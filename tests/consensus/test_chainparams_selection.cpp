@@ -67,6 +67,8 @@ public:
           compact_(params->shielded_compact_activation_height),
           timing_(params->sixty_second_activation_height),
           release_(params->release_v8113_activation_height),
+          orchard_(params->orchard_activation_height),
+          branch_(params->orchard_branch_id),
           outgoing_(params->shielded_outgoing_recovery_activation_height),
           auth_reset_(params->shielded_spend_auth_epoch_reset_height) {}
 
@@ -78,6 +80,8 @@ public:
         params_->shielded_compact_activation_height = compact_;
         params_->sixty_second_activation_height = timing_;
         params_->release_v8113_activation_height = release_;
+        params_->orchard_activation_height = orchard_;
+        params_->orchard_branch_id = branch_;
         params_->shielded_outgoing_recovery_activation_height = outgoing_;
         params_->shielded_spend_auth_epoch_reset_height = auth_reset_;
     }
@@ -94,6 +98,8 @@ private:
     uint32_t compact_;
     uint32_t timing_;
     uint32_t release_;
+    uint32_t orchard_;
+    uint32_t branch_;
     uint32_t outgoing_;
     uint32_t auth_reset_;
 };
@@ -124,10 +130,13 @@ TEST(ChainParamsSelection, CompactRequiresExistingBoundAuthorityAndNoNewReset) {
     params->shielded_compact_activation_height = auth;
     params->sixty_second_activation_height = auth;
     params->release_v8113_activation_height = auth;
+    params->orchard_activation_height = auth;
+    params->orchard_branch_id = 1; // synthetic schedule in this restored fixture only
     EXPECT_THROW(SelectParams(Chain::MAINNET), std::runtime_error);
     params->shielded_compact_activation_height = auth + 1;
     params->sixty_second_activation_height = auth + 1;
     params->release_v8113_activation_height = auth + 1;
+    params->orchard_activation_height = auth + 1;
     EXPECT_NO_THROW(SelectParams(Chain::MAINNET));
     EXPECT_EQ(Params().shielded_epoch_reset_height, cv_reset);
     EXPECT_EQ(Params().shielded_spend_auth_epoch_reset_height, auth_reset);
@@ -144,19 +153,23 @@ TEST(ChainParamsSelection, PublicReleaseRejectsPartialOrMismatchedSchedules) {
 
     // Exercise the real selection boundary, in addition to the profile helper
     // tests. Every partial or mismatched public schedule must fail selection.
-    for (unsigned mask = 1; mask < 7; ++mask) {
+    params->orchard_branch_id = 1; // synthetic fixture owner, restored on exit
+    for (unsigned mask = 1; mask < 15; ++mask) {
         params->shielded_compact_activation_height = mask & 1 ? activation : UINT32_MAX;
         params->sixty_second_activation_height = mask & 2 ? activation : UINT32_MAX;
         params->release_v8113_activation_height = mask & 4 ? activation : UINT32_MAX;
+        params->orchard_activation_height = mask & 8 ? activation : UINT32_MAX;
         EXPECT_THROW(SelectParams(Chain::MAINNET), std::runtime_error) << "mask=" << mask;
     }
     params->shielded_compact_activation_height = activation;
     params->sixty_second_activation_height = activation;
     params->release_v8113_activation_height = activation;
+    params->orchard_activation_height = activation;
     EXPECT_NO_THROW(SelectParams(Chain::MAINNET));
     for (auto* height : {&params->shielded_compact_activation_height,
                          &params->sixty_second_activation_height,
-                         &params->release_v8113_activation_height}) {
+                         &params->release_v8113_activation_height,
+                         &params->orchard_activation_height}) {
         *height = activation + 1;
         EXPECT_THROW(SelectParams(Chain::MAINNET), std::runtime_error);
         *height = activation;

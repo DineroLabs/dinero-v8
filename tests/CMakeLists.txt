@@ -71,6 +71,13 @@ if(NOT WIN32)
       set_property(TARGET test_daemon_service_release PROPERTY ${_property} "${_release_property}")
     endif()
   endforeach()
+  add_test(NAME OrchardCapabilityAdvertisement COMMAND python3
+    ${CMAKE_SOURCE_DIR}/tests/integration/test_orchard_capability_advertisement.py
+    $<TARGET_FILE:dinerod> $<TARGET_EXISTS:dinero_orchard_runtime_reader>)
+  set_tests_properties(OrchardCapabilityAdvertisement PROPERTIES
+    LABELS "integration;e2e-daemon;p2p;orchard;mandatory" TIMEOUT 300 RUN_SERIAL TRUE
+    ENVIRONMENT "DINERO_KEEP_ORCHARD_CAPABILITY_EVIDENCE=1")
+
   add_test(NAME VaultExplicitStartup COMMAND python3
     ${CMAKE_SOURCE_DIR}/tests/integration/test_vault_explicit_startup.py
     $<TARGET_FILE:dinerod>)
@@ -3582,6 +3589,7 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/p2p/test_p2p_manager_ts1_integration.cpp)
   add_executable(test_p2p_manager_ts1_integration
     tests/p2p/test_p2p_manager_ts1_integration.cpp
     tests/p2p/test_release_peer_cutoff.cpp
+    tests/p2p/test_orchard_peer_cutoff.cpp
     src/daemon/p2p_manager.cpp
     src/network/relay_hints_eviction.cpp
     src/network/relay_registry.cpp # Required by NAT C3 relay registry member in P2PManager
@@ -3641,6 +3649,8 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/p2p/test_p2p_manager_ts1_integration.cpp)
 
   # Register with CTest
   add_test(NAME P2PManager_TS1_Integration COMMAND test_p2p_manager_ts1_integration)
+  add_test(NAME OrchardPeerCutoff COMMAND test_p2p_manager_ts1_integration --gtest_filter=OrchardPeerCutoff.*:ReleasePeerCutoff.*)
+  set_tests_properties(OrchardPeerCutoff PROPERTIES LABELS "p2p;orchard;mandatory" TIMEOUT 30)
 
   # Ring 3 Phase 4c: After refactor, this should PASS
   set_tests_properties(P2PManager_TS1_Integration PROPERTIES
@@ -15392,12 +15402,15 @@ add_executable(test_shielded_resource_limits
   tests/consensus/test_shielded_resource_limits.cpp
   tests/consensus/test_compact_activation.cpp
   tests/consensus/test_release_profile.cpp
+  tests/consensus/test_orchard_release_profile.cpp
   src/p2p/structural_validator.cpp)
 target_link_libraries(test_shielded_resource_limits PRIVATE
   GTest::gtest_main dinero_core dinero_shielded)
 target_include_directories(test_shielded_resource_limits PRIVATE
   ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src)
 add_test(NAME ShieldedResourceLimits COMMAND test_shielded_resource_limits)
+add_test(NAME OrchardReleaseProfile COMMAND test_shielded_resource_limits --gtest_filter=OrchardReleaseProfile.*)
+set_tests_properties(OrchardReleaseProfile PROPERTIES LABELS "consensus;orchard;mandatory" TIMEOUT 30)
 set_tests_properties(ShieldedResourceLimits PROPERTIES LABELS "shielded;consensus;p2p;mandatory" TIMEOUT 30)
 
 if(DINERO_ENABLE_COMPACT_REGTEST)

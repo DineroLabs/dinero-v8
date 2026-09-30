@@ -18,6 +18,7 @@
 #include "p2p/addrman.h"
 #include "p2p/addr_v2.h"  // NAT traversal Phase 1A.2: AddrV2Entry struct for create_addrv2()
 #include "p2p/outbound_policy.h"
+#include "network/types.h"
 #include "network/clock_source.h"     // relay-hints Phase 1a: injectable time source for TTL logic
 #include "network/rolling_24h_counter.h"  // Phase 2b: rolling 24h byte counter for relay-virtual traffic
 #include "network/quic_session.h"     // NAT traversal Phase B2: encrypted relay virtual peers
@@ -188,10 +189,12 @@ struct PeerInfo {
           relay_quic_options(std::move(other.relay_quic_options)),
           lifetime_state(other.lifetime_state.load()),
           compact_timing_capable(other.compact_timing_capable.load()),
+          orchard_capable(other.orchard_capable.load()),
           release_handshake_complete(other.release_handshake_complete.load()) {}
 
     // Published by the handshake; sweeps never inspect partially parsed fields.
     std::atomic<bool> compact_timing_capable{false};
+    std::atomic<bool> orchard_capable{false};
     std::atomic<bool> release_handshake_complete{false};
 
     // Default constructor
@@ -521,7 +524,15 @@ public:
 
     // Set before start(). Provider must use the locally validated chain tip.
     void set_release_cutoff_provider(std::function<bool()> provider) {
-        release_cutoff_provider_ = std::move(provider);
+        release_services_provider_ = [provider = std::move(provider)]() -> uint64_t {
+            return provider && provider() ? dinero::ServiceFlags::NODE_COMPACT_TIMING_V1 : 0;
+        };
+    }
+
+    // The production provider captures one locally validated tip for all
+    // scheduled capabilities. Set before start(); peer heights are irrelevant.
+    void set_release_services_provider(std::function<uint64_t()> provider) {
+        release_services_provider_ = std::move(provider);
     }
 
     // Set service flags provider (prune-aware: NODE_NETWORK vs NODE_NETWORK_LIMITED)
@@ -843,6 +854,7 @@ public:
     void test_sweep_release_compatibility() { sweep_release_compatibility(); }
     void test_process_message(const std::string& key, const P2PMessage& message) { process_message(key, message); }
     void test_set_release_capability(const std::string& key, bool capable, bool complete = true);
+    void test_set_orchard_capability(const std::string& key, bool capable);
     void test_run_outbox() { outbox_loop(); }
     void test_stop_outbox() { shutdown_requested_.store(true); outbox_cv_.notify_all(); }
     void test_cleanup_peer(const std::string& peer_address);
@@ -998,7 +1010,8 @@ private:
     PeerConnectedHandler peer_connected_handler_;
     PeerDisconnectedHandler peer_disconnected_handler_;
     PeerHeightUpdatedHandler peer_height_updated_handler_;
-    std::function<bool()> release_cutoff_provider_;
+    std::function<uint64_t()> release_services_provider_;
+    uint64_t required_release_services() const;
     bool release_peer_allowed(const PeerInfo& peer) const;
     bool check_release_handshake(PeerInfo* peer);
     bool enforce_release_compatibility(const std::string& key);

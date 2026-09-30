@@ -137,6 +137,10 @@ if(TARGET dinero_chainstate)
     target_link_libraries(dinero_core PUBLIC dinero_orchard_runtime_reader)
     set_property(SOURCE "${ORCHARD_HOST_ROOT}/src/daemon/services/chainstate_service.cpp"
       DIRECTORY "${ORCHARD_HOST_ROOT}" APPEND PROPERTY COMPILE_DEFINITIONS DINERO_HAS_ORCHARD_RUNTIME_READER=1)
+    # Advertise Orchard only with the real typed relay/download/runtime graph.
+    # Backend-OFF builds and standalone P2PManager fixtures make no such claim.
+    set_property(SOURCE "${ORCHARD_HOST_ROOT}/src/daemon/services/p2p_service.cpp"
+      DIRECTORY "${ORCHARD_HOST_ROOT}" APPEND PROPERTY COMPILE_DEFINITIONS DINERO_HAS_ORCHARD_P2P=1)
   endif()
   add_library(dinero_orchard_block_coins STATIC
     "${ORCHARD_HOST_ROOT}/src/consensus/orchard_block_coins.cpp"

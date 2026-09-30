@@ -211,6 +211,38 @@ jobs:
         run: |
           cmake --build build-orchard-root --target dinerod test_daemon_service_release test_mempool_service_owner test_pool_tip_consumers test_bridge_cache_owner test_bridge_forest_read_lock test_chainstate_commit_batch_interval test_mempool_callback_owner test_mempool_replacement_policy test_mempool_package_bounds test_mempool_maintenance_owner test_mempool_admission_owner test_mempool_policy_owner test_mempool_block_owner test_mempool_refresh_owner test_mempool_prepared_refresh test_relay_refresh_owner test_tx_relay_g3 test_csn_proof_refresh test_header_sync_p2p_integration test_rocksdb_checksum test_wallet_historical_rpc test_rpc_handler_drain test_wallet_pq_rpc_owner test_wallet_mainnet_readiness test_mining_height2 test_wallet_height2_coinbase test_pruning test_header_status_bits test_template_maturity test_wallet_input_coins test_header_metadata_recovery v7_p2mr_key_read_test v7_p2mr_inventory_test test_assumeutxo_replay test_wallet_rescan_utxoset test_orchard_account_delivery test_orchard_index_delivery test_wallet_database_lease test_wallet_block_disconnect test_wallet_revert_atomic test_mempool_proof_staleness test_utxo_publication test_orchard_state_commitment test_orchard_state_root test_orchard_legacy_accounting test_orchard_runtime_reader test_orchard_service_startup test_shielded_state_startup test_legacy_retirement test_state_commitment_canonical test_state_commitment_encoding test_state_commitment_external_vectors test_state_commitment_transitions test_orchard_backend test_orchard_wallet test_orchard_wallet_shield test_orchard_wallet_spend test_orchard_wallet_storage test_orchard_wallet_scan test_orchard_operation_queue test_orchard_proof_jobs test_orchard_wallet_account test_orchard_chain_restore test_orchard_operation_archive test_orchard_transaction_reader test_orchard_coin_snapshot test_orchard_transparent test_orchard_authorization test_orchard_state_transition test_orchard_block_reader test_orchard_block_coins test_orchard_resources test_orchard_block_filter test_orchard_header test_orchard_forest_transition test_orchard_block_staging test_orchard_state_storage test_orchard_legacy_boundary test_block_storage_roundtrip test_archival_block_reader --parallel 2
           ./build-orchard-root/dinerod --version
+      - name: Require and execute Orchard release profile and peer capabilities
+        run: |
+          cmake --build build-orchard-root --target test_p2p_manager_ts1_integration test_shielded_resource_limits --parallel 2
+          ctest --test-dir build-orchard-root -R '^(OrchardPeerCutoff|OrchardReleaseProfile|OrchardCapabilityAdvertisement)$' --show-only=json-v1 > orchard-release-capability-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests=json.load(open('orchard-release-capability-inventory.json'))['tests']
+          if sorted(t['name'] for t in tests)!=['OrchardCapabilityAdvertisement','OrchardPeerCutoff','OrchardReleaseProfile'] or any(p['name']=='DISABLED' and p['value'] for t in tests for p in t.get('properties',[])):
+              raise SystemExit('Orchard release capability cases missing or disabled')
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^(OrchardPeerCutoff|OrchardReleaseProfile|OrchardCapabilityAdvertisement)$' --verbose --no-tests=error --output-log orchard-release-capability-execution.log
+          python3 - <<'PYTEST'
+          import re
+          expected=['OrchardPeerCutoff.BothHandshakeDirectionsRequireEachScheduledCapability', 'OrchardPeerCutoff.EstablishedSessionsRespectOrchardForSweepReceiveAndSend', 'OrchardPeerCutoff.IncompleteHandshakeAndLowLevelControlPolicy', 'OrchardPeerCutoff.CapabilityMoveAndUnconfiguredVersionDoNotInventSupport', 'OrchardPeerCutoff.CompletePolicyIsCapturedOnceForEachControlSend', 'OrchardReleaseProfile.PublicReleaseRequiresExplicitMatchingOrchardOwner', 'OrchardReleaseProfile.ValidatedNextHeightRewindAndDormantSentinel', 'OrchardReleaseProfile.IndependentRegtestSchedulesRemainExplicit', 'OrchardReleaseProfile.InvalidUpdatesPreserveTheCompletePriorSchedule', 'ReleasePeerCutoff.BothHandshakeDirectionsUseCurrentLocalPolicy', 'ReleasePeerCutoff.IdleSweepClosesOnlyUnsupportedEstablishedSessions', 'ReleasePeerCutoff.ExistingConnectionCannotDispatchOrSendAfterCutoff', 'ReleasePeerCutoff.CutoffCrossingWhileHandshakeWaitsIsRechecked', 'ReleasePeerCutoff.IncompleteHandshakeIsNotAnIdleLegacySession', 'ReleasePeerCutoff.BroadcastQueuedBeforeCutoffCannotEscapeAfterIt', 'ReleasePeerCutoff.LowLevelControlSendsRespectEstablishedPeerPolicy']
+          actual=re.findall(r'\[       OK \] ((?:OrchardPeerCutoff|OrchardReleaseProfile|ReleasePeerCutoff)\.\w+)',open('orchard-release-capability-execution.log').read())
+          if sorted(actual)!=sorted(expected):
+              raise SystemExit('Orchard release/peer cases missing, duplicate or unexpected')
+          log=open('orchard-release-capability-execution.log').read()
+          for marker in ['PASS actual daemon outbound version advertises exact backend capability', 'PASS actual daemon inbound version matches outbound capability', 'PASS dormant regtest handshake accepts ordinary peer without activation', 'PASS isolated capability daemon shuts down cleanly']:
+              if log.count(marker)!=1:
+                  raise SystemExit('Actual daemon capability marker missing or duplicated')
+          PYTEST
+      - name: Retain actual daemon capability logs
+        if: always()
+        run: |
+          python3 - <<'PYTEST'
+          from pathlib import Path
+          import shutil
+          out=Path('orchard-release-capability-daemon-logs');out.mkdir(exist_ok=True)
+          for source in Path('/tmp').glob('dinero-orchard-capability-*/daemon.log'):
+              shutil.copy2(source,out/(source.parent.name+'.log'))
+          PYTEST
       - name: Require and execute initial mining and coinbase indexing fixtures
         run: |
           ctest --test-dir build-orchard-root -R '^(MiningHeight2|WalletHeight2Coinbase)$' --show-only=json-v1 > orchard-height-one-inventory.json
@@ -3202,6 +3234,9 @@ jobs:
             orchard-history-replay-execution.log
             orchard-rpc-startup-inventory.json
             orchard-rpc-startup-execution.log
+            orchard-release-capability-inventory.json
+            orchard-release-capability-execution.log
+            orchard-release-capability-daemon-logs/
             orchard-vault-explicit-startup-inventory.json
             orchard-vault-explicit-startup-execution.log
             build-orchard-root/Testing/vault-explicit-startup

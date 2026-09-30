@@ -1,4 +1,5 @@
 #include "consensus/release_profile.h"
+#include "consensus/orchard_profile.h"
 #include "daemon/services/p2p_service.h"
 #include "daemon/services/logger_service.h"
 #include "daemon/services/config_service.h"
@@ -2231,12 +2232,23 @@ bool P2PService::Start() {
             logger_interface_->warning("[P2PService] Chainstate not available - height will be 0 in handshakes");
         }
 
-        p2p_mgr_->set_release_cutoff_provider([this]() {
+        p2p_mgr_->set_release_services_provider([this]() -> uint64_t {
             const auto& params = Params();
-            if (params.release_v8113_activation_height == UINT32_MAX) return false;
-            if (!consensus::ReleaseProfileConfigurationValid(params) || !chainstate_) return true;
+            const bool compact_scheduled = params.release_v8113_activation_height != UINT32_MAX;
+            const bool orchard_scheduled = params.orchard_activation_height != UINT32_MAX;
+            if (!compact_scheduled && !orchard_scheduled) return 0;
+            uint64_t scheduled = (compact_scheduled ? ServiceFlags::NODE_COMPACT_TIMING_V1 : 0) |
+                                 (orchard_scheduled ? ServiceFlags::NODE_ORCHARD_V1 : 0);
+            if (!consensus::ReleaseProfileConfigurationValid(params) ||
+                !consensus::OrchardProfileConfigurationValid(params) || !chainstate_)
+                return scheduled;
+            // One published-tip snapshot determines both requirements.
             const auto height = chainstate_->GetPublishedTipHeight();
-            return !height || consensus::ReleaseServiceCutoffActive(params, *height);
+            if (!height) return scheduled;
+            return (consensus::ReleaseServiceCutoffActive(params, *height)
+                        ? ServiceFlags::NODE_COMPACT_TIMING_V1 : 0) |
+                   (consensus::OrchardServiceCutoffActive(params, *height)
+                        ? ServiceFlags::NODE_ORCHARD_V1 : 0);
         });
 
         // Wire service flags provider (prune-aware: NODE_NETWORK_LIMITED after snapshot)
@@ -2251,6 +2263,9 @@ bool P2PService::Start() {
             p2p_mgr_->set_service_flags_provider([this, prune_svc,
                                                   bridge_enabled]() -> uint64_t {
                 uint64_t flags = ServiceFlags::NODE_UTREEXO | ServiceFlags::NODE_COMPACT_TIMING_V1;
+#ifdef DINERO_HAS_ORCHARD_P2P
+                flags |= ServiceFlags::NODE_ORCHARD_V1;
+#endif
                 if (bridge_enabled) {
                     flags |= ServiceFlags::NODE_UTREEXO_BRIDGE;
                 }
