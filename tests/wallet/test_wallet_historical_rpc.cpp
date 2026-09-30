@@ -2,6 +2,7 @@
 #include "vault/state_snapshot.h"
 #include "rpc/wallet_request_dispatch.h"
 #include "consensus/chainparams.h"
+#include "daemon/services/assumeutxo_replay.h"
 #include "crypto/wallet_crypto.h"
 #include <openssl/crypto.h>
 #include <gtest/gtest.h>
@@ -33,6 +34,17 @@
 namespace dinero {
 struct WalletBatchPaymentTestAccess {
     static void InstallIndex(ChainstateService& chain,std::unique_ptr<UTXOIndex> index) {chain.utxo_index_=std::move(index);}
+    static void InstallValidatedParent(ChainstateService& s,CBlockIndex& tip,const assumeutxo::AssumeUtxoReplayEngine& replay) {
+        if(!s.utxo_index_ || !s.consensus_utxo_set_ || !s.block_validator_ || s.consensus_utxo_set_->GetSetSize()!=replay.ProvenUtxos().size())
+            throw std::runtime_error("actual Init-created canonical pool fixture owners required");
+        for(const auto& [point,coin]:replay.ProvenUtxos()) {
+            const auto* loaded=s.consensus_utxo_set_->GetCoin(point);
+            if(!loaded || loaded->value!=coin.value || loaded->scriptPubKey!=coin.scriptPubKey || loaded->height!=coin.height ||
+               loaded->isCoinbase!=coin.isCoinbase || loaded->is_confidential!=coin.is_confidential || loaded->commitment!=coin.commitment)
+                throw std::runtime_error("pool source loaded coin differs from completed validation");
+        }
+        s.consensus_utxo_set_->ReplaceForestGuarded(*replay.Forest());s.consensus_utxo_set_->SetBestBlock(tip.hash,tip.height);s.active_tip_=&tip;
+    }
 };
 }
 void registerV7PqWalletMethods();
@@ -568,3 +580,5 @@ TEST_F(WalletBatchRpc, SuccessfulSubmissionAndInvalidInputBeforeEffects) {
 #include "wallet_pool_origin_checks.h"
 
 #include "pool_payment_attempt_checks.h"
+
+#include "pool_payment_eligibility_checks.h"

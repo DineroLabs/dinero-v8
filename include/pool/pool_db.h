@@ -261,9 +261,13 @@ private:
     friend struct PoolPaymentAttemptTestAccess;
     friend class PoolPaymentCanonicalOwner;
     friend struct PoolPaymentSettlementTestAccess;
+    friend struct PoolAttemptSourceTestAccess;
+    PoolPaymentSourceSnapshot capturePaymentSources(const std::vector<uint64_t>&);
+    PoolPaymentSourceSnapshot readPaymentSourcesOwned(const std::vector<uint64_t>&);
     bool reconcilePaymentSettlement(const PoolPaymentAttempt&,const std::optional<PoolPaymentSettlement>&);
     PoolPaymentAttempt beginPaymentAttempt(const PoolPaymentWalletBinding&,
-                                           const std::vector<uint64_t>& payout_ids);
+                                           const std::vector<uint64_t>& payout_ids,
+                                           const PoolPaymentSourceSnapshot& expected);
     void retainPaymentAttempt(const PoolPaymentAttempt&,const PoolPaymentRetained&);
     std::vector<PoolPaymentAttempt> readPaymentAttemptsOwned();
 

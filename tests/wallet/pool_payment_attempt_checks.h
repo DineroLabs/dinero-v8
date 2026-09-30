@@ -1,4 +1,5 @@
 #pragma once
+#include "pool_payment_chain_fixture.h"
 #include "pool/pool_manager.h"
 #include "pool/wallet_payment_backend.h"
 namespace dinero::pool {
@@ -8,6 +9,8 @@ namespace {
 class PoolPaymentAttempt : public WalletBatchRpc {
 protected:
     std::unique_ptr<dinero::pool::PoolManager> pool;
+    std::unique_ptr<PoolPaymentChainFixture> canonical;
+    std::string source_hash;
     std::filesystem::path pool_path;
     sqlite3* raw(){return dinero::pool::PoolPaymentAttemptTestAccess::Raw(pool->getDatabase());}
     void open_pool() {
@@ -16,16 +19,31 @@ protected:
         pool->setPaymentBackend(dinero::pool::MakeWalletPoolPaymentBackend(daemon));
     }
     void SetUp() override {
-        dinero::SelectParams(dinero::Chain::REGTEST);WalletBatchRpc::SetUp();if(HasFatalFailure())return;
+        dinero::SelectParams(dinero::Chain::REGTEST);WalletOwnedSigning::SetUp();if(HasFatalFailure())return;
+        ingress=std::make_shared<Ingress>();daemon.tx_ingress=ingress.get();
+        auto& wallet=service->get();const auto funding_address=wallet.getNewAddress();
+        const auto funding_script=wallet.getScriptPubKeyForAddress(funding_address);ASSERT_TRUE(funding_script);
+        ASSERT_TRUE(util::unhex(*funding_script,hd.spk));const auto funding_path=wallet.getDerivationPath(*funding_script);
+        ASSERT_TRUE(funding_path);hd.path=*funding_path;
+        canonical=std::make_unique<PoolPaymentChainFixture>(root/"canonical-source",std::vector<uint8_t>{0x51},hd.spk);source_hash=canonical->blocks[1].GetHash().GetHex();
+        service->get().setUTXOIndex(nullptr);daemon.chainstate.reset();chain.reset();chain=canonical->source;daemon.chainstate=chain;
+        service->get().setUTXOIndex(chain->utxoIndex());
+        const auto& funding=canonical->blocks[2].vtx[0];hd.txid=funding.GetTxid().AsUint256();
+        hd.vout=0;hd.value=funding.vout[0].value;hd.height=2;hd.is_coinbase=true;
+        const auto inclusion=chain->getCanonicalOutputInclusion(hd.txid,0,hd.height);
+        ASSERT_TRUE(inclusion.ok());ASSERT_TRUE(inclusion->MatchesTransparent(hd.value.GetUna(),hd.spk));
+        ASSERT_TRUE(wallet.addUTXO(hd.GetTxIdHex(),0,hd.value.GetUna(),funding_address,util::hex(hd.spk),2,true));
+        wallet.setBlockchainHeight(101);wallet.updateUTXOMaturity();
+        ASSERT_TRUE(chain->utxoIndex()->AddUTXO(dinero::WalletUTXO(dinero::TxId(hd.txid),hd.vout,hd.value,hd.spk,hd.path,hd.height,true)));
         pool_path=root/"pool.sqlite";open_pool();auto cfg=pool->getConfig();cfg.payout_mode=dinero::pool::PayoutMode::SOLO;
         cfg.pool_fee_percent=0;cfg.min_auto_payout=1;cfg.payment_funding=dinero::pool::PoolPaymentFunding{"owner",1,10000};ASSERT_TRUE(pool->setConfig(cfg));
         auto& db=pool->getDatabase();db.getOrCreateWorker("miner",modern_address);
-        dinero::pool::PoolBlock block;block.block_hash=std::string(64,'a');block.height=7;block.finder_worker="miner";block.finder_address=modern_address;
+        dinero::pool::PoolBlock block;block.block_hash=source_hash;block.height=1;block.finder_worker="miner";block.finder_address=modern_address;
         block.reward=block.total_reward=block.distributable=20000;block.found_at=20;block.confirmations=block.required_confirmations=100;
         ASSERT_TRUE(db.insertBlock(block));sql(raw(),"UPDATE blocks SET confirmations=100,required_confirmations=100,total_reward=20000,distributable=20000,pool_fee_percent=0");
         ASSERT_EQ(pool->processConfirmedBlocks(),1u);ASSERT_EQ(db.getPayoutsReadyToSend().size(),1u);ASSERT_TRUE(db.getPayoutsReadyToSend()[0].allocation_origin);
     }
-    void TearDown() override {pool.reset();WalletBatchRpc::TearDown();}
+    void TearDown() override {pool.reset();service->get().setUTXOIndex(nullptr);daemon.chainstate.reset();chain.reset();canonical.reset();WalletBatchRpc::TearDown();}
     std::vector<dinero::pool::PoolPaymentAttempt> attempts(){return pool->getDatabase().getPaymentAttempts();}
     void unpaid() {
         const auto payouts=pool->getDatabase().getPayoutsForBlock(1);ASSERT_EQ(payouts.size(),1u);
@@ -54,7 +72,7 @@ TEST_F(PoolPaymentAttempt, ActualUnknownSubmissionRetainsAndReopensWithoutPaying
     ASSERT_EQ(pool->sendPendingPayouts(),1u);ASSERT_EQ(ingress->tests,1);ASSERT_EQ(ingress->submits,1);
     auto saved=attempts();ASSERT_EQ(saved.size(),1u);ASSERT_TRUE(saved[0].retained);const auto body=service->get().getPendingPayments().at(0).signed_body;unpaid();
     dinero::pool::PoolDB::OrphanResult refused;refused.pending_reversed=91;
-    EXPECT_FALSE(pool->getDatabase().reconcileOrphanedBlock(std::string(64,'a'),refused));EXPECT_EQ(refused.pending_reversed,91u);EXPECT_EQ(attempts(),saved);unpaid();
+    EXPECT_FALSE(pool->getDatabase().reconcileOrphanedBlock(source_hash,refused));EXPECT_EQ(refused.pending_reversed,91u);EXPECT_EQ(attempts(),saved);unpaid();
     pool.reset();service->get().open("owner");service->get().unlockWallet("historical-rpc",0);open_pool();daemon.chainstate.reset();daemon.tx_ingress=nullptr;
     EXPECT_EQ(pool->sendPendingPayouts(),0u);EXPECT_EQ(pool->retryFailedPayouts(pool->getConfig().max_payout_retries),0u);EXPECT_EQ(attempts(),saved);
     EXPECT_EQ(service->get().getPendingPayments().at(0).signed_body,body);EXPECT_EQ(ingress->submits,1);EXPECT_EQ(ingress->tests,1);unpaid();

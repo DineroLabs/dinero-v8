@@ -2720,6 +2720,24 @@ jobs:
           for case in ['RecordedRoundWinsOverUnrelatedMatchingBlockNumber','MissingForeignAndDuplicateRoundRefuseBeforeAllocationWrites','CompleteTypedContributionsAndReadErrors','CallerTransactionAndCommitRefusalPreserveOwners']:
               assert log.count('[       OK ] PoolRoundOwner.'+case+' (')==1
           PYROUND
+      - name: Require selected source eligibility before pool attempt commit
+        run: |
+          ctest --test-dir build-orchard-root -R '^PoolAttemptSource$' --show-only=json-v1 > orchard-pool-attempt-source-inventory.json
+          python3 - <<'PYPOOLREFS'
+          import json
+          tests=json.load(open('orchard-pool-attempt-source-inventory.json'))['tests']
+          assert len(tests)==1 and tests[0]['name']=='PoolAttemptSource'
+          assert next(p['value'] for p in tests[0]['properties'] if p['name']=='TIMEOUT')==180
+          assert not any(p['name']=='DISABLED' and p['value'] for p in tests[0].get('properties',[]))
+          PYPOOLREFS
+          ctest --test-dir build-orchard-root -R '^PoolAttemptSource$' --verbose --no-tests=error --output-log orchard-pool-attempt-source-execution.log
+          python3 - <<'PYPOOLREFS'
+          from pathlib import Path
+          log=Path('orchard-pool-attempt-source-execution.log').read_text()
+          for case in ['PoolAttemptSource.MissingInconsistentAndStoppedSourcePreserveUnclaimedAllocations', 'PoolAttemptSource.StoredConfirmationsCannotReplaceCanonicalDepthHashOrReward', 'PoolAttemptSource.CompleteSourceReadsAndUnavailableBodyRefuseBeforeWalletEffects', 'PoolAttemptSource.CapturedSelectionAndPolicyMustStillMatchInsideAttemptTransaction', 'PoolAttemptSource.CapturedSelectionCommitRefusalPreservesAllAttemptAndWalletState']:
+              assert log.count('[       OK ] '+case+' (')==1
+          PYPOOLREFS
+
       - name: Require durable pool attempts and actual bound wallet dispatch
         run: |
           ctest --test-dir build-orchard-root -R '^PoolPaymentAttempt$' --show-only=json-v1 > orchard-pool-payment-attempt-inventory.json
@@ -3610,6 +3628,8 @@ jobs:
             orchard-pool-request-execution.log
             orchard-pool-origins-inventory.json
             orchard-pool-origins-execution.log
+            orchard-pool-attempt-source-inventory.json
+            orchard-pool-attempt-source-execution.log
             orchard-pool-payment-attempt-inventory.json
             orchard-pool-payment-attempt-execution.log
             orchard-request-owner-inventory.json

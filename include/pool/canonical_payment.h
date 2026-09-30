@@ -8,6 +8,9 @@ class WalletPoolDispatcher;
 class PoolPaymentCanonicalOwner {
     friend class WalletPoolDispatcher;
     friend struct PoolPaymentSettlementTestAccess;
+    friend struct PoolAttemptSourceTestAccess;
+    static PoolPaymentAttempt Begin(const std::shared_ptr<ChainstateService>&,PoolDB&,
+                                    const PoolPaymentWalletBinding&,const std::vector<uint64_t>&);
     static bool Reconcile(const std::shared_ptr<ChainstateService>&,PoolDB&,const PoolPaymentAttempt&);
 };
 }

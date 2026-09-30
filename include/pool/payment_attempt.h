@@ -17,6 +17,20 @@ struct PoolPaymentMember {
     std::array<uint8_t,32> origin{};
     bool operator==(const PoolPaymentMember&) const = default;
 };
+// Captured pool metadata, rechecked byte-for-byte in the attempt transaction.
+// It is not an authenticated catalog or permission to recreate an old attempt.
+struct PoolPaymentSourceRow {
+    PoolPaymentMember member;
+    std::string address,block_hash;
+    uint64_t total_reward{0};
+    uint32_t height{0},required_confirmations{0};
+    bool operator==(const PoolPaymentSourceRow&) const = default;
+};
+struct PoolPaymentSourceSnapshot {
+    PoolConfig policy;
+    std::vector<PoolPaymentSourceRow> rows; // increasing requested payout ID
+    bool operator==(const PoolPaymentSourceSnapshot&) const = default;
+};
 // A retained body is an authenticated wallet origin, never chain settlement.
 struct PoolPaymentRetained {
     std::array<uint8_t,32> txid{},body_sha256{};
@@ -51,6 +65,7 @@ public:
 private:
     friend class PayoutProcessor;
     virtual const PoolPaymentWalletBinding& Binding() const=0;
+    virtual PoolPaymentAttempt Begin(PoolDB&,const std::vector<uint64_t>&)=0;
     virtual std::optional<PoolPaymentRetained> DispatchNew(const PoolPaymentAttempt&)=0;
     virtual std::optional<PoolPaymentRetained> Resolve(const PoolPaymentAttempt&)=0;
     virtual bool Reconcile(PoolDB&,const PoolPaymentAttempt&)=0;

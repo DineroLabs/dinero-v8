@@ -1926,11 +1926,38 @@ std::vector<PoolPaymentAttempt> PoolDB::getPaymentAttempts() {
     PaymentCheck(db_ && sqlite3_get_autocommit(db_));OrphanTransaction transaction(db_);
     auto result=readPaymentAttemptsOwned();transaction.commit();return result;
 }
-PoolPaymentAttempt PoolDB::beginPaymentAttempt(const PoolPaymentWalletBinding& binding,const std::vector<uint64_t>& ids) {
+PoolPaymentSourceSnapshot PoolDB::readPaymentSourcesOwned(const std::vector<uint64_t>& ids) {
+    PaymentCheck(db_ && !sqlite3_get_autocommit(db_) && !ids.empty() && ids.size()<=256);
+    const std::set<uint64_t> selected(ids.begin(),ids.end());PaymentCheck(selected.size()==ids.size());
+    PoolPaymentSourceSnapshot captured;captured.policy=getConfig();
+    for(const auto id:selected) {
+        PaymentCheck(id && id<=INT64_MAX);
+        OrphanStatement row(db_,"SELECT p.block_id,p.worker_id,p.wallet_address,p.amount,p.allocation_origin,b.block_hash,b.height,b.total_reward,b.required_confirmations,b.orphaned,b.payouts_calculated FROM payouts p LEFT JOIN blocks b ON b.block_id=p.block_id WHERE p.payout_id=?");
+        row.integer(1,id);PaymentCheck(sqlite3_step(row.get())==SQLITE_ROW);PoolPaymentSourceRow item;
+        item.member.payout_id=id;item.member.block_id=row.nonnegative(0);item.member.worker=row.textColumn(1);
+        item.address=row.textColumn(2);item.member.amount=row.nonnegative(3);item.member.origin=PaymentBlob<32>(row.get(),4);
+        item.block_hash=row.textColumn(5);const auto height=row.nonnegative(6),confirmations=row.nonnegative(8);
+        item.total_reward=row.nonnegative(7);
+        PaymentCheck(item.member.block_id && item.member.amount && item.member.amount<=MAX_SUPPLY_UNA_CONST &&
+            height>0 && height<=INT32_MAX && confirmations<=UINT32_MAX && item.total_reward>0 && item.total_reward<=MAX_SUPPLY_UNA_CONST &&
+            item.member.amount<=item.total_reward && row.nonnegative(9)==0 && row.nonnegative(10)==1);
+        item.height=static_cast<uint32_t>(height);item.required_confirmations=static_cast<uint32_t>(confirmations);
+        row.done();captured.rows.push_back(std::move(item));
+    }
+    return captured;
+}
+PoolPaymentSourceSnapshot PoolDB::capturePaymentSources(const std::vector<uint64_t>& ids) {
+    std::lock_guard<std::recursive_mutex> owner(connection_mutex_);
+    PaymentCheck(db_ && sqlite3_get_autocommit(db_));OrphanTransaction transaction(db_);
+    auto result=readPaymentSourcesOwned(ids);transaction.commit();return result;
+}
+PoolPaymentAttempt PoolDB::beginPaymentAttempt(const PoolPaymentWalletBinding& binding,const std::vector<uint64_t>& ids,
+                                               const PoolPaymentSourceSnapshot& expected) {
     std::lock_guard<std::recursive_mutex> owner(connection_mutex_);
     PaymentCheck(db_ && sqlite3_get_autocommit(db_));ValidatePaymentBinding(binding);
     PaymentCheck(!ids.empty() && ids.size()<=256);const std::set<uint64_t> selected(ids.begin(),ids.end());PaymentCheck(selected.size()==ids.size());
-    OrphanTransaction transaction(db_);const auto config=getConfig();PaymentCheck(config.payment_funding && *config.payment_funding==binding.funding);
+    OrphanTransaction transaction(db_);PaymentCheck(readPaymentSourcesOwned(ids)==expected);
+    const auto config=getConfig();PaymentCheck(config.payment_funding && *config.payment_funding==binding.funding);
     const auto existing=readPaymentAttemptsOwned();PaymentCheck(existing.size()<4096);
     for(const auto& a:existing)for(const auto& m:a.members)PaymentCheck(!selected.contains(m.payout_id));
     const auto ready=getPayoutsReadyToSend();PoolPaymentAttempt attempt;attempt.binding=binding;

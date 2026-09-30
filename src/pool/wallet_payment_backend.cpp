@@ -44,6 +44,11 @@ public:
     }
 private:
     const PoolPaymentWalletBinding& Binding() const override {return binding_;}
+    PoolPaymentAttempt Begin(PoolDB& db,const std::vector<uint64_t>& ids) override {
+        // Bind captured the wallet identity and released its owners. Selected
+        // source -> pool SQLite is acquired here; no signing/admission callback.
+        return PoolPaymentCanonicalOwner::Begin(ctx_.chainstate,db,binding_,ids);
+    }
     PendingPaymentIntent Intent(const PoolPaymentAttempt& a) const {
         RequirePoolWallet(a.binding==binding_ && NonzeroPoolWallet(a.id) && !a.members.empty() && a.members.size()<=256);
         PendingPaymentIntent intent;intent.address=a.address;intent.amount_una=a.amount;

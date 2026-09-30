@@ -6,6 +6,7 @@
 #include "consensus/merkle_root.h"
 #include "address/addr_codec.h"
 #include "storage/chain_db.h"
+#include "primitives/amount.h"
 #include <openssl/sha.h>
 #include <algorithm>
 #include <stdexcept>
@@ -14,6 +15,44 @@ namespace {
 void CanonicalPaymentCheck(bool ok) {if(!ok)throw std::runtime_error("canonical pool payment observation unavailable");}
 uint256 PaymentHash(const std::array<uint8_t,32>& bytes){uint256 h;std::copy(bytes.begin(),bytes.end(),h.begin());return h;}
 std::array<uint8_t,32> PaymentBytes(const uint256& h){std::array<uint8_t,32> b{};std::copy(h.begin(),h.end(),b.begin());return b;}
+}
+PoolPaymentAttempt PoolPaymentCanonicalOwner::Begin(const std::shared_ptr<ChainstateService>& source,PoolDB& db,
+        const PoolPaymentWalletBinding& binding,const std::vector<uint64_t>& ids) {
+    CanonicalPaymentCheck(source!=nullptr);
+    // Capture metadata without holding a selected owner or a wallet lease. The
+    // complete selection is compared again in the final FULL transaction.
+    const auto captured=db.capturePaymentSources(ids);
+    CanonicalPaymentCheck(captured.policy.payment_funding && *captured.policy.payment_funding==binding.funding);
+    const auto lifetime=ChainstateService::AcquireWalletIndexUse(source);
+    const auto selected=source->AcquireBlockIngressActivationLock();
+    const auto* chain=source->GetChainDB();CanonicalPaymentCheck(chain!=nullptr);
+    uint256 genesis;CanonicalPaymentCheck(uint256::FromHex(Params().genesis_hash,genesis) &&
+        binding.genesis==PaymentBytes(genesis) && binding.network==static_cast<uint8_t>(GetActiveChain()));
+    const auto tip=chain->getTip();CanonicalPaymentCheck(tip.ok() && tip->height>=0);
+    const auto tip_hash=source->getCanonicalBlockHash(static_cast<uint32_t>(tip->height));
+    CanonicalPaymentCheck(tip_hash.ok() && *tip_hash==tip->hash);
+    for(const auto& row:captured.rows) {
+        CanonicalPaymentCheck(row.height<=static_cast<uint32_t>(tip->height));
+        const uint64_t confirmations=uint64_t(tip->height)-row.height+1;
+        CanonicalPaymentCheck(confirmations>=row.required_confirmations && confirmations>=captured.policy.required_confirmations);
+        uint256 hash;CanonicalPaymentCheck(row.block_hash.size()==64 && uint256::FromHex(row.block_hash,hash) && !hash.IsNull());
+        const auto canonical=source->getCanonicalBlockHash(row.height);CanonicalPaymentCheck(canonical.ok() && *canonical==hash);
+        const auto block=source->getBlockRpcSnapshot(hash);
+        CanonicalPaymentCheck(block.ok() && block->height==row.height && block->header.GetHash()==hash && !block->transaction_ids.empty());
+        std::vector<TxId> txids;txids.reserve(block->transaction_ids.size());for(const auto& id:block->transaction_ids)txids.emplace_back(id);
+        bool mutated=false;CanonicalPaymentCheck(consensus::ComputeTransactionMerkleRoot(txids,&mutated)==block->header.merkle_root && !mutated);
+        const auto coinbase=source->getTransactionBody(block->transaction_ids.front());
+        CanonicalPaymentCheck(coinbase.ok() && !coinbase->IsOrchard() && coinbase->Historical().IsCoinbase() &&
+            coinbase->GetTxid().AsUint256()==block->transaction_ids.front());
+        uint64_t reward=0;
+        for(const auto& output:coinbase->Historical().vout) {
+            CanonicalPaymentCheck(!output.is_confidential && output.value.GetUna()<=MAX_SUPPLY_UNA_CONST-reward);reward+=output.value.GetUna();
+        }
+        CanonicalPaymentCheck(reward==row.total_reward);
+    }
+    // Selected ownership remains through comparison and COMMIT, then ends
+    // before any wallet preflight, signing or submission is invoked.
+    return db.beginPaymentAttempt(binding,ids,captured);
 }
 bool PoolPaymentCanonicalOwner::Reconcile(const std::shared_ptr<ChainstateService>& source,PoolDB& db,const PoolPaymentAttempt& attempt) {
     CanonicalPaymentCheck(attempt.retained.has_value());

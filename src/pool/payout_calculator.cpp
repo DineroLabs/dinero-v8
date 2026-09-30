@@ -505,7 +505,7 @@ uint32_t PayoutProcessor::processOwnedPayments() {
             throw std::runtime_error("pool funding policy unavailable");
         // A successful commit in THIS call is the sole permission to invoke
         // DispatchNew. Exceptions after it leave a resolve-only durable attempt.
-        auto attempt=db_.beginPaymentAttempt(dispatcher->Binding(),ids);
+        auto attempt=dispatcher->Begin(db_,ids);
         const auto retained=dispatcher->DispatchNew(attempt);
         if(retained) {
             db_.retainPaymentAttempt(attempt,*retained);

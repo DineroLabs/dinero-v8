@@ -5,7 +5,7 @@
 namespace dinero::pool {
 struct PoolPaymentSettlementTestAccess {
     static sqlite3* Raw(PoolDB& db){return db.db_;}
-    static PoolPaymentAttempt Begin(PoolDB& db,const PoolPaymentWalletBinding& binding,const std::vector<uint64_t>& ids){return db.beginPaymentAttempt(binding,ids);}
+    static PoolPaymentAttempt Begin(PoolDB& db,const PoolPaymentWalletBinding& binding,const std::vector<uint64_t>& ids){return db.beginPaymentAttempt(binding,ids,db.capturePaymentSources(ids));}
     static void Retain(PoolDB& db,const PoolPaymentAttempt& a,const PoolPaymentRetained& retained){db.retainPaymentAttempt(a,retained);}
     static bool Reconcile(const std::shared_ptr<ChainstateService>& source,PoolDB& db,const PoolPaymentAttempt& a){return PoolPaymentCanonicalOwner::Reconcile(source,db,a);}
 };
