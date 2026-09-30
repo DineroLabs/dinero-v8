@@ -2543,6 +2543,22 @@ jobs:
           if sorted(re.findall(r'\[       OK \] WalletPendingPayment\.(\w+)',log))!=sorted(expected):
               raise SystemExit('Pending payment owner cases did not complete exactly once')
           PYTEST
+      - name: Require bounded pool payout calculation arithmetic
+        run: |
+          ctest --test-dir build-orchard-root -R '^PoolCalculationArithmetic$' --show-only=json-v1 > orchard-pool-calculation-arithmetic-inventory.json
+          python3 - <<'PYROUND'
+          import json
+          tests=json.load(open('orchard-pool-calculation-arithmetic-inventory.json'))['tests']
+          assert len(tests)==1 and tests[0]['name']=='PoolCalculationArithmetic'
+          assert not any(p['name']=='DISABLED' and p['value'] for p in tests[0].get('properties',[]))
+          PYROUND
+          ctest --test-dir build-orchard-root -R '^PoolCalculationArithmetic$' --verbose --no-tests=error --output-log orchard-pool-calculation-arithmetic-execution.log
+          python3 - <<'PYROUND'
+          from pathlib import Path
+          log=Path('orchard-pool-calculation-arithmetic-execution.log').read_text()
+          for case in ['FiniteFormulasAndStorageBoundaryAreExplicit','InvalidConfigurationAndHelperInputsRefuseWithoutWrites','AggregateOverflowAndUnrepresentablePpsRefuseAtomically','InconsistentContributionsAndWrappedTotalsRefuse']:
+              assert log.count('[       OK ] PoolCalculationArithmetic.'+case+' (')==1
+          PYROUND
       - name: Require complete pool calculation input reads
         run: |
           ctest --test-dir build-orchard-root -R '^PoolCalculationInputs$' --show-only=json-v1 > orchard-pool-calculation-inputs-inventory.json
@@ -3419,9 +3435,11 @@ jobs:
             orchard-reservation-balance-execution.log
             orchard-pending-payment-inventory.json
             orchard-pending-payment-execution.log
+            orchard-pool-calculation-arithmetic-inventory.json
             orchard-pool-calculation-inputs-inventory.json
             orchard-pool-allocation-inventory.json
             orchard-pool-round-inventory.json
+            orchard-pool-calculation-arithmetic-execution.log
             orchard-pool-calculation-inputs-execution.log
             orchard-pool-allocation-execution.log
             orchard-pool-round-execution.log

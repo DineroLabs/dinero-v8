@@ -9,16 +9,47 @@
 #include <algorithm>
 #include <numeric>
 #include <stdexcept>
+#include <cmath>
+#include <limits>
 
 namespace dinero {
 namespace pool {
+
+namespace {
+void RequireFiniteNonnegative(double value) {
+    if (!std::isfinite(value) || value < 0)
+        throw std::runtime_error("invalid pool calculation value");
+}
+void RequireStoredAmount(uint64_t value) {
+    if (value > static_cast<uint64_t>(std::numeric_limits<int64_t>::max()))
+        throw std::runtime_error("pool calculation amount exceeds storage range");
+}
+uint64_t CheckedCalculationAmount(double value) {
+    RequireFiniteNonnegative(value);
+    // INT64_MAX rounds up as double; compare with the exact exclusive 2^63.
+    if (value >= std::ldexp(1.0, 63))
+        throw std::runtime_error("pool calculated amount exceeds storage range");
+    return static_cast<uint64_t>(value);
+}
+void AddDifficulty(double& total, double contribution) {
+    RequireFiniteNonnegative(total);RequireFiniteNonnegative(contribution);
+    const double next = total + contribution;
+    RequireFiniteNonnegative(next);
+    total = next;
+}
+} // namespace
 
 // ============================================================================
 // PAYOUT CALCULATOR
 // ============================================================================
 
 PayoutCalculator::PayoutCalculator(PoolDB& db, const PoolConfig& config)
-    : db_(db), config_(config) {}
+    : db_(db), config_(config) {
+    RequireFiniteNonnegative(config_.pool_fee_percent);
+    RequireFiniteNonnegative(config_.pps_rate);
+    if (config_.pool_fee_percent > 100.0)
+        throw std::runtime_error("pool fee percentage exceeds 100");
+}
 
 std::vector<Payout> PayoutCalculator::calculatePayouts(const PoolBlock& block) {
     switch (config_.payout_mode) {
@@ -31,7 +62,7 @@ std::vector<Payout> PayoutCalculator::calculatePayouts(const PoolBlock& block) {
         case PayoutMode::SOLO:
             return calculateSOLO(block);
         default:
-            return calculatePPLNS(block);  // Default to PPLNS
+            throw std::runtime_error("unknown pool payout mode");
     }
 }
 
@@ -63,7 +94,7 @@ std::vector<Payout> PayoutCalculator::calculatePROP(const PoolBlock& block) {
         double share_percent = calculateSharePercent(worker_diff, round->total_difficulty);
 
         // Calculate amount (rounding down to ensure we don't overpay)
-        uint64_t amount = static_cast<uint64_t>(distributable * share_percent);
+        uint64_t amount = CheckedCalculationAmount(distributable * share_percent);
         if (amount == 0) continue;
 
         // Get worker's wallet address
@@ -79,19 +110,9 @@ std::vector<Payout> PayoutCalculator::calculatePROP(const PoolBlock& block) {
         payouts.push_back(payout);
     }
 
-    // Validate total doesn't exceed distributable
-    if (!validatePayouts(payouts, distributable)) {
-        // Scale down if needed (shouldn't happen with proper rounding)
-        uint64_t total = 0;
-        for (const auto& p : payouts) total += p.amount;
-
-        if (total > distributable) {
-            double scale = static_cast<double>(distributable) / total;
-            for (auto& p : payouts) {
-                p.amount = static_cast<uint64_t>(p.amount * scale);
-            }
-        }
-    }
+    // Inconsistent recorded contributions refuse; do not silently rescale payouts.
+    if (!validatePayouts(payouts, distributable))
+        throw std::runtime_error("invalid proportional pool allocation");
 
     return payouts;
 }
@@ -126,10 +147,10 @@ std::vector<Payout> PayoutCalculator::calculatePPLNS(const PoolBlock& block) {
             continue;  // Only count valid shares
         }
 
-        worker_difficulty[share.worker_id] += share.difficulty_real;
+        AddDifficulty(worker_difficulty[share.worker_id], share.difficulty_real);
         worker_share_count[share.worker_id]++;
         worker_wallet[share.worker_id] = share.wallet_address;
-        total_difficulty += share.difficulty_real;
+        AddDifficulty(total_difficulty, share.difficulty_real);
     }
 
     if (total_difficulty == 0) {
@@ -144,7 +165,7 @@ std::vector<Payout> PayoutCalculator::calculatePPLNS(const PoolBlock& block) {
         double share_percent = calculateSharePercent(worker_diff, total_difficulty);
 
         // Calculate amount
-        uint64_t amount = static_cast<uint64_t>(distributable * share_percent);
+        uint64_t amount = CheckedCalculationAmount(distributable * share_percent);
         if (amount == 0) continue;
 
         // Get wallet address
@@ -165,7 +186,8 @@ std::vector<Payout> PayoutCalculator::calculatePPLNS(const PoolBlock& block) {
     }
 
     // Validate
-    validatePayouts(payouts, distributable);
+    if (!validatePayouts(payouts, distributable))
+        throw std::runtime_error("invalid PPLNS pool allocation");
 
     return payouts;
 }
@@ -176,6 +198,9 @@ std::vector<Payout> PayoutCalculator::calculatePPLNS(const PoolBlock& block) {
 
 std::vector<Payout> PayoutCalculator::calculatePPS(const PoolBlock& block) {
     std::vector<Payout> payouts;
+
+    RequireStoredAmount(block.total_reward);
+    RequireFiniteNonnegative(block.round_difficulty);
 
     // For PPS, payouts are calculated per-share as they're submitted
     // This function handles the case when a block is found
@@ -208,6 +233,8 @@ std::vector<Payout> PayoutCalculator::calculatePPS(const PoolBlock& block) {
     // Apply pool fee to PPS rate
     pps_rate *= (1.0 - config_.pool_fee_percent / 100.0);
 
+    RequireFiniteNonnegative(pps_rate);
+
     // Aggregate by worker
     std::map<std::string, double> worker_difficulty;
     std::map<std::string, uint64_t> worker_share_count;
@@ -218,7 +245,7 @@ std::vector<Payout> PayoutCalculator::calculatePPS(const PoolBlock& block) {
             continue;
         }
 
-        worker_difficulty[share.worker_id] += share.difficulty_real;
+        AddDifficulty(worker_difficulty[share.worker_id], share.difficulty_real);
         worker_share_count[share.worker_id]++;
         worker_wallet[share.worker_id] = share.wallet_address;
     }
@@ -228,7 +255,7 @@ std::vector<Payout> PayoutCalculator::calculatePPS(const PoolBlock& block) {
         if (worker_diff <= 0) continue;
 
         // PPS amount = difficulty * rate
-        uint64_t amount = static_cast<uint64_t>(worker_diff * pps_rate);
+        uint64_t amount = CheckedCalculationAmount(worker_diff * pps_rate);
         if (amount == 0) continue;
 
         std::string wallet = worker_wallet[worker_id];
@@ -283,7 +310,12 @@ std::vector<Payout> PayoutCalculator::calculateSOLO(const PoolBlock& block) {
 // ============================================================================
 
 uint64_t PayoutCalculator::calculatePoolFee(uint64_t total_reward) const {
-    return static_cast<uint64_t>(total_reward * config_.pool_fee_percent / 100.0);
+    RequireStoredAmount(total_reward);
+    if (config_.pool_fee_percent == 100.0) return total_reward;
+    if (config_.pool_fee_percent == 0.0) return 0;
+    const auto fee = CheckedCalculationAmount(total_reward * config_.pool_fee_percent / 100.0);
+    if (fee > total_reward) throw std::runtime_error("pool fee exceeds reward");
+    return fee;
 }
 
 uint64_t PayoutCalculator::getDistributable(uint64_t total_reward) const {
@@ -292,13 +324,21 @@ uint64_t PayoutCalculator::getDistributable(uint64_t total_reward) const {
 }
 
 double PayoutCalculator::calculateSharePercent(double worker_difficulty, double total_difficulty) const {
-    if (total_difficulty <= 0) return 0.0;
-    return worker_difficulty / total_difficulty;
+    RequireFiniteNonnegative(worker_difficulty);RequireFiniteNonnegative(total_difficulty);
+    if (worker_difficulty > total_difficulty)
+        throw std::runtime_error("pool contribution exceeds recorded total");
+    if (total_difficulty == 0) return 0.0;
+    const double fraction = worker_difficulty / total_difficulty;
+    RequireFiniteNonnegative(fraction);
+    return fraction;
 }
 
 double PayoutCalculator::calculatePPSRate(double network_difficulty, uint64_t block_reward) const {
-    if (network_difficulty <= 0) return 0.0;
-    return static_cast<double>(block_reward) / network_difficulty;
+    RequireFiniteNonnegative(network_difficulty);RequireStoredAmount(block_reward);
+    if (network_difficulty == 0) return 0.0;
+    const double rate = static_cast<double>(block_reward) / network_difficulty;
+    RequireFiniteNonnegative(rate);
+    return rate;
 }
 
 bool PayoutCalculator::validatePayouts(const std::vector<Payout>& payouts, uint64_t distributable) const {
@@ -306,9 +346,10 @@ bool PayoutCalculator::validatePayouts(const std::vector<Payout>& payouts, uint6
     for (const auto& p : payouts) {
         if (p.amount == 0) return false;
         if (p.wallet_address.empty()) return false;
+        if (p.amount > distributable - total) return false;
         total += p.amount;
     }
-    return total <= distributable;
+    return true;
 }
 
 Payout PayoutCalculator::createBasePayout(const PoolBlock& block, const std::string& worker_id,

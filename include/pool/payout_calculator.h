@@ -12,6 +12,10 @@ namespace pool {
 
 /**
  * Payout Calculator - Implements PROP, PPLNS, PPS, and SOLO payout algorithms
+ * Calculation inputs/configuration must be finite and nonnegative; fee is 0..100.
+ * Invalid arithmetic or amounts outside SQLite int64 storage refuse before conversion.
+ * Finite valid formulas retain their floating-point rounding; this is not a proof
+ * of authenticated share totals, canonical eligibility or payment settlement.
  *
  * Usage:
  *   PayoutCalculator calc(db, config);
