@@ -15,8 +15,9 @@ struct RuntimeReorgProgress {
     bool complete = false;
 };
 
-// Preparation must durably retain the complete plan before returning. On restart
-// the consumer resolves committed progress from canonical chainstate, not from
+// Chainstate durably retains the complete plan after consumer preparation and
+// before returning the transition or rolling back its first block. Consumers
+// resolve committed progress from that canonical source on restart, not from
 // the last callback: the process can stop between commit and notification.
 class PreparedRuntimeReorgNotifications {
 public:
@@ -61,7 +62,8 @@ enum class RuntimeBlockDirection { Connect, Disconnect };
 // required to notify/reconcile all consumers after durability and tip publication.
 // ChainstateService owns its configured local pool/bridge/relay tip update; this
 // provider must not prepare or publish that same update a second time. It still
-// owns all remaining configured consumers and durable reorg/readmission plans.
+// owns delivery to all remaining configured consumers and reconciliation of
+// the durable reorg/readmission plans retained by chainstate.
 // No historical Block/Transaction conversion is permitted for a mixed body.
 class PreparedRuntimeBlockNotifications {
 public:

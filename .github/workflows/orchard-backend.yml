@@ -1350,6 +1350,24 @@ jobs:
           for suite,cases in {'VaultStateSnapshot': ['ActualServiceCaptureAndLedgerReplay', 'ExactFormatAllVariantsAndCanonicalInventory', 'IncompleteDuplicateAndTerminalInputRefuse', 'SavedLifecycleAndEveryLedgerBindingRequired', 'ObservedAndDetectedReversionKeepExistingLedgerShape'], 'VaultStateStore': ['ExplicitCreationAndAuthenticatedServiceReopen', 'RequiredWriteAndCommitRefusalPreserveLiveAndDurableState', 'MissingCorruptAndForeignDomainsNeverCreateReplacement', 'DeniedReadsAndBorrowedTransactionRetainCallerAndOwner']}.items():
               for case in cases: assert log.count('[       OK ] '+suite+'.'+case+' (')==1
           PYCODE
+      - name: Prepare all declared runtime notifications before canonical commit
+        shell: bash
+        run: |
+          ctest --test-dir build-orchard-root -R '^RuntimeNotificationComposition$' --show-only=json-v1 > runtime-notification-composition-inventory.json
+          python3 - <<'PYCODE'
+          import json
+          tests=json.load(open('runtime-notification-composition-inventory.json'))['tests']
+          assert len(tests)==1 and tests[0]['name']=='RuntimeNotificationComposition'
+          assert not any(p['name']=='DISABLED' and p['value'] for p in tests[0].get('properties',[]))
+          assert next(p['value'] for p in tests[0]['properties'] if p['name']=='TIMEOUT')==180
+          PYCODE
+          ctest --test-dir build-orchard-root -R '^RuntimeNotificationComposition$' --verbose --no-tests=error --output-log runtime-notification-composition-execution.log
+          python3 - <<'PYCODE'
+          from pathlib import Path
+          log=Path('runtime-notification-composition-execution.log').read_text()
+          for case in ['EveryFamilyRequiresAnExplicitUniqueDeclaration', 'CompletePreparationAndOwnedHandoffsPrecedePublication', 'MailboxHandoffOutlivesStoppedWorkerWithoutOwningItsThread', 'ReorgPreparationUnwindsAndPreservesSharedPlanAndProgress', 'ActualTypedCommitRequiresAllPreparationsBeforePublication', 'ActualCommittedWalletPrefixReplaysThroughMailboxNotification']:
+              assert log.count('[       OK ] RuntimeNotificationComposition.'+case+' (')==1
+          PYCODE
       - name: Recover retained wallet and reorg work without callback acknowledgment
         shell: bash
         run: |
@@ -3186,6 +3204,8 @@ jobs:
             vault-retained-withdrawal-execution.log
             vault-state-store-inventory.json
             vault-state-store-execution.log
+            runtime-notification-composition-inventory.json
+            runtime-notification-composition-execution.log
             runtime-delivery-worker-inventory.json
             runtime-delivery-worker-execution.log
             vault-creation-anchor-inventory.json

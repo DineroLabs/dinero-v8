@@ -8,6 +8,7 @@
 #include <mutex>
 #include <optional>
 #include <thread>
+#include <utility>
 
 namespace dinero {
 class ChainstateService;
@@ -18,6 +19,7 @@ class WalletService;
 // RuntimeBlockNotifications provider and is not installed by DaemonApp until
 // the remaining configured consumers have their own delivery owners.
 class RuntimeDeliveryWorker final {
+    struct WakeState;
 public:
     enum class WalletOutcome { Deferred, ExplicitlyAbsent, NoActiveWallet, NoLog, AppliedPrefix };
     struct Report {
@@ -44,6 +46,19 @@ public:
     ~RuntimeDeliveryWorker();
     RuntimeDeliveryWorker(const RuntimeDeliveryWorker&)=delete;
     RuntimeDeliveryWorker& operator=(const RuntimeDeliveryWorker&)=delete;
+    // A handoff owns only this mailbox, never the worker/thread or chain source.
+    // Releasing it under selected ownership cannot join a worker. After Stop or
+    // destruction requests are ignored; startup always scans durable work again.
+    class WakeHandle final {
+    public:
+        void RequestReplay() const noexcept;
+        [[nodiscard]] bool Running() const noexcept;
+    private:
+        friend class RuntimeDeliveryWorker;
+        explicit WakeHandle(std::shared_ptr<WakeState> state):state_(std::move(state)) {}
+        std::shared_ptr<WakeState> state_;
+    };
+    [[nodiscard]] WakeHandle CaptureWakeHandle() const noexcept { return WakeHandle(state_); }
     // Start always schedules a scan from the beginning, including after Stop.
     // Call lifecycle methods outside wallet, chain and runtime ownership.
     void Start();
@@ -62,10 +77,13 @@ private:
     std::shared_ptr<WalletService> wallet_;
     const Limits limits_;
     std::mutex lifecycle_;
-    mutable std::mutex mutex_;
-    std::condition_variable wake_;
+    struct WakeState {
+        mutable std::mutex mutex;
+        std::condition_variable wake;
+        bool stopping = true, requested = false;
+        Report report;
+    };
+    const std::shared_ptr<WakeState> state_=std::make_shared<WakeState>();
     std::thread thread_;
-    bool stopping_ = true, requested_ = false;
-    Report report_;
 };
 } // namespace dinero

@@ -5116,6 +5116,9 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_assumeutxo_replay.cpp)
   endif()
   link_zstd_if_needed(test_assumeutxo_replay)
   target_include_directories(test_assumeutxo_replay BEFORE PRIVATE
+    # Historical RuntimeBlockBody construction uses shared protocol types.
+    # Expose their headers without linking or enabling the Orchard backend.
+    ${CMAKE_SOURCE_DIR}/rust/orchard_backend/include
     ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
     ${CMAKE_SOURCE_DIR}/include
     ${CMAKE_SOURCE_DIR}/src
@@ -5146,6 +5149,8 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_assumeutxo_replay.cpp)
   set_tests_properties(OrchardTypedSelection PROPERTIES LABELS "daemon;orchard;mining;mandatory" TIMEOUT 120)
   add_test(NAME OrchardMiningTemplate COMMAND test_assumeutxo_replay --gtest_filter=OrchardMiningTemplate.*)
   set_tests_properties(OrchardMiningTemplate PROPERTIES LABELS "daemon;orchard;mining;mandatory" TIMEOUT 120)
+  add_test(NAME RuntimeNotificationComposition COMMAND test_assumeutxo_replay --gtest_filter=RuntimeNotificationComposition.*)
+  set_tests_properties(RuntimeNotificationComposition PROPERTIES TIMEOUT 180 LABELS "daemon;wallet;mandatory")
   add_test(NAME RuntimeDeliveryWorker COMMAND test_assumeutxo_replay --gtest_filter=RuntimeDeliveryWorker.*)
   set_tests_properties(RuntimeDeliveryWorker PROPERTIES TIMEOUT 180 LABELS "daemon;wallet;mandatory")
   add_test(NAME OrchardReorgReadmission COMMAND test_assumeutxo_replay --gtest_filter=OrchardReorgReadmission.*)

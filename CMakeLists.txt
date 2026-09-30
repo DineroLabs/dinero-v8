@@ -1052,6 +1052,7 @@ add_library(dinero_core STATIC
   src/daemon/services/wallet_service.cpp
   src/daemon/services/wallet_service_owner.cpp # Lightweight manager lifetime owner
   src/daemon/runtime_delivery_worker.cpp # Durable wallet/readmission replay worker
+  src/daemon/runtime_notification_composition.cpp # All declared consumers prepare before commit
   src/daemon/services/chainstate_service.cpp
   src/nodecore/sync_profile_policy.cpp
   src/daemon/sync_stats_recorder.cpp  # Forest checkpoint delta campaign phase 0

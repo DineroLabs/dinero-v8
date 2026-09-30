@@ -25,31 +25,35 @@ void RuntimeDeliveryWorker::Start() {
     std::lock_guard lifecycle(lifecycle_);
     if (thread_.joinable()) throw std::logic_error("Runtime delivery worker already started");
     {
-        std::lock_guard lock(mutex_);
-        stopping_=false;requested_=true;report_=Report{};report_.running=true;
+        std::lock_guard lock(state_->mutex);
+        state_->stopping=false;state_->requested=true;state_->report=Report{};state_->report.running=true;
     }
     try { thread_=std::thread([this]{Run();}); }
     catch (...) {
-        std::lock_guard lock(mutex_);stopping_=true;requested_=false;report_.running=false;throw;
+        std::lock_guard lock(state_->mutex);state_->stopping=true;state_->requested=false;state_->report.running=false;throw;
     }
 }
 void RuntimeDeliveryWorker::Stop() {
     std::lock_guard lifecycle(lifecycle_);
-    {std::lock_guard lock(mutex_);stopping_=true;requested_=false;}
-    wake_.notify_one();
+    {std::lock_guard lock(state_->mutex);state_->stopping=true;state_->requested=false;}
+    state_->wake.notify_one();
     // No consumer mutex or selected/wallet owner is held while joining.
     if (thread_.joinable()) thread_.join();
-    std::lock_guard lock(mutex_);report_.running=false;
+    std::lock_guard lock(state_->mutex);state_->report.running=false;
 }
-void RuntimeDeliveryWorker::RequestReplay() noexcept {
-    {std::lock_guard lock(mutex_);if(stopping_)return;requested_=true;}
-    wake_.notify_one();
+void RuntimeDeliveryWorker::RequestReplay() noexcept { CaptureWakeHandle().RequestReplay(); }
+void RuntimeDeliveryWorker::WakeHandle::RequestReplay() const noexcept {
+    {std::lock_guard lock(state_->mutex);if(state_->stopping)return;state_->requested=true;}
+    state_->wake.notify_one();
+}
+bool RuntimeDeliveryWorker::WakeHandle::Running() const noexcept {
+    std::lock_guard lock(state_->mutex);return state_->report.running && !state_->stopping;
 }
 RuntimeDeliveryWorker::Report RuntimeDeliveryWorker::Snapshot() const {
-    std::lock_guard lock(mutex_);return report_;
+    std::lock_guard lock(state_->mutex);return state_->report;
 }
 bool RuntimeDeliveryWorker::Stopping() const {
-    std::lock_guard lock(mutex_);return stopping_;
+    std::lock_guard lock(state_->mutex);return state_->stopping;
 }
 void RuntimeDeliveryWorker::RecoverWallet(Report& report) const {
     report.wallet=WalletOutcome::Deferred;report.wallet_head.reset();
@@ -99,21 +103,21 @@ void RuntimeDeliveryWorker::Run() noexcept {
         for(;;) {
             bool restart=false;
             {
-                std::unique_lock lock(mutex_);
-                if (!continue_pass) wake_.wait_for(lock,limits_.retry_interval,[&]{return stopping_||requested_;});
-                if (stopping_) break;
-                restart=requested_||!continue_pass;requested_=false;
+                std::unique_lock lock(state_->mutex);
+                if (!continue_pass) state_->wake.wait_for(lock,limits_.retry_interval,[&]{return state_->stopping||state_->requested;});
+                if (state_->stopping) break;
+                restart=state_->requested||!continue_pass;state_->requested=false;
             }
             if (restart) {pass=Report{};RecoverWallet(pass);}
             try {continue_pass=ReconcileSlice(pass);}
             catch (...) {pass.source_deferred=true;pass.reorg_eof=false;continue_pass=false;}
             if (slices!=std::numeric_limits<uint64_t>::max())++slices;
             pass.slices=slices;pass.running=true;
-            {std::lock_guard lock(mutex_);report_=pass;}
+            {std::lock_guard lock(state_->mutex);state_->report=pass;}
         }
     } catch (...) {
-        std::lock_guard lock(mutex_);report_.source_deferred=true;report_.reorg_eof=false;
+        std::lock_guard lock(state_->mutex);state_->report.source_deferred=true;state_->report.reorg_eof=false;
     }
-    std::lock_guard lock(mutex_);report_.running=false;
+    std::lock_guard lock(state_->mutex);state_->report.running=false;
 }
 } // namespace dinero
