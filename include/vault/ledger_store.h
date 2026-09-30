@@ -2,19 +2,12 @@
 //
 // Liquidity Vault — persistence layer for the ledger.
 //
-// Append-only file-backed store. Each entry is serialised as one
-// JSON line in a deterministic key order; on startup the daemon
-// replays the file through the in-memory Ledger to recover state.
-//
-// Why JSON-lines and not LevelDB:
-//   - Vault throughput is bounded by chain block rate, so write
-//     volume is tiny compared to chainstate.
-//   - Operator-side audit / forensics is much easier with a plain-
-//     text log than a LevelDB binary.
-//   - The schema-versioned format lets future C++ changes evolve
-//     without a migration step (unrecognised fields preserved verbatim).
-// LevelDB-backed variant slots in cleanly behind the same interface
-// when throughput becomes a concern.
+// Existing append-only JSON-line ledger entry storage. loadAll() checks each
+// complete record and terminal EOF before returning the complete vector. It
+// preserves existing entry bytes and does not reconstruct a complete vault:
+// deposit chain bindings, withdrawal payload/state, and durable vault ownership
+// are not present in this legacy format. Runtime service restoration is a
+// separate contract. Stream flushes below are not physical fsync guarantees.
 
 #pragma once
 
@@ -45,14 +38,15 @@ class LedgerStore {
     LedgerStore& operator=(LedgerStore&&) = delete;
     virtual ~LedgerStore() = default;
 
-    /// Persist one entry. Throws on durable-write failure.
+    /// Append one entry. Concrete stores define their write durability.
     virtual void append(const LedgerEntry& entry) = 0;
 
-    /// Load every entry from the store, in seq order. Used on
-    /// startup to replay state into a fresh in-memory Ledger.
+    /// Read all present entries in strictly increasing sequence order.
+    /// File reads throw on malformed, incomplete, or unavailable data; an
+    /// empty vector is not a certificate of a new or complete vault owner.
     virtual std::vector<LedgerEntry> loadAll() = 0;
 
-    /// Force an fsync so a clean shutdown / migration is durable.
+    /// Flush the store according to its concrete durability contract.
     virtual void flush() = 0;
 };
 
@@ -68,8 +62,11 @@ class InMemoryLedgerStore : public LedgerStore {
     std::vector<LedgerEntry> entries_;
 };
 
-/// File-backed JSON-line store. Each append() is a single line
-/// flushed to disk.
+/// File-backed JSON-line store. Construction explicitly opens for append
+/// and may create a file. Each append flushes the C++ stream (not fsync).
+/// Loading never rewrites malformed records or returns a decoded prefix.
+/// External writers, deletion completeness, and backup rollback are outside
+/// this in-process reader's contract.
 class FileLedgerStore : public LedgerStore {
    public:
     explicit FileLedgerStore(std::string path);

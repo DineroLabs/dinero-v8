@@ -9,6 +9,10 @@
 #include "vault/ledger_store.h"
 
 #include <fstream>
+#include <charconv>
+#include <set>
+#include <type_traits>
+#include <initializer_list>
 #include <iomanip>
 #include <ios>
 #include <iostream>
@@ -63,17 +67,20 @@ std::string hexEncode(const std::array<uint8_t, 32>& bytes) {
 }
 
 bool hexDecode(const std::string& hex, std::array<uint8_t, 32>& out) {
-    if (hex.size() != 64) {
-        return false;
+    if(hex.size()!=64)return false;
+    const auto nibble=[](char c)->int {
+        if(c>='0' && c<='9')return c-'0';
+        if(c>='a' && c<='f')return c-'a'+10;
+        if(c>='A' && c<='F')return c-'A'+10;
+        return -1;
+    };
+    std::array<uint8_t,32> candidate{};
+    for(size_t i=0;i<candidate.size();++i) {
+        const int hi=nibble(hex[2*i]),lo=nibble(hex[2*i+1]);
+        if(hi<0 || lo<0)return false;
+        candidate[i]=static_cast<uint8_t>((hi<<4)|lo);
     }
-    for (size_t i = 0; i < 32; ++i) {
-        try {
-            out[i] = static_cast<uint8_t>(std::stoul(hex.substr(i * 2, 2), nullptr, 16));
-        } catch (...) {
-            return false;
-        }
-    }
-    return true;
+    out=candidate;return true;
 }
 
 std::string outpointJson(const OutpointId& op) {
@@ -149,243 +156,177 @@ std::string serializeEntry(const LedgerEntry& entry) {
     return oss.str();
 }
 
-// ----- minimal JSON parser (reads what serializeEntry produces) -----
-
+// Checked parser for the existing writer's JSON-line format. Keys may be in
+// any order, but every variant has one exact field set. No missing field is
+// supplied from a default and no duplicate/unknown/trailing field is ignored.
 struct Parser {
     const std::string& s;
     size_t i{0};
-
-    explicit Parser(const std::string& str) : s{str} {}
-
     void skipWs() {
-        while (i < s.size() && (s[i] == ' ' || s[i] == '\t' || s[i] == '\n' || s[i] == '\r')) {
-            ++i;
-        }
-    }
-    void expect(char c) {
-        skipWs();
-        if (i >= s.size() || s[i] != c) {
-            throw LedgerStoreError(std::string{"expected '"} + c + "'");
-        }
-        ++i;
+        while (i<s.size() && (s[i]==' ' || s[i]=='\t' || s[i]=='\r' || s[i]=='\n')) ++i;
     }
     bool match(char c) {
         skipWs();
-        if (i < s.size() && s[i] == c) {
-            ++i;
-            return true;
-        }
+        if(i<s.size() && s[i]==c) {++i;return true;}
         return false;
     }
-    std::string readString() {
+    void expect(char c) {
+        if(!match(c))throw LedgerStoreError("unexpected JSON token");
+    }
+    void finish() {
         skipWs();
-        if (i >= s.size() || s[i] != '"') {
-            throw LedgerStoreError("expected string");
+        if(i!=s.size())throw LedgerStoreError("trailing JSON data");
+    }
+    static int nibble(char c) {
+        if(c>='0' && c<='9')return c-'0';
+        if(c>='a' && c<='f')return c-'a'+10;
+        if(c>='A' && c<='F')return c-'A'+10;
+        return -1;
+    }
+    uint32_t unicodeUnit() {
+        if(s.size()-i<4)throw LedgerStoreError("incomplete Unicode escape");
+        uint32_t result=0;
+        for(unsigned n=0;n<4;++n) {
+            const int v=nibble(s[i++]);
+            if(v<0)throw LedgerStoreError("invalid Unicode escape");
+            result=(result<<4)|static_cast<unsigned>(v);
         }
-        ++i;
+        return result;
+    }
+    static void appendUtf8(std::string& out,uint32_t value) {
+        if(value<=0x7f)out.push_back(static_cast<char>(value));
+        else if(value<=0x7ff) {
+            out.push_back(static_cast<char>(0xc0|(value>>6)));
+            out.push_back(static_cast<char>(0x80|(value&0x3f)));
+        } else if(value<=0xffff) {
+            out.push_back(static_cast<char>(0xe0|(value>>12)));
+            out.push_back(static_cast<char>(0x80|((value>>6)&0x3f)));
+            out.push_back(static_cast<char>(0x80|(value&0x3f)));
+        } else {
+            out.push_back(static_cast<char>(0xf0|(value>>18)));
+            out.push_back(static_cast<char>(0x80|((value>>12)&0x3f)));
+            out.push_back(static_cast<char>(0x80|((value>>6)&0x3f)));
+            out.push_back(static_cast<char>(0x80|(value&0x3f)));
+        }
+    }
+    std::string readString() {
+        expect('"');
         std::string out;
-        while (i < s.size() && s[i] != '"') {
-            if (s[i] == '\\' && i + 1 < s.size()) {
-                char next = s[i + 1];
-                if (next == '"') {
-                    out += '"';
-                } else if (next == '\\') {
-                    out += '\\';
-                } else if (next == 'n') {
-                    out += '\n';
-                } else if (next == 'r') {
-                    out += '\r';
-                } else if (next == 't') {
-                    out += '\t';
-                } else {
-                    out += next;
+        while(i<s.size()) {
+            const unsigned char c=static_cast<unsigned char>(s[i++]);
+            if(c=='"')return out;
+            if(c<0x20)throw LedgerStoreError("unescaped string control byte");
+            if(c!='\\') {out.push_back(static_cast<char>(c));continue;}
+            if(i==s.size())throw LedgerStoreError("incomplete string escape");
+            switch(s[i++]) {
+                case '"':out.push_back('"');break;
+                case '\\':out.push_back('\\');break;
+                case '/':out.push_back('/');break;
+                case 'b':out.push_back('\b');break;
+                case 'f':out.push_back('\f');break;
+                case 'n':out.push_back('\n');break;
+                case 'r':out.push_back('\r');break;
+                case 't':out.push_back('\t');break;
+                case 'u': {
+                    uint32_t value=unicodeUnit();
+                    if(value>=0xd800 && value<=0xdbff) {
+                        if(s.size()-i<2 || s[i]!='\\' || s[i+1]!='u')
+                            throw LedgerStoreError("missing low surrogate");
+                        i+=2;const uint32_t low=unicodeUnit();
+                        if(low<0xdc00 || low>0xdfff)throw LedgerStoreError("invalid low surrogate");
+                        value=0x10000+((value-0xd800)<<10)+(low-0xdc00);
+                    } else if(value>=0xdc00 && value<=0xdfff)
+                        throw LedgerStoreError("unpaired low surrogate");
+                    appendUtf8(out,value);break;
                 }
-                i += 2;
-            } else {
-                out += s[i];
-                ++i;
+                default:throw LedgerStoreError("unknown string escape");
             }
         }
-        if (i >= s.size()) {
-            throw LedgerStoreError("unterminated string");
-        }
-        ++i;
-        return out;
+        throw LedgerStoreError("unterminated string");
     }
-    int64_t readSignedInt() {
-        skipWs();
-        size_t start = i;
-        if (i < s.size() && s[i] == '-') {
+    template<class T> T integer() {
+        skipWs();const size_t start=i;
+        if(i<s.size() && s[i]=='-') {
+            if constexpr(std::is_unsigned_v<T>)throw LedgerStoreError("negative unsigned integer");
             ++i;
         }
-        while (i < s.size() && (s[i] >= '0' && s[i] <= '9')) {
-            ++i;
-        }
-        return std::stoll(s.substr(start, i - start));
+        const size_t digits=i;
+        while(i<s.size() && s[i]>='0' && s[i]<='9')++i;
+        if(i==digits || (i-digits>1 && s[digits]=='0'))throw LedgerStoreError("invalid integer token");
+        T value{};
+        const auto result=std::from_chars(s.data()+start,s.data()+i,value);
+        if(result.ec!=std::errc{} || result.ptr!=s.data()+i)throw LedgerStoreError("integer out of range");
+        return value;
     }
-    uint64_t readUnsignedInt() {
+    bool nullValue() {
         skipWs();
-        size_t start = i;
-        while (i < s.size() && (s[i] >= '0' && s[i] <= '9')) {
-            ++i;
-        }
-        return std::stoull(s.substr(start, i - start));
-    }
-    bool peekNull() {
-        skipWs();
-        if (s.compare(i, 4, "null") == 0) {
-            i += 4;
-            return true;
-        }
+        if(s.compare(i,4,"null")==0) {i+=4;return true;}
         return false;
     }
 };
 
-OutpointId parseOutpoint(const std::string& json) {
-    Parser p{json};
-    p.expect('{');
-    OutpointId op;
-    bool first = true;
-    while (true) {
-        if (p.match('}')) {
-            break;
-        }
-        if (!first) {
-            p.expect(',');
-        }
-        first = false;
-        std::string key = p.readString();
+OutpointId parseOutpoint(Parser& p) {
+    p.expect('{');OutpointId op{};std::set<std::string> fields;
+    if(!p.match('}'))while(true) {
+        const auto key=p.readString();
+        if(!fields.insert(key).second)throw LedgerStoreError("duplicate outpoint field");
         p.expect(':');
-        if (key == "txid") {
-            std::string hex = p.readString();
-            if (!hexDecode(hex, op.txid_raw)) {
-                throw LedgerStoreError("bad txid hex");
-            }
-        } else if (key == "vout") {
-            op.vout = static_cast<uint32_t>(p.readUnsignedInt());
-        } else {
-            throw LedgerStoreError("unknown outpoint key: " + key);
-        }
+        if(key=="txid") {
+            if(!hexDecode(p.readString(),op.txid_raw))throw LedgerStoreError("bad txid hex");
+        } else if(key=="vout")op.vout=p.integer<uint32_t>();
+        else throw LedgerStoreError("unknown outpoint field");
+        if(p.match('}'))break;
+        p.expect(',');
     }
+    if(fields!=std::set<std::string>{"txid","vout"})throw LedgerStoreError("missing outpoint field");
     return op;
 }
 
 LedgerEntry parseEntry(const std::string& line) {
-    // Find "kind":"…" pair; do a two-pass since variant choice
-    // depends on it.
-    size_t kind_pos = line.find("\"kind\":\"");
-    if (kind_pos == std::string::npos) {
-        throw LedgerStoreError("missing kind field");
-    }
-    size_t kind_start = kind_pos + std::string("\"kind\":\"").size();
-    size_t kind_end = line.find('"', kind_start);
-    if (kind_end == std::string::npos) {
-        throw LedgerStoreError("malformed kind field");
-    }
-    std::string kind = line.substr(kind_start, kind_end - kind_start);
-
-    Parser p{line};
-    p.expect('{');
-    // Common fields
-    LedgerSeq seq = 0;
-    LedgerTimestamp at = 0;
-    AccountId account;
-    bool account_set = false;
-    OutpointId deposit_or_request;
-    UnaAmount amount = 0;
-    BackendId backend;
-    UnaAmount operator_loss = 0;
-    std::string note;
-    int64_t delta_user = 0;
-    int64_t delta_op = 0;
-    bool first = true;
-    while (true) {
-        if (p.match('}')) {
-            break;
-        }
-        if (!first) {
-            p.expect(',');
-        }
-        first = false;
-        std::string key = p.readString();
+    Parser p{line};p.expect('{');std::set<std::string> fields;
+    LedgerSeq seq{};LedgerTimestamp at{};AccountId account{};bool account_set=false;
+    OutpointId outpoint{};UnaAmount amount{},operator_loss{};BackendId backend{};
+    std::string kind,note;int64_t delta_user{},delta_op{};
+    if(!p.match('}'))while(true) {
+        const auto key=p.readString();
+        if(!fields.insert(key).second)throw LedgerStoreError("duplicate entry field");
         p.expect(':');
-        if (key == "kind") {
-            (void)p.readString();
-        } else if (key == "seq") {
-            seq = p.readUnsignedInt();
-        } else if (key == "at") {
-            at = static_cast<LedgerTimestamp>(p.readSignedInt());
-        } else if (key == "account") {
-            if (p.peekNull()) {
-                account_set = false;
-            } else {
-                account = AccountId{p.readString()};
-                account_set = true;
-            }
-        } else if (key == "deposit" || key == "request") {
-            std::string sub = "{";
-            int depth = 1;
-            p.expect('{');
-            while (p.i < p.s.size() && depth > 0) {
-                char c = p.s[p.i];
-                sub += c;
-                if (c == '{') {
-                    ++depth;
-                } else if (c == '}') {
-                    --depth;
-                }
-                ++p.i;
-            }
-            deposit_or_request = parseOutpoint(sub);
-        } else if (key == "amount") {
-            amount = p.readUnsignedInt();
-        } else if (key == "backend") {
-            backend = BackendId{p.readString()};
-        } else if (key == "operatorLoss") {
-            operator_loss = p.readUnsignedInt();
-        } else if (key == "note") {
-            note = p.readString();
-        } else if (key == "deltaUserBalance") {
-            delta_user = p.readSignedInt();
-        } else if (key == "deltaOperatorFloat") {
-            delta_op = p.readSignedInt();
-        } else {
-            throw LedgerStoreError("unknown field: " + key);
-        }
+        if(key=="kind")kind=p.readString();
+        else if(key=="seq")seq=p.integer<uint64_t>();
+        else if(key=="at")at=p.integer<int64_t>();
+        else if(key=="account") {
+            if(!p.nullValue()) {account.raw=p.readString();account_set=true;}
+        } else if(key=="deposit" || key=="request")outpoint=parseOutpoint(p);
+        else if(key=="amount")amount=p.integer<uint64_t>();
+        else if(key=="backend")backend.raw=p.readString();
+        else if(key=="operatorLoss")operator_loss=p.integer<uint64_t>();
+        else if(key=="note")note=p.readString();
+        else if(key=="deltaUserBalance")delta_user=p.integer<int64_t>();
+        else if(key=="deltaOperatorFloat")delta_op=p.integer<int64_t>();
+        else throw LedgerStoreError("unknown entry field");
+        if(p.match('}'))break;
+        p.expect(',');
     }
-
-    if (kind == "depositObserved") {
-        return DepositObserved{seq, at, account, deposit_or_request, amount};
+    p.finish();
+    const auto require=[&](std::initializer_list<const char*> additional) {
+        std::set<std::string> expected{"kind","seq","at","account"};
+        for(const auto* field:additional)expected.insert(field);
+        if(fields!=expected)throw LedgerStoreError("incomplete or unexpected entry fields");
+        if(kind!="policyAdjustment" && !account_set)throw LedgerStoreError("null entry account");
+    };
+    if(kind=="depositObserved") {require({"deposit","amount"});return DepositObserved{seq,at,account,outpoint,amount};}
+    if(kind=="creditOpened") {require({"deposit","amount"});return CreditOpened{seq,at,account,outpoint,amount};}
+    if(kind=="creditSettled") {require({"deposit"});return CreditSettled{seq,at,account,outpoint};}
+    if(kind=="creditReverted") {require({"deposit"});return CreditReverted{seq,at,account,outpoint};}
+    if(kind=="withdrawalInitiated") {require({"request","amount","backend"});return WithdrawalInitiated{seq,at,account,outpoint,amount,backend};}
+    if(kind=="withdrawalSettled") {require({"request"});return WithdrawalSettled{seq,at,account,outpoint};}
+    if(kind=="withdrawalReverted") {require({"request"});return WithdrawalReverted{seq,at,account,outpoint};}
+    if(kind=="compensatingDebit") {require({"deposit","amount","operatorLoss"});return CompensatingDebit{seq,at,account,outpoint,amount,operator_loss};}
+    if(kind=="policyAdjustment") {
+        require({"note","deltaUserBalance","deltaOperatorFloat"});
+        return PolicyAdjustment{seq,at,account_set?std::optional<AccountId>{account}:std::nullopt,note,delta_user,delta_op};
     }
-    if (kind == "creditOpened") {
-        return CreditOpened{seq, at, account, deposit_or_request, amount};
-    }
-    if (kind == "creditSettled") {
-        return CreditSettled{seq, at, account, deposit_or_request};
-    }
-    if (kind == "creditReverted") {
-        return CreditReverted{seq, at, account, deposit_or_request};
-    }
-    if (kind == "withdrawalInitiated") {
-        return WithdrawalInitiated{seq, at, account, deposit_or_request, amount, backend};
-    }
-    if (kind == "withdrawalSettled") {
-        return WithdrawalSettled{seq, at, account, deposit_or_request};
-    }
-    if (kind == "withdrawalReverted") {
-        return WithdrawalReverted{seq, at, account, deposit_or_request};
-    }
-    if (kind == "compensatingDebit") {
-        return CompensatingDebit{seq, at, account, deposit_or_request, amount, operator_loss};
-    }
-    if (kind == "policyAdjustment") {
-        std::optional<AccountId> maybe_account;
-        if (account_set) {
-            maybe_account = account;
-        }
-        return PolicyAdjustment{seq, at, maybe_account, note, delta_user, delta_op};
-    }
-    throw LedgerStoreError("unknown kind: " + kind);
+    throw LedgerStoreError("unknown entry kind");
 }
 
 }  // namespace
@@ -411,21 +352,28 @@ std::vector<LedgerEntry> FileLedgerStore::loadAll() {
     std::vector<LedgerEntry> out;
     std::ifstream in(path_, std::ios::binary);
     if (!in.is_open()) {
-        return out;  // empty / not-yet-created file is fine
+        throw LedgerStoreError("ledger store read open failed: " + path_);
     }
     std::string line;
     size_t lineno = 0;
     while (std::getline(in, line)) {
         ++lineno;
+        // The writer terminates every record with a newline. A final prefix
+        // without its delimiter is incomplete, even if it resembles JSON.
+        if(in.eof())throw LedgerStoreError("unterminated ledger line " + std::to_string(lineno));
         if (line.empty()) {
             continue;
         }
         try {
-            out.push_back(parseEntry(line));
+            auto entry=parseEntry(line);
+            if((!out.empty() && entrySeq(entry)<=entrySeq(out.back())))
+                throw LedgerStoreError("ledger sequence is not strictly increasing");
+            out.push_back(std::move(entry));
         } catch (const LedgerStoreError& e) {
             throw LedgerStoreError("line " + std::to_string(lineno) + ": " + e.what());
         }
     }
+    if(in.bad() || !in.eof())throw LedgerStoreError("ledger store read failed: " + path_);
     return out;
 }
 
