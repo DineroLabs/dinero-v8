@@ -9,13 +9,26 @@
 #include "vault/ledger_entry.h"
 #include "vault/signing_backend.h"
 
+#include <openssl/rand.h>
+
 #include <algorithm>
+#include <limits>
 #include <chrono>
 #include <climits>
 #include <utility>
 #include <vector>
 
 namespace dinero::vault {
+
+WithdrawalId WithdrawalQueue::GenerateRequestId() {
+    WithdrawalId id{};
+    if (RAND_bytes(id.data(), static_cast<int>(id.size())) != 1 ||
+        std::all_of(id.begin(), id.end(), [](uint8_t b) { return b == 0; })) {
+        throw WithdrawalQueueError(WithdrawalQueueError::Kind::REQUEST_ID_UNAVAILABLE,
+                                   "withdrawal request randomness unavailable");
+    }
+    return id;
+}
 
 LedgerTimestamp WithdrawalQueue::now() {
     return std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -52,7 +65,8 @@ WithdrawalId WithdrawalQueue::enqueue(const AccountId& account, UnaAmount amount
                                    "insufficient spendable");
     }
     UnaAmount outstanding = currentOutstanding(account);
-    if (outstanding + amount > caps_.per_account_outstanding) {
+    if (outstanding > caps_.per_account_outstanding ||
+        amount > caps_.per_account_outstanding - outstanding) {
         throw WithdrawalQueueError(WithdrawalQueueError::Kind::PER_ACCOUNT_OUTSTANDING_EXCEEDED,
                                    "per-account outstanding cap exceeded");
     }
@@ -62,12 +76,31 @@ WithdrawalId WithdrawalQueue::enqueue(const AccountId& account, UnaAmount amount
     }
     WithdrawalRequest req;
     req.request_id = request_id_generator_();
+    if (std::all_of(req.request_id.begin(), req.request_id.end(), [](uint8_t b) { return b == 0; })) {
+        throw WithdrawalQueueError(WithdrawalQueueError::Kind::INVALID_REQUEST_ID,
+                                   "withdrawal request identity is zero");
+    }
+    if (requests_.contains(req.request_id) || states_.contains(req.request_id)) {
+        throw WithdrawalQueueError(WithdrawalQueueError::Kind::DUPLICATE_REQUEST,
+                                   "withdrawal request identity already exists");
+    }
     req.account = account;
     req.amount = amount;
     req.destination_script_pub_key = destination_script_pub_key;
     req.created_at = now();
-    requests_[req.request_id] = req;
-    states_[req.request_id] = WithdrawalPending{};
+    // Both maps publish one identity or neither. The service also stages this
+    // queue as part of its larger candidate state before live publication.
+    const auto [request_it, inserted] = requests_.emplace(req.request_id, req);
+    if (!inserted) throw WithdrawalQueueError(WithdrawalQueueError::Kind::DUPLICATE_REQUEST,
+                                             "withdrawal request identity already exists");
+    try {
+        if (!states_.emplace(req.request_id, WithdrawalPending{}).second)
+            throw WithdrawalQueueError(WithdrawalQueueError::Kind::DUPLICATE_REQUEST,
+                                       "withdrawal request state already exists");
+    } catch (...) {
+        requests_.erase(request_it);
+        throw;
+    }
     return req.request_id;
 }
 
@@ -223,6 +256,9 @@ int WithdrawalQueue::outstandingDepth() const {
     int n = 0;
     for (const auto& [id, st] : states_) {
         if (isOutstanding(st)) {
+            if (n == std::numeric_limits<int>::max())
+                throw WithdrawalQueueError(WithdrawalQueueError::Kind::GLOBAL_QUEUE_FULL,
+                                           "withdrawal queue depth exceeds representation");
             n += 1;
         }
     }
@@ -239,6 +275,9 @@ UnaAmount WithdrawalQueue::currentOutstanding(const AccountId& account) const {
         if (req_it == requests_.end() || req_it->second.account != account) {
             continue;
         }
+        if (req_it->second.amount > std::numeric_limits<UnaAmount>::max() - total)
+            throw WithdrawalQueueError(WithdrawalQueueError::Kind::PER_ACCOUNT_OUTSTANDING_EXCEEDED,
+                                       "withdrawal outstanding amount exceeds representation");
         total += req_it->second.amount;
     }
     return total;

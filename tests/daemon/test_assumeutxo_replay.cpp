@@ -732,3 +732,4 @@ int main(int argc, char** argv) {
 #include "vault_runtime_owner_checks.h"
 #include "vault_staged_state_checks.h"
 #include "vault_selected_snapshot_checks.h"
+#include "vault_withdrawal_identity_checks.h"

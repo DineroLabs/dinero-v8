@@ -2004,6 +2004,7 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/src/test/vault_state_machines_tests.cpp)
   target_link_libraries(test_vault_state_machines PRIVATE
     $<TARGET_FILE:gtest>
     $<TARGET_FILE:gtest_main>
+    OpenSSL::Crypto
   )
   target_include_directories(test_vault_state_machines BEFORE PRIVATE
     ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
@@ -2058,6 +2059,7 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/src/test/vault_service_tests.cpp)
   target_link_libraries(test_vault_service PRIVATE
     $<TARGET_FILE:gtest>
     $<TARGET_FILE:gtest_main>
+    OpenSSL::Crypto
   )
   target_include_directories(test_vault_service BEFORE PRIVATE
     ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
@@ -5135,6 +5137,8 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_assumeutxo_replay.cpp)
   set_tests_properties(VaultCanonicalObservation PROPERTIES TIMEOUT 120 LABELS "daemon;vault;mandatory")
   add_test(NAME VaultSelectedSnapshot COMMAND test_assumeutxo_replay --gtest_filter=VaultSelectedSnapshot.*)
   set_tests_properties(VaultSelectedSnapshot PROPERTIES TIMEOUT 120)
+  add_test(NAME VaultWithdrawalIdentity COMMAND test_assumeutxo_replay --gtest_filter=VaultWithdrawalIdentity.*)
+  set_tests_properties(VaultWithdrawalIdentity PROPERTIES TIMEOUT 120 LABELS "daemon;vault;mandatory")
   add_test(NAME VaultStagedState COMMAND test_assumeutxo_replay --gtest_filter=VaultStagedState.*)
   set_tests_properties(VaultStagedState PROPERTIES TIMEOUT 120 LABELS "daemon;vault;mandatory")
   add_test(NAME VaultRuntimeOwner COMMAND test_assumeutxo_replay --gtest_filter=VaultRuntimeOwner.*)

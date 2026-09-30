@@ -1140,6 +1140,26 @@ jobs:
           assert '100% tests passed, 0 tests failed out of 3' in log
           PYTEST
 
+      - name: Preserve withdrawal request identities before enqueue publication
+        run: |
+          cmake --build build-orchard-root --target test_assumeutxo_replay test_vault_state_machines test_vault_service --parallel 4 -- -k 0
+          ctest --test-dir build-orchard-root -R '^(VaultService|VaultWithdrawalIdentity|VaultStateMachines)$' --show-only=json-v1 > vault-withdrawal-identity-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests=json.load(open('vault-withdrawal-identity-inventory.json'))['tests']
+          assert sorted(t['name'] for t in tests)==['VaultService','VaultStateMachines','VaultWithdrawalIdentity']
+          assert {t['name']:next(p['value'] for p in t['properties'] if p['name']=='TIMEOUT') for t in tests}=={'VaultService':30,'VaultWithdrawalIdentity':120,'VaultStateMachines':30}
+          assert not any(p['name']=='DISABLED' and p['value'] for t in tests for p in t.get('properties',[]))
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^(VaultService|VaultWithdrawalIdentity|VaultStateMachines)$' --verbose --no-tests=error --output-log vault-withdrawal-identity-execution.log
+          python3 - <<'PYTEST'
+          from pathlib import Path
+          log=Path('vault-withdrawal-identity-execution.log').read_text()
+          for case in ['DefaultIdentityAcrossIndependentQueuesAndActualServices', 'DuplicateAndZeroPreserveExistingPayloadAndState', 'GeneratorFailurePublishesNoRequestOrState', 'OutstandingCapArithmeticRefusesWithoutWrapping']:
+              assert log.count('[       OK ] VaultWithdrawalIdentity.'+case+' (')==1
+          assert '100% tests passed, 0 tests failed out of 3' in log
+          PYTEST
+
       - name: Check typed canonical block announcement handoff
         run: |
           cmake --build build-orchard-root --target test_assumeutxo_replay --parallel 4 -- -k 0
@@ -2802,6 +2822,8 @@ jobs:
             vault-staged-state-execution.log
             vault-selected-snapshot-inventory.json
             vault-selected-snapshot-execution.log
+            vault-withdrawal-identity-inventory.json
+            vault-withdrawal-identity-execution.log
             wallet-service-owner-execution.log
             orchard-block-relay-inventory.json
             orchard-block-relay-execution.log

@@ -2,6 +2,7 @@
 #define DINERO_WALLET_CRYPTO_H
 
 #include <array>
+#include <cstdint>
 #include <vector>
 #include <string>
 
