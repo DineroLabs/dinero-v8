@@ -527,6 +527,7 @@ endif()
 # ═══════════════════════════════════════════════════════════════════════════════
 
 set(GUI_SOURCES
+  src/chaintiming.cpp
   src/privatecovenantwidget.cpp
   src/privatecovenantwidget.h
   src/main.cpp
@@ -1375,6 +1376,13 @@ if(BUILD_TESTING)
   target_link_libraries(test_covenant_form_policy PRIVATE Qt6::Core Qt6::Test)
   target_compile_definitions(test_covenant_form_policy PRIVATE QT_NO_KEYWORDS)
   add_test(NAME CovenantFormPolicy COMMAND test_covenant_form_policy)
+
+  add_executable(test_chain_timing tests/test_chain_timing.cpp src/chaintiming.cpp)
+  target_include_directories(test_chain_timing PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_link_libraries(test_chain_timing PRIVATE Qt6::Core Qt6::Test)
+  target_compile_definitions(test_chain_timing PRIVATE QT_NO_KEYWORDS)
+  add_test(NAME ChainTiming COMMAND test_chain_timing)
+  set_tests_properties(ChainTiming PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 30)
 
   add_executable(test_peer_height_semantics
     tests/test_peer_height_semantics.cpp
