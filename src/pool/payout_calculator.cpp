@@ -336,11 +336,7 @@ std::map<std::string, double> PayoutCalculator::aggregateSharesByWorker(uint64_t
 }
 
 std::string PayoutCalculator::getWorkerWallet(const std::string& worker_id) const {
-    auto worker = db_.getWorker(worker_id);
-    if (worker) {
-        return worker->wallet_address;
-    }
-    return "";
+    return db_.getAllocationWorkerWallet(worker_id);
 }
 
 // ============================================================================
@@ -348,35 +344,7 @@ std::string PayoutCalculator::getWorkerWallet(const std::string& worker_id) cons
 // ============================================================================
 
 uint32_t PayoutCalculator::processConfirmedBlocks() {
-    uint32_t processed = 0;
-
-    // Get blocks ready for payout (confirmed but payouts not calculated)
-    auto blocks = db_.getBlocksReadyForPayout();
-
-    for (auto& block : blocks) {
-        if (block.orphaned) continue;
-        if (block.payouts_calculated) continue;
-
-        // Calculate payouts
-        auto payouts = calculatePayouts(block);
-
-        // Insert payout records
-        for (auto& payout : payouts) {
-            payout.status = PayoutStatus::CONFIRMED;
-            db_.insertPayout(payout);
-
-            // Add to worker's pending balance
-            db_.addWorkerPending(payout.worker_id, payout.amount);
-        }
-
-        // Mark block as payouts calculated
-        block.payouts_calculated = true;
-        db_.updateBlock(block);
-
-        processed++;
-    }
-
-    return processed;
+    return db_.allocateConfirmedBlockPayouts(*this);
 }
 
 std::map<std::string, std::vector<Payout>> PayoutCalculator::getPayoutsReadyToSend() {

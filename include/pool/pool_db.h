@@ -13,6 +13,7 @@ struct sqlite3_stmt;
 
 namespace dinero {
 namespace pool {
+class PayoutCalculator;
 
 /**
  * Pool Database - SQLite-backed storage for mining pool accounting
@@ -239,6 +240,11 @@ public:
     uint64_t getDatabaseSize();
 
 private:
+    friend class PayoutCalculator;
+    // Actual DB-only calculator dispatch, never an external payment callback.
+    // Owns the full pending allocation batch; returns only after checked COMMIT.
+    uint32_t allocateConfirmedBlockPayouts(PayoutCalculator& calculator);
+    std::string getAllocationWorkerWallet(const std::string& worker_id);
     friend struct PoolOrphanAccountingTestAccess;
     // All use of the SQLite handle is serialized, including whole transactions.
     // Recursive only for existing DB-to-DB calls and DB-only transaction bodies.

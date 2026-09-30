@@ -753,3 +753,5 @@ int main(int argc, char** argv) {
 #include "pool_orphan_accounting_checks.h"
 
 #include "pool_round_owner_checks.h"
+
+#include "pool_allocation_owner_checks.h"
