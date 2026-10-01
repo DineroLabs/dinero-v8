@@ -3,6 +3,7 @@
 #include "build_identity.h"
 #include "updatechecker.h"
 #include "upgradebanner.h"
+#include "miningrewards.h"
 #include "mainwindow.h"
 #include "miningsessionstatus.h"
 #include "peerheightsemantics.h"
@@ -2833,8 +2834,43 @@ void MainWindow::setupUI() {
     networkColumn->addWidget(peersBox);
     overviewColumnCard(nodeOperationBox);
     overviewColumnCard(cpuBox);
-    monitoringColumns->addWidget(nodeOperationBox, kOverviewLeftStretch, Qt::AlignTop);
-    monitoringColumns->addWidget(cpuBox, kOverviewRightStretch, Qt::AlignTop);
+    // My mining rewards: this wallet's mined blocks, coins still maturing and
+    // when the next ones unlock. It stretches so the right column ends level
+    // with Node operation.
+    auto* rewardsBox = new QGroupBox("My mining rewards");
+    auto* rewardsLayout = new QVBoxLayout(rewardsBox);
+    rewardsLayout->setContentsMargins(10, 10, 10, 8);
+    rewardsLayout->setSpacing(3);
+    lblRewardsHeadline_ = new QLabel("Loading…");
+    lblRewardsHeadline_->setObjectName("miningRewardsHeadline");
+    lblRewardsHeadline_->setStyleSheet("QLabel { font-size: 15px; font-weight: bold; }");
+    lblRewardsPeriod_ = new QLabel(" ");
+    lblRewardsPeriod_->setStyleSheet("QLabel { font-size: 11px; color: #868e96; }");
+    lblRewardsMaturing_ = new QLabel(" ");
+    lblRewardsMaturing_->setObjectName("miningRewardsMaturing");
+    lblRewardsMaturing_->setStyleSheet("QLabel { font-size: 12px; }");
+    lblRewardsMaturing_->setWordWrap(true);
+    lblRewardsLastFound_ = new QLabel(" ");
+    lblRewardsLastFound_->setStyleSheet("QLabel { font-size: 11px; color: #868e96; }");
+    rewardsLayout->addWidget(lblRewardsHeadline_);
+    rewardsLayout->addWidget(lblRewardsPeriod_);
+    rewardsLayout->addWidget(lblRewardsMaturing_);
+    rewardsLayout->addWidget(lblRewardsLastFound_);
+    rewardsLayout->addStretch(1);
+    rewardsBox->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Expanding);
+
+    auto* rightMonitoring = new QWidget;
+    auto* rightMonitoringLayout = new QVBoxLayout(rightMonitoring);
+    rightMonitoringLayout->setContentsMargins(0, 0, 0, 0);
+    rightMonitoringLayout->setSpacing(kOverviewGutter);
+    rightMonitoringLayout->addWidget(cpuBox);
+    rightMonitoringLayout->addWidget(rewardsBox, 1);
+    overviewColumnCard(rightMonitoring);
+
+    // Both columns fill the row so the left and right cards end on one line.
+    nodeOperationBox->setSizePolicy(nodeOperationBox->sizePolicy().horizontalPolicy(), QSizePolicy::Preferred);
+    monitoringColumns->addWidget(nodeOperationBox, kOverviewLeftStretch);
+    monitoringColumns->addWidget(rightMonitoring, kOverviewRightStretch);
     layout->addLayout(monitoringColumns);
 
     // Row 3: Alerts (last 5 events)
@@ -6119,6 +6155,9 @@ void MainWindow::onRpcResult(const QString& method, const QJsonValue& result) {
       }
     }
   }
+  else if (method == "overview.miningrewards") {
+    if (result.isArray()) updateMiningRewards(result.toArray());
+  }
   else if (method == "getconsensusinfo") {
     nodeReleaseHeight_ = UpgradePolicy::parseReleaseActivationHeight(result.toObject());
     evaluateUpgradeBanner();
@@ -6130,6 +6169,7 @@ void MainWindow::onRpcResult(const QString& method, const QJsonValue& result) {
       cachedHeight_ = obj["blocks"].toInt();
       cachedHeaders_ = obj["headers"].toInt();
       evaluateUpgradeBanner();
+      requestMiningRewards();
       overviewNodeSynced_ = cachedHeaders_ > 0 && cachedHeight_ >= cachedHeaders_;
       refreshAiStatusStrip();
 
@@ -8001,6 +8041,16 @@ void MainWindow::onRpcError(const QString& method, int code, const QString& mess
 
   // Older nodes (v8.1.12 and earlier) do not have this method; that is not an error.
   if (method == "getconsensusinfo") return;
+  // The Overview rewards panel shows its own state; never the bottom error bar.
+  if (method == "overview.miningrewards") {
+    if (lblRewardsHeadline_) {
+      lblRewardsHeadline_->setText("Mining rewards unavailable");
+      lblRewardsPeriod_->setText("Load a wallet to see its mining rewards");
+      lblRewardsMaturing_->setVisible(false);
+      lblRewardsLastFound_->setVisible(false);
+    }
+    return;
+  }
 
   if (method == "wallet.listunspent") {
     utxoRequestPending_ = false;
@@ -8483,6 +8533,39 @@ void MainWindow::evaluateUpgradeBanner() {
   QString release = r.state == UpgradePolicy::State::UpdateAvailable ? latestReleaseTag_ : upgradeNotice_.minVersion;
   if (release.startsWith('v')) release.remove(0, 1);
   upgradeBanner_->present(r, release, chainTiming_.approxDuration(qMax<qint64>(0, r.blocksLeft)));
+}
+
+namespace {
+// One page covers a full day of rewards even with 1-minute blocks (1440/day).
+constexpr int kMiningRewardsPage = 1600;
+}
+
+void MainWindow::requestMiningRewards(bool force) {
+  if (!rpc_ || !lblRewardsHeadline_) return;
+  const qint64 now = QDateTime::currentMSecsSinceEpoch();
+  if (!force) {
+    if (now - miningRewardsRequestedAtMs_ < 20 * 1000) return;  // at most every 20 s
+    // Same tip: refresh only every 5 minutes so "last found … ago" stays honest.
+    if (cachedHeight_ == miningRewardsRequestedHeight_ && now - miningRewardsRequestedAtMs_ < 5 * 60 * 1000) return;
+  }
+  miningRewardsRequestedAtMs_ = now;
+  miningRewardsRequestedHeight_ = cachedHeight_;
+  rpc_->callNamedAs("wallet.listtransactions",
+                    QJsonObject{{"count", kMiningRewardsPage}, {"offset", 0}, {"type", "mined"}},
+                    QStringLiteral("overview.miningrewards"));
+}
+
+void MainWindow::updateMiningRewards(const QJsonArray& rewards) {
+  if (!lblRewardsHeadline_) return;
+  const MiningRewardsSummary summary =
+      summarizeMiningRewards(rewards, QDateTime::currentSecsSinceEpoch(), kMiningRewardsPage);
+  const MiningRewardsText text = miningRewardsText(summary, chainTiming_);
+  lblRewardsHeadline_->setText(text.headline);
+  lblRewardsPeriod_->setText(text.period);
+  lblRewardsMaturing_->setText(text.maturing);
+  lblRewardsMaturing_->setVisible(!text.maturing.isEmpty());
+  lblRewardsLastFound_->setText(text.lastFound);
+  lblRewardsLastFound_->setVisible(!text.lastFound.isEmpty());
 }
 
 void MainWindow::refreshTimingText() {

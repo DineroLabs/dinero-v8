@@ -20,3 +20,14 @@ MiningRewardsSummary summarizeMiningRewards(const QJsonArray& transactions, qint
 
 // "31,200 DIN", "0.5 DIN": grouped whole part, trailing zeros trimmed, dot decimal.
 QString formatDinAmount(qint64 una);
+
+struct ChainTiming;
+
+// Panel wording; durations use the node's block time.
+struct MiningRewardsText {
+    QString headline;   // "312 blocks · 31,200 DIN"
+    QString period;     // "found in the last 24 hours"
+    QString maturing;   // "Maturing: 9,900 DIN · next unlock in 2 blocks (~4 min)"
+    QString lastFound;  // "Last block found ~3 min ago"
+};
+MiningRewardsText miningRewardsText(const MiningRewardsSummary& s, const ChainTiming& timing);

@@ -2,6 +2,7 @@
 #include <QJsonArray>
 #include <QJsonObject>
 #include "miningrewards.h"
+#include "chaintiming.h"
 
 namespace {
 QJsonObject reward(double amount, int confirmations, qint64 time) {
@@ -52,6 +53,32 @@ private Q_SLOTS:
         QCOMPARE(s.blocks24h, 0);
         QVERIFY(!s.nextUnlockBlocks.has_value());
         QVERIFY(!s.lastFoundSecsAgo.has_value());
+    }
+    void panelTextForAnActiveMiner() {
+        MiningRewardsSummary s;
+        s.any = true; s.blocks24h = 312; s.una24h = qint64(31'200) * 100'000'000;
+        s.maturingUna = qint64(9'900) * 100'000'000; s.nextUnlockBlocks = 2; s.lastFoundSecsAgo = 180;
+        const MiningRewardsText t = miningRewardsText(s, ChainTiming{120, true});
+        QCOMPARE(t.headline, QString("312 blocks · 31,200 DIN"));
+        QCOMPARE(t.period, QString("found in the last 24 hours"));
+        QCOMPARE(t.maturing, QString("Maturing: 9,900 DIN · next unlock in 2 blocks (~4 min)"));
+        QCOMPARE(t.lastFound, QString("Last block found ~3 min ago"));
+    }
+    void panelTextWhenThePageWasFull() {
+        MiningRewardsSummary s;
+        s.any = true; s.blocks24h = 1600; s.una24h = qint64(160'000) * 100'000'000; s.truncated = true;
+        s.lastFoundSecsAgo = 30;
+        const MiningRewardsText t = miningRewardsText(s, ChainTiming{60, true});
+        QCOMPARE(t.headline, QString("1600+ blocks · 160,000+ DIN"));
+        QCOMPARE(t.maturing, QString("Nothing maturing"));
+        QCOMPARE(t.lastFound, QString("Last block found ~30 sec ago"));
+    }
+    void panelTextWithoutRewards() {
+        const MiningRewardsText t = miningRewardsText(MiningRewardsSummary{}, ChainTiming{});
+        QCOMPARE(t.headline, QString("No mining rewards yet"));
+        QCOMPARE(t.period, QString("in this wallet"));
+        QVERIFY(t.maturing.isEmpty());
+        QVERIFY(t.lastFound.isEmpty());
     }
     void formatsDinWithGrouping() {
         QCOMPARE(formatDinAmount(qint64(31'200) * 100'000'000), QString("31,200 DIN"));

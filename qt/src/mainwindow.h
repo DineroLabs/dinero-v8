@@ -396,6 +396,14 @@ private:
   class QSpinBox* spnTimelockDuration_ = nullptr;
   class QComboBox* cmbTimelockUnit_ = nullptr;
   ChainTiming chainTiming_;
+  void requestMiningRewards(bool force = false);
+  void updateMiningRewards(const QJsonArray& rewards);
+  class QLabel* lblRewardsHeadline_ = nullptr;
+  class QLabel* lblRewardsPeriod_ = nullptr;
+  class QLabel* lblRewardsMaturing_ = nullptr;
+  class QLabel* lblRewardsLastFound_ = nullptr;
+  int miningRewardsRequestedHeight_ = -1;
+  qint64 miningRewardsRequestedAtMs_ = 0;
   class UpgradeBanner* upgradeBanner_ = nullptr;
   class UpdateChecker* updateChecker_ = nullptr;
   QString latestReleaseTag_;
