@@ -189,6 +189,20 @@ private Q_SLOTS:
         QVERIFY2(payForm->height() <= payHint + 4,
                  qPrintable(QString("pay form is %1 px tall, needs %2").arg(payForm->height()).arg(payHint)));
     }
+
+    void emptyDetailsShowADash() {
+        RpcClient rpc;
+        DpiWidget widget(&rpc);
+        widget.clearWalletState();  // what MainWindow does when a wallet loads
+        const QString dash = QString::fromUtf8("\xE2\x80\x94");
+        for (const char* name : {"payDecodedAmount", "payDecodedDestination", "payDecodedMemo", "payDecodedExpiry",
+                                 "collectInvoiceId", "collectInvoiceDestination", "collectInvoiceAmount",
+                                 "collectInvoiceExpiry"}) {
+            auto* label = named<QLabel>(widget, name);
+            QVERIFY2(label, name);
+            QVERIFY2(label->text() == dash, qPrintable(QString("%1 shows '%2'").arg(name, label->text())));
+        }
+    }
 };
 QTEST_MAIN(PayCollectTest)
 #include "test_pay_collect.moc"

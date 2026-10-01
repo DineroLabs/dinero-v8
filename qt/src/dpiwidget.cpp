@@ -26,6 +26,7 @@ const QString kCreateText = QStringLiteral("Create invoice");
 const QString kVerifyText = QStringLiteral("Check payment");
 const QString kReviewText = QStringLiteral("Review invoice");
 const QString kPayText = QStringLiteral("Pay this invoice");
+const QString kEmptyValue = QString::fromUtf8("\xE2\x80\x94");  // shown until there is a value
 using PayCollectPolicy::Tone;
 QString toneText(Tone tone, bool bold = false) {
     return QString("color: %1;%2").arg(PayCollectPolicy::toneColor(tone), bold ? " font-weight: bold;" : "");
@@ -80,20 +81,20 @@ void DpiWidget::clearWalletState() {
     if (collectAmountEdit_) collectAmountEdit_->clear();
     if (collectMemoEdit_)   collectMemoEdit_->clear();
     if (invoiceQrLabel_)    invoiceQrLabel_->clear();
-    if (invoiceIdLabel_)    invoiceIdLabel_->clear();
-    if (invoiceDestLabel_)  invoiceDestLabel_->clear();
-    if (invoiceAmountLabel_) invoiceAmountLabel_->clear();
-    if (invoiceExpiryLabel_) invoiceExpiryLabel_->clear();
+    if (invoiceIdLabel_)    invoiceIdLabel_->setText(kEmptyValue);
+    if (invoiceDestLabel_)  invoiceDestLabel_->setText(kEmptyValue);
+    if (invoiceAmountLabel_) invoiceAmountLabel_->setText(kEmptyValue);
+    if (invoiceExpiryLabel_) invoiceExpiryLabel_->setText(kEmptyValue);
     if (invoiceTextEdit_)   invoiceTextEdit_->clear();
     if (packageInputEdit_)  packageInputEdit_->clear();
     if (verifyResultLabel_) verifyResultLabel_->clear();
     if (verifyDetailsEdit_) verifyDetailsEdit_->clear();
 
     if (payInvoiceInputEdit_) payInvoiceInputEdit_->clear();
-    if (decodedAmountLabel_)  decodedAmountLabel_->clear();
-    if (decodedDestLabel_)    decodedDestLabel_->clear();
-    if (decodedMemoLabel_)    decodedMemoLabel_->clear();
-    if (decodedExpiryLabel_)  decodedExpiryLabel_->clear();
+    if (decodedAmountLabel_)  decodedAmountLabel_->setText(kEmptyValue);
+    if (decodedDestLabel_)    decodedDestLabel_->setText(kEmptyValue);
+    if (decodedMemoLabel_)    decodedMemoLabel_->setText(kEmptyValue);
+    if (decodedExpiryLabel_)  decodedExpiryLabel_->setText(kEmptyValue);
     if (payStatusLabel_)      payStatusLabel_->clear();
     if (packageOutputEdit_)   packageOutputEdit_->clear();
 
@@ -190,22 +191,26 @@ void DpiWidget::setupCollectTab() {
     infoGrid->setColumnStretch(1, 1);
     infoGrid->addWidget(new QLabel("Invoice ID:"), 0, 0);
     invoiceIdLabel_ = new QLabel(QString::fromUtf8("\xE2\x80\x94"));
+    invoiceIdLabel_->setObjectName("collectInvoiceId");
     invoiceIdLabel_->setTextInteractionFlags(Qt::TextSelectableByMouse);
     invoiceIdLabel_->setWordWrap(true);
     infoGrid->addWidget(invoiceIdLabel_, 0, 1);
 
     infoGrid->addWidget(new QLabel("Pays to:"), 1, 0);
     invoiceDestLabel_ = new QLabel(QString::fromUtf8("\xE2\x80\x94"));
+    invoiceDestLabel_->setObjectName("collectInvoiceDestination");
     invoiceDestLabel_->setWordWrap(true);
     invoiceDestLabel_->setTextInteractionFlags(Qt::TextSelectableByMouse);
     infoGrid->addWidget(invoiceDestLabel_, 1, 1);
 
     infoGrid->addWidget(new QLabel("Amount:"), 2, 0);
     invoiceAmountLabel_ = new QLabel(QString::fromUtf8("\xE2\x80\x94"));
+    invoiceAmountLabel_->setObjectName("collectInvoiceAmount");
     infoGrid->addWidget(invoiceAmountLabel_, 2, 1);
 
     infoGrid->addWidget(new QLabel("Expires:"), 3, 0);
     invoiceExpiryLabel_ = new QLabel(QString::fromUtf8("\xE2\x80\x94"));
+    invoiceExpiryLabel_->setObjectName("collectInvoiceExpiry");
     infoGrid->addWidget(invoiceExpiryLabel_, 3, 1);
     detailsLayout->addLayout(infoGrid);
 
@@ -331,20 +336,24 @@ void DpiWidget::setupPayTab() {
 
     decodedGrid->addWidget(new QLabel("Amount:"), 0, 0);
     decodedAmountLabel_ = new QLabel(QString::fromUtf8("\xE2\x80\x94"));
+    decodedAmountLabel_->setObjectName("payDecodedAmount");
     decodedGrid->addWidget(decodedAmountLabel_, 0, 1);
 
     decodedGrid->addWidget(new QLabel("Pays to:"), 1, 0);
     decodedDestLabel_ = new QLabel(QString::fromUtf8("\xE2\x80\x94"));
+    decodedDestLabel_->setObjectName("payDecodedDestination");
     decodedDestLabel_->setWordWrap(true);
     decodedDestLabel_->setTextInteractionFlags(Qt::TextSelectableByMouse);
     decodedGrid->addWidget(decodedDestLabel_, 1, 1);
 
     decodedGrid->addWidget(new QLabel("Memo:"), 2, 0);
     decodedMemoLabel_ = new QLabel(QString::fromUtf8("\xE2\x80\x94"));
+    decodedMemoLabel_->setObjectName("payDecodedMemo");
     decodedGrid->addWidget(decodedMemoLabel_, 2, 1);
 
     decodedGrid->addWidget(new QLabel("Expires:"), 3, 0);
     decodedExpiryLabel_ = new QLabel(QString::fromUtf8("\xE2\x80\x94"));
+    decodedExpiryLabel_->setObjectName("payDecodedExpiry");
     decodedGrid->addWidget(decodedExpiryLabel_, 3, 1);
     decodedLayout->addLayout(decodedGrid);
 
