@@ -680,41 +680,30 @@ std::string Address::base58Encode(const std::vector<uint8_t>& data) {
 }
 
 std::vector<uint8_t> Address::base58Decode(const std::string& encoded) {
-    if (encoded.empty()) {
-        return {};
-    }
-    
-    // Convert from base58 using our internal implementation
-    // This is a simplified version that doesn't require BIGNUM
-    std::vector<uint8_t> result;
-    result.reserve(encoded.size());
-    
-    // Count leading zeros
+    if (encoded.empty()) return {};
     size_t zeros = 0;
-    while (zeros < encoded.size() && encoded[zeros] == '1') {
-        zeros++;
-        result.push_back(0);
-    }
-    
-    // Convert base58 to decimal
-    uint64_t value = 0;
-    uint64_t multiplier = 1;
-    
-    for (size_t i = encoded.size() - 1; i >= zeros; i--) {
-        size_t pos = BASE58_ALPHABET.find(encoded[i]);
-        if (pos == std::string::npos) {
-            return {};
+    while (zeros < encoded.size() && encoded[zeros] == '1') ++zeros;
+
+    // Base conversion uses a byte vector so addresses and extended keys keep
+    // every payload byte. The carry is at most 255 * 58 + 57.
+    std::vector<uint8_t> bytes;
+    bytes.reserve(encoded.size() - zeros);
+    for (size_t i = zeros; i < encoded.size(); ++i) {
+        const auto digit = BASE58_ALPHABET.find(encoded[i]);
+        if (digit == std::string::npos) return {};
+        unsigned carry = static_cast<unsigned>(digit);
+        for (auto& byte : bytes) {
+            carry += unsigned(byte) * 58;
+            byte = static_cast<uint8_t>(carry & 0xff);
+            carry >>= 8;
         }
-        value += pos * multiplier;
-        multiplier *= 58;
+        while (carry) {
+            bytes.push_back(static_cast<uint8_t>(carry & 0xff));
+            carry >>= 8;
+        }
     }
-    
-    // Convert decimal to bytes
-    while (value > 0) {
-        result.insert(result.begin() + zeros, static_cast<uint8_t>(value & 0xFF));
-        value >>= 8;
-    }
-    
+    std::vector<uint8_t> result(zeros, 0);
+    result.insert(result.end(), bytes.rbegin(), bytes.rend());
     return result;
 }
 
