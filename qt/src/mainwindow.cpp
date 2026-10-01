@@ -3,6 +3,7 @@
 #include "build_identity.h"
 #include "updatechecker.h"
 #include "upgradebanner.h"
+#include "portcheck.h"
 #include "miningrewards.h"
 #include "inforow.h"
 #include "mainwindow.h"
@@ -13700,10 +13701,7 @@ bool MainWindow::startDaemonWithOptions(bool showFeedback, bool openLogWindow) {
   // of failing silently. The listener might be a usable existing daemon,
   // so offer to connect to it.
   {
-    QTcpSocket probe;
-    probe.connectToHost("127.0.0.1", 20998);
-    const bool portInUse = probe.waitForConnected(500);
-    probe.abort();
+    const bool portInUse = tcpPortAccepts("127.0.0.1", 20998, 500);
     if (portInUse && showFeedback) {
       QMessageBox box(this);
       box.setIcon(QMessageBox::Warning);

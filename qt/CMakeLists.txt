@@ -531,6 +531,7 @@ set(GUI_SOURCES
   src/upgradepolicy.cpp
   src/miningrewards.cpp
   src/inforow.cpp
+  src/portcheck.cpp
   src/upgradebanner.cpp
   src/updatechecker.cpp
   src/privatecovenantwidget.cpp
@@ -1509,6 +1510,13 @@ if(BUILD_TESTING)
   target_compile_definitions(test_info_row PRIVATE QT_NO_KEYWORDS)
   add_test(NAME InfoRow COMMAND test_info_row)
   set_tests_properties(InfoRow PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 30)
+
+  add_executable(test_port_check tests/test_port_check.cpp src/portcheck.cpp)
+  target_include_directories(test_port_check PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_link_libraries(test_port_check PRIVATE Qt6::Core Qt6::Network Qt6::Test)
+  target_compile_definitions(test_port_check PRIVATE QT_NO_KEYWORDS)
+  add_test(NAME PortCheck COMMAND test_port_check)
+  set_tests_properties(PortCheck PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 30)
   set_tests_properties(MiningRewards PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 30)
   set_tests_properties(RpcReplyAlias PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 30)
 

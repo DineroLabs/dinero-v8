@@ -48,6 +48,7 @@
 #include "mainwindow.h"
 #include "build_identity.h"
 #include "debugconsole.h"
+#include "portcheck.h"
 
 #include "minercontroller.h"
 #include <solo_miner/build_identity.h>
@@ -637,9 +638,7 @@ static constexpr int GENESIS_MISMATCH_EXIT_CODE = 10;
 // TCP-bind only — does NOT prove the daemon is responding to requests.
 // Used as a fast pre-check; pair with isDaemonHealthy() for liveness.
 static bool isDaemonRunning(int timeoutMs = 100) {
-    QTcpSocket socket;
-    socket.connectToHost("127.0.0.1", 20998);
-    return socket.waitForConnected(timeoutMs);
+    return tcpPortAccepts("127.0.0.1", 20998, timeoutMs);
 }
 
 // Check if daemon is actually serving HTTP. Sends a no-auth POST and
