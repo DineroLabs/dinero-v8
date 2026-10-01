@@ -9,6 +9,7 @@
 #include "mainwindow.h"
 #include "rpcclient.h"
 #include <QLabel>
+#include <QLineEdit>
 #include <QJsonArray>
 #include <QJsonObject>
 
@@ -180,6 +181,15 @@ private Q_SLOTS:
         QVERIFY2(ink(12, 28), "handle");
         // Not a cross: nothing past the end of the handle.
         QVERIFY2(!ink(4, 35), "handle extends into a cross bar");
+    }
+    void miningThreadsStartAtFour() {
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, dir.path());
+        MainWindow window(dinero::qt::DaemonBootstrapOwner::ApplicationMain);
+        auto* threads = window.findChild<QLineEdit*>("miningThreads");
+        QVERIFY(threads);
+        QCOMPARE(threads->text(), QString("4"));
     }
 };
 QTEST_MAIN(OverviewColumnsTest)

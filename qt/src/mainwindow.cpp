@@ -126,6 +126,8 @@
 namespace {
 
 constexpr int kWalletUnlockTimeoutSeconds = 60 * 60;
+// CPU mining threads shown when the app starts (the user can change it per session).
+constexpr int kDefaultMiningThreads = 4;
 
 enum class NavigationGlyph {
   Dashboard,
@@ -4437,7 +4439,8 @@ void MainWindow::setupUI() {
     connect(btnUseWalletAddr_, &QPushButton::clicked, this, &MainWindow::onSetMiningAddress);
     row1->addWidget(btnUseWalletAddr_);
     row1->addWidget(new QLabel("Threads:"));
-    edtMiningThreads_ = new QLineEdit("8");
+    edtMiningThreads_ = new QLineEdit(QString::number(kDefaultMiningThreads));
+    edtMiningThreads_->setObjectName("miningThreads");
     edtMiningThreads_->setStyleSheet(miningControlFieldStyle());
     edtMiningThreads_->setAlignment(Qt::AlignCenter);
     edtMiningThreads_->setFixedSize(56, 30);
@@ -11751,8 +11754,8 @@ void MainWindow::startInternalMiner(bool useGpu) {
   bool ok;
   int threads = edtMiningThreads_->text().toInt(&ok);
   if (!ok || threads < 1 || threads > 256) {
-    threads = 4;  // Default to 4 threads if invalid
-    edtMiningThreads_->setText("4");
+    threads = kDefaultMiningThreads;  // invalid entry: fall back to the default
+    edtMiningThreads_->setText(QString::number(kDefaultMiningThreads));
   }
 
   // Build cookie path from datadir
@@ -12198,7 +12201,8 @@ void MainWindow::startExternalMiner() {
   // This ensures the miner can authenticate with the same daemon
   QString dataDirForMiner = rpc_->datadir();
   QString cookiePath = QDir(dataDirForMiner).filePath(".cookie");
-  const QString threadCount = edtMiningThreads_->text().trimmed().isEmpty() ? "8" : edtMiningThreads_->text().trimmed();
+  const QString threadCount = edtMiningThreads_->text().trimmed().isEmpty()
+      ? QString::number(kDefaultMiningThreads) : edtMiningThreads_->text().trimmed();
 
   QString helpText;
   QString probeError;
