@@ -1,5 +1,8 @@
 #include <QtTest/QtTest>
 #include <QGroupBox>
+#include <QTabWidget>
+#include <QImage>
+#include <QPainter>
 #include <QSettings>
 #include <QTemporaryDir>
 #include <QTcpServer>
@@ -111,6 +114,41 @@ private Q_SLOTS:
         // The Transactions tab must not be touched by this reply.
         Q_EMIT rpc->rpcError("overview.miningrewards", -1, "No wallet loaded");
         QCOMPARE(headline->text(), QString("Mining rewards unavailable"));
+    }
+    void poolIconShowsACrowdOfFour() {
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, dir.path());
+        MainWindow window(dinero::qt::DaemonBootstrapOwner::ApplicationMain);
+        QTabWidget* tabs = nullptr;
+        int pool = -1;
+        for (auto* t : window.findChildren<QTabWidget*>())
+            for (int i = 0; i < t->count(); ++i)
+                if (t->tabText(i) == "Pool") { tabs = t; pool = i; }
+        QVERIFY(tabs && pool >= 0);
+        const QImage img = tabs->tabIcon(pool).pixmap(QSize(40, 40)).toImage()
+                               .scaled(40, 40, Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
+        const QString snapshotDir = qEnvironmentVariable("OVERVIEW_SNAPSHOT_DIR");
+        if (!snapshotDir.isEmpty()) {
+            QImage big(img.size() * 8, QImage::Format_ARGB32);
+            big.fill(QColor("#181b20"));
+            QPainter p(&big);
+            p.drawImage(big.rect(), img);
+            p.end();
+            big.save(snapshotDir + "/pool-icon.png");
+        }
+        auto ink = [&](int x, int y) { return qAlpha(img.pixel(x, y)) > 60; };
+        // Tops of four heads: two small at the back (outer), two larger in front.
+        QVERIFY2(ink(8, 7), "back-left head");
+        QVERIFY2(ink(32, 7), "back-right head");
+        QVERIFY2(ink(15, 10), "front-left head");
+        QVERIFY2(ink(25, 10), "front-right head");
+        // The back figures' shoulders reach the icon edges (a crowd, not a pair).
+        QVERIFY2(ink(2, 21), "back-left shoulders");
+        QVERIFY2(ink(37, 21), "back-right shoulders");
+        // Faces stay open (outlined heads, not blobs).
+        QVERIFY2(!ink(15, 14), "front-left head is filled");
+        QVERIFY2(!ink(25, 14), "front-right head is filled");
     }
 };
 QTEST_MAIN(OverviewColumnsTest)

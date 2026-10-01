@@ -201,10 +201,39 @@ QPixmap drawNavigationGlyph(NavigationGlyph glyph, const QColor& color) {
     case NavigationGlyph::Card:
       rect(5, 10, 30, 21, 4); line(6, 17, 34, 17); line(10, 25, 18, 25);
       break;
-    case NavigationGlyph::Pool:
-      painter.drawEllipse(QRectF(8, 7, 9, 9)); painter.drawEllipse(QRectF(23, 7, 9, 9));
-      painter.drawArc(QRectF(4, 17, 17, 17), 0, 180 * 16); painter.drawArc(QRectF(19, 17, 17, 17), 0, 180 * 16);
+    case NavigationGlyph::Pool: {
+      // A crowd of four: two smaller people at the back, two larger in front.
+      // Each front figure first erases what is behind it, so outlines read as
+      // people standing in front of each other rather than crossing lines.
+      struct Person { QRectF head; QRectF shoulders; };
+      const Person backLeft{QRectF(4.5, 6.5, 7, 7), QRectF(1, 15, 14, 14)};
+      const Person backRight{QRectF(28.5, 6.5, 7, 7), QRectF(25, 15, 14, 14)};
+      const Person frontLeft{QRectF(11, 10, 8, 8), QRectF(6, 21, 18, 18)};
+      const Person frontRight{QRectF(21.5, 10, 8, 8), QRectF(16.5, 21, 18, 18)};
+      const QPen crowdPen(color, 2.6, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin);
+      auto drawPerson = [&](const Person& p) {
+        painter.setPen(crowdPen);
+        painter.setBrush(Qt::NoBrush);
+        painter.drawEllipse(p.head);
+        painter.drawArc(p.shoulders, 0, 180 * 16);
+      };
+      auto clearBehind = [&](const Person& p) {
+        painter.save();
+        painter.setCompositionMode(QPainter::CompositionMode_Clear);
+        painter.setPen(QPen(Qt::black, 4.4, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        painter.setBrush(Qt::black);
+        painter.drawEllipse(p.head);
+        painter.drawPie(p.shoulders, 0, 180 * 16);
+        painter.restore();
+      };
+      drawPerson(backLeft);
+      drawPerson(backRight);
+      clearBehind(frontLeft);
+      drawPerson(frontLeft);
+      clearBehind(frontRight);
+      drawPerson(frontRight);
       break;
+    }
     case NavigationGlyph::Shield:
       line(20, 4, 32, 9); line(32, 9, 30, 24); line(30, 24, 20, 35);
       line(20, 35, 10, 24); line(10, 24, 8, 9); line(8, 9, 20, 4);
