@@ -2379,8 +2379,8 @@ void MainWindow::setupUI() {
     "QWidget { background: #181b20; color: #d6dde6; } "
     "QTabWidget::pane { border: 1px solid #2f343c; background: #1a1d22; border-radius: 8px; margin-top: 6px; } "
     "QTabBar::tab { background: #242932; color: #d5dce5; border: 1px solid #353b45; border-bottom: 3px solid transparent; "
-    "padding: 9px 12px; min-height: 22px; font-size: 13px; font-weight: 500; "
-    "border-top-left-radius: 6px; border-top-right-radius: 6px; margin-right: 3px; } "
+    "padding: 6px 8px; min-height: 20px; font-size: 12px; font-weight: 500; "
+    "border-top-left-radius: 6px; border-top-right-radius: 6px; margin-right: 2px; } "
     "QTabBar::tab:hover { background: #2a3039; color: #e7ecf2; border-color: #46505d; border-bottom-color: #46505d; } "
     "QTabBar::tab:selected { background: #303844; color: #f2f5f8; border-color: #46505d; border-bottom: 3px solid #d58a32; } "
     "QGroupBox { border: 1px solid #30353d; border-radius: 10px; margin-top: 10px; padding-top: 8px; background: #20242a; font-weight: 600; } "
@@ -2446,7 +2446,7 @@ void MainWindow::setupUI() {
 
   // Tab widget
   auto *tabs = new QTabWidget;
-  tabs->setIconSize(QSize(18, 18));
+  tabs->setIconSize(QSize(16, 16));
   mainTabs_ = tabs;
   // Icon-only tabs when the full names do not fit; names come back when they do.
   class CompactTabsWatcher : public QObject {

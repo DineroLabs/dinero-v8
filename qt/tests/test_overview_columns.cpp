@@ -263,6 +263,26 @@ private Q_SLOTS:
                                     .arg(table->columnWidth(c))));
         QVERIFY(table->columnWidth(0) > table->columnWidth(1));
     }
+    void tabNamesFitAtCommonWidths() {
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, dir.path());
+        MainWindow window(dinero::qt::DaemonBootstrapOwner::ApplicationMain);
+        QTabWidget* tabs = nullptr;
+        for (auto* t : window.findChildren<QTabWidget*>())
+            for (int i = 0; i < t->count(); ++i)
+                if (t->tabToolTip(i) == "Overview" || t->tabText(i) == "Overview") tabs = t;
+        QVERIFY(tabs);
+        // A common laptop/desktop window: every tab keeps its name.
+        window.resize(1440, 900);
+        window.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&window));
+        QCoreApplication::processEvents();
+        for (int i = 0; i < tabs->count(); ++i)
+            QVERIFY2(!tabs->tabText(i).isEmpty(),
+                     qPrintable(QString("1440 px: %1 lost its name (bar needs %2 px)")
+                                    .arg(tabs->tabToolTip(i)).arg(tabs->tabBar()->sizeHint().width())));
+    }
     void narrowWindowShowsIconOnlyTabs() {
         QTemporaryDir dir;
         QVERIFY(dir.isValid());
