@@ -1,6 +1,7 @@
 #include "upgradebanner.h"
 #include <QHBoxLayout>
 #include <QLabel>
+#include <QTimer>
 
 namespace {
 const char* kReleasesUrl = "https://github.com/DineroLabs/dinero-v8/releases/latest";
@@ -18,12 +19,33 @@ UpgradeBanner::UpgradeBanner(QWidget* parent) : QFrame(parent) {
     link_->setOpenExternalLinks(true);
     layout->addWidget(message_, 1);
     layout->addWidget(link_);
+    autoHide_ = new QTimer(this);
+    autoHide_->setSingleShot(true);
+    connect(autoHide_, &QTimer::timeout, this, [this]() {
+        retired_.insert(currentKey_);
+        hide();
+    });
     hide();
 }
 
 void UpgradeBanner::present(const UpgradePolicy::Result& r, const QString& releaseTag,
                             const QString& durationText) {
     using UpgradePolicy::State;
+    const bool informational = r.state == State::UpdateAvailable || r.state == State::ScheduledReady;
+    // Identity of the message, without the countdown, which changes every block.
+    const QString key = QString("%1|%2|%3").arg(UpgradePolicy::stateName(r.state), releaseTag)
+                            .arg(activationHeight_);
+    if (r.state == State::None || (informational && retired_.contains(key))) {
+        autoHide_->stop();
+        hide();
+        return;
+    }
+    if (!informational) {
+        autoHide_->stop();
+    } else if (key != currentKey_ || !autoHide_->isActive()) {
+        autoHide_->start(autoHideMs_);
+    }
+    currentKey_ = key;
     QString text, background, linkText = QStringLiteral("Download");
     switch (r.state) {
     case State::None:

@@ -40,6 +40,36 @@ private Q_SLOTS:
         b.present({UpgradePolicy::State::None, -1}, QString(), QString());
         QVERIFY(b.isHidden());
     }
+    void informationalMessagesHideAfterAWhile() {
+        UpgradeBanner b;
+        b.setAutoHideMs(50);
+        b.present({UpgradePolicy::State::UpdateAvailable, -1}, "8.1.13", QString());
+        QVERIFY(!b.isHidden());
+        QTRY_VERIFY_WITH_TIMEOUT(b.isHidden(), 2000);
+        // The same message does not come back in this session.
+        b.present({UpgradePolicy::State::UpdateAvailable, -1}, "8.1.13", QString());
+        QVERIFY(b.isHidden());
+        // A different message still shows.
+        b.setActivationHeight(125000);
+        b.present({UpgradePolicy::State::ScheduledReady, 10}, "8.1.13", "~10 min");
+        QVERIFY(!b.isHidden());
+        QTRY_VERIFY_WITH_TIMEOUT(b.isHidden(), 2000);
+    }
+    void requiredUpdatesStayVisible() {
+        UpgradeBanner b;
+        b.setAutoHideMs(50);
+        b.setActivationHeight(125000);
+        b.present({UpgradePolicy::State::UpdateRequired, 4100}, "8.1.13", "~2 days");
+        QTest::qWait(300);
+        QVERIFY(!b.isHidden());
+        b.present({UpgradePolicy::State::RequiredOverdue, 0}, "8.1.13", QString());
+        QTest::qWait(300);
+        QVERIFY(!b.isHidden());
+    }
+    void defaultIsThirtySeconds() {
+        UpgradeBanner b;
+        QCOMPARE(b.autoHideMs(), 30000);
+    }
 };
 QTEST_MAIN(TestUpgradeBanner)
 #include "test_upgrade_banner.moc"
