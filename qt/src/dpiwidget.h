@@ -38,6 +38,7 @@ private Q_SLOTS:
     void onRpcError(const QString& method, int code, const QString& message);
     void onCountdownTick();
     void onTierPollTick();
+    void updateHints();
 
 private:
     void setupUI();
@@ -45,6 +46,7 @@ private:
     void setupPayTab();
     void startTierTracking(const QString& txid);
     void updateTierBadge(QLabel* badge, int tier, int confirmations);
+    QLabel* makeHint(const char* objectName);
 
     RpcClient* rpc_;
     QTabWidget* tabs_;
@@ -61,7 +63,10 @@ private:
     QLabel* invoiceExpiryLabel_;
     QTextEdit* invoiceTextEdit_;
     QPushButton* copyInvoiceBtn_;
-    QGroupBox* detailsGroup_;
+    QWidget* detailsGroup_ = nullptr;           // invoice QR + details, shown once created
+    QLabel* collectInvoicePlaceholder_ = nullptr;
+    QLabel* collectCreateHint_ = nullptr;
+    QLabel* collectVerifyHint_ = nullptr;
     QTextEdit* packageInputEdit_;
     QPushButton* verifyPackageBtn_;
     QLabel* verifyResultLabel_;
@@ -78,6 +83,8 @@ private:
     QLabel* payStatusLabel_;
     QTextEdit* packageOutputEdit_;
     QPushButton* copyPackageBtn_;
+    QGroupBox* packageGroup_ = nullptr;
+    QLabel* payReviewHint_ = nullptr;
 
     // State
     QString collectInvoiceBase64_;

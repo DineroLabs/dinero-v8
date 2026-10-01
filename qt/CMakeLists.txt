@@ -532,6 +532,7 @@ set(GUI_SOURCES
   src/miningrewards.cpp
   src/inforow.cpp
   src/portcheck.cpp
+  src/paycollectpolicy.cpp
   src/upgradebanner.cpp
   src/updatechecker.cpp
   src/privatecovenantwidget.cpp
@@ -1398,6 +1399,16 @@ if(BUILD_TESTING)
   add_test(NAME CovenantsTab COMMAND test_covenants_tab)
   set_tests_properties(CovenantsTab PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 90)
 
+  add_executable(test_pay_collect ${_wallet_test_sources} tests/test_pay_collect.cpp)
+  target_link_libraries(test_pay_collect PRIVATE
+    $<TARGET_PROPERTY:dinero-qt,LINK_LIBRARIES> Qt6::Test)
+  target_include_directories(test_pay_collect PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src $<TARGET_PROPERTY:dinero-qt,INCLUDE_DIRECTORIES>)
+  target_compile_definitions(test_pay_collect PRIVATE
+    QT_NO_KEYWORDS $<TARGET_PROPERTY:dinero-qt,COMPILE_DEFINITIONS>)
+  add_test(NAME PayCollect COMMAND test_pay_collect)
+  set_tests_properties(PayCollect PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 60)
+
   add_executable(test_covenant_form_policy tests/test_covenant_form_policy.cpp)
   target_include_directories(test_covenant_form_policy PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
   target_link_libraries(test_covenant_form_policy PRIVATE Qt6::Core Qt6::Test)
@@ -1527,6 +1538,12 @@ if(BUILD_TESTING)
   target_compile_definitions(test_port_check PRIVATE QT_NO_KEYWORDS)
   add_test(NAME PortCheck COMMAND test_port_check)
   set_tests_properties(PortCheck PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 30)
+
+  add_executable(test_pay_collect_policy tests/test_pay_collect_policy.cpp src/paycollectpolicy.cpp)
+  target_include_directories(test_pay_collect_policy PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_link_libraries(test_pay_collect_policy PRIVATE Qt6::Core Qt6::Test)
+  target_compile_definitions(test_pay_collect_policy PRIVATE QT_NO_KEYWORDS)
+  add_test(NAME PayCollectPolicy COMMAND test_pay_collect_policy)
   set_tests_properties(MiningRewards PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 30)
   set_tests_properties(RpcReplyAlias PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 30)
 

@@ -4,6 +4,7 @@
 #include "updatechecker.h"
 #include "upgradebanner.h"
 #include "portcheck.h"
+#include "chromestyle.h"
 #include "miningrewards.h"
 #include "inforow.h"
 #include "mainwindow.h"
@@ -813,15 +814,6 @@ QString chromePillStyle() {
   return QStringLiteral(
     "QLabel { padding: 5px 10px; background: #272c33; color: #d6dde6; "
     "border: 1px solid #3a4048; border-radius: 6px; font-weight: 600; }");
-}
-
-QString chromeButtonStyle() {
-  return QStringLiteral(
-    "QPushButton { padding: 6px 12px; background: #2b3037; color: #e6ebf1; "
-    "border: 1px solid #3c434d; border-radius: 7px; font-weight: 600; } "
-    "QPushButton:hover { background: #333942; } "
-    "QPushButton:pressed { background: #262b31; } "
-    "QPushButton:disabled { background: #21252a; color: #7f8893; border: 1px solid #30353d; }");
 }
 
 QString chromeSectionLabelStyle() {
