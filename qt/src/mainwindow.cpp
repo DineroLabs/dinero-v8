@@ -238,9 +238,21 @@ QPixmap drawNavigationGlyph(NavigationGlyph glyph, const QColor& color) {
       line(20, 4, 32, 9); line(32, 9, 30, 24); line(30, 24, 20, 35);
       line(20, 35, 10, 24); line(10, 24, 8, 9); line(8, 9, 20, 4);
       break;
-    case NavigationGlyph::Mining:
-      line(8, 31, 29, 10); line(20, 8, 32, 20); line(5, 34, 12, 27);
+    case NavigationGlyph::Mining: {
+      // Pickaxe: a straight handle meeting the middle of a curved head with
+      // two pointed tips (a filled crescent).
+      line(8, 32, 26, 14);
+      QPainterPath head;
+      head.moveTo(15, 6);
+      head.quadTo(33.5, 6.5, 34, 25);    // outer edge, bowing up and right
+      head.quadTo(28, 12, 15, 6);        // inner edge, a shallower bow
+      painter.save();
+      painter.setPen(QPen(color, 1.2, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+      painter.setBrush(color);
+      painter.drawPath(head);
+      painter.restore();
       break;
+    }
     case NavigationGlyph::Settings:
       painter.drawEllipse(QRectF(14, 14, 12, 12));
       painter.drawEllipse(QRectF(7, 7, 26, 26));

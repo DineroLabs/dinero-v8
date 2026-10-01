@@ -150,6 +150,37 @@ private Q_SLOTS:
         QVERIFY2(!ink(15, 14), "front-left head is filled");
         QVERIFY2(!ink(25, 14), "front-right head is filled");
     }
+    void miningIconIsAPickaxe() {
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, dir.path());
+        MainWindow window(dinero::qt::DaemonBootstrapOwner::ApplicationMain);
+        QTabWidget* tabs = nullptr;
+        int mining = -1;
+        for (auto* t : window.findChildren<QTabWidget*>())
+            for (int i = 0; i < t->count(); ++i)
+                if (t->tabText(i) == "Mining") { tabs = t; mining = i; }
+        QVERIFY(tabs && mining >= 0);
+        const QImage img = tabs->tabIcon(mining).pixmap(QSize(40, 40)).toImage()
+                               .scaled(40, 40, Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
+        const QString snapshotDir = qEnvironmentVariable("OVERVIEW_SNAPSHOT_DIR");
+        if (!snapshotDir.isEmpty()) {
+            QImage big(img.size() * 8, QImage::Format_ARGB32);
+            big.fill(QColor("#181b20"));
+            QPainter p(&big);
+            p.drawImage(big.rect(), img);
+            p.end();
+            big.save(snapshotDir + "/mining-icon.png");
+        }
+        auto ink = [&](int x, int y) { return qAlpha(img.pixel(x, y)) > 60; };
+        // A curved pick head with two pointed tips, the handle meeting its middle.
+        QVERIFY2(ink(16, 7), "upper-left tip of the pick head");
+        QVERIFY2(ink(33, 24), "lower-right tip of the pick head");
+        QVERIFY2(ink(28, 11), "curved top of the pick head");
+        QVERIFY2(ink(12, 28), "handle");
+        // Not a cross: nothing past the end of the handle.
+        QVERIFY2(!ink(4, 35), "handle extends into a cross bar");
+    }
 };
 QTEST_MAIN(OverviewColumnsTest)
 #include "test_overview_columns.moc"
