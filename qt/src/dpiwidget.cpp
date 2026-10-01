@@ -107,6 +107,8 @@ void DpiWidget::clearWalletState() {
     if (verifyDetailsEdit_) verifyDetailsEdit_->setVisible(false);
     if (payStatusLabel_) payStatusLabel_->setVisible(false);
     if (packageGroup_) packageGroup_->setVisible(false);
+    payPlain_ = false;
+    if (payPlainNote_) payPlainNote_->setVisible(false);
     updateHints();
 }
 
@@ -304,15 +306,15 @@ void DpiWidget::setupPayTab() {
     inputGroup->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
     auto* inputLayout = new QVBoxLayout(inputGroup);
 
-    auto* payPrompt = new QLabel("Paste or scan an invoice from the Dinero phone app (DineroDPI) "
-                                 "or another Dinero wallet:");
+    auto* payPrompt = new QLabel("Paste an invoice, a dinero: payment link or a Dinero address, "
+                                 "for example from the Dinero phone app (DineroDPI):");
     payPrompt->setWordWrap(true);
     payPrompt->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
     inputLayout->addWidget(payPrompt);
     payInvoiceInputEdit_ = new QTextEdit;
     payInvoiceInputEdit_->setObjectName("payInvoiceInput");
     payInvoiceInputEdit_->setMaximumHeight(60);
-    payInvoiceInputEdit_->setPlaceholderText("Paste invoice here...");
+    payInvoiceInputEdit_->setPlaceholderText("Paste invoice, payment link or address here...");
     inputLayout->addWidget(payInvoiceInputEdit_);
 
     decodeInvoiceBtn_ = new QPushButton(kReviewText);
@@ -358,10 +360,19 @@ void DpiWidget::setupPayTab() {
     decodedLayout->addLayout(decodedGrid);
 
     payInvoiceBtn_ = new QPushButton(kPayText);
+    payInvoiceBtn_->setObjectName("payConfirm");
     payInvoiceBtn_->setStyleSheet(chromeButtonStyle());
     payInvoiceBtn_->setEnabled(false);
-    connect(payInvoiceBtn_, &QPushButton::clicked, this, &DpiWidget::onPayInvoice);
+    connect(payInvoiceBtn_, &QPushButton::clicked, this, &DpiWidget::onPayClicked);
     decodedLayout->addWidget(payInvoiceBtn_);
+
+    payPlainNote_ = new QLabel("Plain payment: no payment package is produced, so the recipient "
+                               "confirms it in their own wallet.");
+    payPlainNote_->setObjectName("payPlainNote");
+    payPlainNote_->setWordWrap(true);
+    payPlainNote_->setStyleSheet(PayCollectPolicy::pillStyle(Tone::Info));
+    payPlainNote_->setVisible(false);
+    decodedLayout->addWidget(payPlainNote_);
 
     payStatusLabel_ = new QLabel;
     payStatusLabel_->setWordWrap(true);
@@ -400,6 +411,9 @@ void DpiWidget::setupPayTab() {
     layout->addWidget(packageGroup_);
     connect(payInvoiceInputEdit_, &QTextEdit::textChanged, this, [this]() {
         payInvoiceBase64_.clear();
+        payPlain_ = false;
+        payPlainNote_->setVisible(false);
+        payInvoiceBtn_->setText(kPayText);
         payInvoiceBtn_->setEnabled(false);
         packageOutputEdit_->clear();
         copyPackageBtn_->setEnabled(false);
@@ -443,8 +457,15 @@ void DpiWidget::updateHints() {
     show(verifyPackageBtn_, collectVerifyHint_, verifyBlocker,
          verifyPackageBtn_ && verifyPackageBtn_->text() != kVerifyText);
 
-    const bool noInvoice = !payInvoiceInputEdit_ || payInvoiceInputEdit_->toPlainText().trimmed().isEmpty();
-    show(decodeInvoiceBtn_, payReviewHint_, noInvoice ? QString("Paste an invoice to review it") : QString(),
+    const auto target = PayCollectPolicy::classifyPayInput(
+        payInvoiceInputEdit_ ? payInvoiceInputEdit_->toPlainText() : QString(),
+        QDateTime::currentSecsSinceEpoch());
+    QString reviewBlocker;
+    if (target.kind == PayCollectPolicy::PayTarget::Kind::Empty)
+        reviewBlocker = "Paste an invoice, payment link or address to review it";
+    else if (target.kind == PayCollectPolicy::PayTarget::Kind::Invalid)
+        reviewBlocker = target.error;
+    show(decodeInvoiceBtn_, payReviewHint_, reviewBlocker,
          decodeInvoiceBtn_ && decodeInvoiceBtn_->text() != kReviewText);
 }
 
@@ -523,6 +544,40 @@ void DpiWidget::onDecodeInvoice() {
         return;
     }
 
+    // Payment links and bare addresses are reviewed here and paid from Send.
+    using Kind = PayCollectPolicy::PayTarget::Kind;
+    const auto target = PayCollectPolicy::classifyPayInput(invoiceB64, QDateTime::currentSecsSinceEpoch());
+    if (target.kind == Kind::Invalid) {
+        updateHints();
+        return;
+    }
+    if (target.kind == Kind::Link || target.kind == Kind::Address) {
+        payPlain_ = true;
+        plainAddress_ = target.address;
+        plainAmount_ = target.amount;
+        decodedAmountLabel_->setText(target.amount.isEmpty() ? QString("Enter it in Send")
+                                                             : target.amount + " DIN");
+        decodedDestLabel_->setText(target.address);
+        decodedMemoLabel_->setText(target.label.isEmpty() ? QString("(none)") : target.label);
+        const QString expires = target.expiresAt > 0
+            ? QDateTime::fromSecsSinceEpoch(target.expiresAt).toString("HH:mm") : QString();
+        decodedExpiryLabel_->setText(expires.isEmpty() ? QString("No expiry") : "at " + expires);
+        decodedExpiryLabel_->setStyleSheet(QString());
+        if (target.kind == Kind::Link) {
+            plainNote_ = "From Pay: payment link";
+            if (!target.label.isEmpty()) plainNote_ += QString::fromUtf8(" for \xE2\x80\x9C%1\xE2\x80\x9D").arg(target.label);
+            if (!expires.isEmpty()) plainNote_ += ", expires at " + expires;
+            plainNote_ += target.amount.isEmpty() ? ". Enter the amount, check the fee, then send."
+                                                  : ". Check the amount and fee, then send.";
+        } else {
+            plainNote_ = "From Pay: enter the amount, check the fee, then send.";
+        }
+        payInvoiceBtn_->setText("Continue in Send");
+        payInvoiceBtn_->setEnabled(true);
+        payPlainNote_->setVisible(true);
+        return;
+    }
+
     payInvoiceBase64_ = invoiceB64;
 
     QJsonObject params;
@@ -536,6 +591,14 @@ void DpiWidget::onDecodeInvoice() {
 // ============================================================================
 // Slot: Pay Invoice
 // ============================================================================
+
+void DpiWidget::onPayClicked() {
+    if (payPlain_) {
+        Q_EMIT payToAddressRequested(plainAddress_, plainAmount_, plainNote_);
+        return;
+    }
+    onPayInvoice();
+}
 
 void DpiWidget::onPayInvoice() {
     if (payInvoiceBase64_.isEmpty()) return;

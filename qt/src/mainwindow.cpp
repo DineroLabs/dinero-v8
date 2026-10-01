@@ -3985,6 +3985,22 @@ void MainWindow::setupUI() {
   {
     dpiWidget_ = new DpiWidget(rpc_, this);
     tabs->addTab(dpiWidget_, navigationIcon(NavigationGlyph::Card), "Pay/Collect");
+    // Payment links and plain addresses are paid through Send, which owns fee
+    // choice, confirmation and the wallet checks.
+    connect(dpiWidget_, &DpiWidget::payToAddressRequested, this,
+            [this](const QString& address, const QString& amount, const QString& note) {
+      if (!mainTabs_ || !cmbSendAction_ || !edtRecipient_ || !edtAmount_) return;
+      for (int i = 0; i < mainTabs_->count(); ++i)
+        if (mainTabName(mainTabs_, i) == "Send") mainTabs_->setCurrentIndex(i);
+      cmbSendAction_->setCurrentIndex(cmbSendAction_->findData("public_transfer"));
+      edtRecipient_->setText(address);
+      edtAmount_->setText(amount);
+      if (lblSendStatus_) {
+        lblSendStatus_->setText(note);
+        lblSendStatus_->setStyleSheet("QLabel { color: #d6dde6; padding: 10px; background: #2c3036; border: 1px solid #3d434d; border-radius: 6px; }");
+      }
+      (amount.isEmpty() ? edtAmount_ : edtRecipient_)->setFocus();
+    });
   }
 
 #ifdef DIN_EXPERIMENTAL_FEATURES
@@ -6064,7 +6080,8 @@ void MainWindow::updateSendModeUi() {
       status.startsWith(QString::fromUtf8("\xF0\x9F\x93\x9C Contract options")) ||
       // The per-mode hints below, so switching tabs or modes replaces them.
       status == "Create an on-chain contract with spending rules." ||
-      status == "Send DIN publicly from transparent Taproot/P2MR funds.";
+      status == "Send DIN publicly from transparent Taproot/P2MR funds." ||
+      status.startsWith("From Pay: ");
     if (isModeHint) {
       if (privateComposer) {
         lblSendStatus_->setText("Open Shielded to send privately or convert funds. The daemon reports activation availability. Use Covenants for private contract controls when activated.");

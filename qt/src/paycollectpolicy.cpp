@@ -1,7 +1,9 @@
 #include "paycollectpolicy.h"
 #include "shieldedtransferpolicy.h"
 
+#include <QHash>
 #include <QRegularExpression>
+#include <QUrl>
 
 namespace PayCollectPolicy {
 
@@ -68,6 +70,68 @@ QString pillStyle(Tone tone) {
 QString badgeHtml(const Badge& badge) {
     return QString("<span style='color:%1; background:%2; padding:4px 10px; font-weight:600;'>%3</span>")
         .arg(toneColor(badge.tone), toneBackground(badge.tone), badge.text.toHtmlEscaped());
+}
+
+namespace {
+// Public (transparent) address families the Send tab accepts, as bech32 text.
+bool isPublicAddress(const QString& text) {
+    static const QRegularExpression re(QStringLiteral("^[tr]?din1[pqr][02-9ac-hj-np-z]{6,}$"));
+    return re.match(text).hasMatch();
+}
+}  // namespace
+
+PayTarget classifyPayInput(const QString& text, qint64 nowSecs) {
+    PayTarget t;
+    const QString input = text.trimmed();
+    if (input.isEmpty()) return t;
+
+    if (input.startsWith(QStringLiteral("dinero:"), Qt::CaseInsensitive)) {
+        auto invalid = [&t](const char* why) { t = PayTarget{}; t.kind = PayTarget::Kind::Invalid; t.error = why; return t; };
+        const QString rest = input.mid(int(qstrlen("dinero:")));
+        const int q = rest.indexOf('?');
+        t.address = q < 0 ? rest : rest.left(q);
+        if (t.address.isEmpty()) return invalid("The link has no address");
+        if (!isPublicAddress(t.address)) return invalid("The link is not for a public Dinero address");
+
+        // Same reading as the phone app: key=value pairs, values percent-decoded.
+        QHash<QString, QString> params;
+        if (q >= 0) {
+            for (const QString& pair : rest.mid(q + 1).split('&', Qt::SkipEmptyParts)) {
+                const int eq = pair.indexOf('=');
+                if (eq <= 0) continue;
+                params.insert(pair.left(eq), QUrl::fromPercentEncoding(pair.mid(eq + 1).toUtf8()));
+            }
+        }
+        if (params.contains("amount")) {
+            qint64 una = 0;
+            const QString amount = params.value("amount").trimmed();
+            if (!ShieldedTransferPolicy::parseDinToUna(amount, &una) || una <= 0)
+                return invalid("The link's amount is not valid");
+            t.amount = amount;
+        }
+        if (params.contains("exp")) {
+            bool ok = false;
+            const qint64 exp = params.value("exp").toLongLong(&ok);
+            if (!ok || exp <= 0) return invalid("The link's expiry is not valid");
+            if (exp <= nowSecs) return invalid("This payment request has expired");
+            t.expiresAt = exp;
+        }
+        t.requestId = params.value("rid");
+        for (const char* key : {"desc", "memo", "merchant"}) {
+            if (!params.value(key).isEmpty()) { t.label = params.value(key); break; }
+        }
+        t.kind = PayTarget::Kind::Link;
+        return t;
+    }
+
+    if (isPublicAddress(input)) {
+        t.kind = PayTarget::Kind::Address;
+        t.address = input;
+        return t;
+    }
+    // Anything else is handed to the node as a DPI invoice, which reports decode errors.
+    t.kind = PayTarget::Kind::Invoice;
+    return t;
 }
 
 }  // namespace PayCollectPolicy

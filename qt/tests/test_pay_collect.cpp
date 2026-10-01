@@ -6,6 +6,7 @@
 #include <QPushButton>
 #include <QTabWidget>
 #include <QTextEdit>
+#include <QSignalSpy>
 #include "dpiwidget.h"
 #include "rpcclient.h"
 
@@ -202,6 +203,64 @@ private Q_SLOTS:
             QVERIFY2(label, name);
             QVERIFY2(label->text() == dash, qPrintable(QString("%1 shows '%2'").arg(name, label->text())));
         }
+    }
+
+    void linksAndAddressesContinueInSend() {
+        const QString addr = "din1pqqqsyqcyq5rqwzqfpg9scrgwpugpzysnzs23v9ccrydpk8qarc0jqg6t5y8";
+        const QString future = QString::number(QDateTime::currentSecsSinceEpoch() + 900);
+        RpcClient rpc;
+        DpiWidget widget(&rpc);
+        widget.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&widget));
+        widget.findChild<QTabWidget*>()->setCurrentIndex(1);
+        auto* input = named<QTextEdit>(widget, "payInvoiceInput");
+        auto* review = named<QPushButton>(widget, "payReview");
+        auto* reviewHint = named<QLabel>(widget, "payReviewHint");
+        auto* pay = named<QPushButton>(widget, "payConfirm");
+        auto* note = named<QLabel>(widget, "payPlainNote");
+        auto* dest = named<QLabel>(widget, "payDecodedDestination");
+        auto* amount = named<QLabel>(widget, "payDecodedAmount");
+        auto* memo = named<QLabel>(widget, "payDecodedMemo");
+        QVERIFY(input && review && reviewHint && pay && note && dest && amount && memo);
+        QSignalSpy handoff(&widget, &DpiWidget::payToAddressRequested);
+
+        // A payment-request link from the phone app.
+        input->setPlainText("dinero:" + addr + "?amount=1.5&rid=r-1&exp=" + future + "&desc=Coffee%20beans");
+        QVERIFY(review->isEnabled());
+        QTest::mouseClick(review, Qt::LeftButton);
+        QCOMPARE(dest->text(), addr);
+        QVERIFY2(amount->text().contains("1.5"), qPrintable(amount->text()));
+        QCOMPARE(memo->text(), QString("Coffee beans"));
+        QCOMPARE(pay->text(), QString("Continue in Send"));
+        QVERIFY(pay->isEnabled());
+        QVERIFY(note->isVisible());
+        QTest::mouseClick(pay, Qt::LeftButton);
+        QCOMPARE(handoff.count(), 1);
+        QCOMPARE(handoff.at(0).at(0).toString(), addr);
+        QCOMPARE(handoff.at(0).at(1).toString(), QString("1.5"));
+        QVERIFY2(handoff.at(0).at(2).toString().contains("Coffee beans"), qPrintable(handoff.at(0).at(2).toString()));
+
+        // A bare address: the amount is entered in Send.
+        input->setPlainText(addr);
+        QCOMPARE(pay->text(), QString("Pay this invoice"));
+        QVERIFY(!pay->isEnabled());
+        QVERIFY(!note->isVisible());
+        QTest::mouseClick(review, Qt::LeftButton);
+        QVERIFY2(amount->text().contains("Send"), qPrintable(amount->text()));
+        QTest::mouseClick(pay, Qt::LeftButton);
+        QCOMPARE(handoff.count(), 2);
+        QCOMPARE(handoff.at(1).at(1).toString(), QString());
+
+        // Expired links are refused before review, with the reason.
+        input->setPlainText("dinero:" + addr + "?amount=1&exp=1000");
+        QVERIFY(!review->isEnabled());
+        QVERIFY2(reviewHint->text().contains("expired"), qPrintable(reviewHint->text()));
+
+        // Invoices keep the invoice flow (decoded by the node, paid here).
+        input->setPlainText("aW52b2ljZSBieXRlcw==");
+        QTest::mouseClick(review, Qt::LeftButton);
+        QCOMPARE(pay->text(), QString("Pay this invoice"));
+        QCOMPARE(handoff.count(), 2);
     }
 };
 QTEST_MAIN(PayCollectTest)
