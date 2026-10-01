@@ -588,6 +588,9 @@ set(GUI_SOURCES
   src/vaultpanel.h
   # Pool operator dashboard (SV2 pool ops endpoint + chain-verified fee).
   src/poolpanel.cpp
+  src/poolcockpit.cpp
+  src/pooltokenstore.cpp
+  src/segwitaddress.cpp
   src/poolpanel.h
   # MyNodeDashboard — Phase 1 MVP (Tasks 1-9).
   src/dashboardtypes.h
@@ -718,6 +721,7 @@ if(APPLE)
     "-framework AppKit"
     "-framework CoreImage"
     "-framework Foundation"
+    "-framework Security"
   )
 elseif(WIN32)
   if(MSVC)
@@ -1554,6 +1558,37 @@ if(BUILD_TESTING)
   target_link_libraries(test_pay_collect_policy PRIVATE Qt6::Core Qt6::Test)
   target_compile_definitions(test_pay_collect_policy PRIVATE QT_NO_KEYWORDS)
   add_test(NAME PayCollectPolicy COMMAND test_pay_collect_policy)
+
+  add_executable(test_pool_cockpit_format tests/test_pool_cockpit_format.cpp src/poolcockpit.cpp)
+  target_include_directories(test_pool_cockpit_format PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_link_libraries(test_pool_cockpit_format PRIVATE Qt6::Core Qt6::Test)
+  target_compile_definitions(test_pool_cockpit_format PRIVATE QT_NO_KEYWORDS)
+  add_test(NAME PoolCockpitFormat COMMAND test_pool_cockpit_format)
+
+  add_executable(test_segwit_address tests/test_segwit_address.cpp src/segwitaddress.cpp)
+  target_include_directories(test_segwit_address PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_link_libraries(test_segwit_address PRIVATE Qt6::Core Qt6::Test)
+  target_compile_definitions(test_segwit_address PRIVATE QT_NO_KEYWORDS)
+  add_test(NAME SegwitAddress COMMAND test_segwit_address)
+
+  add_executable(test_pool_token_store tests/test_pool_token_store.cpp src/pooltokenstore.cpp)
+  target_include_directories(test_pool_token_store PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_link_libraries(test_pool_token_store PRIVATE Qt6::Core Qt6::Test)
+  if(APPLE)
+    target_link_libraries(test_pool_token_store PRIVATE "-framework Security" "-framework CoreFoundation")
+  endif()
+  target_compile_definitions(test_pool_token_store PRIVATE QT_NO_KEYWORDS)
+  add_test(NAME PoolTokenStore COMMAND test_pool_token_store)
+
+  add_executable(test_pool_cockpit ${_wallet_test_sources} tests/test_pool_cockpit.cpp)
+  target_link_libraries(test_pool_cockpit PRIVATE
+    $<TARGET_PROPERTY:dinero-qt,LINK_LIBRARIES> Qt6::Test)
+  target_include_directories(test_pool_cockpit PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src $<TARGET_PROPERTY:dinero-qt,INCLUDE_DIRECTORIES>)
+  target_compile_definitions(test_pool_cockpit PRIVATE
+    QT_NO_KEYWORDS $<TARGET_PROPERTY:dinero-qt,COMPILE_DEFINITIONS>)
+  add_test(NAME PoolCockpit COMMAND test_pool_cockpit)
+  set_tests_properties(PoolCockpit PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 120)
   set_tests_properties(MiningRewards PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 30)
   set_tests_properties(RpcReplyAlias PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 30)
 
