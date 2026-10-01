@@ -77,5 +77,21 @@ int main(int argc,char** argv){try{
     }
     {DB db(path.c_str());WalletSnapshotStore store(db.p,Identity(),seed);Exec(db.p,"BEGIN IMMEDIATE;");Check(store.StageReplaceRetaining(4,State(1))==5);Exec(db.p,"UPDATE companion SET value=1;COMMIT;");}
     Verify(path.c_str(),5,1); // rollback is a NEW revision, never a clock rewind.
+    {
+        sqlite3* db=nullptr;Check(sqlite3_open_v2(path.c_str(),&db,SQLITE_OPEN_READONLY,nullptr)==SQLITE_OK);
+        std::unique_ptr<sqlite3,decltype(&sqlite3_close)> close(db,sqlite3_close);
+        Exec(db,"PRAGMA synchronous=FULL;BEGIN;");WalletSnapshotStore store(db,Identity(),seed);
+        const auto current=store.Read();Check(current&&current->revision==5&&current->state.Bytes()[0]==1);
+        Check(store.ReadRetained(1).state.Bytes()[0]==1);
+        Check(store.ReadRetained(2).state.Bytes()[0]==2);
+        WalletSnapshotStore wrong(db,Identity(),std::array<uint8_t,64>{8});
+        Reject([&]{(void)wrong.Read();});Reject([&]{(void)wrong.ReadRetained(1);});
+        Reject([&]{(void)store.StageReplace(5,State(2));});
+        Reject([&]{(void)store.StageReplaceRetaining(5,State(2));});
+        Reject([&]{WalletSnapshotStore::InitializeSchemaUnderTransaction(db);});
+        Check(!sqlite3_get_autocommit(db)&&sqlite3_total_changes64(db)==0);
+        Check(store.Read()->revision==5);Exec(db,"ROLLBACK;");
+        std::cout<<"PASS read-only snapshot and retained authentication with write refusal\n";
+    }
     std::cout<<"Encrypted wallet snapshot: binding, tamper/key/revision checks, shared SQLite rollback, fresh-process pre/post-commit recovery passed\n";
 }catch(const std::exception& e){std::cerr<<e.what()<<'\n';return 1;}}

@@ -6,13 +6,17 @@
 # Core wallet library (real implementations only)
 # NOTE: src/wallet/hd_wallet.cpp is LEGACY and intentionally NOT compiled.
 #       Active implementation: src/wallet/hd_wallet.cpp (uses BIP32Deriver)
+add_library(dinero_wallet_catalog STATIC ${CMAKE_CURRENT_SOURCE_DIR}/orchard_account_catalog.cpp)
+target_include_directories(dinero_wallet_catalog PUBLIC ${CMAKE_SOURCE_DIR}/include)
+target_compile_features(dinero_wallet_catalog PUBLIC cxx_std_20)
+target_link_libraries(dinero_wallet_catalog PUBLIC OpenSSL::Crypto sqlite3)
+
 add_library(dinero_wallet STATIC
   ${CMAKE_SOURCE_DIR}/src/common/logger.cpp         # Logger used by wallet code
   ${CMAKE_CURRENT_SOURCE_DIR}/address.cpp
   ${CMAKE_SOURCE_DIR}/src/common/AddressCodec.cpp  # Taproot address encoding (P2TR)
   ${CMAKE_SOURCE_DIR}/src/address/addr_codec.cpp    # Taproot address decoding and scriptPubKey creation
   ${CMAKE_SOURCE_DIR}/src/address/addr_types.cpp    # Address type definitions
-  ${CMAKE_CURRENT_SOURCE_DIR}/orchard_account_catalog.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/wallet_manager.cpp  # Modern HD wallet with BIP84 (Nov 2025)
   ${CMAKE_CURRENT_SOURCE_DIR}/key_identity.cpp    # Week 1: KeyID-based wallet identity
   ${CMAKE_CURRENT_SOURCE_DIR}/key_origin.cpp      # Week 1: KeyOriginInfo for descriptor wallet
@@ -101,6 +105,7 @@ target_include_directories(dinero_wallet PUBLIC
 )
 
 target_link_libraries(dinero_wallet PUBLIC
+  dinero_wallet_catalog
   dinero_address_encoding
   dinero_bip32
   dinero_tx_primitives # ← Transaction structures and Schnorr/Taproot signing

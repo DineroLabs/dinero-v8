@@ -1,5 +1,5 @@
 #pragma once
-#include "wallet/orchard_operation_queue.h"
+#include "wallet/orchard_account_metadata.h"
 #include "wallet/orchard_scan_state.h"
 namespace dinero { struct RuntimeOutboxEvent; }
 namespace dinero::wallet {
@@ -9,11 +9,7 @@ namespace dinero::wallet {
 // exposing results.
 class OrchardAccountState {
 public:
-  struct DeliveryCheckpoint {
-    uint64_t sequence = 0;
-    uint256 digest;
-    bool operator==(const DeliveryCheckpoint &) const = default;
-  };
+  using DeliveryCheckpoint = OrchardAccountMetadata::DeliveryCheckpoint;
   const DeliveryCheckpoint &Delivery() const noexcept;
   // Authenticated storage locator, not a source cursor or a validity proof.
   // Zero means no retained parent binding (including legacy snapshots).
@@ -36,20 +32,10 @@ public:
   // conflicts, or undo those observations. Never discards addresses/Ready data.
   [[nodiscard]] OrchardAccountState
   ApplyHistoricalDelivery(const RuntimeOutboxEvent &) const;
-  struct ArchiveCheckpoint {
-    uint64_t count = 0;
-    orchard::Hash head{};
-    bool operator==(const ArchiveCheckpoint &) const = default;
-  };
+  using ArchiveCheckpoint = OrchardAccountMetadata::ArchiveCheckpoint;
   const ArchiveCheckpoint &Archive() const noexcept;
-  enum class OperationOutcome : uint8_t { Confirmed = 1, Conflicted = 2 };
-  struct OperationObservation {
-    OperationOutcome outcome;
-    uint32_t height;
-    uint256 block_hash;
-    orchard::Hash transaction_id; // Included tx, or the first conflicting tx.
-    bool operator==(const OperationObservation &) const = default;
-  };
+  using OperationOutcome = OrchardAccountMetadata::OperationOutcome;
+  using OperationObservation = OrchardAccountMetadata::OperationObservation;
   [[nodiscard]] static OrchardAccountState
   Begin(orchard::SigningDomain, const orchard::FullViewingKeyBytes &,
         uint32_t activation, const uint256 &parent);

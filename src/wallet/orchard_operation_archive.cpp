@@ -17,10 +17,6 @@ void Check(bool value) {
   if (!value)
     Fail();
 }
-WalletStateBytes CheckedSeed(std::span<const uint8_t> seed) {
-  Check(seed.size() >= 32 && seed.size() <= 252);
-  return WalletStateBytes(seed);
-}
 void Exec(sqlite3 *db, const char *sql) {
   Check(sqlite3_exec(db, sql, nullptr, nullptr, nullptr) == SQLITE_OK);
 }
@@ -49,12 +45,6 @@ struct Savepoint {
     done = true;
   }
 };
-Hash H(std::span<const uint8_t> bytes) {
-  Check(bytes.size() == 32);
-  Hash h;
-  std::copy(bytes.begin(), bytes.end(), h.begin());
-  return h;
-}
 WalletStateBytes Encode(const Hash &id, const Observation &observation,
                         const OrchardOperationQueue &queue, uint64_t sequence,
                         const Hash &previous) {
@@ -85,57 +75,6 @@ WalletStateBytes Encode(const Hash &id, const Observation &observation,
   raw(bytes.Bytes());
   return WalletStateBytes(out);
 }
-OrchardOperationArchive::Record Decode(uint64_t revision, const Hash &id,
-                                       const WalletStateBytes &bytes,
-                                       SigningDomain domain) {
-  auto remaining = bytes.Bytes();
-  const auto take = [&](size_t size) {
-    Check(size <= remaining.size());
-    auto out = remaining.first(size);
-    remaining = remaining.subspan(size);
-    return out;
-  };
-  const auto u32 = [&]() {
-    auto data = take(4);
-    uint32_t out = 0;
-    for (size_t i = 0; i < 4; ++i)
-      out |= uint32_t(data[i]) << (i * 8);
-    return out;
-  };
-  constexpr std::string_view magic = "DNORAR01";
-  const auto prefix = take(8);
-  Check(std::equal(prefix.begin(), prefix.end(), magic.begin()));
-  Check(H(take(32)) == id);
-  const auto serial = take(8);
-  uint64_t sequence = 0;
-  for (size_t i = 0; i < 8; ++i)
-    sequence |= uint64_t(serial[i]) << (i * 8);
-  const auto previous = H(take(32));
-  Check(sequence > 0 && ((sequence == 1) == (previous == Hash{})));
-  const auto outcome = take(1)[0];
-  Check(outcome == 1 || outcome == 2);
-  Observation observation;
-  observation.outcome =
-      static_cast<OrchardAccountState::OperationOutcome>(outcome);
-  observation.height = u32();
-  const auto block = take(32);
-  std::copy(block.begin(), block.end(), observation.block_hash.begin());
-  observation.transaction_id = H(take(32));
-  Check(observation.height > 0 && !observation.block_hash.IsNull() &&
-        observation.transaction_id != Hash{});
-  const auto size = u32();
-  Check(size == remaining.size());
-  auto queue =
-      OrchardOperationQueue::Restore(WalletStateBytes(take(size)), domain);
-  Check(queue.Entries().size() == 1 && queue.Entries().contains(id));
-  if (outcome == 1) {
-    const auto &entry = queue.Entries().at(id);
-    Check(entry.phase == OrchardOperationQueue::Phase::Ready &&
-          TransactionEnvelope::DecodeExact(entry.transaction).Txid() ==
-              observation.transaction_id);
-  }
-  return {revision, sequence, previous, std::move(queue), observation};
-}
 bool Equal(const WalletStateBytes &a, const WalletStateBytes &b) {
   return std::equal(a.Bytes().begin(), a.Bytes().end(), b.Bytes().begin(),
                     b.Bytes().end());
@@ -144,36 +83,9 @@ bool Equal(const WalletStateBytes &a, const WalletStateBytes &b) {
 void OrchardOperationArchive::InitializeSchemaUnderTransaction(sqlite3 *db) {
   WalletSnapshotStore::InitializeSchemaUnderTransaction(db);
 }
-OrchardOperationArchive::OrchardOperationArchive(sqlite3 *db,
-                                                 WalletStorageIdentity identity,
-                                                 SigningDomain domain,
-                                                 std::span<const uint8_t> seed)
-    : db_(db), identity_(identity), domain_(domain), seed_(CheckedSeed(seed)) {
-  Check(domain.network_code == uint8_t(identity.network) &&
-        domain.genesis_wire == identity.genesis);
-  (void)SigningContext::Create(domain, 0, {}, {}, 0);
-  WalletSnapshotStore validate(db_, identity_, seed_.Bytes());
-}
-WalletStorageIdentity
-OrchardOperationArchive::RecordIdentity(const Hash &id) const {
-  Check(id != Hash{});
-  // Domain-separated fixed-width identity. Reuses the existing authenticated
-  // per-record snapshot encryption without changing account key/nonce rules.
-  constexpr std::string_view tag = "DIN/orchard/operation-archive-record/v1";
-  std::vector<uint8_t> preimage(tag.begin(), tag.end());
-  preimage.push_back(0);
-  preimage.insert(preimage.end(), identity_.wallet_id.begin(),
-                  identity_.wallet_id.end());
-  preimage.insert(preimage.end(), id.begin(), id.end());
-  auto identity = identity_;
-  SHA256(preimage.data(), preimage.size(), identity.wallet_id.data());
-  Check(identity.wallet_id != identity_.wallet_id);
-  return identity;
-}
-bool OrchardOperationArchive::Contains(const Hash &id) const {
-  WalletSnapshotStore store(db_, RecordIdentity(id), seed_.Bytes());
-  return bool(store.Read());
-}
+OrchardOperationArchive::OrchardOperationArchive(sqlite3* db,
+    WalletStorageIdentity identity,SigningDomain domain,std::span<const uint8_t> seed)
+    : OrchardArchiveReader(db,identity,domain,seed) {}
 OrchardOperationArchive::Cursor
 OrchardOperationArchive::Begin(const OrchardAccountState &account) const {
   WalletSnapshotStore store(db_, identity_, seed_.Bytes());
@@ -200,13 +112,6 @@ OrchardOperationArchive::List(Cursor cursor, size_t limit) const {
   }
   Check((page.next.remaining_ == 0) == (page.next.next_ == Hash{}));
   return page;
-}
-OrchardOperationArchive::Record
-OrchardOperationArchive::Read(const Hash &id) const {
-  WalletSnapshotStore record(db_, RecordIdentity(id), seed_.Bytes());
-  const auto loaded = record.Read();
-  Check(bool(loaded));
-  return Decode(loaded->revision, id, loaded->state, domain_);
 }
 void OrchardOperationArchive::CheckCurrent(
     uint64_t revision, const OrchardAccountState &account) const {

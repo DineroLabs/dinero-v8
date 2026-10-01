@@ -1,9 +1,10 @@
 #pragma once
 #include "wallet/orchard_account_state.h"
+#include "wallet/orchard_archive_reader.h"
 namespace dinero::wallet {
 // Borrows the account's SQLite connection; caller holds wallet/selected-chain
 // locks and owns the outer transaction. Returned state/revision are staged.
-class OrchardOperationArchive {
+class OrchardOperationArchive : public OrchardArchiveReader {
 public:
   class Cursor {
   public:
@@ -36,13 +37,7 @@ public:
     std::vector<LocatedOperation> entries;
     Cursor next;
   };
-  struct Record {
-    uint64_t revision;
-    uint64_t sequence;
-    orchard::Hash previous;
-    OrchardOperationQueue operation; // Exactly one authenticated entry.
-    OrchardAccountState::OperationObservation observation;
-  };
+  using Record = OrchardArchiveReader::Record;
   struct Staged {
     uint64_t revision;
     OrchardAccountState account;
@@ -51,13 +46,11 @@ public:
   OrchardOperationArchive(sqlite3 *, orchard::WalletStorageIdentity,
                           orchard::SigningDomain,
                           std::span<const uint8_t> seed);
-  [[nodiscard]] bool Contains(const orchard::Hash &) const;
   [[nodiscard]] Cursor Begin(const OrchardAccountState &) const;
   // Follows authenticated predecessor links, at most 64 records per call.
   // Missing records fail, not end-of-list. Host retains the captured wallet
   // snapshot/chain checkpoint until enumeration and reconciliation finish.
   [[nodiscard]] Page List(Cursor, size_t limit = 32) const;
-  [[nodiscard]] Record Read(const orchard::Hash &) const;
   [[nodiscard]] Staged StageCompleted(uint64_t expected_revision,
                                       const OrchardAccountState &,
                                       const orchard::Hash &,
@@ -73,11 +66,6 @@ public:
 
 private:
   friend class OrchardAccountDelivery;
-  orchard::WalletStorageIdentity RecordIdentity(const orchard::Hash &) const;
   void CheckCurrent(uint64_t, const OrchardAccountState &) const;
-  sqlite3 *db_;
-  orchard::WalletStorageIdentity identity_;
-  orchard::SigningDomain domain_;
-  orchard::WalletStateBytes seed_;
 };
 } // namespace dinero::wallet

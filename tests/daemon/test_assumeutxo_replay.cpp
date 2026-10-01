@@ -779,6 +779,7 @@ int main(int argc, char** argv) {
 #include "pool_genesis_source_checks.h"
 
 #include "vault_canonical_withdrawal_checks.h"
+#include "wallet_pending_baseline_checks.h"
 
 #include "runtime_legacy_consumer_absence_checks.h"
 
@@ -803,3 +804,5 @@ int main(int argc, char** argv) {
 #include "orchard_spend_rpc_checks.h"
 
 #include "orchard_finish_rpc_checks.h"
+
+#include "orchard_ownership_inventory_checks.h"

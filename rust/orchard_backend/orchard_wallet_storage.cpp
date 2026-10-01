@@ -35,8 +35,10 @@ struct RetainSavepoint {
     void Release(){Exec(db,"RELEASE orchard_snapshot_retention");complete=true;}
 };
 void Durable(sqlite3* db,bool writing){
-    Check(db&&sqlite3_db_readonly(db,"main")==0);
-    if(writing)Check(sqlite3_get_autocommit(db)==0);
+    Check(db);
+    const auto readonly=sqlite3_db_readonly(db,"main");
+    Check(readonly>=0); // A missing main database is never a readable owner.
+    if(writing)Check(readonly==0&&sqlite3_get_autocommit(db)==0);
     Statement sync(db,"PRAGMA main.synchronous");Check(sqlite3_step(sync.p)==SQLITE_ROW);Check(sqlite3_column_int(sync.p,0)>=2);
     Statement mode(db,"PRAGMA main.journal_mode");Check(sqlite3_step(mode.p)==SQLITE_ROW);
     const auto* name=sqlite3_column_text(mode.p,0);Check(name);

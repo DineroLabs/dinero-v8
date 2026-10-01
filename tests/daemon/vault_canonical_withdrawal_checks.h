@@ -13,6 +13,7 @@ namespace {
 // enrolled through addUTXO from the validated output; this fixture does not
 // claim installation of the production wallet notification provider.
 struct CanonicalVaultWithdrawalFixture : CanonicalRecoveryFixture {
+    enum class FundingObservation { Manual, CanonicalOrigin };
     vault::VaultStateDomain domain;
     vault::VaultServiceConfig config;
     vault::WithdrawalPaymentTerms terms{1,10000,"canonical withdrawal fixture"};
@@ -31,7 +32,8 @@ struct CanonicalVaultWithdrawalFixture : CanonicalRecoveryFixture {
         dispatch=std::make_unique<vault::WalletWithdrawalDispatchOwner>(execution,wallet,Selected(),domain);
         return dispatch->Factory();
     }
-    CanonicalVaultWithdrawalFixture(uint64_t maturity=2,bool bounded=false):CanonicalRecoveryFixture(true) {
+    CanonicalVaultWithdrawalFixture(uint64_t maturity=2,bool bounded=false,
+            FundingObservation observation=FundingObservation::Manual):CanonicalRecoveryFixture(true) {
         execution.walletName="canonical-recovery";
         auto& manager=wallet->get();address=manager.getNewAddress();script=TransactionBuilder::AddressToScriptPubKey(address);
         Need(script.size()==34);domain.network=static_cast<uint8_t>(GetActiveChain());
@@ -51,7 +53,12 @@ struct CanonicalVaultWithdrawalFixture : CanonicalRecoveryFixture {
         Need(observed.ok() && observed->MatchesTransparent(amount,script));
         funding.txid=donation.GetTxid().AsUint256();funding.vout=0;funding.value=AmountUna::Una(amount);funding.height=102;funding.spk=script;
         const auto path=manager.getDerivationPath(util::hex(script));Need(bool(path));funding.path=*path;
-        Need(manager.addUTXO(funding.GetTxIdHex(),0,amount,address,util::hex(script),102,false));manager.setBlockchainHeight(102);
+        // Origin-adoption tests must discover this output through the actual
+        // first canonical event. Manual enrollment would put a height-102 row
+        // ahead of the pre-origin (height-101) baseline being authenticated.
+        if(observation==FundingObservation::Manual) {
+            Need(manager.addUTXO(funding.GetTxIdHex(),0,amount,address,util::hex(script),102,false));manager.setBlockchainHeight(102);
+        }
         config.operator_binding=vault::VaultOperatorBinding{script,account.raw};
         config.confirmation_policy.k_observe=1;config.confirmation_policy.k_credit=1;config.confirmation_policy.k_settle=1;
         config.withdrawal_policy.k_settle=maturity;

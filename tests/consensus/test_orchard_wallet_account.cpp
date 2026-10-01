@@ -33,6 +33,7 @@ template <class F> static void AccountReject(F fn) {
   }
   Require(failed);
 }
+#include "orchard_account_metadata_checks.h"
 int main(int argc, char **argv) {
   try {
     Require(argc == 2 || argc == 5);
@@ -547,6 +548,8 @@ int main(int argc, char **argv) {
       WalletSnapshotStore store(db, identity, seed);
       auto saved = store.Read();
       Require(saved && saved->revision == 1);
+      CheckOrchardAccountMetadata(reserved, ready, delivered, saved->state,
+                                  f.domain, fvk, 20001);
       auto account = OrchardAccountState::Restore(
           saved->state, f.domain, fvk, 20001, funded.Scan().Checkpoint(),
           restoreLookups);

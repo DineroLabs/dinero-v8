@@ -321,6 +321,82 @@ TEST_F(WalletPendingPayment, CorruptOwnerReadFailureAndIntentRefuse) {
 }
 
 
+// These wallet-only cases use an explicit opaque receipt marker to check
+// preservation/invalidation mechanics. They do not certify a chain baseline.
+class WalletPendingBaseline : public WalletPendingPayment {
+protected:
+    void Install() {
+        auto* db=service->get().getCurrentDatabase();fund(old);fund(modern);
+        sql(db,"ALTER TABLE wallet_meta ADD COLUMN runtime_ordinary_receipt BLOB");
+        sql(db,"ALTER TABLE wallet_meta ADD COLUMN runtime_ordinary_invalid INTEGER NOT NULL DEFAULT 0");
+        sql(db,"UPDATE wallet_meta SET runtime_ordinary_receipt=X'444e4f5730310011' WHERE id=1");
+        for(const auto* table:{"utxos","transactions","watch_scripts","addresses","tip","sync_meta"})for(const auto* action:{"INSERT","UPDATE","DELETE"})
+            sql(db,std::string("CREATE TRIGGER runtime_ordinary_")+table+"_"+action+" AFTER "+action+" ON "+table+
+                " BEGIN UPDATE wallet_meta SET runtime_ordinary_invalid=1,runtime_ordinary_receipt=NULL WHERE id=1 AND runtime_ordinary_receipt IS NOT NULL; END");
+        sql(db,"CREATE TABLE receipt_extra_owner(id INTEGER PRIMARY KEY,payload BLOB); INSERT INTO receipt_extra_owner VALUES(1,X'000102')");
+    }
+    std::string Marker() {
+        auto* db=service->get().getCurrentDatabase();sqlite3_stmt* q=nullptr;
+        if(sqlite3_prepare_v2(db,"SELECT hex(runtime_ordinary_receipt)||':'||runtime_ordinary_invalid FROM wallet_meta WHERE id=1",-1,&q,nullptr)!=SQLITE_OK)throw std::runtime_error("marker prepare");
+        std::unique_ptr<sqlite3_stmt,decltype(&sqlite3_finalize)> owned(q,sqlite3_finalize);
+        if(sqlite3_step(q)!=SQLITE_ROW)throw std::runtime_error("marker read");const auto* data=sqlite3_column_text(q,0);
+        const std::string value(reinterpret_cast<const char*>(data),sqlite3_column_bytes(q,0));if(sqlite3_step(q)!=SQLITE_DONE)throw std::runtime_error("marker EOF");return value;
+    }
+    void RefusesWithoutAppend() {
+        auto& w=service->get();auto result=stage(payment());EXPECT_FALSE(result.success);EXPECT_TRUE(result.signed_tx.tx.vin.empty());
+        EXPECT_TRUE(w.getPendingPayments().empty());EXPECT_EQ(count(w.getCurrentDatabase(),"transactions"),0);EXPECT_EQ(Marker(),"444E4F5730310011:0");
+    }
+};
+TEST_F(WalletPendingBaseline, TypedAppendPreservesRecordedBytesAndArbitraryHistoryStillInvalidates) {
+    Install();auto& w=service->get();const auto seed=w.GetMasterSeed();const auto initial=Marker();
+    const auto result=stage(payment());ASSERT_TRUE(result.success)<<result.error;verify(result.signed_tx.tx,{old,modern});
+    EXPECT_EQ(Marker(),initial);ASSERT_EQ(w.getPendingPayments().size(),1u);EXPECT_EQ(w.getPendingPayments()[0].signed_body,result.signed_tx.tx.Serialize(dinero::TxSerializationMode::WithWitness));EXPECT_EQ(w.GetMasterSeed(),seed);
+    EXPECT_EQ(count(w.getCurrentDatabase(),"transactions"),1);w.open("owner");w.unlockWallet("historical-rpc",0);EXPECT_EQ(Marker(),initial);
+    sql(w.getCurrentDatabase(),"UPDATE transactions SET label='external history mutation'");EXPECT_EQ(Marker(),":1");
+}
+TEST_F(WalletPendingBaseline, UnexpectedProtectedRowsAndNewHistoryChangesRollbackWholeAppend) {
+    Install();auto& w=service->get();auto* db=w.getCurrentDatabase();const auto seed=w.GetMasterSeed();
+    for(const auto& body:std::vector<std::string>{
+        "UPDATE utxos SET amount=amount-1;",
+        "UPDATE hd_seeds SET encrypted_seed=zeroblob(length(encrypted_seed));",
+        "INSERT INTO receipt_extra_owner VALUES(2,X'030004');",
+        "UPDATE transactions SET label='changed typed append' WHERE id=NEW.id;",
+        "UPDATE wallet_meta SET runtime_delivery_id=zeroblob(32) WHERE id=1;"}) {
+        SCOPED_TRACE(body);sql(db,"CREATE TRIGGER unexpected_payment_write AFTER INSERT ON transactions BEGIN "+body+" END");
+        RefusesWithoutAppend();sql(db,"DROP TRIGGER unexpected_payment_write");EXPECT_EQ(w.GetMasterSeed(),seed);EXPECT_EQ(count(db,"receipt_extra_owner"),1);
+    }
+    const auto retry=stage(payment());ASSERT_TRUE(retry.success)<<retry.error;EXPECT_EQ(Marker(),"444E4F5730310011:0");
+}
+TEST_F(WalletPendingBaseline, RequiredReadsTerminalCompletionAndReceiptWriteRefuseAtomically) {
+    Install();auto* db=service->get().getCurrentDatabase();
+    sqlite3_set_authorizer(db,[](void*,int action,const char* table,const char*,const char*,const char*){
+        return action==SQLITE_READ&&table&&std::string_view(table)=="receipt_extra_owner"?SQLITE_DENY:SQLITE_OK;},nullptr);
+    RefusesWithoutAppend();sqlite3_set_authorizer(db,nullptr,nullptr);
+    struct Interrupted{sqlite3* db;bool called=false;};Interrupted interrupted{db};
+    sqlite3_trace_v2(db,SQLITE_TRACE_ROW,[](unsigned,void* p,void* statement,void*){
+        auto& state=*static_cast<Interrupted*>(p);const auto* text=sqlite3_sql(static_cast<sqlite3_stmt*>(statement));
+        if(text&&std::string_view(text)=="SELECT * FROM \"receipt_extra_owner\""){state.called=true;sqlite3_interrupt(state.db);}return 0;},&interrupted);
+    RefusesWithoutAppend();sqlite3_trace_v2(db,0,nullptr,nullptr);EXPECT_TRUE(interrupted.called);
+    sql(db,"CREATE TRIGGER refuse_receipt_preservation BEFORE UPDATE ON wallet_meta WHEN NEW.runtime_ordinary_receipt IS NOT NULL AND OLD.runtime_ordinary_receipt IS NULL BEGIN SELECT RAISE(ABORT,'receipt preservation fixture'); END");
+    RefusesWithoutAppend();sql(db,"DROP TRIGGER refuse_receipt_preservation");
+    // Mutation by a trigger on the preservation write itself also rolls back.
+    sql(db,"CREATE TRIGGER tamper_receipt_preservation AFTER UPDATE ON wallet_meta WHEN NEW.runtime_ordinary_receipt IS NOT NULL AND OLD.runtime_ordinary_receipt IS NULL BEGIN UPDATE receipt_extra_owner SET payload=X'aa'; END");
+    RefusesWithoutAppend();sql(db,"DROP TRIGGER tamper_receipt_preservation");
+    const auto retry=stage(payment());ASSERT_TRUE(retry.success)<<retry.error;EXPECT_EQ(Marker(),"444E4F5730310011:0");
+}
+TEST_F(WalletPendingBaseline, CommitRefusalMissingAndInvalidReceiptsNeverBecomeBaselines) {
+    Install();auto* db=service->get().getCurrentDatabase();
+    struct Hook{bool writing=false;bool called=false;};Hook hook;
+    sqlite3_trace_v2(db,SQLITE_TRACE_STMT,[](unsigned,void* p,void* q,void*){const auto* s=sqlite3_sql(static_cast<sqlite3_stmt*>(q));if(s&&std::strstr(s,"UPDATE wallet_meta SET pending_payment_owner"))static_cast<Hook*>(p)->writing=true;return 0;},&hook);
+    sqlite3_commit_hook(db,[](void* p){auto& state=*static_cast<Hook*>(p);if(state.writing&&!state.called){state.called=true;return 1;}return 0;},&hook);
+    RefusesWithoutAppend();sqlite3_commit_hook(db,nullptr,nullptr);sqlite3_trace_v2(db,0,nullptr,nullptr);EXPECT_TRUE(hook.called);
+    sql(db,"UPDATE wallet_meta SET runtime_ordinary_invalid=1,runtime_ordinary_receipt=NULL WHERE id=1");const auto result=stage(payment());ASSERT_TRUE(result.success)<<result.error;EXPECT_EQ(Marker(),":1");
+    // A second distinct payment may be retained, but no missing receipt is made.
+    auto next=payment();next.selected_utxos[0].vout=7;next.selected_utxos[1].vout=8;next.tx.vin[0].prevout.vout=7;next.tx.vin[1].prevout.vout=8;
+    fund(next.selected_utxos[0]);fund(next.selected_utxos[1]);sql(db,"UPDATE wallet_meta SET runtime_ordinary_invalid=0 WHERE id=1");
+    const auto missing=stage(next);ASSERT_TRUE(missing.success)<<missing.error;EXPECT_EQ(Marker(),":0");
+}
+
 class WalletReorgOrigin : public WalletPendingPayment {
 protected:
     dinero::Block confirmed_payment() {

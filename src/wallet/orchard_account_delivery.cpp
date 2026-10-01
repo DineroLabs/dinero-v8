@@ -1,3 +1,4 @@
+#include "wallet/orchard_ownership_inventory.h"
 #include "wallet/orchard_account_catalog.h"
 #include "wallet/orchard_account_delivery.h"
 #include "wallet/orchard_proof_jobs.h"
@@ -263,21 +264,18 @@ std::vector<OrchardAccountDelivery::Enrolled> OrchardAccountDelivery::Owner::Rea
         // account's authenticated head; unrelated rows remain a hard refusal.
         std::vector<std::pair<orchard::Hash,uint64_t>> archive_revisions;
         OrchardOperationArchive archive(owner.lease->Database(),identity,context.domain,owner.seed->Bytes());
-        auto cursor=archive.Begin(account);
-        Check(cursor.Remaining()<=inventory.size());
-        while(cursor.Remaining()){
-            const auto page=archive.List(cursor,64);
-            Check(!page.entries.empty());
-            for(const auto& located:page.entries){
-                const auto record=archive.Read(located.Id());
-                const auto record_identity=archive.RecordIdentity(located.Id());
-                const Locator record_locator{record_identity.wallet_id,record_identity.account};
-                const auto found=inventory.find(record_locator);
-                Check(found!=inventory.end()&&found->second==record.revision&&
-                    record.sequence==located.Sequence()&&authenticated.insert(record_locator).second);
-                archive_revisions.emplace_back(record_identity.wallet_id,record.revision);
-            }
-            cursor=page.next;
+        const auto cursor=archive.Begin(account); // Preserve exact current account encoding/owner guard.
+        const auto captured=archive.CaptureCurrent(fvk.bytes,context.activation_height);
+        Check(captured.revision==saved->revision && captured.metadata.Archive()==account.Archive() &&
+            captured.metadata.Delivery()==account.Delivery() &&
+            captured.metadata.ParentSnapshotRevision()==account.ParentSnapshotRevision());
+        Check(captured.archive.size()==cursor.Remaining()&&captured.archive.size()<=inventory.size());
+        for(const auto& archived:captured.archive){
+            const auto& record=archived.record;
+            const Locator record_locator{archived.identity.wallet_id,archived.identity.account};
+            const auto found=inventory.find(record_locator);
+            Check(found!=inventory.end()&&found->second==record.revision&&authenticated.insert(record_locator).second);
+            archive_revisions.emplace_back(record_locator.first,record.revision);
         }
         result.push_back({identity.account,{saved->revision,std::move(account)},std::move(archive_revisions)});
     }
@@ -373,7 +371,21 @@ std::vector<OrchardAccountDelivery::Enrolled> OrchardAccountDelivery::Owner::Val
     Check(context.activation_height==p.activation&&context.domain.network_code==p.domain.network_code&&
         context.domain.genesis_wire==p.domain.genesis_wire&&context.domain.branch_id==p.domain.branch_id);
     catalog=OrchardAccountCatalog::Read(lease->Database(),seed->Bytes());Check(catalog&&catalog->generated);
+    // First genuine creation is between schema initialization and its first
+    // retained write here. Keep that existing empty-catalog initialization
+    // owner; established catalogs must have the complete read-only schema.
+    std::optional<OrchardOwnershipInventory::Snapshot> ownership;
+    if(!catalog->accounts.empty()) {
+        ownership=OrchardOwnershipInventory::Read(lease->Database(),seed->Bytes());
+        Check(ownership->catalog==*catalog&&ownership->wallet_id==identity.wallet_id);
+    }
     auto inventory=ReadInventory(view,true);Check(inventory.size()==catalog->accounts.size());
+    if(ownership) {
+        Check(ownership->accounts.size()==inventory.size());
+        for(size_t i=0;i<inventory.size();++i)
+            Check(ownership->accounts[i].entry.account==inventory[i].number&&
+                  ownership->accounts[i].current.revision==inventory[i].state.revision);
+    }
     for(size_t i=0;i<inventory.size();++i){
         const auto& entry=catalog->accounts[i];
         Check(entry.account==inventory[i].number&&entry.network==p.domain.network_code&&entry.genesis==p.domain.genesis_wire&&

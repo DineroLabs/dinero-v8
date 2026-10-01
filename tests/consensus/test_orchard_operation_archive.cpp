@@ -130,6 +130,7 @@ static Funded RestoreFixture(const char *fixtures, const Bytes &body,
                                        prepared.Next(), lookups),
           block, prepared, auth};
 }
+#include "orchard_archive_reader_checks.h"
 int main(int argc, char **argv) {
   try {
     if (argc == 6 && std::string_view(argv[1]) == "--crash") {
@@ -304,6 +305,8 @@ int main(int argc, char **argv) {
       Require(p1.entries[0].Id() == Hash{2} && p2.entries[0].Id() == Hash{1} &&
               p2.next.Remaining() == 0);
       Require(archive.Read(Hash{2}).previous == Hash{1});
+      CheckOrchardArchiveCapture(db,path,domain,keys.ExportFullViewingKey(),current,revision,
+                                 first.auth.Orchard().CanonicalBytes(),second.auth.Orchard().CanonicalBytes());
       // Deleting an encrypted predecessor is an integrity failure, never a
       // shortened page or an apparently empty history. Roll back the damage.
       Sql(db, "BEGIN IMMEDIATE;");
@@ -312,8 +315,14 @@ int main(int argc, char **argv) {
           "wallet_id!=x'"
           "2c00000000000000000000000000000000000000000000000000000000000000';");
       Fails([&] { (void)archive.List(p1.next, 1); });
+      Fails([&] { (void)archive.CaptureCurrent(keys.ExportFullViewingKey(),20001); });
+      Require(!sqlite3_get_autocommit(db));
       Sql(db, "ROLLBACK;");
       Require(archive.List(p1.next, 1).entries.size() == 1);
+      Sql(db,"BEGIN IMMEDIATE;");
+      Require(archive.CaptureCurrent(keys.ExportFullViewingKey(),20001).archive.size()==2);
+      Sql(db,"ROLLBACK;");
+      std::cout<<"PASS archive capture missing late predecessor refuses complete result\n";
     }
     Require(sqlite3_close(db) == SQLITE_OK);
     // A pre-proof conflict can later be disconnected. Completing the SAME

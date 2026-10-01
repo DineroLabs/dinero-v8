@@ -131,8 +131,12 @@ if(TARGET dinero_chainstate)
   endif()
   add_library(dinero_orchard_wallet_scan STATIC "${ORCHARD_HOST_ROOT}/src/wallet/orchard_scan_state.cpp")
   target_link_libraries(dinero_orchard_wallet_scan PUBLIC dinero_orchard_block_reader dinero_orchard_transparent dinero_orchard_wallet_storage)
+  # Metadata decoding needs authenticated operation bodies, not daemon/service
+  # or scan restoration. Ordinary reservation readers can link this boundary.
+  add_library(dinero_orchard_account_metadata STATIC "${ORCHARD_HOST_ROOT}/src/wallet/orchard_account_metadata.cpp")
+  target_link_libraries(dinero_orchard_account_metadata PUBLIC dinero_orchard_operation_queue)
   add_library(dinero_orchard_wallet_account STATIC "${ORCHARD_HOST_ROOT}/src/wallet/orchard_account_state.cpp")
-  target_link_libraries(dinero_orchard_wallet_account PUBLIC dinero_orchard_wallet_scan dinero_orchard_operation_queue)
+  target_link_libraries(dinero_orchard_wallet_account PUBLIC dinero_orchard_wallet_scan dinero_orchard_account_metadata)
   add_library(dinero_orchard_header STATIC "${ORCHARD_HOST_ROOT}/src/consensus/orchard_header.cpp")
   target_link_libraries(dinero_orchard_header PUBLIC dinero_orchard_transparent dinero_consensus)
   add_library(dinero_orchard_runtime_reader STATIC
@@ -197,7 +201,7 @@ if(TARGET dinero_chainstate)
   target_include_directories(dinero_orchard_index_delivery PRIVATE "${ORCHARD_HOST_ROOT}/src")
   # WalletManager references ChainDB/BlockStorage even in the account-only
   # executable. Keep its archive before the chainstate provider for GNU ld.
-  target_link_libraries(dinero_orchard_index_delivery PUBLIC dinero_wallet dinero_orchard_account_replay dinero_orchard_chainstate_write dinero_orchard_operation_archive dinero_orchard_wallet_account sqlite3 dinero_orchard_proof_jobs)
+  target_link_libraries(dinero_orchard_index_delivery PUBLIC dinero_wallet dinero_orchard_account_replay dinero_orchard_chainstate_write dinero_orchard_operation_archive dinero_orchard_wallet_account sqlite3 dinero_orchard_proof_jobs dinero_orchard_ownership_inventory)
   if(TARGET test_assumeutxo_replay)
     # The service's reader definition is source-local. Bind the projection
     # tests to the actual optional implementation rather than inheriting it.
@@ -211,8 +215,12 @@ if(TARGET dinero_chainstate)
   if(TARGET dinero_core)
     target_link_libraries(dinero_core PUBLIC dinero_orchard_chainstate_write)
   endif()
+  add_library(dinero_orchard_archive_reader STATIC "${ORCHARD_HOST_ROOT}/src/wallet/orchard_archive_reader.cpp")
+  target_link_libraries(dinero_orchard_archive_reader PUBLIC dinero_orchard_account_metadata)
+  add_library(dinero_orchard_ownership_inventory STATIC "${ORCHARD_HOST_ROOT}/src/wallet/orchard_ownership_inventory.cpp")
+  target_link_libraries(dinero_orchard_ownership_inventory PUBLIC dinero_wallet_catalog dinero_orchard_archive_reader)
   add_library(dinero_orchard_operation_archive STATIC "${ORCHARD_HOST_ROOT}/src/wallet/orchard_operation_archive.cpp")
-  target_link_libraries(dinero_orchard_operation_archive PUBLIC dinero_orchard_wallet_account)
+  target_link_libraries(dinero_orchard_operation_archive PUBLIC dinero_orchard_wallet_account dinero_orchard_archive_reader)
   add_library(dinero_orchard_chain_restore STATIC "${ORCHARD_HOST_ROOT}/src/wallet/orchard_chain_restore.cpp")
   target_link_libraries(dinero_orchard_chain_restore PUBLIC dinero_orchard_wallet_account dinero_orchard_block_staging)
 endif()

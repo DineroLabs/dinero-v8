@@ -48,42 +48,10 @@ struct Writer {
     Raw(b);
   }
 };
-struct Reader {
-  std::span<const uint8_t> bytes;
-  std::span<const uint8_t> Raw(size_t n) {
-    Check(n <= bytes.size());
-    auto b = bytes.first(n);
-    bytes = bytes.subspan(n);
-    return b;
-  }
-  uint32_t U32() {
-    auto b = Raw(4);
-    uint32_t v = 0;
-    for (size_t i = 0; i < 4; ++i)
-      v |= uint32_t(b[i]) << (8 * i);
-    return v;
-  }
-  Hash Hash32() {
-    Hash h;
-    auto b = Raw(32);
-    std::copy(b.begin(), b.end(), h.begin());
-    return h;
-  }
-  std::span<const uint8_t> Blob() {
-    auto n = U32();
-    Check(n <= WalletSnapshotStore::kMaxStateBytes);
-    return Raw(n);
-  }
-};
 using Observation = OrchardAccountState::OperationObservation;
 using Outcome = OrchardAccountState::OperationOutcome;
 Hash HashBytes(const uint256 &value) {
   Hash h;
-  std::copy(value.begin(), value.end(), h.begin());
-  return h;
-}
-uint256 HashValue(const Hash &value) {
-  uint256 h;
   std::copy(value.begin(), value.end(), h.begin());
   return h;
 }
@@ -165,23 +133,15 @@ private:
   std::map<Hash, Spender> nullifiers_;
 };
 } // namespace
-struct OrchardAccountState::Data {
+struct OrchardAccountState::Data : OrchardAccountMetadata {
   SigningDomain domain;
   FullViewingKeyBytes fvk;
   uint32_t activation;
   OrchardWalletScanState scan;
-  OrchardOperationQueue operations;
-  std::map<Hash, Observation> observations;
-  ArchiveCheckpoint archive;
-  DeliveryCheckpoint delivery;
-  uint64_t parent_snapshot_revision = 0;
-  std::array<DiversifierIndex, 2> next{};
-  std::array<bool, 2> exhausted{};
   Data(SigningDomain d, const FullViewingKeyBytes &f, uint32_t a,
        const uint256 &parent)
-      : domain(d), fvk(f), activation(a),
-        scan(OrchardWalletScanState::Begin(d, f, a, parent)),
-        operations(OrchardOperationQueue::Empty(d)) {}
+      : OrchardAccountMetadata(d), domain(d), fvk(f), activation(a),
+        scan(OrchardWalletScanState::Begin(d, f, a, parent)) {}
   ~Data() { OPENSSL_cleanse(fvk.data(), fvk.size()); }
 };
 OrchardAccountState OrchardAccountState::Begin(SigningDomain domain,
@@ -436,87 +396,15 @@ std::shared_ptr<OrchardAccountState::Data> OrchardAccountState::ReadMetadata(
     const WalletStateBytes &bytes, SigningDomain domain,
     const FullViewingKeyBytes &fvk, uint32_t activation, const uint256 &parent,
     std::span<const uint8_t> &scan) {
+  auto metadata = OrchardAccountMetadata::Read(bytes, domain, fvk, activation, scan);
   auto state = std::make_shared<Data>(domain, fvk, activation, parent);
-  Reader r{bytes.Bytes()};
-  auto m = r.Raw(8);
-  Check(std::equal(m.begin(), m.begin() + 7, magic.begin()) &&
-        (m[7] >= '1' && m[7] <= '6'));
-  const bool has_observations = m[7] >= '2';
-  const bool has_archive = m[7] >= '3';
-  const bool has_delivery = m[7] >= '4';
-  Check(r.Raw(1)[0] == domain.network_code &&
-        r.Hash32() == domain.genesis_wire && r.U32() == domain.branch_id &&
-        r.U32() == activation && r.Hash32() == Identity(fvk));
-  for (size_t s = 0; s < 2; ++s) {
-    auto b = r.Raw(11);
-    std::copy(b.begin(), b.end(), state->next[s].begin());
-    auto exhausted = r.Raw(1)[0];
-    Check(exhausted <= 1);
-    state->exhausted[s] = exhausted;
-    if (exhausted)
-      Check(
-          std::all_of(b.begin(), b.end(), [](uint8_t v) { return v == 255; }));
-  }
-  scan = r.Blob();
-  auto operations = r.Blob();
-  // Parse the bounded observation section before expensive proof restore.
-  if (has_observations) {
-    const auto count = r.U32();
-    Check(count <= OrchardOperationQueue::kMaxPending &&
-          count <= r.bytes.size() / 101);
-    Hash previous{};
-    for (uint32_t i = 0; i < count; ++i) {
-      const auto id = r.Hash32();
-      Check(id > previous);
-      previous = id;
-      const auto outcome = r.Raw(1)[0];
-      Check(outcome == 1 || outcome == 2);
-      const auto height = r.U32();
-      const auto block = HashValue(r.Hash32());
-      const auto txid = r.Hash32();
-      Check(height > 0 && (height >= activation || (m[7] >= '5' && outcome == 2)) &&
-            !block.IsNull() && txid != Hash{});
-      state->observations.emplace(
-          id, Observation{static_cast<Outcome>(outcome), height, block, txid});
-    }
-  }
-  if (has_archive) {
-    const uint64_t low = r.U32(), high = r.U32();
-    state->archive.count = low | (high << 32);
-    state->archive.head = r.Hash32();
-    Check((state->archive.count == 0) == (state->archive.head == Hash{}));
-  }
-  if (has_delivery) {
-    const uint64_t low = r.U32(), high = r.U32();
-    state->delivery.sequence = low | (high << 32);
-    state->delivery.digest = HashValue(r.Hash32());
-    Check((state->delivery.sequence == 0) == state->delivery.digest.IsNull());
-  }
-  if (m[7] >= '6') {
-    const uint64_t low = r.U32(), high = r.U32();
-    state->parent_snapshot_revision = low | (high << 32);
-    Check(state->parent_snapshot_revision && state->delivery.sequence);
-  }
-  Check(r.bytes.empty());
-  state->operations =
-      OrchardOperationQueue::Restore(WalletStateBytes(operations), domain);
-  for (const auto &[id, observation] : state->observations) {
-    const auto found = state->operations.Entries().find(id);
-    Check(found != state->operations.Entries().end());
-    if (observation.outcome == Outcome::Confirmed) {
-      Check(
-          found->second.phase == OrchardOperationQueue::Phase::Ready &&
-          TransactionEnvelope::DecodeExact(found->second.transaction).Txid() ==
-              observation.transaction_id);
-    }
-  }
+  static_cast<OrchardAccountMetadata &>(*state) = std::move(metadata);
   return state;
 }
 OrchardAccountState::DeliveryCheckpoint OrchardAccountState::ReadDeliveryMetadata(
     const WalletStateBytes& bytes,SigningDomain domain,const FullViewingKeyBytes& fvk,
-    uint32_t activation,const uint256& origin) {
-  std::span<const uint8_t> scan;
-  return ReadMetadata(bytes,domain,fvk,activation,origin,scan)->delivery;
+    uint32_t activation,const uint256&) {
+  return OrchardAccountMetadata::Read(bytes,domain,fvk,activation).Delivery();
 }
 OrchardAccountState OrchardAccountState::Restore(
     const WalletStateBytes &bytes, SigningDomain domain,

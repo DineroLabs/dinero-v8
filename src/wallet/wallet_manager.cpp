@@ -2,6 +2,7 @@
 #include "wallet/selected_history.h"
 #include "wallet/unsigned_tx_builder.h"
 #include <climits>
+#include <cstring>
 #include "wallet/wallet_manager.h"
 #include "consensus/coin_type.h"
 #include "consensus/subsidy.h"   // For ConsensusSubsidy::UNA_PER_DIN
@@ -3762,6 +3763,156 @@ std::optional<PendingPayment> WalletManager::DatabaseLease::FindPaymentRequest(
     return result;
 }
 
+namespace {
+
+// The normal history trigger must still invalidate arbitrary history changes.
+// Only StagePayment may preserve an existing receipt across its exact typed
+// unconfirmed append. The comparison covers all present main-database user
+// tables and schema, including key/account/archive owners. It cannot establish
+// missing history or turn an absent/invalid receipt into a recovery baseline.
+class PendingPaymentBaseline {
+    using Hash=std::array<unsigned char,SHA256_DIGEST_LENGTH>;
+    using Snapshot=std::map<std::string,std::vector<Hash>>;
+    sqlite3* db_;
+    std::optional<std::string> receipt_;
+    Snapshot before_;
+    static constexpr size_t kMaxRows=1000000,kMaxBytes=64*1024*1024;
+    static void Require(bool ok) {
+        if(!ok)throw std::runtime_error("Pending payment baseline changed or unavailable");
+    }
+    static std::string Text(sqlite3_stmt* q,int c) {
+        Require(sqlite3_column_type(q,c)==SQLITE_TEXT);
+        const auto* p=static_cast<const char*>(sqlite3_column_blob(q,c));
+        const auto n=sqlite3_column_bytes(q,c);Require(n>=0&&(p||!n));
+        return n?std::string(p,n):std::string();
+    }
+    static std::string Quote(const std::string& name) {
+        Require(!name.empty()&&name.find('\0')==std::string::npos);
+        std::string q="\"";for(char c:name){q+=c;if(c=='\"')q+=c;}return q+'\"';
+    }
+    static void Bytes(EVP_MD_CTX* out,const void* data,size_t size) {
+        Require(!size||EVP_DigestUpdate(out,data,size)==1);
+    }
+    static void Number(EVP_MD_CTX* out,uint64_t value) {
+        std::array<uint8_t,8> bytes{};for(unsigned n=0;n<8;++n)bytes[n]=uint8_t(value>>(n*8));Bytes(out,bytes.data(),bytes.size());
+    }
+    static void Field(EVP_MD_CTX* out,sqlite3_stmt* q,int c,size_t& budget) {
+        const int type=sqlite3_column_type(q,c);Require(budget>=9);budget-=9;const auto tag=uint8_t(type);Bytes(out,&tag,1);
+        if(type==SQLITE_NULL){Number(out,0);return;}
+        if(type==SQLITE_INTEGER){Number(out,static_cast<uint64_t>(sqlite3_column_int64(q,c)));return;}
+        if(type==SQLITE_FLOAT){const double value=sqlite3_column_double(q,c);uint64_t bits;
+            static_assert(sizeof(bits)==sizeof(value));std::memcpy(&bits,&value,sizeof(bits));Number(out,bits);return;}
+        Require(type==SQLITE_TEXT||type==SQLITE_BLOB);
+        const auto* data=static_cast<const char*>(sqlite3_column_blob(q,c));const auto size=sqlite3_column_bytes(q,c);
+        Require(size>=0&&(data||!size)&&size_t(size)<=budget);budget-=size_t(size);Number(out,uint64_t(size));Bytes(out,data,size_t(size));
+    }
+    Snapshot Capture(const std::string& appended={}) const {
+        Require(!sqlite3_get_autocommit(db_));Snapshot result;size_t rows=0,budget=kMaxBytes;
+        const auto read=[&](const std::string& key,const std::string& sql) {
+            IssuedStatement q(db_,sql.c_str());
+            if(key=="transactions"&&!appended.empty())q.Text(1,appended);
+            int rc;auto& hashes=result[key];
+            while((rc=sqlite3_step(q.value.get()))==SQLITE_ROW) {
+                Require(++rows<=kMaxRows);
+                // Hash SQLite-owned fields directly: no plaintext row/key copy
+                // or additional secret cache is allocated by the comparison.
+                std::unique_ptr<EVP_MD_CTX,decltype(&EVP_MD_CTX_free)> row(EVP_MD_CTX_new(),EVP_MD_CTX_free);
+                Require(row&&EVP_DigestInit_ex(row.get(),EVP_sha256(),nullptr)==1);
+                int id=-1;
+                for(int c=0;c<sqlite3_column_count(q.value.get());++c) {
+                    const auto* name=sqlite3_column_name(q.value.get(),c);Require(name);
+                    if(std::string_view(name)=="id")id=c;
+                }
+                const bool owner=key=="wallet_meta"&&id>=0&&sqlite3_column_type(q.value.get(),id)==SQLITE_INTEGER&&sqlite3_column_int64(q.value.get(),id)==1;
+                for(int c=0;c<sqlite3_column_count(q.value.get());++c) {
+                    const auto* column=sqlite3_column_name(q.value.get(),c);Require(column);
+                    const std::string_view name=column;
+                    if(owner&&(name=="pending_payment_owner"||name=="runtime_ordinary_receipt"||name=="runtime_ordinary_invalid"))continue;
+                    Field(row.get(),q.value.get(),c,budget);
+                }
+                Hash hash{};unsigned length=0;Require(EVP_DigestFinal_ex(row.get(),hash.data(),&length)==1&&length==hash.size());
+                hashes.push_back(hash);
+            }
+            Require(rc==SQLITE_DONE);std::sort(hashes.begin(),hashes.end());
+        };
+        read("#schema","SELECT type,name,tbl_name,sql FROM sqlite_master WHERE substr(name,1,7)<>'sqlite_'");
+        std::vector<std::string> tables;
+        {IssuedStatement q(db_,"SELECT name FROM sqlite_master WHERE type='table' AND substr(name,1,7)<>'sqlite_' ORDER BY name");int rc;
+         while((rc=sqlite3_step(q.value.get()))==SQLITE_ROW){Require(tables.size()<4096);tables.push_back(Text(q.value.get(),0));}
+         Require(rc==SQLITE_DONE);}
+        for(const auto& table:tables) {
+            Require(table!="#schema");std::string sql="SELECT * FROM "+Quote(table);
+            if(table=="transactions"&&!appended.empty())sql+=" WHERE txid<>? OR txid IS NULL";
+            read(table,sql);
+        }
+        return result;
+    }
+    void Guards() const {
+        for(const auto* table:{"utxos","transactions","watch_scripts","addresses","tip","sync_meta"})for(const auto* action:{"INSERT","UPDATE","DELETE"}) {
+            const auto name=std::string("runtime_ordinary_")+table+"_"+action;
+            const auto expected="CREATE TRIGGER "+name+" AFTER "+action+" ON "+table+
+                " BEGIN UPDATE wallet_meta SET runtime_ordinary_invalid=1,runtime_ordinary_receipt=NULL WHERE id=1 AND runtime_ordinary_receipt IS NOT NULL; END";
+            IssuedStatement q(db_,"SELECT sql FROM sqlite_master WHERE type='trigger' AND name=?");q.Text(1,name);
+            Require(sqlite3_step(q.value.get())==SQLITE_ROW&&Text(q.value.get(),0)==expected);q.Done();
+        }
+    }
+public:
+    // Called after the optional pending column has been installed, inside the
+    // existing FULL payment transaction. No caller-owned transaction is closed.
+    explicit PendingPaymentBaseline(sqlite3* db):db_(db) {
+        Require(db_&&!sqlite3_get_autocommit(db_));unsigned found=0;
+        {IssuedStatement q(db_,"PRAGMA table_info(wallet_meta)");int rc;
+         while((rc=sqlite3_step(q.value.get()))==SQLITE_ROW){const auto name=Text(q.value.get(),1);
+            if(name=="runtime_ordinary_receipt")found|=1;if(name=="runtime_ordinary_invalid")found|=2;}
+         Require(rc==SQLITE_DONE&&(found==0||found==3));}
+        if(!found)return;
+        IssuedStatement q(db_,"SELECT runtime_ordinary_receipt,runtime_ordinary_invalid FROM wallet_meta WHERE id=1");
+        Require(sqlite3_step(q.value.get())==SQLITE_ROW&&sqlite3_column_type(q.value.get(),1)==SQLITE_INTEGER);
+        const auto invalid=sqlite3_column_int64(q.value.get(),1);Require(invalid==0||invalid==1);
+        if(!invalid&&sqlite3_column_type(q.value.get(),0)!=SQLITE_NULL) {
+            const auto* data=static_cast<const char*>(sqlite3_column_blob(q.value.get(),0));const int n=sqlite3_column_bytes(q.value.get(),0);
+            Require(sqlite3_column_type(q.value.get(),0)==SQLITE_BLOB&&data&&n>0&&n<=2048);receipt_=std::string(data,n);
+        }
+        q.Done();if(receipt_){
+            Guards();std::set<std::string> columns;IssuedStatement schema(db_,"PRAGMA table_info(transactions)");int rc;
+            while((rc=sqlite3_step(schema.value.get()))==SQLITE_ROW)Require(columns.insert(Text(schema.value.get(),1)).second);
+            Require(rc==SQLITE_DONE&&columns==std::set<std::string>{"id","wallet_id","txid","address","amount","confirmations","category","label","time","is_coinbase","height"});
+            before_=Capture();
+        }
+    }
+    void Finish(const PendingPayment& payment,int wallet_id,const std::string& sealed) {
+        if(!receipt_)return;
+        const auto check_append=[&]() {
+            IssuedStatement q(db_,"SELECT wallet_id,address,amount,confirmations,category,label,time,is_coinbase,height,id FROM transactions WHERE txid=?");q.Text(1,payment.txid);
+            Require(sqlite3_step(q.value.get())==SQLITE_ROW);
+            const auto integer=[&](int c,int64_t value){return sqlite3_column_type(q.value.get(),c)==SQLITE_INTEGER&&sqlite3_column_int64(q.value.get(),c)==value;};
+            const auto spent=PaymentSum(PaymentIntentTotal(payment.intent),payment.fee_una);
+            Require(integer(0,wallet_id)&&Text(q.value.get(),1)==payment.intent.address&&
+                (sqlite3_column_type(q.value.get(),2)==SQLITE_FLOAT||sqlite3_column_type(q.value.get(),2)==SQLITE_INTEGER)&&
+                sqlite3_column_double(q.value.get(),2)==-static_cast<double>(spent)/1e8&&integer(3,0)&&
+                Text(q.value.get(),4)=="send"&&Text(q.value.get(),5)==payment.intent.label&&integer(6,payment.created_at)&&integer(7,0)&&integer(8,0)&&
+                sqlite3_column_type(q.value.get(),9)==SQLITE_INTEGER&&sqlite3_column_int64(q.value.get(),9)>0);q.Done();
+            IssuedStatement p(db_,"SELECT pending_payment_owner FROM wallet_meta WHERE id=1");
+            Require(sqlite3_step(p.value.get())==SQLITE_ROW&&sqlite3_column_type(p.value.get(),0)==SQLITE_BLOB);
+            const auto* data=static_cast<const char*>(sqlite3_column_blob(p.value.get(),0));const int n=sqlite3_column_bytes(p.value.get(),0);
+            Require(data&&n>=0&&std::string_view(data,size_t(n))==sealed);p.Done();
+        };
+        Guards();check_append();Require(Capture(payment.txid)==before_);
+        // Preserve this exact existing receipt, not a newly computed cursor or
+        // readiness claim. Triggers remain enabled throughout the transition.
+        IssuedStatement save(db_,"UPDATE wallet_meta SET runtime_ordinary_receipt=?,runtime_ordinary_invalid=0 WHERE id=1");
+        save.Blob(1,receipt_->data(),int(receipt_->size()));save.Done(true);
+        check_append();Require(Capture(payment.txid)==before_);
+        IssuedStatement receipt(db_,"SELECT runtime_ordinary_receipt,runtime_ordinary_invalid FROM wallet_meta WHERE id=1");
+        Require(sqlite3_step(receipt.value.get())==SQLITE_ROW&&sqlite3_column_type(receipt.value.get(),0)==SQLITE_BLOB&&
+            sqlite3_column_type(receipt.value.get(),1)==SQLITE_INTEGER&&sqlite3_column_int64(receipt.value.get(),1)==0);
+        const auto* data=static_cast<const char*>(sqlite3_column_blob(receipt.value.get(),0));const int n=sqlite3_column_bytes(receipt.value.get(),0);
+        Require(data&&n>=0&&std::string_view(data,size_t(n))==*receipt_);receipt.Done();
+    }
+};
+
+} // namespace
+
 void WalletManager::DatabaseLease::StagePayment(const RecoverySeed& pin,const UnsignedTransaction& input,
                                                const Transaction& signed_tx,const PendingPaymentIntent& intent) {
     if(thread_!=std::this_thread::get_id() || pin.thread_!=thread_ || &pin.owner_!=&owner_ ||
@@ -3820,12 +3971,17 @@ void WalletManager::DatabaseLease::StagePayment(const RecoverySeed& pin,const Un
     PaymentSecret plain{EncodePayments(PaymentIdentity(db_),records)},key{PaymentKey(pin.Bytes())};
     const auto sealed=owner_.encryptData(plain.value,key.value);
     if(!installed)IssuanceCheck(db_,sqlite3_exec(db_,"ALTER TABLE wallet_meta ADD COLUMN pending_payment_owner BLOB",nullptr,nullptr,nullptr),SQLITE_OK);
+    // A retained payment adds a new history row; an existing row is never an
+    // implicit replacement or authorization to preserve a recovery receipt.
+    {IssuedStatement existing(db_,"SELECT 1 FROM transactions WHERE txid=?");existing.Text(1,p.txid);existing.Done();}
+    PendingPaymentBaseline baseline(db_);
     IssuedStatement save(db_,"UPDATE wallet_meta SET pending_payment_owner=? WHERE id=1");save.Blob(1,sealed.data(),int(sealed.size()));save.Done(true);
     IssuedStatement history(db_,"INSERT INTO transactions(wallet_id,txid,address,amount,confirmations,category,label,time,is_coinbase,height) VALUES(?,?,?,?,0,'send',?,?,0,0)");
     history.Int(1,owner_.current_wallet_id_);history.Text(2,p.txid);history.Text(3,p.intent.address);
     const auto spent=PaymentSum(PaymentIntentTotal(p.intent),p.fee_una);
     IssuanceCheck(db_,sqlite3_bind_double(history.value.get(),4,-static_cast<double>(spent)/1e8),SQLITE_OK);
     history.Text(5,p.intent.label);history.Int(6,p.created_at);history.Done(true);
+    baseline.Finish(p,owner_.current_wallet_id_,sealed);
     transaction.Commit();
 }
 

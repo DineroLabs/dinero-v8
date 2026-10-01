@@ -1202,6 +1202,66 @@ jobs:
           assert '100% tests passed, 0 tests failed out of 1' in log
           PYCODE
 
+      - name: Require complete authenticated Orchard ownership inventory
+        run: |
+          cmake --build build-orchard-root --target test_assumeutxo_replay --parallel 4 -- -k 0
+          ctest --test-dir build-orchard-root -R '^OrchardOwnershipInventory$' --show-only=json-v1 > orchard-ownership-inventory-registration.json
+          python3 - <<'PYCODE'
+          import json
+          tests=json.load(open('orchard-ownership-inventory-registration.json'))['tests']
+          assert len(tests)==1 and tests[0]['name']=='OrchardOwnershipInventory'
+          props={p['name']:p['value'] for p in tests[0].get('properties',[])}
+          assert not props.get('DISABLED') and props['TIMEOUT']==180
+          PYCODE
+          ctest --test-dir build-orchard-root -R '^OrchardOwnershipInventory$' --verbose --no-tests=error --output-log orchard-ownership-inventory-execution.log
+          python3 - <<'PYCODE'
+          from pathlib import Path
+          log=Path('orchard-ownership-inventory-execution.log').read_text()
+          for case in ['GeneratedEmptyAndNonconsecutiveEncryptedReopen', 'MissingDeclaredForeignAndMalformedRowsRefuseWholeRead', 'AuthenticatedMalformedRetainedRefusesSelectedCatalogCaller', 'CurrentTransparentInputsAndCrossAccountConflict', 'ReadErrorsAndInterruptedTerminalStepPreserveCaller']:
+              assert log.count('[       OK ] OrchardOwnershipInventory.'+case+' (')==1,case
+          assert '100% tests passed, 0 tests failed out of 1' in log
+          PYCODE
+
+      - name: Capture authenticated current account and reached archive owners
+        run: |
+          cmake --build build-orchard-root --target test_orchard_operation_archive --parallel 4 -- -k 0
+          ctest --test-dir build-orchard-root -R '^OrchardOperationArchive$' --show-only=json-v1 > orchard-archive-reader-inventory.json
+          python3 - <<'PYCODE'
+          import json
+          tests=json.load(open('orchard-archive-reader-inventory.json'))['tests']
+          assert len(tests)==1 and tests[0]['name']=='OrchardOperationArchive'
+          props={p['name']:p['value'] for p in tests[0].get('properties',[])}
+          assert not props.get('DISABLED') and props['TIMEOUT']==600
+          PYCODE
+          ctest --test-dir build-orchard-root -R '^OrchardOperationArchive$' --verbose --no-tests=error --output-log orchard-archive-reader-execution.log
+          python3 - <<'PYCODE'
+          from pathlib import Path
+          log=Path('orchard-archive-reader-execution.log').read_text()
+          for marker in ['PASS archive capture current owner and complete predecessor chain', 'PASS archive capture wrong owners and denied reads preserve transaction', 'PASS archive capture missing late predecessor refuses complete result', 'PASS retained archive reader exact record and caller ownership']:
+              assert log.count(marker)==1,marker
+          assert '100% tests passed, 0 tests failed out of 1' in log
+          PYCODE
+
+      - name: Check authenticated account metadata without scan restoration
+        run: |
+          cmake --build build-orchard-root --target test_orchard_wallet_account --parallel 4 -- -k 0
+          ctest --test-dir build-orchard-root -R '^OrchardWalletAccount$' --show-only=json-v1 > orchard-account-metadata-inventory.json
+          python3 - <<'PYCODE'
+          import json
+          tests=json.load(open('orchard-account-metadata-inventory.json'))['tests']
+          assert len(tests)==1 and tests[0]['name']=='OrchardWalletAccount'
+          props={p['name']:p['value'] for p in tests[0].get('properties',[])}
+          assert not props.get('DISABLED') and props['TIMEOUT']==600
+          PYCODE
+          ctest --test-dir build-orchard-root -R '^OrchardWalletAccount$' --verbose --no-tests=error --output-log orchard-account-metadata-execution.log
+          python3 - <<'PYCODE'
+          from pathlib import Path
+          log=Path('orchard-account-metadata-execution.log').read_text()
+          for marker in ['PASS account metadata exact reservations and encrypted reopen', 'PASS account metadata wrong owners and incomplete framing refuse', 'PASS account metadata legacy ownership retained without scan reset']:
+              assert log.count(marker)==1,marker
+          assert '100% tests passed, 0 tests failed out of 1' in log
+          PYCODE
+
       - name: Complete owned Orchard requests before canonical admission and relay
         run: |
           cmake --build build-orchard-root --target test_assumeutxo_replay --parallel 4 -- -k 0
@@ -1262,6 +1322,26 @@ jobs:
           assert '100% tests passed, 0 tests failed out of 1' in log
           PYCODE
 
+      - name: Preserve ordinary baseline across typed pending payment append
+        run: |
+          ctest --test-dir build-orchard-root -R '^(WalletPendingBaseline|WalletPendingCanonicalBaseline)$' --show-only=json-v1 > orchard-pending-baseline-inventory.json
+          python3 - <<'PY_CHECK'
+          import json
+          tests=json.load(open('orchard-pending-baseline-inventory.json'))['tests']
+          assert sorted(t['name'] for t in tests)==['WalletPendingBaseline','WalletPendingCanonicalBaseline']
+          for t in tests:
+              props={p['name']:p['value'] for p in t.get('properties',[])}
+              assert not props.get('DISABLED',False)
+              assert props['TIMEOUT']==(120 if t['name']=='WalletPendingBaseline' else 180)
+          PY_CHECK
+          ctest --test-dir build-orchard-root -R '^(WalletPendingBaseline|WalletPendingCanonicalBaseline)$' --verbose --no-tests=error --output-log orchard-pending-baseline-execution.log
+          python3 - <<'PY_CHECK'
+          import re
+          log=open('orchard-pending-baseline-execution.log').read()
+          expected=['WalletPendingBaseline.TypedAppendPreservesRecordedBytesAndArbitraryHistoryStillInvalidates','WalletPendingBaseline.UnexpectedProtectedRowsAndNewHistoryChangesRollbackWholeAppend','WalletPendingBaseline.RequiredReadsTerminalCompletionAndReceiptWriteRefuseAtomically','WalletPendingBaseline.CommitRefusalMissingAndInvalidReceiptsNeverBecomeBaselines','WalletPendingCanonicalBaseline.ActualAdoptionSignedPaymentAndReopenKeepExactProgress']
+          actual=re.findall(r'\[       OK \] (WalletPending(?:Canonical)?Baseline\.\w+) \(',log)
+          assert sorted(actual)==sorted(expected)
+          PY_CHECK
       - name: Preserve exact durable Orchard requests across retries and archives
         run: |
           cmake --build build-orchard-root --target test_assumeutxo_replay --parallel 4 -- -k 0
@@ -3975,6 +4055,12 @@ jobs:
             orchard-proof-retention-execution.log
             orchard-proof-capacity-inventory.json
             orchard-proof-capacity-execution.log
+            orchard-ownership-inventory-registration.json
+            orchard-ownership-inventory-execution.log
+            orchard-archive-reader-inventory.json
+            orchard-archive-reader-execution.log
+            orchard-account-metadata-inventory.json
+            orchard-account-metadata-execution.log
             orchard-finish-rpc-inventory.json
             orchard-finish-rpc-execution.log
             orchard-spend-rpc-inventory.json
@@ -4153,6 +4239,8 @@ jobs:
             orchard-batch-payment-execution.log
             orchard-reservation-balance-inventory.json
             orchard-reservation-balance-execution.log
+            orchard-pending-baseline-inventory.json
+            orchard-pending-baseline-execution.log
             orchard-pending-payment-inventory.json
             orchard-pending-payment-execution.log
             orchard-pool-config-owner-inventory.json

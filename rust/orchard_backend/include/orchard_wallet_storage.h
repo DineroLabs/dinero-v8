@@ -31,6 +31,8 @@ struct LoadedWalletState { uint64_t revision; WalletStateBytes state; };
 // and owns its lifetime. Never opens a datadir, commits, rolls back the outer
 // transaction or publishes memory. Require durable SQLite mode and an outer
 // transaction for schema/write calls. Seed is from the unlocked wallet.
+// Existing encrypted snapshots may be authenticated on a read-only main
+// connection; every schema/write call still requires a writable connection.
 class WalletSnapshotStore {
 public:
     static constexpr size_t kMaxStateBytes=16*1024*1024;
