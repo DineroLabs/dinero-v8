@@ -280,14 +280,14 @@ private:
 #endif
   
   // Overview tab
-  QLabel* lblHeight_;
-  QLabel* lblHeaders_;
+  class InfoRow* lblHeight_;
+  class InfoRow* lblHeaders_;
   QLabel* lblSyncProgress_;
-  QLabel* lblConnections_;
-  QLabel* lblMempool_;  // Overview mempool stats
-  QLabel* lblPhase_;
-  QLabel* lblSupply_;
-  QLabel* lblReward_;
+  class InfoRow* lblConnections_;
+  class InfoRow* lblMempool_;  // Overview mempool stats (kept for metrics export; card shows Mempool)
+  class InfoRow* lblPhase_;
+  class InfoRow* lblSupply_;
+  class InfoRow* lblReward_;
 
   // Monitoring Dashboard widgets (Overview bottom half)
   dinero::qt::OverviewConnectivityCard* overviewConnectivityCard_ = nullptr;

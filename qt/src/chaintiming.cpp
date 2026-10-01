@@ -10,6 +10,11 @@ QString formatApproxSeconds(qint64 seconds) {
         return remMin ? QStringLiteral("~%1 h %2 min").arg(hours).arg(remMin)
                       : QStringLiteral("~%1 h").arg(hours);
     const qint64 days = hours / 24, remH = hours % 24;
+    if (days >= 365) {
+        const double years = double(seconds) / 31'557'600.0;  // Julian year
+        const QString value = QString::number(years, 'f', 1);
+        return value == QLatin1String("1.0") ? QStringLiteral("~1.0 year") : QStringLiteral("~%1 years").arg(value);
+    }
     const QString d = days == 1 ? QStringLiteral("1 day") : QStringLiteral("%1 days").arg(days);
     return remH ? QStringLiteral("~%1 %2 h").arg(d).arg(remH) : QStringLiteral("~%1").arg(d);
 }

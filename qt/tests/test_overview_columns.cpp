@@ -8,6 +8,8 @@
 #include <QTcpServer>
 #include "mainwindow.h"
 #include "rpcclient.h"
+#include "inforow.h"
+#include <QMap>
 #include <QLabel>
 #include <QLineEdit>
 #include <QTextEdit>
@@ -213,6 +215,30 @@ private Q_SLOTS:
         QVERIFY2(alerts->height() >= 3 * alerts->fontMetrics().lineSpacing(),
                  qPrintable(QString("alerts list %1 px for 3 lines").arg(alerts->height())));
         QVERIFY2(box->height() <= 220, qPrintable(QString("alerts box grew to %1 px").arg(box->height())));
+    }
+    void networkInfoReadsAsAList() {
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, dir.path());
+        MainWindow window(dinero::qt::DaemonBootstrapOwner::ApplicationMain);
+        auto* rpc = window.findChild<RpcClient*>();
+        QVERIFY(rpc);
+        QGroupBox* info = nullptr;
+        for (auto* g : window.findChildren<QGroupBox*>()) if (g->title() == "Network Info") info = g;
+        QVERIFY(info);
+        Q_EMIT rpc->rpcResult("blockchain.getinfo", QJsonObject{{"blocks", 121208}, {"headers", 121208}, {"chain", "main"}});
+        Q_EMIT rpc->rpcResult("economics.getinfo", QJsonObject{{"current_halving_epoch", 0}, {"halving_interval", 1314000},
+                                                                {"block_time_seconds", 120}, {"next_block_reward_din", "100.00000000"},
+                                                                {"current_supply_din", "12120900"}});
+        QMap<QString, InfoRow*> rows;
+        for (auto* r : info->findChildren<InfoRow*>()) if (!r->isHidden() || true) rows[r->nameText()] = r;
+        QVERIFY2(rows.contains("Height"), "Height row");
+        QCOMPARE(rows["Height"]->valueText(), QString("121,208"));
+        QVERIFY2(rows.contains("Next halving"), "Next halving row");
+        QCOMPARE(rows["Next halving"]->valueText(), QString("block 1,314,001 · ~4.5 years"));
+        // The Mempool card already shows mempool size; no duplicate row here.
+        for (auto* r : info->findChildren<InfoRow*>())
+            QVERIFY2(r->nameText() != "Mempool" || r->isHidden(), "duplicate Mempool row is visible");
     }
 };
 QTEST_MAIN(OverviewColumnsTest)

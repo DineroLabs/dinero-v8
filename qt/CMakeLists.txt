@@ -530,6 +530,7 @@ set(GUI_SOURCES
   src/chaintiming.cpp
   src/upgradepolicy.cpp
   src/miningrewards.cpp
+  src/inforow.cpp
   src/upgradebanner.cpp
   src/updatechecker.cpp
   src/privatecovenantwidget.cpp
@@ -1501,6 +1502,13 @@ if(BUILD_TESTING)
   target_link_libraries(test_mining_rewards PRIVATE Qt6::Core Qt6::Test)
   target_compile_definitions(test_mining_rewards PRIVATE QT_NO_KEYWORDS)
   add_test(NAME MiningRewards COMMAND test_mining_rewards)
+
+  add_executable(test_info_row tests/test_info_row.cpp src/inforow.cpp)
+  target_include_directories(test_info_row PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_link_libraries(test_info_row PRIVATE Qt6::Widgets Qt6::Test)
+  target_compile_definitions(test_info_row PRIVATE QT_NO_KEYWORDS)
+  add_test(NAME InfoRow COMMAND test_info_row)
+  set_tests_properties(InfoRow PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 30)
   set_tests_properties(MiningRewards PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 30)
   set_tests_properties(RpcReplyAlias PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 30)
 

@@ -4,6 +4,7 @@
 #include "updatechecker.h"
 #include "upgradebanner.h"
 #include "miningrewards.h"
+#include "inforow.h"
 #include "mainwindow.h"
 #include "miningsessionstatus.h"
 #include "peerheightsemantics.h"
@@ -2565,13 +2566,15 @@ void MainWindow::setupUI() {
     auto *infoLayout = new QVBoxLayout(infoGroup);
     infoGroup->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Maximum);
     
-    lblHeight_ = new QLabel("Height: -");
-    lblHeaders_ = new QLabel("Headers: -");
-    lblConnections_ = new QLabel("Connections: -");
-    lblMempool_ = new QLabel("Mempool: -");
-    lblPhase_ = new QLabel("Halving Epoch: -");
-    lblSupply_ = new QLabel("Supply: -");
-    lblReward_ = new QLabel("Next Reward: -");
+    // Name on the left, value right-aligned (InfoRow keeps "Name: value" text).
+    lblHeight_ = new InfoRow("Height: -");
+    lblHeaders_ = new InfoRow("Headers: -");
+    lblConnections_ = new InfoRow("Connections: -");
+    lblMempool_ = new InfoRow("Mempool: -");
+    lblMempool_->hide();  // the Mempool card already shows this
+    lblPhase_ = new InfoRow("Next halving: -");
+    lblSupply_ = new InfoRow("Supply: -");
+    lblReward_ = new InfoRow("Next Reward: -");
     lblSyncProgress_ = new QLabel("");
     lblSyncProgress_->setStyleSheet("QLabel { color: #cbd3dc; font-weight: 600; background: #262b32; border: 1px solid #373d46; border-radius: 6px; padding: 5px; }");
     
@@ -2579,7 +2582,6 @@ void MainWindow::setupUI() {
     infoLayout->addWidget(lblHeaders_);
     infoLayout->addWidget(lblSyncProgress_);
     infoLayout->addWidget(lblConnections_);
-    infoLayout->addWidget(lblMempool_);
     infoLayout->addWidget(lblPhase_);
     infoLayout->addWidget(lblSupply_);
     infoLayout->addWidget(lblReward_);
@@ -8658,7 +8660,14 @@ void MainWindow::updateEconomics(const QJsonObject& economics) {
   if (lblPhase_) {
     // Use halving epoch instead of non-existent "phase"
     if (economics.contains("current_halving_epoch")) {
-      lblPhase_->setText(QString("Halving Epoch: %1").arg(economics["current_halving_epoch"].toInt()));
+      // Next halving block and roughly when, at the node's block time.
+      const qint64 interval = economics.value("halving_interval").toInteger(1314000);
+      const qint64 epoch = economics["current_halving_epoch"].toInt();
+      const qint64 nextHalving = (epoch + 1) * interval + 1;  // halvings = (height - 1) / interval
+      const qint64 blocksLeft = nextHalving - qMax(0, cachedHeight_);
+      lblPhase_->setText(cachedHeight_ > 0 && blocksLeft > 0
+          ? QString("Next halving: block %1 · %2").arg(nextHalving).arg(chainTiming_.approxDuration(blocksLeft))
+          : QString("Next halving: block %1").arg(nextHalving));
     } else {
       lblPhase_->setVisible(false); // Hide if not available
     }
