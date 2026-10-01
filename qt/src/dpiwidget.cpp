@@ -228,6 +228,7 @@ void DpiWidget::setupCollectTab() {
 
     // --- Confirm you were paid ---
     auto* verifyGroup = new QGroupBox("Confirm you were paid");
+    verifyGroup->setObjectName("collectVerifyGroup");
     auto* verifyLayout = new QVBoxLayout(verifyGroup);
 
     auto* pastePrompt = new QLabel("Paste the payment package the payer sent you:");
@@ -271,7 +272,7 @@ void DpiWidget::setupCollectTab() {
     verifyLayout->addWidget(collectTierBadge_);
 
     layout->addWidget(verifyGroup);
-    layout->addStretch();
+    layout->addStretch(1);  // spare height goes below the content, not into the boxes
 
     scroll->setWidget(collectWidget);
     ScrollSupport::enableForScrollArea(scroll, collectWidget);
@@ -398,7 +399,7 @@ void DpiWidget::setupPayTab() {
         payStatusLabel_->setVisible(false);
         updateHints();
     });
-    layout->addStretch();
+    layout->addStretch(1);
 
     scroll->setWidget(payWidget);
     ScrollSupport::enableForScrollArea(scroll, payWidget);

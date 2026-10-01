@@ -161,6 +161,34 @@ private Q_SLOTS:
                      qPrintable(QString("form takes %1 of the row at %2 px").arg(share).arg(width)));
         }
     }
+
+    void spareHeightStaysBelowTheContent() {
+        RpcClient rpc;
+        DpiWidget widget(&rpc);
+        widget.resize(1440, 1400);  // much taller than the content
+        widget.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&widget));
+        QCoreApplication::processEvents();
+        auto* form = named<QWidget>(widget, "collectForm");
+        auto* card = named<QWidget>(widget, "collectInvoiceCard");
+        auto* verify = named<QWidget>(widget, "collectVerifyGroup");
+        QVERIFY(form && card && verify);
+        const int rowHint = qMax(form->sizeHint().height(), card->sizeHint().height());
+        QVERIFY2(form->height() <= rowHint + 4,
+                 qPrintable(QString("form is %1 px tall, needs %2").arg(form->height()).arg(rowHint)));
+        QVERIFY2(verify->height() <= verify->sizeHint().height() + 4,
+                 qPrintable(QString("payment check box is %1 px tall, needs %2")
+                                .arg(verify->height()).arg(verify->sizeHint().height())));
+
+        widget.findChild<QTabWidget*>()->setCurrentIndex(1);  // Pay
+        QCoreApplication::processEvents();
+        auto* payForm = named<QWidget>(widget, "payForm");
+        auto* payDetails = named<QWidget>(widget, "payDetails");
+        QVERIFY(payForm && payDetails);
+        const int payHint = qMax(payForm->sizeHint().height(), payDetails->sizeHint().height());
+        QVERIFY2(payForm->height() <= payHint + 4,
+                 qPrintable(QString("pay form is %1 px tall, needs %2").arg(payForm->height()).arg(payHint)));
+    }
 };
 QTEST_MAIN(PayCollectTest)
 #include "test_pay_collect.moc"
