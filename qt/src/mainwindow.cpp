@@ -89,6 +89,7 @@
 #include <QRegularExpressionValidator>
 #include <QInputDialog>
 #include <QHeaderView>
+#include <QButtonGroup>
 #include <QTableWidgetItem>
 #include <QGridLayout>
 #include <QFileDialog>
@@ -2544,6 +2545,9 @@ void MainWindow::setupUI() {
         auto* destination = covenants ? covenantComposerHome_ : sendComposerHome_;
         destination->addWidget(sendComposer_);
         sendComposer_->show();
+        if (cmbSendAction_) cmbSendAction_->setVisible(!covenants);
+        if (covenantKindPublic_) covenantKindPublic_->setVisible(covenants);
+        if (covenantKindPrivate_) covenantKindPrivate_->setVisible(covenants);
         const QString desired = covenants ? "public_contract" : "public_transfer";
         if (cmbSendAction_ && ((covenants && currentSendMode() != "private_contract") || (payments && (currentSendMode() == "public_contract" || currentSendMode() == "private_contract"))))
           cmbSendAction_->setCurrentIndex(cmbSendAction_->findData(desired));
@@ -3292,9 +3296,60 @@ void MainWindow::setupUI() {
     auto *contracts = new QWidget;
     auto *layout = new QVBoxLayout(contracts);
     auto* composerHost = new QWidget(contracts);
+    composerHost->setObjectName("covenantComposerHost");
     covenantComposerHome_ = new QVBoxLayout(composerHost);
     covenantComposerHome_->setContentsMargins(0, 0, 0, 0);
-    layout->addWidget(composerHost);
+
+    // Same 3:2 split and gutter as the Overview: the form on the left, a live
+    // review of what Create Contract will lock on the right.
+    constexpr int kFormStretch = 3;
+    constexpr int kReviewStretch = 2;
+    constexpr int kGutter = 12;
+    covenantReviewBox_ = new QGroupBox("Review");
+    covenantReviewBox_->setObjectName("covenantReview");
+    auto* reviewGrid = new QGridLayout(covenantReviewBox_);
+    reviewGrid->setHorizontalSpacing(12);
+    reviewGrid->setVerticalSpacing(8);
+    reviewGrid->setColumnStretch(1, 1);
+    int reviewRow = 0;
+    auto addReviewRow = [&](const QString& name, const char* objectName, QLabel** nameOut = nullptr) {
+      auto* nameLabel = new QLabel(name);
+      nameLabel->setStyleSheet("QLabel { color: #8b949e; }");
+      auto* value = new QLabel(QString::fromUtf8("\xE2\x80\x94"));
+      value->setObjectName(objectName);
+      value->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+      value->setTextInteractionFlags(Qt::TextSelectableByMouse);
+      reviewGrid->addWidget(nameLabel, reviewRow, 0);
+      reviewGrid->addWidget(value, reviewRow, 1);
+      ++reviewRow;
+      if (nameOut) *nameOut = nameLabel;
+      return value;
+    };
+    lblReviewTemplate_ = addReviewRow("Template", "covenantReviewTemplate");
+    lblReviewRecipient_ = addReviewRow("Pays to", "covenantReviewRecipient");
+    lblReviewLocked_ = addReviewRow("Locked now", "covenantReviewLocked");
+    lblReviewDelivered_ = addReviewRow("Recipient can withdraw", "covenantReviewDelivered", &lblReviewDeliveredName_);
+    lblReviewFee_ = addReviewRow("Network fee", "covenantReviewFee");
+    lblReviewTotal_ = addReviewRow("Total from your wallet", "covenantReviewTotal");
+    lblReviewTotal_->setStyleSheet("QLabel { font-weight: 600; }");
+    lblReviewRule_ = new QLabel;
+    lblReviewRule_->setObjectName("covenantReviewRule");
+    lblReviewRule_->setWordWrap(true);
+    lblReviewRule_->setStyleSheet("QLabel { color: #9fb3c8; }");
+    reviewGrid->addWidget(lblReviewRule_, reviewRow++, 0, 1, 2);
+    lblReviewStatus_ = new QLabel;
+    lblReviewStatus_->setObjectName("covenantReviewStatus");
+    lblReviewStatus_->setWordWrap(true);
+    reviewGrid->addWidget(lblReviewStatus_, reviewRow++, 0, 1, 2);
+    reviewGrid->setRowStretch(reviewRow, 1);
+
+    composerHost->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+    covenantReviewBox_->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+    auto* composeRow = new QHBoxLayout;
+    composeRow->setSpacing(kGutter);
+    composeRow->addWidget(composerHost, kFormStretch);
+    composeRow->addWidget(covenantReviewBox_, kReviewStretch);
+    layout->addLayout(composeRow);
 
     privateCovenantWidget_ = new PrivateCovenantWidget(rpc_, contracts);
     privateCovenantWidget_->hide();
@@ -3310,12 +3365,23 @@ void MainWindow::setupUI() {
     layout->addWidget(headerGroup);
 
     // Contract list table
+    lblContractsEmpty_ = new QLabel(QString::fromUtf8("No contracts yet \xE2\x80\x94 create one above."));
+    lblContractsEmpty_->setObjectName("contractsEmpty");
+    lblContractsEmpty_->setAlignment(Qt::AlignCenter);
+    lblContractsEmpty_->setStyleSheet("QLabel { color: #8b949e; padding: 24px; border: 1px dashed #3d434d; border-radius: 8px; }");
+    lblContractsEmpty_->hide();  // shown once the list has loaded and is empty
+    layout->addWidget(lblContractsEmpty_);
+
     tblContracts_ = new QTableWidget;
+    tblContracts_->setObjectName("contractsTable");
     tblContracts_->setColumnCount(6);
     tblContracts_->setHorizontalHeaderLabels({
         "Type", "Visibility", "Amount", "Created", "Status", "Actions"
     });
-    tblContracts_->horizontalHeader()->setStretchLastSection(true);
+    // Columns share the full width; Actions keeps its button's size.
+    tblContracts_->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
+    tblContracts_->horizontalHeader()->setSectionResizeMode(5, QHeaderView::ResizeToContents);
+    tblContracts_->hide();  // until the list has loaded
     tblContracts_->setSelectionBehavior(QAbstractItemView::SelectRows);
     tblContracts_->setEditTriggers(QAbstractItemView::NoEditTriggers);
     tblContracts_->verticalHeader()->setVisible(false);
@@ -3352,6 +3418,7 @@ void MainWindow::setupUI() {
     lblInfo->setWordWrap(true);
     lblInfo->setStyleSheet("color: #888; font-size: 11px; padding: 8px;");
     layout->addWidget(lblInfo);
+    layout->addStretch(1);  // spare height goes below the content, not into the form row
 
     tabs->addTab(makeScrollableTab(contracts), navigationIcon(NavigationGlyph::Document), "Covenants");
   }
@@ -3383,7 +3450,38 @@ void MainWindow::setupUI() {
         "Public payments use transparent funds. Private payments and conversions open "
         "the Shielded composer, subject to network activation. Covenants currently use "
         "public or private funds through their respective covenant controls.");
-    sendLayout->addWidget(cmbSendAction_, 0, 1);
+    cmbSendAction_->setObjectName("sendMode");
+    // On Covenants the composer chooses only public vs private covenant; the
+    // payment menu stays on Send.
+    auto* modeRow = new QHBoxLayout;
+    modeRow->setContentsMargins(0, 0, 0, 0);
+    modeRow->addWidget(cmbSendAction_, 1);
+    const QString kindStyle = chromeButtonStyle() +
+        " QPushButton:checked { background: #2f5d8f; border: 1px solid #4a86c5; color: #ffffff; }";
+    covenantKindPublic_ = new QPushButton("Public covenant");
+    covenantKindPublic_->setObjectName("covenantKindPublic");
+    covenantKindPublic_->setToolTip("Amounts and recipients are visible on-chain");
+    covenantKindPrivate_ = new QPushButton("Private covenant");
+    covenantKindPrivate_->setObjectName("covenantKindPrivate");
+    covenantKindPrivate_->setToolTip("Funded from shielded notes; requires network activation");
+    auto* kindGroup = new QButtonGroup(this);
+    kindGroup->setExclusive(true);
+    for (auto* kind : {covenantKindPublic_, covenantKindPrivate_}) {
+      kind->setCheckable(true);
+      kind->setStyleSheet(kindStyle);
+      kind->hide();  // shown while the composer is on the Covenants tab
+      kindGroup->addButton(kind);
+      modeRow->addWidget(kind);
+    }
+    covenantKindPublic_->setChecked(true);
+    modeRow->addStretch(0);
+    connect(covenantKindPublic_, &QPushButton::clicked, this, [this]() {
+      cmbSendAction_->setCurrentIndex(cmbSendAction_->findData("public_contract"));
+    });
+    connect(covenantKindPrivate_, &QPushButton::clicked, this, [this]() {
+      cmbSendAction_->setCurrentIndex(cmbSendAction_->findData("private_contract"));
+    });
+    sendLayout->addLayout(modeRow, 0, 1);
 
     // Hidden cmbSendMode_ kept so legacy code paths that read it stay valid;
     // it mirrors the selected mode.
@@ -3391,6 +3489,8 @@ void MainWindow::setupUI() {
     cmbSendMode_->hide();
     auto recomputeMode = [this]() {
         const QString mode = cmbSendAction_->currentData().toString();
+        if (covenantKindPublic_ && covenantKindPrivate_)
+          (mode == "private_contract" ? covenantKindPrivate_ : covenantKindPublic_)->setChecked(true);
         cmbSendMode_->clear();
         cmbSendMode_->addItem(mode, mode);
         cmbSendMode_->setCurrentIndex(0);
@@ -3476,27 +3576,35 @@ void MainWindow::setupUI() {
     auto *templateRow = new QHBoxLayout;
     templateRow->addWidget(new QLabel("Template:"));
     cmbContractTemplate_ = new QComboBox;
+    cmbContractTemplate_->setObjectName("contractTemplate");
     cmbContractTemplate_->addItem("Simple Lock", "vault");
-    cmbContractTemplate_->addItem("Lock with Recovery Key (Unavailable)", "conditional");
-    cmbContractTemplate_->addItem("Time Lock (Unavailable)", "timelock");
-    if (auto* model = qobject_cast<QStandardItemModel*>(cmbContractTemplate_->model())) {
-      if (auto* item = model->item(cmbContractTemplate_->count() - 1)) {
-        item->setEnabled(false);
-        item->setToolTip("Pending Core contextual lock enforcement verification");
+    cmbContractTemplate_->addItem("Batch Payment", "payroll");
+    // Templates that are not usable yet sit in one greyed group below a separator.
+    cmbContractTemplate_->insertSeparator(cmbContractTemplate_->count());
+    const struct { const char* text; const char* key; const char* why; } comingSoon[] = {
+      {"Lock with Recovery Key", "conditional", "Needs a descriptor-backed multi-path Taproot profile"},
+      {"Time Lock", "timelock", "Requires active Core contextual lock enforcement"},
+      {"Custom script", "custom", "Arbitrary scripts are disabled in the consumer wallet"},
+    };
+    for (const auto& entry : comingSoon) {
+      cmbContractTemplate_->addItem(QString::fromUtf8("%1 \xE2\x80\x94 coming soon").arg(entry.text), entry.key);
+      if (auto* model = qobject_cast<QStandardItemModel*>(cmbContractTemplate_->model())) {
+        if (auto* item = model->item(cmbContractTemplate_->count() - 1)) {
+          item->setEnabled(false);
+          item->setToolTip(entry.why);
+        }
       }
     }
-    cmbContractTemplate_->addItem("Batch Payment", "payroll");
-    cmbContractTemplate_->addItem("Custom (Advanced, Unavailable)", "custom");
-    cmbContractTemplate_->setToolTip("Simple Lock: funds locked to a spending template\n"
-                                     "Timelock: unavailable pending Core lock enforcement\n"
-                                     "Payroll: batch payment to multiple recipients (CTV)\n"
-                                     "Recovery and custom scripts are not available");
+    cmbContractTemplate_->setToolTip("Simple Lock: funds locked to one withdrawal address (CTV)\n"
+                                     "Batch Payment: payment to multiple recipients (CTV)\n"
+                                     "Recovery key, time lock and custom scripts are coming soon");
     templateRow->addWidget(cmbContractTemplate_);
     templateRow->addStretch();
     contractLayout->addLayout(templateRow);
 
     // Stacked widget for template-specific fields
     contractTemplateStack_ = new QStackedWidget;
+    contractTemplateStack_->setObjectName("contractTemplateStack");
 
     // Page 0: Vault — no extra fields
     contractVaultPage_ = new QWidget;
@@ -3634,13 +3742,19 @@ void MainWindow::setupUI() {
 
     contractLayout->addWidget(contractTemplateStack_);
 
+    // Pages are matched by template key: menu order no longer equals page order.
+    const QHash<QString, QWidget*> templatePages{
+      {"vault", contractVaultPage_}, {"conditional", contractConditionalPage_},
+      {"timelock", contractTimelockPage_}, {"payroll", contractPayrollPage_},
+      {"custom", contractCustomPage_}};
     connect(cmbContractTemplate_, QOverload<int>::of(&QComboBox::currentIndexChanged),
-            this, [this](int index) {
-      if (contractTemplateStack_) contractTemplateStack_->setCurrentIndex(index);
+            this, [this, templatePages](int) {
+      if (auto* page = templatePages.value(cmbContractTemplate_->currentData().toString()))
+        contractTemplateStack_->setCurrentWidget(page);
       updateSendModeUi();
     });
     cmbContractTemplate_->setCurrentIndex(0);  // Default: Vault
-    contractTemplateStack_->setCurrentIndex(0);
+    contractTemplateStack_->setCurrentWidget(contractVaultPage_);
 
     contractGroup_->setVisible(false);  // Hidden by default, shown when contract mode selected
     sendLayout->addWidget(contractGroup_, 4, 0, 1, 2);
@@ -3663,10 +3777,19 @@ void MainWindow::setupUI() {
 
     sendLayout->addLayout(sendBtnLayout, 5, 0, 1, 2);
 
+    // Keep the Covenants review in step with every input it summarizes.
+    auto refreshReview = [this]() { updateCovenantReview(); };
+    connect(edtRecipient_, &QLineEdit::textChanged, this, refreshReview);
+    connect(edtAmount_, &QLineEdit::textChanged, this, refreshReview);
+    connect(edtFee_, &QLineEdit::textChanged, this, refreshReview);
+    connect(cmbFeePreset_, QOverload<int>::of(&QComboBox::currentIndexChanged), this, refreshReview);
+    connect(tblPayrollRecipients_, &QTableWidget::cellChanged, this, refreshReview);
+
     layout->addWidget(sendGroup);
     
     // Status label
     lblSendStatus_ = new QLabel();
+    lblSendStatus_->setObjectName("sendStatus");
     lblSendStatus_->setWordWrap(true);
     lblSendStatus_->setStyleSheet("QLabel { padding: 10px; }");
     layout->addWidget(lblSendStatus_);
@@ -5946,7 +6069,10 @@ void MainWindow::updateSendModeUi() {
       status.startsWith(QString::fromUtf8("\xE2\x84\xB9\xEF\xB8\x8F Create or restore a wallet")) ||
       status.startsWith(QString::fromUtf8("\xF0\x9F\x94\x84 Blockchain rescan in progress")) ||
       status.startsWith(QString::fromUtf8("\xF0\x9F\x94\x92 Wallet is locked")) ||
-      status.startsWith(QString::fromUtf8("\xF0\x9F\x93\x9C Contract options"));
+      status.startsWith(QString::fromUtf8("\xF0\x9F\x93\x9C Contract options")) ||
+      // The per-mode hints below, so switching tabs or modes replaces them.
+      status == "Create an on-chain contract with spending rules." ||
+      status == "Send DIN publicly from transparent Taproot/P2MR funds.";
     if (isModeHint) {
       if (privateComposer) {
         lblSendStatus_->setText("Open Shielded to send privately or convert funds. The daemon reports activation availability. Use Covenants for private contract controls when activated.");
@@ -5966,6 +6092,77 @@ void MainWindow::updateSendModeUi() {
       }
       lblSendStatus_->setStyleSheet("QLabel { color: #d6dde6; padding: 10px; background: #2c3036; border: 1px solid #3d434d; border-radius: 6px; }");
     }
+  }
+  updateCovenantReview();
+}
+
+void MainWindow::updateCovenantReview() {
+  if (!covenantReviewBox_ || !edtRecipient_ || !edtAmount_ || !cmbContractTemplate_) return;
+  const QString mode = currentSendMode();
+  // Private covenants bring their own controls; this review covers public ones.
+  covenantReviewBox_->setVisible(mode != "private_contract");
+
+  const QString key = cmbContractTemplate_->currentData().toString();
+  const bool batch = key == "payroll";
+  QList<CovenantFormPolicy::BatchRow> rows;
+  if (batch && tblPayrollRecipients_) {
+    for (int r = 0; r < tblPayrollRecipients_->rowCount(); ++r) {
+      auto* address = tblPayrollRecipients_->item(r, 0);
+      auto* amount = tblPayrollRecipients_->item(r, 1);
+      rows.append({address ? address->text() : QString(), amount ? amount->text() : QString()});
+    }
+  }
+  const auto review = CovenantFormPolicy::review(key, edtRecipient_->text(), edtAmount_->text(), rows,
+                                                 isTransparentDineroAddress);
+  const QString none = QString::fromUtf8("\xE2\x80\x94");
+  const auto din = [](qint64 una) { return CovenantFormPolicy::formatUna(una) + " DIN"; };
+
+  lblReviewTemplate_->setText(cmbContractTemplate_->currentText());
+  const QString recipient = edtRecipient_->text().trimmed();
+  if (batch) {
+    lblReviewRecipient_->setText(review.recipients > 0 ? QString("%1 recipient(s)").arg(review.recipients) : none);
+  } else {
+    lblReviewRecipient_->setText(recipient.isEmpty() ? none
+        : (recipient.length() > 24 ? recipient.left(12) + QString::fromUtf8("\xE2\x80\xA6") + recipient.right(8) : recipient));
+    lblReviewRecipient_->setToolTip(recipient);
+  }
+  lblReviewDeliveredName_->setText(batch ? "Recipients receive" : "Recipient can withdraw");
+  lblReviewLocked_->setText(review.lockedUna > 0 ? din(review.lockedUna) : none);
+  lblReviewDelivered_->setText(review.deliveredUna > 0 ? din(review.deliveredUna) : none);
+
+  // Same rate the create path uses: a custom rate when chosen, else the estimate.
+  const bool customFee = cmbFeePreset_ && cmbFeePreset_->currentData().toInt() == -1;
+  const double rate = customFee && edtFee_ && !edtFee_->text().isEmpty() ? edtFee_->text().toDouble()
+                                                                         : currentEstimatedFeeRate_;
+  const qint64 feeUna = rate > 0.0 ? qRound64(rate * kPublicSendEstimateVbytes) : 0;
+  lblReviewFee_->setText(feeUna > 0 ? "~" + din(feeUna) : QString::fromUtf8("estimating\xE2\x80\xA6"));
+  lblReviewTotal_->setText(review.lockedUna > 0 && feeUna > 0 ? "~" + din(review.lockedUna + feeUna) : none);
+
+  if (batch) {
+    lblReviewRule_->setText("Funds can only go to the listed recipients, in exactly these amounts. "
+                            "Everything is visible on-chain.");
+  } else if (key == "timelock") {
+    lblReviewRule_->setText("Only the address above can receive these funds, after the lock period. "
+                            "Everything is visible on-chain.");
+  } else {
+    lblReviewRule_->setText("Only the address above can ever receive these funds, minus the " +
+                            din(CovenantFormPolicy::spendFeeUna) + " withdrawal fee. "
+                            "Everything is visible on-chain.");
+  }
+
+  // Say why Create Contract is unavailable instead of leaving a greyed button.
+  QStringList blockers;
+  if (currentWalletName_.isEmpty()) blockers << "Create or load a wallet first";
+  else if (walletRescanning_) blockers << "Wait for the wallet rescan to finish";
+  else if (!walletUnlocked_) blockers << "Unlock your wallet";
+  else if (sendSubmissionPending_) blockers << "Wait for the previous transaction to be sent";
+  if (!review.blocker.isEmpty()) blockers << review.blocker;
+  if (blockers.isEmpty()) {
+    lblReviewStatus_->setText("Ready. Create Contract shows a final confirmation before anything is sent.");
+    lblReviewStatus_->setStyleSheet("QLabel { color: #2ecc71; padding: 8px; background: #1f2a22; border-radius: 6px; }");
+  } else {
+    lblReviewStatus_->setText("To continue: " + blockers.join(QString::fromUtf8(" \xC2\xB7 ")));
+    lblReviewStatus_->setStyleSheet("QLabel { color: #f0b429; padding: 8px; background: #2c2618; border-radius: 6px; }");
   }
 }
 
@@ -7071,6 +7268,7 @@ void MainWindow::onRpcResult(const QString& method, const QJsonValue& result) {
       // reached the transaction.
       currentEstimatedFeeRate_ = feerateUnaPerVb;
       currentEstimatedFeeBlocks_ = blocks;
+      updateCovenantReview();
 
       // Update estimated fee label in Send tab
       if (lblEstimatedFee_) {
@@ -11619,7 +11817,7 @@ void MainWindow::updateContractsTable(const QJsonValue& txList) {
       lblContractsSummary_->setText(QString("%1 descriptor-backed contract(s). Spending is offered only when a confirmed matching covenant UTXO is discovered.")
         .arg(descriptors.size()));
     }
-    tblContracts_->resizeColumnsToContents();
+    updateContractsEmptyState();
     return;
   }
 
@@ -11761,9 +11959,14 @@ void MainWindow::updateContractsTable(const QJsonValue& txList) {
     summary += "Contract locks are transparent on-chain.";
   }
   if (lblContractsSummary_) lblContractsSummary_->setText(summary);
+  updateContractsEmptyState();
+}
 
-  // Resize columns to content
-  tblContracts_->resizeColumnsToContents();
+void MainWindow::updateContractsEmptyState() {
+  if (!tblContracts_ || !lblContractsEmpty_) return;
+  const bool any = tblContracts_->rowCount() > 0;
+  tblContracts_->setVisible(any);
+  lblContractsEmpty_->setVisible(!any);
 }
 
 void MainWindow::onStartMining() {
@@ -14670,6 +14873,7 @@ void MainWindow::updateWalletUIState() {
   // Send tab controls
   if (btnSend_) {
     btnSend_->setEnabled(canTransact && !sendSubmissionPending_);
+    updateCovenantReview();
     if (!hasWallet) {
       btnSend_->setToolTip("Create or load a wallet first");
     } else if (walletRescanning_) {
@@ -16276,7 +16480,7 @@ void MainWindow::updateNodeStatus(const QJsonObject& blockchainInfo, const QJson
       if (auto* item = model->item(index)) {
         const bool active = blockchainInfo.value("contextual_locks_active").toBool(false);
         item->setEnabled(active);
-        item->setText(active ? "Time Lock" : "Time Lock (Unavailable)");
+        item->setText(active ? QString("Time Lock") : QString::fromUtf8("Time Lock \xE2\x80\x94 coming soon"));
         item->setToolTip(active ? "Delay measured from funding confirmation" : "Requires active Core contextual lock enforcement");
       }
     }
