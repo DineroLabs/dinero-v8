@@ -1,5 +1,8 @@
 #include "privatecovenantwidget.h"
 #include "covenantformpolicy.h"
+#include "build_identity.h"
+#include "updatechecker.h"
+#include "upgradebanner.h"
 #include "mainwindow.h"
 #include "miningsessionstatus.h"
 #include "peerheightsemantics.h"
@@ -2484,7 +2487,10 @@ void MainWindow::setupUI() {
   });
   contentLayout->addWidget(cmdKPanel_);
 
+  upgradeBanner_ = new UpgradeBanner(central);
+  mainLayout->addWidget(upgradeBanner_);
   mainLayout->addWidget(contentArea, 1);
+  startUpdateChecks();
 
   // AI Status Strip: parked with the AI assistant surface. The dashboard
   // remains available through Ctrl+K.
@@ -3364,7 +3370,7 @@ void MainWindow::setupUI() {
     cmbTimelockUnit_->addItem("blocks", "blocks");
     cmbTimelockUnit_->addItem("hours (estimated)", "hours");
     cmbTimelockUnit_->addItem("days (estimated)", "days");
-    cmbTimelockUnit_->setToolTip("Uses the 2-minute block target. The lock starts at funding confirmation and is enforced in blocks, not wall-clock time.");
+    cmbTimelockUnit_->setToolTip("Estimated from the network's current block time. The lock starts at funding confirmation and is enforced in blocks, not wall-clock time.");
     timelockPageLayout->addWidget(cmbTimelockUnit_);
     timelockPageLayout->addStretch();
     contractTemplateStack_->addWidget(contractTimelockPage_);
@@ -5431,6 +5437,21 @@ void MainWindow::setupUI() {
     note->setStyleSheet(backupPanelStyle());
     layout->addWidget(note);
 
+    auto *updatesGroup = new QGroupBox("Updates");
+    auto *updatesLayout = new QVBoxLayout(updatesGroup);
+    auto *chkCheckUpdates = new QCheckBox("Check for updates and network upgrades");
+    chkCheckUpdates->setChecked(QSettings().value("updates/check_enabled", true).toBool());
+    connect(chkCheckUpdates, &QCheckBox::toggled, this, [this](bool on) {
+      QSettings().setValue("updates/check_enabled", on);
+      if (on && updateChecker_) updateChecker_->checkNow();
+    });
+    updatesLayout->addWidget(chkCheckUpdates);
+    auto *lblUpdatesNote = new QLabel("Asks GitHub for the latest Dinero release and any scheduled network upgrade. Nothing about you or your wallet is sent.");
+    lblUpdatesNote->setWordWrap(true);
+    lblUpdatesNote->setStyleSheet(mutedLabelStyle());
+    updatesLayout->addWidget(lblUpdatesNote);
+    layout->addWidget(updatesGroup);
+
     layout->addStretch();
     tabs->addTab(makeScrollableTab(settings), navigationIcon(NavigationGlyph::Settings), "Settings");
   }
@@ -5477,6 +5498,7 @@ void MainWindow::refresh() {
   }
   rpc_->call("getpeerinfo", QJsonArray());        // Get connection count
   rpc_->call("economics.getinfo", QJsonArray());       // Get phase & reward
+  rpc_->call("getconsensusinfo", QJsonArray());        // Scheduled network upgrade (newer nodes only)
   rpc_->call("economics.getsupply", QJsonArray());          // Get total supply
   rpc_->call("mempool.getinfo", QJsonArray());     // Get mempool stats
   rpc_->call("mempool.getrawmempool", QJsonArray{true}); // Visible pending rows + change detection
@@ -6084,12 +6106,17 @@ void MainWindow::onRpcResult(const QString& method, const QJsonValue& result) {
       }
     }
   }
+  else if (method == "getconsensusinfo") {
+    nodeReleaseHeight_ = UpgradePolicy::parseReleaseActivationHeight(result.toObject());
+    evaluateUpgradeBanner();
+  }
   else if (method == "blockchain.getinfo") {
     if (result.isObject()) {
       auto obj = result.toObject();
       updateStatus(obj);
       cachedHeight_ = obj["blocks"].toInt();
       cachedHeaders_ = obj["headers"].toInt();
+      evaluateUpgradeBanner();
       overviewNodeSynced_ = cachedHeaders_ > 0 && cachedHeight_ >= cachedHeaders_;
       refreshAiStatusStrip();
 
@@ -7959,6 +7986,9 @@ void MainWindow::onRpcError(const QString& method, int code, const QString& mess
     sendSubmissionPending_ = false;
   if (!rpc_) return;  // Guard: shutting down
 
+  // Older nodes (v8.1.12 and earlier) do not have this method; that is not an error.
+  if (method == "getconsensusinfo") return;
+
   if (method == "wallet.listunspent") {
     utxoRequestPending_ = false;
   }
@@ -8403,7 +8433,62 @@ void MainWindow::updateStatus(const QJsonObject& info) {
   }
 }
 
+void MainWindow::startUpdateChecks() {
+  QUrl noticeUrl = UpdateChecker::defaultNoticeUrl();
+#ifndef NDEBUG
+  // Development only: point at a local notice file to exercise the banner.
+  const QByteArray overrideUrl = qgetenv("DINERO_UPDATE_NOTICE_URL");
+  if (!overrideUrl.isEmpty()) noticeUrl = QUrl::fromUserInput(QString::fromUtf8(overrideUrl));
+#endif
+  updateChecker_ = new UpdateChecker(new QNetworkAccessManager(this), UpdateChecker::defaultReleaseUrl(),
+                                     noticeUrl, this);
+  connect(updateChecker_, &UpdateChecker::resultReady, this,
+          [this](const QString& tag, const QJsonObject& notice) {
+            latestReleaseTag_ = tag;
+            upgradeNotice_ = UpgradePolicy::parseNotice(notice, QStringLiteral("dinero-qt"));
+            evaluateUpgradeBanner();
+          });
+  auto runCheck = [this]() {
+    if (QSettings().value("updates/check_enabled", true).toBool()) updateChecker_->checkNow();
+  };
+  auto *timer = new QTimer(this);
+  timer->setInterval(6 * 60 * 60 * 1000);
+  connect(timer, &QTimer::timeout, this, runCheck);
+  timer->start();
+  QTimer::singleShot(5000, this, runCheck);
+}
+
+void MainWindow::evaluateUpgradeBanner() {
+  if (!upgradeBanner_) return;
+  const quint32 tip = quint32(qMax(0, cachedHeight_));
+  const auto r = UpgradePolicy::evaluate(QStringLiteral(DINERO_QT_VERSION), latestReleaseTag_, upgradeNotice_, tip,
+                                         nodeReleaseHeight_);
+  quint32 activation = upgradeNotice_.present ? upgradeNotice_.activationHeight
+                                              : (nodeReleaseHeight_ ? *nodeReleaseHeight_ : 0);
+  if (r.state == UpgradePolicy::State::ScheduledReady && nodeReleaseHeight_) activation = *nodeReleaseHeight_;
+  upgradeBanner_->setActivationHeight(activation);
+  QString release = r.state == UpgradePolicy::State::UpdateAvailable ? latestReleaseTag_ : upgradeNotice_.minVersion;
+  if (release.startsWith('v')) release.remove(0, 1);
+  upgradeBanner_->present(r, release, chainTiming_.approxDuration(qMax<qint64>(0, r.blocksLeft)));
+}
+
+void MainWindow::refreshTimingText() {
+  // Block targets stay fixed; only the time estimates follow the node's block time.
+  if (cmbFeePreset_ && cmbFeePreset_->count() >= 3) {
+    cmbFeePreset_->setItemText(0, QString("Low (25+ blocks, %1)").arg(chainTiming_.approxDuration(25)));
+    cmbFeePreset_->setItemText(1, QString("Normal (6 blocks, %1)").arg(chainTiming_.approxDuration(6)));
+    cmbFeePreset_->setItemText(2, QString("High (2 blocks, %1)").arg(chainTiming_.approxDuration(2)));
+  }
+  if (cmbTimelockUnit_) {
+    cmbTimelockUnit_->setToolTip(QString("Estimated from the network's current block time (%1 s). "
+                                         "The lock starts at funding confirmation and is enforced in "
+                                         "blocks, not wall-clock time.").arg(chainTiming_.blockSeconds));
+  }
+}
+
 void MainWindow::updateEconomics(const QJsonObject& economics) {
+  chainTiming_ = ChainTiming::fromEconomics(economics);
+  refreshTimingText();
   // Update Overview tab labels
   if (lblPhase_) {
     // Use halving epoch instead of non-existent "phase"
@@ -11179,9 +11264,9 @@ void MainWindow::updateUTXOTable(const QJsonArray& utxos) {
     auto *maturityItem = new QTableWidgetItem(maturityStatus);
     if (isCoinbase && !isMature) {
       maturityItem->setForeground(QBrush(QColor("#fab005"))); // Orange for immature
-      maturityItem->setToolTip(QString("Coinbase requires 100 confirmations. %1 blocks remaining (~%2 minutes)")
+      maturityItem->setToolTip(QString("Coinbase requires 100 confirmations. %1 blocks remaining (%2)")
         .arg(maturityRemaining)
-        .arg(maturityRemaining * 3)); // Assuming 3 minute block time
+        .arg(chainTiming_.approxDuration(maturityRemaining)));
     } else if (isCoinbase && isMature) {
       maturityItem->setForeground(QBrush(QColor("#51cf66"))); // Green for mature
       maturityItem->setToolTip("Coinbase output is fully mature and spendable");
@@ -15036,7 +15121,7 @@ void MainWindow::onSendTransaction() {
       templateLabel = "Timelock";
       int delay = spnTimelockDuration_ ? spnTimelockDuration_->value() : 144;
       const QString unit = cmbTimelockUnit_ ? cmbTimelockUnit_->currentData().toString() : "blocks";
-      delay = CovenantFormPolicy::delayBlocks(delay, unit);
+      delay = CovenantFormPolicy::delayBlocks(delay, unit, chainTiming_.blockSeconds);
       if (delay <= 0 || delay > 65535) {
         lblSendStatus_->setText("\xe2\x9d\x8c Relative timelock must be between 1 and 65,535 blocks.");
         btnSend_->setEnabled(true); updateSendModeUi(); return;

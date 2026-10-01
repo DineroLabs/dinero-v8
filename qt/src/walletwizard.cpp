@@ -16,6 +16,7 @@
 #include <QRegularExpression>
 #include <QDebug>
 #include <QTimer>
+#include <QPointer>
 #include <QEventLoop>
 #include <memory>
 
@@ -644,6 +645,25 @@ bool WelcomePage::validatePage() {
     qWarning() << "Could not fetch wallet list:" << walletListError;
   }
 
+  if (choiceGroup_->checkedId() == PAGE_RESTORE_SEED) {
+    // Restoring never replaces a wallet: offer a free name instead of just refusing.
+    // Compared case-insensitively because wallet files live on case-insensitive disks.
+    const QString suggested = uniqueRestoreName(normalizedWalletName, existingWallets);
+    if (suggested != normalizedWalletName) {
+      edtWalletName_->setText(suggested);
+      QMessageBox::information(
+        this,
+        "Wallet Name In Use",
+        QString("A wallet named '%1' already exists. Restoring never replaces an existing wallet, "
+                "so your restored wallet will be named '%2'.\n\nYou can change the name, then click Next.")
+          .arg(normalizedWalletName, suggested)
+      );
+      edtWalletName_->setFocus();
+      edtWalletName_->selectAll();
+      return false;
+    }
+  }
+
   if (existingWallets.contains(normalizedWalletName)) {
     QMessageBox::warning(
       this,
@@ -862,6 +882,11 @@ void CreateSeedPage::onGenerateSeed() {
         const QString errorText = !payloadError.isEmpty()
           ? payloadError
           : QStringLiteral("Wallet creation failed.");
+        // The node answered with an error, so it created nothing: never delete a
+        // wallet of this name (it may be the user's existing wallet). Rollback
+        // still reopens the previously loaded wallet.
+        if (wizard() && !keepRollbackCandidateAfterRpc(/*daemonResponded=*/true, /*success=*/false))
+          wizard()->setProperty("walletRollbackCandidateName", QString());
         QString rollbackError;
         rollbackProvisionedWallet(wizard(), &rollbackError);
         lblSeed_->setText("❌ Error generating seed: " + errorText +
@@ -991,6 +1016,10 @@ void CreateSeedPage::onGenerateSeed() {
       // Stop timeout timer
       rpcTimeout_->stop();
 
+      // A name collision means the node created nothing under this name: keep
+      // the existing wallet. Transport failures keep the name for cleanup.
+      if (wizard() && classifyRestoreError(error) == RestoreErrorKind::NameExists)
+        wizard()->setProperty("walletRollbackCandidateName", QString());
       QString rollbackError;
       rollbackProvisionedWallet(wizard(), &rollbackError);
       lblSeed_->setText("❌ Error generating seed: " + error + "\n\nPlease ensure daemon is running."
@@ -1164,7 +1193,7 @@ RestoreSeedPage::RestoreSeedPage(QWidget* parent) : QWizardPage(parent) {
   // Compatibility info at top
   auto* compatInfo = new QLabel(
     "⚠️ <b>Recovery only:</b> Restore creates a new named wallet from your seed phrase.<br><br>"
-    "Existing wallet names cannot be overwritten from this wizard.<br><br>"
+    "Restoring creates a new wallet next to your existing ones. Nothing is overwritten.<br><br>"
     "📱 Import from iOS Wallet: enter your 12-word seed phrase below only when migrating/recovering."
   );
   compatInfo->setWordWrap(true);
@@ -1333,10 +1362,13 @@ bool RestoreSeedPage::validatePage() {
     // Make synchronous call and wait for result
     QEventLoop loop;
     bool success = false;
+    bool responded = false;
+    bool nameExists = false;
     
     connect(walletWizard->rpcClient(), &RpcClient::rpcResult, &loop,
-      [this, walletWizard, walletName, &loop, &success](const QString& method, const QJsonValue& result) {
+      [this, walletWizard, walletName, &loop, &success, &responded, &nameExists](const QString& method, const QJsonValue& result) {
         if (method != "wallet.restore") return;
+        responded = true;
         
         if (result.isObject()) {
           auto obj = result.toObject();
@@ -1358,16 +1390,20 @@ bool RestoreSeedPage::validatePage() {
             success = true;
             lblStatus_->setText(QString("✅ Wallet '%1' restored successfully").arg(walletName));
           } else {
-            lblStatus_->setText("❌ Restore failed: " + obj["error"].toString());
+            const QString error = obj["error"].toString();
+            nameExists = classifyRestoreError(error) == RestoreErrorKind::NameExists;
+            lblStatus_->setText("❌ Restore failed: " + error);
           }
         }
         loop.quit();
       });
 
     connect(walletWizard->rpcClient(), &RpcClient::rpcError, &loop,
-      [this, &loop](const QString& method, int code, const QString& message) {
+      [this, &loop, &responded, &nameExists](const QString& method, int code, const QString& message) {
         if (method != "wallet.restore") return;
         Q_UNUSED(code);
+        responded = true;
+        nameExists = classifyRestoreError(message) == RestoreErrorKind::NameExists;
         lblStatus_->setText(QString("❌ Restore error: %1").arg(message));
         loop.quit();
       });
@@ -1377,6 +1413,29 @@ bool RestoreSeedPage::validatePage() {
     // Wait for RPC to complete (with timeout)
     QTimer::singleShot(10000, &loop, &QEventLoop::quit);
     loop.exec();
+
+    if (walletWizard && !keepRollbackCandidateAfterRpc(responded, success)) {
+      // The node refused (e.g. the name belongs to an existing wallet), so there
+      // is nothing of ours to delete if the user cancels now.
+      walletWizard->setProperty("walletRollbackCandidateName", QString());
+    }
+
+    if (!responded) {
+      lblStatus_->setText("⏳ The node is still working on the restore. Check the wallet list in a moment "
+                          "before trying again.");
+    } else if (nameExists) {
+      // The daemon created nothing, so there is nothing to roll back. Send the user
+      // back to the name field; the seed phrase stays filled in.
+      QMessageBox::information(this, "Choose Another Name",
+        "A wallet with that name already exists. Nothing was changed. "
+        "Pick a new name for the restored wallet.");
+      QPointer<QWizard> w(wizard());
+      QTimer::singleShot(0, this, [w]() {
+        while (w && w->currentId() != WalletWizard::Page_Welcome && !w->visitedIds().isEmpty()
+               && w->visitedIds().first() != w->currentId())
+          w->back();
+      });
+    }
     
     return success;
   }
