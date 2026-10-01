@@ -418,9 +418,26 @@ private:
   // Contracts management tab (Phase 4)
   QTableWidget* tblContracts_ = nullptr;
   QLabel* lblContractsSummary_ = nullptr;
+  QLabel* lblContractsEmpty_ = nullptr;
   bool pendingContractsRefresh_ = false;
   void refreshContractsList();
   void updateContractsTable(const QJsonValue& txList);
+  void updateContractsEmptyState();
+
+  // Covenants tab: public/private toggle and the live review beside the form.
+  QPushButton* covenantKindPublic_ = nullptr;
+  QPushButton* covenantKindPrivate_ = nullptr;
+  QGroupBox* covenantReviewBox_ = nullptr;
+  QLabel* lblReviewTemplate_ = nullptr;
+  QLabel* lblReviewRecipient_ = nullptr;
+  QLabel* lblReviewLocked_ = nullptr;
+  QLabel* lblReviewDeliveredName_ = nullptr;
+  QLabel* lblReviewDelivered_ = nullptr;
+  QLabel* lblReviewFee_ = nullptr;
+  QLabel* lblReviewTotal_ = nullptr;
+  QLabel* lblReviewRule_ = nullptr;
+  QLabel* lblReviewStatus_ = nullptr;
+  void updateCovenantReview();
 
   struct PendingHardwareWalletSend {
     bool active = false;
