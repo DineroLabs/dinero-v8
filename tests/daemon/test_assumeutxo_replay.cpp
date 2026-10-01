@@ -773,3 +773,5 @@ int main(int argc, char** argv) {
 #include "pool_payment_settlement_checks.h"
 
 #include "pool_block_source_checks.h"
+
+#include "pool_genesis_source_checks.h"

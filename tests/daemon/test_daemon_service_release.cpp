@@ -78,7 +78,20 @@ int main(int argc, char** argv) try {
         if (observed.size() < 20) throw std::runtime_error("daemon graph was not initialized");
         if (dinero::RuntimeDeliveryStartupTestAccess::Worker(app))
             throw std::runtime_error("delivery worker started before daemon Start");
+        if(retained_pool && retained_pool->CaptureMaintenanceWakeHandle().Running())
+            throw std::runtime_error("pool maintenance started before daemon Start");
         if (!app.Start()) throw std::runtime_error("daemon Start failed");
+        if(retained_pool) {
+            auto pool_wake=retained_pool->CaptureMaintenanceWakeHandle();
+            const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(10);
+            auto pool_report=retained_pool->MaintenanceSnapshot();
+            while(!pool_report.passes && std::chrono::steady_clock::now()<deadline) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));pool_report=retained_pool->MaintenanceSnapshot();
+            }
+            if(!pool_wake.Running() || !pool_report.running || !pool_report.passes || !pool_report.accounting_pass_returned || !pool_report.maintenance_pass_returned)
+                throw std::runtime_error("actual daemon pool maintenance did not complete its initial checked pass");
+        }
+        std::cout << "PASS actual daemon pool maintenance initial pass or explicit absence\n";
         auto* delivery=dinero::RuntimeDeliveryStartupTestAccess::Worker(app);
         if (!delivery)throw std::runtime_error("daemon omitted delivery worker");
         auto wake=delivery->CaptureWakeHandle();
@@ -102,6 +115,11 @@ int main(int argc, char** argv) try {
         }
         app.Stop();
         if (retained_pool) {
+            auto pool_wake=retained_pool->CaptureMaintenanceWakeHandle();
+            if(pool_wake.Running() || retained_pool->MaintenanceSnapshot().running)
+                throw std::runtime_error("daemon retained running pool maintenance after Stop");
+            pool_wake.RequestReplay();
+            if(pool_wake.Running())throw std::runtime_error("stopped pool mailbox restarted maintenance");
             bool refused=false;
             try {(void)retained_pool->sendPendingPayouts();}catch(const std::runtime_error&){refused=true;}
             if (!refused) throw std::runtime_error("stopped daemon left pool callbacks available");
@@ -112,6 +130,7 @@ int main(int argc, char** argv) try {
         }
         if (dinero::RuntimeDeliveryStartupTestAccess::Pool(app))
             throw std::runtime_error("daemon retained its pool owner after Stop");
+        std::cout << "PASS actual daemon pool maintenance stopped before dependency release\n";
         std::cout << "PASS actual daemon pool callback lifetime closed\n";
         if (dinero::RuntimeDeliveryStartupTestAccess::Worker(app) || wake.Running())
             throw std::runtime_error("daemon retained running delivery worker after Stop");

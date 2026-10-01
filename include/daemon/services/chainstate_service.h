@@ -879,6 +879,10 @@ public:
         }
     };
     StatusOr<uint256> getCanonicalBlockHash(uint32_t height) const;
+    // Read-only, independent validation of the selected height-zero state.
+    // Verifies the compiled genesis body, every durable/live coin and forest.
+    // Does not create validation markers or certify any later historical tip.
+    StatusOr<uint256> getVerifiedGenesisBlockHash() const;
     StatusOr<CanonicalOutputInclusion> getCanonicalOutputInclusion(
         const uint256& txid, uint32_t output, uint32_t height) const;
 

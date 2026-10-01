@@ -1057,6 +1057,7 @@ add_library(dinero_core STATIC
   src/daemon/services/wallet_service.cpp
   src/daemon/services/wallet_service_owner.cpp # Lightweight manager lifetime owner
   src/daemon/runtime_delivery_worker.cpp # Durable wallet/readmission replay worker
+  src/daemon/runtime_block_reader.cpp # Historical retained bodies also available without Orchard
   src/daemon/runtime_notification_composition.cpp # All declared consumers prepare before commit
   src/daemon/services/chainstate_service.cpp
   src/nodecore/sync_profile_policy.cpp
@@ -1203,6 +1204,12 @@ if(NOT MSVC)
 else()
   target_compile_options(dinero_core PRIVATE /W3)
 endif()
+
+# RuntimeBlockBody shares protocol value types in both configurations. Only
+# this reader needs their headers here; backend compilation is enabled by the
+# actual Orchard library edge below, never by the presence of headers.
+set_property(SOURCE src/daemon/runtime_block_reader.cpp APPEND PROPERTY
+  INCLUDE_DIRECTORIES "${CMAKE_SOURCE_DIR}/rust/orchard_backend/include")
 
 # PoolManager invokes the canonical core adapter; declare the static-library
 # cycle so CMake repeats both archives for single-pass ELF linkers.

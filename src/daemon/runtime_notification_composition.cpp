@@ -1,5 +1,6 @@
 #include "daemon/runtime_notification_composition.h"
 #include "daemon/runtime_delivery_worker.h"
+#include "pool/pool_manager.h"
 #include <stdexcept>
 #include <utility>
 
@@ -55,6 +56,33 @@ public:
 private:
     RuntimeDeliveryWorker::WakeHandle worker_;
 };
+class PoolNotifications final : public RuntimeBlockNotifications {
+    struct Block final : PreparedRuntimeBlockNotifications {
+        explicit Block(pool::PoolManager::MaintenanceWakeHandle value):worker(std::move(value)){}
+        pool::PoolManager::MaintenanceWakeHandle worker;
+        void PublishAfterCommit() noexcept override {worker.RequestReplay();}
+    };
+    struct Reorg final : PreparedRuntimeReorgNotifications {
+        explicit Reorg(pool::PoolManager::MaintenanceWakeHandle value):worker(std::move(value)){}
+        pool::PoolManager::MaintenanceWakeHandle worker;
+        void Finish(RuntimeReorgProgress) noexcept override {worker.RequestReplay();}
+    };
+public:
+    explicit PoolNotifications(const pool::PoolManager& worker):worker_(worker.CaptureMaintenanceWakeHandle()) {}
+    std::unique_ptr<PreparedRuntimeBlockNotifications> Prepare(
+            const RuntimeBlockBody&,uint32_t,RuntimeBlockDirection) override {
+        if(!worker_.Running())return {};
+        return std::make_unique<Block>(worker_);
+    }
+    std::unique_ptr<PreparedRuntimeReorgNotifications> PrepareReorg(
+            std::shared_ptr<const RuntimeReorgPlan> plan) override {
+        if(!plan)return {};
+        if(!worker_.Running())return {};
+        return std::make_unique<Reorg>(worker_);
+    }
+private:
+    pool::PoolManager::MaintenanceWakeHandle worker_;
+};
 }
 RuntimeNotificationComposition::RuntimeNotificationComposition(std::span<const RuntimeConsumerBinding> bindings) {
     if(bindings.size()!=Count)throw std::invalid_argument("Incomplete runtime consumer declaration");
@@ -93,5 +121,8 @@ std::unique_ptr<PreparedRuntimeReorgNotifications> RuntimeNotificationCompositio
 }
 std::shared_ptr<RuntimeBlockNotifications> MakeRuntimeWalletNotifications(const RuntimeDeliveryWorker& worker) {
     return std::make_shared<WalletNotifications>(worker);
+}
+std::shared_ptr<RuntimeBlockNotifications> MakeRuntimePoolNotifications(const pool::PoolManager& manager) {
+    return std::make_shared<PoolNotifications>(manager);
 }
 } // namespace dinero

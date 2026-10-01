@@ -38,6 +38,11 @@ try:
         assert "PASS actual daemon delivery worker drained before dependency release" in output
         assert output.count("Runtime delivery worker started; recovery remains asynchronous") == 1
         assert output.count("phase=runtime_delivery_stopped") == 1
+        assert "PASS actual daemon pool maintenance initial pass or explicit absence" in output
+        assert "PASS actual daemon pool maintenance stopped before dependency release" in output
+        assert output.count("Pool maintenance worker started; accounting remains asynchronous") == (1 if mode == "full" else 0)
+        if mode == "full":
+            assert output.index("Pool maintenance worker started; accounting remains asynchronous") < output.index("Startup recovery complete; starting external listeners")
         assert "PASS actual daemon pool callback lifetime closed" in output
         assert output.count("phase=pool_payments_closed") == 1
         assert output.index("phase=pool_payments_closed") < output.index("[DaemonApp] Stopping services...")

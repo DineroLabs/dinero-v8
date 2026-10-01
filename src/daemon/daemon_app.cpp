@@ -7185,6 +7185,10 @@ bool DaemonApp::Start() {
     try {
         runtime_delivery_worker_=std::make_unique<RuntimeDeliveryWorker>(ctx_.chainstate,ctx_.wallet);
         runtime_delivery_worker_->Start();
+        if(pool_manager_runtime_) {
+            pool_manager_runtime_->startMaintenanceThread();
+            std::cout << "[DaemonApp] Pool maintenance worker started; accounting remains asynchronous" << std::endl;
+        }
         std::cout << "[DaemonApp] Runtime delivery worker started; recovery remains asynchronous" << std::endl;
     } catch (const std::exception& e) {
         std::cerr << "[DaemonApp] Runtime delivery worker startup failed: " << e.what() << std::endl;

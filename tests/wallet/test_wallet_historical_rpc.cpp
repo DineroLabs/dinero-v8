@@ -34,6 +34,7 @@
 namespace dinero {
 struct WalletBatchPaymentTestAccess {
     static void InstallIndex(ChainstateService& chain,std::unique_ptr<UTXOIndex> index) {chain.utxo_index_=std::move(index);}
+    static bool SelectedHeld(ChainstateService& s) {return s.activation_mutex_.HeldByCurrentThread();}
     static void InstallValidatedParent(ChainstateService& s,CBlockIndex& tip,const assumeutxo::AssumeUtxoReplayEngine& replay) {
         if(!s.utxo_index_ || !s.consensus_utxo_set_ || !s.block_validator_ || s.consensus_utxo_set_->GetSetSize()!=replay.ProvenUtxos().size())
             throw std::runtime_error("actual Init-created canonical pool fixture owners required");
@@ -586,3 +587,5 @@ TEST_F(WalletBatchRpc, SuccessfulSubmissionAndInvalidInputBeforeEffects) {
 #include "pool_maintenance_source_checks.h"
 
 #include "pool_orphan_retention_checks.h"
+
+#include "pool_maintenance_worker_checks.h"

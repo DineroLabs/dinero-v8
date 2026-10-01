@@ -6,6 +6,7 @@
 
 namespace dinero {
 class RuntimeDeliveryWorker;
+namespace pool {class PoolManager;}
 // Chainstate already owns transparent pool/bridge/relay-tip publication. These
 // are the remaining consumer families; omission is different from explicit
 // absence. The daemon composition owner must derive bindings from real config.
@@ -39,4 +40,6 @@ private:
 // adapter nor composition writes another journal or acknowledges a consumer.
 std::shared_ptr<RuntimeBlockNotifications> MakeRuntimeWalletNotifications(
     const RuntimeDeliveryWorker&);
+std::shared_ptr<RuntimeBlockNotifications> MakeRuntimePoolNotifications(
+    const pool::PoolManager&);
 } // namespace dinero

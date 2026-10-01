@@ -2720,6 +2720,41 @@ jobs:
           for case in ['RecordedRoundWinsOverUnrelatedMatchingBlockNumber','MissingForeignAndDuplicateRoundRefuseBeforeAllocationWrites','CompleteTypedContributionsAndReadErrors','CallerTransactionAndCommitRefusalPreserveOwners']:
               assert log.count('[       OK ] PoolRoundOwner.'+case+' (')==1
           PYROUND
+      - name: Require independent selected genesis accounting source
+        run: |
+          ctest --test-dir build-orchard-root -R '^PoolGenesisSource$' --show-only=json-v1 > orchard-pool-genesis-source-inventory.json
+          python3 - <<'PYGENESIS'
+          import json
+          tests=json.load(open('orchard-pool-genesis-source-inventory.json'))['tests']
+          assert len(tests)==1 and tests[0]['name']=='PoolGenesisSource'
+          assert next(p['value'] for p in tests[0]['properties'] if p['name']=='TIMEOUT')==180
+          assert not any(p['name']=='DISABLED' and p['value'] for p in tests[0].get('properties',[]))
+          PYGENESIS
+          ctest --test-dir build-orchard-root -R '^PoolGenesisSource$' --verbose --no-tests=error --output-log orchard-pool-genesis-source-execution.log
+          python3 - <<'PYGENESIS'
+          from pathlib import Path
+          log=Path('orchard-pool-genesis-source-execution.log').read_text()
+          for case in ['ActualStartedGenesisVerifiedWithoutWritingMarkers','MissingExtraAndChangedDurableCoinsRefuseWithoutRepair','InconsistentTipCheckpointAndPresentOwnersRefuse']:
+              assert log.count('[       OK ] PoolGenesisSource.'+case+' (')==1
+          PYGENESIS
+      - name: Require owned pool maintenance worker and mailbox handoff
+        run: |
+          ctest --test-dir build-orchard-root -R '^PoolMaintenanceWorker$' --show-only=json-v1 > orchard-pool-maintenance-worker-inventory.json
+          python3 - <<'PYPOOLREFS'
+          import json
+          tests=json.load(open('orchard-pool-maintenance-worker-inventory.json'))['tests']
+          assert len(tests)==1 and tests[0]['name']=='PoolMaintenanceWorker'
+          assert next(p['value'] for p in tests[0]['properties'] if p['name']=='TIMEOUT')==180
+          assert not any(p['name']=='DISABLED' and p['value'] for p in tests[0].get('properties',[]))
+          PYPOOLREFS
+          ctest --test-dir build-orchard-root -R '^PoolMaintenanceWorker$' --verbose --no-tests=error --output-log orchard-pool-maintenance-worker-execution.log
+          python3 - <<'PYPOOLREFS'
+          from pathlib import Path
+          log=Path('orchard-pool-maintenance-worker-execution.log').read_text()
+          for case in ['PoolMaintenanceWorker.InitialPassAndMailboxSurviveOnlyAsStoppedState', 'PoolMaintenanceWorker.DeferredSourcePassPreservesRowsThenExplicitWakeRetries', 'PoolMaintenanceWorker.RetainedReorgPlanWakesWithoutClaimingDeliveryAcknowledgement', 'PoolMaintenanceWorker.BackgroundWalletCallbacksRunAfterSelectedOwnerRelease', 'PoolMaintenanceWorker.HistoricalReaderRefusesUnavailableOrMalformedProfile']:
+              assert log.count('[       OK ] '+case+' (')==1
+          PYPOOLREFS
+
       - name: Require retained reversible unpaid pool orphan accounting
         run: |
           ctest --test-dir build-orchard-root -R '^PoolOrphanRetention$' --show-only=json-v1 > orchard-pool-orphan-retention-inventory.json
@@ -3664,9 +3699,13 @@ jobs:
             orchard-pool-request-execution.log
             orchard-pool-origins-inventory.json
             orchard-pool-origins-execution.log
+            orchard-pool-genesis-source-inventory.json
+            orchard-pool-genesis-source-execution.log
+            orchard-pool-maintenance-worker-inventory.json
             orchard-pool-orphan-retention-inventory.json
             orchard-pool-maintenance-source-inventory.json
             orchard-pool-attempt-source-inventory.json
+            orchard-pool-maintenance-worker-execution.log
             orchard-pool-orphan-retention-execution.log
             orchard-pool-maintenance-source-execution.log
             orchard-pool-attempt-source-execution.log

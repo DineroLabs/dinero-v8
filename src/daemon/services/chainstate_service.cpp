@@ -5666,6 +5666,106 @@ StatusOr<ChainstateService::BlockRpcSnapshot> ChainstateService::getBlockRpcSnap
     return result;
 }
 
+StatusOr<uint256> ChainstateService::getVerifiedGenesisBlockHash() const {
+    std::lock_guard<AnnotatedRecursiveMutex> selected(activation_mutex_);
+    if (safe_mode_active_ || !chain_db_ || !block_storage_ || !active_tip_ ||
+        !consensus_utxo_set_ || GetConfig().utreexo_stateless ||
+        !consensus::OrchardProfileConfigurationValid(Params()) ||
+        consensus::OrchardActiveForHeight(Params(), 0) || active_tip_->height != 0)
+        return Status::Invalid;
+    try {
+        uint256 genesis;
+        if (!uint256::FromHex(Params().genesis_hash, genesis) || genesis.IsNull() ||
+            active_tip_->hash != genesis || active_tip_->pprev ||
+            (active_tip_->status & (BLOCK_FAILED_VALID | BLOCK_FAILED_CHILD)) ||
+            consensus_utxo_set_->GetBestBlock() != genesis || consensus_utxo_set_->GetHeight() != 0)
+            return Status::Corruption;
+        const auto tip = chain_db_->getTip();
+        const auto indexed = chain_db_->getBlockHashByHeight(0);
+        const auto height = chain_db_->getBlockHeight(genesis);
+        const auto header = chain_db_->getHeader(genesis);
+        const auto work = chain_db_->getBlockWork(genesis);
+        const auto metadata = chain_db_->getHeaderMetadata(genesis);
+        const auto body = storage::ReadArchivalBlock(*chain_db_, block_storage_.get(), genesis);
+        if (!tip.ok() || !indexed.ok() || !height.ok() || !header.ok() || !work.ok() ||
+            !metadata.ok() || !body.ok() || tip->height != 0 || tip->hash != genesis ||
+            *indexed != genesis || *height != 0 || metadata->height != 0 ||
+            !metadata->parent_hash.IsNull() || !(metadata->status_flags & BLOCK_HAVE_DATA) ||
+            (metadata->status_flags & (BLOCK_FAILED_VALID | BLOCK_FAILED_CHILD)) ||
+            body->header.SerializeForHash() != header->SerializeForHash())
+            return Status::Corruption;
+        assumeutxo::AssumeUtxoReplayEngine replay;
+        std::string error;
+        if (!replay.SeedGenesis(*body, error)) return Status::Corruption;
+        const auto expected_work = GetBlockProof(body->header.difficulty);
+        if (*work != expected_work || tip->work != expected_work ||
+            metadata->chainwork != expected_work || ChainworkFromHex(active_tip_->chainwork) != expected_work)
+            return Status::Corruption;
+
+        const auto same_coin = [](const consensus::UTXOEntry& a, const consensus::UTXOEntry& b) {
+            return a.value.GetUna() == b.value.GetUna() && a.scriptPubKey == b.scriptPubKey &&
+                a.height == b.height && a.isCoinbase == b.isCoinbase &&
+                a.is_confidential == b.is_confidential && a.commitment == b.commitment;
+        };
+        const auto& proven = replay.ProvenUtxos();
+        const auto& live = consensus_utxo_set_->GetUTXOs();
+        if (live.size() != proven.size()) return Status::Corruption;
+        for (const auto& [point, coin] : proven) {
+            const auto found = live.find(point);
+            if (found == live.end() || !same_coin(coin, found->second)) return Status::Corruption;
+        }
+        size_t stored_count = 0;
+        bool matches = true;
+        const auto coins = chain_db_->forEachUTXO([&](const uint256& txid, uint32_t n, const Coin& coin) {
+            const auto found = proven.find(OutPoint(TxId(txid), n));
+            std::vector<uint8_t> script;
+            if (found == proven.end() || coin.height != 0 ||
+                !std::all_of(coin.script_pubkey.begin(), coin.script_pubkey.end(), [](unsigned char c) {
+                    return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+                }) || !util::unhex(coin.script_pubkey, script) ||
+                !same_coin(found->second, consensus::UTXOEntry(AmountUna::Una(coin.amount), script,
+                    0, coin.coinbase, coin.is_confidential, coin.commitment))) {
+                matches = false;
+                return false;
+            }
+            ++stored_count;
+            return true;
+        });
+        if (coins != Status::Ok || !matches || stored_count != proven.size()) return Status::Corruption;
+        const auto expected_forest = replay.Forest()->serialize();
+        {
+            const auto forest_owner = consensus_utxo_set_->LockForestShared();
+            if (consensus_utxo_set_->GetForest().serialize() != expected_forest) return Status::Corruption;
+        }
+        const auto checkpoint = chain_db_->getUtreexoCheckpoint(0);
+        const auto checksum = chain_db_->getUtreexoChecksum(0);
+        std::array<uint8_t, 32> expected_checksum{};
+        crypto::CSHA256().Write(expected_forest.data(), expected_forest.size()).Finalize(expected_checksum.data());
+        if (!checkpoint.ok() || *checkpoint != expected_forest || !checksum.ok() ||
+            checksum->size() != expected_checksum.size() ||
+            !std::equal(checksum->begin(), checksum->end(), expected_checksum.begin()) ||
+            replay.UtreexoRootHex() != body->header.utreexo_root.GetHex())
+            return Status::Corruption;
+        const auto validated = chain_db_->getValidatedTip();
+        if (validated.ok()) {
+            if (validated->height != 0 || validated->hash != genesis) return Status::Corruption;
+        } else if (validated.status() != Status::NotFound) return validated.status();
+        const auto marker = chain_db_->getForestTipMarker();
+        if (marker.ok()) {
+            if (marker->height != 0 || marker->block_hash != genesis ||
+                marker->forest_root.GetHex() != replay.UtreexoRootHex()) return Status::Corruption;
+        } else if (marker.status() != Status::NotFound) return marker.status();
+        // The independently reconstructed height-zero state cannot contain
+        // private-pool activity. Unavailable counts are not an empty state.
+        const auto nullifiers = shielded_nullifiers_.TryCount();
+        if (!nullifiers || *nullifiers != 0 || shielded_tree_.Size() != 0)
+            return Status::Corruption;
+        return genesis;
+    } catch (const std::exception&) {
+        return Status::Internal;
+    }
+}
+
 StatusOr<uint256> ChainstateService::getCanonicalBlockHash(uint32_t height) const {
     std::lock_guard<AnnotatedRecursiveMutex> selected(activation_mutex_);
     if (safe_mode_active_ || !chain_db_ || !active_tip_ || !consensus_utxo_set_ ||

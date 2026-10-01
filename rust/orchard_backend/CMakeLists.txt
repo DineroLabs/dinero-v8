@@ -130,8 +130,17 @@ if(TARGET dinero_chainstate)
   target_link_libraries(dinero_orchard_wallet_account PUBLIC dinero_orchard_wallet_scan dinero_orchard_operation_queue)
   add_library(dinero_orchard_header STATIC "${ORCHARD_HOST_ROOT}/src/consensus/orchard_header.cpp")
   target_link_libraries(dinero_orchard_header PUBLIC dinero_orchard_transparent dinero_consensus)
-  add_library(dinero_orchard_runtime_reader STATIC "${ORCHARD_HOST_ROOT}/src/daemon/runtime_block_reader.cpp"
+  add_library(dinero_orchard_runtime_reader STATIC
     "${ORCHARD_HOST_ROOT}/src/daemon/runtime_reorg_store.cpp")
+  if(TARGET dinero_core)
+    # The shared reader lives in core for historical ON/OFF callers. Enable
+    # its typed Orchard branch only with this real backend dependency.
+    set_property(SOURCE "${ORCHARD_HOST_ROOT}/src/daemon/runtime_block_reader.cpp"
+      DIRECTORY "${ORCHARD_HOST_ROOT}" APPEND PROPERTY COMPILE_DEFINITIONS DINERO_HAS_ORCHARD_RUNTIME_BLOCK_BODY=1)
+  else()
+    target_sources(dinero_orchard_runtime_reader PRIVATE "${ORCHARD_HOST_ROOT}/src/daemon/runtime_block_reader.cpp")
+    target_compile_definitions(dinero_orchard_runtime_reader PRIVATE DINERO_HAS_ORCHARD_RUNTIME_BLOCK_BODY=1)
+  endif()
   target_link_libraries(dinero_orchard_runtime_reader PUBLIC dinero_orchard_block_reader dinero_orchard_header dinero_chainstate)
   if(TARGET dinero_core)
     target_link_libraries(dinero_core PUBLIC dinero_orchard_runtime_reader)

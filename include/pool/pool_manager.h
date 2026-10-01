@@ -7,6 +7,7 @@
 #include <string>
 #include <functional>
 #include <mutex>
+#include <condition_variable>
 #include <atomic>
 #include <thread>
 #include <unordered_map>
@@ -28,7 +29,26 @@ namespace pool {
  * Thread Safety: All public methods are thread-safe
  */
 class PoolManager {
+    struct MaintenanceWakeState;
 public:
+    // Ephemeral pass diagnostics only. Neither a pass nor a wake acknowledges
+    // durable consumer delivery, canonical finality or all-consumer readiness.
+    struct MaintenanceReport {
+        uint64_t passes=0;
+        bool running=false,accounting_pass_returned=false,maintenance_pass_returned=false;
+    };
+    class MaintenanceWakeHandle final {
+    public:
+        void RequestReplay() const noexcept;
+        [[nodiscard]] bool Running() const noexcept;
+    private:
+        friend class PoolManager;
+        explicit MaintenanceWakeHandle(std::shared_ptr<MaintenanceWakeState> state):state_(std::move(state)){}
+        std::shared_ptr<MaintenanceWakeState> state_;
+    };
+    [[nodiscard]] MaintenanceWakeHandle CaptureMaintenanceWakeHandle() const noexcept {return MaintenanceWakeHandle(maintenance_state_);}
+    [[nodiscard]] MaintenanceReport MaintenanceSnapshot() const;
+
     enum class ShareSubmitCode {
         ACCEPTED,
         DUPLICATE,
@@ -264,9 +284,18 @@ private:
     mutable std::mutex mutex_;
     std::atomic<bool> running_;
 
-    // Background thread
+    // Only PoolManager owns/joins this thread. Prepared notification tokens
+    // retain a mailbox, never this manager, the thread or the selected source.
+    std::mutex maintenance_lifecycle_;
+    struct MaintenanceWakeState {
+        mutable std::mutex mutex;
+        std::condition_variable wake;
+        bool stopping=true,requested=false;
+        MaintenanceReport report;
+    };
+    const std::shared_ptr<MaintenanceWakeState> maintenance_state_=std::make_shared<MaintenanceWakeState>();
     std::thread maintenance_thread_;
-    std::atomic<bool> maintenance_running_;
+    void RunMaintenanceWorker() noexcept;
 
 
     // Internal helpers

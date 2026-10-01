@@ -19,7 +19,11 @@ void CanonicalPoolMaintenance::ReconcileSelected(ChainstateService& source,PoolM
     source.AssertActivationLockHeld("pool canonical accounting");
     const auto* chain=source.GetChainDB();RequireMaintenance(chain!=nullptr);
     const auto tip=chain->getTip();RequireMaintenance(tip.ok() && tip->height>=0);
-    const auto selected_tip=source.getCanonicalBlockHash(static_cast<uint32_t>(tip->height));
+    // Ordinary genesis has no ConnectTip validation marker. Authenticate that
+    // exact state independently; an empty pool inventory is not permission to
+    // skip source validation. Every later height retains the canonical guard.
+    const auto selected_tip=tip->height==0 ? source.getVerifiedGenesisBlockHash()
+        : source.getCanonicalBlockHash(static_cast<uint32_t>(tip->height));
     RequireMaintenance(selected_tip.ok() && *selected_tip==tip->hash);
     std::lock_guard<std::mutex> owner(manager.mutex_);RequireMaintenance(manager.db_ && manager.calculator_);
     const auto blocks=manager.db_->getRecordedBlocks();

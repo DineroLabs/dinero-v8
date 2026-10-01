@@ -15600,7 +15600,12 @@ if(UNIX)
     tests/wallet/test_wallet_historical_rpc.cpp
     src/daemon/config.cpp
     src/daemon/mempool.cpp)
-  target_include_directories(test_wallet_historical_rpc PRIVATE include src)
+  # RuntimeBlockBody and retained reorg plans share protocol types in both
+  # configurations. Headers alone do not enable or link the Orchard backend.
+  target_include_directories(test_wallet_historical_rpc PRIVATE
+    include src ${CMAKE_SOURCE_DIR}/rust/orchard_backend/include)
+  target_compile_definitions(test_wallet_historical_rpc PRIVATE
+    DINERO_TEST_RUNTIME_ORCHARD=$<TARGET_EXISTS:dinero_orchard_runtime_reader>)
   if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     target_link_libraries(test_wallet_historical_rpc PRIVATE
       "-Wl,--start-group" dinero_rpc_handlers dinero_core dinero_wallet dinero_chainstate
@@ -15632,6 +15637,8 @@ if(UNIX)
   set_tests_properties(VaultDispatchLifetime PROPERTIES TIMEOUT 120 LABELS "wallet;vault;lifecycle;mandatory")
   add_test(NAME VaultRetainedWithdrawal COMMAND test_wallet_historical_rpc --gtest_filter=VaultRetainedWithdrawal.*)
   set_tests_properties(VaultRetainedWithdrawal PROPERTIES TIMEOUT 120 LABELS "wallet;vault;storage;mandatory")
+  add_test(NAME PoolMaintenanceWorker COMMAND test_wallet_historical_rpc --gtest_filter=PoolMaintenanceWorker.*)
+  set_tests_properties(PoolMaintenanceWorker PROPERTIES TIMEOUT 180 LABELS "pool;wallet;daemon;mandatory")
   add_test(NAME PoolOrphanRetention COMMAND test_wallet_historical_rpc --gtest_filter=PoolOrphanRetention.*)
   set_tests_properties(PoolOrphanRetention PROPERTIES TIMEOUT 180 LABELS "pool;wallet;storage;mandatory")
   add_test(NAME PoolMaintenanceSource COMMAND test_wallet_historical_rpc --gtest_filter=PoolMaintenanceSource.*)
@@ -15832,3 +15839,8 @@ function(dinero_attach_real_mempool_fixture_runtime)
     CONTENT "${_real_mempool_fixture_lines}\n")
 endfunction()
 cmake_language(DEFER CALL dinero_attach_real_mempool_fixture_runtime)
+
+if(TARGET test_assumeutxo_replay)
+  add_test(NAME PoolGenesisSource COMMAND test_assumeutxo_replay --gtest_filter=PoolGenesisSource.*)
+  set_tests_properties(PoolGenesisSource PROPERTIES TIMEOUT 180 LABELS "pool;daemon;mandatory")
+endif()

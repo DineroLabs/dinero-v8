@@ -22,6 +22,11 @@ StatusOr<RuntimeBlockBody> ReadRuntimeBlockUnderLock(
         if (!old.ok()) return old.status();
         return RuntimeBlockBody(std::move(*old));
     }
+    // The selected Orchard profile must never fall back to historical parsing
+    // when the actual backend is absent. Ordinary retained bodies remain usable.
+#if !defined(DINERO_HAS_ORCHARD_RUNTIME_BLOCK_BODY)
+    return Status::Internal;
+#else
     if (metadata->data_size == 0) return Status::NotFound;
     const auto header = db.getHeader(hash);
     if (!header.ok()) return header.status();
@@ -49,6 +54,7 @@ StatusOr<RuntimeBlockBody> ReadRuntimeBlockUnderLock(
     } catch (const std::invalid_argument&) {
         return Status::Corruption;
     }
+#endif
 }
 std::shared_ptr<const RuntimeReorgPlan> ReadRuntimeReorgPlanUnderLock(
     const ChainDB& db, const BlockStorage* blocks, std::span<CBlockIndex* const> disconnect,
