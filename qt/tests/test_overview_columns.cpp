@@ -16,6 +16,7 @@
 #include <QTableWidget>
 #include <QComboBox>
 #include <QToolTip>
+#include <QPushButton>
 #include <QHelpEvent>
 #include <QTabBar>
 #include <QJsonArray>
@@ -342,6 +343,29 @@ private Q_SLOTS:
         QHelpEvent help(QEvent::ToolTip, at, bar->mapToGlobal(at));
         QCoreApplication::sendEvent(bar, &help);
         QTRY_COMPARE_WITH_TIMEOUT(QToolTip::text(), QString("Receive"), 2000);
+    }
+    void openExplorerRestoresAMinimizedExplorer() {
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, dir.path());
+        MainWindow window(dinero::qt::DaemonBootstrapOwner::ApplicationMain);
+        window.resize(1440, 1000);
+        window.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&window));
+        QPushButton* open = nullptr;
+        for (auto* b : window.findChildren<QPushButton*>()) if (b->text() == "Open Explorer") open = b;
+        QVERIFY(open);
+        QWidget* explorer = nullptr;
+        for (auto* w : window.findChildren<QWidget*>()) if (w->windowTitle() == "Dinero Chain Explorer") explorer = w;
+        QVERIFY(explorer);
+        QTest::mouseClick(open, Qt::LeftButton);
+        QTRY_VERIFY_WITH_TIMEOUT(explorer->isVisible(), 2000);
+        // The user minimizes the explorer to the Dock; Open Explorer must bring it back.
+        explorer->setWindowState(explorer->windowState() | Qt::WindowMinimized);
+        QTRY_VERIFY_WITH_TIMEOUT(explorer->isMinimized(), 2000);
+        QTest::mouseClick(open, Qt::LeftButton);
+        QTRY_VERIFY2_WITH_TIMEOUT(!explorer->isMinimized(), "Open Explorer left the explorer minimized", 2000);
+        QVERIFY(explorer->isVisible());
     }
 };
 QTEST_MAIN(OverviewColumnsTest)

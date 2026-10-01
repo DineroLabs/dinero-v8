@@ -9000,6 +9000,8 @@ void MainWindow::showExplorerWindow() {
   if (!explorerWindow_) {
     return;
   }
+  // show() leaves a window minimized to the Dock where it is; restore it.
+  explorerWindow_->setWindowState(explorerWindow_->windowState() & ~Qt::WindowMinimized);
   explorerWindow_->show();
   explorerWindow_->raise();
   explorerWindow_->activateWindow();
