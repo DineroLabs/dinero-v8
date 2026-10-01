@@ -15,6 +15,9 @@
 #include <QTextEdit>
 #include <QTableWidget>
 #include <QComboBox>
+#include <QToolTip>
+#include <QHelpEvent>
+#include <QTabBar>
 #include <QJsonArray>
 #include <QJsonObject>
 
@@ -291,6 +294,54 @@ private Q_SLOTS:
         QCoreApplication::processEvents();
         QCOMPARE(tabs->tabText(0), QString("Overview"));
         for (int i = 0; i < tabs->count(); ++i) QVERIFY2(!tabs->tabText(i).isEmpty(), "wide: names restored");
+    }
+    void sendAndReceiveIconsUseTrays() {
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, dir.path());
+        MainWindow window(dinero::qt::DaemonBootstrapOwner::ApplicationMain);
+        auto icon = [&](const QString& name) {
+            for (auto* t : window.findChildren<QTabWidget*>())
+                for (int i = 0; i < t->count(); ++i)
+                    if (t->tabToolTip(i) == name || t->tabText(i) == name)
+                        return t->tabIcon(i).pixmap(QSize(40, 40)).toImage()
+                            .scaled(40, 40, Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
+            return QImage();
+        };
+        for (const QString& name : {QString("Send"), QString("Receive")}) {
+            const QImage img = icon(name);
+            QVERIFY2(!img.isNull(), qPrintable(name + " tab"));
+            auto ink = [&](int x, int y) { return qAlpha(img.pixel(x, y)) > 60; };
+            // An open tray at the bottom, and a vertical arrow above it.
+            QVERIFY2(ink(7, 28) && ink(33, 28) && ink(20, 34), qPrintable(name + " tray"));
+            QVERIFY2(ink(20, 15), qPrintable(name + " arrow shaft"));
+            QVERIFY2(!ink(5, 20) && !ink(35, 20), qPrintable(name + " still a sideways arrow"));
+            if (name == "Send") QVERIFY2(ink(14, 12) && ink(26, 12), "Send arrow points up");
+            else QVERIFY2(ink(14, 18) && ink(26, 18), "Receive arrow points down");
+        }
+    }
+    void hoveringATabShowsItsName() {
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, dir.path());
+        MainWindow window(dinero::qt::DaemonBootstrapOwner::ApplicationMain);
+        // Names show on hover even while another app (e.g. Terminal) is in front.
+        QVERIFY(window.testAttribute(Qt::WA_AlwaysShowToolTips));
+        window.resize(900, 900);
+        window.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&window));
+        QCoreApplication::processEvents();
+        QTabWidget* tabs = nullptr;
+        for (auto* t : window.findChildren<QTabWidget*>())
+            for (int i = 0; i < t->count(); ++i) if (t->tabToolTip(i) == "Receive") tabs = t;
+        QVERIFY(tabs);
+        int receive = -1;
+        for (int i = 0; i < tabs->count(); ++i) if (tabs->tabToolTip(i) == "Receive") receive = i;
+        QTabBar* bar = tabs->tabBar();
+        const QPoint at = bar->tabRect(receive).center();
+        QHelpEvent help(QEvent::ToolTip, at, bar->mapToGlobal(at));
+        QCoreApplication::sendEvent(bar, &help);
+        QTRY_COMPARE_WITH_TIMEOUT(QToolTip::text(), QString("Receive"), 2000);
     }
 };
 QTEST_MAIN(OverviewColumnsTest)

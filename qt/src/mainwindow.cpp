@@ -190,11 +190,23 @@ QPixmap drawNavigationGlyph(NavigationGlyph glyph, const QColor& color) {
       line(15, 20, 27, 20); line(15, 26, 27, 26);
       break;
     case NavigationGlyph::Send:
-      line(7, 20, 31, 20); line(23, 12, 31, 20); line(31, 20, 23, 28);
+    case NavigationGlyph::Receive: {
+      // An open tray with an arrow leaving it (Send) or arriving in it (Receive).
+      QPainterPath tray;
+      tray.moveTo(7, 22);
+      tray.lineTo(7, 31);
+      tray.quadTo(7, 34, 10, 34);
+      tray.lineTo(30, 34);
+      tray.quadTo(33, 34, 33, 31);
+      tray.lineTo(33, 22);
+      painter.drawPath(tray);
+      if (glyph == NavigationGlyph::Send) {
+        line(20, 24, 20, 6); line(13, 13, 20, 6); line(20, 6, 27, 13);
+      } else {
+        line(20, 6, 20, 24); line(13, 17, 20, 24); line(20, 24, 27, 17);
+      }
       break;
-    case NavigationGlyph::Receive:
-      line(7, 20, 31, 20); line(15, 12, 7, 20); line(7, 20, 15, 28);
-      break;
+    }
     case NavigationGlyph::Transactions:
       line(9, 10, 31, 10); line(9, 20, 31, 20); line(9, 30, 25, 30);
       painter.drawPoint(QPointF(5, 10)); painter.drawPoint(QPointF(5, 20)); painter.drawPoint(QPointF(5, 30));
@@ -2355,6 +2367,9 @@ MainWindow::~MainWindow() {
 }
 
 void MainWindow::setupUI() {
+  // Tab names and other tooltips show on hover even while another app is in
+  // front (macOS otherwise shows tooltips only for the active window).
+  setAttribute(Qt::WA_AlwaysShowToolTips, true);
   auto *central = new QWidget;
   setCentralWidget(central);
 
