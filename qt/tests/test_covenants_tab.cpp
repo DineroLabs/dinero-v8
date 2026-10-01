@@ -17,6 +17,7 @@
 #include <QTemporaryDir>
 #include "mainwindow.h"
 #include "rpcclient.h"
+#include "dpiwidget.h"
 
 // The Covenants tab must never start or clean up daemon processes.
 void killStaleDinerodByPort() { qFatal("Unexpected daemon cleanup in covenants tab test"); }
@@ -226,6 +227,27 @@ private Q_SLOTS:
         QCOMPARE(status->text(), QString("Create an on-chain contract with spending rules."));
         openTab(window, "Send");
         QCOMPARE(status->text(), QString("Send DIN publicly from transparent Taproot/P2MR funds."));
+    }
+
+    void paymentLinkOpensSendFilledIn() {
+        const QString addr = "din1pqqqsyqcyq5rqwzqfpg9scrgwpugpzysnzs23v9ccrydpk8qarc0jqg6t5y8";
+        MainWindow window(dinero::qt::DaemonBootstrapOwner::ApplicationMain);
+        pointAtTestEndpoint(window);
+        window.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&window));
+        openTab(window, "Covenants");  // start somewhere else, in contract mode
+        auto* dpi = window.findChild<DpiWidget*>();
+        QVERIFY(dpi);
+        Q_EMIT dpi->payToAddressRequested(addr, "1.5", "From a payment link: Coffee beans");
+        QCoreApplication::processEvents();
+        auto* tabs = window.findChild<QTabWidget*>();
+        const QString stored = tabs->tabBar()->tabData(tabs->currentIndex()).toString();
+        QCOMPARE(stored.isEmpty() ? tabs->tabText(tabs->currentIndex()) : stored, QString("Send"));
+        QCOMPARE(named<QComboBox>(window, "sendMode")->currentData().toString(), QString("public_transfer"));
+        QCOMPARE(named<QLineEdit>(window, "sendRecipient")->text(), addr);
+        QCOMPARE(named<QLineEdit>(window, "sendAmount")->text(), QString("1.5"));
+        QVERIFY2(named<QLabel>(window, "sendStatus")->text().contains("Coffee beans"),
+                 qPrintable(named<QLabel>(window, "sendStatus")->text()));
     }
 };
 QTEST_MAIN(CovenantsTabTest)
