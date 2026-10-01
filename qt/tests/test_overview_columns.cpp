@@ -14,6 +14,7 @@
 #include <QLineEdit>
 #include <QTextEdit>
 #include <QTableWidget>
+#include <QComboBox>
 #include <QJsonArray>
 #include <QJsonObject>
 
@@ -129,7 +130,7 @@ private Q_SLOTS:
         int pool = -1;
         for (auto* t : window.findChildren<QTabWidget*>())
             for (int i = 0; i < t->count(); ++i)
-                if (t->tabText(i) == "Pool") { tabs = t; pool = i; }
+                if (t->tabToolTip(i) == "Pool" || t->tabText(i) == "Pool") { tabs = t; pool = i; }
         QVERIFY(tabs && pool >= 0);
         const QImage img = tabs->tabIcon(pool).pixmap(QSize(40, 40)).toImage()
                                .scaled(40, 40, Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
@@ -164,7 +165,7 @@ private Q_SLOTS:
         int mining = -1;
         for (auto* t : window.findChildren<QTabWidget*>())
             for (int i = 0; i < t->count(); ++i)
-                if (t->tabText(i) == "Mining") { tabs = t; mining = i; }
+                if (t->tabToolTip(i) == "Mining" || t->tabText(i) == "Mining") { tabs = t; mining = i; }
         QVERIFY(tabs && mining >= 0);
         const QImage img = tabs->tabIcon(mining).pixmap(QSize(40, 40)).toImage()
                                .scaled(40, 40, Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
@@ -257,6 +258,39 @@ private Q_SLOTS:
                      qPrintable(QString("%1 column is %2 px").arg(table->horizontalHeaderItem(c)->text())
                                     .arg(table->columnWidth(c))));
         QVERIFY(table->columnWidth(0) > table->columnWidth(1));
+    }
+    void narrowWindowShowsIconOnlyTabs() {
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, dir.path());
+        MainWindow window(dinero::qt::DaemonBootstrapOwner::ApplicationMain);
+        QTabWidget* tabs = nullptr;
+        for (auto* t : window.findChildren<QTabWidget*>())
+            for (int i = 0; i < t->count(); ++i)
+                if (t->tabToolTip(i) == "Overview" || t->tabText(i) == "Overview") tabs = t;
+        QVERIFY(tabs);
+
+        window.resize(800, 900);
+        window.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&window));
+        QCoreApplication::processEvents();
+        for (int i = 0; i < tabs->count(); ++i) {
+            QVERIFY2(tabs->tabText(i).isEmpty(), qPrintable("narrow: tab still has text " + tabs->tabText(i)));
+            QVERIFY2(!tabs->tabToolTip(i).isEmpty(), "narrow: tab has no name on hover");
+            QVERIFY(!tabs->tabIcon(i).isNull());
+        }
+        // Navigation by tab name still works in icon-only mode.
+        QComboBox* modes = nullptr;
+        for (auto* combo : window.findChildren<QComboBox*>())
+            if (combo->findData("public_transfer") >= 0 && combo->findData("public_contract") >= 0) modes = combo;
+        QVERIFY(modes);
+        modes->setCurrentIndex(modes->findData("public_contract"));
+        QCOMPARE(tabs->tabToolTip(tabs->currentIndex()), QString("Covenants"));
+
+        window.resize(1920, 1000);
+        QCoreApplication::processEvents();
+        QCOMPARE(tabs->tabText(0), QString("Overview"));
+        for (int i = 0; i < tabs->count(); ++i) QVERIFY2(!tabs->tabText(i).isEmpty(), "wide: names restored");
     }
 };
 QTEST_MAIN(OverviewColumnsTest)

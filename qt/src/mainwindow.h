@@ -184,6 +184,7 @@ private:
   void updateEconomics(const QJsonObject& economics);
   void refreshTimingText();
   void startUpdateChecks();
+  void updateCompactTabs();
   void evaluateUpgradeBanner();
   void updateWallet(const QString& address);
   void updateExplorer(const QJsonValue& block);

@@ -127,6 +127,13 @@
 namespace {
 
 constexpr int kWalletUnlockTimeoutSeconds = 60 * 60;
+// A main tab's real name. Narrow windows show icon-only tabs (empty text, name
+// in the tooltip), so look tabs up through this, never through tabText().
+QString mainTabName(const QTabWidget* tabs, int index) {
+  const QString stored = tabs->tabBar()->tabData(index).toString();
+  return stored.isEmpty() ? tabs->tabText(index) : stored;
+}
+
 // CPU mining threads shown when the app starts (the user can change it per session).
 constexpr int kDefaultMiningThreads = 4;
 
@@ -2478,6 +2485,33 @@ void MainWindow::setupUI() {
   auto *tabs = new QTabWidget;
   tabs->setIconSize(QSize(18, 18));
   mainTabs_ = tabs;
+  // Icon-only tabs when the full names do not fit; names come back when they do.
+  class CompactTabsWatcher : public QObject {
+  public:
+    CompactTabsWatcher(QTabWidget* tabs, std::function<void()> update)
+        : QObject(tabs), tabs_(tabs), update_(std::move(update)) {
+      tabs->installEventFilter(this);
+      tabs->tabBar()->installEventFilter(this);
+    }
+    bool eventFilter(QObject* watched, QEvent* event) override {
+      const bool resized = watched == tabs_ && event->type() == QEvent::Resize;
+      const bool tabsChanged = watched == tabs_->tabBar() && event->type() == QEvent::LayoutRequest &&
+                               tabs_->count() != lastCount_;
+      if ((resized || tabsChanged) && !busy_) {
+        busy_ = true;
+        lastCount_ = tabs_->count();
+        update_();
+        busy_ = false;
+      }
+      return false;
+    }
+  private:
+    QTabWidget* tabs_;
+    std::function<void()> update_;
+    int lastCount_ = -1;
+    bool busy_ = false;
+  };
+  new CompactTabsWatcher(tabs, [this]() { updateCompactTabs(); });
   connect(tabs, &QTabWidget::currentChanged, this, [this](int index) {
     updateMiningFocusDimState();
     setMiningOutputCinematicEnabled(isMining_);
@@ -2488,8 +2522,8 @@ void MainWindow::setupUI() {
     // Keep one composer and one set of RPC state; show covenant creation next
     // to contract management, and payment composition on Send.
     if (sendComposer_ && sendComposerHome_ && covenantComposerHome_) {
-      const bool covenants = mainTabs_->tabText(index).contains("Covenants");
-      const bool payments = mainTabs_->tabText(index).contains("Send");
+      const bool covenants = mainTabName(mainTabs_, index).contains("Covenants");
+      const bool payments = mainTabName(mainTabs_, index).contains("Send");
       if (covenants || payments) {
         auto* destination = covenants ? covenantComposerHome_ : sendComposerHome_;
         destination->addWidget(sendComposer_);
@@ -2500,7 +2534,7 @@ void MainWindow::setupUI() {
       }
     }
     // Auto-refresh contracts when the Covenants tab is selected
-    if (mainTabs_ && mainTabs_->tabText(index).contains("Covenants")) {
+    if (mainTabs_ && mainTabName(mainTabs_, index).contains("Covenants")) {
         refreshContractsList();
     }
   });
@@ -2717,7 +2751,7 @@ void MainWindow::setupUI() {
     btnNetworkSettings->setStyleSheet(chromeButtonStyle());
     connect(btnNetworkSettings, &QPushButton::clicked, this, [tabs]() {
       for (int i = 0; i < tabs->count(); ++i) {
-        if (tabs->tabText(i).contains("Settings", Qt::CaseInsensitive)) {
+        if (mainTabName(tabs, i).contains("Settings", Qt::CaseInsensitive)) {
           tabs->setCurrentIndex(i);
           return;
         }
@@ -3138,7 +3172,7 @@ void MainWindow::setupUI() {
       }
       if (mainTabs_) {
         for (int i = 0; i < mainTabs_->count(); ++i) {
-          if (mainTabs_->tabText(i).contains(tabLabelFragment)) {
+          if (mainTabName(mainTabs_, i).contains(tabLabelFragment)) {
             mainTabs_->setCurrentIndex(i);
             break;
           }
@@ -3347,11 +3381,11 @@ void MainWindow::setupUI() {
         updateSendModeUi();
         if ((mode == "public_contract" || mode == "private_contract") && mainTabs_) {
           for (int i = 0; i < mainTabs_->count(); ++i)
-            if (mainTabs_->tabText(i).contains("Covenants")) mainTabs_->setCurrentIndex(i);
+            if (mainTabName(mainTabs_, i).contains("Covenants")) mainTabs_->setCurrentIndex(i);
         } else if (mode == "public_transfer" && mainTabs_ &&
-                   mainTabs_->tabText(mainTabs_->currentIndex()).contains("Covenants")) {
+                   mainTabName(mainTabs_, mainTabs_->currentIndex()).contains("Covenants")) {
           for (int i = 0; i < mainTabs_->count(); ++i)
-            if (mainTabs_->tabText(i).contains("Send")) mainTabs_->setCurrentIndex(i);
+            if (mainTabName(mainTabs_, i).contains("Send")) mainTabs_->setCurrentIndex(i);
         }
     };
     connect(cmbSendAction_, QOverload<int>::of(&QComboBox::currentIndexChanged),
@@ -8568,6 +8602,22 @@ void MainWindow::updateStatus(const QJsonObject& info) {
     if (!supply.isEmpty()) {
       lblExplorerSupply_->setText(explorerDinString(supply) + " DIN");
     }
+  }
+}
+
+void MainWindow::updateCompactTabs() {
+  if (!mainTabs_) return;
+  QTabBar* bar = mainTabs_->tabBar();
+  // Restore every name (recording it first), then measure the full-name width.
+  for (int i = 0; i < mainTabs_->count(); ++i) {
+    if (bar->tabData(i).toString().isEmpty()) bar->setTabData(i, mainTabs_->tabText(i));
+    const QString name = bar->tabData(i).toString();
+    mainTabs_->setTabToolTip(i, name);
+    if (mainTabs_->tabText(i) != name) mainTabs_->setTabText(i, name);
+  }
+  const bool compact = bar->sizeHint().width() > mainTabs_->width() - 8;
+  if (compact) {
+    for (int i = 0; i < mainTabs_->count(); ++i) mainTabs_->setTabText(i, QString());
   }
 }
 
@@ -15220,7 +15270,7 @@ void MainWindow::onSendTransaction() {
   if (sendSubmissionPending_) return;
   if (currentSendMode() == "private_composer") {
     for (int i = 0; mainTabs_ && i < mainTabs_->count(); ++i) {
-      if (mainTabs_->tabText(i).contains("Shielded")) {
+      if (mainTabName(mainTabs_, i).contains("Shielded")) {
         mainTabs_->setCurrentIndex(i);
         return;
       }
