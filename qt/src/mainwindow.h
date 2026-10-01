@@ -184,6 +184,7 @@ private:
   void updateEconomics(const QJsonObject& economics);
   void refreshTimingText();
   void startUpdateChecks();
+  void updateCompactTabs();
   void evaluateUpgradeBanner();
   void updateWallet(const QString& address);
   void updateExplorer(const QJsonValue& block);
@@ -280,14 +281,14 @@ private:
 #endif
   
   // Overview tab
-  QLabel* lblHeight_;
-  QLabel* lblHeaders_;
+  class InfoRow* lblHeight_;
+  class InfoRow* lblHeaders_;
   QLabel* lblSyncProgress_;
-  QLabel* lblConnections_;
-  QLabel* lblMempool_;  // Overview mempool stats
-  QLabel* lblPhase_;
-  QLabel* lblSupply_;
-  QLabel* lblReward_;
+  class InfoRow* lblConnections_;
+  class InfoRow* lblMempool_;  // Overview mempool stats (kept for metrics export; card shows Mempool)
+  class InfoRow* lblPhase_;
+  class InfoRow* lblSupply_;
+  class InfoRow* lblReward_;
 
   // Monitoring Dashboard widgets (Overview bottom half)
   dinero::qt::OverviewConnectivityCard* overviewConnectivityCard_ = nullptr;
@@ -396,6 +397,14 @@ private:
   class QSpinBox* spnTimelockDuration_ = nullptr;
   class QComboBox* cmbTimelockUnit_ = nullptr;
   ChainTiming chainTiming_;
+  void requestMiningRewards(bool force = false);
+  void updateMiningRewards(const QJsonArray& rewards);
+  class QLabel* lblRewardsHeadline_ = nullptr;
+  class QLabel* lblRewardsPeriod_ = nullptr;
+  class QLabel* lblRewardsMaturing_ = nullptr;
+  class QLabel* lblRewardsLastFound_ = nullptr;
+  int miningRewardsRequestedHeight_ = -1;
+  qint64 miningRewardsRequestedAtMs_ = 0;
   class UpgradeBanner* upgradeBanner_ = nullptr;
   class UpdateChecker* updateChecker_ = nullptr;
   QString latestReleaseTag_;

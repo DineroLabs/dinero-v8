@@ -211,10 +211,15 @@ void RpcClient::postJson(const QJsonObject& body) {
       qWarning() << "⚠️  Making RPC call without authentication! Cookie not loaded. Method:" << body["method"].toString();
   }
 
-  // Store method name and full request for potential retry
+  // Store method name and full request for potential retry. A reply alias
+  // (callNamedAs) names the reply for consumers but is never sent.
   QString method = body["method"].toString();
-  
-  auto *reply = nam_->post(req, QJsonDocument(body).toJson(QJsonDocument::Compact));
+  const QString replyAs = body.value("__replyAs").toString();
+  if (!replyAs.isEmpty()) method = replyAs;
+  QJsonObject wireBody = body;
+  wireBody.remove("__replyAs");
+
+  auto *reply = nam_->post(req, QJsonDocument(wireBody).toJson(QJsonDocument::Compact));
   
   // Store method and body in reply's dynamic properties for failover
   reply->setProperty("rpcMethod", method);
@@ -415,6 +420,17 @@ void RpcClient::callNamed(const QString& method, const QJsonObject& params) {
     {"id", static_cast<qint64>(nextId_++)},
     {"method", method},
     {"params", params}
+  };
+  postJson(body);
+}
+
+void RpcClient::callNamedAs(const QString& method, const QJsonObject& params, const QString& replyAs) {
+  QJsonObject body{
+    {"jsonrpc", "2.0"},
+    {"id", static_cast<qint64>(nextId_++)},
+    {"method", method},
+    {"params", params},
+    {"__replyAs", replyAs}  // local only: removed in postJson before sending
   };
   postJson(body);
 }

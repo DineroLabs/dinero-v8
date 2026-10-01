@@ -3,6 +3,9 @@
 #include "build_identity.h"
 #include "updatechecker.h"
 #include "upgradebanner.h"
+#include "portcheck.h"
+#include "miningrewards.h"
+#include "inforow.h"
 #include "mainwindow.h"
 #include "miningsessionstatus.h"
 #include "peerheightsemantics.h"
@@ -125,6 +128,15 @@
 namespace {
 
 constexpr int kWalletUnlockTimeoutSeconds = 60 * 60;
+// A main tab's real name. Narrow windows show icon-only tabs (empty text, name
+// in the tooltip), so look tabs up through this, never through tabText().
+QString mainTabName(const QTabWidget* tabs, int index) {
+  const QString stored = tabs->tabBar()->tabData(index).toString();
+  return stored.isEmpty() ? tabs->tabText(index) : stored;
+}
+
+// CPU mining threads shown when the app starts (the user can change it per session).
+constexpr int kDefaultMiningThreads = 4;
 
 enum class NavigationGlyph {
   Dashboard,
@@ -179,11 +191,23 @@ QPixmap drawNavigationGlyph(NavigationGlyph glyph, const QColor& color) {
       line(15, 20, 27, 20); line(15, 26, 27, 26);
       break;
     case NavigationGlyph::Send:
-      line(7, 20, 31, 20); line(23, 12, 31, 20); line(31, 20, 23, 28);
+    case NavigationGlyph::Receive: {
+      // An open tray with an arrow leaving it (Send) or arriving in it (Receive).
+      QPainterPath tray;
+      tray.moveTo(7, 22);
+      tray.lineTo(7, 31);
+      tray.quadTo(7, 34, 10, 34);
+      tray.lineTo(30, 34);
+      tray.quadTo(33, 34, 33, 31);
+      tray.lineTo(33, 22);
+      painter.drawPath(tray);
+      if (glyph == NavigationGlyph::Send) {
+        line(20, 24, 20, 6); line(13, 13, 20, 6); line(20, 6, 27, 13);
+      } else {
+        line(20, 6, 20, 24); line(13, 17, 20, 24); line(20, 24, 27, 17);
+      }
       break;
-    case NavigationGlyph::Receive:
-      line(7, 20, 31, 20); line(15, 12, 7, 20); line(7, 20, 15, 28);
-      break;
+    }
     case NavigationGlyph::Transactions:
       line(9, 10, 31, 10); line(9, 20, 31, 20); line(9, 30, 25, 30);
       painter.drawPoint(QPointF(5, 10)); painter.drawPoint(QPointF(5, 20)); painter.drawPoint(QPointF(5, 30));
@@ -200,17 +224,58 @@ QPixmap drawNavigationGlyph(NavigationGlyph glyph, const QColor& color) {
     case NavigationGlyph::Card:
       rect(5, 10, 30, 21, 4); line(6, 17, 34, 17); line(10, 25, 18, 25);
       break;
-    case NavigationGlyph::Pool:
-      painter.drawEllipse(QRectF(8, 7, 9, 9)); painter.drawEllipse(QRectF(23, 7, 9, 9));
-      painter.drawArc(QRectF(4, 17, 17, 17), 0, 180 * 16); painter.drawArc(QRectF(19, 17, 17, 17), 0, 180 * 16);
+    case NavigationGlyph::Pool: {
+      // A crowd of four: two smaller people at the back, two larger in front.
+      // Each front figure first erases what is behind it, so outlines read as
+      // people standing in front of each other rather than crossing lines.
+      struct Person { QRectF head; QRectF shoulders; };
+      const Person backLeft{QRectF(4.5, 6.5, 7, 7), QRectF(1, 15, 14, 14)};
+      const Person backRight{QRectF(28.5, 6.5, 7, 7), QRectF(25, 15, 14, 14)};
+      const Person frontLeft{QRectF(11, 10, 8, 8), QRectF(6, 21, 18, 18)};
+      const Person frontRight{QRectF(21.5, 10, 8, 8), QRectF(16.5, 21, 18, 18)};
+      const QPen crowdPen(color, 2.6, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin);
+      auto drawPerson = [&](const Person& p) {
+        painter.setPen(crowdPen);
+        painter.setBrush(Qt::NoBrush);
+        painter.drawEllipse(p.head);
+        painter.drawArc(p.shoulders, 0, 180 * 16);
+      };
+      auto clearBehind = [&](const Person& p) {
+        painter.save();
+        painter.setCompositionMode(QPainter::CompositionMode_Clear);
+        painter.setPen(QPen(Qt::black, 4.4, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        painter.setBrush(Qt::black);
+        painter.drawEllipse(p.head);
+        painter.drawPie(p.shoulders, 0, 180 * 16);
+        painter.restore();
+      };
+      drawPerson(backLeft);
+      drawPerson(backRight);
+      clearBehind(frontLeft);
+      drawPerson(frontLeft);
+      clearBehind(frontRight);
+      drawPerson(frontRight);
       break;
+    }
     case NavigationGlyph::Shield:
       line(20, 4, 32, 9); line(32, 9, 30, 24); line(30, 24, 20, 35);
       line(20, 35, 10, 24); line(10, 24, 8, 9); line(8, 9, 20, 4);
       break;
-    case NavigationGlyph::Mining:
-      line(8, 31, 29, 10); line(20, 8, 32, 20); line(5, 34, 12, 27);
+    case NavigationGlyph::Mining: {
+      // Pickaxe: a straight handle meeting the middle of a curved head with
+      // two pointed tips (a filled crescent).
+      line(8, 32, 26, 14);
+      QPainterPath head;
+      head.moveTo(15, 6);
+      head.quadTo(33.5, 6.5, 34, 25);    // outer edge, bowing up and right
+      head.quadTo(28, 12, 15, 6);        // inner edge, a shallower bow
+      painter.save();
+      painter.setPen(QPen(color, 1.2, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+      painter.setBrush(color);
+      painter.drawPath(head);
+      painter.restore();
       break;
+    }
     case NavigationGlyph::Settings:
       painter.drawEllipse(QRectF(14, 14, 12, 12));
       painter.drawEllipse(QRectF(7, 7, 26, 26));
@@ -2303,6 +2368,9 @@ MainWindow::~MainWindow() {
 }
 
 void MainWindow::setupUI() {
+  // Tab names and other tooltips show on hover even while another app is in
+  // front (macOS otherwise shows tooltips only for the active window).
+  setAttribute(Qt::WA_AlwaysShowToolTips, true);
   auto *central = new QWidget;
   setCentralWidget(central);
 
@@ -2433,6 +2501,33 @@ void MainWindow::setupUI() {
   auto *tabs = new QTabWidget;
   tabs->setIconSize(QSize(18, 18));
   mainTabs_ = tabs;
+  // Icon-only tabs when the full names do not fit; names come back when they do.
+  class CompactTabsWatcher : public QObject {
+  public:
+    CompactTabsWatcher(QTabWidget* tabs, std::function<void()> update)
+        : QObject(tabs), tabs_(tabs), update_(std::move(update)) {
+      tabs->installEventFilter(this);
+      tabs->tabBar()->installEventFilter(this);
+    }
+    bool eventFilter(QObject* watched, QEvent* event) override {
+      const bool resized = watched == tabs_ && event->type() == QEvent::Resize;
+      const bool tabsChanged = watched == tabs_->tabBar() && event->type() == QEvent::LayoutRequest &&
+                               tabs_->count() != lastCount_;
+      if ((resized || tabsChanged) && !busy_) {
+        busy_ = true;
+        lastCount_ = tabs_->count();
+        update_();
+        busy_ = false;
+      }
+      return false;
+    }
+  private:
+    QTabWidget* tabs_;
+    std::function<void()> update_;
+    int lastCount_ = -1;
+    bool busy_ = false;
+  };
+  new CompactTabsWatcher(tabs, [this]() { updateCompactTabs(); });
   connect(tabs, &QTabWidget::currentChanged, this, [this](int index) {
     updateMiningFocusDimState();
     setMiningOutputCinematicEnabled(isMining_);
@@ -2443,8 +2538,8 @@ void MainWindow::setupUI() {
     // Keep one composer and one set of RPC state; show covenant creation next
     // to contract management, and payment composition on Send.
     if (sendComposer_ && sendComposerHome_ && covenantComposerHome_) {
-      const bool covenants = mainTabs_->tabText(index).contains("Covenants");
-      const bool payments = mainTabs_->tabText(index).contains("Send");
+      const bool covenants = mainTabName(mainTabs_, index).contains("Covenants");
+      const bool payments = mainTabName(mainTabs_, index).contains("Send");
       if (covenants || payments) {
         auto* destination = covenants ? covenantComposerHome_ : sendComposerHome_;
         destination->addWidget(sendComposer_);
@@ -2455,7 +2550,7 @@ void MainWindow::setupUI() {
       }
     }
     // Auto-refresh contracts when the Covenants tab is selected
-    if (mainTabs_ && mainTabs_->tabText(index).contains("Covenants")) {
+    if (mainTabs_ && mainTabName(mainTabs_, index).contains("Covenants")) {
         refreshContractsList();
     }
   });
@@ -2504,20 +2599,32 @@ void MainWindow::setupUI() {
   {
     auto *overview = new QWidget;
     auto *layout = new QVBoxLayout(overview);
+    // All three Overview rows share one 3:2 column split and one gutter, and the
+    // split alone decides card widths (size hints ignored horizontally), so the
+    // right-hand cards (v7 Consensus, Mempool, Resources) share one left edge.
+    constexpr int kOverviewLeftStretch = 3;
+    constexpr int kOverviewRightStretch = 2;
+    constexpr int kOverviewGutter = 12;
+    auto overviewColumnCard = [](QWidget* card) {
+      card->setSizePolicy(QSizePolicy::Ignored, card->sizePolicy().verticalPolicy());
+    };
     auto *topRow = new QHBoxLayout;
+    topRow->setSpacing(kOverviewGutter);
     topRow->setSpacing(12);
     
     auto *infoGroup = new QGroupBox("Network Info");
     auto *infoLayout = new QVBoxLayout(infoGroup);
     infoGroup->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Maximum);
     
-    lblHeight_ = new QLabel("Height: -");
-    lblHeaders_ = new QLabel("Headers: -");
-    lblConnections_ = new QLabel("Connections: -");
-    lblMempool_ = new QLabel("Mempool: -");
-    lblPhase_ = new QLabel("Halving Epoch: -");
-    lblSupply_ = new QLabel("Supply: -");
-    lblReward_ = new QLabel("Next Reward: -");
+    // Name on the left, value right-aligned (InfoRow keeps "Name: value" text).
+    lblHeight_ = new InfoRow("Height: -");
+    lblHeaders_ = new InfoRow("Headers: -");
+    lblConnections_ = new InfoRow("Connections: -");
+    lblMempool_ = new InfoRow("Mempool: -");
+    lblMempool_->hide();  // the Mempool card already shows this
+    lblPhase_ = new InfoRow("Next halving: -");
+    lblSupply_ = new InfoRow("Supply: -");
+    lblReward_ = new InfoRow("Next Reward: -");
     lblSyncProgress_ = new QLabel("");
     lblSyncProgress_->setStyleSheet("QLabel { color: #cbd3dc; font-weight: 600; background: #262b32; border: 1px solid #373d46; border-radius: 6px; padding: 5px; }");
     
@@ -2525,12 +2632,12 @@ void MainWindow::setupUI() {
     infoLayout->addWidget(lblHeaders_);
     infoLayout->addWidget(lblSyncProgress_);
     infoLayout->addWidget(lblConnections_);
-    infoLayout->addWidget(lblMempool_);
     infoLayout->addWidget(lblPhase_);
     infoLayout->addWidget(lblSupply_);
     infoLayout->addWidget(lblReward_);
     
-    topRow->addWidget(infoGroup, 3);
+    overviewColumnCard(infoGroup);
+    topRow->addWidget(infoGroup, kOverviewLeftStretch);
     
     // ═══════════════════════════════════════════════════════════════════
     // 🛡️ V7 CONSENSUS HEALTH
@@ -2584,7 +2691,8 @@ void MainWindow::setupUI() {
       v7Column->addWidget(pqBox);
 
       v7Group->setLayout(v7Column);
-      topRow->addWidget(v7Group, 2);
+      overviewColumnCard(v7Group);
+      topRow->addWidget(v7Group, kOverviewRightStretch);
     }
     layout->addLayout(topRow);
 
@@ -2596,6 +2704,7 @@ void MainWindow::setupUI() {
     // filling it.
     // ═══════════════════════════════════════════════════════════════════
     auto* chainActivityRow = new QHBoxLayout;
+    chainActivityRow->setSpacing(kOverviewGutter);
     chainActivityRow->setSpacing(12);
     {
       auto* blocksCard = new QGroupBox("Latest Blocks");
@@ -2621,7 +2730,8 @@ void MainWindow::setupUI() {
       cardLayout->addLayout(header);
 
       overviewBlocksLayout_ = cardLayout;
-      chainActivityRow->addWidget(blocksCard, 7);
+      overviewColumnCard(blocksCard);
+      chainActivityRow->addWidget(blocksCard, kOverviewLeftStretch);
     }
     layout->addLayout(chainActivityRow);
 
@@ -2635,7 +2745,7 @@ void MainWindow::setupUI() {
     // separation used by the rows above, without drawing divider rules.
     auto *monitoringColumns = new QHBoxLayout;
     monitoringColumns->setContentsMargins(0, 0, 0, 0);
-    monitoringColumns->setSpacing(0);
+    monitoringColumns->setSpacing(kOverviewGutter);
     auto *nodeOperationBox = new QGroupBox("Node operation");
     auto *networkColumn = new QVBoxLayout(nodeOperationBox);
     networkColumn->setContentsMargins(10, 12, 10, 10);
@@ -2657,7 +2767,7 @@ void MainWindow::setupUI() {
     btnNetworkSettings->setStyleSheet(chromeButtonStyle());
     connect(btnNetworkSettings, &QPushButton::clicked, this, [tabs]() {
       for (int i = 0; i < tabs->count(); ++i) {
-        if (tabs->tabText(i).contains("Settings", Qt::CaseInsensitive)) {
+        if (mainTabName(tabs, i).contains("Settings", Qt::CaseInsensitive)) {
           tabs->setCurrentIndex(i);
           return;
         }
@@ -2764,24 +2874,30 @@ void MainWindow::setupUI() {
     mempoolLayout->addWidget(lblMempoolSize_);
     mempoolLayout->addWidget(lblMempoolBytes_);
     tblMempoolOverview_ = new QTableWidget(0, 4);
+    tblMempoolOverview_->setObjectName("overviewMempoolTable");
     tblMempoolOverview_->setHorizontalHeaderLabels({"Transaction", "Fee", "Size", "Age"});
     tblMempoolOverview_->horizontalHeader()->setStretchLastSection(false);
     tblMempoolOverview_->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
-    tblMempoolOverview_->horizontalHeader()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
-    tblMempoolOverview_->horizontalHeader()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
-    tblMempoolOverview_->horizontalHeader()->setSectionResizeMode(3, QHeaderView::ResizeToContents);
+    // Fixed, readable widths for the short columns (sized-to-contents made them
+    // as narrow as their header words when the pool was empty).
+    for (const auto& [column, width] : {std::pair{1, 96}, std::pair{2, 72}, std::pair{3, 72}}) {
+      tblMempoolOverview_->horizontalHeader()->setSectionResizeMode(column, QHeaderView::Fixed);
+      tblMempoolOverview_->horizontalHeader()->resizeSection(column, width);
+    }
     tblMempoolOverview_->verticalHeader()->setVisible(false);
     tblMempoolOverview_->setEditTriggers(QAbstractItemView::NoEditTriggers);
     tblMempoolOverview_->setSelectionBehavior(QAbstractItemView::SelectRows);
     tblMempoolOverview_->setMinimumHeight(120);
     tblMempoolOverview_->setToolTip("Transactions currently held by this local node");
     mempoolLayout->addWidget(tblMempoolOverview_);
-    chainActivityRow->addWidget(mempoolBox, 3);
+    overviewColumnCard(mempoolBox);
+    chainActivityRow->addWidget(mempoolBox, kOverviewRightStretch);
     
     // Peers Summary + compact connected peers table
     auto *peersBox = new QGroupBox("🌐 Peers");
     auto *peersLayout = new QVBoxLayout(peersBox);
     lblPeersCount_ = new QLabel("0 peers");
+    lblPeersCount_->setObjectName("overviewPeersCount");
     lblPeersCount_->setStyleSheet("QLabel { font-size: 18px; font-weight: bold; color: #d6dde6; }");
     lblPeersStatus_ = new QLabel("Disconnected");
     lblPeersStatus_->setStyleSheet("QLabel { font-size: 11px; color: #868e96; }");
@@ -2790,6 +2906,10 @@ void MainWindow::setupUI() {
     peersSummary->addWidget(lblPeersCount_);
     peersSummary->addWidget(lblPeersStatus_);
     peersSummary->addStretch();
+    // Node operation stretches to end level with the right column; the summary
+    // keeps its natural height so that extra space goes to the peers table.
+    lblPeersCount_->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
+    lblPeersStatus_->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
     peersLayout->addLayout(peersSummary);
 
     tblPeersOverview_ = new QTableWidget(0, 6);
@@ -2809,32 +2929,84 @@ void MainWindow::setupUI() {
     tblPeersOverview_->setEditTriggers(QAbstractItemView::NoEditTriggers);
     tblPeersOverview_->setSortingEnabled(true);
     tblPeersOverview_->setMinimumHeight(118);
-    tblPeersOverview_->setMaximumHeight(145);  // Compact view
+    // No height cap: the table absorbs the row's extra height (see above).
     tblPeersOverview_->setStyleSheet(
       "QTableWidget { gridline-color: #3a4048; background: #1d2126; color: #d5dde6; } "
       "QHeaderView::section { background: #272c33; color: #d5dde6; padding: 4px; font-weight: bold; border: 1px solid #373d46; }"
     );
-    peersLayout->addWidget(tblPeersOverview_);
+    peersLayout->addWidget(tblPeersOverview_, 1);
     networkColumn->addWidget(peersBox);
-    monitoringColumns->addWidget(nodeOperationBox, 2, Qt::AlignTop);
-    auto* columnGutter = new QWidget;
-    columnGutter->setStyleSheet("QWidget { background: #14191f; }");
-    columnGutter->setFixedWidth(12);
-    monitoringColumns->addWidget(columnGutter);
-    monitoringColumns->addWidget(cpuBox, 1, Qt::AlignTop);
+    overviewColumnCard(nodeOperationBox);
+    overviewColumnCard(cpuBox);
+    // My mining rewards: this wallet's mined blocks, coins still maturing and
+    // when the next ones unlock. It stretches so the right column ends level
+    // with Node operation.
+    auto* rewardsBox = new QGroupBox("My mining rewards");
+    auto* rewardsLayout = new QVBoxLayout(rewardsBox);
+    rewardsLayout->setContentsMargins(10, 10, 10, 8);
+    rewardsLayout->setSpacing(3);
+    lblRewardsHeadline_ = new QLabel("Loading…");
+    lblRewardsHeadline_->setObjectName("miningRewardsHeadline");
+    lblRewardsHeadline_->setStyleSheet("QLabel { font-size: 15px; font-weight: bold; }");
+    lblRewardsPeriod_ = new QLabel(" ");
+    lblRewardsPeriod_->setStyleSheet("QLabel { font-size: 11px; color: #868e96; }");
+    lblRewardsMaturing_ = new QLabel(" ");
+    lblRewardsMaturing_->setObjectName("miningRewardsMaturing");
+    lblRewardsMaturing_->setStyleSheet("QLabel { font-size: 12px; }");
+    lblRewardsMaturing_->setWordWrap(true);
+    lblRewardsLastFound_ = new QLabel(" ");
+    lblRewardsLastFound_->setStyleSheet("QLabel { font-size: 11px; color: #868e96; }");
+    rewardsLayout->addWidget(lblRewardsHeadline_);
+    rewardsLayout->addWidget(lblRewardsPeriod_);
+    rewardsLayout->addWidget(lblRewardsMaturing_);
+    rewardsLayout->addWidget(lblRewardsLastFound_);
+    rewardsLayout->addStretch(1);
+    rewardsBox->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Expanding);
+
+    auto* rightMonitoring = new QWidget;
+    auto* rightMonitoringLayout = new QVBoxLayout(rightMonitoring);
+    rightMonitoringLayout->setContentsMargins(0, 0, 0, 0);
+    rightMonitoringLayout->setSpacing(kOverviewGutter);
+    rightMonitoringLayout->addWidget(cpuBox);
+    rightMonitoringLayout->addWidget(rewardsBox, 1);
+    overviewColumnCard(rightMonitoring);
+
+    // Both columns fill the row so the left and right cards end on one line.
+    nodeOperationBox->setSizePolicy(nodeOperationBox->sizePolicy().horizontalPolicy(), QSizePolicy::Preferred);
+    monitoringColumns->addWidget(nodeOperationBox, kOverviewLeftStretch);
+    monitoringColumns->addWidget(rightMonitoring, kOverviewRightStretch);
     layout->addLayout(monitoringColumns);
 
     // Row 3: Alerts (last 5 events)
     auto *alertsBox = new QGroupBox("⚠️ Recent Alerts");
+    alertsBox->setObjectName("overviewAlertsBox");
     auto *alertsLayout = new QVBoxLayout(alertsBox);
     txtAlerts_ = new QTextEdit;
+    txtAlerts_->setObjectName("overviewAlerts");
     txtAlerts_->setReadOnly(true);
-    txtAlerts_->setMaximumHeight(48);
     txtAlerts_->setStyleSheet(
       "QTextEdit { background: #1d2126; border: 1px solid #373d46; color: #cfd7df; font-family: monospace; font-size: 11px; }"
     );
     txtAlerts_->setPlaceholderText("No recent alerts");
+    // Compact when empty: one muted line instead of an empty box. With alerts,
+    // the list sizes itself to its content (up to about six lines, then scrolls).
+    auto* lblNoAlerts = new QLabel("No recent alerts");
+    lblNoAlerts->setStyleSheet("QLabel { color: #868e96; font-size: 11px; background: transparent; }");
+    alertsLayout->addWidget(lblNoAlerts);
     alertsLayout->addWidget(txtAlerts_);
+    alertsBox->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Maximum);
+    auto fitAlerts = [this, lblNoAlerts]() {
+      const bool empty = txtAlerts_->document()->isEmpty();
+      lblNoAlerts->setVisible(empty);
+      txtAlerts_->setVisible(!empty);
+      if (!empty) {
+        const int lines = qBound(1, txtAlerts_->document()->blockCount(), 6);
+        const int height = lines * txtAlerts_->fontMetrics().lineSpacing() + 16;
+        txtAlerts_->setFixedHeight(height);
+      }
+    };
+    connect(txtAlerts_, &QTextEdit::textChanged, this, fitAlerts);
+    fitAlerts();
     layout->addWidget(alertsBox);
     
     // Row 5: Export Button
@@ -2845,12 +3017,13 @@ void MainWindow::setupUI() {
     connect(btnExportMetrics, &QPushButton::clicked, this, &MainWindow::onExportMetrics);
     exportLayout->addWidget(btnExportMetrics);
     layout->addLayout(exportLayout);
+    // Any spare height collects below the cards instead of inside them.
+    layout->addStretch(1);
     
     // ═══════════════════════════════════════════════════════════════════
     // END MONITORING DASHBOARD
     // ═══════════════════════════════════════════════════════════════════
     
-    overview->setMinimumHeight(1120); // Scroll area still handles smaller screens.
     overview->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::MinimumExpanding);
     tabs->addTab(makeScrollableTab(overview), navigationIcon(NavigationGlyph::Dashboard), "Overview");
   }
@@ -3015,7 +3188,7 @@ void MainWindow::setupUI() {
       }
       if (mainTabs_) {
         for (int i = 0; i < mainTabs_->count(); ++i) {
-          if (mainTabs_->tabText(i).contains(tabLabelFragment)) {
+          if (mainTabName(mainTabs_, i).contains(tabLabelFragment)) {
             mainTabs_->setCurrentIndex(i);
             break;
           }
@@ -3224,11 +3397,11 @@ void MainWindow::setupUI() {
         updateSendModeUi();
         if ((mode == "public_contract" || mode == "private_contract") && mainTabs_) {
           for (int i = 0; i < mainTabs_->count(); ++i)
-            if (mainTabs_->tabText(i).contains("Covenants")) mainTabs_->setCurrentIndex(i);
+            if (mainTabName(mainTabs_, i).contains("Covenants")) mainTabs_->setCurrentIndex(i);
         } else if (mode == "public_transfer" && mainTabs_ &&
-                   mainTabs_->tabText(mainTabs_->currentIndex()).contains("Covenants")) {
+                   mainTabName(mainTabs_, mainTabs_->currentIndex()).contains("Covenants")) {
           for (int i = 0; i < mainTabs_->count(); ++i)
-            if (mainTabs_->tabText(i).contains("Send")) mainTabs_->setCurrentIndex(i);
+            if (mainTabName(mainTabs_, i).contains("Send")) mainTabs_->setCurrentIndex(i);
         }
     };
     connect(cmbSendAction_, QOverload<int>::of(&QComboBox::currentIndexChanged),
@@ -4342,7 +4515,8 @@ void MainWindow::setupUI() {
     connect(btnUseWalletAddr_, &QPushButton::clicked, this, &MainWindow::onSetMiningAddress);
     row1->addWidget(btnUseWalletAddr_);
     row1->addWidget(new QLabel("Threads:"));
-    edtMiningThreads_ = new QLineEdit("8");
+    edtMiningThreads_ = new QLineEdit(QString::number(kDefaultMiningThreads));
+    edtMiningThreads_->setObjectName("miningThreads");
     edtMiningThreads_->setStyleSheet(miningControlFieldStyle());
     edtMiningThreads_->setAlignment(Qt::AlignCenter);
     edtMiningThreads_->setFixedSize(56, 30);
@@ -6106,6 +6280,9 @@ void MainWindow::onRpcResult(const QString& method, const QJsonValue& result) {
       }
     }
   }
+  else if (method == "overview.miningrewards") {
+    if (result.isArray()) updateMiningRewards(result.toArray());
+  }
   else if (method == "getconsensusinfo") {
     nodeReleaseHeight_ = UpgradePolicy::parseReleaseActivationHeight(result.toObject());
     evaluateUpgradeBanner();
@@ -6117,6 +6294,7 @@ void MainWindow::onRpcResult(const QString& method, const QJsonValue& result) {
       cachedHeight_ = obj["blocks"].toInt();
       cachedHeaders_ = obj["headers"].toInt();
       evaluateUpgradeBanner();
+      requestMiningRewards();
       overviewNodeSynced_ = cachedHeaders_ > 0 && cachedHeight_ >= cachedHeaders_;
       refreshAiStatusStrip();
 
@@ -7988,6 +8166,16 @@ void MainWindow::onRpcError(const QString& method, int code, const QString& mess
 
   // Older nodes (v8.1.12 and earlier) do not have this method; that is not an error.
   if (method == "getconsensusinfo") return;
+  // The Overview rewards panel shows its own state; never the bottom error bar.
+  if (method == "overview.miningrewards") {
+    if (lblRewardsHeadline_) {
+      lblRewardsHeadline_->setText("Mining rewards unavailable");
+      lblRewardsPeriod_->setText("Load a wallet to see its mining rewards");
+      lblRewardsMaturing_->setVisible(false);
+      lblRewardsLastFound_->setVisible(false);
+    }
+    return;
+  }
 
   if (method == "wallet.listunspent") {
     utxoRequestPending_ = false;
@@ -8433,6 +8621,22 @@ void MainWindow::updateStatus(const QJsonObject& info) {
   }
 }
 
+void MainWindow::updateCompactTabs() {
+  if (!mainTabs_) return;
+  QTabBar* bar = mainTabs_->tabBar();
+  // Restore every name (recording it first), then measure the full-name width.
+  for (int i = 0; i < mainTabs_->count(); ++i) {
+    if (bar->tabData(i).toString().isEmpty()) bar->setTabData(i, mainTabs_->tabText(i));
+    const QString name = bar->tabData(i).toString();
+    mainTabs_->setTabToolTip(i, name);
+    if (mainTabs_->tabText(i) != name) mainTabs_->setTabText(i, name);
+  }
+  const bool compact = bar->sizeHint().width() > mainTabs_->width() - 8;
+  if (compact) {
+    for (int i = 0; i < mainTabs_->count(); ++i) mainTabs_->setTabText(i, QString());
+  }
+}
+
 void MainWindow::startUpdateChecks() {
   QUrl noticeUrl = UpdateChecker::defaultNoticeUrl();
 #ifndef NDEBUG
@@ -8472,6 +8676,39 @@ void MainWindow::evaluateUpgradeBanner() {
   upgradeBanner_->present(r, release, chainTiming_.approxDuration(qMax<qint64>(0, r.blocksLeft)));
 }
 
+namespace {
+// One page covers a full day of rewards even with 1-minute blocks (1440/day).
+constexpr int kMiningRewardsPage = 1600;
+}
+
+void MainWindow::requestMiningRewards(bool force) {
+  if (!rpc_ || !lblRewardsHeadline_) return;
+  const qint64 now = QDateTime::currentMSecsSinceEpoch();
+  if (!force) {
+    if (now - miningRewardsRequestedAtMs_ < 20 * 1000) return;  // at most every 20 s
+    // Same tip: refresh only every 5 minutes so "last found … ago" stays honest.
+    if (cachedHeight_ == miningRewardsRequestedHeight_ && now - miningRewardsRequestedAtMs_ < 5 * 60 * 1000) return;
+  }
+  miningRewardsRequestedAtMs_ = now;
+  miningRewardsRequestedHeight_ = cachedHeight_;
+  rpc_->callNamedAs("wallet.listtransactions",
+                    QJsonObject{{"count", kMiningRewardsPage}, {"offset", 0}, {"type", "mined"}},
+                    QStringLiteral("overview.miningrewards"));
+}
+
+void MainWindow::updateMiningRewards(const QJsonArray& rewards) {
+  if (!lblRewardsHeadline_) return;
+  const MiningRewardsSummary summary =
+      summarizeMiningRewards(rewards, QDateTime::currentSecsSinceEpoch(), kMiningRewardsPage);
+  const MiningRewardsText text = miningRewardsText(summary, chainTiming_);
+  lblRewardsHeadline_->setText(text.headline);
+  lblRewardsPeriod_->setText(text.period);
+  lblRewardsMaturing_->setText(text.maturing);
+  lblRewardsMaturing_->setVisible(!text.maturing.isEmpty());
+  lblRewardsLastFound_->setText(text.lastFound);
+  lblRewardsLastFound_->setVisible(!text.lastFound.isEmpty());
+}
+
 void MainWindow::refreshTimingText() {
   // Block targets stay fixed; only the time estimates follow the node's block time.
   if (cmbFeePreset_ && cmbFeePreset_->count() >= 3) {
@@ -8493,7 +8730,14 @@ void MainWindow::updateEconomics(const QJsonObject& economics) {
   if (lblPhase_) {
     // Use halving epoch instead of non-existent "phase"
     if (economics.contains("current_halving_epoch")) {
-      lblPhase_->setText(QString("Halving Epoch: %1").arg(economics["current_halving_epoch"].toInt()));
+      // Next halving block and roughly when, at the node's block time.
+      const qint64 interval = economics.value("halving_interval").toInteger(1314000);
+      const qint64 epoch = economics["current_halving_epoch"].toInt();
+      const qint64 nextHalving = (epoch + 1) * interval + 1;  // halvings = (height - 1) / interval
+      const qint64 blocksLeft = nextHalving - qMax(0, cachedHeight_);
+      lblPhase_->setText(cachedHeight_ > 0 && blocksLeft > 0
+          ? QString("Next halving: block %1 · %2").arg(nextHalving).arg(chainTiming_.approxDuration(blocksLeft))
+          : QString("Next halving: block %1").arg(nextHalving));
     } else {
       lblPhase_->setVisible(false); // Hide if not available
     }
@@ -8757,6 +9001,8 @@ void MainWindow::showExplorerWindow() {
   if (!explorerWindow_) {
     return;
   }
+  // show() leaves a window minimized to the Dock where it is; restore it.
+  explorerWindow_->setWindowState(explorerWindow_->windowState() & ~Qt::WindowMinimized);
   explorerWindow_->show();
   explorerWindow_->raise();
   explorerWindow_->activateWindow();
@@ -11609,8 +11855,8 @@ void MainWindow::startInternalMiner(bool useGpu) {
   bool ok;
   int threads = edtMiningThreads_->text().toInt(&ok);
   if (!ok || threads < 1 || threads > 256) {
-    threads = 4;  // Default to 4 threads if invalid
-    edtMiningThreads_->setText("4");
+    threads = kDefaultMiningThreads;  // invalid entry: fall back to the default
+    edtMiningThreads_->setText(QString::number(kDefaultMiningThreads));
   }
 
   // Build cookie path from datadir
@@ -12056,7 +12302,8 @@ void MainWindow::startExternalMiner() {
   // This ensures the miner can authenticate with the same daemon
   QString dataDirForMiner = rpc_->datadir();
   QString cookiePath = QDir(dataDirForMiner).filePath(".cookie");
-  const QString threadCount = edtMiningThreads_->text().trimmed().isEmpty() ? "8" : edtMiningThreads_->text().trimmed();
+  const QString threadCount = edtMiningThreads_->text().trimmed().isEmpty()
+      ? QString::number(kDefaultMiningThreads) : edtMiningThreads_->text().trimmed();
 
   QString helpText;
   QString probeError;
@@ -13454,10 +13701,7 @@ bool MainWindow::startDaemonWithOptions(bool showFeedback, bool openLogWindow) {
   // of failing silently. The listener might be a usable existing daemon,
   // so offer to connect to it.
   {
-    QTcpSocket probe;
-    probe.connectToHost("127.0.0.1", 20998);
-    const bool portInUse = probe.waitForConnected(500);
-    probe.abort();
+    const bool portInUse = tcpPortAccepts("127.0.0.1", 20998, 500);
     if (portInUse && showFeedback) {
       QMessageBox box(this);
       box.setIcon(QMessageBox::Warning);
@@ -15041,7 +15285,7 @@ void MainWindow::onSendTransaction() {
   if (sendSubmissionPending_) return;
   if (currentSendMode() == "private_composer") {
     for (int i = 0; mainTabs_ && i < mainTabs_->count(); ++i) {
-      if (mainTabs_->tabText(i).contains("Shielded")) {
+      if (mainTabName(mainTabs_, i).contains("Shielded")) {
         mainTabs_->setCurrentIndex(i);
         return;
       }

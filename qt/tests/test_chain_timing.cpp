@@ -28,6 +28,11 @@ private Q_SLOTS:
         QCOMPARE(formatApproxSeconds(3600), QString("~1 h"));
         QCOMPARE(formatApproxSeconds(86400 + 3 * 3600), QString("~1 day 3 h"));
         QCOMPARE(formatApproxSeconds(2 * 86400), QString("~2 days"));
+        // A year or more reads in years: halving horizons, not day counts.
+        QCOMPARE(formatApproxSeconds(qint64(1314000) * 120), QString("~5.0 years"));
+        QCOMPARE(formatApproxSeconds(qint64(1314000) * 60), QString("~2.5 years"));
+        QCOMPARE(formatApproxSeconds(364 * 86400), QString("~364 days"));
+        QCOMPARE(formatApproxSeconds(qint64(31'557'600)), QString("~1.0 year"));
         QCOMPARE(formatApproxSeconds(0), QString("~0 min"));
         QCOMPARE((ChainTiming{60, true}).approxDuration(-5), QString("~0 min"));
     }

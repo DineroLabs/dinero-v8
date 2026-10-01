@@ -529,6 +529,9 @@ endif()
 set(GUI_SOURCES
   src/chaintiming.cpp
   src/upgradepolicy.cpp
+  src/miningrewards.cpp
+  src/inforow.cpp
+  src/portcheck.cpp
   src/upgradebanner.cpp
   src/updatechecker.cpp
   src/privatecovenantwidget.cpp
@@ -1374,6 +1377,17 @@ if(BUILD_TESTING)
   add_test(NAME WalletNavigation COMMAND test_wallet_navigation)
   set_tests_properties(WalletNavigation PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 30)
 
+  # Overview columns: the right-hand cards share one left edge and width.
+  add_executable(test_overview_columns ${_wallet_test_sources} tests/test_overview_columns.cpp)
+  target_link_libraries(test_overview_columns PRIVATE
+    $<TARGET_PROPERTY:dinero-qt,LINK_LIBRARIES> Qt6::Test)
+  target_include_directories(test_overview_columns PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src $<TARGET_PROPERTY:dinero-qt,INCLUDE_DIRECTORIES>)
+  target_compile_definitions(test_overview_columns PRIVATE
+    QT_NO_KEYWORDS $<TARGET_PROPERTY:dinero-qt,COMPILE_DEFINITIONS>)
+  add_test(NAME OverviewColumns COMMAND test_overview_columns)
+  set_tests_properties(OverviewColumns PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 60)
+
   add_executable(test_covenant_form_policy tests/test_covenant_form_policy.cpp)
   target_include_directories(test_covenant_form_policy PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
   target_link_libraries(test_covenant_form_policy PRIVATE Qt6::Core Qt6::Test)
@@ -1477,6 +1491,34 @@ if(BUILD_TESTING)
 
   target_compile_definitions(test_wallet_scoped_state PRIVATE QT_NO_KEYWORDS)
   add_test(NAME WalletScopedState COMMAND test_wallet_scoped_state)
+
+  add_executable(test_rpc_reply_alias tests/test_rpc_reply_alias.cpp src/rpcclient.cpp src/rpcclient.h)
+  target_include_directories(test_rpc_reply_alias PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_link_libraries(test_rpc_reply_alias PRIVATE Qt6::Core Qt6::Network Qt6::Test)
+  target_compile_definitions(test_rpc_reply_alias PRIVATE QT_NO_KEYWORDS)
+  add_test(NAME RpcReplyAlias COMMAND test_rpc_reply_alias)
+
+  add_executable(test_mining_rewards tests/test_mining_rewards.cpp src/miningrewards.cpp src/chaintiming.cpp)
+  target_include_directories(test_mining_rewards PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_link_libraries(test_mining_rewards PRIVATE Qt6::Core Qt6::Test)
+  target_compile_definitions(test_mining_rewards PRIVATE QT_NO_KEYWORDS)
+  add_test(NAME MiningRewards COMMAND test_mining_rewards)
+
+  add_executable(test_info_row tests/test_info_row.cpp src/inforow.cpp)
+  target_include_directories(test_info_row PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_link_libraries(test_info_row PRIVATE Qt6::Widgets Qt6::Test)
+  target_compile_definitions(test_info_row PRIVATE QT_NO_KEYWORDS)
+  add_test(NAME InfoRow COMMAND test_info_row)
+  set_tests_properties(InfoRow PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 30)
+
+  add_executable(test_port_check tests/test_port_check.cpp src/portcheck.cpp)
+  target_include_directories(test_port_check PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_link_libraries(test_port_check PRIVATE Qt6::Core Qt6::Network Qt6::Test)
+  target_compile_definitions(test_port_check PRIVATE QT_NO_KEYWORDS)
+  add_test(NAME PortCheck COMMAND test_port_check)
+  set_tests_properties(PortCheck PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 30)
+  set_tests_properties(MiningRewards PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 30)
+  set_tests_properties(RpcReplyAlias PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 30)
 
   add_executable(test_shielded_transfer_policy
     tests/test_shielded_transfer_policy.cpp
