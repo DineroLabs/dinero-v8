@@ -758,7 +758,6 @@ add_library(dinero_rpc_handlers STATIC
   src/pool/wallet_payment_backend.cpp
   src/pool/canonical_payment.cpp
   src/pool/canonical_block.cpp
-  src/pool/canonical_maintenance.cpp
   src/vault/ledger_store.cpp
   src/vault/vault_runtime.cpp
   src/vault/wallet_signing_backend.cpp
@@ -1030,6 +1029,8 @@ set(DINERO_CORE_DAEMON_EDGE_SERVICE_SOURCES
 # Excludes: main(), RPC server, gRPC server, WebSocket server
 # Includes: consensus, mining, mempool, services, metrics, daemon context
 add_library(dinero_core STATIC
+  # Canonical selected-chain maintenance belongs to the core owner, not RPC.
+  src/pool/canonical_maintenance.cpp
   src/contracts/contract_signing_package.cpp
   # Daemon context (dependency injection container access)
   src/daemon/daemon_context.cpp
@@ -1202,6 +1203,11 @@ if(NOT MSVC)
 else()
   target_compile_options(dinero_core PRIVATE /W3)
 endif()
+
+# PoolManager invokes the canonical core adapter; declare the static-library
+# cycle so CMake repeats both archives for single-pass ELF linkers.
+# No implementation is duplicated, stubbed, or force-loaded from the RPC archive.
+target_link_libraries(dinero_pool PRIVATE dinero_core)
 
 target_link_libraries(dinero_core PUBLIC
   dinero_address_encoding
