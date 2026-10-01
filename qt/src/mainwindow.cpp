@@ -2824,12 +2824,16 @@ void MainWindow::setupUI() {
     mempoolLayout->addWidget(lblMempoolSize_);
     mempoolLayout->addWidget(lblMempoolBytes_);
     tblMempoolOverview_ = new QTableWidget(0, 4);
+    tblMempoolOverview_->setObjectName("overviewMempoolTable");
     tblMempoolOverview_->setHorizontalHeaderLabels({"Transaction", "Fee", "Size", "Age"});
     tblMempoolOverview_->horizontalHeader()->setStretchLastSection(false);
     tblMempoolOverview_->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
-    tblMempoolOverview_->horizontalHeader()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
-    tblMempoolOverview_->horizontalHeader()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
-    tblMempoolOverview_->horizontalHeader()->setSectionResizeMode(3, QHeaderView::ResizeToContents);
+    // Fixed, readable widths for the short columns (sized-to-contents made them
+    // as narrow as their header words when the pool was empty).
+    for (const auto& [column, width] : {std::pair{1, 96}, std::pair{2, 72}, std::pair{3, 72}}) {
+      tblMempoolOverview_->horizontalHeader()->setSectionResizeMode(column, QHeaderView::Fixed);
+      tblMempoolOverview_->horizontalHeader()->resizeSection(column, width);
+    }
     tblMempoolOverview_->verticalHeader()->setVisible(false);
     tblMempoolOverview_->setEditTriggers(QAbstractItemView::NoEditTriggers);
     tblMempoolOverview_->setSelectionBehavior(QAbstractItemView::SelectRows);

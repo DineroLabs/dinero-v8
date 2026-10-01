@@ -13,6 +13,7 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QTextEdit>
+#include <QTableWidget>
 #include <QJsonArray>
 #include <QJsonObject>
 
@@ -239,6 +240,23 @@ private Q_SLOTS:
         // The Mempool card already shows mempool size; no duplicate row here.
         for (auto* r : info->findChildren<InfoRow*>())
             QVERIFY2(r->nameText() != "Mempool" || r->isHidden(), "duplicate Mempool row is visible");
+    }
+    void mempoolColumnsAreNotCramped() {
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, dir.path());
+        MainWindow window(dinero::qt::DaemonBootstrapOwner::ApplicationMain);
+        window.resize(1440, 1000);
+        window.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&window));
+        auto* table = window.findChild<QTableWidget*>("overviewMempoolTable");
+        QVERIFY(table);
+        QCoreApplication::processEvents();
+        for (int c = 1; c <= 3; ++c)
+            QVERIFY2(table->columnWidth(c) >= 64,
+                     qPrintable(QString("%1 column is %2 px").arg(table->horizontalHeaderItem(c)->text())
+                                    .arg(table->columnWidth(c))));
+        QVERIFY(table->columnWidth(0) > table->columnWidth(1));
     }
 };
 QTEST_MAIN(OverviewColumnsTest)
