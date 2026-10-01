@@ -10,6 +10,7 @@
 #include "rpcclient.h"
 #include <QLabel>
 #include <QLineEdit>
+#include <QTextEdit>
 #include <QJsonArray>
 #include <QJsonObject>
 
@@ -190,6 +191,28 @@ private Q_SLOTS:
         auto* threads = window.findChild<QLineEdit*>("miningThreads");
         QVERIFY(threads);
         QCOMPARE(threads->text(), QString("4"));
+    }
+    void recentAlertsStayCompactUntilThereAreAlerts() {
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, dir.path());
+        MainWindow window(dinero::qt::DaemonBootstrapOwner::ApplicationMain);
+        window.resize(1440, 1000);
+        window.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&window));
+        auto* box = window.findChild<QGroupBox*>("overviewAlertsBox");
+        auto* alerts = window.findChild<QTextEdit*>("overviewAlerts");
+        QVERIFY(box && alerts);
+        QCoreApplication::processEvents();
+        QVERIFY2(box->height() <= 80, qPrintable(QString("empty alerts box is %1 px tall").arg(box->height())));
+        QVERIFY(alerts->isHidden());
+
+        for (int i = 0; i < 3; ++i) alerts->append(QString("⚠️ Test alert %1").arg(i));
+        QCoreApplication::processEvents();
+        QVERIFY(!alerts->isHidden());
+        QVERIFY2(alerts->height() >= 3 * alerts->fontMetrics().lineSpacing(),
+                 qPrintable(QString("alerts list %1 px for 3 lines").arg(alerts->height())));
+        QVERIFY2(box->height() <= 220, qPrintable(QString("alerts box grew to %1 px").arg(box->height())));
     }
 };
 QTEST_MAIN(OverviewColumnsTest)

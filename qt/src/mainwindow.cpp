@@ -2923,15 +2923,34 @@ void MainWindow::setupUI() {
 
     // Row 3: Alerts (last 5 events)
     auto *alertsBox = new QGroupBox("⚠️ Recent Alerts");
+    alertsBox->setObjectName("overviewAlertsBox");
     auto *alertsLayout = new QVBoxLayout(alertsBox);
     txtAlerts_ = new QTextEdit;
+    txtAlerts_->setObjectName("overviewAlerts");
     txtAlerts_->setReadOnly(true);
-    txtAlerts_->setMaximumHeight(48);
     txtAlerts_->setStyleSheet(
       "QTextEdit { background: #1d2126; border: 1px solid #373d46; color: #cfd7df; font-family: monospace; font-size: 11px; }"
     );
     txtAlerts_->setPlaceholderText("No recent alerts");
+    // Compact when empty: one muted line instead of an empty box. With alerts,
+    // the list sizes itself to its content (up to about six lines, then scrolls).
+    auto* lblNoAlerts = new QLabel("No recent alerts");
+    lblNoAlerts->setStyleSheet("QLabel { color: #868e96; font-size: 11px; background: transparent; }");
+    alertsLayout->addWidget(lblNoAlerts);
     alertsLayout->addWidget(txtAlerts_);
+    alertsBox->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Maximum);
+    auto fitAlerts = [this, lblNoAlerts]() {
+      const bool empty = txtAlerts_->document()->isEmpty();
+      lblNoAlerts->setVisible(empty);
+      txtAlerts_->setVisible(!empty);
+      if (!empty) {
+        const int lines = qBound(1, txtAlerts_->document()->blockCount(), 6);
+        const int height = lines * txtAlerts_->fontMetrics().lineSpacing() + 16;
+        txtAlerts_->setFixedHeight(height);
+      }
+    };
+    connect(txtAlerts_, &QTextEdit::textChanged, this, fitAlerts);
+    fitAlerts();
     layout->addWidget(alertsBox);
     
     // Row 5: Export Button
@@ -2942,12 +2961,13 @@ void MainWindow::setupUI() {
     connect(btnExportMetrics, &QPushButton::clicked, this, &MainWindow::onExportMetrics);
     exportLayout->addWidget(btnExportMetrics);
     layout->addLayout(exportLayout);
+    // Any spare height collects below the cards instead of inside them.
+    layout->addStretch(1);
     
     // ═══════════════════════════════════════════════════════════════════
     // END MONITORING DASHBOARD
     // ═══════════════════════════════════════════════════════════════════
     
-    overview->setMinimumHeight(1120); // Scroll area still handles smaller screens.
     overview->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::MinimumExpanding);
     tabs->addTab(makeScrollableTab(overview), navigationIcon(NavigationGlyph::Dashboard), "Overview");
   }
