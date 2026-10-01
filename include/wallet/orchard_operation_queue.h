@@ -3,6 +3,7 @@
 #include "orchard_wallet.h"
 #include "orchard_wallet_storage.h"
 #include <map>
+#include <optional>
 namespace dinero::wallet {
 // Wallet-local pending operations, NOT consensus or mempool admission. The host
 // must select owned/unspent inputs under its wallet/chain locks. Every returned
@@ -18,6 +19,9 @@ public:
     std::vector<orchard::ResolvedInput> inputs;
     std::vector<orchard::Hash> nullifiers; // All action NFs, including padding.
     std::vector<uint8_t> transaction; // Empty until Ready, frozen thereafter.
+    // Absent on legacy/component intents. Only the account host binds a
+    // canonical request before reservation; never inferred from its ID.
+    std::optional<orchard::Hash> request_commitment{};
   };
   static constexpr size_t kMaxPending = 128;
   [[nodiscard]] static OrchardOperationQueue Empty(orchard::SigningDomain);
@@ -42,6 +46,8 @@ public:
 private:
   friend class OrchardAccountState;
   friend class OrchardOperationArchive;
+  [[nodiscard]] OrchardOperationQueue ReserveRequest(const orchard::Hash &,
+      const orchard::WalletProvingIntent &, const orchard::Hash &) const;
   explicit OrchardOperationQueue(orchard::SigningDomain domain)
       : domain_(domain) {}
   void CheckEntry(const Entry &, bool verify_proof) const;

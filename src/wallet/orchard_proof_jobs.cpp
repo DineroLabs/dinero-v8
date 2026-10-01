@@ -28,6 +28,8 @@ struct OrchardProofJobs::Impl {
         std::unique_ptr<Task> task;
         std::unique_ptr<ProvedWalletBundle> result;
         bool unpublished = false;
+        std::optional<Binding> binding = {};
+        std::unique_ptr<WalletProvingIntent> intent = {};
     };
     mutable std::mutex mutex;
     mutable std::condition_variable changed;
@@ -146,6 +148,46 @@ std::unique_ptr<OrchardProofJobs::Submission> OrchardProofJobs::Prepare(
     catch (...) { impl_->prepared.pop_back(); throw; }
     result->data_->owns_slot = true;
     return result;
+}
+std::unique_ptr<OrchardProofJobs::Submission> OrchardProofJobs::PrepareOwned(
+        const Hash& id,const Binding& binding,WalletBundlePlan plan,SigningContext context) {
+    if (!binding.instance || !binding.session || binding.identity.account>=0x80000000u ||
+        binding.identity.wallet_id==Hash{}) Reject();
+    auto submission=Prepare(id,std::move(plan),std::move(context));
+    auto intent=std::make_unique<WalletProvingIntent>(submission->Intent());
+    std::lock_guard lock(impl_->mutex);
+    const auto found=impl_->jobs.find(id);
+    if (found==impl_->jobs.end() || !found->second.unpublished) Reject();
+    found->second.binding=binding;
+    found->second.intent=std::move(intent);
+    return submission;
+}
+OrchardProofJobs::Capture OrchardProofJobs::CaptureOwned(
+        const Hash& id,const Binding& binding,const OrchardOperationQueue& authenticated) const {
+    const auto entry=authenticated.Entries().find(id);
+    if (entry==authenticated.Entries().end()) Reject();
+    std::lock_guard lock(impl_->mutex);
+    const auto found=impl_->jobs.find(id);
+    if (found==impl_->jobs.end() || found->second.unpublished) return {};
+    const auto& job=found->second;
+    if (!job.binding || !job.intent) Reject(); // Legacy unbound job is not RPC authority.
+    const auto& held=*job.binding;
+    if (!binding.instance || held.instance!=binding.instance || held.session!=binding.session ||
+        held.branch!=binding.branch || held.identity.network!=binding.identity.network ||
+        held.identity.genesis!=binding.identity.genesis || held.identity.wallet_id!=binding.identity.wallet_id ||
+        held.identity.account!=binding.identity.account ||
+        entry->second.message!=job.intent->Message() || entry->second.nullifiers!=job.intent->Nullifiers() ||
+        !SameInputs(entry->second.inputs,job.intent->Inputs())) Reject();
+    Capture result{job.state,{}};
+    if (job.state==State::Succeeded) {
+        if (!job.result || job.result->Authorization().SigningDigest()!=entry->second.message) Reject();
+        const auto& facts=job.result->Authorization().Facts();
+        if (entry->second.nullifiers.size()!=facts.action_count) Reject();
+        for(size_t i=0;i<entry->second.nullifiers.size();++i)
+            if(!std::equal(entry->second.nullifiers[i].begin(),entry->second.nullifiers[i].end(),facts.nullifiers[i])) Reject();
+        result.proof=std::make_unique<ProvedWalletBundle>(*job.result);
+    }
+    return result; // Original task/result/capacity is retained, including on copy failure.
 }
 OrchardProofJobs::~OrchardProofJobs() { Shutdown(); }
 void OrchardProofJobs::Start() {

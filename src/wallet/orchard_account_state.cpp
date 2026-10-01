@@ -361,6 +361,12 @@ OrchardAccountState::Reserve(const Hash &id,
   next->operations = data_->operations.Reserve(id, intent);
   return OrchardAccountState(std::move(next));
 }
+OrchardAccountState OrchardAccountState::ReserveRequest(
+    const Hash &id, const WalletProvingIntent &intent, const Hash &request) const {
+  auto next = std::make_shared<Data>(*data_);
+  next->operations = data_->operations.ReserveRequest(id, intent, request);
+  return OrchardAccountState(std::move(next));
+}
 OrchardAccountState
 OrchardAccountState::SetReady(const Hash &id,
                               const VerifiedOrchardAuthorizations &auth) const {

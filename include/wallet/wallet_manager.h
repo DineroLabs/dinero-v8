@@ -293,6 +293,13 @@ public:
         [[nodiscard]] const std::string& WalletName() const noexcept { return name_; }
         // Process-local identity only, never a durable delivery checkpoint.
         [[nodiscard]] uint64_t Session() const noexcept { return session_; }
+        // Per-manager identity, even when another instance reopens the same
+        // wallet backup with the same session counter. Holds only an opaque
+        // token, not WalletManager or SQLite lifetime. Service ownership is
+        // still required, together with authenticated persistent identity.
+        [[nodiscard]] std::shared_ptr<const void> InstanceToken() const noexcept {
+            return owner_.instance_token_;
+        }
         // Creates/reads a persistent database identity under this lease. Its
         // checked transaction commits before any separate-store delivery.
         // Does not certify key ownership, source history or recovery readiness.
@@ -1078,6 +1085,7 @@ private:
     mutable std::recursive_mutex database_lifecycle_mutex_;
     size_t database_leases_ = 0; // protected by database_lifecycle_mutex_
     size_t recovery_seeds_ = 0; // same lock; recovery seed must die before last lease
+    const std::shared_ptr<const uint8_t> instance_token_ = std::make_shared<const uint8_t>(0);
     uint64_t database_session_ = 1; // same lock; invalidates queued jobs on replacement
     void AdvanceDatabaseSession() noexcept;
     

@@ -9,6 +9,7 @@
 #include "wallet/wallet_manager.h"
 #include <sqlite3.h>
 #include <openssl/crypto.h>
+#include <openssl/evp.h>
 #include <stdexcept>
 #include <type_traits>
 namespace dinero::wallet {
@@ -44,6 +45,33 @@ orchard::WalletStorageIdentity ExistingIdentity(sqlite3* db,const OrchardAccount
     Check(sqlite3_step(retained.p)==SQLITE_ROW&&sqlite3_step(retained.p)==SQLITE_DONE);
     }
     return {static_cast<orchard::WalletNetwork>(p.domain.network_code),p.domain.genesis_wire,id,p.account};
+}
+// Digest is an exact request equality binding inside authenticated storage,
+// not an authorization supplied by callers. No secret or randomized plan input
+// is regenerated from it. Explicit widths/counts distinguish all field splits.
+orchard::Hash SpendRequestCommitment(const orchard::WalletStorageIdentity& identity,
+        const OrchardAccountDelivery::Profile& p,const orchard::Hash& id,
+        std::span<const orchard::WalletPayment> payments,
+        std::span<const orchard::TransparentOutput> outputs,uint64_t fee){
+    Check(payments.size()<=DINERO_ORCHARD_V1_MAX_ACTIONS&&outputs.size()<=1024);
+    std::unique_ptr<EVP_MD_CTX,decltype(&EVP_MD_CTX_free)> context(EVP_MD_CTX_new(),EVP_MD_CTX_free);
+    Check(context&&EVP_DigestInit_ex(context.get(),EVP_sha256(),nullptr)==1);
+    const auto raw=[&](std::span<const uint8_t> bytes){Check(EVP_DigestUpdate(context.get(),bytes.data(),bytes.size())==1);};
+    const auto number=[&](uint64_t value,size_t width){std::array<uint8_t,8> bytes{};for(size_t i=0;i<width;++i)bytes[i]=value>>(8*i);raw(std::span<const uint8_t>(bytes).first(width));};
+    constexpr std::array<uint8_t,8> domain{'D','N','O','R','S','Q','0','1'};raw(domain);
+    number(static_cast<uint8_t>(identity.network),1);raw(identity.genesis);raw(identity.wallet_id);
+    number(identity.account,4);number(p.domain.branch_id,4);number(p.activation,4);raw(id);
+    number(0,4); // Fixed locktime for this pure Orchard-input host API.
+    number(payments.size(),4);
+    for(const auto& payment:payments){number(payment.amount_una,8);raw(payment.recipient.Raw());raw(payment.memo);}
+    number(outputs.size(),4);
+    for(const auto& output:outputs){
+        Check(!output.script_pub_key.empty()&&output.script_pub_key.size()<=10000);
+        number(output.amount_una,8);number(output.script_pub_key.size(),4);raw(output.script_pub_key);
+    }
+    number(fee,8);orchard::Hash result{};unsigned size=0;
+    Check(EVP_DigestFinal_ex(context.get(),result.data(),&size)==1&&size==result.size()&&result!=orchard::Hash{});
+    return result;
 }
 } // namespace
 struct OrchardAccountDelivery::Owner {
@@ -423,20 +451,56 @@ std::unique_ptr<OrchardAccountDelivery::QueuedSpend> OrchardAccountDelivery::Que
         std::span<const orchard::TransparentOutput> outputs,uint64_t fee,OrchardProofJobs& jobs){
     return ReserveSpendForReplay(w,session,p,expected,view,id,payments,outputs,fee,&jobs).queued;
 }
+std::unique_ptr<OrchardAccountDelivery::QueuedSpend> OrchardAccountDelivery::QueueCatalogRequestForReplay(
+        WalletManager& w,uint64_t session,const Profile& p,uint64_t expected,const RuntimeAccountReplay& view,
+        const orchard::Hash& id,std::span<const orchard::WalletPayment> payments,
+        std::span<const orchard::TransparentOutput> outputs,uint64_t fee,OrchardProofJobs& jobs){
+    return ReserveSpendForReplay(w,session,p,expected,view,id,payments,outputs,fee,&jobs,true).queued;
+}
 OrchardAccountDelivery::SpendResult OrchardAccountDelivery::ReserveSpendForReplay(
         WalletManager& w,uint64_t session,const Profile& p,uint64_t expected,const RuntimeAccountReplay& view,
         const orchard::Hash& id,std::span<const orchard::WalletPayment> payments,
-        std::span<const orchard::TransparentOutput> outputs,uint64_t fee,OrchardProofJobs* jobs){
+        std::span<const orchard::TransparentOutput> outputs,uint64_t fee,OrchardProofJobs* jobs,bool bind_request){
     Check(id!=orchard::Hash{}&&(!payments.empty()||!outputs.empty())&&payments.size()<=DINERO_ORCHARD_V1_MAX_ACTIONS);
     Check(fee<=orchard::kMaxMoneyUna);uint64_t required=fee;
     const auto add=[&](uint64_t amount){Check(amount>0&&amount<=orchard::kMaxMoneyUna-required);required+=amount;};
     for(const auto& payment:payments)add(payment.amount_una);
     for(const auto& output:outputs)add(output.amount_una);
     auto lease=w.AcquireDatabaseLease();Check(lease->Session()==session);Transaction tx(lease->Database());
+    std::optional<orchard::Hash> request;
     {
         Owner owner(w,session,p,true);auto inventory=owner.ValidateCatalogInventory(p,view);
         const auto requested=std::find_if(inventory.begin(),inventory.end(),[&](const auto& e){return e.number==p.account;});
-        Check(requested!=inventory.end()&&requested->state.revision==expected);
+        Check(requested!=inventory.end());
+        if(bind_request){
+            Check(jobs);request=SpendRequestCommitment(owner.identity,p,id,payments,outputs,fee);
+            std::unique_ptr<QueuedSpend> existing;
+            for(const auto& enrolled:inventory){
+                const auto& account=enrolled.state.account;
+                const auto pending=account.Operations().Entries().find(id);
+                auto identity=owner.identity;identity.account=enrolled.number;
+                OrchardOperationArchive archive(lease->Database(),identity,p.domain,owner.seed->Bytes());
+                const bool archived=archive.Contains(id);
+                if(pending==account.Operations().Entries().end()&&!archived)continue;
+                Check(enrolled.number==p.account&&!existing);
+                std::optional<OrchardOperationArchive::Record> record;
+                if(archived){record=archive.Read(id);Check(record->operation.Entries().at(id).request_commitment==request);}
+                const bool only_archive=pending==account.Operations().Entries().end();
+                const auto& entry=only_archive?record->operation.Entries().at(id):pending->second;
+                Check(entry.request_commitment==request);
+                existing=std::make_unique<QueuedSpend>(QueuedSpend{enrolled.state.revision,id,
+                    std::vector<orchard::TransparentOutput>(outputs.begin(),outputs.end()),fee,false});
+                existing->existing_request=true;existing->archived=only_archive;existing->durable=entry;
+                if(only_archive)existing->observation=record->observation;
+                else if(const auto observed=account.Observations().find(id);observed!=account.Observations().end())existing->observation=observed->second;
+            }
+            if(existing){
+                // No reconciliation, random plan, executor lookup, re-enqueue,
+                // SQL mutation or implicit cancellation on this retry path.
+                SpendResult result;result.queued=std::move(existing);tx.Commit();return result;
+            }
+        }
+        Check(requested->state.revision==expected);
     }
     Owner::ReconcileSpendCatalog(w,session,p,view,id);
     Owner owner(w,session,p,true);auto inventory=owner.ValidateCatalogInventory(p,view);
@@ -482,19 +546,35 @@ OrchardAccountDelivery::SpendResult OrchardAccountDelivery::ReserveSpendForRepla
     const auto intent=plan.Intent(signing);Check(intent.Inputs().empty());
     for(const auto& nullifier:intent.Nullifiers())Check(!reserved.contains(nullifier));
     std::unique_ptr<OrchardProofJobs::Submission> submission;
-    if(jobs)submission=jobs->Prepare(id,std::move(plan),std::move(signing));
-    auto staged=owner.Replace(current.revision,account.Reserve(id,intent));
+    if(jobs)submission=jobs->PrepareOwned(id,
+        {owner.identity,p.domain.branch_id,session,lease->InstanceToken()},std::move(plan),std::move(signing));
+    auto staged=owner.Replace(current.revision,request?account.ReserveRequest(id,intent,*request):account.Reserve(id,intent));
     static_assert(std::is_nothrow_move_constructible_v<SpendResult>);
     SpendResult result;
     if(submission){
         submission->Bind(staged.account.Operations());
         result.queued=std::make_unique<QueuedSpend>(QueuedSpend{staged.revision,id,std::move(transparent),fee,false});
+        if(request)result.queued->durable=staged.account.Operations().Entries().at(id);
     }else{
         result.direct=std::make_unique<PreparedSpend>(PreparedSpend{staged.revision,id,staged.account.Operations(),std::move(plan),std::move(signing),std::move(transparent),fee});
     }
     tx.Commit();
     if(submission)result.queued->enqueued=submission->Publish();
     return result;
+}
+OrchardAccountDelivery::OwnedProof OrchardAccountDelivery::ReadCatalogProofForReplay(
+        WalletManager& w,uint64_t session,const Profile& p,const RuntimeAccountReplay& view,
+        const orchard::Hash& id,OrchardProofJobs& jobs){
+    Check(id!=orchard::Hash{});
+    auto lease=w.AcquireDatabaseLease();Check(lease->Session()==session);Transaction tx(lease->Database());
+    Owner owner(w,session,p,true);const auto inventory=owner.ValidateCatalogInventory(p,view);
+    const auto requested=std::find_if(inventory.begin(),inventory.end(),[&](const auto& e){return e.number==p.account;});
+    Check(requested!=inventory.end()&&requested->state.account.Operations().Entries().contains(id));
+    auto captured=jobs.CaptureOwned(id,{owner.identity,p.domain.branch_id,session,lease->InstanceToken()},
+        requested->state.account.Operations());
+    OwnedProof result{requested->state.revision,captured.state,std::move(captured.proof)};
+    static_assert(std::is_nothrow_move_constructible_v<OwnedProof>);
+    tx.Commit();return result;
 }
 OrchardAccountDelivery::Applied OrchardAccountDelivery::ReadyCatalogSpendForReplay(
         WalletManager& w,uint64_t session,const Profile& p,uint64_t expected,const RuntimeAccountReplay& view,

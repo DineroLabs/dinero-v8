@@ -23,6 +23,7 @@ Hash Bytes(const uint8_t (&v)[32]) {
   return h;
 }
 constexpr std::array<uint8_t, 8> magic{'D', 'N', 'O', 'R', 'O', 'P', '0', '1'};
+constexpr std::array<uint8_t, 8> request_magic{'D', 'N', 'O', 'R', 'O', 'P', '0', '2'};
 struct Writer {
   std::vector<uint8_t> bytes;
   ~Writer() {
@@ -89,7 +90,7 @@ void OrchardOperationQueue::CheckEntry(const Entry &e, bool verify) const {
     Check(!input.script_pub_key.empty() &&
           input.script_pub_key.size() <= 10000);
   }
-  Check(e.message != Hash{});
+  Check(e.message != Hash{} && (!e.request_commitment || *e.request_commitment != Hash{}));
   if (e.phase == Phase::Reserved) {
     Check(e.transaction.empty());
     return;
@@ -143,6 +144,13 @@ OrchardOperationQueue::Reserve(const Hash &id,
   next.CheckUniqueReservations();
   return next;
 }
+OrchardOperationQueue OrchardOperationQueue::ReserveRequest(
+    const Hash &id, const WalletProvingIntent &intent, const Hash &request) const {
+  Check(request != Hash{});
+  auto next = Reserve(id, intent);
+  next.entries_.at(id).request_commitment = request;
+  return next;
+}
 OrchardOperationQueue OrchardOperationQueue::SetReady(
     const Hash &id, const VerifiedOrchardAuthorizations &auth) const {
   const auto it = entries_.find(id);
@@ -173,7 +181,10 @@ OrchardOperationQueue::CancelReserved(const Hash &id) const {
 }
 WalletStateBytes OrchardOperationQueue::Encode() const {
   Writer w;
-  w.Raw(magic);
+  // Preserve byte-identical legacy encoding unless a real bound request exists.
+  const bool requests = std::any_of(entries_.begin(), entries_.end(),
+      [](const auto &item) { return item.second.request_commitment.has_value(); });
+  w.Raw(requests ? request_magic : magic);
   w.Number(domain_.network_code, 1);
   w.Raw(domain_.genesis_wire);
   w.Number(domain_.branch_id, 4);
@@ -194,6 +205,10 @@ WalletStateBytes OrchardOperationQueue::Encode() const {
     for (const auto &nf : e.nullifiers)
       w.Raw(nf);
     w.Blob(e.transaction);
+    if (requests) {
+      w.Number(e.request_commitment.has_value(), 1);
+      if (e.request_commitment) w.Raw(*e.request_commitment);
+    }
   }
   return WalletStateBytes(w.bytes);
 }
@@ -203,7 +218,9 @@ OrchardOperationQueue::Restore(const WalletStateBytes &bytes,
   auto queue = Empty(domain);
   Reader r{bytes.Bytes()};
   auto m = r.Raw(magic.size());
-  Check(std::equal(m.begin(), m.end(), magic.begin()));
+  const bool requests = std::equal(m.begin(), m.end(), request_magic.begin());
+  Check(requests || std::equal(m.begin(), m.end(), magic.begin()));
+  bool found_request = false;
   Check(r.Number(1) == domain.network_code &&
         r.Hash32() == domain.genesis_wire && r.Number(4) == domain.branch_id);
   const auto count = r.Number(4);
@@ -235,10 +252,15 @@ OrchardOperationQueue::Restore(const WalletStateBytes &bytes,
     for (size_t i = 0; i < nfs; ++i)
       e.nullifiers.push_back(r.Hash32());
     e.transaction = r.Blob(kMaxTransactionBytes);
+    if (requests) {
+      const auto present = r.Number(1);
+      Check(present <= 1);
+      if (present) { e.request_commitment = r.Hash32(); found_request = true; }
+    }
     queue.CheckEntry(e, false);
     queue.entries_.emplace(id, std::move(e));
   }
-  Check(r.bytes.empty());
+  Check(r.bytes.empty() && (!requests || found_request));
   queue.CheckUniqueReservations();
   // Only after bounded structural validation of the entire snapshot do any
   // expensive proof checks. Persisted coin values are authenticated wallet

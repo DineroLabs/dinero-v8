@@ -4,6 +4,7 @@
 #include <memory>
 
 namespace dinero::wallet {
+class OrchardAccountDelivery;
 // One executor per wallet service, shared by its accounts. This is an in-memory
 // execution queue, not the durable transaction queue. The host commits Reserved
 // and ordinary input locks BEFORE submitting, and must commit Ready before relay.
@@ -64,6 +65,24 @@ public:
     void RequestStop();
     void Shutdown();
 private:
+    friend class OrchardAccountDelivery;
+    // Only the authenticated account owner constructs this host binding.
+    // Keeping the token alive prevents allocator-address reuse masquerading as
+    // the same manager; it does not own the manager or its database.
+    struct Binding {
+        orchard::WalletStorageIdentity identity;
+        uint32_t branch;
+        uint64_t session;
+        std::shared_ptr<const void> instance;
+    };
+    struct Capture {
+        std::optional<State> state;
+        std::unique_ptr<orchard::ProvedWalletBundle> proof;
+    };
+    [[nodiscard]] std::unique_ptr<Submission> PrepareOwned(const orchard::Hash&,
+        const Binding&,orchard::WalletBundlePlan,orchard::SigningContext);
+    [[nodiscard]] Capture CaptureOwned(const orchard::Hash&,const Binding&,
+        const OrchardOperationQueue&) const;
     struct Impl;
     std::shared_ptr<Impl> impl_;
 };

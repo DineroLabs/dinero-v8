@@ -796,3 +796,5 @@ int main(int argc, char** argv) {
 
 #include "orchard_proof_retention_checks.h"
 #include "orchard_proof_capacity_checks.h"
+#include "orchard_proof_owner_checks.h"
+#include "orchard_spend_request_checks.h"

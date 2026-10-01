@@ -1202,6 +1202,46 @@ jobs:
           assert '100% tests passed, 0 tests failed out of 1' in log
           PYCODE
 
+      - name: Preserve exact durable Orchard requests across retries and archives
+        run: |
+          cmake --build build-orchard-root --target test_assumeutxo_replay --parallel 4 -- -k 0
+          ctest --test-dir build-orchard-root -R '^OrchardSpendRequest$' --show-only=json-v1 > orchard-spend-request-inventory.json
+          python3 - <<'PYCODE'
+          import json
+          tests=json.load(open('orchard-spend-request-inventory.json'))['tests']
+          assert len(tests)==1 and tests[0]['name']=='OrchardSpendRequest'
+          props={p['name']:p['value'] for p in tests[0].get('properties',[])}
+          assert not props.get('DISABLED') and props['TIMEOUT']==180
+          PYCODE
+          ctest --test-dir build-orchard-root -R '^OrchardSpendRequest$' --verbose --no-tests=error --output-log orchard-spend-request-execution.log
+          python3 - <<'PYCODE'
+          from pathlib import Path
+          log=Path('orchard-spend-request-execution.log').read_text()
+          for case in ['BackendPolicyRemainsExplicit', 'MatchingRetryAndReopenReturnOriginalReservationWithoutTask', 'ChangedRecipientsAmountsMemoOutputsFeeAndOrderRefuse', 'UnknownLegacyBindingWrongAccountAndStaleNewRevisionRefuse', 'WholeCatalogReadsAndReadCommitRequiredForRetry', 'FailedInitialWritesAndCommitPublishNeitherBindingNorTask', 'VersionedQueuePreservesLegacyAndRejectsMalformedBindings', 'ReadyArchiveAndReactivationRetainExactRequestAndSignedBytes']:
+              assert log.count('[       OK ] OrchardSpendRequest.'+case+' (')==1,case
+          assert '100% tests passed, 0 tests failed out of 1' in log
+          PYCODE
+
+      - name: Authenticate wallet identity and session before capturing a proof result
+        run: |
+          cmake --build build-orchard-root --target test_assumeutxo_replay --parallel 4 -- -k 0
+          ctest --test-dir build-orchard-root -R '^OrchardProofOwner$' --show-only=json-v1 > orchard-proof-owner-inventory.json
+          python3 - <<'PYCODE'
+          import json
+          tests=json.load(open('orchard-proof-owner-inventory.json'))['tests']
+          assert len(tests)==1 and tests[0]['name']=='OrchardProofOwner'
+          props={p['name']:p['value'] for p in tests[0].get('properties',[])}
+          assert not props.get('DISABLED') and props['TIMEOUT']==180
+          PYCODE
+          ctest --test-dir build-orchard-root -R '^OrchardProofOwner$' --verbose --no-tests=error --output-log orchard-proof-owner-execution.log
+          python3 - <<'PYCODE'
+          from pathlib import Path
+          log=Path('orchard-proof-owner-execution.log').read_text()
+          for case in ['BackendPolicyAndManagerTokensRemainExplicit', 'AuthenticatedQueuedOwnerAndMissingJobNeverReleaseReservation', 'DifferentManagerAndReopenedSessionCannotCollectExistingJob', 'UnboundLegacyJobCannotBecomeAuthenticatedHostAuthority', 'EntireCatalogAndCheckedReadCommitRequiredBeforeResultReturn', 'CompletedProofCopyRequiresCurrentOwnerAndSurvivesFailedReadCommit']:
+              assert log.count('[       OK ] OrchardProofOwner.'+case+' (')==1,case
+          assert '100% tests passed, 0 tests failed out of 1' in log
+          PYCODE
+
       - name: Require authenticated durable Orchard operation listing
         run: |
           cmake --build build-orchard-root --target test_assumeutxo_replay --parallel 4 -- -k 0
@@ -3875,6 +3915,10 @@ jobs:
             orchard-proof-retention-execution.log
             orchard-proof-capacity-inventory.json
             orchard-proof-capacity-execution.log
+            orchard-spend-request-inventory.json
+            orchard-spend-request-execution.log
+            orchard-proof-owner-inventory.json
+            orchard-proof-owner-execution.log
             orchard-operation-status-inventory.json
             orchard-operation-status-execution.log
             orchard-service-proofs-execution.log

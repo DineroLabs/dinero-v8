@@ -3,9 +3,9 @@
 #include <memory>
 #include "wallet/orchard_account_state.h"
 #include "wallet/orchard_account_catalog.h"
+#include "wallet/orchard_proof_jobs.h"
 namespace dinero { class WalletManager; class RuntimeAccountReplay; }
 namespace dinero::wallet {
-class OrchardProofJobs;
 // A bound account consumer, not notification-provider readiness. Source events,
 // prepared transitions and immutable restore lookups are acquired/validated
 // before entering this owner. Lookups must never acquire chain locks or wait on
@@ -73,6 +73,10 @@ public:
         std::vector<orchard::TransparentOutput> transparent_outputs;
         uint64_t fee_una;
         bool enqueued = false;
+        bool existing_request = false;
+        bool archived = false;
+        std::optional<OrchardOperationQueue::Entry> durable{};
+        std::optional<OrchardAccountState::OperationObservation> observation{};
     };
     // Service lifetime must outlive this call. Capacity/task/context/result
     // allocation happens before Reserved commits. Returns a preallocated owner;
@@ -82,6 +86,29 @@ public:
         const RuntimeAccountReplay&,const orchard::Hash&,
         std::span<const orchard::WalletPayment>,std::span<const orchard::TransparentOutput>,
         uint64_t fee_una,OrchardProofJobs&);
+    // Request ID is bound to the exact ordered recipients/memos/outputs/fee
+    // and authenticated wallet/domain/account. Matching retries return saved
+    // current/archive bytes without preparing or publishing another proof.
+    // Legacy unknown bindings and changed request contents refuse. Revision
+    // precondition applies to new work; a retry may carry its original revision.
+    // enqueued means THIS call published a task, not durable delivery/readiness.
+    static std::unique_ptr<QueuedSpend> QueueCatalogRequestForReplay(
+        WalletManager&,uint64_t session,const Profile&,uint64_t expected_revision,
+        const RuntimeAccountReplay&,const orchard::Hash& request_id,
+        std::span<const orchard::WalletPayment>,std::span<const orchard::TransparentOutput>,
+        uint64_t fee_una,OrchardProofJobs&);
+    struct OwnedProof {
+        uint64_t revision;
+        std::optional<OrchardProofJobs::State> state;
+        std::unique_ptr<orchard::ProvedWalletBundle> proof;
+    };
+    // Fully authenticate all declared/reached owners in the caller-captured
+    // source before inspecting a proof job. Pin persistent wallet identity,
+    // manager instance, live session, network/branch and account. Copy only;
+    // checked read COMMIT precedes return. Missing job never authorizes retry,
+    // cancellation, regeneration or release of a durable reservation.
+    static OwnedProof ReadCatalogProofForReplay(WalletManager&,uint64_t session,
+        const Profile&,const RuntimeAccountReplay&,const orchard::Hash&,OrchardProofJobs&);
     // Exact existing reservation and authorization only. Signed bytes must not
     // leave the host for admission/relay until this checked commit returns.
     // Ready retries preserve identical bytes; no cancellation/release API is
@@ -137,7 +164,7 @@ private:
     struct SpendResult { std::unique_ptr<PreparedSpend> direct; std::unique_ptr<QueuedSpend> queued; };
     static SpendResult ReserveSpendForReplay(WalletManager&,uint64_t,const Profile&,uint64_t,
         const RuntimeAccountReplay&,const orchard::Hash&,std::span<const orchard::WalletPayment>,
-        std::span<const orchard::TransparentOutput>,uint64_t,OrchardProofJobs*);
+        std::span<const orchard::TransparentOutput>,uint64_t,OrchardProofJobs*,bool bind_request=false);
 
     struct Owner;
 };
