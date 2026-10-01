@@ -1494,6 +1494,13 @@ if(BUILD_TESTING)
   target_link_libraries(test_rpc_reply_alias PRIVATE Qt6::Core Qt6::Network Qt6::Test)
   target_compile_definitions(test_rpc_reply_alias PRIVATE QT_NO_KEYWORDS)
   add_test(NAME RpcReplyAlias COMMAND test_rpc_reply_alias)
+
+  add_executable(test_mining_rewards tests/test_mining_rewards.cpp src/miningrewards.cpp)
+  target_include_directories(test_mining_rewards PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_link_libraries(test_mining_rewards PRIVATE Qt6::Core Qt6::Test)
+  target_compile_definitions(test_mining_rewards PRIVATE QT_NO_KEYWORDS)
+  add_test(NAME MiningRewards COMMAND test_mining_rewards)
+  set_tests_properties(MiningRewards PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 30)
   set_tests_properties(RpcReplyAlias PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 30)
 
   add_executable(test_shielded_transfer_policy
