@@ -2720,6 +2720,24 @@ jobs:
           for case in ['RecordedRoundWinsOverUnrelatedMatchingBlockNumber','MissingForeignAndDuplicateRoundRefuseBeforeAllocationWrites','CompleteTypedContributionsAndReadErrors','CallerTransactionAndCommitRefusalPreserveOwners']:
               assert log.count('[       OK ] PoolRoundOwner.'+case+' (')==1
           PYROUND
+      - name: Require retained reversible unpaid pool orphan accounting
+        run: |
+          ctest --test-dir build-orchard-root -R '^PoolOrphanRetention$' --show-only=json-v1 > orchard-pool-orphan-retention-inventory.json
+          python3 - <<'PYPOOLREFS'
+          import json
+          tests=json.load(open('orchard-pool-orphan-retention-inventory.json'))['tests']
+          assert len(tests)==1 and tests[0]['name']=='PoolOrphanRetention'
+          assert next(p['value'] for p in tests[0]['properties'] if p['name']=='TIMEOUT')==180
+          assert not any(p['name']=='DISABLED' and p['value'] for p in tests[0].get('properties',[]))
+          PYPOOLREFS
+          ctest --test-dir build-orchard-root -R '^PoolOrphanRetention$' --verbose --no-tests=error --output-log orchard-pool-orphan-retention-execution.log
+          python3 - <<'PYPOOLREFS'
+          from pathlib import Path
+          log=Path('orchard-pool-orphan-retention-execution.log').read_text()
+          for case in ['PoolOrphanRetention.ExactRowsCreditsAndOriginsRestoreThroughActualSourceAfterReopen', 'PoolOrphanRetention.SaturatingDebitAndNullableMetadataRestoreWithoutInventingCredit', 'PoolOrphanRetention.RetentionWritesCommitAndBorrowedTransactionRollbackTogether', 'PoolOrphanRetention.RestoreWritesCommitAndMissingOwnerNeverPublishPartialCredits', 'PoolOrphanRetention.CompleteRetainedPostimageAndDebitReadsRefuseBeforeRestoration', 'PoolOrphanRetention.PaidUncertainAttemptedAndUnretainedLegacyOwnersRefuse']:
+              assert log.count('[       OK ] '+case+' (')==1
+          PYPOOLREFS
+
       - name: Require canonical source before pool maintenance accounting
         run: |
           ctest --test-dir build-orchard-root -R '^PoolMaintenanceSource$' --show-only=json-v1 > orchard-pool-maintenance-source-inventory.json
@@ -3646,8 +3664,10 @@ jobs:
             orchard-pool-request-execution.log
             orchard-pool-origins-inventory.json
             orchard-pool-origins-execution.log
+            orchard-pool-orphan-retention-inventory.json
             orchard-pool-maintenance-source-inventory.json
             orchard-pool-attempt-source-inventory.json
+            orchard-pool-orphan-retention-execution.log
             orchard-pool-maintenance-source-execution.log
             orchard-pool-attempt-source-execution.log
             orchard-pool-payment-attempt-inventory.json

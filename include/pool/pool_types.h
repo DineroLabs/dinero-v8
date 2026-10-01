@@ -179,6 +179,7 @@ struct PoolBlock {
  * Individual payout to a worker
  */
 struct Payout {
+    bool operator==(const Payout&) const = default;
     uint64_t payout_id;         // Auto-increment ID
     // Created only by the checked new-allocation transaction. Historical and
     // generic inserted rows remain explicitly unowned; absence is not repaired.

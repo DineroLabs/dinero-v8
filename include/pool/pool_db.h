@@ -277,6 +277,10 @@ private:
 
     friend class PayoutCalculator;
     friend class CanonicalPoolMaintenance;
+    friend struct PoolOrphanRetentionTestAccess;
+    // Only the selected source owner uses this reversible unpaid transition.
+    // It preserves exact rows/actual debits in the SAME FULL transaction.
+    void transitionCanonicalOrphan(const PoolBlock& expected,bool orphaned);
     friend struct PoolMaintenanceSourceTestAccess;
     // Actual DB-only calculator dispatch, never an external payment callback.
     // Owns the full pending allocation batch; returns only after checked COMMIT.

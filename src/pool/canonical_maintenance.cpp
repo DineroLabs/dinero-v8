@@ -42,9 +42,6 @@ void CanonicalPoolMaintenance::ReconcileSelected(ChainstateService& source,PoolM
         if(!orphan) {
             const auto canonical=source.getCanonicalBlockHash(block.height);RequireMaintenance(canonical.ok());orphan=*canonical!=hash;
         }
-        // The old orphan policy loses prior active payout states. Re-selecting
-        // such a record cannot recreate credits/allocations from that absence.
-        RequireMaintenance(!block.orphaned || orphan);
         const uint32_t confirmations=orphan?0:static_cast<uint32_t>(uint64_t(tip->height)-block.height+1);
         prepared.push_back({block,orphan,confirmations});
     }
@@ -54,13 +51,14 @@ void CanonicalPoolMaintenance::ReconcileSelected(ChainstateService& source,PoolM
     std::vector<PoolBlock> canonical_blocks;canonical_blocks.reserve(prepared.size());
     for(const auto& entry:prepared) {
         if(entry.orphan) {
-            if(!entry.block.orphaned) {
-                PoolDB::OrphanResult result;
-                RequireMaintenance(manager.db_->reconcileOrphanedBlock(entry.block.block_hash,result,&entry.block) && result.found);
-            }
+            // Retention and reversal share one checked FULL transaction. Repeat
+            // delivery validates the retained postimage without another debit.
+            manager.db_->transitionCanonicalOrphan(entry.block,true);
         } else {
-            manager.db_->updateBlockConfirmationsChecked(entry.block,entry.confirmations,static_cast<int64_t>(observed_at));
-            auto updated=entry.block;updated.confirmations=entry.confirmations;
+            auto updated=entry.block;
+            if(updated.orphaned) {manager.db_->transitionCanonicalOrphan(updated,false);updated.orphaned=false;}
+            manager.db_->updateBlockConfirmationsChecked(updated,entry.confirmations,static_cast<int64_t>(observed_at));
+            updated.confirmations=entry.confirmations;
             if(updated.confirmations>=updated.required_confirmations && updated.confirmed_at==0)updated.confirmed_at=observed_at;
             canonical_blocks.push_back(std::move(updated));
         }

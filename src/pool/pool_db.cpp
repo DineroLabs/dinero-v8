@@ -347,6 +347,11 @@ bool PoolDB::initialize() {
         "attempt BLOB PRIMARY KEY NOT NULL,block_hash BLOB NOT NULL,height INTEGER NOT NULL,"
         "block_time INTEGER NOT NULL,FOREIGN KEY(attempt) REFERENCES pool_payment_attempts(id))")) return false;
 
+    // No enrollment/backfill. A retained image exists only when the actual
+    // checked canonical orphan transaction records it with its accounting writes.
+    if(!executeSQL("CREATE TABLE IF NOT EXISTS pool_orphan_blocks(block_id INTEGER PRIMARY KEY,block_hash TEXT NOT NULL,height INTEGER NOT NULL,finder_worker TEXT NOT NULL,finder_address TEXT NOT NULL,reward INTEGER NOT NULL,fees INTEGER NOT NULL,total_reward INTEGER NOT NULL,pool_fee_percent REAL NOT NULL,pool_fee_amount INTEGER NOT NULL,distributable INTEGER NOT NULL,round_shares INTEGER NOT NULL,round_difficulty REAL NOT NULL,confirmations INTEGER NOT NULL,required_confirmations INTEGER NOT NULL,orphaned INTEGER NOT NULL,payouts_calculated INTEGER NOT NULL,payouts_sent INTEGER NOT NULL,found_at INTEGER NOT NULL,confirmed_at INTEGER NOT NULL,payout_count INTEGER NOT NULL)"))return false;
+    if(!executeSQL("CREATE TABLE IF NOT EXISTS pool_orphan_payouts(payout_id INTEGER PRIMARY KEY,block_id INTEGER NOT NULL,worker_id TEXT NOT NULL,wallet_address TEXT NOT NULL,amount INTEGER NOT NULL,share_percent REAL NOT NULL,share_count INTEGER NOT NULL,difficulty_sum REAL NOT NULL,status INTEGER NOT NULL,txid TEXT,error_message TEXT,calculated_at INTEGER NOT NULL,paid_at INTEGER NOT NULL,retry_count INTEGER NOT NULL,last_retry_at INTEGER NOT NULL,allocation_origin BLOB,worker_wallet TEXT NOT NULL,balance_before INTEGER NOT NULL,balance_after INTEGER NOT NULL,debit INTEGER NOT NULL)"))return false;
+
     g_logger.info("[PoolDB] Database initialized: " + db_path_);
     return true;
 }
@@ -2152,6 +2157,115 @@ bool PoolDB::reconcileOrphanedBlock(const std::string& block_hash, OrphanResult&
         g_logger.error("[PoolDB] Orphan accounting transition refused; no success published");
         return false;
     }
+}
+
+
+namespace {
+constexpr const char* OrphanBlockColumns="block_id,block_hash,height,finder_worker,finder_address,reward,fees,total_reward,pool_fee_percent,pool_fee_amount,distributable,round_shares,round_difficulty,confirmations,required_confirmations,orphaned,payouts_calculated,payouts_sent,found_at,confirmed_at";
+constexpr const char* OrphanPayoutColumns="payout_id,block_id,worker_id,wallet_address,amount,share_percent,share_count,difficulty_sum,status,txid,error_message,calculated_at,paid_at,retry_count,last_retry_at,allocation_origin";
+void RetentionCheck(bool ok) {if(!ok)throw std::runtime_error("retained pool orphan owner unavailable or inconsistent");}
+std::vector<Payout> RetentionPayouts(sqlite3* db,const char* table,uint64_t block) {
+    const std::string query=std::string("SELECT ")+OrphanPayoutColumns+" FROM "+table+" WHERE block_id=? ORDER BY amount DESC,payout_id ASC";
+    OrphanStatement rows(db,query.c_str());rows.integer(1,block);std::vector<Payout> result;int rc;
+    while((rc=sqlite3_step(rows.get()))==SQLITE_ROW) {RetentionCheck(result.size()<4096);auto p=ReadPayout(rows);RetentionCheck(p.block_id==block);result.push_back(std::move(p));}
+    RetentionCheck(rc==SQLITE_DONE);return result;
+}
+struct RetainedDebit {uint64_t before,after,amount;std::string wallet;};
+std::map<uint64_t,RetainedDebit> PrepareRetentionDebits(sqlite3* db,const std::vector<Payout>& rows,bool stored) {
+    std::map<std::string,uint64_t> balances;std::map<uint64_t,RetainedDebit> debits;
+    for(const auto& p:rows) {
+        // Existing PAID/attempted or legacy uncertain txids need a separate
+        // liability owner. They are not certified as reversible unpaid credit.
+        RetentionCheck(p.status!=PayoutStatus::PAID && p.txid.empty() && p.paid_at==0);
+        OrphanStatement worker(db,"SELECT wallet_address,pending_payout FROM workers WHERE worker_id=?");worker.text(1,p.worker_id);
+        RetentionCheck(sqlite3_step(worker.get())==SQLITE_ROW);const auto wallet=worker.textColumn(0);const uint64_t live=worker.nonnegative(1);worker.done();
+        RetentionCheck(wallet==p.wallet_address);
+        uint64_t before,after,debit;
+        if(stored) {
+            OrphanStatement saved(db,"SELECT worker_wallet,balance_before,balance_after,debit FROM pool_orphan_payouts WHERE payout_id=? AND block_id=?");
+            saved.integer(1,p.payout_id);saved.integer(2,p.block_id);RetentionCheck(sqlite3_step(saved.get())==SQLITE_ROW && saved.textColumn(0)==wallet);
+            before=saved.nonnegative(1);after=saved.nonnegative(2);debit=saved.nonnegative(3);saved.done();
+            auto found=balances.find(p.worker_id);if(found!=balances.end())RetentionCheck(found->second==before);
+        } else {
+            auto [position,inserted]=balances.emplace(p.worker_id,live);(void)inserted;before=position->second;
+            debit=p.status==PayoutStatus::FAILED?0:std::min(before,p.amount);after=before-debit;
+        }
+        RetentionCheck(debit==(p.status==PayoutStatus::FAILED?0:std::min(before,p.amount)) && before>=debit && after==before-debit);
+        balances[p.worker_id]=after;RetentionCheck(debits.emplace(p.payout_id,RetainedDebit{before,after,debit,wallet}).second);
+    }
+    return debits;
+}
+void MatchRetainedOrphanPayouts(sqlite3* db,uint64_t block,const std::vector<Payout>& current,const std::vector<Payout>& saved) {
+    RetentionCheck(current.size()==saved.size());
+    for(size_t i=0;i<saved.size();++i) {
+        auto expected=saved[i];if(expected.status==PayoutStatus::PENDING || expected.status==PayoutStatus::CONFIRMED) {
+            expected.status=PayoutStatus::FAILED;expected.txid.clear();expected.error_message="orphaned block";expected.paid_at=0;
+        }
+        RetentionCheck(current[i]==expected);
+    }
+    // Preserve raw nullable TEXT identity too: NULL and empty text normalize to
+    // the same C++ value, but a restored field must retain its original SQL form.
+    OrphanStatement exact(db,"SELECT p.payout_id FROM payouts p JOIN pool_orphan_payouts s ON s.payout_id=p.payout_id "
+        "WHERE p.block_id=? AND NOT (p.txid IS CASE WHEN s.status IN (0,1) THEN '' ELSE s.txid END AND "
+        "p.error_message IS CASE WHEN s.status IN (0,1) THEN 'orphaned block' ELSE s.error_message END) LIMIT 1");
+    exact.integer(1,block);exact.done();
+}
+}
+
+void PoolDB::transitionCanonicalOrphan(const PoolBlock& expected,bool orphaned) {
+    std::lock_guard<std::recursive_mutex> owner(connection_mutex_);
+    RetentionCheck(db_ && sqlite3_get_autocommit(db_) && expected.block_id>0);
+    OrphanTransaction transaction(db_);
+    const std::string block_query=std::string("SELECT ")+OrphanBlockColumns+" FROM blocks WHERE block_id=?";
+    OrphanStatement current(db_,block_query.c_str());current.integer(1,expected.block_id);
+    RetentionCheck(sqlite3_step(current.get())==SQLITE_ROW && ReadCalculationBlock(current)==expected);current.done();
+    OrphanStatement attempted(db_,"SELECT 1 FROM pool_payment_members WHERE block_id=? LIMIT 1");attempted.integer(1,expected.block_id);attempted.done();
+    const auto payouts=RetentionPayouts(db_,"payouts",expected.block_id);
+    const std::string saved_query=std::string("SELECT ")+OrphanBlockColumns+",payout_count FROM pool_orphan_blocks WHERE block_id=?";
+    OrphanStatement record(db_,saved_query.c_str());record.integer(1,expected.block_id);const int rc=sqlite3_step(record.get());
+    if(!expected.orphaned) {
+        RetentionCheck(orphaned && rc==SQLITE_DONE);
+        OrphanStatement stray(db_,"SELECT 1 FROM pool_orphan_payouts WHERE block_id=? LIMIT 1");stray.integer(1,expected.block_id);stray.done();
+        RetentionCheck(payouts.empty() || expected.payouts_calculated);
+        const auto debits=PrepareRetentionDebits(db_,payouts,false);
+        const std::string save_block=std::string("INSERT INTO pool_orphan_blocks(")+OrphanBlockColumns+",payout_count) SELECT "+OrphanBlockColumns+",? FROM blocks WHERE block_id=?";
+        OrphanStatement retain(db_,save_block.c_str());retain.integer(1,payouts.size());retain.integer(2,expected.block_id);retain.changedOne(db_);
+        for(const auto& p:payouts) {
+            const auto& debit=debits.at(p.payout_id);
+            const std::string save=std::string("INSERT INTO pool_orphan_payouts(")+OrphanPayoutColumns+",worker_wallet,balance_before,balance_after,debit) SELECT "+OrphanPayoutColumns+",?,?,?,? FROM payouts WHERE payout_id=? AND block_id=?";
+            OrphanStatement image(db_,save.c_str());image.text(1,debit.wallet);image.integer(2,debit.before);image.integer(3,debit.after);image.integer(4,debit.amount);image.integer(5,p.payout_id);image.integer(6,expected.block_id);image.changedOne(db_);
+            if(p.status==PayoutStatus::FAILED)continue;
+            OrphanStatement worker(db_,"UPDATE workers SET pending_payout=? WHERE worker_id=? AND wallet_address=? AND pending_payout=? AND typeof(pending_payout)='integer'");
+            worker.integer(1,debit.after);worker.text(2,p.worker_id);worker.text(3,debit.wallet);worker.integer(4,debit.before);worker.changedOne(db_);
+            OrphanStatement failure(db_,"UPDATE payouts SET status=3,txid='',error_message='orphaned block',paid_at=0 WHERE payout_id=? AND block_id=? AND status IN (0,1)");
+            failure.integer(1,p.payout_id);failure.integer(2,expected.block_id);failure.changedOne(db_);
+        }
+        OrphanStatement mark(db_,"UPDATE blocks SET orphaned=1 WHERE block_id=? AND orphaned=0");mark.integer(1,expected.block_id);mark.changedOne(db_);
+    } else {
+        // An old orphan without a retained owner can never authorize restoration.
+        RetentionCheck(rc==SQLITE_ROW);auto original=ReadCalculationBlock(record);const uint64_t count=record.nonnegative(20);record.done();
+        RetentionCheck(!original.orphaned && count<=4096);original.orphaned=true;RetentionCheck(original==expected);
+        const auto saved=RetentionPayouts(db_,"pool_orphan_payouts",expected.block_id);RetentionCheck(saved.size()==count);
+        MatchRetainedOrphanPayouts(db_,expected.block_id,payouts,saved);const auto debits=PrepareRetentionDebits(db_,saved,true);
+        if(!orphaned) {
+            const auto max=static_cast<uint64_t>(std::numeric_limits<sqlite3_int64>::max());
+            for(const auto& p:saved) {
+                if(p.status==PayoutStatus::FAILED)continue;
+                const auto& debit=debits.at(p.payout_id);
+                OrphanStatement balance(db_,"SELECT pending_payout,wallet_address FROM workers WHERE worker_id=?");balance.text(1,p.worker_id);
+                RetentionCheck(sqlite3_step(balance.get())==SQLITE_ROW);const uint64_t pending=balance.nonnegative(0);RetentionCheck(balance.textColumn(1)==debit.wallet);balance.done();
+                RetentionCheck(debit.amount<=max-pending);
+                OrphanStatement worker(db_,"UPDATE workers SET pending_payout=? WHERE worker_id=? AND wallet_address=? AND pending_payout=? AND typeof(pending_payout)='integer'");
+                worker.integer(1,pending+debit.amount);worker.text(2,p.worker_id);worker.text(3,debit.wallet);worker.integer(4,pending);worker.changedOne(db_);
+                OrphanStatement restore(db_,"UPDATE payouts SET status=(SELECT status FROM pool_orphan_payouts WHERE payout_id=?),txid=(SELECT txid FROM pool_orphan_payouts WHERE payout_id=?),error_message=(SELECT error_message FROM pool_orphan_payouts WHERE payout_id=?),paid_at=(SELECT paid_at FROM pool_orphan_payouts WHERE payout_id=?) WHERE payout_id=? AND block_id=? AND status=3");
+                for(int i=1;i<=5;++i)restore.integer(i,p.payout_id);restore.integer(6,expected.block_id);restore.changedOne(db_);
+            }
+            OrphanStatement mark(db_,"UPDATE blocks SET orphaned=0 WHERE block_id=? AND orphaned=1");mark.integer(1,expected.block_id);mark.changedOne(db_);
+            OrphanStatement remove(db_,"DELETE FROM pool_orphan_payouts WHERE block_id=?");remove.integer(1,expected.block_id);remove.done();RetentionCheck(static_cast<uint64_t>(sqlite3_changes(db_))==count);
+            OrphanStatement remove_block(db_,"DELETE FROM pool_orphan_blocks WHERE block_id=?");remove_block.integer(1,expected.block_id);remove_block.changedOne(db_);
+        }
+    }
+    transaction.commit();
 }
 
 bool PoolDB::markBlockOrphaned(uint64_t block_id) {
