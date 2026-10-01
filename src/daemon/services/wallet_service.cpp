@@ -11,8 +11,44 @@
 #include "primitives/block.h"          // For dinero::Block
 #include <filesystem>
 #include <stdexcept>
+#ifdef DINERO_HAS_ORCHARD_PROOF_HOST
+#include "wallet/orchard_proof_jobs.h"
+#endif
 
 namespace dinero {
+
+// The worker owns its randomized plans and results; it calls no wallet,
+// chainstate or service callback while proving. Its destructor drains before
+// wallet_mgr_ destruction even when ordinary scope exit omits explicit Stop.
+struct WalletService::OrchardProofOwner {
+#ifdef DINERO_HAS_ORCHARD_PROOF_HOST
+    wallet::OrchardProofJobs jobs;
+    OrchardProofOwner(){jobs.Start();}
+    void Shutdown(){jobs.Shutdown();}
+#else
+    void Shutdown(){}
+#endif
+};
+wallet::OrchardProofJobs& WalletService::WalletUse::OrchardProofs() const {
+    (void)Wallet(); // Enforce the existing thread-affine lifetime owner.
+    return service_.ProofsForCurrentUse();
+}
+
+wallet::OrchardProofJobs& WalletService::ProofsForCurrentUse() const {
+#ifdef DINERO_HAS_ORCHARD_PROOF_HOST
+    std::lock_guard<std::mutex> lock(operation_mutex_);
+    if(!wallet_mgr_||!operations_by_thread_.contains(std::this_thread::get_id()))
+        throw std::runtime_error("Wallet proof execution requires an active service owner");
+    if(!orchard_proofs_){
+        if(!accepting_||stopping_)throw std::runtime_error("Wallet proof execution unavailable during shutdown");
+        auto owned=std::make_unique<OrchardProofOwner>();
+        orchard_proofs_=std::move(owned);
+    }
+    return orchard_proofs_->jobs;
+#else
+    throw std::runtime_error("Orchard wallet backend unavailable");
+#endif
+}
 
 // Constructor and destructor must be defined in .cpp to allow unique_ptr<ZKWalletSync> with forward declaration
 WalletService::WalletService() = default;
@@ -592,6 +628,10 @@ void WalletService::Stop() {
     try { if (logger_interface_) logger_interface_->info("[WalletService] Stopping wallet service..."); }
     catch (...) { /* Diagnostics cannot prevent drain and close. */ }
     try {
+        // Existing operation owners have drained. Join without the lifecycle,
+        // wallet SQLite or selected-chain mutex; active proof computation is
+        // nonpreemptible, so this is not a bounded shutdown-time guarantee.
+        if(orchard_proofs_)orchard_proofs_->Shutdown();
         WalletNotify::Shutdown();
         wallet_mgr_->setHDWallet(nullptr);
     } catch (...) {
@@ -602,13 +642,15 @@ void WalletService::Stop() {
         throw;
     }
     std::unique_ptr<WalletManager> retired;
+    std::unique_ptr<OrchardProofOwner> retired_proofs;
     std::unique_ptr<HDWallet> retired_hd;
     {
         std::lock_guard<std::mutex> lock(operation_mutex_);
+        retired_proofs=std::move(orchard_proofs_);
         retired=std::move(wallet_mgr_);retired_hd=std::move(hd_wallet_);
     }
     // The manager is destroyed before the separately owned HD helper.
-    retired.reset();retired_hd.reset();
+    retired_proofs.reset();retired.reset();retired_hd.reset();
     {
         std::lock_guard<std::mutex> lock(operation_mutex_);
         stopping_=false;stopping_thread_={};operation_changed_.notify_all();

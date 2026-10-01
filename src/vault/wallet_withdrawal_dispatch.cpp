@@ -2,6 +2,10 @@
 #include "rpc/wallet_request_dispatch.h"
 #include "daemon/daemon_context.h"
 #include "daemon/services/wallet_service.h"
+#include "daemon/services/chainstate_service.h"
+#include "storage/chain_db.h"
+#include "consensus/merkle_root.h"
+#include "daemon/mempool_transaction.h"
 #include "wallet/wallet_manager.h"
 #include "address/addr_codec.h"
 #include "external/bech32/bech32.hpp"
@@ -98,7 +102,8 @@ private:
         const auto found=std::find_if(rows.begin(),rows.end(),[&](const auto& v){return v.request.request_id==request.request_id;});
         Require(found!=rows.end() && found->request==request &&
                 (std::holds_alternative<WithdrawalSigning>(found->state) ||
-                 std::holds_alternative<WithdrawalPaymentRetained>(found->state)));
+                 std::holds_alternative<WithdrawalPaymentRetained>(found->state) ||
+                 std::holds_alternative<WithdrawalPaymentConfirmed>(found->state)));
         owner->Commit();
         // owner and WalletUse are released before FindRetained or dispatch;
         // recovery-seed owners must never be nested between these operations.
@@ -159,6 +164,85 @@ private:
         // The JSON status is never promoted to a vault confirmation/ack.
         try {(void)DispatchBoundWalletRequest(state_->ctx,params,state_->wallet,state_->selected);}catch(...) {}
         return Read(request);
+    }
+    class CanonicalLease final : public VaultWithdrawalObservationLease {
+    public:
+        CanonicalLease(const std::shared_ptr<WalletWithdrawalDispatchState>& state,
+                       std::shared_ptr<ChainstateService> source)
+            :dispatch_use_(state->Acquire()),source_(std::move(source)),
+             lifetime_(ChainstateService::AcquireWalletIndexUse(source_)),
+             selected_(source_->AcquireBlockIngressActivationLock()) {}
+        uint64_t Height() const noexcept override {return height;}
+        const std::array<uint8_t,32>& Hash() const noexcept override {return hash;}
+        const std::vector<VaultWithdrawalObservation>& Rows() const noexcept override {return rows;}
+        uint64_t height{0};std::array<uint8_t,32> hash{};
+        std::vector<VaultWithdrawalObservation> rows;
+    private:
+        std::unique_ptr<WalletWithdrawalDispatchState::Use> dispatch_use_;
+        const std::shared_ptr<ChainstateService> source_;
+        std::unique_ptr<ChainstateService::WalletIndexUse> lifetime_;
+        std::unique_lock<AnnotatedRecursiveMutex> selected_;
+    };
+    std::unique_ptr<VaultWithdrawalObservationLease> CaptureCanonical(
+        uint64_t height,const std::vector<VaultWithdrawalQuery>& queries) override {
+        const auto source=state_->ctx.daemon->chainstate;
+        Require(source && height<=UINT32_MAX);
+        auto captured=std::make_unique<CanonicalLease>(state_,source);
+        CheckDomain();const auto* chain=source->GetChainDB();Require(chain);
+        const auto tip=chain->getTip();Require(tip.ok() && tip->height>=0 && uint64_t(tip->height)==height);
+        const auto tip_hash=source->getCanonicalBlockHash(static_cast<uint32_t>(height));
+        Require(tip_hash.ok() && *tip_hash==tip->hash);
+        captured->height=height;std::copy(tip_hash->begin(),tip_hash->end(),captured->hash.begin());
+        captured->rows.reserve(queries.size());
+        const auto hash=[](const std::array<uint8_t,32>& bytes) {
+            uint256 out;std::copy(bytes.begin(),bytes.end(),out.begin());return out;
+        };
+        for(const auto& query:queries) {
+            // Under source -> wallet ordering, authenticate the PRESENT saved
+            // request and full retained payment before any canonical claim.
+            // Read releases every wallet/SQLite/key owner before returning.
+            const auto payment=Read(query.request);Require(payment && *payment==query.retained);
+            VaultWithdrawalObservation observation{query,std::nullopt,false};
+            if(query.prior) {
+                Require(Nonzero(query.prior->block_hash));
+                if(query.prior->height>height)observation.prior_not_canonical=true;
+                else {
+                    const auto old=source->getCanonicalBlockHash(static_cast<uint32_t>(query.prior->height));
+                    Require(old.ok());observation.prior_not_canonical=(*old!=hash(query.prior->block_hash));
+                }
+            }
+            const auto txid=hash(query.retained.txid);
+            const auto location=chain->getTxLocation(txid);
+            if(location.ok()) {
+                const auto at=chain->getBlockHeight(location->first);
+                Require(at.ok() && *at>=0 && uint64_t(*at)<=height);
+                const auto canonical=source->getCanonicalBlockHash(static_cast<uint32_t>(*at));
+                Require(canonical.ok() && *canonical==location->first);
+                const auto block=source->getBlockRpcSnapshot(*canonical);
+                Require(block.ok() && block->height==uint32_t(*at) && block->header.GetHash()==*canonical);
+                std::vector<TxId> ids;ids.reserve(block->transaction_ids.size());
+                for(const auto& id:block->transaction_ids)ids.emplace_back(id);
+                bool mutated=false;const auto root=consensus::ComputeTransactionMerkleRoot(ids,&mutated);
+                Require(!mutated && root==block->header.merkle_root && location->second<ids.size() &&
+                        ids[location->second].AsUint256()==txid);
+                const auto body=source->getTransactionBody(txid);
+                Require(body.ok() && !body->IsOrchard() && !body->Historical().IsCoinbase());
+                const auto bytes=body->Serialize(TxSerializationMode::WithWitness);
+                std::array<uint8_t,32> digest{};
+                Require(SHA256(bytes.data(),bytes.size(),digest.data()) && digest==query.retained.body_sha256);
+                const auto output=source->getCanonicalOutputInclusion(txid,query.retained.vout,uint32_t(*at));
+                Require(output.ok() && output->block_hash==*canonical &&
+                        output->MatchesTransparent(query.request.amount,query.request.destination_script_pub_key));
+                AllocationInclusion inclusion;inclusion.height=uint64_t(*at);
+                std::copy(canonical->begin(),canonical->end(),inclusion.block_hash.begin());
+                Require(!query.prior || observation.prior_not_canonical || *query.prior==inclusion);
+                observation.included=inclusion;
+            } else Require(location.status()==Status::NotFound);
+            captured->rows.push_back(std::move(observation));
+        }
+        // Selected ownership survives this return. The service releases this
+        // lease only after its checked commit and live publication complete.
+        return captured;
     }
     const std::shared_ptr<WalletWithdrawalDispatchState> state_;
     const VaultIdentity vault_;

@@ -615,11 +615,8 @@ bool ValidationQueue::applyBlockToChain(BlockValidationJob& job) {
             return false;
         }
 
-        // Track C: Liquidity Vault block-event hook. Drives the
-        // deposit-flow lifecycle, reorg detection, and withdrawal
-        // settlement of every account-bound deposit/withdrawal the
-        // vault is tracking. No-op when vault is disabled by config.
-        dinero::vault::NotifyVaultTipConnected(static_cast<uint64_t>(job.height));
+        // A validation-only local UTXO transition is not a durable canonical
+        // notification. The daemon worker observes the selected committed tip.
 
         // Store undo data for reorg support
         // Note: Full reorg support requires either:

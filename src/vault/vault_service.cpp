@@ -212,63 +212,100 @@ void VaultService::recordDeposit(const std::array<uint8_t, 32>& txid, uint32_t v
     commitAndPublish(state,transaction.get());
 }
 
-void VaultService::tipChanged(uint64_t height) {
-    std::unique_lock<std::mutex> lock(mu_);
-    if (!capture_tip_) {
-        if (state_owner_) throw std::runtime_error("vault durable canonical snapshot unavailable");
-        PreparedState state(*this);
-        state.watcher.reconcileTracked();
-        state.deposits.tipChanged(height);
-        state.withdrawals.tipChanged(height);
-        publish(state);
-        return;
-    }
-    const auto captured_revision = revision_;
+uint64_t VaultService::currentRevision() {
+    std::lock_guard<std::mutex> lock(mu_);return revision_;
+}
+VaultService::TipObservation VaultService::tipChanged(uint64_t height) {
+    uint64_t captured_revision=0;
     std::vector<VaultDepositQuery> queries;
-    queries.reserve(deposit_flow_.tracked().size());
-    for (const auto& [outpoint, dep] : deposit_flow_.tracked()) {
-        if (dep.stage != DepositStage::REVERTED)
-            queries.push_back({outpoint, dep.deposit_height, dep.amount});
-    }
-    // Never acquire selected-chain ownership while holding the vault mutex.
-    // The reader is immutable after construction and this method's caller
-    // retains the service throughout this operation.
-    lock.unlock();
-    const auto captured = capture_tip_(height, queries);
-    auto transaction=state_owner_?state_owner_->Begin():nullptr;
-    lock.lock();
-    requireCurrentOwner(transaction.get());
-    if (revision_ != captured_revision)
-        throw std::runtime_error("vault state changed during canonical observation");
-    const auto nonzero = [](const auto& hash) {
-        return std::any_of(hash.begin(), hash.end(), [](uint8_t b) { return b != 0; });
-    };
-    if (captured.height != height || !nonzero(captured.block_hash) ||
-        captured.deposits.size() != queries.size())
-        throw std::runtime_error("incomplete vault canonical snapshot");
-    // Validate every result before staging. Ordered exact input binding also
-    // refuses missing, duplicate, foreign or reordered observation results.
-    for (size_t i=0; i<queries.size(); ++i) {
-        const auto& item = captured.deposits[i];
-        if (item.query != queries[i] ||
-            (item.block_hash && !nonzero(*item.block_hash)) ||
-            (item.query.height <= height && !item.block_hash) ||
-            (item.query.height > height && (item.block_hash || item.included)))
-            throw std::runtime_error("vault canonical observation binding mismatch");
-    }
-    PreparedState state(*this);
-    for (const auto& item : captured.deposits) {
-        const auto& dep = state.deposits.tracked_.at(item.query.outpoint);
-        auto& recorded = state.watcher.deposit_block_hashes_.at(item.query.outpoint);
-        if (item.included) {
-            recorded = *item.block_hash;
-        } else {
-            state.deposits.revert(item.query.outpoint, state.watcher.unrecoverableLoss(dep));
+    std::vector<VaultWithdrawalQuery> payment_queries;
+    {
+        std::lock_guard<std::mutex> lock(mu_);
+        if (!capture_tip_) {
+            if (state_owner_) throw std::runtime_error("vault durable canonical snapshot unavailable");
+            PreparedState state(*this);
+            state.watcher.reconcileTracked();state.deposits.tipChanged(height);state.withdrawals.tipChanged(height);
+            publish(state);return {height,{},revision_};
+        }
+        captured_revision=revision_;queries.reserve(deposit_flow_.tracked().size());
+        for(const auto& [outpoint,dep]:deposit_flow_.tracked())
+            queries.push_back({outpoint,dep.deposit_height,dep.amount});
+        for(const auto& [id,request]:withdrawals_.requests_) {
+            const auto& state=withdrawals_.states_.at(id);
+            const auto* payment=std::get_if<WithdrawalPaymentRetained>(&state);
+            std::optional<AllocationInclusion> prior;
+            if(const auto* confirmed=std::get_if<WithdrawalPaymentConfirmed>(&state)) {
+                payment=&confirmed->payment;prior=confirmed->inclusion;
+            }
+            if(!payment)continue;
+            if(!ledger_.creditAllocations().reservations().contains(id)) {
+                // Preserve historical aggregate payment bytes. They cannot be
+                // enrolled into source accounting by guessing old allocations.
+                if(prior)throw std::runtime_error("confirmed vault payment has no source allocation");
+                continue;
+            }
+            payment_queries.push_back({request,*payment,prior});
         }
     }
+    // Capture outside the service mutex. If payments are present their source
+    // lease is acquired before wallet/SQLite and retains selected ownership
+    // through commit. Matching tip hashes bind the earlier deposit snapshot.
+    const auto captured=capture_tip_(height,queries);
+    std::unique_ptr<VaultWithdrawalObservationLease> payments;
+    if(!payment_queries.empty()) {
+        if(!withdrawal_dispatcher_)throw std::runtime_error("vault canonical payment dispatcher unavailable");
+        payments=withdrawal_dispatcher_->CaptureCanonical(height,payment_queries);
+        if(!payments || payments->Height()!=captured.height || payments->Hash()!=captured.block_hash ||
+           payments->Rows().size()!=payment_queries.size())
+            throw std::runtime_error("incomplete vault canonical payment snapshot");
+    }
+    auto transaction=state_owner_?state_owner_->Begin():nullptr;
+    std::lock_guard<std::mutex> lock(mu_);
+    requireCurrentOwner(transaction.get());
+    if(revision_!=captured_revision)throw std::runtime_error("vault state changed during canonical observation");
+    const auto nonzero=[](const auto& bytes){return std::any_of(bytes.begin(),bytes.end(),[](uint8_t b){return b!=0;});};
+    if(captured.height!=height || !nonzero(captured.block_hash) || captured.deposits.size()!=queries.size())
+        throw std::runtime_error("incomplete vault canonical snapshot");
+    for(size_t i=0;i<queries.size();++i) {
+        const auto& item=captured.deposits[i];
+        if(item.query!=queries[i] || (item.block_hash && !nonzero(*item.block_hash)) ||
+           (item.query.height<=height && !item.block_hash) ||
+           (item.query.height>height && (item.block_hash || item.included)))
+            throw std::runtime_error("vault canonical observation binding mismatch");
+    }
+    if(payments)for(size_t i=0;i<payment_queries.size();++i) {
+        const auto& item=payments->Rows()[i];
+        if(item.query!=payment_queries[i] || (item.prior_not_canonical && !item.query.prior) ||
+           (item.included && (!nonzero(item.included->block_hash) || item.included->height>height)) ||
+           (item.query.prior && !item.prior_not_canonical && item.included && *item.query.prior!=*item.included))
+            throw std::runtime_error("vault canonical payment binding mismatch");
+    }
+    PreparedState state(*this);
+    for(const auto& item:captured.deposits) {
+        auto& recorded=state.watcher.deposit_block_hashes_.at(item.query.outpoint);
+        if(item.included) {state.deposits.reinstateIncluded(item.query.outpoint,captured.height);recorded=*item.block_hash;}
+        else state.deposits.revertOwned(item.query.outpoint);
+    }
     state.deposits.tipChanged(captured.height);
+    if(payments)for(const auto& item:payments->Rows()) {
+        const auto& query=item.query;const auto& id=query.request.request_id;
+        auto prior=query.prior;
+        if(prior && item.prior_not_canonical) {
+            state.ledger.append(WithdrawalAllocationDisconnected{state.ledger.nextSeq(),WithdrawalQueue::now(),
+                query.request.account,id,*prior});
+            state.withdrawals.states_.at(id)=query.retained;prior.reset();
+        }
+        // Missing transaction-index data preserves an existing same-anchor
+        // inclusion. It never frees ambiguous inputs or authorizes another send.
+        if(!prior && item.included && (state.withdrawals.policy_.k_settle==0 || height-item.included->height>=state.withdrawals.policy_.k_settle-1)) {
+            state.ledger.append(WithdrawalAllocationIncluded{state.ledger.nextSeq(),WithdrawalQueue::now(),
+                query.request.account,id,*item.included});
+            state.withdrawals.states_.at(id)=WithdrawalPaymentConfirmed{query.retained,*item.included};
+        }
+    }
     state.withdrawals.tipChanged(captured.height);
     commitAndPublish(state,transaction.get());
+    return {captured.height,captured.block_hash,revision_};
 }
 
 WithdrawalId VaultService::enqueueWithdrawal(const AccountId& account, UnaAmount amount,
@@ -287,6 +324,9 @@ UnaAmount VaultService::pendingReservedLocked(const AccountId& account,UnaAmount
     UnaAmount reserved=0;
     for(const auto& [id,request]:withdrawals_.requests_) {
         if(request.account!=account)continue;
+        // Attributed requests already own a source reservation in Ledger.
+        // Historical Pending/Signing rows retain their older reservation path.
+        if(ledger_.creditAllocations().reservations().contains(id))continue;
         const auto& state=withdrawals_.states_.at(id);
         if(!std::holds_alternative<WithdrawalPending>(state) &&
            !std::holds_alternative<WithdrawalSigning>(state))continue;
@@ -327,6 +367,9 @@ WithdrawalId VaultService::enqueueWithdrawal(const AccountId& account,UnaAmount 
     requirePendingCapacity(account,amount);
     PreparedState state(*this);const auto id=state.withdrawals.enqueue(account,amount,script);
     state.withdrawals.requests_.at(id).payment_terms=terms;
+    const auto refs=state.ledger.selectCreditAllocations(account,amount);
+    state.ledger.append(WithdrawalAllocationReserved{state.ledger.nextSeq(),WithdrawalQueue::now(),
+        account,id,amount,refs});
     commitAndPublish(state,transaction.get());return id;
 }
 
@@ -347,12 +390,21 @@ std::optional<WithdrawalId> VaultService::processDurableWithdrawal() {
         if(!selected)return std::nullopt;
         if(!selected->payment_terms)throw std::runtime_error("vault historical withdrawal lacks explicit payment terms");
         ValidateWithdrawalPaymentTerms(*selected->payment_terms);
+        const auto allocation=ledger_.creditAllocations().reservations().find(selected->request_id);
+        if(allocation==ledger_.creditAllocations().reservations().end() ||
+           allocation->second.account!=selected->account || allocation->second.amount!=selected->amount)
+            throw std::runtime_error("withdrawal source allocation is unavailable");
         // Copy all callback input before committing or publishing the transition.
         request=*selected;
         new_dispatch=std::holds_alternative<WithdrawalPending>(withdrawals_.states_.at(request.request_id));
         if(new_dispatch) {
             requirePendingCapacity(request.account,0);
-            PreparedState state(*this);state.withdrawals.states_.at(request.request_id)=WithdrawalSigning{};
+            PreparedState state(*this);
+            if(!state.ledger.creditAllocations().reservations().contains(request.request_id))
+                throw std::runtime_error("historical withdrawal lacks source allocation ownership");
+            state.ledger.append(WithdrawalAllocationDispatchStarted{state.ledger.nextSeq(),WithdrawalQueue::now(),
+                request.account,request.request_id});
+            state.withdrawals.states_.at(request.request_id)=WithdrawalSigning{};
             commitAndPublish(state,transaction.get());
         }
     }
@@ -374,8 +426,9 @@ std::optional<WithdrawalId> VaultService::processDurableWithdrawal() {
             throw std::runtime_error("vault withdrawal state changed during dispatch");
         requirePendingCapacity(request.account,0);
         PreparedState state(*this);
-        state.ledger.append(WithdrawalInitiated{state.ledger.nextSeq(),WithdrawalQueue::now(),
-            request.account,OutpointId{retained->txid,retained->vout},request.amount,backend_->backendId()});
+        state.ledger.append(WithdrawalAllocationPaymentBound{state.ledger.nextSeq(),WithdrawalQueue::now(),
+            request.account,request.request_id,
+            AllocationPayment{OutpointId{retained->txid,retained->vout},retained->body_sha256},backend_->backendId()});
         state.withdrawals.states_.at(request.request_id)=*retained;
         commitAndPublish(state,transaction.get());
     }

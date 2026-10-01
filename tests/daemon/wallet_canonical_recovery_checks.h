@@ -1,4 +1,5 @@
 #pragma once
+#include "rpc/orchard_account_rpc.h"
 namespace dinero {
 namespace {
 using Recovery=WalletService::CanonicalRecovery;
@@ -79,7 +80,11 @@ struct CanonicalRecoveryFixture : OrchardCycleFixture {
         OrchardAdmissionFixture::Require(sqlite3_exec(lease->Database(),"COMMIT",nullptr,nullptr,nullptr)==SQLITE_OK);
     }
     void MineAndAdopt() {
-        EnrollAccount();const auto keys=Keys();const auto [body,bundle]=Shield(keys);(void)Mine(body);
+        const auto keys=Keys();const auto [body,bundle]=Shield(keys);(void)Mine(body);
+        ExecutionContext request;request.daemon=&context;request.walletName="canonical-recovery";
+        din::Json params;params["account"]=Json::UInt64(0);
+        const auto created=rpc_context_wallet_orchard_createaccount(request,params);
+        OrchardAdmissionFixture::Require(!created.isMember("error"));
         auto use=WalletService::AcquireWalletUse(wallet);auto index=ChainstateService::AcquireWalletIndexUse(f.service);
         const auto session=use->Wallet().AcquireDatabaseLease()->Session();
         const auto origin=f.service->getRuntimeWalletOrigin(use->Wallet(),session,&index->Index());

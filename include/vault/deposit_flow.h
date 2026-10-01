@@ -112,6 +112,14 @@ class DepositFlowMachine {
 
    private:
     friend class VaultService;
+    friend class ReorgWatcher;
+    // Live canonical reversal: verifies the tracked owner, derives the actual
+    // debit and publishes both ledger entries before changing the stage.
+    void revertOwned(const OutpointId& outpoint);
+    // Only VaultService may call this after a checked canonical observation.
+    // Previously credited positions wait for settlement maturity and restore
+    // only the account balance actually removed by the retained reversal.
+    void reinstateIncluded(const OutpointId& outpoint, uint64_t tip_height);
     int advance(TrackedDeposit& dep, uint64_t confs);
     LedgerTimestamp now();
 

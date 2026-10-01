@@ -76,9 +76,10 @@ TEST_F(VaultRetainedWithdrawal, AcceptedPaymentRetainsExactBodyAndTermsAcrossReo
     const auto id=enqueue();ingress->submit=[&](const dinero::Transaction& tx){submission(tx,id);return dinero::TxAcceptResult::Accepted(tx.GetTxid().AsUint256());};
     EXPECT_EQ(vault.service->processNextWithdrawal(),std::optional<dinero::vault::WithdrawalId>{id});
     const auto saved=retained(id);const auto bytes=dinero::vault::EncodeVaultState(vault.service->captureState());
-    EXPECT_EQ(bytes[5],'2');const auto decoded=dinero::vault::DecodeVaultState(bytes);
+    EXPECT_EQ(bytes[5],'6');const auto decoded=dinero::vault::DecodeVaultState(bytes);
     ASSERT_EQ(decoded.withdrawals.size(),1u);ASSERT_TRUE(decoded.withdrawals[0].request.payment_terms);
-    EXPECT_EQ(*decoded.withdrawals[0].request.payment_terms,terms);EXPECT_NO_THROW(dinero::vault::ReplayVaultStateLedger(decoded));
+    EXPECT_EQ(*decoded.withdrawals[0].request.payment_terms,terms);
+    EXPECT_NO_THROW(dinero::vault::ReplayVaultStateLedger(decoded));
     EXPECT_THROW(vault.service->markWithdrawalIncluded(id,21),std::runtime_error);
     EXPECT_EQ(dinero::vault::EncodeVaultState(vault.service->captureState()),bytes);
     EXPECT_EQ(ingress->tests,1);EXPECT_EQ(ingress->submits,1);reopen();EXPECT_EQ(retained(id),saved);
@@ -118,7 +119,8 @@ TEST_F(VaultRetainedWithdrawal, MissingBodyKeepsSigningAcrossReopenWithoutRegene
 TEST_F(VaultRetainedWithdrawal, ExplicitTermsAndCollectiveReservationsRefuseBeforeEffects) {
     auto bad=terms;bad.maximum_fee_una=0;const auto initial=dinero::vault::EncodeVaultState(vault.service->captureState());
     EXPECT_THROW(vault.service->enqueueWithdrawal(account,20000,modern.spk,bad),std::runtime_error);
-    bad=terms;bad.audit_context=std::string("a\0b",3);EXPECT_THROW(vault.service->enqueueWithdrawal(account,20000,modern.spk,bad),std::runtime_error);
+    bad=terms;bad.audit_context=std::string("a\0b",3);
+    EXPECT_THROW(vault.service->enqueueWithdrawal(account,20000,modern.spk,bad),std::runtime_error);
     EXPECT_EQ(dinero::vault::EncodeVaultState(vault.service->captureState()),initial);
     (void)enqueue(60000);const auto reserved=dinero::vault::EncodeVaultState(vault.service->captureState());
     EXPECT_THROW(enqueue(40001),std::runtime_error);EXPECT_EQ(dinero::vault::EncodeVaultState(vault.service->captureState()),reserved);
@@ -152,7 +154,7 @@ TEST_F(VaultRetainedWithdrawal, RetainedRecipientAtNonzeroOutputNeverUsesAssumed
     EXPECT_EQ(vault.service->processNextWithdrawal(),std::optional<dinero::vault::WithdrawalId>{id});
     EXPECT_EQ(retained(id).vout,1u);EXPECT_EQ(ingress->tests,0);EXPECT_EQ(ingress->submits,0);
     const auto snapshot=vault.service->captureState();
-    const auto* initiated=std::get_if<dinero::vault::WithdrawalInitiated>(&snapshot.entries.back());ASSERT_NE(initiated,nullptr);EXPECT_EQ(initiated->request.vout,1u);
+    const auto* bound=std::get_if<dinero::vault::WithdrawalAllocationPaymentBound>(&snapshot.entries.back());ASSERT_NE(bound,nullptr);EXPECT_EQ(bound->payment.output.vout,1u);EXPECT_EQ(bound->request,id);
     reopen();EXPECT_EQ(retained(id).vout,1u);EXPECT_EQ(service->get().getPendingPayments().at(0).signed_body,body);
 }
 TEST_F(VaultRetainedWithdrawal, HistoricalSnapshotAndMissingTermsRemainExplicitlyUnspecified) {

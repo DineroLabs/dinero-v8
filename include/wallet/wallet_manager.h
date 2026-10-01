@@ -1043,7 +1043,8 @@ private:
 
     enum class InitialSeedKind { Generated, Recovered };
     bool storeMasterSeedOwned(const std::vector<uint8_t>& seed, const std::string& passphrase,
-                              bool reset_address_state, const std::string* initial_owner);
+                              bool reset_address_state, const std::string* initial_owner,
+                              std::optional<InitialSeedKind> catalog_kind = std::nullopt);
     std::optional<std::array<uint8_t, 32>> loadInitialPqMaster(const std::vector<uint8_t>& seed);
     void createWithInitialSeed(const std::string& name,
                                const std::vector<uint8_t>& initial_master_seed,
@@ -1061,6 +1062,7 @@ private:
     friend struct WalletSeedReadTestAccess;
     friend struct WalletSeedWriteTestAccess;
     friend struct WalletInitialOwnerTestAccess;
+    friend struct WalletOrchardCatalogTestAccess;
     friend struct WalletUnlockOwnerTestAccess;
     bool RescanBlockchainImpl(int start_height, int gap_limit, ChainDB*, BlockStorage*,
                               const SelectedWalletHistory*, uint64_t expected_session);

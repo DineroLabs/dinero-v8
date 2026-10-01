@@ -92,7 +92,10 @@ TEST_F(WalletPoolRequestVault, VaultBindingKeepsDistinctRequestNamespaces) {
         auto& payment=std::get<dinero::vault::WithdrawalPaymentRetained>(next.withdrawals.at(0).state);
         SHA256(pool_payment->signed_body.data(),pool_payment->signed_body.size(),payment.body_sha256.data());
         ASSERT_NE(payment.body_sha256,expected.body_sha256);
-        EXPECT_NO_THROW(dinero::vault::ReplayVaultStateLedger(next));EXPECT_THROW(owner->Stage(next),std::runtime_error);
+        // The allocation ledger already binds the retained body. Both replay
+        // and staging must reject a substituted payment from another namespace.
+        EXPECT_THROW(dinero::vault::ReplayVaultStateLedger(next),std::runtime_error);
+        EXPECT_THROW(owner->Stage(next),std::runtime_error);
     }
     EXPECT_EQ(state_envelope(),stored);EXPECT_EQ(envelope(wallet.getCurrentDatabase()),saved);
     reopen();EXPECT_EQ(retained(id),expected);EXPECT_EQ(state_envelope(),stored);

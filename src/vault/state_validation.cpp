@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <climits>
 #include <limits>
+#include <map>
 #include <stdexcept>
 #include <type_traits>
 #include <unordered_map>
@@ -20,6 +21,8 @@ struct DepositBinding {
     // 0 detected, 1 observed, 2 credited, 3 settled, 4 ledger-reverted.
     unsigned progress{0};
     bool compensated{false};
+    LedgerSeq reversalSeq{0};
+    LedgerSeq compensationSeq{0};
 };
 struct WithdrawalBinding {
     const VaultSavedWithdrawal* saved{};
@@ -36,6 +39,12 @@ Ledger ReplayVaultStateLedger(const VaultStateSnapshot& state) {
     if (state.revision==0)
         Require(state.entries.empty() && state.deposits.empty() && state.withdrawals.empty());
 
+    // Replay is the single owner of source accounting and transition checks.
+    // Snapshot bindings below reconcile its complete result with the saved
+    // requests/deposits; no second approximation of financial replay is used.
+    auto replayed=Ledger::replay(state.entries,state.config.ledger_caps);
+    const auto& allocations=replayed.creditAllocations();
+    std::map<AllocationRequestId,const VaultSavedWithdrawal*> requests;
     std::unordered_map<OutpointId,DepositBinding> deposits;
     for (const auto& row:state.deposits) {
         Require(Nonzero(row.observed_block));
@@ -46,6 +55,7 @@ Ledger ReplayVaultStateLedger(const VaultStateSnapshot& state) {
     size_t depth=0;
     for (const auto& row:state.withdrawals) {
         const auto& request=row.request;
+        Require(requests.emplace(request.request_id,&row).second);
         Require(Nonzero(request.request_id) && request.amount>0 &&
                 !request.destination_script_pub_key.empty());
         Require(request.amount<=state.config.withdrawal_caps.per_request);
@@ -53,7 +63,15 @@ Ledger ReplayVaultStateLedger(const VaultStateSnapshot& state) {
                     std::holds_alternative<WithdrawalSigning>(row.state) ||
                     std::holds_alternative<WithdrawalBroadcast>(row.state) ||
                     std::holds_alternative<WithdrawalPaymentRetained>(row.state);
-        if (active) {
+        const auto allocated=allocations.reservations().find(request.request_id);
+        const bool restored_reservation=allocated!=allocations.reservations().end() &&
+            allocated->second.previously_included && !allocated->second.inclusion;
+        // A canonical disconnect must restore its exact reservation even when
+        // later accepted requests have consumed the admission capacity. This
+        // exception requires replayed Included -> Disconnected ownership.
+        // Live enqueue still counts ALL restored reservations and blocks new
+        // requests above the unchanged caps. Old-format cap checks are exact.
+        if (active && !restored_reservation) {
             auto& total=outstanding[request.account];
             const auto cap=state.config.withdrawal_caps.per_account_outstanding;
             Require(total<=cap && request.amount<=cap-total);
@@ -61,6 +79,8 @@ Ledger ReplayVaultStateLedger(const VaultStateSnapshot& state) {
             Require(depth<static_cast<size_t>(state.config.withdrawal_caps.global_queue_depth));
             ++depth;
         }
+        if(allocations.reservations().contains(request.request_id))continue;
+        Require(!std::holds_alternative<WithdrawalPaymentConfirmed>(row.state));
         std::visit([&](const auto& value) {
             using T=std::decay_t<decltype(value)>;
             if constexpr(std::is_same_v<T,WithdrawalBroadcast> ||
@@ -91,6 +111,16 @@ Ledger ReplayVaultStateLedger(const VaultStateSnapshot& state) {
                 // Keep the recorded account, signed amounts and note. The
                 // actual replay engine owns their established interpretation.
                 return;
+            } else if constexpr(std::is_same_v<T,WithdrawalAllocationReserved> ||
+                                std::is_same_v<T,WithdrawalAllocationDispatchStarted> ||
+                                std::is_same_v<T,WithdrawalAllocationPaymentBound> ||
+                                std::is_same_v<T,WithdrawalAllocationIncluded> ||
+                                std::is_same_v<T,WithdrawalAllocationDisconnected> ||
+                                std::is_same_v<T,WithdrawalAllocationReleased>) {
+                const auto found=requests.find(value.request);
+                Require(found!=requests.end() && found->second->request.account==value.account);
+                // Ledger replay checks the entire ordered lifecycle and each
+                // exact origin. Final saved state is reconciled below.
             } else if constexpr(std::is_same_v<T,WithdrawalInitiated> ||
                                 std::is_same_v<T,WithdrawalSettled> ||
                                 std::is_same_v<T,WithdrawalReverted>) {
@@ -117,14 +147,35 @@ Ledger ReplayVaultStateLedger(const VaultStateSnapshot& state) {
                 } else if constexpr(std::is_same_v<T,CreditOpened>) {
                     Require(binding.progress==1 && value.amount==binding.saved->deposit.amount);
                     binding.progress=2;
+                } else if constexpr(std::is_same_v<T,CreditPositionMatured> ||
+                                    std::is_same_v<T,CreditPositionReverted> ||
+                                    std::is_same_v<T,CreditPositionRestored>) {
+                    const auto origin=allocations.positions().find(value.credit_seq);
+                    Require(origin!=allocations.positions().end() &&
+                            origin->second.account==value.account && origin->second.deposit==value.deposit);
+                    if constexpr(std::is_same_v<T,CreditPositionMatured>) {
+                        Require(binding.progress==2);binding.progress=3;
+                    } else if constexpr(std::is_same_v<T,CreditPositionReverted>) {
+                        Require(binding.progress==2 || binding.progress==3);
+                        binding.progress=4;binding.compensated=true;
+                    } else {
+                        Require(binding.progress==4 && binding.compensated);
+                        binding.progress=3;binding.compensated=false;
+                    }
                 } else if constexpr(std::is_same_v<T,CreditSettled>) {
                     Require(binding.progress==2);binding.progress=3;
                 } else if constexpr(std::is_same_v<T,CreditReverted>) {
                     Require(binding.progress==2 || binding.progress==3);binding.progress=4;
+                    binding.reversalSeq=value.seq;binding.compensated=false;
                 } else if constexpr(std::is_same_v<T,CompensatingDebit>) {
                     Require(binding.progress==4 && !binding.compensated &&
                             value.amount==binding.saved->deposit.amount);
-                    binding.compensated=true;
+                    binding.compensated=true;binding.compensationSeq=value.seq;
+                } else if constexpr(std::is_same_v<T,CreditReinstated>) {
+                    Require(binding.progress==4 && binding.compensated &&
+                            value.reversalSeq==binding.reversalSeq &&
+                            value.compensationSeq==binding.compensationSeq);
+                    binding.progress=3;binding.compensated=false;
                 }
             }
         },entry);
@@ -148,6 +199,39 @@ Ledger ReplayVaultStateLedger(const VaultStateSnapshot& state) {
             Require(binding.progress==2);
         else Require(binding.progress==3);
     }
-    return Ledger::replay(state.entries,state.config.ledger_caps);
+    for(const auto& [id,reservation]:allocations.reservations()) {
+        const auto found=requests.find(id);Require(found!=requests.end());
+        const auto& row=*found->second;const auto& request=row.request;
+        Require(request.account==reservation.account && request.amount==reservation.amount &&
+                request.payment_terms.has_value());
+        ValidateWithdrawalPaymentTerms(*request.payment_terms);
+        if(reservation.released) {
+            Require(!reservation.dispatch_started && !reservation.payment && !reservation.inclusion &&
+                    std::holds_alternative<WithdrawalFailed>(row.state));
+        } else if(!reservation.dispatch_started) {
+            Require(!reservation.payment && !reservation.inclusion && std::holds_alternative<WithdrawalPending>(row.state));
+        } else if(!reservation.payment) {
+            Require(!reservation.inclusion && std::holds_alternative<WithdrawalSigning>(row.state));
+        } else {
+            const WithdrawalPaymentRetained* payment=nullptr;
+            if(reservation.inclusion) {
+                const auto* confirmed=std::get_if<WithdrawalPaymentConfirmed>(&row.state);
+                Require(confirmed && confirmed->inclusion==*reservation.inclusion);
+                payment=&confirmed->payment;
+            } else payment=std::get_if<WithdrawalPaymentRetained>(&row.state);
+            Require(payment && Nonzero(payment->txid) && Nonzero(payment->body_sha256) &&
+                    payment->fee_una<=request.payment_terms->maximum_fee_una &&
+                    reservation.payment->output==OutpointId{payment->txid,payment->vout} &&
+                    reservation.payment->body_hash==payment->body_sha256);
+        }
+    }
+    for(const auto& [seq,position]:allocations.positions()) {
+        const auto found=deposits.find(position.deposit);Require(found!=deposits.end());
+        const auto& saved=found->second.saved->deposit;
+        Require(saved.account==position.account && saved.amount==position.nominal);
+        Require(saved.stage==(!position.active?DepositStage::REVERTED:
+            position.stage==CreditAllocationState::Stage::Pending?DepositStage::CREDITED:DepositStage::SETTLED));
+    }
+    return replayed;
 }
 } // namespace dinero::vault

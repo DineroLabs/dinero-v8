@@ -1,3 +1,4 @@
+#include "wallet/orchard_account_catalog.h"
 #include "wallet/selected_history.h"
 #include "wallet/unsigned_tx_builder.h"
 #include <climits>
@@ -1906,7 +1907,7 @@ void WalletManager::createWithInitialSeed(
             } owner_key{InitialOwnerKey(initial_master_seed)}, owner_plain;
             std::string identity;
             { auto lease = AcquireDatabaseLease(); identity = lease->EnsureDeliveryIdentity(); }
-            owner_plain.value = "DNI01";
+            owner_plain.value = "DNI02";
             owner_plain.value.push_back(kind == InitialSeedKind::Generated ? 1 : 0);
             if (identity.size() != 71 || identity.substr(0,7) != "DNWI01:")
                 throw std::runtime_error("Initial wallet identity invalid");
@@ -1922,7 +1923,7 @@ void WalletManager::createWithInitialSeed(
             }
             const auto sealed = encryptData(owner_plain.value, owner_key.value);
             const auto owner = util::hex(std::vector<uint8_t>(sealed.begin(), sealed.end()));
-            if (!storeMasterSeedOwned(initial_master_seed, "", false, &owner)) {
+            if (!storeMasterSeedOwned(initial_master_seed, "", false, &owner, kind)) {
                 throw std::runtime_error("Failed to persist initial HD wallet seed");
             }
             if (authoritative_mnemonic) {
@@ -4400,7 +4401,7 @@ std::optional<std::array<uint8_t, 32>> WalletManager::loadInitialPqMaster(
     owner.Done();
     struct Secret { std::string value; ~Secret() { secureClearString(value); } } key{InitialOwnerKey(seed)}, plain;
     plain.value = decryptData(std::string(bytes.begin(), bytes.end()), key.value);
-    if ((plain.value.size() != 70 && plain.value.size() != 102) || plain.value.substr(0,5) != "DNI01" ||
+    if ((plain.value.size() != 70 && plain.value.size() != 102) || (plain.value.substr(0,5) != "DNI01" && plain.value.substr(0,5) != "DNI02") ||
         (plain.value[5] != 0 && plain.value[5] != 1) ||
         plain.value.size() != (plain.value[5] == 1 ? 102u : 70u))
         throw std::runtime_error("Initial owner payload invalid");
@@ -4412,6 +4413,10 @@ std::optional<std::array<uint8_t, 32>> WalletManager::loadInitialPqMaster(
     if (!identity || plain.value.substr(6,64) != util::hex(std::vector<uint8_t>(identity,identity+32)))
         throw std::runtime_error("Initial owner identity mismatch");
     id.Done();
+    const auto catalog = wallet::OrchardAccountCatalog::Read(db_,seed);
+    if ((plain.value.substr(0,5) == "DNI02" && !catalog) ||
+        (catalog && catalog->generated != (plain.value[5] == 1)))
+        throw std::runtime_error("Initial Orchard catalog owner mismatch");
     std::optional<std::array<uint8_t,32>> result;
     if (plain.value[5] == 1) {
         result.emplace(); std::memcpy(result->data(), plain.value.data()+70,32);
@@ -4489,6 +4494,8 @@ void WalletManager::unlockWallet(const std::string& passphrase, int timeoutSecon
         (!encryption_key_.empty() && key.value != encryption_key_))
         throw std::runtime_error("Live wallet unlock owner mismatch");
 
+    // Authenticate any present catalog even when a predecessor owner is absent.
+    (void)wallet::OrchardAccountCatalog::Read(db_,seed.value);
     AuthenticateHdInventory(db_,seed.value);
 
     // Authenticate every present predecessor-format import in the same
@@ -8179,7 +8186,8 @@ bool WalletManager::storeMasterSeed(const std::vector<uint8_t>& seed,
 }
 
 bool WalletManager::storeMasterSeedOwned(const std::vector<uint8_t>& seed,
-    const std::string& passphrase, bool reset_address_state, const std::string* initial_owner) {
+    const std::string& passphrase, bool reset_address_state, const std::string* initial_owner,
+    std::optional<InitialSeedKind> catalog_kind) {
     std::lock_guard<std::recursive_mutex> key_ownership(database_lifecycle_mutex_);
     if (recovery_seeds_) throw std::logic_error("Wallet recovery key is pinned");
     if (!db_ || current_wallet_id_ < 0) {
@@ -8195,6 +8203,7 @@ bool WalletManager::storeMasterSeedOwned(const std::vector<uint8_t>& seed,
     try {
         auto lease = AcquireDatabaseLease();
         IssuedAddressTransaction transaction(db_);
+        if (catalog_kind && !initial_owner) throw std::logic_error("Catalog requires initial owner");
         if (initial_owner) {
             // Only creation supplies this sealed owner. Never replace an
             // established seed, even if its ciphertext cannot be read.
@@ -8202,6 +8211,8 @@ bool WalletManager::storeMasterSeedOwned(const std::vector<uint8_t>& seed,
             empty.Done();
             IssuedStatement owner(db_, "INSERT INTO settings(key,value,updated_at) VALUES(?,?,strftime('%s','now'))");
             owner.Text(1, kInitialOwnerSetting); owner.Text(2, *initial_owner); owner.Done(true);
+            if (catalog_kind) wallet::OrchardAccountCatalog::InitializeForInitialSeed(
+                db_, seed, *catalog_kind == InitialSeedKind::Generated);
         }
         struct SeedBuffer {
             std::vector<uint8_t> value;
@@ -8221,6 +8232,16 @@ bool WalletManager::storeMasterSeedOwned(const std::vector<uint8_t>& seed,
         }
         const bool replaces_wallet_identity =
             reset_address_state && !ConstantTimeEqual(seed, previous.value);
+        if (!initial_owner) {
+            IssuedStatement catalog(db_, "SELECT 1 FROM settings WHERE key='orchard_account_catalog_v1'");
+            const int rc = sqlite3_step(catalog.value.get());
+            if (rc != SQLITE_DONE) {
+                IssuanceCheck(db_,rc,SQLITE_ROW); catalog.Done();
+                if (previous.value.size()!=64 || !ConstantTimeEqual(seed,previous.value))
+                    throw std::runtime_error("Seed replacement would orphan Orchard catalog");
+                (void)wallet::OrchardAccountCatalog::Read(db_,previous.value);
+            }
+        }
         if(PaymentColumn(db_)) {
             if(!ConstantTimeEqual(seed,previous.value))
                 throw std::runtime_error("Seed replacement would orphan retained payments");

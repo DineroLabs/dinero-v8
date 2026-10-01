@@ -75,6 +75,19 @@ void LedgerAccount::applyCreditReverted(const OutpointId& deposit) {
     // observed / reverted: nothing to roll back at the credit layer.
 }
 
+void LedgerAccount::applyCreditReinstated(const OutpointId& deposit, UnaAmount amount,
+                                          UnaAmount refund, UnaAmount operator_loss) {
+    auto it=deposits_.find(deposit);
+    if(it==deposits_.end() || !std::holds_alternative<DepositRevertedState>(it->second) ||
+       std::get<DepositRevertedState>(it->second).amount!=amount || operatorLoss_<operator_loss)
+        throw std::logic_error("vault credit reinstatement owner mismatch");
+    const auto confirmed=CheckedAccountSum(confirmed_,refund);
+    (void)CheckedAccountSum(pending_,confirmed);
+    it->second=DepositSettledState{amount};
+    confirmed_=confirmed;
+    operatorLoss_-=operator_loss;
+}
+
 void LedgerAccount::applyWithdrawalInitiated(const OutpointId& request, UnaAmount amount, const BackendId& backend) {
     if (withdrawals_.find(request) == withdrawals_.end()) {
         const auto locked = CheckedAccountSum(locked_, amount);

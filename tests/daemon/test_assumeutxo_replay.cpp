@@ -131,6 +131,7 @@ struct RuntimeOriginProjectionTestAccess {
 #endif
 
 struct ShieldedStateStartupTestAccess {
+    static bool VaultSelectedHeld(ChainstateService& source) {return source.activation_mutex_.HeldByCurrentThread();}
 #ifdef DINERO_TEST_ORCHARD_ORIGIN
     // Populate the real Init-created owner without replacing the index or the
     // consensus object referenced by its validator. No lifetime gate is faked.
@@ -727,6 +728,7 @@ int main(int argc, char** argv) {
 #include "chainstate_wallet_index_owner_checks.h"
 
 #include "wallet_canonical_recovery_checks.h"
+#include "orchard_account_issuance_checks.h"
 #include "runtime_delivery_worker_checks.h"
 #include "runtime_notification_composition_checks.h"
 #include "vault_canonical_observation_checks.h"
@@ -775,3 +777,22 @@ int main(int argc, char** argv) {
 #include "pool_block_source_checks.h"
 
 #include "pool_genesis_source_checks.h"
+
+#include "vault_canonical_withdrawal_checks.h"
+
+#include "runtime_legacy_consumer_absence_checks.h"
+
+#include "orchard_account_creation_checks.h"
+
+#include "orchard_catalog_issuance_checks.h"
+
+#include "orchard_catalog_recovery_checks.h"
+
+#include "orchard_spend_owner_checks.h"
+
+#include "orchard_service_proofs_checks.h"
+
+#include "orchard_operation_status_checks.h"
+
+#include "orchard_proof_retention_checks.h"
+#include "orchard_proof_capacity_checks.h"

@@ -125,4 +125,7 @@ std::shared_ptr<RuntimeBlockNotifications> MakeRuntimeWalletNotifications(const 
 std::shared_ptr<RuntimeBlockNotifications> MakeRuntimePoolNotifications(const pool::PoolManager& manager) {
     return std::make_shared<PoolNotifications>(manager);
 }
+std::shared_ptr<RuntimeBlockNotifications> MakeRuntimeVaultNotifications(const RuntimeDeliveryWorker& worker) {
+    return std::make_shared<WalletNotifications>(worker);
+}
 } // namespace dinero

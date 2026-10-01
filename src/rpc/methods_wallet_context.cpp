@@ -22,6 +22,7 @@
 
 #include "din_json.h"
 #include "rpc/rpc_registry.h"
+#include "rpc/orchard_account_rpc.h"
 #include "rpc/proof_bundle_consistency.h"
 #include "rpc/amount_parser.h"
 #include "daemon/daemon_context.h"
@@ -7933,6 +7934,7 @@ din::Json rpc_context_wallet_listpendingpayments(const ExecutionContext& ctx,con
 }
 
 void registerWalletMethodsContext() {
+    RegisterOrchardAccountRpc();
     g_rpcRegistry.registerHandler("wallet.listpendingpayments",rpc_context_wallet_listpendingpayments,RegisterMode::Overwrite,"context-aware");
     // Core wallet methods (fully implemented)
     g_rpcRegistry.registerHandler("wallet.getbalance",

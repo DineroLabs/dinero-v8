@@ -1,5 +1,6 @@
 #pragma once
 #include "daemon/runtime_outbox_cursor.h"
+#include <array>
 #include <chrono>
 #include <condition_variable>
 #include <cstddef>
@@ -13,15 +14,17 @@
 namespace dinero {
 class ChainstateService;
 class WalletService;
+namespace vault {class VaultService;}
 
 // Replays durable source work; wakeups contain no event or acknowledgment.
-// This is the wallet/readmission consumer only, started by DaemonApp after
-// core recovery. It is not the production RuntimeBlockNotifications provider;
-// all remaining configured consumers still require their own delivery owners.
+// Wallet/readmission and attached-vault tip reconciliation share this owner,
+// started by DaemonApp after core recovery. Its mailbox adapters participate in
+// the daemon provider; worker progress is never all-consumer readiness.
 class RuntimeDeliveryWorker final {
     struct WakeState;
 public:
     enum class WalletOutcome { Deferred, ExplicitlyAbsent, NoActiveWallet, NoLog, AppliedPrefix };
+    enum class VaultOutcome { Deferred, NoAttachedRuntime, ObservedTip, UnchangedSinceObservation };
     struct Report {
         uint64_t slices = 0;
         bool running = false;
@@ -34,6 +37,12 @@ public:
         // Only checked EOF of this pass at reorg_head. Not a durable cursor,
         // admission guarantee, all-consumer acknowledgment or readiness.
         bool reorg_eof = false;
+        // Attached authenticated vault's known tracked state only. NoAttached
+        // is an instantaneous runtime observation, not configured absence.
+        // Unchanged is a process-local cache hint, never fresh authentication.
+        VaultOutcome vault=VaultOutcome::Deferred;
+        uint64_t vault_height=0,vault_revision=0;
+        std::array<uint8_t,32> vault_tip{};
     };
     struct Limits {
         size_t intents_per_slice = 32;
@@ -70,6 +79,12 @@ public:
 private:
     void Run() noexcept;
     bool Stopping() const;
+    struct VaultObservationCache {
+        std::weak_ptr<vault::VaultService> service;
+        uint64_t height=0,revision=0;
+        std::array<uint8_t,32> tip{};
+    };
+    void ObserveVault(Report&,VaultObservationCache&) const;
     void RecoverWallet(Report&) const;
     bool ReconcileSlice(Report&) const;
     std::shared_ptr<ChainstateService> source_;

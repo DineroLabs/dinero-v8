@@ -6,6 +6,8 @@
 #include "consensus/csn_replay_data.h"
 #include "daemon/daemon_app.h"
 #include "daemon/runtime_delivery_worker.h"
+#include "daemon/runtime_notification_composition.h"
+#include "consensus/orchard_profile.h"
 #ifdef __APPLE__
 #include <TargetConditionals.h>
 #endif
@@ -568,13 +570,14 @@ void DaemonApp::ClosePoolRuntime() noexcept {
 }
 
 DaemonApp::~DaemonApp() {
-    // Also covers initialized-but-never-started and failed-start lifetimes.
-    ClosePoolRuntime();
     try {
         Stop();
     } catch (...) {
         std::cerr << "[DaemonApp] Exception in destructor during Stop()" << std::endl;
     }
+    // Stop first detaches typed notifications, then joins workers. This fallback
+    // also covers initialized-but-never-started and failed-start lifetimes.
+    ClosePoolRuntime();
     // Explicitly reset members that might throw during destruction.
     try { chain_db_.reset(); } catch (...) {
         std::cerr << "[DaemonApp] Exception destroying ChainDB" << std::endl;
@@ -2639,6 +2642,20 @@ bool DaemonApp::Init(int argc, char** argv) {
                 std::cout << "[DaemonApp] ✅ ChainstateService wired to HeaderChainSelector (mined block tracking)" << std::endl;
             }
 
+            // Explicitly disabled means no client construction or socket probe.
+            // Default true preserves the existing optional legacy integration.
+            const auto oracle_config=std::dynamic_pointer_cast<ConfigService>(ctx_.config);
+            const bool legacy_oracles_enabled=!oracle_config || oracle_config->GetBool("lightning.oracles.enable",true);
+#ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
+            if (!GetConfig().utreexo_stateless && Params().orchard_activation_height!=UINT32_MAX && legacy_oracles_enabled) {
+                // A configured consumer remains configured even while disconnected.
+                // No typed adapters exist for these legacy IPC clients. Refuse
+                // before any socket probe, rather than declare failed clients absent.
+                std::cerr << "[DaemonApp] Scheduled Orchard requires explicit disabled legacy oracles or typed adapters; refusing before IPC probe" << std::endl;
+                return false;
+            }
+#endif
+            if (legacy_oracles_enabled) {
             // Phase 9.2: Wire ChainOracleClient to Chainstate (for Lightning events)
             {
                 auto chain_oracle = std::make_unique<dinero::ipc::ChainOracleClient>("/tmp/lightningd.sock");
@@ -2684,6 +2701,8 @@ bool DaemonApp::Init(int argc, char** argv) {
                 } else {
                     std::cout << "[DaemonApp] ℹ️  TransactionOracleClient connection failed (lightningd not running?)" << std::endl;
                 }
+            }
+
             }
 
             // Phase G.3: Wire TxRelayManager to Mempool (for announcements)
@@ -6911,6 +6930,69 @@ bool DaemonApp::Start() {
         }
     }
 
+    // A scheduled profile may replay selected blocks in ChainstateService::Start.
+    // Install its real, running mailbox consumers before that pass or P2P starts.
+    // Early worker reads defer until their initialized services grant ownership;
+    // retained outbox work and the normal periodic pass remain authoritative.
+    const auto start_runtime_delivery=[this]() -> bool {
+        try {
+            runtime_delivery_worker_=std::make_unique<RuntimeDeliveryWorker>(ctx_.chainstate,ctx_.wallet);
+            runtime_delivery_worker_->Start();
+            if(pool_manager_runtime_) {
+                pool_manager_runtime_->startMaintenanceThread();
+                std::cout << "[DaemonApp] Pool maintenance worker started; accounting remains asynchronous" << std::endl;
+            }
+    #ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
+            if (!GetConfig().utreexo_stateless && Params().orchard_activation_height!=UINT32_MAX) {
+                if (!consensus::OrchardProfileConfigurationValid(Params()))
+                    throw std::runtime_error("Invalid configured Orchard notification profile");
+                const auto config=std::dynamic_pointer_cast<ConfigService>(ctx_.config);
+                if (!config || !ctx_.chainstate)
+                    throw std::runtime_error("Runtime notification configuration unavailable");
+                if (config->GetBool("lightning.oracles.enable",true))
+                    throw std::runtime_error("Configured legacy oracles have no typed notification adapter");
+            const bool expects_pool=config->GetBool("pool.accounting.enable",false) && GetConfig().allow_pool_mining;
+                if (expects_pool!=static_cast<bool>(pool_manager_runtime_))
+                    throw std::runtime_error("Configured pool accounting owner unavailable");
+                // The daemon owns these actual workers. Vault attachment may occur
+                // later; its worker phase remains installed even before attachment.
+                // Legacy family absence is checked from ChainstateService's real
+                // registrations by installation, not inferred from a socket error.
+                const std::array<RuntimeConsumerBinding,static_cast<size_t>(RuntimeConsumerKind::Count)> bindings{{
+                    {RuntimeConsumerKind::WalletAndReadmission,MakeRuntimeWalletNotifications(*runtime_delivery_worker_)},
+                    {RuntimeConsumerKind::PoolAccounting,pool_manager_runtime_?MakeRuntimePoolNotifications(*pool_manager_runtime_):nullptr},
+                    {RuntimeConsumerKind::ChainOracle,nullptr},
+                    {RuntimeConsumerKind::TimeOracle,nullptr},
+                    {RuntimeConsumerKind::TransactionOracle,nullptr},
+                    {RuntimeConsumerKind::Vault,MakeRuntimeVaultNotifications(*runtime_delivery_worker_)},
+                    {RuntimeConsumerKind::ExtraWalletNotifiers,nullptr}
+                }};
+                auto notifications=std::make_shared<RuntimeNotificationComposition>(bindings);
+                ctx_.chainstate->setRuntimeBlockNotifications(notifications);
+                runtime_notifications_=std::move(notifications);
+                std::cout << "[DaemonApp] Typed runtime notifications installed; consumer recovery remains asynchronous" << std::endl;
+            }
+    #endif
+            std::cout << "[DaemonApp] Runtime delivery worker started; recovery remains asynchronous" << std::endl;
+        } catch (const std::exception& e) {
+            std::cerr << "[DaemonApp] Runtime delivery worker startup failed: " << e.what() << std::endl;
+            Stop();
+            return false;
+        } catch (...) {
+            std::cerr << "[DaemonApp] Runtime delivery worker startup failed" << std::endl;
+            Stop();
+            return false;
+        }
+        return true;
+    };
+#ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
+    if (!GetConfig().utreexo_stateless && Params().orchard_activation_height!=UINT32_MAX) {
+        // Enable the existing complete Stop path if any subsequent Start fails.
+        started_=true;
+        if (!start_runtime_delivery()) return false;
+    }
+#endif
+
     std::cout << "[DaemonApp] Starting core services..." << std::endl;
 
     for (auto& service : services_) {
@@ -7179,26 +7261,15 @@ bool DaemonApp::Start() {
     }
 
     started_ = true;
-    // No selected-chain, wallet, pool or runtime owner is held here. Startup
-    // always scans durable work; a missing callback cannot suppress recovery.
-    // Missing keys/baselines remain deferred and never authorize enrollment.
-    try {
-        runtime_delivery_worker_=std::make_unique<RuntimeDeliveryWorker>(ctx_.chainstate,ctx_.wallet);
-        runtime_delivery_worker_->Start();
-        if(pool_manager_runtime_) {
-            pool_manager_runtime_->startMaintenanceThread();
-            std::cout << "[DaemonApp] Pool maintenance worker started; accounting remains asynchronous" << std::endl;
-        }
-        std::cout << "[DaemonApp] Runtime delivery worker started; recovery remains asynchronous" << std::endl;
-    } catch (const std::exception& e) {
-        std::cerr << "[DaemonApp] Runtime delivery worker startup failed: " << e.what() << std::endl;
-        Stop();
-        return false;
-    } catch (...) {
-        std::cerr << "[DaemonApp] Runtime delivery worker startup failed" << std::endl;
-        Stop();
-        return false;
-    }
+    if (!runtime_delivery_worker_ && !start_runtime_delivery()) return false;
+    // Scheduled profiles install running mailbox consumers before core Start.
+    // An early pass may correctly defer while the selected source is unavailable.
+    // Wake again after core startup and mempool recovery, without certifying that
+    // any consumer has caught up or waiting under a service/SQLite owner.
+    runtime_delivery_worker_->CaptureWakeHandle().RequestReplay();
+    if (pool_manager_runtime_)
+        pool_manager_runtime_->CaptureMaintenanceWakeHandle().RequestReplay();
+    std::cout << "[DaemonApp] Runtime recovery workers woken after core startup and mempool recovery" << std::endl;
     std::cout << "[DaemonApp] Startup recovery complete; starting external listeners..." << std::endl;
 
     if (ctx_.rpc) {
@@ -7371,6 +7442,16 @@ void DaemonApp::Stop() {
 
     const auto shutdown_start = ShutdownClock::now();
     LogShutdownPhase("interrupting", shutdown_start, "DaemonApp::Stop entered");
+
+    // Remove the daemon-owned handoff before joining either worker. These
+    // tokens own only wake mailboxes, so removal cannot join under selected
+    // ownership. Acquiring/releasing selected ownership happens inside setter.
+    if (runtime_notifications_) {
+        if (!ctx_.chainstate) std::terminate();
+        ctx_.chainstate->setRuntimeBlockNotifications(nullptr);
+        runtime_notifications_.reset();
+        LogShutdownPhase("runtime_notifications_detached",shutdown_start,"typed notification provider removed");
+    }
 
     // Stop and release the worker while its source, wallet and admission
     // dependencies are alive. Join outside all consumer and selected owners.

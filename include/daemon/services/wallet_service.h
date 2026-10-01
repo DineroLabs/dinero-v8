@@ -16,6 +16,7 @@ namespace dinero {
 // Forward declarations
 class ILogger;
 class BlockStorage;
+namespace wallet { class OrchardProofJobs; }
 
 /**
  * WalletService - IService wrapper for WalletManager
@@ -71,6 +72,12 @@ public:
         WalletUse(const WalletUse&)=delete;
         WalletUse& operator=(const WalletUse&)=delete;
         WalletManager& Wallet() const;
+        // One bounded executor shared by this service's accounts. Retain this
+        // WalletUse for every access; never keep the reference afterward.
+        // This is execution ownership, not authorization for a selected wallet
+        // or operation. The host still authenticates its durable reservation,
+        // wallet session and exact result before Ready/admission. OFF refuses.
+        wallet::OrchardProofJobs& OrchardProofs() const;
     private:
         friend class WalletService;
         WalletUse(const WalletService&,std::shared_ptr<WalletService>);
@@ -115,6 +122,11 @@ private:
     bool stopping_=false;
     std::thread::id stopping_thread_;
     std::unique_ptr<WalletManager> wallet_mgr_;
+    struct OrchardProofOwner;
+    // Complete only in wallet_service.cpp; identical public class layout in
+    // backend ON/OFF translation units. Destroy before the manager.
+    mutable std::unique_ptr<OrchardProofOwner> orchard_proofs_;
+    wallet::OrchardProofJobs& ProofsForCurrentUse() const;
 
     // Logger dependencies (dual pattern during migration):
     // - logger_: Legacy LoggerService (keep for compatibility during migration)

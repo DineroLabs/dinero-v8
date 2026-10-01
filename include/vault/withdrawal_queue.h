@@ -85,6 +85,13 @@ struct WithdrawalPaymentRetained {
     uint64_t fee_una{0};
     bool operator==(const WithdrawalPaymentRetained&) const = default;
 };
+// A selected-chain inclusion retains the exact signed payment and its block
+// anchor. Disconnect restores that same payment's reservation, not a new send.
+struct WithdrawalPaymentConfirmed {
+    WithdrawalPaymentRetained payment;
+    AllocationInclusion inclusion;
+    bool operator==(const WithdrawalPaymentConfirmed&) const = default;
+};
 using WithdrawalState = std::variant<
     WithdrawalPending,
     WithdrawalSigning,
@@ -92,7 +99,8 @@ using WithdrawalState = std::variant<
     WithdrawalSettledOnChain,
     WithdrawalRevertedOnChain,
     WithdrawalFailed,
-    WithdrawalPaymentRetained
+    WithdrawalPaymentRetained,
+    WithdrawalPaymentConfirmed
 >;
 
 struct WithdrawalCaps {

@@ -23,7 +23,8 @@ struct RuntimeConsumerBinding {
 
 // Owns an immutable complete declaration supplied by the trusted daemon owner.
 // It cannot discover optional registrations or certify their absence itself.
-// Not installed by DaemonApp until all configured families are implemented.
+// DaemonApp installs supported worker families after startup. The service
+// refuses installation if any unadapted legacy registration remains present.
 class RuntimeNotificationComposition final : public RuntimeBlockNotifications {
 public:
     explicit RuntimeNotificationComposition(std::span<const RuntimeConsumerBinding>);
@@ -42,4 +43,8 @@ std::shared_ptr<RuntimeBlockNotifications> MakeRuntimeWalletNotifications(
     const RuntimeDeliveryWorker&);
 std::shared_ptr<RuntimeBlockNotifications> MakeRuntimePoolNotifications(
     const pool::PoolManager&);
+// Vault and wallet phases share the daemon delivery thread; each factory gives
+// the composition a distinct family binding with the same coalesced mailbox.
+std::shared_ptr<RuntimeBlockNotifications> MakeRuntimeVaultNotifications(
+    const RuntimeDeliveryWorker&);
 } // namespace dinero

@@ -471,6 +471,15 @@ Json rpc_vault_withdrawal_status(const ExecutionContext& /*ctx*/, const Json& pa
         result["txid"] = arrayToHex(display);
         result["vout"] = static_cast<Json::UInt64>(retained->vout);
         result["fee_una"] = static_cast<Json::UInt64>(retained->fee_una);
+    } else if (const auto* confirmed = std::get_if<dinero::vault::WithdrawalPaymentConfirmed>(&state)) {
+        result["state"] = "payment_confirmed";
+        auto display=confirmed->payment.txid;std::reverse(display.begin(),display.end());
+        result["txid"] = arrayToHex(display);
+        result["vout"] = static_cast<Json::UInt64>(confirmed->payment.vout);
+        result["fee_una"] = static_cast<Json::UInt64>(confirmed->payment.fee_una);
+        result["included_at_height"] = static_cast<Json::UInt64>(confirmed->inclusion.height);
+        auto block=confirmed->inclusion.block_hash;std::reverse(block.begin(),block.end());
+        result["block_hash"] = arrayToHex(block);
     } else if (auto* failed = std::get_if<dinero::vault::WithdrawalFailed>(&state); failed != nullptr) {
         result["state"] = "failed";
         result["reason"] = failed->reason;

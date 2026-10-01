@@ -5410,6 +5410,9 @@ bool ChainstateService::initializeGenesisInChainDB() {
 // ============================================================================
 
 void ChainstateService::registerWalletNotifier(WalletNotifier* notifier) {
+    std::lock_guard<AnnotatedRecursiveMutex> lock(activation_mutex_);
+    if (notifier && runtime_block_notifications_)
+        throw std::runtime_error("Legacy wallet notifier has no typed runtime delivery adapter");
     if (!notifier) {
         logger_->warning("[ChainstateService] Attempted to register null wallet notifier");
         return;
@@ -5429,6 +5432,7 @@ void ChainstateService::registerWalletNotifier(WalletNotifier* notifier) {
 }
 
 void ChainstateService::unregisterWalletNotifier(WalletNotifier* notifier) {
+    std::lock_guard<AnnotatedRecursiveMutex> lock(activation_mutex_);
     auto it = std::find(wallet_notifiers_.begin(), wallet_notifiers_.end(), notifier);
     if (it != wallet_notifiers_.end()) {
         wallet_notifiers_.erase(it);
@@ -6115,12 +6119,32 @@ ChainstateService::resumeRuntimeWalletRecoveryIfNeeded(WalletManager& wallet, UT
         // Account/source capture and proof verification run after every outer
         // selected lock and the short session lease above have been released.
         return std::make_shared<const RuntimeEnrolledWalletRecoveryResult>(
-            RuntimeWalletRecovery::ResumeEnrolledWalletStores(
+            RuntimeWalletRecovery::ResumeCatalogWalletStores(
                 *this,wallet,index,session));
 #else
         return Status::Internal;
 #endif
     } catch (...) { return Status::Internal; }
+}
+
+StatusOr<std::shared_ptr<const RuntimeAccountReplay>> ChainstateService::getRuntimeAccountReplayForWallet(
+        WalletManager& wallet,uint64_t expected_session) const {
+    if(activation_mutex_.HeldByCurrentThread())return Status::Invalid;
+    try {
+        UTXOIndex* expected_index=nullptr;
+        {
+            std::lock_guard<std::mutex> lock(wallet_index_use_mutex_);
+            if(!wallet_index_uses_by_thread_.count(std::this_thread::get_id())||!utxo_index_)return Status::Invalid;
+            expected_index=utxo_index_.get();
+        }
+        {
+            const auto lease=wallet.AcquireDatabaseLease();
+            if(wallet.database_leases_!=1||!lease->Database()||lease->Session()!=expected_session||
+               wallet.getUTXOIndex()!=expected_index)return Status::Invalid;
+        }
+        // Both the short wallet lease and owner-registry mutex are released.
+        return getRuntimeAccountReplay();
+    }catch(...){return Status::Internal;}
 }
 
 StatusOr<std::shared_ptr<const RuntimeAccountReplay>> ChainstateService::getRuntimeAccountReplay() const {
@@ -7845,6 +7869,9 @@ void ChainstateService::setBlockRelayManager(std::shared_ptr<class BlockRelayMan
 }
 
 void ChainstateService::setChainOracleClient(std::unique_ptr<dinero::ipc::ChainOracleClient> oracle) {
+    std::lock_guard<AnnotatedRecursiveMutex> lock(activation_mutex_);
+    if (oracle && runtime_block_notifications_)
+        throw std::runtime_error("Legacy oracle has no typed runtime delivery adapter");
     chain_oracle_client_ = std::move(oracle);
     if (chain_oracle_client_) {
         logger_->info("[ChainstateService] ChainOracleClient wired for Phase 9.2 Lightning events");
@@ -7859,6 +7886,9 @@ void ChainstateService::setHeaderChainSelector(std::shared_ptr<dinero::consensus
 }
 
 void ChainstateService::setTimeOracleClient(std::unique_ptr<dinero::ipc::TimeOracleClient> oracle) {
+    std::lock_guard<AnnotatedRecursiveMutex> lock(activation_mutex_);
+    if (oracle && runtime_block_notifications_)
+        throw std::runtime_error("Legacy oracle has no typed runtime delivery adapter");
     time_oracle_client_ = std::move(oracle);
     if (time_oracle_client_) {
         logger_->info("[ChainstateService] TimeOracleClient wired for Phase 9.2 Lightning time tracking");
@@ -7866,6 +7896,9 @@ void ChainstateService::setTimeOracleClient(std::unique_ptr<dinero::ipc::TimeOra
 }
 
 void ChainstateService::setTransactionOracleClient(std::shared_ptr<dinero::ipc::TransactionOracleClient> oracle) {
+    std::lock_guard<AnnotatedRecursiveMutex> lock(activation_mutex_);
+    if (oracle && runtime_block_notifications_)
+        throw std::runtime_error("Legacy oracle has no typed runtime delivery adapter");
     transaction_oracle_client_ = oracle;
     if (transaction_oracle_client_) {
         logger_->info("[ChainstateService] TransactionOracleClient wired for Phase 9.2 Lightning TX tracking");
@@ -14580,6 +14613,13 @@ Status ChainstateService::ReconstructSpentCoinsFromChainDb(
 
 void ChainstateService::setRuntimeBlockNotifications(std::shared_ptr<RuntimeBlockNotifications> notifications) {
     std::lock_guard<AnnotatedRecursiveMutex> lock(activation_mutex_);
+    // These legacy registries have no mixed-body/restart delivery adapter.
+    // Presence is checked from the actual registrations, even if an oracle's
+    // socket is disconnected. The same selected owner serializes registration
+    // changes, so installing a provider keeps these families explicitly absent.
+    if (notifications && (chain_oracle_client_ || time_oracle_client_ ||
+                          transaction_oracle_client_ || !wallet_notifiers_.empty()))
+        throw std::runtime_error("Configured legacy consumer lacks typed runtime delivery");
     runtime_block_notifications_=std::move(notifications);
 }
 
@@ -16223,7 +16263,8 @@ std::optional<BlockAcceptResult> ChainstateService::TryAcceptOrchardBlockFromRPC
         // A repeated canonical submission must retain its exact stored body;
         // its inputs have already been consumed, so it is not re-admitted
         // against the current child UTXO view.
-        if (active_tip_->hash == hash && active_tip_->height == height) {
+        uint256 canonical_hash;
+        if (GetActiveChainHashAtHeight(active_tip_, height, canonical_hash) && canonical_hash == hash) {
             const auto stored = ReadRuntimeBlockUnderLock(*chain_db_, block_storage_.get(), hash, height);
             if (!stored.ok() || !stored->IsOrchardProfile() ||
                 stored->Orchard().WireBytes() != wire || !VerifyConsensusJournalAtActiveTip())
@@ -16341,7 +16382,10 @@ std::optional<BlockAcceptResult> ChainstateService::TryAcceptOrchardBlockFromRPC
         }
         AddCandidate(index);
         ActivateBestChain();
-        if (active_tip_ != index)
+        // Activation may also reconnect retained descendants. The submitted
+        // block is connected when it belongs to the selected chain, even if
+        // a child is now the tip. A side branch still requires canonical retry.
+        if (!GetActiveChainHashAtHeight(active_tip_, height, canonical_hash) || canonical_hash != hash)
             return reject(BlockRejectCode::CONNECT_FAILED, "Orchard block retained for canonical retry", hash, height);
         return BlockAcceptResult{BlockRejectCode::OK, "Orchard block connected", hash, height, true, false};
     } catch (const OrchardHeaderError& e) {
@@ -16910,12 +16954,9 @@ bool ChainstateService::ConnectTip(CBlockIndex* tip_to_connect, std::string* out
     }
     std::cout << "✅ [ConnectTip] BlockValidator::ConnectBlock SUCCEEDED" << std::endl;
 
-    // Track C: Liquidity Vault block-event hook. The other call site
-    // is validation_queue.cpp's parallel-validation path, but live-tip
-    // extension goes through ConnectTip (this function) — we need the
-    // hook here too or deposits never advance past OBSERVED on new
-    // blocks. No-op when vault is disabled.
-    dinero::vault::NotifyVaultTipConnected(static_cast<uint64_t>(tip_to_connect->height));
+    // Vault reconciliation runs on the daemon delivery worker after reading
+    // the committed selected tip. No vault/wallet callback belongs inside this
+    // still-uncommitted chain transition.
 
     // ═══════════════════════════════════════════════════════════════════════════
     // Phase 3b step 3 part 3 slice 3: hoisted block-undo persistence

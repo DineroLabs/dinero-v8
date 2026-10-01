@@ -124,6 +124,11 @@ if(TARGET dinero_chainstate)
   target_link_libraries(dinero_orchard_operation_queue PUBLIC dinero_orchard_transparent dinero_orchard_wallet_storage)
   add_library(dinero_orchard_proof_jobs STATIC "${ORCHARD_HOST_ROOT}/src/wallet/orchard_proof_jobs.cpp")
   target_link_libraries(dinero_orchard_proof_jobs PUBLIC dinero_orchard_operation_queue Threads::Threads)
+  if(TARGET dinero_core)
+    target_link_libraries(dinero_core PUBLIC dinero_orchard_proof_jobs)
+    set_property(SOURCE "${ORCHARD_HOST_ROOT}/src/daemon/services/wallet_service.cpp"
+      DIRECTORY "${ORCHARD_HOST_ROOT}" APPEND PROPERTY COMPILE_DEFINITIONS DINERO_HAS_ORCHARD_PROOF_HOST=1)
+  endif()
   add_library(dinero_orchard_wallet_scan STATIC "${ORCHARD_HOST_ROOT}/src/wallet/orchard_scan_state.cpp")
   target_link_libraries(dinero_orchard_wallet_scan PUBLIC dinero_orchard_block_reader dinero_orchard_transparent dinero_orchard_wallet_storage)
   add_library(dinero_orchard_wallet_account STATIC "${ORCHARD_HOST_ROOT}/src/wallet/orchard_account_state.cpp")
@@ -148,6 +153,14 @@ if(TARGET dinero_chainstate)
       DIRECTORY "${ORCHARD_HOST_ROOT}" APPEND PROPERTY COMPILE_DEFINITIONS DINERO_HAS_ORCHARD_RUNTIME_READER=1)
     set_property(SOURCE "${ORCHARD_HOST_ROOT}/src/daemon/services/chainstate_service.cpp"
       DIRECTORY "${ORCHARD_HOST_ROOT}" APPEND PROPERTY COMPILE_DEFINITIONS DINERO_HAS_ORCHARD_RUNTIME_READER=1)
+    # These source-local branches install the actual provider and exercise it
+    # through the daemon fixture. The definition is absent with backend OFF.
+    set_property(SOURCE "${ORCHARD_HOST_ROOT}/src/daemon/daemon_app.cpp"
+      DIRECTORY "${ORCHARD_HOST_ROOT}" "${ORCHARD_HOST_ROOT}/src/daemon" APPEND PROPERTY COMPILE_DEFINITIONS DINERO_HAS_ORCHARD_RUNTIME_READER=1)
+    if(TARGET test_daemon_service_release)
+      set_property(SOURCE "${ORCHARD_HOST_ROOT}/tests/daemon/test_daemon_service_release.cpp"
+        DIRECTORY "${ORCHARD_HOST_ROOT}" APPEND PROPERTY COMPILE_DEFINITIONS DINERO_HAS_ORCHARD_RUNTIME_READER=1)
+    endif()
     # Advertise Orchard only with the real typed relay/download/runtime graph.
     # Backend-OFF builds and standalone P2PManager fixtures make no such claim.
     set_property(SOURCE "${ORCHARD_HOST_ROOT}/src/daemon/services/p2p_service.cpp"
@@ -184,7 +197,7 @@ if(TARGET dinero_chainstate)
   target_include_directories(dinero_orchard_index_delivery PRIVATE "${ORCHARD_HOST_ROOT}/src")
   # WalletManager references ChainDB/BlockStorage even in the account-only
   # executable. Keep its archive before the chainstate provider for GNU ld.
-  target_link_libraries(dinero_orchard_index_delivery PUBLIC dinero_wallet dinero_orchard_account_replay dinero_orchard_chainstate_write dinero_orchard_operation_archive dinero_orchard_wallet_account sqlite3)
+  target_link_libraries(dinero_orchard_index_delivery PUBLIC dinero_wallet dinero_orchard_account_replay dinero_orchard_chainstate_write dinero_orchard_operation_archive dinero_orchard_wallet_account sqlite3 dinero_orchard_proof_jobs)
   if(TARGET test_assumeutxo_replay)
     # The service's reader definition is source-local. Bind the projection
     # tests to the actual optional implementation rather than inheriting it.
@@ -256,6 +269,14 @@ if(DINERO_ORCHARD_BUILD_TESTS)
   add_test(NAME OrchardTransactionContext COMMAND test_orchard_transaction_context "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures")
   set_tests_properties(OrchardTransactionContext PROPERTIES TIMEOUT 120 RUN_SERIAL TRUE
     ENVIRONMENT "RAYON_NUM_THREADS=2" LABELS "orchard;integration-staging")
+  if(TARGET test_daemon_service_release)
+    add_test(NAME RuntimeDaemonProvider COMMAND python3
+      ${ORCHARD_HOST_ROOT}/tests/integration/test_runtime_daemon_provider.py
+      $<TARGET_FILE:test_daemon_service_release>)
+    set_tests_properties(RuntimeDaemonProvider PROPERTIES
+      LABELS "integration;e2e-daemon;orchard;mandatory" TIMEOUT 180 RUN_SERIAL TRUE)
+  endif()
+
   if(TARGET dinero_orchard_block_staging)
     add_executable(test_orchard_runtime_reader
       "${ORCHARD_HOST_ROOT}/tests/daemon/test_orchard_runtime_reader.cpp"

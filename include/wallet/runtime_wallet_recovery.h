@@ -2,6 +2,7 @@
 #include "wallet/runtime_index_delivery.h"
 #include "wallet/runtime_account_replay.h"
 #include <functional>
+#include <optional>
 
 namespace dinero {
 class ChainstateService;
@@ -18,12 +19,16 @@ struct RuntimeWalletRecoveryResult {
     RuntimeOutboxCursor observed_head;
 };
 
-// Every account row present in the selected wallet was authenticated/restored.
+// Legacy calls authenticate present rows; catalog-aware calls authenticate every
+// declared owner and return the captured catalog revision.
 // This is captured-prefix completion, not baseline or all-consumer readiness.
 struct RuntimeEnrolledWalletRecoveryResult {
     RuntimeIndexProgress applied;
     std::vector<std::pair<uint32_t,uint64_t>> account_revisions;
     RuntimeOutboxCursor observed_head;
+    // Present only for catalog-aware recovery. A captured revision is not
+    // lasting completeness, chain catch-up or whole-wallet spend readiness.
+    std::optional<uint64_t> catalog_revision;
 };
 
 class RuntimeWalletRecovery {
@@ -46,14 +51,21 @@ public:
     // Missing accounts and transparent baselines are not created/repaired.
     static RuntimeEnrolledWalletRecoveryResult ResumeEnrolledWalletStores(
         ChainstateService&,WalletManager&,UTXOIndex&,uint64_t expected_session);
+    // Production wallet service path. Require generated authenticated catalog,
+    // all declared owners and history; known-empty permits transparent replay
+    // without creating accounts/schema. Recheck catalog around source reads and
+    // before effects. Unknown legacy/recovered inventory remains a refusal.
+    static RuntimeEnrolledWalletRecoveryResult ResumeCatalogWalletStores(
+        ChainstateService&,WalletManager&,UTXOIndex&,uint64_t expected_session);
 private:
+    friend struct RuntimeCatalogRecoveryTestAccess;
     friend struct RuntimeWalletRecoveryTestAccess;
     using Source = std::function<RuntimeOutboxPage(RuntimeOutboxCursor,size_t)>;
     static RuntimeTransparentRecoveryResult Resume(
         const Source&, WalletManager&, UTXOIndex&, uint64_t expected_session);
     static RuntimeEnrolledWalletRecoveryResult ResumeAccounts(
         const RuntimeAccountReplay&,const Source&,WalletManager&,UTXOIndex&,uint64_t,
-        std::optional<uint32_t> selected_account);
+        std::optional<uint32_t> selected_account,bool require_catalog=false);
     static RuntimeWalletRecoveryResult ResumeAccount(
         const RuntimeAccountReplay&,const Source&,WalletManager&,UTXOIndex&,uint64_t,uint32_t);
 };

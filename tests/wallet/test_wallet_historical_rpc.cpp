@@ -275,7 +275,8 @@ TEST_F(WalletPendingPayment, SignedOriginHistoryReservationsAndReopen) {
     const auto stored=envelope(db);auto duplicate=stage(input);EXPECT_FALSE(duplicate.success);EXPECT_TRUE(duplicate.signed_tx.tx.vin.empty());EXPECT_EQ(envelope(db),stored);EXPECT_EQ(count(db,"transactions"),1);
     // A stale selection for a distinct body still cannot obtain the same reservations.
     auto conflicting=input;conflicting.tx.lockTime=17;auto refused=stage(conflicting);EXPECT_FALSE(refused.success);EXPECT_TRUE(refused.signed_tx.tx.vin.empty());EXPECT_EQ(envelope(db),stored);
-    w.lockWallet();EXPECT_THROW(w.getPendingPayments(),std::runtime_error);w.open("owner");w.unlockWallet("historical-rpc",0);
+    w.lockWallet();
+    EXPECT_THROW(w.getPendingPayments(),std::runtime_error);w.open("owner");w.unlockWallet("historical-rpc",0);
     records=w.getPendingPayments();ASSERT_EQ(records.size(),1u);EXPECT_EQ(records[0].signed_body,p.signed_body);EXPECT_TRUE(w.isUTXOLocked(old.GetTxIdHex(),old.vout));
     // Existing chain observations preserve the immutable origin; rollback leaves reservations intact.
     ASSERT_TRUE(w.confirmTransaction(p.txid,2));EXPECT_EQ(envelope(w.getCurrentDatabase()),stored);EXPECT_EQ(w.getPendingPayments()[0].signed_body,p.signed_body);
@@ -304,16 +305,19 @@ TEST_F(WalletPendingPayment, CorruptOwnerReadFailureAndIntentRefuse) {
     auto wrong=input;wrong.tx.vout[0].value=dinero::AmountUna::Una(198999);auto bad=stage(wrong);EXPECT_FALSE(bad.success);EXPECT_TRUE(bad.signed_tx.tx.vin.empty());EXPECT_TRUE(w.getPendingPayments().empty());
     const auto result=stage(input);ASSERT_TRUE(result.success)<<result.error;const auto stored=envelope(db);
     for(const auto& mutation:{std::string("NULL"),std::string("X'00'"),std::string("'wrong SQL type'"),std::string("X'")+(stored.substr(0,2)=="00"?"01":"00")+stored.substr(2)+"'"}) {
-        sql(db,"UPDATE wallet_meta SET pending_payment_owner="+mutation+" WHERE id=1");EXPECT_THROW(w.getPendingPayments(),std::runtime_error);
+        sql(db,"UPDATE wallet_meta SET pending_payment_owner="+mutation+" WHERE id=1");
+    EXPECT_THROW(w.getPendingPayments(),std::runtime_error);
         EXPECT_THROW(w.isUTXOLocked(old.GetTxIdHex(),old.vout),std::runtime_error);
-        w.lockWallet();EXPECT_THROW(w.unlockWallet("historical-rpc",0),std::runtime_error);EXPECT_TRUE(w.isWalletLocked());
+        w.lockWallet();
+    EXPECT_THROW(w.unlockWallet("historical-rpc",0),std::runtime_error);EXPECT_TRUE(w.isWalletLocked());
         sql(db,"UPDATE wallet_meta SET pending_payment_owner=X'"+stored+"' WHERE id=1");w.unlockWallet("historical-rpc",0);
     }
     sqlite3_set_authorizer(db,[](void*,int op,const char* table,const char* column,const char*,const char*){return op==SQLITE_READ && table && column && std::strcmp(table,"wallet_meta")==0 && std::strcmp(column,"pending_payment_owner")==0?SQLITE_DENY:SQLITE_OK;},nullptr);
     EXPECT_THROW(w.getPendingPayments(),std::runtime_error);auto denied=stage(input);EXPECT_FALSE(denied.success);EXPECT_TRUE(denied.signed_tx.tx.vin.empty());sqlite3_set_authorizer(db,nullptr,nullptr);
     EXPECT_EQ(envelope(db),stored);EXPECT_EQ(w.getPendingPayments().size(),1u);
     struct Interrupt {sqlite3* db;bool fired=false;static int trace(unsigned type,void* p,void* stmt,void*){auto& h=*static_cast<Interrupt*>(p);const auto* s=sqlite3_sql(static_cast<sqlite3_stmt*>(stmt));if(type==SQLITE_TRACE_ROW && !h.fired && s && std::strstr(s,"SELECT pending_payment_owner")){h.fired=true;sqlite3_interrupt(h.db);}return 0;}} interrupted{db};
-    sqlite3_trace_v2(db,SQLITE_TRACE_ROW,Interrupt::trace,&interrupted);EXPECT_THROW(w.getPendingPayments(),std::runtime_error);sqlite3_trace_v2(db,0,nullptr,nullptr);EXPECT_TRUE(interrupted.fired);EXPECT_EQ(w.getPendingPayments().size(),1u);
+    sqlite3_trace_v2(db,SQLITE_TRACE_ROW,Interrupt::trace,&interrupted);
+    EXPECT_THROW(w.getPendingPayments(),std::runtime_error);sqlite3_trace_v2(db,0,nullptr,nullptr);EXPECT_TRUE(interrupted.fired);EXPECT_EQ(w.getPendingPayments().size(),1u);
 }
 
 
@@ -382,7 +386,8 @@ TEST_F(WalletReorgOrigin, DisconnectSqlAndCommitFailuresPreserveWholeGroup) {
     EXPECT_THROW(w.onBlockDisconnected(block,2),std::runtime_error);sqlite3_set_authorizer(db,nullptr,nullptr);unchanged();
     int commits=0;sqlite3_commit_hook(db,[](void* p){++*static_cast<int*>(p);return 1;},&commits);
     EXPECT_THROW(w.onBlockDisconnected(block,2),std::runtime_error);sqlite3_commit_hook(db,nullptr,nullptr);EXPECT_EQ(commits,1);unchanged();
-    sql(db,"BEGIN");EXPECT_THROW(w.onBlockDisconnected(block,2),std::runtime_error);EXPECT_FALSE(sqlite3_get_autocommit(db));sql(db,"ROLLBACK");unchanged();
+    sql(db,"BEGIN");
+    EXPECT_THROW(w.onBlockDisconnected(block,2),std::runtime_error);EXPECT_FALSE(sqlite3_get_autocommit(db));sql(db,"ROLLBACK");unchanged();
     w.onBlockDisconnected(block,2);assert_origin(block,stored,false);
 }
 TEST_F(WalletReorgOrigin, StandaloneRewindPreservesLocalHistoryAndChecksTransaction) {
@@ -392,7 +397,8 @@ TEST_F(WalletReorgOrigin, StandaloneRewindPreservesLocalHistoryAndChecksTransact
     sql(db,"CREATE TRIGGER refuse_history BEFORE DELETE ON transactions BEGIN SELECT RAISE(ABORT,'history rollback fixture'); END");
     EXPECT_THROW(w.removeTransactionsAtHeight(2),std::runtime_error);sql(db,"DROP TRIGGER refuse_history");
     EXPECT_EQ(scalar(db,"SELECT count(*) FROM transactions WHERE height=2"),2);EXPECT_EQ(envelope(db),stored);
-    sql(db,"BEGIN");EXPECT_THROW(w.removeTransactionsAtHeight(2),std::runtime_error);EXPECT_FALSE(sqlite3_get_autocommit(db));sql(db,"ROLLBACK");
+    sql(db,"BEGIN");
+    EXPECT_THROW(w.removeTransactionsAtHeight(2),std::runtime_error);EXPECT_FALSE(sqlite3_get_autocommit(db));sql(db,"ROLLBACK");
     int commits=0;sqlite3_commit_hook(db,[](void* p){++*static_cast<int*>(p);return 1;},&commits);
     EXPECT_THROW(w.removeTransactionsAtHeight(2),std::runtime_error);sqlite3_commit_hook(db,nullptr,nullptr);EXPECT_EQ(commits,1);
     EXPECT_EQ(scalar(db,"SELECT count(*) FROM transactions WHERE height=2"),2);
@@ -461,18 +467,22 @@ TEST_F(WalletReservationBalance, UntrackedAndIncompleteReadsNeverClaimAuthentica
     w.lockUTXO(old.GetTxIdHex(),old.vout);w.lockWallet();
     auto summary=w.getBalanceSummary();EXPECT_EQ(summary.reservations,dinero::WalletManager::ReservationStatus::Untracked);
     EXPECT_DOUBLE_EQ(*summary.locked,0.001);EXPECT_DOUBLE_EQ(*summary.available_confirmed,0.001);
-    sql(db,"UPDATE utxos SET amount='bad' WHERE vout=1");EXPECT_THROW(w.getBalanceSummary(),std::runtime_error);
+    sql(db,"UPDATE utxos SET amount='bad' WHERE vout=1");
+    EXPECT_THROW(w.getBalanceSummary(),std::runtime_error);
     EXPECT_TRUE(rpc_context_wallet_getbalance(ctx,din::Json()).isMember("error"));sql(db,"UPDATE utxos SET amount=100000 WHERE vout=1");
     sql(db,"UPDATE utxos SET txid=upper(substr(txid,1,63)||'a') WHERE vout=1");
     EXPECT_THROW(w.getBalanceSummary(),std::runtime_error);
     sql(db,"UPDATE utxos SET txid='"+old.GetTxIdHex()+"' WHERE vout=1");
-    sql(db,"BEGIN");EXPECT_THROW(w.getBalanceSummary(),std::runtime_error);EXPECT_FALSE(sqlite3_get_autocommit(db));sql(db,"ROLLBACK");
+    sql(db,"BEGIN");
+    EXPECT_THROW(w.getBalanceSummary(),std::runtime_error);EXPECT_FALSE(sqlite3_get_autocommit(db));sql(db,"ROLLBACK");
     struct Interrupt {sqlite3* db;bool fired=false;static int trace(unsigned type,void* p,void* stmt,void*) {auto& h=*static_cast<Interrupt*>(p);const auto* s=sqlite3_sql(static_cast<sqlite3_stmt*>(stmt));if(type==SQLITE_TRACE_ROW && !h.fired && s && std::strstr(s,"SELECT txid,vout,amount,height,is_coinbase,is_spent")){h.fired=true;sqlite3_interrupt(h.db);}return 0;}} interrupted{db};
-    sqlite3_trace_v2(db,SQLITE_TRACE_ROW,Interrupt::trace,&interrupted);EXPECT_THROW(w.getBalanceSummary(),std::runtime_error);sqlite3_trace_v2(db,0,nullptr,nullptr);EXPECT_TRUE(interrupted.fired);
+    sqlite3_trace_v2(db,SQLITE_TRACE_ROW,Interrupt::trace,&interrupted);
+    EXPECT_THROW(w.getBalanceSummary(),std::runtime_error);sqlite3_trace_v2(db,0,nullptr,nullptr);EXPECT_TRUE(interrupted.fired);
     sqlite3_set_authorizer(db,[](void*,int op,const char* table,const char*,const char*,const char*) {return op==SQLITE_READ && table && std::strcmp(table,"utxos")==0?SQLITE_DENY:SQLITE_OK;},nullptr);
     EXPECT_THROW(w.getBalanceSummary(),std::runtime_error);sqlite3_set_authorizer(db,nullptr,nullptr);
     w.unlockWallet("historical-rpc",0);w.unlockAllUTXOs();ASSERT_TRUE(stage(payment()).success);const auto stored=envelope(db);
-    sql(db,"UPDATE wallet_meta SET pending_payment_owner=X'00'");EXPECT_THROW(w.getBalanceSummary(),std::runtime_error);
+    sql(db,"UPDATE wallet_meta SET pending_payment_owner=X'00'");
+    EXPECT_THROW(w.getBalanceSummary(),std::runtime_error);
     const auto failed=rpc_context_wallet_getbalance(ctx,din::Json());EXPECT_TRUE(failed.isMember("error"));EXPECT_FALSE(failed.isMember("confirmed"));
     sql(db,"UPDATE wallet_meta SET pending_payment_owner=X'"+stored+"'");summary=w.getBalanceSummary();EXPECT_EQ(summary.reservations,dinero::WalletManager::ReservationStatus::Authenticated);EXPECT_DOUBLE_EQ(*summary.locked,0.002);
 }
@@ -589,3 +599,15 @@ TEST_F(WalletBatchRpc, SuccessfulSubmissionAndInvalidInputBeforeEffects) {
 #include "pool_orphan_retention_checks.h"
 
 #include "pool_maintenance_worker_checks.h"
+
+#include "vault_tip_worker_checks.h"
+
+#include "vault_reverted_credit_cap_checks.h"
+
+#include "vault_credit_reinclusion_checks.h"
+
+#include "vault_reversal_owner_checks.h"
+
+#include "vault_credit_allocation_checks.h"
+
+#include "orchard_catalog_owner_checks.h"

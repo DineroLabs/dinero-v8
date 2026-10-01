@@ -22,6 +22,7 @@
 #include "vault/vault_types.h"
 
 #include <stdexcept>
+#include <set>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -53,6 +54,14 @@ class LedgerError : public std::runtime_error {
     Kind kind_;
 };
 
+struct CreditReinstatement {
+    LedgerSeq reversalSeq{0};
+    LedgerSeq compensationSeq{0};
+    UnaAmount amount{0};
+    UnaAmount refund{0};
+    UnaAmount operatorLoss{0};
+};
+
 class Ledger {
    public:
     explicit Ledger(LedgerCaps caps = LedgerCaps::unbounded()) : caps_{caps} {}
@@ -63,10 +72,26 @@ class Ledger {
     /// This is in-memory atomicity, not a durable storage transaction.
     void append(LedgerEntry entry);
 
+    // Append the existing reversal and compensation shapes together. Loss is
+    // nominal credit minus the balance removed by the actual account transition.
+    // Historical entries retain their recorded amounts when replayed.
+    void revertCredit(const AccountId& account, const OutpointId& deposit,
+                      LedgerTimestamp at);
+
     /// Replay a sequence of entries onto an empty ledger. Used at
     /// startup from persisted log + tests of determinism.
     static Ledger replay(const std::vector<LedgerEntry>& entries,
                          const LedgerCaps& caps = LedgerCaps::unbounded());
+
+    [[nodiscard]] bool hasCreditAllocation(const AccountId& account) const noexcept {
+        return allocationAccounts_.contains(account);
+    }
+    [[nodiscard]] const CreditAllocationState& creditAllocations() const noexcept { return allocations_; }
+    // Select for a NEW request only; the returned references must be recorded
+    // in WithdrawalAllocationReserved before dispatch. Never use this for retry.
+    [[nodiscard]] std::vector<CreditAllocationRef> selectCreditAllocations(
+        const AccountId&,UnaAmount) const;
+    [[nodiscard]] LedgerSeq creditPositionSeq(const AccountId&,const OutpointId&) const;
 
     [[nodiscard]] const std::vector<LedgerEntry>& entries() const noexcept { return entries_; }
     [[nodiscard]] const std::unordered_map<AccountId, LedgerAccount>& accounts() const noexcept {
@@ -76,6 +101,11 @@ class Ledger {
     [[nodiscard]] UnaAmount totalOperatorLoss() const noexcept { return totalOperatorLoss_; }
     [[nodiscard]] LedgerSeq nextSeq() const noexcept { return nextSeq_; }
     [[nodiscard]] const LedgerCaps& caps() const noexcept { return caps_; }
+
+    // Complete, unique reversal/compensation pair for this current reverted
+    // position. Reconstructed from existing entries during normal replay.
+    [[nodiscard]] std::optional<CreditReinstatement> reinstatement(
+        const AccountId& account, const OutpointId& deposit) const;
 
     /// Convenience: lookup account state, returning a default-
     /// constructed `LedgerAccount{account}` if not present. Useful
@@ -92,7 +122,18 @@ class Ledger {
     void validate(const LedgerEntry& entry);
     void applyToAccounts(const LedgerEntry& entry);
     LedgerAccount& ensureAccount(const AccountId& account);
+    CreditAllocationState captureUnambiguousCreditOrigins(const AccountId&) const;
+    bool applyAllocationEntry(const LedgerEntry&);
+    void syncAllocatedAccount(const AccountId&);
+    CreditAllocationState allocations_;
+    std::set<AccountId> allocationAccounts_;
 
+    struct Reversal {
+        CreditReinstatement values;
+        bool compensated{false};
+        bool usable{true};
+    };
+    std::unordered_map<AccountId,std::unordered_map<OutpointId,Reversal>> reversals_;
     std::vector<LedgerEntry> entries_;
     std::unordered_map<AccountId, LedgerAccount> accounts_;
     std::unordered_map<AccountId, UnaAmount> openCreditsByAccount_;

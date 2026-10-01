@@ -41,9 +41,8 @@ int ReorgWatcher::tipChanged(uint64_t /*tip_height*/) {
                 continue;
             }
             case ChainInclusion::ORPHANED: {
-                UnaAmount loss = unrecoverableLoss(dep);
                 try {
-                    machine_->revert(outpoint, loss);
+                    machine_->revertOwned(outpoint);
                 } catch (const DepositFlowError& e) {
                     throw ReorgError(ReorgError::Kind::DEPOSIT_FLOW, e.what());
                 }
@@ -67,7 +66,7 @@ void ReorgWatcher::reconcileTracked() {
             deposit_block_hashes_.at(outpoint) = inclusion.block_hash;
         } else if (inclusion.kind == ChainInclusion::ORPHANED) {
             try {
-                machine_->revert(outpoint, unrecoverableLoss(dep));
+                machine_->revertOwned(outpoint);
             } catch (const DepositFlowError& e) {
                 throw ReorgError(ReorgError::Kind::DEPOSIT_FLOW, e.what());
             }
@@ -105,27 +104,5 @@ ReorgWatcher::CheckedInclusion ReorgWatcher::check(const TrackedDeposit& dep, bo
     return {ChainInclusion::ORPHANED,current};
 }
 
-UnaAmount ReorgWatcher::unrecoverableLoss(const TrackedDeposit& dep) {
-    Ledger* ledger = machine_->ledger();
-    if (ledger == nullptr) {
-        return dep.amount;
-    }
-    auto it = ledger->accounts().find(dep.account);
-    if (it == ledger->accounts().end()) {
-        return dep.amount;
-    }
-    const LedgerAccount& acct = it->second;
-    UnaAmount user_available = 0;
-    if (dep.stage == DepositStage::CREDITED) {
-        UnaAmount p_minus_dep = acct.pending() >= dep.amount ? acct.pending() - dep.amount : 0;
-        user_available = p_minus_dep + acct.confirmed();
-    } else if (dep.stage == DepositStage::SETTLED) {
-        UnaAmount c_minus_dep = acct.confirmed() >= dep.amount ? acct.confirmed() - dep.amount : 0;
-        user_available = acct.pending() + c_minus_dep;
-    } else {
-        user_available = acct.pending() + acct.confirmed();
-    }
-    return dep.amount > user_available ? dep.amount - user_available : 0;
-}
 
 }  // namespace dinero::vault

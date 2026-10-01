@@ -17,6 +17,27 @@ public:
     OrchardProofJobs(const OrchardProofJobs&) = delete;
     OrchardProofJobs& operator=(const OrchardProofJobs&) = delete;
     void Start(); // Once. No per-request thread creation.
+    // Preallocate the exact task and claim capacity before committing Reserved.
+    // Unpublished submissions cannot run or appear in Query. Destruction frees
+    // only this in-memory slot; it never cancels a durable wallet reservation.
+    class Submission {
+    public:
+        ~Submission();
+        Submission(const Submission&) = delete;
+        Submission& operator=(const Submission&) = delete;
+        const orchard::WalletProvingIntent& Intent() const noexcept;
+        void Bind(const OrchardOperationQueue& staged);
+        // Host calls only after its checked SQLite COMMIT. Nonallocating; false
+        // on stop or an unbound ticket. Durable Reserved remains in that case.
+        [[nodiscard]] bool Publish() noexcept;
+    private:
+        friend class OrchardProofJobs;
+        struct Data;
+        explicit Submission(std::unique_ptr<Data>);
+        std::unique_ptr<Data> data_;
+    };
+    [[nodiscard]] std::unique_ptr<Submission> Prepare(const orchard::Hash&,
+        orchard::WalletBundlePlan, orchard::SigningContext);
     // Consumes the plan even on rejection. Reservation must match this exact
     // randomized plan/context. Caller supplies a stable committed queue copy.
     void Submit(const orchard::Hash& operation_id, const OrchardOperationQueue&,
@@ -27,6 +48,14 @@ public:
     // Queued work is discarded; running proof computation is not preemptible.
     // Its result is discarded at completion. Completed results cannot cancel.
     [[nodiscard]] bool Cancel(const orchard::Hash&);
+    // Copy a successful result without removing its job or freeing capacity.
+    // The host must supply a freshly authenticated durable queue from the
+    // selected wallet/account; the ID alone is not RPC authorization. Exact
+    // intent binding prevents collecting another job that reused this ID.
+    // A failed Ready commit can retry this copy. Only collect with TakeResult
+    // after the host has durably retained the exact signed transaction.
+    [[nodiscard]] std::unique_ptr<orchard::ProvedWalletBundle> CopyResult(
+        const orchard::Hash&, const OrchardOperationQueue&) const;
     [[nodiscard]] std::unique_ptr<orchard::ProvedWalletBundle> TakeResult(const orchard::Hash&);
     void Forget(const orchard::Hash&); // Failed/Cancelled only, frees its slot.
     // Reject new submissions, cancel queued/running jobs. RequestStop is
@@ -36,6 +65,6 @@ public:
     void Shutdown();
 private:
     struct Impl;
-    std::unique_ptr<Impl> impl_;
+    std::shared_ptr<Impl> impl_;
 };
 } // namespace dinero::wallet

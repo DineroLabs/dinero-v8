@@ -18,6 +18,7 @@
 #include "vault/vault_types.h"
 
 #include <cstdint>
+#include <optional>
 #include <unordered_map>
 #include <utility>
 #include <variant>
@@ -86,6 +87,7 @@ class LedgerAccount {
     /// saturated at 0 (per invariant §6.2.3 a negative balance is
     /// represented as `operatorLoss`, never as a negative number).
     [[nodiscard]] UnaAmount spendable() const noexcept {
+        if (allocatedSpendable_) return *allocatedSpendable_;
         const UnaAmount K_CREDIT = pending_ + confirmed_;
         return K_CREDIT >= locked_ ? K_CREDIT - locked_ : 0;
     }
@@ -118,11 +120,17 @@ class LedgerAccount {
     bool operator==(const LedgerAccount& other) const = default;
 
    private:
+    friend class Ledger;
+    void applyCreditReinstated(const OutpointId& deposit, UnaAmount amount,
+                               UnaAmount refund, UnaAmount operator_loss);
     AccountId account_;
     UnaAmount pending_{0};
     UnaAmount confirmed_{0};
     UnaAmount locked_{0};
     UnaAmount operatorLoss_{0};
+    // Derived only by Ledger for accounts with recorded source allocations.
+    // Orphaned reservations cannot consume an unrelated origin's availability.
+    std::optional<UnaAmount> allocatedSpendable_;
     std::unordered_map<OutpointId, DepositLifecycle> deposits_;
     std::unordered_map<OutpointId, WithdrawalLifecycle> withdrawals_;
 };

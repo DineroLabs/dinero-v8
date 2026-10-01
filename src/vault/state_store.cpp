@@ -5,6 +5,7 @@
 #include "util/hex.h"
 #include "external/bech32/bech32.hpp"
 #include <map>
+#include <unordered_map>
 #include <sqlite3.h>
 #include <openssl/crypto.h>
 #include <openssl/evp.h>
@@ -117,7 +118,8 @@ struct VaultStateTransaction::Impl {
     }
     void ValidateRetainedPayments(const VaultStateSnapshot& state) const {
         const bool needed=std::any_of(state.withdrawals.begin(),state.withdrawals.end(),[](const auto& row) {
-            return std::holds_alternative<WithdrawalPaymentRetained>(row.state);
+            return std::holds_alternative<WithdrawalPaymentRetained>(row.state) ||
+                   std::holds_alternative<WithdrawalPaymentConfirmed>(row.state);
         });
         if(!needed)return;
         // The vault row, full authenticated wallet payment envelope and bound
@@ -137,7 +139,9 @@ struct VaultStateTransaction::Impl {
         static constexpr const char* hrps[]={"din","tdin","rdin"};
         Check(domain.network<3);
         for(const auto& row:state.withdrawals) {
-            const auto* retained=std::get_if<WithdrawalPaymentRetained>(&row.state);if(!retained)continue;
+            const auto* retained=std::get_if<WithdrawalPaymentRetained>(&row.state);
+            if(const auto* confirmed=std::get_if<WithdrawalPaymentConfirmed>(&row.state))retained=&confirmed->payment;
+            if(!retained)continue;
             const auto& request=row.request;Check(request.payment_terms.has_value());
             ValidateWithdrawalPaymentTerms(*request.payment_terms);
             const auto found=by_request.find(request.request_id);Check(found!=by_request.end());
@@ -243,6 +247,30 @@ void VaultStateTransaction::Stage(const VaultStateSnapshot& successor) {
     // A historical owner cannot acquire or move a creation boundary through
     // an ordinary successor, including when it is otherwise still empty.
     Check(successor.config.creation_anchor==p.current.state.config.creation_anchor);
+    const auto allocated=[](const VaultStateSnapshot& state) {
+        return std::any_of(state.entries.begin(),state.entries.end(),IsCreditAllocationEntry);
+    };
+    if(allocated(p.current.state) || allocated(successor)) {
+        // Attribution is append-only. A newly authenticated successor cannot
+        // erase or relabel the prefix that established exact source ownership.
+        const auto& before=p.current.state;
+        Check(successor.entries.size()>=before.entries.size() &&
+              std::equal(before.entries.begin(),before.entries.end(),successor.entries.begin()));
+        std::map<WithdrawalId,const WithdrawalRequest*> requests;
+        for(const auto& row:successor.withdrawals)Check(requests.emplace(row.request.request_id,&row.request).second);
+        for(const auto& row:before.withdrawals) {
+            const auto found=requests.find(row.request.request_id);
+            Check(found!=requests.end() && *found->second==row.request);
+        }
+        std::unordered_map<OutpointId,const TrackedDeposit*> deposits;
+        for(const auto& row:successor.deposits)Check(deposits.emplace(row.deposit.outpoint,&row.deposit).second);
+        for(const auto& row:before.deposits) {
+            const auto found=deposits.find(row.deposit.outpoint);Check(found!=deposits.end());
+            const auto& next=*found->second;
+            Check(next.account==row.deposit.account && next.amount==row.deposit.amount &&
+                  next.deposit_height==row.deposit.deposit_height);
+        }
+    }
     (void)ReplayVaultStateLedger(successor);p.ValidateRetainedPayments(successor);
     StoredVaultState prepared;prepared.identity=p.current.identity;prepared.predecessor=p.current.digest;prepared.state=successor;
     Sensitive plain;plain.bytes=EncodeVaultState(successor);auto aad=Associated(p.domain,p.wallet,prepared.identity,successor.revision,prepared.predecessor);auto sealed=Seal(p.key,aad,plain.bytes);prepared.digest=Hash(sealed);

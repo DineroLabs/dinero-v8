@@ -91,28 +91,32 @@ RuntimeWalletRecoveryResult RuntimeWalletRecovery::ResumeAccount(
 
 RuntimeEnrolledWalletRecoveryResult RuntimeWalletRecovery::ResumeAccounts(
         const RuntimeAccountReplay& view,const Source& source,WalletManager& wallet,
-        UTXOIndex& index,uint64_t session,std::optional<uint32_t> selected_account) {
+        UTXOIndex& index,uint64_t session,std::optional<uint32_t> selected_account,bool require_catalog) {
     using Account=wallet::OrchardAccountDelivery;
+    Require(!require_catalog||!selected_account,"Catalog recovery cannot select a partial account inventory");
     {const auto lease=wallet.AcquireDatabaseLease();Require(wallet.database_leases_==1,
         "Wallet recovery requires released caller lease");}
     const auto& first=view.Event(1);const auto target=view.Head();
-    struct Snapshot {RuntimeIndexProgress indexed,ordinary;std::vector<Account::Enrolled> accounts;};
+    struct Snapshot {RuntimeIndexProgress indexed,ordinary;std::vector<Account::Enrolled> accounts;std::optional<wallet::OrchardAccountCatalog::Snapshot> catalog;};
     const auto read=[&] {
         const auto lease=wallet.AcquireDatabaseLease();const auto stores=ReadStores(wallet,index,session);
-        std::vector<Account::Enrolled> accounts;
-        if(selected_account){
+        std::vector<Account::Enrolled> accounts;std::optional<wallet::OrchardAccountCatalog::Snapshot> catalog;
+        if(require_catalog){
+            auto owned=Account::ReadCatalogForReplay(wallet,session,view);
+            accounts=std::move(owned.accounts);catalog=std::move(owned.catalog);
+        }else if(selected_account){
             const Account::Profile profile{first.context.domain,first.context.activation_height,*selected_account};
             auto account=Account::ReadForReplay(wallet,session,profile,view);
             accounts.push_back({*selected_account,std::move(account)});
         }else accounts=Account::ReadEnrolledForReplay(wallet,session,view);
-        return Snapshot{stores.first,stores.second,std::move(accounts)};
+        return Snapshot{stores.first,stores.second,std::move(accounts),std::move(catalog)};
     };
     auto current=read();
     const auto account_cursor=[](const Account::Enrolled& s) {
         const auto& d=s.state.account.Delivery();return RuntimeOutboxCursor{d.sequence,d.digest};
     };
     const auto unchanged=[&](const Snapshot& a,const Snapshot& b) {
-        if(!Same(a.indexed,b.indexed)||!Same(a.ordinary,b.ordinary)||a.accounts.size()!=b.accounts.size())return false;
+        if(!Same(a.indexed,b.indexed)||!Same(a.ordinary,b.ordinary)||a.accounts.size()!=b.accounts.size()||a.catalog!=b.catalog)return false;
         for(size_t i=0;i<a.accounts.size();++i)
             if(a.accounts[i].number!=b.accounts[i].number||a.accounts[i].state.revision!=b.accounts[i].state.revision||
                account_cursor(a.accounts[i])!=account_cursor(b.accounts[i])||
@@ -183,6 +187,6 @@ RuntimeEnrolledWalletRecoveryResult RuntimeWalletRecovery::ResumeAccounts(
     Require(unchanged(current,read()),"Wallet recovery stores changed during source read");
     std::vector<std::pair<uint32_t,uint64_t>> revisions;
     for(const auto& entry:current.accounts)revisions.emplace_back(entry.number,entry.state.revision);
-    return {current.indexed,std::move(revisions),final.head};
+    return {current.indexed,std::move(revisions),final.head,current.catalog?std::optional<uint64_t>(current.catalog->revision):std::nullopt};
 }
 } // namespace dinero

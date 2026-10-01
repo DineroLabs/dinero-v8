@@ -12,6 +12,7 @@ add_library(dinero_wallet STATIC
   ${CMAKE_SOURCE_DIR}/src/common/AddressCodec.cpp  # Taproot address encoding (P2TR)
   ${CMAKE_SOURCE_DIR}/src/address/addr_codec.cpp    # Taproot address decoding and scriptPubKey creation
   ${CMAKE_SOURCE_DIR}/src/address/addr_types.cpp    # Address type definitions
+  ${CMAKE_CURRENT_SOURCE_DIR}/orchard_account_catalog.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/wallet_manager.cpp  # Modern HD wallet with BIP84 (Nov 2025)
   ${CMAKE_CURRENT_SOURCE_DIR}/key_identity.cpp    # Week 1: KeyID-based wallet identity
   ${CMAKE_CURRENT_SOURCE_DIR}/key_origin.cpp      # Week 1: KeyOriginInfo for descriptor wallet

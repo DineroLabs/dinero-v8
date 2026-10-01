@@ -582,6 +582,7 @@ jobs:
           from pathlib import Path
           text=Path('orchard-daemon-mempool-jobs-execution.log').read_text()
           for marker in ['PASS actual daemon initial durable scan without fabricated progress',
+                         'PASS actual daemon vault reconciliation detached until explicit attachment',
                          'PASS actual daemon delivery worker drained before dependency release',
                          'PASS actual daemon pool callback lifetime closed']:
               assert text.count(marker)==2, (marker,text.count(marker))
@@ -1081,6 +1082,206 @@ jobs:
           assert '100% tests passed, 0 tests failed out of 1' in log
           PYTEST
 
+      - name: Authenticate first-seed Orchard catalog ownership
+        run: |
+          cmake --build build-orchard-root --target test_wallet_historical_rpc --parallel 4 -- -k 0
+          ctest --test-dir build-orchard-root -R '^OrchardCatalogOwner$' --show-only=json-v1 > orchard-catalog-owner-inventory.json
+          python3 - <<'PYCODE'
+          import json
+          tests=json.load(open('orchard-catalog-owner-inventory.json'))['tests']
+          assert len(tests)==1 and tests[0]['name']=='OrchardCatalogOwner'
+          props={p['name']:p['value'] for p in tests[0].get('properties',[])}
+          assert not props.get('DISABLED') and props['TIMEOUT']==180
+          PYCODE
+          ctest --test-dir build-orchard-root -R '^OrchardCatalogOwner$' --verbose --no-tests=error --output-log orchard-catalog-owner-execution.log
+          python3 - <<'PYCODE'
+          from pathlib import Path
+          log=Path('orchard-catalog-owner-execution.log').read_text()
+          for case in ['GeneratedRecoveryAndEncryptedReopenPreserveOwners', 'MissingMalformedAndWrongSeedRefuseBeforeUnlockPublication', 'IdentityAndAuthenticatedModeAreBound', 'InitialSeedCatalogAndSealedOwnerRollbackTogether', 'ReadErrorsAndCallerTransactionPreserveState', 'LegacyOwnersAndSameSeedRebindNeverInitializeCatalog', 'AuthenticatedPayloadBoundsAndCanonicalEncoding']:
+              assert log.count('[       OK ] OrchardCatalogOwner.'+case+' (')==1,case
+          assert '100% tests passed, 0 tests failed out of 1' in log
+          PYCODE
+
+      - name: Recover generated Orchard catalog owners and known-empty wallets
+        run: |
+          cmake --build build-orchard-root --target test_assumeutxo_replay --parallel 4 -- -k 0
+          ctest --test-dir build-orchard-root -R '^OrchardCatalogRecovery$' --show-only=json-v1 > orchard-catalog-recovery-inventory.json
+          python3 - <<'PYCODE'
+          import json
+          tests=json.load(open('orchard-catalog-recovery-inventory.json'))['tests']
+          assert len(tests)==1 and tests[0]['name']=='OrchardCatalogRecovery'
+          props={p['name']:p['value'] for p in tests[0].get('properties',[])}
+          assert not props.get('DISABLED') and props['TIMEOUT']==180
+          PYCODE
+          ctest --test-dir build-orchard-root -R '^OrchardCatalogRecovery$' --verbose --no-tests=error --output-log orchard-catalog-recovery-execution.log
+          python3 - <<'PYCODE'
+          from pathlib import Path
+          log=Path('orchard-catalog-recovery-execution.log').read_text()
+          for case in ['GeneratedEmptyReplaysWithoutSchemaOrAccountCreation', 'NonconsecutiveCatalogOwnersRecoverShieldUndoAndReopen', 'MissingOtherOwnerAndUnknownCatalogRefuseBeforeEffects', 'PartialAccountCommitAndCatalogGrowthRequireOwnedRetry']:
+              assert log.count('[       OK ] OrchardCatalogRecovery.'+case+' (')==1,case
+          assert '100% tests passed, 0 tests failed out of 1' in log
+          PYCODE
+
+      - name: Commit Orchard note reservations and signed spend ownership
+        run: |
+          cmake --build build-orchard-root --target test_assumeutxo_replay --parallel 4 -- -k 0
+          ctest --test-dir build-orchard-root -R '^OrchardSpendOwner$' --show-only=json-v1 > orchard-spend-owner-inventory.json
+          python3 - <<'PYCODE'
+          import json
+          tests=json.load(open('orchard-spend-owner-inventory.json'))['tests']
+          assert len(tests)==1 and tests[0]['name']=='OrchardSpendOwner'
+          props={p['name']:p['value'] for p in tests[0].get('properties',[])}
+          assert not props.get('DISABLED') and props['TIMEOUT']==180
+          PYCODE
+          ctest --test-dir build-orchard-root -R '^OrchardSpendOwner$' --verbose --no-tests=error --output-log orchard-spend-owner-execution.log
+          python3 - <<'PYCODE'
+          from pathlib import Path
+          log=Path('orchard-spend-owner-execution.log').read_text()
+          for case in ['DurableReservationReadyAndActualTransferPreserveChange', 'ReadyRequiredWritesAndCommitPreserveReservedThenUnshield', 'ReservationRequiredReadWriteCommitAndAmountsRefuseWithoutEffects', 'EveryCatalogOwnerMustBePresentCaughtUpAndBoundToSession']:
+              assert log.count('[       OK ] OrchardSpendOwner.'+case+' (')==1,case
+          assert '100% tests passed, 0 tests failed out of 1' in log
+          PYCODE
+
+      - name: Own the bounded Orchard prover in the wallet service
+        run: |
+          cmake --build build-orchard-root --target test_assumeutxo_replay --parallel 4 -- -k 0
+          ctest --test-dir build-orchard-root -R '^OrchardServiceProofs$' --show-only=json-v1 > orchard-service-proofs-inventory.json
+          python3 - <<'PYCODE'
+          import json
+          tests=json.load(open('orchard-service-proofs-inventory.json'))['tests']
+          assert len(tests)==1 and tests[0]['name']=='OrchardServiceProofs'
+          props={p['name']:p['value'] for p in tests[0].get('properties',[])}
+          assert not props.get('DISABLED') and props['TIMEOUT']==180
+          PYCODE
+          ctest --test-dir build-orchard-root -R '^OrchardServiceProofs$' --verbose --no-tests=error --output-log orchard-service-proofs-execution.log
+          python3 - <<'PYCODE'
+          from pathlib import Path
+          log=Path('orchard-service-proofs-execution.log').read_text()
+          for case in ['MissingOwnersAndBackendPolicyRefuseOrShareOneExecutor', 'OrdinaryStopReinitAndIdleScopeExitPreserveEncryptedWallet', 'ActualBoundReservationProvesThenCommitsBeforeTransferAdmission', 'CompletedProofDoesNotUnlockOrPublishAndReadyCanRetryAfterUnlock']:
+              assert log.count('[       OK ] OrchardServiceProofs.'+case+' (')==1,case
+          assert '100% tests passed, 0 tests failed out of 1' in log
+          PYCODE
+
+      - name: Retain completed Orchard proof through checked Ready retry
+        run: |
+          cmake --build build-orchard-root --target test_assumeutxo_replay --parallel 4 -- -k 0
+          ctest --test-dir build-orchard-root -R '^OrchardProofRetention$' --show-only=json-v1 > orchard-proof-retention-inventory.json
+          python3 - <<'PYCODE'
+          import json
+          tests=json.load(open('orchard-proof-retention-inventory.json'))['tests']
+          assert len(tests)==1 and tests[0]['name']=='OrchardProofRetention'
+          props={p['name']:p['value'] for p in tests[0].get('properties',[])}
+          assert not props.get('DISABLED') and props['TIMEOUT']==180
+          PYCODE
+          ctest --test-dir build-orchard-root -R '^OrchardProofRetention$' --verbose --no-tests=error --output-log orchard-proof-retention-execution.log
+          python3 - <<'PYCODE'
+          from pathlib import Path
+          log=Path('orchard-proof-retention-execution.log').read_text()
+          for case in ['BackendPolicyAndMissingResultRefuse', 'IncompleteOrDifferentIntentNeverCollectsJob', 'ExactProofSurvivesReadyWriteCommitAndLockedRefusal']:
+              assert log.count('[       OK ] OrchardProofRetention.'+case+' (')==1,case
+          assert '100% tests passed, 0 tests failed out of 1' in log
+          PYCODE
+
+      - name: Preallocate Orchard proof capacity before committing a spend reservation
+        run: |
+          cmake --build build-orchard-root --target test_assumeutxo_replay --parallel 4 -- -k 0
+          ctest --test-dir build-orchard-root -R '^OrchardProofCapacity$' --show-only=json-v1 > orchard-proof-capacity-inventory.json
+          python3 - <<'PYCODE'
+          import json
+          tests=json.load(open('orchard-proof-capacity-inventory.json'))['tests']
+          assert len(tests)==1 and tests[0]['name']=='OrchardProofCapacity'
+          props={p['name']:p['value'] for p in tests[0].get('properties',[])}
+          assert not props.get('DISABLED') and props['TIMEOUT']==180
+          PYCODE
+          ctest --test-dir build-orchard-root -R '^OrchardProofCapacity$' --verbose --no-tests=error --output-log orchard-proof-capacity-execution.log
+          python3 - <<'PYCODE'
+          from pathlib import Path
+          log=Path('orchard-proof-capacity-execution.log').read_text()
+          for case in ['BackendPolicyRemainsExplicit', 'CapacityAndStoppedExecutorRefuseBeforeDurableReservation', 'UnpublishedTicketRequiresBindingAndOutlivesIdleExecutorSafely', 'FailedWritesAndCommitReleaseOnlyPreparedCapacity', 'ActualServicePublishesAfterCommitThenRetainsReadyBeforeUnshield']:
+              assert log.count('[       OK ] OrchardProofCapacity.'+case+' (')==1,case
+          assert '100% tests passed, 0 tests failed out of 1' in log
+          PYCODE
+
+      - name: Require authenticated durable Orchard operation listing
+        run: |
+          cmake --build build-orchard-root --target test_assumeutxo_replay --parallel 4 -- -k 0
+          ctest --test-dir build-orchard-root -R '^OrchardOperationStatus$' --show-only=json-v1 > orchard-operation-status-inventory.json
+          python3 - <<'PYCODE'
+          import json
+          tests=json.load(open('orchard-operation-status-inventory.json'))['tests']
+          assert len(tests)==1 and tests[0]['name']=='OrchardOperationStatus'
+          props={p['name']:p['value'] for p in tests[0].get('properties',[])}
+          assert not props.get('DISABLED') and props['TIMEOUT']==180
+          PYCODE
+          ctest --test-dir build-orchard-root -R '^OrchardOperationStatus$' --verbose --no-tests=error --output-log orchard-operation-status-execution.log
+          python3 - <<'PYCODE'
+          from pathlib import Path
+          log=Path('orchard-operation-status-execution.log').read_text()
+          for case in ['MalformedRequestsRefuseBeforeServices', 'RegistryAndBackendOrServiceAbsenceRefuse', 'ReservedSignedAndReopenPreserveDurableBytes', 'IncompleteCatalogAndSqlReadRefuseWithoutPrefix', 'WalletBindingLockUnknownCatalogAndCapturedLag']:
+              assert log.count('[       OK ] OrchardOperationStatus.'+case+' (')==1,case
+          assert '100% tests passed, 0 tests failed out of 1' in log
+          PYCODE
+
+      - name: Reconcile entire Orchard catalog before receiving address issuance
+        run: |
+          cmake --build build-orchard-root --target test_assumeutxo_replay --parallel 4 -- -k 0
+          ctest --test-dir build-orchard-root -R '^OrchardCatalogIssuance$' --show-only=json-v1 > orchard-catalog-issuance-inventory.json
+          python3 - <<'PYCODE'
+          import json
+          tests=json.load(open('orchard-catalog-issuance-inventory.json'))['tests']
+          assert len(tests)==1 and tests[0]['name']=='OrchardCatalogIssuance'
+          props={p['name']:p['value'] for p in tests[0].get('properties',[])}
+          assert not props.get('DISABLED') and props['TIMEOUT']==180
+          PYCODE
+          ctest --test-dir build-orchard-root -R '^OrchardCatalogIssuance$' --verbose --no-tests=error --output-log orchard-catalog-issuance-execution.log
+          python3 - <<'PYCODE'
+          from pathlib import Path
+          log=Path('orchard-catalog-issuance-execution.log').read_text()
+          for case in ['NonconsecutiveOwnersReopenAndOnlyRequestedCounterAdvances', 'OtherOwnerAndRequiredHistoryRefuseWithoutIssuance', 'ReadCommitAndUnknownInventoryRefuseWithoutEffects']:
+              assert log.count('[       OK ] OrchardCatalogIssuance.'+case+' (')==1,case
+          assert '100% tests passed, 0 tests failed out of 1' in log
+          PYCODE
+
+      - name: Create Orchard account and catalog owner atomically
+        run: |
+          cmake --build build-orchard-root --target test_assumeutxo_replay --parallel 4 -- -k 0
+          ctest --test-dir build-orchard-root -R '^OrchardAccountCreation$' --show-only=json-v1 > orchard-account-creation-inventory.json
+          python3 - <<'PYCODE'
+          import json
+          tests=json.load(open('orchard-account-creation-inventory.json'))['tests']
+          assert len(tests)==1 and tests[0]['name']=='OrchardAccountCreation'
+          props={p['name']:p['value'] for p in tests[0].get('properties',[])}
+          assert not props.get('DISABLED') and props['TIMEOUT']==180
+          PYCODE
+          ctest --test-dir build-orchard-root -R '^OrchardAccountCreation$' --verbose --no-tests=error --output-log orchard-account-creation-execution.log
+          python3 - <<'PYCODE'
+          from pathlib import Path
+          log=Path('orchard-account-creation-execution.log').read_text()
+          for case in ['MalformedRequestsRefuseBeforeServices', 'RegistryAndBackendOrServiceAbsenceRefuse', 'ActualRpcAllocatesNonconsecutiveOwnersAtOriginAndReopens', 'RequiredWritesCommitAndBorrowedOwnerPreserveCatalogAndRows', 'DeletedDeclaredForeignAndCorruptRetainedOwnersNeverRecreate', 'UnknownRecoveryMissingCatalogAndUntrackedRowsNeverInitialize', 'CreatedOwnerReplaysRealShieldAndUndoWithoutCatalogReset']:
+              assert log.count('[       OK ] OrchardAccountCreation.'+case+' (')==1,case
+          assert '100% tests passed, 0 tests failed out of 1' in log
+          PYCODE
+
+      - name: Persist existing Orchard account receiving addresses before publication
+        run: |
+          cmake --build build-orchard-root --target test_assumeutxo_replay --parallel 4 -- -k 0
+          ctest --test-dir build-orchard-root -R '^OrchardAccountIssuance$' --show-only=json-v1 > orchard-account-issuance-inventory.json
+          python3 - <<'PYCODE'
+          import json
+          tests=json.load(open('orchard-account-issuance-inventory.json'))['tests']
+          assert len(tests)==1 and tests[0]['name']=='OrchardAccountIssuance'
+          props={p['name']:p['value'] for p in tests[0].get('properties',[])}
+          assert not props.get('DISABLED') and props['TIMEOUT']==180
+          PYCODE
+          ctest --test-dir build-orchard-root -R '^OrchardAccountIssuance$' --verbose --no-tests=error --output-log orchard-account-issuance-execution.log
+          python3 - <<'PYCODE'
+          from pathlib import Path
+          log=Path('orchard-account-issuance-execution.log').read_text()
+          for case in ['RejectMalformedRequestsBeforeServices', 'RegistryAndUnavailableBackendOrServicesRefuse', 'ActualRpcPersistsCounterAndPreservesAuthenticatedStateAcrossReopen', 'RequiredWriteCommitAndBorrowedTransactionPreserveCounter', 'MissingIdentityAccountReadFailureAndWrongSessionNeverInitialize']:
+              assert log.count('[       OK ] OrchardAccountIssuance.'+case+' (')==1,case
+          assert '100% tests passed, 0 tests failed out of 1' in log
+          PYCODE
+
       - name: Recover enrolled canonical wallet stores on startup and unlock
         run: |
           cmake --build build-orchard-root --target test_assumeutxo_replay --parallel 4 -- -k 0
@@ -1374,6 +1575,25 @@ jobs:
           for case in ['AtomicPolicyAndReopen','RequiredWritesAndCommitRollback','CompleteTypedInventoryAndReadRefusal','BorrowedTransactionAndDurabilityOwner']:
               assert log.count('[       OK ] PoolOrphanAccounting.'+case+' (')==1
           PYPOOL
+
+      - name: Require actual legacy consumer absence before typed provider installation
+        shell: bash
+        run: |
+          ctest --test-dir build-orchard-root -R '^RuntimeLegacyConsumerAbsence$' --show-only=json-v1 > runtime-legacy-consumer-absence-inventory.json
+          python3 - <<'PYABSENT'
+          import json
+          tests=json.load(open('runtime-legacy-consumer-absence-inventory.json'))['tests']
+          assert len(tests)==1 and tests[0]['name']=='RuntimeLegacyConsumerAbsence'
+          assert not any(p['name']=='DISABLED' and p['value'] for p in tests[0].get('properties',[]))
+          assert next(p['value'] for p in tests[0]['properties'] if p['name']=='TIMEOUT')==60
+          PYABSENT
+          ctest --test-dir build-orchard-root -R '^RuntimeLegacyConsumerAbsence$' --verbose --no-tests=error --output-log runtime-legacy-consumer-absence-execution.log
+          python3 - <<'PYABSENT'
+          from pathlib import Path
+          log=Path('runtime-legacy-consumer-absence-execution.log').read_text()
+          for case in ['DisconnectedConfiguredOraclesRefuseProviderInstallation', 'InstalledProviderRefusesLateOracleRegistration', 'ExtraWalletRegistryMustActuallyBeEmpty', 'InstalledProviderRefusesExtraWalletRegistration', 'ExplicitDetachmentRestoresLegacyRegistrationWithoutFalseAbsence']:
+              assert log.count('[       OK ] RuntimeLegacyConsumerAbsence.'+case+' (')==1
+          PYABSENT
 
       - name: Prepare all declared runtime notifications before canonical commit
         shell: bash
@@ -2153,6 +2373,25 @@ jobs:
           expected=['PASS default daemon startup leaves vault detached', 'PASS encrypted wallet explicitly creates lists and attaches authenticated vault', 'PASS new owner never replaces attached or existing vaults', 'PASS restart requires explicit attachment and preserves exact owner rows', 'PASS legacy enable settings and files cannot initialize or overwrite a vault', 'PASS canonical creation anchor survives actual daemon restarts without delivery claim', 'PASS explicit vault startup HTTP lifecycle and clean shutdown', 'PASS wallet creation requires new name and preserves every existing owner row']
           assert all(log.count(marker)==1 for marker in expected)
           PYCHECK
+      - name: Require and execute scheduled daemon provider
+        run: |
+          ctest --test-dir build-orchard-root -R '^RuntimeDaemonProvider$' --show-only=json-v1 > orchard-runtime-daemon-provider-inventory.json
+          python3 - <<'PYCODE'
+          import json
+          t=json.load(open('orchard-runtime-daemon-provider-inventory.json'))['tests']
+          assert len(t)==1 and t[0]['name']=='RuntimeDaemonProvider'
+          assert not any(p['name']=='DISABLED' and p['value'] for p in t[0].get('properties',[]))
+          assert next(p['value'] for p in t[0]['properties'] if p['name']=='TIMEOUT')==180
+          PYCODE
+          ctest --test-dir build-orchard-root -R '^RuntimeDaemonProvider$' --verbose --no-tests=error --output-log orchard-runtime-daemon-provider-execution.log
+          python3 - <<'PYCODE'
+          from pathlib import Path
+          s=Path('orchard-runtime-daemon-provider-execution.log').read_text()
+          assert '100% tests passed, 0 tests failed out of 1' in s
+          for marker in ['PASS scheduled regtest daemon installed actual typed provider', 'PASS actual daemon typed provider detached before dependency release', 'PASS scheduled daemon provider installed before core startup and released before dependencies', 'PASS scheduled daemon refused enabled legacy oracles before IPC probe', 'PASS scheduled daemon destructor detached provider and closed actual workers']:
+              assert s.count(marker)==1,marker
+          PYCODE
+
       - name: Require and execute all root Orchard lanes
         run: |
           ctest --test-dir build-orchard-root -R '^(OrchardAccountDelivery|OrchardAuthorization|OrchardBackend(Cpp|Rust)|OrchardTransactionReader|OrchardCoinSnapshot|OrchardTransparent|OrchardStateStorage|OrchardStateTransition|OrchardForestTransition|OrchardBlockCoins|OrchardHeader|OrchardBlockReader|OrchardBlockStaging|OrchardAtomicCrash|OrchardMemoryPublication|OrchardStateCommitment|OrchardStateRoot|OrchardLegacyAccounting|OrchardRuntimeReader|OrchardRuntimeOutbox|OrchardCommitOwner|OrchardIndexDelivery|OrchardIndexedCommit|OrchardWalletKeys|OrchardWalletShield|OrchardWalletSpend|OrchardWalletStorage|OrchardWalletAccount|OrchardChainRestore|OrchardOperationArchive|OrchardWalletOperations|OrchardProofJobs|OrchardResources|OrchardServiceReorgPlan|OrchardServiceForkPoint|OrchardServiceConnect|OrchardServiceDeliverySource|OrchardServiceDisconnect|OrchardServicePersistence|OrchardServiceStartup|OrchardServiceUndoCoverage|OrchardBlockFilter|OrchardWalletScan|OrchardLegacyBoundary|OrchardLegacyRetirement)$' --show-only=json-v1 > orchard-root-inventory.json
@@ -2753,6 +2992,99 @@ jobs:
           for case in ['ActualStartedGenesisVerifiedWithoutWritingMarkers','MissingExtraAndChangedDurableCoinsRefuseWithoutRepair','InconsistentTipCheckpointAndPresentOwnersRefuse']:
               assert log.count('[       OK ] PoolGenesisSource.'+case+' (')==1
           PYGENESIS
+      - name: Require vault exact-source reservations and canonical withdrawal reconciliation
+        run: |
+          ctest --test-dir build-orchard-root -R '^(VaultCreditAllocation|VaultCanonicalWithdrawal)$' --show-only=json-v1 > orchard-vault-credit-allocation-inventory.json
+          python3 - <<'PYVAULTALLOCATION'
+          import json
+          tests=json.load(open('orchard-vault-credit-allocation-inventory.json'))['tests']
+          assert sorted(t['name'] for t in tests)==['VaultCanonicalWithdrawal','VaultCreditAllocation']
+          for t in tests:
+              assert next(p['value'] for p in t['properties'] if p['name']=='TIMEOUT')==180
+              assert not any(p['name']=='DISABLED' and p['value'] for p in t.get('properties',[]))
+          PYVAULTALLOCATION
+          ctest --test-dir build-orchard-root -R '^(VaultCreditAllocation|VaultCanonicalWithdrawal)$' --verbose --no-tests=error --output-log orchard-vault-credit-allocation-execution.log
+          python3 - <<'PYVAULTALLOCATION'
+          from pathlib import Path
+          log=Path('orchard-vault-credit-allocation-execution.log').read_text()
+          for case in ['VaultCreditAllocation.PartialDebitMaturesOnlyItsOriginAndRepeatedOrphanPreservesLaterFunds', 'VaultCreditAllocation.MultiOriginOrphanReservationDisconnectAndReinclusionKeepExactSources', 'VaultCreditAllocation.LateInvalidSourceAndWrongPaymentAnchorPreserveWholeLedger', 'VaultCreditAllocation.HistoricalUnattributedWithdrawalAndBalanceAdjustmentsRemainUnchanged', 'VaultCreditAllocation.VersionSixAndJsonRoundTripEveryNewEntryWithoutLosingOldPrefix', 'VaultCreditAllocation.SavedRequestPaymentAndDepositBindingsRefusePartialInventories', 'VaultCreditAllocation.OnlyReplayedInclusionUndoCanRestoreAboveAdmissionCaps', 'VaultCreditAllocationWallet.ReserveWriteAndCommitRefuseBeforeWalletEffectsAndReopenKeepsSources', 'VaultCreditAllocationWallet.SuccessorCannotRewriteSourcePrefixOrAuthorizedRequest', 'VaultCanonicalWithdrawal.ActualInclusionMaturityUndoReopenAndReinclusionKeepExactSources', 'VaultCanonicalWithdrawal.RestoredReservationCanExceedAdmissionCapsButNewEnqueueStillRefuses', 'VaultCanonicalWithdrawal.MissingOptionalIndexPreservesConfirmedAnchorAndRetainedBody', 'VaultCanonicalWithdrawal.SqlAndCommitRefusalKeepUnpublishedWithdrawalAndCanonicalLease', 'VaultCanonicalWithdrawal.WrongIndexedBlockOrRequestedTipNeverPublishesInclusion', 'VaultCanonicalWithdrawal.RuntimeWorkerObservesAttributedPaymentOnceAtUnchangedTip']:
+              assert log.count('[       OK ] '+case+' (')==1
+          PYVAULTALLOCATION
+
+      - name: Require vault reversals bind actual debit and atomically retain compensation
+        run: |
+          cmake --build build-orchard-root --target test_vault_state_machines --parallel 4 -- -k 0
+          ctest --test-dir build-orchard-root -R '^(VaultReversalOwner|VaultStateMachines)$' --show-only=json-v1 > orchard-vault-reversal-owner-inventory.json
+          python3 - <<'PYPOOLREFS'
+          import json
+          tests=json.load(open('orchard-vault-reversal-owner-inventory.json'))['tests']
+          assert sorted(t['name'] for t in tests)==['VaultReversalOwner','VaultStateMachines']
+          for t in tests:
+              assert next(p['value'] for p in t['properties'] if p['name']=='TIMEOUT')==({'VaultReversalOwner':180,'VaultStateMachines':30}[t['name']])
+              assert not any(p['name']=='DISABLED' and p['value'] for p in t.get('properties',[]))
+          PYPOOLREFS
+          ctest --test-dir build-orchard-root -R '^(VaultReversalOwner|VaultStateMachines)$' --verbose --no-tests=error --output-log orchard-vault-reversal-owner-execution.log
+          python3 - <<'PYPOOLREFS'
+          from pathlib import Path
+          log=Path('orchard-vault-reversal-owner-execution.log').read_text()
+          for case in ['VaultReversalOwner.UnspentPartlySpentAndFullySpentUseActualDebitWithoutOtherBucket', 'VaultReversalOwner.MissingAmountAndStageOwnersRefuseBeforeEitherEntryOrStage', 'VaultReversalOwner.SecondEntrySequenceOrLossOverflowPreservesCompletePriorOwner', 'VaultReversalOwner.HistoricalRecordedLossRetainedAndNewPairReinstatesExactly', 'VaultReversalOwnerWallet.AuthenticatedWriteAndCommitThenReopenPreserveExactPairAndLoss', 'VaultDepositFlow.detectedIsTheInitialStage', 'VaultDepositFlow.tipAdvanceMovesDetectedToObservedAtKObserve', 'VaultDepositFlow.tipAdvanceCascadesToCreditAtKCredit', 'VaultDepositFlow.tipAdvanceCascadesToSettleAtKSettle', 'VaultDepositFlow.sizeMatrixOverridesKCreditForLargeDeposits', 'VaultDepositFlow.sizeMatrixOverridesKCreditForJumboDeposits', 'VaultDepositFlow.observeIsIdempotent', 'VaultDepositFlow.capPressurePreservesSequenceAndSurfaceLedgerError', 'VaultDepositFlow.revertOfCreditedDepositOpensCompensatingDebit', 'VaultDepositFlow.revertOfSpentSettledDepositCarriesOperatorLoss', 'VaultDepositFlow.revertOfDetectedDepositIsNoLedgerWrite', 'VaultDepositFlow.revertOfUnknownDepositRejects', 'VaultDepositFlow.tipBelowDepositHeightIsNoOp', 'VaultDepositFlow.multiDepositTipAdvanceTracksEachIndependently', 'VaultReorg.unchangedChainEmitsZeroReverts', 'VaultReorg.reMineSameTxidUpdatesHashAndDoesNotRevert', 'VaultReorg.orphanedDepositTriggersRevert', 'VaultReorg.orphanedSettledDepositTriggersRevertAndOperatorLoss', 'VaultReorg.unknownChainStateIsNoOp', 'VaultReorg.recordObservationIsIdempotent', 'VaultReorg.unrecordedObservationOnCreditedDepositRaises', 'VaultReorg.detectedAndObservedDepositsSkipped', 'VaultWithdrawal.enqueueRejectsZeroAmount', 'VaultWithdrawal.enqueueRejectsAboveSpendable', 'VaultWithdrawal.enqueueRespectsPerRequestCap', 'VaultWithdrawal.enqueueRespectsPerAccountOutstandingCap', 'VaultWithdrawal.enqueueRespectsGlobalQueueDepth', 'VaultWithdrawal.enqueueRespectsDestinationValidator', 'VaultWithdrawal.processNextSignsAndWritesInitiated', 'VaultWithdrawal.tipChangedSettlesAtKConfirmations', 'VaultWithdrawal.backendErrorMarksFailedAndPreservesLedger', 'VaultWithdrawal.revertOfBroadcastReleasesLock', 'VaultWithdrawal.unknownRequestRejects', 'VaultWithdrawal.markBroadcastBeforeProcessNextRejects', 'VaultWithdrawal.outstandingDepthAndOutstandingPerAccount']:
+              assert log.count('[       OK ] '+case+' (')==1
+          PYPOOLREFS
+
+      - name: Require mature canonical vault reinclusion retains exact reversal owners
+        run: |
+          ctest --test-dir build-orchard-root -R '^VaultCreditReinclusion$' --show-only=json-v1 > orchard-vault-credit-reinclusion-inventory.json
+          python3 - <<'PYPOOLREFS'
+          import json
+          tests=json.load(open('orchard-vault-credit-reinclusion-inventory.json'))['tests']
+          assert len(tests)==1 and tests[0]['name']=='VaultCreditReinclusion'
+          assert next(p['value'] for p in tests[0]['properties'] if p['name']=='TIMEOUT')==180
+          assert not any(p['name']=='DISABLED' and p['value'] for p in tests[0].get('properties',[]))
+          PYPOOLREFS
+          ctest --test-dir build-orchard-root -R '^VaultCreditReinclusion$' --verbose --no-tests=error --output-log orchard-vault-credit-reinclusion-execution.log
+          python3 - <<'PYPOOLREFS'
+          from pathlib import Path
+          log=Path('orchard-vault-credit-reinclusion-execution.log').read_text()
+          for case in ['VaultCreditReinclusion.PartlySpentCreditRestoresOnlyActualDebitAndRecordedLoss', 'VaultCreditReinclusion.MissingAmbiguousForeignAndOverflowingOwnersRefuseAtomically', 'VaultCreditReinclusion.VersionedSnapshotAndJsonPreserveHistoryAndExactReferences', 'VaultCreditReinclusionWallet.SourceReinclusionWriteAndCommitRefuseBeforePublicationThenReopen', 'VaultCreditReinclusionWallet.SettlementMaturityRequiredBeforeRestoringRevertedPosition', 'VaultCreditReinclusionEarly.CreditedObservedAndDetectedOwnersResumeWithoutDuplicateCredits', 'VaultCreditReinclusionEarly.UnavailableAndLateMisboundObservationPreserveWholeOwner']:
+              assert log.count('[       OK ] '+case+' (')==1
+          PYPOOLREFS
+
+      - name: Require settled vault reversion preserves outstanding credit limits
+        run: |
+          ctest --test-dir build-orchard-root -R '^VaultRevertedCreditCap$' --show-only=json-v1 > orchard-vault-reverted-credit-cap-inventory.json
+          python3 - <<'PYPOOLREFS'
+          import json
+          tests=json.load(open('orchard-vault-reverted-credit-cap-inventory.json'))['tests']
+          assert len(tests)==1 and tests[0]['name']=='VaultRevertedCreditCap'
+          assert next(p['value'] for p in tests[0]['properties'] if p['name']=='TIMEOUT')==180
+          assert not any(p['name']=='DISABLED' and p['value'] for p in tests[0].get('properties',[]))
+          PYPOOLREFS
+          ctest --test-dir build-orchard-root -R '^VaultRevertedCreditCap$' --verbose --no-tests=error --output-log orchard-vault-reverted-credit-cap-execution.log
+          python3 - <<'PYPOOLREFS'
+          from pathlib import Path
+          log=Path('orchard-vault-reverted-credit-cap-execution.log').read_text()
+          for case in ['VaultRevertedCreditCap.SettledRevertPreservesOtherCreditAndPerAccountLimit', 'VaultRevertedCreditCap.SettledRevertPreservesGlobalLimitAcrossAccounts', 'VaultRevertedCreditCap.CreditedRevertStillReleasesExactlyItsOwnCapacity', 'VaultRevertedCreditCapWallet.CheckedCommitReopenAndCapRefusalPreserveAuthenticatedOwner']:
+              assert log.count('[       OK ] '+case+' (')==1
+          PYPOOLREFS
+
+      - name: Require attached vault committed-tip worker and mailbox handoff
+        run: |
+          ctest --test-dir build-orchard-root -R '^VaultTipWorker$' --show-only=json-v1 > orchard-vault-tip-worker-inventory.json
+          python3 - <<'PYPOOLREFS'
+          import json
+          tests=json.load(open('orchard-vault-tip-worker-inventory.json'))['tests']
+          assert len(tests)==1 and tests[0]['name']=='VaultTipWorker'
+          assert next(p['value'] for p in tests[0]['properties'] if p['name']=='TIMEOUT')==180
+          assert not any(p['name']=='DISABLED' and p['value'] for p in tests[0].get('properties',[]))
+          PYPOOLREFS
+          ctest --test-dir build-orchard-root -R '^VaultTipWorker$' --verbose --no-tests=error --output-log orchard-vault-tip-worker-execution.log
+          python3 - <<'PYPOOLREFS'
+          from pathlib import Path
+          log=Path('orchard-vault-tip-worker-execution.log').read_text()
+          for case in ['VaultTipWorker.AttachedOwnerAndChangedRevisionObservedWithoutRepeatedWrites', 'VaultTipWorker.IncoherentSourceAndLockedOwnerDeferWithoutStateEffects', 'VaultTipWorker.RequiredStateWriteAndCommitRefuseBeforePublicationThenRetry', 'VaultTipWorker.MailboxStopsBeforeOwnerReleaseAndReopenPreservesLedger']:
+              assert log.count('[       OK ] '+case+' (')==1
+          PYPOOLREFS
+
       - name: Require owned pool maintenance worker and mailbox handoff
         run: |
           ctest --test-dir build-orchard-root -R '^PoolMaintenanceWorker$' --show-only=json-v1 > orchard-pool-maintenance-worker-inventory.json
@@ -3532,6 +3864,26 @@ jobs:
             orchard-block-announcement-inventory.json
             orchard-reorg-readmission-inventory.json
             chainstate-wallet-index-owner-inventory.json
+            orchard-catalog-owner-inventory.json
+            orchard-catalog-owner-execution.log
+            orchard-catalog-recovery-inventory.json
+            orchard-catalog-recovery-execution.log
+            orchard-spend-owner-inventory.json
+            orchard-spend-owner-execution.log
+            orchard-service-proofs-inventory.json
+            orchard-proof-retention-inventory.json
+            orchard-proof-retention-execution.log
+            orchard-proof-capacity-inventory.json
+            orchard-proof-capacity-execution.log
+            orchard-operation-status-inventory.json
+            orchard-operation-status-execution.log
+            orchard-service-proofs-execution.log
+            orchard-catalog-issuance-inventory.json
+            orchard-catalog-issuance-execution.log
+            orchard-account-creation-inventory.json
+            orchard-account-creation-execution.log
+            orchard-account-issuance-inventory.json
+            orchard-account-issuance-execution.log
             wallet-canonical-recovery-inventory.json
             vault-canonical-observation-inventory.json
             vault-runtime-owner-inventory.json
@@ -3565,6 +3917,10 @@ jobs:
             vault-state-store-execution.log
             pool-orphan-accounting-inventory.json
             pool-orphan-accounting-execution.log
+            orchard-runtime-daemon-provider-inventory.json
+            orchard-runtime-daemon-provider-execution.log
+            runtime-legacy-consumer-absence-inventory.json
+            runtime-legacy-consumer-absence-execution.log
             runtime-notification-composition-inventory.json
             runtime-notification-composition-execution.log
             runtime-delivery-worker-inventory.json
@@ -3719,10 +4075,20 @@ jobs:
             orchard-pool-source-isolation-execution.log
             orchard-pool-genesis-source-inventory.json
             orchard-pool-genesis-source-execution.log
+            orchard-vault-credit-allocation-inventory.json
+            orchard-vault-credit-allocation-execution.log
+            orchard-vault-reversal-owner-inventory.json
+            orchard-vault-credit-reinclusion-inventory.json
+            orchard-vault-reverted-credit-cap-inventory.json
+            orchard-vault-tip-worker-inventory.json
             orchard-pool-maintenance-worker-inventory.json
             orchard-pool-orphan-retention-inventory.json
             orchard-pool-maintenance-source-inventory.json
             orchard-pool-attempt-source-inventory.json
+            orchard-vault-reversal-owner-execution.log
+            orchard-vault-credit-reinclusion-execution.log
+            orchard-vault-reverted-credit-cap-execution.log
+            orchard-vault-tip-worker-execution.log
             orchard-pool-maintenance-worker-execution.log
             orchard-pool-orphan-retention-execution.log
             orchard-pool-maintenance-source-execution.log

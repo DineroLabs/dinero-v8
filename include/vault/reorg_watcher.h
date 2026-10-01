@@ -93,7 +93,6 @@ class ReorgWatcher {
     CheckedInclusion check(const TrackedDeposit& dep, bool verify_recorded = false);
     // Service-only: reconcile every non-reverted deposit before advancement.
     void reconcileTracked();
-    UnaAmount unrecoverableLoss(const TrackedDeposit& dep);
 
     DepositFlowMachine* machine_{nullptr};
     BlockHashAtHeightFn block_hash_at_height_;

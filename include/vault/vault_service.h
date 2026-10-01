@@ -138,7 +138,17 @@ class VaultService {
     /// Publishes all in-memory state only when these phases complete.
     /// Unknown chain observations and lifecycle/cap errors propagate without
     /// changing the prior state.
-    void tipChanged(uint64_t height);
+    struct TipObservation {
+        uint64_t height=0;
+        std::array<uint8_t,32> block_hash{};
+        uint64_t revision=0;
+    };
+    // Returned source identity and revision are captured by this SAME committed
+    // transition, not by a later independent read. Legacy component readers
+    // without a snapshot return a zero hash and cannot certify a selected tip.
+    TipObservation tipChanged(uint64_t height);
+    [[nodiscard]] uint64_t currentRevision();
+    [[nodiscard]] bool hasWalletStateOwner() const noexcept {return bool(state_owner_);}
     // A configured snapshot reader runs outside mu_. Publication refuses if
     // any service mutation occurred during the read. Legacy injected readers
     // retain their narrower per-deposit behavior.

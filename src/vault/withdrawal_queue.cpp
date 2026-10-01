@@ -230,7 +230,8 @@ void WithdrawalQueue::revert(const WithdrawalId& id) {
     if (req_it == requests_.end()) {
         throw WithdrawalQueueError(WithdrawalQueueError::Kind::UNKNOWN_REQUEST, "unknown");
     }
-    if (std::holds_alternative<WithdrawalPaymentRetained>(state_it->second))
+    if (std::holds_alternative<WithdrawalPaymentRetained>(state_it->second) ||
+        std::holds_alternative<WithdrawalPaymentConfirmed>(state_it->second))
         throw WithdrawalQueueError(WithdrawalQueueError::Kind::LIFECYCLE_VIOLATION,
                                    "retained wallet payment requires canonical reconciliation");
     std::array<uint8_t, 32> txid{};

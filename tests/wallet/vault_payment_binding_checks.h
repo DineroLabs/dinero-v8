@@ -57,7 +57,10 @@ TEST_F(VaultPaymentBinding, SuccessorCannotRelabelRetainedBodyFeeOrTerms) {
             if(mode==1)++payment.fee_una;
             if(mode==2)++row.request.payment_terms->fee_rate_hint;
             if(mode==3)row.request.payment_terms->audit_context="different owner terms";
-            EXPECT_NO_THROW(dinero::vault::ReplayVaultStateLedger(next));
+            if(mode==0)
+    EXPECT_THROW(dinero::vault::ReplayVaultStateLedger(next),std::runtime_error);
+            else
+    EXPECT_NO_THROW(dinero::vault::ReplayVaultStateLedger(next));
             EXPECT_THROW(owner->Stage(next),std::runtime_error);
         }
         EXPECT_EQ(state_envelope(),stored);EXPECT_EQ(envelope(service->get().getCurrentDatabase()),original);
@@ -75,5 +78,6 @@ TEST_F(VaultPaymentBinding, CallerTransactionAndSeedRemainOwnedThroughRead) {
         sql(db,"ROLLBACK");EXPECT_TRUE(sqlite3_get_autocommit(db));
         EXPECT_THROW(lease->ReadPendingPaymentsInTransaction(*seed),std::runtime_error);
     }
-    EXPECT_EQ(envelope(wallet.getCurrentDatabase()),original);EXPECT_NO_THROW(open());
+    EXPECT_EQ(envelope(wallet.getCurrentDatabase()),original);
+    EXPECT_NO_THROW(open());
 }

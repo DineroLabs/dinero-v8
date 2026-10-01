@@ -91,6 +91,7 @@ if(NOT WIN32)
   set_tests_properties(RPCListenerStartup PROPERTIES
     LABELS "integration;e2e-daemon;rpc;mandatory" TIMEOUT 300 RUN_SERIAL TRUE)
 
+
   add_test(NAME DaemonServiceRelease COMMAND python3
     ${CMAKE_SOURCE_DIR}/tests/integration/test_daemon_service_release.py
     $<TARGET_FILE:test_daemon_service_release>)
@@ -1984,6 +1985,8 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/src/test/vault_ledger_tests.cpp)
   add_executable(test_vault_ledger
     src/test/vault_ledger_tests.cpp
     src/vault/ledger.cpp
+    src/vault/ledger_allocation.cpp
+    src/vault/credit_allocation.cpp
     src/vault/ledger_account.cpp
   )
   add_dependencies(test_vault_ledger gtest gtest_main)
@@ -2008,6 +2011,8 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/src/test/vault_state_machines_tests.cpp)
   add_executable(test_vault_state_machines
     src/test/vault_state_machines_tests.cpp
     src/vault/ledger.cpp
+    src/vault/ledger_allocation.cpp
+    src/vault/credit_allocation.cpp
     src/vault/ledger_account.cpp
     src/vault/deposit_flow.cpp
     src/vault/reorg_watcher.cpp
@@ -2037,6 +2042,8 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/src/test/vault_ledger_store_tests.cpp)
   add_executable(test_vault_ledger_store
     src/test/vault_ledger_store_tests.cpp
     src/vault/ledger.cpp
+    src/vault/ledger_allocation.cpp
+    src/vault/credit_allocation.cpp
     src/vault/ledger_account.cpp
     src/vault/ledger_store.cpp
   )
@@ -2062,6 +2069,8 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/src/test/vault_service_tests.cpp)
   add_executable(test_vault_service
     src/test/vault_service_tests.cpp
     src/vault/ledger.cpp
+    src/vault/ledger_allocation.cpp
+    src/vault/credit_allocation.cpp
     src/vault/ledger_account.cpp
     src/vault/deposit_flow.cpp
     src/vault/reorg_watcher.cpp
@@ -5176,12 +5185,34 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_assumeutxo_replay.cpp)
   set_tests_properties(PoolOrphanAccounting PROPERTIES TIMEOUT 90 LABELS "pool;storage;mandatory")
   add_test(NAME RuntimeNotificationComposition COMMAND test_assumeutxo_replay --gtest_filter=RuntimeNotificationComposition.*)
   set_tests_properties(RuntimeNotificationComposition PROPERTIES TIMEOUT 180 LABELS "daemon;wallet;mandatory")
+  add_test(NAME RuntimeLegacyConsumerAbsence COMMAND test_assumeutxo_replay --gtest_filter=RuntimeLegacyConsumerAbsence.*)
+  set_tests_properties(RuntimeLegacyConsumerAbsence PROPERTIES TIMEOUT 60 LABELS "daemon;mandatory")
   add_test(NAME RuntimeDeliveryWorker COMMAND test_assumeutxo_replay --gtest_filter=RuntimeDeliveryWorker.*)
   set_tests_properties(RuntimeDeliveryWorker PROPERTIES TIMEOUT 180 LABELS "daemon;wallet;mandatory")
   add_test(NAME OrchardReorgReadmission COMMAND test_assumeutxo_replay --gtest_filter=OrchardReorgReadmission.*)
   set_tests_properties(OrchardReorgReadmission PROPERTIES TIMEOUT 120 LABELS "daemon;mandatory")
   add_test(NAME ChainstateWalletIndexOwner COMMAND test_assumeutxo_replay --gtest_filter=ChainstateWalletIndexOwner.*)
   set_tests_properties(ChainstateWalletIndexOwner PROPERTIES TIMEOUT 120 LABELS "daemon;wallet;mandatory")
+  add_test(NAME OrchardAccountIssuance COMMAND test_assumeutxo_replay --gtest_filter=OrchardAccountIssuance.*)
+  add_test(NAME OrchardProofCapacity COMMAND test_assumeutxo_replay --gtest_filter=OrchardProofCapacity.*)
+  set_tests_properties(OrchardProofCapacity PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;wallet;ownership;mandatory")
+  add_test(NAME OrchardProofRetention COMMAND test_assumeutxo_replay --gtest_filter=OrchardProofRetention.*)
+  set_tests_properties(OrchardProofRetention PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;wallet;ownership;mandatory")
+  add_test(NAME OrchardOperationStatus COMMAND test_assumeutxo_replay --gtest_filter=OrchardOperationStatus.*)
+  set_tests_properties(OrchardOperationStatus PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;wallet;rpc;mandatory")
+  add_test(NAME OrchardServiceProofs COMMAND test_assumeutxo_replay --gtest_filter=OrchardServiceProofs.*)
+  set_tests_properties(OrchardServiceProofs PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;wallet;ownership;mandatory")
+  if(DINERO_BUILD_ORCHARD_BACKEND)
+    add_test(NAME OrchardCatalogRecovery COMMAND test_assumeutxo_replay --gtest_filter=OrchardCatalogRecovery.*)
+    set_tests_properties(OrchardCatalogRecovery PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;wallet;ownership;mandatory")
+    add_test(NAME OrchardSpendOwner COMMAND test_assumeutxo_replay --gtest_filter=OrchardSpendOwner.*)
+    set_tests_properties(OrchardSpendOwner PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;wallet;ownership;mandatory")
+    add_test(NAME OrchardCatalogIssuance COMMAND test_assumeutxo_replay --gtest_filter=OrchardCatalogIssuance.*)
+    set_tests_properties(OrchardCatalogIssuance PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;wallet;ownership;mandatory")
+  endif()
+  add_test(NAME OrchardAccountCreation COMMAND test_assumeutxo_replay --gtest_filter=OrchardAccountCreation.*)
+  set_tests_properties(OrchardAccountCreation PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;wallet;ownership;mandatory")
+  set_tests_properties(OrchardAccountIssuance PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;wallet;mandatory")
   add_test(NAME WalletCanonicalRecovery COMMAND test_assumeutxo_replay --gtest_filter=WalletCanonicalRecovery.*)
   set_tests_properties(WalletCanonicalRecovery PROPERTIES TIMEOUT 120 LABELS "daemon;wallet;mandatory")
   add_test(NAME VaultCanonicalObservation COMMAND test_assumeutxo_replay --gtest_filter=VaultCanonicalObservation.*)
@@ -15622,6 +15653,8 @@ if(UNIX)
     target_link_libraries(test_wallet_historical_rpc PRIVATE "-framework Security")
   endif()
   add_test(NAME WalletHistoricalRpc COMMAND test_wallet_historical_rpc --gtest_filter=HistoricalRpc.*)
+  add_test(NAME OrchardCatalogOwner COMMAND test_wallet_historical_rpc --gtest_filter=OrchardCatalogOwner.*)
+  set_tests_properties(OrchardCatalogOwner PROPERTIES TIMEOUT 180 LABELS "wallet;orchard;ownership;mandatory")
   add_test(NAME WalletOwnedSigning COMMAND test_wallet_historical_rpc --gtest_filter=WalletOwnedSigning.*)
   add_test(NAME WalletReorgOrigin COMMAND test_wallet_historical_rpc --gtest_filter=WalletReorgOrigin.*)
   set_tests_properties(WalletReorgOrigin PROPERTIES TIMEOUT 120 LABELS "wallet;rpc;pending;reorg")
@@ -15637,6 +15670,20 @@ if(UNIX)
   set_tests_properties(VaultDispatchLifetime PROPERTIES TIMEOUT 120 LABELS "wallet;vault;lifecycle;mandatory")
   add_test(NAME VaultRetainedWithdrawal COMMAND test_wallet_historical_rpc --gtest_filter=VaultRetainedWithdrawal.*)
   set_tests_properties(VaultRetainedWithdrawal PROPERTIES TIMEOUT 120 LABELS "wallet;vault;storage;mandatory")
+  add_test(NAME VaultCreditAllocation COMMAND test_wallet_historical_rpc --gtest_filter=VaultCreditAllocation.*:VaultCreditAllocationWallet.*)
+  set_tests_properties(VaultCreditAllocation PROPERTIES TIMEOUT 180 LABELS "vault;wallet;mandatory")
+  if(DINERO_BUILD_ORCHARD_BACKEND)
+    add_test(NAME VaultCanonicalWithdrawal COMMAND test_assumeutxo_replay --gtest_filter=VaultCanonicalWithdrawal.*)
+    set_tests_properties(VaultCanonicalWithdrawal PROPERTIES TIMEOUT 180 LABELS "vault;wallet;chainstate;mandatory")
+  endif()
+  add_test(NAME VaultReversalOwner COMMAND test_wallet_historical_rpc --gtest_filter=VaultReversalOwner.*:VaultReversalOwnerWallet.*)
+  set_tests_properties(VaultReversalOwner PROPERTIES TIMEOUT 180 LABELS "vault;wallet;mandatory")
+  add_test(NAME VaultCreditReinclusion COMMAND test_wallet_historical_rpc --gtest_filter=VaultCreditReinclusion.*:VaultCreditReinclusionWallet.*:VaultCreditReinclusionEarly.*)
+  set_tests_properties(VaultCreditReinclusion PROPERTIES TIMEOUT 180 LABELS "vault;wallet;mandatory")
+  add_test(NAME VaultRevertedCreditCap COMMAND test_wallet_historical_rpc --gtest_filter=VaultRevertedCreditCap.*:VaultRevertedCreditCapWallet.*)
+  set_tests_properties(VaultRevertedCreditCap PROPERTIES TIMEOUT 180 LABELS "vault;wallet;mandatory")
+  add_test(NAME VaultTipWorker COMMAND test_wallet_historical_rpc --gtest_filter=VaultTipWorker.*)
+  set_tests_properties(VaultTipWorker PROPERTIES TIMEOUT 180 LABELS "vault;wallet;daemon;mandatory")
   add_test(NAME PoolMaintenanceWorker COMMAND test_wallet_historical_rpc --gtest_filter=PoolMaintenanceWorker.*)
   set_tests_properties(PoolMaintenanceWorker PROPERTIES TIMEOUT 180 LABELS "pool;wallet;daemon;mandatory")
   add_test(NAME PoolOrphanRetention COMMAND test_wallet_historical_rpc --gtest_filter=PoolOrphanRetention.*)

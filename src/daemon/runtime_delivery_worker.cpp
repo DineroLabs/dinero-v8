@@ -2,10 +2,13 @@
 #include "daemon/runtime_reorg_readmission.h"
 #include "daemon/services/chainstate_service.h"
 #include "daemon/services/wallet_service.h"
+#include "storage/chain_db.h"
+#include "vault/vault_runtime.h"
 #ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
 #include "wallet/runtime_wallet_recovery.h"
 #endif
 #include <limits>
+#include <algorithm>
 #include <stdexcept>
 
 namespace dinero {
@@ -55,6 +58,38 @@ RuntimeDeliveryWorker::Report RuntimeDeliveryWorker::Snapshot() const {
 bool RuntimeDeliveryWorker::Stopping() const {
     std::lock_guard lock(state_->mutex);return state_->stopping;
 }
+void RuntimeDeliveryWorker::ObserveVault(Report& report,VaultObservationCache& last) const {
+    report.vault=VaultOutcome::Deferred;report.vault_tip={};report.vault_height=report.vault_revision=0;
+    try {
+        const auto service=vault::GetVaultRuntimeService();
+        if(!service) {last={};report.vault=VaultOutcome::NoAttachedRuntime;return;}
+        if(!service->hasWalletStateOwner()) {last={};return;}
+        uint64_t height;std::array<uint8_t,32> hash{};
+        {
+            const auto lifetime=ChainstateService::AcquireWalletIndexUse(source_);
+            const auto selected=source_->AcquireBlockIngressActivationLock();
+            const auto* db=source_->GetChainDB();if(!db)throw std::runtime_error("vault worker source unavailable");
+            const auto tip=db->getTip();if(!tip.ok() || tip->height<0 || uint64_t(tip->height)>UINT32_MAX)
+                throw std::runtime_error("vault worker tip unavailable");
+            const auto canonical=source_->getCanonicalBlockHash(static_cast<uint32_t>(tip->height));
+            if(!canonical.ok() || *canonical!=tip->hash)throw std::runtime_error("vault worker tip incoherent");
+            height=static_cast<uint64_t>(tip->height);std::copy(canonical->begin(),canonical->end(),hash.begin());
+        }
+        // Never acquire the vault/wallet/seed/SQLite owner under selected
+        // ownership. tipChanged independently binds its actual captured tip.
+        if(last.service.lock()==service && last.height==height && last.tip==hash &&
+           last.revision==service->currentRevision()) {
+            report.vault=VaultOutcome::UnchangedSinceObservation;
+        } else {
+            const auto applied=service->tipChanged(height);
+            if(!std::any_of(applied.block_hash.begin(),applied.block_hash.end(),[](uint8_t v){return v!=0;}))
+                throw std::runtime_error("vault worker observation identity absent");
+            last={service,applied.height,applied.revision,applied.block_hash};
+            report.vault=VaultOutcome::ObservedTip;
+        }
+        report.vault_height=last.height;report.vault_revision=last.revision;report.vault_tip=last.tip;
+    } catch(...) {last={};/* Existing durable state remains owned; retry later. */}
+}
 void RuntimeDeliveryWorker::RecoverWallet(Report& report) const {
     report.wallet=WalletOutcome::Deferred;report.wallet_head.reset();
     if (!wallet_) {report.wallet=WalletOutcome::ExplicitlyAbsent;return;}
@@ -98,7 +133,7 @@ bool RuntimeDeliveryWorker::ReconcileSlice(Report& report) const {
     return true; // More retained plans may exist; continue without waiting for another callback.
 }
 void RuntimeDeliveryWorker::Run() noexcept {
-    Report pass;bool continue_pass=false;uint64_t slices=0;
+    Report pass;VaultObservationCache vault_observation;bool continue_pass=false;uint64_t slices=0;
     try {
         for(;;) {
             bool restart=false;
@@ -108,7 +143,7 @@ void RuntimeDeliveryWorker::Run() noexcept {
                 if (state_->stopping) break;
                 restart=state_->requested||!continue_pass;state_->requested=false;
             }
-            if (restart) {pass=Report{};RecoverWallet(pass);}
+            if (restart) {pass=Report{};RecoverWallet(pass);ObserveVault(pass,vault_observation);}
             try {continue_pass=ReconcileSlice(pass);}
             catch (...) {pass.source_deferred=true;pass.reorg_eof=false;continue_pass=false;}
             if (slices!=std::numeric_limits<uint64_t>::max())++slices;

@@ -745,6 +745,8 @@ add_library(dinero_rpc_handlers STATIC
   src/rpc/methods_utreexo_bridge.cpp  # Phase 34.3: Utreexo Bridge API for light clients (utreexo.getproof, getroots, getstate)
   # Liquidity Vault — daemon-side source of truth (Track C).
   src/vault/ledger.cpp
+    src/vault/ledger_allocation.cpp
+    src/vault/credit_allocation.cpp
   src/vault/ledger_account.cpp
   src/vault/deposit_flow.cpp
   src/vault/reorg_watcher.cpp
@@ -780,6 +782,7 @@ add_library(dinero_rpc_handlers STATIC
   src/rpc/methods_address_index.cpp
   src/core/rpc/blockchain_rpc_metadata.cpp  # RPC metadata registration
   src/rpc/methods_wallet_context.cpp
+  src/rpc/orchard_account_rpc.cpp
   src/rpc/wallet_raw_transaction_rpc.cpp
   src/rpc/amount_parser.cpp  # Exact DIN/una RPC boundary conversion
   src/rpc/methods_wallet_covenant_profile.cpp  # Regtest-only profile-v1 construction/recovery RPC

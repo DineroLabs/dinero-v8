@@ -68,15 +68,45 @@ void PutEntry(Writer& w,const LedgerEntry& e) {
         else if constexpr(std::is_same_v<T,WithdrawalReverted>)tag=7;
         else if constexpr(std::is_same_v<T,CompensatingDebit>)tag=8;
         else if constexpr(std::is_same_v<T,PolicyAdjustment>)tag=9;
+        else if constexpr(std::is_same_v<T,CreditReinstated>)tag=10;
+        else if constexpr(std::is_same_v<T,WithdrawalAllocationReserved>)tag=11;
+        else if constexpr(std::is_same_v<T,WithdrawalAllocationDispatchStarted>)tag=12;
+        else if constexpr(std::is_same_v<T,WithdrawalAllocationPaymentBound>)tag=13;
+        else if constexpr(std::is_same_v<T,WithdrawalAllocationIncluded>)tag=14;
+        else if constexpr(std::is_same_v<T,WithdrawalAllocationDisconnected>)tag=15;
+        else if constexpr(std::is_same_v<T,WithdrawalAllocationReleased>)tag=16;
+        else if constexpr(std::is_same_v<T,CreditPositionMatured>)tag=17;
+        else if constexpr(std::is_same_v<T,CreditPositionReverted>)tag=18;
+        else if constexpr(std::is_same_v<T,CreditPositionRestored>)tag=19;
         static_assert(std::is_same_v<T,DepositObserved> || std::is_same_v<T,CreditOpened> ||
                       std::is_same_v<T,CreditSettled> || std::is_same_v<T,CreditReverted> ||
                       std::is_same_v<T,WithdrawalInitiated> || std::is_same_v<T,WithdrawalSettled> ||
                       std::is_same_v<T,WithdrawalReverted> || std::is_same_v<T,CompensatingDebit> ||
-                      std::is_same_v<T,PolicyAdjustment>);
+                      std::is_same_v<T,PolicyAdjustment> || std::is_same_v<T,CreditReinstated> ||
+                      std::is_same_v<T,WithdrawalAllocationReserved> || std::is_same_v<T,WithdrawalAllocationDispatchStarted> || std::is_same_v<T,WithdrawalAllocationPaymentBound> || std::is_same_v<T,WithdrawalAllocationIncluded> || std::is_same_v<T,WithdrawalAllocationDisconnected> || std::is_same_v<T,WithdrawalAllocationReleased> || std::is_same_v<T,CreditPositionMatured> || std::is_same_v<T,CreditPositionReverted> || std::is_same_v<T,CreditPositionRestored>);
         w.U8(tag);w.U64(v.seq);w.I64(v.at);
         if constexpr(std::is_same_v<T,PolicyAdjustment>) {
             w.U8(v.account?1:0);if(v.account)w.Text(v.account->raw);
             w.Text(v.note);w.I64(v.deltaUserBalance);w.I64(v.deltaOperatorFloat);
+        } else if constexpr(std::is_same_v<T,WithdrawalAllocationReserved> || std::is_same_v<T,WithdrawalAllocationDispatchStarted> || std::is_same_v<T,WithdrawalAllocationPaymentBound> || std::is_same_v<T,WithdrawalAllocationIncluded> || std::is_same_v<T,WithdrawalAllocationDisconnected> || std::is_same_v<T,WithdrawalAllocationReleased>) {
+            Require(Nonzero(v.request));w.Text(v.account.raw);w.Raw(v.request);
+            if constexpr(std::is_same_v<T,WithdrawalAllocationReserved>) {
+                Require(v.amount && !v.sources.empty());w.U64(v.amount);w.Count(v.sources.size());
+                uint64_t sum=0;std::optional<LedgerSeq> prior;
+                for(const auto& ref:v.sources) {
+                    Require(ref.amount && (!prior || *prior<ref.credit_seq));
+                    Require(ref.amount<=UINT64_MAX-sum);sum+=ref.amount;prior=ref.credit_seq;
+                    w.U64(ref.credit_seq);w.U64(ref.amount);
+                }
+                Require(sum==v.amount);
+            } else if constexpr(std::is_same_v<T,WithdrawalAllocationPaymentBound>) {
+                Require(Nonzero(v.payment.output.txid_raw) && Nonzero(v.payment.body_hash) && !v.backend.raw.empty());
+                PutOutpoint(w,v.payment.output);w.Raw(v.payment.body_hash);w.Text(v.backend.raw);
+            } else if constexpr(std::is_same_v<T,WithdrawalAllocationIncluded> || std::is_same_v<T,WithdrawalAllocationDisconnected>) {
+                Require(Nonzero(v.inclusion.block_hash));w.U64(v.inclusion.height);w.Raw(v.inclusion.block_hash);
+            }
+        } else if constexpr(std::is_same_v<T,CreditPositionMatured> || std::is_same_v<T,CreditPositionReverted> || std::is_same_v<T,CreditPositionRestored>) {
+            w.Text(v.account.raw);PutOutpoint(w,v.deposit);w.U64(v.credit_seq);
         } else {
             w.Text(v.account.raw);
             if constexpr(std::is_same_v<T,WithdrawalInitiated> || std::is_same_v<T,WithdrawalSettled> || std::is_same_v<T,WithdrawalReverted>)PutOutpoint(w,v.request);
@@ -84,20 +114,52 @@ void PutEntry(Writer& w,const LedgerEntry& e) {
             if constexpr(std::is_same_v<T,DepositObserved> || std::is_same_v<T,CreditOpened> || std::is_same_v<T,WithdrawalInitiated> || std::is_same_v<T,CompensatingDebit>)w.U64(v.amount);
             if constexpr(std::is_same_v<T,WithdrawalInitiated>)w.Text(v.backend.raw);
             if constexpr(std::is_same_v<T,CompensatingDebit>)w.U64(v.operatorLoss);
+            if constexpr(std::is_same_v<T,CreditReinstated>) {w.U64(v.reversalSeq);w.U64(v.compensationSeq);}
         }
     },e);
 }
-LedgerEntry GetEntry(Reader& r) {
+LedgerEntry GetEntry(Reader& r,bool version5,bool version6) {
     auto tag=r.U8();auto seq=r.U64();auto at=r.I64();
     if(tag==9) {
         std::optional<AccountId> account;if(r.Bool())account=AccountId{r.Text()};
         auto note=r.Text();auto user=r.I64();auto op=r.I64();return PolicyAdjustment{seq,at,std::move(account),std::move(note),user,op};
     }
-    Require(tag>=1 && tag<=8);AccountId account{r.Text()};auto outpoint=GetOutpoint(r);
+    if(tag>=11 && tag<=19) {
+        Require(version6);AccountId account{r.Text()};
+        if(tag>=17) {
+            const auto deposit=GetOutpoint(r);const auto origin=r.U64();
+            if(tag==17)return CreditPositionMatured{seq,at,std::move(account),origin,deposit};
+            if(tag==18)return CreditPositionReverted{seq,at,std::move(account),origin,deposit};
+            return CreditPositionRestored{seq,at,std::move(account),origin,deposit};
+        }
+        const auto id=r.Fixed<16>();Require(Nonzero(id));
+        if(tag==11) {
+            const auto amount=r.U64();const auto count=r.Count();Require(amount && count);
+            std::vector<CreditAllocationRef> refs;refs.reserve(count);uint64_t sum=0;
+            for(size_t i=0;i<count;++i) {
+                const auto origin=r.U64();const auto value=r.U64();
+                Require(value && (!i || refs.back().credit_seq<origin) && value<=UINT64_MAX-sum);
+                sum+=value;refs.push_back({origin,value});
+            }
+            Require(sum==amount);return WithdrawalAllocationReserved{seq,at,std::move(account),id,amount,std::move(refs)};
+        }
+        if(tag==12)return WithdrawalAllocationDispatchStarted{seq,at,std::move(account),id};
+        if(tag==13) {
+            const auto output=GetOutpoint(r);const auto body=r.Fixed<32>();BackendId backend{r.Text()};
+            Require(Nonzero(output.txid_raw) && Nonzero(body) && !backend.raw.empty());
+            return WithdrawalAllocationPaymentBound{seq,at,std::move(account),id,AllocationPayment{output,body},std::move(backend)};
+        }
+        if(tag==16)return WithdrawalAllocationReleased{seq,at,std::move(account),id};
+        const auto height=r.U64();const auto hash=r.Fixed<32>();Require(Nonzero(hash));
+        if(tag==14)return WithdrawalAllocationIncluded{seq,at,std::move(account),id,AllocationInclusion{height,hash}};
+        return WithdrawalAllocationDisconnected{seq,at,std::move(account),id,AllocationInclusion{height,hash}};
+    }
+    Require((tag>=1 && tag<=8) || (version5 && tag==10));AccountId account{r.Text()};auto outpoint=GetOutpoint(r);
     switch(tag) {
         case 1:return DepositObserved{seq,at,std::move(account),outpoint,r.U64()};
         case 2:return CreditOpened{seq,at,std::move(account),outpoint,r.U64()};
         case 3:return CreditSettled{seq,at,std::move(account),outpoint};
+        case 10:{auto reversal=r.U64();auto compensation=r.U64();return CreditReinstated{seq,at,std::move(account),outpoint,reversal,compensation};}
         case 4:return CreditReverted{seq,at,std::move(account),outpoint};
         case 5:{auto amount=r.U64();BackendId backend{r.Text()};return WithdrawalInitiated{seq,at,std::move(account),outpoint,amount,std::move(backend)};}
         case 6:return WithdrawalSettled{seq,at,std::move(account),outpoint};
@@ -118,10 +180,15 @@ void PutWithdrawalState(Writer& w,const WithdrawalState& state) {
         else if constexpr(std::is_same_v<T,WithdrawalPaymentRetained>) {
             w.U8(7);w.Raw(v.txid);w.U64(v.vout);w.Raw(v.body_sha256);w.U64(v.fee_una);
         }
+        else if constexpr(std::is_same_v<T,WithdrawalPaymentConfirmed>) {
+            Require(Nonzero(v.payment.txid) && Nonzero(v.payment.body_sha256) && Nonzero(v.inclusion.block_hash));
+            w.U8(8);w.Raw(v.payment.txid);w.U64(v.payment.vout);w.Raw(v.payment.body_sha256);w.U64(v.payment.fee_una);
+            w.U64(v.inclusion.height);w.Raw(v.inclusion.block_hash);
+        }
         else static_assert(std::is_same_v<T,void>,"new withdrawal state requires an explicit snapshot format");
     },state);
 }
-WithdrawalState GetWithdrawalState(Reader& r,bool version2) {
+WithdrawalState GetWithdrawalState(Reader& r,bool version2,bool version6) {
     switch(r.U8()) {
         case 1:return WithdrawalPending{};
         case 2:return WithdrawalSigning{};
@@ -130,6 +197,12 @@ WithdrawalState GetWithdrawalState(Reader& r,bool version2) {
         case 5:return WithdrawalRevertedOnChain{r.Fixed<32>()};
         case 6:return WithdrawalFailed{r.Text()};
         case 7:{Require(version2);WithdrawalPaymentRetained v;v.txid=r.Fixed<32>();v.vout=r.U32();v.body_sha256=r.Fixed<32>();v.fee_una=r.U64();return v;}
+        case 8:{
+            Require(version6);WithdrawalPaymentConfirmed v;
+            v.payment.txid=r.Fixed<32>();v.payment.vout=r.U32();v.payment.body_sha256=r.Fixed<32>();v.payment.fee_una=r.U64();
+            v.inclusion.height=r.U64();v.inclusion.block_hash=r.Fixed<32>();
+            Require(Nonzero(v.payment.txid) && Nonzero(v.payment.body_sha256) && Nonzero(v.inclusion.block_hash));return v;
+        }
     }
     Invalid();
 }
@@ -151,9 +224,16 @@ void ValidateVaultCreationAnchor(const VaultCreationAnchor& anchor) {
 }
 
 std::vector<uint8_t> EncodeVaultState(const VaultStateSnapshot& state) {
+    const bool version6=std::any_of(state.entries.begin(),state.entries.end(),
+        [](const auto& entry){return IsCreditAllocationEntry(entry);}) ||
+        std::any_of(state.withdrawals.begin(),state.withdrawals.end(),
+            [](const auto& row){return std::holds_alternative<WithdrawalPaymentConfirmed>(row.state);});
+    const bool version5=version6 || std::any_of(state.entries.begin(),state.entries.end(),
+        [](const auto& entry){return std::holds_alternative<CreditReinstated>(entry);});
     Writer w;const std::array<uint8_t,6> magic{'D','N','V','S','0',
-        static_cast<uint8_t>(state.config.creation_anchor?'4':state.config.operator_binding?'3':'2')};
+        static_cast<uint8_t>(version6?'6':version5?'5':state.config.creation_anchor?'4':state.config.operator_binding?'3':'2')};
     w.Raw(magic);w.U64(state.revision);PutConfig(w,state.config);
+    if(version5) {w.U8(state.config.operator_binding?1:0);w.U8(state.config.creation_anchor?1:0);}
     if(state.config.operator_binding) {
         const auto& binding=*state.config.operator_binding;ValidateVaultOperatorBinding(binding);
         w.Raw(binding.script_pub_key);w.Text(binding.account);
@@ -187,21 +267,25 @@ std::vector<uint8_t> EncodeVaultState(const VaultStateSnapshot& state) {
 }
 VaultStateSnapshot DecodeVaultState(std::span<const uint8_t> bytes) {
     Require(bytes.size()<=MaxBytes);Reader r{bytes};const auto magic=r.Fixed<6>();
+    const bool version6=magic==std::array<uint8_t,6>{'D','N','V','S','0','6'};
+    const bool version5=version6 || magic==std::array<uint8_t,6>{'D','N','V','S','0','5'};
     const bool version4=magic==std::array<uint8_t,6>{'D','N','V','S','0','4'};
     const bool version3=version4 || magic==std::array<uint8_t,6>{'D','N','V','S','0','3'};
-    const bool version2=version3 || magic==std::array<uint8_t,6>{'D','N','V','S','0','2'};
+    const bool version2=version5 || version3 || magic==std::array<uint8_t,6>{'D','N','V','S','0','2'};
     Require(version2 || magic==std::array<uint8_t,6>{'D','N','V','S','0','1'});
     VaultStateSnapshot out;out.revision=r.U64();out.config=GetConfig(r);
-    if(version3) {
+    bool binding=version3,anchor=version4;
+    if(version5) {binding=r.Bool();anchor=r.Bool();Require(!anchor || binding);}
+    if(binding) {
         VaultOperatorBinding binding;auto script=r.Raw(34);
         binding.script_pub_key.assign(script.begin(),script.end());binding.account=r.Text();
         ValidateVaultOperatorBinding(binding);out.config.operator_binding=std::move(binding);
     }
-    if(version4) {
+    if(anchor) {
         VaultCreationAnchor anchor;anchor.height=r.U32();anchor.block_hash=r.Fixed<32>();
         ValidateVaultCreationAnchor(anchor);out.config.creation_anchor=anchor;
     }
-    const auto entries=r.Count();out.entries.reserve(entries);for(size_t i=0;i<entries;++i)out.entries.push_back(GetEntry(r));CheckEntryOrder(out.entries);
+    const auto entries=r.Count();out.entries.reserve(entries);for(size_t i=0;i<entries;++i)out.entries.push_back(GetEntry(r,version5,version6));CheckEntryOrder(out.entries);
     const auto deposits=r.Count();out.deposits.reserve(deposits);
     for(size_t i=0;i<deposits;++i) {
         VaultSavedDeposit d;d.deposit.outpoint=GetOutpoint(r);d.deposit.account={r.Text()};d.deposit.amount=r.U64();d.deposit.deposit_height=r.U64();auto stage=r.U8();Require(stage<=static_cast<uint8_t>(DepositStage::REVERTED));d.deposit.stage=static_cast<DepositStage>(stage);d.observed_block=r.Fixed<32>();Require(Nonzero(d.observed_block));
@@ -214,7 +298,7 @@ VaultStateSnapshot DecodeVaultState(std::span<const uint8_t> bytes) {
             WithdrawalPaymentTerms terms;terms.fee_rate_hint=r.U64();terms.maximum_fee_una=r.U64();terms.audit_context=r.Text();
             ValidateWithdrawalPaymentTerms(terms);v.request.payment_terms=std::move(terms);
         }
-        v.state=GetWithdrawalState(r,version2);
+        v.state=GetWithdrawalState(r,version2,version6);
         if(i)Require(out.withdrawals.back().request.request_id<v.request.request_id);out.withdrawals.push_back(std::move(v));
     }
     Require(r.at==bytes.size());return out;

@@ -373,6 +373,9 @@ public:
 
     // Mixed-body transitions require a complete typed consumer implementation.
     // Absence/refusal prevents the durable write; this is not an optional event.
+    // Configured legacy IPC or extra-wallet consumers refuse installation until
+    // they have typed durable adapters. Non-null legacy registration while a
+    // provider is installed also refuses; disconnected sockets are not absence.
     void setRuntimeBlockNotifications(std::shared_ptr<RuntimeBlockNotifications>);
 
 
@@ -923,6 +926,12 @@ public:
     // Acquire before wallet ownership. Explicit limits/missing origin material
     // refuse; this is not baseline certification or all-consumer readiness.
     StatusOr<std::shared_ptr<const RuntimeAccountReplay>> getRuntimeAccountReplay() const;
+    // Actual source lifetime owner required. Refuse outer selected/SQLite
+    // ownership before capture; pin the exact wallet session at this boundary.
+    // Caller retains both service lifetime owners through the later operation.
+    StatusOr<std::shared_ptr<const RuntimeAccountReplay>> getRuntimeAccountReplayForWallet(
+        WalletManager&,uint64_t expected_session) const;
+
     // Caller owns this service's exact WalletIndexUse and wallet lifetime, and
     // holds no wallet lease or selected-chain lock. Null success means this
     // source has no canonical wallet log to resume. A nonnull result reports
@@ -1293,6 +1302,8 @@ private:
     // Storage-layout startup regression exercises the actual loader without
     // booting network/wallet services. No public runtime mutation API is added.
     friend struct ShieldedStateStartupTestAccess;
+    friend struct RuntimeLegacyConsumerAbsenceTestAccess;
+    friend struct RuntimeDeliveryStartupTestAccess;
     // Exercises production activation/candidate retry bookkeeping without a
     // running P2P stack. No alternate activation implementation is used.
     friend struct ActivationRetryTestAccess;

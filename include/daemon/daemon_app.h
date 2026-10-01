@@ -23,6 +23,7 @@ class WatchRegistrationServer;  // Phase 9.3: Watch registration server
 class ChainDB;
 class TxOrphanPool;
 class RuntimeDeliveryWorker;
+class RuntimeBlockNotifications;
 struct RuntimeDeliveryStartupTestAccess;
 }
 
@@ -127,6 +128,9 @@ private:
     // Started after core recovery and joined before any dependency teardown.
     // This worker observes durable prefixes; it is not all-consumer readiness.
     std::unique_ptr<RuntimeDeliveryWorker> runtime_delivery_worker_;
+    // Owns only coalesced wake mailboxes. Detached from chainstate before
+    // worker shutdown; this ownership is not a delivery acknowledgment.
+    std::shared_ptr<RuntimeBlockNotifications> runtime_notifications_;
 
     // Pool accounting runtime (optional)
     std::shared_ptr<pool::PoolManager> pool_manager_runtime_;

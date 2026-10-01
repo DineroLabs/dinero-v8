@@ -57,7 +57,8 @@ std::string escapeString(const std::string& s) {
     return oss.str();
 }
 
-std::string hexEncode(const std::array<uint8_t, 32>& bytes) {
+template<size_t N>
+std::string hexEncode(const std::array<uint8_t, N>& bytes) {
     std::ostringstream oss;
     oss << std::hex << std::setfill('0');
     for (uint8_t byte : bytes) {
@@ -66,15 +67,16 @@ std::string hexEncode(const std::array<uint8_t, 32>& bytes) {
     return oss.str();
 }
 
-bool hexDecode(const std::string& hex, std::array<uint8_t, 32>& out) {
-    if(hex.size()!=64)return false;
+template<size_t N>
+bool hexDecode(const std::string& hex, std::array<uint8_t, N>& out) {
+    if(hex.size()!=2*N)return false;
     const auto nibble=[](char c)->int {
         if(c>='0' && c<='9')return c-'0';
         if(c>='a' && c<='f')return c-'a'+10;
         if(c>='A' && c<='F')return c-'A'+10;
         return -1;
     };
-    std::array<uint8_t,32> candidate{};
+    std::array<uint8_t,N> candidate{};
     for(size_t i=0;i<candidate.size();++i) {
         const int hi=nibble(hex[2*i]),lo=nibble(hex[2*i+1]);
         if(hi<0 || lo<0)return false;
@@ -94,7 +96,50 @@ std::string serializeEntry(const LedgerEntry& entry) {
     std::visit(
         [&](const auto& concrete) {
             using T = std::decay_t<decltype(concrete)>;
-            if constexpr (std::is_same_v<T, DepositObserved>) {
+            if constexpr (std::is_same_v<T,WithdrawalAllocationReserved> ||
+                          std::is_same_v<T,WithdrawalAllocationDispatchStarted> ||
+                          std::is_same_v<T,WithdrawalAllocationPaymentBound> ||
+                          std::is_same_v<T,WithdrawalAllocationIncluded> ||
+                          std::is_same_v<T,WithdrawalAllocationDisconnected> ||
+                          std::is_same_v<T,WithdrawalAllocationReleased>) {
+                const char* kind=nullptr;
+                if constexpr(std::is_same_v<T,WithdrawalAllocationReserved>)kind="withdrawalAllocationReserved";
+                else if constexpr(std::is_same_v<T,WithdrawalAllocationDispatchStarted>)kind="withdrawalAllocationDispatchStarted";
+                else if constexpr(std::is_same_v<T,WithdrawalAllocationPaymentBound>)kind="withdrawalAllocationPaymentBound";
+                else if constexpr(std::is_same_v<T,WithdrawalAllocationIncluded>)kind="withdrawalAllocationIncluded";
+                else if constexpr(std::is_same_v<T,WithdrawalAllocationDisconnected>)kind="withdrawalAllocationDisconnected";
+                else kind="withdrawalAllocationReleased";
+                oss << "{\"account\":" << escapeString(concrete.account.raw);
+                if constexpr(std::is_same_v<T,WithdrawalAllocationReserved>)oss << ",\"amount\":" << concrete.amount;
+                oss << ",\"at\":" << concrete.at;
+                if constexpr(std::is_same_v<T,WithdrawalAllocationPaymentBound>)
+                    oss << ",\"backend\":" << escapeString(concrete.backend.raw)
+                        << ",\"bodyHash\":" << escapeString(hexEncode(concrete.payment.body_hash));
+                if constexpr(std::is_same_v<T,WithdrawalAllocationIncluded> || std::is_same_v<T,WithdrawalAllocationDisconnected>)
+                    oss << ",\"blockHash\":" << escapeString(hexEncode(concrete.inclusion.block_hash))
+                        << ",\"height\":" << concrete.inclusion.height;
+                oss << ",\"kind\":" << escapeString(kind);
+                if constexpr(std::is_same_v<T,WithdrawalAllocationPaymentBound>)
+                    oss << ",\"output\":" << outpointJson(concrete.payment.output);
+                oss << ",\"requestId\":" << escapeString(hexEncode(concrete.request)) << ",\"seq\":" << concrete.seq;
+                if constexpr(std::is_same_v<T,WithdrawalAllocationReserved>) {
+                    oss << ",\"sources\":[";
+                    for(size_t i=0;i<concrete.sources.size();++i) {
+                        if(i)oss << ',';
+                        oss << "{\"amount\":" << concrete.sources[i].amount
+                            << ",\"creditSeq\":" << concrete.sources[i].credit_seq << '}';
+                    }
+                    oss << ']';
+                }
+                oss << '}';
+            } else if constexpr(std::is_same_v<T,CreditPositionMatured> ||
+                                std::is_same_v<T,CreditPositionReverted> || std::is_same_v<T,CreditPositionRestored>) {
+                const char* kind=std::is_same_v<T,CreditPositionMatured>?"creditPositionMatured":
+                    std::is_same_v<T,CreditPositionReverted>?"creditPositionReverted":"creditPositionRestored";
+                oss << "{\"account\":" << escapeString(concrete.account.raw) << ",\"at\":" << concrete.at
+                    << ",\"creditSeq\":" << concrete.credit_seq << ",\"deposit\":" << outpointJson(concrete.deposit)
+                    << ",\"kind\":" << escapeString(kind) << ",\"seq\":" << concrete.seq << '}';
+            } else if constexpr (std::is_same_v<T, DepositObserved>) {
                 oss << "{\"account\":" << escapeString(concrete.account.raw)
                     << ",\"amount\":" << concrete.amount << ",\"at\":" << concrete.at
                     << ",\"deposit\":" << outpointJson(concrete.deposit)
@@ -112,6 +157,13 @@ std::string serializeEntry(const LedgerEntry& entry) {
                 oss << "{\"account\":" << escapeString(concrete.account.raw)
                     << ",\"at\":" << concrete.at << ",\"deposit\":" << outpointJson(concrete.deposit)
                     << ",\"kind\":\"creditReverted\"" << ",\"seq\":" << concrete.seq << "}";
+            } else if constexpr (std::is_same_v<T, CreditReinstated>) {
+                oss << "{\"account\":" << escapeString(concrete.account.raw)
+                    << ",\"at\":" << concrete.at << ",\"deposit\":" << outpointJson(concrete.deposit)
+                    << ",\"kind\":\"creditReinstated\""
+                    << ",\"reversalSeq\":" << concrete.reversalSeq
+                    << ",\"compensationSeq\":" << concrete.compensationSeq
+                    << ",\"seq\":" << concrete.seq << "}";
             } else if constexpr (std::is_same_v<T, WithdrawalInitiated>) {
                 oss << "{\"account\":" << escapeString(concrete.account.raw)
                     << ",\"amount\":" << concrete.amount << ",\"at\":" << concrete.at
@@ -282,11 +334,36 @@ OutpointId parseOutpoint(Parser& p) {
     return op;
 }
 
+std::vector<CreditAllocationRef> parseSources(Parser& p) {
+    p.expect('[');std::vector<CreditAllocationRef> refs;
+    if(p.match(']'))throw LedgerStoreError("empty credit allocation sources");
+    uint64_t sum=0;
+    while(true) {
+        p.expect('{');std::set<std::string> fields;CreditAllocationRef ref;
+        do {
+            auto key=p.readString();if(!fields.insert(key).second)throw LedgerStoreError("duplicate source field");
+            p.expect(':');
+            if(key=="amount")ref.amount=p.integer<uint64_t>();
+            else if(key=="creditSeq")ref.credit_seq=p.integer<uint64_t>();
+            else throw LedgerStoreError("unknown source field");
+        } while(p.match(','));
+        p.expect('}');
+        if(fields!=std::set<std::string>{"amount","creditSeq"} || !ref.amount ||
+           (!refs.empty() && refs.back().credit_seq>=ref.credit_seq) || ref.amount>UINT64_MAX-sum ||
+           refs.size()>=1000000)throw LedgerStoreError("invalid credit allocation sources");
+        sum+=ref.amount;refs.push_back(ref);
+        if(p.match(']'))return refs;
+        p.expect(',');
+    }
+}
+
 LedgerEntry parseEntry(const std::string& line) {
     Parser p{line};p.expect('{');std::set<std::string> fields;
     LedgerSeq seq{};LedgerTimestamp at{};AccountId account{};bool account_set=false;
     OutpointId outpoint{};UnaAmount amount{},operator_loss{};BackendId backend{};
-    std::string kind,note;int64_t delta_user{},delta_op{};
+    std::string kind,note;int64_t delta_user{},delta_op{};LedgerSeq reversal_seq{},compensation_seq{};
+    AllocationRequestId request_id{};std::array<uint8_t,32> body_hash{},block_hash{};
+    uint64_t height{};LedgerSeq credit_seq{};std::vector<CreditAllocationRef> sources;
     if(!p.match('}'))while(true) {
         const auto key=p.readString();
         if(!fields.insert(key).second)throw LedgerStoreError("duplicate entry field");
@@ -297,9 +374,18 @@ LedgerEntry parseEntry(const std::string& line) {
         else if(key=="account") {
             if(!p.nullValue()) {account.raw=p.readString();account_set=true;}
         } else if(key=="deposit" || key=="request")outpoint=parseOutpoint(p);
+        else if(key=="requestId") {if(!hexDecode(p.readString(),request_id))throw LedgerStoreError("bad request id");}
+        else if(key=="bodyHash") {if(!hexDecode(p.readString(),body_hash))throw LedgerStoreError("bad body hash");}
+        else if(key=="blockHash") {if(!hexDecode(p.readString(),block_hash))throw LedgerStoreError("bad block hash");}
+        else if(key=="output")outpoint=parseOutpoint(p);
+        else if(key=="creditSeq")credit_seq=p.integer<uint64_t>();
+        else if(key=="height")height=p.integer<uint64_t>();
+        else if(key=="sources")sources=parseSources(p);
         else if(key=="amount")amount=p.integer<uint64_t>();
         else if(key=="backend")backend.raw=p.readString();
         else if(key=="operatorLoss")operator_loss=p.integer<uint64_t>();
+        else if(key=="reversalSeq")reversal_seq=p.integer<uint64_t>();
+        else if(key=="compensationSeq")compensation_seq=p.integer<uint64_t>();
         else if(key=="note")note=p.readString();
         else if(key=="deltaUserBalance")delta_user=p.integer<int64_t>();
         else if(key=="deltaOperatorFloat")delta_op=p.integer<int64_t>();
@@ -314,10 +400,25 @@ LedgerEntry parseEntry(const std::string& line) {
         if(fields!=expected)throw LedgerStoreError("incomplete or unexpected entry fields");
         if(kind!="policyAdjustment" && !account_set)throw LedgerStoreError("null entry account");
     };
+    if(kind=="withdrawalAllocationReserved") {
+        require({"requestId","amount","sources"});uint64_t sum=0;
+        for(const auto& ref:sources)sum+=ref.amount; // parseSources checked overflow and order.
+        if(!amount || sum!=amount)throw LedgerStoreError("credit allocation amount mismatch");
+        return WithdrawalAllocationReserved{seq,at,account,request_id,amount,std::move(sources)};
+    }
+    if(kind=="withdrawalAllocationDispatchStarted") {require({"requestId"});return WithdrawalAllocationDispatchStarted{seq,at,account,request_id};}
+    if(kind=="withdrawalAllocationPaymentBound") {require({"requestId","output","bodyHash","backend"});return WithdrawalAllocationPaymentBound{seq,at,account,request_id,{outpoint,body_hash},backend};}
+    if(kind=="withdrawalAllocationIncluded") {require({"requestId","height","blockHash"});return WithdrawalAllocationIncluded{seq,at,account,request_id,{height,block_hash}};}
+    if(kind=="withdrawalAllocationDisconnected") {require({"requestId","height","blockHash"});return WithdrawalAllocationDisconnected{seq,at,account,request_id,{height,block_hash}};}
+    if(kind=="withdrawalAllocationReleased") {require({"requestId"});return WithdrawalAllocationReleased{seq,at,account,request_id};}
+    if(kind=="creditPositionMatured") {require({"deposit","creditSeq"});return CreditPositionMatured{seq,at,account,credit_seq,outpoint};}
+    if(kind=="creditPositionReverted") {require({"deposit","creditSeq"});return CreditPositionReverted{seq,at,account,credit_seq,outpoint};}
+    if(kind=="creditPositionRestored") {require({"deposit","creditSeq"});return CreditPositionRestored{seq,at,account,credit_seq,outpoint};}
     if(kind=="depositObserved") {require({"deposit","amount"});return DepositObserved{seq,at,account,outpoint,amount};}
     if(kind=="creditOpened") {require({"deposit","amount"});return CreditOpened{seq,at,account,outpoint,amount};}
     if(kind=="creditSettled") {require({"deposit"});return CreditSettled{seq,at,account,outpoint};}
     if(kind=="creditReverted") {require({"deposit"});return CreditReverted{seq,at,account,outpoint};}
+    if(kind=="creditReinstated") {require({"deposit","reversalSeq","compensationSeq"});return CreditReinstated{seq,at,account,outpoint,reversal_seq,compensation_seq};}
     if(kind=="withdrawalInitiated") {require({"request","amount","backend"});return WithdrawalInitiated{seq,at,account,outpoint,amount,backend};}
     if(kind=="withdrawalSettled") {require({"request"});return WithdrawalSettled{seq,at,account,outpoint};}
     if(kind=="withdrawalReverted") {require({"request"});return WithdrawalReverted{seq,at,account,outpoint};}
