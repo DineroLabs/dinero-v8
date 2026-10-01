@@ -2504,7 +2504,17 @@ void MainWindow::setupUI() {
   {
     auto *overview = new QWidget;
     auto *layout = new QVBoxLayout(overview);
+    // All three Overview rows share one 3:2 column split and one gutter, and the
+    // split alone decides card widths (size hints ignored horizontally), so the
+    // right-hand cards (v7 Consensus, Mempool, Resources) share one left edge.
+    constexpr int kOverviewLeftStretch = 3;
+    constexpr int kOverviewRightStretch = 2;
+    constexpr int kOverviewGutter = 12;
+    auto overviewColumnCard = [](QWidget* card) {
+      card->setSizePolicy(QSizePolicy::Ignored, card->sizePolicy().verticalPolicy());
+    };
     auto *topRow = new QHBoxLayout;
+    topRow->setSpacing(kOverviewGutter);
     topRow->setSpacing(12);
     
     auto *infoGroup = new QGroupBox("Network Info");
@@ -2530,7 +2540,8 @@ void MainWindow::setupUI() {
     infoLayout->addWidget(lblSupply_);
     infoLayout->addWidget(lblReward_);
     
-    topRow->addWidget(infoGroup, 3);
+    overviewColumnCard(infoGroup);
+    topRow->addWidget(infoGroup, kOverviewLeftStretch);
     
     // ═══════════════════════════════════════════════════════════════════
     // 🛡️ V7 CONSENSUS HEALTH
@@ -2584,7 +2595,8 @@ void MainWindow::setupUI() {
       v7Column->addWidget(pqBox);
 
       v7Group->setLayout(v7Column);
-      topRow->addWidget(v7Group, 2);
+      overviewColumnCard(v7Group);
+      topRow->addWidget(v7Group, kOverviewRightStretch);
     }
     layout->addLayout(topRow);
 
@@ -2596,6 +2608,7 @@ void MainWindow::setupUI() {
     // filling it.
     // ═══════════════════════════════════════════════════════════════════
     auto* chainActivityRow = new QHBoxLayout;
+    chainActivityRow->setSpacing(kOverviewGutter);
     chainActivityRow->setSpacing(12);
     {
       auto* blocksCard = new QGroupBox("Latest Blocks");
@@ -2621,7 +2634,8 @@ void MainWindow::setupUI() {
       cardLayout->addLayout(header);
 
       overviewBlocksLayout_ = cardLayout;
-      chainActivityRow->addWidget(blocksCard, 7);
+      overviewColumnCard(blocksCard);
+      chainActivityRow->addWidget(blocksCard, kOverviewLeftStretch);
     }
     layout->addLayout(chainActivityRow);
 
@@ -2635,7 +2649,7 @@ void MainWindow::setupUI() {
     // separation used by the rows above, without drawing divider rules.
     auto *monitoringColumns = new QHBoxLayout;
     monitoringColumns->setContentsMargins(0, 0, 0, 0);
-    monitoringColumns->setSpacing(0);
+    monitoringColumns->setSpacing(kOverviewGutter);
     auto *nodeOperationBox = new QGroupBox("Node operation");
     auto *networkColumn = new QVBoxLayout(nodeOperationBox);
     networkColumn->setContentsMargins(10, 12, 10, 10);
@@ -2776,7 +2790,8 @@ void MainWindow::setupUI() {
     tblMempoolOverview_->setMinimumHeight(120);
     tblMempoolOverview_->setToolTip("Transactions currently held by this local node");
     mempoolLayout->addWidget(tblMempoolOverview_);
-    chainActivityRow->addWidget(mempoolBox, 3);
+    overviewColumnCard(mempoolBox);
+    chainActivityRow->addWidget(mempoolBox, kOverviewRightStretch);
     
     // Peers Summary + compact connected peers table
     auto *peersBox = new QGroupBox("🌐 Peers");
@@ -2816,12 +2831,10 @@ void MainWindow::setupUI() {
     );
     peersLayout->addWidget(tblPeersOverview_);
     networkColumn->addWidget(peersBox);
-    monitoringColumns->addWidget(nodeOperationBox, 2, Qt::AlignTop);
-    auto* columnGutter = new QWidget;
-    columnGutter->setStyleSheet("QWidget { background: #14191f; }");
-    columnGutter->setFixedWidth(12);
-    monitoringColumns->addWidget(columnGutter);
-    monitoringColumns->addWidget(cpuBox, 1, Qt::AlignTop);
+    overviewColumnCard(nodeOperationBox);
+    overviewColumnCard(cpuBox);
+    monitoringColumns->addWidget(nodeOperationBox, kOverviewLeftStretch, Qt::AlignTop);
+    monitoringColumns->addWidget(cpuBox, kOverviewRightStretch, Qt::AlignTop);
     layout->addLayout(monitoringColumns);
 
     // Row 3: Alerts (last 5 events)

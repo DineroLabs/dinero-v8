@@ -1374,6 +1374,17 @@ if(BUILD_TESTING)
   add_test(NAME WalletNavigation COMMAND test_wallet_navigation)
   set_tests_properties(WalletNavigation PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 30)
 
+  # Overview columns: the right-hand cards share one left edge and width.
+  add_executable(test_overview_columns ${_wallet_test_sources} tests/test_overview_columns.cpp)
+  target_link_libraries(test_overview_columns PRIVATE
+    $<TARGET_PROPERTY:dinero-qt,LINK_LIBRARIES> Qt6::Test)
+  target_include_directories(test_overview_columns PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src $<TARGET_PROPERTY:dinero-qt,INCLUDE_DIRECTORIES>)
+  target_compile_definitions(test_overview_columns PRIVATE
+    QT_NO_KEYWORDS $<TARGET_PROPERTY:dinero-qt,COMPILE_DEFINITIONS>)
+  add_test(NAME OverviewColumns COMMAND test_overview_columns)
+  set_tests_properties(OverviewColumns PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 60)
+
   add_executable(test_covenant_form_policy tests/test_covenant_form_policy.cpp)
   target_include_directories(test_covenant_form_policy PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
   target_link_libraries(test_covenant_form_policy PRIVATE Qt6::Core Qt6::Test)
