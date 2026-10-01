@@ -70,6 +70,12 @@ private Q_SLOTS:
             QVERIFY2(qAbs((top(rewards) + rewards->height()) - (top(node) + node->height())) <= 2,
                      qPrintable(QString("rewards bottom %1 vs node bottom %2").arg(top(rewards) + rewards->height())
                                     .arg(top(node) + node->height()) + at));
+            // The peers summary ("3 peers · 3 outbound…") keeps its natural
+            // height; extra row height goes to the peers table, not the labels.
+            auto* peersCount = window.findChild<QLabel*>("overviewPeersCount");
+            QVERIFY(peersCount);
+            QVERIFY2(peersCount->height() <= peersCount->sizeHint().height() + 4,
+                     qPrintable(QString("peers summary is %1 px tall").arg(peersCount->height()) + at));
             // Left column stays aligned too.
             QVERIFY2(qAbs(blocks->width() - info->width()) <= 1, qPrintable("blocks width" + at));
             QVERIFY2(qAbs(node->width() - info->width()) <= 1, qPrintable("node width" + at));

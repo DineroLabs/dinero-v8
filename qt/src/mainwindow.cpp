@@ -2798,6 +2798,7 @@ void MainWindow::setupUI() {
     auto *peersBox = new QGroupBox("🌐 Peers");
     auto *peersLayout = new QVBoxLayout(peersBox);
     lblPeersCount_ = new QLabel("0 peers");
+    lblPeersCount_->setObjectName("overviewPeersCount");
     lblPeersCount_->setStyleSheet("QLabel { font-size: 18px; font-weight: bold; color: #d6dde6; }");
     lblPeersStatus_ = new QLabel("Disconnected");
     lblPeersStatus_->setStyleSheet("QLabel { font-size: 11px; color: #868e96; }");
@@ -2806,6 +2807,10 @@ void MainWindow::setupUI() {
     peersSummary->addWidget(lblPeersCount_);
     peersSummary->addWidget(lblPeersStatus_);
     peersSummary->addStretch();
+    // Node operation stretches to end level with the right column; the summary
+    // keeps its natural height so that extra space goes to the peers table.
+    lblPeersCount_->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
+    lblPeersStatus_->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
     peersLayout->addLayout(peersSummary);
 
     tblPeersOverview_ = new QTableWidget(0, 6);
@@ -2825,12 +2830,12 @@ void MainWindow::setupUI() {
     tblPeersOverview_->setEditTriggers(QAbstractItemView::NoEditTriggers);
     tblPeersOverview_->setSortingEnabled(true);
     tblPeersOverview_->setMinimumHeight(118);
-    tblPeersOverview_->setMaximumHeight(145);  // Compact view
+    // No height cap: the table absorbs the row's extra height (see above).
     tblPeersOverview_->setStyleSheet(
       "QTableWidget { gridline-color: #3a4048; background: #1d2126; color: #d5dde6; } "
       "QHeaderView::section { background: #272c33; color: #d5dde6; padding: 4px; font-weight: bold; border: 1px solid #373d46; }"
     );
-    peersLayout->addWidget(tblPeersOverview_);
+    peersLayout->addWidget(tblPeersOverview_, 1);
     networkColumn->addWidget(peersBox);
     overviewColumnCard(nodeOperationBox);
     overviewColumnCard(cpuBox);
