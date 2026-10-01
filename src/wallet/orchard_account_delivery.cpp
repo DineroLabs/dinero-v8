@@ -576,6 +576,23 @@ OrchardAccountDelivery::OwnedProof OrchardAccountDelivery::ReadCatalogProofForRe
     static_assert(std::is_nothrow_move_constructible_v<OwnedProof>);
     tx.Commit();return result;
 }
+OrchardAccountDelivery::RequestProof OrchardAccountDelivery::ReadCatalogRequestProofForReplay(
+        WalletManager& w,uint64_t session,const Profile& p,const RuntimeAccountReplay& view,
+        const orchard::Hash& id,std::span<const orchard::WalletPayment> payments,
+        std::span<const orchard::TransparentOutput> outputs,uint64_t fee,OrchardProofJobs& jobs){
+    Check(id!=orchard::Hash{}&&(!payments.empty()||!outputs.empty()));
+    auto lease=w.AcquireDatabaseLease();Check(lease->Session()==session);Transaction tx(lease->Database());
+    Owner owner(w,session,p,true);const auto inventory=owner.ValidateCatalogInventory(p,view);
+    const auto requested=std::find_if(inventory.begin(),inventory.end(),[&](const auto& e){return e.number==p.account;});
+    Check(requested!=inventory.end());
+    const auto& queue=requested->state.account.Operations();const auto found=queue.Entries().find(id);
+    Check(found!=queue.Entries().end()&&found->second.inputs.empty());
+    Check(found->second.request_commitment==SpendRequestCommitment(owner.identity,p,id,payments,outputs,fee));
+    auto captured=jobs.CaptureOwned(id,{owner.identity,p.domain.branch_id,session,lease->InstanceToken()},queue);
+    RequestProof result{requested->state.revision,found->second,captured.state,std::move(captured.proof)};
+    static_assert(std::is_nothrow_move_constructible_v<RequestProof>);
+    tx.Commit();return result;
+}
 OrchardAccountDelivery::Applied OrchardAccountDelivery::ReadyCatalogSpendForReplay(
         WalletManager& w,uint64_t session,const Profile& p,uint64_t expected,const RuntimeAccountReplay& view,
         const orchard::Hash& id,const consensus::VerifiedOrchardAuthorizations& authorization){

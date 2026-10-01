@@ -69,7 +69,9 @@ class WalletManager;
 class RuntimeWalletOriginProjection;
 struct FilePosition;  // #309: storage/block_storage.h
 
+namespace orchard { class TransactionEnvelope; struct SigningDomain; }
 namespace consensus {
+    class VerifiedOrchardAuthorizations;
     class WalletUTXOAdapter;  // v2.2.0: Forward declare adapter (breaks header dependency)
     class ConsensusUTXOSet;   // Phase 2: Pure in-memory UTXO set (owns forest)
     class IConsensusUTXOSet;  // Phase 2: Consensus UTXO set interface
@@ -1281,6 +1283,14 @@ public:
     // Typed admission currently owns selected-tip extensions and exact current
     // tip retries; other parent states refuse without using active-tip coins.
     std::optional<BlockAcceptResult> TryAcceptOrchardBlockFromRPC(const std::string& hex);
+
+    // Verify one Orchard-funded wallet envelope against the actual selected
+    // persisted/live/validated state under activation ownership. Caller holds
+    // the service lifetime and no wallet SQLite/key owner. This is not pool
+    // admission: after durable Ready, SubmitBody must recheck the current chain
+    // and all pending conflicts/resources before any relay.
+    std::shared_ptr<const consensus::VerifiedOrchardAuthorizations> AuthorizeOrchardWalletTransaction(
+        const orchard::TransactionEnvelope&,const orchard::SigningDomain&,uint32_t activation);
 
     static std::unique_ptr<MempoolChainstateReadGuard> AcquireMempoolChainstateRead(
         std::shared_ptr<ChainstateService>);

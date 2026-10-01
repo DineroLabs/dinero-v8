@@ -801,3 +801,5 @@ int main(int argc, char** argv) {
 #include "orchard_proof_finalization_checks.h"
 
 #include "orchard_spend_rpc_checks.h"
+
+#include "orchard_finish_rpc_checks.h"

@@ -1202,6 +1202,26 @@ jobs:
           assert '100% tests passed, 0 tests failed out of 1' in log
           PYCODE
 
+      - name: Complete owned Orchard requests before canonical admission and relay
+        run: |
+          cmake --build build-orchard-root --target test_assumeutxo_replay --parallel 4 -- -k 0
+          ctest --test-dir build-orchard-root -R '^OrchardFinishRpc$' --show-only=json-v1 > orchard-finish-rpc-inventory.json
+          python3 - <<'PYCODE'
+          import json
+          tests=json.load(open('orchard-finish-rpc-inventory.json'))['tests']
+          assert len(tests)==1 and tests[0]['name']=='OrchardFinishRpc'
+          props={p['name']:p['value'] for p in tests[0].get('properties',[])}
+          assert not props.get('DISABLED') and props['TIMEOUT']==180
+          PYCODE
+          ctest --test-dir build-orchard-root -R '^OrchardFinishRpc$' --verbose --no-tests=error --output-log orchard-finish-rpc-execution.log
+          python3 - <<'PYCODE'
+          from pathlib import Path
+          log=Path('orchard-finish-rpc-execution.log').read_text()
+          for case in ['MalformedRequestsRefuseBeforeServices', 'RegistryAndBackendOrServiceAbsenceRefuse', 'ActualTransferAndUnshieldCommitBeforeAdmissionAndRelay', 'UnknownChangedAndIncompleteCatalogRequestsRefuseWithoutEffects', 'ReadyWriteAndCommitRefusalRetainProofWithoutSubmission', 'RejectedAdmissionRetainsReadyForExactReopenRetry', 'SelectedDomainAndMissingOwnedProofRefuseWithoutRegeneration']:
+              assert log.count('[       OK ] OrchardFinishRpc.'+case+' (')==1,case
+          assert '100% tests passed, 0 tests failed out of 1' in log
+          PYCODE
+
       - name: Execute actual Orchard spend RPC ownership and strict destinations
         run: |
           cmake --build build-orchard-root --target test_assumeutxo_replay --parallel 4 -- -k 0
@@ -3955,6 +3975,8 @@ jobs:
             orchard-proof-retention-execution.log
             orchard-proof-capacity-inventory.json
             orchard-proof-capacity-execution.log
+            orchard-finish-rpc-inventory.json
+            orchard-finish-rpc-execution.log
             orchard-spend-rpc-inventory.json
             orchard-spend-rpc-execution.log
             orchard-proof-finalization-inventory.json

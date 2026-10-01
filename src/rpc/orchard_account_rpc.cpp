@@ -10,6 +10,8 @@
 #include "util/hex.h"
 #if DINERO_WALLET_RAW_ORCHARD
 #include "wallet/orchard_account_delivery.h"
+#include "daemon/services/mempool_service.h"
+#include "consensus/orchard_authorization.h"
 #include "address/addr_codec.h"
 #include "wallet/address.h"
 #include "wallet/p2mr_address.h"
@@ -235,7 +237,8 @@ std::vector<uint8_t> SpendOutputScript(const std::string& address,uint8_t networ
 #endif
 } // namespace
 
-din::Json rpc_context_wallet_orchard_queuespend(const ExecutionContext& ctx,const din::Json& params){
+namespace {
+din::Json OrchardSpendCall(const ExecutionContext& ctx,const din::Json& params,bool finishing){
     din::Json result;
     try {
         const auto request=ParseSpendRequest(params);
@@ -275,6 +278,43 @@ din::Json rpc_context_wallet_orchard_queuespend(const ExecutionContext& ctx,cons
         }
         for(const auto& item:request.outputs){amount(item.amount);outputs.push_back({item.amount,SpendOutputScript(item.address,context.domain.network_code)});}
         const dinero::wallet::OrchardAccountDelivery::Profile profile{context.domain,context.activation_height,request.account};
+        if(finishing){
+            // Retain the configured actual service, not a borrowed raw ingress
+            // pointer. SubmitBody owns its pool use and acquires fresh selected
+            // state; no wallet SQLite/key owner survives this RPC handoff.
+            auto ingress=std::dynamic_pointer_cast<dinero::MempoolService>(ctx.daemon->mempool);
+            if(!ingress || ctx.daemon->tx_ingress!=ingress.get())
+                throw std::runtime_error("Canonical Orchard transaction ingress unavailable");
+            auto& jobs=wallet_use->OrchardProofs();
+            const auto captured=dinero::wallet::OrchardAccountDelivery::ReadCatalogRequestProofForReplay(
+                wallet_use->Wallet(),session,profile,**view,request.id,payments,outputs,request.fee,jobs);
+            using Queue=dinero::wallet::OrchardOperationQueue;
+            const auto envelope=[&]{
+                if(captured.durable.phase==Queue::Phase::Ready)
+                    return dinero::orchard::TransactionEnvelope::DecodeExact(captured.durable.transaction);
+                if(captured.durable.phase!=Queue::Phase::Reserved ||
+                   captured.state!=dinero::wallet::OrchardProofJobs::State::Succeeded || !captured.proof)
+                    throw std::runtime_error("Owned Orchard proof is not available; reservation retained");
+                return dinero::orchard::TransactionEnvelope::Create(0,{},outputs,request.fee,captured.proof->Bytes());
+            }();
+            const auto authorization=source->AuthorizeOrchardWalletTransaction(envelope,profile.domain,profile.activation);
+            if(!authorization)throw std::runtime_error("Orchard wallet authorizations unavailable");
+            const auto finalized=dinero::wallet::OrchardAccountDelivery::FinalizeCatalogProofForReplay(
+                wallet_use->Wallet(),session,profile,**view,request.id,*authorization,jobs);
+            // Finalize reauthenticates ownership and commits these exact bytes
+            // before retiring the job. Admission may fail or be interrupted;
+            // retry retains the same Ready transaction, never a fresh proof.
+            const auto body=dinero::MempoolTransaction::FromOrchard(authorization->Transaction());
+            const auto submitted=ingress->SubmitBody(body,dinero::TxOrigin::WALLET);
+            result["operation_id"]=util::hex(std::vector<unsigned char>(request.id.begin(),request.id.end()));
+            result["account"]=Json::UInt64(request.account);result["account_revision"]=Json::UInt64(finalized.state.revision);
+            result["durable_state"]="signed";result["txid"]=body.GetTxid().AsUint256().GetHex();
+            result["admitted"]=submitted.accepted();
+            result["already_in_mempool"]=submitted.code==dinero::TxRejectCode::ALREADY_IN_MEMPOOL;
+            result["submission_code"]=dinero::TxRejectCodeToString(submitted.code);
+            result["submission_message"]=submitted.message;
+            return result;
+        }
         const auto queued=dinero::wallet::OrchardAccountDelivery::QueueCatalogRequestForReplay(
             wallet_use->Wallet(),session,profile,request.revision,**view,request.id,payments,outputs,request.fee,wallet_use->OrchardProofs());
         if(!queued->durable)throw std::runtime_error("Missing committed Orchard request");
@@ -293,6 +333,10 @@ din::Json rpc_context_wallet_orchard_queuespend(const ExecutionContext& ctx,cons
     return result;
 }
 
+} // namespace
+din::Json rpc_context_wallet_orchard_queuespend(const ExecutionContext& ctx,const din::Json& params){return OrchardSpendCall(ctx,params,false);}
+din::Json rpc_context_wallet_orchard_finishspend(const ExecutionContext& ctx,const din::Json& params){return OrchardSpendCall(ctx,params,true);}
+
 void RegisterOrchardAccountRpc(){
     const RpcMethodMeta spending{
         "wallet.orchard.queuespend","wallet",
@@ -307,6 +351,20 @@ void RegisterOrchardAccountRpc(){
         "Requires an unlocked wallet, complete authenticated account catalog and checked replay source. Amounts are integers in atomic units. Matching retries preserve the original reservation without requeueing. Queued and reserved do not mean sent, admitted or confirmed. No cancellation, transparent-input shielding or automatic submission is provided by this method."};
     g_rpcRegistry.registerHandler(spending.name,rpc_context_wallet_orchard_queuespend,
         spending,RegisterMode::Overwrite,"orchard-account-owner");
+
+    const RpcMethodMeta completion{
+        "wallet.orchard.finishspend","wallet",
+        "Commit the owned proof of an existing Orchard request, then submit its exact signed transaction.",
+        {{"account","integer","Existing source account number.",true},
+         {"request_id","string","Nonzero 32-byte hex request ID; reuse only for the same payment.",true},
+         {"expected_revision","integer","Original request revision; completion never reserves a new request.",true},
+         {"payments","array","Ordered Orchard recipients: address, amount_una and optional memo_hex (up to 512 bytes).",true},
+         {"outputs","array","Ordered transparent recipients: address and amount_una.",true},
+         {"fee_una","integer","Explicit fee in atomic units.",true}},
+        {"object","Operation ID, signed transaction ID, durable revision and separate submission result."},
+        "Resend the exact original request fields. Requires a current authenticated request and its completed owned proof, or previously committed signed bytes. Missing jobs and unknown or archived IDs refuse without regeneration. Signed bytes commit before fresh selected-chain and mempool admission; rejection retains them for retry. Admission does not confirm delivery to peers or inclusion in a block."};
+    g_rpcRegistry.registerHandler(completion.name,rpc_context_wallet_orchard_finishspend,
+        completion,RegisterMode::Overwrite,"orchard-account-owner");
 
     const RpcMethodMeta metadata{
         "wallet.orchard.getnewaddress","wallet",

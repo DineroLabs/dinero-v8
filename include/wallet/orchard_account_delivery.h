@@ -109,6 +109,20 @@ public:
     // cancellation, regeneration or release of a durable reservation.
     static OwnedProof ReadCatalogProofForReplay(WalletManager&,uint64_t session,
         const Profile&,const RuntimeAccountReplay&,const orchard::Hash&,OrchardProofJobs&);
+    struct RequestProof {
+        uint64_t revision;
+        OrchardOperationQueue::Entry durable;
+        std::optional<OrchardProofJobs::State> state;
+        std::unique_ptr<orchard::ProvedWalletBundle> proof;
+    };
+    // Read-only completion capture. Require an existing current request with
+    // the exact ordered recipients/memos/outputs/fee before looking up its job.
+    // Authenticate the complete catalog and pin the actual wallet/session.
+    // Unknown/archived IDs cannot reserve, requeue or recreate any operation.
+    static RequestProof ReadCatalogRequestProofForReplay(WalletManager&,uint64_t session,
+        const Profile&,const RuntimeAccountReplay&,const orchard::Hash&,
+        std::span<const orchard::WalletPayment>,std::span<const orchard::TransparentOutput>,
+        uint64_t fee_una,OrchardProofJobs&);
     // Exact existing reservation and authorization only. Signed bytes must not
     // leave the host for admission/relay until this checked commit returns.
     // Ready retries preserve identical bytes; no cancellation/release API is

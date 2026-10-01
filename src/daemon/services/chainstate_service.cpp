@@ -15928,6 +15928,33 @@ ChainstateService::CaptureSelectedOrchardPoolContextUnderLock() {
 #endif
 }
 
+std::shared_ptr<const consensus::VerifiedOrchardAuthorizations>
+ChainstateService::AuthorizeOrchardWalletTransaction(const orchard::TransactionEnvelope& envelope,
+        const orchard::SigningDomain& domain,uint32_t activation) {
+#ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
+    auto lock=AcquireBlockIngressActivationLock();
+    auto selected=CaptureSelectedOrchardPoolContextUnderLock();
+    if(!selected || !envelope.Inputs().empty() ||
+       selected->context.activation_height!=activation ||
+       selected->context.domain.network_code!=domain.network_code ||
+       selected->context.domain.genesis_wire!=domain.genesis_wire ||
+       selected->context.domain.branch_id!=domain.branch_id)
+        throw std::runtime_error("Orchard wallet selected context unavailable");
+    const auto parsed=ParsedTransaction::DecodeExact(envelope.CanonicalBytes(),TransactionReadMode::StagedOrchard);
+    consensus::OrchardResourceUsage usage;
+    consensus::AccumulateOrchardTransactionResources(parsed,usage);
+    const auto snapshot=consensus::OrchardCoinSnapshot::ResolveUnderChainstateLock(envelope,selected->coins);
+    consensus::AccumulateOrchardInputResources(parsed,snapshot.Coins(),usage);
+    auto authorization=std::make_shared<const consensus::VerifiedOrchardAuthorizations>(
+        consensus::VerifyOrchardAuthorizations(snapshot,selected->context.domain,selected->context.height,selected->Mtp()));
+    (void)consensus::CheckOrchardTransactions(selected->context,selected->parent,{authorization.get(),1},selected->Lookups());
+    return authorization;
+#else
+    (void)envelope;(void)domain;(void)activation;
+    return {};
+#endif
+}
+
 MempoolOrchardValidation ChainstateService::ValidateOrchardPoolUnderLock(
     const MempoolTransaction& body,const std::vector<MempoolTransaction>& pending) {
     MempoolOrchardValidation result;
