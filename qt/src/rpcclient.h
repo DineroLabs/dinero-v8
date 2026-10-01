@@ -31,6 +31,9 @@ public:
   // RPC calls
   void call(const QString& method, const QJsonArray& params = {});
   void callNamed(const QString& method, const QJsonObject& params);
+  // Same request as callNamed, but rpcResult/rpcError report it as `replyAs`,
+  // so a second consumer of a shared method gets its own reply route.
+  void callNamedAs(const QString& method, const QJsonObject& params, const QString& replyAs);
   
   // Specific methods
   void getInfo();
