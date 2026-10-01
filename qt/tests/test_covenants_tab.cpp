@@ -160,7 +160,7 @@ private Q_SLOTS:
         MainWindow window(dinero::qt::DaemonBootstrapOwner::ApplicationMain);
         pointAtTestEndpoint(window);
         for (int width : {1100, 1440, 1920}) {
-            window.resize(width, 1000);
+            window.resize(width, 1600);  // tall window: spare height must not push the form down
             window.show();
             QVERIFY(QTest::qWaitForWindowExposed(&window));
             openTab(window, "Covenants");
@@ -172,6 +172,13 @@ private Q_SLOTS:
             const QRect r(review->mapTo(&window, QPoint(0, 0)), review->size());
             QVERIFY2(r.left() > f.right(), "review must sit to the right of the form");
             QCOMPARE(r.top(), f.top());
+            QGroupBox* formBox = nullptr;
+            for (auto* g : form->findChildren<QGroupBox*>())
+                if (g->title() == "Create Covenant") formBox = g;
+            QVERIFY(formBox);
+            const int formTop = formBox->mapTo(&window, QPoint(0, 0)).y();
+            QVERIFY2(qAbs(formTop - r.top()) <= 20,
+                     qPrintable(QString("form starts %1 px below the review").arg(formTop - r.top())));
             const double share = double(f.width()) / double(f.width() + r.width());
             QVERIFY2(share > 0.57 && share < 0.63,
                      qPrintable(QString("form takes %1 of the row at %2 px").arg(share).arg(width)));
@@ -204,6 +211,21 @@ private Q_SLOTS:
         for (int c = 0; c < table->columnCount(); ++c) used += table->horizontalHeader()->sectionSize(c);
         QVERIFY2(used >= table->viewport()->width() - 2,
                  qPrintable(QString("columns use %1 of %2 px").arg(used).arg(table->viewport()->width())));
+    }
+
+    void statusHintFollowsTheTab() {
+        MainWindow window(dinero::qt::DaemonBootstrapOwner::ApplicationMain);
+        pointAtTestEndpoint(window);
+        window.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&window));
+        auto* status = named<QLabel>(window, "sendStatus");
+        QVERIFY(status);
+        openTab(window, "Send");
+        status->setText("Send DIN publicly from transparent Taproot/P2MR funds.");
+        openTab(window, "Covenants");
+        QCOMPARE(status->text(), QString("Create an on-chain contract with spending rules."));
+        openTab(window, "Send");
+        QCOMPARE(status->text(), QString("Send DIN publicly from transparent Taproot/P2MR funds."));
     }
 };
 QTEST_MAIN(CovenantsTabTest)

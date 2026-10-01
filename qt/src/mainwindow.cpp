@@ -3418,6 +3418,7 @@ void MainWindow::setupUI() {
     lblInfo->setWordWrap(true);
     lblInfo->setStyleSheet("color: #888; font-size: 11px; padding: 8px;");
     layout->addWidget(lblInfo);
+    layout->addStretch(1);  // spare height goes below the content, not into the form row
 
     tabs->addTab(makeScrollableTab(contracts), navigationIcon(NavigationGlyph::Document), "Covenants");
   }
@@ -3788,6 +3789,7 @@ void MainWindow::setupUI() {
     
     // Status label
     lblSendStatus_ = new QLabel();
+    lblSendStatus_->setObjectName("sendStatus");
     lblSendStatus_->setWordWrap(true);
     lblSendStatus_->setStyleSheet("QLabel { padding: 10px; }");
     layout->addWidget(lblSendStatus_);
@@ -6067,7 +6069,10 @@ void MainWindow::updateSendModeUi() {
       status.startsWith(QString::fromUtf8("\xE2\x84\xB9\xEF\xB8\x8F Create or restore a wallet")) ||
       status.startsWith(QString::fromUtf8("\xF0\x9F\x94\x84 Blockchain rescan in progress")) ||
       status.startsWith(QString::fromUtf8("\xF0\x9F\x94\x92 Wallet is locked")) ||
-      status.startsWith(QString::fromUtf8("\xF0\x9F\x93\x9C Contract options"));
+      status.startsWith(QString::fromUtf8("\xF0\x9F\x93\x9C Contract options")) ||
+      // The per-mode hints below, so switching tabs or modes replaces them.
+      status == "Create an on-chain contract with spending rules." ||
+      status == "Send DIN publicly from transparent Taproot/P2MR funds.";
     if (isModeHint) {
       if (privateComposer) {
         lblSendStatus_->setText("Open Shielded to send privately or convert funds. The daemon reports activation availability. Use Covenants for private contract controls when activated.");
