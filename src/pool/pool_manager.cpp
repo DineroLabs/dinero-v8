@@ -6,8 +6,6 @@
  */
 
 #include "pool/pool_manager.h"
-#include "pool/canonical_maintenance.h"
-#include "daemon/services/chainstate_service.h"
 #include "primitives/amount.h"
 #include "common/logger.h"
 #include "consensus/subsidy.h"
@@ -686,13 +684,15 @@ void PoolManager::runMaintenance() {
     report.accounting_pass_returned=accounting_returned;report.maintenance_pass_returned=maintenance_returned;
 }
 
-void PoolManager::setChainstateSource(const std::shared_ptr<ChainstateService>& source) {
-    std::lock_guard<std::mutex> owner(mutex_);chain_source_=source;
-}
 void PoolManager::checkBlockConfirmations() {
     std::shared_ptr<ChainstateService> source;
-    {std::lock_guard<std::mutex> owner(mutex_);source=chain_source_.lock();}
-    CanonicalPoolMaintenance::Reconcile(source,*this);
+    CanonicalMaintenance reconcile;
+    {
+        std::lock_guard<std::mutex> owner(mutex_);
+        source=chain_source_.lock();reconcile=canonical_maintenance_;
+    }
+    if(!source || !reconcile)throw std::runtime_error("canonical pool accounting source unavailable or changed");
+    reconcile(source,*this);
 }
 
 void PoolManager::updateWorkerHashrate(const std::string& worker_id) {

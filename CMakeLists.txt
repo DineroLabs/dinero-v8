@@ -1211,10 +1211,8 @@ endif()
 set_property(SOURCE src/daemon/runtime_block_reader.cpp APPEND PROPERTY
   INCLUDE_DIRECTORIES "${CMAKE_SOURCE_DIR}/rust/orchard_backend/include")
 
-# PoolManager invokes the canonical core adapter; declare the static-library
-# cycle so CMake repeats both archives for single-pass ELF linkers.
-# No implementation is duplicated, stubbed, or force-loaded from the RPC archive.
-target_link_libraries(dinero_pool PRIVATE dinero_core)
+# The concrete pool chain-source binding lives in the core adapter. Generic
+# pool accounting does not depend on core/daemon code; no reverse archive edge.
 
 target_link_libraries(dinero_core PUBLIC
   dinero_address_encoding

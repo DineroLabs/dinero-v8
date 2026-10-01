@@ -9,6 +9,12 @@
 #include <stdexcept>
 namespace dinero::pool {
 namespace {void RequireMaintenance(bool ok){if(!ok)throw std::runtime_error("canonical pool accounting source unavailable or changed");}}
+// This integration entry is linked only by a caller that binds a real chain
+// source. The generic pool archive has no direct reference to daemon code.
+void PoolManager::setChainstateSource(const std::shared_ptr<ChainstateService>& source) {
+    std::lock_guard<std::mutex> owner(mutex_);
+    chain_source_=source;canonical_maintenance_=&CanonicalPoolMaintenance::Reconcile;
+}
 void CanonicalPoolMaintenance::Reconcile(const std::shared_ptr<ChainstateService>& source,PoolManager& manager) {
     RequireMaintenance(source!=nullptr);
     const auto use=ChainstateService::AcquireWalletIndexUse(source);

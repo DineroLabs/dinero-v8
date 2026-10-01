@@ -330,6 +330,11 @@ private:
 
     std::unordered_map<std::string, WorkerSubmitState> submit_state_;
     std::weak_ptr<ChainstateService> chain_source_; // Captured under mutex_, pinned before use.
+    // Bound only by setChainstateSource's concrete core adapter. Keeping this
+    // call edge indirect lets the standalone accounting archive remain free
+    // of daemon implementation dependencies; callers cannot install a bypass.
+    using CanonicalMaintenance = void (*)(const std::shared_ptr<ChainstateService>&, PoolManager&);
+    CanonicalMaintenance canonical_maintenance_{nullptr};
 };
 
 } // namespace pool
