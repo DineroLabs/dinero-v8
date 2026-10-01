@@ -78,11 +78,17 @@ private:
     struct Capture {
         std::optional<State> state;
         std::unique_ptr<orchard::ProvedWalletBundle> proof;
+        std::shared_ptr<const void> token;
     };
     [[nodiscard]] std::unique_ptr<Submission> PrepareOwned(const orchard::Hash&,
         const Binding&,orchard::WalletBundlePlan,orchard::SigningContext);
     [[nodiscard]] Capture CaptureOwned(const orchard::Hash&,const Binding&,
         const OrchardOperationQueue&) const;
+    // Captured token keeps a particular completed job identity alive. Retirement
+    // follows checked Ready COMMIT and never touches durable reservations.
+    // A replaced/absent job or lock failure leaves executor capacity unchanged.
+    [[nodiscard]] bool RetireCaptured(const orchard::Hash&,
+        const std::shared_ptr<const void>&) noexcept;
     struct Impl;
     std::shared_ptr<Impl> impl_;
 };

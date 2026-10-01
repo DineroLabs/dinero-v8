@@ -592,6 +592,35 @@ OrchardAccountDelivery::Applied OrchardAccountDelivery::ReadyCatalogSpendForRepl
     if(found->second.phase==OrchardOperationQueue::Phase::Ready){tx.Commit();return current;}
     auto result=owner.Replace(current.revision,std::move(next));tx.Commit();return result;
 }
+OrchardAccountDelivery::FinalizedProof OrchardAccountDelivery::FinalizeCatalogProofForReplay(
+        WalletManager& w,uint64_t session,const Profile& p,const RuntimeAccountReplay& view,
+        const orchard::Hash& id,const consensus::VerifiedOrchardAuthorizations& authorization,
+        OrchardProofJobs& jobs){
+    Check(id!=orchard::Hash{}&&authorization.Transaction().Inputs().empty());
+    auto lease=w.AcquireDatabaseLease();Check(lease->Session()==session);Transaction tx(lease->Database());
+    Owner owner(w,session,p,true);const auto inventory=owner.ValidateCatalogInventory(p,view);
+    const auto requested=std::find_if(inventory.begin(),inventory.end(),[&](const auto& e){return e.number==p.account;});
+    Check(requested!=inventory.end());
+    const auto& current=requested->state;const auto found=current.account.Operations().Entries().find(id);
+    Check(found!=current.account.Operations().Entries().end()&&found->second.inputs.empty());
+    auto captured=jobs.CaptureOwned(id,{owner.identity,p.domain.branch_id,session,lease->InstanceToken()},
+        current.account.Operations());
+    const bool already_ready=found->second.phase==OrchardOperationQueue::Phase::Ready;
+    if(captured.state){
+        Check(captured.state==OrchardProofJobs::State::Succeeded&&captured.proof);
+        const auto& envelope=authorization.Transaction();
+        const auto exact=orchard::TransactionEnvelope::Create(envelope.LockTime(),{},envelope.Outputs(),
+            envelope.ExplicitFee(),captured.proof->Bytes());
+        Check(exact.CanonicalBytes()==authorization.Orchard().CanonicalBytes());
+    }else Check(already_ready); // Missing work cannot promote a reservation.
+    auto next=current.account.SetReady(id,authorization);
+    auto applied=already_ready?current:owner.Replace(current.revision,std::move(next));
+    FinalizedProof result{std::move(applied),false};
+    static_assert(std::is_nothrow_move_constructible_v<FinalizedProof>);
+    tx.Commit();
+    result.retired_job=jobs.RetireCaptured(id,captured.token);
+    return result;
+}
 OrchardAccountDelivery::Applied OrchardAccountDelivery::ApplyForReplay(WalletManager& w,uint64_t session,const Profile& p,
         uint64_t expected,const RuntimeAccountReplay& view,uint64_t sequence){
     const auto& event=view.Event(sequence);

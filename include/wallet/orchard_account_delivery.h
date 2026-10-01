@@ -117,6 +117,21 @@ public:
         const Profile&,uint64_t expected_revision,const RuntimeAccountReplay&,
         const orchard::Hash&,const consensus::VerifiedOrchardAuthorizations&);
 
+    struct FinalizedProof {
+        Applied state;
+        bool retired_job;
+    };
+    // Authenticate the current catalog and exact owned completed job, retain
+    // its verified signed envelope as Ready, then retire only that captured
+    // executor job after checked COMMIT. No proof bytes escape on failure.
+    // Exact Ready retry may succeed without a job; it performs no new proof,
+    // selection or reservation. Retirement is optional cleanup, not admission.
+    // Caller verifies authorizations outside wallet ownership and still needs
+    // fresh selected-chain admission before relay.
+    static FinalizedProof FinalizeCatalogProofForReplay(WalletManager&,uint64_t session,
+        const Profile&,const RuntimeAccountReplay&,const orchard::Hash&,
+        const consensus::VerifiedOrchardAuthorizations&,OrchardProofJobs&);
+
     struct Enrolled {
         uint32_t number; Applied state;
         // Reached, authenticated archive identities/revisions in head order.
