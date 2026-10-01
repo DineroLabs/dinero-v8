@@ -16,6 +16,7 @@
 #include <thread>
 #include <functional>
 #include <type_traits>
+#include <span>
 #include "consensus/orchard_block_filter.h"
 #include "consensus/orchard_state_root.h"
 #include "consensus/state_commitment.h"
@@ -853,7 +854,7 @@ static void OutboxReplayChecks(ChainDB& db,const OrchardBlockContext& context,
     CHECK(ReadRuntimeOutboxUnderLock(db,context).head==all.head);
 }
 static void AtomicForest(const std::string& base,bool checkpoint,const std::string& crash_executable={},bool owned_write=false,bool indexed=false,
-    const std::function<void(ChainDB&,const OrchardBlockContext&,const OrchardBlockCandidate&,const UtreexoForest&,const std::filesystem::path&)>& startup_check={},bool contextual_headers=false) {
+    const std::function<void(ChainDB&,const OrchardBlockContext&,const OrchardBlockCandidate&,const UtreexoForest&,const std::filesystem::path&)>& startup_check={},bool contextual_headers=false,std::span<const uint8_t> receiver_seed={}) {
     AnnotatedRecursiveMutex activation;
     TempDir temp;Seed(temp.path);ChainDB db;CHECK(db.init(temp.path)==Status::Ok);
     BlockStorage files;CBlockIndex disk_index;
@@ -865,7 +866,8 @@ static void AtomicForest(const std::string& base,bool checkpoint,const std::stri
         Fixture f(base);f.view.height=20000;
         f.outputs[0].script_pub_key=f.view.coins.at(Point(f.inputs[0])).scriptPubKey;
         f.outputs[1].script_pub_key=f.view.coins.at(Point(f.inputs[1])).scriptPubKey;f.outputs[1].amount_una=51000;
-        const auto wallet_keys=orchard::WalletKeys::FromSeed(std::array<uint8_t,64>{7},0);
+        CHECK(receiver_seed.size()==64);
+        const auto wallet_keys=orchard::WalletKeys::FromSeed(receiver_seed,0);
         const auto receiver=wallet_keys.Receiver(orchard::WalletScope::External,{});
         std::vector<orchard::ResolvedInput> inputs;
         for(const auto& input:f.inputs){const auto& coin=f.view.coins.at(Point(input));
@@ -1290,8 +1292,19 @@ int main(int argc,char**argv) {
     try { SelectParams(Chain::REGTEST);
 #ifdef DINERO_TEST_ORCHARD_INDEX_DELIVERY
         if(argc==3 && std::string(argv[1])=="--index-delivery") {
-            AtomicForest(argv[2],false,{},true,true,IndexDeliveryChecks);
-            AtomicForest(argv[2],true,{},true,true,IndexDeliveryChecks);
+            for(const bool checkpoint:{false,true}) {
+                TempDir wallet;
+                WalletManager ordinary(wallet.path/"ordinary");ordinary.create("ordinary");
+                std::array<uint8_t,64> receiver_seed{};
+                struct ClearReceiverSeed {std::array<uint8_t,64>& bytes;~ClearReceiverSeed(){OPENSSL_cleanse(bytes.data(),bytes.size());}} clear_receiver_seed{receiver_seed};
+                {const auto lease=ordinary.AcquireDatabaseLease();const auto seed=lease->CopyRecoverySeed(lease->Session());
+                 CHECK(seed->Bytes().size()==receiver_seed.size());std::copy(seed->Bytes().begin(),seed->Bytes().end(),receiver_seed.begin());}
+                const auto replay=[&](ChainDB& db,const OrchardBlockContext& context,const OrchardBlockCandidate& block,
+                        const UtreexoForest& forest,const std::filesystem::path& path) {
+                    IndexDeliveryChecks(db,context,block,forest,path,ordinary);
+                };
+                AtomicForest(argv[2],checkpoint,{},true,true,replay,false,receiver_seed);
+            }
             std::cout<<"OrchardIndexDelivery PASS\n";return 0;
         }
 #endif

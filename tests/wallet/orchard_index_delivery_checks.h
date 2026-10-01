@@ -1,4 +1,5 @@
 #pragma once
+#include <openssl/crypto.h>
 #include "wallet/runtime_index_delivery.h"
 #include "wallet/runtime_wallet_recovery.h"
 #include "wallet/orchard_operation_archive.h"
@@ -20,7 +21,7 @@ struct RuntimeIndexDeliveryTestAccess {
 }
 
 static void IndexDeliveryChecks(ChainDB& db,const OrchardBlockContext& c,
-    const OrchardBlockCandidate& block,const UtreexoForest& forest,const std::filesystem::path& path) {
+    const OrchardBlockCandidate& block,const UtreexoForest& forest,const std::filesystem::path& path,WalletManager& ordinary) {
     TempDir wallet;const auto file=(wallet.path/"index.sqlite").string();
     dinero::UTXOIndex index(file);CHECK(index.Initialize());
     auto historical=HistoricalDeliveryParent();historical.header=RequiredValue(db.getHeader(c.parent_hash));
@@ -44,8 +45,13 @@ static void IndexDeliveryChecks(ChainDB& db,const OrchardBlockContext& c,
     };
     AnnotatedRecursiveMutex lock;std::lock_guard<AnnotatedRecursiveMutex> guard(lock);
     const auto event=ReadRuntimeOutboxUnderLock(db,c).events.front();CHECK(event.cursor.sequence==1);
-    WalletManager ordinary(wallet.path/"ordinary");ordinary.create("ordinary");
-    const std::array<uint8_t,64> account_seed{7};
+    // The caller proves the note to this creation-owned seed before replay.
+    // Keep the same-seed persistence assertion; replacing this owner would
+    // orphan its authenticated catalog and the note receiver would not match.
+    std::array<uint8_t,64> account_seed{};
+    struct ClearAccountSeed {std::array<uint8_t,64>& bytes;~ClearAccountSeed(){OPENSSL_cleanse(bytes.data(),bytes.size());}} clear_account_seed{account_seed};
+    {const auto lease=ordinary.AcquireDatabaseLease();const auto seed=lease->CopyRecoverySeed(lease->Session());
+     CHECK(seed->Bytes().size()==account_seed.size());std::copy(seed->Bytes().begin(),seed->Bytes().end(),account_seed.begin());}
     CHECK(ordinary.storeMasterSeed(std::vector<uint8_t>(account_seed.begin(),account_seed.end()),"",false));
     auto ordinary_session=ordinary.AcquireDatabaseLease()->Session();
     const auto wallet_identity=ordinary.AcquireDatabaseLease()->EnsureDeliveryIdentity();
