@@ -92,7 +92,8 @@
 #include "consensus/shielded/shielded_block_section.h"
 #include "storage/archival_block_reader.h"
 #include "storage/block_storage.h"
-#include "pool/pool_manager.h"  // Pool accounting lifecycle wiring
+#include "pool/pool_manager.h"
+#include "pool/canonical_maintenance.h"  // Pool accounting lifecycle wiring
 #include "primitives/block.h"        // For Block struct
 #include "wallet/transaction.h"      // For Transaction, TxInput, TxOutput
 #include "p2p_manager.h"             // Phase C.1 v2: For P2PMessage::create_inv(), create_block()
@@ -264,75 +265,8 @@ bool ReadCompactSize(const std::vector<uint8_t>& data, size_t* offset, uint64_t*
     return true;
 }
 
-void SyncPoolLifecycleState(pool::PoolManager* pool_manager,
-                            ChainDB* chain_db,
-                            LoggerService* logger) {
-    if (!pool_manager || !chain_db) {
-        return;
-    }
-
-    auto tip_result = chain_db->getTip();
-    if (tip_result.status() != Status::Ok) {
-        return;
-    }
-
-    const uint32_t tip_height = tip_result.value().height;
-    auto pending_blocks = pool_manager->getDatabase().getPendingBlocks();
-
-    uint32_t orphaned = 0;
-    uint32_t confirmations_updated = 0;
-    for (const auto& pending : pending_blocks) {
-        if (pending.block_hash.size() != 64 ||
-            !std::all_of(pending.block_hash.begin(), pending.block_hash.end(), [](unsigned char c) {
-                return std::isxdigit(c) != 0;
-            })) {
-            pool_manager->markBlockOrphaned(pending.block_hash);
-            ++orphaned;
-            continue;
-        }
-
-        if (pending.height > tip_height) {
-            pool_manager->markBlockOrphaned(pending.block_hash);
-            ++orphaned;
-            continue;
-        }
-
-        auto active_hash = chain_db->getBlockHashByHeight(static_cast<int>(pending.height));
-        if (active_hash.status() != Status::Ok) {
-            pool_manager->markBlockOrphaned(pending.block_hash);
-            ++orphaned;
-            continue;
-        }
-
-        const uint256 pending_hash = uint256::FromHexUnsafe(pending.block_hash);
-        if (active_hash.value() != pending_hash) {
-            pool_manager->markBlockOrphaned(pending.block_hash);
-            ++orphaned;
-            continue;
-        }
-
-        const uint32_t confirmations = tip_height - pending.height + 1;
-        if (pending.confirmations != confirmations) {
-            pool_manager->updateBlockConfirmations(pending.block_hash, confirmations);
-            ++confirmations_updated;
-        }
-    }
-
-    uint32_t payouts_processed = 0;
-    if (confirmations_updated > 0) {
-        payouts_processed = pool_manager->processConfirmedBlocks();
-    }
-    // This notifier executes under selected-chain ownership. Wallet signing,
-    // submission and settlement run from the existing pool maintenance/RPC
-    // owner after that ownership is released; never invoke them here.
-    if (logger && (confirmations_updated > 0 || payouts_processed > 0)) {
-        logger->info("[ChainstateService] Pool lifecycle sync: confirmations=" +
-                     std::to_string(confirmations_updated) +
-                     ", payouts_processed=" + std::to_string(payouts_processed));
-    } else if (orphaned > 0 && logger) {
-        logger->warning("[ChainstateService] Pool lifecycle sync: orphaned=" +
-                        std::to_string(orphaned));
-    }
+void SyncPoolLifecycleState(pool::PoolManager* manager,ChainstateService& source,LoggerService*) {
+    if(manager)pool::CanonicalPoolMaintenance::ReconcileSelected(source,*manager);
 }
 
 
@@ -5513,7 +5447,7 @@ void ChainstateService::notifyBlockConnected(const Block& block, uint32_t height
     }
 
     if (pool_manager_) {
-        SyncPoolLifecycleState(pool_manager_.get(), chain_db_, logger_.get());
+        SyncPoolLifecycleState(pool_manager_.get(), *this, logger_.get());
     }
 
     // Phase 9.2: Forward block event to Lightning (if oracle configured)
@@ -5564,7 +5498,7 @@ void ChainstateService::notifyBlockDisconnected(const Block& block, uint32_t hei
     }
 
     if (pool_manager_) {
-        SyncPoolLifecycleState(pool_manager_.get(), chain_db_, logger_.get());
+        SyncPoolLifecycleState(pool_manager_.get(), *this, logger_.get());
     }
 
     // Phase 9.2: Forward block event to Lightning (if oracle configured)

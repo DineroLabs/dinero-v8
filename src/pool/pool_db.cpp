@@ -1009,6 +1009,36 @@ bool PoolDB::insertBlock(PoolBlock& block) {
     return inserted;
 }
 
+std::vector<PoolBlock> PoolDB::getRecordedBlocks() {
+    std::lock_guard<std::recursive_mutex> owner(connection_mutex_);
+    if(!db_ || !sqlite3_get_autocommit(db_))throw std::runtime_error("pool block inventory owner unavailable");
+    OrphanTransaction transaction(db_);
+    OrphanStatement rows(db_,"SELECT block_id,block_hash,height,finder_worker,finder_address,reward,fees,total_reward,pool_fee_percent,pool_fee_amount,distributable,round_shares,round_difficulty,confirmations,required_confirmations,orphaned,payouts_calculated,payouts_sent,found_at,confirmed_at FROM blocks ORDER BY block_id");
+    std::vector<PoolBlock> blocks;int rc;
+    while((rc=sqlite3_step(rows.get()))==SQLITE_ROW) {
+        if(blocks.size()>=65536)throw std::runtime_error("pool block inventory limit exceeded");
+        blocks.push_back(ReadCalculationBlock(rows));
+    }
+    if(rc!=SQLITE_DONE)throw std::runtime_error("pool block inventory incomplete");
+    transaction.commit();return blocks;
+}
+void PoolDB::updateBlockConfirmationsChecked(const PoolBlock& expected,uint32_t confirmations,int64_t observed_at) {
+    std::lock_guard<std::recursive_mutex> owner(connection_mutex_);
+    if(!db_ || !sqlite3_get_autocommit(db_) || observed_at<0)throw std::runtime_error("pool confirmation owner unavailable");
+    OrphanTransaction transaction(db_);
+    OrphanStatement current(db_,"SELECT block_id,block_hash,height,finder_worker,finder_address,reward,fees,total_reward,pool_fee_percent,pool_fee_amount,distributable,round_shares,round_difficulty,confirmations,required_confirmations,orphaned,payouts_calculated,payouts_sent,found_at,confirmed_at FROM blocks WHERE block_id=?");
+    current.integer(1,expected.block_id);
+    if(sqlite3_step(current.get())!=SQLITE_ROW || ReadCalculationBlock(current)!=expected || expected.orphaned)
+        throw std::runtime_error("pool confirmation inventory changed");
+    current.done();
+    const int64_t confirmed_at=confirmations>=expected.required_confirmations && expected.confirmed_at==0 ? observed_at : expected.confirmed_at;
+    if(confirmations!=expected.confirmations || confirmed_at!=expected.confirmed_at) {
+        OrphanStatement write(db_,"UPDATE blocks SET confirmations=?,confirmed_at=? WHERE block_id=?");
+        write.integer(1,confirmations);write.integer(2,confirmed_at);write.integer(3,expected.block_id);write.changedOne(db_);
+    }
+    transaction.commit();
+}
+
 std::vector<PoolBlock> PoolDB::getPendingBlocks() {
     std::lock_guard<std::recursive_mutex> connection_owner(connection_mutex_);
     std::vector<PoolBlock> blocks;
@@ -2046,12 +2076,18 @@ bool PoolDB::reconcilePaymentSettlement(const PoolPaymentAttempt& expected,const
     transaction.commit();return true;
 }
 
-bool PoolDB::reconcileOrphanedBlock(const std::string& block_hash, OrphanResult& result) {
+bool PoolDB::reconcileOrphanedBlock(const std::string& block_hash, OrphanResult& result,const PoolBlock* expected) {
     std::lock_guard<std::recursive_mutex> connection_owner(connection_mutex_);
     if (!db_ || !sqlite3_get_autocommit(db_) || block_hash.empty() ||
         block_hash.find('\0')!=std::string::npos) return false;
     try {
         OrphanTransaction transaction(db_);
+        if(expected) {
+            OrphanStatement current(db_,"SELECT block_id,block_hash,height,finder_worker,finder_address,reward,fees,total_reward,pool_fee_percent,pool_fee_amount,distributable,round_shares,round_difficulty,confirmations,required_confirmations,orphaned,payouts_calculated,payouts_sent,found_at,confirmed_at FROM blocks WHERE block_hash=?");current.text(1,block_hash);
+            if(sqlite3_step(current.get())!=SQLITE_ROW || ReadCalculationBlock(current)!=*expected)
+                throw std::runtime_error("pool orphan source inventory changed");
+            current.done();
+        }
         OrphanResult prepared;
         sqlite3_int64 block_id=0;
         {
@@ -2217,12 +2253,22 @@ std::string PoolDB::getAllocationWorkerWallet(const std::string& worker_id) {
     auto address=worker.textColumn(1);worker.done();return address;
 }
 
-uint32_t PoolDB::allocateConfirmedBlockPayouts(PayoutCalculator& calculator) {
+uint32_t PoolDB::allocateConfirmedBlockPayouts(PayoutCalculator& calculator, const std::vector<PoolBlock>* expected) {
     std::lock_guard<std::recursive_mutex> connection_owner(connection_mutex_);
     if (!db_ || !sqlite3_get_autocommit(db_))
         throw std::runtime_error("pool allocation requires its own database transaction");
     OrphanTransaction transaction(db_);
     const auto blocks=getBlocksReadyForPayout();
+    if(expected) {
+        auto captured=*expected;
+        captured.erase(std::remove_if(captured.begin(),captured.end(),[](const PoolBlock& b) {
+            return b.orphaned || b.payouts_calculated || b.confirmations<b.required_confirmations;
+        }),captured.end());
+        std::sort(captured.begin(),captured.end(),[](const PoolBlock& a,const PoolBlock& b) {
+            return a.found_at<b.found_at || (a.found_at==b.found_at && a.block_id<b.block_id);
+        });
+        if(blocks!=captured)throw std::runtime_error("pool canonical allocation inventory changed");
+    }
     if (blocks.size()>std::numeric_limits<uint32_t>::max()) throw std::runtime_error("pool allocation batch too large");
     const auto max=static_cast<uint64_t>(std::numeric_limits<sqlite3_int64>::max());
     auto ownerText=[](const std::string& value) {return !value.empty() && value.find('\0')==std::string::npos;};

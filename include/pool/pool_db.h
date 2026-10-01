@@ -132,6 +132,10 @@ public:
 
     // Get blocks pending confirmation
     std::vector<PoolBlock> getPendingBlocks();
+    // Complete present inventory; refuses errors, malformed rows and over-limit
+    // inventories. This is not proof against deleted rows or backup rollback.
+    std::vector<PoolBlock> getRecordedBlocks();
+    void updateBlockConfirmationsChecked(const PoolBlock& expected,uint32_t confirmations,int64_t observed_at);
 
     // Get blocks ready for payout (confirmed but not paid)
     std::vector<PoolBlock> getBlocksReadyForPayout();
@@ -148,7 +152,7 @@ public:
     // Checked FULL transaction for the existing unpaid-payout reversal policy.
     // False means unavailable/invalid/failed, never an empty successful read.
     // The result is assigned only after COMMIT. Missing block is found=false.
-    bool reconcileOrphanedBlock(const std::string& block_hash, OrphanResult& result);
+    bool reconcileOrphanedBlock(const std::string& block_hash, OrphanResult& result, const PoolBlock* expected = nullptr);
 
     // Mark block as orphaned
     bool markBlockOrphaned(uint64_t block_id);
@@ -272,9 +276,11 @@ private:
     std::vector<PoolPaymentAttempt> readPaymentAttemptsOwned();
 
     friend class PayoutCalculator;
+    friend class CanonicalPoolMaintenance;
+    friend struct PoolMaintenanceSourceTestAccess;
     // Actual DB-only calculator dispatch, never an external payment callback.
     // Owns the full pending allocation batch; returns only after checked COMMIT.
-    uint32_t allocateConfirmedBlockPayouts(PayoutCalculator& calculator);
+    uint32_t allocateConfirmedBlockPayouts(PayoutCalculator& calculator, const std::vector<PoolBlock>* expected = nullptr);
     std::string getAllocationWorkerWallet(const std::string& worker_id);
     friend struct PoolOrphanAccountingTestAccess;
     // All use of the SQLite handle is serialized, including whole transactions.

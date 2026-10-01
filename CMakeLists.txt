@@ -758,6 +758,7 @@ add_library(dinero_rpc_handlers STATIC
   src/pool/wallet_payment_backend.cpp
   src/pool/canonical_payment.cpp
   src/pool/canonical_block.cpp
+  src/pool/canonical_maintenance.cpp
   src/vault/ledger_store.cpp
   src/vault/vault_runtime.cpp
   src/vault/wallet_signing_backend.cpp

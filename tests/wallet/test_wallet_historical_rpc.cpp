@@ -582,3 +582,5 @@ TEST_F(WalletBatchRpc, SuccessfulSubmissionAndInvalidInputBeforeEffects) {
 #include "pool_payment_attempt_checks.h"
 
 #include "pool_payment_eligibility_checks.h"
+
+#include "pool_maintenance_source_checks.h"

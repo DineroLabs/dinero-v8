@@ -1081,9 +1081,6 @@ bool DaemonApp::Init(int argc, char** argv) {
 
     // ChainDB is owned by DaemonApp; services use non-owning pointers.
     ChainDB* chain_db_ptr = chain_db_.get();
-    if (pool_manager_runtime_) {
-        pool_manager_runtime_->setChainDB(chain_db_ptr);
-    }
 
     // ─────────────────────────────────────────────────────────────────
     // Offline `--rebuild-undo-range=A:B` orchestrator (commit #5)
@@ -1635,9 +1632,6 @@ bool DaemonApp::Init(int argc, char** argv) {
 
 
         chain_db_ptr = chain_db_.get();
-        if (pool_manager_runtime_) {
-            pool_manager_runtime_->setChainDB(chain_db_ptr);
-        }
 
         if (recovery_marker.has_value()) {
             std::string clear_error;
@@ -1934,6 +1928,7 @@ bool DaemonApp::Init(int argc, char** argv) {
     auto chainstate = std::make_shared<ChainstateService>();
     chainstate->setChainDB(chain_db_ptr);  // Non-owning; DaemonApp owns chain_db_
     chainstate->setPoolManager(pool_manager_runtime_);
+    if(pool_manager_runtime_)pool_manager_runtime_->setChainstateSource(chainstate);
 
     // Phase 8: Set validation mode based on config
     if (GetConfig().utreexo_stateless) {

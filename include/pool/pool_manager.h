@@ -12,7 +12,7 @@
 #include <unordered_map>
 
 namespace dinero {
-class ChainDB;
+class ChainstateService;
 namespace pool {
 
 /**
@@ -63,7 +63,7 @@ public:
     bool initialize();
 
     // Provide active chain view for confirmation/orphan tracking.
-    void setChainDB(ChainDB* chain_db) { chain_db_ = chain_db; }
+    void setChainstateSource(const std::shared_ptr<ChainstateService>& source);
 
     /**
      * Check if pool manager is running
@@ -251,6 +251,8 @@ public:
     void runMaintenance();
 
 private:
+    friend class CanonicalPoolMaintenance;
+    friend struct PoolMaintenanceSourceTestAccess;
     std::shared_ptr<PoolDB> db_;
     std::unique_ptr<PayoutCalculator> calculator_;
     std::shared_ptr<PayoutProcessor> processor_;
@@ -298,7 +300,7 @@ private:
     void checkBlockConfirmations();
 
     std::unordered_map<std::string, WorkerSubmitState> submit_state_;
-    ChainDB* chain_db_ = nullptr;  // Non-owning pointer managed by DaemonApp
+    std::weak_ptr<ChainstateService> chain_source_; // Captured under mutex_, pinned before use.
 };
 
 } // namespace pool

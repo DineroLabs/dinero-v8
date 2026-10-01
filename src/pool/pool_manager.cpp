@@ -6,6 +6,8 @@
  */
 
 #include "pool/pool_manager.h"
+#include "pool/canonical_maintenance.h"
+#include "daemon/services/chainstate_service.h"
 #include "primitives/amount.h"
 #include "common/logger.h"
 #include "consensus/subsidy.h"
@@ -600,13 +602,8 @@ void PoolManager::stopMaintenanceThread() {
 
 void PoolManager::runMaintenance() {
     try {
-        // Process confirmed blocks
-        uint32_t blocks_processed = processConfirmedBlocks();
-        if (blocks_processed > 0) {
-            g_logger.info("Processed " + std::to_string(blocks_processed) + " confirmed blocks");
-        }
-
-        // Check block confirmations
+        // Establish canonical eligibility before allocations. Wallet work is
+        // still outside the selected/manager/SQLite owners after this returns.
         checkBlockConfirmations();
 
         // Capture configuration under the manager owner; callback execution is
@@ -652,59 +649,13 @@ void PoolManager::runMaintenance() {
     }
 }
 
+void PoolManager::setChainstateSource(const std::shared_ptr<ChainstateService>& source) {
+    std::lock_guard<std::mutex> owner(mutex_);chain_source_=source;
+}
 void PoolManager::checkBlockConfirmations() {
-    if (!chain_db_) {
-        g_logger.debug("[Pool] checkBlockConfirmations skipped: ChainDB not wired");
-        return;
-    }
-
-    auto tip_result = chain_db_->getTip();
-    if (tip_result.status() != Status::Ok) {
-        return;
-    }
-
-    const uint32_t tip_height = tip_result.value().height;
-
-    std::vector<PoolBlock> pending_blocks;
-    {
-        std::lock_guard<std::mutex> lock(mutex_);
-        pending_blocks = db_->getPendingBlocks();
-    }
-
-    for (const auto& pending : pending_blocks) {
-        if (pending.block_hash.size() != 64 ||
-            !std::all_of(pending.block_hash.begin(), pending.block_hash.end(), [](unsigned char c) {
-                return std::isxdigit(c) != 0;
-            })) {
-            markBlockOrphaned(pending.block_hash);
-            continue;
-        }
-
-        if (pending.height > tip_height) {
-            continue;
-        }
-
-        auto active_hash = chain_db_->getBlockHashByHeight(static_cast<int>(pending.height));
-        if (active_hash.status() != Status::Ok) {
-            markBlockOrphaned(pending.block_hash);
-            continue;
-        }
-
-        uint256 pending_hash;
-        if (!uint256::FromHex(pending.block_hash, pending_hash)) {
-            markBlockOrphaned(pending.block_hash);
-            continue;
-        }
-        if (active_hash.value() != pending_hash) {
-            markBlockOrphaned(pending.block_hash);
-            continue;
-        }
-
-        const uint32_t confirmations = tip_height - pending.height + 1;
-        if (pending.confirmations != confirmations) {
-            updateBlockConfirmations(pending.block_hash, confirmations);
-        }
-    }
+    std::shared_ptr<ChainstateService> source;
+    {std::lock_guard<std::mutex> owner(mutex_);source=chain_source_.lock();}
+    CanonicalPoolMaintenance::Reconcile(source,*this);
 }
 
 void PoolManager::updateWorkerHashrate(const std::string& worker_id) {

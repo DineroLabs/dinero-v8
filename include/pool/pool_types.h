@@ -129,6 +129,7 @@ struct WorkerStats {
  * Block found by the pool
  */
 struct PoolBlock {
+    bool operator==(const PoolBlock&) const = default;
     uint64_t block_id;          // Auto-increment ID
     std::string block_hash;
     uint32_t height;
