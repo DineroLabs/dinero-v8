@@ -590,6 +590,7 @@ set(GUI_SOURCES
   src/poolpanel.cpp
   src/poolcockpit.cpp
   src/pooltokenstore.cpp
+  src/segwitaddress.cpp
   src/poolpanel.h
   # MyNodeDashboard — Phase 1 MVP (Tasks 1-9).
   src/dashboardtypes.h
@@ -1563,6 +1564,12 @@ if(BUILD_TESTING)
   target_link_libraries(test_pool_cockpit_format PRIVATE Qt6::Core Qt6::Test)
   target_compile_definitions(test_pool_cockpit_format PRIVATE QT_NO_KEYWORDS)
   add_test(NAME PoolCockpitFormat COMMAND test_pool_cockpit_format)
+
+  add_executable(test_segwit_address tests/test_segwit_address.cpp src/segwitaddress.cpp)
+  target_include_directories(test_segwit_address PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_link_libraries(test_segwit_address PRIVATE Qt6::Core Qt6::Test)
+  target_compile_definitions(test_segwit_address PRIVATE QT_NO_KEYWORDS)
+  add_test(NAME SegwitAddress COMMAND test_segwit_address)
 
   add_executable(test_pool_token_store tests/test_pool_token_store.cpp src/pooltokenstore.cpp)
   target_include_directories(test_pool_token_store PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)

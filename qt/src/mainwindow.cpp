@@ -5,6 +5,7 @@
 #include "upgradebanner.h"
 #include "portcheck.h"
 #include "chromestyle.h"
+#include "segwitaddress.h"
 #include "miningrewards.h"
 #include "inforow.h"
 #include "mainwindow.h"
@@ -686,57 +687,10 @@ QString discoverSv2MinerPath(bool useGpu, bool allowSavedPath, bool persistDisco
   return candidates.first();
 }
 
-// Minimal bech32m decoder — enough to turn a `din1p…` (Taproot) or
-// `din1r…` (P2MR) address into its scriptPubKey hex for SV2 coinbase.
-// Based on BIP-350. Returns empty string on any parsing failure.
+// `din1p…` (Taproot) or `din1r…` (P2MR) address -> scriptPubKey hex for the
+// SV2 coinbase payout. Empty on any failure.
 QString addressToScriptPubKeyHex(const QString& addr_in) {
-  static const QString CHARSET = QStringLiteral("qpzry9x8gf2tvdw0s3jn54khce6mua7l");
-  const QString addr = addr_in.trimmed().toLower();
-  const int sep = addr.lastIndexOf('1');
-  if (sep < 1 || sep + 7 > addr.length()) return QString();
-
-  const QString hrp = addr.left(sep);
-  if (hrp != "din" && hrp != "tdin" && hrp != "rdin") return QString();
-
-  // 5-bit data + 6-char checksum; discard the checksum but verify length.
-  QVector<int> data5;
-  data5.reserve(addr.length() - sep - 1);
-  for (int i = sep + 1; i < addr.length(); ++i) {
-    const int v = CHARSET.indexOf(addr.at(i));
-    if (v < 0) return QString();
-    data5.append(v);
-  }
-  if (data5.size() < 7) return QString();  // must hold at least version + program + checksum
-
-  const int version = data5.first();
-  if (version != 1 && version != 2) return QString();  // only Taproot / P2MR
-
-  // Drop witness version (1 char) and checksum (6 chars), convert 5-bit → 8-bit.
-  const int progLen5 = data5.size() - 1 - 6;
-  QVector<uint8_t> program;
-  {
-    int acc = 0;
-    int bits = 0;
-    for (int i = 0; i < progLen5; ++i) {
-      acc = (acc << 5) | data5.at(1 + i);
-      bits += 5;
-      while (bits >= 8) {
-        bits -= 8;
-        program.append(static_cast<uint8_t>((acc >> bits) & 0xff));
-      }
-    }
-    // Leftover bits must be zero per BIP-173/350.
-    if (bits >= 5 || ((acc << (8 - bits)) & 0xff) != 0) return QString();
-  }
-  if (program.size() != 32) return QString();  // Dinero v7: both surfaces are 32-byte keys
-
-  // scriptPubKey: OP_<version> (0x50 + version) + 0x20 push + 32 bytes.
-  const uint8_t opVersion = static_cast<uint8_t>(0x50 + version);
-  QByteArray script;
-  script.append(static_cast<char>(opVersion));
-  script.append(static_cast<char>(0x20));
-  for (uint8_t b : program) script.append(static_cast<char>(b));
-  return QString::fromLatin1(script.toHex());
+  return segwitaddress::addressToScriptHex(addr_in);
 }
 
 int localStratumPort() {
