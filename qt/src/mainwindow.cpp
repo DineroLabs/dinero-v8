@@ -1983,6 +1983,9 @@ MainWindow::MainWindow(dinero::qt::DaemonBootstrapOwner daemonBootstrapOwner,
   }
 
   setupUI();
+  // macOS sizes tabs without the stylesheet padding, so there is no slack and
+  // an elidable label shows as "Colle…". Never cut a tab's name.
+  for (QTabBar* bar : findChildren<QTabBar*>()) bar->setElideMode(Qt::ElideNone);
   
   // ═══════════════════════════════════════════════════════════════
   // 🛡️ ConnectionManager Setup (Bulletproof Connection Management)
@@ -2447,6 +2450,10 @@ void MainWindow::setupUI() {
   // Tab widget
   auto *tabs = new QTabWidget;
   tabs->setIconSize(QSize(16, 16));
+  // On macOS a tab bar without scroll buttons demands the full width of every
+  // named tab as its minimum, so the window could not be made narrower than
+  // the names and the switch to icon-only tabs below never got a chance.
+  tabs->tabBar()->setUsesScrollButtons(true);
   mainTabs_ = tabs;
   // Icon-only tabs when the full names do not fit; names come back when they do.
   class CompactTabsWatcher : public QObject {
