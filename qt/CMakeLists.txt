@@ -1403,6 +1403,16 @@ if(BUILD_TESTING)
   add_test(NAME CovenantsTab COMMAND test_covenants_tab)
   set_tests_properties(CovenantsTab PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 90)
 
+  add_executable(test_wallet_layout ${_wallet_test_sources} tests/test_wallet_layout.cpp)
+  target_link_libraries(test_wallet_layout PRIVATE
+    $<TARGET_PROPERTY:dinero-qt,LINK_LIBRARIES> Qt6::Test)
+  target_include_directories(test_wallet_layout PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src $<TARGET_PROPERTY:dinero-qt,INCLUDE_DIRECTORIES>)
+  target_compile_definitions(test_wallet_layout PRIVATE
+    QT_NO_KEYWORDS $<TARGET_PROPERTY:dinero-qt,COMPILE_DEFINITIONS>)
+  add_test(NAME WalletLayout COMMAND test_wallet_layout)
+  set_tests_properties(WalletLayout PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 90)
+
   add_executable(test_pay_collect ${_wallet_test_sources} tests/test_pay_collect.cpp)
   target_link_libraries(test_pay_collect PRIVATE
     $<TARGET_PROPERTY:dinero-qt,LINK_LIBRARIES> Qt6::Test)

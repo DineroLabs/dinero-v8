@@ -3012,21 +3012,31 @@ void MainWindow::setupUI() {
     btnRescanWallet_->setToolTip("If balance/history looks wrong, rescan blockchain for this wallet.");
     connect(btnRescanWallet_, &QPushButton::clicked, this, &MainWindow::onRescanWallet);
     walletIntroLayout->addWidget(lblWalletInfo, 1);
-    walletIntroLayout->addWidget(btnCreateWallet);
     walletSetupLayout->addLayout(walletIntroLayout);
 
+    // Wallet picker on the left, then every wallet action as one row of
+    // same-size buttons.
     auto *walletControlLayout = new QHBoxLayout;
     walletControlLayout->setContentsMargins(0, 0, 0, 0);
     walletControlLayout->setSpacing(8);
     auto *lblWalletSelector = new QLabel("Wallet:");
+    lblWalletSelector->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Preferred);
+    lblWalletSelector->setStyleSheet("QLabel { background: transparent; }");
     lblWalletSelector->setVisible(!singleWalletMode_);
     walletControlLayout->addWidget(lblWalletSelector);
+    cmbWalletSelector_->setMinimumWidth(200);
     walletControlLayout->addWidget(cmbWalletSelector_, 1);
-    walletControlLayout->addWidget(btnLoadWallet_);
-    walletControlLayout->addSpacing(4);
-    walletControlLayout->addWidget(btnWalletLock_);
-    walletControlLayout->addWidget(btnEncryptWallet_);
-    walletControlLayout->addWidget(btnRescanWallet_);
+    btnWalletLock_->setObjectName("walletLock");
+    btnLoadWallet_->setObjectName("walletLoad");
+    btnEncryptWallet_->setObjectName("walletEncrypt");
+    btnRescanWallet_->setObjectName("walletRescan");
+    btnCreateWallet->setObjectName("walletCreate");
+    for (QPushButton* action : {btnLoadWallet_, btnWalletLock_, btnEncryptWallet_, btnRescanWallet_, btnCreateWallet}) {
+      action->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
+      action->setMinimumWidth(0);
+      action->setMaximumWidth(QWIDGETSIZE_MAX);
+      walletControlLayout->addWidget(action, 1);
+    }
     walletSetupLayout->addLayout(walletControlLayout);
     layout->addWidget(walletSetupGroup);
     
@@ -3035,6 +3045,19 @@ void MainWindow::setupUI() {
     auto *compatLayout = new QVBoxLayout(compatGroup);
     compatGroup->setStyleSheet("QGroupBox { background: #20252c; border: 1px solid #343b45; border-radius: 10px; }");
     
+    auto *compatSummaryRow = new QHBoxLayout;
+    auto *lblCompatSummary = new QLabel(
+        "<b>One seed, two address lanes:</b> <code>din1p\u2026</code> Taproot and "
+        "<code>din1r\u2026</code> quantum-safe, restorable on desktop and mobile.");
+    lblCompatSummary->setWordWrap(true);
+    compatSummaryRow->addWidget(lblCompatSummary, 1);
+    auto *btnSeedAbout = new QPushButton("About seed compatibility");
+    btnSeedAbout->setObjectName("walletSeedAbout");
+    btnSeedAbout->setStyleSheet(chromeButtonStyle());
+    compatSummaryRow->addWidget(btnSeedAbout);
+    compatLayout->addLayout(compatSummaryRow);
+
+    // The full explanation is useful once; it no longer pushes the balance down.
     auto *lblCompat = new QLabel(
         "<b>One seed, two address lanes.</b><br><br>"
         "<b>BIP39 seed phrase</b> restores the same wallet across Dinero Qt and mobile. "
@@ -3044,6 +3067,11 @@ void MainWindow::setupUI() {
         "✅ Mobile (iOS Wallet) - seed-compatible Taproot payments; P2MR keys derive from the same seed as mobile support expands"
     );
     lblCompat->setWordWrap(true);
+    lblCompat->setObjectName("walletSeedDetails");
+    lblCompat->setVisible(false);
+    connect(btnSeedAbout, &QPushButton::clicked, lblCompat, [lblCompat]() {
+      lblCompat->setVisible(!lblCompat->isVisible());
+    });
     compatLayout->addWidget(lblCompat);
     
     auto *btnExportSeed = new QPushButton("🧾 Seed Backup / Mobile Restore");
@@ -3070,68 +3098,91 @@ void MainWindow::setupUI() {
     lblTotalWalletBalance_->setObjectName("lblTotalWalletBalance");
     lblTotalWalletBalance_->setVisible(false); // hidden, used for data only
 
-    // Balance breakdown - visible, compact. Taproot and P2MR are both public
-    // transparent outputs; shielded notes are the private bucket.
+    lblBalance_->setObjectName("walletTotalBalance");
+
+    // Balance breakdown in the Overview's 3:2 columns: public on the left,
+    // private on the right, amounts right-aligned. Taproot and P2MR are both
+    // public transparent outputs; shielded notes are the private bucket.
     auto *breakdownWidget = new QWidget;
-    auto *breakdownLayout = new QGridLayout(breakdownWidget);
-    breakdownLayout->setContentsMargins(20, 4, 20, 0);
-    breakdownLayout->setVerticalSpacing(2);
+    auto *breakdownRow = new QHBoxLayout(breakdownWidget);
+    breakdownRow->setContentsMargins(8, 4, 8, 0);
+    breakdownRow->setSpacing(24);
+    auto makeColumn = [](const char* objectName, const QString& title) {
+      auto *column = new QWidget;
+      column->setObjectName(objectName);
+      column->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+      auto *grid = new QGridLayout(column);
+      grid->setContentsMargins(0, 0, 0, 0);
+      grid->setVerticalSpacing(4);
+      grid->setColumnStretch(1, 1);
+      auto *header = new QLabel(title);
+      header->setStyleSheet("QLabel { font-weight: 600; color: #d6dde6; }");
+      grid->addWidget(header, 0, 0, 1, 2);
+      return std::make_pair(column, grid);
+    };
+    auto amountLabel = [](const char* objectName, const QString& tip) {
+      auto *value = new QLabel("0.00000000 DIN");
+      value->setObjectName(objectName);
+      value->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+      value->setTextInteractionFlags(Qt::TextSelectableByMouse);
+      if (!tip.isEmpty()) value->setToolTip(tip);
+      return value;
+    };
 
-    auto *lblPublicHeader = new QLabel("Transparent / public");
-    lblPublicHeader->setStyleSheet("QLabel { font-weight: 600; color: #d6dde6; }");
-    breakdownLayout->addWidget(lblPublicHeader, 0, 0, 1, 2);
+    auto [publicColumn, publicGrid] = makeColumn("walletPublicColumn", "Transparent / public");
+    publicGrid->addWidget(new QLabel("Taproot:"), 1, 0);
+    lblTransparentTaprootBalance_ = amountLabel("lblTransparentTaprootBalance", "Public Taproot spendable balance");
+    publicGrid->addWidget(lblTransparentTaprootBalance_, 1, 1);
 
-    breakdownLayout->addWidget(new QLabel("Taproot:"), 1, 0);
-    lblTransparentTaprootBalance_ = new QLabel("0.00000000 DIN");
-    lblTransparentTaprootBalance_->setObjectName("lblTransparentTaprootBalance");
-    lblTransparentTaprootBalance_->setToolTip("Public Taproot spendable balance");
-    breakdownLayout->addWidget(lblTransparentTaprootBalance_, 1, 1);
-
-    breakdownLayout->addWidget(new QLabel("P2MR quantum-safe:"), 2, 0);
+    publicGrid->addWidget(new QLabel("P2MR quantum-safe:"), 2, 0);
     auto *pqRow = new QHBoxLayout;
+    pqRow->setContentsMargins(0, 0, 0, 0);
     barPqRatio_ = new QProgressBar;
+    barPqRatio_->setObjectName("walletPqBar");
     barPqRatio_->setRange(0, 100);
     barPqRatio_->setValue(0);
     barPqRatio_->setMaximumHeight(16);
     barPqRatio_->setMaximumWidth(120);
     barPqRatio_->setFormat("%p%");
-    barPqRatio_->setStyleSheet(
-        "QProgressBar { border: 1px solid #343b45; border-radius: 4px; "
-        "background: #1a1f27; text-align: center; color: #9fb3c8; font-size: 10px; }"
-        "QProgressBar::chunk { background: #2d8a4e; border-radius: 3px; }");
-    barPqRatio_->setToolTip("Percentage of transparent spendable funds held in P2MR outputs");
+    barPqRatio_->setToolTip("Share of public spendable funds held in quantum-safe P2MR outputs");
     pqRow->addWidget(barPqRatio_);
-    lblPqRatio_ = new QLabel("0.00000000 DIN");
-    lblPqRatio_->setStyleSheet("QLabel { font-size: 11px; color: #9fb3c8; }");
-    pqRow->addWidget(lblPqRatio_);
     pqRow->addStretch();
+    lblPqRatio_ = amountLabel("lblTransparentP2mrBalance", QString());
+    pqRow->addWidget(lblPqRatio_);
     auto *pqWidget = new QWidget;
     pqWidget->setLayout(pqRow);
-    breakdownLayout->addWidget(pqWidget, 2, 1);
+    publicGrid->addWidget(pqWidget, 2, 1);
     lblTransparentP2mrBalance_ = lblPqRatio_;
+    publicGrid->setRowStretch(3, 1);
 
-    auto *lblPrivateHeader = new QLabel("Shielded / private");
-    lblPrivateHeader->setStyleSheet("QLabel { font-weight: 600; color: #d6dde6; margin-top: 6px; }");
-    breakdownLayout->addWidget(lblPrivateHeader, 3, 0, 1, 2);
+    auto [privateColumn, privateGrid] = makeColumn("walletPrivateColumn", "Shielded / private");
+    privateGrid->addWidget(new QLabel("Private:"), 1, 0);
+    lblShieldedBalance_ = amountLabel("lblShieldedBalance", "Confirmed shielded note balance");
+    privateGrid->addWidget(lblShieldedBalance_, 1, 1);
+    privateGrid->setRowStretch(2, 1);
 
-    breakdownLayout->addWidget(new QLabel("Private:"), 4, 0);
-    lblShieldedBalance_ = new QLabel("0.00000000 DIN");
-    lblShieldedBalance_->setObjectName("lblShieldedBalance");
-    lblShieldedBalance_->setToolTip("Confirmed shielded note balance");
-    breakdownLayout->addWidget(lblShieldedBalance_, 4, 1);
+    breakdownRow->addWidget(publicColumn, 3);
+    breakdownRow->addWidget(privateColumn, 2);
 
-    breakdownLayout->addWidget(new QLabel("Pending:"), 5, 0);
-    auto *lblUnconfirmed = new QLabel("0.00 DIN");
-    lblUnconfirmed->setObjectName("lblUnconfirmed");
-    breakdownLayout->addWidget(lblUnconfirmed, 5, 1);
-
-    breakdownLayout->addWidget(new QLabel("Mining:"), 6, 0);
-    auto *lblImmature = new QLabel("0.00 DIN");
-    lblImmature->setObjectName("lblImmature");
-    lblImmature->setToolTip("Recently mined coins (available after 100 confirmations)");
-    breakdownLayout->addWidget(lblImmature, 6, 1);
-
+    // Unconfirmed and maturing coins are neither public-spendable nor shielded.
+    auto *notYetSpendable = new QWidget;
+    notYetSpendable->setObjectName("walletNotYetSpendable");
+    auto *pendingRow = new QHBoxLayout(notYetSpendable);
+    pendingRow->setContentsMargins(8, 6, 8, 0);
+    pendingRow->setSpacing(8);
+    auto *lblNotYet = new QLabel("Not yet spendable:");
+    lblNotYet->setStyleSheet("QLabel { font-weight: 600; color: #d6dde6; }");
+    pendingRow->addWidget(lblNotYet);
+    pendingRow->addWidget(new QLabel("Pending"));
+    auto *lblUnconfirmed = amountLabel("lblUnconfirmed", "Incoming payments waiting for confirmation");
+    pendingRow->addWidget(lblUnconfirmed);
+    pendingRow->addSpacing(16);
+    pendingRow->addWidget(new QLabel("Mining (maturing)"));
+    auto *lblImmature = amountLabel("lblImmature", "Recently mined coins (available after 100 confirmations)");
+    pendingRow->addWidget(lblImmature);
+    pendingRow->addStretch();
     balanceLayout->addWidget(breakdownWidget);
+    balanceLayout->addWidget(notYetSpendable);
 
     auto switchToTabWithMode = [this](const QString& tabLabelFragment,
                                       QComboBox* combo,
@@ -3173,6 +3224,7 @@ void MainWindow::setupUI() {
     lblAssets->setWordWrap(true);
     lblAssets->setStyleSheet("QLabel { color: #666; font-size: 11px; margin-top: 5px; }");
     lblAssets->setToolTip("Taproot assets held in this wallet");
+    lblAssets->setVisible(false);  // shown only when the wallet holds assets
     balanceLayout->addWidget(lblAssets);
 
     layout->addWidget(balanceGroup);
@@ -3230,7 +3282,7 @@ void MainWindow::setupUI() {
     addressLayout->addWidget(txtValidation_);
     
     layout->addWidget(addressGroup);
-    layout->addStretch();
+    layout->addStretch(1);  // spare height goes below the content, not into the boxes
     
     connect(btnNewAddress_, &QPushButton::clicked, this, &MainWindow::onNewAddress);
     connect(btnValidate_, &QPushButton::clicked, this, &MainWindow::onValidateAddress);
@@ -3239,8 +3291,6 @@ void MainWindow::setupUI() {
             this, [this](int) { updateWalletAddressModeUi(); });
     updateWalletAddressModeUi();
     
-    wallet->setMinimumHeight(1800); // v7: must be tall enough for all sections to scroll
-    wallet->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::MinimumExpanding);
     tabs->addTab(makeScrollableTab(wallet), navigationIcon(NavigationGlyph::Wallet), "Wallet");
   }
 
@@ -3483,6 +3533,7 @@ void MainWindow::setupUI() {
     amountLayout->addWidget(edtAmount_);
     
     btnUseMax_ = new QPushButton("Max");
+    btnUseMax_->setObjectName("sendMax");
     btnUseMax_->setStyleSheet("QPushButton { padding: 5px; }");
     connect(btnUseMax_, &QPushButton::clicked, this, &MainWindow::onUseMaxAmount);
     amountLayout->addWidget(btnUseMax_);
@@ -6142,21 +6193,24 @@ void MainWindow::updateWalletBalanceDisplay() {
   const double taproot = std::max(0.0, transparent - p2mr);
   const double shielded = std::max(0.0, cachedShieldedBalance_);
   const double total = transparent + shielded;
+  // Thousands separators, as on the Overview. onUseMaxAmount() strips them again.
+  const QLocale grouped(QLocale::English);
+  auto din = [&grouped](double value) { return grouped.toString(value, 'f', 8) + " DIN"; };
 
   if (lblBalance_) {
-    lblBalance_->setText(QString("%1 DIN").arg(total, 0, 'f', 8));
+    lblBalance_->setText(din(total));
   }
   if (lblTotalWalletBalance_) {
-    lblTotalWalletBalance_->setText(QString("%1 DIN").arg(total, 0, 'f', 8));
+    lblTotalWalletBalance_->setText(din(total));
   }
   if (lblTransparentTaprootBalance_) {
-    lblTransparentTaprootBalance_->setText(QString("%1 DIN").arg(taproot, 0, 'f', 8));
+    lblTransparentTaprootBalance_->setText(din(taproot));
   }
   if (lblTransparentP2mrBalance_) {
-    lblTransparentP2mrBalance_->setText(QString("%1 DIN").arg(p2mr, 0, 'f', 8));
+    lblTransparentP2mrBalance_->setText(din(p2mr));
   }
   if (lblShieldedBalance_) {
-    lblShieldedBalance_->setText(QString("%1 DIN").arg(shielded, 0, 'f', 8));
+    lblShieldedBalance_->setText(din(shielded));
   }
 
   auto lblUnconfirmed = findChild<QLabel*>("lblUnconfirmed");
@@ -6165,21 +6219,20 @@ void MainWindow::updateWalletBalanceDisplay() {
       lblUnconfirmed->setText("0.00000000 DIN");
     } else {
       const QString prefix = cachedPendingBalance_ > 0 ? "+" : "";
-      lblUnconfirmed->setText(QString("%1%2 DIN").arg(prefix).arg(cachedPendingBalance_, 0, 'f', 8));
+      lblUnconfirmed->setText(prefix + din(cachedPendingBalance_));
     }
   }
 
   auto lblImmature = findChild<QLabel*>("lblImmature");
   if (lblImmature) {
-    lblImmature->setText(QString("%1 DIN").arg(cachedMiningBalance_, 0, 'f', 8));
+    lblImmature->setText(din(cachedMiningBalance_));
   }
 
   if (barPqRatio_) {
     const double pqRatio = transparent > 0.0 ? (p2mr / transparent) : 0.0;
     barPqRatio_->setValue(static_cast<int>(std::round(pqRatio * 100.0)));
-    QString chunkColor = (pqRatio < 0.10) ? "#c0392b"
-                     : (pqRatio < 0.50) ? "#d4a017"
-                     :                     "#2d8a4e";
+    // A nudge toward quantum-safe outputs, not an alarm: amber below half, green above.
+    const QString chunkColor = pqRatio < 0.50 ? "#f0b429" : "#51cf66";
     barPqRatio_->setStyleSheet(
         "QProgressBar { border: 1px solid #343b45; border-radius: 4px; "
         "background: #1a1f27; text-align: center; color: #9fb3c8; font-size: 10px; }"
@@ -6613,6 +6666,7 @@ void MainWindow::onRpcResult(const QString& method, const QJsonValue& result) {
         auto assetsObj = obj["assets"].toObject();
         if (assetsObj.isEmpty()) {
           lblAssets->setText("");  // No assets
+          lblAssets->setVisible(false);
         } else {
           QStringList assetLines;
           for (auto it = assetsObj.begin(); it != assetsObj.end(); ++it) {
@@ -6625,9 +6679,11 @@ void MainWindow::onRpcResult(const QString& method, const QJsonValue& result) {
             assetLines << QString("%1: %2").arg(shortId).arg(amount, 0, 'f', 4);
           }
           lblAssets->setText("Assets: " + assetLines.join(" | "));
+          lblAssets->setVisible(true);
         }
       } else if (lblAssets) {
         lblAssets->setText("");  // No assets field in response
+        lblAssets->setVisible(false);
       }
     } else {
       // Fallback for old format
@@ -15775,7 +15831,8 @@ void MainWindow::onListUTXOs() {
 
 void MainWindow::onUseMaxAmount() {
   // Get current balance and set it as amount (minus estimated fee)
-  QString balanceStr = lblBalance_->text();
+  // The label groups thousands ("636,799.99999731 DIN"); read the plain number.
+  QString balanceStr = lblBalance_->text().remove(',');
 
   // Extract numeric value from "X.XXXXXXXX DIN" format
   QRegularExpression re("([0-9]+\\.[0-9]+)");
