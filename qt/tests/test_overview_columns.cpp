@@ -263,6 +263,60 @@ private Q_SLOTS:
                                     .arg(table->columnWidth(c))));
         QVERIFY(table->columnWidth(0) > table->columnWidth(1));
     }
+    void windowShrinksPastTheTabNames() {
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, dir.path());
+        MainWindow window(dinero::qt::DaemonBootstrapOwner::ApplicationMain);
+        QTabWidget* tabs = nullptr;
+        for (auto* t : window.findChildren<QTabWidget*>())
+            for (int i = 0; i < t->count(); ++i)
+                if (t->tabToolTip(i) == "Overview" || t->tabText(i) == "Overview") tabs = t;
+        QVERIFY(tabs);
+        window.resize(1440, 900);
+        window.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&window));
+        QCoreApplication::processEvents();
+        QVERIFY(!tabs->tabText(0).isEmpty());
+        // With the names showing, the user drags the window narrower.
+        window.resize(1000, 900);
+        QCoreApplication::processEvents();
+        QVERIFY2(window.width() <= 1000,
+                 qPrintable(QString("window refused to shrink: stuck at %1 px (minimum %2 px)")
+                                .arg(window.width()).arg(window.minimumSizeHint().width())));
+        QVERIFY2(tabs->tabText(0).isEmpty(), "tabs did not switch to icons when the window shrank");
+    }
+    void subTabNamesAreNotCutOff() {
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, dir.path());
+        MainWindow window(dinero::qt::DaemonBootstrapOwner::ApplicationMain);
+        window.resize(1440, 900);
+        window.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&window));
+        QTabWidget* main = nullptr;
+        for (auto* t : window.findChildren<QTabWidget*>())
+            for (int i = 0; i < t->count(); ++i)
+                if (t->tabToolTip(i) == "Overview" || t->tabText(i) == "Overview") main = t;
+        QVERIFY(main);
+        for (auto* t : window.findChildren<QTabWidget*>()) {
+            if (t == main) continue;
+            QWidget* page = t;
+            while (page && page->parentWidget() != nullptr) {
+                if (main->indexOf(page) >= 0) { main->setCurrentWidget(page); break; }
+                page = page->parentWidget();
+            }
+            QCoreApplication::processEvents();
+            if (!t->isVisible()) continue;
+            QTabBar* bar = t->tabBar();
+            // macOS sizes tabs without the stylesheet padding, leaving no slack; a label
+            // that is allowed to elide then shows as "Colle…". Labels must never be cut.
+            QCOMPARE(bar->elideMode(), Qt::ElideNone);
+            for (int i = 0; i < t->count(); ++i)
+                QVERIFY2(bar->tabRect(i).width() >= bar->fontMetrics().horizontalAdvance(t->tabText(i)),
+                         qPrintable(QString("sub-tab '%1' narrower than its name").arg(t->tabText(i))));
+        }
+    }
     void tabNamesFitAtCommonWidths() {
         QTemporaryDir dir;
         QVERIFY(dir.isValid());
