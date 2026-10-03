@@ -50,6 +50,29 @@ private Q_SLOTS:
     QCOMPARE(dinero::qt::hashSampleCapacity(0, 0), 1);
   }
 
+  void newBlockStartsWhenTheHeightChanges() {
+    QVERIFY(!dinero::qt::startsNewBlock(-1, 122460));  // first sample of a session
+    QVERIFY(!dinero::qt::startsNewBlock(122460, 122460));
+    QVERIFY(dinero::qt::startsNewBlock(122460, 122461));
+  }
+
+  void newBlockRowsFadeFromBlueGreenToGrey() {
+    using dinero::qt::hashRowColor;
+    const auto grey = hashRowColor(false, false, false, 0);
+    QCOMPARE(grey.r, 151); QCOMPARE(grey.g, 163); QCOMPARE(grey.b, 174); QCOMPARE(grey.a, 150);
+    const auto fresh = hashRowColor(false, false, true, 0);
+    QVERIFY2(fresh.g > fresh.r + 60 && fresh.b > fresh.r + 60, "a new block's rows start blue-green");
+    QVERIFY(fresh.a > grey.a);
+    const auto half = hashRowColor(false, false, true, dinero::qt::kNewBlockFadeMs / 2);
+    QVERIFY(half.r > fresh.r && half.r < grey.r);  // part way back to grey
+    const auto done = hashRowColor(false, false, true, dinero::qt::kNewBlockFadeMs);
+    QCOMPARE(done.r, grey.r); QCOMPARE(done.g, grey.g); QCOMPARE(done.b, grey.b); QCOMPARE(done.a, grey.a);
+    // Your own found block stays orange, even on a fresh block.
+    const auto mine = hashRowColor(true, true, true, 0);
+    QCOMPARE(mine.r, 213); QCOMPARE(mine.g, 138); QCOMPARE(mine.b, 50); QCOMPARE(mine.a, 255);
+    QCOMPARE(hashRowColor(true, false, true, 0).a, 205);
+  }
+
   void compactDifficultyMatchesMinerOutput() {
     QCOMPARE(dinero::qt::compactDifficultyText(0x1d00cf7e),
              QStringLiteral("0x1d00cf7e"));

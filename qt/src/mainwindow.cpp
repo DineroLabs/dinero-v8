@@ -10886,6 +10886,10 @@ void MainWindow::updateMiningOutputCinematicFrame() {
           miningHashSamples_.constLast().hash != hash) {
         MiningHashSample liveSample;
         liveSample.nonce = nonce;
+        liveSample.height = height;
+        if (dinero::qt::startsNewBlock(miningTipHeight_, height))
+          miningTipChangedMs_ = QDateTime::currentMSecsSinceEpoch();
+        miningTipHeight_ = height;
         liveSample.hash = hash;
         liveSample.headerFields = headerFields;
         liveSample.renderedLine.setText(headerFields);
@@ -10920,13 +10924,12 @@ void MainWindow::updateMiningOutputCinematicFrame() {
     for (int visual = 0; visual < count; ++visual) {
       const int sampleIndex = count - 1 - visual;
       const MiningHashSample& sample = miningHashSamples_.at(sampleIndex);
-      if (sample.blockFound && sample.highlightUntilMs > nowMs) {
-        painter.setPen(QColor(213, 138, 50, 255));
-      } else if (sample.blockFound) {
-        painter.setPen(QColor(213, 138, 50, 205));
-      } else {
-        painter.setPen(QColor(151, 163, 174, 150));
-      }
+      // Rows on a block that just arrived fade from blue-green to grey, so a
+      // new prev/merkle/utreexo is noticeable; your own finds stay orange.
+      const bool onNewBlock = miningTipChangedMs_ > 0 && sample.height == miningTipHeight_;
+      const auto colour = dinero::qt::hashRowColor(sample.blockFound, sample.highlightUntilMs > nowMs,
+                                                   onNewBlock, nowMs - miningTipChangedMs_);
+      painter.setPen(QColor(colour.r, colour.g, colour.b, colour.a));
       painter.drawStaticText(
         QPointF(8,
                 frameSize.height() - 6 - visual * rowHeight - metrics.ascent()),
