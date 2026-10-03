@@ -551,6 +551,11 @@ private:
   // Mining tab. Adding the first tab emits that signal synchronously, so this
   // must be null until the mining output widget exists.
   QTextEdit* txtMiningOutput_ = nullptr;
+  // Mining output text size: - / + in its top-right corner and Cmd -/+/=.
+  int miningOutputFontPx_ = 10;
+  QPushButton* btnMiningZoomOut_ = nullptr;
+  QPushButton* btnMiningZoomIn_ = nullptr;
+  void applyMiningOutputFontSize(int px);
   QTabWidget* mainTabs_ = nullptr;
   QWidget* sendComposer_ = nullptr;
   QGroupBox* sendFormGroup_ = nullptr;
@@ -648,8 +653,11 @@ private:
     QStaticText renderedLine;
     bool blockFound = false;
     qint64 highlightUntilMs = 0;
+    bool startsNewBlock = false;
   };
   QVector<MiningHashSample> miningHashSamples_;
+  // Height the miner is working on; a change marks the first row of a new block.
+  int miningTipHeight_ = -1;
   QString miningSessionHeader_;
   QLabel* miningHashOverlay_ = nullptr;
   QHash<QString, quint64> transientMiningErrorGenerations_;

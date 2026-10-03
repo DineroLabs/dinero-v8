@@ -58,6 +58,26 @@ inline bool shouldRunHashEngine(bool mining, bool mining_tab_active,
   return mining && mining_tab_active;
 }
 
+struct HashRowColor {
+  int r = 0, g = 0, b = 0, a = 0;
+};
+
+// True when a sample at `height` is the first one on a new block. The first
+// sample of a session (no previous height) is not a new block.
+inline bool startsNewBlock(int previous_height, int height) {
+  return previous_height >= 0 && height != previous_height;
+}
+
+// Your own found block stays orange. The single row where a new block starts
+// (new prev/merkle/utreexo) is a slightly lighter shade of the usual grey and
+// scrolls away with the others.
+inline HashRowColor hashRowColor(bool block_found, bool found_highlight_active,
+                                 bool starts_new_block) {
+  if (block_found) return {213, 138, 50, found_highlight_active ? 255 : 205};
+  if (starts_new_block) return {196, 208, 219, 205};
+  return {151, 163, 174, 150};
+}
+
 inline int hashSampleCapacity(int viewport_height, int row_height) {
   return std::max(1, (std::max(0, viewport_height) - 12) /
                          std::max(1, row_height));
