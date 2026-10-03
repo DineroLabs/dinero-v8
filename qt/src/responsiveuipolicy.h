@@ -58,10 +58,6 @@ inline bool shouldRunHashEngine(bool mining, bool mining_tab_active,
   return mining && mining_tab_active;
 }
 
-// A block found elsewhere switches the miner to a new prev/merkle/utreexo.
-// Those rows start blue-green and fade to the normal grey over this time.
-inline constexpr int kNewBlockFadeMs = 6000;
-
 struct HashRowColor {
   int r = 0, g = 0, b = 0, a = 0;
 };
@@ -72,17 +68,14 @@ inline bool startsNewBlock(int previous_height, int height) {
   return previous_height >= 0 && height != previous_height;
 }
 
-// Your own found block stays orange and wins; rows on a block that arrived
-// `age_ms` ago fade from blue-green to the normal grey.
+// Your own found block stays orange. The single row where a new block starts
+// (new prev/merkle/utreexo) is a slightly lighter shade of the usual grey and
+// scrolls away with the others.
 inline HashRowColor hashRowColor(bool block_found, bool found_highlight_active,
-                                 bool on_new_block, qint64 age_ms) {
+                                 bool starts_new_block) {
   if (block_found) return {213, 138, 50, found_highlight_active ? 255 : 205};
-  const HashRowColor grey{151, 163, 174, 150};
-  if (!on_new_block || age_ms >= kNewBlockFadeMs) return grey;
-  const HashRowColor fresh{79, 209, 197, 235};
-  const double t = std::clamp(static_cast<double>(age_ms) / kNewBlockFadeMs, 0.0, 1.0);
-  auto mix = [t](int from, int to) { return static_cast<int>(from + (to - from) * t + 0.5); };
-  return {mix(fresh.r, grey.r), mix(fresh.g, grey.g), mix(fresh.b, grey.b), mix(fresh.a, grey.a)};
+  if (starts_new_block) return {196, 208, 219, 205};
+  return {151, 163, 174, 150};
 }
 
 inline int hashSampleCapacity(int viewport_height, int row_height) {
