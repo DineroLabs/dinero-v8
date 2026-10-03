@@ -100,6 +100,7 @@
 #include <QDesktopServices>
 #include <QSettings>
 #include <QShortcut>
+#include <QKeyEvent>
 #include <QLocale>
 #include <QUrl>
 #include <QFileInfo>
@@ -4801,6 +4802,7 @@ void MainWindow::setupUI() {
     // Mining output (label intentionally removed for cleaner layout)
     
     txtMiningOutput_ = new QTextEdit;
+    txtMiningOutput_->setObjectName("miningOutput");
     txtMiningOutput_->setReadOnly(true);
     txtMiningOutput_->setMinimumHeight(250); // Ensure minimum decent size
     txtMiningOutput_->setLineWrapMode(QTextEdit::NoWrap);
@@ -4832,6 +4834,69 @@ void MainWindow::setupUI() {
     miningHashOverlay_->setAttribute(Qt::WA_TransparentForMouseEvents);
     miningHashOverlay_->setStyleSheet("background: transparent;");
     miningHashOverlay_->hide();
+
+    // Text size controls in the top-right corner, on the status line. They are
+    // children of the text edit (not its viewport) so the live hash overlay,
+    // which is raised on every frame, never covers them.
+    const QString zoomStyle = QStringLiteral(
+      "QPushButton { background: #232830; color: #c9d2dc; border: 1px solid #3a414b; "
+      "border-radius: 4px; padding: 0; font-weight: 700; } "
+      "QPushButton:hover { background: #2d333c; } "
+      "QPushButton:disabled { color: #59616b; border-color: #2c323a; }");
+    btnMiningZoomOut_ = new QPushButton(QString::fromUtf8("\xE2\x88\x92"), txtMiningOutput_);
+    btnMiningZoomOut_->setObjectName("miningZoomOut");
+    btnMiningZoomOut_->setToolTip(QString::fromUtf8("Smaller text (\xE2\x8C\x98\xE2\x88\x92)"));
+    btnMiningZoomIn_ = new QPushButton("+", txtMiningOutput_);
+    btnMiningZoomIn_->setObjectName("miningZoomIn");
+    btnMiningZoomIn_->setToolTip(QString::fromUtf8("Larger text (\xE2\x8C\x98+)"));
+    for (QPushButton* zoom : {btnMiningZoomOut_, btnMiningZoomIn_}) {
+      zoom->setFixedSize(22, 20);
+      zoom->setFocusPolicy(Qt::NoFocus);
+      zoom->setCursor(Qt::PointingHandCursor);
+      zoom->setStyleSheet(zoomStyle);
+    }
+    connect(btnMiningZoomOut_, &QPushButton::clicked, this,
+            [this]() { applyMiningOutputFontSize(miningOutputFontPx_ - 1); });
+    connect(btnMiningZoomIn_, &QPushButton::clicked, this,
+            [this]() { applyMiningOutputFontSize(miningOutputFontPx_ + 1); });
+    // Keeps the buttons in the corner on resize and handles Cmd -, Cmd + and
+    // Cmd = while the mining output has focus (Ctrl on other platforms).
+    class MiningOutputZoomFilter : public QObject {
+    public:
+      MiningOutputZoomFilter(QTextEdit* out, QPushButton* minus, QPushButton* plus, std::function<void(int)> step)
+          : QObject(out), out_(out), minus_(minus), plus_(plus), step_(std::move(step)) {
+        out->installEventFilter(this);
+        place();
+      }
+      bool eventFilter(QObject*, QEvent* event) override {
+        if (event->type() == QEvent::Resize || event->type() == QEvent::Show) {
+          place();
+        } else if (event->type() == QEvent::KeyPress) {
+          auto* key = static_cast<QKeyEvent*>(event);
+          if (key->modifiers() & Qt::ControlModifier) {
+            if (key->key() == Qt::Key_Plus || key->key() == Qt::Key_Equal) { step_(+1); return true; }
+            if (key->key() == Qt::Key_Minus) { step_(-1); return true; }
+          }
+        }
+        return false;
+      }
+    private:
+      void place() {
+        const QRect area = out_->viewport()->geometry();
+        const int y = area.top() + 5;
+        plus_->move(area.right() - plus_->width() - 6, y);
+        minus_->move(plus_->x() - minus_->width() - 4, y);
+        minus_->raise();
+        plus_->raise();
+      }
+      QTextEdit* out_;
+      QPushButton* minus_;
+      QPushButton* plus_;
+      std::function<void(int)> step_;
+    };
+    new MiningOutputZoomFilter(txtMiningOutput_, btnMiningZoomOut_, btnMiningZoomIn_,
+                               [this](int delta) { applyMiningOutputFontSize(miningOutputFontPx_ + delta); });
+    applyMiningOutputFontSize(QSettings().value("mining/outputFontPx", 10).toInt());
     layout->addWidget(txtMiningOutput_, 10); // HUGE stretch factor = takes all remaining space!
     setMiningOutputCinematicEnabled(false);
     
@@ -10768,6 +10833,24 @@ void MainWindow::setMiningOutputCinematicEnabled(bool enabled) {
   viewport->update();
 }
 
+void MainWindow::applyMiningOutputFontSize(int px) {
+  constexpr int kMinPx = 6;
+  constexpr int kMaxPx = 18;
+  if (!txtMiningOutput_) return;
+  miningOutputFontPx_ = std::clamp(px, kMinPx, kMaxPx);
+  txtMiningOutput_->setStyleSheet(QString(
+    "QTextEdit { color: %2; font-family: \"%1\", \"SF Mono\", Menlo, monospace; "
+    "font-size: %4px; background-color: %3; }")
+    .arg(miningConsoleFontFamily(),
+         QString::fromLatin1(kMiningOutputTextColor),
+         QString::fromLatin1(kMiningOutputIdleBackground))
+    .arg(miningOutputFontPx_));
+  txtMiningOutput_->setFont(miningConsoleFont(miningOutputFontPx_, QFont::Medium));
+  if (btnMiningZoomOut_) btnMiningZoomOut_->setEnabled(miningOutputFontPx_ > kMinPx);
+  if (btnMiningZoomIn_) btnMiningZoomIn_->setEnabled(miningOutputFontPx_ < kMaxPx);
+  QSettings().setValue("mining/outputFontPx", miningOutputFontPx_);
+}
+
 void MainWindow::updateMiningOutputCinematicFrame() {
   const bool miningTabActive =
     mainTabs_ && miningTabWidget_ && mainTabs_->currentWidget() == miningTabWidget_;
@@ -10821,7 +10904,7 @@ void MainWindow::updateMiningOutputCinematicFrame() {
     frame.fill(Qt::transparent);
     QPainter painter(&frame);
     painter.setRenderHint(QPainter::TextAntialiasing, true);
-    const QFont font = miningConsoleFont(10, QFont::Medium);
+    const QFont font = miningConsoleFont(miningOutputFontPx_, QFont::Medium);
     painter.setFont(font);
     const QFontMetrics metrics(font);
     const int rowHeight = qMax(12, metrics.height() + 2);
@@ -10870,7 +10953,7 @@ void MainWindow::updateMiningOutputCinematicFrame() {
   painter.setRenderHint(QPainter::Antialiasing, false);
   painter.setRenderHint(QPainter::TextAntialiasing, false);
 
-  QFont hashFont = miningConsoleFont(10, QFont::Medium);
+  QFont hashFont = miningConsoleFont(miningOutputFontPx_, QFont::Medium);
   painter.setFont(hashFont);
 
   const QFontMetrics hashMetrics(hashFont);

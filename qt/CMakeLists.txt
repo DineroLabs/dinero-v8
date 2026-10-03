@@ -1403,6 +1403,16 @@ if(BUILD_TESTING)
   add_test(NAME CovenantsTab COMMAND test_covenants_tab)
   set_tests_properties(CovenantsTab PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 90)
 
+  add_executable(test_mining_output_zoom ${_wallet_test_sources} tests/test_mining_output_zoom.cpp)
+  target_link_libraries(test_mining_output_zoom PRIVATE
+    $<TARGET_PROPERTY:dinero-qt,LINK_LIBRARIES> Qt6::Test)
+  target_include_directories(test_mining_output_zoom PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src $<TARGET_PROPERTY:dinero-qt,INCLUDE_DIRECTORIES>)
+  target_compile_definitions(test_mining_output_zoom PRIVATE
+    QT_NO_KEYWORDS $<TARGET_PROPERTY:dinero-qt,COMPILE_DEFINITIONS>)
+  add_test(NAME MiningOutputZoom COMMAND test_mining_output_zoom)
+  set_tests_properties(MiningOutputZoom PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 90)
+
   add_executable(test_wallet_layout ${_wallet_test_sources} tests/test_wallet_layout.cpp)
   target_link_libraries(test_wallet_layout PRIVATE
     $<TARGET_PROPERTY:dinero-qt,LINK_LIBRARIES> Qt6::Test)
