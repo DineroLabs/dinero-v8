@@ -398,7 +398,12 @@ bool WalletService::EnsureRuntimeWalletBindings() {
         return false;
     }
 
-    wallet_mgr_->LoadAddressesIntoUTXOIndex();
+    try {
+        wallet_mgr_->LoadAddressesIntoUTXOIndex();
+    } catch (const std::exception& e) {
+        logger_interface_->error("[WalletService] Script inventory reload refused: " + std::string(e.what()));
+        return false;
+    }
 
     try {
         if (!wallet_mgr_->getHDWallet()) {

@@ -361,6 +361,14 @@ struct Transaction {
 // Transaction builder helper
 class TransactionSerializer {
 public:
+    // The staged Orchard family uses version 7 followed by two zero bytes.
+    // Under the historical parser this would mean zero inputs and outputs,
+    // which is not a valid transparent transaction. Never admit this family
+    // as a ten-byte historical transaction prefix in a block stream.
+    static bool HasOrchardEnvelopeMarker(const uint8_t* data, size_t size) {
+        return size >= 6 && data[0] == 7 && data[1] == 0 && data[2] == 0 &&
+               data[3] == 0 && data[4] == 0 && data[5] == 0;
+    }
     // Serialize integer types (little-endian)
     static void WriteUint32(std::vector<uint8_t>& out, uint32_t value);
     static void WriteUint64(std::vector<uint8_t>& out, uint64_t value);

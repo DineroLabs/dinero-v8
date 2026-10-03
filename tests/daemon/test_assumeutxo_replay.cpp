@@ -1,3 +1,12 @@
+#include "daemon/tx_relay_manager.h"
+#include "daemon/utreexo_tx_payload.h"
+#include "daemon/utreexo_tx_reader.h"
+#include "rpc/rpc_registry.h"
+din::Json rpc_mining_getjob(const ExecutionContext&, const din::Json&);
+din::Json rpc_mining_submit(const ExecutionContext&, const din::Json&);
+din::Json rpc_context_getblock(const ExecutionContext&, const din::Json&);
+#include "daemon/block_acceptor.h"
+#include "consensus/filter_commitment.h"
 // ============================================================================
 // AssumeUTXO Replay Engine unit tests (plan Task 6)
 // ============================================================================
@@ -17,7 +26,7 @@
 // which the block passes FULL ConnectBlock validation (coinbase subsidy
 // rule, 128-byte header rule, witness-commitment rules, utreexo root
 // commitment). ConnectBlock does not check PoW/merkle/prev-hash linkage —
-// those belong to header acceptance, outside the replay engine's contract.
+// the replay owner now runs header acceptance and identity checks itself.
 //
 // Genesis handling (mirrors fuzzer AND production ConnectTip): genesis
 // (height 0) is NOT UTXO-neutral — genesis coinbase outputs ARE persisted in
@@ -38,22 +47,135 @@
 // ============================================================================
 
 #include <gtest/gtest.h>
+#include "daemon/services/chainstate_service.h"
+#include "daemon/services/mempool_service.h"
+#include "daemon/services/config_service.h"
+#include "mining/block_assembler.h"
+#include "daemon/daemon_context.h"
+#include "common/ilogger.h"
+#include "storage/chain_db.h"
+#include "wallet/wallet_manager.h"
+#ifdef DINERO_TEST_ORCHARD_ORIGIN
+#include "wallet/runtime_origin_projection.h"
+#include "wallet/runtime_index_delivery.h"
+#endif
+#include <sqlite3.h>
+#include <filesystem>
+#include <future>
+#include <unistd.h>
 
 #include <string>
 #include <vector>
 
 #include "daemon/services/assumeutxo_replay.h"
+#include "daemon/config.h"
+#include "consensus/chainwork.h"
+#include "util/hex.h"
+#include "storage/shielded_cf_comparator.h"
+#include "../storage/shielded_store_fixture.h"
+#undef CHECK
+#ifdef DINERO_TEST_ORCHARD_ORIGIN
+#include "orchard_wallet.h"
+#include <secp256k1.h>
+#include <secp256k1_extrakeys.h>
+#include <secp256k1_schnorrsig.h>
+#include "consensus/orchard_block_coins.h"
+#include "consensus/script_verify.h"
+#include "consensus/orchard_block_filter.h"
+#include "consensus/orchard_forest_transition.h"
+#include "consensus/orchard_header.h"
+#include "consensus/orchard_state_root.h"
+#include "consensus/witness_commitment.h"
+#include "consensus/state_commitment.h"
+#include "consensus/block_lifecycle.h"
+#include "consensus/utreexo_maturity_leaf_activation.h"
+#include "daemon/runtime_block_reader.h"
+#include "storage/block_storage.h"
+#endif
 #include "consensus/utxo_set_digest.h"
 #include "consensus/block_validation.h"
 #include "consensus/chainparams.h"
 #include "consensus/consensus_utxo_set.h"
 #include "consensus/subsidy.h"
+#include "consensus/genesis_canonical.h"
+#include "consensus/merkle_root.h"
 #include "primitives/block.h"
 #include "primitives/transaction.h"
 
 namespace dinero {
 
+#ifdef DINERO_TEST_ORCHARD_ORIGIN
+struct RuntimeOriginProjectionTestAccess {
+    static auto Capture(WalletManager& wallet,uint64_t session) {return RuntimeOrdinaryDelivery::CaptureOriginDomain(wallet,session);}
+    static void Check(WalletManager& wallet,const RuntimeWalletOriginProjection& p) {RuntimeOrdinaryDelivery::CheckOriginDomain(wallet,p);}
+    static auto Create(const std::vector<uint8_t>& script) {
+        auto p=std::unique_ptr<RuntimeWalletOriginProjection>(new RuntimeWalletOriginProjection());
+        p->scripts_[script]="fixture";return p;
+    }
+    static void Append(RuntimeWalletOriginProjection& p,const Block& b,uint32_t height) {p.AppendValidated(b,height);}
+};
+#endif
+
+struct ShieldedStateStartupTestAccess {
+    static void Select(ChainstateService& service, CBlockIndex& tip) {
+        service.active_tip_ = &tip;
+        service.consensus_utxo_set_ = std::make_unique<consensus::ConsensusUTXOSet>();
+        service.consensus_utxo_set_->SetBestBlock(tip.hash,tip.height);
+    }
+    // Selected-parent history fixture only; no runtime mutation API.
+    static auto Boundary(ChainstateService& service) {
+        std::lock_guard<AnnotatedRecursiveMutex> lock(service.activation_mutex_);
+        return service.DeriveOrchardBoundaryFromSelectedHistoryUnderLock();
+    }
+    static void BoundaryState(ChainstateService& service, CBlockIndex& tip,
+        const assumeutxo::AssumeUtxoReplayEngine& replay) {
+        Select(service,tip);
+        for (const auto& [point,coin]:replay.ProvenUtxos())
+            if (!service.consensus_utxo_set_->AddCoin(point,coin)) throw std::runtime_error("fixture live coin");
+        service.consensus_utxo_set_->ReplaceForestGuarded(*replay.Forest());
+        service.shielded_tree_=*replay.ShieldedTree();
+        service.shielded_anchor_history_=*replay.ShieldedAnchors();
+        if (service.shielded_nullifiers_.Open(":memory:")!=consensus::shielded::NullifierSet::OpenResult::Ok ||
+            !service.shielded_nullifiers_.DeserializeContent(replay.ShieldedNullifiers()->SerializeContent()))
+            throw std::runtime_error("fixture nullifier state");
+    }
+    static void RemoveBoundaryCoin(ChainstateService& s,const OutPoint& point) {
+        s.consensus_utxo_set_->SpendCoin(point);
+    }
+    // First boundary fixture invokes the actual service entry points.
+    static bool ConnectBoundary(ChainstateService& s,CBlockIndex* next,std::string& error,bool& invalid) {
+        return s.ConnectTip(next,&error,&invalid);
+    }
+    static bool DisconnectBoundary(ChainstateService& s,CBlockIndex* next) {return s.DisconnectTip(next);}
+    static bool BoundaryTipIs(const ChainstateService& s,const CBlockIndex* tip) {return s.active_tip_==tip;}
+    static bool AuditBoundary(ChainstateService& s) {return s.VerifyConsensusJournalAtActiveTip();}
+    static bool TryChain(ChainstateService& service) {
+        if (!service.activation_mutex_.try_lock()) return false;
+        service.activation_mutex_.unlock(); return true;
+    }
+};
+
 namespace {
+
+Block SelectedGenesis() {
+    Block block;
+    block.header = BuildCanonicalGenesis(Params()).header;
+    Transaction coinbase;
+    if (!TransactionSerializer::Deserialize(coinbase, Params().genesis.genesisCoinbaseHex))
+        throw std::runtime_error("fixture genesis decode failed");
+    block.vtx.push_back(std::move(coinbase));
+    return block;
+}
+
+void SeedDirect(consensus::ConsensusUTXOSet& set) {
+    const auto genesis = SelectedGenesis();
+    const auto& tx = genesis.vtx.front();
+    for (uint32_t i = 0; i < tx.vout.size(); ++i) {
+        const auto& output = tx.vout[i];
+        ASSERT_TRUE(set.AddCoin(OutPoint(tx.GetTxid(), i), consensus::UTXOEntry(
+            output.value, output.scriptPubKey, 0, true, output.is_confidential, output.commitment)));
+    }
+}
 
 // Real coinbase, fuzzer-style (BIP34 height in scriptSig), paying exactly
 // the consensus subsidy to a deterministic height-keyed script.
@@ -94,12 +216,13 @@ std::vector<Block> BuildDeterministicChain(uint32_t n) {
     consensus::ConsensusUTXOSet set;
     consensus::BlockValidator validator(&set);
 
-    uint256 prev_hash;  // zero: stand-in for the pre-applied genesis hash
+    SeedDirect(set);
+    uint256 prev_hash = SelectedGenesis().GetHash();
     for (uint32_t h = 1; h <= n; ++h) {
         Block b;
         b.header.version = 1;
         b.header.prev_block_hash = prev_hash;
-        b.header.timestamp = 1772841600ULL + h * 120;  // fixed past base
+        b.header.timestamp = SelectedGenesis().header.timestamp + h * 120;  // fixed past base
         b.header.difficulty = 0x1d00ffff;
         b.header.nonce = 0;
         b.header.ZeroReserved();
@@ -137,6 +260,7 @@ TEST(AssumeUtxoReplay, ReplayReproducesDirectDigest) {
 
     // Direct application — the "snapshot creator's" view.
     consensus::ConsensusUTXOSet direct;
+    SeedDirect(direct);
     consensus::BlockValidator direct_validator(&direct);
     for (uint32_t i = 0; i < chain.size(); ++i) {
         const uint32_t h = i + 1;
@@ -153,6 +277,7 @@ TEST(AssumeUtxoReplay, ReplayReproducesDirectDigest) {
     // Replay engine — the verifier's view.
     assumeutxo::AssumeUtxoReplayEngine engine;
     std::string err;
+    ASSERT_TRUE(engine.SeedGenesis(SelectedGenesis(), err)) << err;
     for (uint32_t i = 0; i < chain.size(); ++i) {
         const uint32_t h = i + 1;
         ASSERT_TRUE(engine.ConnectAndAdvance(chain[i], h, chain[i].GetHash(), err))
@@ -184,8 +309,10 @@ TEST(AssumeUtxoReplay, TamperedBlockFailsValidation) {
     chain[4].vtx[0].vout[0].value =
         AmountUna::Una(chain[4].vtx[0].vout[0].value.GetUna() - 1);
 
+    chain[4].header.merkle_root = consensus::ComputeMerkleRoot(chain[4].vtx);
     assumeutxo::AssumeUtxoReplayEngine engine;
     std::string err;
+    ASSERT_TRUE(engine.SeedGenesis(SelectedGenesis(), err)) << err;
     for (uint32_t i = 0; i < 4; ++i) {
         const uint32_t h = i + 1;
         ASSERT_TRUE(engine.ConnectAndAdvance(chain[i], h, chain[i].GetHash(), err))
@@ -208,18 +335,7 @@ TEST(AssumeUtxoReplay, TamperedBlockFailsValidation) {
 // causes the test to fail (digests differ because b has genesis records, a
 // does not), confirming the assertion is live.
 TEST(AssumeUtxoReplay, SeedGenesisAddsRecordsNotLeaves) {
-    // Build a minimal synthetic genesis block (height 0): one coinbase tx.
-    // Genesis is never passed through ConnectBlock, so no ComputeUtreexoRootPure
-    // needed — utreexo_root can remain zeroed.
-    Block genesis;
-    genesis.header.version = 1;
-    genesis.header.prev_block_hash = uint256{};
-    genesis.header.timestamp = 1772841600ULL;
-    genesis.header.difficulty = 0x1d00ffff;
-    genesis.header.nonce = 0;
-    genesis.header.ZeroReserved();
-    genesis.vtx.push_back(MakeCoinbase(0));
-    genesis.header.merkle_root = genesis.vtx[0].GetTxid().AsUint256();
+    const Block genesis = SelectedGenesis();
 
     assumeutxo::AssumeUtxoReplayEngine a;  // unseeded
     assumeutxo::AssumeUtxoReplayEngine b;  // seeded
@@ -241,6 +357,7 @@ TEST(AssumeUtxoReplay, CapturesUndoTailWindow) {
     assumeutxo::AssumeUtxoReplayEngine engine;
     engine.SetUndoTailWindow(3);   // capture undo for the last 3 connected heights
     std::string err;
+    ASSERT_TRUE(engine.SeedGenesis(SelectedGenesis(), err)) << err;
     // genesis pre-applied per engine contract; replay 1..9
     // chain[h-1] is the block built for height h (builder: chain[i] -> height i+1)
     for (uint32_t h = 1; h < chain.size(); ++h) {
@@ -269,6 +386,7 @@ TEST(AssumeUtxoReplay, ExposesProvenSetAndStateRefs) {
     ASSERT_EQ(chain.size(), 5u);
     assumeutxo::AssumeUtxoReplayEngine engine;
     std::string err;
+    ASSERT_TRUE(engine.SeedGenesis(SelectedGenesis(), err)) << err;
     // chain[h-1] is the block built for height h
     for (uint32_t h = 1; h < chain.size(); ++h) {
         ASSERT_TRUE(engine.ConnectAndAdvance(chain[h-1], h, chain[h-1].GetHash(), err)) << err;
@@ -279,6 +397,256 @@ TEST(AssumeUtxoReplay, ExposesProvenSetAndStateRefs) {
     EXPECT_NE(engine.ShieldedNullifiers(), nullptr);
     EXPECT_NE(engine.ShieldedAnchors(), nullptr);
 }
+
+
+TEST(AssumeUtxoReplay, RequiresSelectedGenesisAndContiguousIdentity) {
+    const auto chain = BuildDeterministicChain(2);
+    ASSERT_EQ(chain.size(), 2u);
+    assumeutxo::AssumeUtxoReplayEngine engine;
+    std::string error;
+    const auto empty = engine.RecordsDigestHex();
+    EXPECT_FALSE(engine.ConnectAndAdvance(chain[0], 1, chain[0].GetHash(), error));
+    EXPECT_EQ(error, "replay requires seeded selected genesis");
+    auto wrong = SelectedGenesis();
+    wrong.vtx.front().vout.front().value = AmountUna::Una(1);
+    EXPECT_FALSE(engine.SeedGenesis(wrong, error));
+    EXPECT_EQ(engine.RecordsDigestHex(), empty);
+    wrong = SelectedGenesis();
+    ++wrong.header.nonce;
+    EXPECT_FALSE(engine.SeedGenesis(wrong, error));
+    ASSERT_TRUE(engine.SeedGenesis(SelectedGenesis(), error)) << error;
+    const auto baseline = engine.RecordsDigestHex();
+    EXPECT_FALSE(engine.SeedGenesis(SelectedGenesis(), error));
+    EXPECT_FALSE(engine.ConnectAndAdvance(chain[1], 2, chain[1].GetHash(), error));
+    EXPECT_FALSE(engine.ConnectAndAdvance(chain[0], 1, uint256{}, error));
+    wrong = chain[0];
+    wrong.header.prev_block_hash = uint256{};
+    EXPECT_FALSE(engine.ConnectAndAdvance(wrong, 1, wrong.GetHash(), error));
+    wrong = chain[0];
+    wrong.vtx.front().vout.front().value = AmountUna::Una(1);
+    EXPECT_FALSE(engine.ConnectAndAdvance(wrong, 1, wrong.GetHash(), error));
+    EXPECT_EQ(error, "replay block identity, parent or Merkle mismatch");
+    EXPECT_EQ(engine.Height(), 0u);
+    EXPECT_EQ(engine.RecordsDigestHex(), baseline);
+    ASSERT_TRUE(engine.ConnectAndAdvance(chain[0], 1, chain[0].GetHash(), error)) << error;
+}
+
+TEST(AssumeUtxoReplay, OwnsHeaderValidationBeforeCoinEffects) {
+    const auto chain = BuildDeterministicChain(2);
+    ASSERT_EQ(chain.size(), 2u);
+    assumeutxo::AssumeUtxoReplayEngine engine;
+    std::string error;
+    ASSERT_TRUE(engine.SeedGenesis(SelectedGenesis(), error)) << error;
+    const auto baseline = engine.RecordsDigestHex();
+    for (int field = 0; field < 3; ++field) {
+        auto wrong = chain[0];
+        if (field == 0) wrong.header.version = 0;
+        if (field == 1) wrong.header.timestamp = SelectedGenesis().header.timestamp;
+        if (field == 2) wrong.header.difficulty = 0;
+        EXPECT_FALSE(engine.ConnectAndAdvance(wrong, 1, wrong.GetHash(), error));
+        EXPECT_EQ(error, "replay header validation failed");
+        EXPECT_EQ(engine.RecordsDigestHex(), baseline);
+        EXPECT_EQ(engine.Height(), 0u);
+    }
+    ASSERT_TRUE(engine.ConnectAndAdvance(chain[0], 1, chain[0].GetHash(), error)) << error;
+    ASSERT_TRUE(engine.ConnectAndAdvance(chain[1], 2, chain[1].GetHash(), error)) << error;
+}
+
+TEST(AssumeUtxoReplay, TimeLocksUseOwnedAncestryWithoutGlobalIndex) {
+    const uint32_t saved = MutableParams().contextual_locks_activation_height;
+    struct Restore { uint32_t value; ~Restore() { MutableParams().contextual_locks_activation_height = value; } } restore{saved};
+    MutableParams().contextual_locks_activation_height = 1;
+    const auto chain = BuildDeterministicChain(102);
+    ASSERT_EQ(chain.size(), 102u);
+    assumeutxo::AssumeUtxoReplayEngine engine;
+    std::string error;
+    ASSERT_TRUE(engine.SeedGenesis(SelectedGenesis(), error)) << error;
+    for (uint32_t h = 1; h <= 101; ++h)
+        ASSERT_TRUE(engine.ConnectAndAdvance(chain[h-1], h, chain[h-1].GetHash(), error)) << error;
+    const auto before = engine.RecordsDigestHex();
+    auto block = chain[101];
+    Transaction spend;
+    spend.version = 2;
+    TxInput input;
+    input.prevout.txid = chain.front().vtx.front().GetTxid();
+    input.prevout.vout = 0;
+    input.sequence = (1U << 22) | 65535U;
+    spend.vin.push_back(input);
+    spend.vout.push_back(chain.front().vtx.front().vout.front());
+    block.vtx.push_back(spend);
+    block.header.merkle_root = consensus::ComputeMerkleRoot(block.vtx);
+    EXPECT_FALSE(engine.ConnectAndAdvance(block, 102, block.GetHash(), error));
+    EXPECT_NE(error.find("non-final-relative-time-lock"), std::string::npos) << error;
+    EXPECT_EQ(engine.RecordsDigestHex(), before);
+    EXPECT_EQ(engine.Height(), 101u);
+    block.vtx.back().vin.front().sequence = UINT32_MAX - 1;
+    block.vtx.back().lockTime = static_cast<uint32_t>(chain[95].header.timestamp);
+    block.header.merkle_root = consensus::ComputeMerkleRoot(block.vtx);
+    EXPECT_FALSE(engine.ConnectAndAdvance(block, 102, block.GetHash(), error));
+    EXPECT_NE(error.find("non-final-absolute-lock"), std::string::npos) << error;
+    EXPECT_EQ(engine.RecordsDigestHex(), before);
+    block.vtx.back().vin.front().sequence = 1U << 22;
+    block.vtx.back().lockTime = 0;
+    block.header.merkle_root = consensus::ComputeMerkleRoot(block.vtx);
+    EXPECT_FALSE(engine.ConnectAndAdvance(block, 102, block.GetHash(), error));
+    // A mature time lock reaches mandatory script validation; the unsigned
+    // fixture must still refuse and leave the actual replay state unchanged.
+    EXPECT_NE(error.find("Script validation failed"), std::string::npos) << error;
+    EXPECT_EQ(engine.RecordsDigestHex(), before);
+    ASSERT_TRUE(engine.ConnectAndAdvance(chain[101], 102, chain[101].GetHash(), error)) << error;
+
+
+}
+
+
+TEST(SelectedWalletHistory, ValidatesBeforeEffectsAndUsesOwnedBodies) {
+    const auto dir=std::filesystem::temp_directory_path()/("selected_wallet_history_"+std::to_string(getpid()));
+    std::filesystem::create_directories(dir);
+    WalletManager wallet(dir/"wallet"); wallet.create("selected"); wallet.open("selected");
+    auto blocks=BuildDeterministicChain(3); ASSERT_EQ(blocks.size(),3u);
+    wallet.addWatchScript(blocks.front().vtx.front().vout.front().scriptPubKey,"m/84'/1'/0'/0/0",false);
+    auto sql=[&](const char* statement) { ASSERT_EQ(sqlite3_exec(wallet.getCurrentDatabase(),statement,nullptr,nullptr,nullptr),SQLITE_OK); };
+    auto count=[&]() {
+        sqlite3_stmt* st=nullptr;
+        if(sqlite3_prepare_v2(wallet.getCurrentDatabase(),"SELECT COUNT(*) FROM utxos",-1,&st,nullptr)!=SQLITE_OK) throw std::runtime_error("query");
+        std::unique_ptr<sqlite3_stmt,decltype(&sqlite3_finalize)> row(st,sqlite3_finalize);
+        if(sqlite3_step(st)!=SQLITE_ROW) throw std::runtime_error("row");
+        return sqlite3_column_int64(st,0);
+    };
+    ChainDB db; ASSERT_EQ(db.init(dir/"chain"),Status::Ok);
+    const auto token=ChainWriteToken::CreateForTesting();
+    auto store=[&](const Block& body,uint32_t h) {
+        EXPECT_EQ(db.putBlock(token,body.GetHash(),body),Status::Ok);
+        EXPECT_EQ(db.putHeader(token,body.GetHash(),body.header,h,arith_uint256(h+1)),Status::Ok);
+    };
+    store(SelectedGenesis(),0);
+    for(uint32_t i=0;i<blocks.size();++i)store(blocks[i],i+1);
+    CBlockIndex tip(blocks.back().header,3);
+    ASSERT_EQ(db.setTip(token,tip.hash,3,arith_uint256(4)),Status::Ok);
+    ASSERT_EQ(db.setValidatedTip(token,tip.hash,3),Status::Ok);
+    ChainstateService service; service.setChainDB(&db); ShieldedStateStartupTestAccess::Select(service,tip);
+    std::string error;
+    { const auto lease=wallet.AcquireDatabaseLease();
+      EXPECT_FALSE(service.RescanWalletFromSelectedHistory(wallet,0,0,&error));
+      EXPECT_EQ(error,"selected-history-wallet-ownership-unavailable"); }
+    EXPECT_EQ(count(),0);
+    // Height indices deliberately point elsewhere. Actual ancestry is by hash.
+    ASSERT_EQ(db.putHeightIndex(token,1,SelectedGenesis().GetHash()),Status::Ok);
+    auto corrupt=blocks[0];corrupt.vtx[0].vout[0].value=AmountUna::Una(1);
+    ASSERT_EQ(db.putBlock(token,blocks[0].GetHash(),corrupt),Status::Ok);
+    EXPECT_FALSE(service.RescanWalletFromSelectedHistory(wallet,0,0,&error));
+    EXPECT_EQ(error,"selected-history-consensus-validation-failed");EXPECT_EQ(count(),0);
+    store(blocks[0],1);
+    // A selected, internally identified body must still pass actual consensus.
+    auto invalid=blocks.back();invalid.header.utreexo_root.SetNull();store(invalid,3);
+    tip=CBlockIndex(invalid.header,3);ShieldedStateStartupTestAccess::Select(service,tip);
+    ASSERT_EQ(db.setTip(token,tip.hash,3,arith_uint256(4)),Status::Ok);
+    ASSERT_EQ(db.setValidatedTip(token,tip.hash,3),Status::Ok);
+    EXPECT_FALSE(service.RescanWalletFromSelectedHistory(wallet,0,0,&error));
+    EXPECT_EQ(error,"selected-history-consensus-validation-failed");EXPECT_EQ(count(),0);
+    tip=CBlockIndex(blocks.back().header,3);ShieldedStateStartupTestAccess::Select(service,tip);
+    ASSERT_EQ(db.setTip(token,tip.hash,3,arith_uint256(4)),Status::Ok);
+    ASSERT_EQ(db.setValidatedTip(token,tip.hash,3),Status::Ok);
+    struct Observe { ChainstateService* service; ChainDB* db; const Block* corrupt; bool ran=false,unlocked=false; } observe{&service,&db,&corrupt};
+    sqlite3_set_authorizer(wallet.getCurrentDatabase(),[](void* opaque,int action,const char* table,const char*,const char*,const char*) {
+        auto& o=*static_cast<Observe*>(opaque);
+        if(!o.ran && action==SQLITE_READ && table && std::string_view(table)=="watch_scripts") {
+            o.ran=true;
+            o.unlocked=std::async(std::launch::async,[&]{return ShieldedStateStartupTestAccess::TryChain(*o.service);}).get();
+            // Mutate backing storage after acquisition: wallet effects must use
+            // the owned, already validated body, not read the database again.
+            if(o.db->putBlock(ChainWriteToken::CreateForTesting(),o.corrupt->GetHash(),*o.corrupt)!=Status::Ok) return SQLITE_DENY;
+        }
+        return SQLITE_OK;
+    },&observe);
+    EXPECT_EQ(service.RescanWalletFromSelectedHistory(wallet,0,0,&error),std::optional<uint32_t>(3))<<error;
+    sqlite3_set_authorizer(wallet.getCurrentDatabase(),nullptr,nullptr);
+    EXPECT_TRUE(observe.ran);EXPECT_TRUE(observe.unlocked);EXPECT_EQ(count(),1);
+    EXPECT_EQ(wallet.getCurrentBlockchainHeight(),3u);
+    store(blocks[0],1);
+    wallet.open("selected");
+    EXPECT_EQ(service.RescanWalletFromSelectedHistory(wallet,0,0,&error),std::optional<uint32_t>(3))<<error;
+    EXPECT_EQ(count(),1);
+    sql("CREATE TRIGGER selected_fail BEFORE UPDATE ON sync_meta BEGIN SELECT RAISE(ABORT,'fixture'); END;");
+    EXPECT_FALSE(service.RescanWalletFromSelectedHistory(wallet,0,0,&error));
+    EXPECT_EQ(count(),1);
+    sql("DROP TRIGGER selected_fail;");
+    EXPECT_EQ(service.RescanWalletFromSelectedHistory(wallet,0,0,&error),std::optional<uint32_t>(3))<<error;
+}
+
+
+#ifdef DINERO_TEST_ORCHARD_ORIGIN
+TEST(RuntimeOriginProjection, BindsCapturedWalletAndScriptDomain) {
+    const auto dir=std::filesystem::temp_directory_path()/("origin_wallet_domain_"+std::to_string(getpid()));
+    WalletManager wallet(dir);wallet.create("origin");wallet.open("origin");
+    const auto session=wallet.AcquireDatabaseLease()->Session();
+    {const auto lease=wallet.AcquireDatabaseLease();
+     EXPECT_THROW(RuntimeOriginProjectionTestAccess::Capture(wallet,session),std::runtime_error);}
+    auto p=RuntimeOriginProjectionTestAccess::Capture(wallet,session);
+    EXPECT_NO_THROW(RuntimeOriginProjectionTestAccess::Check(wallet,*p));
+    wallet.addWatchScript({0,20,1,2,3},"fixture-domain-path",false);
+    EXPECT_THROW(RuntimeOriginProjectionTestAccess::Check(wallet,*p),std::runtime_error);
+    p=RuntimeOriginProjectionTestAccess::Capture(wallet,session);
+    EXPECT_NO_THROW(RuntimeOriginProjectionTestAccess::Check(wallet,*p));
+    wallet.open("origin");
+    EXPECT_THROW(RuntimeOriginProjectionTestAccess::Check(wallet,*p),std::runtime_error);
+}
+
+TEST(RuntimeOriginProjection, KeepsSpentCoinsAndExactTransactionHistory) {
+    // Projection arithmetic only. Consensus authorization is tested separately
+    // by the existing owned replay suite; these spends are deliberately unsigned.
+    auto source=BuildDeterministicChain(3);ASSERT_EQ(source.size(),3u);
+    const auto owned=source[0].vtx[0].vout[0].scriptPubKey;
+    auto p=RuntimeOriginProjectionTestAccess::Create(owned);
+    RuntimeOriginProjectionTestAccess::Append(*p,source[0],1);
+    const auto point=TxOutPoint{source[0].vtx[0].GetTxid(),0};
+    const auto amount=source[0].vtx[0].vout[0].value.GetUna();
+    Transaction self;self.version=2;TxInput input;input.prevout=point;self.vin.push_back(input);
+    TxOutput change;change.value=AmountUna::Una(amount-100);change.scriptPubKey=owned;self.vout.push_back(change);
+    auto replacement=source[1];replacement.vtx.push_back(self);
+    RuntimeOriginProjectionTestAccess::Append(*p,replacement,2);
+    ASSERT_EQ(p->Coins().size(),2u);ASSERT_TRUE(p->Coins().at(point).spent);
+    EXPECT_EQ(p->Coins().at(point).spent->txid,self.GetTxid());
+    EXPECT_EQ(p->Coins().at(point).spent->height,2u);
+    EXPECT_EQ(p->Coins().at(point).spent->time,uint64_t(replacement.header.timestamp));
+    ASSERT_EQ(p->Transactions().size(),2u);
+    EXPECT_EQ(p->Transactions()[1].credited,amount-100);
+    EXPECT_EQ(p->Transactions()[1].debited,amount);
+    EXPECT_EQ(p->Transactions()[1].transaction.Serialize(TxSerializationMode::WithWitness),self.Serialize(TxSerializationMode::WithWitness));
+    auto outgoing=self;outgoing.vin[0].prevout={self.GetTxid(),0};
+    outgoing.vout[0].scriptPubKey=source[2].vtx[0].vout[0].scriptPubKey;
+    auto last=source[2];last.vtx.push_back(outgoing);
+    RuntimeOriginProjectionTestAccess::Append(*p,last,3);
+    ASSERT_EQ(p->Transactions().size(),3u);EXPECT_EQ(p->Transactions().back().credited,0u);
+    EXPECT_EQ(p->Transactions().back().debited,amount-100);
+    EXPECT_TRUE(p->Coins().at({self.GetTxid(),0}).spent.has_value());
+    EXPECT_THROW(RuntimeOriginProjectionTestAccess::Append(*p,last,3),std::runtime_error);
+    auto unsupported=source[0];unsupported.vtx[0].vout[0].is_confidential=true;
+    auto other=RuntimeOriginProjectionTestAccess::Create(owned);
+    EXPECT_THROW(RuntimeOriginProjectionTestAccess::Append(*other,unsupported,1),std::runtime_error);
+}
+
+#else
+TEST(RuntimeOriginProjection, UnavailableWithoutBackend) {
+    ChainstateService service;
+    WalletManager wallet(std::filesystem::temp_directory_path()/("origin_backend_off_"+std::to_string(getpid())));
+    // No wallet or chain is opened: the absent implementation must refuse
+    // without acquiring either source or silently constructing a projection.
+    const auto origin=service.getRuntimeWalletOrigin(wallet,0);
+    EXPECT_FALSE(origin.ok());
+    EXPECT_EQ(origin.status(),Status::Internal);
+}
+#endif
+
+#include "selected_parent_history_checks.h"
+#include "orchard_first_boundary_checks.h"
+#include "orchard_selected_admission_checks.h"
+#include "orchard_typed_selection_checks.h"
+#include "orchard_mining_template_checks.h"
+#include "orchard_raw_ingress_checks.h"
+#include "orchard_mining_rpc_checks.h"
+#include "orchard_canonical_pool_checks.h"
+#include "orchard_block_rpc_checks.h"
 
 }  // namespace dinero
 

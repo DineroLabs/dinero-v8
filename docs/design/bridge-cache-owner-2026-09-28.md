@@ -1,0 +1,7 @@
+# Prepared bridge transaction-proof cache invalidation
+
+Preparation retains cache ownership and allocates the replacement generation identity before canonical commit. Abandon preserves entries, LRU state and generation. Publication swaps the transaction cache, LRU list/index and generation, updates eviction statistics and releases ownership without allocation, logging or external callbacks. The bridge must outlive the thread-affine object; callers must not reenter cache APIs while held. Existing immediate invalidation delegates to the prepared operation. Block-proof cache and queue ownership remain separate.
+
+Transaction proof generation captures the cache generation before reading the forest commitment and rechecks it before cache lookup and result publication. Invalidation or ClearCache during generation causes refusal without refilling the cache, even at the same commitment. This is in-process invalidation ownership, not a persistent receipt, independent proof-validity certificate, atomic cross-input forest/UTXO snapshot, installed notification provider, whole-node reorg qualification or readiness. Cache insertion allocation failures and unrelated queue/block-cache behavior are outside this change. Mainnet remains unset.
+
+Generation checks are as-of checks: a later tip change can invalidate a returned result. Existing callers still need their normal selected-chain/proof validation. This change does not certify a proof against a persistent or independently validated chain snapshot.

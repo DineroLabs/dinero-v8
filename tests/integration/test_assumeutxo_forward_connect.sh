@@ -839,27 +839,28 @@ if [[ "$PREBASE_MEMPOOL_MODE" == "1" ]]; then
     [[ "$CROSSED" == "1" ]] || fail "stateless consumer did not cross to net tip $NET_TIP (forest would not reflect the spend)"
     info "consumer crossed to tip $NET_TIP — forest now reflects the post-base spend"
 
-    # Helper: build an unsigned raw tx spending <txid>:<vout> and submit it. The
-    # mempool input lookup (the fix's site) runs BEFORE signature validation, so
-    # the error string alone tells us whether the input RESOLVED+AUTHORIZED:
-    #   - resolved+authorized -> fails later (unsigned) with a NON-"not found" error
-    #   - missed/rejected      -> "Input UTXO not found: <txid>:<vout>"
+    # Unsigned transactions must both be refused. The live coin reaches script
+    # checking; checked absence of the spent frozen coin is missing-inputs.
+    # Preserve structured replies and decoded identities, then check membership.
     DST="$(rpc "$CON_RPC" "$CON_DIR" wallet.getnewaddress '[]' | jq -r '.result.address // .result // empty')"
     [[ -n "$DST" ]] || fail "consumer wallet.getnewaddress failed"
-    submit_spend_err() {  # <txid> <vout> -> prints the mempool error text
-        local txid="$1" vout="$2"
-        local raw
+    submit_spend_err() {  # <txid> <vout> <label> -> error text for diagnostics
+        local txid="$1" vout="$2" label="$3" raw decoded
         raw="$(rpc "$CON_RPC" "$CON_DIR" wallet.createrawtransaction \
               "[[{\"txid\":\"$txid\",\"vout\":$vout}],{\"$DST\":1.0}]" \
-              | jq -r '.result.hex // .result // empty')"
-        [[ -n "$raw" ]] || { echo "CREATE_FAILED"; return; }
-        rpc "$CON_RPC" "$CON_DIR" wallet.sendrawtransaction "[\"$raw\"]" 2>/dev/null \
-            | jq -r '(.error.message // .result.error // .result // "") | tostring'
+              | jq -er '.result.hex // .result | select(type == "string" and length > 0)')" || return 1
+        decoded="$(rpc "$CON_RPC" "$CON_DIR" wallet.decoderawtransaction "[\"$raw\"]" \
+              | jq -er '.result.txid | select(type == "string" and test("^[0-9a-fA-F]{64}$"))')" || return 1
+        printf '%s\n' "$decoded" > "$WORK/prebase-$label-txid"
+        rpc "$CON_RPC" "$CON_DIR" wallet.sendrawtransaction "[\"$raw\"]" \
+            > "$WORK/prebase-$label-response.json" || return 1
+        jq -er '(.error // .result.error).message | select(type == "string")' \
+            "$WORK/prebase-$label-response.json"
     }
 
     NF='Input UTXO not found'
-    A_ERR="$(submit_spend_err "$LIVE_TXID" 0)"
-    B_ERR="$(submit_spend_err "$SPB_TXID" "$SPB_VOUT")"
+    A_ERR="$(submit_spend_err "$LIVE_TXID" 0 A)" || fail "live pre-base fixture did not return a structured refusal"
+    B_ERR="$(submit_spend_err "$SPB_TXID" "$SPB_VOUT" B)" || fail "spent pre-base fixture did not return a structured refusal"
     info "A (live pre-base) sendrawtransaction -> ${A_ERR:0:120}"
     info "B (spent post-base) sendrawtransaction -> ${B_ERR:0:120}"
 
@@ -872,19 +873,30 @@ if [[ "$PREBASE_MEMPOOL_MODE" == "1" ]]; then
             ck_fail "N1 (neuter): expected '$NF' for the live coin on the un-fixed binary; got: $A_ERR"
         fi
     else
-        # FIXED expectation.
-        # A: the live pre-base input RESOLVES+AUTHORIZES (not the not-found reject).
-        if [[ "$A_ERR" != *"$NF"* ]]; then
-            ck_pass "A (RESOLVE): live pre-base coin admitted past input lookup (no '$NF'): ${A_ERR:0:80}"
+        # Both refusals must identify the intended stage, not an arbitrary RPC,
+        # setup or service error. No legacy wording is treated as admission.
+        if jq -e '(.error // .result.error) as $e | $e.code == -25 and
+            ($e.message | startswith("txn-validation-failed: Transaction validation failed: Script validation failed for input 0:"))' \
+            "$WORK/prebase-A-response.json" >/dev/null; then
+            ck_pass "A (RESOLVE): live pre-base coin reached script validation and unsigned transaction was refused"
         else
-            ck_fail "A (RESOLVE): live pre-base coin still rejected with '$NF' — fix ineffective"
+            ck_fail "A (RESOLVE): expected script-stage refusal for the live coin; got: $A_ERR"
         fi
-        # B (THE double-spend gate): the spent-post-base coin MUST be rejected. It
-        # resolves from the frozen pre-base store but its forest leaf is gone -> authorize fails.
-        if [[ "$B_ERR" == *"$NF"* ]]; then
-            ck_pass "B (AUTHORIZE): spent-post-base coin correctly REJECTED with '$NF' (forest-leaf-absent gate held)"
+        if jq -e --arg expected "missing-inputs: Transaction validation failed: Input UTXO not found: ${SPB_TXID}:${SPB_VOUT}" \
+            '(.error // .result.error) as $e | $e.code == -26 and $e.message == $expected' \
+            "$WORK/prebase-B-response.json" >/dev/null; then
+            ck_pass "B (MISSING): spent-post-base coin refused as checked missing input"
         else
-            ck_fail "B (AUTHORIZE): spent-post-base coin was ADMITTED (double-spend!) — forest gate failed: ${B_ERR:0:80}"
+            ck_fail "B (MISSING): expected exact missing-input refusal; got: $B_ERR"
+        fi
+        rpc "$CON_RPC" "$CON_DIR" mempool.getrawmempool '[false]' > "$WORK/prebase-pool-after.json" \
+            || fail "could not inspect pool after refusals"
+        if jq -e --arg a "$(cat "$WORK/prebase-A-txid")" --arg b "$(cat "$WORK/prebase-B-txid")" \
+            '.error == null and (.result | type == "array" and index($a) == null and index($b) == null)' \
+            "$WORK/prebase-pool-after.json" >/dev/null; then
+            ck_pass "C (NO ADMISSION): both refused transaction identities are absent from the actual mempool"
+        else
+            ck_fail "C (NO ADMISSION): pool response unavailable or a refused transaction is present"
         fi
     fi
 

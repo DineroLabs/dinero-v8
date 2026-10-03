@@ -105,6 +105,8 @@ uint64_t Mempool::computeVWUForTx(const Transaction&) const {
 // 2 vault observer stubs. See the Vault entry in the file header for why
 // these stay stubbed even though vault_runtime.cpp lives in dinero_core.
 
+// Some real RPC adapter fixtures already link the actual vault runtime.
+#ifndef DINERO_TEST_REAL_VAULT_RUNTIME
 namespace dinero::vault {
 
 void NotifyVaultTipConnected(uint64_t /*height*/) {
@@ -121,3 +123,4 @@ void ObserveWalletOutput(const std::array<uint8_t, 32>& /*txid_raw*/,
 }
 
 }  // namespace dinero::vault
+#endif

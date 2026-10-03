@@ -269,6 +269,12 @@ public:
     /** Return whether a header identity is known without exporting its pointer. */
     bool ContainsHeader(const uint256& hash) const;
 
+    /** Validate an observed block header and return its exact parent-derived
+     * height under the selector lock, without inserting it, changing best work,
+     * or certifying a body. Unknown parents/genesis identities refuse. */
+    std::optional<uint32_t> ValidateObservedHeaderHeight(const BlockHeader& header);
+
+
     /**
      * @brief Build a block locator from the best header, entirely under the lock.
      *

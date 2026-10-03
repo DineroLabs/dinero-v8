@@ -30,7 +30,10 @@ if(DINERO_USE_VENDORED_DEPS)
     message(FATAL_ERROR "RocksDB submodule not initialized. Run: git submodule update --init --recursive")
   endif()
 
-  set(ROCKSDB_SOURCE_DIR  "${CMAKE_SOURCE_DIR}/third_party/rocksdb")
+  include(${CMAKE_CURRENT_LIST_DIR}/PrepareRocksDB.cmake)
+  set(ROCKSDB_SOURCE_DIR "${CMAKE_BINARY_DIR}/_deps/rocksdb-source")
+  dinero_prepare_rocksdb_source("${CMAKE_SOURCE_DIR}/third_party/rocksdb"
+                               "${ROCKSDB_SOURCE_DIR}")
   set(ROCKSDB_BINARY_DIR  "${CMAKE_BINARY_DIR}/_deps/rocksdb-build")
   set(ROCKSDB_INSTALL_DIR "${CMAKE_BINARY_DIR}/_deps/rocksdb-install")
 
@@ -120,7 +123,11 @@ if(DINERO_USE_VENDORED_DEPS)
     )
   endif()
 
-  set(_rocksdb_build_parallel 8)
+  set(DINERO_ROCKSDB_BUILD_JOBS 8 CACHE STRING "Maximum compiler jobs in the nested RocksDB build")
+  if(NOT DINERO_ROCKSDB_BUILD_JOBS MATCHES "^[1-9][0-9]*$")
+    message(FATAL_ERROR "DINERO_ROCKSDB_BUILD_JOBS must be a positive integer")
+  endif()
+  set(_rocksdb_build_parallel ${DINERO_ROCKSDB_BUILD_JOBS})
   if(MSVC)
     # RocksDB compiles many translation units into one static library target.
     # Visual Studio parallel builds otherwise race on rocksdb.pdb and fail with

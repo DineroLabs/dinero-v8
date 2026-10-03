@@ -1,6 +1,29 @@
+#include "mining/orchard_mining_template.h"
+#include "wallet/selected_history.h"
+#include <sqlite3.h>
 #include "consensus/utreexo_maturity_leaf_activation.h"
 #include "consensus/csn_replay_data.h"
 #include "daemon/services/chainstate_service.h"
+#ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
+#include "daemon/orchard_connected_block_effects.h"
+#include "wallet/runtime_origin_projection.h"
+#include "wallet/runtime_index_delivery.h"
+#include "daemon/runtime_block_reader.h"
+#include "daemon/runtime_reorg_store.h"
+#include "daemon/runtime_block_outbox.h"
+#include "wallet/runtime_account_replay.h"
+#include "daemon/orchard_chainstate_write.h"
+#include "consensus/orchard_block_staging.h"
+#include "consensus/orchard_resources.h"
+#include "consensus/orchard_header.h"
+#include "consensus/orchard_block_filter.h"
+#include "consensus/orchard_forest_transition.h"
+#include "consensus/orchard_state_root.h"
+#include "consensus/merkle_root.h"
+#include "consensus/witness_commitment.h"
+#endif
+#include "consensus/orchard_profile.h"
+#include <tuple>
 #include "consensus/assumeutxo_fork_guard.h"
 #include "daemon/chainstate_recovery_marker.h"
 #include "daemon/chainstate_commit_batch.h"
@@ -18,6 +41,7 @@
 #include "consensus/merkle_root.h"  // torn-body guard on replay reads
 #include "daemon/services/config_service.h"
 #include "daemon/config.h"
+#include "daemon/prepared_pool_tip.h"
 #include "daemon/services/p2p_service.h"  // Phase C.1 v2: For block broadcasting
 #include "daemon/services/mining_service.h"  // Phase 40: For ActivateBestChain service notifications
 #include "daemon/services/mempool_service.h"  // Phase 40: For ActivateBestChain service notifications
@@ -114,6 +138,18 @@ namespace dinero {
 extern std::recursive_mutex g_block_index_mutex;
 
 namespace {
+// A retained delivery log survives rollback below activation. Unsupported
+// execution paths must not create an unrecorded canonical transition.
+bool HasRuntimeDeliveryHistory(const ChainDB& db) {
+    std::string value;
+    const auto head=db.getRaw("runtime_orchard_outbox:v1:head",value);
+    if(head==Status::Ok)return true;
+    if(head!=Status::NotFound)throw std::runtime_error("runtime delivery head unavailable");
+    const auto first=db.getRaw("runtime_orchard_outbox:v1:event:0000000000000001",value);
+    if(first!=Status::NotFound)throw std::runtime_error("runtime delivery head missing or unavailable");
+    return false;
+}
+
 constexpr const char* kActivationLastErrorKey = "activation_last_error";
 constexpr const char* kActivationLastErrorTimeKey = "activation_last_error_time";
 constexpr const char* kActivationFailureStreakKey = "activation_failure_streak";
@@ -1564,6 +1600,34 @@ bool ChainstateService::LoadShieldedState() {
 }
 
 bool ChainstateService::PersistShieldedState() const {
+    std::lock_guard<AnnotatedRecursiveMutex> guard(activation_mutex_);
+    if (chain_db_) {
+        const auto retired = chain_db_->getLegacyRetirementState();
+        if (retired.ok()) {
+            // Retirement owns these bytes. Shutdown and legacy notifications
+            // may confirm an unchanged cache, but must never rewrite the
+            // frozen store or its fallback files from stale process memory.
+            const auto frontier = chain_db_->getShieldedState(ChainDB::ShieldedStateRecord::Frontier);
+            const auto anchors = chain_db_->getShieldedState(ChainDB::ShieldedStateRecord::AnchorHistory);
+            const auto memory_frontier = shielded_tree_.SerializeFrontier();
+            const auto memory_anchors = shielded_anchor_history_.SerializePersistenceBytes();
+            const auto root = ComputeShieldedRoot();
+            const auto snapshot = CurrentShieldedStateSnapshot();
+            return frontier.ok() && anchors.ok() && root &&
+                *frontier == std::string(memory_frontier.begin(), memory_frontier.end()) &&
+                *anchors == std::string(memory_anchors.begin(), memory_anchors.end()) &&
+                *root == retired->record.legacy_state_root &&
+                snapshot.root == retired->record.tree_root &&
+                snapshot.tree_size == retired->record.tree_size &&
+                snapshot.nullifier_count == retired->record.nullifier_count;
+        }
+        // Old-schema stores have no retirement namespace. Preserve their
+        // historical path; unavailable or malformed separated stores do not
+        // authorize a fallback-file write.
+        if (retired.status() != Status::NotFound &&
+            !(retired.status() == Status::Invalid && !chain_db_->hasSeparatedShieldedState()))
+            return false;
+    }
     if (shielded_frontier_path_.empty()) {
         return false;
     }
@@ -1648,12 +1712,19 @@ bool ChainstateService::PersistShieldedState() const {
 
 bool ChainstateService::PersistImportedShieldedState(const uint256& base_hash,
                                                    uint32_t base_height) const {
+    std::lock_guard<AnnotatedRecursiveMutex> guard(activation_mutex_);
+    if (!chain_db_) return false;
+    const auto retired = chain_db_->getLegacyRetirementState();
+    // A legacy import cannot replace a retired pool. A future Orchard snapshot
+    // path must authenticate and move the complete composite state atomically.
+    if (retired.ok() || (retired.status() != Status::NotFound &&
+        !(retired.status() == Status::Invalid && !chain_db_->hasSeparatedShieldedState())))
+        return false;
     // LoadSnapshot has already authenticated the complete imported state.
     // SQLite is only a cache: startup discards its rows when ChainDB has none.
     // Replace the authoritative nullifiers with the imported set, together
     // with the frontier, anchors and marker, in one durable batch. This also
     // removes stale rows when importing an empty or different snapshot set.
-    if (!chain_db_) return false;
     const auto token = ChainWriteToken::CreateForTesting();
     rocksdb::WriteBatch batch;
     if (!chain_db_->deleteAllShieldedNullifiers(token, &batch).ok()) return false;
@@ -1918,7 +1989,117 @@ std::optional<uint256> ChainstateService::PredictPostBlockShieldedRootForTemplat
     return predicted;
 }
 
+bool ChainstateService::AuditSelectedOrchardTipUnderLock(std::string* reason) const {
+    AssertActivationLockHeld("Orchard selected-tip alignment");
+    const auto fail_orchard = [&](const char* message) {
+        if (reason) *reason = message;
+        return false;
+    };
+    const bool selected_orchard = active_tip_ &&
+        consensus::OrchardActiveForHeight(Params(), active_tip_->height);
+    const auto orchard_state = chain_db_ ? chain_db_->getOrchardState() :
+        StatusOr<storage::OrchardStoredState>(Status::NotFound);
+#ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
+        if (!selected_orchard || !orchard_state.ok() || !chain_db_ || !block_storage_ ||
+            !consensus_utxo_set_ || GetConfig().utreexo_stateless)
+            return fail_orchard("selected stateful restore is unavailable");
+        try {
+            const auto& tip = *active_tip_;
+            if (consensus_utxo_set_->GetBestBlock() != tip.hash ||
+                consensus_utxo_set_->GetHeight() != tip.height)
+                return fail_orchard("restored memory tip disagrees with active tip");
+            const auto body = ReadRuntimeBlockUnderLock(*chain_db_, block_storage_.get(), tip.hash, tip.height);
+            const auto metadata = chain_db_->getHeaderMetadata(tip.hash);
+            if (!body.ok() || !body->IsOrchardProfile() || !metadata.ok())
+                return fail_orchard("indexed body or metadata unavailable");
+            const auto& m = *metadata;
+            const auto& header = body->Orchard().Header();
+            if (tip.prev_hash != header.prev_block_hash || tip.version != header.version ||
+                tip.merkle_root != header.merkle_root || tip.timestamp != header.timestamp ||
+                tip.bits != header.difficulty || tip.nonce != header.nonce ||
+                ChainworkFromHex(tip.chainwork) != m.chainwork ||
+                (m.status_flags & (BLOCK_FAILED_VALID | BLOCK_FAILED_CHILD)) ||
+                (m.status_flags & (BLOCK_HAVE_DATA | BLOCK_HAVE_UNDO)) != (BLOCK_HAVE_DATA | BLOCK_HAVE_UNDO) ||
+                !m.undo_size ||
+                std::tie(tip.status, tip.file_number, tip.data_pos, tip.data_size, tip.undo_file, tip.undo_pos, tip.undo_size) !=
+                std::tie(m.status_flags, m.file_number, m.data_pos, m.data_size, m.undo_file, m.undo_pos, m.undo_size))
+                return fail_orchard("active index disagrees with durable locators");
+            const auto undo = chain_db_->getUndo(tip.hash);
+            const auto disk_undo = block_storage_->readUndo({m.undo_file, m.undo_pos, m.undo_size});
+            if (!undo.ok() || !disk_undo.ok() || undo->Serialize() != *disk_undo)
+                return fail_orchard("flatfile and chainstate undo disagree");
+            const auto parent = chain_db_->getHeader(header.prev_block_hash);
+            if (!parent.ok()) return fail_orchard("selected parent unavailable");
+            const bool witness = Params().enforce_witness_commitment &&
+                tip.height >= Params().witness_commitment_enforcement_height;
+            // The strict indexed body and the embedded commit body must be
+            // byte-identical, including the Utreexo suffix outside the tx root.
+            if (body->Orchard().WireBytes() != consensus::ReadStoredOrchardBlock(
+                    *chain_db_, tip.hash, witness).WireBytes())
+                return fail_orchard("flatfile and committed body disagree");
+            ChainWriteToken token;
+            const auto forest_lock = consensus_utxo_set_->LockForestShared();
+            consensus::AuditOrchardChainstateTipUnderLock(*chain_db_, token, *body->Context(),
+                *parent, consensus_utxo_set_->GetForest(), witness);
+            return true;
+        } catch (const std::exception&) {
+            return fail_orchard("tip-local consistency audit failed");
+        }
+#else
+        return fail_orchard("binary has no Orchard runtime support");
+#endif
+}
+
 bool ChainstateService::VerifyConsensusJournalAtActiveTip() {
+    std::lock_guard<AnnotatedRecursiveMutex> activation_lock(activation_mutex_);
+    // Orchard's commit record is mandatory. Never route its state through the
+    // optional legacy journal or let a failed check consume the startup gate.
+    const auto fail_orchard = [&](const char* reason) {
+        EnterSafeMode(std::string("orchard-startup-state: ") + reason);
+        return false;
+    };
+    if (!consensus::OrchardProfileConfigurationValid(Params()))
+        return fail_orchard("invalid selected profile");
+    // Retained delivery history remains mandatory below activation too. Probe
+    // the origin as well as the head so a missing head cannot hide the log.
+    if (chain_db_) {
+        std::string delivery;
+        const auto head_status=chain_db_->getRaw("runtime_orchard_outbox:v1:head",delivery);
+        const auto origin_status=chain_db_->getRaw("runtime_orchard_outbox:v1:event:0000000000000001",delivery);
+        if ((head_status!=Status::Ok && head_status!=Status::NotFound) ||
+            (origin_status!=Status::Ok && origin_status!=Status::NotFound))
+            return fail_orchard("cannot read delivery origin");
+        if (head_status==Status::Ok || origin_status==Status::Ok) {
+#ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
+            // This bounded check covers origin/head and current service state;
+            // consumers still validate every page from their applied cursor.
+            if (!getRuntimeDeliveryPage({},1).ok())
+                return fail_orchard("delivery source disagrees with restored chainstate");
+#else
+            return fail_orchard("delivery source support unavailable");
+#endif
+        }
+    }
+    const bool selected_orchard = active_tip_ &&
+        consensus::OrchardActiveForHeight(Params(), active_tip_->height);
+    const auto orchard_state = chain_db_ ? chain_db_->getOrchardState() :
+        StatusOr<storage::OrchardStoredState>(Status::NotFound);
+    if (!orchard_state.ok() && orchard_state.status() != Status::NotFound &&
+        !(chain_db_ && orchard_state.status() == Status::Invalid && !chain_db_->hasSeparatedShieldedState()))
+        return fail_orchard("cannot read stored Orchard state");
+    const auto retired = chain_db_ ? chain_db_->getLegacyRetirementState() :
+        StatusOr<storage::LegacyRetirementState>(Status::NotFound);
+    if (!retired.ok() && retired.status() != Status::NotFound &&
+        !(chain_db_ && retired.status() == Status::Invalid && !chain_db_->hasSeparatedShieldedState()))
+        return fail_orchard("cannot read stored retirement state");
+    const auto persisted_tip = chain_db_ ? chain_db_->getTip() : StatusOr<TipInfo>(Status::NotFound);
+    const bool persisted_orchard = persisted_tip.ok() && persisted_tip->height >= 0 &&
+        consensus::OrchardActiveForHeight(Params(), uint32_t(persisted_tip->height));
+    if (selected_orchard || persisted_orchard || orchard_state.ok() || retired.ok()) {
+        std::string reason;
+        if (!AuditSelectedOrchardTipUnderLock(&reason)) return fail_orchard(reason.c_str());
+        return true;
+    }
     // Phase 3b step 3 part 2 — startup verification of the journal
     // row written by ConsensusWriteBatch::Commit() (commit 85eacb55d).
     //
@@ -2007,6 +2188,7 @@ bool ChainstateService::VerifyConsensusJournalAtActiveTip() {
 }
 
 bool ChainstateService::PersistShieldedTipMarker(const uint256& tip_hash, uint32_t tip_height) const {
+    std::lock_guard<AnnotatedRecursiveMutex> guard(activation_mutex_);
     if (!chain_db_) {
         return false;
     }
@@ -2019,6 +2201,22 @@ bool ChainstateService::PersistShieldedTipMarker(const uint256& tip_hash, uint32
     marker.shielded_root = snapshot.root;
     marker.tree_size = snapshot.tree_size;
     marker.nullifier_count = snapshot.nullifier_count;
+    const auto retired = chain_db_->getLegacyRetirementState();
+    if (retired.ok()) {
+        // Only the composite connect/disconnect batch may advance this marker.
+        // Idempotent legacy callers can observe it, never rebind it separately.
+        const auto stored = chain_db_->getShieldedTipMarker();
+        return stored.ok() && tip_hash == retired->block_hash && tip_height == retired->height &&
+            marker.height == stored->height && marker.block_hash == stored->block_hash &&
+            marker.shielded_root == stored->shielded_root && marker.tree_size == stored->tree_size &&
+            marker.nullifier_count == stored->nullifier_count &&
+            marker.shielded_root == retired->record.tree_root &&
+            marker.tree_size == retired->record.tree_size &&
+            marker.nullifier_count == retired->record.nullifier_count;
+    }
+    if (retired.status() != Status::NotFound &&
+        !(retired.status() == Status::Invalid && !chain_db_->hasSeparatedShieldedState()))
+        return false;
     return chain_db_->putShieldedTipMarker(token, marker) == Status::Ok;
 }
 
@@ -5246,13 +5444,8 @@ void ChainstateService::unregisterWalletNotifier(WalletNotifier* notifier) {
 }
 
 void ChainstateService::notifyBlockConnected(const Block& block, uint32_t height) {
-    // Wake any miners parked on a longpoll getblocktemplate. This is the
-    // server-side long-polling signal — see include/rpc/longpoll_notifier.h
-    // for the design and the block_validation ordering rationale. Doing it
-    // first means miners get their new template before any secondary
-    // work (oracle notifications, mempool reconciliation, proof caches)
-    // that doesn't block template correctness.
-    dinero::rpc::LongPollNotifier::instance().notifyBlockConnected();
+    // Miner longpoll is signaled by the shared active-tip publication, before
+    // fallible downstream work and for disconnects as well as connects.
 
     if (!PersistShieldedState() && logger_) {
         logger_->warning("[ChainstateService] Failed to persist shielded frontier after block connect at height " +
@@ -5282,41 +5475,18 @@ void ChainstateService::notifyBlockConnected(const Block& block, uint32_t height
         }
     }
 
-    // Utreexo proof staleness: evict conflicts, mark remaining TXs stale
+    // Prepare the complete local pool/cache update before publishing any of
+    // these consumers. This legacy notification entry is AFTER canonical
+    // durability; it does not itself move preparation before the chain commit.
     auto* ctx = DaemonContext::instance();
     if (ctx && ctx->mempool) {
-        if (bridge_node_) {
-            bridge_node_->InvalidateTxProofCache();
-        }
-
         std::vector<uint8_t> new_root;
-        if (consensus_utxo_set_) {
-            new_root = consensus_utxo_set_->SnapshotForestCommitment();
-        }
-        ctx->mempool->mempool().onBlockConnected(block, height, new_root);
-
-        // #6: Trigger bounded CSN proof refresh for stale mempool TXs.
-        // Policy is eviction-first under churn:
-        // - stale proof age cutoff
-        // - max refresh attempts per tx
-        // - overload guard bulk-evict
-        if (ctx->tx_relay) {
-            ctx->tx_relay->OnTipChanged();
-            constexpr uint32_t MAX_STALE_PROOF_AGE_BLOCKS = 2;
-            constexpr uint32_t MAX_REFRESH_ATTEMPTS = 1;
-            constexpr size_t STALE_OVERLOAD_THRESHOLD = 256;
-            constexpr size_t REFRESH_BATCH_SIZE = 20;
-            auto refresh_candidates = ctx->mempool->mempool().selectStaleForRefresh(
-                height,
-                REFRESH_BATCH_SIZE,
-                MAX_STALE_PROOF_AGE_BLOCKS,
-                MAX_REFRESH_ATTEMPTS,
-                STALE_OVERLOAD_THRESHOLD
-            );
-            if (!refresh_candidates.empty()) {
-                ctx->tx_relay->RequestProofRefresh(refresh_candidates, REFRESH_BATCH_SIZE);
-            }
-        }
+        if (consensus_utxo_set_) new_root=consensus_utxo_set_->SnapshotForestCommitment();
+        auto pool_use=MempoolService::AcquirePoolUse(ctx->mempool);
+        auto prepared=PreparedPoolTip::Connect(pool_use->Pool(),bridge_node_,ctx->tx_relay,
+                                              block,height,new_root);
+        prepared->PublishAfterCommit();
+        prepared->RequestRefresh();
     }
 
     // Route wallet notifications through WalletWorker (thread-safe, async).
@@ -5343,32 +5513,30 @@ void ChainstateService::notifyBlockDisconnected(const Block& block, uint32_t hei
         chain_oracle_client_->sendBlockDisconnected(height, block_hash);
     }
 
-    // Utreexo proof staleness: mark all mempool TXs stale (root changed backward)
     auto* ctx = DaemonContext::instance();
     if (ctx && ctx->mempool) {
-        if (bridge_node_) {
-            bridge_node_->InvalidateTxProofCache();
+        auto pool_use=MempoolService::AcquirePoolUse(ctx->mempool);
+        // CSN rewinds its forest separately for the whole transition. It may
+        // already represent the fork rather than this per-block parent.
+        std::unique_ptr<PreparedPoolTip> prepared;
+        if (GetConfig().utreexo_stateless) {
+            prepared=PreparedPoolTip::Disconnect(pool_use->Pool(),bridge_node_,ctx->tx_relay,height);
+        } else {
+            AssertActivationLockHeld("notifyBlockDisconnected parent proof context");
+            if (height == 0 || !active_tip_ || !chain_db_ || !consensus_utxo_set_ ||
+                active_tip_->height != height - 1 || active_tip_->hash != block.header.prev_block_hash)
+                throw std::runtime_error("Pool disconnect parent context unavailable");
+            const auto durable=chain_db_->getTip();
+            if (!durable.ok() || durable->height < 0 || uint32_t(durable->height) != height - 1 ||
+                durable->hash != active_tip_->hash || consensus_utxo_set_->GetBestBlock() != active_tip_->hash ||
+                consensus_utxo_set_->GetHeight() != height - 1)
+                throw std::runtime_error("Pool disconnect parent context inconsistent");
+            // Snapshot releases the forest guard before the pool/cache locks.
+            const auto parent_root=consensus_utxo_set_->SnapshotForestCommitment();
+            prepared=PreparedPoolTip::DisconnectToParent(pool_use->Pool(),bridge_node_,ctx->tx_relay,height,parent_root);
         }
-
-        ctx->mempool->mempool().onBlockDisconnected(block, height);
-        if (ctx->tx_relay) {
-            ctx->tx_relay->OnTipChanged();
-            constexpr uint32_t MAX_STALE_PROOF_AGE_BLOCKS = 2;
-            constexpr uint32_t MAX_REFRESH_ATTEMPTS = 1;
-            constexpr size_t STALE_OVERLOAD_THRESHOLD = 256;
-            constexpr size_t REFRESH_BATCH_SIZE = 20;
-            const uint32_t effective_height = (height > 0) ? (height - 1) : 0;
-            auto refresh_candidates = ctx->mempool->mempool().selectStaleForRefresh(
-                effective_height,
-                REFRESH_BATCH_SIZE,
-                MAX_STALE_PROOF_AGE_BLOCKS,
-                MAX_REFRESH_ATTEMPTS,
-                STALE_OVERLOAD_THRESHOLD
-            );
-            if (!refresh_candidates.empty()) {
-                ctx->tx_relay->RequestProofRefresh(refresh_candidates, REFRESH_BATCH_SIZE);
-            }
-        }
+        prepared->PublishAfterCommit();
+        prepared->RequestRefresh();
     }
 
     // Route wallet disconnects through WalletWorker too, so persisted wallet
@@ -5406,6 +5574,7 @@ bool ChainstateService::hasBlock(uint32_t height) const {
 }
 
 std::string ChainstateService::getBlock(uint32_t height) const {
+    std::lock_guard<AnnotatedRecursiveMutex> activation_guard(activation_mutex_);
     if (!chain_db_) {
         return "";
     }
@@ -5415,6 +5584,16 @@ std::string ChainstateService::getBlock(uint32_t height) const {
         return "";
     }
 
+#ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
+    if (!consensus::OrchardProfileConfigurationValid(Params())) return "";
+    if (consensus::OrchardActiveForHeight(Params(), height)) {
+        const auto body = ReadRuntimeBlockUnderLock(*chain_db_, block_storage_.get(),
+                                                   hash_result.value(), height);
+        if (!body.ok()) return "";
+        const auto bytes = body->Serialize();
+        return BinaryToHexString(std::string(bytes.begin(), bytes.end()));
+    }
+#endif
     auto block_result = ReadStoredBlock(hash_result.value());
     if (block_result.status() != Status::Ok) {
         return "";
@@ -5458,6 +5637,184 @@ bool ChainstateService::hasFlatfileBlockByHash(const uint256& hash) const {
 
 StatusOr<Block> ChainstateService::getBlockByHash(const uint256& hash) const {
     return ReadStoredBlock(hash);
+}
+
+StatusOr<ChainstateService::BlockRpcSnapshot> ChainstateService::getBlockRpcSnapshot(
+        const uint256& hash) const {
+    std::lock_guard<AnnotatedRecursiveMutex> guard(activation_mutex_);
+    if (!chain_db_ || !consensus::OrchardProfileConfigurationValid(Params())) return Status::Internal;
+    const auto height=chain_db_->getBlockHeight(hash);
+    if (!height.ok()) return height.status();
+    if (*height<0) return Status::Corruption;
+    BlockRpcSnapshot result{};result.height=static_cast<uint32_t>(*height);
+    if (consensus::OrchardActiveForHeight(Params(),result.height)) {
+#ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
+        const auto body=getRuntimeBlockByHash(hash);
+        if (!body.ok()) return body.status();
+        if (!(*body)->IsOrchardProfile() || !(*body)->Context() ||
+            (*body)->Context()->height!=result.height) return Status::Corruption;
+        const auto& typed=(*body)->Orchard();
+        result.header=typed.Header();result.bytes=typed.WireBytes();
+        result.transaction_ids.reserve(typed.Transactions().size());
+        for (const auto& tx:typed.Transactions()) result.transaction_ids.push_back(tx.GetTxid().AsUint256());
+#else
+        return Status::Internal;
+#endif
+    } else {
+        const auto body=getBlockByHash(hash);
+        if (!body.ok()) return body.status();
+        result.header=body->header;
+        const auto bytes=body->Serialize();result.bytes.assign(bytes.begin(),bytes.end());
+        result.transaction_ids.reserve(body->vtx.size());
+        for (const auto& tx:body->vtx) result.transaction_ids.push_back(tx.GetTxid().AsUint256());
+    }
+    if (result.header.GetHash()!=hash) return Status::Corruption;
+    return result;
+}
+
+StatusOr<std::shared_ptr<const RuntimeBlockBody>> ChainstateService::getRuntimeBlockByHash(
+        const uint256& hash) const {
+#ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
+    std::lock_guard<AnnotatedRecursiveMutex> activation_guard(activation_mutex_);
+    if (!chain_db_) return Status::Internal;
+    const auto metadata = chain_db_->getHeaderMetadata(hash);
+    if (!metadata.ok()) return metadata.status();
+    if (metadata->height < 0) return Status::Corruption;
+    auto body = ReadRuntimeBlockUnderLock(*chain_db_, block_storage_.get(), hash, metadata->height);
+    if (!body.ok()) return body.status();
+    return std::make_shared<const RuntimeBlockBody>(std::move(*body));
+#else
+    return Status::Internal;
+#endif
+}
+
+StatusOr<std::shared_ptr<const RuntimeOutboxPage>> ChainstateService::getRuntimeDeliveryPage(
+        const RuntimeOutboxCursor& after, size_t maximum_events, size_t maximum_bytes) const {
+#ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
+    std::lock_guard<AnnotatedRecursiveMutex> activation_guard(activation_mutex_);
+    if (!chain_db_ || !active_tip_ || !consensus_utxo_set_) return Status::Internal;
+    if (GetConfig().utreexo_stateless || !consensus::OrchardProfileConfigurationValid(Params()))
+        return Status::Invalid;
+    const auto profile=consensus::SelectedOrchardBlockContext(BlockHeader{},Params().orchard_activation_height);
+    if (!profile) return Status::Invalid;
+    const auto tip=chain_db_->getTip();
+    const auto validated=chain_db_->getValidatedTip();
+    if (!tip.ok()) return tip.status();
+    if (!validated.ok()) return validated.status();
+    if (tip->height<0 || tip->hash!=active_tip_->hash || uint32_t(tip->height)!=active_tip_->height ||
+        validated->hash!=tip->hash || validated->height!=tip->height ||
+        consensus_utxo_set_->GetBestBlock()!=tip->hash ||
+        consensus_utxo_set_->GetHeight()!=uint32_t(tip->height)) return Status::Corruption;
+    try {
+        return std::make_shared<const RuntimeOutboxPage>(ReadRuntimeOutboxUnderLock(
+            *chain_db_,*profile,after,maximum_events,maximum_bytes));
+    } catch (const consensus::OrchardStateLookupError& e) { return e.SourceStatus(); }
+      catch (...) { return Status::Internal; }
+#else
+    return Status::Internal;
+#endif
+}
+
+StatusOr<std::shared_ptr<const RuntimeAccountReplay>> ChainstateService::getRuntimeAccountReplay() const {
+#ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
+    try {
+        auto material=[this]{
+            std::lock_guard<AnnotatedRecursiveMutex> activation_guard(activation_mutex_);
+            return RuntimeAccountReplay::ReadSource([this](RuntimeOutboxCursor cursor,size_t count) {
+                const auto page=getRuntimeDeliveryPage(cursor,count);
+                if(!page.ok())throw consensus::OrchardStateLookupError(page.status());
+                return **page;
+            });
+        }();
+        return RuntimeAccountReplay::Build(std::move(material));
+    } catch(const consensus::OrchardStateLookupError& e){return e.SourceStatus();}
+      catch(...){return Status::Internal;}
+#else
+    return Status::Internal;
+#endif
+}
+
+StatusOr<std::shared_ptr<const RuntimeWalletOriginProjection>> ChainstateService::getRuntimeWalletOrigin(
+        WalletManager& wallet,uint64_t session,UTXOIndex* index) const {
+#ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
+    try {
+        auto result=RuntimeOrdinaryDelivery::CaptureOriginDomain(wallet,session,index);
+        RuntimeOutboxCursor head;
+        std::vector<uint256> ancestry;
+        {
+            std::lock_guard<AnnotatedRecursiveMutex> lock(activation_mutex_);
+            const auto page=getRuntimeDeliveryPage({},1);
+            if(!page.ok())return page.status();
+            if(safe_mode_active_ || (*page)->events.size()!=1)return Status::Invalid;
+            result->first_=(*page)->events.front();head=(*page)->head;
+            const auto& first=result->first_;
+            if(first.cursor.sequence!=1 || first.direction!=RuntimeBlockDirection::Connect ||
+               first.context.height!=first.context.activation_height || !first.context.height)
+                return Status::Invalid;
+            auto expected=first.context.parent_hash;
+            // Operational ancestry cap, not a resident-memory certificate.
+            // Retains hashes only; full bodies are read/validated one at a time.
+            if(first.context.height>1000000)return Status::Invalid;
+            for(uint32_t remaining=first.context.height;remaining;--remaining) {
+                const auto header=chain_db_->getHeader(expected);
+                const auto height=chain_db_->getBlockHeight(expected);
+                if(!header.ok() || !height.ok() || *height<0 || uint32_t(*height)!=remaining-1 ||
+                   header->GetHash()!=expected)return Status::Corruption;
+                ancestry.push_back(expected);expected=header->prev_block_hash;
+            }
+            if(!expected.IsNull() || ancestry.back()!=uint256::FromHexUnsafe(Params().genesis_hash))
+                return Status::Corruption;
+            std::reverse(ancestry.begin(),ancestry.end());
+        }
+        assumeutxo::AssumeUtxoReplayEngine replay;
+        for(uint32_t height=0;height<ancestry.size();++height) {
+            std::optional<Block> owned;
+            {
+                std::lock_guard<AnnotatedRecursiveMutex> lock(activation_mutex_);
+                if(!chain_db_)return Status::Internal;
+                const auto body=storage::ReadArchivalBlock(*chain_db_,block_storage_.get(),ancestry[height]);
+                if(!body.ok())return body.status();
+                if(body->GetHash()!=ancestry[height])return Status::Corruption;
+                owned=*body;
+            }
+            std::string error;
+            if(height==0 ? !replay.SeedGenesis(*owned,error) :
+                !replay.ConnectAndAdvance(*owned,height,ancestry[height],error))return Status::Invalid;
+            result->AppendValidated(*owned,height);
+        }
+        {
+            std::lock_guard<AnnotatedRecursiveMutex> lock(activation_mutex_);
+            const auto page=getRuntimeDeliveryPage({},1);
+            if(!page.ok())return page.status();
+            if(safe_mode_active_ || (*page)->head!=head || (*page)->events.size()!=1 ||
+               (*page)->events.front().cursor!=result->first_.cursor)return Status::Invalid;
+        }
+        RuntimeOrdinaryDelivery::CheckOriginDomain(wallet,*result,index);
+        return std::shared_ptr<const RuntimeWalletOriginProjection>(result.release());
+    } catch(const consensus::OrchardStateLookupError& e){return e.SourceStatus();}
+      catch(...){return Status::Internal;}
+#else
+    return Status::Internal;
+#endif
+}
+
+Status ChainstateService::adoptRuntimeWalletOrigin(WalletManager& wallet,UTXOIndex& index,
+        const RuntimeWalletOriginProjection& source) const {
+#ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
+    try {
+        // Source validation precedes wallet ownership. Later source appends are
+        // recovered from the earned prefix; this call never grants readiness.
+        { std::lock_guard<AnnotatedRecursiveMutex> lock(activation_mutex_);
+          const auto page=getRuntimeDeliveryPage({},1);
+          if(!page.ok())return page.status();
+          if(safe_mode_active_ || (*page)->events.size()!=1 ||
+             (*page)->events.front().cursor!=source.first_.cursor)return Status::Invalid; }
+        RuntimeOrdinaryDelivery::AdoptOrigin(wallet,index,source);
+        return Status::Ok;
+    } catch(...) { return Status::Internal; }
+#else
+    return Status::Internal;
+#endif
 }
 
 uint64_t ChainstateService::getLegacyBodyFallbackReadCount() const {
@@ -5582,22 +5939,23 @@ void ChainstateService::PublishActiveTipLocked(CBlockIndex* tip, TipPublishReaso
     // the check inside PublishActiveTip would re-walk durable storage
     // for every non-advancement publish too (rollback, startup,
     // snapshot), which is unnecessary and would increase boot time.
-    if (logger_ && tip) {
-        logger_->info("[PublishActiveTip] " +
-                      std::string(TipPublishReasonName(reason)) +
-                      " tip=" + tip->hash.GetHex().substr(0, 16) + "..." +
-                      " height=" + std::to_string(tip->height));
-    }
-    active_tip_ = tip;
-
     // #439: publish an immutable VALUE copy of the tip identity under its own
     // mutex. GetSyncSnapshot() reads this instead of dereferencing active_tip_,
     // which is a bare CBlockIndex* mutated on the chain-advancement path — a
     // reader touching tip->hash / tip->height concurrently would be racing.
     // Because this is the single setter for active_tip_, publishing here keeps
     // the value in lockstep with the pointer.
-    {
+    // This may follow an authoritative database commit. Acquire the observer
+    // mutex BEFORE changing either representation, then copy fixed-size values
+    // only. A synchronization failure cannot return to a caller that might
+    // continue with durable state and an unpublished service tip.
+    bool changed=false;
+    try {
         std::lock_guard<std::mutex> lock(published_tip_mutex_);
+        changed=published_tip_valid_!=bool(tip) ||
+            published_tip_hash_!=(tip?tip->GetBlockHash():uint256{}) ||
+            published_tip_height_!=(tip?uint32_t(tip->height):0);
+        active_tip_ = tip;
         if (tip) {
             published_tip_valid_ = true;
             published_tip_hash_ = tip->GetBlockHash();
@@ -5607,6 +5965,30 @@ void ChainstateService::PublishActiveTipLocked(CBlockIndex* tip, TipPublishReaso
             published_tip_hash_.SetNull();
             published_tip_height_ = 0;
         }
+    } catch (...) {
+        std::terminate();
+    }
+
+    // This built-in consumer observes every published identity change, including
+    // rollback and same-height branch replacement. It does not depend on a
+    // later wallet/provider callback returning successfully. Release the observer
+    // mutex first; the selected writer lock still serializes tip publication.
+    const auto wake_miners=[]() noexcept {
+        rpc::LongPollNotifier::instance().notifyTipChanged();
+    };
+    if(changed)wake_miners();
+
+    // Diagnostics allocate and may throw. They are best-effort AFTER both tip
+    // representations agree, never a prerequisite for post-commit publication.
+    // Do not attempt another allocating log from this catch path.
+    try {
+        if (logger_ && tip) {
+            logger_->info("[PublishActiveTip] " +
+                          std::string(TipPublishReasonName(reason)) +
+                          " tip=" + tip->hash.GetHex().substr(0, 16) + "..." +
+                          " height=" + std::to_string(tip->height));
+        }
+    } catch (...) {
     }
 }
 
@@ -6040,12 +6422,64 @@ bool ChainstateService::VerifyActiveChainUndoCoverage(uint32_t tip_height,
         return false;
     }
 
+    std::lock_guard<AnnotatedRecursiveMutex> activation_lock(activation_mutex_);
+    const auto fail_orchard = [&](const char* detail) {
+        const std::string reason=std::string("orchard-undo-coverage: ")+detail;
+        EnterSafeMode(reason);
+        if (!datadir_.empty()) {
+            std::string error;
+            (void)daemon::WriteChainstateRecoveryMarker(datadir_,reason,&error);
+        }
+        return false;
+    };
+    if (!consensus::OrchardProfileConfigurationValid(Params()))
+        return fail_orchard("invalid selected profile");
+    const auto stored_orchard=chain_db_->getOrchardState();
+    const auto retirement=chain_db_->getLegacyRetirementState();
+    const auto unreadable=[&](const auto& result) {
+        return !result.ok() && result.status()!=Status::NotFound &&
+            !(result.status()==Status::Invalid && !chain_db_->hasSeparatedShieldedState());
+    };
+    if (unreadable(stored_orchard) || unreadable(retirement))
+        return fail_orchard("stored state unavailable");
+    const auto persisted_tip=chain_db_->getTip();
+    const bool orchard_tip=consensus::OrchardActiveForHeight(Params(),tip_height);
+    const bool persisted_orchard=persisted_tip.ok() && persisted_tip->height>=0 &&
+        consensus::OrchardActiveForHeight(Params(),uint32_t(persisted_tip->height));
+    const bool needs_orchard=orchard_tip || persisted_orchard || stored_orchard.ok() || retirement.ok();
+#ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
+    std::optional<storage::OrchardStoredState> audit_state;
+    consensus::UtreexoForest audit_forest;
+    if (needs_orchard) {
+        const auto validated=chain_db_->getValidatedTip();
+        const auto marker=chain_db_->getForestTipMarker();
+        if (!orchard_tip || !stored_orchard.ok() || !retirement.ok() ||
+            !persisted_tip.ok() || !validated.ok() || !marker.ok() || GetConfig().utreexo_stateless ||
+            tip_height>INT32_MAX || persisted_tip->height!=int(tip_height) ||
+            validated->height!=int(tip_height) || validated->hash!=persisted_tip->hash ||
+            stored_orchard->height!=tip_height || stored_orchard->block_hash!=persisted_tip->hash ||
+            retirement->height!=tip_height || retirement->block_hash!=persisted_tip->hash ||
+            marker->height!=int(tip_height) || marker->block_hash!=persisted_tip->hash)
+            return fail_orchard("selected stateful tip is unavailable or inconsistent");
+        std::string error;
+        if (storage::RestoreHistoricalForest(*chain_db_,tip_height,audit_forest,error)!=Status::Ok)
+            return fail_orchard("cannot restore private audit forest");
+        const auto root=audit_forest.getCommitment();
+        if (!std::equal(root.begin(),root.end(),marker->forest_root.begin()))
+            return fail_orchard("forest marker disagrees with restored root");
+        audit_state=*stored_orchard;
+    }
+#else
+    if (needs_orchard) return fail_orchard("binary has no Orchard runtime support");
+#endif
+
     // Walk backwards from the persisted tip via parent pointers in
     // header metadata. We trust persisted metadata's parent_hash as the
     // backbone — the in-memory CBlockIndex graph may not yet be loaded
     // when this audit runs (it's invoked early in Start()).
     auto current_hash_result = chain_db_->getBlockHashByHeight(static_cast<int>(tip_height));
     if (current_hash_result.status() != Status::Ok) {
+        if (needs_orchard) return fail_orchard("selected tip index is unavailable");
         if (logger_) {
             logger_->warning("[ChainstateService] Undo audit: cannot resolve tip hash for height " +
                              std::to_string(tip_height) + " — skipping");
@@ -6061,6 +6495,28 @@ bool ChainstateService::VerifyActiveChainUndoCoverage(uint32_t tip_height,
         : max_blocks_back;
 
     while (walked < scan_limit && current_height > 0) {
+#ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
+        if (consensus::OrchardActiveForHeight(Params(),current_height)) {
+            try {
+                const auto body=ReadRuntimeBlockUnderLock(*chain_db_,block_storage_.get(),current_hash,current_height);
+                if (!body.ok() || !body->IsOrchardProfile() || !audit_state)
+                    return fail_orchard("retained typed body or undo state unavailable");
+                const auto parent=chain_db_->getHeader(body->Orchard().Header().prev_block_hash);
+                if (!parent.ok()) return fail_orchard("selected parent header unavailable");
+                const bool witness=Params().enforce_witness_commitment &&
+                    current_height>=Params().witness_commitment_enforcement_height;
+                auto step=consensus::AuditOrchardUndoStepUnderLock(*chain_db_,*block_storage_,
+                    *body->Context(),body->Orchard(),*parent,*audit_state,audit_forest,witness);
+                current_hash=body->Orchard().Header().prev_block_hash;
+                audit_state=std::move(step.parent_state);
+                audit_forest=std::move(step.parent_forest);
+                --current_height;++walked;
+                continue;
+            } catch (const std::exception&) {
+                return fail_orchard("retained disconnect material failed verification");
+            }
+        }
+#endif
         auto metadata_result = chain_db_->getHeaderMetadata(current_hash);
         if (metadata_result.status() != Status::Ok) {
             if (logger_) {
@@ -8451,7 +8907,7 @@ void ChainstateService::ActivateBestChain() {
     // be a normal in-flight delta, not a partial-commit signature.
     // Guarded by `journal_verified_at_startup_`.
     if (!journal_verified_at_startup_) {
-        VerifyConsensusJournalAtActiveTip();
+        if (!VerifyConsensusJournalAtActiveTip()) return;
         journal_verified_at_startup_ = true;
     }
 
@@ -9246,6 +9702,15 @@ void ChainstateService::ActivateBestChain() {
         return;
     }
 
+    // Prepare exact mixed/historical transaction material before any rollback,
+    // CSN forest restore or wallet transaction. Per-block consumers alone cannot
+    // recover transactions after a partially successful replacement branch.
+    std::unique_ptr<RuntimeReorgTransition> runtime_reorg;
+    if (!PrepareRuntimeReorgUnderLock(disconnect_path, connect_path, runtime_reorg)) {
+        if (logger_) logger_->warning("[ActivateBestChain] Runtime reorg handoff unavailable; canonical state unchanged");
+        return;
+    }
+
     // Log reorg details
     if (!disconnect_path.empty() || !connect_path.empty()) {
         if (logger_) {
@@ -9741,7 +10206,7 @@ void ChainstateService::ActivateBestChain() {
     // Collect transactions from blocks being disconnected (for mempool reconciliation).
     // Use ancestor-first order so tx chains from disconnected blocks replay cleanly.
     std::vector<Transaction> disconnected_txs;
-    AppendTransactionsFromBlocks(
+    if (!runtime_reorg) AppendTransactionsFromBlocks(
         chain_db_,
         block_storage_.get(),
         disconnect_path,
@@ -9858,6 +10323,7 @@ void ChainstateService::ActivateBestChain() {
 
             return; // Abort reorg on failure
         }
+        if (runtime_reorg) runtime_reorg->Disconnected();
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -9868,52 +10334,13 @@ void ChainstateService::ActivateBestChain() {
     // this base would silently diverge from consensus.
     // ═══════════════════════════════════════════════════════════════════════════
     if (!disconnect_path.empty() && consensus_utxo_set_ && fork_point) {
-        auto fp_block_result = ReadStoredBlock(fork_point->hash);
-        if (fp_block_result.status() != Status::Ok) {
-            if (logger_) {
-                logger_->error("[ActivateBestChain] Cannot load fork-point block " +
-                               fork_point->hash.GetHex() +
-                               " for post-disconnect root validation — ABORTING REORG");
-            }
-            if (wallet_transaction_started && utxo_index_) {
-                utxo_index_->RollbackTransaction();
-            }
+        if (!VerifyForkPointForestUnderLock(fork_point)) {
+            if (logger_) logger_->error("[ActivateBestChain] Fork-point body/state verification failed; aborting reorg");
+            if (wallet_transaction_started && utxo_index_) utxo_index_->RollbackTransaction();
             return;
         }
-        const uint256& expected_fp_root = fp_block_result.value().header.utreexo_root;
-
-        auto forest_commitment = consensus_utxo_set_->SnapshotForestCommitment();
-        if (forest_commitment.size() != 32) {
-            if (logger_) {
-                logger_->error("[ActivateBestChain] Invalid forest commitment size after disconnect: " +
-                               std::to_string(forest_commitment.size()) + " — ABORTING REORG");
-            }
-            if (wallet_transaction_started && utxo_index_) {
-                utxo_index_->RollbackTransaction();
-            }
-            return;
-        }
-        uint256 forest_root;
-        std::memcpy(forest_root.begin(), forest_commitment.data(), 32);
-
-        if (forest_root != expected_fp_root) {
-            if (logger_) {
-                logger_->error("[ActivateBestChain] FORK-POINT ROOT MISMATCH after disconnect");
-                logger_->error("  fork height=" + std::to_string(fork_point->height) +
-                               " block=" + fork_point->hash.GetHex());
-                logger_->error("  forest:   " + forest_root.GetHex());
-                logger_->error("  expected: " + expected_fp_root.GetHex());
-                logger_->error("  ABORTING REORG — disconnect deltas produced wrong state");
-            }
-            if (wallet_transaction_started && utxo_index_) {
-                utxo_index_->RollbackTransaction();
-            }
-            return;
-        }
-        if (logger_) {
-            logger_->info("[ActivateBestChain] Post-disconnect forest root verified at fork height " +
-                          std::to_string(fork_point->height));
-        }
+        if (logger_) logger_->info("[ActivateBestChain] Post-disconnect forest root verified at fork height " +
+                                   std::to_string(fork_point->height));
     }
 
     // Collect transactions from blocks being connected (to filter from reconciliation)
@@ -10054,8 +10481,11 @@ void ChainstateService::ActivateBestChain() {
             return; // Abort reorg on failure
             }
         }
+        if (runtime_reorg) runtime_reorg->Connected();
         std::cout << "✅ [ActivateBestChain] ConnectTip SUCCEEDED for height " << block_index->height << std::endl;
 
+        // Mixed reorgs use the prepared typed plan, never the legacy decoder.
+        if (runtime_reorg || consensus::OrchardActiveForHeight(Params(), block_index->height)) continue;
         // Collect transactions from connected block (for mempool reconciliation)
         auto block_result = ReadStoredBlock(block_index->hash);
         if (block_result.status() == Status::Ok) {
@@ -10065,6 +10495,8 @@ void ChainstateService::ActivateBestChain() {
             }
         }
     }
+
+    if (runtime_reorg) runtime_reorg->Complete();
 
     // ═══════════════════════════════════════════════════════════════════════════
     // Priority 5 FIX: Daemon Invariant Checks
@@ -10136,7 +10568,8 @@ void ChainstateService::ActivateBestChain() {
             if (logger_) logger_->info("[ActivateBestChain] Reconciling mempool after reorg (" +
                          std::to_string(disconnected_txs.size()) + " txs from disconnected blocks)");
 
-            size_t restored = daemon_ctx->mempool->mempool().ReconcileAfterReorg(
+            auto pool_use = MempoolService::AcquirePoolUse(daemon_ctx->mempool);
+            size_t restored = pool_use->Pool().ReconcileAfterReorg(
                 disconnected_txs,
                 connected_txs
             );
@@ -10146,6 +10579,10 @@ void ChainstateService::ActivateBestChain() {
                          " transactions restored");
         }
     }
+
+    // Finish the retained transaction handoff before declaring recovery complete.
+    // Early returns run the same callback through the scope destructor.
+    runtime_reorg.reset();
 
     // ═══════════════════════════════════════════════════════════════════════════
     // Crash Safety: Clear reorg marker on success (Priority 4 FIX)
@@ -10248,14 +10685,22 @@ std::optional<consensus::UTXOEntry> ChainstateService::GetActiveUTXO(
 
 std::optional<consensus::UTXOEntry> ChainstateService::ResolveLivePreBaseCoin(
     const OutPoint& outpoint) const {
+    const auto result = ResolveLivePreBaseCoinChecked(outpoint);
+    return result.ok() ? std::optional<consensus::UTXOEntry>(result.value()) : std::nullopt;
+}
+
+StatusOr<consensus::UTXOEntry> ChainstateService::ResolveLivePreBaseCoinChecked(
+    const OutPoint& outpoint) const {
     std::lock_guard<AnnotatedRecursiveMutex> lock(activation_mutex_);
     if (!chain_db_ || !consensus_utxo_set_) {
-        return std::nullopt;
+        return Status::Internal;
     }
 
     const auto marker = chain_db_->getPreBaseCoinSetBase();
     if (!marker.ok()) {
-        return std::nullopt;
+        if (marker.status() == Status::NotFound &&
+            (assumeutxo_active_ || promoted_base_height_ > 0)) return Status::Corruption;
+        return marker.status();
     }
 
     // The frozen store remains necessary after background validation promotes
@@ -10273,23 +10718,25 @@ std::optional<consensus::UTXOEntry> ChainstateService::ResolveLivePreBaseCoin(
         marker.value().second == promoted_base_height_) {
         const auto canonical =
             chain_db_->getBlockHashByHeight(promoted_base_height_);
-        promoted_base_matches =
-            canonical.ok() && canonical.value() == marker.value().first;
+        if (!canonical.ok())
+            return canonical.status() == Status::NotFound ? Status::Corruption : canonical.status();
+        promoted_base_matches = canonical.value() == marker.value().first;
     }
     if (!active_base_matches && !promoted_base_matches) {
-        return std::nullopt;
+        return Status::Corruption;
     }
 
     const auto stored = chain_db_->getPreBaseCoin(
         outpoint.txid.AsUint256(), outpoint.vout);
-    if (!stored.ok() || stored.value().height < 0 ||
-        static_cast<uint32_t>(stored.value().height) > assumeutxo_base_height_) {
-        return std::nullopt;
+    if (!stored.ok()) return stored.status();
+    if (stored.value().height < 0 ||
+        static_cast<uint32_t>(stored.value().height) > marker.value().second) {
+        return Status::Corruption;
     }
 
     std::vector<unsigned char> script;
     if (!util::unhex(stored.value().script_pubkey, script)) {
-        return std::nullopt;
+        return Status::Corruption;
     }
     const auto leaf = consensus::HashUTXOForCreationHeight(
         outpoint.txid.AsUint256(), outpoint.vout, stored.value().amount,
@@ -10298,7 +10745,7 @@ std::optional<consensus::UTXOEntry> ChainstateService::ResolveLivePreBaseCoin(
     {
         auto forest_lock = consensus_utxo_set_->LockForestShared();
         if (!consensus_utxo_set_->GetForest().findLeafPosition(leaf).has_value()) {
-            return std::nullopt;
+            return Status::NotFound;
         }
     }
 
@@ -10395,18 +10842,20 @@ void ChainstateService::EnterSafeMode(const std::string& reason) {
     safe_mode_reason_ = reason;
     safe_mode_entered_time_ = std::chrono::steady_clock::now();
 
-    logger_->warning("⚠️  SAFE MODE ACTIVATED: " + reason);
-    logger_->warning("⚠️  Mining has been paused for safety");
-    logger_->warning("⚠️  Chain state is unstable - waiting for network consensus");
+    if (logger_) {
+        logger_->warning("⚠️  SAFE MODE ACTIVATED: " + reason);
+        logger_->warning("⚠️  Mining has been paused for safety");
+        logger_->warning("⚠️  Chain state is unstable - waiting for network consensus");
+    }
 
     // Notify mining service to pause
     auto* daemon_ctx = DaemonContext::instance();
     if (daemon_ctx && daemon_ctx->mining) {
         auto mining = std::dynamic_pointer_cast<MiningService>(daemon_ctx->mining);
         if (mining) {
-            logger_->info("[SafeMode] Notifying mining service to pause");
+            if (logger_) logger_->info("[SafeMode] Notifying mining service to pause");
             mining->stopMining();
-            logger_->info("[SafeMode] Mining stopped");
+            if (logger_) logger_->info("[SafeMode] Mining stopped");
         }
     }
 }
@@ -10945,12 +11394,105 @@ uint32_t ChainstateService::GetSnapshotWalletRecoveryBaseHeight() const {
     return header.block_height;
 }
 
+std::optional<uint32_t> ChainstateService::RescanWalletFromSelectedHistory(
+    WalletManager& wallet, int start_height, int gap_limit, std::string* error) {
+    if (error) error->clear();
+    const auto fail = [&](const char* why) -> std::optional<uint32_t> {
+        if (error) *error = why;
+        return std::nullopt;
+    };
+    try {
+        uint64_t session = 0;
+        {
+            const auto lease = wallet.AcquireDatabaseLease();
+            if (!lease->Database() || wallet.database_leases_ != 1 ||
+                !sqlite3_get_autocommit(lease->Database()))
+                return fail("selected-history-wallet-ownership-unavailable");
+            session = lease->Session();
+        } // No wallet ownership during selected-chain acquisition or validation.
+        auto owned = std::unique_ptr<SelectedWalletHistory>(new SelectedWalletHistory());
+        uint32_t height = 0;
+        const auto selected = [&]() {
+            if (!chain_db_ || !active_tip_ || !consensus_utxo_set_ ||
+                GetConfig().utreexo_stateless || safe_mode_active_) return false;
+            const auto tip = chain_db_->getTip();
+            const auto validated = chain_db_->getValidatedTip();
+            return tip.ok() && validated.ok() && tip->height >= 0 &&
+                tip->hash == active_tip_->hash && uint32_t(tip->height) == active_tip_->height &&
+                validated->hash == tip->hash && validated->height == tip->height &&
+                consensus_utxo_set_->GetBestBlock() == tip->hash &&
+                consensus_utxo_set_->GetHeight() == uint32_t(tip->height);
+        };
+        {
+            std::lock_guard<AnnotatedRecursiveMutex> lock(activation_mutex_);
+            if (!selected()) return fail("selected-history-chain-identity-unavailable");
+            height = active_tip_->height;
+            if (start_height < 0 || uint32_t(start_height) > height || gap_limit < 0)
+                return fail("selected-history-scan-range-invalid");
+            // Explicit operational bounds; never truncate a scan or grant a
+            // receipt. Serialized charge is not a resident-memory bound.
+            constexpr uint32_t max_blocks = 100000;
+            constexpr size_t max_material = 256 * 1024 * 1024;
+            if (height >= max_blocks || height >= Params().orchard_activation_height)
+                return fail("selected-history-profile-or-size-unsupported");
+            owned->tip_ = active_tip_->hash;
+            owned->network_ = Params().network_id;
+            owned->genesis_ = uint256::FromHexUnsafe(Params().genesis_hash);
+            uint256 expected = owned->tip_;
+            size_t material = 0;
+            for (uint64_t remaining = uint64_t(height) + 1; remaining; --remaining) {
+                const auto at = static_cast<uint32_t>(remaining - 1);
+                const auto stored_height = chain_db_->getBlockHeight(expected);
+                const auto body = storage::ReadArchivalBlock(*chain_db_, block_storage_.get(), expected);
+                if (!stored_height.ok() || *stored_height < 0 || uint32_t(*stored_height) != at ||
+                    !body.ok() || body->GetHash() != expected)
+                    return fail("selected-history-ancestry-or-body-unavailable");
+                const auto bytes = body->Serialize().size();
+                if (bytes > max_material - material)
+                    return fail("selected-history-material-limit");
+                material += bytes;
+                expected = body->header.prev_block_hash;
+                owned->blocks_.push_back(*body);
+            }
+            if (!expected.IsNull() || owned->blocks_.back().GetHash() != owned->genesis_)
+                return fail("selected-history-genesis-mismatch");
+            std::reverse(owned->blocks_.begin(), owned->blocks_.end());
+        } // Expensive independent replay holds neither chain nor wallet ownership.
+        assumeutxo::AssumeUtxoReplayEngine replay;
+        std::string validation_error;
+        if (!replay.SeedGenesis(owned->blocks_.front(), validation_error))
+            return fail("selected-history-genesis-validation-failed");
+        for (uint32_t h = 1; h <= height; ++h) {
+            const auto& block = owned->blocks_[h];
+            if (!replay.ConnectAndAdvance(block, h, block.GetHash(), validation_error))
+                return fail("selected-history-consensus-validation-failed");
+        }
+        {
+            std::lock_guard<AnnotatedRecursiveMutex> lock(activation_mutex_);
+            if (!selected() || active_tip_->hash != owned->tip_ || active_tip_->height != height ||
+                Params().network_id != owned->network_ ||
+                uint256::FromHexUnsafe(Params().genesis_hash) != owned->genesis_)
+                return fail("selected-history-source-changed");
+        }
+        // Const ownership is local and no source callback reaches the wallet.
+        // A later chain change still needs ordinary catch-up/reorg processing.
+        const auto immutable = std::unique_ptr<const SelectedWalletHistory>(owned.release());
+        if (!wallet.RescanBlockchainImpl(start_height, gap_limit, nullptr, nullptr, immutable.get(), session))
+            return fail("selected-history-wallet-apply-failed");
+        return height;
+    } catch (...) {
+        return fail("selected-history-unavailable");
+    }
+}
+
 int ChainstateService::RescanWalletFromSnapshotUTXOs(WalletManager& wallet, uint32_t base_height) {
     // PRIMARY PATH: read the configured snapshot .dat directly. On a utreexo node
     // the in-memory consensus_utxo_set_ does NOT hold the snapshot's UTXOs (they
     // are committed in the accumulator, not individually enumerable), so iterating
     // it records zero owned coins. The .dat file is the authoritative full UTXO
-    // set the wallet's pre-snapshot coins actually live in. Format per entry:
+    // set the wallet's pre-snapshot coins actually live in. This reader enforces
+    // complete entry delivery, not snapshot provenance or historical consensus.
+    // Format per entry:
     // txid(32) | vout(u32) | value(u64) | script_len(u32) | script | height(u32) | coinbase(u8)
     const std::string snapshot_dat_path =
         config_ ? config_->GetString("assumeutxo_snapshot", "") : "";
@@ -10965,7 +11507,11 @@ int ChainstateService::RescanWalletFromSnapshotUTXOs(WalletManager& wallet, uint
             snap.read(reinterpret_cast<char*>(&header.utxo_count), sizeof(header.utxo_count));
             snap.read(reinterpret_cast<char*>(&header.timestamp), sizeof(header.timestamp));
             snap.read(reinterpret_cast<char*>(&header.reserved), sizeof(header.reserved));
-            if (snap && header.magic == consensus::SNAPSHOT_MAGIC) {
+            if (snap && header.magic == consensus::SNAPSHOT_MAGIC &&
+                header.block_height == base_height &&
+                (header.version == consensus::SNAPSHOT_VERSION_V3 ||
+                 header.version == consensus::SNAPSHOT_VERSION_V4 ||
+                 header.version == consensus::SNAPSHOT_VERSION_V5)) {
                 const uint64_t utxo_count = header.utxo_count;
                 return wallet.rescanUtxoSet(
                     [&](const std::function<void(const dinero::WalletManager::UtxoSetEntry&)>& sink) {
@@ -10979,7 +11525,7 @@ int ChainstateService::RescanWalletFromSnapshotUTXOs(WalletManager& wallet, uint
                             uint32_t script_len = 0;
                             snap.read(reinterpret_cast<char*>(&script_len), sizeof(script_len));
                             if (!snap || script_len > 100000u) {
-                                break;  // truncated/corrupt — stop the scan
+                                throw std::runtime_error("Snapshot wallet entry header unavailable");
                             }
                             std::vector<uint8_t> spk(script_len);
                             snap.read(reinterpret_cast<char*>(spk.data()), script_len);
@@ -10987,8 +11533,9 @@ int ChainstateService::RescanWalletFromSnapshotUTXOs(WalletManager& wallet, uint
                             snap.read(reinterpret_cast<char*>(&height), sizeof(height));
                             uint8_t is_coinbase = 0;
                             snap.read(reinterpret_cast<char*>(&is_coinbase), 1);
-                            if (!snap) {
-                                break;
+                            if (!snap || height > base_height || is_coinbase > 1 ||
+                                value_raw > uint64_t(INT64_MAX)) {
+                                throw std::runtime_error("Snapshot wallet entry unavailable");
                             }
                             dinero::WalletManager::UtxoSetEntry e;
                             e.txid_hex = txid.GetHex();
@@ -11003,6 +11550,9 @@ int ChainstateService::RescanWalletFromSnapshotUTXOs(WalletManager& wallet, uint
                     base_height);
             }
         }
+        // A configured source failure is not permission to substitute another
+        // UTXO set and report that the requested snapshot scan completed.
+        return -1;
     }
 
     // FALLBACK PATH: in-memory consensus UTXO set (full-set / non-utreexo builds).
@@ -12743,6 +13293,8 @@ bool ChainstateService::InvalidateBlock(const uint256& hash, std::string& error)
 
     std::vector<CBlockIndex*> manually_disconnected_blocks;
     CBlockIndex* post_disconnect_tip = active_tip_;
+    std::unique_ptr<RuntimeReorgTransition> runtime_reorg;
+    bool typed_reorg = false;
 
     // Step 1: If block is in the active chain, disconnect back to its parent
     if (active_tip_) {
@@ -12760,6 +13312,15 @@ bool ChainstateService::InvalidateBlock(const uint256& hash, std::string& error)
                 logger_->info("[InvalidateBlock] Block is in active chain — disconnecting " +
                              std::to_string(active_tip_->height - target->height + 1) + " blocks");
             }
+
+            std::vector<CBlockIndex*> planned_disconnects;
+            for (auto* p=active_tip_;p && p!=target->pprev;p=p->pprev) planned_disconnects.push_back(p);
+            if (!PrepareRuntimeReorgUnderLock(planned_disconnects, {}, runtime_reorg)) {
+                error="Runtime invalidation transaction handoff unavailable";
+                return false;
+            }
+            typed_reorg=bool(runtime_reorg);
+            manually_disconnected_blocks.reserve(planned_disconnects.size());
 
             // The CSN DisconnectTip path only rolls back coins and shielded
             // bookkeeping. ABC normally rewinds its forest first; the manual
@@ -12812,10 +13373,12 @@ bool ChainstateService::InvalidateBlock(const uint256& hash, std::string& error)
                             std::to_string(to_disconnect->height);
                     return false;
                 }
+                if (runtime_reorg) runtime_reorg->Disconnected();
                 // DisconnectTip sets active_tip_ to pprev
                 PublishActiveTipLocked(to_disconnect->pprev, TipPublishReason::kRollback);
             }
 
+            if (runtime_reorg) runtime_reorg->Complete();
             post_disconnect_tip = active_tip_ ? active_tip_ : target->pprev;
 
             // Update ChainDB tip to new active tip
@@ -12891,10 +13454,15 @@ bool ChainstateService::InvalidateBlock(const uint256& hash, std::string& error)
         AddCandidate(target->pprev);
     }
 
+    // Retain/readmit the disconnected typed transactions before a separate
+    // replacement activation. Fresh admission handles already-confirmed IDs;
+    // the provider must not discard its durable intent on a partial failure.
+    runtime_reorg.reset();
+
     // Step 4: Re-evaluate best chain (may switch to a fork)
     ActivateBestChain();
 
-    if (!manually_disconnected_blocks.empty()) {
+    if (!typed_reorg && !manually_disconnected_blocks.empty()) {
         auto* daemon_ctx = DaemonContext::instance();
         if (daemon_ctx && daemon_ctx->mempool && daemon_ctx->mempool->isInitialized()) {
             std::vector<Transaction> disconnected_txs;
@@ -12915,7 +13483,8 @@ bool ChainstateService::InvalidateBlock(const uint256& hash, std::string& error)
                 reconnect_fork,
                 &connected_txs);
 
-            const size_t restored = daemon_ctx->mempool->mempool().ReconcileAfterReorg(
+            auto pool_use = MempoolService::AcquirePoolUse(daemon_ctx->mempool);
+            const size_t restored = pool_use->Pool().ReconcileAfterReorg(
                 disconnected_txs,
                 connected_txs
             );
@@ -13157,6 +13726,7 @@ bool ChainstateService::ReloadConsensusUTXOFromDB(std::string& error) {
 }
 
 bool ChainstateService::IsCanonicalStateAligned(std::string* reason) const {
+    std::lock_guard<AnnotatedRecursiveMutex> activation_lock(activation_mutex_);
     auto fail = [&](const std::string& msg) {
         if (reason) {
             *reason = msg;
@@ -13212,6 +13782,15 @@ bool ChainstateService::IsCanonicalStateAligned(std::string* reason) const {
         return fail("chaindb-tip-conflict-at-active-height: chaindb=" +
                     tip.hash.GetHex().substr(0, 16) + "... active=" +
                     active_tip_->hash.GetHex().substr(0, 16) + "...");
+    }
+
+    // Retirement freezes legacy contents while the composite batch advances
+    // their selected-tip marker. Audit that binding together with the current
+    // Orchard commit/body/undo/forest; alignment never repairs durable state.
+    if (consensus::OrchardActiveForHeight(Params(), active_tip_->height)) {
+        if (tip.height < 0 || uint32_t(tip.height) != active_tip_->height || tip.hash != active_tip_->hash)
+            return fail("orchard-durable-tip-disagreement");
+        return AuditSelectedOrchardTipUnderLock(reason);
     }
 
     const auto shielded_marker_result = chain_db_->getShieldedTipMarker();
@@ -13604,7 +14183,182 @@ Status ChainstateService::ReconstructSpentCoinsFromChainDb(
 // Reorg Fix: Production-Correct DisconnectTip
 // ============================================================================
 
+void ChainstateService::setRuntimeBlockNotifications(std::shared_ptr<RuntimeBlockNotifications> notifications) {
+    std::lock_guard<AnnotatedRecursiveMutex> lock(activation_mutex_);
+    runtime_block_notifications_=std::move(notifications);
+}
+
+bool ChainstateService::PrepareRuntimeReorgUnderLock(
+    const std::vector<CBlockIndex*>& disconnect, const std::vector<CBlockIndex*>& connect,
+    std::unique_ptr<RuntimeReorgTransition>& out) {
+    activation_mutex_.AssertHeld("PrepareRuntimeReorgUnderLock");
+    if (out) return false;
+    if (disconnect.empty()) return true;
+    const auto uses_orchard=[](const auto& path) {
+        return std::any_of(path.begin(),path.end(),[](const auto* p) {
+            return p && p->height >= 0 && consensus::OrchardActiveForHeight(Params(),p->height);
+        });
+    };
+    if (!uses_orchard(disconnect) && !uses_orchard(connect)) return true;
+#ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
+    if (!chain_db_ || !block_storage_ || GetConfig().utreexo_stateless ||
+        !runtime_block_notifications_ || active_tip_!=disconnect.front()) return false;
+    try {
+        const auto consumers=runtime_block_notifications_;
+        auto plan=ReadRuntimeReorgPlanUnderLock(*chain_db_,block_storage_.get(),disconnect,connect);
+        if (!plan) return false;
+        auto prepared=consumers->PrepareReorg(plan);
+        if (!prepared) return false;
+        // Own the prepared handoff before any further refusal, so cancellation
+        // (zero committed blocks) is delivered as well.
+        std::unique_ptr<RuntimeReorgTransition> transition;
+        try { transition=std::make_unique<RuntimeReorgTransition>(std::move(prepared),disconnect.size(),connect.size()); }
+        catch (...) { if (prepared) prepared->Finish({}); throw; }
+        if (active_tip_!=disconnect.front() || runtime_block_notifications_!=consumers) return false;
+        ChainWriteToken token;
+        (void)PersistRuntimeReorgIntentUnderLock(*chain_db_,token,*plan);
+        out=std::move(transition);
+        return true;
+    } catch (...) { return false; }
+#else
+    return false;
+#endif
+}
+
+bool ChainstateService::VerifyForkPointForestUnderLock(CBlockIndex* fork) {
+    activation_mutex_.AssertHeld("fork-point forest verification");
+    if (!fork || !consensus_utxo_set_) return false;
+    try {
+        uint256 expected;
+        if (consensus::OrchardActiveForHeight(Params(),fork->height)) {
+#ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
+            // The fork-point check is against the restored selected state, not
+            // a header-only or side-branch root with the same claimed height.
+            if (!chain_db_ || !block_storage_ || fork!=active_tip_ || GetConfig().utreexo_stateless ||
+                consensus_utxo_set_->GetBestBlock()!=fork->hash || consensus_utxo_set_->GetHeight()!=fork->height)
+                return false;
+            const auto tip=chain_db_->getTip();const auto validated=chain_db_->getValidatedTip();
+            const auto marker=chain_db_->getForestTipMarker();
+            const auto metadata=chain_db_->getHeaderMetadata(fork->hash);
+            if (!tip.ok() || !validated.ok() || !marker.ok() || !metadata.ok() ||
+                tip->hash!=fork->hash || tip->height!=int32_t(fork->height) ||
+                validated->hash!=fork->hash || validated->height!=int32_t(fork->height) ||
+                marker->block_hash!=fork->hash || marker->height!=int32_t(fork->height) ||
+                !(metadata->status_flags&BLOCK_HAVE_DATA) ||
+                ((metadata->status_flags|fork->status)&(BLOCK_FAILED_VALID|BLOCK_FAILED_CHILD)) ||
+                std::tie(fork->status,fork->file_number,fork->data_pos,fork->data_size)!=
+                std::tie(metadata->status_flags,metadata->file_number,metadata->data_pos,metadata->data_size))
+                return false;
+            const auto body=ReadRuntimeBlockUnderLock(*chain_db_,block_storage_.get(),fork->hash,fork->height);
+            if (!body.ok() || !body->IsOrchardProfile()) return false;
+            expected=body->Orchard().Header().utreexo_root;
+            if(marker->forest_root!=expected) return false;
+#else
+            return false;
+#endif
+        } else {
+            const auto block=ReadStoredBlock(fork->hash);
+            if (!block.ok()) return false;
+            expected=block->header.utreexo_root;
+        }
+        const auto commitment=consensus_utxo_set_->SnapshotForestCommitment();
+        return commitment.size()==32 && std::equal(commitment.begin(),commitment.end(),expected.begin());
+    } catch (const std::exception&) {
+        // Missing/corrupt retained material is an unavailable local check, not
+        // evidence that an alternative branch is consensus-invalid.
+        return false;
+    }
+}
+
+bool ChainstateService::DisconnectOrchardTip(CBlockIndex* tip) {
+    std::lock_guard<AnnotatedRecursiveMutex> lock(activation_mutex_);
+#ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
+    // Until all typed downstream consumers can prepare an event, there is no
+    // permitted commit. In particular an absent wallet/mempool adapter must not
+    // silently turn a successful rollback into lost wallet notifications.
+    if (!tip || tip!=active_tip_ || !tip->pprev || !chain_db_ || !block_storage_ ||
+        !consensus_utxo_set_ || GetConfig().utreexo_stateless || safe_mode_active_ ||
+        !runtime_block_notifications_ || !consensus::OrchardProfileConfigurationValid(Params()))
+        return false;
+    try {
+        auto* parent_index=tip->pprev;
+        if (uint64_t(parent_index->height)+1!=tip->height || parent_index->hash!=tip->prev_hash)
+            return false;
+        const auto body=ReadRuntimeBlockUnderLock(*chain_db_,block_storage_.get(),tip->hash,tip->height);
+        const auto parent=chain_db_->getHeader(parent_index->hash);
+        const auto work=chain_db_->getBlockWork(parent_index->hash);
+        const auto height=chain_db_->getBlockHeight(parent_index->hash);
+        if (!body.ok() || !body->IsOrchardProfile() || !parent.ok() || !work.ok() || !height.ok() ||
+            *height<0 || uint32_t(*height)!=parent_index->height ||
+            parent->GetHash()!=parent_index->hash || parent->prev_block_hash!=parent_index->prev_hash ||
+            parent->version!=parent_index->version || parent->merkle_root!=parent_index->merkle_root ||
+            parent->timestamp!=parent_index->timestamp || parent->difficulty!=parent_index->bits ||
+            parent->nonce!=parent_index->nonce || ChainworkFromHex(parent_index->chainwork)!=*work ||
+            (parent_index->status&(BLOCK_FAILED_VALID|BLOCK_FAILED_CHILD)))
+            return false;
+        const bool witness=Params().enforce_witness_commitment &&
+            tip->height>=Params().witness_commitment_enforcement_height;
+        // Indexed and embedded representations must be exactly the same body,
+        // including suffixes outside the transaction identity commitment.
+        if (body->Orchard().WireBytes()!=consensus::ReadStoredOrchardBlock(*chain_db_,tip->hash,witness).WireBytes())
+            return false;
+        ChainWriteToken token;
+        // Release the leaf forest read lock before publication takes its write
+        // lock. The activation lock continues to exclude all canonical writers.
+        const auto forest=[&] {
+            const auto forest_lock=consensus_utxo_set_->LockForestShared();
+            return consensus_utxo_set_->GetForest();
+        }();
+        auto write=PreparedOrchardChainstateWrite::DisconnectIndexed(activation_mutex_,*chain_db_,token,
+            *block_storage_,*tip,*consensus_utxo_set_,*body->Context(),body->Orchard(),*parent,forest,witness);
+        const auto consumers=runtime_block_notifications_;
+        auto* context=DaemonContext::instance();
+        if (context && context->chainstate.get()!=this) return false;
+        const auto pool_service=context?context->mempool:nullptr;
+        const auto relay=context?context->tx_relay:nullptr;
+        auto pool_use=pool_service?MempoolService::AcquirePoolUse(pool_service):nullptr;
+        if (!pool_use && (bridge_node_ || relay)) return false;
+        auto notifications=consumers->Prepare(*body,tip->height,RuntimeBlockDirection::Disconnect);
+        if (!notifications) return false;
+        std::unique_ptr<PreparedPoolTip> pool_tip;
+        if (pool_use) pool_tip=PreparedPoolTip::DisconnectToParent(pool_use->Pool(),bridge_node_,relay,
+            tip->height,{parent->utreexo_root.begin(),parent->utreexo_root.end()});
+        if (context && (DaemonContext::instance()!=context || context->chainstate.get()!=this ||
+            context->mempool!=pool_service || context->tx_relay!=relay)) return false;
+        // Prepare is trusted read-only consumer work. Recheck the selected
+        // service pointers as well as the owner's index/memory readiness before
+        // durability. No fallible consumer preparation is allowed afterwards.
+        if (active_tip_!=tip || tip->pprev!=parent_index || runtime_block_notifications_!=consumers) return false;
+        write->Commit();
+        // This diagnostic cache is not authoritative for proof serving. Remove
+        // old-height positions before any consumer can observe the new tip.
+        // A synchronization failure after durability must never return normally.
+        const auto invalidate_positions=[&]() noexcept {
+            if (utxo_position_index_) utxo_position_index_->Clear();
+        };
+        invalidate_positions();
+        PublishActiveTipLocked(parent_index,TipPublishReason::kRollback);
+        if (pool_tip) pool_tip->PublishAfterCommit();
+        notifications->PublishAfterCommit();
+        if (pool_tip) try { pool_tip->RequestRefresh(); } catch (...) {
+            try { if (logger_) logger_->warning("[OrchardDisconnect] proof refresh delivery unavailable after commit"); }
+            catch (...) {}
+        }
+        return true;
+    } catch (const std::exception& e) {
+        // Commit itself fail-stops after storage writing starts, and both
+        // publication methods cannot throw. This handles prewrite failures only.
+        if (logger_) logger_->error(std::string("[OrchardDisconnect] preparation failed: ")+e.what());
+        return false;
+    }
+#else
+    (void)tip;
+    return false;
+#endif
+}
+
 bool ChainstateService::DisconnectTip(CBlockIndex* tip_to_disconnect) {
+    std::unique_lock<AnnotatedRecursiveMutex> delivery_lock(activation_mutex_);
     std::cout << "🔧 [DisconnectTip] ENTRY: height=" << (tip_to_disconnect ? tip_to_disconnect->height : -1) << std::endl;
     std::cout << std::flush;
 
@@ -13616,6 +14370,22 @@ bool ChainstateService::DisconnectTip(CBlockIndex* tip_to_disconnect) {
         std::cout << "❌ [DisconnectTip] NULL chain_db_" << std::endl;
         return false;
     }
+    // A mixed body must never pass through the historical Block decoder.
+    if (consensus::OrchardActiveForHeight(Params(),tip_to_disconnect->height))
+        return DisconnectOrchardTip(tip_to_disconnect);
+    bool runtime_delivery_history=false;
+    try {
+        runtime_delivery_history=HasRuntimeDeliveryHistory(*chain_db_);
+        if(runtime_delivery_history) {
+#ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
+            if(GetConfig().utreexo_stateless || !consensus::SelectedOrchardBlockContext(
+                    BlockHeader{},Params().orchard_activation_height)) { return false; }
+#else
+            return false;
+#endif
+        }
+    } catch(...) { return false; }
+
     if (!block_validator_) {
         std::cout << "❌ [DisconnectTip] NULL block_validator_" << std::endl;
         logger_->error("[DisconnectTip] BlockValidator not initialized");
@@ -13661,6 +14431,19 @@ bool ChainstateService::DisconnectTip(CBlockIndex* tip_to_disconnect) {
         return false;
     }
     Block block = block_result.value();
+#ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
+    std::optional<PreparedHistoricalRuntimeOutbox> historical_delivery;
+    try {
+        if(runtime_delivery_history) {
+            const auto profile=consensus::SelectedOrchardBlockContext(BlockHeader{},Params().orchard_activation_height);
+            if(!profile) { return false; }
+            historical_delivery=PreparedHistoricalRuntimeOutbox::PrepareUnderLock(
+                *chain_db_,*profile,block,tip_to_disconnect->height,RuntimeBlockDirection::Disconnect);
+            if(!historical_delivery) { return false; }
+        }
+    } catch(...) { return false; }
+#endif
+
     std::cout << "✅ [DisconnectTip] Block read, vtx.size()=" << block.vtx.size() << std::endl;
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -14353,6 +15136,9 @@ bool ChainstateService::DisconnectTip(CBlockIndex* tip_to_disconnect) {
         }
     }
 
+#ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
+    if(historical_delivery)historical_delivery->StageOrTerminateUnderLock(*chain_db_,rollback_batch);
+#endif
     const auto write_status = chain_db_->writeBatch(token, std::move(rollback_batch), true);
     if (write_status != Status::Ok) {
         logger_->error("[DisconnectTip] Failed to commit rollback batch, status=" +
@@ -14442,8 +15228,865 @@ bool IsUnambiguousConsensusViolation(const std::string& err) {
 }
 }  // namespace
 
+std::optional<storage::LegacyRetirementRecord>
+ChainstateService::DeriveOrchardBoundaryFromSelectedHistoryUnderLock() {
+#ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
+    if (!activation_mutex_.HeldByCurrentThread() || !chain_db_ || !active_tip_ ||
+        !consensus_utxo_set_ || GetConfig().utreexo_stateless || safe_mode_active_ ||
+        !consensus::OrchardProfileConfigurationValid(Params()) ||
+        uint64_t(active_tip_->height) + 1 != Params().orchard_activation_height)
+        return std::nullopt;
+    try {
+        // This is independent genesis replay, not trust in a tip marker or in
+        // snapshot import. Keep the selected writer owner through comparison
+        // and retirement derivation. Bounds refuse; they never truncate.
+        constexpr uint32_t maximum_blocks = 100000;
+        constexpr size_t maximum_material = 256 * 1024 * 1024;
+        const auto* selected = active_tip_;
+        const auto height = selected->height;
+        const auto hash = selected->hash;
+        if (height >= maximum_blocks) return std::nullopt;
+        const auto tip = chain_db_->getTip();
+        const auto validated = chain_db_->getValidatedTip();
+        if (!tip.ok() || !validated.ok() || tip->height < 0 ||
+            uint32_t(tip->height) != height || tip->hash != hash ||
+            validated->height != tip->height || validated->hash != hash ||
+            consensus_utxo_set_->GetHeight() != height ||
+            consensus_utxo_set_->GetBestBlock() != hash)
+            return std::nullopt;
+        assumeutxo::AssumeUtxoReplayEngine replay;
+        uint256 previous;
+        arith_uint256 work{0};
+        size_t material = 0;
+        for (uint32_t h = 0; h <= height; ++h) {
+            const auto selected_hash = chain_db_->getBlockHashByHeight(int(h));
+            if (!selected_hash.ok()) return std::nullopt;
+            const auto stored_height = chain_db_->getBlockHeight(*selected_hash);
+            const auto stored_header = chain_db_->getHeader(*selected_hash);
+            const auto stored_work = chain_db_->getBlockWork(*selected_hash);
+            const auto body = storage::ReadArchivalBlock(*chain_db_, block_storage_.get(), *selected_hash);
+            if (!stored_height.ok() || *stored_height != int(h) || !stored_header.ok() ||
+                !stored_work.ok() || !body.ok() || body->GetHash() != *selected_hash ||
+                body->header.SerializeForHash() != stored_header->SerializeForHash() ||
+                body->header.prev_block_hash != previous)
+                return std::nullopt;
+            const size_t bytes = body->Serialize().size();
+            if (bytes > maximum_material - material) return std::nullopt;
+            material += bytes;
+            std::string error;
+            if (h == 0 ? !replay.SeedGenesis(*body, error)
+                       : !replay.ConnectAndAdvance(*body, h, *selected_hash, error))
+                return std::nullopt;
+            work += GetBlockProof(body->header.difficulty);
+            if (work != *stored_work) return std::nullopt;
+            previous = *selected_hash;
+        }
+        if (previous != hash || replay.Height() != height ||
+            ChainworkFromHex(selected->chainwork) != work)
+            return std::nullopt;
+        const auto& proven = replay.ProvenUtxos();
+        const auto& live = consensus_utxo_set_->GetUTXOs();
+        const auto same_coin = [](const consensus::UTXOEntry& a, const consensus::UTXOEntry& b) {
+            return a.value.GetUna() == b.value.GetUna() && a.scriptPubKey == b.scriptPubKey &&
+                a.height == b.height && a.isCoinbase == b.isCoinbase &&
+                a.is_confidential == b.is_confidential && a.commitment == b.commitment;
+        };
+        if (live.size() != proven.size()) return std::nullopt;
+        for (const auto& [point, coin] : proven) {
+            const auto found = live.find(point);
+            if (found == live.end() || !same_coin(coin, found->second)) return std::nullopt;
+        }
+        size_t stored_count = 0;
+        bool stored_matches = true;
+        const auto coin_status = chain_db_->forEachUTXO([&](const uint256& txid, uint32_t n, const Coin& coin) {
+            const auto found = proven.find(OutPoint(TxId(txid), n));
+            std::vector<uint8_t> script;
+            if (found == proven.end() || coin.height < 0 || uint32_t(coin.height) > height ||
+                !std::all_of(coin.script_pubkey.begin(), coin.script_pubkey.end(), [](unsigned char c) {
+                    return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+                }) || !util::unhex(coin.script_pubkey, script) ||
+                !same_coin(found->second, consensus::UTXOEntry(AmountUna::Una(coin.amount), script,
+                    uint32_t(coin.height), coin.coinbase, coin.is_confidential, coin.commitment))) {
+                stored_matches = false;
+                return false;
+            }
+            ++stored_count;
+            return true;
+        });
+        if (coin_status != Status::Ok || !stored_matches || stored_count != proven.size())
+            return std::nullopt;
+        const auto forest_marker = chain_db_->getForestTipMarker();
+        if (!forest_marker.ok() || forest_marker->height != int32_t(height) ||
+            forest_marker->block_hash != hash ||
+            forest_marker->forest_root.GetHex() != replay.UtreexoRootHex())
+            return std::nullopt;
+        {
+            const auto forest_lock = consensus_utxo_set_->LockForestShared();
+            const auto& forest = consensus_utxo_set_->GetForest();
+            if (forest.getCommitment() != replay.Forest()->getCommitment() ||
+                forest.getNumLeaves() != replay.Forest()->getNumLeaves())
+                return std::nullopt;
+        }
+        const auto proven_root = consensus::shielded::ComputeShieldedRoot(
+            *replay.ShieldedTree(), *replay.ShieldedNullifiers(), *replay.ShieldedAnchors());
+        const auto live_root = consensus::shielded::ComputeShieldedRoot(
+            shielded_tree_, shielded_nullifiers_, shielded_anchor_history_);
+        if (!proven_root || !live_root || *proven_root != *live_root ||
+            replay.ShieldedTree()->SerializeFrontier() != shielded_tree_.SerializeFrontier() ||
+            replay.ShieldedAnchors()->SerializePersistenceBytes() != shielded_anchor_history_.SerializePersistenceBytes())
+            return std::nullopt;
+        const auto record = consensus::DeriveSelectedLegacyRetirementUnderLock(
+            *chain_db_, block_storage_.get(), maximum_blocks);
+        const auto stored_frontier = chain_db_->getShieldedState(ChainDB::ShieldedStateRecord::Frontier);
+        const auto stored_anchors = chain_db_->getShieldedState(ChainDB::ShieldedStateRecord::AnchorHistory);
+        const auto frontier = replay.ShieldedTree()->SerializeFrontier();
+        const auto anchors = replay.ShieldedAnchors()->SerializePersistenceBytes();
+        if (record.boundary_parent != hash || record.activation_height != uint64_t(height) + 1 ||
+            record.legacy_state_root != *proven_root || !stored_frontier.ok() || !stored_anchors.ok() ||
+            *stored_frontier != std::string(frontier.begin(), frontier.end()) ||
+            *stored_anchors != std::string(anchors.begin(), anchors.end()) || active_tip_ != selected)
+            return std::nullopt;
+        return record;
+    } catch (...) {
+        return std::nullopt;
+    }
+#else
+    return std::nullopt;
+#endif
+}
+
+struct ChainstateService::MempoolReadGuard final : MempoolChainstateReadGuard {
+    std::shared_ptr<ChainstateService> owner;
+    std::unique_lock<AnnotatedRecursiveMutex> lock;
+    const std::thread::id thread=std::this_thread::get_id();
+    explicit MempoolReadGuard(std::shared_ptr<ChainstateService> service)
+        :owner(std::move(service)),lock(owner->AcquireBlockIngressActivationLock()) {}
+    ~MempoolReadGuard() override { if(thread!=std::this_thread::get_id())std::terminate(); }
+    MempoolSelectionValidation ValidateBlockSelection(
+        std::span<const MempoolTransaction> bodies, uint32_t height) override {
+        if (thread != std::this_thread::get_id())
+            throw std::logic_error("Selected pool owner is thread-affine");
+        return owner->ValidateOrchardSelectionUnderLock(bodies, height);
+    }
+    MempoolOrchardValidation ValidateOrchard(const MempoolTransaction& body,
+        std::span<const MempoolTransaction> pending) override {
+        if(thread!=std::this_thread::get_id())throw std::logic_error("Selected pool owner is thread-affine");
+        return owner->ValidateOrchardPoolUnderLock(body,{pending.begin(),pending.end()});
+    }
+};
+std::unique_ptr<MempoolChainstateReadGuard> ChainstateService::AcquireMempoolChainstateRead(
+    std::shared_ptr<ChainstateService> owner) {
+    if(!owner)return {};
+    return std::make_unique<MempoolReadGuard>(std::move(owner));
+}
+
+struct ChainstateService::SelectedOrchardPoolContext {
+#ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
+    struct SelectedCoins final:consensus::ChainStateView {
+            const ChainDB& db;const consensus::ConsensusUTXOSet& live;
+            SelectedCoins(const ChainDB& d,const consensus::ConsensusUTXOSet& l):db(d),live(l){}
+            StatusOr<consensus::UTXOEntry> getCoin(const OutPoint& point)const override {
+                const auto stored=db.getCoin(point.txid.AsUint256(),point.vout);
+                const auto* coin=live.GetCoin(point);
+                if(!stored.ok())return stored.status()==Status::NotFound && coin?Status::Corruption:stored.status();
+                if(!coin || stored->height<0 || uint32_t(stored->height)>live.GetHeight() ||
+                   uint32_t(stored->height)!=coin->height || stored->amount!=coin->value.GetUna() ||
+                   stored->coinbase!=coin->isCoinbase || stored->is_confidential!=coin->is_confidential ||
+                   stored->commitment!=coin->commitment)return Status::Corruption;
+                if(!std::all_of(stored->script_pubkey.begin(),stored->script_pubkey.end(),[](unsigned char c) {
+                    return (c>='0'&&c<='9') || (c>='a'&&c<='f') || (c>='A'&&c<='F');
+                }))return Status::Corruption;
+                std::vector<uint8_t> script;
+                if(!util::unhex(stored->script_pubkey,script) || script!=coin->scriptPubKey)return Status::Corruption;
+                return *coin;
+            }
+            bool hasCoin(const OutPoint& p)const override {
+                const auto coin=getCoin(p);
+                if(!coin.ok() && coin.status()!=Status::NotFound)throw consensus::OrchardCoinLookupError(coin.status());
+                return coin.ok();
+            }
+            uint32_t getHeight()const override{return live.GetHeight();}
+    };
+    const ChainDB& db;
+    consensus::OrchardTransactionContext context;
+    std::optional<storage::OrchardStoredState> parent;
+    std::shared_ptr<consensus::HeaderChainSelector> headers;
+    SelectedCoins coins;
+    SelectedOrchardPoolContext(const ChainDB& database,
+        const consensus::ConsensusUTXOSet& live,
+        std::shared_ptr<consensus::HeaderChainSelector> selected_headers,
+        consensus::OrchardTransactionContext selected_context,
+        std::optional<storage::OrchardStoredState> selected_parent)
+        : db(database), context(std::move(selected_context)), parent(std::move(selected_parent)),
+          headers(std::move(selected_headers)), coins(database, live) {}
+    consensus::OrchardBranchMtpLookup Mtp() const {
+        return [headers=headers, parent_hash=context.parent_hash, parent_height=context.height-1](uint32_t h)->std::optional<uint64_t> {
+            uint256 ancestor;uint32_t selected=0,found=0,time=0;
+            if(h>parent_height || !headers->GetAncestorHashByHash(parent_hash,h,ancestor,selected) ||
+               selected!=parent_height || !headers->GetMedianTimePastByHash(ancestor,time,found) || found!=h)return {};
+            return time;
+        };
+    }
+    consensus::OrchardStateLookups Lookups() const {
+        return consensus::OrchardStateLookups{
+            [&](const uint256& a)->StatusOr<bool>{const auto v=db.getOrchardAnchorReferences(a);
+                if(v.status()==Status::NotFound)return false;if(!v.ok())return v.status();return *v>0;},
+            [&](const uint256& n)->StatusOr<bool>{const auto v=db.getOrchardNullifierOwner(n);
+                if(v.status()==Status::NotFound)return false;if(!v.ok())return v.status();return true;}};
+    }
+#endif
+};
+
+std::unique_ptr<ChainstateService::SelectedOrchardPoolContext>
+ChainstateService::CaptureSelectedOrchardPoolContextUnderLock() {
+#ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
+    if(!chain_db_ || !active_tip_ || !consensus_utxo_set_ ||
+       !header_chain_selector_ || !runtime_block_notifications_ || safe_mode_active_ ||
+       GetConfig().utreexo_stateless || active_tip_->height>=uint32_t(INT32_MAX) ||
+       !consensus::OrchardActiveForHeight(Params(),active_tip_->height+1))
+        return {};
+    const auto parent_hash=active_tip_->hash;const auto parent_height=active_tip_->height;
+    const auto tip=chain_db_->getTip();const auto validated=chain_db_->getValidatedTip();
+    const auto parent_header=chain_db_->getHeader(parent_hash);
+    const auto parent_work=chain_db_->getBlockWork(parent_hash);
+    const auto headers=header_chain_selector_;
+    const auto indexed=headers->GetHeaderValue(parent_hash);
+    if(!tip.ok() || !validated.ok() || !parent_header.ok() || !parent_work.ok() || !indexed ||
+       tip->height<0 || uint32_t(tip->height)!=parent_height || tip->hash!=parent_hash ||
+       validated->hash!=parent_hash || validated->height!=tip->height ||
+       consensus_utxo_set_->GetBestBlock()!=parent_hash || consensus_utxo_set_->GetHeight()!=parent_height ||
+       indexed->height!=parent_height || indexed->chainwork!=*parent_work ||
+       parent_header->GetHash()!=parent_hash ||
+       parent_header->prev_block_hash!=active_tip_->prev_hash || parent_header->version!=active_tip_->version ||
+       parent_header->merkle_root!=active_tip_->merkle_root || parent_header->timestamp!=active_tip_->timestamp ||
+       parent_header->difficulty!=active_tip_->bits || parent_header->nonce!=active_tip_->nonce ||
+       indexed->header.SerializeForHash()!=parent_header->SerializeForHash() ||
+       ChainworkFromHex(active_tip_->chainwork)!=*parent_work ||
+       active_tip_->status&(BLOCK_FAILED_VALID|BLOCK_FAILED_CHILD))
+        return {};
+    if(!VerifyConsensusJournalAtActiveTip())return {};
+    consensus::OrchardTransactionContext context;
+    context.height=parent_height+1;context.parent_hash=parent_hash;
+    context.activation_height=Params().orchard_activation_height;
+    context.domain.network_code=Params().name=="mainnet"?0:Params().name=="testnet"?1:2;
+    context.domain.branch_id=Params().orchard_branch_id;
+    uint256 genesis;
+    if(!uint256::FromHex(Params().genesis_hash,genesis) || genesis.IsNull())
+        return {};
+    std::copy(genesis.begin(),genesis.end(),context.domain.genesis_wire.begin());
+    std::optional<storage::OrchardStoredState> parent;
+    const auto stored=chain_db_->getOrchardState();
+    if(context.height==context.activation_height) {
+        if(stored.status()!=Status::NotFound || !DeriveOrchardBoundaryFromSelectedHistoryUnderLock())
+            return {};
+    } else {
+        if(!stored.ok() || stored->height!=parent_height || stored->block_hash!=parent_hash)
+            return {};
+        parent=*stored;
+        const auto refs=chain_db_->getOrchardAnchorReferences(parent->anchor);
+        if(!refs.ok() || *refs==0)return {};
+    }
+    return std::make_unique<SelectedOrchardPoolContext>(*chain_db_,
+        *consensus_utxo_set_, headers, std::move(context), std::move(parent));
+#else
+    return {};
+#endif
+}
+
+MempoolOrchardValidation ChainstateService::ValidateOrchardPoolUnderLock(
+    const MempoolTransaction& body,const std::vector<MempoolTransaction>& pending) {
+    MempoolOrchardValidation result;
+    const auto fail=[&](const char* message,TxRejectCode code=TxRejectCode::UNAVAILABLE) {
+        result.result=TxAcceptResult::Rejected(code,message);return result;
+    };
+#ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
+    if (!body.IsOrchard()) return fail("Non-Orchard admission body");
+    try {
+        auto selected = CaptureSelectedOrchardPoolContextUnderLock();
+        if (!selected) return fail("Orchard selected service unavailable");
+        const auto& context = selected->context;
+        const auto& parent = selected->parent;
+        const auto& coins = selected->coins;
+        const auto parent_height = context.height - 1;
+        const auto mtp = selected->Mtp();
+        const auto lookups = selected->Lookups();
+        const uint64_t balance=parent?parent->pool_balance:0;
+        uint64_t deposits=0,withdrawals=0;
+        std::set<std::array<uint8_t,32>> nullifiers;
+        std::set<OutPoint> inputs;
+        const auto check=[&](const MempoolTransaction& transaction) {
+            if(!transaction.IsOrchard())throw std::invalid_argument("Non-Orchard pending body");
+            for(const auto& p:transaction.Inputs())if(!inputs.insert(p).second)
+                throw std::invalid_argument("Conflicting pending Orchard input");
+            for(const auto& n:transaction.OrchardNullifiers())if(!nullifiers.insert(n).second)
+                throw std::invalid_argument("Conflicting pending Orchard nullifier");
+            const auto parsed=ParsedTransaction::DecodeExact(transaction.Serialize(),TransactionReadMode::StagedOrchard);
+            consensus::OrchardResourceUsage usage;
+            consensus::AccumulateOrchardTransactionResources(parsed,usage);
+            const auto snapshot=consensus::OrchardCoinSnapshot::ResolveUnderChainstateLock(transaction.Orchard(),coins);
+            consensus::AccumulateOrchardInputResources(parsed,snapshot.Coins(),usage);
+            const auto verified=consensus::VerifyOrchardAuthorizations(snapshot,context.domain,context.height,mtp);
+            const auto checked=consensus::CheckOrchardTransactions(context,parent,{&verified,1},lookups);
+            const auto& flow=checked.Flows().at(0);
+            // Each independent reservation must fit the selected parent in
+            // every selection order; pending deposits cannot fund withdrawals.
+            if(flow.transparent_outputs>orchard::kMaxMoneyUna || flow.fee>orchard::kMaxMoneyUna-flow.transparent_outputs)
+                throw std::invalid_argument("Orchard pending value range");
+            const uint64_t out=flow.transparent_outputs+flow.fee;
+            if(flow.transparent_inputs>=out) {
+                const uint64_t deposit=flow.transparent_inputs-out;
+                if(balance>orchard::kMaxMoneyUna || deposits>orchard::kMaxMoneyUna-balance ||
+                   deposit>orchard::kMaxMoneyUna-balance-deposits)throw std::invalid_argument("Orchard pending deposit capacity");
+                deposits+=deposit;
+            } else {
+                const uint64_t withdrawal=out-flow.transparent_inputs;
+                if(withdrawals>balance || withdrawal>balance-withdrawals)throw std::invalid_argument("Orchard pending withdrawal capacity");
+                withdrawals+=withdrawal;
+            }
+            return flow.fee;
+        };
+        // Existing entries need real readmission on a changed parent. Refuse
+        // this operation without discarding them or asserting they remain ready.
+        try {for(const auto& transaction:pending)(void)check(transaction);}
+        catch(const std::exception&){return fail("Existing Orchard pool requires readmission");}
+        result.fee=check(body);result.parent_height=parent_height;
+        result.result=TxAcceptResult::Accepted(body.GetTxid().AsUint256());return result;
+    } catch(const consensus::OrchardCoinLookupError& e) {
+        return fail("Orchard confirmed input unavailable",e.SourceStatus()==Status::NotFound?TxRejectCode::MISSING_INPUTS:TxRejectCode::UNAVAILABLE);
+    } catch(const consensus::OrchardStateLookupError&) {
+        return fail("Orchard selected state lookup unavailable");
+    } catch(const consensus::OrchardTransparentError& e) {
+        return fail("Orchard transparent authorization refused",e.Code()==consensus::OrchardTransparentErrorCode::MissingMedianTime?
+            TxRejectCode::UNAVAILABLE:TxRejectCode::SCRIPT_VERIFY_FAILED);
+    } catch(const orchard::BackendError& e) {
+        return fail("Orchard authorization refused",e.Status()==DINERO_ORCHARD_PANIC?TxRejectCode::UNAVAILABLE:TxRejectCode::INVALID_TX);
+    } catch(const consensus::OrchardStateError& e) {
+        return fail("Orchard selected transaction state refused",e.Code()==consensus::OrchardStateErrorCode::ParentState ||
+            e.Code()==consensus::OrchardStateErrorCode::Context?TxRejectCode::UNAVAILABLE:TxRejectCode::INVALID_TX);
+    } catch(const consensus::OrchardResourceError&) {
+        return fail("Orchard resource policy refused",TxRejectCode::INVALID_TX);
+    } catch(const std::bad_alloc&) {throw;}
+      catch(const std::exception&) {return fail("Orchard transaction checks unavailable");}
+#else
+    (void)body;(void)pending;
+    return fail("Orchard backend unavailable");
+#endif
+}
+MempoolSelectionValidation ChainstateService::ValidateOrchardSelectionUnderLock(
+    std::span<const MempoolTransaction> bodies, uint32_t height) {
+    MempoolSelectionValidation result;
+#ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
+    try {
+        auto selected = CaptureSelectedOrchardPoolContextUnderLock();
+        if (!selected || selected->context.height != height) return result;
+        std::vector<ParsedTransaction> transactions;
+        transactions.reserve(bodies.size());
+        for (const auto& body : bodies) {
+            if (!body.HasBody()) return result;
+            transactions.push_back(ParsedTransaction::DecodeExact(
+                body.Serialize(), TransactionReadMode::StagedOrchard));
+        }
+        const auto checked = consensus::CheckOrchardTransactionCoinsUnderChainstateLock(
+            transactions, selected->context, selected->coins, selected->Mtp());
+        (void)consensus::CheckOrchardTransactions(selected->context, selected->parent,
+            checked.Authorizations(), selected->Lookups());
+        for (const auto& transaction : checked.Transactions()) {
+            if (!result.fees.emplace(transaction.txid.AsUint256(), transaction.fee).second)
+                return MempoolSelectionValidation{};
+        }
+        result.parent_hash = selected->context.parent_hash;
+        result.parent_height = height - 1;
+        result.result = TxAcceptResult::Accepted(uint256{});
+        return result;
+    } catch (const std::bad_alloc&) { throw; }
+      catch (const std::exception&) { return MempoolSelectionValidation{}; }
+#else
+    (void)bodies; (void)height;
+    return result;
+#endif
+}
+
+
+struct ChainstateService::MiningReadGuard final : MiningChainstateReadGuard {
+    std::shared_ptr<ChainstateService> owner;
+    std::unique_lock<AnnotatedRecursiveMutex> lock;
+    const std::thread::id thread = std::this_thread::get_id();
+    explicit MiningReadGuard(std::shared_ptr<ChainstateService> service)
+        : owner(std::move(service)), lock(owner->AcquireBlockIngressActivationLock()) {}
+    ~MiningReadGuard() override { if (thread != std::this_thread::get_id()) std::terminate(); }
+    std::shared_ptr<const OrchardMiningTemplate> BuildOrchardTemplate(
+        const BlockHeader& header, const Transaction& coinbase,
+        std::span<const MempoolTransaction> bodies, uint32_t height) override {
+        if (thread != std::this_thread::get_id())
+            throw std::logic_error("Selected mining owner is thread-affine");
+        return owner->BuildOrchardMiningTemplateUnderLock(header, coinbase, bodies, height);
+    }
+};
+std::unique_ptr<MiningChainstateReadGuard> ChainstateService::AcquireMiningReadGuard(
+    std::shared_ptr<ChainstateService> owner) {
+    if (!owner) return {};
+    return std::make_unique<MiningReadGuard>(std::move(owner));
+}
+
+std::shared_ptr<const OrchardMiningTemplate> ChainstateService::BuildOrchardMiningTemplateUnderLock(
+    const BlockHeader& requested, const Transaction& requested_coinbase,
+    std::span<const MempoolTransaction> bodies, uint32_t height) {
+    AssertActivationLockHeld("Orchard mining construction");
+#ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
+    using namespace consensus;
+    auto selected = CaptureSelectedOrchardPoolContextUnderLock();
+    if (!selected || height != selected->context.height ||
+        requested.prev_block_hash != selected->context.parent_hash ||
+        !requested_coinbase.IsCoinbase()) return {};
+    const auto parent = chain_db_->getHeader(selected->context.parent_hash);
+    if (!parent.ok()) return {};
+    const auto retirement = [&]() -> std::optional<storage::LegacyRetirementRecord> {
+        if (height == selected->context.activation_height)
+            return DeriveOrchardBoundaryFromSelectedHistoryUnderLock();
+        const auto stored = chain_db_->getLegacyRetirementState();
+        if (!stored.ok()) return {};
+        return stored->record;
+    }();
+    if (!retirement) return {};
+    const auto forest = [&] {
+        const auto lock = consensus_utxo_set_->LockForestShared();
+        return consensus_utxo_set_->GetForest();
+    }();
+    const auto mtp = selected->Mtp();
+    const auto lookups = selected->Lookups();
+    BlockHeader header = requested;
+    Transaction coinbase = requested_coinbase;
+    // The caller supplies a payout coinbase only. Never preserve a stale or
+    // caller-chosen consensus commitment through a new selected-state build.
+    for (const auto& output : coinbase.vout)
+        if (!output.scriptPubKey.empty() && output.scriptPubKey.front() == 0x6a)
+            throw std::invalid_argument("Mining payout contains a commitment output");
+    std::vector<WTxId> witness_ids{WTxId(uint256{})};
+    for (const auto& body : bodies) {
+        if (!body.HasBody()) return {};
+        witness_ids.push_back(body.GetWtxid());
+    }
+    bool mutated = false;
+    const auto witness_root = ComputeWitnessMerkleRootFromIds(witness_ids, &mutated);
+    if (mutated) return {};
+    coinbase.vout.emplace_back(AmountUna::Zero(), BuildWitnessCommitmentFromRoot(witness_root));
+    std::optional<BlockUtreexoData> proof;
+    const auto encode = [&]() {
+        std::vector<TxId> ids{coinbase.GetTxid()};
+        for (const auto& body : bodies) ids.push_back(body.GetTxid());
+        bool duplicate = false;
+        header.merkle_root = ComputeTransactionMerkleRoot(ids, &duplicate);
+        if (duplicate) throw std::invalid_argument("Duplicate mining body identity");
+        const auto prefix = header.SerializeForHash();
+        std::vector<uint8_t> wire(prefix.begin(), prefix.end());
+        const uint64_t count = uint64_t(bodies.size()) + 1;
+        const auto number = [&](uint64_t value, size_t width) {
+            for (size_t i = 0; i < width; ++i) wire.push_back(uint8_t(value >> (8 * i)));
+        };
+        if (count < 253) wire.push_back(uint8_t(count));
+        else if (count <= UINT16_MAX) { wire.push_back(253); number(count, 2); }
+        else if (count <= UINT32_MAX) { wire.push_back(254); number(count, 4); }
+        else { wire.push_back(255); number(count, 8); }
+        const auto append = [&](const std::vector<uint8_t>& bytes) {
+            if (bytes.size() > OrchardBlockCandidate::MaxWireSize() || wire.size() > OrchardBlockCandidate::MaxWireSize() - bytes.size())
+                throw MiningTemplateSizeError();
+            wire.insert(wire.end(), bytes.begin(), bytes.end());
+        };
+        append(coinbase.Serialize(TxSerializationMode::WithWitness));
+        for (const auto& body : bodies) append(body.Serialize());
+        wire.push_back(proof ? 1 : 0);
+        if (proof) append(proof->serialize());
+        if (wire.size() > OrchardBlockCandidate::MaxWireSize()) throw MiningTemplateSizeError();
+        auto candidate = OrchardBlockCandidate::DecodeExact(wire);
+        std::string error;
+        if (!candidate.CheckSizeLimits(error)) throw MiningTemplateSizeError();
+        return candidate;
+    };
+    const auto context_for = [&](const OrchardBlockCandidate& body) {
+        const auto context = SelectedOrchardBlockContext(body.Header(), height);
+        if (!context) throw std::runtime_error("Mining activation context unavailable");
+        return *context;
+    };
+    const auto initial = encode();
+    const auto now = std::chrono::duration_cast<std::chrono::seconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+    CheckOrchardMiningHeaderUnderChainstateLock(initial.Header(), *parent,
+        context_for(initial), *selected->headers, now > 0 ? uint64_t(now) : 0);
+    const auto initial_coins = PrepareOrchardBlockCoinsUnderChainstateLock(
+        initial, context_for(initial), selected->coins, mtp, true);
+    const auto filter = BuildOrchardBlockFilter(initial_coins);
+    // Unlike the historical helper, the typed profile commits an empty
+    // filter as an explicit zero hash rather than omitting its output.
+    std::vector<uint8_t> filter_script{0x6a, FilterCommitment::SIZE, 0x44, 0x4e, 0x52, 0x46, FilterCommitment::VERSION};
+    const auto filter_hash = filter.GetHash();
+    filter_script.insert(filter_script.end(), filter_hash.begin(), filter_hash.end());
+    coinbase.vout.emplace_back(AmountUna::Zero(), std::move(filter_script));
+    const auto filtered = encode();
+    const auto state = PrepareOrchardStateTransition(context_for(filtered), selected->parent,
+        initial_coins.Authorizations(), lookups);
+    const auto sets = chain_db_->previewOrchardCommitmentSets(state.Parent(), state.Next(), state.Nullifiers());
+    if (!sets.ok()) throw OrchardStateLookupError(sets.status());
+    const auto& c = selected->context;
+    const auto root = ComputeOrchardStateRoot(
+        {c.domain, c.activation_height, height, c.parent_hash}, *retirement, state.Next(), *sets);
+    coinbase.vout.emplace_back(AmountUna::Zero(), BuildStateCommitmentScript(root, StateCommitmentEncoding::Orchard));
+    const auto state_draft = encode();
+    const auto coins = PrepareOrchardBlockCoinsUnderChainstateLock(
+        state_draft, context_for(state_draft), selected->coins, mtp, true);
+    const auto post_forest = PrepareOrchardForestTransition(coins, *parent, forest);
+    header.utreexo_root = post_forest.Root();
+    BlockUtreexoData payload;
+    payload.accumulator_root_before = forest.getCommitment();
+    std::set<OutPoint> created;
+    for (const auto& tx : coins.Transactions())
+        for (const auto& [point, coin] : tx.created) created.insert(point);
+    std::vector<UtreexoHash> external;
+    for (const auto& tx : coins.Transactions()) for (const auto& [point, coin] : tx.spent) {
+        payload.spent_outputs.emplace_back(coin.value.GetUna(), coin.scriptPubKey,
+            coin.height, coin.isCoinbase, coin.is_confidential, coin.commitment);
+        if (!created.contains(point)) external.push_back(HashUTXOForCreationHeight(
+            point.txid.AsUint256(), point.vout, coin.value.GetUna(), coin.scriptPubKey,
+            coin.height, coin.isCoinbase));
+    }
+    payload.spend_proof = forest.generateBlockProof(external, GetUtreexoProofFormatVersion(height));
+    proof = std::move(payload);
+    const auto final = encode();
+    const auto final_context = context_for(final);
+    CheckOrchardMiningHeaderUnderChainstateLock(final.Header(), *parent, final_context,
+        *selected->headers, now > 0 ? uint64_t(now) : 0);
+    const auto final_coins = PrepareOrchardBlockCoinsUnderChainstateLock(
+        final, final_context, selected->coins, mtp, true);
+    (void)CheckOrchardBlockFilter(final, final_coins);
+    const auto final_state = PrepareOrchardStateTransition(final_context, selected->parent,
+        final_coins.Authorizations(), lookups);
+    const auto final_sets = chain_db_->previewOrchardCommitmentSets(
+        final_state.Parent(), final_state.Next(), final_state.Nullifiers());
+    if (!final_sets.ok()) throw OrchardStateLookupError(final_sets.status());
+    const auto found = FindStateCommitment(coinbase, StateCommitmentEncoding::Orchard);
+    if (found.status != StateCommitmentStatus::Ok || found.root != ComputeOrchardStateRoot(
+        {c.domain, c.activation_height, height, c.parent_hash}, *retirement, final_state.Next(), *final_sets))
+        throw std::runtime_error("Mining state commitment mismatch");
+    const auto final_forest = PrepareOrchardForestTransition(final_coins, *parent, forest);
+    if (!final_forest.MatchesHeader(final.Header()))
+        throw std::runtime_error("Mining forest commitment mismatch");
+    CheckOrchardBlockUtreexoProof(final, final_coins, *parent, forest);
+    std::vector<MempoolTransaction> transactions{MempoolTransaction(coinbase)};
+    transactions.insert(transactions.end(), bodies.begin(), bodies.end());
+    return std::shared_ptr<const OrchardMiningTemplate>(new OrchardMiningTemplate(
+        final.Header(), std::move(transactions), final.WireBytes(), height,
+        final_coins.TotalFees(), final.BaseSize()));
+#else
+    (void)requested; (void)requested_coinbase; (void)bodies; (void)height;
+    return {};
+#endif
+}
+
+std::optional<BlockAcceptResult> ChainstateService::TryAcceptOrchardBlockFromRPC(
+    const std::string& hex) {
+    std::lock_guard<AnnotatedRecursiveMutex> lock(activation_mutex_);
+    using namespace consensus;
+    if (Params().orchard_activation_height == UINT32_MAX) return std::nullopt;
+    const auto reject = [](BlockRejectCode code, const char* reason,
+                           const uint256& hash = uint256{}, uint32_t height = 0) {
+        return BlockAcceptResult::Rejected(code, reason, hash, height);
+    };
+    if (!OrchardProfileConfigurationValid(Params()) || !chain_db_)
+        return reject(BlockRejectCode::CONNECT_FAILED, "Orchard ingress configuration unavailable");
+    // Route by the authenticated parent's stored height, before attempting a
+    // historical transaction decoder. The payload never selects its profile.
+    if (hex.size() < 256) return reject(BlockRejectCode::PARSE_ERROR, "Truncated block header");
+    std::vector<uint8_t> prefix;
+    if (!util::unhex(hex.substr(0, 256), prefix))
+        return reject(BlockRejectCode::PARSE_ERROR, "Invalid block header encoding");
+    const auto header = BlockHeader::Deserialize(prefix);
+    if (!header) return reject(BlockRejectCode::PARSE_ERROR, "Invalid block header");
+    const auto hash = header->GetHash();
+    const auto parent_height = chain_db_->getBlockHeight(header->prev_block_hash);
+    if (!parent_height.ok())
+        return reject(parent_height.status() == Status::NotFound ? BlockRejectCode::MISSING_PARENT
+            : BlockRejectCode::CONNECT_FAILED, "Block parent unavailable", hash);
+    if (*parent_height < 0 || *parent_height >= INT32_MAX)
+        return reject(BlockRejectCode::CONNECT_FAILED, "Block parent height unavailable", hash);
+    const auto height = uint32_t(*parent_height) + 1;
+    if (!OrchardActiveForHeight(Params(), height)) return std::nullopt;
+#ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
+    if (hex.size() % 2 || hex.size() / 2 > OrchardBlockCandidate::MaxWireSize())
+        return reject(BlockRejectCode::PARSE_ERROR, "Orchard block frame exceeds bounds", hash, height);
+    if (!block_storage_ || !active_tip_ || !consensus_utxo_set_ || !header_chain_selector_ ||
+        !runtime_block_notifications_ || GetConfig().utreexo_stateless || safe_mode_active_)
+        return reject(BlockRejectCode::CONNECT_FAILED, "Orchard ingress owner unavailable", hash, height);
+    try {
+        std::vector<uint8_t> wire;
+        if (!util::unhex(hex, wire))
+            return reject(BlockRejectCode::PARSE_ERROR, "Invalid Orchard block encoding", hash, height);
+        const auto body = OrchardBlockCandidate::DecodeExact(wire);
+        std::string error;
+        if (!body.CheckSizeLimits(error) || !body.CheckCoinbaseHeight(height, error) ||
+            !body.CheckIdentityCommitments(Params().enforce_witness_commitment &&
+                height >= Params().witness_commitment_enforcement_height, error))
+            return reject(BlockRejectCode::INVALID_TRANSACTION, "Orchard block framing or commitments rejected", hash, height);
+        // A repeated canonical submission must retain its exact stored body;
+        // its inputs have already been consumed, so it is not re-admitted
+        // against the current child UTXO view.
+        if (active_tip_->hash == hash && active_tip_->height == height) {
+            const auto stored = ReadRuntimeBlockUnderLock(*chain_db_, block_storage_.get(), hash, height);
+            if (!stored.ok() || !stored->IsOrchardProfile() ||
+                stored->Orchard().WireBytes() != wire || !VerifyConsensusJournalAtActiveTip())
+                return reject(BlockRejectCode::CONNECT_FAILED, "Canonical Orchard body unavailable", hash, height);
+            return BlockAcceptResult{BlockRejectCode::OK, "Block already canonical", hash, height, true, false};
+        }
+        // This entry point initially owns selected-tip extensions. A fork
+        // needs its own parent state; never validate it with active-tip coins.
+        if (active_tip_->hash != header->prev_block_hash || active_tip_->height + uint64_t(1) != height)
+            return reject(BlockRejectCode::STALE_TIP_CHANGED, "Orchard parent is not the selected tip", hash, height);
+        auto selected = CaptureSelectedOrchardPoolContextUnderLock();
+        if (!selected || selected->context.parent_hash != header->prev_block_hash ||
+            selected->context.height != height || dinero::FindBlockIndex(active_tip_->hash) != active_tip_)
+            return reject(BlockRejectCode::CONNECT_FAILED, "Orchard selected index owner unavailable", hash, height);
+        const auto parent = chain_db_->getHeader(header->prev_block_hash);
+        const auto parent_work = chain_db_->getBlockWork(header->prev_block_hash);
+        const auto context = SelectedOrchardBlockContext(body.Header(), height);
+        if (!parent.ok() || !parent_work.ok() || !context)
+            return reject(BlockRejectCode::CONNECT_FAILED, "Orchard selected header unavailable", hash, height);
+        const auto now = std::chrono::duration_cast<std::chrono::seconds>(
+            std::chrono::system_clock::now().time_since_epoch()).count();
+        // Incoming blocks always use the work-enforcing gate.
+        CheckOrchardHeaderUnderChainstateLock(body.Header(), *parent, *context,
+            *selected->headers, now > 0 ? uint64_t(now) : 0);
+        const auto retirement = [&]() -> std::optional<storage::LegacyRetirementRecord> {
+            if (height == context->activation_height) return DeriveOrchardBoundaryFromSelectedHistoryUnderLock();
+            const auto stored = chain_db_->getLegacyRetirementState();
+            if (!stored.ok()) return {};
+            return stored->record;
+        }();
+        if (!retirement)
+            return reject(BlockRejectCode::CONNECT_FAILED, "Orchard retirement owner unavailable", hash, height);
+        const auto forest = [&] {
+            const auto guard = consensus_utxo_set_->LockForestShared();
+            return consensus_utxo_set_->GetForest();
+        }();
+        const bool witness = Params().enforce_witness_commitment &&
+            height >= Params().witness_commitment_enforcement_height;
+        const auto coins = PrepareOrchardBlockCoinsUnderChainstateLock(
+            body, *context, selected->coins, selected->Mtp(), witness);
+        (void)CheckOrchardBlockFilter(body, coins);
+        const auto state = PrepareOrchardStateTransition(*context, selected->parent,
+            coins.Authorizations(), selected->Lookups());
+        const auto sets = chain_db_->previewOrchardCommitmentSets(state.Parent(), state.Next(), state.Nullifiers());
+        if (!sets.ok()) throw OrchardStateLookupError(sets.status());
+        const auto commitment = FindStateCommitment(body.Transactions().front().Historical(), StateCommitmentEncoding::Orchard);
+        const auto& c = selected->context;
+        if (commitment.status != StateCommitmentStatus::Ok || commitment.root != ComputeOrchardStateRoot(
+            {c.domain, c.activation_height, height, c.parent_hash}, *retirement, state.Next(), *sets))
+            return reject(BlockRejectCode::INVALID_TRANSACTION, "Orchard state commitment rejected", hash, height);
+        if (!PrepareOrchardForestTransition(coins, *parent, forest).MatchesHeader(body.Header()))
+            return reject(BlockRejectCode::INVALID_UTREEXO_ROOT, "Orchard forest commitment rejected", hash, height);
+        CheckOrchardBlockUtreexoProof(body, coins, *parent, forest);
+        const auto work = *parent_work + GetBlockProof(body.Header().difficulty);
+        const auto old_header = chain_db_->getHeader(hash);
+        const auto old_height = chain_db_->getBlockHeight(hash);
+        const auto old_work = chain_db_->getBlockWork(hash);
+        if (old_header.ok() != old_height.ok() || old_header.ok() != old_work.ok() ||
+            (old_header.ok() && old_header->SerializeForHash() != body.Header().SerializeForHash()) ||
+            (old_height.ok() && *old_height != int32_t(height)) || (old_work.ok() && *old_work != work) ||
+            (!old_header.ok() && old_header.status() != Status::NotFound) ||
+            (!old_height.ok() && old_height.status() != Status::NotFound) ||
+            (!old_work.ok() && old_work.status() != Status::NotFound))
+            return reject(BlockRejectCode::CONNECT_FAILED, "Retained Orchard header disagreement", hash, height);
+        const auto old = chain_db_->getHeaderMetadata(hash);
+        ChainDB::PersistedHeaderMetadata metadata;
+        if (old.ok()) {
+            if (!old_header.ok())
+                return reject(BlockRejectCode::CONNECT_FAILED, "Retained Orchard header missing", hash, height);
+            metadata = *old;
+            if (metadata.height != int32_t(height) || metadata.parent_hash != header->prev_block_hash ||
+                metadata.chainwork != work || metadata.status_flags & (BLOCK_FAILED_VALID | BLOCK_FAILED_CHILD))
+                return reject(BlockRejectCode::CONNECT_FAILED, "Retained Orchard index disagreement", hash, height);
+        } else if (old.status() != Status::NotFound) {
+            return reject(BlockRejectCode::CONNECT_FAILED, "Retained Orchard index unavailable", hash, height);
+        }
+        if (const auto* indexed = dinero::FindBlockIndex(hash)) {
+            if (indexed->height != height || indexed->prev_hash != header->prev_block_hash ||
+                indexed->pprev != active_tip_ || ChainworkFromHex(indexed->chainwork) != work ||
+                indexed->version != header->version || indexed->merkle_root != header->merkle_root ||
+                indexed->timestamp != header->timestamp || indexed->bits != header->difficulty ||
+                indexed->nonce != header->nonce || indexed->status & (BLOCK_FAILED_VALID | BLOCK_FAILED_CHILD))
+                return reject(BlockRejectCode::CONNECT_FAILED, "Retained Orchard graph disagreement", hash, height);
+        }
+        if (metadata.status_flags & BLOCK_HAVE_DATA) {
+            const auto stored = ReadRuntimeBlockUnderLock(*chain_db_, block_storage_.get(), hash, height);
+            if (!stored.ok() || !stored->IsOrchardProfile() || stored->Orchard().WireBytes() != wire)
+                return reject(BlockRejectCode::CONNECT_FAILED, "Retained Orchard body disagreement", hash, height);
+        } else {
+            const auto position = block_storage_->writeBlockBytes(hash, {wire.begin(), wire.end()});
+            if (!position.ok()) return reject(BlockRejectCode::CONNECT_FAILED, "Orchard body persistence failed", hash, height);
+            metadata.file_number = position->file_number;
+            metadata.data_pos = position->offset;
+            metadata.data_size = position->size;
+        }
+        metadata.height = int32_t(height); metadata.parent_hash = header->prev_block_hash;
+        metadata.chainwork = work; metadata.status_flags |= BLOCK_VALID_HEADER | BLOCK_HAVE_DATA;
+        ChainWriteToken token;
+        rocksdb::WriteBatch batch;
+        if (chain_db_->putHeader(token, hash, body.Header(), height, work, &batch) != Status::Ok ||
+            chain_db_->putHeaderMetadata(token, hash, metadata, &batch) != Status::Ok ||
+            chain_db_->writeBatch(token, std::move(batch), true) != Status::Ok)
+            return reject(BlockRejectCode::CONNECT_FAILED, "Orchard index persistence failed", hash, height);
+        if (!selected->headers->AddHeader(body.Header()))
+            return reject(BlockRejectCode::CONNECT_FAILED, "Orchard header index unavailable", hash, height);
+        auto* index = dinero::AddBlockIndex(body.Header(), height);
+        if (!index || index->pprev != active_tip_ || index->height != height ||
+            ChainworkFromHex(index->chainwork) != work || index->status & (BLOCK_FAILED_VALID | BLOCK_FAILED_CHILD))
+            return reject(BlockRejectCode::CONNECT_FAILED, "Orchard block index unavailable", hash, height);
+        {
+            std::lock_guard<std::recursive_mutex> graph(dinero::g_block_index_mutex);
+            index->status |= metadata.status_flags;
+            index->file_number = metadata.file_number; index->data_pos = metadata.data_pos; index->data_size = metadata.data_size;
+            index->undo_file = metadata.undo_file; index->undo_pos = metadata.undo_pos; index->undo_size = metadata.undo_size;
+        }
+        AddCandidate(index);
+        ActivateBestChain();
+        if (active_tip_ != index)
+            return reject(BlockRejectCode::CONNECT_FAILED, "Orchard block retained for canonical retry", hash, height);
+        return BlockAcceptResult{BlockRejectCode::OK, "Orchard block connected", hash, height, true, false};
+    } catch (const OrchardHeaderError& e) {
+        const bool temporary = e.Code() == OrchardHeaderErrorCode::Context || e.Code() == OrchardHeaderErrorCode::TimeTooNew;
+        return reject(temporary ? BlockRejectCode::CONNECT_FAILED : BlockRejectCode::INVALID_HEADER,
+            "Orchard incoming header rejected", hash, height);
+    } catch (const std::exception&) {
+        // An unavailable local lookup must never become permanent peer blame.
+        return reject(BlockRejectCode::CONNECT_FAILED, "Orchard block validation or storage unavailable", hash, height);
+    }
+#else
+    return reject(BlockRejectCode::CONNECT_FAILED, "Orchard backend unavailable", hash, height);
+#endif
+}
+
+bool ChainstateService::ConnectOrchardTip(CBlockIndex* tip, std::string* error, bool* invalid) {
+    std::lock_guard<AnnotatedRecursiveMutex> lock(activation_mutex_);
+    if (invalid) *invalid=false;
+    if (error) error->clear();
+    const auto fail=[&](const char* reason) { if(error)*error=reason;return false; };
+#ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
+    if (!tip || !active_tip_ || tip->pprev!=active_tip_ ||
+        uint64_t(active_tip_->height)+1!=tip->height || tip->prev_hash!=active_tip_->hash ||
+        !chain_db_ || !block_storage_ || !consensus_utxo_set_ || !header_chain_selector_ ||
+        GetConfig().utreexo_stateless || safe_mode_active_ || !runtime_block_notifications_ ||
+        !consensus::OrchardProfileConfigurationValid(Params()))
+        return fail("orchard-connect-service-not-ready");
+    try {
+        auto* parent_index=active_tip_;
+        const auto headers=header_chain_selector_;
+        const auto body=ReadRuntimeBlockUnderLock(*chain_db_,block_storage_.get(),tip->hash,tip->height);
+        const auto parent=chain_db_->getHeader(parent_index->hash);
+        const auto parent_work=chain_db_->getBlockWork(parent_index->hash);
+        const auto parent_height=chain_db_->getBlockHeight(parent_index->hash);
+        const auto indexed_parent=headers->GetHeaderValue(parent_index->hash);
+        const auto indexed_child=headers->GetHeaderValue(tip->hash);
+        if (!body.ok() || !body->IsOrchardProfile() || !parent.ok() || !parent_work.ok() ||
+            !parent_height.ok() || *parent_height<0 || uint32_t(*parent_height)!=parent_index->height ||
+            !indexed_parent || !indexed_child || indexed_parent->height!=parent_index->height ||
+            indexed_child->height!=tip->height || indexed_parent->chainwork!=*parent_work ||
+            indexed_child->chainwork!=*parent_work+GetBlockProof(body->Orchard().Header().difficulty) ||
+            indexed_child->chainwork!=ChainworkFromHex(tip->chainwork) ||
+            indexed_child->header.SerializeForHash()!=body->Orchard().Header().SerializeForHash() ||
+            parent->GetHash()!=parent_index->hash || parent->prev_block_hash!=parent_index->prev_hash ||
+            parent->version!=parent_index->version || parent->merkle_root!=parent_index->merkle_root ||
+            parent->timestamp!=parent_index->timestamp || parent->difficulty!=parent_index->bits ||
+            parent->nonce!=parent_index->nonce || ChainworkFromHex(parent_index->chainwork)!=*parent_work ||
+            ((parent_index->status|tip->status)&(BLOCK_FAILED_VALID|BLOCK_FAILED_CHILD)))
+            return fail("orchard-connect-index-context-unavailable");
+        const auto now=std::chrono::duration_cast<std::chrono::seconds>(
+            std::chrono::system_clock::now().time_since_epoch()).count();
+        consensus::CheckOrchardHeaderUnderChainstateLock(body->Orchard().Header(),*parent,
+            *body->Context(),*headers,now>0?uint64_t(now):0);
+        // The active parent's durable state, restored memory and exact retained
+        // body/undo must agree before preparing a new generation.
+        if (!VerifyConsensusJournalAtActiveTip()) return fail("orchard-connect-parent-audit-failed");
+        std::optional<storage::LegacyRetirementRecord> boundary;
+        if (tip->height==Params().orchard_activation_height) {
+            boundary=DeriveOrchardBoundaryFromSelectedHistoryUnderLock();
+            if (!boundary) return fail("orchard-connect-boundary-history-unavailable");
+        }
+        const auto consumers=runtime_block_notifications_;
+        auto* context=DaemonContext::instance();
+        if (context && context->chainstate.get()!=this)
+            return fail("orchard-connect-pool-context-unavailable");
+        const auto pool_service=context?context->mempool:nullptr;
+        const auto relay=context?context->tx_relay:nullptr;
+        auto pool_use=pool_service?MempoolService::AcquirePoolUse(pool_service):nullptr;
+        if (!pool_use && (bridge_node_ || relay))
+            return fail("orchard-connect-pool-owner-unavailable");
+        auto notifications=consumers->Prepare(*body,tip->height,RuntimeBlockDirection::Connect);
+        if (!notifications) return fail("orchard-connect-consumers-not-ready");
+        const auto parent_hash=parent_index->hash;
+        const auto parent_h=parent_index->height;
+        consensus::OrchardBranchMtpLookup mtp=[headers,parent_hash,parent_h](uint32_t height)->std::optional<uint64_t> {
+            uint256 ancestor;uint32_t selected_height=0,found_height=0,time=0;
+            if (height>parent_h || !headers->GetAncestorHashByHash(parent_hash,height,ancestor,selected_height) ||
+                selected_height!=parent_h || !headers->GetMedianTimePastByHash(ancestor,time,found_height) ||
+                found_height!=height) return std::nullopt;
+            return time;
+        };
+        const auto forest=[&] {
+            const auto forest_lock=consensus_utxo_set_->LockForestShared();
+            return consensus_utxo_set_->GetForest();
+        }();
+        const bool witness=Params().enforce_witness_commitment &&
+            tip->height>=Params().witness_commitment_enforcement_height;
+        const uint32_t interval=std::max(uint32_t(1),GetConfig().utreexo_checkpoint_interval);
+        ChainWriteToken token;
+        auto write=PreparedOrchardChainstateWrite::ConnectIndexed(activation_mutex_,*chain_db_,token,
+            *block_storage_,*tip,*consensus_utxo_set_,*body->Context(),body->Orchard(),*parent,forest,mtp,
+            witness,tip->height%interval==0,boundary,true);
+        // Full canonical preparation has validated the exact mixed body. Keep
+        // its configured pool and proof caches reversible until this write commits.
+        std::unique_ptr<PreparedPoolTip> pool_tip;
+        if (pool_use) pool_tip=PreparedPoolTip::ConnectEffects(pool_use->Pool(),bridge_node_,relay,
+            BuildOrchardConnectedBlockEffects(body->Orchard()),tip->height,
+            {body->Orchard().Header().utreexo_root.begin(),body->Orchard().Header().utreexo_root.end()});
+        if (context && (DaemonContext::instance()!=context || context->chainstate.get()!=this ||
+            context->mempool!=pool_service || context->tx_relay!=relay))
+            return fail("orchard-connect-pool-owner-changed");
+        if (active_tip_!=parent_index || tip->pprev!=parent_index ||
+            runtime_block_notifications_!=consumers || header_chain_selector_!=headers)
+            return fail("orchard-connect-selected-view-changed");
+        write->Commit();
+        const auto invalidate_positions=[&]() noexcept {
+            if(utxo_position_index_)utxo_position_index_->Clear();
+        };
+        invalidate_positions();
+        PublishActiveTipLocked(tip,TipPublishReason::kAdvancement);
+        if (pool_tip) pool_tip->PublishAfterCommit();
+        notifications->PublishAfterCommit();
+        // Outbound refresh cannot undo the committed chain/pool state or turn
+        // canonical success into a retryable prewrite failure.
+        if (pool_tip) try { pool_tip->RequestRefresh(); } catch (...) {
+            try { if (logger_) logger_->warning("[OrchardConnect] proof refresh delivery unavailable after commit"); }
+            catch (...) {}
+        }
+        return true;
+    } catch (const consensus::OrchardHeaderError& e) {
+        // Local context disagreement and future time remain retryable. All
+        // other header errors above concern the authenticated candidate itself.
+        if(invalid)*invalid=e.Code()!=consensus::OrchardHeaderErrorCode::Context &&
+            e.Code()!=consensus::OrchardHeaderErrorCode::TimeTooNew;
+        return fail("orchard-connect-header-rejected");
+    } catch (const std::exception&) {
+        // No blanket consensus-invalid classification for unavailable local
+        // coins/history or ordinary confidential compatibility not yet wired.
+        // The sealed owner fail-stops on any error after durable writing starts.
+        return fail("orchard-connect-preparation-failed");
+    }
+#else
+    (void)tip;
+    return fail("orchard-connect-runtime-unavailable");
+#endif
+}
+
 bool ChainstateService::ConnectTip(CBlockIndex* tip_to_connect, std::string* out_error,
                                    bool* out_consensus_invalid) {
+    std::unique_lock<AnnotatedRecursiveMutex> delivery_lock(activation_mutex_);
     auto fail = [&](const std::string& reason) {
         if (out_error) {
             *out_error = reason;
@@ -14468,6 +16111,24 @@ bool ChainstateService::ConnectTip(CBlockIndex* tip_to_connect, std::string* out
         std::cout << "❌ [ConnectTip] chain_db_ is NULL" << std::endl;
         return fail("chain-db-null");
     }
+
+    // Select the typed route before any historical decoder or validator path.
+    if (consensus::OrchardActiveForHeight(Params(),tip_to_connect->height))
+        return ConnectOrchardTip(tip_to_connect,out_error,out_consensus_invalid);
+
+    bool runtime_delivery_history=false;
+    try {
+        runtime_delivery_history=HasRuntimeDeliveryHistory(*chain_db_);
+        if(runtime_delivery_history) {
+            if(tip_to_connect->height<=1)return fail("runtime-delivery-bootstrap-unavailable");
+#ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
+            if(GetConfig().utreexo_stateless || !consensus::SelectedOrchardBlockContext(
+                    BlockHeader{},Params().orchard_activation_height)) { return fail("historical-runtime-delivery-unavailable"); }
+#else
+            return fail("historical-runtime-delivery-unavailable");
+#endif
+        }
+    } catch(...) { return fail("historical-runtime-delivery-unavailable"); }
 
     // ═══════════════════════════════════════════════════════════════════════════
     // Phase G Safety Assertion: In-Order Commit Check
@@ -14544,6 +16205,19 @@ bool ChainstateService::ConnectTip(CBlockIndex* tip_to_connect, std::string* out
         return fail("read-block-failed-status-" + std::to_string(static_cast<int>(block_result.status())));
     }
     Block block = block_result.value();
+#ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
+    std::optional<PreparedHistoricalRuntimeOutbox> historical_delivery;
+    try {
+        if(runtime_delivery_history) {
+            const auto profile=consensus::SelectedOrchardBlockContext(BlockHeader{},Params().orchard_activation_height);
+            if(!profile) { return fail("historical-runtime-delivery-preparation-failed"); }
+            historical_delivery=PreparedHistoricalRuntimeOutbox::PrepareUnderLock(
+                *chain_db_,*profile,block,tip_to_connect->height,RuntimeBlockDirection::Connect);
+            if(!historical_delivery) { return fail("historical-runtime-delivery-preparation-failed"); }
+        }
+    } catch(...) { return fail("historical-runtime-delivery-preparation-failed"); }
+#endif
+
     std::cout << "✅ [ConnectTip] Block read successfully, vtx.size()=" << block.vtx.size() << std::endl;
 
     // === CT DIAGNOSTIC: Log every tx and output in the block ===
@@ -15683,6 +17357,9 @@ bool ChainstateService::ConnectTip(CBlockIndex* tip_to_connect, std::string* out
             return fail("commit-batch-incomplete-missing-" + *missing);
         }
 
+#ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
+        if(historical_delivery)historical_delivery->StageOrTerminateUnderLock(*chain_db_,utxo_batch);
+#endif
         auto utxo_status = chain_db_->writeBatch(token, ccb.ReleaseBatch(), true);
 
         // After the outer rocksdb commit succeeds, close the
@@ -16286,6 +17963,10 @@ bool ChainstateService::CommitConnectedBlockBookkeeping(CBlockIndex* block_index
     };
 
     if (!block_index || !chain_db_) return fail("null-block-index-or-db");
+    try {
+        if(HasRuntimeDeliveryHistory(*chain_db_))return fail("runtime-delivery-csn-replay-unavailable");
+    } catch(...) { return fail("runtime-delivery-history-unavailable"); }
+
 
     std::string delta_blob;
     std::string delta_error;
@@ -17229,7 +18910,8 @@ void ChainstateService::BackgroundValidationWorker() {
                                   std::to_string(height));
                     req_it->second = false;
                 }
-                // Genesis (height 0) is never validated — production
+                // Genesis (height 0) is now identity-checked by the isolated
+                // replay owner. Production
                 // ConnectTip's early-init path likewise installs genesis as
                 // tip without running ConnectBlock. But the canonical UTXO
                 // set is NOT genesis-neutral: genesis_init.cpp persists every
@@ -17245,9 +18927,8 @@ void ChainstateService::BackgroundValidationWorker() {
                 if (height == 0 && blocks_skipped == 0) {
                     std::string seed_err;
                     if (!replay->SeedGenesis(blk, seed_err)) {
-                        // Impossible by construction (fresh engine, single
-                        // seed per pass): indicates engine misuse, and a
-                        // retry would fail identically — not transient.
+                        // The replay owner rejects a foreign genesis/body as
+                        // well as duplicate seeding. No progress can certify it.
                         replay_poisoned = true;
                         replay_poison_reason =
                             "genesis seeding failed during replay: " + seed_err;

@@ -200,6 +200,10 @@ private:
 // This variant with consumed_out is needed by consensus code and doesn't exist in wallet
 
 bool TransactionSerializer::Deserialize(Transaction& tx, const std::vector<uint8_t>& data, size_t& consumed_out) {
+    consumed_out = 0;
+    // Orchard is not an ordinary transparent v7 transaction. Live historical
+    // callers reject it until typed admission/activation is implemented.
+    if (HasOrchardEnvelopeMarker(data.data(), data.size())) return false;
     try {
         ByteReader reader(data);
 

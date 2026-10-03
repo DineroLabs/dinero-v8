@@ -14,6 +14,7 @@
 #include "consensus/chainparams.h"  // issue #214: regtest gate for test-only announce suppression
 #include "primitives/block.h"
 #include "util/ser.h"  // CompactSize (varint) encoding for P2P messages
+#include <stdexcept>
 #include <cstdlib>  // std::getenv (issue #214 test hook)
 #include <cstring>
 #include <iostream>  // Debug logging
@@ -60,6 +61,40 @@ BlockRelayManager::BlockRelayManager(ILogger* logger,
     }
 }
 
+void BlockRelayManager::SetMempool(Mempool* mempool) {
+    std::shared_ptr<const MempoolAccessFactory> previous;
+    {
+        std::lock_guard<std::mutex> lock(mempool_access_mutex_);
+        mempool_ = mempool;
+        previous.swap(mempool_access_factory_);
+    }
+}
+
+void BlockRelayManager::SetMempoolAccessFactory(MempoolAccessFactory factory) {
+    if (!factory) throw std::invalid_argument("Compact relay requires a mempool access factory");
+    auto next = std::make_shared<const MempoolAccessFactory>(std::move(factory));
+    {
+        std::lock_guard<std::mutex> lock(mempool_access_mutex_);
+        mempool_ = nullptr;
+        next.swap(mempool_access_factory_);
+    }
+}
+
+BlockRelayManager::PoolOperation BlockRelayManager::AcquireMempoolAccess() const {
+    std::shared_ptr<const MempoolAccessFactory> factory;
+    Mempool* borrowed = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(mempool_access_mutex_);
+        factory = mempool_access_factory_;
+        borrowed = mempool_;
+    }
+    if (!factory) return {nullptr, borrowed};
+    auto owner = (*factory)();
+    if (!owner) throw std::runtime_error("Compact relay mempool owner unavailable");
+    auto* pool = &owner->Pool();
+    return {std::move(owner), pool};
+}
+
 // ============================================================================
 // Block Announcement (Outbound)
 // ============================================================================
@@ -91,11 +126,13 @@ void BlockRelayManager::AnnounceBlock(const uint256& block_hash) {
         return;
     }
 
+    // Acquire before any relay state or external callback is published.
+    auto pool_use = AcquireMempoolAccess();
     // Mark as seen (prevent re-announcement)
     MarkBlockAsSeen(block_hash);
 
     bool sent_compact = false;
-    if (retrieve_block_callback_ && mempool_ && GetCurrentSyncPhase() != SyncPhase::IBD) {
+    if (retrieve_block_callback_ && pool_use.pool && GetCurrentSyncPhase() != SyncPhase::IBD) {
         Block block;
         if (retrieve_block_callback_(block_hash, block)) {
             bool has_confidential_transactions = false;
@@ -1106,10 +1143,13 @@ void BlockRelayManager::HandleCompactBlock(const std::string& peer_address, cons
         return;
     }
 
+    // Keep the actual service pool alive through reconstruction and synchronous
+    // validation/send callbacks. Failure to acquire leaves peer/relay state intact.
+    auto pool_use = AcquireMempoolAccess();
     // Attempt reconstruction from mempool
     Block partial_block;
     std::vector<uint32_t> missing_indexes;
-    if (!CompactBlockCodec::ReconstructPartialBlock(compact, mempool_, partial_block, missing_indexes)) {
+    if (!CompactBlockCodec::ReconstructPartialBlock(compact, pool_use.pool, partial_block, missing_indexes)) {
         if (logger_) {
             logger_->warning("[BlockRelayManager] Compact block " + block_hash.GetHex() +
                             " is malformed and could not be partially reconstructed");

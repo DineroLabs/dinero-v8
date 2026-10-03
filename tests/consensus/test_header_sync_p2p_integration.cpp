@@ -596,7 +596,88 @@ void Test11_LocalRateDropReleasesOnlyItsRequest() {
 // Main Test Runner
 // ============================================================================
 
-int main() {
+void TestPeerHeaderBatchProgress() {
+    HeaderChainSelector selector;
+    HeaderSyncP2P sync(&selector);
+    const auto genesis = CreateTestHeader(uint256(), 1000000);
+    assert(selector.AddHeader(genesis));
+    auto main = CreateHeaderChain(genesis.GetHash(), 8, 1000001);
+    for (const auto& header : main) assert(selector.AddHeader(header));
+    auto fork = CreateHeaderChain(genesis.GetHash(), 3, 1000101);
+    auto inserted = sync.ProcessHeaders(11, fork);
+    assert(inserted.accepted && inserted.inserted == 3);
+    assert(inserted.accepted_height == 3); // not unrelated global height eight
+    auto duplicate = sync.ProcessHeaders(12, fork);
+    assert(duplicate.accepted && duplicate.inserted == 0 && duplicate.duplicates == 3);
+    assert(duplicate.accepted_height == 3);
+    assert(!sync.ProcessHeaders(12, {}).accepted_height);
+    auto invalid = CreateTestHeader(fork.back().GetHash(), 0);
+    fork.push_back(invalid);
+    const auto refused = sync.ProcessHeaders(12, fork);
+    assert(!refused.accepted && !refused.accepted_height); // no accepted-prefix report
+    std::cout << "PASS PeerHeaderProgress.ExactBatchAndDuplicates\n";
+}
+
+void TestPeerBlockHeaderProgress() {
+    HeaderChainSelector selector;
+    HeaderSyncP2P sync(&selector);
+    const auto genesis = CreateTestHeader(uint256(), 1000000);
+    assert(selector.AddHeader(genesis));
+    auto main = CreateHeaderChain(genesis.GetHash(), 8, 1000001);
+    for (const auto& header : main) assert(selector.AddHeader(header));
+    auto fork = CreateHeaderChain(genesis.GetHash(), 2, 1000101);
+    assert(selector.AddHeader(fork[0]));
+    sync.SetSendGetheadersCallback([](uint64_t, const std::vector<uint256>&, const uint256&) { return true; });
+    sync.OnPeerConnected(11, 9, uint256(), true);
+    sync.OnPeerConnected(12, 2, uint256(), false);
+    assert(sync.RequestHeadersFromPeer(11, HeaderRequestMode::REFRESH));
+    auto before = sync.GetStats();
+    assert(sync.ObserveBlockHeader(fork[1]) == 2);
+    assert(!selector.ContainsHeader(fork[1].GetHash())); // observation cannot alter download routing
+    assert(selector.GetBestHeaderValue()->height == 8);
+    assert(sync.GetStats().current_sync_peer == before.current_sync_peer);
+    assert(sync.GetStats().state == before.state);
+    // Once the normal body/header owner inserts it, duplicate delivery still
+    // carries the same exact peer knowledge and does not satisfy peer 11's request.
+    assert(selector.AddHeader(fork[1]));
+    assert(sync.ObserveBlockHeader(fork[1]) == 2);
+    assert(sync.GetStats().current_sync_peer == 11);
+    assert(sync.ObserveBlockHeader(genesis) == 0);
+    std::cout << "PASS PeerHeaderProgress.BlockHeaderWithoutRequestOrTipMutation\n";
+}
+
+void TestPeerBlockHeaderRefusal() {
+    HeaderChainSelector selector;
+    HeaderSyncP2P sync(&selector);
+    const auto genesis = CreateTestHeader(uint256(), 1000000);
+    assert(selector.AddHeader(genesis));
+    const auto good = CreateTestHeader(genesis.GetHash(), 1000001);
+    assert(sync.ObserveBlockHeader(good) == 1);
+    auto bad = good;
+    bad.version = 0;
+    assert(!sync.ObserveBlockHeader(bad));
+    bad = good; bad.timestamp = 0;
+    assert(!sync.ObserveBlockHeader(bad));
+    bad = good; bad.difficulty = 0;
+    assert(!sync.ObserveBlockHeader(bad));
+    bad = good; bad.prev_block_hash = good.GetHash(); // absent parent
+    assert(!sync.ObserveBlockHeader(bad));
+    bad = genesis; ++bad.nonce; // unrelated genesis must not certify a new identity
+    assert(!sync.ObserveBlockHeader(bad));
+    assert(selector.GetBestHeaderValue()->hash == genesis.GetHash());
+    assert(!selector.ContainsHeader(good.GetHash()));
+    std::cout << "PASS PeerHeaderProgress.RefusalWithoutPublication\n";
+}
+
+int main(int argc, char** argv) {
+    if (argc == 2 && std::string(argv[1]) == "--peer-progress") {
+        SelectParams(Chain::REGTEST);
+        TestPeerHeaderBatchProgress();
+        TestPeerBlockHeaderProgress();
+        TestPeerBlockHeaderRefusal();
+        return 0;
+    }
+
     SelectParams(Chain::REGTEST);
     std::cout << "=== Phase N.2 Step 2C: Header Sync P2P Integration Test ===" << std::endl;
 

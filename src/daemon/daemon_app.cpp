@@ -1,3 +1,5 @@
+#include "daemon/utreexo_tx_reader.h"
+#include "daemon/utreexo_tx_payload.h"
 #include "consensus/csn_replay_data.h"
 #include "daemon/daemon_app.h"
 #ifdef __APPLE__
@@ -26,7 +28,8 @@
 #include "daemon/services/metrics_service.h"
 #include "daemon/utreexo_proof_mode.h"
 #include "daemon/block_relay_manager.h"  // Phase G.2: Block propagation
-#include "daemon/tx_relay_manager.h"  // Phase G.3: Mempool relay
+#include "daemon/tx_relay_manager.h"
+#include "daemon/relay_transaction_reader.h"  // Phase G.3: Mempool relay
 #include "mempool/tx_orphan_pool.h"  // Transaction orphan pool
 #include "network/bridge_node.h"  // Phase P.2: Utreexo proof generation for stateless clients
 #include "network/stateless_node.h"  // Phase P.3: CSN block+proof validation
@@ -516,11 +519,8 @@ Block DeserializeBlockFromP2PMessage(const ::P2PMessage& msg) {
     return *block_opt;
 }
 
-Transaction DeserializeTransactionFromP2PMessage(const ::P2PMessage& msg) {
-    Reader reader(msg.payload);
-    Transaction tx;
-    Deserialize(reader, tx);
-    return tx;
+MempoolTransaction DeserializeTransactionFromP2PMessage(const ::P2PMessage& msg) {
+    return DecodeRelayTransaction(msg.payload, RelayTransactionReadMode::AvailableFamilies);
 }
 
 // Peer ID mapping (simple hash-based for now)
@@ -2746,7 +2746,10 @@ bool DaemonApp::Init(int argc, char** argv) {
             // Phase G.13: Wire BlockRelayManager to the canonical daemon mempool for
             // compact-block reconstruction against live transaction state.
             if (ctx_.block_relay && mempool_service) {
-                ctx_.block_relay->SetMempool(&mempool_service->mempool());
+                std::weak_ptr<MempoolService> weak_pool = mempool_service;
+                ctx_.block_relay->SetMempoolAccessFactory([weak_pool]() -> std::unique_ptr<MempoolAccess> {
+                    return MempoolService::AcquirePoolUse(weak_pool.lock());
+                });
                 ctx_.block_relay->SetChainDB(chainstate_service->GetChainDB());
                 std::cout << "[DaemonApp] ✅ BlockRelayManager wired to MempoolService (compact reconstruction)" << std::endl;
             }
@@ -3528,109 +3531,28 @@ bool DaemonApp::Init(int argc, char** argv) {
                         };
 
                         if (bridge_node) {
-                            // BRIDGE PATH: Generate fresh proofs from the forest
-                            auto tx_ptr = mempool_for_getdata->getTransaction(hash);
-                            if (!tx_ptr) {
-                                g_logger.debug("[TX-RELAY] TX not in mempool: " + hash.GetHex().substr(0, 16));
+                            std::unique_ptr<MempoolService::PoolUse> pool_use;
+                            std::optional<std::vector<uint8_t>> payload;
+                            {
+                                auto selected = chainstate_service->AcquireBlockIngressActivationLock();
+                                pool_use = MempoolService::AcquirePoolUse(mempool_for_getdata);
+                                const auto entry = pool_use->Pool().getMempoolEntry(hash);
+                                if (entry && entry->tx.HasBody() && entry->tx.GetTxid().AsUint256() == hash)
+                                    payload = CaptureUtreexoTransactionPayload(entry->tx,*bridge_node);
+                            }
+                            if (!payload) {
                                 sendUtreexoTxNotFound();
                             } else {
-                                const Transaction& tx = *tx_ptr;
-
-                                // 2. Generate per-input proofs
-                                auto proofs_opt = bridge_node->GenerateProofsForTransaction(tx);
-                                if (!proofs_opt.has_value()) {
-                                    g_logger.warning("[TX-RELAY] Failed to generate utreexo proofs for tx " +
-                                                    hash.GetHex().substr(0, 16));
-                                    sendUtreexoTxNotFound();
-                                } else {
-                                    const auto& proofs = proofs_opt.value();
-
-                                    // 3. Get current accumulator root
-                                    auto acc_root = bridge_node->GetCurrentForestCommitment();
-
-                                    // 4. Serialize utxotx wire format
-                                    std::vector<uint8_t> tx_serialized = tx.Serialize();
-                                    uint32_t tx_size = static_cast<uint32_t>(tx_serialized.size());
-                                    uint32_t num_proofs = static_cast<uint32_t>(proofs.size());
-
-                                    std::vector<uint8_t> payload;
-                                    payload.reserve(1 + 32 + 4 + tx_size + 4 + num_proofs * 256 + 32);
-
-                                    // Version (1 byte): v2 carries created_height/is_coinbase metadata.
-                                    payload.push_back(0x02);
-
-                                    // Txid (32 bytes)
-                                    payload.insert(payload.end(), hash.begin(), hash.end());
-
-                                    // TX size (4 bytes LE)
-                                    payload.push_back(tx_size & 0xFF);
-                                    payload.push_back((tx_size >> 8) & 0xFF);
-                                    payload.push_back((tx_size >> 16) & 0xFF);
-                                    payload.push_back((tx_size >> 24) & 0xFF);
-
-                                    // TX data
-                                    payload.insert(payload.end(), tx_serialized.begin(), tx_serialized.end());
-
-                                    // Num proofs (4 bytes LE)
-                                    payload.push_back(num_proofs & 0xFF);
-                                    payload.push_back((num_proofs >> 8) & 0xFF);
-                                    payload.push_back((num_proofs >> 16) & 0xFF);
-                                    payload.push_back((num_proofs >> 24) & 0xFF);
-
-                                    // Per-input proofs
-                                    for (const auto& [proof, spent] : proofs) {
-                                        auto proof_bytes = proof.serialize();
-                                        uint32_t proof_size = static_cast<uint32_t>(proof_bytes.size());
-
-                                        // Proof size (4 bytes LE)
-                                        payload.push_back(proof_size & 0xFF);
-                                        payload.push_back((proof_size >> 8) & 0xFF);
-                                        payload.push_back((proof_size >> 16) & 0xFF);
-                                        payload.push_back((proof_size >> 24) & 0xFF);
-
-                                        // Proof data
-                                        payload.insert(payload.end(), proof_bytes.begin(), proof_bytes.end());
-
-                                        // Value (8 bytes LE)
-                                        uint64_t value = spent.value;
-                                        for (int b = 0; b < 8; b++)
-                                            payload.push_back((value >> (b * 8)) & 0xFF);
-
-                                        // Script size (4 bytes LE)
-                                        uint32_t script_size = static_cast<uint32_t>(spent.scriptPubKey.size());
-                                        payload.push_back(script_size & 0xFF);
-                                        payload.push_back((script_size >> 8) & 0xFF);
-                                        payload.push_back((script_size >> 16) & 0xFF);
-                                        payload.push_back((script_size >> 24) & 0xFF);
-
-                                        // ScriptPubKey
-                                        payload.insert(payload.end(), spent.scriptPubKey.begin(), spent.scriptPubKey.end());
-
-                                        // v2 maturity metadata: created_height (4 bytes LE) + flags (bit 0 = coinbase)
-                                        payload.push_back(spent.created_height & 0xFF);
-                                        payload.push_back((spent.created_height >> 8) & 0xFF);
-                                        payload.push_back((spent.created_height >> 16) & 0xFF);
-                                        payload.push_back((spent.created_height >> 24) & 0xFF);
-                                        payload.push_back(spent.is_coinbase ? 0x01 : 0x00);
-                                    }
-
-                                    // Accumulator root (32 bytes)
-                                    payload.insert(payload.end(), acc_root.begin(), acc_root.end());
-
-                                    // 5. Send utxotx message
-                                    ::P2PMessage utxotx_msg;
-                                    utxotx_msg.command = "utxotx";
-                                    utxotx_msg.payload = std::move(payload);
-                                    utxotx_msg.checksum = 0;
-                                    p2p_service->get().send_to_peer(peer_addr, utxotx_msg);
-
-                                    g_logger.info("[TX-RELAY] Sent utxotx " + hash.GetHex().substr(0, 16) +
-                                                 "... to " + peer_addr + " (" + std::to_string(num_proofs) + " proofs)");
-                                }
+                                ::P2PMessage utxotx_msg;
+                                utxotx_msg.command = "utxotx";
+                                utxotx_msg.payload = std::move(*payload);
+                                utxotx_msg.checksum = 0;
+                                p2p_service->get().send_to_peer(peer_addr,utxotx_msg);
                             }
                         } else {
                             // CSN PATH: Serve cached utxotx payload from mempool
-                            auto cached = mempool_for_getdata->mempool().getCachedUtxoTxPayload(hash);
+                            auto pool_use = MempoolService::AcquirePoolUse(mempool_for_getdata);
+                            auto cached = pool_use->Pool().getCachedUtxoTxPayload(hash);
                             if (!cached.has_value()) {
                                 g_logger.debug("[TX-RELAY] No cached utxotx for " + hash.GetHex().substr(0, 16) +
                                               " (not found or stale)");
@@ -4539,6 +4461,16 @@ bool DaemonApp::Init(int argc, char** argv) {
                                 }
                                 chainstate_service->PersistStoredBodyPosition(
                                     pending.proof_msg.block_hash, pending.stored_pos);
+                                // A raw receipt is not completed ordered proof work.
+                                // Only the successful proof + durable sidecars above
+                                // may suppress competing-frontier receipt retries.
+                                // A concurrent explicit retry can make this a no-op;
+                                // that retry will deliver another owned receipt.
+                                if (block_download_for_csn &&
+                                    chainstate_service->hasBlockByHash(pending.proof_msg.block_hash)) {
+                                    block_download_for_csn->AcknowledgeStatelessProofStaged(
+                                        pending.proof_msg.block_hash);
+                                }
 
                                 lk.lock();
                                 if (!reorg_state->active ||
@@ -5373,226 +5305,76 @@ bool DaemonApp::Init(int argc, char** argv) {
                         auto tx_relay_for_utxotx = ctx_.tx_relay;
                         auto mempool_for_utxotx = std::dynamic_pointer_cast<MempoolService>(ctx_.mempool);
 
-                        p2p_service->OnUtxoTx = [stateless_node, tx_relay_for_utxotx, mempool_for_utxotx](
-                            const std::string& peer_addr,
-                            const ::P2PMessage& msg
-                        ) {
-                            const auto& payload = msg.payload;
-
-                            // ── Hardening: size bounds ──
-                            constexpr size_t MAX_UTXOTX_SIZE = 2 * 1024 * 1024;
-                            constexpr uint32_t MAX_TX_BYTES = 1 * 1024 * 1024;
-                            constexpr uint32_t MAX_PROOF_BYTES = 256 * 1024;
-                            constexpr uint32_t MAX_SCRIPT_BYTES = 10 * 1024;
-                            constexpr uint32_t MAX_PROOFS = 1000;
-
-                            if (payload.size() < 73) {
-                                g_logger.error("[CSN-TX] utxotx payload too small (" +
-                                              std::to_string(payload.size()) + " bytes)");
-                                return;
-                            }
-                            if (payload.size() > MAX_UTXOTX_SIZE) {
-                                g_logger.error("[CSN-TX] utxotx rejected: " +
-                                              std::to_string(payload.size()) + " bytes exceeds limit");
-                                return;
-                            }
-
-                            size_t pos = 0;
-
-                            // 1. Version
-                            uint8_t version = payload[pos++];
-                            if (version != 0x01 && version != 0x02) {
-                                g_logger.error("[CSN-TX] Unsupported utxotx version " + std::to_string(version));
-                                return;
-                            }
-
-                            // 2. Txid (32 bytes)
-                            if (32 > payload.size() - pos) return;
-                            uint256 txid;
-                            std::memcpy(txid.data, &payload[pos], 32);
-                            pos += 32;
-                            auto complete_refresh = [&]() {
-                                if (tx_relay_for_utxotx) {
-                                    tx_relay_for_utxotx->CompleteRefresh(txid);
-                                }
-                            };
-
-                            // 3. TX size + data
-                            if (4 > payload.size() - pos) return;
-                            uint32_t tx_size = 0;
-                            std::memcpy(&tx_size, &payload[pos], 4);
-                            pos += 4;
-
-                            if (tx_size == 0 || tx_size > MAX_TX_BYTES || tx_size > payload.size() - pos) {
-                                complete_refresh();
-                                g_logger.error("[CSN-TX] Invalid tx_size=" + std::to_string(tx_size));
-                                return;
-                            }
-
-                            Transaction tx;
-                            {
-                                std::vector<uint8_t> tx_bytes(payload.begin() + pos,
-                                                               payload.begin() + pos + tx_size);
-                                if (!dinero::TransactionSerializer::Deserialize(tx, tx_bytes)) {
-                                    complete_refresh();
-                                    g_logger.error("[CSN-TX] TX deserialization failed");
-                                    return;
-                                }
-                            }
-                            pos += tx_size;
-
-                            // 4. Num proofs
-                            if (4 > payload.size() - pos) return;
-                            uint32_t num_proofs = 0;
-                            std::memcpy(&num_proofs, &payload[pos], 4);
-                            pos += 4;
-
-                            if (num_proofs > MAX_PROOFS) {
-                                complete_refresh();
-                                g_logger.error("[CSN-TX] Too many proofs: " + std::to_string(num_proofs));
-                                return;
-                            }
-
-                            // 5. Parse per-input proofs
-                            std::vector<std::pair<consensus::UtreexoProof, consensus::SpentOutputData>> input_proofs;
-                            input_proofs.reserve(num_proofs);
-
-                            for (uint32_t i = 0; i < num_proofs; i++) {
-                                if (4 > payload.size() - pos) {
-                                    complete_refresh();
-                                    g_logger.error("[CSN-TX] Truncated proof header at index " + std::to_string(i));
-                                    return;
-                                }
-                                uint32_t proof_size = 0;
-                                std::memcpy(&proof_size, &payload[pos], 4);
-                                pos += 4;
-
-                                if (proof_size > MAX_PROOF_BYTES || proof_size > payload.size() - pos) {
-                                    complete_refresh();
-                                    g_logger.error("[CSN-TX] Invalid proof_size=" + std::to_string(proof_size));
-                                    return;
-                                }
-
-                                consensus::UtreexoProof proof;
-                                try {
-                                    std::vector<uint8_t> proof_bytes(payload.begin() + pos,
-                                                                      payload.begin() + pos + proof_size);
-                                    proof = consensus::UtreexoProof::deserialize(proof_bytes);
-                                } catch (const std::exception& e) {
-                                    complete_refresh();
-                                    g_logger.error("[CSN-TX] Proof deserialization failed at index " + std::to_string(i));
-                                    return;
-                                }
-                                pos += proof_size;
-
-                                // Value (8 bytes LE)
-                                if (8 > payload.size() - pos) return;
-                                uint64_t value = 0;
-                                for (int b = 0; b < 8; b++)
-                                    value |= static_cast<uint64_t>(payload[pos + b]) << (b * 8);
-                                pos += 8;
-
-                                // Script size (4 bytes LE)
-                                if (4 > payload.size() - pos) return;
-                                uint32_t script_size = 0;
-                                std::memcpy(&script_size, &payload[pos], 4);
-                                pos += 4;
-
-                                if (script_size > MAX_SCRIPT_BYTES || script_size > payload.size() - pos) {
-                                    complete_refresh();
-                                    g_logger.error("[CSN-TX] Invalid script_size=" + std::to_string(script_size));
-                                    return;
-                                }
-
-                                std::vector<uint8_t> scriptPubKey(payload.begin() + pos,
-                                                                   payload.begin() + pos + script_size);
-                                pos += script_size;
-
-                                consensus::SpentOutputData spent;
-                                spent.value = value;
-                                spent.scriptPubKey = std::move(scriptPubKey);
-                                if (version >= 0x02) {
-                                    if (5 > payload.size() - pos) {
-                                        complete_refresh();
-                                        g_logger.error("[CSN-TX] Truncated maturity metadata at index " + std::to_string(i));
-                                        return;
+                        p2p_service->OnUtxoTx = [chainstate_service, tx_relay_for_utxotx, mempool_for_utxotx](
+                            const std::string& peer_addr, const ::P2PMessage& msg) {
+                            try {
+                                const auto decoded = UtreexoTransactionPayload::Decode(
+                                    msg.payload, RelayTransactionReadMode::AvailableFamilies);
+                                const auto txid = decoded.Body().GetTxid().AsUint256();
+                                std::unique_ptr<MempoolService::PoolUse> pool_use;
+                                bool existing = false;
+                                bool published = false;
+                                bool proof_valid = false;
+                                // Called only under selected-chain ownership. Avoid the
+                                // worker's mutable StatelessNode stump/height caches.
+                                auto verify_selected = [&]() -> std::optional<VerifiedUtreexoTransaction> {
+                                    const auto* tip = chainstate_service->GetActiveTip();
+                                    auto* coins = chainstate_service->GetConsensusUTXOSet();
+                                    auto* db = chainstate_service->GetChainDB();
+                                    if (!tip || !coins || !db) return std::nullopt;
+                                    const auto durable = db->getTip();
+                                    if (!durable.ok() || durable->height < 0 ||
+                                        durable->hash != tip->hash || uint32_t(durable->height) != tip->height ||
+                                        coins->GetBestBlock() != tip->hash || coins->GetHeight() != tip->height)
+                                        return std::nullopt;
+                                    auto forest_owner = coins->LockForestShared();
+                                    const auto stump = consensus::UtreexoStump::fromForest(coins->GetForest());
+                                    return decoded.VerifyInputs(stump,tip->height);
+                                };
+                                {
+                                    auto selected = chainstate_service->AcquireBlockIngressActivationLock();
+                                    pool_use = MempoolService::AcquirePoolUse(mempool_for_utxotx);
+                                    const auto verified = verify_selected();
+                                    proof_valid = verified.has_value();
+                                    if (verified) {
+                                        existing = pool_use->Pool().getMempoolEntry(txid).has_value();
+                                        if (existing) published = pool_use->Pool().publishProofPayload(*verified);
                                     }
-                                    spent.created_height =
-                                        static_cast<uint32_t>(payload[pos]) |
-                                        (static_cast<uint32_t>(payload[pos + 1]) << 8) |
-                                        (static_cast<uint32_t>(payload[pos + 2]) << 16) |
-                                        (static_cast<uint32_t>(payload[pos + 3]) << 24);
-                                    pos += 4;
-                                    spent.is_coinbase = (payload[pos++] & 0x01) != 0;
                                 }
-
-                                input_proofs.emplace_back(std::move(proof), std::move(spent));
-                            }
-
-                            // 6. Accumulator root (32 bytes)
-                            if (32 > payload.size() - pos) {
-                                complete_refresh();
-                                g_logger.error("[CSN-TX] Missing accumulator root");
-                                return;
-                            }
-                            consensus::UtreexoHash acc_root;
-                            acc_root.assign(payload.begin() + pos, payload.begin() + pos + 32);
-                            pos += 32;
-
-                            // 7. Validate via StatelessNode
-                            const uint32_t validation_height = stateless_node->GetSyncHeight() + 1;
-                            if (!stateless_node->ValidateUtreexoTx(tx, input_proofs, acc_root, validation_height)) {
-                                complete_refresh();
-                                g_logger.warning("[CSN-TX] utxotx proof validation failed from " + peer_addr);
-                                return;
-                            }
-
-                            // 8. Accept into mempool or refresh existing proof
-                            if (mempool_for_utxotx) {
-                                bool already_in_mempool = mempool_for_utxotx->hasTransaction(txid);
-
-                                if (already_in_mempool) {
-                                    // REFRESH PATH (#6): TX already in mempool, update proof + cache
-                                    mempool_for_utxotx->mempool().refreshProof(
-                                        txid, acc_root, stateless_node->GetSyncHeight());
-                                    mempool_for_utxotx->mempool().setCachedUtxoTxPayload(
-                                        txid, std::vector<uint8_t>(payload.begin(), payload.end()));
-                                    if (tx_relay_for_utxotx) {
-                                        tx_relay_for_utxotx->CompleteRefresh(txid);
-                                        tx_relay_for_utxotx->RecordBridgeResponse(peer_addr);
-                                    }
-                                    g_logger.info("[CSN-TX] Refreshed proof for " + txid.GetHex().substr(0, 16) +
-                                                 "... from " + peer_addr);
-                                } else {
-                                    // NEW TX PATH: accept into mempool
-                                    bool accepted_new_tx = false;
-                                    auto submit_result = mempool_for_utxotx->Submit(tx, TxOrigin::P2P);
-                                    if (submit_result.accepted()) {
-                                        mempool_for_utxotx->mempool().refreshProof(
-                                            txid, acc_root, stateless_node->GetSyncHeight());
-                                        mempool_for_utxotx->mempool().setCachedUtxoTxPayload(
-                                            txid, std::vector<uint8_t>(payload.begin(), payload.end()));
-                                        accepted_new_tx = true;
+                                bool admitted = false;
+                                if (proof_valid && !existing) {
+                                    // Canonical admission owns signatures/policy and its
+                                    // callbacks. Orchard remains unavailable in SubmitBody.
+                                    const auto result = mempool_for_utxotx->SubmitBody(decoded.Body(),TxOrigin::P2P);
+                                    admitted = result.accepted();
+                                    if (admitted) {
+                                        // Admission may span a tip change. Revalidate the
+                                        // complete snapshot before attaching its proof cache.
+                                        auto selected = chainstate_service->AcquireBlockIngressActivationLock();
+                                        const auto verified = verify_selected();
+                                        if (verified) published = pool_use->Pool().publishProofPayload(*verified);
                                     } else {
-                                        g_logger.warning(
-                                            "[CSN-TX] Mempool rejection: " +
-                                            std::string(TxRejectCodeToString(submit_result.code)) +
-                                            ": " + submit_result.message);
-                                    }
-                                    if (tx_relay_for_utxotx) {
-                                        tx_relay_for_utxotx->RecordBridgeResponse(peer_addr);
-                                        if (accepted_new_tx) {
-                                            tx_relay_for_utxotx->AnnounceTx(txid);
-                                        } else {
-                                            tx_relay_for_utxotx->CompleteRefresh(txid);
-                                        }
-                                    }
-                                    if (accepted_new_tx) {
-                                        g_logger.info("[CSN-TX] Accepted utxotx " + txid.GetHex().substr(0, 16) +
-                                                     "... from " + peer_addr + " (" +
-                                                     std::to_string(num_proofs) + " proofs)");
+                                        g_logger.warning("[CSN-TX] Mempool rejection: " +
+                                            std::string(TxRejectCodeToString(result.code)) + ": " + result.message);
                                     }
                                 }
+                                // No selected-chain, forest or pool lock survives into
+                                // relay callbacks; the service operation remains pinned.
+                                if (published) {
+                                    tx_relay_for_utxotx->CompleteRefresh(txid);
+                                    tx_relay_for_utxotx->RecordBridgeResponse(peer_addr);
+                                    if (admitted) tx_relay_for_utxotx->AnnounceTx(txid);
+                                    g_logger.info("[CSN-TX] Published complete proof payload for " +
+                                        txid.GetHex().substr(0,16) + " from " + peer_addr);
+                                } else {
+                                    tx_relay_for_utxotx->CompleteRefresh(txid);
+                                    g_logger.warning("[CSN-TX] Proof payload was not published for " +
+                                        txid.GetHex().substr(0,16));
+                                }
+                            } catch (const std::exception& error) {
+                                // A post-publication callback failure does not undo an
+                                // admitted body or its already published proof payload.
+                                g_logger.warning(std::string("[CSN-TX] Receive operation refused or callback failed: ") + error.what());
                             }
                         };
 
@@ -5622,6 +5404,18 @@ bool DaemonApp::Init(int argc, char** argv) {
             auto header_chain_ptr = ctx_.header_chain;
             auto chainstate_ptr = ctx_.chainstate;
             auto p2p_weak = std::weak_ptr<P2PService>(p2p_service);  // Capture weak to avoid cycle
+            // A valid header proves this peer knows that exact height even when
+            // another path receives/activates its body. Publish before body
+            // processing; never substitute the selector's global best height.
+            auto record_block_header = [header_sync = ctx_.header_sync, p2p_weak](
+                    const std::string& peer_addr, const BlockHeader& header) {
+                const auto height = header_sync->ObserveBlockHeader(header);
+                if (height) {
+                    if (auto p2p = p2p_weak.lock()) {
+                        p2p->get().update_peer_synced_headers(peer_addr, *height);
+                    }
+                }
+            };
             constexpr size_t MAX_HEADERS_PER_MSG = 2000;  // Bitcoin standard
             auto stateless_cmpct_refresh_times =
                 std::make_shared<std::unordered_map<std::string, std::chrono::steady_clock::time_point>>();
@@ -5703,14 +5497,10 @@ bool DaemonApp::Init(int argc, char** argv) {
                             }
                         }
 
-                        if (added > 0 && header_chain_ptr) {
-                            // #441: copy under the selector's lock.
-                            consensus::HeaderIndexEntry best_copy{};
-                            const bool have_best = header_chain_ptr->GetBestHeaderCopy(best_copy);
-                            auto p2p_locked = p2p_weak.lock();
-                            if (have_best && p2p_locked) {
-                                p2p_locked->get().update_peer_height(peer_addr, best_copy.height);
-                                p2p_locked->get().update_peer_synced_headers(peer_addr, best_copy.height);
+                        if (process_result.accepted_height) {
+                            if (auto p2p_locked = p2p_weak.lock()) {
+                                p2p_locked->get().update_peer_synced_headers(
+                                    peer_addr, *process_result.accepted_height);
                             }
                         }
 
@@ -5874,7 +5664,7 @@ bool DaemonApp::Init(int argc, char** argv) {
                 auto header_chain = ctx_.header_chain;
                 auto prune_service = ctx_.prune;  // Phase 34.8: Capture prune service
 
-                p2p_service->OnNewBlock = [block_relay, chainstate, block_download, header_chain, prune_service, p2p_service](
+                p2p_service->OnNewBlock = [block_relay, chainstate, block_download, header_chain, prune_service, p2p_service, record_block_header](
                     const std::string& peer_addr,
                     const ::P2PMessage& msg
                 ) {
@@ -5951,6 +5741,8 @@ bool DaemonApp::Init(int argc, char** argv) {
                                       << "... (scheduler still syncing)" << std::endl;
                             return;
                         }
+
+                        record_block_header(peer_addr, block.header);
 
                         // Relay-requested blocks during sync should be routed through
                         // BlockRelayManager so relay scheduler bookkeeping stays coherent.
@@ -6062,7 +5854,7 @@ bool DaemonApp::Init(int argc, char** argv) {
                 std::cout << "[DaemonApp] ✅ Phase G.2 OnNewBlock wired to ChainstateService + BlockRelayManager" << std::endl;
 
                 const bool csn_mode_for_compact = GetConfig().utreexo_stateless;
-                p2p_service->OnCompactBlock = [block_relay, csn_mode_for_compact, chainstate, p2p_service,
+                p2p_service->OnCompactBlock = [block_relay, csn_mode_for_compact, chainstate, p2p_service, record_block_header,
                                                stateless_cmpct_refresh_times,
                                                stateless_cmpct_refresh_retry_armed,
                                                stateless_cmpct_refresh_mutex](
@@ -6101,6 +5893,7 @@ bool DaemonApp::Init(int argc, char** argv) {
                         if (compact.GetTxCount() == 0) {
                             throw std::runtime_error("empty compact block payload");
                         }
+                        record_block_header(peer_addr, compact.header);
                         block_relay->HandleCompactBlock(peer_addr, compact);
                     } catch (const std::exception& e) {
                         g_logger.error("[BlockRelay] Error processing cmpctblock from " + peer_addr +
@@ -6147,7 +5940,7 @@ bool DaemonApp::Init(int argc, char** argv) {
                 ) {
                     try {
                         // Deserialize transaction from P2P message
-                        Transaction tx = DeserializeTransactionFromP2PMessage(msg);
+                        auto tx = DeserializeTransactionFromP2PMessage(msg);
 
                         // Route to TxRelayManager
                         tx_relay->HandleTx(peer_addr, tx);
@@ -6276,7 +6069,7 @@ bool DaemonApp::Init(int argc, char** argv) {
                 auto chainstate = std::dynamic_pointer_cast<ChainstateService>(ctx_.chainstate);
                 auto* block_ingress = ctx_.block_ingress;
                 if (chainstate) {
-                    block_relay->SetValidateBlockCallback([block_ingress, chainstate, p2p_service, block_download](
+                    block_relay->SetValidateBlockCallback([block_ingress, chainstate, p2p_service, block_download, record_block_header](
                         const Block& block,
                         const std::string& peer_address
                     ) -> dinero::BlockRelayManager::BlockValidationOutcome {
@@ -6289,6 +6082,8 @@ bool DaemonApp::Init(int argc, char** argv) {
                                 return Outcome::Rejected;
                             }
 
+                            // Reconstructed/orphan bodies may now have a known parent.
+                            record_block_header(peer_address, block.header);
                             const auto accept_result = block_ingress->Submit(block, BlockOrigin::P2P);
                             if (!accept_result.accepted()) {
                                 // Losing the single-flight race is not a
@@ -6439,42 +6234,35 @@ bool DaemonApp::Init(int argc, char** argv) {
                 });
 
                 // Wire TxRelayManager structured submit callback (TxRelay → MempoolService)
-                // Uses submitTransaction() for structured results (enables orphan pool)
+                // Typed ingress preserves P2P origin and structured retryable results
                 auto mempool = std::dynamic_pointer_cast<MempoolService>(ctx_.mempool);
                 if (mempool) {
-                    tx_relay->SetSubmitTxCallback([mempool](
-                        const Transaction& tx,
+                    tx_relay->SetSubmitBodyCallback([mempool](
+                        const MempoolTransaction& tx,
                         const std::string& peer_address
                     ) -> TxAcceptResult {
                         try {
                             // Route to MempoolService for mempool validation
                             // relay=false: TxRelayManager handles relay after acceptance
-                            return mempool->submitTransaction(tx, "p2p:" + peer_address, false);
+                            return mempool->SubmitBody(tx, TxOrigin::P2P);
                         } catch (const std::exception& e) {
-                            g_logger.error("[TxRelay] Transaction validation failed: " + std::string(e.what()));
-                            return TxAcceptResult::Rejected(TxRejectCode::INVALID_TX, e.what());
+                            g_logger.error("[TxRelay] Transaction validation unavailable for " + peer_address + ": " + std::string(e.what()));
+                            return TxAcceptResult::Rejected(TxRejectCode::UNAVAILABLE, e.what());
                         }
                     });
 
                     // Wire TxRelayManager retrieve callback (TxRelay → MempoolService)
-                    tx_relay->SetRetrieveTxCallback([mempool](
-                        const uint256& txid,
-                        Transaction& out_tx
-                    ) -> bool {
+                    tx_relay->SetRetrieveBodyCallback([mempool](
+                        const uint256& txid
+                    ) -> std::optional<MempoolTransaction> {
                         try {
-                            // Retrieve transaction from mempool
-                            auto tx_ptr = mempool->getTransaction(txid);
-                            if (!tx_ptr) {
-                                g_logger.debug("[TxRelay] Transaction not found in mempool: " +
-                                             txid.GetHex().substr(0, 16) + "...");
-                                return false;
-                            }
-
-                            out_tx = *tx_ptr;
-                            return true;
+                            auto use = MempoolService::AcquirePoolUse(mempool);
+                            const auto entry = use->Pool().getMempoolEntry(txid);
+                            if (!entry) return std::nullopt;
+                            return entry->tx;
                         } catch (const std::exception& e) {
                             g_logger.error("[TxRelay] Transaction retrieval failed: " + std::string(e.what()));
-                            return false;
+                            return std::nullopt;
                         }
                     });
                 }
@@ -7114,7 +6902,8 @@ bool DaemonApp::Start() {
     // ChainstateService::Init()) but BEFORE services Start() so that
     // ChainstateService::Start() → ActivateBestChain() → ConnectBlock()
     if (ctx_.mempool && ctx_.mempool->isInitialized() && ctx_.chainstate) {
-        auto& mempool = ctx_.mempool->mempool();
+        auto pool_use = MempoolService::AcquirePoolUse(ctx_.mempool);
+        auto& mempool = pool_use->Pool();
         auto chainstate = std::dynamic_pointer_cast<ChainstateService>(ctx_.chainstate);
         if (chainstate) {
             mempool.setShieldedState(chainstate->GetShieldedCommitmentTree(),
@@ -7191,7 +6980,15 @@ bool DaemonApp::Start() {
     // MUST happen after services Init() because Mempool is created in Init()
     // ═══════════════════════════════════════════════════════════════════
     if (ctx_.block_assembler && ctx_.mempool && ctx_.mempool->isInitialized()) {
-        ctx_.block_assembler->setMempool(&ctx_.mempool->mempool());
+        std::weak_ptr<ChainstateService> weak_chain = ctx_.chainstate;
+        ctx_.block_assembler->SetChainstateReadGuardFactory([weak_chain]()
+            -> std::unique_ptr<BlockAssembler::ChainstateReadGuard> {
+            return ChainstateService::AcquireMiningReadGuard(weak_chain.lock());
+        });
+        std::weak_ptr<MempoolService> weak_pool = ctx_.mempool;
+        ctx_.block_assembler->SetMempoolAccessFactory([weak_pool]() -> std::unique_ptr<MempoolAccess> {
+            return MempoolService::AcquirePoolUse(weak_pool.lock());
+        });
         std::cout << "[DaemonApp] ✅ BlockAssembler wired to Mempool" << std::endl;
     } else if (ctx_.block_assembler) {
         std::cerr << "[DaemonApp] ⚠️  BlockAssembler created but Mempool not available" << std::endl;
@@ -7281,12 +7078,22 @@ bool DaemonApp::Start() {
             auto utreexo_forest = chainstate->utreexoForest();
             auto utxo_index = chainstate->utxoIndex();
 
-            if (utreexo_forest && utxo_index) {
-                ctx_.block_assembler->SetConsensusUTXOSet(chainstate->GetConsensusUTXOSet());  // snapshot forest under shared lock (UAF guard)
-                // v2.2.0: Create adapter to bridge wallet UTXOIndex to consensus IUTXOProvider
-                // BlockAssembler takes shared_ptr<IUTXOProvider> - lifetime managed automatically
-                auto assembler_utxo_adapter = std::make_shared<consensus::WalletUTXOAdapter>(utxo_index);
-                ctx_.block_assembler->SetUTXOProvider(assembler_utxo_adapter);
+            auto* consensus_utxo_set = chainstate->GetConsensusUTXOSet();
+            if (utreexo_forest && consensus_utxo_set &&
+                (!GetConfig().utreexo_stateless || utxo_index)) {
+                ctx_.block_assembler->SetConsensusUTXOSet(consensus_utxo_set);
+                if (!GetConfig().utreexo_stateless) {
+                    // Covered operations retain the selected-chain guard. Mining
+                    // full-node inputs must not depend on local wallet ownership.
+                    std::shared_ptr<consensus::IUTXOProvider> provider(
+                        static_cast<consensus::IUTXOProvider*>(consensus_utxo_set),
+                        [](consensus::IUTXOProvider*) {});
+                    ctx_.block_assembler->SetUTXOProvider(std::move(provider));
+                } else {
+                    // Keep existing stateless behavior pending pre-base/oracle qualification.
+                    ctx_.block_assembler->SetUTXOProvider(
+                        std::make_shared<consensus::WalletUTXOAdapter>(utxo_index));
+                }
 
                 // Wire BlockValidator for Utreexo root computation (single source of truth)
                 // This ensures BlockAssembler uses the same ComputeUtreexoRootPure as validation
@@ -7351,7 +7158,8 @@ bool DaemonApp::Start() {
         if (mempool_service) {
             std::cout << "[DaemonApp] Loading mempool from disk..." << std::endl;
 
-            Mempool& mempool = mempool_service->mempool();
+            auto pool_use = MempoolService::AcquirePoolUse(mempool_service);
+            Mempool& mempool = pool_use->Pool();
             std::string mempool_path = mempool.getDefaultMempoolPath();
 
             // Get data directory for correct path
@@ -7366,7 +7174,7 @@ bool DaemonApp::Start() {
             if (mempool.loadFromDisk(mempool_path)) {
                 std::cout << "[DaemonApp] ✅ Mempool loaded from " << mempool_path << std::endl;
             } else {
-                std::cout << "[DaemonApp] ℹ️  Mempool load failed or file not found (starting with empty mempool)" << std::endl;
+                std::cout << "[DaemonApp] ℹ️  Mempool recovery incomplete; original file retained and overwrite disabled" << std::endl;
             }
         }
     }
@@ -7622,7 +7430,8 @@ void DaemonApp::Stop() {
         if (mempool_service) {
             std::cout << "[DaemonApp] Saving mempool to disk..." << std::endl;
 
-            Mempool& mempool = mempool_service->mempool();
+            auto pool_use = MempoolService::AcquirePoolUse(mempool_service);
+            Mempool& mempool = pool_use->Pool();
             std::string mempool_path = mempool.getDefaultMempoolPath();
 
             // Get data directory for correct path

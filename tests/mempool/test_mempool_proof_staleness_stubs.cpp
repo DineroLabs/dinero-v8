@@ -44,6 +44,7 @@ void NetworkManager::relayTransaction(const Transaction&) {}
 }
 
 // ── CoinsViewMemPool ────────────────────────────────────────────────────────
+#ifndef DINERO_TEST_REAL_COINS_VIEW
 namespace dinero {
 CoinsViewMemPool::CoinsViewMemPool(const consensus::ChainStateView* base)
     : base_(base) {}
@@ -57,6 +58,8 @@ bool CoinsViewMemPool::hasCommitment(const std::vector<uint8_t>&) const {
     return false;
 }
 }
+
+#endif // DINERO_TEST_REAL_COINS_VIEW
 
 // ── CTSelectionPolicy ───────────────────────────────────────────────────────
 namespace dinero::mining {

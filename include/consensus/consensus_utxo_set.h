@@ -308,6 +308,7 @@ public:
                   uint32_t height, const uint256& best_block);
 
 private:
+    friend class PreparedUTXOPublication;
     // In-memory UTXO set: OutPoint → UTXOEntry
     std::unordered_map<OutPoint, UTXOEntry> utxos_;
 

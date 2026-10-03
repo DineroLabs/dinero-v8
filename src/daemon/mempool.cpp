@@ -1,8 +1,10 @@
+#include "daemon/utreexo_tx_reader.h"
 #include "consensus/contextual_locks.h"
 #include "consensus/coinbase_maturity.h"
 #include "consensus/block_index.h"
 #include "consensus/shielded/resource_limits.h"
 #include "daemon/mempool.h"
+#include "daemon/relay_transaction_reader.h"
 #include "dinero/compat/int128.hpp"
 #include "primitives/block.h"  // Block type for onBlockConnected/onBlockDisconnected
 #include "storage/chain_db.h"  // ChainDB - single source of truth for blockchain state
@@ -30,11 +32,16 @@
 #include <algorithm>
 #include <chrono>
 #include <numeric>
+#include <map>
+#include <set>
 #include <iostream>
 #include <fstream>
 #include <limits>
 #include <stdexcept>
 #include <unordered_set>
+#include <thread>
+#include <type_traits>
+#include <utility>
 
 // NOTE:
 // Mempool identity and dependency tracking use uint256/OutPoint end-to-end.
@@ -183,7 +190,7 @@ public:
 
     StatusOr<consensus::UTXOEntry> getCoin(const OutPoint& outpoint) const override {
         if (!chain_db_) {
-            return Status::NotFound;
+            return Status::Internal;
         }
 
         // ChainDB::getCoin returns StatusOr<Coin>
@@ -285,51 +292,40 @@ public:
         }
 
         auto it = mempool_entries_->find(txid);
-        if (it == mempool_entries_->end() || vout >= it->second.tx.vout.size()) {
+        if (it == mempool_entries_->end() || vout >= it->second.tx.OutputCount()) {
             return false;
         }
 
-        const auto& txout = it->second.tx.vout[vout];
-        out.value = txout.value;
-        out.scriptPubKey = txout.scriptPubKey;
-        out.height = it->second.height;
-        out.isCoinbase = false;
-        out.is_confidential = txout.is_confidential;
-        out.commitment = txout.commitment;
+        out = it->second.tx.OutputCoin(vout, it->second.height);
         return true;
     }
 
-    bool HaveUTXO(const uint256& txid, uint32_t vout) const override {
-        if (!coins_view_) return false;
-        // Phase M.4.3-B: OutPoint uses TxId, wrap uint256 explicitly
-        OutPoint out{TxId(txid), vout};
-        auto result = coins_view_->getCoin(out);
-        if (result.status() == Status::Ok) {
-            return true;
+    StatusOr<consensus::UTXOEntry> CaptureCoin(
+        const uint256& txid, uint32_t vout, bool* invalid_parent_output = nullptr) const {
+        if (invalid_parent_output) *invalid_parent_output = false;
+        if (!coins_view_) return Status::Internal;
+        const auto found = coins_view_->getCoin(OutPoint{TxId(txid), vout});
+        if (found.ok() || found.status() != Status::NotFound) return found;
+        // Only a checked absence may use the existing conflicted-parent
+        // fallback. Storage errors are never reinterpreted as missing inputs.
+        consensus::UTXOEntry parent;
+        if (GetMempoolPrevout(txid, vout, parent)) return parent;
+        if (mempool_entries_ && mempool_entries_->count(txid)) {
+            if (invalid_parent_output) *invalid_parent_output = true;
+            return Status::Invalid;
         }
-        consensus::UTXOEntry mempool_prevout;
-        return GetMempoolPrevout(txid, vout, mempool_prevout);
+        return Status::NotFound;
+    }
+
+    bool HaveUTXO(const uint256& txid, uint32_t vout) const override {
+        return CaptureCoin(txid, vout).ok();
     }
 
     bool GetUTXO(const uint256& txid, uint32_t vout, uint64_t& value, std::string& script) const override {
-        if (!coins_view_) return false;
-        // Phase M.4.3-B: OutPoint uses TxId, wrap uint256 explicitly
-        OutPoint out{TxId(txid), vout};
-        auto result = coins_view_->getCoin(out);
-        if (result.status() == Status::Ok) {
-            const consensus::UTXOEntry& utxo = result.value();
-            value = utxo.value.GetUna();
-            // Convert vector<uint8_t> to string
-            script.assign(utxo.scriptPubKey.begin(), utxo.scriptPubKey.end());
-            return true;
-        }
-
-        consensus::UTXOEntry mempool_prevout;
-        if (!GetMempoolPrevout(txid, vout, mempool_prevout)) {
-            return false;
-        }
-        value = mempool_prevout.value.GetUna();
-        script.assign(mempool_prevout.scriptPubKey.begin(), mempool_prevout.scriptPubKey.end());
+        const auto coin = CaptureCoin(txid, vout);
+        if (!coin.ok()) return false;
+        value = coin.value().value.GetUna();
+        script.assign(coin.value().scriptPubKey.begin(), coin.value().scriptPubKey.end());
         return true;
     }
 
@@ -350,22 +346,10 @@ public:
 
     bool GetConfidentialUTXO(const uint256& txid, uint32_t vout,
                             std::vector<uint8_t>& commitment, bool& is_confidential) const override {
-        if (!coins_view_) return false;
-        OutPoint out{TxId(txid), vout};
-        auto result = coins_view_->getCoin(out);
-        if (result.status() == Status::Ok) {
-            const consensus::UTXOEntry& utxo = result.value();
-            is_confidential = utxo.is_confidential;
-            commitment = utxo.commitment;
-            return true;
-        }
-
-        consensus::UTXOEntry mempool_prevout;
-        if (!GetMempoolPrevout(txid, vout, mempool_prevout)) {
-            return false;
-        }
-        is_confidential = mempool_prevout.is_confidential;
-        commitment = mempool_prevout.commitment;
+        const auto coin = CaptureCoin(txid, vout);
+        if (!coin.ok()) return false;
+        is_confidential = coin.value().is_confidential;
+        commitment = coin.value().commitment;
         return true;
     }
 
@@ -413,31 +397,31 @@ double GetPackageSelectionScore(const MempoolEntry& entry) {
 void PopulatePrivacyLaneMetrics(MempoolEntry& entry, const mining::CTSelectionConfig& config) {
     entry.is_confidential = false;
     entry.total_proof_bytes = 0;
-    entry.effective_vsize = std::max<size_t>(entry.tx.GetVirtualSize(), 1);
+    entry.effective_vsize = std::max<size_t>(entry.tx.Historical().GetVirtualSize(), 1);
     entry.adjusted_fee_rate = entry.fee_rate;
     entry.ancestor_effective_vsize = entry.effective_vsize;
     entry.ancestor_adjusted_feerate = entry.adjusted_fee_rate;
 
-    for (const auto& output : entry.tx.vout) {
+    for (const auto& output : entry.tx.Historical().vout) {
         if (output.is_confidential) {
             entry.is_confidential = true;
             break;
         }
     }
 
-    if (entry.tx.HasExplicitFee()) {
-        entry.fee = entry.tx.GetExplicitFee();
+    if (entry.tx.Historical().HasExplicitFee()) {
+        entry.fee = entry.tx.Historical().GetExplicitFee();
         entry.fee_rate = entry.tx_size > 0 ? static_cast<double>(entry.fee) / entry.tx_size : 0.0;
     }
 
     if (entry.is_confidential) {
         mining::CTSelectionPolicy ct_policy(config);
-        const auto weight_info = ct_policy.GetWeightInfo(entry.tx);
+        const auto weight_info = ct_policy.GetWeightInfo(entry.tx.Historical());
         entry.total_proof_bytes = weight_info.proof_bytes;
         entry.effective_vsize = static_cast<size_t>((weight_info.total_weight + 3) / 4);
     }
 
-    const uint64_t effective_fee = entry.tx.HasExplicitFee() ? entry.tx.GetExplicitFee() : entry.fee;
+    const uint64_t effective_fee = entry.tx.Historical().HasExplicitFee() ? entry.tx.Historical().GetExplicitFee() : entry.fee;
     entry.adjusted_fee_rate = entry.effective_vsize > 0
         ? static_cast<double>(effective_fee) / entry.effective_vsize
         : 0.0;
@@ -542,33 +526,324 @@ bool Mempool::addTransaction(const Transaction& tx, bool relay) {
     return result.accepted();
 }
 
-void Mempool::addUnchecked(const Transaction& tx) {
+struct Mempool::StateRollback {
+    Mempool& pool;
+    decltype(m_transactions) transactions;
+    decltype(m_spent_outputs) spent;
+    decltype(m_fee_index) fees;
+    decltype(m_time_index) times;
+    decltype(m_children_index) children;
+    decltype(m_template_exclusions) exclusions;
+    CoinsViewMemPool overlay;
+    std::vector<uint8_t> accumulator_root;
+    uint32_t block_height;
+    size_t added_count, removed_count;
+    uint64_t stale_evicted, refresh_attempted, refresh_succeeded, refresh_dropped;
+    bool committed = false;
+    explicit StateRollback(Mempool& owner)
+        : pool(owner), transactions(owner.m_transactions), spent(owner.m_spent_outputs),
+          fees(owner.m_fee_index), times(owner.m_time_index), children(owner.m_children_index),
+          exclusions(owner.m_template_exclusions), overlay(owner.coins_view_),
+          accumulator_root(owner.current_accumulator_root_), block_height(owner.current_block_height_),
+          added_count(owner.m_total_tx_added.load()), removed_count(owner.m_total_tx_removed.load()),
+          stale_evicted(owner.m_stale_evicted_total.load()), refresh_attempted(owner.m_refresh_attempted_total.load()),
+          refresh_succeeded(owner.m_refresh_succeeded_total.load()), refresh_dropped(owner.m_refresh_dropped_budget_total.load()) {}
+    StateRollback(const StateRollback&) = delete;
+    StateRollback& operator=(const StateRollback&) = delete;
+    void Swap() noexcept {
+        static_assert(std::is_nothrow_swappable_v<decltype(transactions)>);
+        static_assert(std::is_nothrow_swappable_v<decltype(spent)>);
+        static_assert(std::is_nothrow_swappable_v<decltype(fees)>);
+        static_assert(std::is_nothrow_swappable_v<decltype(times)>);
+        static_assert(std::is_nothrow_swappable_v<decltype(children)>);
+        static_assert(std::is_nothrow_swappable_v<decltype(exclusions)>);
+        static_assert(std::is_nothrow_swappable_v<CoinsViewMemPool>);
+        static_assert(std::is_nothrow_swappable_v<decltype(accumulator_root)>);
+        transactions.swap(pool.m_transactions);
+        spent.swap(pool.m_spent_outputs);
+        fees.swap(pool.m_fee_index);
+        times.swap(pool.m_time_index);
+        children.swap(pool.m_children_index);
+        exclusions.swap(pool.m_template_exclusions);
+        accumulator_root.swap(pool.current_accumulator_root_);
+        std::swap(pool.current_block_height_, block_height);
+        using std::swap;
+        swap(overlay, pool.coins_view_);
+        added_count = pool.m_total_tx_added.exchange(added_count);
+        removed_count = pool.m_total_tx_removed.exchange(removed_count);
+        stale_evicted = pool.m_stale_evicted_total.exchange(stale_evicted);
+        refresh_attempted = pool.m_refresh_attempted_total.exchange(refresh_attempted);
+        refresh_succeeded = pool.m_refresh_succeeded_total.exchange(refresh_succeeded);
+        refresh_dropped = pool.m_refresh_dropped_budget_total.exchange(refresh_dropped);
+    }
+    ~StateRollback() noexcept { if (!committed) Swap(); }
+};
+
+void Mempool::addUnchecked(const Transaction& incoming_tx) {
+    const MempoolTransaction transaction(incoming_tx);
+    const Transaction& tx = transaction.Historical();
     if (tx.HasConfidentialOutputs()) {
         throw std::logic_error(
             "addUnchecked() rejects confidential transactions; use canonical ingress");
     }
     std::unique_lock<std::shared_mutex> lock(m_mutex);
     uint256 txid_u256 = tx.GetTxid().AsUint256();
-    MempoolEntry entry(tx, /*fee=*/0, /*block_height=*/0);
+    StateRollback rollback(*this);
+    MempoolEntry entry(transaction, /*fee=*/0, /*block_height=*/0);
     for (const auto& input : tx.vin) {
         OutPoint outpoint{input.prevout.txid, input.prevout.vout};
-        m_spent_outputs.insert(outpoint);
-        entry.spends.push_back(outpoint);
+        m_spent_outputs[outpoint].insert(txid_u256);
     }
     m_transactions[txid_u256] = entry;
     rebuildCoinsViewLocked();
+    rollback.committed = true;
+}
+
+TxAcceptResult Mempool::checkAdmissionPackageLocked(
+    const MempoolTransaction& transaction,
+    const std::unordered_set<uint256>& replaced_txids,
+    bool auth_packages,
+    std::unordered_set<uint256>& ancestors) const {
+    // Caller owns m_mutex. Publish the complete ancestor inventory only after
+    // every ancestor and descendant check succeeds. This is policy, not proof
+    // validation or permission to admit an Orchard transaction.
+    const auto txid_u256 = transaction.GetTxid().AsUint256();
+    const auto tx_size = transaction.GetSize();
+    const auto has_historical_auth = [](const MempoolTransaction& body) {
+        return !body.IsOrchard() &&
+            consensus::shielded::HasShieldedResources(body.Historical());
+    };
+    // Calculate ancestors (unconfirmed parents)
+    uint32_t ancestor_count = 0;
+    uint64_t ancestor_size = tx_size;  // Start with this transaction's size
+    bool ancestor_has_auth = has_historical_auth(transaction);
+
+    std::unordered_set<uint256> visited_ancestors;
+    std::vector<uint256> to_visit_ancestors;
+
+    // Find all ancestors
+    for (const auto& input : transaction.Inputs()) {
+        TxId parent_txid = input.txid;
+        if (m_transactions.find(parent_txid.AsUint256()) != m_transactions.end()) {
+            to_visit_ancestors.push_back(parent_txid.AsUint256());
+        }
+    }
+
+    // BFS to find all ancestors
+    while (!to_visit_ancestors.empty()) {
+        uint256 current = to_visit_ancestors.back();
+        to_visit_ancestors.pop_back();
+
+        if (replaced_txids.count(current) || visited_ancestors.count(current)) continue;
+        visited_ancestors.insert(current);
+
+        auto ancestor_it = m_transactions.find(current);
+        if (ancestor_it == m_transactions.end()) continue;
+
+        ancestor_count++;
+        ancestor_size += ancestor_it->second.tx_size;
+        ancestor_has_auth |= has_historical_auth(ancestor_it->second.tx);
+
+        // Add this ancestor's parents
+        for (const auto& input : ancestor_it->second.tx.Inputs()) {
+            TxId grandparent_txid = input.txid;
+            if (m_transactions.find(grandparent_txid.AsUint256()) != m_transactions.end() &&
+                !visited_ancestors.count(grandparent_txid.AsUint256())) {
+                to_visit_ancestors.push_back(grandparent_txid.AsUint256());
+            }
+        }
+    }
+
+    // Check ancestor limits
+    constexpr uint32_t MAX_ANCESTORS = 25;
+    const uint64_t MAX_ANCESTOR_SIZE = consensus::shielded::PackageByteLimit(auth_packages, ancestor_has_auth);
+
+    if (ancestor_count > MAX_ANCESTORS) {
+        MPLOG_WARN("Transaction " + txid_u256.GetHex() + " rejected: too many ancestors (" +
+                    std::to_string(ancestor_count) + " > " + std::to_string(MAX_ANCESTORS) + ")");
+        return TxAcceptResult::Rejected(TxRejectCode::TOO_MANY_ANCESTORS,
+            "Transaction has " + std::to_string(ancestor_count) + " ancestors (limit: " +
+            std::to_string(MAX_ANCESTORS) + ")", txid_u256);
+    }
+
+    if (ancestor_size > MAX_ANCESTOR_SIZE) {
+        MPLOG_WARN("Transaction " + txid_u256.GetHex() + " rejected: ancestor size too large (" +
+                    std::to_string(ancestor_size) + " > " + std::to_string(MAX_ANCESTOR_SIZE) + " bytes)");
+        return TxAcceptResult::Rejected(TxRejectCode::ANCESTOR_SIZE_EXCEEDED,
+            "Ancestor size " + std::to_string(ancestor_size) + " bytes exceeds limit " +
+            std::to_string(MAX_ANCESTOR_SIZE) + " bytes", txid_u256);
+    }
+
+    // Calculate descendants (transactions that spend from unconfirmed txs)
+    // Every surviving ancestor gains this descendant, including ancestors
+    // beyond direct inputs. Reuse the complete traversal already checked above.
+    for (const auto& ancestor_txid : visited_ancestors) {
+        const TxId parent_txid(ancestor_txid);
+
+        auto parent_it = m_transactions.find(parent_txid.AsUint256());
+        if (parent_it == m_transactions.end() || replaced_txids.count(parent_txid.AsUint256())) continue;
+
+        // Count descendants of this parent (including the new transaction)
+        uint32_t descendant_count = 1;  // Count the new transaction
+        uint64_t descendant_size = tx_size;
+        bool descendant_has_auth = has_historical_auth(transaction) ||
+            has_historical_auth(parent_it->second.tx);
+        std::unordered_set<uint256> visited_descendants;
+        std::vector<uint256> to_visit_descendants;
+
+        // Find all existing descendants of parent
+        for (const auto& [mempool_txid, entry] : m_transactions) {
+            if (mempool_txid == parent_txid.AsUint256() || replaced_txids.count(mempool_txid)) continue;
+
+            // Check if this transaction spends from the parent
+            for (const auto& tx_input : entry.tx.Inputs()) {
+                TxId input_parent_txid = tx_input.txid;
+                if (input_parent_txid.AsUint256() == parent_txid.AsUint256()) {
+                    to_visit_descendants.push_back(mempool_txid);
+                    break;
+                }
+            }
+        }
+
+        // BFS to find all descendants
+        while (!to_visit_descendants.empty()) {
+            uint256 current = to_visit_descendants.back();
+            to_visit_descendants.pop_back();
+
+            if (replaced_txids.count(current) || visited_descendants.count(current)) continue;
+            visited_descendants.insert(current);
+
+            auto descendant_it = m_transactions.find(current);
+            if (descendant_it == m_transactions.end()) continue;
+
+            descendant_count++;
+            descendant_size += descendant_it->second.tx_size;
+            descendant_has_auth |= has_historical_auth(descendant_it->second.tx);
+
+            // Add this descendant's children
+            for (const auto& [mempool_txid, entry] : m_transactions) {
+                if (replaced_txids.count(mempool_txid) || visited_descendants.count(mempool_txid)) continue;
+
+                for (const auto& tx_input : entry.tx.Inputs()) {
+                    TxId input_parent_txid = tx_input.txid;
+                    if (input_parent_txid.AsUint256() == current) {
+                        to_visit_descendants.push_back(mempool_txid);
+                        break;
+                    }
+                }
+            }
+        }
+
+        // Check descendant limits for this parent
+        constexpr uint32_t MAX_DESCENDANTS = consensus::shielded::kMaxPackageTransactions;
+        const uint64_t MAX_DESCENDANT_SIZE = consensus::shielded::PackageByteLimit(auth_packages, descendant_has_auth);
+
+        if (descendant_count > MAX_DESCENDANTS) {
+            MPLOG_WARN("Transaction " + txid_u256.GetHex() + " rejected: would cause parent " +
+                        parent_txid.AsUint256().GetHex() + " to exceed descendant limit (" +
+                        std::to_string(descendant_count) + " > " + std::to_string(MAX_DESCENDANTS) + ")");
+            return TxAcceptResult::Rejected(TxRejectCode::TOO_MANY_DESCENDANTS,
+                "Would cause parent " + parent_txid.AsUint256().GetHex().substr(0, 16) + "... to have " +
+                std::to_string(descendant_count) + " descendants (limit: " + std::to_string(MAX_DESCENDANTS) + ")",
+                txid_u256);
+        }
+
+        if (descendant_size > MAX_DESCENDANT_SIZE) {
+            MPLOG_WARN("Transaction " + txid_u256.GetHex() + " rejected: would cause parent " +
+                        parent_txid.AsUint256().GetHex() + " to exceed descendant size limit (" +
+                        std::to_string(descendant_size) + " > " + std::to_string(MAX_DESCENDANT_SIZE) + " bytes)");
+            return TxAcceptResult::Rejected(TxRejectCode::DESCENDANT_SIZE_EXCEEDED,
+                "Would cause parent descendant size " + std::to_string(descendant_size) +
+                " bytes (limit: " + std::to_string(MAX_DESCENDANT_SIZE) + " bytes)", txid_u256);
+        }
+    }
+
+    if (ancestor_count > 0) {
+        MPLOG_DEBUG("Transaction " + txid_u256.GetHex() + " has " + std::to_string(ancestor_count) +
+                     " ancestors (" + std::to_string(ancestor_size) + " bytes)");
+    }
+
+    ancestors.swap(visited_ancestors);
+    return TxAcceptResult::Accepted(txid_u256);
+}
+
+TxAcceptResult Mempool::submitBody(const MempoolTransaction& incoming,
+    const std::string& source,bool relay,bool test_only) {
+    if(!incoming.HasBody())return TxAcceptResult::Rejected(TxRejectCode::UNAVAILABLE,"Transaction body unavailable");
+    const MempoolTransaction body=incoming;
+    if(!body.IsOrchard())return submitTransactionInternal(body.Historical(),source,relay,test_only);
+    auto chain=chainstate_read_guard_factory_?chainstate_read_guard_factory_():nullptr;
+    if(!chain)return TxAcceptResult::Rejected(TxRejectCode::UNAVAILABLE,"Selected Orchard owner unavailable");
+    std::unique_lock<std::shared_mutex> lock(m_mutex);
+    const auto id=body.GetTxid().AsUint256();
+    const auto fail=[&](TxRejectCode code,const char* text){return TxAcceptResult::Rejected(code,text,id);};
+    if(!m_tx_accepted_observer.Supports(body))return fail(TxRejectCode::UNAVAILABLE,"Orchard acceptance observer unavailable");
+    auto scanner=m_sp_scanner_manager?m_sp_scanner_manager->acquireEmptyRegistry():nullptr;
+    if(m_sp_scanner_manager && !scanner)return fail(TxRejectCode::UNAVAILABLE,"Configured scanner cannot consume Orchard body");
+    const auto notification=m_tx_accepted_observer.Prepare(body);
+    const auto broadcast=relay?m_tx_broadcast_callback:TxBroadcastCallback{};
+    if(m_transactions.contains(id))return fail(TxRejectCode::ALREADY_IN_MEMPOOL,"Transaction already in mempool");
+    for(const auto& input:body.Inputs()) {
+        if(!getInputSpendersLocked(input).empty())return fail(TxRejectCode::DOUBLE_SPEND_NO_RBF,"Orchard replacement unavailable");
+        if(m_transactions.contains(input.txid.AsUint256()))return fail(TxRejectCode::UNAVAILABLE,"Orchard pending parent policy unavailable");
+    }
+    std::unordered_set<uint256> ancestors;
+    const auto package=checkAdmissionPackageLocked(body,{},false,ancestors);
+    if(!package.accepted())return package;
+    std::set<std::array<uint8_t,32>> nullifiers(body.OrchardNullifiers().begin(),body.OrchardNullifiers().end());
+    if(nullifiers.size()!=body.OrchardNullifiers().size())return fail(TxRejectCode::INVALID_TX,"Duplicate Orchard nullifier");
+    std::vector<MempoolTransaction> pending;
+    for(const auto& [other,entry]:m_transactions) {
+        if(!entry.tx.IsOrchard())continue;
+        for(const auto& nf:entry.tx.OrchardNullifiers())
+            if(nullifiers.contains(nf))return fail(TxRejectCode::DOUBLE_SPEND_NO_RBF,"Conflicting Orchard nullifier");
+        pending.push_back(entry.tx);
+    }
+    const auto checked=chain->ValidateOrchard(body,pending);
+    if(!checked.result.accepted())return checked.result;
+    const auto vsize=body.GetVirtualSize();
+    if(!vsize || body.ExplicitFee()!=std::optional<uint64_t>(checked.fee))
+        return fail(TxRejectCode::UNAVAILABLE,"Orchard checked fee unavailable");
+    const double rate=static_cast<double>(checked.fee)/vsize;
+    if(rate<m_min_fee_rate)return fail(TxRejectCode::INSUFFICIENT_FEE,"Orchard fee rate below minimum");
+    if(test_only)return TxAcceptResult::Accepted(id);
+    StateRollback rollback(*this);
+    MempoolEntry entry(body,checked.fee,checked.parent_height);
+    // Native transparent witnesses have no P2MR surcharge. Existing VWU's
+    // non-P2MR baseline charges all stripped and witness bytes once.
+    entry.vwu=std::max<uint64_t>(body.GetSize(),1);
+    entry.adjusted_fee_rate=static_cast<double>(entry.fee)/entry.vwu;
+    insertAdmittedEntryLocked(std::move(entry),ancestors);
+    MPLOG_INFO("["+source+"] Added Orchard transaction to mempool: "+id.GetHex());
+    m_total_tx_added.fetch_add(1);
+    if(getTotalSizeLocked()>m_max_size)evictTransactionsLocked();
+    rollback.committed=true;
+    if(fee_estimator_)fee_estimator_->recordTxEntry(id,rate,checked.parent_height);
+    scanner.reset();lock.unlock();chain.reset();
+    if(notification)notification();
+    if(broadcast)broadcast(id);
+    return TxAcceptResult::Accepted(id);
 }
 
 TxAcceptResult Mempool::submitTransactionInternal(
-    const Transaction& tx,
+    const Transaction& incoming_tx,
     const std::string& source,
     bool relay,
     bool test_only) {
+    // Capture one immutable body before callbacks, selected-chain acquisition,
+    // validation or pool mutation. Insertion and observers retain this owner.
+    const MempoolTransaction transaction(incoming_tx);
+    const Transaction& tx = transaction.Historical();
     auto chainstate_guard = chainstate_read_guard_factory_ ? chainstate_read_guard_factory_() : nullptr;
     if (chainstate_read_guard_factory_ && !chainstate_guard) {
-        return TxAcceptResult::Rejected(TxRejectCode::INVALID_TX, "chainstate unavailable");
+        return TxAcceptResult::Rejected(TxRejectCode::UNAVAILABLE, "chainstate unavailable");
     }
     std::unique_lock<std::shared_mutex> lock(m_mutex);
+    // Own the selected callback captures before admission publication. Setters
+    // may replace later callbacks without invalidating this notification.
+    const auto accepted_notification = m_tx_accepted_observer.Prepare(transaction);
+    const auto broadcast_callback = relay ? m_tx_broadcast_callback : TxBroadcastCallback{};
+
 
     // Phase M.0: GetTxid() returns TxId, use directly
     TxId txid = tx.GetTxid();
@@ -584,12 +859,13 @@ TxAcceptResult Mempool::submitTransactionInternal(
 
     // Validate transaction
     std::string error;
-    if (!validateTransaction(tx, error)) {
+    TxRejectCode validation_code = TxRejectCode::INVALID_TX;
+    if (!validateTransaction(tx, error, std::nullopt, &validation_code)) {
         MPLOG_WARN("Transaction validation failed for " + txid_u256.GetHex() + ": " + error);
         if (!test_only) {
             m_total_tx_rejected.fetch_add(1);
         }
-        return TxAcceptResult::Rejected(TxRejectCode::INVALID_TX,
+        return TxAcceptResult::Rejected(validation_code,
             "Transaction validation failed: " + error, txid_u256);
     }
 
@@ -597,18 +873,13 @@ TxAcceptResult Mempool::submitTransactionInternal(
     // Phase M.0: Use OutPoint struct instead of string concatenation
     // Build list of conflicting transactions
     std::vector<uint256> conflicting_txids;
+    std::unordered_set<uint256> replaced_txids;
     for (const auto& input : tx.vin) {
         // Phase M.0: Create OutPoint struct from input
         OutPoint outpoint{input.prevout.txid, input.prevout.vout};
-        if (m_spent_outputs.find(outpoint) != m_spent_outputs.end()) {
-            // Find which transaction spends this outpoint
-            for (const auto& [mempool_txid, entry] : m_transactions) {
-                for (const auto& spent : entry.spends) {
-                    if (spent == outpoint) {
-                        conflicting_txids.push_back(mempool_txid);
-                        break;
-                    }
-                }
+        for (const auto& owner : getInputSpendersLocked(outpoint)) {
+            if (std::find(conflicting_txids.begin(), conflicting_txids.end(), owner) == conflicting_txids.end()) {
+                conflicting_txids.push_back(owner);
             }
         }
     }
@@ -670,28 +941,17 @@ TxAcceptResult Mempool::submitTransactionInternal(
                 "RBF replacement rejected: " + rbf_error, txid_u256);
         }
 
-        // RBF validation passed - remove all conflicting transactions
-        MPLOG_INFO(std::string(test_only ? "RBF replacement test accepted: "
-                                        : "RBF replacement accepted: ") +
-                   txid_u256.GetHex() + " replaces " +
-                   std::to_string(conflict_set.conflict_count) + " transactions");
-
-        // Create a copy of direct and descendant conflicts for removal (Phase M.0: uint256)
-        std::vector<uint256> txids_to_remove;
-        txids_to_remove.insert(txids_to_remove.end(),
-                              conflict_set.direct_conflicts.begin(),
-                              conflict_set.direct_conflicts.end());
-        txids_to_remove.insert(txids_to_remove.end(),
-                              conflict_set.descendant_conflicts.begin(),
-                              conflict_set.descendant_conflicts.end());
-
-        // A dry-run must never evict or otherwise mutate existing entries.
-        if (!test_only) {
-            for (const auto& conflict_txid : txids_to_remove) {
-                removeTransactionLocked(conflict_txid);
-                MPLOG_DEBUG("Removed conflicting transaction: " + conflict_txid.GetHex());
+        // Project policy against the surviving pool without changing entries,
+        // dependency indexes or the coin overlay. Actual replacement follows
+        // every policy check and the test-only boundary below.
+        replaced_txids.insert(conflict_set.direct_conflicts.begin(), conflict_set.direct_conflicts.end());
+        replaced_txids.insert(conflict_set.descendant_conflicts.begin(), conflict_set.descendant_conflicts.end());
+        for (const auto& input : tx.vin) {
+            if (replaced_txids.count(input.prevout.txid.AsUint256())) {
+                if (!test_only) m_total_tx_rejected.fetch_add(1);
+                return TxAcceptResult::Rejected(TxRejectCode::RBF_REJECTED,
+                    "Replacement depends on an output removed by replacement", txid_u256);
             }
-            rebuildCoinsViewLocked();
         }
     }
 
@@ -725,9 +985,6 @@ TxAcceptResult Mempool::submitTransactionInternal(
     //
     // These limits prevent mempool DoS attacks via deep transaction chains.
 
-    // Calculate ancestors (unconfirmed parents)
-    uint32_t ancestor_count = 0;
-    uint64_t ancestor_size = tx_size;  // Start with this transaction's size
     uint64_t package_height = 0;
     if (chain_db_) {
         auto tip = chain_db_->getTip();
@@ -735,163 +992,12 @@ TxAcceptResult Mempool::submitTransactionInternal(
     }
     const bool auth_packages = consensus::shielded::AuthResourcesActive(package_height,
         dinero::Params().shielded_spend_auth_activation_height);
-    bool ancestor_has_auth = consensus::shielded::HasShieldedResources(tx);
-
     std::unordered_set<uint256> visited_ancestors;
-    std::vector<uint256> to_visit_ancestors;
-
-    // Find all ancestors
-    for (const auto& input : tx.vin) {
-        TxId parent_txid = input.prevout.txid;
-        if (m_transactions.find(parent_txid.AsUint256()) != m_transactions.end()) {
-            to_visit_ancestors.push_back(parent_txid.AsUint256());
-        }
-    }
-
-    // BFS to find all ancestors
-    while (!to_visit_ancestors.empty()) {
-        uint256 current = to_visit_ancestors.back();
-        to_visit_ancestors.pop_back();
-
-        if (visited_ancestors.count(current)) continue;
-        visited_ancestors.insert(current);
-
-        auto ancestor_it = m_transactions.find(current);
-        if (ancestor_it == m_transactions.end()) continue;
-
-        ancestor_count++;
-        ancestor_size += ancestor_it->second.tx_size;
-        ancestor_has_auth |= consensus::shielded::HasShieldedResources(ancestor_it->second.tx);
-
-        // Add this ancestor's parents
-        for (const auto& input : ancestor_it->second.tx.vin) {
-            TxId grandparent_txid = input.prevout.txid;
-            if (m_transactions.find(grandparent_txid.AsUint256()) != m_transactions.end() &&
-                !visited_ancestors.count(grandparent_txid.AsUint256())) {
-                to_visit_ancestors.push_back(grandparent_txid.AsUint256());
-            }
-        }
-    }
-
-    // Check ancestor limits
-    constexpr uint32_t MAX_ANCESTORS = 25;
-    const uint64_t MAX_ANCESTOR_SIZE = consensus::shielded::PackageByteLimit(auth_packages, ancestor_has_auth);
-
-    if (ancestor_count > MAX_ANCESTORS) {
-        MPLOG_WARN("Transaction " + txid_u256.GetHex() + " rejected: too many ancestors (" +
-                    std::to_string(ancestor_count) + " > " + std::to_string(MAX_ANCESTORS) + ")");
-        if (!test_only) {
-            m_total_tx_rejected.fetch_add(1);
-        }
-        return TxAcceptResult::Rejected(TxRejectCode::TOO_MANY_ANCESTORS,
-            "Transaction has " + std::to_string(ancestor_count) + " ancestors (limit: " +
-            std::to_string(MAX_ANCESTORS) + ")", txid_u256);
-    }
-
-    if (ancestor_size > MAX_ANCESTOR_SIZE) {
-        MPLOG_WARN("Transaction " + txid_u256.GetHex() + " rejected: ancestor size too large (" +
-                    std::to_string(ancestor_size) + " > " + std::to_string(MAX_ANCESTOR_SIZE) + " bytes)");
-        if (!test_only) {
-            m_total_tx_rejected.fetch_add(1);
-        }
-        return TxAcceptResult::Rejected(TxRejectCode::ANCESTOR_SIZE_EXCEEDED,
-            "Ancestor size " + std::to_string(ancestor_size) + " bytes exceeds limit " +
-            std::to_string(MAX_ANCESTOR_SIZE) + " bytes", txid_u256);
-    }
-
-    // Calculate descendants (transactions that spend from unconfirmed txs)
-    // Note: We check if adding this transaction would cause any existing transaction
-    // to exceed descendant limits
-    for (const auto& input : tx.vin) {
-        TxId parent_txid = input.prevout.txid;
-
-        auto parent_it = m_transactions.find(parent_txid.AsUint256());
-        if (parent_it == m_transactions.end()) continue;  // Parent not in mempool
-
-        // Count descendants of this parent (including the new transaction)
-        uint32_t descendant_count = 1;  // Count the new transaction
-        uint64_t descendant_size = tx_size;
-        bool descendant_has_auth = consensus::shielded::HasShieldedResources(tx) ||
-            consensus::shielded::HasShieldedResources(parent_it->second.tx);
-        std::unordered_set<uint256> visited_descendants;
-        std::vector<uint256> to_visit_descendants;
-
-        // Find all existing descendants of parent
-        for (const auto& [mempool_txid, entry] : m_transactions) {
-            if (mempool_txid == parent_txid.AsUint256()) continue;  // Skip the parent itself
-
-            // Check if this transaction spends from the parent
-            for (const auto& tx_input : entry.tx.vin) {
-                TxId input_parent_txid = tx_input.prevout.txid;
-                if (input_parent_txid.AsUint256() == parent_txid.AsUint256()) {
-                    to_visit_descendants.push_back(mempool_txid);
-                    break;
-                }
-            }
-        }
-
-        // BFS to find all descendants
-        while (!to_visit_descendants.empty()) {
-            uint256 current = to_visit_descendants.back();
-            to_visit_descendants.pop_back();
-
-            if (visited_descendants.count(current)) continue;
-            visited_descendants.insert(current);
-
-            auto descendant_it = m_transactions.find(current);
-            if (descendant_it == m_transactions.end()) continue;
-
-            descendant_count++;
-            descendant_size += descendant_it->second.tx_size;
-            descendant_has_auth |= consensus::shielded::HasShieldedResources(descendant_it->second.tx);
-
-            // Add this descendant's children
-            for (const auto& [mempool_txid, entry] : m_transactions) {
-                if (visited_descendants.count(mempool_txid)) continue;
-
-                for (const auto& tx_input : entry.tx.vin) {
-                    TxId input_parent_txid = tx_input.prevout.txid;
-                    if (input_parent_txid.AsUint256() == current) {
-                        to_visit_descendants.push_back(mempool_txid);
-                        break;
-                    }
-                }
-            }
-        }
-
-        // Check descendant limits for this parent
-        constexpr uint32_t MAX_DESCENDANTS = consensus::shielded::kMaxPackageTransactions;
-        const uint64_t MAX_DESCENDANT_SIZE = consensus::shielded::PackageByteLimit(auth_packages, descendant_has_auth);
-
-        if (descendant_count > MAX_DESCENDANTS) {
-            MPLOG_WARN("Transaction " + txid_u256.GetHex() + " rejected: would cause parent " +
-                        parent_txid.AsUint256().GetHex() + " to exceed descendant limit (" +
-                        std::to_string(descendant_count) + " > " + std::to_string(MAX_DESCENDANTS) + ")");
-            if (!test_only) {
-                m_total_tx_rejected.fetch_add(1);
-            }
-            return TxAcceptResult::Rejected(TxRejectCode::TOO_MANY_DESCENDANTS,
-                "Would cause parent " + parent_txid.AsUint256().GetHex().substr(0, 16) + "... to have " +
-                std::to_string(descendant_count) + " descendants (limit: " + std::to_string(MAX_DESCENDANTS) + ")",
-                txid_u256);
-        }
-
-        if (descendant_size > MAX_DESCENDANT_SIZE) {
-            MPLOG_WARN("Transaction " + txid_u256.GetHex() + " rejected: would cause parent " +
-                        parent_txid.AsUint256().GetHex() + " to exceed descendant size limit (" +
-                        std::to_string(descendant_size) + " > " + std::to_string(MAX_DESCENDANT_SIZE) + " bytes)");
-            if (!test_only) {
-                m_total_tx_rejected.fetch_add(1);
-            }
-            return TxAcceptResult::Rejected(TxRejectCode::DESCENDANT_SIZE_EXCEEDED,
-                "Would cause parent descendant size " + std::to_string(descendant_size) +
-                " bytes (limit: " + std::to_string(MAX_DESCENDANT_SIZE) + " bytes)", txid_u256);
-        }
-    }
-
-    if (ancestor_count > 0) {
-        MPLOG_DEBUG("Transaction " + txid_u256.GetHex() + " has " + std::to_string(ancestor_count) +
-                     " ancestors (" + std::to_string(ancestor_size) + " bytes)");
+    const auto package_result = checkAdmissionPackageLocked(
+        transaction, replaced_txids, auth_packages, visited_ancestors);
+    if (!package_result.accepted()) {
+        if (!test_only) m_total_tx_rejected.fetch_add(1);
+        return package_result;
     }
 
     // All canonical validation and policy checks have passed. A
@@ -900,6 +1006,13 @@ TxAcceptResult Mempool::submitTransactionInternal(
     if (test_only) {
         return TxAcceptResult::Accepted(txid_u256);
     }
+
+    // All copies finish before the first mutation. Readers remain excluded by
+    // m_mutex until either publication completes or noexcept swaps restore the
+    // complete prior pool. This temporary full-state copy is not a load bound.
+    StateRollback admission_rollback(*this);
+    for (const auto& conflict_txid : replaced_txids) removeTransactionLocked(conflict_txid);
+    if (!replaced_txids.empty()) rebuildCoinsViewLocked();
 
     // Get current blockchain height from ChainDB
     uint32_t current_height = 0;
@@ -911,14 +1024,14 @@ TxAcceptResult Mempool::submitTransactionInternal(
     }
     
     // Create mempool entry
-    MempoolEntry entry(tx, fee, current_height);
+    MempoolEntry entry(transaction, fee, current_height);
     PopulatePrivacyLaneMetrics(entry, ct_config_);
 
     // Phase 8 Commit 2: compute VWU for ordering/eviction/RBF. Done after
     // PopulatePrivacyLaneMetrics so the CT vsize is already settled
     // (though VWU doesn't consume it) and before ancestor rollup so we
     // can include ancestors' VWU in entry.ancestor_vwu.
-    entry.vwu = computeVWUForTx(entry.tx);
+    entry.vwu = computeVWUForTx(entry.tx.Historical());
     if (entry.vwu == 0) {
         // Defensive fallback: ordering denominators can never be zero.
         entry.vwu = std::max<uint64_t>(entry.tx_size, 1);
@@ -928,9 +1041,57 @@ TxAcceptResult Mempool::submitTransactionInternal(
     entry.adjusted_fee_rate =
         static_cast<double>(entry.fee) / static_cast<double>(entry.vwu);
 
+    insertAdmittedEntryLocked(std::move(entry), visited_ancestors);
+
+    MPLOG_INFO("[" + source + "] Added transaction to mempool: " + txid_u256.GetHex() +
+                 " (fee: " + std::to_string(fee) + " sats, " +
+                 "rate: " + std::to_string(fee_rate) + " sat/byte)");
+
+    m_total_tx_added.fetch_add(1);
+
+    // Finish local maintenance before making external observer effects.
+    if (getTotalSizeLocked() > m_max_size) evictTransactionsLocked();
+    admission_rollback.committed = true;
+
+    // v0.13.0.3: Record transaction entry for fee estimation
+    if (fee_estimator_ && chain_db_) {
+        auto tip_result = chain_db_->getTip();
+        if (tip_result.status() == Status::Ok) {
+            uint32_t tip_height = tip_result.value().height;
+            // Record fee rate as una/vbyte (BIP141-aligned).
+            double vbyte_fee_rate = tx_vsize > 0 ? static_cast<double>(fee) / tx_vsize : 0.0;
+            fee_estimator_->recordTxEntry(txid_u256, vbyte_fee_rate, tip_height);
+        }
+    }
+
+    // Scan for Silent Payments
+    if (m_sp_scanner_manager) {
+        std::string tx_hex = tx.SerializeHex();
+        m_sp_scanner_manager->scanMempoolTransaction(tx_hex);
+    }
+
+    // Admission and maintenance are published. Later observer errors preserve
+    // that outcome; callbacks may query the pool after these locks are released.
+    lock.unlock();
+    chainstate_guard.reset();
+
+    // These are observations of admission, not a promise of continued pool
+    // membership. Callback errors propagate after publication; a wallet's
+    // durable pending owner must retain an ambiguous submission outcome.
+    if (accepted_notification) accepted_notification();
+    if (broadcast_callback) broadcast_callback(txid_u256);
+
+    return TxAcceptResult::Accepted(txid_u256);
+}
+
+void Mempool::insertAdmittedEntryLocked(
+    MempoolEntry entry, const std::unordered_set<uint256>& ancestors) {
+    // Private publication step: the caller holds selected-chain and pool
+    // ownership plus StateRollback until all admission maintenance finishes.
+    const auto txid_u256 = entry.tx.GetTxid().AsUint256();
     std::unordered_set<uint256> direct_parents;
-    for (const auto& input : tx.vin) {
-        TxId parent_txid = input.prevout.txid;
+    for (const auto& input : entry.tx.Inputs()) {
+        TxId parent_txid = input.txid;
         if (m_transactions.find(parent_txid.AsUint256()) != m_transactions.end()) {
             direct_parents.insert(parent_txid.AsUint256());
         }
@@ -945,7 +1106,7 @@ TxAcceptResult Mempool::submitTransactionInternal(
     entry.ancestor_size = entry.tx_size;
     entry.ancestor_effective_vsize = GetEffectiveVirtualSize(entry);
     entry.ancestor_vwu = entry.vwu;
-    for (const auto& ancestor_txid : visited_ancestors) {
+    for (const auto& ancestor_txid : ancestors) {
         auto ancestor_it = m_transactions.find(ancestor_txid);
         if (ancestor_it == m_transactions.end()) {
             continue;
@@ -968,10 +1129,9 @@ TxAcceptResult Mempool::submitTransactionInternal(
         : 0.0;
 
     // Update spent outputs tracking
-    for (const auto& input : tx.vin) {
-        OutPoint outpoint{input.prevout.txid, input.prevout.vout};
-        m_spent_outputs.insert(outpoint);
-        entry.spends.push_back(outpoint);
+    for (const auto& input : entry.tx.Inputs()) {
+        OutPoint outpoint{input.txid, input.vout};
+        m_spent_outputs[outpoint].insert(txid_u256);
     }
 
     // Add to main storage
@@ -979,77 +1139,21 @@ TxAcceptResult Mempool::submitTransactionInternal(
 
     // v0.11.0: Update mempool UTXO overlay
     // Spend inputs (mark as consumed by mempool)
-    for (const auto& input : tx.vin) {
+    for (const auto& input : entry.tx.Inputs()) {
         // Phase M.0: Wallet boundary - convert TxOutPoint (string) to OutPoint (uint256)
-        OutPoint out{input.prevout.txid, input.prevout.vout};
+        OutPoint out{input.txid, input.vout};
         coins_view_.spendCoin(out);
     }
 
-    // Add outputs (created by mempool transaction)
-    for (size_t vout = 0; vout < tx.vout.size(); ++vout) {
-        OutPoint out{TxId(txid_u256), static_cast<uint32_t>(vout)};
-        Coin coin;
-        coin.amount = tx.vout[vout].value.GetUna();  // AmountUna → uint64_t
-        coin.script_pubkey = std::string(tx.vout[vout].scriptPubKey.begin(),
-                                         tx.vout[vout].scriptPubKey.end());
-        coin.height = static_cast<int>(current_height);
-        coin.coinbase = false;  // Mempool txs are never coinbase
-
-        // Convert Coin to UTXOEntry for CoinsViewMemPool
-        consensus::UTXOEntry utxo_entry;
-        utxo_entry.value = AmountUna::Una(coin.amount);  // uint64_t → AmountUna
-        utxo_entry.scriptPubKey.assign(coin.script_pubkey.begin(), coin.script_pubkey.end());
-        utxo_entry.height = static_cast<uint32_t>(coin.height);
-        utxo_entry.isCoinbase = coin.coinbase;
-        utxo_entry.is_confidential = tx.vout[vout].is_confidential;
-        utxo_entry.commitment = tx.vout[vout].commitment;
-        coins_view_.addCoin(out, utxo_entry);
+    // Preserve the admitted family's exact output representation.
+    for (size_t vout = 0; vout < entry.tx.OutputCount(); ++vout) {
+        const OutPoint out{TxId(txid_u256), static_cast<uint32_t>(vout)};
+        coins_view_.addCoin(out, entry.tx.OutputCoin(vout, entry.height));
     }
 
     // Add to indices
     m_fee_index.insert({GetPackageSelectionScore(entry), txid_u256});
     m_time_index.insert({entry.time, txid_u256});
-
-    MPLOG_INFO("[" + source + "] Added transaction to mempool: " + txid_u256.GetHex() +
-                 " (fee: " + std::to_string(fee) + " sats, " +
-                 "rate: " + std::to_string(fee_rate) + " sat/byte)");
-
-    m_total_tx_added.fetch_add(1);
-
-    // v0.13.0.3: Record transaction entry for fee estimation
-    if (fee_estimator_ && chain_db_) {
-        auto tip_result = chain_db_->getTip();
-        if (tip_result.status() == Status::Ok) {
-            uint32_t tip_height = tip_result.value().height;
-            // Record fee rate as una/vbyte (BIP141-aligned).
-            double vbyte_fee_rate = tx_vsize > 0 ? static_cast<double>(fee) / tx_vsize : 0.0;
-            fee_estimator_->recordTxEntry(txid_u256, vbyte_fee_rate, tip_height);
-        }
-    }
-
-    // Scan for Silent Payments
-    if (m_sp_scanner_manager) {
-        std::string tx_hex = tx.SerializeHex();
-        m_sp_scanner_manager->scanMempoolTransaction(tx_hex);
-    }
-
-    // Notify wallet watchers of mempool acceptance (NodeCore → Swift events).
-    if (m_tx_accepted_callback) {
-        m_tx_accepted_callback(tx);
-    }
-
-    // Broadcast to network if requested through the canonical callback path.
-    if (relay && m_tx_broadcast_callback) {
-        lock.unlock();  // Release lock before network call
-        broadcastTransaction(txid_u256);
-    }
-
-    // Check if mempool needs cleanup
-    if (getTotalSizeLocked() > m_max_size) {
-        evictTransactionsLocked();
-    }
-
-    return TxAcceptResult::Accepted(txid_u256);
 }
 
 bool Mempool::removeTransaction(const uint256& txid) {
@@ -1064,7 +1168,7 @@ bool Mempool::removeTransaction(const uint256& txid) {
 
     // Remove from spent outputs tracking
     for (const auto& outpoint : entry.spends) {
-        m_spent_outputs.erase(outpoint);
+        releaseInputSpenderLocked(outpoint, txid);
     }
 
     // Remove from indices
@@ -1181,12 +1285,12 @@ TxAcceptResult Mempool::submitTransactionTestOnly(const Transaction& tx, const s
         if (it != m_transactions.end()) {
             const MempoolEntry& parent = it->second;
 
-            if (input.prevout.vout >= parent.tx.vout.size()) {
+            if (input.prevout.vout >= parent.tx.Historical().vout.size()) {
                 return TxAcceptResult::Rejected(TxRejectCode::INVALID_TX,
                     "Input references invalid output index", txid_u256);
             }
 
-            coin_value = parent.tx.vout[input.prevout.vout].value.GetUna();  // AmountUna → uint64_t
+            coin_value = parent.tx.Historical().vout[input.prevout.vout].value.GetUna();  // AmountUna → uint64_t
             found = true;
             OutPoint outpoint{input_txid, input.prevout.vout};
             MPLOG_DEBUG("TEST_ONLY: Input from mempool: " + outpoint.ToString() +
@@ -1306,7 +1410,7 @@ TxAcceptResult Mempool::submitTransactionTestOnly(const Transaction& tx, const s
         bool rbf_signaled = true;
         for (const auto* conflicting : conflicting_entries) {
             bool tx_signals_rbf = false;
-            for (const auto& input : conflicting->tx.vin) {
+            for (const auto& input : conflicting->tx.Historical().vin) {
                 if (input.sequence < 0xfffffffe) {
                     tx_signals_rbf = true;
                     break;
@@ -1486,7 +1590,7 @@ TxAcceptResult Mempool::submitTransactionTestOnly(const Transaction& tx, const s
             if (mempool_txid == parent_txid) continue;  // Skip the parent itself
 
             // Check if this transaction spends from the parent
-            for (const auto& tx_input : mempool_entry.tx.vin) {
+            for (const auto& tx_input : mempool_entry.tx.Historical().vin) {
                 TxId input_parent_txid = tx_input.prevout.txid;
                 if (input_parent_txid.AsUint256() == parent_txid) {
                     to_visit_descendants.push_back(mempool_txid);
@@ -1513,7 +1617,7 @@ TxAcceptResult Mempool::submitTransactionTestOnly(const Transaction& tx, const s
             for (const auto& [mempool_txid, mempool_entry] : m_transactions) {
                 if (visited_descendants.count(mempool_txid)) continue;
 
-                for (const auto& tx_input : mempool_entry.tx.vin) {
+                for (const auto& tx_input : mempool_entry.tx.Historical().vin) {
                     TxId input_parent_txid = tx_input.prevout.txid;
                     if (input_parent_txid.AsUint256() == current) {
                         to_visit_descendants.push_back(mempool_txid);
@@ -1597,8 +1701,7 @@ TxAcceptResult Mempool::submitTransactionTestOnly(const Transaction& tx, const s
     // Update spent outputs tracking
     for (const auto& input : tx.vin) {
         OutPoint outpoint{input.prevout.txid, input.prevout.vout};
-        m_spent_outputs.insert(outpoint);
-        entry.spends.push_back(outpoint);
+        m_spent_outputs[outpoint].insert(txid_u256);
     }
 
     // Add to main storage
@@ -1731,12 +1834,40 @@ bool Mempool::isOutputSpentInMempool(const OutPoint& outpoint) const {
     return m_spent_outputs.find(outpoint) != m_spent_outputs.end();
 }
 
+std::vector<uint256> Mempool::getInputSpenders(const OutPoint& outpoint) const {
+    std::shared_lock<std::shared_mutex> lock(m_mutex);
+    return getInputSpendersLocked(outpoint);
+}
+
+std::vector<uint256> Mempool::getInputSpendersLocked(const OutPoint& outpoint) const {
+    const auto found = m_spent_outputs.find(outpoint);
+    if (found == m_spent_outputs.end()) return {};
+    if (found->second.empty()) throw std::logic_error("Empty mempool input owner set");
+    std::vector<uint256> owners(found->second.begin(), found->second.end());
+    for (const auto& owner : owners) {
+        const auto entry = m_transactions.find(owner);
+        if (entry == m_transactions.end() ||
+            std::find(entry->second.spends.begin(), entry->second.spends.end(), outpoint) == entry->second.spends.end()) {
+            throw std::logic_error("Mempool input owner mismatch");
+        }
+    }
+    std::sort(owners.begin(), owners.end());
+    return owners;
+}
+
+void Mempool::releaseInputSpenderLocked(const OutPoint& outpoint, const uint256& txid) {
+    const auto found = m_spent_outputs.find(outpoint);
+    if (found == m_spent_outputs.end()) return;
+    found->second.erase(txid);
+    if (found->second.empty()) m_spent_outputs.erase(found);
+}
+
 std::shared_ptr<Transaction> Mempool::getTransaction(const uint256& txid) const {
     std::shared_lock<std::shared_mutex> lock(m_mutex);
 
     auto it = m_transactions.find(txid);
     if (it != m_transactions.end()) {
-        return std::make_shared<Transaction>(it->second.tx);
+        return std::make_shared<Transaction>(it->second.tx.Historical());
     }
     return nullptr;
 }
@@ -1786,29 +1917,36 @@ std::vector<Transaction> Mempool::getAllTransactions() const {
     transactions.reserve(m_transactions.size());
     
     for (const auto& pair : m_transactions) {
-        transactions.push_back(pair.second.tx);
+        transactions.push_back(pair.second.tx.Historical());
     }
     
     return transactions;
 }
 
-std::vector<Transaction> Mempool::getTransactionsByFeeRate(size_t max_count) const {
+std::vector<MempoolEntry> Mempool::CaptureEntriesByFeeRate(size_t max_count) const {
     std::shared_lock<std::shared_mutex> lock(m_mutex);
-    
-    std::vector<Transaction> transactions;
-    transactions.reserve(std::min(max_count, m_transactions.size()));
-    
-    // Iterate from highest fee rate to lowest
-    for (auto it = m_fee_index.rbegin(); 
-         it != m_fee_index.rend() && transactions.size() < max_count; 
-         ++it) {
-        
-        auto tx_it = m_transactions.find(it->second);
-        if (tx_it != m_transactions.end()) {
-            transactions.push_back(tx_it->second.tx);
+    std::vector<MempoolEntry> entries;
+    entries.reserve(std::min(max_count, m_transactions.size()));
+    std::unordered_set<uint256> captured;
+    // Preserve the actual package-selection index; its score is not fee_rate.
+    for (auto it = m_fee_index.rbegin();
+         it != m_fee_index.rend() && entries.size() < max_count; ++it) {
+        const auto entry = m_transactions.find(it->second);
+        if (entry == m_transactions.end() || !entry->second.tx.HasBody() ||
+            entry->second.tx.GetTxid().AsUint256() != it->second ||
+            !captured.insert(it->second).second) {
+            throw std::runtime_error("Mempool ranked entry unavailable");
         }
+        entries.push_back(entry->second);
     }
-    
+    return entries;
+}
+
+std::vector<Transaction> Mempool::getTransactionsByFeeRate(size_t max_count) const {
+    const auto entries = CaptureEntriesByFeeRate(max_count);
+    std::vector<Transaction> transactions;
+    transactions.reserve(entries.size());
+    for (const auto& entry : entries) transactions.push_back(entry.tx.Historical());
     return transactions;
 }
 
@@ -1823,6 +1961,50 @@ std::vector<uint256> Mempool::getTransactionIds() const {
     }
 
     return txids;
+}
+
+std::vector<Mempool::EntryWithInputCoins> Mempool::CaptureEntriesWithInputCoins() const {
+    auto guard = chainstate_read_guard_factory_ ? chainstate_read_guard_factory_() : nullptr;
+    if (chainstate_read_guard_factory_ && !guard)
+        throw std::runtime_error("Mempool input snapshot chainstate unavailable");
+    std::shared_lock<std::shared_mutex> lock(m_mutex);
+    std::vector<EntryWithInputCoins> result;
+    result.reserve(m_transactions.size());
+    for (const auto& [id, entry] : m_transactions) {
+        if (!entry.tx.HasBody() || entry.tx.GetTxid().AsUint256() != id)
+            throw std::runtime_error("Mempool input snapshot body unavailable");
+        EntryWithInputCoins captured{entry, {}};
+        captured.input_coins.reserve(entry.tx.Inputs().size());
+        for (const auto& outpoint : entry.tx.Inputs()) {
+            std::optional<consensus::UTXOEntry> coin;
+            const auto parent = m_transactions.find(outpoint.txid.AsUint256());
+            if (parent != m_transactions.end()) {
+                if (!parent->second.tx.HasBody() ||
+                    parent->second.tx.GetTxid() != outpoint.txid ||
+                    outpoint.vout >= parent->second.tx.OutputCount())
+                    throw std::runtime_error("Mempool input snapshot parent unavailable");
+                // The spent overlay intentionally hides this output. Its actual
+                // immutable parent body is the pending accounting authority.
+                coin = parent->second.tx.OutputCoin(outpoint.vout, parent->second.height);
+            } else if (prebase_coin_predicate_ && prebase_coin_predicate_(outpoint)) {
+                // Never substitute a stale auxiliary row for live-forest proof.
+                if (prebase_coin_resolver_) coin = prebase_coin_resolver_(outpoint);
+            } else {
+                if (!chain_state_view_)
+                    throw std::runtime_error("Mempool input snapshot coin view unavailable");
+                const auto found = chain_state_view_->getCoin(outpoint);
+                if (found.ok()) coin = found.value();
+                else if (found.status() != Status::NotFound)
+                    throw std::runtime_error("Mempool input snapshot coin read failed");
+                if (!coin && prebase_coin_resolver_)
+                    coin = prebase_coin_resolver_(outpoint);
+            }
+            if (!coin) throw std::runtime_error("Mempool input snapshot coin unavailable");
+            captured.input_coins.push_back(std::move(*coin));
+        }
+        result.push_back(std::move(captured));
+    }
+    return result;
 }
 
 std::vector<Transaction> Mempool::getTransactionsForAddress(const std::string& address) const {
@@ -1844,7 +2026,7 @@ std::vector<Transaction> Mempool::getTransactionsForAddress(const std::string& a
 
     // Scan all mempool transactions for outputs to this script or inputs spending it.
     for (const auto& pair : m_transactions) {
-        const Transaction& tx = pair.second.tx;
+        const Transaction& tx = pair.second.tx.Historical();
         bool involves_address = false;
 
         // Check outputs.
@@ -1866,8 +2048,8 @@ std::vector<Transaction> Mempool::getTransactionsForAddress(const std::string& a
 
                 auto parent_it = m_transactions.find(input.prevout.txid.AsUint256());
                 if (parent_it != m_transactions.end() &&
-                    input.prevout.vout < parent_it->second.tx.vout.size() &&
-                    parent_it->second.tx.vout[input.prevout.vout].scriptPubKey == target_script) {
+                    input.prevout.vout < parent_it->second.tx.Historical().vout.size() &&
+                    parent_it->second.tx.Historical().vout[input.prevout.vout].scriptPubKey == target_script) {
                     matched_input = true;
                 }
 
@@ -1949,10 +2131,44 @@ bool Mempool::isTemplateExcludedLocked(const uint256& txid,
 std::vector<Transaction> Mempool::selectTransactionsForBlock(
     size_t max_block_size, uint64_t max_block_weight,
     uint32_t next_block_height) const {
+    auto capture = CaptureBlockSelection(max_block_size, max_block_weight, next_block_height);
+    return std::move(capture.transactions);
+}
+
+MempoolBlockSelection Mempool::CaptureBlockSelection(
+    size_t max_block_size, uint64_t max_block_weight, uint32_t next_block_height) const {
+    auto typed = CaptureBlockSelectionImpl(max_block_size, max_block_weight,
+                                           next_block_height, false);
+    MempoolBlockSelection result;
+    result.available = typed.available;
+    result.pool_size = typed.pool_size;
+    result.pool_bytes = typed.pool_bytes;
+    result.metadata = std::move(typed.metadata);
+    result.transactions.reserve(typed.transactions.size());
+    for (const auto& body : typed.transactions) result.transactions.push_back(body.Historical());
+    return result;
+}
+
+MempoolTypedBlockSelection Mempool::CaptureTypedBlockSelection(
+    size_t max_block_size, uint64_t max_block_weight, uint32_t next_block_height) const {
+    return CaptureBlockSelectionImpl(max_block_size, max_block_weight, next_block_height, true);
+}
+
+MempoolTypedBlockSelection Mempool::CaptureBlockSelectionImpl(
+    size_t max_block_size, uint64_t max_block_weight,
+    uint32_t next_block_height, bool typed) const {
 
     auto chainstate_guard = chainstate_read_guard_factory_ ? chainstate_read_guard_factory_() : nullptr;
     if (chainstate_read_guard_factory_ && !chainstate_guard) return {};
     std::shared_lock<std::shared_mutex> lock(m_mutex);
+    MempoolSelectionValidation parent;
+    if (typed) {
+        if (!chainstate_guard) return {};
+        parent = chainstate_guard->ValidateBlockSelection({}, next_block_height);
+        if (!parent.result.accepted() || parent.parent_hash.IsNull() ||
+            uint64_t(parent.parent_height) + 1 != next_block_height) return {};
+    }
+
 
     // Re-validate height-gated proof rules at template-selection time.
     // A shielded tx admitted before an activation boundary may no longer be
@@ -1975,8 +2191,11 @@ std::vector<Transaction> Mempool::selectTransactionsForBlock(
         }
 
         std::string local_reason;
-        const bool selectable =
-            isSelectableAtHeightLocked(entry, next_block_height, &local_reason);
+        const bool selectable = typed ? entry.tx.HasBody() :
+            (!entry.tx.IsOrchard() &&
+             isSelectableAtHeightLocked(entry, next_block_height, &local_reason));
+        if (!typed && entry.tx.IsOrchard())
+            local_reason = "Orchard body requires typed block selection";
         selectable_cache.emplace(txid, selectable);
         if (!selectable) {
             selectable_reason_cache.emplace(txid, local_reason);
@@ -2072,8 +2291,8 @@ std::vector<Transaction> Mempool::selectTransactionsForBlock(
         std::vector<uint256> to_visit;
 
         // Start with direct parents
-        for (const auto& input : entry.tx.vin) {
-            TxId parent_txid = input.prevout.txid;
+        for (const auto& input : entry.tx.Inputs()) {
+            TxId parent_txid = input.txid;
 
             if (isTemplateExcludedLocked(parent_txid.AsUint256(), now, nullptr)) {
                 excluded_ancestor = true;
@@ -2127,8 +2346,8 @@ std::vector<Transaction> Mempool::selectTransactionsForBlock(
                                       : static_cast<uint64_t>(ancestor_entry.tx_size);
 
             // Add this ancestor's parents to visit list
-            for (const auto& input : ancestor_entry.tx.vin) {
-                TxId grandparent_txid = input.prevout.txid;
+            for (const auto& input : ancestor_entry.tx.Inputs()) {
+                TxId grandparent_txid = input.txid;
                 if (isTemplateExcludedLocked(grandparent_txid.AsUint256(), now, nullptr)) {
                     excluded_ancestor = true;
                     break;
@@ -2147,6 +2366,56 @@ std::vector<Transaction> Mempool::selectTransactionsForBlock(
             ++excluded_descendants;
             continue;
         }
+
+        // Discovery order is not dependency order for chains or diamonds.
+        // Build one deterministic parent-before-child order for the whole
+        // package before it can contribute transactions or resource counts.
+        std::map<uint256, size_t> pending_parents;
+        std::map<uint256, std::vector<uint256>> children;
+        pending_parents.emplace(score.txid, 0);
+        for (const auto& ancestor : score.ancestors)
+            pending_parents.emplace(ancestor, 0);
+        bool complete_package = true;
+        for (auto& [id, count] : pending_parents) {
+            const auto found = m_transactions.find(id);
+            if (found == m_transactions.end() || found->second.tx.GetTxid().AsUint256() != id) {
+                complete_package = false;
+                break;
+            }
+            std::set<uint256> parents;
+            for (const auto& input : found->second.tx.Inputs()) {
+                const auto& parent = input.txid.AsUint256();
+                if (m_transactions.count(parent)) {
+                    if (!pending_parents.count(parent)) {
+                        complete_package = false;
+                        break;
+                    }
+                    parents.insert(parent); // Multiple inputs may share one parent.
+                }
+            }
+            if (!complete_package) break;
+            count = parents.size();
+            for (const auto& parent : parents) children[parent].push_back(id);
+        }
+        if (!complete_package) continue;
+        std::set<uint256> ready;
+        for (const auto& [id, count] : pending_parents)
+            if (count == 0) ready.insert(id);
+        std::vector<uint256> ordered;
+        ordered.reserve(pending_parents.size());
+        while (!ready.empty()) {
+            const auto id = *ready.begin();
+            ready.erase(ready.begin());
+            ordered.push_back(id);
+            const auto next = children.find(id);
+            if (next == children.end()) continue;
+            for (const auto& child : next->second)
+                if (--pending_parents.at(child) == 0) ready.insert(child);
+        }
+        if (ordered.size() != pending_parents.size() || ordered.back() != score.txid)
+            continue; // Incomplete/cyclic packages never publish a prefix.
+        ordered.pop_back();
+        score.ancestors = std::move(ordered);
 
         // Phase 8 Commit 2: switch selection feerate denominator from BIP141
         // effective_vsize to VWU. VWU is the economic truth — it weights
@@ -2187,7 +2456,7 @@ std::vector<Transaction> Mempool::selectTransactionsForBlock(
     // Phase 3: Select transactions with ancestors
     // ───────────────────────────────────────────────────────────────────────────
 
-    std::vector<Transaction> selected;
+    std::vector<MempoolTransaction> selected;
     std::unordered_set<uint256> included;  // Phase M.0: uint256
     size_t current_size = 0;
     uint64_t current_weight = 0;
@@ -2242,10 +2511,9 @@ std::vector<Transaction> Mempool::selectTransactionsForBlock(
             }
         }
 
-        // Include only packages that fit the block's independently bounded
-        // proof work. Track the running count rather than repeatedly copying
-        // and decoding every transaction already selected (quadratic on a
-        // transparent-heavy block).
+        // Historical selection retains its incremental Auth budget. The
+        // active Orchard profile checks each proposed ordered mixed prefix
+        // below, including resolved input work and exact validated fees.
         auto candidate_auth_resources = current_auth_resources;
         bool auth_resources_ok = true;
         auto add_auth_resources = [&](const Transaction& candidate) {
@@ -2258,14 +2526,16 @@ std::vector<Transaction> Mempool::selectTransactionsForBlock(
                 auth_resources_ok = false;
             }
         };
-        for (const auto& ancestor : score.ancestors) {
-            if (!included.count(ancestor)) {
-                auto it = m_transactions.find(ancestor);
-                if (it != m_transactions.end()) add_auth_resources(it->second.tx);
+        if (!typed) {
+            for (const auto& ancestor : score.ancestors) {
+                if (!included.count(ancestor)) {
+                    auto it = m_transactions.find(ancestor);
+                    if (it != m_transactions.end()) add_auth_resources(it->second.tx.Historical());
+                }
             }
+            add_auth_resources(score.entry->tx.Historical());
+            if (!auth_resources_ok) continue;
         }
-        add_auth_resources(score.entry->tx);
-        if (!auth_resources_ok) continue;
 
         uint64_t package_weight = score.entry->tx.GetWeight();
         for (const auto& ancestor : score.ancestors) {
@@ -2279,6 +2549,28 @@ std::vector<Transaction> Mempool::selectTransactionsForBlock(
         if (current_size + package_size > max_block_size ||
             current_weight + package_weight > max_block_weight) {
             continue;  // Skip this package - doesn't fit
+        }
+
+        if (typed) {
+            auto proposed = selected;
+            for (const auto& ancestor : score.ancestors) {
+                if (!included.count(ancestor)) proposed.push_back(m_transactions.at(ancestor).tx);
+            }
+            proposed.push_back(score.entry->tx);
+            const auto checked = chainstate_guard->ValidateBlockSelection(proposed, next_block_height);
+            if (!checked.result.accepted() || checked.parent_hash != parent.parent_hash ||
+                checked.parent_height != parent.parent_height || checked.fees.size() != proposed.size())
+                continue;
+            bool exact_fees = true;
+            for (const auto& body : proposed) {
+                const auto id = body.GetTxid().AsUint256();
+                const auto fee = checked.fees.find(id);
+                if (fee == checked.fees.end() || fee->second != m_transactions.at(id).fee) {
+                    exact_fees = false;
+                    break;
+                }
+            }
+            if (!exact_fees) continue;
         }
 
         // Include all ancestors first (in correct order)
@@ -2312,13 +2604,30 @@ std::vector<Transaction> Mempool::selectTransactionsForBlock(
                  std::to_string(excluded_descendants) + ", height_rule_excluded=" +
                  std::to_string(height_rule_excluded) + ")");
 
-    return selected;
+    MempoolTypedBlockSelection capture;
+    if (typed) {
+        capture.parent_hash = parent.parent_hash;
+        capture.parent_height = parent.parent_height;
+    }
+    capture.available = true;
+    capture.pool_size = m_transactions.size();
+    capture.pool_bytes = getTotalSizeLocked();
+    capture.metadata.reserve(selected.size());
+    for (const auto& tx : selected) {
+        const auto id = tx.GetTxid().AsUint256();
+        const auto& entry = m_transactions.at(id);
+        const auto vwu = entry.vwu != 0 ? entry.vwu :
+            (tx.IsOrchard() ? std::max<size_t>(tx.GetSize(), 1) : computeVWUForTx(tx.Historical()));
+        capture.metadata.emplace(id, MempoolTemplateMetadata{entry.fee, vwu, entry.time});
+    }
+    capture.transactions = std::move(selected);
+    return capture;
 }
 
 bool Mempool::isSelectableAtHeightLocked(const MempoolEntry& entry,
                                          uint32_t next_block_height,
                                          std::string* reason) const {
-    const Transaction& tx = entry.tx;
+    const Transaction& tx = entry.tx.Historical();
     if (next_block_height == 0) {
         return true;
     }
@@ -2333,7 +2642,7 @@ bool Mempool::isSelectableAtHeightLocked(const MempoolEntry& entry,
         const OutPoint outpoint{input.prevout.txid, input.prevout.vout};
         const auto parent = m_transactions.find(input.prevout.txid.AsUint256());
         if (parent != m_transactions.end() &&
-            input.prevout.vout < parent->second.tx.vout.size()) {
+            input.prevout.vout < parent->second.tx.OutputCount()) {
             continue;  // Unconfirmed transaction outputs are not coinbase.
         }
 
@@ -2546,6 +2855,35 @@ bool Mempool::isSelectableAtHeightLocked(const MempoolEntry& entry,
     return true;
 }
 
+namespace {
+// Caller owns the pool lock. Capture the complete branch before any removal
+// changes dependency metadata; recorded inputs also cover restored entries.
+std::vector<uint256> GatherRemovalBranch(
+    const std::unordered_map<uint256, MempoolEntry>& entries,
+    const std::vector<uint256>& roots) {
+    std::unordered_map<uint256, std::vector<uint256>> children;
+    for (const auto& [txid, entry] : entries) {
+        for (const auto& input : entry.tx.Inputs()) {
+            const auto& parent = input.txid.AsUint256();
+            if (entries.count(parent)) children[parent].push_back(txid);
+        }
+    }
+    std::unordered_set<uint256> visited;
+    std::vector<uint256> branch;
+    for (const auto& root : roots) {
+        if (entries.count(root) && visited.insert(root).second) branch.push_back(root);
+    }
+    for (size_t i = 0; i < branch.size(); ++i) {
+        const auto found = children.find(branch[i]);
+        if (found == children.end()) continue;
+        for (const auto& child : found->second) {
+            if (visited.insert(child).second) branch.push_back(child);
+        }
+    }
+    return branch;
+}
+} // namespace
+
 void Mempool::removeConfirmedTransactions(const std::vector<uint256>& confirmed_txids) {
     std::unique_lock<std::shared_mutex> lock(m_mutex);
 
@@ -2566,7 +2904,7 @@ void Mempool::removeConfirmedTransactions(const std::vector<uint256>& confirmed_
             fee_estimator_->recordTxConfirmation(txid, confirmation_height);
         }
 
-        if (removeTransaction(txid)) {
+        if (removeTransactionLocked(txid)) {
             removed_count++;
         }
     }
@@ -2575,52 +2913,9 @@ void Mempool::removeConfirmedTransactions(const std::vector<uint256>& confirmed_
         MPLOG_INFO("Removed " + std::to_string(removed_count) +
                      " confirmed transactions from mempool");
 
-        // v0.11.0: Clear and rebuild UTXO overlay after block acceptance
-        // ChainDB has been updated with the new block, so mempool view must be rebuilt
-        coins_view_.clear();
-
-        // Rebuild overlay from remaining mempool transactions
-        uint32_t current_height = 0;
-        if (chain_db_) {
-            auto tip_result = chain_db_->getTip();
-            if (tip_result.status() == Status::Ok) {
-                current_height = static_cast<uint32_t>(tip_result.value().height);
-            }
-        }
-
-        for (const auto& [txid, entry] : m_transactions) {
-            // Spend inputs
-            for (const auto& input : entry.tx.vin) {
-                // Phase M.0: Wallet boundary - convert string txid to uint256
-                OutPoint out{input.prevout.txid, input.prevout.vout};
-                coins_view_.spendCoin(out);
-            }
-
-            // Add outputs
-            for (size_t vout = 0; vout < entry.tx.vout.size(); ++vout) {
-                OutPoint out{TxId(txid), static_cast<uint32_t>(vout)};
-                Coin coin;
-                coin.amount = entry.tx.vout[vout].value.GetUna();
-                coin.script_pubkey = std::string(entry.tx.vout[vout].scriptPubKey.begin(),
-                                                 entry.tx.vout[vout].scriptPubKey.end());
-                coin.height = static_cast<int>(current_height);
-                coin.coinbase = false;
-
-                // Convert Coin to UTXOEntry for CoinsViewMemPool
-                consensus::UTXOEntry utxo_entry;
-                utxo_entry.value = AmountUna::Una(coin.amount);
-                utxo_entry.scriptPubKey.assign(coin.script_pubkey.begin(), coin.script_pubkey.end());
-                utxo_entry.height = static_cast<uint32_t>(coin.height);
-                utxo_entry.isCoinbase = coin.coinbase;
-                utxo_entry.is_confidential = entry.tx.vout[vout].is_confidential;
-                utxo_entry.commitment = entry.tx.vout[vout].commitment;
-                coins_view_.addCoin(out, utxo_entry);
-            }
-        }
-
-        MPLOG_DEBUG("Rebuilt mempool UTXO overlay with " +
-                     std::to_string(coins_view_.spentCount()) + " spent + " +
-                     std::to_string(coins_view_.createdCount()) + " created outputs");
+        // Publish the surviving overlay once under the existing owner lock.
+        // Outputs are installed before spends by the shared rebuild helper.
+        rebuildCoinsViewLocked();
     }
 }
 
@@ -2639,25 +2934,27 @@ void Mempool::removeExpiredTransactions() {
         expired_txids.push_back(it->second);
     }
     
-    // Remove expired transactions
-    for (const auto& txid : expired_txids) {
-        removeTransaction(txid);
+    // An expired unconfirmed parent cannot leave spenders without an input.
+    const auto branch = GatherRemovalBranch(m_transactions, expired_txids);
+    for (auto it = branch.rbegin(); it != branch.rend(); ++it) {
+        removeTransactionLocked(*it);
     }
 
-    if (!expired_txids.empty()) {
-        MPLOG_INFO("Removed " + std::to_string(expired_txids.size()) +
-                     " expired transactions from mempool");
+    if (!branch.empty()) {
+        rebuildCoinsViewLocked();
+        MPLOG_INFO("Removed " + std::to_string(branch.size()) +
+                     " expired transactions and descendants from mempool");
     }
 }
 
 void Mempool::limitMempoolSize() {
     std::unique_lock<std::shared_mutex> lock(m_mutex);
     
-    if (getTotalSize() <= m_max_size) {
+    if (getTotalSizeLocked() <= m_max_size) {
         return;
     }
     
-    evictTransactions();
+    evictTransactionsLocked();
 }
 
 void Mempool::clear() {
@@ -2668,6 +2965,7 @@ void Mempool::clear() {
     m_spent_outputs.clear();
     m_fee_index.clear();
     m_time_index.clear();
+    m_children_index.clear();
     m_template_exclusions.clear();
     coins_view_.clear();  // v0.11.0: Clear mempool UTXO overlay
 
@@ -2740,7 +3038,7 @@ bool Mempool::removeTransactionLocked(const uint256& txid) {
 
     // Remove from spent outputs tracking
     for (const auto& outpoint : entry.spends) {
-        m_spent_outputs.erase(outpoint);
+        releaseInputSpenderLocked(outpoint, txid);
     }
 
     // Remove from indices
@@ -2776,60 +3074,168 @@ void Mempool::rebuildCoinsViewLocked() {
     coins_view_.clear();
 
     for (const auto& [txid, entry] : m_transactions) {
-        for (size_t vout = 0; vout < entry.tx.vout.size(); ++vout) {
+        for (size_t vout = 0; vout < entry.tx.OutputCount(); ++vout) {
             OutPoint out{TxId(txid), static_cast<uint32_t>(vout)};
-            consensus::UTXOEntry utxo_entry;
-            utxo_entry.value = entry.tx.vout[vout].value;
-            utxo_entry.scriptPubKey = entry.tx.vout[vout].scriptPubKey;
-            utxo_entry.height = entry.height;
-            utxo_entry.isCoinbase = false;
-            coins_view_.addCoin(out, utxo_entry);
+            coins_view_.addCoin(out, entry.tx.OutputCoin(vout, entry.height));
         }
     }
 
     for (const auto& [txid, entry] : m_transactions) {
-        for (const auto& input : entry.tx.vin) {
-            OutPoint out{input.prevout.txid, input.prevout.vout};
-            coins_view_.spendCoin(out);
+        for (const auto& input : entry.tx.Inputs()) {
+            coins_view_.spendCoin(input);
         }
     }
 }
 
+
+struct Mempool::PreparedBlockUpdate::Impl {
+    const std::thread::id thread = std::this_thread::get_id();
+    std::unique_lock<std::shared_mutex> lock;
+    std::unique_ptr<StateRollback> staged;
+    const size_t evicted;
+    const std::vector<uint256> refresh_candidates;
+    bool published = false;
+    Impl(std::unique_lock<std::shared_mutex> held, std::unique_ptr<StateRollback> state,
+         size_t count, std::vector<uint256> refresh)
+        : lock(std::move(held)), staged(std::move(state)), evicted(count), refresh_candidates(std::move(refresh)) {}
+    ~Impl() noexcept {
+        if (thread != std::this_thread::get_id()) std::terminate();
+    }
+};
+Mempool::PreparedBlockUpdate::PreparedBlockUpdate(std::unique_ptr<Impl> impl)
+    : impl_(std::move(impl)) {}
+Mempool::PreparedBlockUpdate::~PreparedBlockUpdate() = default;
+size_t Mempool::PreparedBlockUpdate::EvictedCount() const noexcept { return impl_->evicted; }
+const std::vector<uint256>& Mempool::PreparedBlockUpdate::RefreshCandidates() const noexcept {
+    return impl_->refresh_candidates;
+}
+void Mempool::PreparedBlockUpdate::PublishAfterCommit() noexcept {
+    if (impl_->thread != std::this_thread::get_id() || impl_->published) std::terminate();
+    impl_->staged->Swap();
+    impl_->published = true;
+    impl_->lock.unlock();
+}
+std::unique_ptr<Mempool::PreparedBlockUpdate> Mempool::prepareBlockConnected(
+    const ConnectedBlockEffects& effects, uint32_t height, const std::vector<uint8_t>& new_root,
+    std::optional<ProofRefreshPolicy> refresh) {
+    std::unique_lock<std::shared_mutex> lock(m_mutex);
+    auto staged = std::make_unique<StateRollback>(*this);
+    const auto evicted = applyBlockConnectedLocked(effects, height, new_root);
+    auto candidates = refresh ? selectStaleForRefreshLocked(height, refresh->batch_size,
+        refresh->max_age_blocks, refresh->max_attempts, refresh->overload_threshold) : std::vector<uint256>{};
+    // Restore live state and retain the complete prepared state. Its destructor
+    // now discards that state if the caller abandons the canonical transition.
+    staged->Swap();
+    staged->committed = true;
+    auto impl = std::make_unique<PreparedBlockUpdate::Impl>(std::move(lock), std::move(staged), evicted, std::move(candidates));
+    return std::unique_ptr<PreparedBlockUpdate>(new PreparedBlockUpdate(std::move(impl)));
+}
+std::unique_ptr<Mempool::PreparedBlockUpdate> Mempool::prepareBlockDisconnected(
+    uint32_t height, std::optional<ProofRefreshPolicy> refresh) {
+    std::unique_lock<std::shared_mutex> lock(m_mutex);
+    auto staged = std::make_unique<StateRollback>(*this);
+    applyBlockDisconnectedLocked(height);
+    const auto parent_height = height > 0 ? height - 1 : 0;
+    auto candidates = refresh ? selectStaleForRefreshLocked(parent_height, refresh->batch_size,
+        refresh->max_age_blocks, refresh->max_attempts, refresh->overload_threshold) : std::vector<uint256>{};
+    staged->Swap();
+    staged->committed = true;
+    auto impl = std::make_unique<PreparedBlockUpdate::Impl>(std::move(lock), std::move(staged), 0, std::move(candidates));
+    return std::unique_ptr<PreparedBlockUpdate>(new PreparedBlockUpdate(std::move(impl)));
+}
+std::unique_ptr<Mempool::PreparedBlockUpdate> Mempool::prepareBlockDisconnectedToParent(
+    uint32_t height, const std::vector<uint8_t>& parent_root,
+    std::optional<ProofRefreshPolicy> refresh) {
+    if (height == 0 || parent_root.size() != 32)
+        throw std::invalid_argument("Invalid pool parent proof context");
+    std::unique_lock<std::shared_mutex> lock(m_mutex);
+    auto staged = std::make_unique<StateRollback>(*this);
+    current_accumulator_root_ = parent_root;
+    current_block_height_ = height - 1;
+    applyBlockDisconnectedLocked(height);
+    auto candidates = refresh ? selectStaleForRefreshLocked(height - 1, refresh->batch_size,
+        refresh->max_age_blocks, refresh->max_attempts, refresh->overload_threshold) : std::vector<uint256>{};
+    staged->Swap();
+    staged->committed = true;
+    auto impl = std::make_unique<PreparedBlockUpdate::Impl>(std::move(lock), std::move(staged), 0, std::move(candidates));
+    return std::unique_ptr<PreparedBlockUpdate>(new PreparedBlockUpdate(std::move(impl)));
+}
+size_t Mempool::onBlockConnected(const ConnectedBlockEffects& effects, uint32_t height,
+                               const std::vector<uint8_t>& new_root) {
+    auto prepared = prepareBlockConnected(effects, height, new_root);
+    const auto evicted = prepared->EvictedCount();
+    prepared->PublishAfterCommit();
+    return evicted;
+}
+void Mempool::onBlockDisconnected(uint32_t height) {
+    auto prepared = prepareBlockDisconnected(height);
+    prepared->PublishAfterCommit();
+}
+
 size_t Mempool::onBlockConnected(const Block& block, uint32_t height,
                                   const std::vector<uint8_t>& new_root) {
-    std::unique_lock<std::shared_mutex> lock(m_mutex);
-
-    // 1. Collect all inputs spent in this block
-    std::unordered_set<OutPoint> block_spends;
+    ConnectedBlockEffects effects;
+    effects.confirmed_txids.reserve(block.vtx.size());
     for (const auto& tx : block.vtx) {
-        if (tx.IsCoinbase()) continue;
-        for (const auto& input : tx.vin) {
-            block_spends.insert(OutPoint{input.prevout.txid, input.prevout.vout});
-        }
+        effects.confirmed_txids.push_back(tx.GetTxid().AsUint256());
+        if (!tx.IsCoinbase()) for (const auto& input : tx.vin)
+            effects.spent_transparent_inputs.emplace_back(input.prevout.txid, input.prevout.vout);
     }
+    return onBlockConnected(effects, height, new_root);
+}
 
-    // 2. Collect confirmed txids (all transactions in the block)
-    std::unordered_set<uint256> confirmed_txids;
-    for (const auto& tx : block.vtx) {
-        confirmed_txids.insert(tx.GetTxid().AsUint256());
-    }
+size_t Mempool::applyBlockConnectedLocked(const ConnectedBlockEffects& effects, uint32_t height,
+                                         const std::vector<uint8_t>& new_root) {
 
-    // 3. Find conflicting mempool TXs (double-spends) and confirmed TXs
+    std::unordered_set<OutPoint> block_spends(
+        effects.spent_transparent_inputs.begin(), effects.spent_transparent_inputs.end());
+
+    std::unordered_set<uint256> confirmed_txids(
+        effects.confirmed_txids.begin(), effects.confirmed_txids.end());
+    const std::set<std::array<uint8_t, 32>> orchard_nullifiers(
+        effects.orchard_nullifiers.begin(), effects.orchard_nullifiers.end());
+
+    // Collect the entire conflicting branch BEFORE removal changes dependency
+    // indexes. A confirmed parent merely moved into chainstate; its children
+    // remain eligible. An unconfirmed conflicting parent and all its children
+    // must leave together. Use actual stored prevouts so recovery/test entries
+    // with no cached parent index receive the same reconciliation.
+    std::unordered_map<uint256, std::vector<uint256>> children;
+    std::unordered_set<uint256> conflicts;
+    std::vector<uint256> conflict_queue;
     std::vector<uint256> to_remove;
+    to_remove.reserve(m_transactions.size());
     for (const auto& [txid, entry] : m_transactions) {
-        // Remove if confirmed in this block
-        if (confirmed_txids.count(txid) > 0) {
+        if (confirmed_txids.count(txid)) {
             to_remove.push_back(txid);
             continue;
         }
-        // Remove if any input conflicts with block
-        for (const auto& spent : entry.spends) {
-            if (block_spends.count(spent) > 0) {
-                to_remove.push_back(txid);
-                break;
+        bool conflict = false;
+        for (const auto& spent : entry.tx.Inputs()) {
+            if (block_spends.count(spent)) { conflict = true; break; }
+        }
+        if (!conflict) for (const auto& nullifier : entry.tx.OrchardNullifiers()) {
+            if (orchard_nullifiers.count(nullifier)) { conflict = true; break; }
+        }
+        if (conflict && conflicts.insert(txid).second) conflict_queue.push_back(txid);
+    }
+    if (!conflict_queue.empty()) {
+        for (const auto& [txid, entry] : m_transactions) {
+            for (const auto& spent : entry.tx.Inputs()) {
+                const auto& parent = spent.txid.AsUint256();
+                if (m_transactions.count(parent)) children[parent].push_back(txid);
             }
         }
     }
+    for (size_t i = 0; i < conflict_queue.size(); ++i) {
+        const auto found = children.find(conflict_queue[i]);
+        if (found == children.end()) continue;
+        for (const auto& child : found->second) {
+            if (!confirmed_txids.count(child) && conflicts.insert(child).second)
+                conflict_queue.push_back(child);
+        }
+    }
+    to_remove.insert(to_remove.end(), conflict_queue.begin(), conflict_queue.end());
 
     // 4. Remove conflicting and confirmed TXs
     size_t evicted = 0;
@@ -2867,12 +3273,16 @@ size_t Mempool::onBlockConnected(const Block& block, uint32_t height,
     return evicted;
 }
 
-void Mempool::onBlockDisconnected(const Block& block, uint32_t height) {
-    std::unique_lock<std::shared_mutex> lock(m_mutex);
+void Mempool::onBlockDisconnected(const Block&, uint32_t height) {
+    onBlockDisconnected(height);
+}
 
-    // All mempool TXs become stale — the accumulator root changed backward
+void Mempool::applyBlockDisconnectedLocked(uint32_t height) {
+
+    // Invalidate cached wire bytes even if an older cache-only writer did not
+    // record a validated root. Neither representation survives a rollback.
     for (auto& [txid, entry] : m_transactions) {
-        if (!entry.validated_at_root.empty()) {
+        if (!entry.validated_at_root.empty() || !entry.cached_utxotx_payload.empty()) {
             entry.is_proof_stale = true;
             entry.cached_utxotx_payload.clear();
             entry.cached_utxotx_payload.shrink_to_fit();
@@ -2909,84 +3319,59 @@ std::vector<uint256> Mempool::selectStaleForRefresh(
     size_t stale_overload_threshold
 ) {
     std::unique_lock<std::shared_mutex> lock(m_mutex);
-
+    return selectStaleForRefreshLocked(chain_height, max_refresh_batch,
+        max_proof_age_blocks, max_refresh_attempts, stale_overload_threshold);
+}
+std::vector<uint256> Mempool::selectStaleForRefreshLocked(
+    uint32_t chain_height, size_t max_refresh_batch, uint32_t max_proof_age_blocks,
+    uint32_t max_refresh_attempts, size_t stale_overload_threshold) {
     std::vector<uint256> stale_txids;
     stale_txids.reserve(m_transactions.size());
     for (const auto& [txid, entry] : m_transactions) {
-        if (entry.is_proof_stale) {
-            stale_txids.push_back(txid);
-        }
+        if (entry.is_proof_stale) stale_txids.push_back(txid);
     }
+    if (stale_txids.empty()) return {};
 
-    if (stale_txids.empty()) {
-        return {};
+    const bool overloaded = stale_overload_threshold > 0 && stale_txids.size() >= stale_overload_threshold;
+    std::vector<uint256> roots;
+    for (const auto& txid : stale_txids) {
+        const auto& entry = m_transactions.at(txid);
+        const bool too_old = entry.validated_at_height > 0 && chain_height > entry.validated_at_height &&
+            (chain_height - entry.validated_at_height) > max_proof_age_blocks;
+        if (overloaded || too_old || entry.proof_refresh_attempts >= max_refresh_attempts)
+            roots.push_back(txid);
     }
-
-    // Overload guard: under proof-churn pressure, drop stale transactions
-    // instead of triggering repeated proof refresh storms.
-    if (stale_overload_threshold > 0 && stale_txids.size() >= stale_overload_threshold) {
-        size_t removed = 0;
-        for (const auto& txid : stale_txids) {
-            if (removeTransactionLocked(txid)) {
-                removed++;
-            }
-        }
-        if (removed > 0) {
-            rebuildCoinsViewLocked();
-        }
-        if (removed > 0) {
-            m_stale_evicted_total.fetch_add(static_cast<uint64_t>(removed), std::memory_order_relaxed);
-            m_refresh_dropped_budget_total.fetch_add(static_cast<uint64_t>(removed), std::memory_order_relaxed);
-            MPLOG_WARN("[ProofChurnGuard] Bulk-evicted " + std::to_string(removed) +
-                       " stale mempool TXs (threshold=" + std::to_string(stale_overload_threshold) + ")");
-        }
-        return {};
-    }
-
-    std::vector<uint256> to_evict;
+    // Removing an unconfirmed parent also removes every dependent child,
+    // including children with no proof metadata of their own.
+    const auto branch = GatherRemovalBranch(m_transactions, roots);
+    const std::unordered_set<uint256> removed_ids(branch.begin(), branch.end());
     std::vector<uint256> refresh_candidates;
     refresh_candidates.reserve(std::min(max_refresh_batch, stale_txids.size()));
-
-    for (const auto& txid : stale_txids) {
-        auto it = m_transactions.find(txid);
-        if (it == m_transactions.end()) {
-            continue;
-        }
-        auto& entry = it->second;
-
-        const bool too_old =
-            entry.validated_at_height > 0 &&
-            chain_height > entry.validated_at_height &&
-            (chain_height - entry.validated_at_height) > max_proof_age_blocks;
-        const bool attempts_exhausted = entry.proof_refresh_attempts >= max_refresh_attempts;
-
-        if (too_old || attempts_exhausted) {
-            to_evict.push_back(txid);
-            continue;
-        }
-
-        if (refresh_candidates.size() < max_refresh_batch) {
-            entry.proof_refresh_attempts++;
+    if (!overloaded) for (const auto& txid : stale_txids) {
+        if (!removed_ids.count(txid) && refresh_candidates.size() < max_refresh_batch)
             refresh_candidates.push_back(txid);
-            m_refresh_attempted_total.fetch_add(1, std::memory_order_relaxed);
-        }
     }
 
-    size_t removed = 0;
-    for (const auto& txid : to_evict) {
-        if (removeTransactionLocked(txid)) {
-            removed++;
+    StateRollback rollback(*this);
+    for (auto it = branch.rbegin(); it != branch.rend(); ++it) removeTransactionLocked(*it);
+    if (!branch.empty()) rebuildCoinsViewLocked();
+    for (const auto& txid : refresh_candidates) {
+        ++m_transactions.at(txid).proof_refresh_attempts;
+        m_refresh_attempted_total.fetch_add(1, std::memory_order_relaxed);
+    }
+    if (!branch.empty()) {
+        // Counters count all removed branch entries, including dependents.
+        m_stale_evicted_total.fetch_add(static_cast<uint64_t>(branch.size()), std::memory_order_relaxed);
+        if (overloaded) {
+            m_refresh_dropped_budget_total.fetch_add(static_cast<uint64_t>(branch.size()), std::memory_order_relaxed);
+            MPLOG_WARN("[ProofChurnGuard] Bulk-evicted " + std::to_string(branch.size()) +
+                       " stale mempool TXs and descendants (threshold=" + std::to_string(stale_overload_threshold) + ")");
+        } else {
+            MPLOG_INFO("[ProofChurnGuard] Evicted " + std::to_string(branch.size()) +
+                       " stale TXs and descendants (age/attempt policy)");
         }
     }
-    if (removed > 0) {
-        rebuildCoinsViewLocked();
-    }
-    if (removed > 0) {
-        m_stale_evicted_total.fetch_add(static_cast<uint64_t>(removed), std::memory_order_relaxed);
-        MPLOG_INFO("[ProofChurnGuard] Evicted " + std::to_string(removed) +
-                   " stale TXs (age/attempt policy)");
-    }
-
+    rollback.committed = true;
     return refresh_candidates;
 }
 
@@ -3004,6 +3389,29 @@ bool Mempool::refreshProof(const uint256& txid, const std::vector<uint8_t>& new_
     if (was_stale) {
         m_refresh_succeeded_total.fetch_add(1, std::memory_order_relaxed);
     }
+    return true;
+}
+
+bool Mempool::publishProofPayload(const VerifiedUtreexoTransaction& verified) {
+    // All potentially throwing preparation precedes live publication.
+    auto root = verified.Root();
+    auto payload = verified.Wire();
+    const auto body_bytes = verified.Body().Serialize();
+    const auto txid = verified.Body().GetTxid().AsUint256();
+    std::unique_lock<std::shared_mutex> lock(m_mutex);
+    const auto entry = m_transactions.find(txid);
+    if (root.size() != 32 || payload.empty() || entry == m_transactions.end() ||
+        current_accumulator_root_ != root || current_block_height_ != verified.Height() ||
+        !entry->second.tx.HasBody() || entry->second.tx.Serialize() != body_bytes)
+        return false;
+    auto& target = entry->second;
+    const bool was_stale = target.is_proof_stale;
+    target.validated_at_root.swap(root);
+    target.cached_utxotx_payload.swap(payload);
+    target.validated_at_height = verified.Height();
+    target.proof_refresh_attempts = 0;
+    target.is_proof_stale = false;
+    if (was_stale) m_refresh_succeeded_total.fetch_add(1,std::memory_order_relaxed);
     return true;
 }
 
@@ -3025,21 +3433,22 @@ std::optional<std::vector<uint8_t>> Mempool::getCachedUtxoTxPayload(const uint25
 }
 
 void Mempool::broadcastTransaction(const uint256& txid) {
-    // Try callback first (P2PService wired via MempoolService)
-    // Callback only needs txid - it will send INV and let peer request full tx
-    if (m_tx_broadcast_callback) {
+    TxBroadcastCallback callback;
+    { std::shared_lock<std::shared_mutex> lock(m_mutex); callback = m_tx_broadcast_callback; }
+    if (callback) {
         MPLOG_INFO("Broadcasting transaction via callback: " + txid.GetHex());
-        m_tx_broadcast_callback(txid);
+        callback(txid);
         return;
     }
-
     MPLOG_WARN("Cannot broadcast transaction: no tx broadcast callback set");
 }
 
 bool Mempool::validateTransaction(
     const Transaction& tx,
     std::string& error,
-    std::optional<uint32_t> target_height) const {
+    std::optional<uint32_t> target_height,
+    TxRejectCode* failure) const {
+    if (failure) *failure = TxRejectCode::INVALID_TX;
     const bool has_shielded_bundle = UsesShieldedValueSemantics(tx);
 
     // Basic transaction validation
@@ -3108,6 +3517,23 @@ bool Mempool::validateTransaction(
     // v0.11.0: Use MempoolUTXOView to see both confirmed + mempool UTXOs
     MempoolUTXOView utxo_view(&coins_view_, chain_db_, &m_transactions);
 
+    auto read_prebase = [&](const OutPoint& point,
+                            std::optional<consensus::UTXOEntry>& captured) {
+        if (prebase_coin_status_resolver_) {
+            const auto result = prebase_coin_status_resolver_(point);
+            if (result.ok()) { captured = result.value(); return true; }
+            const bool missing = result.status() == Status::NotFound;
+            if (failure) *failure = missing ? TxRejectCode::MISSING_INPUTS : TxRejectCode::UNAVAILABLE;
+            error = std::string(missing ? "Input UTXO not found: " : "Live pre-base input unavailable: ") + point.ToString();
+            return false;
+        }
+        if (prebase_coin_resolver_) captured = prebase_coin_resolver_(point);
+        if (captured) return true;
+        if (failure) *failure = TxRejectCode::UNAVAILABLE;
+        error = "Live pre-base input unavailable: " + point.ToString();
+        return false;
+    };
+
     for (size_t i = 0; i < tx.vin.size(); i++) {
         const auto& input = tx.vin[i];
 
@@ -3124,49 +3550,41 @@ bool Mempool::validateTransaction(
         OutPoint outpoint{input.prevout.txid, input.prevout.vout};
         const bool is_frozen_prebase =
             prebase_coin_predicate_ && prebase_coin_predicate_(outpoint);
+        std::optional<consensus::UTXOEntry> captured;
         if (is_frozen_prebase) {
-            const auto prebase = prebase_coin_resolver_
-                ? prebase_coin_resolver_(outpoint)
-                : std::nullopt;
-            if (!prebase.has_value()) {
-                error = "Input UTXO not found: " +
-                        input.prevout.txid.AsUint256().GetHex() + ":" +
-                        std::to_string(input.prevout.vout);
-                return false;
-            }
-            utxo.value = prebase->value.GetUna();
-            spk_str.assign(prebase->scriptPubKey.begin(), prebase->scriptPubKey.end());
-            utxo.is_confidential = prebase->is_confidential;
-            utxo.commitment = prebase->commitment;
-        } else if (!utxo_view.GetUTXO(utxo.txid, utxo.vout, utxo.value, spk_str)) {
-            if (auto recovered = recoverConflictedInputUTXO(outpoint)) {
-                utxo.value = recovered->value.GetUna();
-                spk_str.assign(recovered->scriptPubKey.begin(), recovered->scriptPubKey.end());
-                utxo.is_confidential = recovered->is_confidential;
-                utxo.commitment = recovered->commitment;
-            } else if (prebase_coin_resolver_) {
-                const auto prebase = prebase_coin_resolver_(outpoint);
-                if (!prebase.has_value()) {
-                    error = "Input UTXO not found: " + input.prevout.txid.AsUint256().GetHex() + ":" + std::to_string(input.prevout.vout);
+            if (!read_prebase(outpoint,captured)) return false;
+        } else {
+            bool invalid_parent_output = false;
+            const auto found = utxo_view.CaptureCoin(utxo.txid, utxo.vout, &invalid_parent_output);
+            if (found.ok()) {
+                captured = found.value();
+            } else if (found.status() == Status::NotFound) {
+                Status recovered_status = Status::NotFound;
+                captured = recoverConflictedInputUTXO(outpoint, &recovered_status);
+                if (!captured && recovered_status != Status::NotFound) {
+                    if (failure) *failure = TxRejectCode::UNAVAILABLE;
+                    error = "Conflicted input lookup unavailable: " + outpoint.ToString();
                     return false;
                 }
-                utxo.value = prebase->value.GetUna();
-                spk_str.assign(prebase->scriptPubKey.begin(), prebase->scriptPubKey.end());
-                utxo.is_confidential = prebase->is_confidential;
-                utxo.commitment = prebase->commitment;
+                if (!captured && (prebase_coin_status_resolver_ || prebase_coin_resolver_)) {
+                    if (!read_prebase(outpoint,captured)) return false;
+                }
+                if (!captured) {
+                    if (failure) *failure = TxRejectCode::MISSING_INPUTS;
+                    error = "Input UTXO not found: " + outpoint.ToString();
+                    return false;
+                }
             } else {
-                error = "Input UTXO not found: " + input.prevout.txid.AsUint256().GetHex() + ":" + std::to_string(input.prevout.vout);
-                return false;
-            }
-        } else {
-            std::vector<uint8_t> commitment;
-            bool is_confidential = false;
-            if (utxo_view.GetConfidentialUTXO(utxo.txid, utxo.vout, commitment, is_confidential) &&
-                is_confidential) {
-                error = "legacy private lane removed";
+                if (failure) *failure = invalid_parent_output
+                    ? TxRejectCode::INVALID_TX : TxRejectCode::UNAVAILABLE;
+                error = "Input UTXO lookup refused: " + outpoint.ToString();
                 return false;
             }
         }
+        utxo.value = captured->value.GetUna();
+        spk_str.assign(captured->scriptPubKey.begin(), captured->scriptPubKey.end());
+        utxo.is_confidential = captured->is_confidential;
+        utxo.commitment = captured->commitment;
 
         // Convert string to vector<uint8_t> for Script
         utxo.spk.assign(spk_str.begin(), spk_str.end());
@@ -3213,11 +3631,13 @@ bool Mempool::validateTransaction(
         next_block_height_for_scripts = *target_height;
     } else {
         if (!chain_db_) {
+            if (failure) *failure = TxRejectCode::UNAVAILABLE;
             error = "Script validation unavailable: ChainDB not initialized";
             return false;
         }
         auto tip_result = chain_db_->getTip();
         if (tip_result.status() != Status::Ok) {
+            if (failure) *failure = TxRejectCode::UNAVAILABLE;
             error = "Script validation unavailable: ChainDB tip not loaded";
             return false;
         }
@@ -3338,12 +3758,12 @@ bool Mempool::validateTransaction(
 
         for (const auto& spend : bundle.spends) {
             for (const auto& [mempool_txid, entry] : m_transactions) {
-                if (entry.tx.shielded_bundle_bytes.empty()) {
+                if (entry.tx.Historical().shielded_bundle_bytes.empty()) {
                     continue;
                 }
                 consensus::shielded::ShieldedBundle mempool_bundle;
                 if (consensus::shielded::DeserializeShieldedBundle(
-                        entry.tx.shielded_bundle_bytes, &mempool_bundle) !=
+                        entry.tx.Historical().shielded_bundle_bytes, &mempool_bundle) !=
                     consensus::shielded::BundleDecodeError::Ok) {
                     continue;
                 }
@@ -3560,29 +3980,25 @@ uint64_t Mempool::calculateFee(const Transaction& tx) const {
     }
 }
 
-std::optional<consensus::UTXOEntry> Mempool::recoverConflictedInputUTXO(const OutPoint& outpoint) const {
+std::optional<consensus::UTXOEntry> Mempool::recoverConflictedInputUTXO(const OutPoint& outpoint, Status* lookup_status) const {
+    if (lookup_status) *lookup_status = Status::NotFound;
     if (m_spent_outputs.find(outpoint) == m_spent_outputs.end()) {
         return std::nullopt;
     }
 
     auto parent_it = m_transactions.find(outpoint.txid.AsUint256());
-    if (parent_it != m_transactions.end() && outpoint.vout < parent_it->second.tx.vout.size()) {
-        const auto& output = parent_it->second.tx.vout[outpoint.vout];
-        consensus::UTXOEntry recovered;
-        recovered.value = output.value;
-        recovered.scriptPubKey = output.scriptPubKey;
-        recovered.height = parent_it->second.height;
-        recovered.isCoinbase = false;
-        recovered.is_confidential = output.is_confidential;
-        recovered.commitment = output.commitment;
-        return recovered;
+    if (parent_it != m_transactions.end() && outpoint.vout < parent_it->second.tx.OutputCount()) {
+        if (lookup_status) *lookup_status = Status::Ok;
+        return parent_it->second.tx.OutputCoin(outpoint.vout, parent_it->second.height);
     }
 
     if (!chain_state_view_) {
+        if (lookup_status) *lookup_status = Status::Internal;
         return std::nullopt;
     }
 
     auto chain_coin = chain_state_view_->getCoin(outpoint);
+    if (lookup_status) *lookup_status = chain_coin.status();
     if (chain_coin.status() != Status::Ok) {
         return std::nullopt;
     }
@@ -3672,7 +4088,10 @@ void Mempool::evictTransactionsLocked() {
         uint256 txid_to_remove = lowest_fee_it->second;
 
         MPLOG_DEBUG("Evicting low-fee transaction: " + txid_to_remove.GetHex());
-        removed_any = removeTransactionLocked(txid_to_remove) || removed_any;
+        const auto branch = GatherRemovalBranch(m_transactions, {txid_to_remove});
+        for (auto it = branch.rbegin(); it != branch.rend(); ++it) {
+            removed_any = removeTransactionLocked(*it) || removed_any;
+        }
     }
     if (removed_any) {
         rebuildCoinsViewLocked();
@@ -3714,6 +4133,10 @@ bool Mempool::saveToDisk(const std::string& filepath) {
     // - Atomic write (.tmp → rename)
 
     try {
+        std::unique_lock<std::recursive_mutex> operation(m_persistence_mutex, std::try_to_lock);
+        if (!operation.owns_lock() || m_persistence_operation_active || m_persistence_recovery_incomplete) return false;
+        m_persistence_operation_active = true;
+        struct ReleaseOperation { bool& active; ~ReleaseOperation() { active = false; } } release{m_persistence_operation_active};
         std::lock_guard<std::shared_mutex> lock(m_mutex);
 
         // Convert m_transactions map to vector for MempoolPersistence
@@ -3737,91 +4160,83 @@ bool Mempool::saveToDisk(const std::string& filepath) {
 }
 
 bool Mempool::loadFromDisk(const std::string& filepath) {
-    // STEP C: Load mempool on startup
-    // Rules:
-    // - Deserialize each transaction
-    // - Revalidate against current policy
-    // - Drop if expired/conflicts/invalid
-    // - Persistence does NOT bypass policy
-
+    std::unique_lock<std::recursive_mutex> operation(m_persistence_mutex, std::try_to_lock);
+    if (!operation.owns_lock() || m_persistence_operation_active) return false;
+    m_persistence_operation_active = true;
+    struct ReleaseOperation { bool& active; ~ReleaseOperation() { active = false; } } release{m_persistence_operation_active};
+    if (m_persistence_recovery_incomplete && m_persistence_recovery_path != filepath)
+        return false; // Another file cannot discharge this retained recovery.
+    const bool retrying = m_persistence_recovery_incomplete;
+    m_persistence_recovery_incomplete = true; // Before reads, allocations or admission.
     try {
-        MPLOG_INFO("Loading mempool from " + filepath);
-
-        // Delegate to MempoolPersistence::load()
-        std::vector<MempoolPersistence::PersistedEntry> persisted = MempoolPersistence::load(filepath);
-
-        if (persisted.empty()) {
-            MPLOG_INFO("No transactions loaded (empty file or error)");
-            return true;  // Not an error - empty mempool is valid
-        }
-
-        size_t loaded = 0;
-        size_t rejected = 0;
-
-        struct PendingReloadTx {
-            Transaction tx;
-            std::string txid_hex;
-        };
-
-        std::vector<PendingReloadTx> pending;
+        m_persistence_recovery_path = filepath;
+        const auto persisted = MempoolPersistence::load(filepath);
+        std::vector<MempoolTransaction> pending;
         pending.reserve(persisted.size());
-
-        // Deserialize first so we can replay persisted transactions in
-        // dependency-safe passes instead of assuming file order is valid.
+        std::unordered_set<uint256> identities;
+        // Decode the complete file before any admission. Stored metadata is
+        // never authority for fee, height, expiry or transaction validity.
         for (const auto& entry : persisted) {
-            Transaction tx;
-            if (!TransactionSerializer::Deserialize(tx, entry.tx_bytes)) {
-                rejected++;
-                MPLOG_WARN("Failed to deserialize transaction from mempool file");
-                continue;
-            }
-            pending.push_back(PendingReloadTx{tx, tx.GetTxid().AsUint256().GetHex()});
+            auto body = DecodeRelayTransaction(entry.tx_bytes, RelayTransactionReadMode::AvailableFamilies);
+            if (!identities.insert(body.GetTxid().AsUint256()).second)
+                throw std::runtime_error("Duplicate mempool file transaction");
+            pending.push_back(std::move(body));
         }
-
-        size_t pass = 0;
+        if (!m_persistence_recovery_bodies.empty()) {
+            if (pending.size() != m_persistence_recovery_bodies.size()) return false;
+            for (size_t i = 0; i < pending.size(); ++i)
+                if (pending[i].Serialize() != m_persistence_recovery_bodies[i].Serialize()) return false;
+        } else {
+            // Retain actual bodies before the first admission. An empty or
+            // changed retry file cannot erase a known unresolved inventory.
+            m_persistence_recovery_bodies = pending;
+        }
         while (!pending.empty()) {
-            pass++;
-            size_t loaded_this_pass = 0;
-            std::vector<PendingReloadTx> retry;
+            size_t resolved = 0;
+            std::vector<MempoolTransaction> retry;
             retry.reserve(pending.size());
-
-            for (auto& pending_tx : pending) {
-                // Revalidate via canonical ingress. false = don't relay because
-                // this is restart recovery, not new network admission.
-                auto result = submitTransactionInternal(pending_tx.tx, "disk-load", false);
-                if (result.accepted()) {
-                    loaded++;
-                    loaded_this_pass++;
+            for (auto& body : pending) {
+                if (body.IsOrchard()) {
+                    // Actual family validator remains unavailable. Preserve
+                    // its original file, never cast into historical ingress.
+                    retry.push_back(std::move(body));
+                    continue;
+                }
+                const auto result = submitTransactionInternal(body.Historical(), "disk-load", false);
+                if (result.accepted()) { ++resolved; continue; }
+                if (result.code == TxRejectCode::ALREADY_IN_MEMPOOL) {
+                    const auto present = getMempoolEntry(body.GetTxid().AsUint256());
+                    if (present && present->tx.Serialize() == body.Serialize()) {
+                        ++resolved;
+                        continue;
+                    }
+                    retry.push_back(std::move(body));
+                } else if (result.code == TxRejectCode::MISSING_INPUTS ||
+                           result.code == TxRejectCode::UNAVAILABLE) {
+                    retry.push_back(std::move(body));
                 } else {
-                    retry.push_back(std::move(pending_tx));
+                    ++resolved; // Existing known policy rejection; not admitted.
                 }
             }
-
-            if (retry.empty()) {
-                break;
-            }
-
-            if (loaded_this_pass == 0) {
-                rejected += retry.size();
-                for (const auto& pending_tx : retry) {
-                    MPLOG_DEBUG("Rejected transaction " + pending_tx.txid_hex +
-                                " during mempool load (policy/expired/conflict)");
-                }
-                break;
-            }
-
-            MPLOG_DEBUG("Mempool disk-load pass " + std::to_string(pass) +
-                        ": loaded " + std::to_string(loaded_this_pass) +
-                        ", retrying " + std::to_string(retry.size()) + " dependent transaction(s)");
+            if (retry.empty()) break;
+            if (resolved == 0) return false; // Original file retained for retry.
             pending = std::move(retry);
         }
-
-        MPLOG_INFO("Loaded " + std::to_string(loaded) + " transactions, rejected " + std::to_string(rejected));
+        m_persistence_recovery_bodies.clear();
+        m_persistence_recovery_path.clear();
+        m_persistence_recovery_incomplete = false;
         return true;
-
+    } catch (const MempoolPersistence::MissingFile&) {
+        if (retrying) return false;
+        m_persistence_recovery_bodies.clear();
+        m_persistence_recovery_path.clear();
+        m_persistence_recovery_incomplete = false;
+        return true; // Initial absent file only; no pending owner to discharge.
     } catch (const std::exception& e) {
-        // Never throw - return false on failure
-        MPLOG_ERR("Exception loading mempool: " + std::string(e.what()));
+        try { MPLOG_ERR("Mempool recovery incomplete; original file retained: " + std::string(e.what())); }
+        catch (...) {}
+        return false;
+    } catch (...) {
         return false;
     }
 }

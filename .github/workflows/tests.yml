@@ -111,9 +111,41 @@ jobs:
       - name: Verify generated C++20 compile commands
         run: cmake --build build-tests --target check_first_party_compile_commands_cxx20
 
+      - name: Verify Orchard backend is absent from the default graph
+        run: |
+          python3 - <<'PYCODE'
+          import json
+          from pathlib import Path
+          cache = Path('build-tests/CMakeCache.txt').read_text()
+          assert 'DINERO_BUILD_ORCHARD_BACKEND:BOOL=OFF' in cache
+          commands = json.loads(Path('build-tests/compile_commands.json').read_text())
+          for suffix in ['/src/daemon/services/chainstate_service.cpp', '/tests/daemon/test_assumeutxo_replay.cpp']:
+              entries = [e for e in commands if e['file'].endswith(suffix)]
+              assert entries, suffix
+              for entry in entries:
+                  assert 'DINERO_HAS_ORCHARD_RUNTIME_READER' not in entry['command'], suffix
+                  assert 'DINERO_TEST_ORCHARD_ORIGIN' not in entry['command'], suffix
+                  assert '/rust/orchard_backend' not in entry['command'], suffix
+          PYCODE
+
       - name: Full default build
         id: build
-        run: cmake --build build-tests -j
+        # Collect all independent link failures; Ninja still exits nonzero on failure.
+        run: cmake --build build-tests -j -- -k 0
+
+      - name: Verify default-backend replay and origin refusal
+        run: |
+          set -euo pipefail
+          mkdir -p build-tests/Testing
+          ctest --test-dir build-tests -R '^AssumeUtxoReplay$' --verbose --no-tests=error \
+            | tee build-tests/Testing/orchard-backend-off-replay.log
+          python3 - <<'PYCODE'
+          from pathlib import Path
+          log = Path('build-tests/Testing/orchard-backend-off-replay.log').read_text()
+          assert log.count('[ RUN      ] RuntimeOriginProjection.UnavailableWithoutBackend') == 1
+          assert log.count('[       OK ] RuntimeOriginProjection.UnavailableWithoutBackend') == 1
+          assert '100% tests passed, 0 tests failed out of 1' in log
+          PYCODE
 
       # CI integrity gate: every test registered with CTest in THIS build
       # configuration must have a runnable executable. A registered-but-
@@ -124,7 +156,7 @@ jobs:
       # feature flags that are OFF here (e.g. DINERO_ENABLE_QUIC) are not
       # registered at all and cannot be checked by this gate.
       - name: CTest integrity gate (registered => built)
-        run: python3 scripts/ci/check_ctest_integrity.py build-tests
+        run: python3 scripts/ci/check_ctest_integrity.py build-tests --require-shielded-proof-tests
 
       # The execution gate's own parser self-test. It runs FIRST and needs no
       # build directory. The gate's answer is only as good as its model of how
@@ -136,6 +168,9 @@ jobs:
       # Running it as a plain step rather than registering it with CTest is
       # deliberate: a self-test for the unexecuted-test gate must not be able
       # to become an unexecuted test.
+      - name: Shielded proof registration self-test
+        run: python3 tests/cmake/test_shielded_proof_registration.py
+
       - name: Execution-gate parser self-test
         run: python3 scripts/ci/test_check_mandatory_tests_execute.py
 
@@ -188,6 +223,32 @@ jobs:
             .github/workflows/tests.yml \
             .github/workflows/core-heavy.yml \
             --baseline scripts/ci/unexecuted_tests_baseline.txt
+
+      # This storage test is registered even with the optional Orchard backend
+      # disabled. Its integration-staging label excludes it from the broad
+      # sweep; the separate Orchard workflow cannot qualify this build's lane.
+      - name: Run legacy retirement storage regression
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: |
+          mkdir -p build-tests/Testing/legacy-retirement
+          ctest --test-dir build-tests --output-on-failure --no-tests=error \
+            --output-log build-tests/Testing/legacy-retirement/ctest.log \
+            -R '^OrchardLegacyRetirement$'
+
+      # These daemon tests carry the integration label and are excluded from
+      # the broad sweep. Execute each in this build configuration as well as
+      # the separate Orchard workflow; an inventory is not execution.
+      - name: Run mining RPC result and foreign-input regressions
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: |
+          mkdir -p build-tests/Testing/mining-rpc
+          failed=0
+          for t in MiningRpcResult MiningChainProvider; do
+            ctest --test-dir build-tests --verbose --no-tests=error \
+              --output-log "build-tests/Testing/mining-rpc/${t}.ctest.log" \
+              -R "^${t}$" || failed=1
+          done
+          exit "$failed"
 
       # Assertion-integrity ratchet (issue #497). tests/CMakeLists.txt appends
       # -UNDEBUG (/UNDEBUG on MSVC) to the Release test graph, and the
@@ -326,7 +387,7 @@ jobs:
           set +e
           failed=""
           ran=0
-          for t in CompactDefaultActivation PowEnforcedRegtest CheckpointForkAcceptance BlockAcceptorFeeLifecycle CsnCpfpDisconnect CsnReplayMetadataRecovery CsnReplayMetadataLocalUndo SixtySecondActivation SixtySecondShieldedLifecycle DaemonServiceRelease CsnManualInvalidation CsnStoredProofRetry ColdStartConsensus MiningPolicyE2E CovenantWalletMultinodeLifecycle ContextualLocksLifecycle ParallelBlockDownloadTargeted CrossSeedRestartReorgParity CrossSeedTeardownLifecycle UtreexoLiveReorgStateRestoration SnapshotFormatPolicyRuntime SnapshotBindingMutations SnapshotNullifierRestart CSNSnapshotProofRestart CSNSnapshotHistory StateCommitmentMining CsnEpochResetCrashAtomicity ShieldedNullifierCrashBoundary ShieldedPromotionBoundary ShieldedOutgoingRecoveryLifecycle ShieldedAuthRelayLifecycle UtreexoBatchProofCanonicalCoins PrivateCovenantLifecycle ReconsiderRestartBoundary GenerationToctouBarrier InvalidityRestartSticky CSNShieldedReorgInvertibility AssumeUtxoCorruptCheckpointRecovery ConsensusIntrospectionRpc ConnectTipRestartEquivalence RecoveryMarkerRestartEquivalence RestartChurnBoringnessGate ShieldedRootMultinodeDeepReorg DeferredBaseChildForgedRoot MinorityTipHeaderRelay GetChainTipsValidFork; do
+          for t in CompactDefaultActivation PowEnforcedRegtest CheckpointForkAcceptance BlockAcceptorFeeLifecycle CsnCpfpDisconnect CsnReplayMetadataRecovery CsnReplayMetadataLocalUndo SixtySecondActivation SixtySecondShieldedLifecycle DaemonServiceRelease RPCListenerStartup CsnManualInvalidation CsnStoredProofRetry ColdStartConsensus MiningPolicyE2E CovenantWalletMultinodeLifecycle ContextualLocksLifecycle ParallelBlockDownloadTargeted CrossSeedRestartReorgParity CrossSeedTeardownLifecycle UtreexoLiveReorgStateRestoration SnapshotFormatPolicyRuntime SnapshotBindingMutations SnapshotNullifierRestart CSNSnapshotProofRestart CSNSnapshotHistory StateCommitmentMining CsnEpochResetCrashAtomicity ShieldedNullifierCrashBoundary ShieldedPromotionBoundary ShieldedOutgoingRecoveryLifecycle ShieldedAuthRelayLifecycle UtreexoBatchProofCanonicalCoins PrivateCovenantLifecycle ReconsiderRestartBoundary GenerationToctouBarrier InvalidityRestartSticky CSNShieldedReorgInvertibility AssumeUtxoCorruptCheckpointRecovery ConsensusIntrospectionRpc ConnectTipRestartEquivalence RecoveryMarkerRestartEquivalence RestartChurnBoringnessGate ShieldedRootMultinodeDeepReorg DeferredBaseChildForgedRoot MinorityTipHeaderRelay GetChainTipsValidFork; do
             echo "=== $t ==="
             ctest --test-dir build-tests \
               --output-on-failure \
@@ -648,6 +709,19 @@ jobs:
             done
           done
 
+      # The three-node test preserves failure logs in /tmp. Its shutdown tail
+      # can omit the initiating startup error; retain complete stdout logs.
+      # Exact .log allowlist excludes cookies, wallets and database files.
+      - name: Collect parallel-download failure logs
+        if: always()
+        run: |
+          dest=build-tests/Testing/parallel-download-logs
+          mkdir -p "$dest"
+          for f in /tmp/dinero_parallel_dl_a_*.log /tmp/dinero_parallel_dl_b_*.log /tmp/dinero_parallel_dl_c_*.log; do
+            [ -f "$f" ] || continue
+            gzip -c "$f" > "$dest/$(basename "$f").gz"
+          done
+
       - name: Collect snapshot-binding failure evidence
         if: always()
         run: |
@@ -838,12 +912,13 @@ jobs:
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
 
       - name: Full default build (includes registered QUIC test targets)
-        run: cmake --build build-tests-quic -j
+        # Collect all independent link failures; Ninja still exits nonzero on failure.
+        run: cmake --build build-tests-quic -j -- -k 0
 
       # Same gate as the default lane, now over a registry that INCLUDES
       # the QUIC family: registered => built, in this configuration too.
       - name: CTest integrity gate (registered => built)
-        run: python3 scripts/ci/check_ctest_integrity.py build-tests-quic
+        run: python3 scripts/ci/check_ctest_integrity.py build-tests-quic --require-shielded-proof-tests
 
       - name: OpenSSL version assertion (policy pin 3.5.7)
         run: bash scripts/ci/check_openssl_version.sh build-tests-quic 3.5.7

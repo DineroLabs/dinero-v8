@@ -7,6 +7,7 @@
 #include <vector>
 #include <cstdint>
 #include <functional>
+#include <optional>
 #include "consensus/block_undo.h"
 #include "consensus/block_reward.h"
 #include "consensus/utreexo_accumulator.h"  // v0.14.0.4: Utreexo enforcement
@@ -48,7 +49,10 @@ public:
     // - Snapshot-first validation (failed block = restore snapshot)
     // ═══════════════════════════════════════════════════════════════════════════
 
-    explicit BlockValidator(IConsensusUTXOSet* utxo_set);
+    // An isolated replay supplies ancestry owned for this validator's lifetime.
+    // Returning no value is a refusal, never a fallback to the global index.
+    using BranchMtpLookup = std::function<std::optional<uint64_t>(const uint256&, uint32_t)>;
+    explicit BlockValidator(IConsensusUTXOSet* utxo_set, BranchMtpLookup branch_mtp = {});
     ~BlockValidator() = default;
 
     // Forest access via UTXO set (Phase 2: forest owned by ConsensusUTXOSet)
@@ -355,6 +359,7 @@ private:
 
     IConsensusUTXOSet* consensus_utxo_set_;  // Phase 2: Pure consensus UTXO set (owns forest)
     IBDConfig ibd_config_;  // Phase 5: IBD mode (stateful vs stateless)
+    const BranchMtpLookup branch_mtp_;
     ValidationMode validation_mode_ = ValidationMode::STATEFUL;  // Phase 8: Validation mode (default: stateful)
 
     // Set true the first time the STATELESS path processes a spend-block whose

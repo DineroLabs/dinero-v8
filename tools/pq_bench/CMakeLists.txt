@@ -47,6 +47,34 @@ set_target_properties(v7_pq_rpc_test PROPERTIES
     CXX_STANDARD_REQUIRED ON
 )
 
+# Consistent P2MR key capture and authenticated signing/export.
+if(NOT WIN32)
+  add_executable(v7_p2mr_key_read_test
+      v7_p2mr_key_read_test.cpp
+      ${CMAKE_SOURCE_DIR}/src/wallet/p2mr_address.cpp
+      ${CMAKE_SOURCE_DIR}/src/daemon/bech32_encoder.cpp
+  )
+  target_include_directories(v7_p2mr_key_read_test PRIVATE
+      ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/src/daemon)
+  target_link_libraries(v7_p2mr_key_read_test PRIVATE dinero_pq OpenSSL::Crypto sqlite3)
+  set_target_properties(v7_p2mr_key_read_test PROPERTIES
+      CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON EXCLUDE_FROM_ALL FALSE)
+endif()
+
+# Checked present-row P2MR inventory and read-only storage.
+if(NOT WIN32)
+  add_executable(v7_p2mr_inventory_test
+      v7_p2mr_inventory_test.cpp
+      ${CMAKE_SOURCE_DIR}/src/wallet/p2mr_address.cpp
+      ${CMAKE_SOURCE_DIR}/src/daemon/bech32_encoder.cpp
+  )
+  target_include_directories(v7_p2mr_inventory_test PRIVATE
+      ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/src/daemon)
+  target_link_libraries(v7_p2mr_inventory_test PRIVATE dinero_pq OpenSSL::Crypto sqlite3)
+  set_target_properties(v7_p2mr_inventory_test PROPERTIES
+      CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON EXCLUDE_FROM_ALL FALSE)
+endif()
+
 # V7 P2MR store + AEAD round-trip integration test (Phase 4c.2).
 add_executable(v7_p2mr_store_test
     v7_p2mr_store_test.cpp

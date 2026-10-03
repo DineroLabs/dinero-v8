@@ -15,6 +15,7 @@
 #include <vector>
 #include <cctype>
 #include <limits>
+#include <stdexcept>
 #include <unordered_set>
 #include <cstdlib>  // std::getenv — DINERO_RPC_DEBUG gate (issue #538)
 
@@ -37,6 +38,12 @@
 #include <cstring>
 
 #include "compat/net_compat.h"  // compat_set_cloexec (#295)
+
+namespace {
+// A handler may request asynchronous daemon shutdown, but cannot synchronously
+// acquire the lifecycle lock while an external stop waits for that handler.
+thread_local const HttpRpcServer* rpc_connection_owner = nullptr;
+}
 
 // Admin-only RPC methods that can corrupt state or expose secrets.
 // These are rejected when the server runs in read-only mode (--rpc-readonly).
@@ -189,7 +196,11 @@ bool SendAll(int socket_fd, const char* data, size_t length) {
             std::min(length - total_sent, static_cast<size_t>(std::numeric_limits<int>::max())));
         const int sent = send(socket_fd, data + total_sent, to_send, 0);
 #else
-        const ssize_t sent = send(socket_fd, data + total_sent, length - total_sent, 0);
+        int flags = 0;
+#ifdef MSG_NOSIGNAL
+        flags = MSG_NOSIGNAL;
+#endif
+        const ssize_t sent = send(socket_fd, data + total_sent, length - total_sent, flags);
 #endif
         if (sent <= 0) {
             return false;
@@ -219,16 +230,33 @@ HttpRpcServer::~HttpRpcServer() {
 }
 
 void HttpRpcServer::start() {
+    if (rpc_connection_owner == this)
+        throw std::logic_error("RPC lifecycle change requires an external caller");
+    std::lock_guard<std::mutex> lifecycle(lifecycle_mutex_);
     if (running_) {
         std::cout << "RPC server already running" << std::endl;
         return;
     }
     
+    if (server_thread_) {
+        throw std::runtime_error("RPC listener must be stopped before restart");
+    }
+    // Bind/listen synchronously so RPCService's existing exception path can
+    // fail daemon startup. A fixed sleep cannot establish listener readiness.
+    const int server_socket = create_server_socket();
+    if (server_socket < 0) {
+        throw std::runtime_error("RPC listener bind/listen failed");
+    }
     shutdown_requested_ = false;
-    server_thread_ = std::make_unique<std::thread>(&HttpRpcServer::server_loop, this);
-    
-    // Wait a bit for server to start
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    running_ = true;
+    try {
+        server_thread_ = std::make_unique<std::thread>(&HttpRpcServer::server_loop, this, server_socket);
+    } catch (...) {
+        running_ = false;
+        shutdown_requested_ = true;
+        close_socket(server_socket);
+        throw;
+    }
     std::cout << "HTTP RPC server started on " << bind_address_ << ":" << port_ << std::endl;
 
     // Security warning: RPC has no TLS — credentials sent as cleartext Base64
@@ -242,6 +270,9 @@ void HttpRpcServer::start() {
 }
 
 void HttpRpcServer::stop() {
+    if (rpc_connection_owner == this)
+        throw std::logic_error("RPC lifecycle change requires an external caller");
+    std::lock_guard<std::mutex> lifecycle(lifecycle_mutex_);
     const bool had_server_thread = static_cast<bool>(server_thread_);
     const bool was_running = running_.load();
     shutdown_requested_ = true;
@@ -255,22 +286,22 @@ void HttpRpcServer::stop() {
         return;
     }
 
-    // Detached connection handlers capture `this`. Wait briefly for them to
-    // drain before service teardown to avoid use-after-free during shutdown.
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
-    while (active_connections_.load(std::memory_order_relaxed) > 0 &&
-           std::chrono::steady_clock::now() < deadline) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(25));
+    // The accept thread is joined, so no new connection can be enrolled.
+    // Wake idle reads/writes without closing descriptors owned by handlers.
+    // Closing and erasing use this same mutex, preventing descriptor reuse
+    // between selection and shutdown.
+    {
+        std::unique_lock<std::mutex> connections(connections_mutex_);
+        for (int socket : client_sockets_) {
+#ifdef _WIN32
+            ::shutdown(socket, SD_BOTH);
+#else
+            ::shutdown(socket, SHUT_RDWR);
+#endif
+        }
+        connections_drained_.wait(connections, [this] { return client_sockets_.empty(); });
     }
 
-    const auto remaining = active_connections_.load(std::memory_order_relaxed);
-    const auto active_handlers = active_rpc_handlers_.load(std::memory_order_relaxed);
-    if (remaining > 0) {
-        std::cerr << "RPC server stop timeout with " << remaining
-                  << " active connection(s) and " << active_handlers
-                  << " active RPC handler(s); continuing shutdown" << std::endl;
-    }
-    
     running_ = false;
     std::cout << "HTTP RPC server stopped" << std::endl;
 }
@@ -309,15 +340,8 @@ void HttpRpcServer::register_builtin_methods() {
     });
 }
 
-void HttpRpcServer::server_loop() {
-    int server_socket = create_server_socket();
-    if (server_socket < 0) {
-        std::cerr << "Failed to create server socket" << std::endl;
-        return;
-    }
-    
-    running_ = true;
-    
+void HttpRpcServer::server_loop(int server_socket) {
+    // Owns the already-listening descriptor after successful thread creation.
     while (!shutdown_requested_) {
         // Accept connections with timeout. Use poll() rather than select():
         // select() cannot handle a file descriptor >= FD_SETSIZE (1024), and a
@@ -408,22 +432,31 @@ void HttpRpcServer::server_loop() {
                     }
                 }
 
-                active_connections_.fetch_add(1, std::memory_order_relaxed);
                 try {
+                    {
+                        std::lock_guard<std::mutex> connections(connections_mutex_);
+                        client_sockets_.insert(client_socket);
+                        active_connections_.fetch_add(1, std::memory_order_relaxed);
+                    }
                     std::thread([this, client_socket]() {
+                        const auto* previous = rpc_connection_owner;
+                        rpc_connection_owner = this;
                         try {
                             handle_connection(client_socket);
                         } catch (const std::exception& e) {
-                            std::cerr << "Unhandled RPC connection error: " << e.what() << std::endl;
+                            try { std::cerr << "Unhandled RPC connection error: " << e.what() << std::endl; } catch (...) {}
                         } catch (...) {
-                            std::cerr << "Unhandled RPC connection error: unknown exception" << std::endl;
+                            try { std::cerr << "Unhandled RPC connection error: unknown exception" << std::endl; } catch (...) {}
                         }
-                        close_socket(client_socket);
-                        active_connections_.fetch_sub(1, std::memory_order_relaxed);
+                        rpc_connection_owner = previous;
+                        // Last access to this server. stop cannot finish until
+                        // finish_connection releases connections_mutex_.
+                        finish_connection(client_socket);
                     }).detach();
                 } catch (...) {
-                    active_connections_.fetch_sub(1, std::memory_order_relaxed);
-                    close_socket(client_socket);
+                    // Also handles enrollment allocation or thread creation
+                    // failure. Only an enrolled socket decrements the counter.
+                    finish_connection(client_socket);
                 }
             }
         }
@@ -431,6 +464,14 @@ void HttpRpcServer::server_loop() {
     
     close_socket(server_socket);
     running_ = false;
+}
+
+void HttpRpcServer::finish_connection(int client_socket) noexcept {
+    std::lock_guard<std::mutex> connections(connections_mutex_);
+    close_socket(client_socket);
+    if (client_sockets_.erase(client_socket))
+        active_connections_.fetch_sub(1, std::memory_order_relaxed);
+    connections_drained_.notify_all();
 }
 
 void HttpRpcServer::handle_connection(int client_socket) {
@@ -750,12 +791,15 @@ Json::Value HttpRpcServer::process_rpc_call(const Json::Value& request) {
                 ctx.mempool = nullptr;
                 ctx.utxo_view = nullptr;
 
-                // STEP 3.1: Inject NEW policy-aware mempool for stats/policy queries
+                // Keep the service and pool alive through synchronous handler
+                // execution and response construction, including exception paths.
+                // This owner does not hold a pool or selected-chain lock.
+                std::unique_ptr<dinero::MempoolService::PoolUse> mempool_use;
                 if (daemon_context_ && daemon_context_->mempool) {
-                    // Cast MempoolService to get underlying Mempool*
                     auto mempool_service = std::dynamic_pointer_cast<dinero::MempoolService>(daemon_context_->mempool);
                     if (mempool_service) {
-                        ctx.mempool_v2 = const_cast<dinero::Mempool*>(&mempool_service->mempool());
+                        mempool_use = dinero::MempoolService::AcquirePoolUse(std::move(mempool_service));
+                        ctx.mempool_v2 = &mempool_use->Pool();
                     } else {
                         ctx.mempool_v2 = nullptr;
                     }
@@ -984,6 +1028,12 @@ void HttpRpcServer::configure_client_socket(int client_socket) {
     setsockopt(client_socket, SOL_SOCKET, SO_SNDTIMEO,
                reinterpret_cast<const char*>(&timeout_ms), sizeof(timeout_ms));
 #else
+#ifdef SO_NOSIGPIPE
+    // Embedded server callers need the same safe broken-pipe behavior as the
+    // daemon, including a handler sending after stop interrupted its socket.
+    const int no_sigpipe = 1;
+    setsockopt(client_socket, SOL_SOCKET, SO_NOSIGPIPE, &no_sigpipe, sizeof(no_sigpipe));
+#endif
     struct timeval timeout;
     timeout.tv_sec = static_cast<time_t>(kClientSocketTimeout.count() / 1000);
     timeout.tv_usec = static_cast<suseconds_t>((kClientSocketTimeout.count() % 1000) * 1000);

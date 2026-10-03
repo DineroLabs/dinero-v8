@@ -3,7 +3,9 @@
 #include "daemon/interfaces/origin.h"
 #include "daemon/interfaces/ingress_types.h"  // TxAcceptResult, TxRejectCode (no impl headers)
 #include "primitives/transaction.h"
+#include "daemon/mempool_transaction.h"
 #include <memory>
+#include <optional>
 #include <vector>
 
 namespace dinero {
@@ -56,6 +58,25 @@ struct ITxIngress {
      * @return Structured result with accept/reject code and reason
      */
     virtual TxAcceptResult Submit(const Transaction& tx, TxOrigin origin) = 0;
+
+    // A captured body is structural ownership, never permission to run a
+    // different family's validator. Historical implementations keep their
+    // existing virtual Submit path; missing family support is retryable.
+    virtual TxAcceptResult SubmitBody(const MempoolTransaction& body, TxOrigin origin) {
+        if (!body.HasBody())
+            return TxAcceptResult::Rejected(TxRejectCode::UNAVAILABLE, "Transaction body unavailable");
+        if (body.IsOrchard())
+            return TxAcceptResult::Rejected(TxRejectCode::UNAVAILABLE,
+                "Orchard mempool validation unavailable", body.GetTxid().AsUint256());
+        return Submit(body.Historical(), origin);
+    }
+
+    // Validate current policy without admission or relay. A missing capability
+    // is distinct from rejection, and a pass never authorizes later admission.
+    virtual std::optional<TxAcceptResult> Test(const Transaction&, TxOrigin) {
+        return std::nullopt;
+    }
+
 
     /**
      * Check if a transaction is in the mempool.

@@ -1,0 +1,26 @@
+[package]
+name = "dinero-orchard-backend"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["rlib", "staticlib"]
+
+[dependencies]
+orchard = "=0.15.5"
+nonempty = "=0.11.0"
+incrementalmerkletree = { version = "=0.8.2", features = ["legacy-api"] }
+zip32 = "=0.2.1"
+zeroize = "=1.9.0"
+bech32 = "=0.11.1"
+rand = "=0.8.8"
+rayon = "=1.12.0"
+zcash_note_encryption = "=0.4.2"
+
+[dev-dependencies]
+rand_chacha = "=0.3.1"
+sha2 = "=0.10.9"
+
+[profile.release]
+panic = "unwind"

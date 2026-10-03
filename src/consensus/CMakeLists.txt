@@ -28,6 +28,7 @@
 # ─────────────────────────────────────────────────────────────────────────
 add_library(dinero_consensus_core STATIC
   # Pure UTXO set (no database, no threading)
+  src/consensus/utxo_publication.cpp
   src/consensus/consensus_utxo_set.cpp
   src/consensus/consensus_invariants.cpp
 
@@ -148,6 +149,7 @@ add_library(dinero_consensus STATIC
   src/consensus/global_utxo_set_impl.cpp  # Phase 11a: GlobalUTXOSet implementation
   src/indexing/utxo_position_index.cpp    # Phase 11a: Global UTXO → Utreexo position index
   src/consensus/coins_view_cache.cpp   # Phase M.1: CoinsViewCache (L1 UTXO cache)
+  src/consensus/utxo_publication.cpp
   src/consensus/consensus_utxo_set.cpp # Phase 2: Pure in-memory UTXO set (no DB, no mutex)
   src/consensus/stateless_verification.cpp # Phase 2.2: Stateless block verification (pure, no DB)
   src/consensus/consensus_invariants.cpp   # Forensic-grade invariant assertions

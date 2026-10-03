@@ -1,4 +1,5 @@
 #include "storage/chain_db.h"
+#include "storage/shielded_cf_comparator.h"
 #include "common/serialization.h"
 #include "common/json_adapter.h"
 #include "consensus/undo.h"
@@ -403,7 +404,8 @@ Status ChainDB::initAttempt(const std::filesystem::path& dir, bool allow_lock_re
         const std::unordered_set<std::string> found(names.begin(), names.end());
         if (found.size() != names.size()) return Status::Corruption;
         const bool separated = found.count(kShieldedFamily) != 0;
-        if (separated) descriptors.emplace_back(kShieldedFamily, descriptors[idx_utreexo_].options);
+        if (separated) descriptors.emplace_back(
+            kShieldedFamily, storage::ShieldedStateColumnFamilyOptions(descriptors[idx_utreexo_].options));
         for (const auto& name : names) {
             if (std::none_of(descriptors.begin(), descriptors.end(), [&](const auto& d) { return d.name == name; })) {
                 std::cerr << "ChainDB::init: Unsupported column family: " << name << '\n';
@@ -557,6 +559,14 @@ StatusOr<Block> ChainDB::getBlock(const uint256& hash) const {
     }
     
     return std::move(block);
+}
+
+StatusOr<std::vector<uint8_t>> ChainDB::getBlockEncoding(const uint256& hash) const {
+    if (!db_) return Status::Internal;
+    std::string value;
+    const auto status=db_->Get(rocksdb::ReadOptions(),cf_[idx_blocks_].get(),makeBlockKey(hash),&value);
+    if (!status.ok()) return convertRocksDBStatus(status);
+    return std::vector<uint8_t>(value.begin(),value.end());
 }
 
 Status ChainDB::hasBlock(const uint256& hash) const {
@@ -2982,8 +2992,7 @@ Status ChainDB::forEachUTXO(std::function<bool(const uint256& txid, uint32_t vou
 
         // Parse key: PREFIX_UTXO (1 byte) + txid (32 bytes) + vout (4 bytes big-endian)
         if (key.size() != 37 || key[0] != PREFIX_UTXO) {
-            it->Next();
-            continue;  // Skip malformed keys
+            return Status::Corruption;
         }
 
         // Extract txid (bytes 1-32), convert raw bytes to hex string
@@ -3001,29 +3010,34 @@ Status ChainDB::forEachUTXO(std::function<bool(const uint256& txid, uint32_t vou
         std::memcpy(&be_vout, key.data() + 33, sizeof(be_vout));
         uint32_t vout = bswap32(be_vout);
 
-        // Parse value (same format as getCoin)
+        // Decode completely before calling the visitor. A corrupt row cannot
+        // masquerade as absence, and a visitor exception must reach its owner.
+        Coin coin;
         try {
             Reader r(value);
-            Coin coin;
             coin.amount = r.read<uint64_t>();
             coin.script_pubkey = r.readString();
-            coin.height = r.read<uint32_t>();
-            coin.coinbase = (r.read<uint8_t>() != 0);
+            const auto height = r.read<uint32_t>();
+            const auto coinbase = r.read<uint8_t>();
+            if (height > uint32_t(INT32_MAX) || coinbase > 1) return Status::Corruption;
+            coin.height = int(height);
+            coin.coinbase = coinbase != 0;
             if (!r.eof()) {
-                coin.is_confidential = (r.read<uint8_t>() != 0);
+                const auto confidential = r.read<uint8_t>();
+                if (confidential > 1) return Status::Corruption;
+                coin.is_confidential = confidential != 0;
                 if (!r.eof()) {
                     coin.commitment = r.readBytes();
                 }
             }
 
-            // Call callback, stop if it returns false
-            if (!callback(txid, vout, coin)) {
-                break;
-            }
+            if (!r.eof()) return Status::Corruption;
         } catch (const std::exception&) {
-            // Skip malformed UTXO
+            return Status::Corruption;
         }
-
+        // Preserve the existing deliberate early-stop contract. Complete
+        // inventories must keep visiting until EOF and check the return status.
+        if (!callback(txid, vout, coin)) break;
         it->Next();
     }
 

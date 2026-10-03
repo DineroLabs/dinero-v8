@@ -36,6 +36,7 @@
  */
 
 #include "primitives/block.h"
+#include "daemon/interfaces/mempool_access.h"
 #include "primitives/transaction.h"
 #include "primitives/uint256.h"
 #include "p2p/orphan_block_pool.h"    // Phase G.7: Orphan handling
@@ -398,9 +399,14 @@ public:
      * Set mempool for compact block reconstruction
      * @param mempool Mempool instance (non-owning pointer)
      */
-    void SetMempool(Mempool* mempool) {
-        mempool_ = mempool;
-    }
+    // Legacy caller-lifetime contract: replacement and shutdown of the borrowed
+    // pool must wait for all relay operations using it.
+    void SetMempool(Mempool* mempool);
+
+    // Acquire one owner for each synchronous compact relay operation. A configured
+    // factory must return an owner or throw; unavailability is not an empty pool.
+    // Factory invocation and destruction occur outside the configuration mutex.
+    void SetMempoolAccessFactory(MempoolAccessFactory factory);
 
     /**
      * Set ChainDB for sync phase detection (Phase W.1)
@@ -753,7 +759,14 @@ private:
     HeaderSyncManager* header_sync_manager_;  // Non-owning pointer
 
     // Mempool for compact block reconstruction (Phase G.13)
-    Mempool* mempool_;  // Non-owning pointer
+    Mempool* mempool_;  // Legacy non-owning pointer, protected by mempool_access_mutex_
+    mutable std::mutex mempool_access_mutex_;
+    std::shared_ptr<const MempoolAccessFactory> mempool_access_factory_;
+    struct PoolOperation {
+        std::unique_ptr<MempoolAccess> owner;
+        Mempool* pool = nullptr;
+    };
+    PoolOperation AcquireMempoolAccess() const;
 
     // ChainDB for sync phase detection (Phase W.1)
     ChainDB* chain_db_;  // Non-owning pointer

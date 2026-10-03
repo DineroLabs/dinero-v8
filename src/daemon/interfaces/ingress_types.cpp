@@ -19,6 +19,7 @@ const char* TxRejectCodeToString(TxRejectCode code) {
         case TxRejectCode::MISSING_INPUTS: return "missing-inputs";
         case TxRejectCode::SCRIPT_VERIFY_FAILED: return "script-verification-failed";
         case TxRejectCode::LOCKTIME_NOT_SATISFIED: return "locktime-not-satisfied";
+        case TxRejectCode::UNAVAILABLE: return "transaction-validation-unavailable";
         default: return "unknown-reject-reason";
     }
 }

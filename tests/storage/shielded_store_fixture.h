@@ -2,6 +2,7 @@
 // Generated storage fixtures only; never a migration tool.
 #include "storage/chain_db.h"
 #include "storage/chain_write_token.h"
+#include "storage/shielded_cf_comparator.h"
 #include <rocksdb/db.h>
 #include <algorithm>
 #include <filesystem>
@@ -46,13 +47,19 @@ struct TempDir {
 struct Raw {
     std::unique_ptr<rocksdb::DB> db;
     std::vector<rocksdb::ColumnFamilyHandle*> handles;
-    Raw(const std::filesystem::path& path, std::vector<std::string> names = {}) {
+    Raw(const std::filesystem::path& path, std::vector<std::string> names = {},
+        bool named_shielded = true) {
         rocksdb::Options opts;
         const bool create = !names.empty();
         opts.create_if_missing = opts.create_missing_column_families = create;
         if (!create) Setup(rocksdb::DB::ListColumnFamilies(opts, path.string(), &names).ok(), "list CFs");
         std::vector<rocksdb::ColumnFamilyDescriptor> desc;
-        for (const auto& name : names) desc.emplace_back(name, opts);
+        for (const auto& name : names) {
+            rocksdb::ColumnFamilyOptions cf_options(opts);
+            if (name == shielded && named_shielded)
+                cf_options = dinero::storage::ShieldedStateColumnFamilyOptions(std::move(cf_options));
+            desc.emplace_back(name, std::move(cf_options));
+        }
         rocksdb::DB* p = nullptr;
         auto status = create ? rocksdb::DB::Open(opts, path.string(), desc, &handles, &p)
                             : rocksdb::DB::OpenForReadOnly(opts, path.string(), desc, &handles, &p);
@@ -87,13 +94,13 @@ inline std::string NullifierKey(unsigned height) {
 inline void Seed(const std::filesystem::path& path, bool separated = true,
           std::optional<std::string> marker = ready, bool permuted = false,
           const std::string& missing = {}, bool leftover = false,
-          bool add_checkpoint_cf = false) {
+          bool add_checkpoint_cf = false, bool named_shielded = true) {
     auto names = legacy;
     if (separated) names.push_back(shielded);
     if (add_checkpoint_cf) names.push_back("utreexo_checkpoints_v1");
     if (permuted) std::swap(names[7], names[9]);
     if (missing == "prebase_coins") names.erase(std::find(names.begin(), names.end(), missing));
-    Raw raw(path, names);
+    Raw raw(path, names, named_shielded);
     const uint32_t version = 4;
     raw.put("meta", "schema_version", std::string(reinterpret_cast<const char*>(&version), 4));
     if (marker) raw.put("meta", "storage_layout_v1", *marker);

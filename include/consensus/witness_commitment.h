@@ -166,6 +166,14 @@ std::optional<uint256> ExtractWitnessCommitment(
  * @param error Output error message if validation fails
  * @return true if valid (or not recognized), false if recognized but invalid
  */
+// Typed-block entry points share exactly the existing DINW encoding/checks.
+// The root must come from the complete ordered witness identity list, with
+// index zero replaced by zero; these functions do not authenticate that list.
+std::vector<uint8_t> BuildWitnessCommitmentFromRoot(const uint256& witness_root,
+    const std::vector<uint8_t>& nonce = WitnessCommitment::DEFAULT_NONCE);
+bool ValidateWitnessCommitmentRoot(const Transaction& coinbase,
+    const uint256& witness_root, bool mutated, std::string& error);
+
 bool ValidateWitnessCommitment(
     const std::vector<Transaction>& vtx,
     std::string& error

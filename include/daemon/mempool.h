@@ -1,6 +1,10 @@
 #pragma once
 
 #include "consensus/outpoint.h"  // Phase M.0: Canonical OutPoint
+#include "daemon/connected_block_effects.h"
+#include "daemon/mempool_transaction.h"
+#include "daemon/mempool_acceptance_observer.h"
+#include "daemon/mempool_chainstate_guard.h"
 #include "primitives/uint256.h"  // Phase M.0: uint256 type
 #include "daemon/interfaces/ingress_types.h"  // Step 5: Canonical ingress types
 #include <unordered_map>
@@ -26,6 +30,8 @@ namespace din::sp {
 }
 
 namespace dinero {
+class VerifiedUtreexoTransaction;
+
 
 namespace consensus {
 class IConsensusUTXOSet;
@@ -72,7 +78,7 @@ namespace policy {
  * Phase M.0: Updated to use uint256 and OutPoint
  */
 struct MempoolEntry {
-    Transaction tx;                                              // The transaction
+    MempoolTransaction tx;                                      // Immutable owned body; explicit family access
     uint64_t fee;                                               // Transaction fee in una
     double fee_rate;                                            // Fee per byte (una/byte)
     std::chrono::time_point<std::chrono::steady_clock> time;    // When added to mempool
@@ -121,10 +127,16 @@ struct MempoolEntry {
     }
 
     MempoolEntry(const Transaction& transaction, uint64_t tx_fee, uint32_t block_height)
-        : tx(transaction), fee(tx_fee), height(block_height),
+        : MempoolEntry(MempoolTransaction(transaction), tx_fee, block_height) {}
+
+    MempoolEntry(MempoolTransaction transaction, uint64_t tx_fee, uint32_t block_height)
+        : tx(std::move(transaction)), fee(tx_fee), height(block_height),
           ancestor_fee(0), ancestor_size(0), ancestor_feerate(0.0),
           effective_vsize(0), ancestor_effective_vsize(0), ancestor_adjusted_feerate(0.0),
           is_confidential(false), total_proof_bytes(0), adjusted_fee_rate(0.0) {
+        if (tx.IsOrchard() && tx.ExplicitFee() != std::optional<uint64_t>(tx_fee))
+            throw std::invalid_argument("Orchard mempool entry fee mismatch");
+        spends = tx.Inputs();
         time = std::chrono::steady_clock::now();
         tx_size = tx.GetSize(); // Actual serialized bytes, including witness
         fee_rate = tx_size > 0 ? static_cast<double>(fee) / tx_size : 0.0;
@@ -133,10 +145,12 @@ struct MempoolEntry {
         ancestor_adjusted_feerate = fee_rate;
 
         // Compute CT metadata
-        for (const auto& output : tx.vout) {
-            if (output.is_confidential) {
-                is_confidential = true;
-                total_proof_bytes += output.range_proof.size();
+        if (!tx.IsOrchard()) {
+            for (const auto& output : tx.Historical().vout) {
+                if (output.is_confidential) {
+                    is_confidential = true;
+                    total_proof_bytes += output.range_proof.size();
+                }
             }
         }
         adjusted_fee_rate = effective_vsize > 0 ? static_cast<double>(fee) / effective_vsize : fee_rate;
@@ -156,7 +170,40 @@ struct MempoolEntry {
  * - Network relay coordination
  */
 // Phase M.0: daemon::Mempool (high-level mempool, separate from TxMempool)
+// Values copied together with selected transactions while the pool read lock
+// and selected-chain read guard are held. No reference into the live pool escapes.
+struct MempoolTemplateMetadata {
+    uint64_t fee = 0;
+    uint64_t vwu = 0;
+    std::chrono::steady_clock::time_point entered;
+};
+struct MempoolBlockSelection {
+    bool available = false;
+    std::vector<Transaction> transactions;
+    std::unordered_map<uint256, MempoolTemplateMetadata> metadata;
+    size_t pool_size = 0;
+    size_t pool_bytes = 0;
+};
+
+// Immutable mixed-family selection for the active Orchard profile. This is an
+// as-of selected-parent check, not a candidate block or continued readiness.
+struct MempoolTypedBlockSelection {
+    bool available = false;
+    uint256 parent_hash;
+    uint32_t parent_height = 0;
+    std::vector<MempoolTransaction> transactions;
+    std::unordered_map<uint256, MempoolTemplateMetadata> metadata;
+    size_t pool_size = 0;
+    size_t pool_bytes = 0;
+};
+
 class Mempool {
+    friend class MempoolRawRpcTestPeer; // Isolated reader fixture; no production insertion API.
+    friend class MempoolOrchardConflictTestPeer; // Isolated structural conflict fixture only.
+    friend class MempoolTypedPackageTestPeer; // Isolated package-policy graph fixture only.
+    friend class MempoolAddressCaptureTestPeer; // Isolated address reader fixture only.
+    friend class MempoolRankedRpcTestPeer; // Isolated ranked reader fixture only.
+    friend class MempoolTypedIngressTestPeer; // Isolated lookup-error fixture; no production view setter.
 public:
     struct RBFRuntimeConfig {
         bool enabled = false;
@@ -197,14 +244,16 @@ public:
      * @return        Structured result with rejection code and message
      */
     TxAcceptResult submitTransaction(const Transaction& tx, const std::string& source, bool relay = true);
+    TxAcceptResult submitBody(const MempoolTransaction&, const std::string& source,
+        bool relay = true, bool test_only = false);
 
     // Core mempool operations (Phase M.0: Changed to uint256)
     bool removeTransaction(const uint256& txid);
     bool hasTransaction(const uint256& txid) const;
     std::shared_ptr<Transaction> getTransaction(const uint256& txid) const;
 
-    // STEP 2: TEST_ONLY transaction submission (bypasses signature validation)
-    // Note: Still returns structured result for consistency
+    // Preflight through canonical signature and policy validation, without
+    // admission or relay. A pass does not authorize a later submission.
     TxAcceptResult submitTransactionTestOnly(const Transaction& tx, const std::string& source);
 
     // Unchecked insertion: no validation, no fee calc, no UTXO lookups.
@@ -216,6 +265,10 @@ public:
     // STEP 3: Check if output is spent in mempool (for wallet coin selection)
     // Phase M.0: Now uses OutPoint directly
     bool isOutputSpentInMempool(const OutPoint& outpoint) const;
+
+    // Copied, sorted spending transaction IDs at one pool-lock snapshot.
+    // This grants no reservation or continued membership after return.
+    std::vector<uint256> getInputSpenders(const OutPoint& outpoint) const;
 
     // Snapshot confirmed, mature, unspent candidates under chainstate -> mempool
     // locks. Results correspond to candidates; unavailable entries are nullopt.
@@ -245,8 +298,21 @@ public:
 
     // Mempool queries (Phase M.0: Changed to uint256)
     std::vector<Transaction> getAllTransactions() const;
+    // Capture matching bodies and entry metadata in existing package-score order.
+    // This bounded snapshot grants neither reservation nor lasting membership.
+    // Any unavailable indexed entry in the requested prefix refuses the read.
+    std::vector<MempoolEntry> CaptureEntriesByFeeRate(size_t max_count = 1000) const;
+    // Historical compatibility: explicitly refuses unsupported body families.
     std::vector<Transaction> getTransactionsByFeeRate(size_t max_count = 1000) const;
     std::vector<uint256> getTransactionIds() const;
+    // One complete body/input-coin snapshot under chainstate -> pool ownership.
+    // Inputs correspond exactly to entry.tx.Inputs(); unavailable input metadata
+    // refuses the whole read. Copies grant no reservation or lasting membership.
+    struct EntryWithInputCoins {
+        MempoolEntry entry;
+        std::vector<consensus::UTXOEntry> input_coins;
+    };
+    std::vector<EntryWithInputCoins> CaptureEntriesWithInputCoins() const;
     std::vector<Transaction> getTransactionsForAddress(const std::string& address) const;
     size_t size() const;
     uint64_t getTotalFees() const;
@@ -264,6 +330,15 @@ public:
         uint64_t max_block_weight = 4000000, // 4M weight units
         uint32_t next_block_height = 0
     ) const;
+
+    // Requires the real selected Orchard validator. Historical-only consumers
+    // retain CaptureBlockSelection and never receive an Orchard conversion.
+    MempoolTypedBlockSelection CaptureTypedBlockSelection(
+        size_t max_block_size, uint64_t max_block_weight,
+        uint32_t next_block_height) const;
+    MempoolBlockSelection CaptureBlockSelection(
+        size_t max_block_size, uint64_t max_block_weight,
+        uint32_t next_block_height) const;
 
     /**
      * Temporarily exclude a mempool transaction from block template assembly.
@@ -300,10 +375,55 @@ public:
     size_t onBlockConnected(const Block& block, uint32_t height,
                             const std::vector<uint8_t>& new_root = {});
 
+    // Caller holds selected chain ownership before preparing. This thread-affine
+    // object retains the pool lock until publish or destruction. Do not call
+    // other pool APIs while holding it; the Mempool must outlive the object.
+    // Preparation may allocate/refuse. Abandon leaves the live pool unchanged;
+    // publication after canonical commit performs only nonthrowing state swaps.
+    struct ProofRefreshPolicy {
+        size_t batch_size = 20;
+        uint32_t max_age_blocks = 2, max_attempts = 1;
+        size_t overload_threshold = 256;
+    };
+    class PreparedBlockUpdate final {
+    public:
+        ~PreparedBlockUpdate();
+        PreparedBlockUpdate(const PreparedBlockUpdate&) = delete;
+        PreparedBlockUpdate& operator=(const PreparedBlockUpdate&) = delete;
+        size_t EvictedCount() const noexcept;
+        // Immutable proposal; callers may request these only after publication.
+        const std::vector<uint256>& RefreshCandidates() const noexcept;
+        void PublishAfterCommit() noexcept;
+    private:
+        friend class Mempool;
+        struct Impl;
+        explicit PreparedBlockUpdate(std::unique_ptr<Impl>);
+        std::unique_ptr<Impl> impl_;
+    };
+    [[nodiscard]] std::unique_ptr<PreparedBlockUpdate> prepareBlockConnected(
+        const ConnectedBlockEffects&, uint32_t height,
+        const std::vector<uint8_t>& new_root = {},
+        std::optional<ProofRefreshPolicy> refresh = std::nullopt);
+    [[nodiscard]] std::unique_ptr<PreparedBlockUpdate> prepareBlockDisconnected(
+        uint32_t height, std::optional<ProofRefreshPolicy> refresh = std::nullopt);
+    // Caller owns the selected, committed parent and its guarded forest root.
+    // Stages parent root/height with all stale proof/cache state in one owner.
+    [[nodiscard]] std::unique_ptr<PreparedBlockUpdate> prepareBlockDisconnectedToParent(
+        uint32_t disconnected_height, const std::vector<uint8_t>& parent_root,
+        std::optional<ProofRefreshPolicy> refresh = std::nullopt);
+
+    // Caller must derive these effects from the exact validated block body.
+    // Reconciles transparent and Orchard nullifier conflicts in present entries.
+    // This does not authorize Orchard admission or readmission.
+    size_t onBlockConnected(const ConnectedBlockEffects& effects, uint32_t height,
+                            const std::vector<uint8_t>& new_root = {});
+
     /**
      * Process a disconnected block: mark all TXs stale (root changed).
      */
     void onBlockDisconnected(const Block& block, uint32_t height);
+    // Typed mixed-body disconnect has the same proof-staleness effect.
+    void onBlockDisconnected(uint32_t height);
 
     /** Get count of transactions with stale proofs. */
     size_t getStaleCount() const;
@@ -334,6 +454,11 @@ public:
      */
     bool refreshProof(const uint256& txid, const std::vector<uint8_t>& new_root,
                       uint32_t new_height);
+
+    // Caller retains selected-chain ownership from proof verification through
+    // this publication. Exact body and selected pool root/height must agree.
+    // Atomically publishes complete payload and freshness metadata; no admission.
+    bool publishProofPayload(const VerifiedUtreexoTransaction& verified);
 
     /** Store raw utxotx wire payload for CSN-to-CSN relay. */
     bool setCachedUtxoTxPayload(const uint256& txid, std::vector<uint8_t> payload);
@@ -400,10 +525,10 @@ public:
     uint64_t computeVWUForTx(const Transaction& tx) const;
 
     // Configuration
-    void setMaxSize(size_t max_size) { m_max_size = max_size; }
-    void setMaxAge(std::chrono::hours max_age) { m_max_age = max_age; }
-    void setMinFeeRate(double min_fee_rate) { m_min_fee_rate = min_fee_rate; }
-    double getMinFeeRate() const { return m_min_fee_rate; }
+    void setMaxSize(size_t max_size) { std::unique_lock<std::shared_mutex> lock(m_mutex); m_max_size = max_size; }
+    void setMaxAge(std::chrono::hours max_age) { std::unique_lock<std::shared_mutex> lock(m_mutex); m_max_age = max_age; }
+    void setMinFeeRate(double min_fee_rate) { std::unique_lock<std::shared_mutex> lock(m_mutex); m_min_fee_rate = min_fee_rate; }
+    double getMinFeeRate() const { std::shared_lock<std::shared_mutex> lock(m_mutex); return m_min_fee_rate; }
 
     /**
      * Enable/disable RBF (Replace-By-Fee)
@@ -423,9 +548,24 @@ public:
     RBFRuntimeConfig getRBFRuntimeConfig() const;
 
     // CT Fee Policy Configuration (Phase 3)
-    void SetCTConfig(const mining::CTSelectionConfig& config) { ct_config_ = config; }
-    const mining::CTSelectionConfig& GetCTConfig() const { return ct_config_; }
-    mining::CTSelectionConfig& GetCTConfig() { return ct_config_; }
+    void SetCTConfig(const mining::CTSelectionConfig& config) {
+        std::unique_lock<std::shared_mutex> lock(m_mutex); ct_config_ = config;
+    }
+    mining::CTSelectionConfig GetCTConfig() const {
+        std::shared_lock<std::shared_mutex> lock(m_mutex); return ct_config_;
+    }
+    void SetCTMinFeeRate(uint64_t rate) {
+        std::unique_lock<std::shared_mutex> lock(m_mutex); ct_config_.ct_min_fee_rate = rate;
+    }
+    void SetCTWeightMultiplier(double multiplier) {
+        std::unique_lock<std::shared_mutex> lock(m_mutex); ct_config_.ct_weight_multiplier = multiplier;
+    }
+    void SetCTMaxPerBlock(size_t count) {
+        std::unique_lock<std::shared_mutex> lock(m_mutex); ct_config_.max_ct_per_block = count;
+    }
+    void SetCTProofWeightFactor(uint32_t factor) {
+        std::unique_lock<std::shared_mutex> lock(m_mutex); ct_config_.ct_proof_weight_factor = factor;
+    }
 
     // Network integration (Phase M.0: Changed to uint256)
     void broadcastTransaction(const uint256& txid);
@@ -434,13 +574,25 @@ public:
     // Used by MempoolService to wire P2PService for tx relay
     // Only txid is passed - the callback can fetch tx from mempool if needed
     using TxBroadcastCallback = std::function<void(const uint256& txid)>;
-    void setTxBroadcastCallback(TxBroadcastCallback callback) { m_tx_broadcast_callback = callback; }
+    void setTxBroadcastCallback(TxBroadcastCallback callback) {
+        { std::unique_lock<std::shared_mutex> lock(m_mutex); m_tx_broadcast_callback.swap(callback); }
+        // Release the old callback's captures outside the pool lock.
+    }
 
-    // Transaction accepted callback (wallet notifier path)
-    // Called after a tx is accepted into the mempool, with the full Transaction object.
-    // Used by NodeCore to notify watched-script wallets of mempool events.
-    using TxAcceptedCallback = std::function<void(const Transaction& tx)>;
-    void setTxAcceptedCallback(TxAcceptedCallback callback) { m_tx_accepted_callback = callback; }
+    // Capture immutable body and observer capability before admission effects.
+    // Legacy configured consumers support Historical bodies only. Neither
+    // callback is a durable pending owner or continued-membership guarantee.
+    using TxAcceptedCallback = MempoolAcceptanceObserver::HistoricalCallback;
+    using TxBodyAcceptedCallback = MempoolAcceptanceObserver::BodyCallback;
+    void setTxAcceptedCallback(TxAcceptedCallback callback) {
+        auto observer=MempoolAcceptanceObserver::ForHistorical(std::move(callback));
+        { std::unique_lock<std::shared_mutex> lock(m_mutex); m_tx_accepted_observer.Swap(observer); }
+        // Destroy replaced captures after releasing the pool lock.
+    }
+    void setTxBodyAcceptedCallback(TxBodyAcceptedCallback callback) {
+        auto observer=MempoolAcceptanceObserver::ForBody(std::move(callback));
+        { std::unique_lock<std::shared_mutex> lock(m_mutex); m_tx_accepted_observer.Swap(observer); }
+    }
 
     // Logger dependency injection
     void setLogger(ILogger* logger) { m_logger = logger; }
@@ -472,10 +624,12 @@ public:
     using PreBaseCoinResolver =
         std::function<std::optional<consensus::UTXOEntry>(const OutPoint&)>;
     using PreBaseCoinPredicate = std::function<bool(const OutPoint&)>;
+    using PreBaseCoinStatusResolver =
+        std::function<StatusOr<consensus::UTXOEntry>(const OutPoint&)>;
     // Production selection reads chainstate through the pre-base callbacks.
     // Acquire this lifetime guard BEFORE m_mutex, matching block connection's
     // chainstate -> mempool lock order. Set only during service initialization.
-    struct ChainstateReadGuard { virtual ~ChainstateReadGuard() = default; };
+    using ChainstateReadGuard = MempoolChainstateReadGuard;
     using ChainstateReadGuardFactory = std::function<std::unique_ptr<ChainstateReadGuard>()>;
     void setChainstateReadGuardFactory(ChainstateReadGuardFactory factory) {
         chainstate_read_guard_factory_ = std::move(factory);
@@ -483,11 +637,24 @@ public:
     void setPreBaseCoinResolver(PreBaseCoinResolver resolver) {
         prebase_coin_resolver_ = std::move(resolver);
     }
+    // Optional-only compatibility resolvers cannot certify absence. Production
+    // admission installs the checked resolver during service initialization.
+    void setPreBaseCoinStatusResolver(PreBaseCoinStatusResolver resolver) {
+        prebase_coin_status_resolver_ = std::move(resolver);
+    }
     void setPreBaseCoinPredicate(PreBaseCoinPredicate predicate) {
         prebase_coin_predicate_ = std::move(predicate);
     }
 
 private:
+    // Construct only while holding m_mutex; restores local pool state on failure.
+    struct StateRollback;
+    // Caller owns StateRollback and the selected-chain/pool locks.
+    void insertAdmittedEntryLocked(MempoolEntry,
+        const std::unordered_set<uint256>& ancestors);
+    std::vector<uint256> selectStaleForRefreshLocked(uint32_t, size_t, uint32_t, uint32_t, size_t);
+    size_t applyBlockConnectedLocked(const ConnectedBlockEffects&, uint32_t, const std::vector<uint8_t>&);
+    void applyBlockDisconnectedLocked(uint32_t);
     // ========================================================================
     // LEGACY ADAPTER (Step 3 - Phase G.3)
     // ========================================================================
@@ -498,6 +665,13 @@ private:
     // structured result, returning only bool for backwards compatibility.
     // ========================================================================
     bool addTransaction(const Transaction& tx, bool relay = true);
+
+    // Caller holds m_mutex; typed dependency policy only, no admission effects.
+    TxAcceptResult checkAdmissionPackageLocked(
+        const MempoolTransaction& transaction,
+        const std::unordered_set<uint256>& replaced_txids,
+        bool auth_packages,
+        std::unordered_set<uint256>& ancestors) const;
 
     // Internal implementation that returns structured result
     TxAcceptResult submitTransactionInternal(
@@ -510,11 +684,14 @@ private:
     bool validateTransaction(
         const Transaction& tx,
         std::string& error,
-        std::optional<uint32_t> target_height = std::nullopt) const;
+        std::optional<uint32_t> target_height = std::nullopt,
+        TxRejectCode* failure = nullptr) const;
     bool checkDoubleSpend(const Transaction& tx) const;
     bool checkDependencies(const Transaction& tx) const;
-    std::optional<consensus::UTXOEntry> recoverConflictedInputUTXO(const OutPoint& outpoint) const;
+    std::optional<consensus::UTXOEntry> recoverConflictedInputUTXO(
+        const OutPoint& outpoint, Status* lookup_status = nullptr) const;
     PreBaseCoinResolver prebase_coin_resolver_;
+    PreBaseCoinStatusResolver prebase_coin_status_resolver_;
     PreBaseCoinPredicate prebase_coin_predicate_;
     ChainstateReadGuardFactory chainstate_read_guard_factory_;
     void updateDependencies(const uint256& txid);
@@ -523,8 +700,13 @@ private:
     void evictTransactionsLocked();
     bool removeTransactionLocked(const uint256& txid);  // Lock-free version (caller holds m_mutex)
     void rebuildCoinsViewLocked();
+    std::vector<uint256> getInputSpendersLocked(const OutPoint& outpoint) const;
+    void releaseInputSpenderLocked(const OutPoint& outpoint, const uint256& txid);
     uint64_t getTotalFeesLocked() const;
     size_t getTotalSizeLocked() const;
+    MempoolTypedBlockSelection CaptureBlockSelectionImpl(
+        size_t max_block_size, uint64_t max_block_weight,
+        uint32_t next_block_height, bool typed) const;
     bool isSelectableAtHeightLocked(const MempoolEntry& entry,
                                     uint32_t next_block_height,
                                     std::string* reason = nullptr) const;
@@ -534,7 +716,9 @@ private:
 
     // Data structures (Phase M.0: Changed to uint256 and OutPoint)
     std::unordered_map<uint256, MempoolEntry> m_transactions;      // txid -> entry
-    std::unordered_set<OutPoint> m_spent_outputs;                  // OutPoint tracking (replaced string concat)
+    // Each input retains its actual owners. Canonical admission enforces
+    // conflict policy; the transparent synthetic helper may have multiple.
+    std::unordered_map<OutPoint, std::unordered_set<uint256>> m_spent_outputs;
     std::multimap<double, uint256> m_fee_index;                    // package selection score -> txid (sorted)
     std::multimap<std::chrono::time_point<std::chrono::steady_clock>, uint256> m_time_index; // time -> txid
     std::unordered_map<uint256, std::unordered_set<uint256>> m_children_index; // parent → children
@@ -549,6 +733,13 @@ private:
     uint32_t current_block_height_ = 0;              // Updated on each block connect
 
     // Thread safety
+    // Serializes disk recovery and overwrite permission. Reentrant/concurrent
+    // load/save refuses via try_lock; canonical admission takes its own locks.
+    mutable std::recursive_mutex m_persistence_mutex;
+    bool m_persistence_operation_active = false;
+    bool m_persistence_recovery_incomplete = false;
+    std::string m_persistence_recovery_path;
+    std::vector<MempoolTransaction> m_persistence_recovery_bodies;
     mutable std::shared_mutex m_mutex;
     
     // Configuration
@@ -564,7 +755,7 @@ private:
     std::unique_ptr<consensus::ChainStateView> chain_state_view_;  // Adapter: ChainDB -> ChainStateView interface (Phase M.1)
     CoinsViewMemPool coins_view_;  // v0.11.0: In-memory UTXO overlay for policy validation
     TxBroadcastCallback m_tx_broadcast_callback;
-    TxAcceptedCallback m_tx_accepted_callback;
+    MempoolAcceptanceObserver m_tx_accepted_observer;
     ILogger* m_logger;  // Logger dependency injection
 
     // Helper macros for cleaner DI logging

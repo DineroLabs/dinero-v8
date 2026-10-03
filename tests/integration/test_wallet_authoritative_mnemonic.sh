@@ -236,8 +236,31 @@ jq -e --arg mnemonic "${MNEMONIC}" '
 printf '[PASS] authoritative recovery material and acknowledgment survive restart\n'
 
 start_restore
+# A new daemon owns a default wallet already. Restore must preserve that owner.
+DESTINATION_DEFAULT_EXPORT="$(rpc_raw "${RESTORE_DIR}" "${RESTORE_RPC}" wallet.exportseed)"
+jq -e '.error == null and .result.authoritative == true' \
+    <<<"${DESTINATION_DEFAULT_EXPORT}" >/dev/null || fail "destination default has no authoritative identity"
+DESTINATION_DEFAULT_ADDRESSES="$(rpc_raw "${RESTORE_DIR}" "${RESTORE_RPC}" wallet.listaddresses)"
+jq -e '.error == null and (.result | type == "array" and length > 0)' \
+    <<<"${DESTINATION_DEFAULT_ADDRESSES}" >/dev/null || fail "destination default has no address inventory"
 RESTORE_PARAMS="$(jq -nc --arg mnemonic "${MNEMONIC}" \
     '{name:"default",mnemonic:$mnemonic,passphrase:"",password:"",policy:"bip86",replace_existing:true,rescan:false}')"
+REFUSED="$(rpc_raw "${RESTORE_DIR}" "${RESTORE_RPC}" wallet.restore "${RESTORE_PARAMS}")"
+jq -e '.error != null and (.error.message | contains("Restore under a new wallet name"))' \
+    <<<"${REFUSED}" >/dev/null || fail "restore did not refuse the existing default wallet"
+preserve_destination_default() {
+    local export_now addresses_now
+    export_now="$(rpc_raw "${RESTORE_DIR}" "${RESTORE_RPC}" wallet.exportseed)"
+    addresses_now="$(rpc_raw "${RESTORE_DIR}" "${RESTORE_RPC}" wallet.listaddresses)"
+    jq -e --argjson original "${DESTINATION_DEFAULT_EXPORT}" \
+        '.error == null and .result == $original.result' \
+        <<<"${export_now}" >/dev/null || fail "destination default recovery identity changed"
+    jq -e --argjson original "${DESTINATION_DEFAULT_ADDRESSES}" \
+        '.error == null and .result == $original.result' \
+        <<<"${addresses_now}" >/dev/null || fail "destination default addresses changed"
+}
+preserve_destination_default
+RESTORE_PARAMS="$(jq -c '.name = "recovered" | del(.replace_existing)' <<<"${RESTORE_PARAMS}")"
 RESTORED="$(rpc_raw "${RESTORE_DIR}" "${RESTORE_RPC}" wallet.restore "${RESTORE_PARAMS}")"
 jq -e --arg first "${FIRST_ADDRESS}" '
     .error == null and
@@ -267,5 +290,18 @@ RESTORED_EXPORT="$(rpc_raw "${RESTORE_DIR}" "${RESTORE_RPC}" wallet.exportseed)"
 jq -e --arg mnemonic "${MNEMONIC}" '.error == null and .result.mnemonic == $mnemonic and .result.authoritative == true' \
     <<<"${RESTORED_EXPORT}" >/dev/null || fail "restored wallet did not preserve authoritative mnemonic identity"
 printf '[PASS] backup restores exact multi-index external identity and the 20-address change window\n'
+
+OPEN_DEFAULT="$(rpc_raw "${RESTORE_DIR}" "${RESTORE_RPC}" wallet.open '["default"]')"
+jq -e '.error == null and .result.success == true and .result.wallet_name == "default"' \
+    <<<"${OPEN_DEFAULT}" >/dev/null || fail "preserved default wallet could not reopen"
+preserve_destination_default
+OPEN_RECOVERED="$(rpc_raw "${RESTORE_DIR}" "${RESTORE_RPC}" wallet.open '["recovered"]')"
+jq -e '.error == null and .result.success == true and .result.wallet_name == "recovered"' \
+    <<<"${OPEN_RECOVERED}" >/dev/null || fail "recovered wallet could not reopen"
+REOPENED_EXPORT="$(rpc_raw "${RESTORE_DIR}" "${RESTORE_RPC}" wallet.exportseed)"
+jq -e --arg mnemonic "${MNEMONIC}" \
+    '.error == null and .result.authoritative == true and .result.mnemonic == $mnemonic' \
+    <<<"${REOPENED_EXPORT}" >/dev/null || fail "recovered identity changed after switching wallets"
+printf '[PASS] existing default is preserved and restored identity reopens under a new name\n'
 
 printf 'ALL WALLET AUTHORITATIVE-MNEMONIC ASSERTIONS PASSED\n'

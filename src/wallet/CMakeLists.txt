@@ -74,6 +74,7 @@ add_library(dinero_wallet STATIC
   # Milestone 12.4: Unsigned Transaction Construction (v0.12.0)
   ${CMAKE_CURRENT_SOURCE_DIR}/unsigned_tx_builder.cpp  # Pure transaction builder (no side effects)
   # Milestone 12.5: Transaction Signing & Local Validation (v0.12.0)
+  ${CMAKE_CURRENT_SOURCE_DIR}/wallet_transaction_signer.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/transaction_signer.cpp   # Sign unsigned tx + local validation
   # Milestone 12.6: Wallet ↔ Mempool Submission (v0.12.0)
   ${CMAKE_CURRENT_SOURCE_DIR}/wallet_mempool_adapter.cpp  # Adapter between wallet and mempool

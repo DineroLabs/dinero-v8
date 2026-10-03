@@ -1,0 +1,2464 @@
+name: Orchard backend component
+on:
+  push:
+    branches: [main, dinero-main, 'codex/**']
+    paths:
+      - 'rust/orchard_backend/**'
+      - '.github/workflows/orchard-backend.yml'
+      - 'CMakeLists.txt'
+      - 'include/**'
+      - 'src/**'
+      - 'tests/**'
+      - 'tools/pq_bench/**'
+      - 'cmake/**'
+      - 'depends/**'
+      - '.gitmodules'
+      - 'third_party/**'
+      - 'scripts/build-openssl-vendored.sh'
+  pull_request:
+    paths:
+      - 'rust/orchard_backend/**'
+      - '.github/workflows/orchard-backend.yml'
+      - 'CMakeLists.txt'
+      - 'include/**'
+      - 'src/**'
+      - 'tests/**'
+      - 'tools/pq_bench/**'
+      - 'cmake/**'
+      - 'depends/**'
+      - '.gitmodules'
+      - 'third_party/**'
+      - 'scripts/build-openssl-vendored.sh'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: orchard-backend-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  dependency-audit:
+    name: Orchard pinned dependency audit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      CARGO_BUILD_JOBS: '2'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Read pinned compiler
+        id: rust-pin
+        run: |
+          python3 - <<'PYCODE' >> "$GITHUB_OUTPUT"
+          import tomllib
+          with open('rust/orchard_backend/rust-toolchain.toml', 'rb') as f:
+              print('version=' + tomllib.load(f)['toolchain']['channel'])
+          PYCODE
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
+        with:
+          toolchain: ${{ steps.rust-pin.outputs.version }}
+      - name: Install exact audit tool with its locked dependencies
+        run: |
+          cargo +${{ steps.rust-pin.outputs.version }} install cargo-audit --version 0.22.2 --locked --jobs 2 --root build-orchard-audit-tools
+          build-orchard-audit-tools/bin/cargo-audit --version > orchard-audit-tool.txt
+      - name: Audit committed graph against fresh advisories
+        run: |
+          set +e
+          build-orchard-audit-tools/bin/cargo-audit audit --file rust/orchard_backend/Cargo.lock --db build-orchard-advisory-db --deny unsound --deny yanked --format json > orchard-dependency-audit.json
+          audit_status=$?
+          set -e
+          printf '%s\n' "$audit_status" > orchard-dependency-audit-exit.txt
+          git -C build-orchard-advisory-db rev-parse HEAD > orchard-advisory-db-head.txt
+          git rev-parse HEAD > orchard-audit-source.txt
+          sha256sum rust/orchard_backend/Cargo.lock > orchard-audit-lock-sha256.txt
+          exit "$audit_status"
+      - name: Display informational maintenance warnings
+        if: always()
+        run: |
+          python3 - <<'PYCODE' >> "$GITHUB_STEP_SUMMARY"
+          import json
+          from pathlib import Path
+          report = Path('orchard-dependency-audit.json')
+          print('## Orchard dependency audit')
+          print('Gate: known vulnerabilities, unsoundness advisories, yanked crates, and scanner errors fail. Maintenance notices remain visible below; they are not a cryptographic review.')
+          data = json.loads(report.read_text())
+          for kind, entries in data.get('warnings', {}).items():
+              for entry in entries:
+                  package, advisory = entry['package'], entry.get('advisory') or {}
+                  print(f"- {kind}: {package['name']} {package['version']} — {advisory.get('id', '')} {advisory.get('title', '')}")
+          PYCODE
+      - name: Retain audit evidence on success or failure
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: orchard-dependency-audit-${{ github.sha }}
+          path: |
+            orchard-audit-tool.txt
+            orchard-audit-source.txt
+            orchard-audit-lock-sha256.txt
+            orchard-advisory-db-head.txt
+            orchard-dependency-audit.json
+            orchard-dependency-audit-exit.txt
+            rust/orchard_backend/Cargo.lock
+          if-no-files-found: error
+  native-linux:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      CARGO_BUILD_JOBS: '2'
+      RAYON_NUM_THREADS: '2'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Initialize pinned transparent-signature library
+        run: git submodule update --init third_party/secp256k1-zkp
+      - name: Read pinned compiler
+        id: rust-pin
+        run: |
+          python3 - <<'PYCODE' >> "$GITHUB_OUTPUT"
+          import tomllib
+          with open('rust/orchard_backend/rust-toolchain.toml', 'rb') as f:
+              print('version=' + tomllib.load(f)['toolchain']['channel'])
+          PYCODE
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable action, explicit compiler below
+        with:
+          toolchain: ${{ steps.rust-pin.outputs.version }}
+          components: rustfmt, clippy
+      - name: Install native crypto and wallet storage dependencies
+        run: sudo apt-get update && sudo apt-get install -y libssl-dev libsqlite3-dev
+      - name: Record exact source and compiler
+        run: |
+          git rev-parse HEAD
+          rustc --version
+          cmake --version
+      - name: Format and lint pinned dependency graph
+        run: |
+          cargo +${{ steps.rust-pin.outputs.version }} fmt --manifest-path rust/orchard_backend/Cargo.toml -- --check
+          cargo +${{ steps.rust-pin.outputs.version }} clippy --locked --release --manifest-path rust/orchard_backend/Cargo.toml --target-dir build-orchard-backend/cargo --all-targets -- -D warnings
+      - name: Check independent envelope vectors
+        run: |
+          python3 rust/orchard_backend/tests/make_envelope_vector.py --check
+          python3 rust/orchard_backend/tests/make_transparent_vector.py --check
+          python3 rust/orchard_backend/tests/check_combined_vectors.py
+          python3 rust/orchard_backend/tests/make_state_root_vectors.py --check
+      - name: Build C++ and Rust together
+        run: |
+          cmake -S rust/orchard_backend -B build-orchard-backend -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON
+          cmake --build build-orchard-backend --parallel 2
+      - name: Require all executable test lanes
+        run: |
+          ctest --test-dir build-orchard-backend --show-only=json-v1 > orchard-test-inventory.json
+          python3 - <<'PY'
+          import json
+          tests = {x['name'] for x in json.load(open('orchard-test-inventory.json'))['tests']}
+          if tests != {'OrchardAuthorization', 'OrchardBackendCpp', 'OrchardBackendRust', 'OrchardTransactionReader', 'OrchardCoinSnapshot', 'OrchardTransparent', 'OrchardStateTransition', 'OrchardTransactionContext', 'OrchardWalletKeys', 'OrchardWalletShield', 'OrchardWalletSpend', 'OrchardWalletStorage'}:
+              raise SystemExit(f'wrong Orchard test inventory: {tests}')
+          PY
+          ctest --test-dir build-orchard-backend --output-on-failure --no-tests=error
+      - name: Retain component evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: orchard-backend-${{ github.sha }}
+          path: |
+            orchard-test-inventory.json
+            build-orchard-backend/Testing/Temporary/LastTest.log
+            build-orchard-backend/Testing/Temporary/LastTestsFailed.log
+            rust/orchard_backend/Cargo.lock
+          if-no-files-found: error
+
+  root-linux:
+    name: Orchard through root build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      CARGO_BUILD_JOBS: '2'
+      CMAKE_BUILD_PARALLEL_LEVEL: '2'
+      RAYON_NUM_THREADS: '2'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          submodules: recursive
+      - name: Install root build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake ninja-build pkg-config python3 perl ripgrep \
+            libcurl4-openssl-dev libudev-dev libusb-1.0-0-dev libsqlite3-dev
+      - name: Read pinned compiler
+        id: rust-pin
+        run: |
+          python3 - <<'PYCODE' >> "$GITHUB_OUTPUT"
+          import tomllib
+          with open('rust/orchard_backend/rust-toolchain.toml', 'rb') as f:
+              print('version=' + tomllib.load(f)['toolchain']['channel'])
+          PYCODE
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
+        with:
+          toolchain: ${{ steps.rust-pin.outputs.version }}
+      - name: Build root prerequisites
+        run: |
+          OPENSSL_VERSION=3.5.7 bash scripts/build-openssl-vendored.sh
+          cmake -S depends -B depends/build
+          cmake --build depends/build --parallel 2
+      - name: Configure root with Orchard enabled
+        run: |
+          export SOURCE_DATE_EPOCH="$(git show -s --format=%ct HEAD)"
+          git rev-parse HEAD > orchard-root-source.txt
+          cmake -S . -B build-orchard-root -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release -DDINERO_REPRODUCIBLE_BUILD=ON -DDINERO_ROCKSDB_BUILD_JOBS=2 \
+            -DDINERO_USE_VENDORED_DEPS=ON -DENABLE_GRPC=OFF \
+            -DDINERO_BUILD_ORCHARD_BACKEND=ON -DDINERO_ORCHARD_BUILD_TESTS=ON \
+            -DBUILD_TESTING=ON
+      - name: Build daemon and root Orchard targets
+        run: |
+          cmake --build build-orchard-root --target dinerod test_daemon_service_release test_mempool_service_owner test_pool_tip_consumers test_bridge_cache_owner test_bridge_forest_read_lock test_chainstate_commit_batch_interval test_mempool_callback_owner test_mempool_replacement_policy test_mempool_package_bounds test_mempool_maintenance_owner test_mempool_admission_owner test_mempool_policy_owner test_mempool_block_owner test_mempool_refresh_owner test_mempool_prepared_refresh test_relay_refresh_owner test_tx_relay_g3 test_csn_proof_refresh test_header_sync_p2p_integration test_rocksdb_checksum test_wallet_historical_rpc test_rpc_handler_drain test_wallet_pq_rpc_owner test_wallet_mainnet_readiness test_mining_height2 test_wallet_height2_coinbase test_pruning test_header_status_bits test_template_maturity test_wallet_input_coins test_header_metadata_recovery v7_p2mr_key_read_test v7_p2mr_inventory_test test_assumeutxo_replay test_wallet_rescan_utxoset test_orchard_account_delivery test_orchard_index_delivery test_wallet_database_lease test_wallet_block_disconnect test_wallet_revert_atomic test_mempool_proof_staleness test_utxo_publication test_orchard_state_commitment test_orchard_state_root test_orchard_legacy_accounting test_orchard_runtime_reader test_orchard_service_startup test_shielded_state_startup test_legacy_retirement test_state_commitment_canonical test_state_commitment_encoding test_state_commitment_external_vectors test_state_commitment_transitions test_orchard_backend test_orchard_wallet test_orchard_wallet_shield test_orchard_wallet_spend test_orchard_wallet_storage test_orchard_wallet_scan test_orchard_operation_queue test_orchard_proof_jobs test_orchard_wallet_account test_orchard_chain_restore test_orchard_operation_archive test_orchard_transaction_reader test_orchard_coin_snapshot test_orchard_transparent test_orchard_authorization test_orchard_state_transition test_orchard_block_reader test_orchard_block_coins test_orchard_resources test_orchard_block_filter test_orchard_header test_orchard_forest_transition test_orchard_block_staging test_orchard_state_storage test_orchard_legacy_boundary test_block_storage_roundtrip test_archival_block_reader --parallel 2
+          ./build-orchard-root/dinerod --version
+      - name: Require and execute initial mining and coinbase indexing fixtures
+        run: |
+          ctest --test-dir build-orchard-root -R '^(MiningHeight2|WalletHeight2Coinbase)$' --show-only=json-v1 > orchard-height-one-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests = json.load(open('orchard-height-one-inventory.json'))['tests']
+          if sorted(t['name'] for t in tests) != ['MiningHeight2', 'WalletHeight2Coinbase'] or any(p['name'] == 'DISABLED' and p['value'] for t in tests for p in t.get('properties', [])):
+              raise SystemExit('Initial mining/coinbase fixtures missing or disabled')
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^(MiningHeight2|WalletHeight2Coinbase)$' --verbose --no-tests=error --output-log orchard-height-one-execution.log
+          python3 - <<'PYTEST'
+          log = open('orchard-height-one-execution.log').read()
+          if log.count('✅ ALL TESTS PASSED') != 2:
+              raise SystemExit('Both initial mining/coinbase fixtures must complete')
+          for marker in ['First PoW block (Fair Launch v3) works correctly.', 'Wallet correctly tracks and enforces maturity for all coinbase outputs.']:
+              if log.count(marker) != 1:
+                  raise SystemExit('Missing or duplicate initial mining/coinbase completion')
+          PYTEST
+      - name: Require and execute pruning and header-status storage regressions
+        run: |
+          ctest --test-dir build-orchard-root -R '^(PruningTestSuite|HeaderStatusBits)$' --show-only=json-v1 > orchard-storage-test-link-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests = json.load(open('orchard-storage-test-link-inventory.json'))['tests']
+          if sorted(t['name'] for t in tests) != ['HeaderStatusBits', 'PruningTestSuite'] or any(p['name'] == 'DISABLED' and p['value'] for t in tests for p in t.get('properties', [])):
+              raise SystemExit('Pruning/header-status tests missing or disabled')
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^(PruningTestSuite|HeaderStatusBits)$' --verbose --no-tests=error --output-log orchard-storage-test-link-execution.log
+          python3 - <<'PYTEST'
+          import re
+          log = open('orchard-storage-test-link-execution.log').read()
+          if log.count('Header status bits: 12/12 properties hold') != 1 or log.count('ALL TESTS PASSED ✓') != 1:
+              raise SystemExit('Storage fixtures did not complete exactly once')
+          if sorted(re.findall(r'\[Test ([1-5])\] ✓ PASS:', log)) != ['1', '2', '3', '4', '5']:
+              raise SystemExit('Pruning cases missing or duplicated')
+          PYTEST
+      - name: Require and execute archival header metadata recovery
+        run: |
+          ctest --test-dir build-orchard-root -R '^HeaderMetadataRecovery$' --show-only=json-v1 > orchard-header-recovery-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests = json.load(open('orchard-header-recovery-inventory.json'))['tests']
+          if [t['name'] for t in tests] != ['HeaderMetadataRecovery'] or any(p['name'] == 'DISABLED' and p['value'] for t in tests for p in t.get('properties', [])):
+              raise SystemExit('HeaderMetadataRecovery missing or disabled')
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^HeaderMetadataRecovery$' --verbose --no-tests=error --output-log orchard-header-recovery-execution.log
+          python3 - <<'PYTEST'
+          log = open('orchard-header-recovery-execution.log').read()
+          if log.count('[PASS] header metadata recovery reconstructs missing rows safely') != 1:
+              raise SystemExit('Header metadata recovery fixture did not complete exactly once')
+          PYTEST
+      - name: Require and execute chainstate checkpoint interval
+        run: |
+          ctest --test-dir build-orchard-root -R '^ChainstateCommitBatchInterval$' --show-only=json-v1 > orchard-checkpoint-interval-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests=json.load(open('orchard-checkpoint-interval-inventory.json'))['tests']
+          if [t['name'] for t in tests]!=['ChainstateCommitBatchInterval'] or any(p['name']=='DISABLED' and p['value'] for t in tests for p in t.get('properties',[])):
+              raise SystemExit('Checkpoint interval test missing or disabled')
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^ChainstateCommitBatchInterval$' --verbose --no-tests=error --output-log orchard-checkpoint-interval-execution.log
+          python3 - <<'PYTEST'
+          import re
+          log=open('orchard-checkpoint-interval-execution.log').read()
+          expected=['DefaultIntervalRequiresCheckpointEveryBlock','NonIntervalHeightSkipsCheckpointOnly','IntervalHeightStillRequiresCheckpoint','ZeroIntervalBehavesLikeEveryBlock','StatelessModeRequiresRecoveryDelta']
+          if sorted(re.findall(r'\[       OK \] ChainstateCommitBatchInterval\.(\w+)',log))!=sorted(expected):
+              raise SystemExit('Checkpoint interval cases did not complete exactly once')
+          PYTEST
+      - name: Build and execute real mempool runtime test consumers
+        run: |
+          mapfile -t targets < build-orchard-root/real-mempool-fixture-targets.txt
+          test "${#targets[@]}" -eq 20
+          cmake --build build-orchard-root --parallel 4 --target "${targets[@]}" -- -k 0
+          ctest --test-dir build-orchard-root --show-only=json-v1 > orchard-real-mempool-all-inventory.json
+          python3 - <<'PYTEST'
+          import json,pathlib,re
+          targets=set(pathlib.Path('build-orchard-root/real-mempool-fixture-targets.txt').read_text().splitlines())
+          all_tests=json.load(open('orchard-real-mempool-all-inventory.json'))['tests']
+          tests=[t for t in all_tests if t.get('command') and pathlib.Path(t['command'][0]).name in targets]
+          if {pathlib.Path(t['command'][0]).name for t in tests}!=targets or any(p['name']=='DISABLED' and p['value'] for t in tests for p in t.get('properties',[])):
+              raise SystemExit('Real mempool test consumers missing or disabled')
+          json.dump({'tests':tests},open('orchard-real-mempool-inventory.json','w'),indent=2)
+          pathlib.Path('orchard-real-mempool-regex.txt').write_text('^('+'|'.join(re.escape(t['name']) for t in tests)+')$')
+          # Every compiled replay-binary case must have exactly one enabled CTest owner.
+          import fnmatch,subprocess
+          replay=[t for t in tests if pathlib.Path(t['command'][0]).name=='test_assumeutxo_replay']
+          assert replay
+          listing=subprocess.check_output([replay[0]['command'][0],'--gtest_list_tests'],text=True)
+          pathlib.Path('orchard-replay-case-list.txt').write_text(listing)
+          cases=[];suite=None
+          for line in listing.splitlines():
+              if line and not line[0].isspace() and line.endswith('.'):suite=line.strip()
+              elif line.startswith('  ') and suite:cases.append(suite+line.strip().split(' #',1)[0])
+          assert cases and len(cases)==len(set(cases))
+          owners={case:[] for case in cases}
+          for test in replay:
+              filters=[v.split('=',1)[1] for v in test['command'][1:] if v.startswith('--gtest_filter=')]
+              assert len(filters)==1 and '-' not in filters[0]
+              matched=[case for case in cases if any(fnmatch.fnmatchcase(case,p) for p in filters[0].split(':'))]
+              assert matched,(test['name'],'empty filter')
+              for case in matched:owners[case].append(test['name'])
+          assert all(len(v)==1 for v in owners.values()),owners
+          json.dump(owners,open('orchard-replay-case-owners.json','w'),indent=2)
+          PYTEST
+          ctest --test-dir build-orchard-root -R "$(cat orchard-real-mempool-regex.txt)" --verbose --no-tests=error --output-log orchard-real-mempool-execution.log
+          python3 - <<'PYTEST'
+          import json,re
+          names=[t['name'] for t in json.load(open('orchard-real-mempool-inventory.json'))['tests']]
+          log=open('orchard-real-mempool-execution.log').read()
+          if sorted(re.findall(r'Test\s+#\d+:\s+(\S+)\s+\.+\s+Passed',log))!=sorted(names):
+              raise SystemExit('Real mempool test consumer executions incomplete')
+          for case in json.load(open('orchard-replay-case-owners.json')):
+              assert log.count('[       OK ] '+case+' (')==1,case
+          PYTEST
+      - name: Consistent mining selection and fee snapshot
+        run: |
+          cmake --build build-orchard-root --target test_mining_selection_snapshot --parallel 4 -- -k 0
+          ctest --test-dir build-orchard-root -R '^MiningSelectionSnapshot$' --show-only=json-v1 > orchard-mining-selection-snapshot-inventory.json
+          python3 - <<'PYSNAPSHOT'
+          import json
+          tests=json.load(open('orchard-mining-selection-snapshot-inventory.json'))['tests']
+          assert [t['name'] for t in tests]==['MiningSelectionSnapshot']
+          assert not any(p['name']=='DISABLED' and p['value'] for t in tests for p in t.get('properties',[]))
+          PYSNAPSHOT
+          ctest --test-dir build-orchard-root -R '^MiningSelectionSnapshot$' --verbose --no-tests=error --output-log orchard-mining-selection-snapshot-execution.log
+          python3 - <<'PYSNAPSHOT'
+          import re
+          log=open('orchard-mining-selection-snapshot-execution.log').read()
+          assert re.findall(r'Test\s+#\d+:\s+(\S+)\s+\.+\s+Passed',log)==['MiningSelectionSnapshot']
+          cases=['CapturedMetadataSurvivesPoolClear','JobAndRpcTemplateKeepCapturedFees','UnavailableChainCaptureRefusesMining']
+          assert sorted(re.findall(r'\[       OK \] MiningSelectionSnapshot\.(\w+)',log))==sorted(cases)
+          PYSNAPSHOT
+      - name: Ancestor-safe mining package selection
+        run: |
+          cmake --build build-orchard-root --target test_mining_package_selection --parallel 4 -- -k 0
+          ctest --test-dir build-orchard-root -R '^MiningPackageSelection$' --show-only=json-v1 > orchard-mining-package-selection-inventory.json
+          python3 - <<'PYSNAPSHOT'
+          import json
+          tests=json.load(open('orchard-mining-package-selection-inventory.json'))['tests']
+          assert [t['name'] for t in tests]==['MiningPackageSelection']
+          assert not any(p['name']=='DISABLED' and p['value'] for t in tests for p in t.get('properties',[]))
+          PYSNAPSHOT
+          ctest --test-dir build-orchard-root -R '^MiningPackageSelection$' --verbose --no-tests=error --output-log orchard-mining-package-selection-execution.log
+          python3 - <<'PYSNAPSHOT'
+          import re
+          log=open('orchard-mining-package-selection-execution.log').read()
+          assert re.findall(r'Test\s+#\d+:\s+(\S+)\s+\.+\s+Passed',log)==['MiningPackageSelection']
+          cases=['RankedChildRetainsParentAndExactWeight','SharedParentIncludedExactlyOnce','RejectedParentCannotLeaveSelectedChild']
+          assert sorted(re.findall(r'\[       OK \] MiningPackageSelection\.(\w+)',log))==sorted(cases)
+          PYSNAPSHOT
+      - name: Shared mining job selection policy
+        run: |
+          cmake --build build-orchard-root --target test_mining_job_policy --parallel 4 -- -k 0
+          ctest --test-dir build-orchard-root -R '^MiningJobPolicy$' --show-only=json-v1 > orchard-mining-job-policy-inventory.json
+          python3 - <<'PYSNAPSHOT'
+          import json
+          tests=json.load(open('orchard-mining-job-policy-inventory.json'))['tests']
+          assert [t['name'] for t in tests]==['MiningJobPolicy']
+          assert not any(p['name']=='DISABLED' and p['value'] for t in tests for p in t.get('properties',[]))
+          PYSNAPSHOT
+          ctest --test-dir build-orchard-root -R '^MiningJobPolicy$' --verbose --no-tests=error --output-log orchard-mining-job-policy-execution.log
+          python3 - <<'PYSNAPSHOT'
+          import re
+          log=open('orchard-mining-job-policy-execution.log').read()
+          assert re.findall(r'Test\s+#\d+:\s+(\S+)\s+\.+\s+Passed',log)==['MiningJobPolicy']
+          cases=['JobAppliesParentPolicyAndRetry','JobIncludesSharedParentExactlyOnce','JobHonorsExactWeightBoundary']
+          assert sorted(re.findall(r'\[       OK \] MiningJobPolicy\.(\w+)',log))==sorted(cases)
+          PYSNAPSHOT
+      - name: Owned mining template and RPC results
+        run: |
+          cmake --build build-orchard-root --target test_mining_template_result --parallel 4 -- -k 0
+          ctest --test-dir build-orchard-root -R '^MiningTemplateResult$' --show-only=json-v1 > orchard-mining-template-result-inventory.json
+          python3 - <<'PYSNAPSHOT'
+          import json
+          tests=json.load(open('orchard-mining-template-result-inventory.json'))['tests']
+          assert [t['name'] for t in tests]==['MiningTemplateResult']
+          assert not any(p['name']=='DISABLED' and p['value'] for t in tests for p in t.get('properties',[]))
+          PYSNAPSHOT
+          ctest --test-dir build-orchard-root -R '^MiningTemplateResult$' --verbose --no-tests=error --output-log orchard-mining-template-result-execution.log
+          python3 - <<'PYSNAPSHOT'
+          import re
+          log=open('orchard-mining-template-result-execution.log').read()
+          assert re.findall(r'Test\s+#\d+:\s+(\S+)\s+\.+\s+Passed',log)==['MiningTemplateResult']
+          cases=['CapturedFeesSurvivePoolRemoval','ExcludedAncestorsHaveNoResultFees','FailurePreservesOutputAndEmptyRetryReplacesIt']
+          assert sorted(re.findall(r'\[       OK \] MiningTemplateResult\.(\w+)',log))==sorted(cases)
+          PYSNAPSHOT
+      - name: Selected-chain ownership during mining construction
+        run: |
+          cmake --build build-orchard-root --target test_mining_chain_guard --parallel 4 -- -k 0
+          ctest --test-dir build-orchard-root -R '^MiningChainGuard$' --show-only=json-v1 > orchard-mining-chain-guard-inventory.json
+          python3 - <<'PYSNAPSHOT'
+          import json
+          tests=json.load(open('orchard-mining-chain-guard-inventory.json'))['tests']
+          assert [t['name'] for t in tests]==['MiningChainGuard']
+          assert not any(p['name']=='DISABLED' and p['value'] for t in tests for p in t.get('properties',[]))
+          PYSNAPSHOT
+          ctest --test-dir build-orchard-root -R '^MiningChainGuard$' --verbose --no-tests=error --output-log orchard-mining-chain-guard-execution.log
+          python3 - <<'PYSNAPSHOT'
+          import re
+          log=open('orchard-mining-chain-guard-execution.log').read()
+          assert re.findall(r'Test\s+#\d+:\s+(\S+)\s+\.+\s+Passed',log)==['MiningChainGuard']
+          cases=['ChainPrecedesPoolAndOutlivesPoolRelease','CapturedFactorySurvivesReplacementAndUnavailableRefusesEarly','ExplicitParentMustEqualCurrentDurableTip']
+          assert sorted(re.findall(r'\[       OK \] MiningChainGuard\.(\w+)',log))==sorted(cases)
+          PYSNAPSHOT
+      - name: HTTP RPC pool operation ownership
+        run: |
+          cmake --build build-orchard-root --target test_rpc_pool_owner test_rpc_handler_drain -j2
+          ctest --test-dir build-orchard-root -R '^(RpcPoolOwner|RpcHandlerDrain)$' --show-only=json-v1 > orchard-rpc-pool-owner-inventory.json
+          python3 - <<'PYCODE'
+          import json
+          tests=json.load(open('orchard-rpc-pool-owner-inventory.json'))['tests']
+          assert sorted(t['name'] for t in tests)==['RpcHandlerDrain','RpcPoolOwner']
+          assert not any(p['name']=='DISABLED' and p['value'] for t in tests for p in t.get('properties',[]))
+          PYCODE
+          ctest --test-dir build-orchard-root -R '^(RpcPoolOwner|RpcHandlerDrain)$' --verbose --no-tests=error | tee orchard-rpc-pool-owner-execution.log
+          python3 - <<'PYCODE'
+          from pathlib import Path
+          log=Path('orchard-rpc-pool-owner-execution.log').read_text()
+          for case in ['HoldsPoolThroughUnifiedHandlerAndAlias','ExceptionAndReturnedErrorReleaseOwner','ClosedServiceRefusesBeforeHandler']:
+              assert log.count('[       OK ] RpcPoolOwner.'+case+' ')==1
+          assert '100% tests passed, 0 tests failed out of 2' in log
+          PYCODE
+
+      - name: Actual mining RPC result and accepted template
+        run: |
+          ctest --test-dir build-orchard-root -R '^MiningRpcResult$' --show-only=json-v1 > orchard-mining-rpc-result-inventory.json
+          python3 - <<'PYINNER'
+          import json
+          tests=json.load(open('orchard-mining-rpc-result-inventory.json'))['tests']
+          assert [t['name'] for t in tests]==['MiningRpcResult']
+          assert not any(p['name']=='DISABLED' and p['value'] for t in tests for p in t.get('properties',[]))
+          PYINNER
+          ctest --test-dir build-orchard-root -R '^MiningRpcResult$' --verbose --no-tests=error --output-log orchard-mining-rpc-result-execution.log
+          python3 - <<'PYINNER'
+          import re
+          log=open('orchard-mining-rpc-result-execution.log').read()
+          assert re.findall(r'Test\s+#\d+:\s+(\S+)\s+\.+\s+Passed',log)==['MiningRpcResult']
+          for marker in ['PASS actual RPC returns accepted body and exact transaction fees','PASS exclusion and actual mining.getjob preserve the admitted pool','PASS returned RPC template accepted and later response has no stale fees']:
+              assert marker in log
+          PYINNER
+      - name: Full-node mining of foreign-wallet inputs
+        run: |
+          ctest --test-dir build-orchard-root -R '^MiningChainProvider$' --show-only=json-v1 > orchard-mining-chain-provider-inventory.json
+          python3 - <<'PYINNER'
+          import json
+          tests=json.load(open('orchard-mining-chain-provider-inventory.json'))['tests']
+          assert [t['name'] for t in tests]==['MiningChainProvider']
+          assert not any(p['name']=='DISABLED' and p['value'] for t in tests for p in t.get('properties',[]))
+          PYINNER
+          ctest --test-dir build-orchard-root -R '^MiningChainProvider$' --verbose --no-tests=error --output-log orchard-mining-chain-provider-execution.log
+          python3 - <<'PYINNER'
+          import re
+          log=open('orchard-mining-chain-provider-execution.log').read()
+          assert re.findall(r'Test\s+#\d+:\s+(\S+)\s+\.+\s+Passed',log)==['MiningChainProvider']
+          for marker in ['PASS independent full node holds source chain without source wallet coins','PASS foreign-wallet job accepted and reopened round 1','PASS foreign-wallet job accepted and reopened round 2']:
+              assert marker in log
+          PYINNER
+      - name: Retained mining-template mempool owner
+        run: |
+          cmake --build build-orchard-root --target test_mining_pool_owner test_utreexo_safety_gate test_block_template_determinism --parallel 4 -- -k 0
+          ctest --test-dir build-orchard-root -R '^(MiningPoolOwner|UtreexoSafetyGate|BlockTemplateDeterminism)$' --show-only=json-v1 > orchard-mining-pool-owner-inventory.json
+          python3 - <<'PYOWNER'
+          import json
+          tests=json.load(open('orchard-mining-pool-owner-inventory.json'))['tests']
+          assert sorted(t['name'] for t in tests)==['BlockTemplateDeterminism','MiningPoolOwner','UtreexoSafetyGate']
+          assert not any(p['name']=='DISABLED' and p['value'] for t in tests for p in t.get('properties',[]))
+          PYOWNER
+          ctest --test-dir build-orchard-root -R '^(MiningPoolOwner|UtreexoSafetyGate|BlockTemplateDeterminism)$' --verbose --no-tests=error --output-log orchard-mining-pool-owner-execution.log
+          python3 - <<'PYOWNER'
+          import re
+          log=open('orchard-mining-pool-owner-execution.log').read()
+          assert sorted(re.findall(r'Test\s+#\d+:\s+(\S+)\s+\.+\s+Passed',log))==['BlockTemplateDeterminism','MiningPoolOwner','UtreexoSafetyGate']
+          cases=['RpcTemplateRetainsPoolThroughStop','StratumJobUsesOneCapturedPool','UnavailableOwnerPreservesTemplateStateAndBorrowedAccess']
+          assert sorted(re.findall(r'\[       OK \] MiningPoolOwner\.(\w+)',log))==sorted(cases)
+          PYOWNER
+      - name: Retained compact-block mempool owner
+        run: |
+          cmake --build build-orchard-root --target test_block_relay_pool_owner test_block_relay_g2 test_compact_block_binary --parallel 4 -- -k 0
+          ctest --test-dir build-orchard-root -R '^(BlockRelayPoolOwner|BlockRelayG2Verification|CompactBlockBinarySerialization)$' --show-only=json-v1 > orchard-block-relay-pool-owner-inventory.json
+          python3 - <<'PYOWNER'
+          import json
+          tests=json.load(open('orchard-block-relay-pool-owner-inventory.json'))['tests']
+          assert sorted(t['name'] for t in tests)==['BlockRelayG2Verification','BlockRelayPoolOwner','CompactBlockBinarySerialization']
+          assert not any(p['name']=='DISABLED' and p['value'] for t in tests for p in t.get('properties',[]))
+          PYOWNER
+          ctest --test-dir build-orchard-root -R '^(BlockRelayPoolOwner|BlockRelayG2Verification|CompactBlockBinarySerialization)$' --verbose --no-tests=error --output-log orchard-block-relay-pool-owner-execution.log
+          python3 - <<'PYOWNER'
+          import re
+          log=open('orchard-block-relay-pool-owner-execution.log').read()
+          assert sorted(re.findall(r'Test\s+#\d+:\s+(\S+)\s+\.+\s+Passed',log))==['BlockRelayG2Verification','BlockRelayPoolOwner','CompactBlockBinarySerialization']
+          cases=['ReconstructionRetainsServiceThroughValidationAndStop','FactoryReplacementRetainsCapturedOwner','UnavailableOwnerHasNoRelayEffectsAndRetryWorks']
+          assert sorted(re.findall(r'\[       OK \] BlockRelayPoolOwner\.(\w+)',log))==sorted(cases)
+          PYOWNER
+      - name: Require and execute daemon mempool lifecycle jobs
+        run: |
+          ctest --test-dir build-orchard-root -R '^(DaemonServiceRelease|ContextualLocksLifecycle|CsnSpendReorgReconciliation|ParallelBlockDownloadTargeted)$' --show-only=json-v1 > orchard-daemon-mempool-jobs-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests=json.load(open('orchard-daemon-mempool-jobs-inventory.json'))['tests']
+          expected=['DaemonServiceRelease','ContextualLocksLifecycle','CsnSpendReorgReconciliation','ParallelBlockDownloadTargeted']
+          if sorted(t['name'] for t in tests)!=sorted(expected) or any(p['name']=='DISABLED' and p['value'] for t in tests for p in t.get('properties',[])):
+              raise SystemExit('Daemon mempool lifecycle tests missing or disabled')
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^(DaemonServiceRelease|ContextualLocksLifecycle|CsnSpendReorgReconciliation|ParallelBlockDownloadTargeted)$' --verbose --no-tests=error --output-log orchard-daemon-mempool-jobs-execution.log
+          python3 - <<'PYTEST'
+          import re
+          log=open('orchard-daemon-mempool-jobs-execution.log').read()
+          expected=['DaemonServiceRelease','ContextualLocksLifecycle','CsnSpendReorgReconciliation','ParallelBlockDownloadTargeted']
+          if sorted(re.findall(r'Test\s+#\d+:\s+(\S+)\s+\.+\s+Passed',log))!=sorted(expected):
+              raise SystemExit('Daemon mempool lifecycle cases did not complete')
+          PYTEST
+      - name: Require and execute mempool service operation ownership
+        run: |
+          ctest --test-dir build-orchard-root -R '^MempoolServiceOwner$' --show-only=json-v1 > orchard-mempool-service-owner-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests=json.load(open('orchard-mempool-service-owner-inventory.json'))['tests']
+          if [t['name'] for t in tests]!=['MempoolServiceOwner'] or any(p['name']=='DISABLED' and p['value'] for t in tests for p in t.get('properties',[])):
+              raise SystemExit('Mempool service ownership test missing or disabled')
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^MempoolServiceOwner$' --verbose --no-tests=error --output-log orchard-mempool-service-owner-execution.log
+          python3 - <<'PYTEST'
+          import re
+          log=open('orchard-mempool-service-owner-execution.log').read()
+          expected=['PreparedOperationRetainsOwnerAndDrainsBeforeStop','SubmissionCallbackFinishesNestedReadsDuringDrain','ShutdownLoggingCannotStrandClosedService']
+          if sorted(re.findall(r'\[       OK \] MempoolServiceOwner\.(\w+)',log))!=sorted(expected):
+              raise SystemExit('Mempool service ownership cases did not complete')
+          PYTEST
+      - name: Require and execute composed pool tip consumers
+        run: |
+          ctest --test-dir build-orchard-root -R '^PoolTipConsumers$' --show-only=json-v1 > orchard-pool-tip-consumers-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests=json.load(open('orchard-pool-tip-consumers-inventory.json'))['tests']
+          if [t['name'] for t in tests]!=['PoolTipConsumers'] or any(p['name']=='DISABLED' and p['value'] for t in tests for p in t.get('properties',[])):
+              raise SystemExit('Pool tip consumer test missing or disabled')
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^PoolTipConsumers$' --verbose --no-tests=error --output-log orchard-pool-tip-consumers-execution.log
+          python3 - <<'PYTEST'
+          import re
+          log=open('orchard-pool-tip-consumers-execution.log').read()
+          expected=['AbandonAndPublishPreserveAllConsumerOwners','PreparationFailureAndAbsentConsumersRetainExistingPolicy','DisconnectPublishesBeforeAmbiguousExternalRefresh']
+          if sorted(re.findall(r'\[       OK \] PoolTipConsumers\.(\w+)',log))!=sorted(expected):
+              raise SystemExit('Pool tip consumer cases did not complete')
+          PYTEST
+      - name: Require and execute bridge cache publication ownership
+        run: |
+          ctest --test-dir build-orchard-root -R '^(BridgeCacheOwner|BridgeForestReadLock)$' --show-only=json-v1 > orchard-bridge-cache-owner-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests=json.load(open('orchard-bridge-cache-owner-inventory.json'))['tests']
+          if sorted(t['name'] for t in tests)!=['BridgeCacheOwner','BridgeForestReadLock'] or any(p['name']=='DISABLED' and p['value'] for t in tests for p in t.get('properties',[])):
+              raise SystemExit('Bridge cache tests missing or disabled')
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^(BridgeCacheOwner|BridgeForestReadLock)$' --verbose --no-tests=error --output-log orchard-bridge-cache-owner-execution.log
+          python3 - <<'PYTEST'
+          import re
+          log=open('orchard-bridge-cache-owner-execution.log').read()
+          expected=['AbandonPreservesCacheAndPublicationInvalidates','InvalidationDuringGenerationRefusesObsoleteResult','AbandonedInvalidationDoesNotCancelGeneration']
+          if sorted(re.findall(r'\[       OK \] BridgeCacheOwner\.(\w+)',log))!=sorted(expected) or 'PASS: BridgeNode forest reads honor' not in log:
+              raise SystemExit('Bridge cache cases did not complete')
+          PYTEST
+      - name: Require and execute relay refresh ownership
+        run: |
+          ctest --test-dir build-orchard-root -R '^(RelayRefreshOwner|TxRelayG3Verification|CsnProofRefresh)$' --show-only=json-v1 > orchard-relay-refresh-owner-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests=json.load(open('orchard-relay-refresh-owner-inventory.json'))['tests']
+          if sorted(t['name'] for t in tests)!=sorted(['RelayRefreshOwner','TxRelayG3Verification','CsnProofRefresh']) or any(p['name']=='DISABLED' and p['value'] for t in tests for p in t.get('properties',[])):
+              raise SystemExit('Relay refresh tests missing or disabled')
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^(RelayRefreshOwner|TxRelayG3Verification|CsnProofRefresh)$' --verbose --no-tests=error --output-log orchard-relay-refresh-owner-execution.log
+          python3 - <<'PYTEST'
+          import re
+          log=open('orchard-relay-refresh-owner-execution.log').read()
+          expected=['OperationRetainsCallbackSnapshot','CompletionInsideSendDoesNotRecreateReservation','TipChangeDiscardsUnsentBatchAndReplacementIsOwned','SendExceptionRetainsAttemptAndReleasesOnlyUnsent','PreparedTipAbandonsOrPublishesWithoutExternalCalls']
+          if sorted(re.findall(r'\[       OK \] RelayRefreshOwner\.(\w+)',log))!=sorted(expected):
+              raise SystemExit('Relay refresh owner cases did not complete exactly once')
+          PYTEST
+      - name: Require and execute combined mempool block and refresh ownership
+        run: |
+          ctest --test-dir build-orchard-root -R '^MempoolPreparedRefresh$' --show-only=json-v1 > orchard-prepared-refresh-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests=json.load(open('orchard-prepared-refresh-inventory.json'))['tests']
+          if [t['name'] for t in tests]!=['MempoolPreparedRefresh'] or any(p['name']=='DISABLED' and p['value'] for t in tests for p in t.get('properties',[])):
+              raise SystemExit('Refresh owner test missing or disabled')
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^MempoolPreparedRefresh$' --verbose --no-tests=error --output-log orchard-prepared-refresh-execution.log
+          python3 - <<'PYTEST'
+          import re
+          log=open('orchard-prepared-refresh-execution.log').read()
+          expected=['ConnectAbandonsOrPublishesBlockAndRefreshTogether','RefreshPreparationFailureRestoresCompleteBlockTransition','DisconnectUsesParentHeightAndPreservesAbandonedAttempts','ConfirmationPreparedBeforeBaseCommitRetainsChildOverlay']
+          if sorted(re.findall(r'\[       OK \] MempoolPreparedRefresh\.(\w+)',log))!=sorted(expected):
+              raise SystemExit('Refresh owner cases did not complete exactly once')
+          PYTEST
+      - name: Require and execute mempool stale proof refresh ownership
+        run: |
+          ctest --test-dir build-orchard-root -R '^MempoolRefreshOwner$' --show-only=json-v1 > orchard-refresh-owner-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests=json.load(open('orchard-refresh-owner-inventory.json'))['tests']
+          if [t['name'] for t in tests]!=['MempoolRefreshOwner'] or any(p['name']=='DISABLED' and p['value'] for t in tests for p in t.get('properties',[])):
+              raise SystemExit('Refresh owner test missing or disabled')
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^MempoolRefreshOwner$' --verbose --no-tests=error --output-log orchard-refresh-owner-execution.log
+          python3 - <<'PYTEST'
+          import re
+          log=open('orchard-refresh-owner-execution.log').read()
+          expected=['AgeEvictionRemovesDescendantsBeforeSelectingSurvivors','OverloadEvictsChildrenWithoutProofMetadata','SelectionExceptionRestoresEntriesAttemptsAndCounters']
+          if sorted(re.findall(r'\[       OK \] MempoolRefreshOwner\.(\w+)',log))!=sorted(expected):
+              raise SystemExit('Refresh owner cases did not complete exactly once')
+          PYTEST
+      - name: Require and execute mempool typed block reconciliation rollback
+        run: |
+          ctest --test-dir build-orchard-root -R '^MempoolBlockOwner$' --show-only=json-v1 > orchard-block-owner-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests=json.load(open('orchard-block-owner-inventory.json'))['tests']
+          if [t['name'] for t in tests]!=['MempoolBlockOwner'] or any(p['name']=='DISABLED' and p['value'] for t in tests for p in t.get('properties',[])):
+              raise SystemExit('Block owner test missing or disabled')
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^MempoolBlockOwner$' --verbose --no-tests=error --output-log orchard-block-owner-execution.log
+          python3 - <<'PYTEST'
+          import re
+          log=open('orchard-block-owner-execution.log').read()
+          expected=['ConnectedConflictFailureRestoresPoolAndProofState','ConfirmedParentFailurePreservesChildDependencyAndRetry','DisconnectedFailureRestoresCacheBeforeRetry','PreparedUpdatesAbandonOrPublishExactlyOnce']
+          if sorted(re.findall(r'\[       OK \] MempoolBlockOwner\.(\w+)',log))!=sorted(expected):
+              raise SystemExit('Block owner cases did not complete exactly once')
+          PYTEST
+      - name: Require and execute mempool policy setting ownership
+        run: |
+          ctest --test-dir build-orchard-root -R '^MempoolPolicyOwner$' --show-only=json-v1 > orchard-policy-owner-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests=json.load(open('orchard-policy-owner-inventory.json'))['tests']
+          if [t['name'] for t in tests]!=['MempoolPolicyOwner'] or any(p['name']=='DISABLED' and p['value'] for t in tests for p in t.get('properties',[])):
+              raise SystemExit('Policy owner test missing or disabled')
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^MempoolPolicyOwner$' --verbose --no-tests=error --output-log orchard-policy-owner-execution.log
+          python3 - <<'PYTEST'
+          import re
+          log=open('orchard-policy-owner-execution.log').read()
+          expected=['ConfigurationSnapshotsDoNotEscapeMutableState','IndependentFieldUpdatesAndReadsPreserveConfiguration','AdmissionAndOwnedSettingsCompleteTogether']
+          if sorted(re.findall(r'\[       OK \] MempoolPolicyOwner\.(\w+)',log))!=sorted(expected):
+              raise SystemExit('Policy owner cases did not complete exactly once')
+          PYTEST
+      - name: Require and execute mempool admission rollback
+        run: |
+          ctest --test-dir build-orchard-root -R '^MempoolAdmissionOwner$' --show-only=json-v1 > orchard-admission-owner-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests=json.load(open('orchard-admission-owner-inventory.json'))['tests']
+          if [t['name'] for t in tests]!=['MempoolAdmissionOwner'] or any(p['name']=='DISABLED' and p['value'] for t in tests for p in t.get('properties',[])):
+              raise SystemExit('Admission owner test missing or disabled')
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^MempoolAdmissionOwner$' --verbose --no-tests=error --output-log orchard-admission-owner-execution.log
+          python3 - <<'PYTEST'
+          import re
+          log=open('orchard-admission-owner-execution.log').read()
+          expected=['InsertionExceptionRestoresEntriesIndexesAndOverlay','ReplacementExceptionRestoresDescendantsAndExclusions','MaintenanceExceptionRollsBackBeforeObservers']
+          if sorted(re.findall(r'\[       OK \] MempoolAdmissionOwner\.(\w+)',log))!=sorted(expected):
+              raise SystemExit('Admission owner cases did not complete exactly once')
+          PYTEST
+      - name: Require and execute mempool maintenance ownership
+        run: |
+          ctest --test-dir build-orchard-root -R '^MempoolMaintenanceOwner$' --show-only=json-v1 > orchard-maintenance-owner-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests=json.load(open('orchard-maintenance-owner-inventory.json'))['tests']
+          if [t['name'] for t in tests]!=['MempoolMaintenanceOwner'] or any(p['name']=='DISABLED' and p['value'] for t in tests for p in t.get('properties',[])):
+              raise SystemExit('Maintenance owner test missing or disabled')
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^MempoolMaintenanceOwner$' --verbose --no-tests=error --output-log orchard-maintenance-owner-execution.log
+          python3 - <<'PYTEST'
+          import re
+          log=open('orchard-maintenance-owner-execution.log').read()
+          expected=['ConfirmationRetainsChildrenAndCoherentOverlay','ExpiryRebuildsAndAllowsFreshAdmission','SizeMaintenanceAndClearPermitCoherentRefill']
+          if sorted(re.findall(r'\[       OK \] MempoolMaintenanceOwner\.(\w+)',log))!=sorted(expected):
+              raise SystemExit('Maintenance owner cases did not complete exactly once')
+          PYTEST
+      - name: Require and execute mempool input ownership
+        run: |
+          cmake --build build-orchard-root --target test_mempool_input_owners --parallel 4 -- -k 0
+          ctest --test-dir build-orchard-root -R '^MempoolInputOwners$' --show-only=json-v1 > orchard-input-owners-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests=json.load(open('orchard-input-owners-inventory.json'))['tests']
+          if [t['name'] for t in tests]!=['MempoolInputOwners'] or any(p['name']=='DISABLED' and p['value'] for t in tests for p in t.get('properties',[])):
+              raise SystemExit('Input owner test missing or disabled')
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^MempoolInputOwners$' --verbose --no-tests=error --output-log orchard-input-owners-execution.log
+          python3 - <<'PYTEST'
+          import re
+          log=open('orchard-input-owners-execution.log').read()
+          expected=['AdmissionAndReplacementPreserveExactOwners','PreparedPublicationAndConfirmationRetainChildOwner','MaintenanceAndClearReleaseOwners','SyntheticSharedInputRemovalRetainsRemainingOwner']
+          if sorted(re.findall(r'\[       OK \] MempoolInputOwners\.(\w+)',log))!=sorted(expected):
+              raise SystemExit('Input owner cases did not complete exactly once')
+          PYTEST
+      - name: Require and execute mempool transaction body ownership
+        run: |
+          cmake --build build-orchard-root --target test_mempool_transaction_body --parallel 4 -- -k 0
+          ctest --test-dir build-orchard-root -R '^MempoolTransactionBody$' --show-only=json-v1 > orchard-transaction-body-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests=json.load(open('orchard-transaction-body-inventory.json'))['tests']
+          if [t['name'] for t in tests]!=['MempoolTransactionBody'] or any(p['name']=='DISABLED' and p['value'] for t in tests for p in t.get('properties',[])):
+              raise SystemExit('Transaction body test missing or disabled')
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^MempoolTransactionBody$' --verbose --no-tests=error --output-log orchard-transaction-body-execution.log
+          python3 - <<'PYTEST'
+          import re
+          log=open('orchard-transaction-body-execution.log').read()
+          expected=['HistoricalCopyRetainsBodyAndInputs','AdmissionCapturesBeforeChainCallback','EmptyAndWrongFamilyAccessRefuse','OrchardEntryOwnsCanonicalBodyWithoutLegacyConversion']
+          if sorted(re.findall(r'\[       OK \] MempoolTransactionBody\.(\w+)',log))!=sorted(expected):
+              raise SystemExit('Transaction body cases did not complete exactly once')
+          PYTEST
+      - name: Typed mempool output coins and existing overlay
+        run: |
+          cmake --build build-orchard-root --target test_mempool_output_coins --parallel 4 -- -k 0
+          ctest --test-dir build-orchard-root -R '^MempoolOutputCoins$' --show-only=json-v1 > orchard-output-coins-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests=json.load(open('orchard-output-coins-inventory.json'))['tests']
+          assert [t['name'] for t in tests]==['MempoolOutputCoins']
+          assert not any(p['name']=='DISABLED' and p['value'] for t in tests for p in t.get('properties',[]))
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^MempoolOutputCoins$' --verbose --no-tests=error --output-log orchard-output-coins-execution.log
+          python3 - <<'PYTEST'
+          from pathlib import Path
+          log=Path('orchard-output-coins-execution.log').read_text()
+          for case in ['HistoricalOutputMetadataAndCopyRetention','SignedParentChildReplacementAndBranchRemoval','EmptyAndOutOfRangeRefuse','OrchardOutputsRetainCanonicalMetadata']:
+              assert log.count('[       OK ] MempoolOutputCoins.'+case+' ')==1
+          assert '100% tests passed, 0 tests failed out of 1' in log
+          PYTEST
+
+      - name: Typed mempool relay body capture
+        run: |
+          cmake --build build-orchard-root --target test_mempool_typed_relay --parallel 4 -- -k 0
+          ctest --test-dir build-orchard-root -R '^MempoolTypedRelay$' --show-only=json-v1 > orchard-typed-relay-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests=json.load(open('orchard-typed-relay-inventory.json'))['tests']
+          assert [t['name'] for t in tests]==['MempoolTypedRelay']
+          assert not any(p['name']=='DISABLED' and p['value'] for t in tests for p in t.get('properties',[]))
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^MempoolTypedRelay$' --verbose --no-tests=error --output-log orchard-typed-relay-execution.log
+          python3 - <<'PYTEST'
+          from pathlib import Path
+          log=Path('orchard-typed-relay-execution.log').read_text()
+          for case in ['CapturedBodyAndSendSurviveReplacement','MissingEmptyAndWrongIdentityDoNotSend','HistoricalAdapterUsesSameCallbackOwner','OrchardCanonicalWireWithoutHistoricalConversion']:
+              assert log.count('[       OK ] MempoolTypedRelay.'+case+' ')==1
+          assert '100% tests passed, 0 tests failed out of 1' in log
+          PYTEST
+
+      - name: Typed incoming body and retained orphan ownership
+        run: |
+          cmake --build build-orchard-root --target test_mempool_typed_ingress --parallel 4 -- -k 0
+          ctest --test-dir build-orchard-root -R '^MempoolTypedIngress$' --show-only=json-v1 > orchard-typed-ingress-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests=json.load(open('orchard-typed-ingress-inventory.json'))['tests']
+          assert [t['name'] for t in tests]==['MempoolTypedIngress']
+          assert not any(p['name']=='DISABLED' and p['value'] for t in tests for p in t.get('properties',[]))
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^MempoolTypedIngress$' --verbose --no-tests=error --output-log orchard-typed-ingress-execution.log
+          python3 - <<'PYTEST'
+          from pathlib import Path
+          log=Path('orchard-typed-ingress-execution.log').read_text()
+          for case in ['CapturedHistoricalAdmissionAndCallbackReplacement','MissingSecondParentRemainsRetryable','HistoricalAdapterSharesCallbackOwner','OrchardUnavailableBeforeLegacyValidation','MixedOrphanInventoryOwnsCanonicalBodies']:
+              assert log.count('[       OK ] MempoolTypedIngress.'+case+' ')==1
+          assert '100% tests passed, 0 tests failed out of 1' in log
+          PYTEST
+
+      - name: Typed network transaction decoder and ingress boundary
+        run: |
+          cmake --build build-orchard-root --target test_mempool_relay_reader --parallel 4 -- -k 0
+          ctest --test-dir build-orchard-root -R '^MempoolRelayReader$' --show-only=json-v1 > orchard-relay-reader-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests=json.load(open('orchard-relay-reader-inventory.json'))['tests']
+          assert [t['name'] for t in tests]==['MempoolRelayReader']
+          assert not any(p['name']=='DISABLED' and p['value'] for t in tests for p in t.get('properties',[]))
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^MempoolRelayReader$' --verbose --no-tests=error --output-log orchard-relay-reader-execution.log
+          python3 - <<'PYTEST'
+          from pathlib import Path
+          log=Path('orchard-relay-reader-execution.log').read_text()
+          for case in ['SignedHistoricalRoundTripAndActualAdmission','HistoricalBoundsAndExactConsumption','OrchardWireAndUnavailableIngress','ExplicitFamilyPermissionAndWholeMessage']:
+              assert log.count('[       OK ] MempoolRelayReader.'+case+' ')==1
+          assert '100% tests passed, 0 tests failed out of 1' in log
+          PYTEST
+
+      - name: Typed raw mempool RPC capture
+        run: |
+          cmake --build build-orchard-root --target test_mempool_raw_rpc --parallel 4 -- -k 0
+          ctest --test-dir build-orchard-root -R '^MempoolRawRpc$' --show-only=json-v1 > orchard-raw-rpc-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests=json.load(open('orchard-raw-rpc-inventory.json'))['tests']
+          assert [t['name'] for t in tests]==['MempoolRawRpc']
+          assert not any(p['name']=='DISABLED' and p['value'] for t in tests for p in t.get('properties',[]))
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^MempoolRawRpc$' --verbose --no-tests=error --output-log orchard-raw-rpc-execution.log
+          python3 - <<'PYTEST'
+          from pathlib import Path
+          log=Path('orchard-raw-rpc-execution.log').read_text()
+          for case in ['SignedHistoricalBytesAndWeight','InvalidAbsentAndClosedServiceRefuse','OrchardReaderRetainsExactCanonicalBytes']:
+              assert log.count('[       OK ] MempoolRawRpc.'+case+' ')==1
+          assert '100% tests passed, 0 tests failed out of 1' in log
+          PYTEST
+
+      - name: Owned ranked mempool RPC capture
+        run: |
+          cmake --build build-orchard-root --target test_mempool_ranked_rpc --parallel 4 -- -k 0
+          ctest --test-dir build-orchard-root -R '^MempoolRankedRpc$' --show-only=json-v1 > orchard-ranked-rpc-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests=json.load(open('orchard-ranked-rpc-inventory.json'))['tests']
+          assert [t['name'] for t in tests]==['MempoolRankedRpc']
+          assert not any(p['name']=='DISABLED' and p['value'] for t in tests for p in t.get('properties',[]))
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^MempoolRankedRpc$' --verbose --no-tests=error --output-log orchard-ranked-rpc-execution.log
+          python3 - <<'PYTEST'
+          from pathlib import Path
+          log=Path('orchard-ranked-rpc-execution.log').read_text()
+          for case in ['SignedRankedCaptureSurvivesRemoval','IndexedReadRefusesPartialResult','ClosedServiceRefusesCapture','CanonicalOrchardRankedReader']:
+              assert log.count('[       OK ] MempoolRankedRpc.'+case+' ')==1
+          assert '100% tests passed, 0 tests failed out of 1' in log
+          PYTEST
+
+      - name: Retained mempool file recovery
+        run: |
+          cmake --build build-orchard-root --target test_mempool_retained_load test_covenant_system_lifecycle test_mempool_proof_staleness test_mempool_address_queries --parallel 4 -- -k 0
+          ctest --test-dir build-orchard-root -R '^(MempoolRetainedLoad|CovenantSystemLifecycle|MempoolProofStaleness|MempoolAddressQueries)$' --show-only=json-v1 > orchard-retained-load-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests=json.load(open('orchard-retained-load-inventory.json'))['tests']
+          assert sorted(t['name'] for t in tests)==['CovenantSystemLifecycle','MempoolAddressQueries','MempoolProofStaleness','MempoolRetainedLoad']
+          assert not any(p['name']=='DISABLED' and p['value'] for t in tests for p in t.get('properties',[]))
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^(MempoolRetainedLoad|CovenantSystemLifecycle|MempoolProofStaleness|MempoolAddressQueries)$' --verbose --no-tests=error --output-log orchard-retained-load-execution.log
+          python3 - <<'PYTEST'
+          from pathlib import Path
+          log=Path('orchard-retained-load-execution.log').read_text()
+          for case in ['SignedDependencyOrderAndReopen','UnavailableCoinsRetainFileUntilRetry','WholeFileFailureHasNoAdmission','UnavailableOrchardFileRetainsCanonicalBody']:
+              assert log.count('[       OK ] MempoolRetainedLoad.'+case+' ')==1
+          assert 'All mempool address-query tests passed (' in log
+          assert ' assertions passed!' in log
+          assert '100% tests passed, 0 tests failed out of 4' in log
+          PYTEST
+
+      - name: Typed mempool dependency policy
+        run: |
+          cmake --build build-orchard-root --target test_mempool_typed_package --parallel 4 -- -k 0
+          ctest --test-dir build-orchard-root -R '^(MempoolTypedPackage|AssumeUtxoPrebaseMempoolResolution)$' --show-only=json-v1 > orchard-typed-package-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests=json.load(open('orchard-typed-package-inventory.json'))['tests']
+          assert sorted(t['name'] for t in tests)==['AssumeUtxoPrebaseMempoolResolution','MempoolTypedPackage']
+          assert not any(p['name']=='DISABLED' and p['value'] for t in tests for p in t.get('properties',[]))
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^(MempoolTypedPackage|AssumeUtxoPrebaseMempoolResolution)$' --verbose --no-tests=error --output-log orchard-typed-package-execution.log
+          python3 - <<'PYTEST'
+          from pathlib import Path
+          log=Path('orchard-typed-package-execution.log').read_text()
+          for case in ['SignedAdmissionUsesCapturedPolicyAncestors','SharedAncestorsAndReplacementExclusion','RefusalPreservesPriorAncestorResult','MixedFamilyGraphKeepsOrdinaryByteProfile']:
+              assert log.count('[       OK ] MempoolTypedPackage.'+case+' ')==1
+          assert '100% tests passed, 0 tests failed out of 2' in log
+          assert 'PREBASE_MEMPOOL_MODE ASSERTIONS PASSED' in log
+          assert 'C (NO ADMISSION): both refused transaction identities are absent' in log
+          PYTEST
+
+      - name: Typed transaction bridge proof snapshot
+        run: |
+          cmake --build build-orchard-root --target test_mempool_typed_package --parallel 4 -- -k 0
+          ctest --test-dir build-orchard-root -R '^TypedBridgeProofOwner$' --show-only=json-v1 > orchard-typed-bridge-proof-owner-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests=json.load(open('orchard-typed-bridge-proof-owner-inventory.json'))['tests']
+          assert [t['name'] for t in tests]==['TypedBridgeProofOwner']
+          assert not any(p['name']=='DISABLED' and p['value'] for t in tests for p in t.get('properties',[]))
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^TypedBridgeProofOwner$' --verbose --no-tests=error --output-log orchard-typed-bridge-proof-owner-execution.log
+          python3 - <<'PYTEST'
+          from pathlib import Path
+          log=Path('orchard-typed-bridge-proof-owner-execution.log').read_text()
+          for case in ['HistoricalProofsOwnOneRootAndPayload','MissingInputAndUnrepresentableMetadataRefuseWholePayload','OrchardCanonicalBytesAndInputProofsNeedNoHistoricalConversion']:
+              assert log.count('[       OK ] TypedBridgeProofOwner.'+case+' (')==1
+          assert '100% tests passed, 0 tests failed out of 1' in log
+          PYTEST
+
+      - name: Typed Utreexo receive proof publication
+        run: |
+          cmake --build build-orchard-root --target test_mempool_typed_package --parallel 4 -- -k 0
+          ctest --test-dir build-orchard-root -R '^TypedUtreexoReceive$' --show-only=json-v1 > orchard-typed-utreexo-receive-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests=json.load(open('orchard-typed-utreexo-receive-inventory.json'))['tests']
+          assert [t['name'] for t in tests]==['TypedUtreexoReceive']
+          assert not any(p['name']=='DISABLED' and p['value'] for t in tests for p in t.get('properties',[]))
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^TypedUtreexoReceive$' --verbose --no-tests=error --output-log orchard-typed-utreexo-receive-execution.log
+          python3 - <<'PYTEST'
+          from pathlib import Path
+          log=Path('orchard-typed-utreexo-receive-execution.log').read_text()
+          for case in ['ExactHistoricalAndLegacyWirePublishesWholeCache','StaleSnapshotAndDifferentWitnessKeepPriorState','WholeMessageAndProofRefusalLeavePoolUntouched','OrchardInputProofReceiptPreservesFamilyWithoutAdmission']:
+              assert log.count('[       OK ] TypedUtreexoReceive.'+case+' (')==1
+          assert '100% tests passed, 0 tests failed out of 1' in log
+          PYTEST
+
+      - name: Selected parent pool proof context
+        run: |
+          cmake --build build-orchard-root --target test_mempool_typed_package --parallel 4 -- -k 0
+          ctest --test-dir build-orchard-root -R '^PoolParentRoot$' --show-only=json-v1 > orchard-pool-parent-root-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests=json.load(open('orchard-pool-parent-root-inventory.json'))['tests']
+          assert [t['name'] for t in tests]==['PoolParentRoot']
+          assert not any(p['name']=='DISABLED' and p['value'] for t in tests for p in t.get('properties',[]))
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^PoolParentRoot$' --verbose --no-tests=error --output-log orchard-pool-parent-root-execution.log
+          python3 - <<'PYTEST'
+          from pathlib import Path
+          log=Path('orchard-pool-parent-root-execution.log').read_text()
+          for case in ['AbandonAndPublishKeepExactParentProofContext','InvalidContextAndCacheOnlyEntryPreserveOwnerRules','TypedFamilyAndRefreshFailureRetainPublishedParent']:
+              assert log.count('[       OK ] PoolParentRoot.'+case+' (')==1
+          assert '100% tests passed, 0 tests failed out of 1' in log
+          PYTEST
+
+      - name: Typed acceptance observer ownership
+        run: |
+          cmake --build build-orchard-root --target test_mempool_typed_package --parallel 4 -- -k 0
+          ctest --test-dir build-orchard-root -R '^TypedAcceptanceOwner$' --show-only=json-v1 > orchard-typed-acceptance-owner-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests=json.load(open('orchard-typed-acceptance-owner-inventory.json'))['tests']
+          assert [t['name'] for t in tests]==['TypedAcceptanceOwner']
+          assert not any(p['name']=='DISABLED' and p['value'] for t in tests for p in t.get('properties',[]))
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^TypedAcceptanceOwner$' --verbose --no-tests=error --output-log orchard-typed-acceptance-owner-execution.log
+          python3 - <<'PYTEST'
+          from pathlib import Path
+          log=Path('orchard-typed-acceptance-owner-execution.log').read_text()
+          for case in ['SignedAdmissionRetainsTypedBodyAfterLocksAndReplacement','PreflightAndObserverFailureKeepActualAdmissionOutcome','CaptureFailureAndLegacyCompatibilityPreserveBoundary','OrchardCapabilityRefusesLegacyAndRetainsExactRepresentation']:
+              assert log.count('[       OK ] TypedAcceptanceOwner.'+case+' (')==1
+          assert '100% tests passed, 0 tests failed out of 1' in log
+          PYTEST
+
+      - name: Owned Orchard block RPC reads
+        run: |
+          cmake --build build-orchard-root --target test_assumeutxo_replay --parallel 4 -- -k 0
+          ctest --test-dir build-orchard-root -R '^OrchardBlockRpc$' --show-only=json-v1 > orchard-block-rpc-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests=json.load(open('orchard-block-rpc-inventory.json'))['tests']
+          assert [t['name'] for t in tests]==['OrchardBlockRpc']
+          assert not any(p['name']=='DISABLED' and p['value'] for t in tests for p in t.get('properties',[]))
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^OrchardBlockRpc$' --verbose --no-tests=error --output-log orchard-block-rpc-execution.log
+          python3 - <<'PYTEST'
+          from pathlib import Path
+          log=Path('orchard-block-rpc-execution.log').read_text()
+          for case in ['ExactTypedRawAndVerboseReopen','MissingAndInconsistentTypedStorageRefuse','HistoricalBytesAndInputRefusals']:
+              assert log.count('[       OK ] OrchardBlockRpc.'+case+' (')==1
+          assert '100% tests passed, 0 tests failed out of 1' in log
+          PYTEST
+
+      - name: Canonical Orchard pool publication
+        run: |
+          cmake --build build-orchard-root --target test_assumeutxo_replay --parallel 4 -- -k 0
+          ctest --test-dir build-orchard-root -R '^OrchardCanonicalPool$' --show-only=json-v1 > orchard-canonical-pool-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests=json.load(open('orchard-canonical-pool-inventory.json'))['tests']
+          assert [t['name'] for t in tests]==['OrchardCanonicalPool']
+          assert not any(p['name']=='DISABLED' and p['value'] for t in tests for p in t.get('properties',[]))
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^OrchardCanonicalPool$' --verbose --no-tests=error --output-log orchard-canonical-pool-execution.log
+          python3 - <<'PYTEST'
+          from pathlib import Path
+          log=Path('orchard-canonical-pool-execution.log').read_text()
+          for case in ['ConfirmedShieldLeavesPoolBeforeNextBlock','PreparationRefusalPreservesPoolAndCanonicalParent','WrongContextAndMissingProviderPreservePool','DisconnectReopenAndExplicitReadmissionKeepSelectedHeight']:
+              assert log.count('[       OK ] OrchardCanonicalPool.'+case+' (')==1
+          assert '100% tests passed, 0 tests failed out of 1' in log
+          PYTEST
+
+      - name: Owned Orchard mining RPC jobs
+        run: |
+          cmake --build build-orchard-root --target test_assumeutxo_replay --parallel 4 -- -k 0
+          ctest --test-dir build-orchard-root -R '^OrchardMiningRpc$' --show-only=json-v1 > orchard-mining-rpc-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests=json.load(open('orchard-mining-rpc-inventory.json'))['tests']
+          assert [t['name'] for t in tests]==['OrchardMiningRpc']
+          assert not any(p['name']=='DISABLED' and p['value'] for t in tests for p in t.get('properties',[]))
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^OrchardMiningRpc$' --verbose --no-tests=error --output-log orchard-mining-rpc-execution.log
+          python3 - <<'PYTEST'
+          from pathlib import Path
+          log=Path('orchard-mining-rpc-execution.log').read_text()
+          for case in ['ActualGetJobAndSolvedSubmitRetainTypedBody','MissingProviderAndWrongOwnerRefuseThenRetry','InvalidTimeAndHighHashPreserveStoredJob','CanonicalParentChangeRejectsOldJob']:
+              assert log.count('[       OK ] OrchardMiningRpc.'+case+' (')==1
+          assert '100% tests passed, 0 tests failed out of 1' in log
+          PYTEST
+
+      - name: Selected Orchard raw block ingress
+        run: |
+          cmake --build build-orchard-root --target test_assumeutxo_replay --parallel 4 -- -k 0
+          ctest --test-dir build-orchard-root -R '^OrchardRawIngress$' --show-only=json-v1 > orchard-raw-ingress-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests=json.load(open('orchard-raw-ingress-inventory.json'))['tests']
+          assert [t['name'] for t in tests]==['OrchardRawIngress']
+          assert not any(p['name']=='DISABLED' and p['value'] for t in tests for p in t.get('properties',[]))
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^OrchardRawIngress$' --verbose --no-tests=error --output-log orchard-raw-ingress-execution.log
+          python3 - <<'PYTEST'
+          from pathlib import Path
+          log=Path('orchard-raw-ingress-execution.log').read_text()
+          for case in ['ActualRpcRouterConnectsExactShieldBody','MissingOwnerRefusesBeforePersistenceThenRetry','StrictIncomingHeaderAndExactFramingRefuse','DisconnectDatabaseReopenAndRetainedBodyReconnect']:
+              assert log.count('[       OK ] OrchardRawIngress.'+case+' (')==1
+          assert '100% tests passed, 0 tests failed out of 1' in log
+          PYTEST
+
+      - name: Owned Orchard block template construction
+        run: |
+          cmake --build build-orchard-root --target test_assumeutxo_replay --parallel 4 -- -k 0
+          ctest --test-dir build-orchard-root -R '^OrchardMiningTemplate$' --show-only=json-v1 > orchard-mining-template-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests=json.load(open('orchard-mining-template-inventory.json'))['tests']
+          assert [t['name'] for t in tests]==['OrchardMiningTemplate']
+          assert not any(p['name']=='DISABLED' and p['value'] for t in tests for p in t.get('properties',[]))
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^OrchardMiningTemplate$' --verbose --no-tests=error --output-log orchard-mining-template-execution.log
+          python3 - <<'PYTEST'
+          from pathlib import Path
+          log=Path('orchard-mining-template-execution.log').read_text()
+          for case in ['MixedBodiesFeesCommitmentsAndProof','CompleteFrameBudgetAndOwnerRefusal','EmptyFilterIsExplicitlyCommitted','RealShieldConnectDisconnectAndReopen']:
+              assert log.count('[       OK ] OrchardMiningTemplate.'+case+' (')==1
+          assert '100% tests passed, 0 tests failed out of 1' in log
+          PYTEST
+
+      - name: Selected mixed-family mining inventory
+        run: |
+          cmake --build build-orchard-root --target test_assumeutxo_replay --parallel 4 -- -k 0
+          ctest --test-dir build-orchard-root -R '^OrchardTypedSelection$' --show-only=json-v1 > orchard-typed-selection-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests=json.load(open('orchard-typed-selection-inventory.json'))['tests']
+          assert [t['name'] for t in tests]==['OrchardTypedSelection']
+          assert not any(p['name']=='DISABLED' and p['value'] for t in tests for p in t.get('properties',[]))
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^OrchardTypedSelection$' --verbose --no-tests=error --output-log orchard-typed-selection-execution.log
+          python3 - <<'PYTEST'
+          from pathlib import Path
+          log=Path('orchard-typed-selection-execution.log').read_text()
+          for case in ['RealShieldSnapshotAndBudgets','MixedParentFirstAndExactFees','SelectedOwnerRefusalPreservesPool','SharedSequenceResourcesAndCoinbaseRefusal']:
+              assert log.count('[       OK ] OrchardTypedSelection.'+case+' (')==1
+          assert '100% tests passed, 0 tests failed out of 1' in log
+          PYTEST
+
+      - name: Selected-chain Orchard admission
+        run: |
+          cmake --build build-orchard-root --target test_assumeutxo_replay --parallel 4 -- -k 0
+          ctest --test-dir build-orchard-root -R '^OrchardSelectedAdmission$' --show-only=json-v1 > orchard-selected-admission-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests=json.load(open('orchard-selected-admission-inventory.json'))['tests']
+          assert [t['name'] for t in tests]==['OrchardSelectedAdmission']
+          assert not any(p['name']=='DISABLED' and p['value'] for t in tests for p in t.get('properties',[]))
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^OrchardSelectedAdmission$' --verbose --no-tests=error --output-log orchard-selected-admission-execution.log
+          python3 - <<'PYTEST'
+          from pathlib import Path
+          log=Path('orchard-selected-admission-execution.log').read_text()
+          for case in ['RealShieldPreflightPublicationAndDuplicate','MissingOwnerAndInvalidInputRefuseThenRetry','PublicationRollbackAndPostCommitObserverOutcome','MatureInputsPendingConflictsAndSelectedDomain']:
+              assert log.count('[       OK ] OrchardSelectedAdmission.'+case+' (')==1
+          assert '100% tests passed, 0 tests failed out of 1' in log
+          PYTEST
+
+      - name: Typed pool publication and replacement capability
+        run: |
+          cmake --build build-orchard-root --target test_mempool_typed_package --parallel 4 -- -k 0
+          ctest --test-dir build-orchard-root -R '^TypedPoolPublication$' --show-only=json-v1 > orchard-typed-pool-publication-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests=json.load(open('orchard-typed-pool-publication-inventory.json'))['tests']
+          assert [t['name'] for t in tests]==['TypedPoolPublication']
+          assert not any(p['name']=='DISABLED' and p['value'] for t in tests for p in t.get('properties',[]))
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^TypedPoolPublication$' --verbose --no-tests=error --output-log orchard-typed-pool-publication-execution.log
+          python3 - <<'PYTEST'
+          from pathlib import Path
+          log=Path('orchard-typed-pool-publication-execution.log').read_text()
+          for case in ['SignedPublicationKeepsExactOverlayAndAncestorOwners','PublicationFailureRestoresReplacementAndAllowsRetry','MixedConflictInventoryRefusesDirectAndDescendantFamilies','SignedReplacementPreservesUnrelatedTypedBody']:
+              assert log.count('[       OK ] TypedPoolPublication.'+case+' (')==1
+          assert '100% tests passed, 0 tests failed out of 1' in log
+          PYTEST
+
+      - name: Checked pre-base lookup status
+        run: |
+          cmake --build build-orchard-root --target test_mining_chain_guard --parallel 4 -- -k 0
+          ctest --test-dir build-orchard-root -R '^PreBaseLookupStatus$' --show-only=json-v1 > orchard-prebase-lookup-status-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests=json.load(open('orchard-prebase-lookup-status-inventory.json'))['tests']
+          assert [t['name'] for t in tests]==['PreBaseLookupStatus']
+          assert not any(p['name']=='DISABLED' and p['value'] for t in tests for p in t.get('properties',[]))
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^PreBaseLookupStatus$' --verbose --no-tests=error --output-log orchard-prebase-lookup-status-execution.log
+          python3 - <<'PYTEST'
+          from pathlib import Path
+          log=Path('orchard-prebase-lookup-status-execution.log').read_text()
+          for case in ['AbsentAndUnavailableAreDistinct','LiveFrozenAndPromotedBasePreserveScope','CanonicalAdmissionKeepsMissingAndUnavailableDistinct']:
+              assert log.count('[       OK ] PreBaseLookupStatus.'+case+' (')==1
+          assert '100% tests passed, 0 tests failed out of 1' in log
+          PYTEST
+
+      - name: Typed pool tip cache publication
+        run: |
+          cmake --build build-orchard-root --target test_mempool_typed_package --parallel 4 -- -k 0
+          ctest --test-dir build-orchard-root -R '^OrchardTypedPoolTip$' --show-only=json-v1 > orchard-typed-pool-tip-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests=json.load(open('orchard-typed-pool-tip-inventory.json'))['tests']
+          assert [t['name'] for t in tests]==['OrchardTypedPoolTip']
+          assert not any(p['name']=='DISABLED' and p['value'] for t in tests for p in t.get('properties',[]))
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^OrchardTypedPoolTip$' --verbose --no-tests=error --output-log orchard-typed-pool-tip-execution.log
+          python3 - <<'PYTEST'
+          from pathlib import Path
+          log=Path('orchard-typed-pool-tip-execution.log').read_text()
+          for case in ['HistoricalAdapterAndEffectsHaveSamePublication','NullifierConflictAbandonsOrPublishesAllCacheOwners','PreparationFailureAndAmbiguousRefreshRetainCorrectState']:
+              assert log.count('[       OK ] OrchardTypedPoolTip.'+case+' (')==1
+          assert '100% tests passed, 0 tests failed out of 1' in log
+          PYTEST
+
+      - name: Orchard nullifier block conflict reconciliation
+        run: |
+          cmake --build build-orchard-root --target test_mempool_typed_package --parallel 4 -- -k 0
+          ctest --test-dir build-orchard-root -R '^OrchardPoolConflicts$' --show-only=json-v1 > orchard-pool-conflicts-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests=json.load(open('orchard-pool-conflicts-inventory.json'))['tests']
+          assert [t['name'] for t in tests]==['OrchardPoolConflicts']
+          assert not any(p['name']=='DISABLED' and p['value'] for t in tests for p in t.get('properties',[]))
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^OrchardPoolConflicts$' --verbose --no-tests=error --output-log orchard-pool-conflicts-execution.log
+          python3 - <<'PYTEST'
+          from pathlib import Path
+          log=Path('orchard-pool-conflicts-execution.log').read_text()
+          for case in ['HistoricalBodiesHaveNoOrchardNullifiers','AllActionIdentitiesSurviveBodyCopyAndBlockExtraction','ConflictAndDescendantsAbandonThenPublish','ConfirmationRetainsTransparentChildAndExactBody','PreparationFailurePreservesEntriesIndexesAndRetry']:
+              assert log.count('[       OK ] OrchardPoolConflicts.'+case+' (')==1
+          assert '100% tests passed, 0 tests failed out of 1' in log
+          PYTEST
+
+      - name: Parent-first mining package selection
+        run: |
+          cmake --build build-orchard-root --target test_mining_package_selection --parallel 4 -- -k 0
+          ctest --test-dir build-orchard-root -R '^MiningTopologicalSelection$' --show-only=json-v1 > orchard-mining-topology-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests=json.load(open('orchard-mining-topology-inventory.json'))['tests']
+          assert [t['name'] for t in tests]==['MiningTopologicalSelection']
+          assert not any(p['name']=='DISABLED' and p['value'] for t in tests for p in t.get('properties',[]))
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^MiningTopologicalSelection$' --verbose --no-tests=error --output-log orchard-mining-topology-execution.log
+          python3 - <<'PYTEST'
+          from pathlib import Path
+          log=Path('orchard-mining-topology-execution.log').read_text()
+          for case in ['ThreeGenerationsRemainParentFirst','DiamondUsesOneSharedAncestorAndDeterministicSiblings','SharedParentInputsRespectPackageLimitsAndExclusions']:
+              assert log.count('[       OK ] MiningTopologicalSelection.'+case+' (')==1
+          assert '100% tests passed, 0 tests failed out of 1' in log
+          PYTEST
+
+      - name: First Orchard activation boundary through the service
+        run: |
+          cmake --build build-orchard-root --target test_assumeutxo_replay --parallel 4 -- -k 0
+          ctest --test-dir build-orchard-root -R '^OrchardFirstBoundary$' --show-only=json-v1 > orchard-first-boundary-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests=json.load(open('orchard-first-boundary-inventory.json'))['tests']
+          assert [t['name'] for t in tests]==['OrchardFirstBoundary']
+          assert not any(p['name']=='DISABLED' and p['value'] for t in tests for p in t.get('properties',[]))
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^OrchardFirstBoundary$' --verbose --no-tests=error --output-log orchard-first-boundary-execution.log
+          python3 - <<'PYTEST'
+          from pathlib import Path
+          log=Path('orchard-first-boundary-execution.log').read_text()
+          assert log.count('[       OK ] OrchardFirstBoundary.ConnectRefusalDisconnectAndReopenReconnect (')==1
+          assert '100% tests passed, 0 tests failed out of 1' in log
+          PYTEST
+
+      - name: Independently replayed selected activation parent
+        run: |
+          cmake --build build-orchard-root --target test_assumeutxo_replay --parallel 4 -- -k 0
+          ctest --test-dir build-orchard-root -R '^(OrchardSelectedParentHistory|CheckedCoinInventory)$' --show-only=json-v1 > orchard-selected-parent-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests=json.load(open('orchard-selected-parent-inventory.json'))['tests']
+          assert sorted(t['name'] for t in tests)==['CheckedCoinInventory','OrchardSelectedParentHistory']
+          assert not any(p['name']=='DISABLED' and p['value'] for t in tests for p in t.get('properties',[]))
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^(OrchardSelectedParentHistory|CheckedCoinInventory)$' --verbose --no-tests=error --output-log orchard-selected-parent-execution.log
+          python3 - <<'PYTEST'
+          from pathlib import Path
+          log=Path('orchard-selected-parent-execution.log').read_text()
+          for name in ['SelectedParentHistory.IndependentReplayMatchesDurableAndLiveState','SelectedParentHistory.StateAndAncestryMismatchRefuseWithoutPublication','CheckedCoinInventory.VisitorFailureAndEarlyStopRemainDistinct','CheckedCoinInventory.MalformedLateRowsRefuseAndLegacyEncodingsRemainReadable']:
+              assert log.count('[       OK ] '+name+' (')==1,name
+          assert '100% tests passed, 0 tests failed out of 2' in log
+          PYTEST
+
+      - name: CSN ordered proof receipt acknowledgment
+        run: |
+          cmake --build build-orchard-root --target test_block_download_scheduler test_block_download_scheduler_restart_bootstrap test_csn_stale_proof_retry --parallel 4 -- -k 0
+          ctest --test-dir build-orchard-root -R '^(BlockDownloadScheduler|BlockDownloadSchedulerRestartBootstrap|CsnStaleProofRetry|CsnStoredProofRetry|RestartChurnBoringnessGate)$' --show-only=json-v1 > orchard-csn-proof-receipt-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests=json.load(open('orchard-csn-proof-receipt-inventory.json'))['tests']
+          assert sorted(t['name'] for t in tests)==['BlockDownloadScheduler','BlockDownloadSchedulerRestartBootstrap','CsnStaleProofRetry','CsnStoredProofRetry','RestartChurnBoringnessGate']
+          assert not any(p['name']=='DISABLED' and p['value'] for t in tests for p in t.get('properties',[]))
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^(BlockDownloadScheduler|BlockDownloadSchedulerRestartBootstrap|CsnStaleProofRetry|CsnStoredProofRetry|RestartChurnBoringnessGate)$' --verbose --no-tests=error --output-log orchard-csn-proof-receipt-execution.log
+          python3 - <<'PYTEST'
+          from pathlib import Path
+          log=Path('orchard-csn-proof-receipt-execution.log').read_text()
+          assert log.count('[PASS] StatelessProofReceiptAcknowledgment:')==1
+          assert '100% tests passed, 0 tests failed out of 5' in log
+          PYTEST
+
+      - name: Owned typed pending address capture
+        run: |
+          cmake --build build-orchard-root --target test_mempool_address_capture --parallel 4 -- -k 0
+          ctest --test-dir build-orchard-root -R '^(MempoolAddressCapture|AddressBalanceMempoolOverlay|AddressIndexCrossHRP|P2MRAddressIndexRpcSmoke|AddressParentChildMempoolLifecycle)$' --show-only=json-v1 > orchard-address-capture-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests=json.load(open('orchard-address-capture-inventory.json'))['tests']
+          assert sorted(t['name'] for t in tests)==['AddressBalanceMempoolOverlay','AddressIndexCrossHRP','AddressParentChildMempoolLifecycle','MempoolAddressCapture','P2MRAddressIndexRpcSmoke']
+          assert not any(p['name']=='DISABLED' and p['value'] for t in tests for p in t.get('properties',[]))
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^(MempoolAddressCapture|AddressBalanceMempoolOverlay|AddressIndexCrossHRP|P2MRAddressIndexRpcSmoke|AddressParentChildMempoolLifecycle)$' --verbose --no-tests=error --output-log orchard-address-capture-execution.log
+          python3 - <<'PYTEST'
+          from pathlib import Path
+          log=Path('orchard-address-capture-execution.log').read_text()
+          for case in ['SignedParentChildAllAddressRpcs','MissingInputAndClosedServiceRefuse','PrebaseAuthorizationAndSingleBatchCapture','ReadFailureAndConfidentialAmountsRefuse','TypedBodyAndMatchingInputsStayOwned']:
+              assert log.count('[       OK ] MempoolAddressCapture.'+case+' ')==1
+          assert '100% tests passed, 0 tests failed out of 5' in log
+          PYTEST
+
+      - name: Require and execute all-ancestor package bounds
+        run: |
+          ctest --test-dir build-orchard-root -R '^MempoolPackageBounds$' --show-only=json-v1 > orchard-package-bounds-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests=json.load(open('orchard-package-bounds-inventory.json'))['tests']
+          if [t['name'] for t in tests]!=['MempoolPackageBounds'] or any(p['name']=='DISABLED' and p['value'] for t in tests for p in t.get('properties',[])):
+              raise SystemExit('Package bounds test missing or disabled')
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^MempoolPackageBounds$' --verbose --no-tests=error --output-log orchard-package-bounds-execution.log
+          python3 - <<'PYTEST'
+          import re
+          log=open('orchard-package-bounds-execution.log').read()
+          expected=['NonDirectAncestorBoundPreservesPool','ValidReplacementRestoresAncestorCapacity']
+          if sorted(re.findall(r'\[       OK \] MempoolPackageBounds\.(\w+)',log))!=sorted(expected):
+              raise SystemExit('Package bounds cases did not complete exactly once')
+          PYTEST
+      - name: Require and execute surviving mempool replacement policy
+        run: |
+          ctest --test-dir build-orchard-root -R '^MempoolReplacementPolicy$' --show-only=json-v1 > orchard-replacement-policy-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests=json.load(open('orchard-replacement-policy-inventory.json'))['tests']
+          if [t['name'] for t in tests]!=['MempoolReplacementPolicy'] or any(p['name']=='DISABLED' and p['value'] for t in tests for p in t.get('properties',[])):
+              raise SystemExit('Replacement policy test missing or disabled')
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^MempoolReplacementPolicy$' --verbose --no-tests=error --output-log orchard-replacement-policy-execution.log
+          python3 - <<'PYTEST'
+          import re
+          log=open('orchard-replacement-policy-execution.log').read()
+          expected=['FeePolicyRefusalPreservesExistingPool','PreflightAndAdmissionUseSurvivingDescendants','ExistingRbfFeeRulesRemainRequired']
+          if sorted(re.findall(r'\[       OK \] MempoolReplacementPolicy\.(\w+)',log))!=sorted(expected):
+              raise SystemExit('Replacement policy cases did not complete exactly once')
+          PYTEST
+      - name: Require and execute mempool callback ownership
+        run: |
+          ctest --test-dir build-orchard-root -R '^MempoolCallbackOwner$' --show-only=json-v1 > orchard-mempool-callback-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests=json.load(open('orchard-mempool-callback-inventory.json'))['tests']
+          if [t['name'] for t in tests]!=['MempoolCallbackOwner'] or any(p['name']=='DISABLED' and p['value'] for t in tests for p in t.get('properties',[])):
+              raise SystemExit('Mempool callback owner test missing or disabled')
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^MempoolCallbackOwner$' --verbose --no-tests=error --output-log orchard-mempool-callback-execution.log
+          python3 - <<'PYTEST'
+          import re
+          log=open('orchard-mempool-callback-execution.log').read()
+          expected=['OwnedCallbacksAfterLocksAndReplacementSnapshot','PreflightDoesNotPublishOrNotify','CallbackExceptionPreservesAdmissionAndReleasesOwners','CleanupCompletesBeforeExternalObservers']
+          if sorted(re.findall(r'\[       OK \] MempoolCallbackOwner\.(\w+)',log))!=sorted(expected):
+              raise SystemExit('Mempool callback cases did not complete exactly once')
+          PYTEST
+      - name: Require and execute wallet input and maturity regressions
+        run: |
+          ctest --test-dir build-orchard-root -R '^(MempoolTemplateMaturity|WalletInputCoins)$' --show-only=json-v1 > orchard-wallet-input-maturity-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests = json.load(open('orchard-wallet-input-maturity-inventory.json'))['tests']
+          if sorted(t['name'] for t in tests) != ['MempoolTemplateMaturity', 'WalletInputCoins'] or any(p['name'] == 'DISABLED' and p['value'] for t in tests for p in t.get('properties', [])):
+              raise SystemExit('Wallet input/maturity tests missing or disabled')
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^(MempoolTemplateMaturity|WalletInputCoins)$' --verbose --no-tests=error --output-log orchard-wallet-input-maturity-execution.log
+          python3 - <<'PYTEST'
+          import re
+          expected = ['TemplateMaturityTest.RewindExcludesCoinbaseSpendAndDescendantsThenReleasesThem', 'TemplateMaturityTest.FutureCoinbaseHeightDoesNotUnderflow', 'TemplateMaturityTest.OrdinaryOutputsDoNotRequireCoinbaseMaturity', 'TemplateMaturityTest.FrozenCoinUsesLiveForestAuthorizationAndOriginalHeight', 'TemplateMaturityTest.ChainstateGuardPrecedesMempoolLockAndCoversCoinLookup', 'WalletInputCoins.SnapshotMapCoinNeedsNoAuxiliaryRowAndSpentCoinCannotFallBack', 'WalletInputCoins.StatelessPostBaseCoinUsesConfiguredDatabaseFallback', 'WalletInputCoins.FrozenCoinRequiresLiveForestEvenWhenAuxiliaryRowSurvives', 'WalletInputCoins.MempoolSpendAndUnconfirmedChangeAreNotCandidates', 'WalletInputCoins.MaturityUsesCurrentNextBlockAndRejectsFutureCoins', 'WalletInputCoins.GuardPrecedesMempoolLockCoversBatchAndIsReleasedBeforeReturn', 'WalletInputCoins.UnavailableChainstateGuardFailsClosed']
+          actual = re.findall(r'\[       OK \] ((?:WalletInputCoins|TemplateMaturityTest)\.\w+)', open('orchard-wallet-input-maturity-execution.log').read())
+          if sorted(actual) != sorted(expected):
+              raise SystemExit('Wallet input/maturity cases missing, duplicated or unexpected')
+          PYTEST
+      - name: Require and execute authoritative mnemonic daemon recovery
+        run: |
+          ctest --test-dir build-orchard-root -R '^WalletAuthoritativeMnemonic$' --show-only=json-v1 > orchard-mnemonic-recovery-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests = json.load(open('orchard-mnemonic-recovery-inventory.json'))['tests']
+          if [t['name'] for t in tests] != ['WalletAuthoritativeMnemonic'] or any(p['name'] == 'DISABLED' and p['value'] for t in tests for p in t.get('properties', [])):
+              raise SystemExit('Authoritative mnemonic daemon test missing or disabled')
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^WalletAuthoritativeMnemonic$' --verbose --no-tests=error --output-log orchard-mnemonic-recovery-execution.log
+          python3 - <<'PYTEST'
+          log = open('orchard-mnemonic-recovery-execution.log').read()
+          for marker in ['ALL WALLET AUTHORITATIVE-MNEMONIC ASSERTIONS PASSED', '[PASS] existing default is preserved and restored identity reopens under a new name']:
+              if log.count(marker) != 1:
+                  raise SystemExit('Mnemonic recovery must complete all preservation assertions exactly once')
+          PYTEST
+      - name: Require and execute Orchard transaction context checks
+        run: |
+          cmake --build build-orchard-root --target test_orchard_transaction_context --parallel 2
+          ctest --test-dir build-orchard-root -R '^OrchardTransactionContext$' --show-only=json-v1 > orchard-transaction-context-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests=json.load(open('orchard-transaction-context-inventory.json'))['tests']
+          if [t['name'] for t in tests]!=['OrchardTransactionContext'] or any(p['name']=='DISABLED' and p['value'] for t in tests for p in t.get('properties',[])):
+              raise SystemExit('Orchard transaction context test missing or disabled')
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^OrchardTransactionContext$' --verbose --no-tests=error --output-log orchard-transaction-context-execution.log
+          python3 - <<'PYTEST'
+          import re
+          log=open('orchard-transaction-context-execution.log').read()
+          expected=['MatchesBlockPreparation','SelectedParentRulesRemainRequired','ConflictsAndLookupFailures']
+          if sorted(re.findall(r'PASS (\w+)',log))!=sorted(expected):
+              raise SystemExit('Orchard transaction context cases did not complete exactly once')
+          PYTEST
+      - name: Require and execute all root Orchard lanes
+        run: |
+          ctest --test-dir build-orchard-root -R '^(OrchardAccountDelivery|OrchardAuthorization|OrchardBackend(Cpp|Rust)|OrchardTransactionReader|OrchardCoinSnapshot|OrchardTransparent|OrchardStateStorage|OrchardStateTransition|OrchardForestTransition|OrchardBlockCoins|OrchardHeader|OrchardBlockReader|OrchardBlockStaging|OrchardAtomicCrash|OrchardMemoryPublication|OrchardStateCommitment|OrchardStateRoot|OrchardLegacyAccounting|OrchardRuntimeReader|OrchardRuntimeOutbox|OrchardCommitOwner|OrchardIndexDelivery|OrchardIndexedCommit|OrchardWalletKeys|OrchardWalletShield|OrchardWalletSpend|OrchardWalletStorage|OrchardWalletAccount|OrchardChainRestore|OrchardOperationArchive|OrchardWalletOperations|OrchardProofJobs|OrchardResources|OrchardServiceReorgPlan|OrchardServiceForkPoint|OrchardServiceConnect|OrchardServiceDeliverySource|OrchardServiceDisconnect|OrchardServicePersistence|OrchardServiceStartup|OrchardServiceUndoCoverage|OrchardBlockFilter|OrchardWalletScan|OrchardLegacyBoundary|OrchardLegacyRetirement)$' --show-only=json-v1 > orchard-root-inventory.json
+          python3 - <<'PYCODE'
+          import json
+          with open('orchard-root-inventory.json') as f:
+              tests = json.load(f)['tests']
+          names = [x['name'] for x in tests]
+          if sorted(names) != ['OrchardAccountDelivery', 'OrchardAtomicCrash', 'OrchardAuthorization', 'OrchardBackendCpp', 'OrchardBackendRust', 'OrchardBlockCoins', 'OrchardBlockFilter', 'OrchardBlockReader', 'OrchardBlockStaging', 'OrchardChainRestore', 'OrchardCoinSnapshot', 'OrchardCommitOwner', 'OrchardForestTransition', 'OrchardHeader', 'OrchardIndexDelivery', 'OrchardIndexedCommit', 'OrchardLegacyAccounting', 'OrchardLegacyBoundary', 'OrchardLegacyRetirement', 'OrchardMemoryPublication', 'OrchardOperationArchive', 'OrchardProofJobs', 'OrchardResources', 'OrchardRuntimeOutbox', 'OrchardRuntimeReader', 'OrchardServiceConnect', 'OrchardServiceDeliverySource', 'OrchardServiceDisconnect', 'OrchardServiceForkPoint', 'OrchardServicePersistence', 'OrchardServiceReorgPlan', 'OrchardServiceStartup', 'OrchardServiceUndoCoverage', 'OrchardStateCommitment', 'OrchardStateRoot', 'OrchardStateStorage', 'OrchardStateTransition', 'OrchardTransactionReader', 'OrchardTransparent', 'OrchardWalletAccount', 'OrchardWalletKeys', 'OrchardWalletOperations', 'OrchardWalletScan', 'OrchardWalletShield', 'OrchardWalletSpend', 'OrchardWalletStorage']:
+              raise SystemExit(f'Wrong root Orchard inventory: {names}')
+          for test in tests:
+              props = {p['name']: p['value'] for p in test.get('properties', [])}
+              if props.get('DISABLED') or 'orchard' not in props.get('LABELS', []):
+                  raise SystemExit(f'Inactive or mislabeled root test: {test["name"]}')
+          PYCODE
+          ctest --test-dir build-orchard-root -R '^(OrchardAccountDelivery|OrchardAuthorization|OrchardBackend(Cpp|Rust)|OrchardTransactionReader|OrchardCoinSnapshot|OrchardTransparent|OrchardStateStorage|OrchardStateTransition|OrchardForestTransition|OrchardBlockCoins|OrchardHeader|OrchardBlockReader|OrchardBlockStaging|OrchardAtomicCrash|OrchardMemoryPublication|OrchardStateCommitment|OrchardStateRoot|OrchardLegacyAccounting|OrchardRuntimeReader|OrchardRuntimeOutbox|OrchardCommitOwner|OrchardIndexDelivery|OrchardIndexedCommit|OrchardWalletKeys|OrchardWalletShield|OrchardWalletSpend|OrchardWalletStorage|OrchardWalletAccount|OrchardChainRestore|OrchardOperationArchive|OrchardWalletOperations|OrchardProofJobs|OrchardResources|OrchardServiceReorgPlan|OrchardServiceForkPoint|OrchardServiceConnect|OrchardServiceDeliverySource|OrchardServiceDisconnect|OrchardServicePersistence|OrchardServiceStartup|OrchardServiceUndoCoverage|OrchardBlockFilter|OrchardWalletScan|OrchardLegacyBoundary|OrchardLegacyRetirement)$' --output-on-failure --no-tests=error --output-log orchard-root-execution.log
+          cp build-orchard-root/Testing/Temporary/LastTest.log orchard-root-detailed-execution.log
+          python3 - <<'PYCODE'
+          from pathlib import Path
+          log = Path('orchard-root-detailed-execution.log').read_text()
+          marker = 'OrchardOriginCapture validated ancestors/canonical boundary/immutable projection/reopen PASS'
+          if log.count(marker) != 1:
+              raise SystemExit('Missing actual successful wallet-origin capture execution')
+          if log.count('OrchardOriginAdoption dual domains/ordered receipts/rollback/reopen PASS') != 1:
+              raise SystemExit('Missing actual wallet-origin adoption execution')
+          if log.count('OrchardOriginSignedSpends consensus history/first event/metadata/rollback/undo PASS') != 1:
+              raise SystemExit('Missing actual signed-spend origin recovery execution')
+          if log.count('OrchardOriginFirstHistory missing first-event metadata refuses before stores PASS') != 1:
+              raise SystemExit('Missing actual first-event originated-history preflight execution')
+          if log.count('OrchardOriginSameBlock signed child/history preflight/rollback/undo/reconnect PASS') != 1:
+              raise SystemExit('Missing actual same-block originated-history recovery execution')
+          PYCODE
+      - name: Require and execute transparent mempool notification consumer
+        run: |
+          ctest --test-dir build-orchard-root -R '^MempoolProofStaleness$' --show-only=json-v1 > orchard-mempool-inventory.json
+          python3 - <<'PYCODE'
+          import json
+          tests = json.load(open('orchard-mempool-inventory.json'))['tests']
+          if [t['name'] for t in tests] != ['MempoolProofStaleness']:
+              raise SystemExit('Missing transparent mempool notification consumer test')
+          props = {p['name']: p['value'] for p in tests[0].get('properties', [])}
+          if props.get('DISABLED'):
+              raise SystemExit('Disabled transparent mempool notification consumer test')
+          PYCODE
+          ctest --test-dir build-orchard-root -R '^MempoolProofStaleness$' --output-on-failure --no-tests=error --output-log orchard-mempool-execution.log
+      - name: Require and execute actual RPC listener startup
+        run: |
+          ctest --test-dir build-orchard-root -R '^RPCListenerStartup$' --show-only=json-v1 > orchard-rpc-startup-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests = json.load(open('orchard-rpc-startup-inventory.json'))['tests']
+          if [t['name'] for t in tests] != ['RPCListenerStartup'] or any(p['name'] == 'DISABLED' and p['value'] for t in tests for p in t.get('properties', [])):
+              raise SystemExit('RPCListenerStartup missing or disabled')
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^RPCListenerStartup$' --verbose --no-tests=error --output-log orchard-rpc-startup-execution.log
+          python3 - <<'PYTEST'
+          text = open('orchard-rpc-startup-execution.log').read()
+          for expected in ['PASS occupied RPC listener rejects actual daemon startup', 'PASS same port and datadir reopen with authenticated RPC', 'PASS RPC listener startup and clean shutdown']:
+              if text.count(expected) != 1:
+                  raise SystemExit('RPC startup assertion did not execute exactly once: ' + expected)
+          PYTEST
+      - name: Require and execute isolated historical replay
+        run: |
+          ctest --test-dir build-orchard-root -R '^AssumeUtxoReplay$' --show-only=json-v1 > orchard-history-replay-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests = json.load(open('orchard-history-replay-inventory.json'))['tests']
+          if [t['name'] for t in tests] != ['AssumeUtxoReplay'] or any(p['name'] == 'DISABLED' and p['value'] for t in tests for p in t.get('properties', [])):
+              raise SystemExit('AssumeUtxoReplay missing or disabled')
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^AssumeUtxoReplay$' --verbose --no-tests=error --output-log orchard-history-replay-execution.log
+          python3 - <<'PYTEST'
+          import re
+          actual = re.findall(r'\[ RUN\s+\] (AssumeUtxoReplay\.\S+)', open('orchard-history-replay-execution.log').read())
+          expected = ['ReplayReproducesDirectDigest', 'TamperedBlockFailsValidation', 'SeedGenesisAddsRecordsNotLeaves', 'CapturesUndoTailWindow', 'ExposesProvenSetAndStateRefs', 'RequiresSelectedGenesisAndContiguousIdentity', 'OwnsHeaderValidationBeforeCoinEffects', 'TimeLocksUseOwnedAncestryWithoutGlobalIndex']
+          if sorted(actual) != sorted('AssumeUtxoReplay.' + name for name in expected):
+              raise SystemExit('Historical replay cases did not execute exactly once')
+          owned = re.findall(r'\[ RUN\s+\] (SelectedWalletHistory\.\S+)', open('orchard-history-replay-execution.log').read())
+          if owned != ['SelectedWalletHistory.ValidatesBeforeEffectsAndUsesOwnedBodies']:
+              raise SystemExit('Selected wallet history service case did not execute exactly once')
+          projection = re.findall(r'\[ RUN\s+\] (RuntimeOriginProjection\.\S+)', open('orchard-history-replay-execution.log').read())
+          if sorted(projection) != ['RuntimeOriginProjection.BindsCapturedWalletAndScriptDomain', 'RuntimeOriginProjection.KeepsSpentCoinsAndExactTransactionHistory']:
+              raise SystemExit('Origin projection case did not execute exactly once')
+          PYTEST
+      - name: Require and execute wallet recovery key ownership
+        run: |
+          ctest --test-dir build-orchard-root -R '^WalletRecoveryKeys$' --show-only=json-v1 > orchard-wallet-keys-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests = json.load(open('orchard-wallet-keys-inventory.json'))['tests']
+          if [t['name'] for t in tests] != ['WalletRecoveryKeys'] or any(p['name'] == 'DISABLED' and p['value'] for t in tests for p in t.get('properties', [])):
+              raise SystemExit('WalletRecoveryKeys missing or disabled')
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^WalletRecoveryKeys$' --verbose --no-tests=error --output-log orchard-wallet-keys-execution.log
+          python3 - <<'PYTEST'
+          import re
+          actual = re.findall(r'\[ RUN\s+\] (WalletRecoveryKeyTest\.\S+)', open('orchard-wallet-keys-execution.log').read())
+          expected = ['WalletRecoveryKeyTest.PinsActualSeedAcrossLockAndUnlock', 'WalletRecoveryKeyTest.RefusesExpiredEmptyAndReopenedSelection']
+          if sorted(actual) != sorted(expected):
+              raise SystemExit('Recovery key cases did not execute exactly once')
+          PYTEST
+      - name: Require and execute atomic wallet address issuance
+        run: |
+          ctest --test-dir build-orchard-root -R '^WalletAddressIssuance$' --show-only=json-v1 > orchard-wallet-issuance-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests = json.load(open('orchard-wallet-issuance-inventory.json'))['tests']
+          if [t['name'] for t in tests] != ['WalletAddressIssuance'] or any(p['name'] == 'DISABLED' and p['value'] for t in tests for p in t.get('properties', [])):
+              raise SystemExit('WalletAddressIssuance missing or disabled')
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^WalletAddressIssuance$' --verbose --no-tests=error --output-log orchard-wallet-issuance-execution.log
+          python3 - <<'PYTEST'
+          import re
+          actual = re.findall(r'\[ RUN\s+\] (WalletAddressIssuanceTest\.\S+)', open('orchard-wallet-issuance-execution.log').read())
+          expected = ['WalletAddressIssuanceTest.' + name for name in ['RequiredRowsRollbackAndReopen', 'CommitFailureAndBorrowedTransactionRefuse', 'CompleteTupleAndIndexSurviveReopen', 'WatchConflictRefusesAndPublicationFollowsCommit', 'IndexReadFailureAndExhaustionRefuse']]
+          if sorted(actual) != sorted(expected):
+              raise SystemExit('Address issuance cases did not execute exactly once')
+          PYTEST
+      - name: Require and execute atomic Taproot imports
+        run: |
+          ctest --test-dir build-orchard-root -R '^WalletTaprootImport$' --show-only=json-v1 > orchard-wallet-taproot-import-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests = json.load(open('orchard-wallet-taproot-import-inventory.json'))['tests']
+          if [t['name'] for t in tests] != ['WalletTaprootImport'] or any(p['name'] == 'DISABLED' and p['value'] for t in tests for p in t.get('properties', [])):
+              raise SystemExit('WalletTaprootImport missing or disabled')
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^WalletTaprootImport$' --verbose --no-tests=error --output-log orchard-wallet-taproot-import-execution.log
+          python3 - <<'PYTEST'
+          import re
+          actual = re.findall(r'\[ RUN\s+\] (WalletTaprootImportTest\.\S+)', open('orchard-wallet-taproot-import-execution.log').read())
+          expected = ['WalletTaprootImportTest.' + name for name in ['CompleteImportReopensAndReimports', 'RequiredWritesAndCommitRollback', 'CallerTransactionAndConflictingOwnersRefuse', 'EncryptedOwnerAndCommitPublication']]
+          if sorted(actual) != sorted(expected):
+              raise SystemExit('Taproot import cases did not execute exactly once')
+          PYTEST
+      - name: Require and execute durable Taproot key lookup
+        run: |
+          ctest --test-dir build-orchard-root -R '^WalletTaprootLookup$' --show-only=json-v1 > orchard-wallet-taproot-lookup-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests = json.load(open('orchard-wallet-taproot-lookup-inventory.json'))['tests']
+          if [t['name'] for t in tests] != ['WalletTaprootLookup'] or any(p['name'] == 'DISABLED' and p['value'] for t in tests for p in t.get('properties', [])):
+              raise SystemExit('WalletTaprootLookup missing or disabled')
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^WalletTaprootLookup$' --verbose --no-tests=error --output-log orchard-wallet-taproot-lookup-execution.log
+          python3 - <<'PYTEST'
+          import re
+          actual = re.findall(r'\[ RUN\s+\] (WalletTaprootLookupTest\.\S+)', open('orchard-wallet-taproot-lookup-execution.log').read())
+          expected = ['WalletTaprootLookupTest.' + name for name in ['PlaintextAndEncryptedReopenSigning', 'DurableBindingsAndReadFailuresRefuse']]
+          if sorted(actual) != sorted(expected):
+              raise SystemExit('Taproot key lookup cases did not execute exactly once')
+          PYTEST
+      - name: Require and execute imported Taproot transaction signing
+        run: |
+          ctest --test-dir build-orchard-root -R '^WalletImportedTransaction$' --show-only=json-v1 > orchard-wallet-imported-transaction-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests = json.load(open('orchard-wallet-imported-transaction-inventory.json'))['tests']
+          if [t['name'] for t in tests] != ['WalletImportedTransaction'] or any(p['name'] == 'DISABLED' and p['value'] for t in tests for p in t.get('properties', [])):
+              raise SystemExit('WalletImportedTransaction missing or disabled')
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^WalletImportedTransaction$' --verbose --no-tests=error --output-log orchard-wallet-imported-transaction-execution.log
+          python3 - <<'PYTEST'
+          import re
+          actual = re.findall(r'\[ RUN\s+\] (WalletImportedTransactionTest\.\S+)', open('orchard-wallet-imported-transaction-execution.log').read())
+          expected = ['WalletImportedTransactionTest.' + name for name in ['ReopenedEncryptedImportSignsBothEpochs', 'WrongKeyAndOriginRefuseBeforeWitness', 'BuilderRequiresExactOutpointKeys']]
+          if sorted(actual) != sorted(expected):
+              raise SystemExit('Imported transaction cases did not execute exactly once')
+          PYTEST
+      - name: Require and execute ordinary input provider and mixed P2MR signing
+        run: |
+          ctest --test-dir build-orchard-root -R '^WalletInputProvider$' --show-only=json-v1 > orchard-wallet-input-provider-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests = json.load(open('orchard-wallet-input-provider-inventory.json'))['tests']
+          if [t['name'] for t in tests] != ['WalletInputProvider'] or any(p['name'] == 'DISABLED' and p['value'] for t in tests for p in t.get('properties', [])):
+              raise SystemExit('WalletInputProvider missing or disabled')
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^WalletInputProvider$' --verbose --no-tests=error --output-log orchard-wallet-input-provider-execution.log
+          python3 - <<'PYTEST'
+          import re
+          actual = re.findall(r'\[ RUN\s+\] (WalletInputProviderTest\.\S+)', open('orchard-wallet-input-provider-execution.log').read())
+          expected = ['WalletInputProviderTest.' + name for name in ['MapUsesExactInputsAndPreservesHdFallback', 'ImportedLabelsCannotReplaceInputBinding', 'HybridPreservesRealP2mrSigning']]
+          if sorted(actual) != sorted(expected):
+              raise SystemExit('Input provider cases did not execute exactly once')
+          PYTEST
+      - name: Require and execute HD signing key ownership
+        run: |
+          ctest --test-dir build-orchard-root -R '^WalletMainnetReadiness_HdKeyRead' --show-only=json-v1 > orchard-wallet-hd-key-read-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          expected = ['WalletMainnetReadiness_HdKeyReadExactHistoricalAndPinnedOwner', 'WalletMainnetReadiness_HdKeyReadMissingAndChangedOwnerNoRepair', 'WalletMainnetReadiness_HdKeyReadSnapshotErrorsAndTimeout']
+          tests = json.load(open('orchard-wallet-hd-key-read-inventory.json'))['tests']
+          if sorted(t['name'] for t in tests) != sorted(expected) or any(p['name'] == 'DISABLED' and p['value'] for t in tests for p in t.get('properties', [])):
+              raise SystemExit('HD signing key tests missing or disabled')
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^WalletMainnetReadiness_HdKeyRead' --verbose --no-tests=error --output-log orchard-wallet-hd-key-read-execution.log
+          python3 - <<'PYTEST'
+          import re
+          expected = ['WalletMainnetReadiness.HdKeyReadExactHistoricalAndPinnedOwner', 'WalletMainnetReadiness.HdKeyReadMissingAndChangedOwnerNoRepair', 'WalletMainnetReadiness.HdKeyReadSnapshotErrorsAndTimeout']
+          actual = re.findall(r'\[       OK \] (WalletMainnetReadiness\.HdKeyRead\w+)', open('orchard-wallet-hd-key-read-execution.log').read())
+          if sorted(actual) != sorted(expected):
+              raise SystemExit('HD signing key cases missing, duplicated or unexpected')
+          PYTEST
+      - name: Require and execute HD seed, path and script inventory
+        run: |
+          ctest --test-dir build-orchard-root -R '^WalletMainnetReadiness_HdInventory' --show-only=json-v1 > orchard-wallet-hd-inventory-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          expected = ['WalletMainnetReadiness_HdInventoryHistoricalAccountsAndReopen', 'WalletMainnetReadiness_HdInventoryBindingsAndOrphansRefuse', 'WalletMainnetReadiness_HdInventoryIncompleteReadPreservesOwner']
+          tests = json.load(open('orchard-wallet-hd-inventory-inventory.json'))['tests']
+          if sorted(t['name'] for t in tests) != sorted(expected) or any(p['name'] == 'DISABLED' and p['value'] for t in tests for p in t.get('properties', [])):
+              raise SystemExit('HD owner inventory tests missing or disabled')
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^WalletMainnetReadiness_HdInventory' --verbose --no-tests=error --output-log orchard-wallet-hd-inventory-execution.log
+          python3 - <<'PYTEST'
+          import re
+          expected = ['WalletMainnetReadiness.HdInventoryHistoricalAccountsAndReopen', 'WalletMainnetReadiness.HdInventoryBindingsAndOrphansRefuse', 'WalletMainnetReadiness.HdInventoryIncompleteReadPreservesOwner']
+          actual = re.findall(r'\[       OK \] (WalletMainnetReadiness\.HdInventory\w+)', open('orchard-wallet-hd-inventory-execution.log').read())
+          if sorted(actual) != sorted(expected):
+              raise SystemExit('HD owner inventory cases missing, duplicated or unexpected')
+          PYTEST
+      - name: Require and execute modern imported key and script inventory
+        run: |
+          ctest --test-dir build-orchard-root -R '^WalletMainnetReadiness_ModernInventory' --show-only=json-v1 > orchard-wallet-modern-inventory-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          expected = ['WalletMainnetReadiness_ModernInventoryBindingAndReopen', 'WalletMainnetReadiness_ModernInventoryCorruptionAndBindingsRefuse', 'WalletMainnetReadiness_ModernInventoryIncompleteReadPreservesOwner']
+          tests = json.load(open('orchard-wallet-modern-inventory-inventory.json'))['tests']
+          if sorted(t['name'] for t in tests) != sorted(expected) or any(p['name'] == 'DISABLED' and p['value'] for t in tests for p in t.get('properties', [])):
+              raise SystemExit('Imported owner inventory tests missing or disabled')
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^WalletMainnetReadiness_ModernInventory' --verbose --no-tests=error --output-log orchard-wallet-modern-inventory-execution.log
+          python3 - <<'PYTEST'
+          import re
+          expected = ['WalletMainnetReadiness.ModernInventoryBindingAndReopen', 'WalletMainnetReadiness.ModernInventoryCorruptionAndBindingsRefuse', 'WalletMainnetReadiness.ModernInventoryIncompleteReadPreservesOwner']
+          actual = re.findall(r'\[       OK \] (WalletMainnetReadiness\.ModernInventory\w+)', open('orchard-wallet-modern-inventory-execution.log').read())
+          if sorted(actual) != sorted(expected):
+              raise SystemExit('Imported owner inventory cases missing, duplicated or unexpected')
+          PYTEST
+      - name: Require and execute historical imported key reads
+        run: |
+          ctest --test-dir build-orchard-root -R '^WalletMainnetReadiness_LegacyKeyRead' --show-only=json-v1 > orchard-wallet-legacy-key-read-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          expected = ['WalletMainnetReadiness_LegacyKeyReadHistoricalBytesAndReopen', 'WalletMainnetReadiness_LegacyKeyReadMalformedOwnerOverridesCache', 'WalletMainnetReadiness_LegacyKeyReadIncompleteAndBorrowedRefuse']
+          tests = json.load(open('orchard-wallet-legacy-key-read-inventory.json'))['tests']
+          if sorted(t['name'] for t in tests) != sorted(expected) or any(p['name'] == 'DISABLED' and p['value'] for t in tests for p in t.get('properties', [])):
+              raise SystemExit('Historical imported key read tests missing or disabled')
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^WalletMainnetReadiness_LegacyKeyRead' --verbose --no-tests=error --output-log orchard-wallet-legacy-key-read-execution.log
+          python3 - <<'PYTEST'
+          import re
+          expected = ['WalletMainnetReadiness.LegacyKeyReadHistoricalBytesAndReopen', 'WalletMainnetReadiness.LegacyKeyReadMalformedOwnerOverridesCache', 'WalletMainnetReadiness.LegacyKeyReadIncompleteAndBorrowedRefuse']
+          actual = re.findall(r'\[       OK \] (WalletMainnetReadiness\.LegacyKeyRead\w+)', open('orchard-wallet-legacy-key-read-execution.log').read())
+          if sorted(actual) != sorted(expected):
+              raise SystemExit('Historical imported key read cases missing, duplicated or unexpected')
+          PYTEST
+      - name: Require and execute explicit historical signing policy
+        run: |
+          ctest --test-dir build-orchard-root -R '^WalletHistoricalSigning$' --show-only=json-v1 > orchard-historical-signing-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests=json.load(open('orchard-historical-signing-inventory.json'))['tests']
+          if [t['name'] for t in tests]!=['WalletHistoricalSigning'] or any(p['name']=='DISABLED' and p['value'] for t in tests for p in t.get('properties',[])):
+              raise SystemExit('Historical signing missing or disabled')
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^WalletHistoricalSigning$' --verbose --no-tests=error --output-log orchard-historical-signing-execution.log
+          python3 - <<'PYTEST'
+          import re
+          log=open('orchard-historical-signing-execution.log').read()
+          expected=['ExplicitPolicyParityAndEncryptedReopen','BoundProvidersSignMixedOwnersWithoutPaths','WrongPolicyScriptKeyAndOutpointRefuse']
+          if sorted(re.findall(r'\[       OK \] WalletHistoricalSigningTest\.(\w+)',log))!=sorted(expected):
+              raise SystemExit('Historical signing cases did not complete exactly once')
+          PYTEST
+      - name: Require and execute historical raw RPC and builder signing
+        run: |
+          ctest --test-dir build-orchard-root -R '^WalletHistoricalRpc$' --show-only=json-v1 > orchard-historical-rpc-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests=json.load(open('orchard-historical-rpc-inventory.json'))['tests']
+          if [t['name'] for t in tests]!=['WalletHistoricalRpc'] or any(p['name']=='DISABLED' and p['value'] for t in tests for p in t.get('properties',[])):
+              raise SystemExit('Historical signing missing or disabled')
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^WalletHistoricalRpc$' --verbose --no-tests=error --output-log orchard-historical-rpc-execution.log
+          python3 - <<'PYTEST'
+          import re
+          log=open('orchard-historical-rpc-execution.log').read()
+          expected=['ActualRawHandlerPreservesMixedOrigins','ActualRawSessionAndBorrowedTransactionRefusal','BuilderExactKeysAndAtomicWitnessPublication','ExistingWitnessAndMissingMetadataStayExplicit']
+          if sorted(re.findall(r'\[       OK \] HistoricalRpc\.(\w+)',log))!=sorted(expected):
+              raise SystemExit('Historical signing cases did not complete exactly once')
+          PYTEST
+      - name: Require and execute exact peer header progress
+        run: |
+          ctest --test-dir build-orchard-root -R '^PeerHeaderProgress$' --show-only=json-v1 > orchard-peer-header-progress-inventory.json
+          python3 - <<'PYVERIFY'
+          import json
+          tests=json.load(open('orchard-peer-header-progress-inventory.json'))['tests']
+          if [t['name'] for t in tests]!=['PeerHeaderProgress'] or any(p['name']=='DISABLED' and p['value'] for t in tests for p in t.get('properties',[])):
+              raise SystemExit('Peer header progress test missing or disabled')
+          PYVERIFY
+          ctest --test-dir build-orchard-root -R '^PeerHeaderProgress$' --verbose --no-tests=error --output-log orchard-peer-header-progress-execution.log
+          python3 - <<'PYVERIFY'
+          log=open('orchard-peer-header-progress-execution.log').read()
+          for case in ['ExactBatchAndDuplicates','BlockHeaderWithoutRequestOrTipMutation','RefusalWithoutPublication']:
+              if log.count('PASS PeerHeaderProgress.'+case)!=1:
+                  raise SystemExit('Peer header progress case missing: '+case)
+          PYVERIFY
+      - name: Require and execute vendored RocksDB checksum correctness
+        run: |
+          ctest --test-dir build-orchard-root -R '^RocksDBChecksum$' --show-only=json-v1 > orchard-rocksdb-checksum-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests=json.load(open('orchard-rocksdb-checksum-inventory.json'))['tests']
+          if [t['name'] for t in tests]!=['RocksDBChecksum'] or any(p['name']=='DISABLED' and p['value'] for t in tests for p in t.get('properties',[])):
+              raise SystemExit('RocksDB checksum test missing or disabled')
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^RocksDBChecksum$' --verbose --no-tests=error --output-log orchard-rocksdb-checksum-execution.log
+          python3 - <<'PYTEST'
+          log=open('orchard-rocksdb-checksum-execution.log').read()
+          if log.count('PASS RocksDBChecksum.ReferenceAndIncremental')!=1:
+              raise SystemExit('RocksDB checksum reference case did not complete exactly once')
+          PYTEST
+      - name: Require and execute retained payment reorg history
+        run: |
+          ctest --test-dir build-orchard-root -R '^WalletReorgOrigin$' --show-only=json-v1 > orchard-reorg-origin-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests=json.load(open('orchard-reorg-origin-inventory.json'))['tests']
+          if [t['name'] for t in tests]!=['WalletReorgOrigin'] or any(p['name']=='DISABLED' and p['value'] for t in tests for p in t.get('properties',[])):
+              raise SystemExit('Wallet reorg origin test missing or disabled')
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^WalletReorgOrigin$' --verbose --no-tests=error --output-log orchard-reorg-origin-execution.log
+          python3 - <<'PYTEST'
+          import re
+          log=open('orchard-reorg-origin-execution.log').read()
+          expected=['ActualDisconnectRetainsOriginAndReservationsAcrossReopen','DisconnectSqlAndCommitFailuresPreserveWholeGroup','StandaloneRewindPreservesLocalHistoryAndChecksTransaction']
+          if sorted(re.findall(r'\[       OK \] WalletReorgOrigin\.(\w+)',log))!=sorted(expected):
+              raise SystemExit('Wallet reorg origin cases did not complete exactly once')
+          PYTEST
+      - name: Require and execute durable batch payment ownership
+        run: |
+          ctest --test-dir build-orchard-root -R '^WalletBatchPayment$' --show-only=json-v1 > orchard-batch-payment-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests=json.load(open('orchard-batch-payment-inventory.json'))['tests']
+          if [t['name'] for t in tests]!=['WalletBatchPayment'] or any(p['name']=='DISABLED' and p['value'] for t in tests for p in t.get('properties',[])):
+              raise SystemExit('Batch payment test missing or disabled')
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^WalletBatchPayment$' --verbose --no-tests=error --output-log orchard-batch-payment-execution.log
+          python3 - <<'PYTEST'
+          import re
+          log=open('orchard-batch-payment-execution.log').read()
+          expected=['WalletBatchPayment.MixedLegacyBatchAndReopen','WalletBatchPayment.OutputIntentAndCommitRefuseWithoutPublication','WalletBatchRpc.PreflightThenRetainBeforeOneRejectedSubmission','WalletBatchRpc.UnavailablePreflightThenSubmissionExceptionRetains','WalletBatchRpc.SuccessfulSubmissionAndInvalidInputBeforeEffects']
+          if sorted(re.findall(r'\[       OK \] (WalletBatch(?:Payment|Rpc)\.\w+)',log))!=sorted(expected):
+              raise SystemExit('Batch payment cases did not complete exactly once')
+          PYTEST
+      - name: Require and execute authenticated wallet reservation balances
+        run: |
+          ctest --test-dir build-orchard-root -R '^WalletReservationBalance$' --show-only=json-v1 > orchard-reservation-balance-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests=json.load(open('orchard-reservation-balance-inventory.json'))['tests']
+          if [t['name'] for t in tests]!=['WalletReservationBalance'] or any(p['name']=='DISABLED' and p['value'] for t in tests for p in t.get('properties',[])):
+              raise SystemExit('Reservation balance test missing or disabled')
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^WalletReservationBalance$' --verbose --no-tests=error --output-log orchard-reservation-balance-execution.log
+          python3 - <<'PYTEST'
+          import re
+          log=open('orchard-reservation-balance-execution.log').read()
+          expected=['AuthenticatedReservationMaturityAndReopen','LockedRpcAmountsAreExplicitlyUnavailable','UntrackedAndIncompleteReadsNeverClaimAuthentication']
+          if sorted(re.findall(r'\[       OK \] WalletReservationBalance\.(\w+)',log))!=sorted(expected):
+              raise SystemExit('Reservation balance cases did not complete exactly once')
+          PYTEST
+      - name: Require and execute durable wallet payment ownership
+        run: |
+          ctest --test-dir build-orchard-root -R '^WalletPendingPayment$' --show-only=json-v1 > orchard-pending-payment-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests=json.load(open('orchard-pending-payment-inventory.json'))['tests']
+          if [t['name'] for t in tests]!=['WalletPendingPayment'] or any(p['name']=='DISABLED' and p['value'] for t in tests for p in t.get('properties',[])):
+              raise SystemExit('Pending payment owner test missing or disabled')
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^WalletPendingPayment$' --verbose --no-tests=error --output-log orchard-pending-payment-execution.log
+          python3 - <<'PYTEST'
+          import re
+          log=open('orchard-pending-payment-execution.log').read()
+          expected=['SignedOriginHistoryReservationsAndReopen','FailedWritesCommitAndStaleSelectionPublishNothing','CorruptOwnerReadFailureAndIntentRefuse']
+          if sorted(re.findall(r'\[       OK \] WalletPendingPayment\.(\w+)',log))!=sorted(expected):
+              raise SystemExit('Pending payment owner cases did not complete exactly once')
+          PYTEST
+      - name: Require and execute selected-wallet owned transaction signing
+        run: |
+          ctest --test-dir build-orchard-root -R '^WalletOwnedSigning$' --show-only=json-v1 > orchard-owned-signing-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests=json.load(open('orchard-owned-signing-inventory.json'))['tests']
+          if [t['name'] for t in tests]!=['WalletOwnedSigning'] or any(p['name']=='DISABLED' and p['value'] for t in tests for p in t.get('properties',[])):
+              raise SystemExit('Owned signing missing or disabled')
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^WalletOwnedSigning$' --verbose --no-tests=error --output-log orchard-owned-signing-execution.log
+          python3 - <<'PYTEST'
+          import re
+          log=open('orchard-owned-signing-execution.log').read()
+          expected=['ActualMixedOwnerSigningAndPqStore','CapturedSessionPinAndCallerTransaction','CompleteOutpointsBeforeKeyReadsAndNoFallback']
+          if sorted(re.findall(r'\[       OK \] WalletOwnedSigning\.(\w+)',log))!=sorted(expected):
+              raise SystemExit('Owned signing cases did not complete exactly once')
+          PYTEST
+      - name: Require and execute PQ input-root provider checks
+        run: |
+          ctest --test-dir build-orchard-root -R '^WalletPqRootProvider$' --show-only=json-v1 > orchard-pq-root-provider-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests=json.load(open('orchard-pq-root-provider-inventory.json'))['tests']
+          if [t['name'] for t in tests]!=['WalletPqRootProvider'] or any(p['name']=='DISABLED' and p['value'] for t in tests for p in t.get('properties',[])):
+              raise SystemExit('PQ root provider missing or disabled')
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^WalletPqRootProvider$' --verbose --no-tests=error --output-log orchard-pq-root-provider-execution.log
+          python3 - <<'PYTEST'
+          import re
+          log=open('orchard-pq-root-provider-execution.log').read()
+          expected=['CoherentAliasesSignAndReopen','MalformedLaterAliasRefusesWithoutPartialResult','IncompleteReadAndBorrowedTransactionRefuse']
+          if sorted(re.findall(r'\[       OK \] WalletPqRootProviderTest\.(\w+)',log))!=sorted(expected):
+              raise SystemExit('PQ root provider cases did not complete exactly once')
+          PYTEST
+      - name: Require and execute wallet timeout key cleanup
+        run: |
+          ctest --test-dir build-orchard-root -R '^WalletMainnetReadiness_Timeout' --show-only=json-v1 > orchard-wallet-timeout-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          expected=['WalletMainnetReadiness_TimeoutClearsPqAndPreservesDurableOwner','WalletMainnetReadiness_TimeoutHonorsExistingRecoveryPin']
+          tests=json.load(open('orchard-wallet-timeout-inventory.json'))['tests']
+          if sorted(t['name'] for t in tests)!=sorted(expected) or any(p['name']=='DISABLED' and p['value'] for t in tests for p in t.get('properties',[])):
+              raise SystemExit('Wallet timeout tests missing or disabled')
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^WalletMainnetReadiness_Timeout' --verbose --no-tests=error --output-log orchard-wallet-timeout-execution.log
+          python3 - <<'PYTEST'
+          import re
+          log=open('orchard-wallet-timeout-execution.log').read()
+          expected=['TimeoutClearsPqAndPreservesDurableOwner','TimeoutHonorsExistingRecoveryPin']
+          if sorted(re.findall(r'\[       OK \] WalletMainnetReadiness\.(Timeout\w+)',log))!=sorted(expected):
+              raise SystemExit('Wallet timeout cases did not complete exactly once')
+          PYTEST
+      - name: Require and execute RPC handler drain and daemon shutdown
+        run: |
+          ctest --test-dir build-orchard-root -R '^(RpcHandlerDrain|RpcStopCleanShutdown)$' --show-only=json-v1 > orchard-rpc-drain-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests=json.load(open('orchard-rpc-drain-inventory.json'))['tests']
+          if sorted(t['name'] for t in tests)!=['RpcHandlerDrain','RpcStopCleanShutdown'] or any(p['name']=='DISABLED' and p['value'] for t in tests for p in t.get('properties',[])):
+              raise SystemExit('RPC drain or daemon shutdown test missing/disabled')
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^(RpcHandlerDrain|RpcStopCleanShutdown)$' --verbose --no-tests=error --output-log orchard-rpc-drain-execution.log
+          python3 - <<'PYTEST'
+          import re
+          log=open('orchard-rpc-drain-execution.log').read()
+          expected=['WaitsForLiveHandlerBeforeReturning','InterruptsIdleSocketsAndRestarts','RefusesHandlerLifecycleAndDrainsExceptions']
+          if sorted(re.findall(r'\[       OK \] RpcHandlerDrain\.(\w+)',log))!=sorted(expected) or log.count('RPC_STOP_CLEAN_SHUTDOWN=PASS')!=1:
+              raise SystemExit('RPC handler/daemon shutdown completion missing or duplicated')
+          PYTEST
+      - name: Require and execute PQ JSON wallet session ownership
+        run: |
+          ctest --test-dir build-orchard-root -R '^WalletPqRpcOwner$' --show-only=json-v1 > orchard-pq-rpc-owner-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests=json.load(open('orchard-pq-rpc-owner-inventory.json'))['tests']
+          if len(tests)!=1 or tests[0]['name']!='WalletPqRpcOwner' or any(p['name']=='DISABLED' and p['value'] for p in tests[0].get('properties',[])):
+              raise SystemExit('PQ JSON ownership test missing or disabled')
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^WalletPqRpcOwner$' --verbose --no-tests=error --output-log orchard-pq-rpc-owner-execution.log
+          python3 - <<'PYTEST'
+          import re
+          expected=['ActualAdaptersRoundTripAndSelection','SessionPinnedAcrossEveryAdapter','BorrowedTransactionAndMissingStoreRefuse']
+          actual=re.findall(r'\[       OK \] PqRpcOwner\.(\w+)',open('orchard-pq-rpc-owner-execution.log').read())
+          if sorted(actual)!=sorted(expected):
+              raise SystemExit('PQ JSON ownership cases missing, duplicated or unexpected')
+          PYTEST
+      - name: Require and execute PQ inventory during staged unlock
+        run: |
+          ctest --test-dir build-orchard-root -R '^WalletMainnetReadiness_PqInventory' --show-only=json-v1 > orchard-wallet-pq-unlock-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          expected = ['WalletMainnetReadiness_PqInventoryBindingAndReopen', 'WalletMainnetReadiness_PqInventoryCorruptionPreservesOwner', 'WalletMainnetReadiness_PqInventoryReadAndSnapshot']
+          tests = json.load(open('orchard-wallet-pq-unlock-inventory.json'))['tests']
+          if sorted(t['name'] for t in tests) != sorted(expected) or any(p['name'] == 'DISABLED' and p['value'] for t in tests for p in t.get('properties', [])):
+              raise SystemExit('Imported owner inventory tests missing or disabled')
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^WalletMainnetReadiness_PqInventory' --verbose --no-tests=error --output-log orchard-wallet-pq-unlock-execution.log
+          python3 - <<'PYTEST'
+          import re
+          expected = ['WalletMainnetReadiness.PqInventoryBindingAndReopen', 'WalletMainnetReadiness.PqInventoryCorruptionPreservesOwner', 'WalletMainnetReadiness.PqInventoryReadAndSnapshot']
+          actual = re.findall(r'\[       OK \] (WalletMainnetReadiness\.PqInventory\w+)', open('orchard-wallet-pq-unlock-execution.log').read())
+          if sorted(actual) != sorted(expected):
+              raise SystemExit('Imported owner inventory cases missing, duplicated or unexpected')
+          PYTEST
+      - name: Require and execute historical legacy import inventory
+        run: |
+          ctest --test-dir build-orchard-root -R '^WalletMainnetReadiness_LegacyInventory' --show-only=json-v1 > orchard-wallet-legacy-inventory-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          expected = ['WalletMainnetReadiness_LegacyInventoryHistoricalBindingAndReopen', 'WalletMainnetReadiness_LegacyInventoryMismatchAndMalformedRowsRefuse', 'WalletMainnetReadiness_LegacyInventoryIncompleteReadPreservesOwner']
+          tests = json.load(open('orchard-wallet-legacy-inventory-inventory.json'))['tests']
+          if sorted(t['name'] for t in tests) != sorted(expected) or any(p['name'] == 'DISABLED' and p['value'] for t in tests for p in t.get('properties', [])):
+              raise SystemExit('Legacy inventory tests missing or disabled')
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^WalletMainnetReadiness_LegacyInventory' --verbose --no-tests=error --output-log orchard-wallet-legacy-inventory-execution.log
+          python3 - <<'PYTEST'
+          import re
+          expected = ['WalletMainnetReadiness.LegacyInventoryHistoricalBindingAndReopen', 'WalletMainnetReadiness.LegacyInventoryMismatchAndMalformedRowsRefuse', 'WalletMainnetReadiness.LegacyInventoryIncompleteReadPreservesOwner']
+          actual = re.findall(r'\[       OK \] (WalletMainnetReadiness\.LegacyInventory\w+)', open('orchard-wallet-legacy-inventory-execution.log').read())
+          if sorted(actual) != sorted(expected):
+              raise SystemExit('Legacy inventory cases missing, duplicated or unexpected')
+          PYTEST
+      - name: Require and execute staged wallet unlock
+        run: |
+          ctest --test-dir build-orchard-root -R '^WalletMainnetReadiness_StagedUnlock' --show-only=json-v1 > orchard-wallet-staged-unlock-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          expected = ['WalletMainnetReadiness_StagedUnlockSeedAndPolicyFailuresPreserveState', 'WalletMainnetReadiness_StagedUnlockReadAndCommitFailuresPreserveState', 'WalletMainnetReadiness_StagedUnlockPqOwnersMustAgree', 'WalletMainnetReadiness_StagedUnlockLegacyCredentialsPreserved']
+          tests = json.load(open('orchard-wallet-staged-unlock-inventory.json'))['tests']
+          if sorted(t['name'] for t in tests) != sorted(expected) or any(p['name'] == 'DISABLED' and p['value'] for t in tests for p in t.get('properties', [])):
+              raise SystemExit('Staged unlock tests missing or disabled')
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^WalletMainnetReadiness_StagedUnlock' --verbose --no-tests=error --output-log orchard-wallet-staged-unlock-execution.log
+          python3 - <<'PYTEST'
+          import re
+          expected = ['WalletMainnetReadiness.StagedUnlockSeedAndPolicyFailuresPreserveState', 'WalletMainnetReadiness.StagedUnlockReadAndCommitFailuresPreserveState', 'WalletMainnetReadiness.StagedUnlockPqOwnersMustAgree', 'WalletMainnetReadiness.StagedUnlockLegacyCredentialsPreserved']
+          actual = re.findall(r'\[       OK \] (WalletMainnetReadiness\.StagedUnlock\w+)', open('orchard-wallet-staged-unlock-execution.log').read())
+          if sorted(actual) != sorted(expected):
+              raise SystemExit('Staged unlock cases missing, duplicated or unexpected')
+          PYTEST
+      - name: Require and execute initial wallet key ownership
+        run: |
+          ctest --test-dir build-orchard-root -R '^WalletMainnetReadiness_InitialOwner' --show-only=json-v1 > orchard-wallet-initial-owner-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          expected = ['WalletMainnetReadiness_InitialOwnerPreservesGeneratedPqAcrossWrapperLoss', 'WalletMainnetReadiness_InitialOwnerRecoveryNeverGeneratesHistoricalPq', 'WalletMainnetReadiness_InitialOwnerBindingAndConsumedGeneration', 'WalletMainnetReadiness_InitialOwnerSeedAndRecordRollbackTogether']
+          tests = json.load(open('orchard-wallet-initial-owner-inventory.json'))['tests']
+          if sorted(t['name'] for t in tests) != sorted(expected) or any(p['name'] == 'DISABLED' and p['value'] for t in tests for p in t.get('properties', [])):
+              raise SystemExit('Initial ownership tests missing or disabled')
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^WalletMainnetReadiness_InitialOwner' --verbose --no-tests=error --output-log orchard-wallet-initial-owner-execution.log
+          python3 - <<'PYTEST'
+          import re
+          expected = ['WalletMainnetReadiness.InitialOwnerPreservesGeneratedPqAcrossWrapperLoss', 'WalletMainnetReadiness.InitialOwnerRecoveryNeverGeneratesHistoricalPq', 'WalletMainnetReadiness.InitialOwnerBindingAndConsumedGeneration', 'WalletMainnetReadiness.InitialOwnerSeedAndRecordRollbackTogether']
+          actual = re.findall(r'\[       OK \] (WalletMainnetReadiness\.InitialOwner\w+)', open('orchard-wallet-initial-owner-execution.log').read())
+          if sorted(actual) != sorted(expected):
+              raise SystemExit('Initial ownership cases missing, duplicated or unexpected')
+          PYTEST
+      - name: Require and execute restore name preservation
+        run: |
+          ctest --test-dir build-orchard-root -R '^WalletMainnetReadiness_Restore(RequiresNewNamePreservesOriginal|RefusesUnencryptedAndUnregisteredTargets)$' --show-only=json-v1 > orchard-wallet-restore-name-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          expected = ['WalletMainnetReadiness_RestoreRequiresNewNamePreservesOriginal', 'WalletMainnetReadiness_RestoreRefusesUnencryptedAndUnregisteredTargets']
+          tests = json.load(open('orchard-wallet-restore-name-inventory.json'))['tests']
+          if sorted(t['name'] for t in tests) != sorted(expected) or any(p['name'] == 'DISABLED' and p['value'] for t in tests for p in t.get('properties', [])):
+              raise SystemExit('Restore name preservation tests missing or disabled')
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^WalletMainnetReadiness_Restore(RequiresNewNamePreservesOriginal|RefusesUnencryptedAndUnregisteredTargets)$' --verbose --no-tests=error --output-log orchard-wallet-restore-name-execution.log
+          python3 - <<'PYTEST'
+          import re
+          expected = ['WalletMainnetReadiness.RestoreRequiresNewNamePreservesOriginal', 'WalletMainnetReadiness.RestoreRefusesUnencryptedAndUnregisteredTargets']
+          actual = re.findall(r'\[       OK \] (WalletMainnetReadiness\.Restore\w+)', open('orchard-wallet-restore-name-execution.log').read())
+          if sorted(actual) != sorted(expected):
+              raise SystemExit('Restore name preservation cases missing, duplicated or unexpected')
+          PYTEST
+      - name: Require and execute fresh wallet recovery initialization
+        run: |
+          ctest --test-dir build-orchard-root -R '^WalletMainnetReadiness_FreshRestore' --show-only=json-v1 > orchard-wallet-fresh-restore-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          expected = ['WalletMainnetReadiness_FreshRestoreInitialSeedAndRecoveryBinding', 'WalletMainnetReadiness_FreshRestoreEncryptedReopen', 'WalletMainnetReadiness_FreshRestoreExplicitChecksumBypass']
+          tests = json.load(open('orchard-wallet-fresh-restore-inventory.json'))['tests']
+          if sorted(t['name'] for t in tests) != sorted(expected) or any(p['name'] == 'DISABLED' and p['value'] for t in tests for p in t.get('properties', [])):
+              raise SystemExit('Fresh wallet recovery tests missing or disabled')
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^WalletMainnetReadiness_FreshRestore' --verbose --no-tests=error --output-log orchard-wallet-fresh-restore-execution.log
+          python3 - <<'PYTEST'
+          import re
+          expected = ['WalletMainnetReadiness.FreshRestoreInitialSeedAndRecoveryBinding', 'WalletMainnetReadiness.FreshRestoreEncryptedReopen', 'WalletMainnetReadiness.FreshRestoreExplicitChecksumBypass']
+          actual = re.findall(r'\[       OK \] (WalletMainnetReadiness\.FreshRestore\w+)', open('orchard-wallet-fresh-restore-execution.log').read())
+          if sorted(actual) != sorted(expected):
+              raise SystemExit('Fresh wallet recovery cases missing, duplicated or unexpected')
+          PYTEST
+      - name: Require and execute atomic master seed writes
+        run: |
+          ctest --test-dir build-orchard-root -R '^WalletSeedWrite$' --show-only=json-v1 > orchard-wallet-seed-write-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests = json.load(open('orchard-wallet-seed-write-inventory.json'))['tests']
+          if [t['name'] for t in tests] != ['WalletSeedWrite'] or any(p['name'] == 'DISABLED' and p['value'] for t in tests for p in t.get('properties', [])):
+              raise SystemExit('WalletSeedWrite missing or disabled')
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^WalletSeedWrite$' --verbose --no-tests=error --output-log orchard-wallet-seed-write-execution.log
+          python3 - <<'PYTEST'
+          import re
+          actual = re.findall(r'\[       OK \] (WalletSeedWriteTest\.\S+)', open('orchard-wallet-seed-write-execution.log').read())
+          expected = ['WalletSeedWriteTest.' + name for name in ['RequiredWritesRollback', 'CommitAndBorrowedTransactionPreserveOwner', 'ReplacementRollbackAndSameSeedReopen']]
+          if sorted(actual) != sorted(expected):
+              raise SystemExit('Seed writer cases did not execute exactly once')
+          PYTEST
+      - name: Require and execute checked master seed envelope reads
+        run: |
+          ctest --test-dir build-orchard-root -R '^WalletSeedRead$' --show-only=json-v1 > orchard-wallet-seed-read-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests = json.load(open('orchard-wallet-seed-read-inventory.json'))['tests']
+          if [t['name'] for t in tests] != ['WalletSeedRead'] or any(p['name'] == 'DISABLED' and p['value'] for t in tests for p in t.get('properties', [])):
+              raise SystemExit('WalletSeedRead missing or disabled')
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^WalletSeedRead$' --verbose --no-tests=error --output-log orchard-wallet-seed-read-execution.log
+          python3 - <<'PYTEST'
+          import re
+          actual = re.findall(r'\[       OK \] (WalletSeedReadTest\.\S+)', open('orchard-wallet-seed-read-execution.log').read())
+          expected = ['WalletSeedReadTest.' + name for name in ['CurrentAndLegacyAuthenticationWithoutPublication', 'MalformedFieldsAndUnknownVersionsRefuse', 'IncompleteReadAndBorrowedTransactionPreserveOwner']]
+          if sorted(actual) != sorted(expected):
+              raise SystemExit('Seed reader cases did not execute exactly once')
+          PYTEST
+      - name: Require and execute populated wallet encryption lifecycle
+        run: |
+          ctest --test-dir build-orchard-root -R '^WalletEncryptionOwner$' --show-only=json-v1 > orchard-wallet-encryption-owner-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests = json.load(open('orchard-wallet-encryption-owner-inventory.json'))['tests']
+          if [t['name'] for t in tests] != ['WalletEncryptionOwner'] or any(p['name'] == 'DISABLED' and p['value'] for t in tests for p in t.get('properties', [])):
+              raise SystemExit('WalletEncryptionOwner missing or disabled')
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^WalletEncryptionOwner$' --verbose --no-tests=error --output-log orchard-wallet-encryption-owner-execution.log
+          python3 - <<'PYTEST'
+          import re
+          actual = re.findall(r'\[ RUN\s+\] (WalletEncryptionOwnerTest\.\S+)', open('orchard-wallet-encryption-owner-execution.log').read())
+          expected = ['WalletEncryptionOwnerTest.' + name for name in ['PopulatedImportsEncryptAndRotateWithoutIdentityChange', 'RequiredWritesAndBorrowedTransactionRollback', 'ExplicitDecryptionPreservesImportsAndRefusesPqDowngrade', 'CommitAndPolicyFailuresKeepLiveAndDurableOwner', 'LegacyImportedPayloadRoundtripAndFailureRollback']]
+          if sorted(actual) != sorted(expected):
+              raise SystemExit('Encryption owner cases did not execute exactly once')
+          PYTEST
+      - name: Require and execute authenticated P2MR key reads
+        run: |
+          ctest --test-dir build-orchard-root -R '^WalletP2MRKeyRead$' --show-only=json-v1 > orchard-wallet-p2mr-key-read-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests = json.load(open('orchard-wallet-p2mr-key-read-inventory.json'))['tests']
+          if [t['name'] for t in tests] != ['WalletP2MRKeyRead'] or any(p['name'] == 'DISABLED' and p['value'] for t in tests for p in t.get('properties', [])):
+              raise SystemExit('WalletP2MRKeyRead missing or disabled')
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^WalletP2MRKeyRead$' --verbose --no-tests=error --output-log orchard-wallet-p2mr-key-read-execution.log
+          python3 - <<'PYTEST'
+          import re
+          actual = re.findall(r'\[PASS\] P2MRKeyRead\.(\w+)', open('orchard-wallet-p2mr-key-read-execution.log').read())
+          if sorted(actual) != ['BindingAndReopen', 'OneSnapshotDuringReplacement', 'ReadErrorsAndCallerTransaction']:
+              raise SystemExit('P2MR key read cases did not pass exactly once')
+          PYTEST
+      - name: Require and execute checked P2MR inventory
+        run: |
+          ctest --test-dir build-orchard-root -R '^WalletP2MRInventory$' --show-only=json-v1 > orchard-wallet-p2mr-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests = json.load(open('orchard-wallet-p2mr-inventory.json'))['tests']
+          if [t['name'] for t in tests] != ['WalletP2MRInventory'] or any(p['name'] == 'DISABLED' and p['value'] for t in tests for p in t.get('properties', [])):
+              raise SystemExit('WalletP2MRInventory missing or disabled')
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^WalletP2MRInventory$' --verbose --no-tests=error --output-log orchard-wallet-p2mr-inventory-execution.log
+          python3 - <<'PYTEST'
+          import re
+          actual = re.findall(r'\[PASS\] P2MRInventory\.(\w+)', open('orchard-wallet-p2mr-inventory-execution.log').read())
+          if sorted(actual) != ['ExistingReadOnly', 'IncompleteRead', 'MalformedLateRows']:
+              raise SystemExit('P2MR inventory cases did not pass exactly once')
+          PYTEST
+      - name: Require and execute complete known script inventory reload
+        run: |
+          ctest --test-dir build-orchard-root -R '^WalletScriptReload$' --show-only=json-v1 > orchard-wallet-script-reload-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests = json.load(open('orchard-wallet-script-reload-inventory.json'))['tests']
+          if [t['name'] for t in tests] != ['WalletScriptReload'] or any(p['name'] == 'DISABLED' and p['value'] for t in tests for p in t.get('properties', [])):
+              raise SystemExit('WalletScriptReload missing or disabled')
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^WalletScriptReload$' --verbose --no-tests=error --output-log orchard-wallet-script-reload-execution.log
+          python3 - <<'PYTEST'
+          import re
+          actual = re.findall(r'\[ RUN\s+\] (WalletScriptReloadTest\.\S+)', open('orchard-wallet-script-reload-execution.log').read())
+          expected = ['WalletScriptReloadTest.' + name for name in ['LoadsUnionWithoutInventingOrBackfillingPaths', 'IncompleteAndConflictingRecordsDoNotPublish', 'ReadBorrowedTransactionAndIndexConflictRefuseAtomically']]
+          if sorted(actual) != sorted(expected):
+              raise SystemExit('Script reload cases did not execute exactly once')
+          PYTEST
+      - name: Require and execute forward private-key import ownership
+        run: |
+          ctest --test-dir build-orchard-root -R '^WalletPrivateKeyImport$' --show-only=json-v1 > orchard-wallet-private-key-import-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests = json.load(open('orchard-wallet-private-key-import-inventory.json'))['tests']
+          if [t['name'] for t in tests] != ['WalletPrivateKeyImport'] or any(p['name'] == 'DISABLED' and p['value'] for t in tests for p in t.get('properties', [])):
+              raise SystemExit('WalletPrivateKeyImport missing or disabled')
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^WalletPrivateKeyImport$' --verbose --no-tests=error --output-log orchard-wallet-private-key-import-execution.log
+          python3 - <<'PYTEST'
+          import re
+          actual = re.findall(r'\[ RUN\s+\] (WalletPrivateKeyImportTest\.\S+)', open('orchard-wallet-private-key-import-execution.log').read())
+          expected = ['WalletPrivateKeyImportTest.' + name for name in ['CanonicalImportsReopenAndPreserveOtherImports', 'ExpectedAddressSessionAndTransactionRefuse', 'LegacyInventoryAndReadFailureRefuseWithoutEffects']]
+          if sorted(actual) != sorted(expected):
+              raise SystemExit('Private-key import cases did not execute exactly once')
+          PYTEST
+      - name: Require and execute wallet rollback atomicity
+        run: |
+          ctest --test-dir build-orchard-root -R '^WalletRevertAtomic$' --show-only=json-v1 > orchard-wallet-undo-inventory.json
+          python3 - <<'PYCODE'
+          import json
+          tests = json.load(open('orchard-wallet-undo-inventory.json'))['tests']
+          if [t['name'] for t in tests] != ['WalletRevertAtomic']:
+              raise SystemExit('Missing wallet rollback atomicity test')
+          if any(p['name'] == 'DISABLED' and p['value'] for p in tests[0].get('properties', [])):
+              raise SystemExit('Disabled wallet rollback atomicity test')
+          PYCODE
+          ctest --test-dir build-orchard-root -R '^WalletRevertAtomic$' --output-on-failure --no-tests=error --output-log orchard-wallet-undo-execution.log
+      - name: Require and execute wallet database ownership
+        run: |
+          ctest --test-dir build-orchard-root -R '^WalletDatabaseLease$' --show-only=json-v1 > orchard-wallet-lease-inventory.json
+          python3 - <<'PYCODE'
+          import json
+          tests = json.load(open('orchard-wallet-lease-inventory.json'))['tests']
+          if [t['name'] for t in tests] != ['WalletDatabaseLease']:
+              raise SystemExit('Missing wallet database ownership test')
+          if any(p['name'] == 'DISABLED' and p['value'] for p in tests[0].get('properties', [])):
+              raise SystemExit('Disabled wallet database ownership test')
+          PYCODE
+          ctest --test-dir build-orchard-root -R '^WalletDatabaseLease$' --output-on-failure --no-tests=error --output-log orchard-wallet-lease-execution.log
+      - name: Require and execute persistent wallet delivery binding
+        run: |
+          ctest --test-dir build-orchard-root -R '^WalletDeliveryBinding(Identity|Failures)$' --show-only=json-v1 > orchard-wallet-binding-inventory.json
+          python3 - <<'PYCODE'
+          import json
+          tests = json.load(open('orchard-wallet-binding-inventory.json'))['tests']
+          if sorted(t['name'] for t in tests) != ['WalletDeliveryBindingFailures', 'WalletDeliveryBindingIdentity']:
+              raise SystemExit('Missing wallet delivery binding registrations')
+          for test in tests:
+              if any(p['name'] == 'DISABLED' and p['value'] for p in test.get('properties', [])):
+                  raise SystemExit('Disabled wallet delivery binding test')
+          PYCODE
+          ctest --test-dir build-orchard-root -R '^WalletDeliveryBinding(Identity|Failures)$' --verbose --output-on-failure --no-tests=error --output-log orchard-wallet-binding-execution.log
+          python3 - <<'PYCODE'
+          import re
+          actual = re.findall(r'\[ RUN\s+\] (WalletDeliveryBindingTest\.\S+)', open('orchard-wallet-binding-execution.log').read())
+          expected = ['WalletDeliveryBindingTest.StableDatabaseIdentitySurvivesReopenAndMetadataChanges', 'WalletDeliveryBindingTest.FailedWritesAndCommitDoNotPublishIdentity']
+          if sorted(actual) != sorted(expected):
+              raise SystemExit('Missing actual wallet delivery binding executions')
+          PYCODE
+      - name: Require and execute queued wallet identity
+        run: |
+          ctest --test-dir build-orchard-root -R '^WalletQueuedIdentity$' --show-only=json-v1 > orchard-wallet-queue-inventory.json
+          python3 - <<'PYCODE'
+          import json
+          tests = json.load(open('orchard-wallet-queue-inventory.json'))['tests']
+          if [t['name'] for t in tests] != ['WalletQueuedIdentity']:
+              raise SystemExit('WalletQueuedIdentity registration missing')
+          if any(p['name'] == 'DISABLED' and p['value'] for p in tests[0].get('properties', [])):
+              raise SystemExit('WalletQueuedIdentity disabled')
+          PYCODE
+          ctest --test-dir build-orchard-root -R '^WalletQueuedIdentity$' --verbose --output-on-failure --no-tests=error --output-log orchard-wallet-queue-execution.log
+          python3 - <<'PYCODE'
+          import re
+          actual = re.findall(r'\[ RUN\s+\] (WalletQueuedIdentityTest\.\S+)', open('orchard-wallet-queue-execution.log').read())
+          expected = ['WalletQueuedIdentityTest.RejectsReplacedAndReopenedWalletBeforeAnyStoreEffect', 'WalletQueuedIdentityTest.EmptySelectionAndMissingBindingCannotRetargetWork']
+          if sorted(actual) != sorted(expected):
+              raise SystemExit('Missing actual queued identity executions')
+          PYCODE
+      - name: Require and execute ordinary wallet commit failure stages
+        run: |
+          ctest --test-dir build-orchard-root -R '^WalletOrdinaryBlock(Insert|Spend|History|Confirmation|Commit)$' --show-only=json-v1 > orchard-wallet-block-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests = json.load(open('orchard-wallet-block-inventory.json'))['tests']
+          expected = sorted('WalletOrdinaryBlock' + stage for stage in ['Insert', 'Spend', 'History', 'Confirmation', 'Commit'])
+          if sorted(t['name'] for t in tests) != expected:
+              raise SystemExit('Ordinary wallet commit stage registration missing')
+          if any(p['name'] == 'DISABLED' and p['value'] for t in tests for p in t.get('properties', [])):
+              raise SystemExit('Ordinary wallet commit stage disabled')
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^WalletOrdinaryBlock(Insert|Spend|History|Confirmation|Commit)$' --verbose --output-on-failure --no-tests=error --output-log orchard-wallet-block-execution.log
+          python3 - <<'PYTEST'
+          import re
+          log = open('orchard-wallet-block-execution.log').read()
+          actual = re.findall(r'\[ RUN\s+\] (DeliveryStages/WalletOrdinaryBlockTest\.\S+)', log)
+          expected = sorted('DeliveryStages/WalletOrdinaryBlockTest.ChecksOrdinaryWalletWritesAndCommitBeforeHeight/' + stage for stage in ['insert', 'spend', 'history', 'confirmation', 'commit'])
+          if sorted(actual) != expected:
+              raise SystemExit('Ordinary wallet failure stages did not all execute exactly once')
+          PYTEST
+      - name: Require and execute ordinary wallet block rollback
+        run: |
+          ctest --test-dir build-orchard-root -R '^WalletBlockDisconnect$' --show-only=json-v1 > orchard-wallet-disconnect-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests = json.load(open('orchard-wallet-disconnect-inventory.json'))['tests']
+          if [t['name'] for t in tests] != ['WalletBlockDisconnect']:
+              raise SystemExit('WalletBlockDisconnect registration missing')
+          if any(p['name'] == 'DISABLED' and p['value'] for p in tests[0].get('properties', [])):
+              raise SystemExit('WalletBlockDisconnect disabled')
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^WalletBlockDisconnect$' --output-on-failure --no-tests=error --output-log orchard-wallet-disconnect-execution.log
+      - name: Require and execute shared flatfile compatibility lanes
+        run: |
+          ctest --test-dir build-orchard-root -R '^(BlockStorageRoundTrip|ArchivalBlockReader)$' --show-only=json-v1 > orchard-flatfile-inventory.json
+          python3 - <<'PYCODE'
+          import json
+          tests = json.load(open('orchard-flatfile-inventory.json'))['tests']
+          if sorted(t['name'] for t in tests) != ['ArchivalBlockReader', 'BlockStorageRoundTrip']:
+              raise SystemExit('Missing shared flatfile compatibility test')
+          for test in tests:
+              props = {p['name']: p['value'] for p in test.get('properties', [])}
+              if props.get('DISABLED'):
+                  raise SystemExit('Disabled shared flatfile compatibility test')
+          PYCODE
+          ctest --test-dir build-orchard-root -R '^(BlockStorageRoundTrip|ArchivalBlockReader)$' --output-on-failure --no-tests=error --output-log orchard-flatfile-execution.log
+      - name: Require and execute snapshot wallet import
+        run: |
+          ctest --test-dir build-orchard-root -R '^(WalletRescanUtxoSet|SnapshotWalletImport)$' --show-only=json-v1 > orchard-wallet-snapshot-inventory.json
+          python3 - <<'PYCODE'
+          import json
+          tests = json.load(open('orchard-wallet-snapshot-inventory.json'))['tests']
+          if sorted(t['name'] for t in tests) != ['SnapshotWalletImport', 'WalletRescanUtxoSet']:
+              raise SystemExit('Missing snapshot wallet import test')
+          if any(p['name'] == 'DISABLED' and p['value'] for t in tests for p in t.get('properties', [])):
+              raise SystemExit('Disabled snapshot wallet import test')
+          PYCODE
+          ctest --test-dir build-orchard-root -R '^(WalletRescanUtxoSet|SnapshotWalletImport)$' --verbose --no-tests=error --output-log orchard-wallet-snapshot-execution.log
+          python3 - <<'PYCODE'
+          text = open('orchard-wallet-snapshot-execution.log').read()
+          for marker in ['snapshot effects and progress committed together', 'block effects progress and tip committed together', 'PASS snapshot_wallet_import']:
+              if text.count(marker) != 1:
+                  raise SystemExit('Missing or duplicate snapshot import execution marker: ' + marker)
+          PYCODE
+      - name: Require and execute legacy-state service persistence
+        run: |
+          ctest --test-dir build-orchard-root -R '^ShieldedStateStartup$' --show-only=json-v1 > orchard-service-persistence-inventory.json
+          python3 - <<'PYCODE'
+          import json
+          tests = json.load(open('orchard-service-persistence-inventory.json'))['tests']
+          if [t['name'] for t in tests] != ['ShieldedStateStartup']:
+              raise SystemExit('Missing legacy-state service persistence test')
+          props = {p['name']: p['value'] for p in tests[0].get('properties', [])}
+          if props.get('DISABLED') or 'shielded' not in props.get('LABELS', []):
+              raise SystemExit('Inactive legacy-state service persistence test')
+          PYCODE
+          ctest --test-dir build-orchard-root -R '^ShieldedStateStartup$' --output-on-failure --no-tests=error --output-log orchard-service-persistence-execution.log
+      - name: Require and execute legacy DNRS compatibility lanes
+        run: |
+          ctest --test-dir build-orchard-root -R '^StateCommitment(Canonical|Encoding|ExternalVectors|Transitions)$' --show-only=json-v1 > orchard-dnrs-legacy-inventory.json
+          python3 - <<'PYCODE'
+          import json
+          tests = json.load(open('orchard-dnrs-legacy-inventory.json'))['tests']
+          expected = ['StateCommitmentCanonical', 'StateCommitmentEncoding', 'StateCommitmentExternalVectors', 'StateCommitmentTransitions']
+          if sorted(t['name'] for t in tests) != expected:
+              raise SystemExit('Missing legacy DNRS compatibility test')
+          for test in tests:
+              props = {p['name']: p['value'] for p in test.get('properties', [])}
+              if props.get('DISABLED'):
+                  raise SystemExit('Disabled legacy DNRS compatibility test')
+          PYCODE
+          ctest --test-dir build-orchard-root -R '^StateCommitment(Canonical|Encoding|ExternalVectors|Transitions)$' --output-on-failure --no-tests=error --output-log orchard-dnrs-legacy-execution.log
+      - name: Retain root integration evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: orchard-root-${{ github.sha }}
+          path: |
+            orchard-root-source.txt
+            orchard-mnemonic-recovery-inventory.json
+            orchard-mnemonic-recovery-execution.log
+            orchard-height-one-inventory.json
+            orchard-height-one-execution.log
+            orchard-storage-test-link-inventory.json
+            orchard-storage-test-link-execution.log
+            orchard-header-recovery-inventory.json
+            orchard-header-recovery-execution.log
+            orchard-checkpoint-interval-inventory.json
+            orchard-checkpoint-interval-execution.log
+            orchard-block-owner-inventory.json
+            orchard-block-owner-execution.log
+            orchard-refresh-owner-inventory.json
+            orchard-refresh-owner-execution.log
+            orchard-relay-refresh-owner-inventory.json
+            orchard-relay-refresh-owner-execution.log
+            orchard-mining-chain-guard-inventory.json
+            orchard-mining-chain-guard-execution.log
+            orchard-mining-template-result-inventory.json
+            orchard-mining-template-result-execution.log
+            orchard-rpc-pool-owner-inventory.json
+            orchard-rpc-pool-owner-execution.log
+            orchard-mining-chain-provider-inventory.json
+            orchard-mining-chain-provider-execution.log
+            orchard-mining-rpc-result-inventory.json
+            orchard-mining-rpc-result-execution.log
+            orchard-mining-job-policy-inventory.json
+            orchard-mining-job-policy-execution.log
+            orchard-mining-package-selection-inventory.json
+            orchard-mining-package-selection-execution.log
+            orchard-mining-selection-snapshot-inventory.json
+            orchard-mining-selection-snapshot-execution.log
+            orchard-mining-pool-owner-inventory.json
+            orchard-mining-pool-owner-execution.log
+            orchard-block-relay-pool-owner-inventory.json
+            orchard-block-relay-pool-owner-execution.log
+            orchard-real-mempool-all-inventory.json
+            orchard-real-mempool-inventory.json
+            orchard-real-mempool-regex.txt
+            orchard-real-mempool-execution.log
+            orchard-replay-case-list.txt
+            orchard-replay-case-owners.json
+            orchard-daemon-mempool-jobs-inventory.json
+            orchard-daemon-mempool-jobs-execution.log
+            orchard-mempool-service-owner-inventory.json
+            orchard-mempool-service-owner-execution.log
+            orchard-pool-tip-consumers-inventory.json
+            orchard-pool-tip-consumers-execution.log
+            orchard-bridge-cache-owner-inventory.json
+            orchard-bridge-cache-owner-execution.log
+            orchard-prepared-refresh-inventory.json
+            orchard-prepared-refresh-execution.log
+            orchard-policy-owner-inventory.json
+            orchard-policy-owner-execution.log
+            orchard-admission-owner-inventory.json
+            orchard-admission-owner-execution.log
+            orchard-maintenance-owner-inventory.json
+            orchard-maintenance-owner-execution.log
+            orchard-input-owners-inventory.json
+            orchard-input-owners-execution.log
+            orchard-transaction-body-inventory.json
+            orchard-transaction-body-execution.log
+            orchard-output-coins-inventory.json
+            orchard-output-coins-execution.log
+            orchard-typed-relay-inventory.json
+            orchard-typed-relay-execution.log
+            orchard-typed-ingress-inventory.json
+            orchard-typed-ingress-execution.log
+            orchard-relay-reader-inventory.json
+            orchard-relay-reader-execution.log
+            orchard-raw-rpc-inventory.json
+            orchard-raw-rpc-execution.log
+            orchard-ranked-rpc-inventory.json
+            orchard-ranked-rpc-execution.log
+            orchard-typed-bridge-proof-owner-inventory.json
+            orchard-typed-bridge-proof-owner-execution.log
+            orchard-typed-utreexo-receive-inventory.json
+            orchard-pool-parent-root-inventory.json
+            orchard-typed-acceptance-owner-inventory.json
+            orchard-typed-utreexo-receive-execution.log
+            orchard-pool-parent-root-execution.log
+            orchard-typed-acceptance-owner-execution.log
+            orchard-selected-admission-inventory.json
+            orchard-selected-admission-execution.log
+            orchard-block-rpc-inventory.json
+            orchard-block-rpc-execution.log
+            orchard-canonical-pool-inventory.json
+            orchard-canonical-pool-execution.log
+            orchard-mining-rpc-inventory.json
+            orchard-mining-rpc-execution.log
+            orchard-raw-ingress-inventory.json
+            orchard-raw-ingress-execution.log
+            orchard-mining-template-inventory.json
+            orchard-typed-selection-inventory.json
+            orchard-mining-template-execution.log
+            orchard-typed-selection-execution.log
+            orchard-typed-pool-publication-inventory.json
+            orchard-typed-pool-publication-execution.log
+            orchard-prebase-lookup-status-inventory.json
+            orchard-prebase-lookup-status-execution.log
+            orchard-typed-pool-tip-inventory.json
+            orchard-typed-pool-tip-execution.log
+            orchard-pool-conflicts-inventory.json
+            orchard-pool-conflicts-execution.log
+            orchard-mining-topology-inventory.json
+            orchard-mining-topology-execution.log
+            orchard-first-boundary-inventory.json
+            orchard-first-boundary-execution.log
+            orchard-selected-parent-inventory.json
+            orchard-selected-parent-execution.log
+            orchard-csn-proof-receipt-inventory.json
+            orchard-csn-proof-receipt-execution.log
+            orchard-address-capture-inventory.json
+            orchard-address-capture-execution.log
+            orchard-typed-package-inventory.json
+            orchard-typed-package-execution.log
+            orchard-retained-load-inventory.json
+            orchard-retained-load-execution.log
+            orchard-package-bounds-inventory.json
+            orchard-package-bounds-execution.log
+            orchard-replacement-policy-inventory.json
+            orchard-replacement-policy-execution.log
+            orchard-mempool-callback-inventory.json
+            orchard-mempool-callback-execution.log
+            orchard-wallet-input-maturity-inventory.json
+            orchard-wallet-input-maturity-execution.log
+            orchard-transaction-context-inventory.json
+            orchard-transaction-context-execution.log
+            orchard-root-inventory.json
+            orchard-root-execution.log
+            orchard-root-detailed-execution.log
+            orchard-mempool-inventory.json
+            orchard-mempool-execution.log
+            orchard-history-replay-inventory.json
+            orchard-history-replay-execution.log
+            orchard-rpc-startup-inventory.json
+            orchard-rpc-startup-execution.log
+            orchard-wallet-undo-inventory.json
+            orchard-wallet-undo-execution.log
+            orchard-wallet-keys-inventory.json
+            orchard-wallet-keys-execution.log
+            orchard-wallet-issuance-inventory.json
+            orchard-wallet-issuance-execution.log
+            orchard-wallet-taproot-import-inventory.json
+            orchard-wallet-taproot-import-execution.log
+            orchard-wallet-taproot-lookup-inventory.json
+            orchard-wallet-taproot-lookup-execution.log
+            orchard-wallet-imported-transaction-inventory.json
+            orchard-wallet-imported-transaction-execution.log
+            orchard-wallet-input-provider-inventory.json
+            orchard-wallet-input-provider-execution.log
+            orchard-wallet-encryption-owner-inventory.json
+            orchard-wallet-encryption-owner-execution.log
+            orchard-pq-root-provider-inventory.json
+            orchard-pq-root-provider-execution.log
+            orchard-historical-rpc-inventory.json
+            orchard-historical-rpc-execution.log
+            orchard-reorg-origin-inventory.json
+            orchard-reorg-origin-execution.log
+            orchard-batch-payment-inventory.json
+            orchard-batch-payment-execution.log
+            orchard-reservation-balance-inventory.json
+            orchard-reservation-balance-execution.log
+            orchard-pending-payment-inventory.json
+            orchard-pending-payment-execution.log
+            orchard-owned-signing-inventory.json
+            orchard-owned-signing-execution.log
+            orchard-peer-header-progress-inventory.json
+            orchard-peer-header-progress-execution.log
+            orchard-rocksdb-checksum-inventory.json
+            orchard-rocksdb-checksum-execution.log
+            orchard-historical-signing-inventory.json
+            orchard-historical-signing-execution.log
+            orchard-wallet-timeout-inventory.json
+            orchard-wallet-timeout-execution.log
+            orchard-rpc-drain-inventory.json
+            orchard-rpc-drain-execution.log
+            orchard-pq-rpc-owner-inventory.json
+            orchard-pq-rpc-owner-execution.log
+            orchard-wallet-pq-unlock-inventory.json
+            orchard-wallet-pq-unlock-execution.log
+            orchard-wallet-hd-key-read-inventory.json
+            orchard-wallet-hd-key-read-execution.log
+            orchard-wallet-hd-inventory-inventory.json
+            orchard-wallet-hd-inventory-execution.log
+            orchard-wallet-modern-inventory-inventory.json
+            orchard-wallet-modern-inventory-execution.log
+            orchard-wallet-legacy-key-read-inventory.json
+            orchard-wallet-legacy-key-read-execution.log
+            orchard-wallet-legacy-inventory-inventory.json
+            orchard-wallet-legacy-inventory-execution.log
+            orchard-wallet-staged-unlock-inventory.json
+            orchard-wallet-staged-unlock-execution.log
+            orchard-wallet-initial-owner-inventory.json
+            orchard-wallet-initial-owner-execution.log
+            orchard-wallet-restore-name-inventory.json
+            orchard-wallet-restore-name-execution.log
+            orchard-wallet-fresh-restore-inventory.json
+            orchard-wallet-fresh-restore-execution.log
+            orchard-wallet-seed-write-inventory.json
+            orchard-wallet-seed-write-execution.log
+            orchard-wallet-seed-read-inventory.json
+            orchard-wallet-seed-read-execution.log
+            orchard-wallet-p2mr-key-read-inventory.json
+            orchard-wallet-p2mr-key-read-execution.log
+            orchard-wallet-p2mr-inventory.json
+            orchard-wallet-p2mr-inventory-execution.log
+            orchard-wallet-script-reload-inventory.json
+            orchard-wallet-script-reload-execution.log
+            orchard-wallet-private-key-import-inventory.json
+            orchard-wallet-private-key-import-execution.log
+            orchard-wallet-lease-inventory.json
+            orchard-wallet-lease-execution.log
+            orchard-wallet-binding-inventory.json
+            orchard-wallet-binding-execution.log
+            orchard-wallet-queue-inventory.json
+            orchard-wallet-queue-execution.log
+            orchard-wallet-block-inventory.json
+            orchard-wallet-block-execution.log
+            orchard-wallet-disconnect-inventory.json
+            orchard-wallet-disconnect-execution.log
+            orchard-flatfile-inventory.json
+            orchard-flatfile-execution.log
+            orchard-wallet-snapshot-inventory.json
+            orchard-wallet-snapshot-execution.log
+            orchard-service-persistence-inventory.json
+            orchard-service-persistence-execution.log
+            orchard-dnrs-legacy-inventory.json
+            orchard-dnrs-legacy-execution.log
+            build-orchard-root/CMakeCache.txt
+            build-orchard-root/Testing/Temporary/LastTest.log
+            build-orchard-root/Testing/Temporary/LastTestsFailed.log
+          if-no-files-found: error

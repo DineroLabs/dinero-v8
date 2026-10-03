@@ -135,6 +135,11 @@ BlockAcceptResult BlockAcceptor::AcceptBlockFromRPC(const std::string& blockHex,
         LOG_INFO("🔍 BlockAcceptor: Processing " + std::to_string(blockHex.length()) + " hex chars from " + source);
         std::cout << "[ACCEPTOR-DEBUG] >>> AcceptBlockFromRPC ENTRY hex_size=" << blockHex.length() << " source=" << source << std::endl;
 
+        if (activation_chainstate) {
+            const auto typed = activation_chainstate->TryAcceptOrchardBlockFromRPC(blockHex);
+            if (typed) return *typed;
+        }
+
         // 1. Parse block from hex
         std::cout << "[ACCEPTOR-DEBUG] Step 1: Parsing block from hex..." << std::endl;
         ParsedBlock block = ParseBlockFromHex(blockHex);

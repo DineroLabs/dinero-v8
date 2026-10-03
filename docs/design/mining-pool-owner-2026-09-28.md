@@ -1,0 +1,7 @@
+# Owned mempool access for mining templates
+
+Production BlockAssembler wiring uses a weak-service factory. CreateJob and CreateNewBlock each acquire one actual MempoolService operation before mutating job/template state and retain it through the complete synchronous operation. Private selection, fee, exclusion, network-scoring and statistics helpers receive that captured pool explicitly. Configuration replacement cannot switch a running job to a different pool, and unavailable configured ownership refuses before template state changes.
+
+The short factory mutex protects capture and replacement; arbitrary factory invocation and old capture destruction run outside it. Legacy setMempool remains a caller-lifetime API. Its raw getter refuses when an owned factory is installed. Other assembler state and chain/database ownership still require their existing caller serialization. Retaining a pool does not freeze membership, certify fee snapshots, supply historical validation, or implement Orchard admission.
+
+Three benign component cases exercise actual coinbase-only RPC templates and Stratum jobs from an isolated genesis fixture using the real Utreexo oracle, service shutdown drain, factory replacement, retained service lifetime and refusal/retry. This fixture is not independent selected-parent activation qualification. Existing Utreexo safety and template determinism cases are retained; no unsafe original/race/deadlock controls are executed. Mainnet activation remains unset and release gates remain open.

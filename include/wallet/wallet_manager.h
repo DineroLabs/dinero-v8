@@ -7,6 +7,9 @@
 #include <condition_variable>
 #include <cstdint>
 #include <mutex>
+#include <memory>
+#include <thread>
+#include <span>
 #ifdef FFI_WALLET_ONLY
 // iOS doesn't support std::filesystem::path - use std::string instead
 #else
@@ -18,9 +21,12 @@
 #include "interfaces/wallet_notifier.h"  // Phase 3D: Event-driven wallet updates
 #include "wallet/keystore.h"  // Week 1 Day 5: WalletKeyStore interface
 #include "wallet/key_identity.h"  // Week 1 Day 5: KeyID type
+#include "wallet/signing_key.h"
+#include "wallet/pending_payment.h"
 #include "wallet/key_origin.h"  // Week 1 Day 5: KeyOriginInfo
 
 struct sqlite3; // forward decl
+struct sqlite3_mutex;
 
 // Forward declarations
 class HDWallet;
@@ -38,12 +44,15 @@ namespace dinero {
 // must agree with the actual declaration.
 struct Block;
 struct Transaction;
+struct UnsignedTransaction;
 class WalletManager;
 class Mempool;
 class ILogger;  // Dependency injection for logging
 class UTXOIndex;  // UTXO indexing for address registration
 class ChainDB;  // Chain database for UTXO discovery during rescan
 class BlockStorage;
+class SelectedWalletHistory;
+class ChainstateService;
 
 namespace lightning {
     class LightningService;  // Forward declaration for Lightning integration
@@ -99,10 +108,33 @@ public:
     std::string getMostRecentlyOpenedWallet() const;
     bool exists(const std::string& name) const;
 
+    // A move-only identity generated here, never reconstructed from recovery input.
+    class GeneratedBip39Identity {
+    public:
+        GeneratedBip39Identity(GeneratedBip39Identity&&) noexcept = default;
+        GeneratedBip39Identity(const GeneratedBip39Identity&) = delete;
+        GeneratedBip39Identity& operator=(const GeneratedBip39Identity&) = delete;
+        ~GeneratedBip39Identity();
+        const std::string& Mnemonic() const { return mnemonic_; }
+        const std::vector<uint8_t>& Seed() const { return seed_; }
+    private:
+        friend class WalletManager;
+        GeneratedBip39Identity() = default;
+        std::string mnemonic_;
+        std::vector<uint8_t> seed_;
+    };
+    static GeneratedBip39Identity GenerateBip39Identity(int word_count,
+                                                       const std::string& passphrase);
+    void createFromGeneratedBip39(const std::string& name, GeneratedBip39Identity&& identity,
+                                 const std::string& passphrase);
     void create(const std::string& name);
+    // Creates a new database with the supplied recovery seed as its first
+    // identity. Explicit checksum bypass never stores authoritative mnemonic
+    // material; existing wallets are always rejected by the creation owner.
     void createFromBip39(const std::string& name,
                          const std::string& mnemonic,
-                         const std::string& bip39_passphrase);
+                         const std::string& bip39_passphrase,
+                         bool skip_checksum = false);
     void open(const std::string& name);
     void unload();
     void rename(const std::string& oldName, const std::string& newName);
@@ -110,7 +142,7 @@ public:
 
     std::string current() const { return current_; }
     bool hasActiveWallet() const { return !current_.empty(); }
-    bool isLocked() const { return wallet_locked_; }
+    bool isLocked() const { std::lock_guard<std::recursive_mutex> lock(database_lifecycle_mutex_); return wallet_locked_; }
     std::string getCurrentWalletName() const { return current_; }
 
     // Labels and Address Book
@@ -209,6 +241,10 @@ public:
                              const std::string& derivation_path);
 
     /**
+     * Atomically persist an imported Taproot key, address, mapping and watched script.
+     * Refuses incompatible ownership and caller-owned transactions. Publishes to
+     * the live index after durable commit. This does not certify chain recovery.
+     *
      * Store Taproot internal private key for signing
      *
      * Stores the internal private key (NOT tweaked) which is used for signing.
@@ -221,13 +257,76 @@ public:
      * @param output_pubkey 32-byte x-only output pubkey (tweaked)
      * @param label Human-readable label
      */
-    void storeTaprootKey(const std::string& address,
+    [[nodiscard]] bool storeTaprootKey(const std::string& address,
                          const std::array<uint8_t, 32>& internal_privkey,
                          const std::array<uint8_t, 32>& internal_pubkey,
                          const std::array<uint8_t, 32>& output_pubkey,
-                         const std::string& label);
+                         const std::string& label, uint64_t expected_session = 0,
+                         bool require_empty_legacy_imports = false);
 
-    // Database access for RPC handlers
+    // Pins the selected database against open/close/create and holds SQLite's
+    // recursive connection mutex across a complete wallet job. Existing raw
+    // SQLite callers cannot interleave statements with this lease. It does not
+    // make separate wallet databases atomic or acknowledge chain delivery.
+    class DatabaseLease;
+    // A recovery key copy is wiped on destruction. It must not be published or
+    // retained beyond the owning database lease by a recovery consumer.
+    class RecoverySeed {
+    public:
+        ~RecoverySeed() noexcept;
+        RecoverySeed(const RecoverySeed&) = delete;
+        RecoverySeed& operator=(const RecoverySeed&) = delete;
+        [[nodiscard]] std::span<const uint8_t> Bytes() const noexcept { return bytes_; }
+    private:
+        friend class DatabaseLease;
+        explicit RecoverySeed(WalletManager&, std::span<const uint8_t>);
+        WalletManager& owner_;
+        const std::thread::id thread_;
+        std::array<uint8_t, 64> bytes_{};
+    };
+    class DatabaseLease {
+    public:
+        ~DatabaseLease() noexcept;
+        DatabaseLease(const DatabaseLease&) = delete;
+        DatabaseLease& operator=(const DatabaseLease&) = delete;
+        [[nodiscard]] sqlite3* Database() const noexcept { return db_; }
+        [[nodiscard]] const std::string& WalletName() const noexcept { return name_; }
+        // Process-local identity only, never a durable delivery checkpoint.
+        [[nodiscard]] uint64_t Session() const noexcept { return session_; }
+        // Creates/reads a persistent database identity under this lease. Its
+        // checked transaction commits before any separate-store delivery.
+        // Does not certify key ownership, source history or recovery readiness.
+        [[nodiscard]] std::string EnsureDeliveryIdentity();
+        // Checks the intended session and unlock timeout under this lease.
+        // Refuses locked/missing keys; never reloads or unlocks the wallet.
+        // Keep this lease until effects encrypted with the returned key commit.
+        [[nodiscard]] std::unique_ptr<RecoverySeed> CopyRecoverySeed(uint64_t expected_session);
+        // Resolve only under this exact lease and its already-authorized seed pin.
+        [[nodiscard]] std::optional<SigningKey> ResolveSigningKey(
+            const std::string& script_pubkey, const RecoverySeed& owner);
+        // Called only after exact-input signing under this lease and seed pin.
+        // Commits body, real payment intent, history and reservations together;
+        // no admission or chain callback is allowed while this owner is held.
+        void StagePayment(const RecoverySeed&, const UnsignedTransaction&,
+                          const Transaction&, const PendingPaymentIntent&);
+    private:
+        friend class WalletManager;
+        explicit DatabaseLease(WalletManager&);
+        WalletManager& owner_;
+        std::unique_lock<std::recursive_mutex> lock_;
+        const std::thread::id thread_;
+        sqlite3* db_ = nullptr;
+        sqlite3_mutex* sqlite_mutex_ = nullptr;
+        std::string name_;
+        uint64_t session_ = 0;
+    };
+    // May return a lease with no selected database. Outermost entry refuses an
+    // already active transaction. Nested same-thread leases share the outer
+    // transaction; the last lease rolls back any transaction left open;
+    // commit must be checked by the caller before publishing memory/readiness.
+    [[nodiscard]] std::unique_ptr<DatabaseLease> AcquireDatabaseLease();
+
+    // Legacy borrowed access: this pointer alone does not pin wallet lifetime.
     sqlite3* getCurrentDatabase() const;
     
     // Wallet encryption/decryption
@@ -352,6 +451,23 @@ public:
         int utxo_count = 0;
         int immature_utxo_count = 0;
     };
+    // One checked wallet snapshot. Availability concerns recorded reservations,
+    // not complete key discovery, chain readiness or authorization to spend.
+    enum class ReservationStatus { Untracked, Authenticated, UnlockRequired };
+    struct BalanceSummary {
+        struct RecordedBalance {
+            double confirmed = 0, unconfirmed = 0, immature = 0, total = 0;
+            int utxo_count = 0, immature_utxo_count = 0;
+        } balance;
+        std::string wallet_name;
+        ReservationStatus reservations = ReservationStatus::Untracked;
+        std::optional<double> locked;
+        std::optional<double> available_confirmed;
+        std::optional<double> unavailable_confirmed_and_immature;
+        uint64_t pq_confirmed_una = 0;
+        std::map<std::string, double> available_by_script;
+    };
+    BalanceSummary getBalanceSummary(const std::string& expected_wallet = {}) const;
     Balance getBalance(const void* mempool_ptr = nullptr) const;
     Balance getAddressBalance(const std::string& address, const void* mempool_ptr = nullptr) const;
     Balance getScriptPubKeyBalance(const std::string& script_pubkey, const void* mempool_ptr = nullptr) const;
@@ -424,6 +540,10 @@ public:
      * @param vout Output index
      * @return true if locked
      */
+    // Requires unlock when a payment owner is installed. Authenticates the
+    // complete retained set; absence means this legacy wallet has no installed
+    // owner, never that historical pending transactions have been recovered.
+    std::vector<PendingPayment> getPendingPayments() const;
     bool isUTXOLocked(const std::string& txid, uint32_t vout) const;
 
     /**
@@ -575,6 +695,10 @@ public:
     // ========================================================================
     // Wallet rescan functionality
     // ========================================================================
+    // Legacy archival scan: owned UTXO cleanup/effects, scan progress and tip
+    // commit in one checked FULL transaction; caller transactions are refused.
+    // Address discovery precedes that transaction and preserves issued keys.
+    // Mutable ChainDB reads do NOT certify selected history or a recovery baseline.
     bool rescanBlockchain(int start_height = 0,
                           int gap_limit = 20,
                           dinero::ChainDB* chain_db = nullptr,
@@ -594,14 +718,15 @@ public:
     // owned by this wallet, complementing the block-replay rescan which cannot
     // see pre-snapshot coins (their block bodies are absent).
     //
-    // `produce` is invoked with a sink callback; call sink(entry) once per coin
-    // in the set. Coins whose scriptPubKey is in watch_scripts are recorded into
-    // the local utxos table (idempotent: INSERT OR IGNORE on the PRIMARY KEY, so
-    // re-running is safe). If snapshot_height exceeds the wallet's current scan
-    // height, the watermark is advanced so a later block-replay rescan starts
-    // above the snapshot instead of clearing/refetching pre-snapshot heights.
-    //
-    // Returns the number of owned UTXOs newly recorded.
+    // The caller supplies a complete, validated immutable source. This function
+    // does not certify snapshot provenance or pre-origin history completeness.
+    // `produce` calls sink once per coin and throws on any incomplete source.
+    // It runs under the wallet database lease and must not acquire chain locks
+    // or wait for another thread that needs the lease. Owned coins, schema and
+    // scan progress commit together with synchronous=FULL. No delivery receipt
+    // is created; existing mutation guards still invalidate tracked progress.
+    // Returns the number of inserted/refreshed owned coins, or -1 on failure.
+    // An existing caller transaction is refused without changing it.
     int rescanUtxoSet(
         const std::function<void(const std::function<void(const UtxoSetEntry&)>&)>& produce,
         uint32_t snapshot_height = 0);
@@ -611,7 +736,9 @@ public:
     bool addTransaction(const std::string& txid, const std::string& address, double amount,
                        const std::string& category, bool is_coinbase = false,
                        const std::string& label = "", int64_t time = 0, uint32_t height = 0);
-    bool confirmTransaction(const std::string& txid, uint32_t height);
+    // False with an empty error means no matching history. Optional error
+    // distinguishes SQL failure for checked block delivery callers.
+    bool confirmTransaction(const std::string& txid, uint32_t height, std::string* error = nullptr);
 
     // Phase 36: Remove transactions from orphaned blocks during reorg
     bool removeTransactionsAtHeight(uint32_t height);
@@ -751,9 +878,16 @@ public:
      * ⚠️ OWNERSHIP LOGIC - Uses scriptPubKey (consensus data), NOT address string.
      *
      * @param script_pubkey The hex-encoded scriptPubKey to get the private key for
+     * Imported results are internal scalars. Predecessor imports used the
+     * historical SHA256(x-only public key || 0x00) tweak; callers must not
+     * reinterpret them as modern TapTweak signing authority.
      * @return Private key bytes (32 bytes) or std::nullopt if not found
      */
     std::optional<std::vector<uint8_t>> deriveKeyForScriptPubKey(const std::string& script_pubkey);
+
+    // As-of lookup with explicit tweak policy and exact script binding.
+    // The caller owns the returned secret; this does not pin a later job.
+    std::optional<SigningKey> resolveSigningKeyForScriptPubKey(const std::string& script_pubkey);
 
     /**
      * Check whether the wallet has signing material for a scriptPubKey.
@@ -823,7 +957,11 @@ public:
      * @param label Optional label for the address
      * @return The generated address, or empty string on failure
      */
-    std::string importPrivateKey(const std::vector<uint8_t>& privkey, const std::string& label = "");
+    // Forward imports use the current Taproot derivation. Existing legacy
+    // import inventories require separate reconciliation and refuse this route.
+    std::string importPrivateKey(const std::vector<uint8_t>& privkey, const std::string& label = "",
+                                uint64_t expected_session = 0,
+                                const std::string& expected_address = "");
 
     /**
      * Check if a WIF string is valid and decode info without importing.
@@ -838,6 +976,9 @@ public:
     /**
      * Store master seed in database with encryption.
      * Required for wallet.restore to persist the seed.
+     * Owns a FULL transaction for the seed, required metadata and existing
+     * replacement writes; refuses caller transactions. Publishes the live
+     * seed only after commit. This does not certify initialization/recovery.
      * Uses PBKDF2 + AES-256-GCM encryption with user passphrase.
      *
      * @param seed The 512-bit master seed to store
@@ -880,10 +1021,20 @@ public:
                                 std::string* error_out = nullptr);
 
 private:
+    std::vector<PendingPayment> ReadPendingPaymentsOwned(std::span<const uint8_t> seed) const;
+    std::optional<std::vector<uint8_t>> deriveKeyForScriptPubKeyOwned(
+        const std::string& script_pubkey, SigningKeyPolicy* policy, bool pinned_signing = false);
+    void rewriteEncryptionPolicy(const std::string& old_passphrase,
+        const std::string& new_passphrase, bool encrypted);
+
+    enum class InitialSeedKind { Generated, Recovered };
+    bool storeMasterSeedOwned(const std::vector<uint8_t>& seed, const std::string& passphrase,
+                              bool reset_address_state, const std::string* initial_owner);
+    std::optional<std::array<uint8_t, 32>> loadInitialPqMaster(const std::vector<uint8_t>& seed);
     void createWithInitialSeed(const std::string& name,
                                const std::vector<uint8_t>& initial_master_seed,
                                const std::string* authoritative_mnemonic,
-                               const std::string& bip39_passphrase);
+                               const std::string& bip39_passphrase, InitialSeedKind kind);
 
 #ifdef FFI_WALLET_ONLY
     std::string dataDir_;
@@ -891,6 +1042,15 @@ private:
     std::filesystem::path dataDir_;
 #endif
     std::string current_;
+    friend class ChainstateService;
+    friend struct WalletSeedReadTestAccess;
+    friend struct WalletSeedWriteTestAccess;
+    friend struct WalletInitialOwnerTestAccess;
+    friend struct WalletUnlockOwnerTestAccess;
+    bool RescanBlockchainImpl(int start_height, int gap_limit, ChainDB*, BlockStorage*,
+                              const SelectedWalletHistory*, uint64_t expected_session);
+    friend class RuntimeOrdinaryDelivery;
+    friend class RuntimeWalletRecovery;
     int current_wallet_id_ = -1;
 
     // ═══════════════════════════════════════════════════════════════
@@ -898,6 +1058,11 @@ private:
     // ═══════════════════════════════════════════════════════════════
     sqlite3* db_ = nullptr;               // Current wallet's database (wallet_<name>.db)
     sqlite3* registry_db_ = nullptr;      // Wallet registry database (wallet_registry.db)
+    mutable std::recursive_mutex database_lifecycle_mutex_;
+    size_t database_leases_ = 0; // protected by database_lifecycle_mutex_
+    size_t recovery_seeds_ = 0; // same lock; recovery seed must die before last lease
+    uint64_t database_session_ = 1; // same lock; invalidates queued jobs on replacement
+    void AdvanceDatabaseSession() noexcept;
     
     // Encryption state
     bool wallet_encrypted_ = false;

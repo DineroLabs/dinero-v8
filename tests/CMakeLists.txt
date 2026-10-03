@@ -22,6 +22,18 @@ endif()
 # Tests (only if we have working test files)
 enable_testing()
 
+if(TARGET v7_p2mr_key_read_test)
+  add_test(NAME WalletP2MRKeyRead COMMAND v7_p2mr_key_read_test)
+  set_tests_properties(WalletP2MRKeyRead PROPERTIES
+    LABELS "unit;wallet;p2mr;mandatory" TIMEOUT 30)
+endif()
+
+if(TARGET v7_p2mr_inventory_test)
+  add_test(NAME WalletP2MRInventory COMMAND v7_p2mr_inventory_test)
+  set_tests_properties(WalletP2MRInventory PROPERTIES
+    LABELS "unit;wallet;p2mr;mandatory" TIMEOUT 30)
+endif()
+
 add_executable(test_p2p_header_parser tests/daemon/test_p2p_header_parser.cpp)
 target_link_libraries(test_p2p_header_parser PRIVATE dinero_core)
 add_test(NAME P2PHeaderParserAlignment COMMAND test_p2p_header_parser)
@@ -59,6 +71,12 @@ if(NOT WIN32)
       set_property(TARGET test_daemon_service_release PROPERTY ${_property} "${_release_property}")
     endif()
   endforeach()
+  add_test(NAME RPCListenerStartup COMMAND python3
+    ${CMAKE_SOURCE_DIR}/tests/integration/test_rpc_listener_startup.py
+    $<TARGET_FILE:dinerod>)
+  set_tests_properties(RPCListenerStartup PROPERTIES
+    LABELS "integration;e2e-daemon;rpc;mandatory" TIMEOUT 300 RUN_SERIAL TRUE)
+
   add_test(NAME DaemonServiceRelease COMMAND python3
     ${CMAKE_SOURCE_DIR}/tests/integration/test_daemon_service_release.py
     $<TARGET_FILE:test_daemon_service_release>)
@@ -407,7 +425,7 @@ target_include_directories(test_chainstate_commit_batch_interval BEFORE PRIVATE
 target_link_libraries(test_chainstate_commit_batch_interval PRIVATE
   GTest::gtest_main
   Threads::Threads
-  ${ROCKSDB_LIBRARY}
+  RocksDB::rocksdb
 )
 add_test(NAME ChainstateCommitBatchInterval COMMAND test_chainstate_commit_batch_interval)
 set_tests_properties(ChainstateCommitBatchInterval PROPERTIES
@@ -968,6 +986,9 @@ endif()
 if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_header_metadata_recovery.cpp)
   add_executable(test_header_metadata_recovery
     tests/daemon/test_header_metadata_recovery.cpp
+    # This archival metadata fixture does not exercise a live mempool. The
+    # transitive wallet object references its API; use the existing test seam.
+    tests/stubs/mempool_test_stubs.cpp
   )
   target_link_libraries(test_header_metadata_recovery PRIVATE
     dinero_core
@@ -1085,6 +1106,11 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_shielded_state_startup.cpp)
     ${CMAKE_SOURCE_DIR}/include
   )
   add_test(NAME ShieldedStateStartup COMMAND test_shielded_state_startup)
+  add_test(NAME SnapshotWalletImport COMMAND test_shielded_state_startup snapshot_wallet_import)
+  set_tests_properties(SnapshotWalletImport PROPERTIES LABELS "wallet;daemon;storage" TIMEOUT 120)
+  add_test(NAME OrchardServicePersistence COMMAND test_shielded_state_startup retired_persistence)
+  set_tests_properties(OrchardServicePersistence PROPERTIES
+    LABELS "orchard;daemon;shielded;storage;smoke" TIMEOUT 120)
   set_tests_properties(ShieldedStateStartup PROPERTIES
     LABELS "daemon;shielded;storage;smoke"
     TIMEOUT 120
@@ -2698,40 +2724,17 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_shielded_cv_binding.cpp)
   endif()
   add_test(NAME ShieldedCvBinding COMMAND test_shielded_cv_binding)
 
-  # Spartan proof-system soundness regression (standalone require_zero_error).
-  if(EXISTS ${CMAKE_SOURCE_DIR}/tests/zk/test_spartan_soundness.cpp)
-    add_executable(test_spartan_soundness
-      tests/zk/test_spartan_soundness.cpp
-      tests/zk/test_compact_spartan.cpp
-      src/consensus/shielded/compact_spartan_codec.cpp
-    )
-    add_dependencies(test_spartan_soundness gtest dinero_zk)
-    target_link_libraries(test_spartan_soundness PRIVATE
-      GTest::gtest
-      GTest::gtest_main
-      dinero_zk
-      dinero_crypto
-    )
-    target_include_directories(test_spartan_soundness BEFORE PRIVATE
-      ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
-      ${CMAKE_SOURCE_DIR}/include
-      ${CMAKE_SOURCE_DIR}/src
-    )
-    if(APPLE)
-      target_link_libraries(test_spartan_soundness PRIVATE "-framework Security")
-    endif()
-    add_test(NAME SpartanSoundness COMMAND test_spartan_soundness)
-    set_tests_properties(SpartanSoundness PROPERTIES
-      LABELS "zk;spartan;soundness;mandatory"
-      TIMEOUT 300
-    )
-  endif()
   set_tests_properties(ShieldedCvBinding PROPERTIES
     LABELS "shielded;consensus;cv-binding;mandatory"
     TIMEOUT 1800
   )
   message(STATUS "Shielded cv-binding tests enabled")
 endif()
+
+# Required proof/codec suites have independent targets and fail configuration
+# if either source is missing. Neither depends on the optional cv-binding file.
+include(${CMAKE_SOURCE_DIR}/tests/cmake/ShieldedProofTests.cmake)
+dinero_register_shielded_proof_tests(${CMAKE_SOURCE_DIR})
 
 # cv-binding audit 2026-07-01: ec_add_complete selector-binding regression test
 if(TARGET dinero_zk AND TARGET gtest)
@@ -4264,6 +4267,20 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/mining/test_block_template_determinism.cpp)
   message(STATUS "✅ Block Template Determinism test enabled")
 endif()
 
+# Real SQLite wallet rollback, independent of the mock correctness suite below.
+add_executable(test_wallet_revert_atomic
+  tests/utxo/test_wallet_revert_atomic.cpp
+  src/wallet/utxo_index.cpp
+  src/sqlite_open.cpp
+  src/primitives/uint256.cpp
+  src/common/logger.cpp
+)
+target_include_directories(test_wallet_revert_atomic PRIVATE
+  ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(test_wallet_revert_atomic PRIVATE sqlite3 Threads::Threads)
+add_test(NAME WalletRevertAtomic COMMAND test_wallet_revert_atomic)
+set_tests_properties(WalletRevertAtomic PROPERTIES LABELS "wallet;utxo;storage" TIMEOUT 60)
+
 # Priority 3: UTXO Index Correctness Tests
 if(EXISTS ${CMAKE_SOURCE_DIR}/tests/utxo/test_utxo_index_correctness.cpp)
   add_executable(test_utxo_index_correctness tests/utxo/test_utxo_index_correctness.cpp)
@@ -5038,6 +5055,11 @@ endif()
 if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_assumeutxo_replay.cpp)
   add_executable(test_assumeutxo_replay
     tests/daemon/test_assumeutxo_replay.cpp
+    src/rpc/methods_blockchain_context.cpp
+    src/rpc/methods_utxoset.cpp
+    src/rpc/methods_address_index.cpp
+    src/rpc/methods_utreexo.cpp
+    src/rpc/methods_mining_v14.cpp
     src/daemon/services/assumeutxo_replay.cpp
     src/consensus/utxo_set_digest.cpp
     src/daemon/config.cpp  # GetConfig() referenced by consensus_write_batch.obj
@@ -5066,11 +5088,40 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_assumeutxo_replay.cpp)
     ${CMAKE_SOURCE_DIR}/include
     ${CMAKE_SOURCE_DIR}/src
   )
-  add_test(NAME AssumeUtxoReplay COMMAND test_assumeutxo_replay)
+  # Additional suites in this binary have separate bounded CTest registrations.
+  # Keep the original replay/history/projection cases here without duplicating them.
+  add_test(NAME AssumeUtxoReplay COMMAND test_assumeutxo_replay
+    --gtest_filter=AssumeUtxoReplay.*:SelectedWalletHistory.*:RuntimeOriginProjection.*)
   set_tests_properties(AssumeUtxoReplay PROPERTIES
     LABELS "daemon;assumeutxo;replay"
     TIMEOUT 120
   )
+  add_test(NAME OrchardSelectedParentHistory COMMAND test_assumeutxo_replay
+    --gtest_filter=SelectedParentHistory.*)
+  set_tests_properties(OrchardSelectedParentHistory PROPERTIES
+    LABELS "daemon;orchard;history;mandatory" TIMEOUT 60)
+  add_test(NAME CheckedCoinInventory COMMAND test_assumeutxo_replay
+    --gtest_filter=CheckedCoinInventory.*)
+  set_tests_properties(CheckedCoinInventory PROPERTIES
+    LABELS "storage;inventory;mandatory" TIMEOUT 60)
+  add_test(NAME OrchardFirstBoundary COMMAND test_assumeutxo_replay
+    --gtest_filter=OrchardFirstBoundary.*)
+  set_tests_properties(OrchardFirstBoundary PROPERTIES
+    LABELS "daemon;orchard;boundary;mandatory" TIMEOUT 60)
+  add_test(NAME OrchardSelectedAdmission COMMAND test_assumeutxo_replay --gtest_filter=OrchardSelectedAdmission.*)
+  set_tests_properties(OrchardSelectedAdmission PROPERTIES LABELS "daemon;orchard;admission;mandatory" TIMEOUT 120)
+  add_test(NAME OrchardTypedSelection COMMAND test_assumeutxo_replay --gtest_filter=OrchardTypedSelection.*)
+  set_tests_properties(OrchardTypedSelection PROPERTIES LABELS "daemon;orchard;mining;mandatory" TIMEOUT 120)
+  add_test(NAME OrchardMiningTemplate COMMAND test_assumeutxo_replay --gtest_filter=OrchardMiningTemplate.*)
+  set_tests_properties(OrchardMiningTemplate PROPERTIES LABELS "daemon;orchard;mining;mandatory" TIMEOUT 120)
+  add_test(NAME OrchardBlockRpc COMMAND test_assumeutxo_replay --gtest_filter=OrchardBlockRpc.*)
+  set_tests_properties(OrchardBlockRpc PROPERTIES TIMEOUT 120 LABELS "daemon;orchard;rpc;mandatory")
+  add_test(NAME OrchardCanonicalPool COMMAND test_assumeutxo_replay --gtest_filter=OrchardCanonicalPool.*)
+  set_tests_properties(OrchardCanonicalPool PROPERTIES TIMEOUT 120 LABELS "daemon;orchard;mempool;mandatory")
+  add_test(NAME OrchardMiningRpc COMMAND test_assumeutxo_replay --gtest_filter=OrchardMiningRpc.*)
+  set_tests_properties(OrchardMiningRpc PROPERTIES TIMEOUT 120 LABELS "orchard;mining;rpc")
+  add_test(NAME OrchardRawIngress COMMAND test_assumeutxo_replay --gtest_filter=OrchardRawIngress.*)
+  set_tests_properties(OrchardRawIngress PROPERTIES LABELS "daemon;orchard;ingress;mandatory" TIMEOUT 120)
   message(STATUS "✅ AssumeUTXO replay engine test enabled")
 endif()
 
@@ -5719,11 +5770,24 @@ add_executable(test_template_maturity
   src/daemon/config.cpp
   tests/stubs/vault_test_stubs.cpp
 )
-target_link_libraries(test_template_maturity PRIVATE
-  dinero_core dinero_consensus dinero_pq dinero_shielded dinero_chainstate
-  dinero_crypto secp256k1 ${ROCKSDB_LIBRARY} ${SQLITE3_LIBRARIES}
-  GTest::gtest GTest::gtest_main
-)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  # Wallet now references chainstate/core members after their initial scan.
+  # Rescan the actual mutually dependent archives, as for nodecore_runtime_driver.
+  # Raw group flags preserve compatibility with the CMake 3.20 minimum.
+  target_link_libraries(test_template_maturity PRIVATE
+    "-Wl,--start-group" dinero_core dinero_wallet dinero_chainstate
+    dinero_consensus dinero_shielded dinero_bridge dinero_pool
+    dinero_lightning_keys dinero_address_encoding dinero_bip32 dinero_pq
+    dinero_zk dinero_tx_primitives dinero_crypto "-Wl,--end-group"
+    secp256k1 ${ROCKSDB_LIBRARY} ${SQLITE3_LIBRARIES}
+    GTest::gtest GTest::gtest_main)
+else()
+  target_link_libraries(test_template_maturity PRIVATE
+    dinero_core dinero_consensus dinero_pq dinero_shielded dinero_chainstate
+    dinero_crypto secp256k1 ${ROCKSDB_LIBRARY} ${SQLITE3_LIBRARIES}
+    GTest::gtest GTest::gtest_main
+  )
+endif()
 if(TARGET bulletproofs_ffi)
   target_link_libraries(test_template_maturity PRIVATE bulletproofs_ffi)
   if(TARGET build_bulletproofs_ffi)
@@ -5749,11 +5813,24 @@ add_executable(test_wallet_input_coins
   src/daemon/config.cpp
   tests/stubs/vault_test_stubs.cpp
 )
-target_link_libraries(test_wallet_input_coins PRIVATE
-  dinero_core dinero_consensus dinero_pq dinero_shielded dinero_chainstate
-  dinero_crypto secp256k1 ${ROCKSDB_LIBRARY} ${SQLITE3_LIBRARIES}
-  GTest::gtest GTest::gtest_main
-)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  # Wallet now references chainstate/core members after their initial scan.
+  # Rescan the actual mutually dependent archives, as for nodecore_runtime_driver.
+  # Raw group flags preserve compatibility with the CMake 3.20 minimum.
+  target_link_libraries(test_wallet_input_coins PRIVATE
+    "-Wl,--start-group" dinero_core dinero_wallet dinero_chainstate
+    dinero_consensus dinero_shielded dinero_bridge dinero_pool
+    dinero_lightning_keys dinero_address_encoding dinero_bip32 dinero_pq
+    dinero_zk dinero_tx_primitives dinero_crypto "-Wl,--end-group"
+    secp256k1 ${ROCKSDB_LIBRARY} ${SQLITE3_LIBRARIES}
+    GTest::gtest GTest::gtest_main)
+else()
+  target_link_libraries(test_wallet_input_coins PRIVATE
+    dinero_core dinero_consensus dinero_pq dinero_shielded dinero_chainstate
+    dinero_crypto secp256k1 ${ROCKSDB_LIBRARY} ${SQLITE3_LIBRARIES}
+    GTest::gtest GTest::gtest_main
+  )
+endif()
 if(TARGET bulletproofs_ffi)
   target_link_libraries(test_wallet_input_coins PRIVATE bulletproofs_ffi)
   if(TARGET build_bulletproofs_ffi)
@@ -5772,6 +5849,1491 @@ endif()
 add_test(NAME WalletInputCoins COMMAND test_wallet_input_coins)
 set_tests_properties(WalletInputCoins PROPERTIES
   LABELS "mempool;wallet;reorg;utreexo" TIMEOUT 30)
+
+add_executable(test_mempool_callback_owner
+  tests/mempool/test_mempool_callback_owner.cpp
+  src/daemon/mempool.cpp
+  src/daemon/config.cpp
+  tests/stubs/vault_test_stubs.cpp
+)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  # Wallet now references chainstate/core members after their initial scan.
+  # Rescan the actual mutually dependent archives, as for nodecore_runtime_driver.
+  # Raw group flags preserve compatibility with the CMake 3.20 minimum.
+  target_link_libraries(test_mempool_callback_owner PRIVATE
+    "-Wl,--start-group" dinero_core dinero_wallet dinero_chainstate
+    dinero_consensus dinero_shielded dinero_bridge dinero_pool
+    dinero_lightning_keys dinero_address_encoding dinero_bip32 dinero_pq
+    dinero_zk dinero_tx_primitives dinero_crypto "-Wl,--end-group"
+    secp256k1 ${ROCKSDB_LIBRARY} ${SQLITE3_LIBRARIES}
+    GTest::gtest GTest::gtest_main)
+else()
+  target_link_libraries(test_mempool_callback_owner PRIVATE
+    dinero_core dinero_consensus dinero_pq dinero_shielded dinero_chainstate
+    dinero_crypto secp256k1 ${ROCKSDB_LIBRARY} ${SQLITE3_LIBRARIES}
+    GTest::gtest GTest::gtest_main
+  )
+endif()
+if(TARGET bulletproofs_ffi)
+  target_link_libraries(test_mempool_callback_owner PRIVATE bulletproofs_ffi)
+  if(TARGET build_bulletproofs_ffi)
+    add_dependencies(test_mempool_callback_owner build_bulletproofs_ffi)
+  endif()
+endif()
+link_zstd_if_needed(test_mempool_callback_owner)
+target_include_directories(test_mempool_callback_owner PRIVATE
+  ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src
+  ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+)
+if(APPLE)
+  target_link_libraries(test_mempool_callback_owner PRIVATE
+    "-framework Security" "-framework CoreFoundation")
+endif()
+add_test(NAME MempoolCallbackOwner COMMAND test_mempool_callback_owner)
+set_tests_properties(MempoolCallbackOwner PROPERTIES
+  LABELS "mempool;ownership;callbacks" TIMEOUT 60)
+
+add_executable(test_mempool_replacement_policy
+  tests/mempool/test_mempool_replacement_policy.cpp
+  src/daemon/mempool.cpp
+  src/daemon/config.cpp
+  tests/stubs/vault_test_stubs.cpp
+)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  # Wallet now references chainstate/core members after their initial scan.
+  # Rescan the actual mutually dependent archives, as for nodecore_runtime_driver.
+  # Raw group flags preserve compatibility with the CMake 3.20 minimum.
+  target_link_libraries(test_mempool_replacement_policy PRIVATE
+    "-Wl,--start-group" dinero_core dinero_wallet dinero_chainstate
+    dinero_consensus dinero_shielded dinero_bridge dinero_pool
+    dinero_lightning_keys dinero_address_encoding dinero_bip32 dinero_pq
+    dinero_zk dinero_tx_primitives dinero_crypto "-Wl,--end-group"
+    secp256k1 RocksDB::rocksdb ${SQLITE3_LIBRARIES}
+    GTest::gtest GTest::gtest_main)
+else()
+  target_link_libraries(test_mempool_replacement_policy PRIVATE
+    dinero_core dinero_consensus dinero_pq dinero_shielded dinero_chainstate
+    dinero_crypto secp256k1 RocksDB::rocksdb ${SQLITE3_LIBRARIES}
+    GTest::gtest GTest::gtest_main
+  )
+endif()
+if(TARGET bulletproofs_ffi)
+  target_link_libraries(test_mempool_replacement_policy PRIVATE bulletproofs_ffi)
+  if(TARGET build_bulletproofs_ffi)
+    add_dependencies(test_mempool_replacement_policy build_bulletproofs_ffi)
+  endif()
+endif()
+link_zstd_if_needed(test_mempool_replacement_policy)
+target_include_directories(test_mempool_replacement_policy PRIVATE
+  ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src
+  ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+)
+if(APPLE)
+  target_link_libraries(test_mempool_replacement_policy PRIVATE
+    "-framework Security" "-framework CoreFoundation")
+endif()
+add_test(NAME MempoolReplacementPolicy COMMAND test_mempool_replacement_policy)
+set_tests_properties(MempoolReplacementPolicy PROPERTIES
+  LABELS "mempool;replacement;policy" TIMEOUT 60)
+
+add_executable(test_mempool_package_bounds
+  tests/mempool/test_mempool_package_bounds.cpp
+  src/daemon/mempool.cpp
+  src/daemon/config.cpp
+  tests/stubs/vault_test_stubs.cpp
+)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  # Wallet now references chainstate/core members after their initial scan.
+  # Rescan the actual mutually dependent archives, as for nodecore_runtime_driver.
+  # Raw group flags preserve compatibility with the CMake 3.20 minimum.
+  target_link_libraries(test_mempool_package_bounds PRIVATE
+    "-Wl,--start-group" dinero_core dinero_wallet dinero_chainstate
+    dinero_consensus dinero_shielded dinero_bridge dinero_pool
+    dinero_lightning_keys dinero_address_encoding dinero_bip32 dinero_pq
+    dinero_zk dinero_tx_primitives dinero_crypto "-Wl,--end-group"
+    secp256k1 RocksDB::rocksdb ${SQLITE3_LIBRARIES}
+    GTest::gtest GTest::gtest_main)
+else()
+  target_link_libraries(test_mempool_package_bounds PRIVATE
+    dinero_core dinero_consensus dinero_pq dinero_shielded dinero_chainstate
+    dinero_crypto secp256k1 RocksDB::rocksdb ${SQLITE3_LIBRARIES}
+    GTest::gtest GTest::gtest_main
+  )
+endif()
+if(TARGET bulletproofs_ffi)
+  target_link_libraries(test_mempool_package_bounds PRIVATE bulletproofs_ffi)
+  if(TARGET build_bulletproofs_ffi)
+    add_dependencies(test_mempool_package_bounds build_bulletproofs_ffi)
+  endif()
+endif()
+link_zstd_if_needed(test_mempool_package_bounds)
+target_include_directories(test_mempool_package_bounds PRIVATE
+  ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src
+  ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+)
+if(APPLE)
+  target_link_libraries(test_mempool_package_bounds PRIVATE
+    "-framework Security" "-framework CoreFoundation")
+endif()
+add_test(NAME MempoolPackageBounds COMMAND test_mempool_package_bounds)
+set_tests_properties(MempoolPackageBounds PROPERTIES
+  LABELS "mempool;package;policy" TIMEOUT 60)
+
+add_executable(test_mempool_maintenance_owner
+  tests/mempool/test_mempool_maintenance_owner.cpp
+  src/daemon/mempool.cpp
+  src/daemon/config.cpp
+  tests/stubs/vault_test_stubs.cpp
+)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  # Wallet now references chainstate/core members after their initial scan.
+  # Rescan the actual mutually dependent archives, as for nodecore_runtime_driver.
+  # Raw group flags preserve compatibility with the CMake 3.20 minimum.
+  target_link_libraries(test_mempool_maintenance_owner PRIVATE
+    "-Wl,--start-group" dinero_core dinero_wallet dinero_chainstate
+    dinero_consensus dinero_shielded dinero_bridge dinero_pool
+    dinero_lightning_keys dinero_address_encoding dinero_bip32 dinero_pq
+    dinero_zk dinero_tx_primitives dinero_crypto "-Wl,--end-group"
+    secp256k1 RocksDB::rocksdb ${SQLITE3_LIBRARIES}
+    GTest::gtest GTest::gtest_main)
+else()
+  target_link_libraries(test_mempool_maintenance_owner PRIVATE
+    dinero_core dinero_consensus dinero_pq dinero_shielded dinero_chainstate
+    dinero_crypto secp256k1 RocksDB::rocksdb ${SQLITE3_LIBRARIES}
+    GTest::gtest GTest::gtest_main
+  )
+endif()
+if(TARGET bulletproofs_ffi)
+  target_link_libraries(test_mempool_maintenance_owner PRIVATE bulletproofs_ffi)
+  if(TARGET build_bulletproofs_ffi)
+    add_dependencies(test_mempool_maintenance_owner build_bulletproofs_ffi)
+  endif()
+endif()
+link_zstd_if_needed(test_mempool_maintenance_owner)
+target_include_directories(test_mempool_maintenance_owner PRIVATE
+  ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src
+  ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+)
+if(APPLE)
+  target_link_libraries(test_mempool_maintenance_owner PRIVATE
+    "-framework Security" "-framework CoreFoundation")
+endif()
+add_test(NAME MempoolMaintenanceOwner COMMAND test_mempool_maintenance_owner)
+set_tests_properties(MempoolMaintenanceOwner PROPERTIES
+  LABELS "mempool;maintenance;owner" TIMEOUT 60)
+
+add_executable(test_mempool_input_owners
+  tests/mempool/test_mempool_input_owners.cpp
+  src/daemon/mempool.cpp
+  src/daemon/config.cpp
+  tests/stubs/vault_test_stubs.cpp
+)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  # Wallet now references chainstate/core members after their initial scan.
+  # Rescan the actual mutually dependent archives, as for nodecore_runtime_driver.
+  # Raw group flags preserve compatibility with the CMake 3.20 minimum.
+  target_link_libraries(test_mempool_input_owners PRIVATE
+    "-Wl,--start-group" dinero_core dinero_wallet dinero_chainstate
+    dinero_consensus dinero_shielded dinero_bridge dinero_pool
+    dinero_lightning_keys dinero_address_encoding dinero_bip32 dinero_pq
+    dinero_zk dinero_tx_primitives dinero_crypto "-Wl,--end-group"
+    secp256k1 RocksDB::rocksdb ${SQLITE3_LIBRARIES}
+    GTest::gtest GTest::gtest_main)
+else()
+  target_link_libraries(test_mempool_input_owners PRIVATE
+    dinero_core dinero_consensus dinero_pq dinero_shielded dinero_chainstate
+    dinero_crypto secp256k1 RocksDB::rocksdb ${SQLITE3_LIBRARIES}
+    GTest::gtest GTest::gtest_main
+  )
+endif()
+if(TARGET bulletproofs_ffi)
+  target_link_libraries(test_mempool_input_owners PRIVATE bulletproofs_ffi)
+  if(TARGET build_bulletproofs_ffi)
+    add_dependencies(test_mempool_input_owners build_bulletproofs_ffi)
+  endif()
+endif()
+link_zstd_if_needed(test_mempool_input_owners)
+target_include_directories(test_mempool_input_owners PRIVATE
+  ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src
+  ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+)
+if(APPLE)
+  target_link_libraries(test_mempool_input_owners PRIVATE
+    "-framework Security" "-framework CoreFoundation")
+endif()
+add_test(NAME MempoolInputOwners COMMAND test_mempool_input_owners)
+set_tests_properties(MempoolInputOwners PROPERTIES
+  LABELS "mempool;inputs;owner" TIMEOUT 60)
+
+add_executable(test_mempool_transaction_body
+  tests/mempool/test_mempool_transaction_body.cpp
+  src/daemon/mempool.cpp
+  src/daemon/config.cpp
+  tests/stubs/vault_test_stubs.cpp
+)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  # Wallet now references chainstate/core members after their initial scan.
+  # Rescan the actual mutually dependent archives, as for nodecore_runtime_driver.
+  # Raw group flags preserve compatibility with the CMake 3.20 minimum.
+  target_link_libraries(test_mempool_transaction_body PRIVATE
+    "-Wl,--start-group" dinero_core dinero_wallet dinero_chainstate
+    dinero_consensus dinero_shielded dinero_bridge dinero_pool
+    dinero_lightning_keys dinero_address_encoding dinero_bip32 dinero_pq
+    dinero_zk dinero_tx_primitives dinero_crypto "-Wl,--end-group"
+    secp256k1 RocksDB::rocksdb ${SQLITE3_LIBRARIES}
+    GTest::gtest GTest::gtest_main)
+else()
+  target_link_libraries(test_mempool_transaction_body PRIVATE
+    dinero_core dinero_consensus dinero_pq dinero_shielded dinero_chainstate
+    dinero_crypto secp256k1 RocksDB::rocksdb ${SQLITE3_LIBRARIES}
+    GTest::gtest GTest::gtest_main
+  )
+endif()
+if(TARGET bulletproofs_ffi)
+  target_link_libraries(test_mempool_transaction_body PRIVATE bulletproofs_ffi)
+  if(TARGET build_bulletproofs_ffi)
+    add_dependencies(test_mempool_transaction_body build_bulletproofs_ffi)
+  endif()
+endif()
+link_zstd_if_needed(test_mempool_transaction_body)
+target_include_directories(test_mempool_transaction_body PRIVATE
+  ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src
+  ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+)
+if(APPLE)
+  target_link_libraries(test_mempool_transaction_body PRIVATE
+    "-framework Security" "-framework CoreFoundation")
+endif()
+# Root CMake declares the optional backend after including this file.
+function(dinero_attach_orchard_mempool_body_fixture)
+  if(TARGET dinero_orchard_mempool_body)
+    target_link_libraries(test_mempool_transaction_body PRIVATE dinero_orchard_mempool_body)
+    target_compile_definitions(test_mempool_transaction_body PRIVATE
+      DINERO_TEST_ORCHARD_BODY=1
+      DINERO_ORCHARD_BODY_FIXTURES="${CMAKE_SOURCE_DIR}/rust/orchard_backend/tests/fixtures")
+  endif()
+endfunction()
+cmake_language(DEFER CALL dinero_attach_orchard_mempool_body_fixture)
+add_test(NAME MempoolTransactionBody COMMAND test_mempool_transaction_body)
+set_tests_properties(MempoolTransactionBody PROPERTIES
+  LABELS "mempool;body;owner" TIMEOUT 60)
+
+add_executable(test_mempool_output_coins
+  tests/mempool/test_mempool_output_coins.cpp
+  src/daemon/mempool.cpp
+  src/daemon/config.cpp
+  tests/stubs/vault_test_stubs.cpp
+)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  # Wallet now references chainstate/core members after their initial scan.
+  # Rescan the actual mutually dependent archives, as for nodecore_runtime_driver.
+  # Raw group flags preserve compatibility with the CMake 3.20 minimum.
+  target_link_libraries(test_mempool_output_coins PRIVATE
+    "-Wl,--start-group" dinero_core dinero_wallet dinero_chainstate
+    dinero_consensus dinero_shielded dinero_bridge dinero_pool
+    dinero_lightning_keys dinero_address_encoding dinero_bip32 dinero_pq
+    dinero_zk dinero_tx_primitives dinero_crypto "-Wl,--end-group"
+    secp256k1 RocksDB::rocksdb ${SQLITE3_LIBRARIES}
+    GTest::gtest GTest::gtest_main)
+else()
+  target_link_libraries(test_mempool_output_coins PRIVATE
+    dinero_core dinero_consensus dinero_pq dinero_shielded dinero_chainstate
+    dinero_crypto secp256k1 RocksDB::rocksdb ${SQLITE3_LIBRARIES}
+    GTest::gtest GTest::gtest_main
+  )
+endif()
+if(TARGET bulletproofs_ffi)
+  target_link_libraries(test_mempool_output_coins PRIVATE bulletproofs_ffi)
+  if(TARGET build_bulletproofs_ffi)
+    add_dependencies(test_mempool_output_coins build_bulletproofs_ffi)
+  endif()
+endif()
+link_zstd_if_needed(test_mempool_output_coins)
+target_include_directories(test_mempool_output_coins PRIVATE
+  ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src
+  ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+)
+if(APPLE)
+  target_link_libraries(test_mempool_output_coins PRIVATE
+    "-framework Security" "-framework CoreFoundation")
+endif()
+# Root CMake declares the optional backend after including this file.
+function(dinero_attach_orchard_mempool_output_fixture)
+  if(TARGET dinero_orchard_mempool_body)
+    target_link_libraries(test_mempool_output_coins PRIVATE dinero_orchard_mempool_body)
+    target_compile_definitions(test_mempool_output_coins PRIVATE
+      DINERO_TEST_ORCHARD_BODY=1
+      DINERO_ORCHARD_BODY_FIXTURES="${CMAKE_SOURCE_DIR}/rust/orchard_backend/tests/fixtures")
+  endif()
+endfunction()
+cmake_language(DEFER CALL dinero_attach_orchard_mempool_output_fixture)
+add_test(NAME MempoolOutputCoins COMMAND test_mempool_output_coins)
+set_tests_properties(MempoolOutputCoins PROPERTIES
+  LABELS "mempool;coins;owner" TIMEOUT 60)
+
+add_executable(test_mempool_typed_relay
+  tests/p2p/test_mempool_typed_relay.cpp
+  src/daemon/mempool.cpp
+  src/daemon/config.cpp
+  src/daemon/tx_relay_manager.cpp
+  tests/stubs/vault_test_stubs.cpp
+)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  # Wallet now references chainstate/core members after their initial scan.
+  # Rescan the actual mutually dependent archives, as for nodecore_runtime_driver.
+  # Raw group flags preserve compatibility with the CMake 3.20 minimum.
+  target_link_libraries(test_mempool_typed_relay PRIVATE
+    "-Wl,--start-group" dinero_core dinero_wallet dinero_chainstate
+    dinero_consensus dinero_shielded dinero_bridge dinero_pool
+    dinero_lightning_keys dinero_address_encoding dinero_bip32 dinero_pq
+    dinero_zk dinero_tx_primitives dinero_crypto "-Wl,--end-group"
+    secp256k1 RocksDB::rocksdb ${SQLITE3_LIBRARIES}
+    GTest::gtest GTest::gtest_main)
+else()
+  target_link_libraries(test_mempool_typed_relay PRIVATE
+    dinero_core dinero_consensus dinero_pq dinero_shielded dinero_chainstate
+    dinero_crypto secp256k1 RocksDB::rocksdb ${SQLITE3_LIBRARIES}
+    GTest::gtest GTest::gtest_main
+  )
+endif()
+if(TARGET bulletproofs_ffi)
+  target_link_libraries(test_mempool_typed_relay PRIVATE bulletproofs_ffi)
+  if(TARGET build_bulletproofs_ffi)
+    add_dependencies(test_mempool_typed_relay build_bulletproofs_ffi)
+  endif()
+endif()
+link_zstd_if_needed(test_mempool_typed_relay)
+target_include_directories(test_mempool_typed_relay PRIVATE
+  ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src
+  ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+)
+if(APPLE)
+  target_link_libraries(test_mempool_typed_relay PRIVATE
+    "-framework Security" "-framework CoreFoundation")
+endif()
+# Root CMake declares the optional backend after including this file.
+function(dinero_attach_orchard_mempool_typed_relay_fixture)
+  if(TARGET dinero_orchard_mempool_body)
+    target_link_libraries(test_mempool_typed_relay PRIVATE dinero_orchard_mempool_body)
+    target_compile_definitions(test_mempool_typed_relay PRIVATE
+      DINERO_TEST_ORCHARD_BODY=1
+      DINERO_ORCHARD_BODY_FIXTURES="${CMAKE_SOURCE_DIR}/rust/orchard_backend/tests/fixtures")
+  endif()
+endfunction()
+cmake_language(DEFER CALL dinero_attach_orchard_mempool_typed_relay_fixture)
+add_test(NAME MempoolTypedRelay COMMAND test_mempool_typed_relay)
+set_tests_properties(MempoolTypedRelay PROPERTIES
+  LABELS "mempool;relay;body" TIMEOUT 60)
+
+add_executable(test_mempool_typed_ingress
+  tests/p2p/test_mempool_typed_ingress.cpp
+  src/daemon/mempool.cpp
+  src/daemon/config.cpp
+  src/daemon/tx_relay_manager.cpp
+  tests/stubs/vault_test_stubs.cpp
+)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  # Wallet now references chainstate/core members after their initial scan.
+  # Rescan the actual mutually dependent archives, as for nodecore_runtime_driver.
+  # Raw group flags preserve compatibility with the CMake 3.20 minimum.
+  target_link_libraries(test_mempool_typed_ingress PRIVATE
+    "-Wl,--start-group" dinero_core dinero_wallet dinero_chainstate
+    dinero_consensus dinero_shielded dinero_bridge dinero_pool
+    dinero_lightning_keys dinero_address_encoding dinero_bip32 dinero_pq
+    dinero_zk dinero_tx_primitives dinero_crypto "-Wl,--end-group"
+    secp256k1 RocksDB::rocksdb ${SQLITE3_LIBRARIES}
+    GTest::gtest GTest::gtest_main)
+else()
+  target_link_libraries(test_mempool_typed_ingress PRIVATE
+    dinero_core dinero_consensus dinero_pq dinero_shielded dinero_chainstate
+    dinero_crypto secp256k1 RocksDB::rocksdb ${SQLITE3_LIBRARIES}
+    GTest::gtest GTest::gtest_main
+  )
+endif()
+if(TARGET bulletproofs_ffi)
+  target_link_libraries(test_mempool_typed_ingress PRIVATE bulletproofs_ffi)
+  if(TARGET build_bulletproofs_ffi)
+    add_dependencies(test_mempool_typed_ingress build_bulletproofs_ffi)
+  endif()
+endif()
+link_zstd_if_needed(test_mempool_typed_ingress)
+target_include_directories(test_mempool_typed_ingress PRIVATE
+  ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src
+  ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+)
+if(APPLE)
+  target_link_libraries(test_mempool_typed_ingress PRIVATE
+    "-framework Security" "-framework CoreFoundation")
+endif()
+# Root CMake declares the optional backend after including this file.
+function(dinero_attach_orchard_mempool_typed_ingress_fixture)
+  if(TARGET dinero_orchard_mempool_body)
+    target_link_libraries(test_mempool_typed_ingress PRIVATE dinero_orchard_mempool_body)
+    target_compile_definitions(test_mempool_typed_ingress PRIVATE
+      DINERO_TEST_ORCHARD_BODY=1
+      DINERO_ORCHARD_BODY_FIXTURES="${CMAKE_SOURCE_DIR}/rust/orchard_backend/tests/fixtures")
+  endif()
+endfunction()
+cmake_language(DEFER CALL dinero_attach_orchard_mempool_typed_ingress_fixture)
+add_test(NAME MempoolTypedIngress COMMAND test_mempool_typed_ingress)
+set_tests_properties(MempoolTypedIngress PROPERTIES
+  LABELS "mempool;ingress;orphan;body" TIMEOUT 60)
+
+add_executable(test_mempool_relay_reader
+  tests/p2p/test_mempool_relay_reader.cpp
+  src/daemon/mempool.cpp
+  src/daemon/config.cpp
+  src/daemon/tx_relay_manager.cpp
+  tests/stubs/vault_test_stubs.cpp
+)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  # Wallet now references chainstate/core members after their initial scan.
+  # Rescan the actual mutually dependent archives, as for nodecore_runtime_driver.
+  # Raw group flags preserve compatibility with the CMake 3.20 minimum.
+  target_link_libraries(test_mempool_relay_reader PRIVATE
+    "-Wl,--start-group" dinero_core dinero_wallet dinero_chainstate
+    dinero_consensus dinero_shielded dinero_bridge dinero_pool
+    dinero_lightning_keys dinero_address_encoding dinero_bip32 dinero_pq
+    dinero_zk dinero_tx_primitives dinero_crypto "-Wl,--end-group"
+    secp256k1 RocksDB::rocksdb ${SQLITE3_LIBRARIES}
+    GTest::gtest GTest::gtest_main)
+else()
+  target_link_libraries(test_mempool_relay_reader PRIVATE
+    dinero_core dinero_consensus dinero_pq dinero_shielded dinero_chainstate
+    dinero_crypto secp256k1 RocksDB::rocksdb ${SQLITE3_LIBRARIES}
+    GTest::gtest GTest::gtest_main
+  )
+endif()
+if(TARGET bulletproofs_ffi)
+  target_link_libraries(test_mempool_relay_reader PRIVATE bulletproofs_ffi)
+  if(TARGET build_bulletproofs_ffi)
+    add_dependencies(test_mempool_relay_reader build_bulletproofs_ffi)
+  endif()
+endif()
+link_zstd_if_needed(test_mempool_relay_reader)
+target_include_directories(test_mempool_relay_reader PRIVATE
+  ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src
+  ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+)
+if(APPLE)
+  target_link_libraries(test_mempool_relay_reader PRIVATE
+    "-framework Security" "-framework CoreFoundation")
+endif()
+# Root CMake declares the optional backend after including this file.
+function(dinero_attach_orchard_mempool_relay_reader_fixture)
+  if(TARGET dinero_orchard_mempool_body)
+    target_link_libraries(test_mempool_relay_reader PRIVATE dinero_orchard_mempool_body)
+    target_compile_definitions(test_mempool_relay_reader PRIVATE
+      DINERO_TEST_ORCHARD_BODY=1
+      DINERO_ORCHARD_BODY_FIXTURES="${CMAKE_SOURCE_DIR}/rust/orchard_backend/tests/fixtures")
+  endif()
+endfunction()
+cmake_language(DEFER CALL dinero_attach_orchard_mempool_relay_reader_fixture)
+add_test(NAME MempoolRelayReader COMMAND test_mempool_relay_reader)
+set_tests_properties(MempoolRelayReader PROPERTIES
+  LABELS "mempool;relay;reader;body" TIMEOUT 60)
+
+add_executable(test_mempool_raw_rpc
+  tests/rpc/test_mempool_raw_rpc.cpp
+  src/daemon/mempool.cpp
+  src/daemon/config.cpp
+  src/daemon/legacy_globals_stub.cpp
+  src/daemon/tx_relay_manager.cpp
+)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  # Wallet now references chainstate/core members after their initial scan.
+  # Rescan the actual mutually dependent archives, as for nodecore_runtime_driver.
+  # Raw group flags preserve compatibility with the CMake 3.20 minimum.
+  target_link_libraries(test_mempool_raw_rpc PRIVATE
+    "-Wl,--start-group" dinero_rpc_handlers dinero_core dinero_wallet dinero_chainstate
+    dinero_consensus dinero_shielded dinero_bridge dinero_pool
+    dinero_lightning_keys dinero_address_encoding dinero_bip32 dinero_pq
+    dinero_zk dinero_tx_primitives dinero_crypto "-Wl,--end-group"
+    secp256k1 RocksDB::rocksdb ${SQLITE3_LIBRARIES}
+    GTest::gtest GTest::gtest_main)
+else()
+  target_link_libraries(test_mempool_raw_rpc PRIVATE
+    dinero_rpc_handlers dinero_core dinero_consensus dinero_pq dinero_shielded dinero_chainstate
+    dinero_crypto secp256k1 RocksDB::rocksdb ${SQLITE3_LIBRARIES}
+    GTest::gtest GTest::gtest_main
+  )
+endif()
+if(TARGET bulletproofs_ffi)
+  target_link_libraries(test_mempool_raw_rpc PRIVATE bulletproofs_ffi)
+  if(TARGET build_bulletproofs_ffi)
+    add_dependencies(test_mempool_raw_rpc build_bulletproofs_ffi)
+  endif()
+endif()
+link_zstd_if_needed(test_mempool_raw_rpc)
+target_include_directories(test_mempool_raw_rpc PRIVATE
+  ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src
+  ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+)
+if(APPLE)
+  target_link_libraries(test_mempool_raw_rpc PRIVATE
+    "-framework Security" "-framework CoreFoundation")
+endif()
+# Root CMake declares the optional backend after including this file.
+function(dinero_attach_orchard_mempool_raw_rpc_fixture)
+  if(TARGET dinero_orchard_mempool_body)
+    target_link_libraries(test_mempool_raw_rpc PRIVATE dinero_orchard_mempool_body)
+    target_compile_definitions(test_mempool_raw_rpc PRIVATE
+      DINERO_TEST_ORCHARD_BODY=1
+      DINERO_ORCHARD_BODY_FIXTURES="${CMAKE_SOURCE_DIR}/rust/orchard_backend/tests/fixtures")
+  endif()
+endfunction()
+cmake_language(DEFER CALL dinero_attach_orchard_mempool_raw_rpc_fixture)
+add_test(NAME MempoolRawRpc COMMAND test_mempool_raw_rpc)
+set_tests_properties(MempoolRawRpc PROPERTIES
+  LABELS "mempool;rpc;body" TIMEOUT 60)
+
+add_executable(test_mempool_ranked_rpc
+  tests/rpc/test_mempool_ranked_rpc.cpp
+  src/daemon/mempool.cpp
+  src/daemon/config.cpp
+  src/daemon/legacy_globals_stub.cpp
+  src/daemon/tx_relay_manager.cpp
+)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  # Wallet now references chainstate/core members after their initial scan.
+  # Rescan the actual mutually dependent archives, as for nodecore_runtime_driver.
+  # Raw group flags preserve compatibility with the CMake 3.20 minimum.
+  target_link_libraries(test_mempool_ranked_rpc PRIVATE
+    "-Wl,--start-group" dinero_rpc_handlers dinero_core dinero_wallet dinero_chainstate
+    dinero_consensus dinero_shielded dinero_bridge dinero_pool
+    dinero_lightning_keys dinero_address_encoding dinero_bip32 dinero_pq
+    dinero_zk dinero_tx_primitives dinero_crypto "-Wl,--end-group"
+    secp256k1 RocksDB::rocksdb ${SQLITE3_LIBRARIES}
+    GTest::gtest GTest::gtest_main)
+else()
+  target_link_libraries(test_mempool_ranked_rpc PRIVATE
+    dinero_rpc_handlers dinero_core dinero_consensus dinero_pq dinero_shielded dinero_chainstate
+    dinero_crypto secp256k1 RocksDB::rocksdb ${SQLITE3_LIBRARIES}
+    GTest::gtest GTest::gtest_main
+  )
+endif()
+if(TARGET bulletproofs_ffi)
+  target_link_libraries(test_mempool_ranked_rpc PRIVATE bulletproofs_ffi)
+  if(TARGET build_bulletproofs_ffi)
+    add_dependencies(test_mempool_ranked_rpc build_bulletproofs_ffi)
+  endif()
+endif()
+link_zstd_if_needed(test_mempool_ranked_rpc)
+target_include_directories(test_mempool_ranked_rpc PRIVATE
+  ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src
+  ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+)
+if(APPLE)
+  target_link_libraries(test_mempool_ranked_rpc PRIVATE
+    "-framework Security" "-framework CoreFoundation")
+endif()
+# Root CMake declares the optional backend after including this file.
+function(dinero_attach_orchard_mempool_ranked_rpc_fixture)
+  if(TARGET dinero_orchard_mempool_body)
+    target_link_libraries(test_mempool_ranked_rpc PRIVATE dinero_orchard_mempool_body)
+    target_compile_definitions(test_mempool_ranked_rpc PRIVATE
+      DINERO_TEST_ORCHARD_BODY=1
+      DINERO_ORCHARD_BODY_FIXTURES="${CMAKE_SOURCE_DIR}/rust/orchard_backend/tests/fixtures")
+  endif()
+endfunction()
+cmake_language(DEFER CALL dinero_attach_orchard_mempool_ranked_rpc_fixture)
+add_test(NAME MempoolRankedRpc COMMAND test_mempool_ranked_rpc)
+set_tests_properties(MempoolRankedRpc PROPERTIES
+  LABELS "mempool;rpc;ranked;body" TIMEOUT 60)
+
+add_executable(test_mempool_address_capture
+  tests/rpc/test_mempool_address_capture.cpp
+  src/daemon/mempool.cpp
+  src/daemon/config.cpp
+  src/daemon/legacy_globals_stub.cpp
+  src/daemon/tx_relay_manager.cpp
+)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  # Wallet now references chainstate/core members after their initial scan.
+  # Rescan the actual mutually dependent archives, as for nodecore_runtime_driver.
+  # Raw group flags preserve compatibility with the CMake 3.20 minimum.
+  # Core also reaches the optional runtime/wallet-delivery graph. Its entire
+  # project archive closure must share the rescan group: grouping only the
+  # transaction reader leaves late wallet->core backreferences unresolved.
+  # These targets are declared later; generation-time presence keeps OFF and
+  # CMake 3.20 supported without adding stubs or whole-archive extraction.
+  target_link_libraries(test_mempool_address_capture PRIVATE
+    "-Wl,--start-group" dinero_rpc_handlers dinero_core
+    "$<TARGET_NAME_IF_EXISTS:dinero_orchard_mempool_body>"
+    "$<TARGET_NAME_IF_EXISTS:dinero_transaction_reader>"
+    "$<TARGET_NAME_IF_EXISTS:dinero_orchard_backend>"
+    "$<TARGET_NAME_IF_EXISTS:dinero_gpu_mining>"
+    "$<TARGET_NAME_IF_EXISTS:dinero_orchard_runtime_reader>"
+    "$<TARGET_NAME_IF_EXISTS:dinero_orchard_header>"
+    "$<TARGET_NAME_IF_EXISTS:dinero_orchard_index_delivery>"
+    "$<TARGET_NAME_IF_EXISTS:dinero_orchard_account_replay>"
+    "$<TARGET_NAME_IF_EXISTS:dinero_orchard_operation_archive>"
+    "$<TARGET_NAME_IF_EXISTS:dinero_orchard_wallet_account>"
+    "$<TARGET_NAME_IF_EXISTS:dinero_orchard_wallet_scan>"
+    "$<TARGET_NAME_IF_EXISTS:dinero_orchard_operation_queue>"
+    "$<TARGET_NAME_IF_EXISTS:dinero_orchard_wallet_storage>"
+    "$<TARGET_NAME_IF_EXISTS:dinero_orchard_chainstate_write>"
+    "$<TARGET_NAME_IF_EXISTS:dinero_orchard_block_staging>"
+    "$<TARGET_NAME_IF_EXISTS:dinero_orchard_block_coins>"
+    "$<TARGET_NAME_IF_EXISTS:dinero_orchard_block_reader>"
+    "$<TARGET_NAME_IF_EXISTS:dinero_orchard_state_root>"
+    "$<TARGET_NAME_IF_EXISTS:dinero_orchard_legacy_accounting>"
+    "$<TARGET_NAME_IF_EXISTS:dinero_orchard_transparent>"
+    "$<$<TARGET_EXISTS:dinero_transaction_reader>:dinero_consensus_core>"
+    dinero_wallet dinero_chainstate
+    dinero_consensus dinero_shielded dinero_bridge dinero_pool
+    dinero_lightning_keys dinero_address_encoding dinero_bip32 dinero_pq
+    dinero_zk dinero_tx_primitives dinero_crypto "-Wl,--end-group"
+    secp256k1 RocksDB::rocksdb ${SQLITE3_LIBRARIES}
+    GTest::gtest GTest::gtest_main)
+else()
+  target_link_libraries(test_mempool_address_capture PRIVATE
+    dinero_rpc_handlers dinero_core dinero_consensus dinero_pq dinero_shielded dinero_chainstate
+    dinero_crypto secp256k1 RocksDB::rocksdb ${SQLITE3_LIBRARIES}
+    GTest::gtest GTest::gtest_main
+  )
+endif()
+if(TARGET bulletproofs_ffi)
+  target_link_libraries(test_mempool_address_capture PRIVATE bulletproofs_ffi)
+  if(TARGET build_bulletproofs_ffi)
+    add_dependencies(test_mempool_address_capture build_bulletproofs_ffi)
+  endif()
+endif()
+link_zstd_if_needed(test_mempool_address_capture)
+target_include_directories(test_mempool_address_capture PRIVATE
+  ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src
+  ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+)
+if(APPLE)
+  target_link_libraries(test_mempool_address_capture PRIVATE
+    "-framework Security" "-framework CoreFoundation")
+endif()
+# Root CMake declares the optional backend after including this file.
+function(dinero_attach_orchard_mempool_address_capture_fixture)
+  if(TARGET dinero_orchard_mempool_body)
+    target_link_libraries(test_mempool_address_capture PRIVATE dinero_orchard_mempool_body)
+    target_compile_definitions(test_mempool_address_capture PRIVATE
+      DINERO_TEST_ORCHARD_BODY=1
+      DINERO_ORCHARD_BODY_FIXTURES="${CMAKE_SOURCE_DIR}/rust/orchard_backend/tests/fixtures")
+  endif()
+endfunction()
+cmake_language(DEFER CALL dinero_attach_orchard_mempool_address_capture_fixture)
+add_test(NAME MempoolAddressCapture COMMAND test_mempool_address_capture)
+set_tests_properties(MempoolAddressCapture PROPERTIES
+  LABELS "mempool;rpc;address;body" TIMEOUT 60)
+
+add_executable(test_mempool_retained_load
+  tests/mempool/test_mempool_retained_load.cpp
+  src/daemon/mempool.cpp
+  src/daemon/config.cpp
+  src/daemon/legacy_globals_stub.cpp
+  src/daemon/tx_relay_manager.cpp
+)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  # Wallet now references chainstate/core members after their initial scan.
+  # Rescan the actual mutually dependent archives, as for nodecore_runtime_driver.
+  # Raw group flags preserve compatibility with the CMake 3.20 minimum.
+  # Core also reaches the optional runtime/wallet-delivery graph. Its entire
+  # project archive closure must share the rescan group: grouping only the
+  # transaction reader leaves late wallet->core backreferences unresolved.
+  # These targets are declared later; generation-time presence keeps OFF and
+  # CMake 3.20 supported without adding stubs or whole-archive extraction.
+  target_link_libraries(test_mempool_retained_load PRIVATE
+    "-Wl,--start-group" dinero_rpc_handlers dinero_core
+    "$<TARGET_NAME_IF_EXISTS:dinero_orchard_mempool_body>"
+    "$<TARGET_NAME_IF_EXISTS:dinero_transaction_reader>"
+    "$<TARGET_NAME_IF_EXISTS:dinero_orchard_backend>"
+    "$<TARGET_NAME_IF_EXISTS:dinero_gpu_mining>"
+    "$<TARGET_NAME_IF_EXISTS:dinero_orchard_runtime_reader>"
+    "$<TARGET_NAME_IF_EXISTS:dinero_orchard_header>"
+    "$<TARGET_NAME_IF_EXISTS:dinero_orchard_index_delivery>"
+    "$<TARGET_NAME_IF_EXISTS:dinero_orchard_account_replay>"
+    "$<TARGET_NAME_IF_EXISTS:dinero_orchard_operation_archive>"
+    "$<TARGET_NAME_IF_EXISTS:dinero_orchard_wallet_account>"
+    "$<TARGET_NAME_IF_EXISTS:dinero_orchard_wallet_scan>"
+    "$<TARGET_NAME_IF_EXISTS:dinero_orchard_operation_queue>"
+    "$<TARGET_NAME_IF_EXISTS:dinero_orchard_wallet_storage>"
+    "$<TARGET_NAME_IF_EXISTS:dinero_orchard_chainstate_write>"
+    "$<TARGET_NAME_IF_EXISTS:dinero_orchard_block_staging>"
+    "$<TARGET_NAME_IF_EXISTS:dinero_orchard_block_coins>"
+    "$<TARGET_NAME_IF_EXISTS:dinero_orchard_block_reader>"
+    "$<TARGET_NAME_IF_EXISTS:dinero_orchard_state_root>"
+    "$<TARGET_NAME_IF_EXISTS:dinero_orchard_legacy_accounting>"
+    "$<TARGET_NAME_IF_EXISTS:dinero_orchard_transparent>"
+    "$<$<TARGET_EXISTS:dinero_transaction_reader>:dinero_consensus_core>"
+    dinero_wallet dinero_chainstate
+    dinero_consensus dinero_shielded dinero_bridge dinero_pool
+    dinero_lightning_keys dinero_address_encoding dinero_bip32 dinero_pq
+    dinero_zk dinero_tx_primitives dinero_crypto "-Wl,--end-group"
+    secp256k1 RocksDB::rocksdb ${SQLITE3_LIBRARIES}
+    GTest::gtest GTest::gtest_main)
+else()
+  target_link_libraries(test_mempool_retained_load PRIVATE
+    dinero_rpc_handlers dinero_core dinero_consensus dinero_pq dinero_shielded dinero_chainstate
+    dinero_crypto secp256k1 RocksDB::rocksdb ${SQLITE3_LIBRARIES}
+    GTest::gtest GTest::gtest_main
+  )
+endif()
+if(TARGET bulletproofs_ffi)
+  target_link_libraries(test_mempool_retained_load PRIVATE bulletproofs_ffi)
+  if(TARGET build_bulletproofs_ffi)
+    add_dependencies(test_mempool_retained_load build_bulletproofs_ffi)
+  endif()
+endif()
+link_zstd_if_needed(test_mempool_retained_load)
+target_include_directories(test_mempool_retained_load PRIVATE
+  ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src
+  ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+)
+if(APPLE)
+  target_link_libraries(test_mempool_retained_load PRIVATE
+    "-framework Security" "-framework CoreFoundation")
+endif()
+# Root CMake declares the optional backend after including this file.
+function(dinero_attach_orchard_mempool_retained_load_fixture)
+  if(TARGET dinero_orchard_mempool_body)
+    target_link_libraries(test_mempool_retained_load PRIVATE dinero_orchard_mempool_body)
+    target_compile_definitions(test_mempool_retained_load PRIVATE
+      DINERO_TEST_ORCHARD_BODY=1
+      DINERO_ORCHARD_BODY_FIXTURES="${CMAKE_SOURCE_DIR}/rust/orchard_backend/tests/fixtures")
+  endif()
+endfunction()
+cmake_language(DEFER CALL dinero_attach_orchard_mempool_retained_load_fixture)
+add_test(NAME MempoolRetainedLoad COMMAND test_mempool_retained_load)
+set_tests_properties(MempoolRetainedLoad PROPERTIES
+  LABELS "mempool;persistence;recovery;body" TIMEOUT 60)
+
+add_executable(test_mempool_typed_package
+  tests/mempool/test_mempool_typed_package.cpp
+  src/daemon/mempool.cpp
+  src/daemon/config.cpp
+  src/daemon/legacy_globals_stub.cpp
+  src/daemon/tx_relay_manager.cpp
+)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  # Wallet now references chainstate/core members after their initial scan.
+  # Rescan the actual mutually dependent archives, as for nodecore_runtime_driver.
+  # Raw group flags preserve compatibility with the CMake 3.20 minimum.
+  # Core also reaches the optional runtime/wallet-delivery graph. Its entire
+  # project archive closure must share the rescan group: grouping only the
+  # transaction reader leaves late wallet->core backreferences unresolved.
+  # These targets are declared later; generation-time presence keeps OFF and
+  # CMake 3.20 supported without adding stubs or whole-archive extraction.
+  target_link_libraries(test_mempool_typed_package PRIVATE
+    "-Wl,--start-group" dinero_rpc_handlers dinero_core
+    "$<TARGET_NAME_IF_EXISTS:dinero_orchard_mempool_body>"
+    "$<TARGET_NAME_IF_EXISTS:dinero_transaction_reader>"
+    "$<TARGET_NAME_IF_EXISTS:dinero_orchard_backend>"
+    "$<TARGET_NAME_IF_EXISTS:dinero_gpu_mining>"
+    "$<TARGET_NAME_IF_EXISTS:dinero_orchard_runtime_reader>"
+    "$<TARGET_NAME_IF_EXISTS:dinero_orchard_header>"
+    "$<TARGET_NAME_IF_EXISTS:dinero_orchard_index_delivery>"
+    "$<TARGET_NAME_IF_EXISTS:dinero_orchard_account_replay>"
+    "$<TARGET_NAME_IF_EXISTS:dinero_orchard_operation_archive>"
+    "$<TARGET_NAME_IF_EXISTS:dinero_orchard_wallet_account>"
+    "$<TARGET_NAME_IF_EXISTS:dinero_orchard_wallet_scan>"
+    "$<TARGET_NAME_IF_EXISTS:dinero_orchard_operation_queue>"
+    "$<TARGET_NAME_IF_EXISTS:dinero_orchard_wallet_storage>"
+    "$<TARGET_NAME_IF_EXISTS:dinero_orchard_chainstate_write>"
+    "$<TARGET_NAME_IF_EXISTS:dinero_orchard_block_staging>"
+    "$<TARGET_NAME_IF_EXISTS:dinero_orchard_block_coins>"
+    "$<TARGET_NAME_IF_EXISTS:dinero_orchard_block_reader>"
+    "$<TARGET_NAME_IF_EXISTS:dinero_orchard_state_root>"
+    "$<TARGET_NAME_IF_EXISTS:dinero_orchard_legacy_accounting>"
+    "$<TARGET_NAME_IF_EXISTS:dinero_orchard_transparent>"
+    "$<$<TARGET_EXISTS:dinero_transaction_reader>:dinero_consensus_core>"
+    dinero_wallet dinero_chainstate
+    dinero_consensus dinero_shielded dinero_bridge dinero_pool
+    dinero_lightning_keys dinero_address_encoding dinero_bip32 dinero_pq
+    dinero_zk dinero_tx_primitives dinero_crypto "-Wl,--end-group"
+    secp256k1 RocksDB::rocksdb ${SQLITE3_LIBRARIES}
+    GTest::gtest GTest::gtest_main)
+else()
+  target_link_libraries(test_mempool_typed_package PRIVATE
+    dinero_rpc_handlers dinero_core dinero_consensus dinero_pq dinero_shielded dinero_chainstate
+    dinero_crypto secp256k1 RocksDB::rocksdb ${SQLITE3_LIBRARIES}
+    GTest::gtest GTest::gtest_main
+  )
+endif()
+if(TARGET bulletproofs_ffi)
+  target_link_libraries(test_mempool_typed_package PRIVATE bulletproofs_ffi)
+  if(TARGET build_bulletproofs_ffi)
+    add_dependencies(test_mempool_typed_package build_bulletproofs_ffi)
+  endif()
+endif()
+link_zstd_if_needed(test_mempool_typed_package)
+target_include_directories(test_mempool_typed_package PRIVATE
+  ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src
+  ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+)
+if(APPLE)
+  target_link_libraries(test_mempool_typed_package PRIVATE
+    "-framework Security" "-framework CoreFoundation")
+endif()
+# Root CMake declares the optional backend after including this file.
+function(dinero_attach_orchard_mempool_typed_package_fixture)
+  if(TARGET dinero_orchard_mempool_body)
+    target_link_libraries(test_mempool_typed_package PRIVATE dinero_orchard_mempool_body dinero_orchard_block_reader)
+    target_compile_definitions(test_mempool_typed_package PRIVATE
+      DINERO_TEST_ORCHARD_BODY=1
+      DINERO_ORCHARD_BODY_FIXTURES="${CMAKE_SOURCE_DIR}/rust/orchard_backend/tests/fixtures")
+  endif()
+endfunction()
+cmake_language(DEFER CALL dinero_attach_orchard_mempool_typed_package_fixture)
+add_test(NAME MempoolTypedPackage COMMAND test_mempool_typed_package)
+add_test(NAME OrchardPoolConflicts COMMAND test_mempool_typed_package --gtest_filter=OrchardPoolConflicts.*)
+add_test(NAME OrchardTypedPoolTip COMMAND test_mempool_typed_package --gtest_filter=OrchardTypedPoolTip.*)
+add_test(NAME TypedBridgeProofOwner COMMAND test_mempool_typed_package --gtest_filter=TypedBridgeProofOwner.*)
+set_tests_properties(TypedBridgeProofOwner PROPERTIES
+  LABELS "mempool;orchard;bridge;proof;mandatory" TIMEOUT 60)
+add_test(NAME TypedAcceptanceOwner COMMAND test_mempool_typed_package --gtest_filter=TypedAcceptanceOwner.*)
+set_tests_properties(TypedAcceptanceOwner PROPERTIES
+  LABELS "mempool;callback;body;mandatory" TIMEOUT 60)
+
+add_test(NAME TypedPoolPublication COMMAND test_mempool_typed_package --gtest_filter=TypedPoolPublication.*)
+set_tests_properties(TypedPoolPublication PROPERTIES
+  LABELS "mempool;replacement;body;mandatory" TIMEOUT 60)
+add_test(NAME PoolParentRoot COMMAND test_mempool_typed_package --gtest_filter=PoolParentRoot.*)
+set_tests_properties(PoolParentRoot PROPERTIES
+  LABELS "mempool;bridge;proof;reorg;mandatory" TIMEOUT 60)
+add_test(NAME TypedUtreexoReceive COMMAND test_mempool_typed_package --gtest_filter=TypedUtreexoReceive.*)
+set_tests_properties(TypedUtreexoReceive PROPERTIES
+  LABELS "mempool;orchard;bridge;proof;mandatory" TIMEOUT 60)
+set_tests_properties(OrchardTypedPoolTip PROPERTIES
+  LABELS "mempool;orchard;bridge;relay;mandatory" TIMEOUT 60)
+set_tests_properties(OrchardPoolConflicts PROPERTIES
+  LABELS "mempool;orchard;conflicts;mandatory" TIMEOUT 60)
+set_tests_properties(MempoolTypedPackage PROPERTIES
+  LABELS "mempool;package;policy;body" TIMEOUT 60)
+
+add_executable(test_mempool_admission_owner
+  tests/mempool/test_mempool_admission_owner.cpp
+  src/daemon/mempool.cpp
+  src/daemon/config.cpp
+  tests/stubs/vault_test_stubs.cpp
+)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  # Wallet now references chainstate/core members after their initial scan.
+  # Rescan the actual mutually dependent archives, as for nodecore_runtime_driver.
+  # Raw group flags preserve compatibility with the CMake 3.20 minimum.
+  target_link_libraries(test_mempool_admission_owner PRIVATE
+    "-Wl,--start-group" dinero_core dinero_wallet dinero_chainstate
+    dinero_consensus dinero_shielded dinero_bridge dinero_pool
+    dinero_lightning_keys dinero_address_encoding dinero_bip32 dinero_pq
+    dinero_zk dinero_tx_primitives dinero_crypto "-Wl,--end-group"
+    secp256k1 RocksDB::rocksdb ${SQLITE3_LIBRARIES}
+    GTest::gtest GTest::gtest_main)
+else()
+  target_link_libraries(test_mempool_admission_owner PRIVATE
+    dinero_core dinero_consensus dinero_pq dinero_shielded dinero_chainstate
+    dinero_crypto secp256k1 RocksDB::rocksdb ${SQLITE3_LIBRARIES}
+    GTest::gtest GTest::gtest_main
+  )
+endif()
+if(TARGET bulletproofs_ffi)
+  target_link_libraries(test_mempool_admission_owner PRIVATE bulletproofs_ffi)
+  if(TARGET build_bulletproofs_ffi)
+    add_dependencies(test_mempool_admission_owner build_bulletproofs_ffi)
+  endif()
+endif()
+link_zstd_if_needed(test_mempool_admission_owner)
+target_include_directories(test_mempool_admission_owner PRIVATE
+  ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src
+  ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+)
+if(APPLE)
+  target_link_libraries(test_mempool_admission_owner PRIVATE
+    "-framework Security" "-framework CoreFoundation")
+endif()
+add_test(NAME MempoolAdmissionOwner COMMAND test_mempool_admission_owner)
+set_tests_properties(MempoolAdmissionOwner PROPERTIES
+  LABELS "mempool;admission;owner" TIMEOUT 60)
+
+add_executable(test_mempool_policy_owner
+  tests/mempool/test_mempool_policy_owner.cpp
+  src/daemon/mempool.cpp
+  src/daemon/config.cpp
+  tests/stubs/vault_test_stubs.cpp
+)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  # Wallet now references chainstate/core members after their initial scan.
+  # Rescan the actual mutually dependent archives, as for nodecore_runtime_driver.
+  # Raw group flags preserve compatibility with the CMake 3.20 minimum.
+  target_link_libraries(test_mempool_policy_owner PRIVATE
+    "-Wl,--start-group" dinero_core dinero_wallet dinero_chainstate
+    dinero_consensus dinero_shielded dinero_bridge dinero_pool
+    dinero_lightning_keys dinero_address_encoding dinero_bip32 dinero_pq
+    dinero_zk dinero_tx_primitives dinero_crypto "-Wl,--end-group"
+    secp256k1 RocksDB::rocksdb ${SQLITE3_LIBRARIES}
+    GTest::gtest GTest::gtest_main)
+else()
+  target_link_libraries(test_mempool_policy_owner PRIVATE
+    dinero_core dinero_consensus dinero_pq dinero_shielded dinero_chainstate
+    dinero_crypto secp256k1 RocksDB::rocksdb ${SQLITE3_LIBRARIES}
+    GTest::gtest GTest::gtest_main
+  )
+endif()
+if(TARGET bulletproofs_ffi)
+  target_link_libraries(test_mempool_policy_owner PRIVATE bulletproofs_ffi)
+  if(TARGET build_bulletproofs_ffi)
+    add_dependencies(test_mempool_policy_owner build_bulletproofs_ffi)
+  endif()
+endif()
+link_zstd_if_needed(test_mempool_policy_owner)
+target_include_directories(test_mempool_policy_owner PRIVATE
+  ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src
+  ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+)
+if(APPLE)
+  target_link_libraries(test_mempool_policy_owner PRIVATE
+    "-framework Security" "-framework CoreFoundation")
+endif()
+add_test(NAME MempoolPolicyOwner COMMAND test_mempool_policy_owner)
+set_tests_properties(MempoolPolicyOwner PROPERTIES
+  LABELS "mempool;configuration;owner" TIMEOUT 60)
+
+add_executable(test_mempool_block_owner
+  tests/mempool/test_mempool_block_owner.cpp
+  src/daemon/mempool.cpp
+  src/daemon/config.cpp
+  tests/stubs/vault_test_stubs.cpp
+)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  # Wallet now references chainstate/core members after their initial scan.
+  # Rescan the actual mutually dependent archives, as for nodecore_runtime_driver.
+  # Raw group flags preserve compatibility with the CMake 3.20 minimum.
+  target_link_libraries(test_mempool_block_owner PRIVATE
+    "-Wl,--start-group" dinero_core dinero_wallet dinero_chainstate
+    dinero_consensus dinero_shielded dinero_bridge dinero_pool
+    dinero_lightning_keys dinero_address_encoding dinero_bip32 dinero_pq
+    dinero_zk dinero_tx_primitives dinero_crypto "-Wl,--end-group"
+    secp256k1 RocksDB::rocksdb ${SQLITE3_LIBRARIES}
+    GTest::gtest GTest::gtest_main)
+else()
+  target_link_libraries(test_mempool_block_owner PRIVATE
+    dinero_core dinero_consensus dinero_pq dinero_shielded dinero_chainstate
+    dinero_crypto secp256k1 RocksDB::rocksdb ${SQLITE3_LIBRARIES}
+    GTest::gtest GTest::gtest_main
+  )
+endif()
+if(TARGET bulletproofs_ffi)
+  target_link_libraries(test_mempool_block_owner PRIVATE bulletproofs_ffi)
+  if(TARGET build_bulletproofs_ffi)
+    add_dependencies(test_mempool_block_owner build_bulletproofs_ffi)
+  endif()
+endif()
+link_zstd_if_needed(test_mempool_block_owner)
+target_include_directories(test_mempool_block_owner PRIVATE
+  ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src
+  ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+)
+if(APPLE)
+  target_link_libraries(test_mempool_block_owner PRIVATE
+    "-framework Security" "-framework CoreFoundation")
+endif()
+add_test(NAME MempoolBlockOwner COMMAND test_mempool_block_owner)
+set_tests_properties(MempoolBlockOwner PROPERTIES
+  LABELS "mempool;block;owner" TIMEOUT 60)
+
+add_executable(test_mempool_refresh_owner
+  tests/mempool/test_mempool_refresh_owner.cpp
+  src/daemon/mempool.cpp
+  src/daemon/config.cpp
+  tests/stubs/vault_test_stubs.cpp
+)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  # Wallet now references chainstate/core members after their initial scan.
+  # Rescan the actual mutually dependent archives, as for nodecore_runtime_driver.
+  # Raw group flags preserve compatibility with the CMake 3.20 minimum.
+  target_link_libraries(test_mempool_refresh_owner PRIVATE
+    "-Wl,--start-group" dinero_core dinero_wallet dinero_chainstate
+    dinero_consensus dinero_shielded dinero_bridge dinero_pool
+    dinero_lightning_keys dinero_address_encoding dinero_bip32 dinero_pq
+    dinero_zk dinero_tx_primitives dinero_crypto "-Wl,--end-group"
+    secp256k1 RocksDB::rocksdb ${SQLITE3_LIBRARIES}
+    GTest::gtest GTest::gtest_main)
+else()
+  target_link_libraries(test_mempool_refresh_owner PRIVATE
+    dinero_core dinero_consensus dinero_pq dinero_shielded dinero_chainstate
+    dinero_crypto secp256k1 RocksDB::rocksdb ${SQLITE3_LIBRARIES}
+    GTest::gtest GTest::gtest_main
+  )
+endif()
+if(TARGET bulletproofs_ffi)
+  target_link_libraries(test_mempool_refresh_owner PRIVATE bulletproofs_ffi)
+  if(TARGET build_bulletproofs_ffi)
+    add_dependencies(test_mempool_refresh_owner build_bulletproofs_ffi)
+  endif()
+endif()
+link_zstd_if_needed(test_mempool_refresh_owner)
+target_include_directories(test_mempool_refresh_owner PRIVATE
+  ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src
+  ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+)
+if(APPLE)
+  target_link_libraries(test_mempool_refresh_owner PRIVATE
+    "-framework Security" "-framework CoreFoundation")
+endif()
+add_test(NAME MempoolRefreshOwner COMMAND test_mempool_refresh_owner)
+set_tests_properties(MempoolRefreshOwner PROPERTIES
+  LABELS "mempool;refresh;owner" TIMEOUT 60)
+
+add_executable(test_mempool_prepared_refresh
+  tests/mempool/test_mempool_prepared_refresh.cpp
+  src/daemon/mempool.cpp
+  src/daemon/config.cpp
+  tests/stubs/vault_test_stubs.cpp
+)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  # Wallet now references chainstate/core members after their initial scan.
+  # Rescan the actual mutually dependent archives, as for nodecore_runtime_driver.
+  # Raw group flags preserve compatibility with the CMake 3.20 minimum.
+  target_link_libraries(test_mempool_prepared_refresh PRIVATE
+    "-Wl,--start-group" dinero_core dinero_wallet dinero_chainstate
+    dinero_consensus dinero_shielded dinero_bridge dinero_pool
+    dinero_lightning_keys dinero_address_encoding dinero_bip32 dinero_pq
+    dinero_zk dinero_tx_primitives dinero_crypto "-Wl,--end-group"
+    secp256k1 RocksDB::rocksdb ${SQLITE3_LIBRARIES}
+    GTest::gtest GTest::gtest_main)
+else()
+  target_link_libraries(test_mempool_prepared_refresh PRIVATE
+    dinero_core dinero_consensus dinero_pq dinero_shielded dinero_chainstate
+    dinero_crypto secp256k1 RocksDB::rocksdb ${SQLITE3_LIBRARIES}
+    GTest::gtest GTest::gtest_main
+  )
+endif()
+if(TARGET bulletproofs_ffi)
+  target_link_libraries(test_mempool_prepared_refresh PRIVATE bulletproofs_ffi)
+  if(TARGET build_bulletproofs_ffi)
+    add_dependencies(test_mempool_prepared_refresh build_bulletproofs_ffi)
+  endif()
+endif()
+link_zstd_if_needed(test_mempool_prepared_refresh)
+target_include_directories(test_mempool_prepared_refresh PRIVATE
+  ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src
+  ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+)
+if(APPLE)
+  target_link_libraries(test_mempool_prepared_refresh PRIVATE
+    "-framework Security" "-framework CoreFoundation")
+endif()
+add_test(NAME MempoolPreparedRefresh COMMAND test_mempool_prepared_refresh)
+set_tests_properties(MempoolPreparedRefresh PROPERTIES
+  LABELS "mempool;refresh;owner" TIMEOUT 60)
+
+add_executable(test_pool_tip_consumers
+  tests/mempool/test_pool_tip_consumers.cpp
+  src/daemon/mempool.cpp
+  src/daemon/config.cpp
+  src/daemon/tx_relay_manager.cpp
+  tests/stubs/vault_test_stubs.cpp
+)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  # Wallet now references chainstate/core members after their initial scan.
+  # Rescan the actual mutually dependent archives, as for nodecore_runtime_driver.
+  # Raw group flags preserve compatibility with the CMake 3.20 minimum.
+  target_link_libraries(test_pool_tip_consumers PRIVATE
+    "-Wl,--start-group" dinero_core dinero_wallet dinero_chainstate
+    dinero_consensus dinero_shielded dinero_bridge dinero_pool
+    dinero_lightning_keys dinero_address_encoding dinero_bip32 dinero_pq
+    dinero_zk dinero_tx_primitives dinero_crypto "-Wl,--end-group"
+    secp256k1 RocksDB::rocksdb ${SQLITE3_LIBRARIES}
+    GTest::gtest GTest::gtest_main)
+else()
+  target_link_libraries(test_pool_tip_consumers PRIVATE
+    dinero_core dinero_consensus dinero_pq dinero_shielded dinero_chainstate dinero_bridge
+    dinero_crypto secp256k1 RocksDB::rocksdb ${SQLITE3_LIBRARIES}
+    GTest::gtest GTest::gtest_main
+  )
+endif()
+if(TARGET bulletproofs_ffi)
+  target_link_libraries(test_pool_tip_consumers PRIVATE bulletproofs_ffi)
+  if(TARGET build_bulletproofs_ffi)
+    add_dependencies(test_pool_tip_consumers build_bulletproofs_ffi)
+  endif()
+endif()
+link_zstd_if_needed(test_pool_tip_consumers)
+target_include_directories(test_pool_tip_consumers PRIVATE
+  ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src
+  ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+)
+if(APPLE)
+  target_link_libraries(test_pool_tip_consumers PRIVATE
+    "-framework Security" "-framework CoreFoundation")
+endif()
+add_test(NAME PoolTipConsumers COMMAND test_pool_tip_consumers)
+set_tests_properties(PoolTipConsumers PROPERTIES
+  LABELS "mempool;refresh;owner" TIMEOUT 60)
+
+add_executable(test_mempool_service_owner
+  tests/mempool/test_mempool_service_owner.cpp
+  src/daemon/mempool.cpp
+  src/daemon/config.cpp
+  src/daemon/tx_relay_manager.cpp
+  tests/stubs/vault_test_stubs.cpp
+)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  # Wallet now references chainstate/core members after their initial scan.
+  # Rescan the actual mutually dependent archives, as for nodecore_runtime_driver.
+  # Raw group flags preserve compatibility with the CMake 3.20 minimum.
+  target_link_libraries(test_mempool_service_owner PRIVATE
+    "-Wl,--start-group" dinero_core dinero_wallet dinero_chainstate
+    dinero_consensus dinero_shielded dinero_bridge dinero_pool
+    dinero_lightning_keys dinero_address_encoding dinero_bip32 dinero_pq
+    dinero_zk dinero_tx_primitives dinero_crypto "-Wl,--end-group"
+    secp256k1 RocksDB::rocksdb ${SQLITE3_LIBRARIES}
+    GTest::gtest GTest::gtest_main)
+else()
+  target_link_libraries(test_mempool_service_owner PRIVATE
+    dinero_core dinero_consensus dinero_pq dinero_shielded dinero_chainstate dinero_bridge
+    dinero_crypto secp256k1 RocksDB::rocksdb ${SQLITE3_LIBRARIES}
+    GTest::gtest GTest::gtest_main
+  )
+endif()
+if(TARGET bulletproofs_ffi)
+  target_link_libraries(test_mempool_service_owner PRIVATE bulletproofs_ffi)
+  if(TARGET build_bulletproofs_ffi)
+    add_dependencies(test_mempool_service_owner build_bulletproofs_ffi)
+  endif()
+endif()
+link_zstd_if_needed(test_mempool_service_owner)
+target_include_directories(test_mempool_service_owner PRIVATE
+  ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src
+  ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+)
+if(APPLE)
+  target_link_libraries(test_mempool_service_owner PRIVATE
+    "-framework Security" "-framework CoreFoundation")
+endif()
+add_test(NAME MempoolServiceOwner COMMAND test_mempool_service_owner)
+set_tests_properties(MempoolServiceOwner PROPERTIES
+  LABELS "mempool;service;owner" TIMEOUT 60)
+
+add_executable(test_block_relay_pool_owner
+  tests/mempool/test_block_relay_pool_owner.cpp
+  src/daemon/mempool.cpp
+  src/daemon/config.cpp
+  src/daemon/tx_relay_manager.cpp
+  tests/stubs/vault_test_stubs.cpp
+)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  # Wallet now references chainstate/core members after their initial scan.
+  # Rescan the actual mutually dependent archives, as for nodecore_runtime_driver.
+  # Raw group flags preserve compatibility with the CMake 3.20 minimum.
+  target_link_libraries(test_block_relay_pool_owner PRIVATE
+    "-Wl,--start-group" dinero_core dinero_wallet dinero_chainstate
+    dinero_consensus dinero_shielded dinero_bridge dinero_pool
+    dinero_lightning_keys dinero_address_encoding dinero_bip32 dinero_pq
+    dinero_zk dinero_tx_primitives dinero_crypto "-Wl,--end-group"
+    secp256k1 RocksDB::rocksdb ${SQLITE3_LIBRARIES}
+    GTest::gtest GTest::gtest_main)
+else()
+  target_link_libraries(test_block_relay_pool_owner PRIVATE
+    dinero_core dinero_consensus dinero_pq dinero_shielded dinero_chainstate dinero_bridge
+    dinero_crypto secp256k1 RocksDB::rocksdb ${SQLITE3_LIBRARIES}
+    GTest::gtest GTest::gtest_main
+  )
+endif()
+if(TARGET bulletproofs_ffi)
+  target_link_libraries(test_block_relay_pool_owner PRIVATE bulletproofs_ffi)
+  if(TARGET build_bulletproofs_ffi)
+    add_dependencies(test_block_relay_pool_owner build_bulletproofs_ffi)
+  endif()
+endif()
+link_zstd_if_needed(test_block_relay_pool_owner)
+target_include_directories(test_block_relay_pool_owner PRIVATE
+  ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src
+  ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+)
+if(APPLE)
+  target_link_libraries(test_block_relay_pool_owner PRIVATE
+    "-framework Security" "-framework CoreFoundation")
+endif()
+add_test(NAME BlockRelayPoolOwner COMMAND test_block_relay_pool_owner)
+set_tests_properties(BlockRelayPoolOwner PROPERTIES
+  LABELS "mempool;service;owner" TIMEOUT 60)
+
+add_executable(test_mining_pool_owner
+  tests/mempool/test_mining_pool_owner.cpp
+  src/daemon/mempool.cpp
+  src/daemon/config.cpp
+  src/daemon/tx_relay_manager.cpp
+  tests/stubs/vault_test_stubs.cpp
+)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  # Wallet now references chainstate/core members after their initial scan.
+  # Rescan the actual mutually dependent archives, as for nodecore_runtime_driver.
+  # Raw group flags preserve compatibility with the CMake 3.20 minimum.
+  target_link_libraries(test_mining_pool_owner PRIVATE
+    "-Wl,--start-group" dinero_core dinero_wallet dinero_chainstate
+    dinero_consensus dinero_shielded dinero_bridge dinero_pool
+    dinero_lightning_keys dinero_address_encoding dinero_bip32 dinero_pq
+    dinero_zk dinero_tx_primitives dinero_crypto "-Wl,--end-group"
+    secp256k1 RocksDB::rocksdb ${SQLITE3_LIBRARIES}
+    GTest::gtest GTest::gtest_main)
+else()
+  target_link_libraries(test_mining_pool_owner PRIVATE
+    dinero_core dinero_consensus dinero_pq dinero_shielded dinero_chainstate dinero_bridge
+    dinero_crypto secp256k1 RocksDB::rocksdb ${SQLITE3_LIBRARIES}
+    GTest::gtest GTest::gtest_main
+  )
+endif()
+if(TARGET bulletproofs_ffi)
+  target_link_libraries(test_mining_pool_owner PRIVATE bulletproofs_ffi)
+  if(TARGET build_bulletproofs_ffi)
+    add_dependencies(test_mining_pool_owner build_bulletproofs_ffi)
+  endif()
+endif()
+link_zstd_if_needed(test_mining_pool_owner)
+target_include_directories(test_mining_pool_owner PRIVATE
+  ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src
+  ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+)
+if(APPLE)
+  target_link_libraries(test_mining_pool_owner PRIVATE
+    "-framework Security" "-framework CoreFoundation")
+endif()
+add_test(NAME MiningPoolOwner COMMAND test_mining_pool_owner)
+set_tests_properties(MiningPoolOwner PROPERTIES
+  LABELS "mempool;service;owner" TIMEOUT 60)
+
+add_executable(test_mining_selection_snapshot
+  tests/mempool/test_mining_selection_snapshot.cpp
+  src/daemon/mempool.cpp
+  src/daemon/config.cpp
+  src/daemon/tx_relay_manager.cpp
+  tests/stubs/vault_test_stubs.cpp
+)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  # Wallet now references chainstate/core members after their initial scan.
+  # Rescan the actual mutually dependent archives, as for nodecore_runtime_driver.
+  # Raw group flags preserve compatibility with the CMake 3.20 minimum.
+  target_link_libraries(test_mining_selection_snapshot PRIVATE
+    "-Wl,--start-group" dinero_core dinero_wallet dinero_chainstate
+    dinero_consensus dinero_shielded dinero_bridge dinero_pool
+    dinero_lightning_keys dinero_address_encoding dinero_bip32 dinero_pq
+    dinero_zk dinero_tx_primitives dinero_crypto "-Wl,--end-group"
+    secp256k1 RocksDB::rocksdb ${SQLITE3_LIBRARIES}
+    GTest::gtest GTest::gtest_main)
+else()
+  target_link_libraries(test_mining_selection_snapshot PRIVATE
+    dinero_core dinero_consensus dinero_pq dinero_shielded dinero_chainstate dinero_bridge
+    dinero_crypto secp256k1 RocksDB::rocksdb ${SQLITE3_LIBRARIES}
+    GTest::gtest GTest::gtest_main
+  )
+endif()
+if(TARGET bulletproofs_ffi)
+  target_link_libraries(test_mining_selection_snapshot PRIVATE bulletproofs_ffi)
+  if(TARGET build_bulletproofs_ffi)
+    add_dependencies(test_mining_selection_snapshot build_bulletproofs_ffi)
+  endif()
+endif()
+link_zstd_if_needed(test_mining_selection_snapshot)
+target_include_directories(test_mining_selection_snapshot PRIVATE
+  ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src
+  ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+)
+if(APPLE)
+  target_link_libraries(test_mining_selection_snapshot PRIVATE
+    "-framework Security" "-framework CoreFoundation")
+endif()
+add_test(NAME MiningSelectionSnapshot COMMAND test_mining_selection_snapshot)
+set_tests_properties(MiningSelectionSnapshot PROPERTIES
+  LABELS "mempool;mining;snapshot" TIMEOUT 60)
+
+add_executable(test_mining_package_selection
+  tests/mempool/test_mining_package_selection.cpp
+  src/daemon/mempool.cpp
+  src/daemon/config.cpp
+  src/daemon/tx_relay_manager.cpp
+  tests/stubs/vault_test_stubs.cpp
+)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  # Wallet now references chainstate/core members after their initial scan.
+  # Rescan the actual mutually dependent archives, as for nodecore_runtime_driver.
+  # Raw group flags preserve compatibility with the CMake 3.20 minimum.
+  target_link_libraries(test_mining_package_selection PRIVATE
+    "-Wl,--start-group" dinero_core dinero_wallet dinero_chainstate
+    dinero_consensus dinero_shielded dinero_bridge dinero_pool
+    dinero_lightning_keys dinero_address_encoding dinero_bip32 dinero_pq
+    dinero_zk dinero_tx_primitives dinero_crypto "-Wl,--end-group"
+    secp256k1 RocksDB::rocksdb ${SQLITE3_LIBRARIES}
+    GTest::gtest GTest::gtest_main)
+else()
+  target_link_libraries(test_mining_package_selection PRIVATE
+    dinero_core dinero_consensus dinero_pq dinero_shielded dinero_chainstate dinero_bridge
+    dinero_crypto secp256k1 RocksDB::rocksdb ${SQLITE3_LIBRARIES}
+    GTest::gtest GTest::gtest_main
+  )
+endif()
+if(TARGET bulletproofs_ffi)
+  target_link_libraries(test_mining_package_selection PRIVATE bulletproofs_ffi)
+  if(TARGET build_bulletproofs_ffi)
+    add_dependencies(test_mining_package_selection build_bulletproofs_ffi)
+  endif()
+endif()
+link_zstd_if_needed(test_mining_package_selection)
+target_include_directories(test_mining_package_selection PRIVATE
+  ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src
+  ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+)
+if(APPLE)
+  target_link_libraries(test_mining_package_selection PRIVATE
+    "-framework Security" "-framework CoreFoundation")
+endif()
+add_test(NAME MiningPackageSelection COMMAND test_mining_package_selection)
+set_tests_properties(MiningPackageSelection PROPERTIES
+  LABELS "mempool;mining;package" TIMEOUT 60)
+add_test(NAME MiningTopologicalSelection COMMAND test_mining_package_selection
+  --gtest_filter=MiningTopologicalSelection.*)
+set_tests_properties(MiningTopologicalSelection PROPERTIES
+  LABELS "mempool;mining;package;mandatory" TIMEOUT 60)
+
+add_executable(test_mining_job_policy
+  tests/mempool/test_mining_job_policy.cpp
+  src/daemon/mempool.cpp
+  src/daemon/config.cpp
+  src/daemon/tx_relay_manager.cpp
+  tests/stubs/vault_test_stubs.cpp
+)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  # Wallet now references chainstate/core members after their initial scan.
+  # Rescan the actual mutually dependent archives, as for nodecore_runtime_driver.
+  # Raw group flags preserve compatibility with the CMake 3.20 minimum.
+  target_link_libraries(test_mining_job_policy PRIVATE
+    "-Wl,--start-group" dinero_core dinero_wallet dinero_chainstate
+    dinero_consensus dinero_shielded dinero_bridge dinero_pool
+    dinero_lightning_keys dinero_address_encoding dinero_bip32 dinero_pq
+    dinero_zk dinero_tx_primitives dinero_crypto "-Wl,--end-group"
+    secp256k1 RocksDB::rocksdb ${SQLITE3_LIBRARIES}
+    GTest::gtest GTest::gtest_main)
+else()
+  target_link_libraries(test_mining_job_policy PRIVATE
+    dinero_core dinero_consensus dinero_pq dinero_shielded dinero_chainstate dinero_bridge
+    dinero_crypto secp256k1 RocksDB::rocksdb ${SQLITE3_LIBRARIES}
+    GTest::gtest GTest::gtest_main
+  )
+endif()
+if(TARGET bulletproofs_ffi)
+  target_link_libraries(test_mining_job_policy PRIVATE bulletproofs_ffi)
+  if(TARGET build_bulletproofs_ffi)
+    add_dependencies(test_mining_job_policy build_bulletproofs_ffi)
+  endif()
+endif()
+link_zstd_if_needed(test_mining_job_policy)
+target_include_directories(test_mining_job_policy PRIVATE
+  ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src
+  ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+)
+if(APPLE)
+  target_link_libraries(test_mining_job_policy PRIVATE
+    "-framework Security" "-framework CoreFoundation")
+endif()
+add_test(NAME MiningJobPolicy COMMAND test_mining_job_policy)
+set_tests_properties(MiningJobPolicy PROPERTIES
+  LABELS "mempool;mining;job" TIMEOUT 60)
+
+add_executable(test_mining_template_result
+  tests/mempool/test_mining_template_result.cpp
+  src/daemon/mempool.cpp
+  src/daemon/config.cpp
+  src/daemon/tx_relay_manager.cpp
+  tests/stubs/vault_test_stubs.cpp
+)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  # Wallet now references chainstate/core members after their initial scan.
+  # Rescan the actual mutually dependent archives, as for nodecore_runtime_driver.
+  # Raw group flags preserve compatibility with the CMake 3.20 minimum.
+  target_link_libraries(test_mining_template_result PRIVATE
+    "-Wl,--start-group" dinero_core dinero_wallet dinero_chainstate
+    dinero_consensus dinero_shielded dinero_bridge dinero_pool
+    dinero_lightning_keys dinero_address_encoding dinero_bip32 dinero_pq
+    dinero_zk dinero_tx_primitives dinero_crypto "-Wl,--end-group"
+    secp256k1 RocksDB::rocksdb ${SQLITE3_LIBRARIES}
+    GTest::gtest GTest::gtest_main)
+else()
+  target_link_libraries(test_mining_template_result PRIVATE
+    dinero_core dinero_consensus dinero_pq dinero_shielded dinero_chainstate dinero_bridge
+    dinero_crypto secp256k1 RocksDB::rocksdb ${SQLITE3_LIBRARIES}
+    GTest::gtest GTest::gtest_main
+  )
+endif()
+if(TARGET bulletproofs_ffi)
+  target_link_libraries(test_mining_template_result PRIVATE bulletproofs_ffi)
+  if(TARGET build_bulletproofs_ffi)
+    add_dependencies(test_mining_template_result build_bulletproofs_ffi)
+  endif()
+endif()
+link_zstd_if_needed(test_mining_template_result)
+target_include_directories(test_mining_template_result PRIVATE
+  ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src
+  ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+)
+if(APPLE)
+  target_link_libraries(test_mining_template_result PRIVATE
+    "-framework Security" "-framework CoreFoundation")
+endif()
+add_test(NAME MiningTemplateResult COMMAND test_mining_template_result)
+set_tests_properties(MiningTemplateResult PROPERTIES
+  LABELS "mempool;mining;result" TIMEOUT 60)
+
+add_executable(test_mining_chain_guard
+  tests/mempool/test_mining_chain_guard.cpp
+  src/daemon/mempool.cpp
+  src/daemon/config.cpp
+  src/daemon/tx_relay_manager.cpp
+  tests/stubs/vault_test_stubs.cpp
+)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  # Wallet now references chainstate/core members after their initial scan.
+  # Rescan the actual mutually dependent archives, as for nodecore_runtime_driver.
+  # Raw group flags preserve compatibility with the CMake 3.20 minimum.
+  target_link_libraries(test_mining_chain_guard PRIVATE
+    "-Wl,--start-group" dinero_core dinero_wallet dinero_chainstate
+    dinero_consensus dinero_shielded dinero_bridge dinero_pool
+    dinero_lightning_keys dinero_address_encoding dinero_bip32 dinero_pq
+    dinero_zk dinero_tx_primitives dinero_crypto "-Wl,--end-group"
+    secp256k1 RocksDB::rocksdb ${SQLITE3_LIBRARIES}
+    GTest::gtest GTest::gtest_main)
+else()
+  target_link_libraries(test_mining_chain_guard PRIVATE
+    dinero_core dinero_consensus dinero_pq dinero_shielded dinero_chainstate dinero_bridge
+    dinero_crypto secp256k1 RocksDB::rocksdb ${SQLITE3_LIBRARIES}
+    GTest::gtest GTest::gtest_main
+  )
+endif()
+if(TARGET bulletproofs_ffi)
+  target_link_libraries(test_mining_chain_guard PRIVATE bulletproofs_ffi)
+  if(TARGET build_bulletproofs_ffi)
+    add_dependencies(test_mining_chain_guard build_bulletproofs_ffi)
+  endif()
+endif()
+link_zstd_if_needed(test_mining_chain_guard)
+target_include_directories(test_mining_chain_guard PRIVATE
+  ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src
+  ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+)
+if(APPLE)
+  target_link_libraries(test_mining_chain_guard PRIVATE
+    "-framework Security" "-framework CoreFoundation")
+endif()
+add_test(NAME PreBaseLookupStatus COMMAND test_mining_chain_guard --gtest_filter=PreBaseLookupStatus.*)
+set_tests_properties(PreBaseLookupStatus PROPERTIES LABELS "mempool;chain;mandatory" TIMEOUT 60)
+add_test(NAME MiningChainGuard COMMAND test_mining_chain_guard)
+set_tests_properties(MiningChainGuard PROPERTIES
+  LABELS "mempool;mining;chain" TIMEOUT 60)
+
+add_test(NAME MiningRpcResult COMMAND python3 ${CMAKE_SOURCE_DIR}/tests/integration/test_mining_rpc_result.py)
+set_tests_properties(MiningRpcResult PROPERTIES
+  ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>"
+  LABELS "mining;rpc;integration"
+  RUN_SERIAL TRUE TIMEOUT 180)
+
+add_test(NAME MiningChainProvider COMMAND python3 ${CMAKE_SOURCE_DIR}/tests/integration/test_mining_chain_provider.py)
+set_tests_properties(MiningChainProvider PROPERTIES
+  ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>"
+  LABELS "mining;rpc;integration"
+  RUN_SERIAL TRUE TIMEOUT 180)
 
 add_executable(benchmark_covenant_validation
   tests/benchmarks/benchmark_covenant_validation.cpp
@@ -5972,6 +7534,140 @@ if(NOT WIN32)
     COMMAND test_covenant_wallet_recovery)
   set_tests_properties(CovenantWalletRecovery PROPERTIES
     LABELS "wallet;covenant;recovery;persistence;migration"
+    TIMEOUT 30
+  )
+
+  add_executable(test_wallet_database_lease
+    tests/wallet/test_wallet_database_lease.cpp
+    src/wallet/wallet_worker.cpp
+    src/daemon/lightning_stubs.cpp
+    tests/stubs/mempool_test_stubs.cpp
+    tests/stubs/vault_test_stubs.cpp
+  )
+  add_dependencies(test_wallet_database_lease gtest gtest_main)
+  target_link_libraries(test_wallet_database_lease PRIVATE
+    dinero_wallet
+    dinero_chainstate
+    dinero_consensus
+    dinero_crypto
+    jsoncpp_static
+    OpenSSL::Crypto
+    secp256k1
+    RocksDB::rocksdb
+    sqlite3
+    gtest
+    gtest_main
+  )
+  link_zstd_if_needed(test_wallet_database_lease)
+  target_include_directories(test_wallet_database_lease PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+  )
+  if(APPLE)
+    target_link_libraries(
+      test_wallet_database_lease PRIVATE "-framework Security")
+  endif()
+  add_test(
+    NAME WalletDatabaseLease
+    COMMAND test_wallet_database_lease --gtest_filter=WalletDatabaseLeaseTest.*)
+  set_tests_properties(WalletDatabaseLease PROPERTIES
+    LABELS "wallet;recovery;persistence;concurrency"
+    TIMEOUT 30
+  )
+  add_test(NAME WalletSeedWrite
+    COMMAND test_wallet_database_lease --gtest_filter=WalletSeedWriteTest.*)
+  set_tests_properties(WalletSeedWrite PROPERTIES TIMEOUT 90 LABELS "wallet;persistence;recovery")
+  add_test(NAME WalletSeedRead
+    COMMAND test_wallet_database_lease --gtest_filter=WalletSeedReadTest.*)
+  set_tests_properties(WalletSeedRead PROPERTIES TIMEOUT 90 LABELS "wallet;persistence;recovery")
+  add_test(NAME WalletAddressIssuance
+    COMMAND test_wallet_database_lease --gtest_filter=WalletAddressIssuanceTest.*)
+  set_tests_properties(WalletAddressIssuance PROPERTIES TIMEOUT 60 LABELS "wallet;persistence;recovery")
+  add_test(NAME WalletScriptReload
+    COMMAND test_wallet_database_lease --gtest_filter=WalletScriptReloadTest.*)
+  set_tests_properties(WalletScriptReload PROPERTIES TIMEOUT 90 LABELS "wallet;persistence;recovery")
+  add_test(NAME WalletPrivateKeyImport
+    COMMAND test_wallet_database_lease --gtest_filter=WalletPrivateKeyImportTest.*)
+  set_tests_properties(WalletPrivateKeyImport PROPERTIES TIMEOUT 90 LABELS "wallet;persistence;recovery")
+  add_test(NAME WalletEncryptionOwner
+    COMMAND test_wallet_database_lease --gtest_filter=WalletEncryptionOwnerTest.*)
+  set_tests_properties(WalletEncryptionOwner PROPERTIES TIMEOUT 90 LABELS "wallet;persistence;recovery")
+  add_test(NAME WalletHistoricalSigning
+    COMMAND test_wallet_database_lease --gtest_filter=WalletHistoricalSigningTest.*)
+  set_tests_properties(WalletHistoricalSigning PROPERTIES TIMEOUT 60 LABELS "wallet;persistence;recovery")
+  add_test(NAME WalletPqRootProvider
+    COMMAND test_wallet_database_lease --gtest_filter=WalletPqRootProviderTest.*)
+  set_tests_properties(WalletPqRootProvider PROPERTIES TIMEOUT 60 LABELS "wallet;persistence;pq")
+  add_test(NAME WalletInputProvider
+    COMMAND test_wallet_database_lease --gtest_filter=WalletInputProviderTest.*)
+  set_tests_properties(WalletInputProvider PROPERTIES TIMEOUT 60 LABELS "wallet;persistence;recovery")
+  add_test(NAME WalletImportedTransaction
+    COMMAND test_wallet_database_lease --gtest_filter=WalletImportedTransactionTest.*)
+  set_tests_properties(WalletImportedTransaction PROPERTIES TIMEOUT 60 LABELS "wallet;persistence;recovery")
+  add_test(NAME WalletTaprootLookup
+    COMMAND test_wallet_database_lease --gtest_filter=WalletTaprootLookupTest.*)
+  set_tests_properties(WalletTaprootLookup PROPERTIES TIMEOUT 60 LABELS "wallet;persistence;recovery")
+  add_test(NAME WalletTaprootImport
+    COMMAND test_wallet_database_lease --gtest_filter=WalletTaprootImportTest.*)
+  set_tests_properties(WalletTaprootImport PROPERTIES TIMEOUT 60 LABELS "wallet;persistence;recovery")
+  add_test(NAME WalletRecoveryKeys
+    COMMAND test_wallet_database_lease --gtest_filter=WalletRecoveryKeyTest.*)
+  set_tests_properties(WalletRecoveryKeys PROPERTIES TIMEOUT 30 LABELS "wallet;persistence;recovery;concurrency")
+  add_test(NAME WalletDeliveryBindingIdentity
+    COMMAND test_wallet_database_lease --gtest_filter=WalletDeliveryBindingTest.StableDatabaseIdentitySurvivesReopenAndMetadataChanges)
+  add_test(NAME WalletDeliveryBindingFailures
+    COMMAND test_wallet_database_lease --gtest_filter=WalletDeliveryBindingTest.FailedWritesAndCommitDoNotPublishIdentity)
+  set_tests_properties(WalletDeliveryBindingIdentity WalletDeliveryBindingFailures PROPERTIES TIMEOUT 30 LABELS "wallet;persistence;recovery")
+  add_test(NAME WalletQueuedIdentity
+    COMMAND test_wallet_database_lease --gtest_filter=WalletQueuedIdentityTest.*)
+  set_tests_properties(WalletQueuedIdentity PROPERTIES
+    LABELS "wallet;recovery;persistence;concurrency" TIMEOUT 30)
+  foreach(stage Insert Spend History Confirmation Commit)
+    string(TOLOWER "${stage}" stage_lower)
+    add_test(NAME WalletOrdinaryBlock${stage}
+      COMMAND test_wallet_database_lease
+        --gtest_filter=DeliveryStages/WalletOrdinaryBlockTest.ChecksOrdinaryWalletWritesAndCommitBeforeHeight/${stage_lower})
+    set_tests_properties(WalletOrdinaryBlock${stage} PROPERTIES
+      LABELS "wallet;recovery;persistence" TIMEOUT 30)
+  endforeach()
+
+  add_executable(test_wallet_block_disconnect
+    tests/wallet/test_wallet_block_disconnect.cpp
+    src/wallet/wallet_worker.cpp
+    src/daemon/lightning_stubs.cpp
+    tests/stubs/mempool_test_stubs.cpp
+    tests/stubs/vault_test_stubs.cpp
+  )
+  add_dependencies(test_wallet_block_disconnect gtest gtest_main)
+  target_link_libraries(test_wallet_block_disconnect PRIVATE
+    dinero_wallet
+    dinero_chainstate
+    dinero_consensus
+    dinero_crypto
+    jsoncpp_static
+    OpenSSL::Crypto
+    secp256k1
+    RocksDB::rocksdb
+    sqlite3
+    gtest
+    gtest_main
+  )
+  link_zstd_if_needed(test_wallet_block_disconnect)
+  target_include_directories(test_wallet_block_disconnect PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+  )
+  if(APPLE)
+    target_link_libraries(
+      test_wallet_block_disconnect PRIVATE "-framework Security")
+  endif()
+  add_test(
+    NAME WalletBlockDisconnect
+    COMMAND test_wallet_block_disconnect)
+  set_tests_properties(WalletBlockDisconnect PROPERTIES
+    LABELS "wallet;recovery;persistence;concurrency"
     TIMEOUT 30
   )
 endif()
@@ -6906,15 +8602,27 @@ endif()
 if(EXISTS ${CMAKE_SOURCE_DIR}/tests/storage/test_pruning.cpp)
   add_executable(test_pruning
     tests/storage/test_pruning.cpp
+    tests/stubs/mempool_test_stubs.cpp
   )
 
-  target_link_libraries(test_pruning PRIVATE
-    dinero_core
-    dinero_chainstate
-    dinero_consensus
-    dinero_crypto
-    RocksDB::rocksdb
-  )
+  if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    # Storage fixtures do not exercise mempool behavior. The existing stub above
+    # isolates that daemon-only dependency; rescan real mutually dependent archives.
+    target_link_libraries(test_pruning PRIVATE
+      "-Wl,--start-group" dinero_core dinero_wallet dinero_chainstate
+      dinero_consensus dinero_shielded dinero_bridge dinero_pool
+      dinero_lightning_keys dinero_address_encoding dinero_bip32 dinero_pq
+      dinero_zk dinero_tx_primitives dinero_crypto "-Wl,--end-group"
+      RocksDB::rocksdb)
+  else()
+    target_link_libraries(test_pruning PRIVATE
+      dinero_core
+      dinero_chainstate
+      dinero_consensus
+      dinero_crypto
+      RocksDB::rocksdb
+    )
+  endif()
   link_zstd_if_needed(test_pruning)
 
   target_link_directories(test_pruning PRIVATE /opt/homebrew/lib)
@@ -6945,14 +8653,26 @@ endif()
 if(EXISTS ${CMAKE_SOURCE_DIR}/tests/storage/test_header_status_bits.cpp)
   add_executable(test_header_status_bits
     tests/storage/test_header_status_bits.cpp
+    tests/stubs/mempool_test_stubs.cpp
   )
-  target_link_libraries(test_header_status_bits PRIVATE
-    dinero_core
-    dinero_chainstate
-    dinero_consensus
-    dinero_crypto
-    RocksDB::rocksdb
-  )
+  if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    # Storage fixtures do not exercise mempool behavior. The existing stub above
+    # isolates that daemon-only dependency; rescan real mutually dependent archives.
+    target_link_libraries(test_header_status_bits PRIVATE
+      "-Wl,--start-group" dinero_core dinero_wallet dinero_chainstate
+      dinero_consensus dinero_shielded dinero_bridge dinero_pool
+      dinero_lightning_keys dinero_address_encoding dinero_bip32 dinero_pq
+      dinero_zk dinero_tx_primitives dinero_crypto "-Wl,--end-group"
+      RocksDB::rocksdb)
+  else()
+    target_link_libraries(test_header_status_bits PRIVATE
+      dinero_core
+      dinero_chainstate
+      dinero_consensus
+      dinero_crypto
+      RocksDB::rocksdb
+    )
+  endif()
   link_zstd_if_needed(test_header_status_bits)
   target_link_directories(test_header_status_bits PRIVATE /opt/homebrew/lib)
   if(APPLE)
@@ -7511,6 +9231,32 @@ target_include_directories(test_shielded_state_storage PRIVATE
 )
 add_test(NAME ShieldedStateStorage COMMAND test_shielded_state_storage)
 set_tests_properties(ShieldedStateStorage PROPERTIES LABELS "storage;smoke" TIMEOUT 120)
+
+add_executable(test_legacy_retirement
+  tests/storage/test_legacy_retirement.cpp
+  src/common/logger.cpp
+)
+target_link_libraries(test_legacy_retirement PRIVATE
+  dinero_chainstate dinero_crypto RocksDB::rocksdb OpenSSL::Crypto
+)
+target_include_directories(test_legacy_retirement PRIVATE
+  ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include
+)
+add_test(NAME OrchardLegacyRetirement COMMAND test_legacy_retirement)
+set_tests_properties(OrchardLegacyRetirement PROPERTIES LABELS "orchard;storage;integration-staging" TIMEOUT 120)
+
+add_executable(test_orchard_state_storage
+  tests/storage/test_orchard_state_storage.cpp
+  src/common/logger.cpp
+)
+target_link_libraries(test_orchard_state_storage PRIVATE
+  dinero_chainstate dinero_crypto RocksDB::rocksdb OpenSSL::Crypto
+)
+target_include_directories(test_orchard_state_storage PRIVATE
+  ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include
+)
+add_test(NAME OrchardStateStorage COMMAND test_orchard_state_storage)
+set_tests_properties(OrchardStateStorage PROPERTIES LABELS "orchard;storage;smoke" TIMEOUT 120)
 
 # Generated offline-copy qualification only. Not installed or linked into
 # dinerod/NodeCore: whole-datadir eligibility and cutover remain separate gates.
@@ -9618,6 +11364,8 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_header_sync_p2p_integration.c
     )
   endif()
   add_test(NAME HeaderSyncP2PIntegration COMMAND test_header_sync_p2p_integration)
+  add_test(NAME PeerHeaderProgress COMMAND test_header_sync_p2p_integration --peer-progress)
+  set_tests_properties(PeerHeaderProgress PROPERTIES TIMEOUT 60 LABELS "consensus;p2p;peer-progress")
 endif()
 
 # ============================================================================
@@ -11482,6 +13230,27 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/p2p/test_tx_relay_g3.cpp)
   add_test(NAME TxRelayG3Verification COMMAND test_tx_relay_g3)
 endif()
 
+# Relay callback and prepared proof-refresh ownership.
+add_executable(test_relay_refresh_owner
+  tests/p2p/test_relay_refresh_owner.cpp
+  src/daemon/tx_relay_manager.cpp
+  src/mempool/tx_orphan_pool.cpp
+  src/daemon/interfaces/ingress_types.cpp
+  src/primitives/transaction.cpp
+  src/primitives/transaction_serializer.cpp
+  src/primitives/uint256.cpp
+  src/crypto/params_stub.cpp
+  src/common/sha256d.cpp
+  src/common/logger.cpp
+)
+target_link_libraries(test_relay_refresh_owner PRIVATE dinero_crypto GTest::gtest GTest::gtest_main)
+target_include_directories(test_relay_refresh_owner PRIVATE ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src)
+if(APPLE)
+  target_link_libraries(test_relay_refresh_owner PRIVATE "-framework Security" "-framework CoreFoundation")
+endif()
+add_test(NAME RelayRefreshOwner COMMAND test_relay_refresh_owner)
+set_tests_properties(RelayRefreshOwner PROPERTIES LABELS "relay;refresh;owner" TIMEOUT 60)
+
 # Issue #6: CSN Proof Refresh Tests
 if(EXISTS ${CMAKE_SOURCE_DIR}/tests/p2p/test_csn_proof_refresh.cpp)
   add_executable(test_csn_proof_refresh
@@ -12354,11 +14123,14 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/mempool/test_mempool_proof_staleness.cpp)
   add_executable(test_mempool_proof_staleness
     tests/mempool/test_mempool_proof_staleness.cpp
     tests/mempool/test_mempool_proof_staleness_stubs.cpp
+    tests/stubs/mempool_relay_reader_stub.cpp
+    src/mempool/coins_view_mempool.cpp
     src/daemon/mempool.cpp
     src/mining/address_validator.cpp
     src/daemon/bech32_decode.cpp
     src/common/logger.cpp
   )
+  target_compile_definitions(test_mempool_proof_staleness PRIVATE DINERO_TEST_REAL_COINS_VIEW=1)
   target_link_libraries(test_mempool_proof_staleness PRIVATE
     dinero_chainstate
     dinero_consensus
@@ -12386,6 +14158,7 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/mempool/test_mempool_address_queries.cpp)
   add_executable(test_mempool_address_queries
     tests/mempool/test_mempool_address_queries.cpp
     tests/mempool/test_mempool_proof_staleness_stubs.cpp
+    tests/stubs/mempool_relay_reader_stub.cpp
     src/daemon/mempool.cpp
     src/mining/address_validator.cpp
     src/daemon/bech32_decode.cpp
@@ -12681,6 +14454,7 @@ endif()
 if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_mining_height2.cpp)
   add_executable(test_mining_height2
     tests/consensus/test_mining_height2.cpp
+    tests/stubs/mempool_test_stubs.cpp
   )
 
   target_include_directories(test_mining_height2 PRIVATE
@@ -12712,6 +14486,7 @@ endif()
 if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_wallet_height2_coinbase.cpp)
   add_executable(test_wallet_height2_coinbase
     tests/consensus/test_wallet_height2_coinbase.cpp
+    tests/stubs/mempool_test_stubs.cpp
   )
 
   target_include_directories(test_wallet_height2_coinbase PRIVATE
@@ -12916,6 +14691,9 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/wallet/test_wallet_mainnet_readiness.cpp)
 
   # Passing subcases — graduate to active set (run on every PR via tests.yml).
   set(_wmr_passing
+    FreshRestoreInitialSeedAndRecoveryBinding
+    FreshRestoreEncryptedReopen
+    FreshRestoreExplicitChecksumBypass
     AuthoritativeMnemonicBindingAndLegacyFailClosed
     InvalidMnemonicRestoreFailsWithoutPartialWallet
     RejectsNonBip86PolicyWithoutPartialWallet
@@ -12924,7 +14702,36 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/wallet/test_wallet_mainnet_readiness.cpp)
     WrongBip39PassphraseFailsCleanlyWithExpectedAddressGuard
     ShieldedViewingAuthorityClearedOnUnload
     EncryptionRoundTripRestoreAndDerivationPersistence
-    RestoreResetsLegacyEncryptionStateBeforeReEncrypt
+    RestoreRequiresNewNamePreservesOriginal
+    TimeoutClearsPqAndPreservesDurableOwner
+    TimeoutHonorsExistingRecoveryPin
+    PqInventoryBindingAndReopen
+    PqInventoryCorruptionPreservesOwner
+    PqInventoryReadAndSnapshot
+    HdKeyReadExactHistoricalAndPinnedOwner
+    HdKeyReadMissingAndChangedOwnerNoRepair
+    HdKeyReadSnapshotErrorsAndTimeout
+    HdInventoryHistoricalAccountsAndReopen
+    HdInventoryBindingsAndOrphansRefuse
+    HdInventoryIncompleteReadPreservesOwner
+    ModernInventoryBindingAndReopen
+    ModernInventoryCorruptionAndBindingsRefuse
+    ModernInventoryIncompleteReadPreservesOwner
+    LegacyKeyReadHistoricalBytesAndReopen
+    LegacyKeyReadMalformedOwnerOverridesCache
+    LegacyKeyReadIncompleteAndBorrowedRefuse
+    LegacyInventoryHistoricalBindingAndReopen
+    LegacyInventoryMismatchAndMalformedRowsRefuse
+    LegacyInventoryIncompleteReadPreservesOwner
+    StagedUnlockSeedAndPolicyFailuresPreserveState
+    StagedUnlockReadAndCommitFailuresPreserveState
+    StagedUnlockPqOwnersMustAgree
+    StagedUnlockLegacyCredentialsPreserved
+    InitialOwnerPreservesGeneratedPqAcrossWrapperLoss
+    InitialOwnerRecoveryNeverGeneratesHistoricalPq
+    InitialOwnerBindingAndConsumedGeneration
+    InitialOwnerSeedAndRecordRollbackTogether
+    RestoreRefusesUnencryptedAndUnregisteredTargets
     ReorgSelfSpendWithChangeRestoresSpentStateAndHeightMetadata
   )
   foreach(_case IN LISTS _wmr_passing)
@@ -13365,6 +15172,38 @@ endif()
 add_test(NAME BridgeForestReadLock COMMAND test_bridge_forest_read_lock)
 set_tests_properties(BridgeForestReadLock PROPERTIES TIMEOUT 30)
 
+add_executable(test_bridge_cache_owner
+  tests/network/test_bridge_cache_owner.cpp
+  src/common/logger.cpp
+)
+target_include_directories(test_bridge_cache_owner PRIVATE
+  ${CMAKE_SOURCE_DIR}/include
+  ${CMAKE_SOURCE_DIR}/src
+)
+target_link_libraries(test_bridge_cache_owner PRIVATE
+  GTest::gtest GTest::gtest_main
+  dinero_bridge
+  dinero_chainstate
+  dinero_consensus
+  dinero_shielded
+  dinero_crypto
+  jsoncpp_static
+  RocksDB::rocksdb
+  OpenSSL::Crypto
+  OpenSSL::SSL
+  pthread
+  sqlite3
+)
+link_zstd_if_needed(test_bridge_cache_owner)
+if(APPLE)
+  target_link_libraries(test_bridge_cache_owner PRIVATE
+    "-framework Security"
+    "-framework CoreFoundation"
+  )
+endif()
+add_test(NAME BridgeCacheOwner COMMAND test_bridge_cache_owner)
+set_tests_properties(BridgeCacheOwner PROPERTIES TIMEOUT 60)
+
 # ─── Forest lock concurrency stress (deadlock-freedom under contention) ─────
 # Drives the real ConsensusUTXOSet guarded accessors from many reader/writer
 # threads with a watchdog that hard-fails on a stall (deadlock). Short default
@@ -13589,3 +15428,221 @@ add_test(NAME ReplayMetadataRecoveryQueue COMMAND test_replay_metadata_recovery)
 set_tests_properties(ReplayMetadataRecoveryQueue PROPERTIES
     LABELS "daemon;utreexo;recovery;regression"
     TIMEOUT 30)
+
+# Always-on parser boundary: no Rust/backend enablement is required to reject
+# the new marked family in historical transaction/block readers.
+add_executable(test_orchard_legacy_boundary tests/consensus/test_orchard_legacy_boundary.cpp)
+target_link_libraries(test_orchard_legacy_boundary PRIVATE dinero_consensus_core)
+add_test(NAME OrchardLegacyBoundary COMMAND test_orchard_legacy_boundary)
+set_tests_properties(OrchardLegacyBoundary PROPERTIES LABELS "consensus;serialization;orchard" TIMEOUT 30)
+
+# Actual PQ JSON adapters with the real WalletService and wallet databases.
+if(UNIX)
+  add_executable(test_wallet_pq_rpc_owner
+    tests/wallet/test_wallet_pq_rpc_owner.cpp
+    src/daemon/config.cpp
+    tests/stubs/mempool_test_stubs.cpp
+    tests/stubs/daemon_test_stubs.cpp)
+  target_compile_definitions(test_wallet_pq_rpc_owner PRIVATE DINERO_TEST_REAL_VAULT_RUNTIME=1)
+  target_include_directories(test_wallet_pq_rpc_owner PRIVATE include src)
+  if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    target_link_libraries(test_wallet_pq_rpc_owner PRIVATE
+      "-Wl,--start-group" dinero_rpc_handlers dinero_core dinero_wallet dinero_chainstate
+      dinero_consensus dinero_shielded dinero_bridge dinero_pool dinero_lightning_keys
+      dinero_address_encoding dinero_bip32 dinero_pq dinero_zk dinero_tx_primitives
+      dinero_crypto "-Wl,--end-group" sqlite3 gtest gtest_main pthread)
+  else()
+    target_link_libraries(test_wallet_pq_rpc_owner PRIVATE
+      dinero_rpc_handlers dinero_core dinero_wallet dinero_chainstate dinero_consensus
+      dinero_crypto sqlite3 gtest gtest_main pthread)
+  endif()
+  link_zstd_if_needed(test_wallet_pq_rpc_owner)
+  if(APPLE)
+    target_link_libraries(test_wallet_pq_rpc_owner PRIVATE "-framework Security")
+  endif()
+  add_test(NAME WalletPqRpcOwner COMMAND test_wallet_pq_rpc_owner)
+  set_tests_properties(WalletPqRpcOwner PROPERTIES TIMEOUT 120 LABELS "wallet;rpc;pq;ownership")
+endif()
+
+# Actual historical raw-signing adapter and typed transaction builder.
+if(UNIX)
+  add_executable(test_wallet_historical_rpc
+    tests/wallet/test_wallet_historical_rpc.cpp
+    src/daemon/config.cpp
+    src/daemon/mempool.cpp)
+  target_include_directories(test_wallet_historical_rpc PRIVATE include src)
+  if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    target_link_libraries(test_wallet_historical_rpc PRIVATE
+      "-Wl,--start-group" dinero_rpc_handlers dinero_core dinero_wallet dinero_chainstate
+      dinero_consensus dinero_shielded dinero_bridge dinero_pool dinero_lightning_keys
+      dinero_address_encoding dinero_bip32 dinero_pq dinero_zk dinero_tx_primitives
+      dinero_crypto "-Wl,--end-group" sqlite3 gtest gtest_main pthread)
+  else()
+    target_link_libraries(test_wallet_historical_rpc PRIVATE
+      dinero_rpc_handlers dinero_core dinero_wallet dinero_chainstate dinero_consensus
+      dinero_crypto sqlite3 gtest gtest_main pthread)
+  endif()
+  link_zstd_if_needed(test_wallet_historical_rpc)
+  if(APPLE)
+    target_link_libraries(test_wallet_historical_rpc PRIVATE "-framework Security")
+  endif()
+  add_test(NAME WalletHistoricalRpc COMMAND test_wallet_historical_rpc --gtest_filter=HistoricalRpc.*)
+  add_test(NAME WalletOwnedSigning COMMAND test_wallet_historical_rpc --gtest_filter=WalletOwnedSigning.*)
+  add_test(NAME WalletReorgOrigin COMMAND test_wallet_historical_rpc --gtest_filter=WalletReorgOrigin.*)
+  set_tests_properties(WalletReorgOrigin PROPERTIES TIMEOUT 120 LABELS "wallet;rpc;pending;reorg")
+  add_test(NAME WalletBatchPayment COMMAND test_wallet_historical_rpc --gtest_filter=WalletBatchPayment.*:WalletBatchRpc.*)
+  set_tests_properties(WalletBatchPayment PROPERTIES TIMEOUT 120 LABELS "wallet;rpc;pending;batch")
+  add_test(NAME WalletReservationBalance COMMAND test_wallet_historical_rpc --gtest_filter=WalletReservationBalance.*)
+  set_tests_properties(WalletReservationBalance PROPERTIES TIMEOUT 120 LABELS "wallet;rpc;pending;balance")
+  add_test(NAME WalletPendingPayment COMMAND test_wallet_historical_rpc --gtest_filter=WalletPendingPayment.*)
+  set_tests_properties(WalletPendingPayment PROPERTIES TIMEOUT 120 LABELS "wallet;rpc;pending;ownership")
+  set_tests_properties(WalletOwnedSigning PROPERTIES TIMEOUT 120 LABELS "wallet;rpc;signing;ownership")
+  set_tests_properties(WalletHistoricalRpc PROPERTIES TIMEOUT 120 LABELS "wallet;rpc;signing;ownership")
+endif()
+
+if(UNIX)
+  add_executable(test_rpc_handler_drain
+    tests/daemon/test_rpc_handler_drain.cpp
+    src/daemon/http_rpc_server.cpp src/daemon/rpc_auth.cpp src/daemon/config.cpp
+    src/daemon/legacy_globals_stub.cpp
+    tests/stubs/mempool_test_stubs.cpp tests/stubs/daemon_test_stubs.cpp)
+  target_compile_definitions(test_rpc_handler_drain PRIVATE DINERO_TEST_REAL_VAULT_RUNTIME=1
+    DINERO_CLI_VERSION="${DINERO_RELEASE_TAG}")
+  target_include_directories(test_rpc_handler_drain PRIVATE include src src/daemon ${CMAKE_BINARY_DIR})
+  if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    target_link_libraries(test_rpc_handler_drain PRIVATE
+      "-Wl,--start-group" dinero_rpc_handlers dinero_core dinero_wallet dinero_chainstate
+      dinero_consensus dinero_shielded dinero_bridge dinero_pool dinero_lightning_keys
+      dinero_address_encoding dinero_bip32 dinero_pq dinero_zk dinero_tx_primitives
+      dinero_crypto "-Wl,--end-group" sqlite3 gtest gtest_main pthread)
+  else()
+    target_link_libraries(test_rpc_handler_drain PRIVATE dinero_rpc_handlers dinero_core
+      dinero_wallet dinero_chainstate dinero_consensus dinero_crypto sqlite3 gtest gtest_main pthread)
+  endif()
+  link_zstd_if_needed(test_rpc_handler_drain)
+  if(APPLE)
+    target_link_libraries(test_rpc_handler_drain PRIVATE "-framework Security")
+  endif()
+  add_test(NAME RpcHandlerDrain COMMAND test_rpc_handler_drain)
+  set_tests_properties(RpcHandlerDrain PROPERTIES TIMEOUT 90 RUN_SERIAL TRUE LABELS "rpc;lifecycle;shutdown")
+endif()
+
+if(UNIX)
+  add_executable(test_rpc_pool_owner
+    tests/daemon/test_rpc_pool_owner.cpp
+    src/daemon/http_rpc_server.cpp src/daemon/rpc_auth.cpp src/daemon/config.cpp
+    src/daemon/legacy_globals_stub.cpp
+    tests/stubs/mempool_test_stubs.cpp tests/stubs/daemon_test_stubs.cpp)
+  target_compile_definitions(test_rpc_pool_owner PRIVATE DINERO_TEST_REAL_VAULT_RUNTIME=1
+    DINERO_CLI_VERSION="${DINERO_RELEASE_TAG}")
+  target_include_directories(test_rpc_pool_owner PRIVATE include src src/daemon ${CMAKE_BINARY_DIR})
+  if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    target_link_libraries(test_rpc_pool_owner PRIVATE
+      "-Wl,--start-group" dinero_rpc_handlers dinero_core dinero_wallet dinero_chainstate
+      dinero_consensus dinero_shielded dinero_bridge dinero_pool dinero_lightning_keys
+      dinero_address_encoding dinero_bip32 dinero_pq dinero_zk dinero_tx_primitives
+      dinero_crypto "-Wl,--end-group" sqlite3 gtest gtest_main pthread)
+  else()
+    target_link_libraries(test_rpc_pool_owner PRIVATE dinero_rpc_handlers dinero_core
+      dinero_wallet dinero_chainstate dinero_consensus dinero_crypto sqlite3 gtest gtest_main pthread)
+  endif()
+  link_zstd_if_needed(test_rpc_pool_owner)
+  if(APPLE)
+    target_link_libraries(test_rpc_pool_owner PRIVATE "-framework Security")
+  endif()
+  add_test(NAME RpcPoolOwner COMMAND test_rpc_pool_owner)
+  set_tests_properties(RpcPoolOwner PROPERTIES TIMEOUT 90 RUN_SERIAL TRUE LABELS "rpc;lifecycle;shutdown")
+endif()
+
+# Exercise the actual vendored checksum implementation against an independent
+# byte-wise reference. ARM hosts execute both hardware paths explicitly.
+if(DINERO_USE_VENDORED_DEPS)
+  add_executable(test_rocksdb_checksum tests/storage/test_rocksdb_checksum.cpp)
+  target_include_directories(test_rocksdb_checksum PRIVATE "${ROCKSDB_SOURCE_DIR}")
+  target_link_libraries(test_rocksdb_checksum PRIVATE RocksDB::rocksdb)
+  if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(arm64|aarch64|ARM64)$" AND
+     CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
+    target_compile_options(test_rocksdb_checksum PRIVATE -march=armv8-a+crc+crypto)
+  endif()
+  add_test(NAME RocksDBChecksum COMMAND test_rocksdb_checksum)
+  set_tests_properties(RocksDBChecksum PROPERTIES TIMEOUT 60 RUN_SERIAL TRUE LABELS "storage;checksum;platform")
+endif()
+
+# Attach after root CMake has also declared its Orchard service fixtures.
+function(dinero_attach_real_mempool_fixture_runtime)
+  # Chainstate now prepares real mempool transitions and retains service operation
+  # owners. The former no-op mempool stubs cannot implement those contracts.
+  # Compile the real runtime once for the affected service/storage/RPC fixtures;
+  # preserve each fixture and its existing vault isolation (or real vault runtime).
+  add_library(dinero_test_mempool_runtime OBJECT
+    src/daemon/mempool.cpp src/daemon/tx_relay_manager.cpp)
+  target_include_directories(dinero_test_mempool_runtime PRIVATE
+    ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src)
+  target_link_libraries(dinero_test_mempool_runtime PRIVATE
+    dinero_core dinero_consensus dinero_pq dinero_shielded dinero_chainstate
+    dinero_crypto secp256k1 RocksDB::rocksdb ${SQLITE3_LIBRARIES})
+  set(_real_mempool_fixture_targets
+    test_assumeutxo_replay
+    test_block_acceptor_fees
+    test_block_ingress_service
+    test_block_template_determinism
+    test_block_validation_invariants
+    test_csn_shielded_delta_parity
+    test_forward_sync_activation_retry
+    test_orchard_runtime_reader
+    test_orchard_service_startup
+    test_p2p_service_shutdown_order
+    test_persist_pre_base_body_position
+    test_realign_shielded_after_heal
+    test_reconstruct_spent_coins
+    test_rpc_handler_drain
+    test_rpc_pool_owner
+    test_shielded_state_startup
+    test_utreexo_ephemeral
+    test_wallet_descriptor_active_context
+    test_wallet_pq_rpc_owner
+    test_wallet_psbt_policy_context
+  )
+  set(_built_mempool_fixture_targets "")
+  foreach(_fixture IN LISTS _real_mempool_fixture_targets)
+    if(NOT TARGET ${_fixture})
+      continue()
+    endif()
+    get_target_property(_sources ${_fixture} SOURCES)
+    list(FILTER _sources EXCLUDE REGEX "(^|/)tests/stubs/(mempool_test_stubs|daemon_test_stubs)\\.cpp$")
+    set_property(TARGET ${_fixture} PROPERTY SOURCES "${_sources}")
+    target_sources(${_fixture} PRIVATE $<TARGET_OBJECTS:dinero_test_mempool_runtime>)
+    get_target_property(_definitions ${_fixture} COMPILE_DEFINITIONS)
+    if(NOT "DINERO_TEST_REAL_VAULT_RUNTIME=1" IN_LIST _definitions)
+      target_sources(${_fixture} PRIVATE tests/stubs/vault_test_stubs.cpp)
+    endif()
+    target_include_directories(${_fixture} PRIVATE ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src)
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+      target_link_libraries(${_fixture} PRIVATE
+        "-Wl,--start-group" dinero_core dinero_wallet dinero_chainstate
+        dinero_consensus dinero_shielded dinero_bridge dinero_pool dinero_lightning_keys
+        dinero_address_encoding dinero_bip32 dinero_pq dinero_zk dinero_tx_primitives
+        dinero_crypto "-Wl,--end-group" secp256k1 RocksDB::rocksdb ${SQLITE3_LIBRARIES})
+    else()
+      target_link_libraries(${_fixture} PRIVATE
+        dinero_core dinero_wallet dinero_chainstate dinero_consensus dinero_shielded
+        dinero_bridge dinero_pool dinero_lightning_keys dinero_address_encoding dinero_bip32
+        dinero_pq dinero_zk dinero_tx_primitives dinero_crypto secp256k1 RocksDB::rocksdb ${SQLITE3_LIBRARIES})
+    endif()
+    if(TARGET bulletproofs_ffi)
+      target_link_libraries(${_fixture} PRIVATE bulletproofs_ffi)
+      if(TARGET build_bulletproofs_ffi)
+        add_dependencies(${_fixture} build_bulletproofs_ffi)
+      endif()
+    endif()
+    link_zstd_if_needed(${_fixture})
+    if(APPLE)
+      target_link_libraries(${_fixture} PRIVATE "-framework Security" "-framework CoreFoundation")
+    endif()
+    list(APPEND _built_mempool_fixture_targets "${_fixture}")
+  endforeach()
+  list(JOIN _built_mempool_fixture_targets "\n" _real_mempool_fixture_lines)
+  file(GENERATE OUTPUT "${CMAKE_BINARY_DIR}/real-mempool-fixture-targets.txt"
+    CONTENT "${_real_mempool_fixture_lines}\n")
+endfunction()
+cmake_language(DEFER CALL dinero_attach_real_mempool_fixture_runtime)

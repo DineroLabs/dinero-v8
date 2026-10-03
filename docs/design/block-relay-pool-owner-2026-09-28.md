@@ -1,0 +1,11 @@
+# Owned mempool access for compact-block relay
+
+Production BlockRelayManager wiring now acquires a MempoolService operation for each synchronous compact reconstruction or announcement. The guard retains the service and participates in its shutdown drain through reconstruction, validation and send callbacks. No permanent guard or strong service cycle is installed. Factory acquisition precedes relay state publication; a configured service that cannot supply an owner refuses instead of being interpreted as an empty pool.
+
+Factory configuration uses a short mutex and a shared immutable callback snapshot. Invocation, old capture destruction and operation destruction run outside that mutex. An already captured operation keeps its original pool when configuration changes. Legacy SetMempool remains an explicit borrowed-lifetime API for existing callers; an unconfigured null pool retains the existing missing-transaction request behavior.
+
+Three benign component cases exercise real signed mempool admission and compact reconstruction, validation while service shutdown drains, replacement and reentrant factory configuration, retained service lifetime, unavailable-owner refusal and retry. The validation callback is an observer, not consensus acceptance qualification. Existing relay and serialization fixtures remain unchanged. No unsafe original/race/deadlock controls are run.
+
+Other callback configuration, raw chain database lifetime, independent chainstate shutdown, BlockAssembler and optional gRPC pool access remain separate contracts. This change does not supply Orchard admission, a production notification provider, independent activation history, global readiness or release qualification. Mainnet activation remains unset.
+
+Fresh local full-daemon builds passed with the backend enabled and disabled. Each ran 28 selected component tests and four existing daemon scenarios. All 217 linked project C++ sources for the new component binary were freshly instrumented with ASan/UBSan; its three cases passed with 1,440 stable source/header inputs. External libraries, Rust, C, PQClean, the daemon and the separate disabled binary are outside that instrumentation scope; macOS leak detection was disabled. Linux qualification remains required.

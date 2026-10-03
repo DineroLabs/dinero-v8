@@ -1,0 +1,13 @@
+# HD signing key ownership
+
+The HD branch of actual script-key lookup now shares the checked BIP84/BIP86 validator with staged unlock. Lookup selects every path/address row claiming the requested script, validates exact recorded coin/account/change/index, public derivation, address/script/type, present KeyIDs and watched companion, and verifies terminal SQL completion. Missing companions refuse without reconstructing paths or writing rows. Historical network encodings remain recorded ownership metadata.
+
+A real database lease and checked FULL transaction own the read; only a valid 64-byte live seed under the current unlock or an existing signing pin may derive the key. Ordinary lookup checks the unlock timeout. A caller transaction is refused unchanged. A returned scalar is prepared in scoped cleansing buffers and released only after checked COMMIT. The HD plaintext cache is neither read nor populated. Existing modern and historical imported-key paths retain their separate validated owners.
+
+This is present exact-script authority, not a complete membership catalog, deletion/backup rollback proof, or whole send/admission/reservation owner. It does not repair missing historical rows or qualify retired1447 reopen compatibility. Other raw derivation APIs and selection hints remain outside this change. The query restricts selected rows by either recorded path script or address script and checks the corresponding watch claim.
+
+## Local qualification
+
+Three enabled 60-second tests cover exact independently derived BIP84/BIP86 scalars and typed policy, encrypted/unencrypted/reopen and signing pins, misleading cached scalars, missing/changed ownership with no backfill, read/EOF/COMMIT refusal, preserved caller transaction and timeout cleanup. Fresh ON/OFF full daemon and declared wallet targets passed, with 53 actual selected CTests per configuration. All 76 linked project C++ files were freshly instrumented with ASan/UBSan: 37 cases passed with 1,296 unchanged source/header inputs. Three copied omission controls failed their intended assertions, and restoring the implementation passed all three new cases. Original readiness fixture bodies and 102 prior workflow CTest commands remain unchanged.
+
+The sanitizer scope excludes the daemon, backend-off binary, separate lease and historical-RPC test binaries, external libraries, Rust, C and PQClean; macOS leak detection was off. Those normal regression binaries were separately built and executed in both configurations. Prebuilt dependency/version labels do not establish release-binary provenance. The previous ARM RocksDB qualification remains separately scoped. Exact-source Linux and whole-node/release qualification remain separate gates. No unsafe-original reproduction is performed.

@@ -643,83 +643,42 @@ din::Json rpc_context_getblockhash(const ExecutionContext& ctx, const din::Json&
  */
 din::Json rpc_context_getblock(const ExecutionContext& ctx, const din::Json& params) {
     din::Json result;
-
     if (params.empty() || !params[0].is<std::string>()) {
-        result["error"] = "Usage: getblock <hash>";
-        return result;
+        result["error"]="Usage: getblock <hash>";return result;
     }
-
-    // Week 2: Service access via context
+    const auto hash_text=params[0].as<std::string>();
+    if (hash_text.size()!=64 || !std::all_of(hash_text.begin(),hash_text.end(),[](unsigned char c) {
+        return (c>='0' && c<='9') || (c>='a' && c<='f') || (c>='A' && c<='F');
+    })) {result["error"]="Invalid block hash";return result;}
     if (!ctx.daemon || !ctx.daemon->chainstate) {
-        result["error"] = "Chainstate service not available";
+        result["error"]="Chainstate service not available";return result;
+    }
+    const auto service=std::dynamic_pointer_cast<dinero::ChainstateService>(ctx.daemon->chainstate);
+    if (!service) {result["error"]="Chainstate service not available";return result;}
+    const auto hash=uint256::FromHexUnsafe(hash_text);
+    const auto captured=service->getBlockRpcSnapshot(hash);
+    if (!captured.ok()) {
+        result["error"]=captured.status()==dinero::Status::NotFound ? "Block not found" : "Block data unavailable";
         return result;
     }
-
-    auto chainstate = std::dynamic_pointer_cast<dinero::ChainstateService>(ctx.daemon->chainstate);
-    if (!chainstate) {
-        result["error"] = "Failed to cast chainstate service";
-        return result;
+    int verbosity=1;
+    if (params.size()>=2 && params[1].is<int>()) verbosity=params[1].as<int>();
+    if (verbosity==0) return din::Json(util::hex(captured->bytes));
+    const auto& header=captured->header;
+    result["hash"]=hash.GetHex();result["height"]=static_cast<Json::UInt64>(captured->height);
+    result["version"]=static_cast<int>(header.version);
+    result["previousblockhash"]=header.prev_block_hash.GetHex();
+    result["merkleroot"]=header.merkle_root.GetHex();
+    result["time"]=static_cast<Json::UInt64>(header.timestamp);
+    result["bits"]=static_cast<Json::UInt64>(header.difficulty);
+    result["nonce"]=static_cast<Json::UInt64>(header.nonce);
+    if (!header.utreexo_root.IsNull()) {
+        result["utreexocommitment"]=header.utreexo_root.GetHex();
+        result["utreexocommitment_raw"]=UtreexoRootRawHex(header.utreexo_root);
     }
-
-    // Phase 39: Get chain database via ChainstateService (ChainManager deleted)
-    auto* chain_db = chainstate->GetChainDB();
-    if (!chain_db) {
-        result["error"] = "Chain database not available";
-        return result;
-    }
-
-    std::string block_hash = params[0].as<std::string>();
-    uint256 block_hash_uint256 = uint256::FromHexUnsafe(block_hash);  // Phase M.0: Convert hex to uint256
-
-    auto block_result = chainstate->getBlockByHash(block_hash_uint256);
-    if (block_result.status() != dinero::Status::Ok) {
-        result["error"] = "Block not found";
-        return result;
-    }
-
-    const dinero::Block& block = block_result.value();
-
-    // Verbosity 0: return raw hex (like Bitcoin Core getblock <hash> 0)
-    int verbosity = 1;
-    if (params.size() >= 2 && params[1].is<int>()) {
-        verbosity = params[1].as<int>();
-    }
-    if (verbosity == 0) {
-        std::string binary = block.Serialize();
-        std::ostringstream hex_stream;
-        for (unsigned char c : binary) {
-            hex_stream << std::hex << std::setfill('0') << std::setw(2) << static_cast<int>(c);
-        }
-        return din::Json(hex_stream.str());
-    }
-
-    auto height_result = chain_db->getBlockHeight(block_hash_uint256);
-    uint32_t height = (height_result.status() == dinero::Status::Ok) ? height_result.value() : 0;
-
-    result["hash"] = block_hash;
-    result["height"] = static_cast<int>(height);
-    result["version"] = static_cast<int>(block.header.version);
-    result["previousblockhash"] = block.header.prev_block_hash.GetHex();  // Consensus→RPC: hex encode
-    result["merkleroot"] = block.header.merkle_root.GetHex();  // Consensus→RPC: hex encode
-    result["time"] = static_cast<Json::UInt64>(block.header.timestamp);
-    result["bits"] = static_cast<Json::UInt64>(block.header.difficulty);
-    result["nonce"] = static_cast<Json::UInt64>(block.header.nonce);
-
-    // Backward-compat field: display-order uint256 hex.
-    if (!block.header.utreexo_root.IsNull()) {
-        result["utreexocommitment"] = block.header.utreexo_root.GetHex();
-        // Explicit raw byte order matching header bytes 68..99, proof bundles,
-        // and blockchain.getutreexocommitment.
-        result["utreexocommitment_raw"] = UtreexoRootRawHex(block.header.utreexo_root);
-    }
-
-    din::Json tx_array = din::arr();
-    for (const auto& tx : block.vtx) {
-        tx_array.append(tx.GetTxid().AsUint256().GetHex());  // Consensus→RPC: TxId to hex
-    }
-    result["tx"] = tx_array;
-    result["nTx"] = static_cast<int>(block.vtx.size());
-
+    din::Json transactions=din::arr();
+    for (const auto& id:captured->transaction_ids) transactions.append(id.GetHex());
+    result["tx"]=transactions;result["nTx"]=static_cast<Json::UInt64>(captured->transaction_ids.size());
     return result;
 }
 

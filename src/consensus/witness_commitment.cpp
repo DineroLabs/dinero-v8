@@ -29,8 +29,12 @@ std::vector<uint8_t> BuildWitnessCommitment(
         return {};  // Invalid nonce size
     }
 
-    // Step 1: Compute witness merkle root
-    uint256 witness_merkle_root = ComputeWitnessMerkleRoot(vtx);
+    return BuildWitnessCommitmentFromRoot(ComputeWitnessMerkleRoot(vtx), witness_nonce);
+}
+
+std::vector<uint8_t> BuildWitnessCommitmentFromRoot(
+    const uint256& witness_merkle_root, const std::vector<uint8_t>& witness_nonce) {
+    if (witness_nonce.size() != 32) return {};
 
     // Step 2: Concatenate witness_merkle_root || witness_nonce
     std::vector<uint8_t> preimage;
@@ -158,24 +162,18 @@ bool ValidateWitnessCommitment(
         return true;
     }
 
-    size_t index = index_opt.value();
-
-    // Step 3: Extract commitment hash
-    auto extracted_commitment_opt = ExtractWitnessCommitment(coinbase, index);
-    if (!extracted_commitment_opt.has_value()) {
-        error = "Invalid witness commitment format";
-        return false;
-    }
-
-    uint256 extracted_commitment = extracted_commitment_opt.value();
-
-    // Step 4: Compute expected witness merkle root
-    // CVE-2012-2459 (witness tree): a duplicated transaction forges the witness
-    // merkle root / commitment of another valid block. A valid block cannot
-    // contain a duplicated transaction (double-spend), so this never rejects a
-    // valid block.
     bool witness_mutated = false;
-    uint256 witness_merkle_root = ComputeWitnessMerkleRoot(vtx, &witness_mutated);
+    const auto root = ComputeWitnessMerkleRoot(vtx, &witness_mutated);
+    return ValidateWitnessCommitmentRoot(coinbase, root, witness_mutated, error);
+}
+
+bool ValidateWitnessCommitmentRoot(const Transaction& coinbase,
+    const uint256& witness_merkle_root, bool witness_mutated, std::string& error) {
+    const auto index = FindWitnessCommitmentIndex(coinbase);
+    if (!index) return true;
+    const auto extracted = ExtractWitnessCommitment(coinbase, *index);
+    if (!extracted) { error = "Invalid witness commitment format"; return false; }
+    const auto extracted_commitment = *extracted;
     if (witness_mutated) {
         error = "bad-witness-duplicate: duplicated transaction in witness merkle tree (CVE-2012-2459)";
         return false;

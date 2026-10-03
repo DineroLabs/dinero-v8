@@ -1,7 +1,10 @@
 #pragma once
+#include <span>
+#include "daemon/interfaces/ingress_types.h"
 #include "consensus/csn_replay_data.h"
 #include "daemon/replay_metadata_recovery.h"
 #include "daemon/iservice.h"
+#include "daemon/runtime_block_notifications.h"
 #include "daemon/active_tip_classification.h"
 #include "storage/chain_db.h"
 #include "consensus/block_status_generation.h"
@@ -47,8 +50,19 @@ namespace dinero {
 
 // Phase 39 Step 2: Forward declaration (header deleted)
 class ChainManager;
+class MempoolChainstateReadGuard;
+class MiningChainstateReadGuard;
+class OrchardMiningTemplate;
+class MempoolTransaction;
+struct MempoolOrchardValidation;
+struct MempoolSelectionValidation;
 class BlockStorage;
-class WalletManager;  // Snapshot wallet rescan (see RescanWalletFromSnapshotUTXOs)
+class RuntimeBlockBody;
+struct RuntimeOutboxCursor;
+struct RuntimeOutboxPage;
+class RuntimeAccountReplay;
+class WalletManager;
+class RuntimeWalletOriginProjection;
 struct FilePosition;  // #309: storage/block_storage.h
 
 namespace consensus {
@@ -164,6 +178,10 @@ public:
     // leaves are never returned.
     std::optional<consensus::UTXOEntry> ResolveLivePreBaseCoin(
         const OutPoint& outpoint) const;
+    // Checked counterpart for admission: NotFound is established absence or
+    // an absent live leaf; storage/lifecycle failures retain an error status.
+    StatusOr<consensus::UTXOEntry> ResolveLivePreBaseCoinChecked(
+        const OutPoint& outpoint) const;
     // Block undo already has consensus authorization from the block being
     // connected and may run after that block removed the leaf. It therefore
     // requires exact active/promoted-base scoping, but deliberately not
@@ -180,6 +198,13 @@ public:
     // WalletService startup sweep, and wallet.importmnemonic when the mnemonic
     // is imported only after snapshot activation.
     int RescanWalletFromSnapshotUTXOs(WalletManager& wallet, uint32_t base_height);
+    // Independently replay and own selected historical bodies before wallet
+    // effects. Returns the captured height, not lasting chain/wallet readiness.
+    // Bounded archival/stateful pre-Orchard support; failures never substitute
+    // mutable or unvalidated source. Caller must not hold a wallet lease.
+    std::optional<uint32_t> RescanWalletFromSelectedHistory(
+        WalletManager&, int start_height, int gap_limit, std::string* error = nullptr);
+
 
     // v7 shielded pool state accessors.
     consensus::shielded::CommitmentTree* GetShieldedCommitmentTree() { return &shielded_tree_; }
@@ -259,9 +284,12 @@ public:
     //                template generation + block connect, require
     //                operator safemode.exit. Return false.
     //
-    // Returns true if state is consistent (or unverifiable due to
-    // absent row), false if a mismatch was detected and safe mode
-    // was entered.
+    // The optional behavior above is historical only. A selected/persisted
+    // Orchard tip or retirement receipt requires the mandatory typed startup
+    // audit and restored stateful view, independent of the legacy flag. Missing
+    // rows, unsupported runtime/profile or inconsistent local state enter safe
+    // mode and return false. ActivateBestChain must stop without consuming its
+    // startup verification flag. This method acquires the activation lock.
     bool VerifyConsensusJournalAtActiveTip();
 
     // Phase 11a: Utreexo forest accessor (for extracting root hash)
@@ -313,6 +341,11 @@ public:
     // failures (missing-utxo, I/O) un-poisoned.
     bool ConnectTip(class CBlockIndex* tip_to_connect, std::string* out_error = nullptr,
                     bool* out_consensus_invalid = nullptr);
+
+    // Mixed-body transitions require a complete typed consumer implementation.
+    // Absence/refusal prevents the durable write; this is not an optional event.
+    void setRuntimeBlockNotifications(std::shared_ptr<RuntimeBlockNotifications>);
+
 
     // CSN reorg: Bookkeeping-only connect (no ConnectBlock, no forest mutation).
     // Writes coin changes, an UndoRecord (spent/created + shielded fields),
@@ -793,6 +826,40 @@ public:
     void PersistStoredBodyPosition(const uint256& hash, const FilePosition& pos);
     bool hasFlatfileBlockByHash(const uint256& hash) const;
     StatusOr<Block> getBlockByHash(const uint256& hash) const;
+    // Owned presentation data captured under the selected service lock. Reading
+    // a stored body does not grant admission or certify current canonicality.
+    struct BlockRpcSnapshot {
+        BlockHeader header;
+        uint32_t height;
+        std::vector<uint8_t> bytes;
+        std::vector<uint256> transaction_ids;
+    };
+    StatusOr<BlockRpcSnapshot> getBlockRpcSnapshot(const uint256& hash) const;
+    // Selected-height typed read, under the service activation lock. Optional
+    // Orchard builds expose a mixed body without fabricating legacy transactions.
+    // Default builds return Internal (reader unavailable). Not admission.
+    StatusOr<std::shared_ptr<const RuntimeBlockBody>> getRuntimeBlockByHash(const uint256& hash) const;
+    // Copies a bounded, checked canonical delivery page under the selected
+    // writer lock. Acquire this before wallet ownership. A page is replay
+    // material, not proof that a consumer has applied it or is still caught up.
+    StatusOr<std::shared_ptr<const RuntimeOutboxPage>> getRuntimeDeliveryPage(
+        const RuntimeOutboxCursor& after, size_t maximum_events = 32,
+        size_t maximum_bytes = 16 * 1024 * 1024) const;
+    // Capture source material under one selected lock, then build immutable
+    // account branch views without holding that lock during proof verification.
+    // Acquire before wallet ownership. Explicit limits/missing origin material
+    // refuse; this is not baseline certification or all-consumer readiness.
+    StatusOr<std::shared_ptr<const RuntimeAccountReplay>> getRuntimeAccountReplay() const;
+    // Checked outbox-origin facts for the ordinary and optional index domains.
+    // Captures wallet identity briefly, releases it before all chain reads,
+    // independently replays one actual body at a time and rechecks both domains.
+    // No baseline adoption, pending/send policy, account discovery or readiness.
+    StatusOr<std::shared_ptr<const RuntimeWalletOriginProjection>> getRuntimeWalletOrigin(
+        WalletManager&,uint64_t expected_session,UTXOIndex* index = nullptr) const;
+    // Installs a compatible known-script baseline and applies actual event1 to
+    // index then ordinary store. Partial commits are retryable; no readiness.
+    Status adoptRuntimeWalletOrigin(WalletManager&,UTXOIndex&,const RuntimeWalletOriginProjection&) const;
+
     uint64_t getLegacyBodyFallbackReadCount() const;
     uint64_t getLegacyUndoFallbackReadCount() const;
     bool strictArchivalReadsEnabled() const;
@@ -1112,18 +1179,49 @@ public:
         return std::unique_lock<AnnotatedRecursiveMutex>(activation_mutex_);
     }
 
+    // nullopt preserves the historical route below the configured activation.
+    // Typed admission currently owns selected-tip extensions and exact current
+    // tip retries; other parent states refuse without using active-tip coins.
+    std::optional<BlockAcceptResult> TryAcceptOrchardBlockFromRPC(const std::string& hex);
+
+    static std::unique_ptr<MempoolChainstateReadGuard> AcquireMempoolChainstateRead(
+        std::shared_ptr<ChainstateService>);
+    static std::unique_ptr<MiningChainstateReadGuard> AcquireMiningReadGuard(
+        std::shared_ptr<ChainstateService> owner);
+
 private:
+    bool AuditSelectedOrchardTipUnderLock(std::string* reason) const;
+    struct MempoolReadGuard;
+    struct MiningReadGuard;
+    std::shared_ptr<const OrchardMiningTemplate> BuildOrchardMiningTemplateUnderLock(
+        const BlockHeader&, const Transaction&, std::span<const MempoolTransaction>, uint32_t);
+    struct SelectedOrchardPoolContext;
+    std::unique_ptr<SelectedOrchardPoolContext> CaptureSelectedOrchardPoolContextUnderLock();
+    MempoolSelectionValidation ValidateOrchardSelectionUnderLock(
+        std::span<const MempoolTransaction>, uint32_t);
+    MempoolOrchardValidation ValidateOrchardPoolUnderLock(
+        const MempoolTransaction&, const std::vector<MempoolTransaction>&);
     // Storage-layout startup regression exercises the actual loader without
     // booting network/wallet services. No public runtime mutation API is added.
     friend struct ShieldedStateStartupTestAccess;
     // Exercises production activation/candidate retry bookkeeping without a
     // running P2P stack. No alternate activation implementation is used.
     friend struct ActivationRetryTestAccess;
+    // Component payment tests install a real isolated index without starting P2P.
+    friend struct WalletBatchPaymentTestAccess;
+    friend struct PreBaseLookupTestAccess;
     struct ShieldedStateSnapshot {
         uint256 root;
         uint64_t tree_size{0};
         uint64_t nullifier_count{0};
     };
+
+    bool VerifyForkPointForestUnderLock(CBlockIndex*);
+    bool PrepareRuntimeReorgUnderLock(const std::vector<CBlockIndex*>& disconnect,
+        const std::vector<CBlockIndex*>& connect, std::unique_ptr<RuntimeReorgTransition>&);
+    bool DisconnectOrchardTip(CBlockIndex*);
+    bool ConnectOrchardTip(CBlockIndex*, std::string*, bool*);
+    std::optional<storage::LegacyRetirementRecord> DeriveOrchardBoundaryFromSelectedHistoryUnderLock();
 
     bool LoadShieldedState();
     bool LoadSeparatedShieldedState();
@@ -1331,6 +1429,9 @@ private:
      * already holds it. Lock acquisition belongs at the OUTER operation
      * boundary, where the order is visible and taken once.
      */
+    // After asserting the caller's activation lock, publication uses fixed-size
+    // copies under the observer mutex. Synchronization failure is fatal; logging
+    // is best-effort after publication and cannot throw back to a committed caller.
     void PublishActiveTipLocked(CBlockIndex* tip, TipPublishReason reason);
 
     /**
@@ -1753,6 +1854,7 @@ private:
         std::string& error);
 
     std::mutex csn_replay_records_mutex_;
+    std::shared_ptr<RuntimeBlockNotifications> runtime_block_notifications_;
 
 };
 

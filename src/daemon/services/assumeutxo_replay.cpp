@@ -1,13 +1,43 @@
 #include "daemon/services/assumeutxo_replay.h"
 
+#include "consensus/chainparams.h"
+#include "consensus/merkle_root.h"
+
 #include <cstring>
+#include <algorithm>
+#include <array>
+#include <limits>
 #include <stdexcept>
 
 namespace dinero::assumeutxo {
 
 AssumeUtxoReplayEngine::AssumeUtxoReplayEngine()
-    : set_(std::make_unique<consensus::ConsensusUTXOSet>()),
-      validator_(std::make_unique<consensus::BlockValidator>(set_.get())),
+    : network_(Params().network_id),
+      genesis_hash_(uint256::FromHexUnsafe(Params().genesis_hash)),
+      set_(std::make_unique<consensus::ConsensusUTXOSet>()),
+      validator_(std::make_unique<consensus::BlockValidator>(set_.get(),
+          [this](const uint256& parent, uint32_t wanted) -> std::optional<uint64_t> {
+              if (!seeded_ || parent != tip_hash_ || wanted > last_height_) return std::nullopt;
+              uint256 ancestor;
+              uint32_t anchor_height = 0;
+              if (!headers_.GetAncestorHashByHash(parent, wanted, ancestor, anchor_height) ||
+                  anchor_height != last_height_) return std::nullopt;
+              // Match CBlockIndex's 64-bit contextual-lock median. The legacy
+              // header-selector MTP API returns uint32_t and would narrow it.
+              std::array<uint64_t, 11> times{};
+              size_t count = 0;
+              uint32_t expected_height = wanted;
+              while (count < times.size()) {
+                  const auto entry = headers_.GetHeaderValue(ancestor);
+                  if (!entry || entry->height != expected_height) return std::nullopt;
+                  times[count++] = entry->header.timestamp;
+                  if (expected_height == 0) break;
+                  ancestor = entry->prev_hash;
+                  --expected_height;
+              }
+              std::sort(times.begin(), times.begin() + count);
+              return times[count / 2];
+          })),
       shielded_tree_(std::make_unique<consensus::shielded::CommitmentTree>()),
       shielded_nullifiers_(std::make_unique<consensus::shielded::NullifierSet>()),
       shielded_anchor_history_(std::make_unique<consensus::shielded::AnchorHistory>()) {
@@ -33,15 +63,30 @@ AssumeUtxoReplayEngine::AssumeUtxoReplayEngine()
 AssumeUtxoReplayEngine::~AssumeUtxoReplayEngine() = default;
 
 bool AssumeUtxoReplayEngine::SeedGenesis(const Block& genesis_block, std::string& error) {
+    if (seeded_ || Params().network_id != network_ ||
+        uint256::FromHexUnsafe(Params().genesis_hash) != genesis_hash_) {
+        error = "replay genesis already seeded or network changed";
+        return false;
+    }
+    Transaction expected;
+    bool mutated = false;
+    if (genesis_block.GetHash() != genesis_hash_ ||
+        !genesis_block.header.prev_block_hash.IsNull() ||
+        genesis_block.vtx.size() != 1 ||
+        !TransactionSerializer::Deserialize(expected, Params().genesis.genesisCoinbaseHex) ||
+        genesis_block.vtx.front().Serialize(TxSerializationMode::WithWitness) !=
+            expected.Serialize(TxSerializationMode::WithWitness) ||
+        consensus::ComputeMerkleRoot(genesis_block.vtx, &mutated) != genesis_block.header.merkle_root ||
+        mutated || !headers_.AddHeader(genesis_block.header)) {
+        error = "replay genesis identity or body mismatch";
+        return false;
+    }
     // Mirror genesis_init.cpp's ChainDB seeding: every output of the genesis
     // coinbase becomes a coin at height 0 with coinbase=true, INCLUDING
     // OP_RETURN outputs (ConnectBlock's ProcessTransaction skips those, which
     // is exactly why genesis cannot go through ConnectAndAdvance). No utreexo
     // leaves are added — the live forest excludes genesis too (the height-0
     // checkpoint is an empty forest).
-    if (genesis_block.vtx.empty()) {
-        return true;  // no coinbase -> nothing to seed
-    }
     const Transaction& genesis_tx = genesis_block.vtx[0];
     const TxId txid = genesis_tx.GetTxid();
     for (uint32_t vout = 0; vout < genesis_tx.vout.size(); ++vout) {
@@ -60,15 +105,33 @@ bool AssumeUtxoReplayEngine::SeedGenesis(const Block& genesis_block, std::string
             return false;
         }
     }
+    tip_hash_ = genesis_hash_;
+    seeded_ = true;
     return true;
 }
 
 bool AssumeUtxoReplayEngine::ConnectAndAdvance(const Block& block, uint32_t height,
                                                const uint256& block_hash,
                                                std::string& error) {
-    if (any_connected_ && height != last_height_ + 1) {
+    if (!seeded_ || Params().network_id != network_ ||
+        uint256::FromHexUnsafe(Params().genesis_hash) != genesis_hash_) {
+        error = "replay requires seeded selected genesis";
+        return false;
+    }
+    if (last_height_ == std::numeric_limits<uint32_t>::max() || height != last_height_ + 1) {
         error = "replay heights must be strictly ascending (got " +
                 std::to_string(height) + " after " + std::to_string(last_height_) + ")";
+        return false;
+    }
+    bool mutated = false;
+    if (block_hash != block.GetHash() || block.header.prev_block_hash != tip_hash_ ||
+        block.vtx.empty() || consensus::ComputeMerkleRoot(block.vtx, &mutated) != block.header.merkle_root ||
+        mutated) {
+        error = "replay block identity, parent or Merkle mismatch";
+        return false;
+    }
+    if (!headers_.AddHeader(block.header)) {
+        error = "replay header validation failed";
         return false;
     }
     consensus::BlockUndo undo;
@@ -90,7 +153,7 @@ bool AssumeUtxoReplayEngine::ConnectAndAdvance(const Block& block, uint32_t heig
         while (undo_tail_.size() > undo_tail_window_) undo_tail_.pop_front();
     }
     last_height_ = height;
-    any_connected_ = true;
+    tip_hash_ = block_hash;
     return true;
 }
 

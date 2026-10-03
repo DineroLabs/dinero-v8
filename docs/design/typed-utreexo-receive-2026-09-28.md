@@ -1,0 +1,15 @@
+# Typed Utreexo proof receipt and pool publication
+
+The daemon utxotx receive path decodes one bounded whole message using the existing typed transaction reader. It checks exact canonical body bytes and claimed identity, proof count and encoding, explicit little-endian fields, known flags and end of message. Both existing wire versions remain readable. Parsing and input inclusion proofs do not establish transaction authorization or Orchard admission.
+
+Under selected-chain ownership, the receiver compares the active tip, durable tip and live consensus coin-set identity, then captures an immutable stump under the forest guard. Every input proof must match that captured root and leaf count and pass the existing maturity rules. The receiver avoids the worker's mutable StatelessNode stump and height caches. The proof receipt owns the exact typed body, payload, root and parent height.
+
+Mempool publication checks the current pool root/height and exact existing body bytes, including witnesses, under one lock. It swaps the complete payload and root before publishing freshness metadata. Missing or lagging pool-tip state refuses; the receiver does not fabricate synchronization. New bodies use canonical SubmitBody outside selected-chain ownership. Following accepted admission, the receiver reacquires selected-chain ownership and revalidates before publishing the proof payload. A later refusal preserves the admitted body. Relay callbacks run after chain/forest/pool locks are released while the service operation remains pinned. A callback failure does not undo published state.
+
+Orchard SubmitBody remains unavailable. Structural Orchard component fixtures exercise typed inclusion-proof and cache ownership only, without proof/signature/admission claims. Legacy separate refresh/cache APIs remain narrower compatibility paths. This change does not install the production all-consumer notification provider, certify pool-tip initialization after every startup/reorg, or complete incoming Orchard authorization, pending ownership, readmission, typed mining or shield/send/unshield. Mainnet activation remains unset.
+
+## Qualification
+
+Fresh backend ON and OFF builds completed for the daemon and 50 declared component targets. Each configuration passed 58 selected component CTests and seven daemon CTests, including cold start and the existing Utreexo compatibility fixtures. The complete 85-file linked project C++ graph was freshly rebuilt with ASan/UBSan; all 19 cases passed with 1,524 source/header/fixture inputs unchanged. External libraries, Rust, C and PQClean were not instrumented in this component run, and macOS leak detection was off. The daemon and separate compatibility binaries were exercised normally, outside that instrumented graph.
+
+All prior test bodies and deadlines remain unchanged; one existing suite includes the new fixture. New structural Orchard coverage does not claim admission, signature validation, proving or mining. The separate combined migration failure remains an open classification issue, and this local qualification does not establish release readiness.

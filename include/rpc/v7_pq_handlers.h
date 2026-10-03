@@ -61,7 +61,7 @@ enum class HandlerStatus : uint8_t {
     UniqueConflict      = 3,   ///< (wallet_id, path, leaf_index) already exists
     AddressNotFound     = 4,   ///< no such P2MR address in this wallet
     DecryptFailed       = 5,   ///< master key didn't open the seed
-    DerivationMismatch  = 6,   ///< re-derived pubkey != stored pubkey
+    DerivationMismatch  = 6,   ///< seed/public key/root/address binding mismatch
     InternalError       = 7,
 };
 

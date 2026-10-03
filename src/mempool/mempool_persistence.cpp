@@ -52,7 +52,7 @@ void MempoolPersistence::writeBytes(std::vector<uint8_t>& out, const std::vector
 }
 
 uint32_t MempoolPersistence::readUint32(const std::vector<uint8_t>& data, size_t& offset) {
-    if (offset + 4 > data.size()) {
+    if (offset > data.size() || data.size() - offset < 4) {
         throw std::runtime_error("readUint32: insufficient data");
     }
     uint32_t value = data[offset] |
@@ -64,7 +64,7 @@ uint32_t MempoolPersistence::readUint32(const std::vector<uint8_t>& data, size_t
 }
 
 uint64_t MempoolPersistence::readUint64(const std::vector<uint8_t>& data, size_t& offset) {
-    if (offset + 8 > data.size()) {
+    if (offset > data.size() || data.size() - offset < 8) {
         throw std::runtime_error("readUint64: insufficient data");
     }
     uint64_t value = static_cast<uint64_t>(data[offset]) |
@@ -88,7 +88,7 @@ uint64_t MempoolPersistence::readVarint(const std::vector<uint8_t>& data, size_t
     if (first < 0xfd) {
         return first;
     } else if (first == 0xfd) {
-        if (offset + 2 > data.size()) {
+        if (offset > data.size() || data.size() - offset < 2) {
             throw std::runtime_error("readVarint: insufficient data for 0xfd");
         }
         uint64_t value = data[offset] | (data[offset + 1] << 8);
@@ -103,7 +103,7 @@ uint64_t MempoolPersistence::readVarint(const std::vector<uint8_t>& data, size_t
 
 std::vector<uint8_t> MempoolPersistence::readBytes(const std::vector<uint8_t>& data, size_t& offset) {
     uint64_t size = readVarint(data, offset);
-    if (offset + size > data.size()) {
+    if (offset > data.size() || size > data.size() - offset) {
         throw std::runtime_error("readBytes: insufficient data");
     }
 
@@ -123,6 +123,7 @@ bool MempoolPersistence::save(
     try {
         g_logger.info("Saving mempool to " + filepath);
 
+        if (entries.size() > MAX_PERSISTED_TXS) return false;
         std::vector<uint8_t> data;
 
         // Magic bytes (8 bytes): "MEMPOOLV"
@@ -139,12 +140,16 @@ bool MempoolPersistence::save(
         // For each transaction
         for (const auto& entry : entries) {
             // Serialize transaction to canonical wire bytes (proven in v0.13.0.1)
-            std::vector<uint8_t> tx_bytes = entry.tx.Serialize(true);
+            std::vector<uint8_t> tx_bytes = entry.tx.Serialize();
+            // Nine length bytes plus the existing twenty metadata bytes.
+            if (tx_bytes.size() > MAX_PERSISTED_FILE_BYTES - 29 ||
+                data.size() > MAX_PERSISTED_FILE_BYTES - 29 - tx_bytes.size())
+                return false;
 
             // Tx bytes length + tx bytes
             writeBytes(data, tx_bytes);
 
-            // Arrival time (convert steady_clock to Unix timestamp)
+            // Preserve the existing opaque steady-clock field; not recovery authority.
             auto arrival_time_unix = std::chrono::duration_cast<std::chrono::seconds>(
                 entry.time.time_since_epoch()
             ).count();
@@ -179,84 +184,42 @@ bool MempoolPersistence::save(
 // ═══════════════════════════════════════════════════════════════════════════
 
 std::vector<MempoolPersistence::PersistedEntry> MempoolPersistence::load(const std::string& filepath) {
+    std::error_code error;
+    const bool exists = std::filesystem::exists(filepath, error);
+    if (error) throw std::runtime_error("Mempool file availability unknown");
+    if (!exists) throw MissingFile();
+    std::ifstream file(filepath, std::ios::binary | std::ios::ate);
+    if (!file.is_open()) throw std::runtime_error("Mempool file unavailable");
+    const auto end = file.tellg();
+    if (end < 0 || static_cast<uint64_t>(end) > MAX_PERSISTED_FILE_BYTES)
+        throw std::runtime_error("Mempool file exceeds read budget");
+    const auto size = static_cast<size_t>(end);
+    std::vector<uint8_t> data(size);
+    file.seekg(0, std::ios::beg);
+    if (!file || !file.read(reinterpret_cast<char*>(data.data()), static_cast<std::streamsize>(size)) ||
+        file.gcount() != static_cast<std::streamsize>(size) ||
+        file.peek() != std::char_traits<char>::eof() || file.bad())
+        throw std::runtime_error("Incomplete mempool file read");
+    if (data.size() < 8 || std::memcmp(data.data(), MAGIC, 8) != 0)
+        throw std::runtime_error("Invalid mempool file magic");
+    size_t offset = 8;
+    if (readUint32(data, offset) != VERSION)
+        throw std::runtime_error("Unsupported mempool file version");
+    const auto count = readVarint(data, offset);
+    if (count > MAX_PERSISTED_TXS)
+        throw std::runtime_error("Mempool file transaction count exceeds budget");
     std::vector<PersistedEntry> entries;
-
-    try {
-        // Check if file exists
-        if (!std::filesystem::exists(filepath)) {
-            g_logger.info("Mempool file not found: " + filepath + " (starting with empty mempool)");
-            return entries;  // Empty vector, not an error
-        }
-
-        // Read entire file
-        std::ifstream file(filepath, std::ios::binary | std::ios::ate);
-        if (!file.is_open()) {
-            g_logger.warning("Failed to open mempool file: " + filepath);
-            return entries;
-        }
-
-        size_t file_size = file.tellg();
-        file.seekg(0, std::ios::beg);
-
-        std::vector<uint8_t> data(file_size);
-        file.read(reinterpret_cast<char*>(data.data()), file_size);
-        file.close();
-
-        g_logger.info("Loading mempool from " + filepath + " (" + std::to_string(file_size) + " bytes)");
-
-        size_t offset = 0;
-
-        // Verify magic bytes
-        if (data.size() < 8 || std::memcmp(data.data(), MAGIC, 8) != 0) {
-            g_logger.error("Invalid mempool file: bad magic bytes");
-            return entries;
-        }
-        offset += 8;
-
-        // Read version
-        uint32_t version = readUint32(data, offset);
-        if (version != VERSION) {
-            g_logger.error("Unsupported mempool file version: " + std::to_string(version));
-            return entries;
-        }
-
-        // Read transaction count
-        uint64_t tx_count = readVarint(data, offset);
-
-        if (tx_count > MAX_PERSISTED_TXS) {
-            g_logger.error("Mempool file contains too many transactions: " + std::to_string(tx_count));
-            return entries;
-        }
-
-        g_logger.info("Loading " + std::to_string(tx_count) + " transactions from mempool file");
-
-        // Read each transaction
-        for (uint64_t i = 0; i < tx_count; ++i) {
-            PersistedEntry entry;
-
-            // Read tx bytes
-            entry.tx_bytes = readBytes(data, offset);
-
-            // Read arrival time
-            entry.arrival_time = readUint64(data, offset);
-
-            // Read fee
-            entry.fee = readUint64(data, offset);
-
-            // Read height
-            entry.height = readUint32(data, offset);
-
-            entries.push_back(entry);
-        }
-
-        g_logger.info("Loaded " + std::to_string(entries.size()) + " transactions from mempool file");
-        return entries;
-
-    } catch (const std::exception& e) {
-        // Never throw - return empty vector on any failure
-        g_logger.error("Exception loading mempool: " + std::string(e.what()));
-        return {};  // Empty vector
+    entries.reserve(static_cast<size_t>(count));
+    for (uint64_t i = 0; i < count; ++i) {
+        PersistedEntry entry;
+        entry.tx_bytes = readBytes(data, offset);
+        entry.arrival_time = readUint64(data, offset);
+        entry.fee = readUint64(data, offset);
+        entry.height = readUint32(data, offset);
+        entries.push_back(std::move(entry));
     }
+    if (offset != data.size()) throw std::runtime_error("Trailing mempool file bytes");
+    return entries;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

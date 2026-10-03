@@ -693,7 +693,7 @@ din::Json rpc_dpi_checkconflicts(const ExecutionContext& ctx, const din::Json& p
 
     // Scan all mempool transactions for conflicting spends
     mempool_service->mempool().forEachEntry([&](const dinero::MempoolEntry& entry) {
-        const auto& other_tx = entry.tx;
+        const auto& other_tx = entry.tx.Historical();
         auto other_txid = other_tx.GetTxid().AsUint256();
         if (other_txid == txid) return;  // skip self
 

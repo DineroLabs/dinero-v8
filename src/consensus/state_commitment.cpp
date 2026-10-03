@@ -1,6 +1,7 @@
 #include "consensus/state_commitment.h"
 
 #include <cstring>
+#include <stdexcept>
 
 namespace dinero::consensus {
 
@@ -21,18 +22,30 @@ bool CarriesTag(const std::vector<uint8_t>& s) {
 }  // namespace
 
 std::vector<uint8_t> BuildStateCommitmentScript(const uint256& root) {
+    return BuildStateCommitmentScript(root, StateCommitmentEncoding::Legacy);
+}
+
+std::vector<uint8_t> BuildStateCommitmentScript(const uint256& root, StateCommitmentEncoding encoding) {
+    if (encoding != StateCommitmentEncoding::Legacy && encoding != StateCommitmentEncoding::Orchard)
+        throw std::invalid_argument("unsupported state commitment encoding");
     std::vector<uint8_t> script;
     script.reserve(StateCommitment::SCRIPT_SIZE);
     script.push_back(0x6a);                                        // OP_RETURN
     script.push_back(static_cast<uint8_t>(StateCommitment::PAYLOAD_SIZE));
     script.insert(script.end(), StateCommitment::MAGIC_BYTES,
                   StateCommitment::MAGIC_BYTES + 4);
-    script.push_back(StateCommitment::VERSION);
+    script.push_back(static_cast<uint8_t>(encoding));
     script.insert(script.end(), root.data, root.data + 32);
     return script;
 }
 
 std::optional<uint256> ParseStateCommitmentScript(const std::vector<uint8_t>& script) {
+    return ParseStateCommitmentScript(script, StateCommitmentEncoding::Legacy);
+}
+
+std::optional<uint256> ParseStateCommitmentScript(const std::vector<uint8_t>& script, StateCommitmentEncoding encoding) {
+    if (encoding != StateCommitmentEncoding::Legacy && encoding != StateCommitmentEncoding::Orchard)
+        return std::nullopt;
     // Exact size. A longer script that merely starts with the right bytes is
     // NOT this commitment: accepting a prefix would let trailing bytes ride
     // along unauthenticated, and would make the encoding non-canonical.
@@ -45,7 +58,7 @@ std::optional<uint256> ParseStateCommitmentScript(const std::vector<uint8_t>& sc
                     StateCommitment::MAGIC_BYTES, 4) != 0) {
         return std::nullopt;
     }
-    if (script[StateCommitment::OFFSET_VERSION] != StateCommitment::VERSION) {
+    if (script[StateCommitment::OFFSET_VERSION] != static_cast<uint8_t>(encoding)) {
         return std::nullopt;
     }
     uint256 root;
@@ -62,7 +75,16 @@ std::vector<size_t> FindStateCommitmentCandidates(const Transaction& coinbase) {
 }
 
 StateCommitmentLookup FindStateCommitment(const Transaction& coinbase) {
+    return FindStateCommitment(coinbase, StateCommitmentEncoding::Legacy);
+}
+
+StateCommitmentLookup FindStateCommitment(const Transaction& coinbase, StateCommitmentEncoding encoding) {
     StateCommitmentLookup r;
+    if ((encoding != StateCommitmentEncoding::Legacy && encoding != StateCommitmentEncoding::Orchard) ||
+        (encoding == StateCommitmentEncoding::Orchard && !coinbase.IsCoinbase())) {
+        r.status = StateCommitmentStatus::Malformed;
+        return r;
+    }
 
     const auto candidates = FindStateCommitmentCandidates(coinbase);
     if (candidates.empty()) {
@@ -77,8 +99,11 @@ StateCommitmentLookup FindStateCommitment(const Transaction& coinbase) {
         return r;
     }
 
-    const auto parsed = ParseStateCommitmentScript(coinbase.vout[candidates[0]].scriptPubKey);
-    if (!parsed.has_value()) {
+    const auto& output = coinbase.vout[candidates[0]];
+    const auto parsed = ParseStateCommitmentScript(output.scriptPubKey, encoding);
+    if (!parsed.has_value() || (encoding == StateCommitmentEncoding::Orchard &&
+        (output.value.GetUna() != 0 || output.is_confidential || !output.commitment.empty() ||
+         !output.range_proof.empty() || !output.nonce.empty()))) {
         r.status = StateCommitmentStatus::Malformed;
         return r;
     }

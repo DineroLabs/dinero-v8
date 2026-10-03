@@ -58,6 +58,11 @@ HeaderSyncManager::ProcessResult HeaderSyncP2P::ProcessHeaders(
     return result;
 }
 
+std::optional<uint32_t> HeaderSyncP2P::ObserveBlockHeader(const BlockHeader& header) {
+    if (!chain_selector_) return std::nullopt;
+    return chain_selector_->ValidateObservedHeaderHeight(header);
+}
+
 void HeaderSyncP2P::OnGetheadersMessage(uint64_t peer_id, const GetheadersMessage& getheaders_msg) {
     // Find headers to send based on locator
     std::vector<BlockHeader> headers_to_send = FindHeadersToSend(

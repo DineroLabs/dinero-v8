@@ -1,5 +1,6 @@
 #pragma once
 
+#include "wallet/signing_key.h"
 #include "wallet/transaction.h"
 #include "wallet/hd_wallet.h"
 #include "wallet/intent_descriptor.h"  // DEFAULT_EXT_COMMITMENT
@@ -31,7 +32,7 @@ public:
      *
      * @param tx Transaction to sign (modified in-place)
      * @param utxos UTXOs being spent (must match tx inputs)
-     * @param private_keys Tweaked Taproot private keys for signing
+     * @param private_keys Untweaked internal Taproot private keys for signing
      * @return true if all Taproot inputs were signed successfully
      */
     static bool SignTransaction(
@@ -46,7 +47,7 @@ public:
      * @param tx Transaction being signed
      * @param input_index Index of input to sign
      * @param all_utxos ALL UTXOs being spent (BIP341 requires full set for sighash)
-     * @param private_key Tweaked Taproot private key (32 bytes)
+     * @param private_key Untweaked internal Taproot private key (32 bytes)
      * @return true if signing succeeded
      */
     static bool SignInput(
@@ -55,6 +56,9 @@ public:
         const std::vector<CanonicalWalletUTXO>& all_utxos,
         const std::vector<uint8_t>& private_key
     );
+
+    static bool SignInputWithKey(Transaction& tx,size_t input_index,
+        const std::vector<CanonicalWalletUTXO>& all_utxos,const SigningKey& key);
 
     /**
      * @brief Compute BIP341 Taproot sighash for key-path spending
@@ -183,7 +187,7 @@ public:
      * @param tx Transaction being signed
      * @param input_index Index of input to sign
      * @param all_utxos ALL UTXOs being spent
-     * @param private_key Tweaked Taproot private key (32 bytes)
+     * @param private_key Untweaked internal Taproot private key (32 bytes)
      * @param ext_commitment 32-byte extension commitment
      * @return true if signing succeeded
      */
@@ -194,6 +198,10 @@ public:
         const std::vector<uint8_t>& private_key,
         const std::array<uint8_t, 32>& ext_commitment
     );
+
+    static bool SignInputV1WithKey(Transaction& tx,size_t input_index,
+        const std::vector<CanonicalWalletUTXO>& all_utxos,const SigningKey& key,
+        const std::array<uint8_t,32>& ext_commitment);
 
     // Sighash types (BIP341)
     static constexpr uint8_t SIGHASH_DEFAULT = 0x00;  // Taproot-specific: equivalent to SIGHASH_ALL

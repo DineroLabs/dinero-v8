@@ -222,7 +222,7 @@ TxInclusionStatus TxInclusionAnalyzer::Analyze(
 
     // Check if transaction signals RBF (BIP125: any input with sequence < 0xfffffffe)
     status.rbf_available = false;
-    for (const auto& vin : entry.tx.vin) {
+    for (const auto& vin : entry.tx.Historical().vin) {
         if (vin.sequence < 0xfffffffe) {
             status.rbf_available = true;
             break;
@@ -231,7 +231,7 @@ TxInclusionStatus TxInclusionAnalyzer::Analyze(
 
     // CPFP is viable if transaction has unspent outputs (can be spent to add fees)
     // This is always true for unconfirmed transactions with outputs
-    status.cpfp_available = !entry.tx.vout.empty();
+    status.cpfp_available = !entry.tx.Historical().vout.empty();
 
     // ========================================================================
     // Step 7: Suggest fee bump if needed

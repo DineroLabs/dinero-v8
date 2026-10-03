@@ -250,71 +250,6 @@ bool PersistWalletPolicyWithRetry(dinero::WalletManager* wallet_manager,
     return false;
 }
 
-bool ResetWalletEncryptionState(dinero::WalletManager* wallet_manager,
-                                const std::string& wallet_name,
-                                std::string* error_out) {
-    if (!wallet_manager) {
-        if (error_out) {
-            *error_out = "wallet manager is null";
-        }
-        return false;
-    }
-
-    sqlite3* db = wallet_manager->getCurrentDatabase();
-    if (!db) {
-        if (error_out) {
-            *error_out = "wallet database is not open";
-        }
-        return false;
-    }
-
-    try {
-        // Clear legacy settings used by wallet.unlock verification.
-        wallet_manager->setSetting("wallet_encrypted", "");
-        wallet_manager->setSetting("wallet_salt", "");
-        wallet_manager->setSetting("wallet_verify_hash", "");
-    } catch (const std::exception& e) {
-        if (error_out) {
-            *error_out = std::string("failed to clear encryption settings: ") + e.what();
-        }
-        return false;
-    }
-
-    const char* sql = R"(
-        INSERT INTO encryption_metadata (
-            id, encrypted, kdf, cipher, created_at, updated_at
-        )
-        VALUES (1, 0, 'none', 'none', strftime('%s','now'), strftime('%s','now'))
-        ON CONFLICT(id) DO UPDATE SET
-            encrypted = 0,
-            kdf = 'none',
-            cipher = 'none',
-            updated_at = strftime('%s','now')
-    )";
-
-    char* err = nullptr;
-    if (sqlite3_exec(db, sql, nullptr, nullptr, &err) != SQLITE_OK) {
-        const std::string msg = err ? err : sqlite3_errmsg(db);
-        sqlite3_free(err);
-        if (error_out) {
-            *error_out = "failed to update encryption_metadata: " + msg;
-        }
-        return false;
-    }
-
-    // Re-open to refresh in-memory wallet_encrypted_/wallet_locked_ flags.
-    try {
-        wallet_manager->open(wallet_name);
-    } catch (const std::exception& e) {
-        if (error_out) {
-            *error_out = std::string("failed to reopen wallet after reset: ") + e.what();
-        }
-        return false;
-    }
-
-    return true;
-}
-
 void TryRollbackWalletCreate(dinero::WalletManager* wallet_manager, const std::string& wallet_name) {
     try {
         const std::string rollback_wallet = wallet_name + "__rollback_tmp";
@@ -407,25 +342,9 @@ din::Json RpcCreateHDWallet(const din::Json& params, dinero::WalletManager* wall
         // Complete every fallible cryptographic preflight before creating the
         // wallet database. A generation/derivation failure must not leave a
         // usable raw-seed wallet with no authoritative recovery material.
-        dinero::bip39::WordCount wc = dinero::bip39::WordCount::Words12;
-        switch (word_count) {
-            case 15: wc = dinero::bip39::WordCount::Words15; break;
-            case 18: wc = dinero::bip39::WordCount::Words18; break;
-            case 21: wc = dinero::bip39::WordCount::Words21; break;
-            case 24: wc = dinero::bip39::WordCount::Words24; break;
-        }
-
-        std::string mnemonic = dinero::bip39::Generate(wc);
-        if (mnemonic.empty()) {
-            result["error"] = "Failed to generate BIP39 mnemonic";
-            return result;
-        }
-
-        std::vector<uint8_t> seed;
-        if (!dinero::bip39::MnemonicToSeed(mnemonic, bip39_passphrase, seed)) {
-            result["error"] = "Failed to convert mnemonic to seed";
-            return result;
-        }
+        auto generated_identity = dinero::WalletManager::GenerateBip39Identity(word_count, bip39_passphrase);
+        const std::string mnemonic = generated_identity.Mnemonic();
+        std::vector<uint8_t> seed = generated_identity.Seed();
 
         auto preflight_first_address = DeriveBip86FirstAddressFromSeed(seed);
         if (!preflight_first_address.has_value()) {
@@ -455,8 +374,8 @@ din::Json RpcCreateHDWallet(const din::Json& params, dinero::WalletManager* wall
             // The first seed and recovery record are persisted before registry
             // publication. A crash can therefore never leave a registered
             // user-facing wallet whose identity began as an unrelated raw seed.
-            wallet_manager->createFromBip39(
-                wallet_name, mnemonic, bip39_passphrase);
+            wallet_manager->createFromGeneratedBip39(
+                wallet_name, std::move(generated_identity), bip39_passphrase);
             wallet_created = true;
         } else {
             wallet_manager->open(wallet_name);
@@ -488,7 +407,23 @@ din::Json RpcCreateHDWallet(const din::Json& params, dinero::WalletManager* wall
         }
 
         // Encrypt wallet if password provided
-        if (!encryption_password.empty()) {
+        if (wallet_created && !encryption_password.empty()) {
+            // The generated identity is already the durable seed. Encrypt that
+            // same owner through the checked wallet transition, including live
+            // policy, instead of writing a separate metadata-only envelope.
+            if (!wallet_manager->storeUnencryptedWallet(wallet_name, seed, master_fingerprint, true)) {
+                TryRollbackWalletCreate(wallet_manager, wallet_name);
+                result["error"] = "Failed to store initial wallet metadata";
+                return result;
+            }
+            try {
+                wallet_manager->encryptWallet(encryption_password);
+            } catch (...) {
+                TryRollbackWalletCreate(wallet_manager, wallet_name);
+                throw;
+            }
+            result["encrypted"] = true;
+        } else if (!encryption_password.empty()) {
             try {
                 // === STEP 1: Generate random salt and nonce ===
                 std::vector<uint8_t> salt(16);
@@ -713,7 +648,6 @@ din::Json RpcRestoreWallet(const din::Json& params, dinero::WalletManager* walle
         std::string policy = "bip86";  // Default to BIP86 Taproot
         std::string expected_first_address = "";
         bool skip_checksum = false;
-        bool replace_existing = false;
         bool wallet_created = false;
 
         if (params.isArray()) {
@@ -745,13 +679,6 @@ din::Json RpcRestoreWallet(const din::Json& params, dinero::WalletManager* walle
                     skip_checksum = true;
                 }
             }
-            if (params.size() > 7) {
-                if (params[7].isBool()) {
-                    replace_existing = params[7].asBool();
-                } else if (params[7].isString() && params[7].asString() == "true") {
-                    replace_existing = true;
-                }
-            }
         } else if (params.isObject()) {
             if (params.isMember("name")) wallet_name = params["name"].asString();
             if (params.isMember("mnemonic")) mnemonic = params["mnemonic"].asString();
@@ -762,7 +689,6 @@ din::Json RpcRestoreWallet(const din::Json& params, dinero::WalletManager* walle
                 expected_first_address = params["expected_first_address"].asString();
             }
             if (params.isMember("skip_checksum")) skip_checksum = params["skip_checksum"].asBool();
-            if (params.isMember("replace_existing")) replace_existing = params["replace_existing"].asBool();
         }
         
         // Validate mnemonic
@@ -811,17 +737,19 @@ din::Json RpcRestoreWallet(const din::Json& params, dinero::WalletManager* walle
             return result;
         }
 
-        // Create/open wallet in wallet manager
-        const bool wallet_exists = wallet_manager->exists(wallet_name);
-        if (wallet_exists && !replace_existing) {
-            result["error"] = "Wallet already exists: " + wallet_name;
+        // Restore always creates a separate wallet. Legacy replace_existing
+        // arguments are accepted for compatibility but cannot authorize an overwrite.
+        if (wallet_manager->exists(wallet_name)) {
+            result["error"] = "Wallet already exists: " + wallet_name +
+                ". Restore under a new wallet name; existing wallets cannot be overwritten.";
             return result;
         }
 
-        if (!wallet_exists) {
-            wallet_manager->create(wallet_name);
-            wallet_created = true;
-        }
+        // The creation owner also rejects an existing file, including one not
+        // enrolled in the registry. Only this recovery seed is initialized.
+        wallet_manager->createFromBip39(
+            wallet_name, mnemonic, bip39_passphrase, skip_checksum);
+        wallet_created = true;
         wallet_manager->open(wallet_name);
 
         std::string policy_error;
@@ -833,48 +761,7 @@ din::Json RpcRestoreWallet(const din::Json& params, dinero::WalletManager* walle
             return result;
         }
 
-        // Restore is authoritative for wallet identity. Clear any previous
-        // encryption state so legacy passphrase metadata cannot survive across
-        // seed replacement. The caller can then set a fresh passphrase.
-        std::string encryption_reset_error;
-        if (!ResetWalletEncryptionState(wallet_manager, wallet_name, &encryption_reset_error)) {
-            if (wallet_created) {
-                TryRollbackWalletCreate(wallet_manager, wallet_name);
-            }
-            result["error"] = "Failed to reset wallet encryption state: " + encryption_reset_error;
-            return result;
-        }
-        
-        // NOTE: We no longer use HDWallet::Restore - instead we convert mnemonic to seed
-        // and use wallet_manager for ALL address derivation to ensure consistency
-
-        // ═══════════════════════════════════════════════════════════════
-        // CANONICAL FIX: Convert mnemonic to seed and store in wallet_manager
-        // Then use getNewAddress() for proper persistence
-        // ═══════════════════════════════════════════════════════════════
-
-        // Step 2: Store seed in wallet_manager (required for getNewAddress to work)
-        // NOTE: This sets master_seed_ member variable in WalletManager
-        if (!wallet_manager->storeMasterSeed(master_seed, "")) {
-            result["error"] = "Failed to store master seed in wallet";
-            return result;
-        }
-
-        bool recovery_material_stored = false;
-        if (!skip_checksum) {
-            std::string recovery_error;
-            if (!wallet_manager->storeAuthoritativeBip39Mnemonic(
-                    mnemonic, bip39_passphrase, &recovery_error)) {
-                if (wallet_created) {
-                    TryRollbackWalletCreate(wallet_manager, wallet_name);
-                }
-                result["error"] =
-                    "Failed to bind authoritative BIP39 recovery material: " +
-                    recovery_error;
-                return result;
-            }
-            recovery_material_stored = true;
-        }
+        const bool recovery_material_stored = !skip_checksum;
 
         // Reset birthday to 0 so rescan covers full chain history.
         // The restored seed may have been used before this wallet was created.
