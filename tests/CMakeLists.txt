@@ -13662,3 +13662,36 @@ target_include_directories(test_swap_engine PRIVATE
 )
 add_test(NAME SwapEngine COMMAND test_swap_engine)
 set_tests_properties(SwapEngine PROPERTIES LABELS "wallet;swap;mandatory" TIMEOUT 30)
+
+# Swap Bitcoin-side transactions: BIP143 vector, serialization, HTLC spends (milestone 4).
+add_executable(test_swap_btc_tx
+  tests/wallet/test_swap_btc_tx.cpp
+  src/wallet/swap/btc_tx.cpp
+  src/wallet/swap/htlc.cpp
+)
+add_dependencies(test_swap_btc_tx gtest gtest_main)
+target_link_libraries(test_swap_btc_tx PRIVATE dinero_consensus gtest gtest_main)
+link_zstd_if_needed(test_swap_btc_tx)
+target_include_directories(test_swap_btc_tx PRIVATE
+  ${CMAKE_SOURCE_DIR}/include
+  ${CMAKE_SOURCE_DIR}/src
+  ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+)
+add_test(NAME SwapBtcTx COMMAND test_swap_btc_tx)
+set_tests_properties(SwapBtcTx PROPERTIES LABELS "wallet;swap;mandatory" TIMEOUT 20)
+
+# Bitcoin Core regtest check of the swap's BTC side (needs bitcoind/bitcoin-cli on PATH).
+add_executable(swap_btc_regtest_tool
+  tests/wallet/swap_btc_regtest_tool.cpp
+  src/wallet/swap/btc_tx.cpp
+  src/wallet/swap/htlc.cpp
+)
+target_link_libraries(swap_btc_regtest_tool PRIVATE dinero_consensus)
+link_zstd_if_needed(swap_btc_regtest_tool)
+target_include_directories(swap_btc_regtest_tool PRIVATE ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src)
+find_program(DINERO_BITCOIND bitcoind)
+if(DINERO_BITCOIND)
+  add_test(NAME SwapBtcRegtest
+    COMMAND ${CMAKE_SOURCE_DIR}/tests/wallet/swap_btc_regtest.sh $<TARGET_FILE:swap_btc_regtest_tool>)
+  set_tests_properties(SwapBtcRegtest PROPERTIES LABELS "wallet;swap;regtest" TIMEOUT 180)
+endif()
