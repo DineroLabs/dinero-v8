@@ -9,6 +9,9 @@
 #include "miningrewards.h"
 #include "inforow.h"
 #include "mainwindow.h"
+#if defined(DIN_ENABLE_SWAP_UI) && DIN_ENABLE_SWAP_UI
+#include "swapwidget.h"
+#endif
 #include "miningsessionstatus.h"
 #include "peerheightsemantics.h"
 #include "responsiveuipolicy.h"
@@ -4046,6 +4049,14 @@ void MainWindow::setupUI() {
   // END EXPERIMENTAL FEATURES
   // ═══════════════════════════════════════════════════════════════════
 #endif // DIN_EXPERIMENTAL_FEATURES
+
+#if defined(DIN_ENABLE_SWAP_UI) && DIN_ENABLE_SWAP_UI
+  // === Swap Tab: DIN <-> BTC atomic swaps via the local node's swap.* RPCs ===
+  // Off in release builds until the swap code has had external review.
+  {
+    tabs->addTab(new SwapWidget(rpc_, this), navigationIcon(NavigationGlyph::Transactions), "Swap");
+  }
+#endif
 
 #if defined(DIN_ENABLE_LIQUIDITY_VAULT_UI) && DIN_ENABLE_LIQUIDITY_VAULT_UI
   // === Liquidity Vault Tab (daemon-side custodial vault) ===
