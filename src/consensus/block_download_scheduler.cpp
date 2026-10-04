@@ -252,7 +252,7 @@ void BlockDownloadScheduler::StageGetdataLocked(const uint256& block_hash,
     if (!for_backfill) {
         const auto now = std::chrono::steady_clock::now();
         for (const auto& [peer, slow] : slow_peers_) {
-            if (slow.consecutive_timeouts >= kSlowPeerTimeouts &&
+            if (slow.missed >= kSlowPeerTimeouts &&
                 now - slow.demoted_at < slow_peer_cooldown_) {
                 deferred.skip_peers.insert(peer);
             }
@@ -459,8 +459,11 @@ bool BlockDownloadScheduler::OnBlockReceived(const Block& block, FilePosition* s
             }
             fetch_state.status = FetchStatus::RECEIVED;
             fetch_state.stored_pos = stored_pos;
-            if (!fetch_state.chosen_peer.empty()) {
-                slow_peers_.erase(fetch_state.chosen_peer);
+            // A delivery cancels one miss, not all of them: a slow peer that
+            // still trickles in the odd block must not be handed a fresh batch.
+            auto slow = slow_peers_.find(fetch_state.chosen_peer);
+            if (slow != slow_peers_.end() && --slow->second.missed == 0) {
+                slow_peers_.erase(slow);
             }
             g_logger.info("[BlockDownloadScheduler] Block marked RECEIVED: " +
                          block_hash.GetHex());
@@ -741,7 +744,7 @@ void BlockDownloadScheduler::TickLocked() {
                              ", retry=" + std::to_string(fetch_state.retry_count) + ")");
                 if (!fetch_state.chosen_peer.empty()) {
                     auto& slow = slow_peers_[fetch_state.chosen_peer];
-                    if (++slow.consecutive_timeouts >= kSlowPeerTimeouts) {
+                    if (++slow.missed >= kSlowPeerTimeouts) {
                         slow.demoted_at = now;
                     }
                 }

@@ -3448,13 +3448,28 @@ int main() {
                 if (!Require(all_skip(skips, true),
                              "a peer whose requests keep expiring must be skipped")) return 1;
 
+                // A slow peer still trickles in the odd late block (TX: 10
+                // delivered against 36 expired). One delivery must not wipe six
+                // misses, or the peer is handed a fresh batch to let expire.
                 if (!Require(scheduler.OnBlockReceived(MakeBlockForHash(selector, hashes[1])),
                              "slow peer delivers block 1")) return 1;
                 skips.clear();
                 if (!Require(scheduler.ReRequestBlock(hashes[4]), "re-queue block 4")) return 1;
                 for (int t = 0; t < 5; ++t) scheduler.Tick();
+                if (!Require(all_skip(skips, true),
+                             "one delivery must not cancel repeated misses")) return 1;
+
+                // Deliveries that outweigh the misses restore it (6 misses - 5 = 1,
+                // below the demotion threshold).
+                for (int h : {2, 3, 4, 5}) {
+                    if (!Require(scheduler.OnBlockReceived(MakeBlockForHash(selector, hashes[h])),
+                                 "slow peer delivers block " + std::to_string(h))) return 1;
+                }
+                skips.clear();
+                if (!Require(scheduler.ReRequestBlock(hashes[6]), "re-queue block 6")) return 1;
+                for (int t = 0; t < 5; ++t) scheduler.Tick();
                 return Require(all_skip(skips, false),
-                               "a delivered block must restore the peer") ? 0 : 1;
+                               "deliveries that outweigh the misses must restore the peer") ? 0 : 1;
             })) return 1;
 
         // The cooldown lapses on its own.
@@ -3467,7 +3482,7 @@ int main() {
                 return Require(all_skip(skips, false),
                                "a demotion must end after the cooldown") ? 0 : 1;
             })) return 1;
-        std::cout << "   ✅ slow peer demoted on repeated timeouts, restored on delivery or cooldown"
+        std::cout << "   ✅ slow peer demoted on repeated timeouts, restored by deliveries or cooldown"
                   << std::endl;
     }
 

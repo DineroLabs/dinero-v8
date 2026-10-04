@@ -882,12 +882,13 @@ private:
     std::unordered_map<uint256, std::string> announcing_peers_;
     std::chrono::milliseconds tip_retry_timeout_{750};
 
-    // Peers whose tip-sync getdata keep expiring unanswered. After
-    // kSlowPeerTimeouts misses in a row a peer is staged into the request
-    // skip-set for slow_peer_cooldown_; a block it delivers clears the record.
-    // The daemon callback's liveness guard still never drops to zero recipients.
+    // Peers whose tip-sync getdata keep expiring unanswered. Each expiry adds a
+    // miss and each block the peer delivers cancels one; at kSlowPeerTimeouts
+    // net misses the peer is staged into the request skip-set for
+    // slow_peer_cooldown_. The daemon callback's liveness guard still never
+    // drops to zero recipients.
     struct SlowPeer {
-        uint32_t consecutive_timeouts = 0;
+        uint32_t missed = 0;
         std::chrono::steady_clock::time_point demoted_at{};
     };
     static constexpr uint32_t kSlowPeerTimeouts = 2;
