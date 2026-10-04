@@ -45,6 +45,7 @@ add_library(dinero_wallet STATIC
   ${CMAKE_CURRENT_SOURCE_DIR}/taproot_template_builder.cpp  # B2: Taproot template tree builder (PROTECTED/ESCROW)
   ${CMAKE_CURRENT_SOURCE_DIR}/swap/htlc.cpp  # DIN<->BTC swap HTLC builders (docs/design/din-btc-atomic-swaps.md)
   ${CMAKE_CURRENT_SOURCE_DIR}/swap/offer.cpp  # DIN<->BTC swap offer/accept messages
+  ${CMAKE_CURRENT_SOURCE_DIR}/swap/fee_ladder.cpp  # pre-signed swap fee ladders
   ${CMAKE_CURRENT_SOURCE_DIR}/covenant_profile.cpp  # Covenant profile-v1 construction + recovery descriptors
   ${CMAKE_CURRENT_SOURCE_DIR}/safety_profile.cpp  # B4: Safety profile management
   ${CMAKE_CURRENT_SOURCE_DIR}/protected_output_builder.cpp  # B4: Protected output construction (HDWallet + template builder)
