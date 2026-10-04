@@ -222,6 +222,7 @@ SwapManager::AcceptResult SwapManager::Accept(const std::string& text, const std
         s.btc_scan_from_height = scan_from;
         const std::string accept_text = EncodeAccept(s.record.accept);
         EncryptedFileSwapStore(SwapPath(index), store_key).Save(s);
+        WriteFileAtomically(SwapPath(index) + ".id", id + "\n");  // public: readable while locked
         StartSession(index, std::move(s), store_key);
         return {id, accept_text};
     }
@@ -246,6 +247,7 @@ SwapManager::AcceptResult SwapManager::Accept(const std::string& text, const std
             s.btc_payout_script = FromHex(kv["btc_payout"]);
             MakeDinTerms(offer, accept);  // throws on a mismatched accept
             EncryptedFileSwapStore(SwapPath(index), store_key).Save(s);
+            WriteFileAtomically(SwapPath(index) + ".id", id + "\n");  // public: readable while locked
             fs::remove(path);
             StartSession(index, std::move(s), store_key);
             return {id, std::nullopt};
@@ -295,6 +297,7 @@ std::vector<SwapSummary> SwapManager::List() {
             SwapSummary m;
             m.index = index;
             m.id = "swap-" + std::to_string(index);
+            if (std::ifstream in(path + ".id"); in) in >> m.id;
             m.wallet_locked = true;
             out.push_back(m);
             continue;

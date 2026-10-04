@@ -13879,6 +13879,13 @@ target_link_libraries(dinero-swap-tower PRIVATE dinero_rpc_client dinero_consens
 link_zstd_if_needed(dinero-swap-tower)
 target_include_directories(dinero-swap-tower PRIVATE ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/external)
 
+# swap.* RPCs end to end: two dinerods + bitcoind, SIGKILL/restart, clean stop (milestone 6).
+if(TARGET dinerod AND DINERO_BITCOIND)
+  add_test(NAME SwapRpcRegtest
+    COMMAND ${CMAKE_SOURCE_DIR}/tests/wallet/swap_rpc_regtest.sh $<TARGET_FILE:dinerod>)
+  set_tests_properties(SwapRpcRegtest PROPERTIES LABELS "wallet;swap;regtest" TIMEOUT 900)
+endif()
+
 # Two-chain end-to-end swap: Alice and Bob runners on dinerod + bitcoind regtest (milestone 5).
 add_executable(swap_e2e_tool
   tests/wallet/swap_e2e_tool.cpp

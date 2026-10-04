@@ -179,6 +179,25 @@ TEST(SwapManager, LockedWalletRefusesToStartAndPausesTicks) {
     EXPECT_TRUE(m.TickAll(kNow));
 }
 
+TEST(SwapManager, StatusOfAPausedSwapWorksWhileTheWalletIsLocked) {
+    // After a restart with the wallet still locked, the user must see
+    // "paused", not "unknown swap": the id is public and kept beside the file.
+    TempDir da("pa"), db("pb");
+    FakeWallet wa{0x1a}, wb{0x1b};
+    SwapManager alice(Config(da.path), wa.Deriver(), kNoDin, kNoBtc);
+    std::string id;
+    {
+        SwapManager bob(Config(db.path), wb.Deriver(), kNoDin, kNoBtc);
+        const auto b = bob.Accept(alice.MakeOffer(Request(), kNow), P2trAddress("rdin", 1), P2trAddress("bcrt", 2), kNow);
+        id = b.id;
+    }
+    wb.locked = true;
+    SwapManager restarted(Config(db.path), wb.Deriver(), kNoDin, kNoBtc);
+    const auto s = restarted.Status(id);
+    EXPECT_TRUE(s.wallet_locked);
+    EXPECT_EQ(s.id, id);
+}
+
 TEST(SwapManager, CancelOnlyBeforeAnythingIsLocked) {
     TempDir da("ca"), db("cb");
     FakeWallet wa{0x0a}, wb{0x0b};

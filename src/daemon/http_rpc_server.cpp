@@ -42,6 +42,10 @@
 // These are rejected when the server runs in read-only mode (--rpc-readonly).
 static const std::unordered_set<std::string> ADMIN_METHODS = {
     "stop",
+    // DIN <-> BTC swaps: lock and move funds from this wallet.
+    "swap.offer",
+    "swap.accept",
+    "swap.cancel",
     "wallet.importprivkey",
     "wallet.importmnemonic",
     "wallet.exportmnemonic",

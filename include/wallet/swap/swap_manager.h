@@ -13,7 +13,8 @@
 // every index found on disk (a restored older backup cannot roll it back), and
 // an index that already has a file is refused.
 //
-// Files in the swap directory: swap-<i>.swap (EncryptedFileSwapStore),
+// Files in the swap directory: swap-<i>.swap (EncryptedFileSwapStore) with
+// swap-<i>.swap.id (its public id, so a locked wallet can still report it),
 // offer-<i>.offer (Alice's offer awaiting Bob's accept; public data only),
 // next_index.
 
