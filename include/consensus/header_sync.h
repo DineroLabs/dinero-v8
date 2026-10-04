@@ -169,6 +169,18 @@ public:
      */
     void UpdatePeerBest(uint64_t peer_id, uint32_t height, const uint256& hash);
 
+    // Raise (never lower) what we know a peer has. A peer that sends or
+    // announces a header we already hold still holds it; crediting only new
+    // headers left every peer but the first announcer looking behind.
+    void NotePeerHasHeader(uint64_t peer_id, uint32_t height, const uint256& hash);
+
+    // A peer announced a block whose header we do not have, so it is ahead of
+    // our best header even though its height is not known yet.
+    void NotePeerAnnouncedUnknownBlock(uint64_t peer_id);
+
+    // Best height we know the peer has, or 0 for an unknown peer.
+    uint32_t PeerBestHeight(uint64_t peer_id) const;
+
     /**
      * Mark peer as stalled (timeout waiting for headers).
      */
