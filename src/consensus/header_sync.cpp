@@ -458,6 +458,25 @@ std::optional<std::vector<uint256>> HeaderSyncManager::BeginHeadersRequest(
     // Exactly one network request may own the continuation at a time. This is
     // global, not merely per peer: a response from a second peer can otherwise
     // reset a valid continuation from the first one.
+    //
+    // Exception: a flight held by a peer that is not ahead of our best header
+    // cannot teach us anything, so a peer that is ahead takes it over. A silent
+    // relay advertising height 0 otherwise held the flight for the full
+    // 15-minute budget while peers 123k headers ahead were refused (TX resync,
+    // 2026-10-03). The holder is not penalised and its late reply is simply
+    // not the owning one.
+    if (active_sync_peer_ != 0 && active_sync_peer_ != peer_id) {
+        HeaderIndexEntry best_copy{};
+        const uint32_t our_height =
+            chain_selector_->GetBestHeaderCopy(best_copy) ? best_copy.height : 0;
+        const auto owner_it = peers_.find(active_sync_peer_);
+        const bool owner_ahead =
+            owner_it != peers_.end() && owner_it->second.best_height > our_height;
+        if (owner_ahead || peer_it->second.best_height <= our_height) {
+            return std::nullopt;
+        }
+        active_sync_peer_ = 0;
+    }
     if (active_sync_peer_ != 0) {
         return std::nullopt;
     }
