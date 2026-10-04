@@ -50,6 +50,7 @@ add_library(dinero_wallet STATIC
   ${CMAKE_CURRENT_SOURCE_DIR}/swap/btc_tx.cpp  # swap Bitcoin-side transactions (BIP143)
   ${CMAKE_CURRENT_SOURCE_DIR}/swap/btc_watcher.cpp  # swap Bitcoin watcher (Bitcoin Core RPC)
   ${CMAKE_CURRENT_SOURCE_DIR}/swap/din_watcher.cpp  # swap Dinero watcher (node address index)
+  ${CMAKE_CURRENT_SOURCE_DIR}/swap/runner.cpp  # swap executor: observe, persist, act
   ${CMAKE_CURRENT_SOURCE_DIR}/covenant_profile.cpp  # Covenant profile-v1 construction + recovery descriptors
   ${CMAKE_CURRENT_SOURCE_DIR}/safety_profile.cpp  # B4: Safety profile management
   ${CMAKE_CURRENT_SOURCE_DIR}/protected_output_builder.cpp  # B4: Protected output construction (HDWallet + template builder)

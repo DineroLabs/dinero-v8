@@ -1,0 +1,149 @@
+#pragma once
+// Swap runner (milestone 5 of docs/design/din-btc-atomic-swaps-v1-plan.md):
+// the executor around the pure engine. Each Tick() observes both chains,
+// asks Step() what to do, persists the result, and only then performs the
+// actions (fund, claim, refund) through the wallets and nodes.
+//
+// Executor contract (engine.h):
+//   - no observation, no decision: if either chain is unreachable or
+//     inconsistent, the tick does nothing at all;
+//   - the new record is saved BEFORE any action runs; if saving fails, no
+//     action runs and the in-memory session is unchanged;
+//   - a failed action never rolls the state back. The engine re-broadcasts
+//     claims and refunds on later ticks and raises an alert for a funding
+//     transaction that never appears; it never funds twice.
+
+#include "wallet/swap/btc_watcher.h"
+#include "wallet/swap/din_watcher.h"
+#include "wallet/swap/engine.h"
+
+#include <memory>
+#include <string>
+#include <vector>
+
+namespace dinero::swap {
+
+// Everything one party needs to resume a swap after a restart.
+struct SwapSession {
+    SwapRecord record;
+    uint32_t btc_scan_from_height{};          // BTC tip when the swap was accepted
+    std::vector<uint8_t> din_payout_script;   // Alice: refund goes here; Bob: claim goes here
+    std::vector<uint8_t> btc_payout_script;   // Alice: claim goes here; Bob: refund goes here
+};
+
+// Text form, one "key=value" per line. Holds the secret in the clear (via
+// EncodeRecord). Decode throws std::invalid_argument.
+std::string EncodeSession(const SwapSession& session);
+SwapSession DecodeSession(const std::string& text);
+
+class SwapStore {
+public:
+    virtual ~SwapStore() = default;
+    // Durable when it returns; throws on failure.
+    virtual void Save(const SwapSession& session) = 0;
+};
+
+// DEVELOPMENT / REGTEST ONLY: writes the session, secret included, unencrypted.
+// Write-to-temp + fsync + rename, so a crash leaves the old or the new file.
+class PlaintextFileSwapStore : public SwapStore {
+public:
+    explicit PlaintextFileSwapStore(std::string path);
+    void Save(const SwapSession& session) override;
+    static SwapSession Load(const std::string& path);  // throws
+
+private:
+    std::string path_;
+};
+
+// This party's two private keys (32-byte scalars). Alice: DIN refund key and
+// BTC claim key. Bob: DIN claim key and BTC refund key.
+struct SwapKeys {
+    Bytes32 din_secret_key{};
+    Bytes32 btc_secret_key{};
+};
+
+struct RunnerConfig {
+    uint64_t din_fee_una{100'000};
+    uint64_t btc_fee_sat{1'000};
+    std::string din_hrp{"din"};   // "din" / "tdin" / "rdin"
+    std::string btc_hrp{"bc"};    // "bc" / "tb" / "bcrt"
+};
+
+// The chains as the runner sees them. Write methods return the txid and throw
+// std::runtime_error when the node or wallet refuses.
+class SwapChainIo {
+public:
+    virtual ~SwapChainIo() = default;
+    virtual DinWatchReport ObserveDin() = 0;
+    virtual BtcWatchReport ObserveBtc() = 0;
+    virtual std::string FundDin(const std::string& address, uint64_t amount_una) = 0;
+    virtual std::string FundBtc(const std::string& address, uint64_t amount_sat) = 0;
+    virtual std::string BroadcastDin(const std::vector<uint8_t>& raw_tx) = 0;
+    virtual std::string BroadcastBtc(const std::vector<uint8_t>& raw_tx) = 0;
+};
+
+// Node RPC implementation. `btc` must reach a wallet only for Bob (FundBtc).
+// Dinero funding uses wallet.sendtoaddress {address, amount_una}.
+class RpcSwapChainIo : public SwapChainIo {
+public:
+    RpcSwapChainIo(DinRpc din, BtcRpc btc, const SwapSession& session, const RunnerConfig& config);
+    DinWatchReport ObserveDin() override;
+    BtcWatchReport ObserveBtc() override;
+    std::string FundDin(const std::string& address, uint64_t amount_una) override;
+    std::string FundBtc(const std::string& address, uint64_t amount_sat) override;
+    std::string BroadcastDin(const std::vector<uint8_t>& raw_tx) override;
+    std::string BroadcastBtc(const std::vector<uint8_t>& raw_tx) override;
+
+private:
+    DinRpc din_;
+    BtcRpc btc_;
+    DinWatcher din_watcher_;
+    BtcWatcher btc_watcher_;
+};
+
+// HTLC addresses for funding.
+std::string DinHtlcAddressFor(const SwapRecord& record, const std::string& hrp);
+std::string BtcHtlcAddressFor(const SwapRecord& record, const std::string& hrp);  // P2WSH, bech32 v0
+
+// Signed spends, serialized for broadcast. Throw std::invalid_argument when the
+// keys do not match the record or the secret is missing or wrong.
+std::vector<uint8_t> SignedDinClaim(const SwapSession& s, const SwapKeys& keys,
+                                    const FundingOutput& funding, uint64_t fee_una);
+std::vector<uint8_t> SignedDinRefund(const SwapSession& s, const SwapKeys& keys,
+                                     const FundingOutput& funding, uint64_t fee_una);
+std::vector<uint8_t> SignedBtcClaim(const SwapSession& s, const SwapKeys& keys,
+                                    const BtcFunding& funding, uint64_t fee_sat);
+std::vector<uint8_t> SignedBtcRefund(const SwapSession& s, const SwapKeys& keys,
+                                     const BtcFunding& funding, uint64_t fee_sat);
+
+struct TickReport {
+    bool observed{false};  // false: a chain was unreachable; nothing decided, saved or done
+    SwapState before{};
+    SwapState after{};
+    std::vector<ActionKind> actions;  // what Step() asked for this tick
+    std::vector<std::string> events;  // human-readable log: actions, failures, alerts
+};
+
+class SwapRunner {
+public:
+    // Throws std::invalid_argument if the keys (or Alice's secret) do not match
+    // the record for its role.
+    SwapRunner(SwapSession session, SwapKeys keys, RunnerConfig config, SwapChainIo& io, SwapStore& store);
+
+    // Throws only if the store cannot save; then nothing was done.
+    TickReport Tick(uint32_t wall_clock_unix);
+
+    const SwapSession& session() const { return session_; }
+
+private:
+    void Execute(const Action& action, const DinWatchReport& din, const BtcWatchReport& btc,
+                 std::vector<std::string>& events);
+
+    SwapSession session_;
+    SwapKeys keys_;
+    RunnerConfig config_;
+    SwapChainIo& io_;
+    SwapStore& store_;
+};
+
+}  // namespace dinero::swap
