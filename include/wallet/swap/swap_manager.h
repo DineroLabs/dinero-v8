@@ -81,6 +81,9 @@ struct SwapManagerConfig {
     std::string dir;
     SwapNetwork network{SwapNetwork::Mainnet};
     RunnerConfig runner;  // din_hrp / btc_hrp / fees / tower
+    // Per-swap limits (0 = none). Enforced on offers made AND offers accepted.
+    uint64_t max_btc_sat{0};
+    uint64_t max_din_una{0};
 };
 
 class SwapManager {
@@ -138,5 +141,21 @@ private:
 };
 
 std::string SwapId(const SwapOffer& offer);  // 16 hex chars of OfferId
+
+// Mainnet beta (plan milestone 7): swaps on mainnet need an explicit opt-in
+// (swap.mainnet_beta=1) and are capped per swap. A configured cap may be lower
+// than the default, never above the compiled-in ceiling. Test networks: no caps.
+inline constexpr uint64_t kBetaHardMaxBtcSat = 1'000'000;             // 0.01 BTC
+inline constexpr uint64_t kBetaDefaultMaxBtcSat = 100'000;            // 0.001 BTC
+inline constexpr uint64_t kBetaHardMaxDinUna = 100'000ULL * 100'000'000ULL;  // 100,000 DIN
+inline constexpr uint64_t kBetaDefaultMaxDinUna = 10'000ULL * 100'000'000ULL;  // 10,000 DIN
+
+struct BetaDecision {
+    std::optional<std::string> refusal;  // set: do not enable swaps
+    uint64_t max_btc_sat{0};
+    uint64_t max_din_una{0};
+};
+BetaDecision BetaPolicy(SwapNetwork network, bool mainnet_beta_opt_in, uint64_t configured_max_btc_sat,
+                        uint64_t configured_max_din_una);
 
 }  // namespace dinero::swap

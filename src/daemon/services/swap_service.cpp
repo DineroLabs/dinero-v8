@@ -97,6 +97,24 @@ bool SwapService::Init(DaemonContext& ctx) {
     mc.runner.din_fee_urgent_una = uint64_t(config->GetInt("swap.din_fee_urgent_una", int(mc.runner.din_fee_urgent_una)));
     mc.runner.btc_fee_sat = uint64_t(config->GetInt("swap.btc_fee_sat", int(mc.runner.btc_fee_sat)));
     tick_seconds_ = uint32_t(std::max(1, config->GetInt("swap.tick_seconds", 30)));
+    // Mainnet beta: explicit opt-in and per-swap caps (swap_manager.h BetaPolicy).
+    auto limit = [&](const char* key) -> std::optional<uint64_t> {
+        const std::string v = config->GetString(key, "0");
+        if (v.empty() || v.size() > 19 || v.find_first_not_of("0123456789") != std::string::npos) return std::nullopt;
+        return std::stoull(v);
+    };
+    const auto max_btc = limit("swap.max_btc_sat"), max_din = limit("swap.max_din_una");
+    if (!max_btc || !max_din) {
+        std::cerr << "[Swap] swap.max_btc_sat / swap.max_din_una must be whole numbers" << std::endl;
+        return false;
+    }
+    const auto beta = swap::BetaPolicy(mc.network, config->GetBool("swap.mainnet_beta", false), *max_btc, *max_din);
+    if (beta.refusal) {
+        std::cerr << "[Swap] " << *beta.refusal << std::endl;
+        return false;
+    }
+    mc.max_btc_sat = beta.max_btc_sat;
+    mc.max_din_una = beta.max_din_una;
 
     // Swap keys from the wallet seed at m/SWAP'/... (see swap_manager.h).
     swap::KeyDeriver derive = [&ctx](const std::vector<uint32_t>& path) -> std::optional<swap::Bytes32> {
@@ -117,6 +135,9 @@ bool SwapService::Init(DaemonContext& ctx) {
         manager_->SetTowerSink([inbox](const std::string& package) { swap::WriteTowerInbox(inbox, package); });
     }
     std::cout << "[Swap] enabled: dir=" << mc.dir << " btc_rpc=" << btc << " tick=" << tick_seconds_ << "s"
+              << (mc.max_btc_sat ? " max_btc_sat=" + std::to_string(mc.max_btc_sat) + " max_din_una=" +
+                                       std::to_string(mc.max_din_una)
+                                 : std::string())
               << (inbox.empty() ? "" : " tower_inbox=" + inbox) << std::endl;
     return true;
 }

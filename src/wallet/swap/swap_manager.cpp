@@ -52,6 +52,17 @@ uint32_t ParseIndex(const std::string& name, const std::string& prefix, const st
     return static_cast<uint32_t>(std::stoul(digits));
 }
 
+void RequireWithinCaps(const SwapManagerConfig& c, uint64_t din_una, uint64_t btc_sat) {
+    if (c.max_btc_sat && btc_sat > c.max_btc_sat) {
+        throw std::invalid_argument("swap exceeds this node's BTC limit (" + std::to_string(c.max_btc_sat) +
+                                    " sat per swap during the beta)");
+    }
+    if (c.max_din_una && din_una > c.max_din_una) {
+        throw std::invalid_argument("swap exceeds this node's DIN limit (" + std::to_string(c.max_din_una) +
+                                    " una per swap during the beta)");
+    }
+}
+
 }  // namespace
 
 // ---- Keys -------------------------------------------------------------------
@@ -157,6 +168,7 @@ std::string SwapManager::MakeOffer(const OfferRequest& r, uint32_t now) {
     std::lock_guard<std::mutex> lock(mu_);
     SwapStoreKeyFromSeed(derive_, config_.network);  // refuses a locked wallet before using an index
     if (r.din_lock_hours < r.btc_lock_hours + 24) throw std::invalid_argument("DIN lock must be >= BTC lock + 24 h");
+    RequireWithinCaps(config_, r.din_amount_una, r.btc_amount_sat);
     const auto din_payout = PayoutScriptFromAddress(r.din_refund_address, config_.runner.din_hrp);
     const auto btc_payout = PayoutScriptFromAddress(r.btc_claim_address, config_.runner.btc_hrp);
     const uint32_t index = AllocateIndex();
@@ -205,6 +217,7 @@ SwapManager::AcceptResult SwapManager::Accept(const std::string& text, const std
         const SwapOffer offer = DecodeOffer(text);
         if (offer.network != config_.network) throw std::invalid_argument("offer is for another network");
         RequireAcceptableNow(offer, now);
+        RequireWithinCaps(config_, offer.din_amount_una, offer.btc_amount_sat);
         const std::string id = SwapId(offer);
         if (already_started(id)) throw std::runtime_error("swap " + id + " already exists");
         SwapSession s;
@@ -396,6 +409,26 @@ bool SwapManager::TickAll(uint32_t now) {
         it = Terminal(live.runner->session().record.state) ? live_.erase(it) : std::next(it);
     }
     return true;
+}
+
+}  // namespace dinero::swap
+
+namespace dinero::swap {
+
+BetaDecision BetaPolicy(SwapNetwork network, bool mainnet_beta_opt_in, uint64_t configured_max_btc_sat,
+                        uint64_t configured_max_din_una) {
+    BetaDecision d;
+    if (network != SwapNetwork::Mainnet) return d;  // test networks: no caps
+    if (!mainnet_beta_opt_in) {
+        d.refusal = "mainnet swaps are a beta: set swap.mainnet_beta=1 to accept the risk (small amounts only)";
+        return d;
+    }
+    auto clamp = [](uint64_t configured, uint64_t def, uint64_t ceiling) {
+        return configured == 0 ? def : std::min(configured, ceiling);
+    };
+    d.max_btc_sat = clamp(configured_max_btc_sat, kBetaDefaultMaxBtcSat, kBetaHardMaxBtcSat);
+    d.max_din_una = clamp(configured_max_din_una, kBetaDefaultMaxDinUna, kBetaHardMaxDinUna);
+    return d;
 }
 
 }  // namespace dinero::swap

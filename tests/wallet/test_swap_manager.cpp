@@ -242,6 +242,47 @@ TEST(SwapManager, AcceptRefusesWrongNetworkOrExpiredOffers) {
                  std::invalid_argument);
 }
 
+TEST(SwapManager, BetaCapsRefuseOversizedSwapsBothWays) {
+    TempDir da("cap_a"), db("cap_b"), dc("cap_c");
+    FakeWallet wa{0x2a}, wb{0x2b}, wc{0x2c};
+    auto capped = Config(da.path);
+    capped.max_btc_sat = 500'000;
+    capped.max_din_una = 5 * 100'000'000ULL;
+    SwapManager alice(capped, wa.Deriver(), kNoDin, kNoBtc);
+    auto big = Request();  // 10 DIN / 0.01 BTC
+    EXPECT_THROW(alice.MakeOffer(big, kNow), std::invalid_argument);
+    auto small = Request();
+    small.din_amount_una = 5 * 100'000'000ULL;
+    small.btc_amount_sat = 500'000;
+    EXPECT_NO_THROW(alice.MakeOffer(small, kNow));
+
+    // A capped Bob refuses an oversized offer made by an uncapped Alice.
+    SwapManager free_alice(Config(dc.path), wc.Deriver(), kNoDin, kNoBtc);
+    const auto offer = free_alice.MakeOffer(big, kNow);
+    auto bob_cfg = Config(db.path);
+    bob_cfg.max_btc_sat = 500'000;
+    SwapManager bob(bob_cfg, wb.Deriver(), kNoDin, kNoBtc);
+    EXPECT_THROW(bob.Accept(offer, P2trAddress("rdin", 1), P2trAddress("bcrt", 2), kNow), std::invalid_argument);
+    EXPECT_TRUE(bob.List().empty());
+}
+
+TEST(SwapManager, MainnetBetaNeedsOptInAndCapsCannotBeRaisedPastTheCeiling) {
+    // Mainnet: refused without the explicit beta opt-in.
+    EXPECT_TRUE(BetaPolicy(SwapNetwork::Mainnet, false, 0, 0).refusal.has_value());
+    const auto d = BetaPolicy(SwapNetwork::Mainnet, true, 0, 0);
+    ASSERT_FALSE(d.refusal.has_value());
+    EXPECT_EQ(d.max_btc_sat, kBetaDefaultMaxBtcSat);
+    EXPECT_EQ(d.max_din_una, kBetaDefaultMaxDinUna);
+    // A configured limit may be lower, never above the compiled-in ceiling.
+    EXPECT_EQ(BetaPolicy(SwapNetwork::Mainnet, true, 50'000, 0).max_btc_sat, 50'000u);
+    EXPECT_EQ(BetaPolicy(SwapNetwork::Mainnet, true, 50'000'000, 0).max_btc_sat, kBetaHardMaxBtcSat);
+    // Test networks: no opt-in, no caps.
+    const auto r = BetaPolicy(SwapNetwork::Regtest, false, 0, 0);
+    EXPECT_FALSE(r.refusal.has_value());
+    EXPECT_EQ(r.max_btc_sat, 0u);
+    EXPECT_EQ(r.max_din_una, 0u);
+}
+
 TEST(SwapManager, PayoutScriptFromAddress) {
     const auto tr = PayoutScriptFromAddress(P2trAddress("bcrt", 0x44), "bcrt");
     EXPECT_EQ(tr.size(), 34u);
