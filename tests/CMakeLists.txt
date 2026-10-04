@@ -13590,3 +13590,23 @@ add_test(NAME ReplayMetadataRecoveryQueue COMMAND test_replay_metadata_recovery)
 set_tests_properties(ReplayMetadataRecoveryQueue PROPERTIES
     LABELS "daemon;utreexo;recovery;regression"
     TIMEOUT 30)
+
+# DIN <-> BTC swap HTLC builders, verified through the consensus Taproot path.
+add_executable(test_swap_htlc
+  tests/wallet/test_swap_htlc.cpp
+  src/wallet/swap/htlc.cpp
+)
+add_dependencies(test_swap_htlc gtest gtest_main)
+target_link_libraries(test_swap_htlc PRIVATE
+  dinero_consensus
+  gtest
+  gtest_main
+)
+link_zstd_if_needed(test_swap_htlc)
+target_include_directories(test_swap_htlc PRIVATE
+  ${CMAKE_SOURCE_DIR}/include
+  ${CMAKE_SOURCE_DIR}/src
+  ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+)
+add_test(NAME SwapHtlc COMMAND test_swap_htlc)
+set_tests_properties(SwapHtlc PROPERTIES LABELS "wallet;swap;taproot;mandatory" TIMEOUT 20)
