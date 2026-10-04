@@ -73,6 +73,11 @@ TowerPackage BuildTowerPackage(const SwapSession& s, const SwapKeys& keys, const
 // locktime is not T_btc, or any signature that does not verify.
 void VerifyTowerPackage(const TowerPackage& package);
 
+// Arming channel: the package is written atomically (temp + fsync + rename) as
+// <inbox>/<offer id prefix>.pkg. The inbox should be a directory only Bob's
+// user can write (0700); the tower verifies every package anyway.
+std::string WriteTowerInbox(const std::string& inbox_dir, const std::string& package_text);  // returns path
+
 struct TowerConfig {
     uint32_t escalate_after_seconds{30 * 60};
     uint32_t din_urgent_before_seconds{6 * 60 * 60};  // top DIN rung this close to T_din

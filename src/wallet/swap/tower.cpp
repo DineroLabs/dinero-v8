@@ -3,8 +3,11 @@
 #include "crypto/sha256.h"
 #include "wallet/swap/swap_crypto.h"
 
+#include <cstdio>
+#include <fcntl.h>
 #include <map>
 #include <sstream>
+#include <unistd.h>
 
 namespace dinero::swap {
 namespace {
@@ -220,6 +223,25 @@ void VerifyTowerPackage(const TowerPackage& p) {
             Bad(at + "signature does not verify");
         }
     }
+}
+
+std::string WriteTowerInbox(const std::string& inbox_dir, const std::string& package_text) {
+    const auto p = DecodeTowerPackage(package_text);  // never hand the tower something it would refuse
+    const auto id = OfferId(p.offer);
+    const std::string name = ToHex(std::vector<uint8_t>(id.begin(), id.begin() + 8));
+    const std::string path = inbox_dir + "/" + name + ".pkg", tmp = inbox_dir + "/." + name + ".tmp";
+    const int fd = ::open(tmp.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600);
+    if (fd < 0) throw std::runtime_error("tower inbox: cannot open " + tmp);
+    size_t off = 0;
+    while (off < package_text.size()) {
+        const ssize_t n = ::write(fd, package_text.data() + off, package_text.size() - off);
+        if (n <= 0) { ::close(fd); throw std::runtime_error("tower inbox: write failed"); }
+        off += static_cast<size_t>(n);
+    }
+    if (::fsync(fd) != 0) { ::close(fd); throw std::runtime_error("tower inbox: fsync failed"); }
+    ::close(fd);
+    if (std::rename(tmp.c_str(), path.c_str()) != 0) throw std::runtime_error("tower inbox: rename failed");
+    return path;
 }
 
 // ---- The tower --------------------------------------------------------------

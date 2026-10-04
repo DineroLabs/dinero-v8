@@ -13807,6 +13807,23 @@ if(TARGET dinerod)
   set_tests_properties(SwapDinRegtest PROPERTIES LABELS "wallet;swap;regtest" TIMEOUT 600)
 endif()
 
+# Bob's swap watchtower daemon (milestone 5): keyless, pre-signed rungs only.
+add_executable(dinero-swap-tower
+  tools/dinero_swap_tower.cpp
+  src/wallet/swap/tower.cpp
+  src/wallet/swap/runner.cpp
+  src/wallet/swap/fee_ladder.cpp
+  src/wallet/swap/din_watcher.cpp
+  src/wallet/swap/btc_watcher.cpp
+  src/wallet/swap/btc_tx.cpp
+  src/wallet/swap/engine.cpp
+  src/wallet/swap/offer.cpp
+  src/wallet/swap/htlc.cpp
+)
+target_link_libraries(dinero-swap-tower PRIVATE dinero_rpc_client dinero_consensus)
+link_zstd_if_needed(dinero-swap-tower)
+target_include_directories(dinero-swap-tower PRIVATE ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/external)
+
 # Two-chain end-to-end swap: Alice and Bob runners on dinerod + bitcoind regtest (milestone 5).
 add_executable(swap_e2e_tool
   tests/wallet/swap_e2e_tool.cpp
@@ -13825,6 +13842,7 @@ link_zstd_if_needed(swap_e2e_tool)
 target_include_directories(swap_e2e_tool PRIVATE ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/external)
 if(TARGET dinerod AND DINERO_BITCOIND)
   add_test(NAME SwapE2ERegtest
-    COMMAND ${CMAKE_SOURCE_DIR}/tests/wallet/swap_e2e_regtest.sh $<TARGET_FILE:dinerod> $<TARGET_FILE:swap_e2e_tool>)
+    COMMAND ${CMAKE_SOURCE_DIR}/tests/wallet/swap_e2e_regtest.sh $<TARGET_FILE:dinerod> $<TARGET_FILE:swap_e2e_tool>
+            $<TARGET_FILE:dinero-swap-tower>)
   set_tests_properties(SwapE2ERegtest PROPERTIES LABELS "wallet;swap;regtest" TIMEOUT 900)
 endif()

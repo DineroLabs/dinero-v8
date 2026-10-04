@@ -3,13 +3,15 @@
 # Bob each driving their own SwapRunner (tests/wallet/swap_e2e_tool.cpp).
 # dinerod runs with transaction-lock enforcement from height 1, so timestamp
 # locks are enforced by the chain, not only respected by the engine.
-#   usage: swap_e2e_regtest.sh <dinerod> <swap_e2e_tool>
+# Bob's watchtower runs as its own process (dinero-swap-tower) on an inbox dir.
+#   usage: swap_e2e_regtest.sh <dinerod> <swap_e2e_tool> <dinero-swap-tower>
 set -euo pipefail
-DINEROD=${1:?dinerod}; TOOL=${2:?swap_e2e_tool}
+DINEROD=${1:?dinerod}; TOOL=${2:?swap_e2e_tool}; TOWER=${3:?dinero-swap-tower}
 DIR=$(mktemp -d)
 DPORT=$((20000 + RANDOM % 20000)); DP2P=$((DPORT + 7)); BPORT=$((DPORT + 13))
 BCLI=(bitcoin-cli -regtest -datadir="$DIR/btc" -rpcport=$BPORT -rpcuser=test -rpcpassword=test)
-cleanup() { "${BCLI[@]}" stop >/dev/null 2>&1 || true
+cleanup() { [[ -n "${TPID:-}" ]] && kill "$TPID" 2>/dev/null || true
+            "${BCLI[@]}" stop >/dev/null 2>&1 || true
             [[ -n "${NPID:-}" ]] && kill "$NPID" 2>/dev/null || true; sleep 1; rm -rf "$DIR"; }
 trap cleanup EXIT
 dcall() {  # <method> <params-json> -> result (exits on error)
@@ -21,7 +23,7 @@ if e: sys.stderr.write("RPC error %s: %s\n"%(sys.argv[2],e)); sys.exit(1)
 r=d.get("result"); print(r if isinstance(r,str) else json.dumps(r))' "$resp" "$1"
 }
 
-mkdir -p "$DIR/din" "$DIR/btc" "$DIR/swaps"
+mkdir -p "$DIR/din" "$DIR/btc" "$DIR/swaps" "$DIR/inbox"; chmod 700 "$DIR/inbox"
 "$DINEROD" -regtest -daemon=0 -server -rpcuser=test -rpcpassword=test -rpcport=$DPORT -port=$DP2P \
   -datadir="$DIR/din" -listenonion=0 -discover=0 -dnsseed=0 -fixedseeds=0 \
   --consensus-contextual-locks-height=1 >"$DIR/din.log" 2>&1 & NPID=$!
@@ -45,9 +47,16 @@ dcall generatetoaddress "[110, \"$DADDR\"]" >/dev/null
 BADDR=$("${BCLI[@]}" getnewaddress)
 "${BCLI[@]}" generatetoaddress 101 "$BADDR" >/dev/null
 
+# Bob's watchtower: its own process, its own RPC connections, no keys.
+"$TOWER" --inbox "$DIR/inbox" --din-rpc 127.0.0.1:$DPORT --din-auth test:test \
+  --btc-rpc 127.0.0.1:$BPORT --btc-auth test:test --din-hrp rdin --interval 1 --escalate-after 5 \
+  >"$DIR/tower.log" 2>&1 & TPID=$!
+
 rc=0
-for scenario in happy stale-clocks offline; do
+# Order matters: offline and tower-refund move bitcoind's clock past their T_btc.
+for scenario in happy stale-clocks tower-claim offline tower-refund; do
   echo "=== $scenario ==="
-  "$TOOL" "$scenario" "$DIR/swaps" "$DPORT" "$BPORT" test test "$DADDR" "$BADDR" || rc=1
+  "$TOOL" "$scenario" "$DIR/swaps" "$DPORT" "$BPORT" test test "$DADDR" "$BADDR" "$DIR/inbox" || rc=1
 done
+echo "=== tower log ==="; grep -v "not observed" "$DIR/tower.log" | sed 's|'"$DIR"'/inbox/||' || true
 [[ $rc -eq 0 ]] && echo "SWAP E2E: PASS" || { echo "SWAP E2E: FAIL"; tail -20 "$DIR/din.log"; exit 1; }
