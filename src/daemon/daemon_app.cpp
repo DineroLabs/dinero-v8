@@ -2992,6 +2992,9 @@ bool DaemonApp::Init(int argc, char** argv) {
                             tx_relay->HandleInv(peer_addr, hash);
                         } else if (inv_type == 2 && block_relay) {
                             // MSG_BLOCK = 2
+                            if (p2p_service) {
+                                p2p_service->NoteBlockAnnouncement(peer_addr, hash);
+                            }
                             if (csn_mode_for_inv) {
                                 request_headers_refresh();
 
@@ -5703,14 +5706,18 @@ bool DaemonApp::Init(int argc, char** argv) {
                             }
                         }
 
-                        if (added > 0 && header_chain_ptr) {
+                        // Credit the peer with the last header IT sent, whether or
+                        // not it was new to us: a peer re-sending headers we got
+                        // from someone else first still holds those blocks.
+                        if (header_chain_ptr) {
                             // #441: copy under the selector's lock.
-                            consensus::HeaderIndexEntry best_copy{};
-                            const bool have_best = header_chain_ptr->GetBestHeaderCopy(best_copy);
+                            consensus::HeaderIndexEntry last_copy{};
+                            const bool have_last =
+                                header_chain_ptr->GetHeaderCopy(headers.back().GetHash(), last_copy);
                             auto p2p_locked = p2p_weak.lock();
-                            if (have_best && p2p_locked) {
-                                p2p_locked->get().update_peer_height(peer_addr, best_copy.height);
-                                p2p_locked->get().update_peer_synced_headers(peer_addr, best_copy.height);
+                            if (have_last && p2p_locked) {
+                                p2p_locked->get().update_peer_height(peer_addr, last_copy.height);
+                                p2p_locked->get().update_peer_synced_headers(peer_addr, last_copy.height);
                             }
                         }
 

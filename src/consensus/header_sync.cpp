@@ -147,6 +147,32 @@ void HeaderSyncManager::RemovePeer(uint64_t peer_id) {
     }
 }
 
+void HeaderSyncManager::NotePeerHasHeader(uint64_t peer_id, uint32_t height, const uint256& hash) {
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
+    auto it = peers_.find(peer_id);
+    if (it == peers_.end() || height <= it->second.best_height) {
+        return;
+    }
+    it->second.best_height = height;
+    it->second.best_hash = hash;
+}
+
+void HeaderSyncManager::NotePeerAnnouncedUnknownBlock(uint64_t peer_id) {
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
+    HeaderIndexEntry best_copy{};
+    const uint32_t our_height =
+        chain_selector_->GetBestHeaderCopy(best_copy) ? best_copy.height : 0;
+    uint256 unknown;
+    unknown.SetNull();
+    NotePeerHasHeader(peer_id, our_height + 1, unknown);
+}
+
+uint32_t HeaderSyncManager::PeerBestHeight(uint64_t peer_id) const {
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
+    const auto it = peers_.find(peer_id);
+    return it == peers_.end() ? 0 : it->second.best_height;
+}
+
 void HeaderSyncManager::UpdatePeerBest(uint64_t peer_id, uint32_t height, const uint256& hash) {
     std::lock_guard<std::recursive_mutex> lock(mutex_);
     auto it = peers_.find(peer_id);
@@ -343,6 +369,14 @@ HeaderSyncManager::ProcessResult HeaderSyncManager::ProcessHeadersWithResult(
 
     // All headers accepted
     // Note: HeaderChainSelector auto-persists via HeaderStore if configured
+
+    // The peer holds every header it sent, including ones we already had.
+    if (!headers.empty()) {
+        HeaderIndexEntry last{};
+        if (chain_selector_->GetHeaderCopy(headers.back().GetHash(), last)) {
+            NotePeerHasHeader(peer_id, last.height, last.hash);
+        }
+    }
 
     // Validation is complete. Release only the request this response owns.
     if (owns_request) {

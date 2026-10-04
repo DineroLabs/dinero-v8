@@ -258,3 +258,47 @@ TEST(HeaderSyncProbeHardening, AheadPeerDoesNotTakeFlightFromAnotherAheadPeer) {
     EXPECT_FALSE(f.Begin(2, HeaderRequestMode::SYNCHRONIZATION));
     EXPECT_EQ(f.mgr.GetStats().current_sync_peer, 1U);
 }
+
+// Fleet stall, 2026-10-04: a peer that announced a block we do not have was
+// still refused while a peer that was not ahead held the flight. Its height is
+// unknown until its headers arrive — which they cannot while the flight is
+// held. An announcement of an unknown block is itself proof the peer is ahead.
+TEST(HeaderSyncProbeHardening, AnnouncedUnknownBlockLetsPeerTakeFlight) {
+    Fixture f;
+    ASSERT_TRUE(f.Begin(1, HeaderRequestMode::REFRESH));  // 1 is not ahead
+    EXPECT_FALSE(f.Begin(2, HeaderRequestMode::REFRESH)) << "2's height is unknown so far";
+
+    f.mgr.NotePeerAnnouncedUnknownBlock(2);
+    EXPECT_TRUE(f.Begin(2, HeaderRequestMode::REFRESH))
+        << "a peer announcing a block we lack must not wait behind one that is not ahead";
+    EXPECT_EQ(f.mgr.GetStats().current_sync_peer, 2U);
+}
+
+// A peer that sends headers we already have (we learned them from someone else
+// first) still has them: credit it, or it never counts as able to serve them.
+TEST(HeaderSyncProbeHardening, ResentKnownHeadersCreditThePeer) {
+    Fixture f;
+    HeaderIndexEntry genesis{};
+    ASSERT_TRUE(f.selector.GetBestHeaderCopy(genesis));
+    std::vector<BlockHeader> chain;
+    uint256 prev = genesis.hash;
+    for (uint32_t i = 1; i <= 3; ++i) {
+        chain.push_back(MakeHeader(prev, 1000000 + i));
+        prev = chain.back().GetHash();
+    }
+    ASSERT_TRUE(f.mgr.ProcessHeaders(1, chain));
+    EXPECT_EQ(f.mgr.PeerBestHeight(1), 3U);
+
+    ASSERT_TRUE(f.mgr.ProcessHeaders(2, chain));  // all duplicates now
+    EXPECT_EQ(f.mgr.PeerBestHeight(2), 3U);
+}
+
+// Crediting only ever raises a peer's known height.
+TEST(HeaderSyncProbeHardening, PeerCreditNeverLowersKnownHeight) {
+    Fixture f;
+    uint256 none;
+    none.SetNull();
+    f.mgr.NotePeerHasHeader(2, 5, none);
+    f.mgr.NotePeerHasHeader(2, 3, none);
+    EXPECT_EQ(f.mgr.PeerBestHeight(2), 5U);
+}
