@@ -8,6 +8,8 @@
 //   swap.accept {text, [btc_refund_address]}
 //               Bob pastes the offer (btc_refund_address required): returns
 //               {id, accept} — send it back. Alice pastes the accept: the swap starts.
+//   swap.decode {text}  read-only: the terms of an offer (and whether it can
+//               be accepted now), or the swap id an accept belongs to
 //   swap.list / swap.status {id} / swap.cancel {id}
 //
 // No RPC returns a secret, a private key or a raw session. The wallet must be
@@ -145,6 +147,55 @@ din::Json RpcAccept(const ExecutionContext& ctx, const din::Json& params) {
     }
 }
 
+const char* NetworkName(SwapNetwork n) {
+    return n == SwapNetwork::Mainnet ? "mainnet" : n == SwapNetwork::Testnet ? "testnet" : "regtest";
+}
+
+// Read-only: lets a user review terms before swap.accept. No state, no keys.
+din::Json RpcDecode(const ExecutionContext& ctx, const din::Json& params) {
+    if (auto e = Refuse(ctx, false)) return *e;
+    if (!Arg(params, "text").isString()) return Error("usage: swap.decode {text}");
+    const std::string text = Arg(params, "text").asString();
+    try {
+        din::Json out(Json::objectValue);
+        if (text.rfind(kOfferPrefix, 0) == 0) {
+            const SwapOffer o = DecodeOffer(text);
+            out["kind"] = "offer";
+            out["id"] = SwapId(o);
+            out["network"] = NetworkName(o.network);
+            out["din_amount_una"] = Json::UInt64(o.din_amount_una);
+            out["btc_amount_sat"] = Json::UInt64(o.btc_amount_sat);
+            out["t_btc_unix"] = o.t_btc_unix;
+            out["t_din_unix"] = o.t_din_unix;
+            out["expires_unix"] = o.expires_unix;
+            out["n_din"] = o.n_din_confirmations;
+            out["n_btc"] = o.n_btc_confirmations;
+            try {
+                RequireAcceptableNow(o, static_cast<uint32_t>(std::time(nullptr)));
+                out["acceptable_now"] = true;
+            } catch (const std::exception& e) {
+                out["acceptable_now"] = false;
+                out["reason"] = e.what();
+            }
+            return out;
+        }
+        if (text.rfind(kAcceptPrefix, 0) == 0) {
+            const SwapAccept a = DecodeAccept(text);
+            out["kind"] = "accept";
+            out["offer_id_prefix"] = [&] {
+                static const char* d = "0123456789abcdef";
+                std::string h;
+                for (size_t i = 0; i < 8; ++i) { h += d[a.offer_id[i] >> 4]; h += d[a.offer_id[i] & 15]; }
+                return h;
+            }();
+            return out;
+        }
+        return Error("expected a dinswap1o offer or a dinswap1a accept");
+    } catch (const std::exception& e) {
+        return Error(e.what());
+    }
+}
+
 din::Json RpcList(const ExecutionContext& ctx, const din::Json&) {
     if (auto e = Refuse(ctx, false)) return *e;
     din::Json out(Json::arrayValue);
@@ -182,6 +233,7 @@ din::Json RpcCancel(const ExecutionContext& ctx, const din::Json& params) {
 void registerSwapMethods() {
     g_rpcRegistry.registerHandler("swap.offer", RpcOffer, RegisterMode::Overwrite, "context-aware");
     g_rpcRegistry.registerHandler("swap.accept", RpcAccept, RegisterMode::Overwrite, "context-aware");
+    g_rpcRegistry.registerHandler("swap.decode", RpcDecode, RegisterMode::Overwrite, "context-aware");
     g_rpcRegistry.registerHandler("swap.list", RpcList, RegisterMode::Overwrite, "context-aware");
     g_rpcRegistry.registerHandler("swap.status", RpcStatus, RegisterMode::Overwrite, "context-aware");
     g_rpcRegistry.registerHandler("swap.cancel", RpcCancel, RegisterMode::Overwrite, "context-aware");

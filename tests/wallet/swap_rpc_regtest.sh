@@ -80,6 +80,10 @@ check "bob's daemon follows alice's chain" '[[ "$(rpc $BPORT getblockcount "[]")
 OFFER_JSON=$(rpc $APORT swap.offer "{\"din_amount_una\":1000000000,\"btc_amount_sat\":1000000,\"btc_address\":\"$ALICE_BTC\"}")
 OFFER=$(field "$OFFER_JSON" offer); ID=$(field "$OFFER_JSON" id)
 echo "  offer $ID: ${OFFER:0:40}..."
+DECODED=$(rpc $BPORT swap.decode "{\"text\":\"$OFFER\"}")
+check "swap.decode shows bob the terms before accepting" \
+  '[[ "$(field "$DECODED" kind)" == offer && "$(field "$DECODED" id)" == "$ID" && "$(field "$DECODED" btc_amount_sat)" == 1000000 && "$(field "$DECODED" acceptable_now)" == True ]]'
+check "swap.decode refuses garbage" '! rpc $BPORT swap.decode "{\"text\":\"dinswap1o00\"}" 2>/dev/null'
 ACCEPT_JSON=$(rpc $BPORT swap.accept "{\"text\":\"$OFFER\",\"btc_refund_address\":\"$BOB_BTC_REFUND\"}")
 ACCEPT=$(field "$ACCEPT_JSON" accept)
 check "bob accepted the offer" '[[ "$ACCEPT" == dinswap1a* ]]'
