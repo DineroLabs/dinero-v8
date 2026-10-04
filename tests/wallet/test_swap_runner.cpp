@@ -5,6 +5,7 @@
 #include "crypto/evp_secp256k1.h"
 #include "crypto/sha256.h"
 #include "wallet/swap/btc_tx.h"
+#include "wallet/swap/tower.h"
 
 #include <gtest/gtest.h>
 #include <secp256k1.h>
@@ -122,6 +123,13 @@ struct FakeChains : SwapChainIo {
     std::string FundBtc(const std::string& a, uint64_t v) override { return Write("fund_btc:" + a + ":" + std::to_string(v)); }
     std::string BroadcastDin(const std::vector<uint8_t>& t) override { din_broadcasts.push_back(t); return Write("bcast_din"); }
     std::string BroadcastBtc(const std::vector<uint8_t>& t) override { btc_broadcasts.push_back(t); return Write("bcast_btc"); }
+    int tower_refusals{0};
+    std::vector<std::string> armed;
+    void ArmTower(const std::string& package) override {
+        log.lines.push_back("arm_tower");
+        if (tower_refusals > 0) { --tower_refusals; throw std::runtime_error("tower offline"); }
+        armed.push_back(package);
+    }
 };
 
 RunnerConfig Config() {
@@ -327,6 +335,60 @@ TEST(SwapRunner, RpcIoReadsTheNodesRealResultShapes) {
     EXPECT_EQ(io.BroadcastBtc({0x00}), "b1");
 }
 
+void BothLocksSeen(FakeChains& chains, const SwapSession& s) {
+    chains.din.funding = DinFunding(s);
+    chains.din.htlc.output_seen = true;
+    chains.din.htlc.output_confirmations = 40;
+    chains.din.htlc.output_value = s.record.offer.din_amount_una;
+    chains.btc.funding = BtcFundingOf(s);
+    chains.btc.htlc.output_seen = true;
+    chains.btc.htlc.output_confirmations = 1;
+    chains.btc.htlc.output_value = s.record.offer.btc_amount_sat;
+}
+
+TEST(SwapRunner, BobArmsTheTowerOnceBothLocksAreSeen) {
+    Log log;
+    FakeStore store(log);
+    FakeChains chains(log);
+    auto s = MakeSession(Role::BtcSeller);
+    s.record.state = SwapState::BtcLockBroadcast;
+    BothLocksSeen(chains, s);
+    auto config = Config();
+    config.use_tower = true;
+    SwapRunner bob(s, kBobKeys, config, chains, store);
+    bob.Tick(kNow + kHour);
+    EXPECT_EQ(bob.session().record.state, SwapState::BtcLocked);
+    ASSERT_EQ(chains.armed.size(), 1u);
+    const auto package = DecodeTowerPackage(chains.armed[0]);  // verifies every rung
+    EXPECT_EQ(package.din_claims.front().tx.vout[0].scriptPubKey, s.din_payout_script);
+    EXPECT_TRUE(store.saved->tower_armed);
+    EXPECT_TRUE(bob.session().tower_armed);
+    bob.Tick(kNow + 2 * kHour);
+    EXPECT_EQ(chains.armed.size(), 1u) << "armed once";
+}
+
+TEST(SwapRunner, TowerArmingIsRetriedUntilAccepted) {
+    Log log;
+    FakeStore store(log);
+    FakeChains chains(log);
+    chains.tower_refusals = 2;
+    auto s = MakeSession(Role::BtcSeller);
+    s.record.state = SwapState::BtcLocked;
+    BothLocksSeen(chains, s);
+    auto config = Config();
+    config.use_tower = true;
+    SwapRunner bob(s, kBobKeys, config, chains, store);
+    auto r = bob.Tick(kNow + kHour);
+    EXPECT_FALSE(bob.session().tower_armed);
+    bool alerted = false;
+    for (const auto& e : r.events) alerted |= e.rfind("ALERT: watchtower not armed", 0) == 0;
+    EXPECT_TRUE(alerted);
+    bob.Tick(kNow + kHour + 60);
+    bob.Tick(kNow + kHour + 120);
+    EXPECT_TRUE(bob.session().tower_armed);
+    EXPECT_EQ(chains.armed.size(), 1u);
+}
+
 TEST(SwapRunner, SessionRoundTripsThroughTheFileStore) {
     const auto path = (std::filesystem::temp_directory_path() / "swap_runner_test_session.txt").string();
     std::remove(path.c_str());
@@ -338,6 +400,9 @@ TEST(SwapRunner, SessionRoundTripsThroughTheFileStore) {
     EXPECT_EQ(back.record.state, SwapState::DinLocked);
     EXPECT_EQ(back.btc_scan_from_height, 101u);
     EXPECT_EQ(back.din_payout_script, s.din_payout_script);
+    EXPECT_FALSE(back.tower_armed);
+    s.tower_armed = true;
+    EXPECT_TRUE(DecodeSession(EncodeSession(s)).tower_armed);
     std::remove(path.c_str());
     EXPECT_THROW(DecodeSession("record=dinswap1rzz\n"), std::invalid_argument);
 }

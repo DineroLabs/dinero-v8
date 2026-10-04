@@ -4,10 +4,8 @@
 #include "crypto/evp_secp256k1.h"
 #include "crypto/sha256.h"
 #include "wallet/swap/btc_tx.h"
-
-#include <secp256k1.h>
-#include <secp256k1_extrakeys.h>
-#include <secp256k1_schnorrsig.h>
+#include "wallet/swap/swap_crypto.h"
+#include "wallet/swap/tower.h"
 
 #include <cstdio>
 #include <fcntl.h>
@@ -24,81 +22,7 @@ namespace {
     throw std::invalid_argument("swap runner refused: " + why);
 }
 
-std::string ToHex(const std::vector<uint8_t>& b) {
-    static const char* d = "0123456789abcdef";
-    std::string s;
-    for (auto x : b) { s += d[x >> 4]; s += d[x & 15]; }
-    return s;
-}
-
-std::vector<uint8_t> FromHex(const std::string& h) {
-    if (h.size() % 2) Refuse("odd-length hex");
-    std::vector<uint8_t> out;
-    for (size_t i = 0; i < h.size(); i += 2) {
-        auto nib = [](char c) -> int {
-            if (c >= '0' && c <= '9') return c - '0';
-            if (c >= 'a' && c <= 'f') return c - 'a' + 10;
-            return -1;
-        };
-        const int hi = nib(h[i]), lo = nib(h[i + 1]);
-        if (hi < 0 || lo < 0) Refuse("bad hex");
-        out.push_back(static_cast<uint8_t>(hi << 4 | lo));
-    }
-    return out;
-}
-
-secp256k1_keypair Keypair(const Bytes32& secret_key) {
-    secp256k1_keypair kp;
-    if (secp256k1_keypair_create(crypto::GetSecp256k1ContextSignVerify(), &kp, secret_key.data()) != 1) {
-        Refuse("invalid secret key");
-    }
-    return kp;
-}
-
-Bytes32 XOnlyOf(const Bytes32& secret_key) {
-    auto* secp = crypto::GetSecp256k1ContextSignVerify();
-    auto kp = Keypair(secret_key);
-    secp256k1_xonly_pubkey x;
-    secp256k1_keypair_xonly_pub(secp, &x, nullptr, &kp);
-    Bytes32 out{};
-    secp256k1_xonly_pubkey_serialize(secp, out.data(), &x);
-    return out;
-}
-
-std::array<uint8_t, 33> CompressedOf(const Bytes32& secret_key) {
-    auto* secp = crypto::GetSecp256k1ContextSignVerify();
-    secp256k1_pubkey pk;
-    if (secp256k1_ec_pubkey_create(secp, &pk, secret_key.data()) != 1) Refuse("invalid secret key");
-    std::array<uint8_t, 33> out{};
-    size_t len = out.size();
-    secp256k1_ec_pubkey_serialize(secp, out.data(), &len, &pk, SECP256K1_EC_COMPRESSED);
-    return out;
-}
-
-std::array<uint8_t, 64> SchnorrSign(const Bytes32& secret_key, const Bytes32& msg) {
-    auto kp = Keypair(secret_key);
-    std::array<uint8_t, 64> sig{};
-    const std::array<uint8_t, 32> aux{};
-    if (secp256k1_schnorrsig_sign32(crypto::GetSecp256k1ContextSignVerify(), sig.data(), msg.data(), &kp,
-                                    aux.data()) != 1) {
-        Refuse("schnorr signing failed");
-    }
-    return sig;
-}
-
-std::vector<uint8_t> EcdsaSignAll(const Bytes32& secret_key, const Bytes32& msg) {
-    auto* secp = crypto::GetSecp256k1ContextSignVerify();
-    secp256k1_ecdsa_signature sig;
-    if (secp256k1_ecdsa_sign(secp, &sig, msg.data(), secret_key.data(), nullptr, nullptr) != 1) {  // low-S
-        Refuse("ecdsa signing failed");
-    }
-    std::vector<uint8_t> der(72);
-    size_t len = der.size();
-    secp256k1_ecdsa_signature_serialize_der(secp, der.data(), &len, &sig);
-    der.resize(len);
-    der.push_back(0x01);  // SIGHASH_ALL
-    return der;
-}
+using namespace detail;
 
 std::vector<uint8_t> SecretOf(const SwapSession& s) {
     if (!s.record.secret) Refuse("the secret is not known");
@@ -145,7 +69,8 @@ std::string EncodeSession(const SwapSession& s) {
     out << "record=" << EncodeRecord(s.record) << "\n"
         << "btc_scan_from_height=" << s.btc_scan_from_height << "\n"
         << "din_payout_script=" << ToHex(s.din_payout_script) << "\n"
-        << "btc_payout_script=" << ToHex(s.btc_payout_script) << "\n";
+        << "btc_payout_script=" << ToHex(s.btc_payout_script) << "\n"
+        << "tower_armed=" << (s.tower_armed ? 1 : 0) << "\n";
     return out.str();
 }
 
@@ -173,6 +98,10 @@ SwapSession DecodeSession(const std::string& text) {
     }
     s.din_payout_script = FromHex(kv["din_payout_script"]);
     s.btc_payout_script = FromHex(kv["btc_payout_script"]);
+    if (kv.count("tower_armed")) {  // absent in sessions saved before the tower existed
+        if (kv["tower_armed"] != "0" && kv["tower_armed"] != "1") Refuse("bad tower_armed");
+        s.tower_armed = kv["tower_armed"] == "1";
+    }
     if (s.din_payout_script.empty() || s.btc_payout_script.empty()) Refuse("empty payout script");
     return s;
 }
@@ -264,6 +193,21 @@ RpcSwapChainIo::RpcSwapChainIo(DinRpc din, BtcRpc btc, const SwapSession& sessio
       btc_watcher_(btc_, BtcWatchTarget{MakeBtcTerms(session.record.offer, session.record.accept),
                                         session.btc_scan_from_height}) {}
 
+RpcSwapChainIo::RpcSwapChainIo(DinRpc din, BtcRpc btc, const SwapOffer& offer, const SwapAccept& accept,
+                               uint32_t btc_scan_from_height, const std::string& din_hrp)
+    : din_(std::move(din)), btc_(std::move(btc)),
+      din_watcher_(din_, MakeDinTerms(offer, accept), din_hrp),
+      btc_watcher_(btc_, BtcWatchTarget{MakeBtcTerms(offer, accept), btc_scan_from_height}) {}
+
+void SwapChainIo::ArmTower(const std::string&) {
+    throw std::runtime_error("no watchtower configured");
+}
+
+void RpcSwapChainIo::ArmTower(const std::string& package_text) {
+    if (!tower_sink_) throw std::runtime_error("no watchtower configured");
+    tower_sink_(package_text);
+}
+
 DinWatchReport RpcSwapChainIo::ObserveDin() { return din_watcher_.Observe(); }
 BtcWatchReport RpcSwapChainIo::ObserveBtc() { return btc_watcher_.Observe(); }
 
@@ -337,7 +281,40 @@ TickReport SwapRunner::Tick(uint32_t wall_clock_unix) {
         report.actions.push_back(a.kind);
         Execute(a, din, btc, report.events);
     }
+    // Bob's tower must hold the package before he can safely go offline. The
+    // engine asks once (ArmTower); a failed attempt is retried every tick.
+    if (session_.record.role == Role::BtcSeller && config_.use_tower && !session_.tower_armed &&
+        session_.record.state == SwapState::BtcLocked) {
+        ArmTower(din, btc, report.events);
+    }
     return report;
+}
+
+void SwapRunner::ArmTower(const DinWatchReport& din, const BtcWatchReport& btc, std::vector<std::string>& events) {
+    try {
+        if (!din.funding || !btc.funding) throw std::runtime_error("HTLC outputs not both known yet");
+        const auto& offer = session_.record.offer;
+        FeeLadderPolicy din_policy;
+        din_policy.start_feerate_una_per_vb = config_.din_tower_start_feerate_una_per_vb;
+        din_policy.max_rungs = config_.tower_rungs;
+        din_policy.max_fee_una = offer.din_amount_una / 100 * config_.tower_max_fee_percent;
+        din_policy.min_payout_una = offer.din_amount_una / 2;
+        BtcFeeLadderPolicy btc_policy;
+        btc_policy.start_feerate_sat_per_vb = config_.btc_tower_start_feerate_sat_per_vb;
+        btc_policy.max_rungs = config_.tower_rungs;
+        btc_policy.max_fee_sat = offer.btc_amount_sat / 100 * config_.tower_max_fee_percent;
+        btc_policy.min_payout_sat = offer.btc_amount_sat / 2;
+        const auto package = BuildTowerPackage(session_, keys_, *din.funding, *btc.funding, din_policy, btc_policy);
+        io_.ArmTower(EncodeTowerPackage(package));
+        SwapSession next = session_;
+        next.tower_armed = true;
+        store_.Save(next);
+        session_ = std::move(next);
+        events.push_back("watchtower armed: " + std::to_string(package.din_claims.size()) + " DIN claim and " +
+                         std::to_string(package.btc_refunds.size()) + " BTC refund rungs");
+    } catch (const std::exception& e) {
+        events.push_back(std::string("ALERT: watchtower not armed, this wallet must stay online: ") + e.what());
+    }
 }
 
 void SwapRunner::Execute(const Action& action, const DinWatchReport& din, const BtcWatchReport& btc,
@@ -371,8 +348,8 @@ void SwapRunner::Execute(const Action& action, const DinWatchReport& din, const 
             return done("broadcast DIN refund:",
                         io_.BroadcastDin(SignedDinRefund(session_, keys_, *din.funding, config_.din_fee_una)));
         case ActionKind::ArmTower:
-            events.push_back("watchtower not available yet (milestone 6): this wallet must stay online");
-            return;
+            if (!config_.use_tower) events.push_back("no watchtower configured: this wallet must stay online");
+            return;  // armed after the actions (see Tick), retried until it succeeds
         case ActionKind::Alert:
             events.push_back("ALERT: " + action.reason);
             return;

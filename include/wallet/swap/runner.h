@@ -29,6 +29,7 @@ struct SwapSession {
     uint32_t btc_scan_from_height{};          // BTC tip when the swap was accepted
     std::vector<uint8_t> din_payout_script;   // Alice: refund goes here; Bob: claim goes here
     std::vector<uint8_t> btc_payout_script;   // Alice: claim goes here; Bob: refund goes here
+    bool tower_armed{false};                  // Bob: the watchtower accepted this swap's package
 };
 
 // Text form, one "key=value" per line. Holds the secret in the clear (via
@@ -65,6 +66,12 @@ struct SwapKeys {
 struct RunnerConfig {
     uint64_t din_fee_una{100'000};
     uint64_t btc_fee_sat{1'000};
+    // Bob's watchtower ladders (only used when a tower is configured).
+    bool use_tower{false};
+    uint64_t din_tower_start_feerate_una_per_vb{1'000};
+    uint64_t btc_tower_start_feerate_sat_per_vb{2};
+    uint32_t tower_rungs{8};
+    uint32_t tower_max_fee_percent{5};  // per rung, of the swap amount
     std::string din_hrp{"din"};   // "din" / "tdin" / "rdin"
     std::string btc_hrp{"bc"};    // "bc" / "tb" / "bcrt"
 };
@@ -80,6 +87,9 @@ public:
     virtual std::string FundBtc(const std::string& address, uint64_t amount_sat) = 0;
     virtual std::string BroadcastDin(const std::vector<uint8_t>& raw_tx) = 0;
     virtual std::string BroadcastBtc(const std::vector<uint8_t>& raw_tx) = 0;
+    // Hand a TowerPackage (text form) to Bob's watchtower; throws if none is
+    // configured or it refuses the package.
+    virtual void ArmTower(const std::string& package_text);
 };
 
 // Node RPC implementation. `btc` must reach a wallet only for Bob (FundBtc).
@@ -87,6 +97,11 @@ public:
 class RpcSwapChainIo : public SwapChainIo {
 public:
     RpcSwapChainIo(DinRpc din, BtcRpc btc, const SwapSession& session, const RunnerConfig& config);
+    RpcSwapChainIo(DinRpc din, BtcRpc btc, const SwapOffer& offer, const SwapAccept& accept,
+                   uint32_t btc_scan_from_height, const std::string& din_hrp);
+    // Optional: where ArmTower() delivers packages (e.g. writes the tower's inbox).
+    void SetTowerSink(std::function<void(const std::string&)> sink) { tower_sink_ = std::move(sink); }
+    void ArmTower(const std::string& package_text) override;
     DinWatchReport ObserveDin() override;
     BtcWatchReport ObserveBtc() override;
     std::string FundDin(const std::string& address, uint64_t amount_una) override;
@@ -99,6 +114,7 @@ private:
     BtcRpc btc_;
     DinWatcher din_watcher_;
     BtcWatcher btc_watcher_;
+    std::function<void(const std::string&)> tower_sink_;
 };
 
 // HTLC addresses for funding.
@@ -138,6 +154,7 @@ public:
 private:
     void Execute(const Action& action, const DinWatchReport& din, const BtcWatchReport& btc,
                  std::vector<std::string>& events);
+    void ArmTower(const DinWatchReport& din, const BtcWatchReport& btc, std::vector<std::string>& events);
 
     SwapSession session_;
     SwapKeys keys_;
