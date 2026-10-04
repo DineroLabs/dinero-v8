@@ -13610,3 +13610,20 @@ target_include_directories(test_swap_htlc PRIVATE
 )
 add_test(NAME SwapHtlc COMMAND test_swap_htlc)
 set_tests_properties(SwapHtlc PROPERTIES LABELS "wallet;swap;taproot;mandatory" TIMEOUT 20)
+
+# DIN <-> BTC swap offer/accept messages (milestone 1).
+add_executable(test_swap_offer
+  tests/wallet/test_swap_offer.cpp
+  src/wallet/swap/offer.cpp
+  src/wallet/swap/htlc.cpp
+)
+add_dependencies(test_swap_offer gtest gtest_main)
+target_link_libraries(test_swap_offer PRIVATE dinero_consensus gtest gtest_main)
+link_zstd_if_needed(test_swap_offer)
+target_include_directories(test_swap_offer PRIVATE
+  ${CMAKE_SOURCE_DIR}/include
+  ${CMAKE_SOURCE_DIR}/src
+  ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+)
+add_test(NAME SwapOffer COMMAND test_swap_offer)
+set_tests_properties(SwapOffer PROPERTIES LABELS "wallet;swap;mandatory" TIMEOUT 20)
