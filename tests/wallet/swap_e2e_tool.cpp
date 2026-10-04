@@ -149,11 +149,18 @@ int main(int argc, char** argv) {
     const bool stale = scenario == "stale-clocks";
     const bool tower_claim = scenario == "tower-claim", tower_refund = scenario == "tower-refund";
     const bool use_tower = tower_claim || tower_refund;
-    if (!happy && !stale && !use_tower && scenario != "offline") return 2;
+    const bool race_late_reveal = scenario == "race-late-reveal";
+    const bool race_overtaken = scenario == "race-refund-overtaken";
+    const bool race_reorg = scenario == "race-reorg";
+    const bool din_race = scenario == "din-race";
+    const bool known = happy || stale || use_tower || scenario == "offline" || race_late_reveal || race_overtaken ||
+                       race_reorg || din_race;
+    if (!known) return 2;
     const std::string inbox = argc == 10 ? argv[9] : "";
     if (use_tower && inbox.empty()) return 2;
     // Separate payout keys per scenario, so a balance can only come from this run.
-    const uint8_t kb = happy ? 7 : stale ? 17 : scenario == "offline" ? 27 : tower_claim ? 37 : 47;
+    const uint8_t kb = happy ? 7 : stale ? 17 : scenario == "offline" ? 27 : tower_claim ? 37 : tower_refund ? 47
+                     : race_late_reveal ? 57 : race_overtaken ? 67 : race_reorg ? 77 : 87;
     const uint8_t kAliceBtcClaim = kb, kBobDinClaim = kb + 1, kAliceDinRefund = kb + 2, kBobBtcRefund = kb + 3;
     auto din_client = std::make_shared<rpc::RpcClient>("127.0.0.1", uint16_t(std::stoi(argv[3])), "test", "test");
     auto btc_client = std::make_shared<rpc::RpcClient>("127.0.0.1", uint16_t(std::stoi(argv[4])), argv[5], argv[6]);
@@ -191,7 +198,13 @@ int main(int argc, char** argv) {
         // stale-clocks: the parties' clocks say "100 h ago", so for the chains both
         // refund locks are already in the past.
         const int64_t offset = stale ? -100 * int64_t(kHour) : 0;
-        const uint32_t base = static_cast<uint32_t>(int64_t(real_now) + offset);
+        // Honest scenarios start from max(wall clock, Bitcoin MTP): earlier scenarios
+        // may have mocked bitcoind's clock forward, and chain time never goes back.
+        const auto bci = btc("getblockchaininfo", Json::Value(Json::arrayValue));
+        if (!bci) throw std::runtime_error("bitcoind unreachable");
+        const uint32_t btc_mtp_now = (*bci)["mediantime"].asUInt();
+        const uint32_t base = stale ? static_cast<uint32_t>(int64_t(real_now) + offset)
+                                    : std::max(real_now, btc_mtp_now + 60);
         Bytes32 secret{};
         secret.fill(static_cast<uint8_t>(0x50 + kb));
 
@@ -303,6 +316,39 @@ int main(int argc, char** argv) {
             p.append(btc_miner);
             if (!btc("generatetoaddress", p)) throw std::runtime_error("BTC mining failed");
         };
+        // Blocks WITHOUT mempool transactions: Bitcoin time moves, pending spends stay pending.
+        auto mine_btc_empty = [&](int n) {
+            for (int i = 0; i < n; ++i) {
+                Json::Value p(Json::arrayValue);
+                p.append(btc_miner);
+                p.append(Json::Value(Json::arrayValue));
+                if (!btc("generateblock", p)) throw std::runtime_error("generateblock failed");
+            }
+        };
+        auto mock_btc_past_t_btc = [&] {
+            Json::Value mp(Json::arrayValue);
+            mp.append(Json::Int64(o.t_btc_unix) + 3600);
+            if (!btc("setmocktime", mp)) throw std::runtime_error("setmocktime failed");
+        };
+        auto display_txid = [](const BtcTx& tx) {
+            const auto w = BtcTxid(tx);
+            return Hex(std::vector<uint8_t>(w.rbegin(), w.rend()));
+        };
+        // Which transaction currently spends the BTC HTLC in the mempool (if any).
+        auto btc_mempool_spender = [&](const BtcFunding& f) -> std::string {
+            Json::Value op(Json::objectValue);
+            op["txid"] = Hex(std::vector<uint8_t>(f.txid.rbegin(), f.txid.rend()));
+            op["vout"] = f.vout;
+            Json::Value list(Json::arrayValue);
+            list.append(op);
+            Json::Value p(Json::arrayValue);
+            p.append(list);
+            const auto r = btc("gettxspendingprevout", p);
+            return r && r->isArray() && !r->empty() ? (*r)[0]["spendingtxid"].asString() : std::string();
+        };
+        auto never = [](const Party& p, ActionKind k) {
+            return std::find(p.history.begin(), p.history.end(), k) == p.history.end();
+        };
 
         if (happy) {
             bool early_refund_checked = false;
@@ -359,7 +405,8 @@ int main(int argc, char** argv) {
             // Bob locks BTC, arms the tower, and goes offline for good.
             int round = 0;
             for (; round < 60 && !(bob.State() == SwapState::BtcLocked && bob.runner->session().tower_armed); ++round) {
-                tick(alice, round);
+                // tower-refund: Alice funds and then stays silent; tower-claim: she plays on.
+                if (tower_claim || alice.State() != SwapState::DinLocked) tick(alice, round);
                 tick(bob, round);
                 mine();
             }
@@ -397,7 +444,7 @@ int main(int argc, char** argv) {
                 Check(btc_balance(kAliceBtcClaim) == int64_t(kBtcAmount - config.btc_fee_sat), "alice received BTC on chain");
                 std::cout << "  bob comes back\n";
                 boot(bob);
-                for (int i = 0; i < 6 && alive(bob); ++i, ++round) {
+                for (int i = 0; i < 12 && alive(bob); ++i, ++round) {
                     tick(bob, round);
                     mine();
                 }
@@ -405,10 +452,25 @@ int main(int argc, char** argv) {
             } else {
                 // Alice vanishes too; Bitcoin time passes T_btc and only the tower can refund Bob.
                 std::cout << "  alice goes offline; bitcoind: mock time to T_btc + 1 h\n";
-                Json::Value mp(Json::arrayValue);
-                mp.append(Json::Int64(o.t_btc_unix) + 3600);
-                if (!btc("setmocktime", mp)) throw std::runtime_error("setmocktime failed");
+                mock_btc_past_t_btc();
                 mine_btc(12);
+                // No Bitcoin blocks for a while: the tower must bump its refund, and
+                // the higher rung must replace the lower one in the mempool.
+                std::this_thread::sleep_for(std::chrono::seconds(9));
+                const std::string spender = package ? btc_mempool_spender([&] {
+                    BtcFunding f;
+                    f.txid = package->btc_refunds[0].tx.vin[0].prev_txid;
+                    f.vout = package->btc_refunds[0].tx.vin[0].prev_vout;
+                    return f;
+                }()) : "";
+                bool bumped = false;
+                if (package) {
+                    for (size_t i = 1; i < package->btc_refunds.size(); ++i) {
+                        bumped |= spender == display_txid(package->btc_refunds[i].tx);
+                    }
+                }
+                Check(bumped && spender != display_txid(package->btc_refunds[0].tx),
+                      "a higher BTC refund rung replaced rung 0 in the mempool (" + spender.substr(0, 16) + ")");
                 for (; round < 120 && !tower_done(); ++round) mine();
                 Check(tower_done(), "the tower settled the swap");
                 const int64_t got = btc_balance(kBobBtcRefund);
@@ -417,12 +479,160 @@ int main(int argc, char** argv) {
                 Check(rung_amount, "bob got his BTC back through a tower rung (" + std::to_string(got) + " sat)");
                 std::cout << "  bob comes back\n";
                 boot(bob);
-                for (int i = 0; i < 6 && alive(bob); ++i, ++round) {
+                for (int i = 0; i < 12 && alive(bob); ++i, ++round) {
                     tick(bob, round);
                     mine();
                 }
                 Check(bob.State() == SwapState::Refunded,
                       std::string("returning bob reconciles to Refunded (is ") + StateName(bob.State()) + ")");
+            }
+        } else if (race_late_reveal) {
+            // Alice's claim is still in the BTC mempool when Bitcoin time passes
+            // T_btc. Bob must take the DIN with the secret, never race a refund.
+            int round = 0;
+            bool pushed = false;
+            for (; round < 120 && (alive(alice) || alive(bob)); ++round) {
+                if (alive(alice)) tick(alice, round);
+                if (!pushed && alice.State() == SwapState::BtcClaimBroadcast) {
+                    std::cout << "  [" << round << "] claim pending; bitcoind: mock time past T_btc, 12 EMPTY blocks\n";
+                    mock_btc_past_t_btc();
+                    mine_btc_empty(12);
+                    const auto b = bob.io->ObserveBtc();
+                    Check(b.mtp_unix >= o.t_btc_unix && b.htlc.spent && b.htlc.spend_confirmations == 0,
+                          "Bitcoin MTP passed T_btc with Alice's claim still unconfirmed");
+                    pushed = true;
+                }
+                if (alive(bob)) tick(bob, round);
+                mine();
+            }
+            Check(pushed, "the late-reveal window was created");
+            Check(never(bob, ActionKind::RefundBtc), "bob never broadcast a BTC refund against a revealed secret");
+            Check(alice.State() == SwapState::Done && bob.State() == SwapState::Done, "both Done");
+            Check(btc_balance(kAliceBtcClaim) == int64_t(kBtcAmount - config.btc_fee_sat), "alice received BTC on chain");
+            Check(din_balance(kBobDinClaim) == int64_t(kDinAmount - config.din_fee_una), "bob received DIN on chain");
+        } else if (race_overtaken) {
+            // Bob's refund is in the mempool; a late, higher-fee Alice claim (made
+            // outside the client, which refuses) replaces it. Bob must notice the
+            // secret and claim the DIN.
+            int round = 0;
+            for (; round < 60 && bob.State() != SwapState::BtcLocked; ++round) {
+                if (alice.State() != SwapState::DinLocked) tick(alice, round);  // funds, then silent
+                tick(bob, round);
+                mine();
+            }
+            std::cout << "  alice goes quiet; bitcoind: mock time past T_btc\n";
+            mock_btc_past_t_btc();
+            mine_btc(12);
+            tick(bob, round);
+            Check(bob.State() == SwapState::BtcRefundBroadcast, "bob broadcast his BTC refund");
+            const auto b = bob.io->ObserveBtc();
+            Check(b.funding.has_value(), "BTC HTLC known");
+            const std::string refund_txid = b.funding ? btc_mempool_spender(*b.funding) : "";
+            tick(alice, round);
+            Check(never(alice, ActionKind::ClaimBtc), "alice's client refuses to claim after her cut-off");
+            if (b.funding) {
+                const auto late = SignedBtcClaim(alice.runner->session(), alice.keys, *b.funding, 5'000);
+                Json::Value p(Json::arrayValue);
+                p.append(Hex(late));
+                const auto env = btc_client->call("sendrawtransaction", p);
+                std::cout << "    late claim -> " << (env ? env->toStyledString() : btc_client->get_last_error());
+                const std::string now_spender = btc_mempool_spender(*b.funding);
+                Check(!refund_txid.empty() && now_spender == display_txid(ParseBtcTx(late)) && now_spender != refund_txid,
+                      "the higher-fee claim replaced bob's refund in the mempool");
+            }
+            for (++round; round < 120 && alive(bob); ++round) {
+                tick(bob, round);
+                mine();
+            }
+            Check(bob.State() == SwapState::Done, std::string("bob took the DIN instead (is ") + StateName(bob.State()) + ")");
+            Check(din_balance(kBobDinClaim) == int64_t(kDinAmount - config.din_fee_una), "bob received DIN on chain");
+            Check(btc_balance(kAliceBtcClaim) == int64_t(kBtcAmount - 5'000), "the late claim paid alice");
+        } else if (race_reorg) {
+            // Alice's confirmed claim is reorganised out after T_btc. Nobody may
+            // treat the swap as over: Bob must not refund, and the claim re-confirms.
+            int round = 0;
+            std::string claim_block;
+            for (; round < 120 && (alive(alice) || alive(bob)); ++round) {
+                if (alive(alice)) tick(alice, round);
+                if (alive(bob)) tick(bob, round);
+                const bool claim_pending = claim_block.empty() && alice.State() == SwapState::BtcClaimBroadcast;
+                mine();
+                if (claim_pending) {
+                    const auto h = btc("getbestblockhash", Json::Value(Json::arrayValue));
+                    claim_block = h ? h->asString() : "";
+                    const auto a = alice.io->ObserveBtc();
+                    Check(a.htlc.spent && a.htlc.spend_confirmations == 1, "alice's claim is 1 block deep");
+                    tick(alice, round);  // she sees it 1 deep and must not call it settled
+                    Check(alice.State() != SwapState::Done, "alice did not consider a 1-block claim settled");
+                    std::cout << "  [" << round << "] reorg: mock time past T_btc, invalidate the claim block, 12 EMPTY blocks\n";
+                    mock_btc_past_t_btc();
+                    Json::Value p(Json::arrayValue);
+                    p.append(claim_block);
+                    if (!btc("invalidateblock", p)) throw std::runtime_error("invalidateblock failed");
+                    mine_btc_empty(12);
+                    const auto after = alice.io->ObserveBtc();
+                    Check(after.mtp_unix >= o.t_btc_unix && after.htlc.spent && after.htlc.spend_confirmations == 0,
+                          "after the reorg the claim is unconfirmed and Bob's refund is open");
+                }
+            }
+            Check(!claim_block.empty(), "the reorg happened");
+            Check(never(bob, ActionKind::RefundBtc), "bob never refunded after the secret was public");
+            Check(alice.State() == SwapState::Done && bob.State() == SwapState::Done, "both Done");
+            Check(btc_balance(kAliceBtcClaim) == int64_t(kBtcAmount - config.btc_fee_sat), "alice received BTC on chain");
+        } else if (din_race) {
+            // DIN claim and refund in the same window, both orderings, after T_din:
+            // Dinero keeps the first seen (no replace-by-fee); the block decides.
+            for (int order = 0; order < 2; ++order) {
+                SwapOffer od = o;
+                const uint32_t past = real_now - 100 * kHour;
+                od.expires_unix = past;
+                od.t_btc_unix = past + 12 * kHour;
+                od.t_din_unix = past + 36 * kHour;  // already passed by Dinero's MTP
+                Bytes32 sec{};
+                sec.fill(static_cast<uint8_t>(0xa0 + order));
+                crypto::CSHA256().Write(sec.data(), sec.size()).Finalize(od.payment_hash.data());
+                od = DecodeOffer(EncodeOffer(od));
+                SwapAccept ad = a;
+                ad.offer_id = OfferId(od);
+                SwapSession as;
+                as.record.role = Role::DinSeller;
+                as.record.offer = od;
+                as.record.accept = ad;
+                as.record.secret = sec;
+                as.btc_scan_from_height = btc_tip->asUInt();
+                as.din_payout_script = P2tr(kAliceDinRefund);
+                as.btc_payout_script = P2tr(kAliceBtcClaim);
+                SwapSession bs = as;
+                bs.record.role = Role::BtcSeller;  // Bob, having learned the secret
+                bs.din_payout_script = P2tr(kBobDinClaim);
+                RpcSwapChainIo io(din, btc, as, config);
+                Json::Value fp(Json::objectValue);
+                fp["address"] = DinHtlcAddressFor(as.record, "rdin");
+                fp["amount_una"] = Json::UInt64(kDinAmount);
+                if (!din("wallet.sendtoaddress", fp)) throw std::runtime_error("funding failed");
+                mine();
+                const auto d = io.ObserveDin();
+                Check(d.funding.has_value(), "race HTLC funded");
+                if (!d.funding) continue;
+                const auto claim = SignedDinClaim(bs, bob.keys, *d.funding, config.din_fee_una);
+                const auto refund = SignedDinRefund(as, alice.keys, *d.funding, config.din_fee_una);
+                const auto& first = order == 0 ? claim : refund;
+                const auto& second = order == 0 ? refund : claim;
+                Json::Value p1(Json::arrayValue), p2(Json::arrayValue);
+                p1.append(Hex(first));
+                p2.append(Hex(second));
+                const auto e1 = din_client->call("sendrawtransaction", p1);
+                const auto e2 = din_client->call("sendrawtransaction", p2);
+                const std::string t1 = e1 ? e1->toStyledString() : din_client->get_last_error();
+                const std::string t2 = e2 ? e2->toStyledString() : din_client->get_last_error();
+                const char* name = order == 0 ? "claim-then-refund" : "refund-then-claim";
+                Check(t1.find("error") == std::string::npos || t1.find("\"error\" : null") != std::string::npos,
+                      std::string(name) + ": the first spend is accepted");
+                Check(t2.find("conflict") != std::string::npos, std::string(name) + ": the second is refused as a conflict");
+                mine();
+                const auto after = io.ObserveDin();
+                Check(after.htlc.spent && after.htlc.spent_by_claim == (order == 0),
+                      std::string(name) + ": the watcher reports the first one as the winner");
             }
         } else if (stale) {
             for (int round = 0; round < 40 && (alive(alice) || alive(bob)); ++round) {

@@ -53,8 +53,9 @@ BADDR=$("${BCLI[@]}" getnewaddress)
   >"$DIR/tower.log" 2>&1 & TPID=$!
 
 rc=0
-# Order matters: offline and tower-refund move bitcoind's clock past their T_btc.
-for scenario in happy stale-clocks tower-claim offline tower-refund; do
+# Scenarios that move bitcoind's clock forward are safe in any order: each
+# honest scenario starts its locks from max(wall clock, Bitcoin MTP).
+for scenario in happy stale-clocks tower-claim din-race race-late-reveal race-reorg offline tower-refund race-refund-overtaken; do
   echo "=== $scenario ==="
   "$TOOL" "$scenario" "$DIR/swaps" "$DPORT" "$BPORT" test test "$DADDR" "$BADDR" "$DIR/inbox" || rc=1
 done
