@@ -13714,3 +13714,20 @@ if(DINERO_BITCOIND)
             $<TARGET_FILE:swap_btc_watch_tool> $<TARGET_FILE:swap_btc_regtest_tool>)
   set_tests_properties(SwapBtcWatcherRegtest PROPERTIES LABELS "wallet;swap;regtest" TIMEOUT 240)
 endif()
+
+# Dinero regtest helper for the swap's DIN side (milestone 4c).
+add_executable(swap_din_tool
+  tests/wallet/swap_din_tool.cpp
+  src/wallet/swap/din_watcher.cpp
+  src/wallet/swap/engine.cpp
+  src/wallet/swap/offer.cpp
+  src/wallet/swap/htlc.cpp
+)
+target_link_libraries(swap_din_tool PRIVATE dinero_rpc_client dinero_consensus)
+link_zstd_if_needed(swap_din_tool)
+target_include_directories(swap_din_tool PRIVATE ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/external)
+if(TARGET dinerod)
+  add_test(NAME SwapDinRegtest
+    COMMAND ${CMAKE_SOURCE_DIR}/tests/wallet/swap_din_regtest.sh $<TARGET_FILE:dinerod> $<TARGET_FILE:swap_din_tool>)
+  set_tests_properties(SwapDinRegtest PROPERTIES LABELS "wallet;swap;regtest" TIMEOUT 600)
+endif()
