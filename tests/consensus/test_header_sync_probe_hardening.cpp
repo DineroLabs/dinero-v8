@@ -227,3 +227,34 @@ TEST(HeaderSyncProbeHardening, PenaltyRearmsOnRepeatOffence) {
     f.mgr.Tick(f.now_ms);
     EXPECT_TRUE(f.Begin(1, HeaderRequestMode::STALE_TIP_RECOVERY));
 }
+
+// TX resync, 2026-10-03: the first getheaders went to a relay that advertised
+// height 0 and never answered. Peers 123k headers ahead were refused for the
+// whole 15-minute budget ("request flight already owned"). A peer that can
+// actually teach us headers takes the flight from one that cannot; the holder
+// is not penalised and its timeout is unchanged.
+TEST(HeaderSyncProbeHardening, AheadPeerTakesFlightFromPeerThatIsNotAhead) {
+    Fixture f;
+    ASSERT_TRUE(f.Begin(1, HeaderRequestMode::REFRESH));  // 1 is at our height
+
+    uint256 none;
+    none.SetNull();
+    f.mgr.UpdatePeerBest(2, 1000, none);  // 2 is 1000 headers ahead
+    EXPECT_TRUE(f.Begin(2, HeaderRequestMode::SYNCHRONIZATION))
+        << "a peer that is ahead must not wait behind one that is not";
+    EXPECT_EQ(f.mgr.GetStats().current_sync_peer, 2U);
+    EXPECT_TRUE(f.switches.calls.empty()) << "taking the flight is not a stall";
+}
+
+// Two peers that are both ahead keep the single-flight rule: the continuation
+// from the first must not be reset by the second.
+TEST(HeaderSyncProbeHardening, AheadPeerDoesNotTakeFlightFromAnotherAheadPeer) {
+    Fixture f;
+    uint256 none;
+    none.SetNull();
+    f.mgr.UpdatePeerBest(1, 1000, none);
+    f.mgr.UpdatePeerBest(2, 2000, none);
+    ASSERT_TRUE(f.Begin(1, HeaderRequestMode::SYNCHRONIZATION));
+    EXPECT_FALSE(f.Begin(2, HeaderRequestMode::SYNCHRONIZATION));
+    EXPECT_EQ(f.mgr.GetStats().current_sync_peer, 1U);
+}
