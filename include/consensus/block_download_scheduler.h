@@ -544,6 +544,13 @@ public:
         tip_retry_timeout_ = timeout;
     }
 
+    // How long a peer whose tip requests keep timing out is left out of
+    // getdata (see slow_peers_).
+    void SetSlowPeerCooldown(std::chrono::milliseconds cooldown) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        slow_peer_cooldown_ = cooldown;
+    }
+
     // Stall watchdog (defense-in-depth net): if the tip makes no progress for
     // this many seconds while blocks are still queued, Tick() force-recovers —
     // clears the per-peer body-incapable skip-set and resets all in-flight
@@ -874,6 +881,19 @@ private:
 
     std::unordered_map<uint256, std::string> announcing_peers_;
     std::chrono::milliseconds tip_retry_timeout_{750};
+
+    // Peers whose tip-sync getdata keep expiring unanswered. Each expiry adds a
+    // miss and each block the peer delivers cancels one; at kSlowPeerTimeouts
+    // net misses the peer is staged into the request skip-set for
+    // slow_peer_cooldown_. The daemon callback's liveness guard still never
+    // drops to zero recipients.
+    struct SlowPeer {
+        uint32_t missed = 0;
+        std::chrono::steady_clock::time_point demoted_at{};
+    };
+    static constexpr uint32_t kSlowPeerTimeouts = 2;
+    std::unordered_map<std::string, SlowPeer> slow_peers_;  // guarded by mutex_
+    std::chrono::milliseconds slow_peer_cooldown_{std::chrono::seconds(60)};
     std::atomic<bool> driver_running_{false};
     std::atomic<bool> driver_stop_{false};
     std::thread driver_thread_;
