@@ -48,8 +48,12 @@ timeout. We make the **DIN seller (Alice) the initiator**.
    If Alice never claims: Bob refunds BTC after T_btc; Alice refunds DIN after T_din.
 ```
 
-Safety: Alice can only learn the BTC by revealing `s`; once `s` is public Bob
-has until `T_din` to take the DIN. Bob never reveals anything.
+Safety: Alice can only take the BTC by revealing `s`; Bob never reveals
+anything. **The timelocks only open refunds — they never close the claim
+paths.** After `T_btc` both Alice's BTC claim and Bob's BTC refund are valid
+and race; after `T_din` both Bob's DIN claim and Alice's DIN refund race. So
+safety is conditional on each side acting in time (§6.1), not guaranteed by the
+scripts alone.
 
 `T_din` and `T_btc` are **Unix timestamps** checked against each chain's
 median time past, never block heights (§6).
@@ -108,26 +112,73 @@ block's median time past**, BIP113-style (`include/consensus/contextual_locks.h`
 absolute-lock branch), and that check does not depend on input heights, so
 Utreexo/CSN nodes enforce it too. Bitcoin uses the same rule.
 
-**Invariant (must hold in wall-clock time, worst case):**
-
-```
-Bob's claim window = T_din_unix − (latest time s can be revealed)
-latest reveal ≈ T_btc_unix + BTC MTP lag (~1 h) + BTC confirmation slack
-Bob must confirm his DIN claim before Dinero MTP ≥ T_din_unix
-```
-
 | Parameter | Proposed default | Why |
 |---|---|---|
-| `T_btc_unix` (Bob refund) | lock time + 24 h | Bob's BTC is never locked longer than ~a day |
-| `T_din_unix` (Alice refund) | ≥ `T_btc_unix` + 24 h | leaves Bob ≥ 22 h after the latest possible reveal, after MTP lag |
-| Alice's claim cut-off (app) | refuse to claim BTC after `T_btc_unix` − 2 h | avoids racing Bob's BTC refund; past it, both sides refund |
+| `T_btc_unix` (Bob refund opens) | lock time + 24 h | Bob's BTC is locked at most ~a day if Alice disappears |
+| `T_din_unix` (Alice refund opens) | ≥ `T_btc_unix` + 24 h | the gap Bob needs after a late reveal (§6.1) |
 | `N_din` (Bob waits) | scaled by amount (see below), min 30 blocks | DIN is a small-hashrate chain; deep confirmation before Bob commits BTC |
 | `N_btc` (Alice waits) | 2–3 BTC blocks | standard |
-| Bob's claim (app) | claim immediately when `s` appears; alarm at `T_din_unix` − 12 h | Bob's software must claim long before the refund opens |
+| Alice's claim cut-off | *app policy only*: the app will not claim BTC after `T_btc_unix` − 2 h | lowers the chance of a late reveal; **not a guarantee** — any other client can still claim (§6.1) |
 
-MTP lags real time (≈6 blocks: ~6–12 min on Dinero, ~1 h on Bitcoin). The
-margins above already absorb that; the app always computes deadlines from
-each chain's current MTP, not from the local clock.
+### 6.1 What is actually guaranteed, and the liveness each side owes
+
+Nothing in the scripts expires the claim paths, and median-time lag is not a
+bounded quantity (a chain can stall or slow for hours). The real guarantees:
+
+**Bob is safe if, and only if, both hold:**
+
+1. **Prompt BTC refund.** As soon as Bitcoin's MTP reaches `T_btc_unix` and `s`
+   has not appeared, Bob broadcasts his BTC refund (pre-signed, high fee,
+   fee-bumpable). Until it confirms, Alice can still claim the BTC — that is
+   the race. If Alice wins it, `s` appears around `T_btc_unix` plus the race
+   time, and Bob still has roughly `T_din_unix − T_btc_unix` minus Bitcoin's
+   confirmation delay to act on the DIN side.
+2. **Prompt DIN claim.** The moment `s` appears (in Bitcoin's mempool or a
+   block), Bob broadcasts his DIN claim and gets it confirmed before Dinero's
+   MTP reaches `T_din_unix`.
+
+If Bob is offline through `T_btc_unix`, Alice can claim the BTC **arbitrarily
+late** (as long as Bob has not refunded), leaving Bob any window down to zero —
+the 24 h gap protects only a Bob who is online (or delegated, §6.2).
+
+**Alice is safe** with no time-critical action: she only reveals `s` by
+claiming BTC she then holds. Her only liveness duty is to reclaim her DIN
+after `T_din_unix` if Bob never locked (or never claimed) — and after
+`T_din_unix` her refund races Bob's claim, so a Bob who learned `s` must have
+claimed before then.
+
+**Chain-stall effects (not covered by fixed margins):**
+
+| Stall / slowdown | Effect | Handling |
+|---|---|---|
+| Bitcoin stalls or slows near `T_btc_unix` | Bitcoin's MTP stays below `T_btc_unix`, so Bob cannot refund while Alice can still claim — the reveal can slip later in wall-clock time, eating Bob's DIN window | Bob claims DIN the instant `s` appears; the app tracks *wall-clock* time left until Dinero's `T_din_unix`, not the Bitcoin deadline |
+| Dinero stalls or slows near `T_din_unix` | Dinero's MTP stays low, so Alice's refund is delayed too (in Bob's favour) — but Bob's claim also cannot confirm without blocks | claim broadcast early and fee-bumped; a stall delays both sides equally |
+| Fee spike on either chain | claim or refund may not confirm in time | replaceable fees on all claim/refund transactions; CPFP via the sweep output on Bitcoin |
+
+**Abort rules before Bob locks BTC:** Bob's client refuses to lock if
+`T_din_unix − now < 36 h`, if either chain's MTP lags wall-clock time by more
+than 2 h (signs of a stall), or if Alice's DIN lock has fewer than `N_din`
+confirmations.
+
+### 6.2 Watchtower (required for Bob in v1)
+
+Because Bob's safety depends on being online at two moments, v1 ships a
+**watchtower**: a process (on Bob's own always-on machine, or a third party he
+chooses) that holds
+
+- Bob's **pre-signed BTC refund** (`nLockTime = T_btc_unix`), broadcast as soon
+  as Bitcoin's MTP allows if `s` has not appeared; and
+- Bob's **pre-signed DIN claim**, with the preimage slot empty. A BIP341
+  tapscript signature commits to the transaction and leaf, not to the other
+  witness items, so the tower can insert `s` when it appears without holding
+  Bob's key. *(Inference from BIP341; must be confirmed against Dinero's
+  tapscript sighash in qualification §9.)*
+
+The tower can only complete transactions that pay Bob; it cannot redirect funds.
+
+MTP lags real time (≈6 blocks: ~6–12 min on Dinero, ~1 h on Bitcoin) and can
+lag more during stalls; the app always computes deadlines from each chain's
+current MTP and shows wall-clock time remaining.
 
 **Reorg / hashrate risk (main DIN-specific risk).** If an attacker can rewrite
 `N_din` DIN blocks, Alice could double-spend her lock after Bob locks BTC. Rule:
@@ -150,8 +201,10 @@ and raise `N_din` with amount. The app shows the cap; makers set their own.
    `swap.status`, `swap.claim`, `swap.refund`, `swap.list`. They must never be
    reachable on the public bridge endpoints: add `swap.*` to the public RPC
    guard's denylist when they land (and leave them out of the planned allowlist).
-5. **UI**: dinero-qt "Swap" tab first; mobile later via the embedded node.
-6. **Negotiation v1**: copy-paste offer strings (amounts, rate, `h`, both
+5. **Watchtower** (§6.2): holds Bob's pre-signed BTC refund and DIN claim;
+   runs alongside dinero-qt or as a small daemon; required for Bob in v1.
+6. **UI**: dinero-qt "Swap" tab first; mobile later via the embedded node.
+7. **Negotiation v1**: copy-paste offer strings (amounts, rate, `h`, both
    pubkeys, `T_din`, `T_btc`). v2: an order board (Nostr relay or a signed
    offer board) and an optional maker bot to seed liquidity.
 
@@ -161,9 +214,10 @@ and raise `N_din` with amount. The app shows the cap; makers set their own.
 |---|---|
 | Bob never locks BTC | Alice refunds DIN after `T_din` |
 | Alice never claims BTC | Bob refunds BTC after `T_btc`; Alice refunds DIN after `T_din` |
-| Alice claims BTC near `T_btc_unix` | app refuses after `T_btc_unix` − 2 h; even a late reveal leaves Bob ≥ 22 h before `T_din_unix` |
+| Alice claims BTC after `T_btc_unix` (any client) | races Bob's BTC refund; if Alice wins, Bob must claim DIN before `T_din_unix` — safe only if Bob (or his watchtower) is online (§6.1) |
+| Bob offline through `T_btc_unix` | Alice may claim BTC arbitrarily late, shrinking Bob's DIN window toward zero — the watchtower (§6.2) is required in v1 |
 | DIN block rate changes mid-swap (60 s activation, bursts) | no effect: both locks are timestamps |
-| Bob's software offline after `s` revealed | must come back before `T_din`; app warns; watchtower option in v2 |
+| Bob's software offline after `s` revealed | watchtower inserts `s` into Bob's pre-signed DIN claim and broadcasts it (§6.2) |
 | Fee spike on refund/claim | claim/refund txs built with replaceable fees; BTC side CPFP via the sweep output |
 | DIN reorg below `N_din` | Bob does not lock until `N_din`; amount caps bound the attack value |
 | Wrong `h`, amount, or timeout in counterparty lock | each side verifies the other's script byte-for-byte before acting |
@@ -183,6 +237,16 @@ and raise `N_din` with amount. The app shows the cap; makers set their own.
   after; include a swap that **crosses the 60 s activation** on regtest and one
   with a block burst, and check the claim margin in wall-clock time.
 - CSN/Utreexo node enforces the timestamp lock (parent MTP available).
+- **Race tests:** Alice claims BTC just after `T_btc_unix` while Bob's refund
+  is in flight (both orderings); claim and refund broadcast in the same block
+  window on each chain; Bob offline through `T_btc_unix` with and without the
+  watchtower; Bitcoin stall pushing the reveal late (measure Bob's remaining
+  wall-clock window); Dinero stall near `T_din_unix`; fee-spike/RBF on every
+  claim and refund.
+- **Watchtower:** pre-signed DIN claim with `s` inserted later verifies under
+  Dinero's tapscript sighash (confirms §6.2's BIP341 inference); tower cannot
+  alter outputs.
+- Client abort rules (§6.1) refuse to lock under each listed condition.
 - External review of the script templates and state machine.
 
 ## 10. Later: DIN ↔ XMR
@@ -201,5 +265,6 @@ the §4 tooling. Start only after v1 is proven.
 | Script/tx library + vectors | small |
 | State machine + persistence + watchers | medium |
 | RPCs + dinero-qt Swap tab | medium |
+| Watchtower (pre-signed refund/claim, preimage insertion) | small–medium |
 | Regtest two-chain harness + qualification | medium |
 | Order board / maker bot | medium, optional for v1 |
