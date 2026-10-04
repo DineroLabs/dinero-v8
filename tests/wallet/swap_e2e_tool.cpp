@@ -17,6 +17,7 @@
 //               time Alice's DIN refund is already open. Bob must abort WITHOUT
 //               locking BTC (else Alice could refund DIN and also take his
 //               BTC); Alice then refunds her DIN on chain.
+#include "wallet/swap/encrypted_store.h"
 #include "wallet/swap/runner.h"
 #include "wallet/swap/tower.h"
 
@@ -122,13 +123,16 @@ struct Party {
     SwapKeys keys;
     int64_t clock_offset{0};
     std::string store_path;
-    PlaintextFileSwapStore store;
+    Bytes32 store_key;  // stands in for DeriveSwapStoreKey(wallet master key)
+    EncryptedFileSwapStore store;
     std::unique_ptr<RpcSwapChainIo> io;
     std::unique_ptr<SwapRunner> runner;
     std::vector<ActionKind> history;
     bool restarted{false};
 
-    Party(std::string n, SwapKeys k, std::string path) : name(std::move(n)), keys(k), store_path(path), store(path) {}
+    Party(std::string n, SwapKeys k, std::string path, uint8_t master)
+        : name(std::move(n)), keys(k), store_path(path),
+          store_key(DeriveSwapStoreKey([&] { Bytes32 m{}; m.fill(master); return m; }())), store(path, store_key) {}
     uint32_t Now() const { return static_cast<uint32_t>(int64_t(std::time(nullptr)) + clock_offset); }
     bool Terminal() const {
         const auto st = runner->session().record.state;
@@ -250,8 +254,8 @@ int main(int argc, char** argv) {
             return s;
         };
 
-        Party alice("alice", SwapKeys{Scalar(3), Scalar(4)}, dir + "/alice-" + scenario + ".swap");
-        Party bob("bob", SwapKeys{Scalar(5), Scalar(6)}, dir + "/bob-" + scenario + ".swap");
+        Party alice("alice", SwapKeys{Scalar(3), Scalar(4)}, dir + "/alice-" + scenario + ".swap", 0xa1);
+        Party bob("bob", SwapKeys{Scalar(5), Scalar(6)}, dir + "/bob-" + scenario + ".swap", 0xb0);
         alice.clock_offset = bob.clock_offset = offset;
         alice.store.Save(make_session(Role::DinSeller));
         bob.store.Save(make_session(Role::BtcSeller));
@@ -260,7 +264,7 @@ int main(int argc, char** argv) {
         auto boot = [&](Party& p) {
             p.runner.reset();
             p.io.reset();
-            const auto s = PlaintextFileSwapStore::Load(p.store_path);
+            const auto s = EncryptedFileSwapStore::Load(p.store_path, p.store_key);
             p.io = std::make_unique<RpcSwapChainIo>(din, btc, s, config);
             if (use_tower && s.record.role == Role::BtcSeller) {
                 p.io->SetTowerSink([&](const std::string& package) {
@@ -694,9 +698,17 @@ int main(int argc, char** argv) {
                       "dinerod refuses alice's DIN refund until T_din");
             }
         }
+        {  // Alice's store holds her secret: it must never be on disk in the clear.
+            std::ifstream in(alice.store_path);
+            std::stringstream t;
+            t << in.rdbuf();
+            Check(t.str().rfind("dinswap1e", 0) == 0 &&
+                      t.str().find(Hex(std::vector<uint8_t>(secret.begin(), secret.end()))) == std::string::npos,
+                  "alice's swap file is encrypted (no secret on disk)");
+        }
         for (Party* p : {&alice, &bob}) {  // from the store: a party may be offline (no runner)
             std::cout << "  " << p->name << " final record: "
-                      << StateName(PlaintextFileSwapStore::Load(p->store_path).record.state) << "\n";
+                      << StateName(EncryptedFileSwapStore::Load(p->store_path, p->store_key).record.state) << "\n";
         }
     } catch (const std::exception& e) {
         std::cout << "  FAIL exception: " << e.what() << "\n";

@@ -13738,6 +13738,33 @@ target_include_directories(test_swap_tower PRIVATE
 add_test(NAME SwapTower COMMAND test_swap_tower)
 set_tests_properties(SwapTower PROPERTIES LABELS "wallet;swap;mandatory" TIMEOUT 30)
 
+# Encrypted swap store: AES-256-GCM sealed sessions (wallet-key subkey).
+add_executable(test_swap_encrypted_store
+  tests/wallet/test_swap_encrypted_store.cpp
+  src/wallet/swap/encrypted_store.cpp
+  src/crypto/wallet_crypto.cpp
+  src/wallet/swap/tower.cpp
+  src/wallet/swap/runner.cpp
+  src/wallet/swap/fee_ladder.cpp
+  src/wallet/swap/din_watcher.cpp
+  src/wallet/swap/btc_watcher.cpp
+  src/wallet/swap/btc_tx.cpp
+  src/wallet/swap/engine.cpp
+  src/wallet/swap/offer.cpp
+  src/wallet/swap/htlc.cpp
+)
+add_dependencies(test_swap_encrypted_store gtest gtest_main)
+target_link_libraries(test_swap_encrypted_store PRIVATE dinero_consensus argon2 OpenSSL::Crypto gtest gtest_main)
+link_zstd_if_needed(test_swap_encrypted_store)
+target_include_directories(test_swap_encrypted_store PRIVATE
+  ${CMAKE_SOURCE_DIR}/include
+  ${CMAKE_SOURCE_DIR}/src
+  ${CMAKE_SOURCE_DIR}/external
+  ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+)
+add_test(NAME SwapEncryptedStore COMMAND test_swap_encrypted_store)
+set_tests_properties(SwapEncryptedStore PROPERTIES LABELS "wallet;swap;mandatory" TIMEOUT 30)
+
 # Swap Bitcoin-side transactions: BIP143 vector, serialization, HTLC spends (milestone 4).
 add_executable(test_swap_btc_tx
   tests/wallet/test_swap_btc_tx.cpp
@@ -13827,6 +13854,8 @@ target_include_directories(dinero-swap-tower PRIVATE ${CMAKE_SOURCE_DIR}/include
 # Two-chain end-to-end swap: Alice and Bob runners on dinerod + bitcoind regtest (milestone 5).
 add_executable(swap_e2e_tool
   tests/wallet/swap_e2e_tool.cpp
+  src/wallet/swap/encrypted_store.cpp
+  src/crypto/wallet_crypto.cpp
   src/wallet/swap/runner.cpp
   src/wallet/swap/tower.cpp
   src/wallet/swap/fee_ladder.cpp
@@ -13837,7 +13866,7 @@ add_executable(swap_e2e_tool
   src/wallet/swap/offer.cpp
   src/wallet/swap/htlc.cpp
 )
-target_link_libraries(swap_e2e_tool PRIVATE dinero_rpc_client dinero_consensus)
+target_link_libraries(swap_e2e_tool PRIVATE dinero_rpc_client dinero_consensus argon2 OpenSSL::Crypto)
 link_zstd_if_needed(swap_e2e_tool)
 target_include_directories(swap_e2e_tool PRIVATE ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/external)
 if(TARGET dinerod AND DINERO_BITCOIND)
