@@ -46,7 +46,7 @@ BADDR=$("${BCLI[@]}" getnewaddress)
 "${BCLI[@]}" generatetoaddress 101 "$BADDR" >/dev/null
 
 rc=0
-for scenario in happy offline; do
+for scenario in happy stale-clocks offline; do
   echo "=== $scenario ==="
   "$TOOL" "$scenario" "$DIR/swaps" "$DPORT" "$BPORT" test test "$DADDR" "$BADDR" || rc=1
 done

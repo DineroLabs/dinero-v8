@@ -4,12 +4,19 @@
 // both chains mine a block. Each runner is destroyed and rebuilt from its store
 // once mid-swap. Outcomes are checked on chain (payout balances), not just by
 // the final states.
-//   swap_e2e_tool happy|offline <workdir> <din_rpcport> <btc_rpcport> <btc_user> <btc_pass>
-//                 <din_miner_address> <btc_miner_address>
-// happy:   future locks; both reach Done; Alice's early DIN refund is rejected
-//          by the node (lock enforcement is live, not just engine restraint).
-// offline: Alice funds and vanishes; Bob refunds his BTC; Alice returns, does
-//          NOT claim the already-refunded BTC (no secret leak) and refunds DIN.
+//   swap_e2e_tool happy|offline|stale-clocks <workdir> <din_rpcport> <btc_rpcport>
+//                 <btc_user> <btc_pass> <din_miner_address> <btc_miner_address>
+// happy:        honest clocks; both reach Done; Alice's early DIN refund is
+//               refused by the node as non-final (lock enforcement is live).
+// offline:      honest clocks; Alice funds and vanishes; Bob locks, bitcoind's
+//               mock time opens his refund and he takes his BTC back; Alice
+//               returns, does NOT claim (no secret leak) and her DIN stays
+//               locked until T_din (dinerod has no mock time; the node refuses
+//               the early refund as non-final).
+// stale-clocks: both parties' clocks run 100 h behind the chains, so by chain
+//               time Alice's DIN refund is already open. Bob must abort WITHOUT
+//               locking BTC (else Alice could refund DIN and also take his
+//               BTC); Alice then refunds her DIN on chain.
 #include "wallet/swap/runner.h"
 
 #include "bech32/bech32.hpp"
@@ -136,7 +143,8 @@ int main(int argc, char** argv) {
     }
     const std::string scenario = argv[1], dir = argv[2];
     const bool happy = scenario == "happy";
-    if (!happy && scenario != "offline") return 2;
+    const bool stale = scenario == "stale-clocks";
+    if (!happy && !stale && scenario != "offline") return 2;
     auto din_client = std::make_shared<rpc::RpcClient>("127.0.0.1", uint16_t(std::stoi(argv[3])), "test", "test");
     auto btc_client = std::make_shared<rpc::RpcClient>("127.0.0.1", uint16_t(std::stoi(argv[4])), argv[5], argv[6]);
     const DinRpc din = MakeRpc(din_client, "DIN");
@@ -170,12 +178,12 @@ int main(int argc, char** argv) {
 
         // ---- Offer and accept (fixed test keys; secret differs per scenario) ----
         const uint32_t real_now = static_cast<uint32_t>(std::time(nullptr));
-        // offline: everything happened "100 h ago" by the parties' clocks, so both
-        // refund locks are already in the past for the chains.
-        const int64_t offset = happy ? 0 : -100 * int64_t(kHour);
+        // stale-clocks: the parties' clocks say "100 h ago", so for the chains both
+        // refund locks are already in the past.
+        const int64_t offset = stale ? -100 * int64_t(kHour) : 0;
         const uint32_t base = static_cast<uint32_t>(int64_t(real_now) + offset);
         Bytes32 secret{};
-        secret.fill(happy ? 0x5a : 0x6b);
+        secret.fill(happy ? 0x5a : stale ? 0x7c : 0x6b);
 
         SwapOffer o;
         o.network = SwapNetwork::Regtest;
@@ -261,6 +269,24 @@ int main(int argc, char** argv) {
             return r ? std::llround((*r)["total_amount"].asDouble() * 1e8) : -1;
         };
         const auto alive = [&](Party& p) { return !p.Terminal(); };
+        // Read the raw envelope: dinerod's success result is an object, so only an
+        // explicit "non-final" refusal counts.
+        auto din_refuses_as_non_final = [&](const std::vector<uint8_t>& raw) {
+            Json::Value p(Json::arrayValue);
+            p.append(Hex(raw));
+            const auto env = din_client->call("sendrawtransaction", p);
+            const std::string text = (env ? env->toStyledString() : std::string()) + din_client->get_last_error();
+            const bool refused = !env || (env->isMember("error") && !(*env)["error"].isNull()) ||
+                                 ((*env)["result"].isObject() && (*env)["result"].isMember("error"));
+            std::cout << "    node said: " << text << "\n";
+            return refused && text.find("non-final") != std::string::npos;
+        };
+        auto mine_btc = [&](int n) {
+            Json::Value p(Json::arrayValue);
+            p.append(n);
+            p.append(btc_miner);
+            if (!btc("generatetoaddress", p)) throw std::runtime_error("BTC mining failed");
+        };
 
         if (happy) {
             bool early_refund_checked = false;
@@ -273,11 +299,7 @@ int main(int argc, char** argv) {
                     const auto d = alice.io->ObserveDin();
                     if (d.funding) {
                         const auto raw = SignedDinRefund(alice.runner->session(), alice.keys, *d.funding, config.din_fee_una);
-                        Json::Value p(Json::arrayValue);
-                        p.append(Hex(raw));
-                        const auto r = din("sendrawtransaction", p);
-                        const bool accepted = r && r->isString();
-                        Check(!accepted, "dinerod rejects the DIN refund before its timestamp lock");
+                        Check(din_refuses_as_non_final(raw), "dinerod refuses the DIN refund before its timestamp lock");
                         early_refund_checked = true;
                     }
                 }
@@ -299,6 +321,17 @@ int main(int argc, char** argv) {
             Check(bob.State() == SwapState::Done, std::string("bob Done (is ") + StateName(bob.State()) + ")");
             Check(btc_balance(7) == int64_t(kBtcAmount - config.btc_fee_sat), "alice received BTC minus fee on chain");
             Check(din_balance(8) == int64_t(kDinAmount - config.din_fee_una), "bob received DIN minus fee on chain");
+        } else if (stale) {
+            for (int round = 0; round < 40 && (alive(alice) || alive(bob)); ++round) {
+                if (alive(alice)) tick(alice, round);
+                if (alive(bob)) tick(bob, round);
+                mine();
+            }
+            Check(bob.State() == SwapState::Aborted, std::string("bob Aborted (is ") + StateName(bob.State()) + ")");
+            Check(std::find(bob.history.begin(), bob.history.end(), ActionKind::FundBtcHtlc) == bob.history.end(),
+                  "bob never locked BTC against a DIN lock whose refund was already open");
+            Check(alice.State() == SwapState::Refunded, std::string("alice Refunded (is ") + StateName(alice.State()) + ")");
+            Check(din_balance(9) == int64_t(kDinAmount - config.din_fee_una), "alice got her DIN back minus fee on chain");
         } else {
             // Phase 1: Alice funds the DIN lock, then goes offline.
             int round = 0;
@@ -317,24 +350,36 @@ int main(int argc, char** argv) {
                     std::cout << "  [" << round << "] bob: restart from store\n";
                     boot(bob);
                     bob.restarted = true;
+                    // Bitcoin time passes T_btc: mock bitcoind's clock and let MTP catch up.
+                    std::cout << "  [" << round << "] bitcoind: mock time to T_btc + 1 h, mine 12 blocks\n";
+                    Json::Value mp(Json::arrayValue);
+                    mp.append(Json::Int64(o.t_btc_unix) + 3600);
+                    if (!btc("setmocktime", mp)) throw std::runtime_error("setmocktime failed");
+                    mine_btc(12);
                 }
                 mine();
             }
             Check(bob.State() == SwapState::Refunded, std::string("bob Refunded (is ") + StateName(bob.State()) + ")");
-            // Phase 3: Alice returns an hour later (her clock), before her claim cut-off.
+            Check(btc_balance(10) == int64_t(kBtcAmount - config.btc_fee_sat), "bob got his BTC back minus fee on chain");
+            // Phase 3: Alice returns. Her claim would reveal the secret for nothing.
             std::cout << "  alice comes back\n";
-            alice.clock_offset = offset + kHour;
             boot(alice);
             alice.restarted = true;
-            for (; round < 160 && alive(alice); ++round) {
+            for (int i = 0; i < 5; ++i, ++round) {
                 tick(alice, round);
                 mine();
             }
-            Check(alice.State() == SwapState::Refunded, std::string("alice Refunded (is ") + StateName(alice.State()) + ")");
             Check(std::find(alice.history.begin(), alice.history.end(), ActionKind::ClaimBtc) == alice.history.end(),
                   "alice never broadcast a claim on the refunded BTC (secret not leaked)");
-            Check(din_balance(9) == int64_t(kDinAmount - config.din_fee_una), "alice got her DIN back minus fee on chain");
-            Check(btc_balance(10) == int64_t(kBtcAmount - config.btc_fee_sat), "bob got his BTC back minus fee on chain");
+            Check(alice.State() == SwapState::DinLocked,
+                  std::string("alice waits for T_din with her DIN locked (is ") + StateName(alice.State()) + ")");
+            const auto d = alice.io->ObserveDin();
+            Check(d.funding && !d.htlc.spent, "alice's DIN lock is unspent");
+            if (d.funding) {
+                Check(din_refuses_as_non_final(SignedDinRefund(alice.runner->session(), alice.keys, *d.funding,
+                                                               config.din_fee_una)),
+                      "dinerod refuses alice's DIN refund until T_din");
+            }
         }
         for (Party* p : {&alice, &bob}) {
             std::cout << "  " << p->name << " final record: " << StateName(p->State()) << "\n";
