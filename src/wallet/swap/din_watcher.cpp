@@ -99,31 +99,26 @@ DinWatchReport DinWatcher::Observe() {
     }
     std::sort(entries.begin(), entries.end(), [](const Entry& a, const Entry& b) { return a.height < b.height; });
 
-    auto block_txs = [&](uint32_t height) -> std::optional<std::vector<Transaction>> {
-        Json::Value hp(Json::arrayValue);
-        hp.append(height);
-        const auto hash = rpc_("getblockhash", hp);
-        if (!hash || !hash->isString()) return std::nullopt;
-        auto it = block_cache_.find(hash->asString());
-        if (it == block_cache_.end()) {
-            Json::Value bp(Json::arrayValue);
-            bp.append(hash->asString());
-            bp.append(0);
-            const auto raw = rpc_("getblock", bp);
-            if (!raw || !raw->isString()) return std::nullopt;
-            const auto bytes = FromHex(raw->asString());
-            if (!bytes) return std::nullopt;
-            it = block_cache_.emplace(hash->asString(), *bytes).first;
-        }
-        return ParseBlockTransactions(it->second);
-    };
-
     auto hash_at = [&](uint32_t height) -> std::optional<std::string> {
         Json::Value hp(Json::arrayValue);
         hp.append(height);
         const auto hash = rpc_("getblockhash", hp);
         if (!hash || !hash->isString()) return std::nullopt;
         return hash->asString();
+    };
+    auto block_txs = [&](const std::string& hash) -> std::optional<std::vector<Transaction>> {
+        auto it = block_cache_.find(hash);
+        if (it == block_cache_.end()) {
+            Json::Value bp(Json::arrayValue);
+            bp.append(hash);
+            bp.append(0);
+            const auto raw = rpc_("getblock", bp);
+            if (!raw || !raw->isString()) return std::nullopt;
+            const auto bytes = FromHex(raw->asString());
+            if (!bytes) return std::nullopt;
+            it = block_cache_.emplace(hash, *bytes).first;
+        }
+        return ParseBlockTransactions(it->second);
     };
     auto classify = [&](const TxInput& in, uint32_t height, const std::string& block_hash) {
         const auto& w = in.witness;
@@ -141,7 +136,9 @@ DinWatchReport DinWatcher::Observe() {
 
     uint32_t funding_height = 0;
     for (const auto& e : entries) {
-        const auto txs = block_txs(e.height);
+        const auto hash = hash_at(e.height);
+        if (!hash) return report;
+        const auto txs = block_txs(*hash);
         if (!txs) return report;
         const auto it = std::find_if(txs->begin(), txs->end(), [&](const Transaction& tx) {
             return TxId::Compute(tx).AsUint256().GetHex() == e.txid;
@@ -169,16 +166,26 @@ DinWatchReport DinWatcher::Observe() {
         spend_.reset();
     }
     if (report.funding && !spend_) {
+        const std::string funding_key = report.funding->txid.AsUint256().GetHex() + ":" +
+                                        std::to_string(report.funding->vout) + "@" + std::to_string(funding_height);
         Json::Value op(Json::arrayValue);
         op.append(report.funding->txid.AsUint256().GetHex());
         op.append(report.funding->vout);
         const auto utxo = rpc_("gettxout", op);
         if (!utxo) return report;
         if (utxo->isNull()) {  // spent: find the spending transaction in a block
-            for (uint32_t h = funding_height; h <= tip && !spend_; ++h) {
+            // Resume after the last scanned block unless the funding changed or
+            // that block left the main chain.
+            uint32_t from = funding_height;
+            if (scan_funding_ == funding_key && scanned_height_ >= funding_height && scanned_height_ <= tip &&
+                hash_at(scanned_height_) == scanned_hash_) {
+                from = scanned_height_ + 1;
+            }
+            for (uint32_t h = from; h <= tip && !spend_; ++h) {
                 const auto hash = hash_at(h);
-                const auto txs = block_txs(h);
-                if (!hash || !txs) return report;
+                if (!hash) return report;
+                const auto txs = block_txs(*hash);
+                if (!txs) return report;
                 for (const auto& tx : *txs) {
                     for (const auto& in : tx.vin) {
                         if (in.prevout.txid == report.funding->txid && in.prevout.vout == report.funding->vout) {
@@ -186,6 +193,10 @@ DinWatchReport DinWatcher::Observe() {
                         }
                     }
                 }
+                if (spend_) break;  // only spend-free blocks count as searched
+                scan_funding_ = funding_key;
+                scanned_height_ = h;
+                scanned_hash_ = *hash;
             }
         }
     }

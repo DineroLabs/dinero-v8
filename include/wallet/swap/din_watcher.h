@@ -8,7 +8,8 @@
 // parsed with Dinero's own transaction deserializer.
 // Spend: the address index does NOT record a script-path spend from the
 // address, so when gettxout reports the funding output spent, blocks from the
-// funding height are scanned for the spending transaction; the spend's witness
+// funding height are scanned (each block once; a reorg below the scanned tip
+// restarts the scan) for the spending transaction; the spend's witness
 // tells claim (4 items, claim leaf) from refund (3 items, refund leaf). The
 // spend's block hash is cached and re-checked every tick, and the history is
 // re-read every tick, so a reorg that drops either transaction is noticed.
@@ -61,6 +62,13 @@ private:
         std::optional<Bytes32> preimage;
     };
     std::optional<FoundSpend> spend_;
+    // Incremental spend scan: blocks up to scanned_height_ (whose hash was
+    // scanned_hash_) were searched and hold NO spend of scan_funding_; the
+    // spend's own block is never marked, so it is re-found after a reorg.
+    // Public nodes rate-limit RPC, so each block is fetched once, not per tick.
+    std::string scan_funding_;
+    uint32_t scanned_height_{0};
+    std::string scanned_hash_;
 };
 
 }  // namespace dinero::swap

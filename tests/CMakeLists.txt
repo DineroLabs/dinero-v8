@@ -13686,6 +13686,29 @@ target_include_directories(test_swap_runner PRIVATE
 add_test(NAME SwapRunner COMMAND test_swap_runner)
 set_tests_properties(SwapRunner PROPERTIES LABELS "wallet;swap;mandatory" TIMEOUT 30)
 
+# Swap Dinero watcher against a scripted node: bounded RPC per tick, reorgs.
+add_executable(test_swap_din_watcher
+  tests/wallet/test_swap_din_watcher.cpp
+  src/wallet/swap/runner.cpp
+  src/wallet/swap/din_watcher.cpp
+  src/wallet/swap/btc_watcher.cpp
+  src/wallet/swap/btc_tx.cpp
+  src/wallet/swap/engine.cpp
+  src/wallet/swap/offer.cpp
+  src/wallet/swap/htlc.cpp
+)
+add_dependencies(test_swap_din_watcher gtest gtest_main)
+target_link_libraries(test_swap_din_watcher PRIVATE dinero_consensus gtest gtest_main)
+link_zstd_if_needed(test_swap_din_watcher)
+target_include_directories(test_swap_din_watcher PRIVATE
+  ${CMAKE_SOURCE_DIR}/include
+  ${CMAKE_SOURCE_DIR}/src
+  ${CMAKE_SOURCE_DIR}/external
+  ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+)
+add_test(NAME SwapDinWatcher COMMAND test_swap_din_watcher)
+set_tests_properties(SwapDinWatcher PROPERTIES LABELS "wallet;swap;mandatory" TIMEOUT 30)
+
 # Swap Bitcoin-side transactions: BIP143 vector, serialization, HTLC spends (milestone 4).
 add_executable(test_swap_btc_tx
   tests/wallet/test_swap_btc_tx.cpp
