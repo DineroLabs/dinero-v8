@@ -19,6 +19,7 @@
 //               BTC); Alice then refunds her DIN on chain.
 #include "wallet/swap/encrypted_store.h"
 #include "wallet/swap/runner.h"
+#include "wallet/swap/swap_crypto.h"
 #include "wallet/swap/tower.h"
 
 #include "bech32/bech32.hpp"
@@ -157,14 +158,15 @@ int main(int argc, char** argv) {
     const bool race_overtaken = scenario == "race-refund-overtaken";
     const bool race_reorg = scenario == "race-reorg";
     const bool din_race = scenario == "din-race";
+    const bool sign_first = scenario == "din-sign-first";
     const bool known = happy || stale || use_tower || scenario == "offline" || race_late_reveal || race_overtaken ||
-                       race_reorg || din_race;
+                       race_reorg || din_race || sign_first;
     if (!known) return 2;
     const std::string inbox = argc == 10 ? argv[9] : "";
     if (use_tower && inbox.empty()) return 2;
     // Separate payout keys per scenario, so a balance can only come from this run.
     const uint8_t kb = happy ? 7 : stale ? 17 : scenario == "offline" ? 27 : tower_claim ? 37 : tower_refund ? 47
-                     : race_late_reveal ? 57 : race_overtaken ? 67 : race_reorg ? 77 : 87;
+                     : race_late_reveal ? 57 : race_overtaken ? 67 : race_reorg ? 77 : din_race ? 87 : 97;
     const uint8_t kAliceBtcClaim = kb, kBobDinClaim = kb + 1, kAliceDinRefund = kb + 2, kBobBtcRefund = kb + 3;
     auto din_client = std::make_shared<rpc::RpcClient>("127.0.0.1", uint16_t(std::stoi(argv[3])), "test", "test");
     auto btc_client = std::make_shared<rpc::RpcClient>("127.0.0.1", uint16_t(std::stoi(argv[4])), argv[5], argv[6]);
@@ -583,6 +585,57 @@ int main(int argc, char** argv) {
             Check(never(bob, ActionKind::RefundBtc), "bob never refunded after the secret was public");
             Check(alice.State() == SwapState::Done && bob.State() == SwapState::Done, "both Done");
             Check(btc_balance(kAliceBtcClaim) == int64_t(kBtcAmount - config.btc_fee_sat), "alice received BTC on chain");
+        } else if (sign_first) {
+            // The watchtower's premise, on a real dinerod: Bob signs the DIN claim
+            // BEFORE the secret exists; the secret is inserted later. The node must
+            // accept exactly that, and refuse a wrong secret or a payout changed
+            // after signing.
+            RpcSwapChainIo io(din, btc, make_session(Role::DinSeller), config);
+            Json::Value fp(Json::objectValue);
+            fp["address"] = DinHtlcAddressFor(make_session(Role::DinSeller).record, "rdin");
+            fp["amount_una"] = Json::UInt64(kDinAmount);
+            if (!din("wallet.sendtoaddress", fp)) throw std::runtime_error("funding failed");
+            mine();
+            const auto d = io.ObserveDin();
+            Check(d.funding.has_value(), "HTLC funded");
+            if (d.funding) {
+                const auto terms = MakeDinTerms(o, a);
+                const auto htlc = BuildDinHtlc(terms);
+                Transaction tx = BuildDinClaimTx(htlc, *d.funding, Payout{P2tr(kBobDinClaim), AmountUna::Una(config.din_fee_una)});
+                const auto sig = detail::SchnorrSign(bob.keys.din_secret_key, DinClaimSighash(tx, *d.funding, htlc));
+                auto with_witness = [&](Transaction t, const std::vector<uint8_t>& preimage) {
+                    t.vin[0].witness = {std::vector<uint8_t>(sig.begin(), sig.end()), preimage, htlc.claim_script,
+                                        htlc.claim_control_block};
+                    return t.Serialize(TxSerializationMode::WithWitness);
+                };
+                auto send = [&](const std::vector<uint8_t>& raw) {
+                    Json::Value p(Json::arrayValue);
+                    p.append(Hex(raw));
+                    const auto env = din_client->call("sendrawtransaction", p);
+                    const std::string text = (env ? env->toStyledString() : std::string()) + din_client->get_last_error();
+                    const bool ok = env && (!env->isMember("error") || (*env)["error"].isNull()) &&
+                                    !((*env)["result"].isObject() && (*env)["result"].isMember("error"));
+                    std::cout << "    node said: " << text.substr(0, 140) << "\n";
+                    return ok;
+                };
+                std::vector<uint8_t> wrong(secret.begin(), secret.end());
+                wrong[0] ^= 1;
+                Check(!send(with_witness(tx, wrong)), "a wrong secret in the pre-signed claim is refused");
+                Transaction redirected = tx;
+                redirected.vout[0].scriptPubKey = P2tr(kAliceDinRefund);  // payout changed after signing
+                Check(!send(with_witness(redirected, std::vector<uint8_t>(secret.begin(), secret.end()))),
+                      "a payout changed after signing is refused");
+                Transaction cheaper = tx;
+                cheaper.vout[0].value = AmountUna::Una(kDinAmount - 10 * config.din_fee_una);  // fee changed
+                Check(!send(with_witness(cheaper, std::vector<uint8_t>(secret.begin(), secret.end()))),
+                      "an amount changed after signing is refused");
+                Check(send(with_witness(tx, std::vector<uint8_t>(secret.begin(), secret.end()))),
+                      "the pre-signed claim with the secret inserted later is accepted");
+                mine();
+                const auto after = io.ObserveDin();
+                Check(after.htlc.spent && after.htlc.spent_by_claim && after.htlc.revealed_preimage == secret,
+                      "it is mined as a claim revealing the secret");
+            }
         } else if (din_race) {
             // DIN claim and refund in the same window, both orderings, after T_din:
             // Dinero keeps the first seen (no replace-by-fee); the block decides.
