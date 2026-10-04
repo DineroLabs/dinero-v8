@@ -249,6 +249,15 @@ void BlockDownloadScheduler::StageGetdataLocked(const uint256& block_hash,
             }
         }
     }
+    if (!for_backfill) {
+        const auto now = std::chrono::steady_clock::now();
+        for (const auto& [peer, slow] : slow_peers_) {
+            if (slow.consecutive_timeouts >= kSlowPeerTimeouts &&
+                now - slow.demoted_at < slow_peer_cooldown_) {
+                deferred.skip_peers.insert(peer);
+            }
+        }
+    }
     deferred_sends_.push_back(std::move(deferred));
 }
 
@@ -450,6 +459,9 @@ bool BlockDownloadScheduler::OnBlockReceived(const Block& block, FilePosition* s
             }
             fetch_state.status = FetchStatus::RECEIVED;
             fetch_state.stored_pos = stored_pos;
+            if (!fetch_state.chosen_peer.empty()) {
+                slow_peers_.erase(fetch_state.chosen_peer);
+            }
             g_logger.info("[BlockDownloadScheduler] Block marked RECEIVED: " +
                          block_hash.GetHex());
             break;
@@ -727,6 +739,12 @@ void BlockDownloadScheduler::TickLocked() {
                              ", waited_ms " + std::to_string(elapsed_ms.count()) +
                              ", peer=" + fetch_state.chosen_peer +
                              ", retry=" + std::to_string(fetch_state.retry_count) + ")");
+                if (!fetch_state.chosen_peer.empty()) {
+                    auto& slow = slow_peers_[fetch_state.chosen_peer];
+                    if (++slow.consecutive_timeouts >= kSlowPeerTimeouts) {
+                        slow.demoted_at = now;
+                    }
+                }
                 fetch_state.status = FetchStatus::MISSING;
                 fetch_state.chosen_peer.clear();
                 in_flight_blocks_.erase(fetch_state.block_hash);

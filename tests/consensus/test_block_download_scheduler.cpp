@@ -3381,5 +3381,95 @@ int main() {
     if (!ok) return 1;
 }
 
+    {
+        std::cout << "\n24. a peer whose block requests keep timing out is skipped for a "
+                     "cooldown, and restored when it delivers..." << std::endl;
+
+        // TX resync, 2026-10-03: one slow peer (a desktop node on a home uplink)
+        // kept being handed tip getdata and let 42 of them expire against 1 block
+        // delivered, while capable fleet peers sat idle.
+        const std::string slow = "192.0.2.9:20999";  // RFC 5737 test address
+        auto run = [&](int chain_len, auto&& body) -> int {
+            dcs::HeaderChainSelector selector;
+            std::vector<uint256> hashes;
+            try {
+                BuildLinearHeaders(selector, chain_len, &hashes);
+            } catch (const std::exception& e) {
+                std::cerr << "   ❌ failed to build header chain: " << e.what() << std::endl;
+                return 1;
+            }
+            dcs::BlockDownloadScheduler scheduler(&selector, nullptr);
+            scheduler.SetLocalTipHeight(0);
+            scheduler.SetTipRetryTimeout(std::chrono::hours(1));
+            std::vector<std::unordered_set<std::string>> skips;
+            scheduler.SetSendGetDataCallback(
+                [&scheduler, &skips, &slow](const uint256& h, uint32_t /*height*/) {
+                    skips.push_back(scheduler.CurrentRequestSkipPeers());
+                    scheduler.NotifyGetDataDispatched(h, 1, slow);
+                    return true;
+                });
+            scheduler.OnHeadersProcessed();
+            for (int t = 0; t < 10; ++t) scheduler.Tick();
+            if (!Require(!skips.empty(), "setup: blocks should be requested")) return 1;
+            for (const auto& s : skips) {
+                if (!Require(s.empty(), "no peer is skipped before any timeout")) return 1;
+            }
+            return body(scheduler, selector, hashes, skips);
+        };
+        auto expire_all = [](dcs::BlockDownloadScheduler& scheduler) {
+            scheduler.SetStaleRequestTimeoutSeconds(0);  // zeroes the tip retry too
+            scheduler.Tick();
+            scheduler.SetStaleRequestTimeoutSeconds(3600);
+            scheduler.SetTipRetryTimeout(std::chrono::hours(1));
+        };
+        auto all_skip = [&](const std::vector<std::unordered_set<std::string>>& skips,
+                            bool expect) {
+            if (skips.empty()) return false;
+            for (const auto& s : skips) {
+                if ((s.count(slow) > 0) != expect) return false;
+            }
+            return true;
+        };
+
+        // One miss is not enough: a single slow reply must not demote a peer.
+        if (run(1, [&](auto& scheduler, auto&, auto&, auto& skips) {
+                skips.clear();
+                expire_all(scheduler);
+                for (int t = 0; t < 5; ++t) scheduler.Tick();
+                return Require(all_skip(skips, false),
+                               "one timeout must not put the peer in the skip-set") ? 0 : 1;
+            })) return 1;
+
+        // Repeated misses demote; a block it delivers restores it.
+        if (run(6, [&](auto& scheduler, auto& selector, auto& hashes, auto& skips) {
+                skips.clear();
+                expire_all(scheduler);  // all six requests to `slow` expire
+                for (int t = 0; t < 5; ++t) scheduler.Tick();
+                if (!Require(all_skip(skips, true),
+                             "a peer whose requests keep expiring must be skipped")) return 1;
+
+                if (!Require(scheduler.OnBlockReceived(MakeBlockForHash(selector, hashes[1])),
+                             "slow peer delivers block 1")) return 1;
+                skips.clear();
+                if (!Require(scheduler.ReRequestBlock(hashes[4]), "re-queue block 4")) return 1;
+                for (int t = 0; t < 5; ++t) scheduler.Tick();
+                return Require(all_skip(skips, false),
+                               "a delivered block must restore the peer") ? 0 : 1;
+            })) return 1;
+
+        // The cooldown lapses on its own.
+        if (run(6, [&](auto& scheduler, auto&, auto& hashes, auto& skips) {
+                expire_all(scheduler);
+                scheduler.SetSlowPeerCooldown(std::chrono::milliseconds(0));
+                skips.clear();
+                if (!Require(scheduler.ReRequestBlock(hashes[2]), "re-queue block 2")) return 1;
+                for (int t = 0; t < 5; ++t) scheduler.Tick();
+                return Require(all_skip(skips, false),
+                               "a demotion must end after the cooldown") ? 0 : 1;
+            })) return 1;
+        std::cout << "   ✅ slow peer demoted on repeated timeouts, restored on delivery or cooldown"
+                  << std::endl;
+    }
+
     return 0;
 }
