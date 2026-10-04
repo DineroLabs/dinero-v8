@@ -4598,6 +4598,7 @@ bool P2PManager::remember_peer_address(const std::string& address,
         return false;
     }
 
+    bool is_new = false;
     {
         std::lock_guard<std::mutex> lock(peers_mutex_);
         const std::string candidate_key = AddressKey(address, port);
@@ -4610,6 +4611,7 @@ bool P2PManager::remember_peer_address(const std::string& address,
         if (std::find(discovered_nodes_.begin(), discovered_nodes_.end(), endpoint) ==
             discovered_nodes_.end()) {
             discovered_nodes_.push_back(endpoint);
+            is_new = true;
         }
     }
 
@@ -4617,7 +4619,10 @@ bool P2PManager::remember_peer_address(const std::string& address,
         auto network_addr = NetworkAddressForPeer(address, port, services);
         address_manager_->addAddress(network_addr, source_peer);
     }
-    return true;
+    // Only a new address is saved and relayed by the callers. Reporting a known
+    // one as new made fleet nodes bounce the same addresses forever, and that
+    // gossip queued ahead of block replies on every peer thread.
+    return is_new;
 }
 
 void P2PManager::mark_peer_address_attempt(const std::string& address,
