@@ -14,11 +14,13 @@
 // instead of funding again — double funding is impossible by construction.
 //
 // Safety rules implemented here (design §6.1):
-//   Alice (DIN seller): claims BTC only before T_btc - 6 h (wall clock); after
-//   a lost race or the cut-off, refunds DIN once Dinero MTP reaches T_din.
-//   Bob (BTC seller): locks BTC only after N_din confirmations of the correct
-//   DIN lock and only if the DIN deadline is >= 36 h away, the offer has not
-//   expired and neither chain's MTP lags wall clock by more than 2 h; claims
+//   Alice (DIN seller): claims BTC only before T_btc - 6 h by BOTH her wall
+//   clock and Bitcoin's MTP, and never once the BTC lock is spent; after a
+//   lost race or the cut-off, refunds DIN once Dinero MTP reaches T_din.
+//   Bob (BTC seller): locks BTC only after N_din confirmations of the correct,
+//   unspent DIN lock and only if the DIN deadline is >= 36 h away by BOTH his
+//   wall clock and Dinero's MTP, the offer has not expired and neither chain's
+//   MTP lags wall clock by more than 2 h; claims
 //   DIN the moment the preimage appears (mempool or block); refunds BTC once
 //   Bitcoin MTP reaches T_btc and the preimage is still unseen.
 

@@ -65,8 +65,10 @@ struct Stepper {
                 obs.btc.output_confirmations >= offer().n_btc_confirmations) {
                 if (obs.btc.output_value != offer().btc_amount_sat) {
                     Alert("BTC lock has the wrong amount; not claiming");
-                } else if (uint64_t(obs.wall_clock_unix) + kAliceClaimCutoffSeconds <
-                           offer().t_btc_unix) {
+                } else if (uint64_t(obs.wall_clock_unix) + kAliceClaimCutoffSeconds < offer().t_btc_unix &&
+                           uint64_t(obs.btc_mtp_unix) + kAliceClaimCutoffSeconds < offer().t_btc_unix) {
+                    // Both clocks: Bob's refund opens by Bitcoin's median time, so a
+                    // wall clock running behind the chain must not extend the cut-off.
                     Do(ActionKind::ClaimBtc, "BTC lock is deep enough");
                     return Go(SwapState::BtcClaimBroadcast);
                 }
@@ -135,8 +137,15 @@ struct Stepper {
                 return Go(SwapState::BtcLocked);
             }
             if (obs.wall_clock_unix > offer().expires_unix) return Go(SwapState::Aborted);
-            if (uint64_t(obs.wall_clock_unix) + kBobMinDinDeadlineAhead > offer().t_din_unix) {
+            // Both clocks: Alice's refund opens by Dinero's median time, so a wall
+            // clock running behind the chain must not hide a close deadline.
+            if (uint64_t(obs.wall_clock_unix) + kBobMinDinDeadlineAhead > offer().t_din_unix ||
+                uint64_t(obs.din_mtp_unix) + kBobMinDinDeadlineAhead > offer().t_din_unix) {
                 Alert("DIN deadline is too close; not locking BTC");
+                return Go(SwapState::Aborted);
+            }
+            if (obs.din.spent) {  // locking BTC now would only pay Alice
+                Alert("DIN lock already spent; not locking BTC");
                 return Go(SwapState::Aborted);
             }
             if (!obs.din.output_seen || obs.din.output_confirmations < offer().n_din_confirmations) return;

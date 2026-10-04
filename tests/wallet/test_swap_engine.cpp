@@ -432,3 +432,36 @@ TEST(SwapEngine, AliceNeverClaimsAnAlreadySpentBtcLock) {
     const auto s = Step(r, obs);
     EXPECT_FALSE(Has(s, ActionKind::ClaimBtc));
 }
+
+TEST(SwapEngine, BobNeverLocksAgainstAnAlreadySpentDinLock) {
+    // Alice already refunded (or anyone spent) the DIN lock: BTC locked now
+    // could only be taken by Alice with her secret.
+    auto r = MakeRecord(Role::BtcSeller);
+    auto obs = At(kNow + kHour);
+    obs.din = Spent(Locked(kDin, 40), /*by_claim=*/false, 3);
+    const auto s = Step(r, obs);
+    EXPECT_FALSE(Has(s, ActionKind::FundBtcHtlc));
+}
+
+TEST(SwapEngine, BobJudgesTheDinDeadlineByChainTimeToo) {
+    // Bob's clock is behind the chain: by his wall clock T_din is 49 h away,
+    // but Dinero's median time is 20 h from it, so Alice's refund opens soon.
+    auto r = MakeRecord(Role::BtcSeller);
+    auto obs = At(kNow + kHour);
+    obs.din_mtp_unix = r.offer.t_din_unix - 20 * kHour;
+    obs.din = Locked(kDin, 40);
+    const auto s = Step(r, obs);
+    EXPECT_FALSE(Has(s, ActionKind::FundBtcHtlc));
+}
+
+TEST(SwapEngine, AliceJudgesHerClaimCutoffByBitcoinChainTimeToo) {
+    // Alice's clock is behind: Bitcoin's median time is 3 h from T_btc, inside
+    // her 6 h cut-off, so revealing the secret now risks losing the race.
+    auto r = MakeRecord(Role::DinSeller);
+    r.state = SwapState::DinLocked;
+    auto obs = At(kNow + kHour);
+    obs.btc_mtp_unix = r.offer.t_btc_unix - 3 * kHour;
+    obs.din = Locked(kDin, 40);
+    obs.btc = Locked(kBtc, 5);
+    EXPECT_FALSE(Has(Step(r, obs), ActionKind::ClaimBtc));
+}
