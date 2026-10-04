@@ -3,13 +3,17 @@
 // derivation, BIP340 / ECDSA signing and verification. Not a public API.
 
 #include "crypto/evp_secp256k1.h"
+#include "crypto/sha256.h"
 #include "wallet/swap/htlc.h"
 
 #include <secp256k1.h>
 #include <secp256k1_extrakeys.h>
 #include <secp256k1_schnorrsig.h>
 
+#include <cstdio>
+#include <fcntl.h>
 #include <stdexcept>
+#include <unistd.h>
 #include <string>
 #include <vector>
 
@@ -111,6 +115,39 @@ inline bool EcdsaVerifyAll(const std::array<uint8_t, 33>& pubkey, const Bytes32&
     secp256k1_pubkey pk;
     if (secp256k1_ec_pubkey_parse(secp, &pk, pubkey.data(), pubkey.size()) != 1) return false;
     return secp256k1_ecdsa_verify(secp, &s, msg.data(), &pk) == 1;
+}
+
+inline Bytes32 HmacSha256(const Bytes32& key, const uint8_t* msg, size_t len) {
+    std::array<uint8_t, 64> ipad{}, opad{};
+    for (size_t i = 0; i < 64; ++i) {
+        const uint8_t k = i < key.size() ? key[i] : 0;  // a 32-byte key fits the 64-byte block
+        ipad[i] = k ^ 0x36;
+        opad[i] = k ^ 0x5c;
+    }
+    Bytes32 inner{}, out{};
+    crypto::CSHA256().Write(ipad.data(), ipad.size()).Write(msg, len).Finalize(inner.data());
+    crypto::CSHA256().Write(opad.data(), opad.size()).Write(inner.data(), inner.size()).Finalize(out.data());
+    return out;
+}
+
+inline Bytes32 HmacSha256(const Bytes32& key, const std::string& msg) {
+    return HmacSha256(key, reinterpret_cast<const uint8_t*>(msg.data()), msg.size());
+}
+
+// temp + fsync + rename (mode 0600): a crash leaves the old or the new file.
+inline void WriteFileAtomically(const std::string& path, const std::string& text) {
+    const std::string tmp = path + ".tmp";
+    const int fd = ::open(tmp.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600);
+    if (fd < 0) throw std::runtime_error("swap: cannot open " + tmp);
+    size_t off = 0;
+    while (off < text.size()) {
+        const ssize_t n = ::write(fd, text.data() + off, text.size() - off);
+        if (n <= 0) { ::close(fd); throw std::runtime_error("swap: write failed: " + path); }
+        off += static_cast<size_t>(n);
+    }
+    if (::fsync(fd) != 0) { ::close(fd); throw std::runtime_error("swap: fsync failed: " + path); }
+    ::close(fd);
+    if (std::rename(tmp.c_str(), path.c_str()) != 0) throw std::runtime_error("swap: rename failed: " + path);
 }
 
 }  // namespace dinero::swap::detail

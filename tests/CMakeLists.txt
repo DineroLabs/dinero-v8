@@ -13765,6 +13765,34 @@ target_include_directories(test_swap_encrypted_store PRIVATE
 add_test(NAME SwapEncryptedStore COMMAND test_swap_encrypted_store)
 set_tests_properties(SwapEncryptedStore PROPERTIES LABELS "wallet;swap;mandatory" TIMEOUT 30)
 
+# Swap manager: seed-derived keys, offers/accepts, index allocation (milestone 6).
+add_executable(test_swap_manager
+  tests/wallet/test_swap_manager.cpp
+  src/wallet/swap/swap_manager.cpp
+  src/wallet/swap/encrypted_store.cpp
+  src/crypto/wallet_crypto.cpp
+  src/wallet/swap/tower.cpp
+  src/wallet/swap/runner.cpp
+  src/wallet/swap/fee_ladder.cpp
+  src/wallet/swap/din_watcher.cpp
+  src/wallet/swap/btc_watcher.cpp
+  src/wallet/swap/btc_tx.cpp
+  src/wallet/swap/engine.cpp
+  src/wallet/swap/offer.cpp
+  src/wallet/swap/htlc.cpp
+)
+add_dependencies(test_swap_manager gtest gtest_main)
+target_link_libraries(test_swap_manager PRIVATE dinero_consensus argon2 OpenSSL::Crypto gtest gtest_main)
+link_zstd_if_needed(test_swap_manager)
+target_include_directories(test_swap_manager PRIVATE
+  ${CMAKE_SOURCE_DIR}/include
+  ${CMAKE_SOURCE_DIR}/src
+  ${CMAKE_SOURCE_DIR}/external
+  ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+)
+add_test(NAME SwapManager COMMAND test_swap_manager)
+set_tests_properties(SwapManager PROPERTIES LABELS "wallet;swap;mandatory" TIMEOUT 30)
+
 # Swap Bitcoin-side transactions: BIP143 vector, serialization, HTLC spends (milestone 4).
 add_executable(test_swap_btc_tx
   tests/wallet/test_swap_btc_tx.cpp

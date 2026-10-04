@@ -53,6 +53,7 @@ add_library(dinero_wallet STATIC
   ${CMAKE_CURRENT_SOURCE_DIR}/swap/runner.cpp  # swap executor: observe, persist, act
   ${CMAKE_CURRENT_SOURCE_DIR}/swap/tower.cpp  # swap watchtower (keyless, pre-signed rungs)
   ${CMAKE_CURRENT_SOURCE_DIR}/swap/encrypted_store.cpp  # swap sessions sealed with AES-256-GCM
+  ${CMAKE_CURRENT_SOURCE_DIR}/swap/swap_manager.cpp  # swap.* RPC backend: keys, offers, ticks
   ${CMAKE_CURRENT_SOURCE_DIR}/covenant_profile.cpp  # Covenant profile-v1 construction + recovery descriptors
   ${CMAKE_CURRENT_SOURCE_DIR}/safety_profile.cpp  # B4: Safety profile management
   ${CMAKE_CURRENT_SOURCE_DIR}/protected_output_builder.cpp  # B4: Protected output construction (HDWallet + template builder)
