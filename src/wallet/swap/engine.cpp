@@ -2,6 +2,7 @@
 
 #include "crypto/sha256.h"
 
+#include <algorithm>
 #include <stdexcept>
 
 namespace dinero::swap {
@@ -56,7 +57,7 @@ struct Stepper {
             return;
 
         case SwapState::DinLocked:
-            if (obs.din.spent && !obs.din.spent_by_claim && obs.din.spend_confirmations >= 1) {
+            if (obs.din.spent && !obs.din.spent_by_claim && obs.din.spend_confirmations >= kSettleConfirmations) {
                 return Go(SwapState::Refunded);
             }
             // Never claim a BTC lock that is already spent (e.g. Bob refunded while
@@ -77,7 +78,9 @@ struct Stepper {
 
         case SwapState::BtcClaimBroadcast:
             if (obs.btc.spent && obs.btc.spent_by_claim) {
-                if (obs.btc.spend_confirmations >= offer().n_btc_confirmations) Go(SwapState::Done);
+                if (obs.btc.spend_confirmations >= std::max(offer().n_btc_confirmations, kSettleConfirmations)) {
+                    Go(SwapState::Done);
+                }
                 return;
             }
             if (obs.btc.spent) {  // Bob's refund took the BTC: the secret is public
@@ -87,7 +90,7 @@ struct Stepper {
                         Alert("Bob claimed the DIN with the revealed secret");
                         return Go(SwapState::Lost);
                     }
-                    if (obs.din.spend_confirmations >= 1) return Go(SwapState::Refunded);
+                    if (obs.din.spend_confirmations >= kSettleConfirmations) return Go(SwapState::Refunded);
                     return;
                 }
                 return RefundDinWhenOpen();
@@ -104,7 +107,7 @@ struct Stepper {
                     Alert("Bob claimed the DIN before the refund confirmed");
                     return Go(SwapState::Lost);
                 }
-                if (obs.din.spend_confirmations >= 1) Go(SwapState::Refunded);
+                if (obs.din.spend_confirmations >= kSettleConfirmations) Go(SwapState::Refunded);
                 return;
             }
             return Do(ActionKind::RefundDin, "refund not seen; re-broadcasting");
@@ -172,7 +175,7 @@ struct Stepper {
         case SwapState::BtcLocked:
             if (LearnSecret()) return;
             if (obs.btc.spent && !obs.btc.spent_by_claim) {
-                if (obs.btc.spend_confirmations >= 1) Go(SwapState::Refunded);
+                if (obs.btc.spend_confirmations >= kSettleConfirmations) Go(SwapState::Refunded);
                 return;
             }
             if (!obs.btc.spent && obs.btc_mtp_unix >= offer().t_btc_unix) {
@@ -184,7 +187,7 @@ struct Stepper {
         case SwapState::BtcRefundBroadcast:
             if (LearnSecret()) return;  // Alice won the race: take the DIN now
             if (obs.btc.spent && !obs.btc.spent_by_claim) {
-                if (obs.btc.spend_confirmations >= 1) Go(SwapState::Refunded);
+                if (obs.btc.spend_confirmations >= kSettleConfirmations) Go(SwapState::Refunded);
                 return;
             }
             if (!obs.btc.spent) Do(ActionKind::RefundBtc, "refund not seen; re-broadcasting");
@@ -196,7 +199,7 @@ struct Stepper {
                     Alert("Alice's DIN refund beat the claim");
                     return Go(SwapState::Lost);
                 }
-                if (obs.din.spend_confirmations >= 1) Go(SwapState::Done);
+                if (obs.din.spend_confirmations >= kSettleConfirmations) Go(SwapState::Done);
                 return;
             }
             return Do(ActionKind::ClaimDin, "claim not seen; re-broadcasting");

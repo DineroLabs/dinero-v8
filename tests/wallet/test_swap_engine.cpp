@@ -144,7 +144,7 @@ TEST(SwapEngine, AliceHappyPath) {
     EXPECT_TRUE(Has(s, ActionKind::ClaimBtc));
     EXPECT_EQ(s.record.state, SwapState::BtcClaimBroadcast);
 
-    obs.btc = Spent(obs.btc, /*by_claim=*/true, /*confs=*/2, kSecret);
+    obs.btc = Spent(obs.btc, /*by_claim=*/true, /*confs=*/kSettleConfirmations, kSecret);
     s = Step(s.record, obs);
     EXPECT_EQ(s.record.state, SwapState::Done);
 }
@@ -180,7 +180,7 @@ TEST(SwapEngine, AliceNeverClaimsPastTheCutoffAndRefundsDinLater) {
     EXPECT_TRUE(Has(s, ActionKind::RefundDin));
     EXPECT_EQ(s.record.state, SwapState::DinRefundBroadcast);
 
-    obs.din = Spent(obs.din, /*by_claim=*/false, 1);
+    obs.din = Spent(obs.din, /*by_claim=*/false, kSettleConfirmations);
     s = Step(s.record, obs);
     EXPECT_EQ(s.record.state, SwapState::Refunded);
 }
@@ -257,7 +257,7 @@ TEST(SwapEngine, BobHappyPath) {
     ASSERT_TRUE(s.record.secret.has_value());
     EXPECT_EQ(*s.record.secret, kSecret);
 
-    obs.din = Spent(obs.din, /*by_claim=*/true, 1, kSecret);
+    obs.din = Spent(obs.din, /*by_claim=*/true, kSettleConfirmations, kSecret);
     s = Step(s.record, obs);
     EXPECT_EQ(s.record.state, SwapState::Done);
 }
@@ -303,7 +303,7 @@ TEST(SwapEngine, BobRefundsWhenTheSecretNeverAppears) {
     EXPECT_TRUE(Has(s, ActionKind::RefundBtc));
     EXPECT_EQ(s.record.state, SwapState::BtcRefundBroadcast);
 
-    obs.btc = Spent(obs.btc, /*by_claim=*/false, 1);
+    obs.btc = Spent(obs.btc, /*by_claim=*/false, kSettleConfirmations);
     s = Step(s.record, obs);
     EXPECT_EQ(s.record.state, SwapState::Refunded);
 }
@@ -379,7 +379,7 @@ TEST(SwapEngine, RestartAtAnyStateGivesTheSameDecision) {
     obs.din = Locked(kDin, 30); script.push_back(obs);
     obs.btc = Locked(kBtc, 1); script.push_back(obs);
     obs.btc = Spent(obs.btc, true, 0, kSecret); script.push_back(obs);
-    obs.din = Spent(obs.din, true, 1, kSecret); script.push_back(obs);
+    obs.din = Spent(obs.din, true, kSettleConfirmations, kSecret); script.push_back(obs);
     for (const auto& o : script) {
         const auto live = Step(r, o);
         const auto reloaded = Step(DecodeRecord(EncodeRecord(r)), o);
@@ -464,4 +464,42 @@ TEST(SwapEngine, AliceJudgesHerClaimCutoffByBitcoinChainTimeToo) {
     obs.din = Locked(kDin, 40);
     obs.btc = Locked(kBtc, 5);
     EXPECT_FALSE(Has(Step(r, obs), ActionKind::ClaimBtc));
+}
+
+TEST(SwapEngine, AliceStaysWatchfulUntilHerClaimIsBuried) {
+    // A claim one block deep can be reorganised out after T_btc; a Done Alice
+    // would never re-broadcast it.
+    auto r = MakeRecord(Role::DinSeller);
+    r.state = SwapState::BtcClaimBroadcast;
+    auto obs = At(kNow + 3 * kHour);
+    obs.din = Locked(kDin, 40);
+    obs.btc = Spent(Locked(kBtc, 5), /*by_claim=*/true, r.offer.n_btc_confirmations, kSecret);
+    auto s = Step(r, obs);
+    EXPECT_EQ(s.record.state, SwapState::BtcClaimBroadcast) << "not yet buried";
+    obs.btc = Locked(kBtc, 5);  // reorg dropped the claim
+    s = Step(s.record, obs);
+    EXPECT_TRUE(Has(s, ActionKind::ClaimBtc));
+    obs.btc = Spent(Locked(kBtc, 9), true, kSettleConfirmations, kSecret);
+    EXPECT_EQ(Step(s.record, obs).record.state, SwapState::Done);
+}
+
+TEST(SwapEngine, BobStaysWatchfulUntilHisClaimOrRefundIsBuried) {
+    auto r = MakeRecord(Role::BtcSeller);
+    r.state = SwapState::DinClaimBroadcast;
+    r.secret = kSecret;
+    auto obs = At(kNow + 3 * kHour);
+    obs.din = Spent(Locked(kDin, 40), /*by_claim=*/true, 1);
+    EXPECT_EQ(Step(r, obs).record.state, SwapState::DinClaimBroadcast);
+    obs.din = Locked(kDin, 40);  // reorg dropped it
+    EXPECT_TRUE(Has(Step(r, obs), ActionKind::ClaimDin));
+    obs.din = Spent(Locked(kDin, 46), true, kSettleConfirmations);
+    EXPECT_EQ(Step(r, obs).record.state, SwapState::Done);
+
+    auto b = MakeRecord(Role::BtcSeller);
+    b.state = SwapState::BtcRefundBroadcast;
+    auto o2 = At(r.offer.t_btc_unix + kHour);
+    o2.btc = Spent(Locked(kBtc, 20), /*by_claim=*/false, 1);
+    EXPECT_EQ(Step(b, o2).record.state, SwapState::BtcRefundBroadcast);
+    o2.btc = Spent(Locked(kBtc, 25), false, kSettleConfirmations);
+    EXPECT_EQ(Step(b, o2).record.state, SwapState::Refunded);
 }

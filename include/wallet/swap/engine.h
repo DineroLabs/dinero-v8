@@ -103,6 +103,9 @@ struct StepResult {
 inline constexpr uint32_t kAliceClaimCutoffSeconds = 6 * 60 * 60;
 inline constexpr uint32_t kMaxMtpLagSeconds = 2 * 60 * 60;
 inline constexpr uint32_t kFundingAlertAfterSeconds = 2 * 60 * 60;
+// A party is Done/Refunded only once its outcome is this deep; until then it
+// keeps watching and re-broadcasts if a reorg drops the transaction.
+inline constexpr uint32_t kSettleConfirmations = 6;
 
 StepResult Step(const SwapRecord& record, const Observations& now);
 
