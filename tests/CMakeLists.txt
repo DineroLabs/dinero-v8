@@ -13644,3 +13644,21 @@ target_include_directories(test_swap_fee_ladder PRIVATE
 )
 add_test(NAME SwapFeeLadder COMMAND test_swap_fee_ladder)
 set_tests_properties(SwapFeeLadder PROPERTIES LABELS "wallet;swap;taproot;mandatory" TIMEOUT 30)
+
+# Swap engine: pure decisions over chain observations (milestone 3).
+add_executable(test_swap_engine
+  tests/wallet/test_swap_engine.cpp
+  src/wallet/swap/engine.cpp
+  src/wallet/swap/offer.cpp
+  src/wallet/swap/htlc.cpp
+)
+add_dependencies(test_swap_engine gtest gtest_main)
+target_link_libraries(test_swap_engine PRIVATE dinero_consensus gtest gtest_main)
+link_zstd_if_needed(test_swap_engine)
+target_include_directories(test_swap_engine PRIVATE
+  ${CMAKE_SOURCE_DIR}/include
+  ${CMAKE_SOURCE_DIR}/src
+  ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+)
+add_test(NAME SwapEngine COMMAND test_swap_engine)
+set_tests_properties(SwapEngine PROPERTIES LABELS "wallet;swap;mandatory" TIMEOUT 30)
