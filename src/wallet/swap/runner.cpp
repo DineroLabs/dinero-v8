@@ -123,7 +123,8 @@ Json::Value Params(std::initializer_list<Json::Value> items) {
     return p;
 }
 
-// Node results may also report a failure in-band as {"error": ...}.
+// Node results may also report a failure in-band as {"error": ...}; dinerod's
+// sendrawtransaction nests the txid as {"result": "<txid>"}.
 std::string TxidFrom(const std::optional<Json::Value>& r, const std::string& what) {
     if (!r) throw std::runtime_error(what + ": RPC failed");
     if (r->isString()) return r->asString();
@@ -131,6 +132,7 @@ std::string TxidFrom(const std::optional<Json::Value>& r, const std::string& wha
         throw std::runtime_error(what + ": " + (*r)["error"].toStyledString());
     }
     if (r->isObject() && (*r)["txid"].isString()) return (*r)["txid"].asString();
+    if (r->isObject() && (*r)["result"].isString()) return (*r)["result"].asString();
     throw std::runtime_error(what + ": unexpected result " + r->toStyledString());
 }
 

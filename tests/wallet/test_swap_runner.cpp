@@ -305,6 +305,28 @@ TEST(SwapRunner, SignedSpendsVerify) {
     EXPECT_THROW(SignedBtcClaim(alice, kBobKeys, bfund, 1'000), std::invalid_argument);
 }
 
+TEST(SwapRunner, RpcIoReadsTheNodesRealResultShapes) {
+    // Shapes seen on regtest: dinerod's sendrawtransaction nests the txid as
+    // {"result": "<txid>"}; wallet calls report failure in-band as {"error": ...}.
+    Json::Value din_result;
+    const DinRpc din = [&](const std::string&, const Json::Value&) { return std::optional<Json::Value>(din_result); };
+    const BtcRpc btc = [&](const std::string&, const Json::Value&) { return std::optional<Json::Value>(Json::Value("b1")); };
+    RpcSwapChainIo io(din, btc, MakeSession(Role::BtcSeller), Config());
+
+    din_result = Json::Value(Json::objectValue);
+    din_result["result"] = "d1";
+    EXPECT_EQ(io.BroadcastDin({0x00}), "d1");
+    din_result = Json::Value("d2");
+    EXPECT_EQ(io.BroadcastDin({0x00}), "d2");
+    din_result = Json::Value(Json::objectValue);
+    din_result["txid"] = "d3";
+    EXPECT_EQ(io.FundDin("rdin1x", 5), "d3");
+    din_result = Json::Value(Json::objectValue);
+    din_result["error"] = "No confirmed UTXOs available";
+    EXPECT_THROW(io.FundDin("rdin1x", 5), std::runtime_error);
+    EXPECT_EQ(io.BroadcastBtc({0x00}), "b1");
+}
+
 TEST(SwapRunner, SessionRoundTripsThroughTheFileStore) {
     const auto path = (std::filesystem::temp_directory_path() / "swap_runner_test_session.txt").string();
     std::remove(path.c_str());
