@@ -210,6 +210,19 @@ replaceable (`nSequence` signalling) so a higher rung can replace a lower one.
 Child-pays-for-parent from Bob's payout would need Bob's key and is not used
 by the tower.
 
+**Decision (2026-10-04): no fee bumping on Dinero.** Dinero nodes do not
+replace by fee by default (`mempool.enable_rbf=false`; `RBFPolicy::isRBFSignaled`
+then returns false for every transaction). Verified on regtest: a double-fee
+DIN claim conflicting with a pending one is refused (`txn-mempool-conflict`).
+So the first accepted DIN rung is final, and the tower picks it **by urgency**
+instead of escalating: the lowest rung while `T_din_unix` is at least 24 h away
+by Dinero's MTP, the top rung within 6 h, linear in between. The same
+first-seen rule also keeps Alice's later conflicting refund out of mempools
+that already hold Bob's claim (both orderings tested on regtest). Bitcoin
+replaces by fee normally, so BTC refund rungs still escalate over time
+(tested: a higher rung replaces a lower one in bitcoind's mempool). Enabling
+RBF for HTLC spends or adding a CPFP anchor were the alternatives considered.
+
 MTP lags real time (≈6 blocks: ~6–12 min on Dinero, ~1 h on Bitcoin) and can
 lag more during stalls; the app always computes deadlines from each chain's
 current MTP and shows wall-clock time remaining.

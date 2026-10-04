@@ -85,6 +85,9 @@ replaceable. Rungs are generated and signed when the swap is armed and handed
 to the tower. Ceiling is capped so a rung never pays more than a set fraction
 of the swap value (user-visible).
 
+On Dinero the rungs are not escalated (no replace-by-fee on default nodes):
+the tower picks the DIN rung by how close `T_din_unix` is. See design §6.2.
+
 ## 6. Watchtower
 
 Small separate process Bob runs on an always-on machine (same PC is allowed
