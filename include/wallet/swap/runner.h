@@ -64,7 +64,8 @@ struct SwapKeys {
 };
 
 struct RunnerConfig {
-    uint64_t din_fee_una{100'000};
+    uint64_t din_fee_una{100'000};          // DIN claim/refund fee with >= 24 h to T_din
+    uint64_t din_fee_urgent_una{1'000'000}; // DIN claim fee within 6 h of T_din (linear between)
     uint64_t btc_fee_sat{1'000};
     // Bob's watchtower ladders (only used when a tower is configured).
     bool use_tower{false};

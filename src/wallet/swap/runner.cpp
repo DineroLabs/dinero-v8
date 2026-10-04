@@ -7,6 +7,7 @@
 #include "wallet/swap/swap_crypto.h"
 #include "wallet/swap/tower.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <fcntl.h>
 #include <fstream>
@@ -339,10 +340,18 @@ void SwapRunner::Execute(const Action& action, const DinWatchReport& din, const 
             if (!btc.funding) throw std::runtime_error("BTC HTLC output unknown");
             return done("broadcast BTC refund:",
                         io_.BroadcastBtc(SignedBtcRefund(session_, keys_, *btc.funding, config_.btc_fee_sat)));
-        case ActionKind::ClaimDin:
+        case ActionKind::ClaimDin: {
             if (!din.funding) throw std::runtime_error("DIN HTLC output unknown");
-            return done("broadcast DIN claim:",
-                        io_.BroadcastDin(SignedDinClaim(session_, keys_, *din.funding, config_.din_fee_una)));
+            // Dinero does not replace by fee: pick the fee for the time left before
+            // Alice's refund opens (24 h or more: base fee; 6 h or less: urgent fee).
+            const int64_t left = int64_t(offer.t_din_unix) - int64_t(din.mtp_unix);
+            constexpr int64_t kRelaxed = 24 * 3600, kUrgent = 6 * 3600;
+            const uint64_t lo = config_.din_fee_una, hi = std::max(config_.din_fee_una, config_.din_fee_urgent_una);
+            const uint64_t fee = left >= kRelaxed ? lo
+                               : left <= kUrgent  ? hi
+                                                  : lo + (hi - lo) * uint64_t(kRelaxed - left) / uint64_t(kRelaxed - kUrgent);
+            return done("broadcast DIN claim:", io_.BroadcastDin(SignedDinClaim(session_, keys_, *din.funding, fee)));
+        }
         case ActionKind::RefundDin:
             if (!din.funding) throw std::runtime_error("DIN HTLC output unknown");
             return done("broadcast DIN refund:",

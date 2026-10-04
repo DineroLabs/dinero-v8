@@ -389,6 +389,36 @@ TEST(SwapRunner, TowerArmingIsRetriedUntilAccepted) {
     EXPECT_EQ(chains.armed.size(), 1u);
 }
 
+TEST(SwapRunner, BobsDinClaimFeeFollowsUrgency) {
+    // No replace-by-fee on Dinero: Bob's first DIN claim must already carry a
+    // fee fit for the time left before Alice's refund opens.
+    auto fee_at = [](uint32_t hours_before_t_din) {
+        Log log;
+        FakeStore store(log);
+        FakeChains chains(log);
+        auto s = MakeSession(Role::BtcSeller);
+        s.record.state = SwapState::BtcLocked;
+        BothLocksSeen(chains, s);
+        chains.btc.htlc.spent = true;
+        chains.btc.htlc.spent_by_claim = true;
+        chains.btc.htlc.revealed_preimage = kSecret;
+        chains.din.mtp_unix = s.record.offer.t_din_unix - hours_before_t_din * kHour;
+        SwapRunner bob(s, kBobKeys, Config(), chains, store);
+        bob.Tick(kNow + kHour);
+        EXPECT_EQ(chains.din_broadcasts.size(), 1u);
+        Transaction tx;
+        size_t used = 0;
+        EXPECT_TRUE(TransactionSerializer::Deserialize(tx, chains.din_broadcasts.at(0), used));
+        return s.record.offer.din_amount_una - tx.vout.at(0).value.GetUna();
+    };
+    const auto c = Config();
+    EXPECT_EQ(fee_at(40), c.din_fee_una);
+    EXPECT_EQ(fee_at(2), c.din_fee_urgent_una);
+    const auto mid = fee_at(15);
+    EXPECT_GT(mid, c.din_fee_una);
+    EXPECT_LT(mid, c.din_fee_urgent_una);
+}
+
 TEST(SwapRunner, SessionRoundTripsThroughTheFileStore) {
     const auto path = (std::filesystem::temp_directory_path() / "swap_runner_test_session.txt").string();
     std::remove(path.c_str());
