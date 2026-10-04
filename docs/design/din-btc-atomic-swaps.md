@@ -118,7 +118,7 @@ Utreexo/CSN nodes enforce it too. Bitcoin uses the same rule.
 | `T_din_unix` (Alice refund opens) | ≥ `T_btc_unix` + 24 h | the gap Bob needs after a late reveal (§6.1) |
 | `N_din` (Bob waits) | scaled by amount (see below), min 30 blocks | DIN is a small-hashrate chain; deep confirmation before Bob commits BTC |
 | `N_btc` (Alice waits) | 2–3 BTC blocks | standard |
-| Alice's claim cut-off | *app policy only*: the app will not claim BTC after `T_btc_unix` − 2 h | lowers the chance of a late reveal; **not a guarantee** — any other client can still claim (§6.1) |
+| Alice's claim cut-off | Alice's client never broadcasts a BTC claim after `T_btc_unix` − 6 h | protects **Alice** from revealing `s` and losing the BTC race (§6.1); it does not bind a different client, so it is no protection for Bob |
 
 ### 6.1 What is actually guaranteed, and the liveness each side owes
 
@@ -141,11 +141,26 @@ If Bob is offline through `T_btc_unix`, Alice can claim the BTC **arbitrarily
 late** (as long as Bob has not refunded), leaving Bob any window down to zero —
 the 24 h gap protects only a Bob who is online (or delegated, §6.2).
 
-**Alice is safe** with no time-critical action: she only reveals `s` by
-claiming BTC she then holds. Her only liveness duty is to reclaim her DIN
-after `T_din_unix` if Bob never locked (or never claimed) — and after
-`T_din_unix` her refund races Bob's claim, so a Bob who learned `s` must have
-claimed before then.
+**Alice is NOT automatically safe.** Her BTC claim reveals `s` the moment it
+reaches the Bitcoin mempool, before it confirms. If that claim then **loses
+the race to Bob's BTC refund** (possible once Bitcoin's MTP reaches
+`T_btc_unix`) or is **reorganised out** and Bob's refund confirms instead, Bob
+has his BTC back *and* knows `s`, so he can also claim Alice's DIN. Alice's
+rules (her own client enforces them, because they protect her):
+
+1. **Claim early.** Broadcast the BTC claim as soon as Bob's BTC lock has
+   `N_btc` confirmations, never close to `T_btc_unix`.
+2. **Hard cut-off.** Never broadcast a BTC claim after `T_btc_unix − 6 h`
+   (room for several Bitcoin blocks plus a fee spike). Past the cut-off, give
+   up the BTC and refund the DIN after `T_din_unix`.
+3. **Fee-bump to confirmation.** Once broadcast, raise the fee (RBF) until the
+   claim has `N_btc` confirmations; treat it as at risk until then.
+4. **Reorg watch.** If her confirmed claim is reorganised out before
+   `T_btc_unix`, rebroadcast immediately; after `T_btc_unix` she is racing Bob's
+   refund again and has lost the guarantee.
+
+Her other liveness duty: reclaim her DIN after `T_din_unix` if Bob never
+locked BTC.
 
 **Chain-stall effects (not covered by fixed margins):**
 
@@ -162,19 +177,38 @@ confirmations.
 
 ### 6.2 Watchtower (required for Bob in v1)
 
-Because Bob's safety depends on being online at two moments, v1 ships a
-**watchtower**: a process (on Bob's own always-on machine, or a third party he
-chooses) that holds
+A watchtower improves **availability** (Bob does not have to be online at the
+critical moments). It does **not** guarantee **confirmation**: a prolonged
+chain stall, transaction censorship by miners, or losing a race still defeats
+it, exactly as it would defeat an online Bob. The design treats those as
+residual risks bounded only by the time gaps and amount caps.
 
-- Bob's **pre-signed BTC refund** (`nLockTime = T_btc_unix`), broadcast as soon
-  as Bitcoin's MTP allows if `s` has not appeared; and
-- Bob's **pre-signed DIN claim**, with the preimage slot empty. A BIP341
-  tapscript signature commits to the transaction and leaf, not to the other
-  witness items, so the tower can insert `s` when it appears without holding
-  Bob's key. *(Inference from BIP341; must be confirmed against Dinero's
-  tapscript sighash in qualification §9.)*
+The tower holds, for Bob:
 
-The tower can only complete transactions that pay Bob; it cannot redirect funds.
+- a **pre-signed BTC refund** (`nLockTime = T_btc_unix`), broadcast as soon as
+  Bitcoin's MTP allows if `s` has not appeared; and
+- a **pre-signed DIN claim** with the preimage slot empty; when `s` appears the
+  tower inserts it into the witness and broadcasts.
+
+**Why pre-signing works.** Dinero's script-path sighash
+(`SignatureHashTaproot`, `src/consensus/script_sighash.cpp`) commits to the
+transaction data and the script leaf but not to ordinary witness arguments
+such as `s` (source inspection). This is an assumption until the consensus
+test in §9 passes: sign first, insert `s` afterwards, verify; a wrong `s` and a
+redirected payout must both fail.
+
+**Fee bumping without Bob's key.** A pre-signed transaction cannot be re-fee'd
+by a keyless tower, so v1 uses a **fee ladder**: Bob pre-signs each claim and
+refund at several feerates (e.g. 8 versions, roughly doubling from the
+expected rate to a high ceiling). Every version pays the same destination
+(Bob's address); only the amount differs by the fee. The tower broadcasts the
+lowest version that the current feerate requires and replaces it with the
+next rung if it is not confirming. Because every rung is signed with
+`SIGHASH_DEFAULT` (commits to all outputs), the tower can choose *which*
+version to send but cannot change where the money goes. Each version is
+replaceable (`nSequence` signalling) so a higher rung can replace a lower one.
+Child-pays-for-parent from Bob's payout would need Bob's key and is not used
+by the tower.
 
 MTP lags real time (≈6 blocks: ~6–12 min on Dinero, ~1 h on Bitcoin) and can
 lag more during stalls; the app always computes deadlines from each chain's
@@ -217,7 +251,8 @@ and raise `N_din` with amount. The app shows the cap; makers set their own.
 | Alice claims BTC after `T_btc_unix` (any client) | races Bob's BTC refund; if Alice wins, Bob must claim DIN before `T_din_unix` — safe only if Bob (or his watchtower) is online (§6.1) |
 | Bob offline through `T_btc_unix` | Alice may claim BTC arbitrarily late, shrinking Bob's DIN window toward zero — the watchtower (§6.2) is required in v1 |
 | DIN block rate changes mid-swap (60 s activation, bursts) | no effect: both locks are timestamps |
-| Bob's software offline after `s` revealed | watchtower inserts `s` into Bob's pre-signed DIN claim and broadcasts it (§6.2) |
+| Bob's software offline after `s` revealed | watchtower inserts `s` into Bob's pre-signed DIN claim and broadcasts the needed fee rung (§6.2); availability only, not a confirmation guarantee |
+| Alice's BTC claim loses the refund race or is reorganised out | Bob holds his BTC and `s`, and can claim Alice's DIN — prevented only by Alice's early-claim, cut-off and fee-bump rules (§6.1) |
 | Fee spike on refund/claim | claim/refund txs built with replaceable fees; BTC side CPFP via the sweep output |
 | DIN reorg below `N_din` | Bob does not lock until `N_din`; amount caps bound the attack value |
 | Wrong `h`, amount, or timeout in counterparty lock | each side verifies the other's script byte-for-byte before acting |
@@ -243,9 +278,13 @@ and raise `N_din` with amount. The app shows the cap; makers set their own.
   watchtower; Bitcoin stall pushing the reveal late (measure Bob's remaining
   wall-clock window); Dinero stall near `T_din_unix`; fee-spike/RBF on every
   claim and refund.
-- **Watchtower:** pre-signed DIN claim with `s` inserted later verifies under
-  Dinero's tapscript sighash (confirms §6.2's BIP341 inference); tower cannot
-  alter outputs.
+- **Watchtower / pre-signing (consensus test, required):** sign the DIN claim
+  first, insert the correct `s` afterwards → valid; insert a wrong `s` → invalid;
+  change the payout output after signing → invalid. Same for every fee-ladder
+  rung; a higher rung replaces a lower one in the mempool.
+- **Alice-side races:** Alice's claim in the mempool when `T_btc_unix` passes
+  and Bob's refund competes (both outcomes); Alice's confirmed claim reorganised
+  out after `T_btc_unix`; client refuses to claim after the cut-off.
 - Client abort rules (§6.1) refuse to lock under each listed condition.
 - External review of the script templates and state machine.
 
