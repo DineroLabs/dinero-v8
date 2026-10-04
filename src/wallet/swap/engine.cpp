@@ -59,7 +59,10 @@ struct Stepper {
             if (obs.din.spent && !obs.din.spent_by_claim && obs.din.spend_confirmations >= 1) {
                 return Go(SwapState::Refunded);
             }
-            if (obs.btc.output_seen && obs.btc.output_confirmations >= offer().n_btc_confirmations) {
+            // Never claim a BTC lock that is already spent (e.g. Bob refunded while
+            // Alice was offline): it cannot succeed and would leak the secret.
+            if (obs.btc.output_seen && !obs.btc.spent &&
+                obs.btc.output_confirmations >= offer().n_btc_confirmations) {
                 if (obs.btc.output_value != offer().btc_amount_sat) {
                     Alert("BTC lock has the wrong amount; not claiming");
                 } else if (uint64_t(obs.wall_clock_unix) + kAliceClaimCutoffSeconds <

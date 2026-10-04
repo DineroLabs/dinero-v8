@@ -420,3 +420,15 @@ TEST(SwapEngine, ARecordWhoseSecretDoesNotMatchIsRejected) {
     r.secret = wrong;  // corrupted on disk: Alice's claim would be invalid
     EXPECT_THROW(DecodeRecord(EncodeRecord(r)), std::invalid_argument);
 }
+
+TEST(SwapEngine, AliceNeverClaimsAnAlreadySpentBtcLock) {
+    // Alice was offline; Bob's refund already took the BTC. Claiming now
+    // cannot succeed and would leak the secret for nothing.
+    auto r = MakeRecord(Role::DinSeller);
+    r.state = SwapState::DinLocked;
+    auto obs = At(kNow + 3 * kHour);
+    obs.din = Locked(kDin, 300);
+    obs.btc = Spent(Locked(kBtc, 50), /*by_claim=*/false, 5);
+    const auto s = Step(r, obs);
+    EXPECT_FALSE(Has(s, ActionKind::ClaimBtc));
+}
