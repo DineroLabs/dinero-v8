@@ -51,6 +51,9 @@ timeout. We make the **DIN seller (Alice) the initiator**.
 Safety: Alice can only learn the BTC by revealing `s`; once `s` is public Bob
 has until `T_din` to take the DIN. Bob never reveals anything.
 
+`T_din` and `T_btc` are **Unix timestamps** checked against each chain's
+median time past, never block heights (§6).
+
 ## 4. Dinero-side output (exact)
 
 Taproot output, **internal key = BIP341 NUMS point**
@@ -60,7 +63,7 @@ covenant profile and, after #827, the escrow builder). Two leaves:
 
 ```
 claim  : OP_SIZE 32 OP_EQUALVERIFY OP_SHA256 <h> OP_EQUALVERIFY <bob_xonly> OP_CHECKSIG
-refund : <T_din> OP_CHECKLOCKTIMEVERIFY OP_DROP <alice_xonly> OP_CHECKSIG
+refund : <T_din_unix> OP_CHECKLOCKTIMEVERIFY OP_DROP <alice_xonly> OP_CHECKSIG
 ```
 
 - `OP_SIZE 32` pins the preimage size on both chains (prevents a preimage that
@@ -68,7 +71,8 @@ refund : <T_din> OP_CHECKLOCKTIMEVERIFY OP_DROP <alice_xonly> OP_CHECKSIG
 - Keys are fresh per swap (derived from the wallet seed at a dedicated swap
   path), never reused addresses.
 - Claim spend witness: `<sig_bob> <s> <claim_script> <control_block>`.
-- Refund spend: `nLockTime = T_din`, input `nSequence < 0xffffffff`, witness
+- `T_din_unix` is a **Unix timestamp** (≥ 500,000,000), not a height — see §6.
+- Refund spend: `nLockTime = T_din_unix`, input `nSequence < 0xffffffff`, witness
   `<sig_alice> <refund_script> <control_block>`.
 
 ## 5. Bitcoin-side output
@@ -79,7 +83,7 @@ Standard P2WSH HTLC (widest wallet/explorer support), same `h`:
 OP_IF
    OP_SIZE 32 OP_EQUALVERIFY OP_SHA256 <h> OP_EQUALVERIFY <alice_pubkey>
 OP_ELSE
-   <T_btc> OP_CHECKLOCKTIMEVERIFY OP_DROP <bob_pubkey>
+   <T_btc_unix> OP_CHECKLOCKTIMEVERIFY OP_DROP <bob_pubkey>
 OP_ENDIF
 OP_CHECKSIG
 ```
@@ -91,17 +95,39 @@ BTC address the user types in.
 
 ## 6. Timeouts and confirmations
 
-Use **block heights on each chain**, converted from wall-clock targets with
-margins (Dinero 120 s blocks today, 60 s after v8.1.13 activation; BTC ~600 s,
-high variance).
+**Both refund locks are timestamps, never block heights.** A height lock is a
+block count, and Dinero's block rate is not fixed: the v8.1.13 activation
+halves the target (120 s → 60 s), ASERT and the difficulty-encoding quirk
+produce bursts, and Bitcoin blocks vary widely. A "48-hour" DIN height lock
+computed at 120 s becomes ≈24 h if the switch happens mid-swap, wiping out
+Bob's claim margin (review finding, 2026-10-04). Timestamp locks keep the
+margin in wall-clock time regardless of block rate.
+
+Dinero enforces timestamp `nLockTime` (≥ 500,000,000) against the **parent
+block's median time past**, BIP113-style (`include/consensus/contextual_locks.h`,
+absolute-lock branch), and that check does not depend on input heights, so
+Utreexo/CSN nodes enforce it too. Bitcoin uses the same rule.
+
+**Invariant (must hold in wall-clock time, worst case):**
+
+```
+Bob's claim window = T_din_unix − (latest time s can be revealed)
+latest reveal ≈ T_btc_unix + BTC MTP lag (~1 h) + BTC confirmation slack
+Bob must confirm his DIN claim before Dinero MTP ≥ T_din_unix
+```
 
 | Parameter | Proposed default | Why |
 |---|---|---|
-| `T_btc` (Bob refund) | now + 24 h of BTC blocks (≈144) | Bob's coins are never locked longer than a day |
-| `T_din` (Alice refund) | now + 48 h of DIN blocks | ≥ 24 h after `T_btc`, so Bob always has a full day to claim DIN after `s` is revealed |
+| `T_btc_unix` (Bob refund) | lock time + 24 h | Bob's BTC is never locked longer than ~a day |
+| `T_din_unix` (Alice refund) | ≥ `T_btc_unix` + 24 h | leaves Bob ≥ 22 h after the latest possible reveal, after MTP lag |
+| Alice's claim cut-off (app) | refuse to claim BTC after `T_btc_unix` − 2 h | avoids racing Bob's BTC refund; past it, both sides refund |
 | `N_din` (Bob waits) | scaled by amount (see below), min 30 blocks | DIN is a small-hashrate chain; deep confirmation before Bob commits BTC |
 | `N_btc` (Alice waits) | 2–3 BTC blocks | standard |
-| Claim deadline in app | warn at `T_din − 12 h`, auto-claim | Bob's software must claim long before the refund opens |
+| Bob's claim (app) | claim immediately when `s` appears; alarm at `T_din_unix` − 12 h | Bob's software must claim long before the refund opens |
+
+MTP lags real time (≈6 blocks: ~6–12 min on Dinero, ~1 h on Bitcoin). The
+margins above already absorb that; the app always computes deadlines from
+each chain's current MTP, not from the local clock.
 
 **Reorg / hashrate risk (main DIN-specific risk).** If an attacker can rewrite
 `N_din` DIN blocks, Alice could double-spend her lock after Bob locks BTC. Rule:
@@ -135,7 +161,8 @@ and raise `N_din` with amount. The app shows the cap; makers set their own.
 |---|---|
 | Bob never locks BTC | Alice refunds DIN after `T_din` |
 | Alice never claims BTC | Bob refunds BTC after `T_btc`; Alice refunds DIN after `T_din` |
-| Alice claims BTC near `T_btc` | still safe: Bob has until `T_din` (≥ 24 h later) to claim DIN |
+| Alice claims BTC near `T_btc_unix` | app refuses after `T_btc_unix` − 2 h; even a late reveal leaves Bob ≥ 22 h before `T_din_unix` |
+| DIN block rate changes mid-swap (60 s activation, bursts) | no effect: both locks are timestamps |
 | Bob's software offline after `s` revealed | must come back before `T_din`; app warns; watchtower option in v2 |
 | Fee spike on refund/claim | claim/refund txs built with replaceable fees; BTC side CPFP via the sweep output |
 | DIN reorg below `N_din` | Bob does not lock until `N_din`; amount caps bound the attack value |
@@ -152,8 +179,10 @@ and raise `N_din` with amount. The app shows the cap; makers set their own.
   tapscript policy found; verify on regtest).
 - **Utreexo/CSN node** accepts and validates both spends (confirms the
   CLTV-over-CSV choice).
-- Time-based vs height-based lock behaviour on Dinero (`nLockTime` MTP rules)
-  if time locks are ever used; v1 uses heights only.
+- Timestamp locks: refund rejected while parent MTP < `T_din_unix`, accepted
+  after; include a swap that **crosses the 60 s activation** on regtest and one
+  with a block burst, and check the claim margin in wall-clock time.
+- CSN/Utreexo node enforces the timestamp lock (parent MTP available).
 - External review of the script templates and state machine.
 
 ## 10. Later: DIN ↔ XMR
