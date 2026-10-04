@@ -219,19 +219,42 @@ TEST(SwapTower, IgnoresASecretThatDoesNotMatch) {
     EXPECT_FALSE(r.finished);
 }
 
-TEST(SwapTower, EscalatesDinFeesAndGoesToTheTopNearTDin) {
+TEST(SwapTower, DinRungFollowsUrgencyNotElapsedTime) {
+    // Dinero nodes do not replace by fee, so the DIN rung is chosen by how
+    // close T_din is (by Dinero's median time), never escalated over time.
+    FakeChains chains;
+    Watchtower tower(Package(), Config(), chains);  // relaxed >= 24 h, urgent <= 6 h
+    chains.AliceClaimsBtc(kSecret);
+    const auto t_din = BobSession().record.offer.t_din_unix;
+    const auto fees = [] {
+        std::vector<uint64_t> f;
+        for (const auto& r : Package().din_claims) f.push_back(r.fee_una);
+        return f;
+    }();
+    chains.din.mtp_unix = t_din - 40 * kHour;
+    for (uint32_t t = 0; t < 10 * kHour; t += kHour) tower.Tick(kNow + t);  // hours pass, far from T_din
+    for (const auto& b : chains.din_broadcasts) EXPECT_EQ(DinFeeOf(b), fees.front()) << "no time escalation";
+
+    chains.din.mtp_unix = t_din - 15 * kHour;  // halfway between 24 h and 6 h
+    tower.Tick(kNow + 11 * kHour);
+    const uint64_t mid = DinFeeOf(chains.din_broadcasts.back());
+    EXPECT_GT(mid, fees.front());
+    EXPECT_LT(mid, fees.back());
+
+    chains.din.mtp_unix = t_din - 2 * kHour;
+    tower.Tick(kNow + 11 * kHour);
+    EXPECT_EQ(DinFeeOf(chains.din_broadcasts.back()), fees.back());
+}
+
+TEST(SwapTower, BtcRefundStillEscalatesOverTime) {
     FakeChains chains;
     Watchtower tower(Package(), Config(), chains);
-    chains.AliceClaimsBtc(kSecret);
-    tower.Tick(kNow);                 // rung 0
-    tower.Tick(kNow + 600);           // still rung 0 (re-broadcast)
-    tower.Tick(kNow + 1800);          // rung 1
-    ASSERT_EQ(chains.din_broadcasts.size(), 3u);
-    EXPECT_EQ(DinFeeOf(chains.din_broadcasts[0]), DinFeeOf(chains.din_broadcasts[1]));
-    EXPECT_LT(DinFeeOf(chains.din_broadcasts[1]), DinFeeOf(chains.din_broadcasts[2]));
-    chains.din.mtp_unix = BobSession().record.offer.t_din_unix - 2 * kHour;  // Alice's refund opens soon
-    tower.Tick(kNow + 1900);
-    EXPECT_EQ(DinFeeOf(chains.din_broadcasts.back()), Package().din_claims.back().fee_una);
+    chains.btc.mtp_unix = BobSession().record.offer.t_btc_unix;
+    tower.Tick(kNow);
+    tower.Tick(kNow + 1800);
+    ASSERT_EQ(chains.btc_broadcasts.size(), 2u);
+    EXPECT_EQ(chains.btc_broadcasts[0], SerializeBtcTx(Package().btc_refunds[0].tx));
+    EXPECT_EQ(chains.btc_broadcasts[1], SerializeBtcTx(Package().btc_refunds[1].tx));
 }
 
 TEST(SwapTower, RefundsBtcOnlyOnceBitcoinTimeReachesTBtc) {

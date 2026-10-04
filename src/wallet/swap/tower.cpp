@@ -252,15 +252,23 @@ Watchtower::Watchtower(TowerPackage package, TowerConfig config, SwapChainIo& io
     VerifyTowerPackage(package_);
 }
 
-size_t Watchtower::NextRung(Escalation& e, size_t rungs, uint32_t now, bool urgent) const {
+size_t Watchtower::NextRung(Escalation& e, size_t rungs, uint32_t now) const {
     if (!e.started) {
         e = Escalation{0, now, true};
     } else if (now >= e.since + config_.escalate_after_seconds && e.rung + 1 < rungs) {
         ++e.rung;
         e.since = now;
     }
-    if (urgent) e.rung = rungs - 1;
     return e.rung;
+}
+
+size_t Watchtower::DinRungByUrgency(uint32_t din_mtp) const {
+    const size_t top = package_.din_claims.size() - 1;
+    const int64_t left = int64_t(package_.offer.t_din_unix) - int64_t(din_mtp);
+    const int64_t relaxed = config_.din_relaxed_before_seconds, urgent = config_.din_urgent_before_seconds;
+    if (left >= relaxed) return 0;
+    if (left <= urgent || relaxed <= urgent) return top;
+    return static_cast<size_t>((relaxed - left) * int64_t(top) / (relaxed - urgent));
 }
 
 TowerReport Watchtower::Tick(uint32_t now) {
@@ -311,8 +319,9 @@ TowerReport Watchtower::Tick(uint32_t now) {
             report.events.push_back("ALERT: the DIN lock in the package is not on chain");
             return report;
         }
-        const bool urgent = uint64_t(din.mtp_unix) + config_.din_urgent_before_seconds >= offer.t_din_unix;
-        const size_t i = NextRung(din_claim_, package_.din_claims.size(), now, urgent);
+        // No replace-by-fee on Dinero: a lower rung already in mempools stays, and
+        // a higher one is refused harmlessly until the lower one confirms or drops.
+        const size_t i = DinRungByUrgency(din.mtp_unix);
         const auto terms = MakeDinTerms(package_.offer, package_.accept);
         Transaction tx = package_.din_claims[i].tx;
         SetDinClaimWitness(tx, terms, BuildDinHtlc(terms), package_.din_claims[i].signature,
@@ -328,7 +337,7 @@ TowerReport Watchtower::Tick(uint32_t now) {
 
     // No secret: refund the BTC once Bitcoin's median time reaches T_btc.
     if (!(btc.htlc.spent && btc.htlc.spent_by_claim) && btc.mtp_unix >= offer.t_btc_unix && btc.htlc.output_seen) {
-        const size_t i = NextRung(btc_refund_, package_.btc_refunds.size(), now, false);
+        const size_t i = NextRung(btc_refund_, package_.btc_refunds.size(), now);
         try {
             report.events.push_back("BTC refund rung " + std::to_string(i) + " broadcast: " +
                                     io_.BroadcastBtc(SerializeBtcTx(package_.btc_refunds[i].tx)));

@@ -14,11 +14,13 @@
 // every signature against Bob's keys in the accept) so a bad package is refused
 // instead of silently leaving Bob unprotected.
 //
-// Fees: each rung is re-broadcast while unconfirmed and the next rung is tried
-// after `escalate_after_seconds`; when T_din is close the DIN claim jumps to the
-// top rung. Bitcoin replaces by fee. Dinero nodes do NOT by default
-// (mempool.enable_rbf=false): there the first accepted rung stays, so DIN
-// rungs start at a fee meant to confirm without replacement.
+// Fees. Bitcoin replaces by fee: each BTC refund rung is re-broadcast while
+// unconfirmed and the next rung is tried after `escalate_after_seconds`.
+// Dinero nodes do NOT replace by fee by default (mempool.enable_rbf=false;
+// verified on regtest), so the first accepted DIN claim is final: the DIN rung
+// is chosen by urgency alone — rung 0 while T_din is at least
+// `din_relaxed_before_seconds` away (by Dinero's median time), the top rung
+// within `din_urgent_before_seconds`, linear in between — never by elapsed time.
 //
 // The tower keeps no state that matters: it re-derives everything from the
 // chains each tick (a restart only resets the escalation step).
@@ -80,7 +82,8 @@ std::string WriteTowerInbox(const std::string& inbox_dir, const std::string& pac
 
 struct TowerConfig {
     uint32_t escalate_after_seconds{30 * 60};
-    uint32_t din_urgent_before_seconds{6 * 60 * 60};  // top DIN rung this close to T_din
+    uint32_t din_relaxed_before_seconds{24 * 60 * 60};  // lowest DIN rung this far from T_din
+    uint32_t din_urgent_before_seconds{6 * 60 * 60};    // top DIN rung this close to T_din
     uint32_t settle_confirmations{6};  // keep watching (and re-broadcast after a reorg) until this deep
 };
 
@@ -102,12 +105,12 @@ private:
         uint32_t since{0};  // wall clock of the first broadcast at this rung
         bool started{false};
     };
-    size_t NextRung(Escalation& e, size_t rungs, uint32_t now, bool urgent) const;
+    size_t NextRung(Escalation& e, size_t rungs, uint32_t now) const;
+    size_t DinRungByUrgency(uint32_t din_mtp) const;
 
     TowerPackage package_;
     TowerConfig config_;
     SwapChainIo& io_;
-    Escalation din_claim_;
     Escalation btc_refund_;
 };
 
