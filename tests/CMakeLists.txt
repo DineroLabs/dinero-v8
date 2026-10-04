@@ -13695,3 +13695,22 @@ if(DINERO_BITCOIND)
     COMMAND ${CMAKE_SOURCE_DIR}/tests/wallet/swap_btc_regtest.sh $<TARGET_FILE:swap_btc_regtest_tool>)
   set_tests_properties(SwapBtcRegtest PROPERTIES LABELS "wallet;swap;regtest" TIMEOUT 180)
 endif()
+
+# Bitcoin Core regtest check of the swap's Bitcoin watcher (milestone 4b).
+add_executable(swap_btc_watch_tool
+  tests/wallet/swap_btc_watch_tool.cpp
+  src/wallet/swap/btc_watcher.cpp
+  src/wallet/swap/btc_tx.cpp
+  src/wallet/swap/engine.cpp
+  src/wallet/swap/offer.cpp
+  src/wallet/swap/htlc.cpp
+)
+target_link_libraries(swap_btc_watch_tool PRIVATE dinero_rpc_client dinero_consensus)
+link_zstd_if_needed(swap_btc_watch_tool)
+target_include_directories(swap_btc_watch_tool PRIVATE ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src)
+if(DINERO_BITCOIND)
+  add_test(NAME SwapBtcWatcherRegtest
+    COMMAND ${CMAKE_SOURCE_DIR}/tests/wallet/swap_btc_watch_regtest.sh
+            $<TARGET_FILE:swap_btc_watch_tool> $<TARGET_FILE:swap_btc_regtest_tool>)
+  set_tests_properties(SwapBtcWatcherRegtest PROPERTIES LABELS "wallet;swap;regtest" TIMEOUT 240)
+endif()
