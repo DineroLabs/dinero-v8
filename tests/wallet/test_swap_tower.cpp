@@ -258,10 +258,50 @@ TEST(SwapTower, NeverActsBlindAndStopsWhenSettled) {
     chains.din.ok = true;
     chains.din.htlc.spent = true;
     chains.din.htlc.spent_by_claim = true;
-    chains.din.htlc.spend_confirmations = 1;
+    chains.din.htlc.spend_confirmations = Config().settle_confirmations;
     const auto r = tower.Tick(kNow);
     EXPECT_TRUE(r.finished);
     EXPECT_TRUE(chains.din_broadcasts.empty());
+}
+
+}  // namespace
+
+namespace {
+
+TEST(SwapTower, KeepsWatchingUntilTheSpendIsBuriedAndRebroadcastsAfterAReorg) {
+    FakeChains chains;
+    auto config = Config();
+    config.settle_confirmations = 6;
+    Watchtower tower(Package(), config, chains);
+    chains.AliceClaimsBtc(kSecret);
+    tower.Tick(kNow);
+    ASSERT_EQ(chains.din_broadcasts.size(), 1u);
+
+    chains.din.htlc.spent = true;  // the tower's claim is mined
+    chains.din.htlc.spent_by_claim = true;
+    chains.din.htlc.spend_confirmations = 1;
+    EXPECT_FALSE(tower.Tick(kNow + 60).finished) << "one block is not settled";
+
+    chains.din.htlc.spent = false;  // a reorg drops it
+    chains.din.htlc.spent_by_claim = false;
+    chains.din.htlc.spend_confirmations = 0;
+    tower.Tick(kNow + 120);
+    EXPECT_EQ(chains.din_broadcasts.size(), 2u) << "re-broadcast after the reorg";
+
+    chains.din.htlc.spent = chains.din.htlc.spent_by_claim = true;
+    chains.din.htlc.spend_confirmations = 6;
+    EXPECT_TRUE(tower.Tick(kNow + 600).finished);
+
+    // Same for Bob's BTC refund.
+    FakeChains c2;
+    Watchtower t2(Package(), config, c2);
+    c2.btc.mtp_unix = BobSession().record.offer.t_btc_unix;
+    c2.btc.htlc.spent = true;
+    c2.btc.htlc.spent_by_claim = false;
+    c2.btc.htlc.spend_confirmations = 2;
+    EXPECT_FALSE(t2.Tick(kNow).finished);
+    c2.btc.htlc.spend_confirmations = 6;
+    EXPECT_TRUE(t2.Tick(kNow).finished);
 }
 
 }  // namespace

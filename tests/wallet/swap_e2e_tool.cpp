@@ -306,6 +306,7 @@ int main(int argc, char** argv) {
 
         if (happy) {
             bool early_refund_checked = false;
+            bool rbf_probed = false, rbf_replaced = false;
             for (int round = 0; round < 120 && (alive(alice) || alive(bob)); ++round) {
                 if (alive(alice)) tick(alice, round);
                 if (alive(bob)) tick(bob, round);
@@ -317,6 +318,22 @@ int main(int argc, char** argv) {
                         const auto raw = SignedDinRefund(alice.runner->session(), alice.keys, *d.funding, config.din_fee_una);
                         Check(din_refuses_as_non_final(raw), "dinerod refuses the DIN refund before its timestamp lock");
                         early_refund_checked = true;
+                    }
+                }
+                if (!rbf_probed && bob.State() == SwapState::DinClaimBroadcast) {
+                    // Probe (reported, not asserted): does dinerod replace an unconfirmed
+                    // swap spend by fee? The watchtower's DIN ladder depends on it.
+                    const auto d = bob.io->ObserveDin();
+                    if (d.funding) {
+                        Json::Value p(Json::arrayValue);
+                        p.append(Hex(SignedDinClaim(bob.runner->session(), bob.keys, *d.funding, 2 * config.din_fee_una)));
+                        const auto env = din_client->call("sendrawtransaction", p);
+                        const std::string text = env ? env->toStyledString() : din_client->get_last_error();
+                        rbf_replaced = env && (!env->isMember("error") || (*env)["error"].isNull()) &&
+                                       !((*env)["result"].isObject() && (*env)["result"].isMember("error"));
+                        std::cout << "  RBF PROBE: double-fee DIN claim " << (rbf_replaced ? "REPLACED" : "REFUSED")
+                                  << " by dinerod: " << text << "\n";
+                        rbf_probed = true;
                     }
                 }
                 if (!alice.restarted && alice.State() == SwapState::DinLocked) {
@@ -336,7 +353,8 @@ int main(int argc, char** argv) {
             Check(alice.State() == SwapState::Done, std::string("alice Done (is ") + StateName(alice.State()) + ")");
             Check(bob.State() == SwapState::Done, std::string("bob Done (is ") + StateName(bob.State()) + ")");
             Check(btc_balance(kAliceBtcClaim) == int64_t(kBtcAmount - config.btc_fee_sat), "alice received BTC minus fee on chain");
-            Check(din_balance(kBobDinClaim) == int64_t(kDinAmount - config.din_fee_una), "bob received DIN minus fee on chain");
+            Check(din_balance(kBobDinClaim) ==
+                      int64_t(kDinAmount - (rbf_replaced ? 2 : 1) * config.din_fee_una), "bob received DIN minus fee on chain");
         } else if (use_tower) {
             // Bob locks BTC, arms the tower, and goes offline for good.
             int round = 0;

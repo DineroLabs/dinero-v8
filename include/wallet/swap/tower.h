@@ -81,6 +81,7 @@ std::string WriteTowerInbox(const std::string& inbox_dir, const std::string& pac
 struct TowerConfig {
     uint32_t escalate_after_seconds{30 * 60};
     uint32_t din_urgent_before_seconds{6 * 60 * 60};  // top DIN rung this close to T_din
+    uint32_t settle_confirmations{6};  // keep watching (and re-broadcast after a reorg) until this deep
 };
 
 struct TowerReport {

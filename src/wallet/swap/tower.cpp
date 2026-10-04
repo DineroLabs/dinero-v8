@@ -5,6 +5,7 @@
 
 #include <cstdio>
 #include <fcntl.h>
+#include <algorithm>
 #include <map>
 #include <sstream>
 #include <unistd.h>
@@ -273,15 +274,18 @@ TowerReport Watchtower::Tick(uint32_t now) {
     report.observed = true;
     const auto& offer = package_.offer;
 
-    // Settled outcomes.
-    if (din.htlc.spent && din.htlc.spent_by_claim && din.htlc.spend_confirmations >= 1) {
-        report.finished = true;
-        report.events.push_back("DIN claim confirmed: Bob has his DIN");
-        return report;
-    }
-    if (btc.htlc.spent && !btc.htlc.spent_by_claim && btc.htlc.spend_confirmations >= 1) {
-        report.finished = true;
-        report.events.push_back("BTC refund confirmed: Bob has his BTC back");
+    // Bob's outcome in a block: done once buried, and until then only watched
+    // (a reorg that drops it makes the duty below active again).
+    const uint32_t settle = std::max<uint32_t>(1, config_.settle_confirmations);
+    const bool din_claimed = din.htlc.spent && din.htlc.spent_by_claim && din.htlc.spend_confirmations >= 1;
+    const bool btc_refunded = btc.htlc.spent && !btc.htlc.spent_by_claim && btc.htlc.spend_confirmations >= 1;
+    if (din_claimed || btc_refunded) {
+        const uint32_t depth = din_claimed ? din.htlc.spend_confirmations : btc.htlc.spend_confirmations;
+        const std::string what = din_claimed ? "DIN claim" : "BTC refund";
+        if (depth >= settle) {
+            report.finished = true;
+            report.events.push_back(what + " " + std::to_string(depth) + " deep: settled for Bob");
+        }
         return report;
     }
 
