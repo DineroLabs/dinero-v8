@@ -1,4 +1,5 @@
 #include "storage/chain_db.h"
+#include "storage/orchard_catalog_nodes.h"
 #include "storage/shielded_cf_comparator.h"
 #include "common/serialization.h"
 #include "common/json_adapter.h"
@@ -318,7 +319,8 @@ const char* ShieldedStateKey(ChainDB::ShieldedStateRecord record) {
 }
 
 bool IsReservedShieldedMeta(const std::string& key) {
-    return key == "shielded_frontier" || key == "shielded_anchor_history" ||
+    return key.starts_with("orchard_catalog_v1/") ||
+           key == "shielded_frontier" || key == "shielded_anchor_history" ||
            key == "shielded_anchor_history_migrated_v1";
 }
 
@@ -2219,6 +2221,29 @@ StatusOr<std::vector<uint8_t>> ChainDB::getUtreexoChecksum(int height) const {
     }
 
     return std::vector<uint8_t>(value.begin(), value.end());
+}
+
+Status ChainDB::stageOrchardCatalogNode(const ChainWriteToken& token,const uint256& id,
+    const std::string& bytes,rocksdb::WriteBatch& batch) {
+    (void)token;
+    if(!db_)return Status::Internal;
+    if(!storage::catalog::ValidNode(id,bytes))return Status::Invalid;
+    const auto prior=getOrchardCatalogNode(id);
+    if(prior.ok())return *prior==bytes?Status::Ok:Status::Corruption;
+    if(prior.status()!=Status::NotFound)return prior.status();
+    std::string key(1,PREFIX_UTREEXO_META);key+="orchard_catalog_v1/node/";
+    key.append(reinterpret_cast<const char*>(id.data),32);
+    batch.Put(cf_[idx_utreexo_].get(),key,bytes);return Status::Ok;
+}
+StatusOr<std::string> ChainDB::getOrchardCatalogNode(const uint256& id) const {
+    if(!db_)return Status::Internal;
+    if(id.IsNull())return Status::Invalid;
+    std::string key(1,PREFIX_UTREEXO_META);key+="orchard_catalog_v1/node/";
+    key.append(reinterpret_cast<const char*>(id.data),32);std::string bytes;
+    const auto result=db_->Get(rocksdb::ReadOptions(),cf_[idx_utreexo_].get(),key,&bytes);
+    if(!result.ok())return convertRocksDBStatus(result);
+    if(!storage::catalog::ValidNode(id,bytes))return Status::Corruption;
+    return bytes;
 }
 
 Status ChainDB::putUtreexoMeta(const ChainWriteToken& token, const std::string& key,

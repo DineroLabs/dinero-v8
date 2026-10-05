@@ -368,6 +368,14 @@ public:
                           rocksdb::WriteBatch* wb = nullptr);
     StatusOr<std::string> getUtreexoMeta(const std::string& key) const;
 
+    // Immutable content-addressed catalog nodes. Staging never commits or
+    // publishes a root/head; only a completed parent owner can later enroll
+    // roots through the canonical transition. General metadata rejects this
+    // reserved namespace. Reads authenticate the complete node encoding.
+    Status stageOrchardCatalogNode(const ChainWriteToken&, const uint256&,
+        const std::string&, rocksdb::WriteBatch&);
+    StatusOr<std::string> getOrchardCatalogNode(const uint256&) const;
+
     // Canonical shielded records have their own access domain. Encodings are
     // unchanged; legacy stores resolve these exact keys inside utreexo, while
     // verified shielded-state-v1:READY stores resolve only shielded_state_v1.

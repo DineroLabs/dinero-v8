@@ -782,6 +782,7 @@ int main(int argc, char** argv) {
 #include "orchard_extension_checks.h"
 #include "orchard_detached_mining_checks.h"
 #include "orchard_history_capture_checks.h"
+#include "orchard_parent_catalog_checks.h"
 #include "orchard_branch_ancestry_checks.h"
 
 #include "wallet_service_owner_checks.h"

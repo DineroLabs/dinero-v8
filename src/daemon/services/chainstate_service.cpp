@@ -1,6 +1,7 @@
 #include "daemon/services/prepared_orchard_parent.h"
 #ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
 #include "daemon/services/orchard_parent_replay.h"
+#include "daemon/services/orchard_parent_catalog.h"
 #include "daemon/services/orchard_branch_replay.h"
 #endif
 #include "wallet/wallet_transaction_signer.h"
@@ -919,6 +920,7 @@ struct PreparedOrchardParent::State {
     const OrchardParentReplay::Target target_;
     std::unique_ptr<OrchardHistoryCapture> history_;
     OrchardParentReplay replay_;
+    std::unique_ptr<PreparedOrchardCatalog> catalog_;
     using Header=OrchardHistoryCapture::Header;
     std::optional<OrchardParentReplay::Target> branch_target_;
     std::vector<Header> branch_headers_;
@@ -939,6 +941,16 @@ const storage::LegacyRetirementRecord& PreparedOrchardParent::Record() const {
     return state_->replay_.Record();
 #else
     throw std::logic_error("Orchard preparation unavailable without backend");
+#endif
+}
+
+const PreparedOrchardCatalog& PreparedOrchardParent::Catalog() const {
+#ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
+    (void)state_->replay_.ValidatedTarget();
+    if(!state_->catalog_)throw std::logic_error("Orchard catalog preparation unavailable");
+    return *state_->catalog_;
+#else
+    throw std::logic_error("Orchard catalog unavailable without backend");
 #endif
 }
 
@@ -16230,6 +16242,11 @@ bool ChainstateService::CompletePreparedOrchardParent(PreparedOrchardParent& pre
         }
         prepared.state_->history_->Finish();
         prepared.state_->replay_.Finish();
+        // Detached, bounded immutable preparation writes. These nodes have no
+        // canonical head and cannot authorize activation or compact ingress.
+        const ChainWriteToken catalog_token;
+        prepared.state_->catalog_=PreparedOrchardCatalog::Create(*prepared.state_->db_,catalog_token,
+            prepared.state_->replay_,*prepared.state_->history_);
         if(prepared.state_->branch_target_) {
             const auto branch_target=*prepared.state_->branch_target_;
             if(!OrchardBranchReplay::TargetWithinWorkPolicy(target.height,branch_target.height)) return false;

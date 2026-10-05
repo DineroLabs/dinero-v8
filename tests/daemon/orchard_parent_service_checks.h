@@ -15,8 +15,9 @@ public:
     std::unique_ptr<assumeutxo::AssumeUtxoReplayEngine> replay;
     const ChainWriteToken token = ChainWriteToken::CreateForTesting();
     static void Require(bool value) { if (!value) throw std::runtime_error("selected parent fixture setup"); }
-    OwnedSelectedParentFixture() {
-        MutableParams().orchard_activation_height=4;
+    explicit OwnedSelectedParentFixture(uint32_t parent_height=3) {
+        Require(parent_height>0&&parent_height<UINT32_MAX);
+        MutableParams().orchard_activation_height=parent_height+1;
         MutableParams().orchard_branch_id=1;
         MutableParams().shielded_activation_height=1;
         MutableParams().shielded_epoch_reset_height=UINT32_MAX;
@@ -40,8 +41,8 @@ public:
             raw.put("meta","shielded_tip",std::string(84,'\0'));
         }
         Require(db.init(path)==Status::Ok);
-        blocks={SelectedGenesis()};const auto rest=BuildDeterministicChain(3);
-        Require(rest.size()==3);blocks.insert(blocks.end(),rest.begin(),rest.end());
+        blocks={SelectedGenesis()};const auto rest=BuildDeterministicChain(parent_height);
+        Require(rest.size()==parent_height);blocks.insert(blocks.end(),rest.begin(),rest.end());
         replay=std::make_unique<assumeutxo::AssumeUtxoReplayEngine>();
         std::string error;Require(replay->SeedGenesis(blocks.front(),error));
         arith_uint256 work{0};
@@ -55,7 +56,7 @@ public:
             for(uint32_t i=0;i<b.vtx.size();++i)
                 Require(db.putTxIndex(token,b.vtx[i].GetTxid().AsUint256(),b.GetHash(),i)==Status::Ok);
         }
-        tip=CBlockIndex(blocks.back().header,3);tip.chainwork=work.GetHex();
+        tip=CBlockIndex(blocks.back().header,parent_height);tip.chainwork=work.GetHex();
         Require(db.setTip(token,tip.hash,tip.height,work)==Status::Ok);
         Require(db.setValidatedTip(token,tip.hash,tip.height)==Status::Ok);
         for(const auto& [point,entry]:replay->ProvenUtxos()) {
@@ -63,13 +64,13 @@ public:
             c.height=entry.height;c.coinbase=entry.isCoinbase;c.is_confidential=entry.is_confidential;c.commitment=entry.commitment;
             Require(db.putCoin(token,point.txid.AsUint256(),point.vout,c)==Status::Ok);
         }
-        Require(db.putForestTipMarker(token,{3,tip.hash,uint256::FromHexUnsafe(replay->UtreexoRootHex())})==Status::Ok);
+        Require(db.putForestTipMarker(token,{int32_t(parent_height),tip.hash,uint256::FromHexUnsafe(replay->UtreexoRootHex())})==Status::Ok);
         const auto frontier=replay->ShieldedTree()->SerializeFrontier();
         const auto anchors=replay->ShieldedAnchors()->SerializePersistenceBytes();
         Require(db.putShieldedState(token,ChainDB::ShieldedStateRecord::Frontier,{frontier.begin(),frontier.end()})==Status::Ok);
         Require(db.putShieldedState(token,ChainDB::ShieldedStateRecord::AnchorHistory,{anchors.begin(),anchors.end()})==Status::Ok);
         const auto root=replay->ShieldedTree()->Root();uint256 tree_root;std::copy(root.begin(),root.end(),tree_root.begin());
-        Require(db.putShieldedTipMarker(token,{3,tip.hash,tree_root,replay->ShieldedTree()->Size(),0})==Status::Ok);
+        Require(db.putShieldedTipMarker(token,{int32_t(parent_height),tip.hash,tree_root,replay->ShieldedTree()->Size(),0})==Status::Ok);
         service.setOwnedChainDB(database);ShieldedStateStartupTestAccess::BoundaryState(service,tip,*replay);
     }
     ~OwnedSelectedParentFixture() {
