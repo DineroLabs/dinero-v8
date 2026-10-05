@@ -213,7 +213,7 @@ TEST(SwapEngine, AliceLosingTheRaceRefundsDinAndAlerts) {
     s = Step(s.record, obs);
     EXPECT_TRUE(Has(s, ActionKind::RefundDin));
 
-    obs.din = Spent(obs.din, /*by_claim=*/true, 1, kSecret);  // Bob used the leaked secret first
+    obs.din = Spent(obs.din, /*by_claim=*/true, r.offer.n_din_confirmations, kSecret);  // Bob used the leaked secret first, buried
     s = Step(s.record, obs);
     EXPECT_EQ(s.record.state, SwapState::Lost);
     EXPECT_TRUE(Has(s, ActionKind::Alert));
@@ -329,7 +329,7 @@ TEST(SwapEngine, BobRebroadcastsOrReportsALostDinClaim) {
     auto s = Step(r, obs);
     EXPECT_TRUE(Has(s, ActionKind::ClaimDin));
 
-    obs.din = Spent(obs.din, /*by_claim=*/false, 1);  // Alice's refund beat Bob's claim
+    obs.din = Spent(obs.din, /*by_claim=*/false, r.offer.n_din_confirmations);  // Alice's refund beat Bob's claim, buried
     s = Step(r, obs);
     EXPECT_EQ(s.record.state, SwapState::Lost);
     EXPECT_TRUE(Has(s, ActionKind::Alert));
@@ -619,4 +619,30 @@ TEST(SwapEngine, UnconfirmedBitcoinSpendsKeepBeingBroadcastForFeeBumps) {
     o2.din = Locked(kDin, 40);
     o2.btc = Spent(Locked(kBtc, 5), false, 0);
     EXPECT_TRUE(Has(Step(b, o2), ActionKind::RefundBtc));
+}
+
+TEST(SwapEngine, AnAdverseShallowDinSpendIsNotFinalUntilBuried) {
+    // Alice's refund beats Bob's DIN claim by one block; a reorg can undo it.
+    // Bob must not give up (Lost) until it is as deep as any DIN outcome.
+    auto r = MakeRecord(Role::BtcSeller);
+    r.state = SwapState::DinClaimBroadcast;
+    r.secret = kSecret;
+    auto obs = At(kNow + 3 * kHour);
+    obs.din = Spent(Locked(kDin, 60), /*by_claim=*/false, 1);
+    auto s = Step(r, obs);
+    EXPECT_EQ(s.record.state, SwapState::DinClaimBroadcast) << "one block is not final";
+    obs.din = Locked(kDin, 60);  // the refund was reorganised out
+    EXPECT_TRUE(Has(Step(s.record, obs), ActionKind::ClaimDin)) << "claim again";
+    obs.din = Spent(Locked(kDin, 60), false, r.offer.n_din_confirmations);
+    EXPECT_EQ(Step(r, obs).record.state, SwapState::Lost);
+
+    // Same for Alice: Bob's claim beating her refund is final only when buried.
+    auto a = MakeRecord(Role::DinSeller);
+    a.state = SwapState::DinRefundBroadcast;
+    auto o2 = At(a.offer.t_din_unix + kHour);
+    o2.din_mtp_unix = a.offer.t_din_unix + 1;
+    o2.din = Spent(Locked(kDin, 60), true, 1, kSecret);
+    EXPECT_EQ(Step(a, o2).record.state, SwapState::DinRefundBroadcast);
+    o2.din = Spent(Locked(kDin, 60), true, a.offer.n_din_confirmations, kSecret);
+    EXPECT_EQ(Step(a, o2).record.state, SwapState::Lost);
 }

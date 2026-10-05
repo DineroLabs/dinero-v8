@@ -355,19 +355,23 @@ SwapWatchSpec TowerWatchSpec(const TowerPackage& p, const std::string& btc_chain
     return w;
 }
 
-void MarkTowerArmed(const std::string& inbox_dir, const std::string& swap_id) {
-    WriteFileAtomically(inbox_dir + "/" + swap_id + ".armed", "armed\n");
+std::string TowerPackageHash(const std::string& package_text) {
+    Bytes32 h{};
+    crypto::CSHA256().Write(reinterpret_cast<const uint8_t*>(package_text.data()), package_text.size()).Finalize(h.data());
+    return ToHex(std::vector<uint8_t>(h.begin(), h.end()));
 }
 
-void WriteTowerHeartbeat(const std::string& inbox_dir, uint32_t now) {
-    WriteFileAtomically(inbox_dir + "/heartbeat", std::to_string(now) + "\n");
+void MarkTowerArmed(const std::string& inbox_dir, const std::string& swap_id, const std::string& package_hash,
+                    uint32_t now) {
+    WriteFileAtomically(inbox_dir + "/" + swap_id + ".armed", package_hash + " " + std::to_string(now) + "\n");
 }
 
-bool TowerAckFresh(const std::string& inbox_dir, const std::string& swap_id, uint32_t now, uint32_t max_age) {
-    if (!std::ifstream(inbox_dir + "/" + swap_id + ".armed").good()) return false;
-    std::ifstream hb(inbox_dir + "/heartbeat");
+bool TowerAckFresh(const std::string& inbox_dir, const std::string& swap_id, const std::string& package_hash,
+                   uint32_t now, uint32_t max_age) {
+    std::ifstream in(inbox_dir + "/" + swap_id + ".armed");
+    std::string hash;
     uint64_t t = 0;
-    if (!(hb >> t)) return false;
+    if (!(in >> hash >> t) || hash != package_hash) return false;
     return t <= uint64_t(now) + 60 && uint64_t(now) <= t + max_age;
 }
 
@@ -407,32 +411,47 @@ TowerReport Watchtower::Tick(uint32_t now) {
     const DinWatchReport din = io_.ObserveDin();
     const BtcWatchReport btc = io_.ObserveBtc();
     const auto& offer = package_.offer;
-    if (!btc.ok) {
+    const uint32_t settle = std::max<uint32_t>(1, config_.settle_confirmations);
+    const auto& front = package_.din_claims.front().tx.vin[0].prevout;
+    const bool din_lock_here = din.ok && din.funding && TxOutPoint(din.funding->txid, din.funding->vout) == front;
+    // Healthy: both chains observed and the package's DIN lock on chain. The
+    // daemon refreshes Bob's ack only while this holds.
+    report.healthy = din.ok && btc.ok && din_lock_here;
+
+    // Learn the secret from Alice's Bitcoin claim, once; then keep it, so a
+    // later Bitcoin outage cannot stop the DIN duty.
+    if (btc.ok && btc.htlc.spent && btc.htlc.spent_by_claim && btc.htlc.revealed_preimage) {
+        Bytes32 h{};
+        crypto::CSHA256().Write(btc.htlc.revealed_preimage->data(), 32).Finalize(h.data());
+        if (h != offer.payment_hash) {
+            report.events.push_back("ALERT: BTC claim with a secret that does not match; ignoring it");
+        } else if (!secret_) {
+            secret_ = btc.htlc.revealed_preimage;
+            report.learned_secret = secret_;
+        }
+    }
+
+    if (!din.ok) {
+        if (!btc.ok) {
+            report.events.push_back("not observed: neither node is reachable");
+            return report;
+        }
+        // Bob's BTC refund needs only Bitcoin: a Dinero outage must not cost it.
+        report.events.push_back("not observed: the Dinero node is unreachable; BTC refund duty only");
+        if (!secret_) BtcRefundDuty(btc, now, report);
+        return report;
+    }
+    if (!btc.ok && !secret_) {
         report.events.push_back("not observed: the Bitcoin node is unreachable or inconsistent");
         return report;
     }
-    if (!din.ok) {
-        // Bob's BTC refund needs only Bitcoin: a Dinero outage must not cost it.
-        report.events.push_back("not observed: the Dinero node is unreachable; BTC refund duty only");
-        if (!btc.htlc.spent_by_claim && !(btc.htlc.spent && btc.htlc.spend_confirmations >= 1) &&
-            btc.mtp_unix > offer.t_btc_unix && btc.htlc.output_seen) {
-            const size_t i = NextRung(btc_refund_, package_.btc_refunds.size(), now);
-            try {
-                report.events.push_back("BTC refund rung " + std::to_string(i) + " broadcast: " +
-                                        io_.BroadcastBtc(SerializeBtcTx(package_.btc_refunds[i].tx)));
-            } catch (const std::exception& e) {
-                report.events.push_back("BTC refund rung " + std::to_string(i) + " not accepted: " + e.what());
-            }
-        }
-        return report;
-    }
-    report.observed = true;
+    report.observed = btc.ok;
 
-    // Bob's outcome in a block: done once buried, and until then only watched
-    // (a reorg that drops it makes the duty below active again).
-    const uint32_t settle = std::max<uint32_t>(1, config_.settle_confirmations);
+    // Bob's outcome in a block: done once buried (and swept), until then only
+    // watched (a reorg that drops it makes the duty below active again).
     const bool din_claimed = din.htlc.spent && din.htlc.spent_by_claim && din.htlc.spend_confirmations >= 1;
-    const bool btc_refunded = btc.htlc.spent && !btc.htlc.spent_by_claim && btc.htlc.spend_confirmations >= 1;
+    const bool btc_refunded =
+        btc.ok && btc.htlc.spent && !btc.htlc.spent_by_claim && btc.htlc.spend_confirmations >= 1;
     if (din_claimed || btc_refunded) {
         const uint32_t depth = din_claimed ? din.htlc.spend_confirmations : btc.htlc.spend_confirmations;
         const std::string what = din_claimed ? "DIN claim" : "BTC refund";
@@ -463,71 +482,81 @@ TowerReport Watchtower::Tick(uint32_t now) {
         return report;
     }
 
-    // Alice revealed the secret: claim the DIN with it.
-    std::optional<Bytes32> secret;
-    if (btc.htlc.spent && btc.htlc.spent_by_claim && btc.htlc.revealed_preimage) {
-        Bytes32 h{};
-        crypto::CSHA256().Write(btc.htlc.revealed_preimage->data(), 32).Finalize(h.data());
-        if (h == offer.payment_hash) {
-            secret = btc.htlc.revealed_preimage;
-        } else {
-            report.events.push_back("ALERT: BTC claim with a secret that does not match; ignoring it");
-        }
-    }
-    if (secret) {
-        if (din.htlc.spent && !din.htlc.spent_by_claim) {
-            report.finished = true;
-            report.events.push_back("ALERT: Alice refunded the DIN after claiming the BTC: Bob lost the DIN");
-            return report;
-        }
-        const auto& front = package_.din_claims.front().tx.vin[0].prevout;
-        if (!din.funding || !(TxOutPoint(din.funding->txid, din.funding->vout) == front)) {
-            report.events.push_back("ALERT: the DIN lock in the package is not on chain");
-            return report;
-        }
-        // No replace-by-fee on Dinero: a lower rung already in mempools stays, and
-        // a higher one is refused harmlessly until the lower one confirms or drops.
-        const size_t i = DinRungByUrgency(din.mtp_unix);
-        // Bump: still unmined some time after the first claim went out — one
-        // pre-signed child of that (first-seen) rung, its fee by urgency.
-        if (first_claim_ && !din.htlc.spent && now >= first_claim_->second + config_.din_bump_after_seconds) {
-            const auto& children = package_.din_claims[first_claim_->first].children;
-            if (!children.empty()) {
-                const size_t k = IndexByUrgency(children.size(), offer.t_din_unix, din.mtp_unix, config_);
-                try {
-                    report.events.push_back("DIN claim unmined; CPFP child " + std::to_string(k) + ": " +
-                                            io_.BroadcastDin(children[k].tx.Serialize(TxSerializationMode::WithWitness)));
-                } catch (const std::exception& e) {
-                    report.events.push_back("CPFP child not accepted: " + std::string(e.what()));
-                }
-            }
-        }
-        if (!first_claim_) first_claim_ = std::make_pair(i, now);
-        const auto terms = MakeDinTerms(package_.offer, package_.accept);
-        Transaction tx = package_.din_claims[i].tx;
-        SetDinClaimWitness(tx, terms, BuildDinHtlc(terms), package_.din_claims[i].signature,
-                           std::vector<uint8_t>(secret->begin(), secret->end()));
-        try {
-            report.events.push_back("DIN claim rung " + std::to_string(i) + " broadcast: " +
-                                    io_.BroadcastDin(tx.Serialize(TxSerializationMode::WithWitness)));
-        } catch (const std::exception& e) {
-            report.events.push_back("DIN claim rung " + std::to_string(i) + " not accepted: " + e.what());
-        }
+    if (secret_) {
+        DinClaimDuty(din, now, report);
         return report;
     }
-
-    // No secret: refund the BTC once Bitcoin's median time reaches T_btc.
-    // Final only once T_btc < Bitcoin's median time past.
-    if (!(btc.htlc.spent && btc.htlc.spent_by_claim) && btc.mtp_unix > offer.t_btc_unix && btc.htlc.output_seen) {
-        const size_t i = NextRung(btc_refund_, package_.btc_refunds.size(), now);
-        try {
-            report.events.push_back("BTC refund rung " + std::to_string(i) + " broadcast: " +
-                                    io_.BroadcastBtc(SerializeBtcTx(package_.btc_refunds[i].tx)));
-        } catch (const std::exception& e) {
-            report.events.push_back("BTC refund rung " + std::to_string(i) + " not accepted: " + e.what());
-        }
-    }
+    if (btc.ok) BtcRefundDuty(btc, now, report);
     return report;
+}
+
+// Alice revealed the secret: claim the DIN with it (Dinero alone suffices).
+void Watchtower::DinClaimDuty(const DinWatchReport& din, uint32_t now, TowerReport& report) {
+    const auto& offer = package_.offer;
+    const uint32_t settle = std::max<uint32_t>(1, config_.settle_confirmations);
+    if (din.htlc.spent && !din.htlc.spent_by_claim) {
+        // Final only once buried: if a reorg drops the refund, claim again.
+        report.events.push_back("ALERT: Alice refunded the DIN after claiming the BTC");
+        report.finished = din.htlc.spend_confirmations >= std::max(settle, offer.n_din_confirmations);
+        return;
+    }
+    const auto& front = package_.din_claims.front().tx.vin[0].prevout;
+    if (!din.funding || !(TxOutPoint(din.funding->txid, din.funding->vout) == front)) {
+        report.events.push_back("ALERT: the DIN lock in the package is not on chain");
+        return;
+    }
+    if (!duty_since_) duty_since_ = now;
+    // No replace-by-fee on Dinero: a lower rung already in mempools stays, and
+    // a higher one is refused harmlessly until the lower one confirms or drops.
+    const size_t i = DinRungByUrgency(din.mtp_unix);
+    // Bump: still unmined a while into the duty. Which rung sits in mempools
+    // is not known (an earlier choice, or one from before a restart), so offer
+    // a child of every rung: only the real parent's child can be accepted.
+    if (!din.htlc.spent && now >= *duty_since_ + config_.din_bump_after_seconds) {
+        size_t offered = 0;
+        for (const auto& rung : package_.din_claims) {
+            if (rung.children.empty()) continue;
+            const size_t k = IndexByUrgency(rung.children.size(), offer.t_din_unix, din.mtp_unix, config_);
+            try {
+                io_.BroadcastDin(rung.children[k].tx.Serialize(TxSerializationMode::WithWitness));
+                ++offered;
+            } catch (const std::exception&) {
+                // parent not in the mempool (or child already there): expected for all but one
+            }
+        }
+        if (offered) report.events.push_back("DIN claim unmined; CPFP children offered (" + std::to_string(offered) + " accepted)");
+    }
+    const auto terms = MakeDinTerms(package_.offer, package_.accept);
+    Transaction tx = package_.din_claims[i].tx;
+    SetDinClaimWitness(tx, terms, BuildDinHtlc(terms), package_.din_claims[i].signature,
+                       std::vector<uint8_t>(secret_->begin(), secret_->end()));
+    try {
+        report.events.push_back("DIN claim rung " + std::to_string(i) + " broadcast: " +
+                                io_.BroadcastDin(tx.Serialize(TxSerializationMode::WithWitness)));
+    } catch (const std::exception& e) {
+        report.events.push_back("DIN claim rung " + std::to_string(i) + " not accepted: " + e.what());
+    }
+}
+
+// No secret: refund the BTC once T_btc < Bitcoin's median time past.
+void Watchtower::BtcRefundDuty(const BtcWatchReport& btc, uint32_t now, TowerReport& report) {
+    const auto& offer = package_.offer;
+    if (btc.htlc.spent_by_claim || (btc.htlc.spent && btc.htlc.spend_confirmations >= 1)) return;
+    if (btc.mtp_unix <= offer.t_btc_unix || !btc.htlc.output_seen) return;
+    const size_t i = NextRung(btc_refund_, package_.btc_refunds.size(), now);
+    try {
+        report.events.push_back("BTC refund rung " + std::to_string(i) + " broadcast: " +
+                                io_.BroadcastBtc(SerializeBtcTx(package_.btc_refunds[i].tx)));
+    } catch (const std::exception& e) {
+        report.events.push_back("BTC refund rung " + std::to_string(i) + " not accepted: " + e.what());
+    }
+}
+
+void Watchtower::SetKnownSecret(const Bytes32& secret) {
+    Bytes32 h{};
+    crypto::CSHA256().Write(secret.data(), secret.size()).Finalize(h.data());
+    if (h != package_.offer.payment_hash) Bad("the kept secret does not match this swap");
+    secret_ = secret;
 }
 
 }  // namespace dinero::swap

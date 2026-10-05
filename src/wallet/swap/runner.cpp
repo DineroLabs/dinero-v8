@@ -82,7 +82,8 @@ std::string EncodeSession(const SwapSession& s) {
         << "din_claim_value=" << s.din_claim_value << "\n"
         << "din_payout_script=" << ToHex(s.din_payout_script) << "\n"
         << "btc_payout_script=" << ToHex(s.btc_payout_script) << "\n"
-        << "tower_armed=" << (s.tower_armed ? 1 : 0) << "\n";
+        << "tower_armed=" << (s.tower_armed ? 1 : 0) << "\n"
+        << "tower_package_hash=" << s.tower_package_hash << "\n";
     return out.str();
 }
 
@@ -145,6 +146,7 @@ SwapSession DecodeSession(const std::string& text) {
         if (h > UINT32_MAX) Refuse("bad DIN scan height");
         s.din_scan_from_height = static_cast<uint32_t>(h);
     }
+    s.tower_package_hash = txid_field("tower_package_hash");  // 64 hex, like a txid
     if (kv.count("tower_armed")) {  // absent in sessions saved before the tower existed
         if (kv["tower_armed"] != "0" && kv["tower_armed"] != "1") Refuse("bad tower_armed");
         s.tower_armed = kv["tower_armed"] == "1";
@@ -328,7 +330,9 @@ PreparedBtcFunding RpcSwapChainIo::PrepareFundBtc(const std::string& address, ui
     return p;
 }
 
-bool RpcSwapChainIo::TowerAcknowledged(const std::string& swap_id) { return tower_ack_ && tower_ack_(swap_id); }
+bool RpcSwapChainIo::TowerAcknowledged(const std::string& swap_id, const std::string& package_hash) {
+    return tower_ack_ && tower_ack_(swap_id, package_hash);
+}
 
 std::optional<bool> RpcSwapChainIo::DinOutputUnspent(const TxId& txid, uint32_t vout) {
     const auto r = din_("gettxout", Params({txid.AsUint256().GetHex(), Json::Value(vout)}));
@@ -459,9 +463,11 @@ bool SwapRunner::ArmTowerWith(const FundingOutput& din_funding, const BtcFunding
                               std::vector<std::string>& events) {
     try {
         const auto package = MyTowerPackage(din_funding, btc_funding);
-        io_.ArmTower(EncodeTowerPackage(package));
+        const std::string text = EncodeTowerPackage(package);
+        io_.ArmTower(text);
         SwapSession next = session_;
         next.tower_armed = true;
+        next.tower_package_hash = TowerPackageHash(text);
         store_.Save(next);
         session_ = std::move(next);
         events.push_back("watchtower armed: " + std::to_string(package.din_claims.size()) + " DIN claim and " +
@@ -482,7 +488,7 @@ void SwapRunner::SendPreparedFunding(uint32_t now, std::vector<std::string>& eve
         const auto oid = OfferId(r.offer);
         return ToHex(std::vector<uint8_t>(oid.begin(), oid.begin() + 8));
     }();
-    if (!session_.tower_armed || !io_.TowerAcknowledged(id)) {
+    if (!session_.tower_armed || !io_.TowerAcknowledged(id, session_.tower_package_hash)) {
         if (now > r.state_since_unix + 30 * 60) {
             events.push_back("ALERT: the watchtower has not confirmed this swap; your BTC was NOT sent. "
                              "Check dinero-swap-tower, or cancel with swap.cancel");
@@ -611,6 +617,13 @@ uint64_t SwapRunner::BtcFeeNow(uint32_t now) const {
     return std::min(fee, cap);
 }
 
+void SwapRunner::SetClaimSeen(bool seen) {
+    SwapSession next = session_;
+    next.record.claim_seen = seen;
+    store_.Save(next);
+    session_ = std::move(next);
+}
+
 void SwapRunner::PinAndSave(const std::string& din_txid, const std::string& btc_txid) {
     SwapSession next = session_;
     if (!din_txid.empty()) next.din_funding_txid = din_txid;
@@ -664,10 +677,23 @@ void SwapRunner::Execute(const Action& action, const DinWatchReport& din, const 
             PinAndSave("", txid);  // a decoy paying the same script is not Bob's lock
             return done("funded BTC HTLC:", txid);
         }
-        case ActionKind::ClaimBtc:
+        case ActionKind::ClaimBtc: {
             if (!btc.funding) throw std::runtime_error("BTC HTLC output unknown");
-            return done("broadcast BTC claim:",
-                        io_.BroadcastBtc(SignedBtcClaim(session_, keys_, *btc.funding, BtcFeeNow(now))));
+            const auto raw = SignedBtcClaim(session_, keys_, *btc.funding, BtcFeeNow(now));
+            // Possibly public from the moment it is handed to the node: record that
+            // first, so a crash or lost reply never reads as "the secret never left".
+            const bool was_seen = session_.record.claim_seen;
+            if (!was_seen) SetClaimSeen(true);
+            try {
+                return done("broadcast BTC claim:", io_.BroadcastBtc(raw));
+            } catch (const std::runtime_error& e) {
+                const std::string why = e.what();
+                const bool ambiguous = why.find("RPC failed") != std::string::npos ||
+                                       why.find("already") != std::string::npos;
+                if (!was_seen && !ambiguous) SetClaimSeen(false);  // the node refused it: it never left
+                throw;
+            }
+        }
         case ActionKind::RefundBtc:
             if (!btc.funding) throw std::runtime_error("BTC HTLC output unknown");
             return done("broadcast BTC refund:",
@@ -689,9 +715,9 @@ void SwapRunner::Execute(const Action& action, const DinWatchReport& din, const 
             } else {
                 raw = SignedDinClaim(session_, keys_, *din.funding, DinFeeByUrgency(din.mtp_unix));
             }
-            const std::string txid = io_.BroadcastDin(raw);
             if (session_.din_claim_txid.empty()) {
-                // Dinero keeps the first seen: this is the claim a CPFP child must spend.
+                // Dinero keeps the first seen: this is the claim a CPFP child must
+                // spend. Saved BEFORE sending, so a lost reply cannot lose it.
                 Transaction tx;
                 size_t used = 0;
                 TransactionSerializer::Deserialize(tx, raw, used);
@@ -701,7 +727,7 @@ void SwapRunner::Execute(const Action& action, const DinWatchReport& din, const 
                 store_.Save(next);
                 session_ = std::move(next);
             }
-            return done("broadcast DIN claim:", txid);
+            return done("broadcast DIN claim:", io_.BroadcastDin(raw));
         }
         case ActionKind::RefundDin:
             if (!din.funding) throw std::runtime_error("DIN HTLC output unknown");

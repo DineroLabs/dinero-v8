@@ -121,7 +121,7 @@ public:
 
     // Optional: deliver tower packages (Bob) to this sink; enables the tower.
     void SetTowerSink(std::function<void(const std::string&)> sink);
-    void SetTowerAck(std::function<bool(const std::string&)> ack);
+    void SetTowerAck(std::function<bool(const std::string& id, const std::string& package_hash)> ack);
 
 private:
     struct Live {
@@ -144,7 +144,7 @@ private:
     DinRpc din_;
     BtcRpc btc_;
     std::function<void(const std::string&)> tower_sink_;
-    std::function<bool(const std::string&)> tower_ack_;
+    std::function<bool(const std::string&, const std::string&)> tower_ack_;
     std::optional<Bytes32> store_key_;  // kept while the daemon runs: live swaps survive a relock
     Bytes32 StoreKey();                  // derive (and remember), or the remembered one; throws if neither
     std::mutex mu_;

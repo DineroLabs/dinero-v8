@@ -105,7 +105,8 @@ struct Stepper {
                 if (obs.din.spent) {
                     if (obs.din.spent_by_claim) {
                         Alert("Bob claimed the DIN with the revealed secret");
-                        return Go(SwapState::Lost);
+                        if (obs.din.spend_confirmations >= DinSettle()) return Go(SwapState::Lost);
+                        return;
                     }
                     if (obs.din.spend_confirmations >= DinSettle()) return Go(SwapState::Refunded);
                     return;
@@ -128,8 +129,10 @@ struct Stepper {
         case SwapState::DinRefundBroadcast:
             if (obs.din.spent) {
                 if (obs.din.spent_by_claim) {
+                    // Final only once buried: a reorg could still undo it.
                     Alert("Bob claimed the DIN before the refund confirmed");
-                    return Go(SwapState::Lost);
+                    if (obs.din.spend_confirmations >= DinSettle()) return Go(SwapState::Lost);
+                    return;
                 }
                 if (obs.din.spend_confirmations >= DinSettle()) Go(SwapState::Refunded);
                 return;
@@ -223,8 +226,10 @@ struct Stepper {
         case SwapState::DinClaimBroadcast:
             if (obs.din.spent) {
                 if (!obs.din.spent_by_claim) {
+                    // Final only once buried: if a reorg drops the refund, claim again.
                     Alert("Alice's DIN refund beat the claim");
-                    return Go(SwapState::Lost);
+                    if (obs.din.spend_confirmations >= DinSettle()) return Go(SwapState::Lost);
+                    return;
                 }
                 if (obs.din.spend_confirmations >= DinSettle()) Go(SwapState::Done);
                 return;

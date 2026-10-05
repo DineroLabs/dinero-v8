@@ -140,7 +140,7 @@ void SwapManager::SetTowerSink(std::function<void(const std::string&)> sink) {
     tower_sink_ = std::move(sink);
 }
 
-void SwapManager::SetTowerAck(std::function<bool(const std::string&)> ack) {
+void SwapManager::SetTowerAck(std::function<bool(const std::string&, const std::string&)> ack) {
     std::lock_guard<std::mutex> lock(mu_);
     tower_ack_ = std::move(ack);
 }

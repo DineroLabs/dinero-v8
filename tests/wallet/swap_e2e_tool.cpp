@@ -290,8 +290,8 @@ int main(int argc, char** argv) {
                 p.io->SetTowerSink([&](const std::string& package) {
                     std::cout << "        package -> " << WriteTowerInbox(inbox, package) << "\n";
                 });
-                p.io->SetTowerAck([&](const std::string& id) {
-                    return TowerAckFresh(inbox, id, static_cast<uint32_t>(std::time(nullptr)));
+                p.io->SetTowerAck([&](const std::string& id, const std::string& hash) {
+                    return TowerAckFresh(inbox, id, hash, static_cast<uint32_t>(std::time(nullptr)));
                 });
             }
             p.runner = std::make_unique<SwapRunner>(s, p.keys, config, *p.io, p.store);

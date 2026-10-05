@@ -398,7 +398,7 @@ TEST(SwapManager, MainnetBobNeedsAWatchtower) {
     SwapManager bob(cfg(db.path), wb.Deriver(), kNoDin, kNoBtc);
     EXPECT_THROW(bob.Accept(offer, P2trAddress("din", 1), P2trAddress("bc", 2), kNow), std::runtime_error);
     bob.SetTowerSink([](const std::string&) {});
-    bob.SetTowerAck([](const std::string&) { return true; });
+    bob.SetTowerAck([](const std::string&, const std::string&) { return true; });
     EXPECT_NO_THROW(bob.Accept(offer, P2trAddress("din", 1), P2trAddress("bc", 2), kNow));
 }
 

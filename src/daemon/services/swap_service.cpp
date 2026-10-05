@@ -143,8 +143,8 @@ bool SwapService::Init(DaemonContext& ctx) {
     const std::string inbox = config->GetString("swap.tower_inbox", "");
     if (!inbox.empty()) {
         manager_->SetTowerSink([inbox](const std::string& package) { swap::WriteTowerInbox(inbox, package); });
-        manager_->SetTowerAck([inbox](const std::string& id) {
-            return swap::TowerAckFresh(inbox, id, static_cast<uint32_t>(std::time(nullptr)));
+        manager_->SetTowerAck([inbox](const std::string& id, const std::string& hash) {
+            return swap::TowerAckFresh(inbox, id, hash, static_cast<uint32_t>(std::time(nullptr)));
         });
     }
     std::cout << "[Swap] enabled: dir=" << mc.dir << " btc_rpc=" << btc << " tick=" << tick_seconds_ << "s"

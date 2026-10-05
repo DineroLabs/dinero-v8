@@ -47,6 +47,7 @@ struct SwapSession {
     std::vector<uint8_t> din_payout_script;   // Alice: refund goes here; Bob: claim goes here
     std::vector<uint8_t> btc_payout_script;   // Alice: claim goes here; Bob: refund goes here
     bool tower_armed{false};                  // Bob: the watchtower accepted this swap's package
+    std::string tower_package_hash;           // hash of the package delivered (the ack must match it)
 };
 
 // Text form, one "key=value" per line. Holds the secret in the clear (via
@@ -124,9 +125,10 @@ public:
         (void)vout;
         return std::nullopt;
     }
-    // True once Bob's watchtower confirmed it loaded this swap's package and is alive.
-    virtual bool TowerAcknowledged(const std::string& swap_id) {
+    // True while Bob's watchtower confirms it holds exactly this package and is healthy.
+    virtual bool TowerAcknowledged(const std::string& swap_id, const std::string& package_hash) {
         (void)swap_id;
+        (void)package_hash;
         return false;
     }
     // Hand a TowerPackage (text form) to Bob's watchtower; throws if none is
@@ -161,10 +163,10 @@ public:
     // Optional: where ArmTower() delivers packages (e.g. writes the tower's inbox).
     void SetTowerSink(std::function<void(const std::string&)> sink) { tower_sink_ = std::move(sink); }
     // Optional: whether the tower confirmed a swap's package (see WriteTowerInbox).
-    void SetTowerAck(std::function<bool(const std::string&)> ack) { tower_ack_ = std::move(ack); }
+    void SetTowerAck(std::function<bool(const std::string&, const std::string&)> ack) { tower_ack_ = std::move(ack); }
     void ArmTower(const std::string& package_text) override;
     PreparedBtcFunding PrepareFundBtc(const std::string& address, uint64_t amount_sat) override;
-    bool TowerAcknowledged(const std::string& swap_id) override;
+    bool TowerAcknowledged(const std::string& swap_id, const std::string& package_hash) override;
     std::optional<bool> DinOutputUnspent(const TxId& txid, uint32_t vout) override;
     DinWatchReport ObserveDin() override;
     BtcWatchReport ObserveBtc() override;
@@ -181,7 +183,7 @@ private:
     std::unique_ptr<BtcWatcher> btc_watcher_;
     void RebuildWatchers();
     std::function<void(const std::string&)> tower_sink_;
-    std::function<bool(const std::string&)> tower_ack_;
+    std::function<bool(const std::string&, const std::string&)> tower_ack_;
 };
 
 // HTLC addresses for funding.
@@ -237,6 +239,7 @@ private:
     void BumpOrSweepDin(const DinWatchReport& din, uint32_t now, std::vector<std::string>& events);
     uint64_t DinFeeByUrgency(uint32_t din_mtp) const;
     void PinAndSave(const std::string& din_txid, const std::string& btc_txid);
+    void SetClaimSeen(bool seen);
     uint64_t BtcFeeNow(uint32_t now) const;
     void SingleChainRebroadcast(const DinWatchReport& din, const BtcWatchReport& btc, uint32_t now,
                                 std::vector<std::string>& events);

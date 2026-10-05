@@ -58,6 +58,8 @@ std::shared_ptr<rpc::RpcClient> Client(const std::string& hostport, const std::s
 struct Watched {
     std::unique_ptr<RpcSwapChainIo> io;
     std::unique_ptr<Watchtower> tower;
+    std::string id;    // file name without .pkg
+    std::string hash;  // TowerPackageHash of the package text
 };
 
 }  // namespace
@@ -84,7 +86,6 @@ int main(int argc, char** argv) {
 
     std::cout << "tower: watching " << inbox << std::endl;
     while (!g_stop) {
-        WriteTowerHeartbeat(inbox, static_cast<uint32_t>(std::time(nullptr)));
         // Load new packages.
         if (DIR* d = opendir(inbox.c_str())) {
             while (dirent* e = readdir(d)) {
@@ -100,9 +101,20 @@ int main(int argc, char** argv) {
                     Watched w;
                     w.io = std::make_unique<RpcSwapChainIo>(din, btc, TowerWatchSpec(package, opt["--btc-chain"]));
                     w.tower = std::make_unique<Watchtower>(std::move(package), config, *w.io);
+                    w.id = name.substr(0, name.size() - 4);
+                    w.hash = TowerPackageHash(text.str());
+                    // A secret learned before a restart (public on Bitcoin already).
+                    if (std::ifstream sf(inbox + "/" + w.id + ".secret"); sf) {
+                        std::string hex;
+                        sf >> hex;
+                        if (hex.size() == 64) {
+                            Bytes32 sec{};
+                            for (size_t i = 0; i < 32; ++i) sec[i] = uint8_t(std::stoi(hex.substr(2 * i, 2), nullptr, 16));
+                            w.tower->SetKnownSecret(sec);
+                        }
+                    }
                     watched.emplace(path, std::move(w));
-                    MarkTowerArmed(inbox, name.substr(0, name.size() - 4));  // Bob funds only after this
-                    std::cout << "tower: armed " << name << std::endl;
+                    std::cout << "tower: loaded " << name << std::endl;
                 } catch (const std::exception& ex) {
                     std::cout << "tower: REJECTED " << name << ": " << ex.what() << std::endl;
                     std::rename(path.c_str(), (path + ".rejected").c_str());
@@ -112,8 +124,17 @@ int main(int argc, char** argv) {
         }
         // Tick every armed swap.
         for (auto it = watched.begin(); it != watched.end();) {
-            const auto r = it->second.tower->Tick(static_cast<uint32_t>(std::time(nullptr)));
+            const uint32_t now = static_cast<uint32_t>(std::time(nullptr));
+            const auto r = it->second.tower->Tick(now);
             for (const auto& ev : r.events) std::cout << "tower: " << it->first << ": " << ev << std::endl;
+            // Bob funds only on a fresh ack: refreshed only while this swap's duty is healthy.
+            if (r.healthy) MarkTowerArmed(inbox, it->second.id, it->second.hash, now);
+            if (r.learned_secret) {
+                static const char* d = "0123456789abcdef";
+                std::string hex;
+                for (auto b : *r.learned_secret) { hex += d[b >> 4]; hex += d[b & 15]; }
+                std::ofstream(inbox + "/" + it->second.id + ".secret") << hex << "\n";
+            }
             if (r.finished) {
                 std::rename(it->first.c_str(), (it->first + ".done").c_str());
                 it = watched.erase(it);

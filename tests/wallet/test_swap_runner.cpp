@@ -116,9 +116,11 @@ struct FakeChains : SwapChainIo {
     }
     DinWatchReport ObserveDin() override { return din; }
     BtcWatchReport ObserveBtc() override { return btc; }
+    std::string write_error;  // e.g. "min relay fee not met" (definite) or "RPC failed" (ambiguous)
     std::string Write(const std::string& what) {
         log.lines.push_back(what);
         if (refuse_writes) throw std::runtime_error("node refused");
+        if (!write_error.empty()) throw std::runtime_error("sendrawtransaction: " + write_error);
         return std::string(64, 'f');
     }
     std::string FundDin(const std::string& a, uint64_t v) override { return Write("fund_din:" + a + ":" + std::to_string(v)); }
@@ -141,7 +143,11 @@ struct FakeChains : SwapChainIo {
         f.vout = 0;
         return f;
     }
-    bool TowerAcknowledged(const std::string&) override { return tower_acked; }
+    std::string acked_hash;
+    bool TowerAcknowledged(const std::string&, const std::string& hash) override {
+        acked_hash = hash;
+        return tower_acked;
+    }
     std::optional<bool> sweep_output_unspent;
     std::optional<bool> DinOutputUnspent(const TxId&, uint32_t) override { return sweep_output_unspent; }
     int tower_refusals{0};
@@ -274,9 +280,10 @@ TEST(SwapRunner, BobClaimsDinWithTheSecretFromAlicesBtcClaim) {
     const auto r = bob.Tick(kNow + kHour);
     EXPECT_EQ(r.after, SwapState::DinClaimBroadcast);
     ASSERT_EQ(store.saved->record.secret, kSecret);  // learned secret is saved before claiming
-    ASSERT_GE(log.lines.size(), 2u);  // then: the first claim's txid is remembered
-    EXPECT_EQ(log.lines[0].rfind("save:", 0), 0u) << "secret saved before the broadcast";
-    EXPECT_EQ(log.lines[1], "bcast_din");
+    // The learned secret (and the claim's txid) are saved before the broadcast.
+    ASSERT_GE(log.lines.size(), 2u);
+    EXPECT_EQ(log.lines[0].rfind("save:", 0), 0u);
+    EXPECT_EQ(log.lines.back(), "bcast_din");
     ASSERT_EQ(chains.din_broadcasts.size(), 1u);
     EXPECT_EQ(chains.din_broadcasts[0], SignedDinClaim(bob.session(), kBobKeys, DinFunding(s), Config().din_fee_una));
 }
@@ -422,6 +429,7 @@ TEST(SwapRunner, BobArmsTheTowerBeforeHisBtcLeaves) {
 
     chains.tower_acked = true;
     bob.Tick(kNow + kHour + 120);
+    EXPECT_EQ(chains.acked_hash, TowerPackageHash(chains.armed[0])) << "the ack must be for this very package";
     ASSERT_EQ(chains.btc_broadcasts.size(), 1u);
     EXPECT_EQ(chains.btc_broadcasts[0], (std::vector<uint8_t>{0x02, 0x00, 0x00, 0x00, 0xee}));
     EXPECT_TRUE(bob.session().btc_funding_raw.empty()) << "sent";
@@ -588,7 +596,7 @@ TEST(SwapRunner, AnOutageOfOneChainDoesNotBlockTheOthersUrgentRebroadcasts) {
         const auto rep = r.Tick(s.record.offer.t_btc_unix + 7200);
         EXPECT_FALSE(rep.observed);
         EXPECT_EQ(r.session().record.state, state) << "no decision without both chains";
-        EXPECT_TRUE(log.lines.empty() || log.lines[0].rfind("save", 0) != 0) << "nothing saved";
+        if (store.saved) EXPECT_EQ(store.saved->record.state, state) << "no decision saved blind";
         return std::make_pair(chains.din_broadcasts.size(), chains.btc_broadcasts.size());
     };
     // Alice's claim was seen (secret public): keep it going even if Dinero is down.
@@ -784,6 +792,46 @@ TEST(SwapRunner, WithATowerBobSendsTheSameClaimAsTheTower) {
     bool same = false;
     for (const auto& rung : package.din_claims) same |= TxId::Compute(rung.tx) == TxId::Compute(claim);
     EXPECT_TRUE(same) << "the claim is one of the tower's rungs";
+}
+
+TEST(SwapRunner, AlicesFirstClaimIsRecordedAsPossiblyPublicBeforeItIsSent) {
+    // A crash or timeout right after the node accepted the claim must not leave
+    // a record that says the secret never left (the engine would abandon it).
+    auto run = [](const std::string& error) {
+        Log log;
+        FakeStore store(log);
+        FakeChains chains(log);
+        auto s = MakeSession(Role::DinSeller);
+        s.record.state = SwapState::DinLocked;
+        BothLocksSeen(chains, s);
+        chains.din.htlc.output_confirmations = 40;
+        chains.btc.htlc.output_confirmations = 5;
+        chains.write_error = error;
+        SwapRunner alice(s, kAliceKeys, Config(), chains, store);
+        alice.Tick(kNow + kHour);
+        // The save marking it possibly public precedes the broadcast.
+        const auto bcast = std::find(log.lines.begin(), log.lines.end(), "bcast_btc");
+        EXPECT_NE(bcast, log.lines.end());
+        return std::make_pair(alice.session().record.claim_seen, store.saved->record.claim_seen);
+    };
+    EXPECT_EQ(run(""), std::make_pair(true, true)) << "sent";
+    EXPECT_EQ(run("RPC failed"), std::make_pair(true, true)) << "ambiguous: may be public";
+    EXPECT_EQ(run("txn-already-known"), std::make_pair(true, true)) << "already out there";
+    EXPECT_EQ(run("min relay fee not met"), std::make_pair(false, false)) << "definitely refused: never left";
+}
+
+TEST(SwapRunner, BobsClaimTxidIsSavedBeforeTheBroadcast) {
+    Log log;
+    FakeStore store(log);
+    FakeChains chains(log);
+    auto s = CpfpBob(SwapState::DinClaimBroadcast);
+    BothLocksSeen(chains, s);
+    chains.btc.htlc.spent = chains.btc.htlc.spent_by_claim = true;
+    chains.btc.htlc.revealed_preimage = kSecret;
+    chains.write_error = "RPC failed";  // the node may have accepted it
+    SwapRunner bob(s, CpfpKeys(), Config(), chains, store);
+    bob.Tick(kNow + 60);
+    EXPECT_FALSE(store.saved->din_claim_txid.empty()) << "the CPFP parent is known even though the reply was lost";
 }
 
 TEST(SwapRunner, SessionRoundTripsThroughTheFileStore) {

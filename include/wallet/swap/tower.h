@@ -95,12 +95,15 @@ void VerifyTowerPackage(const TowerPackage& package);
 // user can write (0700); the tower verifies every package anyway.
 std::string WriteTowerInbox(const std::string& inbox_dir, const std::string& package_text);  // returns path
 
-// The tower's side of arming: it marks each package it verified and loaded,
-// and refreshes a heartbeat every loop. Bob funds only on a fresh ack.
-void MarkTowerArmed(const std::string& inbox_dir, const std::string& swap_id);
-void WriteTowerHeartbeat(const std::string& inbox_dir, uint32_t now_unix);
-bool TowerAckFresh(const std::string& inbox_dir, const std::string& swap_id, uint32_t now_unix,
-                   uint32_t max_heartbeat_age_seconds = 120);
+// The tower's side of arming: while a package's tower is healthy (both chains
+// observed, the package's DIN lock on chain) the daemon refreshes
+// <inbox>/<id>.armed with that package's hash and the time. Bob funds only on
+// a fresh ack for exactly the package he delivered.
+std::string TowerPackageHash(const std::string& package_text);  // SHA-256 hex
+void MarkTowerArmed(const std::string& inbox_dir, const std::string& swap_id, const std::string& package_hash,
+                    uint32_t now_unix);
+bool TowerAckFresh(const std::string& inbox_dir, const std::string& swap_id, const std::string& package_hash,
+                   uint32_t now_unix, uint32_t max_age_seconds = 120);
 
 struct TowerConfig {
     uint32_t escalate_after_seconds{30 * 60};
@@ -117,6 +120,8 @@ size_t IndexByUrgency(size_t count, uint32_t t_din, uint32_t din_mtp, const Towe
 
 struct TowerReport {
     bool observed{false};
+    bool healthy{false};                    // both chains observed and the package's DIN lock on chain
+    std::optional<Bytes32> learned_secret;  // set once, when first learned (the daemon keeps it)
     bool finished{false};  // Bob's outcome is settled on chain (claimed DIN or refunded BTC)
     std::vector<std::string> events;
 };
@@ -126,6 +131,9 @@ public:
     // Verifies the package (throws std::invalid_argument).
     Watchtower(TowerPackage package, TowerConfig config, SwapChainIo& io);
     TowerReport Tick(uint32_t wall_clock_unix);
+    // A secret learned before a restart (kept by the daemon): lets the DIN
+    // duty continue while Bitcoin is unreachable. Throws if it does not match.
+    void SetKnownSecret(const Bytes32& secret);
 
 private:
     struct Escalation {
@@ -140,7 +148,10 @@ private:
     TowerConfig config_;
     SwapChainIo& io_;
     Escalation btc_refund_;
-    std::optional<std::pair<size_t, uint32_t>> first_claim_;  // rung index and time of the first DIN claim sent
+    std::optional<uint32_t> duty_since_;  // first tick of the DIN claim duty in this process
+    std::optional<Bytes32> secret_;
+    void DinClaimDuty(const DinWatchReport& din, uint32_t now, TowerReport& report);
+    void BtcRefundDuty(const BtcWatchReport& btc, uint32_t now, TowerReport& report);
 };
 
 }  // namespace dinero::swap

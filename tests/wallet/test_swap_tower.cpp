@@ -135,6 +135,13 @@ TowerConfig Config() {
     return c;
 }
 
+Transaction ParseDin(const std::vector<uint8_t>& raw) {
+    Transaction tx;
+    size_t used = 0;
+    EXPECT_TRUE(TransactionSerializer::Deserialize(tx, raw, used));
+    return tx;
+}
+
 uint64_t DinFeeOf(const std::vector<uint8_t>& raw) {
     Transaction tx;
     size_t used = 0;
@@ -301,26 +308,72 @@ TEST(SwapTower, RefundsBtcEvenWhileDineroIsUnobservable) {
     EXPECT_TRUE(chains.din_broadcasts.empty());
 }
 
-TEST(SwapTower, AnAckCountsOnlyFromALiveTowerThatLoadedThePackage) {
+TEST(SwapTower, AnAckIsBoundToThePackageAndRefreshedOnlyWhileHealthy) {
     const auto dir = (std::filesystem::temp_directory_path() / "swap_tower_ack_test").string();
     std::filesystem::remove_all(dir);
     std::filesystem::create_directories(dir);
     const std::string id = "0123456789abcdef";
-    EXPECT_FALSE(TowerAckFresh(dir, id, kNow));
-    MarkTowerArmed(dir, id);
-    EXPECT_FALSE(TowerAckFresh(dir, id, kNow)) << "no heartbeat: the tower may be stopped";
-    WriteTowerHeartbeat(dir, kNow);
-    EXPECT_TRUE(TowerAckFresh(dir, id, kNow + 60));
-    EXPECT_FALSE(TowerAckFresh(dir, id, kNow + 600)) << "stale heartbeat";
-    EXPECT_FALSE(TowerAckFresh(dir, "fedcba9876543210", kNow + 60)) << "another swap";
+    const std::string h = TowerPackageHash(EncodeTowerPackage(Package()));
+    EXPECT_FALSE(TowerAckFresh(dir, id, h, kNow));
+    MarkTowerArmed(dir, id, h, kNow);
+    EXPECT_TRUE(TowerAckFresh(dir, id, h, kNow + 60));
+    EXPECT_FALSE(TowerAckFresh(dir, id, h, kNow + 600)) << "not refreshed: the tower stopped being healthy";
+    EXPECT_FALSE(TowerAckFresh(dir, id, std::string(64, '0'), kNow + 60)) << "another package";
+    EXPECT_FALSE(TowerAckFresh(dir, "fedcba9876543210", h, kNow + 60)) << "another swap";
     std::filesystem::remove_all(dir);
 }
 
-Transaction ParseDin(const std::vector<uint8_t>& raw) {
-    Transaction tx;
-    size_t used = 0;
-    EXPECT_TRUE(TransactionSerializer::Deserialize(tx, raw, used));
-    return tx;
+TEST(SwapTower, ItIsHealthyOnlyWithBothChainsAndThePackagesDinLock) {
+    FakeChains chains;
+    Watchtower tower(Package(), Config(), chains);
+    EXPECT_TRUE(tower.Tick(kNow).healthy);
+    chains.btc.ok = false;
+    EXPECT_FALSE(tower.Tick(kNow).healthy) << "Bitcoin unreachable";
+    chains.btc.ok = true;
+    chains.din.ok = false;
+    EXPECT_FALSE(tower.Tick(kNow).healthy) << "Dinero unreachable";
+    chains.din.ok = true;
+    chains.din.funding.reset();
+    chains.din.htlc.output_seen = false;
+    EXPECT_FALSE(tower.Tick(kNow).healthy) << "the DIN lock of the package is not on chain";
+}
+
+TEST(SwapTower, OnceItKnowsTheSecretABitcoinOutageDoesNotStopTheDinClaim) {
+    FakeChains chains;
+    Watchtower tower(Package(), Config(), chains);
+    chains.AliceClaimsBtc(kSecret);
+    const auto r = tower.Tick(kNow);
+    ASSERT_TRUE(r.learned_secret.has_value()) << "reported once, for the daemon to keep";
+    EXPECT_EQ(*r.learned_secret, kSecret);
+    chains.btc.ok = false;
+    const size_t before = chains.din_broadcasts.size();
+    tower.Tick(kNow + 60);
+    EXPECT_GT(chains.din_broadcasts.size(), before);
+    // A restarted tower given the kept secret does the same.
+    FakeChains c2;
+    c2.btc.ok = false;
+    Watchtower t2(Package(), Config(), c2);
+    t2.SetKnownSecret(kSecret);
+    t2.Tick(kNow);
+    EXPECT_FALSE(c2.din_broadcasts.empty());
+}
+
+TEST(SwapTower, AfterARestartTheBumpReachesWhicheverRungIsInTheMempool) {
+    // A rung chosen before the restart sits in mempools; urgency now points
+    // elsewhere. The bump must still offer a child of that rung.
+    const auto pkg = Package();
+    ASSERT_GE(pkg.din_claims.size(), 3u);
+    FakeChains chains;
+    Watchtower tower(pkg, Config(), chains);
+    chains.AliceClaimsBtc(kSecret);
+    tower.Tick(kNow);
+    tower.Tick(kNow + 25 * 60);
+    bool child_of_rung2 = false;
+    for (const auto& raw : chains.din_broadcasts) {
+        const auto tx = ParseDin(raw);
+        child_of_rung2 |= tx.vin.at(0).prevout.txid == TxId::Compute(pkg.din_claims[2].tx);
+    }
+    EXPECT_TRUE(child_of_rung2);
 }
 
 TEST(SwapTower, PackageChildrenAreVerified) {
@@ -389,6 +442,24 @@ TEST(SwapTower, BumpsAStuckClaimWithAPreSignedChildThenSweeps) {
     EXPECT_FALSE(t2.Tick(kNow + 60).finished) << "not swept yet";
     c2.claim_output_unspent = false;
     EXPECT_TRUE(t2.Tick(kNow + 120).finished);
+}
+
+TEST(SwapTower, AShallowAdverseRefundDoesNotEndTheTowersDuty) {
+    FakeChains chains;
+    Watchtower tower(Package(), Config(), chains);
+    chains.AliceClaimsBtc(kSecret);
+    chains.din.htlc.spent = true;  // Alice's refund, one block deep
+    chains.din.htlc.spent_by_claim = false;
+    chains.din.htlc.spend_confirmations = 1;
+    EXPECT_FALSE(tower.Tick(kNow).finished) << "a reorg can still undo it";
+    chains.din.htlc.spent = false;  // undone: claim again
+    chains.din.htlc.spend_confirmations = 0;
+    const size_t before = chains.din_broadcasts.size();
+    tower.Tick(kNow + 60);
+    EXPECT_GT(chains.din_broadcasts.size(), before);
+    chains.din.htlc.spent = true;
+    chains.din.htlc.spend_confirmations = BobSession().record.offer.n_din_confirmations;
+    EXPECT_TRUE(tower.Tick(kNow + 120).finished);
 }
 
 TEST(SwapTower, NeverActsBlindAndStopsWhenSettled) {
