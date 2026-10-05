@@ -143,6 +143,8 @@ struct FakeChains : SwapChainIo {
         f.vout = 0;
         return f;
     }
+    std::optional<bool> prepared_unsent{true};
+    std::optional<bool> PreparedFundingUnsent(const std::vector<uint8_t>&) override { return prepared_unsent; }
     std::string acked_hash;
     bool TowerAcknowledged(const std::string&, const std::string& hash) override {
         acked_hash = hash;
@@ -530,6 +532,39 @@ TEST(SwapRunner, APreparedFundingIsNeverSentLateOrAfterTheChecksStopHolding) {
         chains.din.htlc.spent = true;  // Alice already took her DIN back
         bob.Tick(kNow + kHour + 60);
         EXPECT_TRUE(chains.btc_broadcasts.empty()) << "the DIN lock is spent: never send";
+    }
+}
+
+TEST(SwapRunner, AnExpiringPreparedFundingIsNotAbortedIfItMayHaveBeenSent) {
+    // The broadcast reply was lost (the raw is still saved) and now the
+    // funding expires. Aborting would leave BTC in the HTLC with nobody
+    // watching it: only abort when Bitcoin Core shows the inputs unspent.
+    for (const std::optional<bool> unsent : {std::optional<bool>(false), std::optional<bool>()}) {
+        Log log;
+        FakeStore store(log);
+        FakeChains chains(log);
+        auto s = MakeSession(Role::BtcSeller);
+        BothLocksSeen(chains, s);
+        chains.btc = BtcWatchReport{};
+        chains.btc.ok = true;
+        chains.btc.mtp_unix = kNow;
+        chains.din.htlc.output_confirmations = 40;
+        auto config = Config();
+        config.use_tower = true;
+        SwapRunner bob(s, kBobKeys, config, chains, store);
+        bob.Tick(kNow + kHour);  // prepared, no ack
+        chains.prepared_unsent = unsent;
+        const uint32_t late = s.record.offer.t_din_unix - 30 * kHour;
+        chains.din.mtp_unix = chains.btc.mtp_unix = late;
+        const auto r = bob.Tick(late);
+        EXPECT_EQ(bob.session().record.state, SwapState::BtcLockBroadcast) << (unsent ? "spent" : "unknown");
+        EXPECT_TRUE(chains.btc_broadcasts.empty());
+        if (unsent) {
+            EXPECT_TRUE(bob.session().btc_funding_raw.empty()) << "possibly sent: never send it again, watch for it";
+            bool alerted = false;
+            for (const auto& e : r.events) alerted |= e.rfind("ALERT", 0) == 0 && e.find("may have been sent") != std::string::npos;
+            EXPECT_TRUE(alerted);
+        }
     }
 }
 

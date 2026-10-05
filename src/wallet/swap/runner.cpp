@@ -366,6 +366,19 @@ void RpcSwapChainIo::ReleasePreparedFunding(const std::vector<uint8_t>& raw) {
     btc_("lockunspent", Params({true, inputs}));  // unlock: the wallet may spend them again
 }
 
+std::optional<bool> RpcSwapChainIo::PreparedFundingUnsent(const std::vector<uint8_t>& raw) {
+    const auto decoded = btc_("decoderawtransaction", Params({ToHex(raw)}));
+    if (!decoded || !decoded->isObject() || !(*decoded)["vin"].isArray() || (*decoded)["vin"].empty()) {
+        return std::nullopt;
+    }
+    for (const auto& in : (*decoded)["vin"]) {
+        const auto out = btc_("gettxout", Params({in["txid"], in["vout"], true}));  // mempool spends count
+        if (!out) return std::nullopt;
+        if (out->isNull()) return false;
+    }
+    return true;
+}
+
 bool RpcSwapChainIo::TowerAcknowledged(const std::string& swap_id, const std::string& package_hash) {
     return tower_ack_ && tower_ack_(swap_id, package_hash);
 }
@@ -541,6 +554,23 @@ bool SwapRunner::ArmTowerWith(const FundingOutput& din_funding, const BtcFunding
 // Bob with a tower: his prepared (signed, unsent) funding leaves only once
 // the tower confirmed it holds the package for exactly that outpoint.
 void SwapRunner::ExpirePreparedFunding(uint32_t now, const std::string& why, std::vector<std::string>& events) {
+    // The raw is still here after a lost broadcast reply too: abort only when
+    // Bitcoin Core shows every prepared input unspent.
+    const auto unsent = io_.PreparedFundingUnsent(FromHex(session_.btc_funding_raw));
+    if (!unsent) {
+        events.push_back("ALERT: prepared BTC funding expired but Bitcoin Core cannot confirm it was never sent; "
+                         "not sending it, checking again: " + why);
+        return;
+    }
+    if (!*unsent) {
+        SwapSession next = session_;
+        next.btc_funding_raw.clear();  // never send it again; the watcher picks up the lock if it went out
+        store_.Save(next);
+        session_ = std::move(next);
+        events.push_back("ALERT: prepared BTC funding may have been sent (its inputs are spent); watching for "
+                         "the lock: " + why);
+        return;
+    }
     try {
         io_.ReleasePreparedFunding(FromHex(session_.btc_funding_raw));
     } catch (const std::exception&) {

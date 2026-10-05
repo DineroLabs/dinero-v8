@@ -450,6 +450,25 @@ void SwapManager::Cancel(const std::string& id) {
             throw std::runtime_error(std::string("cannot cancel in state ") + StateName(s.record.state) +
                                      ": funds may be locked; the swap will finish or refund");
         }
+        if (unsent) {
+            // A lost broadcast reply leaves the raw here although the BTC went
+            // out: only Bitcoin Core can say nothing was sent.
+            const auto raw = FromHex(s.btc_funding_raw);
+            RpcSwapChainIo io(din_, btc_, s, config_.runner);
+            const auto never_sent = io.PreparedFundingUnsent(raw);
+            if (!never_sent || !*never_sent) {
+                throw std::runtime_error(never_sent ? "the prepared BTC funding may have been sent; not cancelling — "
+                                                      "the swap will finish or refund"
+                                                    : "cannot reach Bitcoin Core to check the prepared BTC funding; "
+                                                      "not cancelling");
+            }
+            try {
+                io.ReleasePreparedFunding(raw);
+            } catch (const std::exception&) {
+                // the inputs stay locked in Core; harmless
+            }
+            s.btc_funding_raw.clear();
+        }
         s.record.state = SwapState::Aborted;
         EncryptedFileSwapStore(SwapPath(index), store_key).Save(s);
         live_.erase(index);

@@ -128,6 +128,13 @@ public:
     virtual PreparedBtcFunding PrepareFundBtc(const std::string& address, uint64_t amount_sat);
     // Give a never-sent prepared funding's inputs back to the wallet.
     virtual void ReleasePreparedFunding(const std::vector<uint8_t>& raw) { (void)raw; }
+    // true: every input of the prepared funding is still unspent (mempool
+    // included), so it was never broadcast. false: some input is spent (it may
+    // have gone out, e.g. a lost broadcast reply). nullopt: cannot tell.
+    virtual std::optional<bool> PreparedFundingUnsent(const std::vector<uint8_t>& raw) {
+        (void)raw;
+        return std::nullopt;
+    }
     // Whether a Dinero output is still unspent (nullopt: unknown/unreachable).
     virtual std::optional<bool> DinOutputUnspent(const TxId& txid, uint32_t vout) {
         (void)txid;
@@ -176,6 +183,7 @@ public:
     void ArmTower(const std::string& package_text) override;
     PreparedBtcFunding PrepareFundBtc(const std::string& address, uint64_t amount_sat) override;
     void ReleasePreparedFunding(const std::vector<uint8_t>& raw) override;
+    std::optional<bool> PreparedFundingUnsent(const std::vector<uint8_t>& raw) override;
     bool TowerAcknowledged(const std::string& swap_id, const std::string& package_hash) override;
     std::optional<bool> DinOutputUnspent(const TxId& txid, uint32_t vout) override;
     DinWatchReport ObserveDin() override;

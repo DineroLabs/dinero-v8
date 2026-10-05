@@ -419,7 +419,21 @@ TEST(SwapManager, CancelWhileBobsFundingIsPreparedButUnsent) {
     s.record.state = SwapState::BtcLockBroadcast;
     s.btc_funding_raw = "0200";  // signed, never sent (the tower did not confirm)
     EncryptedFileSwapStore(path, key).Save(s);
-    SwapManager bob(Config(db.path), wb.Deriver(), kNoDin, kNoBtc);
+    // Bitcoin Core: the prepared input is still unspent, so nothing was sent.
+    const BtcRpc unsent = [](const std::string& m, const Json::Value&) -> std::optional<Json::Value> {
+        if (m == "getblockcount") return Json::Value(500);
+        if (m == "decoderawtransaction") {
+            Json::Value tx(Json::objectValue), in(Json::objectValue);
+            in["txid"] = std::string(64, 'a');
+            in["vout"] = 0;
+            tx["vin"].append(in);
+            return tx;
+        }
+        if (m == "gettxout") return Json::Value(Json::objectValue);
+        if (m == "lockunspent") return Json::Value(true);
+        return std::nullopt;
+    };
+    SwapManager bob(Config(db.path), wb.Deriver(), kNoDin, unsent);
     EXPECT_NO_THROW(bob.Cancel(id));
     EXPECT_EQ(bob.Status(id).state, SwapState::Aborted);
 
@@ -428,6 +442,58 @@ TEST(SwapManager, CancelWhileBobsFundingIsPreparedButUnsent) {
     EncryptedFileSwapStore(path, key).Save(s);
     SwapManager bob2(Config(db.path), wb.Deriver(), kNoDin, kNoBtc);
     EXPECT_THROW(bob2.Cancel(id), std::runtime_error);
+}
+
+TEST(SwapManager, CancelRefusesAPreparedFundingThatMayHaveBeenSent) {
+    // The broadcast reply was lost: the raw is still in the session, but the
+    // BTC may be in the HTLC. Cancel asks Bitcoin Core first: only when every
+    // prepared input is still unspent (mempool included) was nothing sent;
+    // then the inputs are unlocked and the swap aborted.
+    TempDir da("ps_a"), db("ps_b");
+    FakeWallet wa{0x6e}, wb{0x6f};
+    SwapManager alice(Config(da.path), wa.Deriver(), kNoDin, kNoBtc);
+    std::string id;
+    uint32_t index = 0;
+    {
+        SwapManager bob(Config(db.path), wb.Deriver(), kNoDin, kNoBtc);
+        id = bob.Accept(alice.MakeOffer(Request(), kNow), P2trAddress("rdin", 1), P2trAddress("bcrt", 2), kNow).id;
+        index = bob.Status(id).index;
+    }
+    const auto key = SwapStoreKeyFromSeed(wb.Deriver(), SwapNetwork::Regtest);
+    const std::string path = db.path + "/swap-" + std::to_string(index) + ".swap";
+    auto s = EncryptedFileSwapStore::Load(path, key);
+    s.record.state = SwapState::BtcLockBroadcast;
+    s.btc_funding_raw = "0200";
+    EncryptedFileSwapStore(path, key).Save(s);
+
+    enum class Core { Unspent, Spent, Down };
+    auto core = [](Core c, int* unlocked) {
+        return BtcRpc([c, unlocked](const std::string& m, const Json::Value&) -> std::optional<Json::Value> {
+            if (m == "getblockcount") return Json::Value(500);
+            if (c == Core::Down) return std::nullopt;
+            if (m == "decoderawtransaction") {
+                Json::Value tx(Json::objectValue), in(Json::objectValue);
+                in["txid"] = std::string(64, 'a');
+                in["vout"] = 1;
+                tx["vin"].append(in);
+                return tx;
+            }
+            if (m == "gettxout") return c == Core::Unspent ? Json::Value(Json::objectValue) : Json::Value();
+            if (m == "lockunspent") { ++*unlocked; return Json::Value(true); }
+            return std::nullopt;
+        });
+    };
+    int unlocked = 0;
+    for (const Core c : {Core::Spent, Core::Down}) {
+        SwapManager bob(Config(db.path), wb.Deriver(), kNoDin, core(c, &unlocked));
+        EXPECT_THROW(bob.Cancel(id), std::runtime_error) << "may have been sent";
+        EXPECT_EQ(bob.Status(id).state, SwapState::BtcLockBroadcast);
+    }
+    EXPECT_EQ(unlocked, 0);
+    SwapManager bob(Config(db.path), wb.Deriver(), kNoDin, core(Core::Unspent, &unlocked));
+    EXPECT_NO_THROW(bob.Cancel(id));
+    EXPECT_EQ(bob.Status(id).state, SwapState::Aborted);
+    EXPECT_EQ(unlocked, 1) << "the prepared inputs are released";
 }
 
 TEST(SwapManager, BobsSwapIsNotFinishedUntilHisDinIsSwept) {
