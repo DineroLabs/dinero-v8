@@ -160,6 +160,44 @@ private Q_SLOTS:
         QVERIFY2(!ink(15, 14), "front-left head is filled");
         QVERIFY2(!ink(25, 14), "front-right head is filled");
     }
+    void swapIconShowsTwoOpposingArrows() {
+#if defined(DIN_ENABLE_SWAP_UI) && DIN_ENABLE_SWAP_UI
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, dir.path());
+        MainWindow window(dinero::qt::DaemonBootstrapOwner::ApplicationMain);
+        QTabWidget* tabs = nullptr;
+        int swap = -1, transactions = -1;
+        for (auto* t : window.findChildren<QTabWidget*>())
+            for (int i = 0; i < t->count(); ++i) {
+                if (t->tabToolTip(i) == "Swap" || t->tabText(i) == "Swap") { tabs = t; swap = i; }
+                if (t->tabToolTip(i) == "Transactions" || t->tabText(i) == "Transactions") transactions = i;
+            }
+        QVERIFY(tabs && swap >= 0 && transactions >= 0);
+        auto image = [&](int i) {
+            return tabs->tabIcon(i).pixmap(QSize(40, 40)).toImage()
+                .scaled(40, 40, Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
+        };
+        const QImage img = image(swap);
+        const QString snapshotDir = qEnvironmentVariable("OVERVIEW_SNAPSHOT_DIR");
+        if (!snapshotDir.isEmpty()) {
+            QImage big(img.size() * 8, QImage::Format_ARGB32);
+            big.fill(QColor("#181b20"));
+            QPainter p(&big);
+            p.drawImage(big.rect(), img);
+            p.end();
+            big.save(snapshotDir + "/swap-icon.png");
+        }
+        auto ink = [&](int x, int y) { return qAlpha(img.pixel(x, y)) > 60; };
+        QVERIFY2(ink(20, 13) && ink(20, 27), "two shafts");
+        QVERIFY2(ink(29, 10) && ink(29, 16), "upper arrow points right");
+        QVERIFY2(ink(11, 24) && ink(11, 30), "lower arrow points left");
+        QVERIFY2(!ink(11, 10) && !ink(29, 30), "heads on opposite ends");
+        QVERIFY2(image(transactions) != img, "Swap must not borrow the Transactions icon");
+#else
+        QSKIP("built without the Swap tab");
+#endif
+    }
     void miningIconIsAPickaxe() {
         QTemporaryDir dir;
         QVERIFY(dir.isValid());
@@ -332,6 +370,9 @@ private Q_SLOTS:
         window.show();
         QVERIFY(QTest::qWaitForWindowExposed(&window));
         QCoreApplication::processEvents();
+        if (const QString shots = qEnvironmentVariable("OVERVIEW_SNAPSHOT_DIR"); !shots.isEmpty()) {
+            tabs->tabBar()->grab().save(shots + "/tab-bar-1440.png");
+        }
         for (int i = 0; i < tabs->count(); ++i)
             QVERIFY2(!tabs->tabText(i).isEmpty(),
                      qPrintable(QString("1440 px: %1 lost its name (bar needs %2 px)")

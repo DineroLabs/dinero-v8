@@ -1471,9 +1471,18 @@ if(BUILD_TESTING)
   add_test(NAME SwapFormPolicy COMMAND test_swap_form_policy)
 
   if(DIN_ENABLE_SWAP_UI)
+    # The Swap tab's look and hints, offline (no node).
+    add_executable(test_swap_tab tests/test_swap_tab.cpp
+      src/swapwidget.cpp src/swapwidget.h src/rpcclient.cpp src/rpcclient.h src/paycollectpolicy.cpp)
+    target_include_directories(test_swap_tab PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_link_libraries(test_swap_tab PRIVATE Qt6::Widgets Qt6::Network Qt6::Test)
+    target_compile_definitions(test_swap_tab PRIVATE QT_NO_KEYWORDS)
+    add_test(NAME SwapTab COMMAND test_swap_tab)
+    set_tests_properties(SwapTab PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 60)
+
     # The real Swap tab against two regtest dinerods (tests/swap_widget_regtest.sh).
     add_executable(test_swap_widget_regtest tests/test_swap_widget_regtest.cpp
-      src/swapwidget.cpp src/swapwidget.h src/rpcclient.cpp src/rpcclient.h)
+      src/swapwidget.cpp src/swapwidget.h src/rpcclient.cpp src/rpcclient.h src/paycollectpolicy.cpp)
     target_include_directories(test_swap_widget_regtest PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
     target_link_libraries(test_swap_widget_regtest PRIVATE Qt6::Widgets Qt6::Network Qt6::Test)
     target_compile_definitions(test_swap_widget_regtest PRIVATE QT_NO_KEYWORDS)

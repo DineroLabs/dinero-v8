@@ -15,6 +15,7 @@
 #include <QPushButton>
 #include <QTableWidget>
 
+#include "chromestyle.h"
 #include "rpcclient.h"
 #include "swapwidget.h"
 
@@ -40,7 +41,8 @@ T* Find(QWidget* w, const char* name) {
 void Shot(QWidget* w, const QString& name) {
     const QString dir = qEnvironmentVariable("SWAP_QT_SHOTS");
     if (dir.isEmpty()) return;
-    w->resize(1280, 820);
+    w->setStyleSheet(appPageStyle());  // as inside the app's window
+    w->resize(1440, 900);
     QApplication::processEvents();
     w->grab().save(dir + "/" + name + ".png");
 }
@@ -64,11 +66,15 @@ private Q_SLOTS:
         bob_ = new SwapWidget(Client(Env("SWAP_QT_BOB_PORT"), Env("SWAP_QT_BOB_DIR"), this));
         alice_->show();
         bob_->show();
-        // Answer every review dialog with "Yes", remembering what it said.
+        // Confirm every review dialog with its action button (Cancel is the
+        // default there), remembering what it said.
         connect(&dialogs_, &QTimer::timeout, this, [this] {
             if (auto* box = qobject_cast<QMessageBox*>(QApplication::activeModalWidget())) {
-                answered_ << box->text();
-                box->button(QMessageBox::Yes)->click();
+                answered_ << box->text() + "\n" + box->informativeText();
+                for (auto* b : box->buttons()) {
+                    if (box->buttonRole(b) == QMessageBox::AcceptRole) return b->click();
+                }
+                qFatal("review dialog without an action button: %s", qPrintable(box->text()));
             }
         });
         dialogs_.start(50);
