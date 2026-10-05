@@ -9,6 +9,7 @@
 
 #include <gtest/gtest.h>
 
+#include <filesystem>
 #include <stdexcept>
 
 namespace {
@@ -281,6 +282,21 @@ TEST(SwapTower, RefundsBtcEvenWhileDineroIsUnobservable) {
     tower.Tick(kNow);
     EXPECT_EQ(chains.btc_broadcasts.size(), 1u);
     EXPECT_TRUE(chains.din_broadcasts.empty());
+}
+
+TEST(SwapTower, AnAckCountsOnlyFromALiveTowerThatLoadedThePackage) {
+    const auto dir = (std::filesystem::temp_directory_path() / "swap_tower_ack_test").string();
+    std::filesystem::remove_all(dir);
+    std::filesystem::create_directories(dir);
+    const std::string id = "0123456789abcdef";
+    EXPECT_FALSE(TowerAckFresh(dir, id, kNow));
+    MarkTowerArmed(dir, id);
+    EXPECT_FALSE(TowerAckFresh(dir, id, kNow)) << "no heartbeat: the tower may be stopped";
+    WriteTowerHeartbeat(dir, kNow);
+    EXPECT_TRUE(TowerAckFresh(dir, id, kNow + 60));
+    EXPECT_FALSE(TowerAckFresh(dir, id, kNow + 600)) << "stale heartbeat";
+    EXPECT_FALSE(TowerAckFresh(dir, "fedcba9876543210", kNow + 60)) << "another swap";
+    std::filesystem::remove_all(dir);
 }
 
 TEST(SwapTower, NeverActsBlindAndStopsWhenSettled) {

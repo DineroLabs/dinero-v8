@@ -33,6 +33,9 @@ struct SwapSession {
     // own BTC funding. Payments to the same scripts never stand in for them.
     std::string din_funding_txid;
     std::string btc_funding_txid;
+    // Bob with a tower: his funding, built and signed but NOT yet broadcast
+    // (sent once the tower confirms it holds the package). Empty once sent.
+    std::string btc_funding_raw;
     std::vector<uint8_t> din_payout_script;   // Alice: refund goes here; Bob: claim goes here
     std::vector<uint8_t> btc_payout_script;   // Alice: claim goes here; Bob: refund goes here
     bool tower_armed{false};                  // Bob: the watchtower accepted this swap's package
@@ -85,6 +88,12 @@ struct RunnerConfig {
     std::string btc_chain{"main"};  // Bitcoin Core getblockchaininfo "chain" this swap must run on
 };
 
+struct PreparedBtcFunding {
+    std::vector<uint8_t> raw;  // signed, not broadcast
+    std::string txid;          // display hex
+    uint32_t vout{};
+};
+
 // The chains as the runner sees them. Write methods return the txid and throw
 // std::runtime_error when the node or wallet refuses.
 class SwapChainIo {
@@ -96,6 +105,14 @@ public:
     virtual std::string FundBtc(const std::string& address, uint64_t amount_sat) = 0;
     virtual std::string BroadcastDin(const std::vector<uint8_t>& raw_tx) = 0;
     virtual std::string BroadcastBtc(const std::vector<uint8_t>& raw_tx) = 0;
+    // Build and sign Bob's BTC funding without broadcasting it (so the tower
+    // can hold a package for its exact outpoint first). Throws if unsupported.
+    virtual PreparedBtcFunding PrepareFundBtc(const std::string& address, uint64_t amount_sat);
+    // True once Bob's watchtower confirmed it loaded this swap's package and is alive.
+    virtual bool TowerAcknowledged(const std::string& swap_id) {
+        (void)swap_id;
+        return false;
+    }
     // Hand a TowerPackage (text form) to Bob's watchtower; throws if none is
     // configured or it refuses the package.
     virtual void ArmTower(const std::string& package_text);
@@ -127,7 +144,11 @@ public:
     void PinFunding(const std::string& din_txid, const std::string& btc_txid) override;
     // Optional: where ArmTower() delivers packages (e.g. writes the tower's inbox).
     void SetTowerSink(std::function<void(const std::string&)> sink) { tower_sink_ = std::move(sink); }
+    // Optional: whether the tower confirmed a swap's package (see WriteTowerInbox).
+    void SetTowerAck(std::function<bool(const std::string&)> ack) { tower_ack_ = std::move(ack); }
     void ArmTower(const std::string& package_text) override;
+    PreparedBtcFunding PrepareFundBtc(const std::string& address, uint64_t amount_sat) override;
+    bool TowerAcknowledged(const std::string& swap_id) override;
     DinWatchReport ObserveDin() override;
     BtcWatchReport ObserveBtc() override;
     std::string FundDin(const std::string& address, uint64_t amount_una) override;
@@ -143,6 +164,7 @@ private:
     std::unique_ptr<BtcWatcher> btc_watcher_;
     void RebuildWatchers();
     std::function<void(const std::string&)> tower_sink_;
+    std::function<bool(const std::string&)> tower_ack_;
 };
 
 // HTLC addresses for funding.
@@ -189,6 +211,8 @@ private:
     void Execute(const Action& action, const DinWatchReport& din, const BtcWatchReport& btc, uint32_t now,
                  std::vector<std::string>& events);
     void ArmTower(const DinWatchReport& din, const BtcWatchReport& btc, std::vector<std::string>& events);
+    bool ArmTowerWith(const FundingOutput& din_funding, const BtcFunding& btc_funding, std::vector<std::string>& events);
+    void SendPreparedFunding(uint32_t now, std::vector<std::string>& events);
     void PinAndSave(const std::string& din_txid, const std::string& btc_txid);
     uint64_t BtcFeeNow(uint32_t now) const;
     void SingleChainRebroadcast(const DinWatchReport& din, const BtcWatchReport& btc, uint32_t now,

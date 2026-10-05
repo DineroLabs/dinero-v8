@@ -131,6 +131,20 @@ void SwapManager::SetTowerSink(std::function<void(const std::string&)> sink) {
     tower_sink_ = std::move(sink);
 }
 
+void SwapManager::SetTowerAck(std::function<bool(const std::string&)> ack) {
+    std::lock_guard<std::mutex> lock(mu_);
+    tower_ack_ = std::move(ack);
+}
+
+Bytes32 SwapManager::StoreKey() {
+    try {
+        store_key_ = SwapStoreKeyFromSeed(derive_, config_.network);
+    } catch (const std::runtime_error&) {
+        if (!store_key_) throw;  // locked and never unlocked since start: paused
+    }
+    return *store_key_;
+}
+
 std::string SwapManager::SwapPath(uint32_t i) const { return config_.dir + "/swap-" + std::to_string(i) + ".swap"; }
 std::string SwapManager::OfferPath(uint32_t i) const { return config_.dir + "/offer-" + std::to_string(i) + ".offer"; }
 
@@ -177,13 +191,14 @@ void SwapManager::StartSession(uint32_t index, SwapSession session, const Bytes3
     live.store = std::make_unique<EncryptedFileSwapStore>(SwapPath(index), store_key);
     live.io = std::make_unique<RpcSwapChainIo>(din_, btc_, session, rc);
     if (tower_sink_) live.io->SetTowerSink(tower_sink_);
+    if (tower_ack_) live.io->SetTowerAck(tower_ack_);
     live.runner = std::make_unique<SwapRunner>(std::move(session), mat.keys, rc, *live.io, *live.store);
     live_[index] = std::move(live);
 }
 
 std::string SwapManager::MakeOffer(const OfferRequest& r, uint32_t now) {
     std::lock_guard<std::mutex> lock(mu_);
-    SwapStoreKeyFromSeed(derive_, config_.network);  // refuses a locked wallet before using an index
+    StoreKey();  // refuses a locked wallet before using an index
     if (r.din_lock_hours < r.btc_lock_hours + 24) throw std::invalid_argument("DIN lock must be >= BTC lock + 24 h");
     RequireWithinCaps(config_, r.din_amount_una, r.btc_amount_sat);
     RequireSane(config_, r.din_amount_una, r.btc_amount_sat, r.n_btc_confirmations);
@@ -213,7 +228,7 @@ std::string SwapManager::MakeOffer(const OfferRequest& r, uint32_t now) {
     std::ostringstream f;
     f << "offer=" << text << "\ndin_payout=" << ToHex(din_payout) << "\nbtc_payout=" << ToHex(btc_payout) << "\n";
     f << "secret=" << ToHex(std::vector<uint8_t>(secret.begin(), secret.end())) << "\n";
-    SealToFile(OfferPath(index), SwapStoreKeyFromSeed(derive_, config_.network), f.str());
+    SealToFile(OfferPath(index), StoreKey(), f.str());
     WriteFileAtomically(OfferPath(index) + ".id", SwapId(o) + "\n");  // public: readable while locked
     return text;
 }
@@ -221,7 +236,7 @@ std::string SwapManager::MakeOffer(const OfferRequest& r, uint32_t now) {
 SwapManager::AcceptResult SwapManager::Accept(const std::string& text, const std::string& din_payout_address,
                                               const std::string& btc_refund_address, uint32_t now) {
     std::lock_guard<std::mutex> lock(mu_);
-    const Bytes32 store_key = SwapStoreKeyFromSeed(derive_, config_.network);
+    const Bytes32 store_key = StoreKey();
     const auto btc_tip = btc_("getblockcount", Json::Value(Json::arrayValue));
     if (!btc_tip || !btc_tip->isNumeric()) throw std::runtime_error("Bitcoin node unreachable (swap.btc_rpc_*)");
     const uint32_t scan_from = btc_tip->asUInt() > kScanMargin ? btc_tip->asUInt() - kScanMargin : 0;
@@ -244,6 +259,10 @@ SwapManager::AcceptResult SwapManager::Accept(const std::string& text, const std
         const SwapOffer offer = DecodeOffer(text);
         if (offer.network != config_.network) throw std::invalid_argument("offer is for another network");
         RequireAcceptableNow(offer, now);
+        if (config_.require_tower_for_bob && (!tower_sink_ || !tower_ack_)) {
+            throw std::runtime_error("mainnet beta: buying DIN needs a watchtower (set swap.tower_inbox and run "
+                                     "dinero-swap-tower)");
+        }
         RequireWithinCaps(config_, offer.din_amount_una, offer.btc_amount_sat);
         RequireSane(config_, offer.din_amount_una, offer.btc_amount_sat, offer.n_btc_confirmations);
         const std::string id = SwapId(offer);
@@ -332,7 +351,7 @@ std::vector<SwapSummary> SwapManager::List() {
     std::lock_guard<std::mutex> lock(mu_);
     std::optional<Bytes32> store_key;
     try {
-        store_key = SwapStoreKeyFromSeed(derive_, config_.network);
+        store_key = StoreKey();
     } catch (const std::runtime_error&) {
     }
     std::vector<SwapSummary> out;
@@ -408,11 +427,14 @@ void SwapManager::Cancel(const std::string& id) {
             return;
         }
     }
-    const Bytes32 store_key = SwapStoreKeyFromSeed(derive_, config_.network);
+    const Bytes32 store_key = StoreKey();
     for (const auto& [index, path] : ScanDir(".swap")) {
         SwapSession s = live_.count(index) ? live_[index].runner->session() : LoadSession(index, store_key);
         if (SwapId(s.record.offer) != id) continue;
-        if (s.record.state != SwapState::Accepted) {
+        // Bob's prepared funding that was never sent (the tower never confirmed)
+        // locks nothing either.
+        const bool unsent = s.record.state == SwapState::BtcLockBroadcast && !s.btc_funding_raw.empty();
+        if (s.record.state != SwapState::Accepted && !unsent) {
             throw std::runtime_error(std::string("cannot cancel in state ") + StateName(s.record.state) +
                                      ": funds may be locked; the swap will finish or refund");
         }
@@ -426,7 +448,7 @@ void SwapManager::Cancel(const std::string& id) {
 
 std::string SwapManager::Refund(const std::string& id, uint32_t now) {
     std::lock_guard<std::mutex> lock(mu_);
-    const Bytes32 store_key = SwapStoreKeyFromSeed(derive_, config_.network);
+    const Bytes32 store_key = StoreKey();
     for (const auto& [index, path] : ScanDir(".swap")) {
         if (!live_.count(index)) {
             SwapSession s = LoadSession(index, store_key);
@@ -446,9 +468,9 @@ bool SwapManager::TickAll(uint32_t now) {
     std::lock_guard<std::mutex> lock(mu_);
     Bytes32 store_key;
     try {
-        store_key = SwapStoreKeyFromSeed(derive_, config_.network);
+        store_key = StoreKey();  // remembered across a relock while the daemon runs
     } catch (const std::runtime_error&) {
-        return false;  // paused, not failed
+        return false;  // locked since start: paused, not failed
     }
     for (const auto& [index, path] : ScanDir(".swap")) {
         if (live_.count(index)) continue;

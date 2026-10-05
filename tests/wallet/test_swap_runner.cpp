@@ -5,6 +5,7 @@
 #include "crypto/evp_secp256k1.h"
 #include "crypto/sha256.h"
 #include "wallet/swap/btc_tx.h"
+#include "wallet/swap/swap_crypto.h"
 #include "wallet/swap/tower.h"
 
 #include <gtest/gtest.h>
@@ -129,6 +130,18 @@ struct FakeChains : SwapChainIo {
         pins.push_back({d, b});
         log.lines.push_back("pin");
     }
+    bool tower_acked{false};
+    int prepared{0};
+    PreparedBtcFunding PrepareFundBtc(const std::string& a, uint64_t v) override {
+        log.lines.push_back("prepare_btc:" + a + ":" + std::to_string(v));
+        ++prepared;
+        PreparedBtcFunding f;
+        f.raw = {0x02, 0x00, 0x00, 0x00, 0xee};
+        f.txid = std::string(64, 'e');
+        f.vout = 0;
+        return f;
+    }
+    bool TowerAcknowledged(const std::string&) override { return tower_acked; }
     int tower_refusals{0};
     std::vector<std::string> armed;
     void ArmTower(const std::string& package) override {
@@ -371,6 +384,69 @@ TEST(SwapRunner, BobArmsTheTowerOnceBothLocksAreSeen) {
     EXPECT_TRUE(bob.session().tower_armed);
     bob.Tick(kNow + 2 * kHour);
     EXPECT_EQ(chains.armed.size(), 1u) << "armed once";
+}
+
+TEST(SwapRunner, BobArmsTheTowerBeforeHisBtcLeaves) {
+    // The funding is built and signed first, the tower gets a package for
+    // that exact outpoint, and the BTC is broadcast only once the tower has
+    // confirmed it holds the package.
+    Log log;
+    FakeStore store(log);
+    FakeChains chains(log);
+    auto s = MakeSession(Role::BtcSeller);
+    BothLocksSeen(chains, s);
+    chains.btc = BtcWatchReport{};  // no BTC lock yet
+    chains.btc.ok = true;
+    chains.btc.mtp_unix = kNow;
+    chains.din.htlc.output_confirmations = 40;
+    auto config = Config();
+    config.use_tower = true;
+    SwapRunner bob(s, kBobKeys, config, chains, store);
+
+    bob.Tick(kNow + kHour);
+    EXPECT_EQ(bob.session().record.state, SwapState::BtcLockBroadcast);
+    ASSERT_EQ(chains.armed.size(), 1u) << "tower armed with the prepared outpoint";
+    const auto package = DecodeTowerPackage(chains.armed[0]);
+    const auto& wire = package.btc_refunds.front().tx.vin[0].prev_txid;
+    EXPECT_EQ(detail::ToHex(std::vector<uint8_t>(wire.rbegin(), wire.rend())), std::string(64, 'e'));
+    EXPECT_TRUE(chains.btc_broadcasts.empty()) << "no BTC before the tower confirms";
+    for (const auto& l : log.lines) EXPECT_EQ(l.rfind("fund_btc", 0), std::string::npos);
+    EXPECT_EQ(store.saved->btc_funding_txid, std::string(64, 'e'));
+    EXPECT_FALSE(store.saved->btc_funding_raw.empty());
+
+    bob.Tick(kNow + kHour + 60);
+    EXPECT_TRUE(chains.btc_broadcasts.empty());
+
+    chains.tower_acked = true;
+    bob.Tick(kNow + kHour + 120);
+    ASSERT_EQ(chains.btc_broadcasts.size(), 1u);
+    EXPECT_EQ(chains.btc_broadcasts[0], (std::vector<uint8_t>{0x02, 0x00, 0x00, 0x00, 0xee}));
+    EXPECT_TRUE(bob.session().btc_funding_raw.empty()) << "sent";
+    EXPECT_EQ(chains.prepared, 1) << "prepared once";
+
+    bob.Tick(kNow + kHour + 180);
+    EXPECT_EQ(chains.btc_broadcasts.size(), 1u) << "never sent twice";
+}
+
+TEST(SwapRunner, WithoutTheTowersConfirmationTheBtcNeverLeaves) {
+    Log log;
+    FakeStore store(log);
+    FakeChains chains(log);
+    auto s = MakeSession(Role::BtcSeller);
+    BothLocksSeen(chains, s);
+    chains.btc = BtcWatchReport{};
+    chains.btc.ok = true;
+    chains.btc.mtp_unix = kNow;
+    chains.din.htlc.output_confirmations = 40;
+    auto config = Config();
+    config.use_tower = true;
+    SwapRunner bob(s, kBobKeys, config, chains, store);
+    bob.Tick(kNow + kHour);
+    const auto r = bob.Tick(kNow + kHour + 31 * 60);
+    EXPECT_TRUE(chains.btc_broadcasts.empty());
+    bool alerted = false;
+    for (const auto& e : r.events) alerted |= e.find("ALERT") == 0 && e.find("watchtower") != std::string::npos;
+    EXPECT_TRUE(alerted);
 }
 
 TEST(SwapRunner, TowerArmingIsRetriedUntilAccepted) {

@@ -11,6 +11,7 @@
 #include <cstdio>
 #include <fcntl.h>
 #include <fstream>
+#include <cmath>
 #include <map>
 #include <sstream>
 #include <stdexcept>
@@ -72,6 +73,7 @@ std::string EncodeSession(const SwapSession& s) {
         << "din_scan_from_height=" << s.din_scan_from_height << "\n"
         << "din_funding_txid=" << s.din_funding_txid << "\n"
         << "btc_funding_txid=" << s.btc_funding_txid << "\n"
+        << "btc_funding_raw=" << s.btc_funding_raw << "\n"
         << "din_payout_script=" << ToHex(s.din_payout_script) << "\n"
         << "btc_payout_script=" << ToHex(s.btc_payout_script) << "\n"
         << "tower_armed=" << (s.tower_armed ? 1 : 0) << "\n";
@@ -111,6 +113,10 @@ SwapSession DecodeSession(const std::string& text) {
     };
     s.din_funding_txid = txid_field("din_funding_txid");
     s.btc_funding_txid = txid_field("btc_funding_txid");
+    if (kv.count("btc_funding_raw") && !kv["btc_funding_raw"].empty()) {
+        FromHex(kv["btc_funding_raw"]);  // validates
+        s.btc_funding_raw = kv["btc_funding_raw"];
+    }
     if (kv.count("din_scan_from_height")) {
         const std::string& v = kv["din_scan_from_height"];
         if (v.empty() || v.size() > 10 || v.find_first_not_of("0123456789") != std::string::npos) Refuse("bad DIN scan height");
@@ -250,6 +256,44 @@ void RpcSwapChainIo::PinFunding(const std::string& din_txid, const std::string& 
     if (changed) RebuildWatchers();
 }
 
+PreparedBtcFunding SwapChainIo::PrepareFundBtc(const std::string&, uint64_t) {
+    throw std::runtime_error("preparing a BTC funding transaction is not supported here");
+}
+
+PreparedBtcFunding RpcSwapChainIo::PrepareFundBtc(const std::string& address, uint64_t amount_sat) {
+    char amount[32];
+    std::snprintf(amount, sizeof amount, "%llu.%08llu", static_cast<unsigned long long>(amount_sat / 100'000'000),
+                  static_cast<unsigned long long>(amount_sat % 100'000'000));
+    Json::Value outputs(Json::objectValue);
+    outputs[address] = std::string(amount);
+    const auto raw = btc_("createrawtransaction", Params({Json::Value(Json::arrayValue), outputs}));
+    if (!raw || !raw->isString()) throw std::runtime_error("createrawtransaction failed");
+    Json::Value opts(Json::objectValue);
+    opts["lockUnspents"] = true;  // the wallet must not spend these inputs elsewhere meanwhile
+    const auto funded = btc_("fundrawtransaction", Params({*raw, opts}));
+    if (!funded || !(*funded)["hex"].isString()) throw std::runtime_error("fundrawtransaction failed (wallet balance?)");
+    const auto signed_tx = btc_("signrawtransactionwithwallet", Params({(*funded)["hex"]}));
+    if (!signed_tx || !(*signed_tx)["complete"].asBool()) throw std::runtime_error("signrawtransactionwithwallet failed");
+    const std::string hex = (*signed_tx)["hex"].asString();
+    const auto decoded = btc_("decoderawtransaction", Params({hex}));
+    if (!decoded) throw std::runtime_error("decoderawtransaction failed");
+    PreparedBtcFunding p;
+    p.raw = FromHex(hex);
+    p.txid = (*decoded)["txid"].asString();
+    bool found = false;
+    for (const auto& out : (*decoded)["vout"]) {
+        if (out["scriptPubKey"]["address"].asString() == address &&
+            static_cast<uint64_t>(std::llround(out["value"].asDouble() * 1e8)) == amount_sat) {
+            p.vout = out["n"].asUInt();
+            found = true;
+        }
+    }
+    if (!found) throw std::runtime_error("prepared funding does not pay the HTLC");
+    return p;
+}
+
+bool RpcSwapChainIo::TowerAcknowledged(const std::string& swap_id) { return tower_ack_ && tower_ack_(swap_id); }
+
 void SwapChainIo::ArmTower(const std::string&) {
     throw std::runtime_error("no watchtower configured");
 }
@@ -333,6 +377,7 @@ TickReport SwapRunner::Tick(uint32_t wall_clock_unix) {
         report.actions.push_back(a.kind);
         Execute(a, din, btc, wall_clock_unix, report.events);
     }
+    SendPreparedFunding(wall_clock_unix, report.events);
     // Bob's tower must hold the package before he can safely go offline. The
     // engine asks once (ArmTower); a failed attempt is retried every tick.
     if (session_.record.role == Role::BtcSeller && config_.use_tower && !session_.tower_armed &&
@@ -343,8 +388,16 @@ TickReport SwapRunner::Tick(uint32_t wall_clock_unix) {
 }
 
 void SwapRunner::ArmTower(const DinWatchReport& din, const BtcWatchReport& btc, std::vector<std::string>& events) {
+    if (!din.funding || !btc.funding) {
+        events.push_back("ALERT: watchtower not armed, this wallet must stay online: HTLC outputs not both known yet");
+        return;
+    }
+    ArmTowerWith(*din.funding, *btc.funding, events);
+}
+
+bool SwapRunner::ArmTowerWith(const FundingOutput& din_funding, const BtcFunding& btc_funding,
+                              std::vector<std::string>& events) {
     try {
-        if (!din.funding || !btc.funding) throw std::runtime_error("HTLC outputs not both known yet");
         const auto& offer = session_.record.offer;
         FeeLadderPolicy din_policy;
         din_policy.start_feerate_una_per_vb = config_.din_tower_start_feerate_una_per_vb;
@@ -356,7 +409,7 @@ void SwapRunner::ArmTower(const DinWatchReport& din, const BtcWatchReport& btc, 
         btc_policy.max_rungs = config_.tower_rungs;
         btc_policy.max_fee_sat = offer.btc_amount_sat / 100 * config_.tower_max_fee_percent;
         btc_policy.min_payout_sat = offer.btc_amount_sat / 2;
-        const auto package = BuildTowerPackage(session_, keys_, *din.funding, *btc.funding, din_policy, btc_policy);
+        const auto package = BuildTowerPackage(session_, keys_, din_funding, btc_funding, din_policy, btc_policy);
         io_.ArmTower(EncodeTowerPackage(package));
         SwapSession next = session_;
         next.tower_armed = true;
@@ -364,8 +417,38 @@ void SwapRunner::ArmTower(const DinWatchReport& din, const BtcWatchReport& btc, 
         session_ = std::move(next);
         events.push_back("watchtower armed: " + std::to_string(package.din_claims.size()) + " DIN claim and " +
                          std::to_string(package.btc_refunds.size()) + " BTC refund rungs");
+        return true;
     } catch (const std::exception& e) {
         events.push_back(std::string("ALERT: watchtower not armed, this wallet must stay online: ") + e.what());
+        return false;
+    }
+}
+
+// Bob with a tower: his prepared (signed, unsent) funding leaves only once
+// the tower confirmed it holds the package for exactly that outpoint.
+void SwapRunner::SendPreparedFunding(uint32_t now, std::vector<std::string>& events) {
+    const auto& r = session_.record;
+    if (r.role != Role::BtcSeller || r.state != SwapState::BtcLockBroadcast || session_.btc_funding_raw.empty()) return;
+    const std::string id = [&] {
+        const auto oid = OfferId(r.offer);
+        return ToHex(std::vector<uint8_t>(oid.begin(), oid.begin() + 8));
+    }();
+    if (!session_.tower_armed || !io_.TowerAcknowledged(id)) {
+        if (now > r.state_since_unix + 30 * 60) {
+            events.push_back("ALERT: the watchtower has not confirmed this swap; your BTC was NOT sent. "
+                             "Check dinero-swap-tower, or cancel with swap.cancel");
+        }
+        return;
+    }
+    try {
+        const std::string txid = io_.BroadcastBtc(FromHex(session_.btc_funding_raw));
+        SwapSession next = session_;
+        next.btc_funding_raw.clear();
+        store_.Save(next);
+        session_ = std::move(next);
+        events.push_back("funded BTC HTLC (watchtower confirmed): " + txid);
+    } catch (const std::exception& e) {
+        events.push_back(std::string("BTC funding not accepted: ") + e.what());
     }
 }
 
@@ -453,6 +536,26 @@ void SwapRunner::Execute(const Action& action, const DinWatchReport& din, const 
             // to the same address must never become "the lock" for his claim.
             if (!din.funding) throw std::runtime_error("DIN lock unknown; not funding BTC");
             PinAndSave(din.funding->txid.AsUint256().GetHex(), "");
+            if (config_.use_tower) {
+                // Arm before funding: build and sign the funding, give the tower
+                // a package for that exact outpoint, send once it confirms.
+                const auto prep = io_.PrepareFundBtc(BtcHtlcAddressFor(session_.record, config_.btc_hrp),
+                                                     offer.btc_amount_sat);
+                SwapSession next = session_;
+                next.btc_funding_txid = prep.txid;
+                next.btc_funding_raw = ToHex(prep.raw);
+                store_.Save(next);
+                session_ = std::move(next);
+                io_.PinFunding("", prep.txid);
+                const auto wire = FromHex(prep.txid);
+                BtcFunding f;
+                std::copy(wire.rbegin(), wire.rend(), f.txid.begin());
+                f.vout = prep.vout;
+                f.value_sat = offer.btc_amount_sat;
+                ArmTowerWith(*din.funding, f, events);
+                SendPreparedFunding(now, events);
+                return done("prepared BTC funding:", prep.txid);
+            }
             const std::string txid =
                 io_.FundBtc(BtcHtlcAddressFor(session_.record, config_.btc_hrp), offer.btc_amount_sat);
             PinAndSave("", txid);  // a decoy paying the same script is not Bob's lock

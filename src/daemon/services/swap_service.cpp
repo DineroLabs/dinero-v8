@@ -123,6 +123,7 @@ bool SwapService::Init(DaemonContext& ctx) {
         return false;
     }
     mc.max_btc_sat = beta.max_btc_sat;
+    mc.require_tower_for_bob = mc.network == swap::SwapNetwork::Mainnet;
     mc.max_din_una = beta.max_din_una;
 
     // Swap keys from the wallet seed at m/SWAP'/... (see swap_manager.h).
@@ -142,6 +143,9 @@ bool SwapService::Init(DaemonContext& ctx) {
     const std::string inbox = config->GetString("swap.tower_inbox", "");
     if (!inbox.empty()) {
         manager_->SetTowerSink([inbox](const std::string& package) { swap::WriteTowerInbox(inbox, package); });
+        manager_->SetTowerAck([inbox](const std::string& id) {
+            return swap::TowerAckFresh(inbox, id, static_cast<uint32_t>(std::time(nullptr)));
+        });
     }
     std::cout << "[Swap] enabled: dir=" << mc.dir << " btc_rpc=" << btc << " tick=" << tick_seconds_ << "s"
               << (mc.max_btc_sat ? " max_btc_sat=" + std::to_string(mc.max_btc_sat) + " max_din_una=" +

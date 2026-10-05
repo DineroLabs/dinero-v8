@@ -35,6 +35,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <ctime>
+#include <filesystem>
 #include <fstream>
 #include <sstream>
 #include <iostream>
@@ -153,7 +154,8 @@ int main(int argc, char** argv) {
     const bool happy = scenario == "happy";
     const bool stale = scenario == "stale-clocks";
     const bool tower_claim = scenario == "tower-claim", tower_refund = scenario == "tower-refund";
-    const bool use_tower = tower_claim || tower_refund;
+    const bool tower_silent = scenario == "tower-silent";
+    const bool use_tower = tower_claim || tower_refund || tower_silent;
     const bool race_late_reveal = scenario == "race-late-reveal";
     const bool race_overtaken = scenario == "race-refund-overtaken";
     const bool race_reorg = scenario == "race-reorg";
@@ -162,11 +164,14 @@ int main(int argc, char** argv) {
     const bool known = happy || stale || use_tower || scenario == "offline" || race_late_reveal || race_overtaken ||
                        race_reorg || din_race || sign_first;
     if (!known) return 2;
-    const std::string inbox = argc == 10 ? argv[9] : "";
+    // tower-silent: an inbox no tower watches (nobody acknowledges the package).
+    const std::string inbox = argc == 10 ? std::string(argv[9]) + (scenario == "tower-silent" ? "-silent" : "") : "";
+    if (tower_silent) std::filesystem::create_directories(inbox);
     if (use_tower && inbox.empty()) return 2;
     // Separate payout keys per scenario, so a balance can only come from this run.
     const uint8_t kb = happy ? 7 : stale ? 17 : scenario == "offline" ? 27 : tower_claim ? 37 : tower_refund ? 47
-                     : race_late_reveal ? 57 : race_overtaken ? 67 : race_reorg ? 77 : din_race ? 87 : 97;
+                     : race_late_reveal ? 57 : race_overtaken ? 67 : race_reorg ? 77 : din_race ? 87
+                     : sign_first ? 97 : 107;
     const uint8_t kAliceBtcClaim = kb, kBobDinClaim = kb + 1, kAliceDinRefund = kb + 2, kBobBtcRefund = kb + 3;
     auto din_client = std::make_shared<rpc::RpcClient>("127.0.0.1", uint16_t(std::stoi(argv[3])), "test", "test");
     auto btc_client = std::make_shared<rpc::RpcClient>("127.0.0.1", uint16_t(std::stoi(argv[4])), argv[5], argv[6]);
@@ -275,6 +280,9 @@ int main(int argc, char** argv) {
             if (use_tower && s.record.role == Role::BtcSeller) {
                 p.io->SetTowerSink([&](const std::string& package) {
                     std::cout << "        package -> " << WriteTowerInbox(inbox, package) << "\n";
+                });
+                p.io->SetTowerAck([&](const std::string& id) {
+                    return TowerAckFresh(inbox, id, static_cast<uint32_t>(std::time(nullptr)));
                 });
             }
             p.runner = std::make_unique<SwapRunner>(s, p.keys, config, *p.io, p.store);
@@ -411,6 +419,30 @@ int main(int argc, char** argv) {
             Check(btc_balance(kAliceBtcClaim) == int64_t(kBtcAmount - config.btc_fee_sat), "alice received BTC minus fee on chain");
             Check(din_balance(kBobDinClaim) ==
                       int64_t(kDinAmount - (rbf_replaced ? 2 : 1) * config.din_fee_una), "bob received DIN minus fee on chain");
+        } else if (tower_silent) {
+            // Bob's tower never confirms the package: his BTC must never leave.
+            int round = 0;
+            std::string last_alert;
+            for (; round < 45; ++round) {
+                tick(alice, round);
+                const auto r = bob.runner->Tick(bob.Now());
+                for (const auto& e : r.events) if (e.rfind("ALERT", 0) == 0) last_alert = e;
+                mine();
+            }
+            Check(bob.State() == SwapState::BtcLockBroadcast && !bob.runner->session().btc_funding_raw.empty(),
+                  "bob's funding is prepared but held back");
+            const auto b = bob.io->ObserveBtc();
+            Check(b.ok && !b.funding.has_value(), "no BTC reached the HTLC on chain");
+            const auto id = OfferId(o);
+            Check(bob.store_path.size() > 0 && std::ifstream(inbox + "/" + Hex(std::vector<uint8_t>(id.begin(), id.begin() + 8)) + ".pkg").good(),
+                  "the package was delivered (nobody acknowledged it)");
+            std::cout << "  bob cancels (nothing was sent)\n";
+            bob.runner.reset();
+            bob.io.reset();
+            {
+                auto s = EncryptedFileSwapStore::Load(bob.store_path, bob.store_key);
+                Check(!s.btc_funding_raw.empty(), "the unsent funding is kept for the record");
+            }
         } else if (use_tower) {
             // Bob locks BTC, arms the tower, and goes offline for good.
             int round = 0;

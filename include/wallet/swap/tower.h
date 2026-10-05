@@ -85,6 +85,13 @@ void VerifyTowerPackage(const TowerPackage& package);
 // user can write (0700); the tower verifies every package anyway.
 std::string WriteTowerInbox(const std::string& inbox_dir, const std::string& package_text);  // returns path
 
+// The tower's side of arming: it marks each package it verified and loaded,
+// and refreshes a heartbeat every loop. Bob funds only on a fresh ack.
+void MarkTowerArmed(const std::string& inbox_dir, const std::string& swap_id);
+void WriteTowerHeartbeat(const std::string& inbox_dir, uint32_t now_unix);
+bool TowerAckFresh(const std::string& inbox_dir, const std::string& swap_id, uint32_t now_unix,
+                   uint32_t max_heartbeat_age_seconds = 120);
+
 struct TowerConfig {
     uint32_t escalate_after_seconds{30 * 60};
     uint32_t din_relaxed_before_seconds{24 * 60 * 60};  // lowest DIN rung this far from T_din

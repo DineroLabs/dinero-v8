@@ -6,6 +6,7 @@
 #include <cstdio>
 #include <fcntl.h>
 #include <algorithm>
+#include <fstream>
 #include <map>
 #include <sstream>
 #include <unistd.h>
@@ -261,6 +262,22 @@ SwapWatchSpec TowerWatchSpec(const TowerPackage& p, const std::string& btc_chain
     w.btc_funding_txid = ToHex(std::vector<uint8_t>(wire.rbegin(), wire.rend()));
     w.btc_chain = btc_chain;
     return w;
+}
+
+void MarkTowerArmed(const std::string& inbox_dir, const std::string& swap_id) {
+    WriteFileAtomically(inbox_dir + "/" + swap_id + ".armed", "armed\n");
+}
+
+void WriteTowerHeartbeat(const std::string& inbox_dir, uint32_t now) {
+    WriteFileAtomically(inbox_dir + "/heartbeat", std::to_string(now) + "\n");
+}
+
+bool TowerAckFresh(const std::string& inbox_dir, const std::string& swap_id, uint32_t now, uint32_t max_age) {
+    if (!std::ifstream(inbox_dir + "/" + swap_id + ".armed").good()) return false;
+    std::ifstream hb(inbox_dir + "/heartbeat");
+    uint64_t t = 0;
+    if (!(hb >> t)) return false;
+    return t <= uint64_t(now) + 60 && uint64_t(now) <= t + max_age;
 }
 
 // ---- The tower --------------------------------------------------------------

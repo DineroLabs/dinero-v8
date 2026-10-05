@@ -85,6 +85,7 @@ struct SwapManagerConfig {
     // Per-swap limits (0 = none). Enforced on offers made AND offers accepted.
     uint64_t max_btc_sat{0};
     uint64_t max_din_una{0};
+    bool require_tower_for_bob{false};  // mainnet beta: Bob may not accept without a watchtower
 };
 
 class SwapManager {
@@ -119,6 +120,7 @@ public:
 
     // Optional: deliver tower packages (Bob) to this sink; enables the tower.
     void SetTowerSink(std::function<void(const std::string&)> sink);
+    void SetTowerAck(std::function<bool(const std::string&)> ack);
 
 private:
     struct Live {
@@ -141,6 +143,9 @@ private:
     DinRpc din_;
     BtcRpc btc_;
     std::function<void(const std::string&)> tower_sink_;
+    std::function<bool(const std::string&)> tower_ack_;
+    std::optional<Bytes32> store_key_;  // kept while the daemon runs: live swaps survive a relock
+    Bytes32 StoreKey();                  // derive (and remember), or the remembered one; throws if neither
     std::mutex mu_;
     std::map<uint32_t, Live> live_;
 };

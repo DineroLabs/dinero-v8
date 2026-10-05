@@ -84,6 +84,7 @@ int main(int argc, char** argv) {
 
     std::cout << "tower: watching " << inbox << std::endl;
     while (!g_stop) {
+        WriteTowerHeartbeat(inbox, static_cast<uint32_t>(std::time(nullptr)));
         // Load new packages.
         if (DIR* d = opendir(inbox.c_str())) {
             while (dirent* e = readdir(d)) {
@@ -100,6 +101,7 @@ int main(int argc, char** argv) {
                     w.io = std::make_unique<RpcSwapChainIo>(din, btc, TowerWatchSpec(package, opt["--btc-chain"]));
                     w.tower = std::make_unique<Watchtower>(std::move(package), config, *w.io);
                     watched.emplace(path, std::move(w));
+                    MarkTowerArmed(inbox, name.substr(0, name.size() - 4));  // Bob funds only after this
                     std::cout << "tower: armed " << name << std::endl;
                 } catch (const std::exception& ex) {
                     std::cout << "tower: REJECTED " << name << ": " << ex.what() << std::endl;

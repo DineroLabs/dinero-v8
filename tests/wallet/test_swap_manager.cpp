@@ -180,9 +180,11 @@ TEST(SwapManager, LockedWalletRefusesToStartAndPausesTicks) {
     m.MakeOffer(Request(), kNow);
     w.locked = true;
     EXPECT_THROW(m.MakeOffer(Request(), kNow), std::runtime_error);
-    EXPECT_FALSE(m.TickAll(kNow));
+    // A daemon started while the wallet is locked has no keys: paused.
+    SwapManager restarted(Config(d.path), w.Deriver(), kNoDin, kNoBtc);
+    EXPECT_FALSE(restarted.TickAll(kNow));
     w.locked = false;
-    EXPECT_TRUE(m.TickAll(kNow));
+    EXPECT_TRUE(restarted.TickAll(kNow));
 }
 
 TEST(SwapManager, StatusOfAPausedSwapWorksWhileTheWalletIsLocked) {
@@ -361,6 +363,71 @@ TEST(SwapManager, FeeSettingsMustBePositiveAndBounded) {
     EXPECT_TRUE(FeeConfigProblem(100'000, 1'000'000, -5).has_value());
     EXPECT_TRUE(FeeConfigProblem(100'000, 50'000, 1'000).has_value()) << "urgent below the base fee";
     EXPECT_TRUE(FeeConfigProblem(100'000, 100'000'000'000LL, 1'000).has_value()) << "absurd";
+}
+
+TEST(SwapManager, LiveSwapsKeepRunningWhenTheWalletRelocks) {
+    // A relock (unlock timeout) must not pause swaps already in flight: their
+    // keys are held in memory. Only a restart while locked pauses them.
+    TempDir da("rl_a"), db("rl_b");
+    FakeWallet wa{0x5a}, wb{0x5b};
+    SwapManager alice(Config(da.path), wa.Deriver(), kNoDin, kNoBtc);
+    SwapManager bob(Config(db.path), wb.Deriver(), kNoDin, kNoBtc);
+    bob.Accept(alice.MakeOffer(Request(), kNow), P2trAddress("rdin", 1), P2trAddress("bcrt", 2), kNow);
+    wb.locked = true;
+    EXPECT_TRUE(bob.TickAll(kNow + 60));
+    SwapManager restarted(Config(db.path), wb.Deriver(), kNoDin, kNoBtc);
+    EXPECT_FALSE(restarted.TickAll(kNow + 120));
+}
+
+TEST(SwapManager, MainnetBobNeedsAWatchtower) {
+    TempDir da("mt_a"), db("mt_b");
+    FakeWallet wa{0x5c}, wb{0x5d};
+    auto cfg = [](const std::string& dir) {
+        auto c = Config(dir);
+        c.network = SwapNetwork::Mainnet;
+        c.runner.din_hrp = "din";
+        c.runner.btc_hrp = "bc";
+        c.require_tower_for_bob = true;
+        return c;
+    };
+    SwapManager alice(cfg(da.path), wa.Deriver(), kNoDin, kNoBtc);
+    auto r = Request();
+    r.din_refund_address = P2trAddress("din", 0x21);
+    r.btc_claim_address = P2trAddress("bc", 0x22);
+    const auto offer = alice.MakeOffer(r, kNow);
+    SwapManager bob(cfg(db.path), wb.Deriver(), kNoDin, kNoBtc);
+    EXPECT_THROW(bob.Accept(offer, P2trAddress("din", 1), P2trAddress("bc", 2), kNow), std::runtime_error);
+    bob.SetTowerSink([](const std::string&) {});
+    bob.SetTowerAck([](const std::string&) { return true; });
+    EXPECT_NO_THROW(bob.Accept(offer, P2trAddress("din", 1), P2trAddress("bc", 2), kNow));
+}
+
+TEST(SwapManager, CancelWhileBobsFundingIsPreparedButUnsent) {
+    TempDir da("pu_a"), db("pu_b");
+    FakeWallet wa{0x5e}, wb{0x5f};
+    SwapManager alice(Config(da.path), wa.Deriver(), kNoDin, kNoBtc);
+    std::string id;
+    uint32_t index = 0;
+    {
+        SwapManager bob(Config(db.path), wb.Deriver(), kNoDin, kNoBtc);
+        id = bob.Accept(alice.MakeOffer(Request(), kNow), P2trAddress("rdin", 1), P2trAddress("bcrt", 2), kNow).id;
+        index = bob.Status(id).index;
+    }
+    const auto key = SwapStoreKeyFromSeed(wb.Deriver(), SwapNetwork::Regtest);
+    const std::string path = db.path + "/swap-" + std::to_string(index) + ".swap";
+    auto s = EncryptedFileSwapStore::Load(path, key);
+    s.record.state = SwapState::BtcLockBroadcast;
+    s.btc_funding_raw = "0200";  // signed, never sent (the tower did not confirm)
+    EncryptedFileSwapStore(path, key).Save(s);
+    SwapManager bob(Config(db.path), wb.Deriver(), kNoDin, kNoBtc);
+    EXPECT_NO_THROW(bob.Cancel(id));
+    EXPECT_EQ(bob.Status(id).state, SwapState::Aborted);
+
+    s.record.state = SwapState::BtcLockBroadcast;
+    s.btc_funding_raw.clear();  // sent: BTC may be locked
+    EncryptedFileSwapStore(path, key).Save(s);
+    SwapManager bob2(Config(db.path), wb.Deriver(), kNoDin, kNoBtc);
+    EXPECT_THROW(bob2.Cancel(id), std::runtime_error);
 }
 
 TEST(SwapManager, PayoutScriptFromAddress) {
