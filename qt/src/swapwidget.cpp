@@ -279,7 +279,8 @@ void SwapWidget::onRpcResult(const QString& method, const QJsonValue& result) {
         if (method == kList) {
             table_->setRowCount(0);
             showStatus(message.contains("disabled")
-                           ? "Swaps are off on this node: start dinerod with swap.enable=1 and swap.btc_rpc=HOST:PORT"
+                           ? "Swaps are off on this node: start dinerod with swap.enable=1 and swap.btc_rpc=HOST:PORT "
+                             "(on mainnet also swap.mainnet_beta=1; see the swap tester guide)"
                            : message,
                        true);
         } else {

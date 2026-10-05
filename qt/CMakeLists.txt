@@ -28,7 +28,7 @@ project(dinero-qt VERSION ${DINERO_MONOREPO_VERSION} LANGUAGES CXX)
 option(DIN_ENABLE_LIQUIDITY_VAULT_UI
   "Expose the custodial Liquidity Vault panel in dinero-qt" OFF)
 option(DIN_ENABLE_SWAP_UI
-  "Expose the DIN <-> BTC atomic swap tab (pre-review; testers' builds)" OFF)
+  "Expose the DIN <-> BTC atomic swap tab (swaps stay off unless dinerod enables them)" ON)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Qt firewall — directory-scope include reset (Phase 2 Step 7 finding, 2026-05-12)
