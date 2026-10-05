@@ -539,6 +539,24 @@ TEST(SwapEngine, AliceDoesNotRevealLateIfHerClaimNeverReachedTheNetwork) {
     EXPECT_TRUE(Has(Step(st, o2), ActionKind::ClaimBtc));
 }
 
+TEST(SwapEngine, AliceWhoGaveUpHerClaimFollowsItIfItShowsUpAnyway) {
+    // She abandoned the claim (cut-off) and is back in DinLocked, but another
+    // node kept it: the secret is public. She must go back to finishing the
+    // claim, not sit waiting to refund the DIN that Bob can now take.
+    auto r = MakeRecord(Role::DinSeller);
+    r.state = SwapState::DinLocked;
+    auto obs = At(r.offer.t_btc_unix - kHour);
+    obs.din = Locked(kDin, 40);
+    obs.btc = Spent(Locked(kBtc, 5), true, 0, kSecret);
+    const auto s = Step(r, obs);
+    EXPECT_EQ(s.record.state, SwapState::BtcClaimBroadcast);
+    EXPECT_TRUE(s.record.claim_seen);
+    EXPECT_TRUE(Has(s, ActionKind::ClaimBtc)) << "unconfirmed: re-broadcast for a fee bump";
+    // Bob's refund taking the BTC instead is not her claim: no change.
+    obs.btc = Spent(Locked(kBtc, 5), false, 0);
+    EXPECT_EQ(Step(r, obs).record.state, SwapState::DinLocked);
+}
+
 TEST(SwapEngine, AliceRevealsOnlyWhileHerDinLockIsIntactAndDeep) {
     auto r = MakeRecord(Role::DinSeller);
     r.state = SwapState::DinLocked;

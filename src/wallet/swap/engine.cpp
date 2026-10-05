@@ -67,6 +67,14 @@ struct Stepper {
             return;
 
         case SwapState::DinLocked:
+            if (obs.btc.spent && obs.btc.spent_by_claim) {
+                // A claim she gave up on reached the network after all: the
+                // secret is public, so finishing the claim is her only way out.
+                rec.claim_seen = true;
+                Alert("BTC claim appeared after it was given up; the secret is public — finishing it");
+                if (obs.btc.spend_confirmations == 0) Do(ActionKind::ClaimBtc, "claim unconfirmed; fee bump");
+                return Go(SwapState::BtcClaimBroadcast);
+            }
             if (obs.din.spent && !obs.din.spent_by_claim && obs.din.spend_confirmations >= DinSettle()) {
                 return Go(SwapState::Refunded);
             }
