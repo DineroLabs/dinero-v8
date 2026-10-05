@@ -9,7 +9,7 @@ namespace dinero::swap {
 namespace {
 
 // Bob refuses to lock BTC when the DIN deadline is closer than this (design §6.1).
-constexpr uint32_t kBobMinDinDeadlineAhead = 36 * 60 * 60;
+constexpr uint32_t kBobMinDinDeadlineAhead = kBobMinDinDeadlineAheadSeconds;
 
 bool PreimageMatches(const Bytes32& preimage, const Bytes32& payment_hash) {
     Bytes32 h{};

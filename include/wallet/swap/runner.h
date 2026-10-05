@@ -119,6 +119,8 @@ public:
     // Build and sign Bob's BTC funding without broadcasting it (so the tower
     // can hold a package for its exact outpoint first). Throws if unsupported.
     virtual PreparedBtcFunding PrepareFundBtc(const std::string& address, uint64_t amount_sat);
+    // Give a never-sent prepared funding's inputs back to the wallet.
+    virtual void ReleasePreparedFunding(const std::vector<uint8_t>& raw) { (void)raw; }
     // Whether a Dinero output is still unspent (nullopt: unknown/unreachable).
     virtual std::optional<bool> DinOutputUnspent(const TxId& txid, uint32_t vout) {
         (void)txid;
@@ -166,6 +168,7 @@ public:
     void SetTowerAck(std::function<bool(const std::string&, const std::string&)> ack) { tower_ack_ = std::move(ack); }
     void ArmTower(const std::string& package_text) override;
     PreparedBtcFunding PrepareFundBtc(const std::string& address, uint64_t amount_sat) override;
+    void ReleasePreparedFunding(const std::vector<uint8_t>& raw) override;
     bool TowerAcknowledged(const std::string& swap_id, const std::string& package_hash) override;
     std::optional<bool> DinOutputUnspent(const TxId& txid, uint32_t vout) override;
     DinWatchReport ObserveDin() override;
@@ -235,7 +238,9 @@ private:
     void ArmTower(const DinWatchReport& din, const BtcWatchReport& btc, std::vector<std::string>& events);
     bool ArmTowerWith(const FundingOutput& din_funding, const BtcFunding& btc_funding, std::vector<std::string>& events);
     TowerPackage MyTowerPackage(const FundingOutput& din_funding, const BtcFunding& btc_funding) const;
-    void SendPreparedFunding(uint32_t now, std::vector<std::string>& events);
+    void SendPreparedFunding(const DinWatchReport& din, const BtcWatchReport& btc, uint32_t now,
+                             std::vector<std::string>& events);
+    void ExpirePreparedFunding(uint32_t now, const std::string& why, std::vector<std::string>& events);
     void BumpOrSweepDin(const DinWatchReport& din, uint32_t now, std::vector<std::string>& events);
     uint64_t DinFeeByUrgency(uint32_t din_mtp) const;
     void PinAndSave(const std::string& din_txid, const std::string& btc_txid);

@@ -104,6 +104,8 @@ struct StepResult {
 inline constexpr uint32_t kAliceClaimCutoffSeconds = 6 * 60 * 60;
 inline constexpr uint32_t kMaxMtpLagSeconds = 2 * 60 * 60;
 inline constexpr uint32_t kFundingAlertAfterSeconds = 2 * 60 * 60;
+// Bob never commits BTC when Alice's DIN refund opens sooner than this.
+inline constexpr uint32_t kBobMinDinDeadlineAheadSeconds = 36 * 60 * 60;
 // A party is Done/Refunded only once its outcome is this deep; until then it
 // keeps watching and re-broadcasts if a reorg drops the transaction.
 inline constexpr uint32_t kSettleConfirmations = 6;

@@ -307,7 +307,11 @@ PreparedBtcFunding RpcSwapChainIo::PrepareFundBtc(const std::string& address, ui
     const auto raw = btc_("createrawtransaction", Params({Json::Value(Json::arrayValue), outputs}));
     if (!raw || !raw->isString()) throw std::runtime_error("createrawtransaction failed");
     Json::Value opts(Json::objectValue);
-    opts["lockUnspents"] = true;  // the wallet must not spend these inputs elsewhere meanwhile
+    opts["lockUnspents"] = false;  // locked persistently below (re-locking would be refused)
+    // Not replaceable: a fee bump would give the funding a new txid, and the
+    // pinned watchers and the tower's package would watch the wrong output.
+    opts["replaceable"] = false;
+    opts["conf_target"] = 2;
     const auto funded = btc_("fundrawtransaction", Params({*raw, opts}));
     if (!funded || !(*funded)["hex"].isString()) throw std::runtime_error("fundrawtransaction failed (wallet balance?)");
     const auto signed_tx = btc_("signrawtransactionwithwallet", Params({(*funded)["hex"]}));
@@ -327,7 +331,31 @@ PreparedBtcFunding RpcSwapChainIo::PrepareFundBtc(const std::string& address, ui
         }
     }
     if (!found) throw std::runtime_error("prepared funding does not pay the HTLC");
+    // Persistent lock: survives a Bitcoin Core restart while the funding waits.
+    Json::Value inputs(Json::arrayValue);
+    for (const auto& in : (*decoded)["vin"]) {
+        Json::Value o(Json::objectValue);
+        o["txid"] = in["txid"];
+        o["vout"] = in["vout"];
+        inputs.append(o);
+    }
+    if (!btc_("lockunspent", Params({false, inputs, true}))) {
+        throw std::runtime_error("could not lock the funding inputs in the Bitcoin wallet");
+    }
     return p;
+}
+
+void RpcSwapChainIo::ReleasePreparedFunding(const std::vector<uint8_t>& raw) {
+    const auto decoded = btc_("decoderawtransaction", Params({ToHex(raw)}));
+    if (!decoded) return;
+    Json::Value inputs(Json::arrayValue);
+    for (const auto& in : (*decoded)["vin"]) {
+        Json::Value o(Json::objectValue);
+        o["txid"] = in["txid"];
+        o["vout"] = in["vout"];
+        inputs.append(o);
+    }
+    btc_("lockunspent", Params({true, inputs}));  // unlock: the wallet may spend them again
 }
 
 bool RpcSwapChainIo::TowerAcknowledged(const std::string& swap_id, const std::string& package_hash) {
@@ -423,7 +451,7 @@ TickReport SwapRunner::Tick(uint32_t wall_clock_unix) {
         report.actions.push_back(a.kind);
         Execute(a, din, btc, wall_clock_unix, report.events);
     }
-    SendPreparedFunding(wall_clock_unix, report.events);
+    SendPreparedFunding(din, btc, wall_clock_unix, report.events);
     BumpOrSweepDin(din, wall_clock_unix, report.events);
     // Bob's tower must hold the package before he can safely go offline. The
     // engine asks once (ArmTower); a failed attempt is retried every tick.
@@ -481,9 +509,38 @@ bool SwapRunner::ArmTowerWith(const FundingOutput& din_funding, const BtcFunding
 
 // Bob with a tower: his prepared (signed, unsent) funding leaves only once
 // the tower confirmed it holds the package for exactly that outpoint.
-void SwapRunner::SendPreparedFunding(uint32_t now, std::vector<std::string>& events) {
+void SwapRunner::ExpirePreparedFunding(uint32_t now, const std::string& why, std::vector<std::string>& events) {
+    try {
+        io_.ReleasePreparedFunding(FromHex(session_.btc_funding_raw));
+    } catch (const std::exception&) {
+    }
+    SwapSession next = session_;
+    next.btc_funding_raw.clear();
+    next.record.state = SwapState::Aborted;  // nothing was sent: nothing is locked
+    next.record.state_since_unix = now;
+    store_.Save(next);
+    session_ = std::move(next);
+    events.push_back("ALERT: prepared BTC funding discarded, swap aborted (nothing was sent): " + why);
+}
+
+void SwapRunner::SendPreparedFunding(const DinWatchReport& din, const BtcWatchReport& btc, uint32_t now,
+                                     std::vector<std::string>& events) {
     const auto& r = session_.record;
     if (r.role != Role::BtcSeller || r.state != SwapState::BtcLockBroadcast || session_.btc_funding_raw.empty()) return;
+    // The checks Bob made before preparing must still hold when the BTC leaves
+    // (the tower's ack may come hours later).
+    if (!din.ok || !btc.ok) return;
+    const auto& o = r.offer;
+    if (din.htlc.spent) return ExpirePreparedFunding(now, "the DIN lock is already spent", events);
+    if (uint64_t(now) + kBobMinDinDeadlineAheadSeconds > o.t_din_unix ||
+        uint64_t(din.mtp_unix) + kBobMinDinDeadlineAheadSeconds > o.t_din_unix) {
+        return ExpirePreparedFunding(now, "the DIN deadline is now less than 36 h away", events);
+    }
+    if (!din.funding || din.funding->txid.AsUint256().GetHex() != session_.din_funding_txid ||
+        din.htlc.output_value != o.din_amount_una || din.htlc.output_confirmations < o.n_din_confirmations ||
+        now > din.mtp_unix + kMaxMtpLagSeconds || now > btc.mtp_unix + kMaxMtpLagSeconds) {
+        return;  // not now (reorg or stall): wait, the deadline check above bounds the wait
+    }
     const std::string id = [&] {
         const auto oid = OfferId(r.offer);
         return ToHex(std::vector<uint8_t>(oid.begin(), oid.begin() + 8));
@@ -669,7 +726,7 @@ void SwapRunner::Execute(const Action& action, const DinWatchReport& din, const 
                 f.vout = prep.vout;
                 f.value_sat = offer.btc_amount_sat;
                 ArmTowerWith(*din.funding, f, events);
-                SendPreparedFunding(now, events);
+                SendPreparedFunding(din, btc, now, events);
                 return done("prepared BTC funding:", prep.txid);
             }
             const std::string txid =

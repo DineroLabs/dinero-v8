@@ -460,6 +460,54 @@ TEST(SwapRunner, WithoutTheTowersConfirmationTheBtcNeverLeaves) {
     EXPECT_TRUE(alerted);
 }
 
+TEST(SwapRunner, APreparedFundingIsNeverSentLateOrAfterTheChecksStopHolding) {
+    // The tower comes back a day later: by then the DIN deadline may be close,
+    // or the DIN lock gone. Re-check Bob's conditions at send time; past a
+    // deadline, the prepared funding expires and the swap aborts (nothing sent).
+    auto setup = [](FakeChains& chains, SwapSession& s) {
+        BothLocksSeen(chains, s);
+        chains.btc = BtcWatchReport{};
+        chains.btc.ok = true;
+        chains.btc.mtp_unix = kNow;
+        chains.din.htlc.output_confirmations = 40;
+    };
+    {
+        Log log;
+        FakeStore store(log);
+        FakeChains chains(log);
+        auto s = MakeSession(Role::BtcSeller);
+        setup(chains, s);
+        auto config = Config();
+        config.use_tower = true;
+        SwapRunner bob(s, kBobKeys, config, chains, store);
+        bob.Tick(kNow + kHour);  // prepared + tower armed, no ack yet
+        chains.tower_acked = true;
+        // Hours later: the DIN deadline is now less than 36 h away.
+        const uint32_t late = s.record.offer.t_din_unix - 30 * kHour;
+        chains.din.mtp_unix = late;
+        chains.btc.mtp_unix = late;
+        bob.Tick(late);
+        EXPECT_TRUE(chains.btc_broadcasts.empty()) << "conditions no longer hold: not sent";
+        EXPECT_EQ(bob.session().record.state, SwapState::Aborted);
+        EXPECT_TRUE(bob.session().btc_funding_raw.empty()) << "the prepared funding is discarded";
+    }
+    {
+        Log log;
+        FakeStore store(log);
+        FakeChains chains(log);
+        auto s = MakeSession(Role::BtcSeller);
+        setup(chains, s);
+        auto config = Config();
+        config.use_tower = true;
+        SwapRunner bob(s, kBobKeys, config, chains, store);
+        bob.Tick(kNow + kHour);
+        chains.tower_acked = true;
+        chains.din.htlc.spent = true;  // Alice already took her DIN back
+        bob.Tick(kNow + kHour + 60);
+        EXPECT_TRUE(chains.btc_broadcasts.empty()) << "the DIN lock is spent: never send";
+    }
+}
+
 TEST(SwapRunner, TowerArmingIsRetriedUntilAccepted) {
     Log log;
     FakeStore store(log);
@@ -832,6 +880,46 @@ TEST(SwapRunner, BobsClaimTxidIsSavedBeforeTheBroadcast) {
     SwapRunner bob(s, CpfpKeys(), Config(), chains, store);
     bob.Tick(kNow + 60);
     EXPECT_FALSE(store.saved->din_claim_txid.empty()) << "the CPFP parent is known even though the reply was lost";
+}
+
+TEST(SwapRunner, PreparedFundingCannotBeFeeBumpedAndItsInputsStayLocked) {
+    // A bumped funding gets a new txid: the pinned watcher and the tower's
+    // package would watch the wrong output. Built non-replaceable, so
+    // Bitcoin Core's bumpfee refuses it; inputs locked persistently.
+    std::vector<std::pair<std::string, Json::Value>> calls;
+    const BtcRpc btc = [&](const std::string& m, const Json::Value& p) -> std::optional<Json::Value> {
+        calls.push_back({m, p});
+        if (m == "createrawtransaction") return Json::Value("00");
+        if (m == "fundrawtransaction") { Json::Value r; r["hex"] = "01"; return r; }
+        if (m == "signrawtransactionwithwallet") { Json::Value r; r["hex"] = "0200"; r["complete"] = true; return r; }
+        if (m == "decoderawtransaction") {
+            Json::Value r;
+            r["txid"] = std::string(64, 'e');
+            Json::Value in;
+            in["txid"] = std::string(64, '1');
+            in["vout"] = 3;
+            r["vin"].append(in);
+            Json::Value out;
+            out["n"] = 0;
+            out["value"] = 0.01;
+            out["scriptPubKey"]["address"] = "bcrt1qhtlc";
+            r["vout"].append(out);
+            return r;
+        }
+        if (m == "lockunspent") return Json::Value(true);
+        return std::nullopt;
+    };
+    const DinRpc din = [](const std::string&, const Json::Value&) { return std::optional<Json::Value>{}; };
+    RpcSwapChainIo io(din, btc, MakeSession(Role::BtcSeller), Config());
+    const auto prep = io.PrepareFundBtc("bcrt1qhtlc", 1'000'000);
+    EXPECT_EQ(prep.txid, std::string(64, 'e'));
+    bool non_replaceable = false, persistent_lock = false;
+    for (const auto& [m, p] : calls) {
+        if (m == "fundrawtransaction") non_replaceable = p[1].isMember("replaceable") && !p[1]["replaceable"].asBool();
+        if (m == "lockunspent") persistent_lock = !p[0].asBool() && p.size() >= 3 && p[2].asBool();
+    }
+    EXPECT_TRUE(non_replaceable) << "bumpfee must not be able to change the funding txid";
+    EXPECT_TRUE(persistent_lock) << "inputs locked across a Bitcoin Core restart";
 }
 
 TEST(SwapRunner, SessionRoundTripsThroughTheFileStore) {
