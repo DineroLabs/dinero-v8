@@ -134,7 +134,9 @@ struct FakeChains : SwapChainIo {
     }
     bool tower_acked{false};
     int prepared{0};
+    bool prepare_fails{false};
     PreparedBtcFunding PrepareFundBtc(const std::string& a, uint64_t v) override {
+        if (prepare_fails) throw std::runtime_error("signrawtransactionwithwallet failed");
         log.lines.push_back("prepare_btc:" + a + ":" + std::to_string(v));
         ++prepared;
         PreparedBtcFunding f;
@@ -533,6 +535,43 @@ TEST(SwapRunner, APreparedFundingIsNeverSentLateOrAfterTheChecksStopHolding) {
         bob.Tick(kNow + kHour + 60);
         EXPECT_TRUE(chains.btc_broadcasts.empty()) << "the DIN lock is spent: never send";
     }
+}
+
+TEST(SwapRunner, AFailedPrepareOrArmIsRetriedAndLeavesTheSwapCancellable) {
+    Log log;
+    FakeStore store(log);
+    FakeChains chains(log);
+    auto s = MakeSession(Role::BtcSeller);
+    BothLocksSeen(chains, s);
+    chains.btc = BtcWatchReport{};
+    chains.btc.ok = true;
+    chains.btc.mtp_unix = kNow;
+    chains.din.htlc.output_confirmations = 40;
+    auto config = Config();
+    config.use_tower = true;
+    SwapRunner bob(s, kBobKeys, config, chains, store);
+
+    // Bitcoin Core's wallet is locked: nothing prepared, nothing sent. Back to
+    // Accepted (persisted), where the checks run again and cancel is allowed.
+    chains.prepare_fails = true;
+    bob.Tick(kNow + kHour);
+    EXPECT_EQ(bob.session().record.state, SwapState::Accepted);
+    EXPECT_EQ(store.saved->record.state, SwapState::Accepted);
+    EXPECT_EQ(chains.prepared, 0);
+
+    // Prepared now, but the tower cannot be armed: retried every tick.
+    chains.prepare_fails = false;
+    chains.tower_refusals = 2;  // at prepare time and the end-of-tick retry
+    bob.Tick(kNow + kHour + 60);
+    EXPECT_EQ(bob.session().record.state, SwapState::BtcLockBroadcast);
+    EXPECT_EQ(chains.prepared, 1);
+    EXPECT_TRUE(chains.armed.empty());
+    bob.Tick(kNow + kHour + 120);
+    ASSERT_EQ(chains.armed.size(), 1u) << "arming retried while the funding waits";
+    EXPECT_EQ(chains.prepared, 1) << "the same prepared funding";
+    chains.tower_acked = true;
+    bob.Tick(kNow + kHour + 180);
+    EXPECT_EQ(chains.btc_broadcasts.size(), 1u);
 }
 
 TEST(SwapRunner, AnExpiringPreparedFundingIsNotAbortedIfItMayHaveBeenSent) {

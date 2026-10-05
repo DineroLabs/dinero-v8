@@ -484,19 +484,22 @@ TickReport SwapRunner::Tick(uint32_t wall_clock_unix) {
     BumpOrSweepDin(din, wall_clock_unix, report.events);
     // Bob's tower must hold the package before he can safely go offline. The
     // engine asks once (ArmTower); a failed attempt is retried every tick.
+    // Also while a prepared funding waits for the tower (it is never sent unarmed).
     if (session_.record.role == Role::BtcSeller && config_.use_tower && !session_.tower_armed &&
-        session_.record.state == SwapState::BtcLocked) {
+        (session_.record.state == SwapState::BtcLocked ||
+         (session_.record.state == SwapState::BtcLockBroadcast && !session_.btc_funding_raw.empty()))) {
         ArmTower(din, btc, report.events);
     }
     return report;
 }
 
 void SwapRunner::ArmTower(const DinWatchReport& din, const BtcWatchReport& btc, std::vector<std::string>& events) {
-    if (!din.funding || !btc.funding) {
+    const auto btc_funding = ArmedBtcFunding(btc);  // the prepared, unsent funding too
+    if (!din.funding || !btc_funding) {
         events.push_back("ALERT: watchtower not armed, this wallet must stay online: HTLC outputs not both known yet");
         return;
     }
-    ArmTowerWith(*din.funding, *btc.funding, events);
+    ArmTowerWith(*din.funding, *btc_funding, events);
 }
 
 TowerPackage SwapRunner::MyTowerPackage(const FundingOutput& din_funding, const BtcFunding& btc_funding) const {
@@ -781,10 +784,24 @@ void SwapRunner::Execute(const Action& action, const DinWatchReport& din, const 
             if (config_.use_tower) {
                 // Arm before funding: build and sign the funding, give the tower
                 // a package for that exact outpoint, send once it confirms.
-                const auto prep = io_.PrepareFundBtc(BtcHtlcAddressFor(session_.record, config_.btc_hrp),
-                                                     offer.btc_amount_sat);
+                PreparedBtcFunding prep;
+                try {
+                    prep = io_.PrepareFundBtc(BtcHtlcAddressFor(session_.record, config_.btc_hrp),
+                                              offer.btc_amount_sat);
+                } catch (const std::exception& e) {
+                    // Nothing was built or sent: back to Accepted, where Bob's
+                    // checks run again next tick and cancel stays possible.
+                    SwapSession back = session_;
+                    back.record.state = SwapState::Accepted;
+                    back.record.state_since_unix = now;
+                    store_.Save(back);
+                    session_ = std::move(back);
+                    events.push_back(std::string("ALERT: could not prepare the BTC funding (retrying): ") + e.what());
+                    return;
+                }
                 SwapSession next = session_;
                 next.btc_funding_txid = prep.txid;
+                next.btc_funding_vout = static_cast<int32_t>(prep.vout);
                 next.btc_funding_raw = ToHex(prep.raw);
                 store_.Save(next);
                 session_ = std::move(next);

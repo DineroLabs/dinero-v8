@@ -92,10 +92,16 @@ int main(int argc, char** argv) {
                 const std::string name = e->d_name;
                 if (name.size() < 5 || name.compare(name.size() - 4, 4, ".pkg") != 0) continue;
                 const std::string path = inbox + "/" + name;
-                if (watched.count(path)) continue;
                 std::ifstream in(path);
                 std::stringstream text;
                 text << in.rdbuf();
+                // A re-armed swap rewrites its package: load the new one (the ack
+                // Bob waits for names the new hash).
+                if (auto it = watched.find(path); it != watched.end()) {
+                    if (it->second.hash == TowerPackageHash(text.str())) continue;
+                    std::cout << "tower: " << name << " changed; reloading" << std::endl;
+                    watched.erase(it);
+                }
                 try {
                     auto package = DecodeTowerPackage(text.str());
                     Watched w;
@@ -125,7 +131,14 @@ int main(int argc, char** argv) {
         // Tick every armed swap.
         for (auto it = watched.begin(); it != watched.end();) {
             const uint32_t now = static_cast<uint32_t>(std::time(nullptr));
-            const auto r = it->second.tower->Tick(now);
+            TowerReport r;
+            try {
+                r = it->second.tower->Tick(now);
+            } catch (const std::exception& ex) {  // one bad swap must not stop the others
+                std::cout << "tower: " << it->first << ": ALERT: tick failed: " << ex.what() << std::endl;
+                ++it;
+                continue;
+            }
             for (const auto& ev : r.events) std::cout << "tower: " << it->first << ": " << ev << std::endl;
             // Bob funds only on a fresh ack: refreshed only while this swap's duty is healthy.
             if (r.healthy) MarkTowerArmed(inbox, it->second.id, it->second.hash, now);

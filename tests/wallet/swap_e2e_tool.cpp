@@ -517,6 +517,21 @@ int main(int argc, char** argv) {
             const auto package = read_package();
             Check(package.has_value(), "the tower's inbox holds a valid package");
             auto tower_done = [&] { return std::ifstream(pkg + ".done").good(); };
+            if (tower_claim && package && package->btc_refunds.size() > 1) {
+                // Re-arming rewrites the package: the running tower must load the
+                // new one and acknowledge its hash (Bob funds only on that ack).
+                TowerPackage changed = *package;
+                changed.btc_refunds.pop_back();
+                const std::string text = EncodeTowerPackage(changed);
+                WriteTowerInbox(inbox, text);
+                const std::string id_hex = Hex(std::vector<uint8_t>(id.begin(), id.begin() + 8));
+                bool acked = false;
+                for (int i = 0; i < 90 && !acked; ++i) {
+                    acked = TowerAckFresh(inbox, id_hex, TowerPackageHash(text), static_cast<uint32_t>(std::time(nullptr)));
+                    if (!acked) std::this_thread::sleep_for(std::chrono::seconds(1));
+                }
+                Check(acked, "the tower reloaded a rewritten package and acknowledged its new hash");
+            }
             if (tower_claim) {
                 // Alice claims BTC (revealing the secret); only the tower can take Bob's DIN.
                 for (; round < 120 && !tower_done(); ++round) {
