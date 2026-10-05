@@ -13931,3 +13931,32 @@ if(TARGET dinerod AND DINERO_BITCOIND)
             $<TARGET_FILE:dinero-swap-tower>)
   set_tests_properties(SwapE2ERegtest PROPERTIES LABELS "wallet;swap;regtest" TIMEOUT 900)
 endif()
+
+# Escrow builders must fail safe: no buyer key-path in the Taproot escrow, and
+# no P2SH escrow (Dinero consensus cannot spend P2SH).
+if(TARGET dinero_wallet AND TARGET gtest)
+  add_executable(test_escrow_builders_fail_safe
+    tests/wallet/test_escrow_builders_fail_safe.cpp
+    src/contracts/escrow_contract.cpp
+    src/wallet/taproot_control_block.cpp
+    tests/stubs/mempool_test_stubs.cpp
+  )
+  add_dependencies(test_escrow_builders_fail_safe gtest dinero_wallet)
+  target_link_libraries(test_escrow_builders_fail_safe PRIVATE
+    GTest::gtest
+    GTest::gtest_main
+    dinero_wallet
+    wallet_test_deps
+    sqlite3
+  )
+  target_include_directories(test_escrow_builders_fail_safe BEFORE PRIVATE
+    ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+  )
+  if(APPLE)
+    target_link_libraries(test_escrow_builders_fail_safe PRIVATE "-framework Security")
+  endif()
+  add_test(NAME EscrowBuildersFailSafe COMMAND test_escrow_builders_fail_safe)
+  set_tests_properties(EscrowBuildersFailSafe PROPERTIES LABELS "wallet;contracts;mandatory")
+endif()

@@ -8,6 +8,7 @@
 #include <iomanip>
 #include <chrono>
 #include <random>
+#include <stdexcept>
 
 namespace dinero {
 namespace contracts {
@@ -268,6 +269,16 @@ EscrowContract EscrowContractBuilder::buildContract(
     uint32_t seller_window_blocks,
     uint32_t current_height
 ) {
+    // This builder produces a P2SH escrow with a placeholder address. Dinero
+    // consensus spends only P2PKH, P2WPKH, P2TR and P2MR outputs, so funds sent
+    // to it could never be released or refunded. Refuse rather than hand out a
+    // "send DIN to ..." address; escrows must be Taproot script trees.
+    (void)keys; (void)amount; (void)refund_blocks; (void)type;
+    (void)seller_window_blocks; (void)current_height;
+    throw std::runtime_error(
+        "P2SH escrow is not spendable on Dinero (consensus spends only P2PKH, "
+        "P2WPKH, P2TR and P2MR); use a Taproot escrow");
+
     EscrowContract contract;
 
     // Generate contract ID
