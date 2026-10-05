@@ -61,7 +61,7 @@ ccall() { DPORT=$CPORT dcall "$@"; }
 
 # Bob's watchtower: its own process, its own RPC connections, no keys.
 "$TOWER" --inbox "$DIR/inbox" --din-rpc 127.0.0.1:$DPORT --din-auth test:test \
-  --btc-rpc 127.0.0.1:$BPORT --btc-auth test:test --din-hrp rdin --interval 1 --escalate-after 5 \
+  --btc-rpc 127.0.0.1:$BPORT --btc-auth test:test --din-hrp rdin --btc-chain regtest --interval 1 --escalate-after 5 \
   >"$DIR/tower.log" 2>&1 & TPID=$!
 
 rc=0

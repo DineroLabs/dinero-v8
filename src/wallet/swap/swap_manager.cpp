@@ -201,6 +201,9 @@ SwapManager::AcceptResult SwapManager::Accept(const std::string& text, const std
     const auto btc_tip = btc_("getblockcount", Json::Value(Json::arrayValue));
     if (!btc_tip || !btc_tip->isNumeric()) throw std::runtime_error("Bitcoin node unreachable (swap.btc_rpc_*)");
     const uint32_t scan_from = btc_tip->asUInt() > kScanMargin ? btc_tip->asUInt() - kScanMargin : 0;
+    const auto din_tip = din_("getblockcount", Json::Value(Json::arrayValue));
+    if (!din_tip || !din_tip->isNumeric()) throw std::runtime_error("Dinero node unreachable");
+    const uint32_t din_scan_from = din_tip->asUInt() > kScanMargin ? din_tip->asUInt() - kScanMargin : 0;
 
     auto already_started = [&](const std::string& id) {
         for (const auto& [i, path] : ScanDir(".swap")) {
@@ -233,6 +236,7 @@ SwapManager::AcceptResult SwapManager::Accept(const std::string& text, const std
         s.record.state = SwapState::Accepted;
         s.record.state_since_unix = now;
         s.btc_scan_from_height = scan_from;
+        s.din_scan_from_height = din_scan_from;
         const std::string accept_text = EncodeAccept(s.record.accept);
         EncryptedFileSwapStore(SwapPath(index), store_key).Save(s);
         WriteFileAtomically(SwapPath(index) + ".id", id + "\n");  // public: readable while locked
@@ -256,6 +260,7 @@ SwapManager::AcceptResult SwapManager::Accept(const std::string& text, const std
             s.record.state = SwapState::Accepted;
             s.record.state_since_unix = now;
             s.btc_scan_from_height = scan_from;
+            s.din_scan_from_height = din_scan_from;
             s.din_payout_script = FromHex(kv["din_payout"]);
             s.btc_payout_script = FromHex(kv["btc_payout"]);
             MakeDinTerms(offer, accept);  // throws on a mismatched accept

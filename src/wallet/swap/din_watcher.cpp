@@ -74,30 +74,23 @@ std::string DinHtlcAddress(const DinHtlcOutput& htlc, const std::string& hrp) {
                           bech32::Encoding::BECH32M);
 }
 
-DinWatcher::DinWatcher(DinRpc rpc, DinHtlcTerms terms, std::string hrp)
-    : rpc_(std::move(rpc)), terms_(terms), htlc_(BuildDinHtlc(terms)),
-      address_(DinHtlcAddress(htlc_, hrp)) {}
+DinWatcher::DinWatcher(DinRpc rpc, DinWatchTarget target)
+    : rpc_(std::move(rpc)), target_(std::move(target)), htlc_(BuildDinHtlc(target_.terms)),
+      next_height_(target_.scan_from_height) {}
 
+DinWatcher::DinWatcher(DinRpc rpc, DinHtlcTerms terms, std::string /*hrp*/)
+    : DinWatcher(std::move(rpc), DinWatchTarget{terms, 0, 0, ""}) {}
+
+// Blocks are scanned once each, from the swap's start height: no address
+// index is needed (an AssumeUTXO node has none, and getaddresshistory only
+// returns the newest entries, which spam could fill). A reorg anywhere in the
+// scanned range rescans from the start.
 DinWatchReport DinWatcher::Observe() {
     DinWatchReport report;
     const auto info = rpc_("getblockchaininfo", Json::Value(Json::arrayValue));
     if (!info || !(*info)["blocks"].isNumeric()) return report;
     const uint32_t tip = (*info)["blocks"].asUInt();
     report.mtp_unix = (*info)["mediantime"].asUInt();
-
-    Json::Value p(Json::arrayValue);
-    p.append(address_);
-    const auto history = rpc_("getaddresshistory", p);
-    if (!history || !(*history)["transactions"].isArray()) return report;
-
-    // Confirmed entries, oldest first.
-    struct Entry { std::string txid; uint32_t height; };
-    std::vector<Entry> entries;
-    for (const auto& t : (*history)["transactions"]) {
-        if (!t["height"].isNumeric() || t["height"].asInt() <= 0) continue;
-        entries.push_back({t["txid"].asString(), t["height"].asUInt()});
-    }
-    std::sort(entries.begin(), entries.end(), [](const Entry& a, const Entry& b) { return a.height < b.height; });
 
     auto hash_at = [&](uint32_t height) -> std::optional<std::string> {
         Json::Value hp(Json::arrayValue);
@@ -107,110 +100,83 @@ DinWatchReport DinWatcher::Observe() {
         return hash->asString();
     };
     auto block_txs = [&](const std::string& hash) -> std::optional<std::vector<Transaction>> {
-        auto it = block_cache_.find(hash);
-        if (it == block_cache_.end()) {
-            Json::Value bp(Json::arrayValue);
-            bp.append(hash);
-            bp.append(0);
-            const auto raw = rpc_("getblock", bp);
-            if (!raw || !raw->isString()) return std::nullopt;
-            const auto bytes = FromHex(raw->asString());
-            if (!bytes) return std::nullopt;
-            it = block_cache_.emplace(hash, *bytes).first;
-        }
-        return ParseBlockTransactions(it->second);
-    };
-    auto classify = [&](const TxInput& in, uint32_t height, const std::string& block_hash) {
-        const auto& w = in.witness;
-        FoundSpend f;
-        f.height = height;
-        f.block_hash = block_hash;
-        f.by_claim = w.size() == 4 && w[2] == htlc_.claim_script;
-        if (f.by_claim && w[1].size() == 32) {
-            Bytes32 s{};
-            std::copy(w[1].begin(), w[1].end(), s.begin());
-            f.preimage = s;
-        }
-        return f;
+        Json::Value bp(Json::arrayValue);
+        bp.append(hash);
+        bp.append(0);
+        const auto raw = rpc_("getblock", bp);
+        if (!raw || !raw->isString()) return std::nullopt;
+        const auto bytes = FromHex(raw->asString());
+        if (!bytes) return std::nullopt;
+        return ParseBlockTransactions(*bytes);
     };
 
-    uint32_t funding_height = 0;
-    for (const auto& e : entries) {
-        const auto hash = hash_at(e.height);
+    if (next_height_ > target_.scan_from_height) {
+        const uint32_t last = next_height_ - 1;
+        if (last > tip || hash_at(last) != scanned_hash_) {  // reorg: start over
+            funding_.reset();
+            spend_.reset();
+            next_height_ = target_.scan_from_height;
+        }
+    }
+
+    for (uint32_t h = next_height_; h <= tip; ++h) {
+        const auto hash = hash_at(h);
         if (!hash) return report;
         const auto txs = block_txs(*hash);
         if (!txs) return report;
-        const auto it = std::find_if(txs->begin(), txs->end(), [&](const Transaction& tx) {
-            return TxId::Compute(tx).AsUint256().GetHex() == e.txid;
-        });
-        if (it == txs->end()) return report;  // history and block disagree: do not act
-        const Transaction& tx = *it;
-
-        if (!report.funding) {
-            for (uint32_t n = 0; n < tx.vout.size(); ++n) {
-                if (tx.vout[n].scriptPubKey != htlc_.script_pubkey) continue;
-                FundingOutput f;
-                f.txid = TxId::Compute(tx);
-                f.vout = n;
-                f.value = tx.vout[n].value;
-                f.script_pubkey = htlc_.script_pubkey;
-                report.funding = f;
-                funding_height = e.height;
-                break;
-            }
-        }
-    }
-
-    // A cached spend survives only while its block is still on the main chain.
-    if (spend_ && (!report.funding || spend_->height > tip || hash_at(spend_->height) != spend_->block_hash)) {
-        spend_.reset();
-    }
-    if (report.funding && !spend_) {
-        const std::string funding_key = report.funding->txid.AsUint256().GetHex() + ":" +
-                                        std::to_string(report.funding->vout) + "@" + std::to_string(funding_height);
-        Json::Value op(Json::arrayValue);
-        op.append(report.funding->txid.AsUint256().GetHex());
-        op.append(report.funding->vout);
-        const auto utxo = rpc_("gettxout", op);
-        if (!utxo) return report;
-        if (utxo->isNull()) {  // spent: find the spending transaction in a block
-            // Resume after the last scanned block unless the funding changed or
-            // that block left the main chain.
-            uint32_t from = funding_height;
-            if (scan_funding_ == funding_key && scanned_height_ >= funding_height && scanned_height_ <= tip &&
-                hash_at(scanned_height_) == scanned_hash_) {
-                from = scanned_height_ + 1;
-            }
-            for (uint32_t h = from; h <= tip && !spend_; ++h) {
-                const auto hash = hash_at(h);
-                if (!hash) return report;
-                const auto txs = block_txs(*hash);
-                if (!txs) return report;
-                for (const auto& tx : *txs) {
-                    for (const auto& in : tx.vin) {
-                        if (in.prevout.txid == report.funding->txid && in.prevout.vout == report.funding->vout) {
-                            spend_ = classify(in, h, *hash);
-                        }
+        for (const auto& tx : *txs) {
+            if (!funding_) {
+                const TxId txid = TxId::Compute(tx);
+                if (target_.expected_funding_txid.empty() ||
+                    txid.AsUint256().GetHex() == target_.expected_funding_txid) {
+                    for (uint32_t n = 0; n < tx.vout.size(); ++n) {
+                        const auto& out = tx.vout[n];
+                        if (out.scriptPubKey != htlc_.script_pubkey) continue;
+                        // Anyone can pay this script: only the exact swap output is the lock.
+                        if (target_.expected_amount_una && out.value.GetUna() != target_.expected_amount_una) continue;
+                        FundingOutput f;
+                        f.txid = txid;
+                        f.vout = n;
+                        f.value = out.value;
+                        f.script_pubkey = htlc_.script_pubkey;
+                        funding_ = f;
+                        funding_height_ = h;
+                        break;
                     }
+                    if (funding_) continue;  // a spend comes in a later transaction
                 }
-                if (spend_) break;  // only spend-free blocks count as searched
-                scan_funding_ = funding_key;
-                scanned_height_ = h;
-                scanned_hash_ = *hash;
+            }
+            if (funding_ && !spend_) {
+                for (const auto& in : tx.vin) {
+                    if (!(in.prevout.txid == funding_->txid && in.prevout.vout == funding_->vout)) continue;
+                    const auto& w = in.witness;
+                    FoundSpend sp;
+                    sp.height = h;
+                    sp.by_claim = w.size() == 4 && w[2] == htlc_.claim_script;  // the leaf is committed
+                    if (sp.by_claim && w[1].size() == 32) {
+                        Bytes32 secret{};
+                        std::copy(w[1].begin(), w[1].end(), secret.begin());
+                        sp.preimage = secret;
+                    }
+                    spend_ = sp;
+                }
             }
         }
+        next_height_ = h + 1;
+        scanned_hash_ = *hash;
+    }
+
+    if (funding_) {
+        report.funding = funding_;
+        report.htlc.output_seen = true;
+        report.htlc.output_value = funding_->value.GetUna();
+        report.htlc.output_confirmations = tip - funding_height_ + 1;
     }
     if (spend_) {
         report.htlc.spent = true;
         report.htlc.spent_by_claim = spend_->by_claim;
         report.htlc.revealed_preimage = spend_->preimage;
         report.htlc.spend_confirmations = tip - spend_->height + 1;
-    }
-
-    if (report.funding) {
-        report.htlc.output_seen = true;
-        report.htlc.output_value = report.funding->value.GetUna();
-        report.htlc.output_confirmations = tip - funding_height + 1;
     }
     report.ok = true;
     return report;

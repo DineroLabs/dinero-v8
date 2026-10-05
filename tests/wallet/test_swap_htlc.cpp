@@ -258,6 +258,26 @@ TEST(SwapHtlc, BtcWitnessScriptAndP2wsh) {
     EXPECT_EQ(BtcP2wshScriptPubKey(script), p2wsh);
 }
 
+TEST(SwapHtlc, ClaimWithANonMinimalSelectorStillRevealsThePreimage) {
+    // MINIMALIF is only relay policy for P2WSH: a miner can include a claim whose
+    // OP_IF selector is 0x02 (or any non-zero push). It still carries the secret;
+    // classifying by witness shape would call it a refund and hide the secret.
+    const std::vector<uint8_t> preimage(32, 0x5a);
+    const auto hash = Sha256(preimage);
+    for (const std::vector<uint8_t>& selector : {std::vector<uint8_t>{0x02}, std::vector<uint8_t>{0x01, 0x00},
+                                                 std::vector<uint8_t>{0x81}}) {
+        const std::vector<std::vector<uint8_t>> claim{std::vector<uint8_t>(72, 0x30), preimage, selector,
+                                                      std::vector<uint8_t>(100, 0x63)};
+        const auto found = ExtractPreimageFromBtcClaim(claim, hash);
+        ASSERT_TRUE(found.has_value()) << int(selector[0]);
+        EXPECT_TRUE(std::equal(found->begin(), found->end(), preimage.begin()));
+    }
+    // A refund with a non-minimal false selector carries no secret.
+    const std::vector<std::vector<uint8_t>> refund{std::vector<uint8_t>(72, 0x30), {0x00},
+                                                   std::vector<uint8_t>(100, 0x63)};
+    EXPECT_FALSE(ExtractPreimageFromBtcClaim(refund, hash).has_value());
+}
+
 TEST(SwapHtlc, PreimageExtractedOnlyWhenItMatches) {
     const std::vector<uint8_t> preimage(32, 0x5a);
     const auto hash = Sha256(preimage);

@@ -69,6 +69,9 @@ std::string EncodeSession(const SwapSession& s) {
     std::ostringstream out;
     out << "record=" << EncodeRecord(s.record) << "\n"
         << "btc_scan_from_height=" << s.btc_scan_from_height << "\n"
+        << "din_scan_from_height=" << s.din_scan_from_height << "\n"
+        << "din_funding_txid=" << s.din_funding_txid << "\n"
+        << "btc_funding_txid=" << s.btc_funding_txid << "\n"
         << "din_payout_script=" << ToHex(s.din_payout_script) << "\n"
         << "btc_payout_script=" << ToHex(s.btc_payout_script) << "\n"
         << "tower_armed=" << (s.tower_armed ? 1 : 0) << "\n";
@@ -99,6 +102,22 @@ SwapSession DecodeSession(const std::string& text) {
     }
     s.din_payout_script = FromHex(kv["din_payout_script"]);
     s.btc_payout_script = FromHex(kv["btc_payout_script"]);
+    auto txid_field = [&](const char* key) -> std::string {
+        if (!kv.count(key) || kv[key].empty()) return {};
+        if (kv[key].size() != 64 || kv[key].find_first_not_of("0123456789abcdef") != std::string::npos) {
+            Refuse(std::string("bad ") + key);
+        }
+        return kv[key];
+    };
+    s.din_funding_txid = txid_field("din_funding_txid");
+    s.btc_funding_txid = txid_field("btc_funding_txid");
+    if (kv.count("din_scan_from_height")) {
+        const std::string& v = kv["din_scan_from_height"];
+        if (v.empty() || v.size() > 10 || v.find_first_not_of("0123456789") != std::string::npos) Refuse("bad DIN scan height");
+        const unsigned long long h = std::stoull(v);
+        if (h > UINT32_MAX) Refuse("bad DIN scan height");
+        s.din_scan_from_height = static_cast<uint32_t>(h);
+    }
     if (kv.count("tower_armed")) {  // absent in sessions saved before the tower existed
         if (kv["tower_armed"] != "0" && kv["tower_armed"] != "1") Refuse("bad tower_armed");
         s.tower_armed = kv["tower_armed"] == "1";
@@ -188,17 +207,48 @@ std::vector<uint8_t> SignedBtcRefund(const SwapSession& s, const SwapKeys& keys,
 
 // ---- Node RPC chain access ---------------------------------------------------
 
-RpcSwapChainIo::RpcSwapChainIo(DinRpc din, BtcRpc btc, const SwapSession& session, const RunnerConfig& config)
-    : din_(std::move(din)), btc_(std::move(btc)),
-      din_watcher_(din_, MakeDinTerms(session.record.offer, session.record.accept), config.din_hrp),
-      btc_watcher_(btc_, BtcWatchTarget{MakeBtcTerms(session.record.offer, session.record.accept),
-                                        session.btc_scan_from_height}) {}
+SwapWatchSpec WatchSpecFor(const SwapSession& session, const RunnerConfig& config) {
+    SwapWatchSpec w;
+    w.offer = session.record.offer;
+    w.accept = session.record.accept;
+    w.din_scan_from_height = session.din_scan_from_height;
+    w.btc_scan_from_height = session.btc_scan_from_height;
+    w.din_funding_txid = session.din_funding_txid;
+    w.btc_funding_txid = session.btc_funding_txid;
+    w.btc_chain = config.btc_chain;
+    return w;
+}
 
-RpcSwapChainIo::RpcSwapChainIo(DinRpc din, BtcRpc btc, const SwapOffer& offer, const SwapAccept& accept,
-                               uint32_t btc_scan_from_height, const std::string& din_hrp)
-    : din_(std::move(din)), btc_(std::move(btc)),
-      din_watcher_(din_, MakeDinTerms(offer, accept), din_hrp),
-      btc_watcher_(btc_, BtcWatchTarget{MakeBtcTerms(offer, accept), btc_scan_from_height}) {}
+RpcSwapChainIo::RpcSwapChainIo(DinRpc din, BtcRpc btc, const SwapSession& session, const RunnerConfig& config)
+    : RpcSwapChainIo(std::move(din), std::move(btc), WatchSpecFor(session, config)) {}
+
+RpcSwapChainIo::RpcSwapChainIo(DinRpc din, BtcRpc btc, SwapWatchSpec spec)
+    : din_(std::move(din)), btc_(std::move(btc)), spec_(std::move(spec)) {
+    RebuildWatchers();
+}
+
+void RpcSwapChainIo::RebuildWatchers() {
+    DinWatchTarget d;
+    d.terms = MakeDinTerms(spec_.offer, spec_.accept);
+    d.scan_from_height = spec_.din_scan_from_height;
+    d.expected_amount_una = spec_.offer.din_amount_una;
+    d.expected_funding_txid = spec_.din_funding_txid;
+    din_watcher_ = std::make_unique<DinWatcher>(din_, d);
+    BtcWatchTarget b;
+    b.terms = MakeBtcTerms(spec_.offer, spec_.accept);
+    b.scan_from_height = spec_.btc_scan_from_height;
+    b.expected_amount_sat = spec_.offer.btc_amount_sat;
+    b.expected_funding_txid = spec_.btc_funding_txid;
+    b.expected_chain = spec_.btc_chain;
+    btc_watcher_ = std::make_unique<BtcWatcher>(btc_, b);
+}
+
+void RpcSwapChainIo::PinFunding(const std::string& din_txid, const std::string& btc_txid) {
+    bool changed = false;
+    if (!din_txid.empty() && din_txid != spec_.din_funding_txid) { spec_.din_funding_txid = din_txid; changed = true; }
+    if (!btc_txid.empty() && btc_txid != spec_.btc_funding_txid) { spec_.btc_funding_txid = btc_txid; changed = true; }
+    if (changed) RebuildWatchers();
+}
 
 void SwapChainIo::ArmTower(const std::string&) {
     throw std::runtime_error("no watchtower configured");
@@ -209,8 +259,8 @@ void RpcSwapChainIo::ArmTower(const std::string& package_text) {
     tower_sink_(package_text);
 }
 
-DinWatchReport RpcSwapChainIo::ObserveDin() { return din_watcher_.Observe(); }
-BtcWatchReport RpcSwapChainIo::ObserveBtc() { return btc_watcher_.Observe(); }
+DinWatchReport RpcSwapChainIo::ObserveDin() { return din_watcher_->Observe(); }
+BtcWatchReport RpcSwapChainIo::ObserveBtc() { return btc_watcher_->Observe(); }
 
 std::string RpcSwapChainIo::FundDin(const std::string& address, uint64_t amount_una) {
     Json::Value p(Json::objectValue);
@@ -318,6 +368,15 @@ void SwapRunner::ArmTower(const DinWatchReport& din, const BtcWatchReport& btc, 
     }
 }
 
+void SwapRunner::PinAndSave(const std::string& din_txid, const std::string& btc_txid) {
+    SwapSession next = session_;
+    if (!din_txid.empty()) next.din_funding_txid = din_txid;
+    if (!btc_txid.empty()) next.btc_funding_txid = btc_txid;
+    store_.Save(next);
+    session_ = std::move(next);
+    io_.PinFunding(din_txid, btc_txid);
+}
+
 void SwapRunner::Execute(const Action& action, const DinWatchReport& din, const BtcWatchReport& btc,
                          std::vector<std::string>& events) {
     const auto& offer = session_.record.offer;
@@ -326,12 +385,22 @@ void SwapRunner::Execute(const Action& action, const DinWatchReport& din, const 
     };
     try {
         switch (action.kind) {
-        case ActionKind::FundDinHtlc:
-            return done("funded DIN HTLC:",
-                        io_.FundDin(DinHtlcAddressFor(session_.record, config_.din_hrp), offer.din_amount_una));
-        case ActionKind::FundBtcHtlc:
-            return done("funded BTC HTLC:",
-                        io_.FundBtc(BtcHtlcAddressFor(session_.record, config_.btc_hrp), offer.btc_amount_sat));
+        case ActionKind::FundDinHtlc: {
+            const std::string txid =
+                io_.FundDin(DinHtlcAddressFor(session_.record, config_.din_hrp), offer.din_amount_una);
+            PinAndSave(txid, "");  // only this transaction is Alice's lock
+            return done("funded DIN HTLC:", txid);
+        }
+        case ActionKind::FundBtcHtlc: {
+            // Pin the DIN lock Bob checked BEFORE his BTC leaves: later payments
+            // to the same address must never become "the lock" for his claim.
+            if (!din.funding) throw std::runtime_error("DIN lock unknown; not funding BTC");
+            PinAndSave(din.funding->txid.AsUint256().GetHex(), "");
+            const std::string txid =
+                io_.FundBtc(BtcHtlcAddressFor(session_.record, config_.btc_hrp), offer.btc_amount_sat);
+            PinAndSave("", txid);  // a decoy paying the same script is not Bob's lock
+            return done("funded BTC HTLC:", txid);
+        }
         case ActionKind::ClaimBtc:
             if (!btc.funding) throw std::runtime_error("BTC HTLC output unknown");
             return done("broadcast BTC claim:",

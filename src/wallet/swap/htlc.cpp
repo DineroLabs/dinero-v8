@@ -231,14 +231,17 @@ std::vector<uint8_t> BtcP2wshScriptPubKey(const std::vector<uint8_t>& witness_sc
 
 std::optional<Bytes32> ExtractPreimageFromBtcClaim(
     const std::vector<std::vector<uint8_t>>& witness, const Bytes32& payment_hash) {
-    // Claim branch: <sig> <preimage> <1 = take OP_IF> <witness script>.
-    if (witness.size() != 4 || witness[2] != std::vector<uint8_t>{0x01} || witness[1].size() != 32) {
-        return std::nullopt;
+    // By content, not shape: every valid claim must carry the secret as a
+    // witness item (the script hashes it), whatever the OP_IF selector bytes are
+    // (MINIMALIF is only relay policy for P2WSH). A spend with no item hashing to
+    // payment_hash took the refund branch.
+    for (const auto& item : witness) {
+        if (item.size() != 32 || Sha256(item.data(), 32) != payment_hash) continue;
+        Bytes32 preimage{};
+        std::copy(item.begin(), item.end(), preimage.begin());
+        return preimage;
     }
-    if (Sha256(witness[1].data(), 32) != payment_hash) return std::nullopt;
-    Bytes32 preimage{};
-    std::copy(witness[1].begin(), witness[1].end(), preimage.begin());
-    return preimage;
+    return std::nullopt;
 }
 
 }  // namespace dinero::swap

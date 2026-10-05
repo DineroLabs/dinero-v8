@@ -68,7 +68,8 @@ std::string EncodeTowerPackage(const TowerPackage& p) {
     out << "format=" << kPackageFormat << "\n"
         << "offer=" << EncodeOffer(p.offer) << "\n"
         << "accept=" << EncodeAccept(p.accept) << "\n"
-        << "btc_scan_from_height=" << p.btc_scan_from_height << "\n";
+        << "btc_scan_from_height=" << p.btc_scan_from_height << "\n"
+        << "din_scan_from_height=" << p.din_scan_from_height << "\n";
     for (const auto& r : p.din_claims) {
         out << "din_claim=" << ToHex(r.tx.Serialize(TxSerializationMode::WithWitness)) << ":"
             << ToHex(std::vector<uint8_t>(r.signature.begin(), r.signature.end())) << ":" << r.fee_una << "\n";
@@ -110,7 +111,7 @@ TowerPackage DecodeTowerPackage(const std::string& text) {
         }
     }
     if (single["format"] != kPackageFormat) Bad("unknown format");
-    for (const char* k : {"offer", "accept", "btc_scan_from_height"}) {
+    for (const char* k : {"offer", "accept", "btc_scan_from_height", "din_scan_from_height"}) {
         if (!single.count(k)) Bad(std::string("missing ") + k);
     }
     p.offer = DecodeOffer(single["offer"]);
@@ -118,6 +119,9 @@ TowerPackage DecodeTowerPackage(const std::string& text) {
     const uint64_t h = ParseU64(single["btc_scan_from_height"]);
     if (h > UINT32_MAX) Bad("bad scan height");
     p.btc_scan_from_height = static_cast<uint32_t>(h);
+    const uint64_t dh = ParseU64(single["din_scan_from_height"]);
+    if (dh > UINT32_MAX) Bad("bad DIN scan height");
+    p.din_scan_from_height = static_cast<uint32_t>(dh);
     VerifyTowerPackage(p);
     return p;
 }
@@ -138,6 +142,7 @@ TowerPackage BuildTowerPackage(const SwapSession& s, const SwapKeys& keys, const
     p.offer = rec.offer;
     p.accept = rec.accept;
     p.btc_scan_from_height = s.btc_scan_from_height;
+    p.din_scan_from_height = s.din_scan_from_height;
 
     const auto htlc = BuildDinHtlc(din_terms);
     for (auto& rung : BuildDinClaimLadder(htlc, din_funding, s.din_payout_script, din_policy)) {
@@ -243,6 +248,19 @@ std::string WriteTowerInbox(const std::string& inbox_dir, const std::string& pac
     ::close(fd);
     if (std::rename(tmp.c_str(), path.c_str()) != 0) throw std::runtime_error("tower inbox: rename failed");
     return path;
+}
+
+SwapWatchSpec TowerWatchSpec(const TowerPackage& p, const std::string& btc_chain) {
+    SwapWatchSpec w;
+    w.offer = p.offer;
+    w.accept = p.accept;
+    w.din_scan_from_height = p.din_scan_from_height;
+    w.btc_scan_from_height = p.btc_scan_from_height;
+    w.din_funding_txid = p.din_claims.front().tx.vin.at(0).prevout.txid.AsUint256().GetHex();
+    const auto& wire = p.btc_refunds.front().tx.vin.at(0).prev_txid;
+    w.btc_funding_txid = ToHex(std::vector<uint8_t>(wire.rbegin(), wire.rend()));
+    w.btc_chain = btc_chain;
+    return w;
 }
 
 // ---- The tower --------------------------------------------------------------

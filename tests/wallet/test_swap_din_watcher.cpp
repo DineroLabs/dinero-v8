@@ -100,6 +100,7 @@ struct FakeNode {
         }();
     }
     bool spent_in_mempool{false};
+    bool no_address_index{false};  // e.g. an AssumeUTXO node, or a pruned history
 
     void Mine(std::vector<Transaction> txs = {}) {
         txs.insert(txs.begin(), filler);
@@ -116,6 +117,7 @@ struct FakeNode {
             return r;
         }
         if (m == "getaddresshistory") {
+            if (no_address_index) return std::nullopt;
             Json::Value r;
             r["transactions"] = Json::Value(Json::arrayValue);
             if (funding) {
@@ -303,6 +305,60 @@ TEST(SwapDinWatcher, SpendMinedBelowTheScannedTipOnAReorgIsFound) {
     EXPECT_TRUE(r.htlc.spent);
     EXPECT_TRUE(r.htlc.spent_by_claim);
     EXPECT_EQ(r.htlc.spend_confirmations, 6u);
+}
+
+// A transaction paying the HTLC script `value` una (a decoy unless it is the swap amount).
+Transaction PayToHtlc(const Fixture& f, uint64_t value, char tag) {
+    FundingOutput src;
+    src.txid = TxId(uint256::FromHexUnsafe(std::string(64, tag)));
+    src.vout = 0;
+    src.value = AmountUna::Una(value + 1000);
+    src.script_pubkey = f.htlc.script_pubkey;
+    return BuildDinClaimTx(f.htlc, src, Payout{f.htlc.script_pubkey, AmountUna::Una(1000)});
+}
+
+DinWatchTarget Target(const Fixture& f, std::string pinned = "") {
+    DinWatchTarget t;
+    t.terms = f.terms;
+    t.scan_from_height = 0;
+    t.expected_amount_una = f.bob.record.offer.din_amount_una;
+    t.expected_funding_txid = pinned;
+    return t;
+}
+
+TEST(SwapDinWatcher, SpamToTheHtlcAddressCannotReplaceTheFunding) {
+    // Alice sends 60 small payments to the HTLC address after Bob locked BTC:
+    // they must not become "the funding", and Bob must still see her real
+    // lock claimed, without any address index.
+    Fixture f;
+    f.node.no_address_index = true;
+    for (int i = 0; i < 4; ++i) f.node.Mine();
+    f.node.Mine({PayToHtlc(f, 1500, 'b')});  // a decoy BEFORE the real lock
+    f.node.Mine({f.funding_tx});  // height 5
+    for (int i = 0; i < 60; ++i) f.node.Mine({PayToHtlc(f, 2000 + i, char('0' + i % 10))});
+    DinWatcher w([&](const std::string& m, const Json::Value& p) { return f.node.Call(m, p); }, Target(f));
+    auto r = w.Observe();
+    ASSERT_TRUE(r.ok);
+    ASSERT_TRUE(r.funding.has_value());
+    EXPECT_EQ(r.funding->txid, f.funding.txid);
+    EXPECT_EQ(r.htlc.output_value, f.bob.record.offer.din_amount_una);
+    f.node.Mine({f.claim_tx});
+    r = w.Observe();
+    EXPECT_TRUE(r.htlc.spent_by_claim);
+    EXPECT_EQ(r.htlc.revealed_preimage, kSecret);
+}
+
+TEST(SwapDinWatcher, APinnedFundingIgnoresAnExactAmountDecoy) {
+    Fixture f;
+    f.node.no_address_index = true;
+    f.node.Mine();
+    f.node.Mine({PayToHtlc(f, f.bob.record.offer.din_amount_una, 'e')});  // decoy, same amount, first
+    f.node.Mine({f.funding_tx});
+    DinWatcher w([&](const std::string& m, const Json::Value& p) { return f.node.Call(m, p); },
+                 Target(f, f.funding.txid.AsUint256().GetHex()));
+    const auto r = w.Observe();
+    ASSERT_TRUE(r.funding.has_value());
+    EXPECT_EQ(r.funding->txid, f.funding.txid);
 }
 
 }  // namespace

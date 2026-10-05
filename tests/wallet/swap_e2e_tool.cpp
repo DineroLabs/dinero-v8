@@ -236,11 +236,14 @@ int main(int argc, char** argv) {
 
         const auto btc_tip = btc("getblockcount", Json::Value(Json::arrayValue));
         if (!btc_tip) throw std::runtime_error("bitcoind unreachable");
+        const auto din_tip = din("getblockcount", Json::Value(Json::arrayValue));
+        if (!din_tip) throw std::runtime_error("dinerod unreachable");
 
         RunnerConfig config;
         config.din_hrp = "rdin";
         config.btc_hrp = "bcrt";
         config.use_tower = use_tower;
+        config.btc_chain = "regtest";
 
         auto make_session = [&](Role role) {
             SwapSession s;
@@ -250,6 +253,7 @@ int main(int argc, char** argv) {
             s.record.state_since_unix = base;
             if (role == Role::DinSeller) s.record.secret = secret;
             s.btc_scan_from_height = btc_tip->asUInt();
+            s.din_scan_from_height = din_tip->asUInt();
             // Alice: DIN refund -> key 9, BTC claim -> key 7. Bob: DIN claim -> key 8, BTC refund -> key 10.
             s.din_payout_script = P2tr(role == Role::DinSeller ? kAliceDinRefund : kBobDinClaim);
             s.btc_payout_script = P2tr(role == Role::DinSeller ? kAliceBtcClaim : kBobBtcRefund);
@@ -657,6 +661,7 @@ int main(int argc, char** argv) {
                 as.record.accept = ad;
                 as.record.secret = sec;
                 as.btc_scan_from_height = btc_tip->asUInt();
+                as.din_scan_from_height = din_tip->asUInt();
                 as.din_payout_script = P2tr(kAliceDinRefund);
                 as.btc_payout_script = P2tr(kAliceBtcClaim);
                 SwapSession bs = as;

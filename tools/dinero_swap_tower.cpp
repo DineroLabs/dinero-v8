@@ -4,7 +4,8 @@
 //
 //   dinero-swap-tower --inbox DIR --din-rpc HOST:PORT --din-auth USER:PASS
 //                     --btc-rpc HOST:PORT --btc-auth USER:PASS
-//                     [--din-hrp din|tdin|rdin] [--interval SECONDS] [--escalate-after SECONDS]
+//                     [--din-hrp din|tdin|rdin] [--btc-chain main|test|regtest]
+//                     [--interval SECONDS] [--escalate-after SECONDS]
 //
 // Arming: Bob's wallet writes <DIR>/<id>.pkg (WriteTowerInbox). Each package
 // is verified on load; a bad one is renamed .rejected with the reason logged.
@@ -62,7 +63,8 @@ struct Watched {
 }  // namespace
 
 int main(int argc, char** argv) {
-    std::map<std::string, std::string> opt{{"--din-hrp", "din"}, {"--interval", "30"}, {"--escalate-after", "1800"}};
+    std::map<std::string, std::string> opt{
+        {"--din-hrp", "din"}, {"--btc-chain", "main"}, {"--interval", "30"}, {"--escalate-after", "1800"}};
     for (int i = 1; i + 1 < argc; i += 2) opt[argv[i]] = argv[i + 1];
     for (const char* k : {"--inbox", "--din-rpc", "--din-auth", "--btc-rpc", "--btc-auth"}) {
         if (!opt.count(k)) {
@@ -95,8 +97,7 @@ int main(int argc, char** argv) {
                 try {
                     auto package = DecodeTowerPackage(text.str());
                     Watched w;
-                    w.io = std::make_unique<RpcSwapChainIo>(din, btc, package.offer, package.accept,
-                                                            package.btc_scan_from_height, opt["--din-hrp"]);
+                    w.io = std::make_unique<RpcSwapChainIo>(din, btc, TowerWatchSpec(package, opt["--btc-chain"]));
                     w.tower = std::make_unique<Watchtower>(std::move(package), config, *w.io);
                     watched.emplace(path, std::move(w));
                     std::cout << "tower: armed " << name << std::endl;

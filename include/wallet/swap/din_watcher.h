@@ -3,21 +3,15 @@
 // docs/design/din-btc-atomic-swaps-v1-plan.md): turns a Dinero node's view of
 // one DIN HTLC into the engine's HtlcObservation.
 //
-// Funding: the node's address index (getaddresshistory) lists the transaction
-// paying the HTLC address; its block is fetched raw (getblock <hash> 0) and
-// parsed with Dinero's own transaction deserializer.
-// Spend: the address index does NOT record a script-path spend from the
-// address, so when gettxout reports the funding output spent, blocks from the
-// funding height are scanned (each block once; a reorg below the scanned tip
-// restarts the scan) for the spending transaction; the spend's witness
-// tells claim (4 items, claim leaf) from refund (3 items, refund leaf). The
-// spend's block hash is cached and re-checked every tick, and the history is
-// re-read every tick, so a reorg that drops either transaction is noticed.
+// It scans blocks from the swap's start height, each block once: the funding
+// is the output paying the HTLC script with exactly the swap amount (and, once
+// known, from the lock's own transaction), so payments to the same address
+// cannot stand in for it; the spend is the transaction that spends that
+// output, classified by its (committed) leaf script. No address index is
+// used. A reorg anywhere in the scanned range rescans from the start.
 //
-// Confirmed spends only: the node's address index does not attribute a mempool
-// spend of a confirmed output to the address. That is enough for the engine —
-// Bob learns the secret from Bitcoin (whose watcher does see the mempool), and
-// DIN claim/refund re-broadcasts are idempotent while confirmation is pending.
+// Confirmed spends only (mempool spends of DIN are not visible here). Bob
+// learns the secret from Bitcoin, whose watcher sees the mempool.
 
 #include "wallet/swap/engine.h"
 
@@ -37,6 +31,13 @@ using DinRpc = std::function<std::optional<Json::Value>(const std::string& metho
 // bech32m P2TR address of the HTLC output ("din"/"tdin"/"rdin" HRP).
 std::string DinHtlcAddress(const DinHtlcOutput& htlc, const std::string& hrp);
 
+struct DinWatchTarget {
+    DinHtlcTerms terms;
+    uint32_t scan_from_height{0};      // first block that could hold the funding
+    uint64_t expected_amount_una{0};   // the swap amount: other payments to the script are decoys (0 = any)
+    std::string expected_funding_txid; // the lock's own transaction once known ("" = any)
+};
+
 struct DinWatchReport {
     bool ok{false};  // false: node unreachable or inconsistent; do not act
     HtlcObservation htlc;
@@ -46,29 +47,24 @@ struct DinWatchReport {
 
 class DinWatcher {
 public:
-    DinWatcher(DinRpc rpc, DinHtlcTerms terms, std::string hrp);
+    DinWatcher(DinRpc rpc, DinWatchTarget target);
+    DinWatcher(DinRpc rpc, DinHtlcTerms terms, std::string hrp);  // any amount, scan from genesis
     DinWatchReport Observe();
 
 private:
     DinRpc rpc_;
-    DinHtlcTerms terms_;
+    DinWatchTarget target_;
     DinHtlcOutput htlc_;
-    std::string address_;
-    std::map<std::string, std::vector<uint8_t>> block_cache_;  // block hash -> raw block
     struct FoundSpend {
         uint32_t height{};
-        std::string block_hash;
         bool by_claim{};
         std::optional<Bytes32> preimage;
     };
+    std::optional<FundingOutput> funding_;
+    uint32_t funding_height_{0};
     std::optional<FoundSpend> spend_;
-    // Incremental spend scan: blocks up to scanned_height_ (whose hash was
-    // scanned_hash_) were searched and hold NO spend of scan_funding_; the
-    // spend's own block is never marked, so it is re-found after a reorg.
-    // Public nodes rate-limit RPC, so each block is fetched once, not per tick.
-    std::string scan_funding_;
-    uint32_t scanned_height_{0};
-    std::string scanned_hash_;
+    uint32_t next_height_{0};
+    std::string scanned_hash_;  // hash of block next_height_ - 1 when it was scanned
 };
 
 }  // namespace dinero::swap

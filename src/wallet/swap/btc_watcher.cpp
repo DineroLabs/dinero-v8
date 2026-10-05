@@ -54,8 +54,8 @@ bool ClassifySpend(const Json::Value& txinwitness, const Bytes32& payment_hash, 
         witness.push_back(*bytes);
     }
     obs.spent = true;
-    obs.spent_by_claim = witness.size() == 4 && witness[2] == std::vector<uint8_t>{0x01};
     obs.revealed_preimage = ExtractPreimageFromBtcClaim(witness, payment_hash);
+    obs.spent_by_claim = obs.revealed_preimage.has_value();  // a claim always carries the secret
     return true;
 }
 
@@ -70,6 +70,8 @@ BtcWatchReport BtcWatcher::Observe() {
     BtcWatchReport report;
     const auto info = rpc_("getblockchaininfo", Json::Value(Json::arrayValue));
     if (!info || !(*info)["blocks"].isNumeric()) return report;
+    // A node on another Bitcoin network would show free coins as a "lock".
+    if (!target_.expected_chain.empty() && (*info)["chain"].asString() != target_.expected_chain) return report;
     const uint32_t tip = (*info)["blocks"].asUInt();
     report.mtp_unix = (*info)["mediantime"].asUInt();
 
@@ -81,6 +83,16 @@ BtcWatchReport BtcWatcher::Observe() {
         return h->asString();
     };
 
+    // Reorg anywhere in the scanned range (not only the funding/spend blocks):
+    // a replaced block may now hold the funding or the claim. Rescan.
+    if (next_height_ > target_.scan_from_height) {
+        const uint32_t last = next_height_ - 1;
+        if (last > tip || hash_at(last) != scanned_hash_) {
+            funding_.reset();
+            confirmed_spend_.reset();
+            next_height_ = target_.scan_from_height;
+        }
+    }
     // Reorg checks: forget anything whose block left the main chain.
     if (confirmed_spend_ && (spend_height_ > tip || hash_at(spend_height_) != spend_block_hash_)) {
         confirmed_spend_.reset();
@@ -105,6 +117,13 @@ BtcWatchReport BtcWatcher::Observe() {
             if (!funding_) {
                 for (const auto& out : tx["vout"]) {
                     if (out["scriptPubKey"]["hex"].asString() != spk_hex) continue;
+                    // Anyone can pay this script: only the exact swap output (and,
+                    // once known, Bob's own funding transaction) is the lock.
+                    const uint64_t sat = static_cast<uint64_t>(std::llround(out["value"].asDouble() * 1e8));
+                    if (target_.expected_amount_sat && sat != target_.expected_amount_sat) continue;
+                    if (!target_.expected_funding_txid.empty() && tx["txid"].asString() != target_.expected_funding_txid) {
+                        continue;
+                    }
                     const auto wire = WireTxid(tx["txid"].asString());
                     if (!wire) return report;
                     BtcFunding f;
@@ -130,6 +149,7 @@ BtcWatchReport BtcWatcher::Observe() {
             }
         }
         next_height_ = height + 1;
+        scanned_hash_ = *hash;
     }
 
     if (funding_) {

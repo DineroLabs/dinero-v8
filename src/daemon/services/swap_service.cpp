@@ -93,6 +93,8 @@ bool SwapService::Init(DaemonContext& ctx) {
     mc.runner.din_hrp = params.hrp;
     mc.runner.btc_hrp = mc.network == swap::SwapNetwork::Mainnet ? "bc"
                       : mc.network == swap::SwapNetwork::Testnet ? "tb" : "bcrt";
+    mc.runner.btc_chain = mc.network == swap::SwapNetwork::Mainnet ? "main"
+                        : mc.network == swap::SwapNetwork::Testnet ? "test" : "regtest";
     mc.runner.din_fee_una = uint64_t(config->GetInt("swap.din_fee_una", int(mc.runner.din_fee_una)));
     mc.runner.din_fee_urgent_una = uint64_t(config->GetInt("swap.din_fee_urgent_una", int(mc.runner.din_fee_urgent_una)));
     mc.runner.btc_fee_sat = uint64_t(config->GetInt("swap.btc_fee_sat", int(mc.runner.btc_fee_sat)));

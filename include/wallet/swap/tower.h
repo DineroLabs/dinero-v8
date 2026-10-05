@@ -49,9 +49,14 @@ struct TowerPackage {
     SwapOffer offer;
     SwapAccept accept;
     uint32_t btc_scan_from_height{};
+    uint32_t din_scan_from_height{};
     std::vector<DinClaimRung> din_claims;    // ascending fee
     std::vector<BtcRefundRung> btc_refunds;  // ascending fee
 };
+
+// The outpoints the package's rungs spend are the locks the tower watches,
+// exactly (payments to the same scripts are ignored).
+SwapWatchSpec TowerWatchSpec(const TowerPackage& package, const std::string& btc_chain);
 
 // "dinswap1t" text form, one "key=value" per line. Decode throws std::invalid_argument.
 std::string EncodeTowerPackage(const TowerPackage& package);

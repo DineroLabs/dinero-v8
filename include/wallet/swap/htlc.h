@@ -101,8 +101,8 @@ struct BtcHtlcTerms {
 std::vector<uint8_t> BuildBtcHtlcWitnessScript(const BtcHtlcTerms& terms);
 std::vector<uint8_t> BtcP2wshScriptPubKey(const std::vector<uint8_t>& witness_script);
 
-// The preimage from a Bitcoin claim witness (<sig> <preimage> <1> <script>), only
-// if it is 32 bytes and hashes to payment_hash.
+// The preimage from a Bitcoin HTLC spend: any 32-byte witness item that hashes
+// to payment_hash. Present exactly when the spend took the claim branch.
 std::optional<Bytes32> ExtractPreimageFromBtcClaim(
     const std::vector<std::vector<uint8_t>>& witness, const Bytes32& payment_hash);
 

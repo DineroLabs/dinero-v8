@@ -27,6 +27,12 @@ namespace dinero::swap {
 struct SwapSession {
     SwapRecord record;
     uint32_t btc_scan_from_height{};          // BTC tip when the swap was accepted
+    uint32_t din_scan_from_height{};          // DIN tip when the swap was accepted
+    // The lock transactions, pinned once known: Alice's own DIN funding (from
+    // her wallet), Alice's DIN lock as Bob saw it when he funded BTC, and Bob's
+    // own BTC funding. Payments to the same scripts never stand in for them.
+    std::string din_funding_txid;
+    std::string btc_funding_txid;
     std::vector<uint8_t> din_payout_script;   // Alice: refund goes here; Bob: claim goes here
     std::vector<uint8_t> btc_payout_script;   // Alice: claim goes here; Bob: refund goes here
     bool tower_armed{false};                  // Bob: the watchtower accepted this swap's package
@@ -75,6 +81,7 @@ struct RunnerConfig {
     uint32_t tower_max_fee_percent{5};  // per rung, of the swap amount
     std::string din_hrp{"din"};   // "din" / "tdin" / "rdin"
     std::string btc_hrp{"bc"};    // "bc" / "tb" / "bcrt"
+    std::string btc_chain{"main"};  // Bitcoin Core getblockchaininfo "chain" this swap must run on
 };
 
 // The chains as the runner sees them. Write methods return the txid and throw
@@ -91,15 +98,32 @@ public:
     // Hand a TowerPackage (text form) to Bob's watchtower; throws if none is
     // configured or it refuses the package.
     virtual void ArmTower(const std::string& package_text);
+    // Watch exactly these lock transactions from now on ("" = keep as is).
+    virtual void PinFunding(const std::string& din_txid, const std::string& btc_txid) {
+        (void)din_txid;
+        (void)btc_txid;
+    }
 };
+
+// What the chain watchers look for.
+struct SwapWatchSpec {
+    SwapOffer offer;
+    SwapAccept accept;
+    uint32_t din_scan_from_height{};
+    uint32_t btc_scan_from_height{};
+    std::string din_funding_txid;
+    std::string btc_funding_txid;
+    std::string btc_chain;
+};
+SwapWatchSpec WatchSpecFor(const SwapSession& session, const RunnerConfig& config);
 
 // Node RPC implementation. `btc` must reach a wallet only for Bob (FundBtc).
 // Dinero funding uses wallet.sendtoaddress {address, amount_una}.
 class RpcSwapChainIo : public SwapChainIo {
 public:
     RpcSwapChainIo(DinRpc din, BtcRpc btc, const SwapSession& session, const RunnerConfig& config);
-    RpcSwapChainIo(DinRpc din, BtcRpc btc, const SwapOffer& offer, const SwapAccept& accept,
-                   uint32_t btc_scan_from_height, const std::string& din_hrp);
+    RpcSwapChainIo(DinRpc din, BtcRpc btc, SwapWatchSpec spec);
+    void PinFunding(const std::string& din_txid, const std::string& btc_txid) override;
     // Optional: where ArmTower() delivers packages (e.g. writes the tower's inbox).
     void SetTowerSink(std::function<void(const std::string&)> sink) { tower_sink_ = std::move(sink); }
     void ArmTower(const std::string& package_text) override;
@@ -113,8 +137,10 @@ public:
 private:
     DinRpc din_;
     BtcRpc btc_;
-    DinWatcher din_watcher_;
-    BtcWatcher btc_watcher_;
+    SwapWatchSpec spec_;
+    std::unique_ptr<DinWatcher> din_watcher_;
+    std::unique_ptr<BtcWatcher> btc_watcher_;
+    void RebuildWatchers();
     std::function<void(const std::string&)> tower_sink_;
 };
 
@@ -156,6 +182,7 @@ private:
     void Execute(const Action& action, const DinWatchReport& din, const BtcWatchReport& btc,
                  std::vector<std::string>& events);
     void ArmTower(const DinWatchReport& din, const BtcWatchReport& btc, std::vector<std::string>& events);
+    void PinAndSave(const std::string& din_txid, const std::string& btc_txid);
 
     SwapSession session_;
     SwapKeys keys_;

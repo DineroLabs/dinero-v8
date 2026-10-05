@@ -12,6 +12,7 @@
 #include <secp256k1_extrakeys.h>
 #include <secp256k1_schnorrsig.h>
 
+#include <algorithm>
 #include <cstdio>
 #include <filesystem>
 #include <stdexcept>
@@ -117,12 +118,17 @@ struct FakeChains : SwapChainIo {
     std::string Write(const std::string& what) {
         log.lines.push_back(what);
         if (refuse_writes) throw std::runtime_error("node refused");
-        return "txid";
+        return std::string(64, 'f');
     }
     std::string FundDin(const std::string& a, uint64_t v) override { return Write("fund_din:" + a + ":" + std::to_string(v)); }
     std::string FundBtc(const std::string& a, uint64_t v) override { return Write("fund_btc:" + a + ":" + std::to_string(v)); }
     std::string BroadcastDin(const std::vector<uint8_t>& t) override { din_broadcasts.push_back(t); return Write("bcast_din"); }
     std::string BroadcastBtc(const std::vector<uint8_t>& t) override { btc_broadcasts.push_back(t); return Write("bcast_btc"); }
+    std::vector<std::pair<std::string, std::string>> pins;
+    void PinFunding(const std::string& d, const std::string& b) override {
+        pins.push_back({d, b});
+        log.lines.push_back("pin");
+    }
     int tower_refusals{0};
     std::vector<std::string> armed;
     void ArmTower(const std::string& package) override {
@@ -164,7 +170,7 @@ TEST(SwapRunner, SavesTheNewStateBeforeFunding) {
     const auto r = alice.Tick(kNow);
     ASSERT_TRUE(r.observed);
     EXPECT_EQ(r.after, SwapState::DinLockBroadcast);
-    ASSERT_EQ(log.lines.size(), 2u);
+    ASSERT_GE(log.lines.size(), 2u);  // then: save of the lock txid, pin
     EXPECT_EQ(log.lines[0], std::string("save:") + StateName(SwapState::DinLockBroadcast));
     EXPECT_EQ(log.lines[1], "fund_din:" + DinHtlcAddressFor(alice.session().record, "rdin") + ":1000000000");
 }
@@ -419,6 +425,44 @@ TEST(SwapRunner, BobsDinClaimFeeFollowsUrgency) {
     EXPECT_LT(mid, c.din_fee_urgent_una);
 }
 
+TEST(SwapRunner, LockTransactionsArePersistedAndPinned) {
+    // Alice: her own DIN funding txid, as returned by her wallet.
+    {
+        Log log;
+        FakeStore store(log);
+        FakeChains chains(log);
+        SwapRunner alice(MakeSession(Role::DinSeller), kAliceKeys, Config(), chains, store);
+        alice.Tick(kNow);
+        EXPECT_EQ(store.saved->din_funding_txid, std::string(64, 'f'));
+        ASSERT_FALSE(chains.pins.empty());
+        EXPECT_EQ(chains.pins.back().first, std::string(64, 'f'));
+    }
+    // Bob: Alice's DIN lock is pinned BEFORE his BTC leaves, then his own BTC funding.
+    {
+        Log log;
+        FakeStore store(log);
+        FakeChains chains(log);
+        auto s = MakeSession(Role::BtcSeller);
+        BothLocksSeen(chains, s);
+        chains.btc = BtcWatchReport{};
+        chains.btc.ok = true;
+        chains.btc.mtp_unix = kNow;
+        chains.din.htlc.output_confirmations = 40;
+        SwapRunner bob(s, kBobKeys, Config(), chains, store);
+        bob.Tick(kNow + kHour);
+        EXPECT_EQ(bob.session().record.state, SwapState::BtcLockBroadcast);
+        const std::string din_txid = DinFunding(s).txid.AsUint256().GetHex();
+        EXPECT_EQ(store.saved->din_funding_txid, din_txid);
+        EXPECT_EQ(store.saved->btc_funding_txid, std::string(64, 'f'));
+        // Order: the DIN pin is saved before the BTC funding call.
+        const auto pin_din = std::find(log.lines.begin(), log.lines.end(), "pin");
+        const auto fund = std::find_if(log.lines.begin(), log.lines.end(),
+                                       [](const std::string& l) { return l.rfind("fund_btc", 0) == 0; });
+        ASSERT_NE(fund, log.lines.end());
+        EXPECT_LT(pin_din - log.lines.begin(), fund - log.lines.begin());
+    }
+}
+
 TEST(SwapRunner, SessionRoundTripsThroughTheFileStore) {
     const auto path = (std::filesystem::temp_directory_path() / "swap_runner_test_session.txt").string();
     std::remove(path.c_str());
@@ -431,6 +475,13 @@ TEST(SwapRunner, SessionRoundTripsThroughTheFileStore) {
     EXPECT_EQ(back.btc_scan_from_height, 101u);
     EXPECT_EQ(back.din_payout_script, s.din_payout_script);
     EXPECT_FALSE(back.tower_armed);
+    s.din_funding_txid = std::string(64, 'a');
+    s.btc_funding_txid = std::string(64, 'b');
+    s.din_scan_from_height = 77;
+    const auto pinned = DecodeSession(EncodeSession(s));
+    EXPECT_EQ(pinned.din_funding_txid, s.din_funding_txid);
+    EXPECT_EQ(pinned.btc_funding_txid, s.btc_funding_txid);
+    EXPECT_EQ(pinned.din_scan_from_height, 77u);
     s.tower_armed = true;
     EXPECT_TRUE(DecodeSession(EncodeSession(s)).tower_armed);
     std::remove(path.c_str());

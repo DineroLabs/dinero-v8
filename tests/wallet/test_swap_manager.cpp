@@ -65,7 +65,10 @@ SwapManagerConfig Config(const std::string& dir) {
     return c;
 }
 
-const DinRpc kNoDin = [](const std::string&, const Json::Value&) { return std::optional<Json::Value>{}; };
+// A Dinero node that only reports its height (the scan start of a new swap).
+const DinRpc kNoDin = [](const std::string& m, const Json::Value&) {
+    return m == "getblockcount" ? std::optional<Json::Value>(Json::Value(1000)) : std::optional<Json::Value>{};
+};
 // A Bitcoin node that only reports its height (the scan start of a new swap).
 const BtcRpc kNoBtc = [](const std::string& m, const Json::Value&) {
     return m == "getblockcount" ? std::optional<Json::Value>(Json::Value(500)) : std::optional<Json::Value>{};

@@ -33,7 +33,10 @@ using BtcRpc = std::function<std::optional<Json::Value>(const std::string& metho
 
 struct BtcWatchTarget {
     BtcHtlcTerms terms;
-    uint32_t scan_from_height{0};  // first block that could contain the funding
+    uint32_t scan_from_height{0};    // first block that could contain the funding
+    uint64_t expected_amount_sat{0};  // the swap amount: other outputs to the script are decoys (0 = any)
+    std::string expected_funding_txid;  // Bob's own funding tx (display hex), once known ("" = any)
+    std::string expected_chain;       // Bitcoin Core "chain" name; a node on another network is not trusted
 };
 
 struct BtcWatchReport {
@@ -57,6 +60,7 @@ private:
     BtcWatchTarget target_;
     std::vector<uint8_t> script_pubkey_;
     uint32_t next_height_;
+    std::string scanned_hash_;  // hash of block next_height_ - 1 when it was scanned
     std::optional<BtcFunding> funding_;
     uint32_t funding_height_{0};
     std::string funding_block_hash_;
