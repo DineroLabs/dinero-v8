@@ -38,6 +38,9 @@ struct FakeBitcoin {
     std::vector<Block> chain;
     std::string chain_name{"regtest"};
     Json::Value mempool_spender;  // gettxspendingprevout entry
+    int getblocks{0};
+    int hash_fails{0};  // the next N getblockhash calls fail
+    std::optional<uint32_t> fail_height_once;  // getblockhash of this height fails once
     std::string Hash(size_t h) const { return "b" + std::to_string(h) + "g" + std::to_string(chain[h].gen); }
     void Mine(Json::Value txs = Json::Value(Json::arrayValue)) { chain.push_back({txs, 0}); }
     std::optional<Json::Value> Call(const std::string& m, const Json::Value& p) {
@@ -49,11 +52,14 @@ struct FakeBitcoin {
             return r;
         }
         if (m == "getblockhash") {
+            if (hash_fails > 0) { --hash_fails; return std::nullopt; }
             const auto h = p[0].asUInt();
+            if (fail_height_once == h) { fail_height_once.reset(); return std::nullopt; }
             if (h >= chain.size()) return std::nullopt;
             return Json::Value(Hash(h));
         }
         if (m == "getblock") {
+            ++getblocks;
             for (size_t h = 0; h < chain.size(); ++h) {
                 if (Hash(h) == p[0].asString()) {
                     Json::Value b;
@@ -186,6 +192,37 @@ TEST(SwapBtcWatcher, AReorgOfAnAlreadyScannedBlockIsNoticed) {
     const auto r = w.Observe();
     ASSERT_TRUE(r.ok);
     EXPECT_TRUE(r.htlc.spent_by_claim);
+}
+
+TEST(SwapBtcWatcher, AShallowReorgOrAnRpcHiccupRewindsOnlyToTheForkPoint) {
+    FakeBitcoin node;
+    for (int i = 0; i < 100; ++i) node.Mine();
+    node.Mine([] { Json::Value a(Json::arrayValue); a.append(FundingTx(kFund, kAmount, SpkHex())); return a; }());
+    for (int i = 0; i < 100; ++i) node.Mine();
+    auto w = Watcher(node);
+    ASSERT_TRUE(w.Observe().htlc.output_seen);
+
+    node.chain.back().gen = 1;  // the tip block is replaced
+    int before = node.getblocks;
+    auto r = w.Observe();
+    ASSERT_TRUE(r.ok);
+    EXPECT_TRUE(r.htlc.output_seen);
+    EXPECT_LE(node.getblocks - before, 3) << "rewound to the fork point, not to the scan start";
+
+    node.Mine();
+    for (int fails = 1; fails <= 3; ++fails) {  // whichever reorg check's getblockhash fails
+        if (fails == 3) {
+            node.fail_height_once = 100;  // the funding block's own reorg check
+        } else {
+            node.hash_fails = fails;
+        }
+        before = node.getblocks;
+        for (int i = 0; i < 4 && !(r = w.Observe()).ok; ++i) {
+        }
+        ASSERT_TRUE(r.ok);
+        EXPECT_TRUE(r.htlc.output_seen) << fails;
+        EXPECT_LE(node.getblocks - before, 3) << fails << ": an RPC failure is not a reorg";
+    }
 }
 
 TEST(SwapBtcWatcher, AWrongNetworkNodeIsNotObserved) {

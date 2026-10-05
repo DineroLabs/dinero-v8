@@ -84,24 +84,51 @@ BtcWatchReport BtcWatcher::Observe() {
     };
 
     // Reorg anywhere in the scanned range (not only the funding/spend blocks):
-    // a replaced block may now hold the funding or the claim. Rescan.
+    // a replaced block may now hold the funding or the claim. Rewind to the
+    // fork point (deeper than the remembered window: to the start). A failed
+    // RPC is "not observed", never a reorg.
     if (next_height_ > target_.scan_from_height) {
         const uint32_t last = next_height_ - 1;
-        if (last > tip || hash_at(last) != scanned_hash_) {
-            funding_.reset();
-            confirmed_spend_.reset();
-            next_height_ = target_.scan_from_height;
+        std::optional<std::string> at_last;
+        if (last <= tip && !(at_last = hash_at(last))) return report;
+        if (last > tip || recent_.empty() || *at_last != recent_.rbegin()->second) {
+            uint32_t resume = target_.scan_from_height;
+            for (auto it = recent_.rbegin(); it != recent_.rend(); ++it) {
+                if (it->first > tip) continue;
+                const auto h = hash_at(it->first);
+                if (!h) return report;
+                if (*h == it->second) {
+                    resume = it->first + 1;
+                    break;
+                }
+            }
+            recent_.erase(recent_.lower_bound(resume), recent_.end());
+            next_height_ = resume;
         }
     }
     // Reorg checks: forget anything whose block left the main chain.
-    if (confirmed_spend_ && (spend_height_ > tip || hash_at(spend_height_) != spend_block_hash_)) {
-        confirmed_spend_.reset();
-        next_height_ = std::min(next_height_, spend_height_);
+    auto left_chain = [&](uint32_t height, const std::string& block_hash) -> std::optional<bool> {
+        if (height > tip) return true;
+        const auto h = hash_at(height);
+        if (!h) return std::nullopt;
+        return *h != block_hash;
+    };
+    if (confirmed_spend_) {
+        const auto gone = left_chain(spend_height_, spend_block_hash_);
+        if (!gone) return report;
+        if (*gone) {
+            confirmed_spend_.reset();
+            next_height_ = std::min(next_height_, spend_height_);
+        }
     }
-    if (funding_ && (funding_height_ > tip || hash_at(funding_height_) != funding_block_hash_)) {
-        funding_.reset();
-        confirmed_spend_.reset();
-        next_height_ = std::min(next_height_, funding_height_);
+    if (funding_) {
+        const auto gone = left_chain(funding_height_, funding_block_hash_);
+        if (!gone) return report;
+        if (*gone) {
+            funding_.reset();
+            confirmed_spend_.reset();
+            next_height_ = std::min(next_height_, funding_height_);
+        }
     }
 
     const std::string spk_hex = ToHex(script_pubkey_.data(), script_pubkey_.size());
@@ -149,7 +176,8 @@ BtcWatchReport BtcWatcher::Observe() {
             }
         }
         next_height_ = height + 1;
-        scanned_hash_ = *hash;
+        recent_[height] = *hash;
+        while (recent_.size() > 288) recent_.erase(recent_.begin());  // the fork-point window
     }
 
     if (funding_) {

@@ -22,6 +22,7 @@
 #include <json/json.h>
 
 #include <functional>
+#include <map>
 #include <optional>
 #include <string>
 
@@ -60,7 +61,7 @@ private:
     BtcWatchTarget target_;
     std::vector<uint8_t> script_pubkey_;
     uint32_t next_height_;
-    std::string scanned_hash_;  // hash of block next_height_ - 1 when it was scanned
+    std::map<uint32_t, std::string> recent_;  // hashes of the last scanned blocks (the reorg anchor)
     std::optional<BtcFunding> funding_;
     uint32_t funding_height_{0};
     std::string funding_block_hash_;

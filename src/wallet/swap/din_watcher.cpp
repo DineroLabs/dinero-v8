@@ -11,6 +11,7 @@ namespace dinero::swap {
 namespace {
 
 constexpr size_t kBlockHeaderSize = 128;
+constexpr size_t kReorgWindow = 288;  // blocks whose hashes are remembered to find a fork point
 
 std::optional<std::vector<uint8_t>> FromHex(const std::string& h) {
     if (h.size() % 2) return std::nullopt;
@@ -87,8 +88,9 @@ DinWatcher::DinWatcher(DinRpc rpc, DinHtlcTerms terms, std::string /*hrp*/)
 
 // Blocks are scanned once each, from the swap's start height: no address
 // index is needed (an AssumeUTXO node has none, and getaddresshistory only
-// returns the newest entries, which spam could fill). A reorg anywhere in the
-// scanned range rescans from the start.
+// returns the newest entries, which spam could fill). A reorg rewinds to the
+// fork point (a deeper one than the remembered window: to the start); a failed
+// RPC is "not observed", never a reorg.
 DinWatchReport DinWatcher::Observe() {
     DinWatchReport report;
     const auto info = rpc_("getblockchaininfo", Json::Value(Json::arrayValue));
@@ -116,10 +118,23 @@ DinWatchReport DinWatcher::Observe() {
 
     if (next_height_ > target_.scan_from_height) {
         const uint32_t last = next_height_ - 1;
-        if (last > tip || hash_at(last) != scanned_hash_) {  // reorg: start over
-            funding_.reset();
-            spend_.reset();
-            next_height_ = target_.scan_from_height;
+        std::optional<std::string> at_last;
+        if (last <= tip && !(at_last = hash_at(last))) return report;
+        if (last > tip || recent_.empty() || *at_last != recent_.rbegin()->second) {
+            uint32_t resume = target_.scan_from_height;
+            for (auto it = recent_.rbegin(); it != recent_.rend(); ++it) {
+                if (it->first > tip) continue;
+                const auto h = hash_at(it->first);
+                if (!h) return report;
+                if (*h == it->second) {
+                    resume = it->first + 1;
+                    break;
+                }
+            }
+            recent_.erase(recent_.lower_bound(resume), recent_.end());
+            if (funding_ && funding_height_ >= resume) funding_.reset();
+            if (!funding_ || (spend_ && spend_->height >= resume)) spend_.reset();
+            next_height_ = resume;
         }
     }
 
@@ -173,7 +188,8 @@ DinWatchReport DinWatcher::Observe() {
             }
         }
         next_height_ = h + 1;
-        scanned_hash_ = *hash;
+        recent_[h] = *hash;
+        while (recent_.size() > kReorgWindow) recent_.erase(recent_.begin());
     }
 
     if (funding_) {

@@ -100,6 +100,7 @@ struct FakeNode {
         }();
     }
     bool spent_in_mempool{false};
+    int hash_fails{0};  // the next N getblockhash calls fail (node busy, connection drop)
     bool no_address_index{false};  // e.g. an AssumeUTXO node, or a pruned history
     bool odd_genesis{false};       // block 0 in a format the swap parser does not read
 
@@ -130,6 +131,7 @@ struct FakeNode {
             return r;
         }
         if (m == "getblockhash") {
+            if (hash_fails > 0) { --hash_fails; return std::nullopt; }
             const uint32_t h = p[0].asUInt();
             if (h > tip) return std::nullopt;
             return Json::Value(HashAt(h));
@@ -223,6 +225,37 @@ TEST(SwapDinWatcher, RpcCostPerTickStaysBoundedWhileTheClaimIsUnconfirmed) {
     EXPECT_TRUE(r.htlc.spent_by_claim);
     EXPECT_EQ(r.htlc.revealed_preimage, kSecret);
     EXPECT_EQ(r.htlc.spend_confirmations, 1u);
+}
+
+TEST(SwapDinWatcher, AShallowReorgOrAnRpcHiccupRewindsOnlyToTheForkPoint) {
+    // A 1-block reorg at the tip, or one failed getblockhash, must not rescan
+    // the whole swap history (on mainnet: hundreds of blocks per swap, every
+    // time, under the swap manager's lock).
+    Fixture f;
+    for (int i = 0; i < 150; ++i) f.node.Mine();
+    f.node.Mine({f.funding_tx});
+    f.node.funding = {f.funding.txid.AsUint256().GetHex(), 150};
+    for (int i = 0; i < 100; ++i) f.node.Mine();
+    DinWatcher w([&](const std::string& m, const Json::Value& p) { return f.node.Call(m, p); }, f.terms, "rdin");
+    ASSERT_TRUE(w.Observe().ok);
+
+    f.node.chain.back().gen = 1;  // the tip block is replaced
+    int before = f.node.BlockCalls();
+    auto r = w.Observe();
+    ASSERT_TRUE(r.ok);
+    EXPECT_TRUE(r.htlc.output_seen) << "the funding below the fork is kept";
+    EXPECT_EQ(r.htlc.output_confirmations, 101u);
+    EXPECT_LE(f.node.BlockCalls() - before, 10) << "rewound to the fork point, not to the scan start";
+
+    f.node.Mine();
+    f.node.hash_fails = 1;  // the reorg check's own getblockhash fails
+    before = f.node.BlockCalls();
+    r = w.Observe();
+    EXPECT_FALSE(r.ok) << "cannot tell: not observed";
+    r = w.Observe();
+    ASSERT_TRUE(r.ok);
+    EXPECT_TRUE(r.htlc.output_seen);
+    EXPECT_LE(f.node.BlockCalls() - before, 10) << "an RPC failure is not a reorg";
 }
 
 TEST(SwapDinWatcher, ReorgOfTheSpendBlockIsNoticedBothWays) {

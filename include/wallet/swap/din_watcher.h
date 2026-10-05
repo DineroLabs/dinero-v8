@@ -66,7 +66,7 @@ private:
     uint32_t funding_height_{0};
     std::optional<FoundSpend> spend_;
     uint32_t next_height_{0};
-    std::string scanned_hash_;  // hash of block next_height_ - 1 when it was scanned
+    std::map<uint32_t, std::string> recent_;  // hashes of the last scanned blocks (the reorg anchor)
 };
 
 }  // namespace dinero::swap
