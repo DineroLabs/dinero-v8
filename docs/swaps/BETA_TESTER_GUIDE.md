@@ -29,6 +29,13 @@ amounts you can afford to lose.
 Your node checks these limits both on offers you make and on offers you
 accept.
 
+**Other rules your node enforces:**
+- **Minimum sizes:** at least 100× the urgent DIN fee (1 DIN by default) and
+  20× the BTC fee (0.0002 BTC by default), so fees always fit.
+- **Lock lengths:** a taker refuses any lock longer than 7 days.
+- **Confirmations:** at least 3 BTC confirmations before Alice reveals her
+  secret. A Dinero outcome counts as final only after 30 confirmations.
+
 ## What you need
 
 1. **dinerod** built from the swap beta branch, with your own wallet. The
@@ -51,7 +58,7 @@ swap.mainnet_beta=1
 swap.btc_rpc=127.0.0.1:8332
 swap.btc_rpc_user=<bitcoin rpc user>
 swap.btc_rpc_pass=<bitcoin rpc password>
-# optional, Bob only: a watchtower (see below)
+# required on mainnet to BUY DIN (Bob): a running watchtower (see below)
 # swap.tower_inbox=/path/to/tower/inbox
 ```
 
@@ -74,20 +81,33 @@ Without `swap.mainnet_beta=1`, dinerod refuses to start with swaps enabled.
 
 1. Paste Alice's offer, enter your Bitcoin refund address and click
    **Review…**. Check the amounts, the rate and both deadlines, then confirm.
+   - On mainnet this needs a running watchtower; see below.
 2. Send your accept text back to Alice.
-3. Your node waits for 30 confirmations of Alice's DIN lock, then locks your
-   BTC. When Alice claims the BTC, your node claims the DIN.
+3. Your node waits for 30 confirmations of Alice's DIN lock, then:
+   - builds and signs your BTC funding **without sending it**;
+   - hands your watchtower a package for exactly that funding;
+   - sends the BTC **only after the tower confirms it holds the package.**
+
+   If the tower doesn't confirm within 30 minutes, nothing is sent and you can
+   cancel.
+4. When Alice claims the BTC, your node (or your tower) claims the DIN.
+   - The claim first pays a swap key of yours. A second small transaction then
+     moves the DIN to your wallet; it can also raise the fee if the claim is
+     stuck.
+   - The tab shows **"Done — moving the DIN to your wallet"** until that
+     second transaction confirms.
 
 ## Your two duties
 
 1. **Stay online with the wallet unlocked** until the swap is Done or Refunded.
-   - While the wallet is locked, swaps pause, and the tab says
-     "Paused — unlock the wallet".
+   - Swaps already running keep going if the wallet locks itself again later.
+   - A daemon **restarted** while the wallet is locked pauses its swaps until
+     you unlock it. The tab says "Paused — unlock the wallet".
    - Bob is most at risk: if he is offline when Alice claims the BTC, he must
      claim the DIN before the DIN deadline. Bob can run
      `dinero-swap-tower --inbox DIR …` on an always-on machine and set
      `swap.tower_inbox=DIR`. The tower holds only pre-signed transactions,
-     never keys.
+     never keys. **On mainnet this is required to buy DIN.**
 2. **Don't start a swap you can't follow through.**
    - You can **cancel** only before your coins are locked.
    - After that, the swap finishes or refunds on its own, as long as your
@@ -95,9 +115,14 @@ Without `swap.mainnet_beta=1`, dinerod refuses to start with swaps enabled.
 
 ## If something goes wrong
 
-- **Recovery from your seed.** Swap keys and files are derived from your
-  wallet seed, at path `m/1398227280'/…`. A wallet restored from the seed can
-  decrypt its files in `<datadir>/swaps` and finish or refund.
+- **Manual refund.** `swap.refund <id>` broadcasts your own refund right away,
+  whatever the swap's state. It never reveals the secret. Before the deadline
+  the node refuses it as "non-final", which is expected.
+- **Recovery from your seed.** Swap keys are derived from your wallet seed, at
+  path `m/1398227280'/…`. A wallet restored from the seed can decrypt its files
+  in `<datadir>/swaps` and finish or refund.
+- **Alice's secret is random per offer** and lives only in those encrypted
+  files. Losing the file of an offer nobody accepted locks nothing.
 - **Keep `<datadir>/swaps` with your backups.** The files are encrypted.
 - **"Lost" state:** contact the team immediately. Include the swap id (shown in
   the tab), the state and the events.
@@ -107,9 +132,11 @@ Without `swap.mainnet_beta=1`, dinerod refuses to start with swaps enabled.
 
 ## Known limitations
 
-- **No fee bumping on Dinero.** Dinero nodes don't replace transactions by fee.
-  The DIN claim fee is chosen by how close the DIN deadline is, and it can't
-  be raised afterwards.
+- **One fee bump on Dinero.** Dinero nodes don't replace transactions by fee.
+  - The DIN claim fee is chosen by how close the DIN deadline is.
+  - A stuck claim gets exactly one bump, through a child transaction (CPFP).
+  - Regtest showed that nodes accept the child. That miners prefer the pair
+    when blocks are full is not yet tested.
 - **One Bitcoin wallet only.** Bitcoin Core must have exactly one loaded
   wallet; there is no Electrum support yet.
 - **Copy-paste only.** Offers are exchanged by copy-paste; there is no order
