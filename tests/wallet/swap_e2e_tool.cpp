@@ -256,7 +256,10 @@ int main(int argc, char** argv) {
         config.btc_hrp = "bcrt";
         config.use_tower = use_tower;
         config.btc_chain = "regtest";
-        if (din_cpfp) config.din_bump_after_seconds = 3;
+        if (din_cpfp) {
+            config.din_bump_after_seconds = 3;
+            config.din_bump_stuck_seconds = 3;  // regtest: "stuck" after 3 s
+        }
 
         auto make_session = [&](Role role) {
             SwapSession s;
@@ -459,7 +462,8 @@ int main(int argc, char** argv) {
             Check(mempool_size >= 2, "dinerod holds the claim and its child together (" + std::to_string(mempool_size) + ")");
             Check(alice.State() == SwapState::Done && bob.State() == SwapState::Done && bob.runner->session().din_swept,
                   "both Done, Bob's DIN swept");
-            Check(din_balance(kBobDinClaim) == int64_t(kDinAmount - 2 * config.din_fee_una),
+            // The one bump pays at least the urgent fee.
+            Check(din_balance(kBobDinClaim) == int64_t(kDinAmount - config.din_fee_una - config.din_fee_urgent_una),
                   "bob received DIN minus claim and child fees in his wallet");
         } else if (tower_silent) {
             // Bob's tower never confirms the package: his BTC must never leave.

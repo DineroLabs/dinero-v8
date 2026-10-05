@@ -87,7 +87,12 @@ struct RunnerConfig {
     uint64_t din_fee_urgent_una{1'000'000}; // DIN claim fee within 6 h of T_din (linear between)
     uint64_t btc_fee_sat{1'000};          // first BTC claim/refund fee; doubles every 30 min unconfirmed
     uint32_t btc_fee_max_percent{5};      // cap per BTC claim/refund, of the swap amount
-    uint32_t din_bump_after_seconds{20 * 60};  // Bob's DIN claim unmined this long: one CPFP child
+    // Bob's one CPFP bump (Dinero cannot bump twice): only for a claim unmined
+    // at least din_bump_after_seconds, and only once it matters — within
+    // din_bump_window_seconds of T_din, or unmined for din_bump_stuck_seconds.
+    uint32_t din_bump_after_seconds{20 * 60};
+    uint32_t din_bump_window_seconds{12 * 60 * 60};
+    uint32_t din_bump_stuck_seconds{6 * 60 * 60};
     // Bob's watchtower ladders (only used when a tower is configured).
     bool use_tower{false};
     uint64_t din_tower_start_feerate_una_per_vb{1'000};

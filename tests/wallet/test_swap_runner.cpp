@@ -774,13 +774,18 @@ TEST(SwapRunner, BobBumpsAStuckDinClaimWithOneChild) {
     const auto claim = Parse(chains.din_broadcasts[0]);
     EXPECT_EQ(bob.session().din_claim_txid, TxId::Compute(claim).AsUint256().GetHex()) << "first claim remembered";
 
-    bob.Tick(kNow + 25 * 60);  // still unconfirmed: one child pays for both
+    bob.Tick(kNow + 25 * 60);  // unmined but T_din far: the one bump is kept for when it matters
+    EXPECT_EQ(chains.din_broadcasts.size(), 2u) << "re-broadcast of the claim only";
+    chains.din.mtp_unix = s.record.offer.t_din_unix - 10 * kHour;  // now within 12 h of T_din
+    bob.Tick(kNow + 30 * 60);
     bool child = false;
     for (const auto& raw : chains.din_broadcasts) {
         const auto tx = Parse(raw);
         if (tx.vin.at(0).prevout.txid == TxId::Compute(claim)) {
             child = true;
             EXPECT_EQ(tx.vout.at(0).scriptPubKey, s.din_payout_script);
+            const uint64_t child_fee = claim.vout[0].value.GetUna() - tx.vout[0].value.GetUna();
+            EXPECT_GE(child_fee, Config().din_fee_urgent_una) << "the one bump pays the urgent fee";
         }
     }
     EXPECT_TRUE(child);

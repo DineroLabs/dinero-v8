@@ -110,7 +110,12 @@ struct TowerConfig {
     uint32_t din_relaxed_before_seconds{24 * 60 * 60};  // lowest DIN rung this far from T_din
     uint32_t din_urgent_before_seconds{6 * 60 * 60};    // top DIN rung this close to T_din
     uint32_t settle_confirmations{6};  // keep watching (and re-broadcast after a reorg) until this deep
-    uint32_t din_bump_after_seconds{20 * 60};  // claim still unmined this long after the first broadcast: CPFP
+    // The one CPFP bump (Dinero cannot bump twice): the claim unmined at least
+    // din_bump_after_seconds, and within din_bump_window_seconds of T_din or
+    // unmined for din_bump_stuck_seconds; then the largest child.
+    uint32_t din_bump_after_seconds{20 * 60};
+    uint32_t din_bump_window_seconds{12 * 60 * 60};
+    uint32_t din_bump_stuck_seconds{6 * 60 * 60};
 };
 
 // Index into `count` fee levels by how close T_din is (Dinero has no RBF:

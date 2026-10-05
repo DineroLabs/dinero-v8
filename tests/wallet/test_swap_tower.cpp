@@ -367,6 +367,7 @@ TEST(SwapTower, AfterARestartTheBumpReachesWhicheverRungIsInTheMempool) {
     Watchtower tower(pkg, Config(), chains);
     chains.AliceClaimsBtc(kSecret);
     tower.Tick(kNow);
+    chains.din.mtp_unix = BobSession().record.offer.t_din_unix - 10 * kHour;  // the bump is due
     tower.Tick(kNow + 25 * 60);
     bool child_of_rung2 = false;
     for (const auto& raw : chains.din_broadcasts) {
@@ -411,13 +412,22 @@ TEST(SwapTower, BumpsAStuckClaimWithAPreSignedChildThenSweeps) {
     const auto claim = ParseDin(chains.din_broadcasts[0]);
     tower.Tick(kNow + 10 * 60);
     EXPECT_EQ(chains.din_broadcasts.size(), 2u) << "re-broadcast only, no child yet";
-    tower.Tick(kNow + 25 * 60);  // still unmined
+    tower.Tick(kNow + 25 * 60);  // unmined but T_din far: keep the one bump
+    EXPECT_EQ(chains.din_broadcasts.size(), 3u) << "claim re-broadcasts only";
+    chains.din.mtp_unix = BobSession().record.offer.t_din_unix - 10 * kHour;  // within 12 h of T_din
+    tower.Tick(kNow + 30 * 60);
     bool child_seen = false;
     for (const auto& raw : chains.din_broadcasts) {
         const auto tx = ParseDin(raw);
         if (tx.vin.at(0).prevout.txid != TxId::Compute(claim)) continue;  // the claim itself
         child_seen = true;
         EXPECT_EQ(tx.vout.at(0).scriptPubKey, BobSession().din_payout_script) << "the child pays Bob's wallet";
+        // The largest child of that rung.
+        bool largest = false;
+        for (const auto& rung : Package().din_claims) {
+            if (TxId::Compute(rung.tx) == TxId::Compute(claim)) largest = TxId::Compute(rung.children.back().tx) == TxId::Compute(tx);
+        }
+        EXPECT_TRUE(largest) << "the one bump uses the largest child";
     }
     EXPECT_TRUE(child_seen) << "a child of the claim it broadcast";
 

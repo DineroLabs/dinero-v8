@@ -630,15 +630,20 @@ void SwapRunner::BumpOrSweepDin(const DinWatchReport& din, uint32_t now, std::ve
     if (r.role != Role::BtcSeller || session_.din_sweep_pubkey == Bytes32{} || session_.din_swept) return;
     const auto sweep_spk = BuildDinSweepOutput(session_.din_sweep_pubkey).script_pubkey;
     try {
+        const int64_t left = int64_t(r.offer.t_din_unix) - int64_t(din.mtp_unix);
+        const bool bump_due = left <= int64_t(config_.din_bump_window_seconds) ||
+                              now >= r.state_since_unix + config_.din_bump_stuck_seconds;
         if (r.state == SwapState::DinClaimBroadcast && !din.htlc.spent && !session_.din_claim_txid.empty() &&
-            now >= r.state_since_unix + config_.din_bump_after_seconds) {
+            now >= r.state_since_unix + config_.din_bump_after_seconds && bump_due) {
             FundingOutput parent;
             parent.txid = TxId(uint256::FromHexUnsafe(session_.din_claim_txid));
             parent.vout = 0;
             parent.value = AmountUna::Una(session_.din_claim_value);
             parent.script_pubkey = sweep_spk;
+            // The only bump there will be: make it count.
+            const uint64_t fee = std::max(config_.din_fee_urgent_una, DinFeeByUrgency(din.mtp_unix));
             events.push_back("DIN claim still unmined; CPFP child: " +
-                             io_.BroadcastDin(SignedDinSweep(session_, keys_, parent, DinFeeByUrgency(din.mtp_unix))));
+                             io_.BroadcastDin(SignedDinSweep(session_, keys_, parent, fee)));
             return;
         }
         if (din.claim_output && din.htlc.spent_by_claim && din.htlc.spend_confirmations >= 1 &&

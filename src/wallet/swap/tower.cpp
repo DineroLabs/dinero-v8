@@ -512,13 +512,16 @@ void Watchtower::DinClaimDuty(const DinWatchReport& din, uint32_t now, TowerRepo
     // Bump: still unmined a while into the duty. Which rung sits in mempools
     // is not known (an earlier choice, or one from before a restart), so offer
     // a child of every rung: only the real parent's child can be accepted.
-    if (!din.htlc.spent && now >= *duty_since_ + config_.din_bump_after_seconds) {
+    const int64_t left = int64_t(offer.t_din_unix) - int64_t(din.mtp_unix);
+    const bool bump_due = left <= int64_t(config_.din_bump_window_seconds) ||
+                          now >= *duty_since_ + config_.din_bump_stuck_seconds;
+    if (!din.htlc.spent && now >= *duty_since_ + config_.din_bump_after_seconds && bump_due) {
         size_t offered = 0;
         for (const auto& rung : package_.din_claims) {
             if (rung.children.empty()) continue;
-            const size_t k = IndexByUrgency(rung.children.size(), offer.t_din_unix, din.mtp_unix, config_);
             try {
-                io_.BroadcastDin(rung.children[k].tx.Serialize(TxSerializationMode::WithWitness));
+                // The only bump there will be: the largest child.
+                io_.BroadcastDin(rung.children.back().tx.Serialize(TxSerializationMode::WithWitness));
                 ++offered;
             } catch (const std::exception&) {
                 // parent not in the mempool (or child already there): expected for all but one
