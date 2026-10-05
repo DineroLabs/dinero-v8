@@ -162,7 +162,7 @@ inline void WriteFileAtomically(const std::string& path, const std::string& text
     }
     if (::_commit(fd) != 0) { ::_close(fd); throw std::runtime_error("swap: fsync failed: " + path); }
     ::_close(fd);
-    if (!::MoveFileExW(tmp.c_str(), target.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+    if (std::rename(tmp.string().c_str(), target.string().c_str()) != 0) {  // NEUTER: plain rename
         throw std::runtime_error("swap: rename failed: " + path);
     }
 }
