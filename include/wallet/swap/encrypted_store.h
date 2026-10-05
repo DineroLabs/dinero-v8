@@ -17,6 +17,10 @@ namespace dinero::swap {
 // wallet master key itself never encrypts swap data.
 Bytes32 DeriveSwapStoreKey(const Bytes32& wallet_master_key);
 
+// Any text sealed the same way (pending offers use it too).
+void SealToFile(const std::string& path, const Bytes32& key, const std::string& plaintext);
+std::string OpenSealedFile(const std::string& path, const Bytes32& key);  // throws std::runtime_error
+
 class EncryptedFileSwapStore : public SwapStore {
 public:
     EncryptedFileSwapStore(std::string path, const Bytes32& key);

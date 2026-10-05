@@ -2,6 +2,7 @@
 
 #include "bech32/bech32.hpp"
 #include "crypto/sha256.h"
+#include "crypto/secure_random.h"
 #include "wallet/swap/swap_crypto.h"
 #include "wallet/swap/tower.h"
 
@@ -29,9 +30,8 @@ Bytes32 Derive(const KeyDeriver& derive, const std::vector<uint32_t>& path) {
     return *k;
 }
 
-std::map<std::string, std::string> ReadKeyValues(const std::string& path) {
-    std::ifstream in(path);
-    if (!in) throw std::runtime_error("swap: cannot read " + path);
+std::map<std::string, std::string> ParseKeyValues(const std::string& text) {
+    std::istringstream in(text);
     std::map<std::string, std::string> kv;
     for (std::string line; std::getline(in, line);) {
         const auto eq = line.find('=');
@@ -78,7 +78,6 @@ SwapKeyMaterial SwapKeysForIndex(const KeyDeriver& derive, SwapNetwork network, 
     m.keys.btc_secret_key = Derive(derive, {kSwapKeyPurpose, uint32_t(network), 2, index});
     XOnlyOf(m.keys.din_secret_key);  // throws on an invalid scalar (negligible probability)
     CompressedOf(m.keys.btc_secret_key);
-    m.secret = HmacSha256(m.keys.din_secret_key, "dinero/swap-secret/v1");
     return m;
 }
 
@@ -173,12 +172,16 @@ std::string SwapManager::MakeOffer(const OfferRequest& r, uint32_t now) {
     const auto btc_payout = PayoutScriptFromAddress(r.btc_claim_address, config_.runner.btc_hrp);
     const uint32_t index = AllocateIndex();
     const auto mat = SwapKeysForIndex(derive_, config_.network, index);
+    // Fresh per offer, never derived from the index: see the header.
+    const auto random = secure_random_bytes(32);
+    Bytes32 secret{};
+    std::copy(random.begin(), random.end(), secret.begin());
 
     SwapOffer o;
     o.network = config_.network;
     o.din_amount_una = r.din_amount_una;
     o.btc_amount_sat = r.btc_amount_sat;
-    crypto::CSHA256().Write(mat.secret.data(), mat.secret.size()).Finalize(o.payment_hash.data());
+    crypto::CSHA256().Write(secret.data(), secret.size()).Finalize(o.payment_hash.data());
     o.din_refund_pubkey = XOnlyOf(mat.keys.din_secret_key);
     o.btc_claim_pubkey = CompressedOf(mat.keys.btc_secret_key);
     o.t_btc_unix = now + r.btc_lock_hours * 3600;
@@ -190,7 +193,9 @@ std::string SwapManager::MakeOffer(const OfferRequest& r, uint32_t now) {
 
     std::ostringstream f;
     f << "offer=" << text << "\ndin_payout=" << ToHex(din_payout) << "\nbtc_payout=" << ToHex(btc_payout) << "\n";
-    WriteFileAtomically(OfferPath(index), f.str());
+    f << "secret=" << ToHex(std::vector<uint8_t>(secret.begin(), secret.end())) << "\n";
+    SealToFile(OfferPath(index), SwapStoreKeyFromSeed(derive_, config_.network), f.str());
+    WriteFileAtomically(OfferPath(index) + ".id", SwapId(o) + "\n");  // public: readable while locked
     return text;
 }
 
@@ -246,7 +251,7 @@ SwapManager::AcceptResult SwapManager::Accept(const std::string& text, const std
     if (text.rfind(kAcceptPrefix, 0) == 0) {  // Alice receives Bob's accept
         const SwapAccept accept = DecodeAccept(text);
         for (const auto& [index, path] : ScanDir(".offer")) {
-            auto kv = ReadKeyValues(path);
+            auto kv = ParseKeyValues(OpenSealedFile(path, store_key));
             const SwapOffer offer = DecodeOffer(kv["offer"]);
             if (OfferId(offer) != accept.offer_id) continue;
             const std::string id = SwapId(offer);
@@ -256,7 +261,11 @@ SwapManager::AcceptResult SwapManager::Accept(const std::string& text, const std
             s.record.role = Role::DinSeller;
             s.record.offer = offer;
             s.record.accept = accept;
-            s.record.secret = mat.secret;
+            const auto secret_bytes = FromHex(kv["secret"]);
+            if (secret_bytes.size() != 32) throw std::runtime_error("pending offer file has no secret");
+            Bytes32 secret{};
+            std::copy(secret_bytes.begin(), secret_bytes.end(), secret.begin());
+            s.record.secret = secret;
             s.record.state = SwapState::Accepted;
             s.record.state_since_unix = now;
             s.btc_scan_from_height = scan_from;
@@ -267,6 +276,7 @@ SwapManager::AcceptResult SwapManager::Accept(const std::string& text, const std
             EncryptedFileSwapStore(SwapPath(index), store_key).Save(s);
             WriteFileAtomically(SwapPath(index) + ".id", id + "\n");  // public: readable while locked
             fs::remove(path);
+            fs::remove(path + ".id");
             StartSession(index, std::move(s), store_key);
             return {id, std::nullopt};
         }
@@ -331,8 +341,19 @@ std::vector<SwapSummary> SwapManager::List() {
         }
     }
     for (const auto& [index, path] : ScanDir(".offer")) {
+        if (!store_key) {
+            SwapSummary m;
+            m.index = index;
+            m.id = "offer-" + std::to_string(index);
+            if (std::ifstream in(path + ".id"); in) in >> m.id;
+            m.role = Role::DinSeller;
+            m.pending_accept = true;
+            m.wallet_locked = true;
+            out.push_back(m);
+            continue;
+        }
         try {
-            const SwapOffer o = DecodeOffer(ReadKeyValues(path)["offer"]);
+            const SwapOffer o = DecodeOffer(ParseKeyValues(OpenSealedFile(path, *store_key))["offer"]);
             SwapSummary m;
             m.id = SwapId(o);
             m.index = index;
@@ -359,8 +380,11 @@ SwapSummary SwapManager::Status(const std::string& id) {
 void SwapManager::Cancel(const std::string& id) {
     std::lock_guard<std::mutex> lock(mu_);
     for (const auto& [index, path] : ScanDir(".offer")) {
-        if (SwapId(DecodeOffer(ReadKeyValues(path)["offer"])) == id) {
+        std::string offer_id;
+        if (std::ifstream in(path + ".id"); in) in >> offer_id;
+        if (offer_id == id) {
             fs::remove(path);  // nothing was locked for an unanswered offer
+            fs::remove(path + ".id");
             return;
         }
     }

@@ -8,15 +8,17 @@
 // m/1398227280' ("SWAP"), per network:
 //   store key   m/SWAP'/net'/0'          -> DeriveSwapStoreKey
 //   swap i      DIN key m/SWAP'/net'/1'/i', BTC key m/SWAP'/net'/2'/i'
-//   Alice's secret = HMAC-SHA256(DIN key of swap i, "dinero/swap-secret/v1")
+// Alice's secret is fresh random per offer and kept only in the encrypted
+// files: a restore into an empty directory reuses indices (and keys), and a
+// secret derived from them would repeat one already revealed on chain.
 // An index is never reused: the next one is above both the stored counter and
 // every index found on disk (a restored older backup cannot roll it back), and
 // an index that already has a file is refused.
 //
-// Files in the swap directory: swap-<i>.swap (EncryptedFileSwapStore) with
-// swap-<i>.swap.id (its public id, so a locked wallet can still report it),
-// offer-<i>.offer (Alice's offer awaiting Bob's accept; public data only),
-// next_index.
+// Files in the swap directory (all 0600, directory 0700): swap-<i>.swap and
+// offer-<i>.offer (Alice's offer awaiting Bob's accept, with its secret),
+// both encrypted; a public <file>.id sidecar each, so a locked wallet can
+// still list and cancel; next_index.
 
 #include "wallet/swap/encrypted_store.h"
 #include "wallet/swap/runner.h"
@@ -39,7 +41,6 @@ using KeyDeriver = std::function<std::optional<Bytes32>(const std::vector<uint32
 
 struct SwapKeyMaterial {
     SwapKeys keys;
-    Bytes32 secret{};  // used only by Alice
 };
 
 // Throw std::runtime_error("wallet locked ...") when the deriver returns nullopt.

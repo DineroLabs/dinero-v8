@@ -90,11 +90,11 @@ TEST(SwapManager, KeysAreSeedDerivedPerIndexAndNetwork) {
     const auto b = SwapKeysForIndex(w.Deriver(), SwapNetwork::Regtest, 1);
     const auto m = SwapKeysForIndex(w.Deriver(), SwapNetwork::Mainnet, 0);
     EXPECT_EQ(a.keys.din_secret_key, a2.keys.din_secret_key);
-    EXPECT_EQ(a.secret, a2.secret);
+
     EXPECT_NE(a.keys.din_secret_key, b.keys.din_secret_key);
     EXPECT_NE(a.keys.btc_secret_key, b.keys.btc_secret_key);
     EXPECT_NE(a.keys.din_secret_key, a.keys.btc_secret_key);
-    EXPECT_NE(a.secret, b.secret);
+
     EXPECT_NE(a.keys.din_secret_key, m.keys.din_secret_key) << "networks are separated";
     EXPECT_NE(SwapStoreKeyFromSeed(w.Deriver(), SwapNetwork::Regtest), a.keys.din_secret_key);
     for (const auto& path : w.asked) EXPECT_EQ(path.at(0), kSwapKeyPurpose);
@@ -126,17 +126,20 @@ TEST(SwapManager, OfferAcceptBetweenTwoWallets) {
     EXPECT_EQ(sa.din_amount_una, Request().din_amount_una);
     EXPECT_EQ(sa.t_din_unix, kNow + 96 * 3600);
 
-    // Alice's secret is seed-derived and matches the offer's payment hash;
-    // nothing secret is readable on disk.
-    const auto mat = SwapKeysForIndex(wa.Deriver(), SwapNetwork::Regtest, sa.index);
+    // Alice's secret matches the offer's payment hash; nothing secret is
+    // readable on disk.
     const auto session = EncryptedFileSwapStore::Load(da.path + "/swap-" + std::to_string(sa.index) + ".swap",
                                                       SwapStoreKeyFromSeed(wa.Deriver(), SwapNetwork::Regtest));
-    EXPECT_EQ(session.record.secret, mat.secret);
+    ASSERT_TRUE(session.record.secret.has_value());
+    Bytes32 h{};
+    crypto::CSHA256().Write(session.record.secret->data(), 32).Finalize(h.data());
+    EXPECT_EQ(h, session.record.offer.payment_hash);
+    const Bytes32 secret = *session.record.secret;
     for (const auto& e : fs::directory_iterator(da.path)) {
         std::ifstream in(e.path());
         std::stringstream t;
         t << in.rdbuf();
-        EXPECT_EQ(t.str().find(detail::ToHex(std::vector<uint8_t>(mat.secret.begin(), mat.secret.end()))),
+        EXPECT_EQ(t.str().find(detail::ToHex(std::vector<uint8_t>(secret.begin(), secret.end()))),
                   std::string::npos)
             << e.path();
     }
@@ -284,6 +287,45 @@ TEST(SwapManager, MainnetBetaNeedsOptInAndCapsCannotBeRaisedPastTheCeiling) {
     EXPECT_FALSE(r.refusal.has_value());
     EXPECT_EQ(r.max_btc_sat, 0u);
     EXPECT_EQ(r.max_din_una, 0u);
+}
+
+TEST(SwapManager, TheSecretIsFreshEvenWhenAnIndexRepeatsAfterARestore) {
+    // Restoring the seed into an empty swap directory restarts at index 0: the
+    // keys repeat, but the secret must not (a revealed old secret would let the
+    // next taker claim Alice's DIN without paying).
+    FakeWallet w{0x3a};
+    Bytes32 h1{}, h2{};
+    {
+        TempDir d("fresh1");
+        SwapManager m(Config(d.path), w.Deriver(), kNoDin, kNoBtc);
+        h1 = DecodeOffer(m.MakeOffer(Request(), kNow)).payment_hash;
+    }
+    {
+        TempDir d("fresh1");  // same path, emptied: a restore from seed
+        SwapManager m(Config(d.path), w.Deriver(), kNoDin, kNoBtc);
+        const auto o = DecodeOffer(m.MakeOffer(Request(), kNow));
+        EXPECT_EQ(m.List().at(0).index, 0u) << "the index repeats";
+        h2 = o.payment_hash;
+    }
+    EXPECT_NE(h1, h2);
+}
+
+TEST(SwapManager, PendingOffersAreNotReadableOnDisk) {
+    TempDir d("sealed");
+    FakeWallet w{0x3b};
+    SwapManager m(Config(d.path), w.Deriver(), kNoDin, kNoBtc);
+    const auto offer = m.MakeOffer(Request(), kNow);
+    for (const auto& e : fs::directory_iterator(d.path)) {
+        std::ifstream in(e.path());
+        std::stringstream t;
+        t << in.rdbuf();
+        EXPECT_EQ(t.str().find("dinswap1o"), std::string::npos) << e.path() << " holds the offer in clear text";
+    }
+    w.locked = true;
+    SwapManager locked(Config(d.path), w.Deriver(), kNoDin, kNoBtc);
+    ASSERT_EQ(locked.List().size(), 1u);
+    EXPECT_TRUE(locked.List()[0].wallet_locked);
+    EXPECT_EQ(locked.List()[0].id, SwapId(DecodeOffer(offer)));
 }
 
 TEST(SwapManager, PayoutScriptFromAddress) {
