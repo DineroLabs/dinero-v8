@@ -273,6 +273,16 @@ TEST(SwapTower, RefundsBtcOnlyOnceBitcoinTimeReachesTBtc) {
     EXPECT_TRUE(chains.din_broadcasts.empty());
 }
 
+TEST(SwapTower, RefundsBtcEvenWhileDineroIsUnobservable) {
+    FakeChains chains;
+    Watchtower tower(Package(), Config(), chains);
+    chains.din.ok = false;
+    chains.btc.mtp_unix = BobSession().record.offer.t_btc_unix + 1;
+    tower.Tick(kNow);
+    EXPECT_EQ(chains.btc_broadcasts.size(), 1u);
+    EXPECT_TRUE(chains.din_broadcasts.empty());
+}
+
 TEST(SwapTower, NeverActsBlindAndStopsWhenSettled) {
     FakeChains chains;
     Watchtower tower(Package(), Config(), chains);

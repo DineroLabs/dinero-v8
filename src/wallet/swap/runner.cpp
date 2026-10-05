@@ -310,6 +310,7 @@ TickReport SwapRunner::Tick(uint32_t wall_clock_unix) {
     if (!din.ok || !btc.ok) {
         report.events.push_back(std::string("not observed: ") + (din.ok ? "" : "Dinero ") + (btc.ok ? "" : "Bitcoin ") +
                                 "node unreachable or inconsistent");
+        SingleChainRebroadcast(din, btc, wall_clock_unix, report.events);
         return report;
     }
     report.observed = true;
@@ -365,6 +366,33 @@ void SwapRunner::ArmTower(const DinWatchReport& din, const BtcWatchReport& btc, 
                          std::to_string(package.btc_refunds.size()) + " BTC refund rungs");
     } catch (const std::exception& e) {
         events.push_back(std::string("ALERT: watchtower not armed, this wallet must stay online: ") + e.what());
+    }
+}
+
+// With one chain unobservable nothing is decided or saved, but transactions
+// already committed to, which depend only on the observable chain, keep being
+// broadcast: an outage of one node must not cost the other chain's deadline.
+void SwapRunner::SingleChainRebroadcast(const DinWatchReport& din, const BtcWatchReport& btc, uint32_t now,
+                                        std::vector<std::string>& events) {
+    const auto& r = session_.record;
+    const bool alice = r.role == Role::DinSeller;
+    auto settled = [](const HtlcObservation& h) { return h.spent && h.spend_confirmations >= 1; };
+    if (btc.ok && btc.funding && !settled(btc.htlc)) {
+        if (alice && r.state == SwapState::BtcClaimBroadcast && r.claim_seen) {  // the secret is already public
+            return Execute({ActionKind::ClaimBtc, "single-chain re-broadcast"}, din, btc, now, events);
+        }
+        if (!alice && r.state == SwapState::BtcRefundBroadcast && !btc.htlc.spent_by_claim &&
+            btc.mtp_unix > r.offer.t_btc_unix) {
+            return Execute({ActionKind::RefundBtc, "single-chain re-broadcast"}, din, btc, now, events);
+        }
+    }
+    if (din.ok && din.funding && !din.htlc.spent) {
+        if (!alice && r.state == SwapState::DinClaimBroadcast && r.secret) {
+            return Execute({ActionKind::ClaimDin, "single-chain re-broadcast"}, din, btc, now, events);
+        }
+        if (alice && r.state == SwapState::DinRefundBroadcast && din.mtp_unix > r.offer.t_din_unix) {
+            return Execute({ActionKind::RefundDin, "single-chain re-broadcast"}, din, btc, now, events);
+        }
     }
 }
 

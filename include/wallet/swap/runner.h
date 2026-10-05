@@ -185,6 +185,8 @@ private:
     void ArmTower(const DinWatchReport& din, const BtcWatchReport& btc, std::vector<std::string>& events);
     void PinAndSave(const std::string& din_txid, const std::string& btc_txid);
     uint64_t BtcFeeNow(uint32_t now) const;
+    void SingleChainRebroadcast(const DinWatchReport& din, const BtcWatchReport& btc, uint32_t now,
+                                std::vector<std::string>& events);
 
     SwapSession session_;
     SwapKeys keys_;

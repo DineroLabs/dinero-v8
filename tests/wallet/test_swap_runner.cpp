@@ -490,6 +490,42 @@ TEST(SwapRunner, AlicesBtcClaimFeeRisesWhileItIsUnconfirmed) {
                                         Config().btc_fee_max_percent / 100);
 }
 
+TEST(SwapRunner, AnOutageOfOneChainDoesNotBlockTheOthersUrgentRebroadcasts) {
+    auto run = [](Role role, SwapState state, bool din_ok, bool btc_ok, bool claim_seen, bool secret) {
+        Log log;
+        FakeStore store(log);
+        FakeChains chains(log);
+        auto s = MakeSession(role);
+        s.record.state = state;
+        s.record.state_since_unix = kNow;
+        s.record.claim_seen = claim_seen;
+        if (secret) s.record.secret = kSecret;
+        BothLocksSeen(chains, s);
+        chains.din.ok = din_ok;
+        chains.btc.ok = btc_ok;
+        chains.btc.mtp_unix = s.record.offer.t_btc_unix + 3600;
+        chains.din.mtp_unix = s.record.offer.t_din_unix + 3600;
+        SwapRunner r(s, role == Role::DinSeller ? kAliceKeys : kBobKeys, Config(), chains, store);
+        const auto rep = r.Tick(s.record.offer.t_btc_unix + 7200);
+        EXPECT_FALSE(rep.observed);
+        EXPECT_EQ(r.session().record.state, state) << "no decision without both chains";
+        EXPECT_TRUE(log.lines.empty() || log.lines[0].rfind("save", 0) != 0) << "nothing saved";
+        return std::make_pair(chains.din_broadcasts.size(), chains.btc_broadcasts.size());
+    };
+    // Alice's claim was seen (secret public): keep it going even if Dinero is down.
+    EXPECT_EQ(run(Role::DinSeller, SwapState::BtcClaimBroadcast, false, true, true, true).second, 1u);
+    // ...but never re-send an unseen claim blind.
+    EXPECT_EQ(run(Role::DinSeller, SwapState::BtcClaimBroadcast, false, true, false, true).second, 0u);
+    // Bob's BTC refund needs only Bitcoin.
+    EXPECT_EQ(run(Role::BtcSeller, SwapState::BtcRefundBroadcast, false, true, false, false).second, 1u);
+    // Bob's DIN claim (secret known) and Alice's DIN refund need only Dinero.
+    EXPECT_EQ(run(Role::BtcSeller, SwapState::DinClaimBroadcast, true, false, false, true).first, 1u);
+    EXPECT_EQ(run(Role::DinSeller, SwapState::DinRefundBroadcast, true, false, false, true).first, 1u);
+    // Nothing new is started blind.
+    const auto none = run(Role::BtcSeller, SwapState::BtcLocked, false, true, false, false);
+    EXPECT_EQ(none.first + none.second, 0u);
+}
+
 TEST(SwapRunner, SessionRoundTripsThroughTheFileStore) {
     const auto path = (std::filesystem::temp_directory_path() / "swap_runner_test_session.txt").string();
     std::remove(path.c_str());

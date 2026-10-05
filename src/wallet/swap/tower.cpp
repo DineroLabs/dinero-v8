@@ -293,12 +293,27 @@ TowerReport Watchtower::Tick(uint32_t now) {
     TowerReport report;
     const DinWatchReport din = io_.ObserveDin();
     const BtcWatchReport btc = io_.ObserveBtc();
-    if (!din.ok || !btc.ok) {
-        report.events.push_back("not observed: a node is unreachable or inconsistent");
+    const auto& offer = package_.offer;
+    if (!btc.ok) {
+        report.events.push_back("not observed: the Bitcoin node is unreachable or inconsistent");
+        return report;
+    }
+    if (!din.ok) {
+        // Bob's BTC refund needs only Bitcoin: a Dinero outage must not cost it.
+        report.events.push_back("not observed: the Dinero node is unreachable; BTC refund duty only");
+        if (!btc.htlc.spent_by_claim && !(btc.htlc.spent && btc.htlc.spend_confirmations >= 1) &&
+            btc.mtp_unix > offer.t_btc_unix && btc.htlc.output_seen) {
+            const size_t i = NextRung(btc_refund_, package_.btc_refunds.size(), now);
+            try {
+                report.events.push_back("BTC refund rung " + std::to_string(i) + " broadcast: " +
+                                        io_.BroadcastBtc(SerializeBtcTx(package_.btc_refunds[i].tx)));
+            } catch (const std::exception& e) {
+                report.events.push_back("BTC refund rung " + std::to_string(i) + " not accepted: " + e.what());
+            }
+        }
         return report;
     }
     report.observed = true;
-    const auto& offer = package_.offer;
 
     // Bob's outcome in a block: done once buried, and until then only watched
     // (a reorg that drops it makes the duty below active again).
