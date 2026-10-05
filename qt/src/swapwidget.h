@@ -26,6 +26,7 @@ private Q_SLOTS:
     void onSelectionChanged();
     void refresh();
     void updateOfferReview();
+    void updatePasteReview();
     void onRpcResult(const QString& method, const QJsonValue& result);
     void onRpcError(const QString& method, int code, const QString& message);
 
@@ -43,17 +44,24 @@ private:
     QLineEdit* dinAmount_;
     QLineEdit* btcAmount_;
     QLineEdit* btcAddress_;
-    QLabel* offerReview_;
+    QLabel* offerHint_;
+    QLabel* reviewSell_;
+    QLabel* reviewReceive_;
+    QLabel* reviewRate_;
+    QLabel* reviewRefund_;
+    QLabel* reviewClaim_;
     QPushButton* createOffer_;
     QPlainTextEdit* offerOut_;
     QPushButton* copyOffer_;
 
     QPlainTextEdit* pasteIn_;
     QLineEdit* btcRefundAddress_;
+    QLabel* pasteHint_;
     QPushButton* reviewPasted_;
     QPlainTextEdit* acceptOut_;
     QPushButton* copyAccept_;
 
+    QLabel* listEmpty_;
     QTableWidget* table_;
     QPlainTextEdit* events_;
     QPushButton* cancel_;

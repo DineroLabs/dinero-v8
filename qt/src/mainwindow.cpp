@@ -162,6 +162,7 @@ enum class NavigationGlyph {
   Proof,
   Peers,
   Template,
+  Swap,
 };
 
 QPixmap drawNavigationGlyph(NavigationGlyph glyph, const QColor& color) {
@@ -218,6 +219,11 @@ QPixmap drawNavigationGlyph(NavigationGlyph glyph, const QColor& color) {
     case NavigationGlyph::Transactions:
       line(9, 10, 31, 10); line(9, 20, 31, 20); line(9, 30, 25, 30);
       painter.drawPoint(QPointF(5, 10)); painter.drawPoint(QPointF(5, 20)); painter.drawPoint(QPointF(5, 30));
+      break;
+    case NavigationGlyph::Swap:
+      // Two opposing arrows: one asset goes out, the other comes in.
+      line(7, 13, 32, 13); line(26, 7, 32, 13); line(26, 19, 32, 13);
+      line(33, 27, 8, 27); line(14, 21, 8, 27); line(14, 33, 8, 27);
       break;
     case NavigationGlyph::Link:
       painter.drawArc(QRectF(5, 12, 18, 16), 45 * 16, 270 * 16);
@@ -2382,22 +2388,7 @@ void MainWindow::setupUI() {
   setMenuBar(menuBar);
 
   auto *mainLayout = new QVBoxLayout(central);
-  central->setStyleSheet(
-    "QWidget { background: #181b20; color: #d6dde6; } "
-    "QTabWidget::pane { border: 1px solid #2f343c; background: #1a1d22; border-radius: 8px; margin-top: 6px; } "
-    "QTabBar::tab { background: #242932; color: #d5dce5; border: 1px solid #353b45; border-bottom: 3px solid transparent; "
-    "padding: 6px 8px; min-height: 20px; font-size: 12px; font-weight: 500; "
-    "border-top-left-radius: 6px; border-top-right-radius: 6px; margin-right: 2px; } "
-    "QTabBar::tab:hover { background: #2a3039; color: #e7ecf2; border-color: #46505d; border-bottom-color: #46505d; } "
-    "QTabBar::tab:selected { background: #303844; color: #f2f5f8; border-color: #46505d; border-bottom: 3px solid #d58a32; } "
-    "QGroupBox { border: 1px solid #30353d; border-radius: 10px; margin-top: 10px; padding-top: 8px; background: #20242a; font-weight: 600; } "
-    "QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 6px; color: #cad2db; } "
-    "QLineEdit, QComboBox, QSpinBox, QTextEdit, QPlainTextEdit { background: #1f2328; color: #d7dde5; "
-    "border: 1px solid #353b44; border-radius: 6px; padding: 6px; selection-background-color: #3e4550; } "
-    "QPushButton { background: #2b3037; color: #e6ebf1; border: 1px solid #3c434d; border-radius: 7px; padding: 6px 12px; font-weight: 600; } "
-    "QPushButton:hover { background: #333942; } "
-    "QPushButton:pressed { background: #262b31; } "
-    "QPushButton:disabled { background: #21252a; color: #7f8893; border: 1px solid #30353d; }");
+  central->setStyleSheet(appPageStyle());
   
   // Wallet name indicator kept for internal status updates only.
   lblWalletName_ = new QLabel("Wallet: none");
@@ -3994,7 +3985,7 @@ void MainWindow::setupUI() {
     hardwareWalletWidget_ = new HardwareWalletWidget(rpc_);
     connect(hardwareWalletWidget_, &HardwareWalletWidget::transactionBroadcasted,
             this, &MainWindow::handleHardwareWalletBroadcast);
-    tabs->addTab(hardwareWalletWidget_, navigationIcon(NavigationGlyph::Hardware), "Hardware Wallet");
+    tabs->addTab(hardwareWalletWidget_, navigationIcon(NavigationGlyph::Hardware), "Hardware");  // short: every name fits at 1440 px
   }
 
   // === DPI Pay/Collect Tab ===
@@ -4054,7 +4045,7 @@ void MainWindow::setupUI() {
   // === Swap Tab: DIN <-> BTC atomic swaps via the local node's swap.* RPCs ===
   // Off in release builds until the swap code has had external review.
   {
-    tabs->addTab(new SwapWidget(rpc_, this), navigationIcon(NavigationGlyph::Transactions), "Swap");
+    tabs->addTab(makeScrollableTab(new SwapWidget(rpc_, this)), navigationIcon(NavigationGlyph::Swap), "Swap");
   }
 #endif
 
