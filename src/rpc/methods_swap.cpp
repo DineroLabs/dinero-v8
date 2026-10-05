@@ -46,7 +46,7 @@ din::Json ToJson(const SwapSummary& s) {
         return j;
     }
     j["role"] = RoleName(s.role);
-    j["state"] = s.pending_accept ? "offer-sent" : StateName(s.state);
+    j["state"] = s.pending_accept ? "offer-sent" : s.sweep_pending ? "sweeping" : StateName(s.state);
     j["din_amount_una"] = Json::UInt64(s.din_amount_una);
     j["btc_amount_sat"] = Json::UInt64(s.btc_amount_sat);
     j["t_btc_unix"] = s.t_btc_unix;

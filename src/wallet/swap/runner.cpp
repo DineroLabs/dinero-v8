@@ -74,6 +74,12 @@ std::string EncodeSession(const SwapSession& s) {
         << "din_funding_txid=" << s.din_funding_txid << "\n"
         << "btc_funding_txid=" << s.btc_funding_txid << "\n"
         << "btc_funding_raw=" << s.btc_funding_raw << "\n"
+        << "din_sweep_pubkey=" << (s.din_sweep_pubkey == Bytes32{} ? std::string()
+                                     : ToHex(std::vector<uint8_t>(s.din_sweep_pubkey.begin(), s.din_sweep_pubkey.end())))
+        << "\n"
+        << "din_swept=" << (s.din_swept ? 1 : 0) << "\n"
+        << "din_claim_txid=" << s.din_claim_txid << "\n"
+        << "din_claim_value=" << s.din_claim_value << "\n"
         << "din_payout_script=" << ToHex(s.din_payout_script) << "\n"
         << "btc_payout_script=" << ToHex(s.btc_payout_script) << "\n"
         << "tower_armed=" << (s.tower_armed ? 1 : 0) << "\n";
@@ -113,6 +119,21 @@ SwapSession DecodeSession(const std::string& text) {
     };
     s.din_funding_txid = txid_field("din_funding_txid");
     s.btc_funding_txid = txid_field("btc_funding_txid");
+    if (kv.count("din_sweep_pubkey") && !kv["din_sweep_pubkey"].empty()) {
+        const auto k = FromHex(kv["din_sweep_pubkey"]);
+        if (k.size() != 32) Refuse("bad din_sweep_pubkey");
+        std::copy(k.begin(), k.end(), s.din_sweep_pubkey.begin());
+    }
+    s.din_claim_txid = txid_field("din_claim_txid");
+    if (kv.count("din_claim_value") && !kv["din_claim_value"].empty()) {
+        const std::string& v = kv["din_claim_value"];
+        if (v.size() > 19 || v.find_first_not_of("0123456789") != std::string::npos) Refuse("bad din_claim_value");
+        s.din_claim_value = std::stoull(v);
+    }
+    if (kv.count("din_swept")) {
+        if (kv["din_swept"] != "0" && kv["din_swept"] != "1") Refuse("bad din_swept");
+        s.din_swept = kv["din_swept"] == "1";
+    }
     if (kv.count("btc_funding_raw") && !kv["btc_funding_raw"].empty()) {
         FromHex(kv["btc_funding_raw"]);  // validates
         s.btc_funding_raw = kv["btc_funding_raw"];
@@ -176,9 +197,24 @@ std::vector<uint8_t> SignedDinClaim(const SwapSession& s, const SwapKeys& keys,
     const auto terms = MakeDinTerms(s.record.offer, s.record.accept);
     RequireDinKey(keys, terms.claim_pubkey);
     const auto htlc = BuildDinHtlc(terms);
-    Transaction tx = BuildDinClaimTx(htlc, funding, Payout{s.din_payout_script, AmountUna::Una(fee_una)});
+    // With CPFP the claim pays Bob's sweep output; a child moves it to his wallet.
+    const bool cpfp = s.din_sweep_pubkey != Bytes32{};
+    const auto payout = cpfp ? BuildDinSweepOutput(s.din_sweep_pubkey).script_pubkey : s.din_payout_script;
+    Transaction tx = BuildDinClaimTx(htlc, funding, Payout{payout, AmountUna::Una(fee_una)});
     SetDinClaimWitness(tx, terms, htlc, SchnorrSign(keys.din_secret_key, DinClaimSighash(tx, funding, htlc)),
                        SecretOf(s));
+    return tx.Serialize(TxSerializationMode::WithWitness);
+}
+
+std::vector<uint8_t> SignedDinSweep(const SwapSession& s, const SwapKeys& keys, const FundingOutput& claim_output,
+                                    uint64_t fee_una) {
+    if (s.din_sweep_pubkey == Bytes32{}) Refuse("this swap has no sweep output");
+    if (XOnlyOf(keys.din_sweep_secret_key) != s.din_sweep_pubkey) Refuse("sweep key does not match the swap");
+    const auto sweep = BuildDinSweepOutput(s.din_sweep_pubkey);
+    FundingOutput parent = claim_output;
+    parent.script_pubkey = sweep.script_pubkey;
+    Transaction tx = BuildDinSweepTx(sweep, parent, Payout{s.din_payout_script, AmountUna::Una(fee_una)});
+    SetDinSweepWitness(tx, sweep, SchnorrSign(keys.din_sweep_secret_key, DinSweepSighash(tx, parent, sweep)));
     return tx.Serialize(TxSerializationMode::WithWitness);
 }
 
@@ -294,6 +330,12 @@ PreparedBtcFunding RpcSwapChainIo::PrepareFundBtc(const std::string& address, ui
 
 bool RpcSwapChainIo::TowerAcknowledged(const std::string& swap_id) { return tower_ack_ && tower_ack_(swap_id); }
 
+std::optional<bool> RpcSwapChainIo::DinOutputUnspent(const TxId& txid, uint32_t vout) {
+    const auto r = din_("gettxout", Params({txid.AsUint256().GetHex(), Json::Value(vout)}));
+    if (!r) return std::nullopt;
+    return !r->isNull();
+}
+
 void SwapChainIo::ArmTower(const std::string&) {
     throw std::runtime_error("no watchtower configured");
 }
@@ -378,6 +420,7 @@ TickReport SwapRunner::Tick(uint32_t wall_clock_unix) {
         Execute(a, din, btc, wall_clock_unix, report.events);
     }
     SendPreparedFunding(wall_clock_unix, report.events);
+    BumpOrSweepDin(din, wall_clock_unix, report.events);
     // Bob's tower must hold the package before he can safely go offline. The
     // engine asks once (ArmTower); a failed attempt is retried every tick.
     if (session_.record.role == Role::BtcSeller && config_.use_tower && !session_.tower_armed &&
@@ -395,21 +438,27 @@ void SwapRunner::ArmTower(const DinWatchReport& din, const BtcWatchReport& btc, 
     ArmTowerWith(*din.funding, *btc.funding, events);
 }
 
+TowerPackage SwapRunner::MyTowerPackage(const FundingOutput& din_funding, const BtcFunding& btc_funding) const {
+    const auto& offer = session_.record.offer;
+    FeeLadderPolicy din_policy;
+    din_policy.start_feerate_una_per_vb = config_.din_tower_start_feerate_una_per_vb;
+    din_policy.max_rungs = config_.tower_rungs;
+    din_policy.max_fee_una = offer.din_amount_una / 100 * config_.tower_max_fee_percent;
+    din_policy.min_payout_una = offer.din_amount_una / 2;
+    BtcFeeLadderPolicy btc_policy;
+    btc_policy.start_feerate_sat_per_vb = config_.btc_tower_start_feerate_sat_per_vb;
+    btc_policy.max_rungs = config_.tower_rungs;
+    btc_policy.max_fee_sat = offer.btc_amount_sat / 100 * config_.tower_max_fee_percent;
+    btc_policy.min_payout_sat = offer.btc_amount_sat / 2;
+    // Deterministic (fixed Schnorr aux, RFC 6979 ECDSA): rebuilding it gives the
+    // exact transactions the tower holds.
+    return BuildTowerPackage(session_, keys_, din_funding, btc_funding, din_policy, btc_policy);
+}
+
 bool SwapRunner::ArmTowerWith(const FundingOutput& din_funding, const BtcFunding& btc_funding,
                               std::vector<std::string>& events) {
     try {
-        const auto& offer = session_.record.offer;
-        FeeLadderPolicy din_policy;
-        din_policy.start_feerate_una_per_vb = config_.din_tower_start_feerate_una_per_vb;
-        din_policy.max_rungs = config_.tower_rungs;
-        din_policy.max_fee_una = offer.din_amount_una / 100 * config_.tower_max_fee_percent;
-        din_policy.min_payout_una = offer.din_amount_una / 2;
-        BtcFeeLadderPolicy btc_policy;
-        btc_policy.start_feerate_sat_per_vb = config_.btc_tower_start_feerate_sat_per_vb;
-        btc_policy.max_rungs = config_.tower_rungs;
-        btc_policy.max_fee_sat = offer.btc_amount_sat / 100 * config_.tower_max_fee_percent;
-        btc_policy.min_payout_sat = offer.btc_amount_sat / 2;
-        const auto package = BuildTowerPackage(session_, keys_, din_funding, btc_funding, din_policy, btc_policy);
+        const auto package = MyTowerPackage(din_funding, btc_funding);
         io_.ArmTower(EncodeTowerPackage(package));
         SwapSession next = session_;
         next.tower_armed = true;
@@ -495,6 +544,60 @@ void SwapRunner::SingleChainRebroadcast(const DinWatchReport& din, const BtcWatc
     }
 }
 
+// Dinero does not replace by fee: a DIN claim (or its CPFP child) is priced
+// once, for the time left before Alice's refund opens (24 h or more: base fee;
+// 6 h or less: urgent fee; linear in between).
+uint64_t SwapRunner::DinFeeByUrgency(uint32_t din_mtp) const {
+    const int64_t left = int64_t(session_.record.offer.t_din_unix) - int64_t(din_mtp);
+    constexpr int64_t kRelaxed = 24 * 3600, kUrgent = 6 * 3600;
+    const uint64_t lo = config_.din_fee_una, hi = std::max(config_.din_fee_una, config_.din_fee_urgent_una);
+    return left >= kRelaxed ? lo
+         : left <= kUrgent  ? hi
+                            : lo + (hi - lo) * uint64_t(kRelaxed - left) / uint64_t(kRelaxed - kUrgent);
+}
+
+// Bob with CPFP: his claim pays a sweep output of his own key.
+// - Stuck claim: 20 minutes after he broadcast it and still unmined, one
+//   child spending his (first-seen) claim pays for both (Dinero mining sorts
+//   by ancestor fee rate). Children cannot replace each other: one bump.
+// - Mined claim (his or the tower's): sweep its output to his wallet; the
+//   swap is not finished until that output is spent.
+void SwapRunner::BumpOrSweepDin(const DinWatchReport& din, uint32_t now, std::vector<std::string>& events) {
+    const auto& r = session_.record;
+    if (r.role != Role::BtcSeller || session_.din_sweep_pubkey == Bytes32{} || session_.din_swept) return;
+    const auto sweep_spk = BuildDinSweepOutput(session_.din_sweep_pubkey).script_pubkey;
+    try {
+        if (r.state == SwapState::DinClaimBroadcast && !din.htlc.spent && !session_.din_claim_txid.empty() &&
+            now >= r.state_since_unix + config_.din_bump_after_seconds) {
+            FundingOutput parent;
+            parent.txid = TxId(uint256::FromHexUnsafe(session_.din_claim_txid));
+            parent.vout = 0;
+            parent.value = AmountUna::Una(session_.din_claim_value);
+            parent.script_pubkey = sweep_spk;
+            events.push_back("DIN claim still unmined; CPFP child: " +
+                             io_.BroadcastDin(SignedDinSweep(session_, keys_, parent, DinFeeByUrgency(din.mtp_unix))));
+            return;
+        }
+        if (din.claim_output && din.htlc.spent_by_claim && din.htlc.spend_confirmations >= 1 &&
+            din.claim_output->script_pubkey == sweep_spk) {
+            const auto unspent = io_.DinOutputUnspent(din.claim_output->txid, din.claim_output->vout);
+            if (!unspent) return;
+            if (*unspent) {
+                events.push_back("sweeping the DIN to the wallet: " +
+                                 io_.BroadcastDin(SignedDinSweep(session_, keys_, *din.claim_output, config_.din_fee_una)));
+            } else {
+                SwapSession next = session_;
+                next.din_swept = true;
+                store_.Save(next);
+                session_ = std::move(next);
+                events.push_back("DIN swept to the wallet");
+            }
+        }
+    } catch (const std::exception& e) {
+        events.push_back(std::string("DIN bump/sweep not accepted: ") + e.what());
+    }
+}
+
 // Bitcoin replaces by fee: while a claim/refund stays unconfirmed, its fee
 // doubles every 30 minutes since the state began, up to btc_fee_max_percent of
 // the amount. Derived from the persisted state, so a restart picks up where it was.
@@ -571,15 +674,34 @@ void SwapRunner::Execute(const Action& action, const DinWatchReport& din, const 
                         io_.BroadcastBtc(SignedBtcRefund(session_, keys_, *btc.funding, BtcFeeNow(now))));
         case ActionKind::ClaimDin: {
             if (!din.funding) throw std::runtime_error("DIN HTLC output unknown");
-            // Dinero does not replace by fee: pick the fee for the time left before
-            // Alice's refund opens (24 h or more: base fee; 6 h or less: urgent fee).
-            const int64_t left = int64_t(offer.t_din_unix) - int64_t(din.mtp_unix);
-            constexpr int64_t kRelaxed = 24 * 3600, kUrgent = 6 * 3600;
-            const uint64_t lo = config_.din_fee_una, hi = std::max(config_.din_fee_una, config_.din_fee_urgent_una);
-            const uint64_t fee = left >= kRelaxed ? lo
-                               : left <= kUrgent  ? hi
-                                                  : lo + (hi - lo) * uint64_t(kRelaxed - left) / uint64_t(kRelaxed - kUrgent);
-            return done("broadcast DIN claim:", io_.BroadcastDin(SignedDinClaim(session_, keys_, *din.funding, fee)));
+            std::vector<uint8_t> raw;
+            if (session_.tower_armed && btc.funding && session_.din_sweep_pubkey != Bytes32{}) {
+                // Send the very rung the tower would (its children are signed
+                // against these txids), chosen by the same urgency rule.
+                const auto package = MyTowerPackage(*din.funding, *btc.funding);
+                const size_t i = IndexByUrgency(package.din_claims.size(), offer.t_din_unix, din.mtp_unix, TowerConfig{});
+                Transaction tx = package.din_claims[i].tx;
+                const auto terms = MakeDinTerms(offer, session_.record.accept);
+                if (!session_.record.secret) throw std::runtime_error("the secret is not known");
+                SetDinClaimWitness(tx, terms, BuildDinHtlc(terms), package.din_claims[i].signature,
+                                   std::vector<uint8_t>(session_.record.secret->begin(), session_.record.secret->end()));
+                raw = tx.Serialize(TxSerializationMode::WithWitness);
+            } else {
+                raw = SignedDinClaim(session_, keys_, *din.funding, DinFeeByUrgency(din.mtp_unix));
+            }
+            const std::string txid = io_.BroadcastDin(raw);
+            if (session_.din_claim_txid.empty()) {
+                // Dinero keeps the first seen: this is the claim a CPFP child must spend.
+                Transaction tx;
+                size_t used = 0;
+                TransactionSerializer::Deserialize(tx, raw, used);
+                SwapSession next = session_;
+                next.din_claim_txid = TxId::Compute(tx).AsUint256().GetHex();
+                next.din_claim_value = tx.vout.at(0).value.GetUna();
+                store_.Save(next);
+                session_ = std::move(next);
+            }
+            return done("broadcast DIN claim:", txid);
         }
         case ActionKind::RefundDin:
             if (!din.funding) throw std::runtime_error("DIN HTLC output unknown");

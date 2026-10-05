@@ -25,7 +25,7 @@ Bytes32 Scalar(uint8_t s) { Bytes32 a{}; a.back() = s; return a; }
 
 const Bytes32 kSecret = [] { Bytes32 s{}; s.fill(0x5a); return s; }();
 const SwapKeys kAliceKeys{Scalar(3), Scalar(4)};
-const SwapKeys kBobKeys{Scalar(5), Scalar(6)};
+const SwapKeys kBobKeys{Scalar(5), Scalar(6), Scalar(7)};
 
 SwapSession BobSession() {
     SwapSession s;
@@ -48,6 +48,7 @@ SwapSession BobSession() {
     r.accept.btc_refund_pubkey = detail::CompressedOf(kBobKeys.btc_secret_key);
     r.state = SwapState::BtcLocked;
     s.btc_scan_from_height = 101;
+    s.din_sweep_pubkey = detail::XOnlyOf(Scalar(7));  // CPFP: Bob's claims pay his sweep output
     s.din_payout_script = {0x51, 0x20};
     s.din_payout_script.resize(34, 0x88);
     s.btc_payout_script = {0x51, 0x20};
@@ -123,6 +124,8 @@ struct FakeChains : SwapChainIo {
     std::string FundBtc(const std::string&, uint64_t) override { throw std::logic_error("tower must not fund"); }
     std::string BroadcastDin(const std::vector<uint8_t>& t) override { din_broadcasts.push_back(t); return "d"; }
     std::string BroadcastBtc(const std::vector<uint8_t>& t) override { btc_broadcasts.push_back(t); return "b"; }
+    std::optional<bool> claim_output_unspent;
+    std::optional<bool> DinOutputUnspent(const TxId&, uint32_t) override { return claim_output_unspent; }
 };
 
 TowerConfig Config() {
@@ -201,7 +204,8 @@ TEST(SwapTower, ClaimsDinWithTheRevealedSecret) {
     const auto& w = tx.vin.at(0).witness;
     ASSERT_EQ(w.size(), 4u);
     EXPECT_EQ(w[1], std::vector<uint8_t>(kSecret.begin(), kSecret.end()));
-    EXPECT_EQ(tx.vout.at(0).scriptPubKey, BobSession().din_payout_script);
+    EXPECT_EQ(tx.vout.at(0).scriptPubKey, BuildDinSweepOutput(BobSession().din_sweep_pubkey).script_pubkey)
+        << "CPFP: the claim pays Bob's sweep output";
     const auto s = BobSession();
     const auto terms = MakeDinTerms(s.record.offer, s.record.accept);
     std::array<uint8_t, 64> sig{};
@@ -232,19 +236,32 @@ TEST(SwapTower, DinRungFollowsUrgencyNotElapsedTime) {
         for (const auto& r : Package().din_claims) f.push_back(r.fee_una);
         return f;
     }();
+    // Claims only (CPFP children of a stuck claim are broadcast too).
+    auto claims = [&] {
+        std::vector<std::vector<uint8_t>> out;
+        const auto htlc_txid = DinFunding(BobSession()).txid;
+        for (const auto& b : chains.din_broadcasts) {
+            Transaction tx;
+            size_t used = 0;
+            if (TransactionSerializer::Deserialize(tx, b, used) && tx.vin.at(0).prevout.txid == htlc_txid) {
+                out.push_back(b);
+            }
+        }
+        return out;
+    };
     chains.din.mtp_unix = t_din - 40 * kHour;
     for (uint32_t t = 0; t < 10 * kHour; t += kHour) tower.Tick(kNow + t);  // hours pass, far from T_din
-    for (const auto& b : chains.din_broadcasts) EXPECT_EQ(DinFeeOf(b), fees.front()) << "no time escalation";
+    for (const auto& b : claims()) EXPECT_EQ(DinFeeOf(b), fees.front()) << "no time escalation";
 
     chains.din.mtp_unix = t_din - 15 * kHour;  // halfway between 24 h and 6 h
     tower.Tick(kNow + 11 * kHour);
-    const uint64_t mid = DinFeeOf(chains.din_broadcasts.back());
+    const uint64_t mid = DinFeeOf(claims().back());
     EXPECT_GT(mid, fees.front());
     EXPECT_LT(mid, fees.back());
 
     chains.din.mtp_unix = t_din - 2 * kHour;
     tower.Tick(kNow + 11 * kHour);
-    EXPECT_EQ(DinFeeOf(chains.din_broadcasts.back()), fees.back());
+    EXPECT_EQ(DinFeeOf(claims().back()), fees.back());
 }
 
 TEST(SwapTower, BtcRefundStillEscalatesOverTime) {
@@ -297,6 +314,81 @@ TEST(SwapTower, AnAckCountsOnlyFromALiveTowerThatLoadedThePackage) {
     EXPECT_FALSE(TowerAckFresh(dir, id, kNow + 600)) << "stale heartbeat";
     EXPECT_FALSE(TowerAckFresh(dir, "fedcba9876543210", kNow + 60)) << "another swap";
     std::filesystem::remove_all(dir);
+}
+
+Transaction ParseDin(const std::vector<uint8_t>& raw) {
+    Transaction tx;
+    size_t used = 0;
+    EXPECT_TRUE(TransactionSerializer::Deserialize(tx, raw, used));
+    return tx;
+}
+
+TEST(SwapTower, PackageChildrenAreVerified) {
+    const auto p = Package();
+    ASSERT_FALSE(p.din_claims.empty());
+    for (const auto& rung : p.din_claims) {
+        ASSERT_GE(rung.children.size(), 2u) << "a few fee levels per rung";
+        for (const auto& c : rung.children) EXPECT_EQ(c.tx.vin.at(0).prevout.txid, TxId::Compute(rung.tx));
+    }
+    auto check = [](const char* what, auto mutate) {
+        auto q = Package();
+        mutate(q);
+        EXPECT_THROW(VerifyTowerPackage(q), std::invalid_argument) << what;
+    };
+    check("child signature", [](TowerPackage& q) { q.din_claims[0].children[0].tx.vin[0].witness[0][5] ^= 1; });
+    check("child of another rung", [](TowerPackage& q) { std::swap(q.din_claims[0].children, q.din_claims[1].children); });
+    check("child fees not rising", [](TowerPackage& q) {
+        std::swap(q.din_claims[0].children[0], q.din_claims[0].children[1]);
+    });
+    check("child signed to another payout", [](TowerPackage& q) {
+        auto s = BobSession();
+        s.din_payout_script[10] ^= 1;
+        q.din_claims[0].children =
+            BuildTowerPackage(s, kBobKeys, DinFunding(s), BtcFundingOf(s), DinPolicy(), BtcPolicy()).din_claims[0].children;
+    });
+    EXPECT_EQ(EncodeTowerPackage(DecodeTowerPackage(EncodeTowerPackage(p))), EncodeTowerPackage(p));
+}
+
+TEST(SwapTower, BumpsAStuckClaimWithAPreSignedChildThenSweeps) {
+    FakeChains chains;
+    Watchtower tower(Package(), Config(), chains);
+    chains.AliceClaimsBtc(kSecret);
+    tower.Tick(kNow);
+    ASSERT_EQ(chains.din_broadcasts.size(), 1u);
+    const auto claim = ParseDin(chains.din_broadcasts[0]);
+    tower.Tick(kNow + 10 * 60);
+    EXPECT_EQ(chains.din_broadcasts.size(), 2u) << "re-broadcast only, no child yet";
+    tower.Tick(kNow + 25 * 60);  // still unmined
+    bool child_seen = false;
+    for (const auto& raw : chains.din_broadcasts) {
+        const auto tx = ParseDin(raw);
+        if (tx.vin.at(0).prevout.txid != TxId::Compute(claim)) continue;  // the claim itself
+        child_seen = true;
+        EXPECT_EQ(tx.vout.at(0).scriptPubKey, BobSession().din_payout_script) << "the child pays Bob's wallet";
+    }
+    EXPECT_TRUE(child_seen) << "a child of the claim it broadcast";
+
+    // The claim is mined (as rung 0): sweep it, finish only once swept and deep.
+    FakeChains c2;
+    Watchtower t2(Package(), Config(), c2);
+    c2.AliceClaimsBtc(kSecret);
+    const auto pkg = Package();
+    FundingOutput mined;
+    mined.txid = TxId::Compute(pkg.din_claims[0].tx);
+    mined.vout = 0;
+    mined.value = pkg.din_claims[0].tx.vout[0].value;
+    mined.script_pubkey = pkg.din_claims[0].tx.vout[0].scriptPubKey;
+    c2.din.claim_output = mined;
+    c2.din.htlc.spent = c2.din.htlc.spent_by_claim = true;
+    c2.din.htlc.spend_confirmations = 2;
+    c2.claim_output_unspent = true;
+    t2.Tick(kNow);
+    ASSERT_EQ(c2.din_broadcasts.size(), 1u);
+    EXPECT_EQ(ParseDin(c2.din_broadcasts[0]).vin.at(0).prevout.txid, mined.txid) << "sweep of the mined rung";
+    c2.din.htlc.spend_confirmations = BobSession().record.offer.n_din_confirmations;
+    EXPECT_FALSE(t2.Tick(kNow + 60).finished) << "not swept yet";
+    c2.claim_output_unspent = false;
+    EXPECT_TRUE(t2.Tick(kNow + 120).finished);
 }
 
 TEST(SwapTower, NeverActsBlindAndStopsWhenSettled) {

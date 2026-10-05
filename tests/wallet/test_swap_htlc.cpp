@@ -258,6 +258,52 @@ TEST(SwapHtlc, BtcWitnessScriptAndP2wsh) {
     EXPECT_EQ(BtcP2wshScriptPubKey(script), p2wsh);
 }
 
+// --- CPFP: a child pre-signed against a claim before the secret exists -------
+
+TEST(SwapHtlc, AClaimsTxidDoesNotDependOnItsWitness) {
+    // Pre-signed children name their parent by txid; the secret is inserted
+    // into the parent's witness later. That only works if the txid ignores it.
+    Fixture f;
+    Transaction tx = BuildDinClaimTx(f.htlc, f.funding, f.payout);
+    const TxId before = TxId::Compute(tx);
+    SetDinClaimWitness(tx, f.terms, f.htlc, Sign(f.bob, DinClaimSighash(tx, f.funding, f.htlc)), f.preimage);
+    EXPECT_EQ(TxId::Compute(tx), before);
+    EXPECT_NE(WTxId::Compute(tx).AsUint256(), before.AsUint256()) << "the witness is in the wtxid";
+}
+
+TEST(SwapHtlc, ASweepChildSignedBeforeTheSecretExistsIsValid) {
+    Fixture f;
+    const Key sweeper = MakeKey(9);
+    const auto sweep = BuildDinSweepOutput(sweeper.xonly);
+    // The claim pays the sweep output; its child is signed before the secret.
+    Transaction claim = BuildDinClaimTx(f.htlc, f.funding, Payout{sweep.script_pubkey, AmountUna::Una(1'000)});
+    FundingOutput parent;
+    parent.txid = TxId::Compute(claim);
+    parent.vout = 0;
+    parent.value = claim.vout[0].value;
+    parent.script_pubkey = sweep.script_pubkey;
+    Transaction child = BuildDinSweepTx(sweep, parent, f.payout);
+    SetDinSweepWitness(child, sweep, Sign(sweeper, DinSweepSighash(child, parent, sweep)));
+    SetDinClaimWitness(claim, f.terms, f.htlc, Sign(f.bob, DinClaimSighash(claim, f.funding, f.htlc)), f.preimage);
+    EXPECT_EQ(child.vin[0].prevout.txid, TxId::Compute(claim)) << "still spends the completed claim";
+
+    auto verify = [&](const Transaction& t) {
+        std::vector<op::UTXOEntry> prevouts(1);
+        prevouts[0].value = parent.value;
+        prevouts[0].scriptPubKey = parent.script_pubkey;
+        std::string error;
+        return op::ScriptVerifier::VerifyTaproot(t, 0, prevouts, error, op::SCRIPT_VERIFY_STANDARD);
+    };
+    EXPECT_TRUE(verify(child));
+    Transaction redirected = child;
+    redirected.vout[0].scriptPubKey.back() ^= 0x01;
+    EXPECT_FALSE(verify(redirected)) << "payout changed after signing";
+    Transaction other = BuildDinSweepTx(sweep, parent, f.payout);
+    SetDinSweepWitness(other, sweep, Sign(f.bob, DinSweepSighash(other, parent, sweep)));
+    EXPECT_FALSE(verify(other)) << "signed by another key";
+    EXPECT_THROW(BuildDinSweepTx(sweep, f.funding, f.payout), std::invalid_argument) << "not the sweep output";
+}
+
 TEST(SwapHtlc, ClaimWithANonMinimalSelectorStillRevealsThePreimage) {
     // MINIMALIF is only relay policy for P2WSH: a miner can include a claim whose
     // OP_IF selector is 0x02 (or any non-zero push). It still carries the secret;

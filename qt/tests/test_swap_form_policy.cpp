@@ -52,6 +52,9 @@ private Q_SLOTS:
         QVERIFY(!SwapFormPolicy::finished("btc-locked"));
         QVERIFY(SwapFormPolicy::stateLabel("lost", "btc-seller").startsWith("ATTENTION"));
         QVERIFY(SwapFormPolicy::stateLabel("paused: wallet locked", "").startsWith("Paused"));
+        // Done on chain, DIN not yet in the wallet: never shown as plain "Done".
+        QCOMPARE(SwapFormPolicy::stateLabel("sweeping", "btc-seller"), QString("Done — moving the DIN to your wallet"));
+        QVERIFY(!SwapFormPolicy::finished("sweeping"));
     }
     void pastedTextKind() {
         QCOMPARE(SwapFormPolicy::kindOfText("  dinswap1o0102 "), QString("offer"));

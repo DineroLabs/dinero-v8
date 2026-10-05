@@ -23,6 +23,8 @@
 
 namespace dinero::swap {
 
+struct TowerPackage;  // tower.h
+
 // Everything one party needs to resume a swap after a restart.
 struct SwapSession {
     SwapRecord record;
@@ -35,6 +37,12 @@ struct SwapSession {
     std::string btc_funding_txid;
     // Bob with a tower: his funding, built and signed but NOT yet broadcast
     // (sent once the tower confirms it holds the package). Empty once sent.
+    // Bob (CPFP): his DIN claim pays a sweep output of this key; a child moves
+    // it to din_payout_script (zero = legacy, the claim pays the wallet).
+    Bytes32 din_sweep_pubkey{};
+    bool din_swept{false};
+    std::string din_claim_txid;    // Bob's first DIN claim (Dinero keeps the first seen)
+    uint64_t din_claim_value{0};   // its output value
     std::string btc_funding_raw;
     std::vector<uint8_t> din_payout_script;   // Alice: refund goes here; Bob: claim goes here
     std::vector<uint8_t> btc_payout_script;   // Alice: claim goes here; Bob: refund goes here
@@ -70,6 +78,7 @@ private:
 struct SwapKeys {
     Bytes32 din_secret_key{};
     Bytes32 btc_secret_key{};
+    Bytes32 din_sweep_secret_key{};  // Bob: spends his claim's sweep output (CPFP child)
 };
 
 struct RunnerConfig {
@@ -77,6 +86,7 @@ struct RunnerConfig {
     uint64_t din_fee_urgent_una{1'000'000}; // DIN claim fee within 6 h of T_din (linear between)
     uint64_t btc_fee_sat{1'000};          // first BTC claim/refund fee; doubles every 30 min unconfirmed
     uint32_t btc_fee_max_percent{5};      // cap per BTC claim/refund, of the swap amount
+    uint32_t din_bump_after_seconds{20 * 60};  // Bob's DIN claim unmined this long: one CPFP child
     // Bob's watchtower ladders (only used when a tower is configured).
     bool use_tower{false};
     uint64_t din_tower_start_feerate_una_per_vb{1'000};
@@ -108,6 +118,12 @@ public:
     // Build and sign Bob's BTC funding without broadcasting it (so the tower
     // can hold a package for its exact outpoint first). Throws if unsupported.
     virtual PreparedBtcFunding PrepareFundBtc(const std::string& address, uint64_t amount_sat);
+    // Whether a Dinero output is still unspent (nullopt: unknown/unreachable).
+    virtual std::optional<bool> DinOutputUnspent(const TxId& txid, uint32_t vout) {
+        (void)txid;
+        (void)vout;
+        return std::nullopt;
+    }
     // True once Bob's watchtower confirmed it loaded this swap's package and is alive.
     virtual bool TowerAcknowledged(const std::string& swap_id) {
         (void)swap_id;
@@ -149,6 +165,7 @@ public:
     void ArmTower(const std::string& package_text) override;
     PreparedBtcFunding PrepareFundBtc(const std::string& address, uint64_t amount_sat) override;
     bool TowerAcknowledged(const std::string& swap_id) override;
+    std::optional<bool> DinOutputUnspent(const TxId& txid, uint32_t vout) override;
     DinWatchReport ObserveDin() override;
     BtcWatchReport ObserveBtc() override;
     std::string FundDin(const std::string& address, uint64_t amount_una) override;
@@ -177,6 +194,9 @@ std::vector<uint8_t> SignedDinClaim(const SwapSession& s, const SwapKeys& keys,
                                     const FundingOutput& funding, uint64_t fee_una);
 std::vector<uint8_t> SignedDinRefund(const SwapSession& s, const SwapKeys& keys,
                                      const FundingOutput& funding, uint64_t fee_una);
+// Bob's CPFP child / sweep: spends his claim's sweep output to din_payout_script.
+std::vector<uint8_t> SignedDinSweep(const SwapSession& s, const SwapKeys& keys, const FundingOutput& claim_output,
+                                    uint64_t fee_una);
 std::vector<uint8_t> SignedBtcClaim(const SwapSession& s, const SwapKeys& keys,
                                     const BtcFunding& funding, uint64_t fee_sat);
 std::vector<uint8_t> SignedBtcRefund(const SwapSession& s, const SwapKeys& keys,
@@ -212,7 +232,10 @@ private:
                  std::vector<std::string>& events);
     void ArmTower(const DinWatchReport& din, const BtcWatchReport& btc, std::vector<std::string>& events);
     bool ArmTowerWith(const FundingOutput& din_funding, const BtcFunding& btc_funding, std::vector<std::string>& events);
+    TowerPackage MyTowerPackage(const FundingOutput& din_funding, const BtcFunding& btc_funding) const;
     void SendPreparedFunding(uint32_t now, std::vector<std::string>& events);
+    void BumpOrSweepDin(const DinWatchReport& din, uint32_t now, std::vector<std::string>& events);
+    uint64_t DinFeeByUrgency(uint32_t din_mtp) const;
     void PinAndSave(const std::string& din_txid, const std::string& btc_txid);
     uint64_t BtcFeeNow(uint32_t now) const;
     void SingleChainRebroadcast(const DinWatchReport& din, const BtcWatchReport& btc, uint32_t now,

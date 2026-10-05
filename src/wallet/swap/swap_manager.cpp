@@ -24,6 +24,14 @@ bool Terminal(SwapState s) {
     return s == SwapState::Done || s == SwapState::Refunded || s == SwapState::Aborted || s == SwapState::Lost;
 }
 
+// Bob's DIN still at his swap key: done on chain, not yet in the wallet.
+bool SweepPending(const SwapSession& s) {
+    return s.record.role == Role::BtcSeller && s.record.state == SwapState::Done &&
+           s.din_sweep_pubkey != Bytes32{} && !s.din_swept;
+}
+
+bool Finished(const SwapSession& s) { return Terminal(s.record.state) && !SweepPending(s); }
+
 Bytes32 Derive(const KeyDeriver& derive, const std::vector<uint32_t>& path) {
     const auto k = derive(path);
     if (!k) throw std::runtime_error("wallet locked: unlock it to use swaps");
@@ -94,6 +102,7 @@ SwapKeyMaterial SwapKeysForIndex(const KeyDeriver& derive, SwapNetwork network, 
     SwapKeyMaterial m;
     m.keys.din_secret_key = Derive(derive, {kSwapKeyPurpose, uint32_t(network), 1, index});
     m.keys.btc_secret_key = Derive(derive, {kSwapKeyPurpose, uint32_t(network), 2, index});
+    m.keys.din_sweep_secret_key = Derive(derive, {kSwapKeyPurpose, uint32_t(network), 3, index});
     XOnlyOf(m.keys.din_secret_key);  // throws on an invalid scalar (negligible probability)
     CompressedOf(m.keys.btc_secret_key);
     return m;
@@ -277,6 +286,7 @@ SwapManager::AcceptResult SwapManager::Accept(const std::string& text, const std
         s.record.accept.offer_id = OfferId(offer);
         s.record.accept.din_claim_pubkey = XOnlyOf(mat.keys.din_secret_key);
         s.record.accept.btc_refund_pubkey = CompressedOf(mat.keys.btc_secret_key);
+        s.din_sweep_pubkey = XOnlyOf(mat.keys.din_sweep_secret_key);  // CPFP: the claim pays here
         s.record.state = SwapState::Accepted;
         s.record.state_since_unix = now;
         s.btc_scan_from_height = scan_from;
@@ -343,6 +353,7 @@ SwapSummary SwapManager::Summarize(uint32_t index, const SwapSession& s, const s
     m.t_btc_unix = s.record.offer.t_btc_unix;
     m.t_din_unix = s.record.offer.t_din_unix;
     m.tower_armed = s.tower_armed;
+    m.sweep_pending = SweepPending(s);
     m.last_events = events;
     return m;
 }
@@ -476,7 +487,7 @@ bool SwapManager::TickAll(uint32_t now) {
         if (live_.count(index)) continue;
         try {
             SwapSession s = LoadSession(index, store_key);
-            if (!Terminal(s.record.state)) StartSession(index, std::move(s), store_key);
+            if (!Finished(s)) StartSession(index, std::move(s), store_key);
         } catch (const std::exception&) {
             // unreadable or foreign file: List() reports it
         }
@@ -495,7 +506,7 @@ bool SwapManager::TickAll(uint32_t now) {
         if (live.last_events.size() > kKeepEvents) {
             live.last_events.erase(live.last_events.begin(), live.last_events.end() - kKeepEvents);
         }
-        it = Terminal(live.runner->session().record.state) ? live_.erase(it) : std::next(it);
+        it = Finished(live.runner->session()) ? live_.erase(it) : std::next(it);
     }
     return true;
 }

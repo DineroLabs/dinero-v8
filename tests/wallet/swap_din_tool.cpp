@@ -105,15 +105,19 @@ int main(int argc, char** argv) {
         }
         if (cmd == "watch" && argc == 7) {
             dinero::rpc::RpcClient client("127.0.0.1", static_cast<uint16_t>(std::stoi(argv[2])), argv[3], argv[4]);
-            DinWatcher watcher(
-                [&](const std::string& m, const Json::Value& p) {
-                    auto r = client.call(m, p);
-                    if (!r || !r->isMember("result") || (r->isMember("error") && !(*r)["error"].isNull())) {
-                        return std::optional<Json::Value>{};
-                    }
-                    return std::optional<Json::Value>{(*r)["result"]};
-                },
-                Terms(static_cast<uint32_t>(std::stoul(argv[6]))), argv[5]);
+            const DinRpc rpc = [&](const std::string& m, const Json::Value& p) {
+                auto r = client.call(m, p);
+                if (!r || !r->isMember("result") || (r->isMember("error") && !(*r)["error"].isNull())) {
+                    return std::optional<Json::Value>{};
+                }
+                return std::optional<Json::Value>{(*r)["result"]};
+            };
+            // Like a real swap: scan from the height at which watching starts.
+            const auto tip = rpc("getblockcount", Json::Value(Json::arrayValue));
+            DinWatchTarget target;
+            target.terms = Terms(static_cast<uint32_t>(std::stoul(argv[6])));
+            target.scan_from_height = tip ? tip->asUInt() : 0;
+            DinWatcher watcher(rpc, target);
             for (std::string line; std::getline(std::cin, line);) {
                 const auto r = watcher.Observe();
                 std::cout << "ok=" << r.ok << " seen=" << r.htlc.output_seen

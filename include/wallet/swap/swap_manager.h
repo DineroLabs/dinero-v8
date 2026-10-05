@@ -75,6 +75,7 @@ struct SwapSummary {
     bool tower_armed{false};
     bool pending_accept{false};  // Alice's offer, Bob has not answered yet
     bool wallet_locked{false};   // session not readable: wallet locked, swap paused
+    bool sweep_pending{false};   // Bob: done on chain, DIN not yet swept to the wallet
     std::vector<std::string> last_events;
 };
 

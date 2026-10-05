@@ -95,6 +95,7 @@ inline QString stateLabel(const QString& state, const QString& role) {
     if (state == "din-refund-broadcast") return "Refunding your DIN";
     if (state == "btc-refund-broadcast") return "Refunding your BTC";
     if (state == "done") return "Done";
+    if (state == "sweeping") return "Done — moving the DIN to your wallet";
     if (state == "refunded") return "Refunded — your coins are back";
     if (state == "aborted") return "Cancelled — nothing was locked";
     if (state == "lost") return "ATTENTION: the swap went wrong — see events";

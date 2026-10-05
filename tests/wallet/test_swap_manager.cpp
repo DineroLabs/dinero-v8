@@ -430,6 +430,33 @@ TEST(SwapManager, CancelWhileBobsFundingIsPreparedButUnsent) {
     EXPECT_THROW(bob2.Cancel(id), std::runtime_error);
 }
 
+TEST(SwapManager, BobsSwapIsNotFinishedUntilHisDinIsSwept) {
+    TempDir da("sw_a"), db("sw_b");
+    FakeWallet wa{0x6a}, wb{0x6b};
+    SwapManager alice(Config(da.path), wa.Deriver(), kNoDin, kNoBtc);
+    std::string id;
+    uint32_t index = 0;
+    {
+        SwapManager bob(Config(db.path), wb.Deriver(), kNoDin, kNoBtc);
+        id = bob.Accept(alice.MakeOffer(Request(), kNow), P2trAddress("rdin", 1), P2trAddress("bcrt", 2), kNow).id;
+        index = bob.Status(id).index;
+    }
+    const auto key = SwapStoreKeyFromSeed(wb.Deriver(), SwapNetwork::Regtest);
+    const std::string path = db.path + "/swap-" + std::to_string(index) + ".swap";
+    auto s = EncryptedFileSwapStore::Load(path, key);
+    EXPECT_NE(s.din_sweep_pubkey, Bytes32{}) << "Bob's claims pay a sweep output";
+    s.record.state = SwapState::Done;
+    EncryptedFileSwapStore(path, key).Save(s);
+    SwapManager bob(Config(db.path), wb.Deriver(), kNoDin, kNoBtc);
+    bob.TickAll(kNow + 60);
+    EXPECT_TRUE(bob.Status(id).sweep_pending) << "done on chain, DIN still at the swap key";
+    s.din_swept = true;
+    EncryptedFileSwapStore(path, key).Save(s);
+    SwapManager bob2(Config(db.path), wb.Deriver(), kNoDin, kNoBtc);
+    bob2.TickAll(kNow + 120);
+    EXPECT_FALSE(bob2.Status(id).sweep_pending);
+}
+
 TEST(SwapManager, PayoutScriptFromAddress) {
     const auto tr = PayoutScriptFromAddress(P2trAddress("bcrt", 0x44), "bcrt");
     EXPECT_EQ(tr.size(), 34u);

@@ -199,6 +199,49 @@ void SetDinRefundWitness(Transaction& tx, const DinHtlcOutput& htlc,
                          htlc.refund_script, htlc.refund_control_block};
 }
 
+DinSweepOutput BuildDinSweepOutput(const Bytes32& sweep_pubkey) {
+    ParseXOnly(sweep_pubkey, "sweep key");
+    DinSweepOutput out;
+    out.sweep_pubkey = sweep_pubkey;
+    Push(out.leaf_script, sweep_pubkey.data(), 32);
+    out.leaf_script.push_back(op::OP_CHECKSIG);
+    // One leaf: the merkle root is the leaf hash, the control block has no path.
+    const auto leaf = op::TapLeafHash(kTapscriptLeafVersion, out.leaf_script);
+    const auto tweak = op::TapTweakHash(ToVector(kNumsInternalKey), leaf);
+    auto* secp = crypto::GetSecp256k1ContextVerify();
+    secp256k1_xonly_pubkey internal = ParseXOnly(kNumsInternalKey, "NUMS key");
+    secp256k1_pubkey tweaked;
+    secp256k1_xonly_pubkey output;
+    int parity = 0;
+    if (secp256k1_xonly_pubkey_tweak_add(secp, &tweaked, &internal, tweak.data()) != 1 ||
+        secp256k1_xonly_pubkey_from_pubkey(secp, &output, &parity, &tweaked) != 1 ||
+        secp256k1_xonly_pubkey_serialize(secp, out.output_key.data(), &output) != 1) {
+        throw std::runtime_error("taproot output key computation failed");
+    }
+    out.script_pubkey = {op::OP_1, 0x20};
+    out.script_pubkey.insert(out.script_pubkey.end(), out.output_key.begin(), out.output_key.end());
+    out.control_block = {static_cast<uint8_t>(kTapscriptLeafVersion | parity)};
+    out.control_block.insert(out.control_block.end(), kNumsInternalKey.begin(), kNumsInternalKey.end());
+    return out;
+}
+
+Transaction BuildDinSweepTx(const DinSweepOutput& sweep, const FundingOutput& parent, const Payout& payout) {
+    if (parent.script_pubkey != sweep.script_pubkey) throw std::invalid_argument("parent output is not the sweep output");
+    if (payout.script_pubkey.empty()) throw std::invalid_argument("payout script is empty");
+    if (payout.fee.GetUna() >= parent.value.GetUna()) throw std::invalid_argument("fee must be below the parent value");
+    return BuildSpend(parent, payout, /*lock_time=*/0);
+}
+
+Bytes32 DinSweepSighash(const Transaction& tx, const FundingOutput& parent, const DinSweepOutput& sweep) {
+    return LeafSighash(tx, parent, sweep.leaf_script);
+}
+
+void SetDinSweepWitness(Transaction& tx, const DinSweepOutput& sweep, const std::array<uint8_t, 64>& signature) {
+    if (tx.vin.size() != 1) throw std::invalid_argument("swap spends have exactly one input");
+    tx.vin[0].witness = {std::vector<uint8_t>(signature.begin(), signature.end()), sweep.leaf_script,
+                         sweep.control_block};
+}
+
 std::vector<uint8_t> BuildBtcHtlcWitnessScript(const BtcHtlcTerms& terms) {
     RequireTimestampLock(terms.refund_locktime_unix);
     for (const auto* key : {&terms.claim_pubkey, &terms.refund_pubkey}) {

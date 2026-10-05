@@ -43,6 +43,7 @@ struct DinWatchReport {
     HtlcObservation htlc;
     uint32_t mtp_unix{0};
     std::optional<FundingOutput> funding;
+    std::optional<FundingOutput> claim_output;  // output 0 of the mined claim (Bob's sweep parent)
 };
 
 class DinWatcher {
@@ -59,6 +60,7 @@ private:
         uint32_t height{};
         bool by_claim{};
         std::optional<Bytes32> preimage;
+        FundingOutput output;  // the spending transaction's output 0
     };
     std::optional<FundingOutput> funding_;
     uint32_t funding_height_{0};

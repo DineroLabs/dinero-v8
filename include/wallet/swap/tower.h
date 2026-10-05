@@ -34,10 +34,19 @@
 
 namespace dinero::swap {
 
+// A CPFP child of one claim rung: spends the rung's sweep output (the rung's
+// txid ignores its witness, so it can be signed before the secret exists) and
+// pays Bob's wallet. Fully signed.
+struct DinChildRung {
+    Transaction tx;
+    uint64_t fee_una{};
+};
+
 struct DinClaimRung {
     Transaction tx;                     // unsigned witness; SetDinClaimWitness completes it
     std::array<uint8_t, 64> signature{};  // Bob's BIP340 signature (SIGHASH_DEFAULT)
     uint64_t fee_una{};
+    std::vector<DinChildRung> children;   // ascending fee (empty without a sweep key)
 };
 
 struct BtcRefundRung {
@@ -50,6 +59,7 @@ struct TowerPackage {
     SwapAccept accept;
     uint32_t btc_scan_from_height{};
     uint32_t din_scan_from_height{};
+    Bytes32 din_sweep_pubkey{};                // zero: claims pay Bob's wallet directly (no CPFP)
     std::vector<DinClaimRung> din_claims;    // ascending fee
     std::vector<BtcRefundRung> btc_refunds;  // ascending fee
 };
@@ -97,7 +107,13 @@ struct TowerConfig {
     uint32_t din_relaxed_before_seconds{24 * 60 * 60};  // lowest DIN rung this far from T_din
     uint32_t din_urgent_before_seconds{6 * 60 * 60};    // top DIN rung this close to T_din
     uint32_t settle_confirmations{6};  // keep watching (and re-broadcast after a reorg) until this deep
+    uint32_t din_bump_after_seconds{20 * 60};  // claim still unmined this long after the first broadcast: CPFP
 };
+
+// Index into `count` fee levels by how close T_din is (Dinero has no RBF:
+// a level is chosen once). Shared by the tower and Bob's runner so both send
+// the same claim.
+size_t IndexByUrgency(size_t count, uint32_t t_din, uint32_t din_mtp, const TowerConfig& config);
 
 struct TowerReport {
     bool observed{false};
@@ -124,6 +140,7 @@ private:
     TowerConfig config_;
     SwapChainIo& io_;
     Escalation btc_refund_;
+    std::optional<std::pair<size_t, uint32_t>> first_claim_;  // rung index and time of the first DIN claim sent
 };
 
 }  // namespace dinero::swap

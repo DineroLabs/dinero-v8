@@ -67,7 +67,7 @@ ccall() { DPORT=$CPORT dcall "$@"; }
 rc=0
 # Scenarios that move bitcoind's clock forward are safe in any order: each
 # honest scenario starts its locks from max(wall clock, Bitcoin MTP).
-for scenario in happy stale-clocks tower-claim tower-silent din-sign-first din-race race-late-reveal race-reorg offline tower-refund race-refund-overtaken; do
+for scenario in happy din-cpfp stale-clocks tower-claim tower-silent din-sign-first din-race race-late-reveal race-reorg offline tower-refund race-refund-overtaken; do
   echo "=== $scenario ==="
   "$TOOL" "$scenario" "$DIR/swaps" "$DPORT" "$BPORT" test test "$DADDR" "$BADDR" "$DIR/inbox" || rc=1
 done

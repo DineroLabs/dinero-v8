@@ -137,7 +137,13 @@ struct Party {
           store_key(DeriveSwapStoreKey([&] { Bytes32 m{}; m.fill(master); return m; }())), store(path, store_key) {}
     uint32_t Now() const { return static_cast<uint32_t>(int64_t(std::time(nullptr)) + clock_offset); }
     bool Terminal() const {
-        const auto st = runner->session().record.state;
+        const auto& ss = runner->session();
+        const auto st = ss.record.state;
+        // Bob's DIN still at his swap key: not finished until swept to the wallet.
+        if (st == SwapState::Done && ss.record.role == Role::BtcSeller && ss.din_sweep_pubkey != Bytes32{} &&
+            !ss.din_swept) {
+            return false;
+        }
         return st == SwapState::Done || st == SwapState::Refunded || st == SwapState::Aborted || st == SwapState::Lost;
     }
     SwapState State() const { return runner->session().record.state; }
@@ -161,8 +167,9 @@ int main(int argc, char** argv) {
     const bool race_reorg = scenario == "race-reorg";
     const bool din_race = scenario == "din-race";
     const bool sign_first = scenario == "din-sign-first";
+    const bool din_cpfp = scenario == "din-cpfp";
     const bool known = happy || stale || use_tower || scenario == "offline" || race_late_reveal || race_overtaken ||
-                       race_reorg || din_race || sign_first;
+                       race_reorg || din_race || sign_first || din_cpfp;
     if (!known) return 2;
     // tower-silent: an inbox no tower watches (nobody acknowledges the package).
     const std::string inbox = argc == 10 ? std::string(argv[9]) + (scenario == "tower-silent" ? "-silent" : "") : "";
@@ -171,7 +178,7 @@ int main(int argc, char** argv) {
     // Separate payout keys per scenario, so a balance can only come from this run.
     const uint8_t kb = happy ? 7 : stale ? 17 : scenario == "offline" ? 27 : tower_claim ? 37 : tower_refund ? 47
                      : race_late_reveal ? 57 : race_overtaken ? 67 : race_reorg ? 77 : din_race ? 87
-                     : sign_first ? 97 : 107;
+                     : sign_first ? 97 : tower_silent ? 107 : 117;
     const uint8_t kAliceBtcClaim = kb, kBobDinClaim = kb + 1, kAliceDinRefund = kb + 2, kBobBtcRefund = kb + 3;
     auto din_client = std::make_shared<rpc::RpcClient>("127.0.0.1", uint16_t(std::stoi(argv[3])), "test", "test");
     auto btc_client = std::make_shared<rpc::RpcClient>("127.0.0.1", uint16_t(std::stoi(argv[4])), argv[5], argv[6]);
@@ -249,6 +256,7 @@ int main(int argc, char** argv) {
         config.btc_hrp = "bcrt";
         config.use_tower = use_tower;
         config.btc_chain = "regtest";
+        if (din_cpfp) config.din_bump_after_seconds = 3;
 
         auto make_session = [&](Role role) {
             SwapSession s;
@@ -262,11 +270,12 @@ int main(int argc, char** argv) {
             // Alice: DIN refund -> key 9, BTC claim -> key 7. Bob: DIN claim -> key 8, BTC refund -> key 10.
             s.din_payout_script = P2tr(role == Role::DinSeller ? kAliceDinRefund : kBobDinClaim);
             s.btc_payout_script = P2tr(role == Role::DinSeller ? kAliceBtcClaim : kBobBtcRefund);
+            if (role == Role::BtcSeller) s.din_sweep_pubkey = XOnly(11);  // CPFP: claims pay Bob's sweep output
             return s;
         };
 
         Party alice("alice", SwapKeys{Scalar(3), Scalar(4)}, dir + "/alice-" + scenario + ".swap", 0xa1);
-        Party bob("bob", SwapKeys{Scalar(5), Scalar(6)}, dir + "/bob-" + scenario + ".swap", 0xb0);
+        Party bob("bob", SwapKeys{Scalar(5), Scalar(6), Scalar(11)}, dir + "/bob-" + scenario + ".swap", 0xb0);
         alice.clock_offset = bob.clock_offset = offset;
         alice.store.Save(make_session(Role::DinSeller));
         bob.store.Save(make_session(Role::BtcSeller));
@@ -418,7 +427,40 @@ int main(int argc, char** argv) {
             Check(bob.State() == SwapState::Done, std::string("bob Done (is ") + StateName(bob.State()) + ")");
             Check(btc_balance(kAliceBtcClaim) == int64_t(kBtcAmount - config.btc_fee_sat), "alice received BTC minus fee on chain");
             Check(din_balance(kBobDinClaim) ==
-                      int64_t(kDinAmount - (rbf_replaced ? 2 : 1) * config.din_fee_una), "bob received DIN minus fee on chain");
+                      int64_t(kDinAmount - (rbf_replaced ? 2 : 1) * config.din_fee_una - config.din_fee_una),
+                  "bob received DIN minus claim and sweep fees in his wallet");
+        } else if (din_cpfp) {
+            // Bob's DIN claim sits unmined: after the bump delay his node sends one
+            // child of it; the real dinerod must accept a child of an unconfirmed
+            // claim, and both are mined together.
+            int round = 0;
+            bool held = false, child_sent = false;
+            size_t mempool_size = 0;
+            for (; round < 160 && (alive(alice) || alive(bob)); ++round) {
+                if (alive(alice)) tick(alice, round);
+                if (alive(bob)) tick(bob, round);
+                if (!held && bob.State() == SwapState::DinClaimBroadcast) {
+                    held = true;
+                    std::cout << "  [" << round << "] claim sent; holding Dinero blocks for 6 s\n";
+                    for (int i = 0; i < 6; ++i) {
+                        std::this_thread::sleep_for(std::chrono::seconds(1));
+                        const auto r = bob.runner->Tick(bob.Now());
+                        for (const auto& e : r.events) {
+                            std::cout << "        " << e << "\n";
+                            child_sent |= e.rfind("DIN claim still unmined; CPFP child", 0) == 0;
+                        }
+                    }
+                    const auto mp = din("getrawmempool", Json::Value(Json::arrayValue));
+                    mempool_size = mp && mp->isArray() ? mp->size() : 0;
+                }
+                mine();
+            }
+            Check(held && child_sent, "bob sent a CPFP child of his unmined claim");
+            Check(mempool_size >= 2, "dinerod holds the claim and its child together (" + std::to_string(mempool_size) + ")");
+            Check(alice.State() == SwapState::Done && bob.State() == SwapState::Done && bob.runner->session().din_swept,
+                  "both Done, Bob's DIN swept");
+            Check(din_balance(kBobDinClaim) == int64_t(kDinAmount - 2 * config.din_fee_una),
+                  "bob received DIN minus claim and child fees in his wallet");
         } else if (tower_silent) {
             // Bob's tower never confirms the package: his BTC must never leave.
             int round = 0;
@@ -481,7 +523,13 @@ int main(int argc, char** argv) {
                 Check(tower_done(), "the tower settled the swap");
                 const int64_t got = din_balance(kBobDinClaim);
                 bool rung_amount = false;
-                if (package) for (const auto& r : package->din_claims) rung_amount |= got == int64_t(kDinAmount - r.fee_una);
+                // A tower rung, swept by the tower (its first child) or by Bob on his return.
+                if (package) {
+                    for (const auto& r : package->din_claims) {
+                        rung_amount |= got == int64_t(kDinAmount - r.fee_una - r.children.front().fee_una) ||
+                                       got == int64_t(kDinAmount - r.fee_una - config.din_fee_una);
+                    }
+                }
                 Check(rung_amount, "bob received his DIN through a tower rung (" + std::to_string(got) + " una)");
                 Check(btc_balance(kAliceBtcClaim) == int64_t(kBtcAmount - config.btc_fee_sat), "alice received BTC on chain");
                 std::cout << "  bob comes back\n";
@@ -551,7 +599,8 @@ int main(int argc, char** argv) {
             Check(never(bob, ActionKind::RefundBtc), "bob never broadcast a BTC refund against a revealed secret");
             Check(alice.State() == SwapState::Done && bob.State() == SwapState::Done, "both Done");
             Check(btc_balance(kAliceBtcClaim) == int64_t(kBtcAmount - config.btc_fee_sat), "alice received BTC on chain");
-            Check(din_balance(kBobDinClaim) == int64_t(kDinAmount - config.din_fee_una), "bob received DIN on chain");
+            Check(din_balance(kBobDinClaim) == int64_t(kDinAmount - 2 * config.din_fee_una),
+                  "bob received DIN (minus claim and sweep fees) in his wallet");
         } else if (race_overtaken) {
             // Bob's refund is in the mempool; a late, higher-fee Alice claim (made
             // outside the client, which refuses) replaces it. Bob must notice the
@@ -587,7 +636,8 @@ int main(int argc, char** argv) {
                 mine();
             }
             Check(bob.State() == SwapState::Done, std::string("bob took the DIN instead (is ") + StateName(bob.State()) + ")");
-            Check(din_balance(kBobDinClaim) == int64_t(kDinAmount - config.din_fee_una), "bob received DIN on chain");
+            Check(din_balance(kBobDinClaim) == int64_t(kDinAmount - 2 * config.din_fee_una),
+                  "bob received DIN (minus claim and sweep fees) in his wallet");
             Check(btc_balance(kAliceBtcClaim) == int64_t(kBtcAmount - 5'000), "the late claim paid alice");
         } else if (race_reorg) {
             // Alice's confirmed claim is reorganised out after T_btc. Nobody may

@@ -75,8 +75,12 @@ std::string DinHtlcAddress(const DinHtlcOutput& htlc, const std::string& hrp) {
 }
 
 DinWatcher::DinWatcher(DinRpc rpc, DinWatchTarget target)
-    : rpc_(std::move(rpc)), target_(std::move(target)), htlc_(BuildDinHtlc(target_.terms)),
-      next_height_(target_.scan_from_height) {}
+    : rpc_(std::move(rpc)), target_(std::move(target)), htlc_(BuildDinHtlc(target_.terms)) {
+    // Never the genesis block: it cannot hold an HTLC, and regtest's canonical
+    // genesis is in a format the swap block parser does not read.
+    target_.scan_from_height = std::max<uint32_t>(target_.scan_from_height, 1);
+    next_height_ = target_.scan_from_height;
+}
 
 DinWatcher::DinWatcher(DinRpc rpc, DinHtlcTerms terms, std::string /*hrp*/)
     : DinWatcher(std::move(rpc), DinWatchTarget{terms, 0, 0, ""}) {}
@@ -152,6 +156,12 @@ DinWatchReport DinWatcher::Observe() {
                     const auto& w = in.witness;
                     FoundSpend sp;
                     sp.height = h;
+                    if (!tx.vout.empty()) {
+                        sp.output.txid = TxId::Compute(tx);
+                        sp.output.vout = 0;
+                        sp.output.value = tx.vout[0].value;
+                        sp.output.script_pubkey = tx.vout[0].scriptPubKey;
+                    }
                     sp.by_claim = w.size() == 4 && w[2] == htlc_.claim_script;  // the leaf is committed
                     if (sp.by_claim && w[1].size() == 32) {
                         Bytes32 secret{};
@@ -177,6 +187,7 @@ DinWatchReport DinWatcher::Observe() {
         report.htlc.spent_by_claim = spend_->by_claim;
         report.htlc.revealed_preimage = spend_->preimage;
         report.htlc.spend_confirmations = tip - spend_->height + 1;
+        if (spend_->by_claim && !spend_->output.script_pubkey.empty()) report.claim_output = spend_->output;
     }
     report.ok = true;
     return report;

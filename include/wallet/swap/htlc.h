@@ -87,6 +87,26 @@ void SetDinClaimWitness(Transaction& tx, const DinHtlcTerms& terms,
 void SetDinRefundWitness(Transaction& tx, const DinHtlcOutput& htlc,
                          const std::array<uint8_t, 64>& signature);
 
+// --- Sweep output (CPFP) ------------------------------------------------------
+// Bob's DIN claim pays here: NUMS internal key, one leaf <K> OP_CHECKSIG with K
+// a swap key from his seed. A child spending it, pre-signed before the secret
+// exists (the claim's txid ignores its witness), moves the coins to his wallet
+// and, while the claim is unconfirmed, pays for both (Dinero mining sorts by
+// ancestor fee rate).
+
+struct DinSweepOutput {
+    Bytes32 sweep_pubkey{};
+    Bytes32 output_key{};
+    std::vector<uint8_t> script_pubkey;  // OP_1 <output_key>
+    std::vector<uint8_t> leaf_script;    // <K> OP_CHECKSIG
+    std::vector<uint8_t> control_block;
+};
+DinSweepOutput BuildDinSweepOutput(const Bytes32& sweep_pubkey);
+// Throws std::invalid_argument unless `parent` pays the sweep output.
+Transaction BuildDinSweepTx(const DinSweepOutput& sweep, const FundingOutput& parent, const Payout& payout);
+Bytes32 DinSweepSighash(const Transaction& tx, const FundingOutput& parent, const DinSweepOutput& sweep);
+void SetDinSweepWitness(Transaction& tx, const DinSweepOutput& sweep, const std::array<uint8_t, 64>& signature);
+
 // --- Bitcoin side: P2WSH HTLC ---------------------------------------------
 
 struct BtcHtlcTerms {

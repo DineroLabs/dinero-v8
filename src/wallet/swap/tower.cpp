@@ -70,10 +70,20 @@ std::string EncodeTowerPackage(const TowerPackage& p) {
         << "offer=" << EncodeOffer(p.offer) << "\n"
         << "accept=" << EncodeAccept(p.accept) << "\n"
         << "btc_scan_from_height=" << p.btc_scan_from_height << "\n"
-        << "din_scan_from_height=" << p.din_scan_from_height << "\n";
+        << "din_scan_from_height=" << p.din_scan_from_height << "\n"
+        << "din_sweep_pubkey="
+        << (p.din_sweep_pubkey == Bytes32{} ? std::string()
+                                            : ToHex(std::vector<uint8_t>(p.din_sweep_pubkey.begin(), p.din_sweep_pubkey.end())))
+        << "\n";
     for (const auto& r : p.din_claims) {
         out << "din_claim=" << ToHex(r.tx.Serialize(TxSerializationMode::WithWitness)) << ":"
             << ToHex(std::vector<uint8_t>(r.signature.begin(), r.signature.end())) << ":" << r.fee_una << "\n";
+    }
+    for (size_t i = 0; i < p.din_claims.size(); ++i) {
+        for (const auto& c : p.din_claims[i].children) {
+            out << "din_child=" << i << ":" << ToHex(c.tx.Serialize(TxSerializationMode::WithWitness)) << ":" << c.fee_una
+                << "\n";
+        }
     }
     for (const auto& r : p.btc_refunds) out << "btc_refund=" << ToHex(SerializeBtcTx(r.tx)) << ":" << r.fee_sat << "\n";
     return out.str();
@@ -100,6 +110,17 @@ TowerPackage DecodeTowerPackage(const std::string& text) {
             std::copy(sig.begin(), sig.end(), r.signature.begin());
             r.fee_una = ParseU64(parts[2]);
             p.din_claims.push_back(std::move(r));
+        } else if (key == "din_child") {
+            const auto parts = Split(value, ':');
+            if (parts.size() != 3) Bad("malformed din_child");
+            const uint64_t i = ParseU64(parts[0]);
+            if (i >= p.din_claims.size()) Bad("din_child for an unknown rung");
+            DinChildRung c;
+            size_t used = 0;
+            const auto raw = FromHex(parts[1]);
+            if (!TransactionSerializer::Deserialize(c.tx, raw, used) || used != raw.size()) Bad("bad din_child tx");
+            c.fee_una = ParseU64(parts[2]);
+            p.din_claims[i].children.push_back(std::move(c));
         } else if (key == "btc_refund") {
             const auto parts = Split(value, ':');
             if (parts.size() != 2) Bad("malformed btc_refund");
@@ -123,6 +144,11 @@ TowerPackage DecodeTowerPackage(const std::string& text) {
     const uint64_t dh = ParseU64(single["din_scan_from_height"]);
     if (dh > UINT32_MAX) Bad("bad DIN scan height");
     p.din_scan_from_height = static_cast<uint32_t>(dh);
+    if (!single["din_sweep_pubkey"].empty()) {
+        const auto k = FromHex(single["din_sweep_pubkey"]);
+        if (k.size() != 32) Bad("bad din_sweep_pubkey");
+        std::copy(k.begin(), k.end(), p.din_sweep_pubkey.begin());
+    }
     VerifyTowerPackage(p);
     return p;
 }
@@ -146,11 +172,39 @@ TowerPackage BuildTowerPackage(const SwapSession& s, const SwapKeys& keys, const
     p.din_scan_from_height = s.din_scan_from_height;
 
     const auto htlc = BuildDinHtlc(din_terms);
-    for (auto& rung : BuildDinClaimLadder(htlc, din_funding, s.din_payout_script, din_policy)) {
+    // CPFP: the claim rungs pay Bob's sweep output; each gets a few pre-signed
+    // children (fees x1, x4, x16, x64 of the rung's) that pay his wallet.
+    const bool cpfp = s.din_sweep_pubkey != Bytes32{};
+    if (cpfp && XOnlyOf(keys.din_sweep_secret_key) != s.din_sweep_pubkey) Fail("sweep key does not match the swap");
+    const auto sweep = cpfp ? BuildDinSweepOutput(s.din_sweep_pubkey) : DinSweepOutput{};
+    p.din_sweep_pubkey = s.din_sweep_pubkey;
+    for (auto& rung : BuildDinClaimLadder(htlc, din_funding, cpfp ? sweep.script_pubkey : s.din_payout_script,
+                                          din_policy)) {
         DinClaimRung r;
         r.signature = SchnorrSign(keys.din_secret_key, rung.sighash);
         r.tx = std::move(rung.tx);
         r.fee_una = rung.fee_una;
+        if (cpfp) {
+            FundingOutput parent;
+            parent.txid = TxId::Compute(r.tx);  // ignores the witness the secret goes into
+            parent.vout = 0;
+            parent.value = r.tx.vout[0].value;
+            parent.script_pubkey = sweep.script_pubkey;
+            uint64_t fee = r.fee_una;
+            for (int level = 0; level < 4; ++level, fee *= 4) {
+                if (fee > din_policy.max_fee_una || fee >= parent.value.GetUna() ||
+                    parent.value.GetUna() - fee < din_policy.min_payout_una) {
+                    break;
+                }
+                DinChildRung c;
+                c.tx = BuildDinSweepTx(sweep, parent, Payout{s.din_payout_script, AmountUna::Una(fee)});
+                SetDinSweepWitness(c.tx, sweep,
+                                   SchnorrSign(keys.din_sweep_secret_key, DinSweepSighash(c.tx, parent, sweep)));
+                c.fee_una = fee;
+                r.children.push_back(std::move(c));
+            }
+            if (r.children.empty()) Fail("no CPFP child fits the fee policy");
+        }
         p.din_claims.push_back(std::move(r));
     }
 
@@ -186,6 +240,9 @@ void VerifyTowerPackage(const TowerPackage& p) {
     if (p.btc_refunds.empty()) Bad("no BTC refund rungs");
 
     const FundingOutput din_funding = DinFundingOf(p, htlc);
+    const bool cpfp = p.din_sweep_pubkey != Bytes32{};
+    const auto sweep = cpfp ? BuildDinSweepOutput(p.din_sweep_pubkey) : DinSweepOutput{};
+    std::optional<std::vector<uint8_t>> child_payout;
     const auto& din_payout = p.din_claims.front().tx.vout.empty() ? std::vector<uint8_t>{}
                                                                    : p.din_claims.front().tx.vout[0].scriptPubKey;
     uint64_t last_fee = 0;
@@ -202,6 +259,40 @@ void VerifyTowerPackage(const TowerPackage& p) {
         last_fee = r.fee_una;
         if (!SchnorrVerify(din_terms.claim_pubkey, DinClaimSighash(r.tx, din_funding, htlc), r.signature)) {
             Bad(at + "signature does not verify");
+        }
+        if (!cpfp) {
+            if (!r.children.empty()) Bad(at + "children without a sweep key");
+            continue;
+        }
+        if (r.tx.vout[0].scriptPubKey != sweep.script_pubkey) Bad(at + "does not pay the sweep output");
+        if (r.children.empty()) Bad(at + "no CPFP child");
+        FundingOutput parent;
+        parent.txid = TxId::Compute(r.tx);
+        parent.vout = 0;
+        parent.value = r.tx.vout[0].value;
+        parent.script_pubkey = sweep.script_pubkey;
+        uint64_t last_child_fee = 0;
+        for (size_t k = 0; k < r.children.size(); ++k) {
+            const auto& c = r.children[k];
+            const std::string cat = at + "child " + std::to_string(k) + ": ";
+            if (c.tx.vin.size() != 1 || c.tx.vout.size() != 1) Bad(cat + "must be one input, one output");
+            if (!(c.tx.vin[0].prevout == TxOutPoint(parent.txid, 0))) Bad(cat + "does not spend its rung");
+            if (child_payout && c.tx.vout[0].scriptPubKey != *child_payout) Bad(cat + "pays a different destination");
+            child_payout = c.tx.vout[0].scriptPubKey;
+            if (c.fee_una >= parent.value.GetUna() || c.tx.vout[0].value.GetUna() + c.fee_una != parent.value.GetUna()) {
+                Bad(cat + "amount does not match");
+            }
+            if (k > 0 && c.fee_una <= last_child_fee) Bad(cat + "fees must rise");
+            last_child_fee = c.fee_una;
+            const auto& w = c.tx.vin[0].witness;
+            if (w.size() != 3 || w[0].size() != 64 || w[1] != sweep.leaf_script || w[2] != sweep.control_block) {
+                Bad(cat + "not a sweep witness");
+            }
+            std::array<uint8_t, 64> sig{};
+            std::copy(w[0].begin(), w[0].end(), sig.begin());
+            if (!SchnorrVerify(p.din_sweep_pubkey, DinSweepSighash(c.tx, parent, sweep), sig)) {
+                Bad(cat + "signature does not verify");
+            }
         }
     }
 
@@ -297,13 +388,18 @@ size_t Watchtower::NextRung(Escalation& e, size_t rungs, uint32_t now) const {
     return e.rung;
 }
 
-size_t Watchtower::DinRungByUrgency(uint32_t din_mtp) const {
-    const size_t top = package_.din_claims.size() - 1;
-    const int64_t left = int64_t(package_.offer.t_din_unix) - int64_t(din_mtp);
-    const int64_t relaxed = config_.din_relaxed_before_seconds, urgent = config_.din_urgent_before_seconds;
+size_t IndexByUrgency(size_t count, uint32_t t_din, uint32_t din_mtp, const TowerConfig& config) {
+    if (count == 0) return 0;
+    const size_t top = count - 1;
+    const int64_t left = int64_t(t_din) - int64_t(din_mtp);
+    const int64_t relaxed = config.din_relaxed_before_seconds, urgent = config.din_urgent_before_seconds;
     if (left >= relaxed) return 0;
     if (left <= urgent || relaxed <= urgent) return top;
     return static_cast<size_t>((relaxed - left) * int64_t(top) / (relaxed - urgent));
+}
+
+size_t Watchtower::DinRungByUrgency(uint32_t din_mtp) const {
+    return IndexByUrgency(package_.din_claims.size(), package_.offer.t_din_unix, din_mtp, config_);
 }
 
 TowerReport Watchtower::Tick(uint32_t now) {
@@ -342,7 +438,25 @@ TowerReport Watchtower::Tick(uint32_t now) {
         const std::string what = din_claimed ? "DIN claim" : "BTC refund";
         // Dinero outcomes need at least the depth Bob required before he locked BTC.
         const uint32_t needed = din_claimed ? std::max(settle, offer.n_din_confirmations) : settle;
-        if (depth >= needed) {
+        bool swept = true;
+        if (din_claimed && package_.din_sweep_pubkey != Bytes32{} && din.claim_output) {
+            // Sweep the mined rung's output to Bob's wallet (its cheapest child).
+            for (const auto& rung : package_.din_claims) {
+                if (TxId::Compute(rung.tx) != din.claim_output->txid || rung.children.empty()) continue;
+                const auto unspent = io_.DinOutputUnspent(din.claim_output->txid, din.claim_output->vout);
+                swept = unspent.has_value() && !*unspent;
+                if (unspent && *unspent) {
+                    try {
+                        report.events.push_back(
+                            "sweeping the DIN to Bob's wallet: " +
+                            io_.BroadcastDin(rung.children.front().tx.Serialize(TxSerializationMode::WithWitness)));
+                    } catch (const std::exception& e) {
+                        report.events.push_back(std::string("sweep not accepted: ") + e.what());
+                    }
+                }
+            }
+        }
+        if (depth >= needed && swept) {
             report.finished = true;
             report.events.push_back(what + " " + std::to_string(depth) + " deep: settled for Bob");
         }
@@ -374,6 +488,21 @@ TowerReport Watchtower::Tick(uint32_t now) {
         // No replace-by-fee on Dinero: a lower rung already in mempools stays, and
         // a higher one is refused harmlessly until the lower one confirms or drops.
         const size_t i = DinRungByUrgency(din.mtp_unix);
+        // Bump: still unmined some time after the first claim went out — one
+        // pre-signed child of that (first-seen) rung, its fee by urgency.
+        if (first_claim_ && !din.htlc.spent && now >= first_claim_->second + config_.din_bump_after_seconds) {
+            const auto& children = package_.din_claims[first_claim_->first].children;
+            if (!children.empty()) {
+                const size_t k = IndexByUrgency(children.size(), offer.t_din_unix, din.mtp_unix, config_);
+                try {
+                    report.events.push_back("DIN claim unmined; CPFP child " + std::to_string(k) + ": " +
+                                            io_.BroadcastDin(children[k].tx.Serialize(TxSerializationMode::WithWitness)));
+                } catch (const std::exception& e) {
+                    report.events.push_back("CPFP child not accepted: " + std::string(e.what()));
+                }
+            }
+        }
+        if (!first_claim_) first_claim_ = std::make_pair(i, now);
         const auto terms = MakeDinTerms(package_.offer, package_.accept);
         Transaction tx = package_.din_claims[i].tx;
         SetDinClaimWitness(tx, terms, BuildDinHtlc(terms), package_.din_claims[i].signature,

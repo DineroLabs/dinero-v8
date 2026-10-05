@@ -101,6 +101,7 @@ struct FakeNode {
     }
     bool spent_in_mempool{false};
     bool no_address_index{false};  // e.g. an AssumeUTXO node, or a pruned history
+    bool odd_genesis{false};       // block 0 in a format the swap parser does not read
 
     void Mine(std::vector<Transaction> txs = {}) {
         txs.insert(txs.begin(), filler);
@@ -136,6 +137,7 @@ struct FakeNode {
         if (m == "getblock") {
             for (uint32_t h = 0; h <= tip; ++h) {
                 if (HashAt(h) != p[0].asString()) continue;
+                if (h == 0 && odd_genesis) return Json::Value("00");
                 std::vector<uint8_t> raw(128, 0);
                 raw.push_back(static_cast<uint8_t>(chain[h].txs.size()));
                 for (const auto& tx : chain[h].txs) {
@@ -346,6 +348,24 @@ TEST(SwapDinWatcher, SpamToTheHtlcAddressCannotReplaceTheFunding) {
     r = w.Observe();
     EXPECT_TRUE(r.htlc.spent_by_claim);
     EXPECT_EQ(r.htlc.revealed_preimage, kSecret);
+    // The mined claim's output, whoever broadcast it (Bob or his tower).
+    ASSERT_TRUE(r.claim_output.has_value());
+    EXPECT_EQ(r.claim_output->txid, TxId::Compute(f.claim_tx));
+    EXPECT_EQ(r.claim_output->vout, 0u);
+    EXPECT_EQ(r.claim_output->value.GetUna(), f.claim_tx.vout[0].value.GetUna());
+}
+
+TEST(SwapDinWatcher, TheGenesisBlockIsNeverScanned) {
+    // Regtest shares mainnet's canonical genesis, which the swap block parser
+    // does not read; it cannot hold an HTLC anyway.
+    Fixture f;
+    f.node.odd_genesis = true;
+    f.node.Mine();
+    f.node.Mine({f.funding_tx});
+    DinWatcher w([&](const std::string& m, const Json::Value& p) { return f.node.Call(m, p); }, Target(f));
+    const auto r = w.Observe();
+    EXPECT_TRUE(r.ok);
+    EXPECT_TRUE(r.funding.has_value());
 }
 
 TEST(SwapDinWatcher, APinnedFundingIgnoresAnExactAmountDecoy) {

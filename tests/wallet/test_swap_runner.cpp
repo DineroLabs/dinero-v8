@@ -142,6 +142,8 @@ struct FakeChains : SwapChainIo {
         return f;
     }
     bool TowerAcknowledged(const std::string&) override { return tower_acked; }
+    std::optional<bool> sweep_output_unspent;
+    std::optional<bool> DinOutputUnspent(const TxId&, uint32_t) override { return sweep_output_unspent; }
     int tower_refusals{0};
     std::vector<std::string> armed;
     void ArmTower(const std::string& package) override {
@@ -272,7 +274,8 @@ TEST(SwapRunner, BobClaimsDinWithTheSecretFromAlicesBtcClaim) {
     const auto r = bob.Tick(kNow + kHour);
     EXPECT_EQ(r.after, SwapState::DinClaimBroadcast);
     ASSERT_EQ(store.saved->record.secret, kSecret);  // learned secret is saved before claiming
-    ASSERT_EQ(log.lines.size(), 2u);
+    ASSERT_GE(log.lines.size(), 2u);  // then: the first claim's txid is remembered
+    EXPECT_EQ(log.lines[0].rfind("save:", 0), 0u) << "secret saved before the broadcast";
     EXPECT_EQ(log.lines[1], "bcast_din");
     ASSERT_EQ(chains.din_broadcasts.size(), 1u);
     EXPECT_EQ(chains.din_broadcasts[0], SignedDinClaim(bob.session(), kBobKeys, DinFunding(s), Config().din_fee_una));
@@ -636,6 +639,151 @@ TEST(SwapRunner, ManualRefundBroadcastsOnlyTheCallersOwnRefund) {
         chains.btc.htlc.spent = true;
         EXPECT_THROW(bob.ForceRefund(kNow), std::runtime_error);
     }
+}
+
+TEST(SwapRunner, BobsDinClaimPaysHisSweepOutputAndTheChildPaysHisWallet) {
+    const Bytes32 sweep_key = Scalar(7);
+    auto bob = MakeSession(Role::BtcSeller);
+    bob.record.secret = kSecret;
+    bob.din_sweep_pubkey = detail::XOnlyOf(sweep_key);
+    SwapKeys keys = kBobKeys;
+    keys.din_sweep_secret_key = sweep_key;
+    const auto sweep = BuildDinSweepOutput(bob.din_sweep_pubkey);
+
+    Transaction claim;
+    size_t used = 0;
+    ASSERT_TRUE(TransactionSerializer::Deserialize(claim, SignedDinClaim(bob, keys, DinFunding(bob), 100'000), used));
+    EXPECT_EQ(claim.vout.at(0).scriptPubKey, sweep.script_pubkey) << "the claim pays the sweep output";
+
+    FundingOutput parent;
+    parent.txid = TxId::Compute(claim);
+    parent.vout = 0;
+    parent.value = claim.vout[0].value;
+    parent.script_pubkey = sweep.script_pubkey;
+    Transaction child;
+    ASSERT_TRUE(TransactionSerializer::Deserialize(child, SignedDinSweep(bob, keys, parent, 5'000), used));
+    EXPECT_EQ(child.vin.at(0).prevout.txid, parent.txid);
+    EXPECT_EQ(child.vout.at(0).scriptPubKey, bob.din_payout_script) << "the child pays Bob's wallet";
+    std::array<uint8_t, 64> sig{};
+    std::copy(child.vin[0].witness.at(0).begin(), child.vin[0].witness.at(0).end(), sig.begin());
+    EXPECT_TRUE(detail::SchnorrVerify(bob.din_sweep_pubkey, DinSweepSighash(child, parent, sweep), sig));
+    SwapKeys wrong = keys;
+    wrong.din_sweep_secret_key = Scalar(8);
+    EXPECT_THROW(SignedDinSweep(bob, wrong, parent, 5'000), std::invalid_argument);
+
+    // Without a sweep key (older sessions) the claim pays the wallet directly.
+    auto legacy = bob;
+    legacy.din_sweep_pubkey = Bytes32{};
+    ASSERT_TRUE(TransactionSerializer::Deserialize(claim, SignedDinClaim(legacy, kBobKeys, DinFunding(bob), 100'000), used));
+    EXPECT_EQ(claim.vout.at(0).scriptPubKey, bob.din_payout_script);
+
+    // Persisted.
+    bob.din_swept = true;
+    const auto back = DecodeSession(EncodeSession(bob));
+    EXPECT_EQ(back.din_sweep_pubkey, bob.din_sweep_pubkey);
+    EXPECT_TRUE(back.din_swept);
+}
+
+SwapSession CpfpBob(SwapState state) {
+    auto s = MakeSession(Role::BtcSeller);
+    s.record.state = state;
+    s.record.state_since_unix = kNow;
+    s.record.secret = kSecret;
+    s.din_sweep_pubkey = detail::XOnlyOf(Scalar(7));
+    return s;
+}
+SwapKeys CpfpKeys() {
+    SwapKeys k = kBobKeys;
+    k.din_sweep_secret_key = Scalar(7);
+    return k;
+}
+Transaction Parse(const std::vector<uint8_t>& raw) {
+    Transaction tx;
+    size_t used = 0;
+    EXPECT_TRUE(TransactionSerializer::Deserialize(tx, raw, used));
+    return tx;
+}
+
+TEST(SwapRunner, BobBumpsAStuckDinClaimWithOneChild) {
+    Log log;
+    FakeStore store(log);
+    FakeChains chains(log);
+    auto s = CpfpBob(SwapState::DinClaimBroadcast);
+    BothLocksSeen(chains, s);
+    chains.btc.htlc.spent = chains.btc.htlc.spent_by_claim = true;
+    chains.btc.htlc.revealed_preimage = kSecret;
+    SwapRunner bob(s, CpfpKeys(), Config(), chains, store);
+    bob.Tick(kNow + 60);
+    ASSERT_EQ(chains.din_broadcasts.size(), 1u);
+    const auto claim = Parse(chains.din_broadcasts[0]);
+    EXPECT_EQ(bob.session().din_claim_txid, TxId::Compute(claim).AsUint256().GetHex()) << "first claim remembered";
+
+    bob.Tick(kNow + 25 * 60);  // still unconfirmed: one child pays for both
+    bool child = false;
+    for (const auto& raw : chains.din_broadcasts) {
+        const auto tx = Parse(raw);
+        if (tx.vin.at(0).prevout.txid == TxId::Compute(claim)) {
+            child = true;
+            EXPECT_EQ(tx.vout.at(0).scriptPubKey, s.din_payout_script);
+        }
+    }
+    EXPECT_TRUE(child);
+}
+
+TEST(SwapRunner, BobSweepsHisClaimToTheWalletOnceItIsMined) {
+    Log log;
+    FakeStore store(log);
+    FakeChains chains(log);
+    auto s = CpfpBob(SwapState::Done);
+    BothLocksSeen(chains, s);
+    // The mined claim (whoever broadcast it) pays the sweep output.
+    FundingOutput mined;
+    mined.txid = TxId(uint256::FromHexUnsafe(std::string(64, 'c')));
+    mined.vout = 0;
+    mined.value = AmountUna::Una(s.record.offer.din_amount_una - 200'000);
+    mined.script_pubkey = BuildDinSweepOutput(s.din_sweep_pubkey).script_pubkey;
+    chains.din.claim_output = mined;
+    chains.din.htlc.spent = chains.din.htlc.spent_by_claim = true;
+    chains.din.htlc.spend_confirmations = 40;
+    chains.sweep_output_unspent = true;
+    SwapRunner bob(s, CpfpKeys(), Config(), chains, store);
+    bob.Tick(kNow + 3600);
+    ASSERT_EQ(chains.din_broadcasts.size(), 1u);
+    const auto sweep = Parse(chains.din_broadcasts[0]);
+    EXPECT_EQ(sweep.vin.at(0).prevout.txid, mined.txid);
+    EXPECT_EQ(sweep.vout.at(0).scriptPubKey, s.din_payout_script);
+    EXPECT_FALSE(bob.session().din_swept);
+    chains.sweep_output_unspent = false;  // spent: the sweep went through
+    bob.Tick(kNow + 7200);
+    EXPECT_TRUE(bob.session().din_swept);
+    EXPECT_TRUE(store.saved->din_swept);
+}
+
+TEST(SwapRunner, WithATowerBobSendsTheSameClaimAsTheTower) {
+    // Children are pre-signed against the package's claim rungs: if Bob's own
+    // runner sent a differently built claim and it got in first, every
+    // pre-signed child would be useless.
+    Log log;
+    FakeStore store(log);
+    FakeChains chains(log);
+    auto s = CpfpBob(SwapState::BtcLocked);
+    s.record.secret.reset();
+    BothLocksSeen(chains, s);
+    chains.din.htlc.output_confirmations = 40;
+    auto config = Config();
+    config.use_tower = true;
+    SwapRunner bob(s, CpfpKeys(), config, chains, store);
+    bob.Tick(kNow + kHour);  // arms the tower (package for these locks)
+    ASSERT_EQ(chains.armed.size(), 1u);
+    const auto package = DecodeTowerPackage(chains.armed[0]);
+    chains.btc.htlc.spent = chains.btc.htlc.spent_by_claim = true;
+    chains.btc.htlc.revealed_preimage = kSecret;
+    bob.Tick(kNow + 2 * kHour);  // learns the secret, claims
+    ASSERT_FALSE(chains.din_broadcasts.empty());
+    const auto claim = Parse(chains.din_broadcasts.front());
+    bool same = false;
+    for (const auto& rung : package.din_claims) same |= TxId::Compute(rung.tx) == TxId::Compute(claim);
+    EXPECT_TRUE(same) << "the claim is one of the tower's rungs";
 }
 
 TEST(SwapRunner, SessionRoundTripsThroughTheFileStore) {
