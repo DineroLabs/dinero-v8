@@ -460,11 +460,14 @@ TowerReport Watchtower::Tick(uint32_t now) {
         bool swept = true;
         if (din_claimed && package_.din_sweep_pubkey != Bytes32{} && din.claim_output) {
             // Sweep the mined rung's output to Bob's wallet (its cheapest child).
-            for (const auto& rung : package_.din_claims) {
-                if (TxId::Compute(rung.tx) != din.claim_output->txid || rung.children.empty()) continue;
-                const auto unspent = io_.DinOutputUnspent(din.claim_output->txid, din.claim_output->vout);
-                swept = unspent.has_value() && !*unspent;
-                if (unspent && *unspent) {
+            // Settled only once that output is spent, whoever mined the claim.
+            const auto unspent = io_.DinOutputUnspent(din.claim_output->txid, din.claim_output->vout);
+            swept = unspent.has_value() && !*unspent;
+            if (unspent && *unspent) {
+                bool have_child = false;
+                for (const auto& rung : package_.din_claims) {
+                    if (TxId::Compute(rung.tx) != din.claim_output->txid || rung.children.empty()) continue;
+                    have_child = true;
                     try {
                         report.events.push_back(
                             "sweeping the DIN to Bob's wallet: " +
@@ -472,6 +475,10 @@ TowerReport Watchtower::Tick(uint32_t now) {
                     } catch (const std::exception& e) {
                         report.events.push_back(std::string("sweep not accepted: ") + e.what());
                     }
+                }
+                if (!have_child) {
+                    report.events.push_back("ALERT: the mined DIN claim is not a package rung; the tower cannot "
+                                            "sweep it — Bob's node must (start it with the wallet unlocked)");
                 }
             }
         }

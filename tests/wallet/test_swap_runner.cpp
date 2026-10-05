@@ -811,6 +811,10 @@ TEST(SwapRunner, BobBumpsAStuckDinClaimWithOneChild) {
             EXPECT_EQ(tx.vout.at(0).scriptPubKey, s.din_payout_script);
             const uint64_t child_fee = claim.vout[0].value.GetUna() - tx.vout[0].value.GetUna();
             EXPECT_GE(child_fee, Config().din_fee_urgent_una) << "the one bump pays the urgent fee";
+        } else {
+            // Re-broadcasts (e.g. after an eviction) send that same claim, never a
+            // re-priced one: a new txid would orphan every child built for it.
+            EXPECT_EQ(TxId::Compute(tx), TxId::Compute(claim)) << "the claim is never re-priced";
         }
     }
     EXPECT_TRUE(child);
@@ -845,6 +849,31 @@ TEST(SwapRunner, BobSweepsHisClaimToTheWalletOnceItIsMined) {
     EXPECT_TRUE(store.saved->din_swept);
 }
 
+TEST(SwapRunner, AShallowClaimMissingFromTheUtxoSetIsNotTakenAsSwept) {
+    // gettxout null also means "not (or no longer) in a block": with the claim
+    // 1 deep, a reorg could be the reason. Swept is decided only once the claim
+    // is buried at the DIN settle depth.
+    Log log;
+    FakeStore store(log);
+    FakeChains chains(log);
+    auto s = CpfpBob(SwapState::Done);
+    BothLocksSeen(chains, s);
+    FundingOutput mined;
+    mined.txid = TxId(uint256::FromHexUnsafe(std::string(64, 'c')));
+    mined.value = AmountUna::Una(s.record.offer.din_amount_una - 200'000);
+    mined.script_pubkey = BuildDinSweepOutput(s.din_sweep_pubkey).script_pubkey;
+    chains.din.claim_output = mined;
+    chains.din.htlc.spent = chains.din.htlc.spent_by_claim = true;
+    chains.din.htlc.spend_confirmations = 1;
+    chains.sweep_output_unspent = false;
+    SwapRunner bob(s, CpfpKeys(), Config(), chains, store);
+    bob.Tick(kNow + 3600);
+    EXPECT_FALSE(bob.session().din_swept) << "1 deep";
+    chains.din.htlc.spend_confirmations = std::max<uint32_t>(kSettleConfirmations, s.record.offer.n_din_confirmations);
+    bob.Tick(kNow + 7200);
+    EXPECT_TRUE(bob.session().din_swept) << "buried, and its output spent in a block";
+}
+
 TEST(SwapRunner, WithATowerBobSendsTheSameClaimAsTheTower) {
     // Children are pre-signed against the package's claim rungs: if Bob's own
     // runner sent a differently built claim and it got in first, every
@@ -870,6 +899,22 @@ TEST(SwapRunner, WithATowerBobSendsTheSameClaimAsTheTower) {
     bool same = false;
     for (const auto& rung : package.din_claims) same |= TxId::Compute(rung.tx) == TxId::Compute(claim);
     EXPECT_TRUE(same) << "the claim is one of the tower's rungs";
+
+    // Bitcoin node down (re-broadcast from the Dinero side only), and again
+    // after a restart: still a rung, never a claim the tower has no child for.
+    chains.btc = BtcWatchReport{};  // ok=false and nothing known, as a failed scan reports
+    chains.din.mtp_unix = s.record.offer.t_din_unix - 10 * kHour;  // urgency now picks a higher rung
+    for (int restart = 0; restart < 2; ++restart) {
+        SwapRunner again(restart ? *store.saved : bob.session(), CpfpKeys(), config, chains, store);
+        chains.din_broadcasts.clear();
+        again.Tick(kNow + 3 * kHour);
+        ASSERT_FALSE(chains.din_broadcasts.empty()) << "restart " << restart;
+        const auto rebroadcast = Parse(chains.din_broadcasts.front());
+        bool rung = false;
+        for (const auto& r : package.din_claims) rung |= TxId::Compute(r.tx) == TxId::Compute(rebroadcast);
+        EXPECT_TRUE(rung) << "restart " << restart << ": single-chain re-broadcast is a tower rung";
+        EXPECT_EQ(TxId::Compute(rebroadcast), TxId::Compute(claim)) << "restart " << restart << ": the same rung";
+    }
 }
 
 TEST(SwapRunner, AlicesFirstClaimIsRecordedAsPossiblyPublicBeforeItIsSent) {
@@ -973,6 +1018,14 @@ TEST(SwapRunner, SessionRoundTripsThroughTheFileStore) {
     EXPECT_EQ(pinned.din_scan_from_height, 77u);
     s.tower_armed = true;
     EXPECT_TRUE(DecodeSession(EncodeSession(s)).tower_armed);
+    EXPECT_EQ(DecodeSession(EncodeSession(s)).btc_funding_vout, -1);
+    s.btc_funding_vout = 3;
+    EXPECT_EQ(DecodeSession(EncodeSession(s)).btc_funding_vout, 3);
+    {
+        auto bad = EncodeSession(s);
+        bad.replace(bad.find("btc_funding_vout=3"), 18, "btc_funding_vout=x");
+        EXPECT_THROW(DecodeSession(bad), std::invalid_argument);
+    }
     std::remove(path.c_str());
     EXPECT_THROW(DecodeSession("record=dinswap1rzz\n"), std::invalid_argument);
 }

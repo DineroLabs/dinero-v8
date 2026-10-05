@@ -48,6 +48,7 @@ struct SwapSession {
     std::vector<uint8_t> btc_payout_script;   // Alice: claim goes here; Bob: refund goes here
     bool tower_armed{false};                  // Bob: the watchtower accepted this swap's package
     std::string tower_package_hash;           // hash of the package delivered (the ack must match it)
+    int32_t btc_funding_vout{-1};             // the BTC lock output the package was built for (-1 unknown)
 };
 
 // Text form, one "key=value" per line. Holds the secret in the clear (via
@@ -242,6 +243,9 @@ private:
     void Execute(const Action& action, const DinWatchReport& din, const BtcWatchReport& btc, uint32_t now,
                  std::vector<std::string>& events);
     void ArmTower(const DinWatchReport& din, const BtcWatchReport& btc, std::vector<std::string>& events);
+    // The BTC lock as observed, else the one the tower was armed for: Bob's
+    // claim must always be a package rung (the tower's children spend those).
+    std::optional<BtcFunding> ArmedBtcFunding(const BtcWatchReport& btc) const;
     bool ArmTowerWith(const FundingOutput& din_funding, const BtcFunding& btc_funding, std::vector<std::string>& events);
     TowerPackage MyTowerPackage(const FundingOutput& din_funding, const BtcFunding& btc_funding) const;
     void SendPreparedFunding(const DinWatchReport& din, const BtcWatchReport& btc, uint32_t now,

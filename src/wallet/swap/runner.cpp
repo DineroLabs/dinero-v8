@@ -83,7 +83,8 @@ std::string EncodeSession(const SwapSession& s) {
         << "din_payout_script=" << ToHex(s.din_payout_script) << "\n"
         << "btc_payout_script=" << ToHex(s.btc_payout_script) << "\n"
         << "tower_armed=" << (s.tower_armed ? 1 : 0) << "\n"
-        << "tower_package_hash=" << s.tower_package_hash << "\n";
+        << "tower_package_hash=" << s.tower_package_hash << "\n"
+        << "btc_funding_vout=" << s.btc_funding_vout << "\n";
     return out.str();
 }
 
@@ -150,6 +151,13 @@ SwapSession DecodeSession(const std::string& text) {
     if (kv.count("tower_armed")) {  // absent in sessions saved before the tower existed
         if (kv["tower_armed"] != "0" && kv["tower_armed"] != "1") Refuse("bad tower_armed");
         s.tower_armed = kv["tower_armed"] == "1";
+    }
+    if (kv.count("btc_funding_vout")) {  // absent in sessions saved before it existed
+        const std::string& v = kv["btc_funding_vout"];
+        if (v != "-1" && (v.empty() || v.size() > 9 || v.find_first_not_of("0123456789") != std::string::npos)) {
+            Refuse("bad btc_funding_vout");
+        }
+        s.btc_funding_vout = std::stoi(v);
     }
     if (s.din_payout_script.empty() || s.btc_payout_script.empty()) Refuse("empty payout script");
     return s;
@@ -495,6 +503,17 @@ TowerPackage SwapRunner::MyTowerPackage(const FundingOutput& din_funding, const 
     return BuildTowerPackage(session_, keys_, din_funding, btc_funding, din_policy, btc_policy);
 }
 
+std::optional<BtcFunding> SwapRunner::ArmedBtcFunding(const BtcWatchReport& btc) const {
+    if (btc.funding) return btc.funding;
+    if (session_.btc_funding_txid.size() != 64 || session_.btc_funding_vout < 0) return std::nullopt;
+    const auto wire = FromHex(session_.btc_funding_txid);
+    BtcFunding f;
+    std::copy(wire.rbegin(), wire.rend(), f.txid.begin());
+    f.vout = static_cast<uint32_t>(session_.btc_funding_vout);
+    f.value_sat = session_.record.offer.btc_amount_sat;
+    return f;
+}
+
 bool SwapRunner::ArmTowerWith(const FundingOutput& din_funding, const BtcFunding& btc_funding,
                               std::vector<std::string>& events) {
     try {
@@ -504,6 +523,10 @@ bool SwapRunner::ArmTowerWith(const FundingOutput& din_funding, const BtcFunding
         SwapSession next = session_;
         next.tower_armed = true;
         next.tower_package_hash = TowerPackageHash(text);
+        next.btc_funding_vout = static_cast<int32_t>(btc_funding.vout);
+        if (next.btc_funding_txid.empty()) {
+            next.btc_funding_txid = ToHex(std::vector<uint8_t>(btc_funding.txid.rbegin(), btc_funding.txid.rend()));
+        }
         store_.Save(next);
         session_ = std::move(next);
         events.push_back("watchtower armed: " + std::to_string(package.din_claims.size()) + " DIN claim and " +
@@ -661,7 +684,10 @@ void SwapRunner::BumpOrSweepDin(const DinWatchReport& din, uint32_t now, std::ve
             if (*unspent) {
                 events.push_back("sweeping the DIN to the wallet: " +
                                  io_.BroadcastDin(SignedDinSweep(session_, keys_, *din.claim_output, config_.din_fee_una)));
-            } else {
+            } else if (din.htlc.spend_confirmations >=
+                       std::max(kSettleConfirmations, session_.record.offer.n_din_confirmations)) {
+                // gettxout reads the block UTXO set: null proves "spent in a
+                // block" only once the claim itself cannot be reorganised away.
                 SwapSession next = session_;
                 next.din_swept = true;
                 store_.Save(next);
@@ -771,11 +797,15 @@ void SwapRunner::Execute(const Action& action, const DinWatchReport& din, const 
         case ActionKind::ClaimDin: {
             if (!din.funding) throw std::runtime_error("DIN HTLC output unknown");
             std::vector<uint8_t> raw;
-            if (session_.tower_armed && btc.funding && session_.din_sweep_pubkey != Bytes32{}) {
+            const auto armed_btc = ArmedBtcFunding(btc);
+            if (session_.tower_armed && armed_btc && session_.din_sweep_pubkey != Bytes32{}) {
                 // Send the very rung the tower would (its children are signed
                 // against these txids), chosen by the same urgency rule.
-                const auto package = MyTowerPackage(*din.funding, *btc.funding);
-                const size_t i = IndexByUrgency(package.din_claims.size(), offer.t_din_unix, din.mtp_unix, TowerConfig{});
+                const auto package = MyTowerPackage(*din.funding, *armed_btc);
+                size_t i = IndexByUrgency(package.din_claims.size(), offer.t_din_unix, din.mtp_unix, TowerConfig{});
+                for (size_t k = 0; k < package.din_claims.size(); ++k) {  // once sent, always that one
+                    if (TxId::Compute(package.din_claims[k].tx).AsUint256().GetHex() == session_.din_claim_txid) i = k;
+                }
                 Transaction tx = package.din_claims[i].tx;
                 const auto terms = MakeDinTerms(offer, session_.record.accept);
                 if (!session_.record.secret) throw std::runtime_error("the secret is not known");
@@ -783,7 +813,13 @@ void SwapRunner::Execute(const Action& action, const DinWatchReport& din, const 
                                    std::vector<uint8_t>(session_.record.secret->begin(), session_.record.secret->end()));
                 raw = tx.Serialize(TxSerializationMode::WithWitness);
             } else {
-                raw = SignedDinClaim(session_, keys_, *din.funding, DinFeeByUrgency(din.mtp_unix));
+                // Once sent, re-send that very claim (same fee, same txid): Dinero
+                // keeps the first seen, and a CPFP child can only spend that one.
+                const bool sent = !session_.din_claim_txid.empty() && session_.din_claim_value > 0 &&
+                                  session_.din_claim_value < offer.din_amount_una;
+                raw = SignedDinClaim(session_, keys_, *din.funding,
+                                     sent ? offer.din_amount_una - session_.din_claim_value
+                                          : DinFeeByUrgency(din.mtp_unix));
             }
             if (session_.din_claim_txid.empty()) {
                 // Dinero keeps the first seen: this is the claim a CPFP child must

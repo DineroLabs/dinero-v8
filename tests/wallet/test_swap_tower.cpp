@@ -454,6 +454,31 @@ TEST(SwapTower, BumpsAStuckClaimWithAPreSignedChildThenSweeps) {
     EXPECT_TRUE(t2.Tick(kNow + 120).finished);
 }
 
+TEST(SwapTower, AMinedClaimThatIsNoRungIsNotSettledWhileItsDinSitsUnswept) {
+    // A claim Bob's node built itself (not a package rung) was mined. The tower
+    // has no child for it: it must not report the swap settled while the DIN
+    // still sits at the sweep key, and must say so.
+    FakeChains chains;
+    Watchtower tower(Package(), Config(), chains);
+    chains.AliceClaimsBtc(kSecret);
+    FundingOutput mined;
+    mined.txid = TxId(uint256::FromHexUnsafe(std::string(64, 'd')));  // no rung has this txid
+    mined.vout = 0;
+    mined.value = Package().din_claims[0].tx.vout[0].value;
+    mined.script_pubkey = Package().din_claims[0].tx.vout[0].scriptPubKey;
+    chains.din.claim_output = mined;
+    chains.din.htlc.spent = chains.din.htlc.spent_by_claim = true;
+    chains.din.htlc.spend_confirmations = BobSession().record.offer.n_din_confirmations;
+    chains.claim_output_unspent = true;
+    const auto r = tower.Tick(kNow);
+    EXPECT_FALSE(r.finished) << "the DIN is not in Bob's wallet yet";
+    bool alerted = false;
+    for (const auto& e : r.events) alerted |= e.rfind("ALERT", 0) == 0 && e.find("sweep") != std::string::npos;
+    EXPECT_TRUE(alerted);
+    chains.claim_output_unspent = false;  // Bob's own node swept it
+    EXPECT_TRUE(tower.Tick(kNow + 60).finished);
+}
+
 TEST(SwapTower, AShallowAdverseRefundDoesNotEndTheTowersDuty) {
     FakeChains chains;
     Watchtower tower(Package(), Config(), chains);
