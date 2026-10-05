@@ -135,6 +135,14 @@ inline Bytes32 HmacSha256(const Bytes32& key, const std::string& msg) {
 }
 
 // temp + fsync + rename (mode 0600): a crash leaves the old or the new file.
+// fsync on macOS only reaches the drive's cache; F_FULLFSYNC flushes it.
+inline int SyncToDisk(int fd) {
+#ifdef F_FULLFSYNC
+    if (::fcntl(fd, F_FULLFSYNC) == 0) return 0;  // falls back where the filesystem lacks it
+#endif
+    return ::fsync(fd);
+}
+
 inline void WriteFileAtomically(const std::string& path, const std::string& text) {
     const std::string tmp = path + ".tmp";
     const int fd = ::open(tmp.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600);
@@ -145,7 +153,7 @@ inline void WriteFileAtomically(const std::string& path, const std::string& text
         if (n <= 0) { ::close(fd); throw std::runtime_error("swap: write failed: " + path); }
         off += static_cast<size_t>(n);
     }
-    if (::fsync(fd) != 0) { ::close(fd); throw std::runtime_error("swap: fsync failed: " + path); }
+    if (SyncToDisk(fd) != 0) { ::close(fd); throw std::runtime_error("swap: fsync failed: " + path); }
     ::close(fd);
     if (std::rename(tmp.c_str(), path.c_str()) != 0) throw std::runtime_error("swap: rename failed: " + path);
     // Make the rename itself durable: without syncing the directory, a power
@@ -154,7 +162,7 @@ inline void WriteFileAtomically(const std::string& path, const std::string& text
     const std::string dir = slash == std::string::npos ? "." : path.substr(0, slash);
     const int dfd = ::open(dir.c_str(), O_RDONLY);
     if (dfd >= 0) {
-        ::fsync(dfd);
+        SyncToDisk(dfd);
         ::close(dfd);
     }
 }
