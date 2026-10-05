@@ -11,11 +11,23 @@
 #include <secp256k1_schnorrsig.h>
 
 #include <cstdio>
-#include <fcntl.h>
+#include <filesystem>
 #include <stdexcept>
-#include <unistd.h>
 #include <string>
 #include <vector>
+
+#ifdef _WIN32
+#include <fcntl.h>
+#include <io.h>
+#include <sys/stat.h>
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#else
+#include <fcntl.h>
+#include <unistd.h>
+#endif
 
 namespace dinero::swap::detail {
 
@@ -135,6 +147,26 @@ inline Bytes32 HmacSha256(const Bytes32& key, const std::string& msg) {
 }
 
 // temp + fsync + rename (mode 0600): a crash leaves the old or the new file.
+#ifdef _WIN32
+// Windows: write + _commit, then MoveFileExW(REPLACE_EXISTING | WRITE_THROUGH)
+// (std::rename refuses to replace an existing file there). No directory sync.
+inline void WriteFileAtomically(const std::string& path, const std::string& text) {
+    const std::filesystem::path target(path), tmp(path + ".tmp");
+    const int fd = ::_wopen(tmp.c_str(), _O_WRONLY | _O_CREAT | _O_TRUNC | _O_BINARY, _S_IREAD | _S_IWRITE);
+    if (fd < 0) throw std::runtime_error("swap: cannot open " + path + ".tmp");
+    size_t off = 0;
+    while (off < text.size()) {
+        const int n = ::_write(fd, text.data() + off, static_cast<unsigned>(text.size() - off));
+        if (n <= 0) { ::_close(fd); throw std::runtime_error("swap: write failed: " + path); }
+        off += static_cast<size_t>(n);
+    }
+    if (::_commit(fd) != 0) { ::_close(fd); throw std::runtime_error("swap: fsync failed: " + path); }
+    ::_close(fd);
+    if (!::MoveFileExW(tmp.c_str(), target.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+        throw std::runtime_error("swap: rename failed: " + path);
+    }
+}
+#else
 // fsync on macOS only reaches the drive's cache; F_FULLFSYNC flushes it.
 inline int SyncToDisk(int fd) {
 #ifdef F_FULLFSYNC
@@ -166,5 +198,6 @@ inline void WriteFileAtomically(const std::string& path, const std::string& text
         ::close(dfd);
     }
 }
+#endif
 
 }  // namespace dinero::swap::detail

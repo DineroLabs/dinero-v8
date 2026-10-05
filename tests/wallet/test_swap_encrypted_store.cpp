@@ -108,4 +108,28 @@ TEST(SwapEncryptedStore, FreshNonceEverySaveAndKeyIsNotTheMasterKey) {
     EXPECT_NE(Slurp(f.path), first) << "same session, different ciphertext";
 }
 
+TEST(SwapEncryptedStore, RepeatedSavesReplaceTheFileAndReopenToTheLastState) {
+    // Every tick may save: the replace must work over an existing file on
+    // every platform (Windows rename refuses that), and leave no temp file.
+    TempFile f;
+    const auto key = DeriveSwapStoreKey(MasterKey(0x21));
+    EncryptedFileSwapStore store(f.path, key);
+    auto s = AliceSession();
+    for (uint32_t i = 1; i <= 5; ++i) {
+        s.btc_scan_from_height = 100 + i;
+        ASSERT_NO_THROW(store.Save(s)) << "save " << i;
+        EXPECT_EQ(EncryptedFileSwapStore::Load(f.path, key).btc_scan_from_height, 100 + i) << "reopen after save " << i;
+    }
+    EXPECT_FALSE(std::filesystem::exists(f.path + ".tmp"));
+    EXPECT_EQ(EncodeSession(EncryptedFileSwapStore::Load(f.path, key)), EncodeSession(s));
+
+    const std::string plain = f.path + ".txt";
+    for (const char* text : {"first\n", "second, longer\n", "3\n"}) {
+        ASSERT_NO_THROW(detail::WriteFileAtomically(plain, text));
+        EXPECT_EQ(Slurp(plain), text);
+    }
+    EXPECT_FALSE(std::filesystem::exists(plain + ".tmp"));
+    std::remove(plain.c_str());
+}
+
 }  // namespace

@@ -6,11 +6,9 @@
 #include "wallet/swap/swap_crypto.h"
 
 #include <cstdio>
-#include <fcntl.h>
 #include <fstream>
 #include <sstream>
 #include <stdexcept>
-#include <unistd.h>
 
 namespace dinero::swap {
 namespace {
