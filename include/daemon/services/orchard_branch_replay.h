@@ -3,6 +3,7 @@
 #include "daemon/services/orchard_history_capture.h"
 #include "daemon/services/orchard_replay_header_view.h"
 #include "consensus/orchard_block_coins.h"
+#include "consensus/orchard_candidate_coin_view.h"
 #include "consensus/orchard_validated_block.h"
 #include "consensus/orchard_block_filter.h"
 #include "consensus/orchard_forest_transition.h"
@@ -84,8 +85,14 @@ public:
         Require(next_work>work_ && next_work==work,"Branch replay work mismatch");
         std::vector<TxId> ids;ids.reserve(block.Transactions().size());
         for(const auto& tx:block.Transactions())ids.push_back(tx.GetTxid());
+        CoinView authenticated_parent(coins_,height_);
+        // Retain only candidate inputs and proved output absences for detached
+        // validation. The replayed branch supplies exact legacy metadata;
+        // membership is queried BEFORE recording this candidate's transaction IDs.
+        const auto view=consensus::OrchardCandidateCoinView::Capture(block,*context,header_,
+            consensus::UtreexoStump::fromForest(forest_),authenticated_parent,
+            [&](const TxId& id)->StatusOr<bool> { return ContainsTransaction(id); });
         RecordTransactions(ids);
-        CoinView view(coins_,height_);
         const auto parent_hash=header_.GetHash();const auto parent_height=height_;
         std::map<uint32_t,uint64_t> recorded_mtp;
         consensus::OrchardBranchMtpLookup mtp=[&](uint32_t h)->std::optional<uint64_t> {
@@ -178,6 +185,12 @@ public:
 private:
     friend struct OrchardBranchCaptureTestAccess;
     friend struct OrchardBranchAncestryTestAccess;
+    bool ContainsTransaction(const TxId& id) const {
+        if(history_ && history_->ContainsTransaction(id)) return true;
+        wallet::detail::RuntimeReplayDiskMembership::Key key;
+        const auto& hash=id.AsUint256();std::copy_n(hash.data,32,key.begin());
+        return transactions_.Contains(transactions_root_,key);
+    }
     void RecordTransactions(std::span<const TxId> ids) {
         // The historical owner uses another spool. Finish its checked reads
         // before taking this branch's private transaction; no nested database

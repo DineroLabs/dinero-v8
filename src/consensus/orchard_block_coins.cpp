@@ -1,4 +1,6 @@
 #include "consensus/orchard_block_coins.h"
+#include "consensus/orchard_candidate_coin_view.h"
+#include "consensus/utreexo_maturity_leaf_activation.h"
 #include "consensus/orchard_resources.h"
 #include "consensus/block_reward.h"
 #include "consensus/chainparams.h"
@@ -203,5 +205,141 @@ PreparedOrchardBlockCoins PrepareOrchardBlockCoinsUnderChainstateLock(
     return PreparedOrchardBlockCoins(context.block_hash, context.parent_hash, context.height,
         std::move(checked.transactions), std::move(checked.changes),
         std::move(checked.authorizations), checked.fees, checked.resources);
+}
+} // namespace dinero::consensus
+
+namespace dinero::consensus {
+namespace {
+using CaptureError = OrchardCandidateCoinErrorCode;
+[[noreturn]] void RejectCapture(CaptureError code) { throw OrchardCandidateCoinError(code); }
+}
+OrchardCandidateCoinView OrchardCandidateCoinView::Capture(
+    const OrchardBlockCandidate& block, const OrchardBlockContext& context,
+    const BlockHeader& header, const UtreexoStump& stump,
+    const ChainStateView& parent, const TransactionMembership& transactions) {
+    const auto root = stump.getCommitment();
+    std::string error;
+    if (!context.height || context.height > INT32_MAX || context.activation_height == UINT32_MAX ||
+        !context.activation_height || context.height < context.activation_height ||
+        parent.getHeight() != context.height - 1 || !transactions ||
+        header.GetHash() != context.parent_hash || block.Header().prev_block_hash != context.parent_hash ||
+        block.Header().GetHash() != context.block_hash || !header.IsReservedValid() ||
+        root.size() != 32 || !std::equal(root.begin(), root.end(), header.utreexo_root.begin()) ||
+        !block.CheckSizeLimits(error)) RejectCapture(CaptureError::Context);
+    if (!block.Utreexo()) RejectCapture(CaptureError::Proof);
+    const auto& data = *block.Utreexo();
+    const auto& proof = data.spend_proof;
+    if (data.accumulator_root_before != root || proof.numLeaves != stump.getNumLeaves() ||
+        proof.format_version != GetUtreexoProofFormatVersion(context.height) || !proof.isValid())
+        RejectCapture(CaptureError::Proof);
+    OrchardCandidateCoinView result(context.height - 1, context.parent_hash, context.block_hash);
+    struct Parts {
+        std::vector<OutPoint> spent;
+        std::vector<std::pair<OutPoint, UTXOEntry>> created;
+    };
+    std::vector<Parts> ordered;
+    std::set<TxId> ids;
+    for (const auto& parsed : block.Transactions()) {
+        const auto id = parsed.GetTxid();
+        if (!ids.insert(id).second) RejectCapture(CaptureError::DuplicateTransaction);
+        const auto present = transactions(id);
+        if (!present.ok()) throw OrchardCoinLookupError(present.status());
+        if (*present) RejectCapture(CaptureError::HistoricalTransaction);
+        Parts part;
+        if (parsed.IsOrchard()) {
+            for (const auto& input : parsed.Orchard().Inputs()) {
+                uint256 hash;
+                std::copy(input.txid_wire.begin(), input.txid_wire.end(), hash.begin());
+                part.spent.emplace_back(TxId(hash), input.output_index);
+            }
+            uint32_t index = 0;
+            for (const auto& output : parsed.Orchard().Outputs())
+                part.created.emplace_back(OutPoint(id, index++), UTXOEntry(
+                    AmountUna::Una(output.amount_una), output.script_pub_key, context.height, false));
+        } else {
+            const auto& tx = parsed.Historical();
+            if (!tx.IsCoinbase()) for (const auto& input : tx.vin)
+                part.spent.emplace_back(input.prevout.txid, input.prevout.vout);
+            for (uint32_t index = 0; index < tx.vout.size(); ++index) {
+                const auto& output = tx.vout[index];
+                part.created.emplace_back(OutPoint(id, index), UTXOEntry(output.value, output.scriptPubKey,
+                    context.height, tx.IsCoinbase(), output.is_confidential, output.commitment));
+            }
+        }
+        for (const auto& [point, coin] : part.created) {
+            const auto existing = parent.getCoin(point);
+            if (existing.ok()) RejectCapture(CaptureError::OutputCollision);
+            if (existing.status() != Status::NotFound) throw OrchardCoinLookupError(existing.status());
+            if (!result.absent_.insert(point).second) RejectCapture(CaptureError::DuplicateTransaction);
+        }
+        ordered.push_back(std::move(part));
+    }
+    std::map<OutPoint, UTXOEntry> prior_outputs;
+    std::set<OutPoint> spent;
+    std::set<UtreexoHash> expected;
+    size_t index = 0;
+    for (const auto& tx : ordered) {
+        for (const auto& point : tx.spent) {
+            if (!spent.insert(point).second) RejectCapture(CaptureError::DuplicateInput);
+            const auto internal = prior_outputs.find(point);
+            const bool same_block = internal != prior_outputs.end();
+            const auto coin = [&]() {
+                if (same_block) return internal->second;
+                if (result.absent_.contains(point)) RejectCapture(CaptureError::InputOrder);
+                const auto found = parent.getCoin(point);
+                if (!found.ok()) throw OrchardCoinLookupError(found.status());
+                if (found->height > context.height - 1) throw OrchardCoinLookupError(Status::Corruption);
+                return *found;
+            }();
+            if (index == data.spent_outputs.size()) RejectCapture(CaptureError::Metadata);
+            const auto& metadata = data.spent_outputs[index++];
+            if (metadata.value != coin.value.GetUna() || metadata.scriptPubKey != coin.scriptPubKey ||
+                metadata.created_height != coin.height || metadata.is_coinbase != coin.isCoinbase ||
+                metadata.is_confidential != coin.is_confidential || metadata.commitment != coin.commitment)
+                RejectCapture(CaptureError::Metadata);
+            if (!same_block) {
+                result.inputs_.emplace(point, coin);
+                if (!expected.insert(HashUTXOForCreationHeight(point.txid.AsUint256(), point.vout,
+                    coin.value.GetUna(), coin.scriptPubKey, coin.height, coin.isCoinbase)).second)
+                    RejectCapture(CaptureError::Proof);
+            }
+        }
+        for (const auto& [point, coin] : tx.created)
+            if (!prior_outputs.emplace(point, coin).second) RejectCapture(CaptureError::DuplicateTransaction);
+    }
+    if (index != data.spent_outputs.size() || expected.size() != proof.targets.size() ||
+        proof.positions.size() != proof.targets.size()) RejectCapture(CaptureError::Proof);
+    std::set<UtreexoHash> provided;
+    std::set<uint64_t> positions;
+    size_t siblings = 0;
+    for (size_t i = 0; i < proof.targets.size(); ++i) {
+        if (proof.targets[i].size() != 32 || !provided.insert(proof.targets[i]).second ||
+            proof.positions[i] >= proof.numLeaves || !positions.insert(proof.positions[i]).second)
+            RejectCapture(CaptureError::Proof);
+        uint64_t start = 0;
+        for (int height = 63; height >= 0; --height) if ((proof.numLeaves >> height) & 1) {
+            const uint64_t size = uint64_t(1) << height;
+            if (proof.positions[i] >= start && proof.positions[i] - start < size) {
+                siblings += size_t(height); break;
+            }
+            start += size;
+        }
+    }
+    if (provided != expected || siblings != proof.proof_hashes.size()) RejectCapture(CaptureError::Proof);
+    if (expected.empty()) {
+        if (!proof.isEmpty()) RejectCapture(CaptureError::Proof);
+    } else if (!stump.verifyBlockProof(proof)) RejectCapture(CaptureError::Proof);
+    if (parent.getHeight() != result.height_) throw OrchardCoinLookupError(Status::Internal);
+    return result;
+}
+StatusOr<UTXOEntry> OrchardCandidateCoinView::getCoin(const OutPoint& point) const {
+    if (const auto found = inputs_.find(point); found != inputs_.end()) return found->second;
+    if (absent_.contains(point)) return Status::NotFound;
+    return Status::Internal;
+}
+bool OrchardCandidateCoinView::hasCoin(const OutPoint& point) const {
+    const auto result = getCoin(point);
+    if (!result.ok() && result.status() != Status::NotFound) throw OrchardCoinLookupError(result.status());
+    return result.ok();
 }
 } // namespace dinero::consensus
