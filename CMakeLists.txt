@@ -1316,6 +1316,9 @@ include(src/wallet/reference/CMakeLists.txt)
 # External sibling project discovery stays in cmake/.
 include(cmake/ExternalProjects.cmake)
 
+# The swap watchtower program (macOS/Linux) and its install rule.
+include(cmake/SwapTower.cmake)
+
 # Install and package-gate policy lives in cmake/.
 include(cmake/InstallRules.cmake)
 

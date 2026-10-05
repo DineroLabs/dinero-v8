@@ -13883,22 +13883,13 @@ if(TARGET dinerod)
   set_tests_properties(SwapDinRegtest PROPERTIES LABELS "wallet;swap;regtest" TIMEOUT 600)
 endif()
 
-# Bob's swap watchtower daemon (milestone 5): keyless, pre-signed rungs only.
-add_executable(dinero-swap-tower
-  tools/dinero_swap_tower.cpp
-  src/wallet/swap/tower.cpp
-  src/wallet/swap/runner.cpp
-  src/wallet/swap/fee_ladder.cpp
-  src/wallet/swap/din_watcher.cpp
-  src/wallet/swap/btc_watcher.cpp
-  src/wallet/swap/btc_tx.cpp
-  src/wallet/swap/engine.cpp
-  src/wallet/swap/offer.cpp
-  src/wallet/swap/htlc.cpp
-)
-target_link_libraries(dinero-swap-tower PRIVATE dinero_rpc_client dinero_consensus)
-link_zstd_if_needed(dinero-swap-tower)
-target_include_directories(dinero-swap-tower PRIVATE ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/external)
+# The swap watchtower (dinero-swap-tower) is a shipped program: cmake/SwapTower.cmake.
+# Its install rule must place a runnable binary (macOS/Linux).
+if(NOT WIN32)
+  add_test(NAME SwapTowerInstalls
+    COMMAND ${CMAKE_SOURCE_DIR}/tests/wallet/swap_tower_install_check.sh ${CMAKE_COMMAND} ${CMAKE_BINARY_DIR})
+  set_tests_properties(SwapTowerInstalls PROPERTIES LABELS "wallet;swap" TIMEOUT 120)
+endif()
 
 # swap.* RPCs end to end: two dinerods + bitcoind, SIGKILL/restart, clean stop (milestone 6).
 if(TARGET dinerod AND DINERO_BITCOIND)
@@ -13925,7 +13916,7 @@ add_executable(swap_e2e_tool
 target_link_libraries(swap_e2e_tool PRIVATE dinero_rpc_client dinero_consensus argon2 OpenSSL::Crypto)
 link_zstd_if_needed(swap_e2e_tool)
 target_include_directories(swap_e2e_tool PRIVATE ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/external)
-if(TARGET dinerod AND DINERO_BITCOIND)
+if(TARGET dinerod AND TARGET dinero-swap-tower AND DINERO_BITCOIND)
   add_test(NAME SwapE2ERegtest
     COMMAND ${CMAKE_SOURCE_DIR}/tests/wallet/swap_e2e_regtest.sh $<TARGET_FILE:dinerod> $<TARGET_FILE:swap_e2e_tool>
             $<TARGET_FILE:dinero-swap-tower>)
