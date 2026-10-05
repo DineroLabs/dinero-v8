@@ -463,6 +463,33 @@ TEST(SwapRunner, LockTransactionsArePersistedAndPinned) {
     }
 }
 
+TEST(SwapRunner, AlicesBtcClaimFeeRisesWhileItIsUnconfirmed) {
+    auto fee_after = [](uint32_t seconds) {
+        Log log;
+        FakeStore store(log);
+        FakeChains chains(log);
+        auto s = MakeSession(Role::DinSeller);
+        s.record.state = SwapState::BtcClaimBroadcast;
+        s.record.state_since_unix = kNow;
+        BothLocksSeen(chains, s);
+        chains.din.htlc.output_confirmations = 40;
+        chains.btc.htlc.spent = true;  // our claim, unconfirmed in the mempool
+        chains.btc.htlc.spent_by_claim = true;
+        chains.btc.htlc.revealed_preimage = kSecret;
+        SwapRunner alice(s, kAliceKeys, Config(), chains, store);
+        alice.Tick(kNow + seconds);
+        EXPECT_EQ(chains.btc_broadcasts.size(), 1u);
+        return s.record.offer.btc_amount_sat - ParseBtcTx(chains.btc_broadcasts.at(0)).vout.at(0).value_sat;
+    };
+    const uint64_t base = Config().btc_fee_sat;
+    EXPECT_EQ(fee_after(60), base);
+    EXPECT_EQ(fee_after(31 * 60), 2 * base);
+    EXPECT_EQ(fee_after(65 * 60), 4 * base);
+    // Capped at btc_fee_max_percent of the amount.
+    EXPECT_EQ(fee_after(48 * 3600), MakeSession(Role::DinSeller).record.offer.btc_amount_sat *
+                                        Config().btc_fee_max_percent / 100);
+}
+
 TEST(SwapRunner, SessionRoundTripsThroughTheFileStore) {
     const auto path = (std::filesystem::temp_directory_path() / "swap_runner_test_session.txt").string();
     std::remove(path.c_str());

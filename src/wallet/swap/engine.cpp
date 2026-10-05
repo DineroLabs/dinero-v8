@@ -93,6 +93,10 @@ struct Stepper {
                 rec.claim_seen = true;  // the secret is public from here on
                 if (obs.btc.spend_confirmations >= std::max(offer().n_btc_confirmations, BtcSettle())) {
                     Go(SwapState::Done);
+                } else if (obs.btc.spend_confirmations == 0) {
+                    // Unconfirmed: re-broadcast so the runner can replace it with a
+                    // higher fee before Bob's refund opens.
+                    Do(ActionKind::ClaimBtc, "claim unconfirmed; fee bump");
                 }
                 return;
             }
@@ -210,6 +214,7 @@ struct Stepper {
             if (LearnSecret()) return;  // Alice won the race: take the DIN now
             if (obs.btc.spent && !obs.btc.spent_by_claim) {
                 if (obs.btc.spend_confirmations >= BtcSettle()) Go(SwapState::Refunded);
+                else if (obs.btc.spend_confirmations == 0) Do(ActionKind::RefundBtc, "refund unconfirmed; fee bump");
                 return;
             }
             if (!obs.btc.spent) Do(ActionKind::RefundBtc, "refund not seen; re-broadcasting");

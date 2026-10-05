@@ -330,7 +330,7 @@ TickReport SwapRunner::Tick(uint32_t wall_clock_unix) {
 
     for (const auto& a : step.actions) {
         report.actions.push_back(a.kind);
-        Execute(a, din, btc, report.events);
+        Execute(a, din, btc, wall_clock_unix, report.events);
     }
     // Bob's tower must hold the package before he can safely go offline. The
     // engine asks once (ArmTower); a failed attempt is retried every tick.
@@ -368,6 +368,19 @@ void SwapRunner::ArmTower(const DinWatchReport& din, const BtcWatchReport& btc, 
     }
 }
 
+// Bitcoin replaces by fee: while a claim/refund stays unconfirmed, its fee
+// doubles every 30 minutes since the state began, up to btc_fee_max_percent of
+// the amount. Derived from the persisted state, so a restart picks up where it was.
+uint64_t SwapRunner::BtcFeeNow(uint32_t now) const {
+    const uint64_t base = config_.btc_fee_sat;
+    const uint64_t cap = std::max(base, session_.record.offer.btc_amount_sat / 100 * config_.btc_fee_max_percent);
+    const uint32_t since = session_.record.state_since_unix;
+    const uint32_t doublings = now > since ? (now - since) / 1800 : 0;
+    uint64_t fee = base;
+    for (uint32_t i = 0; i < doublings && fee < cap; ++i) fee *= 2;
+    return std::min(fee, cap);
+}
+
 void SwapRunner::PinAndSave(const std::string& din_txid, const std::string& btc_txid) {
     SwapSession next = session_;
     if (!din_txid.empty()) next.din_funding_txid = din_txid;
@@ -377,7 +390,7 @@ void SwapRunner::PinAndSave(const std::string& din_txid, const std::string& btc_
     io_.PinFunding(din_txid, btc_txid);
 }
 
-void SwapRunner::Execute(const Action& action, const DinWatchReport& din, const BtcWatchReport& btc,
+void SwapRunner::Execute(const Action& action, const DinWatchReport& din, const BtcWatchReport& btc, uint32_t now,
                          std::vector<std::string>& events) {
     const auto& offer = session_.record.offer;
     auto done = [&](const char* what, const std::string& txid) {
@@ -404,11 +417,11 @@ void SwapRunner::Execute(const Action& action, const DinWatchReport& din, const 
         case ActionKind::ClaimBtc:
             if (!btc.funding) throw std::runtime_error("BTC HTLC output unknown");
             return done("broadcast BTC claim:",
-                        io_.BroadcastBtc(SignedBtcClaim(session_, keys_, *btc.funding, config_.btc_fee_sat)));
+                        io_.BroadcastBtc(SignedBtcClaim(session_, keys_, *btc.funding, BtcFeeNow(now))));
         case ActionKind::RefundBtc:
             if (!btc.funding) throw std::runtime_error("BTC HTLC output unknown");
             return done("broadcast BTC refund:",
-                        io_.BroadcastBtc(SignedBtcRefund(session_, keys_, *btc.funding, config_.btc_fee_sat)));
+                        io_.BroadcastBtc(SignedBtcRefund(session_, keys_, *btc.funding, BtcFeeNow(now))));
         case ActionKind::ClaimDin: {
             if (!din.funding) throw std::runtime_error("DIN HTLC output unknown");
             // Dinero does not replace by fee: pick the fee for the time left before

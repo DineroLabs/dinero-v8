@@ -72,7 +72,8 @@ struct SwapKeys {
 struct RunnerConfig {
     uint64_t din_fee_una{100'000};          // DIN claim/refund fee with >= 24 h to T_din
     uint64_t din_fee_urgent_una{1'000'000}; // DIN claim fee within 6 h of T_din (linear between)
-    uint64_t btc_fee_sat{1'000};
+    uint64_t btc_fee_sat{1'000};          // first BTC claim/refund fee; doubles every 30 min unconfirmed
+    uint32_t btc_fee_max_percent{5};      // cap per BTC claim/refund, of the swap amount
     // Bob's watchtower ladders (only used when a tower is configured).
     bool use_tower{false};
     uint64_t din_tower_start_feerate_una_per_vb{1'000};
@@ -179,10 +180,11 @@ public:
     const SwapSession& session() const { return session_; }
 
 private:
-    void Execute(const Action& action, const DinWatchReport& din, const BtcWatchReport& btc,
+    void Execute(const Action& action, const DinWatchReport& din, const BtcWatchReport& btc, uint32_t now,
                  std::vector<std::string>& events);
     void ArmTower(const DinWatchReport& din, const BtcWatchReport& btc, std::vector<std::string>& events);
     void PinAndSave(const std::string& din_txid, const std::string& btc_txid);
+    uint64_t BtcFeeNow(uint32_t now) const;
 
     SwapSession session_;
     SwapKeys keys_;

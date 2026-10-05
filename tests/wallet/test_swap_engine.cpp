@@ -600,3 +600,23 @@ TEST(SwapEngine, RefundsWaitUntilMedianTimePassesTheLock) {
     o2.btc_mtp_unix = b.offer.t_btc_unix + 1;
     EXPECT_TRUE(Has(Step(b, o2), ActionKind::RefundBtc));
 }
+
+TEST(SwapEngine, UnconfirmedBitcoinSpendsKeepBeingBroadcastForFeeBumps) {
+    // Alice's claim sits unconfirmed in the mempool: the runner must get the
+    // chance to replace it with a higher fee before Bob's refund opens.
+    auto a = MakeRecord(Role::DinSeller);
+    a.state = SwapState::BtcClaimBroadcast;
+    auto obs = At(kNow + 2 * kHour);
+    obs.din = Locked(kDin, 40);
+    obs.btc = Spent(Locked(kBtc, 5), true, 0, kSecret);
+    EXPECT_TRUE(Has(Step(a, obs), ActionKind::ClaimBtc));
+    obs.btc = Spent(Locked(kBtc, 5), true, 1, kSecret);
+    EXPECT_FALSE(Has(Step(a, obs), ActionKind::ClaimBtc)) << "mined: no more broadcasts";
+
+    auto b = MakeRecord(Role::BtcSeller);
+    b.state = SwapState::BtcRefundBroadcast;
+    auto o2 = At(b.offer.t_btc_unix + kHour);
+    o2.din = Locked(kDin, 40);
+    o2.btc = Spent(Locked(kBtc, 5), false, 0);
+    EXPECT_TRUE(Has(Step(b, o2), ActionKind::RefundBtc));
+}
