@@ -133,10 +133,22 @@ Without `swap.mainnet_beta=1`, dinerod refuses to start with swaps enabled.
 ## Known limitations
 
 - **One fee bump on Dinero.** Dinero nodes don't replace transactions by fee.
-  - The DIN claim fee is chosen by how close the DIN deadline is.
+  - The DIN claim fee is chosen by how close the DIN deadline is, and once
+    sent the same claim is re-sent unchanged.
   - A stuck claim gets exactly one bump, through a child transaction (CPFP).
+    It is held back until it matters: within 12 hours of the DIN deadline,
+    or after the claim has sat unmined for 6 hours. It pays at least the
+    urgent fee (the tower sends its largest pre-signed child).
   - Regtest showed that nodes accept the child. That miners prefer the pair
     when blocks are full is not yet tested.
+- **Small BTC fee bumps.** A stuck BTC claim or refund is re-sent with a
+  doubling fee, capped at 5% of the BTC amount. At the smallest swap sizes
+  the cap leaves little room to bump.
+- **Bob's node and his tower may both bump his BTC refund.** Each replaces
+  the other's at a higher fee; this costs fee (up to the cap), not funds.
+- **Slow first look after a restart.** Right after dinerod starts, each swap
+  scans the blocks since it began. Until that finishes, `swap.*` commands
+  (including `swap.refund`) can take a few minutes to answer.
 - **One Bitcoin wallet only.** Bitcoin Core must have exactly one loaded
   wallet; there is no Electrum support yet.
 - **Copy-paste only.** Offers are exchanged by copy-paste; there is no order
