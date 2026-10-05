@@ -109,6 +109,10 @@ public:
     // offer). Throws std::runtime_error otherwise.
     void Cancel(const std::string& id);
 
+    // Recovery: broadcast this wallet's own refund for swap `id` now (see
+    // SwapRunner::ForceRefund). Returns the txid; throws with the node's reason.
+    std::string Refund(const std::string& id, uint32_t now_unix);
+
     // One tick of every unfinished swap. Returns false (and does nothing) when
     // the wallet is locked: swaps are paused, not failed.
     bool TickAll(uint32_t now_unix);

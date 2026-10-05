@@ -424,6 +424,24 @@ void SwapManager::Cancel(const std::string& id) {
     throw std::runtime_error("unknown swap " + id);
 }
 
+std::string SwapManager::Refund(const std::string& id, uint32_t now) {
+    std::lock_guard<std::mutex> lock(mu_);
+    const Bytes32 store_key = SwapStoreKeyFromSeed(derive_, config_.network);
+    for (const auto& [index, path] : ScanDir(".swap")) {
+        if (!live_.count(index)) {
+            SwapSession s = LoadSession(index, store_key);
+            if (SwapId(s.record.offer) != id) continue;
+            StartSession(index, std::move(s), store_key);  // finished swaps too: the caller asked
+        }
+        auto& live = live_[index];
+        if (SwapId(live.runner->session().record.offer) != id) continue;
+        const std::string txid = live.runner->ForceRefund(now);
+        live.last_events.push_back("manual refund broadcast: " + txid);
+        return txid;
+    }
+    throw std::runtime_error("unknown swap " + id);
+}
+
 bool SwapManager::TickAll(uint32_t now) {
     std::lock_guard<std::mutex> lock(mu_);
     Bytes32 store_key;

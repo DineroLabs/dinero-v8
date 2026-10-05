@@ -46,6 +46,7 @@ static const std::unordered_set<std::string> ADMIN_METHODS = {
     "swap.offer",
     "swap.accept",
     "swap.cancel",
+    "swap.refund",
     "wallet.importprivkey",
     "wallet.importmnemonic",
     "wallet.exportmnemonic",

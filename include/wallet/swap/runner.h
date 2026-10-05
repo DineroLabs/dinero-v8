@@ -177,6 +177,12 @@ public:
     // Throws only if the store cannot save; then nothing was done.
     TickReport Tick(uint32_t wall_clock_unix);
 
+    // Recovery: broadcast this party's own refund now, whatever the state (it
+    // never reveals the secret; consensus enforces the lock time, so an early
+    // call is refused by the node). Returns the txid; throws if there is
+    // nothing to refund or the node refuses.
+    std::string ForceRefund(uint32_t wall_clock_unix);
+
     const SwapSession& session() const { return session_; }
 
 private:

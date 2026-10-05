@@ -369,6 +369,22 @@ void SwapRunner::ArmTower(const DinWatchReport& din, const BtcWatchReport& btc, 
     }
 }
 
+std::string SwapRunner::ForceRefund(uint32_t now) {
+    const auto& r = session_.record;
+    if (r.role == Role::DinSeller) {
+        const DinWatchReport din = io_.ObserveDin();
+        if (!din.ok) throw std::runtime_error("Dinero node unreachable");
+        if (!din.funding) throw std::runtime_error("no DIN lock found to refund");
+        if (din.htlc.spent) throw std::runtime_error("the DIN lock is already spent");
+        return io_.BroadcastDin(SignedDinRefund(session_, keys_, *din.funding, config_.din_fee_una));
+    }
+    const BtcWatchReport btc = io_.ObserveBtc();
+    if (!btc.ok) throw std::runtime_error("Bitcoin node unreachable");
+    if (!btc.funding) throw std::runtime_error("no BTC lock found to refund");
+    if (btc.htlc.spent) throw std::runtime_error("the BTC lock is already spent");
+    return io_.BroadcastBtc(SignedBtcRefund(session_, keys_, *btc.funding, BtcFeeNow(now)));
+}
+
 // With one chain unobservable nothing is decided or saved, but transactions
 // already committed to, which depend only on the observable chain, keep being
 // broadcast: an outage of one node must not cost the other chain's deadline.

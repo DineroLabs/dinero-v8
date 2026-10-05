@@ -94,11 +94,17 @@ check "status never shows a secret or key field" \
 
 state() { field "$(rpc $1 swap.status "[\"$ID\"]" 2>/dev/null || echo '{}')" state; }
 killed=0
+early_refund=0
 for round in $(seq 1 150); do
   rpc $APORT generatetoaddress "[1, \"$ALICE_DIN\"]" >/dev/null
   "${BCLI[@]}" generatetoaddress 1 "$BTC_MINER" >/dev/null
   sleep 1.2
   SA=$(state $APORT); SB=$(state $BPORT)
+  if [[ $early_refund == 0 && "$SA" == din-locked ]]; then
+    out=$(rpc $APORT swap.refund "[\"$ID\"]" 2>&1 || true)
+    check "swap.refund before T_din is refused by consensus (${out:0:70})" '[[ "$out" == *non-final* ]]'
+    early_refund=1
+  fi
   (( round % 5 == 0 )) && echo "  [$round] alice=$SA bob=$SB"
   if [[ $killed == 0 && ( "$SB" == btc-lock-broadcast || "$SB" == btc-locked ) ]]; then  # Bob's BTC is committed
     echo "  [$round] SIGKILL bob's daemon, restart, unlock"
@@ -113,6 +119,9 @@ for round in $(seq 1 150); do
 done
 echo "  final: alice=$(state $APORT) bob=$(state $BPORT)"
 check "bob's daemon was killed and restarted mid-swap" '[[ $killed == 1 ]]'
+check "the early manual refund was tried" '[[ $early_refund == 1 ]]'
+out=$(rpc $BPORT swap.refund "[\"$ID\"]" 2>&1 || true)
+check "swap.refund after the swap is refused (${out:0:60})" '[[ "$out" == *"already spent"* ]]'
 check "alice done" '[[ "$(state $APORT)" == done ]]'
 check "bob done" '[[ "$(state $BPORT)" == done ]]'
 GOT_BTC=$("${BCLI[@]}" scantxoutset start "[\"addr($ALICE_BTC)\"]" | python3 -c 'import sys,json;print(round(json.load(sys.stdin)["total_amount"]*1e8))')

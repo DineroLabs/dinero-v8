@@ -526,6 +526,42 @@ TEST(SwapRunner, AnOutageOfOneChainDoesNotBlockTheOthersUrgentRebroadcasts) {
     EXPECT_EQ(none.first + none.second, 0u);
 }
 
+TEST(SwapRunner, ManualRefundBroadcastsOnlyTheCallersOwnRefund) {
+    // Recovery when automation is stuck: whatever the state, the caller can
+    // push their own refund (it never reveals the secret; consensus enforces
+    // the lock time).
+    {
+        Log log;
+        FakeStore store(log);
+        FakeChains chains(log);
+        auto s = MakeSession(Role::DinSeller);
+        s.record.state = SwapState::DinLockBroadcast;  // e.g. stuck: lock never "seen"
+        BothLocksSeen(chains, s);
+        SwapRunner alice(s, kAliceKeys, Config(), chains, store);
+        const auto txid = alice.ForceRefund(kNow);
+        EXPECT_EQ(chains.din_broadcasts.size(), 1u);
+        EXPECT_TRUE(chains.btc_broadcasts.empty());
+        EXPECT_EQ(chains.din_broadcasts[0], SignedDinRefund(s, kAliceKeys, DinFunding(s), Config().din_fee_una));
+        EXPECT_FALSE(txid.empty());
+        EXPECT_EQ(alice.session().record.state, SwapState::DinLockBroadcast) << "state is the engine's business";
+    }
+    {
+        Log log;
+        FakeStore store(log);
+        FakeChains chains(log);
+        auto s = MakeSession(Role::BtcSeller);
+        s.record.state = SwapState::BtcLocked;
+        BothLocksSeen(chains, s);
+        SwapRunner bob(s, kBobKeys, Config(), chains, store);
+        bob.ForceRefund(kNow);
+        EXPECT_EQ(chains.btc_broadcasts.size(), 1u);
+        EXPECT_TRUE(chains.din_broadcasts.empty());
+        // Nothing to refund once the lock is spent.
+        chains.btc.htlc.spent = true;
+        EXPECT_THROW(bob.ForceRefund(kNow), std::runtime_error);
+    }
+}
+
 TEST(SwapRunner, SessionRoundTripsThroughTheFileStore) {
     const auto path = (std::filesystem::temp_directory_path() / "swap_runner_test_session.txt").string();
     std::remove(path.c_str());

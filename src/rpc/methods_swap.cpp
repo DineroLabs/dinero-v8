@@ -11,6 +11,7 @@
 //   swap.decode {text}  read-only: the terms of an offer (and whether it can
 //               be accepted now), or the swap id an accept belongs to
 //   swap.list / swap.status {id} / swap.cancel {id}
+//   swap.refund {id}  recovery: broadcast your own refund now
 //
 // No RPC returns a secret, a private key or a raw session. The wallet must be
 // encrypted and unlocked to start a swap; while it is locked swaps pause.
@@ -214,6 +215,21 @@ din::Json RpcStatus(const ExecutionContext& ctx, const din::Json& params) {
     }
 }
 
+// Recovery: broadcast this wallet's own refund now (the lock time is enforced
+// by consensus, so an early call is refused with the node's reason).
+din::Json RpcRefund(const ExecutionContext& ctx, const din::Json& params) {
+    if (auto e = Refuse(ctx, false)) return *e;
+    const din::Json& id = params.isArray() && params.size() == 1 && params[0].isString() ? params[0] : Arg(params, "id");
+    if (!id.isString()) return Error("usage: swap.refund {id}");
+    try {
+        din::Json out(Json::objectValue);
+        out["txid"] = SwapService::Active()->manager()->Refund(id.asString(), static_cast<uint32_t>(std::time(nullptr)));
+        return out;
+    } catch (const std::exception& e) {
+        return Error(e.what());
+    }
+}
+
 din::Json RpcCancel(const ExecutionContext& ctx, const din::Json& params) {
     if (auto e = Refuse(ctx, false)) return *e;
     const din::Json& id = params.isArray() && params.size() == 1 && params[0].isString() ? params[0] : Arg(params, "id");
@@ -237,4 +253,5 @@ void registerSwapMethods() {
     g_rpcRegistry.registerHandler("swap.list", RpcList, RegisterMode::Overwrite, "context-aware");
     g_rpcRegistry.registerHandler("swap.status", RpcStatus, RegisterMode::Overwrite, "context-aware");
     g_rpcRegistry.registerHandler("swap.cancel", RpcCancel, RegisterMode::Overwrite, "context-aware");
+    g_rpcRegistry.registerHandler("swap.refund", RpcRefund, RegisterMode::Overwrite, "context-aware");
 }
