@@ -67,19 +67,23 @@ public:
         bool mutated=false;
         Require(consensus::ComputeMerkleRoot(body.vtx,&mutated)==captured.header.merkle_root && !mutated);
         const auto wire=body.Serialize();uint256 digest;crypto::CSHA256().Write(wire).Finalize(digest.data);
-        auto next_root=transactions_root_;
+        auto next_root=transactions_root_;auto next_count=transaction_count_;
         wallet::detail::RuntimeReplaySpool::Batch batch(spool_);
         for(const auto& tx:body.vtx) {
             const auto key=TransactionKey(tx.GetTxid());
             Require(!transactions_.Contains(next_root,key));
-            next_root=transactions_.With(next_root,key);
+            Require(next_count!=UINT64_MAX);
+            next_root=transactions_.With(next_root,key);++next_count;
         }
         spool_.Insert(HeightKey('w',height),std::span<const uint8_t>(digest.data,32));
-        batch.Commit();transactions_root_=next_root;++recorded_;poisoned_=false;
+        batch.Commit();transactions_root_=next_root;transaction_count_=next_count;++recorded_;poisoned_=false;
     }
     void Finish() {
         CheckReadable();const bool usable=!finished_;poisoned_=true;
         Require(usable && reverse_remaining_==0 && recorded_==count_ && transactions_root_!=0);
+        // Completion must cover the entire reachable transaction inventory,
+        // not merely the keys that a later candidate happens to query.
+        transactions_.ForEach(transactions_root_,transaction_count_,[](const auto&){return true;});
         spool_.Freeze();finished_=true;poisoned_=false;
     }
     bool Finished() const {CheckReadable();return finished_;}
@@ -91,6 +95,18 @@ public:
     bool ContainsTransaction(const TxId& id) const {
         CheckReadable();Require(finished_);return transactions_.Contains(transactions_root_,TransactionKey(id));
     }
+    uint64_t TransactionCount() const {CheckReadable();Require(finished_);return transaction_count_;}
+    // Export IDs, never the disposable spool root. The capture still is NOT a
+    // consensus certificate: the service must pair it with the same completed
+    // independent parent replay. Consumers must stage privately and discard on
+    // any exception/false visitor result; no partial durable publication.
+    template<class Visitor>
+    uint64_t ForEachTransaction(Visitor&& visitor) const {
+        CheckReadable();Require(finished_);
+        return transactions_.ForEach(transactions_root_,transaction_count_,[&](const auto& key) {
+            uint256 hash;std::copy(key.begin(),key.end(),hash.begin());return visitor(TxId(hash));
+        });
+    }
     wallet::detail::RuntimeReplaySpool::Usage UsageNow() const {CheckReadable();return spool_.UsageNow();}
 private:
     friend struct OrchardHistoryCaptureTestAccess;
@@ -101,7 +117,7 @@ private:
     Membership transactions_{spool_};
     Membership::Root transactions_root_=0;
     const uint64_t count_;
-    uint64_t reverse_remaining_,recorded_=0;
+    uint64_t reverse_remaining_,recorded_=0,transaction_count_=0;
     uint256 previous_;
     const std::thread::id thread_=std::this_thread::get_id();
     bool poisoned_=false,finished_=false;

@@ -26,6 +26,42 @@ public:
             previous=node.bit;node=Read(Bit(key,node.bit)?node.one:node.zero);
         }
     }
+    // Complete, ordered traversal from an owned root, bounded by the number
+    // of successful unique insertions recorded by the caller. SQL enumeration
+    // is insufficient: deleted rows must fail, never look like end-of-input.
+    // Every node is MAC-checked by Read/Get, including terminal SQLITE_DONE.
+    // Visitors run after Get has released its statement and spool mutex. A
+    // visitor may observe a prefix before an error; stage privately and publish
+    // only after this call returns the exact expected count successfully.
+    template<class Visitor>
+    uint64_t ForEach(Root root,uint64_t expected_count,Visitor&& visitor) const {
+        Check(bool(root)==bool(expected_count));
+        if(!root)return 0;
+        struct Frame {Root id;uint16_t minimum_bit;Key mask,prefix;};
+        // At most one pending sibling per key bit, plus the current node.
+        std::array<Frame,257> pending{};size_t size=1;
+        pending[0]={root,0,{}, {}};
+        uint64_t count=0;Key previous{};
+        while(size) {
+            const auto frame=pending[--size];const auto node=Read(frame.id);
+            Check(node.bit>=frame.minimum_bit);
+            if(node.bit==256) {
+                for(size_t i=0;i<node.key.size();++i)
+                    Check((node.key[i]&frame.mask[i])==frame.prefix[i]);
+                Check(count<expected_count && (!count||previous<node.key));
+                Check(visitor(node.key));previous=node.key;++count;
+                continue;
+            }
+            Check(size+2<=pending.size());
+            auto mask=frame.mask;auto zero=frame.prefix;auto one=frame.prefix;
+            const auto byte=node.bit/8;const uint8_t bit=uint8_t(1u<<(7-node.bit%8));
+            mask[byte]|=bit;one[byte]|=bit;
+            const auto next=uint16_t(node.bit+1);
+            pending[size++]={node.one,next,mask,one};
+            pending[size++]={node.zero,next,mask,zero};
+        }
+        Check(count==expected_count);return count;
+    }
     // Caller owns a RuntimeReplaySpool::Batch. A failed batch can leave gaps
     // in allocated IDs but cannot publish a partial root to a later node.
     Root With(Root root,const Key& key) {
