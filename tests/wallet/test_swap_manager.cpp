@@ -328,6 +328,41 @@ TEST(SwapManager, PendingOffersAreNotReadableOnDisk) {
     EXPECT_EQ(locked.List()[0].id, SwapId(DecodeOffer(offer)));
 }
 
+TEST(SwapManager, MainnetNeedsThreeBtcConfirmationsAndSwapsBigEnoughForFees) {
+    TempDir dm("main3"), dr("min");
+    FakeWallet w{0x4a};
+    auto mainnet = Config(dm.path);
+    mainnet.network = SwapNetwork::Mainnet;
+    mainnet.runner.din_hrp = "din";
+    mainnet.runner.btc_hrp = "bc";
+    SwapManager m(mainnet, w.Deriver(), kNoDin, kNoBtc);
+    auto r = Request();
+    r.din_refund_address = P2trAddress("din", 0x21);
+    r.btc_claim_address = P2trAddress("bc", 0x22);
+    r.n_btc_confirmations = 1;
+    EXPECT_THROW(m.MakeOffer(r, kNow), std::invalid_argument) << "mainnet: N_btc >= 3";
+    r.n_btc_confirmations = 3;
+    EXPECT_NO_THROW(m.MakeOffer(r, kNow));
+
+    // Fees must stay small next to the amounts, on every network.
+    SwapManager rt(Config(dr.path), w.Deriver(), kNoDin, kNoBtc);
+    auto tiny = Request();
+    tiny.btc_amount_sat = 15'000;  // < 20 x the 1000 sat fee
+    EXPECT_THROW(rt.MakeOffer(tiny, kNow), std::invalid_argument);
+    tiny = Request();
+    tiny.din_amount_una = 50'000'000;  // < 100 x the 1,000,000 una urgent DIN fee
+    EXPECT_THROW(rt.MakeOffer(tiny, kNow), std::invalid_argument);
+}
+
+TEST(SwapManager, FeeSettingsMustBePositiveAndBounded) {
+    EXPECT_FALSE(FeeConfigProblem(100'000, 1'000'000, 1'000).has_value());
+    EXPECT_TRUE(FeeConfigProblem(-1, 1'000'000, 1'000).has_value());
+    EXPECT_TRUE(FeeConfigProblem(100'000, 0, 1'000).has_value());
+    EXPECT_TRUE(FeeConfigProblem(100'000, 1'000'000, -5).has_value());
+    EXPECT_TRUE(FeeConfigProblem(100'000, 50'000, 1'000).has_value()) << "urgent below the base fee";
+    EXPECT_TRUE(FeeConfigProblem(100'000, 100'000'000'000LL, 1'000).has_value()) << "absurd";
+}
+
 TEST(SwapManager, PayoutScriptFromAddress) {
     const auto tr = PayoutScriptFromAddress(P2trAddress("bcrt", 0x44), "bcrt");
     EXPECT_EQ(tr.size(), 34u);

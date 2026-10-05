@@ -211,3 +211,19 @@ TEST(SwapOffer, TakerRefusesExpiredOrShortDeadlineOffers) {
     tight.expires_unix = kNow + kHour;
     EXPECT_THROW(RequireAcceptableNow(tight, kNow), std::invalid_argument) << "DIN deadline < 36 h away";
 }
+
+TEST(SwapOffer, TakerRefusesLocksThatLastTooLong) {
+    // Nothing else bounds how long a taker's BTC (or the maker's DIN) stays
+    // locked: an offer could lock Bob's BTC until 2106.
+    auto far = ValidOffer();
+    far.t_btc_unix = kNow + 8 * 24 * kHour;
+    far.t_din_unix = far.t_btc_unix + kMinDeadlineGapSeconds;
+    EXPECT_THROW(RequireAcceptableNow(far, kNow), std::invalid_argument) << "BTC lock > 7 days";
+    auto gap = ValidOffer();
+    gap.t_din_unix = gap.t_btc_unix + 8 * 24 * kHour;
+    EXPECT_THROW(RequireAcceptableNow(gap, kNow), std::invalid_argument) << "DIN lock > 7 days after BTC";
+    auto ok = ValidOffer();
+    ok.t_btc_unix = kNow + 6 * 24 * kHour;
+    ok.t_din_unix = ok.t_btc_unix + 6 * 24 * kHour;
+    EXPECT_NO_THROW(RequireAcceptableNow(ok, kNow));
+}

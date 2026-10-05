@@ -95,9 +95,16 @@ bool SwapService::Init(DaemonContext& ctx) {
                       : mc.network == swap::SwapNetwork::Testnet ? "tb" : "bcrt";
     mc.runner.btc_chain = mc.network == swap::SwapNetwork::Mainnet ? "main"
                         : mc.network == swap::SwapNetwork::Testnet ? "test" : "regtest";
-    mc.runner.din_fee_una = uint64_t(config->GetInt("swap.din_fee_una", int(mc.runner.din_fee_una)));
-    mc.runner.din_fee_urgent_una = uint64_t(config->GetInt("swap.din_fee_urgent_una", int(mc.runner.din_fee_urgent_una)));
-    mc.runner.btc_fee_sat = uint64_t(config->GetInt("swap.btc_fee_sat", int(mc.runner.btc_fee_sat)));
+    const int64_t din_fee = config->GetInt("swap.din_fee_una", int(mc.runner.din_fee_una));
+    const int64_t din_fee_urgent = config->GetInt("swap.din_fee_urgent_una", int(mc.runner.din_fee_urgent_una));
+    const int64_t btc_fee = config->GetInt("swap.btc_fee_sat", int(mc.runner.btc_fee_sat));
+    if (const auto problem = swap::FeeConfigProblem(din_fee, din_fee_urgent, btc_fee)) {
+        std::cerr << "[Swap] " << *problem << std::endl;
+        return false;
+    }
+    mc.runner.din_fee_una = uint64_t(din_fee);
+    mc.runner.din_fee_urgent_una = uint64_t(din_fee_urgent);
+    mc.runner.btc_fee_sat = uint64_t(btc_fee);
     tick_seconds_ = uint32_t(std::max(1, config->GetInt("swap.tick_seconds", 30)));
     // Mainnet beta: explicit opt-in and per-swap caps (swap_manager.h BetaPolicy).
     auto limit = [&](const char* key) -> std::optional<uint64_t> {

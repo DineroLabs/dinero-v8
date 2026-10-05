@@ -148,6 +148,15 @@ inline void WriteFileAtomically(const std::string& path, const std::string& text
     if (::fsync(fd) != 0) { ::close(fd); throw std::runtime_error("swap: fsync failed: " + path); }
     ::close(fd);
     if (std::rename(tmp.c_str(), path.c_str()) != 0) throw std::runtime_error("swap: rename failed: " + path);
+    // Make the rename itself durable: without syncing the directory, a power
+    // loss can bring back the old file (e.g. a state from before funding).
+    const auto slash = path.find_last_of('/');
+    const std::string dir = slash == std::string::npos ? "." : path.substr(0, slash);
+    const int dfd = ::open(dir.c_str(), O_RDONLY);
+    if (dfd >= 0) {
+        ::fsync(dfd);
+        ::close(dfd);
+    }
 }
 
 }  // namespace dinero::swap::detail

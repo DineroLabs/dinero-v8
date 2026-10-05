@@ -52,6 +52,24 @@ uint32_t ParseIndex(const std::string& name, const std::string& prefix, const st
     return static_cast<uint32_t>(std::stoul(digits));
 }
 
+// Every network: fees must stay small next to the amounts, so a claim or
+// refund can always be built. Mainnet: at least 3 BTC confirmations before
+// Alice reveals the secret.
+void RequireSane(const SwapManagerConfig& c, uint64_t din_una, uint64_t btc_sat, uint32_t n_btc) {
+    const uint64_t din_fee = std::max(c.runner.din_fee_una, c.runner.din_fee_urgent_una);
+    if (din_una < 100 * din_fee) {
+        throw std::invalid_argument("DIN amount too small for the swap fees (minimum " + std::to_string(100 * din_fee) +
+                                    " una)");
+    }
+    if (btc_sat < 20 * c.runner.btc_fee_sat) {
+        throw std::invalid_argument("BTC amount too small for the swap fees (minimum " +
+                                    std::to_string(20 * c.runner.btc_fee_sat) + " sat)");
+    }
+    if (c.network == SwapNetwork::Mainnet && n_btc < 3) {
+        throw std::invalid_argument("mainnet swaps need at least 3 BTC confirmations");
+    }
+}
+
 void RequireWithinCaps(const SwapManagerConfig& c, uint64_t din_una, uint64_t btc_sat) {
     if (c.max_btc_sat && btc_sat > c.max_btc_sat) {
         throw std::invalid_argument("swap exceeds this node's BTC limit (" + std::to_string(c.max_btc_sat) +
@@ -168,6 +186,7 @@ std::string SwapManager::MakeOffer(const OfferRequest& r, uint32_t now) {
     SwapStoreKeyFromSeed(derive_, config_.network);  // refuses a locked wallet before using an index
     if (r.din_lock_hours < r.btc_lock_hours + 24) throw std::invalid_argument("DIN lock must be >= BTC lock + 24 h");
     RequireWithinCaps(config_, r.din_amount_una, r.btc_amount_sat);
+    RequireSane(config_, r.din_amount_una, r.btc_amount_sat, r.n_btc_confirmations);
     const auto din_payout = PayoutScriptFromAddress(r.din_refund_address, config_.runner.din_hrp);
     const auto btc_payout = PayoutScriptFromAddress(r.btc_claim_address, config_.runner.btc_hrp);
     const uint32_t index = AllocateIndex();
@@ -226,6 +245,7 @@ SwapManager::AcceptResult SwapManager::Accept(const std::string& text, const std
         if (offer.network != config_.network) throw std::invalid_argument("offer is for another network");
         RequireAcceptableNow(offer, now);
         RequireWithinCaps(config_, offer.din_amount_una, offer.btc_amount_sat);
+        RequireSane(config_, offer.din_amount_una, offer.btc_amount_sat, offer.n_btc_confirmations);
         const std::string id = SwapId(offer);
         if (already_started(id)) throw std::runtime_error("swap " + id + " already exists");
         SwapSession s;
@@ -458,6 +478,18 @@ BetaDecision BetaPolicy(SwapNetwork network, bool mainnet_beta_opt_in, uint64_t 
     d.max_btc_sat = clamp(configured_max_btc_sat, kBetaDefaultMaxBtcSat, kBetaHardMaxBtcSat);
     d.max_din_una = clamp(configured_max_din_una, kBetaDefaultMaxDinUna, kBetaHardMaxDinUna);
     return d;
+}
+
+}  // namespace dinero::swap
+
+namespace dinero::swap {
+
+std::optional<std::string> FeeConfigProblem(int64_t din_fee_una, int64_t din_fee_urgent_una, int64_t btc_fee_sat) {
+    if (din_fee_una <= 0 || din_fee_urgent_una <= 0 || btc_fee_sat <= 0) return "swap fees must be positive";
+    if (din_fee_urgent_una < din_fee_una) return "swap.din_fee_urgent_una must be at least swap.din_fee_una";
+    if (din_fee_urgent_una > 10 * 100'000'000LL) return "swap.din_fee_urgent_una is above 10 DIN";
+    if (btc_fee_sat > 100'000) return "swap.btc_fee_sat is above 0.001 BTC";
+    return std::nullopt;
 }
 
 }  // namespace dinero::swap

@@ -60,7 +60,7 @@ struct OfferRequest {
     uint32_t din_lock_hours{96};     // T_din = now + this (>= btc + 24)
     uint32_t expires_minutes{60};
     uint32_t n_din_confirmations{30};
-    uint32_t n_btc_confirmations{1};
+    uint32_t n_btc_confirmations{3};
 };
 
 struct SwapSummary {
@@ -156,6 +156,10 @@ struct BetaDecision {
     uint64_t max_btc_sat{0};
     uint64_t max_din_una{0};
 };
+// Fee settings (swap.din_fee_una, swap.din_fee_urgent_una, swap.btc_fee_sat):
+// a description of what is wrong, or nullopt when they are usable.
+std::optional<std::string> FeeConfigProblem(int64_t din_fee_una, int64_t din_fee_urgent_una, int64_t btc_fee_sat);
+
 BetaDecision BetaPolicy(SwapNetwork network, bool mainnet_beta_opt_in, uint64_t configured_max_btc_sat,
                         uint64_t configured_max_din_una);
 

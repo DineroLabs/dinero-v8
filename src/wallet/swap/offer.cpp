@@ -21,6 +21,8 @@ constexpr size_t kChecksumSize = 4;
 constexpr uint32_t kMinExpiryBeforeBtcDeadline = 12 * 60 * 60;
 // Design §6.1 abort rule: Bob does not commit when the DIN deadline is close.
 constexpr uint32_t kMinDinDeadlineAhead = 36 * 60 * 60;
+// Taker-side upper bound on any lock's remaining duration.
+constexpr uint64_t kMaxLockSeconds = 7ULL * 24 * 60 * 60;
 
 [[noreturn]] void Refuse(const std::string& why) {
     throw std::invalid_argument("swap message refused: " + why);
@@ -238,6 +240,11 @@ void RequireAcceptableNow(const SwapOffer& offer, uint32_t now_unix) {
     if (now_unix > offer.expires_unix) Refuse("offer has expired");
     if (uint64_t(offer.t_din_unix) < uint64_t(now_unix) + kMinDinDeadlineAhead) {
         Refuse("DIN deadline is less than 36 h away");
+    }
+    // Bound how long each side's coins can be locked.
+    if (uint64_t(offer.t_btc_unix) > uint64_t(now_unix) + kMaxLockSeconds) Refuse("BTC lock lasts more than 7 days");
+    if (uint64_t(offer.t_din_unix) > uint64_t(offer.t_btc_unix) + kMaxLockSeconds) {
+        Refuse("DIN lock ends more than 7 days after the BTC lock");
     }
 }
 
