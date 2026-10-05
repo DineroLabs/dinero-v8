@@ -308,7 +308,9 @@ TowerReport Watchtower::Tick(uint32_t now) {
     if (din_claimed || btc_refunded) {
         const uint32_t depth = din_claimed ? din.htlc.spend_confirmations : btc.htlc.spend_confirmations;
         const std::string what = din_claimed ? "DIN claim" : "BTC refund";
-        if (depth >= settle) {
+        // Dinero outcomes need at least the depth Bob required before he locked BTC.
+        const uint32_t needed = din_claimed ? std::max(settle, offer.n_din_confirmations) : settle;
+        if (depth >= needed) {
             report.finished = true;
             report.events.push_back(what + " " + std::to_string(depth) + " deep: settled for Bob");
         }
@@ -354,7 +356,8 @@ TowerReport Watchtower::Tick(uint32_t now) {
     }
 
     // No secret: refund the BTC once Bitcoin's median time reaches T_btc.
-    if (!(btc.htlc.spent && btc.htlc.spent_by_claim) && btc.mtp_unix >= offer.t_btc_unix && btc.htlc.output_seen) {
+    // Final only once T_btc < Bitcoin's median time past.
+    if (!(btc.htlc.spent && btc.htlc.spent_by_claim) && btc.mtp_unix > offer.t_btc_unix && btc.htlc.output_seen) {
         const size_t i = NextRung(btc_refund_, package_.btc_refunds.size(), now);
         try {
             report.events.push_back("BTC refund rung " + std::to_string(i) + " broadcast: " +

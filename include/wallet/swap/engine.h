@@ -57,6 +57,7 @@ struct SwapRecord {
     SwapState state{SwapState::Accepted};
     std::optional<Bytes32> secret;  // Alice: her secret. Bob: learned from Alice's BTC claim.
     uint32_t state_since_unix{};    // wall clock when the current state began
+    bool claim_seen{false};         // Alice: her BTC claim was observed (the secret is public)
 };
 
 // What a chain watcher reports for one HTLC.

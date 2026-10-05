@@ -249,7 +249,7 @@ TEST(SwapTower, DinRungFollowsUrgencyNotElapsedTime) {
 TEST(SwapTower, BtcRefundStillEscalatesOverTime) {
     FakeChains chains;
     Watchtower tower(Package(), Config(), chains);
-    chains.btc.mtp_unix = BobSession().record.offer.t_btc_unix;
+    chains.btc.mtp_unix = BobSession().record.offer.t_btc_unix + 1;
     tower.Tick(kNow);
     tower.Tick(kNow + 1800);
     ASSERT_EQ(chains.btc_broadcasts.size(), 2u);
@@ -263,7 +263,10 @@ TEST(SwapTower, RefundsBtcOnlyOnceBitcoinTimeReachesTBtc) {
     chains.btc.mtp_unix = BobSession().record.offer.t_btc_unix - 1;
     tower.Tick(kNow + 30 * kHour);  // wall clock past T_btc, chain not: wait
     EXPECT_TRUE(chains.btc_broadcasts.empty());
-    chains.btc.mtp_unix = BobSession().record.offer.t_btc_unix;
+    chains.btc.mtp_unix = BobSession().record.offer.t_btc_unix;  // equal: not final yet
+    tower.Tick(kNow + 30 * kHour);
+    EXPECT_TRUE(chains.btc_broadcasts.empty());
+    chains.btc.mtp_unix = BobSession().record.offer.t_btc_unix + 1;
     tower.Tick(kNow + 30 * kHour);
     ASSERT_EQ(chains.btc_broadcasts.size(), 1u);
     EXPECT_EQ(chains.btc_broadcasts[0], SerializeBtcTx(Package().btc_refunds[0].tx));
@@ -281,7 +284,7 @@ TEST(SwapTower, NeverActsBlindAndStopsWhenSettled) {
     chains.din.ok = true;
     chains.din.htlc.spent = true;
     chains.din.htlc.spent_by_claim = true;
-    chains.din.htlc.spend_confirmations = Config().settle_confirmations;
+    chains.din.htlc.spend_confirmations = BobSession().record.offer.n_din_confirmations;
     const auto r = tower.Tick(kNow);
     EXPECT_TRUE(r.finished);
     EXPECT_TRUE(chains.din_broadcasts.empty());
@@ -313,12 +316,14 @@ TEST(SwapTower, KeepsWatchingUntilTheSpendIsBuriedAndRebroadcastsAfterAReorg) {
 
     chains.din.htlc.spent = chains.din.htlc.spent_by_claim = true;
     chains.din.htlc.spend_confirmations = 6;
-    EXPECT_TRUE(tower.Tick(kNow + 600).finished);
+    EXPECT_FALSE(tower.Tick(kNow + 600).finished) << "Dinero outcomes settle at N_din, not 6";
+    chains.din.htlc.spend_confirmations = BobSession().record.offer.n_din_confirmations;
+    EXPECT_TRUE(tower.Tick(kNow + 700).finished);
 
     // Same for Bob's BTC refund.
     FakeChains c2;
     Watchtower t2(Package(), config, c2);
-    c2.btc.mtp_unix = BobSession().record.offer.t_btc_unix;
+    c2.btc.mtp_unix = BobSession().record.offer.t_btc_unix + 1;
     c2.btc.htlc.spent = true;
     c2.btc.htlc.spent_by_claim = false;
     c2.btc.htlc.spend_confirmations = 2;

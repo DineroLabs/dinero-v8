@@ -139,6 +139,7 @@ TEST(SwapEngine, AliceHappyPath) {
     s = Step(s.record, obs);
     EXPECT_FALSE(Has(s, ActionKind::ClaimBtc));
 
+    obs.din = Locked(kDin, r.offer.n_din_confirmations);  // her lock as deep as Bob required
     obs.btc = Locked(kBtc, 2);
     s = Step(s.record, obs);
     EXPECT_TRUE(Has(s, ActionKind::ClaimBtc));
@@ -174,13 +175,13 @@ TEST(SwapEngine, AliceNeverClaimsPastTheCutoffAndRefundsDinLater) {
     s = Step(s.record, obs);
     EXPECT_FALSE(Has(s, ActionKind::RefundDin)) << "refund not open yet";
 
-    obs.din_mtp_unix = r.offer.t_din_unix;
+    obs.din_mtp_unix = r.offer.t_din_unix + 1;  // final once T < median time past
     obs.wall_clock_unix = r.offer.t_din_unix + 600;
     s = Step(s.record, obs);
     EXPECT_TRUE(Has(s, ActionKind::RefundDin));
     EXPECT_EQ(s.record.state, SwapState::DinRefundBroadcast);
 
-    obs.din = Spent(obs.din, /*by_claim=*/false, kSettleConfirmations);
+    obs.din = Spent(obs.din, /*by_claim=*/false, r.offer.n_din_confirmations);  // Dinero settles at N_din
     s = Step(s.record, obs);
     EXPECT_EQ(s.record.state, SwapState::Refunded);
 }
@@ -257,7 +258,7 @@ TEST(SwapEngine, BobHappyPath) {
     ASSERT_TRUE(s.record.secret.has_value());
     EXPECT_EQ(*s.record.secret, kSecret);
 
-    obs.din = Spent(obs.din, /*by_claim=*/true, kSettleConfirmations, kSecret);
+    obs.din = Spent(obs.din, /*by_claim=*/true, r.offer.n_din_confirmations, kSecret);  // Dinero settles at N_din
     s = Step(s.record, obs);
     EXPECT_EQ(s.record.state, SwapState::Done);
 }
@@ -281,8 +282,7 @@ TEST(SwapEngine, BobChecksBeforeLocking) {
     s = Step(r, obs);
     EXPECT_FALSE(Has(s, ActionKind::FundBtcHtlc));
 
-    obs = At(r.offer.expires_unix + 1);  // offer expired before the lock was deep
-    obs.din = Locked(kDin, 50);
+    obs = At(r.offer.expires_unix + 1);  // offer expired and Alice never locked
     s = Step(r, obs);
     EXPECT_FALSE(Has(s, ActionKind::FundBtcHtlc));
     EXPECT_EQ(s.record.state, SwapState::Aborted);
@@ -298,7 +298,7 @@ TEST(SwapEngine, BobRefundsWhenTheSecretNeverAppears) {
     auto s = Step(r, obs);
     EXPECT_FALSE(Has(s, ActionKind::RefundBtc)) << "Bitcoin MTP has not reached T_btc";
 
-    obs.btc_mtp_unix = r.offer.t_btc_unix;
+    obs.btc_mtp_unix = r.offer.t_btc_unix + 1;  // final once T < median time past
     s = Step(r, obs);
     EXPECT_TRUE(Has(s, ActionKind::RefundBtc));
     EXPECT_EQ(s.record.state, SwapState::BtcRefundBroadcast);
@@ -379,7 +379,7 @@ TEST(SwapEngine, RestartAtAnyStateGivesTheSameDecision) {
     obs.din = Locked(kDin, 30); script.push_back(obs);
     obs.btc = Locked(kBtc, 1); script.push_back(obs);
     obs.btc = Spent(obs.btc, true, 0, kSecret); script.push_back(obs);
-    obs.din = Spent(obs.din, true, kSettleConfirmations, kSecret); script.push_back(obs);
+    obs.din = Spent(obs.din, true, r.offer.n_din_confirmations, kSecret); script.push_back(obs);
     for (const auto& o : script) {
         const auto live = Step(r, o);
         const auto reloaded = Step(DecodeRecord(EncodeRecord(r)), o);
@@ -492,7 +492,7 @@ TEST(SwapEngine, BobStaysWatchfulUntilHisClaimOrRefundIsBuried) {
     EXPECT_EQ(Step(r, obs).record.state, SwapState::DinClaimBroadcast);
     obs.din = Locked(kDin, 40);  // reorg dropped it
     EXPECT_TRUE(Has(Step(r, obs), ActionKind::ClaimDin));
-    obs.din = Spent(Locked(kDin, 46), true, kSettleConfirmations);
+    obs.din = Spent(Locked(kDin, 46), true, r.offer.n_din_confirmations);
     EXPECT_EQ(Step(r, obs).record.state, SwapState::Done);
 
     auto b = MakeRecord(Role::BtcSeller);
@@ -502,4 +502,101 @@ TEST(SwapEngine, BobStaysWatchfulUntilHisClaimOrRefundIsBuried) {
     EXPECT_EQ(Step(b, o2).record.state, SwapState::BtcRefundBroadcast);
     o2.btc = Spent(Locked(kBtc, 25), false, kSettleConfirmations);
     EXPECT_EQ(Step(b, o2).record.state, SwapState::Refunded);
+}
+
+// ---- Review fixes (independent security review) -----------------------------
+
+TEST(SwapEngine, ClaimSeenSurvivesARestart) {
+    auto r = MakeRecord(Role::DinSeller);
+    r.claim_seen = true;
+    EXPECT_TRUE(DecodeRecord(EncodeRecord(r)).claim_seen);
+    r.claim_seen = false;
+    EXPECT_FALSE(DecodeRecord(EncodeRecord(r)).claim_seen);
+}
+
+TEST(SwapEngine, AliceDoesNotRevealLateIfHerClaimNeverReachedTheNetwork) {
+    // Her first claim broadcast failed (or was never seen); now she is past the
+    // cut-off. Re-broadcasting would reveal the secret into a race with Bob's
+    // refund. She must abandon the claim and keep the DIN refund path.
+    auto r = MakeRecord(Role::DinSeller);
+    r.state = SwapState::BtcClaimBroadcast;
+    auto obs = At(r.offer.t_btc_unix - kHour);  // inside the 6 h cut-off
+    obs.din = Locked(kDin, 40);
+    obs.btc = Locked(kBtc, 5);                  // not spent: the claim was never seen
+    const auto s = Step(r, obs);
+    EXPECT_FALSE(Has(s, ActionKind::ClaimBtc));
+    EXPECT_EQ(s.record.state, SwapState::DinLocked);
+
+    // Once the claim was seen, the secret is public: keep re-broadcasting.
+    auto o2 = At(r.offer.t_btc_unix - 8 * kHour);
+    o2.din = Locked(kDin, 40);
+    o2.btc = Spent(Locked(kBtc, 5), true, 0, kSecret);
+    auto st = Step(r, o2).record;      // claim observed in the mempool
+    EXPECT_TRUE(st.claim_seen);
+    o2 = At(r.offer.t_btc_unix - kHour);
+    o2.din = Locked(kDin, 40);
+    o2.btc = Locked(kBtc, 5);          // dropped from mempools later
+    EXPECT_TRUE(Has(Step(st, o2), ActionKind::ClaimBtc));
+}
+
+TEST(SwapEngine, AliceRevealsOnlyWhileHerDinLockIsIntactAndDeep) {
+    auto r = MakeRecord(Role::DinSeller);
+    r.state = SwapState::DinLocked;
+    auto base = At(kNow + kHour);
+    base.btc = Locked(kBtc, 5);
+    auto obs = base;
+    obs.din = HtlcObservation{};  // a reorg removed her DIN lock
+    EXPECT_FALSE(Has(Step(r, obs), ActionKind::ClaimBtc));
+    obs.din = Locked(kDin, 10);   // back, but shallower than N_din
+    EXPECT_FALSE(Has(Step(r, obs), ActionKind::ClaimBtc));
+    obs.din = Locked(kDin, 40);
+    EXPECT_TRUE(Has(Step(r, obs), ActionKind::ClaimBtc));
+}
+
+TEST(SwapEngine, DinOutcomesSettleOnlyAtNDinDepth) {
+    auto r = MakeRecord(Role::BtcSeller);
+    r.state = SwapState::DinClaimBroadcast;
+    r.secret = kSecret;
+    auto obs = At(kNow + 3 * kHour);
+    obs.din = Spent(Locked(kDin, 60), true, kSettleConfirmations);  // 6 deep: not enough on Dinero
+    EXPECT_EQ(Step(r, obs).record.state, SwapState::DinClaimBroadcast);
+    obs.din = Spent(Locked(kDin, 60), true, r.offer.n_din_confirmations);
+    EXPECT_EQ(Step(r, obs).record.state, SwapState::Done);
+    // Bitcoin outcomes still settle at 6.
+    auto b = MakeRecord(Role::BtcSeller);
+    b.state = SwapState::BtcRefundBroadcast;
+    auto o2 = At(r.offer.t_btc_unix + kHour);
+    o2.btc = Spent(Locked(kBtc, 20), false, kSettleConfirmations);
+    EXPECT_EQ(Step(b, o2).record.state, SwapState::Refunded);
+}
+
+TEST(SwapEngine, BobKeepsWaitingForConfirmationsPastExpiryOnceTheLockExists) {
+    auto r = MakeRecord(Role::BtcSeller);
+    auto obs = At(r.offer.expires_unix + kHour);  // the offer has expired...
+    obs.din = Locked(kDin, 5);                    // ...but Alice locked in time
+    EXPECT_NE(Step(r, obs).record.state, SwapState::Aborted);
+    obs.din = HtlcObservation{};                  // no lock at all: give up
+    EXPECT_EQ(Step(r, obs).record.state, SwapState::Aborted);
+}
+
+TEST(SwapEngine, RefundsWaitUntilMedianTimePassesTheLock) {
+    // Both chains require the lock to be strictly below median time past.
+    auto a = MakeRecord(Role::DinSeller);
+    a.state = SwapState::DinLocked;
+    auto obs = At(a.offer.t_din_unix + kHour);
+    obs.din = Locked(kDin, 40);
+    obs.din_mtp_unix = a.offer.t_din_unix;  // equal: not yet final
+    EXPECT_FALSE(Has(Step(a, obs), ActionKind::RefundDin));
+    obs.din_mtp_unix = a.offer.t_din_unix + 1;
+    EXPECT_TRUE(Has(Step(a, obs), ActionKind::RefundDin));
+
+    auto b = MakeRecord(Role::BtcSeller);
+    b.state = SwapState::BtcLocked;
+    auto o2 = At(b.offer.t_btc_unix + kHour);
+    o2.din = Locked(kDin, 40);
+    o2.btc = Locked(kBtc, 5);
+    o2.btc_mtp_unix = b.offer.t_btc_unix;
+    EXPECT_FALSE(Has(Step(b, o2), ActionKind::RefundBtc));
+    o2.btc_mtp_unix = b.offer.t_btc_unix + 1;
+    EXPECT_TRUE(Has(Step(b, o2), ActionKind::RefundBtc));
 }
