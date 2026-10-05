@@ -4,12 +4,10 @@
 #include "wallet/swap/swap_crypto.h"
 
 #include <cstdio>
-#include <fcntl.h>
 #include <algorithm>
 #include <fstream>
 #include <map>
 #include <sstream>
-#include <unistd.h>
 
 namespace dinero::swap {
 namespace {
