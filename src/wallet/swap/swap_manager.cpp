@@ -214,6 +214,9 @@ std::string SwapManager::MakeOffer(const OfferRequest& r, uint32_t now) {
     RequireSane(config_, r.din_amount_una, r.btc_amount_sat, r.n_btc_confirmations);
     const auto din_payout = PayoutScriptFromAddress(r.din_refund_address, config_.runner.din_hrp);
     const auto btc_payout = PayoutScriptFromAddress(r.btc_claim_address, config_.runner.btc_hrp);
+    // The cached store key outlives a relock: ask the wallet itself, so a
+    // locked wallet is refused before an index is used up.
+    SwapStoreKeyFromSeed(derive_, config_.network);
     const uint32_t index = AllocateIndex();
     const auto mat = SwapKeysForIndex(derive_, config_.network, index);
     // Fresh per offer, never derived from the index: see the header.
@@ -280,6 +283,7 @@ SwapManager::AcceptResult SwapManager::Accept(const std::string& text, const std
         SwapSession s;
         s.din_payout_script = PayoutScriptFromAddress(din_payout_address, config_.runner.din_hrp);
         s.btc_payout_script = PayoutScriptFromAddress(btc_refund_address, config_.runner.btc_hrp);
+        SwapStoreKeyFromSeed(derive_, config_.network);  // a relocked wallet: refused before an index is used
         const uint32_t index = AllocateIndex();
         const auto mat = SwapKeysForIndex(derive_, config_.network, index);
         s.record.role = Role::BtcSeller;

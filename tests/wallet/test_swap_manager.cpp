@@ -379,6 +379,29 @@ TEST(SwapManager, LiveSwapsKeepRunningWhenTheWalletRelocks) {
     EXPECT_FALSE(restarted.TickAll(kNow + 120));
 }
 
+TEST(SwapManager, ALockedWalletIsRefusedBeforeAnIndexIsUsed) {
+    // After a relock the store key is still cached: new offers and accepts
+    // must still be refused up front, without burning a swap index.
+    TempDir da("li_a"), db("li_b");
+    FakeWallet wa{0x7a}, wb{0x7b};
+    SwapManager alice(Config(da.path), wa.Deriver(), kNoDin, kNoBtc);
+    SwapManager bob(Config(db.path), wb.Deriver(), kNoDin, kNoBtc);
+    const auto offer = alice.MakeOffer(Request(), kNow);  // both store keys now cached
+    bob.TickAll(kNow);
+    auto next_index = [](const std::string& dir) {
+        std::ifstream in(dir + "/next_index");
+        uint32_t n = 0;
+        in >> n;
+        return n;
+    };
+    const uint32_t a0 = next_index(da.path), b0 = next_index(db.path);
+    wa.locked = wb.locked = true;
+    EXPECT_THROW(alice.MakeOffer(Request(), kNow), std::runtime_error);
+    EXPECT_THROW(bob.Accept(offer, P2trAddress("rdin", 1), P2trAddress("bcrt", 2), kNow), std::runtime_error);
+    EXPECT_EQ(next_index(da.path), a0) << "no index used by a refused offer";
+    EXPECT_EQ(next_index(db.path), b0) << "no index used by a refused accept";
+}
+
 TEST(SwapManager, MainnetBobNeedsAWatchtower) {
     TempDir da("mt_a"), db("mt_b");
     FakeWallet wa{0x5c}, wb{0x5d};
