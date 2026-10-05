@@ -1,4 +1,5 @@
 #pragma once
+#include "daemon/orchard_network_block.h"
 
 /**
  * Phase G.2 + G.7 + G.8 + G.13: Block Propagation & Headers-First Sync & Compact Blocks
@@ -231,6 +232,8 @@ public:
 
     // True means exact hash/height canonical acceptance was observed. Receipt,
     // a previously seen hash, or stored bytes alone never acknowledge delivery.
+    OrchardNetworkDisposition ReceiveOrchardBlock(const std::string& peer_address,
+                                                  const std::vector<uint8_t>& bytes);
     bool HandleOrchardBlock(const std::string& peer_address,
                             const std::vector<uint8_t>& bytes);
 

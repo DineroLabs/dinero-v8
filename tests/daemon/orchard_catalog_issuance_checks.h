@@ -54,7 +54,7 @@ TEST(OrchardCatalogIssuance, ReadCommitAndUnknownInventoryRefuseWithoutEffects){
     struct Interrupt{sqlite3* db;bool seen=false;} interrupt{db};
     sqlite3_trace_v2(db,SQLITE_TRACE_ROW,[](unsigned,void* arg,void* stmt,void*){
         auto& state=*static_cast<Interrupt*>(arg);const char* sql=sqlite3_sql(static_cast<sqlite3_stmt*>(stmt));
-        if(!state.seen&&sql&&std::string_view(sql)=="SELECT wallet_id,account,revision FROM orchard_wallet_snapshots ORDER BY account"){
+        if(!state.seen&&sql&&std::string_view(sql)=="SELECT wallet_id,account,revision FROM orchard_wallet_snapshots ORDER BY wallet_id,account"){
             state.seen=true;sqlite3_interrupt(state.db);
         }return 0;
     },&interrupt);

@@ -131,6 +131,13 @@ struct HeaderAsertContext {
     std::optional<dinero::AsertAnchor> timing_anchor;
 };
 
+// Existing legacy header rules using an owning caller's value-only ancestry.
+// A missing parent context means genesis; callers must bind its selected identity
+// and enforce contiguous parent linkage. This is neither branch selection nor
+// body/state validation. Historical zero-ASERT and regtest policy are preserved.
+bool ValidateHistoricalHeader(const BlockHeader& header,
+                              const std::optional<HeaderAsertContext>& parent);
+
 /**
  * @brief Order side-branch tips by ascending cumulative work (4d-2 / #181).
  *

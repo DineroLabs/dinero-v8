@@ -161,16 +161,17 @@ void CannotBypassBinding() {
     CHECK(!result.ok); CHECK(Inspect(f.candidate / "blockchain/chaindb") == before);
 }
 
-void Metadata(const std::string& fault) {
+void Metadata(const std::string& fault, unsigned version = 1) {
     Fixture f; auto budget = file_limits;
     for (const auto& root : {f.original, f.candidate}) {
         const auto db = root / "blockchain/utxo", cache = root / "blockchain/shielded_nullifiers.db";
+        Sql(db, "PRAGMA user_version=" + std::to_string(version) + ";");
         auto set = [&](const std::string& key, const std::string& value) { Sql(db, "INSERT INTO utxo_metadata VALUES('" + key + "','" + value + "');"); };
         if (fault == "missing") fs::remove(db);
         else if (fault == "corrupt") Write(db, "not SQLite");
         else if (fault == "missing_table") Sql(db, "DROP TABLE utxo_metadata;");
         else if (fault == "view") Sql(db, "DROP TABLE utxo_metadata; CREATE VIEW utxo_metadata AS SELECT 'x' AS key, 'y' AS value;");
-        else if (fault == "future_schema") Sql(db, "PRAGMA user_version=2;");
+        else if (fault == "future_schema") Sql(db, "PRAGMA user_version=3;");
         else if (fault == "reorg") set("reorg_in_progress", "unfinished");
         else if (fault == "recovery") set("incomplete_reorg_recovery_tip", std::string(64, 'a'));
         else if (fault == "active") set("assumeutxo_active", "true");
@@ -494,6 +495,7 @@ int main(int argc, char** argv) {
     for (const std::string mode : {"promoted", "wallet", "prebase", "stale_index", "future_wallet", "bad_prebase", "missing_promotion", "wrong_hash", "bad_height", "short_progress", "conflict", "ancestry_budget", "missing_ancestry", "malformed_prebase", "orphan_prebase", "corrupt_header"}) cases["protected_"+mode] = [=] { ProtectedBase(mode); };
     for (const std::string mode : {"healthy", "missing_delta", "corrupt_delta"}) cases["forest_"+mode] = [=] { ForestParity(mode); };
     for (const std::string fault : {"missing", "corrupt", "missing_table", "view", "future_schema", "reorg", "recovery", "active", "active_bad", "unknown_state", "snapshot_loaded", "validating_history", "validation_stalled", "fatal_mismatch", "orphan_base", "incomplete_validated", "orphan_validated", "orphan_fatal", "unknown_reserved", "wallet_bad_height", "nul_value", "blob_value", "duplicate", "null_value", "legacy_cache", "future_cache", "cache_schema", "cache_corrupt", "rows", "value_limit", "steps", "step_exhaustion", "empty_legacy_cache", "absent_cache", "disabled"}) cases["metadata_"+fault] = [=] { Metadata(fault); };
+    for (const std::string fault : {"missing", "corrupt", "missing_table", "view", "future_schema", "reorg", "recovery", "active", "active_bad", "unknown_state", "snapshot_loaded", "validating_history", "validation_stalled", "fatal_mismatch", "orphan_base", "incomplete_validated", "orphan_validated", "orphan_fatal", "unknown_reserved", "wallet_bad_height", "nul_value", "blob_value", "duplicate", "null_value", "legacy_cache", "future_cache", "cache_schema", "cache_corrupt", "rows", "value_limit", "steps", "step_exhaustion", "empty_legacy_cache", "absent_cache", "disabled"}) cases["metadata_v2_"+fault] = [=] { Metadata(fault, 2); };
     cases["escaped_uri"] = [] {
         Fixture f; const auto renamed = f.temp.path / "original?mode=rw#%";
         fs::rename(f.original,renamed); f.original=renamed;
@@ -506,9 +508,13 @@ int main(int argc, char** argv) {
     for (const std::string change : {"replace_lock", "add_marker", "bytes"}) cases["during_" + change] = [=] { During(change); };
     for (const std::string fault : {"source_running", "copy_running", "recovery", "reindex", "reindex_temporary", "maintenance", "different_body", "missing_header", "extra_companion", "missing_lock", "lock_symlink", "file_symlink", "file_hardlink", "same", "root_symlink", "entry_budget", "byte_budget", "zero_budget", "dirty_sqlite"}) cases[fault] = [=] { Refusal(fault); };
     if (argc == 2 && std::string(argv[1]) == "--list") { for (const auto& [name, test] : cases) std::cout << name << '\n'; return 0; }
+    const bool metadata_v1 = argc == 2 && std::string(argv[1]) == "--metadata-v1";
+    const bool metadata_v2 = argc == 2 && std::string(argv[1]) == "--metadata-v2";
     unsigned passed = 0, failed = 0;
     for (const auto& [name, test] : cases) {
-        if (argc == 2 && name != argv[1]) continue;
+        if (metadata_v1 && (name.rfind("metadata_", 0) != 0 || name.rfind("metadata_v2_", 0) == 0)) continue;
+        if (metadata_v2 && name.rfind("metadata_v2_", 0) != 0) continue;
+        if (argc == 2 && !metadata_v1 && !metadata_v2 && name != argv[1]) continue;
         try { test(); ++passed; std::cout << "PASS " << name << '\n'; }
         catch (const Failure& e) { ++failed; std::cerr << "FAIL " << name << ": " << e.what() << '\n'; }
         catch (const std::exception& e) { std::cerr << "SETUP ERROR " << name << ": " << e.what() << '\n'; return 2; }

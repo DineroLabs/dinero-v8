@@ -128,9 +128,13 @@ BlockAcceptResult BlockAcceptor::AcceptBlockFromRPC(const std::string& blockHex,
         auto* activation_ctx = DaemonContext::instance();
         auto activation_chainstate = std::dynamic_pointer_cast<dinero::ChainstateService>(
             activation_ctx ? activation_ctx->chainstate : nullptr);
-        std::unique_lock<dinero::AnnotatedRecursiveMutex> activation_guard;
+        std::unique_ptr<dinero::ChainstateService::BlockIngressUse> activation_guard;
         if (activation_chainstate) {
-            activation_guard = activation_chainstate->AcquireBlockIngressActivationLock();
+            // This real ingress owner prepares history before taking the same
+            // canonical lock held through the historical or typed write path.
+            activation_guard = dinero::ChainstateService::AcquireBlockIngressUse(activation_chainstate,&blockHex);
+            if(!activation_guard) return BlockAcceptResult::Rejected(BlockRejectCode::CONNECT_FAILED,
+                "Selected ingress owner unavailable");
         }
 
         LOG_INFO("🔍 BlockAcceptor: Processing " + std::to_string(blockHex.length()) + " hex chars from " + source);
@@ -140,7 +144,7 @@ BlockAcceptResult BlockAcceptor::AcceptBlockFromRPC(const std::string& blockHex,
             const auto typed = activation_chainstate->TryAcceptOrchardBlockFromRPC(blockHex);
             if (typed) {
                 auto result=*typed;
-                activation_guard.unlock();
+                activation_guard.reset();
                 result.relayed=AnnounceAcceptedOrchardBlock(activation_chainstate,result);
                 return result;
             }

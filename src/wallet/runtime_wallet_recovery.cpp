@@ -2,6 +2,7 @@
 #include "wallet/wallet_manager.h"
 #include <algorithm>
 #include <stdexcept>
+#include <sqlite3.h>
 
 namespace dinero {
 namespace {
@@ -92,11 +93,15 @@ RuntimeWalletRecoveryResult RuntimeWalletRecovery::ResumeAccount(
 RuntimeEnrolledWalletRecoveryResult RuntimeWalletRecovery::ResumeAccounts(
         const RuntimeAccountReplay& view,const Source& source,WalletManager& wallet,
         UTXOIndex& index,uint64_t session,std::optional<uint32_t> selected_account,bool require_catalog) {
+    if(require_catalog){
+        Require(!selected_account,"Catalog recovery cannot select a partial account inventory");
+        return ResumePreparedCatalog(view,source,wallet,index,session);
+    }
     using Account=wallet::OrchardAccountDelivery;
     Require(!require_catalog||!selected_account,"Catalog recovery cannot select a partial account inventory");
     {const auto lease=wallet.AcquireDatabaseLease();Require(wallet.database_leases_==1,
         "Wallet recovery requires released caller lease");}
-    const auto& first=view.Event(1);const auto target=view.Head();
+    const auto first_handle=view.Event(1);const auto& first=*first_handle;const auto target=view.Head();
     struct Snapshot {RuntimeIndexProgress indexed,ordinary;std::vector<Account::Enrolled> accounts;std::optional<wallet::OrchardAccountCatalog::Snapshot> catalog;};
     const auto read=[&] {
         const auto lease=wallet.AcquireDatabaseLease();const auto stores=ReadStores(wallet,index,session);
@@ -152,7 +157,7 @@ RuntimeEnrolledWalletRecoveryResult RuntimeWalletRecovery::ResumeAccounts(
         sequence=std::min(sequence,cursor.sequence);
     }
     for(++sequence;sequence<=target.sequence;++sequence) {
-        const auto& event=view.Event(sequence);
+        const auto event_handle=view.Event(sequence);const auto& event=*event_handle;
         const auto lease=wallet.AcquireDatabaseLease();
         Require(unchanged(current,read()),"Wallet recovery stores changed during source read");
         if(current.indexed.cursor.sequence<sequence)
@@ -188,5 +193,83 @@ RuntimeEnrolledWalletRecoveryResult RuntimeWalletRecovery::ResumeAccounts(
     std::vector<std::pair<uint32_t,uint64_t>> revisions;
     for(const auto& entry:current.accounts)revisions.emplace_back(entry.number,entry.state.revision);
     return {current.indexed,std::move(revisions),final.head,current.catalog?std::optional<uint64_t>(current.catalog->revision):std::nullopt};
+}
+RuntimeEnrolledWalletRecoveryResult RuntimeWalletRecovery::ResumePreparedCatalog(
+        const RuntimeAccountReplay& view,const Source& source,WalletManager& wallet,UTXOIndex& index,uint64_t session){
+    using Account=wallet::OrchardAccountDelivery;using Action=Account::CatalogRecoveryAction;
+    {const auto lease=wallet.AcquireDatabaseLease();Require(wallet.database_leases_==1,"Wallet recovery requires released caller lease");}
+    struct ReadTransaction {
+        sqlite3* db;bool done=false;
+        explicit ReadTransaction(sqlite3* value):db(value){
+            Require(db&&sqlite3_get_autocommit(db),"Wallet recovery requires unborrowed transaction");
+            Require(sqlite3_exec(db,"PRAGMA synchronous=FULL",nullptr,nullptr,nullptr)==SQLITE_OK,"Wallet recovery durability unavailable");
+            Require(sqlite3_exec(db,"BEGIN IMMEDIATE",nullptr,nullptr,nullptr)==SQLITE_OK,"Wallet recovery capture transaction unavailable");
+        }
+        ~ReadTransaction(){if(!done&&sqlite3_exec(db,"ROLLBACK",nullptr,nullptr,nullptr)!=SQLITE_OK&&!sqlite3_get_autocommit(db))std::terminate();}
+        void Commit(){Require(sqlite3_exec(db,"COMMIT",nullptr,nullptr,nullptr)==SQLITE_OK,"Wallet recovery capture commit refused");done=true;}
+    };
+    struct Snapshot {RuntimeIndexProgress indexed,ordinary;Account::CatalogEnrolled catalog;};
+    const auto cursor=[](const Account::Enrolled& entry){const auto& d=entry.state.account.Delivery();return RuntimeOutboxCursor{d.sequence,d.digest};};
+    const auto equal=[&](const Snapshot& a,const Snapshot& b){
+        if(!Same(a.indexed,b.indexed)||!Same(a.ordinary,b.ordinary)||a.catalog.catalog!=b.catalog.catalog||a.catalog.accounts.size()!=b.catalog.accounts.size())return false;
+        for(size_t i=0;i<a.catalog.accounts.size();++i){const auto& x=a.catalog.accounts[i];const auto& y=b.catalog.accounts[i];
+            if(x.number!=y.number||x.state.revision!=y.state.revision||cursor(x)!=cursor(y)||x.archive_revisions!=y.archive_revisions)return false;}
+        return true;
+    };
+    const auto recheck=[&](const Snapshot& expected,const wallet::OrchardCatalogRecoveryPlan& plan){
+        const auto lease=wallet.AcquireDatabaseLease();Require(lease->Session()==session,"Wallet recovery selection changed");
+        // Each transparent store reader owns its transaction. Keep the process
+        // wallet lease across those reads and the following catalog snapshot,
+        // without borrowing a transaction into either reader.
+        const auto stores=ReadStores(wallet,index,session);
+        Require(Same(expected.indexed,stores.first)&&Same(expected.ordinary,stores.second),"Wallet recovery stores changed during preparation");
+        ReadTransaction tx(lease->Database());
+        Account::RecheckCatalogRecoveryInTransaction(wallet,session,plan);tx.Commit();
+    };
+    const auto prepare=[&](Action action,uint64_t sequence){
+        const auto stores=ReadStores(wallet,index,session);
+        auto plan=Account::PrepareCatalogRecovery(wallet,session,view,action,sequence);
+        Snapshot observed{stores.first,stores.second,Account::CatalogRecoveryBefore(*plan)};
+        recheck(observed,*plan);return std::pair{std::move(observed),std::move(plan)};
+    };
+    auto initial=prepare(Action::Observe,0);auto current=std::move(initial.first);initial.second.reset();
+    const auto first=view.Event(1);const auto target=view.Head();const auto origin=view.Point({}).checkpoint;
+    for(const auto* progress:{&current.indexed,&current.ordinary}){
+        Require(progress->origin_hash==origin.block_hash&&progress->origin_height==origin.height,"Wallet recovery source origin mismatch");
+        const auto point=view.Point(progress->cursor).checkpoint;
+        Require(progress->tip_hash==point.block_hash&&progress->tip_height==point.height,"Wallet recovery source position mismatch");
+        CheckPosition(*progress,source(progress->cursor,1));
+    }
+    auto sequence=std::min(current.indexed.cursor.sequence,current.ordinary.cursor.sequence);
+    for(const auto& entry:current.catalog.accounts){
+        const auto position=cursor(entry);const auto page=source(position,1);const auto& scan=entry.state.account.Scan().Checkpoint();
+        if(position.sequence)Require(page.after_tip&&page.after_tip->first==scan.block_hash&&page.after_tip->second==scan.height,"Wallet recovery account source position mismatch");
+        else Require(position.digest.IsNull()&&scan==origin&&!page.events.empty()&&page.events.front().cursor==first->cursor,"Wallet recovery account source origin mismatch");
+        sequence=std::min(sequence,position.sequence);
+    }
+    for(++sequence;sequence<=target.sequence;++sequence){
+        const auto event=view.Event(sequence);auto prepared=prepare(Action::Apply,sequence);
+        Require(equal(current,prepared.first),"Wallet recovery catalog changed during source read");
+        const auto lease=wallet.AcquireDatabaseLease();recheck(current,*prepared.second);
+        if(current.indexed.cursor.sequence<sequence)current.indexed=RuntimeIndexDelivery::ApplyForWallet(wallet,index,session,*event);
+        if(current.ordinary.cursor.sequence<sequence)current.ordinary=RuntimeOrdinaryDelivery::ApplyForWallet(wallet,session,*event);
+        // Preserve independent ascending commits. Complete-catalog byte checks
+        // advance only by this plan's exact retained/non-retained snapshot steps.
+        for(size_t i=0;i<current.catalog.accounts.size();++i)if(cursor(current.catalog.accounts[i]).sequence<sequence)
+            current.catalog.accounts[i].state=Account::CommitCatalogRecoveryAccount(wallet,session,*prepared.second,i);
+    }
+    Require(current.indexed.cursor==target&&current.ordinary.cursor==target&&Same(current.indexed,current.ordinary),"Wallet recovery captured head mismatch");
+    for(const auto& entry:current.catalog.accounts)Require(cursor(entry)==target,"Wallet recovery captured head mismatch");
+    auto reconciled=prepare(Action::Reconcile,0);Require(equal(current,reconciled.first),"Wallet recovery catalog changed before reconciliation");
+    {
+        const auto lease=wallet.AcquireDatabaseLease();recheck(current,*reconciled.second);
+        for(size_t i=0;i<current.catalog.accounts.size();++i)
+            current.catalog.accounts[i].state=Account::CommitCatalogRecoveryAccount(wallet,session,*reconciled.second,i);
+    }
+    const auto final=source(target,1);CheckPosition(current.indexed,final);
+    auto checked=prepare(Action::Observe,0);Require(equal(current,checked.first),"Wallet recovery stores changed during source read");
+    std::vector<std::pair<uint32_t,uint64_t>> revisions;revisions.reserve(current.catalog.accounts.size());
+    for(const auto& entry:current.catalog.accounts)revisions.emplace_back(entry.number,entry.state.revision);
+    return {current.indexed,std::move(revisions),final.head,current.catalog.catalog.revision};
 }
 } // namespace dinero

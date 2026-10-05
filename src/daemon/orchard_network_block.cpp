@@ -91,32 +91,40 @@ OrchardNetworkDisposition ReceiveOrchardNetworkBlock(
             try { downloads->Tick(); } catch (...) {}
             return OrchardNetworkDisposition::Stored;
         }
-        return relay->HandleOrchardBlock(peer,bytes)
-            ? OrchardNetworkDisposition::Connected : OrchardNetworkDisposition::Refused;
+        return relay->ReceiveOrchardBlock(peer,bytes);
     } catch (...) { return OrchardNetworkDisposition::Refused; }
 }
 
+OrchardNetworkDisposition SubmitDownloadedOrchardBlock(
+    const std::shared_ptr<ChainstateService>& source,
+    const std::shared_ptr<BlockIngressService>& ingress,
+    const std::shared_ptr<BlockDownloadScheduler>& parallel,
+    const std::vector<uint8_t>& bytes,const uint256& hash,uint32_t height) {
+    auto disposition=OrchardNetworkDisposition::Refused;
+    try {
+        const auto* context=DaemonContext::instance();
+        if (!source || !ingress || !ingress->IsHealthy() || !context ||
+            context->chainstate!=source || context->block_ingress!=ingress.get() ||
+            context->parallel_block_download!=parallel) return OrchardNetworkDisposition::Refused;
+        const auto classified=ClassifyNetworkBlock(bytes);
+        if (classified.family!=NetworkBlockFamily::Orchard ||
+            classified.header.GetHash()!=hash || classified.height!=height) return OrchardNetworkDisposition::Refused;
+        const auto result=ingress->SubmitHex(util::hex(bytes),BlockOrigin::P2P);
+        if (result.block_hash!=hash || result.height!=height) return OrchardNetworkDisposition::Refused;
+        if (result.retained() && !result.connected && !result.relayed)
+            return OrchardNetworkDisposition::Stored;
+        if (!result.accepted() || !result.connected) return OrchardNetworkDisposition::Refused;
+        disposition=OrchardNetworkDisposition::Connected;
+        if (parallel) parallel->notifyBlockReceived(hash);
+    } catch (...) { /* Terminal bookkeeping cannot undo canonical acceptance. */ }
+    return disposition;
+}
 bool AcceptDownloadedOrchardBlock(
     const std::shared_ptr<ChainstateService>& source,
     const std::shared_ptr<BlockIngressService>& ingress,
     const std::shared_ptr<BlockDownloadScheduler>& parallel,
     const std::vector<uint8_t>& bytes,const uint256& hash,uint32_t height) {
-    bool connected=false;
-    try {
-        const auto* context=DaemonContext::instance();
-        if (!source || !ingress || !ingress->IsHealthy() || !context ||
-            context->chainstate!=source || context->block_ingress!=ingress.get() ||
-            context->parallel_block_download!=parallel) return false;
-        const auto classified=ClassifyNetworkBlock(bytes);
-        if (classified.family!=NetworkBlockFamily::Orchard ||
-            classified.header.GetHash()!=hash || classified.height!=height) return false;
-        const auto result=ingress->SubmitHex(util::hex(bytes),BlockOrigin::P2P);
-        if (!result.accepted() || !result.connected || result.block_hash!=hash || result.height!=height)
-            return false;
-        connected=true;
-        if (parallel) parallel->notifyBlockReceived(hash);
-    } catch (...) { /* Terminal bookkeeping cannot undo canonical acceptance. */ }
-    return connected;
+    return SubmitDownloadedOrchardBlock(source,ingress,parallel,bytes,hash,height)==OrchardNetworkDisposition::Connected;
 }
 bool AnnounceAcceptedOrchardBlock(const std::shared_ptr<ChainstateService>& source,
                                  const BlockAcceptResult& result) noexcept {

@@ -18,6 +18,7 @@
 #include <vector>
 
 #include "common/status.h"
+#include "consensus/reindexer.h"
 #include "primitives/block.h"
 #include "primitives/uint256.h"
 #include "storage/block_storage.h"  // FilePosition
@@ -26,13 +27,26 @@ namespace dinero {
 namespace consensus {
 namespace reindex_detail {
 
-// One block as recovered from a blk*.dat scan.
+// One checksum-checked frame recovered from blk*.dat. Header linkage is used
+// for chain selection; body bytes remain exact until the selected height
+// determines their decoder. A frame is NOT a validated block. In particular,
+// a legacy decoder must not discard a mixed Orchard body during inventory.
 struct DiskBlockRecord {
-    Block block;
+    BlockHeader header;
+    std::vector<uint8_t> body;
     FilePosition pos;
     uint256 hash;
     uint256 prev_hash;
 };
+
+// Inventory exact framed bytes without selecting a transaction profile.
+// Caller holds the isolated datadir owner and keeps Params fixed. Every file
+// must be complete through EOF. Bad checksums or undecodable headers retain
+// the existing skip accounting; body decode/consensus errors are handled only
+// after chain selection, never used to silently shorten the candidate chain.
+StatusOr<std::vector<DiskBlockRecord>> ReadDiskBlocks(
+    const std::vector<std::filesystem::path>& block_files,
+    BlockReindexer::Stats* stats = nullptr);
 
 // Select the canonical chain from a parsed records vector.
 //

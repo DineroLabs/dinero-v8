@@ -51,6 +51,10 @@
 
 namespace dinero {
 
+// Durable owner provenance. This tag alone does not authenticate a key; the
+// historical case must also match a live authenticated script inventory.
+enum class WalletOutputOwner : uint8_t { RecordedPath=0, HistoricalImport=1 };
+
 struct WalletUTXO {
     TxId txid;  // Phase M.4.3-B Step 2: Semantic type safety (malleability-proof)
     uint32_t vout;
@@ -58,6 +62,8 @@ struct WalletUTXO {
     AmountUna value;           // una (AmountUna::Zero() for confidential outputs)
     std::vector<uint8_t> spk;   // scriptPubKey bytes
     std::string path;           // "m/84'/1448'/0'/0/12" etc
+    WalletOutputOwner owner_kind = WalletOutputOwner::RecordedPath;
+    std::string owner_reference; // exact recorded MAIN address for historical imports
     int height;
     std::optional<int> spend_height; // nullopt = unspent
     bool is_coinbase = false;   // true if this is a coinbase output (needs 100 block maturity)
@@ -134,6 +140,8 @@ struct BalanceDetail {
 // ╚═══════════════════════════════════════════════════════════════════════════╝
 class UTXOIndex {
     friend class RuntimeIndexDelivery;
+    friend struct UTXOIndexSchemaTestAccess;
+    friend struct UTXOIndexHistoricalTestAccess;
 public:
     explicit UTXOIndex(const std::string& db_path);
     ~UTXOIndex();
@@ -235,6 +243,15 @@ private:
     std::string db_path_;
     
     // Helper functions
+    // Only checked runtime delivery may enroll a non-HD coin. The supplied
+    // inventory is captured by the wallet owner, not accepted from public DTOs.
+    bool AddUTXOForDelivery(const WalletUTXO& utxo,
+        const std::map<std::vector<uint8_t>,std::string>& authenticated_historical);
+    bool AddUTXORow(const WalletUTXO& utxo);
+    WalletUTXO DecodeOwnedRow(sqlite3_stmt* statement) const;
+    // Protected by db_mutex_, avoiding recursive acquisition of scripts_mutex_
+    // while runtime delivery owns both locks. Publication follows its commit.
+    std::map<std::vector<uint8_t>,std::string> historical_scripts_;
     bool CreateTables();
     bool PrepareStatements();
     void FinalizeStatements();

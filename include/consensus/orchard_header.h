@@ -1,9 +1,23 @@
 #pragma once
 #include "consensus/orchard_state_transition.h"
+#include "consensus/header_chain.h"
 #include <optional>
 
 namespace dinero::consensus {
-class HeaderChainSelector;
+// Value-only, hash-anchored ancestry for the common contextual header gate.
+// The host owns the selected branch and keeps this view and Params() stable.
+// Implementations must return values from that branch; this interface does not
+// establish validity, select a branch, or certify a captured database.
+struct OrchardHeaderAncestor {BlockHeader header;uint32_t height;};
+class OrchardHeaderAncestry {
+public:
+    virtual ~OrchardHeaderAncestry() = default;
+    virtual std::optional<OrchardHeaderAncestor> GetHeaderValue(const uint256&) const = 0;
+    virtual bool GetAsertContextByHash(const uint256&, HeaderAsertContext&,
+        std::optional<uint32_t> timing_anchor_height) const = 0;
+    virtual bool GetAncestorHashByHash(const uint256&, uint32_t,
+        uint256&, uint32_t&) const = 0;
+};
 enum class OrchardHeaderErrorCode {
     Context, Shape, TimeTooOld, TimeTooNew, Difficulty, ProofOfWork, Checkpoint
 };
@@ -39,6 +53,11 @@ public:
 void CheckOrchardHeaderUnderChainstateLock(
     const BlockHeader&, const BlockHeader& selected_parent,
     const OrchardBlockContext&, const HeaderChainSelector&, uint64_t now_seconds);
+// Identical gate for a host-owned immutable replay ancestry. The caller must
+// already have independently validated and bound the historical parent.
+void CheckOrchardHeaderUnderChainstateLock(
+    const BlockHeader&, const BlockHeader& selected_parent,
+    const OrchardBlockContext&, const OrchardHeaderAncestry&, uint64_t now_seconds);
 // The same selected ancestry/time/difficulty rules for an unmined template.
 // This deliberately does not establish proof of work or incoming-block validity.
 void CheckOrchardMiningHeaderUnderChainstateLock(

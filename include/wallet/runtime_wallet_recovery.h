@@ -66,6 +66,8 @@ private:
     static RuntimeEnrolledWalletRecoveryResult ResumeAccounts(
         const RuntimeAccountReplay&,const Source&,WalletManager&,UTXOIndex&,uint64_t,
         std::optional<uint32_t> selected_account,bool require_catalog=false);
+    static RuntimeEnrolledWalletRecoveryResult ResumePreparedCatalog(
+        const RuntimeAccountReplay&,const Source&,WalletManager&,UTXOIndex&,uint64_t);
     static RuntimeWalletRecoveryResult ResumeAccount(
         const RuntimeAccountReplay&,const Source&,WalletManager&,UTXOIndex&,uint64_t,uint32_t);
 };

@@ -954,6 +954,11 @@ bool BlockValidator::ConnectBlockInternal(const Block& block, uint32_t height, c
             shielded::CompactRulesFor(Params()))) return false;
 
 
+    // Private replay checkpoints precede even the historical forest-mode flip.
+    // The ordinary backend returns null and retains its existing snapshot path.
+    auto replay_rollback = consensus_utxo_set_
+        ? consensus_utxo_set_->BeginBlockConnectRollback() : nullptr;
+
     // ═════════════════════════════════════════════════════════════════════════
     // Apr 13 2026 Stage 3 — Utreexo canonical-roots fork activation.
     //
@@ -1015,7 +1020,7 @@ bool BlockValidator::ConnectBlockInternal(const Block& block, uint32_t height, c
     // structural rejects that happen before any deeper consensus work.
     UTXOSnapshot pre_block_snapshot;
     const bool snapshot_supported =
-        consensus_utxo_set_ && consensus_utxo_set_->SupportsSnapshotRestore();
+        !replay_rollback && consensus_utxo_set_ && consensus_utxo_set_->SupportsSnapshotRestore();
     if (snapshot_supported) {
         pre_block_snapshot = consensus_utxo_set_->Snapshot();
     }
@@ -2187,6 +2192,7 @@ bool BlockValidator::ConnectBlockInternal(const Block& block, uint32_t height, c
             return false;
         }
 
+        if (replay_rollback) replay_rollback->Commit();
         block_connect_success = true;
         std::cout << "✅ [STATELESS] Block " << height
                   << " validated via proofs — skipping forest-clone path" << std::endl;
@@ -2732,6 +2738,7 @@ bool BlockValidator::ConnectBlockInternal(const Block& block, uint32_t height, c
     } else {
         undo.pre_block_shielded_frontier.reset();
     }
+    if (replay_rollback) replay_rollback->Commit();
     block_connect_success = true;
     std::cout << "✅ [Phase 2] Block " << height
               << " connected successfully, snapshot "

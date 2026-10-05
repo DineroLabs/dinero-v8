@@ -148,7 +148,7 @@ int main() {
         DiskBlockRecord rec;
         rec.hash = SyntheticHash(height);
         rec.prev_hash = (height == 1) ? genesis : SyntheticHash(height - 1);
-        rec.block.header.difficulty = params.genesis.nBits;
+        rec.header.difficulty = params.genesis.nBits;
         records.push_back(std::move(rec));
     }
     std::cout << "[INFO] built a " << kChainDepth

@@ -24,7 +24,9 @@ struct CanonicalVaultWithdrawalFixture : CanonicalRecoveryFixture {
     std::vector<uint8_t> script;
     CanonicalWalletUTXO funding;
     std::shared_ptr<const RuntimeBlockBody> deposit_block;
-    static void Need(bool value){OrchardAdmissionFixture::Require(value);}
+    static void Need(bool value,const char* file=__builtin_FILE(),int line=__builtin_LINE()){
+        if(!value)throw std::runtime_error(std::string("canonical wallet fixture requirement at ")+file+":"+std::to_string(line));
+    }
     static auto Raw(const uint256& hash){std::array<uint8_t,32> out{};std::copy(hash.begin(),hash.end(),out.begin());return out;}
     auto Selected(){return CaptureWalletSigningIdentity(wallet->get(),"canonical-recovery");}
     auto Backend(){return std::make_unique<vault::InMemorySigningBackend>(vault::BackendId{"canonical-wallet"});}
@@ -116,6 +118,16 @@ TEST(VaultCanonicalWithdrawal, ActualInclusionMaturityUndoReopenAndReinclusionKe
     EXPECT_EQ(f.bound.service->accountConfirmed(f.account),100000u);EXPECT_EQ(f.bound.service->accountLocked(f.account),20000u);
     EXPECT_EQ(f.bound.service->accountSpendable(f.account),80000u);EXPECT_EQ(f.Sources(id),sources);
     const auto undone=f.Bytes();f.Reopen();EXPECT_EQ(f.Bytes(),undone);EXPECT_EQ(f.wallet->get().getPendingPayments().at(0).signed_body,retained);
+    // Both retained descendants need whole-branch validation. The nested RPC
+    // router defers that work; drive the same root maintenance used by the node.
+    const auto* before_retry=f.f.service->GetActiveTip();
+    const auto deferred=f.Submit(included->Orchard().WireBytes());
+    ASSERT_TRUE(deferred.retained())<<deferred.reason;
+    EXPECT_FALSE(deferred.connected);
+    EXPECT_EQ(f.f.service->GetActiveTip(),before_retry);
+    EXPECT_EQ(f.Bytes(),undone);EXPECT_EQ(f.Sources(id),sources);
+    EXPECT_EQ(f.wallet->get().getPendingPayments().at(0).signed_body,retained);
+    f.f.service->PumpReplayMetadataRecovery();
     const auto result=f.Submit(included->Orchard().WireBytes());ASSERT_TRUE(result.accepted()&&result.connected)<<result.reason;
     ASSERT_GT(f.f.service->GetActiveTip()->height,result.height);
     uint256 canonical_hash;

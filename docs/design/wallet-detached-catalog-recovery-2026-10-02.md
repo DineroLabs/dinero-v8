@@ -1,0 +1,15 @@
+# Prepared authenticated catalog recovery
+
+The generated-catalog recovery path captures the complete authenticated catalog, all current/reached/retained account and archive bytes, wallet instance and session, viewing authority and required ordinary shield history in checked FULL SQLite. It releases wallet, seed and SQL ownership before restoring accounts, looking up historical bodies, reconciling archives, and computing each next event state against one retained immutable replay.
+
+A private, noncopyable plan holds the original capture and exact encoded snapshot steps. It has no public constructor or mutable validity token. A writer reauthenticates the complete catalog before effects, checks the same session and instance, applies the already computed retaining or non-retaining replacements, reauthenticates the expected complete post-write catalog, and checks COMMIT before returning a prepared result. A write refusal consumes the plan, so retry requires fresh preparation. No replay point, event, historical body, proof, or account restoration callback runs inside this account writer.
+
+Transparent store readers retain their own transaction contracts. The recovery loop reads them under a process wallet lease before starting a separate catalog recheck transaction. Index commits first, ordinary wallet second, and lagging accounts in ascending account order. An earlier successful store/account prefix survives a later refusal and is authenticated on the next recovery pass. Preparing all transitions does not turn these stores into a single cross-database transaction.
+
+Archive reconciliation preserves the current traversal, existing pending-operation bytes and actual selected causes. Undo uses the authenticated parent revision and retains the pre-undo snapshot. Restoring an archived operation uses the established non-retaining replacement; an additional observation replay replacement retains state only when observations change. The plan preserves each revision step, archive ciphertext and signed transaction bytes. It does not recreate accounts, reset cursors, invent history or regenerate keys.
+
+## Qualification and limits
+
+Five component cases are prepared: released restoration and callback-free commit; capture/write COMMIT and borrowed-transaction refusal; changed account/catalog and final-read refusal; ascending partial-account prefix retry; and real proved spend archive/undo/reactivation with exact retention semantics. Existing catalog recovery, shield/undo/reopen and spend archive/reactivation cases remain. Test execution and qualification are recorded separately; this document is not evidence that any case passed.
+
+This path requires the generated authenticated catalog. Narrow legacy/noncatalog recovery and other writers still require separate detachment work. It does not establish multiprocess wallet consistency, one atomic transaction across stores, complete lazy replay validation, general-history resident-memory bounds, whole-node/platform/load qualification, or release readiness. A recovered prefix is an observation, not lasting readiness. Mainnet activation remains unset.

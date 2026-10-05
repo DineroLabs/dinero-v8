@@ -114,7 +114,7 @@ if(TARGET dinero_chainstate)
   # Standalone scheduler fixtures use the same source and need the same edge.
   set_property(SOURCE "${ORCHARD_HOST_ROOT}/src/consensus/block_download_scheduler.cpp"
     DIRECTORY "${ORCHARD_HOST_ROOT}" APPEND PROPERTY COMPILE_DEFINITIONS DINERO_HAS_ORCHARD_DOWNLOAD_READER=1)
-  foreach(scheduler_target test_block_download_scheduler test_block_download_scheduler_restart_bootstrap)
+  foreach(scheduler_target test_block_download_scheduler test_block_download_scheduler_restart_bootstrap test_block_download_slow_peer)
     if(TARGET ${scheduler_target})
       target_link_libraries(${scheduler_target} PRIVATE dinero_orchard_block_reader)
     endif()
@@ -165,6 +165,10 @@ if(TARGET dinero_chainstate)
       set_property(SOURCE "${ORCHARD_HOST_ROOT}/tests/daemon/test_daemon_service_release.cpp"
         DIRECTORY "${ORCHARD_HOST_ROOT}" APPEND PROPERTY COMPILE_DEFINITIONS DINERO_HAS_ORCHARD_RUNTIME_READER=1)
     endif()
+    if(TARGET test_orchard_wallet_cycle_daemon)
+      set_property(SOURCE "${ORCHARD_HOST_ROOT}/tests/daemon/orchard_wallet_cycle_daemon.cpp"
+        DIRECTORY "${ORCHARD_HOST_ROOT}" APPEND PROPERTY COMPILE_DEFINITIONS DINERO_HAS_ORCHARD_RUNTIME_READER=1)
+    endif()
     # Advertise Orchard only with the real typed relay/download/runtime graph.
     # Backend-OFF builds and standalone P2PManager fixtures make no such claim.
     set_property(SOURCE "${ORCHARD_HOST_ROOT}/src/daemon/services/p2p_service.cpp"
@@ -188,6 +192,14 @@ if(TARGET dinero_chainstate)
   target_link_libraries(dinero_orchard_block_staging PUBLIC dinero_orchard_transparent dinero_chainstate dinero_orchard_block_reader dinero_orchard_block_coins dinero_orchard_state_root dinero_shielded dinero_orchard_legacy_accounting)
   target_include_directories(dinero_orchard_block_staging PRIVATE "${ORCHARD_HOST_ROOT}/src")
   add_library(dinero_orchard_chainstate_write STATIC "${ORCHARD_HOST_ROOT}/src/daemon/orchard_chainstate_write.cpp")
+  add_library(dinero_orchard_reindex STATIC
+    "${ORCHARD_HOST_ROOT}/src/daemon/orchard_reindex.cpp"
+    "${ORCHARD_HOST_ROOT}/src/storage/shielded_migration.cpp")
+  target_include_directories(dinero_orchard_reindex PRIVATE "${ORCHARD_HOST_ROOT}/src")
+  target_link_libraries(dinero_orchard_reindex PUBLIC dinero_orchard_chainstate_write dinero_orchard_header dinero_shielded)
+  if(TARGET dinero_core)
+    target_link_libraries(dinero_core PUBLIC dinero_orchard_reindex)
+  endif()
   target_link_libraries(dinero_orchard_chainstate_write PUBLIC dinero_orchard_block_staging)
   add_library(dinero_orchard_account_replay STATIC "${ORCHARD_HOST_ROOT}/src/wallet/runtime_account_replay.cpp")
   target_link_libraries(dinero_orchard_account_replay PUBLIC dinero_orchard_chainstate_write dinero_orchard_wallet_account)
@@ -205,6 +217,30 @@ if(TARGET dinero_chainstate)
   if(TARGET test_assumeutxo_replay)
     # The service's reader definition is source-local. Bind the projection
     # tests to the actual optional implementation rather than inheriting it.
+    add_test(NAME OrchardParentReplay COMMAND test_assumeutxo_replay --gtest_filter=OrchardParentReplay.*)
+    set_tests_properties(OrchardParentReplay PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;mandatory")
+    add_test(NAME OrchardParentActivation COMMAND test_assumeutxo_replay --gtest_filter=OrchardParentActivation.*)
+    set_tests_properties(OrchardParentActivation PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;mandatory")
+    add_test(NAME OrchardParentRetry COMMAND test_assumeutxo_replay --gtest_filter=OrchardParentRetry.*)
+    set_tests_properties(OrchardParentRetry PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;mandatory")
+    add_test(NAME OrchardParentPlan COMMAND test_assumeutxo_replay --gtest_filter=OrchardParentPlan.*)
+    set_tests_properties(OrchardParentPlan PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;mandatory")
+    add_test(NAME OrchardForkIntake COMMAND test_assumeutxo_replay --gtest_filter=OrchardForkIntake.*)
+    set_tests_properties(OrchardForkIntake PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;mandatory")
+    add_test(NAME OrchardTypedFork COMMAND test_assumeutxo_replay --gtest_filter=OrchardTypedFork.*)
+    set_tests_properties(OrchardTypedFork PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;mandatory")
+    add_test(NAME OrchardBranchReplay COMMAND test_assumeutxo_replay --gtest_filter=OrchardBranchReplay.*)
+    set_tests_properties(OrchardBranchReplay PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;mandatory")
+    add_test(NAME OrchardExtension COMMAND test_assumeutxo_replay --gtest_filter=OrchardExtension.*)
+    set_tests_properties(OrchardExtension PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;mandatory")
+    add_test(NAME OrchardHistoryCapture COMMAND test_assumeutxo_replay --gtest_filter=OrchardHistoryCapture.*)
+    set_tests_properties(OrchardHistoryCapture PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;mandatory")
+    add_test(NAME OrchardBranchAncestry COMMAND test_assumeutxo_replay --gtest_filter=OrchardBranchAncestry.*)
+    set_tests_properties(OrchardBranchAncestry PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;mandatory")
+    add_test(NAME OrchardDownloadPeerCredit COMMAND test_assumeutxo_replay --gtest_filter=OrchardDownloadPeerCredit.*)
+    set_tests_properties(OrchardDownloadPeerCredit PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;mandatory")
+    add_test(NAME OrchardProofHandoff COMMAND test_assumeutxo_replay --gtest_filter=OrchardProofHandoff.*)
+    set_tests_properties(OrchardProofHandoff PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;mandatory")
     target_compile_definitions(test_assumeutxo_replay PRIVATE DINERO_TEST_ORCHARD_ORIGIN=1)
     target_link_libraries(test_assumeutxo_replay PRIVATE dinero_orchard_index_delivery)
   endif()
@@ -277,6 +313,31 @@ if(DINERO_ORCHARD_BUILD_TESTS)
   add_test(NAME OrchardTransactionContext COMMAND test_orchard_transaction_context "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures")
   set_tests_properties(OrchardTransactionContext PROPERTIES TIMEOUT 120 RUN_SERIAL TRUE
     ENVIRONMENT "RAYON_NUM_THREADS=2" LABELS "orchard;integration-staging")
+  if(TARGET test_orchard_wallet_cycle_daemon)
+    if(NOT TARGET migrate_shielded_datadir)
+      message(FATAL_ERROR "OrchardDaemonWalletCycle requires the native copied-datadir migration target")
+    endif()
+    add_dependencies(test_orchard_wallet_cycle_daemon migrate_shielded_datadir)
+    add_test(NAME OrchardDaemonWalletCycle COMMAND python3
+      ${ORCHARD_HOST_ROOT}/tests/integration/test_orchard_daemon_wallet_cycle.py
+      $<TARGET_FILE:test_orchard_wallet_cycle_daemon>
+      $<TARGET_FILE:migrate_shielded_datadir>)
+    set_tests_properties(OrchardDaemonWalletCycle PROPERTIES
+      LABELS "integration;e2e-daemon;orchard;wallet;restart;reorg;mandatory"
+      TIMEOUT 900 RUN_SERIAL TRUE ENVIRONMENT "RAYON_NUM_THREADS=2")
+    if(NOT TARGET test_orchard_coupled_cycle_daemon)
+      message(FATAL_ERROR "OrchardCoupledWalletCycle requires its coupled release daemon")
+    endif()
+    add_dependencies(test_orchard_coupled_cycle_daemon migrate_shielded_datadir)
+    add_test(NAME OrchardCoupledWalletCycle COMMAND python3 -B
+      ${ORCHARD_HOST_ROOT}/tests/integration/test_orchard_daemon_wallet_cycle.py
+      $<TARGET_FILE:test_orchard_coupled_cycle_daemon>
+      $<TARGET_FILE:migrate_shielded_datadir> --coupled-release)
+    set_tests_properties(OrchardCoupledWalletCycle PROPERTIES
+      LABELS "integration;e2e-daemon;orchard;wallet;restart;reorg;consensus;mandatory"
+      TIMEOUT 900 RUN_SERIAL TRUE ENVIRONMENT "RAYON_NUM_THREADS=2")
+  endif()
+
   if(TARGET test_daemon_service_release)
     add_test(NAME RuntimeDaemonProvider COMMAND python3
       ${ORCHARD_HOST_ROOT}/tests/integration/test_runtime_daemon_provider.py
@@ -429,6 +490,22 @@ if(DINERO_ORCHARD_BUILD_TESTS)
     target_link_libraries(test_orchard_index_delivery PRIVATE dinero_orchard_index_delivery)
     add_test(NAME OrchardIndexDelivery COMMAND test_orchard_index_delivery --index-delivery "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures")
     set_tests_properties(OrchardIndexDelivery PROPERTIES TIMEOUT 600 RUN_SERIAL TRUE ENVIRONMENT "RAYON_NUM_THREADS=2" LABELS "orchard;wallet;storage;integration-staging")
+    add_executable(test_runtime_prefix_storage
+      "${ORCHARD_HOST_ROOT}/tests/daemon/test_runtime_prefix_storage.cpp"
+      "${ORCHARD_HOST_ROOT}/src/common/logger.cpp")
+    target_link_libraries(test_runtime_prefix_storage PRIVATE dinero_orchard_account_replay dinero_orchard_chainstate_write dinero_orchard_block_staging dinero_crypto RocksDB::rocksdb)
+    target_include_directories(test_runtime_prefix_storage PRIVATE "${ORCHARD_HOST_ROOT}/src")
+    add_test(NAME RuntimePrefixStorage COMMAND test_runtime_prefix_storage "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures")
+    set_tests_properties(RuntimePrefixStorage PROPERTIES TIMEOUT 600 RUN_SERIAL TRUE
+      ENVIRONMENT "RAYON_NUM_THREADS=2" LABELS "orchard;wallet;storage;component")
+    add_executable(test_runtime_replay_branch_views
+      "${ORCHARD_HOST_ROOT}/tests/wallet/test_runtime_replay_branch_views.cpp"
+      "${ORCHARD_HOST_ROOT}/src/common/logger.cpp")
+    target_link_libraries(test_runtime_replay_branch_views PRIVATE dinero_orchard_account_replay dinero_orchard_chainstate_write dinero_orchard_block_staging dinero_crypto RocksDB::rocksdb)
+    target_include_directories(test_runtime_replay_branch_views PRIVATE "${ORCHARD_HOST_ROOT}/src")
+    add_test(NAME RuntimeReplayBranchViews COMMAND test_runtime_replay_branch_views "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures")
+    set_tests_properties(RuntimeReplayBranchViews PROPERTIES TIMEOUT 600 RUN_SERIAL TRUE
+      ENVIRONMENT "RAYON_NUM_THREADS=2" LABELS "orchard;wallet;replay;component")
     add_executable(test_orchard_block_staging
       "${ORCHARD_HOST_ROOT}/tests/consensus/test_orchard_block_staging.cpp"
       "${ORCHARD_HOST_ROOT}/src/common/logger.cpp")

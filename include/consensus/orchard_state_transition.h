@@ -26,11 +26,17 @@ private:
 };
 class OrchardStateLookupError : public std::runtime_error {
 public:
-    explicit OrchardStateLookupError(Status status)
-        : std::runtime_error("Orchard state lookup failed"), status_(status) {}
+    // Optional constant operation label for diagnostics. Classification and
+    // original storage status are preserved; no missing read becomes success.
+    explicit OrchardStateLookupError(Status status, const char* operation = nullptr)
+        : std::runtime_error(operation ? std::string("Orchard state lookup failed at ") +
+              operation + " (" + StatusToString(status) + ")" : "Orchard state lookup failed"),
+          status_(status), operation_(operation) {}
     Status SourceStatus() const noexcept { return status_; }
+    const char* Operation() const noexcept { return operation_; }
 private:
     Status status_;
+    const char* operation_;
 };
 // Lookups refer ONLY to the selected parent's authenticated chain, under the
 // same held writer lock as coin resolution and eventual batch application.

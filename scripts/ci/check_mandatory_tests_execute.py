@@ -48,6 +48,13 @@ retired a category at a time. A baseline entry that starts being executed, or
 that names a test which no longer exists, also fails -- the baseline shrinks
 rather than rots.
 
+Explicit execution exclusions are separate from this debt baseline. Selecting
+one in any modeled lane is a failure, including --explain/--update and shared
+tests in a secondary configuration. Excluded registrations are reported as
+NOT RUN and receive no execution credit. They must not enter the debt baseline.
+This guard only models the supplied workflows and discovered registrations;
+it does not certify that other workflows or shell scripts cannot run a test.
+
 Usage:
     check_mandatory_tests_execute.py <build-dir> <workflow.yml>... [--baseline P]
     ... --update      rewrite the baseline instead of checking it
@@ -75,6 +82,14 @@ import yaml
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_BASELINE = os.path.join(HERE, "unexecuted_tests_baseline.txt")
+
+# Explicit execution policy, separate from accidental coverage debt. These
+# controls must not run; neither their registration nor their exclusion earns
+# execution credit. Keep exact names: a label/pattern could hide other tests.
+EXCLUDED_TESTS = {
+    "GenerationToctouBarrier": "excluded race/synchronization control",
+    "RestartChurnBoringnessGate": "excluded restart/churn control",
+}
 
 # Flags that do not affect WHICH tests are selected. Base names only: the
 # parser splits an equals form (--no-tests=error) before looking here, so
@@ -140,7 +155,8 @@ def run_blocks(path):
     .github/workflows/shielded-readiness.yml has two -- so that is a live
     mis-parse, not a hypothetical one.
     """
-    raw = open(path, encoding="utf-8").read()
+    with open(path, encoding="utf-8") as source:
+        raw = source.read()
     try:
         doc = yaml.safe_load(raw)
     except yaml.YAMLError as exc:
@@ -484,10 +500,11 @@ def read_baseline(path):
     if not os.path.exists(path):
         return None
     names = set()
-    for line in open(path, encoding="utf-8"):
-        line = line.split("#", 1)[0].strip()
-        if line:
-            names.add(line)
+    with open(path, encoding="utf-8") as source:
+        for line in source:
+            line = line.split("#", 1)[0].strip()
+            if line:
+                names.add(line)
     return names
 
 
@@ -575,7 +592,8 @@ def main():
         if not os.path.exists(w):
             sys.exit("FATAL: workflow not found: %s" % w)
 
-    tests = registered_tests(build_dir)
+    all_tests = registered_tests(build_dir)
+    tests = all_tests
     if args.only_absent_from:
         # A test registered in BOTH configs is gated by the primary
         # invocation. What no other gate can see is this config's UNIQUE
@@ -599,21 +617,51 @@ def main():
                  "nothing is a silent-disappearance mode, not a pass")
     labels_of = dict(tests)
     exclude_patterns = []
-    same, other = execution_map(tests, workflows, build_dir,
+    same, other = execution_map(all_tests, workflows, build_dir,
                                 require_broad=not args.only_absent_from,
                                 collect_excludes=exclude_patterns)
 
+    # Check before --explain, --update, and secondary-configuration scoping.
+    # A shared test remains forbidden even when only unique tests are gated.
+    # Selection in another directory is not execution credit, but still must
+    # not request an explicitly excluded control known to this inventory.
+    forbidden = {n: same.get(n, []) + other.get(n, [])
+                 for n in EXCLUDED_TESTS if n in same or n in other}
+    if forbidden:
+        print("FAIL: execution policy excludes tests selected by these lanes:")
+        for n, lanes in sorted(forbidden.items()):
+            print("  %s: %s (%s)" % (n, ",".join(lanes), EXCLUDED_TESTS[n]))
+        return 1
+
+    baseline = read_baseline(baseline_path)
+    overlap = set(EXCLUDED_TESTS) & (baseline or set())
+    if overlap:
+        print("FAIL: policy exclusions must not be hidden in the debt baseline:")
+        for n in sorted(overlap):
+            print("  " + n)
+        return 1
+
+    registered_names = {n for n, _ in tests}
+    same = {n: lanes for n, lanes in same.items() if n in registered_names}
+    other = {n: lanes for n, lanes in other.items() if n in registered_names}
+    excluded = registered_names & set(EXCLUDED_TESTS)
+    for n in sorted(excluded):
+        print("EXCLUDED (NOT RUN): %s -- %s" % (n, EXCLUDED_TESTS[n]))
+
     if explain:
         for name, _ in sorted(tests):
+            if name in excluded:
+                continue             # already reported; never execution credit
             lanes = same.get(name) or []
             print("%-52s %s" % (name, ",".join(lanes) if lanes else
                                 ("OTHER-DIR:" + ",".join(other.get(name, []))
                                  if other.get(name) else "*** UNEXECUTED ***")))
         return 0
 
-    dead = {n for n, _ in tests} - set(same)
-    print("registered: %d   executed here: %d   unexecuted: %d"
-          % (len(tests), len(same), len(dead)))
+    dead = registered_names - set(same) - excluded
+    print("registered: %d   selected here: %d   unexecuted debt: %d   "
+          "policy excluded (NOT RUN): %d"
+          % (len(tests), len(same), len(dead), len(excluded)))
 
     if update:
         groups = write_baseline(baseline_path, dead, labels_of, other,
@@ -623,12 +671,10 @@ def main():
             print("  %3d  %s" % (len(groups[reason]), reason))
         return 0
 
-    baseline = read_baseline(baseline_path)
     if baseline is None:
         sys.exit("FATAL: baseline not found at %s. Generate it with --update and "
                  "review the contents before committing." % baseline_path)
 
-    registered_names = {n for n, _ in tests}
     newly_dead = sorted(dead - baseline)
     # Two ways a baseline entry goes wrong, and neither may be silent:
     #   revived -- still registered, now executed: the debt was paid, so the

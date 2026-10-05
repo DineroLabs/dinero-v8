@@ -289,19 +289,10 @@ public:
         int32_t canonical_truncated_at_height = -1;
         std::string canonical_truncation_reason;
 
-        // Count of block-shaped on-disk regions that ReadDiskBlocks
-        // skipped because their checksum mismatched or their body
-        // failed to deserialize. These are typically orphaned/stale
-        // blocks from prior chain incarnations (pre-v7 era, dropped
-        // reorg forks, partial writes from interrupted ConnectTip
-        // calls) that the live daemon never references via metadata
-        // and that SelectCanonicalChain would have discarded anyway.
-        // A skip is informational; non-zero `parse_skipped_blocks`
-        // does NOT indicate a problem with the canonical chain. The
-        // reindexer's old behavior was to abort on the first skip
-        // candidate, which prevented offline tooling (--rebuild-undo-range)
-        // from running on any datadir with stale orphans on disk —
-        // surfaced on LA on 2026-04-30.
+        // Frames skipped during inventory for a bad checksum or undecodable
+        // header. Transaction bodies are decoded only after chain selection;
+        // an unsupported/malformed selected body cannot count as a skipped
+        // orphan. A nonzero count is not proof that selected history is intact.
         uint64_t parse_skipped_blocks = 0;
 
         // WINDOWED_UNDO_ONLY accounting (zero in other modes).

@@ -98,6 +98,33 @@ if(NOT WIN32)
   set_tests_properties(DaemonServiceRelease PROPERTIES
     LABELS "integration;restart;mandatory" TIMEOUT 300 RUN_SERIAL TRUE)
 
+  add_test(NAME OrchardWalletCycleHttpContract COMMAND python3 -B
+    ${CMAKE_SOURCE_DIR}/tests/integration/test_orchard_wallet_cycle_http_contract.py)
+  set_tests_properties(OrchardWalletCycleHttpContract PROPERTIES
+    LABELS "unit;wallet;rpc;mandatory" TIMEOUT 30)
+
+  # Separate process with actual services and HTTP RPC; only its regtest
+  # entry point supplies the isolated Orchard schedule and stdin Stop owner.
+  add_executable(test_orchard_wallet_cycle_daemon
+    tests/daemon/orchard_wallet_cycle_daemon.cpp ${_release_sources})
+  foreach(_property INCLUDE_DIRECTORIES COMPILE_DEFINITIONS COMPILE_OPTIONS LINK_LIBRARIES LINK_OPTIONS)
+    get_target_property(_cycle_property dinerod ${_property})
+    if(_cycle_property)
+      set_property(TARGET test_orchard_wallet_cycle_daemon PROPERTY ${_property} "${_cycle_property}")
+    endif()
+  endforeach()
+
+  # Same real service graph under a coupled local release schedule.
+  add_executable(test_orchard_coupled_cycle_daemon
+    tests/daemon/orchard_wallet_cycle_daemon.cpp ${_release_sources})
+  foreach(_property INCLUDE_DIRECTORIES COMPILE_DEFINITIONS COMPILE_OPTIONS LINK_LIBRARIES LINK_OPTIONS)
+    get_target_property(_coupled_property dinerod ${_property})
+    if(_coupled_property)
+      set_property(TARGET test_orchard_coupled_cycle_daemon PROPERTY ${_property} "${_coupled_property}")
+    endif()
+  endforeach()
+  target_compile_definitions(test_orchard_coupled_cycle_daemon PRIVATE DINERO_TEST_COUPLED_ORCHARD_RELEASE=1)
+
   add_executable(test_checkpoint_acceptance_daemon
     tests/daemon/checkpoint_acceptance_daemon.cpp ${_release_sources})
   foreach(_property INCLUDE_DIRECTORIES COMPILE_DEFINITIONS COMPILE_OPTIONS LINK_LIBRARIES LINK_OPTIONS)
@@ -3598,6 +3625,7 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/p2p/test_p2p_manager_ts1_integration.cpp)
   add_executable(test_p2p_manager_ts1_integration
     tests/p2p/test_p2p_manager_ts1_integration.cpp
     tests/p2p/test_release_peer_cutoff.cpp
+    tests/p2p/test_addr_relay_known.cpp
     tests/p2p/test_orchard_peer_cutoff.cpp
     src/daemon/p2p_manager.cpp
     src/network/relay_hints_eviction.cpp
@@ -4085,6 +4113,27 @@ elseif(ENABLE_TS3_LIVENESS)
   message(WARNING "⚠️  Ring 3 Phase 4e TS3 test file not found - skipping")
 endif()
 
+# PBKDF2 valid-input compatibility and checked failure publication.
+add_executable(test_pbkdf2 tests/crypto/test_pbkdf2.cpp src/crypto/pbkdf2.cpp)
+target_include_directories(test_pbkdf2 PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(test_pbkdf2 PRIVATE OpenSSL::Crypto GTest::gtest_main)
+add_test(NAME PBKDF2Compatibility COMMAND test_pbkdf2)
+set_tests_properties(PBKDF2Compatibility PROPERTIES TIMEOUT 60 LABELS "wallet;crypto;pbkdf2")
+
+# Branch membership container used by authenticated runtime account replay.
+add_executable(test_runtime_replay_membership tests/wallet/test_runtime_replay_membership.cpp)
+target_include_directories(test_runtime_replay_membership PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(test_runtime_replay_membership PRIVATE GTest::gtest_main)
+add_test(NAME RuntimeReplayMembership COMMAND test_runtime_replay_membership)
+set_tests_properties(RuntimeReplayMembership PROPERTIES TIMEOUT 60 LABELS "wallet;orchard;replay")
+
+# Disposable replay material/index component. No wallet database or source acknowledgment.
+add_executable(test_runtime_replay_spool tests/wallet/test_runtime_replay_spool.cpp)
+target_include_directories(test_runtime_replay_spool PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(test_runtime_replay_spool PRIVATE sqlite3 OpenSSL::Crypto GTest::gtest_main)
+add_test(NAME RuntimeReplaySpool COMMAND test_runtime_replay_spool)
+set_tests_properties(RuntimeReplaySpool PROPERTIES TIMEOUT 600 RUN_SERIAL TRUE LABELS "wallet;orchard;replay")
+
 # BIP39 test suite
 if(EXISTS ${CMAKE_SOURCE_DIR}/tests/test_bip39.cpp)
   add_executable(test_bip39 tests/test_bip39.cpp)
@@ -4094,6 +4143,12 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/test_bip39.cpp)
     target_link_libraries(test_bip39 PRIVATE dinero_crypto dinero_wallet secp256k1)
   endif()
   target_include_directories(test_bip39 PRIVATE ${CMAKE_SOURCE_DIR}/include)
+  # The fixture invokes derivation inside assert expressions.
+  if(MSVC)
+    target_compile_options(test_bip39 PRIVATE /UNDEBUG)
+  else()
+    target_compile_options(test_bip39 PRIVATE -UNDEBUG)
+  endif()
   add_test(NAME BIP39 COMMAND test_bip39)
 endif()
 
@@ -4452,6 +4507,32 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_concurrent_in_flight.cpp)
     TIMEOUT 30
   )
 endif()
+
+# The wire inventory exercises the actual scanner and selector independently
+# of daemon startup. No proof/consensus/reindex-promotion claim comes from it.
+add_executable(test_reindex_wire_inventory
+  tests/consensus/test_reindex_wire_inventory.cpp
+  src/consensus/reindexer.cpp
+  src/consensus/state_commitment.cpp
+  src/consensus/genesis_canonical.cpp
+  src/consensus/undo.cpp
+  src/primitives/transaction_serializer.cpp
+  src/common/logger.cpp
+)
+target_link_libraries(test_reindex_wire_inventory PRIVATE
+  dinero_chainstate dinero_consensus dinero_shielded dinero_crypto
+  jsoncpp_static RocksDB::rocksdb OpenSSL::Crypto OpenSSL::SSL pthread sqlite3)
+link_zstd_if_needed(test_reindex_wire_inventory)
+target_include_directories(test_reindex_wire_inventory PRIVATE
+  ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src)
+if(APPLE)
+  target_link_libraries(test_reindex_wire_inventory PRIVATE
+    "-framework Security" "-framework CoreFoundation")
+endif()
+add_test(NAME ReindexWireInventory COMMAND test_reindex_wire_inventory
+  ${CMAKE_SOURCE_DIR}/rust/orchard_backend/tests/fixtures/candidate-envelope.bin)
+set_tests_properties(ReindexWireInventory PROPERTIES
+  LABELS "reindex;unit;mandatory" TIMEOUT 30)
 
 if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_reindex_deep_chain.cpp)
   add_executable(test_reindex_deep_chain
@@ -5141,6 +5222,22 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_assumeutxo_replay.cpp)
     LABELS "daemon;assumeutxo;replay"
     TIMEOUT 120
   )
+  add_test(NAME ReplayForestPartitions COMMAND test_assumeutxo_replay
+    --gtest_filter=ReplayForestPartitions.*)
+  set_tests_properties(ReplayForestPartitions PROPERTIES TIMEOUT 180)
+
+  add_test(NAME ReplayForestSharing COMMAND test_assumeutxo_replay
+    --gtest_filter=ReplayForestSharing.*)
+  set_tests_properties(ReplayForestSharing PROPERTIES
+    LABELS "daemon;assumeutxo;replay;mandatory" TIMEOUT 180)
+  add_test(NAME ReplayCoinRollback COMMAND test_assumeutxo_replay
+    --gtest_filter=ReplayCoinRollback.*)
+  set_tests_properties(ReplayCoinRollback PROPERTIES
+    LABELS "daemon;assumeutxo;replay;mandatory" TIMEOUT 180)
+  add_test(NAME ReplayHeaderHistory COMMAND test_assumeutxo_replay
+    --gtest_filter=ReplayHeaderHistory.*)
+  set_tests_properties(ReplayHeaderHistory PROPERTIES
+    LABELS "daemon;assumeutxo;replay;mandatory" TIMEOUT 180)
   add_test(NAME OrchardSelectedParentHistory COMMAND test_assumeutxo_replay
     --gtest_filter=SelectedParentHistory.*)
   set_tests_properties(OrchardSelectedParentHistory PROPERTIES
@@ -5159,6 +5256,10 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_assumeutxo_replay.cpp)
   set_tests_properties(OrchardTypedSelection PROPERTIES LABELS "daemon;orchard;mining;mandatory" TIMEOUT 120)
   add_test(NAME OrchardMiningTemplate COMMAND test_assumeutxo_replay --gtest_filter=OrchardMiningTemplate.*)
   set_tests_properties(OrchardMiningTemplate PROPERTIES LABELS "daemon;orchard;mining;mandatory" TIMEOUT 120)
+  add_test(NAME OrchardDetachedMining COMMAND test_assumeutxo_replay --gtest_filter=OrchardDetachedMining.*)
+  set_tests_properties(OrchardDetachedMining PROPERTIES LABELS "daemon;orchard;mining;mandatory" TIMEOUT 180)
+  add_test(NAME OrchardIssuanceRetry COMMAND test_assumeutxo_replay --gtest_filter=OrchardIssuanceRetry.*)
+  set_tests_properties(OrchardIssuanceRetry PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;wallet;ownership;mandatory")
   add_test(NAME PoolBlockSource COMMAND test_assumeutxo_replay --gtest_filter=PoolBlockSource.*)
   set_tests_properties(PoolBlockSource PROPERTIES TIMEOUT 180 LABELS "pool;storage;rpc;mandatory")
   add_test(NAME PoolPaymentSettlement COMMAND test_assumeutxo_replay --gtest_filter=PoolPaymentSettlement.*)
@@ -5194,6 +5295,8 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_assumeutxo_replay.cpp)
   add_test(NAME ChainstateWalletIndexOwner COMMAND test_assumeutxo_replay --gtest_filter=ChainstateWalletIndexOwner.*)
   set_tests_properties(ChainstateWalletIndexOwner PROPERTIES TIMEOUT 120 LABELS "daemon;wallet;mandatory")
   add_test(NAME OrchardAccountIssuance COMMAND test_assumeutxo_replay --gtest_filter=OrchardAccountIssuance.*)
+  add_test(NAME WalletShieldRpc COMMAND test_assumeutxo_replay --gtest_filter=WalletShieldRpc.*)
+  set_tests_properties(WalletShieldRpc PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;wallet;rpc;mandatory")
   add_test(NAME OrchardFinishRpc COMMAND test_assumeutxo_replay --gtest_filter=OrchardFinishRpc.*)
   set_tests_properties(OrchardFinishRpc PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;wallet;rpc;mandatory")
   add_test(NAME OrchardSpendRpc COMMAND test_assumeutxo_replay --gtest_filter=OrchardSpendRpc.*)
@@ -5217,8 +5320,46 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_assumeutxo_replay.cpp)
   add_test(NAME OrchardServiceProofs COMMAND test_assumeutxo_replay --gtest_filter=OrchardServiceProofs.*)
   set_tests_properties(OrchardServiceProofs PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;wallet;ownership;mandatory")
   if(DINERO_BUILD_ORCHARD_BACKEND)
+    add_test(NAME WalletShieldHistory COMMAND test_assumeutxo_replay --gtest_filter=WalletShieldHistory.*)
+    add_test(NAME WalletScriptReconciliation COMMAND test_assumeutxo_replay --gtest_filter=WalletScriptReconciliation.*)
+  set_tests_properties(WalletScriptReconciliation PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;wallet;recovery;mandatory")
+  add_test(NAME WalletScriptCoverage COMMAND test_assumeutxo_replay --gtest_filter=WalletScriptCoverage.*)
+    set_tests_properties(WalletScriptCoverage PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;wallet;recovery;mandatory")
+    set_tests_properties(WalletShieldHistory PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;wallet;history;mandatory")
+    add_test(NAME WalletShieldBip84 COMMAND test_assumeutxo_replay --gtest_filter=WalletShieldBip84.*)
+    set_tests_properties(WalletShieldBip84 PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;wallet;signing;mandatory")
+    add_test(NAME WalletHistoricalDiscovery COMMAND test_assumeutxo_replay --gtest_filter=WalletHistoricalDiscovery.*)
+    set_tests_properties(WalletHistoricalDiscovery PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;wallet;signing;mandatory")
+    add_test(NAME WalletShieldMaturity COMMAND test_assumeutxo_replay --gtest_filter=WalletShieldMaturity.*)
+    set_tests_properties(WalletShieldMaturity PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;wallet;maturity;mandatory")
+    add_test(NAME WalletShieldReservations COMMAND test_assumeutxo_replay --gtest_filter=WalletShieldReservations.*)
+    set_tests_properties(WalletShieldReservations PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;wallet;ownership;mandatory")
+    add_test(NAME WalletSharedReservations COMMAND test_assumeutxo_replay --gtest_filter=WalletSharedReservations.*)
+    set_tests_properties(WalletSharedReservations PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;wallet;ownership;mandatory")
     add_test(NAME OrchardOwnershipInventory COMMAND test_assumeutxo_replay --gtest_filter=OrchardOwnershipInventory.*)
     set_tests_properties(OrchardOwnershipInventory PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;wallet;ownership;mandatory")
+    add_test(NAME OrchardDetachedRead COMMAND test_assumeutxo_replay --gtest_filter=OrchardDetachedRead.*)
+    set_tests_properties(OrchardDetachedRead PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;wallet;ownership;mandatory")
+    add_test(NAME OrchardDetachedCatalog COMMAND test_assumeutxo_replay --gtest_filter=OrchardDetachedCatalog.*)
+    set_tests_properties(OrchardDetachedCatalog PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;wallet;ownership;mandatory")
+    add_test(NAME OrchardDetachedCoverage COMMAND test_assumeutxo_replay --gtest_filter=OrchardDetachedCoverage.*)
+    set_tests_properties(OrchardDetachedCoverage PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;wallet;ownership;mandatory")
+    add_test(NAME OrchardDetachedRecovery COMMAND test_assumeutxo_replay --gtest_filter=OrchardDetachedRecovery.*)
+    set_tests_properties(OrchardDetachedRecovery PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;wallet;ownership;mandatory")
+    add_test(NAME OrchardDetachedIssuance COMMAND test_assumeutxo_replay --gtest_filter=OrchardDetachedIssuance.*)
+    set_tests_properties(OrchardDetachedIssuance PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;wallet;ownership;mandatory")
+    add_test(NAME OrchardDetachedProofRead COMMAND test_assumeutxo_replay --gtest_filter=OrchardDetachedProofRead.*)
+    set_tests_properties(OrchardDetachedProofRead PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;wallet;ownership;mandatory")
+    add_test(NAME OrchardDetachedFinalization COMMAND test_assumeutxo_replay --gtest_filter=OrchardDetachedFinalization.*)
+    set_tests_properties(OrchardDetachedFinalization PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;wallet;ownership;mandatory")
+    add_test(NAME OrchardDetachedShieldSigning COMMAND test_assumeutxo_replay --gtest_filter=OrchardDetachedShieldSigning.*)
+    set_tests_properties(OrchardDetachedShieldSigning PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;wallet;ownership;mandatory")
+    add_test(NAME OrchardDetachedOrdinaryPayment COMMAND test_assumeutxo_replay --gtest_filter=OrchardDetachedOrdinaryPayment.*)
+    set_tests_properties(OrchardDetachedOrdinaryPayment PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;wallet;ownership;mandatory")
+    add_test(NAME OrchardDetachedSpendReservation COMMAND test_assumeutxo_replay --gtest_filter=OrchardDetachedSpendReservation.*)
+    set_tests_properties(OrchardDetachedSpendReservation PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;wallet;ownership;mandatory")
+    add_test(NAME OrchardDetachedShieldReservation COMMAND test_assumeutxo_replay --gtest_filter=OrchardDetachedShieldReservation.*)
+    set_tests_properties(OrchardDetachedShieldReservation PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;wallet;ownership;mandatory")
     add_test(NAME OrchardCatalogRecovery COMMAND test_assumeutxo_replay --gtest_filter=OrchardCatalogRecovery.*)
     set_tests_properties(OrchardCatalogRecovery PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;wallet;ownership;mandatory")
     add_test(NAME OrchardSpendOwner COMMAND test_assumeutxo_replay --gtest_filter=OrchardSpendOwner.*)
@@ -5296,6 +5437,14 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_assumeutxo_replay.cpp)
   set_tests_properties(OrchardMiningRpc PROPERTIES TIMEOUT 120 LABELS "orchard;mining;rpc")
   add_test(NAME OrchardRawIngress COMMAND test_assumeutxo_replay --gtest_filter=OrchardRawIngress.*)
   set_tests_properties(OrchardRawIngress PROPERTIES LABELS "daemon;orchard;ingress;mandatory" TIMEOUT 120)
+  add_test(NAME OrchardParentService COMMAND test_assumeutxo_replay --gtest_filter=OrchardParentService.*)
+  set_tests_properties(OrchardParentService PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;mandatory")
+  add_test(NAME OrchardParentGuards COMMAND test_assumeutxo_replay --gtest_filter=OrchardParentGuards.*)
+  set_tests_properties(OrchardParentGuards PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;mandatory")
+  add_test(NAME OrchardParentDrain COMMAND test_assumeutxo_replay --gtest_filter=OrchardParentDrain.*)
+  set_tests_properties(OrchardParentDrain PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;mandatory")
+  add_test(NAME OrchardParentIngress COMMAND test_assumeutxo_replay --gtest_filter=OrchardParentIngress.*)
+  set_tests_properties(OrchardParentIngress PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;mandatory")
   message(STATUS "✅ AssumeUTXO replay engine test enabled")
 endif()
 
@@ -9466,6 +9615,11 @@ if(UNIX AND NOT IOS)
   )
   add_test(NAME ShieldedMigrationCohort COMMAND test_shielded_migration_cohort)
   set_tests_properties(ShieldedMigrationCohort PROPERTIES LABELS "storage;smoke" TIMEOUT 180)
+  # Explicit metadata-only selections avoid executing unrelated cohort cases.
+  add_test(NAME ShieldedMigrationMetadataV1 COMMAND test_shielded_migration_cohort --metadata-v1)
+  add_test(NAME ShieldedMigrationMetadataV2 COMMAND test_shielded_migration_cohort --metadata-v2)
+  set_tests_properties(ShieldedMigrationMetadataV1 ShieldedMigrationMetadataV2
+    PROPERTIES LABELS "storage;smoke" TIMEOUT 180)
 
   # Qualification-only CLI driver for the combined-migration-release
   # harness (tests/integration/test_combined_migration_release_qualification.sh).
@@ -11575,6 +11729,39 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_block_download_scheduler.cpp)
     )
   endif()
   add_test(NAME BlockDownloadScheduler COMMAND test_block_download_scheduler)
+endif()
+
+if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_block_download_slow_peer.cpp)
+  add_executable(test_block_download_slow_peer
+    tests/consensus/test_block_download_slow_peer.cpp
+    src/consensus/block_download_scheduler.cpp
+    src/daemon/block_write_metrics.cpp   # g_durable_body_writes, now incremented by StoreBlock
+    src/consensus/header_chain.cpp
+    src/consensus/header_store.cpp
+    src/common/logger.cpp
+  )
+  target_link_libraries(test_block_download_slow_peer PRIVATE
+    dinero_consensus
+    dinero_chainstate  # BlockStorage
+    dinero_wallet
+    dinero_crypto
+    secp256k1
+    RocksDB::rocksdb
+  )
+  link_zstd_if_needed(test_block_download_slow_peer)
+  target_include_directories(test_block_download_slow_peer PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+  )
+  if(APPLE)
+    target_link_directories(test_block_download_slow_peer PRIVATE /opt/homebrew/lib)
+    target_link_libraries(test_block_download_slow_peer PRIVATE
+      "-framework Security"
+      "-framework CoreFoundation"
+    )
+  endif()
+  add_test(NAME BlockDownloadSlowPeer COMMAND test_block_download_slow_peer)
+  set_tests_properties(BlockDownloadSlowPeer PROPERTIES TIMEOUT 60)
 endif()
 
 if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_block_download_scheduler_restart_bootstrap.cpp)

@@ -34,7 +34,16 @@ struct OrchardCatalogRecoveryFixture : OrchardCreationFixture {
 }
 TEST(OrchardCatalogRecovery, GeneratedEmptyReplaysWithoutSchemaOrAccountCreation){
     OrchardCatalogRecoveryFixture f;ASSERT_EQ(f.StorageTables(),0);const auto catalog=f.Catalog();ASSERT_TRUE(catalog&&catalog->generated&&catalog->accounts.empty());
-    EXPECT_EQ(f.wallet->RecoverActiveWalletFromCanonicalSource(),Recovery::Deferred);EXPECT_EQ(f.StorageTables(),0);
+    // Normal recovery now proves and reconciles missing transparent coverage
+    // before replaying the authenticated generated-empty account catalog.
+    EXPECT_EQ(f.wallet->RecoverActiveWalletFromCanonicalSource(),Recovery::AppliedPrefix);
+    EXPECT_EQ(f.StorageTables(),0);EXPECT_EQ(f.Catalog(),catalog);
+    const auto initial=f.Recover();EXPECT_EQ(initial.applied.cursor.sequence,1u);
+    EXPECT_EQ(initial.catalog_revision,std::optional<uint64_t>(catalog->revision));
+    EXPECT_TRUE(initial.account_revisions.empty());
+    const auto initial_progress=f.Progress();
+    EXPECT_EQ(f.wallet->RecoverActiveWalletFromCanonicalSource(),Recovery::AppliedPrefix);
+    EXPECT_EQ(f.Progress(),initial_progress);EXPECT_EQ(f.StorageTables(),0);EXPECT_EQ(f.Catalog(),catalog);
     f.Adopt();f.MineEmpty();const auto owned=f.Owned();EXPECT_TRUE(owned.accounts.empty());EXPECT_EQ(owned.catalog,*catalog);EXPECT_EQ(f.StorageTables(),0);
     const auto recovered=f.Recover();EXPECT_EQ(recovered.catalog_revision,std::optional<uint64_t>(catalog->revision));EXPECT_TRUE(recovered.account_revisions.empty());EXPECT_EQ(recovered.applied.cursor.sequence,2u);
     EXPECT_EQ(f.wallet->RecoverActiveWalletFromCanonicalSource(),Recovery::AppliedPrefix);EXPECT_EQ(f.Catalog(),catalog);EXPECT_EQ(f.StorageTables(),0);

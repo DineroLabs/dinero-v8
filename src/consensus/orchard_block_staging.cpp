@@ -374,6 +374,27 @@ storage::LegacyRetirementRecord DeriveSelectedLegacyRetirementUnderLock(
         throw OrchardStateLookupError(Status::Corruption);
     return result;
 }
+void CheckPreparedLegacyRetirementUnderLock(const ChainDB& db,
+    const storage::LegacyRetirementRecord& record) {
+    const auto& p=Params();
+    uint256 genesis;
+    const uint8_t network=p.name=="mainnet"?0:p.name=="testnet"?1:p.name=="regtest"?2:0xff;
+    if(network==0xff || !uint256::FromHex(p.genesis_hash,genesis) || genesis.IsNull() ||
+        record.network_code!=network || record.genesis!=genesis ||
+        record.branch_id!=p.orchard_branch_id || record.activation_height!=p.orchard_activation_height ||
+        !record.activation_height || record.activation_height==UINT32_MAX ||
+        record.legacy_epoch_height>=record.activation_height || record.retired_value>orchard::kMaxMoneyUna ||
+        record.boundary_parent.IsNull()) throw OrchardStateLookupError(Status::Corruption);
+    for(const auto status:{db.getLegacyRetirementState().status(),db.getOrchardState().status()})
+        if(status!=Status::NotFound) throw OrchardStateLookupError(status==Status::Ok?Status::Corruption:status);
+    auto stored=record;
+    FillFrozenLegacy(db,stored,record.activation_height-1,record.boundary_parent);
+    if(stored!=record) throw OrchardStateLookupError(Status::Corruption);
+    const auto tip=RequiredLocal(db.getTip()),validated=RequiredLocal(db.getValidatedTip());
+    if(tip.height<0 || uint64_t(tip.height)+1!=record.activation_height ||
+        tip.hash!=record.boundary_parent || validated.height!=tip.height || validated.hash!=tip.hash)
+        throw OrchardStateLookupError(Status::Corruption);
+}
 OrchardBlockCandidate ReadStoredOrchardBlock(const ChainDB& db,const uint256& hash,
     bool require_witness_commitment,const BlockStorage* archival_blocks) {
     auto bytes=db.getBlockEncoding(hash);
@@ -479,19 +500,29 @@ PreparedOrchardState StageOrchardBlockUnderChainstateLock(ChainDB& db,
     return prepared;
 }
 
-StagedOrchardBlock StageOrchardBlockCoinsAndStateUnderChainstateLock(ChainDB& db,
+static StagedOrchardBlock StageOrchardCoinsAndStateImpl(ChainDB& db,
     const ChainWriteToken& token, const OrchardBlockContext& context,
     const OrchardBlockCandidate& block, const OrchardBranchMtpLookup& mtp,
-    bool require_witness_commitment, rocksdb::WriteBatch& batch) {
+    bool require_witness_commitment, rocksdb::WriteBatch& batch,
+    const ValidatedOrchardBlock* detached) {
     EmptyBatchGuard guard(batch);
     const auto tip=db.getTip();
     if (!tip.ok()) throw OrchardStateLookupError(tip.status());
     if (context.height==0 || tip->height<0 || uint32_t(tip->height)!=context.height-1 || tip->hash!=context.parent_hash)
         throw OrchardStateError(OrchardStateErrorCode::Context);
     const DatabaseCoins view(db,static_cast<uint32_t>(tip->height));
-    auto coins=PrepareOrchardBlockCoinsUnderChainstateLock(block,context,view,mtp,require_witness_commitment);
-    auto state=StageOrchardBlockUnderChainstateLock(db,token,context,block,
-        require_witness_commitment,coins.Authorizations(),batch);
+    // Only the full adapter supplies a detached result to this private helper,
+    // after checking its exact wire/profile and every parent before-image.
+    auto coins=detached?detached->Coins():
+        PrepareOrchardBlockCoinsUnderChainstateLock(block,context,view,mtp,require_witness_commitment);
+    auto state=[&] {
+        if(!detached) return StageOrchardBlockUnderChainstateLock(db,token,context,block,
+            require_witness_commitment,coins.Authorizations(),batch);
+        const auto& prepared=detached->State();
+        StorageCheck(db.stageOrchardConnect(token,prepared.Parent(),prepared.Next(),
+            prepared.Nullifiers(),prepared.Flows(),batch));
+        return prepared;
+    }();
     UndoRecord undo;
     for (const auto& change:coins.Changes()) {
         if (change.before) {
@@ -514,6 +545,62 @@ StagedOrchardBlock StageOrchardBlockCoinsAndStateUnderChainstateLock(ChainDB& db
     StorageCheck(db.putUndo(token,context.block_hash,undo,&batch));
     guard.Keep();
     return {std::move(coins),std::move(state),std::move(undo)};
+}
+
+StagedOrchardBlock StageOrchardBlockCoinsAndStateUnderChainstateLock(ChainDB& db,
+    const ChainWriteToken& token,const OrchardBlockContext& context,
+    const OrchardBlockCandidate& block,const OrchardBranchMtpLookup& mtp,
+    bool witness,rocksdb::WriteBatch& batch) {
+    return StageOrchardCoinsAndStateImpl(db,token,context,block,mtp,witness,batch,nullptr);
+}
+
+// Freshness checks against the selected durable parent, before any batch effect.
+// The detached result originates only from complete private branch validation.
+void CheckValidatedOrchardParentUnderLock(const ChainDB& db,const OrchardBlockContext& context,
+    const OrchardBlockCandidate& block,const BlockHeader& parent,const UtreexoForest& forest,
+    const OrchardBranchMtpLookup& mtp,bool witness,const ValidatedOrchardBlock& checked) {
+    const auto refuse=[] {throw OrchardStateLookupError(Status::Corruption,"connect/detached-parent");};
+    const auto& bound=checked.Context();
+    if(!checked.MatchesProfile() || !checked.MatchesWire(block) || witness!=checked.WitnessRequired() ||
+        bound.height!=context.height || bound.block_hash!=context.block_hash ||
+        bound.parent_hash!=context.parent_hash || bound.activation_height!=context.activation_height ||
+        bound.domain.network_code!=context.domain.network_code ||
+        bound.domain.genesis_wire!=context.domain.genesis_wire || bound.domain.branch_id!=context.domain.branch_id ||
+        checked.ParentHeader().SerializeForHash()!=parent.SerializeForHash()) refuse();
+    const auto root=forest.getCommitment();
+    if(!std::equal(root.begin(),root.end(),checked.ParentForestRoot().begin()))refuse();
+    const auto current=db.getOrchardState();
+    if(checked.State().Parent()) {
+        if(!current.ok())throw OrchardStateLookupError(current.status());
+        if(*current!=*checked.State().Parent() ||
+            RequiredLocal(db.getOrchardCommitmentSets(*current))!=checked.ParentMembership())refuse();
+    } else {
+        if(current.ok())refuse();
+        if(current.status()!=Status::NotFound)throw OrchardStateLookupError(current.status());
+    }
+    const DatabaseCoins view(db,context.height-1);
+    // Ephemeral outputs have no net change entry but must also have been
+    // absent in the parent. Check all ordered creations, not just net changes.
+    std::set<OutPoint> created;
+    for(const auto& tx:checked.Coins().Transactions())for(const auto& [point,coin]:tx.created) {
+        (void)coin;
+        if(!created.insert(point).second)refuse();
+        const auto stored=view.getCoin(point);
+        if(stored.ok())refuse();
+        if(stored.status()!=Status::NotFound)throw OrchardStateLookupError(stored.status());
+    }
+    for(const auto& tx:checked.Coins().Transactions())for(const auto& [point,expected]:tx.spent) {
+        if(created.contains(point))continue;
+        const auto stored=view.getCoin(point);
+        if(!stored.ok())throw OrchardStateLookupError(stored.status());
+        if(stored->value!=expected.value || stored->scriptPubKey!=expected.scriptPubKey ||
+            stored->height!=expected.height || stored->isCoinbase!=expected.isCoinbase ||
+            stored->is_confidential!=expected.is_confidential || stored->commitment!=expected.commitment)refuse();
+    }
+    for(const auto& [height,time]:checked.BranchMtp()) {
+        const auto current_time=mtp?mtp(height):std::nullopt;
+        if(!current_time || *current_time!=time)refuse();
+    }
 }
 
 std::vector<OrchardCoinChange> StageOrchardBlockCoinsAndStateDisconnectUnderChainstateLock(ChainDB& db,
@@ -571,7 +658,10 @@ StagedOrchardChainstate StageOrchardChainstateConnectUnderLock(ChainDB& db,
     const ChainWriteToken& token,const OrchardBlockContext& context,const OrchardBlockCandidate& block,
     const BlockHeader& parent,const UtreexoForest& forest,const OrchardBranchMtpLookup& mtp,
     bool require_witness_commitment,bool checkpoint,rocksdb::WriteBatch& batch,
-    const std::optional<storage::LegacyRetirementRecord>& authenticated_boundary) {
+    const std::optional<storage::LegacyRetirementRecord>& authenticated_boundary,
+    const ValidatedOrchardBlock* detached) {
+    const char* operation="connect/header-and-markers";
+    try {
     EmptyBatchGuard guard(batch);
     if(context.height==0 || context.height>INT32_MAX || parent.GetHash()!=context.parent_hash)
         throw OrchardStateError(OrchardStateErrorCode::Context);
@@ -580,6 +670,7 @@ StagedOrchardChainstate StageOrchardChainstateConnectUnderLock(ChainDB& db,
     CheckStateMarkers(db,context.height-1,context.parent_hash,parent.utreexo_root);
     if(RequiredLocal(db.getTip()).work!=parent_work || work<=parent_work)
         throw OrchardStateLookupError(Status::Corruption);
+    operation="connect/active-transaction-index";
     // This path owns active transaction indexing. A prior row would need an
     // explicit undo policy; never silently overwrite an unrelated location.
     for(const auto& tx:block.Transactions()) {
@@ -587,11 +678,15 @@ StagedOrchardChainstate StageOrchardChainstateConnectUnderLock(ChainDB& db,
         if(location.ok())throw OrchardStateLookupError(Status::AlreadyExists);
         if(location.status()!=Status::NotFound)throw OrchardStateLookupError(location.status());
     }
-    auto prepared=StageOrchardBlockCoinsAndStateUnderChainstateLock(db,token,context,block,mtp,
-        require_witness_commitment,batch);
+    operation="connect/coins-and-orchard-state";
+    if(detached)CheckValidatedOrchardParentUnderLock(db,context,block,parent,forest,mtp,require_witness_commitment,*detached);
+    auto prepared=StageOrchardCoinsAndStateImpl(db,token,context,block,mtp,
+        require_witness_commitment,batch,detached);
+    operation="connect/filter-and-parent-journal";
     const auto filter=CheckOrchardBlockFilter(block,prepared.coins);
     if(prepared.orchard.Parent())CheckCommitRecord(db,ParentContext(context,parent),parent,parent_work,
         forest,*prepared.orchard.Parent());
+    operation="connect/retirement-parent";
     std::optional<storage::LegacyRetirementState> retired_parent;
     storage::LegacyRetirementRecord retirement;
     if (context.height==context.activation_height) {
@@ -607,27 +702,37 @@ StagedOrchardChainstate StageOrchardChainstateConnectUnderLock(ChainDB& db,
             throw OrchardStateLookupError(Status::Corruption);
         retirement=retired_parent->record;
     }
+    if(detached && detached->Retirement()!=retirement)
+        throw OrchardStateLookupError(Status::Corruption,"connect/detached-retirement");
+    operation="connect/frozen-legacy";
     CheckFrozenLegacy(db,retirement,context,context.height-1,context.parent_hash);
+    operation="connect/parent-body-and-root";
     if (prepared.orchard.Parent()) {
         const auto parent_body=ReadStoredOrchardBlock(db,context.parent_hash,require_witness_commitment);
         CheckRoot(parent_body,StateRoot(ParentContext(context,parent),retirement,*prepared.orchard.Parent(),
             RequiredLocal(db.getOrchardCommitmentSets(*prepared.orchard.Parent()))),true);
     }
+    operation="connect/next-root";
     if (prepared.orchard.Next().pool_balance>orchard::kMaxMoneyUna-retirement.retired_value)
         throw OrchardStateError(OrchardStateErrorCode::PoolBalance);
     CheckRoot(block,StateRoot(context,retirement,prepared.orchard.Next(),
         RequiredLocal(db.previewOrchardCommitmentSets(prepared.orchard.Parent(),prepared.orchard.Next(),
             prepared.orchard.Nullifiers()))),false);
+    operation="connect/forest-transition";
     auto transition=[&] {
         try{return PrepareOrchardForestTransition(prepared.coins,parent,forest);}
         catch(const OrchardForestError&){throw OrchardStateLookupError(Status::Corruption);}
     }();
     if(!transition.MatchesHeader(block.Header()))throw OrchardStateError(OrchardStateErrorCode::BlockBody);
-    try{CheckOrchardBlockUtreexoProof(block,prepared.coins,parent,forest);}
+    operation="connect/utreexo-proof";
+    // The completed detached result binds the exact proof suffix and parent.
+    // Callers without that private result retain the full verifier.
+    try{if(!detached)CheckOrchardBlockUtreexoProof(block,prepared.coins,parent,forest);}
     catch(const OrchardForestError& e) {
         if(e.Code()!=OrchardForestErrorCode::Proof)throw OrchardStateLookupError(Status::Corruption);
         throw OrchardStateError(OrchardStateErrorCode::BlockBody);
     }
+    operation="connect/retained-delta";
     std::string delta,error;
     if(!SerializeUtreexoDelta(transition.Delta(),delta,error))throw OrchardStateLookupError(Status::Corruption);
     const auto key=MakeUtreexoDeltaUndoKey(context.block_hash);
@@ -635,26 +740,37 @@ StagedOrchardChainstate StageOrchardChainstateConnectUnderLock(ChainDB& db,
     if(status==Status::Ok) {if(existing!=delta)throw OrchardStateLookupError(Status::Corruption);}
     else if(status!=Status::NotFound)throw OrchardStateLookupError(status);
     batch.Put(key,delta);
+    operation="connect/checkpoint";
     if(checkpoint)StorageCheck(db.putUtreexoCheckpointWithChecksum(token,int(context.height),transition.After().serialize(),&batch));
+    operation="connect/retained-filter";
     const auto retained_filter=db.getBlockFilter(context.block_hash);
     if(retained_filter.ok()) {
         if(retained_filter->data!=filter.encoded_data || retained_filter->element_count!=filter.element_count)
             throw OrchardStateLookupError(Status::Corruption);
     } else if(retained_filter.status()!=Status::NotFound)throw OrchardStateLookupError(retained_filter.status());
     StorageCheck(db.putBlockFilter(token,context.block_hash,filter.encoded_data,filter.element_count,&batch));
+    operation="connect/stored-body";
     StorageCheck(db.stageOrchardBlock(token,block,require_witness_commitment,batch));
+    operation="connect/transaction-index-write";
     for(size_t i=0;i<block.Transactions().size();++i)
         StorageCheck(db.putTxIndex(token,block.Transactions()[i].GetTxid().AsUint256(),context.block_hash,uint32_t(i),&batch));
+    operation="connect/retained-journal";
     const auto journal=CommitRecord(context,block.Header(),work,transition.After(),prepared.orchard.Next());
     std::string retained;const auto journal_status=db.getRaw(CommitKey(context.height,context.block_hash),retained);
     if(journal_status==Status::Ok && retained!=journal)throw OrchardStateLookupError(Status::Corruption);
     if(journal_status!=Status::Ok && journal_status!=Status::NotFound)throw OrchardStateLookupError(journal_status);
     StorageCheck(batch.Put(CommitKey(context.height,context.block_hash),journal).ok()?Status::Ok:Status::Internal);
+    operation="connect/retirement-write";
     StorageCheck(db.stageLegacyRetirementConnect(token,retired_parent,
         {retirement,context.height,context.block_hash,context.parent_hash},batch));
+    operation="connect/marker-write";
     StageMarkers(db,token,block.Header(),context.height,work,batch);
     guard.Keep();
     return {std::move(prepared),std::move(transition)};
+    } catch(const OrchardStateLookupError& error) {
+        if(error.Operation())throw;
+        throw OrchardStateLookupError(error.SourceStatus(),operation);
+    }
 }
 
 StagedOrchardDisconnect StageOrchardChainstateDisconnectUnderLock(ChainDB& db,

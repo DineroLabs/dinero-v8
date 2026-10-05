@@ -108,6 +108,8 @@ enum class BlockRejectCode {
     STALE_MEMPOOL_CHANGED,       // Mempool changed since template creation (stale-mempool)
     STALE_REORG,                 // Reorg invalidated the template (stale-reorg)
     STALE_TIMESTAMP,             // Template timestamp beyond acceptable drift (stale-time)
+
+    STORED_NOT_VALIDATED,         // Exact body retained; no transaction/canonical validity claim
 };
 
 /**
@@ -128,7 +130,8 @@ struct BlockAcceptResult {
     bool relayed;                // True if block was relayed to peers
 
     bool accepted() const { return code == BlockRejectCode::OK; }
-    bool rejected() const { return code != BlockRejectCode::OK; }
+    bool retained() const { return code == BlockRejectCode::STORED_NOT_VALIDATED; }
+    bool rejected() const { return !accepted() && !retained(); }
 
     static BlockAcceptResult Accepted(const uint256& hash, uint64_t h, bool relay = true) {
         return {BlockRejectCode::OK, "Block accepted", hash, h, true, relay};

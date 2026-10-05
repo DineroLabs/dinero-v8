@@ -24,6 +24,11 @@ OrchardNetworkDisposition ReceiveOrchardNetworkBlock(
     const std::string& peer, const std::vector<uint8_t>& bytes, bool stateless);
 // Actual ordered-download callback: queue validation precedes terminal transport
 // completion. Caller releases scheduler/selected locks before entering.
+OrchardNetworkDisposition SubmitDownloadedOrchardBlock(
+    const std::shared_ptr<ChainstateService>& source,
+    const std::shared_ptr<BlockIngressService>& ingress,
+    const std::shared_ptr<BlockDownloadScheduler>& parallel,
+    const std::vector<uint8_t>& bytes, const uint256& hash, uint32_t height);
 bool AcceptDownloadedOrchardBlock(
     const std::shared_ptr<ChainstateService>& source,
     const std::shared_ptr<BlockIngressService>& ingress,

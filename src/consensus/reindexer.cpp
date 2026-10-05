@@ -389,6 +389,11 @@ uint32_t Fnv1aChecksum(const uint8_t* data, size_t len) {
     return hash;
 }
 
+}  // namespace
+
+// Testable: declared in consensus/reindexer_detail.h. See #708.
+namespace reindex_detail {
+
 StatusOr<std::vector<DiskBlockRecord>> ReadDiskBlocks(
     const std::vector<std::filesystem::path>& block_files,
     BlockReindexer::Stats* stats
@@ -420,7 +425,9 @@ StatusOr<std::vector<DiskBlockRecord>> ReadDiskBlocks(
 
         file.seekg(0, std::ios::end);
         const std::streampos file_size = file.tellg();
+        if (file_size < 0) return Status::Io;
         file.seekg(0, std::ios::beg);
+        if (!file.good()) return Status::Io;
 
         uint64_t offset = 0;
         uint64_t blocks_in_file = 0;
@@ -429,7 +436,8 @@ StatusOr<std::vector<DiskBlockRecord>> ReadDiskBlocks(
             uint32_t magic = 0;
             file.read(reinterpret_cast<char*>(&magic), 4);
             if (file.gcount() != 4) {
-                break;
+                g_logger.error("Incomplete block magic at offset " + std::to_string(offset));
+                return Status::Corruption;
             }
             if (magic != expected_magic) {
                 g_logger.error("Invalid block magic at offset " + std::to_string(offset) +
@@ -483,13 +491,11 @@ StatusOr<std::vector<DiskBlockRecord>> ReadDiskBlocks(
                 continue;
             }
 
-            auto parsed_block = Block::Deserialize(block_data.data(), block_data.size());
-            if (!parsed_block.has_value()) {
-                // Same tolerant-skip rationale as above. A canonical block
-                // that fails to deserialize would manifest downstream as
-                // SelectCanonicalChain producing a shorter-than-expected
-                // chain — observable failure mode, not silent corruption.
-                g_logger.warning("[reindex] Failed to deserialize block at offset " +
+            const auto header = BlockHeader::Deserialize(block_data.data(), block_data.size());
+            if (!header.has_value()) {
+                // No transaction decoder runs before selected ancestry gives
+                // this frame a height and therefore its consensus profile.
+                g_logger.warning("[reindex] Failed to deserialize header at offset " +
                                  std::to_string(offset) + " from " + file_path.string() +
                                  " — skipping (likely orphan/stale from prior chain)");
                 if (stats != nullptr) {
@@ -501,10 +507,11 @@ StatusOr<std::vector<DiskBlockRecord>> ReadDiskBlocks(
             }
 
             DiskBlockRecord record;
-            record.block = std::move(parsed_block.value());
+            record.header = *header;
+            record.body = std::move(block_data);
             record.pos = FilePosition(file_number, offset, block_size);
-            record.hash = record.block.GetHash();
-            record.prev_hash = record.block.header.prev_block_hash;
+            record.hash = record.header.GetHash();
+            record.prev_hash = record.header.prev_block_hash;
             records.push_back(std::move(record));
 
             offset += 12 + block_size;
@@ -515,16 +522,12 @@ StatusOr<std::vector<DiskBlockRecord>> ReadDiskBlocks(
         }
 
         g_logger.info("      Parsed " + std::to_string(blocks_in_file) +
-                      " block bodies from " + filename);
+                      " block frames from " + filename);
     }
 
     return records;
 }
 
-}  // namespace
-
-// Testable: declared in consensus/reindexer_detail.h. See #708.
-namespace reindex_detail {
 
 // Select the canonical chain from a parsed records vector.
 //
@@ -705,7 +708,7 @@ StatusOr<std::vector<size_t>> SelectCanonicalChain(
                     cursor.connected = true;
                     cursor.height = 1;
                     cursor.chainwork =
-                        genesis_work + GetBlockProof(records[idx].block.header.difficulty);
+                        genesis_work + GetBlockProof(records[idx].header.difficulty);
                     cursor.visiting = false;
                     cursor.resolved = true;
                     pending.pop_back();
@@ -727,7 +730,7 @@ StatusOr<std::vector<size_t>> SelectCanonicalChain(
                 cursor.connected = true;
                 cursor.height = cursors[parent].height + 1;
                 cursor.chainwork = cursors[parent].chainwork +
-                                   GetBlockProof(records[idx].block.header.difficulty);
+                                   GetBlockProof(records[idx].header.difficulty);
             }
             cursor.visiting = false;
             cursor.resolved = true;
@@ -786,6 +789,7 @@ StatusOr<std::vector<size_t>> SelectCanonicalChain(
 }  // namespace reindex_detail
 
 using reindex_detail::SelectCanonicalChain;
+using reindex_detail::ReadDiskBlocks;
 
 BlockReindexer::BlockReindexer(
     const std::filesystem::path& datadir,
@@ -1806,7 +1810,17 @@ StatusOr<BlockReindexer::Stats> BlockReindexer::execute() {
     for (size_t i = loop_start_index; i < loop_end_index_exclusive; ++i) {
         const auto& record = records[canonical_chain[i]];
         const uint64_t height = static_cast<uint64_t>(i + 1);
-        auto status = processBlock(record.block, record.pos, height);
+        // Inventory does not decide transaction encoding. Historical replay
+        // decodes only the selected frame at its assigned height. Typed
+        // Orchard replay must consume record.body through its own owner.
+        auto block = Block::Deserialize(record.body.data(), record.body.size());
+        if (!block || block->header.SerializeForHash() != record.header.SerializeForHash() ||
+            block->GetHash() != record.hash) {
+            stats_.error = "Selected block body is unavailable to historical reindex at height " +
+                std::to_string(height);
+            return stats_;
+        }
+        auto status = processBlock(*block, record.pos, height);
         if (status == Status::Ok) {
             continue;
         }
@@ -1864,7 +1878,7 @@ StatusOr<BlockReindexer::Stats> BlockReindexer::execute() {
         for (size_t j = first_invalid_index; j < canonical_chain.size(); ++j) {
             const auto& record = records[canonical_chain[j]];
             ChainDB::PersistedHeaderMetadata metadata;
-            metadata.parent_hash = record.block.header.prev_block_hash;
+            metadata.parent_hash = record.prev_hash;
             metadata.height = static_cast<int32_t>(j + 1);
             metadata.chainwork = arith_uint256(0);
             metadata.status_flags = (first ? BLOCK_FAILED_VALID : BLOCK_FAILED_CHILD) |

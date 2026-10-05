@@ -1,4 +1,5 @@
 #include "daemon/orchard_chainstate_write.h"
+#include "daemon/orchard_reindex.h"
 #include "daemon/runtime_block_outbox.h"
 #include "crypto/sha256.h"
 #include "consensus/merkle_root.h"
@@ -287,12 +288,12 @@ std::optional<std::string> Append(const ChainDB& db,rocksdb::WriteBatch& batch,
 }
 } // namespace outbox_detail
 
-RuntimeOutboxPage ReadRuntimeOutboxUnderLock(const ChainDB& db,const OrchardBlockContext& profile,
-    RuntimeOutboxCursor after,size_t maximum_events,size_t maximum_bytes) {
-    using namespace outbox_detail;
-    if(!Profile(profile) || !maximum_events || maximum_events>128 || !maximum_bytes ||
-        maximum_bytes>16*1024*1024)throw OrchardStateLookupError(Status::Invalid);
-    RuntimeOutboxPage page;page.head=CheckedHead(db,Raw(db,head_key),profile);page.next=after;
+namespace outbox_detail {
+// Both entry points use the same checked page walk. The boundary was verified
+// against durable records by the caller while holding the selected writer lock.
+RuntimeOutboxPage ReadPage(const ChainDB& db,const OrchardBlockContext& profile,
+    RuntimeOutboxCursor head,RuntimeOutboxCursor after,size_t maximum_events,size_t maximum_bytes) {
+    RuntimeOutboxPage page;page.head=head;page.next=after;
     if(after.sequence>page.head.sequence || (!after.sequence && !after.digest.IsNull()))Corrupt();
     std::optional<TransitionTip> previous_tip;
     if(after.sequence) {
@@ -315,6 +316,60 @@ RuntimeOutboxPage ReadRuntimeOutboxUnderLock(const ChainDB& db,const OrchardBloc
     }
     if(page.next.sequence==page.head.sequence && page.next!=page.head)Corrupt();
     return page;
+}
+} // namespace outbox_detail
+
+RuntimeOutboxPage ReadRuntimeOutboxUnderLock(const ChainDB& db,const OrchardBlockContext& profile,
+    RuntimeOutboxCursor after,size_t maximum_events,size_t maximum_bytes) {
+    using namespace outbox_detail;
+    if(!Profile(profile) || !maximum_events || maximum_events>128 || !maximum_bytes ||
+        maximum_bytes>16*1024*1024)throw OrchardStateLookupError(Status::Invalid);
+    const auto head=CheckedHead(db,Raw(db,head_key),profile);
+    return ReadPage(db,profile,head,after,maximum_events,maximum_bytes);
+}
+
+RuntimeOutboxPage ReadRuntimeOutboxPrefixUnderLock(const ChainDB& db,const OrchardBlockContext& profile,
+    RuntimeOutboxCursor captured_head,RuntimeOutboxCursor after,size_t maximum_events,size_t maximum_bytes) {
+    using namespace outbox_detail;
+    if(!Profile(profile) || !captured_head.sequence || !maximum_events || maximum_events>128 ||
+        !maximum_bytes || maximum_bytes>16*1024*1024)throw OrchardStateLookupError(Status::Invalid);
+    const auto current=CheckedHead(db,Raw(db,head_key),profile);
+    if(captured_head.sequence>current.sequence || Read(db,captured_head.sequence,profile).cursor!=captured_head)
+        Corrupt();
+    return ReadPage(db,profile,captured_head,after,maximum_events,maximum_bytes);
+}
+
+// This private entry is reachable only from the startup replay owner, after
+// independent consensus application through `through` into a new candidate.
+void OrchardReindexOwner::CopyValidatedOutboxPrefix(const ChainDB& source, ChainDB& candidate,
+    const ChainWriteToken& token, const consensus::OrchardBlockContext& profile,
+    RuntimeOutboxCursor through, RuntimeOutboxCursor source_head) {
+    using namespace outbox_detail;
+    if (&source==&candidate || !through.sequence || through.sequence>source_head.sequence ||
+        Raw(candidate,head_key) || Raw(candidate,Key(1))) Corrupt();
+    const auto last=Read(source,through.sequence,profile);
+    if(last.cursor!=through)Corrupt();
+    CheckCanonicalTip(candidate,After(last));
+    RuntimeOutboxCursor copied;
+    while(copied!=through) {
+        const auto page=ReadRuntimeOutboxUnderLock(source,profile,copied,1);
+        if(page.head!=source_head || page.events.size()!=1)Corrupt();
+        const auto& event=page.events.front();
+        const auto raw=Raw(source,Key(event.cursor.sequence));
+        if(!raw || Decode(*raw,event.cursor.sequence,profile).cursor!=event.cursor)Corrupt();
+        rocksdb::WriteBatch batch;
+        batch.Put(Key(event.cursor.sequence),*raw);
+        if(event.IsOrchardProfile() && event.direction==RuntimeBlockDirection::Connect)
+            batch.Put("runtime_orchard_outbox:v1:connect:"+event.context.block_hash.GetHex(),EncodeHead(event.cursor));
+        if(candidate.writeBatch(token,std::move(batch),true)!=Status::Ok)
+            throw OrchardStateLookupError(Status::Io);
+        copied=event.cursor;
+    }
+    if(ReadRuntimeOutboxUnderLock(source,profile,through,1).head!=source_head)Corrupt();
+    rocksdb::WriteBatch head;head.Put(head_key,EncodeHead(through));
+    if(candidate.writeBatch(token,std::move(head),true)!=Status::Ok)
+        throw OrchardStateLookupError(Status::Io);
+    if(ReadRuntimeOutboxUnderLock(candidate,profile,through,1).head!=through)Corrupt();
 }
 
 std::optional<PreparedHistoricalRuntimeOutbox> PreparedHistoricalRuntimeOutbox::PrepareUnderLock(
@@ -396,44 +451,77 @@ struct PreparedOrchardChainstateWrite::Impl {
     void PrepareIndex(BlockStorage& files, CBlockIndex& entry,
                       const OrchardBlockContext& context, const OrchardBlockCandidate& block,
                       bool connecting, bool contextual_header_validated=false) {
+        const char* operation="index/read-metadata";
+        try {
         auto before=RequiredDisk(db.getHeaderMetadata(context.block_hash));
         if (before.height<0 || uint32_t(before.height)!=context.height ||
             before.parent_hash!=context.parent_hash ||
             before.chainwork!=RequiredDisk(db.getBlockWork(context.block_hash)) ||
             (before.status_flags & (BLOCK_FAILED_VALID|BLOCK_FAILED_CHILD)) ||
-            !IndexMatches(entry,block.Header(),before))
-            throw OrchardStateLookupError(Status::Corruption);
+            !IndexMatches(entry,block.Header(),before)) {
+            // Preserve the refusal predicate; report its mismatched field without
+            // another database read or publishing any state.
+            const auto& header=block.Header();
+            const char* field="index/durable-work";
+            if(before.height<0 || uint32_t(before.height)!=context.height)field="index/durable-height";
+            else if(before.parent_hash!=context.parent_hash)field="index/durable-parent";
+            else if(before.status_flags&(BLOCK_FAILED_VALID|BLOCK_FAILED_CHILD))field="index/durable-failure-flags";
+            else if(entry.hash!=header.GetHash())field="index/live-hash";
+            else if(entry.prev_hash!=before.parent_hash)field="index/live-parent";
+            else if(entry.height!=uint32_t(before.height))field="index/live-height";
+            else if(entry.version!=header.version || entry.merkle_root!=header.merkle_root ||
+                entry.timestamp!=header.timestamp || entry.bits!=header.difficulty || entry.nonce!=header.nonce)
+                field="index/live-header";
+            else if(ChainworkFromHex(entry.chainwork)!=before.chainwork)field="index/live-work";
+            else if(entry.status!=before.status_flags)field="index/live-status";
+            else if(std::tie(entry.file_number,entry.data_pos,entry.data_size)!=
+                std::tie(before.file_number,before.data_pos,before.data_size))field="index/live-body-locator";
+            else if(std::tie(entry.undo_file,entry.undo_pos,entry.undo_size)!=
+                std::tie(before.undo_file,before.undo_pos,before.undo_size))field="index/live-undo-locator";
+            throw OrchardStateLookupError(Status::Corruption,field);
+        }
         auto after=before;
         const auto& wire=block.WireBytes();
         const std::string exact(wire.begin(),wire.end());
+        operation="index/retained-body";
         if (before.status_flags & BLOCK_HAVE_DATA) {
             if (!before.data_size || RequiredDisk(files.readBlockBytes(
                     {before.file_number,before.data_pos,before.data_size}))!=exact)
                 throw OrchardStateLookupError(Status::Corruption);
         } else {
+            operation="index/new-body-locator";
             if (!connecting || before.data_size || before.data_pos || before.file_number)
                 throw OrchardStateLookupError(Status::Corruption);
+            operation="index/write-body";
             const auto pos=RequiredDisk(files.writeBlockBytes(context.block_hash,exact));
             if (pos.offset>UINT32_MAX) throw OrchardStateLookupError(Status::Invalid);
             after.file_number=pos.file_number;after.data_pos=uint32_t(pos.offset);after.data_size=pos.size;
             after.status_flags|=BLOCK_HAVE_DATA;
         }
+        operation="index/retained-undo";
         if (before.status_flags & BLOCK_HAVE_UNDO) {
             if (!before.undo_size || RequiredDisk(files.readUndo(
                     {before.undo_file,before.undo_pos,before.undo_size}))!=undo_bytes)
                 throw OrchardStateLookupError(Status::Corruption);
         } else {
+            operation="index/new-undo-locator";
             if (!connecting || before.undo_size || before.undo_pos || before.undo_file)
                 throw OrchardStateLookupError(Status::Corruption);
+            operation="index/write-undo";
             const auto pos=RequiredDisk(files.writeUndo(context.block_hash,undo_bytes));
             if (pos.offset>UINT32_MAX) throw OrchardStateLookupError(Status::Invalid);
             after.undo_file=pos.file_number;after.undo_pos=uint32_t(pos.offset);after.undo_size=pos.size;
             after.status_flags|=BLOCK_HAVE_UNDO;
         }
         if (connecting && contextual_header_validated) after.status_flags|=BLOCK_VALID_MASK;
+        operation="index/write-metadata";
         if (connecting && db.putHeaderMetadata(token,context.block_hash,after,&batch)!=Status::Ok)
             throw OrchardStateLookupError(Status::Internal);
         indexed_header=block.Header(); index_before=before; index_after=after; index=&entry;
+        } catch(const OrchardStateLookupError& error) {
+            if(error.Operation())throw;
+            throw OrchardStateLookupError(error.SourceStatus(),operation);
+        }
     }
     void PublishIndex() noexcept {
         if (!index) return;
@@ -455,7 +543,8 @@ std::unique_ptr<PreparedOrchardChainstateWrite> PreparedOrchardChainstateWrite::
     const OrchardBlockCandidate& block, const BlockHeader& parent,
     const UtreexoForest& forest, const OrchardBranchMtpLookup& mtp,
     bool witness, bool checkpoint,
-    const std::optional<storage::LegacyRetirementRecord>& boundary) {
+    const std::optional<storage::LegacyRetirementRecord>& boundary,
+    const ValidatedOrchardBlock* detached) {
     auto result = std::unique_ptr<PreparedOrchardChainstateWrite>(
         new PreparedOrchardChainstateWrite(mutex, db, token));
     auto& owner = *result->impl_;
@@ -469,7 +558,7 @@ std::unique_ptr<PreparedOrchardChainstateWrite> PreparedOrchardChainstateWrite::
         return value;
     };
     auto staged = StageOrchardChainstateConnectUnderLock(db, token, context, block,
-        parent, forest, capture_mtp, witness, checkpoint, owner.batch, boundary);
+        parent, forest, capture_mtp, witness, checkpoint, owner.batch, boundary, detached);
     owner.undo_bytes=staged.block.undo.Serialize();
     owner.replay=RuntimeOrchardReplay{staged.block.orchard.Parent(),staged.block.orchard.Next(),
         owner.undo_bytes,std::move(recorded_mtp)};
@@ -515,13 +604,23 @@ std::unique_ptr<PreparedOrchardChainstateWrite> PreparedOrchardChainstateWrite::
     BlockStorage& files, CBlockIndex& index, ConsensusUTXOSet& live,
     const OrchardBlockContext& context, const OrchardBlockCandidate& block,
     const BlockHeader& parent, const UtreexoForest& forest, const OrchardBranchMtpLookup& mtp,
-    bool witness, bool checkpoint, const std::optional<storage::LegacyRetirementRecord>& boundary, bool contextual_header_validated) {
-    auto result=Connect(mutex,db,token,live,context,block,parent,forest,mtp,witness,checkpoint,boundary);
+    bool witness, bool checkpoint, const std::optional<storage::LegacyRetirementRecord>& boundary, bool contextual_header_validated,
+    const ValidatedOrchardBlock* detached) {
+    const char* operation="indexed/coins-and-state";
+    try {
+    auto result=Connect(mutex,db,token,live,context,block,parent,forest,mtp,witness,checkpoint,boundary,detached);
+    operation="indexed/body-and-undo-locators";
     result->impl_->PrepareIndex(files,index,context,block,true,contextual_header_validated);
+    operation="indexed/delivery-append";
     result->impl_->outbox_before=outbox_detail::Append(db,result->impl_->batch,context,block,true,result->impl_->replay);
     result->impl_->outbox_staged=true;
     return result;
+    } catch(const OrchardStateLookupError& error) {
+        if(error.Operation())throw;
+        throw OrchardStateLookupError(error.SourceStatus(),operation);
+    }
 }
+
 std::unique_ptr<PreparedOrchardChainstateWrite> PreparedOrchardChainstateWrite::DisconnectIndexed(
     AnnotatedRecursiveMutex& mutex, ChainDB& db, const ChainWriteToken& token,
     BlockStorage& files, CBlockIndex& index, ConsensusUTXOSet& live,

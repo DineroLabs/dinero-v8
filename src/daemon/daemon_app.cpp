@@ -1,3 +1,6 @@
+#ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
+#include "daemon/orchard_reindex.h"
+#endif
 #include "pool/wallet_payment_backend.h"
 #include "util/hex.h"
 #include "daemon/orchard_network_block.h"
@@ -996,7 +999,7 @@ bool DaemonApp::Init(int argc, char** argv) {
     std::filesystem::path chain_db_path;
 
     try {
-        chain_db_ = std::make_unique<ChainDB>();
+        chain_db_ = std::make_shared<ChainDB>();
 
         // Get datadir (use same default as ConfigService: ~/.dinero)
         // Note: config isn't initialized yet, so we get the raw value or default
@@ -1435,8 +1438,26 @@ bool DaemonApp::Init(int argc, char** argv) {
         reindex_config.utreexo_checkpoint_interval =
             GetConfig().utreexo_checkpoint_interval;
 
-        consensus::BlockReindexer reindexer(data_dir_path, rebuilt_chain_db.get(), block_storage.get(), reindex_config);
-        auto reindex_result = reindexer.execute();
+        auto reindex_result = [&]() -> StatusOr<consensus::BlockReindexer::Stats> {
+#ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
+            // Preserve delivery chronology even when a reorg returned the tip
+            // below activation. A missing log at an active tip is not permission
+            // to fabricate a new origin or reset wallet checkpoints.
+            std::string head;
+            const auto retained = chain_db_->getRaw("runtime_orchard_outbox:v1:head", head);
+            if (retained != Status::Ok && retained != Status::NotFound) return retained;
+            const auto old_tip = chain_db_->getTip();
+            if (!old_tip.ok()) return old_tip.status();
+            if (retained == Status::Ok || (old_tip->height >= 0 &&
+                uint64_t(old_tip->height) >= Params().orchard_activation_height)) {
+                ChainWriteToken reindex_token;
+                return OrchardReindexOwner::Run(*chain_db_, *rebuilt_chain_db, reindex_token,
+                    *block_storage, data_dir_path, temp_chain_db_path, reindex_config);
+            }
+#endif
+            consensus::BlockReindexer reindexer(data_dir_path, rebuilt_chain_db.get(), block_storage.get(), reindex_config);
+            return reindexer.execute();
+        }();
         if (!reindex_result.ok()) {
             std::cerr << "[DaemonApp] ❌ Reindex failed with status: "
                       << StatusToString(reindex_result.status()) << std::endl;
@@ -1929,7 +1950,7 @@ bool DaemonApp::Init(int argc, char** argv) {
 
     // Phase 39: Create ChainstateService and pass it the ChainDB
     auto chainstate = std::make_shared<ChainstateService>();
-    chainstate->setChainDB(chain_db_ptr);  // Non-owning; DaemonApp owns chain_db_
+    chainstate->setOwnedChainDB(chain_db_);
     chainstate->setPoolManager(pool_manager_runtime_);
     if(pool_manager_runtime_)pool_manager_runtime_->setChainstateSource(chainstate);
 
@@ -6688,8 +6709,9 @@ bool DaemonApp::Init(int argc, char** argv) {
                         const uint256& hash, uint32_t height, const std::string&) {
                         using Result = dinero::consensus::ConnectBlockResult;
                         auto ingress=typed_ingress_owner.lock();
-                        if (!AcceptDownloadedOrchardBlock(chainstate_for_drain,ingress,parallel,bytes,hash,height))
-                            return Result::TEMPORARY_FAIL;
+                        const auto received=SubmitDownloadedOrchardBlock(chainstate_for_drain,ingress,parallel,bytes,hash,height);
+                        if (received==OrchardNetworkDisposition::Stored) return Result::ACCEPTED_NOT_ACTIVE;
+                        if (received!=OrchardNetworkDisposition::Connected) return Result::TEMPORARY_FAIL;
                         if (prune_for_drain) {
                             try { prune_for_drain->triggerPruneIfNeeded(); } catch (...) {}
                         }

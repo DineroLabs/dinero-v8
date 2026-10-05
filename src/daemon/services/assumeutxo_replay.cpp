@@ -14,29 +14,12 @@ namespace dinero::assumeutxo {
 AssumeUtxoReplayEngine::AssumeUtxoReplayEngine()
     : network_(Params().network_id),
       genesis_hash_(uint256::FromHexUnsafe(Params().genesis_hash)),
-      set_(std::make_unique<consensus::ConsensusUTXOSet>()),
+      set_(consensus::ConsensusUTXOSet::CreateForReplay()),
       validator_(std::make_unique<consensus::BlockValidator>(set_.get(),
           [this](const uint256& parent, uint32_t wanted) -> std::optional<uint64_t> {
               if (!seeded_ || parent != tip_hash_ || wanted > last_height_) return std::nullopt;
-              uint256 ancestor;
-              uint32_t anchor_height = 0;
-              if (!headers_.GetAncestorHashByHash(parent, wanted, ancestor, anchor_height) ||
-                  anchor_height != last_height_) return std::nullopt;
-              // Match CBlockIndex's 64-bit contextual-lock median. The legacy
-              // header-selector MTP API returns uint32_t and would narrow it.
-              std::array<uint64_t, 11> times{};
-              size_t count = 0;
-              uint32_t expected_height = wanted;
-              while (count < times.size()) {
-                  const auto entry = headers_.GetHeaderValue(ancestor);
-                  if (!entry || entry->height != expected_height) return std::nullopt;
-                  times[count++] = entry->header.timestamp;
-                  if (expected_height == 0) break;
-                  ancestor = entry->prev_hash;
-                  --expected_height;
-              }
-              std::sort(times.begin(), times.begin() + count);
-              return times[count / 2];
+              try { return headers_.LockMedianTimePast(parent, wanted); }
+              catch (...) { unavailable_ = true; throw; }
           })),
       shielded_tree_(std::make_unique<consensus::shielded::CommitmentTree>()),
       shielded_nullifiers_(std::make_unique<consensus::shielded::NullifierSet>()),
@@ -62,8 +45,12 @@ AssumeUtxoReplayEngine::AssumeUtxoReplayEngine()
 
 AssumeUtxoReplayEngine::~AssumeUtxoReplayEngine() = default;
 
+void AssumeUtxoReplayEngine::CheckAvailable() const {
+    if (unavailable_) throw std::runtime_error("Replay engine has unavailable header storage");
+}
+
 bool AssumeUtxoReplayEngine::SeedGenesis(const Block& genesis_block, std::string& error) {
-    if (seeded_ || Params().network_id != network_ ||
+    if (unavailable_ || seeded_ || Params().network_id != network_ ||
         uint256::FromHexUnsafe(Params().genesis_hash) != genesis_hash_) {
         error = "replay genesis already seeded or network changed";
         return false;
@@ -77,7 +64,7 @@ bool AssumeUtxoReplayEngine::SeedGenesis(const Block& genesis_block, std::string
         genesis_block.vtx.front().Serialize(TxSerializationMode::WithWitness) !=
             expected.Serialize(TxSerializationMode::WithWitness) ||
         consensus::ComputeMerkleRoot(genesis_block.vtx, &mutated) != genesis_block.header.merkle_root ||
-        mutated || !headers_.AddHeader(genesis_block.header)) {
+        mutated || !headers_.Validate(genesis_block.header)) {
         error = "replay genesis identity or body mismatch";
         return false;
     }
@@ -105,6 +92,8 @@ bool AssumeUtxoReplayEngine::SeedGenesis(const Block& genesis_block, std::string
             return false;
         }
     }
+    try { headers_.AppendValidated(genesis_block.header, 0); }
+    catch (...) { unavailable_ = true; error = "replay header storage unavailable"; return false; }
     tip_hash_ = genesis_hash_;
     seeded_ = true;
     return true;
@@ -113,7 +102,7 @@ bool AssumeUtxoReplayEngine::SeedGenesis(const Block& genesis_block, std::string
 bool AssumeUtxoReplayEngine::ConnectAndAdvance(const Block& block, uint32_t height,
                                                const uint256& block_hash,
                                                std::string& error) {
-    if (!seeded_ || Params().network_id != network_ ||
+    if (unavailable_ || !seeded_ || Params().network_id != network_ ||
         uint256::FromHexUnsafe(Params().genesis_hash) != genesis_hash_) {
         error = "replay requires seeded selected genesis";
         return false;
@@ -130,17 +119,29 @@ bool AssumeUtxoReplayEngine::ConnectAndAdvance(const Block& block, uint32_t heig
         error = "replay block identity, parent or Merkle mismatch";
         return false;
     }
-    if (!headers_.AddHeader(block.header)) {
-        error = "replay header validation failed";
-        return false;
+    try {
+        if (!headers_.Validate(block.header)) {
+            error = "replay header validation failed";
+            return false;
+        }
+    } catch (...) {
+        unavailable_ = true; error = "replay header ancestry unavailable"; return false;
     }
     consensus::BlockUndo undo;
-    if (!validator_->ConnectBlock(block, height, block_hash, undo, error)) {
-        return false;
+    try {
+        if (!validator_->ConnectBlock(block, height, block_hash, undo, error)) return false;
+    } catch (...) {
+        unavailable_ = true; error = "replay body or ancestry unavailable"; return false;
     }
+    // No replay-spool mutex or SQL transaction spans expensive body validation.
+    // If this private append fails after coin effects, retire the whole engine;
+    // no partial state may be used as a validated prefix or promotion input.
+    try { headers_.AppendValidated(block.header, height); }
+    catch (...) { unavailable_ = true; error = "replay header storage unavailable"; return false; }
     // Capture undo for the audited tail window (ring semantics: drop oldest
     // when the deque exceeds the window). BlockUndo is movable — utreexo_delta,
     // spent_coins, and optional fields all move without extra allocation.
+    try {
     if (undo_tail_window_ > 0) {
         // CRITICAL: strip the pre-block UTXO-set snapshot ConnectBlock attaches
         // when the backend supports snapshot/restore — it deep-copies the whole
@@ -152,44 +153,64 @@ bool AssumeUtxoReplayEngine::ConnectAndAdvance(const Block& block, uint32_t heig
         undo_tail_.push_back(CapturedUndo{height, block_hash, std::move(undo)});
         while (undo_tail_.size() > undo_tail_window_) undo_tail_.pop_front();
     }
+    } catch (...) {
+        unavailable_ = true; error = "replay undo tail unavailable"; return false;
+    }
     last_height_ = height;
     tip_hash_ = block_hash;
     return true;
 }
 
+std::optional<consensus::UTXOEntry>
+AssumeUtxoReplayEngine::CopyPrefixCoin(const OutPoint& point) const {
+    CheckAvailable();
+    if (!seeded_) throw std::logic_error("Replay prefix has no genesis");
+    const auto* coin = set_->GetCoin(point);
+    if (!coin) return std::nullopt;
+    return *coin;
+}
+
 void AssumeUtxoReplayEngine::SetUndoTailWindow(uint32_t window) {
+    CheckAvailable();
     undo_tail_window_ = window;
     undo_tail_.clear();
 }
 
 const std::unordered_map<OutPoint, consensus::UTXOEntry>&
 AssumeUtxoReplayEngine::ProvenUtxos() const {
+    CheckAvailable();
     return set_->GetUTXOs();
 }
 
 const consensus::UtreexoForest* AssumeUtxoReplayEngine::Forest() const {
+    CheckAvailable();
     return &set_->GetForest();
 }
 
 const consensus::shielded::CommitmentTree* AssumeUtxoReplayEngine::ShieldedTree() const {
+    CheckAvailable();
     return shielded_tree_.get();
 }
 
 const consensus::shielded::NullifierSet* AssumeUtxoReplayEngine::ShieldedNullifiers() const {
+    CheckAvailable();
     return shielded_nullifiers_.get();
 }
 
 const consensus::shielded::AnchorHistory* AssumeUtxoReplayEngine::ShieldedAnchors() const {
+    CheckAvailable();
     return shielded_anchor_history_.get();
 }
 
-uint64_t AssumeUtxoReplayEngine::UtxoCount() const { return set_->GetUTXOs().size(); }
+uint64_t AssumeUtxoReplayEngine::UtxoCount() const { CheckAvailable(); return set_->GetUTXOs().size(); }
 
 std::string AssumeUtxoReplayEngine::RecordsDigestHex() const {
+    CheckAvailable();
     return consensus::ComputeUtxoRecordsDigest(set_->GetUTXOs()).GetHex();
 }
 
 std::string AssumeUtxoReplayEngine::UtreexoRootHex() const {
+    CheckAvailable();
     const consensus::UtreexoHash root = set_->GetForest().getCommitment();
     uint256 h;
     if (root.size() == 32) {

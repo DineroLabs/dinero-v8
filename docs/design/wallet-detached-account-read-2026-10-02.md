@@ -1,0 +1,9 @@
+# Detached reads of existing Orchard accounts
+
+`OrchardAccountDelivery::Read` and `ReadForReplay` capture an authenticated saved account and its derived viewing key in a checked FULL SQLite transaction. An existing-only read owner requires the recorded persistent wallet identity; missing identity or schema is an error and cannot trigger enrollment. These reads do not add a retained-history schema requirement to old scoped account snapshots.
+
+The read releases its own SQLite transaction, wallet lease and recovery-seed pin before restoring the account scan. It retains only scoped, cleansed account bytes and a viewing key. Before returning, a second checked transaction authenticates the current session, instance, persistent identity, viewing key, revision, exact saved account bytes and ordinary Ready history. A failed final read returns no previously prepared result.
+
+The returned account is an observation against the supplied immutable replay view, not continuing authorization to commit changes or a wallet readiness certificate. Callers must retain wallet/service lifetime. A composite caller that holds an outer wallet or selected-chain owner still holds that owner during this call. Catalog, retained-archive and write paths still need a complete detached capture/restore/recheck protocol before replay can perform lazy proof verification there. No proof validity token is serialized, no replay capacity ceiling is removed, and no key, account, cursor or identity is regenerated.
+
+The enabled Orchard backend registers `OrchardDetachedRead` with four component cases: funded-account restoration after releasing the read's own owners; final authentication read refusal and retry; wrong-session and borrowed-transaction refusal; and missing-identity refusal without enrollment. These tests do not establish concurrent mutation safety, whole-catalog detachment, full dependency instrumentation, long-history memory bounds or release readiness.

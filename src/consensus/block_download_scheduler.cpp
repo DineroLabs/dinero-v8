@@ -253,6 +253,15 @@ void BlockDownloadScheduler::StageGetdataLocked(const uint256& block_hash,
             }
         }
     }
+    if (!for_backfill) {
+        const auto now = std::chrono::steady_clock::now();
+        for (const auto& [peer, slow] : slow_peers_) {
+            if (slow.missed >= kSlowPeerTimeouts &&
+                now - slow.demoted_at < slow_peer_cooldown_) {
+                deferred.skip_peers.insert(peer);
+            }
+        }
+    }
     deferred_sends_.push_back(std::move(deferred));
 }
 
@@ -422,6 +431,17 @@ bool BlockDownloadScheduler::OnBackfillBodyReceived(const Block& block) {
     return ConsumeExpectedBackfillLocked(block, block_hash, lock);
 }
 
+// Called with mutex_ held only after a requested tip body has passed receipt
+// checks and its storage write succeeded. This credits request progress for the
+// chosen recipient; it is not peer authentication or canonical acceptance.
+// Both legacy and Orchard callers exclude repeated RECEIVED messages.
+void BlockDownloadScheduler::CreditTipBodyReceiptLocked(const std::string& peer) {
+    auto slow = slow_peers_.find(peer);
+    if (slow == slow_peers_.end()) return;
+    if (slow->second.missed > 0) --slow->second.missed;
+    if (slow->second.missed == 0) slow_peers_.erase(slow);
+}
+
 bool BlockDownloadScheduler::OnBlockReceived(const Block& block, FilePosition* stored_pos_out) {
     std::unique_lock<std::mutex> lock(mutex_);
     const uint256 block_hash = block.GetHash();
@@ -451,6 +471,7 @@ bool BlockDownloadScheduler::OnBlockReceived(const Block& block, FilePosition* s
             // Duplicates must not keep postponing recovery of a stalled proof.
             if (fetch_state.status != FetchStatus::RECEIVED) {
                 fetch_state.received_time = std::chrono::steady_clock::now();
+                CreditTipBodyReceiptLocked(fetch_state.chosen_peer);
             }
             fetch_state.status = FetchStatus::RECEIVED;
             fetch_state.stored_pos = stored_pos;
@@ -509,8 +530,10 @@ bool BlockDownloadScheduler::OnOrchardBlockReceived(std::span<const uint8_t> byt
         const auto stored = block_storage_->writeBlockBytes(hash,raw);
         if (!stored.ok()) return false;
         ++dinero::daemon::g_durable_body_writes;
-        if (fetch->status != FetchStatus::RECEIVED)
+        if (fetch->status != FetchStatus::RECEIVED) {
             fetch->received_time = std::chrono::steady_clock::now();
+            CreditTipBodyReceiptLocked(fetch->chosen_peer);
+        }
         fetch->status = FetchStatus::RECEIVED;
         fetch->stored_pos = *stored;
         received_blocks_.insert(hash);
@@ -782,6 +805,12 @@ void BlockDownloadScheduler::TickLocked(std::unique_lock<std::mutex>& lock) {
                              ", waited_ms " + std::to_string(elapsed_ms.count()) +
                              ", peer=" + fetch_state.chosen_peer +
                              ", retry=" + std::to_string(fetch_state.retry_count) + ")");
+                if (!fetch_state.chosen_peer.empty()) {
+                    auto& slow = slow_peers_[fetch_state.chosen_peer];
+                    if (++slow.missed >= kSlowPeerTimeouts) {
+                        slow.demoted_at = now;
+                    }
+                }
                 fetch_state.status = FetchStatus::MISSING;
                 fetch_state.chosen_peer.clear();
                 in_flight_blocks_.erase(fetch_state.block_hash);
@@ -2204,6 +2233,12 @@ size_t BlockDownloadScheduler::TryConnectStoredBlocksLocked(std::unique_lock<std
                         const bool resolved = get_block_hash_at_height_callback_(fs.height, chain_hash);
                         if (resolved && chain_hash == fs.block_hash) {
                             fs.status = FetchStatus::CONNECTED;
+                            // External canonical activation completed this exact
+                            // queued block. Publish the same cached-height progress
+                            // as the direct CONNECTED callback path below.
+                            if (fs.height > local_tip_height_) {
+                                local_tip_height_ = fs.height;
+                            }
                             in_flight_blocks_.erase(fs.block_hash);
                             continue;  // Already in chainstate, skip
                         }

@@ -10,16 +10,24 @@ class ChainstateService;
 // Missing pre-origin history or old records without replay frames refuse.
 class RuntimeAccountReplay {
 public:
+    // Each non-null handle owns its immutable value independently of this
+    // view and of other records. Retain the handle while borrowing references
+    // into its value. This allows later bounded storage to release unrelated
+    // records without invalidating a caller's active record.
+    using EventHandle = std::shared_ptr<const RuntimeOutboxEvent>;
+    using BlockHandle = std::shared_ptr<const OrchardBlockCandidate>;
+    using StateHandle = std::shared_ptr<const consensus::PreparedOrchardState>;
+    using AuthorizationHandle = std::shared_ptr<const std::vector<consensus::VerifiedOrchardAuthorizations>>;
     RuntimeOutboxCursor Head() const;
-    const RuntimeOutboxEvent& Event(uint64_t sequence) const;
+    EventHandle Event(uint64_t sequence) const;
     wallet::OrchardAccountDelivery::RestorePoint Point(RuntimeOutboxCursor) const;
     // Immutable branch identity at a covered height; missing ancestry refuses.
     std::function<StatusOr<uint256>(uint32_t)> SelectedHashes(RuntimeOutboxCursor) const;
     uint32_t ForkHeight(RuntimeOutboxCursor,const uint256& block,uint32_t height) const;
     bool IsAncestorOf(RuntimeOutboxCursor,const uint256& block,uint32_t height) const;
-    const OrchardBlockCandidate& Block(uint64_t sequence) const;
-    const consensus::PreparedOrchardState& State(uint64_t sequence) const;
-    const std::vector<consensus::VerifiedOrchardAuthorizations>& Authorizations(uint64_t sequence) const;
+    BlockHandle Block(uint64_t sequence) const;
+    StateHandle State(uint64_t sequence) const;
+    AuthorizationHandle Authorizations(uint64_t sequence) const;
 private:
     friend class ChainstateService;
     friend struct RuntimeAccountReplayTestAccess;

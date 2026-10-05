@@ -1,6 +1,7 @@
 #pragma once
 
 #include <vector>
+#include <memory>
 #include <cstdint>
 #include <string>
 #include <optional>
@@ -8,6 +9,7 @@
 #include <unordered_set>
 #include <cstring>
 #include "crypto/hash.h"
+#include "consensus/utreexo_partitioned_storage.h"
 #include "primitives/uint256.h"
 
 namespace dinero {
@@ -275,25 +277,19 @@ public:
     UtreexoForest();
     ~UtreexoForest();
 
-    // Rule of Five, stated explicitly.
-    //
-    // `~UtreexoForest()` is user-declared (and empty), which under the Rule of
-    // Five SUPPRESSES the implicit move constructor and move assignment. Every
-    // rvalue then bound to the copy constructor, so `std::move(forest)` silently
-    // deep-copied the roots/nodes vectors, the leaf-position map for every leaf,
-    // and the deleted-position set.
-    //
-    // That is expensive and invisible: `std::is_move_constructible` still
-    // reports true, because a const-lvalue-ref binds to an rvalue. Only the
-    // NOTHROW form discriminates, which is what UtreexoForestMove asserts.
-    //
-    // Every member is a RAII container and the destructor does nothing, so
-    // defaulting these is safe. Copying stays available and deliberate — the
-    // validation paths use clone() and the copy constructor on purpose.
-    UtreexoForest(UtreexoForest&&) noexcept = default;
-    UtreexoForest& operator=(UtreexoForest&&) noexcept = default;
-    UtreexoForest(const UtreexoForest&) = default;
-    UtreexoForest& operator=(const UtreexoForest&) = default;
+    // Copies and clones retain an immutable state version. Every forest
+    // mutation detaches before writing; borrowed UtreexoForest references
+    // therefore cannot modify another copy's state. Existing external locking
+    // requirements remain unchanged; this is not same-object synchronization.
+    UtreexoForest(const UtreexoForest&) noexcept = default;
+    UtreexoForest& operator=(const UtreexoForest&) noexcept = default;
+    // Retaining the shared version leaves moved-from objects valid without
+    // allocating an empty replacement inside a noexcept move operation.
+    UtreexoForest(UtreexoForest&& other) noexcept : state_(other.state_) {}
+    UtreexoForest& operator=(UtreexoForest&& other) noexcept {
+        state_ = other.state_;
+        return *this;
+    }
 
     // ───────────────────────────────────────────────────────────────────────
     // Core Operations
@@ -497,7 +493,7 @@ public:
     std::vector<UtreexoHash> getRoots() const {
         // Filter out empty roots (std::nullopt)
         std::vector<UtreexoHash> nonEmptyRoots;
-        for (const auto& root : roots_) {
+        for (const auto& root : state_->roots_) {
             if (root.has_value()) {
                 nonEmptyRoots.push_back(root.value());
             }
@@ -513,7 +509,7 @@ public:
      * (where some tree slots may become empty).
      */
     const std::vector<std::optional<UtreexoHash>>& getIndexedRoots() const {
-        return roots_;
+        return state_->roots_;
     }
 
     /**
@@ -530,7 +526,7 @@ public:
      * @brief Get number of leaves in forest
      */
     uint64_t getNumLeaves() const {
-        return numLeaves_;
+        return state_->numLeaves_;
     }
 
     /**
@@ -540,14 +536,14 @@ public:
      * numLeaves_ tracks total ever added, this returns total - deleted.
      */
     uint64_t getActiveLeaves() const {
-        return numLeaves_ - deleted_positions_.size();
+        return state_->numLeaves_ - state_->deleted_positions_.size();
     }
 
     /**
      * @brief Check if a position has been deleted
      */
     bool isDeleted(uint64_t position) const {
-        return deleted_positions_.count(position) > 0;
+        return state_->deleted_positions_.count(position) > 0;
     }
 
     /**
@@ -558,7 +554,7 @@ public:
      */
     size_t getNumRoots() const {
         size_t count = 0;
-        for (const auto& root : roots_) {
+        for (const auto& root : state_->roots_) {
             if (root.has_value()) {
                 count++;
             }
@@ -570,27 +566,18 @@ public:
      * @brief Check if accumulator is empty
      */
     bool isEmpty() const {
-        return numLeaves_ == 0;
+        return state_->numLeaves_ == 0;
     }
 
     /**
      * @brief Clone the accumulator for simulation
      *
-     * Creates a deep copy that can be modified without affecting the original.
+     * Retains an exact state version that detaches before either copy mutates.
      * Used during mining to compute AFTER-state commitment.
      *
      * @return Copy of this accumulator
      */
-    UtreexoForest clone() const {
-        UtreexoForest copy;
-        copy.roots_ = roots_;
-        copy.numLeaves_ = numLeaves_;
-        copy.nodes_ = nodes_;
-        copy.leaf_positions_ = leaf_positions_;
-        copy.deleted_positions_ = deleted_positions_;  // FIX: Must copy deleted set for correct root computation
-        copy.canonical_empty_roots_ = canonical_empty_roots_;  // Stage 3: carry the fork flag
-        return copy;
-    }
+    UtreexoForest clone() const noexcept { return *this; }
 
     /**
      * @brief Clone the accumulator and promote it to the semantics that
@@ -733,8 +720,12 @@ public:
      * and after activation, so every node on the network must flip the flag
      * at the same height.
      */
-    void setCanonicalEmptyRoots(bool v) { canonical_empty_roots_ = v; }
-    bool isCanonicalEmptyRoots() const { return canonical_empty_roots_; }
+    void setCanonicalEmptyRoots(bool v) {
+        if (state_->canonical_empty_roots_ == v) return;
+        EnsureUniqueState();
+        state_->canonical_empty_roots_ = v;
+    }
+    bool isCanonicalEmptyRoots() const { return state_->canonical_empty_roots_; }
 
     /**
      * @brief Diagnostic — describe what state a leaf hash collides with.
@@ -778,37 +769,42 @@ public:
     void rebuildRoots();
 
 private:
-    // Current forest roots (ordered by tree height, ascending)
-    // ARCHITECTURE NOTE: We use std::optional<UtreexoHash> to explicitly
-    // represent empty slots. This prevents any confusion between
-    // "no root at this height" (std::nullopt) and "root whose hash is all zeros"
-    // (std::optional containing a 32-byte vector of zeros).
-    std::vector<std::optional<UtreexoHash>> roots_;
+    struct State {
+        // Current forest roots (ordered by tree height, ascending)
+        // ARCHITECTURE NOTE: We use std::optional<UtreexoHash> to explicitly
+        // represent empty slots. This prevents any confusion between
+        // "no root at this height" (std::nullopt) and "root whose hash is all zeros"
+        // (std::optional containing a 32-byte vector of zeros).
+        std::vector<std::optional<UtreexoHash>> roots_;
 
-    // Total number of leaves ever added to forest (including deleted)
-    uint64_t numLeaves_;
+        // Total number of leaves ever added to forest (including deleted)
+        uint64_t numLeaves_ = 0;
 
-    // Apr 13 2026 Stage 3 — canonical-empty-roots fork flag.
-    // When true, `computeSubtreeHash()` returns a deterministic zero-sentinel
-    // for fully-deleted subtrees instead of `std::nullopt`. This preserves
-    // the `roots_[h].has_value() ⟺ bit h of numLeaves_` invariant and fixes
-    // the proof.verify cascade that made covenant spends unmineable.
-    // Flipped on at `UTREEXO_CANONICAL_ROOTS_HEIGHT_MAINNET` (2870).
-    // Copied by `clone()` so cloned snapshots inherit the flag.
-    bool canonical_empty_roots_ = false;
+        // Apr 13 2026 Stage 3 — canonical-empty-roots fork flag.
+        // When true, `computeSubtreeHash()` returns a deterministic zero-sentinel
+        // for fully-deleted subtrees instead of `std::nullopt`. This preserves
+        // the `roots_[h].has_value() ⟺ bit h of numLeaves_` invariant and fixes
+        // the proof.verify cascade that made covenant spends unmineable.
+        // Flipped on at `UTREEXO_CANONICAL_ROOTS_HEIGHT_MAINNET` (2870).
+        // Copied by `clone()` so cloned snapshots inherit the flag.
+        bool canonical_empty_roots_ = false;
 
-    // Internal forest representation (for proof generation)
-    // Map: position -> hash
-    // std::nullopt = deleted/empty node
-    std::vector<std::optional<UtreexoHash>> nodes_;
+        // Internal forest representation (for proof generation)
+        // Map: position -> hash
+        // std::nullopt = deleted/empty node
+        detail::ForestPages<std::optional<UtreexoHash>> nodes_;
 
-    // Leaf lookup map (for proof generation by hash)
-    // Map: leaf_hash -> position (single position; live leaf hashes must be unique)
-    // Required for generateBatchProof() to find leaf positions
-    std::unordered_map<UtreexoHash, uint64_t, UtreexoHashHasher> leaf_positions_;
+        // Leaf lookup map (for proof generation by hash)
+        // Map: leaf_hash -> position (single position; live leaf hashes must be unique)
+        // Required for generateBatchProof() to find leaf positions
+        detail::ForestMap<UtreexoHash, uint64_t, UtreexoHashHasher> leaf_positions_;
 
-    // Track deleted leaf positions (for spent UTXOs)
-    std::unordered_set<uint64_t> deleted_positions_;
+        // Track deleted leaf positions (for spent UTXOs)
+        detail::ForestSet<uint64_t> deleted_positions_;
+
+    };
+    std::shared_ptr<State> state_;
+    void EnsureUniqueState();
 
     // Internal consistency audit for side-indexed forest state.
     bool validateLeafIndexConsistency() const;

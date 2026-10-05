@@ -6,3 +6,5 @@ void RegisterOrchardAccountRpc();
 din::Json rpc_context_wallet_orchard_listoperations(const ExecutionContext&,const din::Json&);
 din::Json rpc_context_wallet_orchard_queuespend(const ExecutionContext&,const din::Json&);
 din::Json rpc_context_wallet_orchard_finishspend(const ExecutionContext&,const din::Json&);
+din::Json rpc_context_wallet_orchard_queueshield(const ExecutionContext&,const din::Json&);
+din::Json rpc_context_wallet_orchard_finishshield(const ExecutionContext&,const din::Json&);

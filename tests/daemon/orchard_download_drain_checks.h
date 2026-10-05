@@ -80,5 +80,68 @@ TEST(OrchardDownloadDrain, ExactFramingAndTypedCallbackRequired) {
     f.scheduler->SetConnectBlockBytesCallback([&](const auto& wire,const auto& hash,uint32_t height,const auto&){return f.Apply(wire,hash,height);});
     f.scheduler->Tick();EXPECT_EQ(f.scheduler->GetLocalTipHeight(),102u);EXPECT_EQ(historical,0u);
 }
+
+namespace {
+struct DownloadPeerCreditFixture : DownloadDrainFixture {
+    static constexpr const char* slow = "192.0.2.9:20999";
+    std::vector<std::pair<uint256,bool>> offers;
+    uint256 probe_hash;
+    void Start(const BlockHeader& header, unsigned misses) {
+        Enroll(header);
+        scheduler->SetTipRetryTimeout(std::chrono::hours(1));
+        scheduler->SetStaleRequestTimeoutSeconds(3600);
+        scheduler->SetSlowPeerCooldown(std::chrono::hours(1));
+        scheduler->SetSendGetDataCallback([&](const uint256& hash,uint32_t) {
+            offers.emplace_back(hash,scheduler->CurrentRequestSkipPeers().count(slow)>0);
+            scheduler->NotifyGetDataDispatched(hash,1,slow);
+            return true;
+        });
+        OrchardAdmissionFixture::Require(scheduler->ReRequestBlock(header.GetHash()));
+        scheduler->Tick();
+        for(unsigned i=0;i<misses;++i) {
+            scheduler->SetStaleRequestTimeoutSeconds(0);
+            scheduler->Tick();
+            scheduler->SetStaleRequestTimeoutSeconds(3600);
+            scheduler->SetTipRetryTimeout(std::chrono::hours(1));
+            scheduler->Tick();
+        }
+        // This second header is only a request probe. No body for it is
+        // supplied, connected, or claimed independently consensus-valid.
+        auto next=header;next.prev_block_hash=header.GetHash();
+        next.timestamp+=60;++next.nonce;probe_hash=next.GetHash();
+        OrchardAdmissionFixture::Require(headers.AddHeader(next));
+        scheduler->OnHeadersProcessed();scheduler->Tick();
+    }
+    bool ProbeSkipsSlowPeer() {
+        offers.clear();OrchardAdmissionFixture::Require(scheduler->ReRequestBlock(probe_hash));
+        scheduler->Tick();
+        const auto found=std::find_if(offers.begin(),offers.end(),[&](const auto& p){return p.first==probe_hash;});
+        OrchardAdmissionFixture::Require(found!=offers.end());
+        return found->second;
+    }
+};
+}
+TEST(OrchardDownloadPeerCredit, ValidStoredReceiptCreditsButRejectedWireDoesNot) {
+    DownloadPeerCreditFixture f;const auto block=f.Build();ASSERT_TRUE(block);
+    f.Start(block->Header(),2);ASSERT_TRUE(f.ProbeSkipsSlowPeer());
+    auto trailing=block->WireBytes();trailing.push_back(0);
+    EXPECT_FALSE(f.scheduler->OnOrchardBlockReceived(trailing));
+    EXPECT_FALSE(f.scheduler->HasReceivedBlock(block->Header().GetHash()));
+    EXPECT_TRUE(f.ProbeSkipsSlowPeer());
+    ASSERT_TRUE(f.scheduler->OnOrchardBlockReceived(block->WireBytes()));
+    EXPECT_FALSE(f.ProbeSkipsSlowPeer());
+    EXPECT_EQ(f.scheduler->GetLocalTipHeight(),101u);
+    EXPECT_EQ(f.f.service->GetActiveTip(),f.parent);EXPECT_EQ(f.notices->published,0u);
+}
+TEST(OrchardDownloadPeerCredit, DuplicateReceiptCannotEarnRepeatedCredit) {
+    DownloadPeerCreditFixture f;const auto block=f.Build();ASSERT_TRUE(block);
+    f.Start(block->Header(),3);ASSERT_TRUE(f.ProbeSkipsSlowPeer());
+    ASSERT_TRUE(f.scheduler->OnOrchardBlockReceived(block->WireBytes()));
+    EXPECT_TRUE(f.ProbeSkipsSlowPeer());
+    for(unsigned i=0;i<4;++i)ASSERT_TRUE(f.scheduler->OnOrchardBlockReceived(block->WireBytes()));
+    EXPECT_TRUE(f.ProbeSkipsSlowPeer());
+    EXPECT_EQ(f.scheduler->GetLocalTipHeight(),101u);
+    EXPECT_EQ(f.f.service->GetActiveTip(),f.parent);EXPECT_EQ(f.notices->published,0u);
+}
 #endif
 } // namespace dinero

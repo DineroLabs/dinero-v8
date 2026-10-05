@@ -274,7 +274,11 @@ din::Json rpc_getblocktemplate_v14(const ExecutionContext& ctx, const din::Json&
 
     // Longpoll has finished. Keep selected coins, forest and tip from changing
     // during readiness, construction and response serialization; acquire before pool use.
-    auto chain_guard = chainstate->AcquireBlockIngressActivationLock();
+    auto chain_guard = ::dinero::ChainstateService::AcquireMiningReadGuard(chainstate);
+    if(!chain_guard) {
+        result["error"] = "Selected mining owner unavailable";
+        return result;
+    }
 
     // Safety gate: refuse templates when disconnected/behind, unless explicitly
     // configured for isolated mining (regtest default).
@@ -855,7 +859,11 @@ din::Json rpc_mining_getjob(const ExecutionContext& ctx, const din::Json& params
         return result;
     }
 
-    auto chain_guard = chainstate->AcquireBlockIngressActivationLock();
+    auto chain_guard = ::dinero::ChainstateService::AcquireMiningReadGuard(chainstate);
+    if(!chain_guard) {
+        result["error"] = "Selected mining owner unavailable";
+        return result;
+    }
 
     // Apply the same safety gate as getblocktemplate to prevent local-only
     // template generation while disconnected/behind.
@@ -895,12 +903,13 @@ din::Json rpc_mining_getjob(const ExecutionContext& ctx, const din::Json& params
     }
     MiningJob job;
     if (::dinero::consensus::OrchardActiveForHeight(::dinero::Params(), uint32_t(selected_tip->height) + 1)) {
-        assembler.SetChainstateReadGuardFactory([chainstate] {
-            return ::dinero::ChainstateService::AcquireMiningReadGuard(chainstate);
-        });
         try {
-            job.orchard = assembler.CreateOrchardBlock(mining_address);
-        } catch (const std::exception&) {
+            job.orchard = assembler.CreateOrchardBlock(mining_address, *chain_guard);
+        } catch (const std::exception& error) {
+            // Keep the RPC refusal stable; retain the construction cause in
+            // the node log for diagnosis without exposing it over JSON-RPC.
+            try { ::dinero::g_logger.warning(std::string("[Orchard mining diagnostic] ") + error.what()); }
+            catch (...) {}
             result["error"] = "Selected Orchard mining construction unavailable";
             return result;
         }
@@ -1065,7 +1074,7 @@ din::Json rpc_mining_submit(const ExecutionContext& ctx, const din::Json& params
     }
 
     std::shared_ptr<::dinero::ChainstateService> typed_owner;
-    std::unique_lock<::dinero::AnnotatedRecursiveMutex> typed_chain_guard;
+    std::unique_ptr<::dinero::ChainstateService::BlockIngressUse> typed_chain_guard;
     if (job->orchard) {
         typed_owner = job->orchard_owner.lock();
         auto* actual_context = DaemonContext::instance();
@@ -1075,21 +1084,12 @@ din::Json rpc_mining_submit(const ExecutionContext& ctx, const din::Json& params
             result["error"] = "Orchard mining job owner unavailable";
             return result;
         }
-        typed_chain_guard = typed_owner->AcquireBlockIngressActivationLock();
-        const auto parent = typed_owner->GetChainDB() ? typed_owner->GetChainDB()->getTip()
-            : dinero::StatusOr<dinero::TipInfo>(dinero::Status::NotFound);
-        const auto* active = typed_owner->GetActiveTip();
-        if (!parent.ok() || !active || active->hash != job->tip_hash_at_creation ||
-            parent->hash != active->hash || parent->height != int32_t(active->height) ||
-            uint64_t(active->height) + 1 != job->height) {
-            result["code"] = "stale-job";
-            result["error"] = "Orchard mining parent changed";
-            return result;
-        }
+
     }
 
     // --- 3. Stale-job: tip changed since job creation ---
-    if (ctx.daemon) {
+    // Orchard repeats this check under its final owner after detached proofs.
+    if (ctx.daemon && !job->orchard) {
         auto cs = std::dynamic_pointer_cast<::dinero::ChainstateService>(ctx.daemon->chainstate);
         if (cs) {
             auto* cdb = cs->GetChainDB();
@@ -1163,6 +1163,37 @@ din::Json rpc_mining_submit(const ExecutionContext& ctx, const din::Json& params
         block_hex = to_hex(candidate.Serialize());
     }
 
+    if(job->orchard) {
+        // Construct the immutable solved frame before acquiring the final
+        // selected owner. That owner captures and verifies proofs detached,
+        // then holds the selected parent through acceptance and job removal.
+        typed_chain_guard = ::dinero::ChainstateService::AcquireBlockIngressUse(typed_owner,&block_hex);
+        auto* final_context = DaemonContext::instance();
+        if(!typed_chain_guard || !ctx.daemon || ctx.daemon->chainstate!=typed_owner ||
+            !final_context || final_context->chainstate!=typed_owner) {
+            result["code"] = "stale-job";
+            result["error"] = "Orchard mining job owner unavailable";
+            return result;
+        }
+        // Detached work may outlive expiry, invalidation or another successful
+        // submission. Recheck the same immutable job under the final owner.
+        if(g_job_store.lookup(job_id)!=job) {
+            result["code"]="stale-job";
+            result["error"]="Orchard mining job expired or invalidated during verification";
+            return result;
+        }
+        const auto parent = typed_owner->GetChainDB() ? typed_owner->GetChainDB()->getTip()
+            : dinero::StatusOr<dinero::TipInfo>(dinero::Status::NotFound);
+        const auto* active = typed_owner->GetActiveTip();
+        if (!parent.ok() || !active || active->hash != job->tip_hash_at_creation ||
+            parent->hash != active->hash || parent->height != int32_t(active->height) ||
+            uint64_t(active->height) + 1 != job->height) {
+            result["code"] = "stale-job";
+            result["error"] = "Orchard mining parent changed";
+            return result;
+        }
+    }
+
     ::dinero::g_logger.info("[mining.submit] Submitting job=" + job_id +
         " nonce=" + std::to_string(nonce) +
         (has_ntime ? " ntime=" + std::to_string(ntime) : "") +
@@ -1183,7 +1214,7 @@ din::Json rpc_mining_submit(const ExecutionContext& ctx, const din::Json& params
     // BlockAcceptor's nested unlock cannot release this outer mining guard.
     g_job_store.remove(job_id);
     if (job->orchard) {
-        typed_chain_guard.unlock();
+        typed_chain_guard.reset();
         accept_result.relayed=::dinero::AnnounceAcceptedOrchardBlock(typed_owner,accept_result);
     }
 

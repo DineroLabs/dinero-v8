@@ -52,7 +52,9 @@ class UTXOIndex;  // UTXO indexing for address registration
 class ChainDB;  // Chain database for UTXO discovery during rescan
 class BlockStorage;
 class SelectedWalletHistory;
+class WalletTransactionOwner;
 class ChainstateService;
+namespace wallet { class OrchardAccountDelivery; }
 
 namespace lightning {
     class LightningService;  // Forward declaration for Lightning integration
@@ -328,10 +330,53 @@ public:
         // The caller retains the lease/seed through its own checked completion.
         [[nodiscard]] std::vector<PendingPayment> ReadPendingPaymentsInTransaction(
             const RecoverySeed&);
+        // Read-only current-wallet coin and ordinary-reservation check under
+        // the caller's transaction/seed pin. Does not establish selected-chain
+        // unspentness, maturity or admission; that remains the source owner's job.
+        // Bounded checked candidates only, with real supported signing keys.
+        // Excludes manual locks and authenticated ordinary reservations. The
+        // caller must additionally exclude Orchard reservations and validate
+        // selected-chain unspentness/maturity before committing a reservation.
+        [[nodiscard]] std::vector<PendingPaymentInput> ReadShieldCandidatesInTransaction(
+            const RecoverySeed&);
+        // Validate all present issued/imported signing tuples and PQ records
+        // against the pinned live authority in this SQL snapshot. Watch-only
+        // registrations stay recognition metadata. No writes or key generation;
+        // separate PQ capture and missing historical catalogs remain distinct.
+        void ValidateRecoveryInventoryInTransaction(const RecoverySeed&);
+        // Authenticate every present predecessor import in the caller's SQL
+        // snapshot and return exact script -> recorded MAIN address. The map
+        // describes non-HD ownership; it contains no derivation path or secret.
+        // A supplied seed pin must belong to this lease. Otherwise a local pin
+        // is acquired only if an import is present. Missing/invalid keys refuse;
+        // no unlock, schema write, companion row, cache or key is created.
+        [[nodiscard]] std::map<std::vector<uint8_t>,std::string>
+        ReadHistoricalImportScriptsInTransaction(const RecoverySeed* = nullptr);
+        void ValidateUnreservedInputsInTransaction(const RecoverySeed&,
+            std::span<const PendingPaymentInput>);
         [[nodiscard]] std::optional<PendingPayment> FindPaymentRequest(
             const RecoverySeed&, const PendingPaymentIntent&);
     private:
         friend class WalletManager;
+        friend class WalletTransactionOwner;
+        friend class wallet::OrchardAccountDelivery;
+        // Only authenticated Orchard account Ready/current/archive owners may
+        // derive this summary; no RPC accepts arbitrary history fields.
+        struct ShieldHistory {
+            std::string txid, address;
+            uint64_t debit_una;
+            int64_t created_at;
+        };
+        void ValidateShieldHistoryInTransaction(const RecoverySeed&,const ShieldHistory&);
+        void StageShieldHistoryInTransaction(const RecoverySeed&,const ShieldHistory&,bool already_ready);
+        [[nodiscard]] std::optional<PendingPayment> FindPaymentRequestInTransaction(
+            const RecoverySeed&,const PendingPaymentIntent&);
+        // Only the composite signing owner may append in its FULL transaction.
+        // A private savepoint prevents caught errors from leaking partial writes.
+        void StagePaymentInTransaction(const RecoverySeed&,const UnsignedTransaction&,
+                                       const Transaction&,const PendingPaymentIntent&);
+        void StagePaymentOwned(const RecoverySeed&,const UnsignedTransaction&,
+                               const Transaction&,const PendingPaymentIntent&,bool caller_transaction);
         explicit DatabaseLease(WalletManager&);
         WalletManager& owner_;
         std::unique_lock<std::recursive_mutex> lock_;
@@ -1066,6 +1111,7 @@ private:
     std::string current_;
     friend class ChainstateService;
     friend struct WalletObservationTestAccess;
+    friend struct WalletDetachedReadTestAccess;
     friend struct WalletSeedReadTestAccess;
     friend struct WalletSeedWriteTestAccess;
     friend struct WalletInitialOwnerTestAccess;
@@ -1075,6 +1121,7 @@ private:
                               const SelectedWalletHistory*, uint64_t expected_session);
     friend class RuntimeOrdinaryDelivery;
     friend class RuntimeWalletRecovery;
+    friend class wallet::OrchardAccountDelivery;
     int current_wallet_id_ = -1;
 
     // ═══════════════════════════════════════════════════════════════

@@ -4,6 +4,31 @@
 namespace dinero {
 class ChainDBTransactionReadTestPeer {
 public:
+    // Serialized detached-handoff fixtures only. Capture all durable logical
+    // rows so a refusal must leave the actual store unchanged, including the
+    // deliberately altered before-image under test.
+    static auto HandoffRows(const ChainDB& db) {
+        std::map<std::pair<std::string,std::string>,std::string> rows;
+        for(const auto& family:db.cf_) {
+            std::unique_ptr<rocksdb::Iterator> it(db.db_->NewIterator(rocksdb::ReadOptions(),family.get()));
+            for(it->SeekToFirst();it->Valid();it->Next())
+                rows.emplace(std::make_pair(family->GetName(),it->key().ToString()),it->value().ToString());
+            if(!it->status().ok())throw std::runtime_error("handoff fixture row read failed");
+        }
+        return rows;
+    }
+    static std::string HandoffOrchardRow(const ChainDB& db,const std::string& key) {
+        std::string bytes;
+        if(!db.db_->Get(rocksdb::ReadOptions(),db.shieldedStateHandle(),key,&bytes).ok())
+            throw std::runtime_error("handoff fixture Orchard row absent");
+        return bytes;
+    }
+    static void HandoffPutOrchardRow(ChainDB& db,const ChainWriteToken& token,
+        const std::string& key,const std::string& bytes) {
+        rocksdb::WriteBatch batch;batch.Put(db.shieldedStateHandle(),key,bytes);
+        if(db.writeBatch(token,std::move(batch),true)!=Status::Ok)
+            throw std::runtime_error("handoff fixture Orchard row write failed");
+    }
     static bool PutLocationRow(ChainDB& db,const uint256& id,const std::string& bytes) {
         return db.db_->Put(rocksdb::WriteOptions(),db.cf_[db.idx_txindex_].get(),db.makeTxIndexKey(id),bytes).ok();
     }

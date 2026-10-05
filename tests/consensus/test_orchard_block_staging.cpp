@@ -39,6 +39,9 @@ extern char** environ;
 using namespace shielded_store_fixture;
 namespace dinero {
 struct RuntimeAccountReplayTestAccess {
+    static auto CaptureSource(const std::function<RuntimeOutboxPage(RuntimeOutboxCursor,size_t)>& source) {
+        return RuntimeAccountReplay::Capture(source);
+    }
     static auto Capture(const ChainDB& db,const consensus::OrchardBlockContext& context,size_t page=128) {
         return RuntimeAccountReplay::Capture([&](RuntimeOutboxCursor after,size_t count){
             return ReadRuntimeOutboxUnderLock(db,context,after,std::min(page,count));
@@ -691,7 +694,51 @@ static void HistoricalOutboxChecks(ChainDB& source,const OrchardBlockContext& co
     const auto paged=RuntimeAccountReplayTestAccess::Capture(db,context);
     CHECK(paged->Head().sequence==cursor.sequence+130&&paged->Point(paged->Head()).checkpoint==historical_view->Point(cursor).checkpoint);
     CHECK(historical_view->Head()==cursor); // immutable despite later source writes
+    // A captured prefix can end at a different tip from the live retained
+    // head. Reopening and later appends must not change that prefix's EOF.
+    const auto first_later=ReadRuntimeOutboxUnderLock(db,context,cursor,1);
+    const auto prefix=first_later.next;
+    CHECK(prefix.sequence==cursor.sequence+1);
+    db.close();CHECK(db.init(temp.path)==Status::Ok);
+    const auto prefix_page=ReadRuntimeOutboxPrefixUnderLock(db,context,prefix,cursor,128);
+    CHECK(prefix_page.head==prefix&&prefix_page.next==prefix&&prefix_page.events.size()==1);
+    CHECK(prefix_page.events.front().body==historical.Serialize());
+    const auto prefix_eof=ReadRuntimeOutboxPrefixUnderLock(db,context,prefix,prefix,1);
+    CHECK(prefix_eof.events.empty()&&prefix_eof.head==prefix&&prefix_eof.next==prefix);
+    CHECK(prefix_eof.after_tip&&prefix_eof.after_tip->first==historical.GetHash()&&prefix_eof.after_tip->second==height);
+    CHECK(RequiredValue(db.getTip()).hash==historical.header.prev_block_hash);
+    auto bad_prefix=prefix;bad_prefix.digest=H(248);
+    LookupReject(Status::Corruption,[&]{(void)ReadRuntimeOutboxPrefixUnderLock(db,context,bad_prefix,{});});
+    LookupReject(Status::Corruption,[&]{(void)ReadRuntimeOutboxPrefixUnderLock(db,context,prefix,paged->Head());});
+    auto future=paged->Head();++future.sequence;
+    LookupReject(Status::Corruption,[&]{(void)ReadRuntimeOutboxPrefixUnderLock(db,context,future,{});});
+    LookupReject(Status::Corruption,[&]{(void)ReadRuntimeOutboxPrefixUnderLock(db,wrong,prefix,{});});
+    LookupReject(Status::Invalid,[&]{(void)ReadRuntimeOutboxPrefixUnderLock(db,context,{},{});});
+    LookupReject(Status::Invalid,[&]{(void)ReadRuntimeOutboxPrefixUnderLock(db,context,prefix,{},0);});
+    LookupReject(Status::Invalid,[&]{(void)ReadRuntimeOutboxPrefixUnderLock(db,context,prefix,{},129);});
+    LookupReject(Status::Invalid,[&]{(void)ReadRuntimeOutboxPrefixUnderLock(db,context,prefix,{},1,1);});
+    LookupReject(Status::Invalid,[&]{(void)ReadRuntimeOutboxPrefixUnderLock(db,context,prefix,{},1,16*1024*1024+1);});
+    // Safe sequential extension between page calls, without threads or lock
+    // manipulation: the actual replay capture must stop at its original head.
+    std::optional<RuntimeOutboxCursor> captured_head;size_t page_calls=0;
+    const auto fixed=RuntimeAccountReplayTestAccess::CaptureSource([&](RuntimeOutboxCursor after,size_t count) {
+        auto page=captured_head?ReadRuntimeOutboxPrefixUnderLock(db,context,*captured_head,after,count):
+            ReadRuntimeOutboxUnderLock(db,context,after,count);
+        if(!captured_head)captured_head=page.head;
+        if(++page_calls==1) {
+            auto p=PreparedHistoricalRuntimeOutbox::PrepareUnderLock(db,context,historical,height,RuntimeBlockDirection::Connect);CHECK(p);
+            rocksdb::WriteBatch batch;Tip(db,historical.GetHash(),height,batch);
+            p->StageOrTerminateUnderLock(db,batch);Commit(db,batch);
+            db.close();CHECK(db.init(temp.path)==Status::Ok);
+        }
+        return page;
+    });
+    CHECK(page_calls>=3&&fixed->Head()==paged->Head());
+    CHECK(fixed->Point(fixed->Head()).checkpoint==paged->Point(paged->Head()).checkpoint);
+    CHECK(ReadRuntimeOutboxUnderLock(db,context).head.sequence==fixed->Head().sequence+1);
+    CHECK(RequiredValue(db.getTip()).hash==historical.GetHash());
     rocksdb::WriteBatch missing;missing.Delete("runtime_orchard_outbox:v1:head");Commit(db,missing);
+    LookupReject(Status::Corruption,[&]{(void)ReadRuntimeOutboxPrefixUnderLock(db,context,prefix,prefix);});
     LookupReject(Status::Corruption,[&]{(void)PreparedHistoricalRuntimeOutbox::PrepareUnderLock(db,context,historical,height,RuntimeBlockDirection::Disconnect);});
 }
 static void OutboxReplayChecks(ChainDB& db,const OrchardBlockContext& context,
@@ -705,8 +752,8 @@ static void OutboxReplayChecks(ChainDB& db,const OrchardBlockContext& context,
     CHECK(captured->coin_undo==RequiredValue(db.getUndo(context.block_hash)).Serialize());
     const auto view=RuntimeAccountReplayTestAccess::Capture(db,context,1);
     CHECK(view->Head()==all.head&&view->Point({}).checkpoint.block_hash==context.parent_hash);
-    const auto& auths=view->Authorizations(1);CHECK(!auths.empty());
-    const auto& state=view->State(1);CHECK(state.Next()==captured->next&&!state.Nullifiers().empty());
+    const auto auth_handle=view->Authorizations(1);const auto& auths=*auth_handle;CHECK(!auths.empty());
+    const auto state_handle=view->State(1);const auto& state=*state_handle;CHECK(state.Next()==captured->next&&!state.Nullifiers().empty());
     for(const auto& event:all.events){
         const auto point=view->Point(event.cursor);const bool connect=event.direction==RuntimeBlockDirection::Connect;
         CHECK(point.checkpoint.block_hash==(connect?context.block_hash:context.parent_hash));
@@ -718,6 +765,25 @@ static void OutboxReplayChecks(ChainDB& db,const OrchardBlockContext& context,
         else LookupReject(Status::Corruption,[&]{(void)point.lookups.selected_block(context.height,context.block_hash);});
     }
     auto bad=all.head;bad.digest=H(99);LookupReject(Status::Corruption,[&]{(void)view->Point(bad);});
+    // Retaining one record must not pin unrelated records or the replay view.
+    // The four values must remain usable after that view has been released.
+    {
+        auto owned_view=RuntimeAccountReplayTestAccess::Capture(db,context,1);
+        std::weak_ptr<const RuntimeAccountReplay> released_view=owned_view;
+        const auto event=owned_view->Event(1);
+        const auto owned_block=owned_view->Block(1);
+        const auto owned_state=owned_view->State(1);
+        const auto owned_auths=owned_view->Authorizations(1);
+        std::weak_ptr<const RuntimeOutboxEvent> unrelated=owned_view->Event(2);
+        CHECK(!unrelated.expired());
+        owned_view.reset();
+        CHECK(released_view.expired()&&unrelated.expired());
+        CHECK(event->cursor==all.events.front().cursor&&event->body==block.WireBytes());
+        CHECK(owned_block->WireBytes()==event->body&&owned_state->Next()==captured->next);
+        CHECK(owned_auths->size()==auths.size()&&!owned_auths->empty());
+        CHECK(owned_auths->front().Transaction().CanonicalBytes()==auths.front().Transaction().CanonicalBytes());
+    }
+
     for(const auto& e:all.events) {
         CHECK(e.orchard_replay.has_value());
         CHECK(e.orchard_replay->parent==captured->parent && e.orchard_replay->next==captured->next);

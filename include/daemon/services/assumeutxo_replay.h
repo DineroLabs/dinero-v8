@@ -1,7 +1,7 @@
 #pragma once
 
 #include "consensus/block_validation.h"
-#include "consensus/header_chain.h"
+#include "daemon/services/replay_header_history.h"
 #include "consensus/consensus_utxo_set.h"
 #include "consensus/shielded/anchor_history.h"
 #include "consensus/shielded/commitment_tree.h"
@@ -12,6 +12,7 @@
 
 #include <deque>
 #include <memory>
+#include <optional>
 #include <string>
 #include <unordered_map>
 
@@ -38,8 +39,12 @@ namespace dinero::assumeutxo {
 // from block replay only, so it excludes genesis as well.
 // Seeding is mandatory and single-use. Replay starts at height 1 and checks
 // exact identity, Merkle root, parent continuity and the normal header rules.
-// Header ancestry and contextual-lock MTP belong to this engine, not the
+// Authenticated disk-spooled header ancestry and contextual-lock MTP belong
+// to this engine, not the
 // process-wide block index. Network PoW policy (including regtest) is unchanged.
+// No header-storage mutex spans proof validation. A storage/publication failure
+// retires the private engine and all subsequent result access refuses. Header
+// pager bounds are not full UTXO/forest memory or general-history qualification.
 //
 // SHIELDED STATE: the engine owns genesis-fresh shielded pool state
 // (CommitmentTree, NullifierSet, AnchorHistory — same trio production
@@ -72,7 +77,12 @@ public:
     bool ConnectAndAdvance(const Block& block, uint32_t height,
                            const uint256& block_hash, std::string& error);
 
-    uint32_t Height() const { return last_height_; }
+    // Copy a coin from the validated prefix before the next synchronous
+    // ConnectAndAdvance. No reference survives mutation of the replay set.
+    // For branch-local retirement accounting; never reads the live ChainDB.
+    std::optional<consensus::UTXOEntry> CopyPrefixCoin(const OutPoint& point) const;
+
+    uint32_t Height() const { CheckAvailable(); return last_height_; }
     uint64_t UtxoCount() const;
     // Canonical content commitment of the replayed set (Task 1 digest).
     std::string RecordsDigestHex() const;
@@ -94,7 +104,7 @@ public:
         consensus::BlockUndo undo;
     };
     void SetUndoTailWindow(uint32_t window);
-    const std::deque<CapturedUndo>& UndoTail() const { return undo_tail_; }
+    const std::deque<CapturedUndo>& UndoTail() const { CheckAvailable(); return undo_tail_; }
 
     // Proven UTXO map (by const-ref; the reference is valid for the engine's
     // lifetime — it aliases the live set, so CONTENTS change on each
@@ -111,7 +121,10 @@ public:
 
 private:
     // Declared before the validator: its immutable callback may use this owner.
-    consensus::HeaderChainSelector headers_;
+    ReplayHeaderHistory headers_;
+    bool unavailable_ = false;
+    void CheckAvailable() const;
+    friend struct ReplayHeaderHistoryTestAccess;
     const std::string network_;
     const uint256 genesis_hash_;
     uint256 tip_hash_;

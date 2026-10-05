@@ -35,9 +35,28 @@ std::optional<OrchardBlockContext> SelectedOrchardBlockContext(
     return context;
 }
 namespace {
+class SelectorAncestry final : public OrchardHeaderAncestry {
+public:
+    explicit SelectorAncestry(const HeaderChainSelector& headers) : headers_(headers) {}
+    std::optional<OrchardHeaderAncestor> GetHeaderValue(const uint256& hash) const override {
+        const auto value=headers_.GetHeaderValue(hash);
+        if(!value)return std::nullopt;
+        return OrchardHeaderAncestor{value->header,value->height};
+    }
+    bool GetAsertContextByHash(const uint256& hash, HeaderAsertContext& out,
+        std::optional<uint32_t> anchor) const override {
+        return headers_.GetAsertContextByHash(hash, out, anchor);
+    }
+    bool GetAncestorHashByHash(const uint256& hash, uint32_t height,
+        uint256& out, uint32_t& parent_height) const override {
+        return headers_.GetAncestorHashByHash(hash, height, out, parent_height);
+    }
+private:
+    const HeaderChainSelector& headers_;
+};
 void CheckHeader(
     const BlockHeader& header, const BlockHeader& parent,
-    const OrchardBlockContext& context, const HeaderChainSelector& headers,
+    const OrchardBlockContext& context, const OrchardHeaderAncestry& headers,
     uint64_t now_seconds, bool require_work) {
     const auto& params = Params();
     const uint8_t network = params.name == "mainnet" ? 0 :
@@ -108,10 +127,14 @@ void CheckHeader(
 } // namespace
 void CheckOrchardHeaderUnderChainstateLock(const BlockHeader& header, const BlockHeader& parent,
     const OrchardBlockContext& context, const HeaderChainSelector& headers, uint64_t now) {
+    CheckHeader(header, parent, context, SelectorAncestry(headers), now, true);
+}
+void CheckOrchardHeaderUnderChainstateLock(const BlockHeader& header, const BlockHeader& parent,
+    const OrchardBlockContext& context, const OrchardHeaderAncestry& headers, uint64_t now) {
     CheckHeader(header, parent, context, headers, now, true);
 }
 void CheckOrchardMiningHeaderUnderChainstateLock(const BlockHeader& header, const BlockHeader& parent,
     const OrchardBlockContext& context, const HeaderChainSelector& headers, uint64_t now) {
-    CheckHeader(header, parent, context, headers, now, false);
+    CheckHeader(header, parent, context, SelectorAncestry(headers), now, false);
 }
 } // namespace dinero::consensus

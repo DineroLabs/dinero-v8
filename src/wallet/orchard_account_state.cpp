@@ -327,6 +327,13 @@ OrchardAccountState OrchardAccountState::ReserveRequest(
   next->operations = data_->operations.ReserveRequest(id, intent, request);
   return OrchardAccountState(std::move(next));
 }
+OrchardAccountState OrchardAccountState::ReserveShieldRequest(
+    const Hash &id, const WalletProvingIntent &intent, const Hash &request,
+    const OrchardOperationQueue::ShieldRequest &details) const {
+  auto next = std::make_shared<Data>(*data_);
+  next->operations = data_->operations.ReserveShieldRequest(id, intent, request, details);
+  return OrchardAccountState(std::move(next));
+}
 OrchardAccountState
 OrchardAccountState::SetReady(const Hash &id,
                               const VerifiedOrchardAuthorizations &auth) const {
@@ -335,6 +342,14 @@ OrchardAccountState::SetReady(const Hash &id,
         data_->operations.Entries().at(id).phase ==
             OrchardOperationQueue::Phase::Ready);
   next->operations = data_->operations.SetReady(id, auth);
+  return OrchardAccountState(std::move(next));
+}
+OrchardAccountState OrchardAccountState::SetShieldReady(const Hash &id,
+        const VerifiedOrchardAuthorizations &auth, uint64_t created_at) const {
+  // Retain the ordinary Ready observation/authorization checks unchanged.
+  auto ready = SetReady(id, auth);
+  auto next = std::make_shared<Data>(*ready.data_);
+  next->operations = data_->operations.SetShieldReady(id, auth, created_at);
   return OrchardAccountState(std::move(next));
 }
 OrchardAccountState OrchardAccountState::CancelReserved(const Hash &id) const {

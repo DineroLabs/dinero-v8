@@ -205,7 +205,7 @@ static void IndexDeliveryChecks(ChainDB& db,const OrchardBlockContext& c,
         auto issued=initial.IssueReceiver(orchard::WalletScope::External).first;
         // A genuine pending shield intent conflicts with the included transaction's
         // actual transparent inputs. Its completed archive shares this same DB.
-        const auto& auth=account_view->Authorizations(1).front();
+        const auto auth_handle=account_view->Authorizations(1);const auto& auth=auth_handle->front();
         const auto& tx=auth.Transaction();const auto& coins=auth.Transparent().Snapshot().Coins();
         std::vector<orchard::ResolvedInput> resolved;
         for(size_t i=0;i<tx.Inputs().size();++i){const auto& in=tx.Inputs()[i];const auto& coin=coins[i];
@@ -509,7 +509,7 @@ static void IndexDeliveryChecks(ChainDB& db,const OrchardBlockContext& c,
     final_up->Commit();final_up.reset();
     const auto up_view=RuntimeAccountReplayTestAccess::Capture(db,c);
     CHECK(all_recover(*up_view).applied.cursor==up_view->Head());
-    again=up_view->Event(up_view->Head().sequence);
+    again=*up_view->Event(up_view->Head().sequence);
     // Discover nonconsecutive account numbers from actual snapshot rows. Every
     // row must authenticate/restore before advancing any lagging store.
     const auto enroll=[&](uint32_t number){
@@ -586,7 +586,7 @@ static void IndexDeliveryChecks(ChainDB& db,const OrchardBlockContext& c,
             roster_changed=true;enroll(19);
             const Account::Profile added{c.domain,c.activation_height,19};
             (void)Account::Connect(ordinary,ordinary_session,added,1,account_view->Point({}),event,
-                account_view->Block(1),account_view->State(1),account_view->Authorizations(1));
+                *account_view->Block(1),*account_view->State(1),*account_view->Authorizations(1));
         }
         return page;
     },ordinary,index,ordinary_session);},"stores changed during source read");
@@ -609,7 +609,7 @@ static void IndexDeliveryChecks(ChainDB& db,const OrchardBlockContext& c,
     const auto multi_up_view=RuntimeAccountReplayTestAccess::Capture(db,c);
     CHECK(enrolled_recover(*multi_up_view).account_revisions.size()==3);
     CHECK(Account::ReadForReplay(ordinary,ordinary_session,account_profile,*multi_up_view).account.Scan().BalanceUna()==5000);
-    again=multi_up_view->Event(multi_up_view->Head().sequence);
+    again=*multi_up_view->Event(multi_up_view->Head().sequence);
     // A fully authenticated archive revision change must be detected even when
     // account source receipts stay unchanged and every store is caught up.
     bool archive_changed=false;
@@ -654,7 +654,7 @@ static void IndexDeliveryChecks(ChainDB& db,const OrchardBlockContext& c,
     archive_down->Commit();archive_down.reset();
     const auto archive_down_view=RuntimeAccountReplayTestAccess::Capture(db,c);
     const auto legacy_undo=Account::Disconnect(ordinary,ordinary_session,account_profile,archived_current.revision,
-        multi_up_view->Point(multi_up_view->Head()),archive_down_view->Event(archive_down_view->Head().sequence),block,
+        multi_up_view->Point(multi_up_view->Head()),*archive_down_view->Event(archive_down_view->Head().sequence),block,
         archive_down_view->Point(archive_down_view->Head()));
     CHECK(legacy_undo.account.Operations().Entries().empty());
     const auto repaired=enrolled_recover(*archive_down_view);
@@ -664,7 +664,7 @@ static void IndexDeliveryChecks(ChainDB& db,const OrchardBlockContext& c,
     CHECK(!reactivated.account.Observations().contains(orchard::Hash{219}));
     CHECK(reactivated.account.Archive().count==1&&reactivated.account.IssueReceiver(orchard::WalletScope::External).second.Raw()==next_receiver);
     CHECK(enrolled_recover(*archive_down_view).account_revisions==repaired.account_revisions);
-    again=archive_down_view->Event(archive_down_view->Head().sequence);
+    again=*archive_down_view->Event(archive_down_view->Head().sequence);
 
     // A real retained sibling branch: an older account owner advanced its
     // source receipt there with the operation still archived. Reconciliation
@@ -686,7 +686,7 @@ static void IndexDeliveryChecks(ChainDB& db,const OrchardBlockContext& c,
     auto fork_down=PreparedOrchardChainstateWrite::DisconnectIndexed(lock,db,token,files,disk_index,live,c,block,parent,forest,true);
     fork_down->Commit();fork_down.reset();const auto fork_view=RuntimeAccountReplayTestAccess::Capture(db,c);
     const auto old_parent=Account::Disconnect(ordinary,ordinary_session,account_profile,archived_a.revision,
-        branch_a_view->Point(branch_a_view->Head()),fork_view->Event(fork_view->Head().sequence),block,fork_view->Point(fork_view->Head()));
+        branch_a_view->Point(branch_a_view->Head()),*fork_view->Event(fork_view->Head().sequence),block,fork_view->Point(fork_view->Head()));
     auto sibling_header=block.Header();++sibling_header.nonce;
     auto sibling_bytes=block.WireBytes();const auto sibling_prefix=sibling_header.SerializeForHash();
     std::copy(sibling_prefix.begin(),sibling_prefix.end(),sibling_bytes.begin());
@@ -703,7 +703,7 @@ static void IndexDeliveryChecks(ChainDB& db,const OrchardBlockContext& c,
     sibling_connect->Commit();sibling_connect.reset();const auto sibling_view=RuntimeAccountReplayTestAccess::Capture(db,c);
     const auto sibling_sequence=sibling_view->Head().sequence;
     const auto old_sibling=Account::Connect(ordinary,ordinary_session,account_profile,old_parent.revision,
-        fork_view->Point(fork_view->Head()),sibling_view->Event(sibling_sequence),sibling,sibling_view->State(sibling_sequence),sibling_view->Authorizations(sibling_sequence));
+        fork_view->Point(fork_view->Head()),*sibling_view->Event(sibling_sequence),sibling,*sibling_view->State(sibling_sequence),*sibling_view->Authorizations(sibling_sequence));
     CHECK(old_sibling.account.Operations().Entries().empty());
     CHECK(!sibling_view->IsAncestorOf(sibling_view->Head(),c.block_hash,c.height));
     CHECK(sibling_view->ForkHeight(sibling_view->Head(),c.block_hash,c.height)==c.height-1);
@@ -769,7 +769,7 @@ static void IndexDeliveryChecks(ChainDB& db,const OrchardBlockContext& c,
     CHECK(enrolled_recover(*sibling_down_view).applied.cursor==sibling_down_view->Head());
     const auto after_sibling=Account::ReadForReplay(ordinary,ordinary_session,account_profile,*sibling_down_view);
     CHECK(after_sibling.account.Operations().Entries().contains(orchard::Hash{219})&&!after_sibling.account.Observations().contains(orchard::Hash{219}));
-    again=sibling_down_view->Event(sibling_down_view->Head().sequence);
+    again=*sibling_down_view->Event(sibling_down_view->Head().sequence);
 
     ordinary_sql("DROP TRIGGER runtime_ordinary_utxos_UPDATE");
     failure([&]{(void)RuntimeOrdinaryDelivery::ReadForWallet(ordinary,ordinary_session);},"guard unavailable");

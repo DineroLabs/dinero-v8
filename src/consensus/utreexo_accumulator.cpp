@@ -1356,7 +1356,16 @@ namespace {
 }
 } // anonymous namespace
 
-UtreexoForest::UtreexoForest() : numLeaves_(0) {}
+UtreexoForest::UtreexoForest() : state_(std::make_shared<State>()) {}
+
+void UtreexoForest::EnsureUniqueState() {
+    if (state_.use_count() != 1) {
+        // Complete allocation/copy before replacing this object's version.
+        // A failure leaves all existing versions untouched.
+        auto detached = std::make_shared<State>(*state_);
+        state_.swap(detached);
+    }
+}
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Single-source-of-truth fork-aware clone factory (Apr 13 2026 Stage 3).
@@ -1368,8 +1377,8 @@ UtreexoForest::UtreexoForest() : numLeaves_(0) {}
 // See docs in the header declaration.
 UtreexoForest UtreexoForest::cloneForHeight(uint32_t height) const {
     UtreexoForest copy = clone();
-    if (IsUtreexoCanonicalRootsActive(height) && !copy.canonical_empty_roots_) {
-        copy.canonical_empty_roots_ = true;
+    if (IsUtreexoCanonicalRootsActive(height) && !copy.state_->canonical_empty_roots_) {
+        copy.setCanonicalEmptyRoots(true);
         copy.rebuildRoots();
     }
     return copy;
@@ -1390,20 +1399,20 @@ std::string UtreexoForest::dumpInternalState() const {
         return s.str();
     };
 
-    out << "canonical_empty_roots=" << (canonical_empty_roots_ ? 1 : 0) << "\n";
-    out << "numLeaves=" << numLeaves_ << "\n";
-    out << "active_leaves=" << (numLeaves_ - deleted_positions_.size()) << "\n";
-    out << "deleted_count=" << deleted_positions_.size() << "\n";
-    out << "leaf_positions_count=" << leaf_positions_.size() << "\n";
-    out << "nodes_size=" << nodes_.size() << "\n";
-    out << "roots_size=" << roots_.size() << "\n";
+    out << "canonical_empty_roots=" << (state_->canonical_empty_roots_ ? 1 : 0) << "\n";
+    out << "numLeaves=" << state_->numLeaves_ << "\n";
+    out << "active_leaves=" << (state_->numLeaves_ - state_->deleted_positions_.size()) << "\n";
+    out << "deleted_count=" << state_->deleted_positions_.size() << "\n";
+    out << "leaf_positions_count=" << state_->leaf_positions_.size() << "\n";
+    out << "nodes_size=" << state_->nodes_.size() << "\n";
+    out << "roots_size=" << state_->roots_.size() << "\n";
     out << "commitment=" << hex32(getCommitment()) << "\n";
 
     // roots_[h]: distinguish nullopt from optional(value) explicitly
-    for (size_t h = 0; h < roots_.size(); ++h) {
+    for (size_t h = 0; h < state_->roots_.size(); ++h) {
         out << "roots[" << h << "]=";
-        if (roots_[h].has_value()) {
-            out << "value:" << hex32(roots_[h].value());
+        if (state_->roots_[h].has_value()) {
+            out << "value:" << hex32(state_->roots_[h].value());
         } else {
             out << "nullopt";
         }
@@ -1412,8 +1421,8 @@ std::string UtreexoForest::dumpInternalState() const {
 
     // deleted_positions_ (sorted)
     {
-        std::vector<uint64_t> sorted_deleted(deleted_positions_.begin(),
-                                              deleted_positions_.end());
+        std::vector<uint64_t> sorted_deleted(state_->deleted_positions_.begin(),
+                                              state_->deleted_positions_.end());
         std::sort(sorted_deleted.begin(), sorted_deleted.end());
         for (uint64_t pos : sorted_deleted) {
             out << "deleted_position=" << pos << "\n";
@@ -1421,16 +1430,16 @@ std::string UtreexoForest::dumpInternalState() const {
     }
 
     // nodes_ — only emit positions that have a value, sorted
-    for (size_t pos = 0; pos < nodes_.size(); ++pos) {
-        if (nodes_[pos].has_value()) {
-            out << "node[" << pos << "]=" << hex32(nodes_[pos].value()) << "\n";
+    for (size_t pos = 0; pos < state_->nodes_.size(); ++pos) {
+        if (state_->nodes_[pos].has_value()) {
+            out << "node[" << pos << "]=" << hex32(state_->nodes_[pos].value()) << "\n";
         }
     }
 
     // leaf_positions_ — sorted by hash for determinism
     {
         std::vector<std::pair<UtreexoHash, uint64_t>> sorted_lp(
-            leaf_positions_.begin(), leaf_positions_.end());
+            state_->leaf_positions_.begin(), state_->leaf_positions_.end());
         std::sort(sorted_lp.begin(), sorted_lp.end(),
                   [](const auto& a, const auto& b) { return a.first < b.first; });
         for (const auto& [hash, pos] : sorted_lp) {
@@ -1457,10 +1466,10 @@ std::string UtreexoForest::describeAddFailure(const UtreexoHash& leafHash) const
 
     std::ostringstream out;
     const uint64_t capacity_room =
-        (numLeaves_ < MAX_UTREEXO_LEAVES) ? (MAX_UTREEXO_LEAVES - numLeaves_) : 0;
+        (state_->numLeaves_ < MAX_UTREEXO_LEAVES) ? (MAX_UTREEXO_LEAVES - state_->numLeaves_) : 0;
 
     out << "leaf=" << hex32(leafHash)
-        << " numLeaves=" << numLeaves_
+        << " numLeaves=" << state_->numLeaves_
         << " capacity_room=" << capacity_room;
 
     if (capacity_room == 0) {
@@ -1468,8 +1477,8 @@ std::string UtreexoForest::describeAddFailure(const UtreexoHash& leafHash) const
         return out.str();
     }
 
-    auto it = leaf_positions_.find(leafHash);
-    if (it == leaf_positions_.end()) {
+    auto it = state_->leaf_positions_.find(leafHash);
+    if (it == state_->leaf_positions_.end()) {
         // No map entry — add() should not have failed for duplicate reasons.
         // Capacity is fine (checked above). Most likely overflow in
         // checked_add(numLeaves_, 1) — extremely unlikely below 2^40 leaves.
@@ -1478,11 +1487,11 @@ std::string UtreexoForest::describeAddFailure(const UtreexoHash& leafHash) const
     }
 
     const uint64_t existing_pos = it->second;
-    const bool in_nodes_range = existing_pos < nodes_.size();
-    const bool node_has_value = in_nodes_range && nodes_[existing_pos].has_value();
+    const bool in_nodes_range = existing_pos < state_->nodes_.size();
+    const bool node_has_value = in_nodes_range && state_->nodes_[existing_pos].has_value();
     const bool node_matches =
-        node_has_value && nodes_[existing_pos].value() == leafHash;
-    const bool deleted = deleted_positions_.count(existing_pos) != 0;
+        node_has_value && state_->nodes_[existing_pos].value() == leafHash;
+    const bool deleted = state_->deleted_positions_.count(existing_pos) != 0;
 
     out << " existing_pos=" << existing_pos
         << " in_nodes_range=" << (in_nodes_range ? 1 : 0)
@@ -1491,7 +1500,7 @@ std::string UtreexoForest::describeAddFailure(const UtreexoHash& leafHash) const
         << " deleted=" << (deleted ? 1 : 0);
 
     if (node_has_value) {
-        out << " existing_node=" << hex32(nodes_[existing_pos].value());
+        out << " existing_node=" << hex32(state_->nodes_[existing_pos].value());
     }
 
     if (in_nodes_range && node_matches && !deleted) {
@@ -1508,18 +1517,19 @@ std::string UtreexoForest::describeAddFailure(const UtreexoHash& leafHash) const
 UtreexoForest::~UtreexoForest() {}
 
 uint64_t UtreexoForest::add(const UtreexoHash& leafHash) {
+    EnsureUniqueState();
     // ═══════════════════════════════════════════════════════════════════════
     // Medium Priority Fix: Integer overflow checks in position arithmetic
     // ═══════════════════════════════════════════════════════════════════════
 
     // Check bounds BEFORE incrementing
-    if (numLeaves_ >= MAX_UTREEXO_LEAVES) {
+    if (state_->numLeaves_ >= MAX_UTREEXO_LEAVES) {
         // Forest is at maximum capacity - cannot add more leaves
         // Return UINT64_MAX as error indicator (callers should check)
         return UINT64_MAX;
     }
 
-    uint64_t position = numLeaves_;
+    uint64_t position = state_->numLeaves_;
 
     // Checked resize - verify position + 1 doesn't overflow
     uint64_t newSize;
@@ -1530,14 +1540,14 @@ uint64_t UtreexoForest::add(const UtreexoHash& leafHash) {
     // Consensus hardening: live leaf hashes must be unique in the forest.
     // A duplicate hash would make leaf_positions_ ambiguous (hash -> multiple positions),
     // which can break deterministic spend removal.
-    auto existing_it = leaf_positions_.find(leafHash);
-    if (existing_it != leaf_positions_.end()) {
+    auto existing_it = state_->leaf_positions_.find(leafHash);
+    if (existing_it != state_->leaf_positions_.end()) {
         const uint64_t existing_pos = existing_it->second;
         const bool existing_live =
-            existing_pos < nodes_.size() &&
-            nodes_[existing_pos].has_value() &&
-            nodes_[existing_pos].value() == leafHash &&
-            deleted_positions_.count(existing_pos) == 0;
+            existing_pos < state_->nodes_.size() &&
+            state_->nodes_[existing_pos].has_value() &&
+            state_->nodes_[existing_pos].value() == leafHash &&
+            state_->deleted_positions_.count(existing_pos) == 0;
 
         if (existing_live) {
             std::cerr << "❌ [Utreexo Add] Duplicate live leaf hash insertion rejected"
@@ -1549,7 +1559,7 @@ uint64_t UtreexoForest::add(const UtreexoHash& leafHash) {
                 std::cerr << std::hex << std::setfill('0') << std::setw(2) << static_cast<int>(leafHash[i]);
             std::cerr << std::dec << std::endl;
             std::cerr << "   [DIAG] existing_leaf_hash:  ";
-            const auto& ex = nodes_[existing_pos].value();
+            const auto& ex = state_->nodes_[existing_pos].value();
             for (size_t i = 0; i < ex.size(); ++i)
                 std::cerr << std::hex << std::setfill('0') << std::setw(2) << static_cast<int>(ex[i]);
             std::cerr << std::dec << std::endl;
@@ -1557,17 +1567,17 @@ uint64_t UtreexoForest::add(const UtreexoHash& leafHash) {
         }
 
         // Defensive self-heal: stale map entry (deleted/cleared node) should not block add.
-        leaf_positions_.erase(existing_it);
+        state_->leaf_positions_.erase(leafHash);
     }
 
     // Store the leaf
-    if (position >= nodes_.size()) {
-        nodes_.resize(newSize);
+    if (position >= state_->nodes_.size()) {
+        state_->nodes_.resize(newSize);
     }
-    nodes_[position] = leafHash;  // std::optional assignment
+    state_->nodes_.Set(position, leafHash);  // std::optional assignment
 
     // Store leaf position mapping (for proof generation)
-    leaf_positions_[leafHash] = position;
+    state_->leaf_positions_.Set(leafHash, position);
 
     // Add leaf using binary carry logic (like adding 1 in binary)
     // Loop is bounded by MAX_TREE_HEIGHT (40), not 64
@@ -1581,9 +1591,9 @@ uint64_t UtreexoForest::add(const UtreexoHash& leafHash) {
         }
 
         // Check if there was a root at this height
-        if (h < roots_.size() && roots_[h].has_value()) {
+        if (h < state_->roots_.size() && state_->roots_[h].has_value()) {
             // Merge with existing root and carry to next height
-            carry = parentHash(roots_[h].value(), carry.value());
+            carry = parentHash(state_->roots_[h].value(), carry.value());
         } else {
             // No existing root, place carry here
             newRoots[h] = carry;
@@ -1592,38 +1602,39 @@ uint64_t UtreexoForest::add(const UtreexoHash& leafHash) {
     }
 
     // Copy over any remaining roots from higher heights
-    for (size_t h = newRoots.size(); h < roots_.size(); h++) {
-        if (roots_[h].has_value()) {
+    for (size_t h = newRoots.size(); h < state_->roots_.size(); h++) {
+        if (state_->roots_[h].has_value()) {
             while (newRoots.size() <= h) {
                 newRoots.push_back(std::nullopt);
             }
-            newRoots[h] = roots_[h];
+            newRoots[h] = state_->roots_[h];
         }
     }
 
-    roots_ = newRoots;
+    state_->roots_ = newRoots;
 
     // Checked increment - guaranteed safe due to MAX_UTREEXO_LEAVES check above
-    numLeaves_++;
+    state_->numLeaves_++;
 
     return position;
 }
 
 void UtreexoForest::mergeRoots() {
+    EnsureUniqueState();
     // Merge adjacent roots of same height using binary carry logic
     // roots_ are ordered from smallest (height 0) to largest
 
     // Keep merging the two smallest roots while they have the same height
-    while (roots_.size() >= 2) {
+    while (state_->roots_.size() >= 2) {
         // Check if the two smallest roots are the same height
         // Two trees have same height if they represent consecutive positions in binary
 
         // Get the two smallest roots (must have values)
-        if (!roots_[0].has_value() || !roots_[1].has_value()) {
+        if (!state_->roots_[0].has_value() || !state_->roots_[1].has_value()) {
             break;  // Cannot merge with empty roots
         }
-        UtreexoHash left = roots_[0].value();
-        UtreexoHash right = roots_[1].value();
+        UtreexoHash left = state_->roots_[0].value();
+        UtreexoHash right = state_->roots_[1].value();
 
         // Determine if they should be merged
         // This happens when we have 2 trees at the same height
@@ -1631,7 +1642,7 @@ void UtreexoForest::mergeRoots() {
 
         // Calculate what height the first root should be
         // The first root (smallest) corresponds to the least significant 1-bit in numLeaves_
-        uint64_t n = numLeaves_;
+        uint64_t n = state_->numLeaves_;
         int firstSetBit = 0;
         while ((n & (1ULL << firstSetBit)) == 0 && firstSetBit < 64) {
             firstSetBit++;
@@ -1644,13 +1655,13 @@ void UtreexoForest::mergeRoots() {
             UtreexoHash parent = parentHash(left, right);
 
             // Remove the two smallest roots and add the parent
-            roots_.erase(roots_.begin());
-            roots_.erase(roots_.begin());
+            state_->roots_.erase(state_->roots_.begin());
+            state_->roots_.erase(state_->roots_.begin());
 
             // Insert parent at the correct position (maintaining sorted order)
             // Since we merged two height-h trees into height-(h+1),
             // the new root should go after other height-(h+1) roots
-            roots_.insert(roots_.begin(), parent);
+            state_->roots_.insert(state_->roots_.begin(), parent);
         } else {
             // No more merges needed
             break;
@@ -1659,6 +1670,7 @@ void UtreexoForest::mergeRoots() {
 }
 
 bool UtreexoForest::remove(const UtreexoHash& leafHash, const UtreexoProof& proof) {
+    EnsureUniqueState();
     auto dumpHash = [](const UtreexoHash& h) {
         std::ostringstream oss;
         for (size_t b = 0; b < std::min(h.size(), size_t(8)); b++)
@@ -1671,7 +1683,7 @@ bool UtreexoForest::remove(const UtreexoHash& leafHash, const UtreexoProof& proo
         std::cerr << "⚠️  [Utreexo Remove] STEP1 proof.verify FAILED  leaf="
                   << dumpHash(leafHash) << "  pos=" << proof.position
                   << "  siblings=" << proof.siblings.size()
-                  << "  numLeaves_=" << numLeaves_ << std::endl;
+                  << "  numLeaves_=" << state_->numLeaves_ << std::endl;
         // Walk the proof manually and print the computed root + all forest roots.
         UtreexoHash cur = leafHash;
         uint64_t curPos = proof.position;
@@ -1689,18 +1701,18 @@ bool UtreexoForest::remove(const UtreexoHash& leafHash, const UtreexoProof& proo
             std::cerr << "    root[" << ri << "]=" << dumpHash(live_roots[ri]) << std::endl;
         }
         // Also dump the indexed roots so we know which heights are populated.
-        for (size_t ri = 0; ri < roots_.size(); ++ri) {
-            if (roots_[ri].has_value()) {
-                std::cerr << "    roots_[h=" << ri << "]=" << dumpHash(roots_[ri].value()) << std::endl;
+        for (size_t ri = 0; ri < state_->roots_.size(); ++ri) {
+            if (state_->roots_[ri].has_value()) {
+                std::cerr << "    roots_[h=" << ri << "]=" << dumpHash(state_->roots_[ri].value()) << std::endl;
             }
         }
         return false;
     }
 
     // 2. Check position validity
-    if (proof.position >= numLeaves_) {
+    if (proof.position >= state_->numLeaves_) {
         std::cerr << "⚠️  [Utreexo Remove] STEP2 position>=numLeaves  pos="
-                  << proof.position << "  numLeaves_=" << numLeaves_ << std::endl;
+                  << proof.position << "  numLeaves_=" << state_->numLeaves_ << std::endl;
         return false;
     }
 
@@ -1712,28 +1724,28 @@ bool UtreexoForest::remove(const UtreexoHash& leafHash, const UtreexoProof& proo
     }
 
     // 4. Check that the leaf at this position matches
-    if (proof.position < nodes_.size()) {
-        if (!nodes_[proof.position].has_value() || nodes_[proof.position].value() != leafHash) {
+    if (proof.position < state_->nodes_.size()) {
+        if (!state_->nodes_[proof.position].has_value() || state_->nodes_[proof.position].value() != leafHash) {
             std::cerr << "⚠️  [Utreexo Remove] STEP4 leaf mismatch  pos="
                       << proof.position
                       << "  expected=" << dumpHash(leafHash)
                       << "  stored="
-                      << (nodes_[proof.position].has_value() ? dumpHash(nodes_[proof.position].value()) : "<empty>")
+                      << (state_->nodes_[proof.position].has_value() ? dumpHash(state_->nodes_[proof.position].value()) : "<empty>")
                       << std::endl;
             return false;  // Leaf doesn't match or is empty
         }
     }
 
     // 5. Mark position as deleted
-    deleted_positions_.insert(proof.position);
+    state_->deleted_positions_.insert(proof.position);
 
     // 6. Clear the leaf hash from nodes_ (set to std::nullopt)
-    if (proof.position < nodes_.size()) {
-        nodes_[proof.position] = std::nullopt;  // Explicitly empty
+    if (proof.position < state_->nodes_.size()) {
+        state_->nodes_.Set(proof.position, std::nullopt);  // Explicitly empty
     }
 
     // 7. Remove from leaf_positions_ map
-    leaf_positions_.erase(leafHash);
+    state_->leaf_positions_.erase(leafHash);
 
     // 8. Recompute parent hashes along the path to root
     recomputePath(proof.position);
@@ -1749,18 +1761,19 @@ bool UtreexoForest::remove(const UtreexoHash& leafHash, const UtreexoProof& proo
 }
 
 bool UtreexoForest::removeAtKnownPosition(uint64_t position, const UtreexoHash& leafHash) {
+    EnsureUniqueState();
     // Trusted internal variant of remove() that skips the proof.verify step.
     // Still enforces the structural invariants — bounds, not-deleted, and
     // leaf-hash match. See the header comment for rationale.
 
-    if (position >= numLeaves_) {
+    if (position >= state_->numLeaves_) {
         return false;
     }
     if (isDeleted(position)) {
         return false;
     }
-    if (position < nodes_.size()) {
-        if (!nodes_[position].has_value() || nodes_[position].value() != leafHash) {
+    if (position < state_->nodes_.size()) {
+        if (!state_->nodes_[position].has_value() || state_->nodes_[position].value() != leafHash) {
             return false;
         }
     } else {
@@ -1769,13 +1782,13 @@ bool UtreexoForest::removeAtKnownPosition(uint64_t position, const UtreexoHash& 
         return false;
     }
 
-    deleted_positions_.insert(position);
+    state_->deleted_positions_.insert(position);
 
-    if (position < nodes_.size()) {
-        nodes_[position] = std::nullopt;
+    if (position < state_->nodes_.size()) {
+        state_->nodes_.Set(position, std::nullopt);
     }
 
-    leaf_positions_.erase(leafHash);
+    state_->leaf_positions_.erase(leafHash);
 
     recomputePath(position);
 
@@ -1791,24 +1804,25 @@ bool UtreexoForest::removeAtKnownPosition(uint64_t position, const UtreexoHash& 
 
 bool UtreexoForest::removeAtKnownPositions(
     const std::vector<std::pair<uint64_t, UtreexoHash>>& removals) {
+    EnsureUniqueState();
     std::unordered_set<uint64_t> unique_positions;
     unique_positions.reserve(removals.size());
 
     // Validate the complete request first so callers never observe a partial
     // block transition when one input is stale or malformed.
     for (const auto& [position, leaf_hash] : removals) {
-        if (position >= numLeaves_ || position >= nodes_.size() ||
-            isDeleted(position) || !nodes_[position].has_value() ||
-            nodes_[position].value() != leaf_hash ||
+        if (position >= state_->numLeaves_ || position >= state_->nodes_.size() ||
+            isDeleted(position) || !state_->nodes_[position].has_value() ||
+            state_->nodes_[position].value() != leaf_hash ||
             !unique_positions.insert(position).second) {
             return false;
         }
     }
 
     for (const auto& [position, leaf_hash] : removals) {
-        deleted_positions_.insert(position);
-        nodes_[position] = std::nullopt;
-        leaf_positions_.erase(leaf_hash);
+        state_->deleted_positions_.insert(position);
+        state_->nodes_.Set(position, std::nullopt);
+        state_->leaf_positions_.erase(leaf_hash);
     }
 
     if (!removals.empty()) {
@@ -1828,18 +1842,19 @@ bool UtreexoForest::removeAtKnownPositions(
 
 // Recompute parent hashes along path from position to root after a removal
 void UtreexoForest::recomputePath(uint64_t position) {
+    EnsureUniqueState();
     // ═══════════════════════════════════════════════════════════════════════
     // Medium Priority Fix: Bounded position arithmetic
     // ═══════════════════════════════════════════════════════════════════════
 
     // Early bounds check
-    if (position >= numLeaves_ || numLeaves_ > MAX_UTREEXO_LEAVES) {
+    if (position >= state_->numLeaves_ || state_->numLeaves_ > MAX_UTREEXO_LEAVES) {
         return;  // Invalid position or corrupted state
     }
 
     // Find which tree contains this position by scanning from MSB to LSB
     std::vector<std::pair<uint8_t, uint64_t>> trees; // (height, start_pos)
-    uint64_t n = numLeaves_;
+    uint64_t n = state_->numLeaves_;
 
     // Find highest set bit (bounded by MAX_TREE_HEIGHT)
     int maxBit = MAX_TREE_HEIGHT - 1;
@@ -1886,8 +1901,8 @@ void UtreexoForest::recomputePath(uint64_t position) {
             auto newRoot = computeSubtreeHash(treeStart, treeSize);
 
             // Update the root in roots_ array
-            if (height < roots_.size()) {
-                roots_[height] = newRoot;  // Assign optional directly
+            if (height < state_->roots_.size()) {
+                state_->roots_[height] = newRoot;  // Assign optional directly
             }
             break;
         }
@@ -1928,14 +1943,14 @@ std::optional<UtreexoHash> UtreexoForest::computeSubtreeHash(uint64_t start, uin
         // Check if this position is deleted
         if (isDeleted(start)) {
             // Stage 3: canonical zero-sentinel instead of nullopt.
-            return canonical_empty_roots_ ? std::optional<UtreexoHash>(ZERO_HASH)
+            return state_->canonical_empty_roots_ ? std::optional<UtreexoHash>(ZERO_HASH)
                                           : std::nullopt;
         }
-        if (start < nodes_.size() && nodes_[start].has_value()) {
-            return nodes_[start];  // Return the optional (with value)
+        if (start < state_->nodes_.size() && state_->nodes_[start].has_value()) {
+            return state_->nodes_[start];  // Return the optional (with value)
         }
         // Live position with no hash set — treat identically to deleted.
-        return canonical_empty_roots_ ? std::optional<UtreexoHash>(ZERO_HASH)
+        return state_->canonical_empty_roots_ ? std::optional<UtreexoHash>(ZERO_HASH)
                                       : std::nullopt;
     }
 
@@ -2029,7 +2044,7 @@ std::optional<UtreexoProof> UtreexoForest::proveWithCache(
     // ═══════════════════════════════════════════════════════════════════════
 
     // Early bounds check
-    if (position >= numLeaves_ || numLeaves_ > MAX_UTREEXO_LEAVES) {
+    if (position >= state_->numLeaves_ || state_->numLeaves_ > MAX_UTREEXO_LEAVES) {
         return std::nullopt;
     }
 
@@ -2040,13 +2055,13 @@ std::optional<UtreexoProof> UtreexoForest::proveWithCache(
 
     UtreexoProof proof;
     proof.position = position;
-    proof.numLeaves = numLeaves_;
+    proof.numLeaves = state_->numLeaves_;
 
     // Find which tree contains this position
     // Trees are ordered by position: largest tree first (MSB to LSB)
     // Build tree position map by scanning from MSB to LSB
     std::vector<std::pair<uint8_t, uint64_t>> trees; // (height, start_pos)
-    uint64_t n = numLeaves_;
+    uint64_t n = state_->numLeaves_;
 
     // Find highest set bit (bounded by MAX_TREE_HEIGHT)
     int maxBit = MAX_TREE_HEIGHT - 1;
@@ -2184,7 +2199,7 @@ UtreexoHash UtreexoForest::getCommitment() const {
     preimage.reserve(8 + NUM_SLOTS * 32);
 
     // 1. numLeaves as 8 bytes little-endian
-    uint64_t n = numLeaves_;
+    uint64_t n = state_->numLeaves_;
     for (int i = 0; i < 8; ++i) {
         preimage.push_back(static_cast<uint8_t>(n & 0xFF));
         n >>= 8;
@@ -2192,8 +2207,8 @@ UtreexoHash UtreexoForest::getCommitment() const {
 
     // 2. 64 fixed root slots (32 bytes each)
     for (size_t h = 0; h < NUM_SLOTS; ++h) {
-        if (h < roots_.size() && roots_[h].has_value()) {
-            const auto& root = roots_[h].value();
+        if (h < state_->roots_.size() && state_->roots_[h].has_value()) {
+            const auto& root = state_->roots_[h].value();
             preimage.insert(preimage.end(), root.begin(), root.end());
         } else {
             preimage.insert(preimage.end(), ZERO_ROOT.begin(), ZERO_ROOT.end());
@@ -2204,12 +2219,12 @@ UtreexoHash UtreexoForest::getCommitment() const {
 }
 
 uint8_t UtreexoForest::getTreeHeight(uint64_t position) const {
-    if (position >= numLeaves_) {
+    if (position >= state_->numLeaves_) {
         return 0;
     }
 
     // Scan from MSB to LSB to find which tree contains this position
-    uint64_t n = numLeaves_;
+    uint64_t n = state_->numLeaves_;
 
     // Find highest set bit
     int maxBit = 63;
@@ -2269,8 +2284,8 @@ std::vector<UtreexoHash> UtreexoForest::generateBatchProof(const std::vector<Utr
     // Step 1: For each target, find its position and generate proof
     for (const UtreexoHash& target : targets) {
         // Find leaf position
-        auto it = leaf_positions_.find(target);
-        if (it == leaf_positions_.end()) {
+        auto it = state_->leaf_positions_.find(target);
+        if (it == state_->leaf_positions_.end()) {
             std::cout << "⚠️  [Utreexo Proof Gen] Target not found in forest: ";
             for (size_t i = 0; i < std::min(size_t(8), target.size()); i++) {
                 std::cout << std::hex << std::setw(2) << std::setfill('0') << (int)target[i];
@@ -2330,7 +2345,7 @@ BlockUtreexoProof UtreexoForest::generateBlockProof(const std::vector<UtreexoHas
     // ────────────────────────────────────────────────────────────────────────
 
     BlockUtreexoProof block_proof;
-    block_proof.numLeaves = numLeaves_;
+    block_proof.numLeaves = state_->numLeaves_;
 
     // Handle empty targets
     if (targets.empty()) {
@@ -2339,7 +2354,7 @@ BlockUtreexoProof UtreexoForest::generateBlockProof(const std::vector<UtreexoHas
     }
 
     std::cout << "🔍 [Block Proof Gen] Generating block proof for " << targets.size()
-              << " targets (numLeaves=" << numLeaves_ << ")" << std::endl;
+              << " targets (numLeaves=" << state_->numLeaves_ << ")" << std::endl;
 
     size_t found_count = 0;
     size_t missing_count = 0;
@@ -2351,8 +2366,8 @@ BlockUtreexoProof UtreexoForest::generateBlockProof(const std::vector<UtreexoHas
     // This matches the consumption order in verifyBatchProofStateless().
     for (const UtreexoHash& target : targets) {
         // Find leaf position
-        auto it = leaf_positions_.find(target);
-        if (it == leaf_positions_.end()) {
+        auto it = state_->leaf_positions_.find(target);
+        if (it == state_->leaf_positions_.end()) {
             std::cout << "⚠️  [Block Proof Gen] Target not found in forest: ";
             for (size_t i = 0; i < std::min(size_t(8), target.size()); i++) {
                 std::cout << std::hex << std::setw(2) << std::setfill('0') << (int)target[i];
@@ -2414,26 +2429,26 @@ UtreexoHash UtreexoForest::parentHash(const UtreexoHash& left, const UtreexoHash
 
 std::optional<uint64_t> UtreexoForest::findLeafPosition(const UtreexoHash& leafHash) const {
     // Try fast lookup first
-    auto it = leaf_positions_.find(leafHash);
-    if (it != leaf_positions_.end()) {
+    auto it = state_->leaf_positions_.find(leafHash);
+    if (it != state_->leaf_positions_.end()) {
         const uint64_t position = it->second;
         const bool live_match =
-            position < nodes_.size() &&
-            position < numLeaves_ &&
-            nodes_[position].has_value() &&
-            nodes_[position].value() == leafHash &&
-            deleted_positions_.count(position) == 0;
+            position < state_->nodes_.size() &&
+            position < state_->numLeaves_ &&
+            state_->nodes_[position].has_value() &&
+            state_->nodes_[position].value() == leafHash &&
+            state_->deleted_positions_.count(position) == 0;
         if (live_match) {
             return position;
         }
     }
 
     // Fallback: linear search through nodes_ (slower but works if map not available)
-    for (uint64_t i = 0; i < numLeaves_ && i < nodes_.size(); i++) {
-        if (deleted_positions_.count(i) != 0) {
+    for (uint64_t i = 0; i < state_->numLeaves_ && i < state_->nodes_.size(); i++) {
+        if (state_->deleted_positions_.count(i) != 0) {
             continue;
         }
-        if (nodes_[i].has_value() && nodes_[i].value() == leafHash) {
+        if (state_->nodes_[i].has_value() && state_->nodes_[i].value() == leafHash) {
             return i;
         }
     }
@@ -2442,30 +2457,30 @@ std::optional<uint64_t> UtreexoForest::findLeafPosition(const UtreexoHash& leafH
 }
 
 bool UtreexoForest::validateLeafIndexConsistency() const {
-    for (const auto& [leafHash, position] : leaf_positions_) {
-        if (position >= numLeaves_ || position >= nodes_.size()) {
+    for (const auto& [leafHash, position] : state_->leaf_positions_) {
+        if (position >= state_->numLeaves_ || position >= state_->nodes_.size()) {
             return false;
         }
-        if (deleted_positions_.count(position) != 0) {
+        if (state_->deleted_positions_.count(position) != 0) {
             return false;
         }
-        if (!nodes_[position].has_value() || nodes_[position].value() != leafHash) {
+        if (!state_->nodes_[position].has_value() || state_->nodes_[position].value() != leafHash) {
             return false;
         }
     }
 
-    for (uint64_t i = 0; i < numLeaves_ && i < nodes_.size(); ++i) {
-        if (deleted_positions_.count(i) != 0 || !nodes_[i].has_value()) {
+    for (uint64_t i = 0; i < state_->numLeaves_ && i < state_->nodes_.size(); ++i) {
+        if (state_->deleted_positions_.count(i) != 0 || !state_->nodes_[i].has_value()) {
             continue;
         }
-        auto it = leaf_positions_.find(nodes_[i].value());
-        if (it == leaf_positions_.end() || it->second != i) {
+        auto it = state_->leaf_positions_.find(state_->nodes_[i].value());
+        if (it == state_->leaf_positions_.end() || it->second != i) {
             return false;
         }
     }
 
-    for (uint64_t pos : deleted_positions_) {
-        if (pos >= numLeaves_) {
+    for (uint64_t pos : state_->deleted_positions_) {
+        if (pos >= state_->numLeaves_) {
             return false;
         }
     }
@@ -2511,18 +2526,18 @@ std::vector<uint8_t> UtreexoForest::serialize() const {
         data.push_back(2);  // Force the pre-fix v2 layout.
     } else {
         data.push_back(3);  // Version byte
-        data.push_back(canonical_empty_roots_ ? 1 : 0);
+        data.push_back(state_->canonical_empty_roots_ ? 1 : 0);
     }
 
     // 1. Number of leaves (8 bytes)
-    data.push_back(numLeaves_ & 0xFF);
-    data.push_back((numLeaves_ >> 8) & 0xFF);
-    data.push_back((numLeaves_ >> 16) & 0xFF);
-    data.push_back((numLeaves_ >> 24) & 0xFF);
-    data.push_back((numLeaves_ >> 32) & 0xFF);
-    data.push_back((numLeaves_ >> 40) & 0xFF);
-    data.push_back((numLeaves_ >> 48) & 0xFF);
-    data.push_back((numLeaves_ >> 56) & 0xFF);
+    data.push_back(state_->numLeaves_ & 0xFF);
+    data.push_back((state_->numLeaves_ >> 8) & 0xFF);
+    data.push_back((state_->numLeaves_ >> 16) & 0xFF);
+    data.push_back((state_->numLeaves_ >> 24) & 0xFF);
+    data.push_back((state_->numLeaves_ >> 32) & 0xFF);
+    data.push_back((state_->numLeaves_ >> 40) & 0xFF);
+    data.push_back((state_->numLeaves_ >> 48) & 0xFF);
+    data.push_back((state_->numLeaves_ >> 56) & 0xFF);
 
     // 2. Number of roots (4 bytes) - only non-empty roots
     auto nonEmptyRoots = getRoots();
@@ -2538,7 +2553,7 @@ std::vector<uint8_t> UtreexoForest::serialize() const {
     }
 
     // 4. Number of internal nodes (4 bytes) - Phase 4: Complete state serialization
-    uint32_t numNodes = nodes_.size();
+    uint32_t numNodes = state_->nodes_.size();
     data.push_back(numNodes & 0xFF);
     data.push_back((numNodes >> 8) & 0xFF);
     data.push_back((numNodes >> 16) & 0xFF);
@@ -2546,7 +2561,7 @@ std::vector<uint8_t> UtreexoForest::serialize() const {
 
     // 5. Internal node hashes with presence flags (1 + 32 bytes each if present)
     // This is the key change: we now explicitly serialize whether a node exists
-    for (const auto& node : nodes_) {
+    for (const auto& node : state_->nodes_) {
         if (node.has_value()) {
             data.push_back(1);  // Present flag
             data.insert(data.end(), node.value().begin(), node.value().end());
@@ -2556,7 +2571,7 @@ std::vector<uint8_t> UtreexoForest::serialize() const {
     }
 
     // 6. Number of deleted positions (4 bytes) - For UTXO removal
-    uint32_t numDeleted = deleted_positions_.size();
+    uint32_t numDeleted = state_->deleted_positions_.size();
     data.push_back(numDeleted & 0xFF);
     data.push_back((numDeleted >> 8) & 0xFF);
     data.push_back((numDeleted >> 16) & 0xFF);
@@ -2570,8 +2585,8 @@ std::vector<uint8_t> UtreexoForest::serialize() const {
     // checkpoint delta campaign equivalence suite). Sorting makes the
     // persisted form canonical; deserialize rebuilds the set and never
     // cared about order, and pre-fix blobs remain readable.
-    std::vector<uint64_t> sorted_deleted(deleted_positions_.begin(),
-                                         deleted_positions_.end());
+    std::vector<uint64_t> sorted_deleted(state_->deleted_positions_.begin(),
+                                         state_->deleted_positions_.end());
     std::sort(sorted_deleted.begin(), sorted_deleted.end());
     for (uint64_t pos : sorted_deleted) {
         data.push_back(pos & 0xFF);
@@ -2626,7 +2641,7 @@ UtreexoForest UtreexoForest::deserialize(const std::vector<uint8_t>& data) {
         if (data.size() < offset + 1) {
             return forest;
         }
-        forest.canonical_empty_roots_ = (data[offset] != 0);
+        forest.state_->canonical_empty_roots_ = (data[offset] != 0);
         offset += 1;
     }
     // v1 and v2 leave canonical_empty_roots_ at its default (false). For
@@ -2640,7 +2655,7 @@ UtreexoForest UtreexoForest::deserialize(const std::vector<uint8_t>& data) {
     }
 
     // 1. Number of leaves
-    forest.numLeaves_ = data[offset] | ((uint64_t)data[offset+1] << 8) |
+    forest.state_->numLeaves_ = data[offset] | ((uint64_t)data[offset+1] << 8) |
                        ((uint64_t)data[offset+2] << 16) | ((uint64_t)data[offset+3] << 24) |
                        ((uint64_t)data[offset+4] << 32) | ((uint64_t)data[offset+5] << 40) |
                        ((uint64_t)data[offset+6] << 48) | ((uint64_t)data[offset+7] << 56);
@@ -2667,17 +2682,17 @@ UtreexoForest UtreexoForest::deserialize(const std::vector<uint8_t>& data) {
 
     // Rebuild full roots_ array with empties in correct positions
     // Based on binary representation of numLeaves_
-    uint64_t n = forest.numLeaves_;
+    uint64_t n = forest.state_->numLeaves_;
     size_t rootIndex = 0;
     for (uint8_t h = 0; h < 64 && n > 0; h++) {
         if (n & 1) {
             // There's a tree at this height
             if (rootIndex < nonEmptyRoots.size()) {
                 // Make sure roots_ is large enough
-                while (forest.roots_.size() <= h) {
-                    forest.roots_.push_back(std::nullopt);
+                while (forest.state_->roots_.size() <= h) {
+                    forest.state_->roots_.push_back(std::nullopt);
                 }
-                forest.roots_[h] = nonEmptyRoots[rootIndex];
+                forest.state_->roots_[h] = nonEmptyRoots[rootIndex];
                 rootIndex++;
             }
         }
@@ -2709,10 +2724,10 @@ UtreexoForest UtreexoForest::deserialize(const std::vector<uint8_t>& data) {
                     return refuse_partial("nodes section truncated (node hash)");
                 }
                 UtreexoHash node(data.begin() + offset, data.begin() + offset + 32);
-                forest.nodes_.push_back(node);
+                forest.state_->nodes_.push_back(node);
                 offset += 32;
             } else {
-                forest.nodes_.push_back(std::nullopt);
+                forest.state_->nodes_.push_back(std::nullopt);
             }
         }
     } else {
@@ -2730,9 +2745,9 @@ UtreexoForest UtreexoForest::deserialize(const std::vector<uint8_t>& data) {
                 if (node[j] != 0) allZeros = false;
             }
             if (allZeros) {
-                forest.nodes_.push_back(std::nullopt);
+                forest.state_->nodes_.push_back(std::nullopt);
             } else {
-                forest.nodes_.push_back(node);
+                forest.state_->nodes_.push_back(node);
             }
             offset += 32;
         }
@@ -2763,19 +2778,19 @@ UtreexoForest UtreexoForest::deserialize(const std::vector<uint8_t>& data) {
                       ((uint64_t)data[offset+2] << 16) | ((uint64_t)data[offset+3] << 24) |
                       ((uint64_t)data[offset+4] << 32) | ((uint64_t)data[offset+5] << 40) |
                       ((uint64_t)data[offset+6] << 48) | ((uint64_t)data[offset+7] << 56);
-        forest.deleted_positions_.insert(pos);
+        forest.state_->deleted_positions_.insert(pos);
         offset += 8;
     }
 
     // Rebuild leaf_positions_ map from nodes_ (excluding deleted positions)
     // The first numLeaves_ entries in nodes_ are the leaves
-    for (uint64_t i = 0; i < forest.numLeaves_ && i < forest.nodes_.size(); i++) {
+    for (uint64_t i = 0; i < forest.state_->numLeaves_ && i < forest.state_->nodes_.size(); i++) {
         // Skip deleted positions
         if (forest.isDeleted(i)) {
             continue;
         }
-        if (forest.nodes_[i].has_value()) {
-            const auto inserted = forest.leaf_positions_.emplace(forest.nodes_[i].value(), i);
+        if (forest.state_->nodes_[i].has_value()) {
+            const auto inserted = forest.state_->leaf_positions_.emplace(forest.state_->nodes_[i].value(), i);
             if (!inserted.second) {
                 std::cerr << "❌ [Utreexo Deserialize] Duplicate live leaf hash in payload" << std::endl;
                 return UtreexoForest();
@@ -2808,15 +2823,15 @@ UtreexoForest UtreexoForest::deserialize(const std::vector<uint8_t>& data) {
     // that came from a flag=true source. v3 payloads carry the
     // flag explicitly and skip this fallback entirely.
     const auto serialized_commitment = forest.getCommitment();
-    auto stored_roots = forest.roots_;
+    auto stored_roots = forest.state_->roots_;
     forest.rebuildRoots();
-    if (forest.roots_ != stored_roots) {
+    if (forest.state_->roots_ != stored_roots) {
         if (version == 2) {
             // Maybe the v2 payload came from a flag=true source.
             // Retry the rebuild under that assumption.
-            forest.canonical_empty_roots_ = true;
+            forest.state_->canonical_empty_roots_ = true;
             forest.rebuildRoots();
-            if (forest.roots_ != stored_roots) {
+            if (forest.state_->roots_ != stored_roots) {
                 std::cerr << "❌ [Utreexo Deserialize] Serialized roots do not match"
                           << " node/deletion state under either flag value"
                           << std::endl;
@@ -2842,14 +2857,14 @@ UtreexoForest UtreexoForest::deserialize(const std::vector<uint8_t>& data) {
 
 UtreexoForest::Stats UtreexoForest::getStats() const {
     Stats stats;
-    stats.numLeaves = numLeaves_;
-    stats.numRoots = roots_.size();
-    stats.totalSize = roots_.size() * 32 + nodes_.size() * 32;
+    stats.numLeaves = state_->numLeaves_;
+    stats.numRoots = state_->roots_.size();
+    stats.totalSize = state_->roots_.size() * 32 + state_->nodes_.size() * 32;
 
     // Average proof size = log2(numLeaves) * 32 bytes
-    if (numLeaves_ > 0) {
+    if (state_->numLeaves_ > 0) {
         uint8_t height = 0;
-        uint64_t n = numLeaves_;
+        uint64_t n = state_->numLeaves_;
         while (n > 1) {
             n >>= 1;
             height++;
@@ -3203,6 +3218,7 @@ bool UtreexoBatchUpdate::apply(UtreexoForest& forest) const {
 // ═══════════════════════════════════════════════════════════════════════════
 
 bool UtreexoForest::restoreDeletedLeaf(uint64_t position, const UtreexoHash& leafHash) {
+    EnsureUniqueState();
     // ────────────────────────────────────────────────────────────────────────
     // Phase 4: Restore a deleted leaf (inverse of remove())
     // ────────────────────────────────────────────────────────────────────────
@@ -3217,9 +3233,9 @@ bool UtreexoForest::restoreDeletedLeaf(uint64_t position, const UtreexoHash& lea
     // ────────────────────────────────────────────────────────────────────────
 
     // Validate inputs
-    if (position >= numLeaves_) {
+    if (position >= state_->numLeaves_) {
         std::cout << "❌ [Utreexo Restore] Invalid position: " << position
-                  << " (numLeaves=" << numLeaves_ << ")" << std::endl;
+                  << " (numLeaves=" << state_->numLeaves_ << ")" << std::endl;
         return false;
     }
 
@@ -3239,8 +3255,8 @@ bool UtreexoForest::restoreDeletedLeaf(uint64_t position, const UtreexoHash& lea
     // 1. Validate leaf lookup map won't collide with another live leaf.
     // Do this before mutating any state so a failed restore cannot leave the
     // forest half-restored.
-    auto existing_it = leaf_positions_.find(leafHash);
-    if (existing_it != leaf_positions_.end() && existing_it->second != position &&
+    auto existing_it = state_->leaf_positions_.find(leafHash);
+    if (existing_it != state_->leaf_positions_.end() && existing_it->second != position &&
         !isDeleted(existing_it->second)) {
         std::cout << "❌ [Utreexo Restore] Duplicate live leaf hash collision at position "
                   << existing_it->second << std::endl;
@@ -3248,16 +3264,16 @@ bool UtreexoForest::restoreDeletedLeaf(uint64_t position, const UtreexoHash& lea
     }
 
     // 2. Restore leaf hash to nodes_
-    if (position >= nodes_.size()) {
-        nodes_.resize(position + 1);
+    if (position >= state_->nodes_.size()) {
+        state_->nodes_.resize(position + 1);
     }
-    nodes_[position] = leafHash;
+    state_->nodes_.Set(position, leafHash);
 
     // 3. Remove from deleted set
-    deleted_positions_.erase(position);
+    state_->deleted_positions_.erase(position);
 
     // 4. Restore leaf lookup map
-    leaf_positions_[leafHash] = position;
+    state_->leaf_positions_.Set(leafHash, position);
 
     // 5. Recompute path to root (updates parent hashes and roots)
     recomputePath(position);
@@ -3275,6 +3291,7 @@ bool UtreexoForest::restoreDeletedLeaf(uint64_t position, const UtreexoHash& lea
 }
 
 bool UtreexoForest::removeLastNLeaves(uint64_t count) {
+    EnsureUniqueState();
     // ────────────────────────────────────────────────────────────────────────
     // Phase 4: Remove last N added leaves (inverse of add())
     // ────────────────────────────────────────────────────────────────────────
@@ -3298,14 +3315,14 @@ bool UtreexoForest::removeLastNLeaves(uint64_t count) {
         return true;  // Nothing to do
     }
 
-    if (count > numLeaves_) {
+    if (count > state_->numLeaves_) {
         std::cout << "❌ [Utreexo Remove] Cannot remove " << count
-                  << " leaves (only have " << numLeaves_ << ")" << std::endl;
+                  << " leaves (only have " << state_->numLeaves_ << ")" << std::endl;
         return false;
     }
 
     std::cout << "🔄 [Utreexo Remove] Removing last " << count << " leaves" << std::endl;
-    std::cout << "   numLeaves before: " << numLeaves_ << std::endl;
+    std::cout << "   numLeaves before: " << state_->numLeaves_ << std::endl;
 
     // Track active leaves removed (for logging)
     uint64_t active_removed = 0;
@@ -3336,7 +3353,7 @@ bool UtreexoForest::removeLastNLeaves(uint64_t count) {
     // range. count is the number of UTXOs added by ONE block, so
     // even on a heavy block the second walk is O(thousands) at most.
     for (uint64_t i = 0; i < count; i++) {
-        const uint64_t position = numLeaves_ - 1 - i;
+        const uint64_t position = state_->numLeaves_ - 1 - i;
 
         if (isDeleted(position)) {
             std::cerr << "❌ [Utreexo Remove] removeLastNLeaves invariant violated: "
@@ -3348,7 +3365,7 @@ bool UtreexoForest::removeLastNLeaves(uint64_t count) {
             return false;
         }
 
-        if (position >= nodes_.size() || !nodes_[position].has_value()) {
+        if (position >= state_->nodes_.size() || !state_->nodes_[position].has_value()) {
             std::cerr << "❌ [Utreexo Remove] removeLastNLeaves invariant violated: "
                       << "position " << position
                       << " has no leaf hash — adds were not monotonic at "
@@ -3360,31 +3377,27 @@ bool UtreexoForest::removeLastNLeaves(uint64_t count) {
 
     // PASS 2 — mutate. Cannot fail given PASS 1 verified the range.
     for (uint64_t i = 0; i < count; i++) {
-        const uint64_t position = numLeaves_ - 1 - i;
+        const uint64_t position = state_->numLeaves_ - 1 - i;
         active_removed++;
-        const UtreexoHash& leafHash = nodes_[position].value();
-        leaf_positions_.erase(leafHash);
-        nodes_[position] = std::nullopt;
+        const UtreexoHash& leafHash = state_->nodes_[position].value();
+        state_->leaf_positions_.erase(leafHash);
+        state_->nodes_.Set(position, std::nullopt);
     }
 
     // Decrement numLeaves
-    numLeaves_ -= count;
+    state_->numLeaves_ -= count;
 
     // Truncate nodes_ if possible (optional optimization)
-    if (nodes_.size() > numLeaves_) {
-        nodes_.resize(numLeaves_);
+    if (state_->nodes_.size() > state_->numLeaves_) {
+        state_->nodes_.resize(state_->numLeaves_);
     }
 
     // Deleted positions beyond the new frontier are now impossible. Keep the
     // tombstone set aligned with numLeaves_ so reused positions don't look
     // permanently deleted after rollback.
-    for (auto it = deleted_positions_.begin(); it != deleted_positions_.end(); ) {
-        if (*it >= numLeaves_) {
-            it = deleted_positions_.erase(it);
-        } else {
-            ++it;
-        }
-    }
+    state_->deleted_positions_.EraseIf([this](uint64_t position) {
+        return position >= state_->numLeaves_;
+    });
 
     // Recompute roots based on new numLeaves
     // The roots_ array represents the binary decomposition of numLeaves
@@ -3400,13 +3413,14 @@ bool UtreexoForest::removeLastNLeaves(uint64_t count) {
 
     std::cout << "✅ [Utreexo Remove] Removed " << count << " leaves" << std::endl;
     std::cout << "   Active removed: " << active_removed << std::endl;
-    std::cout << "   numLeaves after: " << numLeaves_ << std::endl;
+    std::cout << "   numLeaves after: " << state_->numLeaves_ << std::endl;
     std::cout << "   numRoots after: " << getNumRoots() << std::endl;
 
     return true;
 }
 
 void UtreexoForest::rebuildRoots() {
+    EnsureUniqueState();
     // ────────────────────────────────────────────────────────────────────────
     // Rebuild roots_ array based on current numLeaves and node state
     // ────────────────────────────────────────────────────────────────────────
@@ -3419,9 +3433,9 @@ void UtreexoForest::rebuildRoots() {
     // tree in the forest.
     // ────────────────────────────────────────────────────────────────────────
 
-    roots_.clear();
+    state_->roots_.clear();
 
-    if (numLeaves_ == 0) {
+    if (state_->numLeaves_ == 0) {
         return;  // Empty forest, no roots
     }
 
@@ -3431,7 +3445,7 @@ void UtreexoForest::rebuildRoots() {
 
     // Scan from MSB to LSB to find set bits
     for (int h = 63; h >= 0; h--) {
-        if ((numLeaves_ >> h) & 1) {
+        if ((state_->numLeaves_ >> h) & 1) {
             uint64_t tree_size = (1ULL << h);
             trees.push_back({static_cast<uint8_t>(h), position});
             position += tree_size;
@@ -3444,11 +3458,11 @@ void UtreexoForest::rebuildRoots() {
         auto root = computeSubtreeHash(start_pos, tree_size);
 
         // Ensure roots_ has space
-        while (roots_.size() <= height) {
-            roots_.push_back(std::nullopt);
+        while (state_->roots_.size() <= height) {
+            state_->roots_.push_back(std::nullopt);
         }
 
-        roots_[height] = root;  // Assign optional directly
+        state_->roots_[height] = root;  // Assign optional directly
     }
 }
 

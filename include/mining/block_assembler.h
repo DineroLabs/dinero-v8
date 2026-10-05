@@ -431,6 +431,10 @@ public:
     void SetChainstateReadGuardFactory(ChainstateReadGuardFactory factory);
     std::shared_ptr<const OrchardMiningTemplate> CreateOrchardBlock(
         const std::string& coinbase_address);
+    // Borrow the caller's selected owner so typed proof work can actually
+    // release it; creating another recursive guard would keep it locked.
+    std::shared_ptr<const OrchardMiningTemplate> CreateOrchardBlock(
+        const std::string& coinbase_address, MiningChainstateReadGuard&);
 
     // ========================================================================
     // Phase M.0: Merkle tree calculation (public for golden testing)

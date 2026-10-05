@@ -2606,7 +2606,9 @@ din::Json rpc_context_wallet_sendtoaddress(const ExecutionContext& ctx, const di
     }
 
     try {
-        const auto signing_identity=dinero::CaptureWalletSigningIdentity(wallet_service->get(),ctx.walletName);
+        const auto wallet_use=dinero::WalletService::AcquireWalletUse(wallet_service);
+        const auto source_use=dinero::ChainstateService::AcquireWalletIndexUse(chainstate_service);
+        const auto signing_identity=dinero::CaptureWalletSigningIdentity(wallet_use->Wallet(),ctx.walletName);
         // Support both array and object parameter formats
         // Array: [address, amount, fee_rate, comment, broadcast]
         // Object: {"address": "...", "amount": 1.0, "preview": true} for dry-run
@@ -3119,8 +3121,8 @@ din::Json rpc_context_wallet_sendtoaddress(const ExecutionContext& ctx, const di
                 return result;
             }
 
-            auto sign_result=dinero::SignAndStageWalletPayment(
-                wallet_service->get(),signing_identity,build_result.unsigned_tx,
+            auto sign_result=chainstate_service->signAndStageWalletPayment(
+                wallet_use->Wallet(),signing_identity,build_result.unsigned_tx,
                 dinero::PendingPaymentIntent{address,parsed_amount_una,""});
 
             if (!sign_result.success) {
@@ -3407,6 +3409,8 @@ static din::Json SendManyWithWalletOwner(const ExecutionContext& ctx, const din:
             return result;
         }
 
+        const auto source_use=dinero::ChainstateService::AcquireWalletIndexUse(chainstate_service);
+
         if (ctx.logger) {
             ctx.logger->info("[wallet.sendmany] Preparing batch transaction to " +
                            std::to_string(recipients.size()) + " recipients");
@@ -3613,7 +3617,7 @@ static din::Json SendManyWithWalletOwner(const ExecutionContext& ctx, const din:
             effective_fee_rate = std::max(effective_fee_rate * 2.0, effective_fee_rate + 1.0);
         }
 
-        auto retained = dinero::SignAndStageWalletPayment(wallet_service->get(), signing_identity, unsigned_tx, intent);
+        auto retained = chainstate_service->signAndStageWalletPayment(wallet_use->Wallet(), signing_identity, unsigned_tx, intent);
         if (!retained.success) { result["error"] = "Payment retention failed: " + retained.error; return result; }
         build_result.transaction = std::move(retained.signed_tx.tx);
         const std::string txid = build_result.transaction.GetTxid().AsUint256().GetHex();

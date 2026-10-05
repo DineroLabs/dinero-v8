@@ -84,4 +84,19 @@ private:
     const ChainDB&, const consensus::OrchardBlockContext& selected_profile,
     RuntimeOutboxCursor after = {}, size_t maximum_events = 32,
     size_t maximum_bytes = 16 * 1024 * 1024);
+// Read only through an earlier head captured by the checked current-head
+// reader. Hold the selected writer lock for this call; it may be released
+// between calls because canonical writers retain earlier records. Each call
+// rechecks the current durable head/canonical tip and the exact captured head
+// record. This is a local integrity check, not adversarial authentication.
+// page.head and EOF after_tip describe the captured prefix, not the current
+// canonical tip. Later appended records are excluded. Consumers needing the
+// current tip must separately recheck it with ReadRuntimeOutboxUnderLock.
+// Bounds and the page walk are identical to the current-head reader above;
+// both current-head and captured-head reads are outside the page byte budget.
+// A zero captured head is invalid. Nothing is written or acknowledged.
+[[nodiscard]] RuntimeOutboxPage ReadRuntimeOutboxPrefixUnderLock(
+    const ChainDB&, const consensus::OrchardBlockContext& selected_profile,
+    RuntimeOutboxCursor captured_head, RuntimeOutboxCursor after = {},
+    size_t maximum_events = 32, size_t maximum_bytes = 16 * 1024 * 1024);
 } // namespace dinero

@@ -12,6 +12,11 @@
 #include "daemon/services/config_service.h"
 #include "daemon/services/wallet_service.h"
 #include "daemon/services/chainstate_service.h"
+#include "daemon/services/logger_service.h"
+#include "daemon/block_acceptor.h"
+#include "storage/chain_db.h"
+#include "storage/block_storage.h"
+#include "storage/chain_write_token.h"
 #include "daemon/interfaces/tx_ingress.h"
 #include <functional>
 #include "rpc/rpc_registry.h"
@@ -48,6 +53,7 @@ struct WalletBatchPaymentTestAccess {
     }
 };
 }
+#include "pool_payment_chain_fixture.h"
 void registerV7PqWalletMethods();
 din::Json rpc_context_wallet_sendmany(const ExecutionContext&,const din::Json&);
 din::Json rpc_context_wallet_getbalance(const ExecutionContext&,const din::Json&);
@@ -237,7 +243,7 @@ TEST_F(WalletOwnedSigning, CompleteOutpointsBeforeKeyReadsAndNoFallback) {
 class WalletPendingPayment : public WalletOwnedSigning {
 protected:
     void fund(const dinero::CanonicalWalletUTXO& c) {
-        sql(service->get().getCurrentDatabase(),"INSERT INTO utxos(wallet_id,txid,vout,address,amount,script_pubkey,height,is_coinbase,is_mature,is_spent) VALUES(1,'"+c.GetTxIdHex()+"',"+std::to_string(c.vout)+",'fixture',"+std::to_string(c.value.GetUna())+",'"+util::hex(c.spk)+"',1,0,1,0)");
+        sql(service->get().getCurrentDatabase(),"INSERT INTO utxos(wallet_id,txid,vout,address,amount,script_pubkey,height,is_coinbase,is_mature,is_spent) VALUES(1,'"+c.GetTxIdHex()+"',"+std::to_string(c.vout)+",'fixture',"+std::to_string(c.value.GetUna())+",'"+util::hex(c.spk)+"',"+std::to_string(c.height)+","+std::to_string(c.is_coinbase?1:0)+",1,0)");
     }
     dinero::UnsignedTransaction payment() {
         auto result=unsigned_tx({old,modern});result.tx.vout[0].scriptPubKey=modern.spk;return result;
@@ -613,16 +619,48 @@ protected:
         bool HasTransaction(const dinero::uint256&)const override{return false;}
         std::shared_ptr<dinero::Transaction> GetTransaction(const dinero::uint256&)const override{return {};}
     };
+    std::unique_ptr<PoolPaymentChainFixture> payment_source;
+    DaemonContext* previous_context=DaemonContext::instance();
     std::shared_ptr<dinero::ChainstateService> chain;
     std::shared_ptr<Ingress> ingress;
     void SetUp() override {
+        // Select before wallet addresses and canonical-source construction.
+        dinero::SelectParams(dinero::Chain::REGTEST);
         WalletPendingPayment::SetUp();if(HasFatalFailure())return;
-        chain=std::make_shared<dinero::ChainstateService>();dinero::WalletBatchPaymentTestAccess::InstallIndex(*chain,std::move(index));daemon.chainstate=chain;
+        // Reuse ordinary validation/replay of 101 blocks. The real height-two
+        // funding output is present in the loaded consensus coins AND forest.
+        payment_source=std::make_unique<PoolPaymentChainFixture>(root/"batch-source",std::vector<uint8_t>{0x51},hd.spk);
+        chain=payment_source->source;daemon.chainstate=chain;
+        daemon.block_storage=payment_source->files;
+        ASSERT_NE(chain->GetActiveTip(),nullptr);
+        const auto persisted=payment_source->db.getTip();ASSERT_TRUE(persisted.ok());
+        ASSERT_EQ(persisted->hash,chain->GetActiveTip()->hash);
+        ASSERT_EQ(persisted->height,chain->GetActiveTip()->height);
+        ASSERT_NE(chain->utxoIndex(),nullptr);
+        service->get().setUTXOIndex(chain->utxoIndex());
+        service->get().LoadAddressesIntoUTXOIndex();index.reset();
         ingress=std::make_shared<Ingress>();daemon.tx_ingress=ingress.get();
-        auto& w=service->get();w.setBlockchainHeight(100);fund(hd);
-        ASSERT_TRUE(chain->utxoIndex()->AddUTXO(dinero::WalletUTXO(dinero::TxId(hd.txid),hd.vout,hd.value,hd.spk,hd.path,hd.height)));
+        const auto& funding=payment_source->blocks.at(2).vtx.at(0);
+        hd.txid=funding.GetTxid().AsUint256();hd.vout=0;
+        hd.value=funding.vout.at(0).value;hd.height=2;hd.is_coinbase=true;
+        ASSERT_EQ(hd.value.GetUna(),100000u);ASSERT_EQ(funding.vout.at(0).scriptPubKey,hd.spk);
+        const auto inclusion=chain->getCanonicalOutputInclusion(hd.txid,hd.vout,hd.height);
+        ASSERT_TRUE(inclusion.ok());ASSERT_TRUE(inclusion->MatchesTransparent(hd.value.GetUna(),hd.spk));
+        auto& w=service->get();w.setBlockchainHeight(101);
+        const auto funding_address=AddressCodec::encodeP2TR(Network::REGTEST,std::vector<uint8_t>(hd.spk.begin()+2,hd.spk.end()));
+        ASSERT_TRUE(w.addUTXO(hd.GetTxIdHex(),hd.vout,hd.value.GetUna(),funding_address,util::hex(hd.spk),hd.height,true));
+        w.updateUTXOMaturity();
+        ASSERT_TRUE(chain->utxoIndex()->AddUTXO(dinero::WalletUTXO(dinero::TxId(hd.txid),hd.vout,hd.value,hd.spk,hd.path,hd.height,true)));
+        const auto available=w.listUnspentUTXOs(1,9999999);ASSERT_EQ(available.size(),1u);
+        ASSERT_TRUE(available[0].is_coinbase);ASSERT_TRUE(available[0].is_mature);ASSERT_EQ(available[0].confirmations,100);
     }
-    void TearDown() override {service->get().setUTXOIndex(nullptr);daemon.tx_ingress=nullptr;ingress.reset();daemon.chainstate.reset();chain.reset();WalletPendingPayment::TearDown();}
+    void TearDown() override {
+        service->get().setUTXOIndex(nullptr);daemon.tx_ingress=nullptr;ingress.reset();
+        if(chain)chain->Stop();daemon.chainstate.reset();chain.reset();
+        daemon.block_storage.reset();payment_source.reset();
+        dinero::BlockAcceptor::SetContext(previous_context);DaemonContext::setInstance(previous_context);
+        WalletPendingPayment::TearDown();
+    }
     din::Json request() {
         din::Json result(Json::arrayValue),recipients;recipients[modern_address]="0.00020000";recipients[service->get().getNewAddress()]="0.00030000";result.append(recipients);result.append(1.0);return result;
     }

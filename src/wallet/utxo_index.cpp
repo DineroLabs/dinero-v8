@@ -10,6 +10,9 @@
 #include <cassert>
 #include <memory>
 #include <stdexcept>
+#include <cstring>
+#include <set>
+#include <limits>
 
 namespace dinero {
 
@@ -86,6 +89,7 @@ UTXOIndex::~UTXOIndex() {
 bool UTXOIndex::Initialize() {
     std::lock_guard<std::recursive_mutex> lock(db_mutex_);
     if (atomic_write_active_) return false;
+    historical_scripts_.clear();
     // M.5.2: Guard against re-initialization (lifecycle safety)
     // If already initialized, clean up first to prevent memory leaks
     if (db_ != nullptr) {
@@ -118,174 +122,176 @@ bool UTXOIndex::Initialize() {
     return true;
 }
 
-bool UTXOIndex::CreateTables() {
-    // M.5.2: Enhanced diagnostics for schema creation
-    std::cout << "[UTXOIndex] CreateTables: db_ = " << (void*)db_ << std::endl;
-
-    if (db_ == nullptr) {
-        std::cerr << "FATAL: CreateTables() called with null db_ pointer!" << std::endl;
-        return false;
-    }
-
-    // ═══════════════════════════════════════════════════════════════════════════
-    // SCHEMA MIGRATION: Enforce path NOT NULL constraint
-    // ═══════════════════════════════════════════════════════════════════════════
-    // Schema version 0: Legacy - path allowed NULL (BUG)
-    // Schema version 1: path NOT NULL CHECK(length(path) > 0)
-    //
-    // Migration strategy:
-    //   1. Check current schema version
-    //   2. If version 0, verify no invalid rows exist (fail if any)
-    //   3. Migrate to version 1
-    // ═══════════════════════════════════════════════════════════════════════════
-    constexpr int CURRENT_SCHEMA_VERSION = 1;
-
-    // Get current schema version
-    int schema_version = 0;
-    {
-        sqlite3_stmt* stmt = nullptr;
-        if (sqlite3_prepare_v2(db_, "PRAGMA user_version", -1, &stmt, nullptr) == SQLITE_OK) {
-            if (sqlite3_step(stmt) == SQLITE_ROW) {
-                schema_version = sqlite3_column_int(stmt, 0);
-            }
-            sqlite3_finalize(stmt);
+namespace {
+struct OwnershipSchemaStatement {
+    sqlite3_stmt* value=nullptr;
+    OwnershipSchemaStatement(sqlite3* db,const std::string& sql) {
+        if(sqlite3_prepare_v2(db,sql.c_str(),-1,&value,nullptr)!=SQLITE_OK) {
+            sqlite3_finalize(value);throw std::runtime_error("Wallet ownership schema prepare failed");
         }
     }
+    ~OwnershipSchemaStatement(){sqlite3_finalize(value);}
+    void Text(int position,const std::string& text) {
+        if(sqlite3_bind_text(value,position,text.data(),int(text.size()),SQLITE_TRANSIENT)!=SQLITE_OK)
+            throw std::runtime_error("Wallet ownership schema bind failed");
+    }
+    void Done(){if(sqlite3_step(value)!=SQLITE_DONE)throw std::runtime_error("Wallet ownership schema incomplete");}
+};
+std::string OwnershipSchemaText(sqlite3_stmt* row,int column) {
+    if(sqlite3_column_type(row,column)!=SQLITE_TEXT)throw std::runtime_error("Wallet ownership schema text type invalid");
+    const auto* bytes=static_cast<const char*>(sqlite3_column_blob(row,column));const int size=sqlite3_column_bytes(row,column);
+    if(!bytes||size<=0||std::memchr(bytes,0,size))throw std::runtime_error("Wallet ownership schema text invalid");
+    return std::string(bytes,size);
+}
+void OwnershipSchemaExec(sqlite3* db,const std::string& sql) {
+    if(sqlite3_exec(db,sql.c_str(),nullptr,nullptr,nullptr)!=SQLITE_OK)
+        throw std::runtime_error("Wallet ownership schema write failed");
+}
+int64_t OwnershipSchemaInteger(sqlite3* db,const std::string& sql) {
+    OwnershipSchemaStatement row(db,sql);
+    if(sqlite3_step(row.value)!=SQLITE_ROW||sqlite3_column_type(row.value,0)!=SQLITE_INTEGER)
+        throw std::runtime_error("Wallet ownership schema integer invalid");
+    const auto result=sqlite3_column_int64(row.value,0);row.Done();return result;
+}
+constexpr const char* ownership_table_body=R"((
+    txid TEXT NOT NULL,
+    vout INTEGER NOT NULL,
+    value INTEGER NOT NULL,
+    spk BLOB NOT NULL,
+    path TEXT NOT NULL,
+    height INTEGER NOT NULL,
+    spend_height INTEGER,
+    is_coinbase INTEGER NOT NULL DEFAULT 0,
+    utreexo_position INTEGER,
+    is_confidential INTEGER DEFAULT 0,
+    commitment BLOB,
+    range_proof BLOB,
+    blinding_factor BLOB,
+    nonce BLOB,
+    owner_kind INTEGER NOT NULL DEFAULT 0 CHECK(typeof(owner_kind)='integer' AND owner_kind IN(0,1)),
+    owner_reference TEXT NOT NULL DEFAULT '',
+    CHECK(typeof(path)='text' AND typeof(owner_reference)='text' AND instr(path,char(0))=0 AND instr(owner_reference,char(0))=0 AND
+        ((owner_kind=0 AND length(path)>=1 AND owner_reference='') OR
+         (owner_kind=1 AND path='' AND length(owner_reference) BETWEEN 1 AND 128 AND is_confidential IS 0))),
+    PRIMARY KEY(txid,vout)
+))";
+void CheckOwnershipTable(sqlite3* db) {
+    OwnershipSchemaStatement row(db,"SELECT sql FROM sqlite_schema WHERE type='table' AND name='wallet_utxos'");
+    if(sqlite3_step(row.value)!=SQLITE_ROW)throw std::runtime_error("Wallet ownership table missing");
+    const auto sql=OwnershipSchemaText(row.value,0);row.Done();const auto body=sql.find('(');
+    if(body==std::string::npos||sql.substr(body)!=ownership_table_body)
+        throw std::runtime_error("Wallet ownership table definition changed");
+}
+}
 
-    std::cout << "[UTXOIndex] Current schema version: " << schema_version << std::endl;
-
-    // Check for invalid paths in legacy databases before migration
-    if (schema_version < 1) {
-        // Check if table exists and has invalid rows
-        sqlite3_stmt* check_stmt = nullptr;
-        const char* check_sql = R"(
-            SELECT COUNT(*) FROM wallet_utxos
-            WHERE path IS NULL OR path = '' OR (length(path) < 2)
-        )";
-
-        // Table might not exist yet - that's fine
-        if (sqlite3_prepare_v2(db_, check_sql, -1, &check_stmt, nullptr) == SQLITE_OK) {
-            if (sqlite3_step(check_stmt) == SQLITE_ROW) {
-                int invalid_count = sqlite3_column_int(check_stmt, 0);
-                if (invalid_count > 0) {
-                    std::cerr << "═══════════════════════════════════════════════════════════════════════════" << std::endl;
-                    std::cerr << "FATAL: Schema migration blocked - " << invalid_count << " UTXOs with invalid paths" << std::endl;
-                    std::cerr << "═══════════════════════════════════════════════════════════════════════════" << std::endl;
-                    std::cerr << "WALLET INVARIANT: A UTXO without a derivation path is NOT owned." << std::endl;
-                    std::cerr << std::endl;
-                    std::cerr << "Your database contains UTXOs with NULL or empty paths. These are" << std::endl;
-                    std::cerr << "potentially dangerous: ghost balances, unspendable outputs, or" << std::endl;
-                    std::cerr << "wallet corruption from previous bugs." << std::endl;
-                    std::cerr << std::endl;
-                    std::cerr << "To fix:" << std::endl;
-                    std::cerr << "  1. Backup your wallet database" << std::endl;
-                    std::cerr << "  2. Run: sqlite3 <wallet.db> 'DELETE FROM wallet_utxos WHERE path IS NULL OR path = \"\"'" << std::endl;
-                    std::cerr << "  3. Perform a full rescan to recover valid UTXOs" << std::endl;
-                    std::cerr << "═══════════════════════════════════════════════════════════════════════════" << std::endl;
-                    sqlite3_finalize(check_stmt);
-                    return false;
+bool UTXOIndex::CreateTables() {
+    // The migration owns one FULL SQLite transaction. It copies every existing
+    // value without type coercion, recreates exact user indexes/triggers and
+    // preserves metadata/receipts. Neither schema presence nor a new owner
+    // column is authentication; historical rows still require a live key owner.
+    if(!db_||sqlite3_db_readonly(db_,"main")!=0||!sqlite3_get_autocommit(db_))return false;
+    bool owned=false;
+    try {
+        const auto synchronous=OwnershipSchemaInteger(db_,"PRAGMA synchronous");
+        if(synchronous<2)OwnershipSchemaExec(db_,"PRAGMA synchronous=FULL");
+        if(OwnershipSchemaInteger(db_,"PRAGMA synchronous")<2)
+            throw std::runtime_error("Wallet ownership schema durability unavailable");
+        { OwnershipSchemaStatement q(db_,"PRAGMA journal_mode");
+          if(sqlite3_step(q.value)!=SQLITE_ROW)throw std::runtime_error("Wallet ownership journal unavailable");
+          const auto mode=OwnershipSchemaText(q.value,0);q.Done();
+          const auto* filename=sqlite3_db_filename(db_,"main");
+          const bool memory=mode=="memory"&&(!filename||!*filename);
+          if(mode!="wal"&&mode!="delete"&&mode!="truncate"&&mode!="persist"&&!memory)
+              throw std::runtime_error("Wallet ownership journal unsupported"); }
+        OwnershipSchemaExec(db_,"BEGIN IMMEDIATE");owned=true;
+        const auto version=OwnershipSchemaInteger(db_,"PRAGMA user_version");
+        if(version<0||version>2)throw std::runtime_error("Wallet ownership schema version unsupported");
+        const bool present=OwnershipSchemaInteger(db_,"SELECT count(*) FROM sqlite_schema WHERE type='table' AND name='wallet_utxos'")==1;
+        if(version==2) {
+            if(!present)throw std::runtime_error("Wallet ownership schema lacks its table");
+            CheckOwnershipTable(db_);
+        } else if(present) {
+            const std::vector<std::string> columns={"txid","vout","value","spk","path","height","spend_height","is_coinbase",
+                "utreexo_position","is_confidential","commitment","range_proof","blinding_factor","nonce"};
+            std::set<std::string> observed;int rc;
+            { OwnershipSchemaStatement q(db_,"PRAGMA table_xinfo(wallet_utxos)");
+              while((rc=sqlite3_step(q.value))==SQLITE_ROW) {
+                  const auto name=OwnershipSchemaText(q.value,1);
+                  if(!observed.insert(name).second||std::find(columns.begin(),columns.end(),name)==columns.end()||
+                     sqlite3_column_type(q.value,6)!=SQLITE_INTEGER||sqlite3_column_int64(q.value,6)!=0)
+                      throw std::runtime_error("Wallet ownership legacy columns unsupported");
+              }
+              if(rc!=SQLITE_DONE)throw std::runtime_error("Wallet ownership legacy schema incomplete"); }
+            for(const auto* n:{"txid","vout","value","spk","path","height"})
+                if(!observed.count(n))throw std::runtime_error("Wallet ownership legacy column missing");
+            // A table rebuild with a foreign-key relationship needs a separate
+            // qualified migration. Refuse before mutation rather than cascade.
+            { OwnershipSchemaStatement tables(db_,"SELECT name FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%'");
+              while((rc=sqlite3_step(tables.value))==SQLITE_ROW) {
+                  const auto name=OwnershipSchemaText(tables.value,0);
+                  OwnershipSchemaStatement foreign(db_,"SELECT \"table\" FROM pragma_foreign_key_list(?)");foreign.Text(1,name);int fr;
+                  while((fr=sqlite3_step(foreign.value))==SQLITE_ROW)
+                      if(name=="wallet_utxos"||OwnershipSchemaText(foreign.value,0)=="wallet_utxos")
+                          throw std::runtime_error("Wallet ownership migration foreign key unsupported");
+                  if(fr!=SQLITE_DONE)throw std::runtime_error("Wallet ownership foreign-key inventory incomplete");
+              }
+              if(rc!=SQLITE_DONE)throw std::runtime_error("Wallet ownership table inventory incomplete"); }
+            std::vector<std::pair<std::string,std::string>> schema;
+            { OwnershipSchemaStatement q(db_,"SELECT name,sql FROM sqlite_schema WHERE tbl_name='wallet_utxos' AND type IN('index','trigger') AND sql IS NOT NULL ORDER BY type,name");
+              while((rc=sqlite3_step(q.value))==SQLITE_ROW)schema.emplace_back(OwnershipSchemaText(q.value,0),OwnershipSchemaText(q.value,1));
+              if(rc!=SQLITE_DONE)throw std::runtime_error("Wallet ownership guard inventory incomplete"); }
+            if(OwnershipSchemaInteger(db_,"SELECT count(*) FROM sqlite_schema WHERE name='wallet_utxos_ownership_v2'")!=0)
+                throw std::runtime_error("Wallet ownership migration name conflict");
+            OwnershipSchemaExec(db_,std::string("CREATE TABLE wallet_utxos_ownership_v2 ")+ownership_table_body);
+            std::string destination,source,equal;
+            for(const auto& column:columns) {
+                if(!destination.empty()){destination+=',';source+=',';}
+                destination+=column;
+                source+=observed.count(column)?column:(column=="is_coinbase"||column=="is_confidential"?"0":"NULL");
+                if(observed.count(column)) {
+                    if(!equal.empty())equal+=" AND ";
+                    equal+="typeof(a."+column+")=typeof(b."+column+") AND a."+column+" IS b."+column;
                 }
             }
-            sqlite3_finalize(check_stmt);
+            const auto count=OwnershipSchemaInteger(db_,"SELECT count(*) FROM wallet_utxos");
+            OwnershipSchemaExec(db_,"INSERT INTO wallet_utxos_ownership_v2("+destination+") SELECT "+source+" FROM wallet_utxos");
+            if(OwnershipSchemaInteger(db_,"SELECT count(*) FROM wallet_utxos_ownership_v2")!=count||
+               OwnershipSchemaInteger(db_,"SELECT count(*) FROM wallet_utxos a JOIN wallet_utxos_ownership_v2 b ON a.txid IS b.txid AND a.vout IS b.vout WHERE "+equal)!=count)
+                throw std::runtime_error("Wallet ownership migration changed existing values");
+            OwnershipSchemaExec(db_,"DROP TABLE wallet_utxos");
+            OwnershipSchemaExec(db_,"ALTER TABLE wallet_utxos_ownership_v2 RENAME TO wallet_utxos");
+            for(const auto& [name,sql]:schema) {
+                OwnershipSchemaExec(db_,sql);
+                OwnershipSchemaStatement q(db_,"SELECT sql FROM sqlite_schema WHERE name=? AND tbl_name='wallet_utxos'");q.Text(1,name);
+                if(sqlite3_step(q.value)!=SQLITE_ROW||OwnershipSchemaText(q.value,0)!=sql)
+                    throw std::runtime_error("Wallet ownership migration changed a guard");
+                q.Done();
+            }
+            CheckOwnershipTable(db_);
+        } else {
+            if(version!=0)throw std::runtime_error("Wallet ownership legacy table missing");
+            OwnershipSchemaExec(db_,std::string("CREATE TABLE wallet_utxos ")+ownership_table_body);
         }
-    }
-
-    const char* sql = R"(
-        CREATE TABLE IF NOT EXISTS wallet_utxos (
-            txid TEXT NOT NULL,
-            vout INTEGER NOT NULL,
-            value INTEGER NOT NULL,
-            spk BLOB NOT NULL,
-            -- WALLET INVARIANT: path is REQUIRED for ownership proof
-            -- Valid: "m/86'/...", "m/84'/...", "genesis", "coinbase", "system"
-            path TEXT NOT NULL CHECK(length(path) >= 1),
-            height INTEGER NOT NULL,
-            spend_height INTEGER,
-            is_coinbase INTEGER NOT NULL DEFAULT 0,
-            -- Phase 11a: Utreexo position tracking for proof generation
-            utreexo_position INTEGER,
-            -- Zero-Knowledge privacy fields (Phase F)
-            is_confidential INTEGER DEFAULT 0,
-            commitment BLOB,
-            range_proof BLOB,
-            blinding_factor BLOB,
-            nonce BLOB,
-            PRIMARY KEY (txid, vout)
-        );
-
-        -- Index for fast unspent UTXO queries (getbalance, listunspent)
-        CREATE INDEX IF NOT EXISTS idx_wallet_utxos_unspent
-        ON wallet_utxos(spend_height) WHERE spend_height IS NULL;
-
-        -- Index for querying UTXOs by derivation path
-        CREATE INDEX IF NOT EXISTS idx_wallet_utxos_path
-        ON wallet_utxos(path);
-
-        -- Index for querying UTXOs created at specific height (reorg disconnect)
-        CREATE INDEX IF NOT EXISTS idx_wallet_utxos_height
-        ON wallet_utxos(height);
-
-        -- Index for querying UTXOs spent at specific height (reorg un-spend)
-        CREATE INDEX IF NOT EXISTS idx_wallet_utxos_spend_height
-        ON wallet_utxos(spend_height) WHERE spend_height IS NOT NULL;
-
-        -- Index for fast coinbase maturity queries (is_coinbase + height)
-        CREATE INDEX IF NOT EXISTS idx_wallet_utxos_coinbase_maturity
-        ON wallet_utxos(is_coinbase, height) WHERE spend_height IS NULL;
-
-        -- Index for fast confidential UTXO queries (Phase F)
-        CREATE INDEX IF NOT EXISTS idx_wallet_utxos_confidential
-        ON wallet_utxos(is_confidential) WHERE is_confidential = 1 AND spend_height IS NULL;
-
-        -- Phase 11a: Index for fast Utreexo position lookups (proof generation)
-        CREATE INDEX IF NOT EXISTS idx_wallet_utxos_utreexo_position
-        ON wallet_utxos(txid, vout, utreexo_position) WHERE utreexo_position IS NOT NULL;
-
-        -- Metadata table for AssumeUTXO state persistence (Crash Safety - CRITICAL-003 fix)
-        -- Stores key-value pairs for consensus-critical state that must persist across restarts
-        CREATE TABLE IF NOT EXISTS utxo_metadata (
-            key TEXT PRIMARY KEY NOT NULL,
-            value TEXT NOT NULL
-        );
-    )";
-
-    char* err_msg = nullptr;
-    int rc = sqlite3_exec(db_, sql, nullptr, nullptr, &err_msg);
-
-    std::cout << "[UTXOIndex] sqlite3_exec returned: " << rc
-              << " (" << sqlite3_errstr(rc) << ")" << std::endl;
-
-    if (rc != SQLITE_OK) {
-        std::cerr << "ERROR: SQL error creating tables: " << (err_msg ? err_msg : "null") << std::endl;
-        std::cerr << "       Extended error code: " << sqlite3_extended_errcode(db_) << std::endl;
-        if (err_msg) sqlite3_free(err_msg);
+        OwnershipSchemaExec(db_,R"(
+            CREATE TABLE IF NOT EXISTS utxo_metadata(key TEXT PRIMARY KEY NOT NULL,value TEXT NOT NULL);
+            CREATE INDEX IF NOT EXISTS idx_wallet_utxos_unspent ON wallet_utxos(spend_height) WHERE spend_height IS NULL;
+            CREATE INDEX IF NOT EXISTS idx_wallet_utxos_path ON wallet_utxos(path);
+            CREATE INDEX IF NOT EXISTS idx_wallet_utxos_height ON wallet_utxos(height);
+            CREATE INDEX IF NOT EXISTS idx_wallet_utxos_spend_height ON wallet_utxos(spend_height) WHERE spend_height IS NOT NULL;
+            CREATE INDEX IF NOT EXISTS idx_wallet_utxos_coinbase_maturity ON wallet_utxos(is_coinbase,height) WHERE spend_height IS NULL;
+            CREATE INDEX IF NOT EXISTS idx_wallet_utxos_confidential ON wallet_utxos(is_confidential) WHERE is_confidential=1 AND spend_height IS NULL;
+            CREATE INDEX IF NOT EXISTS idx_wallet_utxos_utreexo_position ON wallet_utxos(txid,vout,utreexo_position) WHERE utreexo_position IS NOT NULL;
+        )");
+        if(version!=2)OwnershipSchemaExec(db_,"PRAGMA user_version=2");
+        if(OwnershipSchemaInteger(db_,"PRAGMA user_version")!=2)throw std::runtime_error("Wallet ownership schema version write failed");
+        OwnershipSchemaExec(db_,"COMMIT");owned=false;
+        return true;
+    } catch(const std::exception& error) {
+        if(owned&&!sqlite3_get_autocommit(db_)&&sqlite3_exec(db_,"ROLLBACK",nullptr,nullptr,nullptr)!=SQLITE_OK&&!sqlite3_get_autocommit(db_))
+            std::terminate();
+        g_logger.error(std::string("[UTXOIndex] Ownership schema refused: ")+error.what());
         return false;
     }
-
-    // M.5.2: Verify tables were actually created
-    const char* verify_sql = "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name;";
-    sqlite3_stmt* stmt = nullptr;
-    rc = sqlite3_prepare_v2(db_, verify_sql, -1, &stmt, nullptr);
-    if (rc == SQLITE_OK) {
-        std::cout << "[UTXOIndex] Tables created:" << std::endl;
-        while (sqlite3_step(stmt) == SQLITE_ROW) {
-            const char* table_name = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
-            std::cout << "  - " << table_name << std::endl;
-        }
-        sqlite3_finalize(stmt);
-    } else {
-        std::cerr << "WARNING: Could not verify table creation: " << sqlite3_errmsg(db_) << std::endl;
-    }
-
-    // Update schema version to current
-    if (schema_version < CURRENT_SCHEMA_VERSION) {
-        std::string version_sql = "PRAGMA user_version = " + std::to_string(CURRENT_SCHEMA_VERSION);
-        if (sqlite3_exec(db_, version_sql.c_str(), nullptr, nullptr, nullptr) == SQLITE_OK) {
-            std::cout << "[UTXOIndex] Schema upgraded to version " << CURRENT_SCHEMA_VERSION << std::endl;
-        }
-    }
-
-    return true;
 }
 
 bool UTXOIndex::PrepareStatements() {
@@ -303,8 +309,8 @@ bool UTXOIndex::PrepareStatements() {
         INSERT INTO wallet_utxos
         (txid, vout, value, spk, path, height, spend_height, is_coinbase,
          utreexo_position,
-         is_confidential, commitment, range_proof, blinding_factor, nonce)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         is_confidential, commitment, range_proof, blinding_factor, nonce, owner_kind, owner_reference)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(txid, vout) DO UPDATE SET
           value            = CASE WHEN excluded.blinding_factor IS NOT NULL
                                   THEN excluded.value
@@ -319,7 +325,13 @@ bool UTXOIndex::PrepareStatements() {
           commitment       = excluded.commitment,
           range_proof      = excluded.range_proof,
           blinding_factor  = COALESCE(excluded.blinding_factor, wallet_utxos.blinding_factor),
-          nonce            = COALESCE(excluded.nonce, wallet_utxos.nonce)
+          nonce            = COALESCE(excluded.nonce, wallet_utxos.nonce),
+          owner_kind       = excluded.owner_kind,
+          owner_reference  = excluded.owner_reference
+        WHERE wallet_utxos.spk IS excluded.spk
+          AND wallet_utxos.path IS excluded.path
+          AND wallet_utxos.owner_kind IS excluded.owner_kind
+          AND wallet_utxos.owner_reference IS excluded.owner_reference
     )";
 
     if (sqlite3_prepare_v2(db_, add_sql, -1, &stmt_add_utxo_, nullptr) != SQLITE_OK) {
@@ -340,7 +352,8 @@ bool UTXOIndex::PrepareStatements() {
     
     // Get unspent UTXOs statement
     const char* unspent_sql = R"(
-        SELECT txid, vout, value, spk, path, height 
+        SELECT txid, vout, value, spk, path, height, spend_height, is_coinbase, is_confidential,
+               commitment, range_proof, blinding_factor, nonce, utreexo_position, owner_kind, owner_reference
         FROM wallet_utxos 
         WHERE spend_height IS NULL 
         ORDER BY value DESC
@@ -377,7 +390,7 @@ bool UTXOIndex::PrepareStatements() {
     // Get specific UTXO statement
     const char* get_utxo_sql = R"(
         SELECT txid, vout, value, spk, path, height, spend_height, is_coinbase, is_confidential,
-               commitment, range_proof, blinding_factor, nonce
+               commitment, range_proof, blinding_factor, nonce, utreexo_position, owner_kind, owner_reference
         FROM wallet_utxos
         WHERE txid = ? AND vout = ?
     )";
@@ -413,6 +426,9 @@ void UTXOIndex::FinalizeStatements() {
 }
 
 bool UTXOIndex::AddUTXO(const WalletUTXO& utxo) {
+    // A public provenance tag is not an authenticated inventory or chain proof.
+    if (utxo.owner_kind != WalletOutputOwner::RecordedPath || !utxo.owner_reference.empty())
+        return false;
     // ═══════════════════════════════════════════════════════════════════════════
     // WALLET INVARIANT: Every UTXO must have a valid derivation path
     // ═══════════════════════════════════════════════════════════════════════════
@@ -434,73 +450,50 @@ bool UTXOIndex::AddUTXO(const WalletUTXO& utxo) {
         return false;
     }
 
-    // ✅ LOCK: Protect all SQLite operations (statements not thread-safe)
+    return AddUTXORow(utxo);
+}
+
+bool UTXOIndex::AddUTXOForDelivery(const WalletUTXO& utxo,
+        const std::map<std::vector<uint8_t>,std::string>& authenticated_historical) {
     std::lock_guard<std::recursive_mutex> lock(db_mutex_);
+    if (!db_ || !atomic_write_active_ || sqlite3_get_autocommit(db_)) return false;
+    if (utxo.owner_kind == WalletOutputOwner::RecordedPath) return AddUTXO(utxo);
+    if (utxo.owner_kind != WalletOutputOwner::HistoricalImport || !utxo.path.empty() ||
+        utxo.is_confidential || utxo.owner_reference.empty() || utxo.owner_reference.size() > 128 ||
+        utxo.owner_reference.find('\0') != std::string::npos) return false;
+    const auto found = authenticated_historical.find(utxo.spk);
+    if (found == authenticated_historical.end() || found->second != utxo.owner_reference) return false;
+    return AddUTXORow(utxo);
+}
 
-    sqlite3_reset(stmt_add_utxo_);
-
-    // Bind standard fields (1-8)
-    std::string txid_hex = utxo.txid.AsUint256().GetHex();  // Phase M.4: Convert to hex for SQLite storage
-    sqlite3_bind_text(stmt_add_utxo_, 1, txid_hex.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_int(stmt_add_utxo_, 2, utxo.vout);
-    // Phase M.6.2: SQLite boundary - extract raw value (safe: MAX_SUPPLY < INT64_MAX)
-    sqlite3_bind_int64(stmt_add_utxo_, 3, utxo.value.GetInt64());
-    sqlite3_bind_blob(stmt_add_utxo_, 4, utxo.spk.data(), utxo.spk.size(), SQLITE_STATIC);
-    sqlite3_bind_text(stmt_add_utxo_, 5, utxo.path.c_str(), -1, SQLITE_STATIC);
-    sqlite3_bind_int(stmt_add_utxo_, 6, utxo.height);
-
-    if (utxo.spend_height) {
-        sqlite3_bind_int(stmt_add_utxo_, 7, *utxo.spend_height);
-    } else {
-        sqlite3_bind_null(stmt_add_utxo_, 7);
+bool UTXOIndex::AddUTXORow(const WalletUTXO& utxo) {
+    std::lock_guard<std::recursive_mutex> lock(db_mutex_);
+    if (!db_ || !stmt_add_utxo_ || utxo.value.GetUna() > uint64_t(INT64_MAX) ||
+        (utxo.utreexo_position && *utxo.utreexo_position > uint64_t(INT64_MAX)) ||
+        utxo.path.find('\0') != std::string::npos) return false;
+    auto* q=stmt_add_utxo_;sqlite3_reset(q);sqlite3_clear_bindings(q);
+    struct Reset {sqlite3_stmt* q;~Reset(){sqlite3_reset(q);sqlite3_clear_bindings(q);}} reset{q};
+    bool bound=true;
+    const auto integer=[&](int n,int64_t value){bound &= sqlite3_bind_int64(q,n,value)==SQLITE_OK;};
+    const auto text=[&](int n,const std::string& value){
+        bound &= value.size()<=size_t(INT_MAX) && sqlite3_bind_text(q,n,value.data(),int(value.size()),SQLITE_TRANSIENT)==SQLITE_OK;
+    };
+    const auto blob=[&](int n,const std::vector<uint8_t>& value){
+        bound &= value.size()<=size_t(INT_MAX) && sqlite3_bind_blob(q,n,value.data(),int(value.size()),SQLITE_TRANSIENT)==SQLITE_OK;
+    };
+    const auto null=[&](int n){bound &= sqlite3_bind_null(q,n)==SQLITE_OK;};
+    text(1,utxo.txid.AsUint256().GetHex());integer(2,utxo.vout);integer(3,utxo.value.GetUna());
+    blob(4,utxo.spk);text(5,utxo.path);integer(6,utxo.height);
+    if(utxo.spend_height)integer(7,*utxo.spend_height);else null(7);
+    integer(8,utxo.is_coinbase);if(utxo.utreexo_position)integer(9,*utxo.utreexo_position);else null(9);
+    integer(10,utxo.is_confidential);
+    for(const auto& item: {std::pair{11,&utxo.commitment},std::pair{12,&utxo.range_proof},
+                          std::pair{13,&utxo.blinding_factor},std::pair{14,&utxo.nonce}}) {
+        if(utxo.is_confidential && !item.second->empty())blob(item.first,*item.second);else null(item.first);
     }
-
-    sqlite3_bind_int(stmt_add_utxo_, 8, utxo.is_coinbase ? 1 : 0);
-
-    // Phase 11a: Bind Utreexo position (9)
-    if (utxo.utreexo_position.has_value()) {
-        sqlite3_bind_int64(stmt_add_utxo_, 9, static_cast<sqlite3_int64>(utxo.utreexo_position.value()));
-    } else {
-        sqlite3_bind_null(stmt_add_utxo_, 9);
-    }
-
-    // Bind confidential fields (10-14)
-    sqlite3_bind_int(stmt_add_utxo_, 10, utxo.is_confidential ? 1 : 0);
-
-    if (utxo.is_confidential && !utxo.commitment.empty()) {
-        sqlite3_bind_blob(stmt_add_utxo_, 11, utxo.commitment.data(), utxo.commitment.size(), SQLITE_STATIC);
-    } else {
-        sqlite3_bind_null(stmt_add_utxo_, 11);
-    }
-
-    if (utxo.is_confidential && !utxo.range_proof.empty()) {
-        sqlite3_bind_blob(stmt_add_utxo_, 12, utxo.range_proof.data(), utxo.range_proof.size(), SQLITE_STATIC);
-    } else {
-        sqlite3_bind_null(stmt_add_utxo_, 12);
-    }
-
-    if (utxo.is_confidential && !utxo.blinding_factor.empty()) {
-        sqlite3_bind_blob(stmt_add_utxo_, 13, utxo.blinding_factor.data(), utxo.blinding_factor.size(), SQLITE_STATIC);
-    } else {
-        sqlite3_bind_null(stmt_add_utxo_, 13);
-    }
-
-    if (utxo.is_confidential && !utxo.nonce.empty()) {
-        sqlite3_bind_blob(stmt_add_utxo_, 14, utxo.nonce.data(), utxo.nonce.size(), SQLITE_STATIC);
-    } else {
-        sqlite3_bind_null(stmt_add_utxo_, 14);
-    }
-
-    int rc = sqlite3_step(stmt_add_utxo_);
-    if (rc != SQLITE_DONE) {
-        std::cerr << "ERROR: Failed to add UTXO: " << sqlite3_errmsg(db_)
-                  << " (code: " << rc << ", extended: " << sqlite3_extended_errcode(db_) << ")" << std::endl;
-        std::cerr << "       stmt_add_utxo_ pointer: " << (void*)stmt_add_utxo_ << std::endl;
-        std::cerr << "       db_ pointer: " << (void*)db_ << std::endl;
-        return false;
-    }
-
-    return true;
+    integer(15,static_cast<uint8_t>(utxo.owner_kind));text(16,utxo.owner_reference);
+    // A conflict with different provenance must not silently replace an owner.
+    return bound && sqlite3_step(q)==SQLITE_DONE && sqlite3_changes(db_)==1;
 }
 
 bool UTXOIndex::SpendUTXO(const TxId& txid, uint32_t vout, uint32_t height) {
@@ -573,123 +566,75 @@ bool UTXOIndex::IsUTXOSpent(const TxId& txid, uint32_t vout) const {
     return false; // UTXO not found, consider unspent
 }
 
-std::vector<WalletUTXO> UTXOIndex::GetUnspentUTXOs() const {
-    // ✅ LOCK: Protect all SQLite operations (statements not thread-safe)
-    std::lock_guard<std::recursive_mutex> lock(db_mutex_);
-
-    std::vector<WalletUTXO> utxos;
-    sqlite3_reset(stmt_get_unspent_);
-
-    while (sqlite3_step(stmt_get_unspent_) == SQLITE_ROW) {
-        WalletUTXO utxo;
-        // Phase M.0: Convert hex string from database to uint256
-        std::string txid_hex = reinterpret_cast<const char*>(sqlite3_column_text(stmt_get_unspent_, 0));
-        utxo.txid = TxId(uint256::FromHexUnsafe(txid_hex));
-        utxo.vout = sqlite3_column_int(stmt_get_unspent_, 1);
-        // Phase M.6.2: SQLite boundary - wrap value in AmountUna
-        utxo.value = AmountUna::Una(static_cast<uint64_t>(sqlite3_column_int64(stmt_get_unspent_, 2)));
-
-        // Get scriptPubKey blob
-        const void* spk_data = sqlite3_column_blob(stmt_get_unspent_, 3);
-        int spk_size = sqlite3_column_bytes(stmt_get_unspent_, 3);
-        utxo.spk.assign(static_cast<const uint8_t*>(spk_data),
-                       static_cast<const uint8_t*>(spk_data) + spk_size);
-
-        utxo.path = reinterpret_cast<const char*>(sqlite3_column_text(stmt_get_unspent_, 4));
-        utxo.height = sqlite3_column_int(stmt_get_unspent_, 5);
-
-        // ═══════════════════════════════════════════════════════════════════════════
-        // WALLET INVARIANT: Balance must never include pathless UTXOs
-        // ═══════════════════════════════════════════════════════════════════════════
-        // A UTXO without a derivation path is NOT owned. No exceptions.
-        // If we find such a UTXO in the database, it indicates corruption or bug.
-        // ═══════════════════════════════════════════════════════════════════════════
-        if (!IsValidDerivationPath(utxo.path) && !IsExternalPath(utxo.path)) {
-            std::cerr << "ERROR [GetUnspentUTXOs] INVARIANT VIOLATION: Pathless UTXO in database" << std::endl;
-            std::cerr << "  txid: " << txid_hex << std::endl;
-            std::cerr << "  vout: " << utxo.vout << std::endl;
-            std::cerr << "  path: \"" << utxo.path << "\"" << std::endl;
-            std::cerr << "  This UTXO should not exist in wallet database!" << std::endl;
-            assert(false && "WALLET INVARIANT: Balance includes UTXO without derivation path");
-            // In release builds, skip this UTXO (don't include in balance)
-            continue;
-        }
-
-        utxos.push_back(utxo);
+WalletUTXO UTXOIndex::DecodeOwnedRow(sqlite3_stmt* q) const {
+    const auto integer=[&](int n,int64_t low,int64_t high) {
+        if(sqlite3_column_type(q,n)!=SQLITE_INTEGER)throw std::runtime_error("Wallet coin integer type invalid");
+        const auto value=sqlite3_column_int64(q,n);
+        if(value<low || value>high)throw std::runtime_error("Wallet coin integer out of range");
+        return value;
+    };
+    const auto text=[&](int n) {
+        if(sqlite3_column_type(q,n)!=SQLITE_TEXT)throw std::runtime_error("Wallet coin text type invalid");
+        const auto* value=reinterpret_cast<const char*>(sqlite3_column_text(q,n));const int size=sqlite3_column_bytes(q,n);
+        if(!value || size<0 || std::memchr(value,0,size))throw std::runtime_error("Wallet coin text malformed");
+        return std::string(value,size);
+    };
+    const auto blob=[&](int n,bool optional) {
+        if(optional && sqlite3_column_type(q,n)==SQLITE_NULL)return std::vector<uint8_t>{};
+        if(sqlite3_column_type(q,n)!=SQLITE_BLOB)throw std::runtime_error("Wallet coin blob type invalid");
+        const auto* value=static_cast<const uint8_t*>(sqlite3_column_blob(q,n));const int size=sqlite3_column_bytes(q,n);
+        if(size<0 || (!value && size) || (!optional && !size))throw std::runtime_error("Wallet coin blob malformed");
+        return size?std::vector<uint8_t>(value,value+size):std::vector<uint8_t>{};
+    };
+    WalletUTXO result;const auto id=text(0);
+    if(id.size()!=64 || !std::all_of(id.begin(),id.end(),[](char c){return (c>='0'&&c<='9')||(c>='a'&&c<='f');}))
+        throw std::runtime_error("Wallet coin transaction id malformed");
+    result.txid=TxId(uint256::FromHexUnsafe(id));result.vout=uint32_t(integer(1,0,UINT32_MAX));
+    result.value=AmountUna::Una(uint64_t(integer(2,0,INT64_MAX)));result.spk=blob(3,false);result.path=text(4);
+    result.height=int(integer(5,INT_MIN,INT_MAX));
+    if(sqlite3_column_type(q,6)!=SQLITE_NULL)result.spend_height=int(integer(6,INT_MIN,INT_MAX));
+    result.is_coinbase=integer(7,0,1);result.is_confidential=integer(8,0,1);
+    result.commitment=blob(9,true);result.range_proof=blob(10,true);
+    result.blinding_factor=blob(11,true);result.nonce=blob(12,true);
+    if(sqlite3_column_type(q,13)!=SQLITE_NULL)result.utreexo_position=uint64_t(integer(13,0,INT64_MAX));
+    result.owner_kind=static_cast<WalletOutputOwner>(integer(14,0,1));result.owner_reference=text(15);
+    if(result.owner_kind==WalletOutputOwner::RecordedPath) {
+        if(!result.owner_reference.empty() || (!IsValidDerivationPath(result.path)&&!IsExternalPath(result.path)))
+            throw std::runtime_error("Wallet coin recorded path invalid");
+    } else {
+        const auto owner=historical_scripts_.find(result.spk);
+        if(!result.path.empty() || result.is_confidential || result.owner_reference.empty() || result.owner_reference.size()>128 ||
+           owner==historical_scripts_.end() || owner->second!=result.owner_reference)
+            throw std::runtime_error("Wallet historical coin has no authenticated live owner");
     }
-
-    return utxos;
+    return result;
 }
 
-std::optional<WalletUTXO> UTXOIndex::GetUTXO(const TxId& txid, uint32_t vout) const {
-    // ✅ LOCK: Protect all SQLite operations (statements not thread-safe)
+std::vector<WalletUTXO> UTXOIndex::GetUnspentUTXOs() const {
     std::lock_guard<std::recursive_mutex> lock(db_mutex_);
+    if(!db_ || !stmt_get_unspent_)throw std::runtime_error("Wallet coin reader unavailable");
+    auto* q=stmt_get_unspent_;sqlite3_reset(q);
+    struct Reset {sqlite3_stmt* q;~Reset(){sqlite3_reset(q);}} reset{q};
+    std::vector<WalletUTXO> result;int rc;
+    while((rc=sqlite3_step(q))==SQLITE_ROW)result.push_back(DecodeOwnedRow(q));
+    if(rc!=SQLITE_DONE)throw std::runtime_error("Wallet coin inventory incomplete");
+    return result;
+}
 
-    sqlite3_reset(stmt_get_utxo_);
-
-    std::string txid_hex = txid.AsUint256().GetHex();  // Phase M.4.3-B Step 3: Explicit DB boundary
-    sqlite3_bind_text(stmt_get_utxo_, 1, txid_hex.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_int(stmt_get_utxo_, 2, vout);
-
-    if (sqlite3_step(stmt_get_utxo_) == SQLITE_ROW) {
-        WalletUTXO utxo;
-        // Phase M.0: Convert hex string from database to uint256
-        std::string txid_from_db = reinterpret_cast<const char*>(sqlite3_column_text(stmt_get_utxo_, 0));
-        utxo.txid = TxId(uint256::FromHexUnsafe(txid_from_db));
-        utxo.vout = sqlite3_column_int(stmt_get_utxo_, 1);
-        // Phase M.6.2: SQLite boundary - wrap value in AmountUna
-        utxo.value = AmountUna::Una(static_cast<uint64_t>(sqlite3_column_int64(stmt_get_utxo_, 2)));
-        
-        // Get scriptPubKey blob
-        const void* spk_data = sqlite3_column_blob(stmt_get_utxo_, 3);
-        int spk_size = sqlite3_column_bytes(stmt_get_utxo_, 3);
-        utxo.spk.assign(static_cast<const uint8_t*>(spk_data), 
-                       static_cast<const uint8_t*>(spk_data) + spk_size);
-        
-        utxo.path = reinterpret_cast<const char*>(sqlite3_column_text(stmt_get_utxo_, 4));
-        utxo.height = sqlite3_column_int(stmt_get_utxo_, 5);
-        
-        // Check spend_height
-        if (sqlite3_column_type(stmt_get_utxo_, 6) != SQLITE_NULL) {
-            utxo.spend_height = sqlite3_column_int(stmt_get_utxo_, 6);
-        }
-
-        // Read is_coinbase (column 7)
-        utxo.is_coinbase = (sqlite3_column_int(stmt_get_utxo_, 7) != 0);
-
-        // Read is_confidential (column 8)
-        utxo.is_confidential = (sqlite3_column_int(stmt_get_utxo_, 8) != 0);
-
-        // Read CT fields (columns 9-12)
-        if (sqlite3_column_type(stmt_get_utxo_, 9) != SQLITE_NULL) {
-            const void* commit_data = sqlite3_column_blob(stmt_get_utxo_, 9);
-            int commit_size = sqlite3_column_bytes(stmt_get_utxo_, 9);
-            utxo.commitment.assign(static_cast<const uint8_t*>(commit_data),
-                                   static_cast<const uint8_t*>(commit_data) + commit_size);
-        }
-        if (sqlite3_column_type(stmt_get_utxo_, 10) != SQLITE_NULL) {
-            const void* rp_data = sqlite3_column_blob(stmt_get_utxo_, 10);
-            int rp_size = sqlite3_column_bytes(stmt_get_utxo_, 10);
-            utxo.range_proof.assign(static_cast<const uint8_t*>(rp_data),
-                                    static_cast<const uint8_t*>(rp_data) + rp_size);
-        }
-        if (sqlite3_column_type(stmt_get_utxo_, 11) != SQLITE_NULL) {
-            const void* blind_data = sqlite3_column_blob(stmt_get_utxo_, 11);
-            int blind_size = sqlite3_column_bytes(stmt_get_utxo_, 11);
-            utxo.blinding_factor.assign(static_cast<const uint8_t*>(blind_data),
-                                        static_cast<const uint8_t*>(blind_data) + blind_size);
-        }
-        if (sqlite3_column_type(stmt_get_utxo_, 12) != SQLITE_NULL) {
-            const void* nonce_data = sqlite3_column_blob(stmt_get_utxo_, 12);
-            int nonce_size = sqlite3_column_bytes(stmt_get_utxo_, 12);
-            utxo.nonce.assign(static_cast<const uint8_t*>(nonce_data),
-                              static_cast<const uint8_t*>(nonce_data) + nonce_size);
-        }
-
-        return utxo;
-    }
-    
-    return std::nullopt;  // UTXO not found
+std::optional<WalletUTXO> UTXOIndex::GetUTXO(const TxId& txid,uint32_t vout) const {
+    std::lock_guard<std::recursive_mutex> lock(db_mutex_);
+    if(!db_ || !stmt_get_utxo_)throw std::runtime_error("Wallet coin reader unavailable");
+    auto* q=stmt_get_utxo_;sqlite3_reset(q);sqlite3_clear_bindings(q);
+    struct Reset {sqlite3_stmt* q;~Reset(){sqlite3_reset(q);sqlite3_clear_bindings(q);}} reset{q};
+    const auto id=txid.AsUint256().GetHex();
+    if(sqlite3_bind_text(q,1,id.data(),int(id.size()),SQLITE_TRANSIENT)!=SQLITE_OK ||
+       sqlite3_bind_int64(q,2,vout)!=SQLITE_OK)throw std::runtime_error("Wallet coin lookup binding failed");
+    const int rc=sqlite3_step(q);if(rc==SQLITE_DONE)return {};
+    if(rc!=SQLITE_ROW)throw std::runtime_error("Wallet coin lookup failed");
+    auto result=DecodeOwnedRow(q);
+    if(result.txid!=txid || result.vout!=vout || sqlite3_step(q)!=SQLITE_DONE)
+        throw std::runtime_error("Wallet coin lookup incomplete");
+    return result;
 }
 
 bool UTXOIndex::GetUTXO(const TxId& txid, uint32_t vout, WalletUTXO& utxo) const {
@@ -703,46 +648,25 @@ bool UTXOIndex::GetUTXO(const TxId& txid, uint32_t vout, WalletUTXO& utxo) const
 
 // Phase M.6.2: Return AmountUna for type safety
 AmountUna UTXOIndex::GetBalance() const {
-    // ✅ LOCK: Protect all SQLite operations (statements not thread-safe)
-    std::lock_guard<std::recursive_mutex> lock(db_mutex_);
-
-    sqlite3_reset(stmt_get_balance_);
-
-    if (sqlite3_step(stmt_get_balance_) == SQLITE_ROW) {
-        int64_t raw = sqlite3_column_int64(stmt_get_balance_, 0);
-        return AmountUna::Una(static_cast<uint64_t>(raw < 0 ? 0 : raw));
+    auto balance=AmountUna::Zero();
+    for(const auto& coin:GetUnspentUTXOs()) {
+        const auto next=balance.Add(coin.value);
+        if(!next)throw std::runtime_error("Wallet balance overflow");balance=*next;
     }
-
-    return AmountUna::Zero();
+    return balance;
 }
 
-// Phase M.6.2: Return AmountUna for type safety
 AmountUna UTXOIndex::GetBalanceForPath(const std::string& path_prefix) const {
-    // ✅ LOCK: Protect all SQLite operations (statements not thread-safe)
+    // LIKE remains SQLite's existing path selection rule. Validate all rows in
+    // the same implicit read snapshot; an unauthenticated owner is not zero.
     std::lock_guard<std::recursive_mutex> lock(db_mutex_);
-
-    const char* sql = R"(
-        SELECT COALESCE(SUM(value), 0)
-        FROM wallet_utxos
-        WHERE spend_height IS NULL AND path LIKE ?
-    )";
-
-    sqlite3_stmt* stmt;
-    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
-        return AmountUna::Zero();
+    auto balance=AmountUna::Zero();const std::string pattern=path_prefix+"%";
+    for(const auto& coin:GetUnspentUTXOs()) {
+        if(coin.owner_kind!=WalletOutputOwner::RecordedPath || sqlite3_strlike(pattern.c_str(),coin.path.c_str(),0)!=0)continue;
+        const auto next=balance.Add(coin.value);
+        if(!next)throw std::runtime_error("Wallet balance overflow");balance=*next;
     }
-
-    std::string pattern = path_prefix + "%";
-    sqlite3_bind_text(stmt, 1, pattern.c_str(), -1, SQLITE_STATIC);
-
-    int64_t balance = 0;
-    if (sqlite3_step(stmt) == SQLITE_ROW) {
-        balance = sqlite3_column_int64(stmt, 0);
-    }
-
-    sqlite3_finalize(stmt);
-    // Phase M.6.2: Wrap in AmountUna for type safety
-    return AmountUna::Una(static_cast<uint64_t>(balance < 0 ? 0 : balance));
+    return balance;
 }
 
 // Phase 44.1: UTXO count for AssumeUTXO verification
@@ -768,107 +692,28 @@ Result<uint64_t> UTXOIndex::GetUTXOCount() const {
 }
 
 BalanceDetail UTXOIndex::GetBalanceWithMaturity(int current_height) const {
-    // ✅ LOCK: Protect all SQLite operations (statements not thread-safe)
     std::lock_guard<std::recursive_mutex> lock(db_mutex_);
-
-    BalanceDetail result;
-
-    // Query 1: Get confirmed balance (all non-coinbase + mature coinbase)
-    // Mature coinbase = current_height - height >= 100
-    const char* confirmed_sql = R"(
-        SELECT COALESCE(SUM(value), 0)
-        FROM wallet_utxos
-        WHERE spend_height IS NULL
-          AND (is_coinbase = 0 OR (? - height) >= 100)
-    )";
-
-    sqlite3_stmt* stmt_confirmed;
-    if (sqlite3_prepare_v2(db_, confirmed_sql, -1, &stmt_confirmed, nullptr) == SQLITE_OK) {
-        sqlite3_bind_int(stmt_confirmed, 1, current_height);
-        if (sqlite3_step(stmt_confirmed) == SQLITE_ROW) {
-            // Phase M.6.2: Wrap value in AmountUna
-            int64_t raw = sqlite3_column_int64(stmt_confirmed, 0);
-            result.confirmed = AmountUna::Una(static_cast<uint64_t>(raw < 0 ? 0 : raw));
-        }
-        sqlite3_finalize(stmt_confirmed);
+    const auto coins=GetUnspentUTXOs();BalanceDetail result;
+    const auto add=[](AmountUna& target,AmountUna value) {
+        const auto next=target.Add(value);if(!next)throw std::runtime_error("Wallet balance overflow");target=*next;
+    };
+    std::lock_guard<std::mutex> scripts(scripts_mutex_);
+    for(const auto& coin:coins) {
+        // Retain the existing index API maturity convention; spend selection
+        // separately checks the candidate block height.
+        if(!coin.is_coinbase || int64_t(current_height)-coin.height>=100)add(result.confirmed,coin.value);
+        else add(result.immature,coin.value);
+        if(coin.is_confidential && watched_scripts_.contains(coin.spk))add(result.confidential,coin.value);
     }
-
-    // Query 2: Get immature balance (coinbase with < 100 confirmations)
-    const char* immature_sql = R"(
-        SELECT COALESCE(SUM(value), 0)
-        FROM wallet_utxos
-        WHERE spend_height IS NULL
-          AND is_coinbase = 1
-          AND (? - height) < 100
-    )";
-
-    sqlite3_stmt* stmt_immature;
-    if (sqlite3_prepare_v2(db_, immature_sql, -1, &stmt_immature, nullptr) == SQLITE_OK) {
-        sqlite3_bind_int(stmt_immature, 1, current_height);
-        if (sqlite3_step(stmt_immature) == SQLITE_ROW) {
-            // Phase M.6.2: Wrap value in AmountUna
-            int64_t raw = sqlite3_column_int64(stmt_immature, 0);
-            result.immature = AmountUna::Una(static_cast<uint64_t>(raw < 0 ? 0 : raw));
-        }
-        sqlite3_finalize(stmt_immature);
-    }
-
-    // Phase M.6.3: Use checked arithmetic (overflow safe)
-    auto total_result = result.confirmed.Add(result.immature);
-    result.total = total_result.value_or(AmountUna::Zero());
-
-    // Query 3: Get confidential balance (Phase F - ZK privacy), filtered to
-    // watch scripts owned by the currently active wallet.
-    const char* confidential_sql = R"(
-        SELECT value, spk
-        FROM wallet_utxos
-        WHERE is_confidential = 1 AND spend_height IS NULL
-    )";
-
-    sqlite3_stmt* stmt_confidential;
-    if (sqlite3_prepare_v2(db_, confidential_sql, -1, &stmt_confidential, nullptr) == SQLITE_OK) {
-        uint64_t confidential_raw = 0;
-        while (sqlite3_step(stmt_confidential) == SQLITE_ROW) {
-            const void* spk_data = sqlite3_column_blob(stmt_confidential, 1);
-            const int spk_size = sqlite3_column_bytes(stmt_confidential, 1);
-            if (!spk_data || spk_size <= 0) {
-                continue;
-            }
-
-            std::vector<uint8_t> spk(static_cast<const uint8_t*>(spk_data),
-                                     static_cast<const uint8_t*>(spk_data) + spk_size);
-            {
-                std::lock_guard<std::mutex> scripts_lock(scripts_mutex_);
-                if (watched_scripts_.find(spk) == watched_scripts_.end()) {
-                    continue;
-                }
-            }
-
-            const int64_t raw = sqlite3_column_int64(stmt_confidential, 0);
-            if (raw > 0) {
-                confidential_raw += static_cast<uint64_t>(raw);
-            }
-        }
-        result.confidential = AmountUna::Una(confidential_raw);
-        sqlite3_finalize(stmt_confidential);
-    }
-
-    // Phase M.6.3: Use checked arithmetic (overflow safe)
-    auto total_with_conf_result = result.total.Add(result.confidential);
-    result.total_with_conf = total_with_conf_result.value_or(result.total);
-
-    // Phase M.6.2: Extract values for logging
-    std::cout << "INFO: Balance detail at height " << current_height << ": "
-              << "confirmed=" << result.confirmed.GetUna() << " sats, "
-              << "immature=" << result.immature.GetUna() << " sats, "
-              << "total=" << result.total.GetUna() << " sats, "
-              << "confidential=" << result.confidential.GetUna() << " sats, "
-              << "total_with_conf=" << result.total_with_conf.GetUna() << " sats" << std::endl;
-
+    result.total=result.confirmed;add(result.total,result.immature);
+    result.total_with_conf=result.total;add(result.total_with_conf,result.confidential);
     return result;
 }
 
 std::optional<std::string> UTXOIndex::IsOurScript(const std::vector<uint8_t>& scriptPubKey) const {
+    std::lock_guard<std::recursive_mutex> database(db_mutex_);
+    if(historical_scripts_.contains(scriptPubKey))
+        throw std::runtime_error("Historical script requires typed canonical wallet delivery");
     std::lock_guard<std::mutex> lock(scripts_mutex_);
 
     auto it = watched_scripts_.find(scriptPubKey);
@@ -899,7 +744,9 @@ void UTXOIndex::MergeRegisteredAddresses(const std::map<std::vector<uint8_t>, st
 }
 
 void UTXOIndex::ClearRegisteredAddresses() {
+    std::lock_guard<std::recursive_mutex> database(db_mutex_);
     std::lock_guard<std::mutex> lock(scripts_mutex_);
+    historical_scripts_.clear();
     watched_scripts_.clear();
 }
 
@@ -1043,6 +890,11 @@ void UTXOIndex::ScanBlockIdempotent(int height, const std::string& block_hash,
     std::lock_guard<std::recursive_mutex> lock(db_mutex_);
     if (atomic_write_active_)
         throw std::logic_error("Cannot replace owned wallet UTXO transaction");
+
+    // This legacy path receives no authenticated wallet inventory or checked
+    // canonical event. It cannot silently skip or relabel historical coins.
+    if(!historical_scripts_.empty())
+        throw std::runtime_error("Historical owners require canonical wallet delivery");
 
     // Begin transaction for atomic block processing
     sqlite3_exec(db_, "BEGIN TRANSACTION", nullptr, nullptr, nullptr);
@@ -1256,116 +1108,37 @@ bool UTXOIndex::AddConfidentialUTXO(const ZKOutput& zk_output) {
 }
 
 std::vector<WalletUTXO> UTXOIndex::GetConfidentialUTXOs() const {
-    // ✅ LOCK: Protect all SQLite operations (statements not thread-safe)
     std::lock_guard<std::recursive_mutex> lock(db_mutex_);
-
-    std::vector<WalletUTXO> utxos;
-
-    // Query all unspent confidential UTXOs with all fields
-    const char* sql = R"(
-        SELECT txid, vout, value, spk, path, height, is_coinbase,
-               commitment, range_proof, blinding_factor, nonce
-        FROM wallet_utxos
-        WHERE is_confidential = 1 AND spend_height IS NULL
-        ORDER BY value DESC
-    )";
-
-    sqlite3_stmt* stmt;
-    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
-        std::cerr << "ERROR: Failed to prepare get confidential UTXOs statement: "
-                  << sqlite3_errmsg(db_) << std::endl;
-        return utxos;
+    const auto coins=GetUnspentUTXOs();std::vector<WalletUTXO> result;
+    std::lock_guard<std::mutex> scripts(scripts_mutex_);
+    for(auto coin:coins) {
+        if(!coin.is_confidential)continue;
+        const auto owned=watched_scripts_.find(coin.spk);if(owned==watched_scripts_.end())continue;
+        // Preserve the existing CT display-path selection from live watchers.
+        coin.path=owned->second;result.push_back(std::move(coin));
     }
-
-    while (sqlite3_step(stmt) == SQLITE_ROW) {
-        WalletUTXO utxo;
-        // Phase M.0: Convert hex string from database to uint256
-        std::string txid_hex = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
-        utxo.txid = TxId(uint256::FromHexUnsafe(txid_hex));
-        utxo.vout = sqlite3_column_int(stmt, 1);
-        // Phase M.6.2: SQLite boundary - wrap value in AmountUna
-        utxo.value = AmountUna::Una(static_cast<uint64_t>(sqlite3_column_int64(stmt, 2)));
-
-        // Get scriptPubKey blob
-        const void* spk_data = sqlite3_column_blob(stmt, 3);
-        int spk_size = sqlite3_column_bytes(stmt, 3);
-        if (spk_data && spk_size > 0) {
-            utxo.spk.assign(static_cast<const uint8_t*>(spk_data),
-                           static_cast<const uint8_t*>(spk_data) + spk_size);
-        }
-
-        utxo.path = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 4));
-        utxo.height = sqlite3_column_int(stmt, 5);
-        utxo.is_coinbase = sqlite3_column_int(stmt, 6) != 0;
-        utxo.is_confidential = true;
-
-        // Load commitment
-        const void* commitment_data = sqlite3_column_blob(stmt, 7);
-        int commitment_size = sqlite3_column_bytes(stmt, 7);
-        if (commitment_data && commitment_size > 0) {
-            utxo.commitment.assign(static_cast<const uint8_t*>(commitment_data),
-                                  static_cast<const uint8_t*>(commitment_data) + commitment_size);
-        }
-
-        // Load range proof
-        const void* proof_data = sqlite3_column_blob(stmt, 8);
-        int proof_size = sqlite3_column_bytes(stmt, 8);
-        if (proof_data && proof_size > 0) {
-            utxo.range_proof.assign(static_cast<const uint8_t*>(proof_data),
-                                   static_cast<const uint8_t*>(proof_data) + proof_size);
-        }
-
-        // Load blinding factor
-        const void* blind_data = sqlite3_column_blob(stmt, 9);
-        int blind_size = sqlite3_column_bytes(stmt, 9);
-        if (blind_data && blind_size > 0) {
-            utxo.blinding_factor.assign(static_cast<const uint8_t*>(blind_data),
-                                       static_cast<const uint8_t*>(blind_data) + blind_size);
-        }
-
-        // Load nonce
-        const void* nonce_data = sqlite3_column_blob(stmt, 10);
-        int nonce_size = sqlite3_column_bytes(stmt, 10);
-        if (nonce_data && nonce_size > 0) {
-            utxo.nonce.assign(static_cast<const uint8_t*>(nonce_data),
-                            static_cast<const uint8_t*>(nonce_data) + nonce_size);
-        }
-
-        // Confidential UTXOs live in a shared chainstate DB. Only expose rows
-        // whose script is currently registered to this wallet, and prefer the
-        // live watch-script path over any stale persisted path on the row.
-        {
-            std::lock_guard<std::mutex> scripts_lock(scripts_mutex_);
-            auto watch_it = watched_scripts_.find(utxo.spk);
-            if (watch_it == watched_scripts_.end()) {
-                continue;
-            }
-            utxo.path = watch_it->second;
-        }
-
-        utxos.push_back(utxo);
-    }
-
-    sqlite3_finalize(stmt);
-    return utxos;
+    return result;
 }
 
-// Phase M.6.2: Return AmountUna for type safety
 AmountUna UTXOIndex::GetConfidentialBalance() const {
-    uint64_t balance = 0;
-    for (const auto& utxo : GetConfidentialUTXOs()) {
-        balance += utxo.value.GetUna();
+    auto balance=AmountUna::Zero();
+    for(const auto& coin:GetConfidentialUTXOs()) {
+        const auto next=balance.Add(coin.value);if(!next)throw std::runtime_error("Wallet balance overflow");balance=*next;
     }
-    return AmountUna::Una(balance);
+    return balance;
 }
 
-// Phase M.6.2: Return AmountUna for type safety
 AmountUna UTXOIndex::GetTotalBalance() const {
-    // Return combined transparent + confidential balance
-    // Each method has its own lock, so no need for additional locking here
-    // Phase M.6.3: Use checked arithmetic (overflow safe)
-    auto result = GetBalance().Add(GetConfidentialBalance());
-    return result.value_or(GetBalance());  // If overflow, return just transparent balance
+    // Derive both components from one checked inventory/snapshot, retaining
+    // this API's existing inclusive base plus watched confidential convention.
+    std::lock_guard<std::recursive_mutex> lock(db_mutex_);
+    const auto coins=GetUnspentUTXOs();auto balance=AmountUna::Zero();
+    std::lock_guard<std::mutex> scripts(scripts_mutex_);
+    for(const auto& coin:coins) {
+        const auto add=[&](){const auto next=balance.Add(coin.value);if(!next)throw std::runtime_error("Wallet balance overflow");balance=*next;};
+        add();if(coin.is_confidential && watched_scripts_.contains(coin.spk))add();
+    }
+    return balance;
 }
 
 std::vector<ZKOutput> UTXOIndex::ScanForNewConfidentialOutputs(

@@ -1,5 +1,6 @@
 #pragma once
 #include "consensus/orchard_state_transition.h"
+#include "consensus/orchard_validated_block.h"
 #include "primitives/orchard_block_reader.h"
 #include "consensus/orchard_block_coins.h"
 #include "consensus/orchard_forest_transition.h"
@@ -10,6 +11,12 @@ namespace rocksdb { class WriteBatch; }
 namespace dinero { class ChainDB; class ChainWriteToken; class BlockStorage; }
 
 namespace dinero::consensus {
+// Recheck a privately verified block against the held canonical parent before
+// ingress persistence or staging. No writes and no proof re-execution.
+void CheckValidatedOrchardParentUnderLock(const ChainDB&,const OrchardBlockContext&,
+    const OrchardBlockCandidate&,const BlockHeader&,const UtreexoForest&,
+    const OrchardBranchMtpLookup&,bool,const ValidatedOrchardBlock&);
+
 // Read-only boundary factory. Derives amount/epoch from selected archival
 // public flows, then binds frozen contents and marker from the SAME held
 // selected writer view. No amount/domain/epoch is supplied by a wallet, RPC
@@ -19,6 +26,11 @@ namespace dinero::consensus {
 // partial record. Use only at the selected activation parent.
 [[nodiscard]] storage::LegacyRetirementRecord DeriveSelectedLegacyRetirementUnderLock(
     const ChainDB&, const BlockStorage*, uint32_t maximum_epoch_blocks);
+// Compare independently proven boundary contents to the selected durable
+// frozen state and require no previous retirement/Orchard state. Does not
+// derive monetary value or authenticate history; the service owns that proof.
+void CheckPreparedLegacyRetirementUnderLock(const ChainDB&,
+    const storage::LegacyRetirementRecord&);
 // Typed stored-body read. Checks exact framing, key/header identity, transaction
 // and witness commitments, and size. Not replay/PoW/proof/transaction validity.
 [[nodiscard]] OrchardBlockCandidate ReadStoredOrchardBlock(
@@ -115,7 +127,8 @@ struct StagedOrchardChainstate {
     const OrchardBlockCandidate&, const BlockHeader& parent, const UtreexoForest&,
     const OrchardBranchMtpLookup&,
     bool require_witness_commitment, bool checkpoint, rocksdb::WriteBatch&,
-    const std::optional<storage::LegacyRetirementRecord>& authenticated_boundary = std::nullopt);
+    const std::optional<storage::LegacyRetirementRecord>& authenticated_boundary = std::nullopt,
+    const ValidatedOrchardBlock* detached = nullptr);
 
 struct StagedOrchardDisconnect {
     std::vector<OrchardCoinChange> coins;

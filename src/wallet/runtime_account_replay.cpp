@@ -1,7 +1,11 @@
 #include "wallet/runtime_account_replay.h"
+#include "wallet/runtime_replay_disk_membership.h"
+#include "wallet/runtime_replay_spool_codec.h"
 #include "consensus/undo.h"
 #include "primitives/block.h"
 #include <set>
+#include <list>
+#include <mutex>
 
 namespace dinero {
 namespace {
@@ -85,25 +89,56 @@ struct RuntimeAccountReplay::Data {
         std::shared_ptr<const OrchardBlockCandidate> block;
         std::shared_ptr<const dinero::Block> historical;
         std::shared_ptr<const PreparedOrchardState> state;
-        std::vector<VerifiedOrchardAuthorizations> auths;
+        AuthorizationHandle auths;
         std::optional<RuntimeOrchardReplay> replay;
         storage::OrchardStoredState checkpoint;
+        wallet::detail::RuntimeReplayDiskMembership::Root nullifiers=0,anchors=0;
     };
     RuntimeOutboxCursor head;uint32_t activation=0;orchard::SigningDomain domain;
-    uint256 origin;std::vector<RuntimeOutboxEvent> events;
+    uint256 origin;
+    wallet::detail::RuntimeReplaySpool spool;
+    wallet::detail::RuntimeReplayDiskMembership membership{spool};
+    // A small owned cache preserves recent handles without retaining every
+    // raw event. The byte charge is encoded material, not a total RSS bound.
+    static constexpr size_t EventCacheEntries=4;
+    static constexpr size_t EventCacheBytes=wallet::detail::RuntimeReplaySpool::MaximumRecordBytes;
+    mutable std::mutex event_mutex;
+    mutable std::list<std::pair<EventHandle,size_t>> event_cache;
+    mutable size_t event_cache_bytes=0;
+    EventHandle ReadEvent(uint64_t sequence) const {
+        Require(sequence&&sequence<=head.sequence);
+        // This private lock never spans source callbacks or proof work. No
+        // path takes event_mutex while holding the spool's private mutex.
+        std::lock_guard guard(event_mutex);
+        for(auto it=event_cache.begin();it!=event_cache.end();++it) {
+            if(it->first->cursor.sequence!=sequence)continue;
+            const auto result=it->first;event_cache.splice(event_cache.begin(),event_cache,it);return result;
+        }
+        const auto bytes=spool.Get(wallet::detail::replay_spool_codec::EventKey(sequence));Require(bytes.has_value());
+        auto value=wallet::detail::replay_spool_codec::Decode(*bytes);Require(value.cursor.sequence==sequence);
+        auto result=std::make_shared<const RuntimeOutboxEvent>(std::move(value));
+        event_cache.emplace_front(result,bytes->size());event_cache_bytes+=bytes->size();
+        while(event_cache.size()>EventCacheEntries||event_cache_bytes>EventCacheBytes) {
+            event_cache_bytes-=event_cache.back().second;event_cache.pop_back();
+        }
+        return result;
+    }
     std::vector<uint256> positions;std::map<uint256,Node> nodes;
     const Node& At(const uint256& hash) const {auto i=nodes.find(hash);Require(i!=nodes.end());return i->second;}
     const Node& Ancestor(uint256 tip,uint32_t height,const uint256& hash) const {
         for(;;){const auto& n=At(tip);Require(n.height>=height);if(n.height==height){Require(tip==hash);return n;}tip=n.parent;}
     }
+    static wallet::detail::RuntimeReplayDiskMembership::Key MembershipKey(const uint256& hash) {
+        wallet::detail::RuntimeReplayDiskMembership::Key key;
+        std::copy(hash.data,hash.data+32,key.begin());return key;
+    }
     bool Nullifier(uint256 tip,const uint256& nf) const {
-        for(;;){const auto& n=At(tip);if(n.height<activation)return false;Require(bool(n.state));
-            if(std::find(n.state->Nullifiers().begin(),n.state->Nullifiers().end(),nf)!=n.state->Nullifiers().end())return true;
-            tip=n.parent;}
+        const auto& n=At(tip);if(n.height<activation)return false;Require(bool(n.state));
+        return membership.Contains(n.nullifiers,MembershipKey(nf));
     }
     bool Anchor(uint256 tip,const uint256& anchor) const {
-        for(;;){const auto& n=At(tip);if(n.height<activation)return false;Require(bool(n.state));
-            if(n.checkpoint.anchor==anchor)return true;tip=n.parent;}
+        const auto& n=At(tip);if(n.height<activation)return false;Require(bool(n.state));
+        return membership.Contains(n.anchors,MembershipKey(anchor));
     }
 };
 std::shared_ptr<const RuntimeAccountReplay> RuntimeAccountReplay::Capture(const Source& source) {
@@ -117,17 +152,22 @@ std::shared_ptr<RuntimeAccountReplay::Data> RuntimeAccountReplay::ReadSource(con
     for(;;){
         auto page=source(after,128);
         if(!after.sequence){data->head=page.head;Require(data->head.sequence&&data->head.sequence<=max_records);}
-        Require(page.head==data->head&&!page.events.empty());
+        Require(page.head==data->head&&!page.events.empty()&&page.events.size()<=128);
+        // The source callback returned before this private transaction starts.
+        // No selected-chain access or external callback under this batch.
+        wallet::detail::RuntimeReplaySpool::Batch batch(data->spool);
         for(auto& e:page.events){
             Require(e.cursor.sequence==after.sequence+1&&e.previous_digest==after.digest&&e.cursor.sequence<=data->head.sequence);
             size_t charge=e.body.size()+224;
             if(e.orchard_replay){const auto& r=*e.orchard_replay;charge+=128+r.coin_undo.size()+r.next.frontier.size()+r.branch_mtp.size()*12;
                 if(r.parent)charge+=88+r.parent->frontier.size();}
-            Require(charge<=max_material-material);material+=charge;after=e.cursor;data->events.push_back(std::move(e));
+            Require(charge<=max_material-material);material+=charge;after=e.cursor;
+            data->spool.Insert(wallet::detail::replay_spool_codec::EventKey(e.cursor.sequence),
+                               wallet::detail::replay_spool_codec::Encode(e));
         }
-        Require(page.next==after);if(after==data->head)break;
+        Require(page.next==after);batch.Commit();if(after==data->head)break;
     }
-    const auto& last=data->events.back();const bool connect=last.direction==RuntimeBlockDirection::Connect;
+    const auto last_handle=data->ReadEvent(data->head.sequence);const auto& last=*last_handle;const bool connect=last.direction==RuntimeBlockDirection::Connect;
     const auto final=source(data->head,1);Require(final.head==data->head&&final.events.empty()&&final.after_tip&&
         final.after_tip->first==(connect?last.context.block_hash:last.context.parent_hash)&&
         final.after_tip->second==(connect?last.context.height:last.context.height-1));
@@ -137,12 +177,13 @@ std::shared_ptr<const RuntimeAccountReplay> RuntimeAccountReplay::Build(std::sha
     // No source callbacks or selected-chain access beyond this point. Expensive
     // authorization verification uses owned immutable material after the
     // service releases its activation lock.
-    const auto& first=data->events.front();data->activation=first.context.activation_height;data->domain=first.context.domain;
+    const auto first_handle=data->ReadEvent(1);const auto& first=*first_handle;data->activation=first.context.activation_height;data->domain=first.context.domain;
     Require(data->activation>0&&data->activation!=UINT32_MAX&&first.direction==RuntimeBlockDirection::Connect&&first.context.height==data->activation&&first.orchard_replay&&
         !first.orchard_replay->parent);
     data->origin=first.context.parent_hash;data->positions.push_back(data->origin);
     Data::Node root;root.height=data->activation-1;root.checkpoint=Empty(root.height,data->origin);data->nodes.emplace(data->origin,std::move(root));
-    for(const auto& e:data->events){
+    for(uint64_t sequence=1;sequence<=data->head.sequence;++sequence){
+        const auto event=data->ReadEvent(sequence);const auto& e=*event;
         Require(e.context.height>0&&e.context.activation_height==data->activation&&Domain(e.context.domain,data->domain)&&
             (e.direction==RuntimeBlockDirection::Connect||e.direction==RuntimeBlockDirection::Disconnect));
         const bool connect=e.direction==RuntimeBlockDirection::Connect;const auto before=data->positions.back();
@@ -164,11 +205,23 @@ std::shared_ptr<const RuntimeAccountReplay> RuntimeAccountReplay::Build(std::sha
                 auto state=std::make_shared<const PreparedOrchardState>(PrepareOrchardStateTransition(e.context,frame.parent,auths,lookups));
                 Require(state->Next()==frame.next);
                 Data::Node node;node.height=e.context.height;node.parent=e.context.parent_hash;node.block=std::move(block);
-                node.state=std::move(state);node.auths=std::move(auths);node.checkpoint=frame.next;node.replay=frame;
+                node.state=std::move(state);node.auths=std::make_shared<const std::vector<VerifiedOrchardAuthorizations>>(std::move(auths));node.checkpoint=frame.next;node.replay=frame;
+                // Index only the sealed, reverified state above. The parent
+                // snapshot belongs to this exact branch; a sibling retains
+                // its own immutable roots and never receives these inserts.
+                Require(parent.height<data->activation || bool(parent.state));
+                // Persist branch membership only AFTER genuine authorizations
+                // and the sealed next-state comparison above. No validity
+                // object is serialized or lazily reverified under wallet locks.
+                wallet::detail::RuntimeReplaySpool::Batch batch(data->spool);
+                node.nullifiers=parent.nullifiers;
+                for(const auto& nf:node.state->Nullifiers())node.nullifiers=data->membership.With(node.nullifiers,Data::MembershipKey(nf));
+                node.anchors=data->membership.With(parent.anchors,Data::MembershipKey(node.checkpoint.anchor));
                 auto old=data->nodes.find(e.context.block_hash);
                 if(old!=data->nodes.end())Require(old->second.block&&old->second.block->WireBytes()==e.body&&old->second.checkpoint==node.checkpoint&&
                     old->second.replay->coin_undo==frame.coin_undo&&old->second.replay->branch_mtp==frame.branch_mtp);
                 else data->nodes.emplace(e.context.block_hash,std::move(node));
+                batch.Commit();
             }else{
                 const auto& node=data->At(before);Require(node.block&&node.block->WireBytes()==e.body&&node.checkpoint==frame.next&&node.state->Parent()==frame.parent&&
                     node.replay->coin_undo==frame.coin_undo&&node.replay->branch_mtp==frame.branch_mtp);
@@ -188,18 +241,19 @@ std::shared_ptr<const RuntimeAccountReplay> RuntimeAccountReplay::Build(std::sha
         }
         data->positions.push_back(connect?e.context.block_hash:e.context.parent_hash);
     }
+    data->spool.Freeze();
     return std::shared_ptr<const RuntimeAccountReplay>(new RuntimeAccountReplay(std::move(data)));
 }
 RuntimeOutboxCursor RuntimeAccountReplay::Head() const{return data_->head;}
-const RuntimeOutboxEvent& RuntimeAccountReplay::Event(uint64_t sequence) const{
-    Require(sequence&&sequence<=data_->events.size());return data_->events[sequence-1];
+RuntimeAccountReplay::EventHandle RuntimeAccountReplay::Event(uint64_t sequence) const{
+    return data_->ReadEvent(sequence);
 }
 wallet::OrchardAccountDelivery::RestorePoint RuntimeAccountReplay::Point(RuntimeOutboxCursor cursor) const {
-    Require(cursor.sequence<=data_->events.size()&&(cursor.sequence?Event(cursor.sequence).cursor==cursor:cursor.digest.IsNull()));
+    Require(cursor.sequence<=data_->head.sequence&&(cursor.sequence?Event(cursor.sequence)->cursor==cursor:cursor.digest.IsNull()));
     const auto tip=data_->positions[cursor.sequence];const auto data=data_;wallet::OrchardWalletRestoreLookups lookup;
     lookup.origin=[data,tip](uint32_t height,const uint256& block,const orchard::Hash& txid){
         const auto& node=data->Ancestor(tip,height,block);Require(bool(node.block));
-        for(const auto& auth:node.auths)if(auth.Orchard().Txid()==txid)return std::make_shared<const VerifiedOrchardAuthorizations>(auth);
+        for(const auto& auth:*node.auths)if(auth.Orchard().Txid()==txid)return std::make_shared<const VerifiedOrchardAuthorizations>(auth);
         throw OrchardStateLookupError(Status::Corruption);
     };
     lookup.spent_nullifier=[data,tip](const uint256& nf)->StatusOr<bool>{return data->Nullifier(tip,nf);};
@@ -245,13 +299,13 @@ bool RuntimeAccountReplay::IsAncestorOf(RuntimeOutboxCursor cursor,const uint256
         hash=it->second.parent;--height;
     }
 }
-const OrchardBlockCandidate& RuntimeAccountReplay::Block(uint64_t sequence) const{
-    const auto& n=data_->At(Event(sequence).context.block_hash);Require(bool(n.block));return *n.block;
+RuntimeAccountReplay::BlockHandle RuntimeAccountReplay::Block(uint64_t sequence) const{
+    const auto& n=data_->At(Event(sequence)->context.block_hash);Require(bool(n.block));return n.block;
 }
-const PreparedOrchardState& RuntimeAccountReplay::State(uint64_t sequence) const{
-    const auto& n=data_->At(Event(sequence).context.block_hash);Require(bool(n.state));return *n.state;
+RuntimeAccountReplay::StateHandle RuntimeAccountReplay::State(uint64_t sequence) const{
+    const auto& n=data_->At(Event(sequence)->context.block_hash);Require(bool(n.state));return n.state;
 }
-const std::vector<VerifiedOrchardAuthorizations>& RuntimeAccountReplay::Authorizations(uint64_t sequence) const{
-    const auto& n=data_->At(Event(sequence).context.block_hash);Require(bool(n.state));return n.auths;
+RuntimeAccountReplay::AuthorizationHandle RuntimeAccountReplay::Authorizations(uint64_t sequence) const{
+    const auto& n=data_->At(Event(sequence)->context.block_hash);Require(bool(n.state)&&bool(n.auths));return n.auths;
 }
 } // namespace dinero

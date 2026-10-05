@@ -14,6 +14,8 @@
 #include "primitives/block.h"
 #include "primitives/transaction.h"
 #include <algorithm>
+#include <unordered_set>
+#include <stdexcept>
 #include <iostream>
 #include <sstream>
 #include <iomanip>
@@ -36,6 +38,87 @@ uint64_t GetUtreexoLeafAmount(const TxOutput& output) {
 
 ConsensusUTXOSet::ConsensusUTXOSet() = default;
 
+// Only the private replay factory enables this owner. The full forest is cloned
+// under the existing shared mutex; expensive validation runs after releasing it.
+// Coin originals are copied before their FIRST mutation, not for the whole map.
+class ConsensusUTXOSet::ReplayBlockRollback final : public BlockConnectRollback {
+public:
+    explicit ReplayBlockRollback(ConsensusUTXOSet& owner)
+        : owner_(owner), height_(owner.height_), hash_(owner.best_block_),
+          count_(owner.utxos_.size()) {
+        std::shared_lock<std::shared_mutex> lock(owner_.forest_mutex_);
+        forest_ = owner_.forest_.clone();
+    }
+    ~ReplayBlockRollback() override {
+        if (!active_) return;
+        // The live coin table never shrinks its bucket array while this owner is
+        // active. Erase newly-created coins first, then transfer preallocated
+        // original nodes back: final size cannot exceed the original capacity.
+        // Exact original forest ownership is moved back under the SAME writer
+        // mutex, preserving roots, deletion positions and the historical mode.
+        std::unique_lock<std::shared_mutex> lock(owner_.forest_mutex_);
+        for (const auto& point : absent_) owner_.utxos_.erase(point);
+        while (!before_.empty()) {
+            auto node = before_.extract(before_.begin());
+            owner_.utxos_.erase(node.key());
+            owner_.utxos_.insert(std::move(node));
+        }
+        if (owner_.utxos_.size() != count_) std::terminate();
+        owner_.forest_ = std::move(forest_);
+        owner_.height_ = height_;
+        owner_.best_block_ = hash_;
+        owner_.replay_rollback_ = nullptr;
+    }
+    void Remember(const OutPoint& point) {
+        if (before_.find(point) != before_.end() || absent_.count(point)) return;
+        const auto found = owner_.utxos_.find(point);
+        // Both insertions may allocate, but happen before any live mutation.
+        // Their strong guarantee leaves no partially-recorded original on failure.
+        if (found == owner_.utxos_.end()) absent_.insert(point);
+        else before_.emplace(point, found->second);
+    }
+    void Commit() noexcept override {
+        if (!active_) return;
+        owner_.replay_rollback_ = nullptr;
+        active_ = false;
+    }
+    size_t TouchedCoinCount() const noexcept override {
+        return before_.size() + absent_.size();
+    }
+private:
+    ConsensusUTXOSet& owner_;
+    uint32_t height_;
+    uint256 hash_;
+    size_t count_;
+    UtreexoForest forest_;
+    std::unordered_map<OutPoint, UTXOEntry> before_;
+    std::unordered_set<OutPoint> absent_;
+    bool active_ = true;
+};
+
+std::unique_ptr<ConsensusUTXOSet> ConsensusUTXOSet::CreateForReplay() {
+    auto result = std::make_unique<ConsensusUTXOSet>();
+    result->replay_rollback_enabled_ = true;
+    return result;
+}
+
+std::unique_ptr<BlockConnectRollback> ConsensusUTXOSet::BeginBlockConnectRollback() {
+    if (!replay_rollback_enabled_) return nullptr;
+    RequireNoReplayRollback();
+    auto owner = std::make_unique<ReplayBlockRollback>(*this);
+    replay_rollback_ = owner.get();
+    return owner;
+}
+
+void ConsensusUTXOSet::RememberReplayCoin(const OutPoint& point) {
+    if (replay_rollback_) replay_rollback_->Remember(point);
+}
+
+void ConsensusUTXOSet::RequireNoReplayRollback() const {
+    if (replay_rollback_) throw std::logic_error("Replay block rollback already active");
+}
+
+
 // =============================================================================
 // Core UTXO Operations
 // =============================================================================
@@ -46,6 +129,7 @@ bool ConsensusUTXOSet::AddCoin(const OutPoint& outpoint, const UTXOEntry& coin) 
         return false;
     }
 
+    RememberReplayCoin(outpoint);
     utxos_[outpoint] = coin;
     return true;
 }
@@ -57,6 +141,7 @@ std::unique_ptr<UTXOEntry> ConsensusUTXOSet::SpendCoin(const OutPoint& outpoint)
     }
 
     auto coin = std::make_unique<UTXOEntry>(it->second);
+    RememberReplayCoin(outpoint);
     utxos_.erase(it);
     return coin;
 }
@@ -75,6 +160,7 @@ bool ConsensusUTXOSet::HaveCoin(const OutPoint& outpoint) const {
 
 bool ConsensusUTXOSet::DeleteCoin(const OutPoint& outpoint) {
     // Idempotent: return true even if not found
+    RememberReplayCoin(outpoint);
     utxos_.erase(outpoint);
     return true;
 }
@@ -103,6 +189,7 @@ bool ConsensusUTXOSet::ApplyBlock(const Block& block, uint32_t height,
                                   const uint256& block_hash, BlockUndo& undo,
                                   UtreexoHash& computed_utreexo_root,
                                   std::string& error) {
+    RequireNoReplayRollback();
     // ALL-OR-NOTHING (issue #490).
     //
     // ProcessTransaction mutates both the UTXO map and the Utreexo forest as it
@@ -311,6 +398,7 @@ bool ConsensusUTXOSet::ProcessTransaction(const Transaction& tx, uint32_t height
 
 bool ConsensusUTXOSet::UndoBlock(const Block& block, uint32_t height,
                                  const BlockUndo& undo, std::string& error) {
+    RequireNoReplayRollback();
     // Verify height matches
     if (undo.height != height) {
         error = "Undo height mismatch";
@@ -429,6 +517,7 @@ bool ConsensusUTXOSet::UndoBlock(const Block& block, uint32_t height,
 // =============================================================================
 
 UTXOSnapshot ConsensusUTXOSet::Snapshot() const {
+    RequireNoReplayRollback();
     // #578: the forest reads below (getCommitment / getNumLeaves / serialize)
     // walk live forest structures and previously ran with NO lock — TSan
     // caught them racing guarded forest writes. Shared lock: coexists with
@@ -446,6 +535,7 @@ UTXOSnapshot ConsensusUTXOSet::Snapshot() const {
 }
 
 void ConsensusUTXOSet::Restore(const UTXOSnapshot& snapshot) {
+    RequireNoReplayRollback();
     // #578: Restore rewrites forest_ wholesale (deserialize / reset / add-loop
     // rebuild / fork-flag rebuildRoots) and previously ran with NO lock — TSan
     // caught its add()/operator= racing RemoveLastNLeavesGuarded during reorg
@@ -616,6 +706,7 @@ size_t ConsensusUTXOSet::GetMemoryUsage() const {
 }
 
 void ConsensusUTXOSet::Clear() {
+    RequireNoReplayRollback();
     utxos_.clear();
     forest_ = UtreexoForest();
     height_ = 0;

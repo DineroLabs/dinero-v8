@@ -26,7 +26,8 @@ public:
         const OrchardBlockCandidate&, const BlockHeader& parent,
         const consensus::UtreexoForest&, const consensus::OrchardBranchMtpLookup&,
         bool require_witness, bool checkpoint,
-        const std::optional<storage::LegacyRetirementRecord>& authenticated_boundary = std::nullopt);
+        const std::optional<storage::LegacyRetirementRecord>& authenticated_boundary = std::nullopt,
+        const consensus::ValidatedOrchardBlock* detached = nullptr);
     [[nodiscard]] static std::unique_ptr<PreparedOrchardChainstateWrite> Disconnect(
         AnnotatedRecursiveMutex&, ChainDB&, const ChainWriteToken&,
         consensus::ConsensusUTXOSet&, const consensus::OrchardBlockContext&,
@@ -49,7 +50,8 @@ public:
         const consensus::UtreexoForest&, const consensus::OrchardBranchMtpLookup&,
         bool require_witness, bool checkpoint,
         const std::optional<storage::LegacyRetirementRecord>& authenticated_boundary = std::nullopt,
-        bool contextual_header_validated = false);
+        bool contextual_header_validated = false,
+        const consensus::ValidatedOrchardBlock* detached = nullptr);
     [[nodiscard]] static std::unique_ptr<PreparedOrchardChainstateWrite> DisconnectIndexed(
         AnnotatedRecursiveMutex&, ChainDB&, const ChainWriteToken&, BlockStorage&,
         CBlockIndex&, consensus::ConsensusUTXOSet&, const consensus::OrchardBlockContext&,

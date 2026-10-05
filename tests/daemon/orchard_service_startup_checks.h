@@ -649,6 +649,11 @@ static void ServiceDeliverySourceChecks(ChainDB& db,const OrchardBlockContext& c
         cursor=(*next)->next;
     }
     CHECK((*service.getRuntimeDeliveryPage(cursor))->events.empty());
+    {
+        auto selected=service.AcquireBlockIngressActivationLock();
+        CHECK(service.getRuntimeAccountReplay().status()==Status::Invalid);
+        CHECK(service.getRuntimeDeliveryPage(cursor).ok());
+    }
     const auto replay_view=service.getRuntimeAccountReplay();CHECK(replay_view.ok());
     // This indexed fixture has a valid local outbox but generated prehistory.
     // The origin source must independently refuse it, never certify its markers.
@@ -657,7 +662,7 @@ static void ServiceDeliverySourceChecks(ChainDB& db,const OrchardBlockContext& c
     CHECK(!service.getRuntimeWalletOrigin(origin_wallet,origin_session).ok());
 
     CHECK((*replay_view)->Head()==cursor&&(*replay_view)->Point(cursor).checkpoint.block_hash==c.block_hash);
-    CHECK((*replay_view)->State(1).Next().block_hash==c.block_hash);
+    CHECK((*replay_view)->State(1)->Next().block_hash==c.block_hash);
     CHECK(Access::Verify(service));
     CHECK(snapshot()==rows);
     auto wrong=cursor;wrong.digest.data[0]^=1;

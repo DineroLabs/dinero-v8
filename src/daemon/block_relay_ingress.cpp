@@ -9,35 +9,37 @@
 #include <cstdlib>
 
 namespace dinero {
-bool BlockRelayManager::HandleOrchardBlock(const std::string& peer_address,
+OrchardNetworkDisposition BlockRelayManager::ReceiveOrchardBlock(const std::string& peer_address,
                                           const std::vector<uint8_t>& bytes) {
-    bool connected = false;
+    auto disposition = OrchardNetworkDisposition::Refused;
     try {
         const auto source = orchard_block_source_.lock();
         const auto ingress = orchard_block_ingress_.lock();
         const auto* context = DaemonContext::instance();
         if (!source || !ingress || !ingress->IsHealthy() || !context || context->chainstate != source ||
             context->block_ingress != ingress.get() || bytes.size() < 128 ||
-            bytes.size() > consensus::MAX_BLOCK_WEIGHT) return false;
+            bytes.size() > consensus::MAX_BLOCK_WEIGHT) return OrchardNetworkDisposition::Refused;
         const auto header = BlockHeader::Deserialize(std::vector<uint8_t>(bytes.begin(),bytes.begin()+128));
-        if (!header) return false;
+        if (!header) return OrchardNetworkDisposition::Refused;
         const auto hash = header->GetHash();
         uint32_t height = 0;
         {
             auto selected = source->AcquireBlockIngressActivationLock();
             auto* db = source->GetChainDB();
-            if (!db || !consensus::OrchardProfileConfigurationValid(Params())) return false;
+            if (!db || !consensus::OrchardProfileConfigurationValid(Params())) return OrchardNetworkDisposition::Refused;
             const auto parent = db->getBlockHeight(header->prev_block_hash);
-            if (!parent.ok() || *parent < 0 || *parent >= INT32_MAX) return false;
+            if (!parent.ok() || *parent < 0 || *parent >= INT32_MAX) return OrchardNetworkDisposition::Refused;
             height = static_cast<uint32_t>(*parent) + 1;
-            if (!consensus::OrchardActiveForHeight(Params(),height)) return false;
+            if (!consensus::OrchardActiveForHeight(Params(),height)) return OrchardNetworkDisposition::Refused;
         }
         // The selected lock is released before queue waiting. The actual queue
         // and canonical owner recheck the current context, profile and parent.
         const auto result = ingress->SubmitHex(util::hex(bytes),BlockOrigin::P2P);
-        if (!result.accepted() || !result.connected || result.block_hash != hash ||
-            result.height != height) return false;
-        connected = true;
+        if (result.block_hash != hash || result.height != height) return OrchardNetworkDisposition::Refused;
+        if (result.retained() && !result.connected && !result.relayed)
+            return OrchardNetworkDisposition::Stored;
+        if (!result.accepted() || !result.connected) return OrchardNetworkDisposition::Refused;
+        disposition = OrchardNetworkDisposition::Connected;
 
         // These are retryable transport/telemetry effects after consensus. A
         // failure here must not turn committed acceptance into a refusal.
@@ -57,7 +59,11 @@ bool BlockRelayManager::HandleOrchardBlock(const std::string& peer_address,
             RecordBlockDelivery(peer_address);
         }
     } catch (...) { /* A missing owner or operational refusal grants no peer penalty. */ }
-    return connected;
+    return disposition;
+}
+bool BlockRelayManager::HandleOrchardBlock(const std::string& peer_address,
+                                          const std::vector<uint8_t>& bytes) {
+    return ReceiveOrchardBlock(peer_address,bytes)==OrchardNetworkDisposition::Connected;
 }
 bool BlockRelayManager::AnnounceOrchardBlock(const uint256& hash,uint32_t height) noexcept {
     bool handed=false;

@@ -781,9 +781,23 @@ size_t HeaderChainSelector::GetHeaderCount() const {
 // ============================================================================
 
 bool HeaderChainSelector::ValidateHeader(
-    const BlockHeader& header,
-    const HeaderIndexEntry* prev
-) {
+    const BlockHeader& header, const HeaderIndexEntry* prev) {
+    std::optional<HeaderAsertContext> parent;
+    if (prev) {
+        parent.emplace();
+        parent->parent_height = prev->height;
+        parent->parent_mtp = static_cast<int64_t>(prev->GetMedianTimePast());
+        parent->block1_time = GetKnownAncestryTimestamp(nullptr, prev, 1);
+        const auto consensus = GetConsensusForCurrentNetwork();
+        if (const auto height = TimingUpgradeAnchorHeight(
+                static_cast<int32_t>(prev->height) + 1, consensus))
+            parent->timing_anchor = GetKnownAncestryTimingAnchor(nullptr, prev, *height);
+    }
+    return ValidateHistoricalHeader(header, parent);
+}
+
+bool ValidateHistoricalHeader(const BlockHeader& header,
+                              const std::optional<HeaderAsertContext>& parent) {
     // Phase N.1: Stateless header validation only
 
     // 1. Version sanity
@@ -799,14 +813,14 @@ bool HeaderChainSelector::ValidateHeader(
     // For non-genesis blocks, enforce the same header-level time rule the
     // active chain accepts: a timestamp must be greater than median-time-past.
     // It does not have to be monotonic relative to the direct parent.
-    if (prev != nullptr) {
-        if (header.timestamp <= prev->GetMedianTimePast()) {
+    if (parent.has_value()) {
+        if (header.timestamp <= parent->parent_mtp) {
             return false;
         }
     }
 
     // 3. Difficulty target validation (if not genesis)
-    if (prev != nullptr) {
+    if (parent.has_value()) {
         // In production, this would validate difficulty adjustment
         // For now, just check bits field is non-zero
         if (header.difficulty == 0) {
@@ -861,7 +875,7 @@ bool HeaderChainSelector::ValidateHeader(
     // header whose claimed bits != the bits required by the ASERT schedule for
     // its height is rejected before its (claimed) chainwork is credited.
     //
-    // Computed from THIS header's own parent (`prev`) — prev->GetMedianTimePast()
+    // Computed from THIS header's own parent (`prev`) — parent->parent_mtp
     // walks prev's own ancestry, so side branches validate against their own
     // anchor context, not the active tip.
     //
@@ -871,21 +885,20 @@ bool HeaderChainSelector::ValidateHeader(
     // skip rather than reject, so honest persisted headers replay cleanly at
     // startup and block_acceptor remains the backstop. Compact bits are compared
     // for equality against the canonical encoding (never ordered numerically).
-    if (prev != nullptr && !Params().SkipProofOfWork()) {
+    if (parent.has_value() && !Params().SkipProofOfWork()) {
         const Consensus consensus = GetConsensusForCurrentNetwork();
-        const uint32_t expected_bits = GetNextWorkRequiredForCandidate(
-            static_cast<int32_t>(prev->height) + 1,
-            static_cast<int64_t>(header.timestamp),
-            consensus,
-            /*parent_index=*/static_cast<const CBlockIndex*>(nullptr),
-            /*parent_entry=*/prev,
-            /*chain_db=*/static_cast<dinero::NoChainDb*>(nullptr));
+        const auto input = BuildAsertInputForCandidateTimes(
+            parent->parent_mtp, parent->block1_time,
+            static_cast<dinero::NoChainDb*>(nullptr),
+            static_cast<int32_t>(parent->parent_height) + 1,
+            static_cast<int64_t>(header.timestamp), consensus, parent->timing_anchor);
+        const uint32_t expected_bits = input ? ComputeAsertBits(*input) : 0;
         // The isolated qualification profile never credits unverifiable work.
         // Preserve historical replay behavior on existing networks.
         if (expected_bits == 0 && Params().regtest_enforce_pow) return false;
         if (expected_bits != 0 && header.difficulty != expected_bits) {
             std::cerr << "[HeaderChainSelector] ❌ bad-diffbits-header at height "
-                      << (prev->height + 1) << ": header has "
+                      << (parent->parent_height + 1) << ": header has "
                       << std::hex << header.difficulty << ", required "
                       << expected_bits << std::dec
                       << " (hash " << hash.GetHex().substr(0, 16) << "...)"

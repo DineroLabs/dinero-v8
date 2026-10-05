@@ -7,7 +7,8 @@ public:
     ChainParams previous_params = Params();
     bool previous_stateless = GetConfig().utreexo_stateless;
     std::filesystem::path path;
-    ChainDB db;
+    std::shared_ptr<ChainDB> database=std::make_shared<ChainDB>();
+    ChainDB& db=*database;
     std::shared_ptr<ChainstateService> service=std::make_shared<ChainstateService>();
     std::shared_ptr<MempoolService> ingress;
     std::vector<uint8_t> script;
@@ -17,7 +18,9 @@ public:
     std::vector<Block> blocks;
     std::unique_ptr<assumeutxo::AssumeUtxoReplayEngine> replay;
     const ChainWriteToken token = ChainWriteToken::CreateForTesting();
-    static void Require(bool value) { if (!value) throw std::runtime_error("selected parent fixture setup"); }
+    static void Require(bool value,const char* file=__builtin_FILE(),int line=__builtin_LINE()) {
+        if (!value) throw std::runtime_error(std::string("selected parent fixture requirement at ")+file+":"+std::to_string(line));
+    }
     struct AdmissionLogger final:ILogger {
         bool refuse=false;
         void info(const std::string& message)override {
@@ -143,7 +146,7 @@ public:
         Require(db.putShieldedState(token,ChainDB::ShieldedStateRecord::AnchorHistory,{anchors.begin(),anchors.end()})==Status::Ok);
         const auto root=replay->ShieldedTree()->Root();uint256 tree_root;std::copy(root.begin(),root.end(),tree_root.begin());
         Require(db.putShieldedTipMarker(token,{101,tip.hash,tree_root,replay->ShieldedTree()->Size(),0})==Status::Ok);
-        service->setChainDB(&db);ShieldedStateStartupTestAccess::BoundaryState(*service,tip,*replay);
+        service->setOwnedChainDB(database);ShieldedStateStartupTestAccess::BoundaryState(*service,tip,*replay);
         auto headers=std::make_shared<consensus::HeaderChainSelector>();
         for(const auto& block:blocks)Require(headers->AddHeader(block.header));
         service->setHeaderChainSelector(headers);

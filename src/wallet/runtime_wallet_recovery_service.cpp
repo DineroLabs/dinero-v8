@@ -40,6 +40,12 @@ RuntimeEnrolledWalletRecoveryResult RuntimeWalletRecovery::ResumeCatalogWalletSt
         ChainstateService& chain,WalletManager& wallet,UTXOIndex& index,uint64_t session) {
     {const auto lease=wallet.AcquireDatabaseLease();
      if(wallet.database_leases_!=1)throw std::runtime_error("Wallet recovery requires released caller lease");}
+    if(RuntimeOrdinaryDelivery::CoverageRequiredForWallet(wallet,index,session)) {
+        const auto coverage=chain.getRuntimeWalletCoverage(wallet,session,index);
+        if(!coverage.ok())throw std::runtime_error("Wallet recovery coverage source unavailable");
+        if(chain.reconcileRuntimeWalletCoverage(wallet,index,**coverage)!=Status::Ok)
+            throw std::runtime_error("Wallet recovery coverage reconciliation refused");
+    }
     const auto view=chain.getRuntimeAccountReplay();
     if(!view.ok())throw std::runtime_error("Wallet recovery checked account source unavailable");
     return ResumeAccounts(**view,[&chain](RuntimeOutboxCursor cursor,size_t count){

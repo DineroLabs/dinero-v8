@@ -56,7 +56,13 @@ struct OrchardCycleFixture : CanonicalPoolFixture {
     }
     std::shared_ptr<const RuntimeBlockBody> Mine(const MempoolTransaction& body) {
         const auto admission=f.ingress->SubmitBody(body,TxOrigin::INTERNAL);
-        if (!admission.accepted()) throw std::runtime_error("cycle admission refused: "+admission.message);
+        if (!admission.accepted() && admission.code!=TxRejectCode::ALREADY_IN_MEMPOOL)
+            throw std::runtime_error("cycle admission refused: "+admission.message);
+        // RPC callers may already have admitted this exact witness-bearing body.
+        // A duplicate txid alone is not enough to proceed to mining.
+        const auto retained=f.ingress->mempool().getMempoolEntry(body.GetTxid().AsUint256());
+        if (!retained || retained->tx.Serialize()!=body.Serialize())
+            throw std::runtime_error("cycle admitted body differs from requested mining body");
         din::Json request;request["address"]=OrchardMiningPayout;
         const auto job=::rpc_mining_getjob(execution,request);
         OrchardAdmissionFixture::Require(!job.isMember("error") && job.isMember("job_id"));

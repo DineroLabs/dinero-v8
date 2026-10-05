@@ -82,8 +82,13 @@ public:
 private:
   friend class OrchardOperationArchive;
   friend class OrchardAccountDelivery;
+  [[nodiscard]] OrchardAccountState SetShieldReady(const orchard::Hash &,
+      const consensus::VerifiedOrchardAuthorizations &, uint64_t) const;
   [[nodiscard]] OrchardAccountState ReserveRequest(const orchard::Hash &,
       const orchard::WalletProvingIntent &, const orchard::Hash &) const;
+  [[nodiscard]] OrchardAccountState ReserveShieldRequest(const orchard::Hash &,
+      const orchard::WalletProvingIntent &, const orchard::Hash &,
+      const OrchardOperationQueue::ShieldRequest &) const;
   static DeliveryCheckpoint ReadDeliveryMetadata(const orchard::WalletStateBytes&,
       orchard::SigningDomain,const orchard::FullViewingKeyBytes&,uint32_t,const uint256&);
   [[nodiscard]] OrchardAccountState WithParentSnapshotRevision(uint64_t) const;

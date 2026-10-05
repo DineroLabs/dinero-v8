@@ -73,6 +73,10 @@ namespace consensus {
 class ConsensusUTXOSet : public IConsensusUTXOSet {
 public:
     ConsensusUTXOSet();
+    // Explicit private replay construction. Does not change ordinary instances,
+    // Snapshot/Restore support, or any guarded forest synchronization.
+    static std::unique_ptr<ConsensusUTXOSet> CreateForReplay();
+    std::unique_ptr<BlockConnectRollback> BeginBlockConnectRollback() override;
     ~ConsensusUTXOSet() override = default;
 
     // Disable copy (UTXO set should be unique per consensus instance)
@@ -309,6 +313,12 @@ public:
 
 private:
     friend class PreparedUTXOPublication;
+    friend struct ReplayCoinRollbackTestAccess;
+    class ReplayBlockRollback;
+    bool replay_rollback_enabled_ = false;
+    ReplayBlockRollback* replay_rollback_ = nullptr;
+    void RememberReplayCoin(const OutPoint& point);
+    void RequireNoReplayRollback() const;
     // In-memory UTXO set: OutPoint → UTXOEntry
     std::unordered_map<OutPoint, UTXOEntry> utxos_;
 

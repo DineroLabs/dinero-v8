@@ -88,9 +88,9 @@ private:
     // while concurrent callers wait for it to finish (see stop_gate.h).
     StopGate stop_gate_;
 
-    // Own ChainDB for the full DaemonApp lifetime. Services receive non-owning
-    // pointers to this instance.
-    std::unique_ptr<ChainDB> chain_db_;
+    // The app and chainstate share the real database lifetime. Detached historical
+    // preparation keeps a copy; init-only close/reopen still precedes workers.
+    std::shared_ptr<ChainDB> chain_db_;
 
     // Per-service JSON loggers (Step B: Separate log files)
     std::unique_ptr<class JsonLogger> wallet_logger_;

@@ -47,6 +47,7 @@ void ValidationQueue::Metrics::reset() {
     blocks_validated.store(0);
     blocks_connected.store(0);
     blocks_failed.store(0);
+    blocks_retained.store(0);
     blocks_cancelled.store(0);
     total_validation_time_ms.store(0);
     total_apply_time_ms.store(0);
@@ -59,6 +60,7 @@ std::string ValidationQueue::Metrics::toString() const {
     oss << "  Validated:   " << blocks_validated.load() << "\n";
     oss << "  Connected:   " << blocks_connected.load() << "\n";
     oss << "  Failed:      " << blocks_failed.load() << "\n";
+    oss << "  Retained:    " << blocks_retained.load() << "\n";
     oss << "  Cancelled:   " << blocks_cancelled.load() << "\n";
 
     uint64_t total_val = total_validation_time_ms.load();
@@ -294,8 +296,10 @@ void ValidationQueue::applyCanonicalJob(const std::shared_ptr<CanonicalJob>& job
         "Canonical block validation failed", job->hash, job->height);
     try {
         result = job->task->ValidateAndApply();
-        if (result.accepted() && (!result.connected || result.block_hash != job->hash ||
-                                  result.height != job->height))
+        if (((result.accepted() || result.retained()) &&
+             (result.block_hash != job->hash || result.height != job->height)) ||
+            (result.accepted() && !result.connected) ||
+            (result.retained() && (result.connected || result.relayed)))
             result = BlockAcceptResult::Rejected(BlockRejectCode::CONNECT_FAILED,
                 "Canonical block result identity mismatch", job->hash, job->height);
     } catch (...) {
@@ -305,6 +309,8 @@ void ValidationQueue::applyCanonicalJob(const std::shared_ptr<CanonicalJob>& job
         metrics_.blocks_validated.fetch_add(1);
         metrics_.blocks_connected.fetch_add(1);
         total_processed_.fetch_add(1);
+    } else if (result.retained()) {
+        metrics_.blocks_retained.fetch_add(1);
     } else {
         metrics_.blocks_failed.fetch_add(1);
     }

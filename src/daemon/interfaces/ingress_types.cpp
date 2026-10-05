@@ -47,6 +47,7 @@ const char* BlockRejectCodeToString(BlockRejectCode code) {
         case BlockRejectCode::STALE_MEMPOOL_CHANGED: return "stale-mempool";
         case BlockRejectCode::STALE_REORG: return "stale-reorg";
         case BlockRejectCode::STALE_TIMESTAMP: return "stale-time";
+        case BlockRejectCode::STORED_NOT_VALIDATED: return "stored-not-validated";
         default: return "unknown-reject-reason";
     }
 }

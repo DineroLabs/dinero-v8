@@ -16,6 +16,7 @@ din::Json rpc_context_getblockheader(const ExecutionContext&, const din::Json&);
 din::Json rpc_context_wallet_getrawtransaction(const ExecutionContext&, const din::Json&);
 din::Json rpc_context_wallet_decoderawtransaction(const ExecutionContext&, const din::Json&);
 #include "daemon/block_acceptor.h"
+#include "daemon/services/logger_service.h"
 #include "consensus/filter_commitment.h"
 // ============================================================================
 // AssumeUTXO Replay Engine unit tests (plan Task 6)
@@ -58,6 +59,18 @@ din::Json rpc_context_wallet_decoderawtransaction(const ExecutionContext&, const
 
 #include <gtest/gtest.h>
 #include "daemon/services/chainstate_service.h"
+#ifdef DINERO_TEST_ORCHARD_ORIGIN
+#include "daemon/services/orchard_parent_replay.h"
+#endif
+#include "daemon/services/prepared_orchard_parent.h"
+#include "wallet/taproot_keys.h"
+#include "wallet/taproot_tx_signer.h"
+#include "consensus/shielded/bundle_builder.h"
+#include "consensus/shielded/pedersen_commit.h"
+#include "consensus/shielded/shielded_circuit.h"
+#include "consensus/shielded/shielded_serialization.h"
+#include "consensus/shielded/shielded_block_section.h"
+
 #include "daemon/services/mempool_service.h"
 #include "daemon/services/config_service.h"
 #include "mining/block_assembler.h"
@@ -131,6 +144,38 @@ struct RuntimeOriginProjectionTestAccess {
 #endif
 
 struct ShieldedStateStartupTestAccess {
+    static auto CaptureActivationPlan(ChainstateService& service) {
+        std::unique_ptr<ChainstateService::ActivationParentPlan> plan;
+        service.ActivateBestChainPass(nullptr,plan,true);
+        if(!plan || (!plan->parent && !plan->extension)) throw std::runtime_error("actual activation plan unavailable");
+        return plan;
+    }
+    static bool CompleteActivationPlan(ChainstateService& service,const auto& plan) {
+        return service.CompleteActivationParentPlan(*plan);
+    }
+    static void ApplyActivationPlan(ChainstateService& service,const auto& plan) {
+        std::unique_ptr<ChainstateService::ActivationParentPlan> unused;
+        service.ActivateBestChainPass(plan.get(),unused,false);
+        if(unused) throw std::runtime_error("prepared pass requested another capture");
+    }
+    static auto OperatorGeneration(ChainstateService& service) {
+        std::lock_guard<AnnotatedRecursiveMutex> lock(service.activation_mutex_);
+        return service.ReadBlockStatusGeneration();
+    }
+    static auto ParentRetryAfter(ChainstateService& service) {
+        std::lock_guard<AnnotatedRecursiveMutex> lock(service.activation_mutex_);
+        return service.activation_parent_retry_after_;
+    }
+    static auto ParentRetryCandidate(ChainstateService& service) {
+        std::lock_guard<AnnotatedRecursiveMutex> lock(service.activation_mutex_);
+        return service.activation_parent_retry_candidate_;
+    }
+    static void PumpParentRetryAt(ChainstateService& service,std::chrono::steady_clock::time_point now) {
+        service.PumpActivationParentRetry(now);
+    }
+    static void InitializeRawIngressLogger(ChainstateService& service) {
+        service.logger_ = std::make_shared<LoggerService>("");
+    }
     static bool VaultSelectedHeld(ChainstateService& source) {return source.activation_mutex_.HeldByCurrentThread();}
 #ifdef DINERO_TEST_ORCHARD_ORIGIN
     // Populate the real Init-created owner without replacing the index or the
@@ -679,13 +724,22 @@ TEST(RuntimeOriginProjection, UnavailableWithoutBackend) {
 #endif
 
 #include "selected_parent_history_checks.h"
+#include "orchard_parent_replay_checks.h"
+#include "orchard_parent_funded_replay_checks.h"
+#include "orchard_parent_service_checks.h"
 #include "orchard_first_boundary_checks.h"
 #include "orchard_selected_admission_checks.h"
 #include "orchard_typed_selection_checks.h"
 #include "orchard_mining_template_checks.h"
+#include "orchard_parent_guard_checks.h"
+#include "orchard_parent_drain_checks.h"
 #include "orchard_raw_ingress_checks.h"
 #include "orchard_mining_rpc_checks.h"
 #include "orchard_canonical_pool_checks.h"
+#include "orchard_parent_ingress_checks.h"
+#include "orchard_parent_activation_checks.h"
+#include "orchard_parent_retry_checks.h"
+#include "orchard_parent_plan_checks.h"
 #include "orchard_block_rpc_checks.h"
 #include "orchard_cycle_checks.h"
 #include "orchard_header_rpc_checks.h"
@@ -718,10 +772,17 @@ int main(int argc, char** argv) {
 #include "orchard_block_relay_checks.h"
 
 #include "orchard_network_routing_checks.h"
+#include "orchard_fork_intake_checks.h"
 
 #include "orchard_block_announcement_checks.h"
 
 #include "orchard_reorg_readmission_checks.h"
+#include "orchard_typed_fork_checks.h"
+#include "orchard_proof_handoff_checks.h"
+#include "orchard_extension_checks.h"
+#include "orchard_detached_mining_checks.h"
+#include "orchard_history_capture_checks.h"
+#include "orchard_branch_ancestry_checks.h"
 
 #include "wallet_service_owner_checks.h"
 
@@ -784,6 +845,7 @@ int main(int argc, char** argv) {
 #include "runtime_legacy_consumer_absence_checks.h"
 
 #include "orchard_account_creation_checks.h"
+#include "orchard_detached_read_checks.h"
 
 #include "orchard_catalog_issuance_checks.h"
 
@@ -806,3 +868,32 @@ int main(int argc, char** argv) {
 #include "orchard_finish_rpc_checks.h"
 
 #include "orchard_ownership_inventory_checks.h"
+#include "wallet_shared_reservations_checks.h"
+#include "wallet_shield_reservations_checks.h"
+#include "wallet_shield_rpc_checks.h"
+#include "wallet_shield_history_checks.h"
+#include "wallet_script_coverage_checks.h"
+
+#include "wallet_shield_maturity_checks.h"
+
+#include "wallet_shield_bip84_checks.h"
+#include "wallet_historical_discovery_checks.h"
+
+#include "orchard_detached_catalog_checks.h"
+
+#include "orchard_detached_coverage_checks.h"
+#include "orchard_detached_recovery_checks.h"
+#include "orchard_detached_issuance_checks.h"
+#include "orchard_issuance_retry_checks.h"
+#include "orchard_detached_proof_read_checks.h"
+#include "orchard_detached_finalization_checks.h"
+#include "orchard_detached_shield_signing_checks.h"
+#include "orchard_detached_ordinary_payment_checks.h"
+#include "orchard_detached_spend_reservation_checks.h"
+#include "orchard_detached_shield_reservation_checks.h"
+
+#include "replay_header_history_checks.h"
+
+#include "replay_coin_rollback_checks.h"
+#include "replay_forest_sharing_checks.h"
+#include "replay_forest_partitions_checks.h"

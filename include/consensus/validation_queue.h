@@ -182,6 +182,7 @@ public:
         std::atomic<uint64_t> blocks_validated{0};
         std::atomic<uint64_t> blocks_connected{0};
         std::atomic<uint64_t> blocks_failed{0};
+        std::atomic<uint64_t> blocks_retained{0};
         std::atomic<uint64_t> blocks_cancelled{0};
 
         std::atomic<uint64_t> total_validation_time_ms{0};

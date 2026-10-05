@@ -95,7 +95,12 @@ ExternalMigrationState InspectMigrationMetadata(const std::filesystem::path& roo
     Require(limits.max_metadata_rows && limits.max_metadata_value_bytes && limits.max_metadata_value_bytes <= INT_MAX &&
             limits.max_sqlite_steps >= 1000 && limits.max_ancestry_headers, "explicit metadata budgets required");
     Reader reader(root / "blockchain/utxo", limits);
-    Require(reader.Version() == 1, "unsupported UTXO SQLite schema version"); reader.Table("utxo_metadata");
+    // UTXOIndex schema2 adds explicit wallet coin ownership columns; the
+    // utxo_metadata key/value format consumed here is unchanged from schema1.
+    // This recognizes that format only, not wallet ownership or completeness.
+    const auto version = reader.Version();
+    Require(version == 1 || version == 2, "unsupported UTXO SQLite schema version");
+    reader.Table("utxo_metadata");
     Metadata rows; auto query = reader.Prepare("SELECT key,value FROM utxo_metadata"); int rc;
     while ((rc = sqlite3_step(query.get())) == SQLITE_ROW) {
         Require(rows.size() < limits.max_metadata_rows, "metadata row budget exceeded");

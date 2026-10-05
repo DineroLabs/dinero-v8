@@ -1336,6 +1336,11 @@ std::shared_ptr<const OrchardMiningTemplate> BlockAssembler::CreateOrchardBlock(
     const std::string& coinbase_address) {
     auto chain_guard = AcquireChainstateReadGuard();
     if (!chain_guard) throw std::runtime_error("Typed mining requires a selected-chain owner");
+    return CreateOrchardBlock(coinbase_address, *chain_guard);
+}
+
+std::shared_ptr<const OrchardMiningTemplate> BlockAssembler::CreateOrchardBlock(
+    const std::string& coinbase_address, MiningChainstateReadGuard& chain_guard) {
     auto pool_use = AcquireMempoolAccess();
     if (!chain_db_ || !pool_use.pool)
         throw std::runtime_error("Typed mining chain or pool unavailable");
@@ -1377,7 +1382,7 @@ std::shared_ptr<const OrchardMiningTemplate> BlockAssembler::CreateOrchardBlock(
         coinbase.vin.front().scriptSig = height_script.data();
         if (coinbase.vin.front().scriptSig.size() < 2) coinbase.vin.front().scriptSig.push_back(0);
         try {
-            result = chain_guard->BuildOrchardTemplate(header, coinbase, bodies, height);
+            result = chain_guard.BuildOrchardTemplate(header, coinbase, bodies, height);
             if (!result) throw std::runtime_error("Typed mining template owner unavailable");
             if (result->Height() != height || result->Header().prev_block_hash != tip->hash ||
                 result->TotalFees() != fees || result->Transactions().size() != bodies.size() + 1)

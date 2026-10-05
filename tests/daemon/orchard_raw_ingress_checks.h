@@ -41,6 +41,9 @@ public:
     DaemonContext context;
     DaemonContext* previous=DaemonContext::instance();
     RawIngressFixture() {
+        // Header-only siblings exercise the real missing-body logging path.
+        // Match the logger dependency normally installed by DaemonApp.
+        ShieldedStateStartupTestAccess::InitializeRawIngressLogger(*f.service);
         for(uint32_t height=0;height<f.blocks.size();++height) {
             auto* index=dinero::AddBlockIndex(f.blocks[height].header,height);
             OrchardAdmissionFixture::Require(index!=nullptr);
@@ -136,6 +139,44 @@ TEST(OrchardRawIngress, DisconnectDatabaseReopenAndRetainedBodyReconnect) {
     EXPECT_TRUE(again.connected);EXPECT_EQ(fixture.f.service->GetActiveTip(),child);
     EXPECT_EQ(fixture.notices->published,3u);EXPECT_TRUE(ShieldedStateStartupTestAccess::AuditBoundary(*fixture.f.service));
 }
+TEST(OrchardRawIngress, PreferredHeaderSiblingDoesNotChangeCanonicalIndexPublication) {
+    RawIngressFixture fixture;const auto built=fixture.Build();ASSERT_TRUE(built);
+    // Two ordinary sibling headers with equal work. Keep the header-only sibling
+    // preferred, so ABC cannot incidentally rehydrate the submitted block's
+    // metadata while importing its preferred header branch.
+    auto low=built->Header(),high=low;
+    for(uint32_t nonce=0;nonce<64;++nonce) {
+        auto header=built->Header();header.nonce=nonce;
+        if(header.GetHash()<low.GetHash())low=header;
+        if(high.GetHash()<header.GetHash())high=header;
+    }
+    ASSERT_NE(low.GetHash(),high.GetHash());
+    auto headers=std::make_shared<consensus::HeaderChainSelector>();
+    for(const auto& block:fixture.f.blocks)ASSERT_TRUE(headers->AddHeader(block.header));
+    ASSERT_TRUE(headers->AddHeader(low));
+    const auto preferred=headers->GetBestHeaderValue();ASSERT_TRUE(preferred);
+    ASSERT_EQ(preferred->hash,low.GetHash());
+    fixture.f.service->setHeaderChainSelector(headers);
+    auto wire=built->WireBytes();const auto prefix=high.SerializeForHash();
+    std::copy(prefix.begin(),prefix.end(),wire.begin());
+    const auto result=fixture.Submit(wire);ASSERT_TRUE(result.accepted())<<result.reason;
+    ASSERT_TRUE(result.connected);EXPECT_EQ(result.block_hash,high.GetHash());
+    const auto still_preferred=headers->GetBestHeaderValue();ASSERT_TRUE(still_preferred);
+    EXPECT_EQ(still_preferred->hash,low.GetHash());
+    auto* selected=fixture.f.service->GetActiveTip();ASSERT_NE(selected,fixture.parent);
+    EXPECT_EQ(selected->hash,high.GetHash());EXPECT_EQ(fixture.notices->published,1u);
+    const auto metadata=fixture.f.db.getHeaderMetadata(high.GetHash());ASSERT_TRUE(metadata.ok());
+    EXPECT_EQ(selected->status,metadata->status_flags);
+    EXPECT_EQ(selected->file_number,metadata->file_number);EXPECT_EQ(selected->data_pos,metadata->data_pos);
+    EXPECT_EQ(selected->data_size,metadata->data_size);EXPECT_EQ(selected->undo_file,metadata->undo_file);
+    EXPECT_EQ(selected->undo_pos,metadata->undo_pos);EXPECT_EQ(selected->undo_size,metadata->undo_size);
+    EXPECT_EQ(metadata->status_flags&BLOCK_VALID_MASK,uint32_t(BLOCK_VALID_MASK));
+    EXPECT_NE(metadata->status_flags&BLOCK_HAVE_UNDO,0u);
+    const auto body=ReadRuntimeBlockUnderLock(fixture.f.db,fixture.files.get(),high.GetHash(),102);
+    ASSERT_TRUE(body.ok());ASSERT_TRUE(body->IsOrchardProfile());EXPECT_EQ(body->Orchard().WireBytes(),wire);
+    EXPECT_TRUE(ShieldedStateStartupTestAccess::AuditBoundary(*fixture.f.service));
+}
+
 #else
 TEST(OrchardRawIngress, InactiveProfileKeepsHistoricalRoute) {
     ChainstateService service;
