@@ -13591,6 +13591,347 @@ set_tests_properties(ReplayMetadataRecoveryQueue PROPERTIES
     LABELS "daemon;utreexo;recovery;regression"
     TIMEOUT 30)
 
+# DIN <-> BTC swap HTLC builders, verified through the consensus Taproot path.
+add_executable(test_swap_htlc
+  tests/wallet/test_swap_htlc.cpp
+  src/wallet/swap/htlc.cpp
+)
+add_dependencies(test_swap_htlc gtest gtest_main)
+target_link_libraries(test_swap_htlc PRIVATE
+  dinero_consensus
+  gtest
+  gtest_main
+)
+link_zstd_if_needed(test_swap_htlc)
+target_include_directories(test_swap_htlc PRIVATE
+  ${CMAKE_SOURCE_DIR}/include
+  ${CMAKE_SOURCE_DIR}/src
+  ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+)
+add_test(NAME SwapHtlc COMMAND test_swap_htlc)
+set_tests_properties(SwapHtlc PROPERTIES LABELS "wallet;swap;taproot;mandatory" TIMEOUT 20)
+
+# DIN <-> BTC swap offer/accept messages (milestone 1).
+add_executable(test_swap_offer
+  tests/wallet/test_swap_offer.cpp
+  src/wallet/swap/offer.cpp
+  src/wallet/swap/htlc.cpp
+)
+add_dependencies(test_swap_offer gtest gtest_main)
+target_link_libraries(test_swap_offer PRIVATE dinero_consensus gtest gtest_main)
+link_zstd_if_needed(test_swap_offer)
+target_include_directories(test_swap_offer PRIVATE
+  ${CMAKE_SOURCE_DIR}/include
+  ${CMAKE_SOURCE_DIR}/src
+  ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+)
+add_test(NAME SwapOffer COMMAND test_swap_offer)
+set_tests_properties(SwapOffer PROPERTIES LABELS "wallet;swap;mandatory" TIMEOUT 20)
+
+# Pre-signed swap fee ladders (milestone 2).
+add_executable(test_swap_fee_ladder
+  tests/wallet/test_swap_fee_ladder.cpp
+  src/wallet/swap/fee_ladder.cpp
+  src/wallet/swap/htlc.cpp
+)
+add_dependencies(test_swap_fee_ladder gtest gtest_main)
+target_link_libraries(test_swap_fee_ladder PRIVATE dinero_consensus gtest gtest_main)
+link_zstd_if_needed(test_swap_fee_ladder)
+target_include_directories(test_swap_fee_ladder PRIVATE
+  ${CMAKE_SOURCE_DIR}/include
+  ${CMAKE_SOURCE_DIR}/src
+  ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+)
+add_test(NAME SwapFeeLadder COMMAND test_swap_fee_ladder)
+set_tests_properties(SwapFeeLadder PROPERTIES LABELS "wallet;swap;taproot;mandatory" TIMEOUT 30)
+
+# Swap engine: pure decisions over chain observations (milestone 3).
+add_executable(test_swap_engine
+  tests/wallet/test_swap_engine.cpp
+  src/wallet/swap/engine.cpp
+  src/wallet/swap/offer.cpp
+  src/wallet/swap/htlc.cpp
+)
+add_dependencies(test_swap_engine gtest gtest_main)
+target_link_libraries(test_swap_engine PRIVATE dinero_consensus gtest gtest_main)
+link_zstd_if_needed(test_swap_engine)
+target_include_directories(test_swap_engine PRIVATE
+  ${CMAKE_SOURCE_DIR}/include
+  ${CMAKE_SOURCE_DIR}/src
+  ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+)
+add_test(NAME SwapEngine COMMAND test_swap_engine)
+set_tests_properties(SwapEngine PROPERTIES LABELS "wallet;swap;mandatory" TIMEOUT 30)
+
+# Swap runner: executor contract around the engine (milestone 5).
+add_executable(test_swap_runner
+  tests/wallet/test_swap_runner.cpp
+  src/wallet/swap/runner.cpp
+  src/wallet/swap/tower.cpp
+  src/wallet/swap/fee_ladder.cpp
+  src/wallet/swap/din_watcher.cpp
+  src/wallet/swap/btc_watcher.cpp
+  src/wallet/swap/btc_tx.cpp
+  src/wallet/swap/engine.cpp
+  src/wallet/swap/offer.cpp
+  src/wallet/swap/htlc.cpp
+)
+add_dependencies(test_swap_runner gtest gtest_main)
+target_link_libraries(test_swap_runner PRIVATE dinero_consensus gtest gtest_main)
+link_zstd_if_needed(test_swap_runner)
+target_include_directories(test_swap_runner PRIVATE
+  ${CMAKE_SOURCE_DIR}/include
+  ${CMAKE_SOURCE_DIR}/src
+  ${CMAKE_SOURCE_DIR}/external
+  ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+)
+add_test(NAME SwapRunner COMMAND test_swap_runner)
+set_tests_properties(SwapRunner PROPERTIES LABELS "wallet;swap;mandatory" TIMEOUT 30)
+
+# Swap Dinero watcher against a scripted node: bounded RPC per tick, reorgs.
+add_executable(test_swap_din_watcher
+  tests/wallet/test_swap_din_watcher.cpp
+  src/wallet/swap/runner.cpp
+  src/wallet/swap/tower.cpp
+  src/wallet/swap/fee_ladder.cpp
+  src/wallet/swap/din_watcher.cpp
+  src/wallet/swap/btc_watcher.cpp
+  src/wallet/swap/btc_tx.cpp
+  src/wallet/swap/engine.cpp
+  src/wallet/swap/offer.cpp
+  src/wallet/swap/htlc.cpp
+)
+add_dependencies(test_swap_din_watcher gtest gtest_main)
+target_link_libraries(test_swap_din_watcher PRIVATE dinero_consensus gtest gtest_main)
+link_zstd_if_needed(test_swap_din_watcher)
+target_include_directories(test_swap_din_watcher PRIVATE
+  ${CMAKE_SOURCE_DIR}/include
+  ${CMAKE_SOURCE_DIR}/src
+  ${CMAKE_SOURCE_DIR}/external
+  ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+)
+add_test(NAME SwapDinWatcher COMMAND test_swap_din_watcher)
+set_tests_properties(SwapDinWatcher PROPERTIES LABELS "wallet;swap;mandatory" TIMEOUT 30)
+
+# Swap watchtower: keyless package, verification, claim/refund duties.
+add_executable(test_swap_tower
+  tests/wallet/test_swap_tower.cpp
+  src/wallet/swap/tower.cpp
+  src/wallet/swap/runner.cpp
+  src/wallet/swap/fee_ladder.cpp
+  src/wallet/swap/din_watcher.cpp
+  src/wallet/swap/btc_watcher.cpp
+  src/wallet/swap/btc_tx.cpp
+  src/wallet/swap/engine.cpp
+  src/wallet/swap/offer.cpp
+  src/wallet/swap/htlc.cpp
+)
+add_dependencies(test_swap_tower gtest gtest_main)
+target_link_libraries(test_swap_tower PRIVATE dinero_consensus gtest gtest_main)
+link_zstd_if_needed(test_swap_tower)
+target_include_directories(test_swap_tower PRIVATE
+  ${CMAKE_SOURCE_DIR}/include
+  ${CMAKE_SOURCE_DIR}/src
+  ${CMAKE_SOURCE_DIR}/external
+  ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+)
+add_test(NAME SwapTower COMMAND test_swap_tower)
+set_tests_properties(SwapTower PROPERTIES LABELS "wallet;swap;mandatory" TIMEOUT 30)
+
+# Encrypted swap store: AES-256-GCM sealed sessions (wallet-key subkey).
+add_executable(test_swap_encrypted_store
+  tests/wallet/test_swap_encrypted_store.cpp
+  src/wallet/swap/encrypted_store.cpp
+  src/crypto/wallet_crypto.cpp
+  src/wallet/swap/tower.cpp
+  src/wallet/swap/runner.cpp
+  src/wallet/swap/fee_ladder.cpp
+  src/wallet/swap/din_watcher.cpp
+  src/wallet/swap/btc_watcher.cpp
+  src/wallet/swap/btc_tx.cpp
+  src/wallet/swap/engine.cpp
+  src/wallet/swap/offer.cpp
+  src/wallet/swap/htlc.cpp
+)
+add_dependencies(test_swap_encrypted_store gtest gtest_main)
+target_link_libraries(test_swap_encrypted_store PRIVATE dinero_consensus argon2 OpenSSL::Crypto gtest gtest_main)
+link_zstd_if_needed(test_swap_encrypted_store)
+target_include_directories(test_swap_encrypted_store PRIVATE
+  ${CMAKE_SOURCE_DIR}/include
+  ${CMAKE_SOURCE_DIR}/src
+  ${CMAKE_SOURCE_DIR}/external
+  ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+)
+add_test(NAME SwapEncryptedStore COMMAND test_swap_encrypted_store)
+set_tests_properties(SwapEncryptedStore PROPERTIES LABELS "wallet;swap;mandatory" TIMEOUT 30)
+
+# Swap manager: seed-derived keys, offers/accepts, index allocation (milestone 6).
+add_executable(test_swap_manager
+  tests/wallet/test_swap_manager.cpp
+  src/wallet/swap/swap_manager.cpp
+  src/wallet/swap/encrypted_store.cpp
+  src/crypto/wallet_crypto.cpp
+  src/wallet/swap/tower.cpp
+  src/wallet/swap/runner.cpp
+  src/wallet/swap/fee_ladder.cpp
+  src/wallet/swap/din_watcher.cpp
+  src/wallet/swap/btc_watcher.cpp
+  src/wallet/swap/btc_tx.cpp
+  src/wallet/swap/engine.cpp
+  src/wallet/swap/offer.cpp
+  src/wallet/swap/htlc.cpp
+)
+add_dependencies(test_swap_manager gtest gtest_main)
+target_link_libraries(test_swap_manager PRIVATE dinero_consensus argon2 OpenSSL::Crypto gtest gtest_main)
+link_zstd_if_needed(test_swap_manager)
+target_include_directories(test_swap_manager PRIVATE
+  ${CMAKE_SOURCE_DIR}/include
+  ${CMAKE_SOURCE_DIR}/src
+  ${CMAKE_SOURCE_DIR}/external
+  ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+)
+add_test(NAME SwapManager COMMAND test_swap_manager)
+set_tests_properties(SwapManager PROPERTIES LABELS "wallet;swap;mandatory" TIMEOUT 30)
+
+# Swap Bitcoin watcher against a scripted Bitcoin Core: content-based claims, decoys, reorgs.
+add_executable(test_swap_btc_watcher
+  tests/wallet/test_swap_btc_watcher.cpp
+  src/wallet/swap/btc_watcher.cpp
+  src/wallet/swap/btc_tx.cpp
+  src/wallet/swap/engine.cpp
+  src/wallet/swap/offer.cpp
+  src/wallet/swap/htlc.cpp
+)
+add_dependencies(test_swap_btc_watcher gtest gtest_main)
+target_link_libraries(test_swap_btc_watcher PRIVATE dinero_consensus gtest gtest_main)
+link_zstd_if_needed(test_swap_btc_watcher)
+target_include_directories(test_swap_btc_watcher PRIVATE
+  ${CMAKE_SOURCE_DIR}/include
+  ${CMAKE_SOURCE_DIR}/src
+  ${CMAKE_SOURCE_DIR}/external
+  ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+)
+add_test(NAME SwapBtcWatcher COMMAND test_swap_btc_watcher)
+set_tests_properties(SwapBtcWatcher PROPERTIES LABELS "wallet;swap;mandatory" TIMEOUT 30)
+
+# Swap Bitcoin-side transactions: BIP143 vector, serialization, HTLC spends (milestone 4).
+add_executable(test_swap_btc_tx
+  tests/wallet/test_swap_btc_tx.cpp
+  src/wallet/swap/btc_tx.cpp
+  src/wallet/swap/htlc.cpp
+)
+add_dependencies(test_swap_btc_tx gtest gtest_main)
+target_link_libraries(test_swap_btc_tx PRIVATE dinero_consensus gtest gtest_main)
+link_zstd_if_needed(test_swap_btc_tx)
+target_include_directories(test_swap_btc_tx PRIVATE
+  ${CMAKE_SOURCE_DIR}/include
+  ${CMAKE_SOURCE_DIR}/src
+  ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+)
+add_test(NAME SwapBtcTx COMMAND test_swap_btc_tx)
+set_tests_properties(SwapBtcTx PROPERTIES LABELS "wallet;swap;mandatory" TIMEOUT 20)
+
+# Bitcoin Core regtest check of the swap's BTC side (needs bitcoind/bitcoin-cli on PATH).
+add_executable(swap_btc_regtest_tool
+  tests/wallet/swap_btc_regtest_tool.cpp
+  src/wallet/swap/btc_tx.cpp
+  src/wallet/swap/htlc.cpp
+)
+target_link_libraries(swap_btc_regtest_tool PRIVATE dinero_consensus)
+link_zstd_if_needed(swap_btc_regtest_tool)
+target_include_directories(swap_btc_regtest_tool PRIVATE ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src)
+find_program(DINERO_BITCOIND bitcoind)
+if(DINERO_BITCOIND)
+  add_test(NAME SwapBtcRegtest
+    COMMAND ${CMAKE_SOURCE_DIR}/tests/wallet/swap_btc_regtest.sh $<TARGET_FILE:swap_btc_regtest_tool>)
+  set_tests_properties(SwapBtcRegtest PROPERTIES LABELS "wallet;swap;regtest" TIMEOUT 180)
+endif()
+
+# Bitcoin Core regtest check of the swap's Bitcoin watcher (milestone 4b).
+add_executable(swap_btc_watch_tool
+  tests/wallet/swap_btc_watch_tool.cpp
+  src/wallet/swap/btc_watcher.cpp
+  src/wallet/swap/btc_tx.cpp
+  src/wallet/swap/engine.cpp
+  src/wallet/swap/offer.cpp
+  src/wallet/swap/htlc.cpp
+)
+target_link_libraries(swap_btc_watch_tool PRIVATE dinero_rpc_client dinero_consensus)
+link_zstd_if_needed(swap_btc_watch_tool)
+target_include_directories(swap_btc_watch_tool PRIVATE ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src)
+if(DINERO_BITCOIND)
+  add_test(NAME SwapBtcWatcherRegtest
+    COMMAND ${CMAKE_SOURCE_DIR}/tests/wallet/swap_btc_watch_regtest.sh
+            $<TARGET_FILE:swap_btc_watch_tool> $<TARGET_FILE:swap_btc_regtest_tool>)
+  set_tests_properties(SwapBtcWatcherRegtest PROPERTIES LABELS "wallet;swap;regtest" TIMEOUT 240)
+endif()
+
+# Dinero regtest helper for the swap's DIN side (milestone 4c).
+add_executable(swap_din_tool
+  tests/wallet/swap_din_tool.cpp
+  src/wallet/swap/din_watcher.cpp
+  src/wallet/swap/engine.cpp
+  src/wallet/swap/offer.cpp
+  src/wallet/swap/htlc.cpp
+)
+target_link_libraries(swap_din_tool PRIVATE dinero_rpc_client dinero_consensus)
+link_zstd_if_needed(swap_din_tool)
+target_include_directories(swap_din_tool PRIVATE ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/external)
+if(TARGET dinerod)
+  add_test(NAME SwapDinRegtest
+    COMMAND ${CMAKE_SOURCE_DIR}/tests/wallet/swap_din_regtest.sh $<TARGET_FILE:dinerod> $<TARGET_FILE:swap_din_tool>)
+  set_tests_properties(SwapDinRegtest PROPERTIES LABELS "wallet;swap;regtest" TIMEOUT 600)
+endif()
+
+# Bob's swap watchtower daemon (milestone 5): keyless, pre-signed rungs only.
+add_executable(dinero-swap-tower
+  tools/dinero_swap_tower.cpp
+  src/wallet/swap/tower.cpp
+  src/wallet/swap/runner.cpp
+  src/wallet/swap/fee_ladder.cpp
+  src/wallet/swap/din_watcher.cpp
+  src/wallet/swap/btc_watcher.cpp
+  src/wallet/swap/btc_tx.cpp
+  src/wallet/swap/engine.cpp
+  src/wallet/swap/offer.cpp
+  src/wallet/swap/htlc.cpp
+)
+target_link_libraries(dinero-swap-tower PRIVATE dinero_rpc_client dinero_consensus)
+link_zstd_if_needed(dinero-swap-tower)
+target_include_directories(dinero-swap-tower PRIVATE ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/external)
+
+# swap.* RPCs end to end: two dinerods + bitcoind, SIGKILL/restart, clean stop (milestone 6).
+if(TARGET dinerod AND DINERO_BITCOIND)
+  add_test(NAME SwapRpcRegtest
+    COMMAND ${CMAKE_SOURCE_DIR}/tests/wallet/swap_rpc_regtest.sh $<TARGET_FILE:dinerod>)
+  set_tests_properties(SwapRpcRegtest PROPERTIES LABELS "wallet;swap;regtest" TIMEOUT 900)
+endif()
+
+# Two-chain end-to-end swap: Alice and Bob runners on dinerod + bitcoind regtest (milestone 5).
+add_executable(swap_e2e_tool
+  tests/wallet/swap_e2e_tool.cpp
+  src/wallet/swap/encrypted_store.cpp
+  src/crypto/wallet_crypto.cpp
+  src/wallet/swap/runner.cpp
+  src/wallet/swap/tower.cpp
+  src/wallet/swap/fee_ladder.cpp
+  src/wallet/swap/din_watcher.cpp
+  src/wallet/swap/btc_watcher.cpp
+  src/wallet/swap/btc_tx.cpp
+  src/wallet/swap/engine.cpp
+  src/wallet/swap/offer.cpp
+  src/wallet/swap/htlc.cpp
+)
+target_link_libraries(swap_e2e_tool PRIVATE dinero_rpc_client dinero_consensus argon2 OpenSSL::Crypto)
+link_zstd_if_needed(swap_e2e_tool)
+target_include_directories(swap_e2e_tool PRIVATE ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/external)
+if(TARGET dinerod AND DINERO_BITCOIND)
+  add_test(NAME SwapE2ERegtest
+    COMMAND ${CMAKE_SOURCE_DIR}/tests/wallet/swap_e2e_regtest.sh $<TARGET_FILE:dinerod> $<TARGET_FILE:swap_e2e_tool>
+            $<TARGET_FILE:dinero-swap-tower>)
+  set_tests_properties(SwapE2ERegtest PROPERTIES LABELS "wallet;swap;regtest" TIMEOUT 900)
+endif()
+
 # Escrow builders must fail safe: no buyer key-path in the Taproot escrow, and
 # no P2SH escrow (Dinero consensus cannot spend P2SH).
 if(TARGET dinero_wallet AND TARGET gtest)

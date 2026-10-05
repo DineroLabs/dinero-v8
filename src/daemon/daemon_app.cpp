@@ -24,6 +24,7 @@
 #include "daemon/services/rpc_service.h"
 #include "daemon/services/mining_service.h"
 #include "daemon/services/metrics_service.h"
+#include "daemon/services/swap_service.h"
 #include "daemon/utreexo_proof_mode.h"
 #include "daemon/block_relay_manager.h"  // Phase G.2: Block propagation
 #include "daemon/tx_relay_manager.h"  // Phase G.3: Mempool relay
@@ -2597,6 +2598,9 @@ bool DaemonApp::Init(int argc, char** argv) {
     auto metrics = std::make_shared<MetricsService>();
     ctx_.metrics = metrics;
     services_.push_back(metrics);
+
+    // DIN <-> BTC swaps: Init() leaves it fully inert unless swap.enable=1.
+    services_.push_back(std::make_shared<SwapService>());
 
     auto rpc = std::make_shared<RPCService>();
     ctx_.rpc = rpc;

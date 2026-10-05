@@ -27,6 +27,8 @@ project(dinero-qt VERSION ${DINERO_MONOREPO_VERSION} LANGUAGES CXX)
 
 option(DIN_ENABLE_LIQUIDITY_VAULT_UI
   "Expose the custodial Liquidity Vault panel in dinero-qt" OFF)
+option(DIN_ENABLE_SWAP_UI
+  "Expose the DIN <-> BTC atomic swap tab (pre-review; testers' builds)" OFF)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Qt firewall — directory-scope include reset (Phase 2 Step 7 finding, 2026-05-12)
@@ -641,6 +643,15 @@ if(DIN_EXPERIMENTAL_FEATURES)
   )
 endif()
 
+# DIN <-> BTC swap tab (talks to the local node's swap.* RPCs)
+if(DIN_ENABLE_SWAP_UI)
+  list(APPEND GUI_SOURCES
+    src/swapwidget.cpp
+    src/swapwidget.h
+    src/swapformpolicy.h
+  )
+endif()
+
 # QML resources (if enabled)
 if(HAVE_QT_QUICK)
   qt_add_resources(QML_RESOURCES qml/qml.qrc)
@@ -764,6 +775,10 @@ endif()
 
 if(DIN_ENABLE_LIQUIDITY_VAULT_UI)
   target_compile_definitions(dinero-qt PRIVATE DIN_ENABLE_LIQUIDITY_VAULT_UI=1)
+endif()
+
+if(DIN_ENABLE_SWAP_UI)
+  target_compile_definitions(dinero-qt PRIVATE DIN_ENABLE_SWAP_UI=1)
 endif()
 
 target_compile_definitions(dinero-qt PRIVATE QT_NO_KEYWORDS)
@@ -1448,6 +1463,26 @@ if(BUILD_TESTING)
   target_link_libraries(test_covenant_form_policy PRIVATE Qt6::Core Qt6::Test)
   target_compile_definitions(test_covenant_form_policy PRIVATE QT_NO_KEYWORDS)
   add_test(NAME CovenantFormPolicy COMMAND test_covenant_form_policy)
+
+  add_executable(test_swap_form_policy tests/test_swap_form_policy.cpp)
+  target_include_directories(test_swap_form_policy PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_link_libraries(test_swap_form_policy PRIVATE Qt6::Core Qt6::Test)
+  target_compile_definitions(test_swap_form_policy PRIVATE QT_NO_KEYWORDS)
+  add_test(NAME SwapFormPolicy COMMAND test_swap_form_policy)
+
+  if(DIN_ENABLE_SWAP_UI)
+    # The real Swap tab against two regtest dinerods (tests/swap_widget_regtest.sh).
+    add_executable(test_swap_widget_regtest tests/test_swap_widget_regtest.cpp
+      src/swapwidget.cpp src/swapwidget.h src/rpcclient.cpp src/rpcclient.h)
+    target_include_directories(test_swap_widget_regtest PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_link_libraries(test_swap_widget_regtest PRIVATE Qt6::Widgets Qt6::Network Qt6::Test)
+    target_compile_definitions(test_swap_widget_regtest PRIVATE QT_NO_KEYWORDS)
+    if(DINEROD_BINARY)
+      add_test(NAME SwapWidgetRegtest COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/swap_widget_regtest.sh
+               ${DINEROD_BINARY} $<TARGET_FILE:test_swap_widget_regtest>)
+      set_tests_properties(SwapWidgetRegtest PROPERTIES TIMEOUT 600)
+    endif()
+  endif()
 
   add_executable(test_chain_timing tests/test_chain_timing.cpp src/chaintiming.cpp)
   target_include_directories(test_chain_timing PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
