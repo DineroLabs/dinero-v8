@@ -439,6 +439,31 @@ TEST(SwapRunner, BobArmsTheTowerBeforeHisBtcLeaves) {
     EXPECT_EQ(chains.btc_broadcasts.size(), 1u) << "never sent twice";
 }
 
+TEST(SwapRunner, WhereATowerIsRequiredBobNeverFundsWithoutOne) {
+    // Mainnet: Bob accepted with a tower, then restarted without one. He must
+    // stay in Accepted (still cancellable), never fund, and say why.
+    Log log;
+    FakeStore store(log);
+    FakeChains chains(log);
+    auto s = MakeSession(Role::BtcSeller);
+    BothLocksSeen(chains, s);
+    chains.btc = BtcWatchReport{};
+    chains.btc.ok = true;
+    chains.btc.mtp_unix = kNow;
+    chains.din.htlc.output_confirmations = 40;
+    auto config = Config();
+    config.use_tower = false;
+    config.require_tower = true;
+    SwapRunner bob(s, kBobKeys, config, chains, store);
+    const auto r = bob.Tick(kNow + kHour);
+    EXPECT_EQ(bob.session().record.state, SwapState::Accepted);
+    EXPECT_EQ(chains.prepared, 0);
+    for (const auto& l : log.lines) EXPECT_EQ(l.rfind("fund_btc", 0), std::string::npos) << l;
+    bool alerted = false;
+    for (const auto& e : r.events) alerted |= e.find("ALERT") == 0 && e.find("watchtower") != std::string::npos;
+    EXPECT_TRUE(alerted);
+}
+
 TEST(SwapRunner, WithoutTheTowersConfirmationTheBtcNeverLeaves) {
     Log log;
     FakeStore store(log);

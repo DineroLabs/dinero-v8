@@ -95,6 +95,7 @@ struct RunnerConfig {
     uint32_t din_bump_stuck_seconds{6 * 60 * 60};
     // Bob's watchtower ladders (only used when a tower is configured).
     bool use_tower{false};
+    bool require_tower{false};  // mainnet beta: Bob holds in Accepted (never funds) without a tower
     uint64_t din_tower_start_feerate_una_per_vb{1'000};
     uint64_t btc_tower_start_feerate_sat_per_vb{2};
     uint32_t tower_rungs{8};

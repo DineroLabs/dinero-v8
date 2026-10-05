@@ -440,6 +440,14 @@ TickReport SwapRunner::Tick(uint32_t wall_clock_unix) {
     obs.din = din.htlc;
     obs.btc = btc.htlc;
     const StepResult step = Step(session_.record, obs);
+    const bool funds_btc = std::any_of(step.actions.begin(), step.actions.end(),
+                                       [](const Action& a) { return a.kind == ActionKind::FundBtcHtlc; });
+    if (funds_btc && config_.require_tower && !config_.use_tower) {
+        // Held in Accepted, so it can still be cancelled or run once a tower is set.
+        report.events.push_back("ALERT: not locking BTC: this network requires a watchtower "
+                                "(set swap.tower_inbox and restart, or cancel the swap)");
+        return report;
+    }
 
     SwapSession next = session_;
     next.record = step.record;

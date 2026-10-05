@@ -196,6 +196,7 @@ void SwapManager::StartSession(uint32_t index, SwapSession session, const Bytes3
     const auto mat = SwapKeysForIndex(derive_, config_.network, index);
     RunnerConfig rc = config_.runner;
     rc.use_tower = static_cast<bool>(tower_sink_);
+    rc.require_tower = config_.require_tower_for_bob;
     Live live;
     live.store = std::make_unique<EncryptedFileSwapStore>(SwapPath(index), store_key);
     live.io = std::make_unique<RpcSwapChainIo>(din_, btc_, session, rc);
