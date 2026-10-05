@@ -479,6 +479,20 @@ int main(int argc, char** argv) {
                   "bob's funding is prepared but held back");
             const auto b = bob.io->ObserveBtc();
             Check(b.ok && !b.funding.has_value(), "no BTC reached the HTLC on chain");
+            {
+                // Cancel/expiry decide "never sent" from Bitcoin Core: check the
+                // real answers, unsent -> in the mempool -> mined.
+                const auto raw = detail::FromHex(bob.runner->session().btc_funding_raw);
+                const auto unsent = bob.io->PreparedFundingUnsent(raw);
+                Check(unsent && *unsent, "Bitcoin Core shows the held-back funding's inputs unspent");
+                RpcSwapChainIo probe(din, btc, bob.runner->session(), config);
+                probe.BroadcastBtc(raw);  // as if the reply of a real send had been lost
+                const auto in_mempool = probe.PreparedFundingUnsent(raw);
+                Check(in_mempool && !*in_mempool, "a funding in the mempool reads as possibly sent");
+                mine();
+                const auto mined = probe.PreparedFundingUnsent(raw);
+                Check(mined && !*mined, "a mined funding reads as possibly sent");
+            }
             const auto id = OfferId(o);
             Check(bob.store_path.size() > 0 && std::ifstream(inbox + "/" + Hex(std::vector<uint8_t>(id.begin(), id.begin() + 8)) + ".pkg").good(),
                   "the package was delivered (nobody acknowledged it)");

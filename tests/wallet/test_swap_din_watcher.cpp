@@ -90,7 +90,10 @@ struct FakeNode {
     Transaction filler;
 
     std::string HashAt(uint32_t h) const { return "h" + std::to_string(h) + "g" + std::to_string(chain[h].gen); }
-    bool Spent() const {  // gettxout is mempool-aware: a mempool spend also reports null
+    // Real dinerod's gettxout reads only the block UTXO set (ChainDB), never the
+    // mempool; spent_in_mempool here models a node that would also hide mempool
+    // spends, which the watcher must not rely on either way.
+    bool Spent() const {
         return spent_in_mempool || [&] {
             for (const auto& b : chain)
                 for (const auto& tx : b.txs)

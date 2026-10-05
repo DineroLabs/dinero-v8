@@ -89,7 +89,10 @@ Without `swap.mainnet_beta=1`, dinerod refuses to start with swaps enabled.
    - sends the BTC **only after the tower confirms it holds the package.**
 
    If the tower doesn't confirm within 30 minutes, nothing is sent and you can
-   cancel.
+   cancel. Cancelling asks Bitcoin Core first, so it must be reachable: if
+   Core shows the funding's inputs already spent (for example, a send whose
+   reply was lost), the node refuses to cancel and keeps watching for the
+   lock instead. If that lock never appears, contact the team.
 4. When Alice claims the BTC, your node (or your tower) claims the DIN.
    - The claim first pays a swap key of yours. A second small transaction then
      moves the DIN to your wallet; it can also raise the fee if the claim is
