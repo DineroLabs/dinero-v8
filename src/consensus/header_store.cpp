@@ -92,10 +92,10 @@ namespace {
     }
 
     uint32_t ReadUint32LE(const uint8_t* data, size_t& offset) {
-        uint32_t value = data[offset] |
-                        (data[offset + 1] << 8) |
-                        (data[offset + 2] << 16) |
-                        (data[offset + 3] << 24);
+        uint32_t value = static_cast<uint32_t>(data[offset]) |
+                        (static_cast<uint32_t>(data[offset + 1]) << 8) |
+                        (static_cast<uint32_t>(data[offset + 2]) << 16) |
+                        (static_cast<uint32_t>(data[offset + 3]) << 24);
         offset += 4;
         return value;
     }
@@ -444,6 +444,60 @@ bool HeaderStore::LoadAllHeaders(std::vector<HeaderIndexEntry>& headers) {
     return true;
 }
 
+bool HeaderStore::ReadStartupSnapshot(StartupSnapshot& snapshot) {
+    if (!is_open_ || !db_) return false;
+    struct SnapshotUse {
+        rocksdb::DB* db;
+        const rocksdb::Snapshot* value;
+        ~SnapshotUse() { if (value) db->ReleaseSnapshot(value); }
+    } use{db_, db_->GetSnapshot()};
+    if (!use.value) return false;
+    rocksdb::ReadOptions options;
+    options.snapshot = use.value;
+    options.io_activity = rocksdb::Env::IOActivity::kDBIterator;
+    std::unique_ptr<rocksdb::Iterator> it(db_->NewIterator(options));
+    if (!it) return false;
+    const auto schema = CurrentSchemaMetadata();
+    std::vector<uint8_t> schema_bytes;
+    WriteUint32LE(schema_bytes, schema.version);
+    WriteUint32LE(schema_bytes, schema.header_size);
+    WriteUint32LE(schema_bytes, static_cast<uint32_t>(schema.network.size()));
+    schema_bytes.insert(schema_bytes.end(), schema.network.begin(), schema.network.end());
+    const std::string expected_schema(schema_bytes.begin(), schema_bytes.end());
+    StartupSnapshot staged;
+    bool saw_schema = false;
+    for (it->Seek(HEADER_PREFIX); it->Valid(); it->Next()) {
+        const std::string key = it->key().ToString();
+        if (key.compare(0, HEADER_PREFIX.size(), HEADER_PREFIX) != 0) break;
+        const std::string value = it->value().ToString();
+        if (key == MakeSchemaMetadataKey()) {
+            if (saw_schema || value != expected_schema) return false;
+            saw_schema = true;
+        } else if (key == MakeBestHeaderKey()) {
+            if (staged.best || value.size() != 32) return false;
+            uint256 best;
+            std::memcpy(best.data, value.data(), 32);
+            staged.best = best;
+        } else {
+            // The current writer uses exactly 64 hex digits and the complete
+            // 128-byte consensus header. No legacy reconstruction or schema
+            // migration is allowed through this startup read.
+            if (key.size() != HEADER_PREFIX.size() + 32 ||
+                value.size() != 72 + 64 + kFullPersistedHeaderSize) return false;
+            std::vector<uint8_t> bytes(value.begin(), value.end());
+            size_t offset = 68;
+            if (ReadUint32LE(bytes.data(), offset) != 64) return false;
+            HeaderIndexEntry entry;
+            if (!DeserializeHeader(bytes, entry) || MakeHeaderKey(entry.hash) != key) return false;
+            staged.headers.push_back(std::move(entry));
+        }
+    }
+    if (!it->status().ok() || !saw_schema) return false;
+    snapshot.headers.swap(staged.headers);
+    snapshot.best.swap(staged.best);
+    return true;
+}
+
 size_t HeaderStore::GetHeaderCount() const {
     if (!is_open_) {
         return 0;
@@ -554,6 +608,19 @@ bool HeaderStore::DeserializeHeader(const std::vector<uint8_t>& data, HeaderInde
     entry.hash = ReadUint256(data.data(), offset);
     entry.prev_hash = ReadUint256(data.data(), offset);
     entry.height = ReadUint32LE(data.data(), offset);
+    // Check the length-prefixed field before constructing its string. Older
+    // current/legacy header layouts share this prefix; neither may read beyond
+    // the record or silently truncate an oversized integer.
+    size_t length_offset = offset;
+    const uint32_t work_size = ReadUint32LE(data.data(), length_offset);
+    if (work_size == 0 || work_size > 64 || work_size > data.size() - length_offset) {
+        return false;
+    }
+    for (size_t i = 0; i < work_size; ++i) {
+        const uint8_t c = data[length_offset + i];
+        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') ||
+              (c >= 'A' && c <= 'F'))) return false;
+    }
     entry.chainwork = ReadArithUint256(data.data(), offset);
 
     const size_t remaining = data.size() - offset;

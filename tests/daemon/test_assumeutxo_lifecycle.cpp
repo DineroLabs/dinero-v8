@@ -596,3 +596,23 @@ int main(int argc, char** argv) {
     ::testing::InitGoogleTest(&argc, argv);
     return RUN_ALL_TESTS();
 }
+
+// Sequential lifetime checks only: no race, churn or synchronization-removal
+// controls. Fatal/reset transitions happen after each scoped use is released.
+namespace dinero {
+TEST_F(AssumeUtxoLifecycleTest, SnapshotUseRequiresExactNonfatalOwner) {
+    auto lc = MakeLifecycle();
+    EXPECT_FALSE(lc->AcquireSnapshotUse(base_block_, kBaseHeight));
+    ASSERT_TRUE(lc->OnSnapshotLoaded(base_block_, kBaseHeight));
+    EXPECT_FALSE(lc->AcquireSnapshotUse(base_block_, kBaseHeight + 1));
+    EXPECT_FALSE(lc->AcquireSnapshotUse(dinero::uint256(), kBaseHeight));
+    { auto use = lc->AcquireSnapshotUse(base_block_, kBaseHeight); ASSERT_TRUE(use); }
+    ASSERT_TRUE(lc->OnValidationStarted(t0_));
+    { auto use = lc->AcquireSnapshotUse(base_block_, kBaseHeight); ASSERT_TRUE(use); }
+    lc->ForceFatal("snapshot use fixture");
+    EXPECT_FALSE(lc->AcquireSnapshotUse(base_block_, kBaseHeight));
+    ASSERT_TRUE(lc->OperatorReset(dinero::assumeutxo::kResetToken));
+    EXPECT_FALSE(lc->AcquireSnapshotUse(base_block_, kBaseHeight));
+}
+
+} // namespace dinero

@@ -5180,6 +5180,33 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_assumeutxo_replay.cpp)
     tests/stubs/daemon_test_stubs.cpp   # Mempool extras + vault
   )
   add_dependencies(test_assumeutxo_replay gtest)
+  option(DINERO_TEST_ORCHARD_QT_CONTRACT "Build in-process node/Qt Orchard contract tests" OFF)
+  if(DINERO_TEST_ORCHARD_QT_CONTRACT)
+    find_package(Qt6 REQUIRED COMPONENTS Core)
+    target_sources(test_assumeutxo_replay PRIVATE qt/tests/orchard_backend_contract_adapter.cpp)
+    target_compile_definitions(test_assumeutxo_replay PRIVATE DINERO_TEST_ORCHARD_QT_CONTRACT=1 QT_NO_KEYWORDS=1)
+    target_link_libraries(test_assumeutxo_replay PRIVATE Qt6::Core)
+    add_test(NAME OrchardQtContract COMMAND test_assumeutxo_replay --gtest_filter=OrchardQtContract.*)
+    set_tests_properties(OrchardQtContract PROPERTIES TIMEOUT 180 LABELS "orchard;qt;contract;offline")
+  endif()
+  option(DINERO_TEST_ORCHARD_HTTP_TRANSPORT "Build explicitly gated Orchard HTTP/Qt integration tests (never automatically run)" OFF)
+  if(DINERO_TEST_ORCHARD_HTTP_TRANSPORT)
+    if(NOT UNIX OR NOT DINERO_BUILD_ORCHARD_BACKEND OR NOT DINERO_TEST_ORCHARD_QT_CONTRACT)
+      message(FATAL_ERROR "Orchard HTTP test requires Unix, real Orchard backend and Qt contract fixtures")
+    endif()
+    find_package(Qt6 REQUIRED COMPONENTS Core Network Widgets)
+    target_sources(test_assumeutxo_replay PRIVATE
+      src/daemon/http_rpc_server.cpp src/daemon/rpc_auth.cpp src/daemon/legacy_globals_stub.cpp
+      qt/src/rpcclient.cpp qt/src/rpcclient.h
+      qt/src/orchardwidget.cpp qt/src/orchardwidget.h qt/src/paycollectpolicy.cpp
+      qt/tests/orchard_http_transport_adapter.cpp)
+    target_include_directories(test_assumeutxo_replay PRIVATE ${CMAKE_SOURCE_DIR}/qt/src)
+    target_compile_definitions(test_assumeutxo_replay PRIVATE DINERO_TEST_ORCHARD_HTTP_TRANSPORT=1 QT_NO_KEYWORDS=1 DINERO_CLI_VERSION="8.1.13")
+    set_target_properties(test_assumeutxo_replay PROPERTIES AUTOMOC ON)
+    target_link_libraries(test_assumeutxo_replay PRIVATE Qt6::Core Qt6::Network Qt6::Widgets)
+    # Deliberately NO add_test, discovery, post-build launch or CI registration.
+    # Future execution requires explicit isolated IPC authorization/environment.
+  endif()
   # Test data remains available in backend-OFF builds without introducing a
   # backend path into the compilation graph. Preserve the exact fixture bytes.
   file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/orchard-transaction-rpc-fixtures")
@@ -5297,6 +5324,14 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_assumeutxo_replay.cpp)
   add_test(NAME OrchardAccountIssuance COMMAND test_assumeutxo_replay --gtest_filter=OrchardAccountIssuance.*)
   add_test(NAME WalletShieldRpc COMMAND test_assumeutxo_replay --gtest_filter=WalletShieldRpc.*)
   set_tests_properties(WalletShieldRpc PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;wallet;rpc;mandatory")
+  add_test(NAME CompactHeaderStartup COMMAND test_assumeutxo_replay --gtest_filter=CompactHeaderStartup.*)
+  set_tests_properties(CompactHeaderStartup PROPERTIES TIMEOUT 120 LABELS "daemon;headers;storage;mandatory")
+  add_test(NAME OrchardFinishById COMMAND test_assumeutxo_replay --gtest_filter=OrchardFinishById.*)
+  set_tests_properties(OrchardFinishById PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;wallet;rpc;mandatory")
+  if(DINERO_BUILD_ORCHARD_BACKEND)
+    add_test(NAME OrchardShieldFinishById COMMAND test_assumeutxo_replay --gtest_filter=OrchardShieldFinishById.*)
+    set_tests_properties(OrchardShieldFinishById PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;wallet;rpc;mandatory")
+  endif()
   add_test(NAME OrchardFinishRpc COMMAND test_assumeutxo_replay --gtest_filter=OrchardFinishRpc.*)
   set_tests_properties(OrchardFinishRpc PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;wallet;rpc;mandatory")
   add_test(NAME OrchardSpendRpc COMMAND test_assumeutxo_replay --gtest_filter=OrchardSpendRpc.*)
@@ -5307,6 +5342,10 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_assumeutxo_replay.cpp)
     add_test(NAME WalletPendingCanonicalBaseline COMMAND test_assumeutxo_replay --gtest_filter=WalletPendingCanonicalBaseline.*)
     set_tests_properties(WalletPendingCanonicalBaseline PROPERTIES TIMEOUT 180 LABELS "daemon;wallet;pending;ownership;mandatory")
   endif()
+  if(DINERO_BUILD_ORCHARD_BACKEND)
+    add_test(NAME OrchardSpendDetails COMMAND test_assumeutxo_replay --gtest_filter=OrchardSpendDetails.*)
+    set_tests_properties(OrchardSpendDetails PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;wallet;ownership;mandatory")
+  endif()
   add_test(NAME OrchardSpendRequest COMMAND test_assumeutxo_replay --gtest_filter=OrchardSpendRequest.*)
   set_tests_properties(OrchardSpendRequest PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;wallet;ownership;mandatory")
   add_test(NAME OrchardProofOwner COMMAND test_assumeutxo_replay --gtest_filter=OrchardProofOwner.*)
@@ -5315,6 +5354,30 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_assumeutxo_replay.cpp)
   set_tests_properties(OrchardProofCapacity PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;wallet;ownership;mandatory")
   add_test(NAME OrchardProofRetention COMMAND test_assumeutxo_replay --gtest_filter=OrchardProofRetention.*)
   set_tests_properties(OrchardProofRetention PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;wallet;ownership;mandatory")
+  if(DINERO_BUILD_ORCHARD_BACKEND)
+    add_test(NAME OrchardProofStatus COMMAND test_assumeutxo_replay --gtest_filter=OrchardProofStatus.*)
+    set_tests_properties(OrchardProofStatus PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;wallet;rpc;mandatory")
+  endif()
+  add_test(NAME UtreexoProofInputCapture COMMAND test_assumeutxo_replay --gtest_filter=UtreexoProofInputCapture.*)
+  set_tests_properties(UtreexoProofInputCapture PROPERTIES TIMEOUT 180 LABELS "daemon;utreexo;wallet;rpc;mandatory")
+  add_test(NAME WalletProofContext COMMAND test_assumeutxo_replay --gtest_filter=WalletProofContext.*)
+  set_tests_properties(WalletProofContext PROPERTIES TIMEOUT 180 LABELS "daemon;utreexo;wallet;rpc;mandatory")
+  add_test(NAME WalletProofSnapshot COMMAND test_assumeutxo_replay --gtest_filter=WalletProofSnapshot.*)
+  set_tests_properties(WalletProofSnapshot PROPERTIES TIMEOUT 180 LABELS "daemon;utreexo;wallet;rpc;mandatory")
+  if(DINERO_BUILD_ORCHARD_BACKEND)
+    add_test(NAME OrchardCompactDownloadMode COMMAND test_assumeutxo_replay --gtest_filter=OrchardCompactDownloadMode.*)
+    set_tests_properties(OrchardCompactDownloadMode PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;p2p;mandatory")
+  endif()
+  add_test(NAME UtreexoBlockPayload COMMAND test_assumeutxo_replay --gtest_filter=UtreexoBlockPayload.*)
+  set_tests_properties(UtreexoBlockPayload PROPERTIES TIMEOUT 180 LABELS "daemon;utreexo;p2p;mandatory")
+  add_test(NAME OrchardNetworkRequest COMMAND test_assumeutxo_replay --gtest_filter=OrchardNetworkRequest.*)
+  set_tests_properties(OrchardNetworkRequest PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;p2p;mandatory")
+  add_test(NAME OrchardActivationStatus COMMAND test_assumeutxo_replay --gtest_filter=OrchardActivationStatus.*)
+  set_tests_properties(OrchardActivationStatus PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;rpc;mandatory")
+  add_test(NAME OrchardRpcBinding COMMAND test_assumeutxo_replay --gtest_filter=OrchardRpcBinding.*)
+  set_tests_properties(OrchardRpcBinding PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;wallet;rpc;mandatory")
+  add_test(NAME OrchardBalance COMMAND test_assumeutxo_replay --gtest_filter=OrchardBalance.*)
+  set_tests_properties(OrchardBalance PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;wallet;rpc;mandatory")
   add_test(NAME OrchardOperationStatus COMMAND test_assumeutxo_replay --gtest_filter=OrchardOperationStatus.*)
   set_tests_properties(OrchardOperationStatus PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;wallet;rpc;mandatory")
   add_test(NAME OrchardServiceProofs COMMAND test_assumeutxo_replay --gtest_filter=OrchardServiceProofs.*)
@@ -5348,6 +5411,10 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_assumeutxo_replay.cpp)
     set_tests_properties(OrchardDetachedRecovery PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;wallet;ownership;mandatory")
     add_test(NAME OrchardDetachedIssuance COMMAND test_assumeutxo_replay --gtest_filter=OrchardDetachedIssuance.*)
     set_tests_properties(OrchardDetachedIssuance PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;wallet;ownership;mandatory")
+    add_test(NAME OrchardRequestErrors COMMAND test_assumeutxo_replay --gtest_filter=OrchardRequestErrors.*)
+    set_tests_properties(OrchardRequestErrors PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;wallet;ownership;mandatory")
+    add_test(NAME OrchardPlanRecovery COMMAND test_assumeutxo_replay --gtest_filter=OrchardPlanRecovery.*)
+    set_tests_properties(OrchardPlanRecovery PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;wallet;ownership;mandatory")
     add_test(NAME OrchardDetachedProofRead COMMAND test_assumeutxo_replay --gtest_filter=OrchardDetachedProofRead.*)
     set_tests_properties(OrchardDetachedProofRead PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;wallet;ownership;mandatory")
     add_test(NAME OrchardDetachedFinalization COMMAND test_assumeutxo_replay --gtest_filter=OrchardDetachedFinalization.*)
@@ -5409,6 +5476,8 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_assumeutxo_replay.cpp)
   set_tests_properties(WalletServiceOwner PROPERTIES TIMEOUT 120 LABELS "daemon;wallet;mandatory")
   add_test(NAME OrchardBlockAnnouncement COMMAND test_assumeutxo_replay --gtest_filter=OrchardBlockAnnouncement.*)
   set_tests_properties(OrchardBlockAnnouncement PROPERTIES TIMEOUT 120 LABELS "daemon;mandatory")
+  add_test(NAME CanonicalOnlyQueue COMMAND test_assumeutxo_replay --gtest_filter=CanonicalOnlyQueue.*)
+  set_tests_properties(CanonicalOnlyQueue PROPERTIES TIMEOUT 120 LABELS "daemon;mandatory")
   add_test(NAME OrchardNetworkRouting COMMAND test_assumeutxo_replay --gtest_filter=OrchardNetworkRouting.*)
   set_tests_properties(OrchardNetworkRouting PROPERTIES TIMEOUT 120 LABELS "daemon;mandatory")
   add_test(NAME OrchardBlockRelay COMMAND test_assumeutxo_replay --gtest_filter=OrchardBlockRelay.*)
@@ -5431,12 +5500,21 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_assumeutxo_replay.cpp)
   set_tests_properties(OrchardCycle PROPERTIES TIMEOUT 120 LABELS "daemon;orchard;wallet;mandatory")
   add_test(NAME OrchardBlockRpc COMMAND test_assumeutxo_replay --gtest_filter=OrchardBlockRpc.*)
   set_tests_properties(OrchardBlockRpc PROPERTIES TIMEOUT 120 LABELS "daemon;orchard;rpc;mandatory")
+  add_test(NAME OrchardPoolCatalogView COMMAND test_assumeutxo_replay --gtest_filter=OrchardPoolCatalogView.*)
+  set_tests_properties(OrchardPoolCatalogView PROPERTIES TIMEOUT 120 LABELS "daemon;orchard;mempool;mandatory")
+  add_test(NAME OrchardCompactService COMMAND test_assumeutxo_replay --gtest_filter=OrchardCompactService.*)
+  set_tests_properties(OrchardCompactService PROPERTIES TIMEOUT 120 LABELS "daemon;orchard;storage;mandatory")
+
+  add_test(NAME OrchardPoolProofTransport COMMAND test_assumeutxo_replay --gtest_filter=OrchardPoolProofTransport.*)
+  set_tests_properties(OrchardPoolProofTransport PROPERTIES TIMEOUT 120 LABELS "daemon;orchard;mempool;mandatory")
   add_test(NAME OrchardCanonicalPool COMMAND test_assumeutxo_replay --gtest_filter=OrchardCanonicalPool.*)
   set_tests_properties(OrchardCanonicalPool PROPERTIES TIMEOUT 120 LABELS "daemon;orchard;mempool;mandatory")
   add_test(NAME OrchardMiningRpc COMMAND test_assumeutxo_replay --gtest_filter=OrchardMiningRpc.*)
   set_tests_properties(OrchardMiningRpc PROPERTIES TIMEOUT 120 LABELS "orchard;mining;rpc")
   add_test(NAME OrchardRawIngress COMMAND test_assumeutxo_replay --gtest_filter=OrchardRawIngress.*)
   set_tests_properties(OrchardRawIngress PROPERTIES LABELS "daemon;orchard;ingress;mandatory" TIMEOUT 120)
+  add_test(NAME OrchardCanonicalCatalog COMMAND test_assumeutxo_replay --gtest_filter=OrchardCanonicalCatalog.*)
+  set_tests_properties(OrchardCanonicalCatalog PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;mandatory")
   add_test(NAME OrchardParentCatalog COMMAND test_assumeutxo_replay --gtest_filter=OrchardParentCatalog.*)
   set_tests_properties(OrchardParentCatalog PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;mandatory")
   add_test(NAME OrchardParentService COMMAND test_assumeutxo_replay --gtest_filter=OrchardParentService.*)
@@ -7903,6 +7981,9 @@ if(NOT WIN32)
   add_test(NAME WalletSeedWrite
     COMMAND test_wallet_database_lease --gtest_filter=WalletSeedWriteTest.*)
   set_tests_properties(WalletSeedWrite PROPERTIES TIMEOUT 90 LABELS "wallet;persistence;recovery")
+  add_test(NAME WalletUtxoRead
+    COMMAND test_wallet_database_lease --gtest_filter=WalletUtxoReadTest.*)
+  set_tests_properties(WalletUtxoRead PROPERTIES TIMEOUT 90 LABELS "wallet;persistence;recovery")
   add_test(NAME WalletSeedRead
     COMMAND test_wallet_database_lease --gtest_filter=WalletSeedReadTest.*)
   set_tests_properties(WalletSeedRead PROPERTIES TIMEOUT 90 LABELS "wallet;persistence;recovery")
@@ -7939,6 +8020,8 @@ if(NOT WIN32)
   add_test(NAME WalletRecoveryKeys
     COMMAND test_wallet_database_lease --gtest_filter=WalletRecoveryKeyTest.*)
   set_tests_properties(WalletRecoveryKeys PROPERTIES TIMEOUT 30 LABELS "wallet;persistence;recovery;concurrency")
+  add_test(NAME WalletExistingIdentity COMMAND test_wallet_database_lease --gtest_filter=WalletExistingIdentityTest.*)
+  set_tests_properties(WalletExistingIdentity PROPERTIES TIMEOUT 30 LABELS "wallet;persistence;recovery")
   add_test(NAME WalletDeliveryBindingIdentity
     COMMAND test_wallet_database_lease --gtest_filter=WalletDeliveryBindingTest.StableDatabaseIdentitySurvivesReopenAndMetadataChanges)
   add_test(NAME WalletDeliveryBindingFailures
@@ -12719,6 +12802,46 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_utreexo_stump_deletion.cpp)
   add_test(NAME UtreexoStumpDeletion COMMAND test_utreexo_stump_deletion)
 endif()
 
+# Canonical full-forest oracle for the roots-only Orchard transition prerequisite.
+add_executable(test_orchard_compact_stump_characterization
+  tests/consensus/test_orchard_compact_stump_characterization.cpp)
+target_link_libraries(test_orchard_compact_stump_characterization PRIVATE
+  dinero_consensus GTest::gtest_main ${OPENSSL_CRYPTO_LIBRARY} ${OPENSSL_SSL_LIBRARY})
+link_zstd_if_needed(test_orchard_compact_stump_characterization)
+target_include_directories(test_orchard_compact_stump_characterization PRIVATE
+  ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src ${OPENSSL_INCLUDE_DIR})
+if(APPLE)
+  target_link_libraries(test_orchard_compact_stump_characterization PRIVATE
+    "-framework Security" "-framework CoreFoundation")
+endif()
+foreach(case EverySmallDeletionSubset DeletedSubtreesThenCarryAdditions)
+  add_test(NAME OrchardCompactStump_${case}
+    COMMAND test_orchard_compact_stump_characterization
+      --gtest_filter=OrchardCompactStumpCharacterization.${case})
+  set_tests_properties(OrchardCompactStump_${case} PROPERTIES TIMEOUT 60)
+endforeach()
+
+# Canonical Orchard Merkle arithmetic; original generic stump remains historical.
+add_executable(test_orchard_canonical_stump_transition
+  tests/consensus/test_orchard_canonical_stump_transition.cpp)
+target_link_libraries(test_orchard_canonical_stump_transition PRIVATE
+  dinero_consensus GTest::gtest_main ${OPENSSL_CRYPTO_LIBRARY} ${OPENSSL_SSL_LIBRARY})
+link_zstd_if_needed(test_orchard_canonical_stump_transition)
+target_include_directories(test_orchard_canonical_stump_transition PRIVATE
+  ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src ${OPENSSL_INCLUDE_DIR})
+if(APPLE)
+  target_link_libraries(test_orchard_canonical_stump_transition PRIVATE
+    "-framework Security" "-framework CoreFoundation")
+endif()
+foreach(case EverySmallDeletionSubset DeletedSubtreesThenCarryAdditions
+    RejectsMalformedProofWithoutMutation SuccessiveDeletionsAndCapacityBoundary
+    RejectsDuplicateAdditionsEvenWithMatchingArithmetic)
+  add_test(NAME OrchardCanonicalStump_${case}
+    COMMAND test_orchard_canonical_stump_transition
+      --gtest_filter=OrchardCanonicalStumpTransition.${case})
+  set_tests_properties(OrchardCanonicalStump_${case} PROPERTIES TIMEOUT 60)
+endforeach()
+
 # ============================================================================
 # CSN Integration Test (Position Index + Proof + Rebuild + Stateless Verify)
 # ============================================================================
@@ -15014,26 +15137,26 @@ endif()
 if(EXISTS ${CMAKE_SOURCE_DIR}/tests/wallet/test_wallet_mainnet_readiness.cpp)
   add_executable(test_wallet_mainnet_readiness
     tests/wallet/test_wallet_mainnet_readiness.cpp
-    tests/stubs/mempool_test_stubs.cpp  # Mempool::isOutputSpentInMempool etc.
+    src/daemon/config.cpp
+    src/daemon/mempool.cpp
   )
 
+  # RpcImportMnemonic reaches the real WalletWorker/daemon graph. Match the
+  # historical-RPC fixture's real config/mempool sources and archive grouping.
   target_include_directories(test_wallet_mainnet_readiness PRIVATE
-    ${CMAKE_SOURCE_DIR}/include
-    ${CMAKE_SOURCE_DIR}/src
-  )
-
-  target_link_libraries(test_wallet_mainnet_readiness PRIVATE
-    dinero_wallet
-    dinero_core
-    dinero_consensus
-    dinero_crypto
-    dinero_rpc_handlers
-    sqlite3
-    gtest
-    gtest_main
-    pthread
-  )
-
+    ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/rust/orchard_backend/include)
+  if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    target_link_libraries(test_wallet_mainnet_readiness PRIVATE
+      "-Wl,--start-group" dinero_rpc_handlers dinero_core dinero_wallet dinero_chainstate
+      dinero_consensus dinero_shielded dinero_bridge dinero_pool dinero_lightning_keys
+      dinero_address_encoding dinero_bip32 dinero_pq dinero_zk dinero_tx_primitives
+      dinero_crypto "-Wl,--end-group" sqlite3 gtest gtest_main pthread)
+  else()
+    target_link_libraries(test_wallet_mainnet_readiness PRIVATE
+      dinero_rpc_handlers dinero_core dinero_wallet dinero_chainstate dinero_consensus
+      dinero_crypto sqlite3 gtest gtest_main pthread)
+  endif()
   link_zstd_if_needed(test_wallet_mainnet_readiness)
 
   if(APPLE)
@@ -15054,6 +15177,8 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/wallet/test_wallet_mainnet_readiness.cpp)
 
   # Passing subcases — graduate to active set (run on every PR via tests.yml).
   set(_wmr_passing
+    WalletSelectionPersistsAcrossTimestampTies
+    WalletSelectionWriteFailureAndLegacyFallback
     FreshRestoreInitialSeedAndRecoveryBinding
     FreshRestoreEncryptedReopen
     FreshRestoreExplicitChecksumBypass
@@ -15066,6 +15191,7 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/wallet/test_wallet_mainnet_readiness.cpp)
     ShieldedViewingAuthorityClearedOnUnload
     EncryptionRoundTripRestoreAndDerivationPersistence
     RestoreRequiresNewNamePreservesOriginal
+    ImportMnemonicBindsNewNamePreservesOriginal
     TimeoutClearsPqAndPreservesDurableOwner
     TimeoutHonorsExistingRecoveryPin
     PqInventoryBindingAndReopen
@@ -15858,6 +15984,10 @@ if(UNIX)
     target_link_libraries(test_wallet_historical_rpc PRIVATE "-framework Security")
   endif()
   add_test(NAME WalletHistoricalRpc COMMAND test_wallet_historical_rpc --gtest_filter=HistoricalRpc.*)
+  add_test(NAME WalletListUnspentOwner COMMAND test_wallet_historical_rpc --gtest_filter=WalletListUnspentOwner.*)
+  set_tests_properties(WalletListUnspentOwner PROPERTIES TIMEOUT 120 LABELS "wallet;rpc;ownership;mandatory")
+  add_test(NAME SnapshotPaymentSource COMMAND test_wallet_historical_rpc --gtest_filter=SnapshotPaymentSource.*)
+  set_tests_properties(SnapshotPaymentSource PROPERTIES TIMEOUT 120 LABELS "wallet;assumeutxo;ownership;mandatory")
   add_test(NAME OrchardCatalogOwner COMMAND test_wallet_historical_rpc --gtest_filter=OrchardCatalogOwner.*)
   set_tests_properties(OrchardCatalogOwner PROPERTIES TIMEOUT 180 LABELS "wallet;orchard;ownership;mandatory")
   add_test(NAME WalletOwnedSigning COMMAND test_wallet_historical_rpc --gtest_filter=WalletOwnedSigning.*)
@@ -15901,6 +16031,8 @@ if(UNIX)
   set_tests_properties(PoolPaymentAttempt PROPERTIES TIMEOUT 180 LABELS "pool;wallet;payment;mandatory")
   add_test(NAME WalletPoolOrigins COMMAND test_wallet_historical_rpc --gtest_filter=WalletPoolOriginsOwner.*:WalletPoolOriginsDispatch.*)
   set_tests_properties(WalletPoolOrigins PROPERTIES TIMEOUT 120 LABELS "wallet;pool;pending;ownership;mandatory")
+  add_test(NAME WalletSwapRequest COMMAND test_wallet_historical_rpc --gtest_filter=WalletSwapRequestOwner.*:WalletSwapRequestDispatch.*:WalletSwapFundingAdapter.*)
+  set_tests_properties(WalletSwapRequest PROPERTIES TIMEOUT 120 LABELS "wallet;swap;pending;request;ownership;mandatory")
   add_test(NAME WalletPoolRequest COMMAND test_wallet_historical_rpc --gtest_filter=WalletPoolRequestOwner.*:WalletPoolRequestDispatch.*:WalletPoolRequestVault.*)
   set_tests_properties(WalletPoolRequest PROPERTIES TIMEOUT 120 LABELS "wallet;pool;pending;request;ownership")
   add_test(NAME WalletRequestDispatch COMMAND test_wallet_historical_rpc --gtest_filter=WalletRequestDispatch.*)
@@ -15967,6 +16099,66 @@ if(UNIX)
   endif()
   add_test(NAME RpcRequestFraming COMMAND test_rpc_request_framing)
   set_tests_properties(RpcRequestFraming PROPERTIES TIMEOUT 90 RUN_SERIAL TRUE LABELS "rpc;framing;ownership")
+endif()
+
+if(UNIX)
+  add_executable(test_rpc_orchard_readonly_policy
+    tests/daemon/test_rpc_orchard_readonly_policy.cpp
+    src/daemon/http_rpc_server.cpp src/daemon/rpc_auth.cpp src/daemon/config.cpp
+    src/daemon/legacy_globals_stub.cpp
+    tests/stubs/mempool_test_stubs.cpp tests/stubs/daemon_test_stubs.cpp)
+  target_compile_definitions(test_rpc_orchard_readonly_policy PRIVATE DINERO_TEST_REAL_VAULT_RUNTIME=1
+    DINERO_CLI_VERSION="${DINERO_RELEASE_TAG}")
+  target_include_directories(test_rpc_orchard_readonly_policy PRIVATE include src src/daemon ${CMAKE_BINARY_DIR})
+  if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    target_link_libraries(test_rpc_orchard_readonly_policy PRIVATE
+      "-Wl,--start-group" dinero_rpc_handlers dinero_core dinero_wallet dinero_chainstate
+      dinero_consensus dinero_shielded dinero_bridge dinero_pool dinero_lightning_keys
+      dinero_address_encoding dinero_bip32 dinero_pq dinero_zk dinero_tx_primitives
+      dinero_crypto "-Wl,--end-group" sqlite3 gtest gtest_main pthread)
+  else()
+    target_link_libraries(test_rpc_orchard_readonly_policy PRIVATE dinero_rpc_handlers dinero_core
+      dinero_wallet dinero_chainstate dinero_consensus dinero_crypto sqlite3 gtest gtest_main pthread)
+  endif()
+  link_zstd_if_needed(test_rpc_orchard_readonly_policy)
+  if(APPLE)
+    target_link_libraries(test_rpc_orchard_readonly_policy PRIVATE "-framework Security")
+  endif()
+  add_test(NAME RpcOrchardReadOnlyPolicy COMMAND test_rpc_orchard_readonly_policy)
+  set_tests_properties(RpcOrchardReadOnlyPolicy PROPERTIES TIMEOUT 60 RUN_SERIAL TRUE LABELS "rpc;orchard;policy;offline;mandatory")
+endif()
+
+if(UNIX AND DINERO_TEST_ORCHARD_QT_CONTRACT)
+  add_executable(test_rpc_orchard_error_envelope
+    tests/daemon/test_rpc_orchard_error_envelope.cpp
+    src/daemon/http_rpc_server.cpp src/daemon/rpc_auth.cpp src/daemon/config.cpp
+    src/daemon/legacy_globals_stub.cpp
+    tests/stubs/mempool_test_stubs.cpp tests/stubs/daemon_test_stubs.cpp)
+  find_package(Qt6 REQUIRED COMPONENTS Core Network)
+  target_sources(test_rpc_orchard_error_envelope PRIVATE qt/src/rpcclient.cpp qt/src/rpcclient.h
+    qt/tests/orchard_error_envelope_adapter.cpp)
+  set_target_properties(test_rpc_orchard_error_envelope PROPERTIES AUTOMOC ON)
+  target_include_directories(test_rpc_orchard_error_envelope PRIVATE qt/src)
+  target_link_libraries(test_rpc_orchard_error_envelope PRIVATE Qt6::Core Qt6::Network)
+  target_compile_definitions(test_rpc_orchard_error_envelope PRIVATE QT_NO_KEYWORDS=1 DINERO_TEST_REAL_VAULT_RUNTIME=1
+    DINERO_CLI_VERSION="${DINERO_RELEASE_TAG}")
+  target_include_directories(test_rpc_orchard_error_envelope PRIVATE include src src/daemon ${CMAKE_BINARY_DIR})
+  if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    target_link_libraries(test_rpc_orchard_error_envelope PRIVATE
+      "-Wl,--start-group" dinero_rpc_handlers dinero_core dinero_wallet dinero_chainstate
+      dinero_consensus dinero_shielded dinero_bridge dinero_pool dinero_lightning_keys
+      dinero_address_encoding dinero_bip32 dinero_pq dinero_zk dinero_tx_primitives
+      dinero_crypto "-Wl,--end-group" sqlite3 gtest gtest_main pthread)
+  else()
+    target_link_libraries(test_rpc_orchard_error_envelope PRIVATE dinero_rpc_handlers dinero_core
+      dinero_wallet dinero_chainstate dinero_consensus dinero_crypto sqlite3 gtest gtest_main pthread)
+  endif()
+  link_zstd_if_needed(test_rpc_orchard_error_envelope)
+  if(APPLE)
+    target_link_libraries(test_rpc_orchard_error_envelope PRIVATE "-framework Security")
+  endif()
+  add_test(NAME RpcOrchardErrorEnvelope COMMAND test_rpc_orchard_error_envelope)
+  set_tests_properties(RpcOrchardErrorEnvelope PROPERTIES TIMEOUT 60 RUN_SERIAL TRUE LABELS "rpc;orchard;qt;offline")
 endif()
 
 if(UNIX)
@@ -16039,6 +16231,8 @@ function(dinero_attach_real_mempool_fixture_runtime)
     test_reconstruct_spent_coins
     test_rpc_handler_drain
     test_rpc_request_framing
+    test_rpc_orchard_readonly_policy
+    test_rpc_orchard_error_envelope
     test_rpc_pool_owner
     test_shielded_state_startup
     test_utreexo_ephemeral
@@ -16097,4 +16291,365 @@ cmake_language(DEFER CALL dinero_attach_real_mempool_fixture_runtime)
 if(TARGET test_assumeutxo_replay)
   add_test(NAME PoolGenesisSource COMMAND test_assumeutxo_replay --gtest_filter=PoolGenesisSource.*)
   set_tests_properties(PoolGenesisSource PROPERTIES TIMEOUT 180 LABELS "pool;daemon;mandatory")
+endif()
+
+# DIN <-> BTC swap HTLC builders, verified through the consensus Taproot path.
+add_executable(test_swap_htlc
+  tests/wallet/test_swap_htlc.cpp
+  src/wallet/swap/htlc.cpp
+)
+add_dependencies(test_swap_htlc gtest gtest_main)
+target_link_libraries(test_swap_htlc PRIVATE
+  dinero_consensus
+  gtest
+  gtest_main
+)
+link_zstd_if_needed(test_swap_htlc)
+target_include_directories(test_swap_htlc PRIVATE
+  ${CMAKE_SOURCE_DIR}/include
+  ${CMAKE_SOURCE_DIR}/src
+  ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+)
+add_test(NAME SwapHtlc COMMAND test_swap_htlc)
+set_tests_properties(SwapHtlc PROPERTIES LABELS "wallet;swap;taproot;mandatory" TIMEOUT 20)
+
+# DIN <-> BTC swap offer/accept messages (milestone 1).
+add_executable(test_swap_offer
+  tests/wallet/test_swap_offer.cpp
+  src/wallet/swap/offer.cpp
+  src/wallet/swap/htlc.cpp
+)
+add_dependencies(test_swap_offer gtest gtest_main)
+target_link_libraries(test_swap_offer PRIVATE dinero_consensus gtest gtest_main)
+link_zstd_if_needed(test_swap_offer)
+target_include_directories(test_swap_offer PRIVATE
+  ${CMAKE_SOURCE_DIR}/include
+  ${CMAKE_SOURCE_DIR}/src
+  ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+)
+add_test(NAME SwapOffer COMMAND test_swap_offer)
+set_tests_properties(SwapOffer PROPERTIES LABELS "wallet;swap;mandatory" TIMEOUT 20)
+
+# Pre-signed swap fee ladders (milestone 2).
+add_executable(test_swap_fee_ladder
+  tests/wallet/test_swap_fee_ladder.cpp
+  src/wallet/swap/fee_ladder.cpp
+  src/wallet/swap/htlc.cpp
+)
+add_dependencies(test_swap_fee_ladder gtest gtest_main)
+target_link_libraries(test_swap_fee_ladder PRIVATE dinero_consensus gtest gtest_main)
+link_zstd_if_needed(test_swap_fee_ladder)
+target_include_directories(test_swap_fee_ladder PRIVATE
+  ${CMAKE_SOURCE_DIR}/include
+  ${CMAKE_SOURCE_DIR}/src
+  ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+)
+add_test(NAME SwapFeeLadder COMMAND test_swap_fee_ladder)
+set_tests_properties(SwapFeeLadder PROPERTIES LABELS "wallet;swap;taproot;mandatory" TIMEOUT 30)
+
+# Swap engine: pure decisions over chain observations (milestone 3).
+add_executable(test_swap_engine
+  tests/wallet/test_swap_engine.cpp
+  src/wallet/swap/engine.cpp
+  src/wallet/swap/offer.cpp
+  src/wallet/swap/htlc.cpp
+)
+add_dependencies(test_swap_engine gtest gtest_main)
+target_link_libraries(test_swap_engine PRIVATE dinero_consensus gtest gtest_main)
+link_zstd_if_needed(test_swap_engine)
+target_include_directories(test_swap_engine PRIVATE
+  ${CMAKE_SOURCE_DIR}/include
+  ${CMAKE_SOURCE_DIR}/src
+  ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+)
+add_test(NAME SwapEngine COMMAND test_swap_engine)
+set_tests_properties(SwapEngine PROPERTIES LABELS "wallet;swap;mandatory" TIMEOUT 30)
+
+# Swap runner: executor contract around the engine (milestone 5).
+add_executable(test_swap_runner
+  tests/wallet/test_swap_runner.cpp
+  src/wallet/swap/runner.cpp
+  src/wallet/swap/tower.cpp
+  src/wallet/swap/fee_ladder.cpp
+  src/wallet/swap/din_watcher.cpp
+  src/wallet/swap/btc_watcher.cpp
+  src/wallet/swap/btc_tx.cpp
+  src/wallet/swap/engine.cpp
+  src/wallet/swap/offer.cpp
+  src/wallet/swap/htlc.cpp
+)
+add_dependencies(test_swap_runner gtest gtest_main)
+target_link_libraries(test_swap_runner PRIVATE dinero_consensus gtest gtest_main)
+link_zstd_if_needed(test_swap_runner)
+target_include_directories(test_swap_runner PRIVATE
+  ${CMAKE_SOURCE_DIR}/include
+  ${CMAKE_SOURCE_DIR}/src
+  ${CMAKE_SOURCE_DIR}/external
+  ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+)
+add_test(NAME SwapRunner COMMAND test_swap_runner)
+set_tests_properties(SwapRunner PROPERTIES LABELS "wallet;swap;mandatory" TIMEOUT 30)
+
+# Swap Dinero watcher against a scripted node: bounded RPC per tick, reorgs.
+add_executable(test_swap_din_watcher
+  tests/wallet/test_swap_din_watcher.cpp
+  src/wallet/swap/runner.cpp
+  src/wallet/swap/tower.cpp
+  src/wallet/swap/fee_ladder.cpp
+  src/wallet/swap/din_watcher.cpp
+  src/wallet/swap/btc_watcher.cpp
+  src/wallet/swap/btc_tx.cpp
+  src/wallet/swap/engine.cpp
+  src/wallet/swap/offer.cpp
+  src/wallet/swap/htlc.cpp
+)
+add_dependencies(test_swap_din_watcher gtest gtest_main)
+target_link_libraries(test_swap_din_watcher PRIVATE dinero_consensus gtest gtest_main)
+link_zstd_if_needed(test_swap_din_watcher)
+target_include_directories(test_swap_din_watcher PRIVATE
+  ${CMAKE_SOURCE_DIR}/include
+  ${CMAKE_SOURCE_DIR}/src
+  ${CMAKE_SOURCE_DIR}/external
+  ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+)
+add_test(NAME SwapDinWatcher COMMAND test_swap_din_watcher)
+set_tests_properties(SwapDinWatcher PROPERTIES LABELS "wallet;swap;mandatory" TIMEOUT 30)
+
+# Swap watchtower: keyless package, verification, claim/refund duties.
+add_executable(test_swap_tower
+  tests/wallet/test_swap_tower.cpp
+  src/wallet/swap/tower.cpp
+  src/wallet/swap/runner.cpp
+  src/wallet/swap/fee_ladder.cpp
+  src/wallet/swap/din_watcher.cpp
+  src/wallet/swap/btc_watcher.cpp
+  src/wallet/swap/btc_tx.cpp
+  src/wallet/swap/engine.cpp
+  src/wallet/swap/offer.cpp
+  src/wallet/swap/htlc.cpp
+)
+add_dependencies(test_swap_tower gtest gtest_main)
+target_link_libraries(test_swap_tower PRIVATE dinero_consensus gtest gtest_main)
+link_zstd_if_needed(test_swap_tower)
+target_include_directories(test_swap_tower PRIVATE
+  ${CMAKE_SOURCE_DIR}/include
+  ${CMAKE_SOURCE_DIR}/src
+  ${CMAKE_SOURCE_DIR}/external
+  ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+)
+add_test(NAME SwapTower COMMAND test_swap_tower)
+set_tests_properties(SwapTower PROPERTIES LABELS "wallet;swap;mandatory" TIMEOUT 30)
+
+# Encrypted swap store: AES-256-GCM sealed sessions (wallet-key subkey).
+add_executable(test_swap_encrypted_store
+  tests/wallet/test_swap_encrypted_store.cpp
+  src/wallet/swap/encrypted_store.cpp
+  src/crypto/wallet_crypto.cpp
+  src/wallet/swap/tower.cpp
+  src/wallet/swap/runner.cpp
+  src/wallet/swap/fee_ladder.cpp
+  src/wallet/swap/din_watcher.cpp
+  src/wallet/swap/btc_watcher.cpp
+  src/wallet/swap/btc_tx.cpp
+  src/wallet/swap/engine.cpp
+  src/wallet/swap/offer.cpp
+  src/wallet/swap/htlc.cpp
+)
+add_dependencies(test_swap_encrypted_store gtest gtest_main)
+target_link_libraries(test_swap_encrypted_store PRIVATE dinero_consensus argon2 OpenSSL::Crypto gtest gtest_main)
+link_zstd_if_needed(test_swap_encrypted_store)
+target_include_directories(test_swap_encrypted_store PRIVATE
+  ${CMAKE_SOURCE_DIR}/include
+  ${CMAKE_SOURCE_DIR}/src
+  ${CMAKE_SOURCE_DIR}/external
+  ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+)
+add_test(NAME SwapEncryptedStore COMMAND test_swap_encrypted_store)
+set_tests_properties(SwapEncryptedStore PROPERTIES LABELS "wallet;swap;mandatory" TIMEOUT 30)
+
+# Swap manager: seed-derived keys, offers/accepts, index allocation (milestone 6).
+add_executable(test_swap_manager
+  tests/wallet/test_swap_manager.cpp
+  src/wallet/swap/swap_manager.cpp
+  src/wallet/swap/encrypted_store.cpp
+  src/crypto/wallet_crypto.cpp
+  src/wallet/swap/tower.cpp
+  src/wallet/swap/runner.cpp
+  src/wallet/swap/fee_ladder.cpp
+  src/wallet/swap/din_watcher.cpp
+  src/wallet/swap/btc_watcher.cpp
+  src/wallet/swap/btc_tx.cpp
+  src/wallet/swap/engine.cpp
+  src/wallet/swap/offer.cpp
+  src/wallet/swap/htlc.cpp
+)
+add_dependencies(test_swap_manager gtest gtest_main)
+target_link_libraries(test_swap_manager PRIVATE dinero_consensus argon2 OpenSSL::Crypto gtest gtest_main)
+link_zstd_if_needed(test_swap_manager)
+target_include_directories(test_swap_manager PRIVATE
+  ${CMAKE_SOURCE_DIR}/include
+  ${CMAKE_SOURCE_DIR}/src
+  ${CMAKE_SOURCE_DIR}/external
+  ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+)
+add_test(NAME SwapManager COMMAND test_swap_manager)
+set_tests_properties(SwapManager PROPERTIES LABELS "wallet;swap;mandatory" TIMEOUT 30)
+
+# Swap Bitcoin watcher against a scripted Bitcoin Core: content-based claims, decoys, reorgs.
+add_executable(test_swap_btc_watcher
+  tests/wallet/test_swap_btc_watcher.cpp
+  src/wallet/swap/btc_watcher.cpp
+  src/wallet/swap/btc_tx.cpp
+  src/wallet/swap/engine.cpp
+  src/wallet/swap/offer.cpp
+  src/wallet/swap/htlc.cpp
+)
+add_dependencies(test_swap_btc_watcher gtest gtest_main)
+target_link_libraries(test_swap_btc_watcher PRIVATE dinero_consensus gtest gtest_main)
+link_zstd_if_needed(test_swap_btc_watcher)
+target_include_directories(test_swap_btc_watcher PRIVATE
+  ${CMAKE_SOURCE_DIR}/include
+  ${CMAKE_SOURCE_DIR}/src
+  ${CMAKE_SOURCE_DIR}/external
+  ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+)
+add_test(NAME SwapBtcWatcher COMMAND test_swap_btc_watcher)
+set_tests_properties(SwapBtcWatcher PROPERTIES LABELS "wallet;swap;mandatory" TIMEOUT 30)
+
+# Swap Bitcoin-side transactions: BIP143 vector, serialization, HTLC spends (milestone 4).
+add_executable(test_swap_btc_tx
+  tests/wallet/test_swap_btc_tx.cpp
+  src/wallet/swap/btc_tx.cpp
+  src/wallet/swap/htlc.cpp
+)
+add_dependencies(test_swap_btc_tx gtest gtest_main)
+target_link_libraries(test_swap_btc_tx PRIVATE dinero_consensus gtest gtest_main)
+link_zstd_if_needed(test_swap_btc_tx)
+target_include_directories(test_swap_btc_tx PRIVATE
+  ${CMAKE_SOURCE_DIR}/include
+  ${CMAKE_SOURCE_DIR}/src
+  ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+)
+add_test(NAME SwapBtcTx COMMAND test_swap_btc_tx)
+set_tests_properties(SwapBtcTx PROPERTIES LABELS "wallet;swap;mandatory" TIMEOUT 20)
+
+# Bitcoin Core regtest check of the swap's BTC side (needs bitcoind/bitcoin-cli on PATH).
+add_executable(swap_btc_regtest_tool
+  tests/wallet/swap_btc_regtest_tool.cpp
+  src/wallet/swap/btc_tx.cpp
+  src/wallet/swap/htlc.cpp
+)
+target_link_libraries(swap_btc_regtest_tool PRIVATE dinero_consensus)
+link_zstd_if_needed(swap_btc_regtest_tool)
+target_include_directories(swap_btc_regtest_tool PRIVATE ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src)
+find_program(DINERO_BITCOIND bitcoind)
+if(DINERO_BITCOIND)
+  add_test(NAME SwapBtcRegtest
+    COMMAND ${CMAKE_SOURCE_DIR}/tests/wallet/swap_btc_regtest.sh $<TARGET_FILE:swap_btc_regtest_tool>)
+  set_tests_properties(SwapBtcRegtest PROPERTIES LABELS "wallet;swap;regtest" TIMEOUT 180)
+endif()
+
+# Bitcoin Core regtest check of the swap's Bitcoin watcher (milestone 4b).
+add_executable(swap_btc_watch_tool
+  tests/wallet/swap_btc_watch_tool.cpp
+  src/wallet/swap/btc_watcher.cpp
+  src/wallet/swap/btc_tx.cpp
+  src/wallet/swap/engine.cpp
+  src/wallet/swap/offer.cpp
+  src/wallet/swap/htlc.cpp
+)
+target_link_libraries(swap_btc_watch_tool PRIVATE dinero_rpc_client dinero_consensus)
+link_zstd_if_needed(swap_btc_watch_tool)
+target_include_directories(swap_btc_watch_tool PRIVATE ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src)
+if(DINERO_BITCOIND)
+  add_test(NAME SwapBtcWatcherRegtest
+    COMMAND ${CMAKE_SOURCE_DIR}/tests/wallet/swap_btc_watch_regtest.sh
+            $<TARGET_FILE:swap_btc_watch_tool> $<TARGET_FILE:swap_btc_regtest_tool>)
+  set_tests_properties(SwapBtcWatcherRegtest PROPERTIES LABELS "wallet;swap;regtest" TIMEOUT 240)
+endif()
+
+# Dinero regtest helper for the swap's DIN side (milestone 4c).
+add_executable(swap_din_tool
+  tests/wallet/swap_din_tool.cpp
+  src/wallet/swap/din_watcher.cpp
+  src/wallet/swap/engine.cpp
+  src/wallet/swap/offer.cpp
+  src/wallet/swap/htlc.cpp
+)
+target_link_libraries(swap_din_tool PRIVATE dinero_rpc_client dinero_consensus)
+link_zstd_if_needed(swap_din_tool)
+target_include_directories(swap_din_tool PRIVATE ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/external)
+if(TARGET dinerod)
+  add_test(NAME SwapDinRegtest
+    COMMAND ${CMAKE_SOURCE_DIR}/tests/wallet/swap_din_regtest.sh $<TARGET_FILE:dinerod> $<TARGET_FILE:swap_din_tool>)
+  set_tests_properties(SwapDinRegtest PROPERTIES LABELS "wallet;swap;regtest" TIMEOUT 600)
+endif()
+
+# The swap watchtower (dinero-swap-tower) is a shipped program: cmake/SwapTower.cmake.
+# Its install rule must place a runnable binary (macOS/Linux).
+if(NOT WIN32)
+  add_test(NAME SwapTowerInstalls
+    COMMAND ${CMAKE_SOURCE_DIR}/tests/wallet/swap_tower_install_check.sh ${CMAKE_COMMAND} ${CMAKE_BINARY_DIR})
+  set_tests_properties(SwapTowerInstalls PROPERTIES LABELS "wallet;swap" TIMEOUT 120)
+endif()
+
+# swap.* RPCs end to end: two dinerods + bitcoind, SIGKILL/restart, clean stop (milestone 6).
+if(TARGET dinerod AND DINERO_BITCOIND)
+  add_test(NAME SwapRpcRegtest
+    COMMAND ${CMAKE_SOURCE_DIR}/tests/wallet/swap_rpc_regtest.sh $<TARGET_FILE:dinerod>)
+  set_tests_properties(SwapRpcRegtest PROPERTIES LABELS "wallet;swap;regtest" TIMEOUT 900)
+endif()
+
+# Two-chain end-to-end swap: Alice and Bob runners on dinerod + bitcoind regtest (milestone 5).
+add_executable(swap_e2e_tool
+  tests/wallet/swap_e2e_tool.cpp
+  src/wallet/swap/encrypted_store.cpp
+  src/crypto/wallet_crypto.cpp
+  src/wallet/swap/runner.cpp
+  src/wallet/swap/tower.cpp
+  src/wallet/swap/fee_ladder.cpp
+  src/wallet/swap/din_watcher.cpp
+  src/wallet/swap/btc_watcher.cpp
+  src/wallet/swap/btc_tx.cpp
+  src/wallet/swap/engine.cpp
+  src/wallet/swap/offer.cpp
+  src/wallet/swap/htlc.cpp
+)
+target_link_libraries(swap_e2e_tool PRIVATE dinero_rpc_client dinero_consensus argon2 OpenSSL::Crypto)
+link_zstd_if_needed(swap_e2e_tool)
+target_include_directories(swap_e2e_tool PRIVATE ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/external)
+if(TARGET dinerod AND TARGET dinero-swap-tower AND DINERO_BITCOIND)
+  add_test(NAME SwapE2ERegtest
+    COMMAND ${CMAKE_SOURCE_DIR}/tests/wallet/swap_e2e_regtest.sh $<TARGET_FILE:dinerod> $<TARGET_FILE:swap_e2e_tool>
+            $<TARGET_FILE:dinero-swap-tower>)
+  set_tests_properties(SwapE2ERegtest PROPERTIES LABELS "wallet;swap;regtest" TIMEOUT 900)
+endif()
+
+# Escrow builders must fail safe: no buyer key-path in the Taproot escrow, and
+# no P2SH escrow (Dinero consensus cannot spend P2SH).
+if(TARGET dinero_wallet AND TARGET gtest)
+  add_executable(test_escrow_builders_fail_safe
+    tests/wallet/test_escrow_builders_fail_safe.cpp
+    src/contracts/escrow_contract.cpp
+    src/wallet/taproot_control_block.cpp
+    tests/stubs/mempool_test_stubs.cpp
+  )
+  add_dependencies(test_escrow_builders_fail_safe gtest dinero_wallet)
+  target_link_libraries(test_escrow_builders_fail_safe PRIVATE
+    GTest::gtest
+    GTest::gtest_main
+    dinero_wallet
+    wallet_test_deps
+    sqlite3
+  )
+  target_include_directories(test_escrow_builders_fail_safe BEFORE PRIVATE
+    ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+  )
+  if(APPLE)
+    target_link_libraries(test_escrow_builders_fail_safe PRIVATE "-framework Security")
+  endif()
+  add_test(NAME EscrowBuildersFailSafe COMMAND test_escrow_builders_fail_safe)
+  set_tests_properties(EscrowBuildersFailSafe PROPERTIES LABELS "wallet;contracts;mandatory")
 endif()

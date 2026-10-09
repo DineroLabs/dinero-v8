@@ -14,12 +14,22 @@ public:
     bool hasCoin(const OutPoint& p)const override {return replay_.ProvenUtxos().contains(p);}
     uint32_t getHeight()const override {return replay_.Height();}
 };
-OrchardBlockCandidate BoundaryCoinbaseBlock(SelectedParentFixture& f,
+template<class Fixture>
+OrchardBlockCandidate BoundaryCoinbaseBlock(Fixture& f,
     const storage::LegacyRetirementRecord& retirement) {
     using namespace consensus;
     const auto require=SelectedParentFixture::Require;
+    const uint32_t height=f.tip.height+1;
     Transaction cb;cb.version=2;
-    TxInput input;input.prevout.vout=UINT32_MAX;input.scriptSig={0x54,0};cb.vin={input};
+    TxInput input;input.prevout.vout=UINT32_MAX;if(height==4)input.scriptSig={0x54,0};
+    else {
+        auto value=height;std::vector<uint8_t> number;
+        while(value){number.push_back(uint8_t(value));value>>=8;}
+        if(number.back()&0x80)number.push_back(0);
+        input.scriptSig.push_back(uint8_t(number.size()));
+        input.scriptSig.insert(input.scriptSig.end(),number.begin(),number.end());input.scriptSig.push_back(0);
+    }
+    cb.vin={input};
     cb.vout.emplace_back(AmountUna::Una(1),std::vector<uint8_t>{0x51});
     const std::vector<WTxId> witness_ids{WTxId(uint256{})};
     cb.vout.emplace_back(AmountUna::Zero(),BuildWitnessCommitmentFromRoot(
@@ -34,13 +44,13 @@ OrchardBlockCandidate BoundaryCoinbaseBlock(SelectedParentFixture& f,
         return OrchardBlockCandidate::DecodeExact(bytes);
     };
     FirstBoundaryView view(*f.replay);
-    auto draft=encode(header);auto context=SelectedOrchardBlockContext(draft.Header(),4);require(bool(context));
+    auto draft=encode(header);auto context=SelectedOrchardBlockContext(draft.Header(),height);require(bool(context));
     const auto preliminary=PrepareOrchardBlockCoinsUnderChainstateLock(draft,*context,view,{},true);
     const auto filter=BuildOrchardBlockFilter(preliminary).GetHash();
     std::vector<uint8_t> filter_script{0x6a,37,0x44,0x4e,0x52,0x46,1};
     filter_script.insert(filter_script.end(),filter.begin(),filter.end());
     cb.vout.emplace_back(AmountUna::Zero(),filter_script);
-    const auto filtered=encode(header);context=SelectedOrchardBlockContext(filtered.Header(),4);
+    const auto filtered=encode(header);context=SelectedOrchardBlockContext(filtered.Header(),height);
     OrchardStateLookups lookups{
         [&](const uint256& a)->StatusOr<bool>{auto v=f.db.getOrchardAnchorReferences(a);if(v.ok())return true;if(v.status()==Status::NotFound)return false;return v.status();},
         [&](const uint256& n)->StatusOr<bool>{auto v=f.db.getOrchardNullifierOwner(n);if(v.ok())return true;if(v.status()==Status::NotFound)return false;return v.status();}};
@@ -48,12 +58,12 @@ OrchardBlockCandidate BoundaryCoinbaseBlock(SelectedParentFixture& f,
     const auto sets=f.db.previewOrchardCommitmentSets(std::nullopt,next.Next(),next.Nullifiers());require(sets.ok());
     const auto root=ComputeOrchardStateRoot({context->domain,context->activation_height,context->height,context->parent_hash},retirement,next.Next(),*sets);
     cb.vout.emplace_back(AmountUna::Zero(),BuildStateCommitmentScript(root,StateCommitmentEncoding::Orchard));
-    const auto state_draft=encode(header);context=SelectedOrchardBlockContext(state_draft.Header(),4);
+    const auto state_draft=encode(header);context=SelectedOrchardBlockContext(state_draft.Header(),height);
     const auto coins=PrepareOrchardBlockCoinsUnderChainstateLock(state_draft,*context,view,{},true);
     const auto forest=PrepareOrchardForestTransition(coins,f.blocks.back().header,*f.replay->Forest());
     header.utreexo_root=forest.Root();const auto final_draft=encode(header);
     BlockUtreexoData proof;proof.accumulator_root_before=f.replay->Forest()->getCommitment();
-    proof.spend_proof=f.replay->Forest()->generateBlockProof({},GetUtreexoProofFormatVersion(4));
+    proof.spend_proof=f.replay->Forest()->generateBlockProof({},GetUtreexoProofFormatVersion(height));
     auto wire=final_draft.WireBytes();require(wire.back()==0);wire.back()=1;
     const auto suffix=proof.serialize();wire.insert(wire.end(),suffix.begin(),suffix.end());
     return OrchardBlockCandidate::DecodeExact(wire);
@@ -81,7 +91,7 @@ struct BoundaryNotifications final:RuntimeBlockNotifications {
 }
 TEST(OrchardFirstBoundary, ConnectRefusalDisconnectAndReopenReconnect) {
     using Access=ShieldedStateStartupTestAccess;
-    SelectedParentFixture f;const auto record=f.Read();ASSERT_TRUE(record);
+    OwnedSelectedParentFixture f;const auto record=f.Read();ASSERT_TRUE(record);
     MutableParams().enforce_witness_commitment=true;MutableParams().witness_commitment_enforcement_height=4;
     const auto candidate=BoundaryCoinbaseBlock(f,*record);
     auto files=std::make_shared<BlockStorage>();ASSERT_EQ(files->init(f.path/"flatfiles"),Status::Ok);

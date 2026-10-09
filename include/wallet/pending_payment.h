@@ -8,8 +8,10 @@ namespace dinero {
 // Explicit external operation identity retained inside the authenticated wallet
 // payment owner. Supplying these bytes does not establish a vault or pool's existence,
 // authorization or durable initialization; those remain the caller's contract.
+// SwapFunding identifies a retained single-output payment request, not a swap
+// enrollment, intended-wallet certificate, or acknowledgment of submission.
 // No free-form payment label is interpreted as a request identity.
-enum class PendingPaymentRequestDomain : uint64_t { VaultWithdrawal = 1, PoolPayout = 2 };
+enum class PendingPaymentRequestDomain : uint64_t { VaultWithdrawal = 1, PoolPayout = 2, SwapFunding = 3 };
 struct PendingPaymentRequest {
     PendingPaymentRequestDomain domain{PendingPaymentRequestDomain::VaultWithdrawal};
     std::array<uint8_t,32> owner{};

@@ -8,7 +8,14 @@ use orchard::{
 use zcash_note_encryption::try_note_decryption;
 use zip32::Scope;
 
+pub(super) struct NoteRecovery {
+    pub(super) encoded: std::sync::Arc<[u8]>,
+    pub(super) scope: u8,
+    pub(super) index: u32,
+}
+
 pub struct ReceivedNote {
+    pub(super) recovery: NoteRecovery,
     pub(super) note: Note,
     pub(super) fvk: FullViewingKey,
     memo: [u8; 512],
@@ -23,12 +30,13 @@ pub struct NoteFacts {
     memo: [u8; 512],
     reserved: [u8; 5],
 }
-fn receive(
+pub(super) fn receive(
     bundle: &ParsedBundle,
     fvk: &[u8; 96],
     scope: u8,
     index: usize,
 ) -> Result<Option<ReceivedNote>, Status> {
+    let scope_byte = scope;
     let scope = match scope {
         0 => Scope::External,
         1 => Scope::Internal,
@@ -38,8 +46,18 @@ fn receive(
     let action = bundle.bundle.actions().get(index).ok_or(Status::Limit)?;
     let ivk = PreparedIncomingViewingKey::new(&fvk.to_ivk(scope));
     Ok(
-        try_note_decryption(&OrchardDomain::for_action(action), &ivk, action)
-            .map(|(note, _, memo)| ReceivedNote { note, fvk, memo }),
+        try_note_decryption(&OrchardDomain::for_action(action), &ivk, action).map(
+            |(note, _, memo)| ReceivedNote {
+                note,
+                fvk,
+                memo,
+                recovery: NoteRecovery {
+                    encoded: bundle.encoded.clone(),
+                    scope: scope_byte,
+                    index: index as u32,
+                },
+            },
+        ),
     )
 }
 fn facts(note: &ReceivedNote) -> NoteFacts {

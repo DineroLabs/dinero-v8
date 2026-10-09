@@ -21,7 +21,7 @@ TEST_F(WalletPoolRequestOwner, DomainSeparationAndExactReopen) {
 TEST_F(WalletPoolRequestOwner, ConflictingPoolPayloadAndUnknownDomainsRefuse) {
     auto& wallet=service->get();auto intent=request();intent.request->domain=dinero::PendingPaymentRequestDomain::PoolPayout;
     const auto input=shifted(0);
-    for(uint64_t domain:{uint64_t{0},uint64_t{3},uint64_t{UINT64_MAX}}) {
+    for(uint64_t domain:{uint64_t{0},uint64_t{4},uint64_t{UINT64_MAX}}) {
         auto invalid=intent;invalid.request->domain=static_cast<dinero::PendingPaymentRequestDomain>(domain);
         EXPECT_THROW(find(invalid),std::runtime_error);EXPECT_FALSE(retain(input,invalid).success);
         EXPECT_TRUE(wallet.getPendingPayments().empty());EXPECT_EQ(count(wallet.getCurrentDatabase(),"transactions"),0);

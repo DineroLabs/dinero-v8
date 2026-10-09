@@ -20,6 +20,8 @@ use std::sync::{Mutex, OnceLock};
 use zeroize::Zeroizing;
 use zip32::Scope;
 
+mod recovery;
+
 type UnprovedBundle = Bundle<InProgress<Unproven, Unauthorized>, i64>;
 static PROVING_KEY: OnceLock<ProvingKey> = OnceLock::new();
 static PROVER_POOL: OnceLock<Result<rayon::ThreadPool, Status>> = OnceLock::new();
@@ -31,7 +33,17 @@ pub struct Payment {
     recipient: [u8; 43],
     memo: [u8; 512],
 }
+impl zeroize::Zeroize for Payment {
+    fn zeroize(&mut self) {
+        self.amount.zeroize();
+        self.recipient.zeroize();
+        self.memo.zeroize();
+    }
+}
 pub struct WalletPlan {
+    // Secret construction randomness and private payment data. Host persistence
+    // must use the authenticated encrypted reservation, never a plaintext file.
+    recovery: Option<Zeroizing<Vec<u8>>>,
     bundle: Option<UnprovedBundle>,
     facts: BundleFacts,
     spending_key: Option<Zeroizing<[u8; 32]>>,
@@ -83,9 +95,11 @@ fn finish_plan(
     builder: Builder,
     balance: i64,
     key: Option<Zeroizing<[u8; 32]>>,
+    prefix: Zeroizing<Vec<u8>>,
+    mut rng: recovery::BuildRng,
 ) -> Result<WalletPlan, Status> {
     let (bundle, _) = builder
-        .build::<i64>(&mut OsRng)
+        .build::<i64>(&mut rng)
         .map_err(|_| Status::Format)?
         .ok_or(Status::Format)?;
     if bundle.actions().len() > MAX_ACTIONS || *bundle.value_balance() != balance {
@@ -109,13 +123,22 @@ fn finish_plan(
         facts.nullifiers[i] = action.nullifier().to_bytes();
         facts.commitments[i] = action.cmx().to_bytes();
     }
+    let recovery = recovery::finish(prefix, &facts, rng.finish()?);
     Ok(WalletPlan {
+        recovery: Some(recovery?),
         bundle: Some(bundle),
         facts,
         spending_key: key,
     })
 }
 fn prepare(keys: &WalletKeys, payments: &[Payment]) -> Result<WalletPlan, Status> {
+    prepare_with_rng(keys, payments, recovery::BuildRng::record())
+}
+fn prepare_with_rng(
+    keys: &WalletKeys,
+    payments: &[Payment],
+    rng: recovery::BuildRng,
+) -> Result<WalletPlan, Status> {
     if payments.is_empty() {
         return Err(Status::Limit);
     }
@@ -128,7 +151,8 @@ fn prepare(keys: &WalletKeys, payments: &[Payment]) -> Result<WalletPlan, Status
     )
     .map_err(|_| Status::Format)?;
     let total = add_payments(&mut builder, &fvk, payments)?;
-    finish_plan(builder, -(total as i64), None)
+    let prefix = recovery::prefix(keys, &[], [0; 32], payments)?;
+    finish_plan(builder, -(total as i64), None, prefix, rng)
 }
 fn prepare_spend(
     keys: &WalletKeys,
@@ -136,9 +160,19 @@ fn prepare_spend(
     anchor: [u8; 32],
     payments: &[Payment],
 ) -> Result<WalletPlan, Status> {
+    prepare_spend_with_rng(keys, inputs, anchor, payments, recovery::BuildRng::record())
+}
+fn prepare_spend_with_rng(
+    keys: &WalletKeys,
+    inputs: &[WitnessedNote<'_>],
+    anchor: [u8; 32],
+    payments: &[Payment],
+    rng: recovery::BuildRng,
+) -> Result<WalletPlan, Status> {
     if inputs.is_empty() || inputs.len() > MAX_ACTIONS {
         return Err(Status::Limit);
     }
+    let prefix = recovery::prefix(keys, inputs, anchor, payments)?;
     let anchor = Option::<Anchor>::from(Anchor::from_bytes(anchor)).ok_or(Status::Encoding)?;
     let fvk = keys.viewing()?;
     let mut builder = Builder::new(
@@ -179,6 +213,8 @@ fn prepare_spend(
         builder,
         total as i64 - output_total as i64,
         Some(keys.secret_copy()),
+        prefix,
+        rng,
     )
 }
 fn encode(bundle: &Bundle<Authorized, i64>) -> Result<Vec<u8>, Status> {
@@ -242,6 +278,8 @@ fn prove(
         .as_ref()
         .map_err(|e| *e)?;
     let bundle = plan.bundle.take().ok_or(Status::Format)?;
+    // Consumed handles cannot export a new resumable copy after proof exposure.
+    plan.recovery.take();
     let secret = plan.spending_key.take();
     let authorities = match &secret {
         Some(raw) => {
@@ -405,6 +443,89 @@ pub unsafe extern "C" fn dinero_orchard_prove_wallet_bundle_v1(
     })
 }
 /// # Safety
+/// Plan is live and immutable; output is aligned writable and non-aliasing.
+/// The output is unchanged on failure. A consumed plan cannot be exported.
+#[no_mangle]
+pub unsafe extern "C" fn dinero_orchard_wallet_plan_recovery_size_v1(
+    plan: *const WalletPlan,
+    output: *mut usize,
+) -> i32 {
+    if plan.is_null() || output.is_null() {
+        return Status::NullArgument as i32;
+    }
+    boundary(|| {
+        let plan = unsafe { &*plan };
+        if plan.bundle.is_none() {
+            return Err(Status::Format);
+        }
+        let bytes = plan.recovery.as_ref().ok_or(Status::Format)?;
+        unsafe {
+            output.write(bytes.len());
+        }
+        Ok(())
+    })
+}
+/// # Safety
+/// Plan is live and immutable. Output has exactly length writable bytes and
+/// does not alias plan or its storage. Output is unchanged on every failure.
+/// These bytes contain private payment data and construction randomness;
+/// persist only inside the authenticated encrypted account reservation.
+#[no_mangle]
+pub unsafe extern "C" fn dinero_orchard_wallet_plan_export_recovery_v1(
+    plan: *const WalletPlan,
+    output: *mut u8,
+    length: usize,
+) -> i32 {
+    if length == 0 || length > recovery::MAX_PLAN_BYTES {
+        return Status::Limit as i32;
+    }
+    if plan.is_null() || output.is_null() {
+        return Status::NullArgument as i32;
+    }
+    boundary(|| {
+        let plan = unsafe { &*plan };
+        if plan.bundle.is_none() {
+            return Err(Status::Format);
+        }
+        let bytes = plan.recovery.as_ref().ok_or(Status::Format)?;
+        if bytes.len() != length {
+            return Err(Status::Format);
+        }
+        unsafe {
+            std::ptr::copy_nonoverlapping(bytes.as_ptr(), output, length);
+        }
+        Ok(())
+    })
+}
+/// # Safety
+/// Keys is live, bytes is immutable for length bytes; output is aligned,
+/// writable and non-aliasing. Output remains unchanged on failure. The host
+/// must authenticate the current reservation before supplying this capsule,
+/// and compare the restored intent before publishing any executor job.
+#[no_mangle]
+pub unsafe extern "C" fn dinero_orchard_wallet_plan_restore_v1(
+    keys: *const WalletKeys,
+    bytes: *const u8,
+    length: usize,
+    output: *mut *mut WalletPlan,
+) -> i32 {
+    if length == 0 || length > recovery::MAX_PLAN_BYTES {
+        return Status::Limit as i32;
+    }
+    if keys.is_null() || bytes.is_null() || output.is_null() {
+        return Status::NullArgument as i32;
+    }
+    boundary(|| {
+        let plan = Box::new(recovery::restore(unsafe { &*keys }, unsafe {
+            std::slice::from_raw_parts(bytes, length)
+        })?);
+        unsafe {
+            output.write(Box::into_raw(plan));
+        }
+        Ok(())
+    })
+}
+/// # Safety
 /// Null or live owned plan, consumed regardless of status. No concurrent use.
 #[no_mangle]
 pub unsafe extern "C" fn dinero_orchard_wallet_plan_free_v1(plan: *mut WalletPlan) -> i32 {
@@ -426,6 +547,147 @@ mod tests {
                 .to_raw_address_bytes(),
             memo: [42; 512],
         }
+    }
+    #[test]
+    fn recovery_ffi_round_trip_and_consumed_export_refusal() {
+        let keys = WalletKeys::derive(&[7; 64], 0).unwrap();
+        let plan = prepare(&keys, &[payment(&keys, 1000)]).unwrap();
+        let mut length = 0usize;
+        assert_eq!(
+            unsafe { dinero_orchard_wallet_plan_recovery_size_v1(&plan, &mut length) },
+            0
+        );
+        assert!(length > 0 && length <= recovery::MAX_PLAN_BYTES);
+        let mut capsule = Zeroizing::new(vec![0u8; length]);
+        assert_eq!(
+            unsafe {
+                dinero_orchard_wallet_plan_export_recovery_v1(&plan, capsule.as_mut_ptr(), length)
+            },
+            0
+        );
+        let mut restored = std::ptr::null_mut();
+        assert_eq!(
+            unsafe {
+                dinero_orchard_wallet_plan_restore_v1(
+                    &keys,
+                    capsule.as_ptr(),
+                    length,
+                    &mut restored,
+                )
+            },
+            0
+        );
+        assert!(!restored.is_null());
+        let restored_ref = unsafe { &mut *restored };
+        assert_eq!(
+            restored_ref.recovery.as_ref().unwrap().as_slice(),
+            capsule.as_slice()
+        );
+        assert_eq!(restored_ref.facts.effect, plan.facts.effect);
+        let effect = restored_ref.facts.effect;
+        let encoded = prove(restored_ref, &[9; 32], &effect, -1000).unwrap();
+        let parsed = ParsedBundle::decode(&encoded).unwrap();
+        assert_eq!(parsed.facts.effect, effect);
+        assert!(restored_ref.bundle.is_none() && restored_ref.recovery.is_none());
+        let mut unchanged = usize::MAX;
+        assert_ne!(
+            unsafe { dinero_orchard_wallet_plan_recovery_size_v1(restored, &mut unchanged) },
+            0
+        );
+        assert_eq!(unchanged, usize::MAX);
+        let mut output = Zeroizing::new(vec![0x5au8; length]);
+        assert_ne!(
+            unsafe {
+                dinero_orchard_wallet_plan_export_recovery_v1(restored, output.as_mut_ptr(), length)
+            },
+            0
+        );
+        assert!(output.iter().all(|b| *b == 0x5a));
+        assert_eq!(unsafe { dinero_orchard_wallet_plan_free_v1(restored) }, 0);
+    }
+    #[test]
+    fn recovery_ffi_errors_preserve_outputs() {
+        let keys = WalletKeys::derive(&[7; 64], 0).unwrap();
+        let foreign = WalletKeys::derive(&[8; 64], 0).unwrap();
+        let mut plan = prepare(&keys, &[payment(&keys, 1000)]).unwrap();
+        let capsule = Zeroizing::new(plan.recovery.as_ref().unwrap().to_vec());
+        let mut length = 123usize;
+        assert_ne!(
+            unsafe { dinero_orchard_wallet_plan_recovery_size_v1(std::ptr::null(), &mut length) },
+            0
+        );
+        assert_eq!(length, 123);
+        let mut buffer = Zeroizing::new(vec![0x33u8; capsule.len() + 1]);
+        for size in [
+            0,
+            capsule.len() - 1,
+            capsule.len() + 1,
+            recovery::MAX_PLAN_BYTES + 1,
+        ] {
+            assert_ne!(
+                unsafe {
+                    dinero_orchard_wallet_plan_export_recovery_v1(&plan, buffer.as_mut_ptr(), size)
+                },
+                0
+            );
+            assert!(buffer.iter().all(|b| *b == 0x33));
+        }
+        // A valid live sentinel avoids inventing or dereferencing bogus pointers.
+        let sentinel = &mut plan as *mut WalletPlan;
+        let mut output = sentinel;
+        assert_ne!(
+            unsafe {
+                dinero_orchard_wallet_plan_restore_v1(
+                    &foreign,
+                    capsule.as_ptr(),
+                    capsule.len(),
+                    &mut output,
+                )
+            },
+            0
+        );
+        assert_eq!(output, sentinel);
+        let mut malformed = Zeroizing::new(capsule.to_vec());
+        malformed[7] ^= 1;
+        assert_ne!(
+            unsafe {
+                dinero_orchard_wallet_plan_restore_v1(
+                    &keys,
+                    malformed.as_ptr(),
+                    malformed.len(),
+                    &mut output,
+                )
+            },
+            0
+        );
+        assert_eq!(output, sentinel);
+        for size in [0, recovery::MAX_PLAN_BYTES + 1] {
+            // Bounds are rejected before reading bytes, which are deliberately null.
+            assert_ne!(
+                unsafe {
+                    dinero_orchard_wallet_plan_restore_v1(
+                        &keys,
+                        std::ptr::null(),
+                        size,
+                        &mut output,
+                    )
+                },
+                0
+            );
+            assert_eq!(output, sentinel);
+        }
+        assert_ne!(
+            unsafe {
+                dinero_orchard_wallet_plan_restore_v1(
+                    &keys,
+                    capsule.as_ptr(),
+                    capsule.len() - 1,
+                    &mut output,
+                )
+            },
+            0
+        );
+        assert_eq!(output, sentinel);
     }
     #[test]
     fn prepared_outputs_are_fresh_and_decrypt_to_the_requested_payment() {

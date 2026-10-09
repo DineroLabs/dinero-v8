@@ -3,6 +3,9 @@
 #include <QMainWindow>
 
 #include "daemonstartuppolicy.h"
+#include "chaintiming.h"
+#include "upgradepolicy.h"
+#include <optional>
 #include <QMap>
 #include <QJsonObject>
 #include <QJsonArray>
@@ -179,6 +182,10 @@ private:
   bool maybeShowP2PNetworkNotice();
   void updateStatus(const QJsonObject& info);
   void updateEconomics(const QJsonObject& economics);
+  void refreshTimingText();
+  void startUpdateChecks();
+  void updateCompactTabs();
+  void evaluateUpgradeBanner();
   void updateWallet(const QString& address);
   void updateExplorer(const QJsonValue& block);
   void displayAddressResult(const QJsonObject& result);
@@ -274,14 +281,14 @@ private:
 #endif
   
   // Overview tab
-  QLabel* lblHeight_;
-  QLabel* lblHeaders_;
+  class InfoRow* lblHeight_;
+  class InfoRow* lblHeaders_;
   QLabel* lblSyncProgress_;
-  QLabel* lblConnections_;
-  QLabel* lblMempool_;  // Overview mempool stats
-  QLabel* lblPhase_;
-  QLabel* lblSupply_;
-  QLabel* lblReward_;
+  class InfoRow* lblConnections_;
+  class InfoRow* lblMempool_;  // Overview mempool stats (kept for metrics export; card shows Mempool)
+  class InfoRow* lblPhase_;
+  class InfoRow* lblSupply_;
+  class InfoRow* lblReward_;
 
   // Monitoring Dashboard widgets (Overview bottom half)
   dinero::qt::OverviewConnectivityCard* overviewConnectivityCard_ = nullptr;
@@ -389,6 +396,20 @@ private:
   QLineEdit* edtRecoveryPubkey_ = nullptr;      // Recovery key for conditional vault
   class QSpinBox* spnTimelockDuration_ = nullptr;
   class QComboBox* cmbTimelockUnit_ = nullptr;
+  ChainTiming chainTiming_;
+  void requestMiningRewards(bool force = false);
+  void updateMiningRewards(const QJsonArray& rewards);
+  class QLabel* lblRewardsHeadline_ = nullptr;
+  class QLabel* lblRewardsPeriod_ = nullptr;
+  class QLabel* lblRewardsMaturing_ = nullptr;
+  class QLabel* lblRewardsLastFound_ = nullptr;
+  int miningRewardsRequestedHeight_ = -1;
+  qint64 miningRewardsRequestedAtMs_ = 0;
+  class UpgradeBanner* upgradeBanner_ = nullptr;
+  class UpdateChecker* updateChecker_ = nullptr;
+  QString latestReleaseTag_;
+  UpgradePolicy::Notice upgradeNotice_;
+  std::optional<quint32> nodeReleaseHeight_;
   QTableWidget* tblPayrollRecipients_ = nullptr;
   QLabel* lblPayrollTotal_ = nullptr;
   QLineEdit* edtCustomScript_ = nullptr;
@@ -397,9 +418,26 @@ private:
   // Contracts management tab (Phase 4)
   QTableWidget* tblContracts_ = nullptr;
   QLabel* lblContractsSummary_ = nullptr;
+  QLabel* lblContractsEmpty_ = nullptr;
   bool pendingContractsRefresh_ = false;
   void refreshContractsList();
   void updateContractsTable(const QJsonValue& txList);
+  void updateContractsEmptyState();
+
+  // Covenants tab: public/private toggle and the live review beside the form.
+  QPushButton* covenantKindPublic_ = nullptr;
+  QPushButton* covenantKindPrivate_ = nullptr;
+  QGroupBox* covenantReviewBox_ = nullptr;
+  QLabel* lblReviewTemplate_ = nullptr;
+  QLabel* lblReviewRecipient_ = nullptr;
+  QLabel* lblReviewLocked_ = nullptr;
+  QLabel* lblReviewDeliveredName_ = nullptr;
+  QLabel* lblReviewDelivered_ = nullptr;
+  QLabel* lblReviewFee_ = nullptr;
+  QLabel* lblReviewTotal_ = nullptr;
+  QLabel* lblReviewRule_ = nullptr;
+  QLabel* lblReviewStatus_ = nullptr;
+  void updateCovenantReview();
 
   struct PendingHardwareWalletSend {
     bool active = false;
@@ -513,6 +551,11 @@ private:
   // Mining tab. Adding the first tab emits that signal synchronously, so this
   // must be null until the mining output widget exists.
   QTextEdit* txtMiningOutput_ = nullptr;
+  // Mining output text size: - / + in its top-right corner and Cmd -/+/=.
+  int miningOutputFontPx_ = 10;
+  QPushButton* btnMiningZoomOut_ = nullptr;
+  QPushButton* btnMiningZoomIn_ = nullptr;
+  void applyMiningOutputFontSize(int px);
   QTabWidget* mainTabs_ = nullptr;
   QWidget* sendComposer_ = nullptr;
   QGroupBox* sendFormGroup_ = nullptr;
@@ -567,6 +610,7 @@ private:
   // path can poke it for an immediate refresh; otherwise it would only
   // re-fetch on its 6s tip-poll timer and display stale balance/notes.
   class ShieldedWidget* shieldedWidget_ = nullptr;
+  class OrchardWidget* orchardWidget_ = nullptr;  // only with DIN_ENABLE_ORCHARD_UI
 
   // NOTE: Lightning Network moved to separate lightning-main branch (L2)
   // dinero::LightningWidget* lightningWidget_;  // REMOVED for L1 purity
@@ -610,8 +654,11 @@ private:
     QStaticText renderedLine;
     bool blockFound = false;
     qint64 highlightUntilMs = 0;
+    bool startsNewBlock = false;
   };
   QVector<MiningHashSample> miningHashSamples_;
+  // Height the miner is working on; a change marks the first row of a new block.
+  int miningTipHeight_ = -1;
   QString miningSessionHeader_;
   QLabel* miningHashOverlay_ = nullptr;
   QHash<QString, quint64> transientMiningErrorGenerations_;

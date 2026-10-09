@@ -186,6 +186,9 @@ jobs:
         run: |
           python3 scripts/ci/test_check_mandatory_tests_execute.py
           python3 scripts/ci/test_execution_exclusions.py
+          python3 scripts/ci/test_workflow_heredoc_selection.py
+          python3 scripts/ci/test_workflow_redirection_selection.py
+          python3 scripts/ci/test_workflow_setarch_selection.py
       - name: Read pinned compiler
         id: rust-pin
         run: |

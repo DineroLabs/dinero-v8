@@ -1,6 +1,7 @@
 #include "vault/wallet_withdrawal_dispatch.h"
 #include "vault/state_snapshot.h"
 #include "rpc/wallet_request_dispatch.h"
+#include "daemon/services/swap_service.h"
 #include "consensus/chainparams.h"
 #include "daemon/services/assumeutxo_replay.h"
 #include "crypto/wallet_crypto.h"
@@ -11,6 +12,7 @@
 #include "daemon/daemon_context.h"
 #include "daemon/services/config_service.h"
 #include "daemon/services/wallet_service.h"
+#include "daemon/services/mempool_service.h"
 #include "daemon/services/chainstate_service.h"
 #include "daemon/services/logger_service.h"
 #include "daemon/block_acceptor.h"
@@ -40,6 +42,11 @@ namespace dinero {
 struct WalletBatchPaymentTestAccess {
     static void InstallIndex(ChainstateService& chain,std::unique_ptr<UTXOIndex> index) {chain.utxo_index_=std::move(index);}
     static bool SelectedHeld(ChainstateService& s) {return s.activation_mutex_.HeldByCurrentThread();}
+    static void SetPaymentFixtureUtxoTip(ChainstateService& s,const uint256& hash,uint32_t height) {
+        std::lock_guard<AnnotatedRecursiveMutex> selected(s.activation_mutex_);
+        s.consensus_utxo_set_->SetBestBlock(hash,height);
+    }
+
     static void InstallValidatedParent(ChainstateService& s,CBlockIndex& tip,const assumeutxo::AssumeUtxoReplayEngine& replay) {
         if(!s.utxo_index_ || !s.consensus_utxo_set_ || !s.block_validator_ || s.consensus_utxo_set_->GetSetSize()!=replay.ProvenUtxos().size())
             throw std::runtime_error("actual Init-created canonical pool fixture owners required");
@@ -701,6 +708,7 @@ TEST_F(WalletBatchRpc, SuccessfulSubmissionAndInvalidInputBeforeEffects) {
 #include "vault_reservation_metrics_checks.h"
 
 #include "wallet_pool_request_checks.h"
+#include "wallet_swap_request_checks.h"
 
 #include "wallet_pool_origin_checks.h"
 
@@ -725,3 +733,61 @@ TEST_F(WalletBatchRpc, SuccessfulSubmissionAndInvalidInputBeforeEffects) {
 #include "vault_credit_allocation_checks.h"
 
 #include "orchard_catalog_owner_checks.h"
+
+#include "snapshot_payment_source_checks.h"
+
+
+namespace {
+// Serialized RPC component cases. No transport, concurrent teardown, worker
+// wait race or canonical readiness is simulated by these fixtures.
+class WalletListUnspentOwner : public WalletPendingPayment {
+protected:
+    void SetUp() override {
+        WalletPendingPayment::SetUp();
+        service->get().setUTXOIndex(nullptr);
+        service->get().setBlockchainHeight(3);
+        fund(old);fund(modern);
+    }
+    din::Json list() {return rpc_context_wallet_listunspent(ctx,din::Json());}
+};
+TEST_F(WalletListUnspentOwner, CompleteRowsAndRequestSelection) {
+    auto& w=service->get();auto* db=w.getCurrentDatabase();const int changes=sqlite3_total_changes(db);
+    const auto result=list();ASSERT_TRUE(result.isArray())<<result.toStyledString();ASSERT_EQ(result.size(),2u);
+    for(const auto& row:result){EXPECT_TRUE(row["solvable"].asBool());EXPECT_TRUE(row["spendable"].asBool());EXPECT_EQ(row["confirmations"].asInt(),3);}
+    EXPECT_EQ(sqlite3_total_changes(db),changes);
+    ctx.walletName="other";const auto wrong=list();EXPECT_TRUE(wrong.isMember("error"));EXPECT_FALSE(wrong.isArray());
+    EXPECT_EQ(w.getCurrentWalletName(),"owner");EXPECT_EQ(sqlite3_total_changes(db),changes);
+    ctx.walletName="owner";EXPECT_TRUE(list().isArray());
+}
+TEST_F(WalletListUnspentOwner, UnownedIndexRefusesAndRetryWorks) {
+    service->get().setUTXOIndex(index.get());const auto refused=list();
+    EXPECT_TRUE(refused.isMember("error"));EXPECT_FALSE(refused.isArray());
+    service->get().setUTXOIndex(nullptr);EXPECT_TRUE(list().isArray());
+}
+TEST_F(WalletListUnspentOwner, ClosedWalletServiceReturnsError) {
+    // An independently closed service avoids destroying the fixture owner.
+    daemon.wallet=std::make_shared<dinero::WalletService>();
+    din::Json refused;EXPECT_NO_THROW(refused=list());EXPECT_TRUE(refused.isMember("error"));EXPECT_FALSE(refused.isArray());
+    daemon.wallet=service;EXPECT_TRUE(list().isArray());
+}
+TEST_F(WalletListUnspentOwner, ConfiguredUnavailableServicesRefuse) {
+    daemon.mempool=std::make_shared<dinero::MempoolService>();
+    const auto no_chain=list();EXPECT_TRUE(no_chain.isMember("error"));EXPECT_FALSE(no_chain.isArray());
+    daemon.chainstate=std::make_shared<dinero::ChainstateService>();
+    const auto closed_chain=list();EXPECT_TRUE(closed_chain.isMember("error"));EXPECT_FALSE(closed_chain.isArray());
+    daemon.mempool.reset();daemon.chainstate.reset();EXPECT_TRUE(list().isArray());
+}
+TEST_F(WalletListUnspentOwner, ReadFailureAndBorrowedTransactionReturnNoPrefix) {
+    auto* db=service->get().getCurrentDatabase();
+    sql(db,"UPDATE utxos SET script_pubkey='zz' WHERE vout=1");
+    const auto malformed=list();EXPECT_TRUE(malformed.isMember("error"));EXPECT_FALSE(malformed.isArray());
+    sql(db,"UPDATE utxos SET script_pubkey='"+util::hex(modern.spk)+"' WHERE vout=1");
+    sqlite3_set_authorizer(db,[](void*,int action,const char* table,const char*,const char*,const char*){
+        return action==SQLITE_READ && table && std::strcmp(table,"utxos")==0 ? SQLITE_DENY : SQLITE_OK;
+    },nullptr);
+    const auto denied=list();sqlite3_set_authorizer(db,nullptr,nullptr);
+    EXPECT_TRUE(denied.isMember("error"));EXPECT_FALSE(denied.isArray());
+    sql(db,"BEGIN");const auto borrowed=list();EXPECT_TRUE(borrowed.isMember("error"));EXPECT_FALSE(borrowed.isArray());
+    EXPECT_FALSE(sqlite3_get_autocommit(db));sql(db,"ROLLBACK");EXPECT_TRUE(list().isArray());
+}
+}

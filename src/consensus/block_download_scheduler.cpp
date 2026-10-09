@@ -509,7 +509,7 @@ bool BlockDownloadScheduler::OnOrchardBlockReceived(std::span<const uint8_t> byt
         const auto hash=wire_header->GetHash();
         std::unique_lock<std::mutex> lock(mutex_);
         HeaderIndexEntry header;
-        if (stateless_mode_ || !block_storage_ || !header_chain_ ||
+        if ((stateless_mode_ && !compact_orchard_connect_callback_) || !block_storage_ || !header_chain_ ||
             backfill_expected_.count(hash) || !OrchardProfileConfigurationValid(Params()) ||
             !header_chain_->GetHeaderCopy(hash, header) ||
             !OrchardActiveForHeight(Params(), header.height) || header.hash != hash)
@@ -2179,15 +2179,16 @@ bool BlockDownloadScheduler::StoreBlock(const Block& block, FilePosition& out_po
 // ============================================================================
 
 size_t BlockDownloadScheduler::TryConnectStoredBlocksLocked(std::unique_lock<std::mutex>& lock, size_t max_blocks) {
-    if (canonical_drain_active_ || (!connect_block_callback_ && !connect_block_bytes_callback_) || !block_storage_) {
+    if (canonical_drain_active_ || (!connect_block_callback_ && !connect_block_bytes_callback_ &&
+        !compact_orchard_connect_callback_) || !block_storage_) {
         return 0;
     }
 
-    // In CSN/stateless mode, block activation is driven by the ordered
-    // OnUtxoBlock proof-validation path, not by the scheduler's flat-file
-    // drainer. Trying to connect RECEIVED blocks here races ahead of proof
-    // validation and reads proof-less blocks back from storage.
-    if (stateless_mode_) {
+    // Historical CSN activation remains exclusively with its ordered proof
+    // worker. The distinct compact callback can consume only Orchard-family
+    // exact bytes; the per-offer guard below never lets historical raw bodies
+    // fall through to the full-node callback in stateless mode.
+    if (stateless_mode_ && !compact_orchard_connect_callback_) {
         return 0;
     }
 
@@ -2417,8 +2418,11 @@ size_t BlockDownloadScheduler::TryConnectStoredBlocksLocked(std::unique_lock<std
         const uint32_t offered_height = fetch_state->height;
         const FilePosition offered_pos = fetch_state->stored_pos;
         const bool orchard = OrchardActiveForHeight(Params(),offered_height);
+        auto typed_apply = stateless_mode_ ? compact_orchard_connect_callback_
+                                          : connect_block_bytes_callback_;
         if (!OrchardProfileConfigurationValid(Params()) ||
-            (orchard ? !connect_block_bytes_callback_ : !connect_block_callback_)) break;
+            (stateless_mode_ && !orchard) ||
+            (orchard ? !typed_apply : !connect_block_callback_)) break;
         std::optional<Block> historical;
         std::vector<uint8_t> wire;
         uint256 parent_hash;
@@ -2454,7 +2458,6 @@ size_t BlockDownloadScheduler::TryConnectStoredBlocksLocked(std::unique_lock<std
             received_blocks_.erase(offered_hash);
             break;
         }
-        auto typed_apply=connect_block_bytes_callback_;
         auto old_apply=connect_block_callback_;
         fetch_state->status=FetchStatus::CONNECTING;
         canonical_drain_active_=true;

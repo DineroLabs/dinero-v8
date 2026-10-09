@@ -784,6 +784,7 @@ add_library(dinero_rpc_handlers STATIC
   src/rpc/methods_wallet_context.cpp
   src/rpc/orchard_account_rpc.cpp
   src/rpc/wallet_raw_transaction_rpc.cpp
+  src/rpc/methods_swap.cpp  # swap.* RPCs (DIN<->BTC atomic swaps)
   src/rpc/amount_parser.cpp  # Exact DIN/una RPC boundary conversion
   src/rpc/methods_wallet_covenant_profile.cpp  # Regtest-only profile-v1 construction/recovery RPC
   src/rpc/wallet_sync_rpc_handlers.cpp  # Phase W.2.6: Wallet sync UX RPC methods
@@ -1061,6 +1062,7 @@ add_library(dinero_core STATIC
   src/daemon/services/wallet_service_owner.cpp # Lightweight manager lifetime owner
   src/daemon/runtime_delivery_worker.cpp # Durable wallet/readmission replay worker
   src/daemon/runtime_block_reader.cpp # Historical retained bodies also available without Orchard
+  src/daemon/orchard_compact_unavailable.cpp # Explicit refusal when the optional Orchard owner is absent
   src/daemon/runtime_notification_composition.cpp # All declared consumers prepare before commit
   src/daemon/services/chainstate_service.cpp
   src/nodecore/sync_profile_policy.cpp
@@ -1069,6 +1071,7 @@ add_library(dinero_core STATIC
   src/daemon/services/assumeutxo_replay.cpp     # AssumeUTXO isolated replay engine
   src/daemon/services/mempool_service.cpp
   src/daemon/services/metrics_service.cpp
+  src/daemon/services/swap_service.cpp  # DIN<->BTC swaps (off unless swap.enable=1)
   src/daemon/services/p2p_service.cpp
 
   # Phase D.4 (Dinero Core 1.0) — pure health-check decision logic
@@ -1208,10 +1211,10 @@ else()
   target_compile_options(dinero_core PRIVATE /W3)
 endif()
 
-# RuntimeBlockBody shares protocol value types in both configurations. Only
-# this reader needs their headers here; backend compilation is enabled by the
+# RuntimeBlockBody and the unavailable capture entry share protocol value types.
+# Only these sources need their headers here; backend compilation is enabled by the
 # actual Orchard library edge below, never by the presence of headers.
-set_property(SOURCE src/daemon/runtime_block_reader.cpp APPEND PROPERTY
+set_property(SOURCE src/daemon/runtime_block_reader.cpp src/daemon/orchard_compact_unavailable.cpp APPEND PROPERTY
   INCLUDE_DIRECTORIES "${CMAKE_SOURCE_DIR}/rust/orchard_backend/include")
 
 # The concrete pool chain-source binding lives in the core adapter. Generic
@@ -1225,6 +1228,7 @@ target_link_libraries(dinero_core PUBLIC
   dinero_bridge           # BridgeNode::* (Utreexo proof gen) — used by chainstate_service.cpp
   dinero_pool             # PoolDB / PoolManager / PayoutCalculator — used by chainstate_service.cpp
   dinero_wallet
+  dinero_rpc_client      # Bitcoin Core RPC for swaps (thin client; see firewall note)
   dinero_lightning_keys  # Phase 3: Lightning key derivation for gRPC wallet service
   dinero_gpu_mining      # GPU mining backends (Metal/CUDA/OpenCL)
   dinero_portmap_deps    # Optional UPnP/NAT-PMP P2P port mapping
@@ -1343,6 +1347,9 @@ include(src/wallet/reference/CMakeLists.txt)
 
 # External sibling project discovery stays in cmake/.
 include(cmake/ExternalProjects.cmake)
+
+# The swap watchtower program (macOS/Linux) and its install rule.
+include(cmake/SwapTower.cmake)
 
 # Install and package-gate policy lives in cmake/.
 include(cmake/InstallRules.cmake)

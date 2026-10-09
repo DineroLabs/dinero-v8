@@ -88,6 +88,8 @@ done
 
 echo "----------------------------------------------------------"
 echo "Finalizing Dinero macOS release -- v$VERSION"
+python3 "$PROJECT_ROOT/scripts/verify-swap-tower-binary.py" "$APP/Contents/MacOS/dinero-swap-tower"
+python3 "$PROJECT_ROOT/scripts/verify-swap-tower-binary.py" "$STAGE_DIR/dinero-swap-tower"
 echo "----------------------------------------------------------"
 echo "Architecture:   $ARCH"
 echo "Identity:       $IDENTITY"
@@ -166,23 +168,25 @@ echo ""
 echo "Rebuilding signed macOS operator archive..."
 rm -rf "$OPERATOR_ROOT"
 mkdir -p "$OPERATOR_ROOT/bin"
-for bin in dinerod dinero-cli dinero-seeder; do
+for bin in dinerod dinero-cli dinero-seeder dinero-swap-tower; do
     if [[ -x "$STAGE_DIR/$bin" ]]; then
         cp "$STAGE_DIR/$bin" "$OPERATOR_ROOT/bin/$bin"
         sign_macho_file "$OPERATOR_ROOT/bin/$bin"
     fi
 done
+python3 "$PROJECT_ROOT/scripts/verify-swap-tower-binary.py" "$OPERATOR_ROOT/bin/dinero-swap-tower"
 cp "$PROJECT_ROOT/LICENSE" "$OPERATOR_ROOT/LICENSE" 2>/dev/null || true
 cat > "$OPERATOR_ROOT/README.txt" <<EOF
 Dinero macOS operator archive ${VERSION}
 
 This archive is for headless macOS node operators. It includes the daemon,
-RPC CLI, and dinero-seeder.
+RPC CLI, dinero-seeder, and the swap watchtower.
 
 Common entry points:
   ./bin/dinerod
   ./bin/dinero-cli
   ./bin/dinero-seeder
+  ./bin/dinero-swap-tower (requires explicit swap configuration)
 EOF
 (cd "$OPERATOR_ROOT" && shasum -a 256 bin/* > SHA256SUMS)
 rm -f "$OPERATOR_TARBALL"

@@ -306,6 +306,14 @@ public:
         // checked transaction commits before any separate-store delivery.
         // Does not certify key ownership, source history or recovery readiness.
         [[nodiscard]] std::string EnsureDeliveryIdentity();
+        // Read an existing nonzero identity in one checked SQLite snapshot.
+        // Never enroll/create an identity, change schema, or finish a caller's
+        // transaction. This identifies a database; it does not authenticate keys.
+        [[nodiscard]] std::array<uint8_t, 32> ReadDeliveryIdentity() const;
+        // Opaque request-intent binding to this manager instance, existing
+        // database identity, selected name and session. No key/SQL writes.
+        // Not an RPC authorization credential or a recovery certificate.
+        [[nodiscard]] std::array<uint8_t, 32> RpcBinding();
         // Checks the intended session and unlock timeout under this lease.
         // Refuses locked/missing keys; never reloads or unlocks the wallet.
         // Keep this lease until effects encrypted with the returned key commit.
@@ -1133,6 +1141,7 @@ private:
     size_t database_leases_ = 0; // protected by database_lifecycle_mutex_
     size_t recovery_seeds_ = 0; // same lock; recovery seed must die before last lease
     const std::shared_ptr<const uint8_t> instance_token_ = std::make_shared<const uint8_t>(0);
+    std::optional<std::array<uint8_t,32>> rpc_instance_id_; // lifecycle mutex; process-local random identity
     uint64_t database_session_ = 1; // same lock; invalidates queued jobs on replacement
     void AdvanceDatabaseSession() noexcept;
     

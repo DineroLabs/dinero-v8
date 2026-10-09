@@ -23,6 +23,7 @@
 
 namespace dinero {
 class OrchardBlockCandidate;
+class PreparedOrchardChainstateWrite;
 
 namespace consensus { struct OrchardValueFlow; }
 
@@ -375,6 +376,9 @@ public:
     Status stageOrchardCatalogNode(const ChainWriteToken&, const uint256&,
         const std::string&, rocksdb::WriteBatch&);
     StatusOr<std::string> getOrchardCatalogNode(const uint256&) const;
+    // Returns the checked immutable record for a block, not a separate tip.
+    StatusOr<std::string> getOrchardCatalogState(const uint256&) const;
+    StatusOr<std::string> getHistoricalCompactCatalogState(const uint256&) const;
 
     // Canonical shielded records have their own access domain. Encodings are
     // unchanged; legacy stores resolve these exact keys inside utreexo, while
@@ -406,6 +410,11 @@ public:
     Status stageOrchardDisconnect(const ChainWriteToken& token,
         const storage::OrchardStoredState& expected_tip, rocksdb::WriteBatch& batch);
     StatusOr<storage::OrchardStoredState> getOrchardState() const;
+    // Compare every O1 key/value, including an empty namespace, with a separately
+    // reconstructed store. Caller owns both databases across this read and any
+    // publication. Equality alone does not authenticate the expected store.
+    // Read-only, exact ordered comparison; no row vector or digest is materialized.
+    Status compareOrchardStorage(const ChainDB& expected) const;
     // Decode the retained undo and require its after-state to match exactly.
     // Does not authenticate the parent frontier or its selected-chain identity.
     StatusOr<std::optional<storage::OrchardStoredState>> getOrchardUndoParent(
@@ -754,6 +763,13 @@ public:
     bool commitBatch();
 
 private:
+    friend class PreparedOrchardChainstateWrite;
+    // Reconstruct authentic catalog heads only in its unpublished scratch candidate.
+    friend class OrchardReindexOwner;
+    Status stageOrchardCatalogState(const ChainWriteToken&,const uint256&,
+        const std::string&,rocksdb::WriteBatch&);
+    Status stageHistoricalCompactCatalogState(const ChainWriteToken&,const uint256&,
+        const std::string&,rocksdb::WriteBatch&);
     void moveFrom(ChainDB&& other) {
         open_env_ = std::move(other.open_env_);
         db_ = std::move(other.db_);
@@ -796,6 +812,8 @@ private:
     rocksdb::ColumnFamilyHandle* shieldedStateHandle() const {
         return cf_[hasSeparatedShieldedState() ? 9 : idx_utreexo_].get();
     }
+    Status compareOrchardStorageIterators(
+        rocksdb::Iterator& actual, rocksdb::Iterator& expected) const;
     StatusOr<storage::OrchardCommitmentSets> readOrchardCommitmentSets(
         const std::optional<storage::OrchardStoredState>& parent,
         const std::vector<uint256>& added_nullifiers,

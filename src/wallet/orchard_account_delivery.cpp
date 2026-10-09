@@ -26,6 +26,9 @@
 namespace dinero::wallet {
 namespace {
 void Check(bool v) { if(!v) throw std::runtime_error("Orchard account delivery ownership or state mismatch"); }
+void CheckRequest(bool value, OrchardRequestError::Code code) {
+    if(!value) throw OrchardRequestError(code);
+}
 void Exec(sqlite3* db,const char* sql) { Check(sqlite3_exec(db,sql,nullptr,nullptr,nullptr)==SQLITE_OK); }
 struct Transaction {
     sqlite3* db;bool complete=false;
@@ -125,14 +128,38 @@ OrchardOperationQueue::ShieldRequest StoreShieldRequest(
         request.payments.push_back({payment.amount_una,payment.recipient.EncodeAddress(network),payment.memo});
     return request;
 }
-void ValidateShieldRequests(const OrchardOperationQueue& operations,
+void ValidateBoundRequests(const OrchardOperationQueue& operations,
         const orchard::WalletStorageIdentity& identity,const OrchardAccountDelivery::Profile& profile){
-    for(const auto& [id,entry]:operations.Entries())if(entry.shield_request){
-        const auto& request=*entry.shield_request;
-        const auto payments=StoredShieldPayments(request,identity.network);
-        Check(entry.request_commitment==ShieldRequestCommitment(identity,profile,id,
-            entry.inputs,payments,request.outputs,request.fee_una));
+    for(const auto& [id,entry]:operations.Entries()) {
+        if(entry.shield_request) {
+            const auto& request=*entry.shield_request;
+            const auto payments=StoredShieldPayments(request,identity.network);
+            Check(entry.request_commitment==ShieldRequestCommitment(identity,profile,id,
+                entry.inputs,payments,request.outputs,request.fee_una));
+        }
+        if(entry.spend_request) {
+            const auto& request=*entry.spend_request;
+            const auto payments=StoredShieldPayments(request,identity.network);
+            Check(entry.request_commitment==SpendRequestCommitment(identity,profile,id,
+                payments,request.outputs,request.fee_una));
+        }
     }
+}
+// Retention includes revisions outside the linked undo chain. Their sealed
+// request details still belong to the original account, including records
+// whose storage wallet ID is derived for an operation archive. Validate every
+// captured queue before any caller can return a catalog or authorize effects.
+void ValidateCatalogRequests(const OrchardOwnershipInventory::Account& account){
+    const auto& entry=account.entry;
+    const OrchardAccountDelivery::Profile profile{
+        {entry.network,entry.genesis,entry.branch},entry.activation,entry.account};
+    const auto validate=[&](const OrchardOperationQueue& queue){
+        ValidateBoundRequests(queue,account.identity,profile);
+    };
+    validate(account.current.metadata.Operations());
+    for(const auto& archived:account.current.archive)validate(archived.record.operation);
+    for(const auto& retained:account.retained_accounts)validate(retained.metadata.Operations());
+    for(const auto& retained:account.retained_archives)validate(retained.record.operation);
 }
 // This helper is reachable only after the request and exact owned proof have
 // been authenticated by SignShieldProofForReplay. It uses the Orchard profile
@@ -291,7 +318,7 @@ struct OrchardAccountDelivery::Owner {
             auto account=OrchardAccountState::Restore(saved.state,p.domain,viewing,p.activation,
                 point.checkpoint,point.lookups);
             Check(account.ParentSnapshotRevision()<saved.revision);
-            ValidateShieldRequests(account.Operations(),identity,p);
+            ValidateBoundRequests(account.Operations(),identity,p);
             return {saved.revision,std::move(account)};
         }
     };
@@ -299,7 +326,7 @@ struct OrchardAccountDelivery::Owner {
         auto saved=store.Read();Check(saved.has_value());
         const auto metadata=OrchardAccountMetadata::Read(saved->state,p.domain,fvk.bytes,p.activation);
         Check(metadata.ParentSnapshotRevision()<saved->revision);
-        ValidateShieldRequests(metadata.Operations(),identity,p);
+        ValidateBoundRequests(metadata.Operations(),identity,p);
         ValidateShieldHistories(metadata.Operations());
         return std::make_unique<CapturedRead>(std::move(*saved),identity,lease->InstanceToken(),fvk.bytes);
     }
@@ -322,7 +349,7 @@ struct OrchardAccountDelivery::Owner {
         auto saved=store.Read();Check(saved.has_value());
         auto account=OrchardAccountState::Restore(saved->state,p.domain,fvk.bytes,p.activation,point.checkpoint,point.lookups);
         Check(account.ParentSnapshotRevision()<saved->revision);
-        ValidateShieldRequests(account.Operations(),identity,p);
+        ValidateBoundRequests(account.Operations(),identity,p);
         ValidateShieldHistories(account.Operations());
         return {saved->revision,std::move(account)};
     }
@@ -452,7 +479,7 @@ struct OrchardAccountDelivery::Owner {
                     auto state=OrchardAccountState::Restore(saved.state,profile.domain,payload.viewing.bytes,
                         profile.activation,point.checkpoint,point.lookups);
                     Check(state.ParentSnapshotRevision()<saved.revision);
-                    ValidateShieldRequests(state.Operations(),captured.identity,profile);
+                    ValidateBoundRequests(state.Operations(),captured.identity,profile);
                     return state;
                 };
                 auto current=restore(payload.current);
@@ -493,8 +520,9 @@ struct OrchardAccountDelivery::Owner {
             Check(entry.network==profile.domain.network_code&&entry.genesis==profile.domain.genesis_wire&&
                 entry.branch==profile.domain.branch_id&&entry.activation==profile.activation);
             const Profile p{profile.domain,profile.activation,entry.account};
+            ValidateCatalogRequests(account);
             const auto validate=[&](const OrchardOperationQueue& queue){
-                ValidateShieldRequests(queue,account.identity,p);histories(queue);
+                ValidateBoundRequests(queue,account.identity,p);histories(queue);
             };
             validate(account.current.metadata.Operations());
             const auto keys=orchard::WalletKeys::FromSeed(seed->Bytes(),entry.account);
@@ -866,7 +894,7 @@ std::vector<OrchardAccountDelivery::Enrolled> OrchardAccountDelivery::Owner::Rea
             context.activation_height,point.checkpoint,point.lookups);
         Check(account.ParentSnapshotRevision()<saved->revision);
         const Profile profile{context.domain,context.activation_height,identity.account};
-        ValidateShieldRequests(account.Operations(),identity,profile);
+        ValidateBoundRequests(account.Operations(),identity,profile);
         owner.ValidateShieldHistories(account.Operations());
         Check(authenticated.insert(locator).second);
         // Archive records deliberately use derived wallet IDs in this SAME
@@ -883,7 +911,7 @@ std::vector<OrchardAccountDelivery::Enrolled> OrchardAccountDelivery::Owner::Rea
         for(const auto& archived:captured.archive){
             const auto& record=archived.record;
             // Archive IDs differ; requests belong to the original account.
-            ValidateShieldRequests(record.operation,identity,profile);
+            ValidateBoundRequests(record.operation,identity,profile);
             owner.ValidateShieldHistories(record.operation);
             const Locator record_locator{archived.identity.wallet_id,archived.identity.account};
             const auto found=inventory.find(record_locator);
@@ -930,7 +958,7 @@ void OrchardAccountDelivery::Owner::ValidateRetainedInventory(const std::vector<
             const auto receipt=OrchardAccountState::ReadDeliveryMetadata(parent.state,context.domain,viewing.bytes,context.activation_height,view.Point({}).checkpoint.block_hash);
             const auto point=view.Point({receipt.sequence,receipt.digest});
             const auto restored=OrchardAccountState::Restore(parent.state,context.domain,viewing.bytes,context.activation_height,point.checkpoint,point.lookups);
-            ValidateShieldRequests(restored.Operations(),account_identity,
+            ValidateBoundRequests(restored.Operations(),account_identity,
                 {context.domain,context.activation_height,account_identity.account});
             ValidateShieldHistories(restored.Operations());
             upper=revision;revision=restored.ParentSnapshotRevision();
@@ -1022,6 +1050,7 @@ std::vector<OrchardAccountDelivery::Enrolled> OrchardAccountDelivery::Owner::Val
     if(!catalog->accounts.empty()) {
         ownership=OrchardOwnershipInventory::Read(lease->Database(),seed->Bytes());
         Check(ownership->catalog==*catalog&&ownership->wallet_id==identity.wallet_id);
+        for(const auto& account:ownership->accounts)ValidateCatalogRequests(account);
     }
     auto inventory=ReadInventory(view,true);Check(inventory.size()==catalog->accounts.size());
     if(ownership) {
@@ -1290,7 +1319,8 @@ std::vector<orchard::ResolvedInput> OrchardAccountDelivery::ReadPreparedShieldCa
     Check(data.profile.domain.network_code==p.domain.network_code&&data.profile.domain.genesis_wire==p.domain.genesis_wire&&
           data.profile.domain.branch_id==p.domain.branch_id&&data.profile.activation==p.activation);
     const auto found=std::find_if(data.before.accounts.begin(),data.before.accounts.end(),[&](const auto& a){return a.number==p.account;});
-    Check(found!=data.before.accounts.end()&&found->state.revision==expected);
+    Check(found!=data.before.accounts.end());
+    CheckRequest(found->state.revision==expected,OrchardRequestError::Code::StaleAccountRevision);
     std::set<std::pair<orchard::Hash,uint32_t>> reserved;
     for(const auto& account:data.accounts){
         const auto receipt=account.result.account.Delivery();Check(receipt.sequence==data.head.sequence&&receipt.digest==data.head.digest);
@@ -1371,17 +1401,20 @@ std::unique_ptr<OrchardCatalogRecoveryPlan> OrchardAccountDelivery::PrepareShiel
             const auto& archive=data.expected->ownership.accounts[i].current.archive;
             const auto archived=std::find_if(archive.begin(),archive.end(),[&](const auto& record){return record.id==id;});
             if(pending==account.Operations().Entries().end()&&archived==archive.end())continue;
-            Check(enrolled.number==p.account&&!details->existing);
+            CheckRequest(enrolled.number==p.account,OrchardRequestError::Code::RequestIdConflict);
+            Check(!details->existing);
             const bool only_archive=pending==account.Operations().Entries().end();
             const auto& entry=only_archive?archived->record.operation.Entries().at(id):pending->second;
             auto request=details->exact_request;
             std::vector<orchard::TransparentOutput> selected_outputs(outputs.begin(),outputs.end());
             if(mode==ShieldRequestMode::Stored){
-                Check(entry.shield_request.has_value()&&entry.shield_request->fee_una==fee);
+                Check(entry.shield_request.has_value());
+                CheckRequest(entry.shield_request->fee_una==fee,OrchardRequestError::Code::RequestIdConflict);
                 selected_outputs=entry.shield_request->outputs;
                 request=ShieldRequestCommitment(identity,p,id,entry.inputs,payments,selected_outputs,fee);
             }
-            Check(request&&entry.request_commitment==request);
+            Check(request.has_value());
+            CheckRequest(entry.request_commitment==request,OrchardRequestError::Code::RequestIdConflict);
             if(archived!=archive.end()){
                 const auto& retained=archived->record.operation.Entries().at(id);
                 Check(retained.request_commitment==request);
@@ -1398,7 +1431,8 @@ std::unique_ptr<OrchardCatalogRecoveryPlan> OrchardAccountDelivery::PrepareShiel
     // Exact retries precede availability and reconciliation. They do not issue
     // change, generate a plan, inspect an executor or release reservations.
     if(retry||existing_only)return prepared;
-    Check(found->state.revision==expected&&data.head.sequence&&!data.head.digest.IsNull());
+    CheckRequest(found->state.revision==expected,OrchardRequestError::Code::StaleAccountRevision);
+    Check(data.head.sequence&&!data.head.digest.IsNull());
     for(size_t i=0;i<data.before.accounts.size();++i){
         const auto& account=data.before.accounts[i].state.account;const auto receipt=account.Delivery();
         Check(receipt.sequence==data.head.sequence&&receipt.digest==data.head.digest&&!account.Operations().Entries().contains(id));
@@ -1478,12 +1512,13 @@ OrchardAccountDelivery::ShieldResult OrchardAccountDelivery::CommitShieldReserva
         auto signing=orchard::SigningContext::Create(p.domain,0,resolved,transparent,fee);
         Check(signing.RequiredValueBalance()==-static_cast<int64_t>(shield.deposit));
         auto plan=orchard::WalletBundlePlan::PrepareShield(owner.keys,payments);
+        auto recovery=request?std::make_shared<const orchard::WalletStateBytes>(plan.ExportRecovery()):nullptr;
         const auto intent=plan.Intent(signing);Check(!intent.Nullifiers().empty()&&intent.Inputs().size()==inputs.size());
         std::unique_ptr<OrchardProofJobs::Submission> submission;
         if(jobs)submission=jobs->PrepareOwned(id,{owner.identity,p.domain.branch_id,session,lease->InstanceToken()},
             std::move(plan),std::move(signing));
         auto staged=owner.Replace(current.revision,request?
-            current.account.ReserveShieldRequest(id,intent,*request,StoreShieldRequest(owner.identity.network,payments,outputs,fee)):
+            current.account.ReserveShieldRequest(id,intent,*request,StoreShieldRequest(owner.identity.network,payments,outputs,fee),std::move(recovery)):
             current.account.Reserve(id,intent));
         auto& bytes=*data.expected->bytes[shield.index];
         Check(data.expected->ownership.retained_rows<OrchardOwnershipInventory::kMaxRows);
@@ -1562,11 +1597,12 @@ OrchardAccountDelivery::SpendResult OrchardAccountDelivery::ReserveSpendWithRest
             const auto& archive=data.expected->ownership.accounts[i].current.archive;
             const auto archived=std::find_if(archive.begin(),archive.end(),[&](const auto& record){return record.id==id;});
             if(pending==account.Operations().Entries().end()&&archived==archive.end())continue;
-            Check(enrolled.number==p.account&&!result.queued);
-            if(archived!=archive.end())Check(archived->record.operation.Entries().at(id).request_commitment==request);
+            CheckRequest(enrolled.number==p.account,OrchardRequestError::Code::RequestIdConflict);
+            Check(!result.queued);
+            if(archived!=archive.end())CheckRequest(archived->record.operation.Entries().at(id).request_commitment==request,OrchardRequestError::Code::RequestIdConflict);
             const bool only_archive=pending==account.Operations().Entries().end();
             const auto& entry=only_archive?archived->record.operation.Entries().at(id):pending->second;
-            Check(entry.request_commitment==request);
+            CheckRequest(entry.request_commitment==request,OrchardRequestError::Code::RequestIdConflict);
             result.queued=std::make_unique<QueuedSpend>(QueuedSpend{enrolled.state.revision,id,
                 std::vector<orchard::TransparentOutput>(outputs.begin(),outputs.end()),fee,false});
             result.queued->existing_request=true;result.queued->archived=only_archive;result.queued->durable=entry;
@@ -1584,7 +1620,7 @@ OrchardAccountDelivery::SpendResult OrchardAccountDelivery::ReserveSpendWithRest
             transaction.Commit();return result;
         }
     }
-    Check(requested->state.revision==expected);
+    CheckRequest(requested->state.revision==expected,OrchardRequestError::Code::StaleAccountRevision);
     const auto head=view.Head();Check(head.sequence&&!head.digest.IsNull());
     for(size_t i=0;i<data.before.accounts.size();++i){
         const auto& account=data.before.accounts[i].state.account;const auto receipt=account.Delivery();
@@ -1660,11 +1696,14 @@ OrchardAccountDelivery::SpendResult OrchardAccountDelivery::ReserveSpendWithRest
         {
             Owner owner(w,session,p,Owner::ExistingRead{});
             auto plan=orchard::WalletBundlePlan::PrepareSpend(owner.keys,inputs,anchor,recipients);
+            auto recovery=request?std::make_shared<const orchard::WalletStateBytes>(plan.ExportRecovery()):nullptr;
             const auto intent=plan.Intent(signing);Check(intent.Inputs().empty());
             for(const auto& nullifier:intent.Nullifiers())Check(!reserved.contains(nullifier));
             if(jobs)submission=jobs->PrepareOwned(id,
                 {owner.identity,p.domain.branch_id,session,lease->InstanceToken()},std::move(plan),std::move(signing));
-            auto staged=owner.Replace(current.revision,request?account.ReserveRequest(id,intent,*request):account.Reserve(id,intent));
+            auto staged=owner.Replace(current.revision,request?
+                account.ReserveSpendRequest(id,intent,*request,StoreShieldRequest(owner.identity.network,payments,outputs,fee),std::move(recovery)):
+                account.Reserve(id,intent));
             auto& bytes=*data.expected->bytes[index];
             Check(data.expected->ownership.retained_rows<OrchardOwnershipInventory::kMaxRows);
             bytes.retained.push_back(std::move(bytes.current));++data.expected->ownership.retained_rows;
@@ -1694,26 +1733,35 @@ OrchardAccountDelivery::OwnedProof OrchardAccountDelivery::ReadCatalogProofForRe
 OrchardAccountDelivery::RequestProof OrchardAccountDelivery::ReadCatalogRequestProofForReplay(
         WalletManager& w,uint64_t session,const Profile& p,const RuntimeAccountReplay& view,
         const orchard::Hash& id,std::span<const orchard::WalletPayment> payments,
-        std::span<const orchard::TransparentOutput> outputs,uint64_t fee,OrchardProofJobs& jobs){
+        std::span<const orchard::TransparentOutput> outputs,uint64_t fee,OrchardProofJobs& jobs,bool resume_missing){
     return ReadCatalogProofWithRestorePoints(w,session,p,view,CatalogProofRequest::Spend,
-        id,{},payments,outputs,fee,jobs,[&view](RuntimeOutboxCursor cursor){return view.Point(cursor);});
+        id,{},payments,outputs,fee,jobs,[&view](RuntimeOutboxCursor cursor){return view.Point(cursor);},resume_missing);
+}
+OrchardAccountDelivery::RequestProof OrchardAccountDelivery::ReadStoredCatalogRequestProofForReplay(
+        WalletManager& w,uint64_t session,const Profile& p,const RuntimeAccountReplay& view,
+        const orchard::Hash& id,bool shield,OrchardProofJobs& jobs,bool resume_missing){
+    return ReadCatalogProofWithRestorePoints(w,session,p,view,
+        shield?CatalogProofRequest::StoredShield:CatalogProofRequest::StoredSpend,
+        id,{},{},{},0,jobs,[&view](RuntimeOutboxCursor cursor){return view.Point(cursor);},resume_missing);
 }
 OrchardAccountDelivery::RequestProof OrchardAccountDelivery::ReadCatalogShieldRequestProofForReplay(
         WalletManager& w,uint64_t session,const Profile& p,const RuntimeAccountReplay& view,
         const orchard::Hash& id,std::span<const orchard::ResolvedInput> inputs,
         std::span<const orchard::WalletPayment> payments,
-        std::span<const orchard::TransparentOutput> outputs,uint64_t fee,OrchardProofJobs& jobs){
+        std::span<const orchard::TransparentOutput> outputs,uint64_t fee,OrchardProofJobs& jobs,bool resume_missing){
     return ReadCatalogProofWithRestorePoints(w,session,p,view,CatalogProofRequest::Shield,
-        id,inputs,payments,outputs,fee,jobs,[&view](RuntimeOutboxCursor cursor){return view.Point(cursor);});
+        id,inputs,payments,outputs,fee,jobs,[&view](RuntimeOutboxCursor cursor){return view.Point(cursor);},resume_missing);
 }
 OrchardAccountDelivery::RequestProof OrchardAccountDelivery::ReadCatalogProofWithRestorePoints(
         WalletManager& w,uint64_t session,const Profile& p,const RuntimeAccountReplay& view,
         CatalogProofRequest kind,const orchard::Hash& id,std::span<const orchard::ResolvedInput> inputs,
         std::span<const orchard::WalletPayment> payments,std::span<const orchard::TransparentOutput> outputs,
         uint64_t fee,OrchardProofJobs& jobs,
-        const std::function<RestorePoint(RuntimeOutboxCursor)>& points){
+        const std::function<RestorePoint(RuntimeOutboxCursor)>& points,bool resume_missing){
+    Check(!resume_missing||kind!=CatalogProofRequest::Any);
     Check(bool(points)&&id!=orchard::Hash{}&&p.domain.network_code<=2&&p.account<0x80000000&&p.activation>0);
-    Check(kind==CatalogProofRequest::Any||kind==CatalogProofRequest::Spend||kind==CatalogProofRequest::Shield);
+    Check(kind==CatalogProofRequest::Any||kind==CatalogProofRequest::Spend||kind==CatalogProofRequest::Shield||
+        kind==CatalogProofRequest::StoredSpend||kind==CatalogProofRequest::StoredShield);
     if(kind==CatalogProofRequest::Spend)Check(!payments.empty()||!outputs.empty());
     if(kind==CatalogProofRequest::Shield)Check(!inputs.empty()&&!payments.empty());
     const auto event=view.Event(1);const auto& context=event->context;
@@ -1735,26 +1783,86 @@ OrchardAccountDelivery::RequestProof OrchardAccountDelivery::ReadCatalogProofWit
     const auto index=static_cast<size_t>(requested-inventory.accounts.begin());
     const auto& identity=captured->ownership.accounts[index].identity;
     const auto& queue=requested->state.account.Operations();const auto operation=queue.Entries().find(id);
-    Check(operation!=queue.Entries().end());
+    CheckRequest(operation!=queue.Entries().end(),OrchardRequestError::Code::RequestNotCurrent);
     if(kind==CatalogProofRequest::Spend){
-        Check(operation->second.inputs.empty()&&
-            operation->second.request_commitment==SpendRequestCommitment(identity,p,id,payments,outputs,fee));
+        Check(operation->second.inputs.empty());
+        CheckRequest(operation->second.request_commitment==SpendRequestCommitment(identity,p,id,payments,outputs,fee),
+            OrchardRequestError::Code::RequestIdConflict);
     }else if(kind==CatalogProofRequest::Shield){
-        Check(operation->second.request_commitment==ShieldRequestCommitment(identity,p,id,inputs,payments,outputs,fee));
+        CheckRequest(operation->second.request_commitment==ShieldRequestCommitment(identity,p,id,inputs,payments,outputs,fee),
+            OrchardRequestError::Code::RequestIdConflict);
     }
-    RequestProof result{requested->state.revision,operation->second,{},{}};
+    // Restore authenticated all current and retained detail/digest bindings.
+    // Requiring the matching details here distinguishes spend from shield and
+    // refuses older ID-only records; an ID alone never invents payment intent.
+    if(kind==CatalogProofRequest::StoredSpend)
+        Check(operation->second.spend_request.has_value()&&!operation->second.shield_request&&operation->second.inputs.empty());
+    if(kind==CatalogProofRequest::StoredShield)
+        Check(operation->second.shield_request.has_value()&&!operation->second.spend_request&&!operation->second.inputs.empty());
+    const auto& entry=operation->second;
+    RequestProof result{requested->state.revision,entry,{},{}};
     static_assert(std::is_nothrow_move_constructible_v<RequestProof>);
+    // This is an as-of source check, not lasting chain readiness. Authorization
+    // and admission still capture fresh selected state before exposing Ready.
+    const auto head=view.Head();
+    const bool eligible=resume_missing&&entry.phase==OrchardOperationQueue::Phase::Reserved&&
+        !requested->state.account.Observations().contains(id);
+    std::unique_ptr<orchard::WalletKeys> recovery_keys;
     {
         auto lease=w.AcquireDatabaseLease();
         Check(lease->Session()==session&&lease->Database()&&w.database_leases_==1);
         RequireShieldFullSync(lease->Database());Transaction tx(lease->Database());
         auto fresh=Owner::CaptureCatalog(w,session,p);captured->Recheck(*fresh);
-        // This copies an already-owned job under its mutex; it performs no
-        // proof work, source callback, retirement, reservation or publication.
         auto proof=jobs.CaptureOwned(id,{identity,p.domain.branch_id,session,lease->InstanceToken()},queue);
         result.state=proof.state;result.proof=std::move(proof.proof);
+        if(eligible&&!result.state){
+            Check(entry.recovery&&entry.request_commitment&&
+                (entry.shield_request.has_value()!=entry.spend_request.has_value()));
+            Owner owner(w,session,p,Owner::ExistingRead{});
+            Check(Owner::CapturedCatalog::SameIdentity(owner.identity,identity));
+            recovery_keys=std::make_unique<orchard::WalletKeys>(std::move(owner.keys));
+        }
         tx.Commit();
     }
+    if(!recovery_keys)return result; // Status reads and existing/Ready jobs never requeue.
+    if(eligible){
+        Check(head.sequence&&!head.digest.IsNull());
+        for(const auto& account:inventory.accounts){
+            const auto receipt=account.state.account.Delivery();
+            Check(receipt.sequence==head.sequence&&receipt.digest==head.digest);
+        }
+        // Invokes the immutable source only outside wallet/SQLite ownership.
+        Check(requested->state.account.Scan().Checkpoint()==points(head).checkpoint);
+    }
+    const auto& details=entry.shield_request?*entry.shield_request:*entry.spend_request;
+    auto signing=orchard::SigningContext::Create(p.domain,0,entry.inputs,details.outputs,details.fee_una);
+    auto plan=orchard::WalletBundlePlan::Restore(*recovery_keys,*entry.recovery);
+    recovery_keys.reset();
+    const auto intent=plan.Intent(signing);
+    Check(intent.Message()==entry.message&&intent.Nullifiers()==entry.nullifiers&&intent.Inputs().size()==entry.inputs.size());
+    for(size_t i=0;i<entry.inputs.size();++i){
+        const auto& a=intent.Inputs()[i];const auto& b=entry.inputs[i];
+        Check(a.txid_wire==b.txid_wire&&a.output_index==b.output_index&&a.sequence==b.sequence&&
+            a.amount_una==b.amount_una&&a.script_pub_key==b.script_pub_key);
+    }
+    std::unique_ptr<OrchardProofJobs::Submission> submission;
+    {
+        auto lease=w.AcquireDatabaseLease();
+        Check(lease->Session()==session&&lease->Database()&&w.database_leases_==1);
+        RequireShieldFullSync(lease->Database());Transaction tx(lease->Database());
+        auto fresh=Owner::CaptureCatalog(w,session,p);captured->Recheck(*fresh);
+        const OrchardProofJobs::Binding binding{identity,p.domain.branch_id,session,lease->InstanceToken()};
+        auto proof=jobs.CaptureOwned(id,binding,queue);
+        result.state=proof.state;result.proof=std::move(proof.proof);
+        if(!result.state){
+            submission=jobs.PrepareOwned(id,binding,std::move(plan),std::move(signing));
+            submission->Bind(queue);
+        }
+        tx.Commit();
+    }
+    // A failed read/COMMIT drops only the unpublished task; original durable
+    // reservations and all existing jobs remain untouched. Publish is noexcept.
+    if(submission&&submission->Publish())result.state=OrchardProofJobs::State::Queued;
     return result;
 }
 std::unique_ptr<OrchardCatalogFinalizationPlan> OrchardAccountDelivery::PrepareFinalizationWithRestorePoints(

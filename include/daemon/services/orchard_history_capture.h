@@ -76,6 +76,8 @@ public:
             next_root=transactions_.With(next_root,key);++next_count;
         }
         spool_.Insert(HeightKey('w',height),std::span<const uint8_t>(digest.data,32));
+        Bytes membership;Number(membership,next_root,8);Number(membership,next_count,8);
+        spool_.Insert(HeightKey('t',height),membership);
         batch.Commit();transactions_root_=next_root;transaction_count_=next_count;++recorded_;poisoned_=false;
     }
     void Finish() {
@@ -107,6 +109,18 @@ public:
             uint256 hash;std::copy(key.begin(),key.end(),hash.begin());return visitor(TxId(hash));
         });
     }
+    // Immutable membership after this exact validated body. Later blocks may
+    // add IDs, but cannot change the retained prefix root/count pair.
+    uint64_t TransactionCountAt(uint32_t height) const {
+        return TransactionPrefix(height).second;
+    }
+    template<class Visitor>
+    uint64_t ForEachTransactionAt(uint32_t height,Visitor&& visitor) const {
+        const auto [root,count]=TransactionPrefix(height);
+        return transactions_.ForEach(root,count,[&](const auto& key) {
+            uint256 hash;std::copy(key.begin(),key.end(),hash.begin());return visitor(TxId(hash));
+        });
+    }
     wallet::detail::RuntimeReplaySpool::Usage UsageNow() const {CheckReadable();return spool_.UsageNow();}
 private:
     friend struct OrchardHistoryCaptureTestAccess;
@@ -130,6 +144,14 @@ private:
     static uint64_t Number(const Bytes& bytes,size_t at,unsigned size) {
         Require(at<=bytes.size()&&size<=bytes.size()-at);uint64_t value=0;
         for(unsigned i=0;i<size;++i)value|=uint64_t(bytes[at+i])<<(8*i);return value;
+    }
+    std::pair<Membership::Root,uint64_t> TransactionPrefix(uint32_t height) const {
+        CheckReadable();Require(finished_ && uint64_t(height)<count_);
+        const auto bytes=spool_.Get(HeightKey('t',height));Require(bytes && bytes->size()==16);
+        const auto root=Number(*bytes,0,8),count=Number(*bytes,8,8);
+        Require(root && count && count<=transaction_count_);
+        if(uint64_t(height)+1==count_)Require(root==transactions_root_&&count==transaction_count_);
+        return {root,count};
     }
     static Bytes HeightKey(uint8_t space,uint32_t height) {Bytes key{space};Number(key,height,4);return key;}
     static Membership::Key TransactionKey(const TxId& id) {

@@ -115,6 +115,66 @@ int main(int argc, char **argv) {
                                              paidB.Checkpoint(), lookups);
     };
     const auto restored = restore(encoded);
+    Require(a.HasCompleteReceiptHistory() && a.CompleteReceipts().empty());
+    Require(fundedA.HasCompleteReceiptHistory() && fundedA.CompleteReceipts().size() == 1);
+    Require(paidA.HasCompleteReceiptHistory() && paidA.CompleteReceipts().size() == 1);
+    Require(paidA.CompleteReceipts()[0].origin->Orchard().Txid() == shields[0].Orchard().Txid());
+    Require(paidA.CompleteReceipts()[0].created_height == c.height &&
+            paidA.CompleteReceipts()[0].created_block == c.block_hash);
+    Require(restored.CompleteReceipts().size() == 1 &&
+            restored.CompleteReceipts()[0].created_block == next.block_hash);
+    Require(reorgB.CompleteReceipts().size() == 1 &&
+            reorgB.CompleteReceipts()[0].created_block == alternate.block_hash);
+    dinero::wallet::OrchardWalletRestoreLookups spentOrigin{
+        [&](uint32_t height, const uint256 &hash, const orchard::Hash &txid) {
+          Require(height == c.height && hash == c.block_hash && txid == shields[0].Orchard().Txid());
+          return std::make_shared<const VerifiedOrchardAuthorizations>(shields[0]);
+        },
+        [](const uint256 &) -> StatusOr<bool> { return true; }};
+    auto spentRestored = OrchardWalletScanState::Restore(paidA.Encode(), domain,
+        sender, 20001, paidA.Checkpoint(), spentOrigin);
+    Require(spentRestored.Notes().empty() && spentRestored.BalanceUna() == 0 &&
+            spentRestored.CompleteReceipts().size() == 1);
+    auto missingSpentOrigin = spentOrigin; missingSpentOrigin.origin = {};
+    ScanReject([&] { (void)OrchardWalletScanState::Restore(paidA.Encode(), domain,
+        sender, 20001, paidA.Checkpoint(), missingSpentOrigin); });
+    Require(spentRestored.DecryptReceipt(0).Facts().amount == 5000);
+    ScanReject([&] { (void)spentRestored.DecryptReceipt(1); });
+    std::cout << "RECEIVED_HISTORY_SPENT_RESTORE_OK\n";
+    // Exact old encoding: omit the v2 suffix, retain the original notes bytes.
+    auto legacyBytes = std::vector<uint8_t>(encoded.Bytes().begin(), encoded.Bytes().end());
+    Require(legacyBytes.size() >= 78 && legacyBytes[7] == '2');
+    legacyBytes.resize(legacyBytes.size() - 78); legacyBytes[7] = '1';
+    auto legacyRestored = restore(orchard::WalletStateBytes(legacyBytes));
+    Require(!legacyRestored.HasCompleteReceiptHistory() && legacyRestored.BalanceUna() == 4500);
+    ScanReject([&] { (void)legacyRestored.CompleteReceipts(); });
+    ScanReject([&] { (void)legacyRestored.DecryptReceipt(0); });
+    auto exactLegacy = legacyRestored.Encode();
+    Require(std::equal(exactLegacy.Bytes().begin(), exactLegacy.Bytes().end(),
+                       legacyBytes.begin(), legacyBytes.end()));
+    auto advancedLegacy = legacyRestored.Advance(emptyContext, emptyBlock, emptyTransition, {});
+    Require(!advancedLegacy.HasCompleteReceiptHistory());
+    ScanReject([&] { (void)advancedLegacy.CompleteReceipts(); });
+    const auto reopenedLegacy = OrchardWalletScanState::Restore(advancedLegacy.Encode(),
+        domain, recipient, 20001, advancedLegacy.Checkpoint(), lookups);
+    Require(!reopenedLegacy.HasCompleteReceiptHistory() && reopenedLegacy.BalanceUna() == 4500);
+    std::cout << "RECEIVED_HISTORY_LEGACY_INCOMPLETE_OK\n";
+    auto malformedReceipts = std::vector<uint8_t>(encoded.Bytes().begin(), encoded.Bytes().end());
+    const auto suffix = malformedReceipts.size() - 78;
+    malformedReceipts[suffix] = 2;
+    ScanReject([&] { (void)restore(orchard::WalletStateBytes(malformedReceipts)); });
+    malformedReceipts.assign(encoded.Bytes().begin(), encoded.Bytes().end());
+    malformedReceipts.resize(suffix + 5);
+    std::fill(malformedReceipts.begin() + suffix + 1, malformedReceipts.end(), 0);
+    ScanReject([&] { (void)restore(orchard::WalletStateBytes(malformedReceipts)); });
+    malformedReceipts.assign(encoded.Bytes().begin(), encoded.Bytes().end());
+    const auto receiptCopy = std::vector<uint8_t>(malformedReceipts.end() - 73, malformedReceipts.end());
+    malformedReceipts[suffix + 1] = 2;
+    malformedReceipts.insert(malformedReceipts.end(), receiptCopy.begin(), receiptCopy.end());
+    ScanReject([&] { (void)restore(orchard::WalletStateBytes(malformedReceipts)); });
+    std::cout << "RECEIVED_HISTORY_MALFORMED_REFUSAL_OK\n";
+
+
     Require(restored.BalanceUna() == 4500 && restored.Notes().size() == 1 &&
             restored.Checkpoint() == paidB.Checkpoint());
     Require(restored.Notes()[0].witness->Encode() ==

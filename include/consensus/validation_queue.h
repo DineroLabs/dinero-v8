@@ -145,6 +145,11 @@ public:
         ChainstateGuard* chainstate_guard,
         const Config& config = Config::forNormalOperation()
     );
+    // Only typed tasks owning their own validation and canonical application.
+    // No legacy BlockValidator, UTXO set or script worker pool is constructed.
+    // Historical Block submissions refuse in this immutable mode.
+    static std::shared_ptr<ValidationQueue> CreateCanonicalOnly(
+        const Config& config = Config::forNormalOperation());
     ~ValidationQueue();
 
     // Lifecycle
@@ -196,6 +201,9 @@ public:
     void resetMetrics() { metrics_.reset(); }
 
 private:
+    struct CanonicalOnlyTag {};
+    ValidationQueue(CanonicalOnlyTag, const Config&);
+    const bool canonical_only_{false};
     // Thread entry points
     void validationThreadFunc();  // Dispatches blocks to worker pool
     void applierThreadFunc();     // Applies validated blocks to chainstate

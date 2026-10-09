@@ -3,6 +3,8 @@
 #include "consensus/merkle_root.h"
 #include "crypto/sha256.h"
 #include "storage/chain_db.h"
+#include "storage/historical_compact_validation.h"
+#include "storage/orchard_storage_mode.h"
 #include <rocksdb/write_batch.h>
 #include <cstring>
 
@@ -50,7 +52,7 @@ std::string Profile() {
 const BlockHeader& Header(const RuntimeReorgBlock& b) {
     return b.body.IsOrchardProfile()?b.body.Orchard().Header():b.body.Historical().header;
 }
-void CheckPlan(const RuntimeReorgPlan& plan) {
+bool CheckPlan(const RuntimeReorgPlan& plan) {
     if(plan.disconnect.empty() || plan.disconnect.size()>max_blocks || plan.connect.size()>max_blocks-plan.disconnect.size())Fail();
     uint256 current=plan.disconnect.front().hash;uint32_t height=plan.disconnect.front().height;bool mixed=false;
     const auto check=[&](const RuntimeReorgBlock& b) {
@@ -73,10 +75,15 @@ void CheckPlan(const RuntimeReorgPlan& plan) {
     for(const auto& b:plan.connect) {
         check(b);if(Header(b).prev_block_hash!=current || uint64_t(height)+1!=b.height)Fail();current=b.hash;height=b.height;
     }
-    if(!mixed)Fail(Status::Invalid);
+    return mixed;
 }
 std::string Encode(const RuntimeReorgIntent& intent) {
-    CheckPlan(*intent.plan);std::string s="DNRI01";Number(s,intent.cursor.sequence,8);Hash(s,intent.previous_digest);
+    const bool mixed=CheckPlan(*intent.plan);
+    if(!mixed && !intent.outbox_origin.sequence)Fail(Status::Invalid);
+    // Version1 remains the original Orchard-containing contract. Version2
+    // retains historical-only plans after a checked canonical source exists.
+    // Neither record is a consensus proof or a consumer acknowledgement.
+    std::string s=mixed?"DNRI01":"DNRI02";Number(s,intent.cursor.sequence,8);Hash(s,intent.previous_digest);
     s+=Profile();Number(s,intent.outbox_origin.sequence,8);Hash(s,intent.outbox_origin.digest);
     Number(s,intent.plan->disconnect.size(),4);Number(s,intent.plan->connect.size(),4);
     const auto append=[&](const RuntimeReorgBlock& b) {
@@ -90,7 +97,7 @@ std::string Encode(const RuntimeReorgIntent& intent) {
     Seal(s);return s;
 }
 RuntimeReorgIntent Decode(const std::string& bytes,uint64_t sequence) {
-    auto r=Open(bytes,max_bytes);if(r.Take(6)!="DNRI01")Fail();
+    auto r=Open(bytes,max_bytes);const auto version=r.Take(6);if(version!="DNRI01" && version!="DNRI02")Fail();
     RuntimeReorgIntent intent;intent.cursor.sequence=r.Number(8);intent.previous_digest=r.Hash();
     if(!sequence || intent.cursor.sequence!=sequence || (sequence==1)!=intent.previous_digest.IsNull() || r.Take(41)!=Profile())Fail();
     intent.outbox_origin=r.Cursor();if((intent.outbox_origin.sequence==0)!=intent.outbox_origin.digest.IsNull())Fail();
@@ -113,7 +120,9 @@ RuntimeReorgIntent Decode(const std::string& bytes,uint64_t sequence) {
     };
     for(size_t i=0;i<old_count;++i)read(old_blocks);for(size_t i=0;i<new_count;++i)read(new_blocks);
     if(!r.s.empty())Fail();intent.plan=std::make_shared<const RuntimeReorgPlan>(RuntimeReorgPlan{std::move(old_blocks),std::move(new_blocks)});
-    CheckPlan(*intent.plan);intent.cursor.digest=Digest(std::string_view(bytes).substr(0,bytes.size()-32));return intent;
+    const bool mixed=CheckPlan(*intent.plan);
+    if((version=="DNRI01")!=mixed || (!mixed && !intent.outbox_origin.sequence))Fail();
+    intent.cursor.digest=Digest(std::string_view(bytes).substr(0,bytes.size()-32));return intent;
 }
 RuntimeReorgIntent Record(const ChainDB& db,uint64_t sequence) {
     const auto raw=Get(db,Key(sequence));if(!raw)Fail();
@@ -128,13 +137,38 @@ RuntimeOutboxCursor Head(const ChainDB& db) {
 }
 } // namespace
 RuntimeOutboxCursor PersistRuntimeReorgIntentUnderLock(ChainDB& db,const ChainWriteToken& token,const RuntimeReorgPlan& plan) {
-    CheckPlan(plan);const auto tip=db.getTip();
+    const bool mixed=CheckPlan(plan);const auto tip=db.getTip();
     if(!tip.ok())Fail(tip.status());
     if(tip->height!=int32_t(plan.disconnect.front().height) || tip->hash!=plan.disconnect.front().hash)Fail();
     const auto head=Head(db);if(head.sequence==UINT64_MAX)Fail(Status::Invalid);
     const auto c=consensus::SelectedOrchardBlockContext(BlockHeader{},Params().orchard_activation_height);if(!c)Fail(Status::Invalid);
-    RuntimeReorgIntent intent{{head.sequence+1,{}},head.digest,ReadRuntimeOutboxUnderLock(db,*c,{},1).head,
-        std::make_shared<const RuntimeReorgPlan>(plan)};
+    const auto source=ReadRuntimeOutboxUnderLock(db,*c,{},1);
+    if(!mixed) {
+        const auto binding=storage::ReadOrchardCompactStorageBinding(db);
+        const auto validated=db.getValidatedTip();
+        if(!binding || !validated.ok() || validated->hash!=tip->hash || validated->height!=tip->height ||
+            !source.head.sequence || source.events.size()!=1 || source.events.front().cursor.sequence!=1 ||
+            source.events.front().direction!=RuntimeBlockDirection::Connect ||
+            source.events.front().context.height!=c->activation_height || !source.events.front().orchard_replay)Fail(Status::Invalid);
+        const auto end=ReadRuntimeOutboxUnderLock(db,*c,source.head,1);
+        if(end.head!=source.head || end.next!=source.head || !end.events.empty() || !end.after_tip ||
+            end.after_tip->first!=tip->hash || end.after_tip->second!=uint32_t(tip->height))Fail();
+        if(uint64_t(tip->height)+1<c->activation_height) {
+            const auto encoded=db.getHistoricalCompactCatalogState(tip->hash);if(!encoded.ok())Fail(encoded.status());
+            const auto state=storage::catalog::HistoricalState::Decode(*encoded);
+            storage::CheckHistoricalCompactSelection(db,state);
+        } else {
+            if(uint64_t(tip->height)+1!=c->activation_height)Fail(Status::Invalid);
+            const auto encoded=db.getOrchardCatalogState(tip->hash);if(!encoded.ok())Fail(encoded.status());
+            const auto state=storage::catalog::State::Decode(*encoded);uint256 genesis;
+            std::copy(c->domain.genesis_wire.begin(),c->domain.genesis_wire.end(),genesis.begin());
+            if(state.block!=tip->hash || state.height!=uint32_t(tip->height) || state.work!=tip->work ||
+                state.network!=c->domain.network_code || state.genesis!=genesis || state.branch!=c->domain.branch_id ||
+                state.activation!=c->activation_height || storage::EncodeOrchardCompactStorageBinding(state)!=*binding ||
+                db.getOrchardState().status()!=Status::NotFound || !db.getLegacyRetirementState().ok())Fail();
+        }
+    }
+    RuntimeReorgIntent intent{{head.sequence+1,{}},head.digest,source.head,std::make_shared<const RuntimeReorgPlan>(plan)};
     const auto bytes=Encode(intent);intent.cursor.digest=Digest(std::string_view(bytes).substr(0,bytes.size()-32));
     std::string marker="DNRH01";Number(marker,intent.cursor.sequence,8);Hash(marker,intent.cursor.digest);Seal(marker);
     rocksdb::WriteBatch batch;batch.Put(Key(intent.cursor.sequence),bytes);batch.Put(head_key,marker);

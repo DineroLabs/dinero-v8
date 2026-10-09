@@ -993,29 +993,7 @@ din::Json rpc_context_wallet_snapshot(const ExecutionContext& ctx, const din::Js
         sync_obj["error"] = std::string("Failed to build sync snapshot: ") + e.what();
     }
 
-    din::Json proof_context;
-    std::string tip_hash;
-    if (ctx.daemon->chainstate) {
-        tip_hash = ctx.daemon->chainstate->getBestBlockHash();
-        proof_context["tip_height"] = static_cast<Json::UInt64>(ctx.daemon->chainstate->getBlockHeight());
-    } else {
-        proof_context["tip_height"] = static_cast<Json::UInt64>(0);
-    }
-    proof_context["tip_hash"] = tip_hash;
-
-    din::Json commitment_result = din::rpc_getutreexocommitment(ctx, din::arr());
-    if (!commitment_result.isMember("error") &&
-        commitment_result.isMember("commitment") &&
-        commitment_result["commitment"].isString()) {
-        proof_context["utreexo_root"] = commitment_result["commitment"].asString();
-    } else {
-        proof_context["utreexo_root"] = "";
-    }
-    proof_context["available"] =
-        proof_context["tip_hash"].isString() &&
-        !proof_context["tip_hash"].asString().empty() &&
-        proof_context["utreexo_root"].isString() &&
-        !proof_context["utreexo_root"].asString().empty();
+    const auto proof_context = din::BuildUtreexoProofContext(ctx);
 
     din::Json balances;
     balances["confirmed"] = 0.0;
@@ -1878,11 +1856,6 @@ din::Json rpc_context_wallet_listunspent(const ExecutionContext& ctx, const din:
         return result;
     }
 
-    if (!wallet_service->hasActiveWallet()) {
-        result["error"] = "No active wallet";
-        return result;
-    }
-
     try {
         int min_conf = 1;
         int max_conf = 9999999;
@@ -1894,23 +1867,45 @@ din::Json rpc_context_wallet_listunspent(const ExecutionContext& ctx, const din:
             max_conf = params[1].as<int>();
         }
 
-        const dinero::Mempool* mempool = nullptr;
-        if (ctx.daemon->mempool) {
-            if (auto mempool_service = std::dynamic_pointer_cast<dinero::MempoolService>(ctx.daemon->mempool);
-                mempool_service && mempool_service->isInitialized()) {
-                mempool = &mempool_service->mempool();
-            }
+        // Retain each service through result construction. These owners pin
+        // lifetimes; they do not certify a canonical or complete wallet view.
+        auto wallet_use = dinero::WalletService::AcquireWalletUse(wallet_service);
+        auto& mgr = wallet_use->Wallet();
+        uint64_t session = 0;
+        std::string wallet_name;
+        {
+            auto lease = mgr.AcquireDatabaseLease();
+            session = lease->Session();
+            wallet_name = lease->WalletName();
+            if (wallet_name.empty() || (!ctx.walletName.empty() && ctx.walletName != wallet_name))
+                throw std::runtime_error("Wallet request selection changed");
         }
-
-        auto& mgr = wallet_service->get();
-
-        // Sync gate: wait for wallet worker to catch up to chain tip.
-        if (ctx.daemon->chainstate) {
-            auto cs = std::dynamic_pointer_cast<dinero::ChainstateService>(ctx.daemon->chainstate);
-            if (cs) {
-                mgr.WaitForHeight(cs->getBlockHeight(), std::chrono::milliseconds(5000));
-            }
+        auto chainstate = std::dynamic_pointer_cast<dinero::ChainstateService>(ctx.daemon->chainstate);
+        if (ctx.daemon->chainstate && !chainstate)
+            throw std::runtime_error("Wallet chainstate owner unavailable");
+        auto index_use = chainstate
+            ? dinero::ChainstateService::AcquireWalletIndexUse(chainstate) : nullptr;
+        std::unique_ptr<dinero::MempoolService::PoolUse> pool_use;
+        uint32_t target_height = 0;
+        if (chainstate) {
+            auto selected = chainstate->AcquireBlockIngressActivationLock();
+            target_height = chainstate->getBlockHeight();
+            if (ctx.daemon->mempool)
+                pool_use = dinero::MempoolService::AcquirePoolUse(
+                    std::dynamic_pointer_cast<dinero::MempoolService>(ctx.daemon->mempool));
+        } else if (ctx.daemon->mempool) {
+            throw std::runtime_error("Wallet pool requires a selected-chain owner");
         }
+        // The worker must be able to acquire wallet/chain locks while catching
+        // up. Recheck the selected wallet after this existing bounded wait.
+        if (chainstate)
+            mgr.WaitForHeight(target_height, std::chrono::milliseconds(5000));
+        auto lease = mgr.AcquireDatabaseLease();
+        if (lease->Session() != session || lease->WalletName() != wallet_name)
+            throw std::runtime_error("Wallet request selection changed");
+        if (mgr.getUTXOIndex() && (!index_use || mgr.getUTXOIndex() != &index_use->Index()))
+            throw std::runtime_error("Wallet index owner does not match selected wallet");
+        const dinero::Mempool* mempool = pool_use ? &pool_use->Pool() : nullptr;
 
         auto utxos = mgr.listUnspentUTXOs(min_conf, max_conf, mempool);
         din::Json utxo_array = din::arr();
@@ -1931,7 +1926,7 @@ din::Json rpc_context_wallet_listunspent(const ExecutionContext& ctx, const din:
             utxo_obj["confirmations"] = utxo.confirmations;
             utxo_obj["spendable"] = spendable;
             utxo_obj["solvable"] = solvable;
-            utxo_obj["safe"] = (utxo.confirmations > 0) && solvable;  // Confirmed + signable = safe
+            utxo_obj["safe"] = (utxo.confirmations > 0) && solvable;  // Existing recognition policy; not a readiness certificate
             utxo_obj["is_coinbase"] = utxo.is_coinbase;
             utxo_obj["is_mature"] = utxo.is_mature;
             utxo_obj["locked"] = locked;
@@ -3240,7 +3235,8 @@ din::Json rpc_context_wallet_sendtoaddress(const ExecutionContext& ctx, const di
  */
 static din::Json SendManyWithWalletOwner(const ExecutionContext& ctx, const din::Json& params,
     const std::shared_ptr<dinero::WalletService>& required_service,
-    const dinero::WalletSigningIdentity* required_identity) {
+    const dinero::WalletSigningIdentity* required_identity,
+    dinero::WalletRequestDispatchMode dispatch_mode = dinero::WalletRequestDispatchMode::Submit) {
     din::Json result;
     if (RefuseIfSafeMode(ctx, result)) return result;  // spec Fatal §3
 
@@ -3271,10 +3267,19 @@ static din::Json SendManyWithWalletOwner(const ExecutionContext& ctx, const din:
         const auto wallet_use=dinero::WalletService::AcquireWalletUse(wallet_service);
         if(wallet_use->Wallet().isWalletLocked())
             throw std::runtime_error("Wallet is locked. Use wallet.unlock first.");
-        const auto signing_identity=dinero::CaptureWalletSigningIdentity(wallet_use->Wallet(),ctx.walletName);
+        auto signing_identity=dinero::CaptureWalletSigningIdentity(wallet_use->Wallet(),ctx.walletName);
         if(required_identity && (required_identity->session==0 || required_identity->name.empty() ||
             signing_identity.name!=required_identity->name || signing_identity.session!=required_identity->session))
             throw std::runtime_error("Bound payment selected wallet session changed");
+        if(required_identity) {
+            signing_identity.database_id=required_identity->database_id;
+            if(signing_identity.database_id) {
+                auto lease=wallet_use->Wallet().AcquireDatabaseLease();
+                if(lease->Session()!=signing_identity.session || lease->WalletName()!=signing_identity.name ||
+                   lease->ReadDeliveryIdentity()!=*signing_identity.database_id)
+                    throw std::runtime_error("Bound payment payer database changed");
+            }
+        }
         din::Json recipients_obj = requested ? din::Json() : params[0];
         double fee_rate = 1.0;
         std::optional<dinero::PendingPaymentRequest> request_binding;
@@ -3298,13 +3303,22 @@ static din::Json SendManyWithWalletOwner(const ExecutionContext& ctx, const din:
             if(binding.isMember("pool_origins"))request_fields.push_back("pool_origins");
             fields(binding,request_fields);
             if(!binding["domain"].isString() ||
-               (binding["domain"].asString()!="vault_withdrawal" && binding["domain"].asString()!="pool_payout") ||
+               (binding["domain"].asString()!="vault_withdrawal" && binding["domain"].asString()!="pool_payout" &&
+                binding["domain"].asString()!="swap_funding") ||
                !binding["owner"].isString() || !binding["id"].isString() || !binding["audit_context"].isString())
                 throw std::runtime_error("Payment request domain or identity type invalid");
             dinero::PendingPaymentRequest request;
-            request.domain=binding["domain"].asString()=="pool_payout"
-                ? dinero::PendingPaymentRequestDomain::PoolPayout
-                : dinero::PendingPaymentRequestDomain::VaultWithdrawal;
+            request.domain=binding["domain"].asString()=="swap_funding"
+                ? dinero::PendingPaymentRequestDomain::SwapFunding
+                : binding["domain"].asString()=="pool_payout"
+                    ? dinero::PendingPaymentRequestDomain::PoolPayout
+                    : dinero::PendingPaymentRequestDomain::VaultWithdrawal;
+            // A generic selected-wallet send cannot act as the swap adapter.
+            // The caller must retain and supply the intended live wallet owner;
+            // durable swap enrollment remains the adapter's responsibility.
+            if(request.domain==dinero::PendingPaymentRequestDomain::SwapFunding &&
+               (!required_identity || !required_identity->database_id))
+                throw std::runtime_error("Swap funding requires bound wallet dispatch");
             std::vector<uint8_t> owner,id;
             const auto owner_hex=binding["owner"].asString(),id_hex=binding["id"].asString();
             if(owner_hex.size()!=64 || id_hex.size()!=32 || !util::unhex(owner_hex,owner) || !util::unhex(id_hex,id) || owner.size()!=32 || id.size()!=16)
@@ -3327,6 +3341,9 @@ static din::Json SendManyWithWalletOwner(const ExecutionContext& ctx, const din:
                 }
             }
             fee_rate=static_cast<double>(request.fee_rate_hint ? request.fee_rate_hint : 1);
+            if(dispatch_mode==dinero::WalletRequestDispatchMode::RetainOnly &&
+               request.domain!=dinero::PendingPaymentRequestDomain::SwapFunding)
+                throw std::runtime_error("Retain-only dispatch requires a bound swap funding request");
             request_binding=std::move(request);
             if(!params["recipients"].isArray() || params["recipients"].empty() || params["recipients"].size()>4096)
                 throw std::runtime_error("Payment recipient list invalid");
@@ -3623,6 +3640,14 @@ static din::Json SendManyWithWalletOwner(const ExecutionContext& ctx, const din:
         const std::string txid = build_result.transaction.GetTxid().AsUint256().GetHex();
         result["txid"] = txid;
         result["payment_retained"] = true;
+        if(dispatch_mode==dinero::WalletRequestDispatchMode::RetainOnly) {
+            result["hex"]=util::hex(build_result.transaction.Serialize(dinero::TxSerializationMode::WithWitness));
+            result["submitted_this_call"]=false;result["submission_status"]="not_attempted";
+            result["status"]="retained_request";
+            result["total_amount_una"]=static_cast<din::Json::UInt64>(total_amount);
+            result["fee_paid_una"]=static_cast<din::Json::UInt64>(retained.signed_tx.fee);
+            return result;
+        }
         if(intent.request) {
             result["submitted_this_call"]=true;
             result["submission_status"]="outcome_unknown";
@@ -3665,8 +3690,8 @@ din::Json rpc_context_wallet_sendmany(const ExecutionContext& ctx,const din::Jso
 }
 
 din::Json dinero::DispatchBoundWalletRequest(const ExecutionContext& ctx,const din::Json& params,
-    const std::shared_ptr<WalletService>& service,const WalletSigningIdentity& identity) {
-    return SendManyWithWalletOwner(ctx,params,service,&identity);
+    const std::shared_ptr<WalletService>& service,const WalletSigningIdentity& identity, WalletRequestDispatchMode mode) {
+    return SendManyWithWalletOwner(ctx,params,service,&identity,mode);
 }
 
 /**
@@ -3689,7 +3714,7 @@ din::Json rpc_context_wallet_utxoproof(const ExecutionContext& ctx, const din::J
     }
 
     auto chainstate_service = std::dynamic_pointer_cast<dinero::ChainstateService>(ctx.daemon->chainstate);
-    if (!chainstate_service || !chainstate_service->utxoIndex()) {
+    if (!chainstate_service) {
         result["error"] = "UTXO index not available";
         return result;
     }
@@ -3704,25 +3729,22 @@ din::Json rpc_context_wallet_utxoproof(const ExecutionContext& ctx, const din::J
             return result;
         }
         (void)consumed;
-
-        // Get UTXO from index
-        auto utxo = chainstate_service->utxoIndex()->GetUTXO(dinero::TxId(uint256::FromHexUnsafe(txid)), vout);  // Phase M.4: GetUTXO takes TxId
-        if (!utxo.has_value()) {
-            result["error"] = "UTXO not found: " + txid + ":" + std::to_string(vout);
+        if (txid.size() != 64 || txid.find_first_not_of("0123456789abcdefABCDEF") != std::string::npos) {
+            result["error"] = "Invalid txid: expected 32-byte hexadecimal value";
             return result;
         }
 
-        // Get current chain height to compute confirmations
-        int current_height = chainstate_service->getBlockHeight();
-        int confirmations = (current_height >= utxo->height) ? (current_height - utxo->height + 1) : 0;
-
-        result["txid"] = txid;
-        result["vout"] = static_cast<int>(vout);
-        result["amount"] = static_cast<double>(utxo->value.GetUna()) / 1e8;
-        result["height"] = utxo->height;
-        result["confirmations"] = confirmations;
-        result["is_coinbase"] = utxo->is_coinbase;
-        result["tip_height"] = current_height;
+        // The index is a recognition check only. Its metadata is not the
+        // authority for a proof. Release index use before selected capture.
+        {
+            const auto index_use = dinero::ChainstateService::AcquireWalletIndexUse(chainstate_service);
+            const auto utxo = index_use->Index().GetUTXO(
+                dinero::TxId(uint256::FromHexUnsafe(txid)), vout);
+            if (!utxo) {
+                result["error"] = "UTXO not found: " + txid + ":" + std::to_string(vout);
+                return result;
+            }
+        }
 
         // Delegate to canonical proof generation path.
         din::Json proof_params = din::arr();
@@ -3733,27 +3755,20 @@ din::Json rpc_context_wallet_utxoproof(const ExecutionContext& ctx, const din::J
             result["error"] = "Failed to generate UTXO proof: " + ExtractRpcErrorMessage(proof_result);
             return result;
         }
+        const auto current_height = proof_result["height"].asUInt64();
+        const auto created_height = proof_result["created_height"].asUInt64();
+        result["txid"] = txid;
+        result["vout"] = vout;
+        result["amount_una"] = proof_result["amount_una"];
+        result["amount"] = static_cast<double>(proof_result["amount_una"].asInt64()) / 1e8;
+        result["height"] = proof_result["created_height"];
+        result["confirmations"] = static_cast<Json::UInt64>(
+            current_height >= created_height ? current_height - created_height + 1 : 0);
+        result["is_coinbase"] = proof_result["coinbase"];
+        result["tip_height"] = proof_result["height"];
         result["utreexo_proof"] = proof_result;
-
-        // Bind proof bundle to current chain context for optional strict verification.
-        din::Json commitment_params = din::arr();
-        din::Json commitment_result = din::rpc_getutreexocommitment(ctx, commitment_params);
-        if (commitment_result.isMember("error")) {
-            result["error"] = "Failed to bind proof context: " + ExtractRpcErrorMessage(commitment_result);
-            return result;
-        }
-        if (!commitment_result.isMember("commitment") || !commitment_result["commitment"].isString()) {
-            result["error"] = "Failed to bind proof context: missing commitment";
-            return result;
-        }
-        result["utreexo_root"] = commitment_result["commitment"].asString();
-
-        std::string tip_hash = chainstate_service->getBestBlockHash();
-        if (tip_hash.empty()) {
-            result["error"] = "Failed to bind proof context: missing active tip hash";
-            return result;
-        }
-        result["tip_hash"] = tip_hash;
+        result["utreexo_root"] = proof_result["accumulator_root"];
+        result["tip_hash"] = proof_result["block_hash"];
 
         if (ctx.logger) {
             ctx.logger->debug("[wallet.utxoproof] Generated proof for " + txid + ":" + std::to_string(vout) +
@@ -3762,6 +3777,7 @@ din::Json rpc_context_wallet_utxoproof(const ExecutionContext& ctx, const din::J
         }
 
     } catch (const std::exception& e) {
+        result = din::obj();
         result["error"] = std::string("Failed to get UTXO proof: ") + e.what();
     }
 
@@ -3821,12 +3837,6 @@ din::Json rpc_context_wallet_getproofbundle(const ExecutionContext& ctx, const d
         return result;
     }
 
-    auto* forest = chainstate_service->utreexoForest();
-    if (!forest) {
-        result["error"] = "Utreexo forest not available";
-        return result;
-    }
-
     // Parse options
     int min_confirmations = 1;
     bool spendable_only = true;
@@ -3846,8 +3856,18 @@ din::Json rpc_context_wallet_getproofbundle(const ExecutionContext& ctx, const d
     }
 
     try {
-        auto& mgr = wallet_service->get();
-        auto utxos = mgr.listUnspentUTXOs(min_confirmations, 9999999);
+        auto wallet_use = dinero::WalletService::AcquireWalletUse(wallet_service);
+        auto& mgr = wallet_use->Wallet();
+        uint64_t wallet_session;
+        std::vector<dinero::WalletManager::WalletUTXO> utxos;
+        {
+            // listUnspentUTXOs consults the wallet index; pin its service owner
+            // before taking wallet database locks, then release both before capture.
+            const auto index_use = dinero::ChainstateService::AcquireWalletIndexUse(chainstate_service);
+            auto lease = mgr.AcquireDatabaseLease(); wallet_session = lease->Session();
+            utxos = mgr.listUnspentUTXOs(min_confirmations, 9999999);
+        } // Release wallet locks before selected-chain capture.
+
 
         if (spendable_only) {
             utxos.erase(
@@ -3874,129 +3894,40 @@ din::Json rpc_context_wallet_getproofbundle(const ExecutionContext& ctx, const d
         din::Json batch_params = din::arr();
         batch_params.append(proof_input);
 
-        // The individual UTXO proofs and the stump (accumulator root + num_leaves)
-        // must describe ONE Utreexo forest state, or a light client rejects the
-        // bundle with "proof leaf count mismatch" (it requires every proof's
-        // num_leaves == stump_num_leaves, since a proof only verifies against the
-        // stump of the same forest size). Proof generation and the stump snapshot
-        // are separate forest reads, so a block connecting on the sync thread in
-        // between grows the forest and makes them diverge. Rather than hold a
-        // consensus lock from this RPC thread (deadlock risk), assemble
-        // optimistically and bracket the work with a forest-commitment read before
-        // and after: getCommitment() reflects additions AND deletions (num_leaves
-        // alone misses spends), so an unchanged commitment proves the whole bundle
-        // came from one consistent state. If a block landed mid-assembly, retry.
-        // Fails safe: on exhaustion return a transient error the client already
-        // handles via seed failover/retry — never an internally inconsistent bundle.
-        constexpr int kMaxAttempts = 4;
-        bool consistent = false;
-        std::string root_hex;
-
-        for (int attempt = 0; attempt < kMaxAttempts && !consistent; ++attempt) {
-            // Atomic guarded read; the before/after comparison intentionally
-            // reads the LIVE forest at two moments (audit: forest UAF).
-            const auto commitment_before = chainstate_service->GetConsensusUTXOSet()->SnapshotForestCommitment();
-
-            din::Json batch_result = din::rpc_getutxoproofs_batch(ctx, batch_params);
-            if (batch_result.isMember("error")) {
-                result["error"] = "Proof generation failed: " + ExtractRpcErrorMessage(batch_result);
-                return result;
+        const auto batch = din::rpc_getutxoproofs_batch(ctx, batch_params);
+        if (batch.isMember("error")) {
+            result["error"] = "Proof generation failed: " + ExtractRpcErrorMessage(batch); return result;
+        }
+        // All coin metadata comes from the same canonical capture as the proof.
+        // The wallet row selected an outpoint; it is not a source of proof fields.
+        din::Json proofs = din::arr(); size_t successful = 0;
+        for (const auto& item : batch["proofs"]) {
+            din::Json entry;
+            for (const auto* key : {"txid", "vout", "success", "error_code", "error"})
+                if (item.isMember(key)) entry[key] = item[key];
+            if (item["success"].asBool()) {
+                const auto& proof = item["proof"];
+                for (const auto* key : {"leaf_hash", "position", "num_leaves", "siblings",
+                        "script_pubkey", "created_height", "coinbase", "amount_una"}) entry[key] = proof[key];
+                entry["amount_unas"] = proof["amount_una"];
+                ++successful;
             }
-
-            din::Json attempt_result;
-            // Bind to the exact compact accumulator context used by the proofs.
-            {
-                // Structural read of the live forest — hold the shared lock (audit: forest UAF).
-                auto forest_lock = chainstate_service->GetConsensusUTXOSet()->LockForestShared();
-                AppendWalletProofRootsSnapshot(attempt_result, *forest);
-            }
-            const uint64_t stump_num_leaves = attempt_result["stump_num_leaves"].asUInt64();
-
-            // commitment_after must be the LAST forest read so the whole window
-            // (proof gen + stump snapshot) is provably inside the unchanged span.
-            const auto commitment_after = chainstate_service->GetConsensusUTXOSet()->SnapshotForestCommitment();
-            root_hex = BytesToHex(commitment_after);
-            if (commitment_before != commitment_after) {
-                continue;  // a block connected mid-assembly; re-assemble
-            }
-
-            attempt_result["accumulator_root"] = root_hex;
-            attempt_result["block_hash"] = chainstate_service->getBestBlockHash();
-            attempt_result["height"] = chainstate_service->getBlockHeight();
-            attempt_result["truncated"] = truncated;
-
-            // Transform batch result into proof bundle format
-            din::Json proofs_out = din::arr();
-            std::vector<uint64_t> proof_num_leaves;
-            size_t success_count = 0;
-
-            if (batch_result.isMember("proofs") && batch_result["proofs"].isArray()) {
-                for (const auto& p : batch_result["proofs"]) {
-                    din::Json entry;
-                    entry["txid"] = p.isMember("txid") ? p["txid"].asString() : "";
-                    entry["vout"] = p.isMember("vout") ? p["vout"].asUInt() : 0;
-
-                    bool ok = p.isMember("success") && p["success"].isBool() && p["success"].asBool();
-                    entry["success"] = ok;
-
-                    if (ok && p.isMember("proof") && p["proof"].isObject()) {
-                        const auto& proof = p["proof"];
-                        if (proof.isMember("leaf_hash")) entry["leaf_hash"] = proof["leaf_hash"];
-                        if (proof.isMember("position")) entry["position"] = proof["position"];
-                        if (proof.isMember("num_leaves")) {
-                            entry["num_leaves"] = proof["num_leaves"];
-                            proof_num_leaves.push_back(proof["num_leaves"].asUInt64());
-                        }
-                        if (proof.isMember("siblings")) entry["siblings"] = proof["siblings"];
-                        success_count++;
-                    }
-
-                    // Include amount for client-side balance verification
-                    for (const auto& utxo : utxos) {
-                        if (utxo.txid == entry["txid"].asString() &&
-                            utxo.vout == entry["vout"].asUInt()) {
-                            entry["amount_una"] = static_cast<int64_t>(utxo.amount_una);
-                            entry["amount_unas"] = static_cast<int64_t>(utxo.amount_una);
-                            entry["script_pubkey"] = utxo.script_pubkey;
-                            entry["created_height"] = static_cast<uint64_t>(utxo.height);
-                            entry["coinbase"] = utxo.is_coinbase;
-                            break;
-                        }
-                    }
-
-                    proofs_out.append(entry);
-                }
-            }
-
-            // Defense in depth: the commitment gate above already guarantees this,
-            // but assert the exact invariant the client validates before emitting.
-            if (!dinero::rpc::ProofBundleLeafCountsConsistent(proof_num_leaves, stump_num_leaves)) {
-                continue;
-            }
-
-            attempt_result["proofs"] = proofs_out;
-            attempt_result["utxo_count"] = static_cast<int>(success_count);
-
-            result = std::move(attempt_result);
-            consistent = true;
-
-            if (ctx.logger) {
-                ctx.logger->info("[wallet.getproofbundle] Generated " +
-                                 std::to_string(success_count) + "/" +
-                                 std::to_string(utxos.size()) +
-                                 " proofs, root=" + root_hex.substr(0, 16) + "...");
+            proofs.append(entry);
+        }
+        {
+            auto lease = mgr.AcquireDatabaseLease();
+            if (lease->Session() != wallet_session) {
+                result["error"] = "Wallet changed during proof generation"; result["retryable"] = true; return result;
             }
         }
-
-        if (!consistent) {
-            result = din::Json();
-            result["error"] = "Proof bundle could not be assembled from a stable "
-                              "forest state (blocks connecting); please retry";
-            result["retryable"] = true;
-            return result;
-        }
+        result["accumulator_root"] = batch["utreexo_root"];
+        for (const auto* key : {"height", "block_hash", "stump_num_leaves", "stump_roots",
+                                "num_leaves", "num_roots", "roots"}) result[key] = batch[key];
+        result["proofs"] = proofs; result["truncated"] = truncated;
+        result["utxo_count"] = static_cast<Json::UInt64>(successful);
 
     } catch (const std::exception& e) {
+        result = din::Json();
         result["error"] = std::string("Failed to generate proof bundle: ") + e.what();
     }
 
@@ -4023,42 +3954,34 @@ din::Json rpc_context_wallet_getproofbundle(const ExecutionContext& ctx, const d
  */
 din::Json rpc_context_wallet_proofstatus(const ExecutionContext& ctx, const din::Json& params) {
     din::Json result;
-
-    if (params.empty() || !params[0].isString()) {
-        result["error"] = "Usage: wallet.proofstatus <accumulator_root_hex>";
+    std::vector<unsigned char> client_root;
+    if (!params.isArray() || params.size()!=1 || !params[0].isString() ||
+        params[0].asString().size()!=64 ||
+        ![](const std::string& hex) {
+            return std::all_of(hex.begin(),hex.end(),[](unsigned char c) {
+                return (c>='0' && c<='9') || (c>='a' && c<='f') || (c>='A' && c<='F');
+            });
+        }(params[0].asString()) || !util::unhex(params[0].asString(),client_root) ||
+        client_root.size()!=32) {
+        result["error"] = "Usage: wallet.proofstatus <32-byte accumulator_root_hex>";
         return result;
     }
-
-    if (!ctx.daemon || !ctx.daemon->chainstate) {
+    const auto service=ctx.daemon
+        ?std::dynamic_pointer_cast<dinero::ChainstateService>(ctx.daemon->chainstate):nullptr;
+    if (!service) {
         result["error"] = "Chainstate service not available";
         return result;
     }
-
-    auto chainstate_service = std::dynamic_pointer_cast<dinero::ChainstateService>(ctx.daemon->chainstate);
-    if (!chainstate_service) {
-        result["error"] = "Failed to cast chainstate service";
+    const auto snapshot=service->getUtreexoRpcSnapshot();
+    if (!snapshot.ok()) {
+        result["error"] = "Selected accumulator snapshot unavailable";
         return result;
     }
-
-    try {
-        std::string client_root = params[0].asString();
-
-        din::Json commitment_result = din::rpc_getutreexocommitment(ctx, din::arr());
-        std::string current_root;
-        if (commitment_result.isMember("commitment") && commitment_result["commitment"].isString()) {
-            current_root = commitment_result["commitment"].asString();
-        }
-
-        result["stale"] = (client_root != current_root);
-        result["client_root"] = client_root;
-        result["current_root"] = current_root;
-        result["current_height"] = chainstate_service->getBlockHeight();
-        result["current_block_hash"] = chainstate_service->getBestBlockHash();
-
-    } catch (const std::exception& e) {
-        result["error"] = std::string("Failed to check proof status: ") + e.what();
-    }
-
+    result["stale"] = (client_root!=snapshot->commitment);
+    result["client_root"] = util::hex(client_root);
+    result["current_root"] = util::hex(snapshot->commitment);
+    result["current_height"] = snapshot->height;
+    result["current_block_hash"] = snapshot->block_hash.GetHex();
     return result;
 }
 
@@ -4244,15 +4167,10 @@ din::Json rpc_context_wallet_verifyutxoproof(const ExecutionContext& ctx, const 
         result["error_detail"] = first_result["error"];
     }
 
-    auto chainstate_service = std::dynamic_pointer_cast<dinero::ChainstateService>(ctx.daemon->chainstate);
-    std::string tip_hash;
-    if (chainstate_service) {
-        result["tip_height"] = chainstate_service->getBlockHeight();
-        tip_hash = chainstate_service->getBestBlockHash();
-        if (!tip_hash.empty()) {
-            result["tip_hash"] = tip_hash;
-        }
-    }
+    // Bind policy checks to the very observation that verified the proof.
+    const std::string tip_hash = verify_result["block_hash"].asString();
+    result["tip_height"] = verify_result["height"];
+    result["tip_hash"] = verify_result["block_hash"];
 
     if (enforce_bound_context || !expected_utreexo_root.empty() || !expected_tip_hash.empty()) {
         result["context_enforced"] = true;
@@ -4369,9 +4287,20 @@ din::Json rpc_context_wallet_validatestatelessbalance(const ExecutionContext& ct
         max_utxos = 1000;
     }
 
-    auto& mgr = wallet_service->get();
-    auto wallet_balance = mgr.getBalance();
-    auto utxos = mgr.listUnspentUTXOs(min_confirmations, max_confirmations);
+    try {
+    auto wallet_use = dinero::WalletService::AcquireWalletUse(wallet_service);
+    auto& mgr = wallet_use->Wallet();
+    uint64_t wallet_session;
+    std::string wallet_name;
+    dinero::WalletManager::Balance wallet_balance;
+    std::vector<dinero::WalletManager::WalletUTXO> utxos;
+    {
+        const auto index_use = dinero::ChainstateService::AcquireWalletIndexUse(chainstate_service);
+        auto lease = mgr.AcquireDatabaseLease();
+        wallet_session = lease->Session(); wallet_name = lease->WalletName();
+        wallet_balance = mgr.getBalance();
+        utxos = mgr.listUnspentUTXOs(min_confirmations, max_confirmations);
+    }
 
     if (spendable_only) {
         utxos.erase(
@@ -4394,7 +4323,9 @@ din::Json rpc_context_wallet_validatestatelessbalance(const ExecutionContext& ct
 
     uint64_t selected_una = 0;
     for (const auto& utxo : utxos) {
-        selected_una += utxo.amount_una;
+        if (utxo.amount_una < 0 || uint64_t(utxo.amount_una) > UINT64_MAX - selected_una)
+            throw std::runtime_error("Invalid selected wallet amount");
+        selected_una += uint64_t(utxo.amount_una);
     }
 
     din::Json proof_input = din::arr();
@@ -4415,6 +4346,8 @@ din::Json rpc_context_wallet_validatestatelessbalance(const ExecutionContext& ct
 
     std::unordered_map<std::string, std::string> generation_failures;
     std::unordered_map<std::string, bool> verify_valid;
+    std::unordered_map<std::string, uint64_t> canonical_amounts;
+    std::unordered_map<std::string, din::Json> canonical_metadata;
     std::unordered_map<std::string, std::string> verify_error_codes;
     din::Json verify_input = din::arr();
     size_t generated_count = 0;
@@ -4434,6 +4367,12 @@ din::Json rpc_context_wallet_validatestatelessbalance(const ExecutionContext& ct
                     verify_item["txid"] = txid;
                     verify_item["vout"] = vout;
                     verify_item["proof"] = p["proof"];
+                    if (!p["proof"]["amount_una"].isInt64() || p["proof"]["amount_una"].asInt64() < 0) {
+                        generation_failures[key] = "invalid-canonical-amount";
+                        continue;
+                    }
+                    canonical_amounts.emplace(key, uint64_t(p["proof"]["amount_una"].asInt64()));
+                    canonical_metadata.emplace(key, p["proof"]);
                     verify_input.append(verify_item);
                     generated_count++;
                 } else {
@@ -4450,7 +4389,7 @@ din::Json rpc_context_wallet_validatestatelessbalance(const ExecutionContext& ct
     }
 
     din::Json verify_batch;
-    if (!verify_input.empty()) {
+    {
         din::Json verify_params = din::arr();
         verify_params.append(verify_input);
         verify_batch = din::rpc_verifyutxoproofs_batch(ctx, verify_params);
@@ -4481,6 +4420,7 @@ din::Json rpc_context_wallet_validatestatelessbalance(const ExecutionContext& ct
     }
 
     uint64_t verified_una = 0;
+    bool metadata_matches = true;
     size_t verified_valid_count = 0;
     size_t verified_invalid_count = 0;
     din::Json failure_entries = din::arr();
@@ -4504,8 +4444,19 @@ din::Json rpc_context_wallet_validatestatelessbalance(const ExecutionContext& ct
 
         auto valid_it = verify_valid.find(key);
         if (valid_it != verify_valid.end() && valid_it->second) {
+            const auto amount = canonical_amounts.find(key);
+            if (amount == canonical_amounts.end() || amount->second > UINT64_MAX - verified_una)
+                throw std::runtime_error("Canonical proof amount unavailable or overflowing");
+            const auto metadata = canonical_metadata.find(key);
+            if (metadata == canonical_metadata.end())
+                throw std::runtime_error("Canonical proof metadata unavailable");
+            const auto& proved = metadata->second;
+            metadata_matches = metadata_matches && amount->second == uint64_t(utxo.amount_una) &&
+                proved["script_pubkey"].asString() == utxo.script_pubkey &&
+                proved["created_height"].asUInt64() == utxo.height &&
+                proved["coinbase"].asBool() == utxo.is_coinbase;
             verified_valid_count++;
-            verified_una += utxo.amount_una;
+            verified_una += amount->second;
         } else {
             verified_invalid_count++;
             if (include_details) {
@@ -4520,40 +4471,36 @@ din::Json rpc_context_wallet_validatestatelessbalance(const ExecutionContext& ct
         }
     }
 
-    std::string tip_hash = chainstate_service->getBestBlockHash();
-    uint32_t tip_height = static_cast<uint32_t>(chainstate_service->getBlockHeight());
-
-    std::string chain_root;
+    // Generation and verification are distinct observations. Accept the
+    // diagnostic comparison only when their complete selected tuples agree.
+    // A root alone does not identify the block, even for an unchanged forest.
+    const std::string proof_root = proof_batch["utreexo_root"].asString();
+    const std::string verify_root = verify_batch["utreexo_root"].asString();
+    const bool roots_match = !proof_root.empty() && proof_root == verify_root;
+    const bool context_match = roots_match &&
+        proof_batch["block_hash"] == verify_batch["block_hash"] &&
+        proof_batch["height"] == verify_batch["height"];
+    if (!context_match) {
+        result["error"] = "Selected chain changed during balance proof validation";
+        result["retryable"] = true;
+        return result;
+    }
+    const std::string tip_hash = verify_batch["block_hash"].asString();
+    const uint32_t tip_height = verify_batch["height"].asUInt();
+    const std::string chain_root = verify_root;
     {
-        din::Json commitment_params = din::arr();
-        din::Json commitment_result = din::rpc_getutreexocommitment(ctx, commitment_params);
-        if (!commitment_result.isMember("error") &&
-            commitment_result.isMember("commitment") &&
-            commitment_result["commitment"].isString()) {
-            chain_root = commitment_result["commitment"].asString();
+        auto lease = mgr.AcquireDatabaseLease();
+        if (lease->Session() != wallet_session) {
+            result["error"] = "Wallet changed during balance proof validation";
+            result["retryable"] = true;
+            return result;
         }
-    }
-
-    std::string proof_root;
-    if (proof_batch.isMember("utreexo_root") && proof_batch["utreexo_root"].isString()) {
-        proof_root = proof_batch["utreexo_root"].asString();
-    }
-
-    std::string verify_root;
-    if (verify_batch.isMember("utreexo_root") && verify_batch["utreexo_root"].isString()) {
-        verify_root = verify_batch["utreexo_root"].asString();
-    }
-
-    bool roots_match = true;
-    if (!chain_root.empty()) {
-        if (!proof_root.empty()) roots_match = roots_match && (proof_root == chain_root);
-        if (!verify_root.empty()) roots_match = roots_match && (verify_root == chain_root);
     }
 
     const uint64_t delta_una = (selected_una >= verified_una)
         ? (selected_una - verified_una)
         : (verified_una - selected_una);
-    const bool subset_consistent = (delta_una == 0 && verified_invalid_count == 0);
+    const bool subset_consistent = (delta_una == 0 && verified_invalid_count == 0 && metadata_matches);
 
     const uint64_t wallet_spendable_una = static_cast<uint64_t>(
         std::llround(wallet_balance.spendable * static_cast<double>(dinero::ConsensusSubsidy::UNA_PER_DIN)));
@@ -4571,8 +4518,9 @@ din::Json rpc_context_wallet_validatestatelessbalance(const ExecutionContext& ct
 
     const bool pilot_pass = subset_consistent && roots_match && (!full_wallet_scope || wallet_match);
 
-    result["wallet"] = wallet_service->getCurrentWalletName();
+    result["wallet"] = wallet_name;
     result["mode"] = "stateless-wallet-pilot";
+    result["scope"] = "selected-wallet-rows";
     result["pilot_pass"] = pilot_pass;
     result["tip_height"] = tip_height;
     result["tip_hash"] = tip_hash;
@@ -4589,6 +4537,7 @@ din::Json rpc_context_wallet_validatestatelessbalance(const ExecutionContext& ct
     result["summary"]["selected_utxos"] = static_cast<Json::UInt64>(selected_count);
     result["summary"]["truncated"] = truncated;
     result["summary"]["subset_consistent"] = subset_consistent;
+    result["summary"]["canonical_metadata_match"] = metadata_matches;
     result["summary"]["full_wallet_scope"] = full_wallet_scope;
     if (full_wallet_scope) {
         result["summary"]["wallet_spendable_match"] = wallet_match;
@@ -4619,6 +4568,7 @@ din::Json rpc_context_wallet_validatestatelessbalance(const ExecutionContext& ct
     result["balances"]["wallet_spendable_din"] = wallet_balance.spendable;
 
     result["context"]["root_match"] = roots_match;
+    result["context"]["selected_tuple_match"] = context_match;
     if (!proof_root.empty()) {
         result["context"]["proof_root"] = proof_root;
     }
@@ -4634,13 +4584,17 @@ din::Json rpc_context_wallet_validatestatelessbalance(const ExecutionContext& ct
     }
 
     if (ctx.logger) {
-        ctx.logger->info("[wallet.validatestatelessbalance] wallet=" + wallet_service->getCurrentWalletName() +
+        ctx.logger->info("[wallet.validatestatelessbalance] wallet=" + wallet_name +
                          " selected_utxos=" + std::to_string(selected_count) +
                          " valid=" + std::to_string(verified_valid_count) +
                          " invalid=" + std::to_string(verified_invalid_count) +
                          " pilot_pass=" + std::string(pilot_pass ? "true" : "false"));
     }
 
+    } catch (const std::exception& e) {
+        result = din::obj();
+        result["error"] = std::string("Balance proof validation failed: ") + e.what();
+    }
     return result;
 }
 
@@ -7913,6 +7867,8 @@ din::Json rpc_context_wallet_listpendingpayments(const ExecutionContext& ctx,con
                         binding["domain"]="vault_withdrawal";break;
                     case dinero::PendingPaymentRequestDomain::PoolPayout:
                         binding["domain"]="pool_payout";break;
+                    case dinero::PendingPaymentRequestDomain::SwapFunding:
+                        binding["domain"]="swap_funding";break;
                     default:throw std::runtime_error("Retained payment request domain invalid");
                 }
                 binding["owner"] = util::hex(std::vector<uint8_t>(request.owner.begin(), request.owner.end()));

@@ -6,8 +6,10 @@
 #include "daemon/orchard_network_block.h"
 #include "daemon/utreexo_tx_reader.h"
 #include "daemon/utreexo_tx_payload.h"
+#include "daemon/utreexo_block_payload.h"
 #include "consensus/csn_replay_data.h"
 #include "daemon/daemon_app.h"
+#include "storage/orchard_storage_mode.h"
 #include "daemon/runtime_delivery_worker.h"
 #include "daemon/runtime_notification_composition.h"
 #include "consensus/orchard_profile.h"
@@ -36,6 +38,7 @@
 #include "daemon/services/rpc_service.h"
 #include "daemon/services/mining_service.h"
 #include "daemon/services/metrics_service.h"
+#include "daemon/services/swap_service.h"
 #include "daemon/utreexo_proof_mode.h"
 #include "daemon/block_relay_manager.h"  // Phase G.2: Block propagation
 #include "daemon/tx_relay_manager.h"
@@ -1079,6 +1082,11 @@ bool DaemonApp::Init(int argc, char** argv) {
             std::cerr << "[DaemonApp] ❌ Failed to initialize ChainDB: " << StatusToString(status) << std::endl;
             return false;
         }
+        // Until the complete compact service composition is connected, refuse
+        // before offline undo repair, genesis initialization, header/height
+        // backfills or legacy recovery can mutate root-only storage. The
+        // separate ChainstateService compact initializer is not readiness.
+        storage::RequireFullOrchardStorage(*chain_db_);
         std::cout << "[DaemonApp] ✅ ChainDB constructed and initialized (ONE DB)" << std::endl;
     } catch (const std::exception& e) {
         std::cerr << "[DaemonApp] ❌ Exception constructing ChainDB: " << e.what() << std::endl;
@@ -2514,9 +2522,9 @@ bool DaemonApp::Init(int argc, char** argv) {
                 }
 
                 const bool csn_mode = GetConfig().utreexo_stateless;
-                const uint32_t inv_type = csn_mode
-                    ? static_cast<uint32_t>(dinero::InventoryType::MSG_UTREEXO_BLOCK)
-                    : static_cast<uint32_t>(dinero::InventoryType::MSG_BLOCK);
+                const auto request_type=SelectBlockRequestInventory(block_hash,csn_mode);
+                if (!request_type) return false;
+                const uint32_t inv_type=static_cast<uint32_t>(*request_type);
                 ::P2PMessage msg = ::P2PMessage::create_getdata_binary(
                     block_hash.begin(), 32, inv_type
                 );
@@ -2571,6 +2579,9 @@ bool DaemonApp::Init(int argc, char** argv) {
     auto metrics = std::make_shared<MetricsService>();
     ctx_.metrics = metrics;
     services_.push_back(metrics);
+
+    // DIN <-> BTC swaps: Init() leaves it fully inert unless swap.enable=1.
+    services_.push_back(std::make_shared<SwapService>());
 
     auto rpc = std::make_shared<RPCService>();
     ctx_.rpc = rpc;
@@ -2668,7 +2679,7 @@ bool DaemonApp::Init(int argc, char** argv) {
             const auto oracle_config=std::dynamic_pointer_cast<ConfigService>(ctx_.config);
             const bool legacy_oracles_enabled=!oracle_config || oracle_config->GetBool("lightning.oracles.enable",true);
 #ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
-            if (!GetConfig().utreexo_stateless && Params().orchard_activation_height!=UINT32_MAX && legacy_oracles_enabled) {
+            if (Params().orchard_activation_height!=UINT32_MAX && legacy_oracles_enabled) {
                 // A configured consumer remains configured even while disconnected.
                 // No typed adapters exist for these legacy IPC clients. Refuse
                 // before any socket probe, rather than declare failed clients absent.
@@ -2985,6 +2996,9 @@ bool DaemonApp::Init(int argc, char** argv) {
                             tx_relay->HandleInv(peer_addr, hash);
                         } else if (inv_type == 2 && block_relay) {
                             // MSG_BLOCK = 2
+                            if (p2p_service) {
+                                p2p_service->NoteBlockAnnouncement(peer_addr, hash);
+                            }
                             if (csn_mode_for_inv) {
                                 request_headers_refresh();
 
@@ -4853,159 +4867,35 @@ bool DaemonApp::Init(int argc, char** argv) {
                         const std::string& peer_addr,
                         const ::P2PMessage& msg
                     ) {
-                        const auto& payload = msg.payload;
-
-                        // ── Hardening: payload size bounds ──
-                        constexpr size_t MAX_UTXOBLK_SIZE  = 5 * 1024 * 1024;   // 5 MB total
-                        constexpr uint32_t MAX_BLOCK_BYTES = 4 * 1024 * 1024;   // 4 MB block
-                        constexpr uint32_t MAX_PROOF_BYTES = 1 * 1024 * 1024;   // 1 MB proof
-                        constexpr uint32_t MAX_TP_BYTES    = 512 * 1024;        // 512 KB transition proof
-
-                        // Minimum v2 utxoblk size: version(1) + hash(32) + height(4) + root_after(32)
-                        //                         + block_size(4) + proof_size(4) = 77 bytes minimum
-                        if (payload.size() < 77) {
-                            g_logger.error("[CSN] Invalid utxoblk: payload too small (" +
-                                          std::to_string(payload.size()) + " bytes)");
+                        auto decoded=DecodeUtreexoBlockPayload(msg.payload);
+                        if(!decoded) {
+                            g_logger.error("[CSN] Invalid utxoblk transport frame from " + peer_addr);
                             return;
                         }
-                        if (payload.size() > MAX_UTXOBLK_SIZE) {
-                            g_logger.error("[CSN] utxoblk rejected: payload " +
-                                          std::to_string(payload.size()) + " bytes exceeds " +
-                                          std::to_string(MAX_UTXOBLK_SIZE) + " byte limit");
+                        std::optional<Block> block_value;
+                        try { block_value=Block::Deserialize(decoded->block_bytes); }
+                        catch(const std::exception& e) {
+                            g_logger.error("[CSN] Failed to decode block body in utxoblk from " + peer_addr + ": " + e.what());
                             return;
                         }
-
-                        size_t pos = 0;
-
-                        // Version (1 byte)
-                        uint8_t version = payload[pos++];
-                        if (version < 2) {
-                            g_logger.error("[CSN] Unsupported utxoblk version " + std::to_string(version) +
-                                          " (expected >= 2)");
+                        if(!block_value || block_value->GetHash()!=decoded->hash) {
+                            g_logger.error("[CSN] Invalid block body in utxoblk from " + peer_addr);
                             return;
                         }
-
-                        // Block hash (32 bytes)
-                        uint256 block_hash;
-                        std::memcpy(block_hash.data, &payload[pos], 32);
-                        pos += 32;
-
-                        // Block height (4 bytes LE)
-                        uint32_t block_height = 0;
-                        std::memcpy(&block_height, &payload[pos], 4);
-                        pos += 4;
-
-                        // Accumulator root after (32 bytes)
-                        consensus::UtreexoHash root_after(32, 0);
-                        std::memcpy(root_after.data(), &payload[pos], 32);
-                        pos += 32;
-
-                        // Block size (4 bytes LE)
-                        if (pos + 4 > payload.size()) {
-                            g_logger.error("[CSN] Invalid utxoblk: truncated at block_size");
-                            return;
-                        }
-                        uint32_t block_size = 0;
-                        std::memcpy(&block_size, &payload[pos], 4);
-                        pos += 4;
-
-                        // Validate block_size (overflow-safe: subtract instead of add)
-                        if (block_size == 0 || block_size > MAX_BLOCK_BYTES ||
-                            block_size > payload.size() - pos) {
-                            g_logger.error("[CSN] Invalid utxoblk: block_size=" + std::to_string(block_size) +
-                                          " (max=" + std::to_string(MAX_BLOCK_BYTES) +
-                                          " remaining=" + std::to_string(payload.size() - pos) + ")");
-                            return;
-                        }
-
-                        // Deserialize block
-                        Block block;
-                        try {
-                            std::vector<uint8_t> block_bytes(payload.begin() + pos,
-                                                             payload.begin() + pos + block_size);
-                            auto block_opt = Block::Deserialize(block_bytes);
-                            if (!block_opt.has_value()) {
-                                g_logger.error("[CSN] Failed to deserialize block from utxoblk: Block::Deserialize returned null");
-                                return;
-                            }
-                            block = *block_opt;
-                        } catch (const std::exception& e) {
-                            g_logger.error("[CSN] Failed to deserialize block from utxoblk: " +
-                                          std::string(e.what()));
-                            return;
-                        }
-                        pos += block_size;
-
-                        // Verify block hash matches
-                        if (block.GetHash() != block_hash) {
-                            g_logger.error("[CSN] Block hash mismatch in utxoblk from " + peer_addr);
-                            return;
-                        }
-
-                        // Proof size (4 bytes LE)
-                        if (pos + 4 > payload.size()) {
-                            g_logger.error("[CSN] Invalid utxoblk: truncated at proof_size");
-                            return;
-                        }
-                        uint32_t proof_size = 0;
-                        std::memcpy(&proof_size, &payload[pos], 4);
-                        pos += 4;
-
+                        auto& block=*block_value;
+                        const auto& block_hash=decoded->hash;
+                        const auto block_height=decoded->height;
+                        const auto& root_after=decoded->root_after;
                         consensus::BlockUtreexoData proof_data;
-                        // v3 TP-only historical payloads intentionally carry an empty
-                        // batch-proof section and rely on the transition proof appended
-                        // later in the message. Older CSN parsers rejected proof_size=0
-                        // too early and never reached TP parsing.
-                        if (proof_size == 0) {
-                            if (version < 3) {
-                                g_logger.error("[CSN] Invalid utxoblk: proof_size=0 for legacy version");
-                                return;
-                            }
-                        } else {
-                            // Validate proof_size (overflow-safe: subtract instead of add)
-                            if (proof_size > MAX_PROOF_BYTES ||
-                                proof_size > payload.size() - pos) {
-                                g_logger.error("[CSN] Invalid utxoblk: proof_size=" + std::to_string(proof_size) +
-                                              " (max=" + std::to_string(MAX_PROOF_BYTES) +
-                                              " remaining=" + std::to_string(payload.size() - pos) + ")");
-                                return;
-                            }
-
-                            // Deserialize proof
-                            std::vector<uint8_t> proof_bytes(payload.begin() + pos,
-                                                             payload.begin() + pos + proof_size);
-                            try {
-                                proof_data = consensus::BlockUtreexoData::deserialize(proof_bytes);
-                            } catch (const std::exception& e) {
-                                g_logger.error("[CSN] Failed to deserialize utreexo proof from " +
-                                              peer_addr + ": " + std::string(e.what()));
-                                return;
-                            }
-
-                            pos += proof_size;
-                        }
-
-                        // v3: Parse transition proof (if present)
                         std::optional<consensus::UtreexoTransitionProof> transition_proof;
-                        if (version >= 3 && pos + 4 <= payload.size()) {
-                            uint32_t tp_size = 0;
-                            std::memcpy(&tp_size, &payload[pos], 4);
-                            pos += 4;
-                            if (tp_size > 0 && tp_size <= MAX_TP_BYTES &&
-                                tp_size <= payload.size() - pos) {
-                                try {
-                                    std::vector<uint8_t> tp_bytes(payload.begin() + pos,
-                                                                   payload.begin() + pos + tp_size);
-                                    transition_proof = consensus::UtreexoTransitionProof::deserialize(tp_bytes);
-                                    g_logger.debug("[CSN] Parsed transition proof (" +
-                                                  std::to_string(tp_size) + " bytes) for height " +
-                                                  std::to_string(block_height));
-                                } catch (const std::exception& e) {
-                                    g_logger.warning("[CSN] Failed to parse transition proof: " +
-                                                    std::string(e.what()) + " — falling back to batch proof");
-                                }
-                                pos += tp_size;
-                            }
+                        try {
+                            if(!decoded->batch_proof.empty())
+                                proof_data=consensus::BlockUtreexoData::deserialize(decoded->batch_proof);
+                            if(!decoded->transition_proof.empty())
+                                transition_proof=consensus::UtreexoTransitionProof::deserialize(decoded->transition_proof);
+                        } catch(const std::exception& e) {
+                            g_logger.error("[CSN] Failed to decode utxoblk proof from " + peer_addr + ": " + e.what());
+                            return;
                         }
 
                         // Build UtreexoProofMessage for StatelessNode validation API
@@ -5301,6 +5191,13 @@ bool DaemonApp::Init(int argc, char** argv) {
                                 const auto decoded = UtreexoTransactionPayload::Decode(
                                     msg.payload, RelayTransactionReadMode::AvailableFamilies);
                                 const auto txid = decoded.Body().GetTxid().AsUint256();
+                                if(decoded.Body().IsOrchard()) {
+                                    const auto result=mempool_for_utxotx->SubmitProofBody(decoded,TxOrigin::P2P);
+                                    if(result.accepted())tx_relay_for_utxotx->AnnounceTx(txid);
+                                    else g_logger.warning("[CSN-TX] Orchard proof admission refused: "+result.message);
+                                    tx_relay_for_utxotx->CompleteRefresh(txid);
+                                    return;
+                                }
                                 std::unique_ptr<MempoolService::PoolUse> pool_use;
                                 bool existing = false;
                                 bool published = false;
@@ -6425,12 +6322,14 @@ bool DaemonApp::Init(int argc, char** argv) {
                 // backfill with phantom in-flight. The backfill store path keeps
                 // only the raw body and the background validation worker rebuilds
                 // the forest itself (assumeutxo_replay), so the proof is
-                // unnecessary. Tip sync still uses MSG_UTREEXO_BLOCK.
+                // unnecessary. Historical tip sync still uses MSG_UTREEXO_BLOCK; active
+                // Orchard requests exact typed bytes; receive validates the storage owner.
                 const bool for_backfill = sched && sched->CurrentRequestIsBackfill();
                 // Use binary format with raw bytes (not hex) to preserve correct byte order
-                uint32_t inv_type = (csn_mode && !for_backfill)
-                    ? static_cast<uint32_t>(dinero::InventoryType::MSG_UTREEXO_BLOCK)
-                    : static_cast<uint32_t>(dinero::InventoryType::MSG_BLOCK);
+                const auto request_type=SelectBlockRequestInventory(
+                    block_hash,csn_mode,for_backfill,block_height);
+                if (!request_type) return;
+                const uint32_t inv_type=static_cast<uint32_t>(*request_type);
                 ::P2PMessage msg = ::P2PMessage::create_getdata_binary(
                     block_hash.begin(), 32, inv_type
                 );
@@ -6718,6 +6617,26 @@ bool DaemonApp::Init(int argc, char** argv) {
                         return Result::CONNECTED;
                     });
 
+                // Compact Orchard has a typed canonical path distinct from
+                // historical CSN proof validation. Keep stateless mode enabled.
+                if (GetConfig().utreexo_stateless) {
+                    block_download->SetCompactOrchardConnectCallback(
+                        [typed_ingress_owner, chainstate_for_drain, parallel=ctx_.parallel_block_download,
+                         prune_for_drain](const std::vector<uint8_t>& bytes,
+                            const uint256& hash, uint32_t height, const std::string&) {
+                            using Result = dinero::consensus::ConnectBlockResult;
+                            const auto received=SubmitDownloadedCompactOrchardBlock(
+                                chainstate_for_drain,typed_ingress_owner.lock(),parallel,bytes,hash,height);
+                            // Stored may mean the queue has not started yet.
+                            // Keep it retryable; never mark it side-accepted.
+                            if (received!=OrchardNetworkDisposition::Connected) return Result::TEMPORARY_FAIL;
+                            if (prune_for_drain) {
+                                try { prune_for_drain->triggerPruneIfNeeded(); } catch (...) {}
+                            }
+                            return Result::CONNECTED;
+                        });
+                }
+
                 // BlockDownloadScheduler → GetTipHeight (queries actual chainstate tip for drain ordering)
                 block_download->SetGetTipHeightCallback(
                     [chainstate_for_drain]() -> uint32_t {
@@ -6965,7 +6884,7 @@ bool DaemonApp::Start() {
                 std::cout << "[DaemonApp] Pool maintenance worker started; accounting remains asynchronous" << std::endl;
             }
     #ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
-            if (!GetConfig().utreexo_stateless && Params().orchard_activation_height!=UINT32_MAX) {
+            if (Params().orchard_activation_height!=UINT32_MAX) {
                 if (!consensus::OrchardProfileConfigurationValid(Params()))
                     throw std::runtime_error("Invalid configured Orchard notification profile");
                 const auto config=std::dynamic_pointer_cast<ConfigService>(ctx_.config);
@@ -7008,7 +6927,7 @@ bool DaemonApp::Start() {
         return true;
     };
 #ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
-    if (!GetConfig().utreexo_stateless && Params().orchard_activation_height!=UINT32_MAX) {
+    if (Params().orchard_activation_height!=UINT32_MAX) {
         // Enable the existing complete Stop path if any subsequent Start fails.
         started_=true;
         if (!start_runtime_delivery()) return false;

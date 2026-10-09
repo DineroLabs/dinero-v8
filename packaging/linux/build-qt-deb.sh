@@ -40,7 +40,7 @@ echo "----------------------------------------------------------"
 # that work in another package format.
 SV2_ROOT="${DINERO_SV2_SOURCE_ROOT:-${PROJECT_ROOT}/../dinero-sv2}"
 BIN_NAMES=(
-    dinero-qt dinerod dinero-cli dinero-seeder
+    dinero-qt dinerod dinero-cli dinero-swap-tower dinero-seeder
     dinero-miner dinero-solo-miner dinero-gpu-miner
     dinero-stratum-worker dinero-wallet-cli
     dinero-sv2-miner dinero-sv2-gpu-miner
@@ -49,6 +49,7 @@ BIN_PATHS=(
     "${BUILD_DIR}/bin/dinero-qt"
     "${BUILD_DIR}/dinerod"
     "${BUILD_DIR}/dinero-cli"
+    "${BUILD_DIR}/dinero-swap-tower"
     "${BUILD_DIR}/seeder/dinero-seeder"
     "${BUILD_DIR}/dinero-miner"
     "${BUILD_DIR}/miner/dinero-solo-miner"

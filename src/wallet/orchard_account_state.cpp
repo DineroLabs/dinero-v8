@@ -327,11 +327,20 @@ OrchardAccountState OrchardAccountState::ReserveRequest(
   next->operations = data_->operations.ReserveRequest(id, intent, request);
   return OrchardAccountState(std::move(next));
 }
+OrchardAccountState OrchardAccountState::ReserveSpendRequest(
+    const Hash &id, const WalletProvingIntent &intent, const Hash &request,
+    const OrchardOperationQueue::SpendRequest &details,
+    std::shared_ptr<const WalletStateBytes> recovery) const {
+  auto next = std::make_shared<Data>(*data_);
+  next->operations = data_->operations.ReserveSpendRequest(id, intent, request, details, std::move(recovery));
+  return OrchardAccountState(std::move(next));
+}
 OrchardAccountState OrchardAccountState::ReserveShieldRequest(
     const Hash &id, const WalletProvingIntent &intent, const Hash &request,
-    const OrchardOperationQueue::ShieldRequest &details) const {
+    const OrchardOperationQueue::ShieldRequest &details,
+    std::shared_ptr<const WalletStateBytes> recovery) const {
   auto next = std::make_shared<Data>(*data_);
-  next->operations = data_->operations.ReserveShieldRequest(id, intent, request, details);
+  next->operations = data_->operations.ReserveShieldRequest(id, intent, request, details, std::move(recovery));
   return OrchardAccountState(std::move(next));
 }
 OrchardAccountState
@@ -370,6 +379,12 @@ OrchardAccountState::Observations() const noexcept {
 }
 WalletStateBytes OrchardAccountState::Encode() const {
   Writer w;
+  // The enclosed operation capsule contains construction secrets. Allocate
+  // before copying any of it, so later metadata appends cannot leave a copy
+  // in an abandoned vector allocation. The existing bound still refuses.
+  if (std::any_of(data_->operations.Entries().begin(), data_->operations.Entries().end(),
+      [](const auto& item) { return bool(item.second.recovery); }))
+    w.bytes.reserve(WalletSnapshotStore::kMaxStateBytes);
   auto version = magic;
   if (data_->parent_snapshot_revision) version[7] = '6';
   w.Raw(version);

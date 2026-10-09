@@ -1,0 +1,9 @@
+# Authenticated Orchard balance read
+
+Draft, not installed or runtime-qualified. `wallet.orchard.getbalance {account: n}` uses the same immutable replay capture and complete authenticated account-catalog restoration as operation listing. Only the typed CatalogChanged comparison retries (four attempts); all SQL, key, session, identity and restoration failures refuse. No scan, reservation, account, wallet or chain writes occur.
+
+Amounts are unsigned integer atomic units, at the returned checkpoint height/hash and account revision. `confirmed_una` is the sum of restored notes unspent at that checkpoint. `reserved_confirmed_una` intersects those notes with durable operation nullifiers; padding and absent/spent notes add nothing. `unreserved_confirmed_una` is the difference, not a spending guarantee. Confirmation/conflict observations do not independently release reservations. On undo, restored notes can become reserved again.
+
+`account_caught_up_to_captured_source` compares both delivery sequence and digest with the captured immutable head. It says nothing about other accounts or later chain changes. Lagged results must be displayed with their checkpoint, not as current funds available to send. There is no inferred pending incoming balance. Errors return only an error and must display as unavailable, never zero. The node still authorizes every spend against fresh source and complete catalog.
+
+Existing listoperations output and fixtures are retained. New intended runtime cases cover malformed/service refusal, actual note reservation/signing/reopen, transfer/incoming/lag/undo, and missing catalog owners/lock/binding/SQL/borrowed transaction. Five cases are declared, none executed yet. Current qualification owner inputs remain untouched. No activation height, migration, Qt, private covenant or production readiness is introduced.

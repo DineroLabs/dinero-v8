@@ -16,16 +16,10 @@ if(NOT TARGET secp256k1)
   endforeach()
   add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/../../third_party/secp256k1-zkp" "secp256k1")
 endif()
-# This first build integration supports native Linux/macOS. Refuse accidental
-# cross compilation until the Rust target and native libraries are qualified.
-if(CMAKE_CROSSCOMPILING OR WIN32 OR ANDROID OR CMAKE_SYSTEM_NAME STREQUAL "iOS")
-  message(FATAL_ERROR "Orchard backend cross/platform toolchain is not qualified yet")
-endif()
-if(APPLE AND CMAKE_OSX_ARCHITECTURES)
-  if(NOT CMAKE_OSX_ARCHITECTURES STREQUAL CMAKE_HOST_SYSTEM_PROCESSOR)
-    message(FATAL_ERROR "Orchard backend currently requires the native macOS architecture")
-  endif()
-endif()
+# Windows remains unavailable to release builds until native qualification.
+option(DINERO_ORCHARD_WINDOWS_QUALIFICATION "Allow isolated native x64 MSVC Orchard qualification" OFF)
+include("${CMAKE_CURRENT_SOURCE_DIR}/NativeRustPlatform.cmake")
+dinero_orchard_native_platform(ORCHARD_RUST_TARGET ORCHARD_ARCHIVE_NAME)
 # file(STRINGS) inputs must also invalidate an existing configured build.
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
   "${CMAKE_CURRENT_SOURCE_DIR}/rust-toolchain.toml"
@@ -37,7 +31,30 @@ if(NOT ORCHARD_RUST_TOOLCHAIN)
   message(FATAL_ERROR "Missing pinned Orchard Rust toolchain")
 endif()
 set(ORCHARD_TARGET_DIR "${CMAKE_CURRENT_BINARY_DIR}/cargo")
-set(ORCHARD_ARCHIVE "${ORCHARD_TARGET_DIR}/release/libdinero_orchard_backend.a")
+if(WIN32)
+  find_program(ORCHARD_RUSTC rustc HINTS "$ENV{USERPROFILE}/.cargo/bin" REQUIRED)
+  execute_process(COMMAND "${ORCHARD_RUSTC}" "+${ORCHARD_RUST_TOOLCHAIN}" -vV
+    RESULT_VARIABLE ORCHARD_RUST_HOST_RESULT OUTPUT_VARIABLE ORCHARD_RUST_HOST_INFO)
+  if(NOT ORCHARD_RUST_HOST_RESULT EQUAL 0 OR
+     NOT ORCHARD_RUST_HOST_INFO MATCHES "host: x86_64-pc-windows-msvc[\r\n]")
+    message(FATAL_ERROR "Orchard qualification requires the pinned native x64 MSVC Rust toolchain")
+  endif()
+  set(ORCHARD_CARGO_TEST_TARGET --target "${ORCHARD_RUST_TARGET}")
+  set(ORCHARD_ARCHIVE "${ORCHARD_TARGET_DIR}/${ORCHARD_RUST_TARGET}/release/${ORCHARD_ARCHIVE_NAME}")
+  set(ORCHARD_NATIVE_LINK_RESPONSE "${CMAKE_CURRENT_BINARY_DIR}/orchard-native-libraries.rsp")
+  add_custom_command(OUTPUT "${ORCHARD_ARCHIVE}" "${ORCHARD_NATIVE_LINK_RESPONSE}"
+    COMMAND ${CMAKE_COMMAND}
+      "-DCARGO=${ORCHARD_CARGO}" "-DRUST_TOOLCHAIN=${ORCHARD_RUST_TOOLCHAIN}"
+      "-DMANIFEST=${CMAKE_CURRENT_SOURCE_DIR}/Cargo.toml" "-DTARGET_DIR=${ORCHARD_TARGET_DIR}"
+      "-DARCHIVE=${ORCHARD_ARCHIVE}" "-DLINK_RESPONSE=${ORCHARD_NATIVE_LINK_RESPONSE}"
+      "-DBUILD_CONFIG=$<CONFIG>" -P "${CMAKE_CURRENT_SOURCE_DIR}/BuildMsvcRust.cmake"
+    DEPENDS Cargo.toml Cargo.lock rust-toolchain.toml src/lib.rs src/frontier.rs src/wallet.rs
+      src/wallet_prover.rs src/wallet_note.rs src/wallet_witness.rs include/orchard_backend_ffi.h
+      tests/fixtures/candidate-spend.bundle tests/fixtures/candidate-spend.digest tests/fixtures/candidate-spend.effect
+      NativeRustPlatform.cmake BuildMsvcRust.cmake MsvcRustNativeLibraries.cmake
+    WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}" VERBATIM)
+else()
+  set(ORCHARD_ARCHIVE "${ORCHARD_TARGET_DIR}/release/${ORCHARD_ARCHIVE_NAME}")
 add_custom_command(OUTPUT "${ORCHARD_ARCHIVE}"
   COMMAND ${CMAKE_COMMAND} -E env RAYON_NUM_THREADS=2
     ${ORCHARD_CARGO} +${ORCHARD_RUST_TOOLCHAIN} build --locked --release --jobs 2
@@ -47,11 +64,25 @@ add_custom_command(OUTPUT "${ORCHARD_ARCHIVE}"
     include/orchard_backend_ffi.h tests/fixtures/candidate-spend.bundle
     tests/fixtures/candidate-spend.digest tests/fixtures/candidate-spend.effect
   WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}" VERBATIM)
-add_custom_target(dinero_orchard_rust_build DEPENDS "${ORCHARD_ARCHIVE}")
+endif()
+add_custom_target(dinero_orchard_rust_build DEPENDS "${ORCHARD_ARCHIVE}" ${ORCHARD_NATIVE_LINK_RESPONSE})
 add_library(dinero_orchard_rust STATIC IMPORTED)
 set_target_properties(dinero_orchard_rust PROPERTIES IMPORTED_LOCATION "${ORCHARD_ARCHIVE}")
 add_dependencies(dinero_orchard_rust dinero_orchard_rust_build)
-add_library(dinero_orchard_backend STATIC orchard_backend.cpp orchard_signing.cpp orchard_transaction.cpp orchard_wallet.cpp)
+if(WIN32)
+  # Attach to the imported Rust owner so direct consumers (including the daemon
+  # capability report) receive the same native system-library requirements.
+  target_link_options(dinero_orchard_rust INTERFACE "LINKER:@${ORCHARD_NATIVE_LINK_RESPONSE}")
+  set_property(TARGET dinero_orchard_rust APPEND PROPERTY INTERFACE_LINK_DEPENDS
+    "${ORCHARD_NATIVE_LINK_RESPONSE}")
+endif()
+# The report calls the linked Rust protocol descriptor, not a cache-only claim.
+if(TARGET dinerod)
+  target_compile_definitions(dinerod PRIVATE DINERO_HAS_ORCHARD_BUILD_INFO=1)
+  target_include_directories(dinerod PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include")
+  target_link_libraries(dinerod PRIVATE dinero_orchard_rust)
+endif()
+add_library(dinero_orchard_backend STATIC orchard_backend.cpp orchard_signing.cpp orchard_transaction.cpp orchard_wallet.cpp orchard_wallet_bytes.cpp)
 target_compile_features(dinero_orchard_backend PUBLIC cxx_std_20)
 target_include_directories(dinero_orchard_backend PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include"
   PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../../include")
@@ -241,6 +272,47 @@ if(TARGET dinero_chainstate)
     set_tests_properties(OrchardDownloadPeerCredit PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;mandatory")
     add_test(NAME OrchardProofHandoff COMMAND test_assumeutxo_replay --gtest_filter=OrchardProofHandoff.*)
     set_tests_properties(OrchardProofHandoff PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;mandatory")
+    # Keep the new inverse regressions independent of the existing catalog suite.
+    add_test(NAME OrchardCompactInverse COMMAND test_assumeutxo_replay --gtest_filter=OrchardCompactInverse.*)
+    set_tests_properties(OrchardCompactInverse PROPERTIES TIMEOUT 120 LABELS "daemon;orchard;storage;mandatory")
+    add_test(NAME OrchardCompactHandoff COMMAND test_assumeutxo_replay --gtest_filter=OrchardCompactHandoff.*)
+    set_tests_properties(OrchardCompactHandoff PROPERTIES TIMEOUT 120 LABELS "daemon;orchard;storage;mandatory")
+    add_test(NAME OrchardCompactIndex COMMAND test_assumeutxo_replay --gtest_filter=OrchardCompactIndex.*)
+    set_tests_properties(OrchardCompactIndex PROPERTIES TIMEOUT 120 LABELS "daemon;orchard;storage;mandatory")
+    add_test(NAME OrchardCompactUndoHandoff COMMAND test_assumeutxo_replay --gtest_filter=OrchardCompactUndoHandoff.*)
+    set_tests_properties(OrchardCompactUndoHandoff PROPERTIES TIMEOUT 120 LABELS "daemon;orchard;storage;mandatory")
+    add_test(NAME OrchardCompactHistoricalUndo COMMAND test_assumeutxo_replay --gtest_filter=OrchardCompactHistoricalUndo.*)
+    set_tests_properties(OrchardCompactHistoricalUndo PROPERTIES TIMEOUT 120 LABELS "daemon;orchard;storage;mandatory")
+    add_test(NAME OrchardCompactGlobalIndex COMMAND test_assumeutxo_replay --gtest_filter=OrchardCompactGlobalIndex.*)
+    set_tests_properties(OrchardCompactGlobalIndex PROPERTIES TIMEOUT 120 LABELS "daemon;orchard;storage;mandatory")
+    add_test(NAME OrchardCompactHeaderBinding COMMAND test_assumeutxo_replay --gtest_filter=OrchardCompactHeaderBinding.*)
+    set_tests_properties(OrchardCompactHeaderBinding PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;storage;mandatory")
+    add_test(NAME OrchardCompactHeaderRetention COMMAND test_assumeutxo_replay --gtest_filter=OrchardCompactHeaderRetention.*)
+    set_tests_properties(OrchardCompactHeaderRetention PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;storage;mandatory")
+    add_test(NAME OrchardCompactHeaderTransition COMMAND test_assumeutxo_replay --gtest_filter=OrchardCompactHeaderTransition.*)
+    set_tests_properties(OrchardCompactHeaderTransition PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;storage;mandatory")
+    add_test(NAME OrchardCompactBoundaryAudit COMMAND test_assumeutxo_replay --gtest_filter=OrchardCompactBoundaryAudit.*)
+    set_tests_properties(OrchardCompactBoundaryAudit PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;storage;mandatory")
+    add_test(NAME OrchardHistoricalSpendTransition COMMAND test_assumeutxo_replay --gtest_filter=OrchardHistoricalSpendTransition.*)
+    set_tests_properties(OrchardHistoricalSpendTransition PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;storage;mandatory")
+    add_test(NAME OrchardHistoricalIndexOwner COMMAND test_assumeutxo_replay --gtest_filter=OrchardHistoricalIndexOwner.*)
+    set_tests_properties(OrchardHistoricalIndexOwner PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;storage;mandatory")
+    add_test(NAME OrchardHistoricalController COMMAND test_assumeutxo_replay --gtest_filter=OrchardHistoricalController.*)
+    set_tests_properties(OrchardHistoricalController PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;storage;mandatory")
+    add_test(NAME OrchardOutgoingHandoff COMMAND test_assumeutxo_replay --gtest_filter=OrchardOutgoingHandoff.*)
+    set_tests_properties(OrchardOutgoingHandoff PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;storage;mandatory")
+    add_test(NAME OrchardCompactTransition COMMAND test_assumeutxo_replay --gtest_filter=OrchardCompactTransition.*)
+    set_tests_properties(OrchardCompactTransition PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;storage;mandatory")
+    add_test(NAME OrchardCompactNetwork COMMAND test_assumeutxo_replay --gtest_filter=OrchardCompactNetwork.*)
+    set_tests_properties(OrchardCompactNetwork PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;p2p;storage;mandatory")
+    add_test(NAME OrchardCompactQueuedIngress COMMAND test_assumeutxo_replay --gtest_filter=OrchardCompactQueuedIngress.*)
+    set_tests_properties(OrchardCompactQueuedIngress PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;storage;mandatory")
+    add_test(NAME OrchardCompactHeaderRestore COMMAND test_assumeutxo_replay --gtest_filter=OrchardCompactHeaderRestore.*)
+    set_tests_properties(OrchardCompactHeaderRestore PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;headers;storage;mandatory")
+    add_test(NAME OrchardCompactStart COMMAND test_assumeutxo_replay --gtest_filter=OrchardCompactStart.*)
+    set_tests_properties(OrchardCompactStart PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;storage;mandatory")
+    add_test(NAME OrchardCompactStartupAudit COMMAND test_assumeutxo_replay --gtest_filter=OrchardCompactStartupAudit.*)
+    set_tests_properties(OrchardCompactStartupAudit PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;storage;mandatory")
     target_compile_definitions(test_assumeutxo_replay PRIVATE DINERO_TEST_ORCHARD_ORIGIN=1)
     target_link_libraries(test_assumeutxo_replay PRIVATE dinero_orchard_index_delivery)
   endif()
@@ -525,9 +597,14 @@ if(DINERO_ORCHARD_BUILD_TESTS)
     set_tests_properties(OrchardBlockStaging OrchardAtomicCrash OrchardCommitOwner OrchardIndexedCommit OrchardRuntimeOutbox PROPERTIES TIMEOUT 600 RUN_SERIAL TRUE
       ENVIRONMENT "RAYON_NUM_THREADS=2" LABELS "orchard;storage;integration-staging")
   endif()
-  add_test(NAME OrchardBackendRust COMMAND ${ORCHARD_CARGO} +${ORCHARD_RUST_TOOLCHAIN} test --locked --release --jobs 2
+  add_test(NAME OrchardBackendRust COMMAND ${ORCHARD_CARGO} +${ORCHARD_RUST_TOOLCHAIN} test --locked --release --jobs 2 ${ORCHARD_CARGO_TEST_TARGET}
     --manifest-path "${CMAKE_CURRENT_SOURCE_DIR}/Cargo.toml" --target-dir "${ORCHARD_TARGET_DIR}"
     -- --test-threads=1)
   set_tests_properties(OrchardBackendCpp OrchardBackendRust OrchardWalletKeys OrchardWalletShield OrchardWalletSpend OrchardWalletStorage OrchardTransactionReader OrchardCoinSnapshot OrchardTransparent OrchardAuthorization OrchardStateTransition PROPERTIES
     TIMEOUT 600 RUN_SERIAL TRUE ENVIRONMENT "RAYON_NUM_THREADS=2" LABELS "orchard;integration-staging")
+  if(WIN32)
+    set_property(TEST OrchardBackendRust APPEND PROPERTY ENVIRONMENT
+      "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS=-C target-feature=-crt-static")
+  endif()
+
 endif()

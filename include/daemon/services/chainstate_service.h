@@ -8,6 +8,7 @@
 #include "daemon/replay_metadata_recovery.h"
 #include "daemon/iservice.h"
 #include "daemon/runtime_block_notifications.h"
+#include "daemon/runtime_outbox_cursor.h"
 #include "daemon/active_tip_classification.h"
 #include "storage/chain_db.h"
 #include "consensus/block_status_generation.h"
@@ -59,9 +60,12 @@ class MiningChainstateReadGuard;
 class OrchardMiningTemplate;
 class OrchardBlockCandidate;
 class PreparedOrchardParent;
+class PreparedHistoricalCatalogRange;
+class PreparedOrchardCatalog;
 class MempoolTransaction;
 struct MempoolOrchardValidation;
 struct MempoolSelectionValidation;
+struct MempoolProofView;
 class BlockStorage;
 class RuntimeBlockBody;
 struct RuntimeOutboxCursor;
@@ -87,6 +91,7 @@ namespace consensus {
     class ConsensusUTXOSet;   // Phase 2: Pure in-memory UTXO set (owns forest)
     class IConsensusUTXOSet;  // Phase 2: Consensus UTXO set interface
     class HeaderChainSelector;  // P2P fix: Header chain tracking for sync
+    class HeaderStore;
     struct HeaderIndexEntry;    // Header-first sync index entry
     class ProofGossipManager;   // Phase 9.3+: Proof gossip prewarm/metrics
     enum class ConnectBlockResult : int;  // Scheduler drain connection classification
@@ -139,6 +144,7 @@ namespace pool {
  * - Stop() performs clean shutdown and flushes data
  */
 class ChainstateService : public IService, public std::enable_shared_from_this<ChainstateService> {
+    struct SelectedReadUse;
 public:
     ChainstateService();  // v2.2.4: Out-of-line (WalletUTXOAdapter incomplete type)
     ~ChainstateService() override;  // v2.2.4: Out-of-line (WalletUTXOAdapter incomplete type)
@@ -915,6 +921,47 @@ public:
     StatusOr<CanonicalOutputInclusion> getCanonicalOutputInclusion(
         const uint256& txid, uint32_t output, uint32_t height) const;
 
+    // One owned observation of the selected accumulator and its block. No
+    // freshness field may be published when this capture is unavailable.
+    struct UtreexoRpcSnapshot {
+        std::vector<uint8_t> commitment;
+        uint256 block_hash;
+        uint32_t height{};
+        uint64_t num_leaves{};
+        size_t num_roots{};
+        size_t compact_state_bytes{};
+        bool compact{};
+    };
+    StatusOr<UtreexoRpcSnapshot> getUtreexoRpcSnapshot();
+
+    // Immutable inputs for proof work after releasing selected ownership.
+    // This is an as-of observation, not continued authorization or a proof.
+    struct UtreexoProofInput {
+        OutPoint outpoint;
+        Status status;
+        std::optional<Coin> coin;
+        bool canonical = false;
+    };
+    struct UtreexoProofInputs {
+        UtreexoProofInputs();
+        ~UtreexoProofInputs();
+        UtreexoProofInputs(UtreexoProofInputs&&) noexcept;
+        UtreexoProofInputs& operator=(UtreexoProofInputs&&) noexcept;
+        UtreexoProofInputs(const UtreexoProofInputs&) = delete;
+        UtreexoProofInputs& operator=(const UtreexoProofInputs&) = delete;
+        UtreexoRpcSnapshot snapshot;
+        consensus::UtreexoForest forest;
+        std::vector<UtreexoProofInput> inputs;
+    private:
+        friend class ChainstateService;
+        // Thread-affine service lifetime, not a selected/forest lock. Proof
+        // work and any coverage notification finish before shutdown drains.
+        std::unique_ptr<SelectedReadUse> service_use_;
+    };
+    StatusOr<UtreexoProofInputs> CaptureUtreexoProofInputs(
+        std::span<const OutPoint> outpoints);
+
+
     struct OrchardAnnouncementSnapshot {
         uint256 hash;
         uint32_t height;
@@ -1151,6 +1198,12 @@ public:
      * When blocks are connected, their headers are added to keep header chain in sync
      */
     void setHeaderChainSelector(std::shared_ptr<dinero::consensus::HeaderChainSelector> header_chain);
+    // Startup-only restoration from this service's independently reconstructed
+    // selected history. Retains store lifetime and rechecks selection before
+    // binding; all header validation runs outside the selected-chain lock.
+    std::shared_ptr<dinero::consensus::HeaderChainSelector> RestoreCompactHeaderSelector(
+        std::shared_ptr<dinero::consensus::HeaderStore> store);
+
 
     /**
      * @brief Set ChainOracleClient for Phase 9.2 Lightning event forwarding
@@ -1383,6 +1436,11 @@ public:
     // boundary preparation also occurs before that final lock. Nested ingress
     // borrows the same immutable preparation and refuses an unprepared fallback. Release
     // the owner before relay/notification callbacks outside canonical writes.
+    // Routing policy only: caller mode must match a live full or reconstructed
+    // compact storage owner. No chain lock remains held when this returns;
+    // canonical tasks still prepare and validate their exact block separately.
+    bool MatchesOrchardNetworkStorageMode(bool stateless);
+
     class BlockIngressUse final {
     public:
         ~BlockIngressUse();
@@ -1403,16 +1461,42 @@ public:
         std::shared_ptr<ChainstateService> owner);
 
 private:
+    // Startup-only reconstruction. The caller owns the datadir and has not
+    // started any writer or consumer. Success initializes storage authority;
+    // it does not publish an active tip or open service admission.
+    bool InitCompactStorage();
+    // Starts this service from its reconstructed compact owner. DaemonApp
+    // orchestration and consumer recovery remain separate readiness gates.
+    bool StartCompactStorage();
+    struct CompactStartupState;
     // Internal fixed-prefix capture only. All live/durable/profile guards and
     // the selected lock are shared with the public current-head page reader.
     StatusOr<std::shared_ptr<const RuntimeOutboxPage>> getRuntimeDeliveryPageAtPrefix(
         const std::optional<RuntimeOutboxCursor>& captured_head,
         const RuntimeOutboxCursor& after,size_t maximum_events,size_t maximum_bytes) const;
     bool AuditSelectedOrchardTipUnderLock(std::string* reason) const;
+    // Recheck a reconstructed activation parent without publishing it.
+    bool AuditCompactBoundaryUnderLock(const CBlockIndex&,std::string* reason) const;
+    bool AuditHistoricalCompactTipUnderLock(const CBlockIndex&,std::string* reason) const;
+    friend struct CompactBoundaryAuditTestAccess;
+    const consensus::ValidatedOrchardBlock* DetachedOrchardBlockUnderLock(
+        uint32_t height,const uint256& hash) const;
     friend class PreparedOrchardParent;
-    struct SelectedReadUse;
+    StatusOr<UtreexoRpcSnapshot> UtreexoRpcSnapshotUnderLock();
+
+    struct CompactStartupReadUse;
     struct ParentPreparationScope;
     struct PreparedOrchardExtension;
+    struct PreparedOrchardInverse;
+    std::unique_ptr<PreparedOrchardInverse> CaptureOrchardInverseUnderLock();
+    std::unique_ptr<PreparedOrchardInverse> CaptureOrchardInverseForIndexUnderLock(
+        const CBlockIndex&,std::unique_ptr<SelectedReadUse>,const CompactStartupReadUse*);
+    const consensus::ValidatedOrchardBlock& BindOrchardInverseForIndexUnderLock(
+        PreparedOrchardInverse&,CBlockIndex&) const;
+    bool CompleteOrchardInverse(PreparedOrchardInverse&);
+    std::unique_ptr<PreparedOrchardInverse> PrepareSelectedOrchardInverse();
+    const consensus::ValidatedOrchardBlock& BindOrchardInverseUnderLock(
+        PreparedOrchardInverse&) const;
     std::unique_ptr<PreparedOrchardExtension> CaptureOrchardExtensionUnderLock(const std::string&);
     bool CompleteOrchardExtension(PreparedOrchardExtension&);
     std::unique_ptr<PreparedOrchardExtension> PrepareOrchardExtension(
@@ -1422,9 +1506,48 @@ private:
 
     // Complete private representation permits internal phased ownership;
     // construction/destruction remain out of line with PreparedOrchardParent.
-    struct ActivationParentPlan {
-        using Entry=std::tuple<uint256,uint256,uint256,uint32_t,uint32_t,uint256,uint64_t,
+    using OrchardIndexBeforeImage=std::tuple<uint256,uint256,uint256,uint32_t,uint32_t,uint256,uint64_t,
             uint32_t,uint32_t,std::string,uint32_t,uint32_t,uint32_t,uint32_t,uint32_t,uint32_t,uint32_t>;
+    // Separate authority for a branch strictly below activation parent.
+    // Public type visibility here is only for internal phased lifetime; the
+    // service alone captures and completes the opaque private state.
+    struct PreparedHistoricalBranch {
+        struct State;
+        explicit PreparedHistoricalBranch(std::unique_ptr<State>);
+        ~PreparedHistoricalBranch();
+        const PreparedHistoricalCatalogRange& Range() const;
+        std::unique_ptr<State> state;
+    };
+    std::unique_ptr<PreparedHistoricalBranch> CaptureHistoricalBranchUnderLock(CBlockIndex*,CBlockIndex*);
+    bool CompleteHistoricalBranch(PreparedHistoricalBranch&);
+    std::pair<const PreparedHistoricalCatalogRange*,const PreparedOrchardCatalog*> HistoricalEdgeProofUnderLock(bool connecting) const;
+    bool DispatchHistoricalCompactTip(CBlockIndex*,bool connecting,std::string* error);
+    bool ApplyHistoricalCompactTip(CBlockIndex*,const PreparedHistoricalCatalogRange&,
+        const PreparedOrchardCatalog*,bool connecting,std::string* error);
+    bool BindHistoricalBranchUnderLock(const PreparedHistoricalBranch&,CBlockIndex*,CBlockIndex*) const;
+    friend struct HistoricalBranchPreparationTestAccess;
+    struct PreparedOrchardOutgoing {
+        std::unique_ptr<PreparedOrchardParent> parent;
+        std::unique_ptr<PreparedHistoricalBranch> historical;
+        // Exact selected path at capture; fork is retained for the final audit.
+        std::vector<OrchardIndexBeforeImage> path;
+        uint256 fork_hash;
+        uint32_t fork_height=0;
+        std::optional<OrchardIndexBeforeImage> historical_fork;
+        consensus::GenerationRead generation;
+    };
+    std::unique_ptr<PreparedOrchardOutgoing> CaptureOrchardOutgoingUnderLock(
+        const std::vector<CBlockIndex*>&,CBlockIndex*);
+    bool CompleteOrchardOutgoing(PreparedOrchardOutgoing&);
+    bool BindOrchardOutgoingUnderLock(const PreparedOrchardOutgoing&,
+        const std::vector<CBlockIndex*>&,CBlockIndex*) const;
+    friend struct OrchardOutgoingHandoffTestAccess;
+    friend struct OrchardCompactTransitionTestAccess;
+    bool CheckCompactTransitionUnderLock(const std::vector<CBlockIndex*>&,
+        const std::vector<CBlockIndex*>&);
+    bool InvalidateBlockPass(const uint256&,std::string&,const PreparedOrchardOutgoing*);
+    struct ActivationParentPlan {
+        using Entry=OrchardIndexBeforeImage;
         static Entry Capture(const CBlockIndex&);
         struct Snapshot {
             std::optional<Entry> active,fork;
@@ -1436,12 +1559,32 @@ private:
         ActivationParentPlan();
         ~ActivationParentPlan();
         Snapshot snapshot;
+        std::unique_ptr<PreparedHistoricalBranch> historical;
         std::unique_ptr<PreparedOrchardParent> parent;
+        std::unique_ptr<PreparedOrchardOutgoing> outgoing;
         std::unique_ptr<PreparedOrchardExtension> extension;
         std::string extension_wire;
     };
+    // Retains startup lifetime without opening ordinary read admission. Proof
+    // work runs outside the activation lock; binding never publishes a tip.
+    struct PreparedCompactStartupAudit {
+        explicit PreparedCompactStartupAudit(std::unique_ptr<CompactStartupReadUse>);
+        ~PreparedCompactStartupAudit();
+        const std::unique_ptr<CompactStartupReadUse> use;
+        CBlockIndex* tip=nullptr;
+        ActivationParentPlan::Entry before;
+        std::unique_ptr<PreparedOrchardInverse> inverse;
+        bool boundary=false;
+        std::string historical_selected; // Exact independently restored DNHCS01 before-image.
+        RuntimeOutboxCursor delivery_origin,delivery_head;
+    };
+    std::unique_ptr<PreparedCompactStartupAudit> PrepareCompactStartupAudit();
+    bool BindCompactStartupAuditUnderLock(PreparedCompactStartupAudit&) const;
+    bool CheckCompactStartupDeliveryUnderLock(PreparedCompactStartupAudit&,bool capture) const;
+    friend struct CompactStartupAuditTestAccess;
     bool CompleteActivationParentPlan(ActivationParentPlan&);
-    void ActivateBestChainPass(const ActivationParentPlan*,std::unique_ptr<ActivationParentPlan>&,bool);
+    void ActivateBestChainPass(const ActivationParentPlan*,std::unique_ptr<ActivationParentPlan>&,bool,
+        PreparedOrchardInverse* = nullptr);
     bool CompletePreparedOrchardParent(PreparedOrchardParent&);
     bool BindActivationParentUnderLock(CBlockIndex*,CBlockIndex*,const std::vector<CBlockIndex*>&,
         const std::vector<CBlockIndex*>&,const ActivationParentPlan*,std::unique_ptr<ActivationParentPlan>&,
@@ -1458,11 +1601,18 @@ private:
     std::shared_ptr<const OrchardMiningTemplate> BindOrchardMiningUnderLock(PreparedOrchardMining&);
     friend struct OrchardDetachedMiningTestAccess;
     struct SelectedOrchardPoolContext;
-    std::unique_ptr<SelectedOrchardPoolContext> CaptureSelectedOrchardPoolContextUnderLock();
+    // Compact callers must enumerate every body/proof that will be queried.
+    // No argument requests the general full-node view, not an empty catalog.
+    std::unique_ptr<SelectedOrchardPoolContext> CaptureSelectedOrchardPoolContextUnderLock(
+        std::optional<std::span<const MempoolProofView>> proved_entries=std::nullopt);
     MempoolSelectionValidation ValidateOrchardSelectionUnderLock(
         std::span<const MempoolTransaction>, uint32_t);
     MempoolOrchardValidation ValidateOrchardPoolUnderLock(
         const MempoolTransaction&, const std::vector<MempoolTransaction>&);
+    MempoolOrchardValidation ValidateOrchardPoolProofsUnderLock(
+        const MempoolProofView&, std::span<const MempoolProofView>);
+    MempoolSelectionValidation ValidateOrchardSelectionProofsUnderLock(
+        std::span<const MempoolProofView>, uint32_t);
     // Storage-layout startup regression exercises the actual loader without
     // booting network/wallet services. No public runtime mutation API is added.
     friend struct ShieldedStateStartupTestAccess;
@@ -1474,6 +1624,7 @@ private:
     // Component payment tests install a real isolated index without starting P2P.
     friend struct WalletBatchPaymentTestAccess;
     friend struct PreBaseLookupTestAccess;
+    friend struct UtreexoProofCaptureTestAccess;
     struct ShieldedStateSnapshot {
         uint256 root;
         uint64_t tree_size{0};
@@ -1762,6 +1913,10 @@ private:
     // admission while replacing state and reopens only after successful setup.
     std::map<std::thread::id,size_t> selected_read_uses_by_thread_;
     size_t selected_read_uses_=0;
+    // Startup audit uses are deliberately separate: they never authorize a
+    // nested ordinary selected read while initialization remains unpublished.
+    std::map<std::thread::id,size_t> compact_startup_uses_by_thread_;
+    size_t compact_startup_uses_=0;
     bool selected_read_accepting_=true;
     bool wallet_index_accepting_=false;
     bool wallet_index_stopping_=false;
@@ -1805,6 +1960,9 @@ private:
     // that from a comment into an enforced invariant. Satisfies Lockable, so
     // every existing lock_guard/unique_lock site is unchanged.
     mutable AnnotatedRecursiveMutex activation_mutex_;  // Protects ActivateBestChain from concurrent entry
+    // Declared after the bound mutex and database owner so it is destroyed
+    // first. Database handoff refuses replacement while this owner exists.
+    std::unique_ptr<CompactStartupState> compact_startup_;
 
     // Phase 43: Safe mode state (deep reorg protection)
     bool safe_mode_active_ = false;

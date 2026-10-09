@@ -40,7 +40,7 @@ std::string hashToHexBatch(const dinero::consensus::UtreexoHash& hash) {
 
 // Helper: Convert hex string to UtreexoHash
 std::optional<dinero::consensus::UtreexoHash> hexToHashBatch(const std::string& hex) {
-    if (hex.size() != 64) {  // 32 bytes = 64 hex chars
+    if (hex.size() != 64 || hex.find_first_not_of("0123456789abcdefABCDEF") != std::string::npos) {
         return std::nullopt;
     }
 
@@ -88,25 +88,6 @@ std::optional<dinero::TxId> parseTxId(const std::string& txid_hex) {
     return dinero::TxId(txid_uint256);
 }
 
-void MaybeScheduleProofCoverageRecovery(dinero::ChainstateService& chainstate,
-                                        dinero::ChainDB& chain_db,
-                                        const dinero::TxId& txid,
-                                        uint32_t vout,
-                                        const std::string& source_tag) {
-    auto coin_result = chain_db.getCoin(txid.AsUint256(), vout);
-    if (coin_result.status() != dinero::Status::Ok) {
-        return;
-    }
-
-    const std::string outpoint =
-        txid.AsUint256().GetHex() + ":" + std::to_string(vout);
-    dinero::g_logger.error(source_tag +
-                           " live forest missing canonical UTXO " + outpoint +
-                           " — scheduling chainstate recovery");
-    chainstate.RequestChainstateRecovery(
-        "live UTXO missing from Utreexo forest for " + outpoint,
-        source_tag);
-}
 
 /**
  * blockchain.getutxoproofs_batch - Generate proofs for multiple UTXOs
@@ -172,20 +153,6 @@ Json rpc_getutxoproofs_batch(const ExecutionContext& ctx, const Json& params) {
             return result;
         }
 
-        auto* forest = chainstate->utreexoForest();
-        if (!forest) {
-            result["error"]["code"] = -1;
-            result["error"]["message"] = "Utreexo forest not available";
-            return result;
-        }
-
-        auto* chain_db = chainstate->GetChainDB();
-        if (!chain_db) {
-            result["error"]["code"] = -1;
-            result["error"]["message"] = "ChainDB not available";
-            return result;
-        }
-
         // Parse parameters
         if (params.empty() || !params[0].isArray()) {
             result["error"]["code"] = -32602;
@@ -204,27 +171,39 @@ Json rpc_getutxoproofs_batch(const ExecutionContext& ctx, const Json& params) {
             return result;
         }
 
-        // Get current Utreexo root for batch result
-        // Snapshot the live forest once under its shared lock; derive the root
-        // and all batch proofs from the local clone — consistent AND free of a
-        // race with the block-connect writer (audit: forest read-during-free UAF).
-        dinero::consensus::UtreexoForest forest_view;
-        {
-            auto forest_lock = chainstate->GetConsensusUTXOSet()->LockForestShared();
-            forest_view = forest->clone();
+        // Parse valid outpoints once for one selected capture. Invalid entries
+        // retain their original positions and independent error responses.
+        std::vector<dinero::OutPoint> points;
+        std::vector<std::optional<size_t>> input_indices(batch_size);
+        for (size_t i = 0; i < batch_size; ++i) {
+            const auto& op = utxos[static_cast<Json::ArrayIndex>(i)];
+            if (!op.isObject() || !op.isMember("txid") || !op["txid"].isString() ||
+                !op.isMember("vout") || !op["vout"].isUInt()) continue;
+            const auto txid = parseTxId(op["txid"].asString());
+            if (!txid) continue;
+            input_indices[i] = points.size();
+            points.emplace_back(*txid, op["vout"].asUInt());
         }
-        dinero::consensus::UtreexoHash utreexo_root = forest_view.getCommitment();
+        auto captured = chainstate->CaptureUtreexoProofInputs(points);
+        if (!captured.ok()) {
+            result["error"]["code"] = -1;
+            result["error"]["message"] = "Selected proof inputs unavailable";
+            return result;
+        }
+        const auto& forest_view = captured->forest;
+        const auto& utreexo_root = captured->snapshot.commitment;
 
         // Process each UTXO
         Json proofs_array(::Json::arrayValue);
         size_t successful = 0;
         size_t failed = 0;
 
-        for (const auto& utxo : utxos) {
+        for (size_t item = 0; item < batch_size; ++item) {
+            const auto& utxo = utxos[static_cast<Json::ArrayIndex>(item)];
             Json proof_result;
 
             // Parse txid and vout
-            if (!utxo.isObject() || !utxo.isMember("txid") || !utxo.isMember("vout")) {
+            if (!utxo.isObject() || !utxo.isMember("txid") || !utxo["txid"].isString() || !utxo.isMember("vout")) {
                 proof_result["success"] = false;
                 proof_result["error_code"] = "invalid-format";
                 proof_result["error"] = "Invalid UTXO format: expected {txid, vout}";
@@ -263,21 +242,19 @@ Json rpc_getutxoproofs_batch(const ExecutionContext& ctx, const Json& params) {
 
             dinero::TxId txid = txid_opt.value();
 
-            // The forest's leaf index describes this captured state. The
-            // separate outpoint cache may not cover a CSN's post-base coins.
-            const auto coin = dinero::rpc::ResolveUtreexoProofCoin(
-                *chainstate, *chain_db, txid.AsUint256(), vout);
-            if (!coin.ok()) {
+            const auto& input = captured->inputs.at(input_indices.at(item).value());
+            if (input.status != dinero::Status::Ok || !input.coin) {
                 proof_result["success"] = false;
-                proof_result["error_code"] = coin.status() == dinero::Status::NotFound
+                proof_result["error_code"] = input.status == dinero::Status::NotFound
                     ? "utxo-not-found" : "utxo-lookup-failed";
                 proof_result["error"] = "Canonical coin unavailable for proof";
                 ++failed;
                 proofs_array.append(proof_result);
                 continue;
             }
+            const auto& coin = *input.coin;
             std::vector<uint8_t> script;
-            if (coin.value().height < 0 || !util::unhex(coin.value().script_pubkey, script)) {
+            if (coin.height < 0 || !util::unhex(coin.script_pubkey, script)) {
                 proof_result["success"] = false;
                 proof_result["error_code"] = "invalid-utxo-data";
                 ++failed;
@@ -285,15 +262,20 @@ Json rpc_getutxoproofs_batch(const ExecutionContext& ctx, const Json& params) {
                 continue;
             }
             const auto leaf = dinero::consensus::HashUTXOForCreationHeight(
-                txid.AsUint256(), vout, coin.value().amount, script,
-                coin.value().height, coin.value().coinbase);
+                txid.AsUint256(), vout, coin.amount, script,
+                coin.height, coin.coinbase);
             auto position_opt = forest_view.findLeafPosition(leaf);
             if (!position_opt.has_value()) {
-                MaybeScheduleProofCoverageRecovery(*chainstate, *chain_db, txid, vout,
-                                                  "[getutxoproofs_batch]");
+                if (input.canonical) {
+                    chainstate->RequestChainstateRecovery(
+                        "live UTXO missing from Utreexo forest for " + txid_hex + ":" +
+                        std::to_string(vout), "[getutxoproofs_batch]");
+                }
                 proof_result["success"] = false;
                 proof_result["error_code"] = "chainstate-recovery-required";
-                proof_result["error"] = "Live UTXO missing from forest; chainstate recovery scheduled";
+                proof_result["error"] = input.canonical
+                    ? "Captured canonical UTXO missing from forest; recovery requested"
+                    : "Captured pre-base UTXO missing from forest";
                 failed++;
                 proofs_array.append(proof_result);
                 continue;
@@ -320,6 +302,11 @@ Json rpc_getutxoproofs_batch(const ExecutionContext& ctx, const Json& params) {
             for (const auto& sibling : proof.siblings) {
                 siblings_array.append(hashToHexBatch(sibling));
             }
+            proof_json["leaf_hash"] = hashToHexBatch(leaf);
+            proof_json["amount_una"] = static_cast<Json::Int64>(coin.amount);
+            proof_json["script_pubkey"] = coin.script_pubkey;
+            proof_json["created_height"] = static_cast<Json::UInt64>(coin.height);
+            proof_json["coinbase"] = coin.coinbase;
             proof_json["siblings"] = siblings_array;
             proof_json["position"] = static_cast<Json::Int64>(proof.position);
             proof_json["num_leaves"] = static_cast<Json::Int64>(proof.numLeaves);
@@ -338,6 +325,15 @@ Json rpc_getutxoproofs_batch(const ExecutionContext& ctx, const Json& params) {
 
         // Return results
         result["utreexo_root"] = hashToHexBatch(utreexo_root);
+        result["block_hash"] = captured->snapshot.block_hash.GetHex();
+        result["height"] = captured->snapshot.height;
+        Json stump_roots = din::arr();
+        for (const auto& root : forest_view.getRoots()) stump_roots.append(hashToHexBatch(root));
+        result["stump_roots"] = stump_roots;
+        result["roots"] = stump_roots;
+        result["stump_num_leaves"] = static_cast<Json::UInt64>(captured->snapshot.num_leaves);
+        result["num_leaves"] = static_cast<Json::UInt64>(captured->snapshot.num_leaves);
+        result["num_roots"] = static_cast<Json::UInt64>(captured->snapshot.num_roots);
         result["proofs"] = proofs_array;
         result["batch_size"] = static_cast<Json::Int64>(batch_size);
         result["successful"] = static_cast<Json::Int64>(successful);
@@ -416,23 +412,6 @@ Json rpc_verifyutxoproofs_batch(const ExecutionContext& ctx, const Json& params)
             return result;
         }
 
-        auto* forest = chainstate->utreexoForest();
-        if (!forest) {
-            result["error"]["code"] = -1;
-            result["error"]["message"] = "Utreexo forest not available";
-            return result;
-        }
-
-        // Canonical coins are committed with the active chain in ChainDB.
-        // The legacy getUTXOIndex() accessor returns wallet-owned metadata,
-        // which is incomplete on non-owning nodes and lags connect/reorg events.
-        auto* chain_db = chainstate->GetChainDB();
-        if (!chain_db) {
-            result["error"]["code"] = -1;
-            result["error"]["message"] = "Canonical coin database not available";
-            return result;
-        }
-
         // Parse parameters
         if (params.empty() || !params[0].isArray()) {
             result["error"]["code"] = -32602;
@@ -451,28 +430,36 @@ Json rpc_verifyutxoproofs_batch(const ExecutionContext& ctx, const Json& params)
             return result;
         }
 
-        // Get current forest roots and commitment for verification
-        // Snapshot the live forest once under its shared lock; derive the root
-        // and all batch proofs from the local clone — consistent AND free of a
-        // race with the block-connect writer (audit: forest read-during-free UAF).
-        dinero::consensus::UtreexoForest forest_view;
-        {
-            auto forest_lock = chainstate->GetConsensusUTXOSet()->LockForestShared();
-            forest_view = forest->clone();
+        std::vector<dinero::OutPoint> points;
+        std::vector<std::optional<size_t>> input_indices(batch_size);
+        for (size_t i = 0; i < batch_size; ++i) {
+            const auto& op = proofs_param[static_cast<Json::ArrayIndex>(i)];
+            if (!op.isObject() || !op.isMember("txid") || !op["txid"].isString() ||
+                !op.isMember("vout") || !op["vout"].isUInt()) continue;
+            const auto txid = parseTxId(op["txid"].asString());
+            if (!txid) continue;
+            input_indices[i] = points.size(); points.emplace_back(*txid, op["vout"].asUInt());
         }
-        std::vector<dinero::consensus::UtreexoHash> roots = forest_view.getRoots();
-        dinero::consensus::UtreexoHash utreexo_root = forest_view.getCommitment();
+        auto captured = chainstate->CaptureUtreexoProofInputs(points);
+        if (!captured.ok()) {
+            result["error"]["code"] = -1;
+            result["error"]["message"] = "Selected verification inputs unavailable";
+            return result;
+        }
+        const auto roots = captured->forest.getRoots();
+        const auto& utreexo_root = captured->snapshot.commitment;
 
         // Process each proof
         Json results_array(::Json::arrayValue);
         size_t valid_count = 0;
         size_t invalid_count = 0;
 
-        for (const auto& proof_obj : proofs_param) {
+        for (size_t item = 0; item < batch_size; ++item) {
+            const auto& proof_obj = proofs_param[static_cast<Json::ArrayIndex>(item)];
             Json verify_result;
 
             // Parse txid, vout, and proof
-            if (!proof_obj.isObject() || !proof_obj.isMember("txid") ||
+            if (!proof_obj.isObject() || !proof_obj.isMember("txid") || !proof_obj["txid"].isString() ||
                 !proof_obj.isMember("vout") || !proof_obj.isMember("proof")) {
                 verify_result["valid"] = false;
                 verify_result["error_code"] = "invalid-format";
@@ -517,21 +504,15 @@ Json rpc_verifyutxoproofs_batch(const ExecutionContext& ctx, const Json& params)
             // canonical coin source used by getutxoproof, never from the wallet
             // or caller-supplied metadata. A spent coin must fail even if the
             // wallet still retains its history row.
-            auto coin_result = dinero::rpc::ResolveUtreexoProofCoin(
-                *chainstate, *chain_db, txid_uint256, vout);
-            if (!coin_result.ok()) {
+            const auto& input = captured->inputs.at(input_indices.at(item).value());
+            if (input.status != dinero::Status::Ok || !input.coin) {
                 verify_result["valid"] = false;
-                const bool missing = coin_result.status() == dinero::Status::NotFound;
+                const bool missing = input.status == dinero::Status::NotFound;
                 verify_result["error_code"] = missing ? "utxo-not-found" : "utxo-lookup-failed";
-                verify_result["error"] = missing
-                    ? "UTXO not found in canonical chainstate (spent or never existed)"
-                    : "Canonical UTXO lookup failed";
-                invalid_count++;
-                results_array.append(verify_result);
-                continue;
+                verify_result["error"] = "Canonical UTXO unavailable in captured state";
+                ++invalid_count; results_array.append(verify_result); continue;
             }
-
-            const dinero::Coin& coin = coin_result.value();
+            const dinero::Coin& coin = *input.coin;
             std::vector<uint8_t> script_pubkey;
             if (coin.height < 0 || !util::unhex(coin.script_pubkey, script_pubkey)) {
                 verify_result["valid"] = false;
@@ -554,7 +535,8 @@ Json rpc_verifyutxoproofs_batch(const ExecutionContext& ctx, const Json& params)
             // Parse proof structure
             const Json& proof_json = proof_obj["proof"];
             if (!proof_json.isObject() || !proof_json.isMember("siblings") ||
-                !proof_json.isMember("position") || !proof_json.isMember("num_leaves")) {
+                !proof_json.isMember("position") || !proof_json.isMember("num_leaves") ||
+                !proof_json["position"].isUInt64() || !proof_json["num_leaves"].isUInt64()) {
                 verify_result["valid"] = false;
                 verify_result["error_code"] = "invalid-proof-structure";
                 verify_result["error"] = "Invalid proof structure";
@@ -579,20 +561,20 @@ Json rpc_verifyutxoproofs_batch(const ExecutionContext& ctx, const Json& params)
             }
 
             for (const auto& sibling_hex : siblings_json) {
-                auto sibling_opt = hexToHashBatch(sibling_hex.asString());
+                auto sibling_opt = sibling_hex.isString()
+                    ? hexToHashBatch(sibling_hex.asString()) : std::nullopt;
                 if (!sibling_opt.has_value()) {
                     verify_result["valid"] = false;
                     verify_result["error_code"] = "invalid-sibling-hash";
                     verify_result["error"] = "Invalid sibling hash format";
                     invalid_count++;
-                    results_array.append(verify_result);
                     goto next_proof;  // Break out of inner loop and continue outer
                 }
                 proof.siblings.push_back(sibling_opt.value());
             }
 
             // Verify proof
-            if (proof.verify(leaf_hash, roots)) {
+            if (proof.numLeaves == captured->snapshot.num_leaves && proof.verify(leaf_hash, roots)) {
                 verify_result["valid"] = true;
                 valid_count++;
             } else {
@@ -612,6 +594,8 @@ Json rpc_verifyutxoproofs_batch(const ExecutionContext& ctx, const Json& params)
 
         // Return results
         result["utreexo_root"] = hashToHexBatch(utreexo_root);
+        result["height"] = captured->snapshot.height;
+        result["block_hash"] = captured->snapshot.block_hash.GetHex();
         result["results"] = results_array;
         result["batch_size"] = static_cast<Json::Int64>(batch_size);
         result["valid"] = static_cast<Json::Int64>(valid_count);

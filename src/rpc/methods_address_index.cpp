@@ -825,17 +825,7 @@ static Json computeAddressBatch(const ExecutionContext& ctx,
         result["history_limit"] = MAX_BATCH_HISTORY;
         result["history_scope"] = "wallet_global";
         result["addresses"] = address_results;
-        Json proof_context;
-        proof_context["tip_height"] = tip_height;
-        proof_context["tip_hash"] = ctx.daemon->chainstate->getBestBlockHash();
-        const auto commitment = din::rpc_getutreexocommitment(ctx, din::arr());
-        proof_context["utreexo_root"] = commitment.isMember("commitment")
-            ? commitment["commitment"] : Json("");
-        proof_context["available"] = proof_context["tip_hash"].isString() &&
-            !proof_context["tip_hash"].asString().empty() &&
-            proof_context["utreexo_root"].isString() &&
-            !proof_context["utreexo_root"].asString().empty();
-        result["proof_context"] = proof_context;
+
     } catch (const std::exception& e) {
         result["error"]["code"] = -1;
         result["error"]["message"] = std::string("Exception: ") + e.what();
@@ -876,6 +866,14 @@ Json rpc_getaddressbatch(const ExecutionContext& ctx, const Json& params) {
         return result;
     }
 
+    // Balance/history results may be cached. Proof context is an independent,
+    // current observation and must be captured after releasing the cache lock.
+    const auto with_proof_context = [&](Json response) {
+        if (!response.isMember("error"))
+            response["proof_context"] = BuildUtreexoProofContext(ctx);
+        return response;
+    };
+
     std::ostringstream key_builder;
     key_builder << ctx.daemon->chainstate->getBestBlockHash() << ':' << history_count;
     for (const auto& address : addresses) key_builder << ':' << address;
@@ -893,7 +891,8 @@ Json rpc_getaddressbatch(const ExecutionContext& ctx, const Json& params) {
             ++g_batch_discovery.cache_hits;
             result = cached->second.result;
             addBatchMetadata(result, true, 0, addresses.size(), g_batch_discovery);
-            return result;
+            lock.unlock();
+            return with_proof_context(std::move(result));
         }
 
         if (auto running = g_batch_discovery.flights.find(key);
@@ -906,7 +905,8 @@ Json rpc_getaddressbatch(const ExecutionContext& ctx, const Json& params) {
                 ++g_batch_discovery.cache_hits;
                 result = flight->result;
                 addBatchMetadata(result, true, 0, addresses.size(), g_batch_discovery);
-                return result;
+                lock.unlock();
+                return with_proof_context(std::move(result));
             }
             ++g_batch_discovery.rejected;
             if (completed) result = flight->result;
@@ -964,7 +964,7 @@ Json rpc_getaddressbatch(const ExecutionContext& ctx, const Json& params) {
         addBatchMetadata(result, false, scan_ms, addresses.size(), g_batch_discovery);
     }
     flight->changed.notify_all();
-    return result;
+    return with_proof_context(std::move(result));
 }
 
 

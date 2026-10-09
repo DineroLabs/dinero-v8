@@ -197,6 +197,18 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Install the source-pinned Orchard compiler
+        shell: bash
+        run: |
+          python - <<'PY_ORCHARD_TOOLCHAIN'
+          import pathlib, re, subprocess
+          text = pathlib.Path('rust/orchard_backend/rust-toolchain.toml').read_text()
+          pins = re.findall(r'^channel = "([0-9]+\.[0-9]+\.[0-9]+)"$', text, re.MULTILINE)
+          if len(pins) != 1:
+              raise SystemExit('Missing exact Orchard compiler pin')
+          subprocess.run(['rustup', 'toolchain', 'install', pins[0], '--profile', 'minimal'], check=True)
+          PY_ORCHARD_TOOLCHAIN
+
       - name: Install OpenCL import library for the SV2 GPU miner
         shell: powershell
         run: |
@@ -252,6 +264,8 @@ jobs:
         run: |
           cmake -S . -B build-msvc-native -G 'Visual Studio 17 2022' -A x64 `
             -DDINERO_BUILD_QT=ON `
+            -DDINERO_BUILD_ORCHARD_BACKEND=ON `
+            -DDIN_ENABLE_ORCHARD_UI=ON `
             -DDINERO_BUILD_MINER=ON `
             -DDINERO_BUILD_SEEDER=ON `
             -DENABLE_GPU_MINING=ON `
@@ -414,6 +428,10 @@ jobs:
             } | Out-File SHA256SUMS.txt -Encoding ascii
           } finally { Pop-Location }
           Compress-Archive -Path "$zipStage\*" -DestinationPath "packaging\windows\dist\dinero-v$version-windows-x86_64-msvc.zip" -Force
+          $orchardZipCheck = Join-Path $env:RUNNER_TEMP 'orchard-operator-zip'
+          Expand-Archive -Path "packaging\windows\dist\dinero-v$version-windows-x86_64-msvc.zip" -DestinationPath $orchardZipCheck
+          & python scripts/verify-orchard-package.py --daemon (Join-Path $orchardZipCheck 'bin\dinerod.exe')
+          if ($LASTEXITCODE -ne 0) { throw 'Operator ZIP Orchard capability check failed' }
 
       - name: Sign final installers
         if: ${{ vars.WINDOWS_SIGNING_READY == 'true' }}
@@ -450,6 +468,10 @@ jobs:
             $install = Start-Process -FilePath (Resolve-Path $case.Installer) -ArgumentList '/S' -Wait -PassThru
             if ($install.ExitCode -ne 0) { throw "installer failed: $($case.Installer)" }
             foreach ($name in $case.Required) { if (-not (Test-Path (Join-Path $case.Dir $name))) { throw "missing installed $name" } }
+            $orchardArgs = @('scripts/verify-orchard-package.py', '--daemon', (Join-Path $case.Dir 'dinerod.exe'))
+            if ($case.Gui) { $orchardArgs += @('--qt', (Join-Path $case.Dir 'dinero-qt.exe')) }
+            & python @orchardArgs
+            if ($LASTEXITCODE -ne 0) { throw 'Installed Orchard capability check failed' }
             if ($case.Gui) {
               # Regression gate for #673: the first tab change used to dereference the
               # mining output widget before construction, shortly after the embedded

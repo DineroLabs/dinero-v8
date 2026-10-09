@@ -1,3 +1,10 @@
+#include "dinero/core/common/AddressCodec.h"
+#include "consensus/pow.hpp"
+#include "consensus/pow.h"
+#include "consensus/pow_context.h"
+#include <deque>
+#include "daemon/orchard_chainstate_write.h"
+#include "storage/orchard_catalog_state.h"
 #include "rpc/methods_vault.h"
 #include "vault/vault_service.h"
 #include "address/addr_codec.h"
@@ -144,6 +151,18 @@ struct RuntimeOriginProjectionTestAccess {
 #endif
 
 struct ShieldedStateStartupTestAccess {
+    static bool ActivationRetryReady(ChainstateService& service,const uint256& hash) {
+        std::lock_guard<AnnotatedRecursiveMutex> lock(service.activation_mutex_);
+        return service.activation_retries_.IsReady(hash,std::chrono::steady_clock::now());
+    }
+    static bool WaitForActivationRetry(ChainstateService& service,const uint256& hash) {
+        const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(2);
+        while(!ActivationRetryReady(service,hash)) {
+            if(std::chrono::steady_clock::now()>=deadline)return false;
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        return true;
+    }
     static auto CaptureActivationPlan(ChainstateService& service) {
         std::unique_ptr<ChainstateService::ActivationParentPlan> plan;
         service.ActivateBestChainPass(nullptr,plan,true);
@@ -229,11 +248,16 @@ struct ShieldedStateStartupTestAccess {
     }
     // First boundary fixture invokes the actual service entry points.
     static bool ConnectBoundary(ChainstateService& s,CBlockIndex* next,std::string& error,bool& invalid) {
+        // Use the same independently completed parent and selected-lock owner
+        // as real block ingress, rather than a raw fixture root installation.
+        auto use=ChainstateService::AcquireBlockIngressUse(s.weak_from_this().lock());
         return s.ConnectTip(next,&error,&invalid);
     }
     static bool DisconnectBoundary(ChainstateService& s,CBlockIndex* next) {return s.DisconnectTip(next);}
     static bool BoundaryTipIs(const ChainstateService& s,const CBlockIndex* tip) {return s.active_tip_==tip;}
     static bool AuditBoundary(ChainstateService& s) {return s.VerifyConsensusJournalAtActiveTip();}
+    static auto& CatalogWriterMutex(ChainstateService& s){return s.activation_mutex_;}
+    static auto& CatalogWriterCoins(ChainstateService& s){return *s.consensus_utxo_set_;}
     static bool TryChain(ChainstateService& service) {
         if (!service.activation_mutex_.try_lock()) return false;
         service.activation_mutex_.unlock(); return true;
@@ -746,6 +770,10 @@ TEST(RuntimeOriginProjection, UnavailableWithoutBackend) {
 
 }  // namespace dinero
 
+#ifdef DINERO_TEST_ORCHARD_HTTP_TRANSPORT
+#include "../../qt/tests/orchard_http_transport_adapter.h"
+#endif
+
 int main(int argc, char** argv) {
     dinero::SelectParams(dinero::Chain::REGTEST);  // utreexo active from genesis on all nets
     // state_commitment_v1: dormant for this suite — its blocks are hand-built
@@ -754,6 +782,10 @@ int main(int argc, char** argv) {
     // suites and the forged-snapshot e2e exercise on the active default).
     dinero::MutableParams().state_commitment_activation_height = UINT32_MAX;
     ::testing::InitGoogleTest(&argc, argv);
+#ifdef DINERO_TEST_ORCHARD_HTTP_TRANSPORT
+    if (::testing::GTEST_FLAG(filter)=="OrchardHttpTransport.*")
+        return OrchardHttpTransportTest::RunWithApplication([] { return RUN_ALL_TESTS(); });
+#endif
     return RUN_ALL_TESTS();
 }
 
@@ -772,6 +804,7 @@ int main(int argc, char** argv) {
 #include "orchard_block_relay_checks.h"
 
 #include "orchard_network_routing_checks.h"
+#include "canonical_only_queue_checks.h"
 #include "orchard_fork_intake_checks.h"
 
 #include "orchard_block_announcement_checks.h"
@@ -790,6 +823,7 @@ int main(int argc, char** argv) {
 #include "chainstate_wallet_index_owner_checks.h"
 
 #include "wallet_canonical_recovery_checks.h"
+#include "orchard_rpc_binding_fixture.h"
 #include "orchard_account_issuance_checks.h"
 #include "runtime_delivery_worker_checks.h"
 #include "runtime_notification_composition_checks.h"
@@ -872,6 +906,7 @@ int main(int argc, char** argv) {
 #include "wallet_shared_reservations_checks.h"
 #include "wallet_shield_reservations_checks.h"
 #include "wallet_shield_rpc_checks.h"
+#include "orchard_request_error_checks.h"
 #include "wallet_shield_history_checks.h"
 #include "wallet_script_coverage_checks.h"
 
@@ -887,6 +922,7 @@ int main(int argc, char** argv) {
 #include "orchard_detached_issuance_checks.h"
 #include "orchard_issuance_retry_checks.h"
 #include "orchard_detached_proof_read_checks.h"
+#include "orchard_plan_recovery_checks.h"
 #include "orchard_detached_finalization_checks.h"
 #include "orchard_detached_shield_signing_checks.h"
 #include "orchard_detached_ordinary_payment_checks.h"
@@ -898,3 +934,52 @@ int main(int argc, char** argv) {
 #include "replay_coin_rollback_checks.h"
 #include "replay_forest_sharing_checks.h"
 #include "replay_forest_partitions_checks.h"
+
+#include "orchard_canonical_catalog_checks.h"
+#include "orchard_compact_service_checks.h"
+#include "orchard_compact_handoff_checks.h"
+#include "orchard_compact_undo_handoff_checks.h"
+#include "orchard_compact_historical_undo_checks.h"
+#include "orchard_compact_global_index_checks.h"
+#include "orchard_compact_header_binding_checks.h"
+#include "orchard_compact_header_retention_checks.h"
+#include "orchard_compact_header_transition_checks.h"
+#include "orchard_compact_boundary_audit_checks.h"
+#include "orchard_compact_startup_audit_checks.h"
+
+#include "orchard_pool_catalog_view_checks.h"
+
+#include "orchard_outgoing_handoff_checks.h"
+
+#include "orchard_compact_transition_checks.h"
+#include "orchard_compact_start_checks.h"
+#include "compact_header_startup_checks.h"
+#include "orchard_compact_header_restore_checks.h"
+
+#include "orchard_rpc_binding_checks.h"
+
+#include "wallet_proof_snapshot_checks.h"
+
+#include "wallet_proof_context_checks.h"
+
+#include "utreexo_proof_input_capture_checks.h"
+
+#include "orchard_compact_queued_ingress_checks.h"
+
+#include "orchard_compact_network_checks.h"
+
+#include "orchard_activation_status_checks.h"
+
+#include "orchard_network_request_checks.h"
+
+#include "orchard_compact_download_mode_checks.h"
+
+#include "utreexo_block_payload_checks.h"
+
+#ifdef DINERO_TEST_ORCHARD_QT_CONTRACT
+#include "orchard_qt_contract_checks.h"
+#endif
+
+#ifdef DINERO_TEST_ORCHARD_HTTP_TRANSPORT
+#include "orchard_http_transport_checks.h"
+#endif

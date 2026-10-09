@@ -1361,6 +1361,20 @@ std::optional<std::string> UTXOIndex::GetMetadata(const std::string& key) const 
     return result;
 }
 
+void UTXOIndex::RequireMetadataAbsent(const std::vector<std::string>& keys) const {
+    std::lock_guard<std::recursive_mutex> lock(db_mutex_);
+    if (!db_ || atomic_write_active_ || !sqlite3_get_autocommit(db_) || keys.empty())
+        throw std::runtime_error("Wallet index startup metadata read unavailable");
+    std::string sql="SELECT key FROM utxo_metadata WHERE key IN (";
+    for(size_t i=0;i<keys.size();++i) sql+=(i ? ",?" : "?");
+    sql+=")";
+    OwnershipSchemaStatement row(db_,sql);
+    for(size_t i=0;i<keys.size();++i) row.Text(int(i+1),keys[i]);
+    const int rc=sqlite3_step(row.value);
+    if(rc==SQLITE_ROW)throw std::runtime_error("Wallet index retains unsupported recovery state");
+    if(rc!=SQLITE_DONE)throw std::runtime_error("Wallet index startup metadata read incomplete");
+}
+
 bool UTXOIndex::DeleteMetadata(const std::string& key) {
     if (key.starts_with("runtime_delivery:")) return false;
     std::lock_guard<std::recursive_mutex> lock(db_mutex_);

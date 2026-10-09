@@ -85,6 +85,134 @@ protected:
     std::unique_ptr<dinero::WalletManager> wallet;
 };
 
+class WalletUtxoReadTest : public WalletDatabaseLeaseTest {
+protected:
+    void SetUp() override {
+        WalletDatabaseLeaseTest::SetUp();
+        wallet->open("owner");
+        auto* db = wallet->getCurrentDatabase();
+        Exec(db, "INSERT INTO utxos(id,wallet_id,txid,vout,address,amount,script_pubkey,height,is_coinbase,is_spent) "
+                 "VALUES(101,1,'1111111111111111111111111111111111111111111111111111111111111111',0,'',300,'51',0,0,0),"
+                 "(102,1,'2222222222222222222222222222222222222222222222222222222222222222',1,'recorded display',100,'52',0,0,0)");
+    }
+    static int Interrupt(unsigned event, void* opaque, void* raw, void*) {
+        const char* sql = sqlite3_sql(static_cast<sqlite3_stmt*>(raw));
+        if (event == SQLITE_TRACE_ROW && sql && std::string_view(sql).find("FROM utxos u") != std::string_view::npos)
+            sqlite3_interrupt(static_cast<sqlite3*>(opaque));
+        return 0;
+    }
+};
+
+TEST_F(WalletUtxoReadTest, CompleteRowsKeepEmptyDisplayAndDoNotWrite) {
+    auto* db = wallet->getCurrentDatabase();
+    const int changes = sqlite3_total_changes(db);
+    const auto rows = wallet->listUnspentUTXOs(0, 10);
+    ASSERT_EQ(rows.size(), 2u);
+    EXPECT_EQ(rows[0].amount_una, 300u); EXPECT_TRUE(rows[0].address.empty());
+    EXPECT_EQ(rows[0].script_pubkey, "51"); EXPECT_TRUE(rows[0].derivation_path.empty());
+    EXPECT_EQ(rows[1].amount_una, 100u); EXPECT_EQ(rows[1].address, "recorded display");
+    EXPECT_TRUE(rows[1].derivation_path.empty());
+    EXPECT_EQ(sqlite3_total_changes(db), changes);
+    EXPECT_EQ(sqlite3_get_autocommit(db), 1);
+}
+
+TEST_F(WalletUtxoReadTest, MalformedLaterRowNeverReturnsEarlierPrefix) {
+    auto* db = wallet->getCurrentDatabase();
+    for (const char* mutation : {
+            "UPDATE utxos SET vout=-1 WHERE id=102",
+            "UPDATE utxos SET vout=4294967296 WHERE id=102",
+            "UPDATE utxos SET script_pubkey=CAST(script_pubkey AS BLOB) WHERE id=102",
+            "UPDATE utxos SET txid='short' WHERE id=102",
+            "UPDATE utxos SET address=CAST(X'610062' AS TEXT) WHERE id=102",
+            "UPDATE utxos SET is_coinbase=2 WHERE id=102"}) {
+        SCOPED_TRACE(mutation); Exec(db, mutation);
+        const int changes = sqlite3_total_changes(db);
+        EXPECT_THROW(wallet->listUnspentUTXOs(0, 10), std::runtime_error);
+        EXPECT_EQ(sqlite3_total_changes(db), changes);
+        Exec(db, "UPDATE utxos SET vout=1,script_pubkey='52',address='recorded display',is_coinbase=0,"
+                 "txid='2222222222222222222222222222222222222222222222222222222222222222' WHERE id=102");
+        EXPECT_EQ(wallet->listUnspentUTXOs(0, 10).size(), 2u);
+    }
+}
+
+TEST_F(WalletUtxoReadTest, DeniedReadInterruptedCompletionAndRetry) {
+    auto* db = wallet->getCurrentDatabase();
+    sqlite3_set_authorizer(db, [](void*, int op, const char* table, const char*, const char*, const char*) {
+        return op == SQLITE_READ && table && std::string_view(table) == "utxos" ? SQLITE_DENY : SQLITE_OK;
+    }, nullptr);
+    EXPECT_THROW(wallet->listUnspentUTXOs(0, 10), std::runtime_error);
+    sqlite3_set_authorizer(db, nullptr, nullptr);
+    sqlite3_trace_v2(db, SQLITE_TRACE_ROW, Interrupt, db);
+    EXPECT_THROW(wallet->listUnspentUTXOs(0, 10), std::runtime_error);
+    sqlite3_trace_v2(db, 0, nullptr, nullptr);
+    EXPECT_EQ(sqlite3_get_autocommit(db), 1);
+    EXPECT_EQ(wallet->listUnspentUTXOs(0, 10).size(), 2u);
+}
+
+TEST_F(WalletUtxoReadTest, BorrowedTransactionIsNeitherCommittedNorRolledBack) {
+    auto* db = wallet->getCurrentDatabase();
+    Exec(db, "BEGIN");
+    Exec(db, "UPDATE utxos SET amount=101 WHERE id=102");
+    EXPECT_THROW(wallet->listUnspentUTXOs(0, 10), std::runtime_error);
+    EXPECT_EQ(sqlite3_get_autocommit(db), 0);
+    Exec(db, "ROLLBACK");
+    const auto rows = wallet->listUnspentUTXOs(0, 10);
+    ASSERT_EQ(rows.size(), 2u); EXPECT_EQ(rows[1].amount_una, 100u);
+    EXPECT_THROW(wallet->listUnspentUTXOs(-1, 10), std::runtime_error);
+    EXPECT_THROW(wallet->listUnspentUTXOs(11, 10), std::runtime_error);
+}
+
+TEST_F(WalletUtxoReadTest, SchemaReadFailureIsNotLegacyColumnAbsence) {
+    auto* db = wallet->getCurrentDatabase();
+    // This actual fresh schema has no snapshot column; that checked absence is supported.
+    EXPECT_EQ(wallet->listUnspentUTXOs(0, 10).size(), 2u);
+    sqlite3_set_authorizer(db, [](void*, int op, const char* name, const char*, const char*, const char*) {
+        return op == SQLITE_PRAGMA && name && std::string_view(name) == "table_info" ? SQLITE_DENY : SQLITE_OK;
+    }, nullptr);
+    EXPECT_THROW(wallet->listUnspentUTXOs(0, 10), std::runtime_error);
+    sqlite3_set_authorizer(db, nullptr, nullptr);
+    Exec(db, "ALTER TABLE utxos ADD COLUMN snapshot_anchored INTEGER NOT NULL DEFAULT 0");
+    Exec(db, "UPDATE utxos SET snapshot_anchored=2 WHERE id=102");
+    EXPECT_THROW(wallet->listUnspentUTXOs(0, 10), std::runtime_error);
+    Exec(db, "UPDATE utxos SET snapshot_anchored=0 WHERE id=102");
+    EXPECT_EQ(wallet->listUnspentUTXOs(0, 10).size(), 2u);
+}
+
+TEST_F(WalletUtxoReadTest, CanonicalDuplicateOutpointRefusesWithoutRewritingRows) {
+    auto* db = wallet->getCurrentDatabase();
+    Exec(db, "UPDATE utxos SET txid='aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',vout=0 WHERE id=101");
+    Exec(db, "UPDATE utxos SET txid='AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',vout=0 WHERE id=102");
+    const int changes = sqlite3_total_changes(db);
+    EXPECT_THROW(wallet->listUnspentUTXOs(0, 10), std::runtime_error);
+    EXPECT_EQ(sqlite3_total_changes(db), changes);
+    Exec(db, "UPDATE utxos SET vout=1 WHERE id=102");
+    const auto rows = wallet->listUnspentUTXOs(0, 10);
+    ASSERT_EQ(rows.size(), 2u);
+    EXPECT_EQ(rows[0].txid, std::string(64, 'a'));
+    EXPECT_EQ(rows[1].txid, std::string(64, 'A'));
+}
+
+TEST_F(WalletUtxoReadTest, UnavailableIndexRefusesAndCheckedAbsencePreservesRows) {
+    auto* db = wallet->getCurrentDatabase();
+    dinero::UTXOIndex index((path / "read-index.sqlite").string());
+    wallet->setUTXOIndex(&index);
+    struct Detach { dinero::WalletManager& wallet; ~Detach() { wallet.setUTXOIndex(nullptr); } } detach{*wallet};
+    // The fixture owns this index for the entire serialized call; no shutdown/race probe.
+    EXPECT_THROW(wallet->listUnspentUTXOs(0, 10), std::runtime_error);
+    ASSERT_TRUE(index.Initialize());
+    const int before = sqlite3_total_changes(db);
+    EXPECT_TRUE(wallet->listUnspentUTXOs(0, 10).empty());
+    EXPECT_EQ(sqlite3_total_changes(db), before);
+    Exec(db, "ALTER TABLE utxos ADD COLUMN snapshot_anchored INTEGER NOT NULL DEFAULT 0");
+    Exec(db, "UPDATE utxos SET snapshot_anchored=1 WHERE id=102");
+    const int anchored_changes = sqlite3_total_changes(db);
+    const auto rows = wallet->listUnspentUTXOs(0, 10);
+    ASSERT_EQ(rows.size(), 1u); EXPECT_EQ(rows[0].vout, 1u);
+    EXPECT_EQ(sqlite3_total_changes(db), anchored_changes);
+    wallet->setUTXOIndex(nullptr);
+    EXPECT_EQ(wallet->listUnspentUTXOs(0, 10).size(), 2u);
+}
+
 class WalletSeedReadTest : public WalletDatabaseLeaseTest {
 protected:
     std::optional<std::vector<uint8_t>> Read(const std::string& passphrase) {
@@ -966,6 +1094,43 @@ TEST_F(WalletRecoveryKeyTest, RefusesExpiredEmptyAndReopenedSelection) {
     auto lease=wallet->AcquireDatabaseLease();
     EXPECT_THROW(lease->CopyRecoverySeed(lease->Session()),std::runtime_error);
     EXPECT_FALSE(wallet->GetMasterSeed().has_value());
+}
+
+
+class WalletExistingIdentityTest : public WalletDatabaseLeaseTest {};
+TEST_F(WalletExistingIdentityTest, ReadOnlyAndSameSeedLease) {
+    wallet->open("owner");std::array<uint8_t,32> original{};
+    {auto lease=wallet->AcquireDatabaseLease();auto* db=lease->Database();const auto writes=sqlite3_total_changes(db);
+     Exec(db,"PRAGMA query_only=ON");auto seed=lease->CopyRecoverySeed(lease->Session());
+     original=lease->ReadDeliveryIdentity();EXPECT_NE(original,(std::array<uint8_t,32>{}));
+     EXPECT_EQ(lease->ReadDeliveryIdentity(),original);EXPECT_EQ(sqlite3_total_changes(db),writes);
+     Exec(db,"PRAGMA query_only=OFF");}
+    wallet->open("owner");EXPECT_EQ(wallet->AcquireDatabaseLease()->ReadDeliveryIdentity(),original);
+    wallet->create("other");wallet->open("other");EXPECT_NE(wallet->AcquireDatabaseLease()->ReadDeliveryIdentity(),original);
+    dinero::WalletManager empty(path/"empty");EXPECT_THROW(empty.AcquireDatabaseLease()->ReadDeliveryIdentity(),std::runtime_error);
+}
+TEST_F(WalletExistingIdentityTest, MissingAndMalformedNeverEnroll) {
+    wallet->open("owner");auto lease=wallet->AcquireDatabaseLease();auto* db=lease->Database();
+    for(const auto* value:{"NULL","zeroblob(32)","zeroblob(31)","'not-a-blob'"}){
+        Exec(db,(std::string("UPDATE wallet_meta SET runtime_delivery_id=")+value+" WHERE id=1").c_str());
+        const auto writes=sqlite3_total_changes(db);EXPECT_THROW(lease->ReadDeliveryIdentity(),std::runtime_error);EXPECT_EQ(sqlite3_total_changes(db),writes);}
+    // Predecessor schema is synthetic; no key recovery or unlock is attempted.
+    Exec(db,"ALTER TABLE wallet_meta DROP COLUMN runtime_delivery_id");const auto writes=sqlite3_total_changes(db);
+    EXPECT_THROW(lease->ReadDeliveryIdentity(),std::runtime_error);EXPECT_EQ(sqlite3_total_changes(db),writes);
+    sqlite3_stmt* q=nullptr;ASSERT_EQ(sqlite3_prepare_v2(db,"SELECT count(*) FROM pragma_table_info('wallet_meta') WHERE name='runtime_delivery_id'",-1,&q,nullptr),SQLITE_OK);
+    ASSERT_EQ(sqlite3_step(q),SQLITE_ROW);EXPECT_EQ(sqlite3_column_int(q,0),0);sqlite3_finalize(q);
+}
+TEST_F(WalletExistingIdentityTest, ReadFailureAndBorrowedReadPreserveTransaction) {
+    wallet->open("owner");auto lease=wallet->AcquireDatabaseLease();auto* db=lease->Database();const auto id=lease->ReadDeliveryIdentity();
+    sqlite3_set_authorizer(db,[](void*,int op,const char* table,const char* column,const char*,const char*){
+        return op==SQLITE_READ&&table&&column&&std::string_view(table)=="wallet_meta"&&std::string_view(column)=="runtime_delivery_id"?SQLITE_DENY:SQLITE_OK;},nullptr);
+    EXPECT_THROW(lease->ReadDeliveryIdentity(),std::runtime_error);sqlite3_set_authorizer(db,nullptr,nullptr);
+    sqlite3_trace_v2(db,SQLITE_TRACE_ROW,[](unsigned event,void* context,void* statement,void*){
+        const char* sql=sqlite3_sql(static_cast<sqlite3_stmt*>(statement));if(event==SQLITE_TRACE_ROW&&sql&&std::string_view(sql)=="SELECT runtime_delivery_id FROM wallet_meta WHERE id=1")sqlite3_interrupt(static_cast<sqlite3*>(context));return 0;},db);
+    EXPECT_THROW(lease->ReadDeliveryIdentity(),std::runtime_error);sqlite3_trace_v2(db,0,nullptr,nullptr);
+    EXPECT_EQ(lease->ReadDeliveryIdentity(),id);
+    Exec(db,"BEGIN IMMEDIATE");EXPECT_EQ(lease->ReadDeliveryIdentity(),id);EXPECT_EQ(sqlite3_get_autocommit(db),0);Exec(db,"ROLLBACK");
+    EXPECT_EQ(lease->ReadDeliveryIdentity(),id);
 }
 
 class WalletDeliveryBindingTest : public WalletDatabaseLeaseTest {};

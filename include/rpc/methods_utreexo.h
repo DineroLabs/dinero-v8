@@ -6,6 +6,9 @@
 // Forward declarations for Utreexo RPC methods
 namespace din {
 
+// One checked root/height/hash observation. Unavailable results contain no tuple.
+Json BuildUtreexoProofContext(const ExecutionContext& ctx);
+
 // Phase 34.2: Core Utreexo RPC methods
 Json rpc_getutreexoroots(const ExecutionContext& ctx, const Json& params);
 Json rpc_getutreexocommitment(const ExecutionContext& ctx, const Json& params);

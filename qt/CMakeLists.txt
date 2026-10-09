@@ -27,6 +27,10 @@ project(dinero-qt VERSION ${DINERO_MONOREPO_VERSION} LANGUAGES CXX)
 
 option(DIN_ENABLE_LIQUIDITY_VAULT_UI
   "Expose the custodial Liquidity Vault panel in dinero-qt" OFF)
+option(DIN_ENABLE_ORCHARD_UI
+  "Orchard private-payment screens (preview; RPC contract not final)" OFF)
+option(DIN_ENABLE_SWAP_UI
+  "Expose the DIN <-> BTC atomic swap tab (swaps stay off unless dinerod enables them)" ON)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Qt firewall — directory-scope include reset (Phase 2 Step 7 finding, 2026-05-12)
@@ -527,6 +531,14 @@ endif()
 # ═══════════════════════════════════════════════════════════════════════════════
 
 set(GUI_SOURCES
+  src/chaintiming.cpp
+  src/upgradepolicy.cpp
+  src/miningrewards.cpp
+  src/inforow.cpp
+  src/portcheck.cpp
+  src/paycollectpolicy.cpp
+  src/upgradebanner.cpp
+  src/updatechecker.cpp
   src/privatecovenantwidget.cpp
   src/privatecovenantwidget.h
   src/main.cpp
@@ -580,6 +592,9 @@ set(GUI_SOURCES
   src/vaultpanel.h
   # Pool operator dashboard (SV2 pool ops endpoint + chain-verified fee).
   src/poolpanel.cpp
+  src/poolcockpit.cpp
+  src/pooltokenstore.cpp
+  src/segwitaddress.cpp
   src/poolpanel.h
   # MyNodeDashboard — Phase 1 MVP (Tasks 1-9).
   src/dashboardtypes.h
@@ -627,6 +642,25 @@ if(DIN_EXPERIMENTAL_FEATURES)
     src/marketplacewidget.h
     src/websocketclient.cpp
     src/websocketclient.h
+  )
+endif()
+
+# Orchard private-payment preview screens (wallet.orchard.* RPCs)
+if(DIN_ENABLE_ORCHARD_UI)
+  list(APPEND GUI_SOURCES
+    src/orchardwidget.cpp
+    src/orchardwidget.h
+    src/orchardflow.h
+    src/orchardcontract.h
+  )
+endif()
+
+# DIN <-> BTC swap tab (talks to the local node's swap.* RPCs)
+if(DIN_ENABLE_SWAP_UI)
+  list(APPEND GUI_SOURCES
+    src/swapwidget.cpp
+    src/swapwidget.h
+    src/swapformpolicy.h
   )
 endif()
 
@@ -710,6 +744,7 @@ if(APPLE)
     "-framework AppKit"
     "-framework CoreImage"
     "-framework Foundation"
+    "-framework Security"
   )
 elseif(WIN32)
   if(MSVC)
@@ -752,6 +787,13 @@ endif()
 
 if(DIN_ENABLE_LIQUIDITY_VAULT_UI)
   target_compile_definitions(dinero-qt PRIVATE DIN_ENABLE_LIQUIDITY_VAULT_UI=1)
+endif()
+
+if(DIN_ENABLE_SWAP_UI)
+  target_compile_definitions(dinero-qt PRIVATE DIN_ENABLE_SWAP_UI=1)
+endif()
+if(DIN_ENABLE_ORCHARD_UI)
+  target_compile_definitions(dinero-qt PRIVATE DIN_ENABLE_ORCHARD_UI=1)
 endif()
 
 target_compile_definitions(dinero-qt PRIVATE QT_NO_KEYWORDS)
@@ -1370,11 +1412,163 @@ if(BUILD_TESTING)
   add_test(NAME WalletNavigation COMMAND test_wallet_navigation)
   set_tests_properties(WalletNavigation PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 30)
 
+  # Overview columns: the right-hand cards share one left edge and width.
+  add_executable(test_overview_columns ${_wallet_test_sources} tests/test_overview_columns.cpp)
+  target_link_libraries(test_overview_columns PRIVATE
+    $<TARGET_PROPERTY:dinero-qt,LINK_LIBRARIES> Qt6::Test)
+  target_include_directories(test_overview_columns PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src $<TARGET_PROPERTY:dinero-qt,INCLUDE_DIRECTORIES>)
+  target_compile_definitions(test_overview_columns PRIVATE
+    QT_NO_KEYWORDS $<TARGET_PROPERTY:dinero-qt,COMPILE_DEFINITIONS>)
+  add_test(NAME OverviewColumns COMMAND test_overview_columns)
+  set_tests_properties(OverviewColumns PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 60)
+
+  add_executable(test_covenants_tab ${_wallet_test_sources} tests/test_covenants_tab.cpp)
+  target_link_libraries(test_covenants_tab PRIVATE
+    $<TARGET_PROPERTY:dinero-qt,LINK_LIBRARIES> Qt6::Test)
+  target_include_directories(test_covenants_tab PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src $<TARGET_PROPERTY:dinero-qt,INCLUDE_DIRECTORIES>)
+  target_compile_definitions(test_covenants_tab PRIVATE
+    QT_NO_KEYWORDS $<TARGET_PROPERTY:dinero-qt,COMPILE_DEFINITIONS>)
+  add_test(NAME CovenantsTab COMMAND test_covenants_tab)
+  set_tests_properties(CovenantsTab PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 90)
+
+  add_executable(test_mining_output_zoom ${_wallet_test_sources} tests/test_mining_output_zoom.cpp)
+  target_link_libraries(test_mining_output_zoom PRIVATE
+    $<TARGET_PROPERTY:dinero-qt,LINK_LIBRARIES> Qt6::Test)
+  target_include_directories(test_mining_output_zoom PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src $<TARGET_PROPERTY:dinero-qt,INCLUDE_DIRECTORIES>)
+  target_compile_definitions(test_mining_output_zoom PRIVATE
+    QT_NO_KEYWORDS $<TARGET_PROPERTY:dinero-qt,COMPILE_DEFINITIONS>)
+  add_test(NAME MiningOutputZoom COMMAND test_mining_output_zoom)
+  set_tests_properties(MiningOutputZoom PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 90)
+
+  add_executable(test_wallet_layout ${_wallet_test_sources} tests/test_wallet_layout.cpp)
+  target_link_libraries(test_wallet_layout PRIVATE
+    $<TARGET_PROPERTY:dinero-qt,LINK_LIBRARIES> Qt6::Test)
+  target_include_directories(test_wallet_layout PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src $<TARGET_PROPERTY:dinero-qt,INCLUDE_DIRECTORIES>)
+  target_compile_definitions(test_wallet_layout PRIVATE
+    QT_NO_KEYWORDS $<TARGET_PROPERTY:dinero-qt,COMPILE_DEFINITIONS>)
+  add_test(NAME WalletLayout COMMAND test_wallet_layout)
+  set_tests_properties(WalletLayout PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 90)
+
+  add_executable(test_pay_collect ${_wallet_test_sources} tests/test_pay_collect.cpp)
+  target_link_libraries(test_pay_collect PRIVATE
+    $<TARGET_PROPERTY:dinero-qt,LINK_LIBRARIES> Qt6::Test)
+  target_include_directories(test_pay_collect PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src $<TARGET_PROPERTY:dinero-qt,INCLUDE_DIRECTORIES>)
+  target_compile_definitions(test_pay_collect PRIVATE
+    QT_NO_KEYWORDS $<TARGET_PROPERTY:dinero-qt,COMPILE_DEFINITIONS>)
+  add_test(NAME PayCollect COMMAND test_pay_collect)
+  set_tests_properties(PayCollect PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 60)
+
+  add_executable(test_hardware_wallet_layout ${_wallet_test_sources} tests/test_hardware_wallet_layout.cpp)
+  target_link_libraries(test_hardware_wallet_layout PRIVATE
+    $<TARGET_PROPERTY:dinero-qt,LINK_LIBRARIES> Qt6::Test)
+  target_include_directories(test_hardware_wallet_layout PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src $<TARGET_PROPERTY:dinero-qt,INCLUDE_DIRECTORIES>)
+  target_compile_definitions(test_hardware_wallet_layout PRIVATE
+    QT_NO_KEYWORDS $<TARGET_PROPERTY:dinero-qt,COMPILE_DEFINITIONS>)
+  add_test(NAME HardwareWalletLayout COMMAND test_hardware_wallet_layout)
+  set_tests_properties(HardwareWalletLayout PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 60)
+
   add_executable(test_covenant_form_policy tests/test_covenant_form_policy.cpp)
   target_include_directories(test_covenant_form_policy PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
   target_link_libraries(test_covenant_form_policy PRIVATE Qt6::Core Qt6::Test)
   target_compile_definitions(test_covenant_form_policy PRIVATE QT_NO_KEYWORDS)
   add_test(NAME CovenantFormPolicy COMMAND test_covenant_form_policy)
+
+  add_executable(test_orchard_flow tests/test_orchard_flow.cpp)
+  target_include_directories(test_orchard_flow PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_link_libraries(test_orchard_flow PRIVATE Qt6::Core Qt6::Test)
+  target_compile_definitions(test_orchard_flow PRIVATE QT_NO_KEYWORDS)
+  add_test(NAME OrchardFlow COMMAND test_orchard_flow)
+
+  add_executable(test_swap_form_policy tests/test_swap_form_policy.cpp)
+  target_include_directories(test_swap_form_policy PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_link_libraries(test_swap_form_policy PRIVATE Qt6::Core Qt6::Test)
+  target_compile_definitions(test_swap_form_policy PRIVATE QT_NO_KEYWORDS)
+  add_test(NAME SwapFormPolicy COMMAND test_swap_form_policy)
+
+  # Pure request classification; no RPC client, server, socket or node.
+  add_executable(test_rpc_retry_policy tests/test_rpc_retry_policy.cpp)
+  target_include_directories(test_rpc_retry_policy PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_link_libraries(test_rpc_retry_policy PRIVATE Qt6::Core Qt6::Test)
+  target_compile_definitions(test_rpc_retry_policy PRIVATE QT_NO_KEYWORDS)
+  add_test(NAME RpcRetryPolicy COMMAND test_rpc_retry_policy)
+  set_tests_properties(RpcRetryPolicy PROPERTIES TIMEOUT 60)
+
+  add_executable(test_rpc_connection_policy tests/test_rpc_connection_policy.cpp)
+  target_include_directories(test_rpc_connection_policy PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_link_libraries(test_rpc_connection_policy PRIVATE Qt6::Core Qt6::Test)
+  target_compile_definitions(test_rpc_connection_policy PRIVATE QT_NO_KEYWORDS)
+  add_test(NAME RpcConnectionPolicy COMMAND test_rpc_connection_policy)
+  set_tests_properties(RpcConnectionPolicy PROPERTIES TIMEOUT 60)
+
+
+  if(DIN_ENABLE_ORCHARD_UI)
+    # The Orchard preview screens, offline (no node).
+    add_executable(test_orchard_tab tests/test_orchard_tab.cpp
+      src/orchardwidget.cpp src/orchardwidget.h src/rpcclient.cpp src/rpcclient.h src/paycollectpolicy.cpp)
+    target_include_directories(test_orchard_tab PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_link_libraries(test_orchard_tab PRIVATE Qt6::Widgets Qt6::Network Qt6::Test)
+    target_compile_definitions(test_orchard_tab PRIVATE QT_NO_KEYWORDS)
+    add_test(NAME OrchardTab COMMAND test_orchard_tab)
+    set_tests_properties(OrchardTab PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 60)
+  endif()
+
+  if(DIN_ENABLE_SWAP_UI)
+    # The Swap tab's look and hints, offline (no node).
+    add_executable(test_swap_tab tests/test_swap_tab.cpp
+      src/swapwidget.cpp src/swapwidget.h src/rpcclient.cpp src/rpcclient.h src/paycollectpolicy.cpp)
+    target_include_directories(test_swap_tab PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_link_libraries(test_swap_tab PRIVATE Qt6::Widgets Qt6::Network Qt6::Test)
+    target_compile_definitions(test_swap_tab PRIVATE QT_NO_KEYWORDS)
+    add_test(NAME SwapTab COMMAND test_swap_tab)
+    set_tests_properties(SwapTab PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 60)
+
+    # The real Swap tab against two regtest dinerods (tests/swap_widget_regtest.sh).
+    add_executable(test_swap_widget_regtest tests/test_swap_widget_regtest.cpp
+      src/swapwidget.cpp src/swapwidget.h src/rpcclient.cpp src/rpcclient.h src/paycollectpolicy.cpp)
+    target_include_directories(test_swap_widget_regtest PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_link_libraries(test_swap_widget_regtest PRIVATE Qt6::Widgets Qt6::Network Qt6::Test)
+    target_compile_definitions(test_swap_widget_regtest PRIVATE QT_NO_KEYWORDS)
+    if(DINEROD_BINARY)
+      add_test(NAME SwapWidgetRegtest COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/swap_widget_regtest.sh
+               ${DINEROD_BINARY} $<TARGET_FILE:test_swap_widget_regtest>)
+      set_tests_properties(SwapWidgetRegtest PROPERTIES TIMEOUT 600)
+    endif()
+  endif()
+
+  add_executable(test_chain_timing tests/test_chain_timing.cpp src/chaintiming.cpp)
+  target_include_directories(test_chain_timing PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_link_libraries(test_chain_timing PRIVATE Qt6::Core Qt6::Test)
+  target_compile_definitions(test_chain_timing PRIVATE QT_NO_KEYWORDS)
+  add_test(NAME ChainTiming COMMAND test_chain_timing)
+  set_tests_properties(ChainTiming PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 30)
+
+  add_executable(test_upgrade_policy tests/test_upgrade_policy.cpp src/upgradepolicy.cpp)
+  target_include_directories(test_upgrade_policy PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_link_libraries(test_upgrade_policy PRIVATE Qt6::Core Qt6::Test)
+  target_compile_definitions(test_upgrade_policy PRIVATE QT_NO_KEYWORDS
+    UPGRADE_VECTORS="${CMAKE_CURRENT_SOURCE_DIR}/tests/vectors/network_upgrade_policy_v1.json")
+  add_test(NAME UpgradePolicy COMMAND test_upgrade_policy)
+  set_tests_properties(UpgradePolicy PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 30)
+
+  add_executable(test_upgrade_banner tests/test_upgrade_banner.cpp src/upgradebanner.cpp src/upgradepolicy.cpp)
+  target_include_directories(test_upgrade_banner PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_link_libraries(test_upgrade_banner PRIVATE Qt6::Widgets Qt6::Test)
+  target_compile_definitions(test_upgrade_banner PRIVATE QT_NO_KEYWORDS)
+  add_test(NAME UpgradeBanner COMMAND test_upgrade_banner)
+  set_tests_properties(UpgradeBanner PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 30)
+
+  add_executable(test_update_checker tests/test_update_checker.cpp src/updatechecker.cpp)
+  target_include_directories(test_update_checker PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_link_libraries(test_update_checker PRIVATE Qt6::Network Qt6::Test)
+  target_compile_definitions(test_update_checker PRIVATE QT_NO_KEYWORDS)
+  add_test(NAME UpdateChecker COMMAND test_update_checker)
+  set_tests_properties(UpdateChecker PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 30)
 
   add_executable(test_peer_height_semantics
     tests/test_peer_height_semantics.cpp
@@ -1444,6 +1638,78 @@ if(BUILD_TESTING)
 
   target_compile_definitions(test_wallet_scoped_state PRIVATE QT_NO_KEYWORDS)
   add_test(NAME WalletScopedState COMMAND test_wallet_scoped_state)
+
+  add_executable(test_rpc_error_envelope tests/test_rpc_error_envelope.cpp src/rpcclient.cpp src/rpcclient.h)
+  target_include_directories(test_rpc_error_envelope PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_link_libraries(test_rpc_error_envelope PRIVATE Qt6::Core Qt6::Network Qt6::Test)
+  target_compile_definitions(test_rpc_error_envelope PRIVATE QT_NO_KEYWORDS)
+  add_test(NAME RpcErrorEnvelope COMMAND test_rpc_error_envelope)
+  set_tests_properties(RpcErrorEnvelope PROPERTIES TIMEOUT 60 LABELS "rpc;orchard;offline")
+
+  add_executable(test_rpc_reply_alias tests/test_rpc_reply_alias.cpp src/rpcclient.cpp src/rpcclient.h)
+  target_include_directories(test_rpc_reply_alias PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_link_libraries(test_rpc_reply_alias PRIVATE Qt6::Core Qt6::Network Qt6::Test)
+  target_compile_definitions(test_rpc_reply_alias PRIVATE QT_NO_KEYWORDS)
+  add_test(NAME RpcReplyAlias COMMAND test_rpc_reply_alias)
+
+  add_executable(test_mining_rewards tests/test_mining_rewards.cpp src/miningrewards.cpp src/chaintiming.cpp)
+  target_include_directories(test_mining_rewards PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_link_libraries(test_mining_rewards PRIVATE Qt6::Core Qt6::Test)
+  target_compile_definitions(test_mining_rewards PRIVATE QT_NO_KEYWORDS)
+  add_test(NAME MiningRewards COMMAND test_mining_rewards)
+
+  add_executable(test_info_row tests/test_info_row.cpp src/inforow.cpp)
+  target_include_directories(test_info_row PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_link_libraries(test_info_row PRIVATE Qt6::Widgets Qt6::Test)
+  target_compile_definitions(test_info_row PRIVATE QT_NO_KEYWORDS)
+  add_test(NAME InfoRow COMMAND test_info_row)
+  set_tests_properties(InfoRow PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 30)
+
+  add_executable(test_port_check tests/test_port_check.cpp src/portcheck.cpp)
+  target_include_directories(test_port_check PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_link_libraries(test_port_check PRIVATE Qt6::Core Qt6::Network Qt6::Test)
+  target_compile_definitions(test_port_check PRIVATE QT_NO_KEYWORDS)
+  add_test(NAME PortCheck COMMAND test_port_check)
+  set_tests_properties(PortCheck PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 30)
+
+  add_executable(test_pay_collect_policy tests/test_pay_collect_policy.cpp src/paycollectpolicy.cpp)
+  target_include_directories(test_pay_collect_policy PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_link_libraries(test_pay_collect_policy PRIVATE Qt6::Core Qt6::Test)
+  target_compile_definitions(test_pay_collect_policy PRIVATE QT_NO_KEYWORDS)
+  add_test(NAME PayCollectPolicy COMMAND test_pay_collect_policy)
+
+  add_executable(test_pool_cockpit_format tests/test_pool_cockpit_format.cpp src/poolcockpit.cpp)
+  target_include_directories(test_pool_cockpit_format PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_link_libraries(test_pool_cockpit_format PRIVATE Qt6::Core Qt6::Test)
+  target_compile_definitions(test_pool_cockpit_format PRIVATE QT_NO_KEYWORDS)
+  add_test(NAME PoolCockpitFormat COMMAND test_pool_cockpit_format)
+
+  add_executable(test_segwit_address tests/test_segwit_address.cpp src/segwitaddress.cpp)
+  target_include_directories(test_segwit_address PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_link_libraries(test_segwit_address PRIVATE Qt6::Core Qt6::Test)
+  target_compile_definitions(test_segwit_address PRIVATE QT_NO_KEYWORDS)
+  add_test(NAME SegwitAddress COMMAND test_segwit_address)
+
+  add_executable(test_pool_token_store tests/test_pool_token_store.cpp src/pooltokenstore.cpp)
+  target_include_directories(test_pool_token_store PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_link_libraries(test_pool_token_store PRIVATE Qt6::Core Qt6::Test)
+  if(APPLE)
+    target_link_libraries(test_pool_token_store PRIVATE "-framework Security" "-framework CoreFoundation")
+  endif()
+  target_compile_definitions(test_pool_token_store PRIVATE QT_NO_KEYWORDS)
+  add_test(NAME PoolTokenStore COMMAND test_pool_token_store)
+
+  add_executable(test_pool_cockpit ${_wallet_test_sources} tests/test_pool_cockpit.cpp)
+  target_link_libraries(test_pool_cockpit PRIVATE
+    $<TARGET_PROPERTY:dinero-qt,LINK_LIBRARIES> Qt6::Test)
+  target_include_directories(test_pool_cockpit PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src $<TARGET_PROPERTY:dinero-qt,INCLUDE_DIRECTORIES>)
+  target_compile_definitions(test_pool_cockpit PRIVATE
+    QT_NO_KEYWORDS $<TARGET_PROPERTY:dinero-qt,COMPILE_DEFINITIONS>)
+  add_test(NAME PoolCockpit COMMAND test_pool_cockpit)
+  set_tests_properties(PoolCockpit PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 120)
+  set_tests_properties(MiningRewards PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 30)
+  set_tests_properties(RpcReplyAlias PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 30)
 
   add_executable(test_shielded_transfer_policy
     tests/test_shielded_transfer_policy.cpp

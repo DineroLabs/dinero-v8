@@ -22,7 +22,7 @@ TEST(WalletShieldRpc, MalformedIntentRefusesBeforeServices){
 TEST(WalletShieldRpc, RegistryAndBackendPolicyRemainExplicit){
     RegisterOrchardAccountRpc();ExecutionContext context;
     for(const auto name:{"wallet.orchard.queueshield","wallet.orchard.finishshield"}){
-        const auto* handler=g_rpcRegistry.lookup(name);ASSERT_NE(handler,nullptr);const auto result=(*handler)(context,ShieldRpcShape());
+        const auto* handler=g_rpcRegistry.lookup(name);ASSERT_NE(handler,nullptr);const auto result=(*handler)(context,OrchardBoundParamsForTest(context,ShieldRpcShape()));
         SpendRpcRefused(result);
 #ifdef DINERO_TEST_ORCHARD_ORIGIN
         EXPECT_EQ(result["error"].asString(),"Daemon services unavailable");
@@ -57,6 +57,24 @@ struct ShieldRpcFixture:ShieldReservationFixture {
     void Complete(){auto use=WalletService::AcquireWalletUse(wallet);
         Need(ServiceProofTerminal(use->OrchardProofs(),orchard::Hash{81})==wallet::OrchardProofJobs::State::Succeeded);}
 };
+}
+TEST(OrchardOperationStatus, StoredShieldCompletionMethodSurvivesReadyAndReopen) {
+    ShieldRpcFixture f;const auto original=f.Request();
+    ASSERT_FALSE(f.QueueRpc(original).isMember("error"));f.Complete();
+    const auto list=[&](){return rpc_context_wallet_orchard_listoperations(f.execution,OrchardOperationListRequest());};
+    const auto before=f.Snapshot();const auto reserved=list();
+    ASSERT_FALSE(reserved.isMember("error"))<<reserved.toStyledString();ASSERT_EQ(reserved["operations"].size(),1u);
+    const auto& row=reserved["operations"][0];EXPECT_EQ(row["operation_id"],original["request_id"]);
+    EXPECT_EQ(row["completion_method"].asString(),"wallet.orchard.finishshield");
+    EXPECT_EQ(row["durable_state"].asString(),"reserved");EXPECT_EQ(row.size(),4u);EXPECT_EQ(f.Snapshot(),before);EXPECT_EQ(f.broadcasts,0u);
+    din::Json id;id["account"]=original["account"];id["request_id"]=row["operation_id"];
+    const auto finished=f.FinishRpc(id);ASSERT_FALSE(finished.isMember("error"))<<finished.toStyledString();
+    const auto ready=f.Snapshot();const auto signed_list=list();ASSERT_FALSE(signed_list.isMember("error"));
+    EXPECT_EQ(signed_list["operations"][0]["completion_method"],row["completion_method"]);
+    EXPECT_EQ(signed_list["operations"][0]["txid"],finished["txid"]);EXPECT_EQ(signed_list["operations"][0].size(),5u);EXPECT_EQ(f.Snapshot(),ready);
+    f.Reopen();ASSERT_TRUE(f.wallet->EnsureRuntimeWalletBindings());EXPECT_EQ(list(),signed_list);EXPECT_EQ(f.Snapshot(),ready);
+    const auto again=f.FinishRpc(id);ASSERT_FALSE(again.isMember("error"));EXPECT_TRUE(again["already_in_mempool"].asBool());
+    EXPECT_EQ(again["txid"],finished["txid"]);EXPECT_EQ(f.broadcasts,1u);EXPECT_EQ(f.Snapshot(),ready);
 }
 TEST(WalletShieldRpc, AutomaticSelectionRetryReadyAdmissionMiningAndRecovery){
     ShieldRpcFixture f;const auto request=f.Request();const auto result=f.QueueRpc(request);ASSERT_FALSE(result.isMember("error"))<<result.toStyledString();
@@ -136,5 +154,97 @@ TEST(WalletShieldRpc, ReadyFailureRetainsOwnedProofAndPreventsSubmission){
     {auto use=WalletService::AcquireWalletUse(f.wallet);EXPECT_EQ(use->OrchardProofs().Query(orchard::Hash{81}),wallet::OrchardProofJobs::State::Succeeded);}
     const auto finished=f.FinishRpc(request);ASSERT_FALSE(finished.isMember("error"))<<finished.toStyledString();EXPECT_TRUE(finished["admitted"].asBool()) << finished.toStyledString();
 }
+TEST(OrchardProofStatus, ShieldReopenRejectsForeignJobThenRestoresOriginalPlan) {
+    ShieldRpcFixture f;const auto request=f.Request();
+    const auto queued=f.QueueRpc(request);ASSERT_FALSE(queued.isMember("error"))<<queued.toStyledString();
+    f.Complete();const auto reserved=f.Snapshot();
+    const auto original=f.Account(3).account.Operations().Entries().at(orchard::Hash{81});
+    ASSERT_EQ(original.phase,wallet::OrchardOperationQueue::Phase::Reserved);
+    ASSERT_TRUE(original.transaction.empty());
+    f.Reopen();ASSERT_TRUE(f.wallet->EnsureRuntimeWalletBindings());
+    ASSERT_EQ(f.Snapshot(),reserved);
+    RegisterOrchardAccountRpc();const auto* finish=g_rpcRegistry.lookup("wallet.orchard.finishshield");ASSERT_NE(finish,nullptr);
+    // A job retained by this same service still belongs to the old session.
+    // Its presence must refuse ownership, not disclose it as current work.
+    const auto foreign=(*finish)(f.execution,OrchardBoundParamsForTest(f.execution,request));
+    SpendRpcRefused(foreign);EXPECT_EQ(f.Snapshot(),reserved);EXPECT_EQ(f.broadcasts,0u);
+    // Explicit fixture loss of the old process-local result through the normal
+    // executor API. This is not a whole-process restart qualification.
+    {auto use=WalletService::AcquireWalletUse(f.wallet);
+     auto old_result=use->OrchardProofs().TakeResult(orchard::Hash{81});ASSERT_TRUE(old_result);}
+    const auto result=(*finish)(f.execution,OrchardBoundParamsForTest(f.execution,request));
+    ASSERT_TRUE(result.isMember("error"));EXPECT_EQ(result.size(),4u);
+    EXPECT_EQ(result["error_code"].asString(),"proof_not_ready");
+    EXPECT_EQ(result["proof_state"].asString(),"queued");EXPECT_TRUE(result["reservation_retained"].asBool());
+    EXPECT_EQ(f.Snapshot(),reserved);EXPECT_EQ(f.broadcasts,0u);EXPECT_EQ(f.f.ingress->mempool().size(),0u);
+    const auto retained=f.Account(3).account.Operations().Entries().at(orchard::Hash{81});
+    EXPECT_EQ(retained.phase,wallet::OrchardOperationQueue::Phase::Reserved);
+    EXPECT_EQ(retained.request_commitment,original.request_commitment);EXPECT_TRUE(retained.transaction.empty());
+    EXPECT_EQ(retained.message,original.message);EXPECT_EQ(retained.nullifiers,original.nullifiers);
+    ASSERT_TRUE(retained.recovery);ASSERT_TRUE(original.recovery);
+    EXPECT_TRUE(std::equal(retained.recovery->Bytes().begin(),retained.recovery->Bytes().end(),original.recovery->Bytes().begin(),original.recovery->Bytes().end()));
+    // Let the normal executor finish. Do not assume a second call is still queued.
+    f.Complete();
+    {auto use=WalletService::AcquireWalletUse(f.wallet);const auto proof=use->OrchardProofs().CopyResult(orchard::Hash{81},f.Account(3).account.Operations());
+     ASSERT_TRUE(proof);EXPECT_EQ(proof->Authorization().SigningDigest(),original.message);}
+    const auto finished=(*finish)(f.execution,OrchardBoundParamsForTest(f.execution,request));
+    ASSERT_FALSE(finished.isMember("error"))<<finished.toStyledString();EXPECT_TRUE(finished["admitted"].asBool());
+    EXPECT_EQ(f.broadcasts,1u);EXPECT_TRUE(f.ready_at_broadcast);EXPECT_TRUE(f.autocommit_at_broadcast);
+    const auto ready=f.Account(3).account.Operations().Entries().at(orchard::Hash{81});
+    EXPECT_EQ(ready.request_commitment,original.request_commitment);EXPECT_EQ(ready.message,original.message);
+    EXPECT_EQ(ready.transaction,f.broadcast_body);EXPECT_FALSE(ready.transaction.empty());
+}
+TEST(OrchardProofStatus, IdleQueuedCancelledAndMissingJobsRetainReservation) {
+    ShieldReservationFixture f;wallet::OrchardProofJobs jobs;
+    const auto queued=f.Queue(jobs);ASSERT_TRUE(queued->enqueued);ASSERT_TRUE(queued->durable);
+    const auto reserved=f.Snapshot();const auto id=orchard::Hash{81};
+    const auto refuse=[&](std::optional<wallet::OrchardProofJobs::State> expected) {
+        bool typed=false;
+        try { (void)f.Finish(jobs); }
+        catch(const wallet::OrchardProofUnavailable& error) {
+            typed=true;EXPECT_EQ(error.ObservedState(),expected);
+        }
+        EXPECT_TRUE(typed);EXPECT_EQ(f.Snapshot(),reserved);
+        const auto account=f.Account(3);const auto& entry=account.account.Operations().Entries().at(id);
+        EXPECT_EQ(entry.phase,wallet::OrchardOperationQueue::Phase::Reserved);EXPECT_TRUE(entry.transaction.empty());
+        EXPECT_EQ(entry.request_commitment,queued->durable->request_commitment);
+        EXPECT_EQ(f.f.ingress->mempool().size(),0u);
+    };
+    ASSERT_EQ(jobs.Query(id),wallet::OrchardProofJobs::State::Queued);
+    refuse(wallet::OrchardProofJobs::State::Queued);
+    // The normal executor starts idle. No worker, artificial barrier, timeout,
+    // synchronization change or scheduling assumption is used by this case.
+    ASSERT_TRUE(jobs.Cancel(id));ASSERT_EQ(jobs.Query(id),wallet::OrchardProofJobs::State::Cancelled);
+    refuse(wallet::OrchardProofJobs::State::Cancelled);
+    jobs.Forget(id);ASSERT_FALSE(jobs.Query(id));refuse(wallet::OrchardProofJobs::State::Queued);
+    EXPECT_EQ(jobs.Query(id),wallet::OrchardProofJobs::State::Queued);
+    EXPECT_EQ(f.Snapshot(),reserved);
+}
+TEST(OrchardShieldFinishById, StoredSelectionAndAdmissionResultSurviveReopen) {
+    for(const uint64_t fee:{1000u,10000u}) {
+        ShieldRpcFixture f;const auto request=f.Request(fee);ASSERT_FALSE(f.QueueRpc(request).isMember("error"));f.Complete();
+        din::Json id;id["account"]=request["account"];id["request_id"]=request["request_id"];
+        RegisterOrchardAccountRpc();const auto* method=g_rpcRegistry.lookup("wallet.orchard.finishshield");ASSERT_NE(method,nullptr);
+        const auto finished=(*method)(f.execution,OrchardBoundParamsForTest(f.execution,id));ASSERT_FALSE(finished.isMember("error"))<<finished.toStyledString();
+        EXPECT_EQ(finished["admitted"].asBool(),fee==10000);EXPECT_EQ(f.broadcasts,fee==10000?1u:0u);
+        const auto before=f.Snapshot();const auto account=f.Account(3);const auto bytes=account.account.Operations().Entries().at(orchard::Hash{81}).transaction;ASSERT_FALSE(bytes.empty());
+        f.Reopen();ASSERT_TRUE(f.wallet->EnsureRuntimeWalletBindings());
+        const auto again=(*method)(f.execution,OrchardBoundParamsForTest(f.execution,id));ASSERT_FALSE(again.isMember("error"))<<again.toStyledString();
+        EXPECT_EQ(again["txid"],finished["txid"]);EXPECT_EQ(f.Snapshot(),before);EXPECT_EQ(f.Account(3).account.Operations().Entries().at(orchard::Hash{81}).transaction,bytes);
+        if(fee==1000){EXPECT_FALSE(again["admitted"].asBool());EXPECT_EQ(again["submission_code"],finished["submission_code"]);EXPECT_EQ(f.broadcasts,0u);}
+        else {EXPECT_TRUE(again["already_in_mempool"].asBool());EXPECT_TRUE(f.ready_at_broadcast);EXPECT_TRUE(f.autocommit_at_broadcast);EXPECT_EQ(f.broadcasts,1u);}
+    }
+}
+TEST(OrchardShieldFinishById, WrongKindUnknownAndArchivedNeverSubmit) {
+    ShieldRpcFixture f;const auto request=f.Request();ASSERT_FALSE(f.QueueRpc(request).isMember("error"));f.Complete();
+    din::Json id;id["account"]=request["account"];id["request_id"]=request["request_id"];const auto before=f.Snapshot();
+    SpendRpcRefused(rpc_context_wallet_orchard_finishspend(f.execution,id));EXPECT_EQ(f.Snapshot(),before);EXPECT_EQ(f.broadcasts,0u);
+    auto unknown=id;unknown["request_id"]=std::string(63,'0')+"2";SpendRpcRefused(f.FinishRpc(unknown));EXPECT_EQ(f.Snapshot(),before);
+    const auto finished=f.FinishRpc(id);ASSERT_FALSE(finished.isMember("error"))<<finished.toStyledString();ASSERT_TRUE(finished["admitted"].asBool());
+    ASSERT_TRUE(f.Mine(MempoolTransaction::FromOrchard(orchard::TransactionEnvelope::DecodeExact(f.broadcast_body))));
+    EXPECT_EQ(f.wallet->RecoverActiveWalletFromCanonicalSource(),Recovery::AppliedPrefix);f.ArchiveConfirmedShield();const auto archived=f.Snapshot();
+    SpendRpcRefused(f.FinishRpc(id));EXPECT_EQ(f.Snapshot(),archived);EXPECT_EQ(f.broadcasts,1u);
+}
+
 #endif
 } // namespace dinero

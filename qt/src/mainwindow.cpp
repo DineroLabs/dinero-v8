@@ -1,6 +1,20 @@
 #include "privatecovenantwidget.h"
 #include "covenantformpolicy.h"
+#include "build_identity.h"
+#include "updatechecker.h"
+#include "upgradebanner.h"
+#include "portcheck.h"
+#include "chromestyle.h"
+#include "segwitaddress.h"
+#include "miningrewards.h"
+#include "inforow.h"
 #include "mainwindow.h"
+#if defined(DIN_ENABLE_ORCHARD_UI) && DIN_ENABLE_ORCHARD_UI
+#include "orchardwidget.h"
+#endif
+#if defined(DIN_ENABLE_SWAP_UI) && DIN_ENABLE_SWAP_UI
+#include "swapwidget.h"
+#endif
 #include "miningsessionstatus.h"
 #include "peerheightsemantics.h"
 #include "responsiveuipolicy.h"
@@ -83,6 +97,7 @@
 #include <QRegularExpressionValidator>
 #include <QInputDialog>
 #include <QHeaderView>
+#include <QButtonGroup>
 #include <QTableWidgetItem>
 #include <QGridLayout>
 #include <QFileDialog>
@@ -91,6 +106,7 @@
 #include <QDesktopServices>
 #include <QSettings>
 #include <QShortcut>
+#include <QKeyEvent>
 #include <QLocale>
 #include <QUrl>
 #include <QFileInfo>
@@ -122,6 +138,15 @@
 namespace {
 
 constexpr int kWalletUnlockTimeoutSeconds = 60 * 60;
+// A main tab's real name. Narrow windows show icon-only tabs (empty text, name
+// in the tooltip), so look tabs up through this, never through tabText().
+QString mainTabName(const QTabWidget* tabs, int index) {
+  const QString stored = tabs->tabBar()->tabData(index).toString();
+  return stored.isEmpty() ? tabs->tabText(index) : stored;
+}
+
+// CPU mining threads shown when the app starts (the user can change it per session).
+constexpr int kDefaultMiningThreads = 4;
 
 enum class NavigationGlyph {
   Dashboard,
@@ -140,6 +165,7 @@ enum class NavigationGlyph {
   Proof,
   Peers,
   Template,
+  Swap,
 };
 
 QPixmap drawNavigationGlyph(NavigationGlyph glyph, const QColor& color) {
@@ -176,14 +202,31 @@ QPixmap drawNavigationGlyph(NavigationGlyph glyph, const QColor& color) {
       line(15, 20, 27, 20); line(15, 26, 27, 26);
       break;
     case NavigationGlyph::Send:
-      line(7, 20, 31, 20); line(23, 12, 31, 20); line(31, 20, 23, 28);
+    case NavigationGlyph::Receive: {
+      // An open tray with an arrow leaving it (Send) or arriving in it (Receive).
+      QPainterPath tray;
+      tray.moveTo(7, 22);
+      tray.lineTo(7, 31);
+      tray.quadTo(7, 34, 10, 34);
+      tray.lineTo(30, 34);
+      tray.quadTo(33, 34, 33, 31);
+      tray.lineTo(33, 22);
+      painter.drawPath(tray);
+      if (glyph == NavigationGlyph::Send) {
+        line(20, 24, 20, 6); line(13, 13, 20, 6); line(20, 6, 27, 13);
+      } else {
+        line(20, 6, 20, 24); line(13, 17, 20, 24); line(20, 24, 27, 17);
+      }
       break;
-    case NavigationGlyph::Receive:
-      line(7, 20, 31, 20); line(15, 12, 7, 20); line(7, 20, 15, 28);
-      break;
+    }
     case NavigationGlyph::Transactions:
       line(9, 10, 31, 10); line(9, 20, 31, 20); line(9, 30, 25, 30);
       painter.drawPoint(QPointF(5, 10)); painter.drawPoint(QPointF(5, 20)); painter.drawPoint(QPointF(5, 30));
+      break;
+    case NavigationGlyph::Swap:
+      // Two opposing arrows: one asset goes out, the other comes in.
+      line(7, 13, 32, 13); line(26, 7, 32, 13); line(26, 19, 32, 13);
+      line(33, 27, 8, 27); line(14, 21, 8, 27); line(14, 33, 8, 27);
       break;
     case NavigationGlyph::Link:
       painter.drawArc(QRectF(5, 12, 18, 16), 45 * 16, 270 * 16);
@@ -197,17 +240,58 @@ QPixmap drawNavigationGlyph(NavigationGlyph glyph, const QColor& color) {
     case NavigationGlyph::Card:
       rect(5, 10, 30, 21, 4); line(6, 17, 34, 17); line(10, 25, 18, 25);
       break;
-    case NavigationGlyph::Pool:
-      painter.drawEllipse(QRectF(8, 7, 9, 9)); painter.drawEllipse(QRectF(23, 7, 9, 9));
-      painter.drawArc(QRectF(4, 17, 17, 17), 0, 180 * 16); painter.drawArc(QRectF(19, 17, 17, 17), 0, 180 * 16);
+    case NavigationGlyph::Pool: {
+      // A crowd of four: two smaller people at the back, two larger in front.
+      // Each front figure first erases what is behind it, so outlines read as
+      // people standing in front of each other rather than crossing lines.
+      struct Person { QRectF head; QRectF shoulders; };
+      const Person backLeft{QRectF(4.5, 6.5, 7, 7), QRectF(1, 15, 14, 14)};
+      const Person backRight{QRectF(28.5, 6.5, 7, 7), QRectF(25, 15, 14, 14)};
+      const Person frontLeft{QRectF(11, 10, 8, 8), QRectF(6, 21, 18, 18)};
+      const Person frontRight{QRectF(21.5, 10, 8, 8), QRectF(16.5, 21, 18, 18)};
+      const QPen crowdPen(color, 2.6, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin);
+      auto drawPerson = [&](const Person& p) {
+        painter.setPen(crowdPen);
+        painter.setBrush(Qt::NoBrush);
+        painter.drawEllipse(p.head);
+        painter.drawArc(p.shoulders, 0, 180 * 16);
+      };
+      auto clearBehind = [&](const Person& p) {
+        painter.save();
+        painter.setCompositionMode(QPainter::CompositionMode_Clear);
+        painter.setPen(QPen(Qt::black, 4.4, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        painter.setBrush(Qt::black);
+        painter.drawEllipse(p.head);
+        painter.drawPie(p.shoulders, 0, 180 * 16);
+        painter.restore();
+      };
+      drawPerson(backLeft);
+      drawPerson(backRight);
+      clearBehind(frontLeft);
+      drawPerson(frontLeft);
+      clearBehind(frontRight);
+      drawPerson(frontRight);
       break;
+    }
     case NavigationGlyph::Shield:
       line(20, 4, 32, 9); line(32, 9, 30, 24); line(30, 24, 20, 35);
       line(20, 35, 10, 24); line(10, 24, 8, 9); line(8, 9, 20, 4);
       break;
-    case NavigationGlyph::Mining:
-      line(8, 31, 29, 10); line(20, 8, 32, 20); line(5, 34, 12, 27);
+    case NavigationGlyph::Mining: {
+      // Pickaxe: a straight handle meeting the middle of a curved head with
+      // two pointed tips (a filled crescent).
+      line(8, 32, 26, 14);
+      QPainterPath head;
+      head.moveTo(15, 6);
+      head.quadTo(33.5, 6.5, 34, 25);    // outer edge, bowing up and right
+      head.quadTo(28, 12, 15, 6);        // inner edge, a shallower bow
+      painter.save();
+      painter.setPen(QPen(color, 1.2, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+      painter.setBrush(color);
+      painter.drawPath(head);
+      painter.restore();
       break;
+    }
     case NavigationGlyph::Settings:
       painter.drawEllipse(QRectF(14, 14, 12, 12));
       painter.drawEllipse(QRectF(7, 7, 26, 26));
@@ -616,57 +700,10 @@ QString discoverSv2MinerPath(bool useGpu, bool allowSavedPath, bool persistDisco
   return candidates.first();
 }
 
-// Minimal bech32m decoder — enough to turn a `din1p…` (Taproot) or
-// `din1r…` (P2MR) address into its scriptPubKey hex for SV2 coinbase.
-// Based on BIP-350. Returns empty string on any parsing failure.
+// `din1p…` (Taproot) or `din1r…` (P2MR) address -> scriptPubKey hex for the
+// SV2 coinbase payout. Empty on any failure.
 QString addressToScriptPubKeyHex(const QString& addr_in) {
-  static const QString CHARSET = QStringLiteral("qpzry9x8gf2tvdw0s3jn54khce6mua7l");
-  const QString addr = addr_in.trimmed().toLower();
-  const int sep = addr.lastIndexOf('1');
-  if (sep < 1 || sep + 7 > addr.length()) return QString();
-
-  const QString hrp = addr.left(sep);
-  if (hrp != "din" && hrp != "tdin" && hrp != "rdin") return QString();
-
-  // 5-bit data + 6-char checksum; discard the checksum but verify length.
-  QVector<int> data5;
-  data5.reserve(addr.length() - sep - 1);
-  for (int i = sep + 1; i < addr.length(); ++i) {
-    const int v = CHARSET.indexOf(addr.at(i));
-    if (v < 0) return QString();
-    data5.append(v);
-  }
-  if (data5.size() < 7) return QString();  // must hold at least version + program + checksum
-
-  const int version = data5.first();
-  if (version != 1 && version != 2) return QString();  // only Taproot / P2MR
-
-  // Drop witness version (1 char) and checksum (6 chars), convert 5-bit → 8-bit.
-  const int progLen5 = data5.size() - 1 - 6;
-  QVector<uint8_t> program;
-  {
-    int acc = 0;
-    int bits = 0;
-    for (int i = 0; i < progLen5; ++i) {
-      acc = (acc << 5) | data5.at(1 + i);
-      bits += 5;
-      while (bits >= 8) {
-        bits -= 8;
-        program.append(static_cast<uint8_t>((acc >> bits) & 0xff));
-      }
-    }
-    // Leftover bits must be zero per BIP-173/350.
-    if (bits >= 5 || ((acc << (8 - bits)) & 0xff) != 0) return QString();
-  }
-  if (program.size() != 32) return QString();  // Dinero v7: both surfaces are 32-byte keys
-
-  // scriptPubKey: OP_<version> (0x50 + version) + 0x20 push + 32 bytes.
-  const uint8_t opVersion = static_cast<uint8_t>(0x50 + version);
-  QByteArray script;
-  script.append(static_cast<char>(opVersion));
-  script.append(static_cast<char>(0x20));
-  for (uint8_t b : program) script.append(static_cast<char>(b));
-  return QString::fromLatin1(script.toHex());
+  return segwitaddress::addressToScriptHex(addr_in);
 }
 
 int localStratumPort() {
@@ -744,15 +781,6 @@ QString chromePillStyle() {
   return QStringLiteral(
     "QLabel { padding: 5px 10px; background: #272c33; color: #d6dde6; "
     "border: 1px solid #3a4048; border-radius: 6px; font-weight: 600; }");
-}
-
-QString chromeButtonStyle() {
-  return QStringLiteral(
-    "QPushButton { padding: 6px 12px; background: #2b3037; color: #e6ebf1; "
-    "border: 1px solid #3c434d; border-radius: 7px; font-weight: 600; } "
-    "QPushButton:hover { background: #333942; } "
-    "QPushButton:pressed { background: #262b31; } "
-    "QPushButton:disabled { background: #21252a; color: #7f8893; border: 1px solid #30353d; }");
 }
 
 QString chromeSectionLabelStyle() {
@@ -1968,6 +1996,9 @@ MainWindow::MainWindow(dinero::qt::DaemonBootstrapOwner daemonBootstrapOwner,
   }
 
   setupUI();
+  // macOS sizes tabs without the stylesheet padding, so there is no slack and
+  // an elidable label shows as "Colle…". Never cut a tab's name.
+  for (QTabBar* bar : findChildren<QTabBar*>()) bar->setElideMode(Qt::ElideNone);
   
   // ═══════════════════════════════════════════════════════════════
   // 🛡️ ConnectionManager Setup (Bulletproof Connection Management)
@@ -2300,6 +2331,9 @@ MainWindow::~MainWindow() {
 }
 
 void MainWindow::setupUI() {
+  // Tab names and other tooltips show on hover even while another app is in
+  // front (macOS otherwise shows tooltips only for the active window).
+  setAttribute(Qt::WA_AlwaysShowToolTips, true);
   auto *central = new QWidget;
   setCentralWidget(central);
 
@@ -2357,22 +2391,7 @@ void MainWindow::setupUI() {
   setMenuBar(menuBar);
 
   auto *mainLayout = new QVBoxLayout(central);
-  central->setStyleSheet(
-    "QWidget { background: #181b20; color: #d6dde6; } "
-    "QTabWidget::pane { border: 1px solid #2f343c; background: #1a1d22; border-radius: 8px; margin-top: 6px; } "
-    "QTabBar::tab { background: #242932; color: #d5dce5; border: 1px solid #353b45; border-bottom: 3px solid transparent; "
-    "padding: 9px 12px; min-height: 22px; font-size: 13px; font-weight: 500; "
-    "border-top-left-radius: 6px; border-top-right-radius: 6px; margin-right: 3px; } "
-    "QTabBar::tab:hover { background: #2a3039; color: #e7ecf2; border-color: #46505d; border-bottom-color: #46505d; } "
-    "QTabBar::tab:selected { background: #303844; color: #f2f5f8; border-color: #46505d; border-bottom: 3px solid #d58a32; } "
-    "QGroupBox { border: 1px solid #30353d; border-radius: 10px; margin-top: 10px; padding-top: 8px; background: #20242a; font-weight: 600; } "
-    "QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 6px; color: #cad2db; } "
-    "QLineEdit, QComboBox, QSpinBox, QTextEdit, QPlainTextEdit { background: #1f2328; color: #d7dde5; "
-    "border: 1px solid #353b44; border-radius: 6px; padding: 6px; selection-background-color: #3e4550; } "
-    "QPushButton { background: #2b3037; color: #e6ebf1; border: 1px solid #3c434d; border-radius: 7px; padding: 6px 12px; font-weight: 600; } "
-    "QPushButton:hover { background: #333942; } "
-    "QPushButton:pressed { background: #262b31; } "
-    "QPushButton:disabled { background: #21252a; color: #7f8893; border: 1px solid #30353d; }");
+  central->setStyleSheet(appPageStyle());
   
   // Wallet name indicator kept for internal status updates only.
   lblWalletName_ = new QLabel("Wallet: none");
@@ -2428,8 +2447,39 @@ void MainWindow::setupUI() {
 
   // Tab widget
   auto *tabs = new QTabWidget;
-  tabs->setIconSize(QSize(18, 18));
+  tabs->setIconSize(QSize(16, 16));
+  // On macOS a tab bar without scroll buttons demands the full width of every
+  // named tab as its minimum, so the window could not be made narrower than
+  // the names and the switch to icon-only tabs below never got a chance.
+  tabs->tabBar()->setUsesScrollButtons(true);
   mainTabs_ = tabs;
+  // Icon-only tabs when the full names do not fit; names come back when they do.
+  class CompactTabsWatcher : public QObject {
+  public:
+    CompactTabsWatcher(QTabWidget* tabs, std::function<void()> update)
+        : QObject(tabs), tabs_(tabs), update_(std::move(update)) {
+      tabs->installEventFilter(this);
+      tabs->tabBar()->installEventFilter(this);
+    }
+    bool eventFilter(QObject* watched, QEvent* event) override {
+      const bool resized = watched == tabs_ && event->type() == QEvent::Resize;
+      const bool tabsChanged = watched == tabs_->tabBar() && event->type() == QEvent::LayoutRequest &&
+                               tabs_->count() != lastCount_;
+      if ((resized || tabsChanged) && !busy_) {
+        busy_ = true;
+        lastCount_ = tabs_->count();
+        update_();
+        busy_ = false;
+      }
+      return false;
+    }
+  private:
+    QTabWidget* tabs_;
+    std::function<void()> update_;
+    int lastCount_ = -1;
+    bool busy_ = false;
+  };
+  new CompactTabsWatcher(tabs, [this]() { updateCompactTabs(); });
   connect(tabs, &QTabWidget::currentChanged, this, [this](int index) {
     updateMiningFocusDimState();
     setMiningOutputCinematicEnabled(isMining_);
@@ -2440,19 +2490,22 @@ void MainWindow::setupUI() {
     // Keep one composer and one set of RPC state; show covenant creation next
     // to contract management, and payment composition on Send.
     if (sendComposer_ && sendComposerHome_ && covenantComposerHome_) {
-      const bool covenants = mainTabs_->tabText(index).contains("Covenants");
-      const bool payments = mainTabs_->tabText(index).contains("Send");
+      const bool covenants = mainTabName(mainTabs_, index).contains("Covenants");
+      const bool payments = mainTabName(mainTabs_, index).contains("Send");
       if (covenants || payments) {
         auto* destination = covenants ? covenantComposerHome_ : sendComposerHome_;
         destination->addWidget(sendComposer_);
         sendComposer_->show();
+        if (cmbSendAction_) cmbSendAction_->setVisible(!covenants);
+        if (covenantKindPublic_) covenantKindPublic_->setVisible(covenants);
+        if (covenantKindPrivate_) covenantKindPrivate_->setVisible(covenants);
         const QString desired = covenants ? "public_contract" : "public_transfer";
         if (cmbSendAction_ && ((covenants && currentSendMode() != "private_contract") || (payments && (currentSendMode() == "public_contract" || currentSendMode() == "private_contract"))))
           cmbSendAction_->setCurrentIndex(cmbSendAction_->findData(desired));
       }
     }
     // Auto-refresh contracts when the Covenants tab is selected
-    if (mainTabs_ && mainTabs_->tabText(index).contains("Covenants")) {
+    if (mainTabs_ && mainTabName(mainTabs_, index).contains("Covenants")) {
         refreshContractsList();
     }
   });
@@ -2484,7 +2537,10 @@ void MainWindow::setupUI() {
   });
   contentLayout->addWidget(cmdKPanel_);
 
+  upgradeBanner_ = new UpgradeBanner(central);
+  mainLayout->addWidget(upgradeBanner_);
   mainLayout->addWidget(contentArea, 1);
+  startUpdateChecks();
 
   // AI Status Strip: parked with the AI assistant surface. The dashboard
   // remains available through Ctrl+K.
@@ -2498,20 +2554,32 @@ void MainWindow::setupUI() {
   {
     auto *overview = new QWidget;
     auto *layout = new QVBoxLayout(overview);
+    // All three Overview rows share one 3:2 column split and one gutter, and the
+    // split alone decides card widths (size hints ignored horizontally), so the
+    // right-hand cards (v7 Consensus, Mempool, Resources) share one left edge.
+    constexpr int kOverviewLeftStretch = 3;
+    constexpr int kOverviewRightStretch = 2;
+    constexpr int kOverviewGutter = 12;
+    auto overviewColumnCard = [](QWidget* card) {
+      card->setSizePolicy(QSizePolicy::Ignored, card->sizePolicy().verticalPolicy());
+    };
     auto *topRow = new QHBoxLayout;
+    topRow->setSpacing(kOverviewGutter);
     topRow->setSpacing(12);
     
     auto *infoGroup = new QGroupBox("Network Info");
     auto *infoLayout = new QVBoxLayout(infoGroup);
     infoGroup->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Maximum);
     
-    lblHeight_ = new QLabel("Height: -");
-    lblHeaders_ = new QLabel("Headers: -");
-    lblConnections_ = new QLabel("Connections: -");
-    lblMempool_ = new QLabel("Mempool: -");
-    lblPhase_ = new QLabel("Halving Epoch: -");
-    lblSupply_ = new QLabel("Supply: -");
-    lblReward_ = new QLabel("Next Reward: -");
+    // Name on the left, value right-aligned (InfoRow keeps "Name: value" text).
+    lblHeight_ = new InfoRow("Height: -");
+    lblHeaders_ = new InfoRow("Headers: -");
+    lblConnections_ = new InfoRow("Connections: -");
+    lblMempool_ = new InfoRow("Mempool: -");
+    lblMempool_->hide();  // the Mempool card already shows this
+    lblPhase_ = new InfoRow("Next halving: -");
+    lblSupply_ = new InfoRow("Supply: -");
+    lblReward_ = new InfoRow("Next Reward: -");
     lblSyncProgress_ = new QLabel("");
     lblSyncProgress_->setStyleSheet("QLabel { color: #cbd3dc; font-weight: 600; background: #262b32; border: 1px solid #373d46; border-radius: 6px; padding: 5px; }");
     
@@ -2519,12 +2587,12 @@ void MainWindow::setupUI() {
     infoLayout->addWidget(lblHeaders_);
     infoLayout->addWidget(lblSyncProgress_);
     infoLayout->addWidget(lblConnections_);
-    infoLayout->addWidget(lblMempool_);
     infoLayout->addWidget(lblPhase_);
     infoLayout->addWidget(lblSupply_);
     infoLayout->addWidget(lblReward_);
     
-    topRow->addWidget(infoGroup, 3);
+    overviewColumnCard(infoGroup);
+    topRow->addWidget(infoGroup, kOverviewLeftStretch);
     
     // ═══════════════════════════════════════════════════════════════════
     // 🛡️ V7 CONSENSUS HEALTH
@@ -2578,7 +2646,8 @@ void MainWindow::setupUI() {
       v7Column->addWidget(pqBox);
 
       v7Group->setLayout(v7Column);
-      topRow->addWidget(v7Group, 2);
+      overviewColumnCard(v7Group);
+      topRow->addWidget(v7Group, kOverviewRightStretch);
     }
     layout->addLayout(topRow);
 
@@ -2590,6 +2659,7 @@ void MainWindow::setupUI() {
     // filling it.
     // ═══════════════════════════════════════════════════════════════════
     auto* chainActivityRow = new QHBoxLayout;
+    chainActivityRow->setSpacing(kOverviewGutter);
     chainActivityRow->setSpacing(12);
     {
       auto* blocksCard = new QGroupBox("Latest Blocks");
@@ -2615,7 +2685,8 @@ void MainWindow::setupUI() {
       cardLayout->addLayout(header);
 
       overviewBlocksLayout_ = cardLayout;
-      chainActivityRow->addWidget(blocksCard, 7);
+      overviewColumnCard(blocksCard);
+      chainActivityRow->addWidget(blocksCard, kOverviewLeftStretch);
     }
     layout->addLayout(chainActivityRow);
 
@@ -2629,7 +2700,7 @@ void MainWindow::setupUI() {
     // separation used by the rows above, without drawing divider rules.
     auto *monitoringColumns = new QHBoxLayout;
     monitoringColumns->setContentsMargins(0, 0, 0, 0);
-    monitoringColumns->setSpacing(0);
+    monitoringColumns->setSpacing(kOverviewGutter);
     auto *nodeOperationBox = new QGroupBox("Node operation");
     auto *networkColumn = new QVBoxLayout(nodeOperationBox);
     networkColumn->setContentsMargins(10, 12, 10, 10);
@@ -2651,7 +2722,7 @@ void MainWindow::setupUI() {
     btnNetworkSettings->setStyleSheet(chromeButtonStyle());
     connect(btnNetworkSettings, &QPushButton::clicked, this, [tabs]() {
       for (int i = 0; i < tabs->count(); ++i) {
-        if (tabs->tabText(i).contains("Settings", Qt::CaseInsensitive)) {
+        if (mainTabName(tabs, i).contains("Settings", Qt::CaseInsensitive)) {
           tabs->setCurrentIndex(i);
           return;
         }
@@ -2758,24 +2829,30 @@ void MainWindow::setupUI() {
     mempoolLayout->addWidget(lblMempoolSize_);
     mempoolLayout->addWidget(lblMempoolBytes_);
     tblMempoolOverview_ = new QTableWidget(0, 4);
+    tblMempoolOverview_->setObjectName("overviewMempoolTable");
     tblMempoolOverview_->setHorizontalHeaderLabels({"Transaction", "Fee", "Size", "Age"});
     tblMempoolOverview_->horizontalHeader()->setStretchLastSection(false);
     tblMempoolOverview_->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
-    tblMempoolOverview_->horizontalHeader()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
-    tblMempoolOverview_->horizontalHeader()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
-    tblMempoolOverview_->horizontalHeader()->setSectionResizeMode(3, QHeaderView::ResizeToContents);
+    // Fixed, readable widths for the short columns (sized-to-contents made them
+    // as narrow as their header words when the pool was empty).
+    for (const auto& [column, width] : {std::pair{1, 96}, std::pair{2, 72}, std::pair{3, 72}}) {
+      tblMempoolOverview_->horizontalHeader()->setSectionResizeMode(column, QHeaderView::Fixed);
+      tblMempoolOverview_->horizontalHeader()->resizeSection(column, width);
+    }
     tblMempoolOverview_->verticalHeader()->setVisible(false);
     tblMempoolOverview_->setEditTriggers(QAbstractItemView::NoEditTriggers);
     tblMempoolOverview_->setSelectionBehavior(QAbstractItemView::SelectRows);
     tblMempoolOverview_->setMinimumHeight(120);
     tblMempoolOverview_->setToolTip("Transactions currently held by this local node");
     mempoolLayout->addWidget(tblMempoolOverview_);
-    chainActivityRow->addWidget(mempoolBox, 3);
+    overviewColumnCard(mempoolBox);
+    chainActivityRow->addWidget(mempoolBox, kOverviewRightStretch);
     
     // Peers Summary + compact connected peers table
     auto *peersBox = new QGroupBox("🌐 Peers");
     auto *peersLayout = new QVBoxLayout(peersBox);
     lblPeersCount_ = new QLabel("0 peers");
+    lblPeersCount_->setObjectName("overviewPeersCount");
     lblPeersCount_->setStyleSheet("QLabel { font-size: 18px; font-weight: bold; color: #d6dde6; }");
     lblPeersStatus_ = new QLabel("Disconnected");
     lblPeersStatus_->setStyleSheet("QLabel { font-size: 11px; color: #868e96; }");
@@ -2784,6 +2861,10 @@ void MainWindow::setupUI() {
     peersSummary->addWidget(lblPeersCount_);
     peersSummary->addWidget(lblPeersStatus_);
     peersSummary->addStretch();
+    // Node operation stretches to end level with the right column; the summary
+    // keeps its natural height so that extra space goes to the peers table.
+    lblPeersCount_->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
+    lblPeersStatus_->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
     peersLayout->addLayout(peersSummary);
 
     tblPeersOverview_ = new QTableWidget(0, 6);
@@ -2803,32 +2884,84 @@ void MainWindow::setupUI() {
     tblPeersOverview_->setEditTriggers(QAbstractItemView::NoEditTriggers);
     tblPeersOverview_->setSortingEnabled(true);
     tblPeersOverview_->setMinimumHeight(118);
-    tblPeersOverview_->setMaximumHeight(145);  // Compact view
+    // No height cap: the table absorbs the row's extra height (see above).
     tblPeersOverview_->setStyleSheet(
       "QTableWidget { gridline-color: #3a4048; background: #1d2126; color: #d5dde6; } "
       "QHeaderView::section { background: #272c33; color: #d5dde6; padding: 4px; font-weight: bold; border: 1px solid #373d46; }"
     );
-    peersLayout->addWidget(tblPeersOverview_);
+    peersLayout->addWidget(tblPeersOverview_, 1);
     networkColumn->addWidget(peersBox);
-    monitoringColumns->addWidget(nodeOperationBox, 2, Qt::AlignTop);
-    auto* columnGutter = new QWidget;
-    columnGutter->setStyleSheet("QWidget { background: #14191f; }");
-    columnGutter->setFixedWidth(12);
-    monitoringColumns->addWidget(columnGutter);
-    monitoringColumns->addWidget(cpuBox, 1, Qt::AlignTop);
+    overviewColumnCard(nodeOperationBox);
+    overviewColumnCard(cpuBox);
+    // My mining rewards: this wallet's mined blocks, coins still maturing and
+    // when the next ones unlock. It stretches so the right column ends level
+    // with Node operation.
+    auto* rewardsBox = new QGroupBox("My mining rewards");
+    auto* rewardsLayout = new QVBoxLayout(rewardsBox);
+    rewardsLayout->setContentsMargins(10, 10, 10, 8);
+    rewardsLayout->setSpacing(3);
+    lblRewardsHeadline_ = new QLabel("Loading…");
+    lblRewardsHeadline_->setObjectName("miningRewardsHeadline");
+    lblRewardsHeadline_->setStyleSheet("QLabel { font-size: 15px; font-weight: bold; }");
+    lblRewardsPeriod_ = new QLabel(" ");
+    lblRewardsPeriod_->setStyleSheet("QLabel { font-size: 11px; color: #868e96; }");
+    lblRewardsMaturing_ = new QLabel(" ");
+    lblRewardsMaturing_->setObjectName("miningRewardsMaturing");
+    lblRewardsMaturing_->setStyleSheet("QLabel { font-size: 12px; }");
+    lblRewardsMaturing_->setWordWrap(true);
+    lblRewardsLastFound_ = new QLabel(" ");
+    lblRewardsLastFound_->setStyleSheet("QLabel { font-size: 11px; color: #868e96; }");
+    rewardsLayout->addWidget(lblRewardsHeadline_);
+    rewardsLayout->addWidget(lblRewardsPeriod_);
+    rewardsLayout->addWidget(lblRewardsMaturing_);
+    rewardsLayout->addWidget(lblRewardsLastFound_);
+    rewardsLayout->addStretch(1);
+    rewardsBox->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Expanding);
+
+    auto* rightMonitoring = new QWidget;
+    auto* rightMonitoringLayout = new QVBoxLayout(rightMonitoring);
+    rightMonitoringLayout->setContentsMargins(0, 0, 0, 0);
+    rightMonitoringLayout->setSpacing(kOverviewGutter);
+    rightMonitoringLayout->addWidget(cpuBox);
+    rightMonitoringLayout->addWidget(rewardsBox, 1);
+    overviewColumnCard(rightMonitoring);
+
+    // Both columns fill the row so the left and right cards end on one line.
+    nodeOperationBox->setSizePolicy(nodeOperationBox->sizePolicy().horizontalPolicy(), QSizePolicy::Preferred);
+    monitoringColumns->addWidget(nodeOperationBox, kOverviewLeftStretch);
+    monitoringColumns->addWidget(rightMonitoring, kOverviewRightStretch);
     layout->addLayout(monitoringColumns);
 
     // Row 3: Alerts (last 5 events)
     auto *alertsBox = new QGroupBox("⚠️ Recent Alerts");
+    alertsBox->setObjectName("overviewAlertsBox");
     auto *alertsLayout = new QVBoxLayout(alertsBox);
     txtAlerts_ = new QTextEdit;
+    txtAlerts_->setObjectName("overviewAlerts");
     txtAlerts_->setReadOnly(true);
-    txtAlerts_->setMaximumHeight(48);
     txtAlerts_->setStyleSheet(
       "QTextEdit { background: #1d2126; border: 1px solid #373d46; color: #cfd7df; font-family: monospace; font-size: 11px; }"
     );
     txtAlerts_->setPlaceholderText("No recent alerts");
+    // Compact when empty: one muted line instead of an empty box. With alerts,
+    // the list sizes itself to its content (up to about six lines, then scrolls).
+    auto* lblNoAlerts = new QLabel("No recent alerts");
+    lblNoAlerts->setStyleSheet("QLabel { color: #868e96; font-size: 11px; background: transparent; }");
+    alertsLayout->addWidget(lblNoAlerts);
     alertsLayout->addWidget(txtAlerts_);
+    alertsBox->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Maximum);
+    auto fitAlerts = [this, lblNoAlerts]() {
+      const bool empty = txtAlerts_->document()->isEmpty();
+      lblNoAlerts->setVisible(empty);
+      txtAlerts_->setVisible(!empty);
+      if (!empty) {
+        const int lines = qBound(1, txtAlerts_->document()->blockCount(), 6);
+        const int height = lines * txtAlerts_->fontMetrics().lineSpacing() + 16;
+        txtAlerts_->setFixedHeight(height);
+      }
+    };
+    connect(txtAlerts_, &QTextEdit::textChanged, this, fitAlerts);
+    fitAlerts();
     layout->addWidget(alertsBox);
     
     // Row 5: Export Button
@@ -2839,12 +2972,13 @@ void MainWindow::setupUI() {
     connect(btnExportMetrics, &QPushButton::clicked, this, &MainWindow::onExportMetrics);
     exportLayout->addWidget(btnExportMetrics);
     layout->addLayout(exportLayout);
+    // Any spare height collects below the cards instead of inside them.
+    layout->addStretch(1);
     
     // ═══════════════════════════════════════════════════════════════════
     // END MONITORING DASHBOARD
     // ═══════════════════════════════════════════════════════════════════
     
-    overview->setMinimumHeight(1120); // Scroll area still handles smaller screens.
     overview->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::MinimumExpanding);
     tabs->addTab(makeScrollableTab(overview), navigationIcon(NavigationGlyph::Dashboard), "Overview");
   }
@@ -2876,21 +3010,31 @@ void MainWindow::setupUI() {
     btnRescanWallet_->setToolTip("If balance/history looks wrong, rescan blockchain for this wallet.");
     connect(btnRescanWallet_, &QPushButton::clicked, this, &MainWindow::onRescanWallet);
     walletIntroLayout->addWidget(lblWalletInfo, 1);
-    walletIntroLayout->addWidget(btnCreateWallet);
     walletSetupLayout->addLayout(walletIntroLayout);
 
+    // Wallet picker on the left, then every wallet action as one row of
+    // same-size buttons.
     auto *walletControlLayout = new QHBoxLayout;
     walletControlLayout->setContentsMargins(0, 0, 0, 0);
     walletControlLayout->setSpacing(8);
     auto *lblWalletSelector = new QLabel("Wallet:");
+    lblWalletSelector->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Preferred);
+    lblWalletSelector->setStyleSheet("QLabel { background: transparent; }");
     lblWalletSelector->setVisible(!singleWalletMode_);
     walletControlLayout->addWidget(lblWalletSelector);
+    cmbWalletSelector_->setMinimumWidth(200);
     walletControlLayout->addWidget(cmbWalletSelector_, 1);
-    walletControlLayout->addWidget(btnLoadWallet_);
-    walletControlLayout->addSpacing(4);
-    walletControlLayout->addWidget(btnWalletLock_);
-    walletControlLayout->addWidget(btnEncryptWallet_);
-    walletControlLayout->addWidget(btnRescanWallet_);
+    btnWalletLock_->setObjectName("walletLock");
+    btnLoadWallet_->setObjectName("walletLoad");
+    btnEncryptWallet_->setObjectName("walletEncrypt");
+    btnRescanWallet_->setObjectName("walletRescan");
+    btnCreateWallet->setObjectName("walletCreate");
+    for (QPushButton* action : {btnLoadWallet_, btnWalletLock_, btnEncryptWallet_, btnRescanWallet_, btnCreateWallet}) {
+      action->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
+      action->setMinimumWidth(0);
+      action->setMaximumWidth(QWIDGETSIZE_MAX);
+      walletControlLayout->addWidget(action, 1);
+    }
     walletSetupLayout->addLayout(walletControlLayout);
     layout->addWidget(walletSetupGroup);
     
@@ -2899,6 +3043,19 @@ void MainWindow::setupUI() {
     auto *compatLayout = new QVBoxLayout(compatGroup);
     compatGroup->setStyleSheet("QGroupBox { background: #20252c; border: 1px solid #343b45; border-radius: 10px; }");
     
+    auto *compatSummaryRow = new QHBoxLayout;
+    auto *lblCompatSummary = new QLabel(
+        "<b>One seed, two address lanes:</b> <code>din1p\u2026</code> Taproot and "
+        "<code>din1r\u2026</code> quantum-safe, restorable on desktop and mobile.");
+    lblCompatSummary->setWordWrap(true);
+    compatSummaryRow->addWidget(lblCompatSummary, 1);
+    auto *btnSeedAbout = new QPushButton("About seed compatibility");
+    btnSeedAbout->setObjectName("walletSeedAbout");
+    btnSeedAbout->setStyleSheet(chromeButtonStyle());
+    compatSummaryRow->addWidget(btnSeedAbout);
+    compatLayout->addLayout(compatSummaryRow);
+
+    // The full explanation is useful once; it no longer pushes the balance down.
     auto *lblCompat = new QLabel(
         "<b>One seed, two address lanes.</b><br><br>"
         "<b>BIP39 seed phrase</b> restores the same wallet across Dinero Qt and mobile. "
@@ -2908,6 +3065,11 @@ void MainWindow::setupUI() {
         "✅ Mobile (iOS Wallet) - seed-compatible Taproot payments; P2MR keys derive from the same seed as mobile support expands"
     );
     lblCompat->setWordWrap(true);
+    lblCompat->setObjectName("walletSeedDetails");
+    lblCompat->setVisible(false);
+    connect(btnSeedAbout, &QPushButton::clicked, lblCompat, [lblCompat]() {
+      lblCompat->setVisible(!lblCompat->isVisible());
+    });
     compatLayout->addWidget(lblCompat);
     
     auto *btnExportSeed = new QPushButton("🧾 Seed Backup / Mobile Restore");
@@ -2934,68 +3096,91 @@ void MainWindow::setupUI() {
     lblTotalWalletBalance_->setObjectName("lblTotalWalletBalance");
     lblTotalWalletBalance_->setVisible(false); // hidden, used for data only
 
-    // Balance breakdown - visible, compact. Taproot and P2MR are both public
-    // transparent outputs; shielded notes are the private bucket.
+    lblBalance_->setObjectName("walletTotalBalance");
+
+    // Balance breakdown in the Overview's 3:2 columns: public on the left,
+    // private on the right, amounts right-aligned. Taproot and P2MR are both
+    // public transparent outputs; shielded notes are the private bucket.
     auto *breakdownWidget = new QWidget;
-    auto *breakdownLayout = new QGridLayout(breakdownWidget);
-    breakdownLayout->setContentsMargins(20, 4, 20, 0);
-    breakdownLayout->setVerticalSpacing(2);
+    auto *breakdownRow = new QHBoxLayout(breakdownWidget);
+    breakdownRow->setContentsMargins(8, 4, 8, 0);
+    breakdownRow->setSpacing(24);
+    auto makeColumn = [](const char* objectName, const QString& title) {
+      auto *column = new QWidget;
+      column->setObjectName(objectName);
+      column->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+      auto *grid = new QGridLayout(column);
+      grid->setContentsMargins(0, 0, 0, 0);
+      grid->setVerticalSpacing(4);
+      grid->setColumnStretch(1, 1);
+      auto *header = new QLabel(title);
+      header->setStyleSheet("QLabel { font-weight: 600; color: #d6dde6; }");
+      grid->addWidget(header, 0, 0, 1, 2);
+      return std::make_pair(column, grid);
+    };
+    auto amountLabel = [](const char* objectName, const QString& tip) {
+      auto *value = new QLabel("0.00000000 DIN");
+      value->setObjectName(objectName);
+      value->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+      value->setTextInteractionFlags(Qt::TextSelectableByMouse);
+      if (!tip.isEmpty()) value->setToolTip(tip);
+      return value;
+    };
 
-    auto *lblPublicHeader = new QLabel("Transparent / public");
-    lblPublicHeader->setStyleSheet("QLabel { font-weight: 600; color: #d6dde6; }");
-    breakdownLayout->addWidget(lblPublicHeader, 0, 0, 1, 2);
+    auto [publicColumn, publicGrid] = makeColumn("walletPublicColumn", "Transparent / public");
+    publicGrid->addWidget(new QLabel("Taproot:"), 1, 0);
+    lblTransparentTaprootBalance_ = amountLabel("lblTransparentTaprootBalance", "Public Taproot spendable balance");
+    publicGrid->addWidget(lblTransparentTaprootBalance_, 1, 1);
 
-    breakdownLayout->addWidget(new QLabel("Taproot:"), 1, 0);
-    lblTransparentTaprootBalance_ = new QLabel("0.00000000 DIN");
-    lblTransparentTaprootBalance_->setObjectName("lblTransparentTaprootBalance");
-    lblTransparentTaprootBalance_->setToolTip("Public Taproot spendable balance");
-    breakdownLayout->addWidget(lblTransparentTaprootBalance_, 1, 1);
-
-    breakdownLayout->addWidget(new QLabel("P2MR quantum-safe:"), 2, 0);
+    publicGrid->addWidget(new QLabel("P2MR quantum-safe:"), 2, 0);
     auto *pqRow = new QHBoxLayout;
+    pqRow->setContentsMargins(0, 0, 0, 0);
     barPqRatio_ = new QProgressBar;
+    barPqRatio_->setObjectName("walletPqBar");
     barPqRatio_->setRange(0, 100);
     barPqRatio_->setValue(0);
     barPqRatio_->setMaximumHeight(16);
     barPqRatio_->setMaximumWidth(120);
     barPqRatio_->setFormat("%p%");
-    barPqRatio_->setStyleSheet(
-        "QProgressBar { border: 1px solid #343b45; border-radius: 4px; "
-        "background: #1a1f27; text-align: center; color: #9fb3c8; font-size: 10px; }"
-        "QProgressBar::chunk { background: #2d8a4e; border-radius: 3px; }");
-    barPqRatio_->setToolTip("Percentage of transparent spendable funds held in P2MR outputs");
+    barPqRatio_->setToolTip("Share of public spendable funds held in quantum-safe P2MR outputs");
     pqRow->addWidget(barPqRatio_);
-    lblPqRatio_ = new QLabel("0.00000000 DIN");
-    lblPqRatio_->setStyleSheet("QLabel { font-size: 11px; color: #9fb3c8; }");
-    pqRow->addWidget(lblPqRatio_);
     pqRow->addStretch();
+    lblPqRatio_ = amountLabel("lblTransparentP2mrBalance", QString());
+    pqRow->addWidget(lblPqRatio_);
     auto *pqWidget = new QWidget;
     pqWidget->setLayout(pqRow);
-    breakdownLayout->addWidget(pqWidget, 2, 1);
+    publicGrid->addWidget(pqWidget, 2, 1);
     lblTransparentP2mrBalance_ = lblPqRatio_;
+    publicGrid->setRowStretch(3, 1);
 
-    auto *lblPrivateHeader = new QLabel("Shielded / private");
-    lblPrivateHeader->setStyleSheet("QLabel { font-weight: 600; color: #d6dde6; margin-top: 6px; }");
-    breakdownLayout->addWidget(lblPrivateHeader, 3, 0, 1, 2);
+    auto [privateColumn, privateGrid] = makeColumn("walletPrivateColumn", "Shielded / private");
+    privateGrid->addWidget(new QLabel("Private:"), 1, 0);
+    lblShieldedBalance_ = amountLabel("lblShieldedBalance", "Confirmed shielded note balance");
+    privateGrid->addWidget(lblShieldedBalance_, 1, 1);
+    privateGrid->setRowStretch(2, 1);
 
-    breakdownLayout->addWidget(new QLabel("Private:"), 4, 0);
-    lblShieldedBalance_ = new QLabel("0.00000000 DIN");
-    lblShieldedBalance_->setObjectName("lblShieldedBalance");
-    lblShieldedBalance_->setToolTip("Confirmed shielded note balance");
-    breakdownLayout->addWidget(lblShieldedBalance_, 4, 1);
+    breakdownRow->addWidget(publicColumn, 3);
+    breakdownRow->addWidget(privateColumn, 2);
 
-    breakdownLayout->addWidget(new QLabel("Pending:"), 5, 0);
-    auto *lblUnconfirmed = new QLabel("0.00 DIN");
-    lblUnconfirmed->setObjectName("lblUnconfirmed");
-    breakdownLayout->addWidget(lblUnconfirmed, 5, 1);
-
-    breakdownLayout->addWidget(new QLabel("Mining:"), 6, 0);
-    auto *lblImmature = new QLabel("0.00 DIN");
-    lblImmature->setObjectName("lblImmature");
-    lblImmature->setToolTip("Recently mined coins (available after 100 confirmations)");
-    breakdownLayout->addWidget(lblImmature, 6, 1);
-
+    // Unconfirmed and maturing coins are neither public-spendable nor shielded.
+    auto *notYetSpendable = new QWidget;
+    notYetSpendable->setObjectName("walletNotYetSpendable");
+    auto *pendingRow = new QHBoxLayout(notYetSpendable);
+    pendingRow->setContentsMargins(8, 6, 8, 0);
+    pendingRow->setSpacing(8);
+    auto *lblNotYet = new QLabel("Not yet spendable:");
+    lblNotYet->setStyleSheet("QLabel { font-weight: 600; color: #d6dde6; }");
+    pendingRow->addWidget(lblNotYet);
+    pendingRow->addWidget(new QLabel("Pending"));
+    auto *lblUnconfirmed = amountLabel("lblUnconfirmed", "Incoming payments waiting for confirmation");
+    pendingRow->addWidget(lblUnconfirmed);
+    pendingRow->addSpacing(16);
+    pendingRow->addWidget(new QLabel("Mining (maturing)"));
+    auto *lblImmature = amountLabel("lblImmature", "Recently mined coins (available after 100 confirmations)");
+    pendingRow->addWidget(lblImmature);
+    pendingRow->addStretch();
     balanceLayout->addWidget(breakdownWidget);
+    balanceLayout->addWidget(notYetSpendable);
 
     auto switchToTabWithMode = [this](const QString& tabLabelFragment,
                                       QComboBox* combo,
@@ -3009,7 +3194,7 @@ void MainWindow::setupUI() {
       }
       if (mainTabs_) {
         for (int i = 0; i < mainTabs_->count(); ++i) {
-          if (mainTabs_->tabText(i).contains(tabLabelFragment)) {
+          if (mainTabName(mainTabs_, i).contains(tabLabelFragment)) {
             mainTabs_->setCurrentIndex(i);
             break;
           }
@@ -3037,6 +3222,7 @@ void MainWindow::setupUI() {
     lblAssets->setWordWrap(true);
     lblAssets->setStyleSheet("QLabel { color: #666; font-size: 11px; margin-top: 5px; }");
     lblAssets->setToolTip("Taproot assets held in this wallet");
+    lblAssets->setVisible(false);  // shown only when the wallet holds assets
     balanceLayout->addWidget(lblAssets);
 
     layout->addWidget(balanceGroup);
@@ -3094,7 +3280,7 @@ void MainWindow::setupUI() {
     addressLayout->addWidget(txtValidation_);
     
     layout->addWidget(addressGroup);
-    layout->addStretch();
+    layout->addStretch(1);  // spare height goes below the content, not into the boxes
     
     connect(btnNewAddress_, &QPushButton::clicked, this, &MainWindow::onNewAddress);
     connect(btnValidate_, &QPushButton::clicked, this, &MainWindow::onValidateAddress);
@@ -3103,8 +3289,6 @@ void MainWindow::setupUI() {
             this, [this](int) { updateWalletAddressModeUi(); });
     updateWalletAddressModeUi();
     
-    wallet->setMinimumHeight(1800); // v7: must be tall enough for all sections to scroll
-    wallet->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::MinimumExpanding);
     tabs->addTab(makeScrollableTab(wallet), navigationIcon(NavigationGlyph::Wallet), "Wallet");
   }
 
@@ -3113,9 +3297,60 @@ void MainWindow::setupUI() {
     auto *contracts = new QWidget;
     auto *layout = new QVBoxLayout(contracts);
     auto* composerHost = new QWidget(contracts);
+    composerHost->setObjectName("covenantComposerHost");
     covenantComposerHome_ = new QVBoxLayout(composerHost);
     covenantComposerHome_->setContentsMargins(0, 0, 0, 0);
-    layout->addWidget(composerHost);
+
+    // Same 3:2 split and gutter as the Overview: the form on the left, a live
+    // review of what Create Contract will lock on the right.
+    constexpr int kFormStretch = 3;
+    constexpr int kReviewStretch = 2;
+    constexpr int kGutter = 12;
+    covenantReviewBox_ = new QGroupBox("Review");
+    covenantReviewBox_->setObjectName("covenantReview");
+    auto* reviewGrid = new QGridLayout(covenantReviewBox_);
+    reviewGrid->setHorizontalSpacing(12);
+    reviewGrid->setVerticalSpacing(8);
+    reviewGrid->setColumnStretch(1, 1);
+    int reviewRow = 0;
+    auto addReviewRow = [&](const QString& name, const char* objectName, QLabel** nameOut = nullptr) {
+      auto* nameLabel = new QLabel(name);
+      nameLabel->setStyleSheet("QLabel { color: #8b949e; }");
+      auto* value = new QLabel(QString::fromUtf8("\xE2\x80\x94"));
+      value->setObjectName(objectName);
+      value->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+      value->setTextInteractionFlags(Qt::TextSelectableByMouse);
+      reviewGrid->addWidget(nameLabel, reviewRow, 0);
+      reviewGrid->addWidget(value, reviewRow, 1);
+      ++reviewRow;
+      if (nameOut) *nameOut = nameLabel;
+      return value;
+    };
+    lblReviewTemplate_ = addReviewRow("Template", "covenantReviewTemplate");
+    lblReviewRecipient_ = addReviewRow("Pays to", "covenantReviewRecipient");
+    lblReviewLocked_ = addReviewRow("Locked now", "covenantReviewLocked");
+    lblReviewDelivered_ = addReviewRow("Recipient can withdraw", "covenantReviewDelivered", &lblReviewDeliveredName_);
+    lblReviewFee_ = addReviewRow("Network fee", "covenantReviewFee");
+    lblReviewTotal_ = addReviewRow("Total from your wallet", "covenantReviewTotal");
+    lblReviewTotal_->setStyleSheet("QLabel { font-weight: 600; }");
+    lblReviewRule_ = new QLabel;
+    lblReviewRule_->setObjectName("covenantReviewRule");
+    lblReviewRule_->setWordWrap(true);
+    lblReviewRule_->setStyleSheet("QLabel { color: #9fb3c8; }");
+    reviewGrid->addWidget(lblReviewRule_, reviewRow++, 0, 1, 2);
+    lblReviewStatus_ = new QLabel;
+    lblReviewStatus_->setObjectName("covenantReviewStatus");
+    lblReviewStatus_->setWordWrap(true);
+    reviewGrid->addWidget(lblReviewStatus_, reviewRow++, 0, 1, 2);
+    reviewGrid->setRowStretch(reviewRow, 1);
+
+    composerHost->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+    covenantReviewBox_->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+    auto* composeRow = new QHBoxLayout;
+    composeRow->setSpacing(kGutter);
+    composeRow->addWidget(composerHost, kFormStretch);
+    composeRow->addWidget(covenantReviewBox_, kReviewStretch);
+    layout->addLayout(composeRow);
 
     privateCovenantWidget_ = new PrivateCovenantWidget(rpc_, contracts);
     privateCovenantWidget_->hide();
@@ -3131,12 +3366,23 @@ void MainWindow::setupUI() {
     layout->addWidget(headerGroup);
 
     // Contract list table
+    lblContractsEmpty_ = new QLabel(QString::fromUtf8("No contracts yet \xE2\x80\x94 create one above."));
+    lblContractsEmpty_->setObjectName("contractsEmpty");
+    lblContractsEmpty_->setAlignment(Qt::AlignCenter);
+    lblContractsEmpty_->setStyleSheet("QLabel { color: #8b949e; padding: 24px; border: 1px dashed #3d434d; border-radius: 8px; }");
+    lblContractsEmpty_->hide();  // shown once the list has loaded and is empty
+    layout->addWidget(lblContractsEmpty_);
+
     tblContracts_ = new QTableWidget;
+    tblContracts_->setObjectName("contractsTable");
     tblContracts_->setColumnCount(6);
     tblContracts_->setHorizontalHeaderLabels({
         "Type", "Visibility", "Amount", "Created", "Status", "Actions"
     });
-    tblContracts_->horizontalHeader()->setStretchLastSection(true);
+    // Columns share the full width; Actions keeps its button's size.
+    tblContracts_->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
+    tblContracts_->horizontalHeader()->setSectionResizeMode(5, QHeaderView::ResizeToContents);
+    tblContracts_->hide();  // until the list has loaded
     tblContracts_->setSelectionBehavior(QAbstractItemView::SelectRows);
     tblContracts_->setEditTriggers(QAbstractItemView::NoEditTriggers);
     tblContracts_->verticalHeader()->setVisible(false);
@@ -3173,6 +3419,7 @@ void MainWindow::setupUI() {
     lblInfo->setWordWrap(true);
     lblInfo->setStyleSheet("color: #888; font-size: 11px; padding: 8px;");
     layout->addWidget(lblInfo);
+    layout->addStretch(1);  // spare height goes below the content, not into the form row
 
     tabs->addTab(makeScrollableTab(contracts), navigationIcon(NavigationGlyph::Document), "Covenants");
   }
@@ -3204,7 +3451,38 @@ void MainWindow::setupUI() {
         "Public payments use transparent funds. Private payments and conversions open "
         "the Shielded composer, subject to network activation. Covenants currently use "
         "public or private funds through their respective covenant controls.");
-    sendLayout->addWidget(cmbSendAction_, 0, 1);
+    cmbSendAction_->setObjectName("sendMode");
+    // On Covenants the composer chooses only public vs private covenant; the
+    // payment menu stays on Send.
+    auto* modeRow = new QHBoxLayout;
+    modeRow->setContentsMargins(0, 0, 0, 0);
+    modeRow->addWidget(cmbSendAction_, 1);
+    const QString kindStyle = chromeButtonStyle() +
+        " QPushButton:checked { background: #2f5d8f; border: 1px solid #4a86c5; color: #ffffff; }";
+    covenantKindPublic_ = new QPushButton("Public covenant");
+    covenantKindPublic_->setObjectName("covenantKindPublic");
+    covenantKindPublic_->setToolTip("Amounts and recipients are visible on-chain");
+    covenantKindPrivate_ = new QPushButton("Private covenant");
+    covenantKindPrivate_->setObjectName("covenantKindPrivate");
+    covenantKindPrivate_->setToolTip("Funded from shielded notes; requires network activation");
+    auto* kindGroup = new QButtonGroup(this);
+    kindGroup->setExclusive(true);
+    for (auto* kind : {covenantKindPublic_, covenantKindPrivate_}) {
+      kind->setCheckable(true);
+      kind->setStyleSheet(kindStyle);
+      kind->hide();  // shown while the composer is on the Covenants tab
+      kindGroup->addButton(kind);
+      modeRow->addWidget(kind);
+    }
+    covenantKindPublic_->setChecked(true);
+    modeRow->addStretch(0);
+    connect(covenantKindPublic_, &QPushButton::clicked, this, [this]() {
+      cmbSendAction_->setCurrentIndex(cmbSendAction_->findData("public_contract"));
+    });
+    connect(covenantKindPrivate_, &QPushButton::clicked, this, [this]() {
+      cmbSendAction_->setCurrentIndex(cmbSendAction_->findData("private_contract"));
+    });
+    sendLayout->addLayout(modeRow, 0, 1);
 
     // Hidden cmbSendMode_ kept so legacy code paths that read it stay valid;
     // it mirrors the selected mode.
@@ -3212,17 +3490,19 @@ void MainWindow::setupUI() {
     cmbSendMode_->hide();
     auto recomputeMode = [this]() {
         const QString mode = cmbSendAction_->currentData().toString();
+        if (covenantKindPublic_ && covenantKindPrivate_)
+          (mode == "private_contract" ? covenantKindPrivate_ : covenantKindPublic_)->setChecked(true);
         cmbSendMode_->clear();
         cmbSendMode_->addItem(mode, mode);
         cmbSendMode_->setCurrentIndex(0);
         updateSendModeUi();
         if ((mode == "public_contract" || mode == "private_contract") && mainTabs_) {
           for (int i = 0; i < mainTabs_->count(); ++i)
-            if (mainTabs_->tabText(i).contains("Covenants")) mainTabs_->setCurrentIndex(i);
+            if (mainTabName(mainTabs_, i).contains("Covenants")) mainTabs_->setCurrentIndex(i);
         } else if (mode == "public_transfer" && mainTabs_ &&
-                   mainTabs_->tabText(mainTabs_->currentIndex()).contains("Covenants")) {
+                   mainTabName(mainTabs_, mainTabs_->currentIndex()).contains("Covenants")) {
           for (int i = 0; i < mainTabs_->count(); ++i)
-            if (mainTabs_->tabText(i).contains("Send")) mainTabs_->setCurrentIndex(i);
+            if (mainTabName(mainTabs_, i).contains("Send")) mainTabs_->setCurrentIndex(i);
         }
     };
     connect(cmbSendAction_, QOverload<int>::of(&QComboBox::currentIndexChanged),
@@ -3251,6 +3531,7 @@ void MainWindow::setupUI() {
     amountLayout->addWidget(edtAmount_);
     
     btnUseMax_ = new QPushButton("Max");
+    btnUseMax_->setObjectName("sendMax");
     btnUseMax_->setStyleSheet("QPushButton { padding: 5px; }");
     connect(btnUseMax_, &QPushButton::clicked, this, &MainWindow::onUseMaxAmount);
     amountLayout->addWidget(btnUseMax_);
@@ -3297,27 +3578,35 @@ void MainWindow::setupUI() {
     auto *templateRow = new QHBoxLayout;
     templateRow->addWidget(new QLabel("Template:"));
     cmbContractTemplate_ = new QComboBox;
+    cmbContractTemplate_->setObjectName("contractTemplate");
     cmbContractTemplate_->addItem("Simple Lock", "vault");
-    cmbContractTemplate_->addItem("Lock with Recovery Key (Unavailable)", "conditional");
-    cmbContractTemplate_->addItem("Time Lock (Unavailable)", "timelock");
-    if (auto* model = qobject_cast<QStandardItemModel*>(cmbContractTemplate_->model())) {
-      if (auto* item = model->item(cmbContractTemplate_->count() - 1)) {
-        item->setEnabled(false);
-        item->setToolTip("Pending Core contextual lock enforcement verification");
+    cmbContractTemplate_->addItem("Batch Payment", "payroll");
+    // Templates that are not usable yet sit in one greyed group below a separator.
+    cmbContractTemplate_->insertSeparator(cmbContractTemplate_->count());
+    const struct { const char* text; const char* key; const char* why; } comingSoon[] = {
+      {"Lock with Recovery Key", "conditional", "Needs a descriptor-backed multi-path Taproot profile"},
+      {"Time Lock", "timelock", "Requires active Core contextual lock enforcement"},
+      {"Custom script", "custom", "Arbitrary scripts are disabled in the consumer wallet"},
+    };
+    for (const auto& entry : comingSoon) {
+      cmbContractTemplate_->addItem(QString::fromUtf8("%1 \xE2\x80\x94 coming soon").arg(entry.text), entry.key);
+      if (auto* model = qobject_cast<QStandardItemModel*>(cmbContractTemplate_->model())) {
+        if (auto* item = model->item(cmbContractTemplate_->count() - 1)) {
+          item->setEnabled(false);
+          item->setToolTip(entry.why);
+        }
       }
     }
-    cmbContractTemplate_->addItem("Batch Payment", "payroll");
-    cmbContractTemplate_->addItem("Custom (Advanced, Unavailable)", "custom");
-    cmbContractTemplate_->setToolTip("Simple Lock: funds locked to a spending template\n"
-                                     "Timelock: unavailable pending Core lock enforcement\n"
-                                     "Payroll: batch payment to multiple recipients (CTV)\n"
-                                     "Recovery and custom scripts are not available");
+    cmbContractTemplate_->setToolTip("Simple Lock: funds locked to one withdrawal address (CTV)\n"
+                                     "Batch Payment: payment to multiple recipients (CTV)\n"
+                                     "Recovery key, time lock and custom scripts are coming soon");
     templateRow->addWidget(cmbContractTemplate_);
     templateRow->addStretch();
     contractLayout->addLayout(templateRow);
 
     // Stacked widget for template-specific fields
     contractTemplateStack_ = new QStackedWidget;
+    contractTemplateStack_->setObjectName("contractTemplateStack");
 
     // Page 0: Vault — no extra fields
     contractVaultPage_ = new QWidget;
@@ -3364,7 +3653,7 @@ void MainWindow::setupUI() {
     cmbTimelockUnit_->addItem("blocks", "blocks");
     cmbTimelockUnit_->addItem("hours (estimated)", "hours");
     cmbTimelockUnit_->addItem("days (estimated)", "days");
-    cmbTimelockUnit_->setToolTip("Uses the 2-minute block target. The lock starts at funding confirmation and is enforced in blocks, not wall-clock time.");
+    cmbTimelockUnit_->setToolTip("Estimated from the network's current block time. The lock starts at funding confirmation and is enforced in blocks, not wall-clock time.");
     timelockPageLayout->addWidget(cmbTimelockUnit_);
     timelockPageLayout->addStretch();
     contractTemplateStack_->addWidget(contractTimelockPage_);
@@ -3455,13 +3744,19 @@ void MainWindow::setupUI() {
 
     contractLayout->addWidget(contractTemplateStack_);
 
+    // Pages are matched by template key: menu order no longer equals page order.
+    const QHash<QString, QWidget*> templatePages{
+      {"vault", contractVaultPage_}, {"conditional", contractConditionalPage_},
+      {"timelock", contractTimelockPage_}, {"payroll", contractPayrollPage_},
+      {"custom", contractCustomPage_}};
     connect(cmbContractTemplate_, QOverload<int>::of(&QComboBox::currentIndexChanged),
-            this, [this](int index) {
-      if (contractTemplateStack_) contractTemplateStack_->setCurrentIndex(index);
+            this, [this, templatePages](int) {
+      if (auto* page = templatePages.value(cmbContractTemplate_->currentData().toString()))
+        contractTemplateStack_->setCurrentWidget(page);
       updateSendModeUi();
     });
     cmbContractTemplate_->setCurrentIndex(0);  // Default: Vault
-    contractTemplateStack_->setCurrentIndex(0);
+    contractTemplateStack_->setCurrentWidget(contractVaultPage_);
 
     contractGroup_->setVisible(false);  // Hidden by default, shown when contract mode selected
     sendLayout->addWidget(contractGroup_, 4, 0, 1, 2);
@@ -3484,10 +3779,19 @@ void MainWindow::setupUI() {
 
     sendLayout->addLayout(sendBtnLayout, 5, 0, 1, 2);
 
+    // Keep the Covenants review in step with every input it summarizes.
+    auto refreshReview = [this]() { updateCovenantReview(); };
+    connect(edtRecipient_, &QLineEdit::textChanged, this, refreshReview);
+    connect(edtAmount_, &QLineEdit::textChanged, this, refreshReview);
+    connect(edtFee_, &QLineEdit::textChanged, this, refreshReview);
+    connect(cmbFeePreset_, QOverload<int>::of(&QComboBox::currentIndexChanged), this, refreshReview);
+    connect(tblPayrollRecipients_, &QTableWidget::cellChanged, this, refreshReview);
+
     layout->addWidget(sendGroup);
     
     // Status label
     lblSendStatus_ = new QLabel();
+    lblSendStatus_->setObjectName("sendStatus");
     lblSendStatus_->setWordWrap(true);
     lblSendStatus_->setStyleSheet("QLabel { padding: 10px; }");
     layout->addWidget(lblSendStatus_);
@@ -3684,13 +3988,29 @@ void MainWindow::setupUI() {
     hardwareWalletWidget_ = new HardwareWalletWidget(rpc_);
     connect(hardwareWalletWidget_, &HardwareWalletWidget::transactionBroadcasted,
             this, &MainWindow::handleHardwareWalletBroadcast);
-    tabs->addTab(hardwareWalletWidget_, navigationIcon(NavigationGlyph::Hardware), "Hardware Wallet");
+    tabs->addTab(hardwareWalletWidget_, navigationIcon(NavigationGlyph::Hardware), "Hardware");  // short: every name fits at 1440 px
   }
 
   // === DPI Pay/Collect Tab ===
   {
     dpiWidget_ = new DpiWidget(rpc_, this);
     tabs->addTab(dpiWidget_, navigationIcon(NavigationGlyph::Card), "Pay/Collect");
+    // Payment links and plain addresses are paid through Send, which owns fee
+    // choice, confirmation and the wallet checks.
+    connect(dpiWidget_, &DpiWidget::payToAddressRequested, this,
+            [this](const QString& address, const QString& amount, const QString& note) {
+      if (!mainTabs_ || !cmbSendAction_ || !edtRecipient_ || !edtAmount_) return;
+      for (int i = 0; i < mainTabs_->count(); ++i)
+        if (mainTabName(mainTabs_, i) == "Send") mainTabs_->setCurrentIndex(i);
+      cmbSendAction_->setCurrentIndex(cmbSendAction_->findData("public_transfer"));
+      edtRecipient_->setText(address);
+      edtAmount_->setText(amount);
+      if (lblSendStatus_) {
+        lblSendStatus_->setText(note);
+        lblSendStatus_->setStyleSheet("QLabel { color: #d6dde6; padding: 10px; background: #2c3036; border: 1px solid #3d434d; border-radius: 6px; }");
+      }
+      (amount.isEmpty() ? edtAmount_ : edtRecipient_)->setFocus();
+    });
   }
 
 #ifdef DIN_EXPERIMENTAL_FEATURES
@@ -3724,6 +4044,14 @@ void MainWindow::setupUI() {
   // ═══════════════════════════════════════════════════════════════════
 #endif // DIN_EXPERIMENTAL_FEATURES
 
+#if defined(DIN_ENABLE_SWAP_UI) && DIN_ENABLE_SWAP_UI
+  // === Swap Tab: DIN <-> BTC atomic swaps via the local node's swap.* RPCs ===
+  // Off in release builds until the swap code has had external review.
+  {
+    tabs->addTab(makeScrollableTab(new SwapWidget(rpc_, this)), navigationIcon(NavigationGlyph::Swap), "Swap");
+  }
+#endif
+
 #if defined(DIN_ENABLE_LIQUIDITY_VAULT_UI) && DIN_ENABLE_LIQUIDITY_VAULT_UI
   // === Liquidity Vault Tab (daemon-side custodial vault) ===
   // Disabled in normal builds until its consumer product model is finalized.
@@ -3748,7 +4076,20 @@ void MainWindow::setupUI() {
   // banner; on regtest it is fully functional.
   {
     shieldedWidget_ = new ShieldedWidget(rpc_, this);
+#if defined(DIN_ENABLE_ORCHARD_UI) && DIN_ENABLE_ORCHARD_UI
+    {
+      // Preview: the new Orchard screens sit beside the current pool, so the
+      // main tab bar keeps its width.
+      auto* shieldedTabs = new QTabWidget(this);
+      shieldedTabs->setObjectName("shieldedSubTabs");
+      shieldedTabs->addTab(shieldedWidget_, "Current pool");
+      orchardWidget_ = new OrchardWidget(rpc_, this);
+      shieldedTabs->addTab(makeScrollableTab(orchardWidget_), "Orchard (preview)");
+      tabs->addTab(shieldedTabs, navigationIcon(NavigationGlyph::Shield), "Shielded");
+    }
+#else
     tabs->addTab(shieldedWidget_, navigationIcon(NavigationGlyph::Shield), "Shielded");
+#endif
   }
 
   // === ⚡ Lightning Network Tab (Phase 7) ===
@@ -4336,7 +4677,8 @@ void MainWindow::setupUI() {
     connect(btnUseWalletAddr_, &QPushButton::clicked, this, &MainWindow::onSetMiningAddress);
     row1->addWidget(btnUseWalletAddr_);
     row1->addWidget(new QLabel("Threads:"));
-    edtMiningThreads_ = new QLineEdit("8");
+    edtMiningThreads_ = new QLineEdit(QString::number(kDefaultMiningThreads));
+    edtMiningThreads_->setObjectName("miningThreads");
     edtMiningThreads_->setStyleSheet(miningControlFieldStyle());
     edtMiningThreads_->setAlignment(Qt::AlignCenter);
     edtMiningThreads_->setFixedSize(56, 30);
@@ -4478,6 +4820,7 @@ void MainWindow::setupUI() {
     // Mining output (label intentionally removed for cleaner layout)
     
     txtMiningOutput_ = new QTextEdit;
+    txtMiningOutput_->setObjectName("miningOutput");
     txtMiningOutput_->setReadOnly(true);
     txtMiningOutput_->setMinimumHeight(250); // Ensure minimum decent size
     txtMiningOutput_->setLineWrapMode(QTextEdit::NoWrap);
@@ -4509,6 +4852,69 @@ void MainWindow::setupUI() {
     miningHashOverlay_->setAttribute(Qt::WA_TransparentForMouseEvents);
     miningHashOverlay_->setStyleSheet("background: transparent;");
     miningHashOverlay_->hide();
+
+    // Text size controls in the top-right corner, on the status line. They are
+    // children of the text edit (not its viewport) so the live hash overlay,
+    // which is raised on every frame, never covers them.
+    const QString zoomStyle = QStringLiteral(
+      "QPushButton { background: #232830; color: #c9d2dc; border: 1px solid #3a414b; "
+      "border-radius: 4px; padding: 0; font-weight: 700; } "
+      "QPushButton:hover { background: #2d333c; } "
+      "QPushButton:disabled { color: #59616b; border-color: #2c323a; }");
+    btnMiningZoomOut_ = new QPushButton(QString::fromUtf8("\xE2\x88\x92"), txtMiningOutput_);
+    btnMiningZoomOut_->setObjectName("miningZoomOut");
+    btnMiningZoomOut_->setToolTip(QString::fromUtf8("Smaller text (\xE2\x8C\x98\xE2\x88\x92)"));
+    btnMiningZoomIn_ = new QPushButton("+", txtMiningOutput_);
+    btnMiningZoomIn_->setObjectName("miningZoomIn");
+    btnMiningZoomIn_->setToolTip(QString::fromUtf8("Larger text (\xE2\x8C\x98+)"));
+    for (QPushButton* zoom : {btnMiningZoomOut_, btnMiningZoomIn_}) {
+      zoom->setFixedSize(22, 20);
+      zoom->setFocusPolicy(Qt::NoFocus);
+      zoom->setCursor(Qt::PointingHandCursor);
+      zoom->setStyleSheet(zoomStyle);
+    }
+    connect(btnMiningZoomOut_, &QPushButton::clicked, this,
+            [this]() { applyMiningOutputFontSize(miningOutputFontPx_ - 1); });
+    connect(btnMiningZoomIn_, &QPushButton::clicked, this,
+            [this]() { applyMiningOutputFontSize(miningOutputFontPx_ + 1); });
+    // Keeps the buttons in the corner on resize and handles Cmd -, Cmd + and
+    // Cmd = while the mining output has focus (Ctrl on other platforms).
+    class MiningOutputZoomFilter : public QObject {
+    public:
+      MiningOutputZoomFilter(QTextEdit* out, QPushButton* minus, QPushButton* plus, std::function<void(int)> step)
+          : QObject(out), out_(out), minus_(minus), plus_(plus), step_(std::move(step)) {
+        out->installEventFilter(this);
+        place();
+      }
+      bool eventFilter(QObject*, QEvent* event) override {
+        if (event->type() == QEvent::Resize || event->type() == QEvent::Show) {
+          place();
+        } else if (event->type() == QEvent::KeyPress) {
+          auto* key = static_cast<QKeyEvent*>(event);
+          if (key->modifiers() & Qt::ControlModifier) {
+            if (key->key() == Qt::Key_Plus || key->key() == Qt::Key_Equal) { step_(+1); return true; }
+            if (key->key() == Qt::Key_Minus) { step_(-1); return true; }
+          }
+        }
+        return false;
+      }
+    private:
+      void place() {
+        const QRect area = out_->viewport()->geometry();
+        const int y = area.top() + 5;
+        plus_->move(area.right() - plus_->width() - 6, y);
+        minus_->move(plus_->x() - minus_->width() - 4, y);
+        minus_->raise();
+        plus_->raise();
+      }
+      QTextEdit* out_;
+      QPushButton* minus_;
+      QPushButton* plus_;
+      std::function<void(int)> step_;
+    };
+    new MiningOutputZoomFilter(txtMiningOutput_, btnMiningZoomOut_, btnMiningZoomIn_,
+                               [this](int delta) { applyMiningOutputFontSize(miningOutputFontPx_ + delta); });
+    applyMiningOutputFontSize(QSettings().value("mining/outputFontPx", 10).toInt());
     layout->addWidget(txtMiningOutput_, 10); // HUGE stretch factor = takes all remaining space!
     setMiningOutputCinematicEnabled(false);
     
@@ -5431,6 +5837,21 @@ void MainWindow::setupUI() {
     note->setStyleSheet(backupPanelStyle());
     layout->addWidget(note);
 
+    auto *updatesGroup = new QGroupBox("Updates");
+    auto *updatesLayout = new QVBoxLayout(updatesGroup);
+    auto *chkCheckUpdates = new QCheckBox("Check for updates and network upgrades");
+    chkCheckUpdates->setChecked(QSettings().value("updates/check_enabled", true).toBool());
+    connect(chkCheckUpdates, &QCheckBox::toggled, this, [this](bool on) {
+      QSettings().setValue("updates/check_enabled", on);
+      if (on && updateChecker_) updateChecker_->checkNow();
+    });
+    updatesLayout->addWidget(chkCheckUpdates);
+    auto *lblUpdatesNote = new QLabel("Asks GitHub for the latest Dinero release and any scheduled network upgrade. Nothing about you or your wallet is sent.");
+    lblUpdatesNote->setWordWrap(true);
+    lblUpdatesNote->setStyleSheet(mutedLabelStyle());
+    updatesLayout->addWidget(lblUpdatesNote);
+    layout->addWidget(updatesGroup);
+
     layout->addStretch();
     tabs->addTab(makeScrollableTab(settings), navigationIcon(NavigationGlyph::Settings), "Settings");
   }
@@ -5477,6 +5898,7 @@ void MainWindow::refresh() {
   }
   rpc_->call("getpeerinfo", QJsonArray());        // Get connection count
   rpc_->call("economics.getinfo", QJsonArray());       // Get phase & reward
+  rpc_->call("getconsensusinfo", QJsonArray());        // Scheduled network upgrade (newer nodes only)
   rpc_->call("economics.getsupply", QJsonArray());          // Get total supply
   rpc_->call("mempool.getinfo", QJsonArray());     // Get mempool stats
   rpc_->call("mempool.getrawmempool", QJsonArray{true}); // Visible pending rows + change detection
@@ -5750,7 +6172,11 @@ void MainWindow::updateSendModeUi() {
       status.startsWith(QString::fromUtf8("\xE2\x84\xB9\xEF\xB8\x8F Create or restore a wallet")) ||
       status.startsWith(QString::fromUtf8("\xF0\x9F\x94\x84 Blockchain rescan in progress")) ||
       status.startsWith(QString::fromUtf8("\xF0\x9F\x94\x92 Wallet is locked")) ||
-      status.startsWith(QString::fromUtf8("\xF0\x9F\x93\x9C Contract options"));
+      status.startsWith(QString::fromUtf8("\xF0\x9F\x93\x9C Contract options")) ||
+      // The per-mode hints below, so switching tabs or modes replaces them.
+      status == "Create an on-chain contract with spending rules." ||
+      status == "Send DIN publicly from transparent Taproot/P2MR funds." ||
+      status.startsWith("From Pay: ");
     if (isModeHint) {
       if (privateComposer) {
         lblSendStatus_->setText("Open Shielded to send privately or convert funds. The daemon reports activation availability. Use Covenants for private contract controls when activated.");
@@ -5771,6 +6197,77 @@ void MainWindow::updateSendModeUi() {
       lblSendStatus_->setStyleSheet("QLabel { color: #d6dde6; padding: 10px; background: #2c3036; border: 1px solid #3d434d; border-radius: 6px; }");
     }
   }
+  updateCovenantReview();
+}
+
+void MainWindow::updateCovenantReview() {
+  if (!covenantReviewBox_ || !edtRecipient_ || !edtAmount_ || !cmbContractTemplate_) return;
+  const QString mode = currentSendMode();
+  // Private covenants bring their own controls; this review covers public ones.
+  covenantReviewBox_->setVisible(mode != "private_contract");
+
+  const QString key = cmbContractTemplate_->currentData().toString();
+  const bool batch = key == "payroll";
+  QList<CovenantFormPolicy::BatchRow> rows;
+  if (batch && tblPayrollRecipients_) {
+    for (int r = 0; r < tblPayrollRecipients_->rowCount(); ++r) {
+      auto* address = tblPayrollRecipients_->item(r, 0);
+      auto* amount = tblPayrollRecipients_->item(r, 1);
+      rows.append({address ? address->text() : QString(), amount ? amount->text() : QString()});
+    }
+  }
+  const auto review = CovenantFormPolicy::review(key, edtRecipient_->text(), edtAmount_->text(), rows,
+                                                 isTransparentDineroAddress);
+  const QString none = QString::fromUtf8("\xE2\x80\x94");
+  const auto din = [](qint64 una) { return CovenantFormPolicy::formatUna(una) + " DIN"; };
+
+  lblReviewTemplate_->setText(cmbContractTemplate_->currentText());
+  const QString recipient = edtRecipient_->text().trimmed();
+  if (batch) {
+    lblReviewRecipient_->setText(review.recipients > 0 ? QString("%1 recipient(s)").arg(review.recipients) : none);
+  } else {
+    lblReviewRecipient_->setText(recipient.isEmpty() ? none
+        : (recipient.length() > 24 ? recipient.left(12) + QString::fromUtf8("\xE2\x80\xA6") + recipient.right(8) : recipient));
+    lblReviewRecipient_->setToolTip(recipient);
+  }
+  lblReviewDeliveredName_->setText(batch ? "Recipients receive" : "Recipient can withdraw");
+  lblReviewLocked_->setText(review.lockedUna > 0 ? din(review.lockedUna) : none);
+  lblReviewDelivered_->setText(review.deliveredUna > 0 ? din(review.deliveredUna) : none);
+
+  // Same rate the create path uses: a custom rate when chosen, else the estimate.
+  const bool customFee = cmbFeePreset_ && cmbFeePreset_->currentData().toInt() == -1;
+  const double rate = customFee && edtFee_ && !edtFee_->text().isEmpty() ? edtFee_->text().toDouble()
+                                                                         : currentEstimatedFeeRate_;
+  const qint64 feeUna = rate > 0.0 ? qRound64(rate * kPublicSendEstimateVbytes) : 0;
+  lblReviewFee_->setText(feeUna > 0 ? "~" + din(feeUna) : QString::fromUtf8("estimating\xE2\x80\xA6"));
+  lblReviewTotal_->setText(review.lockedUna > 0 && feeUna > 0 ? "~" + din(review.lockedUna + feeUna) : none);
+
+  if (batch) {
+    lblReviewRule_->setText("Funds can only go to the listed recipients, in exactly these amounts. "
+                            "Everything is visible on-chain.");
+  } else if (key == "timelock") {
+    lblReviewRule_->setText("Only the address above can receive these funds, after the lock period. "
+                            "Everything is visible on-chain.");
+  } else {
+    lblReviewRule_->setText("Only the address above can ever receive these funds, minus the " +
+                            din(CovenantFormPolicy::spendFeeUna) + " withdrawal fee. "
+                            "Everything is visible on-chain.");
+  }
+
+  // Say why Create Contract is unavailable instead of leaving a greyed button.
+  QStringList blockers;
+  if (currentWalletName_.isEmpty()) blockers << "Create or load a wallet first";
+  else if (walletRescanning_) blockers << "Wait for the wallet rescan to finish";
+  else if (!walletUnlocked_) blockers << "Unlock your wallet";
+  else if (sendSubmissionPending_) blockers << "Wait for the previous transaction to be sent";
+  if (!review.blocker.isEmpty()) blockers << review.blocker;
+  if (blockers.isEmpty()) {
+    lblReviewStatus_->setText("Ready. Create Contract shows a final confirmation before anything is sent.");
+    lblReviewStatus_->setStyleSheet("QLabel { color: #2ecc71; padding: 8px; background: #1f2a22; border-radius: 6px; }");
+  } else {
+    lblReviewStatus_->setText("To continue: " + blockers.join(QString::fromUtf8(" \xC2\xB7 ")));
+    lblReviewStatus_->setStyleSheet("QLabel { color: #f0b429; padding: 8px; background: #2c2618; border-radius: 6px; }");
+  }
 }
 
 void MainWindow::updateWalletBalanceDisplay() {
@@ -5779,21 +6276,24 @@ void MainWindow::updateWalletBalanceDisplay() {
   const double taproot = std::max(0.0, transparent - p2mr);
   const double shielded = std::max(0.0, cachedShieldedBalance_);
   const double total = transparent + shielded;
+  // Thousands separators, as on the Overview. onUseMaxAmount() strips them again.
+  const QLocale grouped(QLocale::English);
+  auto din = [&grouped](double value) { return grouped.toString(value, 'f', 8) + " DIN"; };
 
   if (lblBalance_) {
-    lblBalance_->setText(QString("%1 DIN").arg(total, 0, 'f', 8));
+    lblBalance_->setText(din(total));
   }
   if (lblTotalWalletBalance_) {
-    lblTotalWalletBalance_->setText(QString("%1 DIN").arg(total, 0, 'f', 8));
+    lblTotalWalletBalance_->setText(din(total));
   }
   if (lblTransparentTaprootBalance_) {
-    lblTransparentTaprootBalance_->setText(QString("%1 DIN").arg(taproot, 0, 'f', 8));
+    lblTransparentTaprootBalance_->setText(din(taproot));
   }
   if (lblTransparentP2mrBalance_) {
-    lblTransparentP2mrBalance_->setText(QString("%1 DIN").arg(p2mr, 0, 'f', 8));
+    lblTransparentP2mrBalance_->setText(din(p2mr));
   }
   if (lblShieldedBalance_) {
-    lblShieldedBalance_->setText(QString("%1 DIN").arg(shielded, 0, 'f', 8));
+    lblShieldedBalance_->setText(din(shielded));
   }
 
   auto lblUnconfirmed = findChild<QLabel*>("lblUnconfirmed");
@@ -5802,21 +6302,20 @@ void MainWindow::updateWalletBalanceDisplay() {
       lblUnconfirmed->setText("0.00000000 DIN");
     } else {
       const QString prefix = cachedPendingBalance_ > 0 ? "+" : "";
-      lblUnconfirmed->setText(QString("%1%2 DIN").arg(prefix).arg(cachedPendingBalance_, 0, 'f', 8));
+      lblUnconfirmed->setText(prefix + din(cachedPendingBalance_));
     }
   }
 
   auto lblImmature = findChild<QLabel*>("lblImmature");
   if (lblImmature) {
-    lblImmature->setText(QString("%1 DIN").arg(cachedMiningBalance_, 0, 'f', 8));
+    lblImmature->setText(din(cachedMiningBalance_));
   }
 
   if (barPqRatio_) {
     const double pqRatio = transparent > 0.0 ? (p2mr / transparent) : 0.0;
     barPqRatio_->setValue(static_cast<int>(std::round(pqRatio * 100.0)));
-    QString chunkColor = (pqRatio < 0.10) ? "#c0392b"
-                     : (pqRatio < 0.50) ? "#d4a017"
-                     :                     "#2d8a4e";
+    // A nudge toward quantum-safe outputs, not an alarm: amber below half, green above.
+    const QString chunkColor = pqRatio < 0.50 ? "#f0b429" : "#51cf66";
     barPqRatio_->setStyleSheet(
         "QProgressBar { border: 1px solid #343b45; border-radius: 4px; "
         "background: #1a1f27; text-align: center; color: #9fb3c8; font-size: 10px; }"
@@ -6084,12 +6583,21 @@ void MainWindow::onRpcResult(const QString& method, const QJsonValue& result) {
       }
     }
   }
+  else if (method == "overview.miningrewards") {
+    if (result.isArray()) updateMiningRewards(result.toArray());
+  }
+  else if (method == "getconsensusinfo") {
+    nodeReleaseHeight_ = UpgradePolicy::parseReleaseActivationHeight(result.toObject());
+    evaluateUpgradeBanner();
+  }
   else if (method == "blockchain.getinfo") {
     if (result.isObject()) {
       auto obj = result.toObject();
       updateStatus(obj);
       cachedHeight_ = obj["blocks"].toInt();
       cachedHeaders_ = obj["headers"].toInt();
+      evaluateUpgradeBanner();
+      requestMiningRewards();
       overviewNodeSynced_ = cachedHeaders_ > 0 && cachedHeight_ >= cachedHeaders_;
       refreshAiStatusStrip();
 
@@ -6241,6 +6749,7 @@ void MainWindow::onRpcResult(const QString& method, const QJsonValue& result) {
         auto assetsObj = obj["assets"].toObject();
         if (assetsObj.isEmpty()) {
           lblAssets->setText("");  // No assets
+          lblAssets->setVisible(false);
         } else {
           QStringList assetLines;
           for (auto it = assetsObj.begin(); it != assetsObj.end(); ++it) {
@@ -6253,9 +6762,11 @@ void MainWindow::onRpcResult(const QString& method, const QJsonValue& result) {
             assetLines << QString("%1: %2").arg(shortId).arg(amount, 0, 'f', 4);
           }
           lblAssets->setText("Assets: " + assetLines.join(" | "));
+          lblAssets->setVisible(true);
         }
       } else if (lblAssets) {
         lblAssets->setText("");  // No assets field in response
+        lblAssets->setVisible(false);
       }
     } else {
       // Fallback for old format
@@ -6866,6 +7377,7 @@ void MainWindow::onRpcResult(const QString& method, const QJsonValue& result) {
       // reached the transaction.
       currentEstimatedFeeRate_ = feerateUnaPerVb;
       currentEstimatedFeeBlocks_ = blocks;
+      updateCovenantReview();
 
       // Update estimated fee label in Send tab
       if (lblEstimatedFee_) {
@@ -7959,6 +8471,19 @@ void MainWindow::onRpcError(const QString& method, int code, const QString& mess
     sendSubmissionPending_ = false;
   if (!rpc_) return;  // Guard: shutting down
 
+  // Older nodes (v8.1.12 and earlier) do not have this method; that is not an error.
+  if (method == "getconsensusinfo") return;
+  // The Overview rewards panel shows its own state; never the bottom error bar.
+  if (method == "overview.miningrewards") {
+    if (lblRewardsHeadline_) {
+      lblRewardsHeadline_->setText("Mining rewards unavailable");
+      lblRewardsPeriod_->setText("Load a wallet to see its mining rewards");
+      lblRewardsMaturing_->setVisible(false);
+      lblRewardsLastFound_->setVisible(false);
+    }
+    return;
+  }
+
   if (method == "wallet.listunspent") {
     utxoRequestPending_ = false;
   }
@@ -8403,12 +8928,123 @@ void MainWindow::updateStatus(const QJsonObject& info) {
   }
 }
 
+void MainWindow::updateCompactTabs() {
+  if (!mainTabs_) return;
+  QTabBar* bar = mainTabs_->tabBar();
+  // Restore every name (recording it first), then measure the full-name width.
+  for (int i = 0; i < mainTabs_->count(); ++i) {
+    if (bar->tabData(i).toString().isEmpty()) bar->setTabData(i, mainTabs_->tabText(i));
+    const QString name = bar->tabData(i).toString();
+    mainTabs_->setTabToolTip(i, name);
+    if (mainTabs_->tabText(i) != name) mainTabs_->setTabText(i, name);
+  }
+  const bool compact = bar->sizeHint().width() > mainTabs_->width() - 8;
+  if (compact) {
+    for (int i = 0; i < mainTabs_->count(); ++i) mainTabs_->setTabText(i, QString());
+  }
+}
+
+void MainWindow::startUpdateChecks() {
+  QUrl noticeUrl = UpdateChecker::defaultNoticeUrl();
+#ifndef NDEBUG
+  // Development only: point at a local notice file to exercise the banner.
+  const QByteArray overrideUrl = qgetenv("DINERO_UPDATE_NOTICE_URL");
+  if (!overrideUrl.isEmpty()) noticeUrl = QUrl::fromUserInput(QString::fromUtf8(overrideUrl));
+#endif
+  updateChecker_ = new UpdateChecker(new QNetworkAccessManager(this), UpdateChecker::defaultReleaseUrl(),
+                                     noticeUrl, this);
+  connect(updateChecker_, &UpdateChecker::resultReady, this,
+          [this](const QString& tag, const QJsonObject& notice) {
+            latestReleaseTag_ = tag;
+            upgradeNotice_ = UpgradePolicy::parseNotice(notice, QStringLiteral("dinero-qt"));
+            evaluateUpgradeBanner();
+          });
+  auto runCheck = [this]() {
+    if (QSettings().value("updates/check_enabled", true).toBool()) updateChecker_->checkNow();
+  };
+  auto *timer = new QTimer(this);
+  timer->setInterval(6 * 60 * 60 * 1000);
+  connect(timer, &QTimer::timeout, this, runCheck);
+  timer->start();
+  QTimer::singleShot(5000, this, runCheck);
+}
+
+void MainWindow::evaluateUpgradeBanner() {
+  if (!upgradeBanner_) return;
+  const quint32 tip = quint32(qMax(0, cachedHeight_));
+  const auto r = UpgradePolicy::evaluate(QStringLiteral(DINERO_QT_VERSION), latestReleaseTag_, upgradeNotice_, tip,
+                                         nodeReleaseHeight_);
+  quint32 activation = upgradeNotice_.present ? upgradeNotice_.activationHeight
+                                              : (nodeReleaseHeight_ ? *nodeReleaseHeight_ : 0);
+  if (r.state == UpgradePolicy::State::ScheduledReady && nodeReleaseHeight_) activation = *nodeReleaseHeight_;
+  upgradeBanner_->setActivationHeight(activation);
+  QString release = r.state == UpgradePolicy::State::UpdateAvailable ? latestReleaseTag_ : upgradeNotice_.minVersion;
+  if (release.startsWith('v')) release.remove(0, 1);
+  upgradeBanner_->present(r, release, chainTiming_.approxDuration(qMax<qint64>(0, r.blocksLeft)));
+}
+
+namespace {
+// One page covers a full day of rewards even with 1-minute blocks (1440/day).
+constexpr int kMiningRewardsPage = 1600;
+}
+
+void MainWindow::requestMiningRewards(bool force) {
+  if (!rpc_ || !lblRewardsHeadline_) return;
+  const qint64 now = QDateTime::currentMSecsSinceEpoch();
+  if (!force) {
+    if (now - miningRewardsRequestedAtMs_ < 20 * 1000) return;  // at most every 20 s
+    // Same tip: refresh only every 5 minutes so "last found … ago" stays honest.
+    if (cachedHeight_ == miningRewardsRequestedHeight_ && now - miningRewardsRequestedAtMs_ < 5 * 60 * 1000) return;
+  }
+  miningRewardsRequestedAtMs_ = now;
+  miningRewardsRequestedHeight_ = cachedHeight_;
+  rpc_->callNamedAs("wallet.listtransactions",
+                    QJsonObject{{"count", kMiningRewardsPage}, {"offset", 0}, {"type", "mined"}},
+                    QStringLiteral("overview.miningrewards"));
+}
+
+void MainWindow::updateMiningRewards(const QJsonArray& rewards) {
+  if (!lblRewardsHeadline_) return;
+  const MiningRewardsSummary summary =
+      summarizeMiningRewards(rewards, QDateTime::currentSecsSinceEpoch(), kMiningRewardsPage);
+  const MiningRewardsText text = miningRewardsText(summary, chainTiming_);
+  lblRewardsHeadline_->setText(text.headline);
+  lblRewardsPeriod_->setText(text.period);
+  lblRewardsMaturing_->setText(text.maturing);
+  lblRewardsMaturing_->setVisible(!text.maturing.isEmpty());
+  lblRewardsLastFound_->setText(text.lastFound);
+  lblRewardsLastFound_->setVisible(!text.lastFound.isEmpty());
+}
+
+void MainWindow::refreshTimingText() {
+  // Block targets stay fixed; only the time estimates follow the node's block time.
+  if (cmbFeePreset_ && cmbFeePreset_->count() >= 3) {
+    cmbFeePreset_->setItemText(0, QString("Low (25+ blocks, %1)").arg(chainTiming_.approxDuration(25)));
+    cmbFeePreset_->setItemText(1, QString("Normal (6 blocks, %1)").arg(chainTiming_.approxDuration(6)));
+    cmbFeePreset_->setItemText(2, QString("High (2 blocks, %1)").arg(chainTiming_.approxDuration(2)));
+  }
+  if (cmbTimelockUnit_) {
+    cmbTimelockUnit_->setToolTip(QString("Estimated from the network's current block time (%1 s). "
+                                         "The lock starts at funding confirmation and is enforced in "
+                                         "blocks, not wall-clock time.").arg(chainTiming_.blockSeconds));
+  }
+}
+
 void MainWindow::updateEconomics(const QJsonObject& economics) {
+  chainTiming_ = ChainTiming::fromEconomics(economics);
+  refreshTimingText();
   // Update Overview tab labels
   if (lblPhase_) {
     // Use halving epoch instead of non-existent "phase"
     if (economics.contains("current_halving_epoch")) {
-      lblPhase_->setText(QString("Halving Epoch: %1").arg(economics["current_halving_epoch"].toInt()));
+      // Next halving block and roughly when, at the node's block time.
+      const qint64 interval = economics.value("halving_interval").toInteger(1314000);
+      const qint64 epoch = economics["current_halving_epoch"].toInt();
+      const qint64 nextHalving = (epoch + 1) * interval + 1;  // halvings = (height - 1) / interval
+      const qint64 blocksLeft = nextHalving - qMax(0, cachedHeight_);
+      lblPhase_->setText(cachedHeight_ > 0 && blocksLeft > 0
+          ? QString("Next halving: block %1 · %2").arg(nextHalving).arg(chainTiming_.approxDuration(blocksLeft))
+          : QString("Next halving: block %1").arg(nextHalving));
     } else {
       lblPhase_->setVisible(false); // Hide if not available
     }
@@ -8672,6 +9308,8 @@ void MainWindow::showExplorerWindow() {
   if (!explorerWindow_) {
     return;
   }
+  // show() leaves a window minimized to the Dock where it is; restore it.
+  explorerWindow_->setWindowState(explorerWindow_->windowState() & ~Qt::WindowMinimized);
   explorerWindow_->show();
   explorerWindow_->raise();
   explorerWindow_->activateWindow();
@@ -10213,6 +10851,24 @@ void MainWindow::setMiningOutputCinematicEnabled(bool enabled) {
   viewport->update();
 }
 
+void MainWindow::applyMiningOutputFontSize(int px) {
+  constexpr int kMinPx = 6;
+  constexpr int kMaxPx = 18;
+  if (!txtMiningOutput_) return;
+  miningOutputFontPx_ = std::clamp(px, kMinPx, kMaxPx);
+  txtMiningOutput_->setStyleSheet(QString(
+    "QTextEdit { color: %2; font-family: \"%1\", \"SF Mono\", Menlo, monospace; "
+    "font-size: %4px; background-color: %3; }")
+    .arg(miningConsoleFontFamily(),
+         QString::fromLatin1(kMiningOutputTextColor),
+         QString::fromLatin1(kMiningOutputIdleBackground))
+    .arg(miningOutputFontPx_));
+  txtMiningOutput_->setFont(miningConsoleFont(miningOutputFontPx_, QFont::Medium));
+  if (btnMiningZoomOut_) btnMiningZoomOut_->setEnabled(miningOutputFontPx_ > kMinPx);
+  if (btnMiningZoomIn_) btnMiningZoomIn_->setEnabled(miningOutputFontPx_ < kMaxPx);
+  QSettings().setValue("mining/outputFontPx", miningOutputFontPx_);
+}
+
 void MainWindow::updateMiningOutputCinematicFrame() {
   const bool miningTabActive =
     mainTabs_ && miningTabWidget_ && mainTabs_->currentWidget() == miningTabWidget_;
@@ -10248,6 +10904,8 @@ void MainWindow::updateMiningOutputCinematicFrame() {
           miningHashSamples_.constLast().hash != hash) {
         MiningHashSample liveSample;
         liveSample.nonce = nonce;
+        liveSample.startsNewBlock = dinero::qt::startsNewBlock(miningTipHeight_, height);
+        miningTipHeight_ = height;
         liveSample.hash = hash;
         liveSample.headerFields = headerFields;
         liveSample.renderedLine.setText(headerFields);
@@ -10266,7 +10924,7 @@ void MainWindow::updateMiningOutputCinematicFrame() {
     frame.fill(Qt::transparent);
     QPainter painter(&frame);
     painter.setRenderHint(QPainter::TextAntialiasing, true);
-    const QFont font = miningConsoleFont(10, QFont::Medium);
+    const QFont font = miningConsoleFont(miningOutputFontPx_, QFont::Medium);
     painter.setFont(font);
     const QFontMetrics metrics(font);
     const int rowHeight = qMax(12, metrics.height() + 2);
@@ -10282,13 +10940,10 @@ void MainWindow::updateMiningOutputCinematicFrame() {
     for (int visual = 0; visual < count; ++visual) {
       const int sampleIndex = count - 1 - visual;
       const MiningHashSample& sample = miningHashSamples_.at(sampleIndex);
-      if (sample.blockFound && sample.highlightUntilMs > nowMs) {
-        painter.setPen(QColor(213, 138, 50, 255));
-      } else if (sample.blockFound) {
-        painter.setPen(QColor(213, 138, 50, 205));
-      } else {
-        painter.setPen(QColor(151, 163, 174, 150));
-      }
+      // The first row of a new block is a lighter grey; your own finds stay orange.
+      const auto colour = dinero::qt::hashRowColor(sample.blockFound, sample.highlightUntilMs > nowMs,
+                                                   sample.startsNewBlock);
+      painter.setPen(QColor(colour.r, colour.g, colour.b, colour.a));
       painter.drawStaticText(
         QPointF(8,
                 frameSize.height() - 6 - visual * rowHeight - metrics.ascent()),
@@ -10315,7 +10970,7 @@ void MainWindow::updateMiningOutputCinematicFrame() {
   painter.setRenderHint(QPainter::Antialiasing, false);
   painter.setRenderHint(QPainter::TextAntialiasing, false);
 
-  QFont hashFont = miningConsoleFont(10, QFont::Medium);
+  QFont hashFont = miningConsoleFont(miningOutputFontPx_, QFont::Medium);
   painter.setFont(hashFont);
 
   const QFontMetrics hashMetrics(hashFont);
@@ -11179,9 +11834,9 @@ void MainWindow::updateUTXOTable(const QJsonArray& utxos) {
     auto *maturityItem = new QTableWidgetItem(maturityStatus);
     if (isCoinbase && !isMature) {
       maturityItem->setForeground(QBrush(QColor("#fab005"))); // Orange for immature
-      maturityItem->setToolTip(QString("Coinbase requires 100 confirmations. %1 blocks remaining (~%2 minutes)")
+      maturityItem->setToolTip(QString("Coinbase requires 100 confirmations. %1 blocks remaining (%2)")
         .arg(maturityRemaining)
-        .arg(maturityRemaining * 3)); // Assuming 3 minute block time
+        .arg(chainTiming_.approxDuration(maturityRemaining)));
     } else if (isCoinbase && isMature) {
       maturityItem->setForeground(QBrush(QColor("#51cf66"))); // Green for mature
       maturityItem->setToolTip("Coinbase output is fully mature and spendable");
@@ -11288,7 +11943,7 @@ void MainWindow::updateContractsTable(const QJsonValue& txList) {
       lblContractsSummary_->setText(QString("%1 descriptor-backed contract(s). Spending is offered only when a confirmed matching covenant UTXO is discovered.")
         .arg(descriptors.size()));
     }
-    tblContracts_->resizeColumnsToContents();
+    updateContractsEmptyState();
     return;
   }
 
@@ -11430,9 +12085,14 @@ void MainWindow::updateContractsTable(const QJsonValue& txList) {
     summary += "Contract locks are transparent on-chain.";
   }
   if (lblContractsSummary_) lblContractsSummary_->setText(summary);
+  updateContractsEmptyState();
+}
 
-  // Resize columns to content
-  tblContracts_->resizeColumnsToContents();
+void MainWindow::updateContractsEmptyState() {
+  if (!tblContracts_ || !lblContractsEmpty_) return;
+  const bool any = tblContracts_->rowCount() > 0;
+  tblContracts_->setVisible(any);
+  lblContractsEmpty_->setVisible(!any);
 }
 
 void MainWindow::onStartMining() {
@@ -11524,8 +12184,8 @@ void MainWindow::startInternalMiner(bool useGpu) {
   bool ok;
   int threads = edtMiningThreads_->text().toInt(&ok);
   if (!ok || threads < 1 || threads > 256) {
-    threads = 4;  // Default to 4 threads if invalid
-    edtMiningThreads_->setText("4");
+    threads = kDefaultMiningThreads;  // invalid entry: fall back to the default
+    edtMiningThreads_->setText(QString::number(kDefaultMiningThreads));
   }
 
   // Build cookie path from datadir
@@ -11971,7 +12631,8 @@ void MainWindow::startExternalMiner() {
   // This ensures the miner can authenticate with the same daemon
   QString dataDirForMiner = rpc_->datadir();
   QString cookiePath = QDir(dataDirForMiner).filePath(".cookie");
-  const QString threadCount = edtMiningThreads_->text().trimmed().isEmpty() ? "8" : edtMiningThreads_->text().trimmed();
+  const QString threadCount = edtMiningThreads_->text().trimmed().isEmpty()
+      ? QString::number(kDefaultMiningThreads) : edtMiningThreads_->text().trimmed();
 
   QString helpText;
   QString probeError;
@@ -13369,10 +14030,7 @@ bool MainWindow::startDaemonWithOptions(bool showFeedback, bool openLogWindow) {
   // of failing silently. The listener might be a usable existing daemon,
   // so offer to connect to it.
   {
-    QTcpSocket probe;
-    probe.connectToHost("127.0.0.1", 20998);
-    const bool portInUse = probe.waitForConnected(500);
-    probe.abort();
+    const bool portInUse = tcpPortAccepts("127.0.0.1", 20998, 500);
     if (portInUse && showFeedback) {
       QMessageBox box(this);
       box.setIcon(QMessageBox::Warning);
@@ -14046,6 +14704,9 @@ void MainWindow::bindWalletScopedState(const QString& walletName) {
 
   if (shieldedWidget_) {
     shieldedWidget_->setWalletScope(walletName);
+#if defined(DIN_ENABLE_ORCHARD_UI) && DIN_ENABLE_ORCHARD_UI
+    if (orchardWidget_) orchardWidget_->setWalletScope(walletName);
+#endif
   }
 
   if (vaultPanel_) {
@@ -14322,6 +14983,9 @@ void MainWindow::updateWalletUIState() {
   bool canTransact = hasWallet && walletUnlocked_ && !walletRescanning_;
   if (shieldedWidget_) {
     shieldedWidget_->setWalletUnlocked(hasWallet && walletUnlocked_);
+#if defined(DIN_ENABLE_ORCHARD_UI) && DIN_ENABLE_ORCHARD_UI
+    if (orchardWidget_) orchardWidget_->setWalletUnlocked(hasWallet && walletUnlocked_);
+#endif
   }
   const QString sendMode = currentSendMode();
   const bool standardSendMode = isSendModePublic(sendMode);
@@ -14341,6 +15005,7 @@ void MainWindow::updateWalletUIState() {
   // Send tab controls
   if (btnSend_) {
     btnSend_->setEnabled(canTransact && !sendSubmissionPending_);
+    updateCovenantReview();
     if (!hasWallet) {
       btnSend_->setToolTip("Create or load a wallet first");
     } else if (walletRescanning_) {
@@ -14956,7 +15621,7 @@ void MainWindow::onSendTransaction() {
   if (sendSubmissionPending_) return;
   if (currentSendMode() == "private_composer") {
     for (int i = 0; mainTabs_ && i < mainTabs_->count(); ++i) {
-      if (mainTabs_->tabText(i).contains("Shielded")) {
+      if (mainTabName(mainTabs_, i).contains("Shielded")) {
         mainTabs_->setCurrentIndex(i);
         return;
       }
@@ -15036,7 +15701,7 @@ void MainWindow::onSendTransaction() {
       templateLabel = "Timelock";
       int delay = spnTimelockDuration_ ? spnTimelockDuration_->value() : 144;
       const QString unit = cmbTimelockUnit_ ? cmbTimelockUnit_->currentData().toString() : "blocks";
-      delay = CovenantFormPolicy::delayBlocks(delay, unit);
+      delay = CovenantFormPolicy::delayBlocks(delay, unit, chainTiming_.blockSeconds);
       if (delay <= 0 || delay > 65535) {
         lblSendStatus_->setText("\xe2\x9d\x8c Relative timelock must be between 1 and 65,535 blocks.");
         btnSend_->setEnabled(true); updateSendModeUi(); return;
@@ -15272,7 +15937,8 @@ void MainWindow::onListUTXOs() {
 
 void MainWindow::onUseMaxAmount() {
   // Get current balance and set it as amount (minus estimated fee)
-  QString balanceStr = lblBalance_->text();
+  // The label groups thousands ("636,799.99999731 DIN"); read the plain number.
+  QString balanceStr = lblBalance_->text().remove(',');
 
   // Extract numeric value from "X.XXXXXXXX DIN" format
   QRegularExpression re("([0-9]+\\.[0-9]+)");
@@ -15947,7 +16613,7 @@ void MainWindow::updateNodeStatus(const QJsonObject& blockchainInfo, const QJson
       if (auto* item = model->item(index)) {
         const bool active = blockchainInfo.value("contextual_locks_active").toBool(false);
         item->setEnabled(active);
-        item->setText(active ? "Time Lock" : "Time Lock (Unavailable)");
+        item->setText(active ? QString("Time Lock") : QString::fromUtf8("Time Lock \xE2\x80\x94 coming soon"));
         item->setToolTip(active ? "Delay measured from funding confirmation" : "Requires active Core contextual lock enforcement");
       }
     }

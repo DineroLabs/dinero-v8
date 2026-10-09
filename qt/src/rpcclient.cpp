@@ -1,10 +1,13 @@
 #include "rpcclient.h"
+#include "rpcretrypolicy.h"
+#include "rpcconnectionpolicy.h"
 #include <QNetworkAccessManager>
 #include <QNetworkRequest>
 #include <QJsonDocument>
 #include <QFile>
 #include <QDir>
 #include <QTimer>
+#include <QPointer>
 
 static QString defaultDatadir() {
 #ifdef Q_OS_WIN
@@ -59,18 +62,34 @@ RpcClient::RpcClient(QObject* parent)
   healthCheckTimer_->start(30000);
 }
 
-void RpcClient::setEndpoint(const QUrl& url) { 
-    servers_.clear();
-    servers_.append(url);
-    currentServerIndex_ = 0;
-    url_ = url; 
+RpcClient::RpcClient(QObject* parent, ReplyOnlyTestTag)
+    : QObject(parent), healthCheckTimer_(nullptr), nam_(nullptr) {}
+
+void RpcClient::reportRpcError(const QString& method, int code, const QString& message,
+                               const QJsonValue& data) {
+  QPointer<RpcClient> alive(this);
+  Q_EMIT rpcErrorDetailed(method, code, message, data);
+  if (alive) Q_EMIT rpcError(method, code, message);
+}
+
+void RpcClient::invalidateConnectionContext() {
+    connectionContext_=QUuid::createUuid().toString(QUuid::WithoutBraces);
+    connected_=false;
+    serverFailCount_.clear();
+    Q_EMIT connectionContextChanged();
+}
+
+void RpcClient::setEndpoint(const QUrl& url) {
+    const bool changed=url_!=url;
+    servers_={url};currentServerIndex_=0;url_=url;
+    if(changed)invalidateConnectionContext();
 }
 
 void RpcClient::setEndpoints(const QList<QUrl>& urls) {
-    if (urls.isEmpty()) return;
-    servers_ = urls;
-    currentServerIndex_ = 0;
-    url_ = servers_[0];
+    if(urls.isEmpty())return;
+    const bool changed=url_!=urls.front();
+    servers_=urls;currentServerIndex_=0;url_=servers_.front();
+    if(changed)invalidateConnectionContext();
     qDebug() << "Configured" << servers_.size() << "RPC servers";
 }
 
@@ -88,8 +107,9 @@ QString RpcClient::currentServer() const {
     return url_.toString();
 }
 
-void RpcClient::setDatadir(const QString& d) { 
-    datadir_ = d; 
+void RpcClient::setDatadir(const QString& d) {
+    if(datadir_==d)return;
+    datadir_=d;cookieToken_.clear();invalidateConnectionContext();
 }
 
 bool RpcClient::loadServerInfo() {
@@ -181,14 +201,17 @@ bool RpcClient::loadCookie() {
           
           if (!line.isEmpty() && line.contains(':')) {
               // Store the entire cookie (username:password format)
-              cookieToken_ = line;
+              const auto directory=QFileInfo(path).absolutePath();
+              const bool changed=cookieToken_!=line || datadir_!=directory;
+              cookieToken_=line;datadir_=directory;
+              if(changed)invalidateConnectionContext();
               qDebug() << "Loaded cookie from:" << path;
-              datadir_ = QFileInfo(path).absolutePath();
               return true;
           }
       }
   }
   
+  if(!cookieToken_.isEmpty()){cookieToken_.clear();invalidateConnectionContext();}
   qWarning() << "No cookie file found. RPC calls will fail without authentication.";
   qWarning() << "For testnet servers, run: ./fetch-testnet-cookies.sh";
   return false;
@@ -201,9 +224,12 @@ QByteArray RpcClient::authHeader() const {
 }
 
 void RpcClient::postJson(const QJsonObject& body) {
-  QNetworkRequest req(url_);
+  const auto sentContext=connectionContext_;
+  const auto sentEndpoint=url_;
+  QNetworkRequest req(sentEndpoint);
   req.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
-  req.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::NoLessSafeRedirectPolicy);
+  req.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
+      RpcRetryPolicy::RequiresExplicitRetry(body)?QNetworkRequest::ManualRedirectPolicy:QNetworkRequest::NoLessSafeRedirectPolicy);
 
   if (!cookieToken_.isEmpty()) {
       req.setRawHeader("Authorization", authHeader());
@@ -211,14 +237,21 @@ void RpcClient::postJson(const QJsonObject& body) {
       qWarning() << "⚠️  Making RPC call without authentication! Cookie not loaded. Method:" << body["method"].toString();
   }
 
-  // Store method name and full request for potential retry
+  // Store method name and full request for potential retry. A reply alias
+  // (callNamedAs) names the reply for consumers but is never sent.
   QString method = body["method"].toString();
-  
-  auto *reply = nam_->post(req, QJsonDocument(body).toJson(QJsonDocument::Compact));
+  const QString replyAs = body.value("__replyAs").toString();
+  if (!replyAs.isEmpty()) method = replyAs;
+  QJsonObject wireBody = body;
+  wireBody.remove("__replyAs");
+
+  auto *reply = nam_->post(req, QJsonDocument(wireBody).toJson(QJsonDocument::Compact));
   
   // Store method and body in reply's dynamic properties for failover
   reply->setProperty("rpcMethod", method);
   reply->setProperty("rpcBody", body);
+  reply->setProperty("rpcContext",sentContext);
+  reply->setProperty("rpcEndpoint",sentEndpoint);
   
   connect(reply, &QNetworkReply::finished, this, &RpcClient::onReplyFinished);
 }
@@ -232,6 +265,7 @@ void RpcClient::tryNextServer(const QJsonObject& pendingRequest) {
   // Switch to next server
   currentServerIndex_ = (currentServerIndex_ + 1) % servers_.size();
   url_ = servers_[currentServerIndex_];
+  invalidateConnectionContext();
   
   QString newServer = url_.toString();
   qDebug() << "✅ Switching to server:" << newServer;
@@ -249,8 +283,9 @@ void RpcClient::tryNextServer(const QJsonObject& pendingRequest) {
 }
 
 void RpcClient::startHealthCheck() {
-  // Quick ping to current server
-  QNetworkRequest req(url_);
+  // Capture before dispatch, as for ordinary RPC replies.
+  const auto sentContext=connectionContext_;const auto sentEndpoint=url_;
+  QNetworkRequest req(sentEndpoint);
   req.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
   if (!cookieToken_.isEmpty()) {
       req.setRawHeader("Authorization", authHeader());
@@ -265,6 +300,8 @@ void RpcClient::startHealthCheck() {
   
   auto *reply = nam_->post(req, QJsonDocument(ping).toJson(QJsonDocument::Compact));
   reply->setProperty("healthCheck", true);
+  reply->setProperty("rpcContext",sentContext);
+  reply->setProperty("rpcEndpoint",sentEndpoint);
   connect(reply, &QNetworkReply::finished, this, &RpcClient::onHealthCheckFinished);
 }
 
@@ -272,8 +309,11 @@ void RpcClient::onHealthCheckFinished() {
   auto *reply = qobject_cast<QNetworkReply*>(sender());
   if (!reply) return;
   
+  const bool current=RpcConnectionPolicy::MatchesOrigin(reply->property("rpcContext").toString(),
+      reply->property("rpcEndpoint").toUrl(),connectionContext_,url_);
   bool isHealthy = (reply->error() == QNetworkReply::NoError);
   reply->deleteLater();
+  if(!current)return;
   
   if (isHealthy) {
     serverFailCount_[url_.toString()] = 0; // Reset on successful health check
@@ -290,6 +330,9 @@ void RpcClient::onReplyFinished() {
 
   QString method = reply->property("rpcMethod").toString();
   QJsonObject pendingRequest = reply->property("rpcBody").toJsonObject();
+  const auto sentContext=reply->property("rpcContext").toString();
+  const auto sentEndpoint=reply->property("rpcEndpoint").toUrl();
+  const auto responseEndpoint=reply->url();
 
   // Read ALL data from reply before scheduling deletion.
   // After deleteLater(), the reply may be destroyed by nested event-loop
@@ -304,6 +347,12 @@ void RpcClient::onReplyFinished() {
   reply->deleteLater();
   reply = nullptr;
 
+  if(!RpcConnectionPolicy::AcceptsResponse(sentContext,sentEndpoint,connectionContext_,url_,
+        RpcRetryPolicy::RequiresExplicitRetry(pendingRequest),responseEndpoint,httpStatus)) {
+    reportRpcError(method,-32098,"RPC connection changed or redirect refused; check the original wallet before retrying.");
+    return;
+  }
+
   if (networkError != QNetworkReply::NoError) {
     qDebug() << "RPC HTTP error for" << method << ":" << networkError << errorString;
 
@@ -317,13 +366,10 @@ void RpcClient::onReplyFinished() {
     // A lost response does not prove a fund-moving request was rejected.
     // Never replay it on another server (or after reloading a cookie). The
     // wallet's operation journal owns reconciliation and explicit retry.
-    const bool fundMoving = method == "wallet.shield" || method == "wallet.unshield" ||
-        method == "wallet.transfer" || method == "wallet.sendtoaddress" ||
-        method == "sendtoaddress" || method == "sendrawtransaction" ||
-        method == "wallet.sendrawtransaction" || method.startsWith("wallet.covenant.");
+    const bool fundMoving = RpcRetryPolicy::RequiresExplicitRetry(pendingRequest);
     if (fundMoving) {
       if (httpStatus == 401) loadCookie(); // prepare the next explicitly reviewed request
-      Q_EMIT rpcError(method, httpStatus == 401 ? 401 : -1, httpStatus == 401 ? "unauthorized" : errorString);
+      reportRpcError(method, httpStatus == 401 ? 401 : -1, httpStatus == 401 ? "unauthorized" : errorString);
       Q_EMIT connectionFailed(errorString);
       return;
     }
@@ -336,7 +382,7 @@ void RpcClient::onReplyFinished() {
       return;
     }
 
-    Q_EMIT rpcError(method, -1, errorString);
+    reportRpcError(method, -1, errorString);
 
     // Enhancement #1: Auto-reload cookie on 401 error
     if (networkError == QNetworkReply::AuthenticationRequiredError) {
@@ -363,40 +409,36 @@ void RpcClient::onReplyFinished() {
   serverFailCount_[url_.toString()] = 0;
   connected_ = true;  // We got a successful HTTP response, daemon is reachable
 
-  // Parse JSON with error handling
+  if (deliverRpcResponse(method, body) &&
+      RpcConnectionPolicy::MatchesOrigin(sentContext,sentEndpoint,connectionContext_,url_))
+    Q_EMIT connectionOk();
+}
+
+bool RpcClient::deliverRpcResponse(const QString& method, const QByteArray& body) {
   QJsonParseError parseError;
   const auto doc = QJsonDocument::fromJson(body, &parseError);
-
   if (parseError.error != QJsonParseError::NoError || !doc.isObject()) {
-    qWarning() << "RPC parse error for" << method << ":" << parseError.errorString();
-    qDebug().noquote() << "RPC body:" << QString::fromUtf8(body);
-    Q_EMIT rpcError(method, -32700, QString("Parse error: %1").arg(parseError.errorString()));
-    return;
+    reportRpcError(method, -32700, QString("Parse error: %1").arg(parseError.errorString()));
+    return false;
   }
-
   const auto obj = doc.object();
-  qDebug() << "RPC" << method << "HTTP" << httpStatus;
-  qDebug().noquote() << "  Body:" << QString::fromUtf8(body.left(200));
-
-  // Check for RPC-level error
-  if (obj.contains("error") && !obj["error"].isNull() && obj["error"].isObject()) {
-    const auto e = obj["error"].toObject();
-    int code = e.value("code").toInt(-32000);
-    QString message = e.value("message").toString("RPC error");
-    qWarning() << "RPC error for" << method << "- code:" << code << message;
-    Q_EMIT rpcError(method, code, message);
-    return;
+  // A non-null error always wins, even if a malformed server also sends result.
+  if (obj.contains("error") && !obj["error"].isNull()) {
+    if (!obj["error"].isObject()) {
+      reportRpcError(method, -32603, "Malformed RPC error");
+      return false;
+    }
+    const auto error = obj["error"].toObject();
+    reportRpcError(method, error.value("code").toInt(-32000),
+                   error.value("message").toString("RPC error"), error.value("data"));
+    return false;
   }
-  
-  // Defensive: check result exists
   if (!obj.contains("result")) {
-    qWarning() << "RPC missing result for" << method;
-    Q_EMIT rpcError(method, -32603, "Missing result field");
-    return;
+    reportRpcError(method, -32603, "Missing result field");
+    return false;
   }
-  
   Q_EMIT rpcResult(method, obj["result"]);
-  Q_EMIT connectionOk();
+  return true;
 }
 
 void RpcClient::call(const QString& method, const QJsonArray& params) {
@@ -415,6 +457,17 @@ void RpcClient::callNamed(const QString& method, const QJsonObject& params) {
     {"id", static_cast<qint64>(nextId_++)},
     {"method", method},
     {"params", params}
+  };
+  postJson(body);
+}
+
+void RpcClient::callNamedAs(const QString& method, const QJsonObject& params, const QString& replyAs) {
+  QJsonObject body{
+    {"jsonrpc", "2.0"},
+    {"id", static_cast<qint64>(nextId_++)},
+    {"method", method},
+    {"params", params},
+    {"__replyAs", replyAs}  // local only: removed in postJson before sending
   };
   postJson(body);
 }

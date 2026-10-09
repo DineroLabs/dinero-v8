@@ -1,5 +1,6 @@
 #include "consensus/orchard_block_coins.h"
 #include "consensus/orchard_candidate_coin_view.h"
+#include "consensus/orchard_catalog_coin_view.h"
 #include "consensus/utreexo_maturity_leaf_activation.h"
 #include "consensus/orchard_resources.h"
 #include "consensus/block_reward.h"
@@ -341,5 +342,86 @@ bool OrchardCandidateCoinView::hasCoin(const OutPoint& point) const {
     const auto result = getCoin(point);
     if (!result.ok() && result.status() != Status::NotFound) throw OrchardCoinLookupError(result.status());
     return result.ok();
+}
+
+OrchardCandidateCoinView CaptureOrchardCatalogCoins(
+    const OrchardBlockCandidate& block, const OrchardBlockContext& context,
+    const BlockHeader& header, const storage::catalog::State& catalog,
+    const storage::catalog::Tree::Read& read) {
+    namespace c=storage::catalog;
+    catalog.Validate();
+    if (!read || !context.height || catalog.height!=context.height-1 ||
+        catalog.block!=context.parent_hash || catalog.block!=header.GetHash() ||
+        catalog.parent!=header.prev_block_hash || catalog.activation!=context.activation_height ||
+        catalog.network!=context.domain.network_code || catalog.branch!=context.domain.branch_id ||
+        !std::equal(catalog.genesis.begin(),catalog.genesis.end(),context.domain.genesis_wire.begin()) ||
+        catalog.leaf_activation!=GetUtreexoMaturityLeafActivationHeight()) RejectCapture(CaptureError::Context);
+    if (!block.Utreexo()) RejectCapture(CaptureError::Proof);
+    const auto stump=UtreexoStump::deserialize(catalog.stump);
+    c::Tree transactions(c::Kind::Transactions,read),legacy(c::Kind::LegacyCoins,read);
+    c::Tree nontransparent(c::Kind::NonTransparentCoins,read);
+    const auto membership=[&](const TxId& id)->StatusOr<bool> {
+        return transactions.Find(catalog.transactions,c::TransactionKey(id)).has_value();
+    };
+    struct Provisional final:ChainStateView {
+        uint32_t height=0;
+        std::map<OutPoint,std::optional<UTXOEntry>> rows;
+        StatusOr<UTXOEntry> getCoin(const OutPoint& point)const override {
+            const auto i=rows.find(point);
+            if(i==rows.end())return Status::Internal;
+            if(!i->second)return Status::NotFound;
+            return *i->second;
+        }
+        bool hasCoin(const OutPoint& point)const override {
+            const auto v=getCoin(point);
+            if(!v.ok()&&v.status()!=Status::NotFound)throw OrchardCoinLookupError(v.status());
+            return v.ok();
+        }
+        uint32_t getHeight()const override{return height;}
+    } provisional;
+    provisional.height=catalog.height;
+    std::vector<OutPoint> inputs;
+    std::set<TxId> ids;
+    for(const auto& tx:block.Transactions()) {
+        const auto id=tx.GetTxid();
+        if(!ids.insert(id).second)RejectCapture(CaptureError::DuplicateTransaction);
+        if(*membership(id))RejectCapture(CaptureError::HistoricalTransaction);
+        const auto outputs=tx.IsOrchard()?tx.Orchard().Outputs().size():tx.Historical().vout.size();
+        for(size_t i=0;i<outputs;++i)provisional.rows.emplace(OutPoint(id,uint32_t(i)),std::nullopt);
+        if(tx.IsOrchard())for(const auto& input:tx.Orchard().Inputs())inputs.push_back(Point(input));
+        else if(!tx.Historical().IsCoinbase())for(const auto& input:tx.Historical().vin)
+            inputs.emplace_back(input.prevout.txid,input.prevout.vout);
+    }
+    const auto& metadata=block.Utreexo()->spent_outputs;
+    if(metadata.size()!=inputs.size())RejectCapture(CaptureError::Metadata);
+    for(size_t i=0;i<inputs.size();++i) {
+        const auto& point=inputs[i];const auto& claimed=metadata[i];
+        // Candidate outputs are resolved in order by Capture below, including
+        // forward-reference refusal and exact same-block metadata comparison.
+        if(ids.contains(point.txid))continue;
+        const auto bytes=c::OutpointBytes(point);
+        const auto special=nontransparent.Find(catalog.nontransparent,c::NonTransparentKey(bytes));
+        if(special || claimed.is_confidential || !claimed.commitment.empty())
+            RejectCapture(CaptureError::Metadata);
+        // Query legacy ownership independently of the claimed height. Legacy
+        // leaves do not bind either creation height or coinbase status.
+        const auto old=legacy.Find(catalog.legacy,c::LegacyKey(bytes));
+        uint32_t height=claimed.created_height;bool coinbase=claimed.is_coinbase;
+        if(old) {
+            if(old->size()!=41 || old->compare(0,36,bytes)!=0 || uint8_t((*old)[40])>1)
+                throw OrchardCoinLookupError(Status::Corruption);
+            height=uint32_t(c::Number(*old,36,4));coinbase=uint8_t((*old)[40])!=0;
+            if(height>=catalog.leaf_activation || height>catalog.height)
+                throw OrchardCoinLookupError(Status::Corruption);
+            if(height!=claimed.created_height || coinbase!=claimed.is_coinbase)
+                RejectCapture(CaptureError::Metadata);
+        } else if(height<catalog.leaf_activation)RejectCapture(CaptureError::Metadata);
+        if(height>catalog.height || claimed.value>orchard::kMaxMoneyUna)
+            RejectCapture(CaptureError::Metadata);
+        provisional.rows.emplace(point,UTXOEntry(AmountUna::Una(claimed.value),claimed.scriptPubKey,height,coinbase));
+    }
+    // Modern metadata is authoritative only after this exact proof succeeds.
+    // Nothing in provisional is returned or published on a partial failure.
+    return OrchardCandidateCoinView::Capture(block,context,header,stump,provisional,membership);
 }
 } // namespace dinero::consensus

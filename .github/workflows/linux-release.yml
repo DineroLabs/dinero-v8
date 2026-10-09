@@ -105,6 +105,18 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Install the source-pinned Orchard compiler
+        shell: bash
+        run: |
+          python3 - <<'PY_ORCHARD_TOOLCHAIN'
+          import pathlib, re, subprocess
+          text = pathlib.Path('rust/orchard_backend/rust-toolchain.toml').read_text()
+          pins = re.findall(r'^channel = "([0-9]+\.[0-9]+\.[0-9]+)"$', text, re.MULTILINE)
+          if len(pins) != 1:
+              raise SystemExit('Missing exact Orchard compiler pin')
+          subprocess.run(['rustup', 'toolchain', 'install', pins[0], '--profile', 'minimal'], check=True)
+          PY_ORCHARD_TOOLCHAIN
+
       - name: Cache vendored prerequisites
         uses: actions/cache@v4
         with:
@@ -131,13 +143,14 @@ jobs:
           cmake -S . -B build-release -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DDINERO_USE_VENDORED_DEPS=ON \
+            -DDINERO_BUILD_ORCHARD_BACKEND=ON \
             -DENABLE_GRPC=OFF \
             -DENABLE_GPU_MINING=OFF \
             -DDINERO_ENABLE_PORTMAPPING=OFF \
             -DDINERO_RELEASE_TAG=${{ steps.ver.outputs.version }}
 
-      - name: Build daemon and CLI
-        run: cmake --build build-release --target dinerod dinero-cli -j"$(nproc)"
+      - name: Build daemon, CLI and swap tower
+        run: cmake --build build-release --target dinerod dinero-cli dinero-swap-tower -j"$(nproc)"
 
       - name: Assert OpenSSL policy pin (3.5.7)
         run: bash scripts/ci/check_openssl_version.sh build-release 3.5.7
@@ -193,8 +206,10 @@ jobs:
           mkdir -p "$OUT"
           mkdir -p "$DEBUG_DIR"
           cp build-release/dinerod build-release/dinero-cli "$OUT/"
+          cmake --install build-release --component swap-tower --prefix "$PWD/swap-tower-install"
+          cp swap-tower-install/bin/dinero-swap-tower "$OUT/"
 
-          for BIN in dinerod dinero-cli; do
+          for BIN in dinerod dinero-cli dinero-swap-tower; do
             readelf --sections "$OUT/$BIN" | grep -q '\.debug_info' || {
               echo "::error::$BIN was built without DWARF debug information"
               exit 1
@@ -220,17 +235,23 @@ jobs:
             'Build IDs for each executable are recorded in BUILD-IDS.' \
             > "$DEBUG_STAGE/$OUT/README-debug-symbols.txt"
 
+          python3 scripts/verify-swap-tower-binary.py "$OUT/dinero-swap-tower"
+          python3 scripts/verify-orchard-package.py --daemon "$OUT/dinerod"
           tar -czf "$OUT.tar.gz" "$OUT"
+          mkdir -p tower-tar-check
+          tar -xzf "$OUT.tar.gz" -C tower-tar-check
+          python3 scripts/verify-swap-tower-binary.py "tower-tar-check/$OUT/dinero-swap-tower"
+          python3 scripts/verify-orchard-package.py --daemon "tower-tar-check/$OUT/dinerod"
           # The symbols archive contains OUT/.debug/*.debug. Extracting both
           # archives in the same directory therefore gives GDB its standard
           # automatic debug-link layout without modifying the public binary.
           tar -czf "$DEBUG_ARCHIVE.tar.gz" -C "$DEBUG_STAGE" "$OUT"
-          sha256sum "$OUT.tar.gz" "$OUT/dinerod" "$OUT/dinero-cli" \
+          sha256sum "$OUT.tar.gz" "$OUT/dinerod" "$OUT/dinero-cli" "$OUT/dinero-swap-tower" \
             > "SHA256SUMS-linux-x86_64-$V"
           sha256sum "$DEBUG_ARCHIVE.tar.gz" > "SHA256SUMS-linux-x86_64-debug-symbols-$V"
           (
             cd "$DEBUG_STAGE"
-            sha256sum "$OUT/.debug/dinerod.debug" "$OUT/.debug/dinero-cli.debug"
+            sha256sum "$OUT/.debug/dinerod.debug" "$OUT/.debug/dinero-cli.debug" "$OUT/.debug/dinero-swap-tower.debug"
           ) >> "SHA256SUMS-linux-x86_64-debug-symbols-$V"
           cat "SHA256SUMS-linux-x86_64-$V"
           cat "SHA256SUMS-linux-x86_64-debug-symbols-$V"
@@ -263,6 +284,8 @@ jobs:
           dpkg-deb -x "$DEB" deb-check
           test -x deb-check/usr/bin/dinerod
           test -x deb-check/usr/bin/dinero-cli
+          python3 scripts/verify-swap-tower-binary.py deb-check/usr/bin/dinero-swap-tower
+          python3 scripts/verify-orchard-package.py --daemon "deb-check/usr/bin/dinerod"
           deb-check/usr/bin/dinerod --version
           deb-check/usr/bin/dinero-cli version
           sudo dpkg -i "$DEB"
@@ -275,7 +298,7 @@ jobs:
           test "$(dpkg-deb -f "$DBG_DEB" Architecture)" = amd64
           mkdir -p deb-debug-check
           dpkg-deb -x "$DBG_DEB" deb-debug-check
-          for BIN in dinerod dinero-cli; do
+          for BIN in dinerod dinero-cli dinero-swap-tower; do
             BUILD_ID=$(readelf -n "deb-check/usr/bin/$BIN" | awk '/Build ID:/{print $3; exit}')
             test -n "$BUILD_ID"
             DEBUG_FILE="deb-debug-check/usr/lib/debug/.build-id/${BUILD_ID:0:2}/${BUILD_ID:2}.debug"

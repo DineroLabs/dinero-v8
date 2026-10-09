@@ -49,6 +49,18 @@ thread_local const HttpRpcServer* rpc_connection_owner = nullptr;
 // These are rejected when the server runs in read-only mode (--rpc-readonly).
 static const std::unordered_set<std::string> ADMIN_METHODS = {
     "stop",
+    // DIN <-> BTC swaps: lock and move funds from this wallet.
+    "swap.offer",
+    "swap.accept",
+    "swap.cancel",
+    "swap.refund",
+    // Orchard account/address issuance and payment effects require write access.
+    "wallet.orchard.createaccount",
+    "wallet.orchard.getnewaddress",
+    "wallet.orchard.queueshield",
+    "wallet.orchard.finishshield",
+    "wallet.orchard.queuespend",
+    "wallet.orchard.finishspend",
     "wallet.importprivkey",
     "wallet.importmnemonic",
     "wallet.exportmnemonic",
@@ -924,6 +936,30 @@ Json::Value HttpRpcServer::process_rpc_call(const Json::Value& request) {
                         // malformed shape escape into the envelope contract.
                         if (!raw.isString()) {
                             normalized["data"] = raw;
+                        }
+                        // Orchard failures carry typed state used by the desktop
+                        // client. Preserve only these fields, never the whole
+                        // handler result (which may contain payment material).
+                        // Automatic flat aliases are copied handlers and have
+                        // no getAliasInfo entry. Accept their namespace too;
+                        // explicit aliases were resolved above.
+                        const bool orchard = admin_check_method.rfind("wallet.orchard.", 0) == 0 ||
+                            admin_check_method.rfind("orchard.", 0) == 0 ||
+                            admin_check_method == "getactivationstatus";
+                        auto token = [](const Json::Value& value, size_t limit) {
+                            if (!value.isString()) return false;
+                            const auto text = value.asString();
+                            return !text.empty() && text.size() <= limit &&
+                                std::all_of(text.begin(), text.end(), [](unsigned char c) {
+                                    return (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_';
+                                });
+                        };
+                        if (orchard && raw.isString() && token(result["error_code"], 64)) {
+                            Json::Value detail(Json::objectValue);
+                            detail["error_code"] = result["error_code"];
+                            if (token(result["proof_state"], 32)) detail["proof_state"] = result["proof_state"];
+                            if (result["reservation_retained"].isBool()) detail["reservation_retained"] = result["reservation_retained"];
+                            normalized["data"]["orchard"] = detail;
                         }
                         response["error"] = normalized;
                     }

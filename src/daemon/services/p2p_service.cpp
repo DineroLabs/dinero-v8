@@ -1178,6 +1178,29 @@ bool P2PService::RequestHeaders(const std::string& peer_addr,
     return sent;
 }
 
+void P2PService::NoteBlockAnnouncement(const std::string& peer_addr,
+                                       const uint256& block_hash) {
+    auto* ctx = DaemonContext::instance();
+    if (!ctx || !ctx->header_chain || !ctx->header_sync) {
+        return;
+    }
+    auto* sync = ctx->header_sync->GetSyncManager();
+    if (!sync) {
+        return;
+    }
+    const uint64_t peer_id = daemon::HeaderPeerId(peer_addr);
+    consensus::HeaderIndexEntry entry{};
+    if (ctx->header_chain->GetHeaderCopy(block_hash, entry)) {
+        sync->NotePeerHasHeader(peer_id, entry.height, block_hash);
+        if (p2p_mgr_) {
+            p2p_mgr_->update_peer_height(peer_addr, entry.height);
+            p2p_mgr_->update_peer_synced_headers(peer_addr, entry.height);
+        }
+        return;
+    }
+    sync->NotePeerAnnouncedUnknownBlock(peer_id);
+}
+
 void P2PService::RequestHeadersRefreshForBlockAnnouncement(
         const std::string& peer_addr) {
     const auto now = std::chrono::steady_clock::now();

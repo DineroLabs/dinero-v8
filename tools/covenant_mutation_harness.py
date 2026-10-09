@@ -212,7 +212,7 @@ def run(cmd, cwd=REPO, timeout=1800):
 
 
 def build(build_dir):
-    return run(["cmake", "--build", build_dir, "--target", *TARGETS, "-j8"])
+    return run(["cmake", "--build", build_dir, "--target", *TARGETS, "-j4"])
 
 
 def run_tests(build_dir):
@@ -225,6 +225,7 @@ def run_tests(build_dir):
             "-R",
             "^(%s)$" % "|".join(CTEST_TESTS),
             "--output-on-failure",
+            "--no-tests=error",
         ]
     )
     return result.returncode == 0, result.stdout
@@ -341,7 +342,8 @@ def main():
 
     # Stale anchors fail too: a mutation that silently stops applying would
     # otherwise quietly shrink coverage while still reporting 100%.
-    return 0 if not survived and not stale else 1
+    # An unbuildable mutation cannot establish that its test catches the rule.
+    return 0 if not survived and not stale and not unbuildable else 1
 
 
 if __name__ == "__main__":

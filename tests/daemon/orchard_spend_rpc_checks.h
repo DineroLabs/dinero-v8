@@ -12,7 +12,15 @@ din::Json SpendRpcShape(){
     p["payments"]=din::arr();p["outputs"]=din::arr();din::Json recipient;
     recipient["address"]="address";recipient["amount_una"]=Json::UInt64(200000);p["payments"].append(recipient);return p;
 }
-void SpendRpcRefused(const din::Json& result){EXPECT_TRUE(result.isMember("error"));EXPECT_EQ(result.size(),1u);}
+void SpendRpcRefused(const din::Json& result){
+    EXPECT_TRUE(result.isMember("error"));
+    if(result.isMember("error_code")) {
+        EXPECT_TRUE(result["error_code"].isString());
+        const auto code=result["error_code"].asString();
+        EXPECT_TRUE(code=="stale_account_revision" || code=="request_id_conflict" || code=="request_not_current");
+        EXPECT_EQ(result.size(),2u);
+    } else EXPECT_EQ(result.size(),1u);
+}
 }
 TEST(OrchardSpendRpc, MalformedRequestsRefuseBeforeServices){
     // Healthy Base58 payload coverage also runs with the backend disabled.
@@ -49,7 +57,7 @@ TEST(OrchardSpendRpc, MalformedRequestsRefuseBeforeServices){
 }
 TEST(OrchardSpendRpc, RegistryAndBackendOrServiceAbsenceRefuse){
     RegisterOrchardAccountRpc();const auto* method=g_rpcRegistry.lookup("wallet.orchard.queuespend");ASSERT_NE(method,nullptr);
-    ExecutionContext context;const auto result=(*method)(context,SpendRpcShape());SpendRpcRefused(result);
+    ExecutionContext context;const auto result=(*method)(context,OrchardBoundParamsForTest(context,SpendRpcShape()));SpendRpcRefused(result);
 #ifndef DINERO_TEST_ORCHARD_ORIGIN
     EXPECT_EQ(result["error"].asString(),"Orchard wallet backend unavailable");
 #else
@@ -78,7 +86,7 @@ struct OrchardSpendRpcFixture : OrchardSpendRequestFixture {
 TEST(OrchardSpendRpc, ActualRegistryTransferRetryReadyAndReopenPreserveRequest){
     OrchardSpendRpcFixture f;auto params=f.RequestJson();params["payments"][0]["memo_hex"]="0100ff";
     RegisterOrchardAccountRpc();const auto* method=g_rpcRegistry.lookup("wallet.orchard.queuespend");ASSERT_NE(method,nullptr);
-    const auto first=(*method)(f.RequestContext(),params);ASSERT_FALSE(first.isMember("error"))<<first["error"].asString();
+    const auto first=(*method)(f.RequestContext(),OrchardBoundParamsForTest(f.RequestContext(),params));ASSERT_FALSE(first.isMember("error"))<<first["error"].asString();
     EXPECT_TRUE(first["proof_queued"].asBool());EXPECT_FALSE(first["existing_request"].asBool());EXPECT_FALSE(first["archived"].asBool());EXPECT_EQ(first["durable_state"].asString(),"reserved");EXPECT_EQ(first["operation_id"],params["request_id"]);
     const auto reserved=f.Snapshot();const auto retry=f.CallSpend(params);ASSERT_FALSE(retry.isMember("error"));EXPECT_FALSE(retry["proof_queued"].asBool());EXPECT_TRUE(retry["existing_request"].asBool());EXPECT_EQ(retry["account_revision"],first["account_revision"]);EXPECT_EQ(f.Snapshot(),reserved);
     auto changed=params;changed["payments"][0]["memo_hex"]="0100fe";SpendRpcRefused(f.CallSpend(changed));EXPECT_EQ(f.Snapshot(),reserved);

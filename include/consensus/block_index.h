@@ -191,6 +191,7 @@ public:
     bool empty() const { return entries_.empty(); }
     size_t size() const { return entries_.size(); }
     void clear() { entries_.clear(); }
+    void Swap(BlockCandidates& other) noexcept { entries_.swap(other.entries_); }
     std::vector<CBlockIndex*> Snapshot() const {
         std::vector<CBlockIndex*> result(entries_.begin(), entries_.end());
         std::sort(result.begin(), result.end(), ByWorkThenHash{});

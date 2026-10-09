@@ -450,6 +450,15 @@ void WalletManager::initializeRegistry() {
         )
     )");
 
+    // Selection is an explicit wallet ID, not an ordering of wall-clock times.
+    // Existing registries with no selection retain the legacy startup fallback.
+    exec(registry_db_, R"(
+        CREATE TABLE IF NOT EXISTS wallet_selection (
+            singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+            wallet_id INTEGER NOT NULL REFERENCES wallets(id) ON DELETE CASCADE
+        )
+    )");
+
     exec(registry_db_, "CREATE INDEX IF NOT EXISTS idx_registry_name ON wallets(name)");
     exec(registry_db_, "CREATE INDEX IF NOT EXISTS idx_registry_encrypted ON wallets(encrypted)");
     exec(registry_db_, "CREATE INDEX IF NOT EXISTS idx_registry_last_opened ON wallets(last_opened)");
@@ -1606,9 +1615,32 @@ std::vector<std::string> WalletManager::listWallets() const {
 }
 
 std::string WalletManager::getMostRecentlyOpenedWallet() const {
+    std::lock_guard<std::recursive_mutex> database_lock(database_lifecycle_mutex_);
     if (!registry_db_) {
         WLOG_ERR("Registry database not open");
         return "";
+    }
+
+    {
+        sqlite3_stmt* raw = nullptr;
+        const int prepared = sqlite3_prepare_v2(registry_db_,
+            "SELECT w.name FROM wallet_selection s LEFT JOIN wallets w ON w.id=s.wallet_id "
+            "WHERE s.singleton=1", -1, &raw, nullptr);
+        std::unique_ptr<sqlite3_stmt, decltype(&sqlite3_finalize)> selection(raw, sqlite3_finalize);
+        if (prepared != SQLITE_OK) throw std::runtime_error("Wallet selection read unavailable");
+        const int rc = sqlite3_step(selection.get());
+        if (rc == SQLITE_ROW) {
+            const auto* bytes = sqlite3_column_text(selection.get(), 0);
+            const int size = sqlite3_column_bytes(selection.get(), 0);
+            if (sqlite3_column_type(selection.get(), 0) != SQLITE_TEXT || !bytes ||
+                size <= 0 || std::memchr(bytes, 0, size))
+                throw std::runtime_error("Wallet selection target invalid");
+            const std::string name(reinterpret_cast<const char*>(bytes), size);
+            if (sqlite3_step(selection.get()) != SQLITE_DONE)
+                throw std::runtime_error("Wallet selection read incomplete");
+            return name;
+        }
+        if (rc != SQLITE_DONE) throw std::runtime_error("Wallet selection read failed");
     }
 
     sqlite3_stmt* stmt = nullptr;
@@ -3007,20 +3039,20 @@ void WalletManager::updateWalletPathInRegistry(const std::string& name, const st
 }
 
 void WalletManager::updateLastOpened(const std::string& name) {
-    if (!registry_db_) {
-        return;
-    }
-
-    sqlite3_stmt* stmt = nullptr;
-    const char* sql = "UPDATE wallets SET last_opened = strftime('%s','now') WHERE name = ?";
-
-    if (sqlite3_prepare_v2(registry_db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
-        return;
-    }
-
-    sqlite3_bind_text(stmt, 1, name.c_str(), -1, SQLITE_STATIC);
-    sqlite3_step(stmt);
-    sqlite3_finalize(stmt);
+    std::lock_guard<std::recursive_mutex> database_lock(database_lifecycle_mutex_);
+    if (!registry_db_) throw std::runtime_error("Wallet registry unavailable");
+    IssuedAddressTransaction transaction(registry_db_);
+    IssuedStatement timestamp(registry_db_,
+        "UPDATE wallets SET last_opened = strftime('%s','now') WHERE name = ?");
+    timestamp.Text(1, name);
+    timestamp.Done(true);
+    IssuedStatement selected(registry_db_,
+        "INSERT INTO wallet_selection(singleton,wallet_id) "
+        "SELECT 1,id FROM wallets WHERE name=? "
+        "ON CONFLICT(singleton) DO UPDATE SET wallet_id=excluded.wallet_id");
+    selected.Text(1, name);
+    selected.Done(true);
+    transaction.Commit();
 }
 
 std::string WalletManager::sanitize(const std::string& in) {
@@ -3263,6 +3295,53 @@ WalletManager::DatabaseLease::DatabaseLease(WalletManager& owner)
     ++owner_.database_leases_;
 }
 
+std::array<uint8_t, 32> WalletManager::DatabaseLease::ReadDeliveryIdentity() const {
+    if (thread_ != std::this_thread::get_id())
+        throw std::logic_error("Wallet identity read used on another thread");
+    if (!db_ || name_.empty() || owner_.db_ != db_ || owner_.database_session_ != session_)
+        throw std::runtime_error("Wallet identity read ownership unavailable");
+    sqlite3_stmt* raw = nullptr;
+    const int prepared = sqlite3_prepare_v2(db_, "SELECT runtime_delivery_id FROM wallet_meta WHERE id=1", -1, &raw, nullptr);
+    const std::unique_ptr<sqlite3_stmt, decltype(&sqlite3_finalize)> statement(raw, sqlite3_finalize);
+    if (prepared != SQLITE_OK || sqlite3_step(raw) != SQLITE_ROW ||
+        sqlite3_column_type(raw, 0) != SQLITE_BLOB || sqlite3_column_bytes(raw, 0) != 32)
+        throw std::runtime_error("Existing wallet identity unavailable");
+    const auto* bytes = static_cast<const uint8_t*>(sqlite3_column_blob(raw, 0));
+    if (!bytes) throw std::runtime_error("Existing wallet identity unavailable");
+    std::array<uint8_t, 32> identity{};
+    std::copy_n(bytes, identity.size(), identity.begin());
+    if (sqlite3_step(raw) != SQLITE_DONE ||
+        std::all_of(identity.begin(), identity.end(), [](uint8_t b) { return b == 0; }))
+        throw std::runtime_error("Existing wallet identity malformed or incomplete");
+    return identity;
+}
+
+std::array<uint8_t,32> WalletManager::DatabaseLease::RpcBinding() {
+    // The existing checked identity reader validates this exact lease/thread
+    // and requires an existing identity. No enrollment or database writes.
+    const auto identity=ReadDeliveryIdentity();
+    if(!owner_.rpc_instance_id_) {
+        std::array<uint8_t,32> instance{};
+        if(RAND_bytes(instance.data(),static_cast<int>(instance.size()))!=1 ||
+            std::all_of(instance.begin(),instance.end(),[](uint8_t x){return x==0;}))
+            throw std::runtime_error("Wallet RPC instance identity unavailable");
+        owner_.rpc_instance_id_=instance;
+    }
+    // This identifies request intent, not RPC authorization or key ownership.
+    // A fresh manager/process has a fresh random identity; open/close changes
+    // the existing monotonic session. Never serialize pointers or key material.
+    std::string material="Dinero/Orchard/RpcWalletBinding/v1";
+    material.append(reinterpret_cast<const char*>(owner_.rpc_instance_id_->data()),32);
+    material.append(reinterpret_cast<const char*>(identity.data()),32);
+    const auto number=[&](uint64_t value){for(unsigned i=0;i<8;++i)material.push_back(char(value>>(8*i)));};
+    number(session_);number(name_.size());material.append(name_);
+    std::array<uint8_t,32> binding{};
+    if(!::SHA256(reinterpret_cast<const uint8_t*>(material.data()),material.size(),binding.data()))
+        throw std::runtime_error("Wallet RPC binding unavailable");
+    return binding;
+}
+
+
 std::string WalletManager::DatabaseLease::EnsureDeliveryIdentity() {
     if (thread_ != std::this_thread::get_id())
         throw std::logic_error("Wallet delivery identity used on another thread");
@@ -3494,13 +3573,17 @@ void ValidatePaymentRequest(const PendingPaymentIntent& intent) {
         return std::any_of(bytes.begin(), bytes.end(), [](uint8_t b) { return b != 0; });
     };
     if ((request.domain != PendingPaymentRequestDomain::VaultWithdrawal &&
-         request.domain != PendingPaymentRequestDomain::PoolPayout) ||
+         request.domain != PendingPaymentRequestDomain::PoolPayout &&
+         request.domain != PendingPaymentRequestDomain::SwapFunding) ||
         !nonzero(request.owner) || !nonzero(request.id) ||
         request.fee_rate_hint > MAX_SUPPLY_UNA_CONST ||
         request.maximum_fee_una > MAX_SUPPLY_UNA_CONST ||
         request.audit_context.size() > 4096 || request.audit_context.find('\0') != std::string::npos ||
         intent.label.find('\0') != std::string::npos)
         throw std::runtime_error("Payment request binding invalid");
+    if (request.domain == PendingPaymentRequestDomain::SwapFunding &&
+        (!intent.additional_recipients.empty() || !request.maximum_fee_una))
+        throw std::runtime_error("Swap funding requires one recipient and an explicit fee ceiling");
     if (request.pool_origins.size()>256 ||
         (!request.pool_origins.empty() && request.domain!=PendingPaymentRequestDomain::PoolPayout))
         throw std::runtime_error("Pool allocation reference domain or capacity invalid");
@@ -6015,29 +6098,65 @@ void WalletManager::checkUnlockTimeout() {
 }
 
 // UTXO management for PSBT creation
-std::vector<WalletManager::WalletUTXO> WalletManager::listUnspentUTXOs(int min_confirmations,
-                                                                       int max_confirmations,
-                                                                       const Mempool* mempool) const {
-    std::vector<WalletManager::WalletUTXO> utxos;
-    
-    if (!db_) {
-        return utxos;
+std::vector<WalletManager::WalletUTXO> WalletManager::listUnspentUTXOs(
+    int min_confirmations, int max_confirmations, const Mempool* mempool) const {
+    auto lease = const_cast<WalletManager&>(*this).AcquireDatabaseLease();
+    if (!db_ || current_wallet_id_ <= 0)
+        throw std::runtime_error("Wallet UTXO inventory unavailable");
+    if (min_confirmations < 0 || max_confirmations < min_confirmations)
+        throw std::runtime_error("Wallet UTXO confirmation range invalid");
+    const auto checked = [this](int actual, int expected) {
+        if (actual != expected)
+            throw std::runtime_error("Wallet UTXO read failed: " + std::string(sqlite3_errmsg(db_)));
+    };
+    const auto prepare = [this, &checked](const char* sql) {
+        sqlite3_stmt* raw = nullptr;
+        const int rc = sqlite3_prepare_v2(db_, sql, -1, &raw, nullptr);
+        std::unique_ptr<sqlite3_stmt, decltype(&sqlite3_finalize)> statement(raw, sqlite3_finalize);
+        checked(rc, SQLITE_OK);
+        return statement;
+    };
+    const auto text = [](sqlite3_stmt* row, int column, bool nullable) {
+        const int type = sqlite3_column_type(row, column);
+        if (nullable && type == SQLITE_NULL) return std::string{};
+        if (type != SQLITE_TEXT) throw std::runtime_error("Wallet UTXO text type invalid");
+        const int size = sqlite3_column_bytes(row, column);
+        const auto* data = static_cast<const char*>(sqlite3_column_blob(row, column));
+        if (size < 0 || (size > 0 && (!data || std::memchr(data, 0, size))))
+            throw std::runtime_error("Wallet UTXO text encoding invalid");
+        return size ? std::string(data, size) : std::string{};
+    };
+    const auto number = [](sqlite3_stmt* row, int column, int64_t maximum) {
+        if (sqlite3_column_type(row, column) != SQLITE_INTEGER)
+            throw std::runtime_error("Wallet UTXO integer type invalid");
+        const int64_t value = sqlite3_column_int64(row, column);
+        if (value < 0 || value > maximum) throw std::runtime_error("Wallet UTXO integer out of range");
+        return value;
+    };
+    const auto hex = [](const std::string& value) {
+        return value.size() % 2 == 0 && std::all_of(value.begin(), value.end(), [](unsigned char c) {
+            return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+        });
+    };
+
+    // Legacy schemas may lack this column. Only a completed schema read proves
+    // absence; access errors do not silently classify anchored coins as spent.
+    bool has_anchor = false;
+    {
+        auto schema = prepare("PRAGMA table_info(utxos)");
+        int rc; size_t columns = 0;
+        while ((rc = sqlite3_step(schema.get())) == SQLITE_ROW) {
+            ++columns;
+            const auto name = text(schema.get(), 1, false);
+            has_anchor = has_anchor || name == "snapshot_anchored";
+        }
+        checked(rc, SQLITE_DONE);
+        if (columns == 0) throw std::runtime_error("Wallet UTXO schema unavailable");
     }
-    
-    // Query UTXOs with dynamic maturity computation (no stored is_mature dependency)
-    // JOIN with address_derivation_paths to get BIP32 derivation path for signing.
-    // FALLBACK 1: If address_derivation_paths is empty (legacy wallets), construct the
-    // derivation path from the addresses table (type, account, change, idx).
-    // FALLBACK 2 (Phase 10): v7 P2MR addresses live in watch_scripts, not
-    // addresses/address_derivation_paths. LEFT JOIN watch_scripts as a third
-    // COALESCE source so P2MR UTXOs carry a non-empty derivation_path, which
-    // wallet.sendtoaddress requires to admit them into the coin-selector input set.
-    // watch_scripts stores the scriptPubKey as a BLOB; utxos.script_pubkey is the
-    // lower-hex string, so we compare via lower(hex(ws.script_pubkey)).
-    // NOTE: JOIN on script_pubkey (not address) because addresses may use different
-    // network prefixes (din1/rdin1) while script_pubkey is network-independent
-    sqlite3_stmt* stmt;
-    const char* sql = R"(
+
+    // Preserve existing recognition/path selection. It is not an authenticated
+    // key-ownership certificate; canonical funding validation remains separate.
+    std::string sql = R"(
         SELECT u.txid, u.vout, u.address, u.amount, u.script_pubkey, u.height, u.is_coinbase, u.is_spent,
                COALESCE(adp.derivation_path,
                         CASE WHEN a.type IS NOT NULL THEN
@@ -6055,164 +6174,62 @@ std::vector<WalletManager::WalletUTXO> WalletManager::listUnspentUTXOs(int min_c
           AND u.wallet_id = ?2
         ORDER BY u.amount DESC
     )";
-
-    if (!SqlLog::prepare(&stmt, db_, sql, "list-utxos-with-derivation-path")) {
-        return utxos;
-    }
-
-    // Bind canonical Dinero coin type for fallback derivation-path reconstruction.
-    if (sqlite3_bind_int(stmt, 1, static_cast<int>(dinero::consensus::DINERO_COIN_TYPE)) != SQLITE_OK) {
-        sqlite3_finalize(stmt);
-        return utxos;
-    }
-
-    if (sqlite3_bind_int(stmt, 2, current_wallet_id_) != SQLITE_OK) {
-        sqlite3_finalize(stmt);
-        return utxos;
-    }
-
-    while (sqlite3_step(stmt) == SQLITE_ROW) {
-        WalletManager::WalletUTXO utxo;
-
-        // Extract UTXO data
-        const char* txid = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
-        uint32_t vout = sqlite3_column_int(stmt, 1);
-        const char* address = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 2));
-        int64_t amount_una = sqlite3_column_int64(stmt, 3);
-        const char* script_pubkey = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 4));
-        uint32_t height = sqlite3_column_int(stmt, 5);
-        bool is_coinbase = sqlite3_column_int(stmt, 6) != 0;
-        bool is_spent = sqlite3_column_int(stmt, 7) != 0;
-        const char* derivation_path = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 8));
-
-        // SEATBELT: Validate critical fields before use
-        if (!txid || strlen(txid) == 0) {
-            logCorruptRow("utxos", "txid", "NULL or empty txid");
-            continue;  // Skip this row, continue with others
-        }
-        if (!address || strlen(address) == 0) {
-            logCorruptRow("utxos", "address", "NULL or empty address");
-            continue;  // Skip this row, continue with others
-        }
-
-        utxo.txid = txid;
-        utxo.vout = vout;
-        utxo.amount_una = amount_una;
-        utxo.amount_din = static_cast<double>(amount_una) / dinero::ConsensusSubsidy::UNA_PER_DIN;
-        utxo.address = address;
-        utxo.height = height;
-        utxo.is_coinbase = is_coinbase;
-        utxo.is_spent = is_spent;
-        utxo.script_pubkey = script_pubkey ? script_pubkey : "";
-        utxo.derivation_path = derivation_path ? derivation_path : "";
-        utxo.label = "";
-
-        // Calculate confirmations from current blockchain height
-        // A coin in the selected tip already has one confirmation. Height zero
-        // denotes an unconfirmed row; future-height rows have no confirmations.
-        utxo.confirmations = height > 0 && current_blockchain_height_ >= height
-            ? static_cast<int>(std::min<uint64_t>(
-                  uint64_t(current_blockchain_height_) - height + 1,
-                  std::numeric_limits<int>::max()))
-            : 0;
-
-        // Compute maturity dynamically (no stored boolean dependency)
-        const uint32_t COINBASE_MATURITY = 100;
-        utxo.is_mature = !is_coinbase || (utxo.confirmations >= COINBASE_MATURITY); // >= 100 for coinbase
-
-        // Bug Fix 1: Skip immature coinbase outputs — they cannot be spent yet.
-        // A coinbase UTXO with < 100 confirmations will be rejected by consensus.
-        if (is_coinbase && !utxo.is_mature) {
-            continue;
-        }
-
-        // Check if spendable (dynamic maturity + confirmation range)
-        utxo.spendable = utxo.is_mature &&
-                        (utxo.confirmations >= min_confirmations) &&
-                        (utxo.confirmations <= max_confirmations);
-
-        // Bug Fix 2: Validate UTXO against the chain UTXO index to exclude
-        // stale/spent entries that the wallet DB has not yet marked as spent.
-        // This catches transparent UTXOs consumed by ring/unshield transactions
-        // where the wallet index was not updated (e.g. fee inputs for CT spends).
+    const std::string path_column = "AS derivation_path";
+    const auto column_at = sql.find(path_column);
+    if (column_at == std::string::npos) throw std::logic_error("Wallet UTXO query malformed");
+    sql.replace(column_at, path_column.size(), path_column +
+        (has_anchor ? ", u.snapshot_anchored" : ", 0"));
+    auto statement = prepare(sql.c_str());
+    sqlite3_stmt* stmt = statement.get();
+    checked(sqlite3_bind_int(stmt, 1, static_cast<int>(dinero::consensus::DINERO_COIN_TYPE)), SQLITE_OK);
+    checked(sqlite3_bind_int(stmt, 2, current_wallet_id_), SQLITE_OK);
+    std::vector<WalletUTXO> utxos;
+    const uint32_t wallet_height = getBlockchainHeight();
+    std::set<std::pair<std::string, uint32_t>> observed;
+    int rc;
+    while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
+        WalletUTXO utxo{};
+        utxo.txid = text(stmt, 0, false);
+        if (utxo.txid.size() != 64 || !hex(utxo.txid))
+            throw std::runtime_error("Wallet UTXO transaction ID invalid");
+        utxo.vout = static_cast<uint32_t>(number(stmt, 1, UINT32_MAX));
+        // An empty display address remains an owned exact script, not absence.
+        utxo.address = text(stmt, 2, false);
+        utxo.amount_una = static_cast<uint64_t>(number(stmt, 3, INT64_MAX));
+        utxo.amount_din = static_cast<double>(utxo.amount_una) / dinero::ConsensusSubsidy::UNA_PER_DIN;
+        utxo.script_pubkey = text(stmt, 4, false);
+        if (!hex(utxo.script_pubkey)) throw std::runtime_error("Wallet UTXO script encoding invalid");
+        utxo.height = static_cast<uint32_t>(number(stmt, 5, UINT32_MAX));
+        utxo.is_coinbase = number(stmt, 6, 1) != 0;
+        utxo.is_spent = number(stmt, 7, 1) != 0;
+        if (utxo.is_spent) throw std::runtime_error("Wallet UTXO selection changed");
+        utxo.derivation_path = text(stmt, 8, true);
+        const bool anchored = number(stmt, 9, 1) != 0;
+        if (!observed.emplace(uint256::FromHexUnsafe(utxo.txid).GetHex(), utxo.vout).second)
+            throw std::runtime_error("Wallet UTXO recognition metadata ambiguous");
+        utxo.confirmations = utxo.height > 0 && wallet_height >= utxo.height
+            ? static_cast<int>(std::min<uint64_t>(uint64_t(wallet_height) - utxo.height + 1,
+                                                std::numeric_limits<int>::max())) : 0;
+        utxo.is_mature = !utxo.is_coinbase || utxo.confirmations >= 100;
+        if (utxo.is_coinbase && !utxo.is_mature) continue;
+        utxo.spendable = utxo.is_mature && utxo.confirmations >= min_confirmations &&
+                         utxo.confirmations <= max_confirmations;
+        // The index owner must still be pinned by the service caller. Existing
+        // index/mempool filtering is retained; this is not a canonical snapshot.
         if (utxo_index_) {
-            try {
-                TxId chain_txid(uint256::FromHexUnsafe(utxo.txid));
-                auto chain_utxo = utxo_index_->GetUTXO(chain_txid, utxo.vout);
-                if (!chain_utxo.has_value()) {
-                    // A snapshot-anchored coin (recorded from the AssumeUTXO
-                    // snapshot) is committed in the utreexo accumulator and is
-                    // NEVER enumerable in the live utxo_index_. Do NOT infer it
-                    // spent — this read-path was wiping fast-synced wallets'
-                    // pre-snapshot balances. Genuine spends above the base still
-                    // arrive via the input-gated block-connect paths.
-                    bool anchored = false;
-                    {
-                        sqlite3_stmt* astmt = nullptr;
-                        const char* asql = "SELECT snapshot_anchored FROM utxos "
-                                           "WHERE txid = ? AND vout = ? AND wallet_id = ? LIMIT 1";
-                        if (sqlite3_prepare_v2(db_, asql, -1, &astmt, nullptr) == SQLITE_OK) {
-                            sqlite3_bind_text(astmt, 1, utxo.txid.c_str(), -1, SQLITE_TRANSIENT);
-                            sqlite3_bind_int(astmt, 2, static_cast<int>(utxo.vout));
-                            sqlite3_bind_int(astmt, 3, current_wallet_id_);
-                            if (sqlite3_step(astmt) == SQLITE_ROW) {
-                                anchored = sqlite3_column_int(astmt, 0) != 0;
-                            }
-                            sqlite3_finalize(astmt);
-                        }
-                        // If the column doesn't exist (legacy wallet), prepare
-                        // fails and anchored stays false → original behavior.
-                    }
-                    if (!anchored) {
-                        // Cross-store mismatch: the coin is in the wallet DB but
-                        // absent from the in-memory chain UTXO index, and it is NOT
-                        // a snapshot-anchored coin.
-                        //
-                        // SECURITY (fund-loss fix, audit Fix 2): a const READ method
-                        // must NEVER mutate fund state. The previous code persisted
-                        // `UPDATE utxos SET is_spent=1` here, which irreversibly
-                        // zeroed legitimate balances on the first listunspent. We now
-                        // treat the mismatch as non-destructive: skip the coin from
-                        // THIS result set (so coin-selection won't try to spend an
-                        // output the chainstate can't currently see) but leave the DB
-                        // untouched, so the coin reappears once utxo_index_ is
-                        // populated.
-                        logCorruptRow("utxos", "chain-mismatch",
-                                      "wallet UTXO absent from chain index; skipping "
-                                      "(read-only, no state mutation)");
-                        continue;
-                    }
-                    // anchored: valid snapshot coin — keep it (transparent, not CT).
-                } else {
-                    // Propagate CT flag from chain UTXO set into wallet UTXO view
-                    utxo.is_confidential = chain_utxo->is_confidential;
-                }
-            } catch (const std::exception&) {
-                // If the txid is malformed we can't validate — skip to be safe.
-                logCorruptRow("utxos", "txid", "failed to parse txid for chain UTXO validation");
-                continue;
+            const TxId id(uint256::FromHexUnsafe(utxo.txid));
+            const auto coin = utxo_index_->GetUTXO(id, utxo.vout);
+            if (!coin) {
+                if (!anchored) continue;
+            } else {
+                utxo.is_confidential = coin->is_confidential;
             }
         }
-
-        if (mempool) {
-            try {
-                const OutPoint outpoint(TxId(uint256::FromHexUnsafe(utxo.txid)), utxo.vout);
-                if (mempool->isOutputSpentInMempool(outpoint)) {
-                    continue;
-                }
-            } catch (const std::exception&) {
-                logCorruptRow("utxos", "txid", "failed to parse txid for mempool spend filter");
-                continue;
-            }
-        }
-
-        // Only include UTXOs with positive amounts
-        if (utxo.amount_una > 0) {
-            utxos.push_back(utxo);
-        }
+        if (mempool && mempool->isOutputSpentInMempool(
+                OutPoint(TxId(uint256::FromHexUnsafe(utxo.txid)), utxo.vout))) continue;
+        if (utxo.amount_una > 0) utxos.push_back(std::move(utxo));
     }
-    
-    sqlite3_finalize(stmt);
+    checked(rc, SQLITE_DONE);
     return utxos;
 }
 

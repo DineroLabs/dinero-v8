@@ -155,6 +155,11 @@ def snapshot(node):
     selected = generation_a / "snapshot.dat"
     newer = staging_b / "snapshot.dat"
     check("source NodeCore starts", node.start(source) == 0)
+    # Startup owns a generated default wallet. Recovery uses a separate name;
+    # the subsequent import exercises the existing same-seed bind handler.
+    restored = node.rpc("wallet.restore", {
+        "name": "snapshot-source", "mnemonic": mnemonic, "rescan": False})
+    check("source recovery uses a new wallet", restored.get("success") is True, restored)
     imported = node.rpc("wallet.importmnemonic", {
         "mnemonic": mnemonic, "rescan": False, "initial_address_count": 4})
     check("source owns fixture scripts", imported["success"] and imported["watch_scripts"] > 0, imported)
@@ -232,6 +237,11 @@ def snapshot(node):
     check("another complete generation is published", newer.is_file()
           and Path(str(newer) + ".manifest.json").is_file())
     check("later generation has different bytes", hashlib.sha256(newer.read_bytes()).hexdigest() != digest)
+    # Establish the recovered seed without replacing the consumer's default
+    # wallet or scanning. The unchanged import below must still read generation A.
+    restored = node.rpc("wallet.restore", {
+        "name": "snapshot-recovered", "mnemonic": mnemonic, "rescan": False})
+    check("late recovery uses a new wallet", restored.get("success") is True, restored)
     imported = node.rpc("wallet.importmnemonic", {
         "mnemonic": mnemonic, "rescan": True, "initial_address_count": 4})
     check("late wallet recovery reads selected generation", imported.get("success") is True

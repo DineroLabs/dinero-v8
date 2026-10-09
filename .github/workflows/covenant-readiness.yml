@@ -13,6 +13,7 @@ on:
       - 'tests/integration/test_covenant_*'
       - 'scripts/covenant-*.sh'
       - 'tools/covenant_*'
+      - 'scripts/ci/test_covenant_mutation_harness.py'
       - 'docs/consensus/COVENANT_*'
       - '.github/workflows/covenant-readiness.yml'
   schedule:
@@ -50,6 +51,9 @@ jobs:
         with:
           key: covenant-readiness-linux
           max-size: 1G
+
+      - name: Check covenant harness result policy
+        run: python3 -B scripts/ci/test_covenant_mutation_harness.py -v
 
       - name: Build vendored OpenSSL
         run: OPENSSL_VERSION=3.5.7 bash scripts/build-openssl-vendored.sh

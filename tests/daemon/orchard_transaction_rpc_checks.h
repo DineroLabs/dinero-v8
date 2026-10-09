@@ -29,6 +29,14 @@ public:
         if(db.writeBatch(token,std::move(batch),true)!=Status::Ok)
             throw std::runtime_error("handoff fixture Orchard row write failed");
     }
+    static auto OrchardComparisonIterator(const ChainDB& db) {
+        return std::unique_ptr<rocksdb::Iterator>(db.db_->NewIterator(
+            rocksdb::ReadOptions(), db.shieldedStateHandle()));
+    }
+    static Status CompareOrchardIterators(const ChainDB& db,
+        rocksdb::Iterator& actual, rocksdb::Iterator& expected) {
+        return db.compareOrchardStorageIterators(actual, expected);
+    }
     static bool PutLocationRow(ChainDB& db,const uint256& id,const std::string& bytes) {
         return db.db_->Put(rocksdb::WriteOptions(),db.cf_[db.idx_txindex_].get(),db.makeTxIndexKey(id),bytes).ok();
     }

@@ -6,11 +6,24 @@
 #include "consensus/orchard_forest_transition.h"
 #include "storage/legacy_retirement.h"
 #include "consensus/undo.h"
+#include "consensus/utreexo_stump.h"
+#include "storage/orchard_catalog_state.h"
 
 namespace rocksdb { class WriteBatch; }
 namespace dinero { class ChainDB; class ChainWriteToken; class BlockStorage; }
 
 namespace dinero::consensus {
+// Pure proof/transition check for detached compact verification. The caller
+// supplies authenticated parent metadata and already-authorized block coins;
+// this neither enrolls a catalog nor authorizes canonical publication.
+void CheckOrchardCompactBlockUtreexoProof(const OrchardBlockCandidate&,
+    const PreparedOrchardBlockCoins&,const BlockHeader&,const UtreexoStump&);
+// Rebind a sealed result to the caller's enrolled compact selected catalog.
+// All exact external inputs and output absences are recaptured and checked.
+void CheckValidatedOrchardCompactParentUnderLock(const ChainDB&,
+    const OrchardBlockContext&,const OrchardBlockCandidate&,const BlockHeader&,
+    const storage::catalog::State&,const OrchardBranchMtpLookup&,bool witness,
+    const ValidatedOrchardBlock&);
 // Recheck a privately verified block against the held canonical parent before
 // ingress persistence or staging. No writes and no proof re-execution.
 void CheckValidatedOrchardParentUnderLock(const ChainDB&,const OrchardBlockContext&,
@@ -43,7 +56,7 @@ void CheckPreparedLegacyRetirementUnderLock(const ChainDB&,
 // consensus validity. Does not audit every older UTXO/nullifier in the database.
 void AuditOrchardChainstateTipUnderLock(ChainDB&, const ChainWriteToken&,
     const OrchardBlockContext&, const BlockHeader& parent, const UtreexoForest&,
-    bool require_witness_commitment);
+    bool require_witness_commitment, bool require_catalog = false);
 struct OrchardUndoCoverageStep {
     std::optional<storage::OrchardStoredState> parent_state;
     UtreexoForest parent_forest;
@@ -60,7 +73,7 @@ struct OrchardUndoCoverageStep {
     const ChainDB&, const BlockStorage&, const OrchardBlockContext&,
     const OrchardBlockCandidate&, const BlockHeader& parent,
     const storage::OrchardStoredState&, const UtreexoForest&,
-    bool require_witness_commitment);
+    bool require_witness_commitment, bool require_catalog = false);
 // Caller holds the chainstate writer lock from coin resolution/authorization
 // through commit. All supplied authorizations must come from that held view.
 // This stages ONLY Orchard state in the caller's batch. UTXO/forest/tip/index
@@ -105,6 +118,24 @@ struct StagedOrchardChainstate {
     StagedOrchardBlock block;
     PreparedOrchardForest forest;
 };
+struct StagedOrchardCompactChainstate {
+    StagedOrchardBlock block;
+    UtreexoStump stump;
+};
+// Compact counterpart of the canonical staging operation. The canonical
+// owner must authenticate this exact selected catalog before calling. Resolves
+// only candidate inputs through catalog membership and the parent's proof;
+// never reads or writes the full coin table or constructs a full forest.
+// The same body, undo, delta, filter, Orchard/retirement state and tip records
+// share the batch. The caller must stage the successor catalog in that batch.
+// Not a catalog-enrollment API or a configured CSN admission path.
+[[nodiscard]] StagedOrchardCompactChainstate StageOrchardCompactChainstateConnectUnderLock(
+    ChainDB&, const ChainWriteToken&, const OrchardBlockContext&,
+    const OrchardBlockCandidate&, const BlockHeader& parent,
+    const storage::catalog::State& authenticated_parent,
+    const OrchardBranchMtpLookup&, bool require_witness_commitment, rocksdb::WriteBatch&,
+    const std::optional<storage::LegacyRetirementRecord>& authenticated_boundary = std::nullopt,
+    const ValidatedOrchardBlock* detached = nullptr);
 // Stage authoritative state, body, active transaction indexes, delta, forest
 // marker, height index and both tip markers together. The caller supplies
 // authenticated selected-branch headers with persisted header/work records,
@@ -128,6 +159,24 @@ struct StagedOrchardChainstate {
     const OrchardBranchMtpLookup&,
     bool require_witness_commitment, bool checkpoint, rocksdb::WriteBatch&,
     const std::optional<storage::LegacyRetirementRecord>& authenticated_boundary = std::nullopt,
+    const ValidatedOrchardBlock* detached = nullptr);
+
+struct StagedOrchardCompactDisconnect {
+    PreparedOrchardBlockCoins forward_coins;
+    UtreexoStump stump;
+};
+// The caller owns the current selected compact catalog and its exact retained
+// predecessor. Revalidates the candidate proof and forward transition against
+// those roots and exact conventional undo/delta. No full coin-table access.
+// A supplied sealed result is rebound to the selected child, retained parent
+// state/membership/retirement, exact wire, coins and MTP before authorization
+// reuse; proof transition and all inverse storage checks still run.
+// Remaining canonical index/outbox publication belongs to the outer writer.
+[[nodiscard]] StagedOrchardCompactDisconnect StageOrchardCompactChainstateDisconnectUnderLock(
+    ChainDB&, const ChainWriteToken&, const OrchardBlockContext&,
+    const OrchardBlockCandidate&, const BlockHeader& parent,
+    const storage::catalog::State& current, const storage::catalog::State& previous,
+    const OrchardBranchMtpLookup&, bool require_witness_commitment, rocksdb::WriteBatch&,
     const ValidatedOrchardBlock* detached = nullptr);
 
 struct StagedOrchardDisconnect {

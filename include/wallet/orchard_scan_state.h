@@ -15,6 +15,17 @@ struct ScannedOrchardNote {
   uint32_t created_height;
   uint256 created_block;
 };
+// An authenticated selected-chain receipt locator, retained after its note is
+// spent. It holds public authorization data, not a private note opening or a
+// spend witness. Consumers decrypt the referenced action with the account FVK
+// when presenting amount/recipient/memo; internal change remains distinguishable.
+struct ReceivedOrchardNote {
+  std::shared_ptr<const consensus::VerifiedOrchardAuthorizations> origin;
+  uint32_t action_index;
+  orchard::WalletScope scope;
+  uint32_t created_height;
+  uint256 created_block;
+};
 // All callbacks use the SAME locked selected-chain view as the supplied
 // checkpoint. Origin must establish selected-ancestor membership and exact
 // transaction inclusion from authenticated block bytes. It must not trust a
@@ -51,6 +62,13 @@ public:
   const storage::OrchardStoredState &Checkpoint() const noexcept;
   const std::vector<ScannedOrchardNote> &Notes() const noexcept;
   uint64_t BalanceUna() const noexcept;
+  // Old scan snapshots retain only unspent notes. They remain spendable under
+  // existing checks but cannot claim complete receipt history without replay.
+  bool HasCompleteReceiptHistory() const noexcept;
+  const std::vector<ReceivedOrchardNote> &CompleteReceipts() const;
+  // Re-decrypt one recorded action for display. The caller owns the returned
+  // short-lived private note; it is not an unspentness or spendability proof.
+  [[nodiscard]] orchard::WalletNote DecryptReceipt(size_t index) const;
   [[nodiscard]] orchard::WalletStateBytes Encode() const;
   // Consumes only authenticated/decrypted snapshot bytes. A different chain
   // checkpoint is an error requiring rollback/rescan, never spendable state.

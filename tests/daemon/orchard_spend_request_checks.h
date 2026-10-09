@@ -1,6 +1,7 @@
 #pragma once
 #ifdef DINERO_TEST_ORCHARD_ORIGIN
 #include "wallet/orchard_operation_archive.h"
+#include "wallet/orchard_ownership_inventory.h"
 #endif
 namespace dinero {
 TEST(OrchardSpendRequest, BackendPolicyRemainsExplicit){
@@ -14,6 +15,66 @@ TEST(OrchardSpendRequest, BackendPolicyRemainsExplicit){
 #ifdef DINERO_TEST_ORCHARD_ORIGIN
 namespace {
 struct OrchardSpendRequestFixture : OrchardProofOwnerFixture {
+    // This fixture deliberately has one operation. Verify the complete capsule
+    // suffix before locating the preceding fee; never confuse capsule bytes with money.
+    static std::optional<size_t> RecoveryFeeOffset(std::span<const uint8_t> bytes,
+            const wallet::OrchardOperationQueue::Entry& entry) {
+        const std::array<uint8_t,8> magic{'D','N','O','R','O','P','0','6'};
+        if(bytes.size()<49 || !std::equal(magic.begin(),magic.end(),bytes.begin()) ||
+           !entry.spend_request || !entry.recovery || entry.recovery->Bytes().empty())return std::nullopt;
+        uint32_t count=0;for(size_t i=0;i<4;++i)count|=uint32_t(bytes[45+i])<<(8*i);
+        if(count!=1)return std::nullopt;
+        const auto capsule=entry.recovery->Bytes();
+        if(capsule.size()>bytes.size()-49 || bytes.size()-capsule.size()<13)return std::nullopt;
+        const size_t start=bytes.size()-capsule.size()-5;
+        if(start<8 || bytes[start]!=1)return std::nullopt;
+        uint32_t size=0;for(size_t i=0;i<4;++i)size|=uint32_t(bytes[start+1+i])<<(8*i);
+        if(size!=capsule.size() || !std::equal(capsule.begin(),capsule.end(),bytes.begin()+start+5,bytes.end()))return std::nullopt;
+        return start-8;
+    }
+    static orchard::WalletStateBytes BoundPredecessor(const wallet::OrchardOperationQueue::Entry& e,
+            const orchard::SigningDomain& domain,const orchard::Hash& id) {
+        // Explicit DNOROP02 fixture. Preserve the predecessor's exact layout,
+        // including all binding offsets tested below, independently of new encodings.
+        OrchardAdmissionFixture::Require(e.request_commitment.has_value());
+        std::vector<uint8_t> bytes;
+        const auto raw=[&](std::span<const uint8_t> value){bytes.insert(bytes.end(),value.begin(),value.end());};
+        const auto number=[&](uint64_t value,size_t width){for(size_t i=0;i<width;++i)bytes.push_back(value>>(8*i));};
+        const auto blob=[&](std::span<const uint8_t> value){number(value.size(),4);raw(value);};
+        const std::array<uint8_t,8> magic{'D','N','O','R','O','P','0','2'};raw(magic);
+        number(domain.network_code,1);raw(domain.genesis_wire);number(domain.branch_id,4);number(1,4);
+        raw(id);number(static_cast<uint8_t>(e.phase),1);raw(e.message);number(e.inputs.size(),4);
+        for(const auto& input:e.inputs){raw(input.txid_wire);number(input.output_index,4);number(input.sequence,4);number(input.amount_una,8);blob(input.script_pub_key);}
+        number(e.nullifiers.size(),1);for(const auto& nf:e.nullifiers)raw(nf);
+        blob(e.transaction);number(1,1);raw(*e.request_commitment);return orchard::WalletStateBytes(bytes);
+    }
+    void StoreQueueFixture(const std::vector<uint8_t>& replacement,bool retain_bad) {
+        const auto current=Account(3);const auto encoded=current.account.Encode();
+        const auto queue=current.account.Operations().Encode();
+        std::vector<uint8_t> bytes(encoded.Bytes().begin(),encoded.Bytes().end());
+        const auto found=std::search(bytes.begin(),bytes.end(),queue.Bytes().begin(),queue.Bytes().end());
+        const auto need=[](bool ok){OrchardAdmissionFixture::Require(ok);};
+        need(found!=bytes.end()&&found-bytes.begin()>=4);
+        need(std::search(found+queue.Bytes().size(),bytes.end(),queue.Bytes().begin(),queue.Bytes().end())==bytes.end());
+        const auto offset=static_cast<size_t>(found-bytes.begin());
+        uint32_t size=0;for(size_t i=0;i<4;++i)size|=uint32_t(bytes[offset-4+i])<<(8*i);
+        need(size==queue.Bytes().size()&&replacement.size()<=UINT32_MAX);
+        bytes.erase(bytes.begin()+offset,bytes.begin()+offset+size);
+        bytes.insert(bytes.begin()+offset,replacement.begin(),replacement.end());
+        for(size_t i=0;i<4;++i)bytes[offset-4+i]=replacement.size()>>(8*i);
+        auto use=WalletService::AcquireWalletUse(wallet);auto lease=use->Wallet().AcquireDatabaseLease();
+        auto pin=lease->CopyRecoverySeed(Session());auto* db=lease->Database();
+        need(sqlite3_exec(db,"PRAGMA synchronous=FULL",nullptr,nullptr,nullptr)==SQLITE_OK);
+        need(sqlite3_exec(db,"BEGIN IMMEDIATE",nullptr,nullptr,nullptr)==SQLITE_OK);
+        try {
+            const auto inventory=wallet::OrchardOwnershipInventory::Read(db,pin->Bytes());
+            const auto owner=std::find_if(inventory.accounts.begin(),inventory.accounts.end(),[](const auto& a){return a.entry.account==3;});
+            need(owner!=inventory.accounts.end());orchard::WalletSnapshotStore store(db,owner->identity,pin->Bytes());
+            const auto revision=store.StageReplaceRetaining(current.revision,orchard::WalletStateBytes(bytes));
+            if(retain_bad)(void)store.StageReplaceRetaining(revision,encoded);
+            need(sqlite3_exec(db,"COMMIT",nullptr,nullptr,nullptr)==SQLITE_OK);
+        } catch(...) {if(!sqlite3_get_autocommit(db))need(sqlite3_exec(db,"ROLLBACK",nullptr,nullptr,nullptr)==SQLITE_OK);throw;}
+    }
     void ArchiveCompleted(uint8_t id=1,uint32_t number=3){
         // Mining/replay records the observation; archival is a separate explicit
         // existing API. Capture selected lookups before acquiring wallet SQLite.
@@ -115,7 +176,7 @@ TEST(OrchardSpendRequest, FailedInitialWritesAndCommitPublishNeitherBindingNorTa
     auto first=f.Request(jobs,false,revision);EXPECT_TRUE(first->enqueued);EXPECT_FALSE(first->existing_request);EXPECT_TRUE(first->durable->request_commitment);
 }
 TEST(OrchardSpendRequest, VersionedQueuePreservesLegacyAndRejectsMalformedBindings){
-    OrchardSpendRequestFixture f;wallet::OrchardProofJobs jobs;auto request=f.Request(jobs);const auto encoded=f.Account(3).account.Operations().Encode();
+    OrchardSpendRequestFixture f;wallet::OrchardProofJobs jobs;auto request=f.Request(jobs);const auto encoded=OrchardSpendRequestFixture::BoundPredecessor(*request->durable,f.Domain(),f.Operation(1));
     const auto original=std::vector<uint8_t>(encoded.Bytes().begin(),encoded.Bytes().end());ASSERT_GT(original.size(),33u);EXPECT_EQ(original[7],'2');
     auto roundtrip=wallet::OrchardOperationQueue::Restore(encoded,f.Domain());EXPECT_EQ(roundtrip.Entries().at(f.Operation(1)).request_commitment,request->durable->request_commitment);
     auto malformed=original;malformed[malformed.size()-33]=2;
@@ -154,5 +215,115 @@ TEST(OrchardSpendRequest, ReadyArchiveAndReactivationRetainExactRequestAndSigned
     ASSERT_TRUE(ShieldedStateStartupTestAccess::DisconnectBoundary(*f.f.service,f.f.service->GetActiveTip()));EXPECT_EQ(f.wallet->RecoverActiveWalletFromCanonicalSource(),Recovery::AppliedPrefix);
     const auto reactivated=f.Snapshot();auto reopened=f.Request(jobs,true,original_revision);EXPECT_FALSE(reopened->archived);EXPECT_TRUE(reopened->existing_request);EXPECT_FALSE(reopened->enqueued);EXPECT_EQ(reopened->durable->transaction,exact);EXPECT_EQ(f.Snapshot(),reactivated);
 }
+TEST(OrchardSpendDetails, OrderedRecipientsMemoAndOutputsSurviveReopen) {
+    OrchardSpendRequestFixture f;wallet::OrchardProofJobs jobs,missing;
+    auto payments=f.Payments(10000);payments.front().memo[511]=91;
+    payments.push_back({20000,f.AccountKeys(3).Receiver(orchard::WalletScope::External,{})});
+    const std::vector<orchard::TransparentOutput> outputs{{30000,f.f.script}};
+    auto first=f.Invoke(jobs,payments,outputs);ASSERT_TRUE(first->durable);ASSERT_TRUE(first->durable->spend_request);
+    const auto& details=*first->durable->spend_request;ASSERT_EQ(details.payments.size(),2u);
+    for(size_t i=0;i<payments.size();++i){EXPECT_EQ(details.payments[i].amount_una,payments[i].amount_una);
+        EXPECT_EQ(details.payments[i].address,payments[i].recipient.EncodeAddress(orchard::WalletNetwork::Regtest));
+        EXPECT_EQ(details.payments[i].memo,payments[i].memo);}
+    ASSERT_EQ(details.outputs.size(),1u);EXPECT_EQ(details.outputs.front().amount_una,30000u);
+    EXPECT_EQ(details.outputs.front().script_pub_key,f.f.script);EXPECT_EQ(details.fee_una,100000u);
+    const auto bytes=f.Account(3).account.Operations().Encode();ASSERT_EQ(bytes.Bytes()[7],'6');ASSERT_TRUE(first->durable->recovery);const auto before=f.Snapshot();
+    {auto use=WalletService::AcquireWalletUse(f.wallet);use->Wallet().open("canonical-recovery");use->Wallet().unlockWallet("canonical-fixture-pass",0);}
+    auto retry=f.Invoke(missing,payments,outputs);ASSERT_TRUE(retry->durable);ASSERT_TRUE(retry->durable->spend_request);
+    EXPECT_TRUE(retry->existing_request);EXPECT_FALSE(retry->enqueued);EXPECT_FALSE(missing.Query(first->operation_id));
+    EXPECT_EQ(retry->durable->message,first->durable->message);EXPECT_EQ(retry->durable->nullifiers,first->durable->nullifiers);
+    const auto restored=f.Account(3).account.Operations().Encode();
+    EXPECT_EQ(std::vector<uint8_t>(restored.Bytes().begin(),restored.Bytes().end()),std::vector<uint8_t>(bytes.Bytes().begin(),bytes.Bytes().end()));
+    EXPECT_EQ(f.Snapshot(),before);
+}
+TEST(OrchardSpendDetails, UnshieldDetailsAndMalformedNewEncoding) {
+    OrchardSpendRequestFixture f;wallet::OrchardProofJobs jobs;auto first=f.Request(jobs,true);
+    ASSERT_TRUE(first->durable);ASSERT_TRUE(first->durable->spend_request);EXPECT_FALSE(first->durable->shield_request);
+    EXPECT_TRUE(first->durable->spend_request->payments.empty());ASSERT_EQ(first->durable->spend_request->outputs.size(),1u);
+    const auto encoded=f.Account(3).account.Operations().Encode();
+    const std::vector<uint8_t> original(encoded.Bytes().begin(),encoded.Bytes().end());ASSERT_EQ(original[7],'6');const auto fee_offset=f.RecoveryFeeOffset(original,*first->durable);ASSERT_TRUE(fee_offset);
+    const auto restored=wallet::OrchardOperationQueue::Restore(encoded,f.Domain());ASSERT_TRUE(restored.Entries().at(f.Operation(1)).spend_request);
+    const auto roundtrip=restored.Encode();EXPECT_EQ(std::vector<uint8_t>(roundtrip.Bytes().begin(),roundtrip.Bytes().end()),original);
+    for(size_t cut=1;cut<=8;++cut)EXPECT_THROW(wallet::OrchardOperationQueue::Restore(orchard::WalletStateBytes(std::span<const uint8_t>(original).first(original.size()-cut)),f.Domain()),std::runtime_error);
+    auto malformed=original;malformed.push_back(0);EXPECT_THROW(wallet::OrchardOperationQueue::Restore(orchard::WalletStateBytes(malformed),f.Domain()),std::runtime_error);
+    malformed=original;std::fill_n(malformed.begin()+*fee_offset,8,0xff);EXPECT_THROW(wallet::OrchardOperationQueue::Restore(orchard::WalletStateBytes(malformed),f.Domain()),std::runtime_error);
+    malformed=original;malformed[7]='4';EXPECT_THROW(wallet::OrchardOperationQueue::Restore(orchard::WalletStateBytes(malformed),f.Domain()),std::runtime_error);
+}
+TEST(OrchardSpendDetails, PredecessorFiveRetainsDetailsWithoutInventingRecovery) {
+    OrchardSpendRequestFixture f;wallet::OrchardProofJobs old,missing;
+    const auto first=f.Request(old,true);ASSERT_TRUE(first->durable);
+    const auto encoded=f.Account(3).account.Operations().Encode();
+    std::vector<uint8_t> predecessor(encoded.Bytes().begin(),encoded.Bytes().end());
+    const auto fee_offset=f.RecoveryFeeOffset(predecessor,*first->durable);ASSERT_TRUE(fee_offset);
+    // DNOROP05 ended at the fee. It has no capsule-presence byte or capsule.
+    predecessor.resize(*fee_offset+8);predecessor[7]='5';
+    const auto restored=wallet::OrchardOperationQueue::Restore(orchard::WalletStateBytes(predecessor),f.Domain());
+    const auto& entry=restored.Entries().at(f.Operation(1));ASSERT_TRUE(entry.spend_request);
+    EXPECT_FALSE(entry.recovery);EXPECT_EQ(entry.message,first->durable->message);
+    EXPECT_EQ(entry.request_commitment,first->durable->request_commitment);EXPECT_EQ(entry.nullifiers,first->durable->nullifiers);
+    EXPECT_EQ(entry.spend_request->fee_una,100000u);ASSERT_EQ(entry.spend_request->outputs.size(),1u);
+    EXPECT_EQ(entry.spend_request->outputs[0].amount_una,400000u);EXPECT_EQ(entry.spend_request->outputs[0].script_pub_key,f.f.script);
+    const auto roundtrip=restored.Encode();EXPECT_EQ(std::vector<uint8_t>(roundtrip.Bytes().begin(),roundtrip.Bytes().end()),predecessor);
+    f.StoreQueueFixture(predecessor,false);const auto before=f.Snapshot();
+    auto use=WalletService::AcquireWalletUse(f.wallet);const auto view=f.f.service->getRuntimeAccountReplay();ASSERT_TRUE(view.ok());
+    const auto read=[&](bool resume){return wallet::OrchardAccountDelivery::ReadStoredCatalogRequestProofForReplay(
+        use->Wallet(),f.Session(),{f.Domain(),102,3},**view,f.Operation(1),false,missing,resume);};
+    const auto observed=read(false);EXPECT_FALSE(observed.state);EXPECT_FALSE(observed.durable.recovery);
+    EXPECT_EQ(observed.durable.request_commitment,first->durable->request_commitment);
+    EXPECT_FALSE(missing.Query(f.Operation(1)));EXPECT_EQ(f.Snapshot(),before);
+    EXPECT_THROW((void)read(true),std::runtime_error);EXPECT_FALSE(missing.Query(f.Operation(1)));EXPECT_EQ(f.Snapshot(),before);
+}
+TEST(OrchardSpendDetails, AuthenticatedCurrentAndRetainedDetailMismatchRefuse) {
+    for(const bool retained:{false,true}) {
+        OrchardSpendRequestFixture f;wallet::OrchardProofJobs jobs;auto first=f.Request(jobs,true);
+        const auto encoded=f.Account(3).account.Operations().Encode();std::vector<uint8_t> altered(encoded.Bytes().begin(),encoded.Bytes().end());
+        const auto fee_offset=f.RecoveryFeeOffset(altered,*first->durable);ASSERT_TRUE(fee_offset);
+        const auto capsule_suffix=std::vector<uint8_t>(altered.begin()+*fee_offset+8,altered.end());
+        uint64_t fee=0;for(size_t i=0;i<8;++i)fee|=uint64_t(altered[*fee_offset+i])<<(8*i);
+        ASSERT_EQ(fee,100000u);++fee;for(size_t i=0;i<8;++i)altered[*fee_offset+i]=fee>>(8*i);
+        EXPECT_EQ(std::vector<uint8_t>(altered.begin()+*fee_offset+8,altered.end()),capsule_suffix);
+        // Structurally valid, but no longer matches the original identity-bound
+        // request digest. Seal it with the fixture's real account owner.
+        EXPECT_NO_THROW(wallet::OrchardOperationQueue::Restore(orchard::WalletStateBytes(altered),f.Domain()));
+        f.StoreQueueFixture(altered,retained);const auto before=f.Snapshot();
+        EXPECT_THROW(f.Request(jobs,true,first->revision),std::runtime_error);EXPECT_EQ(f.Snapshot(),before);
+    }
+}
+
+TEST(OrchardSpendDetails, RetainedDetailsCheckedByBothCatalogReaders) {
+    OrchardSpendRequestFixture f;wallet::OrchardProofJobs jobs;
+    const auto request=f.Request(jobs,true);ASSERT_TRUE(request->durable);
+    const auto view=f.f.service->getRuntimeAccountReplay();ASSERT_TRUE(view.ok());
+    const auto read_current=[&]{
+        auto use=WalletService::AcquireWalletUse(f.wallet);
+        return wallet::OrchardAccountDelivery::ReadCatalogForReplay(use->Wallet(),f.Session(),**view);
+    };
+    const auto read_in_transaction=[&]{
+        auto use=WalletService::AcquireWalletUse(f.wallet);auto lease=use->Wallet().AcquireDatabaseLease();auto* db=lease->Database();
+        OrchardAdmissionFixture::Require(sqlite3_exec(db,"BEGIN IMMEDIATE",nullptr,nullptr,nullptr)==SQLITE_OK);
+        try {
+            const auto result=wallet::OrchardAccountDelivery::ReadCatalogForReplayInTransaction(use->Wallet(),f.Session(),**view);
+            OrchardAdmissionFixture::Require(!sqlite3_get_autocommit(db));
+            OrchardAdmissionFixture::Require(sqlite3_exec(db,"COMMIT",nullptr,nullptr,nullptr)==SQLITE_OK);
+            return result;
+        } catch(...) {
+            if(!sqlite3_get_autocommit(db))OrchardAdmissionFixture::Require(sqlite3_exec(db,"ROLLBACK",nullptr,nullptr,nullptr)==SQLITE_OK);
+            throw;
+        }
+    };
+    EXPECT_NO_THROW(read_current());
+    EXPECT_NO_THROW(read_in_transaction());
+    const auto queue=f.Account(3).account.Operations().Encode();std::vector<uint8_t> altered(queue.Bytes().begin(),queue.Bytes().end());
+    const auto fee_offset=f.RecoveryFeeOffset(altered,*request->durable);ASSERT_TRUE(fee_offset);
+    const auto capsule_suffix=std::vector<uint8_t>(altered.begin()+*fee_offset+8,altered.end());
+    uint64_t fee=0;for(size_t i=0;i<8;++i)fee|=uint64_t(altered[*fee_offset+i])<<(8*i);
+    ASSERT_EQ(fee,100000u);++fee;for(size_t i=0;i<8;++i)altered[*fee_offset+i]=fee>>(8*i);
+    EXPECT_EQ(std::vector<uint8_t>(altered.begin()+*fee_offset+8,altered.end()),capsule_suffix);
+    f.StoreQueueFixture(altered,true);const auto before=f.Snapshot();
+    EXPECT_THROW(read_current(),std::runtime_error);EXPECT_EQ(f.Snapshot(),before);
+    EXPECT_THROW(read_in_transaction(),std::runtime_error);EXPECT_EQ(f.Snapshot(),before);
+    EXPECT_EQ(jobs.Query(f.Operation(1)),std::optional(wallet::OrchardProofJobs::State::Queued));
+}
+
 #endif
 } // namespace dinero

@@ -116,6 +116,20 @@ ValidationQueue::ValidationQueue(IConsensusUTXOSet* consensus_utxo_set, Chainsta
     worker_pool_ = std::make_unique<ValidationWorkerPool>(worker_config);
 }
 
+std::shared_ptr<ValidationQueue> ValidationQueue::CreateCanonicalOnly(const Config& config) {
+    return std::shared_ptr<ValidationQueue>(new ValidationQueue(CanonicalOnlyTag{}, config));
+}
+
+ValidationQueue::ValidationQueue(CanonicalOnlyTag, const Config& config)
+    : canonical_only_(true)
+    , config_(config)
+    , consensus_utxo_set_(nullptr)
+    , chainstate_guard_(nullptr)
+    , pending_queue_([](const std::shared_ptr<BlockValidationJob>& a,
+                        const std::shared_ptr<BlockValidationJob>& b) {
+          return a->height > b->height;
+      }) {}
+
 ValidationQueue::~ValidationQueue() {
     stop();
 }
@@ -129,6 +143,19 @@ void ValidationQueue::start() {
 
     shutdown_.store(false);
     running_.store(true);
+
+    if (canonical_only_) {
+        // The existing applier owns typed task execution, reservations, identity
+        // checks and completion. No legacy validation thread is started.
+        try {
+            applier_thread_ = std::thread(&ValidationQueue::applierThreadFunc, this);
+        } catch (...) {
+            shutdown_.store(true);
+            running_.store(false);
+            throw;
+        }
+        return;
+    }
 
     // Start worker pool
     worker_pool_->start();
@@ -162,7 +189,7 @@ void ValidationQueue::stop() {
     }
 
     // Stop worker pool
-    worker_pool_->stop();
+    if (worker_pool_) worker_pool_->stop();
 
     auto reject_outstanding = [this](const std::string& reason) {
         std::vector<std::shared_ptr<BlockValidationJob>> outstanding;
@@ -216,6 +243,7 @@ void ValidationQueue::stop() {
 // ========== Block Submission ==========
 
 bool ValidationQueue::submit(const Block& block, uint64_t height, const uint256& prev_hash) {
+    if (canonical_only_) return false;
     if (!running_.load()) {
         std::cerr << "[ValidationQueue] Not running, rejecting block " << height << "\n";
         return false;
@@ -227,6 +255,9 @@ bool ValidationQueue::submit(const Block& block, uint64_t height, const uint256&
 }
 
 BlockAcceptResult ValidationQueue::submitAndWait(const Block& block, uint64_t height, const uint256& prev_hash) {
+    if (canonical_only_)
+        return BlockAcceptResult::Rejected(BlockRejectCode::CONNECT_FAILED,
+            "Canonical-only queue refuses historical block jobs", block.GetHash(), height);
     if (!running_.load()) {
         return BlockAcceptResult::Rejected(
             BlockRejectCode::CONNECT_FAILED,
@@ -325,6 +356,7 @@ void ValidationQueue::applyCanonicalJob(const std::shared_ptr<CanonicalJob>& job
 }
 
 bool ValidationQueue::enqueueJob(const std::shared_ptr<BlockValidationJob>& job) {
+    if (canonical_only_) return false;
     // Check queue capacity
     {
         std::lock_guard<std::mutex> lock(pending_mutex_);

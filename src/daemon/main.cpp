@@ -1,3 +1,6 @@
+#if defined(DINERO_HAS_ORCHARD_BUILD_INFO) && DINERO_HAS_ORCHARD_BUILD_INFO
+#include "orchard_backend_ffi.h"
+#endif
 #include "consensus/release_profile.h"
 // Dinero Daemon - Clean Service Architecture
 // Week 1 Migration: Using DaemonApp with dependency injection
@@ -430,6 +433,22 @@ void print_usage(const char* program_name) {
 }
 
 int RunDaemonMain(int argc, char* argv[], bool running_as_windows_service) {
+    // Package inspection exits before arguments, datadirs, services or sockets.
+    // The verifier also passes --version so an older binary exits safely.
+    if ((argc == 2 || (argc == 3 && std::string(argv[2]) == "--version")) &&
+        std::string(argv[1]) == "--orchard-build-info") {
+#if defined(DINERO_HAS_ORCHARD_BUILD_INFO) && DINERO_HAS_ORCHARD_BUILD_INFO
+        DineroOrchardProtocol profile{};
+        if (dinero_orchard_protocol_v1(&profile) != DINERO_ORCHARD_OK) return 1;
+        std::cout << "{\"schema\":1,\"component\":\"dinerod\",\"orchard_backend\":true,\"profile\":["
+                  << profile.transaction_version << ',' << profile.bundle_wire_profile << ','
+                  << profile.pool_profile << ',' << profile.circuit_profile << ','
+                  << profile.effect_commitment_version << "]}\n";
+#else
+        std::cout << "{\"schema\":1,\"component\":\"dinerod\",\"orchard_backend\":false,\"profile\":null}\n";
+#endif
+        return 0;
+    }
     // Handle "doctor" subcommand immediately (before general arg parsing)
     // This ensures doctor gets its own --help, --deep, etc. without interference
     if (argc >= 2 && std::string(argv[1]) == "doctor") {

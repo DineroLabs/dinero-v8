@@ -103,6 +103,9 @@ pub struct BundleFacts {
 
 /// Opaque immutable object: decoding cannot set any verification state.
 pub struct ParsedBundle {
+    // Bounded original encoding, shared by notes for authenticated plan recovery.
+    // This does not confer verification or selected-chain provenance.
+    encoded: std::sync::Arc<[u8]>,
     bundle: Bundle<Authorized, i64>,
     facts: BundleFacts,
 }
@@ -135,7 +138,7 @@ impl ParsedBundle {
             facts.nullifiers[i] = action.nullifier().to_bytes();
             facts.commitments[i] = action.cmx().to_bytes();
         }
-        Ok(Self { bundle, facts })
+        Ok(Self { bundle, facts, encoded: bytes.into() })
     }
 
     fn verify(&self, digest: &[u8; 32], required_value_balance: i64) -> Result<(), Status> {

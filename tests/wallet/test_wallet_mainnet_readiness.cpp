@@ -65,6 +65,7 @@ static inline char* mkdtemp(char* tmpl) {
 #include "consensus/subsidy.h"
 #include "crypto/hd_keychain.h"
 #include "daemon/rpc/wallet_gui_handlers.h"
+#include "daemon/rpc/wallet_import_handlers.h"
 #include "external/bech32/bech32.hpp"
 #include "primitives/block.h"
 #include "storage/chain_direct.h"
@@ -1121,6 +1122,62 @@ std::string changed_wallet_files(const fs::path& data,
         if (before.count(name) == 0) names += name + " ";
     return names;
 }
+}
+
+TEST(WalletMainnetReadiness, ImportMnemonicBindsNewNamePreservesOriginal) {
+    const auto root = make_temp_dir("din_import_new_name_");
+    ScopedHomeEnv home(root / "home");
+    const auto data = root / "node";
+    fs::create_directories(data);
+    const std::string mnemonic =
+        "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+    {
+        dinero::WalletManager wallet(data);
+        assert_rpc_success(dinero::rpc::RpcCreateHDWallet(
+            make_create_params("default", 12, "", "", "bip86"), &wallet));
+        const auto original_db = data / "wallets/wallet_default.db";
+        const auto original_seed = query_encrypted_seed_blob(original_db);
+        std::string error;
+        const auto original = wallet.loadAuthoritativeBip39Mnemonic(&error);
+        ASSERT_TRUE(original) << error;
+        ASSERT_NE(original->mnemonic, mnemonic);
+        const auto original_files = wallet_file_snapshot(data);
+        auto bind = din::obj();
+        bind["mnemonic"] = mnemonic;
+        bind["rescan"] = false;
+        bind["initial_address_count"] = 4;
+        const auto refused = dinero::rpc::RpcImportMnemonic(bind, &wallet, nullptr);
+        assert_rpc_error(refused);
+        EXPECT_FALSE(refused["success"].asBool());
+        EXPECT_TRUE(changed_wallet_files(data, original_files).empty());
+        EXPECT_EQ(query_encrypted_seed_blob(original_db), original_seed);
+
+        assert_rpc_success(dinero::rpc::RpcRestoreWallet(
+            make_restore_params("snapshot-recovered", mnemonic, "", "", "bip86"), &wallet));
+        const auto recovered = wallet.loadAuthoritativeBip39Mnemonic(&error);
+        ASSERT_TRUE(recovered) << error;
+        EXPECT_EQ(recovered->mnemonic, mnemonic);
+        const auto bound = dinero::rpc::RpcImportMnemonic(bind, &wallet, nullptr);
+        assert_rpc_success(bound);
+        ASSERT_GT(bound["watch_scripts"].asInt(), 0);
+        const int scripts = bound["watch_scripts"].asInt();
+        bind["skip_address_derivation"] = true;
+        const auto rebound = dinero::rpc::RpcImportMnemonic(bind, &wallet, nullptr);
+        assert_rpc_success(rebound);
+        EXPECT_EQ(rebound["watch_scripts"].asInt(), scripts);
+        EXPECT_FALSE(rebound.isMember("watch_scripts_repaired"));
+
+        wallet.open("default");
+        const auto reopened = wallet.loadAuthoritativeBip39Mnemonic(&error);
+        ASSERT_TRUE(reopened) << error;
+        EXPECT_EQ(reopened->mnemonic, original->mnemonic);
+        EXPECT_EQ(query_encrypted_seed_blob(original_db), original_seed);
+        wallet.open("snapshot-recovered");
+        const auto retry = dinero::rpc::RpcImportMnemonic(bind, &wallet, nullptr);
+        assert_rpc_success(retry);
+        EXPECT_EQ(retry["watch_scripts"].asInt(), scripts);
+    }
+    fs::remove_all(root);
 }
 
 TEST(WalletMainnetReadiness, RestoreRequiresNewNamePreservesOriginal) {
@@ -2492,4 +2549,77 @@ TEST(WalletMainnetReadiness, HdKeyReadSnapshotErrorsAndTimeout) {
      EXPECT_TRUE(sqlite3_get_autocommit(db));EXPECT_EQ(hd_rows(w),rows);EXPECT_EQ(dinero::WalletUnlockOwnerTestAccess::State(w),state);hd_expect_key(w,script,86,0,0,0);
      dinero::WalletUnlockOwnerTestAccess::Expire(w);EXPECT_FALSE(w.resolveSigningKeyForScriptPubKey(script));EXPECT_TRUE(dinero::WalletUnlockOwnerTestAccess::Cleared(w));
     }fs::remove_all(root);
+}
+
+namespace {
+void SelectionFixtureSql(const fs::path& data, const char* sql) {
+    sqlite3* raw = nullptr;
+    const int rc = sqlite3_open((data / "wallet_registry.db").string().c_str(), &raw);
+    std::unique_ptr<sqlite3, decltype(&sqlite3_close)> db(raw, sqlite3_close);
+    if (rc != SQLITE_OK || sqlite3_exec(db.get(), sql, nullptr, nullptr, nullptr) != SQLITE_OK)
+        throw std::runtime_error("Selection fixture SQL failed");
+}
+}
+
+TEST(WalletMainnetReadiness, WalletSelectionPersistsAcrossTimestampTies) {
+    const auto root = make_temp_dir("din_wallet_selection_");
+    ScopedHomeEnv home(root / "home");
+    const auto data = root / "data";
+    fs::create_directories(data);
+    {
+        dinero::WalletManager wallet(data);
+        wallet.create("default");
+        wallet.create("snapshot-recovered");
+        wallet.open("snapshot-recovered");
+        const auto seed = query_encrypted_seed_blob(data / "wallets/wallet_snapshot-recovered.db");
+        SelectionFixtureSql(data, "UPDATE wallets SET last_opened=123456");
+        EXPECT_EQ(wallet.getMostRecentlyOpenedWallet(), "snapshot-recovered");
+        // Model the snapshot sweep and its restoration of the original owner.
+        wallet.open("default");
+        wallet.open("snapshot-recovered");
+        SelectionFixtureSql(data, "UPDATE wallets SET last_opened=123456");
+        EXPECT_EQ(wallet.getMostRecentlyOpenedWallet(), "snapshot-recovered");
+        EXPECT_EQ(query_encrypted_seed_blob(data / "wallets/wallet_snapshot-recovered.db"), seed);
+    }
+    {
+        dinero::WalletManager reopened(data);
+        EXPECT_EQ(reopened.getMostRecentlyOpenedWallet(), "snapshot-recovered");
+        reopened.open(reopened.getMostRecentlyOpenedWallet());
+        EXPECT_EQ(reopened.getCurrentWalletName(), "snapshot-recovered");
+        reopened.open("default");
+        SelectionFixtureSql(data, "UPDATE wallets SET last_opened=123456");
+        EXPECT_EQ(reopened.getMostRecentlyOpenedWallet(), "default");
+    }
+    dinero::WalletManager reopened(data);
+    EXPECT_EQ(reopened.getMostRecentlyOpenedWallet(), "default");
+}
+
+TEST(WalletMainnetReadiness, WalletSelectionWriteFailureAndLegacyFallback) {
+    const auto root = make_temp_dir("din_wallet_selection_failure_");
+    ScopedHomeEnv home(root / "home");
+    const auto data = root / "data";
+    fs::create_directories(data);
+    dinero::WalletManager wallet(data);
+    wallet.create("default");
+    wallet.create("recovered");
+    wallet.open("recovered");
+    SelectionFixtureSql(data,
+        "CREATE TRIGGER refuse_selection BEFORE UPDATE ON wallet_selection "
+        "BEGIN SELECT RAISE(ABORT,'selection fault'); END;");
+    EXPECT_THROW(wallet.open("default"), std::runtime_error);
+    EXPECT_EQ(wallet.getMostRecentlyOpenedWallet(), "recovered");
+    SelectionFixtureSql(data, "DROP TRIGGER refuse_selection;");
+    wallet.open("default");
+    EXPECT_EQ(wallet.getMostRecentlyOpenedWallet(), "default");
+    // A registry predating explicit selection still uses its existing timestamp.
+    SelectionFixtureSql(data,
+        "DELETE FROM wallet_selection; UPDATE wallets SET last_opened=1; "
+        "UPDATE wallets SET last_opened=2 WHERE name='recovered';");
+    EXPECT_EQ(wallet.getMostRecentlyOpenedWallet(), "recovered");
+    wallet.open("recovered");
+    SelectionFixtureSql(data, "UPDATE wallets SET last_opened=3 WHERE name='default';");
+    EXPECT_EQ(wallet.getMostRecentlyOpenedWallet(), "recovered");
+    // A present but broken reference is an error, never a fallback to another owner.
+    SelectionFixtureSql(data, "PRAGMA foreign_keys=OFF; UPDATE wallet_selection SET wallet_id=999999;");
+    EXPECT_THROW(wallet.getMostRecentlyOpenedWallet(), std::runtime_error);
 }
