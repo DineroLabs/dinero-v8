@@ -20,22 +20,25 @@ def digest(path):
 
 def fingerprint(root):
     names = subprocess.check_output(['git', 'ls-files', '--recurse-submodules', '-z'], cwd=root).decode().split('\0')
-    return {n: digest(root/n) for n in names if n}
+    result = {}
+    for name in filter(None, names):
+        path = root/name
+        # Hash a tracked link as a link, never open its runtime/external target.
+        result[name] = ({'kind': 'symlink', 'target': os.readlink(path)}
+                        if path.is_symlink() else
+                        {'kind': 'file', 'sha256': digest(path)})
+    return result
 
 
-def main():
-    parser=argparse.ArgumentParser();parser.add_argument('--source',type=Path,required=True);parser.add_argument('--output',type=Path,required=True);parser.add_argument('--expected-sha',required=True);args=parser.parse_args()
-    gate.require(sys.platform == 'win32', 'Native Windows qualification required')
-    gate.require(re.fullmatch('[0-9a-f]{40}',args.expected_sha), 'Expected full source SHA')
+def qualify(args):
     root=args.source.resolve();out=args.output.resolve()
-    gate.require(not out.exists() and not out.is_relative_to(root), 'Fresh external build directory required')
     actual=subprocess.check_output(['git','rev-parse','HEAD'],cwd=root,text=True).strip()
     gate.require(actual==args.expected_sha,'Unexpected checkout')
     gate.require(not subprocess.check_output(['git','status','--porcelain','--untracked-files=no'],cwd=root).strip(),'Dirty tracked source')
     initial=fingerprint(root)
     pin=tomllib.loads((root/'rust/orchard_backend/rust-toolchain.toml').read_text())['toolchain']['channel']
     gate.require(re.fullmatch(r'\d+\.\d+\.\d+',pin),'Invalid pinned toolchain')
-    out.mkdir();evidence=out/'evidence';evidence.mkdir();build=out/'build'
+    evidence=out/'evidence';build=out/'build'
     (evidence/'source.json').write_text(json.dumps({'head':actual,'files':initial,'rust':pin},indent=2)+'\n')
     env=dict(os.environ,CARGO_BUILD_JOBS='2',RAYON_NUM_THREADS='2',CMAKE_BUILD_PARALLEL_LEVEL='2',OPENSSL_VERSION='3.5.7',OPENSSL_REBUILD='1')
     # Do not inherit a caller's compiler parallelism or alternate dependency roots.
@@ -57,6 +60,7 @@ def main():
         return (evidence/(label+'.log')).read_text(encoding='utf-8-sig',errors='replace')
     result={'status':'failure','scope':'Native Windows standalone build and two non-IPC component tests only'}
     try:
+        run('driver-contracts',[sys.executable,'-B',root/'scripts/ci/test_run_orchard_windows.py'],120)
         run('contracts',[sys.executable,'-B',root/'scripts/ci/test_orchard_msvc_bridge.py'],120)
         run('evidence-contracts',[sys.executable,'-B',root/'scripts/ci/test_verify_orchard_windows.py'],120)
         caps=json.loads(run('cmake-capabilities',['cmake','-E','capabilities'],60));gate.require((caps['version']['major'],caps['version']['minor'])>=(3,21),'CTest JUnit support required')
@@ -91,4 +95,21 @@ def main():
         artifacts={str(p.relative_to(out)):{'sha256':digest(p),'bytes':p.stat().st_size} for p in out.rglob('*') if p.is_file() and p.suffix.lower() in ('.exe','.lib','.obj')}
         (evidence/'artifacts.json').write_text(json.dumps(artifacts,indent=2)+'\n');(evidence/'terminal.json').write_text(json.dumps(result,indent=2)+'\n')
     print(json.dumps(result));return 0 if result['status']=='success' else 1
+def main():
+    parser=argparse.ArgumentParser();parser.add_argument('--source',type=Path,required=True);parser.add_argument('--output',type=Path,required=True);parser.add_argument('--expected-sha',required=True);args=parser.parse_args()
+    gate.require(sys.platform == 'win32', 'Native Windows qualification required')
+    gate.require(re.fullmatch('[0-9a-f]{40}',args.expected_sha), 'Expected full source SHA')
+    root=args.source.resolve();out=args.output.resolve()
+    gate.require(not out.exists() and not out.is_relative_to(root), 'Fresh external build directory required')
+    out.mkdir();evidence=out/'evidence';evidence.mkdir()
+    (evidence/'request.json').write_text(json.dumps({'expected_sha':args.expected_sha})+'\n')
+    try:
+        return qualify(args)
+    except Exception as error:
+        # Preflight failures must remain inspectable through the always-upload step.
+        result={'status':'failure','stage':'driver','error':str(error)}
+        (evidence/'exception.txt').write_text(traceback.format_exc())
+        (evidence/'terminal.json').write_text(json.dumps(result,indent=2)+'\n')
+        print(json.dumps(result));return 1
+
 if __name__=='__main__':sys.exit(main())
