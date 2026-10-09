@@ -18,6 +18,10 @@ execute_process(
     --target x86_64-pc-windows-msvc --manifest-path "${MANIFEST}"
     --target-dir "${TARGET_DIR}" -- --print native-static-libs
   RESULT_VARIABLE result OUTPUT_VARIABLE output ERROR_VARIABLE diagnostics)
+# Preserve captured streams before message rendering or native-list parsing.
+# These contain compiler/linker diagnostics, never wallet inputs.
+file(WRITE "${LINK_RESPONSE}.cargo.stdout" "${output}")
+file(WRITE "${LINK_RESPONSE}.cargo.stderr" "${diagnostics}")
 # Retain Cargo/rustc diagnostics, including the exact ordered native link list.
 message("${output}${diagnostics}")
 if(NOT result STREQUAL "0" OR NOT EXISTS "${ARCHIVE}")

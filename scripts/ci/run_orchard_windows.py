@@ -89,7 +89,7 @@ def qualify(args):
             gate.require(fingerprint(root)==initial,'Tracked source changed during qualification')
             result['source_unchanged']=True
         except Exception as error:result.update(status='failure',source_error=str(error))
-        for name in ['CMakeCache.txt','compile_commands.json','build.ninja','orchard-native-libraries.rsp','CTestTestfile.cmake','Testing/Temporary/LastTest.log']:
+        for name in ['CMakeCache.txt','compile_commands.json','build.ninja','orchard-native-libraries.rsp','orchard-native-libraries.rsp.cargo.stdout','orchard-native-libraries.rsp.cargo.stderr','CTestTestfile.cmake','Testing/Temporary/LastTest.log']:
             src=build/name
             if src.is_file():dest=evidence/'build'/name;dest.parent.mkdir(parents=True,exist_ok=True);shutil.copyfile(src,dest)
         artifacts={str(p.relative_to(out)):{'sha256':digest(p),'bytes':p.stat().st_size} for p in out.rglob('*') if p.is_file() and p.suffix.lower() in ('.exe','.lib','.obj')}

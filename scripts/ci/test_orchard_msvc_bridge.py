@@ -163,4 +163,19 @@ class PlatformContract(unittest.TestCase):
                 self.assertFalse(record.exists())
                 self.assertFalse(response.exists())
 
+    def test_rejected_token_diagnostic_includes_exact_bytes(self):
+        report = 'native-static-libs: /defaultlib:msvcrt!'
+        diagnostic = self.libraries(report, False)
+        self.assertIn('bytes=19', diagnostic)
+        self.assertIn('hex=2f64656661756c746c69623a6d737663727421', diagnostic)
+
+    def test_wrapper_retains_captured_streams_before_rejection(self):
+        for mode in ('ok', 'failed', 'duplicate'):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory(prefix='orchard-diagnostic-cargo-') as temp:
+                result,response,_=self.wrapper(temp,mode)
+                self.assertEqual(Path(str(response)+'.cargo.stdout').read_bytes(),b'')
+                stderr=Path(str(response)+'.cargo.stderr').read_text()
+                self.assertIn('native-static-libs: kernel32.lib userenv.lib kernel32.lib',stderr)
+                self.assertEqual(result.returncode == 0, mode == 'ok')
+
 if __name__ == '__main__': unittest.main(verbosity=2)

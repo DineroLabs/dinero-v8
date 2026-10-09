@@ -19,7 +19,9 @@ function(dinero_orchard_msvc_native_libraries report out_response)
     # that exact token only; do not generalize to arbitrary /defaultlib options.
     if(NOT library STREQUAL "/defaultlib:msvcrt" AND
        NOT library MATCHES "^[A-Za-z0-9_][A-Za-z0-9_.-]*\\.lib$")
-      message(FATAL_ERROR "Unexpected MSVC native library token: ${library}")
+      string(HEX "${library}" library_hex)
+      string(LENGTH "${library}" library_length)
+      message(FATAL_ERROR "Unexpected MSVC native library token: ${library} (bytes=${library_length}, hex=${library_hex})")
     endif()
     # Preserve order and duplicates exactly; do not sort or deduplicate.
     string(APPEND response "${library}\n")
