@@ -15,7 +15,10 @@ function(dinero_orchard_msvc_native_libraries report out_response)
   string(REGEX REPLACE "[ \t]+" ";" libraries "${line}")
   set(response "")
   foreach(library IN LISTS libraries)
-    if(NOT library MATCHES "^[A-Za-z0-9_][A-Za-z0-9_.-]*\\.lib$")
+    # Native rustc emits this release dynamic-CRT directive on MSVC. Accept
+    # that exact token only; do not generalize to arbitrary /defaultlib options.
+    if(NOT library STREQUAL "/defaultlib:msvcrt" AND
+       NOT library MATCHES "^[A-Za-z0-9_][A-Za-z0-9_.-]*\\.lib$")
       message(FATAL_ERROR "Unexpected MSVC native library token: ${library}")
     endif()
     # Preserve order and duplicates exactly; do not sort or deduplicate.

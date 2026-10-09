@@ -72,6 +72,19 @@ class PlatformContract(unittest.TestCase):
         self.assertIn('RESULT=kernel32.lib\nuserenv.lib\nkernel32.lib\nEND',
                       self.libraries('note: native-static-libs: kernel32.lib userenv.lib kernel32.lib\n'))
 
+    def test_actual_rust_release_runtime_directive(self):
+        report = 'note: native-static-libs: bcrypt.lib advapi32.lib kernel32.lib ntdll.lib userenv.lib ws2_32.lib dbghelp.lib /defaultlib:msvcrt\n'
+        expected = 'RESULT=bcrypt.lib\nadvapi32.lib\nkernel32.lib\nntdll.lib\nuserenv.lib\nws2_32.lib\ndbghelp.lib\n/defaultlib:msvcrt\nEND'
+        self.assertIn(expected, self.libraries(report))
+        self.assertIn('RESULT=/defaultlib:msvcrt\nkernel32.lib\n/defaultlib:msvcrt\nEND',
+                      self.libraries('native-static-libs: /defaultlib:msvcrt kernel32.lib /defaultlib:msvcrt'))
+
+    def test_other_runtime_directives_and_response_options_refuse(self):
+        for token in ('/defaultlib:libcmt', '/defaultlib:msvcrtd', '/defaultlib:msvcrt.dll',
+                      '/defaultlib:other', '/defaultlib:../msvcrt', '/DEFAULTLIB:msvcrt',
+                      '/nodefaultlib', '/defaultlib:msvcrt;other.lib', '/defaultlib:msvcrt&bad'):
+            with self.subTest(token=token): self.libraries('native-static-libs: '+token, False)
+
     def test_missing_empty_duplicate_report_refuses(self):
         for report in ('no report','note: native-static-libs: ',
                        'native-static-libs: a.lib\nnative-static-libs: a.lib'):
