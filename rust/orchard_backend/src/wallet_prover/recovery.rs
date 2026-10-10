@@ -5,21 +5,26 @@ use super::*;
 use rand::{CryptoRng, RngCore};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
-// Profile 1 pins our builder/encoding behavior and Orchard 0.15.5/v2. A future
-// builder must explicitly retain or migrate this profile; never guess a plan.
-const MAGIC: &[u8; 8] = b"DNOPLN01";
+// Both profiles use the current Orchard engine and unchanged circuit/wire rules.
+// Profile 1 retains the original rand0.8 construction shuffle for saved plans;
+// profile 2 uses the upstream current shuffle for newly recorded plans.
+const MAGIC: &[u8; 8] = b"DNOPLN02";
+const LEGACY_MAGIC: &[u8; 8] = b"DNOPLN01";
 pub(super) const MAX_PLAN_BYTES: usize = 1024 * 1024;
 const MAX_RANDOM_BYTES: usize = 64 * 1024;
 
 pub(super) struct BuildRng {
     bytes: Zeroizing<Vec<u8>>,
     cursor: Option<usize>,
+    legacy_profile1: bool,
 }
 impl BuildRng {
+    pub(super) fn is_profile1(&self) -> bool { self.legacy_profile1 }
     pub(super) fn record() -> Self {
         Self {
             bytes: Zeroizing::new(Vec::new()),
             cursor: None,
+            legacy_profile1: false,
         }
     }
     fn replay(bytes: &[u8]) -> Result<Self, Status> {
@@ -29,6 +34,7 @@ impl BuildRng {
         Ok(Self {
             bytes: Zeroizing::new(bytes.to_vec()),
             cursor: Some(0),
+            legacy_profile1: false,
         })
     }
     fn draw(&mut self, tag: u8, out: &mut [u8]) -> Result<(), rand::Error> {
@@ -94,6 +100,24 @@ impl RngCore for BuildRng {
     }
 }
 impl CryptoRng for BuildRng {}
+// Private migration candidate: retain the original transcript tags and refusal
+// checks while adapting only the new rand trait surface. Exact old replay is
+// still required; no production compatibility claim is made by this adapter.
+impl rand_next::TryRng for BuildRng {
+    type Error = core::convert::Infallible;
+    fn try_next_u32(&mut self) -> Result<u32, Self::Error> {
+        Ok(rand::RngCore::next_u32(self))
+    }
+    fn try_next_u64(&mut self) -> Result<u64, Self::Error> {
+        Ok(rand::RngCore::next_u64(self))
+    }
+    fn try_fill_bytes(&mut self, out: &mut [u8]) -> Result<(), Self::Error> {
+        rand::RngCore::fill_bytes(self, out);
+        Ok(())
+    }
+}
+impl rand_next::TryCryptoRng for BuildRng {}
+
 
 fn number(bytes: &mut Vec<u8>, n: usize) -> Result<(), Status> {
     bytes.extend_from_slice(&u32::try_from(n).map_err(|_| Status::Limit)?.to_le_bytes());
@@ -109,11 +133,12 @@ pub(super) fn prefix(
     inputs: &[WitnessedNote<'_>],
     anchor: [u8; 32],
     payments: &[Payment],
+    legacy_profile1: bool,
 ) -> Result<Zeroizing<Vec<u8>>, Status> {
     if inputs.len() > MAX_ACTIONS || payments.len() > MAX_ACTIONS {
         return Err(Status::Limit);
     }
-    let mut bytes = Zeroizing::new(MAGIC.to_vec());
+    let mut bytes = Zeroizing::new(if legacy_profile1 { LEGACY_MAGIC } else { MAGIC }.to_vec());
     bytes.extend_from_slice(&keys.viewing()?.to_bytes());
     number(&mut bytes, inputs.len())?;
     bytes.extend_from_slice(&anchor);
@@ -206,7 +231,13 @@ pub(super) fn restore(keys: &WalletKeys, bytes: &[u8]) -> Result<WalletPlan, Sta
 }
 fn restore_inner(keys: &WalletKeys, bytes: &[u8]) -> Result<WalletPlan, Status> {
     let mut r = Reader { bytes, offset: 0 };
-    if r.take(8)? != MAGIC || r.array::<96>()? != keys.viewing()?.to_bytes() {
+    let profile = r.take(8)?;
+    let legacy_profile1 = match profile {
+        p if p == LEGACY_MAGIC => true,
+        p if p == MAGIC => false,
+        _ => return Err(Status::Encoding),
+    };
+    if r.array::<96>()? != keys.viewing()?.to_bytes() {
         return Err(Status::Encoding);
     }
     let count = r.u32()? as usize;
@@ -245,7 +276,8 @@ fn restore_inner(keys: &WalletKeys, bytes: &[u8]) -> Result<WalletPlan, Status> 
             memo: r.array()?,
         });
     }
-    let random = BuildRng::replay(r.sized(MAX_RANDOM_BYTES)?)?;
+    let mut random = BuildRng::replay(r.sized(MAX_RANDOM_BYTES)?)?;
+    random.legacy_profile1 = legacy_profile1;
     // The remainder is checked against facts generated from the replayed bundle.
     let inputs: Vec<_> = owned
         .iter()

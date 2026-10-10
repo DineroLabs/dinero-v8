@@ -30,6 +30,7 @@ string(REGEX MATCH "[0-9]+\\.[0-9]+\\.[0-9]+" ORCHARD_RUST_TOOLCHAIN "${ORCHARD_
 if(NOT ORCHARD_RUST_TOOLCHAIN)
   message(FATAL_ERROR "Missing pinned Orchard Rust toolchain")
 endif()
+include("${CMAKE_CURRENT_SOURCE_DIR}/OrchardRustInputs.cmake")
 set(ORCHARD_TARGET_DIR "${CMAKE_CURRENT_BINARY_DIR}/cargo")
 if(WIN32)
   find_program(ORCHARD_RUSTC rustc HINTS "$ENV{USERPROFILE}/.cargo/bin" REQUIRED)
@@ -48,7 +49,7 @@ if(WIN32)
       "-DMANIFEST=${CMAKE_CURRENT_SOURCE_DIR}/Cargo.toml" "-DTARGET_DIR=${ORCHARD_TARGET_DIR}"
       "-DARCHIVE=${ORCHARD_ARCHIVE}" "-DLINK_RESPONSE=${ORCHARD_NATIVE_LINK_RESPONSE}"
       "-DBUILD_CONFIG=$<CONFIG>" -P "${CMAKE_CURRENT_SOURCE_DIR}/BuildMsvcRust.cmake"
-    DEPENDS Cargo.toml Cargo.lock rust-toolchain.toml src/lib.rs src/frontier.rs src/wallet.rs
+    DEPENDS ${ORCHARD_RUST_INPUTS} Cargo.toml Cargo.lock rust-toolchain.toml src/lib.rs src/frontier.rs src/wallet.rs
       src/wallet_prover.rs src/wallet_note.rs src/wallet_witness.rs include/orchard_backend_ffi.h
       tests/fixtures/candidate-spend.bundle tests/fixtures/candidate-spend.digest tests/fixtures/candidate-spend.effect
       NativeRustPlatform.cmake BuildMsvcRust.cmake MsvcRustNativeLibraries.cmake
@@ -60,7 +61,7 @@ add_custom_command(OUTPUT "${ORCHARD_ARCHIVE}"
     ${ORCHARD_CARGO} +${ORCHARD_RUST_TOOLCHAIN} build --locked --release --jobs 2
     --manifest-path "${CMAKE_CURRENT_SOURCE_DIR}/Cargo.toml"
     --target-dir "${ORCHARD_TARGET_DIR}"
-  DEPENDS Cargo.toml Cargo.lock rust-toolchain.toml src/lib.rs src/frontier.rs src/wallet.rs src/wallet_prover.rs src/wallet_note.rs src/wallet_witness.rs
+  DEPENDS ${ORCHARD_RUST_INPUTS} Cargo.toml Cargo.lock rust-toolchain.toml src/lib.rs src/frontier.rs src/wallet.rs src/wallet_prover.rs src/wallet_note.rs src/wallet_witness.rs
     include/orchard_backend_ffi.h tests/fixtures/candidate-spend.bundle
     tests/fixtures/candidate-spend.digest tests/fixtures/candidate-spend.effect
   WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}" VERBATIM)

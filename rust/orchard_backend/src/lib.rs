@@ -246,7 +246,7 @@ fn parse_bundle(bytes: &[u8]) -> Result<Bundle<Authorized, i64>, Status> {
         .ok_or(Status::Encoding)?;
         let encrypted_note = TransmittedNoteCiphertext {
             epk_bytes: reader.array::<32>()?,
-            enc_ciphertext: reader.array::<580>()?,
+            enc_ciphertext: zcash_note_encryption::note_bytes::NoteBytesData(reader.array::<580>()?),
             out_ciphertext: reader.array::<80>()?,
         };
         let signature = redpallas::Signature::<SpendAuth>::from(reader.array::<64>()?);

@@ -98,10 +98,12 @@ fn finish_plan(
     prefix: Zeroizing<Vec<u8>>,
     mut rng: recovery::BuildRng,
 ) -> Result<WalletPlan, Status> {
-    let (bundle, _) = builder
-        .build::<i64>(&mut rng)
-        .map_err(|_| Status::Format)?
-        .ok_or(Status::Format)?;
+    let result = if rng.is_profile1() {
+        builder.build_with_profile1_shuffle::<i64>(&mut rng)
+    } else {
+        builder.build::<i64>(&mut rng)
+    };
+    let (bundle, _) = result.map_err(|_| Status::Format)?.ok_or(Status::Format)?;
     if bundle.actions().len() > MAX_ACTIONS || *bundle.value_balance() != balance {
         return Err(Status::Format);
     }
@@ -151,7 +153,7 @@ fn prepare_with_rng(
     )
     .map_err(|_| Status::Format)?;
     let total = add_payments(&mut builder, &fvk, payments)?;
-    let prefix = recovery::prefix(keys, &[], [0; 32], payments)?;
+    let prefix = recovery::prefix(keys, &[], [0; 32], payments, rng.is_profile1())?;
     finish_plan(builder, -(total as i64), None, prefix, rng)
 }
 fn prepare_spend(
@@ -172,7 +174,7 @@ fn prepare_spend_with_rng(
     if inputs.is_empty() || inputs.len() > MAX_ACTIONS {
         return Err(Status::Limit);
     }
-    let prefix = recovery::prefix(keys, inputs, anchor, payments)?;
+    let prefix = recovery::prefix(keys, inputs, anchor, payments, rng.is_profile1())?;
     let anchor = Option::<Anchor>::from(Anchor::from_bytes(anchor)).ok_or(Status::Encoding)?;
     let fvk = keys.viewing()?;
     let mut builder = Builder::new(
@@ -234,7 +236,7 @@ fn encode(bundle: &Bundle<Authorized, i64>) -> Result<Vec<u8>, Status> {
         bytes.extend_from_slice(&action.cmx().to_bytes());
         let note = action.encrypted_note();
         bytes.extend_from_slice(&note.epk_bytes);
-        bytes.extend_from_slice(&note.enc_ciphertext);
+        bytes.extend_from_slice(&note.enc_ciphertext.0);
         bytes.extend_from_slice(&note.out_ciphertext);
         let sig: [u8; 64] = action.authorization().into();
         bytes.extend_from_slice(&sig);
@@ -292,9 +294,9 @@ fn prove(
     let complete = pool.install(|| {
         let key = PROVING_KEY.get_or_init(|| ProvingKey::build(BUNDLE_VERSION.circuit_version()));
         bundle
-            .create_proof(key, &mut OsRng)
+            .create_proof(key, &mut rand_next::rand_core::UnwrapErr(rand_next::rngs::SysRng))
             .map_err(|_| Status::Proof)?
-            .apply_signatures(OsRng, *digest, &authorities)
+            .apply_signatures(rand_next::rand_core::UnwrapErr(rand_next::rngs::SysRng), *digest, &authorities)
             .map_err(|_| Status::SpendSignature)
     })?;
     let bytes = encode(&complete)?;
