@@ -14,7 +14,7 @@ dinero_orchard_msvc_environment()
 execute_process(
   COMMAND "${CMAKE_COMMAND}" -E env RAYON_NUM_THREADS=2
     "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS=-C target-feature=-crt-static"
-    "${CARGO}" "+${RUST_TOOLCHAIN}" rustc --locked --release --jobs 2 --lib
+    "${CARGO}" "+${RUST_TOOLCHAIN}" rustc --color never --locked --release --jobs 2 --lib
     --target x86_64-pc-windows-msvc --manifest-path "${MANIFEST}"
     --target-dir "${TARGET_DIR}" -- --print native-static-libs
   RESULT_VARIABLE result OUTPUT_VARIABLE output ERROR_VARIABLE diagnostics)

@@ -121,7 +121,10 @@ class PlatformContract(unittest.TestCase):
             '(root/"invocation.json").write_text(json.dumps({"args":[Path(__file__).name]+sys.argv[1:],"flags":os.environ.get("CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS"),"threads":os.environ.get("RAYON_NUM_THREADS")}))\n' +
             'mode=os.environ["ORCHARD_INERT_MODE"]\n' +
             'if mode != "absent": (root/"candidate.lib").write_bytes(b"INERT-NOT-A-REAL-LIBRARY")\n' +
-            'if mode != "missing-report": print("note: native-static-libs: kernel32.lib userenv.lib kernel32.lib",file=sys.stderr)\n' +
+            'if mode == "color-default":\n' +
+            '    plain = any(sys.argv[i:i+2] == ["--color", "never"] for i in range(len(sys.argv)))\n' +
+            '    print("note: native-static-libs: kernel32.lib /defaultlib:msvcrt" + ("" if plain else chr(27)+"[0m"),file=sys.stderr)\n' +
+            'elif mode != "missing-report": print("note: native-static-libs: kernel32.lib userenv.lib kernel32.lib",file=sys.stderr)\n' +
             'if mode == "duplicate": print("note: native-static-libs: userenv.lib",file=sys.stderr)\n' +
             'sys.exit(7 if mode == "failed" else 0)\n')
         values=dict(CARGO=sys.executable,RUST_TOOLCHAIN='1.91.1',MANIFEST=str(root/'Cargo.toml'),
@@ -139,7 +142,7 @@ class PlatformContract(unittest.TestCase):
             self.assertEqual(result.returncode,0,result.stdout+result.stderr)
             self.assertEqual(response.read_text(),'kernel32.lib\nuserenv.lib\nkernel32.lib\n')
             call=json.loads(record.read_text())
-            self.assertEqual(call['args'],['+1.91.1','rustc','--locked','--release','--jobs','2','--lib',
+            self.assertEqual(call['args'],['+1.91.1','rustc','--color','never','--locked','--release','--jobs','2','--lib',
                 '--target','x86_64-pc-windows-msvc','--manifest-path',str(Path(temp)/'Cargo.toml'),
                 '--target-dir',str(Path(temp)/'target'),'--','--print','native-static-libs'])
             self.assertEqual(call['flags'],'-C target-feature=-crt-static')
@@ -177,5 +180,20 @@ class PlatformContract(unittest.TestCase):
                 stderr=Path(str(response)+'.cargo.stderr').read_text()
                 self.assertIn('native-static-libs: kernel32.lib userenv.lib kernel32.lib',stderr)
                 self.assertEqual(result.returncode == 0, mode == 'ok')
+
+    def test_wrapper_requests_plain_report_despite_color_environment(self):
+        import json
+        with tempfile.TemporaryDirectory(prefix='orchard-color-cargo-') as temp:
+            result,response,record=self.wrapper(temp,'color-default',{'CARGO_TERM_COLOR':'always'})
+            self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+            self.assertEqual(response.read_text(),'kernel32.lib\n/defaultlib:msvcrt\n')
+            args=json.loads(record.read_text())['args']
+            self.assertEqual(args[args.index('--color'):args.index('--color')+2],['--color','never'])
+            self.assertNotIn(b'\x1b',(Path(str(response)+'.cargo.stderr')).read_bytes())
+
+    def test_parser_still_rejects_colored_native_tokens(self):
+        diagnostic=self.libraries('native-static-libs: /defaultlib:msvcrt\x1b[0m',False)
+        self.assertIn('bytes=22',diagnostic)
+        self.assertIn('hex=2f64656661756c746c69623a6d73766372741b5b306d',diagnostic)
 
 if __name__ == '__main__': unittest.main(verbosity=2)
