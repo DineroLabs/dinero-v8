@@ -363,6 +363,34 @@ bool TowerAckFresh(const std::string& inbox_dir, const std::string& swap_id, con
     return t <= uint64_t(now) + 60 && uint64_t(now) <= t + max_age;
 }
 
+TowerReport TickAndRecord(Watchtower& tower, const std::string& inbox_dir, const std::string& swap_id,
+                          const std::string& package_hash, uint32_t now) {
+    TowerReport r;
+    try {
+        r = tower.Tick(now);
+    } catch (const std::exception& ex) {
+        r = TowerReport{};
+        r.events.push_back(std::string("ALERT: tick failed: ") + ex.what());
+        return r;
+    }
+    if (r.healthy) {
+        try {
+            MarkTowerArmed(inbox_dir, swap_id, package_hash, now);
+        } catch (const std::exception& ex) {
+            r.events.push_back(std::string("ALERT: cannot write the ack; Bob will not fund: ") + ex.what());
+        }
+    }
+    if (r.learned_secret) {
+        try {
+            WriteFileAtomically(inbox_dir + "/" + swap_id + ".secret",
+                                ToHex(std::vector<uint8_t>(r.learned_secret->begin(), r.learned_secret->end())) + "\n");
+        } catch (const std::exception& ex) {  // kept in memory; public on Bitcoin anyway
+            r.events.push_back(std::string("ALERT: cannot keep the learned secret on disk: ") + ex.what());
+        }
+    }
+    return r;
+}
+
 // ---- The tower --------------------------------------------------------------
 
 Watchtower::Watchtower(TowerPackage package, TowerConfig config, SwapChainIo& io)

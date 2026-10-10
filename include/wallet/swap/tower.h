@@ -159,4 +159,12 @@ private:
     void BtcRefundDuty(const BtcWatchReport& btc, uint32_t now, TowerReport& report);
 };
 
+// One daemon cycle for one armed swap: Tick, then refresh the ack (while
+// healthy) and keep a newly learned secret in the inbox. Never throws: a
+// failed tick or write is an ALERT event, because the daemon ticks every swap
+// in one loop and one swap's disk or chain trouble must not stop the others.
+// Without a fresh ack Bob does not fund, so a failed ack write is safe.
+TowerReport TickAndRecord(Watchtower& tower, const std::string& inbox_dir, const std::string& swap_id,
+                          const std::string& package_hash, uint32_t now_unix);
+
 }  // namespace dinero::swap

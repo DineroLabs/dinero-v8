@@ -10,6 +10,7 @@
 #include <gtest/gtest.h>
 
 #include <filesystem>
+#include <fstream>
 #include <stdexcept>
 
 namespace {
@@ -320,6 +321,68 @@ TEST(SwapTower, AnAckIsBoundToThePackageAndRefreshedOnlyWhileHealthy) {
     EXPECT_FALSE(TowerAckFresh(dir, id, h, kNow + 600)) << "not refreshed: the tower stopped being healthy";
     EXPECT_FALSE(TowerAckFresh(dir, id, std::string(64, '0'), kNow + 60)) << "another package";
     EXPECT_FALSE(TowerAckFresh(dir, "fedcba9876543210", h, kNow + 60)) << "another swap";
+    std::filesystem::remove_all(dir);
+}
+
+TEST(SwapTower, ACycleRecordsTheAckAndALearnedSecretInTheInbox) {
+    const auto dir = (std::filesystem::temp_directory_path() / "swap_tower_cycle_test").string();
+    std::filesystem::remove_all(dir);
+    std::filesystem::create_directories(dir);
+    const std::string id = "0123456789abcdef";
+    const std::string h = TowerPackageHash(EncodeTowerPackage(Package()));
+    FakeChains chains;
+    Watchtower tower(Package(), Config(), chains);
+    chains.AliceClaimsBtc(kSecret);
+    const auto r = TickAndRecord(tower, dir, id, h, kNow);
+    EXPECT_TRUE(r.healthy);
+    EXPECT_TRUE(TowerAckFresh(dir, id, h, kNow + 60));
+    std::ifstream sf(dir + "/" + id + ".secret");
+    std::string hex;
+    sf >> hex;
+    std::string want;
+    for (int i = 0; i < 32; ++i) want += "5a";  // kSecret
+    EXPECT_EQ(hex, want);
+    std::filesystem::remove_all(dir);
+}
+
+// A failed write (disk full, read-only inbox) must not escape: the daemon
+// ticks every swap in one loop, so a throw would stop Bob's protection for
+// all of them. No fresh ack is the safe outcome: Bob does not fund.
+TEST(SwapTower, AFailedInboxWriteIsAnAlertNotACrash) {
+    const auto file = (std::filesystem::temp_directory_path() / "swap_tower_not_a_dir").string();
+    std::filesystem::remove_all(file);
+    std::ofstream(file) << "x";
+    const std::string inbox = file;  // a file, not a directory: every write into it fails
+    const std::string id = "0123456789abcdef";
+    const std::string h = TowerPackageHash(EncodeTowerPackage(Package()));
+    FakeChains chains;
+    Watchtower tower(Package(), Config(), chains);
+    chains.AliceClaimsBtc(kSecret);
+    TowerReport r;
+    ASSERT_NO_THROW(r = TickAndRecord(tower, inbox, id, h, kNow));
+    EXPECT_TRUE(r.learned_secret.has_value()) << "the duty itself is unaffected";
+    size_t alerts = 0;
+    for (const auto& ev : r.events) alerts += ev.find("ALERT") != std::string::npos;
+    EXPECT_EQ(alerts, 2u) << "one for the ack, one for the secret";
+    EXPECT_FALSE(TowerAckFresh(inbox, id, h, kNow));
+    std::filesystem::remove_all(file);
+}
+
+TEST(SwapTower, AFailedTickIsAnAlertNotACrash) {
+    struct Broken : FakeChains {
+        DinWatchReport ObserveDin() override { throw std::runtime_error("rpc exploded"); }
+    } chains;
+    Watchtower tower(Package(), Config(), chains);
+    const auto dir = (std::filesystem::temp_directory_path() / "swap_tower_broken_tick").string();
+    std::filesystem::remove_all(dir);
+    std::filesystem::create_directories(dir);
+    TowerReport r;
+    ASSERT_NO_THROW(r = TickAndRecord(tower, dir, "0123456789abcdef", "h", kNow));
+    EXPECT_FALSE(r.healthy);
+    EXPECT_FALSE(r.finished);
+    ASSERT_EQ(r.events.size(), 1u);
+    EXPECT_NE(r.events[0].find("ALERT: tick failed: rpc exploded"), std::string::npos);
+    EXPECT_FALSE(TowerAckFresh(dir, "0123456789abcdef", "h", kNow)) << "no ack without a tick";
     std::filesystem::remove_all(dir);
 }
 

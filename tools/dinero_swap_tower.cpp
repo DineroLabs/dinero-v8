@@ -131,23 +131,8 @@ int main(int argc, char** argv) {
         // Tick every armed swap.
         for (auto it = watched.begin(); it != watched.end();) {
             const uint32_t now = static_cast<uint32_t>(std::time(nullptr));
-            TowerReport r;
-            try {
-                r = it->second.tower->Tick(now);
-            } catch (const std::exception& ex) {  // one bad swap must not stop the others
-                std::cout << "tower: " << it->first << ": ALERT: tick failed: " << ex.what() << std::endl;
-                ++it;
-                continue;
-            }
+            const TowerReport r = TickAndRecord(*it->second.tower, inbox, it->second.id, it->second.hash, now);
             for (const auto& ev : r.events) std::cout << "tower: " << it->first << ": " << ev << std::endl;
-            // Bob funds only on a fresh ack: refreshed only while this swap's duty is healthy.
-            if (r.healthy) MarkTowerArmed(inbox, it->second.id, it->second.hash, now);
-            if (r.learned_secret) {
-                static const char* d = "0123456789abcdef";
-                std::string hex;
-                for (auto b : *r.learned_secret) { hex += d[b >> 4]; hex += d[b & 15]; }
-                std::ofstream(inbox + "/" + it->second.id + ".secret") << hex << "\n";
-            }
             if (r.finished) {
                 std::rename(it->first.c_str(), (it->first + ".done").c_str());
                 it = watched.erase(it);
