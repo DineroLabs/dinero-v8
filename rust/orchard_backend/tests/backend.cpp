@@ -6,6 +6,7 @@
 #include <iostream>
 #include <iterator>
 #include <source_location>
+#include <string>
 #include <type_traits>
 #include <vector>
 using namespace dinero::orchard;
