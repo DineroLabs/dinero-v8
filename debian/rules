@@ -20,6 +20,11 @@ DEB_OPENSSL_VERSION := 3.5.7
 %:
 	dh $@ --buildsystem=cmake
 
+# dh_clean normally removes *.orig files, including the tracked Orchard
+# vendor manifest. Keep that source file intact across package builds.
+override_dh_clean:
+	dh_clean -Xrust/orchard_backend/vendor/orchard/Cargo.toml.orig
+
 # Phase E.3 — vendored static OpenSSL.
 #
 # The packaged-service build uses USE_SYSTEM_OPENSSL=OFF and pins the
