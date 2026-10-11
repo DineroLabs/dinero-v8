@@ -97,9 +97,17 @@ if(APPLE)
 elseif(UNIX)
   target_link_libraries(dinero_orchard_backend PUBLIC m)
 endif()
-find_package(SQLite3 REQUIRED)
 add_library(dinero_orchard_wallet_storage STATIC orchard_wallet_storage.cpp)
-target_link_libraries(dinero_orchard_wallet_storage PUBLIC dinero_orchard_backend SQLite::SQLite3)
+if(TARGET sqlite3)
+  # The root release build already owns the bundled amalgamation. Do not let
+  # FindSQLite3 inject the builder's libsqlite3.so into the daemon package.
+  target_link_libraries(dinero_orchard_wallet_storage PUBLIC dinero_orchard_backend sqlite3)
+elseif(DINERO_USE_VENDORED_DEPS)
+  message(FATAL_ERROR "vendored Orchard build requires the bundled sqlite3 target")
+else()
+  find_package(SQLite3 REQUIRED)
+  target_link_libraries(dinero_orchard_wallet_storage PUBLIC dinero_orchard_backend SQLite::SQLite3)
+endif()
 option(DINERO_ORCHARD_BUILD_TESTS "Build Orchard component qualification tests" ON)
 
 # Typed host reader: Orchard never becomes an ordinary Transaction. The root
