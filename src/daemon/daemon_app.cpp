@@ -1111,17 +1111,22 @@ bool DaemonApp::Init(int argc, char** argv) {
                 std::cerr << "[DaemonApp] ⚠️  Shielded-state storage upgrade failed: " << e.what()
                           << " (will retry on next start)" << std::endl;
             }
-            // An interrupted swap may leave the live name absent while the
-            // rollback copy survives. Opening ChainDB here would create an
-            // empty store, so preserve the evidence and refuse startup.
-            if (!std::filesystem::exists(chain_db_path) &&
-                !daemon::IsBrandNewStore(chain_db_path)) {
-                std::cerr << "[DaemonApp] ❌ Incomplete shielded-state storage swap; refusing to create ChainDB"
-                          << std::endl;
-                return false;
-            }
         }
 #endif
+        // A missing live name is safe only for a genuinely new store. Check
+        // even when automatic upgrading, Orchard, or stateless operation is
+        // disabled: ChainDB::init must not create an empty database over an
+        // interrupted swap's rollback copy.
+        if (!std::filesystem::exists(chain_db_path)) {
+            for (const char* suffix : {".upgrade-candidate", ".upgrade-state",
+                                       ".upgrade-state.tmp", ".legacy-v1"}) {
+                if (std::filesystem::exists(chain_db_path.string() + suffix)) {
+                    std::cerr << "[DaemonApp] ❌ Incomplete shielded-state storage swap; refusing to create ChainDB"
+                              << std::endl;
+                    return false;
+                }
+            }
+        }
         auto status = chain_db_->init(chain_db_path);
         if (status != Status::Ok) {
             std::cerr << "[DaemonApp] ❌ Failed to initialize ChainDB: " << StatusToString(status) << std::endl;

@@ -119,6 +119,35 @@ def main():
     assert not chaindb.exists() and legacy.is_dir() and rollback_files() == before
     print("PASS missing upgrade candidate refuses startup without creating ChainDB", flush=True)
 
+    # The refusal must not depend on whether this process will perform an
+    # Orchard upgrade. Either mode would otherwise let ChainDB::init create
+    # an empty live store over the surviving rollback copy.
+    for name, auto_upgrade, stateless in (("upgrade-off", False, False),
+                                          ("stateless", True, True)):
+        variant = fresh_copy(name)
+        shutil.rmtree(variant.datadir)
+        shutil.copytree(damaged.datadir, variant.datadir)
+        variant_chaindb = variant.datadir / "blockchain" / "chaindb"
+        variant_legacy = variant.datadir / "blockchain" / "chaindb.legacy-v1"
+        variant_before = sorted((p.relative_to(variant_legacy), hashlib.sha256(p.read_bytes()).hexdigest())
+                                for p in variant_legacy.rglob("*") if p.is_file())
+        variant_env = os.environ.copy()
+        if not auto_upgrade:
+            variant_env.pop("DINERO_TEST_AUTOMATIC_STORAGE_UPGRADE", None)
+        variant_args = [variant.binary, "--regtest", f"--datadir={variant.datadir}",
+                        f"--conf={variant.config}", f"--rpcport={variant.ports[0]}",
+                        f"--port={variant.ports[1]}", f"--wallet-socket-port={variant.ports[2]}",
+                        "--listen=0", "--p2p.offline=1", "--utreexo=1",
+                        "--utreexo-stateless=1" if stateless else "--utreexo-bridge=1"]
+        variant_result = subprocess.run(variant_args, stdin=subprocess.DEVNULL, capture_output=True,
+                                        env=variant_env, timeout=30)
+        assert variant_result.returncode != 0 and b"refusing to create ChainDB" in (
+            variant_result.stdout + variant_result.stderr), f"{name}: missing swap refusal"
+        variant_after = sorted((p.relative_to(variant_legacy), hashlib.sha256(p.read_bytes()).hexdigest())
+                               for p in variant_legacy.rglob("*") if p.is_file())
+        assert not variant_chaindb.exists() and variant_legacy.is_dir() and variant_after == variant_before
+        print(f"PASS missing upgrade candidate refuses with {name}", flush=True)
+
     # An upgraded store is left alone.
     node.start()
     node.stop()
