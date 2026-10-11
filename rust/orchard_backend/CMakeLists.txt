@@ -189,6 +189,11 @@ if(TARGET dinero_chainstate)
       DIRECTORY "${ORCHARD_HOST_ROOT}" APPEND PROPERTY COMPILE_DEFINITIONS DINERO_HAS_ORCHARD_RUNTIME_READER=1)
     set_property(SOURCE "${ORCHARD_HOST_ROOT}/src/daemon/services/chainstate_service.cpp"
       DIRECTORY "${ORCHARD_HOST_ROOT}" APPEND PROPERTY COMPILE_DEFINITIONS DINERO_HAS_ORCHARD_RUNTIME_READER=1)
+    # The backend-OFF fallback shares CapturePoolCoinsUnderLock with the real
+    # chainstate writer. Suppress that fallback only when this real owner is
+    # linked into core.
+    set_property(SOURCE "${ORCHARD_HOST_ROOT}/src/daemon/orchard_compact_unavailable.cpp"
+      DIRECTORY "${ORCHARD_HOST_ROOT}" APPEND PROPERTY COMPILE_DEFINITIONS DINERO_HAS_ORCHARD_RUNTIME_READER=1)
     # These source-local branches install the actual provider and exercise it
     # through the daemon fixture. The definition is absent with backend OFF.
     set_property(SOURCE "${ORCHARD_HOST_ROOT}/src/daemon/daemon_app.cpp"

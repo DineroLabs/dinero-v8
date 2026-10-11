@@ -161,11 +161,20 @@ set_target_properties(dinerod PROPERTIES
 #   5. dinero_crypto      (Crypto primitives)
 # ═══════════════════════════════════════════════════════════════════════════
 
+# The retired Bulletproofs FFI and Orchard each embed Rust std. Linking both
+# static archives into the same daemon defines rust_eh_personality twice.
+# Orchard-enabled daemon code has no bp_* references; retain the legacy edge
+# for backend-OFF builds only.
+set(DINERO_DAEMON_BULLETPROOFS_FFI bulletproofs_ffi)
+if(DINERO_BUILD_ORCHARD_BACKEND)
+  set(DINERO_DAEMON_BULLETPROOFS_FFI)
+endif()
+
 if(APPLE)
   target_link_libraries(dinerod PRIVATE
     dinero_rpc_handlers    # RPC handlers
     dinero_core            # Core services/logic; must follow rpc_handlers for static resolution
-    bulletproofs_ffi       # Dalek Bulletproofs via Rust FFI (range proofs)
+    ${DINERO_DAEMON_BULLETPROOFS_FFI}
     "-framework IOKit"      # Week 3: For mining_safety_gates battery/thermal checks
   )
   if(TARGET dinerod_proto)
@@ -175,7 +184,7 @@ else()
   target_link_libraries(dinerod PRIVATE
     dinero_rpc_handlers    # RPC handlers
     -Wl,--whole-archive dinero_core -Wl,--no-whole-archive  # whole-archive core after rpc_handlers resolves static refs in one pass
-    bulletproofs_ffi       # Dalek Bulletproofs via Rust FFI (range proofs)
+    ${DINERO_DAEMON_BULLETPROOFS_FFI}
   )
   if(TARGET dinerod_proto)
     target_link_libraries(dinerod PRIVATE dinerod_proto) # gRPC API (dev mode only)
@@ -222,7 +231,7 @@ target_link_libraries(dinerod PRIVATE
 )
 
 # Ensure dinerod depends on Bulletproofs FFI build (if cargo is available)
-if(CARGO_EXECUTABLE)
+if(CARGO_EXECUTABLE AND NOT DINERO_BUILD_ORCHARD_BACKEND)
   add_dependencies(dinerod build_bulletproofs_ffi)
 endif()
 # Ensure production code path remains on canonical daemon mempool.
