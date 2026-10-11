@@ -1047,6 +1047,19 @@ std::unique_ptr<PreparedOrchardChainstateWrite> PreparedOrchardChainstateWrite::
         ChainDB::ShieldedTipMarker marker;
         std::vector<std::pair<uint32_t,uint256>> nullifiers;
     };
+    struct NullifierVisitor {
+        uint32_t max_height;
+        uint64_t expected;
+        size_t& charge;
+        size_t limit;
+        std::set<uint256>& seen;
+        std::vector<std::pair<uint32_t,uint256>>& out;
+        bool operator()(uint32_t height,const uint8_t* bytes) const {
+            if(height>max_height || out.size()>=expected || limit-charge<36)return false;
+            uint256 hash;std::copy_n(bytes,32,hash.begin());if(!seen.insert(hash).second)return false;
+            out.emplace_back(height,hash);charge+=36;return true;
+        }
+    };
     const auto fill=[&](auto state,const auto& proof,const uint256& wire,
         std::optional<storage::LegacyRetirementRecord> retirement)->View {
         View v;state.Validate();v.height=state.height;v.hash=state.block;v.parent=state.parent;v.work=state.work;
@@ -1060,11 +1073,8 @@ std::unique_ptr<PreparedOrchardChainstateWrite> PreparedOrchardChainstateWrite::
         constexpr auto limits=SelectedParentReplayWorkLimits();size_t charge=v.frontier.size();
         require(charge<=limits.serialized_bytes && v.anchors.size()<=limits.serialized_bytes-charge);charge+=v.anchors.size();
         std::set<uint256> seen;
-        require(proof.ShieldedNullifiers()->ForEach([&](uint32_t height,const uint8_t* bytes) {
-            if(height>v.height || v.nullifiers.size()>=*count || limits.serialized_bytes-charge<36)return false;
-            uint256 hash;std::copy_n(bytes,32,hash.begin());if(!seen.insert(hash).second)return false;
-            v.nullifiers.emplace_back(height,hash);charge+=36;return true;
-        }) && v.nullifiers.size()==*count);
+        const NullifierVisitor visitor{v.height,*count,charge,limits.serialized_bytes,seen,v.nullifiers};
+        require(proof.ShieldedNullifiers()->ForEach(visitor) && v.nullifiers.size()==*count);
         std::sort(v.nullifiers.begin(),v.nullifiers.end());
         v.stump=UtreexoStump::fromForest(*proof.Forest()).serialize();
         const auto forest_root=proof.Forest()->getCommitment();
