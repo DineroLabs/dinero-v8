@@ -124,6 +124,13 @@ typedef struct { uint32_t position; uint8_t path[32][32]; const DineroOrchardNot
 int32_t dinero_orchard_prepare_spend_v1(const DineroOrchardWalletKeys*, const DineroOrchardSpendInput*, size_t, const uint8_t anchor[32], const DineroOrchardPayment*, size_t, DineroOrchardWalletPlan**);
 int32_t dinero_orchard_wallet_plan_facts_v1(const DineroOrchardWalletPlan*, DineroOrchardFacts*);
 int32_t dinero_orchard_prove_wallet_bundle_v1(DineroOrchardWalletPlan*, const uint8_t digest[32], const uint8_t effect[32], int64_t balance, DineroOrchardBuiltBundle*);
+/* Private recovery bytes, not a transaction or authorization. All outputs
+ * remain unchanged on failure. Export requires an exact-sized buffer.
+ * Restore must be gated by the host's authenticated current reservation. */
+#define DINERO_ORCHARD_V1_MAX_PLAN_RECOVERY_BYTES (1024u * 1024u)
+int32_t dinero_orchard_wallet_plan_recovery_size_v1(const DineroOrchardWalletPlan*, size_t*);
+int32_t dinero_orchard_wallet_plan_export_recovery_v1(const DineroOrchardWalletPlan*, uint8_t*, size_t);
+int32_t dinero_orchard_wallet_plan_restore_v1(const DineroOrchardWalletKeys*, const uint8_t*, size_t, DineroOrchardWalletPlan**);
 int32_t dinero_orchard_wallet_plan_free_v1(DineroOrchardWalletPlan*);
 
 /* All non-null pointers must be valid and aligned; inputs immutable for each

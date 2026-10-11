@@ -178,6 +178,9 @@ public:
     // Must be called within a transaction to ensure atomicity with UTXO changes
     bool SetMetadata(const std::string& key, const std::string& value);
     std::optional<std::string> GetMetadata(const std::string& key) const;
+    // Checked startup refusal, never absence on a SQL error. Does not clear
+    // recovery markers or certify wallet delivery/ownership completeness.
+    void RequireMetadataAbsent(const std::vector<std::string>& keys) const;
     bool DeleteMetadata(const std::string& key);
 
     // Query functions

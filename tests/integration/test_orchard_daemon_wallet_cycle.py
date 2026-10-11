@@ -86,6 +86,16 @@ class RpcError(RuntimeError):
         self.method = method
         self.code = error.get("code") if isinstance(error, dict) else None
         self.rpc_message = error.get("message") if isinstance(error, dict) else None
+        self.has_data = isinstance(error, dict) and "data" in error
+        self.data = error.get("data") if isinstance(error, dict) else None
+
+
+def proof_is_pending(detail):
+    # The current node and desktop use typed state. A retained reservation
+    # alone does not mean its proof is still running.
+    return (isinstance(detail, dict) and detail.get("error_code") == "proof_not_ready"
+            and detail.get("proof_state") in ("queued", "running")
+            and detail.get("reservation_retained") is True)
 
 
 class Node:
@@ -124,6 +134,15 @@ class Node:
     def raw(self, method, params=None):
         if self.process.poll() is not None:
             raise RuntimeError(f"daemon exited: {self.process.returncode}")
+        if method.startswith("wallet.orchard.") and method != "wallet.orchard.getwalletbinding":
+            binding = getattr(self, "wallet_binding", None)
+            if not isinstance(binding, str) or len(binding) != 64 or any(c not in "0123456789abcdef" for c in binding):
+                raise RuntimeError("Explicit wallet binding is required before Orchard requests")
+            if not isinstance(params, dict) or "wallet_binding" in params:
+                raise RuntimeError("Orchard fixture requires an unbound object request")
+            # Selection is session-local transport context, never persisted in
+            # the payment request or refreshed implicitly after a refusal.
+            params = {**params, "wallet_binding": binding}
         cookie_path = next((p for p in [self.datadir / ".cookie", self.datadir / "regtest/.cookie"]
                             if p.exists()), None)
         if cookie_path is None:
@@ -190,6 +209,16 @@ class Node:
             raise RpcError(f"{method}: {result['error']}")
         return result
 
+    def refresh_wallet_binding(self):
+        self.wallet_binding = None
+        result = self.rpc("wallet.orchard.getwalletbinding", {"wallet_name": self.wallet})
+        if not isinstance(result, dict) or result.get("wallet_name") != self.wallet:
+            raise RuntimeError("Unexpected wallet binding owner")
+        binding = result.get("wallet_binding")
+        if not isinstance(binding, str) or len(binding) != 64 or any(c not in "0123456789abcdef" for c in binding):
+            raise RuntimeError("Malformed wallet binding")
+        self.wallet_binding = binding
+
     def wait(self, predicate, label, seconds=90):
         deadline = time.monotonic() + seconds
         while time.monotonic() < deadline:
@@ -199,6 +228,7 @@ class Node:
         raise RuntimeError(f"Timeout: {label}")
 
     def start(self, extra=()):
+        self.wallet_binding = None
         self.starts += 1
         holders = [socket.socket() for _ in range(3)]
         for sock in holders:
@@ -282,6 +312,7 @@ class Node:
         self.start(["--reindex"] if reindex else [])
         self.rpc("wallet.open", [self.wallet])
         assert self.rpc("wallet.unlock", [self.password, 3600])["success"] is True
+        self.refresh_wallet_binding()
         assert self.rpc("getbestblockhash") == tip
         for account in accounts:
             self.synced(account)
@@ -317,6 +348,7 @@ class Node:
         self.start()
         self.rpc("wallet.open", [self.wallet])
         assert self.rpc("wallet.unlock", [self.password, 3600])["success"] is True
+        self.refresh_wallet_binding()
         assert self.rpc("getblockcount") == height and self.rpc("getbestblockhash") == tip
         print("PASS JSON-RPC explicit copied storage migration preserved original and selected tip", flush=True)
 
@@ -441,14 +473,21 @@ class Node:
             try:
                 value = self.raw(method, request)
             except RpcError as error:
-                # The HTTP dispatcher promotes the handler's string error.
-                # Retry only the exact expected unfinished-proof response.
-                if (error.method == method and type(error.code) is int and
-                        error.code == -32603 and error.rpc_message == pending):
-                    return False
+                if error.method == method and type(error.code) is int and error.code == -32603:
+                    if error.has_data:
+                        detail = error.data.get("orchard") if isinstance(error.data, dict) else None
+                        if proof_is_pending(detail):
+                            return False
+                    elif error.rpc_message == pending:
+                        # Compatibility only for an older response with no
+                        # typed data at all; malformed/terminal data refuses.
+                        return False
                 raise
             if isinstance(value, dict) and "error" in value:
-                if value["error"] == pending:
+                if any(key in value for key in ("error_code", "proof_state", "reservation_retained")):
+                    if proof_is_pending(value):
+                        return False
+                elif value["error"] == pending:
                     return False
                 raise RpcError(f"finish{kind}: {value['error']}")
             result = value
@@ -481,6 +520,7 @@ def main():
         assert created["success"] is True
         created.clear()  # Never print/archive the returned mnemonic.
         assert node.rpc("wallet.unlock", [node.password, 3600])["success"] is True
+        node.refresh_wallet_binding()
         address = node.rpc("wallet.getnewaddress", ["taproot", "cycle funding"])["address"]
         ordinary = node.generate(2, address)
         assert len(ordinary) == 2 and node.rpc("getblockcount") == 2

@@ -1,12 +1,15 @@
 #pragma once
 #include "daemon/relay_transaction_reader.h"
 #include "consensus/utreexo_stump.h"
+#include "consensus/chain_state_view.h"
 #include "consensus/utreexo_maturity_leaf_activation.h"
 #include <limits>
 #include <algorithm>
+#include <set>
 
 namespace dinero {
 class VerifiedUtreexoTransaction;
+class OrchardPoolCoinView;
 // Whole-message parsing and inclusion proof validation do not grant admission.
 class UtreexoTransactionPayload {
     struct Data {
@@ -18,6 +21,7 @@ class UtreexoTransactionPayload {
     std::shared_ptr<const Data> data_;
     explicit UtreexoTransactionPayload(std::shared_ptr<const Data> data) : data_(std::move(data)) {}
     friend class VerifiedUtreexoTransaction;
+    friend class OrchardPoolCoinView; // Raw claims remain private until catalog/proof capture.
 public:
     UtreexoTransactionPayload(const UtreexoTransactionPayload&)=default;
     UtreexoTransactionPayload& operator=(const UtreexoTransactionPayload&)=default;
@@ -82,6 +86,12 @@ public:
     // ownership, and retains selected-chain ownership through pool publication.
     std::optional<VerifiedUtreexoTransaction> VerifyInputs(
         const consensus::UtreexoStump& selected_stump,uint32_t parent_height) const;
+    // Additional independently authenticated metadata is required for legacy
+    // leaves, which do not commit to creation height or coinbase status.
+    std::optional<VerifiedUtreexoTransaction> VerifyInputs(
+        const consensus::UtreexoStump& selected_stump,uint32_t parent_height,
+        const consensus::ChainStateView& authenticated_inputs) const;
+
 };
 class VerifiedUtreexoTransaction {
     UtreexoTransactionPayload payload_;
@@ -112,6 +122,28 @@ inline std::optional<VerifiedUtreexoTransaction> UtreexoTransactionPayload::Veri
         const auto leaf=consensus::HashUTXOForCreationHeight(input.txid.AsUint256(),input.vout,
             spent.value,spent.scriptPubKey,spent.created_height,spent.is_coinbase);
         if(!proof.verify(leaf,roots)) return std::nullopt;
+    }
+    return VerifiedUtreexoTransaction(*this,parent_height);
+}
+inline std::optional<VerifiedUtreexoTransaction> UtreexoTransactionPayload::VerifyInputs(
+    const consensus::UtreexoStump& stump,uint32_t parent_height,
+    const consensus::ChainStateView& authenticated_inputs) const {
+    if(parent_height==std::numeric_limits<uint32_t>::max() ||
+       authenticated_inputs.getHeight()!=parent_height || Root()!=stump.getCommitment())return std::nullopt;
+    const auto roots=stump.getRoots();std::set<OutPoint> seen;
+    for(size_t i=0;i<data_->proofs.size();++i) {
+        const auto& point=Body().Inputs()[i];const auto& [proof,spent]=data_->proofs[i];
+        if(!seen.insert(point).second || proof.numLeaves!=stump.getNumLeaves())return std::nullopt;
+        const auto coin=authenticated_inputs.getCoin(point);
+        if(!coin.ok() || coin->is_confidential || !coin->commitment.empty() ||
+           coin->height>parent_height || coin->height!=spent.created_height ||
+           coin->isCoinbase!=spent.is_coinbase || coin->value.GetUna()!=spent.value ||
+           coin->scriptPubKey!=spent.scriptPubKey)return std::nullopt;
+        if(coin->isCoinbase && uint64_t(parent_height)+1-coin->height<
+            consensus::UTREEXO_STATELESS_COINBASE_MATURITY)return std::nullopt;
+        const auto leaf=consensus::HashUTXOForCreationHeight(point.txid.AsUint256(),point.vout,
+            spent.value,spent.scriptPubKey,coin->height,coin->isCoinbase);
+        if(!proof.verify(leaf,roots))return std::nullopt;
     }
     return VerifiedUtreexoTransaction(*this,parent_height);
 }

@@ -51,6 +51,7 @@ WalletStateBytes Encode(const Hash &id, const Observation &observation,
   auto bytes = queue.Encode();
   Check(bytes.Bytes().size() <= WalletSnapshotStore::kMaxStateBytes - 153);
   std::vector<uint8_t> out{'D', 'N', 'O', 'R', 'A', 'R', '0', '1'};
+  out.reserve(153 + bytes.Bytes().size()); // No reallocation after private operation bytes arrive.
   struct Wipe {
     std::vector<uint8_t> &b;
     ~Wipe() {

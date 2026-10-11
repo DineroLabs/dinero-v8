@@ -20,6 +20,11 @@ class DpiWidget : public QWidget {
 public:
     explicit DpiWidget(RpcClient* rpc, QWidget* parent = nullptr);
 
+Q_SIGNALS:
+    // A dinero: link or bare address was reviewed in Pay; the payment itself
+    // goes through the Send tab (fee choice, confirmation, wallet checks).
+    void payToAddressRequested(const QString& address, const QString& amount, const QString& note);
+
 public Q_SLOTS:
     // Drop wallet-bound state on wallet switch. Invoices encode the
     // active wallet's destination address; a tier-tracked txid was
@@ -33,11 +38,13 @@ private Q_SLOTS:
     void onVerifyPackage();
     void onDecodeInvoice();
     void onPayInvoice();
+    void onPayClicked();
     void onCopyPackage();
     void onRpcResult(const QString& method, const QJsonValue& result);
     void onRpcError(const QString& method, int code, const QString& message);
     void onCountdownTick();
     void onTierPollTick();
+    void updateHints();
 
 private:
     void setupUI();
@@ -45,6 +52,7 @@ private:
     void setupPayTab();
     void startTierTracking(const QString& txid);
     void updateTierBadge(QLabel* badge, int tier, int confirmations);
+    QLabel* makeHint(const char* objectName);
 
     RpcClient* rpc_;
     QTabWidget* tabs_;
@@ -61,7 +69,10 @@ private:
     QLabel* invoiceExpiryLabel_;
     QTextEdit* invoiceTextEdit_;
     QPushButton* copyInvoiceBtn_;
-    QGroupBox* detailsGroup_;
+    QWidget* detailsGroup_ = nullptr;           // invoice QR + details, shown once created
+    QLabel* collectInvoicePlaceholder_ = nullptr;
+    QLabel* collectCreateHint_ = nullptr;
+    QLabel* collectVerifyHint_ = nullptr;
     QTextEdit* packageInputEdit_;
     QPushButton* verifyPackageBtn_;
     QLabel* verifyResultLabel_;
@@ -78,6 +89,14 @@ private:
     QLabel* payStatusLabel_;
     QTextEdit* packageOutputEdit_;
     QPushButton* copyPackageBtn_;
+    QGroupBox* packageGroup_ = nullptr;
+    QLabel* payPlainNote_ = nullptr;
+    // Set when Review accepted a dinero: link or bare address instead of an invoice.
+    bool payPlain_ = false;
+    QString plainAddress_;
+    QString plainAmount_;
+    QString plainNote_;
+    QLabel* payReviewHint_ = nullptr;
 
     // State
     QString collectInvoiceBase64_;

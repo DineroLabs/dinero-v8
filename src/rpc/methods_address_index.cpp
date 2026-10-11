@@ -24,6 +24,14 @@
 #include "wallet/recipient_descriptor.h"
 #include "primitives/block.h"
 #include "rpc/methods_utreexo.h"
+#include "consensus/orchard_profile.h"
+#include "daemon/mempool_transaction.h"
+#if DINERO_WALLET_RAW_ORCHARD
+#include "daemon/runtime_block_reader.h"
+#include "orchard_transaction.h"
+#endif
+#include <cstring>
+#include <optional>
 #include <sstream>
 #include <limits>
 #include <iomanip>
@@ -427,6 +435,72 @@ Json rpc_getaddressmempool(const ExecutionContext& ctx, const Json& params) {
  *         [2] from_height (int, optional, default tip)
  * Returns: { address, from_height, transactions: [...] }
  */
+// Address scans must read blocks of both families. An Orchard block cannot be
+// decoded as a legacy Block: getBlockByHash fails and these scans skipped the
+// whole block, so unshields and other Orchard transactions vanished from
+// address history and wallet.snapshot. Each entry is the transaction's
+// transparent view with its real txid.
+struct ScannedTransaction {
+    dinero::Transaction tx;
+    dinero::uint256 txid;
+};
+#if DINERO_WALLET_RAW_ORCHARD
+// A scanning view only: the transparent inputs/outputs of an Orchard
+// envelope, for script matching. It is not the transaction (no Orchard
+// bundle, wrong serialization and txid); callers carry the real txid
+// separately and must never serialize, hash or relay this view.
+static dinero::Transaction TransparentView(const dinero::orchard::TransactionEnvelope& envelope) {
+    dinero::Transaction view;
+    for (const auto& input : envelope.Inputs()) {
+        dinero::uint256 previous;
+        std::memcpy(previous.data, input.txid_wire.data(), 32);
+        dinero::TxInput in;
+        in.prevout = dinero::TxOutPoint(dinero::TxId(previous), input.output_index);
+        view.vin.push_back(in);
+    }
+    for (const auto& output : envelope.Outputs())
+        view.vout.emplace_back(dinero::AmountUna::Una(static_cast<int64_t>(output.amount_una)), output.script_pub_key);
+    return view;
+}
+#endif
+static bool ReadScannedBlock(const dinero::ChainstateService& chainstate, const dinero::uint256& hash, int height,
+                             std::vector<ScannedTransaction>& out) {
+    out.clear();
+#if DINERO_WALLET_RAW_ORCHARD
+    if (height >= 0 && dinero::consensus::OrchardActiveForHeight(dinero::Params(), static_cast<uint32_t>(height))) {
+        const auto block = chainstate.getRuntimeBlockByHash(hash);
+        if (!block.ok() || !(*block)->IsOrchardProfile()) return false;
+        for (const auto& parsed : (*block)->Orchard().Transactions())
+            out.push_back({parsed.IsOrchard() ? TransparentView(parsed.Orchard()) : parsed.Historical(),
+                           parsed.GetTxid().AsUint256()});
+        return true;
+    }
+#endif
+    auto block = chainstate.getBlockByHash(hash);
+    if (!block.ok()) return false;
+    for (const auto& tx : block.value().vtx) out.push_back({tx, tx.GetTxid().AsUint256()});
+    return true;
+}
+// The output an input spends, whichever family created it.
+static std::optional<dinero::TxOutput> PreviousOutput(dinero::ChainDB& chain_db, const dinero::ChainstateService& chainstate,
+                                              const dinero::uint256& txid, uint32_t vout) {
+    auto previous = chain_db.getTransaction(txid);
+    if (previous.ok())
+        return vout < previous.value().vout.size() ? std::optional<dinero::TxOutput>(previous.value().vout[vout]) : std::nullopt;
+    const auto body = chainstate.getTransactionBody(txid);
+    if (!body.ok()) return std::nullopt;
+#if DINERO_WALLET_RAW_ORCHARD
+    if (body->IsOrchard()) {
+        const auto& outputs = body->Orchard().Outputs();
+        if (vout >= outputs.size()) return std::nullopt;
+        return dinero::TxOutput(dinero::AmountUna::Una(static_cast<int64_t>(outputs[vout].amount_una)), outputs[vout].script_pub_key);
+    }
+#endif
+    if (body->IsOrchard()) return std::nullopt;
+    const auto& tx = body->Historical();
+    return vout < tx.vout.size() ? std::optional<dinero::TxOutput>(tx.vout[vout]) : std::nullopt;
+}
+
 Json rpc_getaddresshistory(const ExecutionContext& ctx, const Json& params) {
     Json result;
 
@@ -495,12 +569,10 @@ Json rpc_getaddresshistory(const ExecutionContext& ctx, const Json& params) {
             auto hash_result = chain_db->getBlockHashByHeight(h);
             if (!hash_result.ok()) continue;
 
-            auto block_result = chainstate->getBlockByHash(hash_result.value());
-            if (!block_result.ok()) continue;
+            std::vector<ScannedTransaction> scanned;
+            if (!ReadScannedBlock(*chainstate, hash_result.value(), h, scanned)) continue;
 
-            const auto& block = block_result.value();
-
-            for (const auto& tx : block.vtx) {
+            for (const auto& [tx, real_txid] : scanned) {
                 bool has_output = false;
                 bool has_input = false;
                 bool matched_conf_output = false;
@@ -531,11 +603,10 @@ Json rpc_getaddresshistory(const ExecutionContext& ctx, const Json& params) {
                 // Check inputs (skip coinbase)
                 if (!tx.IsCoinbase()) {
                     for (const auto& input : tx.vin) {
-                        auto prev_tx_result = chain_db->getTransaction(input.prevout.txid.AsUint256());
-                        if (!prev_tx_result.ok()) continue;
-                        const auto& prev_tx = prev_tx_result.value();
-                        if (input.prevout.vout < prev_tx.vout.size()) {
-                            const auto& spent_output = prev_tx.vout[input.prevout.vout];
+                        const auto previous = PreviousOutput(*chain_db, *chainstate,
+                            input.prevout.txid.AsUint256(), input.prevout.vout);
+                        if (previous) {
+                            const auto& spent_output = *previous;
                             tx_has_conf_inputs = tx_has_conf_inputs || spent_output.is_confidential;
                             if (bytesToHex(spent_output.scriptPubKey) == target_script) {
                                 has_input = true;
@@ -560,7 +631,7 @@ Json rpc_getaddresshistory(const ExecutionContext& ctx, const Json& params) {
                             tx_has_conf_inputs,
                             tx_has_conf_outputs);
                     const bool amount_hidden = matched_conf_output || matched_conf_input;
-                    entry["txid"] = tx.GetTxid().AsUint256().GetHex();
+                    entry["txid"] = real_txid.GetHex();
                     entry["height"] = h;
                     entry["confirmations"] = tip_height - h + 1;
                     entry["type"] = has_input ? "send" : "receive";
@@ -729,9 +800,9 @@ static Json computeAddressBatch(const ExecutionContext& ctx,
             }
             auto hash_result = chain_db->getBlockHashByHeight(height);
             if (!hash_result.ok()) continue;
-            auto block_result = chainstate->getBlockByHash(hash_result.value());
-            if (!block_result.ok()) continue;
-            for (const auto& tx : block_result.value().vtx) {
+            std::vector<ScannedTransaction> scanned;
+            if (!ReadScannedBlock(*chainstate, hash_result.value(), height, scanned)) continue;
+            for (const auto& [tx, real_txid] : scanned) {
                 struct Match {
                     bool input = false;
                     bool output = false;
@@ -764,9 +835,10 @@ static Json computeAddressBatch(const ExecutionContext& ctx,
                 bool tx_has_conf_inputs = false;
                 if (!tx.IsCoinbase()) {
                     for (const auto& input : tx.vin) {
-                        auto previous = chain_db->getTransaction(input.prevout.txid.AsUint256());
-                        if (!previous.ok() || input.prevout.vout >= previous.value().vout.size()) continue;
-                        const auto& output = previous.value().vout[input.prevout.vout];
+                        const auto previous = PreviousOutput(*chain_db, *chainstate,
+                            input.prevout.txid.AsUint256(), input.prevout.vout);
+                        if (!previous) continue;
+                        const auto& output = *previous;
                         tx_has_conf_inputs = tx_has_conf_inputs || output.is_confidential;
                         auto found = script_to_index.find(bytesToHex(output.scriptPubKey));
                         if (found == script_to_index.end()) continue;
@@ -782,7 +854,7 @@ static Json computeAddressBatch(const ExecutionContext& ctx,
                     match.tx_conf_inputs = tx_has_conf_inputs;
                     match.tx_conf_outputs = tx_has_conf_outputs;
                     Json entry;
-                    entry["txid"] = tx.GetTxid().AsUint256().GetHex();
+                    entry["txid"] = real_txid.GetHex();
                     entry["height"] = height;
                     entry["confirmations"] = tip_height - height + 1;
                     entry["type"] = match.input ? "send" : "receive";
@@ -825,17 +897,7 @@ static Json computeAddressBatch(const ExecutionContext& ctx,
         result["history_limit"] = MAX_BATCH_HISTORY;
         result["history_scope"] = "wallet_global";
         result["addresses"] = address_results;
-        Json proof_context;
-        proof_context["tip_height"] = tip_height;
-        proof_context["tip_hash"] = ctx.daemon->chainstate->getBestBlockHash();
-        const auto commitment = din::rpc_getutreexocommitment(ctx, din::arr());
-        proof_context["utreexo_root"] = commitment.isMember("commitment")
-            ? commitment["commitment"] : Json("");
-        proof_context["available"] = proof_context["tip_hash"].isString() &&
-            !proof_context["tip_hash"].asString().empty() &&
-            proof_context["utreexo_root"].isString() &&
-            !proof_context["utreexo_root"].asString().empty();
-        result["proof_context"] = proof_context;
+
     } catch (const std::exception& e) {
         result["error"]["code"] = -1;
         result["error"]["message"] = std::string("Exception: ") + e.what();
@@ -876,6 +938,14 @@ Json rpc_getaddressbatch(const ExecutionContext& ctx, const Json& params) {
         return result;
     }
 
+    // Balance/history results may be cached. Proof context is an independent,
+    // current observation and must be captured after releasing the cache lock.
+    const auto with_proof_context = [&](Json response) {
+        if (!response.isMember("error"))
+            response["proof_context"] = BuildUtreexoProofContext(ctx);
+        return response;
+    };
+
     std::ostringstream key_builder;
     key_builder << ctx.daemon->chainstate->getBestBlockHash() << ':' << history_count;
     for (const auto& address : addresses) key_builder << ':' << address;
@@ -893,7 +963,8 @@ Json rpc_getaddressbatch(const ExecutionContext& ctx, const Json& params) {
             ++g_batch_discovery.cache_hits;
             result = cached->second.result;
             addBatchMetadata(result, true, 0, addresses.size(), g_batch_discovery);
-            return result;
+            lock.unlock();
+            return with_proof_context(std::move(result));
         }
 
         if (auto running = g_batch_discovery.flights.find(key);
@@ -906,7 +977,8 @@ Json rpc_getaddressbatch(const ExecutionContext& ctx, const Json& params) {
                 ++g_batch_discovery.cache_hits;
                 result = flight->result;
                 addBatchMetadata(result, true, 0, addresses.size(), g_batch_discovery);
-                return result;
+                lock.unlock();
+                return with_proof_context(std::move(result));
             }
             ++g_batch_discovery.rejected;
             if (completed) result = flight->result;
@@ -964,7 +1036,7 @@ Json rpc_getaddressbatch(const ExecutionContext& ctx, const Json& params) {
         addBatchMetadata(result, false, scan_ms, addresses.size(), g_batch_discovery);
     }
     flight->changed.notify_all();
-    return result;
+    return with_proof_context(std::move(result));
 }
 
 

@@ -124,6 +124,11 @@ command -v jq >/dev/null 2>&1 || fail "jq is required"
 
 info "Creating a funded deterministic wallet and V4 snapshot"
 start_node "$SRC_DIR" "$SRC_RPC" "$SRC_P2P" "$SRC_WS" "$SRC_DIR/source.log"
+# Preserve the startup wallet; recover this mnemonic under a separate name.
+RESTORE_SOURCE="$(rpc "$SRC_RPC" "$SRC_DIR" wallet.restore \
+    "{\"name\":\"snapshot-source\",\"mnemonic\":\"$MNEMONIC\",\"rescan\":false}")"
+jq -e '.result.success == true' <<<"$RESTORE_SOURCE" >/dev/null \
+    || fail "new-name recovery failed: $RESTORE_SOURCE"
 IMPORT_SOURCE="$(rpc "$SRC_RPC" "$SRC_DIR" wallet.importmnemonic \
     "{\"mnemonic\":\"$MNEMONIC\",\"rescan\":false,\"initial_address_count\":4}")"
 jq -e '.result.success == true and .result.watch_scripts > 0' <<<"$IMPORT_SOURCE" >/dev/null \
@@ -182,6 +187,11 @@ PRE_IMPORT_COUNT="$(rpc "$CON_RPC" "$CON_DIR" wallet.listunspent '[]' \
 pass "snapshot activated before funded mnemonic import (control wallet has 0 UTXOs)"
 
 info "Creating the affected state: funded mnemonic present, local inventory empty"
+# Preserve the startup wallet; recover this mnemonic under a separate name.
+RESTORE_CONSUMER="$(rpc "$CON_RPC" "$CON_DIR" wallet.restore \
+    "{\"name\":\"snapshot-recovered\",\"mnemonic\":\"$MNEMONIC\",\"rescan\":false}")"
+jq -e '.result.success == true' <<<"$RESTORE_CONSUMER" >/dev/null \
+    || fail "new-name recovery failed: $RESTORE_CONSUMER"
 LATE_IMPORT="$(rpc "$CON_RPC" "$CON_DIR" wallet.importmnemonic \
     "{\"mnemonic\":\"$MNEMONIC\",\"rescan\":false,\"initial_address_count\":4}")"
 jq -e '.result.success == true and .result.rescan_triggered == false' \

@@ -12,6 +12,7 @@
 #include <QFileInfo>
 #include <QLockFile>
 #include <iostream>
+#include <string>
 #include <QMessageBox>
 #include <QPushButton>
 #include <QCheckBox>
@@ -48,6 +49,7 @@
 #include "mainwindow.h"
 #include "build_identity.h"
 #include "debugconsole.h"
+#include "portcheck.h"
 
 #include "minercontroller.h"
 #include <solo_miner/build_identity.h>
@@ -637,9 +639,7 @@ static constexpr int GENESIS_MISMATCH_EXIT_CODE = 10;
 // TCP-bind only — does NOT prove the daemon is responding to requests.
 // Used as a fast pre-check; pair with isDaemonHealthy() for liveness.
 static bool isDaemonRunning(int timeoutMs = 100) {
-    QTcpSocket socket;
-    socket.connectToHost("127.0.0.1", 20998);
-    return socket.waitForConnected(timeoutMs);
+    return tcpPortAccepts("127.0.0.1", 20998, timeoutMs);
 }
 
 // Check if daemon is actually serving HTTP. Sends a no-auth POST and
@@ -1161,6 +1161,17 @@ static bool confirmRpcPortSquatter() {
 }
 
 int main(int argc, char** argv) {
+  // This package inspection must precede QApplication and daemon discovery.
+  // --version is accepted as a safe fallback for package checks of old builds.
+  if ((argc == 2 || (argc == 3 && std::string(argv[2]) == "--version")) &&
+      std::string(argv[1]) == "--orchard-build-info") {
+#if defined(DIN_ENABLE_ORCHARD_UI) && DIN_ENABLE_ORCHARD_UI
+    std::cout << "{\"schema\":1,\"component\":\"dinero-qt\",\"orchard_ui\":true}\n";
+#else
+    std::cout << "{\"schema\":1,\"component\":\"dinero-qt\",\"orchard_ui\":false}\n";
+#endif
+    return 0;
+  }
   for (int i = 1; i < argc; ++i) {
     const QString arg = QString::fromUtf8(argv[i]);
     if (arg == "--version") {

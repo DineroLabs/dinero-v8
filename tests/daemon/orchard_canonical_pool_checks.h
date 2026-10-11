@@ -5,7 +5,8 @@ namespace {
 // construction. Initialize this fixture's real pool after that replacement so
 // its historical coin adapter points to the current owner before any admission.
 struct CanonicalPoolFixture : RawIngressFixture {
-    CanonicalPoolFixture() {
+    explicit CanonicalPoolFixture(bool real_pow=false,
+        OrchardAdmissionFixture::HistoricalSpend spend=OrchardAdmissionFixture::HistoricalSpend::None):RawIngressFixture(real_pow,spend) {
         f.ingress->Stop();
         context.mempool.reset();
         f.ingress=std::make_shared<MempoolService>();
@@ -38,6 +39,16 @@ struct CanonicalPoolLogger final:ILogger {
     void error(const std::string&)override{} void setLogLevel(LogLevel)override{}
     void setLogFile(const std::string&)override{} void shutdown()override{}
 };
+// Capture untrusted wire for exercising the production metadata-aware path.
+// The older proof-only verifier intentionally refuses these legacy coinbases
+// during the regtest grace window; it is not this fixture's admission owner.
+auto CanonicalPoolUnverifiedProof(RawIngressFixture& fixture,const MempoolTransaction& body) {
+    auto selected=fixture.f.service->AcquireBlockIngressActivationLock();
+    auto* coins=fixture.f.service->GetConsensusUTXOSet();
+    std::shared_ptr<consensus::IUTXOProvider> provider(fixture.f.service,coins);
+    network::BridgeNode bridge(provider,&coins->GetForest(),nullptr,nullptr,nullptr,coins);
+    return CaptureUtreexoTransactionPayload(body,bridge);
+}
 auto CanonicalPoolProof(RawIngressFixture& fixture,const MempoolTransaction& body) {
     auto selected=fixture.f.service->AcquireBlockIngressActivationLock();
     auto* coins=fixture.f.service->GetConsensusUTXOSet();
@@ -108,22 +119,28 @@ TEST(OrchardCanonicalPool, WrongContextAndMissingProviderPreservePool) {
     EXPECT_EQ(pool.size(),1u);EXPECT_EQ(f.f.service->GetActiveTip(),f.parent);f.f.CheckUnpublished();
     f.f.service->setRuntimeBlockNotifications(nullptr);
     EXPECT_FALSE(f.Submit(built->WireBytes()).accepted());EXPECT_EQ(pool.size(),1u);
+    ASSERT_TRUE(ShieldedStateStartupTestAccess::WaitForActivationRetry(*f.f.service,built->Header().GetHash()));
     struct ChangeOwner final:RuntimeBlockNotifications {
+        unsigned prepared=0;
         RawIngressFixture& fixture;
         explicit ChangeOwner(RawIngressFixture& value):fixture(value){}
         std::unique_ptr<PreparedRuntimeBlockNotifications> Prepare(const RuntimeBlockBody& body,uint32_t height,RuntimeBlockDirection direction)override {
+            ++prepared;
             auto result=fixture.notices->Prepare(body,height,direction);
             fixture.context.mempool.reset();
             return result;
         }
     };
-    f.f.service->setRuntimeBlockNotifications(std::make_shared<ChangeOwner>(f));
+    auto changed_owner=std::make_shared<ChangeOwner>(f);
+    f.f.service->setRuntimeBlockNotifications(changed_owner);
     const auto changed=f.Submit(built->WireBytes());f.context.mempool=f.f.ingress;
+    EXPECT_EQ(changed_owner->prepared,1u);
     EXPECT_FALSE(changed.accepted());EXPECT_EQ(pool.size(),1u);EXPECT_EQ(f.notices->published,0u);
     f.f.CheckUnpublished();
     f.f.service->setRuntimeBlockNotifications(f.notices);
-    // Owner refusal retains the candidate under the same operational cooldown.
-    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    // Read the real tracker: successive refusals increase the cooldown.
+    // No retry is submitted while waiting and no tracker state is changed.
+    ASSERT_TRUE(ShieldedStateStartupTestAccess::WaitForActivationRetry(*f.f.service,built->Header().GetHash()));
     const auto retry=f.Submit(built->WireBytes());ASSERT_TRUE(retry.accepted())<<retry.reason;
     EXPECT_EQ(pool.size(),0u);EXPECT_EQ(f.notices->published,1u);
 }
@@ -160,8 +177,87 @@ TEST(OrchardCanonicalPool, DisconnectReopenAndExplicitReadmissionKeepSelectedHei
     EXPECT_EQ(notices->published,4u);EXPECT_TRUE(ShieldedStateStartupTestAccess::AuditBoundary(*f.f.service));
 }
 
+
+TEST(OrchardPoolProofTransport, AdmissionRefreshAndSelectionUseExactProof) {
+    CanonicalPoolFixture f;const auto block=f.Build();ASSERT_TRUE(block);
+    auto& pool=f.f.ingress->mempool();
+    const auto body=MempoolTransaction::FromOrchard(block->Transactions()[1].Orchard());
+    const auto id=body.GetTxid().AsUint256();
+    const auto wire=CanonicalPoolUnverifiedProof(f,body);ASSERT_TRUE(wire);
+    const auto payload=UtreexoTransactionPayload::Decode(*wire,RelayTransactionReadMode::AvailableFamilies);
+    {
+        auto selected=f.f.service->AcquireBlockIngressActivationLock();
+        auto* coins=f.f.service->GetConsensusUTXOSet();auto forest=coins->LockForestShared();
+        const auto stump=consensus::UtreexoStump::fromForest(coins->GetForest());
+        ASSERT_EQ(f.f.service->GetActiveTip()->height,101u);
+        EXPECT_FALSE(payload.VerifyInputs(stump,101));
+    }
+    ASSERT_TRUE(pool.removeTransaction(id));ASSERT_EQ(pool.size(),0u);
+    const auto admitted=f.f.ingress->SubmitProofBody(payload,TxOrigin::INTERNAL);
+    ASSERT_TRUE(admitted.accepted())<<admitted.message;
+    ASSERT_EQ(pool.size(),1u);const auto entry=pool.getMempoolEntry(id);ASSERT_TRUE(entry);
+    EXPECT_EQ(entry->cached_utxotx_payload,payload.Wire());EXPECT_EQ(entry->validated_at_root,payload.Root());
+    EXPECT_EQ(entry->validated_at_height,101u);EXPECT_FALSE(entry->is_proof_stale);
+    const auto selected=pool.CaptureTypedBlockSelection(1000000,4000000,102);
+    ASSERT_TRUE(selected.available);ASSERT_EQ(selected.transactions.size(),1u);
+    EXPECT_EQ(selected.transactions.front().Serialize(),body.Serialize());
+    ASSERT_TRUE(f.f.ingress->SubmitProofBody(payload,TxOrigin::INTERNAL).accepted());
+    EXPECT_EQ(pool.size(),1u);EXPECT_EQ(pool.getMempoolEntry(id)->fee,entry->fee);
+    EXPECT_EQ(pool.getMempoolEntry(id)->cached_utxotx_payload,payload.Wire());
+    EXPECT_EQ(f.f.service->GetActiveTip(),f.parent);
+}
+TEST(OrchardPoolProofTransport, WrongRootBodyAndCachedProofRefuseWithoutPublication) {
+    CanonicalPoolFixture f;const auto block=f.Build();ASSERT_TRUE(block);
+    auto& pool=f.f.ingress->mempool();
+    const auto body=MempoolTransaction::FromOrchard(block->Transactions()[1].Orchard());
+    const auto id=body.GetTxid().AsUint256();
+    const auto wire=CanonicalPoolUnverifiedProof(f,body);ASSERT_TRUE(wire);
+    const auto good=UtreexoTransactionPayload::Decode(*wire,RelayTransactionReadMode::AvailableFamilies);
+    auto wrong=good.Wire();wrong.back()^=1;
+    const auto bad=UtreexoTransactionPayload::Decode(wrong,RelayTransactionReadMode::AvailableFamilies);
+    ASSERT_TRUE(pool.removeTransaction(id));
+    EXPECT_FALSE(f.f.ingress->SubmitProofBody(bad,TxOrigin::INTERNAL).accepted());EXPECT_EQ(pool.size(),0u);
+    ASSERT_TRUE(f.f.ingress->SubmitProofBody(good,TxOrigin::INTERNAL).accepted());
+    const auto before=pool.getMempoolEntry(id);ASSERT_TRUE(before);
+    EXPECT_FALSE(f.f.ingress->SubmitProofBody(bad,TxOrigin::INTERNAL).accepted());
+    EXPECT_EQ(pool.getMempoolEntry(id)->cached_utxotx_payload,before->cached_utxotx_payload);
+    EXPECT_EQ(pool.getMempoolEntry(id)->validated_at_root,before->validated_at_root);
+    // One v2 input: the final metadata byte before the root is its coinbase
+    // flag. Legacy inclusion alone does not bind that flag. Exact selected
+    // metadata must refuse this forged ordinary-coin claim without replacing
+    // the previously accepted proof cache.
+    ASSERT_EQ(good.Body().Inputs().size(),1u);ASSERT_EQ(good.Wire().front(),2u);
+    auto forged=good.Wire();ASSERT_GT(forged.size(),33u);
+    ASSERT_EQ(forged[forged.size()-33],1u);forged[forged.size()-33]=0;
+    const auto false_metadata=UtreexoTransactionPayload::Decode(forged,RelayTransactionReadMode::AvailableFamilies);
+    EXPECT_FALSE(f.f.ingress->SubmitProofBody(false_metadata,TxOrigin::INTERNAL).accepted());
+    EXPECT_EQ(pool.getMempoolEntry(id)->cached_utxotx_payload,before->cached_utxotx_payload);
+    EXPECT_EQ(pool.getMempoolEntry(id)->validated_at_root,before->validated_at_root);
+    const auto other=CanonicalPoolSurvivor(f);
+    {
+        auto selected=ChainstateService::AcquireMempoolChainstateRead(f.f.service);ASSERT_TRUE(selected);
+        const std::vector<MempoolProofView> mismatched{{other,good.Wire()}};
+        EXPECT_FALSE(selected->ValidateBlockSelectionWithProofs(mismatched,102).result.accepted());
+    }
+    ASSERT_TRUE(pool.setCachedUtxoTxPayload(id,wrong));
+    const auto selection=pool.CaptureTypedBlockSelection(1000000,4000000,102);
+    ASSERT_TRUE(selection.available);EXPECT_TRUE(selection.transactions.empty());
+    EXPECT_EQ(pool.size(),1u);EXPECT_EQ(pool.getMempoolEntry(id)->cached_utxotx_payload,wrong);
+    ASSERT_TRUE(f.f.ingress->SubmitProofBody(good,TxOrigin::INTERNAL).accepted());
+    EXPECT_EQ(pool.getMempoolEntry(id)->cached_utxotx_payload,good.Wire());
+    EXPECT_EQ(pool.CaptureTypedBlockSelection(1000000,4000000,102).transactions.size(),1u);
+    EXPECT_EQ(f.f.service->GetActiveTip(),f.parent);
+}
+
 #else
 TEST(OrchardCanonicalPool, InactiveServiceDoesNotRouteTypedBody) {
     ChainstateService service;EXPECT_FALSE(service.TryAcceptOrchardBlockFromRPC(""));
 }
 #endif
+
+TEST(OrchardPoolProofTransport, MissingProofValidatorRefusesSuppliedBytes) {
+    MempoolChainstateReadGuard guard;const std::vector<uint8_t> bytes{1,2,3};
+    const MempoolProofView body{MempoolTransaction{},bytes};
+    EXPECT_FALSE(guard.ValidateOrchardWithProofs(body,{}).result.accepted());
+    EXPECT_FALSE(guard.ValidateBlockSelectionWithProofs({&body,1},1).result.accepted());
+}

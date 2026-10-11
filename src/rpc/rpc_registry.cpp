@@ -12,6 +12,7 @@ void RpcRegistry::beginRuntimeRegistrationCycle() {
     runtime_baseline_owners_ = owners_;
     runtime_baseline_aliases_ = aliases_;
     runtime_baseline_alias_info_ = alias_info_;
+    runtime_baseline_sources_ = sources_;
     runtime_baseline_captured_ = true;
     return;
   }
@@ -21,6 +22,7 @@ void RpcRegistry::beginRuntimeRegistrationCycle() {
   owners_ = runtime_baseline_owners_;
   aliases_ = runtime_baseline_aliases_;
   alias_info_ = runtime_baseline_alias_info_;
+  sources_ = runtime_baseline_sources_;
   last_error_.clear();
 }
 
@@ -34,7 +36,7 @@ bool RpcRegistry::registerHandler(const std::string& m, RpcHandler h, const std:
 #endif
     return false;
   }
-  handlers_.emplace(m, std::move(h)); owners_.emplace(m, owner);
+  handlers_.emplace(m, std::move(h)); owners_.emplace(m, owner); noteRegisteredLocked(m);
 
   // AUTO-ALIAS: Register flat version (everything after last '.')
   auto dot = m.find('.');
@@ -43,6 +45,7 @@ bool RpcRegistry::registerHandler(const std::string& m, RpcHandler h, const std:
     if (!handlers_.count(flat)) {
       handlers_[flat] = handlers_[m];
       owners_[flat] = owner + " [alias]";
+      sources_[flat] = m;
     }
   }
 
@@ -53,7 +56,7 @@ bool RpcRegistry::registerHandler(const std::string& m, RpcHandler h,
                                   const RpcMethodMeta& meta, const std::string& owner) {
   std::lock_guard<std::mutex> lk(mtx_);
   if (handlers_.count(m)) { last_error_ = "duplicate method " + m; return false; }
-  handlers_.emplace(m, std::move(h)); meta_.emplace(m, meta); owners_.emplace(m, owner);
+  handlers_.emplace(m, std::move(h)); meta_.emplace(m, meta); owners_.emplace(m, owner); noteRegisteredLocked(m);
 
   // AUTO-ALIAS: Register flat version (everything after last '.')
   auto dot = m.find('.');
@@ -63,6 +66,7 @@ bool RpcRegistry::registerHandler(const std::string& m, RpcHandler h,
       handlers_[flat] = handlers_[m];
       meta_[flat] = meta;
       owners_[flat] = owner + " [alias]";
+      sources_[flat] = m;
     }
   }
 
@@ -76,7 +80,7 @@ bool RpcRegistry::registerHandler(const std::string& m, RpcHandler h,
     return true; // Skip registration if method already exists
   }
   // FIX: Use assignment for Overwrite mode (emplace doesn't replace existing keys!)
-  handlers_[m] = std::move(h); owners_[m] = owner;
+  handlers_[m] = std::move(h); owners_[m] = owner; noteRegisteredLocked(m);
 
   // 🔧 AUTO-ALIAS: Register flat version (everything after last '.')
   // Example: "wallet.getbalance" → also register "getbalance"
@@ -88,6 +92,7 @@ bool RpcRegistry::registerHandler(const std::string& m, RpcHandler h,
       // FIX: Use handlers_[m] (not h, which was moved from!)
       handlers_[flat] = handlers_[m];
       owners_[flat] = owner + " [alias]";
+      sources_[flat] = m;
     }
   }
 
@@ -101,7 +106,7 @@ bool RpcRegistry::registerHandler(const std::string& m, RpcHandler h,
     return true; // Skip registration if method already exists
   }
   // FIX: Use assignment for Overwrite mode (emplace doesn't replace existing keys!)
-  handlers_[m] = std::move(h); meta_[m] = meta; owners_[m] = owner;
+  handlers_[m] = std::move(h); meta_[m] = meta; owners_[m] = owner; noteRegisteredLocked(m);
 
   // 🔧 AUTO-ALIAS: Register flat version (everything after last '.')
   auto dot = m.find('.');
@@ -112,10 +117,33 @@ bool RpcRegistry::registerHandler(const std::string& m, RpcHandler h,
       handlers_[flat] = handlers_[m];
       meta_[flat] = meta;
       owners_[flat] = owner + " [alias]";
+      sources_[flat] = m;
     }
   }
 
   return true;
+}
+
+void RpcRegistry::noteRegisteredLocked(const std::string& m) {
+  // Short names generated from an earlier m keep running that earlier
+  // handler: their origin is no longer what m names.
+  for (auto& [name, source] : sources_) {
+    if (name != m && source == m) source.clear();
+  }
+  sources_[m] = m;
+}
+
+std::string RpcRegistry::handlerSource(const std::string& m) const {
+  std::lock_guard<std::mutex> lk(mtx_);
+  // Same order as lookup(): an exact handler first, then an explicit alias.
+  std::string name = m;
+  if (!handlers_.count(name)) {
+    auto alias_it = aliases_.find(m);
+    if (alias_it == aliases_.end() || !handlers_.count(alias_it->second)) return {};
+    name = alias_it->second;
+  }
+  auto it = sources_.find(name);
+  return it == sources_.end() ? std::string() : it->second;
 }
 
 std::string RpcRegistry::getMethodOwner(const std::string& m) const {

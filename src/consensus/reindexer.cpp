@@ -2304,8 +2304,11 @@ Status BlockReindexer::processBlock(const Block& block, const FilePosition& pos,
     // ═══════════════════════════════════════════════════════════════════
     // Step 3: Build the undo record BEFORE any UTXO mutation
     // ═══════════════════════════════════════════════════════════════════
-    // Spent coins must be read via getCoin() while they are still in the
-    // ChainDB UTXO set (deleteCoin happens below in Step 6). UndoRecord
+    // Resolve inputs in transaction order: earlier outputs in this block
+    // precede the durable parent UTXO set. Step 6 has not written either yet.
+    // Undo retains every input, including same-block ephemeral coins; its
+    // disconnect owner restores inputs then deletes all created outputs.
+    // UndoRecord
     // holds SpentCoin entries (for restoring the UTXO set on disconnect) and
     // CreatedOut markers (for deleting this block's outputs on disconnect).
     // The Utreexo forest delta is persisted separately as the UD:<blockhash>
@@ -2316,6 +2319,9 @@ Status BlockReindexer::processBlock(const Block& block, const FilePosition& pos,
     undo.pre_block_shielded_anchors = shielded_anchor_history_.SerializePersistenceBytes();
     std::vector<shielded::ShieldedBundle> shielded_bundles;
     std::vector<int64_t> shielded_deltas;
+    std::unordered_map<OutPoint, Coin> earlier_outputs;
+    std::unordered_set<OutPoint> spent_inputs;
+    std::unordered_set<TxId> seen_transactions;
 
     // CONSENSUS: mirrors ConnectBlockInternal's coinbase rule, at the same
     // heights, so replayed history is judged exactly as the live chain judged
@@ -2348,13 +2354,19 @@ Status BlockReindexer::processBlock(const Block& block, const FilePosition& pos,
     for (size_t tx_idx = 0; tx_idx < block.vtx.size(); ++tx_idx) {
         const auto& tx = block.vtx[tx_idx];
         TxId txid = tx.GetTxid();
+        if (!seen_transactions.insert(txid).second) return Status::Invalid;
         std::vector<Coin> input_coins;
         uint64_t total_input_value = 0;
 
         if (tx_idx > 0) {
             for (const auto& input : tx.vin) {
-                auto coin_result = chain_db_->getCoinWithConfidentialFallback(
-                    input.prevout.txid.AsUint256(), input.prevout.vout);
+                const OutPoint outpoint(input.prevout.txid, input.prevout.vout);
+                if (!spent_inputs.insert(outpoint).second) return Status::Invalid;
+                const auto earlier = earlier_outputs.find(outpoint);
+                auto coin_result = earlier != earlier_outputs.end()
+                    ? StatusOr<Coin>(earlier->second)
+                    : chain_db_->getCoinWithConfidentialFallback(
+                        input.prevout.txid.AsUint256(), input.prevout.vout);
                 if (coin_result.status() != Status::Ok) {
                     g_logger.error("reindex-missing-utxo-for-undo at height " +
                                    std::to_string(height) +
@@ -2387,6 +2399,7 @@ Status BlockReindexer::processBlock(const Block& block, const FilePosition& pos,
                 spent.is_confidential = coin.is_confidential;
                 spent.commitment = coin.commitment;
                 undo.spent.push_back(std::move(spent));
+                if (earlier != earlier_outputs.end()) earlier_outputs.erase(earlier);
             }
         }
 
@@ -2419,6 +2432,17 @@ Status BlockReindexer::processBlock(const Block& block, const FilePosition& pos,
         }
 
         for (uint32_t vout = 0; vout < tx.vout.size(); ++vout) {
+            const auto& output = tx.vout[vout];
+            Coin coin;
+            coin.amount = output.value.GetUna();
+            coin.script_pubkey = BytesToHex(output.scriptPubKey.data(), output.scriptPubKey.size());
+            coin.height = height;
+            coin.coinbase = (tx_idx == 0);
+            coin.is_confidential = output.is_confidential;
+            coin.commitment = output.commitment;
+            const OutPoint outpoint(txid, vout);
+            if (spent_inputs.count(outpoint) || !earlier_outputs.emplace(outpoint, std::move(coin)).second)
+                return Status::Invalid;
             undo.created.emplace_back(txid.AsUint256(), vout);
         }
 

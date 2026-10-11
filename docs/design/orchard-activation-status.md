@@ -1,0 +1,11 @@
+# Orchard activation observation
+
+Prepared candidate; not compiled, applied or runtime-qualified. Mainnet heights remain unset.
+
+`orchard.getactivationstatus` takes no arguments and reads the configured rule at one verified selected tip using the existing service-owned accumulator snapshot. The call uses the existing shutdown read owner and refuses inconsistent durable/validated/live tip, safe mode, missing storage, stopped service, caller-held selected lock, or invalid profile. It never enrolls storage, modifies configuration, opens a wallet, or signals wallet readiness.
+
+`activation_state` is `unscheduled`, `scheduled`, or `active` at the captured tip. Unscheduled height and branch ID are JSON null. `rule_active_for_next_block` is separate: at the activation parent the tip is still scheduled. The widened next height avoids wraparound. The response includes `network`, `tip_height`, `tip_hash`, `next_block_height`, `storage_mode`, and `wallet_backend_compiled`. The last field describes compilation only. Errors contain no activation/tip prefix, using `invalid_parameters`, `activation_profile_invalid`, or `activation_status_unavailable` for these refusals.
+
+The profile is immutable after process network selection. No peer height, wall clock or hardcoded production height is used. This observation does not certify global synchronization, account coverage, spendability, fee adequacy, proof availability, admission, relay, or release readiness. Qt must separately use its intended wallet binding, authenticated account checkpoint/balance and operation state, and must retain unknown on an unavailable read. This endpoint alone does not connect the preview screens.
+
+New cases cover malformed requests/missing owners, actual full boundary/unscheduled observations, inconsistent durable tip and invalid profile, recursive selected ownership refusal, historical/boundary/active compact owners and stopped admission. Original tests and deadlines remain intact. No race/deadlock/churn or synchronization-removal control is added. Fresh backend ON/OFF declared builds, exact selected tests and all linked project C++ sanitizer qualification are required before application; IPC and whole-node desktop flows remain separate gates.

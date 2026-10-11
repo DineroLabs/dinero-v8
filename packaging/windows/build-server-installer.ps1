@@ -290,6 +290,7 @@ if (-not $SkipBuild) {
         '-DDINERO_WINDOWS_SERVER_BUILD=ON',
         '-DDINERO_BUILD_SEEDER=ON',
         '-DDINERO_BUILD_MINER=OFF',
+        '-DDINERO_BUILD_ORCHARD_BACKEND=ON',
         '-DDINERO_ENABLE_QUIC=ON'
     )
     $vcpkgToolchain = Join-Path $VcpkgRoot 'scripts\buildsystems\vcpkg.cmake'

@@ -1,4 +1,5 @@
 #pragma once
+namespace dinero::wallet::detail { class RuntimeReplayAuthorizationRetention; }
 
 #include "consensus/chain_state_view.h"
 #include "orchard_transaction.h"
@@ -33,6 +34,8 @@ public:
         orchard::SigningDomain domain) const;
 
 private:
+    // Exact process-local retention, only after a genuine verified capture.
+    friend class dinero::wallet::detail::RuntimeReplayAuthorizationRetention;
     OrchardCoinSnapshot(orchard::TransactionEnvelope transaction,
                         std::vector<UTXOEntry> coins, uint32_t view_height);
     std::vector<orchard::PreviousOutput> PreviousOutputs() const;

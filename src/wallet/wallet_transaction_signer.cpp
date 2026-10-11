@@ -11,6 +11,12 @@
 #include <type_traits>
 #include "wallet/orchard_account_catalog.h"
 namespace dinero {
+namespace {
+void RequireExpectedDatabase(const WalletManager::DatabaseLease& lease, const WalletSigningIdentity& identity) {
+    if (identity.database_id && lease.ReadDeliveryIdentity() != *identity.database_id)
+        throw std::runtime_error("Payment payer database identity changed");
+}
+}
 WalletSigningIdentity CaptureWalletSigningIdentity(WalletManager& wallet,const std::string& requested_name) {
     auto lease=wallet.AcquireDatabaseLease();
     if(!lease->Database() || lease->WalletName().empty() ||
@@ -26,6 +32,7 @@ SignResult WalletTransactionOwner::SignBeforeActivation(WalletManager& manager,
         if(!db||!identity.session||identity.name.empty()||lease->Session()!=identity.session||
            lease->WalletName()!=identity.name||!sqlite3_get_autocommit(db))
             throw std::runtime_error("Pre-activation payment owner unavailable");
+        RequireExpectedDatabase(*lease,identity);
         const auto check=[](bool value){if(!value)throw std::runtime_error("Pre-activation payment inventory unavailable");};
         struct Statement {sqlite3_stmt* p=nullptr;~Statement(){sqlite3_finalize(p);}};
         check(sqlite3_exec(db,"PRAGMA synchronous=FULL",nullptr,nullptr,nullptr)==SQLITE_OK);
@@ -72,6 +79,7 @@ SignResult WalletTransactionOwner::Sign(WalletManager& manager,const WalletSigni
         if(!lease->Database() || identity.name.empty() || identity.session==0 ||
            lease->WalletName()!=identity.name || lease->Session()!=identity.session)
             throw std::runtime_error("Selected wallet signing session changed");
+        RequireExpectedDatabase(*lease,identity);
         auto pin=lease->CopyRecoverySeed(identity.session);
         if (payment && payment->request && (caller_transaction ?
             lease->FindPaymentRequestInTransaction(*pin,*payment) : lease->FindPaymentRequest(*pin,*payment)))
@@ -135,6 +143,7 @@ std::optional<PendingPayment> FindRetainedWalletPayment(
     if (!lease->Database() || identity.name.empty() || identity.session == 0 ||
         lease->WalletName() != identity.name || lease->Session() != identity.session)
         throw std::runtime_error("Selected wallet payment request session changed");
+    RequireExpectedDatabase(*lease,identity);
     auto pin = lease->CopyRecoverySeed(identity.session);
     return lease->FindPaymentRequest(*pin, intent);
 }

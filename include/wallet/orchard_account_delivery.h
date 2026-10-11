@@ -8,6 +8,18 @@
 #include "wallet/orchard_proof_jobs.h"
 namespace dinero { class ChainstateService; class RuntimeOrdinaryDelivery; class RuntimeWalletRecovery; struct RuntimeOutboxCursor; class WalletManager; class RuntimeAccountReplay; struct WalletSigningIdentity; struct UnsignedTransaction; struct PendingPaymentIntent; struct SignResult; }
 namespace dinero::wallet {
+// Narrow request classification after authenticated catalog restoration.
+// These observations do not authorize retries, replacement IDs, or release of
+// reservations. Ownership/SQL/source failures remain separate generic errors.
+class OrchardRequestError final : public std::runtime_error {
+public:
+    enum class Code { StaleAccountRevision, RequestIdConflict, RequestNotCurrent };
+    explicit OrchardRequestError(Code code)
+        : std::runtime_error("Orchard account delivery ownership or state mismatch"), code_(code) {}
+    Code Reason() const noexcept { return code_; }
+private:
+    Code code_;
+};
 // An unforgeable, process-local capture of authenticated account bytes restored
 // against one retained immutable replay. This carries no durable authority:
 // the writer must authenticate the complete capture again in its transaction.
@@ -232,21 +244,32 @@ public:
         std::optional<OrchardProofJobs::State> state;
         std::unique_ptr<orchard::ProvedWalletBundle> proof;
     };
-    // Read-only completion capture. Require an existing current request with
+    // Default is read-only. Explicit completion may opt into resuming a missing
+    // process-local job from a sealed original plan, after current catalog,
+    // receipt, observation and intent checks. No new payment construction.
+    // Publication follows checked COMMIT with wallet/seed ownership released.
+    // Require an existing current request with
     // the exact ordered recipients/memos/outputs/fee before looking up its job.
     // Authenticate the complete catalog and pin the actual wallet/session.
-    // Unknown/archived IDs cannot reserve, requeue or recreate any operation.
+    // Unknown/archived IDs and missing legacy capsules cannot recreate work.
     static RequestProof ReadCatalogRequestProofForReplay(WalletManager&,uint64_t session,
         const Profile&,const RuntimeAccountReplay&,const orchard::Hash&,
         std::span<const orchard::WalletPayment>,std::span<const orchard::TransparentOutput>,
-        uint64_t fee_una,OrchardProofJobs&);
-    // Read-only owned shield proof capture, bound to the same complete request.
-    // Missing jobs/archived IDs cannot recreate work or release reservations.
+        uint64_t fee_una,OrchardProofJobs&,bool resume_missing=false);
+    // Completion by ID requires the complete request already sealed in this
+    // current account. Full catalog restoration authenticates its identity-bound
+    // digest before executor lookup. Unknown, archived, legacy-without-details,
+    // and wrong-kind requests refuse without creating or replacing work.
+    static RequestProof ReadStoredCatalogRequestProofForReplay(WalletManager&,uint64_t session,
+        const Profile&,const RuntimeAccountReplay&,const orchard::Hash&,
+        bool shield,OrchardProofJobs&,bool resume_missing=false);
+    // Same explicit resume opt-in for the complete authenticated shield request.
+    // Archived IDs refuse; resumption never releases reservations.
     static RequestProof ReadCatalogShieldRequestProofForReplay(
         WalletManager&,uint64_t session,const Profile&,const RuntimeAccountReplay&,
         const orchard::Hash&,std::span<const orchard::ResolvedInput>,
         std::span<const orchard::WalletPayment>,std::span<const orchard::TransparentOutput>,
-        uint64_t fee_una,OrchardProofJobs&);
+        uint64_t fee_una,OrchardProofJobs&,bool resume_missing=false);
     // Exact existing reservation and authorization only. Signed bytes must not
     // leave the host for admission/relay until this checked commit returns.
     // Ready retries preserve identical bytes; no cancellation/release API is
@@ -353,13 +376,13 @@ private:
         std::unique_ptr<OrchardCatalogFinalizationPlan>,const consensus::VerifiedOrchardAuthorizations&);
     friend struct OrchardDetachedIssuanceTestAccess;
     friend struct OrchardDetachedProofReadTestAccess;
-    enum class CatalogProofRequest { Any, Spend, Shield };
+    enum class CatalogProofRequest { Any, Spend, Shield, StoredSpend, StoredShield };
     static RequestProof ReadCatalogProofWithRestorePoints(
         WalletManager&,uint64_t,const Profile&,const RuntimeAccountReplay&,
         CatalogProofRequest,const orchard::Hash&,std::span<const orchard::ResolvedInput>,
         std::span<const orchard::WalletPayment>,std::span<const orchard::TransparentOutput>,
         uint64_t,OrchardProofJobs&,
-        const std::function<RestorePoint(RuntimeOutboxCursor)>&);
+        const std::function<RestorePoint(RuntimeOutboxCursor)>&,bool resume_missing=false);
     static IssuedReceiver IssueCatalogWithRestorePoints(WalletManager&,uint64_t,
         const Profile&,const RuntimeAccountReplay&,orchard::WalletScope,bool creating,
         const std::function<RestorePoint(RuntimeOutboxCursor)>&);

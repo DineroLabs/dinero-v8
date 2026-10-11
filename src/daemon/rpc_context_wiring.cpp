@@ -21,6 +21,7 @@
 // Forward declarations of context-aware registration functions
 void registerBlockchainMethodsContext();
 void registerWalletMethodsContext();
+void registerSwapMethods();  // swap.* (src/rpc/methods_swap.cpp)
 void register_context_wallet_covenant_profile_methods();
 void registerMiningMethodsContext();  // Phase F.5: MiningManager v2 mining RPC
 void registerMiningRPCv14();  // v0.14.0.3: BlockAssembler-based mining RPC
@@ -178,6 +179,7 @@ bool WireRpcContext(DaemonContext& ctx, HttpRpcServer* http_server) {
 
         // Wallet namespace (Week 2)
         registerWalletMethodsContext();
+        registerSwapMethods();
         dinero::g_logger.info("[RPC Context] ✅ Wallet context-aware handlers registered");
 
         // V7 post-quantum wallet namespace (Phase 4c.3.1)

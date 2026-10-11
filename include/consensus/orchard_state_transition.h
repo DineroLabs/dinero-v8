@@ -3,6 +3,8 @@
 #include "storage/orchard_state.h"
 #include <span>
 
+namespace dinero::wallet::detail { class RuntimeReplayStateRetention; }
+
 namespace dinero::consensus {
 struct OrchardBlockContext {
     uint32_t height = 0;
@@ -107,6 +109,10 @@ public:
     const auto& Flows() const noexcept { return flows_; }
     uint64_t Fees() const noexcept { return fees_; }
 private:
+    // Process-local retention accepts only this sealed type and requires its
+    // original owner/content token before private reconstruction. No raw
+    // spool decoder or caller-provided bytes can mint that token.
+    friend class dinero::wallet::detail::RuntimeReplayStateRetention;
     friend PreparedOrchardState PrepareOrchardStateTransition(
         const OrchardBlockContext&, const std::optional<storage::OrchardStoredState>&,
         std::span<const VerifiedOrchardAuthorizations>, const OrchardStateLookups&);

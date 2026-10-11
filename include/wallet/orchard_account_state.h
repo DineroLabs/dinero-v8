@@ -86,9 +86,14 @@ private:
       const consensus::VerifiedOrchardAuthorizations &, uint64_t) const;
   [[nodiscard]] OrchardAccountState ReserveRequest(const orchard::Hash &,
       const orchard::WalletProvingIntent &, const orchard::Hash &) const;
+  [[nodiscard]] OrchardAccountState ReserveSpendRequest(const orchard::Hash &,
+      const orchard::WalletProvingIntent &, const orchard::Hash &,
+      const OrchardOperationQueue::SpendRequest &,
+      std::shared_ptr<const orchard::WalletStateBytes> = {}) const;
   [[nodiscard]] OrchardAccountState ReserveShieldRequest(const orchard::Hash &,
       const orchard::WalletProvingIntent &, const orchard::Hash &,
-      const OrchardOperationQueue::ShieldRequest &) const;
+      const OrchardOperationQueue::ShieldRequest &,
+      std::shared_ptr<const orchard::WalletStateBytes> = {}) const;
   static DeliveryCheckpoint ReadDeliveryMetadata(const orchard::WalletStateBytes&,
       orchard::SigningDomain,const orchard::FullViewingKeyBytes&,uint32_t,const uint256&);
   [[nodiscard]] OrchardAccountState WithParentSnapshotRevision(uint64_t) const;

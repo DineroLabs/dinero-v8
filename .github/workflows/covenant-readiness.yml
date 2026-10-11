@@ -12,7 +12,10 @@ on:
       - 'tests/consensus/test_covenant_*'
       - 'tests/integration/test_covenant_*'
       - 'scripts/covenant-*.sh'
+      - 'scripts/build-openssl-vendored.sh'
+      - 'scripts/ci/test_openssl_build_jobs.py'
       - 'tools/covenant_*'
+      - 'scripts/ci/test_covenant_mutation_harness.py'
       - 'docs/consensus/COVENANT_*'
       - '.github/workflows/covenant-readiness.yml'
   schedule:
@@ -29,6 +32,10 @@ jobs:
   release-gate:
     runs-on: ubuntu-24.04
     timeout-minutes: 180
+    env:
+      CARGO_BUILD_JOBS: '2'
+      CMAKE_BUILD_PARALLEL_LEVEL: '2'
+      OPENSSL_BUILD_JOBS: '2'
     steps:
       - uses: actions/checkout@v4
         with:
@@ -51,13 +58,19 @@ jobs:
           key: covenant-readiness-linux
           max-size: 1G
 
+      - name: Check covenant harness result policy
+        run: python3 -B scripts/ci/test_covenant_mutation_harness.py -v
+
+      - name: Check OpenSSL dependency job policy
+        run: python3 -B scripts/ci/test_openssl_build_jobs.py -v
+
       - name: Build vendored OpenSSL
         run: OPENSSL_VERSION=3.5.7 bash scripts/build-openssl-vendored.sh
 
       - name: Build depends
         run: |
           cmake -S depends -B depends/build
-          cmake --build depends/build -j
+          cmake --build depends/build --parallel 1
 
       - name: Configure release candidate
         run: |
@@ -66,8 +79,14 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release \
             -DDINERO_USE_VENDORED_DEPS=ON \
             -DENABLE_GRPC=OFF \
+            -DDINERO_ROCKSDB_BUILD_JOBS=2 \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache \
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+
+      - name: Build native and Rust dependencies sequentially
+        run: |
+          cmake --build build-covenant --target rocksdb_external --parallel 1
+          cmake --build build-covenant --target build_bulletproofs_ffi --parallel 1
 
       - name: Run canonical covenant release gate
         run: ./scripts/covenant-readiness.sh --build-dir build-covenant --mutation

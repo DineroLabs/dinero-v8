@@ -103,6 +103,9 @@ pub struct BundleFacts {
 
 /// Opaque immutable object: decoding cannot set any verification state.
 pub struct ParsedBundle {
+    // Bounded original encoding, shared by notes for authenticated plan recovery.
+    // This does not confer verification or selected-chain provenance.
+    encoded: std::sync::Arc<[u8]>,
     bundle: Bundle<Authorized, i64>,
     facts: BundleFacts,
 }
@@ -135,7 +138,7 @@ impl ParsedBundle {
             facts.nullifiers[i] = action.nullifier().to_bytes();
             facts.commitments[i] = action.cmx().to_bytes();
         }
-        Ok(Self { bundle, facts })
+        Ok(Self { bundle, facts, encoded: bytes.into() })
     }
 
     fn verify(&self, digest: &[u8; 32], required_value_balance: i64) -> Result<(), Status> {
@@ -243,7 +246,7 @@ fn parse_bundle(bytes: &[u8]) -> Result<Bundle<Authorized, i64>, Status> {
         .ok_or(Status::Encoding)?;
         let encrypted_note = TransmittedNoteCiphertext {
             epk_bytes: reader.array::<32>()?,
-            enc_ciphertext: reader.array::<580>()?,
+            enc_ciphertext: zcash_note_encryption::note_bytes::NoteBytesData(reader.array::<580>()?),
             out_ciphertext: reader.array::<80>()?,
         };
         let signature = redpallas::Signature::<SpendAuth>::from(reader.array::<64>()?);
@@ -407,11 +410,13 @@ mod tests {
     const BUNDLE: &[u8] = include_bytes!("../tests/fixtures/candidate-spend.bundle");
     const DIGEST: &[u8; 32] = include_bytes!("../tests/fixtures/candidate-spend.digest");
     const EFFECT: &[u8; 32] = include_bytes!("../tests/fixtures/candidate-spend.effect");
+    const AUTHORIZATION: &[u8; 32] = include_bytes!("../tests/fixtures/candidate-spend.authorization");
 
     #[test]
     fn honest_fixture_verifies_and_exports_exact_bound_effects() {
         let parsed = ParsedBundle::decode(BUNDLE).unwrap();
         assert_eq!(parsed.facts.effect, *EFFECT);
+        assert_eq!(parsed.facts.authorization, *AUTHORIZATION);
         assert_eq!(parsed.facts.action_count, 2);
         assert_eq!(parsed.facts.reserved, [0; 3]);
         assert_eq!(parsed.facts.nullifiers[2..], [[0; 32]; 6]);
@@ -470,6 +475,62 @@ mod tests {
                     Err(expected)
                 );
             }
+        }
+    }
+
+    #[test]
+    fn noncanonical_action_fields_reject_at_every_position() {
+        // Anchor plus cv, nf, rk, cmx and epk in BOTH actions. These fixed-width
+        // all-ones encodings are outside the canonical Pallas field/point range.
+        // Include the second action so a valid prefix cannot hide a bad field.
+        let offsets = [22, 54, 86, 118, 150, 182, 938, 970, 1002, 1034, 1066];
+        for offset in offsets {
+            let mut bytes = BUNDLE.to_vec();
+            bytes[offset..offset + 32].fill(0xff);
+            assert_eq!(
+                ParsedBundle::decode(&bytes).map(|_| ()),
+                Err(Status::Encoding),
+                "noncanonical field at {offset}"
+            );
+        }
+    }
+
+    #[test]
+    fn identity_spend_and_ephemeral_keys_reject_in_each_action() {
+        // Canonical Pallas identity encoding is zero. The Action constructor
+        // must reject it for rk and epk even though the point encoding is valid.
+        for offset in [118, 182, 1002, 1066] {
+            let mut bytes = BUNDLE.to_vec();
+            bytes[offset..offset + 32].fill(0);
+            assert_eq!(
+                ParsedBundle::decode(&bytes).map(|_| ()),
+                Err(Status::Encoding),
+                "identity key at {offset}"
+            );
+        }
+    }
+
+    #[test]
+    fn reserved_flags_and_proof_lengths_reject_before_authorization() {
+        for bit in 2..8 {
+            let mut bytes = BUNDLE.to_vec();
+            bytes[9] |= 1 << bit;
+            assert_eq!(
+                ParsedBundle::decode(&bytes).map(|_| ()),
+                Err(Status::Format),
+                "reserved flag bit {bit}"
+            );
+        }
+        let offset = 54 + 884 * 2;
+        let original = u32::from_le_bytes(BUNDLE[offset..offset + 4].try_into().unwrap());
+        for length in [0, original - 1, original + 1, u32::MAX] {
+            let mut bytes = BUNDLE.to_vec();
+            bytes[offset..offset + 4].copy_from_slice(&length.to_le_bytes());
+            assert_eq!(
+                ParsedBundle::decode(&bytes).map(|_| ()),
+                Err(Status::Format),
+                "proof length {length}"
+            );
         }
     }
 

@@ -25,6 +25,9 @@ public:
     std::vector<orchard::TransparentOutput> outputs;
     uint64_t fee_una;
   };
+  // Same recipient/output representation; a distinct field and request
+  // commitment domain distinguish pure Orchard spends from shielding.
+  using SpendRequest = ShieldRequest;
   struct Entry {
     Phase phase;
     orchard::Hash message;
@@ -38,6 +41,10 @@ public:
     // Assigned once by the Ready owner and authenticated in this snapshot.
     // Absence on older formats never authorizes recreating missing history.
     std::optional<uint64_t> shield_ready_time{};
+    std::optional<SpendRequest> spend_request{};
+    // Exact original randomized plan. Shared immutable owner wipes its buffer
+    // on final release; snapshot encryption remains the persistence boundary.
+    std::shared_ptr<const orchard::WalletStateBytes> recovery{};
   };
   static constexpr size_t kMaxPending = 128;
   [[nodiscard]] static OrchardOperationQueue Empty(orchard::SigningDomain);
@@ -64,9 +71,12 @@ private:
   friend class OrchardOperationArchive;
   [[nodiscard]] OrchardOperationQueue ReserveRequest(const orchard::Hash &,
       const orchard::WalletProvingIntent &, const orchard::Hash &) const;
+  [[nodiscard]] OrchardOperationQueue ReserveSpendRequest(const orchard::Hash &,
+      const orchard::WalletProvingIntent &, const orchard::Hash &,
+      const SpendRequest &, std::shared_ptr<const orchard::WalletStateBytes> = {}) const;
   [[nodiscard]] OrchardOperationQueue ReserveShieldRequest(const orchard::Hash &,
       const orchard::WalletProvingIntent &, const orchard::Hash &,
-      const ShieldRequest &) const;
+      const ShieldRequest &, std::shared_ptr<const orchard::WalletStateBytes> = {}) const;
   [[nodiscard]] OrchardOperationQueue SetShieldReady(const orchard::Hash &,
       const consensus::VerifiedOrchardAuthorizations &, uint64_t) const;
   explicit OrchardOperationQueue(orchard::SigningDomain domain)

@@ -123,6 +123,12 @@ public:
             origin!=TxOrigin::INTERNAL && origin!=TxOrigin::P2P);
     }
 
+    TxAcceptResult SubmitProofBody(const UtreexoTransactionPayload& payload, TxOrigin origin) {
+        auto use=BorrowPoolUse();
+        return use->Pool().submitProofBody(payload,TxOriginToString(origin),
+            origin!=TxOrigin::INTERNAL && origin!=TxOrigin::P2P);
+    }
+
     // Policy preflight has no admission or relay effects; Submit revalidates.
     std::optional<TxAcceptResult> Test(const Transaction& tx, TxOrigin origin) override {
         std::unique_ptr<PoolUse> use;

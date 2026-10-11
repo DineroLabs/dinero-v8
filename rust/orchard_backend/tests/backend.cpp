@@ -6,6 +6,7 @@
 #include <iostream>
 #include <iterator>
 #include <source_location>
+#include <string>
 #include <type_traits>
 #include <vector>
 using namespace dinero::orchard;
@@ -203,12 +204,29 @@ static void EnvelopeTests(const std::string& base) {
     }
     std::cout << "Draft envelope framing, independent bytes/identities, stream consumption, bounds and transaction-bound authorization passed\n";
 }
+// Expected bytes are independently derived with the ZIP244 Python reference.
+// Matching decoded commitments does not grant proof or spend authorization.
+static void ReferenceCommitmentTests(const std::string& base) {
+    for (const char* name : {"candidate-spend", "combined-shield", "combined-spend"}) {
+        const std::string stem=base+"/"+name;
+        const auto expected_effect=Load(stem+".effect");
+        const auto expected_auth=Load(stem+".authorization");
+        Require(expected_effect.size()==32 && expected_auth.size()==32);
+        const auto parsed=ParsedBundle::Decode(Load(stem+".bundle"));
+        const auto& facts=parsed.UnverifiedFacts();
+        Require(std::equal(expected_effect.begin(),expected_effect.end(),facts.effect));
+        Require(std::equal(expected_auth.begin(),expected_auth.end(),facts.authorization));
+    }
+    std::cout << "Independent effect and authorization commitment vectors passed (3 fixtures)\n";
+}
+
 int main(int argc, char** argv) {
     try {
         Require(argc == 2);
         Require(dinero_orchard_max_money_v1()==kMaxMoneyUna);
         Require(dinero_orchard_max_actions_v1()==kMaxActionsV1);
         const std::string base = argv[1];
+        ReferenceCommitmentTests(base);
         EnvelopeReviewTests(base);
         EnvelopeTests(base);
         auto bytes = Load(base + "/candidate-spend.bundle");

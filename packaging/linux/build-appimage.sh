@@ -59,7 +59,7 @@ fi
 # the macOS .app embeds both, and the Qt GUI exposes GPU mining plus a Start
 # Seeder control. Omitting them here meant the Linux desktop bundle silently
 # shipped without the GPU miner users are told to mine with.
-DAEMON_BINS=(dinerod dinero-cli dinero-miner dinero-stratum-worker dinero-wallet-cli dinero-gpu-miner)
+DAEMON_BINS=(dinerod dinero-cli dinero-swap-tower dinero-miner dinero-stratum-worker dinero-wallet-cli dinero-gpu-miner)
 for b in "${DAEMON_BINS[@]}"; do
     if [ ! -x "${BUILD_DIR}/${b}" ]; then
         echo "ERROR: ${b} not found at ${BUILD_DIR}/${b}" >&2
@@ -125,7 +125,7 @@ done
 # both cases packaging reported success while shipping an incomplete wallet.
 # Bundling "whatever resolved" is not a release contract; this is.
 EXPECTED_BINS=(
-    dinerod dinero-cli dinero-qt dinero-seeder
+    dinerod dinero-cli dinero-swap-tower dinero-qt dinero-seeder
     dinero-miner dinero-solo-miner dinero-gpu-miner
     dinero-stratum-worker dinero-wallet-cli
     dinero-sv2-miner dinero-sv2-gpu-miner
@@ -205,6 +205,7 @@ export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${HOME
     --appdir "${APPDIR}" \
     --plugin qt \
     --executable "${APPDIR}/usr/bin/dinero-qt" \
+    --executable "${APPDIR}/usr/bin/dinero-swap-tower" \
     --desktop-file "${APPDIR}/usr/share/applications/dinero-qt.desktop" \
     --icon-file "${APPDIR}/usr/share/icons/hicolor/256x256/apps/dinero-qt.png" \
     --output appimage

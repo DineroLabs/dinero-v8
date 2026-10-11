@@ -4,6 +4,9 @@
 namespace dinero {
 class ChainstateService;
 class PreparedOrchardCatalog;
+class HistoricalCompactReplay;
+class PreparedHistoricalCatalog;
+class PreparedHistoricalCatalogRange;
 // The actual service captures real storage owners and validates outside the
 // selected lock. This opaque owner has the same public type in ON/OFF builds;
 // backend-specific state is constructed only by an enabled service. Thread
@@ -16,6 +19,11 @@ public:
     const storage::LegacyRetirementRecord& Record() const;
     // Immutable preparation nodes only; this owner publishes no canonical root.
     const PreparedOrchardCatalog& Catalog() const;
+    // Optional independently completed prefix below activation parent. Absence
+    // throws; this is historical proof material, not a retirement certificate.
+    const HistoricalCompactReplay& HistoricalPrefix() const;
+    const PreparedHistoricalCatalog& HistoricalCatalog() const;
+    const PreparedHistoricalCatalogRange& HistoricalRange() const;
 private:
     friend class ChainstateService;
     struct State;

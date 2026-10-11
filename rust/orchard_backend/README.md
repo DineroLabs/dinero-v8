@@ -1,4 +1,51 @@
-# Staged Orchard backend
+# Orchard backend
+
+## Current dependency and qualification scope
+
+The current integration uses **Orchard 0.16.0 with a local patch**, selected by
+`Cargo.toml` and `Cargo.lock`. The `[patch.crates-io]` entry selects
+`vendor/orchard`; it is not an unmodified crates.io build. The original upstream
+identity and the saved profile-1 shuffle compatibility changes are recorded in
+[vendor/orchard/UPSTREAM.md](vendor/orchard/UPSTREAM.md). Preserve and review that
+patch when upgrading. The selected bundle is `orchard_v2()`, with the
+`FixedPostNu6_2` circuit key and version-5 commitments. No local proof arithmetic
+is introduced by the compatibility patch.
+
+Host transaction, wallet, provider and desktop integration now exists. Its
+component evidence does not establish final installed-application or network
+readiness. [The current release qualification document](../../docs/specs/v8.1.13-release-qualification.md)
+records the supporting evidence and remaining gates. Mainnet activation is
+unset; a successful component build does not authorize activation.
+
+Rust dependency advisory checks are defined in
+[the dependency-security workflow](../../.github/workflows/rust-dependency-security.yml)
+and [the Orchard workflow](../../.github/workflows/orchard-backend.yml). Reports
+must identify the exact lockfile, scanner and advisory database. A clean report
+does not independently qualify the cryptography or the local compatibility
+patch. Workflow definitions are not evidence that a current run passed.
+
+For a fresh native component check, build the Rust dependency separately and
+select only the C++/Rust backend registrations:
+
+```sh
+cmake -S rust/orchard_backend -B build-orchard-component-review -DCMAKE_BUILD_TYPE=Release
+cmake --build build-orchard-component-review --target dinero_orchard_rust_build --parallel 1
+cmake --build build-orchard-component-review --target test_orchard_backend --parallel 4
+ctest --test-dir build-orchard-component-review -R '^OrchardBackend(Cpp|Rust)$' -j1 -V --no-tests=error
+```
+
+These commands cover the backend component, not the daemon, desktop, whole
+network or supported platform matrix. Use a new output directory for changed
+source and retain exact source, dependency and execution records.
+
+## Historical staging record
+
+The remainder records the earlier 0.15.5 staging implementation and its scoped
+qualification. Its statements about unwired callers, absent wallet flows,
+unpatched dependencies, pending advisory checks and old test counts describe
+that historical stage, not the current integration. Historical commands and
+results below are retained for context; use the current scope and selected
+commands above for new component work.
 
 This component starts runtime integration on the v8.1.13 integration source base.
 It uses upstream Orchard **0.15.5**, `BundleVersion::orchard_v2()` and the

@@ -39,17 +39,26 @@ template<class F> void LookupFailure(F run) {
     CHECK(rejected);
 }
 int main() {
-    // All shipped network configurations remain inactive, including the
-    // sentinel height. Only local copies are scheduled by this test.
+    // Mainnet schedules the joint release; testnet and regtest stay dormant.
+    // The remaining cases use isolated local copies of each profile.
     for (auto network : {Chain::MAINNET, Chain::TESTNET, Chain::REGTEST}) {
         SelectParams(network);
-        CHECK(Params().orchard_activation_height == UINT32_MAX);
-        CHECK(Params().orchard_branch_id == 0);
         CHECK(OrchardProfileConfigurationValid(Params()));
-        CHECK(!OrchardActiveForHeight(Params(), UINT32_MAX));
-        CHECK(!SelectedOrchardBlockContext(BlockHeader{}, UINT32_MAX));
+        if (network == Chain::MAINNET) {
+            CHECK(Params().orchard_activation_height == 150000);
+            CHECK(Params().orchard_branch_id == 0x04b4ca97u);
+            CHECK(!OrchardActiveForHeight(Params(), 149999));
+            CHECK(OrchardActiveForHeight(Params(), 150000));
+        } else {
+            CHECK(Params().orchard_activation_height == UINT32_MAX);
+            CHECK(Params().orchard_branch_id == 0);
+            CHECK(!OrchardActiveForHeight(Params(), UINT32_MAX));
+            CHECK(!SelectedOrchardBlockContext(BlockHeader{}, UINT32_MAX));
+        }
         auto scheduled = Params();
-        // Synthetic prerequisites avoid assigning an actual public schedule.
+        if (network == Chain::MAINNET)
+            ConfigureOrchardRelease(scheduled, UINT32_MAX, 0);
+        // Synthetic prerequisites isolate the copied fixture from mainnet.
         scheduled.shielded_activation_height = 1;
         scheduled.shielded_input_binding_activation_height = 2;
         scheduled.shielded_cv_binding_activation_height = scheduled.shielded_epoch_reset_height = 3;
@@ -79,7 +88,8 @@ int main() {
         CHECK(!OrchardProfileConfigurationValid(mismatch));
         ConfigureOrchardRelease(scheduled, UINT32_MAX, 0);
         CHECK(!OrchardActiveForHeight(scheduled, UINT32_MAX));
-        CHECK(Params().orchard_activation_height == UINT32_MAX);
+        CHECK(Params().orchard_activation_height ==
+              (network == Chain::MAINNET ? 150000u : UINT32_MAX));
     }
     SelectParams(Chain::REGTEST);
     MutableParams().orchard_activation_height = 1;

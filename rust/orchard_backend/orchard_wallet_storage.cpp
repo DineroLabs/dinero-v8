@@ -54,12 +54,6 @@ void U32(std::vector<uint8_t>& out,uint32_t x){for(unsigned i=0;i<4;++i)out.push
 void U64(std::vector<uint8_t>& out,uint64_t x){for(unsigned i=0;i<8;++i)out.push_back(uint8_t(x>>(i*8)));}
 using Cipher=std::unique_ptr<EVP_CIPHER_CTX,decltype(&EVP_CIPHER_CTX_free)>;
 }
-WalletStateBytes::WalletStateBytes(std::span<const uint8_t> bytes){Check(bytes.size()<=WalletSnapshotStore::kMaxStateBytes);bytes_.assign(bytes.begin(),bytes.end());}
-WalletStateBytes::WalletStateBytes(size_t size){Check(size<=WalletSnapshotStore::kMaxStateBytes);bytes_.resize(size);}
-void WalletStateBytes::Wipe()noexcept{if(!bytes_.empty())OPENSSL_cleanse(bytes_.data(),bytes_.size());}
-WalletStateBytes::~WalletStateBytes(){Wipe();}
-WalletStateBytes::WalletStateBytes(WalletStateBytes&& other)noexcept:bytes_(std::move(other.bytes_)){}
-WalletStateBytes& WalletStateBytes::operator=(WalletStateBytes&& other)noexcept{if(this!=&other){Wipe();bytes_=std::move(other.bytes_);}return *this;}
 void WalletSnapshotStore::InitializeSchemaUnderTransaction(sqlite3* db){
     Durable(db,true);
     Exec(db,"CREATE TABLE IF NOT EXISTS orchard_wallet_schema(id INTEGER PRIMARY KEY CHECK(id=1),version INTEGER NOT NULL);");

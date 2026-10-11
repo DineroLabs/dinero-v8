@@ -1,4 +1,4 @@
-//! Valid synthetic funding and cross-address spend, through unmodified Orchard.
+//! Valid synthetic funding and cross-address spend using the saved profile-1 shuffle.
 //! All keys/seeds are PUBLIC TEST DATA. No wallet, RPC, network or live chain.
 use incrementalmerkletree::Hashable;
 use orchard::{
@@ -12,11 +12,29 @@ use orchard::{
     value::NoteValue,
     Bundle,
 };
-use rand::SeedableRng;
+use rand::{RngCore, SeedableRng};
 use rand_chacha::ChaCha20Rng;
 use sha2::{Digest, Sha256};
 use std::path::Path;
 use zcash_note_encryption::try_note_decryption;
+
+// Preserve the saved fixture's ChaCha20 byte stream across the rand trait upgrade.
+// This deterministic seed is PUBLIC TEST DATA, never wallet randomness.
+struct FixtureRng(ChaCha20Rng);
+impl rand_next::TryRng for FixtureRng {
+    type Error = core::convert::Infallible;
+    fn try_next_u32(&mut self) -> Result<u32, Self::Error> {
+        Ok(self.0.next_u32())
+    }
+    fn try_next_u64(&mut self) -> Result<u64, Self::Error> {
+        Ok(self.0.next_u64())
+    }
+    fn try_fill_bytes(&mut self, out: &mut [u8]) -> Result<(), Self::Error> {
+        self.0.fill_bytes(out);
+        Ok(())
+    }
+}
+impl rand_next::TryCryptoRng for FixtureRng {}
 
 fn hex<const N: usize>(text: &str) -> [u8; N] {
     assert_eq!(text.len(), 2 * N);
@@ -79,7 +97,7 @@ fn encode(bundle: &Bundle<Authorized, i64>) -> Vec<u8> {
         out.extend_from_slice(&key);
         out.extend_from_slice(&action.cmx().to_bytes());
         out.extend_from_slice(&action.encrypted_note().epk_bytes);
-        out.extend_from_slice(&action.encrypted_note().enc_ciphertext);
+        out.extend_from_slice(action.encrypted_note().enc_ciphertext.as_ref());
         out.extend_from_slice(&action.encrypted_note().out_ciphertext);
         let signature: [u8; 64] = action.authorization().into();
         out.extend_from_slice(&signature);
@@ -119,7 +137,7 @@ fn main() {
     std::fs::create_dir_all(dir).unwrap();
     let version = BundleVersion::orchard_v2();
     let pk = ProvingKey::build(version.circuit_version());
-    let mut rng = ChaCha20Rng::from_seed([41; 32]);
+    let mut rng = FixtureRng(ChaCha20Rng::from_seed([41; 32]));
     let sk = SpendingKey::from_bytes([7; 32]).unwrap();
     let fvk = FullViewingKey::from(&sk);
     let recipient = fvk.address_at(0_u32, Scope::External);
@@ -133,7 +151,7 @@ fn main() {
     builder
         .add_output(None, recipient, NoteValue::from_raw(5000), [0; 512])
         .unwrap();
-    let (unproven, _) = builder.build::<i64>(&mut rng).unwrap().unwrap();
+    let (unproven, _) = builder.build_with_profile1_shuffle::<i64>(&mut rng).unwrap().unwrap();
     assert_eq!(*unproven.value_balance(), -5000);
     let effect: [u8; 32] = unproven.commitment(TxVersion::V5).unwrap().into();
     let d = intent(effect, unproven.actions().len(), -5000, 32);
@@ -193,7 +211,7 @@ fn main() {
     builder
         .add_output(None, destination, NoteValue::from_raw(4500), [0; 512])
         .unwrap();
-    let (unproven, _) = builder.build::<i64>(&mut rng).unwrap().unwrap();
+    let (unproven, _) = builder.build_with_profile1_shuffle::<i64>(&mut rng).unwrap().unwrap();
     assert_eq!(*unproven.value_balance(), 500);
     let effect: [u8; 32] = unproven.commitment(TxVersion::V5).unwrap().into();
     let d = intent(effect, unproven.actions().len(), 500, 96);

@@ -29,6 +29,7 @@
 #include <unordered_set>
 #include <utility>
 #include <vector>
+#include <span>
 
 namespace dinero {
 namespace consensus {
@@ -194,6 +195,22 @@ public:
      */
     explicit HeaderChainSelector(class HeaderStore* store);
 
+    // Build an unpublished selector from an independently authenticated complete
+    // selected ancestry and the store's checked snapshot. Revalidates all
+    // present branches and stored height/work. Never evicts, rewrites, clears or
+    // migrates the store. Missing selected headers are seeded in memory from
+    // the caller's durable owner, not fabricated or written back. Throws on any
+    // incompatible row or over-budget branch inventory. The caller retains the
+    // store and serializes startup; this does not authenticate block bodies.
+    static std::shared_ptr<HeaderChainSelector> RestorePreservingBranches(
+        class HeaderStore& store, std::span<const HeaderIndexEntry> selected);
+    // Owned form for daemon composition: callers retaining the returned
+    // selector also retain its backing store after service shutdown.
+    static std::shared_ptr<HeaderChainSelector> RestorePreservingBranches(
+        std::shared_ptr<class HeaderStore> store, std::span<const HeaderIndexEntry> selected);
+
+
+
     ~HeaderChainSelector();
 
     /**
@@ -218,6 +235,41 @@ public:
      *         false if it was rejected
      */
     bool AddHeader(const BlockHeader& header);
+
+    // Compare one complete caller-supplied genesis-to-tip value sequence under
+    // the selector mutex, including actual parent pointers and stored work.
+    // Does not validate consensus, mutate/persist headers, select a best branch,
+    // pin entries against later eviction, or authorize a caller's values.
+    bool MatchesAncestry(std::span<const HeaderIndexEntry> expected) const;
+
+    // Retains an already authenticated ancestry without changing fork choice.
+    // The guard owns the selector; no borrowed node pointer escapes. Clearing
+    // or reloading the selector refuses while any guard is alive.
+    class AncestryRetention {
+    public:
+        ~AncestryRetention() noexcept;
+        AncestryRetention(const AncestryRetention&)=delete;
+        AncestryRetention& operator=(const AncestryRetention&)=delete;
+    private:
+        friend class HeaderChainSelector;
+        explicit AncestryRetention(std::shared_ptr<HeaderChainSelector> owner)
+            :owner_(std::move(owner)) {}
+        std::shared_ptr<HeaderChainSelector> owner_;
+        uint256 tip_;
+        bool retained_=false;
+    };
+    static std::unique_ptr<AncestryRetention> RetainAncestry(
+        std::shared_ptr<HeaderChainSelector> owner,
+        std::span<const HeaderIndexEntry> expected);
+    // Prepare one exact parent/child transition from an already retained tip.
+    // Keeps the prior guard intact; caller publishes the new guard only after
+    // its canonical commit. No borrowed selector pointer escapes.
+    static std::unique_ptr<AncestryRetention> RetainAdjacent(
+        const AncestryRetention& current,
+        const HeaderIndexEntry& expected_current,
+        const HeaderIndexEntry& expected_next);
+
+
 
     /**
      * Add a header while preserving whether it actually advanced stored state.
@@ -457,6 +509,11 @@ public:
     bool SaveBestHeader();
 
 private:
+    bool MatchesAncestryUnderLock(std::span<const HeaderIndexEntry> expected) const;
+    // Only retained tips need a count: retaining a tip prevents pruning through
+    // its parent chain. Guards are destroyed before their final shared owner.
+    std::map<uint256,size_t> retained_ancestry_tips_;
+
     // Guards header_index_, best_header_, and header store interactions.
     mutable std::mutex mutex_;
 
@@ -468,6 +525,7 @@ private:
 
     // Persistent storage (Phase N.1: restart safety)
     class HeaderStore* header_store_;  // Not owned, optional
+    std::shared_ptr<class HeaderStore> header_store_owner_; // Owned startup form only.
 
     // 4d-2 (issue #181): bounded side-branch header storage with work-aware
     // eviction. `evictable_tips_` holds every losing side-branch TIP

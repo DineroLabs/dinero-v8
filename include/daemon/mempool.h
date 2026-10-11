@@ -31,6 +31,7 @@ namespace din::sp {
 
 namespace dinero {
 class VerifiedUtreexoTransaction;
+class UtreexoTransactionPayload;
 
 
 namespace consensus {
@@ -245,6 +246,8 @@ public:
      */
     TxAcceptResult submitTransaction(const Transaction& tx, const std::string& source, bool relay = true);
     TxAcceptResult submitBody(const MempoolTransaction&, const std::string& source,
+        bool relay = true, bool test_only = false);
+    TxAcceptResult submitProofBody(const UtreexoTransactionPayload&, const std::string& source,
         bool relay = true, bool test_only = false);
 
     // Core mempool operations (Phase M.0: Changed to uint256)
@@ -674,6 +677,8 @@ private:
         std::unordered_set<uint256>& ancestors) const;
 
     // Internal implementation that returns structured result
+    TxAcceptResult submitOrchardBody(const MempoolTransaction&, std::span<const uint8_t>,
+        const std::string&, bool relay, bool test_only);
     TxAcceptResult submitTransactionInternal(
         const Transaction& tx,
         const std::string& source,

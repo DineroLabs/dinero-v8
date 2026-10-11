@@ -163,6 +163,7 @@ jobs:
         run: |
           python3 scripts/ci/test_check_mandatory_tests_execute.py
           python3 scripts/ci/test_execution_exclusions.py
+          python3 scripts/ci/test_workflow_setarch_selection.py
 
       # Build and call the production FFI; the inline RuntimeGuards unit test
       # alone cannot qualify DaemonApp/ChainDB shutdown or snapshot readers.

@@ -118,12 +118,37 @@ private:
     std::vector<ResolvedInput> inputs_;
     std::vector<Hash> nullifiers_;
 };
+// Wallet-private serialized state. Owned bytes are wiped on release/move
+// assignment; this does not erase caller copies, swap or compiler temporaries.
+class WalletStateBytes {
+public:
+    static constexpr size_t kMaxBytes=16*1024*1024;
+    explicit WalletStateBytes(std::span<const uint8_t> bytes);
+    ~WalletStateBytes();
+    WalletStateBytes(WalletStateBytes&&) noexcept;
+    WalletStateBytes& operator=(WalletStateBytes&&) noexcept;
+    WalletStateBytes(const WalletStateBytes&)=delete;
+    WalletStateBytes& operator=(const WalletStateBytes&)=delete;
+    std::span<const uint8_t> Bytes()const noexcept{return bytes_;}
+private:
+    friend class WalletSnapshotStore;
+    friend class WalletBundlePlan;
+    explicit WalletStateBytes(size_t size);
+    void Wipe()noexcept;
+    std::vector<uint8_t> bytes_;
+};
 class WalletBundlePlan {
 public:
     [[nodiscard]] static WalletBundlePlan PrepareShield(const WalletKeys&, std::span<const WalletPayment>);
     [[nodiscard]] static WalletBundlePlan PrepareSpend(const WalletKeys&,
         std::span<const WalletSpendInput>, const Hash& selected_anchor,
         std::span<const WalletPayment> payments);
+    static constexpr size_t kMaxRecoveryBytes = DINERO_ORCHARD_V1_MAX_PLAN_RECOVERY_BYTES;
+    // Private capsule: persist only under the existing encrypted account owner.
+    // Restore is reconstruction, not authority; the caller must authenticate
+    // the reservation and compare its exact original intent before publication.
+    [[nodiscard]] WalletStateBytes ExportRecovery() const;
+    [[nodiscard]] static WalletBundlePlan Restore(const WalletKeys&, const WalletStateBytes&);
     WalletBundlePlan(WalletBundlePlan&&) noexcept = default;
     WalletBundlePlan& operator=(WalletBundlePlan&&) noexcept = default;
     WalletBundlePlan(const WalletBundlePlan&) = delete;

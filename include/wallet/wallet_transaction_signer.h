@@ -8,7 +8,13 @@ class WalletManager;
 class ChainstateService;
 namespace wallet { class OrchardAccountDelivery; }
 // An identity snapshot, not a key or lasting authorization. Signing rechecks it.
-struct WalletSigningIdentity {std::string name;uint64_t session=0;};
+struct WalletSigningIdentity {
+    std::string name;
+    uint64_t session=0;
+    // Optional for existing callers; a funding adapter supplies the identity
+    // authenticated in its persisted intent. Rechecked under the final lease.
+    std::optional<std::array<uint8_t,32>> database_id;
+};
 WalletSigningIdentity CaptureWalletSigningIdentity(WalletManager&,const std::string& requested_name);
 // Caller resolves chain/index data before entry. No admission, broadcast or
 // chain callbacks occur while the selected wallet/key owner is held here.

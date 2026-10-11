@@ -1,10 +1,14 @@
 #include "orchard_wallet.h"
+#include <cstring>
 #include "orchard_transaction.h"
 #include <algorithm>
 #include <iostream>
 #include <fstream>
 #include <filesystem>
+#include "platform_helpers.h"
+#ifndef _WIN32
 #include <unistd.h>
+#endif
 using namespace dinero::orchard;
 static void Check(bool ok){if(!ok)throw std::runtime_error("Orchard wallet spend lifecycle failed");}
 template<class F>static void Reject(F fn){bool rejected=false;try{fn();}catch(const BackendError&){rejected=true;}Check(rejected);}
@@ -20,7 +24,32 @@ static std::pair<WalletNote,size_t> Receive(const WalletKeys& keys,const ProvedW
     throw std::runtime_error("expected recipient note absent");
 }
 static Hash Root(const WalletWitness& witness){Hash out{};std::copy(std::begin(witness.Facts().root),std::end(witness.Facts().root),out.begin());return out;}
+static void PlatformHelpers() {
+    using test::WindowsArgument;
+    Check(WindowsArgument("")=="\"\"");
+    Check(WindowsArgument("plain")=="\"plain\"");
+    Check(WindowsArgument("two words")=="\"two words\"");
+    Check(WindowsArgument("a\tb")=="\"a\tb\"");
+    Check(WindowsArgument("a\"b")=="\"a\\\"b\"");
+    Check(WindowsArgument("C:\\a b\\")=="\"C:\\a b\\\\\"");
+    Check(WindowsArgument("a\\\"b")=="\"a\\\\\\\"b\"");
+    bool refused=false;
+    try {(void)WindowsArgument(std::string("a\0b",3));}
+    catch (const std::invalid_argument&) {refused=true;}
+    Check(refused);
+    std::filesystem::path owned;
+    {
+        test::TemporaryDirectory first("dinero helper space");
+        test::TemporaryDirectory second("dinero helper space");
+        Check(first.p!=second.p&&std::filesystem::is_directory(first.p)&&std::filesystem::is_directory(second.p));
+        owned=first.p;
+        {std::ofstream file(owned/"sentinel");file<<"owned";Check(bool(file));}
+    }
+    Check(!std::filesystem::exists(owned));
+    std::cout<<"PASS test platform argument quoting and owned temporary directories\n";
+}
 int main(){try{
+    PlatformHelpers();
     auto a=WalletKeys::FromSeed(std::array<uint8_t,64>{7},0);
     auto b=WalletKeys::FromSeed(std::array<uint8_t,64>{9},0);
     auto c=WalletKeys::FromSeed(std::array<uint8_t,64>{11},0);
@@ -45,9 +74,15 @@ int main(){try{
     // Close a temporary file, release the updated witness, and restore its
     // canonical state before the actual spend proof below.
     const auto stored=updated.Encode();
+#ifdef _WIN32
+    test::TemporaryDirectory temporary("dinero orchard witness");
+    const auto filename=(temporary.p/"witness.bin").string();
+    std::vector<char> file(filename.begin(),filename.end());file.push_back(0);
+#else
     auto pattern=(std::filesystem::temp_directory_path()/"dinero-orchard-witness-XXXXXX").string();
     std::vector<char> file(pattern.begin(),pattern.end());file.push_back(0);
     const int fd=mkstemp(file.data());Check(fd>=0);close(fd);
+#endif
     {std::ofstream out(file.data(),std::ios::binary);out.write(reinterpret_cast<const char*>(stored.data()),stored.size());Check(bool(out));}
     std::vector<uint8_t> reloaded;
     {std::ifstream in(file.data(),std::ios::binary);Check(bool(in));reloaded.assign(std::istreambuf_iterator<char>(in),{});}
@@ -64,7 +99,14 @@ int main(){try{
     Reject([&]{(void)WalletBundlePlan::PrepareSpend(b,spends,first.Root(),outputs);});
     const std::vector<WalletSpendInput> duplicate{{note,updated},{note,updated}};
     Reject([&]{(void)WalletBundlePlan::PrepareSpend(b,duplicate,second.Root(),outputs);});
-    auto transfer=WalletBundlePlan::PrepareSpend(b,spends,second.Root(),outputs).Prove(SigningContext::Create(domain,0,{}, {},100));
+    const auto transferContext=SigningContext::Create(domain,0,{}, {},100);
+    auto transferPlan=WalletBundlePlan::PrepareSpend(b,spends,second.Root(),outputs);
+    const auto transferIntent=transferPlan.Intent(transferContext);
+    const auto transferCapsule=transferPlan.ExportRecovery();
+    auto recoveredTransfer=WalletBundlePlan::Restore(b,transferCapsule);
+    Check(recoveredTransfer.Intent(transferContext).Message()==transferIntent.Message());
+    Check(recoveredTransfer.Intent(transferContext).Nullifiers()==transferIntent.Nullifiers());
+    auto transfer=std::move(recoveredTransfer).Prove(transferContext);
     Check(transfer.Authorization().Facts().value_balance==100);
     bool spent=false;for(uint32_t i=0;i<transfer.Authorization().Facts().action_count;++i)
         spent|=std::equal(std::begin(note.Facts().nullifier),std::end(note.Facts().nullifier),transfer.Authorization().Facts().nullifiers[i]);
@@ -76,7 +118,14 @@ int main(){try{
     auto receivedWitness=WalletWitness::ForAppendedLeaf(second,transferLeaves,receivedIndex);
     std::vector<WalletSpendInput> withdrawal{{received,receivedWitness}};
     std::vector<TransparentOutput> cash{{4800,{0x51}}};
-    auto unshield=WalletBundlePlan::PrepareSpend(c,withdrawal,third.Root(),{}).Prove(SigningContext::Create(domain,0,{},cash,100));
+    const auto unshieldContext=SigningContext::Create(domain,0,{},cash,100);
+    auto unshieldPlan=WalletBundlePlan::PrepareSpend(c,withdrawal,third.Root(),{});
+    const auto unshieldIntent=unshieldPlan.Intent(unshieldContext);
+    const auto unshieldCapsule=unshieldPlan.ExportRecovery();
+    auto recoveredUnshield=WalletBundlePlan::Restore(c,unshieldCapsule);
+    Check(recoveredUnshield.Intent(unshieldContext).Message()==unshieldIntent.Message());
+    Check(recoveredUnshield.Intent(unshieldContext).Nullifiers()==unshieldIntent.Nullifiers());
+    auto unshield=std::move(recoveredUnshield).Prove(unshieldContext);
     Check(unshield.Authorization().Facts().value_balance==4900);
     auto exit=TransactionEnvelope::Create(0,{},cash,100,unshield.Bytes());
     Check(exit.VerifyAuthorization(domain,{}).Orchard().SigningDigest()==unshield.Authorization().SigningDigest());

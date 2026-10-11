@@ -15,7 +15,7 @@ namespace dinero::storage::catalog {
 // certifies history. Canonical publication requires the completed replay owner.
 using Key=std::array<uint8_t,32>;
 using Digest=uint256;
-enum class Kind:uint8_t { Transactions=1, LegacyCoins=2 };
+enum class Kind:uint8_t { Transactions=1, LegacyCoins=2, NonTransparentCoins=3 };
 inline void Require(bool ok) {if(!ok)throw std::runtime_error("Orchard catalog record inconsistent");}
 inline void Number(std::string& s,uint64_t n,unsigned size) {
     for(unsigned i=0;i<size;++i){s.push_back(char(n));n>>=8;}
@@ -37,6 +37,13 @@ inline Key LegacyKey(const std::string& point) {
     Require(point.size()==36);const auto h=Hash("DNOCK01"+point);Key key{};
     std::copy(h.begin(),h.end(),key.begin());return key;
 }
+// Membership covers every unspent output whose confidential flag or commitment
+// is not empty. Leaves bind neither field, including maturity-bound v2 leaves.
+// Only completed replay/canonical transitions may certify this set is complete.
+inline Key NonTransparentKey(const std::string& point) {
+    Require(point.size()==36);const auto h=Hash("DNONC01"+point);Key key{};
+    std::copy(h.begin(),h.end(),key.begin());return key;
+}
 struct Node {
     Kind kind;uint16_t bit=256;Key key{};std::string value;Digest zero{},one{};
     std::string Encode() const {
@@ -47,12 +54,13 @@ struct Node {
     }
     static Node Decode(const std::string& s) {
         Require(s.size()>=9&&s.compare(0,7,"DNOCN01")==0);
-        Node n{Kind(uint8_t(s[7]))};Require(n.kind==Kind::Transactions||n.kind==Kind::LegacyCoins);
+        Node n{Kind(uint8_t(s[7]))};Require(n.kind==Kind::Transactions||n.kind==Kind::LegacyCoins||n.kind==Kind::NonTransparentCoins);
         const auto tag=uint8_t(s[8]);Require(tag<=1);
         if(tag==1) {
-            const size_t extra=n.kind==Kind::LegacyCoins?41:0;Require(s.size()==41+extra);
+            const size_t extra=n.kind==Kind::LegacyCoins?41:(n.kind==Kind::NonTransparentCoins?36:0);Require(s.size()==41+extra);
             std::copy_n(reinterpret_cast<const uint8_t*>(s.data()+9),32,n.key.begin());n.value=s.substr(41);
             if(n.kind==Kind::LegacyCoins)Require(uint8_t(n.value[40])<=1&&LegacyKey(n.value.substr(0,36))==n.key);
+            if(n.kind==Kind::NonTransparentCoins)Require(NonTransparentKey(n.value)==n.key);
         } else {
             Require(s.size()==75);n.bit=uint16_t(Number(s,9,2));Require(n.bit<256);
             std::copy_n(reinterpret_cast<const uint8_t*>(s.data()+11),32,n.zero.begin());
@@ -85,7 +93,25 @@ public:
         uint16_t split=0;while(split<256&&Bit(existing.key,split)==Bit(key,split))++split;
         Require(split<256);return InsertAt(root,leaf,split,0);
     }
+    // Removal returns a new root. Retained roots and nodes are never changed.
+    // Missing keys are an error, not successful consumption of a coin.
+    Digest Erase(const Digest& root,const Key& key) const {
+        Require(bool(write_)&&!root.IsNull());Require(Leaf(root,key).key==key);
+        return EraseAt(root,key,0);
+    }
 private:
+    Digest EraseAt(const Digest& id,const Key& key,unsigned depth) const {
+        Require(depth<=256);auto n=Get(id);
+        if(n.bit==256){Require(n.key==key);return {};}
+        const bool one=Bit(key,n.bit);const auto child=one?n.one:n.zero;
+        Require(Get(child).bit>n.bit);
+        const auto next=EraseAt(child,key,depth+1);
+        if(next.IsNull()) {
+            const auto sibling=one?n.zero:n.one;Require(Get(sibling).bit>n.bit);
+            return sibling;
+        }
+        if(one)n.one=next;else n.zero=next;return Put(n);
+    }
     Kind kind_;Read read_;Write write_;
     static bool Bit(const Key& k,uint16_t b){Require(b<256);return (k[b/8]>>(7-b%8))&1;}
     Node Get(const Digest& id) const {

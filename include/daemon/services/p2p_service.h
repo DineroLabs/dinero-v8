@@ -5,6 +5,7 @@
 #include "daemon/services/header_refresh_coalescer.h"
 #include "daemon/services/stale_tip_recovery.h"  // issue #214: StaleTipState + decision
 #include "daemon/services/anchor_reconnect_policy.h"  // 2026-09-16: connect-only gap fix
+#include "primitives/uint256.h"
 #include "network/port_mapper.h"
 #include "network/stun_client.h"      // NAT traversal Phase C1 (unique_ptr<StunClient> member)
 #include "network/tor_control.h"
@@ -308,6 +309,12 @@ public:
     // fast regtest/mining burst.  Coalesce those hints so our own getheaders
     // requests cannot make an honest peer exceed the inbound headers limiter.
     void RequestHeadersRefreshForBlockAnnouncement(const std::string& peer_addr);
+
+    // Credit a peer for a block it announced: its height when we hold the
+    // header, otherwise "ahead of us". Peer heights otherwise only moved when a
+    // peer sent headers that were new to us, so every peer but the first
+    // announcer looked behind (stale eligibility and header-flight takeover).
+    void NoteBlockAnnouncement(const std::string& peer_addr, const uint256& block_hash);
     
     // Protocol constants (Dinero-specific)
     static constexpr uint32_t GetProtocolVersion() { return 70016; }

@@ -329,7 +329,7 @@ bool WalletService::Start() {
             // Capture the wallet to restore as active afterward (open() below
             // overwrites the "most recently opened" marker).
             const std::string preferred_wallet = wallet_mgr_->hasActiveWallet()
-                ? wallet_mgr_->getMostRecentlyOpenedWallet() : std::string();
+                ? wallet_mgr_->getCurrentWalletName() : std::string();
             for (const auto& wname : wallets) {
                 try {
                     wallet_mgr_->open(wname);

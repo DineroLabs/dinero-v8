@@ -1,6 +1,7 @@
 #include "daemon/daemon_app.h"
 #include "daemon/datadir_guard.h"
 #include "daemon/regtest_pow_profile.h"
+#include <cstdlib>
 #include "consensus/chainparams.h"
 #include "consensus/orchard_profile.h"
 #include "consensus/shielded/pedersen_generators.h"
@@ -69,7 +70,38 @@ int main(int argc, char** argv) try {
         throw std::runtime_error(error);
     dinero::daemon::CheckRegtestPowDatadir(datadir, true);
     dinero::daemon::BindRegtestPowProfile(datadir, profile);
+    const bool automatic_upgrade = [] {
+        const char* v = std::getenv("DINERO_TEST_AUTOMATIC_STORAGE_UPGRADE");
+        return v && std::string(v) == "1";
+    }();
+    if (automatic_upgrade) {  // same fresh-datadir bootstrap as dinerod (src/daemon/main.cpp)
+        dinero::DaemonApp bootstrap;
+        bootstrap.SetAutomaticStorageUpgrade(true);
+        bootstrap.SetFreshStoreBootstrapOnly(true);
+        if (bootstrap.Init(argc, argv) && bootstrap.FreshStoreCreated()) {
+            if (bootstrap.Start()) (void)bootstrap.PersistFreshStoreGenesisRecords();
+            bootstrap.Stop();
+        }
+    }
     dinero::DaemonApp app;
+    // Production dinerod upgrades automatically; this fixture does so only when
+    // asked, so tests of the explicit migrator still see a legacy store.
+    if (automatic_upgrade)
+        app.SetAutomaticStorageUpgrade(true);
+    // Crash after a named upgrade step, or pretend the disk is nearly full.
+    const char* crash = std::getenv("DINERO_TEST_STORAGE_UPGRADE_CRASH_AFTER");
+    const char* free_bytes = std::getenv("DINERO_TEST_STORAGE_UPGRADE_FREE_BYTES");
+    if (crash || free_bytes) {
+        const std::string crash_phase = crash ? crash : "";
+        app.SetStorageUpgradeTestHooks(
+            [crash_phase](const char* phase) {
+                if (!crash_phase.empty() && crash_phase == phase) {
+                    std::cout << "CRASH after storage upgrade step " << phase << std::endl;
+                    std::_Exit(17);
+                }
+            },
+            free_bytes ? std::optional<std::uintmax_t>(std::stoull(free_bytes)) : std::nullopt);
+    }
     if (!app.Init(argc, argv) || !app.Start())
         throw std::runtime_error("Orchard wallet cycle daemon startup failed");
     std::cout << "READY Orchard wallet cycle JSON-RPC daemon" << std::endl;

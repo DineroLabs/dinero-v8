@@ -892,6 +892,32 @@ stratummaxconnections=100
 
 ---
 
+## Atomic Swaps (DIN <-> BTC)
+
+Off by default. With `swap.enable` unset the node starts no swap thread and
+creates no swap files. See `docs/design/din-btc-atomic-swaps.md`.
+
+| Key | Default | Meaning |
+|---|---|---|
+| `swap.enable` | `0` | `1` runs the swap service and enables the `swap.*` RPCs |
+| `swap.btc_rpc` | (required) | Bitcoin Core RPC `HOST:PORT`. Bob's BTC funding uses that node's wallet, so load exactly one wallet. |
+| `swap.btc_rpc_user` / `swap.btc_rpc_pass` | | Bitcoin Core RPC credentials. The password is never logged. |
+| `swap.tick_seconds` | `30` | How often each swap is advanced |
+| `swap.tower_inbox` | (none) | Directory of a `dinero-swap-tower` inbox. When set, Bob's swaps arm the watchtower. |
+| `swap.din_fee_una` | `100000` | DIN claim/refund fee when T_din is 24 h or more away |
+| `swap.din_fee_urgent_una` | `1000000` | DIN claim fee within 6 h of T_din (linear in between) |
+| `swap.btc_fee_sat` | `1000` | BTC claim/refund fee |
+
+Swap files live in `<datadir>/swaps` (mode 0700), encrypted with a key derived
+from the wallet seed. Swap keys are derived at `m/1398227280'/...`, so a wallet
+restored from its seed can resume and refund. The wallet must be encrypted and
+unlocked to start a swap. While it is locked, swaps are paused and
+`swap.status` says so. Bob should run a watchtower if his wallet may be locked
+or offline near a deadline.
+
+`swap.offer`, `swap.accept` and `swap.cancel` are admin methods (refused under
+`--rpc-readonly`). Never expose them on a public RPC endpoint.
+
 ## Command-Line Override
 
 Command-line arguments override config file.

@@ -139,6 +139,20 @@ WalletBundlePlan WalletBundlePlan::PrepareSpend(const WalletKeys& keys,std::span
     Check(dinero_orchard_prepare_spend_v1(keys.handle_.get(),wire.data(),wire.size(),anchor.data(),
         outputs.data(),outputs.size(),&handle));return WalletBundlePlan(handle);
 }
+WalletStateBytes WalletBundlePlan::ExportRecovery() const {
+    size_t length=0;
+    Check(dinero_orchard_wallet_plan_recovery_size_v1(handle_.get(),&length));
+    if(length==0||length>kMaxRecoveryBytes)throw BackendError(DINERO_ORCHARD_LIMIT);
+    WalletStateBytes bytes(length);
+    Check(dinero_orchard_wallet_plan_export_recovery_v1(handle_.get(),bytes.bytes_.data(),length));
+    return bytes;
+}
+WalletBundlePlan WalletBundlePlan::Restore(const WalletKeys& keys,const WalletStateBytes& bytes) {
+    if(bytes.Bytes().empty()||bytes.Bytes().size()>kMaxRecoveryBytes)throw BackendError(DINERO_ORCHARD_LIMIT);
+    DineroOrchardWalletPlan* handle=nullptr;
+    Check(dinero_orchard_wallet_plan_restore_v1(keys.handle_.get(),bytes.Bytes().data(),bytes.Bytes().size(),&handle));
+    return WalletBundlePlan(handle);
+}
 WalletProvingIntent WalletBundlePlan::Intent(const SigningContext& context)const {
     if(!handle_)throw BackendError(DINERO_ORCHARD_FORMAT);
     std::vector<Hash> nullifiers;

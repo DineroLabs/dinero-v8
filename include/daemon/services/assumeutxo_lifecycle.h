@@ -6,6 +6,7 @@
 #include <chrono>
 #include <cstdint>
 #include <mutex>
+#include <memory>
 #include <string>
 
 namespace dinero { class Logger; }
@@ -106,6 +107,23 @@ public:
     void RestoreFromPersistence(bool chainstate_matches_marker);
     // Normal (non-fatal) clear, e.g. operator wipes datadir state.
     void Disable();
+
+    // Pins this exact non-fatal snapshot lifecycle through a caller's scoped
+    // operation. Does not certify history or storage: callers must separately
+    // bind the selected header, persisted snapshot and live UTXO state. Acquire
+    // after the selected-chain lock, before wallet/index locks. While held, do
+    // not call back into this lifecycle. Destroy on the acquiring thread.
+    class SnapshotUse {
+    public:
+        SnapshotUse(const SnapshotUse&) = delete;
+        SnapshotUse& operator=(const SnapshotUse&) = delete;
+    private:
+        friend class AssumeUtxoLifecycle;
+        explicit SnapshotUse(std::mutex& mutex) : lock_(mutex) {}
+        std::unique_lock<std::mutex> lock_;
+    };
+    std::unique_ptr<SnapshotUse> AcquireSnapshotUse(
+        const uint256& base_block, uint32_t base_height) const;
 
     State GetState() const;
     Status GetStatus(TimePoint now) const;

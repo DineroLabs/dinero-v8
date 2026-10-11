@@ -23,6 +23,7 @@
 #pragma once
 
 #include "poolearnings.h"
+#include "pooltokenstore.h"
 
 #include <QGroupBox>
 #include <QJsonObject>
@@ -38,6 +39,8 @@
 #include <QWidget>
 
 class RpcClient;
+class QCheckBox;
+class QComboBox;
 class QNetworkAccessManager;
 class QNetworkReply;
 class QUrl;
@@ -46,14 +49,20 @@ class PoolPanel : public QWidget {
     Q_OBJECT
 
 public:
-    explicit PoolPanel(RpcClient* rpc, QWidget* parent = nullptr);
+    /// `token_store` holds remembered ops tokens; null means the platform
+    /// store (the macOS Keychain, or none elsewhere).
+    explicit PoolPanel(RpcClient* rpc, QWidget* parent = nullptr,
+                       std::unique_ptr<PoolTokenStore> token_store = nullptr);
     ~PoolPanel() override;
 
 public Q_SLOTS:
     void refresh();
 
 private Q_SLOTS:
+    void onConnectClicked();
     void onFetchStatusClicked();
+    void onProfileActivated(int index);
+    void onForgetPoolClicked();
     void onChangePayoutClicked();
     void onChangeFeeClicked();
     void onCheckEarningsClicked();
@@ -92,8 +101,14 @@ private:
     void setOperatorAuthenticated(bool authenticated);
     bool validateOpsUrl(const QUrl& url, QLabel* error_target) const;
     static QString formatDin(qint64 una);
+    // Saved pools: name + endpoint in settings, the token only in the token store.
+    QString tokenAccount() const;
+    void reloadProfiles(const QString& select);
+    void applyProfile(const QString& name, bool auto_connect);
+    void saveCurrentProfile();
 
     RpcClient* rpc_;
+    std::unique_ptr<PoolTokenStore> token_store_;
     QNetworkAccessManager* net_;
     QTimer refresh_timer_;
     /// Suppresses the "no pool configured" nag until the operator has
@@ -114,6 +129,16 @@ private:
     bool has_valid_status_ = false;
     QDateTime last_valid_status_;
     QGroupBox* why_group_ = nullptr;
+    QComboBox* pool_profile_combo_ = nullptr;
+    QLineEdit* pool_name_input_ = nullptr;
+    QCheckBox* remember_token_check_ = nullptr;
+    QPushButton* btn_forget_pool_ = nullptr;
+    /// Set by Connect (and by an automatic reconnect); the next valid status
+    /// saves the pool, so a 15-second refresh never rewrites the Keychain.
+    bool profile_save_pending_ = false;
+    /// The fee address this panel filled in from /status. A different
+    /// address the operator typed is left alone.
+    QString autofilled_fee_address_;
     QPushButton* btn_about_ = nullptr;
 
     // Connection settings.

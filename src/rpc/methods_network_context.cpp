@@ -19,6 +19,9 @@
  * - Thread-safe service access
  */
 
+#include "daemon/orchard_light_node_notice.h"
+#include "daemon/config.h"
+#include "daemon/services/chainstate_service.h"
 #include "din_json.h"
 #include "rpc/rpc_registry.h"
 #include "rpc/peer_json_utils.h"
@@ -463,6 +466,16 @@ din::Json rpc_context_getnetworkinfo(const ExecutionContext& ctx, const din::Jso
     if (status.network_active && status.listening && !direct_reachable) {
         warning = "No confirmed direct reachability (no inbound peer, explicit advertised "
                   "address, or active port mapping) yet; outbound P2P still works";
+    }
+    // A light node that cannot follow Orchard says so first.
+    if (ctx.daemon) {
+        if (auto chainstate = std::dynamic_pointer_cast<dinero::ChainstateService>(ctx.daemon->chainstate)) {
+            if (const auto* tip = chainstate->GetActiveTip()) {
+                const auto notice = dinero::daemon::OrchardLightNodeNotice(
+                    dinero::Params(), GetConfig().utreexo_stateless, tip->height);
+                if (!notice.empty()) warning = warning.empty() ? notice : notice + " " + warning;
+            }
+        }
     }
     result["warnings"] = warning;
     result["rpc_schema"] = "din.rpc.v1";

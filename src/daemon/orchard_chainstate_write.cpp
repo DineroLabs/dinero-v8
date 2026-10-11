@@ -1,4 +1,18 @@
+#include "consensus/orchard_header.h"
+#include "consensus/block_filter.h"
+#include "consensus/filter_commitment.h"
+#include "storage/archival_block_reader.h"
+#include "consensus/utreexo_delta_codec.h"
+#include <type_traits>
+#include <set>
 #include "daemon/orchard_chainstate_write.h"
+#include "daemon/utreexo_tx_reader.h"
+#include "daemon/services/orchard_parent_catalog.h"
+#include "daemon/services/historical_catalog.h"
+#include "daemon/services/historical_catalog_range.h"
+#include "storage/orchard_catalog_state.h"
+#include "storage/orchard_storage_mode.h"
+#include "consensus/orchard_catalog_validation.h"
 #include "daemon/orchard_reindex.h"
 #include "daemon/runtime_block_outbox.h"
 #include "crypto/sha256.h"
@@ -419,14 +433,153 @@ struct PreparedOrchardChainstateWrite::Impl {
     const ChainWriteToken& token;
     rocksdb::WriteBatch batch;
     std::optional<PreparedUTXOPublication> publication;
+    OrchardCompactChainstate* compact_live=nullptr;
+    std::shared_ptr<const OrchardCompactChainstate::Selected> compact_before,compact_after;
     std::vector<uint8_t> undo_bytes;
     std::optional<RuntimeOrchardReplay> replay;
     CBlockIndex* index = nullptr;
     BlockHeader indexed_header;
     std::optional<ChainDB::PersistedHeaderMetadata> index_before, index_after;
+    // Historical replay proves live validation levels without rewriting the
+    // stored before-image. Retain both exact representations through commit.
+    std::optional<ChainDB::PersistedHeaderMetadata> historical_index_live_before, historical_index_live_after;
     Phase phase = Phase::Preparing;
     std::optional<std::string> outbox_before;
     bool outbox_staged = false;
+    std::function<void()> historical_ready;
+    bool storage_mode_captured=false;
+    std::optional<std::string> storage_mode_before,storage_mode_after;
+    void CaptureStorageMode(bool compact,const storage::catalog::State* state=nullptr,bool enroll=false) {
+        CatalogRequire(!storage_mode_captured);
+        storage_mode_before=storage::ReadOrchardCompactStorageBinding(db);
+        if(compact) {
+            CatalogRequire(state!=nullptr);
+            const auto expected=storage::EncodeOrchardCompactStorageBinding(*state);
+            if(enroll) {
+                CatalogRequire(!storage_mode_before);
+                storage_mode_after=expected;
+            } else CatalogRequire(storage_mode_before&&*storage_mode_before==expected);
+        } else storage::RequireFullOrchardStorage(db);
+        storage_mode_captured=true;
+    }
+    std::map<uint256,std::optional<std::string>> catalog_before;
+    std::optional<TipInfo> catalog_tip_before;
+    std::optional<std::string> CaptureCatalog(const uint256& hash) {
+        if(!catalog_tip_before)catalog_tip_before=RequiredDisk(db.getTip());
+        const auto value=db.getOrchardCatalogState(hash);std::optional<std::string> bytes;
+        if(value.ok())bytes=*value;
+        else if(value.status()!=Status::NotFound)throw OrchardStateLookupError(value.status(),"catalog/read");
+        const auto [it,added]=catalog_before.emplace(hash,bytes);
+        if(!added&&it->second!=bytes)throw OrchardStateLookupError(Status::Corruption,"catalog/changed");
+        return bytes;
+    }
+    static void CatalogRequire(bool ok) {
+        if(!ok)throw OrchardStateLookupError(Status::Corruption,"catalog/binding");
+    }
+    storage::catalog::State SelectCatalog(const PreparedOrchardCatalog* initial,
+        const std::optional<storage::LegacyRetirementRecord>& boundary,
+        const OrchardBlockContext& context,const BlockHeader& parent) {
+        namespace c=storage::catalog;
+        const auto prior=CaptureCatalog(context.parent_hash);
+        CatalogRequire(bool(prior)||initial);
+        c::State state;
+        if(initial) {
+            initial->Check();CatalogRequire(&initial->db_==&db&&boundary&&initial->record_==*boundary&&
+                context.height==context.activation_height&&initial->target_.hash==context.parent_hash&&
+                uint64_t(initial->target_.height)+1==context.height&&
+                initial->target_.chainwork==RequiredDisk(db.getBlockWork(context.parent_hash)));
+            state.network=initial->record_.network_code;state.genesis=initial->record_.genesis;
+            state.branch=initial->record_.branch_id;state.activation=initial->record_.activation_height;
+            state.leaf_activation=initial->leaf_activation_;state.height=initial->target_.height;
+            state.block=initial->target_.hash;state.parent=parent.prev_block_hash;state.work=initial->target_.chainwork;
+            state.transactions=initial->transactions_;state.legacy=initial->legacy_;state.nontransparent=initial->nontransparent_;
+            state.transaction_count=initial->transaction_count_;state.legacy_count=initial->legacy_count_;state.nontransparent_count=initial->nontransparent_count_;
+            state.stump=initial->stump_;
+            if(prior)CatalogRequire(*prior==state.Encode());
+        } else state=c::State::Decode(*prior);
+        const auto stump=UtreexoStump::deserialize(state.stump);
+        CheckOrchardCatalogStump(db,state,context,parent,context.height-1,stump);
+        return state;
+    }
+    std::optional<storage::catalog::State> ConnectCatalog(const PreparedOrchardCatalog* initial,bool required,
+        const std::optional<storage::LegacyRetirementRecord>& boundary,
+        const OrchardBlockContext& context,const OrchardBlockCandidate& block,const BlockHeader& parent,
+        const UtreexoStump& before,const PreparedOrchardBlockCoins& coins,const UtreexoStump& after,bool verify_only=false) {
+        namespace c=storage::catalog;
+        const auto prior=CaptureCatalog(context.parent_hash);
+        const auto existing=CaptureCatalog(context.block_hash);
+        if(!prior&&!initial){CatalogRequire(!required&&!existing);return {};}
+        auto state=SelectCatalog(initial,boundary,context,parent);
+        CheckOrchardCatalogStump(db,state,context,parent,context.height-1,before);
+        const auto parent_bytes=state.Encode();
+        if(!prior) {
+            CatalogRequire(!verify_only);
+            CatalogRequire(db.stageOrchardCatalogState(token,state.block,parent_bytes,batch)==Status::Ok);
+        }
+        std::map<uint256,std::string> pending;
+        const auto read=[&](const uint256& hash){
+            const auto found=pending.find(hash);return found==pending.end()?RequiredDisk(db.getOrchardCatalogNode(hash)):found->second;
+        };
+        const auto write=[&](const uint256& hash,const std::string& bytes){
+            const auto [it,added]=pending.emplace(hash,bytes);CatalogRequire(added||it->second==bytes);
+            if(added) {
+                if(verify_only)CatalogRequire(RequiredDisk(db.getOrchardCatalogNode(hash))==bytes);
+                else CatalogRequire(db.stageOrchardCatalogNode(token,hash,bytes,batch)==Status::Ok);
+            }
+        };
+        c::Tree transactions(c::Kind::Transactions,read,write),legacy(c::Kind::LegacyCoins,read,write);
+        c::Tree nontransparent(c::Kind::NonTransparentCoins,read,write);
+        // Includes transactions whose outputs were all spent, and same-block
+        // transactions with no surviving output. TxIndex is not this authority.
+        for(const auto& tx:coins.Transactions()) {
+            CatalogRequire(state.transaction_count!=UINT64_MAX);
+            state.transactions=transactions.Insert(state.transactions,c::TransactionKey(tx.txid),{});++state.transaction_count;
+        }
+        for(const auto& change:coins.Changes()) {
+            const auto point=c::OutpointBytes(change.outpoint);const auto key=c::LegacyKey(point);
+            const auto found=legacy.Find(state.legacy,key);
+            const auto nontransparent_key=c::NonTransparentKey(point);
+            const auto special=nontransparent.Find(state.nontransparent,nontransparent_key);
+            const bool was_nontransparent=change.before&&(change.before->is_confidential||!change.before->commitment.empty());
+            CatalogRequire(special.has_value()==was_nontransparent);
+            if(special) {
+                CatalogRequire(*special==point&&state.nontransparent_count>0);
+                state.nontransparent=nontransparent.Erase(state.nontransparent,nontransparent_key);--state.nontransparent_count;
+            }
+            if(change.after&&(change.after->is_confidential||!change.after->commitment.empty())) {
+                CatalogRequire(change.after->height==context.height&&state.nontransparent_count!=UINT64_MAX);
+                state.nontransparent=nontransparent.Insert(state.nontransparent,nontransparent_key,point);++state.nontransparent_count;
+            }
+            const auto metadata=[&](const UTXOEntry& coin){auto v=point;c::Number(v,coin.height,4);v.push_back(coin.isCoinbase?1:0);return v;};
+            if(change.before&&change.before->height<state.leaf_activation) {
+                CatalogRequire(found&&*found==metadata(*change.before)&&state.legacy_count>0);
+                state.legacy=legacy.Erase(state.legacy,key);--state.legacy_count;
+            } else CatalogRequire(!found);
+            if(change.after&&change.after->height<state.leaf_activation) {
+                CatalogRequire(change.after->height==context.height&&state.legacy_count!=UINT64_MAX);
+                state.legacy=legacy.Insert(state.legacy,key,metadata(*change.after));++state.legacy_count;
+            }
+        }
+        state.previous_record=c::Hash(parent_bytes);
+        state.undo=c::Hash(std::string(undo_bytes.begin(),undo_bytes.end()));
+        state.height=context.height;state.block=context.block_hash;state.parent=context.parent_hash;
+        state.work=RequiredDisk(db.getBlockWork(context.block_hash));
+        state.stump=after.serialize();
+        CheckOrchardCatalogStump(db,state,context,block.Header(),context.height,after);
+        const auto bytes=state.Encode();if(existing)CatalogRequire(*existing==bytes);
+        if(verify_only)CatalogRequire(existing&&*existing==bytes);
+        else CatalogRequire(db.stageOrchardCatalogState(token,state.block,bytes,batch)==Status::Ok);
+        return state;
+    }
+    void DisconnectCatalog(bool required,const OrchardBlockContext& context,
+        const OrchardBlockCandidate& block,const BlockHeader& parent,
+        const UtreexoForest& before,const UtreexoForest& after) {
+        namespace c=storage::catalog;const auto current=CaptureCatalog(context.block_hash);
+        const auto prior=CaptureCatalog(context.parent_hash);
+        CheckOrchardCatalogUndo(db,context,block.Header(),parent,before,after,undo_bytes,current,prior,required);
+        // No second catalog tip and no mutable root restoration: the same
+        // canonical batch restores the chain tip to this retained parent.
+    }
 
     Impl(AnnotatedRecursiveMutex& mutex, ChainDB& database, const ChainWriteToken& capability)
         : lock(mutex), db(database), token(capability) {}
@@ -440,12 +593,25 @@ struct PreparedOrchardChainstateWrite::Impl {
         lock.mutex()->AssertHeld("Orchard chainstate write");
     }
     void CheckIndex() const {
+        if(historical_ready)historical_ready();
+        CatalogRequire(storage_mode_captured&&
+            storage::ReadOrchardCompactStorageBinding(db)==storage_mode_before);
+        if(catalog_tip_before) {
+            const auto now=RequiredDisk(db.getTip());const auto& before=*catalog_tip_before;
+            CatalogRequire(std::tie(now.hash,now.height,now.work,now.timestamp)==
+                std::tie(before.hash,before.height,before.work,before.timestamp));
+        }
+        for(const auto& [hash,before]:catalog_before) {
+            const auto value=db.getOrchardCatalogState(hash);
+            if(before)CatalogRequire(value.ok()&&*value==*before);
+            else CatalogRequire(value.status()==Status::NotFound);
+        }
         if (outbox_staged && outbox_detail::Raw(db,outbox_detail::head_key)!=outbox_before)
             throw OrchardStateLookupError(Status::Corruption);
         if (!index) return;
         const auto current=RequiredDisk(db.getHeaderMetadata(indexed_header.GetHash()));
         if (MetadataFields(current)!=MetadataFields(*index_before) ||
-            !IndexMatches(*index,indexed_header,*index_before))
+            !IndexMatches(*index,indexed_header,historical_index_live_before ? *historical_index_live_before : *index_before))
             throw OrchardStateLookupError(Status::Corruption);
     }
     void PrepareIndex(BlockStorage& files, CBlockIndex& entry,
@@ -525,7 +691,7 @@ struct PreparedOrchardChainstateWrite::Impl {
     }
     void PublishIndex() noexcept {
         if (!index) return;
-        const auto& m=*index_after;
+        const auto& m=historical_index_live_after ? *historical_index_live_after : *index_after;
         index->status=m.status_flags;
         index->file_number=m.file_number;index->data_pos=m.data_pos;index->data_size=m.data_size;
         index->undo_file=m.undo_file;index->undo_pos=m.undo_pos;index->undo_size=m.undo_size;
@@ -537,6 +703,119 @@ PreparedOrchardChainstateWrite::PreparedOrchardChainstateWrite(
     : impl_(std::make_unique<Impl>(mutex, db, token)) {}
 PreparedOrchardChainstateWrite::~PreparedOrchardChainstateWrite() = default;
 
+const storage::catalog::State* OrchardCompactChainstate::SelectedUnderLock(AnnotatedRecursiveMutex& mutex) const {
+    mutex.AssertHeld("Orchard compact selected state");
+    if(!selected_)return nullptr;
+    if(selected_->mutex!=&mutex)throw std::logic_error("Orchard compact owner mutex mismatch");
+    const auto* state=std::get_if<Selected::Orchard>(&selected_->value);
+    return state?&state->catalog:nullptr;
+}
+const storage::catalog::HistoricalState* OrchardCompactChainstate::HistoricalUnderLock(AnnotatedRecursiveMutex& mutex) const {
+    mutex.AssertHeld("Historical compact selected state");
+    if(!selected_)return nullptr;
+    if(selected_->mutex!=&mutex)throw std::logic_error("Historical compact owner mutex mismatch");
+    return std::get_if<storage::catalog::HistoricalState>(&selected_->value);
+}
+const storage::LegacyRetirementRecord* OrchardCompactChainstate::RetirementUnderLock(AnnotatedRecursiveMutex& mutex) const {
+    if(!SelectedUnderLock(mutex))return nullptr;
+    return &selected_->OrchardState().retirement;
+}
+
+
+OrchardPoolCoinView OrchardPoolCoinView::Capture(const OrchardTransactionContext& context,
+    const BlockHeader& header,const storage::catalog::State& catalog,
+    const storage::catalog::Tree::Read& read,std::span<const MempoolProofView> entries) {
+    namespace c=storage::catalog;
+    catalog.Validate();
+    RequireOrchardCatalog(read&&context.height&&context.height<=INT32_MAX&&
+        context.height>=context.activation_height&&catalog.height==context.height-1&&
+        catalog.block==context.parent_hash&&catalog.block==header.GetHash()&&
+        catalog.parent==header.prev_block_hash&&catalog.activation==context.activation_height&&
+        catalog.network==context.domain.network_code&&catalog.branch==context.domain.branch_id&&
+        std::equal(catalog.genesis.begin(),catalog.genesis.end(),context.domain.genesis_wire.begin())&&
+        catalog.leaf_activation==GetUtreexoMaturityLeafActivationHeight());
+    const auto stump=UtreexoStump::deserialize(catalog.stump);
+    const auto root=stump.getCommitment();
+    RequireOrchardCatalog(root.size()==32&&std::equal(root.begin(),root.end(),header.utreexo_root.begin()));
+    c::Tree transactions(c::Kind::Transactions,read),legacy(c::Kind::LegacyCoins,read);
+    c::Tree nontransparent(c::Kind::NonTransparentCoins,read);
+    OrchardPoolCoinView result(catalog.height,catalog.block);
+    std::set<TxId> ids;
+    for(const auto& entry:entries) {
+        RequireOrchardCatalog(entry.body.HasBody());
+        const auto id=entry.body.GetTxid();
+        RequireOrchardCatalog(ids.insert(id).second&&!transactions.Find(catalog.transactions,c::TransactionKey(id)));
+        RequireOrchardCatalog(entry.body.OutputCount()<=UINT32_MAX);
+        for(size_t i=0;i<entry.body.OutputCount();++i)result.absent_.emplace(id,uint32_t(i));
+    }
+    for(const auto& entry:entries) {
+        // There is no pending-parent proof representation in this transport.
+        // Do not invent confirmed absence or permit omitted input proofs.
+        for(const auto& point:entry.body.Inputs())
+            RequireOrchardCatalog(!point.txid.IsNull()&&!ids.contains(point.txid));
+        if(entry.proof.empty()) {
+            RequireOrchardCatalog(entry.body.Inputs().empty());
+            continue;
+        }
+        const auto payload=UtreexoTransactionPayload::Decode(entry.proof,RelayTransactionReadMode::AvailableFamilies);
+        RequireOrchardCatalog(payload.Body().Serialize()==entry.body.Serialize());
+        for(size_t i=0;i<payload.data_->proofs.size();++i) {
+            const auto& point=entry.body.Inputs().at(i);
+            const auto& claimed=payload.data_->proofs[i].second;
+            const auto bytes=c::OutpointBytes(point);
+            RequireOrchardCatalog(!nontransparent.Find(catalog.nontransparent,c::NonTransparentKey(bytes))&&
+                !claimed.is_confidential&&claimed.commitment.empty());
+            const auto old=legacy.Find(catalog.legacy,c::LegacyKey(bytes));
+            uint32_t height=claimed.created_height;bool coinbase=claimed.is_coinbase;
+            if(old) {
+                RequireOrchardCatalog(old->size()==41&&old->compare(0,36,bytes)==0&&uint8_t((*old)[40])<=1);
+                height=uint32_t(c::Number(*old,36,4));coinbase=uint8_t((*old)[40])!=0;
+                RequireOrchardCatalog(height<catalog.leaf_activation&&height==claimed.created_height&&coinbase==claimed.is_coinbase);
+            } else RequireOrchardCatalog(height>=catalog.leaf_activation);
+            RequireOrchardCatalog(height<=catalog.height&&claimed.value<=orchard::kMaxMoneyUna&&
+                transactions.Find(catalog.transactions,c::TransactionKey(point.txid)).has_value());
+            RequireOrchardCatalog(result.inputs_.emplace(point,
+                UTXOEntry(AmountUna::Una(claimed.value),claimed.scriptPubKey,height,coinbase)).second);
+        }
+        // The provisional map is local and never escapes on any failed proof.
+        // Modern metadata becomes authenticated by its exact maturity-bound leaf;
+        // legacy metadata was independently bound above before this check.
+        RequireOrchardCatalog(payload.VerifyInputs(stump,catalog.height,result).has_value());
+    }
+    return result;
+}
+
+OrchardPoolCoinView OrchardCompactChainstate::CapturePoolCoinsUnderLock(AnnotatedRecursiveMutex& mutex,
+    const OrchardTransactionContext& context,const BlockHeader& header,
+    std::span<const MempoolProofView> entries) const {
+    mutex.AssertHeld("Orchard compact pool input capture");
+    RequireOrchardCatalog(selected_&&selected_->mutex==&mutex&&selected_->database);
+    const auto selected=selected_;const auto& db=*selected->database;const auto& state=selected->OrchardState().catalog;
+    const auto check=[&] {
+        const auto tip=RequiredDisk(db.getTip()),validated=RequiredDisk(db.getValidatedTip());
+        const auto durable_header=RequiredDisk(db.getHeader(state.block));
+        RequireOrchardCatalog(tip.height>=0&&uint32_t(tip.height)==state.height&&tip.hash==state.block&&
+            tip.work==state.work&&validated.height==tip.height&&validated.hash==tip.hash&&
+            RequiredDisk(db.getBlockWork(state.block))==state.work&&
+            durable_header.SerializeForHash()==header.SerializeForHash()&&
+            RequiredDisk(db.getOrchardCatalogState(state.block))==state.Encode()&&
+            storage::ReadOrchardCompactStorageBinding(db)==storage::EncodeOrchardCompactStorageBinding(state));
+        if(state.height>=state.activation) {
+            const auto orchard=RequiredDisk(db.getOrchardState());
+            const auto retired=RequiredDisk(db.getLegacyRetirementState());
+            RequireOrchardCatalog(orchard.height==state.height&&orchard.block_hash==state.block&&
+                retired.height==state.height&&retired.block_hash==state.block&&
+                retired.parent_hash==state.parent&&retired.record==selected->OrchardState().retirement);
+        } else RequireOrchardCatalog(db.getOrchardState().status()==Status::NotFound&&
+            db.getLegacyRetirementState().status()==Status::NotFound);
+    };
+    check();
+    const auto read=[&](const uint256& id){return RequiredDisk(db.getOrchardCatalogNode(id));};
+    auto result=OrchardPoolCoinView::Capture(context,header,state,read,entries);
+    check();RequireOrchardCatalog(selected_==selected);
+    return result;
+}
+
 std::unique_ptr<PreparedOrchardChainstateWrite> PreparedOrchardChainstateWrite::Connect(
     AnnotatedRecursiveMutex& mutex, ChainDB& db, const ChainWriteToken& token,
     ConsensusUTXOSet& live, const OrchardBlockContext& context,
@@ -544,10 +823,11 @@ std::unique_ptr<PreparedOrchardChainstateWrite> PreparedOrchardChainstateWrite::
     const UtreexoForest& forest, const OrchardBranchMtpLookup& mtp,
     bool witness, bool checkpoint,
     const std::optional<storage::LegacyRetirementRecord>& boundary,
-    const ValidatedOrchardBlock* detached) {
+    const ValidatedOrchardBlock* detached,const PreparedOrchardCatalog* initial_catalog,bool require_catalog) {
     auto result = std::unique_ptr<PreparedOrchardChainstateWrite>(
         new PreparedOrchardChainstateWrite(mutex, db, token));
     auto& owner = *result->impl_;
+    owner.CaptureStorageMode(false);
     std::map<uint32_t,uint64_t> recorded_mtp;
     const OrchardBranchMtpLookup capture_mtp=[&](uint32_t height) {
         const auto value=mtp?mtp(height):std::nullopt;
@@ -560,6 +840,8 @@ std::unique_ptr<PreparedOrchardChainstateWrite> PreparedOrchardChainstateWrite::
     auto staged = StageOrchardChainstateConnectUnderLock(db, token, context, block,
         parent, forest, capture_mtp, witness, checkpoint, owner.batch, boundary, detached);
     owner.undo_bytes=staged.block.undo.Serialize();
+    owner.ConnectCatalog(initial_catalog,require_catalog,boundary,context,block,parent,
+        UtreexoStump::fromForest(forest),staged.block.coins,UtreexoStump::fromForest(staged.forest.After()));
     owner.replay=RuntimeOrchardReplay{staged.block.orchard.Parent(),staged.block.orchard.Next(),
         owner.undo_bytes,std::move(recorded_mtp)};
     std::vector<UTXOPublicationChange> changes;
@@ -577,16 +859,18 @@ std::unique_ptr<PreparedOrchardChainstateWrite> PreparedOrchardChainstateWrite::
     AnnotatedRecursiveMutex& mutex, ChainDB& db, const ChainWriteToken& token,
     ConsensusUTXOSet& live, const OrchardBlockContext& context,
     const OrchardBlockCandidate& block, const BlockHeader& parent,
-    const UtreexoForest& forest, bool witness) {
+    const UtreexoForest& forest, bool witness,bool require_catalog) {
     auto result = std::unique_ptr<PreparedOrchardChainstateWrite>(
         new PreparedOrchardChainstateWrite(mutex, db, token));
     auto& owner = *result->impl_;
+    owner.CaptureStorageMode(false);
     const auto before_state=RequiredDisk(db.getOrchardState());
     const auto parent_state=RequiredDisk(db.getOrchardUndoParent(before_state));
     auto staged = StageOrchardChainstateDisconnectUnderLock(db, token, context,
         block, parent, forest, witness, owner.batch);
     const auto undo=RequiredDisk(db.getUndo(context.block_hash));
     owner.undo_bytes=undo.Serialize();
+    owner.DisconnectCatalog(require_catalog,context,block,parent,forest,staged.forest);
     owner.replay=RuntimeOrchardReplay{parent_state,before_state,owner.undo_bytes,{}};
     std::vector<UTXOPublicationChange> changes;
     changes.reserve(staged.coins.size());
@@ -605,10 +889,10 @@ std::unique_ptr<PreparedOrchardChainstateWrite> PreparedOrchardChainstateWrite::
     const OrchardBlockContext& context, const OrchardBlockCandidate& block,
     const BlockHeader& parent, const UtreexoForest& forest, const OrchardBranchMtpLookup& mtp,
     bool witness, bool checkpoint, const std::optional<storage::LegacyRetirementRecord>& boundary, bool contextual_header_validated,
-    const ValidatedOrchardBlock* detached) {
+    const ValidatedOrchardBlock* detached,const PreparedOrchardCatalog* initial_catalog,bool require_catalog) {
     const char* operation="indexed/coins-and-state";
     try {
-    auto result=Connect(mutex,db,token,live,context,block,parent,forest,mtp,witness,checkpoint,boundary,detached);
+    auto result=Connect(mutex,db,token,live,context,block,parent,forest,mtp,witness,checkpoint,boundary,detached,initial_catalog,require_catalog);
     operation="indexed/body-and-undo-locators";
     result->impl_->PrepareIndex(files,index,context,block,true,contextual_header_validated);
     operation="indexed/delivery-append";
@@ -625,12 +909,498 @@ std::unique_ptr<PreparedOrchardChainstateWrite> PreparedOrchardChainstateWrite::
     AnnotatedRecursiveMutex& mutex, ChainDB& db, const ChainWriteToken& token,
     BlockStorage& files, CBlockIndex& index, ConsensusUTXOSet& live,
     const OrchardBlockContext& context, const OrchardBlockCandidate& block,
-    const BlockHeader& parent, const UtreexoForest& forest, bool witness) {
-    auto result=Disconnect(mutex,db,token,live,context,block,parent,forest,witness);
+    const BlockHeader& parent, const UtreexoForest& forest, bool witness,bool require_catalog) {
+    auto result=Disconnect(mutex,db,token,live,context,block,parent,forest,witness,require_catalog);
     result->impl_->PrepareIndex(files,index,context,block,false);
     result->impl_->outbox_before=outbox_detail::Append(db,result->impl_->batch,context,block,false,result->impl_->replay);
     result->impl_->outbox_staged=true;
     return result;
+}
+
+std::unique_ptr<PreparedOrchardChainstateWrite> PreparedOrchardChainstateWrite::ConnectCompactIndexed(
+    AnnotatedRecursiveMutex& mutex,ChainDB& db,const ChainWriteToken& token,
+    BlockStorage& files,CBlockIndex& index,OrchardCompactChainstate& live,
+    const OrchardBlockContext& context,const OrchardBlockCandidate& block,
+    const BlockHeader& parent,const OrchardBranchMtpLookup& mtp,bool witness,
+    const std::optional<storage::LegacyRetirementRecord>& boundary,bool contextual_header_validated,
+    const PreparedOrchardCatalog* initial,const ValidatedOrchardBlock* detached) {
+    auto result=std::unique_ptr<PreparedOrchardChainstateWrite>(
+        new PreparedOrchardChainstateWrite(mutex,db,token));
+    auto& owner=*result->impl_;
+    owner.compact_live=&live;owner.compact_before=live.selected_;
+    // A decoded database row cannot enroll a new live owner. The first
+    // transition consumes genuine independent replay; descendants must match
+    // the already-published selected catalog and its database/mutex binding.
+    Impl::CatalogRequire(bool(owner.compact_before)!=bool(initial));
+    auto effective_boundary=boundary;
+    if(owner.compact_before) {
+        Impl::CatalogRequire(owner.compact_before->database==&db&&owner.compact_before->mutex==&mutex);
+        if(context.height==context.activation_height) {
+            if(boundary)Impl::CatalogRequire(*boundary==owner.compact_before->OrchardState().retirement);
+            effective_boundary=owner.compact_before->OrchardState().retirement;
+        } else {
+            Impl::CatalogRequire(!boundary&&
+                RequiredDisk(db.getLegacyRetirementState()).record==owner.compact_before->OrchardState().retirement);
+        }
+    }
+    const auto selected=owner.SelectCatalog(initial,effective_boundary,context,parent);
+    owner.CaptureStorageMode(true,&selected,!owner.compact_before);
+    if(owner.compact_before)
+        Impl::CatalogRequire(owner.compact_before->OrchardState().catalog.Encode()==selected.Encode());
+    std::map<uint32_t,uint64_t> replay_mtp;
+    const OrchardBranchMtpLookup captured_mtp=[&](uint32_t height) {
+        const auto value=mtp?mtp(height):std::nullopt;
+        if(value) {
+            const auto [at,inserted]=replay_mtp.emplace(height,*value);
+            if(!inserted&&at->second!=*value)throw OrchardStateLookupError(Status::Corruption);
+        }
+        return value;
+    };
+    auto staged=StageOrchardCompactChainstateConnectUnderLock(db,token,context,block,parent,
+        selected,captured_mtp,witness,owner.batch,effective_boundary,detached);
+    owner.undo_bytes=staged.block.undo.Serialize();
+    auto next=owner.ConnectCatalog(initial,true,effective_boundary,context,block,parent,
+        UtreexoStump::deserialize(selected.stump),staged.block.coins,staged.stump);
+    Impl::CatalogRequire(bool(next));
+    if(owner.storage_mode_after)
+        Impl::CatalogRequire(owner.batch.Put(storage::OrchardCompactStorageKey,*owner.storage_mode_after).ok());
+    owner.replay=RuntimeOrchardReplay{staged.block.orchard.Parent(),staged.block.orchard.Next(),
+        owner.undo_bytes,std::move(replay_mtp)};
+    owner.compact_after=std::make_shared<const OrchardCompactChainstate::Selected>(
+        OrchardCompactChainstate::Selected{&db,&mutex,std::move(*next),
+            owner.compact_before?owner.compact_before->OrchardState().retirement:*effective_boundary});
+    owner.PrepareIndex(files,index,context,block,true,contextual_header_validated);
+    owner.outbox_before=outbox_detail::Append(db,owner.batch,context,block,true,owner.replay);
+    owner.outbox_staged=true;
+    owner.phase=Impl::Phase::Prepared;
+    return result;
+}
+
+std::unique_ptr<PreparedOrchardChainstateWrite> PreparedOrchardChainstateWrite::DisconnectCompactIndexed(
+    AnnotatedRecursiveMutex& mutex,ChainDB& db,const ChainWriteToken& token,
+    BlockStorage& files,CBlockIndex& index,OrchardCompactChainstate& live,
+    const OrchardBlockContext& context,const OrchardBlockCandidate& block,
+    const BlockHeader& parent,const OrchardBranchMtpLookup& mtp,bool witness,
+    const ValidatedOrchardBlock* detached) {
+    auto result=std::unique_ptr<PreparedOrchardChainstateWrite>(new PreparedOrchardChainstateWrite(mutex,db,token));
+    auto& owner=*result->impl_;owner.compact_live=&live;owner.compact_before=live.selected_;
+    Impl::CatalogRequire(owner.compact_before&&owner.compact_before->database==&db&&
+        owner.compact_before->mutex==&mutex);
+    owner.CaptureStorageMode(true,&owner.compact_before->OrchardState().catalog);
+    const auto current=owner.CaptureCatalog(context.block_hash);
+    Impl::CatalogRequire(current&&*current==owner.compact_before->OrchardState().catalog.Encode());
+    Impl::CatalogRequire(RequiredDisk(db.getLegacyRetirementState()).record==owner.compact_before->OrchardState().retirement);
+    const auto previous=owner.SelectCatalog(nullptr,std::nullopt,context,parent);
+    const auto before_state=RequiredDisk(db.getOrchardState());
+    const auto parent_state=RequiredDisk(db.getOrchardUndoParent(before_state));
+    auto staged=StageOrchardCompactChainstateDisconnectUnderLock(db,token,context,block,parent,
+        owner.compact_before->OrchardState().catalog,previous,mtp,witness,owner.batch,detached);
+    owner.undo_bytes=RequiredDisk(db.getUndo(context.block_hash)).Serialize();
+    // Rebuild every catalog effect against the retained parent and require
+    // the exact child plus already-present immutable nodes. Undo never repairs
+    // missing nodes or fabricates a new predecessor from a decoded stump.
+    owner.ConnectCatalog(nullptr,true,std::nullopt,context,block,parent,staged.stump,
+        staged.forward_coins,UtreexoStump::deserialize(owner.compact_before->OrchardState().catalog.stump),true);
+    owner.replay=RuntimeOrchardReplay{parent_state,before_state,owner.undo_bytes,{}};
+    owner.compact_after=std::make_shared<const OrchardCompactChainstate::Selected>(
+        OrchardCompactChainstate::Selected{&db,&mutex,previous,owner.compact_before->OrchardState().retirement});
+    owner.PrepareIndex(files,index,context,block,false);
+    owner.outbox_before=outbox_detail::Append(db,owner.batch,context,block,false,owner.replay);
+    owner.outbox_staged=true;owner.phase=Impl::Phase::Prepared;
+    return result;
+}
+
+std::unique_ptr<PreparedOrchardChainstateWrite> PreparedOrchardChainstateWrite::HistoricalCompactIndexed(
+    AnnotatedRecursiveMutex& mutex,ChainDB& db,const ChainWriteToken& token,BlockStorage& files,
+    CBlockIndex& index,OrchardCompactChainstate& live,const Block& block,
+    const PreparedHistoricalCatalog& lower,const HigherHistoricalCatalog& higher,bool connecting) {
+    return HistoricalCompactPrepared(mutex,db,token,files,index,live,block,&lower,nullptr,&higher,connecting);
+}
+
+std::unique_ptr<PreparedOrchardChainstateWrite> PreparedOrchardChainstateWrite::HistoricalCompactRangeIndexed(
+    AnnotatedRecursiveMutex& mutex,ChainDB& db,const ChainWriteToken& token,BlockStorage& files,
+    CBlockIndex& index,OrchardCompactChainstate& live,const Block& block,
+    const PreparedHistoricalCatalogRange& range,const PreparedOrchardCatalog* boundary,bool connecting) {
+    std::optional<HigherHistoricalCatalog> higher;
+    if(boundary)higher.emplace(std::cref(*boundary));
+    return HistoricalCompactPrepared(mutex,db,token,files,index,live,block,nullptr,&range,higher?&*higher:nullptr,connecting);
+}
+
+std::unique_ptr<PreparedOrchardChainstateWrite> PreparedOrchardChainstateWrite::HistoricalCompactPrepared(
+    AnnotatedRecursiveMutex& mutex,ChainDB& db,const ChainWriteToken& token,BlockStorage& files,
+    CBlockIndex& index,OrchardCompactChainstate& live,const Block& block,
+    const PreparedHistoricalCatalog* lower,const PreparedHistoricalCatalogRange* range,
+    const HigherHistoricalCatalog* higher,bool connecting) {
+    namespace c=storage::catalog;
+    auto result=std::unique_ptr<PreparedOrchardChainstateWrite>(new PreparedOrchardChainstateWrite(mutex,db,token));
+    auto& owner=*result->impl_;
+    const char* operation="historical/catalog-capture";
+    const auto require=[&operation](bool ok){if(!ok)throw OrchardStateLookupError(Status::Corruption,operation);};
+    const auto checked=[&](Status status){require(status==Status::Ok);};
+    struct View {
+        std::variant<c::State,c::HistoricalState> state;
+        std::optional<storage::LegacyRetirementRecord> retirement;
+        std::vector<uint8_t> stump,undo;
+        std::string delta;
+        uint32_t height=0;uint256 hash,parent,wire;arith_uint256 work{0};
+        std::string bytes,frontier,anchors;
+        ChainDB::ShieldedTipMarker marker;
+        std::vector<std::pair<uint32_t,uint256>> nullifiers;
+    };
+    const auto fill=[&](auto state,const auto& proof,const uint256& wire,
+        std::optional<storage::LegacyRetirementRecord> retirement)->View {
+        View v;state.Validate();v.height=state.height;v.hash=state.block;v.parent=state.parent;v.work=state.work;
+        v.bytes=state.Encode();v.state=std::move(state);v.retirement=std::move(retirement);v.wire=wire;
+        require(v.height<=INT32_MAX && proof.Height()==v.height && proof.Forest() && !wire.IsNull());
+        const auto f=proof.ShieldedTree()->SerializeFrontier(),a=proof.ShieldedAnchors()->SerializePersistenceBytes();
+        v.frontier.assign(f.begin(),f.end());v.anchors.assign(a.begin(),a.end());
+        const auto root=proof.ShieldedTree()->Root();uint256 tree_root;std::copy(root.begin(),root.end(),tree_root.begin());
+        const auto count=proof.ShieldedNullifiers()->TryCount();require(bool(count));
+        v.marker={int32_t(v.height),v.hash,tree_root,proof.ShieldedTree()->Size(),*count};
+        constexpr auto limits=SelectedParentReplayWorkLimits();size_t charge=v.frontier.size();
+        require(charge<=limits.serialized_bytes && v.anchors.size()<=limits.serialized_bytes-charge);charge+=v.anchors.size();
+        std::set<uint256> seen;
+        require(proof.ShieldedNullifiers()->ForEach([&](uint32_t height,const uint8_t* bytes) {
+            if(height>v.height || v.nullifiers.size()>=*count || limits.serialized_bytes-charge<36)return false;
+            uint256 hash;std::copy_n(bytes,32,hash.begin());if(!seen.insert(hash).second)return false;
+            v.nullifiers.emplace_back(height,hash);charge+=36;return true;
+        }) && v.nullifiers.size()==*count);
+        std::sort(v.nullifiers.begin(),v.nullifiers.end());
+        v.stump=UtreexoStump::fromForest(*proof.Forest()).serialize();
+        const auto forest_root=proof.Forest()->getCommitment();
+        require(UtreexoStump::deserialize(v.stump).getCommitment()==forest_root);
+        if(v.height) {
+            const auto& tail=proof.UndoTail();
+            require(tail.size()==1 && tail.front().height==v.height && tail.front().block_hash==v.hash);
+            const auto& undo=tail.front().undo;
+            require(undo.height==v.height && undo.block_hash==v.hash && undo.utreexo_delta);
+            const auto body=RequiredDisk(storage::ReadArchivalBlock(db,&files,v.hash));
+            uint256 digest;crypto::CSHA256().Write(body.Serialize()).Finalize(digest.data);
+            require(body.GetHash()==v.hash && digest==wire);
+            UndoRecord stored;
+            for(const auto& e:undo.spent_coins)stored.spent.emplace_back(e.txid,e.vout,e.coin.value.GetUna(),
+                e.coin.scriptPubKey,e.coin.isCoinbase,e.coin.height,e.coin.is_confidential,e.coin.commitment);
+            for(const auto& tx:body.vtx) {
+                require(tx.vout.size()<=UINT32_MAX);
+                for(size_t n=0;n<tx.vout.size();++n)stored.created.emplace_back(tx.GetTxid().AsUint256(),uint32_t(n));
+            }
+            stored.pre_block_shielded_frontier=undo.pre_block_shielded_frontier;
+            stored.pre_block_shielded_anchors=undo.pre_block_shielded_anchors;
+            stored.pre_reset_shielded_epoch=undo.pre_reset_shielded_epoch;
+            v.undo=stored.Serialize();std::string error;
+            require(SerializeUtreexoDelta(*undo.utreexo_delta,v.delta,error));
+        }
+        return v;
+    };
+    const auto historical=[&](const PreparedHistoricalCatalog& p) {
+        p.Check();require(&p.db_==&db);
+        return fill(p.State(),p.proof_.ProvenState(),p.wire_,std::nullopt);
+    };
+    const auto boundary=[&](const PreparedOrchardCatalog& p) {
+        p.Check();require(&p.db_==&db);
+        const auto header=RequiredDisk(db.getHeader(p.target_.hash));require(header.GetHash()==p.target_.hash);
+        c::State s;s.network=p.record_.network_code;s.genesis=p.record_.genesis;
+        s.branch=p.record_.branch_id;s.activation=p.record_.activation_height;s.leaf_activation=p.leaf_activation_;
+        s.height=p.target_.height;s.block=p.target_.hash;s.parent=header.prev_block_hash;s.work=p.target_.chainwork;
+        s.transactions=p.transactions_;s.legacy=p.legacy_;s.nontransparent=p.nontransparent_;
+        s.transaction_count=p.transaction_count_;s.legacy_count=p.legacy_count_;s.nontransparent_count=p.nontransparent_count_;
+        s.stump=p.stump_;return fill(std::move(s),p.proof_.ProvenState(),p.wire_,p.record_);
+    };
+    const auto ranged=[&](const PreparedHistoricalCatalogRange& range,uint32_t height) {
+        range.Check();require(&range.db_==&db);
+        const auto state=range.At(height);const auto checkpoint=range.proof_.CheckpointAt(height);
+        require(state.height==checkpoint.target.height && state.block==checkpoint.target.hash &&
+            state.parent==checkpoint.parent && state.work==checkpoint.target.chainwork &&
+            state.stump==checkpoint.snapshot.stump && height<=INT32_MAX);
+        View v;v.state=state;v.height=state.height;v.hash=state.block;v.parent=state.parent;v.work=state.work;
+        v.bytes=state.Encode();v.wire=checkpoint.wire_hash;v.stump=checkpoint.snapshot.stump;
+        v.frontier.assign(checkpoint.frontier.begin(),checkpoint.frontier.end());
+        v.anchors.assign(checkpoint.anchors.begin(),checkpoint.anchors.end());
+        v.marker={int32_t(height),state.block,checkpoint.snapshot.tree_root,
+            checkpoint.snapshot.tree_size,checkpoint.snapshot.nullifier_count};
+        v.nullifiers=checkpoint.nullifiers;v.undo=checkpoint.undo;v.delta=checkpoint.delta;
+        return v;
+    };
+    require(bool(lower)!=bool(range));
+    if(range) {
+        range->Check();require(index.height>0 && &range->db_==&db);
+        if(index.height>range->Last()) {
+            require(higher && std::holds_alternative<std::reference_wrapper<const PreparedOrchardCatalog>>(*higher));
+            const auto& top=std::get<std::reference_wrapper<const PreparedOrchardCatalog>>(*higher).get();
+            top.Check();require(&top.db_==&db && uint64_t(range->Last())+1==top.target_.height &&
+                top.target_.height==index.height);
+            const auto header=RequiredDisk(db.getHeader(top.target_.hash));
+            require(header.GetHash()==top.target_.hash && header.prev_block_hash==range->At(range->Last()).block);
+        }
+    } else require(higher!=nullptr);
+    const auto low=range?ranged(*range,index.height-1):historical(*lower);
+    const auto high=range && index.height<=range->Last()?ranged(*range,index.height):
+        std::visit([&](const auto& reference)->View {
+            using T=std::remove_cvref_t<decltype(reference.get())>;
+            if constexpr(std::is_same_v<T,PreparedHistoricalCatalog>)return historical(reference.get());
+            else return boundary(reference.get());
+        },*higher);
+    operation="historical/adjacent-proofs";
+    require(uint64_t(low.height)+1==high.height && high.parent==low.hash && high.work>low.work &&
+        high.height<Params().orchard_activation_height && high.hash==block.GetHash() && !block.vtx.empty());
+    operation="historical/exact-body";
+    const auto wire=block.Serialize();uint256 wire_hash;crypto::CSHA256().Write(wire).Finalize(wire_hash.data);
+    require(wire_hash==high.wire);
+    const auto& before=connecting?low:high;const auto& after=connecting?high:low;
+    operation="historical/selected-owner";
+    owner.compact_live=&live;owner.compact_before=live.selected_;
+    require(owner.compact_before && owner.compact_before->database==&db && owner.compact_before->mutex==&mutex);
+    const auto selected_bytes=std::visit([](const auto& value) {
+        using T=std::remove_cvref_t<decltype(value)>;
+        if constexpr(std::is_same_v<T,OrchardCompactChainstate::Selected::Orchard>)return value.catalog.Encode();
+        else return value.Encode();
+    },owner.compact_before->value);
+    operation="historical/selected-catalog";
+    require(selected_bytes==before.bytes);
+    operation="historical/storage-mode";
+    const auto mode=std::visit([](const auto& s){return storage::EncodeOrchardCompactStorageBinding(s);},before.state);
+    require(mode==std::visit([](const auto& s){return storage::EncodeOrchardCompactStorageBinding(s);},after.state));
+    owner.storage_mode_before=storage::ReadOrchardCompactStorageBinding(db);
+    require(owner.storage_mode_before && *owner.storage_mode_before==mode);owner.storage_mode_captured=true;
+    const auto read_catalog=[&](const View& v) {
+        return v.retirement?db.getOrchardCatalogState(v.hash):db.getHistoricalCompactCatalogState(v.hash);
+    };
+    operation="historical/durable-catalog";
+    require(RequiredDisk(read_catalog(before))==before.bytes);
+    const auto existing_after=read_catalog(after);
+    require(existing_after.ok()?*existing_after==after.bytes:existing_after.status()==Status::NotFound);
+    operation="historical/headers-work-stumps";
+    const auto low_header=RequiredDisk(db.getHeader(low.hash));
+    require(low_header.GetHash()==low.hash && low_header.prev_block_hash==low.parent);
+    require(RequiredDisk(db.getHeader(high.hash)).SerializeForHash()==block.header.SerializeForHash());
+    for(const auto* view:{&low,&high}) {
+        require(RequiredDisk(db.getBlockHeight(view->hash))==int(view->height) && RequiredDisk(db.getBlockWork(view->hash))==view->work);
+        const auto stump=UtreexoStump::deserialize(view->stump);
+        require(stump.serialize()==view->stump);const auto root=stump.getCommitment();
+        const auto header=RequiredDisk(db.getHeader(view->hash));
+        require(root.size()==32 && std::equal(root.begin(),root.end(),header.utreexo_root.begin()));
+        require(std::visit([&](const auto& s){return view->stump==s.stump;},view->state));
+    }
+    require(high.work==low.work+GetBlockProof(block.header.difficulty));
+    operation="historical/archival-body";
+    const auto durable_body=RequiredDisk(storage::ReadArchivalBlock(db,&files,high.hash));
+    require(durable_body.Serialize()==wire);
+    operation="historical/global-parent";
+    require(index.pprev && index.pprev->hash==low.hash && index.pprev->height==low.height);
+    operation="historical/global-selected";
+    auto metadata=RequiredDisk(db.getHeaderMetadata(high.hash));
+    // The actual completed historical/boundary proofs above bind both bodies
+    // and work. Only their reconstructed validation levels may differ from
+    // disk. Failure, availability and every locator remain exact.
+    const auto live_before=[&](const CBlockIndex& entry,const BlockHeader& header,
+        const ChainDB::PersistedHeaderMetadata& durable) {
+        require(!(durable.status_flags&(BLOCK_FAILED_VALID|BLOCK_FAILED_CHILD)) &&
+            (entry.status==durable.status_flags || entry.status==(durable.status_flags|BLOCK_VALID_MASK)));
+        auto captured=durable;captured.status_flags=entry.status;
+        require(IndexMatches(entry,header,captured));return captured;
+    };
+    const auto high_live_before=live_before(index,block.header,metadata);
+    require(metadata.height==int(high.height) && metadata.chainwork==high.work &&
+        metadata.parent_hash==low.hash && (metadata.status_flags&BLOCK_HAVE_DATA));
+    operation="historical/independent-undo";
+    require(!high.undo.empty() && !high.delta.empty());
+    auto stored_undo=UndoRecord::Deserialize(high.undo);
+    require(stored_undo.Serialize()==high.undo);
+    size_t created=0;
+    for(const auto& tx:block.vtx) {
+        require(tx.vout.size()<=UINT32_MAX);
+        for(size_t n=0;n<tx.vout.size();++n) {
+            require(created<stored_undo.created.size());const auto& output=stored_undo.created[created++];
+            require(output.txid==tx.GetTxid().AsUint256() && output.vout==uint32_t(n));
+        }
+    }
+    require(created==stored_undo.created.size());
+    operation="historical/retained-undo";
+    owner.undo_bytes=stored_undo.Serialize();const auto existing_undo=db.getUndo(high.hash);
+    require(existing_undo.ok()?existing_undo->Serialize()==owner.undo_bytes:existing_undo.status()==Status::NotFound);
+    operation="historical/retained-delta";
+    const auto& delta=high.delta;UtreexoDelta parsed_delta;std::string error;
+    require(DeserializeUtreexoDelta(delta,parsed_delta,error));
+    const auto delta_key=MakeUtreexoDeltaUndoKey(high.hash);std::string old_delta;
+    const auto delta_status=db.getRaw(delta_key,old_delta);require(delta_status==Status::Ok?old_delta==delta:delta_status==Status::NotFound);
+    // Reconstruct the historical BIP158 filter from the independently validated
+    // block and spent coins, including outputs spent later in this same block.
+    operation="historical/filter-inputs";
+    std::map<OutPoint,std::vector<uint8_t>> scripts_by_coin;
+    std::vector<std::vector<uint8_t>> scripts;
+    for(const auto& coin:stored_undo.spent)
+        require(scripts_by_coin.emplace(OutPoint(TxId(coin.prev_txid),coin.prev_vout),coin.scriptPubKey).second);
+    for(const auto& tx:block.vtx) {
+        for(size_t n=0;n<tx.vout.size();++n) {
+            const auto& script=tx.vout[n].scriptPubKey;
+            const auto [it,added]=scripts_by_coin.emplace(OutPoint(tx.GetTxid(),uint32_t(n)),script);
+            require(added || it->second==script);
+            if(!script.empty() && script.front()!=0x6a)scripts.push_back(script);
+        }
+    }
+    for(size_t n=1;n<block.vtx.size();++n)for(const auto& input:block.vtx[n].vin) {
+        const auto found=scripts_by_coin.find(OutPoint(input.prevout.txid,input.prevout.vout));require(found!=scripts_by_coin.end());
+        if(!found->second.empty())scripts.push_back(found->second);
+    }
+    const auto filter=GCSFilter::Build(scripts,low.hash);
+    std::string filter_error;
+    operation="historical/filter-commitment";
+    require(ValidateFilterCommitment(block.vtx.front(),filter.GetHash(),high.height,filter_error));
+    operation="historical/retained-filter";
+    const auto old_filter=db.getBlockFilter(high.hash);
+    require(old_filter.ok()?(old_filter->data==filter.encoded_data&&old_filter->element_count==filter.element_count):
+        old_filter.status()==Status::NotFound);
+    operation="historical/parent-metadata";
+    const auto low_metadata=RequiredDisk(db.getHeaderMetadata(low.hash));
+    const auto low_live_before=live_before(*index.pprev,low_header,low_metadata);
+    require(low_metadata.height==int(low.height)&&low_metadata.chainwork==low.work);
+    operation="historical/transaction-index";
+    std::vector<std::pair<uint256,std::optional<std::pair<uint256,uint32_t>>>> tx_before;
+    require(block.vtx.size()<=UINT32_MAX);
+    for(size_t n=0;n<block.vtx.size();++n) {
+        const auto id=block.vtx[n].GetTxid().AsUint256();const auto location=db.getTxLocation(id);
+        if(connecting)require(location.status()==Status::NotFound);
+        else require(location.ok()&&location->first==high.hash&&location->second==uint32_t(n));
+        tx_before.emplace_back(id,location.ok()?std::make_optional(*location):std::nullopt);
+    }
+    operation="historical/height-index";
+    const auto high_height_before=db.getBlockHashByHeight(int(high.height));
+    require(connecting?high_height_before.status()==Status::NotFound:
+        (high_height_before.ok()&&*high_height_before==high.hash));
+    // Recheck all mutable disk inputs at commit after external preparation.
+    // No replay engine is borrowed by the callback; only captured values remain.
+    const auto durable_ready=[&db,&files,parent_index=index.pprev,low_header,low_metadata,low_live_before,
+        low_hash=low.hash,high_hash=high.hash,low_height=low.height,high_height=high.height,
+        low_work=low.work,high_work=high.work,wire,existing_after,after_hash=after.hash,
+        after_is_boundary=bool(after.retirement),existing_undo,delta_key,delta_status,old_delta,
+        old_filter,tx_before,high_height_before]() {
+        const auto check=[](bool ok){Impl::CatalogRequire(ok);};
+        check(IndexMatches(*parent_index,low_header,low_live_before));
+        const auto metadata_now=RequiredDisk(db.getHeaderMetadata(low_hash));
+        check(MetadataFields(metadata_now)==MetadataFields(low_metadata));
+        check(RequiredDisk(db.getHeader(low_hash)).SerializeForHash()==low_header.SerializeForHash());
+        check(RequiredDisk(db.getBlockHeight(low_hash))==int(low_height)&&
+            RequiredDisk(db.getBlockHeight(high_hash))==int(high_height)&&
+            RequiredDisk(db.getBlockWork(low_hash))==low_work&&RequiredDisk(db.getBlockWork(high_hash))==high_work);
+        check(RequiredDisk(storage::ReadArchivalBlock(db,&files,high_hash)).Serialize()==wire);
+        const auto height_now=db.getBlockHashByHeight(int(high_height));
+        check(height_now.status()==high_height_before.status()&&(!height_now.ok()||*height_now==*high_height_before));
+        const auto catalog_now=after_is_boundary?db.getOrchardCatalogState(after_hash):db.getHistoricalCompactCatalogState(after_hash);
+        check(catalog_now.status()==existing_after.status()&&(!catalog_now.ok()||*catalog_now==*existing_after));
+        const auto undo_now=db.getUndo(high_hash);
+        check(undo_now.status()==existing_undo.status()&&(!undo_now.ok()||undo_now->Serialize()==existing_undo->Serialize()));
+        std::string delta_now;check(db.getRaw(delta_key,delta_now)==delta_status&&
+            (delta_status!=Status::Ok||delta_now==old_delta));
+        const auto filter_now=db.getBlockFilter(high_hash);
+        check(filter_now.status()==old_filter.status()&&(!filter_now.ok()||
+            (filter_now->data==old_filter->data&&filter_now->element_count==old_filter->element_count)));
+        for(const auto& [id,location]:tx_before) {
+            const auto now=db.getTxLocation(id);
+            check(location?(now.ok()&&*now==*location):now.status()==Status::NotFound);
+        }
+    };
+    durable_ready();
+    // Capture exact selected legacy bytes and every nullifier before preparing
+    // any durable change. A marker/count alone cannot certify those rows.
+    const auto check_before=[&db,before=before]() {
+        const auto check=[](bool ok){Impl::CatalogRequire(ok);};
+        const auto tip=RequiredDisk(db.getTip()),validated=RequiredDisk(db.getValidatedTip());
+        check(tip.height==int(before.height)&&tip.hash==before.hash&&tip.work==before.work&&
+            validated.height==tip.height&&validated.hash==tip.hash&&
+            RequiredDisk(db.getBlockHashByHeight(int(before.height)))==before.hash);
+        // Existing checked iterators refuse malformed records. A single
+        // present full/prebase coin is enough to refuse compact publication.
+        bool full_coin=false,prebase_coin=false;
+        check(db.forEachUTXO([&](const auto&,uint32_t,const auto&){full_coin=true;return false;})==Status::Ok&&!full_coin);
+        check(db.forEachPreBaseCoin([&](const auto&,uint32_t,const auto&){prebase_coin=true;return false;})==Status::Ok&&!prebase_coin);
+        check(db.getPreBaseCoinSetBase().status()==Status::NotFound);
+        check(db.hasSeparatedShieldedState() && db.getOrchardState().status()==Status::NotFound &&
+            db.getLegacyRetirementState().status()==Status::NotFound);
+        check(RequiredDisk(db.getShieldedState(ChainDB::ShieldedStateRecord::Frontier))==before.frontier&&
+            RequiredDisk(db.getShieldedState(ChainDB::ShieldedStateRecord::AnchorHistory))==before.anchors);
+        const auto marker=RequiredDisk(db.getShieldedTipMarker());const auto& m=before.marker;
+        check(std::tie(marker.height,marker.block_hash,marker.shielded_root,marker.tree_size,marker.nullifier_count)==
+            std::tie(m.height,m.block_hash,m.shielded_root,m.tree_size,m.nullifier_count));
+        size_t at=0;bool valid=true;
+        const auto status=db.forEachShieldedNullifier([&](uint32_t height,const uint8_t* p) {
+            if(at==before.nullifiers.size() || height!=before.nullifiers[at].first ||
+                !std::equal(p,p+32,before.nullifiers[at].second.begin())){valid=false;return false;}++at;return true;
+        });check(status==Status::Ok&&valid&&at==before.nullifiers.size());
+        const auto catalog=before.retirement?db.getOrchardCatalogState(before.hash):db.getHistoricalCompactCatalogState(before.hash);
+        check(catalog.ok()&&*catalog==before.bytes);
+        const auto forest=RequiredDisk(db.getForestTipMarker());
+        const auto header=RequiredDisk(db.getHeader(before.hash));
+        check(forest.height==int(before.height)&&forest.block_hash==before.hash&&forest.forest_root==header.utreexo_root);
+    };
+    check_before();owner.historical_ready=[check_before,durable_ready](){check_before();durable_ready();};
+    operation="historical/retirement-owner";
+    if(before.retirement)require(owner.compact_before->OrchardState().retirement==*before.retirement);
+    operation="historical/delivery-profile";
+    const auto profile=SelectedOrchardBlockContext(BlockHeader{},Params().orchard_activation_height);require(bool(profile));
+    operation="historical/delivery-prepare";
+    auto delivery=PreparedHistoricalRuntimeOutbox::PrepareUnderLock(db,*profile,block,high.height,
+        connecting?RuntimeBlockDirection::Connect:RuntimeBlockDirection::Disconnect);require(bool(delivery));
+    owner.outbox_before=outbox_detail::Raw(db,outbox_detail::head_key);require(bool(owner.outbox_before));
+    // All fallible preparation precedes the single durable commit. Immutable
+    // undo append records may be abandoned, never published without the batch.
+    operation="historical/undo-locator";
+    auto next_metadata=metadata;
+    if(metadata.status_flags&BLOCK_HAVE_UNDO)require(metadata.undo_size&&
+        RequiredDisk(files.readUndo({metadata.undo_file,metadata.undo_pos,metadata.undo_size}))==owner.undo_bytes);
+    else {
+        require(!metadata.undo_file&&!metadata.undo_pos&&!metadata.undo_size);
+        const auto pos=RequiredDisk(files.writeUndo(high.hash,owner.undo_bytes));require(pos.offset<=UINT32_MAX);
+        next_metadata.undo_file=pos.file_number;next_metadata.undo_pos=uint32_t(pos.offset);next_metadata.undo_size=pos.size;
+        next_metadata.status_flags|=BLOCK_HAVE_UNDO;
+    }
+    checked(db.putBlockFilter(token,high.hash,filter.encoded_data,filter.element_count,&owner.batch));
+    checked(db.putHeaderMetadata(token,high.hash,next_metadata,&owner.batch));
+    owner.indexed_header=block.header;owner.index_before=metadata;owner.index_after=next_metadata;owner.index=&index;
+    owner.historical_index_live_before=high_live_before;
+    auto high_live_after=next_metadata;
+    // Both adjacent catalogs above carry completed independent replay proofs
+    // for these exact bodies. Publish the proven live validation levels only
+    // after commit, including a boundary parent first reached from below.
+    // Durable status, failure flags and every locator retain their exact checks.
+    high_live_after.status_flags|=BLOCK_VALID_MASK;
+    owner.historical_index_live_after=high_live_after;
+    checked(db.putUndo(token,high.hash,stored_undo,&owner.batch));owner.batch.Put(delta_key,delta);
+    std::visit([&](const auto& state) {
+        using T=std::remove_cvref_t<decltype(state)>;
+        if constexpr(std::is_same_v<T,c::State>)checked(db.stageOrchardCatalogState(token,after.hash,after.bytes,owner.batch));
+        else checked(db.stageHistoricalCompactCatalogState(token,after.hash,after.bytes,owner.batch));
+    },after.state);
+    checked(db.putShieldedState(token,ChainDB::ShieldedStateRecord::Frontier,after.frontier,&owner.batch));
+    checked(db.putShieldedState(token,ChainDB::ShieldedStateRecord::AnchorHistory,after.anchors,&owner.batch));
+    require(RequiredDisk(db.deleteAllShieldedNullifiers(token,&owner.batch))==before.nullifiers.size());
+    for(const auto& [height,hash]:after.nullifiers)checked(db.putShieldedNullifier(token,height,hash.data,&owner.batch));
+    checked(db.putShieldedTipMarker(token,after.marker,&owner.batch));
+    const auto after_header=connecting?block.header:low_header;
+    checked(db.putForestTipMarker(token,{int32_t(after.height),after.hash,after_header.utreexo_root},&owner.batch));
+    for(size_t i=0;i<block.vtx.size();++i) {
+        const auto id=block.vtx[i].GetTxid().AsUint256();const auto location=db.getTxLocation(id);
+        if(connecting) {
+            require(location.status()==Status::NotFound);
+            checked(db.putTxIndex(token,id,high.hash,uint32_t(i),&owner.batch));
+        } else {
+            require(location.ok()&&location->first==high.hash&&location->second==uint32_t(i));
+            checked(db.deleteTxIndex(token,id,&owner.batch));
+        }
+    }
+    if(connecting) {
+        require(db.getBlockHashByHeight(int(high.height)).status()==Status::NotFound);
+        checked(db.putHeightIndex(token,int(high.height),high.hash,&owner.batch));
+    } else checked(db.deleteHeightIndex(token,int(high.height),&owner.batch));
+    checked(db.setTip(token,after.hash,int(after.height),after.work,&owner.batch));
+    checked(db.setValidatedTip(token,after.hash,int(after.height),&owner.batch));
+    owner.compact_after=std::visit([&](const auto& state)->std::shared_ptr<const OrchardCompactChainstate::Selected> {
+        using T=std::remove_cvref_t<decltype(state)>;
+        if constexpr(std::is_same_v<T,c::State>) {
+            require(bool(after.retirement));return std::make_shared<const OrchardCompactChainstate::Selected>(&db,&mutex,state,*after.retirement);
+        } else return std::make_shared<const OrchardCompactChainstate::Selected>(&db,&mutex,state);
+    },after.state);
+    delivery->StageOrTerminateUnderLock(db,owner.batch);owner.outbox_staged=true;
+    owner.phase=Impl::Phase::Prepared;return result;
 }
 
 void PreparedOrchardChainstateWrite::Commit() {
@@ -640,7 +1410,13 @@ void PreparedOrchardChainstateWrite::Commit() {
         throw std::logic_error("Orchard chainstate write is not prepared or was already consumed");
     try {
         owner.CheckIndex();
-        owner.publication->CheckReadyUnderLock();
+        if(owner.compact_live) {
+            Impl::CatalogRequire(!owner.publication&&owner.compact_after&&
+                owner.compact_live->selected_==owner.compact_before);
+        } else {
+            if(!owner.publication)throw std::logic_error("Orchard publication is missing");
+            owner.publication->CheckReadyUnderLock();
+        }
     } catch (...) {
         owner.phase = Impl::Phase::Aborted;
         throw;
@@ -653,7 +1429,12 @@ void PreparedOrchardChainstateWrite::Commit() {
         std::fputs("FATAL: Orchard chainstate write failed; restart from durable state required\n", stderr);
         std::terminate();
     }
-    std::move(*owner.publication).PublishAfterCommitUnderLock();
+    if(owner.compact_live) {
+        // All allocation and readiness checks precede durability. Swapping
+        // shared owners publishes the complete immutable catalog without a
+        // potentially throwing copy or a second database write.
+        owner.compact_live->selected_.swap(owner.compact_after);
+    } else std::move(*owner.publication).PublishAfterCommitUnderLock();
     owner.PublishIndex();
     owner.phase = Impl::Phase::Committed;
 }

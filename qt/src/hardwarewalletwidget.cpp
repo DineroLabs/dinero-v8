@@ -374,7 +374,7 @@ void HardwareWalletWidget::setupFileBasedTab() {
     layout->addWidget(fileProgressBar_);
 
     updateFileActionButtons();
-    layout->addStretch();
+    layout->addStretch(1);  // spare height goes below the content, not into the boxes
 }
 
 void HardwareWalletWidget::setupQRCodeTab() {
@@ -463,7 +463,7 @@ void HardwareWalletWidget::setupQRCodeTab() {
     qrSummaryLabel_->setStyleSheet(hwPanelStyle());
     layout->addWidget(qrSummaryLabel_);
 
-    layout->addStretch();
+    layout->addStretch(1);
     renderDemoQrDisplay();
 }
 
@@ -741,7 +741,7 @@ void HardwareWalletWidget::setupUSBTab() {
 
     updateUsbAddressButtons();
     updateUsbDescriptorControls();
-    layout->addStretch();
+    layout->addStretch(1);
 }
 
 void HardwareWalletWidget::onExportPSBT() {

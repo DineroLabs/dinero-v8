@@ -99,6 +99,13 @@ public:
   std::string getMethodOwner(const std::string& method) const;
   RpcHandler* lookup(const std::string& method);
   std::vector<std::string> methodNames() const;
+  // The registration the handler lookup(method) would run came from: the
+  // method itself when registered under that name, "ns.rest" for the short
+  // name "rest" generated from it, an explicit alias's target. Empty when
+  // unknown, or when it is a generated short name left on a handler that has
+  // since been overwritten (it still runs the old copy). --rpc-readonly
+  // decides on this, never on the spelling of the request.
+  std::string handlerSource(const std::string& method) const;
   bool has(const std::string& method) const;
 
   // Get method metadata (returns nullptr if no metadata registered)
@@ -122,7 +129,9 @@ private:
   std::unordered_map<std::string, std::string>   owners_;
   std::unordered_map<std::string, std::string>   aliases_;      // alias -> target
   std::unordered_map<std::string, RpcAliasInfo>  alias_info_;   // alias -> metadata
+  std::unordered_map<std::string, std::string>   sources_;      // handler name -> handlerSource()
   std::string last_error_;
+  void noteRegisteredLocked(const std::string& method);
 
   bool runtime_baseline_captured_ = false;
   std::unordered_map<std::string, RpcHandler> runtime_baseline_handlers_;
@@ -130,6 +139,7 @@ private:
   std::unordered_map<std::string, std::string> runtime_baseline_owners_;
   std::unordered_map<std::string, std::string> runtime_baseline_aliases_;
   std::unordered_map<std::string, RpcAliasInfo> runtime_baseline_alias_info_;
+  std::unordered_map<std::string, std::string> runtime_baseline_sources_;
 };
 
 // Global RPC registry instance (defined in rpc_registry.cpp)

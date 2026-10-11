@@ -11,6 +11,8 @@ on:
     paths:
       - '.github/workflows/desktop-release.yml'
       - '.github/workflows/windows-release.yml'
+      - 'scripts/verify-orchard-package.py'
+      - 'scripts/tests/test_verify_orchard_package.py'
       - 'packaging/v8.1.13-candidate-sources.json'
       - 'packaging/linux/build-qt-deb.sh'
       - 'packaging/linux/build-qt-tarball.sh'
@@ -95,6 +97,9 @@ jobs:
                   raise SystemExit(f'{name}: source pin {actual} differs from candidate {expected}')
           print('Desktop and Windows mining source pins match the candidate record')
           PY_PINS
+
+      - name: Check Orchard package-report refusal policy
+        run: python3 scripts/tests/test_verify_orchard_package.py -v
 
   linux-desktop:
     name: Linux x86_64 — Qt desktop packages
@@ -188,6 +193,17 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Install the source-pinned Orchard compiler
+        run: |
+          python3 - <<'PY_ORCHARD_TOOLCHAIN'
+          import pathlib, re, subprocess
+          text = pathlib.Path('rust/orchard_backend/rust-toolchain.toml').read_text()
+          pins = re.findall(r'^channel = "([0-9]+\.[0-9]+\.[0-9]+)"$', text, re.MULTILINE)
+          if len(pins) != 1:
+              raise SystemExit('Missing exact Orchard compiler pin')
+          subprocess.run(['rustup', 'toolchain', 'install', pins[0], '--profile', 'minimal'], check=True)
+          PY_ORCHARD_TOOLCHAIN
+
       - name: Build pinned SV2 miners
         working-directory: dinero-sv2
         run: cargo build --release --locked
@@ -213,6 +229,8 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release \
             -DDINERO_USE_VENDORED_DEPS=ON \
             -DDINERO_BUILD_QT=ON \
+            -DDINERO_BUILD_ORCHARD_BACKEND=ON \
+            -DDIN_ENABLE_ORCHARD_UI=ON \
             -DDINERO_BUILD_MINER=ON \
             -DDINERO_BUILD_SEEDER=ON \
             -DENABLE_GPU_MINING=ON \
@@ -225,7 +243,7 @@ jobs:
       - name: Build complete desktop stack
         run: |
           cmake --build build-desktop -j"$(nproc)" --target \
-            dinerod dinero-cli dinero-qt dinero-miner dinero-stratum-worker \
+            dinerod dinero-cli dinero-swap-tower dinero-qt dinero-miner dinero-stratum-worker \
             dinero-wallet-cli dinero-gpu-miner dinero-solo-miner-cli dinero-seeder
 
       - name: Assert OpenSSL policy pin
@@ -288,7 +306,7 @@ jobs:
           EXTRACT="$RUNNER_TEMP/appimage-extract"
           mkdir -p "$EXTRACT"
           (cd "$EXTRACT" && "$GITHUB_WORKSPACE/source/$APPIMAGE" --appimage-extract >/dev/null)
-          for bin in dinerod dinero-cli dinero-qt dinero-seeder dinero-miner \
+          for bin in dinerod dinero-cli dinero-swap-tower dinero-qt dinero-seeder dinero-miner \
                      dinero-solo-miner dinero-gpu-miner dinero-stratum-worker \
                      dinero-wallet-cli dinero-sv2-miner dinero-sv2-gpu-miner; do
             test -x "$EXTRACT/squashfs-root/usr/bin/$bin" || {
@@ -303,6 +321,9 @@ jobs:
               echo "::error::AppImage dinerod needs libOpenCL but the loader was not bundled"; exit 1;
             }
           fi
+
+          python3 scripts/verify-swap-tower-binary.py "$EXTRACT/squashfs-root/usr/bin/dinero-swap-tower"
+          python3 scripts/verify-orchard-package.py --daemon "$EXTRACT/squashfs-root/usr/bin/dinerod" --qt "$EXTRACT/squashfs-root/usr/bin/dinero-qt"
 
           TEST_HOME=$(mktemp -d)
           export HOME="$TEST_HOME"
@@ -328,15 +349,19 @@ jobs:
           TAR_TMP=$(mktemp -d)
           tar -xzf "$TARBALL" -C "$TAR_TMP"
           (cd "$TAR_TMP/dinero-v${V}-linux-x86_64-qt" && sha256sum -c SHA256SUMS.txt)
+          python3 scripts/verify-swap-tower-binary.py "$TAR_TMP/dinero-v${V}-linux-x86_64-qt/usr/bin/dinero-swap-tower"
+          python3 scripts/verify-orchard-package.py --daemon "$TAR_TMP/dinero-v${V}-linux-x86_64-qt/usr/bin/dinerod" --qt "$TAR_TMP/dinero-v${V}-linux-x86_64-qt/usr/bin/dinero-qt"
           DEB_TMP=$(mktemp -d)
           dpkg-deb -x "$DEB" "$DEB_TMP"
-          for bin in dinerod dinero-cli dinero-qt dinero-seeder dinero-miner \
+          for bin in dinerod dinero-cli dinero-swap-tower dinero-qt dinero-seeder dinero-miner \
                      dinero-solo-miner dinero-gpu-miner dinero-stratum-worker \
                      dinero-wallet-cli dinero-sv2-miner dinero-sv2-gpu-miner; do
             test -x "$DEB_TMP/opt/dinero-qt-desktop/bin/$bin" || {
               echo "::error::missing deb binary: $bin"; exit 1;
             }
           done
+          python3 scripts/verify-swap-tower-binary.py "$DEB_TMP/opt/dinero-qt-desktop/bin/dinero-swap-tower"
+          python3 scripts/verify-orchard-package.py --daemon "$DEB_TMP/opt/dinero-qt-desktop/bin/dinerod" --qt "$DEB_TMP/opt/dinero-qt-desktop/bin/dinero-qt"
           dpkg-deb --info "$DEB" >/dev/null
 
       - name: Write desktop checksums
@@ -436,6 +461,17 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Install the source-pinned Orchard compiler
+        run: |
+          python3 - <<'PY_ORCHARD_TOOLCHAIN'
+          import pathlib, re, subprocess
+          text = pathlib.Path('rust/orchard_backend/rust-toolchain.toml').read_text()
+          pins = re.findall(r'^channel = "([0-9]+\.[0-9]+\.[0-9]+)"$', text, re.MULTILINE)
+          if len(pins) != 1:
+              raise SystemExit('Missing exact Orchard compiler pin')
+          subprocess.run(['rustup', 'toolchain', 'install', pins[0], '--profile', 'minimal'], check=True)
+          PY_ORCHARD_TOOLCHAIN
+
       - name: Build pinned SV2 miners
         working-directory: dinero-sv2
         run: cargo build --release --locked
@@ -492,6 +528,8 @@ jobs:
             -DCMAKE_OSX_DEPLOYMENT_TARGET=13.0 \
             -DDINERO_USE_VENDORED_DEPS=ON \
             -DDINERO_BUILD_QT=ON \
+            -DDINERO_BUILD_ORCHARD_BACKEND=ON \
+            -DDIN_ENABLE_ORCHARD_UI=ON \
             -DDINERO_BUILD_MINER=ON \
             -DDINERO_BUILD_SEEDER=ON \
             -DENABLE_GPU_MINING=ON \
@@ -508,7 +546,7 @@ jobs:
       - name: Build complete Intel desktop stack
         run: |
           cmake --build build-desktop -j"$(sysctl -n hw.ncpu)" --target \
-            dinerod dinero-cli dinero-qt dinero-miner dinero-stratum-worker \
+            dinerod dinero-cli dinero-swap-tower dinero-qt dinero-miner dinero-stratum-worker \
             dinero-wallet-cli dinero-gpu-miner dinero-solo-miner-cli dinero-seeder
 
       - name: Build unsigned Intel release stage
@@ -525,6 +563,9 @@ jobs:
           set -euo pipefail
           APP="packaging/mac/dist/stage/dinero-qt.app"
           test -d "$APP"
+          python3 scripts/verify-swap-tower-binary.py "$APP/Contents/MacOS/dinero-swap-tower"
+          python3 scripts/verify-orchard-package.py --daemon "$APP/Contents/MacOS/dinerod" --qt "$APP/Contents/MacOS/dinero-qt"
+          python3 scripts/verify-swap-tower-binary.py packaging/mac/dist/stage/dinero-swap-tower
           test -x "$APP/Contents/Resources/tor/tor/tor"
           test -f "$APP/Contents/Resources/tor/DINERO_TOR_VERSION"
           "$APP/Contents/Resources/tor/tor/tor" --version | grep -F 'Tor version '

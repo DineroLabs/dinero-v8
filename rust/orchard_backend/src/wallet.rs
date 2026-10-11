@@ -1,7 +1,7 @@
 //! Wallet key/receiver profile. No RPC, database, signing or consensus admission.
 //! Secret bytes remain in an opaque non-cloneable handle and are wiped on drop.
-//! Upstream temporary key objects are not zeroizing; this is not a claim that
-//! every compiler/stack copy or the caller's seed has been erased.
+//! With Orchard zeroize enabled, upstream SpendingKey values are wiped on drop.
+//! This does not establish erasure of every compiler/stack copy or caller seed.
 use crate::{boundary, free_owned, Status};
 use bech32::{primitives::decode::CheckedHrpstring, Bech32m, Hrp};
 use orchard::{

@@ -1,4 +1,5 @@
 #pragma once
+namespace dinero::wallet::detail { class RuntimeReplayAuthorizationRetention; }
 #include "consensus/orchard_transparent.h"
 
 namespace dinero::consensus {
@@ -18,6 +19,8 @@ public:
         return transparent_.Snapshot().Transaction();
     }
 private:
+    // Exact process-local retention, only after a genuine verified capture.
+    friend class dinero::wallet::detail::RuntimeReplayAuthorizationRetention;
     friend VerifiedOrchardAuthorizations VerifyOrchardAuthorizations(
         const OrchardCoinSnapshot&, orchard::SigningDomain, uint32_t,
         const OrchardBranchMtpLookup&);

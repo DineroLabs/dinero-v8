@@ -1,4 +1,5 @@
 #pragma once
+namespace dinero::wallet::detail { class RuntimeReplayAuthorizationRetention; }
 #include "orchard_backend.h"
 #include <utility>
 
@@ -31,6 +32,8 @@ public:
     const Hash& Wtxid() const noexcept { return wtxid_; }
     const std::vector<std::uint8_t>& CanonicalBytes() const noexcept { return bytes_; }
 private:
+    // Exact process-local retention, only after a genuine verified capture.
+    friend class dinero::wallet::detail::RuntimeReplayAuthorizationRetention;
     friend class TransactionEnvelope;
     VerifiedEnvelopeAuthorization(VerifiedAuthorization authorization, Hash txid,
         Hash wtxid, std::vector<std::uint8_t> bytes)
@@ -67,6 +70,8 @@ public:
     [[nodiscard]] VerifiedEnvelopeAuthorization VerifyAuthorization(
         SigningDomain domain, std::span<const PreviousOutput> coins) const;
 private:
+    // Exact process-local retention, only after a genuine verified capture.
+    friend class dinero::wallet::detail::RuntimeReplayAuthorizationRetention;
     TransactionEnvelope(std::uint32_t lock_time, std::vector<EnvelopeInput> inputs,
         std::vector<TransparentOutput> outputs, std::uint64_t fee,
         std::vector<std::uint8_t> bundle_bytes, ParsedBundle bundle,

@@ -3,23 +3,6 @@
 #include <optional>
 struct sqlite3;
 namespace dinero::orchard {
-// Wallet-private serialized state. Owned bytes are wiped on release/move
-// assignment; this does not erase caller copies, swap or compiler temporaries.
-class WalletStateBytes {
-public:
-    explicit WalletStateBytes(std::span<const uint8_t> bytes);
-    ~WalletStateBytes();
-    WalletStateBytes(WalletStateBytes&&) noexcept;
-    WalletStateBytes& operator=(WalletStateBytes&&) noexcept;
-    WalletStateBytes(const WalletStateBytes&)=delete;
-    WalletStateBytes& operator=(const WalletStateBytes&)=delete;
-    std::span<const uint8_t> Bytes()const noexcept{return bytes_;}
-private:
-    friend class WalletSnapshotStore;
-    explicit WalletStateBytes(size_t size);
-    void Wipe()noexcept;
-    std::vector<uint8_t> bytes_;
-};
 struct WalletStorageIdentity {
     WalletNetwork network;
     Hash genesis;
@@ -35,7 +18,7 @@ struct LoadedWalletState { uint64_t revision; WalletStateBytes state; };
 // connection; every schema/write call still requires a writable connection.
 class WalletSnapshotStore {
 public:
-    static constexpr size_t kMaxStateBytes=16*1024*1024;
+    static constexpr size_t kMaxStateBytes=WalletStateBytes::kMaxBytes;
     static void InitializeSchemaUnderTransaction(sqlite3*);
     WalletSnapshotStore(sqlite3*,WalletStorageIdentity,std::span<const uint8_t> seed);
     ~WalletSnapshotStore();

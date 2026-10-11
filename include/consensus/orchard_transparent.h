@@ -1,4 +1,5 @@
 #pragma once
+namespace dinero::wallet::detail { class RuntimeReplayAuthorizationRetention; }
 
 #include "consensus/orchard_coin_snapshot.h"
 #include "consensus/orchard_pool_balance.h"
@@ -45,6 +46,8 @@ public:
     const orchard::Hash& OrchardIntent() const noexcept { return intent_; }
     uint32_t CandidateHeight() const noexcept { return candidate_height_; }
 private:
+    // Exact process-local retention, only after a genuine verified capture.
+    friend class dinero::wallet::detail::RuntimeReplayAuthorizationRetention;
     friend VerifiedOrchardTransparentInputs VerifyOrchardTransparentInputs(
         const OrchardCoinSnapshot&, orchard::SigningDomain, uint32_t,
         const OrchardBranchMtpLookup&);

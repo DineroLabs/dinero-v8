@@ -1,4 +1,5 @@
 #pragma once
+namespace dinero::wallet::detail { class RuntimeReplayAuthorizationRetention; }
 
 #include "orchard_backend_ffi.h"
 #include <array>
@@ -94,7 +95,8 @@ private:
 };
 
 class ParsedBundle;
-// Only ParsedBundle::VerifyAuthorization constructs this result. It records
+// Verification constructs this result; private retention may restore the exact
+// previously verified value under its original owner/content token. It records
 // the exact digest checked and shares ownership of the immutable parsed data.
 // Chainstate and transparent-script validation are separate requirements.
 class VerifiedAuthorization {
@@ -102,6 +104,8 @@ public:
     const DineroOrchardFacts& Facts() const noexcept { return facts_; }
     const Hash& SigningDigest() const noexcept { return digest_; }
 private:
+    // Exact process-local retention, only after a genuine verified capture.
+    friend class dinero::wallet::detail::RuntimeReplayAuthorizationRetention;
     friend class ParsedBundle;
     friend class WalletNote;
     VerifiedAuthorization(std::shared_ptr<const DineroOrchardHandle> handle,
@@ -120,6 +124,8 @@ public:
     Hash SigningDigest(const SigningContext& context) const;
     [[nodiscard]] VerifiedAuthorization VerifyAuthorization(const SigningContext& context) const;
 private:
+    // Exact process-local retention, only after a genuine verified capture.
+    friend class dinero::wallet::detail::RuntimeReplayAuthorizationRetention;
     ParsedBundle(std::shared_ptr<const DineroOrchardHandle> handle,
                  DineroOrchardFacts facts);
     const std::shared_ptr<const DineroOrchardHandle> handle_;

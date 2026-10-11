@@ -1,0 +1,9 @@
+# Explicit compact Orchard download draining
+
+Uncompiled, unapplied draft. The legacy stateless flag stays enabled. An additional typed callback permits only known Orchard-height exact bodies to be stored and offered for canonical validation. Historical raw bodies cannot enter either callback in stateless mode; their ordered proof-validation path remains mandatory. Backfill handling and stored-body adoption remain unchanged.
+
+The actual DaemonApp callback checks the started compact storage owner through SubmitDownloadedCompactOrchardBlock, outside the scheduler mutex, then enters the existing canonical queue. Stored and refused results remain retryable and do not acknowledge a connection. Only the canonical Connected result advances transport completion. The callback is configured before dispatch. Existing mutex release/reacquisition and captured-offer reconciliation are retained.
+
+Three serial component cases are defined: explicit typed registration plus queue-not-started retry and malformed refusal; stopped compact owner; historical raw-body refusal. These are definitions, not executed results. They use actual schedulers, compact service and canonical queue, with local send callbacks. They do not execute DaemonApp startup, sockets, IPC, or excluded synchronization controls. No original-red or sanitizer claim.
+
+The draft includes the earlier unqualified request-format V2 changes and all their three test bodies unchanged. Activation-status V2 additions are preserved. Full-storage startup refusal remains; historical compact receive, stored-body restart adoption, authenticated header startup, maintenance/reindex and mining composition still require implementation and qualification before opening DaemonApp compact startup. This does not establish release readiness or change activation.

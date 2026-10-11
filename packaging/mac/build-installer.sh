@@ -119,7 +119,7 @@ echo "Verified embedded Tor: $(cat "$TOR_VERSION_FILE") ($TOR_ARCHS)"
 # Verify the daemon stack the Qt app embeds. dinero-seeder is required because
 # the Cmd+K dashboard exposes a Start Seeder control; shipping the GUI without
 # the helper makes that button fail at runtime.
-for bin in dinerod dinero-cli seeder/dinero-seeder; do
+for bin in dinerod dinero-cli dinero-swap-tower seeder/dinero-seeder; do
     if [[ ! -x "$BUILD_DIR/$bin" ]]; then
         echo "ERROR: $bin not found at $BUILD_DIR/$bin" >&2
         echo "Run cmake --build $BUILD_DIR --target dinerod dinero-cli dinero-seeder first." >&2
@@ -135,7 +135,7 @@ done
 # with a signal (exit >= 128) or prints a C++ terminate/abort message. Refuse to
 # package a broken release.
 echo "Smoke-testing the daemon stack launches (--version)..."
-for bin in dinerod dinero-cli seeder/dinero-seeder; do
+for bin in dinerod dinero-cli dinero-swap-tower seeder/dinero-seeder; do
     if smoke_out=$("$BUILD_DIR/$bin" --version 2>&1); then smoke_rc=0; else smoke_rc=$?; fi
     if [[ "$smoke_rc" -ge 128 ]] || printf '%s' "$smoke_out" | grep -qiE "libc\+\+abi|terminating due to|mutex lock failed|Abort trap|Segmentation fault"; then
         echo "ERROR: $bin crashed at startup (exit $smoke_rc) -- refusing to package a broken release." >&2
@@ -144,6 +144,8 @@ for bin in dinerod dinero-cli seeder/dinero-seeder; do
     fi
 done
 echo "  OK: daemon stack launches cleanly"
+python3 "$PROJECT_ROOT/scripts/verify-swap-tower-binary.py" "$BUILD_DIR/dinero-swap-tower"
+[[ "$(lipo -archs "$BUILD_DIR/dinero-swap-tower")" == "$ARCH" ]]
 
 echo "----------------------------------------------------------"
 echo "Building Dinero macOS installer -- v$VERSION"
@@ -156,6 +158,8 @@ mkdir -p "$OPERATOR_STAGE_DIR/bin"
 
 echo "Copying dinero-qt.app (with embedded dinerod + Qt frameworks)..."
 ditto "$APP_BUNDLE" "$STAGE_DIR/dinero-qt.app"
+cp "$BUILD_DIR/dinero-swap-tower" "$STAGE_DIR/dinero-qt.app/Contents/MacOS/dinero-swap-tower"
+python3 "$PROJECT_ROOT/scripts/verify-swap-tower-binary.py" "$STAGE_DIR/dinero-qt.app/Contents/MacOS/dinero-swap-tower"
 
 # Keep the drag-to-Applications install self-contained for advanced
 # network operators. The companion binary remains available at the DMG
@@ -233,7 +237,7 @@ fi
 # want the CLI tools without launching the Qt UI. Mirrors what the
 # Linux tarball + Windows installer ship.
 echo "Copying standalone daemon binaries..."
-for bin in dinerod dinero-cli; do
+for bin in dinerod dinero-cli dinero-swap-tower; do
     if [[ -x "$BUILD_DIR/$bin" ]]; then
         cp "$BUILD_DIR/$bin" "$STAGE_DIR/$bin"
     fi
@@ -288,18 +292,21 @@ OPERATOR_ROOT="$OPERATOR_STAGE_DIR/dinero-operator-v${VERSION}-macOS-${ARCH}"
 mkdir -p "$OPERATOR_ROOT/bin"
 cp "$BUILD_DIR/dinerod" "$OPERATOR_ROOT/bin/dinerod"
 cp "$BUILD_DIR/dinero-cli" "$OPERATOR_ROOT/bin/dinero-cli"
+cp "$BUILD_DIR/dinero-swap-tower" "$OPERATOR_ROOT/bin/dinero-swap-tower"
+python3 "$PROJECT_ROOT/scripts/verify-swap-tower-binary.py" "$OPERATOR_ROOT/bin/dinero-swap-tower"
 cp "$BUILD_DIR/seeder/dinero-seeder" "$OPERATOR_ROOT/bin/dinero-seeder"
 cp "$PROJECT_ROOT/LICENSE" "$OPERATOR_ROOT/LICENSE" 2>/dev/null || true
 cat > "$OPERATOR_ROOT/README.txt" <<EOF
 Dinero macOS operator archive ${VERSION}
 
 This archive is for headless macOS node operators. It includes the daemon,
-RPC CLI, and dinero-seeder.
+RPC CLI, dinero-seeder, and the swap watchtower.
 
 Common entry points:
   ./bin/dinerod
   ./bin/dinero-cli
   ./bin/dinero-seeder
+  ./bin/dinero-swap-tower (requires explicit swap configuration)
 EOF
 (cd "$OPERATOR_ROOT" && shasum -a 256 bin/* > SHA256SUMS)
 OPERATOR_TARBALL="$DIST_DIR/dinero-operator-v${VERSION}-macOS-${ARCH}.tar.gz"

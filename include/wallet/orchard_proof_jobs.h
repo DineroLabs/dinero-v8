@@ -2,6 +2,8 @@
 #include "wallet/orchard_operation_queue.h"
 #include <chrono>
 #include <memory>
+#include <optional>
+#include <stdexcept>
 
 namespace dinero::wallet {
 class OrchardAccountDelivery;
@@ -91,5 +93,16 @@ private:
         const std::shared_ptr<const void>&) noexcept;
     struct Impl;
     std::shared_ptr<Impl> impl_;
+};
+// Raised only after authenticating an existing durable reservation and its
+// owned job observation. A missing process-local job is not queued/running and
+// never authorizes requeue, replacement, cancellation or reservation release.
+class OrchardProofUnavailable final : public std::runtime_error {
+public:
+    OrchardProofUnavailable(std::optional<OrchardProofJobs::State> state,const char* message)
+        :std::runtime_error(message),state_(state){}
+    std::optional<OrchardProofJobs::State> ObservedState() const noexcept{return state_;}
+private:
+    std::optional<OrchardProofJobs::State> state_;
 };
 } // namespace dinero::wallet

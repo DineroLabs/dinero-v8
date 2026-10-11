@@ -3,6 +3,8 @@
 #include <openssl/crypto.h>
 #include <openssl/sha.h>
 #include <set>
+#include <map>
+#include <utility>
 namespace dinero::wallet {
 namespace {
 using namespace orchard;
@@ -34,6 +36,9 @@ OrchardFrontier Frontier(const storage::OrchardStoredState &state) {
        state.frontier.size()});
 }
 constexpr size_t kMaxWalletNotes = 4096;
+// Operational bound: refuse before publishing, never truncate history. The
+// enclosing encrypted snapshot's byte bound still applies independently.
+constexpr size_t kMaxReceivedNotes = 65536;
 } // namespace
 struct OrchardWalletScanState::Data {
   orchard::SigningDomain domain;
@@ -41,6 +46,9 @@ struct OrchardWalletScanState::Data {
   uint32_t activation;
   storage::OrchardStoredState checkpoint;
   std::vector<ScannedOrchardNote> notes;
+  std::vector<ReceivedOrchardNote> receipts;
+  bool complete_receipts = true;
+  bool legacy_encoding = false;
   uint64_t balance = 0;
   ~Data() { OPENSSL_cleanse(fvk.data(), fvk.size()); }
 };
@@ -82,6 +90,24 @@ OrchardWalletScanState::Notes() const noexcept {
 }
 uint64_t OrchardWalletScanState::BalanceUna() const noexcept {
   return data_->balance;
+}
+bool OrchardWalletScanState::HasCompleteReceiptHistory() const noexcept {
+  return data_->complete_receipts;
+}
+const std::vector<ReceivedOrchardNote> &
+OrchardWalletScanState::CompleteReceipts() const {
+  Check(data_->complete_receipts);
+  return data_->receipts;
+}
+WalletNote OrchardWalletScanState::DecryptReceipt(size_t index) const {
+  const auto &receipts = CompleteReceipts();
+  Check(index < receipts.size());
+  const auto &receipt = receipts[index];
+  auto note = WalletNote::Receive(receipt.origin->Orchard().Orchard(), data_->fvk,
+                                 receipt.scope, receipt.action_index);
+  Check(bool(note) && note->Facts().amount > 0 &&
+        note->Facts().amount <= kMaxMoneyUna);
+  return std::move(*note);
 }
 OrchardWalletScanState OrchardWalletScanState::Advance(
     const OrchardBlockContext &context, const OrchardBlockCandidate &block,
@@ -137,6 +163,11 @@ OrchardWalletScanState OrchardWalletScanState::Advance(
   }
   Check(nf_index == prepared.Nullifiers().size());
   auto next = std::make_shared<Data>(*data_);
+  next->legacy_encoding = false;
+  std::set<std::pair<Hash, uint32_t>> known_receipts;
+  for (const auto &received : next->receipts)
+    Check(known_receipts.emplace(received.origin->Orchard().Txid(),
+                                 received.action_index).second);
   std::erase_if(next->notes, [&](const auto &owned) {
     return spent.contains(HashBytes(owned.note->Facts().nullifier));
   });
@@ -167,6 +198,11 @@ OrchardWalletScanState OrchardWalletScanState::Advance(
         Check(next->notes.size() < kMaxWalletNotes);
         if (!origin)
           origin = std::make_shared<VerifiedOrchardAuthorizations>(auth);
+        Check(next->receipts.size() < kMaxReceivedNotes);
+        const auto txid = origin->Orchard().Txid();
+        Check(known_receipts.emplace(txid, i).second);
+        next->receipts.push_back({origin, i, scope, context.height,
+                                  context.block_hash});
         auto witness = std::make_shared<WalletWitness>(
             WalletWitness::ForAppendedLeaf(*frontier, commitments, i));
         next->notes.push_back(
@@ -204,7 +240,9 @@ namespace {
 // The snapshot is wallet-private and must only reach durable storage through
 // WalletSnapshotStore. Bounds are enforced before allocation or callbacks.
 constexpr std::array<uint8_t, 8> kScanMagic{'D', 'N', 'O', 'R',
-                                            'W', 'S', '0', '1'};
+                                            'W', 'S', '0', '2'};
+constexpr std::array<uint8_t, 8> kLegacyScanMagic{'D', 'N', 'O', 'R',
+                                                  'W', 'S', '0', '1'};
 struct Writer {
   std::vector<uint8_t> bytes;
   ~Writer() {
@@ -289,7 +327,7 @@ storage::OrchardStoredState ReadCheckpoint(Reader &r) {
 } // namespace
 WalletStateBytes OrchardWalletScanState::Encode() const {
   Writer w;
-  w.Raw(kScanMagic);
+  w.Raw(data_->legacy_encoding ? kLegacyScanMagic : kScanMagic);
   w.Number(data_->domain.network_code, 1);
   w.Raw(data_->domain.genesis_wire);
   w.Number(data_->domain.branch_id, 4);
@@ -305,6 +343,18 @@ WalletStateBytes OrchardWalletScanState::Encode() const {
     w.Number(static_cast<uint8_t>(owned.scope), 1);
     w.Blob(owned.witness->Encode());
   }
+  if (!data_->legacy_encoding) {
+    Check(data_->receipts.size() <= kMaxReceivedNotes);
+    w.Number(data_->complete_receipts ? 1 : 0, 1);
+    w.Number(data_->receipts.size(), 4);
+    for (const auto &received : data_->receipts) {
+      w.Number(received.created_height, 4);
+      w.Raw(HashBytes(received.created_block));
+      w.Raw(received.origin->Orchard().Txid());
+      w.Number(received.action_index, 4);
+      w.Number(static_cast<uint8_t>(received.scope), 1);
+    }
+  }
   return WalletStateBytes(w.bytes);
 }
 OrchardWalletScanState OrchardWalletScanState::Restore(
@@ -319,7 +369,9 @@ OrchardWalletScanState OrchardWalletScanState::Restore(
   (void)WalletReceiver::FromViewingKey(fvk, WalletScope::External, {});
   Reader r{encoded.Bytes()};
   auto magic = r.Raw(kScanMagic.size());
-  Check(std::equal(magic.begin(), magic.end(), kScanMagic.begin()));
+  const bool legacy = std::equal(magic.begin(), magic.end(),
+                                 kLegacyScanMagic.begin());
+  Check(legacy || std::equal(magic.begin(), magic.end(), kScanMagic.begin()));
   Check(r.Number(1) == domain.network_code &&
         r.Hash32() == domain.genesis_wire && r.Number(4) == domain.branch_id);
   Check(r.Number(4) == activation && r.Hash32() == ViewingIdentity(fvk));
@@ -356,14 +408,45 @@ OrchardWalletScanState OrchardWalletScanState::Restore(
           !item.block.IsNull() && item.index < kMaxActionsV1);
     records.push_back(item);
   }
+  bool complete = false;
+  std::vector<Record> receipt_records;
+  if (!legacy) {
+    const auto flag = r.Number(1);
+    Check(flag <= 1);
+    complete = flag != 0;
+    const auto receipt_count = r.Number(4);
+    Check(receipt_count <= kMaxReceivedNotes &&
+          receipt_count <= r.bytes.size() / 73);
+    receipt_records.reserve(receipt_count);
+    for (size_t i = 0; i < receipt_count; ++i) {
+      Record item{};
+      item.height = r.Number(4);
+      item.block = r.Uint256();
+      item.txid = r.Hash32();
+      item.index = r.Number(4);
+      const auto scope = r.Number(1);
+      Check(scope <= static_cast<uint8_t>(WalletScope::Internal));
+      item.scope = static_cast<WalletScope>(scope);
+      Check(item.height >= activation && item.height <= checkpoint.height &&
+            !item.block.IsNull() && item.index < kMaxActionsV1);
+      if (!receipt_records.empty()) {
+        const auto &previous = receipt_records.back();
+        Check(previous.height <= item.height &&
+              (previous.height != item.height || previous.block == item.block));
+      }
+      receipt_records.push_back(item);
+    }
+  }
   Check(r.bytes.empty());
-  if (count)
-    Check(bool(lookups.origin) && bool(lookups.spent_nullifier));
+  if (count || !receipt_records.empty()) Check(bool(lookups.origin));
+  if (count) Check(bool(lookups.spent_nullifier));
   auto state = std::make_shared<Data>();
   state->domain = domain;
   state->fvk = fvk;
   state->activation = activation;
   state->checkpoint = checkpoint;
+  state->complete_receipts = complete;
+  state->legacy_encoding = legacy;
   std::set<Hash> nullifiers;
   std::set<uint32_t> positions;
   for (const auto &item : records) {
@@ -397,6 +480,36 @@ OrchardWalletScanState OrchardWalletScanState::Restore(
                             std::make_shared<WalletWitness>(std::move(witness)),
                             std::move(origin), item.index, item.scope,
                             item.height, item.block});
+  }
+  std::map<std::pair<Hash, uint32_t>, const Record *> receipt_ids;
+  std::set<Hash> receipt_nullifiers;
+  for (const auto &item : receipt_records) {
+    Check(receipt_ids.emplace(std::make_pair(item.txid, item.index), &item).second);
+    auto origin = lookups.origin(item.height, item.block, item.txid);
+    Check(bool(origin));
+    Check(origin->Orchard().Txid() == item.txid &&
+          origin->Transparent().CandidateHeight() == item.height &&
+          origin->Transparent().Snapshot().ViewHeight() == item.height - 1 &&
+          origin->Transparent().Snapshot().SigningDigest(domain) ==
+              origin->Orchard().Orchard().SigningDigest());
+    auto received = WalletNote::Receive(origin->Orchard().Orchard(), fvk,
+                                        item.scope, item.index);
+    Check(bool(received) && received->Facts().amount > 0 &&
+          received->Facts().amount <= kMaxMoneyUna);
+    Check(receipt_nullifiers.insert(HashBytes(received->Facts().nullifier)).second);
+    state->receipts.push_back({std::move(origin), item.index, item.scope,
+                              item.height, item.block});
+  }
+  if (complete) {
+    for (const auto &owned : state->notes) {
+      const auto found = receipt_ids.find(
+          {owned.origin->Orchard().Txid(), owned.action_index});
+      Check(found != receipt_ids.end());
+      const auto &received = *found->second;
+      Check(received.scope == owned.scope &&
+            received.height == owned.created_height &&
+            received.block == owned.created_block);
+    }
   }
   Check(state->balance <= checkpoint.pool_balance);
   auto restored = OrchardWalletScanState(std::move(state));

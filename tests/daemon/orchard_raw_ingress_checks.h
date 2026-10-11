@@ -40,7 +40,8 @@ public:
     CBlockIndex* parent=nullptr;
     DaemonContext context;
     DaemonContext* previous=DaemonContext::instance();
-    RawIngressFixture() {
+    explicit RawIngressFixture(bool real_pow=false,
+        OrchardAdmissionFixture::HistoricalSpend spend=OrchardAdmissionFixture::HistoricalSpend::None):f(real_pow,spend) {
         // Header-only siblings exercise the real missing-body logging path.
         // Match the logger dependency normally installed by DaemonApp.
         ShieldedStateStartupTestAccess::InitializeRawIngressLogger(*f.service);

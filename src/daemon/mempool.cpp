@@ -772,6 +772,16 @@ TxAcceptResult Mempool::submitBody(const MempoolTransaction& incoming,
     if(!incoming.HasBody())return TxAcceptResult::Rejected(TxRejectCode::UNAVAILABLE,"Transaction body unavailable");
     const MempoolTransaction body=incoming;
     if(!body.IsOrchard())return submitTransactionInternal(body.Historical(),source,relay,test_only);
+    return submitOrchardBody(body,{},source,relay,test_only);
+}
+TxAcceptResult Mempool::submitProofBody(const UtreexoTransactionPayload& payload,
+    const std::string& source,bool relay,bool test_only) {
+    if(!payload.Body().IsOrchard())return TxAcceptResult::Rejected(
+        TxRejectCode::UNAVAILABLE,"Proof-bearing admission requires Orchard body");
+    return submitOrchardBody(payload.Body(),payload.Wire(),source,relay,test_only);
+}
+TxAcceptResult Mempool::submitOrchardBody(const MempoolTransaction& body,
+    std::span<const uint8_t> proof,const std::string& source,bool relay,bool test_only) {
     auto chain=chainstate_read_guard_factory_?chainstate_read_guard_factory_():nullptr;
     if(!chain)return TxAcceptResult::Rejected(TxRejectCode::UNAVAILABLE,"Selected Orchard owner unavailable");
     std::unique_lock<std::shared_mutex> lock(m_mutex);
@@ -782,33 +792,57 @@ TxAcceptResult Mempool::submitBody(const MempoolTransaction& incoming,
     if(m_sp_scanner_manager && !scanner)return fail(TxRejectCode::UNAVAILABLE,"Configured scanner cannot consume Orchard body");
     const auto notification=m_tx_accepted_observer.Prepare(body);
     const auto broadcast=relay?m_tx_broadcast_callback:TxBroadcastCallback{};
-    if(m_transactions.contains(id))return fail(TxRejectCode::ALREADY_IN_MEMPOOL,"Transaction already in mempool");
+    const auto existing=m_transactions.find(id);
+    const bool refresh=existing!=m_transactions.end();
+    if(refresh && proof.empty())return fail(TxRejectCode::ALREADY_IN_MEMPOOL,"Transaction already in mempool");
+    if(refresh && existing->second.tx.Serialize()!=body.Serialize())
+        return fail(TxRejectCode::INVALID_TX,"Proof refresh body mismatch");
     for(const auto& input:body.Inputs()) {
-        if(!getInputSpendersLocked(input).empty())return fail(TxRejectCode::DOUBLE_SPEND_NO_RBF,"Orchard replacement unavailable");
+        for(const auto& spender:getInputSpendersLocked(input))
+            if(!refresh || spender!=id)return fail(TxRejectCode::DOUBLE_SPEND_NO_RBF,"Orchard replacement unavailable");
         if(m_transactions.contains(input.txid.AsUint256()))return fail(TxRejectCode::UNAVAILABLE,"Orchard pending parent policy unavailable");
     }
     std::unordered_set<uint256> ancestors;
-    const auto package=checkAdmissionPackageLocked(body,{},false,ancestors);
-    if(!package.accepted())return package;
+    if(!refresh) {
+        const auto package=checkAdmissionPackageLocked(body,{},false,ancestors);
+        if(!package.accepted())return package;
+    }
     std::set<std::array<uint8_t,32>> nullifiers(body.OrchardNullifiers().begin(),body.OrchardNullifiers().end());
     if(nullifiers.size()!=body.OrchardNullifiers().size())return fail(TxRejectCode::INVALID_TX,"Duplicate Orchard nullifier");
-    std::vector<MempoolTransaction> pending;
+    std::vector<MempoolProofView> pending;
     for(const auto& [other,entry]:m_transactions) {
-        if(!entry.tx.IsOrchard())continue;
+        if(other==id || !entry.tx.IsOrchard())continue;
         for(const auto& nf:entry.tx.OrchardNullifiers())
             if(nullifiers.contains(nf))return fail(TxRejectCode::DOUBLE_SPEND_NO_RBF,"Conflicting Orchard nullifier");
-        pending.push_back(entry.tx);
+        pending.push_back({entry.tx,entry.cached_utxotx_payload});
     }
-    const auto checked=chain->ValidateOrchard(body,pending);
+    const auto checked=chain->ValidateOrchardWithProofs({body,proof},pending);
     if(!checked.result.accepted())return checked.result;
     const auto vsize=body.GetVirtualSize();
     if(!vsize || body.ExplicitFee()!=std::optional<uint64_t>(checked.fee))
         return fail(TxRejectCode::UNAVAILABLE,"Orchard checked fee unavailable");
     const double rate=static_cast<double>(checked.fee)/vsize;
     if(rate<m_min_fee_rate)return fail(TxRejectCode::INSUFFICIENT_FEE,"Orchard fee rate below minimum");
+    if(!proof.empty() && checked.proof_root.size()!=32)
+        return fail(TxRejectCode::UNAVAILABLE,"Selected input proof unavailable");
     if(test_only)return TxAcceptResult::Accepted(id);
+    if(refresh) {
+        auto wire=std::vector<uint8_t>(proof.begin(),proof.end());
+        auto root=checked.proof_root;
+        auto& entry=existing->second;
+        entry.cached_utxotx_payload.swap(wire);entry.validated_at_root.swap(root);
+        entry.validated_at_height=checked.parent_height;
+        entry.is_proof_stale=false;entry.proof_refresh_attempts=0;
+        return TxAcceptResult::Accepted(id);
+    }
     StateRollback rollback(*this);
     MempoolEntry entry(body,checked.fee,checked.parent_height);
+    if(!proof.empty()) {
+        entry.cached_utxotx_payload.assign(proof.begin(),proof.end());
+        entry.validated_at_root=checked.proof_root;
+        entry.validated_at_height=checked.parent_height;
+        entry.is_proof_stale=false;
+    }
     // Native transparent witnesses have no P2MR surcharge. Existing VWU's
     // non-P2MR baseline charges all stripped and witness bytes once.
     entry.vwu=std::max<uint64_t>(body.GetSize(),1);
@@ -2164,7 +2198,7 @@ MempoolTypedBlockSelection Mempool::CaptureBlockSelectionImpl(
     MempoolSelectionValidation parent;
     if (typed) {
         if (!chainstate_guard) return {};
-        parent = chainstate_guard->ValidateBlockSelection({}, next_block_height);
+        parent = chainstate_guard->ValidateBlockSelectionWithProofs({}, next_block_height);
         if (!parent.result.accepted() || parent.parent_hash.IsNull() ||
             uint64_t(parent.parent_height) + 1 != next_block_height) return {};
     }
@@ -2557,7 +2591,11 @@ MempoolTypedBlockSelection Mempool::CaptureBlockSelectionImpl(
                 if (!included.count(ancestor)) proposed.push_back(m_transactions.at(ancestor).tx);
             }
             proposed.push_back(score.entry->tx);
-            const auto checked = chainstate_guard->ValidateBlockSelection(proposed, next_block_height);
+            std::vector<MempoolProofView> proof_entries;
+            proof_entries.reserve(proposed.size());
+            for(const auto& body:proposed)proof_entries.push_back(
+                {body,m_transactions.at(body.GetTxid().AsUint256()).cached_utxotx_payload});
+            const auto checked = chainstate_guard->ValidateBlockSelectionWithProofs(proof_entries, next_block_height);
             if (!checked.result.accepted() || checked.parent_hash != parent.parent_hash ||
                 checked.parent_height != parent.parent_height || checked.fees.size() != proposed.size())
                 continue;

@@ -25,6 +25,7 @@ class HttpContract(unittest.TestCase):
         (self.node.datadir / ".cookie").write_text("unit:fake")
         self.node.process = SimpleNamespace(poll=lambda: None)
         self.node.ports, self.node.starts = [1], 1
+        self.node.wallet_binding = "a" * 64
         self.request = {"account": 3, "request_id": "unit-request"}
         self.success = {"admitted": True, "durable_state": "signed", "txid": "unit-tx"}
 
@@ -126,6 +127,55 @@ class HttpContract(unittest.TestCase):
 
     def test_legacy_nested_pending_then_ready(self):
         self.assert_ready_after("shield", {"result": {"error": "Owned shield proof is not complete"}})
+
+
+    def test_typed_pending_ignores_human_message(self):
+        for state in ("queued", "running"):
+            with self.subTest(state=state):
+                try:
+                    self.assert_ready_after("shield", {"error": {"code": -32603,
+                        "message": "Human wording may change", "data": {"orchard": {
+                            "error_code": "proof_not_ready", "proof_state": state,
+                            "reservation_retained": True}}}})
+                except cycle.RpcError as error:
+                    self.fail("Typed queued/running proof was refused: " + str(error))
+
+    def assert_typed_refuses(self, detail):
+        self.arrange_ready("shield")
+        response = {"error": {"code": -32603, "message": "Owned shield proof is not complete",
+                              "data": detail}}
+        with patch.object(cycle.urllib.request, "urlopen", side_effect=lambda *a, **k: self.reply(response)) as transport:
+            with self.assertRaises(cycle.RpcError):
+                self.node.ready("shield", self.request)
+        self.assertEqual(self.attempts, 1)
+        transport.assert_called_once()
+        self.node.restart.assert_not_called()
+
+    def test_typed_terminal_proof_states_refuse_immediately(self):
+        for state in ("failed", "cancelled", "cancel_requested", "missing", "result_unavailable", "unavailable"):
+            with self.subTest(state=state):
+                self.assert_typed_refuses({"orchard": {"error_code": "proof_not_ready",
+                    "proof_state": state, "reservation_retained": True}})
+
+    def test_malformed_typed_details_never_fall_back_to_message(self):
+        valid = {"error_code": "proof_not_ready", "proof_state": "running", "reservation_retained": True}
+        details = [None, [], "running", {}, {"orchard": None}, {"orchard": []}]
+        details += [{"orchard": {**valid, "reservation_retained": value}} for value in (False, 1, "true", None)]
+        details += [{"orchard": {**valid, "proof_state": value}} for value in (None, 7, [], "unknown")]
+        details += [{"orchard": {**valid, "error_code": "request_not_current"}}]
+        for detail in details:
+            with self.subTest(detail=detail):self.assert_typed_refuses(detail)
+
+    def test_nested_typed_failed_state_is_not_pending(self):
+        self.arrange_ready("shield")
+        response = {"result": {"error": "Owned shield proof is not complete",
+            "error_code": "proof_not_ready", "proof_state": "failed", "reservation_retained": True}}
+        with patch.object(cycle.urllib.request, "urlopen", side_effect=lambda *a, **k: self.reply(response)) as transport:
+            with self.assertRaises(cycle.RpcError):
+                self.node.ready("shield", self.request)
+        self.assertEqual(self.attempts, 1)
+        transport.assert_called_once()
+        self.node.restart.assert_not_called()
 
 
 class ProfileContract(unittest.TestCase):
@@ -445,6 +495,67 @@ class RpcPacingContract(unittest.TestCase):
         sleep.assert_not_called()
         self.assertFalse((self.node.root / "rpc-observations.jsonl").exists())
 
+
+
+class WalletBindingContract(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix="orchard-binding-unit-")
+        self.addCleanup(self.temp.cleanup)
+        self.node = cycle.Node.__new__(cycle.Node)
+        self.node.root = self.node.datadir = Path(self.temp.name)
+        (self.node.datadir / ".cookie").write_text("unit:fake")
+        self.node.process = SimpleNamespace(poll=lambda: None)
+        self.node.ports, self.node.starts = [1], 1
+        self.node.wallet = "intended-wallet"
+        self.node.wallet_binding = "a" * 64
+
+    def test_bound_request_does_not_modify_durable_request(self):
+        request = {"account": 3, "request_id": "original-request"}
+        original = request.copy()
+        with patch.object(cycle.urllib.request, "urlopen", return_value=io.StringIO('{"result": {}}')) as transport:
+            self.node.raw("wallet.orchard.finishspend", request)
+        sent = json.loads(transport.call_args.args[0].data)
+        self.assertEqual(sent["params"], {**original, "wallet_binding": "a" * 64})
+        self.assertEqual(request, original)
+
+    def test_missing_binding_refuses_before_transport(self):
+        self.node.wallet_binding = None
+        with patch.object(cycle.urllib.request, "urlopen", return_value=io.StringIO('{"result": {}}')) as transport:
+            with self.assertRaisesRegex(RuntimeError, "wallet binding"):
+                self.node.raw("wallet.orchard.createaccount", {"account": 3})
+        transport.assert_not_called()
+
+    def test_refresh_is_bound_to_intended_wallet(self):
+        reply = {"wallet_name": self.node.wallet, "wallet_binding": "b" * 64}
+        with patch.object(cycle.urllib.request, "urlopen", return_value=io.StringIO(json.dumps({"result": reply}))) as transport:
+            self.node.refresh_wallet_binding()
+        sent = json.loads(transport.call_args.args[0].data)
+        self.assertEqual(sent["method"], "wallet.orchard.getwalletbinding")
+        self.assertEqual(sent["params"], {"wallet_name": "intended-wallet"})
+        self.assertEqual(self.node.wallet_binding, "b" * 64)
+
+    def test_failed_refresh_clears_previous_binding(self):
+        for reply in ({"wallet_name": "other", "wallet_binding": "b" * 64},
+                      {"wallet_name": "intended-wallet", "wallet_binding": "B" * 64},
+                      {"wallet_name": "intended-wallet", "wallet_binding": "b" * 63},
+                      {"error": "wrong selection"}):
+            with self.subTest(reply=reply):
+                self.node.wallet_binding = "a" * 64
+                with patch.object(cycle.urllib.request, "urlopen", return_value=io.StringIO(json.dumps({"result": reply}))):
+                    with self.assertRaises((RuntimeError, AssertionError)):
+                        self.node.refresh_wallet_binding()
+                self.assertIsNone(self.node.wallet_binding)
+
+    def test_restart_rebinds_before_account_reads(self):
+        calls = []
+        self.node.password = "unit-password"
+        self.node.rpc = lambda method, params=None: calls.append(method) or ({"success": True} if method == "wallet.unlock" else "tip")
+        self.node.stop = lambda: calls.append("stop")
+        self.node.start = lambda args: calls.append("start")
+        self.node.refresh_wallet_binding = lambda: calls.append("rebind")
+        self.node.synced = lambda account: calls.append("synced")
+        self.node.restart(accounts=(3,))
+        self.assertEqual(calls, ["getbestblockhash", "stop", "start", "wallet.open", "wallet.unlock", "rebind", "getbestblockhash", "synced"])
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

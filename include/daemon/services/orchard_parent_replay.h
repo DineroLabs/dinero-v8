@@ -67,6 +67,7 @@ public:
             }
         }
         accounting_ = {epoch_, target_.height, target_.hash, 0, 0, 0};
+        replay_.SetUndoTailWindow(1);
     }
     OrchardParentReplay(const OrchardParentReplay&) = delete;
     OrchardParentReplay& operator=(const OrchardParentReplay&) = delete;
@@ -152,6 +153,10 @@ public:
             Require(commitment.status == consensus::StateCommitmentStatus::Ok &&
                 commitment.root == result.legacy_state_root, "Parent replay frozen commitment mismatch");
         }
+        const auto& undo=replay_.UndoTail();
+        Require(target_.height==0 ? undo.empty() :
+            undo.size()==1 && undo.front().height==target_.height && undo.front().block_hash==target_.hash,
+            "Parent replay undo unavailable");
         record_ = result;
         finished_ = true;
         poisoned_ = false;
@@ -259,4 +264,14 @@ private:
     bool poisoned_ = false;
     bool finished_ = false;
 };
+constexpr OrchardParentReplay::Limits SelectedParentReplayWorkLimits() noexcept {
+    constexpr size_t material = 256u * 1024u * 1024u;
+    // Every serialized historical body contains the fixed header. Bound the
+    // number of source reads by what could fit in the existing byte budget,
+    // rather than by an unrelated absolute chain height. Full bodies are still
+    // charged during replay; this is not a resident-memory bound.
+    static_assert(sizeof(BlockHeader) == 128);
+    static_assert(material / sizeof(BlockHeader) <= UINT32_MAX);
+    return {static_cast<uint32_t>(material / sizeof(BlockHeader)), material};
+}
 } // namespace dinero

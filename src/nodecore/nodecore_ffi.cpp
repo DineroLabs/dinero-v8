@@ -1148,36 +1148,51 @@ int32_t nodecore_rescan(uint64_t from_height) {
 // ============================================================================
 
 char* nodecore_list_unspent_json(int32_t min_confirmations) {
-    auto& s = state();
-    std::lock_guard<std::mutex> lock(s.mtx);
-    if (!is_queryable_locked(s)) return nullptr;
+    try {
+        auto& s = state();
+        std::lock_guard<std::mutex> lock(s.mtx);
+        if (!is_queryable_locked(s)) return nullptr;
 
-    auto& ctx = s.app->GetContext();
-    if (!ctx.wallet) return nullptr;
+        auto& ctx = s.app->GetContext();
+        if (!ctx.wallet) return nullptr;
 
-    auto ws = std::dynamic_pointer_cast<dinero::WalletService>(ctx.wallet);
-    if (!ws) return nullptr;
+        auto ws = std::dynamic_pointer_cast<dinero::WalletService>(ctx.wallet);
+        if (!ws) return nullptr;
 
-    auto utxos = ws->get().listUnspentUTXOs(min_confirmations);
+        auto wallet_use = dinero::WalletService::AcquireWalletUse(ws);
+        auto cs = std::dynamic_pointer_cast<dinero::ChainstateService>(ctx.chainstate);
+        std::unique_ptr<dinero::ChainstateService::WalletIndexUse> index_use;
+        if (cs) index_use = dinero::ChainstateService::AcquireWalletIndexUse(cs);
+        auto& wallet = wallet_use->Wallet();
+        // Pin service lifetimes before the database lease. The runtime mutex
+        // also serializes this embedding entry point against close/shutdown.
+        auto lease = wallet.AcquireDatabaseLease();
+        if (wallet.getUTXOIndex() &&
+            (!index_use || wallet.getUTXOIndex() != &index_use->Index()))
+            return nullptr;
+        auto utxos = wallet.listUnspentUTXOs(min_confirmations);
 
-    Json::Value arr(Json::arrayValue);
-    for (const auto& u : utxos) {
-        Json::Value item;
-        item["txid"] = u.txid;
-        item["vout"] = u.vout;
-        item["amount"] = static_cast<Json::UInt64>(u.amount_una);
-        item["script"] = u.script_pubkey;
-        item["address"] = u.address;
-        item["height"] = u.height;
-        item["confirmations"] = u.confirmations;
-        item["coinbase"] = u.is_coinbase;
-        item["spendable"] = u.spendable;
-        arr.append(item);
+        Json::Value arr(Json::arrayValue);
+        for (const auto& u : utxos) {
+            Json::Value item;
+            item["txid"] = u.txid;
+            item["vout"] = u.vout;
+            item["amount"] = static_cast<Json::UInt64>(u.amount_una);
+            item["script"] = u.script_pubkey;
+            item["address"] = u.address;
+            item["height"] = u.height;
+            item["confirmations"] = u.confirmations;
+            item["coinbase"] = u.is_coinbase;
+            item["spendable"] = u.spendable;
+            arr.append(item);
+        }
+
+        Json::StreamWriterBuilder builder;
+        builder["indentation"] = "";
+        return strdup_c(Json::writeString(builder, arr));
+    } catch (...) {
+        return nullptr;
     }
-
-    Json::StreamWriterBuilder builder;
-    builder["indentation"] = "";
-    return strdup_c(Json::writeString(builder, arr));
 }
 
 // ============================================================================

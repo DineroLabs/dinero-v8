@@ -21,6 +21,12 @@ public:
     PreparedOrchardCatalog& operator=(const PreparedOrchardCatalog&)=delete;
     uint64_t TransactionCount() const {Check();return transaction_count_;}
     uint64_t LegacyCoinCount() const {Check();return legacy_count_;}
+    uint64_t NonTransparentCoinCount() const {Check();return nontransparent_count_;}
+    bool NonTransparentCoin(const OutPoint& point) const {
+        Check();const auto bytes=storage::catalog::OutpointBytes(point);
+        const auto value=Tree(storage::catalog::Kind::NonTransparentCoins).Find(nontransparent_,storage::catalog::NonTransparentKey(bytes));
+        if(value)Require(*value==bytes);return value.has_value();
+    }
     bool ContainsTransaction(const TxId& id) const {
         Check();return Tree(storage::catalog::Kind::Transactions).Find(transactions_,storage::catalog::TransactionKey(id)).has_value();
     }
@@ -36,16 +42,22 @@ public:
     const std::vector<uint8_t>& VerificationStump() const {Check();return stump_;}
 private:
     friend class ChainstateService;
+    friend class OrchardReindexOwner;
+    friend class PreparedOrchardChainstateWrite;
     friend struct OrchardParentCatalogTestAccess;
     using Digest=storage::catalog::Digest;
-    ChainDB& db_;const storage::LegacyRetirementRecord record_;
+    // The detached owner retains the completed replay until this catalog and
+    // every writer preparation using it are destroyed. No reference escapes
+    // into the published selected-state value.
+    ChainDB& db_;const OrchardParentReplay& proof_;
+    Digest wire_{};const storage::LegacyRetirementRecord record_;
     const OrchardParentReplay::Target target_;
     const uint32_t leaf_activation_;
     const std::thread::id thread_=std::this_thread::get_id();
-    Digest transactions_{},legacy_{};uint64_t transaction_count_=0,legacy_count_=0;
+    Digest transactions_{},legacy_{},nontransparent_{};uint64_t transaction_count_=0,legacy_count_=0,nontransparent_count_=0;
     std::vector<uint8_t> stump_;
     PreparedOrchardCatalog(ChainDB& db,const OrchardParentReplay& replay)
-        :db_(db),record_(replay.Record()),target_(replay.ValidatedTarget()),
+        :db_(db),proof_(replay),record_(replay.Record()),target_(replay.ValidatedTarget()),
          leaf_activation_(consensus::GetUtreexoMaturityLeafActivationHeight()){}
     static void Require(bool ok){if(!ok)throw std::runtime_error("Orchard parent catalog unavailable");}
     void Check() const {
@@ -63,10 +75,12 @@ private:
     }
     static std::unique_ptr<PreparedOrchardCatalog> Create(ChainDB& db,const ChainWriteToken& token,
         const OrchardParentReplay& replay,const OrchardHistoryCapture& history) {
-        // The only production caller is the service that ran Append BEFORE
-        // RecordBody for this exact hash-linked history, then finished both.
+        // Production callers are the detached service and unpublished startup
+        // reindex owner. Both run Append BEFORE RecordBody for this exact
+        // hash-linked history, then finish both and compare the selected state.
         auto result=std::unique_ptr<PreparedOrchardCatalog>(new PreparedOrchardCatalog(db,replay));
         result->Check();const auto& target=result->target_;
+        result->wire_=history.WireHashAt(target.height);
         Require(history.Finished()&&history.Count()==uint64_t(target.height)+1&&
             history.HeaderAt(target.height).hash==target.hash&&history.HeaderAt(target.height).work==target.chainwork&&
             history.HeaderAt(0).hash==result->record_.genesis);
@@ -103,8 +117,15 @@ private:
         });
         Require(count==history.TransactionCount()&&count==result->transaction_count_);
         storage::catalog::Tree legacy(storage::catalog::Kind::LegacyCoins,read,write);
+        storage::catalog::Tree nontransparent(storage::catalog::Kind::NonTransparentCoins,read,write);
         for(const auto& [point,coin]:replay.ProvenState().ProvenUtxos()) {
             Require(coin.height<=target.height);
+            if(coin.is_confidential||!coin.commitment.empty()) {
+                Require(result->nontransparent_count_!=UINT64_MAX);
+                const auto point_bytes=storage::catalog::OutpointBytes(point);
+                result->nontransparent_=nontransparent.Insert(result->nontransparent_,storage::catalog::NonTransparentKey(point_bytes),point_bytes);
+                ++result->nontransparent_count_;
+            }
             if(coin.height>=result->leaf_activation_)continue;
             Require(result->legacy_count_!=UINT64_MAX);
             const auto outpoint=storage::catalog::OutpointBytes(point);auto bytes=outpoint;
@@ -115,13 +136,16 @@ private:
         // Re-read from durable storage after every pending write has completed.
         // Enumerate the actual validated owners again, never raw database rows.
         Require(history.ForEachTransaction([&](const TxId& id){return result->ContainsTransaction(id);})==count);
-        uint64_t found=0;
+        uint64_t found=0,found_nontransparent=0;
         for(const auto& [point,coin]:replay.ProvenState().ProvenUtxos()) {
+            const bool expected_nontransparent=coin.is_confidential||!coin.commitment.empty();
+            Require(result->NonTransparentCoin(point)==expected_nontransparent);
+            if(expected_nontransparent)++found_nontransparent;
             const auto metadata=result->LegacyCoin(point);
             if(coin.height>=result->leaf_activation_){Require(!metadata);continue;}
             Require(metadata&&*metadata==LegacyMetadata{coin.height,coin.isCoinbase});++found;
         }
-        Require(found==result->legacy_count_);result->Check();return result;
+        Require(found==result->legacy_count_&&found_nontransparent==result->nontransparent_count_);result->Check();return result;
     }
 };
 } // namespace dinero

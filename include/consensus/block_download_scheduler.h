@@ -201,7 +201,8 @@ public:
 
     // Header-selected Orchard body storage only: exact framing/identity/size
     // checks, never proof or canonical acceptance. Requires an expected tip
-    // download and real storage; stateless/backfill routing remains separate.
+    // download and real storage. Stateless mode requires the explicit compact
+    // typed callback; historical proof/backfill routing remains separate.
     bool OnOrchardBlockReceived(std::span<const uint8_t> bytes);
 
     /**
@@ -430,6 +431,15 @@ public:
     // owned exact bytes and the captured header-selected identity.
     void SetConnectBlockBytesCallback(ConnectBlockBytesCallback callback) {
         connect_block_bytes_callback_ = std::move(callback);
+    }
+
+    // Explicit compact Orchard path, configured before dispatch. Historical
+    // stateless bodies still require their separate ordered proof worker.
+    // Invoked outside mutex_; the callback must authenticate the live compact
+    // storage owner and perform canonical validation before CONNECTED.
+    void SetCompactOrchardConnectCallback(ConnectBlockBytesCallback callback) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        compact_orchard_connect_callback_ = std::move(callback);
     }
 
     /** Callback for the actual chainstate tip, used for tip+1 ordering. */
@@ -819,6 +829,7 @@ private:
     DisconnectPeerCallback disconnect_peer_callback_;
     ConnectBlockCallback connect_block_callback_;
     ConnectBlockBytesCallback connect_block_bytes_callback_;
+    ConnectBlockBytesCallback compact_orchard_connect_callback_;
     bool canonical_drain_active_ = false; // guarded by mutex_, includes unlocked callback
     GetTipHeightCallback get_tip_height_callback_;
     GetBlockHashAtHeightCallback get_block_hash_at_height_callback_;

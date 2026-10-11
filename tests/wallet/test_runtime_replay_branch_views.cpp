@@ -1,8 +1,13 @@
 #include "../consensus/orchard_block_test_fixture.h"
 #include "consensus/undo.h"
+#include "primitives/block.h"
 #include "wallet/runtime_account_replay.h"
 #include "wallet/runtime_replay_spool_codec.h"
 #include <set>
+#include <type_traits>
+#include "wallet/runtime_replay_state_retention.h"
+#include "wallet/runtime_replay_authorization_retention.h"
+#include "orchard_wallet.h"
 
 namespace dinero {
 struct RuntimeAccountReplayTestAccess {
@@ -24,6 +29,41 @@ struct RuntimeAccountReplayTestAccess {
             if(!page.events.empty())page.next=page.events.back().cursor;
             return page;
         });
+    }
+};
+}
+namespace dinero::wallet::detail {
+struct RuntimeReplayAuthorizationRetentionTestAccess {
+    static RuntimeReplaySpool& Spool(RuntimeReplayAuthorizationRetention& value){return value.spool_;}
+};
+struct RuntimeReplayStateRetentionTestAccess {
+    static RuntimeReplaySpool& Spool(RuntimeReplayStateRetention& value){return value.spool_;}
+};
+struct RuntimeReplaySpoolTestAccess {
+    static sqlite3* Handle(RuntimeReplaySpool& value){return value.db_.get();}
+    static void ChangeValueWithValidStorageMac(RuntimeReplaySpool& value,uint8_t prefix='s') {
+        const RuntimeReplaySpool::Bytes key{prefix,1,0,0,0,0,0,0,0};
+        auto bytes=value.Get(key);Require(bytes.has_value()&&!bytes->empty());
+        if(prefix=='a') {
+            // Alter the recorded verified digest, preserving the entire codec
+            // shape. A decoder alone accepts this; only original-content
+            // binding prevents it from minting a changed authorization.
+            replay_spool_codec::Reader reader{*bytes};
+            Require(reader.Number(1)==1&&reader.Number(4)>0);
+            (void)reader.Blob(orchard::kMaxTransactionBytes);
+            (void)reader.Number(4);(void)reader.Number(4);(void)reader.Raw(32);
+            const size_t digest_offset=bytes->size()-reader.bytes.size();
+            Require(reader.bytes.size()>=32);(*bytes)[digest_offset]^=1;
+        } else bytes->back()^=1;
+        std::array<uint8_t,32> tag;
+        {std::lock_guard lock(value.mutex_);tag=value.Tag(key,*bytes);}
+        sqlite3_stmt* statement=nullptr;
+        Require(sqlite3_prepare_v2(value.db_.get(),"UPDATE records SET v=?1,tag=?2 WHERE k=?3",-1,&statement,nullptr)==SQLITE_OK);
+        Require(sqlite3_bind_blob(statement,1,bytes->data(),int(bytes->size()),SQLITE_TRANSIENT)==SQLITE_OK);
+        Require(sqlite3_bind_blob(statement,2,tag.data(),int(tag.size()),SQLITE_TRANSIENT)==SQLITE_OK);
+        Require(sqlite3_bind_blob(statement,3,key.data(),int(key.size()),SQLITE_TRANSIENT)==SQLITE_OK);
+        const int result=sqlite3_step(statement);sqlite3_finalize(statement);Require(result==SQLITE_DONE);
+        Require(value.Get(key)==bytes); // Generic storage MAC accepts it.
     }
 };
 }
@@ -184,6 +224,211 @@ void EventEvictionReload(const std::string& base) {
             wallet::detail::replay_spool_codec::Encode(trace.events[0]));
     std::cout<<"RuntimeReplayBranchViews EventEvictionReload PASS\n";
 }
+void BodyEvictionReload(const std::string& base) {
+    Trace trace(base);Branch parent{{},{},{},H(238),20000};
+    for(uint32_t i=0;i<7;++i)parent=trace.Connect(parent,{},60+i);
+    RuntimeAccountReplay::BlockHandle held;
+    std::weak_ptr<const OrchardBlockCandidate> evicted;
+    {
+        const auto view=RuntimeAccountReplayTestAccess::Capture(trace.events);
+        held=view->Block(1);Require(view->Block(1)==held);
+        evicted=view->Block(2);Require(!evicted.expired());
+        for(uint64_t sequence=3;sequence<=6;++sequence)
+            Require(view->Block(sequence)->WireBytes()==trace.events[sequence-1].body);
+        Require(evicted.expired());
+        const auto reloaded=view->Block(2);
+        Require(reloaded->WireBytes()==trace.events[1].body&&view->Block(2)==reloaded);
+        const auto point=view->Point(trace.events.back().cursor);
+        Require(point.lookups.selected_block(trace.events[0].context.height,
+            trace.events[0].context.block_hash)->WireBytes()==held->WireBytes());
+    }
+    Require(held->WireBytes()==trace.events[0].body);
+    std::cout<<"RuntimeReplayBranchViews BodyEvictionReload PASS\n";
+}
+void HistoricalBodyEvictionReload(const std::string& base) {
+    // Real historical block encoding and an activation-crossing event trace;
+    // no historical PoW/script/unspentness certification is claimed.
+    std::vector<dinero::Block> history;uint256 previous=H(237);
+    for(uint32_t i=0;i<7;++i) {
+        dinero::Block block{};Transaction coinbase;coinbase.vin.resize(1);
+        coinbase.vin[0].prevout=TxOutPoint(TxId(uint256{}),UINT32_MAX);
+        coinbase.vin[0].scriptSig=CoinbaseHeightScript(19994+i);
+        coinbase.vout.emplace_back(AmountUna::Zero(),std::vector<uint8_t>{0x51});
+        block.vtx.push_back(coinbase);block.header.version=1;
+        block.header.prev_block_hash=previous;block.header.timestamp=19994+i;
+        block.header.merkle_root=ComputeMerkleRoot(block.vtx);
+        previous=block.GetHash();history.push_back(std::move(block));
+    }
+    Trace trace(base);const Branch origin{{},{},{},history.back().GetHash(),20000};
+    (void)trace.Connect(origin,{},80);trace.Disconnect(0);
+    auto append=[&](size_t i,RuntimeBlockDirection direction) {
+        const auto& block=history[i];RuntimeOutboxEvent event;event.direction=direction;
+        event.context={uint32_t(19994+i),block.GetHash(),block.header.prev_block_hash,20001,trace.domain};
+        const auto wire=block.Serialize();event.body.assign(wire.begin(),wire.end());trace.Append(std::move(event));
+    };
+    for(size_t i=history.size();i>0;--i)append(i-1,RuntimeBlockDirection::Disconnect);
+    for(size_t i=0;i<history.size();++i)append(i,RuntimeBlockDirection::Connect);
+    std::shared_ptr<const dinero::Block> held;
+    {
+        const auto view=RuntimeAccountReplayTestAccess::Capture(trace.events);
+        const auto point=view->Point(view->Head());
+        Require(point.checkpoint.height==20000&&point.checkpoint.block_hash==history.back().GetHash());
+        auto read=[&](size_t i){return point.lookups.selected_historical_block(uint32_t(19994+i),history[i].GetHash());};
+        held=read(0);Require(read(0)==held);
+        std::weak_ptr<const dinero::Block> evicted=read(1);Require(!evicted.expired());
+        for(size_t i=2;i<6;++i)Require(read(i)->Serialize()==history[i].Serialize());
+        Require(evicted.expired());
+        const auto reloaded=read(1);Require(reloaded->Serialize()==history[1].Serialize()&&read(1)==reloaded);
+        Require(view->Block(1)->WireBytes()==trace.events.front().body);
+        // The same recorded historical header cannot name a changed body on
+        // reconnect. Preserve the existing exact-body consistency refusal.
+        auto corrupt=trace.events;auto changed=history.back();
+        changed.vtx.front().vout.front().value=AmountUna::Una(1);
+        const auto wire=changed.Serialize();corrupt.back().body.assign(wire.begin(),wire.end());
+        LookupReject(Status::Corruption,[&]{(void)RuntimeAccountReplayTestAccess::Capture(corrupt);});
+    }
+    Require(held->Serialize()==history.front().Serialize());
+    std::cout<<"RuntimeReplayBranchViews HistoricalBodyEvictionReload PASS\n";
+}
+void StateEvictionReload(const std::string& base) {
+    Trace trace(base);Branch parent{{},{},{},H(240),20000};
+    const std::vector<VerifiedOrchardAuthorizations> shield{Authorized(base,false,20000)};
+    parent=trace.Connect(parent,shield,71);
+    for(uint32_t i=0;i<7;++i)parent=trace.Connect(parent,{},72+i);
+    RuntimeAccountReplay::StateHandle held;
+    {
+        const auto view=RuntimeAccountReplayTestAccess::Capture(trace.events);
+        held=view->State(1);Require(!held->Nullifiers().empty()&&view->State(1)==held);
+        std::weak_ptr<const PreparedOrchardState> evicted=view->State(2);Require(!evicted.expired());
+        for(uint64_t i=3;i<8;++i)Require(view->State(i)->Next()==trace.events[i-1].orchard_replay->next);
+        Require(evicted.expired());
+        const auto again=view->State(2);Require(again->Next()==trace.events[1].orchard_replay->next);
+        Require(again->Parent()==trace.events[1].orchard_replay->parent&&view->State(2)==again);
+        const auto original=view->State(1);
+        Require(original->Nullifiers()==held->Nullifiers()&&original->Fees()==held->Fees());
+        Require(original->Flows().size()==held->Flows().size());
+        for(size_t i=0;i<held->Flows().size();++i){
+            Require(original->Flows()[i].transparent_inputs==held->Flows()[i].transparent_inputs);
+            Require(original->Flows()[i].transparent_outputs==held->Flows()[i].transparent_outputs);
+            Require(original->Flows()[i].fee==held->Flows()[i].fee);
+        }
+    }
+    Require(held->Next()==trace.events[0].orchard_replay->next&&!held->Nullifiers().empty());
+    std::cout<<"RuntimeReplayBranchViews StateEvictionReload PASS\n";
+}
+void StateRetentionProvenance(const std::string& base) {
+    using namespace wallet::detail;
+    using Retention=RuntimeReplayStateRetention;
+    static_assert(!std::is_default_constructible_v<Retention::Token>);
+    Trace trace(base);const Branch origin{{},{},{},H(240),20000};
+    const std::vector<VerifiedOrchardAuthorizations> shield{Authorized(base,false,20000)};
+    (void)trace.Connect(origin,shield,81);const auto view=RuntimeAccountReplayTestAccess::Capture(trace.events);
+    const auto verified=view->State(1);
+    Retention owner,other;auto ticket=owner.Capture(*verified);const auto foreign=other.Capture(*verified);
+    LookupReject(Status::Corruption,[&]{(void)owner.Load(foreign);});
+    LookupReject(Status::Corruption,[&]{(void)other.Load(ticket);});
+    auto& spool=RuntimeReplayStateRetentionTestAccess::Spool(owner);
+    RuntimeReplaySpoolTestAccess::ChangeValueWithValidStorageMac(spool);
+    LookupReject(Status::Corruption,[&]{(void)owner.Load(ticket);});
+    // Another owner's untouched state remains valid, including after freeze.
+    other.Freeze();const auto restored=other.Load(foreign);
+    Require(restored->Parent()==verified->Parent()&&restored->Next()==verified->Next());
+    Require(restored->Nullifiers()==verified->Nullifiers()&&restored->Fees()==verified->Fees());
+    LookupReject(Status::Corruption,[&]{(void)other.Capture(*verified);});
+    std::cout<<"RuntimeReplayBranchViews StateRetentionProvenance PASS\n";
+}
+void StateRetentionFailures(const std::string& base) {
+    using namespace wallet::detail;
+    Trace trace(base);const Branch origin{{},{},{},H(240),20000};
+    (void)trace.Connect(origin,{},91);const auto view=RuntimeAccountReplayTestAccess::Capture(trace.events);
+    const auto verified=view->State(1);RuntimeReplayStateRetention store;
+    auto& spool=RuntimeReplayStateRetentionTestAccess::Spool(store);auto* db=RuntimeReplaySpoolTestAccess::Handle(spool);
+    sqlite3_commit_hook(db,[](void*){return 1;},nullptr);
+    bool refused=false;try{(void)store.Capture(*verified);}catch(const std::runtime_error&){refused=true;}
+    Require(refused);sqlite3_commit_hook(db,nullptr,nullptr);
+    const auto token=store.Capture(*verified); // Failed write did not publish a token or consume its slot.
+    sqlite3_set_authorizer(db,[](void*,int action,const char*,const char*,const char*,const char*){return action==SQLITE_READ?SQLITE_DENY:SQLITE_OK;},nullptr);
+    refused=false;try{(void)store.Load(token);}catch(const std::runtime_error&){refused=true;}
+    Require(refused);sqlite3_set_authorizer(db,nullptr,nullptr);
+    Require(store.Load(token)->Next()==verified->Next());
+    std::cout<<"RuntimeReplayBranchViews StateRetentionFailures PASS\n";
+}
+
+void SameAuthorization(const VerifiedOrchardAuthorizations& a,const VerifiedOrchardAuthorizations& b){
+    Require(a.Transaction().CanonicalBytes()==b.Transaction().CanonicalBytes());
+    Require(a.Orchard().CanonicalBytes()==b.Orchard().CanonicalBytes());
+    Require(a.Orchard().Txid()==b.Orchard().Txid()&&a.Orchard().Wtxid()==b.Orchard().Wtxid());
+    Require(a.Orchard().Orchard().SigningDigest()==b.Orchard().Orchard().SigningDigest());
+    Require(a.Transparent().OrchardIntent()==b.Transparent().OrchardIntent());
+    Require(a.Transparent().CandidateHeight()==b.Transparent().CandidateHeight());
+    const auto& x=a.Transparent().Snapshot();const auto& y=b.Transparent().Snapshot();
+    Require(x.ViewHeight()==y.ViewHeight()&&x.Coins().size()==y.Coins().size());
+    for(size_t i=0;i<x.Coins().size();++i){
+        const auto& c=x.Coins()[i];const auto& d=y.Coins()[i];
+        Require(c.value.GetUna()==d.value.GetUna()&&c.scriptPubKey==d.scriptPubKey&&c.height==d.height);
+        Require(c.isCoinbase==d.isCoinbase&&c.is_confidential==d.is_confidential&&c.commitment==d.commitment);
+    }
+}
+void AuthorizationEvictionReload(const std::string& base){
+    // Generate one real payment to a known test wallet. This checks use of the
+    // reloaded Rust handle by WalletNote, not merely equality of public bytes.
+    auto keys=WalletKeys::FromSeed(std::array<uint8_t,64>{23},0);const auto fvk=keys.ExportFullViewingKey();
+    Fixture fixture(base);fixture.outputs={{61000,fixture.view.coins.at(::Point(fixture.inputs[0])).scriptPubKey}};
+    std::vector<ResolvedInput> resolved;
+    for(const auto& in:fixture.inputs){const auto& coin=fixture.view.coins.at(::Point(in));
+        resolved.push_back({in.txid_wire,in.output_index,in.sequence,coin.value.GetUna(),coin.scriptPubKey});}
+    const std::vector<WalletPayment> payments{{5000,keys.Receiver(WalletScope::External,{})}};
+    const auto proved=WalletBundlePlan::PrepareShield(keys,payments).Prove(
+        SigningContext::Create(fixture.domain,fixture.lock,resolved,fixture.outputs,fixture.fee));
+    fixture.bundle=proved.Bytes();fixture.Sign();
+    const std::vector<VerifiedOrchardAuthorizations> shield{VerifyOrchardAuthorizations(fixture.Snapshot(),fixture.domain,20001,{})};
+    Trace trace(base);Branch parent{{},{},{},H(240),20000};parent=trace.Connect(parent,shield,101);
+    for(uint32_t i=0;i<7;++i)parent=trace.Connect(parent,{},102+i);
+    RuntimeAccountReplay::AuthorizationHandle held;
+    {
+        const auto view=RuntimeAccountReplayTestAccess::Capture(trace.events);held=view->Authorizations(1);
+        Require(held->size()==1&&view->Authorizations(1)==held);SameAuthorization(held->front(),shield.front());
+        std::weak_ptr<const std::vector<VerifiedOrchardAuthorizations>> evicted=view->Authorizations(2);
+        Require(!evicted.expired());for(uint64_t i=3;i<8;++i)Require(view->Authorizations(i)->empty());
+        Require(evicted.expired());Require(view->Authorizations(2)->empty());
+        SameAuthorization(view->Authorizations(1)->front(),shield.front());
+    }
+    SameAuthorization(held->front(),shield.front());bool received=false;
+    const auto& restored=held->front().Orchard().Orchard();
+    for(uint32_t i=0;i<restored.Facts().action_count;++i){
+        const auto note=WalletNote::Receive(restored,fvk,WalletScope::External,i);
+        if(note){Require(note->Facts().amount==5000);received=true;}
+    }
+    Require(received);std::cout<<"RuntimeReplayBranchViews AuthorizationEvictionReload PASS\n";
+}
+void AuthorizationRetentionProvenance(const std::string& base){
+    using namespace wallet::detail;using Retention=RuntimeReplayAuthorizationRetention;
+    static_assert(!std::is_default_constructible_v<Retention::Token>);
+    const std::vector<VerifiedOrchardAuthorizations> verified{Authorized(base,false,20000),Authorized(base,true,20001)};
+    Retention owner,other;const auto token=owner.Capture(verified),foreign=other.Capture(verified);
+    LookupReject(Status::Corruption,[&]{(void)owner.Load(foreign);});
+    LookupReject(Status::Corruption,[&]{(void)other.Load(token);});
+    auto& spool=RuntimeReplayAuthorizationRetentionTestAccess::Spool(owner);
+    RuntimeReplaySpoolTestAccess::ChangeValueWithValidStorageMac(spool,'a');
+    LookupReject(Status::Corruption,[&]{(void)owner.Load(token);});
+    other.Freeze();const auto restored=other.Load(foreign);Require(restored->size()==verified.size());
+    for(size_t i=0;i<verified.size();++i)SameAuthorization((*restored)[i],verified[i]);
+    LookupReject(Status::Corruption,[&]{(void)other.Capture(verified);});
+    std::cout<<"RuntimeReplayBranchViews AuthorizationRetentionProvenance PASS\n";
+}
+void AuthorizationRetentionFailures(const std::string& base){
+    using namespace wallet::detail;const std::vector<VerifiedOrchardAuthorizations> verified{Authorized(base,false,20000)};
+    RuntimeReplayAuthorizationRetention store;auto& spool=RuntimeReplayAuthorizationRetentionTestAccess::Spool(store);
+    auto* db=RuntimeReplaySpoolTestAccess::Handle(spool);sqlite3_commit_hook(db,[](void*){return 1;},nullptr);
+    bool refused=false;try{(void)store.Capture(verified);}catch(const std::runtime_error&){refused=true;}
+    Require(refused);sqlite3_commit_hook(db,nullptr,nullptr);const auto token=store.Capture(verified);
+    sqlite3_set_authorizer(db,[](void*,int action,const char*,const char*,const char*,const char*){return action==SQLITE_READ?SQLITE_DENY:SQLITE_OK;},nullptr);
+    refused=false;try{(void)store.Load(token);}catch(const std::runtime_error&){refused=true;}Require(refused);
+    sqlite3_set_authorizer(db,nullptr,nullptr);const auto restored=store.Load(token);Require(restored->size()==1);
+    SameAuthorization(restored->front(),verified.front());
+    std::cout<<"RuntimeReplayBranchViews AuthorizationRetentionFailures PASS\n";
+}
+
 void RawSpoolCodec() {
     // Codec fidelity only: deliberately raw synthetic fields are not proof
     // authority. Actual signed replay validation remains in BranchMembership.
@@ -206,7 +451,7 @@ void RawSpoolCodec() {
 }
 }
 int main(int argc,char** argv) {
-    try { Require(argc==2);BranchMembership(argv[1]);RawSpoolCodec();EventEvictionReload(argv[1]); }
+    try { Require(argc==2);BranchMembership(argv[1]);RawSpoolCodec();EventEvictionReload(argv[1]);BodyEvictionReload(argv[1]);HistoricalBodyEvictionReload(argv[1]);StateEvictionReload(argv[1]);StateRetentionProvenance(argv[1]);StateRetentionFailures(argv[1]);AuthorizationEvictionReload(argv[1]);AuthorizationRetentionProvenance(argv[1]);AuthorizationRetentionFailures(argv[1]); }
     catch(const std::exception& error){std::cerr<<error.what()<<'\n';return 1;}
     return 0;
 }

@@ -702,7 +702,9 @@ static void HistoricalOutboxChecks(ChainDB& source,const OrchardBlockContext& co
     db.close();CHECK(db.init(temp.path)==Status::Ok);
     const auto prefix_page=ReadRuntimeOutboxPrefixUnderLock(db,context,prefix,cursor,128);
     CHECK(prefix_page.head==prefix&&prefix_page.next==prefix&&prefix_page.events.size()==1);
-    CHECK(prefix_page.events.front().body==historical.Serialize());
+    const auto historical_bytes=historical.Serialize();
+    CHECK(prefix_page.events.front().body==
+          std::vector<uint8_t>(historical_bytes.begin(),historical_bytes.end()));
     const auto prefix_eof=ReadRuntimeOutboxPrefixUnderLock(db,context,prefix,prefix,1);
     CHECK(prefix_eof.events.empty()&&prefix_eof.head==prefix&&prefix_eof.next==prefix);
     CHECK(prefix_eof.after_tip&&prefix_eof.after_tip->first==historical.GetHash()&&prefix_eof.after_tip->second==height);

@@ -1391,25 +1391,9 @@ void registerMiningExtrasMethods(
     dinero::g_logger.info("Registered 3 mining extras RPC methods in vNext (incl. mining.getblocktemplate alias)");
 }
 
-// ═══════════════════════════════════════════════════════════════
-// AUTO-REGISTRATION: Call registerMiningExtrasMethods() at startup
-// ═══════════════════════════════════════════════════════════════
-
-namespace {
-    // Dummy variable to force execution at program startup
-    // This ensures mining extras methods are registered automatically
-    struct MiningExtrasAutoRegistration {
-        MiningExtrasAutoRegistration() {
-            // Note: Cannot call registerMiningExtrasMethods() here directly since it
-            // requires server, tx_pool, etc. Instead, rely on main.cpp to call it
-            // OR use the vNext self-registering pattern like other method files
-            dinero::g_logger.info("[AutoReg] Mining extras registration deferred (requires context from main.cpp)");
-        }
-    };
-
-    // This static variable will be constructed before main() runs
-    static MiningExtrasAutoRegistration _auto_register_mining_extras;
-}
+// Mining RPC registration is performed by the explicit context wiring.
+// Do not log from a placeholder static initializer: it runs before main()
+// can select machine-readable commands such as --orchard-build-info.
 
 } // namespace rpc
 } // namespace dinero

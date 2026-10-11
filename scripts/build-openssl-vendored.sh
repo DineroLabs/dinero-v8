@@ -7,6 +7,14 @@
 
 set -e  # Exit on error
 
+# Bound dependency compilation by default. Validate before source discovery,
+# downloads, cleanup or configuration so malformed limits have no build effects.
+OPENSSL_BUILD_JOBS="${OPENSSL_BUILD_JOBS:-2}"
+if [[ ! "$OPENSSL_BUILD_JOBS" =~ ^[1-9][0-9]*$ ]]; then
+    echo "OPENSSL_BUILD_JOBS must be a positive integer" >&2
+    exit 2
+fi
+
 # Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -406,14 +414,9 @@ else
     exit 1
 fi
 
-# Build with all available cores
+# Build within the explicit dependency budget (two jobs by default).
 echo -e "${BLUE}Building OpenSSL (this may take a few minutes)...${NC}"
-
-if [ "$OS" = "Darwin" ]; then
-    CORES=$(sysctl -n hw.ncpu)
-else
-    CORES=$(nproc)
-fi
+CORES="$OPENSSL_BUILD_JOBS"
 
 echo -e "${BLUE}Using $CORES CPU cores${NC}"
 make -j"$CORES"

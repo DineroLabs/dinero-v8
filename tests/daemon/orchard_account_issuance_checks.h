@@ -16,7 +16,7 @@ TEST(OrchardAccountIssuance, RejectMalformedRequestsBeforeServices){
 }
 TEST(OrchardAccountIssuance, RegistryAndUnavailableBackendOrServicesRefuse){
     RegisterOrchardAccountRpc();const auto* method=g_rpcRegistry.lookup("wallet.orchard.getnewaddress");ASSERT_NE(method,nullptr);
-    ExecutionContext context;const auto out=(*method)(context,OrchardIssuanceRequest());
+    ExecutionContext context;const auto out=(*method)(context,OrchardBoundParamsForTest(context,OrchardIssuanceRequest()));
     EXPECT_TRUE(out.isMember("error"));EXPECT_FALSE(out.isMember("address"));
 #ifndef DINERO_TEST_ORCHARD_ORIGIN
     EXPECT_EQ(out["error"].asString(),"Orchard wallet backend unavailable");
@@ -57,7 +57,7 @@ TEST(OrchardAccountIssuance, ActualRpcPersistsCounterAndPreservesAuthenticatedSt
     const auto expected=before.account.IssueReceiver(orchard::WalletScope::External);
     RegisterOrchardAccountRpc();const auto* handler=g_rpcRegistry.lookup("wallet.orchard.getnewaddress");ASSERT_NE(handler,nullptr);
     ExecutionContext c;c.daemon=&f.context;c.walletName="canonical-recovery";
-    const auto result=(*handler)(c,OrchardIssuanceRequest());ASSERT_FALSE(result.isMember("error"))<<result["error"].asString();
+    const auto result=(*handler)(c,OrchardBoundParamsForTest(c,OrchardIssuanceRequest()));ASSERT_FALSE(result.isMember("error"))<<result["error"].asString();
     EXPECT_EQ(result["address"].asString(),expected.second.EncodeAddress(orchard::WalletNetwork::Regtest));
     EXPECT_EQ(result["revision"].asUInt64(),before.revision+1);EXPECT_EQ(result["account"].asUInt64(),0u);
     const auto after=f.ReadAccount();EXPECT_EQ(OrchardAccountBytes(after.account),OrchardAccountBytes(expected.first));

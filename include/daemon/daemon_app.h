@@ -1,4 +1,7 @@
 #pragma once
+#include <cstdint>
+#include <optional>
+#include <functional>
 #include "daemon_context.h"
 #include "iservice.h"
 #include "daemon/notify_drain_worker.h"
@@ -59,6 +62,27 @@ public:
      */
     bool Init(int argc = 0, char** argv = nullptr);
 
+    // Native daemons upgrade a legacy store to the separated shielded-state
+    // layout before opening it (daemon/orchard_storage_upgrade.h). Off by
+    // default: NodeCore and tests that drive the explicit migrator opt out.
+    void SetAutomaticStorageUpgrade(bool enabled) { automatic_storage_upgrade_ = enabled; }
+    // Bootstrap run for a brand-new datadir: Init returns at once if the store
+    // already exists; otherwise it creates genesis and persists the records
+    // the storage upgrade needs. The caller then Start()s/Stop()s this
+    // instance and starts the real one, which upgrades the store at genesis.
+    void SetFreshStoreBootstrapOnly(bool enabled) { fresh_store_bootstrap_only_ = enabled; }
+    // True when this bootstrap run created the store (it must Start() and Stop()).
+    bool FreshStoreCreated() const { return fresh_store_bootstrap_only_ && fresh_store_created_; }
+    // After Start(): persist the genesis records; true when the store can now be upgraded.
+    bool PersistFreshStoreGenesisRecords();
+
+    // Tests only: called after each durable upgrade step; replaces measured free space.
+    void SetStorageUpgradeTestHooks(std::function<void(const char*)> after_phase,
+                                    std::optional<std::uintmax_t> available_bytes) {
+        storage_upgrade_after_phase_ = std::move(after_phase);
+        storage_upgrade_available_bytes_ = available_bytes;
+    }
+
     /**
      * Start all services
      * Calls Start() on each service in order
@@ -78,6 +102,11 @@ public:
     DaemonContext& GetContext() { return ctx_; }
 
 private:
+    bool automatic_storage_upgrade_ = false;
+    bool fresh_store_bootstrap_only_ = false;
+    bool fresh_store_created_ = false;
+    std::function<void(const char*)> storage_upgrade_after_phase_;
+    std::optional<std::uintmax_t> storage_upgrade_available_bytes_;
     friend struct RuntimeDeliveryStartupTestAccess;
     void ClosePoolRuntime() noexcept;
     DaemonContext ctx_;

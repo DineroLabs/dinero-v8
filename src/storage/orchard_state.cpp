@@ -146,6 +146,39 @@ private:
 };
 } // namespace
 
+Status ChainDB::compareOrchardStorage(const ChainDB& expected) const {
+    if (!db_ || !expected.db_) return Status::Internal;
+    if (!hasSeparatedShieldedState() || !expected.hasSeparatedShieldedState())
+        return Status::Invalid;
+    // Caller owns both databases for the full comparison/publication interval.
+    // Iterator defaults are deliberate: point-Get IOActivity is invalid here.
+    std::unique_ptr<rocksdb::Iterator> actual(
+        db_->NewIterator(rocksdb::ReadOptions(), shieldedStateHandle()));
+    std::unique_ptr<rocksdb::Iterator> replayed(
+        expected.db_->NewIterator(rocksdb::ReadOptions(), expected.shieldedStateHandle()));
+    if (!actual || !replayed) return Status::Internal;
+    return compareOrchardStorageIterators(*actual, *replayed);
+}
+Status ChainDB::compareOrchardStorageIterators(
+    rocksdb::Iterator& actual, rocksdb::Iterator& expected) const {
+    const rocksdb::Slice orchard_prefix(prefix.data(), prefix.size());
+    actual.Seek(orchard_prefix);
+    expected.Seek(orchard_prefix);
+    for (;;) {
+        // Check errors before considering either cursor exhausted. A failed
+        // iterator may report !Valid() just like successful end-of-range.
+        if (!actual.status().ok()) return convertRocksDBStatus(actual.status());
+        if (!expected.status().ok()) return convertRocksDBStatus(expected.status());
+        const bool a = actual.Valid() && actual.key().starts_with(orchard_prefix);
+        const bool e = expected.Valid() && expected.key().starts_with(orchard_prefix);
+        if (!a || !e) return a == e ? Status::Ok : Status::Corruption;
+        if (actual.key() != expected.key() || actual.value() != expected.value())
+            return Status::Corruption;
+        actual.Next();
+        expected.Next();
+    }
+}
+
 StatusOr<storage::OrchardStoredState> ChainDB::getOrchardState() const {
     if (!db_) return Status::Internal;
     if (!hasSeparatedShieldedState()) return Status::Invalid;

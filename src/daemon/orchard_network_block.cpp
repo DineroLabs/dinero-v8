@@ -1,5 +1,6 @@
 #include "daemon/orchard_network_block.h"
 #include "daemon/daemon_context.h"
+#include "daemon/p2p_message.h"
 #include "daemon/block_relay_manager.h"
 #include "daemon/services/block_ingress_service.h"
 #include "daemon/services/chainstate_service.h"
@@ -13,6 +14,39 @@
 #include <optional>
 
 namespace dinero {
+std::optional<InventoryType> SelectBlockRequestInventory(const uint256& hash,
+    bool stateless, bool store_only_backfill, std::optional<uint32_t> expected_height) {
+    try {
+        const auto profile=Params();
+        if (!consensus::OrchardProfileConfigurationValid(profile)) return std::nullopt;
+        // Full storage and store-only history backfill retain their established
+        // raw-body requests. Backfill does not acknowledge canonical acceptance.
+        if (!stateless || store_only_backfill) return InventoryType::MSG_BLOCK;
+        if (profile.orchard_activation_height==UINT32_MAX)
+            return InventoryType::MSG_UTREEXO_BLOCK;
+        const auto* context=DaemonContext::instance();
+        if (!context) return std::nullopt;
+        const auto headers=context->header_chain;
+        const auto source=context->chainstate;
+        if (!headers || !source) return std::nullopt;
+        consensus::HeaderIndexEntry header{};
+        if (!headers->GetHeaderCopy(hash,header) || header.hash!=hash ||
+            header.header.GetHash()!=hash || header.height==0 ||
+            header.height>uint32_t(INT32_MAX) ||
+            (expected_height && *expected_height!=header.height)) return std::nullopt;
+        const bool orchard=consensus::OrchardActiveForHeight(profile,header.height);
+        // The parallel scheduler invokes this under its request queue mutex.
+        // Do not acquire the selected-chain/lifetime owner here. This chooses
+        // only a wire format; ReceiveOrchardNetworkBlock separately checks the
+        // actual storage owner before storage, queueing or acknowledgment.
+        if (DaemonContext::instance()!=context || context->header_chain!=headers ||
+            context->chainstate!=source) return std::nullopt;
+        // Orchard's typed envelope includes its own required proof material.
+        // Historical stateless blocks still require the legacy proof envelope.
+        return orchard?InventoryType::MSG_BLOCK:InventoryType::MSG_UTREEXO_BLOCK;
+    } catch (...) { return std::nullopt; }
+}
+
 NetworkBlockClassification ClassifyNetworkBlock(std::span<const uint8_t> bytes) {
     try {
         if (!consensus::OrchardProfileConfigurationValid(Params())) return {};
@@ -59,7 +93,7 @@ OrchardNetworkDisposition ReceiveOrchardNetworkBlock(
     const std::string& peer,const std::vector<uint8_t>& bytes,bool stateless) {
     try {
         const auto block=ClassifyNetworkBlock(bytes);
-        if (stateless || block.family!=NetworkBlockFamily::Orchard)
+        if (block.family!=NetworkBlockFamily::Orchard)
             return OrchardNetworkDisposition::Refused;
         const auto* context=DaemonContext::instance();
         if (!context) return OrchardNetworkDisposition::Refused;
@@ -67,7 +101,11 @@ OrchardNetworkDisposition ReceiveOrchardNetworkBlock(
         const auto headers=context->header_chain;
         const auto downloads=context->block_download;
         const auto relay=context->block_relay;
-        if (!source || !relay) return OrchardNetworkDisposition::Refused;
+        // A stateless flag is not ownership. Require the service's actual storage
+        // mode, then release that check before any scheduler or queue waiting.
+        // Stored bodies remain partial; only the canonical result acknowledges.
+        if (!source || !relay || !source->MatchesOrchardNetworkStorageMode(stateless))
+            return OrchardNetworkDisposition::Refused;
         const auto hash=block.header.GetHash();
         const bool known=downloads && downloads->IsBlockKnown(hash);
         const bool requested=relay->IsBlockDownloadInFlight(hash);
@@ -118,6 +156,17 @@ OrchardNetworkDisposition SubmitDownloadedOrchardBlock(
         if (parallel) parallel->notifyBlockReceived(hash);
     } catch (...) { /* Terminal bookkeeping cannot undo canonical acceptance. */ }
     return disposition;
+}
+OrchardNetworkDisposition SubmitDownloadedCompactOrchardBlock(
+    const std::shared_ptr<ChainstateService>& source,
+    const std::shared_ptr<BlockIngressService>& ingress,
+    const std::shared_ptr<BlockDownloadScheduler>& parallel,
+    const std::vector<uint8_t>& bytes,const uint256& hash,uint32_t height) {
+    try {
+        if (!source || !source->MatchesOrchardNetworkStorageMode(true))
+            return OrchardNetworkDisposition::Refused;
+        return SubmitDownloadedOrchardBlock(source,ingress,parallel,bytes,hash,height);
+    } catch (...) { return OrchardNetworkDisposition::Refused; }
 }
 bool AcceptDownloadedOrchardBlock(
     const std::shared_ptr<ChainstateService>& source,

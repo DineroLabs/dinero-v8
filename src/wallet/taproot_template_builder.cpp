@@ -456,6 +456,13 @@ TemplateTreeResult TaprootTemplateBuilder::BuildProtected(
 // BuildEscrow
 // ============================================================================
 
+// BIP341's NUMS point H (no known discrete log). An escrow must be spendable
+// only through its release and timeout leaves; any party's key as the internal
+// key would give that party a key-path spend that skips both.
+static const std::vector<uint8_t> kEscrowNumsInternalKey{
+    0x50, 0x92, 0x9b, 0x74, 0xc1, 0xa0, 0x49, 0x54, 0xb7, 0x8b, 0x4b, 0x60, 0x35, 0xe9, 0x7a, 0x5e,
+    0x07, 0x8a, 0x5a, 0x0f, 0x28, 0xec, 0x96, 0xd5, 0x47, 0xbf, 0xee, 0x9a, 0xce, 0x80, 0x3a, 0xc0};
+
 TemplateTreeResult TaprootTemplateBuilder::BuildEscrow(
     const EscrowTemplateParams& params) {
 
@@ -492,9 +499,9 @@ TemplateTreeResult TaprootTemplateBuilder::BuildEscrow(
     auto merkle_root = ComputeBranchHash(release_leaf_hash, timeout_leaf_hash);
 
     // --- Compute output key with parity ---
-    // v1: key-path = buyer_pubkey (MuSig2(buyer, seller) in v2)
+    // No key path: the internal key is the NUMS point.
     OutputKeyWithParity okp;
-    if (!ComputeOutputKeyInternal(params.buyer_pubkey, merkle_root, okp)) {
+    if (!ComputeOutputKeyInternal(kEscrowNumsInternalKey, merkle_root, okp)) {
         throw std::runtime_error("BuildEscrow: output key computation failed");
     }
 
@@ -509,7 +516,7 @@ TemplateTreeResult TaprootTemplateBuilder::BuildEscrow(
 
     // --- Build control blocks ---
     std::array<uint8_t, 32> internal_key_arr;
-    std::copy(params.buyer_pubkey.begin(), params.buyer_pubkey.end(), internal_key_arr.begin());
+    std::copy(kEscrowNumsInternalKey.begin(), kEscrowNumsInternalKey.end(), internal_key_arr.begin());
 
     // Release leaf control block: path = [timeout_leaf_hash]
     TaprootControlBlock release_cb;

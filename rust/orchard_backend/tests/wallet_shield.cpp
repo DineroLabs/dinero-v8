@@ -1,4 +1,5 @@
 #include "orchard_wallet.h"
+#include <cstring>
 #include <algorithm>
 #include <iostream>
 #include <type_traits>
@@ -23,7 +24,25 @@ int main(){try{
     const auto wrongBalance=SigningContext::Create(domain,0,{input},outputs,101);
     Reject([&]{(void)std::move(wrongPlan).Prove(wrongBalance);});
     Reject([&]{(void)std::move(wrongPlan).Prove(context);});
-    auto complete=std::move(plan).Prove(context);
+    const auto originalIntent=plan.Intent(context);
+    auto capsule=plan.ExportRecovery();
+    Check(!capsule.Bytes().empty()&&capsule.Bytes().size()<=WalletBundlePlan::kMaxRecoveryBytes);
+    Reject([&]{(void)WalletBundlePlan::Restore(receiver,capsule);});
+    const WalletStateBytes empty(std::span<const uint8_t>{});
+    Reject([&]{(void)WalletBundlePlan::Restore(sender,empty);});
+    WalletStateBytes truncated(capsule.Bytes().first(capsule.Bytes().size()-1));
+    Reject([&]{(void)WalletBundlePlan::Restore(sender,truncated);});
+    auto restored=WalletBundlePlan::Restore(sender,capsule);
+    Check(std::memcmp(&plan.UnprovedFacts(),&restored.UnprovedFacts(),sizeof(DineroOrchardFacts))==0);
+    Check(restored.Intent(context).Message()==originalIntent.Message());
+    Check(restored.Intent(context).Nullifiers()==originalIntent.Nullifiers());
+    auto recaptured=restored.ExportRecovery();
+    Check(std::equal(capsule.Bytes().begin(),capsule.Bytes().end(),recaptured.Bytes().begin(),recaptured.Bytes().end()));
+    auto complete=std::move(restored).Prove(context);
+    Reject([&]{(void)restored.ExportRecovery();});
+    // The original plan remains unexposed, but drop it before the existing
+    // consumed-plan assertion below by replacing it with the consumed handle.
+    plan=std::move(restored);
     Check(!complete.Bytes().empty());Check(complete.Authorization().Facts().value_balance==-5000);
     auto parsed=ParsedBundle::Decode(complete.Bytes());
     Check(parsed.VerifyAuthorization(context).SigningDigest()==complete.Authorization().SigningDigest());

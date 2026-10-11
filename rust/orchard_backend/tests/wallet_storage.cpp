@@ -3,11 +3,18 @@
 #include <algorithm>
 #include <filesystem>
 #include <iostream>
+#include "platform_helpers.h"
+#ifdef _WIN32
+#include <process.h>
+#else
 #include <spawn.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#endif
 using namespace dinero::orchard;
+#ifndef _WIN32
 extern char** environ;
+#endif
 static void Check(bool ok){if(!ok)throw std::runtime_error("Orchard wallet snapshot test failed");}
 template<class F>static void Reject(F fn){bool rejected=false;try{fn();}catch(const std::exception&){rejected=true;}Check(rejected);}
 static void Exec(sqlite3* db,const char* sql){Check(sqlite3_exec(db,sql,nullptr,nullptr,nullptr)==SQLITE_OK);}
@@ -21,16 +28,27 @@ static int Companion(sqlite3* db){sqlite3_stmt* s=nullptr;Check(sqlite3_prepare_
 static void Initial(const char* path){DB db(path);Exec(db.p,"BEGIN IMMEDIATE;CREATE TABLE companion(value INTEGER);INSERT INTO companion VALUES(1);");WalletSnapshotStore::InitializeSchemaUnderTransaction(db.p);WalletSnapshotStore store(db.p,Identity(),seed);Check(store.StageReplace(0,State(1))==1);Exec(db.p,"COMMIT;");}
 static void Verify(const char* path,uint64_t revision,uint8_t n){DB db(path);WalletSnapshotStore store(db.p,Identity(),seed);auto read=store.Read();Check(read&&read->revision==revision);Check(read->state.Bytes().size()==2048);Check(std::all_of(read->state.Bytes().begin(),read->state.Bytes().end(),[&](auto b){return b==n;}));Check(Companion(db.p)==n);}
 static void Crash(const std::string& exe,const std::string& path,bool commit){
+#ifdef _WIN32
+    const auto quotedExe=test::WindowsArgument(exe);
+    const auto quotedPath=test::WindowsArgument(path);
+    const char* args[]{quotedExe.c_str(),"--crash",quotedPath.c_str(),commit?"post":"pre",nullptr};
+    Check(_spawnv(_P_WAIT,exe.c_str(),args)==73);
+#else
     pid_t pid;std::string mode=commit?"post":"pre";std::vector<char*> args{const_cast<char*>(exe.c_str()),const_cast<char*>("--crash"),const_cast<char*>(path.c_str()),mode.data(),nullptr};
     Check(posix_spawn(&pid,exe.c_str(),nullptr,nullptr,args.data(),environ)==0);int status=0;Check(waitpid(pid,&status,0)==pid);Check(WIFEXITED(status)&&WEXITSTATUS(status)==73);
+#endif
 }
 int main(int argc,char** argv){try{
     if(argc==4&&std::string_view(argv[1])=="--crash"){
         DB db(argv[2]);WalletSnapshotStore store(db.p,Identity(),seed);Exec(db.p,"BEGIN IMMEDIATE;");Check(store.StageReplaceRetaining(1,State(2))==2);Exec(db.p,"UPDATE companion SET value=2;");
         if(std::string_view(argv[3])=="post")Exec(db.p,"COMMIT;");std::_Exit(73);
     }
+#ifdef _WIN32
+    test::TemporaryDirectory cleanup("dinero wallet snapshot");
+#else
     auto pattern=(std::filesystem::temp_directory_path()/"dinero-wallet-snapshot-XXXXXX").string();std::vector<char> dir(pattern.begin(),pattern.end());dir.push_back(0);Check(mkdtemp(dir.data()));
     struct Cleanup {std::filesystem::path p;~Cleanup(){std::filesystem::remove_all(p);}} cleanup{dir.data()};
+#endif
     const auto path=(cleanup.p/"wallet.sqlite").string();Initial(path.c_str());Verify(path.c_str(),1,1);
     {
         DB db(path.c_str());WalletSnapshotStore store(db.p,Identity(),seed);

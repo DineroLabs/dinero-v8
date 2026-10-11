@@ -36,6 +36,8 @@ A test is EXECUTED if any ctest invocation in the given workflows selects it:
   * a broad invocation (no -R, no -L), minus its --label-exclude/--exclude-regex
   * an -R name/regex selection, including `for t in A B C; do ... -R "^${t}$"`
   * an -L label selection, minus that same invocation's --label-exclude
+The CI address-layout wrapper `setarch x86_64 -R ctest ...` preserves the
+underlying selection; unsupported setarch/CTest shapes refuse explicitly.
 An invocation carrying -N/--show-only is an INVENTORY listing, not a run, and
 is never credited. This repo has two such steps.
 
@@ -209,6 +211,18 @@ def split_unquoted(text):
         elif ch in "'\"":
             quote = ch
             buf.append(ch)
+        elif ch == "\\" and i + 1 < len(text):
+            # Escaped shell punctuation belongs to this word.
+            buf.extend(text[i:i + 2])
+            i += 1
+        elif ch == "&" and ((i > 0 and text[i - 1] in "<>")
+                            or (i + 1 < len(text) and text[i + 1] == ">")):
+            # Descriptor duplication (2>&1) and combined output (&>file)
+            # are redirects, not command separators. The CTest lexer below
+            # validates and removes them without interpreting the target.
+            buf.append(ch)
+        elif ch == "|" and i > 0 and text[i - 1] == ">":
+            buf.append(ch)  # >| overrides shell noclobber, not a pipeline
         elif ch in ";\n":
             parts.append("".join(buf)); buf = []
         elif ch in "|&":
@@ -223,21 +237,161 @@ def split_unquoted(text):
     return parts
 
 
-def shell_commands(script):
-    """Split a run: script into individual commands, continuations joined.
+def shell_source(script):
+    """Remove heredoc data and shell comments without interpreting either.
 
-    Comments are dropped first: an unscoped search for `ctest` previously
-    matched prose inside comments, and a `for t in ...` written in a comment
-    could resolve a loop variable.
+    Embedded Python/text is not shell syntax. In particular, its quotes and
+    comments must not hide the next shell command or create fake CTest calls.
+    This is a bounded shell subset: unsupported delimiters or command expansion
+    inside an unquoted heredoc refuse instead of claiming coverage.
     """
-    # Join backslash continuations before anything else.
-    joined = re.sub(r"\\\n\s*", " ", script)
-    stripped = []
-    for line in joined.split("\n"):
-        # A '#' starts a comment when it begins a word. Good enough here, and
-        # erring toward dropping text only ever removes candidate commands.
-        stripped.append(re.sub(r"(^|\s)#.*$", "", line))
-    return [c.strip() for c in split_unquoted("\n".join(stripped)) if c.strip()]
+    output, pending, quote = [], [], None
+    for line in script.splitlines(keepends=True):
+        if pending:
+            delimiter, tabs, quoted = pending[0]
+            body = line.lstrip("\t") if tabs else line
+            if body.rstrip("\r\n") == delimiter:
+                pending.pop(0)
+            elif not quoted and ("$(" in body or "`" in body):
+                sys.exit("FATAL: command expansion in an unquoted heredoc "
+                         "is not modeled")
+            output.append("\n")
+            continue
+        i, visible = 0, []
+        while i < len(line):
+            ch = line[i]
+            if quote:
+                visible.append(ch)
+                if ch == quote:
+                    quote = None
+                elif ch == "\\" and quote == '\"' and i + 1 < len(line):
+                    i += 1
+                    visible.append(line[i])
+            elif ch in "'\"":
+                quote = ch
+                visible.append(ch)
+            elif ch == "\\" and i + 1 < len(line):
+                visible.extend(line[i:i + 2]); i += 1
+            elif ch == "#" and (i == 0 or line[i - 1].isspace()
+                                 or line[i - 1] in ";|&()"):
+                break
+            elif line.startswith("<<<", i):
+                visible.append("<<<"); i += 2
+            elif line.startswith("<<", i):
+                # Quoted identifiers cover our Python and text heredocs;
+                # simple unquoted identifiers are safe only without commands.
+                match = re.match(r"<<(-?)[ \t]*(?:'([A-Za-z_][A-Za-z_0-9]*)'|"
+                                 r'"([A-Za-z_][A-Za-z_0-9]*)"|'
+                                 r"([A-Za-z_][A-Za-z_0-9]*))"
+                                 r"(?=[ \t\r\n;|&<>]|$)", line[i:])
+                if not match:
+                    sys.exit("FATAL: unsupported heredoc delimiter")
+                if line.rstrip("\r\n").endswith("\\"):
+                    sys.exit("FATAL: continued heredoc command is not modeled")
+                pending.append((next(x for x in match.groups()[1:] if x),
+                                bool(match[1]), bool(match[2] or match[3])))
+                visible.append(match[0]); i += len(match[0]) - 1
+            else:
+                visible.append(ch)
+            i += 1
+        output.append("".join(visible).rstrip("\r\n") + "\n")
+    if pending:
+        sys.exit("FATAL: unterminated heredoc")
+    if quote:
+        sys.exit("FATAL: unterminated shell quote")
+    return "".join(output)
+
+
+def shell_commands(script):
+    """Shell commands only; heredoc bodies remain inert data."""
+    source = shell_source(script)
+    joined = re.sub(r"\\\n\s*", " ", source)
+    return [c.strip() for c in split_unquoted(joined) if c.strip()]
+
+
+def ctest_arguments(command):
+    """Tokenize our output-redirection subset without losing quoted operators.
+
+    Output paths and descriptor destinations cannot change CTest selection.
+    They are removed as shell syntax, never executed or opened. Input and
+    process redirection, expansions that execute commands, and malformed
+    redirects refuse. This is not a general shell interpreter.
+    """
+    out, i, word_start = [], 0, 0
+    while i < len(command):
+        ch = command[i]
+        if ch in "'\"" or ch == "\\":
+            start = i
+            if ch == "\\":
+                if i + 1 >= len(command):
+                    sys.exit("FATAL: incomplete shell escape")
+                i += 2
+            else:
+                quote = ch
+                i += 1
+                while i < len(command) and command[i] != quote:
+                    if command[i] == "\\" and quote == '"':
+                        i += 1
+                    i += 1
+                if i >= len(command):
+                    sys.exit("FATAL: unterminated shell quote")
+                i += 1
+            out.extend(command[start:i])
+            continue
+        if ch == "<":
+            sys.exit("FATAL: input/process redirection is not modeled")
+        if ch == ">" or command.startswith("&>", i):
+            # Only an entirely unquoted digit word is a file descriptor.
+            prefix = "".join(out[word_start:])
+            if prefix.isascii() and prefix.isdigit():
+                del out[word_start:]
+            combined = ch == "&"
+            if combined:
+                i += 1
+            i += 1
+            extended = i < len(command) and command[i] in ">|"
+            if i < len(command) and command[i] in ">|":
+                if combined and command[i] == "|":
+                    sys.exit("FATAL: unsupported combined output redirect")
+                i += 1
+            duplicate = i < len(command) and command[i] == "&"
+            if duplicate:
+                if combined or extended:
+                    sys.exit("FATAL: unsupported combined descriptor redirect")
+                i += 1
+            while i < len(command) and command[i].isspace():
+                i += 1
+            start = i
+            quote = None
+            while i < len(command):
+                c = command[i]
+                if quote:
+                    if c == quote:
+                        quote = None
+                    elif c == "\\" and quote == '"':
+                        i += 1
+                elif c in "'\"":
+                    quote = c
+                elif c == "\\":
+                    i += 1
+                elif c.isspace() or c in "<>;|&":
+                    break
+                i += 1
+            target = command[start:i]
+            if not target or quote or i > len(command):
+                sys.exit("FATAL: missing or malformed redirection target")
+            if any(x in target for x in ("$(", "`", "(", ")")):
+                sys.exit("FATAL: dynamic/process redirection target is not modeled")
+            if duplicate and not re.fullmatch(r"(?:[0-9]+|-)", target):
+                sys.exit("FATAL: descriptor redirection target is not modeled")
+            out.append(" ")
+            word_start = len(out)
+            continue
+        out.append(ch)
+        if ch.isspace():
+            word_start = len(out)
+        i += 1
+    return shlex.split("".join(out), comments=False)
 
 
 def ctest_blocks(text_or_path, path=None):
@@ -247,13 +401,24 @@ def ctest_blocks(text_or_path, path=None):
         for cmd in shell_commands(script):
             # Strip leading VAR=value assignments and `env`.
             probe = re.sub(r"^(?:env\s+|[A-Za-z_][\w]*=\S*\s+)*", "", cmd)
-            if not re.match(r"ctest(\s|$)", probe):
+            wrapped = bool(re.match(r"(?:/usr/bin/)?setarch(\s|$)", probe))
+            if not wrapped and not re.match(r"ctest(\s|$)", probe):
                 continue
             try:
-                argv = shlex.split(probe, comments=True)
+                argv = ctest_arguments(probe)
             except ValueError as exc:
                 sys.exit("FATAL: %s:%d cannot tokenize ctest invocation: %s"
                          % (path or text_or_path, line_no, exc))
+            if wrapped:
+                # The checked CI lanes use this exact address-layout wrapper.
+                # It changes no CTest selection. Never execute it during parsing.
+                if "ctest" not in argv:
+                    continue
+                if len(argv) < 4 or argv[1:4] != ["x86_64", "-R", "ctest"]:
+                    sys.exit("FATAL: %s:%d unsupported setarch-wrapped CTest "
+                             "command; selection must not be silently omitted"
+                             % (path or text_or_path, line_no))
+                argv = argv[3:]
             if not argv:
                 continue
             blocks.append((line_no, argv, script))
@@ -366,6 +531,9 @@ def parse_block(line_no, argv, script, path):
     # literal regex, matched nothing, and the exclusion silently vanished.
     for key in ("include", "label_include", "name_exclude", "label_exclude"):
         pat = spec[key]
+        if pat and ("$(" in pat or "`" in pat):
+            sys.exit("FATAL: %s:%d dynamic command substitution in selection "
+                     "%r is not modeled" % (path, line_no, pat))
         if not pat or not re.search(r"\$\{?\w", pat):
             continue
         m = re.fullmatch(r"\^?\$\{?(\w+)\}?\$?", pat)

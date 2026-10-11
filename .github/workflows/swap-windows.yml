@@ -1,0 +1,172 @@
+# Swap code on Windows (MSVC): dinerod links it on every platform, and the
+# swap store must replace its files in place on every tick. Builds dinerod and
+# runs the swap store tests (repeated save / reopen) natively under MSVC; and
+# builds dinero-qt with the Swap tab and runs its offscreen test.
+name: Swap Windows
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [dinero-main]
+    paths:
+      - '.github/workflows/swap-windows.yml'
+      - 'src/wallet/swap/**'
+      - 'include/wallet/swap/**'
+      - 'src/daemon/services/swap_service.cpp'
+      - 'tests/wallet/test_swap_encrypted_store.cpp'
+      - 'qt/src/swap*'
+      - 'cmake/SwapTower.cmake'
+      - 'tools/dinero_swap_tower.cpp'
+      - 'qt/src/chromestyle.h'
+      - 'qt/tests/test_swap_tab.cpp'
+
+jobs:
+  swap-windows:
+    name: Windows MSVC — dinerod + swap store tests
+    runs-on: windows-2022
+    timeout-minutes: 120
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Cache vendored OpenSSL
+        uses: actions/cache@v4
+        with:
+          path: |
+            third_party/openssl-3.5.7
+          key: windows-msvc-openssl-3.5.7-${{ hashFiles('scripts/build-openssl-vendored.ps1') }}
+
+      - name: Build vendored OpenSSL 3.5.7
+        shell: powershell
+        run: |
+          $env:OPENSSL_VERSION = '3.5.7'
+          .\scripts\build-openssl-vendored.ps1
+
+      - name: Cache vendored curl
+        uses: actions/cache@v4
+        with:
+          path: |
+            third_party/curl-8.21.0
+          key: windows-msvc-curl-8.21.0-${{ hashFiles('scripts/build-curl-vendored.ps1') }}
+
+      - name: Build vendored static libcurl (OpenSSL 3.5.7)
+        shell: powershell
+        run: |
+          $env:OPENSSL_VERSION = '3.5.7'
+          .\scripts\build-curl-vendored.ps1
+
+      - name: Provision curl via runner vcpkg
+        shell: powershell
+        run: |
+          & "$env:VCPKG_INSTALLATION_ROOT\vcpkg.exe" install curl:x64-windows --no-print-usage
+
+      - name: Configure (same flags as the Windows server release)
+        shell: powershell
+        run: |
+          cmake -S . -B build-msvc-swap -G 'Visual Studio 17 2022' -A x64 `
+            -DDINERO_WINDOWS_SERVER_BUILD=ON -DDINERO_BUILD_SEEDER=OFF -DDINERO_BUILD_MINER=OFF `
+            -DDINERO_ENABLE_QUIC=ON `
+            "-DCMAKE_TOOLCHAIN_FILE=$env:VCPKG_INSTALLATION_ROOT\scripts\buildsystems\vcpkg.cmake"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Build dinerod and the swap store tests
+        shell: powershell
+        run: |
+          cmake --build build-msvc-swap --config Release --parallel 2 --target dinerod test_swap_encrypted_store
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Run the swap store tests (must have run, not just built)
+        shell: powershell
+        run: |
+          ctest --test-dir build-msvc-swap -C Release -R '^SwapEncryptedStore$' --output-on-failure | Tee-Object ctest.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if (-not (Select-String -Path ctest.log -Pattern '100% tests passed, 0 tests failed out of 1')) {
+            throw 'SwapEncryptedStore did not run exactly once'
+          }
+
+  swap-windows-qt:
+    name: Windows MSVC — dinero-qt with the Swap tab
+    runs-on: windows-2022
+    timeout-minutes: 150
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Install Qt 6.9.1 (MSVC 2022 x86_64)
+        uses: jurplel/install-qt-action@48d3ad6db93f3627c8ee7a0454bc6f3744f7e730 # v4.3.1
+        with:
+          version: '6.9.1'
+          arch: win64_msvc2022_64
+          cache: true
+
+      - name: Cache vendored OpenSSL
+        uses: actions/cache@v4
+        with:
+          path: |
+            third_party/openssl-3.5.7
+          key: windows-msvc-openssl-3.5.7-${{ hashFiles('scripts/build-openssl-vendored.ps1') }}
+
+      - name: Build vendored OpenSSL 3.5.7
+        shell: powershell
+        run: |
+          $env:OPENSSL_VERSION = '3.5.7'
+          .\scripts\build-openssl-vendored.ps1
+
+      - name: Cache vendored curl
+        uses: actions/cache@v4
+        with:
+          path: |
+            third_party/curl-8.21.0
+          key: windows-msvc-curl-8.21.0-${{ hashFiles('scripts/build-curl-vendored.ps1') }}
+
+      - name: Build vendored static libcurl (OpenSSL 3.5.7)
+        shell: powershell
+        run: |
+          $env:OPENSSL_VERSION = '3.5.7'
+          .\scripts\build-curl-vendored.ps1
+
+      - name: Provision curl via runner vcpkg
+        shell: powershell
+        run: |
+          & "$env:VCPKG_INSTALLATION_ROOT\vcpkg.exe" install curl:x64-windows --no-print-usage
+
+      - name: Configure (desktop flags, no GPU miners)
+        shell: powershell
+        run: |
+          cmake -S . -B build-msvc-qt -G 'Visual Studio 17 2022' -A x64 `
+            -DDINERO_BUILD_QT=ON -DDINERO_BUILD_MINER=OFF -DDINERO_BUILD_SEEDER=OFF `
+            -DENABLE_GPU_MINING=OFF -DMINER_ENABLE_CUDA=OFF -DDINERO_QT_ENABLE_SOLO_CUDA=OFF `
+            -DENABLE_GRPC=OFF -DDINERO_ENABLE_QUIC=ON -DBUILD_TESTING=ON `
+            "-DCMAKE_TOOLCHAIN_FILE=$env:VCPKG_INSTALLATION_ROOT\scripts\buildsystems\vcpkg.cmake" `
+            "-DCMAKE_PREFIX_PATH=$env:QT_ROOT_DIR"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if (-not (Select-String -Path 'build-msvc-qt\CMakeCache.txt' -Pattern '^DIN_ENABLE_SWAP_UI:BOOL=ON$' -Quiet)) {
+            throw 'the Swap tab is not enabled in this build'
+          }
+
+      - name: Build dinero-qt and the Swap tab test
+        shell: powershell
+        run: |
+          cmake --build build-msvc-qt --config Release --parallel 2 --target dinero-qt test_swap_tab
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Run the Swap tab test (offscreen)
+        shell: powershell
+        run: |
+          $env:QT_QPA_PLATFORM = 'offscreen'
+          $env:PATH = "$env:QT_ROOT_DIR\bin;$env:PATH"
+          ctest --test-dir build-msvc-qt -C Release -R '^SwapTab$' --output-on-failure | Tee-Object ctest.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if (-not (Select-String -Path ctest.log -Pattern '100% tests passed, 0 tests failed out of 1')) {
+            throw 'SwapTab did not run exactly once'
+          }

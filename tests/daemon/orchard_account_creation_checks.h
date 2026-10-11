@@ -13,7 +13,7 @@ TEST(OrchardAccountCreation, MalformedRequestsRefuseBeforeServices){
 }
 TEST(OrchardAccountCreation, RegistryAndBackendOrServiceAbsenceRefuse){
     RegisterOrchardAccountRpc();const auto* method=g_rpcRegistry.lookup("wallet.orchard.createaccount");ASSERT_NE(method,nullptr);
-    ExecutionContext context;const auto result=(*method)(context,OrchardCreationRequest());EXPECT_TRUE(result.isMember("error"));EXPECT_FALSE(result.isMember("address"));
+    ExecutionContext context;const auto result=(*method)(context,OrchardBoundParamsForTest(context,OrchardCreationRequest()));EXPECT_TRUE(result.isMember("error"));EXPECT_FALSE(result.isMember("address"));
 #ifndef DINERO_TEST_ORCHARD_ORIGIN
     EXPECT_EQ(result["error"].asString(),"Orchard wallet backend unavailable");
 #endif
@@ -56,7 +56,7 @@ std::vector<uint8_t> OrchardCreationBytes(const wallet::OrchardAccountState& sta
 TEST(OrchardAccountCreation, ActualRpcAllocatesNonconsecutiveOwnersAtOriginAndReopens){
     OrchardCreationFixture f;const auto initial=f.Catalog();ASSERT_TRUE(initial);ASSERT_TRUE(initial->generated);ASSERT_TRUE(initial->accounts.empty());
     RegisterOrchardAccountRpc();const auto* method=g_rpcRegistry.lookup("wallet.orchard.createaccount");ASSERT_NE(method,nullptr);
-    const auto first=(*method)(f.RequestContext(),OrchardCreationRequest());ASSERT_FALSE(first.isMember("error"))<<first["error"].asString();EXPECT_EQ(first["revision"].asUInt64(),1u);EXPECT_TRUE(first["requires_sync"].asBool());
+    const auto first=(*method)(f.RequestContext(),OrchardBoundParamsForTest(f.RequestContext(),OrchardCreationRequest()));ASSERT_FALSE(first.isMember("error"))<<first["error"].asString();EXPECT_EQ(first["revision"].asUInt64(),1u);EXPECT_TRUE(first["requires_sync"].asBool());
     const auto account=f.Account();EXPECT_EQ(account.account.Delivery().sequence,0u);EXPECT_EQ(account.account.Scan().Checkpoint().height,101u);EXPECT_EQ(account.account.Scan().Checkpoint().block_hash,f.parent->hash);EXPECT_EQ(account.account.Scan().BalanceUna(),0u);
     const auto keys=f.AccountKeys();const auto expected=wallet::OrchardAccountState::Begin(f.Domain(),keys.ExportFullViewingKey(),102,f.parent->hash).IssueReceiver(orchard::WalletScope::External);
     EXPECT_EQ(first["address"].asString(),expected.second.EncodeAddress(orchard::WalletNetwork::Regtest));EXPECT_EQ(OrchardCreationBytes(account.account),OrchardCreationBytes(expected.first));

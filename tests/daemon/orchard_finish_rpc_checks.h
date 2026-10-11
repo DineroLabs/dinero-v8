@@ -14,7 +14,7 @@ TEST(OrchardFinishRpc, MalformedRequestsRefuseBeforeServices){
 }
 TEST(OrchardFinishRpc, RegistryAndBackendOrServiceAbsenceRefuse){
     RegisterOrchardAccountRpc();const auto* method=g_rpcRegistry.lookup("wallet.orchard.finishspend");ASSERT_NE(method,nullptr);
-    ExecutionContext context;const auto result=(*method)(context,SpendRpcShape());SpendRpcRefused(result);
+    ExecutionContext context;const auto result=(*method)(context,OrchardBoundParamsForTest(context,SpendRpcShape()));SpendRpcRefused(result);
 #ifndef DINERO_TEST_ORCHARD_ORIGIN
     EXPECT_EQ(result["error"].asString(),"Orchard wallet backend unavailable");
 #else
@@ -53,7 +53,7 @@ TEST(OrchardFinishRpc, ActualTransferAndUnshieldCommitBeforeAdmissionAndRelay){
         if(withdraw){params["payments"]=din::arr();din::Json output;output["address"]=f.TransparentAddress();output["amount_una"]=Json::UInt64(400000);params["outputs"].append(output);}
         ASSERT_FALSE(f.CallSpend(params).isMember("error"));f.CompleteProof();f.ExpectUnsubmitted();
         RegisterOrchardAccountRpc();const auto* method=g_rpcRegistry.lookup("wallet.orchard.finishspend");ASSERT_NE(method,nullptr);
-        const auto result=(*method)(f.RequestContext(),params);ASSERT_FALSE(result.isMember("error"))<<result["error"].asString();
+        const auto result=(*method)(f.RequestContext(),OrchardBoundParamsForTest(f.RequestContext(),params));ASSERT_FALSE(result.isMember("error"))<<result["error"].asString();
         EXPECT_TRUE(result["admitted"].asBool());EXPECT_FALSE(result["already_in_mempool"].asBool());EXPECT_EQ(result["durable_state"].asString(),"signed");
         EXPECT_EQ(f.broadcasts,1u);EXPECT_TRUE(f.ready_at_broadcast);EXPECT_TRUE(f.autocommit_at_broadcast);EXPECT_TRUE(f.retired_at_broadcast);
         const auto ready=f.Snapshot();const auto bytes=f.Account(3).account.Operations().Entries().at(f.Operation(1)).transaction;
@@ -119,7 +119,11 @@ TEST(OrchardFinishRpc, RejectedAdmissionRetainsReadyForExactReopenRetry){
 TEST(OrchardFinishRpc, SelectedDomainAndMissingOwnedProofRefuseWithoutRegeneration){
     OrchardFinishRpcFixture f;const auto params=f.RequestJson();
     {wallet::OrchardProofJobs idle;const auto request=f.Request(idle);EXPECT_TRUE(request->enqueued);
-     const auto before=f.Snapshot();SpendRpcRefused(f.Finish(params));EXPECT_EQ(f.Snapshot(),before);f.ExpectUnsubmitted();
+     const auto before=f.Snapshot();const auto missing=f.Finish(params);
+     EXPECT_TRUE(missing.isMember("error"));EXPECT_EQ(missing.size(),4u);
+     EXPECT_EQ(missing["error_code"].asString(),"proof_not_ready");
+     EXPECT_EQ(missing["proof_state"].asString(),"missing");EXPECT_TRUE(missing["reservation_retained"].asBool());
+     EXPECT_EQ(f.Snapshot(),before);f.ExpectUnsubmitted();
      auto use=WalletService::AcquireWalletUse(f.wallet);EXPECT_FALSE(use->OrchardProofs().Query(f.Operation(1)));}
     OrchardFinishRpcFixture complete;const auto valid=complete.RequestJson();ASSERT_FALSE(complete.CallSpend(valid).isMember("error"));complete.CompleteProof();
     auto use=WalletService::AcquireWalletUse(complete.wallet);auto captured=complete.Read(use->OrchardProofs());ASSERT_TRUE(captured.proof);
@@ -134,4 +138,96 @@ TEST(OrchardFinishRpc, SelectedDomainAndMissingOwnedProofRefuseWithoutRegenerati
     const auto result=complete.Finish(valid);ASSERT_FALSE(result.isMember("error"))<<result["error"].asString();EXPECT_TRUE(result["admitted"].asBool());
 }
 #endif
+TEST(OrchardFinishById, StrictSelectorsAndBackendPolicy) {
+    ExecutionContext ctx;din::Json p;p["account"]=Json::UInt64(3);p["request_id"]=std::string(63,'0')+"1";
+    for(const bool shield:{false,true}) {
+        const auto call=[&](const din::Json& x){return shield?rpc_context_wallet_orchard_finishshield(ctx,x):rpc_context_wallet_orchard_finishspend(ctx,x);};
+        const auto unavailable=call(p);SpendRpcRefused(unavailable);
+#ifdef DINERO_TEST_ORCHARD_ORIGIN
+        EXPECT_EQ(unavailable["error"].asString(),"Daemon services unavailable");
+#else
+        EXPECT_EQ(unavailable["error"].asString(),"Orchard wallet backend unavailable");
+#endif
+        for(int mode=0;mode<6;++mode){auto bad=p;
+            if(mode==0)bad["account"]=true;
+            if(mode==1)bad["account"]=Json::UInt64(0x80000000ULL);
+            if(mode==2)bad["request_id"]=std::string(64,'0');
+            if(mode==3)bad["request_id"]="01";
+            if(mode==4)bad["fee_una"]=Json::UInt64(1);
+            if(mode==5)bad["payments"]=din::arr();
+            const auto error=call(bad);SpendRpcRefused(error);EXPECT_NE(error["error"],unavailable["error"]);
+        }
+        const auto queued=shield?rpc_context_wallet_orchard_queueshield(ctx,p):rpc_context_wallet_orchard_queuespend(ctx,p);
+        SpendRpcRefused(queued);EXPECT_NE(queued["error"],unavailable["error"]);
+    }
+}
+#ifdef DINERO_TEST_ORCHARD_ORIGIN
+TEST(OrchardOperationStatus, StoredSpendCompletionMethodSurvivesReadyAndReopen) {
+    for (const bool withdraw:{false,true}) {
+        OrchardFinishRpcFixture f;auto original=f.RequestJson();
+        if(withdraw){original["payments"]=din::arr();din::Json output;output["address"]=f.TransparentAddress();output["amount_una"]=Json::UInt64(400000);original["outputs"].append(output);}
+        ASSERT_FALSE(f.CallSpend(original).isMember("error"));f.CompleteProof();
+        const auto list=[&](){return rpc_context_wallet_orchard_listoperations(f.RequestContext(),OrchardOperationListRequest());};
+        const auto before=f.Snapshot();const auto reserved=list();
+        ASSERT_FALSE(reserved.isMember("error"))<<reserved.toStyledString();ASSERT_EQ(reserved["operations"].size(),1u);
+        const auto& row=reserved["operations"][0];EXPECT_EQ(row["operation_id"],original["request_id"]);
+        EXPECT_EQ(row["completion_method"].asString(),"wallet.orchard.finishspend");
+        EXPECT_EQ(row["durable_state"].asString(),"reserved");EXPECT_EQ(row.size(),4u);
+        EXPECT_EQ(f.Snapshot(),before);f.ExpectUnsubmitted();
+        din::Json id;id["account"]=original["account"];id["request_id"]=row["operation_id"];
+        const auto finished=f.Finish(id);ASSERT_FALSE(finished.isMember("error"))<<finished.toStyledString();
+        const auto ready=f.Snapshot();const auto signed_list=list();ASSERT_FALSE(signed_list.isMember("error"));
+        EXPECT_EQ(signed_list["operations"][0]["completion_method"],row["completion_method"]);
+        EXPECT_EQ(signed_list["operations"][0]["txid"],finished["txid"]);EXPECT_EQ(signed_list["operations"][0].size(),5u);EXPECT_EQ(f.Snapshot(),ready);
+        {auto use=WalletService::AcquireWalletUse(f.wallet);use->Wallet().open("canonical-recovery");use->Wallet().unlockWallet("canonical-fixture-pass",0);}
+        ASSERT_TRUE(f.wallet->EnsureRuntimeWalletBindings());EXPECT_EQ(list(),signed_list);EXPECT_EQ(f.Snapshot(),ready);
+        const auto again=f.Finish(id);ASSERT_FALSE(again.isMember("error"));EXPECT_TRUE(again["already_in_mempool"].asBool());
+        EXPECT_EQ(again["txid"],finished["txid"]);EXPECT_EQ(f.broadcasts,1u);EXPECT_EQ(f.Snapshot(),ready);
+    }
+}
+TEST(OrchardFinishById, TransferAndUnshieldUseStoredIntentAndReadyReopen) {
+    for(const bool withdraw:{false,true}) {
+        OrchardFinishRpcFixture f;auto original=f.RequestJson();
+        if(withdraw){original["payments"]=din::arr();din::Json output;output["address"]=f.TransparentAddress();output["amount_una"]=Json::UInt64(400000);original["outputs"].append(output);}
+        ASSERT_FALSE(f.CallSpend(original).isMember("error"));f.CompleteProof();
+        din::Json id;id["account"]=original["account"];id["request_id"]=original["request_id"];
+        RegisterOrchardAccountRpc();const auto* method=g_rpcRegistry.lookup("wallet.orchard.finishspend");ASSERT_NE(method,nullptr);
+        const auto bound=OrchardBoundParamsForTest(f.RequestContext(),id);
+        const auto first=(*method)(f.RequestContext(),bound);ASSERT_FALSE(first.isMember("error"))<<first.toStyledString();
+        EXPECT_TRUE(first["admitted"].asBool());EXPECT_EQ(f.broadcasts,1u);EXPECT_TRUE(f.ready_at_broadcast);EXPECT_TRUE(f.autocommit_at_broadcast);EXPECT_TRUE(f.retired_at_broadcast);
+        const auto before=f.Snapshot();const auto bytes=f.Account(3).account.Operations().Entries().at(f.Operation(1)).transaction;EXPECT_EQ(bytes,f.broadcast_body);
+        {auto use=WalletService::AcquireWalletUse(f.wallet);EXPECT_FALSE(use->OrchardProofs().Query(f.Operation(1)));use->Wallet().open("canonical-recovery");use->Wallet().unlockWallet("canonical-fixture-pass",0);}
+        ASSERT_TRUE(f.wallet->EnsureRuntimeWalletBindings());
+        const auto stale=(*method)(f.RequestContext(),bound);EXPECT_EQ(stale["error_code"].asString(),"wallet_binding_mismatch");EXPECT_EQ(f.Snapshot(),before);
+        const auto again=(*method)(f.RequestContext(),OrchardBoundParamsForTest(f.RequestContext(),id));ASSERT_FALSE(again.isMember("error"))<<again.toStyledString();
+        EXPECT_TRUE(again["already_in_mempool"].asBool());EXPECT_EQ(again["txid"],first["txid"]);EXPECT_EQ(f.broadcasts,1u);EXPECT_EQ(f.Snapshot(),before);
+        EXPECT_EQ(f.Account(3).account.Operations().Entries().at(f.Operation(1)).transaction,bytes);
+    }
+}
+TEST(OrchardFinishById, MissingUnknownReadAndWriteFailuresPreserveOwnership) {
+    OrchardFinishRpcFixture missing;wallet::OrchardProofJobs idle;ASSERT_TRUE(missing.Request(idle)->enqueued);
+    const auto request=missing.RequestJson();din::Json id;id["account"]=request["account"];id["request_id"]=request["request_id"];
+    const auto before=missing.Snapshot();const auto original_entry=missing.Account(3).account.Operations().Entries().at(missing.Operation(1));
+    const auto unavailable=missing.Finish(id);
+    EXPECT_EQ(unavailable["error_code"].asString(),"proof_not_ready");EXPECT_EQ(unavailable["proof_state"].asString(),"queued");EXPECT_TRUE(unavailable["reservation_retained"].asBool());EXPECT_EQ(missing.Snapshot(),before);missing.ExpectUnsubmitted();
+    const auto resumed=missing.Account(3).account.Operations().Entries().at(missing.Operation(1));
+    EXPECT_EQ(resumed.message,original_entry.message);EXPECT_EQ(resumed.nullifiers,original_entry.nullifiers);
+    EXPECT_EQ(resumed.request_commitment,original_entry.request_commitment);ASSERT_TRUE(resumed.recovery);ASSERT_TRUE(original_entry.recovery);
+    EXPECT_TRUE(std::equal(resumed.recovery->Bytes().begin(),resumed.recovery->Bytes().end(),original_entry.recovery->Bytes().begin(),original_entry.recovery->Bytes().end()));
+    {auto use=WalletService::AcquireWalletUse(missing.wallet);EXPECT_TRUE(use->OrchardProofs().Query(missing.Operation(1)));}
+    auto unknown=id;unknown["request_id"]=std::string(63,'0')+"2";SpendRpcRefused(missing.Finish(unknown));EXPECT_EQ(missing.Snapshot(),before);
+    auto wrong=id;wrong["account"]=Json::UInt64(17);SpendRpcRefused(missing.Finish(wrong));EXPECT_EQ(missing.Snapshot(),before);
+    SpendRpcRefused(rpc_context_wallet_orchard_finishshield(missing.RequestContext(),id));EXPECT_EQ(missing.Snapshot(),before);
+    OrchardFinishRpcFixture ready;const auto original=ready.RequestJson();ASSERT_FALSE(ready.CallSpend(original).isMember("error"));ready.CompleteProof();
+    const auto reserved=ready.Snapshot();auto* db=ready.Database();bool denied=false;
+    sqlite3_set_authorizer(db,[](void* p,int action,const char* table,const char*,const char*,const char*){
+        if(action==SQLITE_READ&&table&&std::string_view(table)=="orchard_wallet_snapshots"){*static_cast<bool*>(p)=true;return SQLITE_DENY;}return SQLITE_OK;},&denied);
+    SpendRpcRefused(ready.Finish(id));sqlite3_set_authorizer(db,nullptr,nullptr);EXPECT_TRUE(denied);EXPECT_EQ(ready.Snapshot(),reserved);ready.ExpectUnsubmitted();
+    ready.Sql("CREATE TRIGGER refuse_id_finish BEFORE UPDATE ON orchard_wallet_snapshots BEGIN SELECT RAISE(ABORT,'id finish refusal'); END");
+    SpendRpcRefused(ready.Finish(id));ready.Sql("DROP TRIGGER refuse_id_finish");EXPECT_EQ(ready.Snapshot(),reserved);ready.ExpectUnsubmitted();
+    {auto use=WalletService::AcquireWalletUse(ready.wallet);EXPECT_EQ(use->OrchardProofs().Query(ready.Operation(1)),wallet::OrchardProofJobs::State::Succeeded);}
+    const auto finished=ready.Finish(id);ASSERT_FALSE(finished.isMember("error"))<<finished.toStyledString();EXPECT_TRUE(finished["admitted"].asBool());EXPECT_TRUE(ready.ready_at_broadcast);
+}
+#endif
+
 } // namespace dinero
