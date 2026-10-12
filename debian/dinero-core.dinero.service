@@ -21,10 +21,10 @@ Type=simple
 User=dinero
 Group=dinero
 
-# dinerod auto-discovers <datadir>/dinero.conf when run with no
-# --conf flag. We pass --datadir explicitly so the location is
-# unambiguous in the unit file (and in journalctl output).
-ExecStart=/usr/bin/dinerod --datadir=/var/lib/dinero
+# The package seeds /etc/dinero/dinero.conf while chain and wallet data live
+# under /var/lib/dinero. Pass both paths so the packaged service reads the
+# operator's configuration instead of silently using datadir defaults.
+ExecStart=/usr/bin/dinerod --datadir=/var/lib/dinero --conf=/etc/dinero/dinero.conf
 
 ExecReload=/bin/kill -HUP $MAINPID
 KillMode=mixed

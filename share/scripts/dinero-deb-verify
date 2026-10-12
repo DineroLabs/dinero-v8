@@ -354,7 +354,7 @@ EXPECTED_FILES_KIND=(
   "exec|usr/bin/dinero-backup"
   "exec|usr/bin/dinero-prepare-upgrade"
   "conf|lib/systemd/system/dinero.service:usr/lib/systemd/system/dinero.service"
-  "conf|usr/share/doc/dinero/dinero.conf.example:usr/share/doc/dinero/dinero.conf.example.gz"
+  "conf|usr/share/doc/dinero/dinero.conf.example"
   "conf|usr/share/doc/dinero/dinero.service.example:usr/share/doc/dinero/dinero.service.example.gz"
   "conf|usr/share/doc/dinero/journald-dinero.conf.example:usr/share/doc/dinero/journald-dinero.conf.example.gz"
 )

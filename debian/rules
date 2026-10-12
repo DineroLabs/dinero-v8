@@ -25,6 +25,11 @@ DEB_OPENSSL_VERSION := 3.5.7
 override_dh_clean:
 	dh_clean -Xrust/orchard_backend/vendor/orchard/Cargo.toml.orig
 
+# postinst reads the example by this exact path to seed /etc/dinero/dinero.conf.
+# Debian's default dh_compress would append .gz and silently skip that step.
+override_dh_compress:
+	dh_compress -Xdinero.conf.example
+
 # Phase E.3 — vendored static OpenSSL.
 #
 # The packaged-service build uses USE_SYSTEM_OPENSSL=OFF and pins the
