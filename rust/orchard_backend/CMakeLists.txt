@@ -43,6 +43,23 @@ if(WIN32)
   set(ORCHARD_CARGO_TEST_TARGET --target "${ORCHARD_RUST_TARGET}")
   set(ORCHARD_ARCHIVE "${ORCHARD_TARGET_DIR}/${ORCHARD_RUST_TARGET}/release/${ORCHARD_ARCHIVE_NAME}")
   set(ORCHARD_NATIVE_LINK_RESPONSE "${CMAKE_CURRENT_BINARY_DIR}/orchard-native-libraries.rsp")
+  # Visual Studio does not expand an @response file supplied through a target's
+  # linker properties. Obtain rustc's checked native-library report while
+  # configuring, then give the actual libraries to CMake's link graph.
+  execute_process(COMMAND ${CMAKE_COMMAND}
+      "-DCARGO=${ORCHARD_CARGO}" "-DRUST_TOOLCHAIN=${ORCHARD_RUST_TOOLCHAIN}"
+      "-DMANIFEST=${CMAKE_CURRENT_SOURCE_DIR}/Cargo.toml" "-DTARGET_DIR=${ORCHARD_TARGET_DIR}"
+      "-DARCHIVE=${ORCHARD_ARCHIVE}" "-DLINK_RESPONSE=${ORCHARD_NATIVE_LINK_RESPONSE}"
+      "-DBUILD_CONFIG=Release" -P "${CMAKE_CURRENT_SOURCE_DIR}/BuildMsvcRust.cmake"
+    RESULT_VARIABLE ORCHARD_NATIVE_REPORT_RESULT)
+  if(NOT ORCHARD_NATIVE_REPORT_RESULT EQUAL 0 OR
+     NOT EXISTS "${ORCHARD_NATIVE_LINK_RESPONSE}")
+    message(FATAL_ERROR "Orchard MSVC native-library report failed")
+  endif()
+  file(STRINGS "${ORCHARD_NATIVE_LINK_RESPONSE}" ORCHARD_NATIVE_LIBRARIES)
+  if(NOT ORCHARD_NATIVE_LIBRARIES)
+    message(FATAL_ERROR "Orchard MSVC native-library report is empty")
+  endif()
   add_custom_command(OUTPUT "${ORCHARD_ARCHIVE}" "${ORCHARD_NATIVE_LINK_RESPONSE}"
     COMMAND ${CMAKE_COMMAND}
       "-DCARGO=${ORCHARD_CARGO}" "-DRUST_TOOLCHAIN=${ORCHARD_RUST_TOOLCHAIN}"
@@ -71,11 +88,14 @@ add_library(dinero_orchard_rust STATIC IMPORTED)
 set_target_properties(dinero_orchard_rust PROPERTIES IMPORTED_LOCATION "${ORCHARD_ARCHIVE}")
 add_dependencies(dinero_orchard_rust dinero_orchard_rust_build)
 if(WIN32)
-  # Attach to the imported Rust owner so direct consumers (including the daemon
-  # capability report) receive the same native system-library requirements.
-  target_link_options(dinero_orchard_rust INTERFACE "LINKER:@${ORCHARD_NATIVE_LINK_RESPONSE}")
-  set_property(TARGET dinero_orchard_rust APPEND PROPERTY INTERFACE_LINK_DEPENDS
-    "${ORCHARD_NATIVE_LINK_RESPONSE}")
+  # Preserve rustc's reported order and duplicates for every consumer.
+  foreach(ORCHARD_NATIVE_LIBRARY IN LISTS ORCHARD_NATIVE_LIBRARIES)
+    if(ORCHARD_NATIVE_LIBRARY STREQUAL "/defaultlib:msvcrt")
+      target_link_options(dinero_orchard_rust INTERFACE "${ORCHARD_NATIVE_LIBRARY}")
+    else()
+      target_link_libraries(dinero_orchard_rust INTERFACE "${ORCHARD_NATIVE_LIBRARY}")
+    endif()
+  endforeach()
 endif()
 # The report calls the linked Rust protocol descriptor, not a cache-only claim.
 if(TARGET dinerod)
