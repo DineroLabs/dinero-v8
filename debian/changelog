@@ -2,6 +2,8 @@ dinero-core (8.1.13~rc1-2) unstable; urgency=medium
 
   * Keep the configuration example uncompressed so postinst seeds the file.
   * Start the packaged service with that configuration file explicitly.
+  * Explicitly disable unsupported legacy Lightning oracles in the seeded
+    Orchard mainnet configuration so a fresh service can start.
 
  -- Dinero Labs <team@dinerolabs.org>  Sun, 11 Oct 2026 00:00:00 -0400
 
