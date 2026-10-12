@@ -8,6 +8,8 @@
 #include <unordered_map>
 #include <optional>
 #include <string>
+#include <type_traits>
+#include <utility>
 
 namespace dinero {
 // Phase M.0: OutPoint now defined in consensus/outpoint.h (uint256-based with std::hash specialization)
@@ -53,6 +55,21 @@ public:
      * @param base - ChainStateView instance (non-owning, must outlive this object)
      */
     explicit CoinsViewMemPool(const consensus::ChainStateView* base);
+
+    // Rollback must exchange the complete overlay without throwing.  Relying on
+    // the implicitly generated move swap is not noexcept on every STL (MSVC).
+    void swap(CoinsViewMemPool& other) noexcept {
+        static_assert(noexcept(spent_.swap(other.spent_)));
+        static_assert(noexcept(created_.swap(other.created_)));
+        using std::swap;
+        swap(base_, other.base_);
+        spent_.swap(other.spent_);
+        created_.swap(other.created_);
+    }
+
+    friend void swap(CoinsViewMemPool& a, CoinsViewMemPool& b) noexcept {
+        a.swap(b);
+    }
 
     /**
      * Get coin with mempool overlay applied
