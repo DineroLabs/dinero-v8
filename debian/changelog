@@ -3,6 +3,7 @@ dinero-core (8.1.13~rc1-1) unstable; urgency=medium
   * Build a qualification-only v8.1.13 candidate with the Orchard backend.
   * Bound the nested RocksDB build to two compiler jobs.
   * Preserve Orchard's tracked vendor manifest during Debian clean.
+  * Disable dynamic UPnP/NAT-PMP linkage in the server package.
   * Keep mainnet activation and deployment subject to release qualification.
 
  -- Dinero Labs <team@dinerolabs.org>  Sun, 11 Oct 2026 00:00:00 -0400
