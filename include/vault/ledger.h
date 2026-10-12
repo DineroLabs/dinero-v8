@@ -66,6 +66,35 @@ class Ledger {
    public:
     explicit Ledger(LedgerCaps caps = LedgerCaps::unbounded()) : caps_{caps} {}
 
+    // Publish a prepared ledger without relying on the standard library's
+    // whole-object move/swap traits, which differ across supported platforms.
+    // VaultService keeps pointers to this Ledger object, so exchange values
+    // in place rather than exchanging the object that owns those pointers.
+    void swap(Ledger& other) noexcept {
+        static_assert(noexcept(allocations_.swap(other.allocations_)));
+        static_assert(noexcept(allocationAccounts_.swap(other.allocationAccounts_)));
+        static_assert(noexcept(reversals_.swap(other.reversals_)));
+        static_assert(noexcept(entries_.swap(other.entries_)));
+        static_assert(noexcept(accounts_.swap(other.accounts_)));
+        static_assert(noexcept(openCreditsByAccount_.swap(other.openCreditsByAccount_)));
+        static_assert(noexcept(std::swap(totalOpenCredits_, other.totalOpenCredits_)));
+        static_assert(noexcept(std::swap(totalOperatorLoss_, other.totalOperatorLoss_)));
+        static_assert(noexcept(std::swap(caps_, other.caps_)));
+        static_assert(noexcept(std::swap(nextSeq_, other.nextSeq_)));
+        allocations_.swap(other.allocations_);
+        allocationAccounts_.swap(other.allocationAccounts_);
+        reversals_.swap(other.reversals_);
+        entries_.swap(other.entries_);
+        accounts_.swap(other.accounts_);
+        openCreditsByAccount_.swap(other.openCreditsByAccount_);
+        using std::swap;
+        swap(totalOpenCredits_, other.totalOpenCredits_);
+        swap(totalOperatorLoss_, other.totalOperatorLoss_);
+        swap(caps_, other.caps_);
+        swap(nextSeq_, other.nextSeq_);
+    }
+    friend void swap(Ledger& left, Ledger& right) noexcept { left.swap(right); }
+
     /// Prepare the derived account/counter state before appending an entry.
     /// Errors preserve entries, accounts, counters and sequence. Successful
     /// publication after the entry append uses only nonthrowing swaps.
