@@ -8,7 +8,6 @@
 #include <unordered_map>
 #include <optional>
 #include <string>
-#include <type_traits>
 #include <utility>
 
 namespace dinero {
@@ -58,17 +57,12 @@ public:
 
     // Rollback must exchange the complete overlay without throwing.  Relying on
     // the implicitly generated move swap is not noexcept on every STL (MSVC).
-    void swap(CoinsViewMemPool& other) noexcept {
+    void Swap(CoinsViewMemPool& other) noexcept {
         static_assert(noexcept(spent_.swap(other.spent_)));
         static_assert(noexcept(created_.swap(other.created_)));
-        using std::swap;
-        swap(base_, other.base_);
+        std::swap(base_, other.base_);
         spent_.swap(other.spent_);
         created_.swap(other.created_);
-    }
-
-    friend void swap(CoinsViewMemPool& a, CoinsViewMemPool& b) noexcept {
-        a.swap(b);
     }
 
     /**

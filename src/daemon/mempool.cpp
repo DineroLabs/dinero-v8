@@ -557,7 +557,8 @@ struct Mempool::StateRollback {
         static_assert(std::is_nothrow_swappable_v<decltype(times)>);
         static_assert(std::is_nothrow_swappable_v<decltype(children)>);
         static_assert(std::is_nothrow_swappable_v<decltype(exclusions)>);
-        static_assert(std::is_nothrow_swappable_v<CoinsViewMemPool>);
+        static_assert(noexcept(std::declval<CoinsViewMemPool&>().Swap(
+            std::declval<CoinsViewMemPool&>())));
         static_assert(std::is_nothrow_swappable_v<decltype(accumulator_root)>);
         transactions.swap(pool.m_transactions);
         spent.swap(pool.m_spent_outputs);
@@ -568,7 +569,7 @@ struct Mempool::StateRollback {
         accumulator_root.swap(pool.current_accumulator_root_);
         std::swap(pool.current_block_height_, block_height);
         using std::swap;
-        swap(overlay, pool.coins_view_);
+        overlay.Swap(pool.coins_view_);
         added_count = pool.m_total_tx_added.exchange(added_count);
         removed_count = pool.m_total_tx_removed.exchange(removed_count);
         stale_evicted = pool.m_stale_evicted_total.exchange(stale_evicted);
