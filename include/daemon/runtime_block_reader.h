@@ -9,7 +9,7 @@
 namespace dinero {
 class ChainDB;
 class BlockStorage;
-struct CBlockIndex;
+class CBlockIndex;
 
 // A stored body selected by network/height, never by a transaction's claimed
 // version. Reading authenticates identities, not consensus validity. There is

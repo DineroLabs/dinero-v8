@@ -6,7 +6,7 @@
 
 namespace dinero {
 class RuntimeBlockBody;
-class RuntimeReorgPlan;
+struct RuntimeReorgPlan;
 struct RuntimeReorgProgress {
     size_t disconnected = 0, connected = 0;
     // False means canonical recovery is required even in the current process.
