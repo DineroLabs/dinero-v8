@@ -38,6 +38,7 @@ ShieldedMigrationResult MigrateShieldedStateCopy(
     const std::filesystem::path& candidate,
     const ShieldedMigrationLimits& limits,
     bool apply,
-    const std::function<void(const char*)>& checkpoint = {});
+    const std::function<void(const char*)>& checkpoint = {},
+    bool paired_sst_links = false);
 
 } // namespace dinero::storage

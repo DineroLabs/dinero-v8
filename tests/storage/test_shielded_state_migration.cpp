@@ -248,6 +248,40 @@ void Ownership(const std::string& fault) {
     const auto report = MigrateShieldedStateCopy(src_arg, dst_arg, limits, true);
     CHECK(!report.ok); held.close(); CHECK(Inspect(source) == before && Inspect(copy) == candidate_before);
 }
+void PairedImmutableSst() {
+    CanonicalTemp temp; const auto source = temp.path / "original", copy = temp.path / "copy";
+    ValidSeed(source);
+    {
+        Raw raw(source, legacy);
+        for (auto* handle : raw.handles)
+            Setup(raw.db->Flush(rocksdb::FlushOptions(), handle).ok(), "flush live SST fixture");
+    }
+    fs::copy(source, copy, fs::copy_options::recursive);
+    fs::path first_sst;
+    unsigned shared = 0;
+    for (const auto& entry : fs::recursive_directory_iterator(source)) {
+        if (!entry.is_regular_file() || entry.path().extension() != ".sst") continue;
+        const auto paired = copy / entry.path().lexically_relative(source);
+        fs::remove(paired);
+        fs::create_hard_link(entry.path(), paired);
+        if (first_sst.empty()) first_sst = entry.path();
+        ++shared;
+    }
+    CHECK(shared > 0);
+    const auto before = PersistentFiles(source);
+    CHECK(!MigrateShieldedStateCopy(source, copy, limits, true).ok);
+    const auto outside = temp.path / "outside.sst";
+    fs::create_hard_link(first_sst, outside);
+    CHECK(!MigrateShieldedStateCopy(source, copy, limits, true, {}, true).ok);
+    fs::remove(outside);
+    const auto mutable_alias = temp.path / "outside-current";
+    fs::create_hard_link(source / "CURRENT", mutable_alias);
+    CHECK(!MigrateShieldedStateCopy(source, copy, limits, true, {}, true).ok);
+    fs::remove(mutable_alias);
+    const auto result = MigrateShieldedStateCopy(source, copy, limits, true, {}, true);
+    CHECK(result.ok && result.ready);
+    CHECK(PersistentFiles(source) == before);
+}
 int Child(const fs::path& source, const fs::path& copy, const std::string& stage, const char* mode) {
     const auto pid = fork(); Setup(pid >= 0, "fork");
     if (pid == 0) {
@@ -349,6 +383,7 @@ int main(int argc, char** argv) {
             cases["io_" + fault + "_" + stage] = [=] { IOFailure(fault, stage); };
     for (const std::string fault : {"short_nf", "long_nf", "nf_value", "duplicate_nf", "frontier", "trailing_frontier", "anchors", "missing_frontier", "root", "composite_root", "count", "tree_size", "height", "forest_tip", "copy_changed", "record_limit", "nullifier_limit", "zero_batch"}) cases[fault] = [=] { Refusal(fault); };
     for (const std::string fault : {"source_locked", "copy_locked", "same", "nested", "symlink", "hardlink"}) cases[fault] = [=] { Ownership(fault); };
+    cases["paired_immutable_sst"] = PairedImmutableSst;
     for (const std::string stage : {"after_prepare", "after_create", "after_copy", "after_readback", "after_retire", "after_verifying", "before_ready", "after_ready"}) cases[stage] = [=] { Interrupt(stage); };
     for (const std::string fault : {"conflict", "unknown", "unselected", "lost_both", "journal"}) cases[fault] = [=] { Interrupt("after_copy", fault); };
     if (argc == 2 && std::string(argv[1]) == "--list") { for (const auto& [name, test] : cases) std::cout << name << '\n'; return 0; }

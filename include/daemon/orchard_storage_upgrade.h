@@ -62,11 +62,13 @@ inline int FamilyCount(const fs::path& db) {
     return status.ok() ? static_cast<int>(names.size()) : -1;
 }
 
-inline std::uintmax_t TreeBytes(const fs::path& root) {
+inline std::uintmax_t TreeBytes(const fs::path& root, bool count_sst = true) {
     std::uintmax_t total = 0;
     std::error_code ec;
     for (fs::recursive_directory_iterator it(root, ec), end; !ec && it != end; it.increment(ec))
-        if (it->is_regular_file(ec)) total += it->file_size(ec);
+        if (it->is_regular_file(ec) && (count_sst || it->path().extension() != ".sst"))
+            total += it->file_size(ec);
+    if (ec) throw fs::filesystem_error("cannot measure ChainDB", root, ec);
     return total;
 }
 
@@ -106,13 +108,38 @@ inline std::string ReadJournal(const fs::path& journal) {
     return state;
 }
 
-inline void CopyTree(const fs::path& from, const fs::path& to) {
+inline bool CanHardlinkInCandidate(const fs::path& candidate) {
+    // A crash before the journal is written leaves only this candidate; the
+    // ordinary recovery path removes it on the next start.
+    fs::create_directory(candidate);
+    const auto first = candidate / ".upgrade-link-probe";
+    const auto second = candidate / ".upgrade-link-probe-pair";
+    { std::ofstream out(first); out << "probe"; if (!out) throw std::runtime_error("cannot probe hardlink support"); }
+    std::error_code ec;
+    fs::create_hard_link(first, second, ec);
+    const bool supported = !ec;
+    fs::remove(second);
+    fs::remove(first);
+    return supported;
+}
+
+inline void CopyTree(const fs::path& from, const fs::path& to, bool link_sst) {
+    fs::create_directories(to);
     for (const auto& entry : fs::recursive_directory_iterator(from))
         if (entry.is_symlink() || !(entry.is_regular_file() || entry.is_directory()))
             throw std::runtime_error("unexpected entry in ChainDB: " + entry.path().string());
-    fs::copy(from, to, fs::copy_options::recursive);
-    for (const auto& entry : fs::recursive_directory_iterator(to))
-        if (entry.is_regular_file()) SyncPath(entry.path());
+    for (const auto& entry : fs::recursive_directory_iterator(from)) {
+        const auto target = to / entry.path().lexically_relative(from);
+        if (entry.is_directory()) { fs::create_directories(target); continue; }
+        if (link_sst && entry.path().extension() == ".sst") {
+            if (fs::hard_link_count(entry.path()) != 1)
+                throw std::runtime_error("source SST already hardlinked: " + entry.path().string());
+            fs::create_hard_link(entry.path(), target);
+        } else {
+            fs::copy_file(entry.path(), target);
+            SyncPath(target);
+        }
+    }
     SyncPath(to);
 }
 }  // namespace storage_upgrade_detail
@@ -193,23 +220,34 @@ inline StorageUpgradeReport EnsureSeparatedShieldedLayout(
                                    fs::path(chaindb.string() + ".reindex.tmp")})
             if (fs::exists(marker)) return refuse("unfinished operation marker present: " + marker.string());
 
-        // 4. Room for one copy of the store plus margin.
-        const auto need = TreeBytes(chaindb) / 10 * 11 + (512ULL << 20);
+        // 4. Copy only mutable files; immutable SSTs can share disk blocks
+        // with the rollback store when the filesystem supports hardlinks.
+        const auto total_bytes = TreeBytes(chaindb);
+        const auto mutable_bytes = TreeBytes(chaindb, false);
         std::error_code ec;
         const auto space = fs::space(chaindb.parent_path(), ec);
         const std::uintmax_t available = available_bytes ? *available_bytes : (ec ? 0 : space.available);
+        const auto linked_need = mutable_bytes + total_bytes / 10 + (512ULL << 20);
+        if ((ec && !available_bytes) || available < linked_need)
+            return refuse("not enough free disk for the storage upgrade: need " + std::to_string(linked_need >> 20) +
+                          " MiB, have " + std::to_string(available >> 20) + " MiB");
+        const bool link_sst = CanHardlinkInCandidate(candidate);
+        const auto need = link_sst ? linked_need : total_bytes / 10 * 11 + (512ULL << 20);
         if ((ec && !available_bytes) || available < need)
+        {
+            fs::remove_all(candidate);
             return refuse("not enough free disk for the storage upgrade: need " + std::to_string(need >> 20) +
                           " MiB, have " + std::to_string(available >> 20) + " MiB");
+        }
 
         // 5. Copy, then migrate the copy with the reviewed engine.
         WriteJournal(journal, "copying");
-        CopyTree(chaindb, candidate);
+        CopyTree(chaindb, candidate, link_sst);
         phase("copied");
         // Same bounded limits as the Orchard reindex path.
         constexpr uint64_t record_bytes = 32ULL * 1024 * 1024;
         const storage::ShieldedMigrationLimits limits{record_bytes, 4096, record_bytes, 10000000};
-        const auto result = storage::MigrateShieldedStateCopy(chaindb, candidate, limits, true);
+        const auto result = storage::MigrateShieldedStateCopy(chaindb, candidate, limits, true, {}, link_sst);
         if (!result.ok || !result.ready) {
             std::error_code ignored;
             fs::remove_all(candidate, ignored);

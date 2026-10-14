@@ -90,6 +90,7 @@ std::optional<WindowsFileIdentity> WindowsNoFollowIdentity(const fs::path& path)
 #endif
 struct Identity {
     fs::path path;
+    fs::path paired_sst_root;
 #if defined(_WIN32)
     uint64_t device;
     uint64_t inode;
@@ -97,7 +98,7 @@ struct Identity {
     dev_t device;
     ino_t inode;
 #endif
-    Identity(const fs::path& input) {
+    Identity(const fs::path& input, const fs::path& paired_root = {}) {
         const auto absolute = fs::absolute(input);
         fs::path cursor;
         for (const auto& part : absolute) {
@@ -109,6 +110,7 @@ struct Identity {
 #endif
         }
         path = fs::canonical(absolute);
+        if (!paired_root.empty()) paired_sst_root = fs::absolute(paired_root);
 #if defined(_WIN32)
         const auto info = WindowsNoFollowIdentity(path);
         Require(info && info->directory, "database directory missing");
@@ -122,19 +124,36 @@ struct Identity {
         CheckFiles();
     }
     void CheckFiles() const {
-        // Reject shared mutable files and links, even to paths within this DB.
-        // Filesystem clones have separate inodes and are not hardlinks.
+        // Standalone migration rejects every hardlink. The automatic upgrade
+        // alone may pair immutable SSTs with the original at the same relative
+        // path; mutable RocksDB controls and outside aliases remain forbidden.
         for (const auto& entry : fs::recursive_directory_iterator(path)) {
 #if defined(_WIN32)
             const auto info = WindowsNoFollowIdentity(entry.path());
             Require(info.has_value(), "cannot stat database entry");
-            Require(info->directory || (info->regular && info->links == 1),
+            if (info->directory) continue;
+            Require(info->regular, "nonregular database entry");
+            if (info->links == 1) continue;
+            Require(info->links == 2 && !paired_sst_root.empty() && entry.path().extension() == ".sst",
                     "nonregular or hardlinked database entry");
+            const auto paired = WindowsNoFollowIdentity(
+                paired_sst_root / entry.path().lexically_relative(path));
+            Require(paired && paired->regular && paired->links == 2 &&
+                    paired->device == info->device && paired->inode == info->inode,
+                    "SST hardlink is not paired with the other database");
 #else
             struct stat info{};
             Require(::lstat(entry.path().c_str(), &info) == 0, "cannot stat database entry");
-            Require(S_ISDIR(info.st_mode) || (S_ISREG(info.st_mode) && info.st_nlink == 1),
+            if (S_ISDIR(info.st_mode)) continue;
+            Require(S_ISREG(info.st_mode), "nonregular database entry");
+            if (info.st_nlink == 1) continue;
+            Require(info.st_nlink == 2 && !paired_sst_root.empty() && entry.path().extension() == ".sst",
                     "nonregular or hardlinked database entry");
+            const auto paired_path = paired_sst_root / entry.path().lexically_relative(path);
+            struct stat paired{};
+            Require(::lstat(paired_path.c_str(), &paired) == 0 && S_ISREG(paired.st_mode) &&
+                    paired.st_nlink == 2 && paired.st_dev == info.st_dev && paired.st_ino == info.st_ino,
+                    "SST hardlink is not paired with the other database");
 #endif
         }
     }
@@ -601,7 +620,8 @@ void Compare(const Store& original, const Store& candidate, const Journal& journ
 static ShieldedMigrationResult RunMigration(const fs::path& original_path, const fs::path& candidate_path,
     const ShieldedMigrationLimits& limits, bool apply, const std::function<void(const char*)>& checkpoint,
     rocksdb::Env* environment, const std::string& cohort_binding = {},
-    const std::function<void()>& outer_ownership = {}, const detail::ExternalMigrationState* external = nullptr) {
+    const std::function<void()>& outer_ownership = {}, const detail::ExternalMigrationState* external = nullptr,
+    bool paired_sst_links = false) {
     ShieldedMigrationResult result;
     try {
 #if defined(__APPLE__) && TARGET_OS_IOS
@@ -610,7 +630,8 @@ static ShieldedMigrationResult RunMigration(const fs::path& original_path, const
         Require(limits.batch_bytes && limits.batch_rows && limits.max_record_bytes && limits.max_nullifiers &&
                 limits.max_record_bytes <= limits.batch_bytes && limits.max_record_bytes <= std::numeric_limits<size_t>::max() &&
                 limits.max_nullifiers <= std::numeric_limits<size_t>::max() / sizeof(sh::NullifierEntry), "invalid resource budgets");
-        Identity original_id(original_path), candidate_id(candidate_path);
+        Identity original_id(original_path, paired_sst_links ? candidate_path : fs::path{});
+        Identity candidate_id(candidate_path, paired_sst_links ? original_path : fs::path{});
         Require(!Nested(original_id.path, candidate_id.path) && !Nested(candidate_id.path, original_id.path) &&
                 !(original_id.device == candidate_id.device && original_id.inode == candidate_id.inode), "overlapping database paths");
         LockedEnv original_lock(original_id.path, environment), candidate_lock(candidate_id.path, environment);
@@ -700,8 +721,10 @@ static ShieldedMigrationResult RunMigration(const fs::path& original_path, const
 }
 
 ShieldedMigrationResult MigrateShieldedStateCopy(const fs::path& original, const fs::path& candidate,
-    const ShieldedMigrationLimits& limits, bool apply, const std::function<void(const char*)>& checkpoint) {
-    return RunMigration(original, candidate, limits, apply, checkpoint, rocksdb::Env::Default());
+    const ShieldedMigrationLimits& limits, bool apply, const std::function<void(const char*)>& checkpoint,
+    bool paired_sst_links) {
+    return RunMigration(original, candidate, limits, apply, checkpoint, rocksdb::Env::Default(),
+                        {}, {}, nullptr, paired_sst_links);
 }
 
 ShieldedMigrationResult detail::MigrateBoundCopy(const fs::path& original, const fs::path& candidate,

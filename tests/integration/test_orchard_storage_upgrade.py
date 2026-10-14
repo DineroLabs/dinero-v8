@@ -67,6 +67,11 @@ def main():
     base.stop()
     fixture = base.root / "fixture"
     shutil.copytree(base.datadir, fixture)
+    # Five blocks remain in RocksDB's WAL, so this small fixture has no live
+    # SST yet. A distinct orphan SST-shaped file exercises the copy/link and
+    # identity rules without making the regtest mine thousands of blocks.
+    sentinel = fixture / "blockchain" / "chaindb" / "999999.sst"
+    sentinel.write_bytes(b"immutable-sst-copy-sentinel\n" * 4096)
     assert layout(fixture) == {"separated": False, "legacy_kept": False, "leftovers": []}
     print(f"PASS legacy fixture at height {height}", flush=True)
 
@@ -88,11 +93,36 @@ def main():
     for phase in PHASES:
         node = fresh_copy(phase)
         crash_start(node, phase)
+        if phase == "copied":
+            live = node.datadir / "blockchain" / "chaindb"
+            copied = node.datadir / "blockchain" / "chaindb.upgrade-candidate"
+            shared = 0
+            for original in live.rglob("*.sst"):
+                candidate = copied / original.relative_to(live)
+                assert candidate.is_file(), f"missing copied SST: {candidate}"
+                left, right = original.stat(), candidate.stat()
+                assert (left.st_dev, left.st_ino) == (right.st_dev, right.st_ino), \
+                    f"SST copied instead of linked: {original.name}"
+                assert left.st_nlink == right.st_nlink == 2, f"unexpected SST link count: {original.name}"
+                shared += 1
+            assert shared > 0, "fixture produced no SST files"
+            for name in ("CURRENT", "LOCK"):
+                left, right = (live / name).stat(), (copied / name).stat()
+                assert (left.st_dev, left.st_ino) != (right.st_dev, right.st_ino), \
+                    f"mutable database file was hardlinked: {name}"
+            print(f"PASS copy shares {shared} immutable SST files but no mutable control files", flush=True)
         node.start()  # ordinary start, automatic upgrade on
         assert node.rpc("getbestblockhash") == tip and node.rpc("getblockcount") == height
         node.stop()
         got = layout(node.datadir)
         assert got == {"separated": True, "legacy_kept": True, "leftovers": []}, f"after crash at {phase}: {got}"
+        if phase == "copied":
+            legacy = node.datadir / "blockchain" / "chaindb.legacy-v1"
+            original = fixture / "blockchain" / "chaindb"
+            for name in ("CURRENT", "999999.sst"):
+                assert hashlib.sha256((legacy / name).read_bytes()).digest() == \
+                    hashlib.sha256((original / name).read_bytes()).digest(), \
+                    f"rollback store changed {name}"
         print(f"PASS crash after '{phase}' recovered on the next start (tip kept, legacy kept)", flush=True)
 
     # A missing candidate after the old live directory was retired is damage,
@@ -187,6 +217,24 @@ def main():
     assert "storage upgrade refused (not enough free disk" in log, "refusal not reported"
     assert layout(node.datadir) == {"separated": False, "legacy_kept": False, "leftovers": []}
     print("PASS too little disk: upgrade refused, status RPCs warned, legacy store kept, node started", flush=True)
+
+    # A pre-existing link to a path outside the two database directories must
+    # never be mistaken for the paired immutable SST optimization.
+    alias_node = fresh_copy("external-sst-alias")
+    alias_sst = alias_node.datadir / "blockchain" / "chaindb" / "999999.sst"
+    outside = alias_node.root / "outside.sst"
+    os.link(alias_sst, outside)
+    outside_digest = hashlib.sha256(outside.read_bytes()).digest()
+    alias_node.start()
+    assert alias_node.rpc("getnetworkinfo")["storage_upgrade_refused"] is True
+    assert alias_node.rpc("getbestblockhash") == tip
+    alias_node.stop()
+    # RocksDB may remove an orphan SST from the live store when it opens it;
+    # the outside file must remain byte-identical regardless.
+    assert hashlib.sha256(outside.read_bytes()).digest() == outside_digest
+    assert layout(alias_node.datadir)["separated"] is False
+    print("PASS external SST hardlink refused without touching the legacy store", flush=True)
+
     print("PASS automatic storage upgrade", flush=True)
 
 
