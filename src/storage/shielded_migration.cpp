@@ -11,6 +11,7 @@
 #include <rocksdb/env.h>
 #include <rocksdb/write_batch.h>
 #include <algorithm>
+#include <cerrno>
 #include <charconv>
 #include <cstring>
 #include <limits>
@@ -20,6 +21,10 @@
 #include <set>
 #include <stdexcept>
 #include <sys/stat.h>
+#include <system_error>
+#if !defined(_WIN32)
+#include <sys/resource.h>
+#endif
 #if defined(_WIN32)
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -42,6 +47,21 @@ constexpr const char* kAnchors = "Mshielded_anchor_history";
 constexpr const char* kImport = "Mshielded_anchor_history_migrated_v1";
 const std::set<std::string> kLegacy{
     "default", "meta", "blocks", "headers", "height", "txindex", "utxo", "utreexo", "prebase_coins"};
+
+#if !defined(_WIN32)
+void RaiseMigrationOpenFileLimit() {
+    struct rlimit current{};
+    if (::getrlimit(RLIMIT_NOFILE, &current) != 0)
+        throw std::system_error(errno, std::generic_category(), "read migration open-file limit");
+    constexpr rlim_t desired = 8192;
+    if (current.rlim_cur >= desired) return;
+    const rlim_t available = std::min(current.rlim_max, desired);
+    if (available <= current.rlim_cur) return; // The operator's hard limit is binding.
+    current.rlim_cur = available;
+    if (::setrlimit(RLIMIT_NOFILE, &current) != 0)
+        throw std::system_error(errno, std::generic_category(), "raise migration open-file limit");
+}
+#endif
 
 void Require(bool ok, const char* reason) { if (!ok) throw std::runtime_error(reason); }
 void Check(const rocksdb::Status& status, const char* action) {
@@ -263,6 +283,11 @@ struct Store {
     void Close() { for (const auto& [name, h] : families) db->DestroyColumnFamilyHandle(h); families.clear(); db.reset(); }
     void Open(const fs::path& path, LockedEnv& env, bool read_only) {
         Close(); rocksdb::Options options; options.env = &env;
+        // The migration opens both the source and candidate. RocksDB's -1
+        // default keeps every SST open, which exhausts a manual node's usual
+        // 1024-descriptor limit on a full ChainDB. Cap each store separately;
+        // the normal ChainDB already uses a bounded open-file cache.
+        options.max_open_files = 256;
         options.create_if_missing = options.create_missing_column_families = false;
         options.paranoid_checks = true;
         std::vector<std::string> names;
@@ -630,6 +655,9 @@ static ShieldedMigrationResult RunMigration(const fs::path& original_path, const
         Require(limits.batch_bytes && limits.batch_rows && limits.max_record_bytes && limits.max_nullifiers &&
                 limits.max_record_bytes <= limits.batch_bytes && limits.max_record_bytes <= std::numeric_limits<size_t>::max() &&
                 limits.max_nullifiers <= std::numeric_limits<size_t>::max() / sizeof(sh::NullifierEntry), "invalid resource budgets");
+#if !defined(_WIN32)
+        RaiseMigrationOpenFileLimit();
+#endif
         Identity original_id(original_path, paired_sst_links ? candidate_path : fs::path{});
         Identity candidate_id(candidate_path, paired_sst_links ? original_path : fs::path{});
         Require(!Nested(original_id.path, candidate_id.path) && !Nested(candidate_id.path, original_id.path) &&
@@ -716,6 +744,8 @@ static ShieldedMigrationResult RunMigration(const fs::path& original_path, const
         result.ok = result.ready = true;
     } catch (const std::exception& error) {
         result.ok = result.ready = false; result.error = error.what();
+        if (result.error.find("Too many open files") != std::string::npos)
+            result.error += "; increase the process open-file limit (for example, ulimit -n 8192) and restart";
     }
     return result;
 }

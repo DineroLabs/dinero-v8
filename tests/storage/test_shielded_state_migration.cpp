@@ -6,6 +6,7 @@
 #include <fstream>
 #include <atomic>
 #include <rocksdb/env.h>
+#include <sys/resource.h>
 #include <sys/wait.h>
 
 using namespace shielded_store_fixture;
@@ -120,6 +121,52 @@ void Happy(const std::string& mode) {
         const auto again = MigrateShieldedStateCopy(source, copy, limits, true);
         CHECK(again.ok && again.ready && again.operation == report.operation); CHECK(Inspect(copy) == completed);
     }
+}
+// A real pre-activation ChainDB can contain more SSTs than a manually started
+// node's soft file limit. Make many tiny SSTs without needing a huge datadir,
+// then run the actual migration in a child capped at 1024 descriptors.
+void BoundedOpenFiles() {
+    CanonicalTemp temp; const auto source = temp.path / "original", copy = temp.path / "copy";
+    ValidSeed(source);
+    rocksdb::Options options;
+    options.create_if_missing = options.create_missing_column_families = false;
+    options.max_open_files = 128; // The fixture itself must work under a modest limit.
+    std::vector<rocksdb::ColumnFamilyDescriptor> descriptors;
+    for (const auto& name : legacy) {
+        rocksdb::ColumnFamilyOptions cf_options(options);
+        if (name == "utreexo") {
+            cf_options.disable_auto_compactions = true;
+            cf_options.level0_file_num_compaction_trigger = 2000;
+            cf_options.level0_slowdown_writes_trigger = 2000;
+            cf_options.level0_stop_writes_trigger = 3000;
+        }
+        descriptors.emplace_back(name, std::move(cf_options));
+    }
+    std::vector<rocksdb::ColumnFamilyHandle*> handles;
+    rocksdb::DB* pointer = nullptr;
+    Setup(rocksdb::DB::Open(options, source.string(), descriptors, &handles, &pointer).ok(), "open many-SST fixture");
+    std::unique_ptr<rocksdb::DB> db(pointer);
+    auto* utreexo = handles.at(std::distance(legacy.begin(), std::find(legacy.begin(), legacy.end(), "utreexo")));
+    rocksdb::FlushOptions flush; flush.wait = true;
+    for (int i = 0; i < 1100; ++i) {
+        Setup(db->Put(rocksdb::WriteOptions(), utreexo, "X" + std::to_string(i), "fixture").ok(), "write SST fixture");
+        Setup(db->Flush(flush, utreexo).ok(), "flush SST fixture");
+    }
+    for (auto* handle : handles) Setup(db->DestroyColumnFamilyHandle(handle).ok(), "close SST fixture family");
+    db.reset();
+    const auto count_sst = [](const fs::path& path) {
+        size_t count = 0;
+        for (const auto& entry : fs::directory_iterator(path))
+            if (entry.path().extension() == ".sst") ++count;
+        return count;
+    };
+    CHECK(count_sst(source) >= 1100);
+    fs::copy(source, copy, fs::copy_options::recursive);
+    CHECK(count_sst(copy) >= 1100);
+    CHECK(Child(source, copy, "run", "--low-nofile-child") == 0);
+    const auto hard_copy = temp.path / "hard-copy";
+    fs::copy(source, hard_copy, fs::copy_options::recursive);
+    CHECK(Child(source, hard_copy, "hard", "--low-nofile-child") == 0);
 }
 void NamedComparatorFence() {
     CanonicalTemp temp; const auto source = temp.path / "original", copy = temp.path / "copy";
@@ -361,6 +408,20 @@ void Interrupt(const std::string& stage, const std::string& corruption = "") {
 
 int main(int argc, char** argv) {
     executable = fs::absolute(argv[0]).string();
+    if (argc == 5 && std::string(argv[1]) == "--low-nofile-child") {
+        struct rlimit limit{};
+        if (getrlimit(RLIMIT_NOFILE, &limit) != 0 || limit.rlim_max < 2048) return 2;
+        limit.rlim_cur = 1024;
+        const bool hard_limit = std::string(argv[4]) == "hard";
+        limit.rlim_max = hard_limit ? 1024 : 2048;
+        if (setrlimit(RLIMIT_NOFILE, &limit) != 0) return 2;
+        const auto result = MigrateShieldedStateCopy(argv[2], argv[3], limits, true);
+        if (!result.ok) std::cerr << result.error << '\n';
+        if (hard_limit)
+            return !result.ok && result.error.find("increase the process open-file limit") != std::string::npos ? 0 : 1;
+        if (getrlimit(RLIMIT_NOFILE, &limit) != 0 || limit.rlim_cur != 2048) return 2;
+        return result.ok && result.ready ? 0 : 1;
+    }
     if (argc == 5 && std::string(argv[1]) == "--probe") {
         ChainDB one, two; return one.init(argv[2]) != Status::Ok && two.init(argv[3]) != Status::Ok ? 0 : 1;
     }
@@ -372,6 +433,7 @@ int main(int argc, char** argv) {
     }
     std::map<std::string, std::function<void()>> cases;
     for (const std::string mode : {"inspect", "move", "empty", "optional_absent", "byte_batches"}) cases[mode] = [=] { Happy(mode); };
+    cases["bounded_open_files"] = BoundedOpenFiles;
     cases["named_comparator_fence"] = NamedComparatorFence;
     cases["named_comparator_at_creation"] = NamedComparatorAtCreation;
     cases["reject_default_comparator_tenth"] = RejectDefaultComparatorTenth;
