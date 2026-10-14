@@ -242,8 +242,10 @@ inline std::optional<AccountReply> ParseAccount(const QJsonValue& v, bool creati
 
 struct ActivationReply {
     QString network, state;
+    QString nodeNotice;
     quint64 tipHeight=0, nextHeight=0;
     bool activeAtTip=false, activeForNext=false, walletBackend=false;
+    bool nodeSupported=false, storageUpgradeRefused=false;
 };
 inline QString CanonicalNetwork(const QString& name) {
     if(name=="main" || name=="mainnet")return "mainnet";
@@ -259,7 +261,13 @@ inline std::optional<ActivationReply> ParseActivation(const QJsonValue& v,const 
     if(CanonicalNetwork(expectedNetwork).isEmpty() || network!=CanonicalNetwork(expectedNetwork) ||
         !tip || *tip>0xffffffffULL || !next || *next!=*tip+1 || !ValidHash32(o.value("tip_hash")) ||
         !o.value("rule_active_at_tip").isBool() || !o.value("rule_active_for_next_block").isBool() ||
-        !o.value("wallet_backend_compiled").isBool() || (mode!="full" && mode!="compact"))return {};
+        !o.value("wallet_backend_compiled").isBool() || !o.value("node_supported").isBool() ||
+        !o.value("node_notice").isString() || !o.value("storage_upgrade_refused").isBool() ||
+        (mode!="full" && mode!="compact" && mode!="stateless"))return {};
+    const bool supported=o.value("node_supported").toBool(), refused=o.value("storage_upgrade_refused").toBool();
+    const auto notice=o.value("node_notice").toString();
+    if((refused || mode=="stateless") && supported) return {};
+    if(!supported && notice.isEmpty()) return {};
     const bool active=o.value("rule_active_at_tip").toBool(), nextActive=o.value("rule_active_for_next_block").toBool();
     if(state=="unscheduled") {
         if(!o.contains("activation_height") || !o.value("activation_height").isNull() ||
@@ -269,7 +277,8 @@ inline std::optional<ActivationReply> ParseActivation(const QJsonValue& v,const 
         if(!height || *height>=0xffffffffULL || !branch || *branch==0 || *branch>0xffffffffULL ||
             active!=(*tip>=*height) || nextActive!=(*next>=*height) || (state=="active")!=active)return {};
     } else return {};
-    return ActivationReply{network,state,*tip,*next,active,nextActive,o.value("wallet_backend_compiled").toBool()};
+    return ActivationReply{network,state,notice,*tip,*next,active,nextActive,
+        o.value("wallet_backend_compiled").toBool(),supported,refused};
 }
 
 struct QueueReply {

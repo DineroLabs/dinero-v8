@@ -323,6 +323,7 @@ private:
   QLabel* lblPeersStatus_;
   QTableWidget* tblPeersOverview_;
   QTextEdit* txtAlerts_;
+  bool orchardStorageUpgradeAlertShown_ = false;
 
   // v7 Consensus Health (Overview tab)
   QLabel* lblUtreexoHealth_ = nullptr;

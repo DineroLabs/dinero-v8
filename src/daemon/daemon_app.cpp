@@ -1103,11 +1103,14 @@ bool DaemonApp::Init(int argc, char** argv) {
                     data_dir_path, chain_db_path, storage_upgrade_after_phase_, storage_upgrade_available_bytes_);
                 if (upgrade.outcome == daemon::StorageUpgradeOutcome::Upgraded)
                     std::cout << "[DaemonApp] ✅ Shielded-state storage upgraded: " << upgrade.detail << std::endl;
-                else if (upgrade.outcome == daemon::StorageUpgradeOutcome::Refused)
+                else if (upgrade.outcome == daemon::StorageUpgradeOutcome::Refused) {
+                    ctx_.orchard_storage_upgrade_refused->store(true);
                     std::cerr << "[DaemonApp] ⚠️  Shielded-state storage upgrade refused (" << upgrade.detail
                               << "). This node cannot follow the chain past Orchard activation at height "
                               << Params().orchard_activation_height << " until it succeeds." << std::endl;
+                }
             } catch (const std::exception& e) {
+                ctx_.orchard_storage_upgrade_refused->store(true);
                 std::cerr << "[DaemonApp] ⚠️  Shielded-state storage upgrade failed: " << e.what()
                           << " (will retry on next start)" << std::endl;
             }
@@ -1565,15 +1568,18 @@ bool DaemonApp::Init(int argc, char** argv) {
                 const auto upgrade = daemon::EnsureSeparatedShieldedLayout(
                     data_dir_path, temp_chain_db_path, storage_upgrade_after_phase_, storage_upgrade_available_bytes_);
                 if (upgrade.outcome == daemon::StorageUpgradeOutcome::Upgraded) {
+                    ctx_.orchard_storage_upgrade_refused->store(false);
                     // The live store is the reindex backup; the rebuilt legacy copy is not needed.
                     std::filesystem::remove_all(temp_chain_db_path.string() + ".legacy-v1", fs_error);
                     fs_error.clear();
                     std::cout << "[DaemonApp] ✅ Reindexed store upgraded to the separated shielded-state layout" << std::endl;
                 } else if (upgrade.outcome == daemon::StorageUpgradeOutcome::Refused) {
+                    ctx_.orchard_storage_upgrade_refused->store(true);
                     std::cerr << "[DaemonApp] ⚠️  Reindexed store upgrade refused (" << upgrade.detail
                               << "); retried on the next start" << std::endl;
                 }
             } catch (const std::exception& e) {
+                ctx_.orchard_storage_upgrade_refused->store(true);
                 std::cerr << "[DaemonApp] ⚠️  Reindexed store upgrade failed: " << e.what() << std::endl;
             }
         }

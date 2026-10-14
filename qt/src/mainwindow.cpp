@@ -7674,6 +7674,13 @@ void MainWindow::onRpcResult(const QString& method, const QJsonValue& result) {
   } else if (method == "getnetworkinfo" || method == "network.info") {
     if (result.isObject()) {
       const auto info = result.toObject();
+      if (info.value("storage_upgrade_refused").toBool(false) &&
+          !orchardStorageUpgradeAlertShown_ && txtAlerts_) {
+        orchardStorageUpgradeAlertShown_ = true;
+        txtAlerts_->append(QStringLiteral(
+            "⚠️ Orchard storage upgrade refused. This node cannot follow Orchard activation. "
+            "Check the local daemon log, resolve the cause, and restart."));
+      }
       updateNetworkInfo(info);
       if (overviewConnectivityCard_) overviewConnectivityCard_->setNetworkInfo(info);
     }

@@ -1,4 +1,5 @@
 #pragma once
+#include <atomic>
 #include <functional>
 #include <memory>
 #include "consensus/cpu_budget_monitor.h"
@@ -142,6 +143,13 @@ struct DaemonContext {
     // RPC "stop" and similar control paths should request shutdown through
     // this callback instead of reaching into process globals directly.
     std::function<void()> request_shutdown;
+
+    // Set by the native daemon's automatic shielded-store upgrade before
+    // services start. RPC and Qt can report a refusal while the legacy node
+    // continues running below Orchard activation. Atomic because reindex can
+    // update the result after startup while RPC workers read it.
+    std::shared_ptr<std::atomic<bool>> orchard_storage_upgrade_refused =
+        std::make_shared<std::atomic<bool>>(false);
 
     // Core services (required) - all using service wrappers now
     std::shared_ptr<dinero::LoggerService> logger;

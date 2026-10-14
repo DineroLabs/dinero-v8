@@ -173,13 +173,20 @@ def main():
         node = fresh_copy("disk")
         node.start()
         assert node.rpc("getbestblockhash") == tip
+        network = node.rpc("getnetworkinfo")
+        assert network["storage_upgrade_refused"] is True, network
+        assert "storage upgrade was refused" in network["warnings"], network
+        activation = node.rpc("orchard.getactivationstatus")
+        assert activation["storage_upgrade_refused"] is True, activation
+        assert activation["node_supported"] is False, activation
+        assert "storage upgrade was refused" in activation["node_notice"], activation
         node.stop()
     finally:
         os.environ.pop("DINERO_TEST_STORAGE_UPGRADE_FREE_BYTES", None)
     log = (node.root / f"process-{node.starts}.log").read_text(errors="replace")
     assert "storage upgrade refused (not enough free disk" in log, "refusal not reported"
     assert layout(node.datadir) == {"separated": False, "legacy_kept": False, "leftovers": []}
-    print("PASS too little disk: upgrade refused, legacy store kept, node started", flush=True)
+    print("PASS too little disk: upgrade refused, status RPCs warned, legacy store kept, node started", flush=True)
     print("PASS automatic storage upgrade", flush=True)
 
 

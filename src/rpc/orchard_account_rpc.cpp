@@ -773,7 +773,8 @@ din::Json rpc_context_orchard_getactivationstatus(const ExecutionContext& ctx,co
         // active tip instead, so it can say it cannot follow Orchard.
         const bool stateless=GetConfig().utreexo_stateless;
         const auto captured=source->getUtreexoRpcSnapshot();
-        const auto* light_tip=!captured.ok() && stateless ? source->GetActiveTip() : nullptr;
+        const auto* light_tip=!captured.ok() && stateless && source->IsStarted()
+            ? source->GetActiveTip() : nullptr;
         if(!captured.ok() && !light_tip)
             throw OrchardBindingError("activation_status_unavailable","Selected chainstate observation unavailable");
         const uint32_t tip_height=captured.ok()?captured->height:light_tip->height;
@@ -791,8 +792,12 @@ din::Json rpc_context_orchard_getactivationstatus(const ExecutionContext& ctx,co
         result["rule_active_for_next_block"]=configured && next>=profile.orchard_activation_height;
         result["storage_mode"]=!captured.ok()?"stateless":captured->compact?"compact":"full";
         const auto notice=dinero::daemon::OrchardLightNodeNotice(profile,stateless,tip_height);
-        result["node_supported"]=notice.empty();
-        result["node_notice"]=notice;
+        const bool upgrade_refused=ctx.daemon->orchard_storage_upgrade_refused->load();
+        const auto upgrade_notice=dinero::daemon::OrchardStorageUpgradeNotice(profile,upgrade_refused);
+        result["storage_upgrade_refused"]=upgrade_refused;
+        result["node_supported"]=notice.empty() && upgrade_notice.empty();
+        result["node_notice"]=upgrade_notice.empty()?notice:
+            notice.empty()?upgrade_notice:upgrade_notice+" "+notice;
 #if DINERO_WALLET_RAW_ORCHARD
         result["wallet_backend_compiled"]=true;
 #else

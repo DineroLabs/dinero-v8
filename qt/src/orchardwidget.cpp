@@ -783,9 +783,10 @@ void OrchardWidget::handle(const QString& shortName, const QJsonValue& result) {
     if (shortName=="activation") {
         const auto observed=OC::ParseActivation(result,chain_);
         const auto state=observed?observed->state:QString();
-        activationObserved_=observed && observed->activeAtTip && observed->walletBackend;
+        activationObserved_=observed && observed->activeAtTip && observed->walletBackend && observed->nodeSupported;
         auto* intro=findChild<QLabel*>("orchardIntro");
         if (intro) intro->setText(activationObserved_ ? "Orchard rules are active. Wallet synchronization is still required."
+            : observed && !observed->nodeSupported ? observed->nodeNotice
             : state=="unscheduled" ? "Orchard activation is not scheduled on this node."
             : state=="scheduled" ? "Orchard is scheduled but not active on this node."
             : "Orchard availability is unknown or unavailable on this node.");

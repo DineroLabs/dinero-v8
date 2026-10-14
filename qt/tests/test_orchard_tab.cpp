@@ -95,7 +95,8 @@ class OrchardTabTest : public QObject {
     QJsonObject activationFixture() {
         return {{"network","regtest"},{"activation_state","active"},{"activation_height",10},{"branch_id",42},
             {"tip_height",20},{"tip_hash",QString(64,'d')},{"next_block_height",21},
-            {"rule_active_at_tip",true},{"rule_active_for_next_block",true},{"wallet_backend_compiled",true},{"storage_mode","full"}};
+            {"rule_active_at_tip",true},{"rule_active_for_next_block",true},{"wallet_backend_compiled",true},{"storage_mode","full"},
+            {"node_supported",true},{"node_notice",""},{"storage_upgrade_refused",false}};
     }
     QJsonObject balanceFixture() {
         return {{"account",0},{"account_revision",5},{"account_sequence",3},{"captured_source_sequence",3},
@@ -320,6 +321,15 @@ private Q_SLOTS:
         rawReply(last("orchard.getactivationstatus"),activationFixture());QVERIFY(Find<QPushButton>(tab_,"orchardReview")->isEnabled());
         x=activationFixture();x.remove("tip_hash");rawReply(last("orchard.getactivationstatus"),x);
         QVERIFY(!Find<QPushButton>(tab_,"orchardReview")->isEnabled());
+    }
+    void refusedStorageUpgradeWarnsAndDisablesPayment() {
+        ready();fillSend();QVERIFY(Find<QPushButton>(tab_,"orchardReview")->isEnabled());
+        auto status=activationFixture();status["storage_upgrade_refused"]=true;
+        status["node_supported"]=false;
+        status["node_notice"]="This full node cannot follow Orchard activation because its storage upgrade was refused.";
+        rawReply(last("orchard.getactivationstatus"),status);
+        QVERIFY(!Find<QPushButton>(tab_,"orchardReview")->isEnabled());
+        QVERIFY(Find<QLabel>(tab_,"orchardIntro")->text().contains("storage upgrade was refused"));
     }
     void wrongAccountAndStaleBalancesStayUnknown() {
         ready();const auto call=last("wallet.orchard.getbalance");auto x=balanceFixture();x["account"]=1;rawReply(call,x);

@@ -24,4 +24,13 @@ inline std::string OrchardLightNodeNotice(const ChainParams& params, bool statel
            "Orchard activation at block " + at + ". Switch to a full node, or use the wallet's remote mode.";
 }
 
+inline std::string OrchardStorageUpgradeNotice(const ChainParams& params, bool refused) {
+    if (!refused || params.orchard_activation_height == UINT32_MAX ||
+        params.orchard_activation_height == 0) return {};
+    return "This full node cannot follow Orchard activation at block " +
+           std::to_string(params.orchard_activation_height) +
+           " because its shielded-state storage upgrade was refused. Check the local daemon log, "
+           "resolve the reported cause, and restart before activation.";
+}
+
 }  // namespace dinero::daemon

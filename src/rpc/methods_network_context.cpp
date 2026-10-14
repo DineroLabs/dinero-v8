@@ -468,6 +468,7 @@ din::Json rpc_context_getnetworkinfo(const ExecutionContext& ctx, const din::Jso
                   "address, or active port mapping) yet; outbound P2P still works";
     }
     // A light node that cannot follow Orchard says so first.
+    const bool upgrade_refused = ctx.daemon && ctx.daemon->orchard_storage_upgrade_refused->load();
     if (ctx.daemon) {
         if (auto chainstate = std::dynamic_pointer_cast<dinero::ChainstateService>(ctx.daemon->chainstate)) {
             if (const auto* tip = chainstate->GetActiveTip()) {
@@ -476,8 +477,13 @@ din::Json rpc_context_getnetworkinfo(const ExecutionContext& ctx, const din::Jso
                 if (!notice.empty()) warning = warning.empty() ? notice : notice + " " + warning;
             }
         }
+        const auto upgrade_notice = dinero::daemon::OrchardStorageUpgradeNotice(
+            dinero::Params(), upgrade_refused);
+        if (!upgrade_notice.empty())
+            warning = warning.empty() ? upgrade_notice : upgrade_notice + " " + warning;
     }
     result["warnings"] = warning;
+    result["storage_upgrade_refused"] = upgrade_refused;
     result["rpc_schema"] = "din.rpc.v1";
 
     return result;
