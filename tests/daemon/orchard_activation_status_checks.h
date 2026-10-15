@@ -38,11 +38,14 @@ TEST(OrchardActivationStatus, FullBoundaryAndUnscheduledProfileRemainReadOnly) {
     EXPECT_FALSE(response["rule_active_at_tip"].asBool());EXPECT_TRUE(response["rule_active_for_next_block"].asBool());
     EXPECT_EQ(response["storage_mode"].asString(),"full");EXPECT_TRUE(response["wallet_backend_compiled"].asBool());
     EXPECT_FALSE(response["storage_upgrade_refused"].asBool());EXPECT_TRUE(response["node_supported"].asBool());
-    f.context.orchard_storage_upgrade_refused->store(true);
+    EXPECT_EQ(response["storage_upgrade_reason"].asString(),"none");
+    f.context.orchard_storage_upgrade_issue->store(daemon::StorageUpgradeIssue::OpenFileLimit);
     const auto refused=ReadActivation(f.context);ASSERT_FALSE(refused.isMember("error"))<<refused.toStyledString();
     EXPECT_TRUE(refused["storage_upgrade_refused"].asBool());EXPECT_FALSE(refused["node_supported"].asBool());
+    EXPECT_EQ(refused["storage_upgrade_reason"].asString(),"open_file_limit");
     EXPECT_NE(refused["node_notice"].asString().find("storage upgrade was refused"),std::string::npos);
-    f.context.orchard_storage_upgrade_refused->store(false);
+    EXPECT_NE(refused["node_notice"].asString().find("ulimit -n 8192"),std::string::npos);
+    f.context.orchard_storage_upgrade_issue->store(daemon::StorageUpgradeIssue::None);
     {struct Restore {ChainParams saved=Params();~Restore(){MutableParams()=saved;}} restore;
      MutableParams().orchard_activation_height=UINT32_MAX;MutableParams().orchard_branch_id=0;
      MutableParams().release_v8113_activation_height=UINT32_MAX;

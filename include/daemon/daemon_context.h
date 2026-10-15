@@ -5,6 +5,7 @@
 #include "consensus/cpu_budget_monitor.h"
 #include "storage/disk_space_monitor.h"
 #include "p2p/network_limits_monitor.h"
+#include "daemon/orchard_storage_upgrade_state.h"
 
 // Forward declarations
 class Subscriptions;  // WebSocket subscription manager
@@ -145,11 +146,10 @@ struct DaemonContext {
     std::function<void()> request_shutdown;
 
     // Set by the native daemon's automatic shielded-store upgrade before
-    // services start. RPC and Qt can report a refusal while the legacy node
-    // continues running below Orchard activation. Atomic because reindex can
-    // update the result after startup while RPC workers read it.
-    std::shared_ptr<std::atomic<bool>> orchard_storage_upgrade_refused =
-        std::make_shared<std::atomic<bool>>(false);
+    // services start. One atomic value keeps the refusal and its sanitized
+    // reason coherent while reindex updates state and RPC workers read it.
+    std::shared_ptr<std::atomic<dinero::daemon::StorageUpgradeIssue>> orchard_storage_upgrade_issue =
+        std::make_shared<std::atomic<dinero::daemon::StorageUpgradeIssue>>(dinero::daemon::StorageUpgradeIssue::None);
 
     // Core services (required) - all using service wrappers now
     std::shared_ptr<dinero::LoggerService> logger;

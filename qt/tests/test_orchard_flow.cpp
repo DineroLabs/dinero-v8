@@ -65,7 +65,7 @@ QJsonObject ActivationSnapshot() {
         {"tip_height",20},{"tip_hash",QString(64,'d')},{"next_block_height",21},
         {"rule_active_at_tip",true},{"rule_active_for_next_block",true},
         {"wallet_backend_compiled",true},{"storage_mode","full"},
-        {"node_supported",true},{"node_notice",""},{"storage_upgrade_refused",false}};
+        {"node_supported",true},{"node_notice",""},{"storage_upgrade_refused",false},{"storage_upgrade_reason","none"}};
 }
 }  // namespace
 
@@ -290,11 +290,13 @@ private Q_SLOTS:
         x=good;x["activation_state"]="unscheduled";x["activation_height"]=QJsonValue(QJsonValue::Null);x["branch_id"]=QJsonValue(QJsonValue::Null);
         x["rule_active_at_tip"]=false;x["rule_active_for_next_block"]=false;QVERIFY(ParseActivation(x,"regtest"));
         x.remove("branch_id");QVERIFY(!ParseActivation(x,"regtest"));
-        x=good;x["storage_upgrade_refused"]=true;x["node_supported"]=false;
+        x=good;x["storage_upgrade_refused"]=true;x["storage_upgrade_reason"]="open_file_limit";x["node_supported"]=false;
         x["node_notice"]="Orchard storage upgrade refused";
         const auto refused=ParseActivation(x,"regtest");QVERIFY(refused);
         QVERIFY(refused->storageUpgradeRefused);QVERIFY(!refused->nodeSupported);
+        QCOMPARE(refused->storageUpgradeReason,QString("open_file_limit"));
         x["node_supported"]=true;QVERIFY(!ParseActivation(x,"regtest"));
+        x["node_supported"]=false;x["storage_upgrade_reason"]="none";QVERIFY(!ParseActivation(x,"regtest"));
     }
     void amountsAreExactUna() {
         QCOMPARE(*ParseDin("1"), 100000000ULL);

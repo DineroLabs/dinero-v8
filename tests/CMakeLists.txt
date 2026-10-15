@@ -9666,6 +9666,11 @@ target_include_directories(test_orchard_state_storage PRIVATE
 add_test(NAME OrchardStateStorage COMMAND test_orchard_state_storage)
 set_tests_properties(OrchardStateStorage PROPERTIES LABELS "orchard;storage;smoke" TIMEOUT 120)
 
+add_executable(test_orchard_storage_upgrade_notice tests/daemon/test_orchard_storage_upgrade_notice.cpp)
+target_include_directories(test_orchard_storage_upgrade_notice PRIVATE ${CMAKE_SOURCE_DIR}/include)
+add_test(NAME OrchardStorageUpgradeNotice COMMAND test_orchard_storage_upgrade_notice)
+set_tests_properties(OrchardStorageUpgradeNotice PROPERTIES LABELS "orchard;storage;smoke" TIMEOUT 30)
+
 # Generated offline-copy qualification only. Not installed or linked into
 # dinerod/NodeCore: whole-datadir eligibility and cutover remain separate gates.
 if(UNIX AND NOT IOS)

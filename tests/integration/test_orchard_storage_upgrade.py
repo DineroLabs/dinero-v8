@@ -205,9 +205,12 @@ def main():
         assert node.rpc("getbestblockhash") == tip
         network = node.rpc("getnetworkinfo")
         assert network["storage_upgrade_refused"] is True, network
+        assert network["storage_upgrade_reason"] == "insufficient_disk", network
         assert "storage upgrade was refused" in network["warnings"], network
+        assert "Free space" in network["warnings"], network
         activation = node.rpc("orchard.getactivationstatus")
         assert activation["storage_upgrade_refused"] is True, activation
+        assert activation["storage_upgrade_reason"] == "insufficient_disk", activation
         assert activation["node_supported"] is False, activation
         assert "storage upgrade was refused" in activation["node_notice"], activation
         node.stop()

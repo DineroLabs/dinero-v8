@@ -6,6 +6,7 @@
 // at the activation parent, such a node says so through its status RPCs and
 // log. Empty when the node is not affected.
 #include "consensus/chainparams.h"
+#include "daemon/orchard_storage_upgrade_state.h"
 
 #include <cstdint>
 #include <string>
@@ -24,13 +25,23 @@ inline std::string OrchardLightNodeNotice(const ChainParams& params, bool statel
            "Orchard activation at block " + at + ". Switch to a full node, or use the wallet's remote mode.";
 }
 
-inline std::string OrchardStorageUpgradeNotice(const ChainParams& params, bool refused) {
-    if (!refused || params.orchard_activation_height == UINT32_MAX ||
+inline std::string OrchardStorageUpgradeNotice(const ChainParams& params, StorageUpgradeIssue issue) {
+    if (issue == StorageUpgradeIssue::None || params.orchard_activation_height == UINT32_MAX ||
         params.orchard_activation_height == 0) return {};
-    return "This full node cannot follow Orchard activation at block " +
+    std::string notice = "This full node cannot follow Orchard activation at block " +
            std::to_string(params.orchard_activation_height) +
-           " because its shielded-state storage upgrade was refused. Check the local daemon log, "
-           "resolve the reported cause, and restart before activation.";
+           " because its shielded-state storage upgrade was refused. ";
+    switch (issue) {
+        case StorageUpgradeIssue::InsufficientDisk:
+            return notice + "Free space on the node's storage volume and restart before activation.";
+        case StorageUpgradeIssue::OpenFileLimit:
+            return notice + "Raise the node process's open-file limit (for example, ulimit -n 8192) "
+                   "and restart before activation.";
+        case StorageUpgradeIssue::Other:
+            return notice + "Check the local daemon log, resolve the reported cause, and restart before activation.";
+        case StorageUpgradeIssue::None: break;
+    }
+    return {};
 }
 
 }  // namespace dinero::daemon

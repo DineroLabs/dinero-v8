@@ -792,9 +792,11 @@ din::Json rpc_context_orchard_getactivationstatus(const ExecutionContext& ctx,co
         result["rule_active_for_next_block"]=configured && next>=profile.orchard_activation_height;
         result["storage_mode"]=!captured.ok()?"stateless":captured->compact?"compact":"full";
         const auto notice=dinero::daemon::OrchardLightNodeNotice(profile,stateless,tip_height);
-        const bool upgrade_refused=ctx.daemon->orchard_storage_upgrade_refused->load();
-        const auto upgrade_notice=dinero::daemon::OrchardStorageUpgradeNotice(profile,upgrade_refused);
+        const auto upgrade_issue=ctx.daemon->orchard_storage_upgrade_issue->load();
+        const bool upgrade_refused=upgrade_issue!=dinero::daemon::StorageUpgradeIssue::None;
+        const auto upgrade_notice=dinero::daemon::OrchardStorageUpgradeNotice(profile,upgrade_issue);
         result["storage_upgrade_refused"]=upgrade_refused;
+        result["storage_upgrade_reason"]=dinero::daemon::StorageUpgradeIssueCode(upgrade_issue);
         result["node_supported"]=notice.empty() && upgrade_notice.empty();
         result["node_notice"]=upgrade_notice.empty()?notice:
             notice.empty()?upgrade_notice:upgrade_notice+" "+notice;

@@ -242,7 +242,7 @@ inline std::optional<AccountReply> ParseAccount(const QJsonValue& v, bool creati
 
 struct ActivationReply {
     QString network, state;
-    QString nodeNotice;
+    QString nodeNotice, storageUpgradeReason;
     quint64 tipHeight=0, nextHeight=0;
     bool activeAtTip=false, activeForNext=false, walletBackend=false;
     bool nodeSupported=false, storageUpgradeRefused=false;
@@ -263,9 +263,13 @@ inline std::optional<ActivationReply> ParseActivation(const QJsonValue& v,const 
         !o.value("rule_active_at_tip").isBool() || !o.value("rule_active_for_next_block").isBool() ||
         !o.value("wallet_backend_compiled").isBool() || !o.value("node_supported").isBool() ||
         !o.value("node_notice").isString() || !o.value("storage_upgrade_refused").isBool() ||
+        !o.value("storage_upgrade_reason").isString() ||
         (mode!="full" && mode!="compact" && mode!="stateless"))return {};
     const bool supported=o.value("node_supported").toBool(), refused=o.value("storage_upgrade_refused").toBool();
     const auto notice=o.value("node_notice").toString();
+    const auto reason=o.value("storage_upgrade_reason").toString();
+    if(reason!="none" && reason!="insufficient_disk" && reason!="open_file_limit" && reason!="other")return {};
+    if(refused!=(reason!="none"))return {};
     if((refused || mode=="stateless") && supported) return {};
     if(!supported && notice.isEmpty()) return {};
     const bool active=o.value("rule_active_at_tip").toBool(), nextActive=o.value("rule_active_for_next_block").toBool();
@@ -277,7 +281,7 @@ inline std::optional<ActivationReply> ParseActivation(const QJsonValue& v,const 
         if(!height || *height>=0xffffffffULL || !branch || *branch==0 || *branch>0xffffffffULL ||
             active!=(*tip>=*height) || nextActive!=(*next>=*height) || (state=="active")!=active)return {};
     } else return {};
-    return ActivationReply{network,state,notice,*tip,*next,active,nextActive,
+    return ActivationReply{network,state,notice,reason,*tip,*next,active,nextActive,
         o.value("wallet_backend_compiled").toBool(),supported,refused};
 }
 
