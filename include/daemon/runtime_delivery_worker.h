@@ -86,6 +86,7 @@ private:
     };
     void ObserveVault(Report&,VaultObservationCache&) const;
     void RecoverWallet(Report&) const;
+    void RestoreRetiredLegacyPendingNotes() const;
     bool ReconcileSlice(Report&) const;
     std::shared_ptr<ChainstateService> source_;
     // Null is an explicit absence supplied by the composition owner.

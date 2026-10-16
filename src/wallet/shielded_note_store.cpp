@@ -543,14 +543,14 @@ bool ShieldedNoteStore::MarkSpentByNullifier(const sh::Hash& nullifier,
 }
 
 int ShieldedNoteStore::UnmarkAllPendingSpent() {
-    if (!db_) return 0;
+    if (!db_) return -1;
     sqlite3_stmt* stmt = nullptr;
     const char* sql =
         "UPDATE shielded_notes SET spent = 0 "
         "WHERE spent = 1 AND spent_height = 0 AND confirmed = 1";
-    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) return 0;
-    sqlite3_step(stmt);
-    const int changed = sqlite3_changes(db_);
+    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) return -1;
+    const bool done = sqlite3_step(stmt) == SQLITE_DONE;
+    const int changed = done ? sqlite3_changes(db_) : -1;
     sqlite3_finalize(stmt);
     return changed;
 }

@@ -986,6 +986,17 @@ bool RollbackPendingTransaction(
     return true;
 }
 
+bool RestorePendingSpentAfterRetirement(dinero::WalletManager& wallet,
+                                        std::string* error) {
+    RuntimeWalletLock lock(wallet);
+    if (!EnsureRuntimeLocked(wallet, error)) return false;
+    if (g_runtime->store.UnmarkAllPendingSpent() < 0) {
+        if (error) *error = "shielded_retirement_pending_restore_failed";
+        return false;
+    }
+    return true;
+}
+
 std::optional<ShieldedNote> SelectUnshieldNote(dinero::WalletManager& wallet,
                                                uint64_t min_value_una) {
     RuntimeWalletLock lock(wallet);

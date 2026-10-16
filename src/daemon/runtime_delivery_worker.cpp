@@ -4,6 +4,9 @@
 #include "daemon/services/wallet_service.h"
 #include "storage/chain_db.h"
 #include "vault/vault_runtime.h"
+#include "consensus/chainparams.h"
+#include "consensus/orchard_profile.h"
+#include "wallet/shielded_wallet_ops.h"
 #ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
 #include "wallet/runtime_wallet_recovery.h"
 #endif
@@ -110,6 +113,22 @@ void RuntimeDeliveryWorker::RecoverWallet(Report& report) const {
 #endif
     } catch (...) { /* Durable store prefixes remain retryable; never enroll here. */ }
 }
+void RuntimeDeliveryWorker::RestoreRetiredLegacyPendingNotes() const {
+    if (!wallet_) return;
+    uint32_t height;
+    {
+        const auto selected = source_->AcquireBlockIngressActivationLock();
+        height = source_->getBlockHeight();
+    }
+    if (!consensus::OrchardActiveForHeight(Params(), height)) return;
+    // Read the committed tip before acquiring the wallet owner. The mempool's
+    // block-connected update has evicted every retired legacy spend by now.
+    auto use = WalletService::AcquireWalletUse(wallet_);
+    if (!use->Wallet().hasActiveWallet()) return;
+    std::string error;
+    if (!wallet::shielded_ops::RestorePendingSpentAfterRetirement(use->Wallet(), &error))
+        throw std::runtime_error(error.empty() ? "shielded retirement restore failed" : error);
+}
 bool RuntimeDeliveryWorker::ReconcileSlice(Report& report) const {
     report.source_deferred=true;
     for(size_t i=0;i<limits_.intents_per_slice;++i) {
@@ -143,7 +162,13 @@ void RuntimeDeliveryWorker::Run() noexcept {
                 if (state_->stopping) break;
                 restart=state_->requested||!continue_pass;state_->requested=false;
             }
-            if (restart) {pass=Report{};RecoverWallet(pass);ObserveVault(pass,vault_observation);}
+            if (restart) {
+                pass=Report{};
+                RecoverWallet(pass);
+                try { RestoreRetiredLegacyPendingNotes(); }
+                catch (...) { /* Keep the durable note state for the next retry. */ }
+                ObserveVault(pass,vault_observation);
+            }
             try {continue_pass=ReconcileSlice(pass);}
             catch (...) {pass.source_deferred=true;pass.reorg_eof=false;continue_pass=false;}
             if (slices!=std::numeric_limits<uint64_t>::max())++slices;
