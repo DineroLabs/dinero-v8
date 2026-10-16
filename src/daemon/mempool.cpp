@@ -3254,13 +3254,20 @@ size_t Mempool::applyBlockConnectedLocked(const ConnectedBlockEffects& effects, 
     std::unordered_set<uint256> conflicts;
     std::vector<uint256> conflict_queue;
     std::vector<uint256> to_remove;
+    const bool legacy_retired = consensus::OrchardActiveForHeight(Params(), height);
     to_remove.reserve(m_transactions.size());
     for (const auto& [txid, entry] : m_transactions) {
         if (confirmed_txids.count(txid)) {
             to_remove.push_back(txid);
             continue;
         }
-        bool conflict = false;
+        // A spend admitted for the last historical block cannot remain
+        // pending after the legacy pool retires. Remove it and its descendants
+        // in the same block-connected update as ordinary conflicts; template
+        // exclusion alone would leave an unmineable payment in the mempool.
+        bool conflict = legacy_retired && entry.tx.HasBody() &&
+            !entry.tx.IsOrchard() &&
+            UsesShieldedValueSemantics(entry.tx.Historical());
         for (const auto& spent : entry.tx.Inputs()) {
             if (block_spends.count(spent)) { conflict = true; break; }
         }
