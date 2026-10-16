@@ -8805,7 +8805,8 @@ void MainWindow::onRpcError(const QString& method, int code, const QString& mess
         daemonProcess_->setProgram(daemonPath);
         daemonProcess_->setArguments(QStringList()
           << QString("--datadir=%1").arg(datadir)
-          << QString("--embedded-parent-pid=%1").arg(QCoreApplication::applicationPid()));
+          << QString("--embedded-parent-pid=%1").arg(QCoreApplication::applicationPid())
+          << QStringLiteral("--lightning.oracles.enable=0"));
 
         qDebug() << "🚀 Starting embedded daemon:" << daemonPath
                  << "--datadir=" << datadir
@@ -14155,7 +14156,8 @@ bool MainWindow::startDaemonWithOptions(bool showFeedback, bool openLogWindow) {
 
   QStringList args = {
     QString("--datadir=%1").arg(datadir),
-    QString("--embedded-parent-pid=%1").arg(QCoreApplication::applicationPid())
+    QString("--embedded-parent-pid=%1").arg(QCoreApplication::applicationPid()),
+    QStringLiteral("--lightning.oracles.enable=0")
   };
   args << "--listen" << "--p2pport" << QString::number(kDineroMainnetP2PPort)
        << "--rpc" << "--rpcport" << "20998";
