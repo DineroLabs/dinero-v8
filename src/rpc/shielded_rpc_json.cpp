@@ -22,6 +22,7 @@
 #include "daemon/services/wallet_service.h"
 #include "dinero/daemon/execution_context.h"
 #include "consensus/chainparams.h"
+#include "consensus/orchard_profile.h"
 #include "consensus/shielded/wallet_activation.h"
 #include "consensus/shielded/compact.h"
 #include "consensus/pq/p2mr_consensus.h"
@@ -163,10 +164,20 @@ WalletManager* AcquireWallet(const ExecutionContext& ctx, Json& err, bool requir
 // Production fund-moving RPCs wait for the committed Auth epoch. Read-only
 // balance/address calls remain available. The same decision is published to Qt.
 bool RejectIfShieldedSpendLocked(const ExecutionContext& ctx, Json& err) {
-    if (GetActiveChain() == Chain::REGTEST) return false;
     auto cs = ctx.daemon ? std::dynamic_pointer_cast<dinero::ChainstateService>(
                               ctx.daemon->chainstate) : nullptr;
     const auto& params = Params();
+    // The historical pool retires at the next Orchard block. Reject before
+    // proving or changing wallet state, including on regtest with an Orchard
+    // activation override. Historical balance and note reads remain available.
+    if (cs && dinero::consensus::OrchardActiveForHeight(
+                  params, cs->getBlockHeight() == UINT32_MAX
+                      ? UINT32_MAX : cs->getBlockHeight() + 1)) {
+        err["error"] = "shielded_pool_retired";
+        err["error_message"] = "The legacy shielded pool is retired at the next block; this spend cannot confirm.";
+        return true;
+    }
+    if (GetActiveChain() == Chain::REGTEST) return false;
     if (!cs || !dinero::consensus::shielded::WalletAuthEpochReady(
                    cs->getBlockHeight(), params.shielded_spend_auth_activation_height,
                    params.shielded_spend_auth_epoch_reset_height)) {

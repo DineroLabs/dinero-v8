@@ -24,6 +24,7 @@
 #include "consensus/script_validation.h"   // Phase 6 Commit 4: unified ValidateSpend dispatcher (single consensus script validator)
 #include "consensus/pq/p2mr_consensus.h"   // Phase 8 Commit 2: ComputeVWU for fee/eviction/RBF ordering
 #include "consensus/chainparams.h"
+#include "consensus/orchard_profile.h"
 #include "consensus/interfaces/iconsensus_utxo_set.h"
 #include "consensus/shielded/binding_sig.h"
 #include "consensus/shielded/shielded_serialization.h"
@@ -2226,9 +2227,14 @@ MempoolTypedBlockSelection Mempool::CaptureBlockSelectionImpl(
         }
 
         std::string local_reason;
-        const bool selectable = typed ? entry.tx.HasBody() :
+        const bool retired_legacy = !entry.tx.IsOrchard() &&
+            UsesShieldedValueSemantics(entry.tx.Historical()) &&
+            consensus::OrchardActiveForHeight(Params(), next_block_height);
+        const bool selectable = !retired_legacy && (typed ? entry.tx.HasBody() :
             (!entry.tx.IsOrchard() &&
-             isSelectableAtHeightLocked(entry, next_block_height, &local_reason));
+             isSelectableAtHeightLocked(entry, next_block_height, &local_reason)));
+        if (retired_legacy)
+            local_reason = "legacy shielded pool retired at target block height";
         if (!typed && entry.tx.IsOrchard())
             local_reason = "Orchard body requires typed block selection";
         selectable_cache.emplace(txid, selectable);
@@ -2669,6 +2675,11 @@ bool Mempool::isSelectableAtHeightLocked(const MempoolEntry& entry,
     const Transaction& tx = entry.tx.Historical();
     if (next_block_height == 0) {
         return true;
+    }
+    if (UsesShieldedValueSemantics(tx) &&
+        consensus::OrchardActiveForHeight(Params(), next_block_height)) {
+        if (reason) *reason = "legacy shielded pool retired at target block height";
+        return false;
     }
 
     // A rewind can make an admitted coinbase spend immature again. Resolve
@@ -3519,6 +3530,11 @@ bool Mempool::validateTransaction(
     if (!target_height && chain_db_) {
         auto tip = chain_db_->getTip();
         if (tip.status() == Status::Ok) resource_height = static_cast<uint64_t>(tip.value().height) + 1;
+    }
+    if (has_shielded_bundle && resource_height <= UINT32_MAX &&
+        consensus::OrchardActiveForHeight(Params(), static_cast<uint32_t>(resource_height))) {
+        error = "legacy shielded pool retired at target block height";
+        return false;
     }
     const auto activation = dinero::Params().shielded_spend_auth_activation_height;
     if (!consensus::shielded::CheckTxResourceEnvelope(tx,
