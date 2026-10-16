@@ -64,6 +64,10 @@ void ShieldedWidgetLockTest::retiredBalanceIsRecordedButNotAvailable() {
     QVERIFY(balance->text().contains("1.00000000 DIN"));
     QVERIFY(balance->text().contains("not spendable"));
     QVERIFY(!balance->text().contains("available for ordinary payments"));
+    auto* banner = widget.findChild<QLabel*>("shieldedStatusBanner");
+    QVERIFY(banner);
+    QVERIFY(banner->text().contains("Legacy shielded pool retired"));
+    QVERIFY(!banner->text().contains("await activation"));
     Q_EMIT rpc.rpcResult("wallet.shieldedbalance", QJsonObject{{"balance_una",100000000},
         {"ordinary_balance_una",100000000},{"covenant_balance_una",0},{"spend_enabled",true}});
     QVERIFY(balance->text().contains("available for ordinary payments"));

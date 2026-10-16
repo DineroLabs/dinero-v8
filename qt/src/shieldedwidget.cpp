@@ -334,7 +334,7 @@ void ShieldedWidget::updateFundMovingUi() {
     } else {
         QString msg = "Private payments unavailable";
         if (!shieldedUnavailableReason_.isEmpty()) msg += "  —  " + shieldedUnavailableReason_;
-        msg += "  —  receive addresses still derive locally; shield/unshield/send await activation.";
+        msg += "  —  receive addresses still derive locally; shield/unshield/send remain unavailable while the daemon refuses spending.";
         statusBanner_->setText(msg);
         statusBanner_->setStyleSheet(
             "QLabel { padding: 8px 12px; border-radius: 6px; background: #4a402d; "
