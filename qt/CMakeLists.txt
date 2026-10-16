@@ -739,6 +739,16 @@ target_link_libraries(dinero-qt PRIVATE
   dinero-solo-miner
 )
 
+# The portable Linux GUI links vendored OpenSSL statically, while Qt's TLS
+# plugin opens the distro's libssl/libcrypto at runtime. Keep the static
+# OpenSSL symbols out of the executable's dynamic symbol table so that the
+# plugin resolves both halves of its TLS stack from the same shared libraries.
+if(UNIX AND NOT APPLE AND NOT USE_SYSTEM_OPENSSL)
+  target_link_options(dinero-qt PRIVATE
+    "LINKER:--exclude-libs,libcrypto.a:libssl.a"
+  )
+endif()
+
 if(APPLE)
   target_link_libraries(dinero-qt PRIVATE
     "-framework AppKit"
