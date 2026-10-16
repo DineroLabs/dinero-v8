@@ -6276,15 +6276,17 @@ void MainWindow::updateWalletBalanceDisplay() {
   const double taproot = std::max(0.0, transparent - p2mr);
   const double shielded = std::max(0.0, cachedShieldedBalance_);
   const double total = transparent + shielded;
+  const QString lockedNote = cachedShieldedRetired_ && shielded > 0.0
+      ? " (includes retired, locked shielded funds)" : QString();
   // Thousands separators, as on the Overview. onUseMaxAmount() strips them again.
   const QLocale grouped(QLocale::English);
   auto din = [&grouped](double value) { return grouped.toString(value, 'f', 8) + " DIN"; };
 
   if (lblBalance_) {
-    lblBalance_->setText(din(total));
+    lblBalance_->setText(din(total) + lockedNote);
   }
   if (lblTotalWalletBalance_) {
-    lblTotalWalletBalance_->setText(din(total));
+    lblTotalWalletBalance_->setText(din(total) + lockedNote);
   }
   if (lblTransparentTaprootBalance_) {
     lblTransparentTaprootBalance_->setText(din(taproot));
@@ -6293,7 +6295,8 @@ void MainWindow::updateWalletBalanceDisplay() {
     lblTransparentP2mrBalance_->setText(din(p2mr));
   }
   if (lblShieldedBalance_) {
-    lblShieldedBalance_->setText(din(shielded));
+    lblShieldedBalance_->setText(din(shielded) + (cachedShieldedRetired_ && shielded > 0.0
+        ? " (retired, locked)" : QString()));
   }
 
   auto lblUnconfirmed = findChild<QLabel*>("lblUnconfirmed");
@@ -6782,9 +6785,12 @@ void MainWindow::onRpcResult(const QString& method, const QJsonValue& result) {
       const QString innerError = obj.value("error").toString();
       if (innerError == "shielded_not_active") {
         cachedShieldedBalance_ = 0.0;
+        cachedShieldedRetired_ = false;
       } else if (innerError.isEmpty()) {
         const qint64 balanceUna = obj.value("balance_una").toVariant().toLongLong();
         cachedShieldedBalance_ = static_cast<double>(balanceUna) / 100000000.0;
+        cachedShieldedRetired_ = !obj.value("spend_enabled").toBool(false) &&
+            obj.value("spend_disabled_reason").toString().contains("retired", Qt::CaseInsensitive);
       }
       updateWalletBalanceDisplay();
     }
@@ -6794,7 +6800,9 @@ void MainWindow::onRpcResult(const QString& method, const QJsonValue& result) {
       const auto transparent = obj.value("transparent").toObject();
       const double total = jsonToDouble(obj.value("total_balance"));
       if (lblTotalWalletBalance_) {
-        lblTotalWalletBalance_->setText(QString("%1 DIN").arg(total, 0, 'f', 8));
+        const QString lockedNote = cachedShieldedRetired_ && cachedShieldedBalance_ > 0.0
+            ? " (includes retired, locked shielded funds)" : QString();
+        lblTotalWalletBalance_->setText(QString("%1 DIN").arg(total, 0, 'f', 8) + lockedNote);
       }
     }
   } else if (method == "wallet.rescanblockchain") {

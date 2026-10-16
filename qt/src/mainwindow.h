@@ -832,6 +832,7 @@ private:
   double cachedTransparentBalance_ = 0.0;
   double cachedP2mrBalance_ = 0.0;
   double cachedShieldedBalance_ = 0.0;
+  bool cachedShieldedRetired_ = false;
   double cachedPendingBalance_ = 0.0;
   double cachedMiningBalance_ = 0.0;
   bool cachedMiningActive_ = false;

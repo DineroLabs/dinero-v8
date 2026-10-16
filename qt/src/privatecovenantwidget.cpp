@@ -111,8 +111,14 @@ PrivateCovenantWidget::PrivateCovenantWidget(RpcClient* rpc,QWidget* parent):QWi
             else ownerStatus_->setText("Could not get your shielded address: "+object.value("error_message").toString(object.value("error").toString("Daemon returned no address.")));
             ownerRequestScope_.clear();
         } else if(method=="wallet.shieldedbalance") {
-            active_=object.value("error").isUndefined() && object.value("private_covenants_enabled").isBool() && object.value("private_covenants_enabled").toBool();
-            if(pendingMethod_.isEmpty() && !uncertain_) status_->setText(active_ ? "Private covenants available on this network" : "Private covenants unavailable: network activation or node readiness required");
+            active_=object.value("error").isUndefined() && object.value("private_covenants_enabled").toBool(false) &&
+                ShieldedTransferPolicy::daemonAllowsSpending(object);
+            if(pendingMethod_.isEmpty() && !uncertain_) {
+                const QString reason=object.value("spend_disabled_reason").toString();
+                status_->setText(active_ ? "Private covenants available on this network" :
+                    reason.isEmpty() ? "Private covenants unavailable: network activation or node readiness required" :
+                    "Private covenants unavailable: "+reason);
+            }
             updateEnabled();
         } else if(method=="wallet.listshielded") {
             notes_=object.value("notes").toArray(); render();

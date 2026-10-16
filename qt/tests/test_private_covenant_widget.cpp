@@ -29,15 +29,20 @@ private Q_SLOTS:
         rpc.setEndpoint(QUrl(QString("http://127.0.0.1:%1/").arg(endpoint.serverPort())));
         PrivateCovenantWidget widget(&rpc); widget.setWalletScope("alpha");
         auto* fund=widget.findChild<QPushButton*>("privateCovenantFund"); QVERIFY(fund); QVERIFY(!fund->isEnabled());
-        Q_EMIT rpc.rpcResult("wallet.shieldedbalance",QJsonObject{{"private_covenants_enabled",true}});
+        Q_EMIT rpc.rpcResult("wallet.shieldedbalance",QJsonObject{{"private_covenants_enabled",true},{"spend_enabled",false},{"spend_disabled_reason","Legacy shielded pool retired"}});
+        QVERIFY(!fund->isEnabled());
+        bool retiredReasonShown=false;
+        for(auto* label:widget.findChildren<QLabel*>()) retiredReasonShown |= label->text().contains("Legacy shielded pool retired");
+        QVERIFY(retiredReasonShown);
+        Q_EMIT rpc.rpcResult("wallet.shieldedbalance",QJsonObject{{"private_covenants_enabled",true},{"spend_enabled",true}});
         QVERIFY(fund->isEnabled());
         Q_EMIT rpc.rpcResult("wallet.shieldedbalance",QJsonObject{}); QVERIFY(!fund->isEnabled());
-        Q_EMIT rpc.rpcResult("wallet.shieldedbalance",QJsonObject{{"private_covenants_enabled",true}});
+        Q_EMIT rpc.rpcResult("wallet.shieldedbalance",QJsonObject{{"private_covenants_enabled",true},{"spend_enabled",true}});
         auto* owner=widget.findChild<QLineEdit*>("privateCovenantOwner"); owner->setText("draft");
         widget.setWalletScope("beta"); QVERIFY(owner->text().isEmpty()); QVERIFY(!fund->isEnabled());
-        Q_EMIT rpc.rpcResult("wallet.shieldedbalance",QJsonObject{{"private_covenants_enabled",true}});
+        Q_EMIT rpc.rpcResult("wallet.shieldedbalance",QJsonObject{{"private_covenants_enabled",true},{"spend_enabled",true}});
         Q_EMIT rpc.connectionFailed("disconnected"); QVERIFY(!fund->isEnabled());
-        Q_EMIT rpc.rpcResult("wallet.shieldedbalance",QJsonObject{{"private_covenants_enabled",true}});
+        Q_EMIT rpc.rpcResult("wallet.shieldedbalance",QJsonObject{{"private_covenants_enabled",true},{"spend_enabled",true}});
         owner->setText("rdins1fixture");
         auto* outputs=widget.findChild<QTableWidget*>("privateCovenantOutputs");
         outputs->item(0,0)->setText("rdins1payee"); outputs->item(0,1)->setText("0.2");
@@ -49,7 +54,7 @@ private Q_SLOTS:
         Q_EMIT rpc.rpcError("wallet.covenant.privatefund",-1,"connection lost");
         QVERIFY(!fund->isEnabled());
         widget.setWalletScope({}); widget.setWalletScope("beta");
-        Q_EMIT rpc.rpcResult("wallet.shieldedbalance",QJsonObject{{"private_covenants_enabled",true}});
+        Q_EMIT rpc.rpcResult("wallet.shieldedbalance",QJsonObject{{"private_covenants_enabled",true},{"spend_enabled",true}});
         QVERIFY(!fund->isEnabled()); // durable uncertain outcome, never automatic retry
         auto* resolve=widget.findChild<QPushButton*>("privateCovenantResolve"); QVERIFY(resolve->isEnabled());
         QTimer::singleShot(1,accept); resolve->click(); QVERIFY(fund->isEnabled());

@@ -16,6 +16,7 @@ private Q_SLOTS:
     void lockedWalletIsDefinitiveAndRetryUnlocks();
     void staleJournalNeedsExplicitClearBeforeRetry();
     void transportFailureRemainsUncertain();
+    void retiredBalanceIsRecordedButNotAvailable();
 };
 
 namespace {
@@ -43,6 +44,30 @@ void configureSettings(const QString& path) {
     QSettings().clear();
 }
 }  // namespace
+
+void ShieldedWidgetLockTest::retiredBalanceIsRecordedButNotAvailable() {
+    QTemporaryDir settingsDir;
+    QVERIFY(settingsDir.isValid());
+    configureSettings(settingsDir.path());
+    QTcpServer endpoint;
+    QVERIFY(endpoint.listen(QHostAddress::LocalHost));
+    RpcClient rpc;
+    rpc.setDatadir(settingsDir.path());
+    rpc.setEndpoint(QUrl(QString("http://127.0.0.1:%1/").arg(endpoint.serverPort())));
+    ShieldedWidget widget(&rpc);
+    widget.setWalletScope("India");
+    auto* balance = widget.findChild<QLabel*>("shieldedBalanceDin");
+    QVERIFY(balance);
+    Q_EMIT rpc.rpcResult("wallet.shieldedbalance", QJsonObject{{"balance_una",100000000},
+        {"ordinary_balance_una",100000000},{"covenant_balance_una",0},
+        {"spend_enabled",false},{"spend_disabled_reason","Legacy shielded pool retired"}});
+    QVERIFY(balance->text().contains("1.00000000 DIN"));
+    QVERIFY(balance->text().contains("not spendable"));
+    QVERIFY(!balance->text().contains("available for ordinary payments"));
+    Q_EMIT rpc.rpcResult("wallet.shieldedbalance", QJsonObject{{"balance_una",100000000},
+        {"ordinary_balance_una",100000000},{"covenant_balance_una",0},{"spend_enabled",true}});
+    QVERIFY(balance->text().contains("available for ordinary payments"));
+}
 
 void ShieldedWidgetLockTest::lockedWalletIsDefinitiveAndRetryUnlocks() {
     QTemporaryDir settingsDir;
