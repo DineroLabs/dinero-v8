@@ -332,9 +332,9 @@ bool test_restart_state_preservation() {
             wallet.open("restart_test");
 
             std::string address = wallet.getNewAddress("test");
-            wallet.addUTXO("aaaa1111111111111111111111111111111111111111111111111111111111", 0, 50000000, address, "51", 100, false);
-            wallet.addUTXO("bbbb2222222222222222222222222222222222222222222222222222222222", 0, 75000000, address, "51", 101, false);
-            wallet.addUTXO("cccc3333333333333333333333333333333333333333333333333333333333", 0, 25000000, address, "51", 102, false);
+            wallet.addUTXO("aaaa111111111111111111111111111111111111111111111111111111111111", 0, 50000000, address, "51", 100, false);
+            wallet.addUTXO("bbbb222222222222222222222222222222222222222222222222222222222222", 0, 75000000, address, "51", 101, false);
+            wallet.addUTXO("cccc333333333333333333333333333333333333333333333333333333333333", 0, 25000000, address, "51", 102, false);
 
             auto balance = wallet.getBalance();
             balance_before = balance.total;
@@ -417,12 +417,12 @@ bool test_spend_determinism() {
             std::string address = wallet.getNewAddress("test");
 
             // Add UTXOs
-            wallet.addUTXO("1111aaaa1111111111111111111111111111111111111111111111111111", 0, 100000000, address, "51", 100, false);
-            wallet.addUTXO("2222bbbb2222222222222222222222222222222222222222222222222222", 0, 200000000, address, "51", 101, false);
-            wallet.addUTXO("3333cccc3333333333333333333333333333333333333333333333333333", 0, 300000000, address, "51", 102, false);
+            wallet.addUTXO("1111aaaa11111111111111111111111111111111111111111111111111111111", 0, 100000000, address, "51", 100, false);
+            wallet.addUTXO("2222bbbb22222222222222222222222222222222222222222222222222222222", 0, 200000000, address, "51", 101, false);
+            wallet.addUTXO("3333cccc33333333333333333333333333333333333333333333333333333333", 0, 300000000, address, "51", 102, false);
 
             // Spend one
-            wallet.spendUTXO("2222bbbb2222222222222222222222222222222222222222222222222222", 0);
+            wallet.spendUTXO("2222bbbb22222222222222222222222222222222222222222222222222222222", 0);
 
             auto balance = wallet.getBalance();
             final_balances.push_back(balance.total);
@@ -473,9 +473,9 @@ bool test_utxo_listing_order() {
         std::string address = wallet.getNewAddress("test");
 
         // Add UTXOs in specific order
-        wallet.addUTXO("zzzz9999999999999999999999999999999999999999999999999999999999", 0, 10000000, address, "51", 100, false);
-        wallet.addUTXO("aaaa0000000000000000000000000000000000000000000000000000000000", 0, 20000000, address, "51", 101, false);
-        wallet.addUTXO("mmmm5555555555555555555555555555555555555555555555555555555555", 0, 30000000, address, "51", 102, false);
+        wallet.addUTXO("dddd999999999999999999999999999999999999999999999999999999999999", 0, 10000000, address, "51", 100, false);
+        wallet.addUTXO("aaaa000000000000000000000000000000000000000000000000000000000000", 0, 20000000, address, "51", 101, false);
+        wallet.addUTXO("eeee555555555555555555555555555555555555555555555555555555555555", 0, 30000000, address, "51", 102, false);
 
         // Get listing multiple times
         std::vector<std::vector<std::string>> listings;

@@ -44,12 +44,21 @@ foreach(required
     "forest_memory_bytes_estimate"
     "retains_full_state"
     "disk_savings_available"
-    "UtreexoStump::fromForest")
+    "getUtreexoRpcSnapshot"
+    "Selected accumulator snapshot unavailable")
   string(FIND "${utreexo_rpc_source}" "${required}" found)
   if(found EQUAL -1)
     message(FATAL_ERROR "Missing Utreexo telemetry field or guarded derivation: ${required}")
   endif()
 endforeach()
+
+# The RPC now obtains one selected-chain accumulator snapshot from
+# ChainstateService. Guard the fail-closed read instead of requiring the old
+# direct forest-to-stump conversion, which would bypass compact state.
+string(FIND "${utreexo_rpc_source}" "if (!snapshot.ok())" snapshot_guard)
+if(snapshot_guard EQUAL -1)
+  message(FATAL_ERROR "Utreexo telemetry must reject an unavailable selected snapshot")
+endif()
 
 # The panel must not invent a disk-savings estimate from the approximate
 # per-leaf forest-memory constant.
