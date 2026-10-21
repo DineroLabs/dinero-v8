@@ -59,7 +59,7 @@ TEST(OrchardDiskReadmission, MissingSelectedOwnerAndChangedRetryRemainRetained) 
     EXPECT_EQ(ReadRetainedPoolFile(path),original);
     ASSERT_TRUE(MempoolPersistence::save({},path.string()));const auto empty=ReadRetainedPoolFile(path);
     EXPECT_FALSE(pool.loadFromDisk(path.string()));EXPECT_FALSE(pool.saveToDisk(path.string()));EXPECT_EQ(ReadRetainedPoolFile(path),empty);
-    WriteRetainedPoolFile(path,original);f.f.service->setChainDB(&f.f.db);
+    WriteRetainedPoolFile(path,original);f.f.service->setOwnedChainDB(f.f.database);
     ASSERT_TRUE(pool.loadFromDisk(path.string()));EXPECT_EQ(pool.size(),1u);EXPECT_EQ(pool.getMempoolEntry(id)->tx.Serialize(),shield.Serialize());
     EXPECT_TRUE(pool.saveToDisk(path.string()));std::filesystem::remove(path);
 }
