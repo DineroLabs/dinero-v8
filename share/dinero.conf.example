@@ -41,7 +41,7 @@ addnode=173.249.195.59:20999  # VA / us-east
 addnode=72.18.214.120:20999   # MO / us-central
 addnode=96.9.226.98:20999     # Canada / ca-east
 
-# v8.1.13 Orchard has no typed notification adapter for the optional legacy
+# v8.2.0 Orchard has no typed notification adapter for the optional legacy
 # Lightning chain/time/transaction IPC oracles. An Orchard-scheduled node
 # refuses startup while they remain enabled. Keep them explicitly disabled
 # until an adapter is qualified; this does not disable ordinary block relay.

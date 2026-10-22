@@ -1,4 +1,4 @@
-//! Pinned Orchard cryptographic backend for the staged v8.1.13 integration.
+//! Pinned Orchard cryptographic backend for the staged v8.2.0 integration.
 //! The bundle encoding is a draft inner codec, not a consensus transaction.
 //! Transaction identity, transparent scripts and chainstate checks belong to
 //! the host. No function in this crate declares a Dinero transaction valid.

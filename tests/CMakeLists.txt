@@ -5201,7 +5201,7 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_assumeutxo_replay.cpp)
       qt/src/orchardwidget.cpp qt/src/orchardwidget.h qt/src/paycollectpolicy.cpp
       qt/tests/orchard_http_transport_adapter.cpp)
     target_include_directories(test_assumeutxo_replay PRIVATE ${CMAKE_SOURCE_DIR}/qt/src)
-    target_compile_definitions(test_assumeutxo_replay PRIVATE DINERO_TEST_ORCHARD_HTTP_TRANSPORT=1 QT_NO_KEYWORDS=1 DINERO_CLI_VERSION="8.1.13")
+    target_compile_definitions(test_assumeutxo_replay PRIVATE DINERO_TEST_ORCHARD_HTTP_TRANSPORT=1 QT_NO_KEYWORDS=1 DINERO_CLI_VERSION="8.2.0")
     set_target_properties(test_assumeutxo_replay PROPERTIES AUTOMOC ON)
     target_link_libraries(test_assumeutxo_replay PRIVATE Qt6::Core Qt6::Network Qt6::Widgets)
     # Deliberately NO add_test, discovery, post-build launch or CI registration.

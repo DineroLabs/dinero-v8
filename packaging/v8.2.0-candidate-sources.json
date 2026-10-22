@@ -1,11 +1,12 @@
 {
   "schema": 1,
-  "target_release": "v8.1.13",
+  "target_release": "v8.2.0",
   "status": "qualification-only",
   "daemon": {
     "repository": "DineroLabs/dinero-v8",
-    "source_commit": "a254efd314f364fd9d5fedee2c8b3fec3d84b557",
-    "version": "8.1.13"
+    "source_commit": null,
+    "source_commit_status": "pending final source freeze",
+    "version": "8.2.0"
   },
   "mining": {
     "repository": "DineroLabs/dinero-sv2",

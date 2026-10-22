@@ -1,3 +1,10 @@
+dinero-core (8.2.0~rc1-1) unstable; urgency=medium
+
+  * Stage the mandatory Orchard and 60-second network upgrade as v8.2.0.
+  * Preserve the 150000 activation target pending final release approval.
+
+ -- Dinero Labs <team@dinerolabs.org>  Thu, 22 Oct 2026 00:00:00 -0400
+
 dinero-core (8.1.13~rc1-2) unstable; urgency=medium
 
   * Keep the configuration example uncompressed so postinst seeds the file.

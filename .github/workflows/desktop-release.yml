@@ -13,7 +13,7 @@ on:
       - '.github/workflows/windows-release.yml'
       - 'scripts/verify-orchard-package.py'
       - 'scripts/tests/test_verify_orchard_package.py'
-      - 'packaging/v8.1.13-candidate-sources.json'
+      - 'packaging/v8.2.0-candidate-sources.json'
       - 'packaging/linux/build-qt-deb.sh'
       - 'packaging/linux/build-qt-tarball.sh'
       - 'packaging/mac/assert-v8-release-lane.sh'
@@ -86,7 +86,7 @@ jobs:
         run: |
           python3 - <<'PY_PINS'
           import json, pathlib, re
-          pins = json.loads(pathlib.Path('packaging/v8.1.13-candidate-sources.json').read_text())
+          pins = json.loads(pathlib.Path('packaging/v8.2.0-candidate-sources.json').read_text())
           expected = pins['mining']['source_commit']
           if not re.fullmatch('[0-9a-f]{40}', expected):
               raise SystemExit('Candidate mining source must be a full commit SHA')

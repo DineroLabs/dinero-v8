@@ -49,7 +49,7 @@ static constexpr const char* EXPECTED_MERKLE_ROOT =
 // partial-activation window from being introduced by changing only one field.
 static constexpr uint32_t MAINNET_COVENANT_PROFILE_V1_HEIGHT = 100000;
 
-// Operator-selected joint v8.1.13 boundary. All four consensus rules and the
+// Operator-selected joint v8.2.0 boundary. All four consensus rules and the
 // service cutoff must use this one height. The branch ID was generated from a
 // cryptographic random source and is distinct from the isolated regtest ID 1.
 static constexpr uint32_t MAINNET_V8113_HEIGHT = 150000;

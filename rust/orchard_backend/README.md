@@ -13,7 +13,7 @@ is introduced by the compatibility patch.
 
 Host transaction, wallet, provider and desktop integration now exists. Its
 component evidence does not establish final installed-application or network
-readiness. [The current release qualification document](../../docs/specs/v8.1.13-release-qualification.md)
+readiness. [The current release qualification document](../../docs/specs/v8.2.0-release-qualification.md)
 records the supporting evidence and remaining gates. Mainnet activation is
 unset; a successful component build does not authorize activation.
 
@@ -47,7 +47,7 @@ that historical stage, not the current integration. Historical commands and
 results below are retained for context; use the current scope and selected
 commands above for new component work.
 
-This component starts runtime integration on the v8.1.13 integration source base.
+This component starts runtime integration on the v8.2.0 integration source base.
 It uses upstream Orchard **0.15.5**, `BundleVersion::orchard_v2()` and the
 `FixedPostNu6_2` verification key. No proof arithmetic is implemented locally.
 The dependency graph is locked in Cargo.lock. It does not use the research
