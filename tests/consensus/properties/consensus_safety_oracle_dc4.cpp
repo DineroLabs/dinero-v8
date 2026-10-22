@@ -14,6 +14,8 @@ std::vector<Violation> DC4Oracle::observeTrace(const ConsensusTrace& trace) {
     const std::set<NodeID> honest(honest_nodes.begin(), honest_nodes.end());
     std::map<NodeID, std::map<uint32_t, const FinalizedBlockObservation*>> histories;
     std::map<std::pair<uint32_t, std::string>, std::pair<std::string, NodeID>> parents;
+    std::map<uint32_t, std::pair<std::string, NodeID>> finalized_at_height;
+    std::set<uint32_t> heights_seen_by_multiple_nodes;
 
     for (const auto& block : trace.finalized_blocks) {
         if (!honest.count(block.node_id)) continue;
@@ -22,6 +24,18 @@ std::vector<Violation> DC4Oracle::observeTrace(const ConsensusTrace& trace) {
             v.involved_nodes.push_back(block.node_id);
             violations.push_back(std::move(v));
             continue;
+        }
+        const auto [canonical, first_at_height] = finalized_at_height.emplace(
+            block.height, std::make_pair(block.block_hash, block.node_id));
+        if (!first_at_height && canonical->second.second != block.node_id) {
+            heights_seen_by_multiple_nodes.insert(block.height);
+            if (canonical->second.first != block.block_hash) {
+                Violation v(getName(), "Honest nodes have conflicting finalized blocks at one height");
+                v.involved_nodes = {canonical->second.second, block.node_id};
+                v.details = std::to_string(block.height) + ": " +
+                    canonical->second.first + " conflicts with " + block.block_hash;
+                violations.push_back(std::move(v));
+            }
         }
         auto& history = histories[block.node_id];
         const auto [at_height, inserted] = history.emplace(block.height, &block);
@@ -56,7 +70,8 @@ std::vector<Violation> DC4Oracle::observeTrace(const ConsensusTrace& trace) {
             }
         }
     }
-    if (honest.empty() || histories.size() != honest.size() || linked_nodes.size() != honest.size()) {
+    if (honest.size() < 2 || histories.size() != honest.size() ||
+        linked_nodes.size() != honest.size() || heights_seen_by_multiple_nodes.empty()) {
         Violation v(getName(), "Insufficient finalized parent-link evidence for honest nodes");
         v.involved_nodes = honest_nodes;
         violations.push_back(std::move(v));

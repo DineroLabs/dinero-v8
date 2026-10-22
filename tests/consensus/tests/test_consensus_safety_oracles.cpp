@@ -139,7 +139,57 @@ TEST_F(SafetyOraclesTest, DC4_Violation_IdenticalChildDifferentParents) {
     DC4Oracle oracle;
     const auto violations = oracle.check(trace);
     ASSERT_FALSE(violations.empty());
-    EXPECT_NE(violations.front().description.find("different parents"), std::string::npos);
+    bool found_parent_mismatch = false;
+    for (const auto& violation : violations) {
+        found_parent_mismatch |=
+            violation.description.find("different parents") != std::string::npos;
+    }
+    EXPECT_TRUE(found_parent_mismatch);
+}
+
+TEST_F(SafetyOraclesTest, DC4_Violation_DifferentFinalizedBlocksSameHeight) {
+    auto trace = FinalizedTrace();
+    trace.finalized_blocks = {
+        {"alice", 1, "a_1", "genesis", {}},
+        {"alice", 2, "a_2", "a_1", {}},
+        {"bob", 1, "b_1", "genesis", {}},
+        {"bob", 2, "b_2", "b_1", {}},
+    };
+    DC4Oracle oracle;
+    const auto violations = oracle.check(trace);
+    ASSERT_FALSE(violations.empty());
+    EXPECT_NE(violations.front().description.find("conflicting finalized blocks"), std::string::npos);
+}
+
+TEST_F(SafetyOraclesTest, DC4_InsufficientEvidence_NoOverlappingHeights) {
+    auto trace = FinalizedTrace();
+    trace.finalized_blocks = {
+        {"alice", 1, "a_1", "genesis", {}},
+        {"alice", 2, "a_2", "a_1", {}},
+        {"bob", 3, "b_3", "b_2", {}},
+        {"bob", 4, "b_4", "b_3", {}},
+    };
+    DC4Oracle oracle;
+    const auto violations = oracle.check(trace);
+    ASSERT_FALSE(violations.empty());
+    EXPECT_NE(violations.front().description.find("Insufficient"), std::string::npos);
+}
+
+TEST_F(SafetyOraclesTest, DC4_InsufficientEvidence_OnlyOneHonestNode) {
+    ConsensusTrace trace{};
+    trace.topology = NetworkTopology::fullMesh({"alice"});
+    ConsensusState state{};
+    state.node_id = "alice";
+    state.is_byzantine = false;
+    trace.snapshots.push_back(state);
+    trace.finalized_blocks = {
+        {"alice", 1, "block_1", "genesis", {}},
+        {"alice", 2, "block_2", "block_1", {}},
+    };
+    DC4Oracle oracle;
+    const auto violations = oracle.check(trace);
+    ASSERT_FALSE(violations.empty());
+    EXPECT_NE(violations.front().description.find("Insufficient"), std::string::npos);
 }
 
 TEST_F(SafetyOraclesTest, DC4_InsufficientEvidence_IsNotPass) {
