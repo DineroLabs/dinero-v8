@@ -5251,7 +5251,8 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_assumeutxo_replay.cpp)
   )
   # Preserve the bundled historical registration above until its other
   # fixture families are reviewed. This command selects only the eight
-  # in-memory replay-engine cases for separate isolation review.
+  # replay-engine cases for separate isolation review. Their header-history
+  # spool uses a SQLite-owned temporary file, so pin TMPDIR for execution.
   add_test(NAME AssumeUtxoReplayFocused COMMAND test_assumeutxo_replay
     --gtest_filter=AssumeUtxoReplay.*)
   set_tests_properties(AssumeUtxoReplayFocused PROPERTIES
