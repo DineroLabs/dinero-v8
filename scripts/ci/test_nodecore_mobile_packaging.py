@@ -53,6 +53,22 @@ class Packaging(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'consensus declaration'):
             consensus.compose_receipts([dict(qualification_only=True,dnorst02='dormant')],ROOT)
 
+    def test_xcframework_ships_orchard_wallet_header(self):
+        spec=importlib.util.spec_from_file_location('xcframework',ROOT/'scripts/mobile/package_nodecore_xcframework.py')
+        xcframework=importlib.util.module_from_spec(spec);spec.loader.exec_module(xcframework)
+        with tempfile.TemporaryDirectory() as temp:
+            headers=Path(temp)/'Headers';headers.mkdir()
+            digests=xcframework.stage_headers(headers)
+            sources={'nodecore_ffi.h':ROOT/'include/nodecore/nodecore_ffi.h',
+                     'orchard_backend_ffi.h':ROOT/'rust/orchard_backend/include/orchard_backend_ffi.h'}
+            self.assertEqual(sorted(p.name for p in headers.iterdir()),sorted(sources))
+            for name,source in sources.items():
+                self.assertEqual((headers/name).read_bytes(),source.read_bytes())
+                self.assertEqual(digests[name],module.digest(source))
+            # Swift consumers include both through a bridging header: each must stand alone as C.
+            for name in sources:
+                subprocess.run(['cc','-fsyntax-only','-x','c','-I',str(headers),str(headers/name)],check=True)
+
     def test_all_packaging_entrypoints_use_the_reviewed_receipt(self):
         for name in ('build_nodecore_slice.py','package_nodecore_archive.py','package_nodecore_android.py','package_nodecore_xcframework.py'):
             source=(ROOT/'scripts/mobile'/name).read_text()
