@@ -18,6 +18,7 @@
 #include <filesystem>
 #include <memory>
 #include <functional>
+#include <map>
 #include <vector>
 #include <thread>
 
@@ -376,6 +377,13 @@ public:
     // reserved namespace. Reads authenticate the complete node encoding.
     Status stageOrchardCatalogNode(const ChainWriteToken&, const uint256&,
         const std::string&, rocksdb::WriteBatch&);
+    // Same immutable-node checks, using one bounded iterator/read view instead
+    // of repeatedly fetching giant checkpoint blocks for absent point reads.
+    // Caller owns the writer throughout staging/publication. Errors leave the
+    // supplied batch unchanged; this method never writes or publishes a head.
+    static constexpr size_t kOrchardCatalogNodeBatchLimit = 1024;
+    Status stageOrchardCatalogNodes(const ChainWriteToken&,
+        const std::map<uint256,std::string>&, rocksdb::WriteBatch&);
     StatusOr<std::string> getOrchardCatalogNode(const uint256&) const;
     // Returns the checked immutable record for a block, not a separate tip.
     StatusOr<std::string> getOrchardCatalogState(const uint256&) const;

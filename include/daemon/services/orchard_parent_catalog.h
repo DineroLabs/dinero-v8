@@ -102,12 +102,12 @@ private:
         // Fixed pending-node bound, separate from the full replay's work policy.
         // Sync each batch. Any prefix is immutable and unreachable until the
         // future canonical batch installs a head; no preparation receipt is a head.
-        constexpr size_t pending_limit=1024;
+        constexpr size_t pending_limit=ChainDB::kOrchardCatalogNodeBatchLimit;
         std::map<Digest,std::string> pending;
         const auto flush=[&] {
             if(pending.empty())return;
             rocksdb::WriteBatch batch;
-            for(const auto& [id,bytes]:pending)Require(db.stageOrchardCatalogNode(token,id,bytes,batch)==Status::Ok);
+            Require(db.stageOrchardCatalogNodes(token,pending,batch)==Status::Ok);
             Require(db.writeBatch(token,std::move(batch),true)==Status::Ok);pending.clear();
         };
         const auto read=[&](const Digest& id) {

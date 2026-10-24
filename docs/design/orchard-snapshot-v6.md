@@ -61,6 +61,26 @@ owner, validated-history status or durable state by itself.
 
 ## Container and section encoding
 
+### Initial catalog construction storage reads
+
+Preparation flushes at most1,024 immutable nodes at a time. Each flush checks
+all input hashes/canonical encodings, then uses one checksum-verified,
+total-order RocksDB iterator bounded to the exact catalog-node namespace to
+seek each existing key. Exact equality to validated input bytes is required
+for every existing node; corruption/read errors refuse without appending any
+prefix to the caller's batch. Only proven-absent keys are staged. Every flush
+still writes synchronously, and final durable membership/metadata/stump checks
+and completed-history ownership remain unchanged. No column-family migration,
+new consensus rule, checksum bypass, or public schedule change is involved.
+
+The shared Utreexo column family can contain a~14.6MB checkpoint data block.
+Individual absent point reads repeatedly fetch/checksum that block; retaining
+the iterator within a bounded flush avoids that amplification without scanning
+millions of existing nodes. Regression controls count actual table-block bytes
+rather than timing, and inject both I/O errors and corrupted SST read buffers.
+Real-history cold/preparation-retry cost receipts are separate from codec,
+live-daemon activation/publication and power-loss qualification.
+
 All integers are little-endian. `blob` means a uint64 byte length followed by
 exactly that many bytes. Hashes use their 32 raw wire bytes. The section is
 inside the v6 container and is covered by that container's checksum.

@@ -2248,6 +2248,42 @@ StatusOr<std::string> ChainDB::getOrchardCatalogNode(const uint256& id) const {
     return bytes;
 }
 
+Status ChainDB::stageOrchardCatalogNodes(const ChainWriteToken& token,
+    const std::map<uint256,std::string>& nodes,rocksdb::WriteBatch& batch) {
+    (void)token;
+    if(!db_)return Status::Internal;
+    if(nodes.size()>kOrchardCatalogNodeBatchLimit)return Status::Invalid;
+    for(const auto& [id,bytes]:nodes)
+        if(!storage::catalog::ValidNode(id,bytes))return Status::Invalid;
+    if(nodes.empty())return Status::Ok;
+
+    const std::string prefix=std::string(1,PREFIX_UTREEXO_META)+"orchard_catalog_v1/node/";
+    std::string end=prefix;++end.back();
+    const rocksdb::Slice lower(prefix),upper(end);
+    rocksdb::ReadOptions options;
+    options.verify_checksums=true;
+    options.total_order_seek=true;
+    options.iterate_lower_bound=&lower;options.iterate_upper_bound=&upper;
+    std::unique_ptr<rocksdb::Iterator> it(db_->NewIterator(options,cf_[idx_utreexo_].get()));
+    std::vector<std::pair<std::string,const std::string*>> missing;missing.reserve(nodes.size());
+    for(const auto& [id,bytes]:nodes) {
+        std::string key=prefix;key.append(reinterpret_cast<const char*>(id.data),32);
+        // Seek, not Next across the namespace: work is bounded by the input
+        // batch, not by the millions of previously retained immutable nodes.
+        // The iterator retains its current SST block across these seeks.
+        it->Seek(key);
+        if(!it->status().ok())return convertRocksDBStatus(it->status());
+        if(it->Valid()&&it->key()==rocksdb::Slice(key)) {
+            // Exact equality to the already hash/encoding-validated input also
+            // authenticates the existing bytes. Corruption is never replaced.
+            if(it->value()!=rocksdb::Slice(bytes))return Status::Corruption;
+        } else missing.emplace_back(std::move(key),&bytes);
+    }
+    // Do not append even a valid prefix if a later read/input was corrupt.
+    for(const auto& [key,bytes]:missing)batch.Put(cf_[idx_utreexo_].get(),key,*bytes);
+    return Status::Ok;
+}
+
 StatusOr<std::string> ChainDB::getOrchardCatalogState(const uint256& id) const {
     if(!db_)return Status::Internal;if(id.IsNull())return Status::Invalid;
     std::string key(1,PREFIX_UTREEXO_META);key+="orchard_catalog_v1/state/";

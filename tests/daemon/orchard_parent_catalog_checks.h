@@ -1,6 +1,8 @@
 #pragma once
 #ifdef DINERO_TEST_ORCHARD_ORIGIN
 #include "daemon/services/orchard_parent_catalog.h"
+#include <rocksdb/perf_context.h>
+#include <rocksdb/perf_level.h>
 namespace dinero {
 struct OrchardParentCatalogTestAccess {
     static auto Roots(const PreparedOrchardCatalog& p){return std::pair{p.transactions_,p.legacy_};}
@@ -16,6 +18,31 @@ void CatalogReplay(OrchardParentReplay& replay,OrchardHistoryCapture& history,co
 std::string CatalogDiskKey(const uint256& id) {
     return std::string("Morchard_catalog_v1/node/")+std::string(reinterpret_cast<const char*>(id.data),32);
 }
+class CatalogReadFaultEnv : public rocksdb::EnvWrapper {
+public:
+    std::atomic<int> mode{0};std::atomic<unsigned> corruptions{0};
+    CatalogReadFaultEnv():EnvWrapper(rocksdb::Env::Default()){}
+    class File : public rocksdb::RandomAccessFileWrapper {
+        std::unique_ptr<rocksdb::RandomAccessFile> file_;CatalogReadFaultEnv& env_;
+    public:
+        File(std::unique_ptr<rocksdb::RandomAccessFile> file,CatalogReadFaultEnv& env)
+            :RandomAccessFileWrapper(file.get()),file_(std::move(file)),env_(env){}
+        rocksdb::Status Read(uint64_t offset,size_t count,rocksdb::Slice* result,char* scratch) const override {
+            if(env_.mode==1)return rocksdb::Status::IOError("catalog fixture read failure");
+            auto status=file_->Read(offset,count,result,scratch);
+            if(env_.mode==2&&status.ok()&&result->data()==scratch&&result->size()>1024*1024) {
+                scratch[result->size()/2]^=1;++env_.corruptions;
+            }
+            return status;
+        }
+    };
+    rocksdb::Status NewRandomAccessFile(const std::string& name,
+        std::unique_ptr<rocksdb::RandomAccessFile>* result,const rocksdb::EnvOptions& options) override {
+        auto status=target()->NewRandomAccessFile(name,result,options);
+        if(status.ok()&&name.ends_with(".sst"))*result=std::make_unique<File>(std::move(*result),*this);
+        return status;
+    }
+};
 }
 TEST(OrchardParentCatalog, CompletedServiceOwnerMatchesHistoryLegacyBoundaryAndReopen) {
     OwnedSelectedParentFixture f(21);
@@ -105,6 +132,68 @@ TEST(OrchardParentCatalog, TypedStorageRejectsWrongHashEncodingAndCrossDomainRea
     c::Tree legacy(c::Kind::LegacyCoins,read);EXPECT_THROW(legacy.Find(id,node.key),std::runtime_error);
     auto unknown=id;unknown.data[0]^=1;EXPECT_THROW(transactions.Find(unknown,node.key),std::runtime_error);
     c::Node invalid{c::Kind::LegacyCoins};invalid.value=std::string(41,'\0');EXPECT_THROW(c::Node::Decode(invalid.Encode()),std::runtime_error);f.CheckUnpublished();
+}
+TEST(OrchardParentCatalog, BatchedImmutableStoragePreservesValidationAndDoesNotPublish) {
+    namespace c=storage::catalog;OwnedSelectedParentFixture f;
+    std::map<uint256,std::string> nodes;
+    for(unsigned i=0;i<ChainDB::kOrchardCatalogNodeBatchLimit+1;++i) {
+        c::Node node{c::Kind::Transactions};node.key[0]=uint8_t(i);node.key[1]=uint8_t(i>>8);
+        const auto bytes=node.Encode();nodes.emplace(c::Hash(bytes),bytes);
+    }
+    rocksdb::WriteBatch batch;batch.Put("unrelated-sentinel","preserve");const auto before=batch.Data();
+    EXPECT_EQ(f.db.stageOrchardCatalogNodes(f.token,nodes,batch),Status::Invalid);EXPECT_EQ(batch.Data(),before);
+    nodes.erase(nodes.begin());
+    auto invalid=nodes;invalid.begin()->second+="extra";
+    EXPECT_EQ(f.db.stageOrchardCatalogNodes(f.token,invalid,batch),Status::Invalid);EXPECT_EQ(batch.Data(),before);
+    invalid=nodes;invalid.emplace(uint256{},nodes.begin()->second);invalid.erase(std::next(invalid.begin()));
+    EXPECT_EQ(f.db.stageOrchardCatalogNodes(f.token,invalid,batch),Status::Invalid);EXPECT_EQ(batch.Data(),before);
+    ASSERT_EQ(f.db.stageOrchardCatalogNodes(f.token,nodes,batch),Status::Ok);
+    EXPECT_EQ(batch.Count(),nodes.size()+1);for(const auto& [id,bytes]:nodes)EXPECT_EQ(f.db.getOrchardCatalogNode(id).status(),Status::NotFound);
+    ASSERT_EQ(f.db.writeBatch(f.token,std::move(batch),true),Status::Ok);
+    f.db.close();ASSERT_EQ(f.db.init(f.path),Status::Ok);
+    rocksdb::WriteBatch identical;ASSERT_EQ(f.db.stageOrchardCatalogNodes(f.token,nodes,identical),Status::Ok);EXPECT_EQ(identical.Count(),0u);
+    for(const auto& [id,bytes]:nodes){const auto value=f.db.getOrchardCatalogNode(id);ASSERT_TRUE(value.ok());EXPECT_EQ(*value,bytes);}
+    const auto corrupt=std::prev(nodes.end())->first;
+    f.db.close();auto names=shielded_store_fixture::legacy;names.push_back(shielded_store_fixture::shielded);
+    {shielded_store_fixture::Raw raw(f.path,names);raw.put("utreexo",CatalogDiskKey(corrupt),"wrong existing bytes");}
+    ASSERT_EQ(f.db.init(f.path),Status::Ok);
+    c::Node fresh{c::Kind::Transactions};fresh.key.fill(0xff);const auto bytes=fresh.Encode();nodes.emplace(c::Hash(bytes),bytes);nodes.erase(nodes.begin());
+    rocksdb::WriteBatch refused;refused.Put("sentinel","untouched");const auto saved=refused.Data();
+    EXPECT_EQ(f.db.stageOrchardCatalogNodes(f.token,nodes,refused),Status::Corruption);EXPECT_EQ(refused.Data(),saved);
+    EXPECT_EQ(f.db.getOrchardCatalogNode(corrupt).status(),Status::Corruption);f.CheckUnpublished();
+    f.db.close();EXPECT_EQ(f.db.stageOrchardCatalogNodes(f.token,{},refused),Status::Internal);EXPECT_EQ(refused.Data(),saved);
+}
+TEST(OrchardParentCatalog, BatchedMissingNodesDoNotRefetchGiantCheckpointPerNode) {
+    namespace c=storage::catalog;OwnedSelectedParentFixture f;
+    ASSERT_EQ(f.db.putUtreexoCheckpointWithChecksum(f.token,100,std::vector<uint8_t>(16*1024*1024,0x55)),Status::Ok);
+    ASSERT_EQ(f.db.compactUtreexoForTesting(),Status::Ok);
+    std::map<uint256,std::string> nodes;
+    for(unsigned i=0;i<128;++i){c::Node node{c::Kind::Transactions};node.key[0]=uint8_t(i);const auto bytes=node.Encode();nodes.emplace(c::Hash(bytes),bytes);}
+    struct Restore {rocksdb::PerfLevel prior=rocksdb::GetPerfLevel();~Restore(){rocksdb::SetPerfLevel(prior);}} restore;
+    rocksdb::SetPerfLevel(rocksdb::PerfLevel::kEnableCount);
+    rocksdb::get_perf_context()->Reset();
+    for(const auto& [id,bytes]:nodes)EXPECT_EQ(f.db.getOrchardCatalogNode(id).status(),Status::NotFound);
+    const auto point_bytes=rocksdb::get_perf_context()->block_read_byte;
+    ASSERT_GE(point_bytes,128u*16u*1024u*1024u);
+    rocksdb::get_perf_context()->Reset();rocksdb::WriteBatch batch;
+    ASSERT_EQ(f.db.stageOrchardCatalogNodes(f.token,nodes,batch),Status::Ok);
+    const auto batch_bytes=rocksdb::get_perf_context()->block_read_byte;
+    // Count actual table-block work, not elapsed time: a per-node Get mutation
+    // fails even on a fast/slow or loaded host. Checksum verification stays on.
+    EXPECT_LT(batch_bytes,point_bytes/16);EXPECT_EQ(batch.Count(),nodes.size());
+    EXPECT_FALSE(f.db.getUtreexoCheckpoint(100).value().empty());f.CheckUnpublished();
+}
+TEST(OrchardParentCatalog, BatchedReadErrorsAndSstChecksumsFailClosedWithoutStaging) {
+    namespace c=storage::catalog;CatalogReadFaultEnv env;OwnedSelectedParentFixture f;
+    f.db.close();f.db.setEnvForTesting(&env);ASSERT_EQ(f.db.init(f.path),Status::Ok);
+    ASSERT_EQ(f.db.putUtreexoCheckpointWithChecksum(f.token,100,std::vector<uint8_t>(16*1024*1024,0x55)),Status::Ok);
+    ASSERT_EQ(f.db.compactUtreexoForTesting(),Status::Ok);
+    std::map<uint256,std::string> nodes;
+    for(unsigned i=0;i<8;++i){c::Node node{c::Kind::Transactions};node.key[0]=uint8_t(i);const auto bytes=node.Encode();nodes.emplace(c::Hash(bytes),bytes);}
+    rocksdb::WriteBatch batch;batch.Put("sentinel","unchanged");const auto before=batch.Data();
+    env.mode=1;EXPECT_EQ(f.db.stageOrchardCatalogNodes(f.token,nodes,batch),Status::Io);EXPECT_EQ(batch.Data(),before);
+    env.mode=2;EXPECT_EQ(f.db.stageOrchardCatalogNodes(f.token,nodes,batch),Status::Corruption);EXPECT_EQ(batch.Data(),before);EXPECT_GT(env.corruptions.load(),0u);
+    env.mode=0;ASSERT_EQ(f.db.stageOrchardCatalogNodes(f.token,nodes,batch),Status::Ok);EXPECT_EQ(batch.Count(),nodes.size()+1);f.CheckUnpublished();
 }
 TEST(OrchardParentCatalog, NonTransparentMembershipBindsOutpointAndRefusesUnavailableNodes) {
     namespace c=storage::catalog;OwnedSelectedParentFixture f;
