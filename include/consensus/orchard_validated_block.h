@@ -46,6 +46,7 @@ private:
         out << ConsensusChecksum(p) << '\n' << p.name << '\n' << p.network_id << '\n'
             << p.genesis_hash << '\n' << p.orchard_activation_height << '\n'
             << p.orchard_branch_id << '\n' << p.release_v8113_activation_height << '\n'
+            << p.orchard_catalog_commitment_activation_height << '\n'
             << p.max_block_size << '\n' << p.coinbase_maturity << '\n'
             << p.allow_min_difficulty << '\n' << p.require_standard_txs << '\n'
             << p.mine_blocks_on_demand << '\n' << p.regtest_enforce_pow << '\n'

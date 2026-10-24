@@ -247,7 +247,7 @@ if(TARGET dinero_chainstate)
   target_link_libraries(dinero_orchard_block_coins PUBLIC dinero_orchard_block_reader dinero_orchard_transparent)
   add_library(dinero_orchard_state_root STATIC
     "${ORCHARD_HOST_ROOT}/src/consensus/orchard_state_root.cpp")
-  target_link_libraries(dinero_orchard_state_root PUBLIC dinero_orchard_backend dinero_crypto)
+  target_link_libraries(dinero_orchard_state_root PUBLIC dinero_orchard_backend dinero_crypto dinero_consensus_core)
   target_include_directories(dinero_orchard_state_root PUBLIC "${ORCHARD_HOST_ROOT}/include")
   add_library(dinero_orchard_legacy_accounting STATIC "${ORCHARD_HOST_ROOT}/src/consensus/orchard_legacy_accounting.cpp")
   target_link_libraries(dinero_orchard_legacy_accounting PUBLIC dinero_orchard_transparent dinero_chainstate dinero_consensus)

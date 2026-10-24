@@ -13,6 +13,11 @@ namespace rocksdb { class WriteBatch; }
 namespace dinero { class ChainDB; class ChainWriteToken; class BlockStorage; }
 
 namespace dinero::consensus {
+// Complete exact-proof stump transition used by both canonical compact
+// admission and snapshot catalog derivation. Parent authority and complete
+// block coin validation remain the caller's obligations.
+[[nodiscard]] UtreexoStump DeriveOrchardCompactBlockStump(const OrchardBlockCandidate&,
+    const PreparedOrchardBlockCoins&,const BlockHeader&,const UtreexoStump&);
 // Pure proof/transition check for detached compact verification. The caller
 // supplies authenticated parent metadata and already-authorized block coins;
 // this neither enrolls a catalog nor authorizes canonical publication.
@@ -57,6 +62,10 @@ void CheckPreparedLegacyRetirementUnderLock(const ChainDB&,
 void AuditOrchardChainstateTipUnderLock(ChainDB&, const ChainWriteToken&,
     const OrchardBlockContext&, const BlockHeader& parent, const UtreexoForest&,
     bool require_witness_commitment, bool require_catalog = false);
+// Stages only the deterministic local consistency journal, not authority.
+// Used by the sealed snapshot installer in the same atomic state batch.
+void StageOrchardSnapshotJournal(const OrchardBlockContext&,const BlockHeader&,
+    const arith_uint256&,const storage::OrchardStoredState&,const UtreexoStump&,rocksdb::WriteBatch&);
 struct OrchardUndoCoverageStep {
     std::optional<storage::OrchardStoredState> parent_state;
     UtreexoForest parent_forest;
@@ -159,7 +168,8 @@ struct StagedOrchardCompactChainstate {
     const OrchardBranchMtpLookup&,
     bool require_witness_commitment, bool checkpoint, rocksdb::WriteBatch&,
     const std::optional<storage::LegacyRetirementRecord>& authenticated_boundary = std::nullopt,
-    const ValidatedOrchardBlock* detached = nullptr);
+    const ValidatedOrchardBlock* detached = nullptr,
+    const storage::catalog::State* authenticated_parent_catalog = nullptr);
 
 struct StagedOrchardCompactDisconnect {
     PreparedOrchardBlockCoins forward_coins;

@@ -45,4 +45,35 @@ uint256 ComputeOrchardStateRoot(const OrchardStateRootContext& c,
     const auto bytes=BuildOrchardStateRootPreimage(c,r,s,sets);
     crypto::CSHA256 hash;hash.Write(bytes.data(),bytes.size());uint256 root;hash.Finalize(root.data);return root;
 }
+std::vector<uint8_t> BuildOrchardCatalogStateRootPreimage(const OrchardStateRootContext& c,
+    const storage::LegacyRetirementRecord& r,const storage::OrchardStoredState& s,
+    const storage::OrchardCommitmentSets& sets,const storage::catalog::State& parent) {
+    const auto record=parent.Encode();
+    if(parent.network!=c.domain.network_code || parent.branch!=c.domain.branch_id ||
+        !std::equal(parent.genesis.begin(),parent.genesis.end(),c.domain.genesis_wire.begin()) ||
+        parent.activation!=c.activation_height || uint64_t(parent.height)+1!=c.height ||
+        parent.block!=c.parent_hash)
+        throw std::invalid_argument("invalid Orchard parent catalog context");
+    auto bytes=BuildOrchardStateRootPreimage(c,r,s,sets);
+    bytes.at(7)='2'; // Explicit preimage domain; DNORST01 stays byte-identical.
+    const auto digest=storage::catalog::Hash(record);
+    bytes.insert(bytes.end(),digest.begin(),digest.end());
+    return bytes;
+}
+uint256 ComputeOrchardCatalogStateRoot(const OrchardStateRootContext& c,
+    const storage::LegacyRetirementRecord& r,const storage::OrchardStoredState& s,
+    const storage::OrchardCommitmentSets& sets,const storage::catalog::State& parent) {
+    const auto bytes=BuildOrchardCatalogStateRootPreimage(c,r,s,sets,parent);
+    crypto::CSHA256 hash;hash.Write(bytes.data(),bytes.size());uint256 root;hash.Finalize(root.data);return root;
+}
+uint256 ComputeOrchardSelectedStateRoot(const OrchardStateRootContext& c,
+    const storage::LegacyRetirementRecord& r,const storage::OrchardStoredState& s,
+    const storage::OrchardCommitmentSets& sets,uint32_t activation,
+    const storage::catalog::State* parent) {
+    if(activation!=UINT32_MAX && (activation<c.activation_height || activation>uint32_t(INT32_MAX)))
+        throw std::invalid_argument("invalid Orchard catalog commitment activation");
+    if(activation==UINT32_MAX || c.height<activation)return ComputeOrchardStateRoot(c,r,s,sets);
+    if(!parent)throw std::invalid_argument("missing authenticated Orchard parent catalog");
+    return ComputeOrchardCatalogStateRoot(c,r,s,sets,*parent);
+}
 } // namespace dinero::consensus

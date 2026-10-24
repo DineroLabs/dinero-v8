@@ -172,13 +172,14 @@ private:
     // release/epoch domain as well so sequential test/network changes refuse.
     // This is not permission for concurrent mutation of process ChainParams.
     using ProfileIdentity = std::tuple<std::string, std::string, std::string,
-        uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t>;
+        uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t>;
     static ProfileIdentity Profile() {
         const auto& p = Params();
         return std::make_tuple(p.name, p.network_id, p.genesis_hash,
             p.orchard_activation_height, p.orchard_branch_id, p.release_v8113_activation_height,
             p.shielded_activation_height, p.shielded_epoch_reset_height,
-            p.shielded_spend_auth_epoch_reset_height, p.state_commitment_activation_height);
+            p.shielded_spend_auth_epoch_reset_height, p.state_commitment_activation_height,
+            p.orchard_catalog_commitment_activation_height);
     }
     static void Require(bool condition, const std::string& reason) {
         if (!condition) throw std::runtime_error(reason);

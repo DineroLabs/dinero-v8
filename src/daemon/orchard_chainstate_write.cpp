@@ -6,6 +6,8 @@
 #include <type_traits>
 #include <set>
 #include "daemon/orchard_chainstate_write.h"
+#include "consensus/orchard_catalog_transition.h"
+#include "consensus/orchard_profile.h"
 #include "daemon/utreexo_tx_reader.h"
 #include "daemon/services/orchard_parent_catalog.h"
 #include "daemon/services/historical_catalog.h"
@@ -527,44 +529,8 @@ struct PreparedOrchardChainstateWrite::Impl {
                 else CatalogRequire(db.stageOrchardCatalogNode(token,hash,bytes,batch)==Status::Ok);
             }
         };
-        c::Tree transactions(c::Kind::Transactions,read,write),legacy(c::Kind::LegacyCoins,read,write);
-        c::Tree nontransparent(c::Kind::NonTransparentCoins,read,write);
-        // Includes transactions whose outputs were all spent, and same-block
-        // transactions with no surviving output. TxIndex is not this authority.
-        for(const auto& tx:coins.Transactions()) {
-            CatalogRequire(state.transaction_count!=UINT64_MAX);
-            state.transactions=transactions.Insert(state.transactions,c::TransactionKey(tx.txid),{});++state.transaction_count;
-        }
-        for(const auto& change:coins.Changes()) {
-            const auto point=c::OutpointBytes(change.outpoint);const auto key=c::LegacyKey(point);
-            const auto found=legacy.Find(state.legacy,key);
-            const auto nontransparent_key=c::NonTransparentKey(point);
-            const auto special=nontransparent.Find(state.nontransparent,nontransparent_key);
-            const bool was_nontransparent=change.before&&(change.before->is_confidential||!change.before->commitment.empty());
-            CatalogRequire(special.has_value()==was_nontransparent);
-            if(special) {
-                CatalogRequire(*special==point&&state.nontransparent_count>0);
-                state.nontransparent=nontransparent.Erase(state.nontransparent,nontransparent_key);--state.nontransparent_count;
-            }
-            if(change.after&&(change.after->is_confidential||!change.after->commitment.empty())) {
-                CatalogRequire(change.after->height==context.height&&state.nontransparent_count!=UINT64_MAX);
-                state.nontransparent=nontransparent.Insert(state.nontransparent,nontransparent_key,point);++state.nontransparent_count;
-            }
-            const auto metadata=[&](const UTXOEntry& coin){auto v=point;c::Number(v,coin.height,4);v.push_back(coin.isCoinbase?1:0);return v;};
-            if(change.before&&change.before->height<state.leaf_activation) {
-                CatalogRequire(found&&*found==metadata(*change.before)&&state.legacy_count>0);
-                state.legacy=legacy.Erase(state.legacy,key);--state.legacy_count;
-            } else CatalogRequire(!found);
-            if(change.after&&change.after->height<state.leaf_activation) {
-                CatalogRequire(change.after->height==context.height&&state.legacy_count!=UINT64_MAX);
-                state.legacy=legacy.Insert(state.legacy,key,metadata(*change.after));++state.legacy_count;
-            }
-        }
-        state.previous_record=c::Hash(parent_bytes);
-        state.undo=c::Hash(std::string(undo_bytes.begin(),undo_bytes.end()));
-        state.height=context.height;state.block=context.block_hash;state.parent=context.parent_hash;
-        state.work=RequiredDisk(db.getBlockWork(context.block_hash));
-        state.stump=after.serialize();
+        state=AdvanceOrchardCatalog(std::move(state),coins,after,
+            RequiredDisk(db.getBlockWork(context.block_hash)),undo_bytes,read,write);
         CheckOrchardCatalogStump(db,state,context,block.Header(),context.height,after);
         const auto bytes=state.Encode();if(existing)CatalogRequire(*existing==bytes);
         if(verify_only)CatalogRequire(existing&&*existing==bytes);
@@ -837,8 +803,14 @@ std::unique_ptr<PreparedOrchardChainstateWrite> PreparedOrchardChainstateWrite::
         }
         return value;
     };
+    std::optional<storage::catalog::State> root_parent;
+    if(OrchardCatalogCommitmentActive(Params(),context.height)) {
+        root_parent=owner.SelectCatalog(initial_catalog,boundary,context,parent);
+        require_catalog=true;
+    }
     auto staged = StageOrchardChainstateConnectUnderLock(db, token, context, block,
-        parent, forest, capture_mtp, witness, checkpoint, owner.batch, boundary, detached);
+        parent, forest, capture_mtp, witness, checkpoint, owner.batch, boundary, detached,
+        root_parent?&*root_parent:nullptr);
     owner.undo_bytes=staged.block.undo.Serialize();
     owner.ConnectCatalog(initial_catalog,require_catalog,boundary,context,block,parent,
         UtreexoStump::fromForest(forest),staged.block.coins,UtreexoStump::fromForest(staged.forest.After()));

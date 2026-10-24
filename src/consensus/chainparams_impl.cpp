@@ -551,6 +551,11 @@ std::string ConsensusChecksum(const ChainParams& params) {
            << "orchard_activation_height=" << params.orchard_activation_height << '\n'
            << "orchard_branch_id=" << params.orchard_branch_id << '\n';
     }
+    if (params.orchard_catalog_commitment_activation_height != UINT32_MAX) {
+        ss << "orchard_catalog_commitment_profile=DNORST02\n"
+           << "orchard_catalog_commitment_activation_height="
+           << params.orchard_catalog_commitment_activation_height << '\n';
+    }
 
     // Preserve all existing network fingerprints when the mode is disabled.
     // Include compact activation and maturity in the isolated profile identity.

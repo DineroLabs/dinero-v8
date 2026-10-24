@@ -15,10 +15,11 @@ public:
     std::unique_ptr<assumeutxo::AssumeUtxoReplayEngine> replay;
     const ChainWriteToken token = ChainWriteToken::CreateForTesting();
     static void Require(bool value) { if (!value) throw std::runtime_error("selected parent fixture setup"); }
-    explicit OwnedSelectedParentFixture(uint32_t parent_height=3) {
+    explicit OwnedSelectedParentFixture(uint32_t parent_height=3,bool catalog_commitment=false) {
         Require(parent_height>0&&parent_height<UINT32_MAX);
         MutableParams().orchard_activation_height=parent_height+1;
         MutableParams().orchard_branch_id=1;
+        MutableParams().orchard_catalog_commitment_activation_height=catalog_commitment?parent_height+1:UINT32_MAX;
         MutableParams().shielded_activation_height=1;
         MutableParams().shielded_epoch_reset_height=UINT32_MAX;
         MutableParams().shielded_spend_auth_epoch_reset_height=UINT32_MAX;

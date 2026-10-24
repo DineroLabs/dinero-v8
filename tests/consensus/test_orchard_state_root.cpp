@@ -30,6 +30,35 @@ int main(int argc,char**argv){try{
     Require(pre==Load(base+"/state-funded.preimage"));
     const auto root=ComputeOrchardStateRoot(root_context,record,funded.Next(),projected);
     Require(Eq(root,Load(base+"/state-funded.root")));
+    storage::catalog::State catalog;catalog.network=c.domain.network_code;catalog.genesis=record.genesis;
+    catalog.branch=c.domain.branch_id;catalog.activation=c.activation_height;catalog.leaf_activation=120000;
+    catalog.height=c.height-1;catalog.block=c.parent_hash;catalog.parent=H(9);catalog.work=arith_uint256{1};
+    catalog.stump=UtreexoStump{}.serialize();
+    const auto catalog_preimage=BuildOrchardCatalogStateRootPreimage(root_context,record,funded.Next(),projected,catalog);
+    auto expected=pre;expected.at(7)='2';const auto catalog_digest=storage::catalog::Hash(catalog.Encode());
+    expected.insert(expected.end(),catalog_digest.begin(),catalog_digest.end());Require(catalog_preimage==expected);
+    const auto catalog_root=ComputeOrchardCatalogStateRoot(root_context,record,funded.Next(),projected,catalog);
+    Require(ComputeOrchardSelectedStateRoot(root_context,record,funded.Next(),projected,UINT32_MAX,nullptr)==root);
+    Require(ComputeOrchardSelectedStateRoot(root_context,record,funded.Next(),projected,c.height+1,nullptr)==root);
+    Require(ComputeOrchardSelectedStateRoot(root_context,record,funded.Next(),projected,c.height,&catalog)==catalog_root);
+    RootReject([&]{(void)ComputeOrchardSelectedStateRoot(root_context,record,funded.Next(),projected,c.height,nullptr);});
+    RootReject([&]{(void)ComputeOrchardSelectedStateRoot(root_context,record,funded.Next(),projected,c.height-1,&catalog);});
+    Require(catalog_root!=root);
+    for(int field=0;field<7;++field) {
+        auto changed=catalog;
+        if(field==0){changed.transactions=H(33);changed.transaction_count=1;}
+        if(field==1){changed.legacy=H(33);changed.legacy_count=1;}
+        if(field==2){changed.nontransparent=H(33);changed.nontransparent_count=1;}
+        if(field==3)changed.leaf_activation++;
+        if(field==4)changed.work=arith_uint256{2};
+        if(field==5)changed.parent=H(8);
+        if(field==6)changed.stump=UtreexoStump::fromRoots({UtreexoHash(32,1)},1).serialize();
+        Require(ComputeOrchardCatalogStateRoot(root_context,record,funded.Next(),projected,changed)!=catalog_root);
+    }
+    auto wrong_parent=catalog;wrong_parent.block=H(99);
+    RootReject([&]{(void)ComputeOrchardCatalogStateRoot(root_context,record,funded.Next(),projected,wrong_parent);});
+    auto changed_current=funded.Next();changed_current.block_hash=H(88);
+    Require(ComputeOrchardCatalogStateRoot(root_context,record,changed_current,projected,catalog)==catalog_root);
     Require(db.getOrchardState().status()==Status::NotFound); // Projection is read-only.
     // Initial empty blocks commit a real empty set, not an unavailable set.
     const auto empty_initial=PrepareOrchardStateTransition(c,{}, {},lookups);

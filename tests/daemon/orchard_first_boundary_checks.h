@@ -56,7 +56,13 @@ OrchardBlockCandidate BoundaryCoinbaseBlock(Fixture& f,
         [&](const uint256& n)->StatusOr<bool>{auto v=f.db.getOrchardNullifierOwner(n);if(v.ok())return true;if(v.status()==Status::NotFound)return false;return v.status();}};
     const auto next=PrepareOrchardStateTransition(*context,std::nullopt,{},lookups);
     const auto sets=f.db.previewOrchardCommitmentSets(std::nullopt,next.Next(),next.Nullifiers());require(sets.ok());
-    const auto root=ComputeOrchardStateRoot({context->domain,context->activation_height,context->height,context->parent_hash},retirement,next.Next(),*sets);
+    std::optional<storage::catalog::State> catalog;
+    if(OrchardCatalogCommitmentActive(Params(),height)) {
+        if constexpr(requires { f.prepared->Catalog(); })catalog=f.prepared->Catalog().VerificationState(f.blocks.back().header);
+        else throw std::runtime_error("test requires independently prepared catalog");
+    }
+    const auto root=ComputeOrchardSelectedStateRoot({context->domain,context->activation_height,context->height,context->parent_hash},
+        retirement,next.Next(),*sets,Params().orchard_catalog_commitment_activation_height,catalog?&*catalog:nullptr);
     cb.vout.emplace_back(AmountUna::Zero(),BuildStateCommitmentScript(root,StateCommitmentEncoding::Orchard));
     const auto state_draft=encode(header);context=SelectedOrchardBlockContext(state_draft.Header(),height);
     const auto coins=PrepareOrchardBlockCoinsUnderChainstateLock(state_draft,*context,view,{},true);

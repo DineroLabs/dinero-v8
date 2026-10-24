@@ -1,5 +1,6 @@
 #include "consensus/orchard_block_staging.h"
 #include "consensus/orchard_catalog_validation.h"
+#include "consensus/orchard_catalog_transition.h"
 #include "consensus/orchard_catalog_coin_view.h"
 #include "consensus/orchard_canonical_stump_transition.h"
 #include "consensus/utreexo_canonical_roots_activation.h"
@@ -10,6 +11,7 @@
 #include "consensus/orchard_block_filter.h"
 #include "consensus/filter_commitment.h"
 #include "consensus/orchard_state_root.h"
+#include "consensus/orchard_profile.h"
 #include "consensus/orchard_legacy_accounting.h"
 #include "consensus/chainparams.h"
 #include "consensus/merkle_root.h"
@@ -214,9 +216,18 @@ void CheckFrozenLegacy(const ChainDB& db,const storage::LegacyRetirementRecord& 
     auto derived=r;FillFrozenLegacy(db,derived,selected_height,selected_hash);
     if (derived!=r) bad();
 }
-uint256 StateRoot(const OrchardBlockContext& c,const storage::LegacyRetirementRecord& r,
-    const storage::OrchardStoredState& s,const storage::OrchardCommitmentSets& sets) {
-    try {return ComputeOrchardStateRoot({c.domain,c.activation_height,c.height,c.parent_hash},r,s,sets);}
+uint256 StateRoot(const ChainDB& db,const OrchardBlockContext& c,const storage::LegacyRetirementRecord& r,
+    const storage::OrchardStoredState& s,const storage::OrchardCommitmentSets& sets,
+    const storage::catalog::State* authenticated_parent=nullptr) {
+    try {
+        std::optional<storage::catalog::State> stored;
+        if(OrchardCatalogCommitmentActive(Params(),c.height) && !authenticated_parent) {
+            stored=storage::catalog::State::Decode(RequiredLocal(db.getOrchardCatalogState(c.parent_hash)));
+            authenticated_parent=&*stored;
+        }
+        return ComputeOrchardSelectedStateRoot({c.domain,c.activation_height,c.height,c.parent_hash},r,s,sets,
+            Params().orchard_catalog_commitment_activation_height,authenticated_parent);
+    }
     catch(const std::invalid_argument&){throw OrchardStateLookupError(Status::Corruption);}
     catch(const orchard::BackendError& e){throw OrchardStateLookupError(
         e.Status()==DINERO_ORCHARD_PANIC?Status::Internal:Status::Corruption);}
@@ -530,16 +541,9 @@ static StagedOrchardBlock StageOrchardCoinsAndStateImpl(ChainDB& db,
             prepared.Nullifiers(),prepared.Flows(),batch));
         return prepared;
     }();
-    UndoRecord undo;
+    auto undo=BuildOrchardCoinUndo(coins);
     for (const auto& change:coins.Changes()) {
-        if (change.before) {
-            const auto& coin=*change.before;
-            undo.spent.emplace_back(change.outpoint.txid.AsUint256(),change.outpoint.vout,
-                coin.value.GetUna(),coin.scriptPubKey,coin.isCoinbase,coin.height,
-                coin.is_confidential,coin.commitment);
-        }
         if (change.after) {
-            undo.created.emplace_back(change.outpoint.txid.AsUint256(),change.outpoint.vout);
             if(!compact_view)StorageCheck(db.putCoin(token,change.outpoint.txid.AsUint256(),change.outpoint.vout,StoredCoin(*change.after),&batch));
         } else if(!compact_view)StorageCheck(db.deleteCoin(token,change.outpoint.txid.AsUint256(),change.outpoint.vout,&batch));
     }
@@ -747,13 +751,25 @@ void CheckOrchardCompactBlockUtreexoProof(const OrchardBlockCandidate& block,
     (void)PrepareCompactTransition(block,coins,parent,stump);
 }
 
+UtreexoStump DeriveOrchardCompactBlockStump(const OrchardBlockCandidate& block,
+    const PreparedOrchardBlockCoins& coins,const BlockHeader& parent,const UtreexoStump& stump) {
+    return PrepareCompactTransition(block,coins,parent,stump).after;
+}
+void StageOrchardSnapshotJournal(const OrchardBlockContext& context,const BlockHeader& header,
+    const arith_uint256& work,const storage::OrchardStoredState& state,const UtreexoStump& stump,
+    rocksdb::WriteBatch& batch) {
+    StorageCheck(batch.Put(CommitKey(context.height,context.block_hash),
+        CommitRecord(context,header,work,stump,state)).ok()?Status::Ok:Status::Internal);
+}
+
 template<class Accumulator>
 static auto StageOrchardChainstateConnectImpl(ChainDB& db,
     const ChainWriteToken& token,const OrchardBlockContext& context,const OrchardBlockCandidate& block,
     const BlockHeader& parent,const Accumulator& forest,const OrchardBranchMtpLookup& mtp,
     bool require_witness_commitment,bool checkpoint,rocksdb::WriteBatch& batch,
     const std::optional<storage::LegacyRetirementRecord>& authenticated_boundary,
-    const ValidatedOrchardBlock* detached,const OrchardCandidateCoinView* compact_view) {
+    const ValidatedOrchardBlock* detached,const OrchardCandidateCoinView* compact_view,
+    const storage::catalog::State* parent_catalog) {
     constexpr bool compact=std::is_same_v<Accumulator,UtreexoStump>;
     if(compact!=bool(compact_view)||(compact&&checkpoint))
         throw OrchardStateLookupError(Status::Invalid);
@@ -811,15 +827,15 @@ static auto StageOrchardChainstateConnectImpl(ChainDB& db,
     operation="connect/parent-body-and-root";
     if (prepared.orchard.Parent()) {
         const auto parent_body=ReadStoredOrchardBlock(db,context.parent_hash,require_witness_commitment);
-        CheckRoot(parent_body,StateRoot(ParentContext(context,parent),retirement,*prepared.orchard.Parent(),
+        CheckRoot(parent_body,StateRoot(db,ParentContext(context,parent),retirement,*prepared.orchard.Parent(),
             RequiredLocal(db.getOrchardCommitmentSets(*prepared.orchard.Parent()))),true);
     }
     operation="connect/next-root";
     if (prepared.orchard.Next().pool_balance>orchard::kMaxMoneyUna-retirement.retired_value)
         throw OrchardStateError(OrchardStateErrorCode::PoolBalance);
-    CheckRoot(block,StateRoot(context,retirement,prepared.orchard.Next(),
+    CheckRoot(block,StateRoot(db,context,retirement,prepared.orchard.Next(),
         RequiredLocal(db.previewOrchardCommitmentSets(prepared.orchard.Parent(),prepared.orchard.Next(),
-            prepared.orchard.Nullifiers()))),false);
+            prepared.orchard.Nullifiers())),parent_catalog),false);
     operation="connect/forest-transition";
     auto transition=[&] {
         try {
@@ -888,9 +904,10 @@ StagedOrchardChainstate StageOrchardChainstateConnectUnderLock(ChainDB& db,
     const ChainWriteToken& token,const OrchardBlockContext& context,const OrchardBlockCandidate& block,
     const BlockHeader& parent,const UtreexoForest& forest,const OrchardBranchMtpLookup& mtp,
     bool witness,bool checkpoint,rocksdb::WriteBatch& batch,
-    const std::optional<storage::LegacyRetirementRecord>& boundary,const ValidatedOrchardBlock* detached) {
+    const std::optional<storage::LegacyRetirementRecord>& boundary,const ValidatedOrchardBlock* detached,
+    const storage::catalog::State* parent_catalog) {
     return StageOrchardChainstateConnectImpl(db,token,context,block,parent,forest,mtp,
-        witness,checkpoint,batch,boundary,detached,nullptr);
+        witness,checkpoint,batch,boundary,detached,nullptr,parent_catalog);
 }
 StagedOrchardCompactChainstate StageOrchardCompactChainstateConnectUnderLock(ChainDB& db,
     const ChainWriteToken& token,const OrchardBlockContext& context,const OrchardBlockCandidate& block,
@@ -903,7 +920,7 @@ StagedOrchardCompactChainstate StageOrchardCompactChainstateConnectUnderLock(Cha
         return RequiredLocal(db.getOrchardCatalogNode(id));
     });
     return StageOrchardChainstateConnectImpl(db,token,context,block,parent,stump,mtp,
-        witness,false,batch,boundary,detached,&view);
+        witness,false,batch,boundary,detached,&view,&selected);
 }
 
 template<class Accumulator>
@@ -932,12 +949,12 @@ static auto StageOrchardChainstateDisconnectImpl(ChainDB& db,
     if (retired.height!=context.height || retired.block_hash!=context.block_hash || retired.parent_hash!=context.parent_hash)
         throw OrchardStateLookupError(Status::Corruption);
     CheckFrozenLegacy(db,retired.record,context,context.height,context.block_hash);
-    CheckRoot(block,StateRoot(context,retired.record,current_state,
+    CheckRoot(block,StateRoot(db,context,retired.record,current_state,
         RequiredLocal(db.getOrchardCommitmentSets(current_state))),true);
     const auto reverse_sets=RequiredLocal(db.previewOrchardDisconnectCommitmentSets(current_state));
     if (undo_parent) {
         const auto parent_body=ReadStoredOrchardBlock(db,context.parent_hash,require_witness_commitment);
-        CheckRoot(parent_body,StateRoot(ParentContext(context,parent),retired.record,*undo_parent,reverse_sets),true);
+        CheckRoot(parent_body,StateRoot(db,ParentContext(context,parent),retired.record,*undo_parent,reverse_sets),true);
     }
     for(size_t i=0;i<block.Transactions().size();++i) {
         const auto location=RequiredLocal(db.getTxLocation(block.Transactions()[i].GetTxid().AsUint256()));

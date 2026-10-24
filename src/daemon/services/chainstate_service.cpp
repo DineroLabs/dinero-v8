@@ -18968,8 +18968,9 @@ const consensus::ValidatedOrchardBlock& ChainstateService::BindOrchardExtensionU
     if(!sets.ok())throw OrchardStateLookupError(sets.status());
     const auto commitment=FindStateCommitment(body.Transactions().front().Historical(),StateCommitmentEncoding::Orchard);
     const auto& c=captured.context;
-    if(commitment.status!=StateCommitmentStatus::Ok || commitment.root!=ComputeOrchardStateRoot(
-        {c.domain,c.activation_height,c.height,c.parent_hash},captured.retirement,state.Next(),*sets))
+    if(commitment.status!=StateCommitmentStatus::Ok || commitment.root!=ComputeOrchardSelectedStateRoot(
+        {c.domain,c.activation_height,c.height,c.parent_hash},captured.retirement,state.Next(),*sets,
+        Params().orchard_catalog_commitment_activation_height,captured.catalog?&*captured.catalog:nullptr))
         throw OrchardStateError(OrchardStateErrorCode::StateCommitment);
     const auto root=captured.compact_stump?captured.compact_stump->getCommitment():captured.forest->getCommitment();
     if(root.size()!=32)refuse();
@@ -19127,9 +19128,10 @@ bool ChainstateService::CompleteOrchardInverse(PreparedOrchardInverse& inverse) 
     if(captured.proved_state->Next()!=inverse.selected_state)return false;
     const auto& c=captured.context;
     const auto commitment=FindStateCommitment(captured.body->Transactions().front().Historical(),StateCommitmentEncoding::Orchard);
-    inverse.completed=commitment.status==StateCommitmentStatus::Ok && commitment.root==ComputeOrchardStateRoot(
+    inverse.completed=commitment.status==StateCommitmentStatus::Ok && commitment.root==ComputeOrchardSelectedStateRoot(
         {c.domain,c.activation_height,c.height,c.parent_hash},captured.retirement,
-        inverse.selected_state,inverse.selected_membership);
+        inverse.selected_state,inverse.selected_membership,
+        Params().orchard_catalog_commitment_activation_height,captured.catalog?&*captured.catalog:nullptr);
     return inverse.completed;
 #else
     (void)inverse;return false;
@@ -19743,6 +19745,8 @@ ChainstateService::CaptureOrchardMiningUnderLock(const BlockHeader& header,const
         const auto forest_lock=consensus_utxo_set_->LockForestShared();
         p->forest=std::make_unique<UtreexoForest>(consensus_utxo_set_->GetForest());
     }
+    if(OrchardCatalogCommitmentActive(Params(),height))
+        p->catalog=PreparedOrchardExtension::CaptureCatalog(*this,p->context,p->parent,*p->forest,p->retirement);
     // Typed mining has always required its explicit witness commitment.
     p->witness=true;
     for(const auto& output:p->coinbase.vout)
@@ -19875,7 +19879,8 @@ void ChainstateService::CommitOrchardMiningUnderLock(PreparedOrchardMining& p) {
     const auto sets=chain_db_->previewOrchardCommitmentSets(state.Parent(),state.Next(),state.Nullifiers());
     if(!sets.ok())throw OrchardStateLookupError(sets.status());
     p.next_membership=*sets;const auto& c=p.context;
-    const auto root=ComputeOrchardStateRoot({c.domain,c.activation_height,c.height,c.parent_hash},p.retirement,state.Next(),*sets);
+    const auto root=ComputeOrchardSelectedStateRoot({c.domain,c.activation_height,c.height,c.parent_hash},p.retirement,state.Next(),*sets,
+        Params().orchard_catalog_commitment_activation_height,p.catalog?&*p.catalog:nullptr);
     p.coinbase.vout.emplace_back(AmountUna::Zero(),BuildStateCommitmentScript(root,StateCommitmentEncoding::Orchard));
     p.draft.emplace(p.Encode());
     // The commitment changes the coinbase ID. Capture its exact output absence,
@@ -19919,8 +19924,9 @@ void ChainstateService::CompleteOrchardMiningDetached(PreparedOrchardMining& p) 
     p.proved_state.reset();p.proved_state.emplace(PrepareOrchardStateTransition(p.Context(*p.final),p.parent_state,
         p.proved_coins->Authorizations(),p.Lookups()));
     const auto found=FindStateCommitment(p.coinbase,StateCommitmentEncoding::Orchard);const auto& c=p.context;
-    if(found.status!=StateCommitmentStatus::Ok || found.root!=ComputeOrchardStateRoot(
-        {c.domain,c.activation_height,c.height,c.parent_hash},p.retirement,p.proved_state->Next(),*p.next_membership))
+    if(found.status!=StateCommitmentStatus::Ok || found.root!=ComputeOrchardSelectedStateRoot(
+        {c.domain,c.activation_height,c.height,c.parent_hash},p.retirement,p.proved_state->Next(),*p.next_membership,
+        Params().orchard_catalog_commitment_activation_height,p.catalog?&*p.catalog:nullptr))
         throw std::runtime_error("Mining state commitment mismatch");
     if(!PrepareOrchardForestTransition(*p.proved_coins,p.parent,*p.forest).MatchesHeader(p.final->Header()))
         throw std::runtime_error("Mining forest commitment mismatch");

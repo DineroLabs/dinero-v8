@@ -5,6 +5,7 @@
 #include "consensus/utreexo_stump.h"
 #include "storage/chain_db.h"
 #include "storage/orchard_catalog_nodes.h"
+#include "storage/orchard_catalog_state.h"
 #include <map>
 #include <memory>
 
@@ -40,6 +41,14 @@ public:
         return LegacyMetadata{height,uint8_t((*value)[40])!=0};
     }
     const std::vector<uint8_t>& VerificationStump() const {Check();return stump_;}
+    storage::catalog::State VerificationState(const BlockHeader& parent) const {
+        Check();Require(parent.GetHash()==target_.hash);
+        storage::catalog::State s;s.network=record_.network_code;s.genesis=record_.genesis;
+        s.branch=record_.branch_id;s.activation=record_.activation_height;s.leaf_activation=leaf_activation_;
+        s.height=target_.height;s.block=target_.hash;s.parent=parent.prev_block_hash;s.work=target_.chainwork;
+        s.transactions=transactions_;s.transaction_count=transaction_count_;s.legacy=legacy_;s.legacy_count=legacy_count_;
+        s.nontransparent=nontransparent_;s.nontransparent_count=nontransparent_count_;s.stump=stump_;s.Validate();return s;
+    }
 private:
     friend class ChainstateService;
     friend class OrchardReindexOwner;

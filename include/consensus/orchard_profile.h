@@ -11,6 +11,9 @@ inline bool OrchardProfileConfigurationValid(const ChainParams& params) {
     if (params.name != "mainnet" && params.name != "testnet" && params.name != "regtest")
         return false;
     const auto height = params.orchard_activation_height;
+    const auto catalog = params.orchard_catalog_commitment_activation_height;
+    if (catalog != UINT32_MAX && (height == UINT32_MAX || catalog < height || catalog > uint32_t(INT32_MAX)))
+        return false;
     if (height == UINT32_MAX)
         return params.orchard_branch_id == 0 &&
             (params.name == "regtest" || params.release_v8113_activation_height == UINT32_MAX);
@@ -34,6 +37,11 @@ inline void ConfigureOrchardRelease(ChainParams& params, uint32_t height, uint32
 inline bool OrchardActiveForHeight(const ChainParams& params, uint32_t height) {
     return OrchardProfileConfigurationValid(params) &&
         params.orchard_activation_height != UINT32_MAX && height >= params.orchard_activation_height;
+}
+inline bool OrchardCatalogCommitmentActive(const ChainParams& params, uint32_t height) {
+    return OrchardActiveForHeight(params, height) &&
+        params.orchard_catalog_commitment_activation_height != UINT32_MAX &&
+        height >= params.orchard_catalog_commitment_activation_height;
 }
 // Peer compatibility follows the locally validated next block, including an
 // independent regtest Orchard schedule. The unset sentinel never activates.

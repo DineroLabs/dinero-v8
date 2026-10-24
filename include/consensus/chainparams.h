@@ -423,6 +423,10 @@ struct ChainParams {
     // A scheduled public profile must share the joint release boundary.
     uint32_t orchard_activation_height = UINT32_MAX;
     uint32_t orchard_branch_id = 0;
+    // DNORST02 additionally commits the parent compact catalog. Independent
+    // hard-fork gate: never reinterpret deployed DNORST01 history. Public
+    // schedules require explicit fleet coordination; dormant by default.
+    uint32_t orchard_catalog_commitment_activation_height = UINT32_MAX;
 };
 
 // ============================================================================
