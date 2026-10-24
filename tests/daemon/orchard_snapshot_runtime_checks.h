@@ -23,6 +23,52 @@ struct OrchardSnapshotStoreTestAccess {
         std::lock_guard<AnnotatedRecursiveMutex> lock(mutex);return OrchardSnapshotStore::RecoverBaseMarkers(mutex,db,token,headers);
     }
 };
+TEST(OrchardSnapshotRuntime, FullNodeRejectsBadDnorst02WithCompactBootstrapOff) {
+    using namespace consensus;
+    CanonicalPoolFixture fixture(true);MutableParams().orchard_catalog_commitment_activation_height=102;
+    const auto config=ShieldedStateStartupTestAccess::SnapshotBootstrapConfig(*fixture.f.service);
+    ASSERT_TRUE(config->CompactSnapshotBootstrapEnabled());config->Set("assumeutxo_compact_bootstrap","0");
+    ASSERT_FALSE(GetConfig().utreexo_stateless);ASSERT_NE(fixture.f.service->GetConsensusUTXOSet(),nullptr);
+    const auto honest=fixture.Build();ASSERT_TRUE(honest);ASSERT_LT(honest->Transactions().size(),253u);
+    auto cb=honest->Transactions().front().Historical();
+    const auto original=FindStateCommitment(cb,StateCommitmentEncoding::Orchard);
+    ASSERT_EQ(original.status,StateCommitmentStatus::Ok);
+    bool changed=false;
+    for(auto& output:cb.vout) {
+        auto& script=output.scriptPubKey;
+        if(script.size()==39&&script[0]==0x6a&&script[2]=='D'&&script[3]=='N'&&script[4]=='R'&&script[5]=='S') {
+            script.back()^=1;changed=true;
+        }
+    }
+    ASSERT_TRUE(changed);ASSERT_NE(FindStateCommitment(cb,StateCommitmentEncoding::Orchard).root,original.root);
+    auto bytes=honest->WireBytes();const auto wire=cb.Serialize(TxSerializationMode::WithWitness);
+    ASSERT_EQ(wire.size(),honest->Transactions().front().Historical().Serialize(TxSerializationMode::WithWitness).size());
+    ASSERT_EQ(bytes.at(128),honest->Transactions().size());std::copy(wire.begin(),wire.end(),bytes.begin()+129);
+    auto header=honest->Header();std::vector<TxId> ids{cb.GetTxid()};
+    for(size_t i=1;i<honest->Transactions().size();++i)ids.push_back(honest->Transactions()[i].GetTxid());
+    header.merkle_root=ComputeTransactionMerkleRoot(ids);
+    const auto encode=[&] {const auto prefix=header.SerializeForHash();std::copy(prefix.begin(),prefix.end(),bytes.begin());};
+    encode();auto draft=OrchardBlockCandidate::DecodeExact(bytes);
+    FirstBoundaryView view(*fixture.f.replay);
+    const auto context=SelectedOrchardBlockContext(draft.Header(),honest->Height());ASSERT_TRUE(context);
+    const auto coins=PrepareOrchardBlockCoinsUnderChainstateLock(draft,*context,view,{},true);
+    const auto& parent=fixture.f.blocks.back().header;const auto& forest=*fixture.f.replay->Forest();
+    header.utreexo_root=PrepareOrchardForestTransition(coins,parent,forest).Root();
+    header=OrchardAdmissionFixture::SolveHeader(header);encode();
+    const auto forged=OrchardBlockCandidate::DecodeExact(bytes);
+    const auto final_context=SelectedOrchardBlockContext(header,honest->Height());ASSERT_TRUE(final_context);
+    const auto final_coins=PrepareOrchardBlockCoinsUnderChainstateLock(forged,*final_context,view,{},true);
+    std::string error;ASSERT_TRUE(forged.CheckIdentityCommitments(true,error))<<error;
+    ASSERT_NO_THROW(CheckOrchardBlockUtreexoProof(forged,final_coins,parent,forest));
+    ASSERT_TRUE(PrepareOrchardForestTransition(final_coins,parent,forest).MatchesHeader(header));
+    const auto refused=fixture.Submit(bytes);EXPECT_FALSE(refused.connected);
+    EXPECT_EQ(refused.code,BlockRejectCode::INVALID_TRANSACTION);
+    EXPECT_EQ(refused.reason,"Orchard state commitment rejected");
+    EXPECT_EQ(fixture.f.service->GetActiveTip(),fixture.parent);fixture.f.CheckUnpublished();
+    const auto valid=SolveCatalogTemplate(honest);ASSERT_TRUE(valid);
+    const auto accepted=fixture.Submit(valid->WireBytes());EXPECT_TRUE(accepted.connected)<<accepted.reason;
+    EXPECT_FALSE(config->CompactSnapshotBootstrapEnabled());
+}
 TEST(OrchardSnapshotRuntime, RealRegtestActivationFullAndCompactImportReopenAndFloor) {
     using namespace consensus;using Access=OrchardSnapshotStoreTestAccess;
     CanonicalPoolFixture source(true);MutableParams().orchard_catalog_commitment_activation_height=102;
@@ -122,6 +168,15 @@ TEST(OrchardSnapshotRuntime, ActualServiceBootstrapExportAndRestartBothProfiles)
     shielded_store_fixture::TempDir exports;
     const auto full_path=exports.path/"full.v6";
     const auto exported=source.f.service->ExportSnapshot(full_path);ASSERT_TRUE(exported.success)<<exported.error_message;
+    // A checksum-valid full container whose logical state computes a different
+    // DNORST02 root must remain rejected when compact bootstrap is switched off.
+    const auto bad_root_path=exports.path/"bad-root-full.v6";
+    {
+        std::ifstream input(full_path,std::ios::binary);
+        auto forged=ReadOrchardSnapshotFile(input,std::filesystem::file_size(full_path),OrchardSnapshotProfile::Full);
+        ++forged.orchard.state.pool_balance;
+        ASSERT_TRUE(WriteOrchardSnapshotFileAtomically(bad_root_path,forged.metadata,forged.orchard,forged.coins).success);
+    }
     auto& live=ShieldedStateStartupTestAccess::CatalogWriterCoins(*source.f.service);
     auto compact=Access::Capture(source.f.db,OrchardSnapshotProfile::Compact,
         UtreexoStump::fromForest(live.GetForest()).serialize());
@@ -172,6 +227,8 @@ TEST(OrchardSnapshotRuntime, ActualServiceBootstrapExportAndRestartBothProfiles)
             auto db=std::make_shared<ChainDB>();ASSERT_EQ(db->init(path),Status::Ok);
             DaemonContext context;context.config=std::make_shared<ConfigService>();
             context.config->Set("datadir",directory.path.string());
+            EXPECT_TRUE(context.config->CompactSnapshotBootstrapEnabled()); // Default is on.
+            if(!stateless)context.config->Set("assumeutxo_compact_bootstrap","0");
             if(stateless&&run==0)context.config->Set("assumeutxo_snapshot",snapshot.string());
             context.logger=std::make_shared<LoggerService>("");
             context.block_storage=std::make_shared<BlockStorage>();ASSERT_EQ(context.block_storage->init(directory.path/"files"),Status::Ok);
@@ -192,6 +249,11 @@ TEST(OrchardSnapshotRuntime, ActualServiceBootstrapExportAndRestartBothProfiles)
             }
             ASSERT_TRUE(service->Start());
             if(!stateless&&run==0) {
+                EXPECT_FALSE(context.config->CompactSnapshotBootstrapEnabled());
+                const auto refused_root=service->LoadSnapshot(bad_root_path);
+                EXPECT_FALSE(refused_root.success);EXPECT_TRUE(refused_root.checksum_valid);
+                EXPECT_EQ(refused_root.utxos_imported,0u);
+                EXPECT_EQ(db->getTip()->height,0);EXPECT_EQ(service->GetConsensusUTXOSet(),original);
                 const auto wrong_profile=service->LoadSnapshot(compact_path);EXPECT_FALSE(wrong_profile.success);
                 EXPECT_EQ(db->getTip()->height,0);EXPECT_EQ(service->GetConsensusUTXOSet(),original);
                 const auto imported=service->LoadSnapshot(snapshot);ASSERT_TRUE(imported.success)<<imported.error_message;
@@ -214,6 +276,21 @@ TEST(OrchardSnapshotRuntime, ActualServiceBootstrapExportAndRestartBothProfiles)
             }
             {auto lease=ChainstateService::AcquireBlockIngressUse(service);ASSERT_TRUE(lease);}
             const auto copy=directory.path/("export-"+std::to_string(run)+".v6");
+            if(stateless) {
+                context.config->Set("assumeutxo_compact_bootstrap","0");
+                {std::ofstream sentinel(copy);sentinel<<"retain on disabled compact export";}
+                const auto refused_export=service->ExportSnapshot(copy);
+                EXPECT_FALSE(refused_export.success);
+                EXPECT_NE(refused_export.error_message.find("disabled by local policy"),std::string::npos);
+                {std::ifstream sentinel(copy);EXPECT_EQ(std::string(std::istreambuf_iterator<char>(sentinel),{}),
+                    "retain on disabled compact export");}
+                const auto previous=GetConfig().utreexo_stateless;GetConfig().utreexo_stateless=true;
+                const auto refused_load=service->LoadSnapshot(compact_path);GetConfig().utreexo_stateless=previous;
+                EXPECT_FALSE(refused_load.success);
+                EXPECT_NE(refused_load.error_message.find("disabled by local policy"),std::string::npos);
+                EXPECT_EQ(service->GetActiveTip()->hash,selected.block_hash);EXPECT_TRUE(service->IsHealthy());
+                context.config->Set("assumeutxo_compact_bootstrap","1");
+            }
             const auto result=service->ExportSnapshot(copy);ASSERT_TRUE(result.success)<<result.error_message;
             const auto expected_path=run==0?snapshot:(stateless?compact_second_path:full_second);
             std::ifstream expected(expected_path,std::ios::binary),actual(copy,std::ios::binary);

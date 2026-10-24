@@ -13071,6 +13071,8 @@ std::pair<uint64_t, uint64_t> ChainstateService::RebuildTxIndex() {
 bool ChainstateService::InitCompactSnapshotBootstrap(const std::filesystem::path& snapshot) {
 #ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
     try {
+        if(config_&&!config_->CompactSnapshotBootstrapEnabled())
+            throw std::runtime_error("Compact v6 snapshot bootstrap disabled by local policy");
         std::lock_guard<AnnotatedRecursiveMutex> selected(activation_mutex_);
         if(!GetConfig().utreexo_stateless||!chain_db_||!chain_db_->hasSeparatedShieldedState()||!block_storage_||
             consensus_utxo_set_||block_validator_||utxo_index_||compact_startup_||active_tip_||started_)
@@ -13334,6 +13336,8 @@ consensus::SnapshotExportResult ChainstateService::ExportOrchardSnapshot(const s
         if(!chain_db_||!active_tip_||!header_chain_selector_||safe_mode_active_)
             throw std::runtime_error("Orchard v6 export requires a selected authenticated chainstate");
         const bool compact=bool(compact_startup_);
+        if(compact&&config_&&!config_->CompactSnapshotBootstrapEnabled())
+            throw std::runtime_error("Compact v6 snapshot bootstrap disabled by local policy");
         if(!tip.ok()||tip->height!=int(active_tip_->height)||tip->hash!=active_tip_->hash||
             !consensus::OrchardCatalogCommitmentActive(Params(),active_tip_->height))
             throw std::runtime_error("Orchard v6 export requires an active DNORST02 base");
@@ -13369,6 +13373,8 @@ consensus::SnapshotImportResult ChainstateService::LoadOrchardSnapshot(const std
 #ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
     bool committed=false;
     try {
+        if(GetConfig().utreexo_stateless&&config_&&!config_->CompactSnapshotBootstrapEnabled())
+            throw std::runtime_error("Compact v6 snapshot bootstrap disabled by local policy");
         const auto maximum_mb=config_?std::max(0,config_->GetInt("assumeutxo_snapshot_max_mb",64*1024)):64*1024;
         const uint64_t maximum=uint64_t(maximum_mb)*1024*1024;std::string error;
         if(!ValidateSnapshotTransportPreflight(path,maximum,error))throw std::runtime_error(error);

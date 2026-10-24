@@ -207,6 +207,27 @@ Version 6 refuses before DNORST02 activation. Both profiles become eligible at
 mainnet H150,000; a loader still requires the configured selected-chain burial.
 Private-testnet cutover remains separately coordinated.
 
+### Compact-bootstrap fallback
+
+`--assumeutxo_compact_bootstrap=0` disables compact v6 snapshot load/export.
+The default is on. The flag is local policy, not a chain parameter, and does
+not change DNORST02 selection, catalog construction/validation, full-profile
+load/export, or restoration/validation of an already enrolled compact owner.
+A requested fresh compact bootstrap refuses before creating storage when
+disabled; it never silently converts into full sync or reinterprets a profile.
+Both service entry points and fresh-store initialization apply the same policy.
+An existing compact owner remains usable; its snapshot load/export calls refuse.
+Tests keep full-node compact bootstrap off while rejecting a checksum-valid
+full snapshot with an incorrect DNORST02 state root, then successfully import
+and export the honest full snapshot. Compact refusals preserve the export
+destination and selected state, and re-enabling the flag restores export.
+`FullNodeRejectsBadDnorst02WithCompactBootstrapOff` also submits a block to the
+actual full-node ingress with this flag off. It changes the coinbase state root,
+then rebuilds the transaction Merkle root and accumulator commitment and solves
+PoW. Identity, forest transition and network proof checks pass; ingress must
+reject specifically `Orchard state commitment rejected`. An honest block is
+accepted immediately afterward with the flag still off.
+
 ## Mainnet schedule and fingerprint review (2026-10-24)
 
 The owner approved one release branch, with the standalone v5 restart repair

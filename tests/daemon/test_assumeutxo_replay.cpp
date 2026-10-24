@@ -152,6 +152,10 @@ struct RuntimeOriginProjectionTestAccess {
 #endif
 
 struct ShieldedStateStartupTestAccess {
+    static auto SnapshotBootstrapConfig(ChainstateService& service) {
+        if(!service.config_)service.config_=std::make_shared<ConfigService>();
+        return service.config_;
+    }
     static void SetPromotionBase(ChainstateService& service, uint32_t height,
                                  const uint256& hash) {
         service.assumeutxo_base_height_ = height;

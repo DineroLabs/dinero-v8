@@ -1105,8 +1105,13 @@ bool DaemonApp::Init(int argc, char** argv) {
                 try {
                     std::ifstream input(snapshot,std::ios::binary);
                     const auto metadata=consensus::ReadOrchardSnapshotMetadata(input,68);
-                    if(consensus::OrchardCatalogCommitmentActive(Params(),metadata.block_height))
+                    if(consensus::OrchardCatalogCommitmentActive(Params(),metadata.block_height)) {
+                        if(GetConfig().utreexo_stateless&&!ctx_.config->CompactSnapshotBootstrapEnabled()) {
+                            if(ctx_.logger)ctx_.logger->error("Compact v6 snapshot bootstrap disabled by local policy");
+                            return false; // Refuse the requested load before creating storage.
+                        }
                         OrchardSnapshotStore::CreateFreshStore(chain_db_path);
+                    }
                 } catch(const std::invalid_argument&) {
                     // Legacy/invalid files do not choose a storage layout.
                     // Their normal loader supplies the definitive error.
