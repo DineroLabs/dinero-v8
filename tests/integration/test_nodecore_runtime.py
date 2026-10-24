@@ -94,7 +94,9 @@ def datadir(name):
     # max_peers=0 does NOT disable networking in the C ABI. Use the real
     # daemon configuration, which is loaded before CLI overrides.
     (path / "dinero.conf").write_text(
-        "p2p.offline=1\nlisten=0\nrpc=0\nwallet.socket.enable=0\n"
+        # The embedded RPC registry still owns a loopback listener even with
+        # rpc=0. Let the OS pick its port; never contend with a user's daemon.
+        "p2p.offline=1\nlisten=0\nrpc=0\nrpc.port=0\nwallet.socket.enable=0\n"
         "utreexo.checkpoint_interval=1000\nassumeutxo_bg_stall_timeout=3600\n")
     return path
 
@@ -196,6 +198,8 @@ def snapshot(node):
     rejector = datadir("rejector")
     shutil.copytree(source / "headers", rejector / "headers")
     check("empty consumer starts for rejection control", node.start(rejector, **manifest_config) == 0)
+    check("legacy compact profile reports its actual full backing",
+          node.rpc("blockchain.getutreexocommitment")["retains_full_state"] is True)
     before_rejection = state(node)
     damaged_dir = WORK / "damaged"
     damaged_dir.mkdir()
@@ -227,6 +231,8 @@ def snapshot(node):
     else:
         check("startup imported the configured base", startup_height == 130, startup_height)
     check("import preserves source roots and tip", state(node) == expected, state(node))
+    check("legacy assumed-base read does not invent a root-only owner",
+          node.rpc("blockchain.getutreexocommitment")["retains_full_state"] is True)
     check("unrelated consumer wallet owns no fixture coins", len(node.rpc("wallet.listunspent", [0])) == 0)
 
     # The consumer has already returned from nodecore_start. Publish another

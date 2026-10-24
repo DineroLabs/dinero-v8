@@ -32,6 +32,7 @@
 #include <span>
 
 namespace dinero {
+class OrchardSnapshotStore;
 namespace consensus {
 
 /**
@@ -509,6 +510,10 @@ public:
     bool SaveBestHeader();
 
 private:
+    // Sealed snapshot publication checks best-chain ancestry and retains this
+    // mutex through its one synced state commit. No selector callback runs
+    // from that critical section; lock order is selected writer -> headers.
+    friend class ::dinero::OrchardSnapshotStore;
     bool MatchesAncestryUnderLock(std::span<const HeaderIndexEntry> expected) const;
     // Only retained tips need a count: retaining a tip prevents pruning through
     // its parent chain. Guards are destroyed before their final shared owner.

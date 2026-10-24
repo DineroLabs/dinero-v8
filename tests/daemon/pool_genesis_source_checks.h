@@ -4,19 +4,22 @@ namespace dinero {
 TEST(PoolGenesisSource, ActualStartedGenesisVerifiedWithoutWritingMarkers) {
     VaultRuntimeReset reset;VaultExplicitChainCreationFixture f;
     auto& db=f.chain.db;auto& source=*f.chain.source;
-    ASSERT_EQ(db.getValidatedTip().status(),Status::NotFound);
+    const auto initialized=db.getValidatedTip();ASSERT_TRUE(initialized.ok());
+    ASSERT_EQ(initialized->height,0);ASSERT_EQ(initialized->hash.GetHex(),Params().genesis_hash);
     ASSERT_EQ(db.getForestTipMarker().status(),Status::NotFound);
-    EXPECT_FALSE(source.getCanonicalBlockHash(0).ok());
+    ASSERT_TRUE(source.getCanonicalBlockHash(0).ok());
     const auto first=source.getVerifiedGenesisBlockHash();ASSERT_TRUE(first.ok());
     EXPECT_EQ(first->GetHex(),Params().genesis_hash);
     const auto again=source.getVerifiedGenesisBlockHash();ASSERT_TRUE(again.ok());EXPECT_EQ(*again,*first);
-    EXPECT_EQ(db.getValidatedTip().status(),Status::NotFound);
+    ASSERT_TRUE(db.getValidatedTip().ok());EXPECT_EQ(db.getValidatedTip()->hash,initialized->hash);
+    EXPECT_EQ(db.getValidatedTip()->height,initialized->height);
     EXPECT_EQ(db.getForestTipMarker().status(),Status::NotFound);
-    EXPECT_FALSE(source.getCanonicalBlockHash(0).ok());
+    EXPECT_EQ(*source.getCanonicalBlockHash(0),initialized->hash);
 }
 TEST(PoolGenesisSource, MissingExtraAndChangedDurableCoinsRefuseWithoutRepair) {
     VaultRuntimeReset reset;VaultExplicitChainCreationFixture f;
     auto& db=f.chain.db;auto& source=*f.chain.source;
+    const auto initialized=db.getValidatedTip();ASSERT_TRUE(initialized.ok());
     const auto token=ChainWriteToken::CreateForTesting();
     const auto genesis=SelectedGenesis();const auto id=genesis.vtx.front().GetTxid().AsUint256();
     const auto saved=db.getCoin(id,0);ASSERT_TRUE(saved.ok());
@@ -33,7 +36,8 @@ TEST(PoolGenesisSource, MissingExtraAndChangedDurableCoinsRefuseWithoutRepair) {
     EXPECT_FALSE(source.getVerifiedGenesisBlockHash().ok());EXPECT_TRUE(db.getCoin(id,77).ok());
     ASSERT_EQ(db.deleteCoin(token,id,77),Status::Ok);
     EXPECT_TRUE(source.getVerifiedGenesisBlockHash().ok());
-    EXPECT_EQ(db.getValidatedTip().status(),Status::NotFound);EXPECT_EQ(db.getForestTipMarker().status(),Status::NotFound);
+    ASSERT_TRUE(db.getValidatedTip().ok());EXPECT_EQ(db.getValidatedTip()->hash,initialized->hash);
+    EXPECT_EQ(db.getValidatedTip()->height,initialized->height);EXPECT_EQ(db.getForestTipMarker().status(),Status::NotFound);
 }
 TEST(PoolGenesisSource, InconsistentTipCheckpointAndPresentOwnersRefuse) {
     VaultRuntimeReset reset;VaultExplicitChainCreationFixture f;

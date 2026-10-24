@@ -140,6 +140,16 @@ StatusOr<storage::LegacyRetirementState> ChainDB::getLegacyRetirementState() con
     if (!s.ok()) return convertRocksDBStatus(s);
     return Decode(bytes);
 }
+Status ChainDB::stageLegacyRetirementSnapshotState(const ChainWriteToken& token,
+    const LegacyRetirementState& state,rocksdb::WriteBatch& batch) {
+    if(!db_||!hasSeparatedShieldedState()||!Valid(state))return Status::Invalid;
+    auto* cf=shieldedStateHandle();
+    std::unique_ptr<rocksdb::Iterator> it(db_->NewIterator(rocksdb::ReadOptions(),cf));it->Seek("R1");
+    if(it->Valid()&&it->key().starts_with("R1"))return Status::AlreadyExists;
+    if(!it->status().ok())return convertRocksDBStatus(it->status());
+    RETURN_IF_ERROR(convertRocksDBStatus(batch.Put(cf,state_key,Encode(state))));
+    return putShieldedTipMarker(token,Marker(state),&batch);
+}
 Status ChainDB::stageLegacyRetirementConnect(const ChainWriteToken& token,
     const std::optional<LegacyRetirementState>& parent, const LegacyRetirementState& next,
     rocksdb::WriteBatch& batch) {

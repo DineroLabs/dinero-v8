@@ -2602,6 +2602,30 @@ std::vector<uint8_t> UtreexoForest::serialize() const {
     return data;
 }
 
+std::vector<uint8_t> UtreexoForest::serializeCanonicalLeaves(size_t maximum_bytes) const {
+    const auto leaves=state_->numLeaves_;const auto deleted=state_->deleted_positions_.size();
+    if(leaves>UINT32_MAX||deleted>leaves||state_->nodes_.size()<leaves)
+        throw std::runtime_error("Forest cannot be serialized as canonical leaves");
+    const auto roots=getRoots();
+    const uint64_t size=22+32*roots.size()+leaves+32*(leaves-deleted)+8*deleted;
+    if(size>maximum_bytes)throw std::runtime_error("Canonical forest exceeds snapshot byte budget");
+    std::vector<uint8_t> bytes;bytes.reserve(size_t(size));
+    const auto number=[&](uint64_t value,unsigned width){for(unsigned i=0;i<width;++i){bytes.push_back(uint8_t(value));value>>=8;}};
+    number(3,1);number(state_->canonical_empty_roots_?1:0,1);number(leaves,8);number(roots.size(),4);
+    for(const auto& root:roots){if(root.size()!=32)throw std::runtime_error("Invalid forest root");bytes.insert(bytes.end(),root.begin(),root.end());}
+    number(leaves,4);
+    for(uint64_t i=0;i<leaves;++i) {
+        if(state_->deleted_positions_.count(i)){number(0,1);continue;}
+        const auto& node=state_->nodes_[size_t(i)];
+        if(!node||node->size()!=32)throw std::runtime_error("Canonical forest is missing a live leaf");
+        number(1,1);bytes.insert(bytes.end(),node->begin(),node->end());
+    }
+    std::vector<uint64_t> sorted(state_->deleted_positions_.begin(),state_->deleted_positions_.end());
+    std::sort(sorted.begin(),sorted.end());number(sorted.size(),4);
+    for(const auto position:sorted){if(position>=leaves)throw std::runtime_error("Invalid deleted forest position");number(position,8);}
+    return bytes;
+}
+
 UtreexoForest UtreexoForest::deserialize(const std::vector<uint8_t>& data) {
     UtreexoForest forest;
 

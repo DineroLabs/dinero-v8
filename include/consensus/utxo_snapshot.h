@@ -77,6 +77,7 @@ constexpr uint32_t SNAPSHOT_VERSION_V4 = 4;
 // merkle branch). Mandatory for any base at or above
 // state_commitment_activation_height; see snapshot_binding.h.
 constexpr uint32_t SNAPSHOT_VERSION_V5 = 5;
+constexpr uint32_t SNAPSHOT_VERSION_V6 = 6;
 
 // ===========================================================================
 // Snapshot container format policy (fail closed)
@@ -105,6 +106,8 @@ enum class SnapshotFormatVerdict {
     RejectV2Deprecated,
     RejectV3PostShieldedActivation,
     RejectV4PostStateCommitmentActivation,
+    RejectLegacyPostOrchardActivation,
+    RejectV6WithoutCatalogCommitment,
     RejectUnknownVersion,
 };
 
@@ -114,7 +117,9 @@ enum class SnapshotFormatVerdict {
 // including the mixed quadrants (shielded active + commitment dormant, and
 // the reverse), which is where a bug coupling the two activations would hide.
 //
-// TWO INDEPENDENT POLICIES, ONE DECISION POINT:
+// INDEPENDENT POLICIES, ONE DECISION POINT:
+//   - every legacy container refuses an active Orchard base, independently
+//     of the legacy transaction and commitment activation heights;
 //   - the v3 rule keys on shielded-TRANSACTION activation
 //     (`shielded_activation_height`);
 //   - the v4 rule keys on snapshot-TRUST activation
@@ -137,9 +142,27 @@ inline SnapshotFormatVerdict EvaluateSnapshotFormat(
         uint32_t version,
         uint32_t block_height,
         uint32_t shielded_activation_height,
-        uint32_t state_commitment_activation_height) {
+        uint32_t state_commitment_activation_height,
+        uint32_t orchard_activation_height = UINT32_MAX,
+        uint32_t orchard_catalog_commitment_activation_height = UINT32_MAX) {
     if (version == SNAPSHOT_VERSION_V2) {
         return SnapshotFormatVerdict::RejectV2Deprecated;
+    }
+    if(version==SNAPSHOT_VERSION_V6) {
+        return orchard_activation_height!=UINT32_MAX&&orchard_activation_height>0&&
+            orchard_catalog_commitment_activation_height!=UINT32_MAX&&
+            orchard_catalog_commitment_activation_height>=orchard_activation_height&&
+            orchard_catalog_commitment_activation_height<=uint32_t(INT32_MAX)&&
+            block_height>=orchard_catalog_commitment_activation_height&&block_height<=uint32_t(INT32_MAX)
+            ?SnapshotFormatVerdict::Accept:SnapshotFormatVerdict::RejectV6WithoutCatalogCommitment;
+    }
+    // Orchard has different state, set commitments, and retirement semantics.
+    // No legacy container can bootstrap it, including a well-formed v5 proof.
+    // Check the independent activation even on networks where legacy DNRS is
+    // dormant. Unknown containers must still report unknown-version below.
+    if (version >= SNAPSHOT_VERSION_V3 && version <= SNAPSHOT_VERSION_V5 &&
+        orchard_activation_height != UINT32_MAX && block_height >= orchard_activation_height) {
+        return SnapshotFormatVerdict::RejectLegacyPostOrchardActivation;
     }
     if (version == SNAPSHOT_VERSION_V3) {
         return (block_height >= shielded_activation_height)
@@ -153,7 +176,7 @@ inline SnapshotFormatVerdict EvaluateSnapshotFormat(
                    : SnapshotFormatVerdict::Accept;
     }
     if (version == SNAPSHOT_VERSION_V5) {
-        // Acceptable at every height: v5 is v4 plus the binding proof, and
+        // Below Orchard (screened above), v5 is v4 plus the binding proof, and
         // carrying a proof below activation is harmless (the proof is then
         // verified opportunistically, enforced once active). The format
         // policy only answers "may this container be parsed here" — the
@@ -199,11 +222,11 @@ constexpr size_t SNAPSHOT_FOOTER_SIZE = 32;
  */
 struct SnapshotMetadata {
     uint32_t magic;           // Magic number (0x4F545855 = "UTXO")
-    uint32_t version;         // Format version (2 or 3)
+    uint32_t version;         // Container version; v6 requires DNORST02 activation
     uint256 block_hash;       // Block hash this snapshot corresponds to
     uint32_t block_height;    // Block height
     uint64_t utxo_count;      // Number of UTXOs in snapshot
-    uint64_t timestamp;       // v4: export time; v5: base block timestamp (new exports)
+    uint64_t timestamp;       // v4: export time; v5/v6: base block timestamp (new exports)
     uint64_t reserved;        // Reserved for future use
 
     SnapshotMetadata()

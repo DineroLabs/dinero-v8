@@ -44,6 +44,7 @@ public:
 private:
     friend class PreparedOrchardChainstateWrite;
     friend class OrchardReindexOwner;
+    friend class OrchardSnapshotStore;
     struct Selected {
         const ChainDB* database;
         AnnotatedRecursiveMutex* mutex;

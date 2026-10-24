@@ -15,6 +15,10 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
+#include <filesystem>
+#ifndef _WIN32
+#include <sys/stat.h>
+#endif
 
 namespace dinero::wallet::detail {
 // Private, disposable replay material. Never a durable wallet owner or a
@@ -28,13 +32,14 @@ public:
     static constexpr size_t MaximumRecordBytes=32*1024*1024;
     static constexpr size_t MaximumKeyBytes=64;
     static constexpr int PagerCacheKiB=1024;
-    RuntimeReplaySpool() {
+    explicit RuntimeReplaySpool(const std::filesystem::path& work_directory={},bool cache_statements=false)
+        :temporary_(work_directory),cache_statements_(cache_statements) {
         algorithm_.reset(EVP_MAC_fetch(nullptr,"HMAC",nullptr));Check(bool(algorithm_));
         mac_.reset(EVP_MAC_CTX_new(algorithm_.get()));Check(bool(mac_));
         char digest[]="SHA256";OSSL_PARAM parameters[]={OSSL_PARAM_construct_utf8_string(OSSL_MAC_PARAM_DIGEST,digest,0),OSSL_PARAM_construct_end()};
         Check(EVP_MAC_init(mac_.get(),secret_.bytes.data(),secret_.bytes.size(),parameters)==1);
         sqlite3* raw=nullptr;
-        const int rc=sqlite3_open_v2("",&raw,SQLITE_OPEN_READWRITE|SQLITE_OPEN_CREATE|
+        const int rc=sqlite3_open_v2(temporary_.database.c_str(),&raw,SQLITE_OPEN_READWRITE|SQLITE_OPEN_CREATE|
                                    SQLITE_OPEN_FULLMUTEX|SQLITE_OPEN_PRIVATECACHE,nullptr);
         db_.reset(raw);
         Check(rc==SQLITE_OK);
@@ -47,6 +52,10 @@ public:
         Exec("PRAGMA mmap_size=0");
         Exec("PRAGMA temp_store=FILE");
         Exec("PRAGMA cache_spill=ON");
+        // Named app-workspace files are equally disposable. Never fsync a
+        // scratch batch as though it were canonical durable state: interrupted
+        // spools are discarded, and every value is MAC-checked before use.
+        if(!work_directory.empty())Exec("PRAGMA synchronous=OFF");
         Exec("CREATE TABLE records(k BLOB PRIMARY KEY NOT NULL,v BLOB NOT NULL,tag BLOB NOT NULL) WITHOUT ROWID");
     }
     RuntimeReplaySpool(const RuntimeReplaySpool&)=delete;
@@ -69,13 +78,13 @@ public:
         std::lock_guard guard(mutex_);Check(!frozen_&&!sqlite3_get_autocommit(db_.get()));
         Check(!key.empty()&&key.size()<=MaximumKeyBytes&&value.size()<=MaximumRecordBytes);
         const auto tag=Tag(key,value);
-        Statement stmt(db_.get(),"INSERT INTO records(k,v,tag) VALUES(?1,?2,?3)");
+        Query stmt(db_.get(),insert_statement_,"INSERT INTO records(k,v,tag) VALUES(?1,?2,?3)",cache_statements_);
         stmt.Blob(1,key);stmt.Blob(2,value);stmt.Blob(3,tag);Check(sqlite3_step(stmt.get())==SQLITE_DONE);
         Check(sqlite3_changes(db_.get())==1);
     }
     std::optional<Bytes> Get(std::span<const uint8_t> key) const {
         std::lock_guard guard(mutex_);Check(!key.empty()&&key.size()<=MaximumKeyBytes);
-        Statement stmt(db_.get(),"SELECT v,tag FROM records WHERE k=?1");stmt.Blob(1,key);
+        Query stmt(db_.get(),read_statement_,"SELECT v,tag FROM records WHERE k=?1",cache_statements_);stmt.Blob(1,key);
         const int rc=sqlite3_step(stmt.get());if(rc==SQLITE_DONE)return std::nullopt;
         Check(rc==SQLITE_ROW);auto result=Value(stmt.get(),0,key);
         Check(sqlite3_step(stmt.get())==SQLITE_DONE);return result;
@@ -84,7 +93,7 @@ public:
     // the method and no caller callback executes under this private mutex.
     std::optional<std::pair<Bytes,Bytes>> Next(uint8_t space,std::span<const uint8_t> after) const {
         std::lock_guard guard(mutex_);Check(space<255&&!after.empty()&&after[0]==space&&after.size()<=MaximumKeyBytes);
-        Statement stmt(db_.get(),"SELECT k,v,tag FROM records WHERE k>?1 AND k<?2 ORDER BY k LIMIT 1");
+        Query stmt(db_.get(),next_statement_,"SELECT k,v,tag FROM records WHERE k>?1 AND k<?2 ORDER BY k LIMIT 1",cache_statements_);
         stmt.Blob(1,after);const Bytes upper{uint8_t(space+1)};stmt.Blob(2,upper);
         const int rc=sqlite3_step(stmt.get());if(rc==SQLITE_DONE)return std::nullopt;
         Check(rc==SQLITE_ROW&&sqlite3_column_type(stmt.get(),0)==SQLITE_BLOB);
@@ -107,6 +116,33 @@ public:
     }
 private:
     friend struct RuntimeReplaySpoolTestAccess;
+    // App-owned workspaces avoid Android's unwritable system /tmp. Only this
+    // exclusively created child belongs to the spool, never its caller path.
+    struct Temporary {
+        std::filesystem::path directory;std::string database;
+        explicit Temporary(const std::filesystem::path& parent) {
+            if(parent.empty())return;
+            if(!std::filesystem::is_directory(parent))throw std::runtime_error("Spool workspace unavailable");
+            std::array<uint8_t,16> nonce{};
+            if(RAND_bytes(nonce.data(),int(nonce.size()))!=1)throw std::runtime_error("Spool nonce unavailable");
+            std::string name="dno-spool-";
+            for(auto b:nonce){name.push_back("0123456789abcdef"[b>>4]);name.push_back("0123456789abcdef"[b&15]);}
+            const auto candidate=parent/name;
+#ifdef _WIN32
+            if(!std::filesystem::create_directory(candidate))throw std::runtime_error("Spool workspace collision");
+#else
+            if(::mkdir(candidate.c_str(),0700)!=0)throw std::runtime_error("Spool workspace creation failed");
+#endif
+            directory=candidate;database=(directory/"records.sqlite").string();
+        }
+        ~Temporary() {
+            if(directory.empty())return;
+            std::error_code ignored;
+            for(const auto* name:{"records.sqlite","records.sqlite-journal","records.sqlite-wal","records.sqlite-shm"})
+                std::filesystem::remove(directory/name,ignored);
+            std::filesystem::remove(directory,ignored);
+        }
+    } temporary_;
     struct Close {void operator()(sqlite3* db)const noexcept {if(db)sqlite3_close_v2(db);}};
     struct Secret {
         std::array<uint8_t,32> bytes{};
@@ -141,11 +177,13 @@ private:
     std::unique_ptr<sqlite3,Close> db_;
     mutable std::recursive_mutex mutex_;
     bool frozen_=false;
+    const bool cache_statements_;
     static void Check(bool ok){if(!ok)throw std::runtime_error("Runtime replay spool unavailable or inconsistent");}
     class Statement {
     public:
         Statement(sqlite3* db,const char* sql){sqlite3_stmt* raw=nullptr;const int rc=sqlite3_prepare_v2(db,sql,-1,&raw,nullptr);stmt_.reset(raw);Check(rc==SQLITE_OK);}
         sqlite3_stmt* get()const{return stmt_.get();}
+        void Reset()noexcept{sqlite3_reset(get());sqlite3_clear_bindings(get());}
         void Blob(int index,std::span<const uint8_t> bytes) {
             static constexpr uint8_t empty=0;
             Check(bytes.size()<=size_t(std::numeric_limits<int>::max()));
@@ -155,6 +193,21 @@ private:
         struct Finalize {void operator()(sqlite3_stmt* s)const noexcept{if(s)sqlite3_finalize(s);}};
         std::unique_ptr<sqlite3_stmt,Finalize> stmt_;
     };
+    // Optional fixed three-statement cache. Every lease resets bindings/rows
+    // while the spool mutex is still held; no cursor or borrowed blob escapes.
+    class Query {
+    public:
+        Query(sqlite3* db,std::unique_ptr<Statement>& cache,const char* sql,bool cached) {
+            if(cached){if(!cache)cache=std::make_unique<Statement>(db,sql);statement_=cache.get();}
+            else {owned_=std::make_unique<Statement>(db,sql);statement_=owned_.get();}
+        }
+        ~Query(){statement_->Reset();}
+        sqlite3_stmt* get()const{return statement_->get();}
+        void Blob(int index,std::span<const uint8_t> bytes){statement_->Blob(index,bytes);}
+    private:
+        std::unique_ptr<Statement> owned_;Statement* statement_=nullptr;
+    };
+    mutable std::unique_ptr<Statement> insert_statement_,read_statement_,next_statement_;
     void Exec(const char* sql){Check(sqlite3_exec(db_.get(),sql,nullptr,nullptr,nullptr)==SQLITE_OK);}
 };
 } // namespace dinero::wallet::detail

@@ -1,5 +1,6 @@
 #ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
 #include "daemon/orchard_reindex.h"
+#include "daemon/orchard_snapshot_store.h"
 #endif
 #include "pool/wallet_payment_backend.h"
 #include "util/hex.h"
@@ -1094,6 +1095,24 @@ bool DaemonApp::Init(int argc, char** argv) {
             }
         }
 #ifdef DINERO_HAS_ORCHARD_RUNTIME_READER  // the migration engine ships with the Orchard backend
+        if(!fresh_store_bootstrap_only_&&daemon::IsBrandNewStore(chain_db_path)) {
+            // SDKs deliberately do not migrate existing databases. A configured
+            // v6 bootstrap may create a NEW separated store directly; the
+            // payload still has to pass selected-chain authentication at load.
+            const std::filesystem::path snapshot=ctx_.config->GetString("assumeutxo_snapshot","");
+            std::error_code error;const auto type=std::filesystem::symlink_status(snapshot,error);
+            if(!snapshot.empty()&&!error&&std::filesystem::is_regular_file(type)) {
+                try {
+                    std::ifstream input(snapshot,std::ios::binary);
+                    const auto metadata=consensus::ReadOrchardSnapshotMetadata(input,68);
+                    if(consensus::OrchardCatalogCommitmentActive(Params(),metadata.block_height))
+                        OrchardSnapshotStore::CreateFreshStore(chain_db_path);
+                } catch(const std::invalid_argument&) {
+                    // Legacy/invalid files do not choose a storage layout.
+                    // Their normal loader supplies the definitive error.
+                }
+            }
+        }
         if (automatic_storage_upgrade_ && !fresh_store_bootstrap_only_ &&
             Params().orchard_activation_height != UINT32_MAX && !GetConfig().utreexo_stateless) {
             // A refusal keeps the legacy store: the node runs until Orchard

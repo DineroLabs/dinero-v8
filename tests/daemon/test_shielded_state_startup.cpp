@@ -12,9 +12,14 @@
 #include "wallet/wallet_manager.h"
 #include "crypto/sha256.h"
 #include <iomanip>
+#include "daemon/services/logger_service.h"
 
 namespace dinero {
 struct ShieldedStateStartupTestAccess {
+    static void SnapshotPolicy(ChainstateService& service) {
+        service.logger_=std::make_shared<LoggerService>("");
+        service.consensus_utxo_set_=std::make_unique<consensus::ConsensusUTXOSet>();
+    }
     static void SnapshotPath(ChainstateService& service, const std::filesystem::path& path) {
         service.config_ = std::make_shared<ConfigService>();
         service.config_->Set("assumeutxo_snapshot", path.string());
@@ -298,10 +303,51 @@ void SnapshotWalletImport() {
     std::cout << "PASS snapshot_wallet_import\n";
 }
 
+void OrchardSnapshotPolicyRuntime() {
+    struct Restore {ChainParams params;~Restore(){MutableParams()=params;}} restore{Params()};
+    MutableParams().orchard_activation_height=150000;MutableParams().orchard_branch_id=0xa1b2c3d4;
+    MutableParams().state_commitment_activation_height=UINT32_MAX;
+    TempDir temp;const auto database=temp.path/"chaindb";std::filesystem::create_directory(database);Seed(database);
+    ChainDB db;CHECK(db.init(database)==Status::Ok);const auto token=ChainWriteToken::CreateForTesting();
+    uint256 hash;hash.data[0]=7;CHECK(db.setTip(token,hash,150000,arith_uint256{1})==Status::Ok);
+    db.close();const auto before=Inspect(database);CHECK(db.init(database)==Status::Ok);
+    const auto file=temp.path/"snapshot.dat";
+    const auto write=[&](uint32_t version,uint32_t height) {
+        std::ofstream out(file,std::ios::binary|std::ios::trunc);
+        const auto put=[&](const auto& value){out.write(reinterpret_cast<const char*>(&value),sizeof(value));};
+        put(consensus::SNAPSHOT_MAGIC);put(version);out.write(reinterpret_cast<const char*>(hash.data),32);
+        put(height);put(uint64_t(0));put(uint64_t(0));put(uint64_t(0));
+        const std::array<char,32> padding{};out.write(padding.data(),padding.size());CHECK(out.good());
+    };
+    const auto read=[&] {std::ifstream in(file,std::ios::binary);return std::string(std::istreambuf_iterator<char>(in),{});};
+    for(unsigned reopen=0;reopen<2;++reopen) {
+        {
+            ChainstateService service;service.setChainDB(&db);ShieldedStateStartupTestAccess::SnapshotPolicy(service);
+            for(uint32_t version:{3,4,5})for(uint32_t height:{150000,150001}) {
+                write(version,height);const auto payload=read();const auto result=service.LoadSnapshot(file);
+                CHECK(!result.success&&result.utxos_imported==0&&
+                    result.error_message.find("Legacy snapshot container cannot bootstrap Orchard")!=std::string::npos);
+                CHECK(read()==payload);
+            }
+            write(6,150000);const auto dormant=service.LoadSnapshot(file);
+            CHECK(!dormant.success&&dormant.error_message.find("active DNORST02")!=std::string::npos);
+            const auto sentinel=read();const auto exported=service.ExportSnapshot(file);
+            CHECK(!exported.success&&exported.error_message.find("active DNORST02")!=std::string::npos);
+            CHECK(read()==sentinel); // Refusal precedes opening/truncating output.
+        }
+        db.close();CHECK(Inspect(database)==before);CHECK(db.init(database)==Status::Ok);
+    }
+    std::cout<<"PASS orchard_snapshot_policy_runtime: pre-body refusal, unchanged storage/reopen, preserved export destination\n";
+}
+
 int main(int argc, char** argv) {
     SelectParams(Chain::REGTEST);
     if(argc==2&&std::string(argv[1])=="snapshot_marker_above_tip") {
         try{SnapshotMarkerAboveTip();return 0;}
+        catch(const std::exception& e){std::cerr<<e.what()<<'\n';return 1;}
+    }
+    if(argc==2&&std::string(argv[1])=="orchard_snapshot_policy_runtime") {
+        try{OrchardSnapshotPolicyRuntime();return 0;}
         catch(const std::exception& e){std::cerr<<e.what()<<'\n';return 1;}
     }
     if (argc == 2 && std::string(argv[1]) == "snapshot_wallet_import") {

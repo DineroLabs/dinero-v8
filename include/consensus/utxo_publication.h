@@ -16,6 +16,11 @@ struct UTXOPublicationChange {
 // This validates local state agreement, NOT block validity or a durable commit.
 class PreparedUTXOPublication {
 public:
+    // Whole-view replacement after a separately authenticated durable import.
+    // The caller owns the selected writer and excludes detached old-view users.
+    // Preserves the target address borrowed by providers/validators; conveys
+    // no consensus or durable authority of its own. Source becomes the old view.
+    static void AdoptPreparedReplacementUnderLock(ConsensusUTXOSet& target,ConsensusUTXOSet& source);
     [[nodiscard]] static PreparedUTXOPublication PrepareUnderLock(
         ConsensusUTXOSet&, uint32_t from_height, const uint256& from_hash,
         const uint256& from_root, std::span<const UTXOPublicationChange>,

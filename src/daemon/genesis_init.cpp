@@ -311,6 +311,9 @@ bool InitializeGenesis(ChainDB* chain_db, BlockStorage* block_storage, UTXOIndex
         std::cerr << "ERROR: Failed to set genesis tip" << std::endl;
         return false;
     }
+    // Genesis is compiled/tripwire-checked above. Publish its consistency
+    // marker with the same atomic initialization, as ordinary ConnectTip does.
+    if(chain_db->setValidatedTip(token,genesis_hash,0,&batch)!=Status::Ok)return false;
 
     // CRITICAL FIX: Store genesis UTXOs in ChainDB (not just wallet UTXOIndex)
     // Without this, getCoin() fails when building blocks with spend transactions

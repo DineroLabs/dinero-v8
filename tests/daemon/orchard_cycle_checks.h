@@ -21,7 +21,7 @@ uint256 CycleHash(const uint8_t* bytes) {
 struct OrchardCycleFixture : CanonicalPoolFixture {
     std::shared_ptr<CanonicalPoolNotices> cycle_notices=std::make_shared<CanonicalPoolNotices>();
     ExecutionContext execution;
-    OrchardCycleFixture() {
+    explicit OrchardCycleFixture(bool real_pow=false):CanonicalPoolFixture(real_pow) {
         f.service->setRuntimeBlockNotifications(cycle_notices);execution.daemon=&context;
     }
     orchard::SigningDomain Domain() const {

@@ -99,6 +99,43 @@ public:
         Require(bool(write_)&&!root.IsNull());Require(Leaf(root,key).key==key);
         return EraseAt(root,key,0);
     }
+    // Complete traversal from a claimed root/count, with at most one pending
+    // sibling per key bit. Validating only lookup paths misses damage in other
+    // branches. Callers exporting or enrolling a catalog must finish this walk
+    // before publishing any result. Visitors may observe a prefix on failure.
+    // The visitor receives every reachable node exactly once in tree order.
+    template<class Visitor>
+    uint64_t ForEachNode(const Digest& root,uint64_t expected_leaves,Visitor&& visitor) const {
+        Require(root.IsNull()==(expected_leaves==0));
+        if(root.IsNull())return 0;
+        struct Frame {Digest id;uint16_t minimum;Key mask,prefix;};
+        std::array<Frame,257> pending{};size_t size=1;
+        pending[0]={root,0,{}, {}};
+        uint64_t leaves=0;Key previous{};
+        while(size) {
+            const auto frame=pending[--size];
+            const auto bytes=read_(frame.id);
+            Require(Hash(bytes)==frame.id);
+            const auto node=Node::Decode(bytes);
+            Require(node.kind==kind_&&node.bit>=frame.minimum);
+            if(node.bit==256) {
+                for(size_t i=0;i<node.key.size();++i)
+                    Require((node.key[i]&frame.mask[i])==frame.prefix[i]);
+                Require(leaves<expected_leaves&&(!leaves||previous<node.key));
+                previous=node.key;++leaves;
+            } else {
+                Require(size+2<=pending.size());
+                auto mask=frame.mask;auto zero=frame.prefix;auto one=frame.prefix;
+                const auto byte=node.bit/8;const auto bit=uint8_t(1u<<(7-node.bit%8));
+                mask[byte]|=bit;one[byte]|=bit;
+                const auto next=uint16_t(node.bit+1);
+                pending[size++]={node.one,next,mask,one};
+                pending[size++]={node.zero,next,mask,zero};
+            }
+            Require(visitor(frame.id,bytes));
+        }
+        Require(leaves==expected_leaves);return leaves;
+    }
 private:
     Digest EraseAt(const Digest& id,const Key& key,unsigned depth) const {
         Require(depth<=256);auto n=Get(id);

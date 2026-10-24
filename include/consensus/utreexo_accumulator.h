@@ -681,6 +681,12 @@ public:
      */
     static UtreexoForest deserialize(const std::vector<uint8_t>& data);
 
+    // v3 leaf-only checkpoint bytes: omit dispensable internal cache cells and
+    // deleted hashes, without first allocating a serialization of those caches.
+    // Does not mutate the forest or grant imported-state authority. Untrusted
+    // readers must still rebuild/check roots. Throws before an oversized output.
+    std::vector<uint8_t> serializeCanonicalLeaves(size_t maximum_bytes) const;
+
     // ───────────────────────────────────────────────────────────────────────
     // Statistics
     // ───────────────────────────────────────────────────────────────────────

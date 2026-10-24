@@ -6,6 +6,7 @@
 #include "consensus/utreexo_canonical_roots_activation.h"
 #include <type_traits>
 #include "storage/chain_db.h"
+#include "storage/orchard_snapshot_base.h"
 #include "storage/block_storage.h"
 #include "consensus/block_index.h"
 #include "consensus/orchard_block_filter.h"
@@ -213,6 +214,17 @@ void CheckFrozenLegacy(const ChainDB& db,const storage::LegacyRetirementRecord& 
         r.activation_height!=c.activation_height || !r.activation_height ||
         r.legacy_epoch_height>=r.activation_height || r.boundary_parent.IsNull() ||
         r.retired_value>orchard::kMaxMoneyUna) bad();
+    if(const auto base=storage::ReadOrchardSnapshotBase(db)) {
+        const auto retired=RequiredLocal(db.getLegacyRetirementState());
+        const auto marker=RequiredLocal(db.getShieldedTipMarker());
+        if(selected_height<base->height || retired.record!=r || retired.height!=selected_height ||
+            retired.block_hash!=selected_hash || base->retirement!=storage::OrchardSnapshotRetirementFingerprint(r) ||
+            marker.height!=int32_t(selected_height)||marker.block_hash!=selected_hash||marker.shielded_root!=r.tree_root||
+            marker.tree_size!=r.tree_size||marker.nullifier_count!=r.nullifier_count)bad();
+        // Old bytes are intentionally omitted. This receipt is part of every
+        // selected DNORST02 root; root checks below still run before staging.
+        return;
+    }
     auto derived=r;FillFrozenLegacy(db,derived,selected_height,selected_hash);
     if (derived!=r) bad();
 }
@@ -933,6 +945,8 @@ static auto StageOrchardChainstateDisconnectImpl(ChainDB& db,
     if(compact!=bool(compact_parent)||compact!=bool(compact_mtp)||(!compact&&detached))
         throw OrchardStateLookupError(Status::Invalid);
     EmptyBatchGuard guard(batch);
+    if(const auto base=storage::ReadOrchardSnapshotBase(db);base&&context.height<=base->height)
+        throw OrchardStateLookupError(Status::Invalid,"snapshot/reorg-floor");
     if(context.height==0 || context.height>INT32_MAX || parent.GetHash()!=context.parent_hash)
         throw OrchardStateError(OrchardStateErrorCode::Context);
     const auto parent_work=StoredHeaderWork(db,parent,context.height-1);

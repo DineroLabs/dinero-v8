@@ -1017,6 +1017,7 @@ int main(int argc, char** argv) {
 #include "replay_forest_partitions_checks.h"
 
 #include "orchard_canonical_catalog_checks.h"
+#include "orchard_snapshot_runtime_checks.h"
 #include "orchard_compact_service_checks.h"
 #include "orchard_compact_handoff_checks.h"
 #include "orchard_compact_undo_handoff_checks.h"

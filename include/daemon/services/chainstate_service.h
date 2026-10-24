@@ -1474,6 +1474,7 @@ private:
     // orchestration and consumer recovery remain separate readiness gates.
     bool StartCompactStorage();
     struct CompactStartupState;
+    struct OrchardSnapshotStartupState;
     // Internal fixed-prefix capture only. All live/durable/profile guards and
     // the selected lock are shared with the public current-head page reader.
     StatusOr<std::shared_ptr<const RuntimeOutboxPage>> getRuntimeDeliveryPageAtPrefix(
@@ -1580,6 +1581,7 @@ private:
         ActivationParentPlan::Entry before;
         std::unique_ptr<PreparedOrchardInverse> inverse;
         bool boundary=false;
+        bool snapshot_base=false;
         std::string historical_selected; // Exact independently restored DNHCS01 before-image.
         RuntimeOutboxCursor delivery_origin,delivery_head;
     };
@@ -1644,6 +1646,13 @@ private:
     std::optional<storage::LegacyRetirementRecord> DeriveOrchardBoundaryFromSelectedHistoryUnderLock();
 
     bool LoadShieldedState();
+    consensus::SnapshotExportResult ExportOrchardSnapshot(const std::filesystem::path&);
+    consensus::SnapshotImportResult LoadOrchardSnapshot(const std::filesystem::path&);
+    bool InitOrchardSnapshotStorage();
+    bool StartOrchardSnapshotStorage();
+    bool InitCompactSnapshotBootstrap(const std::filesystem::path&);
+    bool StartCompactSnapshotBootstrap();
+    bool AuditOrchardSnapshotBaseUnderLock() const;
     bool LoadSeparatedShieldedState();
     bool PersistShieldedState() const;
     bool PersistImportedShieldedState(const uint256& base_hash, uint32_t base_height) const;
@@ -1968,6 +1977,9 @@ private:
     // Declared after the bound mutex and database owner so it is destroyed
     // first. Database handoff refuses replacement while this owner exists.
     std::unique_ptr<CompactStartupState> compact_startup_;
+    std::unique_ptr<OrchardSnapshotStartupState> orchard_snapshot_startup_;
+    std::atomic<bool> orchard_compact_bootstrap_pending_{false};
+    bool snapshot_bootstrap_v6_=false;
 
     // Phase 43: Safe mode state (deep reorg protection)
     bool safe_mode_active_ = false;

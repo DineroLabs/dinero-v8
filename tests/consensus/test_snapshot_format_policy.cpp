@@ -51,6 +51,34 @@ constexpr uint32_t kU32Max = std::numeric_limits<uint32_t>::max();
 // pre-existing v2/v3 assertions read unchanged in meaning.
 constexpr uint32_t kCommitmentDormant = kU32Max;
 
+TEST(SnapshotFormatPolicy, LegacyFormatsRefuseAtIndependentOrchardBoundary) {
+    using namespace dinero::consensus;
+    for(const uint32_t version:{SNAPSHOT_VERSION_V3,SNAPSHOT_VERSION_V4,SNAPSHOT_VERSION_V5}) {
+        EXPECT_EQ(EvaluateSnapshotFormat(version,149999,kU32Max,kU32Max,150000),SnapshotFormatVerdict::Accept);
+        for(const auto height:{150000U,150001U,kU32Max})
+            for(const auto shielded:{0U,8650U,kU32Max})
+                for(const auto commitment:{0U,111000U,kU32Max})
+                    EXPECT_EQ(EvaluateSnapshotFormat(version,height,shielded,commitment,150000),
+                              SnapshotFormatVerdict::RejectLegacyPostOrchardActivation);
+    }
+    EXPECT_EQ(EvaluateSnapshotFormat(SNAPSHOT_VERSION_V5,kU32Max,0,0,kU32Max),SnapshotFormatVerdict::Accept);
+    EXPECT_EQ(EvaluateSnapshotFormat(SNAPSHOT_VERSION_V2,150000,0,0,150000),SnapshotFormatVerdict::RejectV2Deprecated);
+    EXPECT_EQ(EvaluateSnapshotFormat(6,150000,0,0,150000),SnapshotFormatVerdict::RejectV6WithoutCatalogCommitment);
+    EXPECT_EQ(EvaluateSnapshotFormat(99,150000,0,0,150000),SnapshotFormatVerdict::RejectUnknownVersion);
+}
+TEST(SnapshotFormatPolicy, V6RequiresExplicitIndependentCatalogActivation) {
+    using namespace dinero::consensus;
+    for(const auto orchard:{22U,150000U})for(const auto catalog:{orchard,orchard+100}) {
+        EXPECT_EQ(EvaluateSnapshotFormat(6,catalog-1,0,0,orchard,catalog),SnapshotFormatVerdict::RejectV6WithoutCatalogCommitment);
+        EXPECT_EQ(EvaluateSnapshotFormat(6,catalog,0,0,orchard,catalog),SnapshotFormatVerdict::Accept);
+        EXPECT_EQ(EvaluateSnapshotFormat(6,catalog+1,kU32Max,kU32Max,orchard,catalog),SnapshotFormatVerdict::Accept);
+        EXPECT_EQ(EvaluateSnapshotFormat(6,kU32Max,0,0,orchard,catalog),SnapshotFormatVerdict::RejectV6WithoutCatalogCommitment);
+    }
+    EXPECT_EQ(EvaluateSnapshotFormat(6,150000,0,0,150000,kU32Max),SnapshotFormatVerdict::RejectV6WithoutCatalogCommitment);
+    EXPECT_EQ(EvaluateSnapshotFormat(6,150000,0,0,kU32Max,150000),SnapshotFormatVerdict::RejectV6WithoutCatalogCommitment);
+    EXPECT_EQ(EvaluateSnapshotFormat(6,150000,0,0,150000,149999),SnapshotFormatVerdict::RejectV6WithoutCatalogCommitment);
+}
+
 // ---------------------------------------------------------------------------
 // V2: unconditional
 // ---------------------------------------------------------------------------
@@ -237,7 +265,7 @@ TEST(SnapshotFormatPolicy, V5IsAcceptedInBothDormantAndEnforcedRegimes) {
 }
 
 TEST(SnapshotFormatPolicy, UnknownVersionsAreRejected) {
-    for (const uint32_t version : {0U, 1U, 6U, 7U, 99U, kU32Max}) {
+    for (const uint32_t version : {0U, 1U, 7U, 99U, kU32Max}) {
         EXPECT_EQ(EvaluateSnapshotFormat(version, 1000, 8650, kCommitmentDormant),
                   SnapshotFormatVerdict::RejectUnknownVersion)
             << "version " << version << " was not rejected";

@@ -73,6 +73,23 @@ TEST(RuntimeReplaySpool,PagerSpillsWhileRecordsRemainExact) {
     for(uint64_t i:{0,63,64,1023,2047})EXPECT_EQ(*spool.Get(Sequence(i)),value);
     EXPECT_FALSE(spool.Get(Sequence(2048)));
 }
+TEST(RuntimeReplaySpool,FixedStatementCacheReleasesRowsAndHonorsIntegrityAndReadFailures) {
+    RuntimeReplaySpool spool({},true);const Bytes key{1,1},value{2,3};
+    {RuntimeReplaySpool::Batch batch(spool);spool.Insert(key,value);batch.Commit();}
+    for(unsigned i=0;i<1000;++i) {
+        EXPECT_EQ(spool.Get(key),value);EXPECT_FALSE(spool.Get(Bytes{1,2}));
+        const auto row=spool.Next(1,Bytes{1});ASSERT_TRUE(row);EXPECT_EQ(row->second,value);
+        EXPECT_FALSE(spool.Next(1,key));
+    }
+    const auto usage=spool.UsageNow();EXPECT_GT(usage.statement_bytes,0);EXPECT_LT(usage.statement_bytes,65536);
+    auto* db=RuntimeReplaySpoolTestAccess::Handle(spool);
+    sqlite3_set_authorizer(db,[](void*,int action,const char*,const char*,const char*,const char*){
+        return action==SQLITE_READ?SQLITE_DENY:SQLITE_OK;
+    },nullptr);
+    EXPECT_THROW((void)spool.Get(key),std::runtime_error);sqlite3_set_authorizer(db,nullptr,nullptr);
+    EXPECT_EQ(spool.Get(key),value);spool.Freeze();EXPECT_EQ(spool.Get(key),value);
+    EXPECT_THROW((RuntimeReplaySpool::Batch(spool)),std::runtime_error);
+}
 TEST(RuntimeReplaySpool,DiskMembershipRetainsIndependentBranchesAndEverySplit) {
     RuntimeReplaySpool spool;Membership membership(spool);Membership::Root root=0;
     const Key zero{};std::vector<Membership::Root> snapshots;

@@ -9,12 +9,19 @@
 #include "consensus/orchard_forest_transition.h"
 #include "consensus/orchard_header.h"
 #include "consensus/orchard_state_root.h"
+#include "consensus/orchard_catalog_transition.h"
+#include "consensus/orchard_catalog_coin_view.h"
+#include "consensus/orchard_block_staging.h"
+#include "consensus/orchard_snapshot.h"
+#include "consensus/utreexo_maturity_leaf_activation.h"
 #include "crypto/sha256.h"
 #include <cstring>
 
 namespace dinero {
-// Private, single-threaded replay of the entire Orchard prefix from an
-// independently proved historical parent. No selected database, global block
+// Private, single-threaded replay from an independently proved historical
+// parent, or (only through the sealed snapshot store) an authenticated v6 base.
+// The latter validates the suffix only and never claims pre-base execution.
+// No selected database, global block
 // index, wallet or external callback supplies coins or membership. The service
 // keeps the parent alive and runs this outside selected/wallet ownership.
 // A failed append poisons the owner; only Finish exposes a completed result.
@@ -32,7 +39,7 @@ public:
     }
     OrchardBranchReplay(const OrchardParentReplay& parent,
         const std::vector<BlockHeader>& history, std::set<TxId> transaction_ids, Target target)
-        : parent_(parent), target_(target), profile_(consensus::ValidatedOrchardBlock::CaptureProfile()), coins_(parent.ProvenState().ProvenUtxos()),
+        : parent_(&parent), target_(target), profile_(consensus::ValidatedOrchardBlock::CaptureProfile()), coins_(parent.ProvenState().ProvenUtxos()),
           forest_(*parent.ProvenState().Forest()),
           height_(parent.ValidatedTarget().height), work_(parent.ValidatedTarget().chainwork) {
         Require(history.size()==uint64_t(height_)+1 && TargetWithinWorkPolicy(height_,target.height),
@@ -51,12 +58,13 @@ public:
             ids.push_back(id);if(ids.size()==256){RecordTransactions(ids);ids.clear();}
         }
         if(!ids.empty())RecordTransactions(ids);
+        InitializeCatalog([&](const auto& visitor){for(const auto& id:transaction_ids)visitor(id);});
     }
     // The service owns this immutable capture for longer than the branch. No
     // historical header vector or all-history transaction set is reconstructed.
     OrchardBranchReplay(const OrchardParentReplay& parent,
         const OrchardHistoryCapture& history,Target target)
-        : parent_(parent),target_(target),profile_(consensus::ValidatedOrchardBlock::CaptureProfile()),
+        : parent_(&parent),target_(target),profile_(consensus::ValidatedOrchardBlock::CaptureProfile()),
           coins_(parent.ProvenState().ProvenUtxos()),forest_(*parent.ProvenState().Forest()),
           history_(&history),height_(parent.ValidatedTarget().height),work_(parent.ValidatedTarget().chainwork) {
         Require(history.Finished() && history.Count()==uint64_t(height_)+1 &&
@@ -66,12 +74,13 @@ public:
             "Branch replay parent mismatch");
         header_=captured.header;
         captured_headers_=std::make_unique<OrchardReplayHeaderView>(history);
+        InitializeCatalog([&](const auto& visitor){history.ForEachTransaction(visitor);});
     }
     OrchardBranchReplay(const OrchardBranchReplay&)=delete;
     OrchardBranchReplay& operator=(const OrchardBranchReplay&)=delete;
     void Append(const OrchardBlockCandidate& block,uint32_t height,const arith_uint256& work,uint64_t now) {
         CheckThread(); const bool usable=!poisoned_ && !finished_;poisoned_=true;
-        (void)parent_.ValidatedTarget();
+        if(parent_)(void)parent_->ValidatedTarget();
         Require(usable && profile_==consensus::ValidatedOrchardBlock::CaptureProfile() &&
             uint64_t(height_)+1==height && height<=target_.height,
             "Branch replay discontinuity");
@@ -89,7 +98,8 @@ public:
         // Retain only candidate inputs and proved output absences for detached
         // validation. The replayed branch supplies exact legacy metadata;
         // membership is queried BEFORE recording this candidate's transaction IDs.
-        const auto view=consensus::OrchardCandidateCoinView::Capture(block,*context,header_,
+        const auto view=compact_replay_?consensus::CaptureOrchardCatalogCoins(block,*context,header_,*catalog_,CatalogRead()):
+            consensus::OrchardCandidateCoinView::Capture(block,*context,header_,
             consensus::UtreexoStump::fromForest(forest_),authenticated_parent,
             [&](const TxId& id)->StatusOr<bool> { return ContainsTransaction(id); });
         RecordTransactions(ids);
@@ -117,11 +127,13 @@ public:
             [&](const uint256& a)->StatusOr<bool>{return anchors_.count(a)!=0;},
             [&](const uint256& n)->StatusOr<bool>{return nullifiers_.count(n)!=0;}};
         const auto parent_membership=Commitments();
-        const auto parent_forest_commitment=forest_.getCommitment();
-        uint256 parent_forest_root;
-        std::copy(parent_forest_commitment.begin(),parent_forest_commitment.end(),parent_forest_root.begin());
+        uint256 parent_forest_root=header_.utreexo_root;
+        if(!compact_replay_) {
+            const auto commitment=forest_.getCommitment();
+            std::copy(commitment.begin(),commitment.end(),parent_forest_root.begin());
+        }
         auto state=consensus::PrepareOrchardStateTransition(*context,state_,coins.Authorizations(),lookups);
-        Require(state.Next().pool_balance<=orchard::kMaxMoneyUna-parent_.Record().retired_value,
+        Require(state.Next().pool_balance<=orchard::kMaxMoneyUna-Retirement().retired_value,
             "Branch replay combined pool overflow");
         for(const auto& nf:state.Nullifiers())
             Require(nullifiers_.insert(nf).second,"Branch replay duplicate nullifier");
@@ -131,17 +143,31 @@ public:
         Require(sets.nullifier_count==state.Next().tree_size &&
             sets.anchor_references==uint64_t(height)+1-context->activation_height,
             "Branch replay membership count mismatch");
-        const auto root=consensus::ComputeOrchardStateRoot(
+        const auto root=consensus::ComputeOrchardSelectedStateRoot(
             {context->domain,context->activation_height,height,context->parent_hash},
-            parent_.Record(),state.Next(),sets);
+            Retirement(),state.Next(),sets,Params().orchard_catalog_commitment_activation_height,
+            catalog_?&*catalog_:nullptr);
         const auto commitment=consensus::FindStateCommitment(block.Transactions().at(0).Historical(),
             consensus::StateCommitmentEncoding::Orchard);
         Require(commitment.status==consensus::StateCommitmentStatus::Ok && commitment.root==root,
             "Branch replay state commitment mismatch");
-        auto forest=consensus::PrepareOrchardForestTransition(coins,header_,forest_);
-        Require(forest.MatchesHeader(block.Header()),"Branch replay forest commitment mismatch");
-        consensus::CheckOrchardBlockUtreexoProof(block,coins,header_,forest_);
-        for(const auto& change:coins.Changes()) {
+        std::optional<consensus::PreparedOrchardForest> forest;
+        auto stump=compact_stump_;
+        if(compact_replay_)stump=consensus::DeriveOrchardCompactBlockStump(block,coins,header_,compact_stump_);
+        else {
+            forest.emplace(consensus::PrepareOrchardForestTransition(coins,header_,forest_));
+            Require(forest->MatchesHeader(block.Header()),"Branch replay forest commitment mismatch");
+            consensus::CheckOrchardBlockUtreexoProof(block,coins,header_,forest_);
+            stump=consensus::UtreexoStump::fromForest(forest->After());
+        }
+        if(catalog_) {
+            wallet::detail::RuntimeReplaySpool::Batch batch(*catalog_spool_);
+            auto next=consensus::AdvanceOrchardCatalog(*catalog_,coins,
+                stump,work,
+                consensus::BuildOrchardCoinUndo(coins).Serialize(),CatalogRead(),CatalogWrite());
+            batch.Commit();catalog_=std::move(next);
+        }
+        if(!compact_replay_)for(const auto& change:coins.Changes()) {
             if(change.after) coins_.insert_or_assign(change.outpoint,*change.after);
             else coins_.erase(change.outpoint);
         }
@@ -151,30 +177,32 @@ public:
         // full forest snapshot per block. Results remain hidden until Finish.
         auto validated=std::unique_ptr<const consensus::ValidatedOrchardBlock>(
             new consensus::ValidatedOrchardBlock(profile_,block,*context,header_,coins,state,
-                parent_.Record(),parent_membership,parent_forest_root,std::move(recorded_mtp),witness));
+                Retirement(),parent_membership,parent_forest_root,std::move(recorded_mtp),witness));
         validated_.push_back(std::move(validated));
-        forest_=forest.After();state_=state.Next();header_=block.Header();height_=height;work_=work;
+        if(forest)forest_=forest->After();compact_stump_=std::move(stump);
+        state_=state.Next();header_=block.Header();height_=height;work_=work;
         poisoned_=false;
     }
     void Finish() {
         CheckThread();const bool usable=!poisoned_ && !finished_;poisoned_=true;
-        (void)parent_.ValidatedTarget();
+        if(parent_)(void)parent_->ValidatedTarget();
         Require(usable && profile_==consensus::ValidatedOrchardBlock::CaptureProfile() &&
-            validated_.size()==uint64_t(target_.height)-parent_.ValidatedTarget().height &&
+            validated_.size()==uint64_t(target_.height)-BaseHeight() &&
             height_==target_.height && header_.GetHash()==target_.hash &&
             work_==target_.chainwork,"Branch replay incomplete");
         transactions_spool_.Freeze();
+        if(catalog_spool_)catalog_spool_->Freeze();
         if(captured_headers_)captured_headers_->Freeze();
         finished_=true;poisoned_=false;
     }
     const storage::OrchardStoredState& ProvenState()const {
-        CheckThread();(void)parent_.ValidatedTarget();
+        CheckThread();if(parent_)(void)parent_->ValidatedTarget();
         Require(finished_ && !poisoned_ && state_.has_value() &&
             profile_==consensus::ValidatedOrchardBlock::CaptureProfile(),"Branch replay unavailable");return *state_;
     }
     const consensus::ValidatedOrchardBlock& ProvenBlock(uint32_t height,const uint256& hash)const {
         (void)ProvenState();
-        const auto base=parent_.ValidatedTarget().height;
+        const auto base=BaseHeight();
         Require(height>base && height<=target_.height,"Branch replay block unavailable");
         const auto& result=*validated_.at(size_t(height-base-1));
         Require(result.Context().height==height && result.Context().block_hash==hash,
@@ -182,7 +210,94 @@ public:
         return result;
     }
     storage::OrchardCommitmentSets ProvenCommitments()const { (void)ProvenState();return Commitments(); }
+    const storage::catalog::State& ProvenCatalog()const {
+        (void)ProvenState();Require(catalog_.has_value(),"Branch replay catalog unavailable");return *catalog_;
+    }
+    const auto& ProvenUtxos()const {(void)ProvenState();Require(!compact_replay_,"Compact replay has no full coins");return coins_;}
+    const consensus::UtreexoForest& ProvenForest()const {(void)ProvenState();Require(!compact_replay_,"Compact replay has no full forest");return forest_;}
 private:
+    friend class OrchardSnapshotStore;
+    // Only the sealed store can seed this owner, after authenticating the
+    // durable baseline against real selected headers. This does not declare
+    // pre-base history executed and owns no full coin table or forest.
+    OrchardBranchReplay(const consensus::OrchardSnapshotSection& baseline,
+        const std::vector<BlockHeader>& history,Target target)
+        :parent_(nullptr),target_(target),profile_(consensus::ValidatedOrchardBlock::CaptureProfile()),
+         height_(baseline.state.height),work_(baseline.base_catalog.work),compact_replay_(true),
+         snapshot_height_(baseline.state.height),snapshot_retirement_(baseline.retirement.record) {
+        Require(history.size()==uint64_t(height_)+1&&TargetWithinWorkPolicy(height_,target.height),"Snapshot branch replay work policy");
+        headers_=std::make_unique<consensus::HeaderChainSelector>();uint256 previous;
+        for(const auto& header:history) {
+            Require(header.prev_block_hash==previous&&headers_->AddHeader(header),"Snapshot branch replay header ancestry");
+            previous=header.GetHash();
+        }
+        Require(previous==baseline.state.block_hash,"Snapshot branch replay base identity");
+        header_=history.back();state_=baseline.state;catalog_=baseline.base_catalog;
+        compact_stump_=consensus::UtreexoStump::deserialize(catalog_->stump);
+        nullifiers_.insert(baseline.nullifiers.begin(),baseline.nullifiers.end());
+        for(const auto& anchor:baseline.anchors)anchors_.emplace(anchor.anchor,anchor.references);
+        catalog_spool_=std::make_unique<wallet::detail::RuntimeReplaySpool>();size_t count=0;
+        std::unique_ptr<wallet::detail::RuntimeReplaySpool::Batch> batch;
+        consensus::ForEachOrchardSnapshotNode(baseline,[&](const auto& id,const auto& bytes) {
+            if(!batch)batch=std::make_unique<wallet::detail::RuntimeReplaySpool::Batch>(*catalog_spool_);
+            CatalogWrite()(id,bytes);
+            if(++count==256){batch->Commit();batch.reset();count=0;}
+        });
+        if(batch)batch->Commit();
+    }
+    uint32_t BaseHeight()const {return parent_?parent_->ValidatedTarget().height:snapshot_height_;}
+    const storage::LegacyRetirementRecord& Retirement()const {return parent_?parent_->Record():snapshot_retirement_;}
+    static std::array<uint8_t,32> CatalogKey(const uint256& id) {
+        std::array<uint8_t,32> key;std::copy(id.begin(),id.end(),key.begin());return key;
+    }
+    storage::catalog::Tree::Read CatalogRead() const {
+        return [this](const uint256& id) {
+            const auto value=catalog_spool_->Get(CatalogKey(id));
+            Require(value.has_value(),"Branch replay missing catalog node");
+            return std::string(value->begin(),value->end());
+        };
+    }
+    storage::catalog::Tree::Write CatalogWrite() {
+        return [this](const uint256& id,const std::string& bytes) {
+            const auto key=CatalogKey(id);const auto prior=catalog_spool_->Get(key);
+            if(prior)Require(std::string(prior->begin(),prior->end())==bytes,"Branch replay catalog collision");
+            else catalog_spool_->Insert(key,{reinterpret_cast<const uint8_t*>(bytes.data()),bytes.size()});
+        };
+    }
+    template<class Enumerate> void InitializeCatalog(const Enumerate& enumerate) {
+        if(Params().orchard_catalog_commitment_activation_height==UINT32_MAX)return;
+        namespace c=storage::catalog;
+        catalog_spool_=std::make_unique<wallet::detail::RuntimeReplaySpool>();
+        c::State s;const auto& r=Retirement();
+        s.network=r.network_code;s.genesis=r.genesis;s.branch=r.branch_id;s.activation=r.activation_height;
+        s.leaf_activation=consensus::GetUtreexoMaturityLeafActivationHeight();s.height=height_;
+        s.block=header_.GetHash();s.parent=header_.prev_block_hash;s.work=work_;
+        s.stump=consensus::UtreexoStump::fromForest(forest_).serialize();
+        c::Tree transactions(c::Kind::Transactions,CatalogRead(),CatalogWrite());
+        // Enumeration performs external historical reads, so each callback
+        // opens/closes only its own node batch; no spool locks are nested.
+        enumerate([&](const TxId& id) {
+            wallet::detail::RuntimeReplaySpool::Batch batch(*catalog_spool_);
+            s.transactions=transactions.Insert(s.transactions,c::TransactionKey(id),{});
+            Require(s.transaction_count!=UINT64_MAX,"Branch replay catalog count overflow");
+            ++s.transaction_count;batch.Commit();return true;
+        });
+        c::Tree legacy(c::Kind::LegacyCoins,CatalogRead(),CatalogWrite());
+        c::Tree special(c::Kind::NonTransparentCoins,CatalogRead(),CatalogWrite());
+        for(const auto& [point,coin]:coins_) {
+            wallet::detail::RuntimeReplaySpool::Batch batch(*catalog_spool_);
+            const auto bytes=c::OutpointBytes(point);
+            if(coin.height<s.leaf_activation) {
+                auto value=bytes;c::Number(value,coin.height,4);value.push_back(coin.isCoinbase?1:0);
+                s.legacy=legacy.Insert(s.legacy,c::LegacyKey(bytes),value);++s.legacy_count;
+            }
+            if(coin.is_confidential||!coin.commitment.empty()) {
+                s.nontransparent=special.Insert(s.nontransparent,c::NonTransparentKey(bytes),bytes);++s.nontransparent_count;
+            }
+            batch.Commit();
+        }
+        s.Validate();catalog_=std::move(s);
+    }
     friend struct OrchardBranchCaptureTestAccess;
     friend struct OrchardBranchAncestryTestAccess;
     bool ContainsTransaction(const TxId& id) const {
@@ -237,11 +352,14 @@ private:
         number(anchors,result.anchor_count);number(anchors,result.anchor_references);anchors.Finalize(result.anchors.data);
         return result;
     }
-    const OrchardParentReplay& parent_;const Target target_;
+    const OrchardParentReplay* parent_;const Target target_;
     const std::string profile_;
     std::vector<std::unique_ptr<const consensus::ValidatedOrchardBlock>> validated_;
     const std::thread::id thread_=std::this_thread::get_id();
     Coins coins_;consensus::UtreexoForest forest_;
+    bool compact_replay_=false;uint32_t snapshot_height_=0;
+    storage::LegacyRetirementRecord snapshot_retirement_;
+    consensus::UtreexoStump compact_stump_;
     // Only the legacy vector fixture path constructs a header selector. The
     // service path borrows its immutable historical capture and spills append
     // headers without recreating the parent replay's complete header index.
@@ -254,6 +372,8 @@ private:
     std::set<uint256,RawLess> nullifiers_;
     std::map<uint256,uint64_t,RawLess> anchors_;
     std::optional<storage::OrchardStoredState> state_;
+    std::unique_ptr<wallet::detail::RuntimeReplaySpool> catalog_spool_;
+    std::optional<storage::catalog::State> catalog_;
     BlockHeader header_;uint32_t height_;arith_uint256 work_;bool poisoned_=false,finished_=false;
 };
 }

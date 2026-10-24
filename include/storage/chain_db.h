@@ -24,6 +24,7 @@
 namespace dinero {
 class OrchardBlockCandidate;
 class PreparedOrchardChainstateWrite;
+class OrchardSnapshotStore;
 
 namespace consensus { struct OrchardValueFlow; }
 
@@ -421,6 +422,10 @@ public:
         const storage::OrchardStoredState& expected_tip) const;
     StatusOr<uint256> getOrchardNullifierOwner(const uint256& nullifier) const;
     StatusOr<uint64_t> getOrchardAnchorReferences(const uint256& anchor) const;
+    // Ordered, checked logical membership export; caller owns the selected
+    // writer across the complete scan. Visitor refusal is not a successful scan.
+    Status forEachOrchardNullifier(const std::function<bool(const uint256&,const uint256&)>&) const;
+    Status forEachOrchardAnchor(const std::function<bool(const uint256&,uint64_t)>&) const;
     // Read or project canonical logical-set commitments from the exact held
     // parent view. Caller holds the writer lock across reads and any commit.
     // Bounded overlay memory, but scans the existing sets (not yet optimized).
@@ -764,6 +769,12 @@ public:
 
 private:
     friend class PreparedOrchardChainstateWrite;
+    friend class OrchardSnapshotStore;
+    Status stageOrchardSnapshotState(const ChainWriteToken&,const storage::OrchardStoredState&,
+        const std::vector<uint256>&,const std::vector<std::pair<uint256,uint64_t>>&,
+        rocksdb::WriteBatch&);
+    Status stageLegacyRetirementSnapshotState(const ChainWriteToken&,
+        const storage::LegacyRetirementState&,rocksdb::WriteBatch&);
     // Reconstruct authentic catalog heads only in its unpublished scratch candidate.
     friend class OrchardReindexOwner;
     Status stageOrchardCatalogState(const ChainWriteToken&,const uint256&,

@@ -266,6 +266,19 @@ if(TARGET dinero_chainstate)
     target_link_libraries(dinero_core PUBLIC dinero_orchard_reindex)
   endif()
   target_link_libraries(dinero_orchard_chainstate_write PUBLIC dinero_orchard_block_staging)
+  add_library(dinero_orchard_snapshot STATIC
+    "${ORCHARD_HOST_ROOT}/src/consensus/orchard_snapshot_catalog.cpp"
+    "${ORCHARD_HOST_ROOT}/src/consensus/orchard_snapshot.cpp"
+    "${ORCHARD_HOST_ROOT}/src/consensus/orchard_snapshot_file.cpp"
+    "${ORCHARD_HOST_ROOT}/src/consensus/utxo_set_digest.cpp"
+    "${ORCHARD_HOST_ROOT}/src/consensus/snapshot_binding.cpp")
+  target_link_libraries(dinero_orchard_snapshot PUBLIC dinero_orchard_block_staging dinero_consensus sqlite3)
+  add_library(dinero_orchard_snapshot_store STATIC
+    "${ORCHARD_HOST_ROOT}/src/daemon/orchard_snapshot_store.cpp")
+  target_link_libraries(dinero_orchard_snapshot_store PUBLIC dinero_orchard_snapshot dinero_orchard_chainstate_write dinero_orchard_header)
+  if(TARGET dinero_core)
+    target_link_libraries(dinero_core PUBLIC dinero_orchard_snapshot_store)
+  endif()
   add_library(dinero_orchard_account_replay STATIC "${ORCHARD_HOST_ROOT}/src/wallet/runtime_account_replay.cpp")
   target_link_libraries(dinero_orchard_account_replay PUBLIC dinero_orchard_chainstate_write dinero_orchard_wallet_account)
   target_link_libraries(dinero_orchard_runtime_reader PUBLIC dinero_orchard_chainstate_write)
@@ -571,6 +584,12 @@ if(DINERO_ORCHARD_BUILD_TESTS)
       "${ORCHARD_HOST_ROOT}/src/common/logger.cpp")
     target_link_libraries(test_orchard_state_root PRIVATE dinero_orchard_state_root dinero_orchard_block_staging RocksDB::rocksdb)
     add_test(NAME OrchardStateRoot COMMAND test_orchard_state_root "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures")
+    add_executable(test_orchard_snapshot
+      "${ORCHARD_HOST_ROOT}/tests/consensus/test_orchard_snapshot.cpp"
+      "${ORCHARD_HOST_ROOT}/src/common/logger.cpp")
+    target_link_libraries(test_orchard_snapshot PRIVATE GTest::gtest_main dinero_orchard_snapshot)
+    add_test(NAME OrchardSnapshotSection COMMAND test_orchard_snapshot)
+    set_tests_properties(OrchardSnapshotSection PROPERTIES LABELS "orchard;snapshot;mandatory" TIMEOUT 60)
     set_tests_properties(OrchardStateRoot PROPERTIES TIMEOUT 120 LABELS "orchard;consensus;storage;integration-staging")
     add_executable(test_orchard_state_commitment
       "${ORCHARD_HOST_ROOT}/tests/consensus/test_orchard_state_commitment.cpp"

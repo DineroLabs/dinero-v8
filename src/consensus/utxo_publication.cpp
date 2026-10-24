@@ -6,6 +6,14 @@
 #include <utility>
 
 namespace dinero::consensus {
+void PreparedUTXOPublication::AdoptPreparedReplacementUnderLock(ConsensusUTXOSet& target,ConsensusUTXOSet& source) {
+    if(&target==&source)throw std::invalid_argument("UTXO replacement aliases its source");
+    target.RequireNoReplayRollback();source.RequireNoReplayRollback();
+    std::unique_lock lock(target.forest_mutex_);
+    target.utxos_.swap(source.utxos_);
+    std::swap(target.height_,source.height_);std::swap(target.best_block_,source.best_block_);
+    auto old=target.forest_;target.forest_=source.forest_;source.forest_=std::move(old);
+}
 namespace {
 bool SameCoin(const UTXOEntry& a, const UTXOEntry& b) {
     return a.value == b.value && a.scriptPubKey == b.scriptPubKey &&

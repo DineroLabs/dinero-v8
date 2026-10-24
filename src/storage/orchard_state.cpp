@@ -187,6 +187,52 @@ StatusOr<storage::OrchardStoredState> ChainDB::getOrchardState() const {
     if (!status.ok()) return convertRocksDBStatus(status);
     return Decode(bytes);
 }
+Status ChainDB::forEachOrchardNullifier(
+    const std::function<bool(const uint256&,const uint256&)>& visitor) const {
+    if(!db_||!hasSeparatedShieldedState()||!visitor)return Status::Invalid;
+    std::unique_ptr<rocksdb::Iterator> it(db_->NewIterator(rocksdb::ReadOptions(),shieldedStateHandle()));
+    for(it->Seek("O1N");it->Valid()&&it->key().starts_with("O1N");it->Next()) {
+        if(it->key().size()!=35||it->value().size()!=32)return Status::Corruption;
+        uint256 nf,owner;std::memcpy(nf.data,it->key().data()+3,32);std::memcpy(owner.data,it->value().data(),32);
+        if(owner.IsNull())return Status::Corruption;
+        if(!visitor(nf,owner))return Status::Invalid;
+    }
+    return convertRocksDBStatus(it->status());
+}
+Status ChainDB::forEachOrchardAnchor(
+    const std::function<bool(const uint256&,uint64_t)>& visitor) const {
+    if(!db_||!hasSeparatedShieldedState()||!visitor)return Status::Invalid;
+    std::unique_ptr<rocksdb::Iterator> it(db_->NewIterator(rocksdb::ReadOptions(),shieldedStateHandle()));
+    for(it->Seek("O1A");it->Valid()&&it->key().starts_with("O1A");it->Next()) {
+        if(it->key().size()!=35||it->value().size()!=8)return Status::Corruption;
+        uint256 anchor;std::memcpy(anchor.data,it->key().data()+3,32);
+        OrchardRecordReader r{std::string_view(it->value().data(),it->value().size())};const auto refs=r.number(8);
+        if(!refs||refs>uint64_t(INT32_MAX))return Status::Corruption;
+        if(!visitor(anchor,refs))return Status::Invalid;
+    }
+    return convertRocksDBStatus(it->status());
+}
+Status ChainDB::stageOrchardSnapshotState(const ChainWriteToken&,const OrchardStoredState& state,
+    const std::vector<uint256>& nullifiers,const std::vector<std::pair<uint256,uint64_t>>& anchors,
+    rocksdb::WriteBatch& batch) {
+    if(!db_||!hasSeparatedShieldedState()||!Valid(state)||nullifiers.size()!=state.tree_size||anchors.empty())
+        return Status::Invalid;
+    auto* cf=shieldedStateHandle();
+    std::unique_ptr<rocksdb::Iterator> it(db_->NewIterator(rocksdb::ReadOptions(),cf));it->Seek("O1");
+    if(it->Valid()&&it->key().starts_with("O1"))return Status::AlreadyExists;
+    if(!it->status().ok())return convertRocksDBStatus(it->status());
+    for(size_t i=0;i<nullifiers.size();++i)
+        if(i&&std::memcmp(nullifiers[i-1].data,nullifiers[i].data,32)>=0)return Status::Invalid;
+    for(size_t i=0;i<anchors.size();++i)
+        if(!anchors[i].second||anchors[i].second>uint64_t(INT32_MAX)||
+            (i&&std::memcmp(anchors[i-1].first.data,anchors[i].first.data,32)>=0))return Status::Invalid;
+    batch.Put(cf,state_key,Encode(state));
+    for(const auto& nf:nullifiers)batch.Put(cf,Key('N',nf),std::string(reinterpret_cast<const char*>(state.block_hash.data),32));
+    for(const auto& [anchor,refs]:anchors){std::string value;Number(value,refs,8);batch.Put(cf,Key('A',anchor),value);}
+    // No invented pre-base undo. The authenticated snapshot floor must share
+    // this batch and all inverse paths must refuse crossing it.
+    return Status::Ok;
+}
 StatusOr<uint256> ChainDB::getOrchardNullifierOwner(const uint256& nullifier) const {
     if (!db_) return Status::Internal;
     if (!hasSeparatedShieldedState()) return Status::Invalid;
