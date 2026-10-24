@@ -11,9 +11,11 @@
 #include "consensus/csn_replay_data.h"
 #include "daemon/daemon_app.h"
 #include "storage/orchard_storage_mode.h"
+#include "storage/orchard_snapshot_base.h"
 #include "daemon/runtime_delivery_worker.h"
 #include "daemon/runtime_notification_composition.h"
 #include "consensus/orchard_profile.h"
+#include "consensus/orchard_snapshot.h"
 #ifdef __APPLE__
 #include <TargetConditionals.h>
 #endif
@@ -1003,6 +1005,10 @@ bool DaemonApp::Init(int argc, char** argv) {
     // ═══════════════════════════════════════════════════════════════════════════
     std::filesystem::path data_dir_path;
     std::filesystem::path chain_db_path;
+    // Routing only: no state is enrolled until ChainstateService authenticates
+    // the retained snapshot proof, selected ancestry and current catalog.
+    bool compact_snapshot_reopen = false;
+    std::unique_ptr<BlockStorage> startup_block_storage;
 
     try {
         chain_db_ = std::make_shared<ChainDB>();
@@ -1031,6 +1037,10 @@ bool DaemonApp::Init(int argc, char** argv) {
         const auto reindex_promotion_journal = ReindexPromotionJournalPath(data_dir_path);
         const bool had_interrupted_reindex_promotion =
             std::filesystem::exists(reindex_promotion_journal);
+        if (had_interrupted_reindex_promotion && GetConfig().utreexo_stateless) {
+            std::cerr << "[DaemonApp] Compact startup refuses interrupted legacy reindex promotion" << std::endl;
+            return false;
+        }
         std::string reindex_recovery_error;
         if (!RecoverInterruptedReindexPromotion(data_dir_path, &reindex_recovery_error)) {
             std::cerr << "[DaemonApp] ❌ Failed to recover interrupted reindex promotion: "
@@ -1169,11 +1179,33 @@ bool DaemonApp::Init(int argc, char** argv) {
             std::cerr << "[DaemonApp] ❌ Failed to initialize ChainDB: " << StatusToString(status) << std::endl;
             return false;
         }
-        // Until the complete compact service composition is connected, refuse
-        // before offline undo repair, genesis initialization, header/height
-        // backfills or legacy recovery can mutate root-only storage. The
-        // separate ChainstateService compact initializer is not readiness.
-        storage::RequireFullOrchardStorage(*chain_db_);
+        const auto snapshot_base = storage::ReadOrchardSnapshotBase(*chain_db_);
+        const auto compact_binding = storage::ReadOrchardCompactStorageBinding(*chain_db_);
+        if (snapshot_base && snapshot_base->profile == uint8_t(consensus::OrchardSnapshotProfile::Compact) && !compact_binding)
+            throw std::runtime_error("Compact snapshot storage binding missing");
+        if (compact_binding && GetConfig().utreexo_stateless) {
+            const auto& base = snapshot_base;
+            compact_snapshot_reopen = base &&
+                base->profile == uint8_t(consensus::OrchardSnapshotProfile::Compact) &&
+                consensus::OrchardCatalogCommitmentActive(Params(), base->height);
+        }
+        if (compact_snapshot_reopen) {
+            // A compact marker/base chooses ONLY the authentication route. It
+            // cannot authorize full-state repair or generic startup backfills.
+            for (int i = 1; argv && i < argc; ++i) {
+                const std::string arg = argv[i];
+                if (arg.starts_with("--reindex") || arg.starts_with("--repair-") ||
+                    arg.starts_with("--recover-") || arg.starts_with("--rebuild-"))
+                    throw std::runtime_error("Compact snapshot reopen refuses legacy maintenance options");
+            }
+            if (std::filesystem::exists(daemon::ChainstateRecoveryMarkerPath(data_dir_path)))
+                throw std::runtime_error("Compact snapshot reopen refuses legacy recovery marker");
+            std::cout << "[DaemonApp] Compact snapshot reopen routed to retained-proof authentication; legacy backfills disabled" << std::endl;
+        } else {
+            // Preserve the fail-closed full-storage guard for every legacy,
+            // misconfigured, unknown or malformed compact store.
+            storage::RequireFullOrchardStorage(*chain_db_);
+        }
         std::cout << "[DaemonApp] ✅ ChainDB constructed and initialized (ONE DB)" << std::endl;
     } catch (const std::exception& e) {
         std::cerr << "[DaemonApp] ❌ Exception constructing ChainDB: " << e.what() << std::endl;
@@ -1183,6 +1215,7 @@ bool DaemonApp::Init(int argc, char** argv) {
     // ChainDB is owned by DaemonApp; services use non-owning pointers.
     ChainDB* chain_db_ptr = chain_db_.get();
 
+    if (!compact_snapshot_reopen) {
     // ─────────────────────────────────────────────────────────────────
     // Offline `--rebuild-undo-range=A:B` orchestrator (commit #5)
     // ─────────────────────────────────────────────────────────────────
@@ -1861,7 +1894,6 @@ bool DaemonApp::Init(int argc, char** argv) {
 
     // Temporary archival reader used during startup backfills before the
     // long-lived runtime BlockStorage is initialized.
-    std::unique_ptr<BlockStorage> startup_block_storage;
 
     {
         std::string startup_datadir_str = ctx_.config->GetString("datadir", "~/.dinero");
@@ -2074,6 +2106,7 @@ bool DaemonApp::Init(int argc, char** argv) {
         std::cerr << "[DaemonApp] ❌ Exception during genesis initialization: " << e.what() << std::endl;
         return false;
     }
+    } // Full/legacy startup only. Compact storage must reach its authenticated owner untouched.
 
     // Phase 39: Create ChainstateService and pass it the ChainDB
     auto chainstate = std::make_shared<ChainstateService>();
@@ -2200,6 +2233,7 @@ bool DaemonApp::Init(int argc, char** argv) {
 
     // 🧹 Phase 34.8: Initialize Prune Service
     ctx_.prune = std::make_shared<dinero::daemon::PruneService>();
+    auto initialize_pruning = [&]() {
     ctx_.prune->Init(ctx_);
 
     // Configure PruneService from CLI flags
@@ -2237,6 +2271,10 @@ bool DaemonApp::Init(int argc, char** argv) {
         ctx_.prune->setConfig(prune_cfg);
     }
     std::cout << "[DaemonApp] ✅ PruneService initialized" << std::endl;
+    };
+    // PruneService::Init can repair persisted block-index flags. Root-only
+    // storage must authenticate before this or any pruning configuration write.
+    if (!compact_snapshot_reopen) initialize_pruning();
 
     // 🛡️ Phase E.2.c: Initialize Network Limits Monitor
     // NOTE: NetworkLimitsMonitor requires P2P internal components (ConnectionManager, RateLimiter, PeerScoringManager)
@@ -2272,6 +2310,10 @@ bool DaemonApp::Init(int argc, char** argv) {
     const bool has_legacy_entries = header_store->HasLegacyEntries();
     const bool schema_recovery_required = header_store->NeedsSchemaRecovery();
     if (has_legacy_entries || schema_recovery_required) {
+        if (compact_snapshot_reopen) {
+            std::cerr << "[DaemonApp] Compact snapshot reopen refuses incompatible header storage" << std::endl;
+            return false; // Never quarantine/reseed compact headers through legacy recovery.
+        }
         std::string recovery_reason;
         if (schema_recovery_required) {
             recovery_reason = header_store->GetSchemaRecoveryReason();
@@ -2328,7 +2370,7 @@ bool DaemonApp::Init(int argc, char** argv) {
     // though its separately persisted HeaderChainSelector contains the verified
     // chain. ResolveStartupHeader preserves the normal ChainDB-first behavior and
     // uses that selector only for genuine NotFound results.
-    if (chain_db_ptr) {
+    if (chain_db_ptr && !compact_snapshot_reopen) {
         auto tip_result = chain_db_ptr->getTip();
         if (tip_result.status() == Status::Ok) {
             const uint256 tip_hash = tip_result.value().hash;
@@ -2480,7 +2522,7 @@ bool DaemonApp::Init(int argc, char** argv) {
     // that don't match. This is independent of the in-memory block index
     // which may itself have been built from stale height→hash data.
     // ═══════════════════════════════════════════════════════════════════════════
-    {
+    if (!compact_snapshot_reopen) {
         auto tip_result = chain_db_ptr->getTip();
         if (tip_result.status() == Status::Ok) {
             ChainWriteToken token;
@@ -2745,6 +2787,7 @@ bool DaemonApp::Init(int argc, char** argv) {
         }
         std::cout << "[DaemonApp] ✅ " << service->Name() << " initialized" << std::endl;
     }
+    if (compact_snapshot_reopen) initialize_pruning();
 
     // Phase 2: Create consensus engine after all services are initialized
     // Consensus engine needs ChainDB (from ChainstateService) and Mining (from MiningService)

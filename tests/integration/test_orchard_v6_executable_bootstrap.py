@@ -5,6 +5,8 @@ The fixture provides an already-buried authentic v6 snapshot and a loopback
 peer serving its real selected headers/bodies. It never pre-creates ChainDB or
 substitutes DaemonApp/test-only startup for the actual executable. A right tip
 obtained by fallback IBD is a failure. Workdirs/evidence are always retained.
+Two actual cold restarts remove the snapshot request and must retain the same
+authenticated base, selected tip, accumulator and full/root-only storage role.
 No fixture is registered by default: this is not an empty/skipped release gate.
 """
 import argparse
@@ -14,6 +16,7 @@ import ipaddress
 import json
 import os
 from pathlib import Path
+import shutil
 import socket
 import subprocess
 import tempfile
@@ -29,6 +32,8 @@ def main():
     parser.add_argument('--fixture', required=True, type=Path)
     parser.add_argument('--profile', required=True, choices=('full', 'compact'))
     parser.add_argument('--work-parent', required=True, type=Path)
+    parser.add_argument('--reopen-copy', type=Path,
+                        help='copy an explicitly stopped fixture datadir; never open or modify the original')
     args = parser.parse_args()
     os.umask(0o077)
     fixture = json.loads(args.fixture.read_text())
@@ -42,7 +47,12 @@ def main():
     assert args.work_parent.is_dir() and not args.work_parent.is_symlink()
     work = Path(tempfile.mkdtemp(prefix='v6-executable-' + args.profile + '-', dir=args.work_parent)).resolve()
     data = work / 'datadir'
-    data.mkdir(mode=0o700)
+    if args.reopen_copy:
+        source_data = args.reopen_copy.resolve(strict=True)
+        assert source_data.is_dir() and not args.reopen_copy.is_symlink()
+        shutil.copytree(source_data, data, symlinks=True)
+    else:
+        data.mkdir(mode=0o700)
     reservations = []
     for _ in range(3):
         sock = socket.socket()
@@ -51,7 +61,7 @@ def main():
     rpc_port, p2p_port, wallet_port = [sock.getsockname()[1] for sock in reservations]
     config = work / 'dinero.conf'
     config.write_text('wallet.socket.enable=false\nlightning.oracles.enable=false\nrpcbind=127.0.0.1\n'
-                      'assumeutxo_snapshot=' + str(snapshot) + '\n')
+                      + ('' if args.reopen_copy else 'assumeutxo_snapshot=' + str(snapshot) + '\n'))
     command = [str(binary), '--' + fixture['network'], '--datadir=' + str(data), '--conf=' + str(config),
                '--rpcport=' + str(rpc_port), '--port=' + str(p2p_port), '--wallet-socket-port=' + str(wallet_port),
                '--listen=1', '--dnsseed=0', '--fixedseeds=0', '--discover=0', '--listenonion=0',
@@ -60,6 +70,8 @@ def main():
     receipt = {'state': 'STARTING', 'scope': 'actual dinerod executable; no hand-created store or header authority',
                'binary_sha256': hashlib.sha256(binary.read_bytes()).hexdigest(), 'command': command,
                'profile': args.profile, 'fixture': fixture, 'workdir': str(work)}
+    if args.reopen_copy:
+        receipt['reopen_source_copy'] = str(source_data)
     path = work / 'receipt.json'
 
     def save():
@@ -86,6 +98,7 @@ def main():
         return result
 
     process = None
+    receipt['cold_restarts'] = []
     began = time.monotonic()
     try:
         for sock in reservations:
@@ -109,7 +122,8 @@ def main():
             try:
                 status = rpc('getsnapshotbootstrapstatus')
                 height, tip = rpc('getblockcount'), rpc('getbestblockhash')
-                if 'SNAPSHOT BOOTSTRAP SUCCESS' in text and '[snapshot] loaded' in text and \
+                installed = args.reopen_copy or ('SNAPSHOT BOOTSTRAP SUCCESS' in text and '[snapshot] loaded' in text)
+                if installed and \
                         status['snapshot_bootstrap'].get('snapshot_base_height') == fixture['base_height'] and \
                         height == fixture['tip_height'] and tip == fixture['tip_hash']:
                     break
@@ -127,8 +141,62 @@ def main():
         if args.profile == 'compact':
             assert 'ValidationQueue started (canonical-only compact Orchard)' in text
             assert accumulator['forest_memory_bytes_estimate'] == 0 and accumulator['validation_role'] == 'compact_validator'
+            if args.reopen_copy:
+                assert 'Compact snapshot reopen routed to retained-proof authentication' in text
+                assert '[snapshot] loaded' not in text
         assert not list((data / 'blockchain').glob('chaindb.legacy-*')), 'unexpected preliminary legacy layout/migration'
-        receipt.update(state='PASS_ACTUAL_EXECUTABLE_AUTHENTICATED_V6_BOOTSTRAP', bootstrap=status, accumulator=accumulator)
+        receipt.update(bootstrap=status, accumulator=accumulator)
+        save()
+        for index in range(2):
+            rpc('stop')
+            process.wait(timeout=90)
+            assert process.returncode == 0, 'pre-restart daemon did not exit cleanly'
+            if receipt['cold_restarts']:
+                receipt['cold_restarts'][-1]['exit'] = process.returncode
+            else:
+                receipt['initial_daemon_exit'] = process.returncode
+            process = None
+            # Existing storage must reopen without a snapshot file or IBD.
+            # Ports are reused exactly as the real daemon does (SO_REUSEADDR).
+            config.write_text('wallet.socket.enable=false\nlightning.oracles.enable=false\nrpcbind=127.0.0.1\n')
+            log_path = work / ('cold-restart-' + str(index) + '.log')
+            with log_path.open('xb') as log:
+                process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=log,
+                                           stderr=log, start_new_session=True)
+            restart = {'pid': process.pid, 'log': str(log_path)}
+            receipt['cold_restarts'].append(restart)
+            save()
+            deadline = time.monotonic() + 180
+            while time.monotonic() < deadline:
+                assert process.poll() is None, 'cold restart exited: ' + str(process.returncode)
+                try:
+                    reopened = rpc('blockchain.getutreexocommitment')
+                    reopened_status = rpc('getsnapshotbootstrapstatus')
+                    if reopened['verified_height'] == fixture['tip_height'] and \
+                            rpc('getbestblockhash') == fixture['tip_hash']:
+                        break
+                except (OSError, ValueError, RuntimeError, KeyError):
+                    pass
+                time.sleep(.3)
+            else:
+                raise TimeoutError('cold restart did not authenticate the retained selection')
+            assert reopened['verified_block_hash'] == fixture['tip_hash']
+            assert reopened['commitment'] == accumulator['commitment']
+            assert reopened['retains_full_state'] == accumulator['retains_full_state']
+            assert reopened_status['snapshot_bootstrap'].get('snapshot_base_height') == fixture['base_height']
+            assert not reopened_status['snapshot_bootstrap'].get('fatal')
+            text = log_path.read_text(errors='replace')
+            assert '[snapshot] loaded' not in text, 'cold restart reimported a snapshot'
+            assert 'Height index audit: fixed' not in text
+            if args.profile == 'compact':
+                assert 'Compact snapshot reopen routed to retained-proof authentication' in text
+                assert 'ValidationQueue started (canonical-only compact Orchard)' in text
+                assert reopened['forest_memory_bytes_estimate'] == 0
+                assert reopened['validation_role'] == 'compact_validator'
+                assert 'Seeded HeaderChainSelector with' not in text, 'legacy header backfill ran on compact storage'
+            restart.update(accumulator=reopened, bootstrap=reopened_status)
+            save()
+        receipt.update(state='PASS_ACTUAL_EXECUTABLE_AUTHENTICATED_V6_BOOTSTRAP_AND_TWO_COLD_RESTARTS')
     except BaseException as error:
         receipt.update(state='FAIL', error=repr(error), traceback=traceback.format_exc())
     finally:
@@ -144,6 +212,8 @@ def main():
                 except subprocess.TimeoutExpired:
                     receipt.update(state='FAIL', cleanup='child did not stop; no force-kill or automatic retry')
             receipt['daemon_exit'] = process.poll()
+            if receipt['cold_restarts']:
+                receipt['cold_restarts'][-1]['exit'] = process.poll()
             if receipt['state'].startswith('PASS') and process.poll() != 0:
                 receipt.update(state='FAIL', error='successful import did not exit cleanly')
         receipt['elapsed_s'] = round(time.monotonic() - began, 3)
