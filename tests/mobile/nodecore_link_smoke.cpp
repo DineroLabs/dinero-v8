@@ -7,7 +7,8 @@ int main(int argc, char**) {
     if (argc == 19731) nodecore_stop();
     for(const auto network:{dinero::Chain::MAINNET,dinero::Chain::TESTNET,dinero::Chain::REGTEST}) {
         dinero::SelectParams(network);
-        if(dinero::Params().orchard_catalog_commitment_activation_height!=UINT32_MAX)return 2;
+        const auto expected=network==dinero::Chain::MAINNET?150000u:UINT32_MAX;
+        if(dinero::Params().orchard_catalog_commitment_activation_height!=expected)return 2;
     }
     return 0;
 }

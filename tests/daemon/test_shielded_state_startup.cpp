@@ -307,6 +307,7 @@ void OrchardSnapshotPolicyRuntime() {
     struct Restore {ChainParams params;~Restore(){MutableParams()=params;}} restore{Params()};
     MutableParams().orchard_activation_height=150000;MutableParams().orchard_branch_id=0xa1b2c3d4;
     MutableParams().state_commitment_activation_height=UINT32_MAX;
+    MutableParams().orchard_catalog_commitment_activation_height=UINT32_MAX;
     TempDir temp;const auto database=temp.path/"chaindb";std::filesystem::create_directory(database);Seed(database);
     ChainDB db;CHECK(db.init(database)==Status::Ok);const auto token=ChainWriteToken::CreateForTesting();
     uint256 hash;hash.data[0]=7;CHECK(db.setTip(token,hash,150000,arith_uint256{1})==Status::Ok);

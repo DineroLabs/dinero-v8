@@ -291,6 +291,9 @@ static ChainParams g_mainnet = {
     .release_v8113_activation_height = MAINNET_V8113_HEIGHT,
     .orchard_activation_height = MAINNET_V8113_HEIGHT,
     .orchard_branch_id = MAINNET_ORCHARD_BRANCH_ID,
+    // Owner-selected v8.2.0 fork: authenticate the parent catalog from the
+    // first Orchard block. Testnet cutover remains separately coordinated.
+    .orchard_catalog_commitment_activation_height = MAINNET_V8113_HEIGHT,
 };
 
 // ============================================================================

@@ -1,10 +1,12 @@
 # Orchard snapshots for full and compact nodes
 
-Status: implemented on source `683daa1ca`, with an explicitly dormant consensus
+Status: implemented on source `683daa1ca`, with a source-selected consensus
 gate. Full and compact container export/import, authenticated atomic storage
 publication, fresh-store bootstrap, post-base validation/reorg, restart and
 exact-base marker recovery are wired into the daemon service. Tests explicitly
-activate the new rule on regtest; no public or private network schedule is changed.
+activate the new rule on regtest. The owner-approved v8.2.0 candidate now selects
+DNORST02 at mainnet H150,000, together with Orchard. Testnet/regtest defaults
+remain dormant. Scheduling the candidate is not release qualification.
 
 Both full and compact/mobile nodes are required. This includes NodeCore on
 iOS/macOS and DineroDPI on Android. A successful component test is not a
@@ -36,8 +38,9 @@ This binds the parent's three roots and counts, maturity-leaf rule, stump,
 domain, height, block, parent, work, previous-record digest and undo digest.
 `DNORST01` remains byte-identical. Mining, full/compact connection, inverse
 validation and detached replay use the same height selector. The new
-`orchard_catalog_commitment_activation_height` defaults to `UINT32_MAX` on
-every network. A scheduled height must be at or after Orchard activation.
+`orchard_catalog_commitment_activation_height` has a `UINT32_MAX` struct default;
+mainnet explicitly selects H150,000. Testnet/regtest remain dormant unless
+explicitly configured in source/tests. A scheduled height must be at or after Orchard activation.
 The dormant profile preserves existing consensus fingerprints. Scheduling a
 cutover requires separate coordinated deployment, including private histories.
 
@@ -200,9 +203,50 @@ pre-base execution. Snapshot authentication is not a wallet-history coverage
 acknowledgement.
 
 Legacy v3/v4/v5 files refuse Orchard-era bases even while DNORST02 is dormant.
-Version 6 refuses before explicit DNORST02 activation. Public schedules remain
-unchanged, so the current Orchard-era gap remains deliberately fail-closed on
-those networks until a separately coordinated activation.
+Version 6 refuses before DNORST02 activation. Both profiles become eligible at
+mainnet H150,000; a loader still requires the configured selected-chain burial.
+Private-testnet cutover remains separately coordinated.
+
+## Mainnet schedule and fingerprint review (2026-10-24)
+
+The owner approved one release branch, with the standalone v5 restart repair
+first, its regressions next, and logical consensus, snapshot/runtime and mobile
+commits following. DNORST02 starts at the first Orchard block, H150,000; its
+parent catalog is derived from independently validated history through H149,999.
+
+The mainnet consensus fingerprint changes from
+`9675a39fa147bab33c3e35da6df08fca598d90e54e6da7a08b0a1157f60c3111`
+to `d81a7474229102455fb552224c63c8b0e13947f16cb59e86d9b5d02630057ad2`.
+An independent explicit field-order transcription matched the production API;
+external SHA256 confirmed both preimages. The complete byte difference is the
+addition of these two newline-terminated lines after `orchard_branch_id`:
+
+```
+orchard_catalog_commitment_profile=DNORST02
+orchard_catalog_commitment_activation_height=150000
+```
+
+Testnet remains `d999b0b59cc9f9575e85f424e763a15a53e50c8e24b50c5a96268cb11d93cbf8`;
+regtest remains `0caa01581b5cf97410957a2f72a29ec5bc9c61b6a42c49db805ad298bd353ff9`.
+The historical fully dormant mainnet vector is preserved by explicitly disabling
+the catalog schedule along with the other release schedules in that fixture.
+Tests pin these values and the real mainnet H149,999/H150,000 format boundary.
+
+Known v5 limitation at bases H111,000..H149,999: pre-H60,000 coin height and
+coinbase status are not authenticated at load by the legacy accumulator leaf or
+the shielded-state coinbase proof. The checksum is publisher-recomputable; a
+trusted manifest pins the publisher's file, not chain truth. Independent replay
+checks the full transparent records digest and detects a metadata lie before
+successful promotion. This is not a demonstrated promotion bypass. DNORST02's
+catalog supplies this metadata authentication for v6; the experimental legacy
+origin proof section is not part of the shipping v6 format.
+
+Release go/no-go: November 2, 2026, noon America/New_York, earlier if measured
+block production reduces deployment runway. H150,000, not an estimated date,
+is authoritative. Remaining gates include production-diff review, the complete
+applicable suite, mutation controls, crash/power-loss testing, real initial
+catalog cost, coordinated three-host DNORST02 soak/migration/DC3/DC4 and both
+snapshot profiles, released-asset provenance/hashes, and physical mobile devices.
 
 ## Recorded local validation
 
@@ -275,7 +319,9 @@ into the Bulletproofs FFI object through LTO. This fixes the genuine Android
 duplicate-runtime link failure; duplicate-symbol errors are not suppressed.
 No chain parameters, public network schedules or activation CLI overrides were
 changed by mobile qualification. The SDK smoke executable checks that all three
-network defaults leave DNORST02 at `UINT32_MAX`.
+network defaults leave DNORST02 at `UINT32_MAX` in those historical receipts.
+The current smoke instead requires mainnet H150,000 and dormant testnet/regtest;
+the older SDK receipts must not be represented as qualification of this schedule.
 
 The old `build_nodecore_xcframework.sh` allowlist is not a v6 packaging recipe.
 Use `scripts/mobile/build_nodecore_slice.py` with a **new** build directory and
@@ -396,4 +442,4 @@ Generated corpora and private spools are removed after verification. The
 dedicated read-only Android emulator is shut down without changing the
 consumer AVD's saved state, and the dedicated iOS simulator is deleted.
 SDK candidates, manifests and measurement reports are retained. No consumer
-app, public schedule or DNORST02 default is changed.
+app, public schedule or DNORST02 default was changed by those measurement runs.
