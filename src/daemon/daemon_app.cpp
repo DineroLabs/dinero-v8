@@ -1198,8 +1198,9 @@ bool DaemonApp::Init(int argc, char** argv) {
                     arg.starts_with("--recover-") || arg.starts_with("--rebuild-"))
                     throw std::runtime_error("Compact snapshot reopen refuses legacy maintenance options");
             }
-            if (std::filesystem::exists(daemon::ChainstateRecoveryMarkerPath(data_dir_path)))
-                throw std::runtime_error("Compact snapshot reopen refuses legacy recovery marker");
+            // Advisory recovery markers may survive a healthy forward sync.
+            // Leave them intact; the skipped legacy orchestrator must never
+            // replay a root-only store, even if automatic replay is re-armed.
             std::cout << "[DaemonApp] Compact snapshot reopen routed to retained-proof authentication; legacy backfills disabled" << std::endl;
         } else {
             // Preserve the fail-closed full-storage guard for every legacy,
@@ -7132,9 +7133,11 @@ bool DaemonApp::Start() {
 
     std::cout << "[DaemonApp] ✅ Core services started" << std::endl;
 
-    // Marker discipline: advisory recovery markers may survive a crash, but
-    // they must not outlive a later healthy canonical startup forever.
-    {
+    // Full-state marker discipline is not compact recovery authority. Compact
+    // startup has already authenticated its retained proof and current state;
+    // preserve advisory markers without calling legacy undo/restamp helpers.
+    if (!GetConfig().utreexo_stateless || !chain_db_ ||
+        !storage::ReadOrchardCompactStorageBinding(*chain_db_)) {
         const std::filesystem::path post_start_data_dir =
             ctx_.config ? std::filesystem::path(std::dynamic_pointer_cast<ConfigService>(ctx_.config)->DataDir())
                         : std::filesystem::path{};

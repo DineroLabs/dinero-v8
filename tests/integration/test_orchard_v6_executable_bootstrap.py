@@ -146,6 +146,8 @@ def main():
                 assert '[snapshot] loaded' not in text
         assert not list((data / 'blockchain').glob('chaindb.legacy-*')), 'unexpected preliminary legacy layout/migration'
         receipt.update(bootstrap=status, accumulator=accumulator)
+        advisory_marker = data / 'chainstate_recovery.marker'
+        marker_before = advisory_marker.read_bytes() if args.profile == 'compact' and advisory_marker.is_file() else None
         save()
         for index in range(2):
             rpc('stop')
@@ -196,6 +198,9 @@ def main():
                 assert 'Seeded HeaderChainSelector with' not in text, 'legacy header backfill ran on compact storage'
             restart.update(accumulator=reopened, bootstrap=reopened_status)
             save()
+        if marker_before is not None:
+            assert advisory_marker.read_bytes() == marker_before, 'compact startup changed advisory legacy marker'
+            receipt['advisory_marker_preserved_sha256'] = hashlib.sha256(marker_before).hexdigest()
         receipt.update(state='PASS_ACTUAL_EXECUTABLE_AUTHENTICATED_V6_BOOTSTRAP_AND_TWO_COLD_RESTARTS')
     except BaseException as error:
         receipt.update(state='FAIL', error=repr(error), traceback=traceback.format_exc())
