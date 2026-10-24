@@ -7,6 +7,7 @@ import struct
 import subprocess
 
 from package_nodecore_archive import digest
+from sdk_consensus_manifest import compose_receipts
 
 ROOT=Path(__file__).resolve().parents[2]
 
@@ -46,17 +47,20 @@ def main():
         parser.error('expected exactly one NDK host toolchain')
     bin_dir=tools[0]
     sources={'arm64-v8a':args.arm64.resolve(),'x86_64':args.x86_64.resolve()}
+    receipts=[]
     for abi,build in sources.items():
         library=build/'lib/libnodecore_ffi.so'
         receipt=json.loads((build/'nodecore-sdk.manifest.json').read_text())
         if not receipt.get('qualification_only') or receipt.get('sha256')!=digest(library):
             parser.error('missing or stale JNI build receipt: '+str(build))
         check_elf(library,183 if abi=='arm64-v8a' else 62)
+        receipts.append(receipt)
+    provenance=compose_receipts(receipts,ROOT)
     output=args.output.resolve()
     if output.exists():
         parser.error('refusing to replace existing SDK directory: '+str(output))
     output.mkdir(parents=True)
-    manifest=dict(qualification_only=True,dnorst02='dormant',abis={})
+    manifest=dict(qualification_only=True,**provenance,abis={})
     for abi,build in sources.items():
         source=build/'lib/libnodecore_ffi.so'
         target=output/'jniLibs'/abi/source.name;target.parent.mkdir(parents=True)

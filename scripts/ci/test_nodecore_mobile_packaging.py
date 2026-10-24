@@ -3,6 +3,11 @@ import importlib.util
 from pathlib import Path
 import tempfile
 import unittest
+import copy
+import json
+import os
+import shutil
+import subprocess
 
 ROOT=Path(__file__).resolve().parents[2]
 spec=importlib.util.spec_from_file_location('package', ROOT/'scripts/mobile/package_nodecore_archive.py')
@@ -14,9 +19,51 @@ import sys
 sys.path.insert(0,str(ROOT/'scripts/mobile'))
 android=importlib.util.module_from_spec(elf_spec)
 elf_spec.loader.exec_module(android)
+import sdk_consensus_manifest as consensus
 
 
 class Packaging(unittest.TestCase):
+    def test_reviewed_defaults_are_network_specific_not_globally_dormant(self):
+        declaration=consensus.reviewed_defaults(ROOT)
+        self.assertEqual(declaration['dnorst02_activation_height'],dict(mainnet=150000,testnet=4294967295,regtest=4294967295))
+        self.assertIn('NOT runtime attestation',declaration['evidence'])
+
+    def test_source_change_requires_explicit_declaration_review(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp)
+            for name in consensus.REVIEWED:
+                (root/name).parent.mkdir(parents=True,exist_ok=True)
+                shutil.copy2(ROOT/name,root/name)
+            self.assertEqual(consensus.reviewed_defaults(root),consensus.reviewed_defaults(ROOT))
+            path=root/'src/consensus/chainparams_impl.cpp';path.write_bytes(path.read_bytes()+b'\n')
+            with self.assertRaisesRegex(ValueError,'unreviewed chainparams'):
+                consensus.reviewed_defaults(root)
+
+    def test_composition_preserves_input_source_instead_of_current_head(self):
+        receipt=consensus.source_receipt(ROOT);receipt.update(source_base='a'*40,source_dirty=False)
+        combined=consensus.compose_receipts([receipt,copy.deepcopy(receipt)],ROOT)
+        self.assertEqual(combined['source_base'],'a'*40)
+        self.assertEqual(combined['source_consensus_declaration'],consensus.reviewed_defaults(ROOT))
+        for field,value,error in [('source_base','b'*40,'different source'),('source_dirty',True,'clean'),
+                                  ('ffi_header_sha256','0'*64,'header identity'),
+                                  ('source_consensus_declaration',{'dnorst02':'dormant'},'consensus declaration')]:
+            changed=copy.deepcopy(receipt);changed[field]=value
+            with self.subTest(field=field),self.assertRaisesRegex(ValueError,error):
+                consensus.compose_receipts([receipt,changed],ROOT)
+        with self.assertRaisesRegex(ValueError,'consensus declaration'):
+            consensus.compose_receipts([dict(qualification_only=True,dnorst02='dormant')],ROOT)
+
+    def test_all_packaging_entrypoints_use_the_reviewed_receipt(self):
+        for name in ('build_nodecore_slice.py','package_nodecore_archive.py','package_nodecore_android.py','package_nodecore_xcframework.py'):
+            source=(ROOT/'scripts/mobile'/name).read_text()
+            self.assertNotIn("dnorst02='dormant'",source)
+            self.assertIn('sdk_consensus_manifest',source)
+
+    if os.environ.get('NODECORE_LINK_SMOKE'):
+        def test_declaration_matches_actual_compiled_network_parameters(self):
+            actual=json.loads(subprocess.check_output([os.environ['NODECORE_LINK_SMOKE'],'--consensus-json'],text=True))
+            self.assertEqual(actual,consensus.reviewed_defaults(ROOT)['dnorst02_activation_height'])
+
     def test_exact_link_command_and_quoted_paths(self):
         tokens=module.link_tokens('clang++ -c smoke.cpp -o CMakeFiles/x/nodecore_link_smoke.cpp.o\n'
                                  ': && clang++ CMakeFiles/x/nodecore_link_smoke.cpp.o -o smoke "with space/a.a" a.a -framework Security && :')

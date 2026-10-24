@@ -6,6 +6,7 @@ import shutil
 import subprocess
 
 from package_nodecore_archive import digest
+from sdk_consensus_manifest import compose_receipts
 
 ROOT=Path(__file__).resolve().parents[2]
 
@@ -18,13 +19,16 @@ def main():
     args=parser.parse_args()
     inputs={name:getattr(args,name.replace('-','_')).resolve()/'sdk'/('libnodecore-'+name+'.a')
             for name in ('ios-device','ios-simulator','macos-arm64','macos-x86_64')}
+    receipts=[]
     for name,path in inputs.items():
         if not path.is_file():
             parser.error('missing slice: '+str(path))
         manifest=json.loads(path.with_suffix('.manifest.json').read_text())
         if not manifest.get('qualification_only') or manifest.get('sha256')!=digest(path):
             parser.error('missing or stale slice link receipt: '+str(path))
+        receipts.append(manifest)
         subprocess.run(['xcrun','lipo',str(path),'-verify_arch','x86_64' if name.endswith('x86_64') else 'arm64'],check=True)
+    provenance=compose_receipts(receipts,ROOT)
     output=args.output.resolve()
     if output.exists():
         parser.error('refusing to replace existing SDK directory: '+str(output))
@@ -39,7 +43,7 @@ def main():
     for archive in (inputs['ios-device'],inputs['ios-simulator'],universal):
         command+=['-library',str(archive),'-headers',str(headers)]
     subprocess.run(command+['-output',str(framework)],check=True)
-    (output/'manifest.json').write_text(json.dumps(dict(qualification_only=True,dnorst02='dormant',
+    (output/'manifest.json').write_text(json.dumps(dict(qualification_only=True,**provenance,
         inputs={name:dict(path=str(path),sha256=digest(path)) for name,path in inputs.items()},
         header_sha256=digest(headers/'nodecore_ffi.h')),indent=2)+'\n')
 

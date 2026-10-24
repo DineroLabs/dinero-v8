@@ -350,6 +350,23 @@ Coordinated network activation remains separate deployment work.
 
 ## Mobile SDK and memory qualification (2026-10-23)
 
+Current SDK receipts no longer label DNORST02 globally dormant. Fresh archive
+and JNI build receipts carry a `source_consensus_declaration`: reviewed mainnet
+activation150000, testnet/regtestUINT32_MAX, and hashes of the reviewed chainparams
+source/header. A changed source digest fails packaging until its declaration
+is explicitly reviewed. This is source-default provenance, NOT runtime
+attestation, new activation authority or release qualification. The native link
+smoke's `--consensus-json` output can check actual compiled network parameters
+against the declaration without starting a node.
+
+XCFramework/Android composition propagates the compatible input declarations
+and source identity, not the packager's current HEAD. Missing legacy declarations,
+mixed source revisions, dirty source inputs and incompatible FFI headers refuse
+before creating output. Old artifacts/receipts are not edited or relabelled;
+their original evidence and any accurate supplemental receipt remain historical.
+Fresh SDKs need their own build/link/runtime/device qualification. None of these
+metadata changes modifies chain parameters or a public network schedule.
+
 `DINERO_ORCHARD_MOBILE_QUALIFICATION=ON` explicitly permits only iOS arm64
 device/simulator, macOS arm64/x86_64 and Android arm64-v8a/x86_64 build targets.
 It is OFF by default and is not release approval. Cargo receives the exact

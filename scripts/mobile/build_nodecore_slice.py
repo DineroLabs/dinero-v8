@@ -11,6 +11,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from package_nodecore_archive import digest, package
+from sdk_consensus_manifest import source_receipt
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -57,10 +58,7 @@ def main():
                     '-DCMAKE_OSX_DEPLOYMENT_TARGET='+(ROOT/'.macos-deployment-target').read_text().strip()]
     subprocess.run(['cmake', '-S', str(ROOT), '-B', str(build), '-G', 'Ninja', *options], check=True)
     subprocess.run(['cmake', '--build', str(build), '--target', *targets, '-j', str(args.jobs)], check=True)
-    provenance = dict(platform=args.platform, qualification_only=True, dnorst02='dormant',
-                      source_base=subprocess.check_output(['git', '-C', str(ROOT), 'rev-parse', 'HEAD'], text=True).strip(),
-                      source_dirty=bool(subprocess.check_output(['git', '-C', str(ROOT),
-                          '-c', 'diff.ignoreSubmodules=all', 'status', '--porcelain'], text=True)))
+    provenance = dict(platform=args.platform, qualification_only=True, **source_receipt(ROOT))
     if args.platform.startswith('android-'):
         library=build/'lib/libnodecore_ffi.so'
         provenance.update(library=str(library), sha256=digest(library))

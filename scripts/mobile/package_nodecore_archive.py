@@ -76,7 +76,9 @@ def digest(path):
 
 
 def package(build, command, output):
+    from sdk_consensus_manifest import build_source_receipt
     build, output = build.resolve(), output.resolve()
+    provenance = build_source_receipt(build)
     tokens = link_tokens(command)
     inputs = archives(tokens, build)
     if output.exists():
@@ -87,7 +89,7 @@ def package(build, command, output):
     # object, SDK/architecture flags and required system libraries/frameworks.
     smoke = output.with_suffix('.link-smoke')
     subprocess.run(relink(tokens, output, smoke), cwd=build, check=True)
-    manifest = dict(qualification_only=True, dnorst02='dormant',
+    manifest = dict(qualification_only=True, **provenance,
                     archive=str(output), sha256=digest(output),
                     packaged_link_smoke=str(smoke),
                     inputs=[dict(path=str(path), sha256=digest(path)) for path in inputs])
