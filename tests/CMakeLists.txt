@@ -91,6 +91,22 @@ if(NOT WIN32)
   set_tests_properties(RPCListenerStartup PROPERTIES
     LABELS "integration;e2e-daemon;rpc;mandatory" TIMEOUT 300 RUN_SERIAL TRUE)
 
+  # Actual executable (main.cpp), not the direct DaemonApp fixture. This
+  # opt-in gate needs authenticated, buried snapshots plus an isolated peer;
+  # an absent fixture never registers an empty/skipped qualification success.
+  set(DINERO_V6_EXECUTABLE_FIXTURE "" CACHE FILEPATH "Explicit private v6 executable regression fixture JSON")
+  if(DINERO_V6_EXECUTABLE_FIXTURE)
+    file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/v6-executable-evidence")
+    foreach(_profile full compact)
+      add_test(NAME OrchardV6ExecutableBootstrap_${_profile} COMMAND python3 -B
+        ${CMAKE_SOURCE_DIR}/tests/integration/test_orchard_v6_executable_bootstrap.py
+        --dinerod $<TARGET_FILE:dinerod> --fixture ${DINERO_V6_EXECUTABLE_FIXTURE}
+        --profile ${_profile} --work-parent ${CMAKE_BINARY_DIR}/v6-executable-evidence)
+      set_tests_properties(OrchardV6ExecutableBootstrap_${_profile} PROPERTIES
+        LABELS "integration;e2e-daemon;orchard;snapshot" TIMEOUT 420 RUN_SERIAL TRUE)
+    endforeach()
+  endif()
+
 
   add_test(NAME DaemonServiceRelease COMMAND python3
     ${CMAKE_SOURCE_DIR}/tests/integration/test_daemon_service_release.py

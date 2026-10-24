@@ -1095,7 +1095,7 @@ bool DaemonApp::Init(int argc, char** argv) {
             }
         }
 #ifdef DINERO_HAS_ORCHARD_RUNTIME_READER  // the migration engine ships with the Orchard backend
-        if(!fresh_store_bootstrap_only_&&daemon::IsBrandNewStore(chain_db_path)) {
+        if(daemon::IsBrandNewStore(chain_db_path)) {
             // SDKs deliberately do not migrate existing databases. A configured
             // v6 bootstrap may create a NEW separated store directly; the
             // payload still has to pass selected-chain authentication at load.
@@ -1106,6 +1106,15 @@ bool DaemonApp::Init(int argc, char** argv) {
                     std::ifstream input(snapshot,std::ios::binary);
                     const auto metadata=consensus::ReadOrchardSnapshotMetadata(input,68);
                     if(consensus::OrchardCatalogCommitmentActive(Params(),metadata.block_height)) {
+                        if(fresh_store_bootstrap_only_) {
+                            // main's preliminary run must not start P2P or
+                            // attempt this load against a legacy store. The
+                            // real Init below creates the empty READY layout;
+                            // selected-header authentication still gates Load.
+                            fresh_store_created_=false;
+                            std::cout << "[DaemonApp] Configured v6 bootstrap: deferring fresh separated store to the real start" << std::endl;
+                            return true;
+                        }
                         if(GetConfig().utreexo_stateless&&!ctx_.config->CompactSnapshotBootstrapEnabled()) {
                             if(ctx_.logger)ctx_.logger->error("Compact v6 snapshot bootstrap disabled by local policy");
                             return false; // Refuse the requested load before creating storage.
