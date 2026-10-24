@@ -367,6 +367,7 @@ int32_t nodecore_start(const char* datadir, const char* config_json) {
     std::string network = "mainnet";
     int p2p_port = 21001;
     int max_peers = 4;
+    std::string addnode;
     bool utreexo_stateless = dinero::nodecore::DefaultUtreexoStateless();
     std::string sync_profile = dinero::nodecore::DefaultSyncProfile();
     std::string wallet_schema_path;
@@ -403,6 +404,13 @@ int32_t nodecore_start(const char* datadir, const char* config_json) {
             }
             if (config.isMember("p2p_port")) p2p_port = config["p2p_port"].asInt();
             if (config.isMember("max_peers")) max_peers = config["max_peers"].asInt();
+            if (config.isMember("addnode")) {
+                // Host static peers, comma-separated host:port (the daemon's addnode).
+                if (!config["addnode"].isString()) {
+                    return NODECORE_ERROR_INVALID_ARGS;
+                }
+                addnode = config["addnode"].asString();
+            }
             if (config.isMember("wallet_schema_path")) {
                 if (!config["wallet_schema_path"].isString()) {
                     return NODECORE_ERROR_INVALID_ARGS;
@@ -518,6 +526,11 @@ int32_t nodecore_start(const char* datadir, const char* config_json) {
     if (max_peers > 0) {
         args_storage.push_back("--maxconnections=" + std::to_string(max_peers));
     }
+    // Embedded hosts never run the legacy Lightning oracle IPC clients. With a
+    // scheduled Orchard profile (mainnet H150000) the daemon refuses to start
+    // while they are enabled (daemon_app.cpp), so disable them explicitly.
+    args_storage.push_back("--lightning.oracles.enable=0");
+    if (!addnode.empty()) args_storage.push_back("--addnode=" + addnode);
 
     if (network == "regtest") args_storage.push_back("--regtest");
     else if (network == "testnet") args_storage.push_back("--testnet");

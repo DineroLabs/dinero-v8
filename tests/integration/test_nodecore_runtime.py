@@ -101,7 +101,26 @@ def datadir(name):
     return path
 
 
+def mainnet_schedule(node):
+    # Mainnet schedules Orchard (H150000). The daemon refuses to start while the
+    # legacy Lightning oracle clients are enabled, and embedded hosts never run
+    # them, so NodeCore must disable them itself. App static peers (addnode)
+    # must reach the daemon too. Offline: no peer is contacted.
+    path = datadir("mainnet-schedule")
+    started = node.start(path, network="mainnet", addnode="127.0.0.1:9,127.0.0.2:9")
+    check("embedded mainnet with scheduled Orchard starts", started == 0, started)
+    status = node.call("status")
+    check("embedded mainnet is running", status["running"] and status["network"] == "mainnet", status)
+    # The daemon's own startup line counts configured addnode seeds (none on
+    # mainnet otherwise); this is the first P2P start in this driver's log.
+    seeds = [line for line in (WORK / "nodecore.log").read_text(errors="replace").splitlines()
+             if "[P2PService]   Seed nodes:" in line]
+    check("app static peers reach the daemon", bool(seeds) and seeds[0].endswith("Seed nodes: 2"), seeds[:1])
+    check("mainnet stop", node.call("stop") == 0)
+
+
 def lifecycle(node):
+    mainnet_schedule(node)
     path = datadir("lifecycle")
     check("already stopped is idempotent", node.call("stop") == 0)
     started = node.start(path)
