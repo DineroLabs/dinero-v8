@@ -1125,11 +1125,51 @@ bool ChainstateService::LoadSeparatedShieldedState() {
     const auto tip = chain_db_->getTip();
     const auto count = chain_db_->countShieldedNullifiers();
     if (!marker.ok() || !tip.ok() || !count.ok()) return refuse("unreadable canonical marker/tip/nullifiers");
-    if (marker.value().height < 0 ||
-        static_cast<uint32_t>(marker.value().height) != tip.value().height ||
-        marker.value().block_hash != tip.value().hash ||
-        marker.value().nullifier_count != count.value())
+    if (marker.value().height < 0 || marker.value().nullifier_count != count.value())
         return refuse("canonical marker/tip/nullifier count mismatch");
+
+    uint32_t nullifier_height_limit = tip.value().height;
+    if (static_cast<uint32_t>(marker.value().height) != tip.value().height ||
+        marker.value().block_hash != tip.value().hash) {
+        // A fresh AssumeUTXO import deliberately leaves ChainDB's validated
+        // history tip below the snapshot base until background replay promotes
+        // it. The imported shielded marker is at the base. This is the ONLY
+        // permitted READY marker/tip split: require an exact, hashed snapshot
+        // manifest and the persisted base header before loading any state.
+        // LoadSnapshot will re-check the full v5 binding during rehydrate.
+        if (static_cast<uint32_t>(marker.value().height) <= tip.value().height || !config_)
+            return refuse("canonical marker/tip/nullifier count mismatch");
+        const std::filesystem::path snapshot_path =
+            config_->GetString("assumeutxo_snapshot", "");
+        if (snapshot_path.empty())
+            return refuse("snapshot marker ahead of tip without configured snapshot");
+        std::filesystem::path manifest_path =
+            config_->GetString("assumeutxo_manifest", "");
+        if (manifest_path.empty()) {
+            manifest_path = snapshot_path;
+            manifest_path += ".manifest.json";
+        }
+        std::string validation_error;
+        if (!ValidateSnapshotTransportPreflight(snapshot_path, 64ULL * 1024ULL * 1024ULL * 1024ULL,
+                                               validation_error) ||
+            !ValidateSnapshotManifestPreflight(snapshot_path, manifest_path, validation_error))
+            return refuse("snapshot marker ahead of tip without valid manifest-bound payload");
+        SnapshotManifest manifest;
+        if (!ParseSnapshotManifest(manifest_path, manifest, validation_error) ||
+            manifest.block_height != static_cast<uint32_t>(marker.value().height) ||
+            manifest.block_hash_hex != ToLowerHex(marker.value().block_hash.GetHex()))
+            return refuse("snapshot marker does not match configured payload");
+        const auto base_header = chain_db_->getHeader(marker.value().block_hash);
+        const auto base_height = chain_db_->getBlockHeight(marker.value().block_hash);
+        if (!base_header.ok() || !base_height.ok() ||
+            base_header.value().GetHash() != marker.value().block_hash ||
+            base_height.value() != marker.value().height)
+            return refuse("snapshot base header not durably bound to marker");
+        nullifier_height_limit = static_cast<uint32_t>(marker.value().height);
+        if (logger_) logger_->warning(
+            "[ChainstateService] READY shielded marker at verified snapshot base above "
+            "ChainDB history tip; checking state before AssumeUTXO rehydrate");
+    }
 
     const auto frontier = chain_db_->getShieldedState(ChainDB::ShieldedStateRecord::Frontier);
     const auto anchors = chain_db_->getShieldedState(ChainDB::ShieldedStateRecord::AnchorHistory);
@@ -1150,7 +1190,7 @@ bool ChainstateService::LoadSeparatedShieldedState() {
     const auto scanned = chain_db_->forEachShieldedNullifier([&](uint32_t height, const uint8_t* nf) {
         consensus::shielded::Hash nullifier;
         std::memcpy(nullifier.data(), nf, nullifier.size());
-        if (height > tip.value().height || nullifiers.size() >= count.value() ||
+        if (height > nullifier_height_limit || nullifiers.size() >= count.value() ||
             !nullifiers.insert(nullifier).second) {
             valid = false;
             return false;
@@ -23738,8 +23778,9 @@ bool ChainstateService::PromoteValidatedHistory(
     // (OnBackgroundValidationComplete: chaindb tip >= base + FullyValidated)
     // can fire.
     //
-    // THE NON-NEGOTIABLE ORDERING INVARIANT: setTip(base) is the LAST write
-    // and the ONLY one that makes the rest observable to the startup audits
+    // THE NON-NEGOTIABLE ORDERING INVARIANT: the atomic
+    // {validatedTip(base), tip(base)} batch is the LAST write and the ONLY
+    // one that makes the rest observable to the startup audits
     // (VerifyActiveChainUndoCoverage / IsCanonicalStateAligned /
     // VerifyConsensusJournalAtActiveTip all key off the persisted tip).
     // Every write before it is invisible-until-tip and idempotently
@@ -24389,7 +24430,7 @@ bool ChainstateService::PromoteValidatedHistory(
         return true;
     }
 
-    // ── 6) Durable setTip(base) — THE LAST WRITE (see ordering invariant) ──
+    // ── 6) Durable validated-tip + tip batch — THE LAST WRITE ────────────
     // Work comes from the header-chain block index for the base (the same
     // chainwork-hex source ConnectTip uses); fall back to the persisted
     // header metadata when the in-memory entry is unavailable.
@@ -24415,13 +24456,31 @@ bool ChainstateService::PromoteValidatedHistory(
             }
             base_work = work_result.value();
         }
-        // Direct (non-batched) setTip writes with sync=true (chain_db.cpp
-        // Phase E.1.c) — the single fsync that makes the promotion visible.
-        const auto st = chain_db_->setTip(token, base_hash,
-                                          static_cast<int>(base), base_work);
-        if (st != Status::Ok) {
+        // Selected-state readers require the validation marker and canonical
+        // tip to identify the same block. A separate validated-tip write would
+        // leave a crash window on either side of setTip(base). Stage both in
+        // the final synced batch, after every replay-proven artifact above.
+        rocksdb::WriteBatch tip_batch;
+        const auto validated_st = chain_db_->setValidatedTip(
+            token, base_hash, static_cast<int>(base), &tip_batch);
+        if (validated_st != Status::Ok) {
+            error = "promotion: setValidatedTip(base) staging failed (status=" +
+                    std::to_string(static_cast<int>(validated_st)) + ")";
+            return false;
+        }
+        const auto tip_st = chain_db_->setTip(token, base_hash,
+                                             static_cast<int>(base), base_work,
+                                             &tip_batch);
+        if (tip_st != Status::Ok) {
             error = "promotion: setTip(base) failed (status=" +
-                    std::to_string(static_cast<int>(st)) + ")";
+                    std::to_string(static_cast<int>(tip_st)) + ")";
+            return false;
+        }
+        const auto commit_st = chain_db_->writeBatch(
+            token, std::move(tip_batch), /*sync=*/true);
+        if (commit_st != Status::Ok) {
+            error = "promotion: validated-tip/tip commit failed (status=" +
+                    std::to_string(static_cast<int>(commit_st)) + ")";
             return false;
         }
     }
