@@ -16257,6 +16257,7 @@ function(dinero_attach_real_mempool_fixture_runtime)
     test_forward_sync_activation_retry
     test_orchard_runtime_reader
     test_orchard_service_startup
+    test_orchard_block_staging
     test_p2p_service_shutdown_order
     test_persist_pre_base_body_position
     test_realign_shielded_after_heal

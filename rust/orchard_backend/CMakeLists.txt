@@ -692,6 +692,12 @@ if(DINERO_ORCHARD_BUILD_TESTS)
       "${ORCHARD_HOST_ROOT}/tests/consensus/test_orchard_block_staging.cpp"
       "${ORCHARD_HOST_ROOT}/src/common/logger.cpp")
     target_link_libraries(test_orchard_block_staging PRIVATE dinero_orchard_account_replay dinero_orchard_chainstate_write dinero_orchard_block_staging dinero_crypto RocksDB::rocksdb)
+    # Match the neighboring service-startup executable's runtime closure.
+    # The central fixture hook attaches real Mempool transitions and retains
+    # only the existing unrelated Vault observer isolation.
+    target_sources(test_orchard_block_staging PRIVATE
+      "${ORCHARD_HOST_ROOT}/src/daemon/config.cpp")
+    target_link_libraries(test_orchard_block_staging PRIVATE dinero_core)
     target_include_directories(test_orchard_block_staging PRIVATE "${ORCHARD_HOST_ROOT}/src")
     add_test(NAME OrchardBlockStaging COMMAND test_orchard_block_staging "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures")
     add_test(NAME OrchardAtomicCrash COMMAND test_orchard_block_staging --crash-lifecycle "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures")
