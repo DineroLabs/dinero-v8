@@ -13181,6 +13181,11 @@ bool ChainstateService::InitOrchardSnapshotStorage() {
                 index->status=entry.height<base->height?uint32_t(BLOCK_VALID_HEADER):metadata->status_flags;
                 index->file_number=entry.file_number;index->data_pos=entry.data_pos;index->data_size=entry.data_size;
                 if(entry.height>base->height&&(metadata->status_flags&BLOCK_HAVE_UNDO)) {
+                    // A cold process has no existing index whose coordinates
+                    // can fill these fields. Keep the staged value and retained
+                    // location consistent; publication's conflict checks and
+                    // Start's detached inverse/undo proof audit remain mandatory.
+                    index->undo_file=metadata->undo_file;index->undo_pos=metadata->undo_pos;index->undo_size=metadata->undo_size;
                     handoff->selected_undo_[entry.height]=OrchardCompactStartup::RetainedUndoLocation{
                         metadata->undo_file,metadata->undo_pos,metadata->undo_size};
                 }

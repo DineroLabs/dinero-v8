@@ -224,6 +224,11 @@ TEST(OrchardSnapshotRuntime, ActualServiceBootstrapExportAndRestartBothProfiles)
             ~ContextGuard(){BlockAcceptor::SetContext(prior);DaemonContext::setInstance(prior);}} guard;
         GetConfig().utreexo_stateless=stateless;
         for(unsigned run=0;run<2;++run) {
+            // A real executable has no permanent graph from its previous run.
+            // Keep the earlier graph alive but detached until this service is
+            // destroyed, rather than accidentally borrowing its undo locators.
+            std::unique_ptr<RawIngressGraph> cold_graph;
+            if(stateless&&run==1)cold_graph=std::make_unique<RawIngressGraph>();
             auto db=std::make_shared<ChainDB>();ASSERT_EQ(db->init(path),Status::Ok);
             DaemonContext context;context.config=std::make_shared<ConfigService>();
             context.config->Set("datadir",directory.path.string());
