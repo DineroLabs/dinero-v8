@@ -69,6 +69,12 @@ class Packaging(unittest.TestCase):
             for name in sources:
                 subprocess.run(['cc','-fsyntax-only','-x','c','-I',str(headers),str(headers/name)],check=True)
 
+    def test_sdk_slices_never_carry_gpu_mining(self):
+        # macOS host builds auto-detect OpenCL; a wallet SDK must not export the
+        # mining backend (it leaves _cl* symbols undefined for app links).
+        source=(ROOT/'scripts/mobile/build_nodecore_slice.py').read_text()
+        self.assertIn("'-DENABLE_GPU_MINING=OFF'",source)
+
     def test_all_packaging_entrypoints_use_the_reviewed_receipt(self):
         for name in ('build_nodecore_slice.py','package_nodecore_archive.py','package_nodecore_android.py','package_nodecore_xcframework.py'):
             source=(ROOT/'scripts/mobile'/name).read_text()
