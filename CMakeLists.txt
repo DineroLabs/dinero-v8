@@ -360,11 +360,35 @@ endif()
 find_program(CARGO_EXECUTABLE cargo HINTS "$ENV{HOME}/.cargo/bin")
 
 if(CARGO_EXECUTABLE)
-    set(BP_FFI_BUILD_COMMAND "${CARGO_EXECUTABLE}" build --release)
+    set(BP_FFI_TOOLCHAIN_ARG "")
+    set(BP_FFI_RUNTIME_ENV "")
+    if(DINERO_BUILD_ORCHARD_BACKEND)
+        # Both Rust staticlibs enter one native image. LTO-folding an abort
+        # runtime into Bulletproofs' FFI object conflicts with Orchard's unwind
+        # runtime on Android. Use the same pinned compiler/runtime, with std
+        # remaining separate archive members for normal symbol extraction.
+        file(STRINGS "${CMAKE_SOURCE_DIR}/rust/orchard_backend/rust-toolchain.toml"
+            BP_ORCHARD_TOOLCHAIN REGEX "^channel =")
+        string(REGEX MATCH "[0-9]+\\.[0-9]+\\.[0-9]+" BP_ORCHARD_TOOLCHAIN "${BP_ORCHARD_TOOLCHAIN}")
+        set(BP_FFI_TOOLCHAIN_ARG "+${BP_ORCHARD_TOOLCHAIN}")
+        set(BP_FFI_RUNTIME_ENV CARGO_PROFILE_RELEASE_PANIC=unwind
+            CARGO_PROFILE_RELEASE_LTO=false CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16)
+    endif()
+    set(BP_FFI_BUILD_COMMAND ${CMAKE_COMMAND} -E env ${BP_FFI_RUNTIME_ENV}
+        "${CARGO_EXECUTABLE}" ${BP_FFI_TOOLCHAIN_ARG} build --release)
 
     if(ANDROID)
+        string(TOUPPER "${BP_FFI_CARGO_TARGET}" BP_TARGET_ENV)
+        string(REPLACE "-" "_" BP_TARGET_ENV "${BP_TARGET_ENV}")
         set(BP_FFI_BUILD_COMMAND
-            "${CARGO_EXECUTABLE}" build --release --target "${BP_FFI_CARGO_TARGET}"
+            ${CMAKE_COMMAND} -E env
+            ${BP_FFI_RUNTIME_ENV}
+            "CARGO_TARGET_${BP_TARGET_ENV}_LINKER=${CMAKE_C_COMPILER}"
+            "CARGO_TARGET_${BP_TARGET_ENV}_RUSTFLAGS=-C link-arg=--target=${CMAKE_C_COMPILER_TARGET} -C link-arg=--sysroot=${CMAKE_SYSROOT}"
+            "CC_${BP_FFI_CARGO_TARGET}=${CMAKE_C_COMPILER}"
+            "AR_${BP_FFI_CARGO_TARGET}=${CMAKE_AR}"
+            "CFLAGS_${BP_FFI_CARGO_TARGET}=--target=${CMAKE_C_COMPILER_TARGET} --sysroot=${CMAKE_SYSROOT}"
+            "${CARGO_EXECUTABLE}" ${BP_FFI_TOOLCHAIN_ARG} build --release --target "${BP_FFI_CARGO_TARGET}"
         )
         message(STATUS "   Bulletproofs FFI Android cargo target: ${BP_FFI_CARGO_TARGET}")
     elseif(APPLE)
@@ -409,10 +433,11 @@ if(CARGO_EXECUTABLE)
 
         set(BP_FFI_BUILD_COMMAND
             ${CMAKE_COMMAND} -E env
+            ${BP_FFI_RUNTIME_ENV}
             "CARGO_TARGET_${BP_TARGET_ENV}_RUSTFLAGS=-C link-arg=${BP_VERSION_MIN_FLAG}"
             "CFLAGS_${BP_FFI_CARGO_TARGET}=${BP_VERSION_MIN_FLAG}"
             "LDFLAGS_${BP_FFI_CARGO_TARGET}=${BP_VERSION_MIN_FLAG}"
-            "${CARGO_EXECUTABLE}" build --release --target "${BP_FFI_CARGO_TARGET}"
+            "${CARGO_EXECUTABLE}" ${BP_FFI_TOOLCHAIN_ARG} build --release --target "${BP_FFI_CARGO_TARGET}"
         )
 
         message(STATUS "   Bulletproofs FFI Apple target: ${BP_FFI_CARGO_TARGET} (deployment target: ${CMAKE_OSX_DEPLOYMENT_TARGET})")

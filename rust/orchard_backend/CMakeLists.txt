@@ -18,6 +18,7 @@ if(NOT TARGET secp256k1)
 endif()
 # Windows remains unavailable to release builds until native qualification.
 option(DINERO_ORCHARD_WINDOWS_QUALIFICATION "Allow isolated native x64 MSVC Orchard qualification" OFF)
+option(DINERO_ORCHARD_MOBILE_QUALIFICATION "Allow explicit Apple/Android Orchard SDK qualification (not release approval)" OFF)
 include("${CMAKE_CURRENT_SOURCE_DIR}/NativeRustPlatform.cmake")
 dinero_orchard_native_platform(ORCHARD_RUST_TARGET ORCHARD_ARCHIVE_NAME)
 # file(STRINGS) inputs must also invalidate an existing configured build.
@@ -72,10 +73,43 @@ if(WIN32)
       NativeRustPlatform.cmake BuildMsvcRust.cmake MsvcRustNativeLibraries.cmake
     WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}" VERBATIM)
 else()
-  set(ORCHARD_ARCHIVE "${ORCHARD_TARGET_DIR}/release/${ORCHARD_ARCHIVE_NAME}")
+  set(ORCHARD_CARGO_ENV RAYON_NUM_THREADS=2)
+  set(ORCHARD_CARGO_TARGET_ARGS "")
+  if(ORCHARD_RUST_TARGET)
+    set(ORCHARD_CARGO_TARGET_ARGS --target "${ORCHARD_RUST_TARGET}")
+    set(ORCHARD_ARCHIVE "${ORCHARD_TARGET_DIR}/${ORCHARD_RUST_TARGET}/release/${ORCHARD_ARCHIVE_NAME}")
+    string(TOUPPER "${ORCHARD_RUST_TARGET}" ORCHARD_TARGET_ENV)
+    string(REPLACE "-" "_" ORCHARD_TARGET_ENV "${ORCHARD_TARGET_ENV}")
+    # Scope flags to the target, never host proc macros/build scripts.
+    if(ANDROID)
+      list(APPEND ORCHARD_CARGO_ENV
+        "CARGO_TARGET_${ORCHARD_TARGET_ENV}_LINKER=${CMAKE_C_COMPILER}"
+        "CC_${ORCHARD_RUST_TARGET}=${CMAKE_C_COMPILER}"
+        "AR_${ORCHARD_RUST_TARGET}=${CMAKE_AR}"
+        "CFLAGS_${ORCHARD_RUST_TARGET}=--target=${CMAKE_C_COMPILER_TARGET} --sysroot=${CMAKE_SYSROOT}")
+      list(APPEND ORCHARD_CARGO_ENV
+        "CARGO_TARGET_${ORCHARD_TARGET_ENV}_RUSTFLAGS=-C link-arg=--target=${CMAKE_C_COMPILER_TARGET} -C link-arg=--sysroot=${CMAKE_SYSROOT}")
+    elseif(APPLE)
+      if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
+        if(IOS_PLATFORM STREQUAL "SIMULATOR")
+          set(ORCHARD_MIN_FLAG "-mios-simulator-version-min=${CMAKE_OSX_DEPLOYMENT_TARGET}")
+        else()
+          set(ORCHARD_MIN_FLAG "-miphoneos-version-min=${CMAKE_OSX_DEPLOYMENT_TARGET}")
+        endif()
+      else()
+        set(ORCHARD_MIN_FLAG "-mmacosx-version-min=${CMAKE_OSX_DEPLOYMENT_TARGET}")
+      endif()
+      list(APPEND ORCHARD_CARGO_ENV
+        "CARGO_TARGET_${ORCHARD_TARGET_ENV}_RUSTFLAGS=-C link-arg=${ORCHARD_MIN_FLAG}"
+        "CFLAGS_${ORCHARD_RUST_TARGET}=${ORCHARD_MIN_FLAG}")
+    endif()
+  else()
+    set(ORCHARD_ARCHIVE "${ORCHARD_TARGET_DIR}/release/${ORCHARD_ARCHIVE_NAME}")
+  endif()
 add_custom_command(OUTPUT "${ORCHARD_ARCHIVE}"
-  COMMAND ${CMAKE_COMMAND} -E env RAYON_NUM_THREADS=2
+  COMMAND ${CMAKE_COMMAND} -E env ${ORCHARD_CARGO_ENV}
     ${ORCHARD_CARGO} +${ORCHARD_RUST_TOOLCHAIN} build --locked --release --jobs 2
+    ${ORCHARD_CARGO_TARGET_ARGS}
     --manifest-path "${CMAKE_CURRENT_SOURCE_DIR}/Cargo.toml"
     --target-dir "${ORCHARD_TARGET_DIR}"
   DEPENDS ${ORCHARD_RUST_INPUTS} Cargo.toml Cargo.lock rust-toolchain.toml src/lib.rs src/frontier.rs src/wallet.rs src/wallet_prover.rs src/wallet_note.rs src/wallet_witness.rs
@@ -276,6 +310,23 @@ if(TARGET dinero_chainstate)
   add_library(dinero_orchard_snapshot_store STATIC
     "${ORCHARD_HOST_ROOT}/src/daemon/orchard_snapshot_store.cpp")
   target_link_libraries(dinero_orchard_snapshot_store PUBLIC dinero_orchard_snapshot dinero_orchard_chainstate_write dinero_orchard_header)
+  option(DINERO_ORCHARD_MEMORY_BENCHMARK "Build the synthetic v6 capacity benchmark (not chain qualification)" OFF)
+  if(DINERO_ORCHARD_MEMORY_BENCHMARK)
+    add_executable(orchard_snapshot_memory
+      "${ORCHARD_HOST_ROOT}/tests/mobile/orchard_snapshot_memory.cpp"
+      "${ORCHARD_HOST_ROOT}/src/common/logger.cpp")
+    target_link_libraries(orchard_snapshot_memory PRIVATE dinero_orchard_snapshot)
+    set_target_properties(orchard_snapshot_memory PROPERTIES MACOSX_BUNDLE FALSE)
+    if(NOT CMAKE_CROSSCOMPILING)
+      add_test(NAME OrchardSnapshotMemorySmoke
+        COMMAND python3 "${ORCHARD_HOST_ROOT}/tests/mobile/run_orchard_snapshot_memory.py"
+          --binary $<TARGET_FILE:orchard_snapshot_memory> --counts 1000 --max-rss-mib 512)
+      set_tests_properties(OrchardSnapshotMemorySmoke PROPERTIES TIMEOUT 120 LABELS "mobile;orchard;snapshot;memory")
+      add_test(NAME NodeCoreMobilePackagingContracts
+        COMMAND python3 "${ORCHARD_HOST_ROOT}/scripts/ci/test_nodecore_mobile_packaging.py")
+      set_tests_properties(NodeCoreMobilePackagingContracts PROPERTIES TIMEOUT 60 LABELS "mobile;nodecore;packaging")
+    endif()
+  endif()
   if(TARGET dinero_core)
     target_link_libraries(dinero_core PUBLIC dinero_orchard_snapshot_store)
   endif()

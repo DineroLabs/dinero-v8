@@ -62,6 +62,23 @@ class PlatformContract(unittest.TestCase):
     def test_foreign_macos_architecture_refuses(self):
         self.platform({'WIN32':'FALSE','APPLE':'TRUE','CMAKE_OSX_ARCHITECTURES':'x86_64','CMAKE_HOST_SYSTEM_PROCESSOR':'arm64'}, False, 'native macOS architecture')
 
+    def test_explicit_mobile_qualification_triples(self):
+        common={'WIN32':'FALSE','DINERO_ORCHARD_MOBILE_QUALIFICATION':'TRUE'}
+        for abi,triple in [('arm64-v8a','aarch64-linux-android'),('x86_64','x86_64-linux-android')]:
+            self.assertIn('RESULT='+triple+'|libdinero_orchard_backend.a', self.platform(dict(common,ANDROID='TRUE',ANDROID_ABI=abi)))
+        for platform,triple in [('OS','aarch64-apple-ios'),('SIMULATOR','aarch64-apple-ios-sim')]:
+            self.assertIn('RESULT='+triple+'|libdinero_orchard_backend.a', self.platform(dict(common,APPLE='TRUE',CMAKE_SYSTEM_NAME='iOS',CMAKE_OSX_ARCHITECTURES='arm64',IOS_PLATFORM=platform)))
+        for arch,triple in [('arm64','aarch64-apple-darwin'),('x86_64','x86_64-apple-darwin')]:
+            self.assertIn('RESULT='+triple+'|libdinero_orchard_backend.a', self.platform(dict(common,APPLE='TRUE',CMAKE_SYSTEM_NAME='Darwin',CMAKE_OSX_ARCHITECTURES=arch)))
+
+    def test_mobile_opt_in_still_rejects_unknown_platforms(self):
+        common={'WIN32':'FALSE','DINERO_ORCHARD_MOBILE_QUALIFICATION':'TRUE'}
+        for settings in ({'ANDROID':'TRUE','ANDROID_ABI':'armeabi-v7a'},
+                         {'APPLE':'TRUE','CMAKE_SYSTEM_NAME':'iOS','CMAKE_OSX_ARCHITECTURES':'x86_64'},
+                         {'APPLE':'TRUE','CMAKE_SYSTEM_NAME':'Darwin','CMAKE_OSX_ARCHITECTURES':'arm64;x86_64'},
+                         {'CMAKE_CROSSCOMPILING':'TRUE','CMAKE_SYSTEM_NAME':'Linux'}):
+            self.platform(dict(common,**settings),False,'Unsupported Orchard mobile')
+
     def libraries(self, report, success=True):
         result = self.run_script(f'include("{(ROOT / "MsvcRustNativeLibraries.cmake").as_posix()}")\n'
             f'dinero_orchard_msvc_native_libraries([==[{report}]==] response)\nmessage("RESULT=${{response}}END")\n')

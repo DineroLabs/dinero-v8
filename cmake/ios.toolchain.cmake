@@ -18,7 +18,7 @@ endif()
 # System identification
 set(CMAKE_SYSTEM_NAME iOS)
 set(CMAKE_SYSTEM_PROCESSOR aarch64)
-set(CMAKE_OSX_ARCHITECTURES arm64)
+set(CMAKE_OSX_ARCHITECTURES arm64 CACHE STRING "NodeCore iOS slice architecture" FORCE)
 
 # Deployment target
 if(NOT DEFINED CMAKE_OSX_DEPLOYMENT_TARGET)
@@ -77,8 +77,10 @@ if(IOS_PLATFORM STREQUAL "SIMULATOR")
 else()
     set(IOS_VERSION_FLAG "-miphoneos-version-min=${CMAKE_OSX_DEPLOYMENT_TARGET}")
 endif()
-set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fembed-bitcode-marker ${IOS_VERSION_FLAG}")
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fembed-bitcode-marker -std=c++20 ${IOS_VERSION_FLAG}")
+# Bitcode is no longer accepted by current Apple linkers. Even the marker-only
+# compiler flag injects obsolete -bitcode_process_mode arguments at final link.
+set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${IOS_VERSION_FLAG}")
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++20 ${IOS_VERSION_FLAG}")
 
 # Suppress warnings that are noisy for cross-compilation
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-shorten-64-to-32")

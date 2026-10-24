@@ -123,6 +123,13 @@ if(BUILD_NODECORE OR (CMAKE_SYSTEM_NAME STREQUAL "iOS" AND NOT BUILD_FFI_ONLY))
     PUBLIC_HEADER "${CMAKE_SOURCE_DIR}/include/nodecore/nodecore_ffi.h"
   )
 
+  # Archive creation alone cannot detect missing Orchard/Rust dependencies.
+  # Build this executable for every SDK slice before packaging its static libs.
+  add_executable(nodecore_link_smoke EXCLUDE_FROM_ALL
+    tests/mobile/nodecore_link_smoke.cpp)
+  set_target_properties(nodecore_link_smoke PROPERTIES MACOSX_BUNDLE FALSE)
+  target_link_libraries(nodecore_link_smoke PRIVATE nodecore_ffi)
+
   # iOS-specific configuration
   if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
     set_target_properties(nodecore_ffi PROPERTIES
