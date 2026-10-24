@@ -84,6 +84,7 @@ din::Json rpc_context_wallet_decoderawtransaction(const ExecutionContext&, const
 #include "daemon/daemon_context.h"
 #include "common/ilogger.h"
 #include "storage/chain_db.h"
+#include "storage/block_storage.h"
 #include "wallet/wallet_manager.h"
 #ifdef DINERO_TEST_ORCHARD_ORIGIN
 #include "wallet/runtime_origin_projection.h"
@@ -151,6 +152,16 @@ struct RuntimeOriginProjectionTestAccess {
 #endif
 
 struct ShieldedStateStartupTestAccess {
+    static void SetPromotionBase(ChainstateService& service, uint32_t height,
+                                 const uint256& hash) {
+        service.assumeutxo_base_height_ = height;
+        service.assumeutxo_base_block_ = hash;
+    }
+    static bool Promote(ChainstateService& service,
+                        const assumeutxo::AssumeUtxoReplayEngine& replay,
+                        const std::vector<uint256>& hashes, std::string& error) {
+        return service.PromoteValidatedHistory(replay, hashes, error);
+    }
     static bool ActivationRetryReady(ChainstateService& service,const uint256& hash) {
         std::lock_guard<AnnotatedRecursiveMutex> lock(service.activation_mutex_);
         return service.activation_retries_.IsReady(hash,std::chrono::steady_clock::now());
@@ -505,6 +516,76 @@ TEST(AssumeUtxoReplay, ExposesProvenSetAndStateRefs) {
     EXPECT_NE(engine.ShieldedTree(), nullptr);
     EXPECT_NE(engine.ShieldedNullifiers(), nullptr);
     EXPECT_NE(engine.ShieldedAnchors(), nullptr);
+}
+
+// Exercise the actual promotion routine with one fully validated block and
+// durable flatfile body. This deliberately goes through the replay engine,
+// undo-tail persistence, coin reconciliation and the selected RPC gate.
+TEST(AssumeUtxoPromotion, PublishesValidatedTipAndSelectedCommitment) {
+    const auto blocks = BuildDeterministicChain(1);
+    ASSERT_EQ(blocks.size(), 1u);
+    const Block genesis = SelectedGenesis();
+    const Block& base = blocks.front();
+
+    assumeutxo::AssumeUtxoReplayEngine replay;
+    replay.SetUndoTailWindow(1);
+    std::string error;
+    ASSERT_TRUE(replay.SeedGenesis(genesis, error)) << error;
+    ASSERT_TRUE(replay.ConnectAndAdvance(base, 1, base.GetHash(), error)) << error;
+    ASSERT_EQ(replay.UndoTail().size(), 1u);
+
+    shielded_store_fixture::TempDir temporary;
+    const auto& root = temporary.path;
+    ChainDB db;
+    ASSERT_EQ(db.init(root / "chaindb"), Status::Ok);
+    auto files = std::make_shared<BlockStorage>();
+    ASSERT_EQ(files->init(root), Status::Ok);
+    const auto token = ChainWriteToken::CreateForTesting();
+    ASSERT_EQ(db.putHeader(token, genesis.GetHash(), genesis.header, 0,
+                           arith_uint256(1)), Status::Ok);
+    ASSERT_EQ(db.putHeightIndex(token, 0, genesis.GetHash()), Status::Ok);
+    ASSERT_EQ(db.setTip(token, genesis.GetHash(), 0, arith_uint256(1)), Status::Ok);
+    ASSERT_EQ(db.setValidatedTip(token, genesis.GetHash(), 0), Status::Ok);
+    ASSERT_EQ(db.putHeader(token, base.GetHash(), base.header, 1,
+                           arith_uint256(2)), Status::Ok);
+    ChainDB::PersistedHeaderMetadata base_metadata;
+    base_metadata.parent_hash = genesis.GetHash();
+    base_metadata.height = 1;
+    base_metadata.chainwork = arith_uint256(2);
+    base_metadata.status_flags = BLOCK_VALID_HEADER;
+    ASSERT_EQ(db.putHeaderMetadata(token, base.GetHash(), base_metadata), Status::Ok);
+    const auto body_pos = files->writeBlock(base.GetHash(), base);
+    ASSERT_EQ(body_pos.status(), Status::Ok);
+
+    auto service = std::make_shared<ChainstateService>();
+    service->setChainDB(&db);
+    service->setBlockStorage(files);
+    service->PersistStoredBodyPosition(base.GetHash(), body_pos.value());
+    ASSERT_EQ(service->getBlockByHash(base.GetHash()).status(), Status::Ok);
+    CBlockIndex selected(base.header, 1);
+    selected.chainwork = ChainworkToHex(arith_uint256(2));
+    ShieldedStateStartupTestAccess::BoundaryState(*service, selected, replay);
+    ShieldedStateStartupTestAccess::SetPromotionBase(*service, 1, base.GetHash());
+
+    ASSERT_TRUE(ShieldedStateStartupTestAccess::Promote(
+        *service, replay, {genesis.GetHash(), base.GetHash()}, error)) << error;
+    const auto tip = db.getTip();
+    const auto validated = db.getValidatedTip();
+    ASSERT_TRUE(tip.ok());
+    ASSERT_TRUE(validated.ok());
+    EXPECT_EQ(tip->hash, base.GetHash());
+    EXPECT_EQ(tip->height, 1);
+    EXPECT_EQ(validated->hash, tip->hash);
+    EXPECT_EQ(validated->height, tip->height);
+    const auto selected_snapshot = service->getUtreexoRpcSnapshot();
+    ASSERT_EQ(selected_snapshot.status(), Status::Ok);
+    EXPECT_EQ(selected_snapshot->block_hash, base.GetHash());
+    EXPECT_EQ(selected_snapshot->height, 1u);
+
+    service->setBlockStorage(nullptr);
+    service->setChainDB(nullptr);
+    files->close();
+    db.close();
 }
 
 

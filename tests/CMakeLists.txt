@@ -1149,6 +1149,8 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_shielded_state_startup.cpp)
   )
   add_test(NAME ShieldedStateStartup COMMAND test_shielded_state_startup)
   add_test(NAME SnapshotWalletImport COMMAND test_shielded_state_startup snapshot_wallet_import)
+  add_test(NAME SnapshotMarkerAboveTip COMMAND test_shielded_state_startup snapshot_marker_above_tip)
+  set_tests_properties(SnapshotMarkerAboveTip PROPERTIES LABELS "snapshot;daemon;restart;mandatory" TIMEOUT 120)
   set_tests_properties(SnapshotWalletImport PROPERTIES LABELS "wallet;daemon;storage" TIMEOUT 120)
   add_test(NAME OrchardServicePersistence COMMAND test_shielded_state_startup retired_persistence)
   set_tests_properties(OrchardServicePersistence PROPERTIES
@@ -5245,6 +5247,9 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_assumeutxo_replay.cpp)
   # Keep the original replay/history/projection cases here without duplicating them.
   add_test(NAME AssumeUtxoReplay COMMAND test_assumeutxo_replay
     --gtest_filter=AssumeUtxoReplay.*:SelectedWalletHistory.*:RuntimeOriginProjection.*)
+  add_test(NAME AssumeUtxoPromotion COMMAND test_assumeutxo_replay
+    --gtest_filter=AssumeUtxoPromotion.*)
+  set_tests_properties(AssumeUtxoPromotion PROPERTIES LABELS "snapshot;daemon;restart;mandatory" TIMEOUT 120)
   set_tests_properties(AssumeUtxoReplay PROPERTIES
     LABELS "daemon;assumeutxo;replay"
     TIMEOUT 120
