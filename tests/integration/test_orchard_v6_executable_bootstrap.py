@@ -125,6 +125,7 @@ def main():
         assert accumulator['retains_full_state'] == (args.profile == 'full')
         assert accumulator['commitment'] == fixture['tip_accumulator']
         if args.profile == 'compact':
+            assert 'ValidationQueue started (canonical-only compact Orchard)' in text
             assert accumulator['forest_memory_bytes_estimate'] == 0 and accumulator['validation_role'] == 'compact_validator'
         assert not list((data / 'blockchain').glob('chaindb.legacy-*')), 'unexpected preliminary legacy layout/migration'
         receipt.update(state='PASS_ACTUAL_EXECUTABLE_AUTHENTICATED_V6_BOOTSTRAP', bootstrap=status, accumulator=accumulator)

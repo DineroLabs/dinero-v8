@@ -7218,6 +7218,20 @@ bool DaemonApp::Start() {
                           << (chainstate->IsInIBD() ? "IBD" : "normal")
                           << ", max_in_flight=" << queue_config.max_in_flight_blocks
                           << ", max_queued=" << queue_config.max_queued_blocks << ")" << std::endl;
+            } else if (GetConfig().utreexo_stateless &&
+                       Params().orchard_activation_height != UINT32_MAX &&
+                       consensus::OrchardProfileConfigurationValid(Params())) {
+                // Root-only Orchard owners deliberately have no full forest.
+                // They still need the canonical typed-task scheduler: each task
+                // owns its proofs and selected-state validation/application.
+                // This immutable queue mode refuses historical Block jobs and
+                // constructs no full UTXO owner, validator or script worker pool.
+                const auto queue_config = chainstate->IsInIBD()
+                    ? dinero::consensus::ValidationQueue::Config::forIBD()
+                    : dinero::consensus::ValidationQueue::Config::forNormalOperation();
+                ctx_.validation_queue = dinero::consensus::ValidationQueue::CreateCanonicalOnly(queue_config);
+                ctx_.validation_queue->start();
+                std::cout << "[DaemonApp] ValidationQueue started (canonical-only compact Orchard)" << std::endl;
             } else {
                 std::cout << "[DaemonApp] ValidationQueue skipped (ConsensusUTXOSet not available)" << std::endl;
             }
