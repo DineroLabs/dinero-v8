@@ -91,6 +91,34 @@ TEST(DatadirGuard, RejectsNonDirectoryDatadir) {
 }
 
 #ifndef _WIN32
+TEST(DatadirGuard, AliasPinsCanonicalRootAndDoesNotFollowRetargetOnRelease) {
+    namespace fs = std::filesystem;
+    TempDir tmp("datadir-guard-alias");
+    const auto original = tmp.path / "original";
+    const auto replacement = tmp.path / "replacement";
+    const auto alias = tmp.path / "alias";
+    fs::create_directory(original);
+    fs::create_directory(replacement);
+    fs::create_directory_symlink(original, alias);
+    dinero::daemon::DatadirGuard guard;
+    std::string error;
+    ASSERT_TRUE(guard.Acquire(alias, error)) << error;
+    EXPECT_EQ(guard.DataDir(), fs::canonical(original));
+    dinero::daemon::DatadirGuard contender;
+    EXPECT_FALSE(contender.Acquire(original, error));
+    EXPECT_NE(error.find("already in use"), std::string::npos);
+    // Retargeting the operator alias cannot redirect PID cleanup or startup's
+    // pinned path away from the root whose lock is still owned.
+    fs::remove(alias);
+    fs::create_directory_symlink(replacement, alias);
+    { std::ofstream out(replacement / "dinerod.pid"); out << "999999\n"; }
+    EXPECT_EQ(guard.DataDir(), fs::canonical(original));
+    guard.Release();
+    EXPECT_FALSE(fs::exists(original / "dinerod.pid"));
+    EXPECT_TRUE(fs::exists(replacement / "dinerod.pid"));
+    ASSERT_TRUE(contender.Acquire(original, error)) << error;
+}
+
 TEST(DatadirGuard, BlocksSecondProcessWhileHeld) {
     TempDir tmp("datadir-guard-lock");
     dinero::daemon::DatadirGuard guard;

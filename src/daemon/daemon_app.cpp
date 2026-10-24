@@ -5,6 +5,7 @@
 #include "pool/wallet_payment_backend.h"
 #include "util/hex.h"
 #include "daemon/orchard_network_block.h"
+#include "daemon/datadir_guard.h"
 #include "daemon/utreexo_tx_reader.h"
 #include "daemon/utreexo_tx_payload.h"
 #include "daemon/utreexo_block_payload.h"
@@ -571,6 +572,11 @@ std::string GetPeerAddress(uint64_t peer_id) {
 // Constructor implementation (must be in .cpp to allow unique_ptr with forward-declared types)
 DaemonApp::DaemonApp() = default;
 
+void DaemonApp::SetLockedDatadir(const daemon::DatadirGuard& guard) {
+    if (!guard.IsHeld()) throw std::logic_error("DaemonApp requires a held datadir guard");
+    locked_datadir_ = guard.DataDir();
+}
+
 // Destructor implementation (must be in .cpp to allow unique_ptr with forward-declared types)
 void DaemonApp::ClosePoolRuntime() noexcept {
     const auto owner=pool_manager_runtime_;
@@ -705,7 +711,9 @@ bool DaemonApp::Init(int argc, char** argv) {
         // If --datadir was given, seed wallet.datadir before computing the
         // default config path. Set() will be called again during the full
         // CLI parse below — single-value keys are last-wins, so this is safe.
-        if (!cli_datadir.empty()) {
+        if (locked_datadir_) {
+            config->Set("datadir", locked_datadir_->string());
+        } else if (!cli_datadir.empty()) {
             config->Set("datadir", cli_datadir);
         }
 
@@ -799,6 +807,12 @@ bool DaemonApp::Init(int argc, char** argv) {
             }
         }
     }
+
+    // The native executable already owns this resolved root. Keep every
+    // service and upgrade/recovery path on that same root, even if the CLI
+    // spelling is a symlink or a config file supplies a different datadir.
+    // Embedded callers without a datadir guard retain their existing API.
+    if (locked_datadir_) config->Set("datadir", locked_datadir_->string());
 
     // Phase D.1 (Dinero Core 1.0): wire `debug.log_file` from final
     // config (file + CLI overrides applied) into LoggerService BEFORE

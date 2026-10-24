@@ -783,7 +783,7 @@ int RunDaemonMain(int argc, char* argv[], bool running_as_windows_service) {
     if (regtest_enforce_pow && !explicit_datadir) {
         std::cerr << "PoW profile requires an explicit fresh datadir\n"; return 1;
     }
-    const std::string startup_datadir = ResolveStartupDataDir(argc, argv, use_testnet, use_regtest);
+    std::string startup_datadir = ResolveStartupDataDir(argc, argv, use_testnet, use_regtest);
 
     dinero::daemon::DatadirGuard datadir_guard;
     if (!startup_datadir.empty()) {
@@ -792,6 +792,7 @@ int RunDaemonMain(int argc, char* argv[], bool running_as_windows_service) {
             std::cerr << "[FATAL] " << datadir_guard_error << "\n";
             return 1;
         }
+        startup_datadir = datadir_guard.DataDir().string();
     }
 
     try {
@@ -1072,6 +1073,7 @@ int RunDaemonMain(int argc, char* argv[], bool running_as_windows_service) {
         // storage upgrade needs, so the real start below upgrades it at once
         // instead of reaching Orchard activation on the legacy layout.
         dinero::DaemonApp bootstrap;
+        if (datadir_guard.IsHeld()) bootstrap.SetLockedDatadir(datadir_guard);
         bootstrap.SetAutomaticStorageUpgrade(true);
         bootstrap.SetFreshStoreBootstrapOnly(true);
         if (bootstrap.Init(argc, argv) && bootstrap.FreshStoreCreated()) {
@@ -1080,6 +1082,7 @@ int RunDaemonMain(int argc, char* argv[], bool running_as_windows_service) {
         }
     }
     dinero::DaemonApp app;
+    if (datadir_guard.IsHeld()) app.SetLockedDatadir(datadir_guard);
     app.SetAutomaticStorageUpgrade(true);  // legacy store -> separated shielded-state layout before Orchard
 
     app.GetContext().request_shutdown = []() {

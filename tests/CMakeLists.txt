@@ -91,6 +91,12 @@ if(NOT WIN32)
   set_tests_properties(RPCListenerStartup PROPERTIES
     LABELS "integration;e2e-daemon;rpc;mandatory" TIMEOUT 300 RUN_SERIAL TRUE)
 
+  add_test(NAME OrchardMigrationDatadirAlias COMMAND python3 -B
+    ${CMAKE_SOURCE_DIR}/tests/integration/test_orchard_migration_datadir_alias.py
+    --dinerod $<TARGET_FILE:dinerod>)
+  set_tests_properties(OrchardMigrationDatadirAlias PROPERTIES
+    LABELS "integration;e2e-daemon;storage;orchard;mandatory" TIMEOUT 600 RUN_SERIAL TRUE)
+
   # Actual executable (main.cpp), not the direct DaemonApp fixture. This
   # opt-in gate needs authenticated, buried snapshots plus an isolated peer;
   # an absent fixture never registers an empty/skipped qualification success.

@@ -68,6 +68,7 @@ int main(int argc, char** argv) try {
     dinero::daemon::DatadirGuard datadir_guard;
     if (!datadir_guard.Acquire(datadir, error))
         throw std::runtime_error(error);
+    datadir = datadir_guard.DataDir().string();
     dinero::daemon::CheckRegtestPowDatadir(datadir, true);
     dinero::daemon::BindRegtestPowProfile(datadir, profile);
     const bool automatic_upgrade = [] {
@@ -76,6 +77,7 @@ int main(int argc, char** argv) try {
     }();
     if (automatic_upgrade) {  // same fresh-datadir bootstrap as dinerod (src/daemon/main.cpp)
         dinero::DaemonApp bootstrap;
+        bootstrap.SetLockedDatadir(datadir_guard);
         bootstrap.SetAutomaticStorageUpgrade(true);
         bootstrap.SetFreshStoreBootstrapOnly(true);
         if (bootstrap.Init(argc, argv) && bootstrap.FreshStoreCreated()) {
@@ -84,6 +86,7 @@ int main(int argc, char** argv) try {
         }
     }
     dinero::DaemonApp app;
+    app.SetLockedDatadir(datadir_guard);
     // Production dinerod upgrades automatically; this fixture does so only when
     // asked, so tests of the explicit migrator still see a legacy store.
     if (automatic_upgrade)

@@ -18,6 +18,9 @@ public:
     void Release();
 
     bool IsHeld() const { return held_; }
+    // Pinned, resolved root used to acquire the lock. Callers must use this
+    // spelling for startup/migration, not resolve an operator alias again.
+    const std::filesystem::path& DataDir() const { return datadir_; }
 
     static std::filesystem::path LockFilePath(const std::filesystem::path& datadir);
     static std::filesystem::path PidFilePath(const std::filesystem::path& datadir);

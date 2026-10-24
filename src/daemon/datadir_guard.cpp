@@ -178,8 +178,6 @@ bool DatadirGuard::Acquire(const std::filesystem::path& datadir, std::string& er
     Release();
 
     datadir_ = std::filesystem::absolute(datadir);
-    lock_path_ = LockFilePath(datadir_);
-    pid_path_ = PidFilePath(datadir_);
 
     std::error_code ec;
     if (std::filesystem::exists(datadir_, ec) && !ec &&
@@ -199,6 +197,19 @@ bool DatadirGuard::Acquire(const std::filesystem::path& datadir, std::string& er
         error = "Configured datadir is not a directory: " + PathString(datadir_);
         return false;
     }
+
+    // Resolve only the operator-selected root, before taking its lock. macOS
+    // /var and /tmp (and user-selected datadir aliases) are ordinary spellings
+    // of that root. Never canonicalize blockchain/chaindb: the migration
+    // engine must still reject symlinks anywhere *inside* the pinned root.
+    const auto resolved = std::filesystem::canonical(datadir_, ec);
+    if (ec) {
+        error = "Failed to resolve datadir " + PathString(datadir_) + ": " + ec.message();
+        return false;
+    }
+    datadir_ = resolved;
+    lock_path_ = LockFilePath(datadir_);
+    pid_path_ = PidFilePath(datadir_);
 
     if (!CheckOwnership(error)) {
         return false;

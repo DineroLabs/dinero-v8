@@ -2,6 +2,7 @@
 #include <cstdint>
 #include <optional>
 #include <functional>
+#include <filesystem>
 #include "daemon_context.h"
 #include "iservice.h"
 #include "daemon/notify_drain_worker.h"
@@ -11,6 +12,7 @@
 
 // Forward declarations
 namespace dinero {
+namespace daemon { class DatadirGuard; }
 namespace pool {
 class PoolManager;
 }
@@ -62,6 +64,11 @@ public:
      */
     bool Init(int argc = 0, char** argv = nullptr);
 
+    // Native startup pins the same resolved root as its held datadir lock.
+    // Keep the guard alive until Stop(); config/CLI aliases must not redirect
+    // services or the storage-upgrade cohort to another root after locking.
+    void SetLockedDatadir(const daemon::DatadirGuard& guard);
+
     // Native daemons upgrade a legacy store to the separated shielded-state
     // layout before opening it (daemon/orchard_storage_upgrade.h). Off by
     // default: NodeCore and tests that drive the explicit migrator opt out.
@@ -102,6 +109,7 @@ public:
     DaemonContext& GetContext() { return ctx_; }
 
 private:
+    std::optional<std::filesystem::path> locked_datadir_;
     bool automatic_storage_upgrade_ = false;
     bool fresh_store_bootstrap_only_ = false;
     bool fresh_store_created_ = false;
