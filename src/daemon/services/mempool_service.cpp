@@ -50,6 +50,41 @@ std::unique_ptr<MempoolService::PoolUse> MempoolService::BorrowPoolUse() const {
     return std::unique_ptr<PoolUse>(new PoolUse(*this,{}));
 }
 
+std::unique_ptr<ReopenServiceFence> MempoolService::FenceForReopen(
+    std::shared_ptr<MempoolService> service,std::chrono::milliseconds timeout) {
+    if(!service||timeout<std::chrono::milliseconds::zero()||timeout>std::chrono::seconds(30))
+        throw std::invalid_argument("Invalid mempool reopen fence");
+    std::unique_lock lock(service->operation_mutex_);
+    if(service->operations_by_thread_.contains(std::this_thread::get_id())||service->stopping_||
+        service->reopen_fenced_||!service->accepting_||!service->mempool_)throw PoolUnavailable();
+    service->accepting_=false;service->reopen_fenced_=true;service->reopen_thread_=std::this_thread::get_id();
+    const auto resume=[service](bool open){
+        std::lock_guard guard(service->operation_mutex_);
+        if(!service->reopen_fenced_||service->reopen_thread_!=std::this_thread::get_id())std::terminate();
+        service->reopen_fenced_=false;service->reopen_thread_={};
+        if(open&&service->mempool_&&!service->stopping_)service->accepting_=true;
+        service->operation_changed_.notify_all();
+    };
+    // Allocate the rollback owner before waiting or performing external work.
+    std::unique_ptr<ReopenServiceFence> fence;
+    try {fence.reset(new ReopenServiceFence(service.get(),resume));}
+    catch(...){service->accepting_=true;service->reopen_fenced_=false;service->reopen_thread_={};throw;}
+    bool drained=false;
+    try{drained=service->operation_changed_.wait_for(lock,timeout,[&]{return service->active_operations_==0;});}
+    catch(...){lock.unlock();fence.reset();throw;}
+    if(!drained){
+        lock.unlock();fence.reset();throw PoolUnavailable();
+    }
+    return fence;
+}
+void MempoolService::ForEachReopenCandidate(const ReopenServiceFence& fence,
+    const std::function<void(const MempoolEntry&)>& visit) const {
+    fence.RequireOwner(this);
+    // Stop waits for this fence; all operation owners have drained. The pool's
+    // own shared lock still protects enumeration. Visitor must not call services.
+    mempool_->forEachEntry(visit);
+}
+
 bool MempoolService::Init(DaemonContext& ctx) {
     { std::lock_guard<std::mutex> lock(operation_mutex_); if (mempool_ || accepting_ || stopping_) return false; }
     // Store dependencies
@@ -184,6 +219,9 @@ void MempoolService::Stop() {
         std::unique_lock<std::mutex> lock(operation_mutex_);
         if (operations_by_thread_.count(std::this_thread::get_id()))
             throw std::logic_error("Cannot stop mempool inside an active operation");
+        if(reopen_fenced_&&reopen_thread_==std::this_thread::get_id())
+            throw std::logic_error("Commit or abandon the mempool reopen fence before Stop");
+        operation_changed_.wait(lock,[&]{return !reopen_fenced_;});
         if (stopping_) {
             if (stopping_thread_==std::this_thread::get_id())
                 throw std::logic_error("Recursive mempool shutdown is not available");

@@ -5,6 +5,9 @@
 #include "storage/chain_direct.h"
 #include "daemon/daemon_app.h"
 #include "daemon/datadir_guard.h"
+#include "daemon/daemon_context.h"
+#include "daemon/services/wallet_service.h"
+#include "daemon/services/mempool_service.h"
 #include "consensus/chainparams.h"
 
 #include <json/json.h>
@@ -150,6 +153,36 @@ Json::Value LegacyStorageFixture(const std::string& path) {
         !app.PersistFreshStoreGenesisRecords())throw std::runtime_error("legacy fixture bootstrap failed");
     app.Stop();return 0;
 }
+Json::Value ReopenFences(){
+    auto* context=DaemonContext::instance();
+    if(!nodecore_is_running()||!context||!context->wallet||!context->mempool)
+        throw std::runtime_error("real running Core required for fence probe");
+    const auto wallet=std::dynamic_pointer_cast<dinero::WalletService>(context->wallet);
+    const auto pool=std::dynamic_pointer_cast<dinero::MempoolService>(context->mempool);
+    Json::Value result;
+    {auto use=dinero::WalletService::AcquireWalletUse(wallet);
+     try{auto bad=dinero::WalletService::FenceForReopen(wallet,0ms);result["wallet_reentrant_refused"]=false;}
+     catch(const std::exception&){result["wallet_reentrant_refused"]=true;}}
+    {auto use=dinero::MempoolService::AcquirePoolUse(pool);
+     try{auto bad=dinero::MempoolService::FenceForReopen(pool,0ms);result["pool_reentrant_refused"]=false;}
+     catch(const std::exception&){result["pool_reentrant_refused"]=true;}}
+    const auto wf=dinero::WalletService::FenceForReopen(wallet,100ms);
+    const auto pf=dinero::MempoolService::FenceForReopen(pool,100ms);
+    result["wallet_name"]=wallet->ReopenWalletName(*wf);unsigned count=0;
+    try{(void)wallet->ReopenWalletName(*pf);result["foreign_fence_refused"]=false;}
+    catch(const std::exception&){result["foreign_fence_refused"]=true;}
+    pool->ForEachReopenCandidate(*pf,[&](const auto&){++count;});result["candidate_count"]=count;
+    try{auto use=dinero::WalletService::AcquireWalletUse(wallet);result["wallet_gate_closed"]=false;}
+    catch(const std::exception&){result["wallet_gate_closed"]=true;}
+    try{auto use=dinero::MempoolService::AcquirePoolUse(pool);result["pool_gate_closed"]=false;}
+    catch(const std::exception&){result["pool_gate_closed"]=true;}
+    try{wallet->Stop();result["wallet_stop_requires_decision"]=false;}
+    catch(const std::exception&){result["wallet_stop_requires_decision"]=true;}
+    try{pool->Stop();result["pool_stop_requires_decision"]=false;}
+    catch(const std::exception&){result["pool_stop_requires_decision"]=true;}
+    // Abandoning both leases restores the exact prior owners, not new stores.
+    return result;
+}
 } // namespace
 
 int main(int argc, char** argv) {
@@ -162,7 +195,9 @@ int main(int argc, char** argv) {
         try {
             const auto request = Parse(line);
             const auto operation = request["op"].asString();
-            if (operation == "legacy_storage_fixture") {
+            if (operation == "reopen_fences") {
+                result = ReopenFences();
+            } else if (operation == "legacy_storage_fixture") {
                 result = LegacyStorageFixture(request["datadir"].asString());
             } else if (operation == "start") {
                 const auto path = request["datadir"].asString();

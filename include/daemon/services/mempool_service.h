@@ -2,6 +2,8 @@
 #include "daemon/iservice.h"
 #include "daemon/interfaces/mempool_access.h"
 #include "daemon/mempool.h"
+#include "daemon/services/reopen_service_fence.h"
+#include <chrono>
 #include "daemon/interfaces/tx_ingress.h"  // Step 5: ITxIngress, IBlockTemplateSource
 #include "daemon/interfaces/origin.h"      // Step 5: TxOrigin
 #include "policy/fee_estimator.h"
@@ -69,6 +71,12 @@ public:
     };
     [[nodiscard]] static std::unique_ptr<PoolUse> AcquirePoolUse(
         std::shared_ptr<MempoolService> service);
+    // Caller has fenced RPC/background wallet admission first, outside every
+    // selected-chain/operation owner. Failure restores the old admission gate.
+    [[nodiscard]] static std::unique_ptr<ReopenServiceFence> FenceForReopen(
+        std::shared_ptr<MempoolService>,std::chrono::milliseconds timeout);
+    void ForEachReopenCandidate(const ReopenServiceFence&,
+        const std::function<void(const MempoolEntry&)>&) const;
 
     // Access to wrapped mempool
     // Legacy borrowed reference: caller must serialize shutdown. For complete
@@ -263,6 +271,8 @@ private:
     mutable std::map<std::thread::id,size_t> operations_by_thread_;
     mutable size_t active_operations_=0;
     bool accepting_=false,stopping_=false;
+    bool reopen_fenced_=false;
+    std::thread::id reopen_thread_;
     std::thread::id stopping_thread_;
     std::unique_ptr<Mempool> mempool_;
 

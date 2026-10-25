@@ -1,4 +1,6 @@
 #pragma once
+#include "daemon/services/reopen_service_fence.h"
+#include <chrono>
 #include "daemon/iservice.h"
 #include "wallet/wallet_manager.h"
 #include "wallet/hd_wallet.h"
@@ -88,6 +90,9 @@ public:
     };
     [[nodiscard]] static std::unique_ptr<WalletUse> AcquireWalletUse(
         std::shared_ptr<WalletService> service);
+    [[nodiscard]] static std::unique_ptr<ReopenServiceFence> FenceForReopen(
+        std::shared_ptr<WalletService>,std::chrono::milliseconds timeout);
+    std::string ReopenWalletName(const ReopenServiceFence&) const;
 
     // Legacy borrowed reference: callers still serialize shutdown themselves.
     WalletManager& get() { return *wallet_mgr_; }
@@ -120,6 +125,8 @@ private:
     mutable size_t active_operations_=0;
     bool accepting_=false;
     bool stopping_=false;
+    bool reopen_fenced_=false;
+    std::thread::id reopen_thread_;
     std::thread::id stopping_thread_;
     std::unique_ptr<WalletManager> wallet_mgr_;
     struct OrchardProofOwner;

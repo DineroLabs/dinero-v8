@@ -239,6 +239,23 @@ physical-phone viability from host/synthetic memory measurements.
 
 ## Acceptance gates
 
+The owner selected automatic internal close/reopen, not an in-place raw-forest
+swap. Before it is enabled, it must preserve/reopen the active named wallet
+without importing its phrase; suppress semantic queueshield/queuesend refusals
+during the pause (retryable restarting/no reply); retain/revalidate or re-broadcast
+mempool and durable pending private payments; and pass a real activation-crossing
+regtest with a named wallet and queued payment. These gates are not yet cleared.
+
+Wallet and mempool services now offer reversible, thread-affine admission fences.
+Existing operations drain; abort resumes the same manager/pool; commit permits
+ordinary Stop with admission still closed. An inactive/foreign fence cannot read
+state and same-thread Stop requires an explicit fence decision. Existing wallet
+operations may finish lazy proof-worker setup during this reversible drain, but
+not during actual Stop. Native tests cover named-wallet fence abort/cold open
+and export/normal re-admission of genuinely accepted mixed-family candidates.
+No RPC pause, durable candidate journal or automatic restart is enabled by these
+fences alone; their callers must fence RPC first and persist work before commit.
+
 The thread-affine catalog download actor now handles one capability/connection/
 nonce-bound flight, sequential disk-backed pages, a single identical page retry,
 16 requests/second, 30-second idle and 20-minute network-flight limits, cancellation

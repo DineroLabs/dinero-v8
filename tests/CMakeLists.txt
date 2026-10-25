@@ -5561,6 +5561,8 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_assumeutxo_replay.cpp)
   add_test(NAME OrchardCatalogTransfer COMMAND test_assumeutxo_replay --gtest_filter=OrchardCatalogTransfer.*)
   add_test(NAME OrchardCatalogClient COMMAND test_assumeutxo_replay --gtest_filter=OrchardCatalogClient.*)
   set_tests_properties(OrchardCatalogClient PROPERTIES TIMEOUT 120 LABELS "daemon;orchard;p2p;mandatory")
+  add_test(NAME OrchardReopenFences COMMAND test_assumeutxo_replay --gtest_filter=OrchardReopenFences.*)
+  set_tests_properties(OrchardReopenFences PROPERTIES TIMEOUT 120 LABELS "daemon;orchard;mempool;mandatory")
   add_test(NAME OrchardActivationOrigin COMMAND test_assumeutxo_replay --gtest_filter=OrchardActivationOrigin.*)
   set_tests_properties(OrchardActivationOrigin PROPERTIES TIMEOUT 120 LABELS "daemon;orchard;recovery;mandatory")
   set_tests_properties(OrchardCatalogTransfer PROPERTIES TIMEOUT 120 LABELS "daemon;orchard;p2p;mandatory")
@@ -9343,7 +9345,13 @@ if(TARGET nodecore_ffi)
       NODECORE_SCENARIO=storage_readiness
       NODECORE_EVIDENCE_DIR=${CMAKE_BINARY_DIR}/Testing/nodecore-runtime
       python3 ${CMAKE_SOURCE_DIR}/tests/integration/test_nodecore_runtime.py)
-  set_tests_properties(NodeCoreRuntimeLifecycle NodeCoreSnapshotConsumers NodeCoreDatadirLock NodeCoreStorageReadiness PROPERTIES
+  add_test(NAME NodeCoreReopenFences
+    COMMAND ${CMAKE_COMMAND} -E env
+      NODECORE_DRIVER=$<TARGET_FILE:nodecore_runtime_driver>
+      NODECORE_SCENARIO=reopen_fences
+      NODECORE_EVIDENCE_DIR=${CMAKE_BINARY_DIR}/Testing/nodecore-runtime
+      python3 ${CMAKE_SOURCE_DIR}/tests/integration/test_nodecore_runtime.py)
+  set_tests_properties(NodeCoreRuntimeLifecycle NodeCoreSnapshotConsumers NodeCoreDatadirLock NodeCoreStorageReadiness NodeCoreReopenFences PROPERTIES
     LABELS "integration;nodecore;restart;storage" TIMEOUT 300 RUN_SERIAL TRUE)
   add_test(NAME NodeCoreMaintenanceGate
     COMMAND ${CMAKE_COMMAND} -E env

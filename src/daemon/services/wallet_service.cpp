@@ -40,7 +40,7 @@ wallet::OrchardProofJobs& WalletService::ProofsForCurrentUse() const {
     if(!wallet_mgr_||!operations_by_thread_.contains(std::this_thread::get_id()))
         throw std::runtime_error("Wallet proof execution requires an active service owner");
     if(!orchard_proofs_){
-        if(!accepting_||stopping_)throw std::runtime_error("Wallet proof execution unavailable during shutdown");
+        if((!accepting_&&!reopen_fenced_)||stopping_)throw std::runtime_error("Wallet proof execution unavailable during shutdown");
         auto owned=std::make_unique<OrchardProofOwner>();
         orchard_proofs_=std::move(owned);
     }
@@ -53,6 +53,37 @@ wallet::OrchardProofJobs& WalletService::ProofsForCurrentUse() const {
 // Constructor and destructor must be defined in .cpp to allow unique_ptr<ZKWalletSync> with forward declaration
 WalletService::WalletService() = default;
 WalletService::~WalletService() = default;
+
+std::unique_ptr<ReopenServiceFence> WalletService::FenceForReopen(
+    std::shared_ptr<WalletService> service,std::chrono::milliseconds timeout) {
+    if(!service||timeout<std::chrono::milliseconds::zero()||timeout>std::chrono::seconds(30))
+        throw std::invalid_argument("Invalid wallet reopen fence");
+    std::unique_lock lock(service->operation_mutex_);
+    if(service->operations_by_thread_.contains(std::this_thread::get_id())||service->stopping_||
+        service->reopen_fenced_||!service->accepting_||!service->wallet_mgr_)
+        throw std::runtime_error("Wallet reopen fence unavailable");
+    service->accepting_=false;service->reopen_fenced_=true;service->reopen_thread_=std::this_thread::get_id();
+    const auto resume=[service](bool open){
+        std::lock_guard guard(service->operation_mutex_);
+        if(!service->reopen_fenced_||service->reopen_thread_!=std::this_thread::get_id())std::terminate();
+        service->reopen_fenced_=false;service->reopen_thread_={};
+        if(open&&service->wallet_mgr_&&!service->stopping_)service->accepting_=true;
+        service->operation_changed_.notify_all();
+    };
+    std::unique_ptr<ReopenServiceFence> fence;
+    try {fence.reset(new ReopenServiceFence(service.get(),resume));}
+    catch(...){service->accepting_=true;service->reopen_fenced_=false;service->reopen_thread_={};throw;}
+    bool drained=false;
+    try{drained=service->operation_changed_.wait_for(lock,timeout,[&]{return service->active_operations_==0;});}
+    catch(...){lock.unlock();fence.reset();throw;}
+    if(!drained){
+        lock.unlock();fence.reset();throw std::runtime_error("Wallet reopen fence timed out");
+    }
+    return fence;
+}
+std::string WalletService::ReopenWalletName(const ReopenServiceFence& fence) const {
+    fence.RequireOwner(this);return wallet_mgr_->getCurrentWalletName();
+}
 
 bool WalletService::Init(DaemonContext& ctx) {
     // Init/Start remain serialized startup operations. Never replace a manager
@@ -610,6 +641,9 @@ void WalletService::Stop() {
         std::unique_lock<std::mutex> lock(operation_mutex_);
         if (operations_by_thread_.count(std::this_thread::get_id()))
             throw std::logic_error("Cannot stop wallet service inside an active operation");
+        if(reopen_fenced_&&reopen_thread_==std::this_thread::get_id())
+            throw std::logic_error("Commit or abandon the wallet reopen fence before Stop");
+        operation_changed_.wait(lock,[&]{return !reopen_fenced_;});
         while (stopping_) {
             if (stopping_thread_==std::this_thread::get_id())
                 throw std::logic_error("Recursive wallet shutdown is not available");

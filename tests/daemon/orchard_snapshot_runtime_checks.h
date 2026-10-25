@@ -35,6 +35,28 @@ struct OrchardSnapshotStoreTestAccess {
         std::lock_guard<AnnotatedRecursiveMutex> lock(mutex);return OrchardSnapshotStore::RecoverBaseMarkers(mutex,db,token,headers);
     }
 };
+TEST(OrchardReopenFences, CommittedPoolFenceExportsTypedCandidatesForCanonicalReadmission){
+    CanonicalPoolFixture fixture;const auto first=fixture.Build();ASSERT_TRUE(first);
+    const auto survivor=CanonicalPoolSurvivor(fixture);ASSERT_TRUE(fixture.f.ingress->SubmitBody(survivor,TxOrigin::INTERNAL).accepted());
+    std::vector<std::vector<uint8_t>> candidates;bool orchard=false,historical=false;
+    auto fence=MempoolService::FenceForReopen(fixture.f.ingress,std::chrono::milliseconds(100));
+    fixture.f.ingress->ForEachReopenCandidate(*fence,[&](const auto& entry){
+        orchard|=entry.tx.IsOrchard();historical|=!entry.tx.IsOrchard();candidates.push_back(entry.tx.Serialize());
+    });
+    ASSERT_EQ(candidates.size(),2u);EXPECT_TRUE(orchard);EXPECT_TRUE(historical);
+    EXPECT_ANY_THROW(MempoolService::AcquirePoolUse(fixture.f.ingress));
+    EXPECT_ANY_THROW(fixture.f.ingress->Stop());
+    fence->CommitToStop();
+    EXPECT_ANY_THROW(fixture.f.ingress->ForEachReopenCandidate(*fence,[](const auto&){}));
+    fixture.f.ingress->Stop();
+    auto reopened=std::make_shared<MempoolService>();ASSERT_TRUE(reopened->Init(fixture.context));
+    fixture.context.mempool=reopened;fixture.f.ingress=reopened;
+    for(const auto& bytes:candidates){
+        const auto body=DecodeRelayTransaction(bytes,RelayTransactionReadMode::AvailableFamilies);
+        const auto accepted=reopened->SubmitBody(body,TxOrigin::INTERNAL);EXPECT_TRUE(accepted.accepted())<<accepted.message;
+    }
+    EXPECT_EQ(reopened->mempool().size(),2u);EXPECT_EQ(fixture.f.service->GetActiveTip()->height,101u);
+}
 TEST(OrchardCatalogClient, SequentialConnectionBoundDownloadAuthenticatesWithoutPublishing){
     using namespace consensus;using Transfer=p2p::OrchardCatalogTransfer;using Client=p2p::OrchardCatalogClient;
     CanonicalPoolFixture source(true);MutableParams().orchard_catalog_commitment_activation_height=102;

@@ -249,6 +249,27 @@ def storage_readiness(node):
     check("refusal keeps wallet seed", seeds(linked) == original_seeds)
 
 
+def reopen_fences(node):
+    path = datadir("reopen-fence-owner")
+    phrase = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
+    check("real Core for fences starts", node.start(path) == 0)
+    restored = node.rpc("wallet.restore", {"name":"reopen-owner", "mnemonic":phrase, "rescan":False})
+    check("named fixture wallet is open", restored["success"] is True)
+    probe = node.call("reopen_fences")
+    check("real wallet and pool reopen fences", probe == {
+        "wallet_name":"reopen-owner", "candidate_count":0,
+        "foreign_fence_refused":True,
+        "wallet_reentrant_refused":True, "pool_reentrant_refused":True,
+        "wallet_gate_closed":True, "pool_gate_closed":True,
+        "wallet_stop_requires_decision":True, "pool_stop_requires_decision":True}, probe)
+    check("aborted fences keep live context", node.rpc("getblockcount") == 0)
+    check("named wallet opens without phrase after fence abort", node.rpc("wallet.open", ["reopen-owner"])["success"] is True)
+    check("fence fixture stops", node.call("stop") == 0)
+    check("fence fixture cold reopens", node.start(path) == 0)
+    check("named wallet reopens without phrase after ordinary restart", node.rpc("wallet.open", ["reopen-owner"])["success"] is True)
+    check("fence fixture closes", node.call("stop") == 0)
+
+
 def stopped_wallet_birth_height(path, name):
     # Only inspect the synthetic wallet after nodecore_stop has closed it.
     database = path / "wallets" / f"wallet_{name}.db"
@@ -524,6 +545,7 @@ success = False
 try:
     try:
         {"lifecycle": lifecycle, "datadir_lock": datadir_lock, "storage_readiness": storage_readiness,
+         "reopen_fences": reopen_fences,
          "snapshot": snapshot, "maintenance": maintenance,
          "maintenance_gate": maintenance_gate}[os.environ["NODECORE_SCENARIO"]](node)
         success = True
