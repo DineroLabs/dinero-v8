@@ -111,15 +111,30 @@ jobs:
           path: |
             third_party/openssl-3.5.7
             third_party/bulletproofs_ffi/target
-          key: linux-release-vendored-${{ hashFiles('scripts/build-openssl-vendored.sh', 'third_party/bulletproofs_ffi/Cargo.lock') }}
+            depends/sources
+          key: linux-release-vendored-${{ hashFiles('scripts/build-openssl-vendored.sh', 'third_party/bulletproofs_ffi/Cargo.lock', 'depends/packages/*.cmake') }}
 
       - name: Build vendored OpenSSL 3.5.7
         run: bash scripts/build-openssl-vendored.sh
 
-      # Pinned release flag set. GPU mining and port mapping are OFF so the
-      # artifact never links libOpenCL / libminiupnpc / libnatpmp regardless of
-      # what the runner happens to have installed. Hardware wallets stay ON
-      # (libudev), matching the deployed fleet contract.
+      # Static miniupnpc + libnatpmp from depends/, so UPnP / NAT-PMP port
+      # mapping ships without adding a NEEDED entry. The toolchain path must be
+      # absolute: CMake resolves a relative one against the build directory.
+      - name: Build depends (miniupnpc + libnatpmp, static)
+        run: |
+          cmake -S depends -B depends/build -G Ninja \
+            -DCMAKE_TOOLCHAIN_FILE="$PWD/depends/toolchains/linux-x86_64.cmake"
+          cmake --build depends/build -j"$(nproc)"
+          grep '^DINERO_DEPENDS_PREFIX=' depends/current-prefix.env >> "$GITHUB_ENV"
+
+      # Pinned release flag set. GPU mining is OFF so the artifact never links
+      # libOpenCL regardless of what the runner has installed. Port mapping and
+      # QUIC are ON and REQUIRED: miniupnpc/libnatpmp come statically from the
+      # depends prefix above (no NEEDED entry -- the allow-list below still
+      # enforces that), and QUIC's TLS bridge uses the vendored OpenSSL. A node
+      # without them cannot open router ports or carry encrypted relay
+      # traffic. Hardware wallets stay ON (libudev), matching the deployed
+      # fleet contract.
       - name: Configure
         env:
           # Keep DWARF in the intermediate binaries. The public executables
@@ -133,7 +148,10 @@ jobs:
             -DDINERO_USE_VENDORED_DEPS=ON \
             -DENABLE_GRPC=OFF \
             -DENABLE_GPU_MINING=OFF \
-            -DDINERO_ENABLE_PORTMAPPING=OFF \
+            -DDINERO_ENABLE_PORTMAPPING=ON \
+            -DDINERO_DEPENDS_PREFIX="$DINERO_DEPENDS_PREFIX" \
+            -DDINERO_ENABLE_QUIC=ON \
+            -DDINERO_REQUIRE_REACHABILITY_STACK=ON \
             -DDINERO_RELEASE_TAG=${{ steps.ver.outputs.version }}
 
       - name: Build daemon and CLI
@@ -165,6 +183,11 @@ jobs:
             exit 1
           fi
           echo "dependency contract satisfied"
+
+      # Ask the finished binary, not the build files: UPnP, NAT-PMP, QUIC and
+      # the QUIC TLS bridge must all be compiled in.
+      - name: Assert reachability stack
+        run: python3 scripts/ci/check_reachability_stack.py --dinerod build-release/dinerod --cli build-release/dinero-cli
 
       - name: Report consensus checksum
         run: |
