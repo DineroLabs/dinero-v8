@@ -137,7 +137,25 @@ and reverified. Source-capture latency, disk use and device feasibility remain
 unqualified. Authenticated historical download and real-device qualification are
 still required for phones; replay scalability alone grants no mobile authority.
 
-## Stateless phone: selected transport and outstanding gate
+## Stateless phone: seamless transfer selected, integration unfinished
+
+The owner selected automatic authenticated catalog transfer, not a manual v6
+file or a fresh-datadir reset. The new boundary wire codec pins genesis, network
+magic, branch, activation, maturity-leaf rule, selected activation parent/block,
+and a local request nonce. A bounded sequential 64-KiB page stream uses private
+MAC-checked disk staging and a complete-content digest. Completion reuses the
+existing DNORST02 verifier and configured burial depth; peer hashes and headers
+alone cannot enroll a compact owner. The first activation proof carries complete
+parent/base catalog reachability and the full activation body, not path-only
+membership or caller metadata. No new consensus schedule is introduced.
+
+This codec is NOT yet daemon P2P negotiation/serving, atomic transition of an
+existing H149999 store, crash-safe startup recovery, or a wallet-history source.
+Those integration gates remain open. Automatic crossing may wait at the
+activation parent for the configured commitment burial. It does not require a
+user-managed snapshot, but does require an available archival peer and complete
+local authentication before crossing. Never lower burial or disable catalog
+validation to call crossing immediate or seamless.
 
 Proposed initial transport is on-demand full canonical block download from
 archival peers, not a trusted balance service. A phone need not keep history

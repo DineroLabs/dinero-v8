@@ -170,6 +170,13 @@ consensus::OrchardBlockContext OrchardSnapshotStore::Authenticate(const consensu
         base.height>=Params().witness_commitment_enforcement_height);
     return *context;
 }
+void OrchardSnapshotStore::VerifyCatalogTransferProof(const consensus::OrchardSnapshotSection& proof,
+    const consensus::HeaderChainSelector& headers) {
+    Require(proof.profile==consensus::OrchardSnapshotProfile::Compact&&
+        proof.state.height==Params().orchard_activation_height&&
+        Params().orchard_catalog_commitment_activation_height==Params().orchard_activation_height);
+    (void)Authenticate(proof,headers,Params().state_commitment_burial_depth);
+}
 OrchardSnapshotStore::Publication OrchardSnapshotStore::Install(AnnotatedRecursiveMutex& mutex,ChainDB& db,
     const ChainWriteToken& token,BlockStorage& files,const consensus::HeaderChainSelector& headers,
     const consensus::OrchardSnapshotFile& file) {

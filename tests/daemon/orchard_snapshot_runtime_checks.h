@@ -1,4 +1,5 @@
 #pragma once
+#include "p2p/orchard_catalog_transfer.h"
 #include "daemon/orchard_snapshot_store.h"
 #include "daemon/services/block_ingress_service.h"
 #include "consensus/validation_queue.h"
@@ -6,6 +7,9 @@
 #ifdef DINERO_TEST_ORCHARD_ORIGIN
 namespace dinero {
 struct OrchardSnapshotStoreTestAccess {
+    static auto Authenticate(const consensus::OrchardSnapshotSection& proof,const consensus::HeaderChainSelector& headers){
+        return OrchardSnapshotStore::Authenticate(proof,headers,Params().state_commitment_burial_depth);
+    }
     static void CreateFresh(const std::filesystem::path& path){OrchardSnapshotStore::CreateFreshStore(path);}
     static auto Capture(const ChainDB& db,consensus::OrchardSnapshotProfile profile,const std::vector<uint8_t>& accumulator) {
         return OrchardSnapshotStore::Capture(db,profile,accumulator);
@@ -23,6 +27,83 @@ struct OrchardSnapshotStoreTestAccess {
         std::lock_guard<AnnotatedRecursiveMutex> lock(mutex);return OrchardSnapshotStore::RecoverBaseMarkers(mutex,db,token,headers);
     }
 };
+TEST(OrchardCatalogTransfer, BoundaryProofStreamsWithoutPeerGrantedPublication){
+    using namespace consensus;using Transfer=p2p::OrchardCatalogTransfer;
+    CanonicalPoolFixture source(true);MutableParams().orchard_catalog_commitment_activation_height=102;
+    MutableParams().state_commitment_burial_depth=0;
+    const auto first=SolveCatalogTemplate(source.Build());ASSERT_TRUE(first);ASSERT_TRUE(source.Submit(first->WireBytes()).connected);
+    HeaderChainSelector headers;for(const auto& block:source.f.blocks)ASSERT_TRUE(headers.AddHeader(block.header));
+    ASSERT_TRUE(headers.AddHeader(first->Header()));
+    auto& live=ShieldedStateStartupTestAccess::CatalogWriterCoins(*source.f.service);
+    const auto proof=OrchardSnapshotStoreTestAccess::Capture(source.f.db,OrchardSnapshotProfile::Compact,
+        UtreexoStump::fromForest(live.GetForest()).serialize());
+    uint256 nonce;nonce.data[0]=7;const auto request=Transfer::Request::Selected(headers,nonce);
+    EXPECT_EQ(Transfer::Request::Decode(request.Encode()),request);
+    shielded_store_fixture::TempDir directory;Transfer::Sender sender(request,proof,directory.path);
+    const auto manifest=sender.Description().Encode();Transfer::Receiver receiver(request,manifest,headers,directory.path);
+    for(uint32_t i=0;i<sender.Description().Pages();++i){
+        const auto request_page=receiver.RequestNext();EXPECT_EQ(Transfer::PageRequest::Decode(request_page).index,i);
+        const auto page=sender.Serve(request_page);receiver.Accept(page);receiver.Accept(page);EXPECT_EQ(receiver.NextPage(),i+1);
+    }
+    const auto decoded=receiver.Finish(headers);
+    EXPECT_ANY_THROW(receiver.RequestNext());
+    EXPECT_TRUE(decoded.nodes.empty());ASSERT_TRUE(decoded.disk_nodes);
+    EXPECT_EQ(HashOrchardSnapshotSection(decoded),HashOrchardSnapshotSection(proof));
+    ASSERT_NO_THROW(OrchardSnapshotStoreTestAccess::Authenticate(decoded,headers));
+    EXPECT_ANY_THROW(receiver.Accept(sender.Page(0)));
+    EXPECT_ANY_THROW(receiver.Finish(headers));
+    // No consumer database or selected owner is passed to this transport.
+    // Successful framing/authentication is not installation or wallet history.
+    EXPECT_EQ(source.f.service->GetActiveTip()->hash,first->Header().GetHash());
+}
+TEST(OrchardCatalogTransfer, ForeignUnburiedTruncatedAndCorruptTransfersRefuse){
+    using namespace consensus;using Transfer=p2p::OrchardCatalogTransfer;
+    CanonicalPoolFixture source(true);MutableParams().orchard_catalog_commitment_activation_height=102;
+    MutableParams().state_commitment_burial_depth=0;
+    const auto first=SolveCatalogTemplate(source.Build());ASSERT_TRUE(first);ASSERT_TRUE(source.Submit(first->WireBytes()).connected);
+    HeaderChainSelector headers;for(const auto& block:source.f.blocks)ASSERT_TRUE(headers.AddHeader(block.header));ASSERT_TRUE(headers.AddHeader(first->Header()));
+    auto& live=ShieldedStateStartupTestAccess::CatalogWriterCoins(*source.f.service);
+    const auto proof=OrchardSnapshotStoreTestAccess::Capture(source.f.db,OrchardSnapshotProfile::Compact,
+        UtreexoStump::fromForest(live.GetForest()).serialize());
+    uint256 nonce;nonce.data[0]=8;const auto request=Transfer::Request::Selected(headers,nonce);
+    Transfer::Sender sender(request,proof);const auto manifest=sender.Description().Encode();
+    for(const auto offset:{6u,10u,11u,43u,75u,79u,83u,87u,119u}){
+        auto bad=manifest;bad.at(offset)^=1;
+        EXPECT_ANY_THROW(Transfer::Receiver(request,bad,headers));
+    }
+    auto truncated=manifest;truncated.pop_back();EXPECT_ANY_THROW(Transfer::Manifest::Decode(truncated));
+    auto trailing=manifest;trailing.push_back(0);EXPECT_ANY_THROW(Transfer::Manifest::Decode(trailing));
+    auto huge=sender.Description();huge.bytes=Transfer::MaximumBytes+1;EXPECT_ANY_THROW(huge.Encode());
+    Transfer::PageRequest wrong_page{sender.Description().Id(),sender.Description().Pages()};
+    EXPECT_ANY_THROW(sender.Serve(wrong_page.Encode()));
+    wrong_page.index=0;wrong_page.transfer.data[0]^=1;EXPECT_ANY_THROW(sender.Serve(wrong_page.Encode()));
+    auto short_request=Transfer::PageRequest{sender.Description().Id(),0}.Encode();short_request.pop_back();
+    EXPECT_ANY_THROW(sender.Serve(short_request));
+    MutableParams().state_commitment_burial_depth=1;
+    EXPECT_ANY_THROW(Transfer::Request::Selected(headers,nonce));
+    EXPECT_ANY_THROW(Transfer::Receiver(request,manifest,headers));
+    MutableParams().state_commitment_burial_depth=0;
+    {Transfer::Receiver incomplete(request,manifest,headers);
+     EXPECT_ANY_THROW(incomplete.Finish(headers));
+     EXPECT_ANY_THROW(incomplete.NextPage());}
+    {Transfer::Receiver wrong(request,manifest,headers);auto page=sender.Page(0);page.at(0)^=1;
+     EXPECT_ANY_THROW(wrong.Accept(page));
+     EXPECT_ANY_THROW(wrong.Accept(sender.Page(0)));}
+    {Transfer::Receiver wrong(request,manifest,headers);auto page=sender.Page(0);page.at(32)=255;
+     EXPECT_ANY_THROW(wrong.Accept(page));}
+    {Transfer::Receiver wrong(request,manifest,headers);
+     for(uint32_t i=0;i<sender.Description().Pages();++i){auto page=sender.Page(i);if(!i)page.back()^=1;wrong.Accept(page);}
+     EXPECT_ANY_THROW(wrong.Finish(headers));}
+    {Transfer::Receiver wrong(request,manifest,headers);auto page=sender.Page(0);page.pop_back();EXPECT_ANY_THROW(wrong.Accept(page));}
+    auto forged=proof;forged.state.pool_balance+=1;
+    // The peer can legitimately hash a self-consistent lie. Only the selected
+    // coinbase commitment check distinguishes it from genuine authenticated data.
+    EXPECT_ANY_THROW(OrchardSnapshotStoreTestAccess::Authenticate(forged,headers));
+    Transfer::Sender liar(request,forged);Transfer::Receiver lied_to(request,liar.Description().Encode(),headers);
+    for(uint32_t i=0;i<liar.Description().Pages();++i)lied_to.Accept(liar.Page(i));
+    EXPECT_ANY_THROW(lied_to.Finish(headers));
+    EXPECT_EQ(source.f.service->GetActiveTip()->hash,first->Header().GetHash());
+}
 TEST(OrchardSnapshotRuntime, FullNodeRejectsBadDnorst02WithCompactBootstrapOff) {
     using namespace consensus;
     CanonicalPoolFixture fixture(true);MutableParams().orchard_catalog_commitment_activation_height=102;

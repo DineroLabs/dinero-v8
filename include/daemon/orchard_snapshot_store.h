@@ -11,6 +11,12 @@ class OrchardBranchReplay;
 // checksum cannot enroll a compact owner. Only the service may invoke this
 // installer while holding its real activation mutex and datadir ownership.
 class OrchardSnapshotStore final {
+public:
+    // Read-only proof check. A successful return grants no publication, replay
+    // or compact-owner capability; installation still rechecks selected state.
+    static void VerifyCatalogTransferProof(const consensus::OrchardSnapshotSection&,
+        const consensus::HeaderChainSelector&);
+private:
     friend class ChainstateService;
     friend class DaemonApp;
     friend struct OrchardSnapshotStoreTestAccess;
