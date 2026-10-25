@@ -245,8 +245,20 @@ the guard until the worker, services and database have closed. The persistent
 maintenance fence is checked both before lock acquisition and on that pinned
 root. Native executable tests exercise root-lock contention through alias and
 resolved paths and release after completed stop. This prerequisite does not
-itself enable legacy-store migration, install a catalog or qualify iOS/Android
-filesystem behavior; those remain separate gates.
+itself install a catalog or qualify iOS/Android filesystem behavior.
+
+The SDK now opts into the existing reviewed separated-layout upgrade under that
+guard, including stateless profiles. A brand-new scheduled store first runs an
+offline genesis bootstrap under the same lock, persists its real cohort, closes
+all stores, then performs the ordinary copy/verify/swap before the real Init.
+Existing stores skip the fresh bootstrap. The migration engine, original LOCK,
+checksums, synced writes, cohort checks, no-follow/inode/hardlink rules, space
+budget and interrupted-swap handling are unchanged. Refusal still keeps legacy
+storage and reports inability to follow Orchard; it grants no compact owner.
+Native tests cover fresh and existing SDK stores, seed-row preservation, cold
+reopen and the inner-symlink refusal. The shared lock uses real flock on iOS too;
+only unavailable libproc process-name diagnostics use the pre-existing
+conservative live-PID fallback. This is not a framework or device qualification.
 
 - Existing unknown/missing/corrupt/untracked catalog and seed-replacement
   refusals remain negative. New enrollment tests cover atomicity, source gaps,

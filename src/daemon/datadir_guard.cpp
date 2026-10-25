@@ -16,7 +16,10 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #if defined(__APPLE__)
+#include <TargetConditionals.h>
+#if !TARGET_OS_IPHONE
 #include <libproc.h>
+#endif
 #endif
 #endif
 
@@ -38,7 +41,7 @@ bool ProcessLooksLikeDinerod(int pid) {
         return false;
     }
 
-#if defined(__APPLE__)
+#if defined(__APPLE__) && !TARGET_OS_IPHONE
     char proc_name_buf[PROC_PIDPATHINFO_MAXSIZE] = {};
     const int rc = proc_name(pid, proc_name_buf, sizeof(proc_name_buf));
     if (rc <= 0) {
@@ -56,6 +59,9 @@ bool ProcessLooksLikeDinerod(int pid) {
     std::getline(comm_file, proc_name);
     return proc_name.find("dinerod") != std::string::npos;
 #else
+    // iOS has no public libproc API. Keep the existing conservative live-PID
+    // refusal, as on other unsupported platforms; the real flock remains the
+    // ownership authority. Never substitute a no-lock mobile implementation.
     return true;
 #endif
 }

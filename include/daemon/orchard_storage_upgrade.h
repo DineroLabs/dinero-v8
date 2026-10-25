@@ -19,8 +19,8 @@
 // start over; migrated -> swap; swapping -> finish the renames.
 //
 // The caller holds the datadir lock and has not opened ChainDB yet, so the
-// engine can take the store's own LOCK. Only native daemons call this
-// (DaemonApp::SetAutomaticStorageUpgrade); NodeCore does not.
+// engine can take the store's own LOCK. DaemonApp's native and embedded hosts
+// opt in under the same real DatadirGuard (SetAutomaticStorageUpgrade).
 #include "consensus/chainparams.h"
 #include "daemon/chainstate_recovery_marker.h"
 #include "storage/shielded_migration.h"

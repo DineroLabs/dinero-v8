@@ -9335,7 +9335,13 @@ if(TARGET nodecore_ffi)
       NODECORE_SCENARIO=datadir_lock
       NODECORE_EVIDENCE_DIR=${CMAKE_BINARY_DIR}/Testing/nodecore-runtime
       python3 ${CMAKE_SOURCE_DIR}/tests/integration/test_nodecore_runtime.py)
-  set_tests_properties(NodeCoreRuntimeLifecycle NodeCoreSnapshotConsumers NodeCoreDatadirLock PROPERTIES
+  add_test(NAME NodeCoreStorageReadiness
+    COMMAND ${CMAKE_COMMAND} -E env
+      NODECORE_DRIVER=$<TARGET_FILE:nodecore_runtime_driver>
+      NODECORE_SCENARIO=storage_readiness
+      NODECORE_EVIDENCE_DIR=${CMAKE_BINARY_DIR}/Testing/nodecore-runtime
+      python3 ${CMAKE_SOURCE_DIR}/tests/integration/test_nodecore_runtime.py)
+  set_tests_properties(NodeCoreRuntimeLifecycle NodeCoreSnapshotConsumers NodeCoreDatadirLock NodeCoreStorageReadiness PROPERTIES
     LABELS "integration;nodecore;restart;storage" TIMEOUT 300 RUN_SERIAL TRUE)
   add_test(NAME NodeCoreMaintenanceGate
     COMMAND ${CMAKE_COMMAND} -E env

@@ -193,6 +193,62 @@ def state(node):
             "shielded": node.rpc("daemon.shieldedroot")}
 
 
+def storage_readiness(node):
+    def layout(path):
+        db = path / "blockchain" / "chaindb"
+        options = sorted(db.glob("OPTIONS-*"))
+        return bool(options) and "shielded_state_v1" in options[-1].read_text(errors="replace")
+    def seeds(path):
+        # Inspect only closed disposable wallets, retaining digests not seed
+        # material in the test's output. Migration must not change these rows.
+        found = {}
+        for db in sorted((path / "wallets").glob("wallet_*.db")):
+            with sqlite3.connect(db.as_uri()+"?mode=ro", uri=True) as sql:
+                rows = sql.execute("SELECT * FROM hd_seeds ORDER BY id").fetchall()
+            found[db.name] = hashlib.sha256(repr(rows).encode()).hexdigest()
+        assert found, "real bootstrap must create a wallet"
+        return found
+    path = datadir("fresh-stateless-ready").resolve()
+    check("fresh scheduled stateless SDK starts", node.start(path, network="mainnet", sync_profile="ios_utreexo") == 0)
+    before = state(node)
+    check("fresh scheduled SDK is separated before sync", layout(path))
+    check("fresh readiness closes", node.call("stop") == 0)
+    original_seeds = seeds(path)
+    check("fresh readiness cold reopen", node.start(path, network="mainnet", sync_profile="ios_utreexo") == 0)
+    check("fresh readiness roots unchanged", state(node) == before)
+    check("fresh readiness second close", node.call("stop") == 0)
+    check("fresh readiness keeps wallet seed", seeds(path) == original_seeds)
+
+    legacy = datadir("legacy-stateless-ready").resolve()
+    check("real stopped legacy fixture", node.call("legacy_storage_fixture", datadir=str(legacy)) == 0)
+    check("fixture is legacy before embedded start", not layout(legacy))
+    original_seeds = seeds(legacy)
+    sentinel = legacy / "wallets" / "pending-sentinel"
+    sentinel.write_bytes(b"fixture-outside-chaindb-must-not-change")
+    check("SDK upgrades existing legacy store for stateless profile", node.start(legacy, network="mainnet", sync_profile="ios_utreexo") == 0)
+    check("legacy store separated", layout(legacy))
+    check("original legacy store retained", (legacy/"blockchain"/"chaindb.legacy-v1").is_dir())
+    check("migration kept canonical genesis", state(node) == before)
+    check("migration closes", node.call("stop") == 0)
+    check("migration keeps seed and unrelated pending file", seeds(legacy) == original_seeds and sentinel.read_bytes() == b"fixture-outside-chaindb-must-not-change")
+    check("migrated stateless SDK cold reopens", node.start(legacy, network="mainnet", sync_profile="ios_utreexo") == 0)
+    check("migrated cold roots unchanged", state(node) == before)
+    check("migrated final close", node.call("stop") == 0)
+
+    linked = datadir("inner-symlink-refusal").resolve()
+    check("real legacy fixture for inner-symlink negative", node.call("legacy_storage_fixture", datadir=str(linked)) == 0)
+    original_seeds = seeds(linked)
+    (linked/"blockchain").rename(linked/"private-blockchain")
+    (linked/"blockchain").symlink_to(linked/"private-blockchain", target_is_directory=True)
+    check("preactivation refusal can still report its status", node.start(linked, network="mainnet", sync_profile="ios_utreexo") == 0)
+    report = node.rpc("orchard.getactivationstatus")
+    check("inner-symlink migration guard still refuses", report["storage_upgrade_refused"] is True, report)
+    check("refusal does not publish separated layout", not layout(linked) and not (linked/"blockchain"/"chaindb.legacy-v1").exists())
+    check("refusal keeps canonical genesis", state(node) == before)
+    check("refused store closes", node.call("stop") == 0)
+    check("refusal keeps wallet seed", seeds(linked) == original_seeds)
+
+
 def stopped_wallet_birth_height(path, name):
     # Only inspect the synthetic wallet after nodecore_stop has closed it.
     database = path / "wallets" / f"wallet_{name}.db"
@@ -467,7 +523,8 @@ node = Embedded()
 success = False
 try:
     try:
-        {"lifecycle": lifecycle, "datadir_lock": datadir_lock, "snapshot": snapshot, "maintenance": maintenance,
+        {"lifecycle": lifecycle, "datadir_lock": datadir_lock, "storage_readiness": storage_readiness,
+         "snapshot": snapshot, "maintenance": maintenance,
          "maintenance_gate": maintenance_gate}[os.environ["NODECORE_SCENARIO"]](node)
         success = True
     finally:

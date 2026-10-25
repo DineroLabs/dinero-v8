@@ -573,9 +573,41 @@ int32_t nodecore_start(const char* datadir, const char* config_json) {
         fprintf(stderr, "[nodecore_ffi] quiet logging active (pass verbose_logging=true to restore)\n");
     }
 
-    // Create and initialize DaemonApp
+    // A brand-new scheduled store needs the same genesis cohort as dinerod
+    // before the reviewed legacy->separated migration can run. This short
+    // bootstrap is always offline, under the SAME root guard, and closes every
+    // store before the real Init. It never enrolls a compact owner or replaces
+    // an existing wallet. Existing stores return before opening ChainDB here.
+    try {
+        auto bootstrap_args = args_storage;
+        bootstrap_args.insert(bootstrap_args.end(), {"--p2p.offline=1", "--listen=0",
+            "--rpc.port=0", "--wallet.socket.enable=0"});
+        std::vector<char*> bootstrap_argv;
+        for (auto& arg : bootstrap_args) bootstrap_argv.push_back(arg.data());
+        dinero::DaemonApp bootstrap;
+        bootstrap.SetLockedDatadir(*datadir_guard);
+        bootstrap.SetAutomaticStorageUpgrade(true);
+        bootstrap.SetFreshStoreBootstrapOnly(true);
+        if (!bootstrap.Init(static_cast<int>(bootstrap_argv.size()), bootstrap_argv.data()))
+            return NODECORE_ERROR_INIT_FAILED;
+        if (bootstrap.FreshStoreCreated()) {
+            if (!bootstrap.Start() || !bootstrap.PersistFreshStoreGenesisRecords()) {
+                bootstrap.Stop();
+                return NODECORE_ERROR_INIT_FAILED;
+            }
+            bootstrap.Stop();
+        }
+    } catch (const std::exception& error) {
+        fprintf(stderr, "[nodecore_ffi] storage preparation failed: %s\n", error.what());
+        return NODECORE_ERROR_INIT_FAILED;
+    }
+
+    // Create and initialize DaemonApp. The reviewed copy/verify/swap engine
+    // still refuses corrupt, aliased-inner, unfinished or concurrently held
+    // stores; refusal is reported by the existing activation-status RPCs.
     s.app = std::make_unique<dinero::DaemonApp>();
     s.app->SetLockedDatadir(*datadir_guard);
+    s.app->SetAutomaticStorageUpgrade(true);
 
     if (!s.app->Init(static_cast<int>(argv_ptrs.size()), argv_ptrs.data())) {
         s.app.reset();

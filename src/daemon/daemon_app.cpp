@@ -1107,7 +1107,7 @@ bool DaemonApp::Init(int argc, char** argv) {
         if (fresh_store_bootstrap_only_) {
 #ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
             fresh_store_created_ = automatic_storage_upgrade_ &&
-                Params().orchard_activation_height != UINT32_MAX && !GetConfig().utreexo_stateless &&
+                Params().orchard_activation_height != UINT32_MAX &&
                 daemon::IsBrandNewStore(chain_db_path);
 #else
             fresh_store_created_ = false;  // no upgrade without the Orchard backend
@@ -1120,8 +1120,7 @@ bool DaemonApp::Init(int argc, char** argv) {
         }
 #ifdef DINERO_HAS_ORCHARD_RUNTIME_READER  // the migration engine ships with the Orchard backend
         if(daemon::IsBrandNewStore(chain_db_path)) {
-            // SDKs deliberately do not migrate existing databases. A configured
-            // v6 bootstrap may create a NEW separated store directly; the
+            // A configured v6 bootstrap may create a NEW separated store directly; the
             // payload still has to pass selected-chain authentication at load.
             const std::filesystem::path snapshot=ctx_.config->GetString("assumeutxo_snapshot","");
             std::error_code error;const auto type=std::filesystem::symlink_status(snapshot,error);
@@ -1152,7 +1151,7 @@ bool DaemonApp::Init(int argc, char** argv) {
             }
         }
         if (automatic_storage_upgrade_ && !fresh_store_bootstrap_only_ &&
-            Params().orchard_activation_height != UINT32_MAX && !GetConfig().utreexo_stateless) {
+            Params().orchard_activation_height != UINT32_MAX) {
             // A refusal keeps the legacy store: the node runs until Orchard
             // activation and retries on every start (see the header).
             try {

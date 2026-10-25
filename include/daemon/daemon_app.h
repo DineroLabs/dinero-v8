@@ -71,7 +71,8 @@ public:
 
     // Native daemons upgrade a legacy store to the separated shielded-state
     // layout before opening it (daemon/orchard_storage_upgrade.h). Off by
-    // default: NodeCore and tests that drive the explicit migrator opt out.
+    // default for explicit migrator fixtures; dinerod and NodeCore opt in only
+    // while retaining their real operator-root datadir guard.
     void SetAutomaticStorageUpgrade(bool enabled) { automatic_storage_upgrade_ = enabled; }
     // Bootstrap run for a brand-new datadir: Init returns at once if the store
     // already exists; otherwise it creates genesis and persists the records

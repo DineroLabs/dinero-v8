@@ -3,17 +3,22 @@
 // Replies use a separate file because DaemonApp owns stdout/stderr logging.
 #include "nodecore/nodecore_ffi.h"
 #include "storage/chain_direct.h"
+#include "daemon/daemon_app.h"
+#include "daemon/datadir_guard.h"
+#include "consensus/chainparams.h"
 
 #include <json/json.h>
 #include <chrono>
 #include <condition_variable>
 #include <fstream>
+#include <filesystem>
 #include <future>
 #include <iostream>
 #include <mutex>
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 namespace {
 using namespace std::chrono_literals;
@@ -125,6 +130,26 @@ Json::Value StopAtCallback(const Json::Value& request) {
     result["callback_timed_out"] = gate.timed_out;
     return result;
 }
+
+// Real offline DaemonApp bootstrap, stopped BEFORE its second (migrating)
+// Init. Supplies a nine-family genesis cohort without test writes to ChainDB.
+Json::Value LegacyStorageFixture(const std::string& path) {
+    if (nodecore_is_running() || !std::filesystem::path(path).is_absolute() ||
+        std::filesystem::exists(std::filesystem::path(path)/"blockchain"))
+        throw std::runtime_error("legacy fixture requires a fresh isolated root");
+    dinero::daemon::DatadirGuard guard;std::string error;
+    if (!guard.Acquire(path,error)) throw std::runtime_error(error);
+    dinero::SelectParams(dinero::Chain::MAINNET);
+    std::vector<std::string> args{"legacy-storage-fixture", "--datadir="+guard.DataDir().string(),
+        "--p2p.offline=1","--listen=0","--rpc.port=0","--wallet.socket.enable=0",
+        "--lightning.oracles.enable=0","--sync-profile=mac_fullblock","--utreexo-stateless=0"};
+    std::vector<char*> argv;for(auto& arg:args)argv.push_back(arg.data());
+    dinero::DaemonApp app;app.SetLockedDatadir(guard);app.SetAutomaticStorageUpgrade(true);
+    app.SetFreshStoreBootstrapOnly(true);
+    if(!app.Init(int(argv.size()),argv.data())||!app.FreshStoreCreated()||!app.Start()||
+        !app.PersistFreshStoreGenesisRecords())throw std::runtime_error("legacy fixture bootstrap failed");
+    app.Stop();return 0;
+}
 } // namespace
 
 int main(int argc, char** argv) {
@@ -137,7 +162,9 @@ int main(int argc, char** argv) {
         try {
             const auto request = Parse(line);
             const auto operation = request["op"].asString();
-            if (operation == "start") {
+            if (operation == "legacy_storage_fixture") {
+                result = LegacyStorageFixture(request["datadir"].asString());
+            } else if (operation == "start") {
                 const auto path = request["datadir"].asString();
                 const auto config = Encode(request["config"]);
                 result = nodecore_start(path.c_str(), config.c_str());
