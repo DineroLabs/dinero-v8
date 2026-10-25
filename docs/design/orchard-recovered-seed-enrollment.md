@@ -112,9 +112,12 @@ account 0, scanned target and delivery digest. Other accounts remain refused.
 
 Publication atomically adopts the verified encrypted staging tables with the
 catalog in one FULL transaction, after fresh selected-tip/source/session checks.
-The initial owner retains at most 256 immediate parent snapshots. A deeper wallet
-rewind fails closed and requires a rescan; that deep-reorg rescan path is still
-open, not silently synthesized. Existing inventory and pending-owner checks are
+Staging is trimmed after every bounded call to at most 256 immediate parent
+snapshots; the next 64-event chunk may temporarily add at most 64 more. The
+initial admitted owner keeps that same window. A deeper source/wallet rewind
+fails closed and requires a complete rescan source; that deep-reorg rescan path
+is still open, not silently synthesized. A retained outbox containing a deeper
+rewind is not necessarily repairable by repeating `restart=true`. Existing inventory and pending-owner checks are
 unchanged. Recovery cannot reconstruct lost off-chain requests or unused receiver
 issuance history. A complete certificate is an as-of scan, not perpetual freshness.
 

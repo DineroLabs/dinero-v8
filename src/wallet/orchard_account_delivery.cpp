@@ -730,10 +730,11 @@ std::unique_ptr<OrchardAccount0RecoveryPlan> OrchardAccountDelivery::PrepareReco
     }
     const auto receipt=current.Delivery();const auto checkpoint=current.Scan().Checkpoint();
     data->observation={receipt.sequence==head.sequence,false,receipt.sequence,head.sequence,checkpoint.height,checkpoint.block_hash};
-    if(data->observation.complete){
-        // Keep a finite immediate-parent undo window in the admitted account.
-        // Older derived staging is not active/pending ownership. A deeper wallet
-        // rewind requires an explicit full rescan; never invent a missing parent.
+    {
+        // Bound uncertified disk retention after EVERY chunk, not only at final
+        // publication. A chunk can temporarily add at most 64 snapshots to this
+        // 256-parent window. Older cache is not active/pending ownership. Deep
+        // source/wallet rewinds refuse; never invent a missing parent or cursor.
         std::vector<uint64_t> keep;auto parent=current.ParentSnapshotRevision();
         std::optional<orchard::WalletStateBytes> cut;uint64_t cut_revision=0;
         while(parent&&keep.size()<256){

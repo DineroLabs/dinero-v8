@@ -326,5 +326,23 @@ TEST(OrchardAccount0Recovery, DdlAdoptionAndCommitRefusalRollBackCatalogAndActiv
     EXPECT_TRUE(saw_catalog);EXPECT_TRUE(uncommitted.isMember("error"));EXPECT_EQ(f.Snapshot(),before);EXPECT_FALSE(f.Catalog()->KnownInventory());
     const auto done=f.Recover();ASSERT_FALSE(done.isMember("error"))<<done.toStyledString();EXPECT_TRUE(done["complete"].asBool());
 }
+TEST(OrchardAccount0Recovery, StagingRetentionIsBoundedBeforeFinalPublication){
+    Account0RecoveryFixture f;for(size_t i=0;i<321;++i)f.MineEmpty();f.RestoreLate();
+    const auto catalog=f.Catalog();bool complete=false;size_t calls=0;
+    while(!complete&&calls<7){
+        const auto progress=f.Recover();ASSERT_FALSE(progress.isMember("error"))<<progress.toStyledString();
+        complete=progress["complete"].asBool();++calls;
+        if(!complete){
+            EXPECT_EQ(f.Catalog(),catalog);
+            auto use=WalletService::AcquireWalletUse(f.wallet);auto lease=use->Wallet().AcquireDatabaseLease();
+            sqlite3_stmt* rows=nullptr;
+            ASSERT_EQ(sqlite3_prepare_v2(lease->Database(),"SELECT count(*) FROM orchard_recovery_retained",-1,&rows,nullptr),SQLITE_OK);
+            ASSERT_EQ(sqlite3_step(rows),SQLITE_ROW);const auto count=sqlite3_column_int64(rows,0);sqlite3_finalize(rows);
+            EXPECT_LE(count,256); // Fails on the original complete-only pruning.
+        }
+    }
+    ASSERT_TRUE(complete);EXPECT_EQ(calls,6u);EXPECT_TRUE(f.Catalog()->recovered.has_value());
+    EXPECT_EQ(f.Account(0).account.Scan().BalanceUna(),0u);
+}
 #endif
 } // namespace dinero
