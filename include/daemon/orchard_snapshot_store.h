@@ -48,6 +48,14 @@ private:
         const ChainWriteToken&,const BlockStorage&,
         std::shared_ptr<const consensus::HeaderChainSelector>,
         std::shared_ptr<const consensus::OrchardSnapshotSection>,const std::function<bool()>& cancelled={});
+    // Revalidates the exact post-conversion delivery suffix, including every
+    // connect/undo/reconnect and the first Orchard block. The retained original
+    // fixes the coverage origin; its old marker is NOT promoted to execution.
+    // DATA audit only, no root choice, writer or lifecycle authority.
+    static storage::catalog::State AuditActivationEvents(AnnotatedRecursiveMutex&,const ChainDB& original,
+        const ChainDB& selected,const BlockStorage&,
+        std::shared_ptr<const consensus::HeaderChainSelector>,
+        std::shared_ptr<const consensus::OrchardSnapshotSection>,const std::function<bool()>& cancelled={});
     class CommitUncertain final:public std::runtime_error {
     public:CommitUncertain():std::runtime_error("v6 state commit outcome is uncertain; restart required"){}
     };

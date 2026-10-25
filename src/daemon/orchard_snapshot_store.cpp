@@ -541,6 +541,49 @@ storage::catalog::State OrchardSnapshotStore::AuditActivationSuffix(AnnotatedRec
 #endif
 }
 
+storage::catalog::State OrchardSnapshotStore::AuditActivationEvents(AnnotatedRecursiveMutex& mutex,
+    const ChainDB& original,const ChainDB& db,const BlockStorage& files,
+    std::shared_ptr<const consensus::HeaderChainSelector> headers,
+    std::shared_ptr<const consensus::OrchardSnapshotSection> proof,const std::function<bool()>& cancelled){
+    using namespace consensus;mutex.AssertHeld("audit authenticated activation delivery history");
+    const auto check=[&]{Require(!cancelled||!cancelled());};check();Require(headers&&proof);
+    VerifyCatalogTransferProof(*proof,*headers);const auto origin=storage::ReadOrchardActivationOrigin(db);
+    Require(origin&&origin->proof==HashOrchardSnapshotSection(*proof)&&
+        origin->parent_catalog==storage::catalog::Hash(proof->parent_catalog.Encode())&&
+        origin->source==HandoffStoreDigest(original,cancelled));
+    const auto base=Need(original.getTip()),anchor=Need(original.getValidatedTip()),tip=Need(db.getTip());
+    Require(base.height==int(proof->parent_catalog.height)&&base.hash==proof->parent_catalog.block&&base.work==proof->parent_catalog.work&&
+        anchor.height==int(origin->validated_height)&&anchor.hash==origin->validated&&
+        Need(db.getValidatedTip()).hash==anchor.hash&&Need(db.getValidatedTip()).height==anchor.height);
+    CheckLegacyRetirementBeforeImageUnderLock(original,proof->retirement.record);
+    const auto profile=Authenticate(*proof,*headers,Params().state_commitment_burial_depth);
+    const auto old=ReadRuntimeOutboxUnderLock(original,profile,{},1).head;
+    auto page=ReadRuntimeOutboxUnderLock(db,profile,old,32,16*1024*1024);const auto head=page.head;
+    auto replay=std::unique_ptr<OrchardBoundaryReplay>(new OrchardBoundaryReplay(proof,headers,uint32_t(tip.height),tip.hash,true));
+    const auto equal=[](const RuntimeOrchardReplay& a,const RuntimeOrchardReplay& b){
+        return a.parent==b.parent&&a.next==b.next&&a.coin_undo==b.coin_undo&&a.branch_mtp==b.branch_mtp;};
+    for(;;){
+        for(const auto& event:page.events){
+            check();Require(event.IsOrchardProfile()&&event.orchard_replay.has_value());
+            const auto block=OrchardBlockCandidate::DecodeExact(event.body);
+            const bool witness=Params().enforce_witness_commitment&&event.context.height>=Params().witness_commitment_enforcement_height;
+            Require(ReadStoredOrchardBlock(db,event.context.block_hash,witness,&files).WireBytes()==block.WireBytes());
+            if(event.direction==RuntimeBlockDirection::Connect){
+                const auto now=std::time(nullptr);Require(now>=0);const auto verified=replay->Append(block,uint64_t(now));
+                const RuntimeOrchardReplay actual{verified->State().Parent(),verified->State().Next(),
+                    BuildOrchardCoinUndo(verified->Coins()).Serialize(),verified->BranchMtp()};
+                Require(equal(actual,*event.orchard_replay));
+            }else Require(event.direction==RuntimeBlockDirection::Disconnect&&equal(replay->Rewind(block),*event.orchard_replay));
+        }
+        if(page.next==head)break;check();const auto before=page.next;
+        page=ReadRuntimeOutboxPrefixUnderLock(db,profile,head,before,32,16*1024*1024);Require(page.next!=before);
+    }
+    replay->Finish();Require(replay->state_==([&]()->std::optional<storage::OrchardStoredState>{
+        const auto state=db.getOrchardState();if(state.status()==Status::NotFound)return {};return Need(state);}())&&
+        Need(db.getOrchardCatalogState(tip.hash))==replay->Catalog().Encode());
+    VerifyCatalogTransferProof(*proof,*headers);check();return replay->Catalog();
+}
+
 void OrchardSnapshotStore::RetainActivationHeaders(ChainDB& db,const ChainWriteToken& token,
     const consensus::HeaderChainSelector& source,const uint256& first,const std::function<bool()>& cancelled){
     using namespace consensus;Require(db.hasSeparatedShieldedState());
@@ -986,6 +1029,7 @@ OrchardSnapshotStore::ActivationPublication OrchardSnapshotStore::OpenActivation
     CheckActivationHandoff(guard,*prepared);
     const auto audited=AuditActivationSuffix(mutex,*d.candidate,token,files,d.headers,d.proof,d.cancelled);
     Require(audited.Encode()==d.proof->parent_catalog.Encode());
+    Require(AuditActivationEvents(mutex,*d.source,*d.candidate,files,d.headers,d.proof,d.cancelled).Encode()==audited.Encode());
     Require(d.candidate_path==guard.DataDir()/"blockchain"/"chaindb"&&!d.selection.empty()&&
         HandoffControl(d.blockchain.value,HandoffIntent)==d.selection&&
         HandoffControl(d.blockchain.value,HandoffDone)==HandoffSeal("DNODONE1"+storage::catalog::Hash(d.selection).GetHex()));

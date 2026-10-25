@@ -631,6 +631,22 @@ and full original/current before-image audit. Local delivery hash-chain checks
 alone are not adversarial authentication or a first-runtime-event certificate.
 No actual queued-wallet crossing, restored-phone or device acceptance is implied.
 
+The parent opener additionally authenticates the delivery suffix from the actual
+immutable original store's outbox head. A private disk-backed replay validates
+each genuine connect and checks disconnect against checkpoints captured only by
+those validations, including exact bodies, Orchard state, conventional undo and
+branch MTP answers. Immutable anchor/nullifier occurrences are filtered by the
+replayed branch ancestry, so undo/reconnect does not accumulate stale members.
+Owned content-addressed checkpoint roots bind metadata independently of scratch
+MAC records; decoded spool material cannot construct a sealed validation result.
+The final selected state/catalog must match the complete replay. A locally
+reframed event checksum is not enough. No first cursor or independent anchor is
+fabricated, no canonical rows are repaired, and the replay returns DATA only.
+Actual close/read-only-reopen and local-checksum-valid false-MTP cases are
+component controls, not normal descendant/post-undo writer/DaemonApp startup.
+That route still requires an exact full original/current row audit, including
+retained records from undone branches, before a writable owner can be published.
+
 Mutation controls are recorded separately from the earlier positive receipts.
 The original parent-reopen case survived a disabled consistency check; transition
 and engine-reopen cases detected it. The parent case now additionally substitutes
