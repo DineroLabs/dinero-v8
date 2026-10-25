@@ -61,6 +61,21 @@ selected replay source and follows normal connect/disconnect verification.
 
 ## Retained-history post-activation account-0 recovery
 
+Completed activation-handoff startup has a distinct selected-state consistency
+capability; it does not advance the original independent validated anchor. Its
+generation/mutex/database/profile/origin/anchor checks now also guard selected
+accumulator observations, delivery-history reads and compact pool/ingress context.
+The ordinary full-store and independently replayed compact paths retain their
+validated-tip equality requirement. Exact catalog/stump/header/work/storage and
+body/proof checks remain mandatory; a matching origin row alone is not authority.
+
+The native `OrchardActivationRuntime` test cold-starts the real App twice on an
+authenticated descendant, resubmits its identical canonical body, obtains the
+public binding for its named wallet and invokes explicit account-0 recovery over
+retained local history. It preserves the original anchor and generated=false.
+This fixture does not establish phone history downloads, funds belonging to that
+phrase, queued-payment crossing or an original mobile assumed-history lifecycle.
+
 This is required for new installs, reinstalls and new phones after activation.
 Core cannot distinguish an app-generated phrase from an old recovered phrase.
 Neither case may get a trusted-empty current wallet just because it uses

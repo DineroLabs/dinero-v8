@@ -15,6 +15,7 @@ root=Path(tempfile.mkdtemp(prefix='completed-activation-process-evidence-')).res
 print('Completed activation evidence:',root,flush=True)
 generator=Path(os.environ['ACTIVATION_FIXTURE_GENERATOR']).resolve()
 driver=Path(os.environ['NODECORE_DRIVER']).resolve()
+runtime=os.environ.get('ACTIVATION_RUNTIME_CHECKS','0')=='1'
 manifest=root/'roots.json'
 limit=int(os.environ.get('ACTIVATION_FIXTURE_LIMIT','8'));assert 1<=limit<=8
 env=dict(os.environ,DINERO_COMPLETED_ACTIVATION_MANIFEST=str(manifest),DINERO_COMPLETED_ACTIVATION_LIMIT=str(limit))
@@ -30,7 +31,7 @@ for row in roots:
     sentinels={str(p):digest(p) for p in [sentinel,lifecycle]}
     for attempt in range(1 if row['refuse'] else 2):
         prefix=f"phase{row['phase']}-cold{attempt+1}"
-        reply=root/(prefix+'.jsonl');command=dict(op='completed_activation_cold',datadir=row['datadir'],profile=row['profile'])
+        reply=root/(prefix+'.jsonl');command=dict(op='completed_activation_cold',datadir=row['datadir'],profile=row['profile'],origin_runtime=runtime)
         with (root/(prefix+'.log')).open('xb') as log:
             p=subprocess.run([str(driver),str(reply)],input=json.dumps(command)+'\n',text=True,
                 stdout=log,stderr=subprocess.STDOUT,timeout=90)
@@ -44,6 +45,7 @@ for row in roots:
             assert result['tip']==result['active_tip']==row['tip'] and result['height']==row['height'],result
             assert result['validated_height']==0 and result['profile']==row['profile'],result
             assert result['named_wallet']=='handoff-named-owner' and result['wallet_open'] and result['stopped'],result
+            if runtime:assert result['runtime_snapshot'] and result['canonical_ingress'] and result['account0_recovered'] and result['generated'] is False,result
         assert inventory(original)==before,'original before-image changed'
         assert sentinels=={p:digest(Path(p)) for p in sentinels},'wallet/lifecycle sentinel changed'
         results.append(dict(phase=row['phase'],attempt=attempt+1,result=result,reply_sha256=digest(reply)))

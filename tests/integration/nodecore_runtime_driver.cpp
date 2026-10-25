@@ -13,8 +13,10 @@
 #include "daemon/http_rpc_server.h"
 #include "consensus/chainparams.h"
 #include "daemon/services/chainstate_service.h"
+#include "daemon/runtime_block_reader.h"
 #include "daemon/config.h"
 #include "rpc/rpc_registry.h"
+#include "util/hex.h"
 
 #include <json/json.h>
 #include <chrono>
@@ -199,6 +201,12 @@ Json::Value CompletedActivationCold(const Json::Value& request){
     result["tip"]=tip->hash.GetHex();result["height"]=tip->height;
     result["validated_height"]=anchor->height;result["validated_hash"]=anchor->hash.GetHex();
     result["active_tip"]=chain->GetActiveTip()->hash.GetHex();result["profile"]=dinero::ConsensusChecksum(profile);
+    if(request.get("origin_runtime",false).asBool()){
+        const auto snapshot=chain->getUtreexoRpcSnapshot();
+        if(!snapshot.ok()||!snapshot->compact||snapshot->block_hash!=tip->hash||snapshot->height!=unsigned(tip->height))
+            throw std::runtime_error("actual selected-origin read-only snapshot refused");
+        result["runtime_snapshot"]=true;
+    }
     }
     if(receipt){result["named_wallet"]=receipt->WalletName();app->ResumeAfterInternalReopen(guard,*receipt);}
     {const auto rpc=std::dynamic_pointer_cast<dinero::RPCService>(app->GetContext().rpc);
@@ -207,6 +215,32 @@ Json::Value CompletedActivationCold(const Json::Value& request){
     const auto opened=HttpRpcRequestTestAccess::Dispatch(*rpc->GetHttpServer(),"wallet.open",open);
     if(!opened["result"]["success"].asBool())throw std::runtime_error("cold named wallet.open refused without phrase: "+Encode(opened));
     result["named_wallet"]="handoff-named-owner";
+    if(request.get("origin_runtime",false).asBool()){
+        const auto chain=std::dynamic_pointer_cast<dinero::ChainstateService>(app->GetContext().chainstate);
+        if(!chain||!chain->GetActiveTip())throw std::runtime_error("runtime selected service missing");
+        const auto stored=chain->getRuntimeBlockByHash(chain->GetActiveTip()->hash);
+        if(!stored.ok()||!(*stored)->IsOrchardProfile())throw std::runtime_error("runtime canonical body missing");
+        Json::Value submit(Json::arrayValue);submit.append(util::hex((*stored)->Serialize()));
+        const auto repeated=HttpRpcRequestTestAccess::Dispatch(*rpc->GetHttpServer(),"blockchain.submitblock",submit);
+        // The real dispatcher normalizes ordinary null results to {} and
+        // carries error:null on a successful response.
+        if(!repeated["error"].isNull()||!repeated.isMember("result")||repeated["result"]!=Json::Value(Json::objectValue))
+            throw std::runtime_error("actual selected-origin canonical ingress refused: "+Encode(repeated));
+        result["canonical_ingress"]=true;
+        Json::Value binding_request(Json::objectValue);binding_request["wallet_name"]="handoff-named-owner";
+        const auto binding=HttpRpcRequestTestAccess::Dispatch(*rpc->GetHttpServer(),"wallet.orchard.getwalletbinding",binding_request);
+        if(!binding["result"]["wallet_binding"].isString()||binding["result"]["wallet_binding"].asString().size()!=64)
+            throw std::runtime_error("actual named wallet binding refused: "+Encode(binding));
+        Json::Value recovery_request(Json::objectValue);recovery_request["wallet_binding"]=binding["result"]["wallet_binding"];
+        const auto recovery=HttpRpcRequestTestAccess::Dispatch(*rpc->GetHttpServer(),"wallet.orchard.recoveraccount0",recovery_request);
+        if(!recovery["result"]["complete"].asBool()||!recovery["result"].isMember("generated")||recovery["result"]["generated"].asBool())
+            throw std::runtime_error("actual named account0 recovery refused: "+Encode(recovery));
+        result["account0_recovered"]=true;result["generated"]=false;
+        if(!chain||!chain->GetChainDB())throw std::runtime_error("account0 recovery lost chain database");
+        const auto anchor=chain->GetChainDB()->getValidatedTip();
+        if(!anchor.ok()||anchor->height!=0)
+            throw std::runtime_error("account0 recovery changed original independent anchor");
+    }
     }
     {const auto wallet=std::dynamic_pointer_cast<dinero::WalletService>(app->GetContext().wallet);
      auto use=dinero::WalletService::AcquireWalletUse(wallet);result["wallet_open"]=bool(use);}

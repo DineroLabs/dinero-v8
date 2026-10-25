@@ -6292,9 +6292,17 @@ StatusOr<ChainstateService::UtreexoRpcSnapshot> ChainstateService::UtreexoRpcSna
         header->prev_block_hash!=live.prev_hash || header->version!=live.version ||
         header->merkle_root!=live.merkle_root || header->timestamp!=live.timestamp ||
         header->difficulty!=live.bits || header->nonce!=live.nonce) return Status::Corruption;
+    bool selected_origin=false;
+#ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
+    // A completed activation handoff authenticates selected state without
+    // claiming independent execution of its frozen pre-activation history.
+    if(compact_startup_&&compact_startup_->selected_consistency){
+        compact_startup_->selected_consistency->Check(*chain_db_);selected_origin=true;
+    }
+#endif
     const bool canonical_selection=canonical.ok()&&*canonical==live.hash&&
         tip->hash==live.hash&&tip->height==int(live.height)&&*work==tip->work&&
-        validated->hash==tip->hash&&validated->height==tip->height;
+        (selected_origin||(validated->hash==tip->hash&&validated->height==tip->height));
     if(!canonical_selection) {
         // Legacy v5 owns authenticated state at its exact imported base while
         // history validation deliberately leaves the durable tip below it.
@@ -6763,11 +6771,13 @@ StatusOr<std::shared_ptr<const RuntimeOutboxPage>> ChainstateService::getRuntime
     const auto validated=chain_db_->getValidatedTip();
     if (!tip.ok()) return tip.status();
     if (!validated.ok()) return validated.status();
-    if (tip->height<0 || tip->hash!=active_tip_->hash || uint32_t(tip->height)!=active_tip_->height ||
-        validated->hash!=tip->hash || validated->height!=tip->height ||
-        (!compact && (consensus_utxo_set_->GetBestBlock()!=tip->hash ||
-        consensus_utxo_set_->GetHeight()!=uint32_t(tip->height)))) return Status::Corruption;
     try {
+        const auto origin_consistency=compact?compact_startup_->selected_consistency:nullptr;
+        if(origin_consistency)origin_consistency->Check(*chain_db_);
+        if (tip->height<0 || tip->hash!=active_tip_->hash || uint32_t(tip->height)!=active_tip_->height ||
+            (!origin_consistency&&(validated->hash!=tip->hash || validated->height!=tip->height)) ||
+            (!compact && (consensus_utxo_set_->GetBestBlock()!=tip->hash ||
+            consensus_utxo_set_->GetHeight()!=uint32_t(tip->height)))) return Status::Corruption;
         if(compact && uint64_t(tip->height)+1<profile->activation_height) {
             // Historical catalogs authorize delivery-history inspection, not
             // an Orchard input-coin view. Recheck their exact live and durable
@@ -19519,9 +19529,11 @@ ChainstateService::CaptureSelectedOrchardPoolContextUnderLock(
     const auto parent_work=chain_db_->getBlockWork(parent_hash);
     const auto headers=header_chain_selector_;
     const auto indexed=headers->GetHeaderValue(parent_hash);
+    const auto origin_consistency=compact?compact_startup_->selected_consistency:nullptr;
+    if(origin_consistency)origin_consistency->Check(*chain_db_);
     if(!tip.ok() || !validated.ok() || !parent_header.ok() || !parent_work.ok() || !indexed ||
        tip->height<0 || uint32_t(tip->height)!=parent_height || tip->hash!=parent_hash ||
-       validated->hash!=parent_hash || validated->height!=tip->height ||
+       (!origin_consistency&&(validated->hash!=parent_hash || validated->height!=tip->height)) ||
        (!compact && (consensus_utxo_set_->GetBestBlock()!=parent_hash || consensus_utxo_set_->GetHeight()!=parent_height)) ||
        indexed->height!=parent_height || indexed->chainwork!=*parent_work ||
        parent_header->GetHash()!=parent_hash ||

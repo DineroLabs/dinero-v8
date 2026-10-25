@@ -9360,6 +9360,13 @@ if(TARGET nodecore_ffi)
       python3 ${CMAKE_SOURCE_DIR}/tests/integration/test_completed_activation_startup.py)
     set_tests_properties(OrchardCompletedActivationStartup PROPERTIES TIMEOUT 360 RUN_SERIAL TRUE
       LABELS "integration;orchard;storage;restart;mandatory")
+    add_test(NAME OrchardActivationRuntime COMMAND ${CMAKE_COMMAND} -E env
+      NODECORE_DRIVER=$<TARGET_FILE:nodecore_runtime_driver>
+      ACTIVATION_FIXTURE_GENERATOR=$<TARGET_FILE:test_assumeutxo_replay>
+      ACTIVATION_FIXTURE_LIMIT=1 ACTIVATION_RUNTIME_CHECKS=1
+      python3 ${CMAKE_SOURCE_DIR}/tests/integration/test_completed_activation_startup.py)
+    set_tests_properties(OrchardActivationRuntime PROPERTIES TIMEOUT 180 RUN_SERIAL TRUE
+      LABELS "integration;orchard;wallet;restart;mandatory")
   endif()
   if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     # These project archives have backward references (including wallet's
