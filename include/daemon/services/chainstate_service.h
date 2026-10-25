@@ -83,7 +83,7 @@ class RuntimeWalletCoverageProjection;
 struct FilePosition;  // #309: storage/block_storage.h
 
 namespace orchard { class TransactionEnvelope; struct SigningDomain; struct ResolvedInput; struct WalletPayment; struct TransparentOutput; }
-namespace wallet { struct OrchardPreparedSpend; struct OrchardQueuedSpend; class OrchardProofJobs; }
+namespace wallet { struct OrchardPreparedSpend; struct OrchardQueuedSpend; class OrchardProofJobs; struct OrchardAccount0RecoveryProgress; }
 namespace consensus {
     class VerifiedOrchardAuthorizations;
     class ValidatedOrchardBlock;
@@ -1016,6 +1016,8 @@ public:
     // a converged fully validated pre-activation source and no retained history.
     StatusOr<OrchardPreactivationEnrollment> enrollPreactivationOrchardWallet(
         WalletManager&,uint64_t expected_session);
+    StatusOr<wallet::OrchardAccount0RecoveryProgress> recoverOrchardAccount0(
+        WalletManager&,uint64_t expected_session,bool restart=false);
     // Requires caller-held WalletUse and this service's WalletIndexUse, with
     // no outer selected/SQLite owner. Capture proofs first, then recheck the
     // exact canonical head under the selected lock and hold it through the

@@ -13,15 +13,22 @@ namespace dinero::orchard {
 namespace {
 [[noreturn]] void Fail(){throw std::runtime_error("Orchard wallet storage integrity, transaction or I/O failure");}
 void Check(bool condition){if(!condition)Fail();}
+std::string Sql(const char* sql,WalletSnapshotStore::Scope scope){
+    Check(scope==WalletSnapshotStore::Scope::Active||scope==WalletSnapshotStore::Scope::Recovery);
+    std::string text(sql);if(scope==WalletSnapshotStore::Scope::Recovery){
+        const std::string before="orchard_wallet_",after="orchard_recovery_";
+        for(size_t p=0;(p=text.find(before,p))!=std::string::npos;p+=after.size())text.replace(p,before.size(),after);
+    }return text;
+}
 struct Statement {
     sqlite3_stmt* p=nullptr;
-    Statement(sqlite3* db,const char* sql){if(sqlite3_prepare_v2(db,sql,-1,&p,nullptr)!=SQLITE_OK){sqlite3_finalize(p);p=nullptr;Fail();}}
+    Statement(sqlite3* db,const char* sql,WalletSnapshotStore::Scope scope=WalletSnapshotStore::Scope::Active){const auto text=Sql(sql,scope);if(sqlite3_prepare_v2(db,text.c_str(),-1,&p,nullptr)!=SQLITE_OK){sqlite3_finalize(p);p=nullptr;Fail();}}
     ~Statement(){sqlite3_finalize(p);}
     Statement(const Statement&)=delete;
     void Blob(int index,std::span<const uint8_t> bytes){Check(bytes.size()<=size_t(INT_MAX));Check(sqlite3_bind_blob(p,index,bytes.data(),int(bytes.size()),SQLITE_TRANSIENT)==SQLITE_OK);}
     void Int(int index,uint64_t value){Check(value<=uint64_t(INT64_MAX));Check(sqlite3_bind_int64(p,index,sqlite3_int64(value))==SQLITE_OK);}
 };
-void Exec(sqlite3* db,const char* sql){Check(sqlite3_exec(db,sql,nullptr,nullptr,nullptr)==SQLITE_OK);}
+void Exec(sqlite3* db,const char* sql,WalletSnapshotStore::Scope scope=WalletSnapshotStore::Scope::Active){const auto text=Sql(sql,scope);Check(sqlite3_exec(db,text.c_str(),nullptr,nullptr,nullptr)==SQLITE_OK);}
 struct RetainSavepoint {
     sqlite3* db;bool complete=false;
     explicit RetainSavepoint(sqlite3* p):db(p){Exec(db,"SAVEPOINT orchard_snapshot_retention");}
@@ -45,8 +52,8 @@ void Durable(sqlite3* db,bool writing){
     const std::string_view text(reinterpret_cast<const char*>(name));
     Check(text=="wal"||text=="delete"||text=="truncate"||text=="persist");
 }
-void Schema(sqlite3* db){
-    Statement stmt(db,"SELECT version FROM orchard_wallet_schema WHERE id=1");
+void Schema(sqlite3* db,WalletSnapshotStore::Scope scope=WalletSnapshotStore::Scope::Active){
+    Statement stmt(db,"SELECT version FROM orchard_wallet_schema WHERE id=1",scope);
     Check(sqlite3_step(stmt.p)==SQLITE_ROW&&sqlite3_column_type(stmt.p,0)==SQLITE_INTEGER&&sqlite3_column_int64(stmt.p,0)==1);
     Check(sqlite3_step(stmt.p)==SQLITE_DONE);
 }
@@ -54,14 +61,14 @@ void U32(std::vector<uint8_t>& out,uint32_t x){for(unsigned i=0;i<4;++i)out.push
 void U64(std::vector<uint8_t>& out,uint64_t x){for(unsigned i=0;i<8;++i)out.push_back(uint8_t(x>>(i*8)));}
 using Cipher=std::unique_ptr<EVP_CIPHER_CTX,decltype(&EVP_CIPHER_CTX_free)>;
 }
-void WalletSnapshotStore::InitializeSchemaUnderTransaction(sqlite3* db){
+void WalletSnapshotStore::InitializeSchemaUnderTransaction(sqlite3* db,Scope scope){
     Durable(db,true);
-    Exec(db,"CREATE TABLE IF NOT EXISTS orchard_wallet_schema(id INTEGER PRIMARY KEY CHECK(id=1),version INTEGER NOT NULL);");
-    Exec(db,"INSERT OR IGNORE INTO orchard_wallet_schema(id,version) VALUES(1,1);");Schema(db);
-    Exec(db,"CREATE TABLE IF NOT EXISTS orchard_wallet_snapshots(wallet_id BLOB NOT NULL CHECK(typeof(wallet_id)='blob' AND length(wallet_id)=32),account INTEGER NOT NULL CHECK(account>=0 AND account<2147483648),revision INTEGER NOT NULL CHECK(revision>0),sealed BLOB NOT NULL CHECK(typeof(sealed)='blob' AND length(sealed)>=29 AND length(sealed)<=16777245),PRIMARY KEY(wallet_id,account)) WITHOUT ROWID;");
+    Exec(db,"CREATE TABLE IF NOT EXISTS orchard_wallet_schema(id INTEGER PRIMARY KEY CHECK(id=1),version INTEGER NOT NULL);",scope);
+    Exec(db,"INSERT OR IGNORE INTO orchard_wallet_schema(id,version) VALUES(1,1);",scope);Schema(db,scope);
+    Exec(db,"CREATE TABLE IF NOT EXISTS orchard_wallet_snapshots(wallet_id BLOB NOT NULL CHECK(typeof(wallet_id)='blob' AND length(wallet_id)=32),account INTEGER NOT NULL CHECK(account>=0 AND account<2147483648),revision INTEGER NOT NULL CHECK(revision>0),sealed BLOB NOT NULL CHECK(typeof(sealed)='blob' AND length(sealed)>=29 AND length(sealed)<=16777245),PRIMARY KEY(wallet_id,account)) WITHOUT ROWID;",scope);
 }
-WalletSnapshotStore::WalletSnapshotStore(sqlite3* db,WalletStorageIdentity identity,std::span<const uint8_t> seed):db_(db),identity_(identity){
-    Durable(db,false);Schema(db);
+WalletSnapshotStore::WalletSnapshotStore(sqlite3* db,WalletStorageIdentity identity,std::span<const uint8_t> seed,Scope scope):db_(db),identity_(identity),scope_(scope){
+    Durable(db,false);Schema(db,scope_);
     Check(seed.size()>=32&&seed.size()<=252&&uint8_t(identity.network)<=2&&identity.account<0x80000000);
     Check(std::any_of(identity.genesis.begin(),identity.genesis.end(),[](auto b){return b!=0;}));
     Check(std::any_of(identity.wallet_id.begin(),identity.wallet_id.end(),[](auto b){return b!=0;}));
@@ -107,7 +114,7 @@ WalletStateBytes WalletSnapshotStore::Open(uint64_t revision,std::span<const uin
     uint8_t scratch[16]{};const auto status=EVP_DecryptFinal_ex(ctx.get(),scratch,&tail);OPENSSL_cleanse(scratch,sizeof(scratch));Check(status==1&&tail==0);return result;
 }
 std::optional<LoadedWalletState> WalletSnapshotStore::Read()const{
-    Schema(db_);Statement stmt(db_,"SELECT revision,sealed FROM orchard_wallet_snapshots WHERE wallet_id=? AND account=?");stmt.Blob(1,identity_.wallet_id);stmt.Int(2,identity_.account);
+    Schema(db_,scope_);Statement stmt(db_,"SELECT revision,sealed FROM orchard_wallet_snapshots WHERE wallet_id=? AND account=?",scope_);stmt.Blob(1,identity_.wallet_id);stmt.Int(2,identity_.account);
     const auto code=sqlite3_step(stmt.p);if(code==SQLITE_DONE)return std::nullopt;Check(code==SQLITE_ROW);
     Check(sqlite3_column_type(stmt.p,0)==SQLITE_INTEGER&&sqlite3_column_int64(stmt.p,0)>0&&sqlite3_column_type(stmt.p,1)==SQLITE_BLOB);
     const auto revision=uint64_t(sqlite3_column_int64(stmt.p,0));const int size=sqlite3_column_bytes(stmt.p,1);Check(size>=29&&size<=int(kMaxStateBytes+29));
@@ -120,7 +127,7 @@ uint64_t WalletSnapshotStore::StageReplace(uint64_t expected,const WalletStateBy
     // for wrong-key attempts. CAS prevents stale concurrent writer publication.
     const auto previous=Read();Check(previous?previous->revision==expected:expected==0);
     const auto revision=expected+1;const auto sealed=Seal(revision,state.Bytes());
-    Statement stmt(db_,expected==0?"INSERT INTO orchard_wallet_snapshots(wallet_id,account,revision,sealed) VALUES(?,?,?,?)":"UPDATE orchard_wallet_snapshots SET revision=?,sealed=? WHERE wallet_id=? AND account=? AND revision=?");
+    Statement stmt(db_,expected==0?"INSERT INTO orchard_wallet_snapshots(wallet_id,account,revision,sealed) VALUES(?,?,?,?)":"UPDATE orchard_wallet_snapshots SET revision=?,sealed=? WHERE wallet_id=? AND account=? AND revision=?",scope_);
     if(expected==0){stmt.Blob(1,identity_.wallet_id);stmt.Int(2,identity_.account);stmt.Int(3,revision);stmt.Blob(4,sealed);}
     else{stmt.Int(1,revision);stmt.Blob(2,sealed);stmt.Blob(3,identity_.wallet_id);stmt.Int(4,identity_.account);stmt.Int(5,expected);}
     Check(sqlite3_step(stmt.p)==SQLITE_DONE&&sqlite3_changes(db_)==1);return revision;
@@ -129,11 +136,11 @@ uint64_t WalletSnapshotStore::StageReplaceRetaining(uint64_t expected,const Wall
     Durable(db_,true);
     RetainSavepoint savepoint(db_);
     const auto previous=Read();Check(previous?previous->revision==expected:expected==0);
-    Exec(db_,"CREATE TABLE IF NOT EXISTS orchard_wallet_retained(wallet_id BLOB NOT NULL,account INTEGER NOT NULL,revision INTEGER NOT NULL CHECK(revision>0),sealed BLOB NOT NULL,PRIMARY KEY(wallet_id,account,revision)) WITHOUT ROWID;");
+    Exec(db_,"CREATE TABLE IF NOT EXISTS orchard_wallet_retained(wallet_id BLOB NOT NULL,account INTEGER NOT NULL,revision INTEGER NOT NULL CHECK(revision>0),sealed BLOB NOT NULL,PRIMARY KEY(wallet_id,account,revision)) WITHOUT ROWID;",scope_);
     if(previous){
         // Preserve the original authenticated envelope. If this revision is
         // already retained, authenticate it and require identical plaintext.
-        Statement found(db_,"SELECT sealed FROM orchard_wallet_retained WHERE wallet_id=? AND account=? AND revision=?");
+        Statement found(db_,"SELECT sealed FROM orchard_wallet_retained WHERE wallet_id=? AND account=? AND revision=?",scope_);
         found.Blob(1,identity_.wallet_id);found.Int(2,identity_.account);found.Int(3,expected);
         const auto rc=sqlite3_step(found.p);
         if(rc==SQLITE_ROW){
@@ -144,7 +151,7 @@ uint64_t WalletSnapshotStore::StageReplaceRetaining(uint64_t expected,const Wall
             Check(sqlite3_step(found.p)==SQLITE_DONE);
         }else{
             Check(rc==SQLITE_DONE);
-            Statement keep(db_,"INSERT INTO orchard_wallet_retained(wallet_id,account,revision,sealed) SELECT wallet_id,account,revision,sealed FROM orchard_wallet_snapshots WHERE wallet_id=? AND account=? AND revision=?");
+            Statement keep(db_,"INSERT INTO orchard_wallet_retained(wallet_id,account,revision,sealed) SELECT wallet_id,account,revision,sealed FROM orchard_wallet_snapshots WHERE wallet_id=? AND account=? AND revision=?",scope_);
             keep.Blob(1,identity_.wallet_id);keep.Int(2,identity_.account);keep.Int(3,expected);
             Check(sqlite3_step(keep.p)==SQLITE_DONE&&sqlite3_changes(db_)==1);
         }
@@ -153,11 +160,27 @@ uint64_t WalletSnapshotStore::StageReplaceRetaining(uint64_t expected,const Wall
 }
 LoadedWalletState WalletSnapshotStore::ReadRetained(uint64_t revision)const{
     const auto current=Read();Check(current&&revision>0&&revision<current->revision);
-    Statement stmt(db_,"SELECT sealed FROM orchard_wallet_retained WHERE wallet_id=? AND account=? AND revision=?");
+    Statement stmt(db_,"SELECT sealed FROM orchard_wallet_retained WHERE wallet_id=? AND account=? AND revision=?",scope_);
     stmt.Blob(1,identity_.wallet_id);stmt.Int(2,identity_.account);stmt.Int(3,revision);
     Check(sqlite3_step(stmt.p)==SQLITE_ROW&&sqlite3_column_type(stmt.p,0)==SQLITE_BLOB);
     const auto n=sqlite3_column_bytes(stmt.p,0);const auto* p=static_cast<const uint8_t*>(sqlite3_column_blob(stmt.p,0));
     Check(p&&n>=29&&n<=int(kMaxStateBytes+29));auto state=Open(revision,{p,size_t(n)});
     Check(sqlite3_step(stmt.p)==SQLITE_DONE);return {revision,std::move(state)};
+}
+void WalletSnapshotStore::PruneRecovery(const std::vector<uint64_t>& keep,uint64_t cut,const WalletStateBytes* state){
+    Durable(db_,true);Check(scope_==Scope::Recovery&&keep.size()<=256&&bool(cut)==bool(state));
+    std::string sql="DELETE FROM orchard_recovery_retained WHERE wallet_id=? AND account=?";
+    if(!keep.empty()){
+        sql+=" AND revision NOT IN (";
+        for(size_t i=0;i<keep.size();++i){Check(keep[i]&&keep[i]<=uint64_t(INT64_MAX));if(i)sql+=",";sql+=std::to_string(keep[i]);}sql+=")";
+    }
+    Statement erase(db_,sql.c_str());erase.Blob(1,identity_.wallet_id);erase.Int(2,identity_.account);Check(sqlite3_step(erase.p)==SQLITE_DONE);
+    if(state){
+        Check(std::find(keep.begin(),keep.end(),cut)!=keep.end());(void)ReadRetained(cut);
+        const auto sealed=Seal(cut,state->Bytes());
+        Statement q(db_,"UPDATE orchard_recovery_retained SET sealed=? WHERE wallet_id=? AND account=? AND revision=?");
+        q.Blob(1,sealed);q.Blob(2,identity_.wallet_id);q.Int(3,identity_.account);q.Int(4,cut);
+        Check(sqlite3_step(q.p)==SQLITE_DONE&&sqlite3_changes(db_)==1);
+    }
 }
 } // namespace dinero::orchard

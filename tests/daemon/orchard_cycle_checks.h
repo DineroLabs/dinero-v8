@@ -29,7 +29,7 @@ struct OrchardCycleFixture : CanonicalPoolFixture {
         const auto genesis=uint256::FromHexUnsafe(Params().genesis_hash);
         std::copy(genesis.begin(),genesis.end(),domain.genesis_wire.begin());return domain;
     }
-    auto Shield(const orchard::WalletKeys& receiver) {
+    auto Shield(const orchard::WalletKeys& receiver,std::array<uint8_t,512> memo={}) {
         const OutPoint point(f.blocks[1].vtx.front().GetTxid(),0);
         const auto& coin=f.replay->ProvenUtxos().at(point);
         orchard::EnvelopeInput input{};
@@ -37,7 +37,7 @@ struct OrchardCycleFixture : CanonicalPoolFixture {
         input.output_index=0;input.sequence=UINT32_MAX;
         constexpr uint64_t fee=100000,deposit=500000;
         const std::vector<orchard::TransparentOutput> outputs{{coin.value.GetUna()-fee-deposit,f.script}};
-        const std::vector<orchard::WalletPayment> payments{{deposit,receiver.Receiver(orchard::WalletScope::External,{})}};
+        const std::vector<orchard::WalletPayment> payments{{deposit,receiver.Receiver(orchard::WalletScope::External,{}),memo}};
         const std::vector<orchard::ResolvedInput> inputs{{input.txid_wire,0,input.sequence,coin.value.GetUna(),f.script}};
         const auto bundle=orchard::WalletBundlePlan::PrepareShield(receiver,payments)
             .Prove(orchard::SigningContext::Create(Domain(),0,inputs,outputs,fee));

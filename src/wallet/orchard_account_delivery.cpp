@@ -589,6 +589,212 @@ struct OrchardCatalogFinalizationPlan::Data {
 };
 OrchardCatalogFinalizationPlan::OrchardCatalogFinalizationPlan(std::unique_ptr<Data> data):data_(std::move(data)){}
 OrchardCatalogFinalizationPlan::~OrchardCatalogFinalizationPlan()=default;
+namespace {
+int64_t RecoveryNumber(sqlite3* db,const std::string& text){
+    struct Q{sqlite3_stmt* p=nullptr;~Q(){sqlite3_finalize(p);}} q;
+    Check(sqlite3_prepare_v2(db,text.c_str(),-1,&q.p,nullptr)==SQLITE_OK);
+    Check(sqlite3_step(q.p)==SQLITE_ROW&&sqlite3_column_type(q.p,0)==SQLITE_INTEGER);
+    const auto n=sqlite3_column_int64(q.p,0);Check(sqlite3_step(q.p)==SQLITE_DONE);return n;
+}
+bool RecoveryTable(sqlite3* db,const char* name){
+    struct Q{sqlite3_stmt* p=nullptr;~Q(){sqlite3_finalize(p);}} q;
+    Check(sqlite3_prepare_v2(db,"SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",-1,&q.p,nullptr)==SQLITE_OK);
+    Check(sqlite3_bind_text(q.p,1,name,-1,SQLITE_STATIC)==SQLITE_OK);
+    const auto rc=sqlite3_step(q.p);Check(rc==SQLITE_DONE||rc==SQLITE_ROW);
+    if(rc==SQLITE_DONE)return false;Check(sqlite3_step(q.p)==SQLITE_DONE);return true;
+}
+bool RecoveryTables(sqlite3* db){
+    const bool a=RecoveryTable(db,"orchard_recovery_schema"),b=RecoveryTable(db,"orchard_recovery_snapshots"),c=RecoveryTable(db,"orchard_recovery_retained");
+    Check((!a&&!b&&!c)||(a&&b&&c));return a;
+}
+auto RecoveryStamp(sqlite3* db){return std::pair{sqlite3_total_changes64(db),RecoveryNumber(db,"PRAGMA data_version")};}
+orchard::Hash RecoveryDigest(const orchard::WalletStateBytes& state){orchard::Hash digest{};const auto bytes=state.Bytes();Check(SHA256(bytes.data(),bytes.size(),digest.data()));return digest;}
+}
+struct OrchardAccount0RecoveryPlan::Data {
+    OrchardAccount0RecoveryProgress observation;
+    OrchardAccountDelivery::Profile profile;
+    uint64_t session=0,revision=0;
+    std::shared_ptr<const void> instance;
+    std::pair<sqlite3_int64,int64_t> stamp{};
+    orchard::WalletStorageIdentity identity;
+    orchard::Hash state_digest{};
+    OrchardAccountCatalog::Snapshot::RecoveredAccount0 proof;
+};
+OrchardAccount0RecoveryPlan::OrchardAccount0RecoveryPlan(std::unique_ptr<Data> data):data_(std::move(data)){}
+OrchardAccount0RecoveryPlan::~OrchardAccount0RecoveryPlan()=default;
+OrchardAccount0RecoveryProgress OrchardAccount0RecoveryPlan::Observation() const {Check(bool(data_));return data_->observation;}
+
+std::unique_ptr<OrchardAccount0RecoveryPlan> OrchardAccountDelivery::PrepareRecoveredAccount0(
+        WalletManager& w,uint64_t session,const RuntimeAccountReplay& view,bool restart){
+    using Store=orchard::WalletSnapshotStore;constexpr auto scope=Store::Scope::Recovery;
+    const auto first=view.Event(1);const Profile p{first->context.domain,first->context.activation_height,0};
+    const auto origin=view.Point({}).checkpoint;const auto head=view.Head();
+    Check(origin.height+1==p.activation&&view.Point(head).checkpoint.height>=p.activation);
+    auto data=std::make_unique<OrchardAccount0RecoveryPlan::Data>();data->profile=p;data->session=session;
+    data->observation.target=head.sequence;
+    std::unique_ptr<Owner::ViewingKey> viewing;
+    std::optional<orchard::LoadedWalletState> saved;
+    bool admitted=false;
+    // No source/proof callback under this short wallet/seed/SQLite owner.
+    {
+        auto lease=w.AcquireDatabaseLease();Check(w.database_leases_==1&&lease->Session()==session&&lease->Database());
+        RequireShieldFullSync(lease->Database());Transaction tx(lease->Database());auto seed=lease->CopyRecoverySeed(session);
+        const auto catalog=OrchardAccountCatalog::Read(lease->Database(),seed->Bytes());Check(catalog.has_value());
+        admitted=catalog->recovered.has_value();
+        if(admitted){Check(!restart&&catalog->Covers({0,uint8_t(p.domain.network_code),p.domain.genesis_wire,p.domain.branch_id,p.activation}));}
+        else {
+            (void)OrchardAccountCatalog::RequireUnknownEmpty(lease->Database(),seed->Bytes());
+            Check(!w.getSetting("wallet_initial_owner_v1").empty());
+            std::vector<uint8_t> raw(seed->Bytes().begin(),seed->Bytes().end());
+            struct Wipe{std::vector<uint8_t>& b;~Wipe(){OPENSSL_cleanse(b.data(),b.size());}} wipe{raw};
+            Check(!w.loadInitialPqMaster(raw));
+        }
+        data->identity=ExistingIdentity(lease->Database(),p,false);data->instance=lease->InstanceToken();
+        const auto keys=orchard::WalletKeys::FromSeed(seed->Bytes(),0);viewing=std::make_unique<Owner::ViewingKey>(keys);
+        if(!admitted){
+            if(restart){
+                Exec(lease->Database(),"DROP TABLE IF EXISTS orchard_recovery_retained");
+                Exec(lease->Database(),"DROP TABLE IF EXISTS orchard_recovery_snapshots");
+                Exec(lease->Database(),"DROP TABLE IF EXISTS orchard_recovery_schema");
+            }
+            if(RecoveryTables(lease->Database())){
+                Store store(lease->Database(),data->identity,seed->Bytes(),scope);saved=store.Read();Check(saved.has_value());
+            }
+        }
+        tx.Commit();
+    }
+    if(admitted){
+        const auto read_complete=[&]{
+            std::pair<sqlite3_int64,int64_t> before;
+            {auto lease=w.AcquireDatabaseLease();before=RecoveryStamp(lease->Database());}
+            auto inventory=ReadCatalogForReplay(w,session,view);Check(inventory.accounts.size()==1&&inventory.accounts.front().number==0);
+            {auto lease=w.AcquireDatabaseLease();Check(lease->Session()==session&&RecoveryStamp(lease->Database())==before);}
+            data->stamp=before;return std::move(inventory.accounts.front().state);
+        };
+        auto current=read_complete();
+        for(size_t work=0;work<64&&current.account.Delivery().sequence<head.sequence;++work)
+            current=ApplyForReplay(w,session,p,current.revision,view,current.account.Delivery().sequence+1);
+        current=read_complete();data->revision=current.revision;data->state_digest=RecoveryDigest(current.account.Encode());
+        const auto receipt=current.account.Delivery();const auto checkpoint=current.account.Scan().Checkpoint();
+        data->observation={receipt.sequence==head.sequence,true,receipt.sequence,head.sequence,checkpoint.height,checkpoint.block_hash};
+        return std::unique_ptr<OrchardAccount0RecoveryPlan>(new OrchardAccount0RecoveryPlan(std::move(data)));
+    }
+    const auto unknown=[&](auto& lease,auto& seed){
+        Check(lease->Session()==session&&lease->InstanceToken()==data->instance&&w.database_leases_==1);
+        (void)OrchardAccountCatalog::RequireUnknownEmpty(lease->Database(),seed->Bytes());
+        const auto id=ExistingIdentity(lease->Database(),p,false);
+        Check(id.wallet_id==data->identity.wallet_id&&id.genesis==data->identity.genesis&&id.network==data->identity.network);
+    };
+    if(!saved){
+        auto initial=OrchardAccountState::Begin(p.domain,viewing->bytes,p.activation,origin.block_hash);
+        initial=initial.IssueReceiver(orchard::WalletScope::External).first;const auto bytes=initial.Encode();
+        auto lease=w.AcquireDatabaseLease();RequireShieldFullSync(lease->Database());Transaction tx(lease->Database());
+        auto seed=lease->CopyRecoverySeed(session);unknown(lease,seed);Check(!RecoveryTables(lease->Database()));
+        Store::InitializeSchemaUnderTransaction(lease->Database(),scope);Store store(lease->Database(),data->identity,seed->Bytes(),scope);
+        Check(store.StageReplaceRetaining(0,bytes)==1);saved=store.Read();Check(saved.has_value());tx.Commit();
+    }
+    const auto restore=[&](const orchard::LoadedWalletState& row){
+        const auto receipt=OrchardAccountState::ReadDeliveryMetadata(row.state,p.domain,viewing->bytes,p.activation,origin.block_hash);
+        const auto point=view.Point({receipt.sequence,receipt.digest});
+        auto account=OrchardAccountState::Restore(row.state,p.domain,viewing->bytes,p.activation,point.checkpoint,point.lookups);
+        Check(account.ParentSnapshotRevision()<row.revision&&account.Operations().Entries().empty());return account;
+    };
+    auto current=restore(*saved);
+    const auto read_parent=[&](uint64_t revision){
+        auto lease=w.AcquireDatabaseLease();RequireShieldFullSync(lease->Database());Transaction tx(lease->Database());
+        auto seed=lease->CopyRecoverySeed(session);unknown(lease,seed);Store store(lease->Database(),data->identity,seed->Bytes(),scope);
+        const auto now=store.Read();Check(now&&now->revision==saved->revision&&RecoveryDigest(now->state)==RecoveryDigest(saved->state));
+        auto parent=store.ReadRetained(revision);tx.Commit();return parent;
+    };
+    for(size_t work=0;work<64&&current.Delivery().sequence<head.sequence;++work){
+        const auto sequence=current.Delivery().sequence+1;const auto event=view.Event(sequence);
+        auto next=[&]{
+            if(!event->IsOrchardProfile())return current.ApplyHistoricalDelivery(*event);
+            const auto block=view.Block(sequence);
+            if(event->direction==RuntimeBlockDirection::Connect){
+                const auto state=view.State(sequence);const auto auth=view.Authorizations(sequence);
+                return current.AdvanceDelivery(*event,*block,*state,*auth).WithParentSnapshotRevision(saved->revision);
+            }
+            const auto revision=current.ParentSnapshotRevision();Check(revision&&revision<saved->revision);
+            const auto parent=restore(read_parent(revision));
+            return current.RewindDelivery(*event,*block,parent).WithParentSnapshotRevision(parent.ParentSnapshotRevision());
+        }();
+        const auto bytes=next.Encode();
+        {
+            auto lease=w.AcquireDatabaseLease();RequireShieldFullSync(lease->Database());Transaction tx(lease->Database());
+            auto seed=lease->CopyRecoverySeed(session);unknown(lease,seed);Store store(lease->Database(),data->identity,seed->Bytes(),scope);
+            const auto now=store.Read();Check(now&&now->revision==saved->revision&&RecoveryDigest(now->state)==RecoveryDigest(saved->state));
+            const auto revision=store.StageReplaceRetaining(saved->revision,bytes);saved=store.Read();Check(saved&&saved->revision==revision);tx.Commit();
+        }
+        current=std::move(next);
+    }
+    const auto receipt=current.Delivery();const auto checkpoint=current.Scan().Checkpoint();
+    data->observation={receipt.sequence==head.sequence,false,receipt.sequence,head.sequence,checkpoint.height,checkpoint.block_hash};
+    if(data->observation.complete){
+        // Keep a finite immediate-parent undo window in the admitted account.
+        // Older derived staging is not active/pending ownership. A deeper wallet
+        // rewind requires an explicit full rescan; never invent a missing parent.
+        std::vector<uint64_t> keep;auto parent=current.ParentSnapshotRevision();
+        std::optional<orchard::WalletStateBytes> cut;uint64_t cut_revision=0;
+        while(parent&&keep.size()<256){
+            const auto row=read_parent(parent);auto prior=restore(row);keep.push_back(parent);
+            if(keep.size()==256&&prior.ParentSnapshotRevision()){
+                cut_revision=parent;cut=prior.WithParentSnapshotRevision(0).Encode();
+            }
+            parent=prior.ParentSnapshotRevision();
+        }
+        {
+            auto lease=w.AcquireDatabaseLease();RequireShieldFullSync(lease->Database());Transaction tx(lease->Database());
+            auto seed=lease->CopyRecoverySeed(session);unknown(lease,seed);Store store(lease->Database(),data->identity,seed->Bytes(),scope);
+            const auto now=store.Read();Check(now&&now->revision==saved->revision&&RecoveryDigest(now->state)==RecoveryDigest(saved->state));
+            // Staging may contain old fork revisions, never a different owner.
+            const auto id="x'"+util::hex(std::vector<uint8_t>(data->identity.wallet_id.begin(),data->identity.wallet_id.end()))+"'";
+            Check(RecoveryNumber(lease->Database(),"SELECT count(*) FROM orchard_recovery_snapshots WHERE wallet_id!="+id+" OR account!=0")==0);
+            Check(RecoveryNumber(lease->Database(),"SELECT count(*) FROM orchard_recovery_retained WHERE wallet_id!="+id+" OR account!=0")==0);
+            Check(RecoveryNumber(lease->Database(),"SELECT count(*) FROM orchard_recovery_snapshots")==1);
+            store.PruneRecovery(keep,cut_revision,cut?&*cut:nullptr);tx.Commit();
+        }
+        // Authenticate/restore every kept row one at a time outside selected
+        // ownership. Database generations pin this audited inventory to publish;
+        // no history-sized ciphertext vector or SQL transaction spans proof work.
+        {
+            auto lease=w.AcquireDatabaseLease();data->stamp=RecoveryStamp(lease->Database());
+            Check(RecoveryNumber(lease->Database(),"SELECT count(*) FROM orchard_recovery_retained")==int64_t(keep.size()));
+        }
+        for(const auto revision:keep){(void)restore(read_parent(revision));auto lease=w.AcquireDatabaseLease();Check(RecoveryStamp(lease->Database())==data->stamp);}
+        data->revision=saved->revision;data->state_digest=RecoveryDigest(saved->state);
+        auto& proof=data->proof;proof.origin={uint8_t(p.domain.network_code),p.domain.genesis_wire,p.domain.branch_id,p.activation,origin.height,{}};
+        std::copy(origin.block_hash.begin(),origin.block_hash.end(),proof.origin.block.begin());
+        proof.height=checkpoint.height;std::copy(checkpoint.block_hash.begin(),checkpoint.block_hash.end(),proof.block.begin());
+        proof.sequence=receipt.sequence;std::copy(receipt.digest.begin(),receipt.digest.end(),proof.digest.begin());
+    }
+    return std::unique_ptr<OrchardAccount0RecoveryPlan>(new OrchardAccount0RecoveryPlan(std::move(data)));
+}
+void OrchardAccountDelivery::CommitRecoveredAccount0(WalletManager& w,uint64_t session,
+        std::unique_ptr<OrchardAccount0RecoveryPlan> plan){
+    Check(plan&&plan->data_&&plan->data_->observation.complete);auto& data=*plan->data_;
+    Check(session==data.session);auto lease=w.AcquireDatabaseLease();
+    Check(w.database_leases_==1&&lease->Session()==session&&lease->InstanceToken()==data.instance&&RecoveryStamp(lease->Database())==data.stamp);
+    RequireShieldFullSync(lease->Database());Transaction tx(lease->Database());auto seed=lease->CopyRecoverySeed(session);
+    if(data.observation.already_recovered){
+        const auto catalog=OrchardAccountCatalog::Read(lease->Database(),seed->Bytes());Check(catalog&&catalog->recovered);
+        orchard::WalletSnapshotStore store(lease->Database(),data.identity,seed->Bytes());const auto saved=store.Read();
+        Check(saved&&saved->revision==data.revision&&RecoveryDigest(saved->state)==data.state_digest);tx.Commit();return;
+    }
+    (void)OrchardAccountCatalog::RequireUnknownEmpty(lease->Database(),seed->Bytes());
+    orchard::WalletSnapshotStore stage(lease->Database(),data.identity,seed->Bytes(),orchard::WalletSnapshotStore::Scope::Recovery);
+    const auto now=stage.Read();Check(now&&now->revision==data.revision&&RecoveryDigest(now->state)==data.state_digest);
+    (void)OrchardAccountCatalog::StageRecoveredAccount0(lease->Database(),seed->Bytes(),data.proof);
+    // Only empty active tables can exist here. Adopt verified encrypted rows in
+    // constant DDL work, not a history-sized copy under selected ownership.
+    Exec(lease->Database(),"DROP TABLE IF EXISTS orchard_wallet_retained");
+    Exec(lease->Database(),"DROP TABLE IF EXISTS orchard_wallet_snapshots");
+    Exec(lease->Database(),"DROP TABLE IF EXISTS orchard_wallet_schema");
+    Exec(lease->Database(),"ALTER TABLE orchard_recovery_schema RENAME TO orchard_wallet_schema");
+    Exec(lease->Database(),"ALTER TABLE orchard_recovery_snapshots RENAME TO orchard_wallet_snapshots");
+    Exec(lease->Database(),"ALTER TABLE orchard_recovery_retained RENAME TO orchard_wallet_retained");
+    tx.Commit();
+}
 struct OrchardCatalogCapture::Data {
     std::unique_ptr<OrchardAccountDelivery::Owner::CapturedCatalog> captured;
     std::shared_ptr<const RuntimeAccountReplay> replay;

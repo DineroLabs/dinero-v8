@@ -34,11 +34,22 @@ public:
             bool operator==(const Preactivation&) const = default;
         };
         std::optional<Preactivation> preactivation{};
-        bool KnownInventory() const { return generated || preactivation.has_value(); }
+        struct RecoveredAccount0 {
+            Preactivation origin; // Actual activation parent, not a caller birthday.
+            uint32_t height;
+            std::array<uint8_t,32> block;
+            uint64_t sequence;
+            std::array<uint8_t,32> digest;
+            bool operator==(const RecoveredAccount0&) const = default;
+        };
+        std::optional<RecoveredAccount0> recovered{};
+        // Complete for the declared scope only. Recovery certifies account0,
+        // never arbitrary account discovery or a new seed's provenance.
+        bool KnownInventory() const { return generated || preactivation.has_value() || recovered.has_value(); }
         bool Covers(const Entry& e) const {
-            return generated || (preactivation && preactivation->network==e.network &&
-                preactivation->genesis==e.genesis && preactivation->branch==e.branch &&
-                preactivation->activation==e.activation);
+            const auto* p=preactivation?&*preactivation:recovered&&e.account==0?&recovered->origin:nullptr;
+            return generated || (p && p->network==e.network && p->genesis==e.genesis &&
+                p->branch==e.branch && p->activation==e.activation);
         }
         bool operator==(const Snapshot&) const = default;
     };
@@ -54,6 +65,8 @@ private:
     // initial catalog and every empty storage row are checked; no repair/DDL.
     static Snapshot StagePreactivation(sqlite3*,std::span<const uint8_t>,
                                       const Snapshot::Preactivation&);
+    static Snapshot RequireUnknownEmpty(sqlite3*,std::span<const uint8_t>);
+    static Snapshot StageRecoveredAccount0(sqlite3*,std::span<const uint8_t>,const Snapshot::RecoveredAccount0&);
     // Caller owns the complete authenticated account inventory and transaction.
     // Compare the authenticated revision and add exactly one never-used number;
     // commit this with its first encrypted account snapshot, never separately.

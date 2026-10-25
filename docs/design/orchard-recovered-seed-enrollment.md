@@ -2,9 +2,10 @@
 
 ## Scope and release status
 
-The bounded implementation adds `wallet.orchard.enrollpreactivation` for an
-explicitly bound, unlocked, named recovered wallet. It is NOT post-activation
-recovery, mobile sync support, or release qualification. Public activation
+The bounded implementation adds `wallet.orchard.enrollpreactivation` and explicit
+`wallet.orchard.recoveraccount0` for an unlocked, named recovered wallet. The
+latter requires complete authenticated retained history from activation; it is
+not yet phone historical download, seamless mobile sync, or release qualification. Public activation
 schedules and consensus rules are unchanged. Mainnet Orchard starts at H150000;
 implementation uses the selected network parameters, not a hard-coded height.
 
@@ -58,14 +59,18 @@ pre-activation fork cannot contain Orchard notes under the same bound rules;
 actual account state still starts at the authenticated activation parent of the
 selected replay source and follows normal connect/disconnect verification.
 
-## Planned post-activation recovery: not implemented by enrollment
+## Retained-history post-activation account-0 recovery
 
 This is required for new installs, reinstalls and new phones after activation.
 Core cannot distinguish an app-generated phrase from an old recovered phrase.
 Neither case may get a trusted-empty current wallet just because it uses
 `wallet.restore` or supplies a recent birthday.
 
-1. Add explicit account-0 recovery for the apps. Report coverage as account 0,
+The Core RPC implements the following bounded contract when its selected service
+can supply the complete activation-origin replay. It does not make missing
+historical data appear on a snapshot-only/stateless node.
+
+1. Explicit account-0 recovery reports coverage as account 0,
    not every possible BIP32 account of the seed. Arbitrary/nonconsecutive Core
    accounts require an explicit bounded account set or authenticated catalog
    backup. Do not silently erase or declare recovery of unlisted accounts.
@@ -79,7 +84,7 @@ Neither case may get a trusted-empty current wallet just because it uses
    txids, action positions, heights, hashes, amounts and memos. Compare computed
    tree sizes/roots with authenticated chain commitments. Reorged ancestry or
    any missing body/proof/checkpoint refuses completion.
-4. Use a resumable disk-backed staging owner separate from the active catalog.
+4. Use a resumable encrypted disk-backed staging owner separate from the active catalog.
    Persist verified prefixes and their identity, not a caller-chosen cursor.
    Derive only the necessary viewing authority under a short wallet lease;
    download/decrypt/verify outside wallet/selected locks. Encrypt sensitive
@@ -96,6 +101,23 @@ Neither case may get a trusted-empty current wallet just because it uses
    an empty scan. No automatic rebroadcast or reservation release follows from
    a recovery certificate.
 
+Each call processes at most 64 delivery events after the selected source has
+been captured and verified. `complete=false` is a verified staged prefix, never
+an active wallet owner. Repeated calls resume after encrypted wallet reopen.
+`restart=true` discards only uncertified recovery cache after rechecking the
+intact unknown/empty active catalog. It never repairs missing/corrupt catalogs,
+replaces a seed, or resets an already admitted owner. Generated provenance stays
+false. `DNOAC03` binds the seed-authenticated wallet, network, activation parent,
+account 0, scanned target and delivery digest. Other accounts remain refused.
+
+Publication atomically adopts the verified encrypted staging tables with the
+catalog in one FULL transaction, after fresh selected-tip/source/session checks.
+The initial owner retains at most 256 immediate parent snapshots. A deeper wallet
+rewind fails closed and requires a rescan; that deep-reorg rescan path is still
+open, not silently synthesized. Existing inventory and pending-owner checks are
+unchanged. Recovery cannot reconstruct lost off-chain requests or unused receiver
+issuance history. A complete certificate is an as-of scan, not perpetual freshness.
+
 Runtime replay capture now streams retained origin material into private disk
 storage without the former 2048-record/64MiB total-history ceilings. Branch
 metadata and cursor positions are disk indexed under a verifier-owned
@@ -106,11 +128,11 @@ ancestry, real-proof and EOF checks still apply. Disk/allocation errors refuse;
 there is no truncated-prefix success. This is not a total RSS, latency or disk
 budget certificate and does not supply missing historical material.
 
-These private scratch spools cannot reopen after process death. They are not the
-resumable encrypted recovery staging owner proposed above. Production recovery
-still needs that owner, an authenticated historical transport, account-0 scoped
-publication and real-device qualification; replay scalability alone grants no
-recovered-wallet or mobile chain-validation authority.
+These private source scratch spools cannot reopen after process death. The
+separate encrypted wallet staging owner can resume, but the source is rebuilt
+and reverified. Source-capture latency, disk use and device feasibility remain
+unqualified. Authenticated historical download and real-device qualification are
+still required for phones; replay scalability alone grants no mobile authority.
 
 ## Stateless phone: selected transport and outstanding gate
 

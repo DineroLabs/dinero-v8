@@ -15,7 +15,8 @@ constexpr std::string_view kMagic="DNOAC01";
 constexpr std::string_view kDomain="Dinero Orchard account catalog authentication v1";
 constexpr size_t kHeader=7+32+1+8+4, kEntry=4+1+32+4+4, kTag=32;
 constexpr size_t kPreactivation=1+32+4+4+4+32;
-constexpr size_t kMaxBytes=kHeader+OrchardAccountCatalog::kMaxAccounts*kEntry+kPreactivation+kTag;
+constexpr size_t kRecovery=kPreactivation+4+32+8+32;
+constexpr size_t kMaxBytes=kHeader+OrchardAccountCatalog::kMaxAccounts*kEntry+kRecovery+kTag;
 void Check(bool ok) { if(!ok) throw std::runtime_error("Orchard account catalog unavailable or invalid"); }
 struct Statement {
     sqlite3_stmt* p=nullptr;
@@ -66,6 +67,7 @@ void RequireFull(sqlite3* db){
     std::string mode(text,sqlite3_column_bytes(j.p,0));j.Done();
     Check(mode=="wal"||mode=="delete"||mode=="truncate"||mode=="persist");
 }
+void AppendPreactivation(std::vector<uint8_t>&,const OrchardAccountCatalog::Snapshot::Preactivation&);
 } // namespace
 std::optional<OrchardAccountCatalog::Snapshot> OrchardAccountCatalog::Read(sqlite3* db,std::span<const uint8_t> seed){
     Check(db&&!sqlite3_get_autocommit(db)&&seed.size()==64);
@@ -79,12 +81,13 @@ std::optional<OrchardAccountCatalog::Snapshot> OrchardAccountCatalog::Read(sqlit
     const auto tag=Tag(seed,payload);Check(CRYPTO_memcmp(tag.data(),bytes.data()+payload.size(),kTag)==0);
     const auto id=Identity(db);
     const bool v2=std::equal(payload.begin(),payload.begin()+7,"DNOAC02");
-    Check(v2||std::equal(kMagic.begin(),kMagic.end(),payload.begin()));
+    const bool v3=std::equal(payload.begin(),payload.begin()+7,"DNOAC03");
+    Check(v2||v3||std::equal(kMagic.begin(),kMagic.end(),payload.begin()));
     Check(CRYPTO_memcmp(id.data(),payload.data()+kMagic.size(),id.size())==0);
-    size_t pos=kMagic.size()+id.size();const uint64_t mode=Get(payload,pos,1);Check(v2?mode==2:mode<=1);
+    size_t pos=kMagic.size()+id.size();const uint64_t mode=Get(payload,pos,1);Check(v3?mode==3:v2?mode==2:mode<=1);
     Snapshot result{mode==1,Get(payload,pos,8),{}};const auto count=Get(payload,pos,4);
     Check(result.revision>0&&result.revision<=uint64_t(std::numeric_limits<int64_t>::max())&&count<=kMaxAccounts);
-    Check(payload.size()==kHeader+count*kEntry+(v2?kPreactivation:0)&&(result.generated||v2||count==0));
+    Check(payload.size()==kHeader+count*kEntry+(v3?kRecovery:v2?kPreactivation:0)&&(result.generated||v2||v3||count==0));
     result.accounts.reserve(static_cast<size_t>(count));
     for(size_t i=0;i<count;++i){
         Entry entry{};entry.account=static_cast<uint32_t>(Get(payload,pos,4));entry.network=static_cast<uint8_t>(Get(payload,pos,1));
@@ -94,7 +97,7 @@ std::optional<OrchardAccountCatalog::Snapshot> OrchardAccountCatalog::Read(sqlit
         Check(std::any_of(entry.genesis.begin(),entry.genesis.end(),[](uint8_t b){return b!=0;}));
         Check(result.accounts.empty()||result.accounts.back().account<entry.account);result.accounts.push_back(entry);
     }
-    if(v2){
+    if(v2||v3){
         Snapshot::Preactivation p{};
         p.network=Get(payload,pos,1);
         std::copy_n(payload.data()+pos,32,p.genesis.begin());pos+=32;
@@ -102,10 +105,49 @@ std::optional<OrchardAccountCatalog::Snapshot> OrchardAccountCatalog::Read(sqlit
         std::copy_n(payload.data()+pos,32,p.block.begin());pos+=32;
         Check(p.network<=2&&p.branch&&p.activation&&p.activation!=UINT32_MAX&&p.height<p.activation&&
               p.genesis!=std::array<uint8_t,32>{}&&p.block!=std::array<uint8_t,32>{});
-        result.preactivation=p;
+        if(v3){
+            Check(p.height+1==p.activation&&count==1&&result.accounts.front().account==0&&result.revision==2);
+            Snapshot::RecoveredAccount0 recovered{p,static_cast<uint32_t>(Get(payload,pos,4)),{},0,{}};
+            std::copy_n(payload.data()+pos,32,recovered.block.begin());pos+=32;
+            recovered.sequence=Get(payload,pos,8);std::copy_n(payload.data()+pos,32,recovered.digest.begin());pos+=32;
+            Check(recovered.height>=p.activation&&recovered.block!=std::array<uint8_t,32>{}&&
+                recovered.sequence&&recovered.digest!=std::array<uint8_t,32>{});result.recovered=recovered;
+        }else result.preactivation=p;
         for(const auto& entry:result.accounts)Check(result.Covers(entry));
     }
     Check(pos==payload.size());return result;
+}
+OrchardAccountCatalog::Snapshot OrchardAccountCatalog::RequireUnknownEmpty(sqlite3* db,std::span<const uint8_t> seed){
+    Check(db&&!sqlite3_get_autocommit(db));RequireFull(db);
+    const auto current=Read(db,seed);Check(current&&!current->KnownInventory()&&current->revision==1&&current->accounts.empty());
+    bool present[3]{};size_t i=0;
+    for(const char* name:{"orchard_wallet_schema","orchard_wallet_snapshots","orchard_wallet_retained"}){
+        Statement q(db,"SELECT 1 FROM sqlite_master WHERE type='table' AND name=?");q.Text(1,name);
+        const int rc=sqlite3_step(q.p);Check(rc==SQLITE_DONE||rc==SQLITE_ROW);present[i++]=rc==SQLITE_ROW;if(rc==SQLITE_ROW)q.Done();
+    }
+    Check((!present[0]&&!present[1]&&!present[2])||(present[0]&&present[1]&&present[2]));
+    if(present[0]){
+        Statement v(db,"SELECT version FROM orchard_wallet_schema WHERE id=1");Check(sqlite3_step(v.p)==SQLITE_ROW&&sqlite3_column_type(v.p,0)==SQLITE_INTEGER&&sqlite3_column_int64(v.p,0)==1);v.Done();
+        Statement a(db,"SELECT wallet_id,account,revision,sealed FROM orchard_wallet_snapshots");a.Done();
+        Statement b(db,"SELECT wallet_id,account,revision,sealed FROM orchard_wallet_retained");b.Done();
+    }
+    return *current;
+}
+OrchardAccountCatalog::Snapshot OrchardAccountCatalog::StageRecoveredAccount0(
+        sqlite3* db,std::span<const uint8_t> seed,const Snapshot::RecoveredAccount0& proof){
+    // The service calls this BEFORE table adoption in the SAME FULL transaction.
+    (void)RequireUnknownEmpty(db,seed);const auto& p=proof.origin;
+    Check(p.activation&&p.activation!=UINT32_MAX&&p.height+1==p.activation&&p.network<=2&&p.branch&&
+        p.genesis!=std::array<uint8_t,32>{}&&p.block!=std::array<uint8_t,32>{}&&proof.height>=p.activation&&
+        proof.block!=std::array<uint8_t,32>{}&&proof.sequence&&proof.digest!=std::array<uint8_t,32>{});
+    const auto id=Identity(db);std::vector<uint8_t> bytes{'D','N','O','A','C','0','3'};
+    bytes.insert(bytes.end(),id.begin(),id.end());bytes.push_back(3);Put(bytes,2,8);Put(bytes,1,4);
+    Put(bytes,0,4);bytes.push_back(p.network);bytes.insert(bytes.end(),p.genesis.begin(),p.genesis.end());Put(bytes,p.branch,4);Put(bytes,p.activation,4);
+    AppendPreactivation(bytes,p);Put(bytes,proof.height,4);bytes.insert(bytes.end(),proof.block.begin(),proof.block.end());
+    Put(bytes,proof.sequence,8);bytes.insert(bytes.end(),proof.digest.begin(),proof.digest.end());
+    const auto tag=Tag(seed,bytes);bytes.insert(bytes.end(),tag.begin(),tag.end());
+    Statement q(db,"UPDATE settings SET value=?,updated_at=strftime('%s','now') WHERE key=?");q.Text(1,Encode(bytes));q.Text(2,kSetting);q.Done();Check(sqlite3_changes(db)==1);
+    const auto result=Read(db,seed);Check(result&&result->recovered);return *result;
 }
 namespace {
 void AppendPreactivation(std::vector<uint8_t>& bytes,const OrchardAccountCatalog::Snapshot::Preactivation& p){
@@ -159,7 +201,7 @@ void OrchardAccountCatalog::InitializeForInitialSeed(sqlite3* db,std::span<const
 }
 uint64_t OrchardAccountCatalog::StageAppend(sqlite3* db,std::span<const uint8_t> seed,uint64_t expected,const Entry& entry){
     Check(db&&!sqlite3_get_autocommit(db)&&seed.size()==64);RequireFull(db);
-    const auto current=Read(db,seed);Check(current&&current->Covers(entry)&&current->revision==expected);
+    const auto current=Read(db,seed);Check(current&&!current->recovered&&current->Covers(entry)&&current->revision==expected);
     Check(expected<uint64_t(std::numeric_limits<int64_t>::max())&&current->accounts.size()<kMaxAccounts);
     Check(entry.account<0x80000000U&&entry.network<=2&&entry.branch&&entry.activation&&entry.activation!=UINT32_MAX);
     Check(std::any_of(entry.genesis.begin(),entry.genesis.end(),[](uint8_t b){return b!=0;}));

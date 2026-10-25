@@ -7009,6 +7009,41 @@ StatusOr<ChainstateService::OrchardPreactivationEnrollment> ChainstateService::e
 #endif
 }
 
+StatusOr<wallet::OrchardAccount0RecoveryProgress> ChainstateService::recoverOrchardAccount0(
+        WalletManager& wallet,uint64_t expected_session,bool restart){
+#ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
+    try {
+        const auto captured=getRuntimeAccountReplayForWallet(wallet,expected_session);
+        if(!captured.ok())return captured.status();
+        const auto& view=**captured;const auto head=view.Head();const auto target=view.Point(head).checkpoint;
+        const auto first=view.Event(1);
+        const auto profile=consensus::SelectedOrchardBlockContext(BlockHeader{},Params().orchard_activation_height);
+        if(!profile||target.height<profile->activation_height||first->context.domain.network_code!=profile->domain.network_code||
+            first->context.domain.genesis_wire!=profile->domain.genesis_wire||first->context.domain.branch_id!=profile->domain.branch_id||
+            first->context.activation_height!=profile->activation_height)return Status::Invalid;
+        auto prepared=wallet::OrchardAccountDelivery::PrepareRecoveredAccount0(wallet,expected_session,view,restart);
+        auto result=prepared->Observation();
+        if(!result.complete)return result; // Only encrypted staging, never active ownership/readiness.
+        std::lock_guard<std::mutex> snapshot(snapshot_load_mutex_);
+        std::lock_guard<AnnotatedRecursiveMutex> selected(activation_mutex_);
+        const auto capture=UtreexoRpcSnapshotUnderLock();const auto page=getRuntimeDeliveryPage(head,1);
+        const auto sync=GetSyncSnapshot();
+        if(!capture.ok()||capture->block_hash!=target.block_hash||capture->height!=target.height||
+            !page.ok()||(*page)->head!=head||!(*page)->events.empty()||(*page)->next!=head||!(*page)->after_tip||
+            (*page)->after_tip->first!=target.block_hash||(*page)->after_tip->second!=target.height||
+            !sync.IsConverged()||sync.active_tip_hash!=target.block_hash||sync.active_tip_height!=target.height||
+            IsInIBD()||(assumeutxo_active_&&!compact_startup_&&!IsBackgroundValidationComplete())||
+            (Params().name!="regtest"&&uint64_t(std::time(nullptr))>uint64_t(active_tip_->timestamp)+7200)){
+            result.complete=false;return result; // Preserve verified prefix for the next bounded call.
+        }
+        wallet::OrchardAccountDelivery::CommitRecoveredAccount0(wallet,expected_session,std::move(prepared));
+        return result;
+    }catch(...){return Status::Invalid;}
+#else
+    (void)wallet;(void)expected_session;(void)restart;return Status::Internal;
+#endif
+}
+
 StatusOr<std::shared_ptr<const RuntimeAccountReplay>> ChainstateService::getRuntimeAccountReplayForWallet(
         WalletManager& wallet,uint64_t expected_session) const {
     if(activation_mutex_.HeldByCurrentThread())return Status::Invalid;

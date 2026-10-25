@@ -3,6 +3,7 @@
 din::Json rpc_context_wallet_orchard_getnewaddress(const ExecutionContext&,const din::Json&);
 din::Json rpc_context_wallet_orchard_createaccount(const ExecutionContext&,const din::Json&);
 din::Json rpc_context_wallet_orchard_enrollpreactivation(const ExecutionContext&,const din::Json&);
+din::Json rpc_context_wallet_orchard_recoveraccount0(const ExecutionContext&,const din::Json&);
 void RegisterOrchardAccountRpc();
 din::Json rpc_context_wallet_orchard_listoperations(const ExecutionContext&,const din::Json&);
 din::Json rpc_context_wallet_orchard_listaccounts(const ExecutionContext&,const din::Json&);

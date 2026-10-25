@@ -2,6 +2,7 @@
 #include "orchard_wallet.h"
 #include <optional>
 struct sqlite3;
+namespace dinero::wallet { class OrchardAccountDelivery; }
 namespace dinero::orchard {
 struct WalletStorageIdentity {
     WalletNetwork network;
@@ -18,9 +19,14 @@ struct LoadedWalletState { uint64_t revision; WalletStateBytes state; };
 // connection; every schema/write call still requires a writable connection.
 class WalletSnapshotStore {
 public:
+    // Recovery is encrypted, resumable staging, NOT an admitted wallet owner.
+    // Its table names differ; ciphertext identity stays identical so the
+    // service can atomically adopt fully verified tables without rewriting a
+    // history-sized set under the selected-chain lock.
+    enum class Scope { Active, Recovery };
     static constexpr size_t kMaxStateBytes=WalletStateBytes::kMaxBytes;
-    static void InitializeSchemaUnderTransaction(sqlite3*);
-    WalletSnapshotStore(sqlite3*,WalletStorageIdentity,std::span<const uint8_t> seed);
+    static void InitializeSchemaUnderTransaction(sqlite3*,Scope=Scope::Active);
+    WalletSnapshotStore(sqlite3*,WalletStorageIdentity,std::span<const uint8_t> seed,Scope=Scope::Active);
     ~WalletSnapshotStore();
     WalletSnapshotStore(const WalletSnapshotStore&)=delete;
     WalletSnapshotStore& operator=(const WalletSnapshotStore&)=delete;
@@ -36,11 +42,17 @@ public:
     [[nodiscard]] uint64_t StageReplaceRetaining(uint64_t expected_revision,const WalletStateBytes&);
     [[nodiscard]] LoadedWalletState ReadRetained(uint64_t revision) const;
 private:
+    friend class dinero::wallet::OrchardAccountDelivery;
+    // Only uncertified recovery scratch may cut its old undo tail. The active
+    // store's immutable retention contract is unchanged. Caller authenticated
+    // the kept lineage and cuts its oldest parent to zero before adoption.
+    void PruneRecovery(const std::vector<uint64_t>& keep,uint64_t cut,const WalletStateBytes*);
     std::vector<uint8_t> AssociatedData(uint64_t revision)const;
     std::vector<uint8_t> Seal(uint64_t revision,std::span<const uint8_t>)const;
     WalletStateBytes Open(uint64_t revision,std::span<const uint8_t>)const;
     sqlite3* const db_;
     const WalletStorageIdentity identity_;
+    const Scope scope_;
     std::array<uint8_t,32> key_{};
 };
 } // namespace dinero::orchard

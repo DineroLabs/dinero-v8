@@ -62,6 +62,22 @@ private:
     explicit OrchardCatalogFinalizationPlan(std::unique_ptr<Data>);
     std::unique_ptr<Data> data_;
 };
+struct OrchardAccount0RecoveryProgress {
+    bool complete=false,already_recovered=false;
+    uint64_t applied=0,target=0;
+    uint32_t height=0;
+    uint256 block;
+};
+class OrchardAccount0RecoveryPlan final {
+public:
+    ~OrchardAccount0RecoveryPlan();
+    OrchardAccount0RecoveryProgress Observation() const;
+private:
+    friend class OrchardAccountDelivery;
+    struct Data;
+    explicit OrchardAccount0RecoveryPlan(std::unique_ptr<Data>);
+    std::unique_ptr<Data> data_;
+};
 // Owned plan returned after a checked reservation commit. The alias below
 // retains the existing account API while allowing a source boundary to return
 // this owner without exposing the entire account-delivery header.
@@ -356,6 +372,11 @@ public:
     static Applied Historical(WalletManager&, uint64_t session, const Profile&,
         uint64_t expected_revision, const RestorePoint&, const RuntimeOutboxEvent&);
 private:
+    friend class dinero::ChainstateService;
+    static std::unique_ptr<OrchardAccount0RecoveryPlan> PrepareRecoveredAccount0(
+        WalletManager&,uint64_t,const RuntimeAccountReplay&,bool restart);
+    static void CommitRecoveredAccount0(WalletManager&,uint64_t,
+        std::unique_ptr<OrchardAccount0RecoveryPlan>);
     friend struct OrchardDetachedShieldSigningTestAccess;
     static std::unique_ptr<orchard::TransactionEnvelope> SignShieldWithRestorePoints(
         WalletManager&,uint64_t,const Profile&,const RuntimeAccountReplay&,const orchard::Hash&,

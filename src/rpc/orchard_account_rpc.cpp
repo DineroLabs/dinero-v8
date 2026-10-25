@@ -161,6 +161,34 @@ din::Json rpc_context_wallet_orchard_enrollpreactivation(const ExecutionContext&
     return result;
 }
 
+din::Json rpc_context_wallet_orchard_recoveraccount0(const ExecutionContext& ctx,const din::Json& params){
+    din::Json result;
+    try {
+        if(!params.isObject()||params.size()>1||(params.size()==1&&(!params.isMember("restart")||!params["restart"].isBool())))
+            throw std::runtime_error("wallet.orchard.recoveraccount0 takes only optional restart:boolean; Core selects the profile and full history");
+#if DINERO_WALLET_RAW_ORCHARD
+        if(!ctx.daemon)throw std::runtime_error("Daemon services unavailable");
+        auto source=std::dynamic_pointer_cast<dinero::ChainstateService>(ctx.daemon->chainstate);
+        auto wallet=std::dynamic_pointer_cast<dinero::WalletService>(ctx.daemon->wallet);
+        auto source_use=dinero::ChainstateService::AcquireWalletIndexUse(source);
+        auto wallet_use=dinero::WalletService::AcquireWalletUse(wallet);uint64_t session;
+        {auto lease=wallet_use->Wallet().AcquireDatabaseLease();CheckOrchardRequestWallet(ctx,*lease);session=lease->Session();}
+        const auto recovered=source->recoverOrchardAccount0(wallet_use->Wallet(),session,params.get("restart",false).asBool());
+        if(!recovered.ok())throw OrchardBindingError("account0_recovery_unavailable",
+            "Recovery requires an intact recovered wallet and complete authenticated Orchard history; no birthday, empty-history or snapshot-only fallback");
+        result["account"]=0;result["coverage"]="account_0_only";result["generated"]=false;
+        result["complete"]=recovered->complete;result["scan_complete_to_current_tip"]=recovered->complete;
+        result["already_recovered"]=recovered->already_recovered;result["resumable"]=true;
+        result["applied_sequence"]=Json::UInt64(recovered->applied);result["target_sequence"]=Json::UInt64(recovered->target);
+        result["checkpoint_height"]=Json::UInt64(recovered->height);result["checkpoint_hash"]=recovered->block.GetHex();
+        result["undo_window_blocks"]=256;
+#else
+        (void)ctx;throw std::runtime_error("Orchard wallet backend unavailable");
+#endif
+    }catch(const std::exception& error){OrchardRpcFailure(result,error);}
+    return result;
+}
+
 namespace {
 din::Json OrchardAccountRequest(const ExecutionContext& ctx,const din::Json& params,bool creating){
     din::Json result;
@@ -857,6 +885,13 @@ void RegisterOrchardAccountRpc(){
         {},{"object","Profile-bound preactivation provenance and its observed checkpoint; no address or current scan certificate."},
         "Requires the bound unlocked recovered wallet, intact empty catalog and storage, FULL durability, converged fully validated recent selected chain, and no retained activation history. Core chooses all profile/checkpoint fields. Missing, corrupt, foreign or retained owners refuse; no repair or seed replacement. Generated provenance is unchanged. Refuses at/after activation, even when the wallet has no notes. Does not recover post-activation history or certify current spend readiness."};
     RegisterBoundOrchard(enrollment,rpc_context_wallet_orchard_enrollpreactivation);
+    const RpcMethodMeta recovery{
+        "wallet.orchard.recoveraccount0","wallet",
+        "Recover account0 from the complete authenticated activation-origin history in bounded resumable chunks.",
+        {{"restart","boolean","Discard only uncertified staging for an otherwise intact empty recovered wallet.",false}},
+        {"object","Account0-only scan progress; complete is returned only after fresh selected-tip check and atomic publication."},
+        "Call again while complete=false. Requires the bound unlocked recovered wallet, intact unknown catalog and complete retained canonical Orchard replay. Missing history refuses: a v6 snapshot alone is not a wallet rescan. Generated remains false; no other account is certified or allocatable. All active/retained/pending owners prevent initial recovery. Encrypted staging survives reopen; no active owner is exposed before FULL commit. Keeps256 immediate parents for wallet undo; deeper wallet rewinds require rescan and never invent missing history. Existing recovered account0 may advance normally; restart never overwrites it."};
+    RegisterBoundOrchard(recovery,rpc_context_wallet_orchard_recoveraccount0);
     const RpcMethodMeta shielding{
         "wallet.orchard.queueshield","wallet",
         "Select owned mature transparent coins and durably reserve a shield request before queueing its proof.",

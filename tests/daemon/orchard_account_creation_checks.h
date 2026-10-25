@@ -216,5 +216,115 @@ TEST(OrchardPreactivationEnrollment, GeneratedCatalogNeverReclassified){
     EXPECT_TRUE(rpc_context_wallet_orchard_enrollpreactivation(f.RequestContext(),din::obj()).isMember("error"));
     EXPECT_EQ(f.Snapshot(),before);EXPECT_EQ(f.Catalog(),catalog);
 }
+namespace {
+constexpr const char* RecoveryTestPhrase="abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+struct Account0RecoveryFixture:OrchardCreationFixture {
+    Account0RecoveryFixture():OrchardCreationFixture(false){
+        ShieldedStateStartupTestAccess::PublishEnrollmentParent(*f.service,*parent);MineEmpty();
+        auto use=WalletService::AcquireWalletUse(wallet);use->Wallet().createFromBip39("before-recovery",RecoveryTestPhrase,"");
+    }
+    void RestoreLate(){auto use=WalletService::AcquireWalletUse(wallet);use->Wallet().createFromBip39("after-activation-recovery",RecoveryTestPhrase,"");}
+    din::Json Recover(bool restart=false){auto p=din::obj();if(restart)p["restart"]=true;return rpc_context_wallet_orchard_recoveraccount0(RequestContext(),p);}
+};
+}
+TEST(OrchardAccount0Recovery, LaterRestoreFindsEarlierFundsAndMemoAndSurvivesReopen){
+    Account0RecoveryFixture f;const auto keys=f.AccountKeys(0);std::array<uint8_t,512> memo{};memo[0]='R';memo[1]='6';
+    const auto [body,bundle]=f.Shield(keys,memo);(void)f.Mine(body);f.MineEmpty();f.RestoreLate();
+    ASSERT_FALSE(f.Catalog()->KnownInventory());EXPECT_TRUE(f.Call(0).isMember("error"));
+    RegisterOrchardAccountRpc();const auto* method=g_rpcRegistry.lookup("wallet.orchard.recoveraccount0");ASSERT_NE(method,nullptr);
+    const auto result=(*method)(f.RequestContext(),OrchardBoundParamsForTest(f.RequestContext(),din::obj()));
+    ASSERT_FALSE(result.isMember("error"))<<result.toStyledString();ASSERT_TRUE(result["complete"].asBool())<<result.toStyledString();
+    const auto catalog=f.Catalog();ASSERT_TRUE(catalog&&catalog->recovered);EXPECT_FALSE(catalog->generated);
+    EXPECT_EQ(catalog->accounts.size(),1u);EXPECT_EQ(catalog->accounts.front().account,0u);EXPECT_TRUE(f.Call(1).isMember("error"));
+    for(int reopen=0;reopen<2;++reopen){
+        const auto account=f.Account(0);EXPECT_EQ(account.account.Scan().BalanceUna(),500000u);
+        ASSERT_EQ(account.account.Scan().CompleteReceipts().size(),1u);
+        const auto note=account.account.Scan().DecryptReceipt(0);EXPECT_EQ(note.Facts().memo[0],'R');EXPECT_EQ(note.Facts().memo[1],'6');
+        {auto use=WalletService::AcquireWalletUse(f.wallet);if(!reopen)use->Wallet().encryptWallet("late-recovery-pass");
+         use->Wallet().open("after-activation-recovery");use->Wallet().unlockWallet("late-recovery-pass",0);}
+        EXPECT_EQ(f.Catalog(),catalog);
+    }
+    const auto again=f.Recover();ASSERT_FALSE(again.isMember("error"));EXPECT_TRUE(again["already_recovered"].asBool());EXPECT_TRUE(again["complete"].asBool());
+    const auto before=f.Snapshot();EXPECT_TRUE(f.Recover(true).isMember("error"));EXPECT_EQ(f.Snapshot(),before);
+    const auto owned=f.Account(0);ASSERT_EQ(owned.account.Scan().Notes().size(),1u);
+    const auto& unspent=owned.account.Scan().Notes().front();const std::vector<orchard::WalletSpendInput> inputs{{*unspent.note,*unspent.witness}};
+    const auto recipient=orchard::WalletKeys::FromSeed(std::array<uint8_t,64>{91},0);
+    const std::vector<orchard::WalletPayment> payment{{400000,recipient.Receiver(orchard::WalletScope::External,{})}};
+    orchard::Hash anchor{};std::copy(owned.account.Scan().Checkpoint().anchor.begin(),owned.account.Scan().Checkpoint().anchor.end(),anchor.begin());
+    const auto proved=orchard::WalletBundlePlan::PrepareSpend(keys,inputs,anchor,payment)
+        .Prove(orchard::SigningContext::Create(f.Domain(),0,{}, {},100000));
+    const auto transfer=MempoolTransaction::FromOrchard(orchard::TransactionEnvelope::Create(0,{}, {},100000,proved.Bytes()));
+    (void)f.Mine(transfer);const auto advanced=f.Recover();ASSERT_FALSE(advanced.isMember("error"))<<advanced.toStyledString();
+    EXPECT_TRUE(advanced["complete"].asBool());const auto spent=f.Account(0);
+    EXPECT_EQ(spent.account.Scan().BalanceUna(),0u);EXPECT_TRUE(spent.account.Scan().Notes().empty());
+    EXPECT_EQ(spent.account.Scan().CompleteReceipts().size(),1u);EXPECT_EQ(spent.account.Scan().DecryptReceipt(0).Facts().memo[0],'R');
+}
+TEST(OrchardAccount0Recovery, EncryptedPartialPrefixResumesWithoutEarlyCatalogPublication){
+    Account0RecoveryFixture f;const auto keys=f.AccountKeys(0);const auto [body,bundle]=f.Shield(keys);(void)f.Mine(body);
+    for(size_t i=0;i<65;++i)f.MineEmpty();f.RestoreLate();const auto before=f.Catalog();
+    const auto first=f.Recover();ASSERT_FALSE(first.isMember("error"))<<first.toStyledString();EXPECT_FALSE(first["complete"].asBool());
+    EXPECT_EQ(first["applied_sequence"].asUInt64(),64u);EXPECT_EQ(f.Catalog(),before);EXPECT_TRUE(f.Call(0).isMember("error"));
+    {auto use=WalletService::AcquireWalletUse(f.wallet);use->Wallet().encryptWallet("prefix-pass");use->Wallet().open("after-activation-recovery");use->Wallet().unlockWallet("prefix-pass",0);}
+    const auto done=f.Recover();ASSERT_FALSE(done.isMember("error"))<<done.toStyledString();EXPECT_TRUE(done["complete"].asBool())<<done.toStyledString();
+    EXPECT_EQ(f.Account(0).account.Scan().BalanceUna(),500000u);
+}
+TEST(OrchardAccount0Recovery, MissingCorruptUnknownRowsAndGeneratedOwnersNeverReclassify){
+    Account0RecoveryFixture f;f.RestoreLate();const auto good=f.Setting("orchard_account_catalog_v1");
+    for(const char* sql:{"DELETE FROM settings WHERE key='orchard_account_catalog_v1'","UPDATE settings SET value='00' WHERE key='orchard_account_catalog_v1'"}){
+        f.Sql(sql);const auto before=f.Snapshot();EXPECT_TRUE(f.Recover().isMember("error"));EXPECT_TRUE(f.Recover(true).isMember("error"));EXPECT_EQ(f.Snapshot(),before);
+        auto use=WalletService::AcquireWalletUse(f.wallet);use->Wallet().setSetting("orchard_account_catalog_v1",good);
+    }
+    {auto use=WalletService::AcquireWalletUse(f.wallet);auto lease=use->Wallet().AcquireDatabaseLease();f.Sql("PRAGMA synchronous=FULL; BEGIN IMMEDIATE");
+     orchard::WalletSnapshotStore::InitializeSchemaUnderTransaction(lease->Database());f.Sql("CREATE TABLE orchard_wallet_retained(wallet_id BLOB,account INTEGER,revision INTEGER,sealed BLOB); COMMIT");}
+    f.Sql("INSERT INTO orchard_wallet_snapshots(wallet_id,account,revision,sealed) VALUES(randomblob(32),0,1,zeroblob(128))");
+    const auto before=f.Snapshot();EXPECT_TRUE(f.Recover().isMember("error"));EXPECT_TRUE(f.Recover(true).isMember("error"));EXPECT_EQ(f.Snapshot(),before);
+}
+TEST(OrchardAccount0Recovery, PublicationFailureAndBorrowedOwnersPreserveActiveInventory){
+    Account0RecoveryFixture f;f.RestoreLate();const auto before=f.Snapshot();
+    {auto use=WalletService::AcquireWalletUse(f.wallet);auto lease=use->Wallet().AcquireDatabaseLease();EXPECT_TRUE(f.Recover().isMember("error"));}
+    {auto lock=f.f.service->AcquireBlockIngressActivationLock();EXPECT_TRUE(f.Recover().isMember("error"));}
+    f.Sql("CREATE TRIGGER refuse_recovery BEFORE UPDATE ON settings WHEN NEW.key='orchard_account_catalog_v1' BEGIN SELECT RAISE(ABORT,'refuse recovery publication'); END");
+    EXPECT_TRUE(f.Recover().isMember("error"));EXPECT_EQ(f.Snapshot(),before);EXPECT_FALSE(f.Catalog()->KnownInventory());
+    f.Sql("DROP TRIGGER refuse_recovery");const auto retry=f.Recover();ASSERT_FALSE(retry.isMember("error"))<<retry.toStyledString();EXPECT_TRUE(retry["complete"].asBool());
+}
+TEST(OrchardAccount0Recovery, GeneratedProvenanceAndCallerScopeOrBirthdayNeverOverrideGuards){
+    OrchardCreationFixture f;const auto before=f.Snapshot();
+    EXPECT_TRUE(rpc_context_wallet_orchard_recoveraccount0(f.RequestContext(),din::obj()).isMember("error"));EXPECT_EQ(f.Snapshot(),before);
+    for(const char* key:{"account","height","birthday_height","checkpoint_hash","network"}){
+        auto p=din::obj();p[key]=0;EXPECT_TRUE(rpc_context_wallet_orchard_recoveraccount0(f.RequestContext(),p).isMember("error"));
+    }
+    EXPECT_EQ(f.Snapshot(),before);
+}
+TEST(OrchardAccount0Recovery, CorruptIncompleteCacheRequiresExplicitRestartAndNeverRepairsActiveOwners){
+    Account0RecoveryFixture f;const auto keys=f.AccountKeys(0);const auto [body,bundle]=f.Shield(keys);(void)f.Mine(body);
+    for(size_t i=0;i<65;++i)f.MineEmpty();f.RestoreLate();const auto catalog=f.Catalog();
+    const auto first=f.Recover();ASSERT_FALSE(first.isMember("error"));ASSERT_FALSE(first["complete"].asBool());
+    f.Sql("UPDATE orchard_recovery_snapshots SET sealed=zeroblob(length(sealed))");
+    const auto active=f.Snapshot();EXPECT_TRUE(f.Recover().isMember("error"));EXPECT_EQ(f.Snapshot(),active);EXPECT_EQ(f.Catalog(),catalog);
+    const auto restarted=f.Recover(true);ASSERT_FALSE(restarted.isMember("error"))<<restarted.toStyledString();
+    EXPECT_FALSE(restarted["complete"].asBool());EXPECT_EQ(f.Catalog(),catalog);
+    const auto done=f.Recover();ASSERT_FALSE(done.isMember("error"));ASSERT_TRUE(done["complete"].asBool());
+    EXPECT_EQ(f.Account(0).account.Scan().BalanceUna(),500000u);
+    const auto admitted=f.Snapshot();EXPECT_TRUE(f.Recover(true).isMember("error"));EXPECT_EQ(f.Snapshot(),admitted);
+}
+TEST(OrchardAccount0Recovery, DdlAdoptionAndCommitRefusalRollBackCatalogAndActiveRows){
+    Account0RecoveryFixture f;f.RestoreLate();const auto before=f.Snapshot();sqlite3* db;
+    {auto use=WalletService::AcquireWalletUse(f.wallet);auto lease=use->Wallet().AcquireDatabaseLease();db=lease->Database();}
+    sqlite3_set_authorizer(db,[](void*,int action,const char*,const char* table,const char*,const char*){
+        return action==SQLITE_ALTER_TABLE&&table&&std::string_view(table)=="orchard_recovery_retained"?SQLITE_DENY:SQLITE_OK;
+    },nullptr);
+    const auto denied=f.Recover();sqlite3_set_authorizer(db,nullptr,nullptr);
+    EXPECT_TRUE(denied.isMember("error"));EXPECT_EQ(f.Snapshot(),before);EXPECT_FALSE(f.Catalog()->KnownInventory());
+    // The verified staging prefix survives the failed atomic adoption. Refuse
+    // its publication COMMIT too, without consuming or relabelling that prefix.
+    bool saw_catalog=false;
+    sqlite3_update_hook(db,[](void* p,int op,const char*,const char* table,sqlite3_int64){
+        if(op==SQLITE_UPDATE&&table&&std::string_view(table)=="settings")*static_cast<bool*>(p)=true;
+    },&saw_catalog);
+    sqlite3_commit_hook(db,[](void* p){return *static_cast<bool*>(p)?1:0;},&saw_catalog);
+    const auto uncommitted=f.Recover();sqlite3_commit_hook(db,nullptr,nullptr);sqlite3_update_hook(db,nullptr,nullptr);
+    EXPECT_TRUE(saw_catalog);EXPECT_TRUE(uncommitted.isMember("error"));EXPECT_EQ(f.Snapshot(),before);EXPECT_FALSE(f.Catalog()->KnownInventory());
+    const auto done=f.Recover();ASSERT_FALSE(done.isMember("error"))<<done.toStyledString();EXPECT_TRUE(done["complete"].asBool());
+}
 #endif
 } // namespace dinero
