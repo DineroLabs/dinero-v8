@@ -336,6 +336,25 @@ recovery worker or a power-loss qualification. Those paths must recover only a
 valid selected intent and keep RPC closed until the named wallet and canonical
 readmission are ready; they may not adopt a live pause token or reset an epoch.
 
+The explicit fresh-App `PreparePendingReopen` host API now opens that selected
+intent before Init, binds its receipt to this replacement instance, and retains
+the same locked root/RPC gate. It does not enroll a catalog or state owner. It
+requires a never-initialized App; ordinary active or stopped-old Apps cannot use
+it to skip teardown. Missing intent returns null without changing RPC; malformed
+or ambiguous controls refuse. The host still must destroy every old service and
+reader before replacement initialization. This API is not yet invoked by an
+automatic NodeCore worker or general SDK startup.
+
+The RPC epoch now distinguishes OPEN, HELD and abandoned UNOWNED states. Every
+state transition is monotonic: no reset/ABA, recovery of a live HELD token, or
+generation wrap is permitted. Dropping an irreversible receipt changes HELD to
+UNOWNED without admitting RPC. Only the intent-checked host path may acquire a
+replacement token, which also remains closed on abandonment. Normal abort still
+resumes the same owners. A real linked native host fixture exercises both an
+abandoned same-process receipt and complete original driver exit followed by a
+fresh driver reopening the named wallet without a phrase. These remain genesis/
+empty-pool fixtures, not activation, nonempty pending payments or device tests.
+
 Owner decision: automatic crossing must retain H149999 (activation minus one)
 as an available compact undo/cold-reopen state. It may not silently establish
 H150000 as the snapshot/reorg floor. The activation-parent proof, original

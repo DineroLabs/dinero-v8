@@ -7580,7 +7580,7 @@ struct CoreReopenReceipt::Data {
     std::unique_ptr<ReopenServiceFence> wallet_fence,pool_fence;
     std::unique_ptr<daemon::ReopenCandidateJournal> journal;
     std::string wallet_name;std::filesystem::path root;
-    std::shared_ptr<const uint8_t> original_identity;bool committed=false,resumed=false;
+    std::shared_ptr<const uint8_t> original_identity,replacement_identity;bool committed=false,resumed=false;
     const std::thread::id thread=std::this_thread::get_id();
     Data(std::shared_ptr<ReopenRpcGate> g,std::shared_ptr<ReopenRpcGate::Pause> p)
         :gate(std::move(g)),pause(p?std::move(p):std::shared_ptr<ReopenRpcGate::Pause>(ReopenRpcGate::Begin(gate))){}
@@ -7631,10 +7631,31 @@ std::unique_ptr<CoreReopenReceipt> DaemonApp::CloseForInternalReopen(
     Stop();return receipt;
 }
 
+std::unique_ptr<CoreReopenReceipt> DaemonApp::PreparePendingReopen(
+    const daemon::DatadirGuard& guard,const std::shared_ptr<ReopenRpcGate>& gate){
+    std::lock_guard<std::recursive_mutex> lifecycle(close_reopen_mutex_);
+    if(started_||chain_db_||ctx_.config||ctx_.chainstate||ctx_.wallet||ctx_.mempool||!gate||
+        !guard.IsHeld()||!locked_datadir_||*locked_datadir_!=guard.DataDir())
+        throw std::logic_error("Pending Core reopen requires a fresh App and actual locked root");
+    std::string wallet;auto journal=daemon::ReopenCandidateJournal::OpenPending(guard,wallet);
+    if(!journal)return {};
+    // Audit before claiming a pause: a malformed file cannot steal a live
+    // token, change its generation, or turn missing work into startup authority.
+    std::shared_ptr<ReopenRpcGate::Pause> pause=gate->Allows(gate->Snapshot())?
+        ReopenRpcGate::Begin(gate):ReopenRpcGate::Recover(gate);
+    pause->HoldClosed();
+    auto receipt=std::unique_ptr<CoreReopenReceipt>(new CoreReopenReceipt(
+        std::make_unique<CoreReopenReceipt::Data>(gate,std::move(pause))));
+    auto& saved=*receipt->data_;saved.journal=std::move(journal);saved.wallet_name=std::move(wallet);
+    saved.root=guard.DataDir();saved.replacement_identity=reopen_identity_;saved.committed=true;
+    ctx_.reopen_rpc_gate=gate;receipt->CheckBeforeInit(guard);return receipt;
+}
+
 CoreReopenReceipt::Readmission DaemonApp::ResumeAfterInternalReopen(
     const daemon::DatadirGuard& guard,CoreReopenReceipt& receipt){
     std::lock_guard<std::recursive_mutex> lifecycle(close_reopen_mutex_);auto& saved=*receipt.data_;saved.Check();
     if(!started_||saved.original_identity==reopen_identity_||saved.resumed||ctx_.reopen_rpc_gate!=saved.gate||
+        (saved.replacement_identity&&saved.replacement_identity!=reopen_identity_)||
         !locked_datadir_||*locked_datadir_!=saved.root||!ctx_.config||
         std::filesystem::path(ctx_.config->DataDir())!=saved.root)
         throw std::logic_error("Core reopen replacement is not ready");

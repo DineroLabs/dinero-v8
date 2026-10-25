@@ -297,6 +297,29 @@ def app_reopen(node):
         "completed_intent_archived":True}, probe)
 
 
+def app_pending_reopen(node):
+    expected = {"candidates":0, "resolved":0, "retained":0, "wallet_name":"reopen-owner",
+        "paused_queues_retryable":True, "wallet_open_without_phrase":True,
+        "stale_epoch_refused":True, "repeat_resume_refused":True, "resumed_epoch_allowed":True,
+        "completed_intent_archived":True}
+    same = node.call("actual_app_reopen", datadir=str(datadir("abandoned-app-reopen")), mode="abandoned")
+    check("live pause is not stolen; abandoned receipt recovers closed", same == {
+        **expected, "live_token_refused":True, "abandoned_gate_stays_closed":True}, same)
+    path = datadir("cold-pending-app-reopen")
+    prepared = node.call("actual_app_reopen", datadir=str(path), mode="prepare")
+    check("pending intent survives complete original host exit", prepared == {
+        "pending_wallet":"reopen-owner", "pending_count":0, "rpc_closed":True}, prepared)
+    node.close()
+    check("original driver exits cleanly before fresh host", node.process.returncode == 0, node.process.returncode)
+    fresh = Embedded()
+    try:
+        recovered = fresh.call("actual_app_reopen", datadir=str(path), mode="cold")
+        check("fresh process reopens named wallet without phrase and retry-gates queues", recovered == expected, recovered)
+    finally:
+        fresh.close()
+    check("cold recovery driver exits cleanly", fresh.process.returncode == 0, fresh.process.returncode)
+
+
 def stopped_wallet_birth_height(path, name):
     # Only inspect the synthetic wallet after nodecore_stop has closed it.
     database = path / "wallets" / f"wallet_{name}.db"
@@ -575,6 +598,7 @@ try:
          "reopen_fences": reopen_fences,
          "reopen_rpc_pause": reopen_rpc_pause,
          "app_reopen": app_reopen,
+         "app_pending_reopen": app_pending_reopen,
          "snapshot": snapshot, "maintenance": maintenance,
          "maintenance_gate": maintenance_gate}[os.environ["NODECORE_SCENARIO"]](node)
         success = True

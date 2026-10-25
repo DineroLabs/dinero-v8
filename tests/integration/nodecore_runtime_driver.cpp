@@ -164,8 +164,10 @@ Json::Value LegacyStorageFixture(const std::string& path) {
         !app.PersistFreshStoreGenesisRecords())throw std::runtime_error("legacy fixture bootstrap failed");
     app.Stop();return 0;
 }
-Json::Value ActualAppReopen(const std::string& path){
-    if(nodecore_is_running()||!std::filesystem::path(path).is_absolute()||std::filesystem::exists(std::filesystem::path(path)/"blockchain"))
+Json::Value ActualAppReopen(const std::string& path,const std::string& mode={}){
+    if(mode!=""&&mode!="prepare"&&mode!="cold"&&mode!="abandoned")throw std::runtime_error("unknown reopen fixture mode");
+    if(nodecore_is_running()||!std::filesystem::path(path).is_absolute()||
+        (std::filesystem::exists(std::filesystem::path(path)/"blockchain")!=(mode=="cold")))
         throw std::runtime_error("reopen fixture needs a fresh isolated root");
     dinero::daemon::DatadirGuard guard;std::string error;
     if(!guard.Acquire(path,error))throw std::runtime_error(error);
@@ -183,23 +185,47 @@ Json::Value ActualAppReopen(const std::string& path){
         if(!rpc||!rpc->GetHttpServer())throw std::runtime_error("real App HTTP dispatcher missing");
         return HttpRpcRequestTestAccess::Dispatch(*rpc->GetHttpServer(),method,params);
     };
+    auto gate=std::make_shared<dinero::ReopenRpcGate>();auto epoch=gate->Snapshot();
+    std::unique_ptr<dinero::CoreReopenReceipt> receipt;
+    std::shared_ptr<dinero::ReopenRpcGate::Pause> pause;
+    auto reopened=std::make_unique<dinero::DaemonApp>();reopened->SetLockedDatadir(guard);
+    Json::Value result;std::string selected_wallet;
+    if(mode!="cold"){
     auto old=std::make_unique<dinero::DaemonApp>();initialize(*old);
     Json::Value restore;restore["name"]="reopen-owner";
     restore["mnemonic"]="abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
     restore["rescan"]=false;
     if(!call(*old,"wallet.restore",restore)["result"]["success"].asBool())throw std::runtime_error("fixture named restore failed");
-    const auto gate=old->GetContext().reopen_rpc_gate;const auto epoch=gate->Snapshot();
-    auto pause=std::shared_ptr<dinero::ReopenRpcGate::Pause>(dinero::ReopenRpcGate::Begin(gate));
-    auto receipt=old->CloseForInternalReopen(guard,pause);
+    gate=old->GetContext().reopen_rpc_gate;epoch=gate->Snapshot();
+    pause=std::shared_ptr<dinero::ReopenRpcGate::Pause>(dinero::ReopenRpcGate::Begin(gate));
+    receipt=old->CloseForInternalReopen(guard,pause);
     if(receipt->WalletName()!="reopen-owner"||gate->Allows(epoch))throw std::runtime_error("close did not fence/retain named wallet");
-    std::string selected_wallet;
     auto pending=dinero::daemon::ReopenCandidateJournal::OpenPending(guard,selected_wallet);
     if(!pending||pending->Name()!=receipt->CandidateJournal()||selected_wallet!="reopen-owner")
         throw std::runtime_error("close did not durably select the exact named-wallet intent");
     old.reset(); // ALL raw forest/bridge/validation readers end before new Init.
+    if(mode=="prepare"){
+        result["pending_wallet"]=selected_wallet;result["pending_count"]=Json::UInt64(pending->Count());
+        result["rpc_closed"]=!gate->Allows(gate->Snapshot());return result;
+    }
+    if(mode=="abandoned"){
+        const auto held=gate->Snapshot();
+        try{(void)reopened->PreparePendingReopen(guard,gate);result["live_token_refused"]=false;}
+        catch(const std::logic_error&){result["live_token_refused"]=gate->Snapshot()==held;}
+        receipt.reset();pause.reset();
+        result["abandoned_gate_stays_closed"]=!gate->Allows(gate->Snapshot());
+        receipt=reopened->PreparePendingReopen(guard,gate);
+        if(!receipt)throw std::runtime_error("abandoned intent not recovered");
+    }
+    }else{
+        // This path is invoked by a FRESH DRIVER PROCESS; no old receipt,
+        // pause, wallet session, registry handle or context survives it.
+        receipt=reopened->PreparePendingReopen(guard,gate);
+        if(!receipt||receipt->WalletName()!="reopen-owner")throw std::runtime_error("cold pending wallet not recovered");
+    }
     receipt->CheckBeforeInit(guard);
-    auto reopened=std::make_unique<dinero::DaemonApp>();reopened->GetContext().reopen_rpc_gate=receipt->Gate();initialize(*reopened);
-    Json::Value result;result["paused_queues_retryable"]=true;
+    reopened->GetContext().reopen_rpc_gate=receipt->Gate();initialize(*reopened);
+    result["paused_queues_retryable"]=true;
     for(const auto* method:{"wallet.orchard.queueshield","wallet.orchard.queuespend","wallet.orchard.queuesend"}){
         const auto paused=call(*reopened,method,Json::Value(Json::objectValue));
         result["paused_queues_retryable"]=result["paused_queues_retryable"].asBool()&&
@@ -292,7 +318,7 @@ int main(int argc, char** argv) {
             if (operation == "reopen_fences") {
                 result = ReopenFences();
             } else if (operation == "actual_app_reopen") {
-                result = ActualAppReopen(request["datadir"].asString());
+                result = ActualAppReopen(request["datadir"].asString(),request.get("mode","").asString());
             } else if (operation == "reopen_rpc_pause") {
                 result = ReopenRpcPause();
             } else if (operation == "legacy_storage_fixture") {

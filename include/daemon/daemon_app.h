@@ -114,6 +114,13 @@ public:
     // do not release it in the unavailable publication gap on capture failure.
     std::unique_ptr<CoreReopenReceipt> CloseForInternalReopen(const daemon::DatadirGuard&,
         std::shared_ptr<ReopenRpcGate::Pause> pause={});
+    // Explicit host startup only, on a fresh App BEFORE Init. Missing intent
+    // returns null; malformed/ambiguous control refuses. A valid selection
+    // recovers only a fresh OPEN or abandoned UNOWNED gate, never a live pause.
+    // The host must already have destroyed all old services/readers and retain
+    // the same real root lock until replacement teardown. No owner conversion.
+    std::unique_ptr<CoreReopenReceipt> PreparePendingReopen(const daemon::DatadirGuard&,
+        const std::shared_ptr<ReopenRpcGate>&);
     CoreReopenReceipt::Readmission ResumeAfterInternalReopen(const daemon::DatadirGuard&,CoreReopenReceipt&);
 
     /**

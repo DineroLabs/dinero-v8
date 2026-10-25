@@ -33,6 +33,14 @@ struct HttpRpcRequestTestAccess {
         server.handle_connection(fd, false);
     }
 };
+namespace dinero {
+struct ReopenRpcGateTestAccess {
+    static auto Recover(const std::shared_ptr<ReopenRpcGate>& gate){return ReopenRpcGate::Recover(gate);}
+    static void Hold(ReopenRpcGate::Pause& pause){pause.HoldClosed();}
+    static void Resume(ReopenRpcGate::Pause& pause){pause.Resume();}
+    static void Epoch(ReopenRpcGate& gate,uint64_t epoch){gate.epoch_.store(epoch);}
+};
+}
 namespace {
 struct Socket {
     int fd;
@@ -153,6 +161,40 @@ TEST(RpcReopenPause, CompletePauseInsideDispatchSuppressesBothRefusalAndSuccess)
     RequireRestarting(HttpRpcRequestTestAccess::Dispatch(server,"test.overlap"));refuse=false;
     RequireRestarting(HttpRpcRequestTestAccess::Dispatch(server,"test.overlap"));EXPECT_EQ(calls,2u);
     EXPECT_TRUE(context.reopen_rpc_gate->Allows(context.reopen_rpc_gate->Snapshot()));
+}
+TEST(RpcReopenPause, AbandonedCommittedTokenCanBeRecoveredButLiveTokenCannotBeStolen){
+    using Gate=dinero::ReopenRpcGate;using Access=dinero::ReopenRpcGateTestAccess;
+    const auto gate=std::make_shared<Gate>();const auto original=gate->Snapshot();
+    EXPECT_ANY_THROW(Access::Recover(gate));EXPECT_EQ(gate->Snapshot(),original);
+    auto token=Gate::Begin(gate);Access::Hold(*token);const auto owned=gate->Snapshot();
+    EXPECT_ANY_THROW(Access::Recover(gate));EXPECT_EQ(gate->Snapshot(),owned);
+    EXPECT_ANY_THROW(Gate::Begin(gate));EXPECT_FALSE(gate->Allows(owned));
+    token.reset();const auto abandoned=gate->Snapshot();EXPECT_GT(abandoned,owned);EXPECT_FALSE(gate->Allows(abandoned));
+    auto recovered=Access::Recover(gate);const auto reclaimed=gate->Snapshot();EXPECT_GT(reclaimed,abandoned);
+    EXPECT_ANY_THROW(Access::Recover(gate));EXPECT_FALSE(gate->Allows(reclaimed));
+    recovered.reset(); // An abandoned recovered receipt also stays CLOSED.
+    EXPECT_FALSE(gate->Allows(gate->Snapshot()));
+    recovered=Access::Recover(gate);Access::Resume(*recovered);
+    EXPECT_TRUE(gate->Allows(gate->Snapshot()));
+    for(const auto stale:{original,owned,abandoned,reclaimed})EXPECT_FALSE(gate->Allows(stale));
+}
+TEST(RpcReopenPause, UnownedLatchStillReturnsRestartingWithoutDispatch){
+    using Access=dinero::ReopenRpcGateTestAccess;DaemonContext context;
+    HttpRpcServer server("127.0.0.1",0);server.set_daemon_context(&context);unsigned calls=0;
+    server.register_method("wallet.orchard.queuesend",[&](const Json::Value&){++calls;return Json::Value(false);});
+    {auto pause=dinero::ReopenRpcGate::Begin(context.reopen_rpc_gate);Access::Hold(*pause);}
+    RequireRestarting(HttpRpcRequestTestAccess::Dispatch(server,"wallet.orchard.queuesend"));EXPECT_EQ(calls,0u);
+    auto pause=Access::Recover(context.reopen_rpc_gate);
+    RequireRestarting(HttpRpcRequestTestAccess::Dispatch(server,"wallet.orchard.queuesend"));EXPECT_EQ(calls,0u);
+    Access::Resume(*pause);EXPECT_FALSE(HttpRpcRequestTestAccess::Dispatch(server,"wallet.orchard.queuesend")["result"].asBool());
+    EXPECT_EQ(calls,1u);
+}
+TEST(RpcReopenPause, ExhaustedGenerationNeverWrapsOrReopens){
+    using Access=dinero::ReopenRpcGateTestAccess;const auto gate=std::make_shared<dinero::ReopenRpcGate>();
+    const auto maximum=std::numeric_limits<uint64_t>::max();
+    Access::Epoch(*gate,maximum-3);EXPECT_ANY_THROW(dinero::ReopenRpcGate::Begin(gate));EXPECT_EQ(gate->Snapshot(),maximum-3);
+    Access::Epoch(*gate,maximum-4);EXPECT_ANY_THROW(Access::Recover(gate));EXPECT_EQ(gate->Snapshot(),maximum-4);
+    EXPECT_FALSE(gate->Allows(gate->Snapshot()));EXPECT_FALSE(gate->Allows(0));
 }
 TEST(RpcRequestFraming, CapturedRateRefusalConsumesOneFrameWithoutDispatch) {
     HttpRpcServer server("127.0.0.1",0);std::atomic<unsigned> calls{0};
