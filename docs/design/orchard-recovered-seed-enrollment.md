@@ -239,6 +239,17 @@ physical-phone viability from host/synthetic memory measurements.
 
 ## Acceptance gates
 
+The thread-affine catalog download actor now handles one capability/connection/
+nonce-bound flight, sequential disk-backed pages, a single identical page retry,
+16 requests/second, 30-second idle and 20-minute network-flight limits, cancellation
+and a conservative free-disk check before staging. It authenticates completion
+with the existing full DNORST02 verifier and yields only an immutable unpublished
+section. The host must serialize calls on its owner worker, use a real steady
+clock, enforce cross-attempt cooldown/peer rotation with fresh nonces, and drain
+that worker before teardown. Verification itself is not asynchronously interruptible.
+This actor is tested against real generated proof pages, but is not yet wired
+to daemon peer scheduling, live-owner installation or phone history downloads.
+
 SDK store ownership now acquires the daemon's real datadir guard before Init,
 pins the resolved operator root through all arguments and DaemonApp, and holds
 the guard until the worker, services and database have closed. The persistent
