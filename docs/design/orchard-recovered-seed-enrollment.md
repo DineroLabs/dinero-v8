@@ -199,6 +199,41 @@ binding, runtime event, wallet operation or validation flag is published by the
 worker. Daemon handoff and historical recovery downloads remain unfinished;
 serving/client component tests are not actual mobile crossing or phone readiness.
 
+Closed-store conversion preparation now creates a separate, private candidate
+under the same real resolved datadir lock. The source is opened read-only with
+the normal directory reservation, actual ChainDB LOCK, schema/layout and READY
+checks; source INFO logging is suppressed rather than rotating its files. A
+live source, inner symlink, foreign hardlink or substituted root refuses. Only
+an existing SST's exact retained layout-upgrade rollback counterpart may share
+its inode. No hardlinks are created for the new candidate.
+
+All original column-family rows are copied with checksums and bounded synced
+batches, then independently compared before conversion. Complete selected/buried
+DNORST02 proof, actual parent header/work/stump, full frozen legacy before-image,
+empty Orchard namespace and the original validated anchor's selected ancestry
+are mandatory. This is distinct from the original independently prepared legacy
+retirement guard, which continues to require the validated marker at the parent.
+The conversion does not advance that marker or alter lifecycle/companion files.
+
+Only the unselected candidate drops its fully parsed coin rows and adds exact
+proof/catalog nodes and a compact compatibility binding. A domain-bound origin
+record and its selection fence are written in one synced candidate batch. They
+bind the original full logical row digest, validated anchor, selected first/parent,
+parent catalog, proof and retirement. Missing/conflicting origin or selection
+never grants fresh parent authority. Every original non-coin row remains exactly
+equal; additional rows are restricted to the fully checked proof/catalog/origin
+data. Both stores remain exclusively locked during the final source/target
+inventory, physical-identity and selected-header recheck. Cancellation leaves
+only an unselected candidate, never an implicitly adopted directory.
+
+This private preparation result is NOT promotion, typed live-state consistency,
+parent/descendant service startup or SDK automatic reopen. It retains candidates
+for investigation instead of deleting/adopting them. Live selection still needs
+a durable closed-store cohort journal and full restart recovery under the same
+guard; re-enrollment must reauthenticate and require the selected origin through
+activation-minus-one undo. Actual lifecycle/queued-payment/device acceptance and
+production-scale preparation disk/RSS/latency remain open.
+
 A private activation-origin verifier now starts at the authenticated parent,
 not at the first block's already-computed snapshot state. It verifies the full
 first block and every gap-free selected-header descendant, including scripts,

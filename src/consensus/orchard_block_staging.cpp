@@ -404,7 +404,7 @@ storage::LegacyRetirementRecord DeriveSelectedLegacyRetirementUnderLock(
         throw OrchardStateLookupError(Status::Corruption);
     return result;
 }
-void CheckPreparedLegacyRetirementUnderLock(const ChainDB& db,
+void CheckLegacyRetirementBeforeImageUnderLock(const ChainDB& db,
     const storage::LegacyRetirementRecord& record) {
     const auto& p=Params();
     uint256 genesis;
@@ -420,9 +420,16 @@ void CheckPreparedLegacyRetirementUnderLock(const ChainDB& db,
     auto stored=record;
     FillFrozenLegacy(db,stored,record.activation_height-1,record.boundary_parent);
     if(stored!=record) throw OrchardStateLookupError(Status::Corruption);
-    const auto tip=RequiredLocal(db.getTip()),validated=RequiredLocal(db.getValidatedTip());
+    const auto tip=RequiredLocal(db.getTip());
     if(tip.height<0 || uint64_t(tip.height)+1!=record.activation_height ||
-        tip.hash!=record.boundary_parent || validated.height!=tip.height || validated.hash!=tip.hash)
+        tip.hash!=record.boundary_parent)
+        throw OrchardStateLookupError(Status::Corruption);
+}
+void CheckPreparedLegacyRetirementUnderLock(const ChainDB& db,
+    const storage::LegacyRetirementRecord& record) {
+    CheckLegacyRetirementBeforeImageUnderLock(db,record);
+    const auto tip=RequiredLocal(db.getTip()),validated=RequiredLocal(db.getValidatedTip());
+    if(validated.height!=tip.height || validated.hash!=tip.hash)
         throw OrchardStateLookupError(Status::Corruption);
 }
 OrchardBlockCandidate ReadStoredOrchardBlock(const ChainDB& db,const uint256& hash,

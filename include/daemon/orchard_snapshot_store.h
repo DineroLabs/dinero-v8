@@ -3,11 +3,13 @@
 #include "consensus/header_chain.h"
 #include "daemon/orchard_chainstate_write.h"
 #include "storage/orchard_snapshot_base.h"
+#include "daemon/orchard_activation_handoff.h"
 
 namespace dinero {
 class ChainstateService;
 class OrchardBranchReplay;
 class OrchardBoundaryReplay;
+namespace daemon {class DatadirGuard;}
 // Private selected-state authority. Decoding, raw catalog staging and a local
 // checksum cannot enroll a compact owner. Only the service may invoke this
 // installer while holding its real activation mutex and datadir ownership.
@@ -28,6 +30,19 @@ private:
     class CommitUncertain final:public std::runtime_error {
     public:CommitUncertain():std::runtime_error("v6 state commit outcome is uncertain; restart required"){}
     };
+    // Closed old services only, under the SAME real root guard. Read-only
+    // source holds the checked ChainDB LOCK throughout copying and audit.
+    // Converts a new exclusive candidate only; no rename, service/owner/tip
+    // publication, lifecycle rewrite or original-file cleanup occurs here.
+    static std::unique_ptr<PreparedOrchardActivationHandoff> PrepareActivationHandoff(
+        const daemon::DatadirGuard&,const ChainWriteToken&,
+        std::shared_ptr<const consensus::HeaderChainSelector>,
+        std::shared_ptr<const consensus::OrchardSnapshotSection>,
+        const std::function<bool()>& cancelled={});
+    static void CheckActivationHandoff(const daemon::DatadirGuard&,
+        const PreparedOrchardActivationHandoff&);
+    static int OpenHandoffRoot(const daemon::DatadirGuard&);
+    static uint256 HandoffStoreDigest(const ChainDB&,const std::function<bool()>&);
     // New directories only, under the caller's datadir guard. No existing
     // database is opened/migrated/replaced and no chainstate is enrolled.
     static void CreateFreshStore(const std::filesystem::path&);

@@ -358,13 +358,33 @@ rocksdb::Status CheckReadyShieldedRecords(OpenedChainDB& reader) {
 }
 } // namespace
 
-Status ChainDB::initAttempt(const std::filesystem::path& dir, bool allow_lock_recovery) {
+Status ChainDB::initReadOnlyForHandoff(const std::filesystem::path& dir) {
+    close();
+    try {
+        // This entry point must never create a missing source or normalize a
+        // substituted inner path. The caller already owns the resolved root.
+        if(!std::filesystem::is_directory(std::filesystem::symlink_status(dir)) ||
+           std::filesystem::canonical(dir)!=dir.lexically_normal() ||
+           !std::filesystem::is_regular_file(std::filesystem::symlink_status(dir/"LOCK")))return Status::Invalid;
+        dir_=dir;
+    }catch(...){return Status::Io;}
+    return initAttempt(dir_,false,true);
+}
+
+Status ChainDB::initAttempt(const std::filesystem::path& dir, bool allow_lock_recovery, bool read_only) {
     auto owner = ProcessDirectoryOwner::Acquire(dir);
     if (!owner) {
         std::cerr << "ChainDB::init: Database directory unavailable or already owned in this process\n";
         return Status::Io;
     }
     auto options = getDefaultOptions();
+    if(read_only){
+        // Read-only engine access must not rotate/create the source INFO log.
+        class QuietHandoffLogger final:public rocksdb::Logger {
+            void Logv(const char*,va_list)override{}
+        };
+        options.info_log=std::make_shared<QuietHandoffLogger>();
+    }
     auto descriptors = getColumnFamilyDescriptors();
     const auto lock_path = (dir / "LOCK").string();
     rocksdb::FileLock* lock = nullptr;
@@ -373,7 +393,7 @@ Status ChainDB::initAttempt(const std::filesystem::path& dir, bool allow_lock_re
         owner.reset();  // No DB opened; a retry must acquire a fresh reservation.
         if (allow_lock_recovery) {
             std::this_thread::sleep_for(std::chrono::milliseconds(50));
-            return initAttempt(dir, false);
+            return initAttempt(dir, false, read_only);
         }
         std::cerr << "ChainDB::init: Cannot acquire database lock: " << status.ToString() << '\n';
         return convertRocksDBStatus(status);
@@ -462,12 +482,13 @@ Status ChainDB::initAttempt(const std::filesystem::path& dir, bool allow_lock_re
         }
     }
 
+    if(read_only&&(fresh||missing_schema||append_prebase))return Status::Corruption;
     // All ownership remains local until opening, the approved append, schema
     // initialization and name-based handle resolution have succeeded.
     OpenedChainDB opened;
     options.create_if_missing = fresh;
     options.create_missing_column_families = fresh;
-    status = opened.open(options, dir.string(), fresh ? descriptors : existing, false);
+    status = opened.open(options, dir.string(), fresh ? descriptors : existing, read_only);
     if (!status.ok()) return convertRocksDBStatus(status);
     if (append_prebase) {
         const auto& descriptor = descriptors.back();

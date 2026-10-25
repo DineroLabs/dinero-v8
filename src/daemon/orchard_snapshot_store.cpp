@@ -1,4 +1,6 @@
 #include "daemon/orchard_snapshot_store.h"
+#include "daemon/datadir_guard.h"
+#include "daemon/chainstate_recovery_marker.h"
 #include "daemon/services/orchard_branch_replay.h"
 #include "daemon/services/orchard_boundary_replay.h"
 #include "consensus/orchard_profile.h"
@@ -11,13 +13,20 @@
 #include "storage/forest_restore.h"
 #include "storage/orchard_storage_mode.h"
 #include "storage/shielded_cf_comparator.h"
+#include "storage/orchard_activation_origin.h"
 #include "consensus/shielded/commitment_tree.h"
 #include "consensus/shielded/anchor_history.h"
 #include "crypto/secure_random.h"
 #include "util/hex.h"
+#include "common/serialization.h"
 #include <rocksdb/iterator.h>
+#include <map>
+#include <thread>
+#include <utility>
 #ifndef _WIN32
 #include <fcntl.h>
+#include <sys/stat.h>
+#include <sys/statvfs.h>
 #include <unistd.h>
 #endif
 
@@ -96,6 +105,339 @@ OrchardSnapshotSection ReadActivationProofChunks(const ChainDB& db,const Activat
         proof.state.block_hash==d.first&&proof.parent_catalog.block==d.parent);
     Require(!cancelled||!cancelled());return proof;
 }
+#ifndef _WIN32
+struct HandoffFd {
+    int value=-1;HandoffFd()=default;explicit HandoffFd(int fd):value(fd){Require(fd>=0);}
+    HandoffFd(HandoffFd&& other)noexcept:value(std::exchange(other.value,-1)){}
+    HandoffFd& operator=(HandoffFd&& other)noexcept{
+        if(value>=0)::close(value);value=std::exchange(other.value,-1);return *this;
+    }
+    HandoffFd(const HandoffFd&)=delete;~HandoffFd(){if(value>=0)::close(value);}
+};
+struct stat HandoffStat(int fd){struct stat s{};Require(::fstat(fd,&s)==0);return s;}
+struct stat HandoffNamed(int parent,const std::string& name){
+    struct stat s{};Require(::fstatat(parent,name.c_str(),&s,AT_SYMLINK_NOFOLLOW)==0);return s;
+}
+bool HandoffSame(const struct stat& a,const struct stat& b){return a.st_dev==b.st_dev&&a.st_ino==b.st_ino;}
+struct HandoffFile {
+    uint64_t device,inode,links,size,mode,uid;int64_t modified,changed,modified_ns,changed_ns;
+    bool operator==(const HandoffFile&)const=default;
+};
+using HandoffFiles=std::map<std::string,HandoffFile>;
+HandoffFiles InspectHandoffFiles(const std::filesystem::path& path,
+    const std::filesystem::path& paired_sst={},const std::function<bool()>& cancelled={}){
+    namespace fs=std::filesystem;HandoffFiles result;
+    Require(fs::canonical(path)==path.lexically_normal());
+    for(const auto& item:fs::recursive_directory_iterator(path)){
+        Require(!cancelled||!cancelled());struct stat s{};Require(::lstat(item.path().c_str(),&s)==0&&
+            s.st_uid==::geteuid()&&(S_ISREG(s.st_mode)||S_ISDIR(s.st_mode)));
+        Require(result.size()<100000);
+        if(S_ISREG(s.st_mode)&&s.st_nlink!=1){
+            // Existing separated stores can share only their immutable SST
+            // with the exact retained layout-upgrade rollback counterpart.
+            Require(s.st_nlink==2&&!paired_sst.empty()&&item.path().extension()==".sst");
+            const auto pair=paired_sst/item.path().lexically_relative(path);struct stat p{};
+            Require(fs::canonical(pair)==pair.lexically_normal()&&::lstat(pair.c_str(),&p)==0&&
+                S_ISREG(p.st_mode)&&p.st_nlink==2&&p.st_uid==s.st_uid&&HandoffSame(p,s));
+        }
+#ifdef __APPLE__
+        const auto m=s.st_mtimespec,c=s.st_ctimespec;
+#else
+        const auto m=s.st_mtim,c=s.st_ctim;
+#endif
+        result.emplace(item.path().lexically_relative(path).generic_string(),HandoffFile{
+            uint64_t(s.st_dev),uint64_t(s.st_ino),uint64_t(s.st_nlink),uint64_t(s.st_size),
+            uint64_t(s.st_mode),uint64_t(s.st_uid),m.tv_sec,c.tv_sec,m.tv_nsec,c.tv_nsec});
+    }
+    return result;
+}
+void HandoffSync(int fd){Require(::fsync(fd)==0);}
+void HandoffMaintenanceClear(const std::filesystem::path& root,const std::filesystem::path& source){
+    for(const auto& path:{daemon::ChainstateRecoveryMarkerPath(root),root/"blockchain"/"reindex_promotion.marker",
+        std::filesystem::path(source.string()+".upgrade-state"),std::filesystem::path(source.string()+".upgrade-state.tmp"),
+        std::filesystem::path(source.string()+".upgrade-candidate"),std::filesystem::path(source.string()+".reindex.tmp")}){
+        std::error_code error;const auto status=std::filesystem::symlink_status(path,error);
+        Require(status.type()==std::filesystem::file_type::not_found&&
+            (!error||error==std::errc::no_such_file_or_directory));
+    }
+}
+#endif
+}
+
+struct PreparedOrchardActivationHandoff::Data {
+    std::filesystem::path root_path,source_path,candidate_path,paired_sst;
+    std::shared_ptr<const consensus::HeaderChainSelector> headers;
+    std::shared_ptr<const consensus::OrchardSnapshotSection> proof;
+    std::function<bool()> cancelled;
+    std::unique_ptr<ChainDB> source,candidate;
+    AnnotatedRecursiveMutex candidate_mutex;
+    storage::OrchardActivationOrigin origin;uint256 candidate_digest;
+    const std::thread::id thread=std::this_thread::get_id();
+#ifndef _WIN32
+    HandoffFd root,blockchain,source_dir,candidate_dir;HandoffFiles source_files,candidate_files;
+#endif
+};
+PreparedOrchardActivationHandoff::PreparedOrchardActivationHandoff(std::unique_ptr<Data> d):data_(std::move(d)){}
+PreparedOrchardActivationHandoff::~PreparedOrchardActivationHandoff()=default;
+const std::filesystem::path& PreparedOrchardActivationHandoff::CandidatePath()const{return data_->candidate_path;}
+const ChainDB& PreparedOrchardActivationHandoff::OriginalForInspection()const{return *data_->source;}
+const ChainDB& PreparedOrchardActivationHandoff::CandidateForInspection()const{return *data_->candidate;}
+
+int OrchardSnapshotStore::OpenHandoffRoot(const daemon::DatadirGuard& guard){
+#ifdef _WIN32
+    (void)guard;throw std::runtime_error("authenticated store handoff unavailable on this platform");
+#else
+    Require(guard.held_&&guard.lock_fd_>=0);
+    HandoffFd root(::open(guard.datadir_.c_str(),O_RDONLY|O_DIRECTORY|O_CLOEXEC|O_NOFOLLOW));
+    const auto held=HandoffStat(root.value);struct stat named{};
+    Require(::lstat(guard.datadir_.c_str(),&named)==0&&HandoffSame(held,named)&&S_ISDIR(held.st_mode)&&
+        held.st_uid==::geteuid()&&!(held.st_mode&0022)&&
+        uint64_t(held.st_dev)==guard.root_device_&&uint64_t(held.st_ino)==guard.root_inode_);
+    const auto lock=HandoffStat(guard.lock_fd_),current=HandoffNamed(root.value,"dinerod.lock");
+    Require(HandoffSame(lock,current)&&S_ISREG(lock.st_mode)&&lock.st_nlink==1&&lock.st_uid==::geteuid());
+    return std::exchange(root.value,-1);
+#endif
+}
+
+uint256 OrchardSnapshotStore::HandoffStoreDigest(const ChainDB& db,const std::function<bool()>& cancelled){
+    Require(db.hasSeparatedShieldedState());crypto::CSHA256 hash;hash.Write("DIN/orchard/handoff/store/v1");
+    const auto field=[&](const rocksdb::Slice& value){
+        std::string length;storage::catalog::Number(length,uint64_t(value.size()),8);hash.Write(length);
+        hash.Write(reinterpret_cast<const uint8_t*>(value.data()),value.size());
+    };
+    rocksdb::ReadOptions reads;reads.verify_checksums=true;reads.fill_cache=false;
+    for(const auto& family:db.cf_){
+        hash.Write(std::string(1,'\x01'));field(family->GetName());
+        std::unique_ptr<rocksdb::Iterator> it(db.db_->NewIterator(reads,family.get()));
+        for(it->SeekToFirst();it->Valid();it->Next()){
+            Require(!cancelled||!cancelled());Require(it->key().size()<=32*1024*1024&&it->value().size()<=32*1024*1024);
+            hash.Write(std::string(1,'\x02'));field(it->key());field(it->value());
+        }
+        Require(it->status().ok());hash.Write(std::string(1,'\x03'));
+    }
+    hash.Write(std::string(1,'\x04'));uint256 digest;hash.Finalize(digest.data);return digest;
+}
+
+std::unique_ptr<PreparedOrchardActivationHandoff> OrchardSnapshotStore::PrepareActivationHandoff(
+    const daemon::DatadirGuard& guard,const ChainWriteToken& token,
+    std::shared_ptr<const consensus::HeaderChainSelector> headers,
+    std::shared_ptr<const consensus::OrchardSnapshotSection> input,const std::function<bool()>& cancelled){
+#ifdef _WIN32
+    (void)guard;(void)token;(void)headers;(void)input;(void)cancelled;
+    throw std::runtime_error("authenticated store handoff unavailable on this platform");
+#else
+    using namespace consensus;namespace fs=std::filesystem;
+    Require(headers&&input);auto d=std::make_unique<PreparedOrchardActivationHandoff::Data>();
+    d->root_path=guard.DataDir();d->headers=std::move(headers);d->cancelled=cancelled;
+    d->proof=std::make_shared<const OrchardSnapshotSection>(*input);
+    const auto check_cancel=[&]{Require(!cancelled||!cancelled());};check_cancel();
+    d->root=HandoffFd(OpenHandoffRoot(guard));
+    d->blockchain=HandoffFd(::openat(d->root.value,"blockchain",O_RDONLY|O_DIRECTORY|O_CLOEXEC|O_NOFOLLOW));
+    const auto chain_id=HandoffStat(d->blockchain.value);
+    Require(chain_id.st_uid==::geteuid()&&!(chain_id.st_mode&0022));
+    d->source_path=d->root_path/"blockchain"/"chaindb";d->paired_sst=d->source_path.string()+".legacy-v1";
+    HandoffMaintenanceClear(d->root_path,d->source_path);
+    d->source_dir=HandoffFd(::openat(d->blockchain.value,"chaindb",O_RDONLY|O_DIRECTORY|O_CLOEXEC|O_NOFOLLOW));
+    const auto source_id=HandoffStat(d->source_dir.value);
+    Require(source_id.st_uid==::geteuid()&&!(source_id.st_mode&0022)&&
+        HandoffSame(source_id,HandoffNamed(d->blockchain.value,"chaindb")));
+    d->source_files=InspectHandoffFiles(d->source_path,d->paired_sst,cancelled);
+    d->source=std::make_unique<ChainDB>();Need(d->source->initReadOnlyForHandoff(d->source_path));
+    const auto& source=*d->source;const auto& proof=*d->proof;const auto& parent=proof.parent_catalog;
+    VerifyCatalogTransferProof(proof,*d->headers);check_cancel();
+    Require(source.hasSeparatedShieldedState()&&!storage::ReadOrchardSnapshotBase(source)&&
+        !storage::ReadOrchardCompactStorageBinding(source));
+    for(const char* key:{storage::OrchardActivationOriginKey,storage::OrchardActivationSelectionKey,storage::OrchardSnapshotFreshKey}){
+        std::string value;Require(source.getRaw(key,value)==Status::NotFound);
+    }
+    CheckLegacyRetirementBeforeImageUnderLock(source,proof.retirement.record);
+    const auto tip=Need(source.getTip()),validated=Need(source.getValidatedTip());
+    const auto marker=Need(source.getForestTipMarker());const auto stored_header=Need(source.getHeader(parent.block));
+    Require(tip.height==int32_t(parent.height)&&tip.hash==parent.block&&tip.work==parent.work&&
+        Need(source.getBlockHashByHeight(int(parent.height)))==parent.block&&
+        Need(source.getBlockHeight(parent.block))==int(parent.height)&&Need(source.getBlockWork(parent.block))==parent.work&&
+        marker.height==tip.height&&marker.block_hash==tip.hash&&marker.forest_root==stored_header.utreexo_root);
+    const auto selected=d->headers->GetHeaderValue(parent.block);HeaderIndexEntry anchor;
+    Require(selected&&selected->height==parent.height&&selected->header.SerializeForHash()==stored_header.SerializeForHash()&&
+        selected->chainwork==parent.work&&validated.height>=0&&validated.height<=tip.height&&
+        d->headers->GetHeaderAtHeightCopy(uint32_t(validated.height),anchor)&&anchor.hash==validated.hash);
+    const auto stump=UtreexoStump::deserialize(parent.stump);const auto root=stump.getCommitment();
+    Require(root.size()==32&&std::equal(root.begin(),root.end(),stored_header.utreexo_root.begin()));
+    Require(Need(source.previewOrchardCommitmentSets(std::nullopt,proof.state,proof.nullifiers))==ComputeOrchardSnapshotSets(proof));
+    const auto before=HandoffStoreDigest(source,cancelled);
+    uint64_t bytes=0;for(const auto& [name,file]:d->source_files){
+        (void)name;Require(file.size<=UINT64_MAX-bytes);bytes+=file.size;
+    }
+    const auto proof_bytes=OrchardSnapshotSectionEncodedSize(proof);
+    Require(bytes<=(UINT64_MAX-(uint64_t(1)<<30)-3*proof_bytes)/2);
+    struct statvfs space{};Require(::fstatvfs(d->blockchain.value,&space)==0&&space.f_frsize);
+    const uint64_t required=2*bytes+3*proof_bytes+(uint64_t(1)<<30);
+    Require(required<=UINT64_MAX-(space.f_frsize-1));
+    Require(uint64_t(space.f_bavail)>=(required+space.f_frsize-1)/space.f_frsize);
+    const auto name="chaindb.orchard-handoff-"+util::hex(secure_random_bytes(16));
+    d->candidate_path=d->source_path.parent_path()/name;
+    CreateFreshStore(d->candidate_path);
+    d->candidate_dir=HandoffFd(::openat(d->blockchain.value,name.c_str(),O_RDONLY|O_DIRECTORY|O_CLOEXEC|O_NOFOLLOW));
+    Require(HandoffSame(HandoffStat(d->candidate_dir.value),HandoffNamed(d->blockchain.value,name)));
+    d->candidate=std::make_unique<ChainDB>();Need(d->candidate->init(d->candidate_path));auto& candidate=*d->candidate;
+    Require(candidate.hasSeparatedShieldedState()&&candidate.cf_.size()==source.cf_.size());
+    rocksdb::ReadOptions reads;reads.verify_checksums=true;reads.fill_cache=false;
+    rocksdb::WriteBatch batch;unsigned rows=0;
+    const auto flush=[&]{if(batch.Count()){
+        check_cancel();Need(candidate.writeBatch(token,std::move(batch),true));batch=rocksdb::WriteBatch();rows=0;
+    }};
+    // Remove ONLY this exclusive new store's initialization rows. Every source
+    // CF then streams into the copy, with checksums and bounded synced batches.
+    for(const auto& family:candidate.cf_){
+        std::unique_ptr<rocksdb::Iterator> it(candidate.db_->NewIterator(reads,family.get()));
+        for(it->SeekToFirst();it->Valid();it->Next()){
+            check_cancel();Require(batch.Delete(family.get(),it->key()).ok());if(++rows==1024)flush();
+        }Require(it->status().ok());
+    }flush();
+    for(size_t index=0;index<source.cf_.size();++index){
+        Require(candidate.cf_[index]->GetName()==source.cf_[index]->GetName());
+        std::unique_ptr<rocksdb::Iterator> it(source.db_->NewIterator(reads,source.cf_[index].get()));
+        for(it->SeekToFirst();it->Valid();it->Next()){
+            check_cancel();Require(it->key().size()<=32*1024*1024&&it->value().size()<=32*1024*1024);
+            Require(batch.Put(candidate.cf_[index].get(),it->key(),it->value()).ok());
+            if(++rows==1024||batch.GetDataSize()>=4*1024*1024)flush();
+        }Require(it->status().ok());
+    }flush();Require(HandoffStoreDigest(candidate,cancelled)==before);
+    {
+        std::lock_guard<AnnotatedRecursiveMutex> lock(d->candidate_mutex);
+        RetainActivationProof(d->candidate_mutex,candidate,token,*d->headers,proof,cancelled);
+    }
+    std::map<uint256,std::string> node_batch;
+    const auto flush_nodes=[&]{if(!node_batch.empty()){
+        check_cancel();Need(candidate.stageOrchardCatalogNodes(token,node_batch,batch));flush();node_batch.clear();
+    }};
+    ForEachOrchardSnapshotNode(proof,[&](const auto& id,const auto& value){
+        check_cancel();const auto [at,inserted]=node_batch.emplace(id,value);Require(inserted||at->second==value);
+        if(node_batch.size()==1024)flush_nodes();
+    });flush_nodes();
+    // Coins leave only the unselected candidate. Parse every original key and
+    // value first; an unknown row is corruption, never silently dropped.
+    std::unique_ptr<rocksdb::Iterator> coins(source.db_->NewIterator(reads,source.cf_[source.idx_utxo_].get()));
+    for(coins->SeekToFirst();coins->Valid();coins->Next()){
+        check_cancel();const auto key=coins->key();Require(key.size()==37&&key[0]==ChainDB::PREFIX_UTXO);
+        uint256 id;std::reverse_copy(reinterpret_cast<const uint8_t*>(key.data()+1),reinterpret_cast<const uint8_t*>(key.data()+33),id.begin());
+        uint32_t output=0;for(unsigned i=0;i<4;++i)output=(output<<8)|uint8_t(key[33+i]);
+        Require(source.makeUtxoKey(id,output)==key.ToString());
+        const auto value=coins->value().ToString();Reader reader(value);
+        (void)reader.read<uint64_t>();(void)reader.readString();
+        Require(reader.read<uint32_t>()<=uint32_t(INT32_MAX)&&reader.read<uint8_t>()<=1);
+        if(!reader.eof()){
+            Require(reader.read<uint8_t>()<=1);if(!reader.eof())(void)reader.readBytes();
+        }
+        Require(reader.eof());Need(candidate.deleteCoin(token,id,output,&batch));
+        if(++rows==1024)flush();
+    }Require(coins->status().ok());coins.reset();flush();
+    auto& origin=d->origin;origin.magic=Params().magic;origin.profile=ConsensusChecksum(Params());
+    origin.parent_height=parent.height;origin.validated_height=uint32_t(validated.height);
+    origin.first=proof.state.block_hash;origin.parent=parent.block;origin.parent_catalog=storage::catalog::Hash(parent.Encode());
+    origin.proof=HashOrchardSnapshotSection(proof);origin.retirement=storage::OrchardSnapshotRetirementFingerprint(proof.retirement.record);
+    origin.source=before;origin.validated=validated.hash;
+    Need(candidate.stageOrchardCatalogState(token,parent.block,parent.Encode(),batch));
+    Require(batch.Put(storage::OrchardCompactStorageKey,storage::EncodeOrchardCompactStorageBinding(parent)).ok());
+    Require(batch.Put(storage::OrchardActivationOriginKey,origin.Encode()).ok());
+    Require(batch.Put(storage::OrchardActivationSelectionKey,origin.Selection()).ok());
+    // Final source/selection checks BEFORE this candidate-only synced choice.
+    VerifyCatalogTransferProof(proof,*d->headers);check_cancel();
+    Require(HandoffStoreDigest(source,cancelled)==before&&InspectHandoffFiles(d->source_path,d->paired_sst,cancelled)==d->source_files);
+    {HandoffFd root_check(OpenHandoffRoot(guard));Require(HandoffSame(HandoffStat(root_check.value),HandoffStat(d->root.value)));}
+    flush();candidate.close();Need(candidate.initReadOnlyForHandoff(d->candidate_path));
+    d->candidate_digest=HandoffStoreDigest(candidate,cancelled);
+    d->candidate_files=InspectHandoffFiles(d->candidate_path,{},cancelled);
+    HandoffSync(d->candidate_dir.value);HandoffSync(d->blockchain.value);
+    auto result=std::unique_ptr<PreparedOrchardActivationHandoff>(new PreparedOrchardActivationHandoff(std::move(d)));
+    CheckActivationHandoff(guard,*result);return result;
+#endif
+}
+
+void OrchardSnapshotStore::CheckActivationHandoff(const daemon::DatadirGuard& guard,
+    const PreparedOrchardActivationHandoff& prepared){
+#ifdef _WIN32
+    (void)guard;(void)prepared;throw std::runtime_error("authenticated store handoff unavailable on this platform");
+#else
+    const auto& d=*prepared.data_;Require(d.thread==std::this_thread::get_id()&&d.root_path==guard.DataDir()&&
+        d.headers&&d.proof&&d.source&&d.candidate&&(!d.cancelled||!d.cancelled()));
+    HandoffFd current(OpenHandoffRoot(guard));Require(HandoffSame(HandoffStat(current.value),HandoffStat(d.root.value))&&
+        HandoffSame(HandoffNamed(current.value,"blockchain"),HandoffStat(d.blockchain.value))&&
+        HandoffSame(HandoffNamed(d.blockchain.value,"chaindb"),HandoffStat(d.source_dir.value))&&
+        HandoffSame(HandoffNamed(d.blockchain.value,d.candidate_path.filename().string()),HandoffStat(d.candidate_dir.value)));
+    HandoffMaintenanceClear(d.root_path,d.source_path);
+    Require(InspectHandoffFiles(d.source_path,d.paired_sst,d.cancelled)==d.source_files&&
+        InspectHandoffFiles(d.candidate_path,{},d.cancelled)==d.candidate_files&&
+        HandoffStoreDigest(*d.source,d.cancelled)==d.origin.source&&
+        HandoffStoreDigest(*d.candidate,d.cancelled)==d.candidate_digest);
+    VerifyCatalogTransferProof(*d.proof,*d.headers);
+    CheckLegacyRetirementBeforeImageUnderLock(*d.source,d.proof->retirement.record);
+    CheckLegacyRetirementBeforeImageUnderLock(*d.candidate,d.proof->retirement.record);
+    const auto tip=Need(d.candidate->getTip()),validated=Need(d.candidate->getValidatedTip());
+    Require(tip.height==int32_t(d.origin.parent_height)&&tip.hash==d.origin.parent&&
+        validated.height==int32_t(d.origin.validated_height)&&validated.hash==d.origin.validated&&
+        d.origin.magic==Params().magic&&d.origin.profile==ConsensusChecksum(Params())&&
+        !storage::ReadOrchardSnapshotBase(*d.candidate)&&
+        storage::ReadOrchardCompactStorageBinding(*d.candidate)==storage::EncodeOrchardCompactStorageBinding(d.proof->parent_catalog)&&
+        Need(d.candidate->getOrchardCatalogState(tip.hash))==d.proof->parent_catalog.Encode());
+    std::string origin,selection;Need(d.candidate->getRaw(storage::OrchardActivationOriginKey,origin));
+    Need(d.candidate->getRaw(storage::OrchardActivationSelectionKey,selection));
+    Require(storage::OrchardActivationOrigin::Decode(origin).Encode()==d.origin.Encode()&&selection==d.origin.Selection());
+    std::lock_guard<AnnotatedRecursiveMutex> lock(prepared.data_->candidate_mutex);
+    const auto retained=ReadActivationProof(prepared.data_->candidate_mutex,*d.candidate,*d.headers,d.origin.first,d.cancelled);
+    Require(retained&&HashOrchardSnapshotSection(*retained)==d.origin.proof);
+    rocksdb::ReadOptions reads;reads.verify_checksums=true;reads.fill_cache=false;
+    // Compare every original non-coin row byte-for-byte. Only explicitly
+    // checked new proof/catalog/origin rows may appear; prefix alone is not
+    // permission to hide arbitrary extra data or a deleted before-image.
+    const auto proof_size=OrchardSnapshotSectionEncodedSize(*d.proof);
+    const auto allowed_extra=[&](size_t family,const rocksdb::Slice& key,const rocksdb::Slice& value){
+        const auto k=key.ToString(),v=value.ToString();
+        if(family==0){
+            if(k==storage::OrchardActivationOriginKey)return v==d.origin.Encode();
+            if(k==storage::OrchardActivationSelectionKey)return v==d.origin.Selection();
+            if(k==storage::OrchardCompactStorageKey)return v==storage::EncodeOrchardCompactStorageBinding(d.proof->parent_catalog);
+            if(k==ActivationProofKey(d.origin.first))return ActivationProofDescriptor::Decode(v).digest==d.origin.proof;
+            const auto prefix="orchard_activation_proof_v1:chunk:"+d.origin.proof.GetHex()+":";
+            if(k.starts_with(prefix)){
+                const auto part=k.substr(prefix.size());if(part.empty()||part.size()>20)return false;
+                uint64_t index=0;for(const auto digit:part){
+                    if(digit<'0'||digit>'9'||index>(UINT64_MAX-9)/10)return false;index=index*10+uint8_t(digit-'0');
+                }
+                return std::to_string(index)==part&&index<(proof_size+
+                    storage::OrchardSnapshotProofChunkBytes-1)/storage::OrchardSnapshotProofChunkBytes;
+            }
+            return false;
+        }
+        if(family==size_t(d.source->idx_utreexo_)){
+            const std::string nodes="Morchard_catalog_v1/node/",states="Morchard_catalog_v1/state/";
+            if(k.starts_with(nodes)&&k.size()==nodes.size()+32){
+                uint256 id;std::copy_n(reinterpret_cast<const uint8_t*>(k.data()+nodes.size()),32,id.begin());
+                return storage::catalog::ValidNode(id,v)&&v==ReadOrchardSnapshotNode(*d.proof,id);
+            }
+            return k==states+std::string(reinterpret_cast<const char*>(d.origin.parent.data),32)&&v==d.proof->parent_catalog.Encode();
+        }
+        return false;
+    };
+    Require(d.source->cf_.size()==d.candidate->cf_.size());
+    for(size_t family=0;family<d.source->cf_.size();++family){
+        if(family==size_t(d.source->idx_utxo_))continue;
+        std::unique_ptr<rocksdb::Iterator> original(d.source->db_->NewIterator(reads,d.source->cf_[family].get()));
+        std::unique_ptr<rocksdb::Iterator> copy(d.candidate->db_->NewIterator(reads,d.candidate->cf_[family].get()));
+        original->SeekToFirst();copy->SeekToFirst();
+        while(original->Valid()||copy->Valid()){
+            Require(!d.cancelled||!d.cancelled());
+            if(copy->Valid()&&(!original->Valid()||copy->key().compare(original->key())<0)){
+                Require(allowed_extra(family,copy->key(),copy->value()));copy->Next();continue;
+            }
+            Require(original->Valid()&&copy->Valid()&&original->key()==copy->key()&&original->value()==copy->value());
+            original->Next();copy->Next();
+        }
+        Require(original->status().ok()&&copy->status().ok());
+    }
+    std::unique_ptr<rocksdb::Iterator> coins(d.candidate->db_->NewIterator(reads,d.candidate->cf_[d.candidate->idx_utxo_].get()));
+    coins->SeekToFirst();Require(!coins->Valid()&&coins->status().ok());
+#endif
 }
 void OrchardSnapshotStore::CreateFreshStore(const std::filesystem::path& destination) {
     namespace fs=std::filesystem;

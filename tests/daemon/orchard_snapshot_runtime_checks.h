@@ -9,6 +9,7 @@
 #include "consensus/validation_queue.h"
 #include "daemon/reopen_candidate_journal.h"
 #include "daemon/datadir_guard.h"
+#include "storage/orchard_activation_origin.h"
 #include <sstream>
 #ifndef _WIN32
 #include <fcntl.h>
@@ -18,6 +19,12 @@
 #ifdef DINERO_TEST_ORCHARD_ORIGIN
 namespace dinero {
 struct OrchardSnapshotStoreTestAccess {
+    static auto PrepareHandoff(const daemon::DatadirGuard& root,const ChainWriteToken& token,
+        std::shared_ptr<const consensus::HeaderChainSelector> headers,
+        std::shared_ptr<const consensus::OrchardSnapshotSection> proof,const std::function<bool()>& cancelled={}){
+        return OrchardSnapshotStore::PrepareActivationHandoff(root,token,std::move(headers),std::move(proof),cancelled);}
+    static void CheckHandoff(const daemon::DatadirGuard& root,const PreparedOrchardActivationHandoff& prepared){
+        OrchardSnapshotStore::CheckActivationHandoff(root,prepared);}
     static auto Authenticate(const consensus::OrchardSnapshotSection& proof,const consensus::HeaderChainSelector& headers){
         return OrchardSnapshotStore::Authenticate(proof,headers,Params().state_commitment_burial_depth);
     }
@@ -260,7 +267,157 @@ struct TransferredActivationParentFixture {
     auto Read(const uint256& first,const std::function<bool()>& cancelled={}){
         return OrchardSnapshotStoreTestAccess::ReadProof(disk.startup_mutex,disk.reopened,*headers,first,cancelled);}
 };
+#ifndef _WIN32
+struct ActivationHandoffFixture {
+    std::shared_ptr<consensus::HeaderChainSelector> headers=std::make_shared<consensus::HeaderChainSelector>();
+    std::shared_ptr<const consensus::OrchardSnapshotSection> proof;
+    CompactStartupFixture full;
+    std::filesystem::path root,path;daemon::DatadirGuard guard;
+    ActivationHandoffFixture():full([this](auto& source){
+        for(const auto& block:source.f.blocks)OrchardAdmissionFixture::Require(headers->AddHeader(block.header));
+        OrchardAdmissionFixture::Require(headers->AddHeader(source.first->Header())&&headers->AddHeader(source.second->Header()));
+        proof=std::make_shared<const consensus::OrchardSnapshotSection>(OrchardSnapshotStoreTestAccess::CaptureActivation(source.f.db,*headers));
+    },OrchardAdmissionFixture::HistoricalSpend::None,true,true){
+        auto name=(std::filesystem::temp_directory_path()/"orchard-handoff-evidence-XXXXXX").string();
+        OrchardAdmissionFixture::Require(::mkdtemp(name.data())!=nullptr);root=std::filesystem::canonical(name);
+        std::filesystem::create_directory(root/"blockchain");path=root/"blockchain"/"chaindb";
+        std::filesystem::copy(full.f.path,path,std::filesystem::copy_options::recursive);
+        {std::ofstream wallet(root/"named-wallet.sentinel");wallet<<"opaque test-only named wallet/pending bytes";}
+        {std::ofstream lifecycle(root/"blockchain"/"original-lifecycle.sentinel");lifecycle<<"do not rebase or promote original history";}
+        std::string error;OrchardAdmissionFixture::Require(guard.Acquire(root,error));
+        std::cout<<"Activation handoff evidence: "<<root.string()<<"\n";
+    }
+    auto Prepare(const std::function<bool()>& cancel={}){
+        return OrchardSnapshotStoreTestAccess::PrepareHandoff(guard,full.f.token,headers,proof,cancel);
+    }
+    static auto Files(const std::filesystem::path& dir){
+        std::map<std::string,std::string> result;
+        for(const auto& item:std::filesystem::recursive_directory_iterator(dir))if(item.is_regular_file()){
+            std::ifstream in(item.path(),std::ios::binary);result.emplace(item.path().lexically_relative(dir).generic_string(),
+                std::string((std::istreambuf_iterator<char>(in)),{}));OrchardAdmissionFixture::Require(!in.bad());
+        }return result;
+    }
+    void MutateSource(const std::function<void(shielded_store_fixture::Raw&)>& fn){
+        auto families=shielded_store_fixture::legacy;families.push_back(shielded_store_fixture::shielded);
+        shielded_store_fixture::Raw raw(path,families);fn(raw);
+    }
+    static void MutateCopy(const std::filesystem::path& path,const std::function<void(shielded_store_fixture::Raw&)>& fn){
+        auto families=shielded_store_fixture::legacy;families.push_back(shielded_store_fixture::shielded);
+        shielded_store_fixture::Raw raw(path,families);fn(raw);
+    }
+};
+#endif
 }
+#ifndef _WIN32
+TEST(OrchardActivationHandoff, ClosedCopyConvertsWithoutMovingHistoryMarkersOrOriginalFiles){
+    using namespace consensus;ActivationHandoffFixture f;
+    // This simulates lagging independent execution metadata. It is not a
+    // complete assumed-state daemon/lifecycle acceptance fixture.
+    {ChainDB source;ASSERT_EQ(source.init(f.path),Status::Ok);
+     ASSERT_EQ(source.setValidatedTip(f.full.f.token,f.full.f.blocks.front().GetHash(),0),Status::Ok);source.close();}
+    // The existing layout upgrade legitimately shares immutable SSTs with
+    // its exact rollback counterpart. That narrow case remains supported;
+    // the new converted candidate must not create any additional links.
+    const auto rollback=std::filesystem::path(f.path.string()+".legacy-v1");std::filesystem::create_directory(rollback);
+    bool paired=false;for(const auto& item:std::filesystem::directory_iterator(f.path)){
+        if(item.is_regular_file()&&item.path().extension()==".sst"){
+            std::filesystem::create_hard_link(item.path(),rollback/item.path().filename());paired=true;break;
+        }
+    }ASSERT_TRUE(paired);
+    const auto original=ActivationHandoffFixture::Files(f.path);
+    const auto companions=ActivationHandoffFixture::Files(f.root);
+    auto prepared=f.Prepare();ASSERT_TRUE(prepared);
+    const auto& source=prepared->OriginalForInspection();const auto& copy=prepared->CandidateForInspection();
+    for(const auto& item:std::filesystem::directory_iterator(prepared->CandidatePath()))
+        if(item.is_regular_file()&&item.path().extension()==".sst")EXPECT_EQ(std::filesystem::hard_link_count(item.path()),1u);
+    const auto before=ChainDBTransactionReadTestPeer::HandoffRows(source),after=ChainDBTransactionReadTestPeer::HandoffRows(copy);
+    EXPECT_GT(before.size(),after.size()/2);EXPECT_NE(before,after);
+    EXPECT_EQ(source.getTip()->height,101);EXPECT_EQ(copy.getTip()->height,101);
+    EXPECT_EQ(source.getValidatedTip()->height,0);EXPECT_EQ(copy.getValidatedTip()->height,0);
+    EXPECT_EQ(source.getValidatedTip()->hash,copy.getValidatedTip()->hash);
+    EXPECT_NO_THROW(CheckLegacyRetirementBeforeImageUnderLock(copy,f.proof->retirement.record));
+    EXPECT_ANY_THROW(CheckPreparedLegacyRetirementUnderLock(copy,f.proof->retirement.record)); // original guard retained
+    EXPECT_FALSE(storage::ReadOrchardSnapshotBase(copy));EXPECT_FALSE(storage::ReadOrchardSnapshotBase(source));
+    EXPECT_FALSE(storage::ReadOrchardCompactStorageBinding(source));EXPECT_ANY_THROW(storage::RequireFullOrchardStorage(copy));
+    const auto origin=storage::ReadOrchardActivationOrigin(copy);ASSERT_TRUE(origin);
+    EXPECT_EQ(origin->validated_height,0u);EXPECT_EQ(origin->parent,f.proof->parent_catalog.block);
+    EXPECT_EQ(origin->first,f.proof->state.block_hash);EXPECT_EQ(origin->proof,HashOrchardSnapshotSection(*f.proof));
+    EXPECT_EQ(copy.getOrchardState().status(),Status::NotFound);EXPECT_EQ(copy.getLegacyRetirementState().status(),Status::NotFound);
+    EXPECT_NO_THROW(OrchardSnapshotStoreTestAccess::CheckHandoff(f.guard,*prepared));
+    EXPECT_EQ(ActivationHandoffFixture::Files(f.path),original);
+    EXPECT_EQ(ActivationHandoffFixture::Files(f.root).at("named-wallet.sentinel"),companions.at("named-wallet.sentinel"));
+    EXPECT_EQ(ActivationHandoffFixture::Files(f.root).at("blockchain/original-lifecycle.sentinel"),
+        companions.at("blockchain/original-lifecycle.sentinel"));
+    // Neither source nor candidate may acquire a second same-process owner.
+    ChainDB duplicate;EXPECT_NE(duplicate.init(f.path),Status::Ok);EXPECT_NE(duplicate.init(prepared->CandidatePath()),Status::Ok);
+    const auto candidate_path=prepared->CandidatePath();prepared.reset();
+    EXPECT_EQ(ActivationHandoffFixture::Files(f.path),original);
+    ChainDB cold;ASSERT_EQ(cold.init(candidate_path),Status::Ok);EXPECT_TRUE(storage::ReadOrchardActivationOrigin(cold));
+    EXPECT_EQ(cold.getValidatedTip()->height,0);EXPECT_ANY_THROW(storage::RequireFullOrchardStorage(cold));cold.close();
+}
+TEST(OrchardActivationHandoff, MissingCorruptOriginOrSelectionCannotBecomeFreshParentAuthority){
+    ActivationHandoffFixture f;auto prepared=f.Prepare();const auto candidate=prepared->CandidatePath();prepared.reset();
+    for(unsigned variant=0;variant<5;++variant){
+        const auto path=f.root/"blockchain"/("metadata-negative-"+std::to_string(variant));
+        std::filesystem::copy(candidate,path,std::filesystem::copy_options::recursive);
+        ActivationHandoffFixture::MutateCopy(path,[&](auto& raw){
+            rocksdb::WriteOptions sync;sync.sync=true;
+            if(variant==0||variant==4)ASSERT_TRUE(raw.db->Delete(sync,raw.cf("default"),storage::OrchardActivationOriginKey).ok());
+            if(variant==1||variant==4)ASSERT_TRUE(raw.db->Delete(sync,raw.cf("default"),storage::OrchardActivationSelectionKey).ok());
+            if(variant==2)raw.put("default",storage::OrchardActivationOriginKey,"corrupt");
+            if(variant==3)raw.put("default",storage::OrchardActivationSelectionKey,"foreign");
+        });
+        ChainDB cold;ASSERT_EQ(cold.init(path),Status::Ok);
+        const auto rows=ChainDBTransactionReadTestPeer::HandoffRows(cold);
+        if(variant==4)EXPECT_FALSE(storage::ReadOrchardActivationOrigin(cold));
+        else EXPECT_ANY_THROW(storage::ReadOrchardActivationOrigin(cold));
+        EXPECT_ANY_THROW(storage::RequireFullOrchardStorage(cold));
+        EXPECT_EQ(ChainDBTransactionReadTestPeer::HandoffRows(cold),rows);cold.close();
+    }
+}
+TEST(OrchardActivationHandoff, LiveSourceAndInterruptedPreparationNeverSelectOrAlterTheOriginal){
+    ActivationHandoffFixture f;ChainDB live;ASSERT_EQ(live.init(f.path),Status::Ok);
+    EXPECT_ANY_THROW(f.Prepare());live.close();
+    const auto original=ActivationHandoffFixture::Files(f.path);bool cancelled_after_creation=false;
+    EXPECT_ANY_THROW(f.Prepare([&]{
+        for(const auto& item:std::filesystem::directory_iterator(f.root/"blockchain"))
+            if(item.path().filename().string().starts_with("chaindb.orchard-handoff-"))cancelled_after_creation=true;
+        return cancelled_after_creation;
+    }));
+    EXPECT_TRUE(cancelled_after_creation);EXPECT_EQ(ActivationHandoffFixture::Files(f.path),original);
+    unsigned partial=0;for(const auto& item:std::filesystem::directory_iterator(f.root/"blockchain")){
+        if(!item.path().filename().string().starts_with("chaindb.orchard-handoff-"))continue;
+        ++partial;ChainDB copy;ASSERT_EQ(copy.init(item.path()),Status::Ok);EXPECT_FALSE(storage::ReadOrchardActivationOrigin(copy));
+    }
+    EXPECT_EQ(partial,1u);
+    auto prepared=f.Prepare();EXPECT_TRUE(prepared); // explicit new attempt, NEVER adopt the unselected prefix
+    EXPECT_EQ(ActivationHandoffFixture::Files(f.path),original);
+}
+TEST(OrchardActivationHandoff, AliasedInnerPathCorruptLegacyAndReplacedRootRefuse){
+    ActivationHandoffFixture f;
+    const auto source=f.path;std::filesystem::rename(source,source.string()+".held-original");
+    std::filesystem::create_directory_symlink(source.string()+".held-original",source);
+    EXPECT_ANY_THROW(f.Prepare());std::filesystem::remove(source);std::filesystem::rename(source.string()+".held-original",source);
+    const auto foreign_link=f.root/"foreign-current-link";
+    std::filesystem::create_hard_link(source/"CURRENT",foreign_link);EXPECT_ANY_THROW(f.Prepare());std::filesystem::remove(foreign_link);
+    auto prepared=f.Prepare();const auto original=ActivationHandoffFixture::Files(f.path);
+    const auto maintenance=f.root/"blockchain"/"reindex_promotion.marker";
+    {std::ofstream marker(maintenance);marker<<"unfinished test-only promotion";}
+    EXPECT_ANY_THROW(OrchardSnapshotStoreTestAccess::CheckHandoff(f.guard,*prepared));
+    EXPECT_ANY_THROW(f.Prepare());
+    std::filesystem::remove(maintenance);
+    const auto previous_magic=Params().magic;MutableParams().magic^=1;
+    EXPECT_ANY_THROW(OrchardSnapshotStoreTestAccess::CheckHandoff(f.guard,*prepared));MutableParams().magic=previous_magic;
+    const auto moved=f.root.string()+".held-root";std::filesystem::rename(f.root,moved);std::filesystem::create_directory(f.root);
+    EXPECT_ANY_THROW(OrchardSnapshotStoreTestAccess::CheckHandoff(f.guard,*prepared));
+    std::filesystem::remove(f.root);std::filesystem::rename(moved,f.root);
+    EXPECT_NO_THROW(OrchardSnapshotStoreTestAccess::CheckHandoff(f.guard,*prepared));prepared.reset();
+    EXPECT_EQ(ActivationHandoffFixture::Files(f.path),original);
+    f.MutateSource([](auto& raw){raw.put(shielded_store_fixture::shielded,"Mshielded_frontier","corrupt");});
+    const auto corrupt=ActivationHandoffFixture::Files(f.path);EXPECT_ANY_THROW(f.Prepare());
+    EXPECT_EQ(ActivationHandoffFixture::Files(f.path),corrupt);
+}
+#endif
 TEST(OrchardActivationProof, ColdDatabaseReadsAuthenticateWithoutHostProofOrSnapshotFloor){
     using namespace consensus;TransferredActivationParentFixture f;f.Parent();
     const auto first=f.proof->state.block_hash,expected=HashOrchardSnapshotSection(*f.proof);

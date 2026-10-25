@@ -661,7 +661,7 @@ struct CompactStartupFixture:CanonicalPoolFixture {
     unsigned attempts=0;
     explicit CompactStartupFixture(const std::function<void(CompactStartupFixture&)>& capture={},
         OrchardAdmissionFixture::HistoricalSpend historical_spend=OrchardAdmissionFixture::HistoricalSpend::None,
-        bool joint_boundary=false):CanonicalPoolFixture(true,historical_spend) {
+        bool joint_boundary=false,bool retain_full_parent=false):CanonicalPoolFixture(true,historical_spend) {
         if(joint_boundary){MutableParams().orchard_catalog_commitment_activation_height=102;MutableParams().state_commitment_burial_depth=1;}
         const auto require=[](bool ok){OrchardAdmissionFixture::Require(ok);};
         // Persist the actual independently validated historical bodies and
@@ -697,6 +697,7 @@ struct CompactStartupFixture:CanonicalPoolFixture {
                 *dinero::FindBlockIndex(c.block_hash),full,c,body,*f.db.getHeader(c.parent_hash),full.GetForest(),true,true);
             undo->Commit();
         }
+        if(retain_full_parent){f.ingress->Stop();f.db.close();return;}
         independent=std::make_unique<OrchardParentReplay>(OrchardParentReplay::Target{
             parent->height,parent->hash,ChainworkFromHex(parent->chainwork)},SelectedParentReplayWorkLimits());
         OrchardHistoryCapture history(parent->height,parent->hash);CaptureHeaders(history,f.blocks);

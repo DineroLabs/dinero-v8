@@ -169,7 +169,10 @@ public:
     }
 
 private:
-    Status initAttempt(const std::filesystem::path& dir, bool allow_lock_recovery);
+    Status initAttempt(const std::filesystem::path& dir, bool allow_lock_recovery, bool read_only = false);
+    // Closed-store handoff only: existing complete layout, the same checked
+    // directory/LOCK lifetime, no schema append/repair or writable Open.
+    Status initReadOnlyForHandoff(const std::filesystem::path& dir);
     std::filesystem::path dir_;  // Remembered for lock recovery
 
 public:

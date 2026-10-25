@@ -5,6 +5,7 @@
 #include <string>
 #include <cstdint>
 
+namespace dinero {class OrchardSnapshotStore;}
 namespace dinero::daemon {
 class ReopenCandidateJournal;
 
@@ -30,6 +31,7 @@ public:
 
 private:
     friend class ReopenCandidateJournal;
+    friend class ::dinero::OrchardSnapshotStore;
     bool CheckOwnership(std::string& error) const;
     bool WritePidFile(std::string& error);
     void RemovePidFile() noexcept;

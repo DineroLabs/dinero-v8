@@ -49,6 +49,12 @@ void CheckValidatedOrchardParentUnderLock(const ChainDB&,const OrchardBlockConte
 // derive monetary value or authenticate history; the service owns that proof.
 void CheckPreparedLegacyRetirementUnderLock(const ChainDB&,
     const storage::LegacyRetirementRecord&);
+// Contents/actual-parent check ONLY, not independent historical execution or
+// permission to mint an owner. Authenticated closed-store conversion uses it
+// after selected/buried DNORST02 verification, retaining the old validated tip.
+// The original prepared-retirement guard still requires that marker.
+void CheckLegacyRetirementBeforeImageUnderLock(const ChainDB&,
+    const storage::LegacyRetirementRecord&);
 // Typed stored-body read. Checks exact framing, key/header identity, transaction
 // and witness commitments, and size. Not replay/PoW/proof/transaction validity.
 [[nodiscard]] OrchardBlockCandidate ReadStoredOrchardBlock(
