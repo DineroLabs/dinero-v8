@@ -647,6 +647,18 @@ component controls, not normal descendant/post-undo writer/DaemonApp startup.
 That route still requires an exact full original/current row audit, including
 retained records from undone branches, before a writable owner can be published.
 
+The unpublished conversion now uses one private deterministic parent-copy builder,
+also suitable for reconstructing the exact selected before-image during cold
+auditing. It creates its own exclusive destination, pins its inode before opening
+an engine, checksums and copies every original column-family row in bounded synced
+batches, parses every removed coin, and stages the same proof/header/catalog/origin
+encodings. The actual root/source fence still runs before the final synced choice.
+It cannot reuse or clear a caller-supplied engine. Tests reconstruct through cold
+retained headers and compare every row, retain unknown original metadata, reject a
+wrong source digest or cancellation before creation, and preserve missing choice
+rows if the final fence refuses. This builder is DATA copying, not a state owner,
+normal descendant startup, lifecycle recovery or permission to replay a capture.
+
 Mutation controls are recorded separately from the earlier positive receipts.
 The original parent-reopen case survived a disabled consistency check; transition
 and engine-reopen cases detected it. The parent case now additionally substitutes

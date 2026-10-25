@@ -27,6 +27,13 @@ std::string EncodeHead(const RuntimeOutboxCursor&);
 }
 struct OrchardSnapshotStoreTestAccess {
     using ActivationPublication=OrchardSnapshotStore::ActivationPublication;
+    static auto CopyParent(const ChainDB& original,const ChainWriteToken& token,
+        AnnotatedRecursiveMutex& mutex,const consensus::HeaderChainSelector& headers,
+        const consensus::OrchardSnapshotSection& proof,const uint256& source,
+        const std::filesystem::path& destination,const std::function<void()>& created,
+        const std::function<void()>& choice,const std::function<bool()>& cancel={}){
+        return OrchardSnapshotStore::CopyActivationParent(original,token,mutex,headers,proof,
+            source,destination,created,choice,cancel);}
     static auto PrepareHandoff(const daemon::DatadirGuard& root,const ChainWriteToken& token,
         std::shared_ptr<const consensus::HeaderChainSelector> headers,
         std::shared_ptr<const consensus::OrchardSnapshotSection> proof,const std::function<bool()>& cancelled={}){
@@ -846,6 +853,55 @@ TEST(OrchardActivationSelection, ControlAndDirectoryTamperingCannotSelectOrRepai
     EXPECT_EQ(ActivationHandoffFixture::Files(selected->OriginalPath()),original);
 }
 #endif
+TEST(OrchardActivationBaseline, IndependentCopyMatchesEveryRowWithoutReusingAnEngine){
+    ActivationHandoffFixture f;
+    {ChainDB source;ASSERT_EQ(source.init(f.path),Status::Ok);
+     ASSERT_EQ(source.setValidatedTip(f.full.f.token,f.full.f.blocks.front().GetHash(),0),Status::Ok);source.close();}
+    ActivationHandoffFixture::MutateCopy(f.path,[](auto& raw){raw.put("default","original-local-beforeimage:test","opaque-preserved-row");});
+    auto prepared=f.Prepare();const auto& original=prepared->OriginalForInspection();
+    const auto& expected=prepared->CandidateForInspection();const auto origin=*storage::ReadOrchardActivationOrigin(expected);
+    const auto cold=OrchardSnapshotStoreTestAccess::ReadHandoffHeaders(expected,origin.first);
+    const auto rows=ChainDBTransactionReadTestPeer::HandoffRows(original);const auto files=ActivationHandoffFixture::Files(f.path);
+    AnnotatedRecursiveMutex mutex;const auto path=f.root/"baseline-reconstruction";bool created=false,chosen=false;
+    auto rebuilt=OrchardSnapshotStoreTestAccess::CopyParent(original,f.full.f.token,mutex,*cold,*f.proof,
+        origin.source,path,[&]{created=true;EXPECT_TRUE(std::filesystem::is_directory(path));},[&]{chosen=true;});
+    EXPECT_TRUE(created&&chosen);EXPECT_EQ(rebuilt.origin.Encode(),origin.Encode());
+    EXPECT_EQ(ChainDBTransactionReadTestPeer::HandoffRows(*rebuilt.database),ChainDBTransactionReadTestPeer::HandoffRows(expected));
+    EXPECT_EQ(rebuilt.database->getValidatedTip()->height,0);EXPECT_EQ(rebuilt.database->getTip()->height,101);
+    rebuilt.database.reset();const auto rebuilt_files=ActivationHandoffFixture::Files(path);
+    bool called=false;
+    EXPECT_ANY_THROW(OrchardSnapshotStoreTestAccess::CopyParent(original,f.full.f.token,mutex,*cold,*f.proof,
+        origin.source,path,[&]{called=true;},[]{ }));
+    EXPECT_FALSE(called);EXPECT_EQ(ActivationHandoffFixture::Files(path),rebuilt_files);
+    EXPECT_EQ(ChainDBTransactionReadTestPeer::HandoffRows(original),rows);EXPECT_EQ(ActivationHandoffFixture::Files(f.path),files);
+}
+TEST(OrchardActivationBaseline, WrongSourceAndCancellationNeverCreateOrAlterTheOriginal){
+    ActivationHandoffFixture f;auto prepared=f.Prepare();const auto& original=prepared->OriginalForInspection();
+    const auto origin=*storage::ReadOrchardActivationOrigin(prepared->CandidateForInspection());
+    const auto rows=ChainDBTransactionReadTestPeer::HandoffRows(original);const auto files=ActivationHandoffFixture::Files(f.path);
+    AnnotatedRecursiveMutex mutex;auto foreign=origin.source;foreign.begin()[0]^=1;
+    const auto path=f.root/"wrong-source-reconstruction";bool called=false;
+    EXPECT_ANY_THROW(OrchardSnapshotStoreTestAccess::CopyParent(original,f.full.f.token,mutex,*f.headers,*f.proof,
+        foreign,path,[&]{called=true;},[]{ }));
+    EXPECT_FALSE(called);EXPECT_FALSE(std::filesystem::exists(path));
+    EXPECT_ANY_THROW(OrchardSnapshotStoreTestAccess::CopyParent(original,f.full.f.token,mutex,*f.headers,*f.proof,
+        origin.source,path,[&]{called=true;},[]{ },[]{return true;}));
+    EXPECT_FALSE(called);EXPECT_FALSE(std::filesystem::exists(path));
+    EXPECT_EQ(ChainDBTransactionReadTestPeer::HandoffRows(original),rows);EXPECT_EQ(ActivationHandoffFixture::Files(f.path),files);
+}
+TEST(OrchardActivationBaseline, FinalRootFenceFailureNeverCommitsChoiceRows){
+    ActivationHandoffFixture f;auto prepared=f.Prepare();const auto& original=prepared->OriginalForInspection();
+    const auto origin=*storage::ReadOrchardActivationOrigin(prepared->CandidateForInspection());
+    const auto rows=ChainDBTransactionReadTestPeer::HandoffRows(original);const auto files=ActivationHandoffFixture::Files(f.path);
+    AnnotatedRecursiveMutex mutex;const auto path=f.root/"fence-refused-reconstruction";bool created=false,choice=false;
+    EXPECT_ANY_THROW(OrchardSnapshotStoreTestAccess::CopyParent(original,f.full.f.token,mutex,*f.headers,*f.proof,
+        origin.source,path,[&]{created=true;},[&]{choice=true;throw std::runtime_error("fixture root fence refused");}));
+    EXPECT_TRUE(created&&choice);ChainDB rejected;ASSERT_EQ(ChainDBTransactionReadTestPeer::HandoffReadOnly(rejected,path),Status::Ok);
+    std::string bytes;EXPECT_EQ(rejected.getRaw(storage::OrchardActivationOriginKey,bytes),Status::NotFound);
+    EXPECT_EQ(rejected.getRaw(storage::OrchardActivationSelectionKey,bytes),Status::NotFound);
+    EXPECT_FALSE(storage::ReadOrchardCompactStorageBinding(rejected));
+    EXPECT_EQ(ChainDBTransactionReadTestPeer::HandoffRows(original),rows);EXPECT_EQ(ActivationHandoffFixture::Files(f.path),files);
+}
 TEST(OrchardActivationHandoff, ClosedCopyConvertsWithoutMovingHistoryMarkersOrOriginalFiles){
     using namespace consensus;ActivationHandoffFixture f;
     // This simulates lagging independent execution metadata. It is not a

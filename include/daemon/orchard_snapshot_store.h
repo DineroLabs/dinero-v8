@@ -5,6 +5,7 @@
 #include "storage/orchard_snapshot_base.h"
 #include "daemon/orchard_activation_handoff.h"
 #include "storage/orchard_handoff_names.h"
+#include "storage/orchard_activation_origin.h"
 
 namespace dinero {
 class ChainstateService;
@@ -35,6 +36,18 @@ private:
         std::unique_ptr<ChainDB> database;
         std::unique_ptr<OrchardCompactChainstate> compact;
     };
+    // Deterministic unpublished conversion DATA, also used to reconstruct the
+    // exact parent before-image for completed-state audits. Creates its own
+    // exclusive destination; never clears/reuses an existing engine or root.
+    struct ActivationParentCopy {
+        std::unique_ptr<ChainDB> database;
+        storage::OrchardActivationOrigin origin;
+    };
+    static ActivationParentCopy CopyActivationParent(const ChainDB&,const ChainWriteToken&,
+        AnnotatedRecursiveMutex&,const consensus::HeaderChainSelector&,
+        const consensus::OrchardSnapshotSection&,const uint256& source_digest,
+        const std::filesystem::path& destination,const std::function<void()>& on_created,
+        const std::function<void()>& before_choice,const std::function<bool()>& cancelled);
     static ActivationPublication OpenActivationHandoff(
         const daemon::DatadirGuard&,const ClosedCoreReopenIntent&,AnnotatedRecursiveMutex&,
         const ChainWriteToken&,const BlockStorage&,

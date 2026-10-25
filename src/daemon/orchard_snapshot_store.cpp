@@ -654,6 +654,95 @@ std::shared_ptr<consensus::HeaderChainSelector> OrchardSnapshotStore::ReadActiva
         activation.hash==first&&verified->GetBestHeaderValue()->hash==descriptor.target);check();return verified;
 }
 
+OrchardSnapshotStore::ActivationParentCopy OrchardSnapshotStore::CopyActivationParent(
+    const ChainDB& source,const ChainWriteToken& token,AnnotatedRecursiveMutex& mutex,
+    const consensus::HeaderChainSelector& headers,const consensus::OrchardSnapshotSection& proof,
+    const uint256& before,const std::filesystem::path& destination,
+    const std::function<void()>& on_created,const std::function<void()>& before_choice,
+    const std::function<bool()>& cancelled){
+    using namespace consensus;Require(on_created&&before_choice);
+    const auto check_cancel=[&]{Require(!cancelled||!cancelled());};check_cancel();
+    VerifyCatalogTransferProof(proof,headers);
+    const auto& parent=proof.parent_catalog;const auto validated=Need(source.getValidatedTip());
+    const auto tip=Need(source.getTip());
+    Require(source.hasSeparatedShieldedState()&&validated.height>=0&&validated.height<=tip.height&&
+        tip.height==int(parent.height)&&tip.hash==parent.block&&tip.work==parent.work&&
+        HandoffStoreDigest(source,cancelled)==before);
+    // This helper cannot clear or overwrite any caller-supplied live engine.
+    // Its ONLY destination is created exclusively here; the caller pins its
+    // actual inode before the first DB open or row write.
+    CreateFreshStore(destination);on_created();
+    auto database=std::make_unique<ChainDB>();Need(database->init(destination));auto& candidate=*database;
+    Require(candidate.hasSeparatedShieldedState()&&candidate.cf_.size()==source.cf_.size());
+    rocksdb::ReadOptions reads;reads.verify_checksums=true;reads.fill_cache=false;
+    rocksdb::WriteBatch batch;unsigned rows=0;
+    const auto flush=[&]{if(batch.Count()){
+        check_cancel();Need(candidate.writeBatch(token,std::move(batch),true));batch=rocksdb::WriteBatch();rows=0;
+    }};
+    // Remove ONLY this exclusive new store's initialization rows. Every source
+    // CF then streams into the copy, with checksums and bounded synced batches.
+    for(const auto& family:candidate.cf_){
+        std::unique_ptr<rocksdb::Iterator> it(candidate.db_->NewIterator(reads,family.get()));
+        for(it->SeekToFirst();it->Valid();it->Next()){
+            check_cancel();Require(batch.Delete(family.get(),it->key()).ok());if(++rows==1024)flush();
+        }Require(it->status().ok());
+    }flush();
+    for(size_t index=0;index<source.cf_.size();++index){
+        Require(candidate.cf_[index]->GetName()==source.cf_[index]->GetName());
+        std::unique_ptr<rocksdb::Iterator> it(source.db_->NewIterator(reads,source.cf_[index].get()));
+        for(it->SeekToFirst();it->Valid();it->Next()){
+            check_cancel();Require(it->key().size()<=32*1024*1024&&it->value().size()<=32*1024*1024);
+            Require(batch.Put(candidate.cf_[index].get(),it->key(),it->value()).ok());
+            if(++rows==1024||batch.GetDataSize()>=4*1024*1024)flush();
+        }Require(it->status().ok());
+    }flush();Require(HandoffStoreDigest(candidate,cancelled)==before);
+    // Header-first peers can persist their ahead-of-body ancestry only in
+    // HeaderStore. Retain the exact minimal genesis-to-burial closure here too,
+    // so a cold interrupted swap can revalidate it without an old RAM selector.
+    RetainActivationHeaders(candidate,token,headers,proof.state.block_hash,cancelled);
+    {
+        std::lock_guard<AnnotatedRecursiveMutex> lock(mutex);
+        RetainActivationProof(mutex,candidate,token,headers,proof,cancelled);
+    }
+    std::map<uint256,std::string> node_batch;
+    const auto flush_nodes=[&]{if(!node_batch.empty()){
+        check_cancel();Need(candidate.stageOrchardCatalogNodes(token,node_batch,batch));flush();node_batch.clear();
+    }};
+    ForEachOrchardSnapshotNode(proof,[&](const auto& id,const auto& value){
+        check_cancel();const auto [at,inserted]=node_batch.emplace(id,value);Require(inserted||at->second==value);
+        if(node_batch.size()==1024)flush_nodes();
+    });flush_nodes();
+    // Coins leave only the unselected candidate. Parse every original key and
+    // value first; an unknown row is corruption, never silently dropped.
+    std::unique_ptr<rocksdb::Iterator> coins(source.db_->NewIterator(reads,source.cf_[source.idx_utxo_].get()));
+    for(coins->SeekToFirst();coins->Valid();coins->Next()){
+        check_cancel();const auto key=coins->key();Require(key.size()==37&&key[0]==ChainDB::PREFIX_UTXO);
+        uint256 id;std::reverse_copy(reinterpret_cast<const uint8_t*>(key.data()+1),reinterpret_cast<const uint8_t*>(key.data()+33),id.begin());
+        uint32_t output=0;for(unsigned i=0;i<4;++i)output=(output<<8)|uint8_t(key[33+i]);
+        Require(source.makeUtxoKey(id,output)==key.ToString());
+        const auto value=coins->value().ToString();Reader reader(value);
+        (void)reader.read<uint64_t>();(void)reader.readString();
+        Require(reader.read<uint32_t>()<=uint32_t(INT32_MAX)&&reader.read<uint8_t>()<=1);
+        if(!reader.eof()){
+            Require(reader.read<uint8_t>()<=1);if(!reader.eof())(void)reader.readBytes();
+        }
+        Require(reader.eof());Need(candidate.deleteCoin(token,id,output,&batch));
+        if(++rows==1024)flush();
+    }Require(coins->status().ok());coins.reset();flush();
+    storage::OrchardActivationOrigin origin;origin.magic=Params().magic;origin.profile=ConsensusChecksum(Params());
+    origin.parent_height=parent.height;origin.validated_height=uint32_t(validated.height);
+    origin.first=proof.state.block_hash;origin.parent=parent.block;origin.parent_catalog=storage::catalog::Hash(parent.Encode());
+    origin.proof=HashOrchardSnapshotSection(proof);origin.retirement=storage::OrchardSnapshotRetirementFingerprint(proof.retirement.record);
+    origin.source=before;origin.validated=validated.hash;
+    Need(candidate.stageOrchardCatalogState(token,parent.block,parent.Encode(),batch));
+    Require(batch.Put(storage::OrchardCompactStorageKey,storage::EncodeOrchardCompactStorageBinding(parent)).ok());
+    Require(batch.Put(storage::OrchardActivationOriginKey,origin.Encode()).ok());
+    Require(batch.Put(storage::OrchardActivationSelectionKey,origin.Selection()).ok());
+    VerifyCatalogTransferProof(proof,headers);check_cancel();
+    Require(HandoffStoreDigest(source,cancelled)==before);
+    before_choice();flush();return {std::move(database),std::move(origin)};
+}
+
 std::unique_ptr<PreparedOrchardActivationHandoff> OrchardSnapshotStore::PrepareActivationHandoff(
     const daemon::DatadirGuard& guard,const ChainWriteToken& token,
     std::shared_ptr<const consensus::HeaderChainSelector> headers,
@@ -713,80 +802,18 @@ std::unique_ptr<PreparedOrchardActivationHandoff> OrchardSnapshotStore::PrepareA
     Require(uint64_t(space.f_bavail)>=(required+space.f_frsize-1)/space.f_frsize);
     const auto name="chaindb.orchard-handoff-"+util::hex(secure_random_bytes(16));
     d->candidate_path=d->source_path.parent_path()/name;
-    CreateFreshStore(d->candidate_path);
-    d->candidate_dir=HandoffFd(::openat(d->blockchain.value,name.c_str(),O_RDONLY|O_DIRECTORY|O_CLOEXEC|O_NOFOLLOW));
-    Require(HandoffSame(HandoffStat(d->candidate_dir.value),HandoffNamed(d->blockchain.value,name)));
-    d->candidate=std::make_unique<ChainDB>();Need(d->candidate->init(d->candidate_path));auto& candidate=*d->candidate;
-    Require(candidate.hasSeparatedShieldedState()&&candidate.cf_.size()==source.cf_.size());
-    rocksdb::ReadOptions reads;reads.verify_checksums=true;reads.fill_cache=false;
-    rocksdb::WriteBatch batch;unsigned rows=0;
-    const auto flush=[&]{if(batch.Count()){
-        check_cancel();Need(candidate.writeBatch(token,std::move(batch),true));batch=rocksdb::WriteBatch();rows=0;
-    }};
-    // Remove ONLY this exclusive new store's initialization rows. Every source
-    // CF then streams into the copy, with checksums and bounded synced batches.
-    for(const auto& family:candidate.cf_){
-        std::unique_ptr<rocksdb::Iterator> it(candidate.db_->NewIterator(reads,family.get()));
-        for(it->SeekToFirst();it->Valid();it->Next()){
-            check_cancel();Require(batch.Delete(family.get(),it->key()).ok());if(++rows==1024)flush();
-        }Require(it->status().ok());
-    }flush();
-    for(size_t index=0;index<source.cf_.size();++index){
-        Require(candidate.cf_[index]->GetName()==source.cf_[index]->GetName());
-        std::unique_ptr<rocksdb::Iterator> it(source.db_->NewIterator(reads,source.cf_[index].get()));
-        for(it->SeekToFirst();it->Valid();it->Next()){
-            check_cancel();Require(it->key().size()<=32*1024*1024&&it->value().size()<=32*1024*1024);
-            Require(batch.Put(candidate.cf_[index].get(),it->key(),it->value()).ok());
-            if(++rows==1024||batch.GetDataSize()>=4*1024*1024)flush();
-        }Require(it->status().ok());
-    }flush();Require(HandoffStoreDigest(candidate,cancelled)==before);
-    // Header-first peers can persist their ahead-of-body ancestry only in
-    // HeaderStore. Retain the exact minimal genesis-to-burial closure here too,
-    // so a cold interrupted swap can revalidate it without an old RAM selector.
-    RetainActivationHeaders(candidate,token,*d->headers,proof.state.block_hash,cancelled);
-    {
-        std::lock_guard<AnnotatedRecursiveMutex> lock(d->candidate_mutex);
-        RetainActivationProof(d->candidate_mutex,candidate,token,*d->headers,proof,cancelled);
-    }
-    std::map<uint256,std::string> node_batch;
-    const auto flush_nodes=[&]{if(!node_batch.empty()){
-        check_cancel();Need(candidate.stageOrchardCatalogNodes(token,node_batch,batch));flush();node_batch.clear();
-    }};
-    ForEachOrchardSnapshotNode(proof,[&](const auto& id,const auto& value){
-        check_cancel();const auto [at,inserted]=node_batch.emplace(id,value);Require(inserted||at->second==value);
-        if(node_batch.size()==1024)flush_nodes();
-    });flush_nodes();
-    // Coins leave only the unselected candidate. Parse every original key and
-    // value first; an unknown row is corruption, never silently dropped.
-    std::unique_ptr<rocksdb::Iterator> coins(source.db_->NewIterator(reads,source.cf_[source.idx_utxo_].get()));
-    for(coins->SeekToFirst();coins->Valid();coins->Next()){
-        check_cancel();const auto key=coins->key();Require(key.size()==37&&key[0]==ChainDB::PREFIX_UTXO);
-        uint256 id;std::reverse_copy(reinterpret_cast<const uint8_t*>(key.data()+1),reinterpret_cast<const uint8_t*>(key.data()+33),id.begin());
-        uint32_t output=0;for(unsigned i=0;i<4;++i)output=(output<<8)|uint8_t(key[33+i]);
-        Require(source.makeUtxoKey(id,output)==key.ToString());
-        const auto value=coins->value().ToString();Reader reader(value);
-        (void)reader.read<uint64_t>();(void)reader.readString();
-        Require(reader.read<uint32_t>()<=uint32_t(INT32_MAX)&&reader.read<uint8_t>()<=1);
-        if(!reader.eof()){
-            Require(reader.read<uint8_t>()<=1);if(!reader.eof())(void)reader.readBytes();
-        }
-        Require(reader.eof());Need(candidate.deleteCoin(token,id,output,&batch));
-        if(++rows==1024)flush();
-    }Require(coins->status().ok());coins.reset();flush();
-    auto& origin=d->origin;origin.magic=Params().magic;origin.profile=ConsensusChecksum(Params());
-    origin.parent_height=parent.height;origin.validated_height=uint32_t(validated.height);
-    origin.first=proof.state.block_hash;origin.parent=parent.block;origin.parent_catalog=storage::catalog::Hash(parent.Encode());
-    origin.proof=HashOrchardSnapshotSection(proof);origin.retirement=storage::OrchardSnapshotRetirementFingerprint(proof.retirement.record);
-    origin.source=before;origin.validated=validated.hash;
-    Need(candidate.stageOrchardCatalogState(token,parent.block,parent.Encode(),batch));
-    Require(batch.Put(storage::OrchardCompactStorageKey,storage::EncodeOrchardCompactStorageBinding(parent)).ok());
-    Require(batch.Put(storage::OrchardActivationOriginKey,origin.Encode()).ok());
-    Require(batch.Put(storage::OrchardActivationSelectionKey,origin.Selection()).ok());
-    // Final source/selection checks BEFORE this candidate-only synced choice.
-    VerifyCatalogTransferProof(proof,*d->headers);check_cancel();
-    Require(HandoffStoreDigest(source,cancelled)==before&&InspectHandoffFiles(d->source_path,d->paired_sst,cancelled)==d->source_files);
-    {HandoffFd root_check(OpenHandoffRoot(guard));Require(HandoffSame(HandoffStat(root_check.value),HandoffStat(d->root.value)));}
-    flush();candidate.close();Need(candidate.initReadOnlyForHandoff(d->candidate_path));
+    auto copy=CopyActivationParent(source,token,d->candidate_mutex,*d->headers,proof,before,d->candidate_path,
+        [&]{
+            d->candidate_dir=HandoffFd(::openat(d->blockchain.value,name.c_str(),O_RDONLY|O_DIRECTORY|O_CLOEXEC|O_NOFOLLOW));
+            Require(HandoffSame(HandoffStat(d->candidate_dir.value),HandoffNamed(d->blockchain.value,name)));
+        },[&]{
+            // Preserve the real-root/source checks BEFORE final synced choice.
+            VerifyCatalogTransferProof(proof,*d->headers);check_cancel();
+            Require(HandoffStoreDigest(source,cancelled)==before&&InspectHandoffFiles(d->source_path,d->paired_sst,cancelled)==d->source_files);
+            HandoffFd root_check(OpenHandoffRoot(guard));Require(HandoffSame(HandoffStat(root_check.value),HandoffStat(d->root.value)));
+        },cancelled);
+    d->candidate=std::move(copy.database);d->origin=std::move(copy.origin);auto& candidate=*d->candidate;
+    candidate.close();Need(candidate.initReadOnlyForHandoff(d->candidate_path));
     d->candidate_digest=HandoffStoreDigest(candidate,cancelled);
     d->candidate_files=InspectHandoffFiles(d->candidate_path,{},cancelled);
     HandoffSync(d->candidate_dir.value);HandoffSync(d->blockchain.value);
