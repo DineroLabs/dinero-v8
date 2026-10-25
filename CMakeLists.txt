@@ -256,6 +256,9 @@ include(cmake/ThirdParty.cmake)
 # Vendored static libcurl (MSVC) — must precede any curl consumer subdirectory.
 include(cmake/VendoredCurl.cmake)
 include(cmake/VendorNgtcp2.cmake)
+# Release lanes fail here if UPnP/NAT-PMP/QUIC/QUIC TLS did not make it in.
+include(cmake/RequireReachabilityStack.cmake)
+dinero_require_reachability_stack()
 
 # V7 PQ façade + bench + round-trip tests. Requires OpenSSL::Crypto
 # (pq_derivation.cpp uses HMAC-SHA256). Works with BOTH system and
