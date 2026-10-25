@@ -205,4 +205,12 @@ Status ChainDB::stageLegacyRetirementDisconnect(const ChainWriteToken& token,
     RETURN_IF_ERROR(putShieldedTipMarker(token, undo->before ? Marker(*undo->before) : Marker(tip, true), &batch));
     guard.keep(); return Status::Ok;
 }
+namespace storage {
+std::string EncodeLegacyRetirementState(const LegacyRetirementState& state){
+    if(!Valid(state))throw std::invalid_argument("Invalid retirement persistence data");return Encode(state);
+}
+std::string EncodeLegacyRetirementUndo(const std::optional<LegacyRetirementState>& parent,const LegacyRetirementState& next){
+    if(!Transition(parent,next))throw std::invalid_argument("Invalid retirement persistence transition");return EncodeUndo({parent,next});
+}
+} // namespace storage
 } // namespace dinero

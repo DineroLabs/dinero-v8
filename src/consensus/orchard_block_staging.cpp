@@ -775,6 +775,10 @@ void CheckOrchardCompactBlockUtreexoProof(const OrchardBlockCandidate& block,
     const PreparedOrchardBlockCoins& coins,const BlockHeader& parent,const UtreexoStump& stump) {
     (void)PrepareCompactTransition(block,coins,parent,stump);
 }
+void CheckOrchardFrozenLegacyUnderLock(const ChainDB& db,const storage::LegacyRetirementRecord& record,
+    const OrchardBlockContext& context,uint32_t height,const uint256& hash){
+    CheckFrozenLegacy(db,record,context,height,hash);
+}
 
 UtreexoStump DeriveOrchardCompactBlockStump(const OrchardBlockCandidate& block,
     const PreparedOrchardBlockCoins& coins,const BlockHeader& parent,const UtreexoStump& stump) {
@@ -1090,6 +1094,47 @@ void AuditOrchardChainstateTipUnderLock(ChainDB& db,const ChainWriteToken& token
     CheckOrchardCatalogUndo(db,context,block.Header(),parent,forest,restored.forest,
         RequiredLocal(db.getUndo(context.block_hash)).Serialize(),ReadOrchardCatalogRecord(db,context.block_hash),
         ReadOrchardCatalogRecord(db,context.parent_hash),require_catalog);
+}
+void AuditOrchardCompactStoredStepUnderLock(const ChainDB& db,const BlockStorage& files,
+    const OrchardBlockCandidate& block,const ValidatedOrchardBlock& verified,
+    const storage::catalog::State& previous,const storage::catalog::State& current){
+    const auto bad=[]{throw OrchardStateLookupError(Status::Corruption,"selected-origin/stored-step");};
+    const auto& c=verified.Context();const auto& parent=verified.ParentHeader();
+    if(!verified.MatchesProfile()||!verified.MatchesWire(block)||block.Header().GetHash()!=c.block_hash||
+        parent.GetHash()!=c.parent_hash||c.height<c.activation_height||
+        previous.height+uint64_t{1}!=c.height||previous.block!=c.parent_hash||
+        current.height!=c.height||current.block!=c.block_hash||current.parent!=c.parent_hash||
+        RequiredLocal(db.getOrchardCatalogState(previous.block))!=previous.Encode()||
+        RequiredLocal(db.getOrchardCatalogState(current.block))!=current.Encode())bad();
+    const auto metadata=RequiredLocal(db.getHeaderMetadata(c.block_hash));
+    if(metadata.height!=int(c.height)||metadata.parent_hash!=c.parent_hash||metadata.chainwork!=current.work||
+        (metadata.status_flags&(BLOCK_HAVE_DATA|BLOCK_HAVE_UNDO))!=(BLOCK_HAVE_DATA|BLOCK_HAVE_UNDO)||
+        (metadata.status_flags&(BLOCK_FAILED_VALID|BLOCK_FAILED_CHILD))||!metadata.data_size||!metadata.undo_size||
+        StoredHeaderWork(db,block.Header(),c.height)!=current.work||StoredHeaderWork(db,parent,c.height-1)!=previous.work||
+        RequiredLocal(db.getBlockHashByHeight(int(c.height)))!=c.block_hash)bad();
+    const auto& wire=block.WireBytes();
+    if(RequiredLocal(db.getBlockEncoding(c.block_hash))!=wire||
+        RequiredLocal(files.readBlockBytes({metadata.file_number,metadata.data_pos,metadata.data_size}))!=
+            std::string(wire.begin(),wire.end()))bad();
+    const auto undo=RequiredLocal(db.getUndo(c.block_hash));
+    if(undo.Serialize()!=BuildOrchardCoinUndo(verified.Coins()).Serialize()||
+        RequiredLocal(files.readUndo({metadata.undo_file,metadata.undo_pos,metadata.undo_size}))!=undo.Serialize()||
+        RequiredLocal(db.getOrchardUndoParent(verified.State().Next()))!=verified.State().Parent())bad();
+    const auto before=UtreexoStump::deserialize(previous.stump),after=UtreexoStump::deserialize(current.stump);
+    const auto transition=PrepareCompactTransition(block,verified.Coins(),parent,before);
+    std::string delta,error,retained;const auto bytes=undo.Serialize();
+    if(transition.After().serialize()!=after.serialize()||
+        !SerializeUtreexoDelta(transition.Delta(),delta,error)||
+        db.getRaw(MakeUtreexoDeltaUndoKey(c.block_hash),retained)!=Status::Ok||retained!=delta||
+        current.previous_record!=storage::catalog::Hash(previous.Encode())||
+        current.undo!=storage::catalog::Hash(std::string(bytes.begin(),bytes.end())))bad();
+    CheckCommitRecord(db,c,block.Header(),current.work,after,verified.State().Next());
+    if(verified.State().Parent())CheckCommitRecord(db,ParentContext(c,parent),parent,previous.work,before,*verified.State().Parent());
+    CheckStoredFilter(db,c,block,undo);
+    for(size_t i=0;i<block.Transactions().size();++i){
+        const auto location=RequiredLocal(db.getTxLocation(block.Transactions()[i].GetTxid().AsUint256()));
+        if(location.first!=c.block_hash||location.second!=i)bad();
+    }
 }
 OrchardUndoCoverageStep AuditOrchardUndoStepUnderLock(
     const ChainDB& db,const BlockStorage& files,const OrchardBlockContext& context,

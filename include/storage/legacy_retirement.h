@@ -1,6 +1,8 @@
 #pragma once
 #include "primitives/uint256.h"
 #include <cstdint>
+#include <optional>
+#include <string>
 
 namespace dinero::storage {
 // Persistence receipt, NOT proof of historical balance or SHR1 correctness.
@@ -27,4 +29,8 @@ struct LegacyRetirementState {
     uint256 parent_hash;
     bool operator==(const LegacyRetirementState&) const = default;
 };
+// Canonical persistence DATA encoders only; not a retirement/history or writer
+// certificate. Used by independently authenticated cold suffix comparison.
+std::string EncodeLegacyRetirementState(const LegacyRetirementState&);
+std::string EncodeLegacyRetirementUndo(const std::optional<LegacyRetirementState>&,const LegacyRetirementState&);
 } // namespace dinero::storage

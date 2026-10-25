@@ -4,6 +4,7 @@
 namespace dinero {
 class ChainDBTransactionReadTestPeer {
 public:
+    static Status HandoffReadOnly(ChainDB& db,const std::filesystem::path& path){return db.initReadOnlyForHandoff(path);}
     // Serialized detached-handoff fixtures only. Capture all durable logical
     // rows so a refusal must leave the actual store unchanged, including the
     // deliberately altered before-image under test.
@@ -28,6 +29,10 @@ public:
         rocksdb::WriteBatch batch;batch.Put(db.shieldedStateHandle(),key,bytes);
         if(db.writeBatch(token,std::move(batch),true)!=Status::Ok)
             throw std::runtime_error("handoff fixture Orchard row write failed");
+    }
+    static void HandoffDeleteOrchardRow(ChainDB& db,const ChainWriteToken& token,const std::string& key){
+        rocksdb::WriteBatch batch;batch.Delete(db.shieldedStateHandle(),key);
+        if(db.writeBatch(token,std::move(batch),true)!=Status::Ok)throw std::runtime_error("handoff fixture row delete failed");
     }
     static auto OrchardComparisonIterator(const ChainDB& db) {
         return std::unique_ptr<rocksdb::Iterator>(db.db_->NewIterator(

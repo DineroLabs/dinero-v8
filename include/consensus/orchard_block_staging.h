@@ -56,6 +56,10 @@ void CheckPreparedLegacyRetirementUnderLock(const ChainDB&,
 // The original prepared-retirement guard still requires that marker.
 void CheckLegacyRetirementBeforeImageUnderLock(const ChainDB&,
     const storage::LegacyRetirementRecord&);
+// Full frozen-content check at a selected Orchard tip or its activation
+// parent. Contents only: grants no historical execution/startup authority.
+void CheckOrchardFrozenLegacyUnderLock(const ChainDB&,const storage::LegacyRetirementRecord&,
+    const OrchardBlockContext&,uint32_t selected_height,const uint256& selected_hash);
 // Typed stored-body read. Checks exact framing, key/header identity, transaction
 // and witness commitments, and size. Not replay/PoW/proof/transaction validity.
 [[nodiscard]] OrchardBlockCandidate ReadStoredOrchardBlock(
@@ -69,6 +73,13 @@ void CheckLegacyRetirementBeforeImageUnderLock(const ChainDB&,
 void AuditOrchardChainstateTipUnderLock(ChainDB&, const ChainWriteToken&,
     const OrchardBlockContext&, const BlockHeader& parent, const UtreexoForest&,
     bool require_witness_commitment, bool require_catalog = false);
+// Read-only audit of one retained ACTIVE compact step against real detached
+// activation-origin replay. No full forest or validated-marker fiction. The
+// caller separately authenticates the complete catalog closure and namespaces;
+// this checks actual archive/index/undo/delta/filter/journal rows, not authority.
+void AuditOrchardCompactStoredStepUnderLock(const ChainDB&,const BlockStorage&,
+    const OrchardBlockCandidate&,const ValidatedOrchardBlock&,
+    const storage::catalog::State& parent,const storage::catalog::State& current);
 // Stages only the deterministic local consistency journal, not authority.
 // Used by the sealed snapshot installer in the same atomic state batch.
 void StageOrchardSnapshotJournal(const OrchardBlockContext&,const BlockHeader&,

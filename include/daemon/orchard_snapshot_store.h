@@ -37,8 +37,17 @@ private:
     };
     static ActivationPublication OpenActivationHandoff(
         const daemon::DatadirGuard&,const ClosedCoreReopenIntent&,AnnotatedRecursiveMutex&,
+        const ChainWriteToken&,const BlockStorage&,
         std::shared_ptr<const consensus::HeaderChainSelector> current_headers,
         std::unique_ptr<PreparedOrchardActivationHandoff>);
+    // Read-only state audit, NOT root selection, lifecycle or owner authority.
+    // Replays ALL activation-to-tip bodies, compares complete active Orchard/
+    // retirement namespaces and exact archives/indexes/catalog closure. Caller
+    // still owes completed root/backup/cohort/before-image/current-header checks.
+    static storage::catalog::State AuditActivationSuffix(AnnotatedRecursiveMutex&,const ChainDB&,
+        const ChainWriteToken&,const BlockStorage&,
+        std::shared_ptr<const consensus::HeaderChainSelector>,
+        std::shared_ptr<const consensus::OrchardSnapshotSection>,const std::function<bool()>& cancelled={});
     class CommitUncertain final:public std::runtime_error {
     public:CommitUncertain():std::runtime_error("v6 state commit outcome is uncertain; restart required"){}
     };

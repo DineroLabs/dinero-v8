@@ -1,4 +1,5 @@
 #pragma once
+#include "consensus/utreexo_delta_codec.h"
 #include "p2p/orchard_catalog_transfer.h"
 #include "p2p/orchard_catalog_server.h"
 #include "p2p/orchard_catalog_client.h"
@@ -20,6 +21,7 @@
 #ifdef DINERO_TEST_ORCHARD_ORIGIN
 namespace dinero {
 struct OrchardSnapshotStoreTestAccess {
+    using ActivationPublication=OrchardSnapshotStore::ActivationPublication;
     static auto PrepareHandoff(const daemon::DatadirGuard& root,const ChainWriteToken& token,
         std::shared_ptr<const consensus::HeaderChainSelector> headers,
         std::shared_ptr<const consensus::OrchardSnapshotSection> proof,const std::function<bool()>& cancelled={}){
@@ -34,14 +36,20 @@ struct OrchardSnapshotStoreTestAccess {
         std::shared_ptr<const consensus::HeaderChainSelector> headers,const std::function<bool()>& cancel={}){
         return OrchardSnapshotStore::RecoverActivationHandoff(root,receipt.ClosedForHandoff(root),std::move(headers),cancel);}
     static auto OpenHandoff(const daemon::DatadirGuard& root,const CoreReopenReceipt& receipt,
-        AnnotatedRecursiveMutex& mutex,std::shared_ptr<const consensus::HeaderChainSelector> headers,
+        AnnotatedRecursiveMutex& mutex,const ChainWriteToken& token,const BlockStorage& files,
+        std::shared_ptr<const consensus::HeaderChainSelector> headers,
         std::unique_ptr<PreparedOrchardActivationHandoff> prepared){
         std::lock_guard<AnnotatedRecursiveMutex> lock(mutex);
-        return OrchardSnapshotStore::OpenActivationHandoff(root,receipt.ClosedForHandoff(root),mutex,std::move(headers),std::move(prepared));}
+        return OrchardSnapshotStore::OpenActivationHandoff(root,receipt.ClosedForHandoff(root),mutex,token,files,std::move(headers),std::move(prepared));}
 #endif
     static void NoHandoff(const std::filesystem::path& root){OrchardSnapshotStore::RequireNoActivationHandoff(root);}
     static auto ReadHandoffHeaders(const ChainDB& db,const uint256& first,const std::function<bool()>& cancel={}){
         return OrchardSnapshotStore::ReadActivationHeaders(db,first,cancel);}
+    static auto AuditSuffix(AnnotatedRecursiveMutex& mutex,const ChainDB& db,const ChainWriteToken& token,
+        const BlockStorage& files,std::shared_ptr<const consensus::HeaderChainSelector> headers,
+        std::shared_ptr<const consensus::OrchardSnapshotSection> proof,const std::function<bool()>& cancel={}){
+        std::lock_guard<AnnotatedRecursiveMutex> lock(mutex);
+        return OrchardSnapshotStore::AuditActivationSuffix(mutex,db,token,files,std::move(headers),std::move(proof),cancel);}
     static auto Authenticate(const consensus::OrchardSnapshotSection& proof,const consensus::HeaderChainSelector& headers){
         return OrchardSnapshotStore::Authenticate(proof,headers,Params().state_commitment_burial_depth);
     }
@@ -427,14 +435,102 @@ TEST(OrchardActivationHeaders, ColdClosureMissingCorruptRowsAndConflictingOrigin
     EXPECT_EQ(ActivationHandoffFixture::Files(f.path),original);
 }
 #ifdef DINERO_TEST_REAL_CORE_HANDOFF
+namespace {
+struct ActivationSuffixFixture:ActivationHandoffFixture {
+    AnnotatedRecursiveMutex mutex;OrchardSnapshotStoreTestAccess::ActivationPublication live;
+    ActivationSuffixFixture():ActivationHandoffFixture(true){
+        {ChainDB db;OrchardAdmissionFixture::Require(db.init(path)==Status::Ok&&
+            db.setValidatedTip(full.f.token,full.f.blocks.front().GetHash(),0)==Status::Ok);}
+        auto selected=OrchardSnapshotStoreTestAccess::SelectHandoff(guard,*receipt,Prepare());
+        live=OrchardSnapshotStoreTestAccess::OpenHandoff(guard,*receipt,mutex,full.f.token,*full.files,headers,std::move(selected));
+    }
+    void Connect(const std::shared_ptr<const CatalogSolvedTemplate>& source){
+        const auto block=OrchardBlockCandidate::DecodeExact(source->WireBytes());
+        const auto c=*consensus::SelectedOrchardBlockContext(block.Header(),source->Height());
+        auto write=PreparedOrchardChainstateWrite::ConnectCompactIndexed(mutex,*live.database,full.f.token,*full.files,
+            *FindBlockIndex(c.block_hash),*live.compact,c,block,*live.database->getHeader(c.parent_hash),
+            [&](uint32_t h){return full.Mtp(h);},true,std::nullopt,true);write->Commit();
+    }
+    void Undo(const std::shared_ptr<const CatalogSolvedTemplate>& source){
+        const auto block=OrchardBlockCandidate::DecodeExact(source->WireBytes());
+        const auto c=*consensus::SelectedOrchardBlockContext(block.Header(),source->Height());
+        auto write=PreparedOrchardChainstateWrite::DisconnectCompactIndexed(mutex,*live.database,full.f.token,*full.files,
+            *FindBlockIndex(c.block_hash),*live.compact,c,block,*live.database->getHeader(c.parent_hash),
+            [&](uint32_t h){return full.Mtp(h);},true);write->Commit();
+    }
+    auto Audit(const std::function<bool()>& cancel={}){
+        return OrchardSnapshotStoreTestAccess::AuditSuffix(mutex,*live.database,full.f.token,*full.files,headers,proof,cancel);
+    }
+};
+}
+TEST(OrchardActivationSuffix, ColdDescendantAndUndoneParentReauthenticateWithoutMarkerOrOwnerPublication){
+    for(const bool descendant:{true,false}){
+        ActivationSuffixFixture f;f.Connect(f.full.first);f.Connect(f.full.second);
+        if(!descendant){f.Undo(f.full.second);f.Undo(f.full.first);}
+        const auto hash=f.live.database->getTip()->hash;
+        const auto expected=*f.live.database->getOrchardCatalogState(hash);
+        const auto rows=ChainDBTransactionReadTestPeer::HandoffRows(*f.live.database);
+        f.live.compact.reset();f.live.database.reset();const auto files=ActivationHandoffFixture::Files(f.path);
+        ChainDB cold;ASSERT_EQ(ChainDBTransactionReadTestPeer::HandoffReadOnly(cold,f.path),Status::Ok);
+        const auto audited=OrchardSnapshotStoreTestAccess::AuditSuffix(f.mutex,cold,f.full.f.token,*f.full.files,f.headers,f.proof);
+        EXPECT_EQ(audited.Encode(),expected);EXPECT_EQ(cold.getValidatedTip()->height,0);
+        EXPECT_EQ(ChainDBTransactionReadTestPeer::HandoffRows(cold),rows);
+        EXPECT_EQ(ActivationHandoffFixture::Files(f.path),files);
+        EXPECT_ANY_THROW(storage::RequireFullOrchardStorage(cold));
+        EXPECT_FALSE(f.gate->Allows(f.gate->Snapshot()));
+    }
+}
+TEST(OrchardActivationSuffix, WrongNullifierOwnerAndUntrackedNamespaceRefuseEvenWhenSetDigestsMatch){
+    ActivationSuffixFixture f;f.Connect(f.full.first);f.Connect(f.full.second);auto& db=*f.live.database;
+    const auto state=*db.getOrchardState();const auto commitments=*db.getOrchardCommitmentSets(state);
+    uint256 nf,owner;bool found=false;
+    ASSERT_EQ(db.forEachOrchardNullifier([&](const auto& n,const auto& o){if(!found){nf=n;owner=o;found=true;}return true;}),Status::Ok);
+    ASSERT_TRUE(found);const auto original=ChainDBTransactionReadTestPeer::HandoffRows(db);
+    const auto key="O1N"+std::string(reinterpret_cast<const char*>(nf.data),32);
+    const auto other=owner==f.full.first->Header().GetHash()?f.full.second->Header().GetHash():f.full.first->Header().GetHash();
+    ChainDBTransactionReadTestPeer::HandoffPutOrchardRow(db,f.full.f.token,key,std::string(reinterpret_cast<const char*>(other.data),32));
+    ASSERT_EQ(*db.getOrchardCommitmentSets(state),commitments); // Root alone cannot detect this owner substitution.
+    const auto bad=ChainDBTransactionReadTestPeer::HandoffRows(db);EXPECT_ANY_THROW(f.Audit());
+    EXPECT_EQ(ChainDBTransactionReadTestPeer::HandoffRows(db),bad);
+    ChainDBTransactionReadTestPeer::HandoffPutOrchardRow(db,f.full.f.token,key,std::string(reinterpret_cast<const char*>(owner.data),32));
+    for(const auto* prefix:{"O1U","R1U"}){
+        const auto orphan=std::string(prefix)+std::string(32,'z');
+        ChainDBTransactionReadTestPeer::HandoffPutOrchardRow(db,f.full.f.token,orphan,"untracked");
+        const auto before=ChainDBTransactionReadTestPeer::HandoffRows(db);EXPECT_ANY_THROW(f.Audit());
+        EXPECT_EQ(ChainDBTransactionReadTestPeer::HandoffRows(db),before);
+        ChainDBTransactionReadTestPeer::HandoffDeleteOrchardRow(db,f.full.f.token,orphan);
+    }
+    EXPECT_EQ(ChainDBTransactionReadTestPeer::HandoffRows(db),original);
+    EXPECT_EQ(f.Audit().block,state.block_hash);EXPECT_EQ(db.getValidatedTip()->height,0);
+}
+TEST(OrchardActivationSuffix, MissingBodyBadDeltaAndCancellationNeverRepairOrPublish){
+    ActivationSuffixFixture f;f.Connect(f.full.first);f.Connect(f.full.second);auto& db=*f.live.database;
+    const auto hash=f.full.first->Header().GetHash();const auto key=MakeUtreexoDeltaUndoKey(hash);
+    std::string delta;ASSERT_EQ(db.getRaw(key,delta),Status::Ok);
+    rocksdb::WriteBatch damage;damage.Put(key,"bad delta");ASSERT_EQ(db.writeBatch(f.full.f.token,std::move(damage),true),Status::Ok);
+    const auto bad=ChainDBTransactionReadTestPeer::HandoffRows(db);EXPECT_ANY_THROW(f.Audit());
+    EXPECT_EQ(ChainDBTransactionReadTestPeer::HandoffRows(db),bad);
+    rocksdb::WriteBatch restore;restore.Put(key,delta);ASSERT_EQ(db.writeBatch(f.full.f.token,std::move(restore),true),Status::Ok);
+    const auto body=OrchardBlockCandidate::DecodeExact(f.full.first->WireBytes());
+    ASSERT_EQ(db.deleteBlock(f.full.f.token,hash),Status::Ok);
+    const auto missing=ChainDBTransactionReadTestPeer::HandoffRows(db);EXPECT_ANY_THROW(f.Audit());
+    EXPECT_EQ(ChainDBTransactionReadTestPeer::HandoffRows(db),missing);
+    rocksdb::WriteBatch replace;ASSERT_EQ(db.stageOrchardBlock(f.full.f.token,body,true,replace),Status::Ok);
+    ASSERT_EQ(db.writeBatch(f.full.f.token,std::move(replace),true),Status::Ok);
+    const auto before=ChainDBTransactionReadTestPeer::HandoffRows(db);unsigned calls=0;
+    EXPECT_ANY_THROW(f.Audit([&]{return ++calls>100;}));
+    EXPECT_EQ(ChainDBTransactionReadTestPeer::HandoffRows(db),before);
+    EXPECT_EQ(f.Audit().block,f.full.second->Header().GetHash());
+    EXPECT_EQ(db.getValidatedTip()->height,0);EXPECT_FALSE(f.gate->Allows(f.gate->Snapshot()));
+}
 TEST(OrchardSelectedConsistency, CompletedParentOpensWithoutAdvancingIndependentAnchor){
     ActivationHandoffFixture f(true);AnnotatedRecursiveMutex mutex;
     {ChainDB db;ASSERT_EQ(db.init(f.path),Status::Ok);ASSERT_EQ(db.setValidatedTip(f.full.f.token,f.full.f.blocks.front().GetHash(),0),Status::Ok);}
     auto prepared=f.Prepare();
-    EXPECT_ANY_THROW(OrchardSnapshotStoreTestAccess::OpenHandoff(f.guard,*f.receipt,mutex,f.headers,std::move(prepared)));
+    EXPECT_ANY_THROW(OrchardSnapshotStoreTestAccess::OpenHandoff(f.guard,*f.receipt,mutex,f.full.f.token,*f.full.files,f.headers,std::move(prepared)));
     auto selected=OrchardSnapshotStoreTestAccess::SelectHandoff(f.guard,*f.receipt,f.Prepare());
     const auto original=ActivationHandoffFixture::Files(selected->OriginalPath());const auto original_path=selected->OriginalPath();
-    auto live=OrchardSnapshotStoreTestAccess::OpenHandoff(f.guard,*f.receipt,mutex,f.headers,std::move(selected));
+    auto live=OrchardSnapshotStoreTestAccess::OpenHandoff(f.guard,*f.receipt,mutex,f.full.f.token,*f.full.files,f.headers,std::move(selected));
     ASSERT_TRUE(live.database&&live.compact);EXPECT_EQ(live.database->getTip()->height,101);
     EXPECT_EQ(live.database->getValidatedTip()->height,0);
     EXPECT_ANY_THROW(storage::RequireFullOrchardStorage(*live.database));
@@ -445,7 +541,7 @@ TEST(OrchardSelectedConsistency, CompletedParentOpensWithoutAdvancingIndependent
     // A harmless private engine open may rotate LOG files. The completed
     // route still reauthenticates the entire exact parent logical baseline.
     auto cold=OrchardSnapshotStoreTestAccess::RecoverHandoff(f.guard,*f.receipt,f.headers);
-    auto reopened=OrchardSnapshotStoreTestAccess::OpenHandoff(f.guard,*f.receipt,mutex,f.headers,std::move(cold));
+    auto reopened=OrchardSnapshotStoreTestAccess::OpenHandoff(f.guard,*f.receipt,mutex,f.full.f.token,*f.full.files,f.headers,std::move(cold));
     EXPECT_EQ(reopened.database->getValidatedTip()->height,0);
     EXPECT_EQ(ActivationHandoffFixture::Files(original_path),original);
     ChainDB generic;EXPECT_NE(generic.init(f.path),Status::Ok);
@@ -456,7 +552,7 @@ TEST(OrchardSelectedConsistency, RealCompactTransitionsPreserveAnchorAndRefuseUn
     {ChainDB db;ASSERT_EQ(db.init(f.path),Status::Ok);ASSERT_EQ(db.setValidatedTip(f.full.f.token,f.full.f.blocks.front().GetHash(),0),Status::Ok);}
     auto selected=OrchardSnapshotStoreTestAccess::SelectHandoff(f.guard,*f.receipt,f.Prepare());
     const auto original_path=selected->OriginalPath();const auto original=ActivationHandoffFixture::Files(original_path);
-    auto live=OrchardSnapshotStoreTestAccess::OpenHandoff(f.guard,*f.receipt,mutex,f.headers,std::move(selected));auto& db=*live.database;
+    auto live=OrchardSnapshotStoreTestAccess::OpenHandoff(f.guard,*f.receipt,mutex,f.full.f.token,*f.full.files,f.headers,std::move(selected));auto& db=*live.database;
     const auto connect=[&](const auto& source){
         const auto block=OrchardBlockCandidate::DecodeExact(source->WireBytes());
         const auto context=*consensus::SelectedOrchardBlockContext(block.Header(),source->Height());
@@ -521,7 +617,7 @@ TEST(OrchardSelectedConsistency, RealCompactTransitionsPreserveAnchorAndRefuseUn
 TEST(OrchardSelectedConsistency, SameDatabaseObjectCannotReuseOwnerAfterEngineReopen){
     ActivationHandoffFixture f(true);AnnotatedRecursiveMutex mutex;
     auto selected=OrchardSnapshotStoreTestAccess::SelectHandoff(f.guard,*f.receipt,f.Prepare());
-    auto live=OrchardSnapshotStoreTestAccess::OpenHandoff(f.guard,*f.receipt,mutex,f.headers,std::move(selected));
+    auto live=OrchardSnapshotStoreTestAccess::OpenHandoff(f.guard,*f.receipt,mutex,f.full.f.token,*f.full.files,f.headers,std::move(selected));
     auto& db=*live.database;const auto header=*db.getHeader(f.proof->parent_catalog.block);
     const auto c=*consensus::SelectedOrchardBlockContext(f.full.first->Header(),102);
     const consensus::OrchardTransactionContext tx{102,header.GetHash(),c.activation_height,c.domain};

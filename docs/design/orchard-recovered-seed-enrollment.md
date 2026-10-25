@@ -606,6 +606,31 @@ and exercise cold parent open/refusals. This is not automatic App/SDK activation
 queued-payment survival, descendant cold startup, complete phone history,
 fresh-process crash, physical device or release qualification.
 
+The private suffix DATA audit now revalidates every selected mixed body from
+the authenticated activation proof, including the first block's authorizations,
+state and catalog. A scratch byte oracle stages only those verified Orchard and
+retirement transitions: it has no tip, validated marker, forest, independent
+replay capability or publication owner. Entire `O1` and `R1` namespaces are
+compared, including nullifier **owners**, anchor references and undo, rather than
+only committed set digests. The audit also checks exact embedded/archive bodies,
+undo locators, deltas, filters, transaction indexes, commit journals, reachable
+catalog nodes, full frozen legacy contents and local outbox framing/continuity.
+Checksummed node iteration into private MAC disk staging and a disk-backed seen
+set avoid per-node source-SST reads and an unbounded resident tree walk. Batches,
+free-space and cancellation checks are not a production latency/RSS guarantee.
+No total 2,048-event or 64-MiB historical replay ceiling is reinstated.
+
+Existing parent handoff opening consumes this audit while retaining all its
+original immutable source/cohort/name/receipt/before-image checks. Same-process
+tests additionally close/reopen an actual descendant or undone-parent database
+read-only and exercise wrong-owner, orphan-row, bad-delta, missing-body and
+cancellation refusals without repair or writer publication. The DATA return is
+not completed-root/current-before-image or lifecycle authority. Descendant and
+post-undo **writer/DaemonApp/SDK startup** still require their dedicated routing
+and full original/current before-image audit. Local delivery hash-chain checks
+alone are not adversarial authentication or a first-runtime-event certificate.
+No actual queued-wallet crossing, restored-phone or device acceptance is implied.
+
 - Existing unknown/missing/corrupt/untracked catalog and seed-replacement
   refusals remain negative. New enrollment tests cover atomicity, source gaps,
   borrowed owners, reopen and actual funds received across activation.
