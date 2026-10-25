@@ -171,3 +171,59 @@ int main(int argc, char** argv) {
     ::testing::InitGoogleTest(&argc, argv);
     return RUN_ALL_TESTS();
 }
+
+namespace {
+
+dinero::network::QuicSessionOptions TestOptions(const char* alpn) {
+    dinero::network::QuicSessionOptions options;
+    options.alpn = alpn;
+    options.server_name = "localhost";
+    options.certificate_pem = kTestCertificate;
+    options.private_key_pem = kTestPrivateKey;
+    options.verify_peer = false;
+    return options;
+}
+
+}  // namespace
+
+// Without a CONNECTION_CLOSE the peer only learns of a shutdown from the 60 s
+// idle timeout, which is how a vanished peer and a polite one looked identical.
+TEST(QuicSession, CloseNotifiesPeerPromptly) {
+    const auto options = TestOptions("dinero-p2p/1");
+    dinero::network::test::QuicLoopbackPair pair;
+    const auto client_addr = Localhost(22201);
+    const auto server_addr = Localhost(22202);
+    ASSERT_TRUE(pair.server->StartServer(server_addr, client_addr, options));
+    ASSERT_TRUE(pair.client->StartClient(client_addr, server_addr, options));
+    auto cr = pair.client->WaitHandshakeReady();
+    auto sr = pair.server->WaitHandshakeReady();
+    ASSERT_EQ(cr.wait_for(std::chrono::seconds(5)), std::future_status::ready);
+    ASSERT_EQ(sr.wait_for(std::chrono::seconds(5)), std::future_status::ready);
+    ASSERT_TRUE(cr.get());
+    ASSERT_TRUE(sr.get());
+    ASSERT_TRUE(pair.server->active());
+
+    pair.client->Close();
+
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (pair.server->active() && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+    EXPECT_FALSE(pair.server->active())
+        << "peer still active 2 s after Close(); last_error=" << pair.server->last_error();
+}
+
+// Direct peers ("dinero-p2p/1") and relay circuits ("dinero-relay/1") must not
+// be able to complete a handshake with each other.
+TEST(QuicSession, AlpnMismatchFailsHandshake) {
+    dinero::network::test::QuicLoopbackPair pair;
+    const auto client_addr = Localhost(22301);
+    const auto server_addr = Localhost(22302);
+    ASSERT_TRUE(pair.server->StartServer(server_addr, client_addr,
+                                         TestOptions("dinero-relay/1")));
+    ASSERT_TRUE(pair.client->StartClient(client_addr, server_addr,
+                                         TestOptions("dinero-p2p/1")));
+    auto cr = pair.client->WaitHandshakeReady();
+    ASSERT_EQ(cr.wait_for(std::chrono::seconds(5)), std::future_status::ready);
+    EXPECT_FALSE(cr.get());
+}
