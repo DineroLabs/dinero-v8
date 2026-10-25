@@ -69,7 +69,8 @@ def _free_port():
 
 def _tail(path, lines=40):
     try:
-        with open(path, errors="replace") as f:
+        # dinerod logs UTF-8 regardless of the runner's locale (cp1252 on Windows).
+        with open(path, encoding="utf-8", errors="replace") as f:
             return "".join(f.readlines()[-lines:])
     except OSError:
         return ""
@@ -123,6 +124,9 @@ def main(argv=None):
     parser.add_argument("--timeout", type=int, default=90)
     parser.add_argument("--from-json")
     args = parser.parse_args(argv)
+    # A piped Windows stdout is cp1252: never let a daemon banner character
+    # turn the failure report into a traceback.
+    sys.stdout.reconfigure(errors="replace")
     if args.from_json:
         with open(args.from_json) as f:
             return report(json.load(f))

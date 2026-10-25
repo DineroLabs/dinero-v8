@@ -252,14 +252,16 @@ jobs:
       # DINERO_REPRODUCIBLE_BUILD (the only thing that forces /MT, in
       # cmake/Repro.cmake), uses the dynamic vcpkg triplet and links curl
       # MultiThreadedDLL, so the main build is CMake's default /MD. The depends
-      # toolchain defaults to /MT, hence the override. The prefix resolves to
-      # depends\windows-AMD64, which build-server-installer.ps1 also probes.
+      # toolchain defaults to /MT, hence the override. The host is pinned
+      # because depends/ derives it from `cc -dumpmachine`, which cl.exe does not
+      # support; windows-AMD64 is also the prefix build-server-installer.ps1 probes.
       - name: Build depends (miniupnpc + libnatpmp, static, /MD)
         shell: powershell
         run: |
           cmake -S depends -B depends\build-msvc -G Ninja `
             -DCMAKE_TOOLCHAIN_FILE="$PWD\depends\toolchains\windows-msvc-x64.cmake" `
-            -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreadedDLL
+            -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreadedDLL `
+            -DDINERO_DEPENDS_HOST=windows-AMD64
           if ($LASTEXITCODE -ne 0) { throw 'depends configure failed' }
           cmake --build depends\build-msvc
           if ($LASTEXITCODE -ne 0) { throw 'depends build failed' }

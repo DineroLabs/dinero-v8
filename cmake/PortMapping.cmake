@@ -64,6 +64,9 @@ if(DINERO_ENABLE_PORTMAPPING)
       target_include_directories(dinero_portmap_deps INTERFACE ${MINIUPNPC_INCLUDE_DIR})
       target_link_libraries(dinero_portmap_deps INTERFACE ${MINIUPNPC_LIBRARY})
       if(WIN32)
+        # Same as the pkg-config branch: static consumers need this or the
+        # headers declare DLL imports (LNK2019 on __imp_upnpDiscover).
+        target_compile_definitions(dinero_portmap_deps INTERFACE MINIUPNP_STATICLIB=1)
         target_link_libraries(dinero_portmap_deps INTERFACE ws2_32 iphlpapi)
       endif()
       set(DINERO_PORTMAP_HAVE_MINIUPNPC ON)

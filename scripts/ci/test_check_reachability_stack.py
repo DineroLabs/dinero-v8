@@ -94,6 +94,23 @@ class CliTests(unittest.TestCase):
             self.assertEqual(r.returncode, 2)
             self.assertLess(time.monotonic() - start, 15)
 
+    def test_exit_2_survives_non_ascii_daemon_log_on_cp1252_stdout(self):
+        # Windows runners pipe stdout as cp1252; dinerod prints "════" banners.
+        # The failure report must still be exit 2 with the log, not a traceback.
+        with tempfile.TemporaryDirectory() as tmp:
+            dinerod = write_exe(
+                tmp, "dinerod",
+                "import sys\n"
+                "sys.stdout.buffer.write('════ startup banner ════\\n'.encode('utf-8'))\n"
+                "sys.exit(1)\n")
+            cli = write_exe(tmp, "dinero-cli", "import sys\nsys.exit(1)\n")
+            env = dict(os.environ, PYTHONIOENCODING="cp1252")
+            r = subprocess.run([sys.executable, GATE_PATH, "--dinerod", dinerod,
+                                "--cli", cli, "--timeout", "3"],
+                               capture_output=True, env=env, timeout=60)
+            self.assertEqual(r.returncode, 2, r.stderr.decode("utf-8", "replace"))
+            self.assertIn(b"startup banner", r.stdout)
+
     def test_daemon_is_stopped_after_success(self):
         with tempfile.TemporaryDirectory() as tmp:
             pidfile = os.path.join(tmp, "pid")
