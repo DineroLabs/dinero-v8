@@ -509,6 +509,11 @@ std::optional<std::vector<uint256>> HeaderSyncManager::BeginHeadersRequest(
     // 15-minute budget while peers 123k headers ahead were refused (TX resync,
     // 2026-10-03). The holder is not penalised and its late reply is simply
     // not the owning one.
+    //
+    // A holder that has not answered within the takeover window loses the
+    // flight too, even when it counts as ahead: on 2026-10-25 a silent peer
+    // that kept relaying block announcements was credited ahead, held SJ's
+    // flight for 15 minutes and refused NA every time (fork at 139026).
     if (active_sync_peer_ != 0 && active_sync_peer_ != peer_id) {
         HeaderIndexEntry best_copy{};
         const uint32_t our_height =
@@ -516,7 +521,11 @@ std::optional<std::vector<uint256>> HeaderSyncManager::BeginHeadersRequest(
         const auto owner_it = peers_.find(active_sync_peer_);
         const bool owner_ahead =
             owner_it != peers_.end() && owner_it->second.best_height > our_height;
-        if (owner_ahead || peer_it->second.best_height <= our_height) {
+        const bool owner_silent =
+            owner_it != peers_.end() &&
+            GetCurrentTimeMs() >= owner_it->second.last_request_time +
+                                      HEADERS_SILENT_FLIGHT_TAKEOVER_MS;
+        if ((owner_ahead && !owner_silent) || peer_it->second.best_height <= our_height) {
             return std::nullopt;
         }
         active_sync_peer_ = 0;

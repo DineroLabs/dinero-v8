@@ -302,3 +302,58 @@ TEST(HeaderSyncProbeHardening, PeerCreditNeverLowersKnownHeight) {
     f.mgr.NotePeerHasHeader(2, 3, none);
     EXPECT_EQ(f.mgr.PeerBestHeight(2), 5U);
 }
+
+// SJ fork, 2026-10-25 (fork at 139026): a peer answered nothing for 15
+// minutes yet kept relaying block announcements, so it was credited as ahead
+// and the takeover above never fired. NA, also ahead, was refused ~70 times and
+// the pool mined a 43-block dead branch. A flight owner that has been silent
+// for the takeover window loses it to a peer that is ahead, whatever its own
+// credited height.
+constexpr uint64_t kTakeoverMs = 60 * kSec;  // HEADERS_SILENT_FLIGHT_TAKEOVER_MS
+
+TEST(HeaderSyncProbeHardening, SilentAheadOwnerLosesFlightAfterTakeoverWindow) {
+    Fixture f;
+    f.mgr.NotePeerAnnouncedUnknownBlock(1);
+    ASSERT_TRUE(f.Begin(1, HeaderRequestMode::REFRESH));
+    f.mgr.NotePeerAnnouncedUnknownBlock(2);
+
+    f.Advance(kTakeoverMs - kSec);
+    f.mgr.NotePeerAnnouncedUnknownBlock(1);  // keeps relaying, never answers
+    EXPECT_FALSE(f.Begin(2, HeaderRequestMode::REFRESH))
+        << "inside the window the ahead owner keeps its flight";
+
+    f.Advance(2 * kSec);
+    f.mgr.NotePeerAnnouncedUnknownBlock(1);
+    EXPECT_TRUE(f.Begin(2, HeaderRequestMode::REFRESH))
+        << "a silent owner must not pin the flight for the 15-minute budget";
+    EXPECT_EQ(f.mgr.GetStats().current_sync_peer, 2U);
+    EXPECT_TRUE(f.switches.calls.empty()) << "losing the flight is not a stall";
+}
+
+// The takeover still needs a requester that is ahead: a peer with nothing new
+// gains nothing by taking a silent owner's flight.
+TEST(HeaderSyncProbeHardening, SilentOwnerKeepsFlightAgainstPeerThatIsNotAhead) {
+    Fixture f;
+    f.mgr.NotePeerAnnouncedUnknownBlock(1);
+    ASSERT_TRUE(f.Begin(1, HeaderRequestMode::REFRESH));
+    f.Advance(kTakeoverMs + kSec);
+    EXPECT_FALSE(f.Begin(2, HeaderRequestMode::REFRESH));
+    EXPECT_EQ(f.mgr.GetStats().current_sync_peer, 1U);
+}
+
+// The window counts from the owner's latest request: after an answer, its next
+// request starts a fresh window, so a peer that keeps answering keeps its
+// continuation.
+TEST(HeaderSyncProbeHardening, AnsweringOwnerStartsFreshWindowOnNextRequest) {
+    Fixture f;
+    f.mgr.NotePeerAnnouncedUnknownBlock(1);
+    f.mgr.NotePeerAnnouncedUnknownBlock(2);
+    ASSERT_TRUE(f.Begin(1, HeaderRequestMode::REFRESH));
+    f.Advance(kTakeoverMs - kSec);
+    ASSERT_TRUE(f.mgr.ProcessHeadersWithResult(1, {}).accepted);
+    f.mgr.NotePeerAnnouncedUnknownBlock(1);
+    ASSERT_TRUE(f.Begin(1, HeaderRequestMode::REFRESH));
+    f.Advance(2 * kSec);
+    EXPECT_FALSE(f.Begin(2, HeaderRequestMode::REFRESH))
+        << "2 s into a new request is not a silent owner";
+}
