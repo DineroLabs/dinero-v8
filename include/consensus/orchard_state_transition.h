@@ -1,6 +1,7 @@
 #pragma once
 #include "consensus/orchard_authorization.h"
 #include "storage/orchard_state.h"
+#include "consensus/orchard_state_error.h"
 #include <span>
 
 namespace dinero::wallet::detail { class RuntimeReplayStateRetention; }
@@ -12,33 +13,6 @@ struct OrchardBlockContext {
     uint256 parent_hash;
     uint32_t activation_height = UINT32_MAX;
     orchard::SigningDomain domain;
-};
-enum class OrchardStateErrorCode {
-    Inactive, Context, ParentState, Anchor, DuplicateNullifier,
-    SpentNullifier, DuplicateTransaction, DuplicateInput, PoolBalance, ResourceLimit,
-    BlockBody, AuthorizationCoverage, RetiredLegacyPool, StateCommitment
-};
-class OrchardStateError : public std::runtime_error {
-public:
-    explicit OrchardStateError(OrchardStateErrorCode code)
-        : std::runtime_error("Orchard state transition rejected"), code_(code) {}
-    OrchardStateErrorCode Code() const noexcept { return code_; }
-private:
-    OrchardStateErrorCode code_;
-};
-class OrchardStateLookupError : public std::runtime_error {
-public:
-    // Optional constant operation label for diagnostics. Classification and
-    // original storage status are preserved; no missing read becomes success.
-    explicit OrchardStateLookupError(Status status, const char* operation = nullptr)
-        : std::runtime_error(operation ? std::string("Orchard state lookup failed at ") +
-              operation + " (" + StatusToString(status) + ")" : "Orchard state lookup failed"),
-          status_(status), operation_(operation) {}
-    Status SourceStatus() const noexcept { return status_; }
-    const char* Operation() const noexcept { return operation_; }
-private:
-    Status status_;
-    const char* operation_;
 };
 // Lookups refer ONLY to the selected parent's authenticated chain, under the
 // same held writer lock as coin resolution and eventual batch application.

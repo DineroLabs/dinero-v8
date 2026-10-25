@@ -33,6 +33,11 @@ struct OrchardSnapshotStoreTestAccess {
     static auto RecoverHandoff(const daemon::DatadirGuard& root,const CoreReopenReceipt& receipt,
         std::shared_ptr<const consensus::HeaderChainSelector> headers,const std::function<bool()>& cancel={}){
         return OrchardSnapshotStore::RecoverActivationHandoff(root,receipt.ClosedForHandoff(root),std::move(headers),cancel);}
+    static auto OpenHandoff(const daemon::DatadirGuard& root,const CoreReopenReceipt& receipt,
+        AnnotatedRecursiveMutex& mutex,std::shared_ptr<const consensus::HeaderChainSelector> headers,
+        std::unique_ptr<PreparedOrchardActivationHandoff> prepared){
+        std::lock_guard<AnnotatedRecursiveMutex> lock(mutex);
+        return OrchardSnapshotStore::OpenActivationHandoff(root,receipt.ClosedForHandoff(root),mutex,std::move(headers),std::move(prepared));}
 #endif
     static void NoHandoff(const std::filesystem::path& root){OrchardSnapshotStore::RequireNoActivationHandoff(root);}
     static auto ReadHandoffHeaders(const ChainDB& db,const uint256& first,const std::function<bool()>& cancel={}){
@@ -422,6 +427,115 @@ TEST(OrchardActivationHeaders, ColdClosureMissingCorruptRowsAndConflictingOrigin
     EXPECT_EQ(ActivationHandoffFixture::Files(f.path),original);
 }
 #ifdef DINERO_TEST_REAL_CORE_HANDOFF
+TEST(OrchardSelectedConsistency, CompletedParentOpensWithoutAdvancingIndependentAnchor){
+    ActivationHandoffFixture f(true);AnnotatedRecursiveMutex mutex;
+    {ChainDB db;ASSERT_EQ(db.init(f.path),Status::Ok);ASSERT_EQ(db.setValidatedTip(f.full.f.token,f.full.f.blocks.front().GetHash(),0),Status::Ok);}
+    auto prepared=f.Prepare();
+    EXPECT_ANY_THROW(OrchardSnapshotStoreTestAccess::OpenHandoff(f.guard,*f.receipt,mutex,f.headers,std::move(prepared)));
+    auto selected=OrchardSnapshotStoreTestAccess::SelectHandoff(f.guard,*f.receipt,f.Prepare());
+    const auto original=ActivationHandoffFixture::Files(selected->OriginalPath());const auto original_path=selected->OriginalPath();
+    auto live=OrchardSnapshotStoreTestAccess::OpenHandoff(f.guard,*f.receipt,mutex,f.headers,std::move(selected));
+    ASSERT_TRUE(live.database&&live.compact);EXPECT_EQ(live.database->getTip()->height,101);
+    EXPECT_EQ(live.database->getValidatedTip()->height,0);
+    EXPECT_ANY_THROW(storage::RequireFullOrchardStorage(*live.database));
+    EXPECT_ANY_THROW(OrchardSnapshotStoreTestAccess::RestoreParent(mutex,*live.database,*f.headers,*f.proof));
+    {std::lock_guard<AnnotatedRecursiveMutex> lock(mutex);
+        EXPECT_EQ(live.compact->SelectedUnderLock(mutex)->Encode(),f.proof->parent_catalog.Encode());}
+    live.compact.reset();live.database.reset();f.ColdReceipt();f.closed_app.reset();
+    // A harmless private engine open may rotate LOG files. The completed
+    // route still reauthenticates the entire exact parent logical baseline.
+    auto cold=OrchardSnapshotStoreTestAccess::RecoverHandoff(f.guard,*f.receipt,f.headers);
+    auto reopened=OrchardSnapshotStoreTestAccess::OpenHandoff(f.guard,*f.receipt,mutex,f.headers,std::move(cold));
+    EXPECT_EQ(reopened.database->getValidatedTip()->height,0);
+    EXPECT_EQ(ActivationHandoffFixture::Files(original_path),original);
+    ChainDB generic;EXPECT_NE(generic.init(f.path),Status::Ok);
+    EXPECT_FALSE(f.gate->Allows(f.gate->Snapshot()));
+}
+TEST(OrchardSelectedConsistency, RealCompactTransitionsPreserveAnchorAndRefuseUntypedOrChangedOrigin){
+    ActivationHandoffFixture f(true);AnnotatedRecursiveMutex mutex;
+    {ChainDB db;ASSERT_EQ(db.init(f.path),Status::Ok);ASSERT_EQ(db.setValidatedTip(f.full.f.token,f.full.f.blocks.front().GetHash(),0),Status::Ok);}
+    auto selected=OrchardSnapshotStoreTestAccess::SelectHandoff(f.guard,*f.receipt,f.Prepare());
+    const auto original_path=selected->OriginalPath();const auto original=ActivationHandoffFixture::Files(original_path);
+    auto live=OrchardSnapshotStoreTestAccess::OpenHandoff(f.guard,*f.receipt,mutex,f.headers,std::move(selected));auto& db=*live.database;
+    const auto connect=[&](const auto& source){
+        const auto block=OrchardBlockCandidate::DecodeExact(source->WireBytes());
+        const auto context=*consensus::SelectedOrchardBlockContext(block.Header(),source->Height());
+        auto write=PreparedOrchardChainstateWrite::ConnectCompactIndexed(mutex,db,f.full.f.token,*f.full.files,
+            *FindBlockIndex(context.block_hash),*live.compact,context,block,*db.getHeader(context.parent_hash),
+            [&](uint32_t h){return f.full.Mtp(h);},true,std::nullopt,true);write->Commit();
+    };
+    const auto undo=[&](const auto& source){
+        const auto block=OrchardBlockCandidate::DecodeExact(source->WireBytes());
+        const auto context=*consensus::SelectedOrchardBlockContext(block.Header(),source->Height());
+        auto write=PreparedOrchardChainstateWrite::DisconnectCompactIndexed(mutex,db,f.full.f.token,*f.full.files,
+            *FindBlockIndex(context.block_hash),*live.compact,context,block,*db.getHeader(context.parent_hash),
+            [&](uint32_t h){return f.full.Mtp(h);},true);write->Commit();
+    };
+    const auto first=OrchardBlockCandidate::DecodeExact(f.full.first->WireBytes());
+    const auto context=*consensus::SelectedOrchardBlockContext(first.Header(),102);
+    {std::lock_guard<AnnotatedRecursiveMutex> lock(mutex);rocksdb::WriteBatch batch;
+        EXPECT_ANY_THROW(consensus::StageOrchardCompactChainstateConnectUnderLock(db,f.full.f.token,context,first,
+            *db.getHeader(context.parent_hash),f.proof->parent_catalog,[&](uint32_t h){return f.full.Mtp(h);},true,batch,f.proof->retirement.record));
+        EXPECT_EQ(batch.Count(),0u);}
+    connect(f.full.first);connect(f.full.second);EXPECT_EQ(db.getTip()->height,103);EXPECT_EQ(db.getValidatedTip()->height,0);
+    {std::lock_guard<AnnotatedRecursiveMutex> lock(mutex);
+        const consensus::OrchardTransactionContext tx{104,f.full.second->Header().GetHash(),context.activation_height,context.domain};
+        EXPECT_EQ(live.compact->CapturePoolCoinsUnderLock(mutex,tx,f.full.second->Header(),{}).CapturedInputs(),0u);}
+    undo(f.full.second);undo(f.full.first);EXPECT_EQ(db.getTip()->height,101);EXPECT_EQ(db.getValidatedTip()->height,0);
+    EXPECT_EQ(db.getOrchardState().status(),Status::NotFound);
+    connect(f.full.first);EXPECT_EQ(db.getValidatedTip()->height,0);
+    std::string origin;ASSERT_EQ(db.getRaw(storage::OrchardActivationOriginKey,origin),Status::Ok);
+    rocksdb::WriteBatch corrupt;corrupt.Put(storage::OrchardActivationOriginKey,"corrupt");
+    ASSERT_EQ(db.writeBatch(f.full.f.token,std::move(corrupt),true),Status::Ok);
+    const auto before=ChainDBTransactionReadTestPeer::HandoffRows(db);EXPECT_ANY_THROW(connect(f.full.second));
+    EXPECT_EQ(ChainDBTransactionReadTestPeer::HandoffRows(db),before);
+    rocksdb::WriteBatch restore;restore.Put(storage::OrchardActivationOriginKey,origin);
+    ASSERT_EQ(db.writeBatch(f.full.f.token,std::move(restore),true),Status::Ok);
+    // Missing BOTH metadata rows must not silently fall back to independent
+    // marker semantics. A changed validated marker is also never repaired.
+    rocksdb::WriteBatch missing;missing.Delete(storage::OrchardActivationOriginKey);missing.Delete(storage::OrchardActivationSelectionKey);
+    ASSERT_EQ(db.writeBatch(f.full.f.token,std::move(missing),true),Status::Ok);
+    const auto absent=ChainDBTransactionReadTestPeer::HandoffRows(db);EXPECT_ANY_THROW(connect(f.full.second));
+    EXPECT_EQ(ChainDBTransactionReadTestPeer::HandoffRows(db),absent);
+    rocksdb::WriteBatch repair;repair.Put(storage::OrchardActivationOriginKey,origin);
+    repair.Put(storage::OrchardActivationSelectionKey,storage::OrchardActivationOrigin::Decode(origin).Selection());
+    ASSERT_EQ(db.writeBatch(f.full.f.token,std::move(repair),true),Status::Ok);
+    ASSERT_EQ(db.setValidatedTip(f.full.f.token,f.full.first->Header().GetHash(),102),Status::Ok);
+    const auto advanced=ChainDBTransactionReadTestPeer::HandoffRows(db);EXPECT_ANY_THROW(connect(f.full.second));
+    EXPECT_EQ(ChainDBTransactionReadTestPeer::HandoffRows(db),advanced);
+    ASSERT_EQ(db.setValidatedTip(f.full.f.token,f.full.f.blocks.front().GetHash(),0),Status::Ok);
+    // A valid prepare is NOT durable authority after its selected before-image
+    // changes. Commit must recheck the origin/anchor before the first write.
+    const auto block=OrchardBlockCandidate::DecodeExact(f.full.second->WireBytes());
+    const auto child=*consensus::SelectedOrchardBlockContext(block.Header(),103);
+    auto pending=PreparedOrchardChainstateWrite::ConnectCompactIndexed(mutex,db,f.full.f.token,*f.full.files,
+        *FindBlockIndex(child.block_hash),*live.compact,child,block,*db.getHeader(child.parent_hash),
+        [&](uint32_t h){return f.full.Mtp(h);},true,std::nullopt,true);
+    rocksdb::WriteBatch tamper;tamper.Put(storage::OrchardActivationOriginKey,"changed after prepare");
+    ASSERT_EQ(db.writeBatch(f.full.f.token,std::move(tamper),true),Status::Ok);
+    const auto changed=ChainDBTransactionReadTestPeer::HandoffRows(db);EXPECT_ANY_THROW(pending->Commit());
+    EXPECT_EQ(ChainDBTransactionReadTestPeer::HandoffRows(db),changed);pending.reset();
+    EXPECT_EQ(ActivationHandoffFixture::Files(original_path),original);
+    EXPECT_FALSE(f.gate->Allows(f.gate->Snapshot()));
+}
+TEST(OrchardSelectedConsistency, SameDatabaseObjectCannotReuseOwnerAfterEngineReopen){
+    ActivationHandoffFixture f(true);AnnotatedRecursiveMutex mutex;
+    auto selected=OrchardSnapshotStoreTestAccess::SelectHandoff(f.guard,*f.receipt,f.Prepare());
+    auto live=OrchardSnapshotStoreTestAccess::OpenHandoff(f.guard,*f.receipt,mutex,f.headers,std::move(selected));
+    auto& db=*live.database;const auto header=*db.getHeader(f.proof->parent_catalog.block);
+    const auto c=*consensus::SelectedOrchardBlockContext(f.full.first->Header(),102);
+    const consensus::OrchardTransactionContext tx{102,header.GetHash(),c.activation_height,c.domain};
+    {std::lock_guard<AnnotatedRecursiveMutex> lock(mutex);
+        EXPECT_EQ(live.compact->CapturePoolCoinsUnderLock(mutex,tx,header,{}).CapturedInputs(),0u);}
+    db.close();const auto copy=f.root/"generation-negative"/"db";
+    std::filesystem::create_directories(copy.parent_path());
+    std::filesystem::copy(f.path,copy,std::filesystem::copy_options::recursive);
+    ASSERT_EQ(db.init(copy),Status::Ok); // Same object, exact logical rows, DIFFERENT open generation.
+    const auto before=ChainDBTransactionReadTestPeer::HandoffRows(db);
+    {std::lock_guard<AnnotatedRecursiveMutex> lock(mutex);
+        EXPECT_ANY_THROW(live.compact->CapturePoolCoinsUnderLock(mutex,tx,header,{}));}
+    EXPECT_EQ(ChainDBTransactionReadTestPeer::HandoffRows(db),before);
+}
 TEST(OrchardActivationHeaders, SelectedInterruptionRecoversAfterDiscardingRamProofAndSelector){
     ActivationHandoffFixture f(true);auto prepared=f.Prepare();const auto original=ActivationHandoffFixture::Files(f.path);
     const auto expected=ChainDBTransactionReadTestPeer::HandoffRows(prepared->CandidateForInspection());

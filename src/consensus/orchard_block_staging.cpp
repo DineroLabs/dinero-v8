@@ -1,4 +1,5 @@
 #include "consensus/orchard_block_staging.h"
+#include "consensus/orchard_selected_consistency.h"
 #include "consensus/orchard_catalog_validation.h"
 #include "consensus/orchard_catalog_transition.h"
 #include "consensus/orchard_catalog_coin_view.h"
@@ -111,23 +112,28 @@ arith_uint256 StoredHeaderWork(const ChainDB& db,const BlockHeader& header,uint3
         stored.SerializeForHash()!=header.SerializeForHash())throw OrchardStateLookupError(Status::Corruption);
     return RequiredLocal(db.getBlockWork(hash));
 }
-void CheckStateMarkers(const ChainDB& db,uint32_t height,const uint256& hash,const uint256& root) {
+void CheckStateMarkers(const ChainDB& db,uint32_t height,const uint256& hash,const uint256& root,
+    const OrchardSelectedConsistency* selected=nullptr) {
     const auto tip=RequiredLocal(db.getTip());
     const auto validated=RequiredLocal(db.getValidatedTip());
     const auto marker=RequiredLocal(db.getForestTipMarker());
+    if(selected)selected->Check(db);
+    else if(storage::ReadOrchardActivationOrigin(db)||validated.height!=int(height)||validated.hash!=hash)
+        throw OrchardStateLookupError(Status::Corruption,"selected-origin/requires-owner");
     if(height>INT32_MAX || tip.height!=int(height) || tip.hash!=hash ||
-        validated.height!=int(height) || validated.hash!=hash ||
         marker.height!=int(height) || marker.block_hash!=hash || marker.forest_root!=root ||
         RequiredLocal(db.getBlockHashByHeight(int(height)))!=hash)
         throw OrchardStateLookupError(Status::Corruption);
 }
 void StageMarkers(ChainDB& db,const ChainWriteToken& token,const BlockHeader& header,
-    uint32_t height,const arith_uint256& work,rocksdb::WriteBatch& batch) {
+    uint32_t height,const arith_uint256& work,rocksdb::WriteBatch& batch,
+    const OrchardSelectedConsistency* selected=nullptr) {
     const auto hash=header.GetHash();
     StorageCheck(db.putForestTipMarker(token,{int32_t(height),hash,header.utreexo_root},&batch));
     StorageCheck(db.putHeightIndex(token,int(height),hash,&batch));
     StorageCheck(db.setTip(token,hash,int(height),work,&batch));
-    StorageCheck(db.setValidatedTip(token,hash,int(height),&batch));
+    if(selected)selected->Check(db); // Retain the original independent-history anchor.
+    else StorageCheck(db.setValidatedTip(token,hash,int(height),&batch));
 }
 std::string CommitKey(uint32_t height,const uint256& hash) {
     char height_hex[9];std::snprintf(height_hex,sizeof(height_hex),"%08x",height);
@@ -788,9 +794,9 @@ static auto StageOrchardChainstateConnectImpl(ChainDB& db,
     bool require_witness_commitment,bool checkpoint,rocksdb::WriteBatch& batch,
     const std::optional<storage::LegacyRetirementRecord>& authenticated_boundary,
     const ValidatedOrchardBlock* detached,const OrchardCandidateCoinView* compact_view,
-    const storage::catalog::State* parent_catalog) {
+    const storage::catalog::State* parent_catalog,const OrchardSelectedConsistency* consistency=nullptr) {
     constexpr bool compact=std::is_same_v<Accumulator,UtreexoStump>;
-    if(compact!=bool(compact_view)||(compact&&checkpoint))
+    if(compact!=bool(compact_view)||(compact&&checkpoint)||(!compact&&consistency))
         throw OrchardStateLookupError(Status::Invalid);
     const char* operation="connect/header-and-markers";
     try {
@@ -799,7 +805,7 @@ static auto StageOrchardChainstateConnectImpl(ChainDB& db,
         throw OrchardStateError(OrchardStateErrorCode::Context);
     const auto parent_work=StoredHeaderWork(db,parent,context.height-1);
     const auto work=StoredHeaderWork(db,block.Header(),context.height);
-    CheckStateMarkers(db,context.height-1,context.parent_hash,parent.utreexo_root);
+    CheckStateMarkers(db,context.height-1,context.parent_hash,parent.utreexo_root,consistency);
     if(RequiredLocal(db.getTip()).work!=parent_work || work<=parent_work)
         throw OrchardStateLookupError(Status::Corruption);
     operation="connect/active-transaction-index";
@@ -906,9 +912,9 @@ static auto StageOrchardChainstateConnectImpl(ChainDB& db,
     StorageCheck(batch.Put(CommitKey(context.height,context.block_hash),journal).ok()?Status::Ok:Status::Internal);
     operation="connect/retirement-write";
     StorageCheck(db.stageLegacyRetirementConnect(token,retired_parent,
-        {retirement,context.height,context.block_hash,context.parent_hash},batch));
+        {retirement,context.height,context.block_hash,context.parent_hash},batch,consistency));
     operation="connect/marker-write";
-    StageMarkers(db,token,block.Header(),context.height,work,batch);
+    StageMarkers(db,token,block.Header(),context.height,work,batch,consistency);
     guard.Keep();
     if constexpr(compact)return StagedOrchardCompactChainstate{std::move(prepared),std::move(transition.after)};
     else return StagedOrchardChainstate{std::move(prepared),std::move(transition)};
@@ -932,14 +938,15 @@ StagedOrchardCompactChainstate StageOrchardCompactChainstateConnectUnderLock(Cha
     const ChainWriteToken& token,const OrchardBlockContext& context,const OrchardBlockCandidate& block,
     const BlockHeader& parent,const storage::catalog::State& selected,const OrchardBranchMtpLookup& mtp,
     bool witness,rocksdb::WriteBatch& batch,
-    const std::optional<storage::LegacyRetirementRecord>& boundary,const ValidatedOrchardBlock* detached) {
+    const std::optional<storage::LegacyRetirementRecord>& boundary,const ValidatedOrchardBlock* detached,
+    const OrchardSelectedConsistency* consistency) {
     const auto stump=UtreexoStump::deserialize(selected.stump);
     CheckOrchardCatalogStump(db,selected,context,parent,context.height-1,stump);
     const auto view=CaptureOrchardCatalogCoins(block,context,parent,selected,[&](const auto& id) {
         return RequiredLocal(db.getOrchardCatalogNode(id));
     });
     return StageOrchardChainstateConnectImpl(db,token,context,block,parent,stump,mtp,
-        witness,false,batch,boundary,detached,&view,&selected);
+        witness,false,batch,boundary,detached,&view,&selected,consistency);
 }
 
 template<class Accumulator>
@@ -947,9 +954,10 @@ static auto StageOrchardChainstateDisconnectImpl(ChainDB& db,
     const ChainWriteToken& token,const OrchardBlockContext& context,const OrchardBlockCandidate& block,
     const BlockHeader& parent,const Accumulator& forest,bool require_witness_commitment,
     rocksdb::WriteBatch& batch,const storage::catalog::State* compact_parent,
-    const OrchardBranchMtpLookup* compact_mtp,const ValidatedOrchardBlock* detached) {
+    const OrchardBranchMtpLookup* compact_mtp,const ValidatedOrchardBlock* detached,
+    const OrchardSelectedConsistency* consistency=nullptr) {
     constexpr bool compact=std::is_same_v<Accumulator,UtreexoStump>;
-    if(compact!=bool(compact_parent)||compact!=bool(compact_mtp)||(!compact&&detached))
+    if(compact!=bool(compact_parent)||compact!=bool(compact_mtp)||(!compact&&(detached||consistency)))
         throw OrchardStateLookupError(Status::Invalid);
     EmptyBatchGuard guard(batch);
     if(const auto base=storage::ReadOrchardSnapshotBase(db);base&&context.height<=base->height)
@@ -958,7 +966,7 @@ static auto StageOrchardChainstateDisconnectImpl(ChainDB& db,
         throw OrchardStateError(OrchardStateErrorCode::Context);
     const auto parent_work=StoredHeaderWork(db,parent,context.height-1);
     const auto work=StoredHeaderWork(db,block.Header(),context.height);
-    CheckStateMarkers(db,context.height,context.block_hash,block.Header().utreexo_root);
+    CheckStateMarkers(db,context.height,context.block_hash,block.Header().utreexo_root,consistency);
     if(RequiredLocal(db.getTip()).work!=work || work<=parent_work)
         throw OrchardStateLookupError(Status::Corruption);
     const auto current_state=RequiredLocal(db.getOrchardState());
@@ -1045,8 +1053,8 @@ static auto StageOrchardChainstateDisconnectImpl(ChainDB& db,
     for(const auto& tx:block.Transactions())StorageCheck(db.deleteTxIndex(token,tx.GetTxid().AsUint256(),&batch));
     StorageCheck(db.deleteHeightIndex(token,int(context.height),&batch));
     StorageCheck(db.deleteUtreexoCheckpointWithChecksum(token,int(context.height),&batch));
-    StorageCheck(db.stageLegacyRetirementDisconnect(token,retired,batch));
-    StageMarkers(db,token,parent,context.height-1,parent_work,batch);
+    StorageCheck(db.stageLegacyRetirementDisconnect(token,retired,batch,consistency));
+    StageMarkers(db,token,parent,context.height-1,parent_work,batch,consistency);
     guard.Keep();
     if constexpr(compact)return StagedOrchardCompactDisconnect{std::move(*forward_coins),std::move(restored)};
     else return StagedOrchardDisconnect{std::move(changes),std::move(restored)};
@@ -1060,14 +1068,14 @@ StagedOrchardCompactDisconnect StageOrchardCompactChainstateDisconnectUnderLock(
     const ChainWriteToken& token,const OrchardBlockContext& context,const OrchardBlockCandidate& block,
     const BlockHeader& parent,const storage::catalog::State& current,const storage::catalog::State& previous,
     const OrchardBranchMtpLookup& mtp,bool witness,rocksdb::WriteBatch& batch,
-    const ValidatedOrchardBlock* detached) {
+    const ValidatedOrchardBlock* detached,const OrchardSelectedConsistency* consistency) {
     const auto before=UtreexoStump::deserialize(current.stump),after=UtreexoStump::deserialize(previous.stump);
     CheckOrchardCatalogStump(db,current,context,block.Header(),context.height,before);
     CheckOrchardCatalogStump(db,previous,context,parent,context.height-1,after);
     const auto undo=RequiredLocal(db.getUndo(context.block_hash)).Serialize();
     RequireOrchardCatalog(current.previous_record==storage::catalog::Hash(previous.Encode())&&
         current.undo==storage::catalog::Hash(std::string(undo.begin(),undo.end())));
-    return StageOrchardChainstateDisconnectImpl(db,token,context,block,parent,before,witness,batch,&previous,&mtp,detached);
+    return StageOrchardChainstateDisconnectImpl(db,token,context,block,parent,before,witness,batch,&previous,&mtp,detached,consistency);
 }
 
 void AuditOrchardChainstateTipUnderLock(ChainDB& db,const ChainWriteToken& token,

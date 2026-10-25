@@ -1,6 +1,7 @@
 #pragma once
 #include "consensus/orchard_block_coins.h"
 #include "consensus/chainparams.h"
+#include "consensus/orchard_validation_profile.h"
 #include "storage/legacy_retirement.h"
 #include "crypto/sha256.h"
 #include <map>
@@ -42,22 +43,7 @@ private:
     // Network parameters remain immutable during a process; this also refuses
     // reuse across serialized test/profile changes. It does not authorize
     // concurrent mutation of the global ChainParams object.
-    static std::string CaptureProfile() {
-        const auto& p = Params();
-        std::ostringstream out;
-        out << ConsensusChecksum(p) << '\n' << p.name << '\n' << p.network_id << '\n'
-            << p.genesis_hash << '\n' << p.orchard_activation_height << '\n'
-            << p.orchard_branch_id << '\n' << p.release_v8113_activation_height << '\n'
-            << p.orchard_catalog_commitment_activation_height << '\n'
-            << p.max_block_size << '\n' << p.coinbase_maturity << '\n'
-            << p.allow_min_difficulty << '\n' << p.require_standard_txs << '\n'
-            << p.mine_blocks_on_demand << '\n' << p.regtest_enforce_pow << '\n'
-            << p.enable_witness_magic_translation << '\n' << p.witness_magic_translation_height << '\n'
-            << p.disable_confidential_transactions << '\n' << p.confidential_activation_height << '\n'
-            << p.nMinimumChainWork << '\n' << p.defaultAssumeValid << '\n' << p.assumeValidHeight << '\n';
-        for (const auto& [height, hash] : p.vCheckpoints) out << height << ':' << hash << '\n';
-        return out.str();
-    }
+    static std::string CaptureProfile() {return OrchardValidationProfile();}
     static uint256 WireDigest(const OrchardBlockCandidate& block) {
         uint256 digest;
         crypto::CSHA256().Write(block.WireBytes().data(),block.WireBytes().size()).Finalize(digest.data);

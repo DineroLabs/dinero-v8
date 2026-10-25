@@ -559,6 +559,7 @@ struct PreparedOrchardChainstateWrite::Impl {
         lock.mutex()->AssertHeld("Orchard chainstate write");
     }
     void CheckIndex() const {
+        if(compact_before&&compact_before->consistency)compact_before->consistency->Check(db);
         if(historical_ready)historical_ready();
         CatalogRequire(storage_mode_captured&&
             storage::ReadOrchardCompactStorageBinding(db)==storage_mode_before);
@@ -759,9 +760,11 @@ OrchardPoolCoinView OrchardCompactChainstate::CapturePoolCoinsUnderLock(Annotate
     const auto selected=selected_;const auto& db=*selected->database;const auto& state=selected->OrchardState().catalog;
     const auto check=[&] {
         const auto tip=RequiredDisk(db.getTip()),validated=RequiredDisk(db.getValidatedTip());
+        if(selected->consistency)selected->consistency->Check(db);
+        else RequireOrchardCatalog(!storage::ReadOrchardActivationOrigin(db)&&validated.height==tip.height&&validated.hash==tip.hash);
         const auto durable_header=RequiredDisk(db.getHeader(state.block));
         RequireOrchardCatalog(tip.height>=0&&uint32_t(tip.height)==state.height&&tip.hash==state.block&&
-            tip.work==state.work&&validated.height==tip.height&&validated.hash==tip.hash&&
+            tip.work==state.work&&
             RequiredDisk(db.getBlockWork(state.block))==state.work&&
             durable_header.SerializeForHash()==header.SerializeForHash()&&
             RequiredDisk(db.getOrchardCatalogState(state.block))==state.Encode()&&
@@ -929,7 +932,8 @@ std::unique_ptr<PreparedOrchardChainstateWrite> PreparedOrchardChainstateWrite::
         return value;
     };
     auto staged=StageOrchardCompactChainstateConnectUnderLock(db,token,context,block,parent,
-        selected,captured_mtp,witness,owner.batch,effective_boundary,detached);
+        selected,captured_mtp,witness,owner.batch,effective_boundary,detached,
+        owner.compact_before?owner.compact_before->consistency.get():nullptr);
     owner.undo_bytes=staged.block.undo.Serialize();
     auto next=owner.ConnectCatalog(initial,true,effective_boundary,context,block,parent,
         UtreexoStump::deserialize(selected.stump),staged.block.coins,staged.stump);
@@ -940,7 +944,8 @@ std::unique_ptr<PreparedOrchardChainstateWrite> PreparedOrchardChainstateWrite::
         owner.undo_bytes,std::move(replay_mtp)};
     owner.compact_after=std::make_shared<const OrchardCompactChainstate::Selected>(
         OrchardCompactChainstate::Selected{&db,&mutex,std::move(*next),
-            owner.compact_before?owner.compact_before->OrchardState().retirement:*effective_boundary});
+            owner.compact_before?owner.compact_before->OrchardState().retirement:*effective_boundary,
+            owner.compact_before?owner.compact_before->consistency:nullptr});
     owner.PrepareIndex(files,index,context,block,true,contextual_header_validated);
     owner.outbox_before=outbox_detail::Append(db,owner.batch,context,block,true,owner.replay);
     owner.outbox_staged=true;
@@ -966,7 +971,8 @@ std::unique_ptr<PreparedOrchardChainstateWrite> PreparedOrchardChainstateWrite::
     const auto before_state=RequiredDisk(db.getOrchardState());
     const auto parent_state=RequiredDisk(db.getOrchardUndoParent(before_state));
     auto staged=StageOrchardCompactChainstateDisconnectUnderLock(db,token,context,block,parent,
-        owner.compact_before->OrchardState().catalog,previous,mtp,witness,owner.batch,detached);
+        owner.compact_before->OrchardState().catalog,previous,mtp,witness,owner.batch,detached,
+        owner.compact_before->consistency.get());
     owner.undo_bytes=RequiredDisk(db.getUndo(context.block_hash)).Serialize();
     // Rebuild every catalog effect against the retained parent and require
     // the exact child plus already-present immutable nodes. Undo never repairs
@@ -975,7 +981,8 @@ std::unique_ptr<PreparedOrchardChainstateWrite> PreparedOrchardChainstateWrite::
         staged.forward_coins,UtreexoStump::deserialize(owner.compact_before->OrchardState().catalog.stump),true);
     owner.replay=RuntimeOrchardReplay{parent_state,before_state,owner.undo_bytes,{}};
     owner.compact_after=std::make_shared<const OrchardCompactChainstate::Selected>(
-        OrchardCompactChainstate::Selected{&db,&mutex,previous,owner.compact_before->OrchardState().retirement});
+        OrchardCompactChainstate::Selected{&db,&mutex,previous,owner.compact_before->OrchardState().retirement,
+            owner.compact_before->consistency});
     owner.PrepareIndex(files,index,context,block,false);
     owner.outbox_before=outbox_detail::Append(db,owner.batch,context,block,false,owner.replay);
     owner.outbox_staged=true;owner.phase=Impl::Phase::Prepared;
@@ -1132,6 +1139,9 @@ std::unique_ptr<PreparedOrchardChainstateWrite> PreparedOrchardChainstateWrite::
     operation="historical/selected-owner";
     owner.compact_live=&live;owner.compact_before=live.selected_;
     require(owner.compact_before && owner.compact_before->database==&db && owner.compact_before->mutex==&mutex);
+    // This authority covers the authenticated activation parent and Orchard
+    // descendants only, never an independent pre-activation replay capability.
+    require(!owner.compact_before->consistency&&!storage::ReadOrchardActivationOrigin(db));
     const auto selected_bytes=std::visit([](const auto& value) {
         using T=std::remove_cvref_t<decltype(value)>;
         if constexpr(std::is_same_v<T,OrchardCompactChainstate::Selected::Orchard>)return value.catalog.Encode();

@@ -775,7 +775,12 @@ std::unique_ptr<PreparedOrchardActivationHandoff> OrchardSnapshotStore::RecoverA
         source_id.st_uid==::geteuid()&&!(source_id.st_mode&0022)&&copy_id.st_uid==::geteuid()&&!(copy_id.st_mode&0022));
     d->source_files=InspectHandoffFiles(d->source_path,d->paired_sst,cancelled);
     d->candidate_files=InspectHandoffFiles(d->candidate_path,{},cancelled);
-    Require(record.source_files==HandoffFilesDigest(d->source_files)&&record.copy_files==HandoffFilesDigest(d->candidate_files));
+    Require(record.source_files==HandoffFilesDigest(d->source_files)&&
+        (!done.empty()||record.copy_files==HandoffFilesDigest(d->candidate_files)));
+    // Before completion, exact unpublished candidate files are immutable.
+    // A completed selected store may have been opened by the private writer;
+    // reauthenticate its ENTIRE recorded logical baseline below, not its LOG
+    // inode/mtime. Descendant rows still refuse this parent-only recovery path.
     d->source=std::make_unique<ChainDB>();Need(d->source->initReadOnlyForHandoff(d->source_path));
     d->candidate=std::make_unique<ChainDB>();Need(d->candidate->initReadOnlyForHandoff(d->candidate_path));
     // No state/owner is granted by completing this recorded filesystem choice.
@@ -811,6 +816,61 @@ std::unique_ptr<PreparedOrchardActivationHandoff> OrchardSnapshotStore::RecoverA
     }
     Require(HandoffControl(live.blockchain.value,HandoffIntent)==bytes&&HandoffControl(live.blockchain.value,HandoffDone)==completed);
     return result; // Both stores stay locked; no Init, writer, lifecycle or RPC publication.
+#endif
+}
+OrchardSnapshotStore::ActivationPublication OrchardSnapshotStore::OpenActivationHandoff(
+    const daemon::DatadirGuard& guard,const ClosedCoreReopenIntent& receipt,AnnotatedRecursiveMutex& mutex,
+    std::shared_ptr<const consensus::HeaderChainSelector> current_headers,
+    std::unique_ptr<PreparedOrchardActivationHandoff> prepared){
+#ifdef _WIN32
+    (void)guard;(void)receipt;(void)mutex;(void)current_headers;(void)prepared;Require(false);return {};
+#else
+    mutex.AssertHeld("open authenticated selected activation handoff");
+    receipt.Check(guard);Require(prepared&&prepared->data_);auto& d=*prepared->data_;
+    // Dedicated startup supplies its current branch-preserving HeaderStore
+    // selector, never the cold as-of-intent data closure by implicit fallback.
+    Require(bool(current_headers));VerifyCatalogTransferProof(*d.proof,*current_headers);
+    d.headers=std::move(current_headers);
+    CheckActivationHandoff(guard,*prepared);
+    Require(d.candidate_path==guard.DataDir()/"blockchain"/"chaindb"&&!d.selection.empty()&&
+        HandoffControl(d.blockchain.value,HandoffIntent)==d.selection&&
+        HandoffControl(d.blockchain.value,HandoffDone)==HandoffSeal("DNODONE1"+storage::catalog::Hash(d.selection).GetHex()));
+    const auto record=HandoffSelection::Decode(d.selection);
+    Require(record.origin.Encode()==d.origin.Encode()&&record.copy_rows==d.candidate_digest&&
+        record.journal==receipt.CandidateJournal()&&record.wallet==receipt.WalletName());
+    // Only this completed, wholly audited selection can request an existing-
+    // layout writer. No create, lock retry, migration/schema append or generic
+    // no-handoff fence bypass is exposed to callers.
+    d.candidate->close();d.source->close();receipt.Check(guard);
+    // The old source was opened before rename: both RocksDB's process lock
+    // table and our directory reservation may still use its OLD live name.
+    // Rebind the unchanged original under its actual retained backup name;
+    // never bypass either lock or leave it writable.
+    Need(d.source->initReadOnlyForHandoff(d.source_path));
+    Require(HandoffSame(HandoffStat(d.candidate_dir.value),HandoffNamed(d.blockchain.value,"chaindb")));
+    const ChainDB::SelectedHandoffOpen permit(d.candidate_path);
+    d.candidate->dir_=d.candidate_path;
+    Need(d.candidate->initAttempt(d.candidate_path,false,false,&permit));
+    Require(HandoffSame(HandoffStat(d.candidate_dir.value),HandoffNamed(d.blockchain.value,"chaindb"))&&
+        HandoffStoreDigest(*d.candidate,d.cancelled)==d.candidate_digest&&
+        InspectHandoffFiles(d.source_path,d.paired_sst,d.cancelled)==d.source_files);
+    receipt.Check(guard);VerifyCatalogTransferProof(*d.proof,*d.headers);
+    const auto consistency=std::shared_ptr<const consensus::OrchardSelectedConsistency>(
+        new consensus::OrchardSelectedConsistency(*d.candidate,mutex,d.origin));
+    // CheckActivationHandoff authenticated every reachable parent node, exact
+    // stump/header/work/tip, FULL legacy before-image and empty namespaces.
+    // The original independent validated anchor remains untouched.
+    ActivationPublication publication;publication.compact=std::make_unique<OrchardCompactChainstate>();
+    publication.compact->selected_=std::make_shared<const OrchardCompactChainstate::Selected>(
+        d.candidate.get(),&mutex,d.proof->parent_catalog,d.proof->retirement.record,consistency);
+    {
+        std::unique_lock<std::mutex> selected(d.headers->mutex_);const auto* best=d.headers->best_header_;
+        const auto* first=best?best->GetAncestor(d.proof->state.height):nullptr;
+        Require(first&&first->hash==d.origin.first&&first->prev_hash==d.origin.parent&&
+            uint64_t(best->height)>=uint64_t(first->height)+Params().state_commitment_burial_depth);
+    }
+    receipt.Check(guard);Require(!d.cancelled||!d.cancelled());
+    publication.database=std::move(d.candidate);return publication;
 #endif
 }
 void OrchardSnapshotStore::CreateFreshStore(const std::filesystem::path& destination) {

@@ -575,6 +575,37 @@ corrupt, wrong-work or conflicting header data refuses without repairing the
 original store. Native tests discard proof/selector inputs in the same process;
 they do not establish fresh-process crash recovery or phone/App acceptance.
 
+The selected activation-parent route now has a private existing-layout writable
+open and a distinct typed state-consistency owner. It requires the genuine closed
+lifecycle receipt and retained root, completed exact filesystem selection, current
+branch-preserving HeaderStore selector, complete DNORST02/burial verification,
+all original rows/before-images and the exact candidate logical baseline. The
+retained original is rebound read-only under its backup name before opening the
+new live writer: process lock registries must not retain the old live pathname.
+No create, schema append, migration, lock retry or generic startup-fence bypass
+is exposed. Once a completed baseline has been privately opened, LOG rotations
+may change physical file metadata; cold parent reopening still checks the entire
+recorded logical baseline, original immutable inventory, layout and inner paths.
+This parent-only route refuses mutated descendant/post-undo baselines until their
+dedicated full suffix startup audit is implemented; it never guesses a repair.
+
+The typed consistency owner pins the actual database open generation, writer
+mutex, full existing validation fingerprint, origin/selection and original
+independent-history anchor. Compact connect, disconnect, retirement staging,
+pool input capture and pre-commit readiness use this SAME authority. Real tip,
+forest, active height, frozen legacy, authorizations, sets, body/index/undo,
+catalog and delivery checks remain mandatory. The validated marker is neither
+advanced nor rebased by this route. Missing/corrupt/changed origin or anchor,
+foreign/reopened engine or profile changes refuse; a decoded row cannot mint
+the type. Historical pre-activation writers may not consume it. Default full/
+independent staging retains its previous validated-tip rule. The shared profile
+and error definitions were extracted without changing their token sequence.
+Native tests compose an empty-genesis named-wallet lifecycle receipt with an
+offline authenticated parent, execute first/second compact connects and undo,
+and exercise cold parent open/refusals. This is not automatic App/SDK activation,
+queued-payment survival, descendant cold startup, complete phone history,
+fresh-process crash, physical device or release qualification.
+
 - Existing unknown/missing/corrupt/untracked catalog and seed-replacement
   refusals remain negative. New enrollment tests cover atomicity, source gaps,
   borrowed owners, reopen and actual funds received across activation.

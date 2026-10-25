@@ -27,7 +27,7 @@ class OrchardBlockCandidate;
 class PreparedOrchardChainstateWrite;
 class OrchardSnapshotStore;
 
-namespace consensus { struct OrchardValueFlow; }
+namespace consensus { struct OrchardValueFlow; class OrchardSelectedConsistency; }
 
 // Forward declarations
 class CBlockIndex;  // From consensus/block_index.h
@@ -169,11 +169,21 @@ public:
     }
 
 private:
-    Status initAttempt(const std::filesystem::path& dir, bool allow_lock_recovery, bool read_only = false);
+    friend class consensus::OrchardSelectedConsistency;
+    // Private engine-open permit, not chainstate authority. Only the sealed
+    // store may create it after complete RO handoff selection/proof audits.
+    class SelectedHandoffOpen {
+        friend class OrchardSnapshotStore;friend class ChainDB;
+        explicit SelectedHandoffOpen(std::filesystem::path path):directory(std::move(path)){}
+        const std::filesystem::path directory;
+    };
+    Status initAttempt(const std::filesystem::path& dir, bool allow_lock_recovery, bool read_only = false,
+        const SelectedHandoffOpen* selected = nullptr);
     // Closed-store handoff only: existing complete layout, the same checked
     // directory/LOCK lifetime, no schema append/repair or writable Open.
     Status initReadOnlyForHandoff(const std::filesystem::path& dir);
     std::filesystem::path dir_;  // Remembered for lock recovery
+    uint64_t open_generation_=0;
 
 public:
 
@@ -464,9 +474,11 @@ public:
     StatusOr<storage::LegacyRetirementState> getLegacyRetirementState() const;
     Status stageLegacyRetirementConnect(const ChainWriteToken&,
         const std::optional<storage::LegacyRetirementState>& expected_parent,
-        const storage::LegacyRetirementState& next, rocksdb::WriteBatch&);
+        const storage::LegacyRetirementState& next, rocksdb::WriteBatch&,
+        const consensus::OrchardSelectedConsistency* selected = nullptr);
     Status stageLegacyRetirementDisconnect(const ChainWriteToken&,
-        const storage::LegacyRetirementState& expected_tip, rocksdb::WriteBatch&);
+        const storage::LegacyRetirementState& expected_tip, rocksdb::WriteBatch&,
+        const consensus::OrchardSelectedConsistency* selected = nullptr);
 
     // CSN reorg: Spend targets stored in utreexo CF for forest replay
     Status putCSNSpendTargets(const ChainWriteToken& token, const uint256& block_hash,

@@ -378,8 +378,10 @@ Status ChainDB::initReadOnlyForHandoff(const std::filesystem::path& dir) {
     return initAttempt(dir_,false,true);
 }
 
-Status ChainDB::initAttempt(const std::filesystem::path& dir, bool allow_lock_recovery, bool read_only) {
-    if(!read_only&&!storage::OrchardHandoffControlsAbsent(dir.parent_path()))return Status::Corruption;
+Status ChainDB::initAttempt(const std::filesystem::path& dir, bool allow_lock_recovery, bool read_only,
+    const SelectedHandoffOpen* selected) {
+    if(selected&&(read_only||allow_lock_recovery||selected->directory!=dir))return Status::Invalid;
+    if(!read_only&&!selected&&!storage::OrchardHandoffControlsAbsent(dir.parent_path()))return Status::Corruption;
     auto owner = ProcessDirectoryOwner::Acquire(dir);
     if (!owner) {
         std::cerr << "ChainDB::init: Database directory unavailable or already owned in this process\n";
@@ -401,7 +403,7 @@ Status ChainDB::initAttempt(const std::filesystem::path& dir, bool allow_lock_re
         owner.reset();  // No DB opened; a retry must acquire a fresh reservation.
         if (allow_lock_recovery) {
             std::this_thread::sleep_for(std::chrono::milliseconds(50));
-            return initAttempt(dir, false, read_only);
+            return initAttempt(dir, false, read_only, selected);
         }
         std::cerr << "ChainDB::init: Cannot acquire database lock: " << status.ToString() << '\n';
         return convertRocksDBStatus(status);
@@ -490,7 +492,8 @@ Status ChainDB::initAttempt(const std::filesystem::path& dir, bool allow_lock_re
         }
     }
 
-    if(read_only&&(fresh||missing_schema||append_prebase))return Status::Corruption;
+    if((read_only||selected)&&(fresh||missing_schema||append_prebase))return Status::Corruption;
+    if(open_generation_==UINT64_MAX)return Status::Corruption;
     // All ownership remains local until opening, the approved append, schema
     // initialization and name-based handle resolution have succeeded.
     OpenedChainDB opened;
@@ -524,6 +527,7 @@ Status ChainDB::initAttempt(const std::filesystem::path& dir, bool allow_lock_re
     open_env_ = std::move(env);
     db_ = std::move(opened.db);
     cf_ = std::move(ordered);
+    ++open_generation_;
     return Status::Ok;
 }
 

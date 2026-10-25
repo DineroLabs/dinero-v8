@@ -5,6 +5,7 @@
 #include <variant>
 #include <functional>
 #include "storage/historical_catalog_state.h"
+#include "consensus/orchard_selected_consistency.h"
 
 namespace dinero {
 class AnnotatedRecursiveMutex;
@@ -50,8 +51,11 @@ private:
         AnnotatedRecursiveMutex* mutex;
         struct Orchard {storage::catalog::State catalog;storage::LegacyRetirementRecord retirement;};
         std::variant<Orchard,storage::catalog::HistoricalState> value;
+        std::shared_ptr<const consensus::OrchardSelectedConsistency> consistency;
         Selected(const ChainDB* db,AnnotatedRecursiveMutex* lock,storage::catalog::State state,
-            storage::LegacyRetirementRecord retired):database(db),mutex(lock),value(Orchard{std::move(state),std::move(retired)}){}
+            storage::LegacyRetirementRecord retired,
+            std::shared_ptr<const consensus::OrchardSelectedConsistency> selected={})
+            :database(db),mutex(lock),value(Orchard{std::move(state),std::move(retired)}),consistency(std::move(selected)){}
         Selected(const ChainDB* db,AnnotatedRecursiveMutex* lock,storage::catalog::HistoricalState state)
             :database(db),mutex(lock),value(std::move(state)){}
         const Orchard& OrchardState() const {return std::get<Orchard>(value);}

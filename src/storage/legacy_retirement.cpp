@@ -1,4 +1,5 @@
 #include "storage/chain_db.h"
+#include "consensus/orchard_selected_consistency.h"
 #include "consensus/tx_validation.h"
 #include <cstring>
 #include <limits>
@@ -93,8 +94,11 @@ ChainDB::ShieldedTipMarker Marker(const LegacyRetirementState& s, bool boundary_
     return {int32_t(boundary_parent ? r.activation_height - 1 : s.height),
         boundary_parent ? r.boundary_parent : s.block_hash, r.tree_root, r.tree_size, r.nullifier_count};
 }
-Status CheckSelectedMarker(const ChainDB& db, const ChainDB::ShieldedTipMarker& expected) {
-    const auto tip = db.getValidatedTip(); if (!tip.ok()) return tip.status();
+Status CheckSelectedMarker(const ChainDB& db, const ChainDB::ShieldedTipMarker& expected,
+    const consensus::OrchardSelectedConsistency* selected) {
+    if(selected)selected->Check(db);
+    else if(storage::ReadOrchardActivationOrigin(db))return Status::Invalid;
+    const auto tip = selected?db.getTip():db.getValidatedTip(); if (!tip.ok()) return tip.status();
     if (tip->height != expected.height || tip->hash != expected.block_hash) return Status::Invalid;
     const auto marker = db.getShieldedTipMarker(); if (!marker.ok()) return marker.status();
     if (marker->height != expected.height || marker->block_hash != expected.block_hash ||
@@ -152,7 +156,7 @@ Status ChainDB::stageLegacyRetirementSnapshotState(const ChainWriteToken& token,
 }
 Status ChainDB::stageLegacyRetirementConnect(const ChainWriteToken& token,
     const std::optional<LegacyRetirementState>& parent, const LegacyRetirementState& next,
-    rocksdb::WriteBatch& batch) {
+    rocksdb::WriteBatch& batch,const consensus::OrchardSelectedConsistency* selected) {
     if (!db_) return Status::Internal;
     if (!hasSeparatedShieldedState() || !Transition(parent, next)) return Status::Invalid;
     auto* cf = shieldedStateHandle(); PriorWrites prior(cf->GetID(), cf_[idx_meta_]->GetID());
@@ -169,7 +173,7 @@ Status ChainDB::stageLegacyRetirementConnect(const ChainWriteToken& token,
         if (it->Valid() && it->key().starts_with(rocksdb::Slice(prefix.data(), prefix.size()))) return Status::Corruption;
         if (!it->status().ok()) return convertRocksDBStatus(it->status());
     }
-    RETURN_IF_ERROR(CheckSelectedMarker(*this, parent ? Marker(*parent) : Marker(next, true)));
+    RETURN_IF_ERROR(CheckSelectedMarker(*this, parent ? Marker(*parent) : Marker(next, true),selected));
     std::string retained;
     const auto exists = db_->Get(getReadOptions(), cf, UndoKey(next.block_hash), &retained);
     if (exists.ok()) return Status::AlreadyExists;
@@ -181,7 +185,7 @@ Status ChainDB::stageLegacyRetirementConnect(const ChainWriteToken& token,
     guard.keep(); return Status::Ok;
 }
 Status ChainDB::stageLegacyRetirementDisconnect(const ChainWriteToken& token,
-    const LegacyRetirementState& tip, rocksdb::WriteBatch& batch) {
+    const LegacyRetirementState& tip, rocksdb::WriteBatch& batch,const consensus::OrchardSelectedConsistency* selected) {
     if (!db_) return Status::Internal;
     if (!hasSeparatedShieldedState() || !Valid(tip)) return Status::Invalid;
     auto* cf = shieldedStateHandle(); PriorWrites prior(cf->GetID(), cf_[idx_meta_]->GetID());
@@ -189,7 +193,7 @@ Status ChainDB::stageLegacyRetirementDisconnect(const ChainWriteToken& token,
     const auto current = getLegacyRetirementState();
     if (!current.ok()) return current.status();
     if (*current != tip) return Status::Invalid;
-    RETURN_IF_ERROR(CheckSelectedMarker(*this, Marker(tip)));
+    RETURN_IF_ERROR(CheckSelectedMarker(*this, Marker(tip),selected));
     std::string bytes;
     const auto s = db_->Get(getReadOptions(), cf, UndoKey(tip.block_hash), &bytes);
     if (!s.ok()) return s.IsNotFound() ? Status::Corruption : convertRocksDBStatus(s);

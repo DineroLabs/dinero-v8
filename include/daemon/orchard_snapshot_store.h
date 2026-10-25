@@ -29,6 +29,16 @@ private:
         std::unique_ptr<consensus::ConsensusUTXOSet> full;
         std::unique_ptr<OrchardCompactChainstate> compact;
     };
+    struct ActivationPublication {
+        // The bound DB outlives its typed compact owner. The caller retains
+        // the SAME root guard and mutex before admitting any readers.
+        std::unique_ptr<ChainDB> database;
+        std::unique_ptr<OrchardCompactChainstate> compact;
+    };
+    static ActivationPublication OpenActivationHandoff(
+        const daemon::DatadirGuard&,const ClosedCoreReopenIntent&,AnnotatedRecursiveMutex&,
+        std::shared_ptr<const consensus::HeaderChainSelector> current_headers,
+        std::unique_ptr<PreparedOrchardActivationHandoff>);
     class CommitUncertain final:public std::runtime_error {
     public:CommitUncertain():std::runtime_error("v6 state commit outcome is uncertain; restart required"){}
     };

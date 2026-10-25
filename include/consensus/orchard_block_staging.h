@@ -13,6 +13,7 @@ namespace rocksdb { class WriteBatch; }
 namespace dinero { class ChainDB; class ChainWriteToken; class BlockStorage; }
 
 namespace dinero::consensus {
+class OrchardSelectedConsistency;
 // Complete exact-proof stump transition used by both canonical compact
 // admission and snapshot catalog derivation. Parent authority and complete
 // block coin validation remain the caller's obligations.
@@ -150,7 +151,8 @@ struct StagedOrchardCompactChainstate {
     const storage::catalog::State& authenticated_parent,
     const OrchardBranchMtpLookup&, bool require_witness_commitment, rocksdb::WriteBatch&,
     const std::optional<storage::LegacyRetirementRecord>& authenticated_boundary = std::nullopt,
-    const ValidatedOrchardBlock* detached = nullptr);
+    const ValidatedOrchardBlock* detached = nullptr,
+    const OrchardSelectedConsistency* selected_consistency = nullptr);
 // Stage authoritative state, body, active transaction indexes, delta, forest
 // marker, height index and both tip markers together. The caller supplies
 // authenticated selected-branch headers with persisted header/work records,
@@ -193,7 +195,8 @@ struct StagedOrchardCompactDisconnect {
     const OrchardBlockCandidate&, const BlockHeader& parent,
     const storage::catalog::State& current, const storage::catalog::State& previous,
     const OrchardBranchMtpLookup&, bool require_witness_commitment, rocksdb::WriteBatch&,
-    const ValidatedOrchardBlock* detached = nullptr);
+    const ValidatedOrchardBlock* detached = nullptr,
+    const OrchardSelectedConsistency* selected_consistency = nullptr);
 
 struct StagedOrchardDisconnect {
     std::vector<OrchardCoinChange> coins;
