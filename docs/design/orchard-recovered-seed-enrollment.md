@@ -268,6 +268,29 @@ deterministic in-handler epoch change. They are not an automatic restart or a
 live owner install. Other transports must be stopped/drained before service
 fences (or bound to the same epoch); an HTTP/FFI pass alone does not qualify them.
 
+The reopen candidate journal is a separate prerequisite, not startup wiring.
+It captures exact public transaction and cached-proof bytes while the genuine
+pool fence and operator-root lock are held. No fee, accepted flag, ownership,
+proof-freshness or caller-supplied validity becomes restoration authority. It
+streams at most100,000 rows/1GiB, with a32MiB per-wire bound and a512MiB free-disk
+floor. The root and held lock inode, profile (including wire magic), private
+directory, no-follow regular-file/hardlink constraints and complete inventory
+digest are checked. Sealing syncs the file and directories and uses no-replace
+publication; partial/ambiguous files are retained and refuse. Opening a sealed
+journal re-establishes durability, then a full audit precedes each visitor.
+Normal canonical admission/relay must revalidate every restored candidate;
+unresolved dependencies or stale proofs remain retained, not silently discarded.
+There is no automatic consumption/deletion or direct pool insertion API.
+
+Native fixtures cover actual mixed-family candidates, cached-proof retention,
+closing/reopening the journal and lock, canonical readmission, aborted capture,
+and corrupt/profile/alias/hardlink/root-replacement refusals before visitor use.
+This is not a real cold-daemon activation crossing, power-loss matrix, mobile
+filesystem/RSS qualification or automatic mempool/pending-payment restoration.
+Windows journal capture remains explicitly unavailable/fail-closed. Private
+wallet intents stay in their existing encrypted durable queue; no mnemonic,
+password, randomized proving plan or unlock continuation is written here.
+
 The thread-affine catalog download actor now handles one capability/connection/
 nonce-bound flight, sequential disk-backed pages, a single identical page retry,
 16 requests/second, an 11-minute initial manifest wait (server preparation is

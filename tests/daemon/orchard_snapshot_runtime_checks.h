@@ -6,7 +6,14 @@
 #include "daemon/orchard_snapshot_store.h"
 #include "daemon/services/block_ingress_service.h"
 #include "consensus/validation_queue.h"
+#include "daemon/reopen_candidate_journal.h"
+#include "daemon/datadir_guard.h"
 #include <sstream>
+#ifndef _WIN32
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#endif
 #ifdef DINERO_TEST_ORCHARD_ORIGIN
 namespace dinero {
 struct OrchardSnapshotStoreTestAccess {
@@ -57,6 +64,92 @@ TEST(OrchardReopenFences, CommittedPoolFenceExportsTypedCandidatesForCanonicalRe
     }
     EXPECT_EQ(reopened->mempool().size(),2u);EXPECT_EQ(fixture.f.service->GetActiveTip()->height,101u);
 }
+#ifndef _WIN32
+namespace {
+auto ReopenJournalEvidence(){
+    auto path=(std::filesystem::temp_directory_path()/"reopen-journal-evidence-XXXXXX").string();
+    OrchardAdmissionFixture::Require(::mkdtemp(path.data())!=nullptr);
+    const auto result=std::filesystem::canonical(path);
+    std::cout<<"Reopen journal evidence: "<<result.string()<<std::endl;return result;
+}
+}
+TEST(OrchardReopenJournal, SealedMixedCandidatesColdOpenAndOrdinaryCanonicalReadmission){
+    using Journal=daemon::ReopenCandidateJournal;CanonicalPoolFixture fixture;
+    ASSERT_TRUE(fixture.Build());const auto survivor=CanonicalPoolSurvivor(fixture);
+    ASSERT_TRUE(fixture.f.ingress->SubmitBody(survivor,TxOrigin::INTERNAL).accepted());
+    const auto proof=CanonicalPoolUnverifiedProof(fixture,survivor);ASSERT_TRUE(proof);
+    ASSERT_TRUE(fixture.f.ingress->mempool().setCachedUtxoTxPayload(survivor.GetTxid().AsUint256(),*proof));
+    const auto path=ReopenJournalEvidence();daemon::DatadirGuard guard;std::string error;ASSERT_TRUE(guard.Acquire(path,error))<<error;
+    auto fence=MempoolService::FenceForReopen(fixture.f.ingress,std::chrono::milliseconds(100));
+    auto journal=Journal::Capture(guard,fixture.f.ingress,*fence);ASSERT_EQ(journal->Count(),2u);
+    const auto name=journal->Name();bool found_proof=false;
+    journal->ForEach(guard,[&](const auto& entry){if(!entry.proof.empty()){EXPECT_EQ(entry.proof,*proof);found_proof=true;}});
+    EXPECT_TRUE(found_proof);fence->CommitToStop();fixture.f.ingress->Stop();journal.reset();guard.Release();
+    ASSERT_TRUE(guard.Acquire(path,error))<<error;journal=Journal::Open(guard,name);ASSERT_EQ(journal->Count(),2u);
+    auto reopened=std::make_shared<MempoolService>();ASSERT_TRUE(reopened->Init(fixture.context));fixture.context.mempool=reopened;fixture.f.ingress=reopened;
+    unsigned admitted=0;bool orchard=false,historical=false;
+    journal->ForEach(guard,[&](const auto& entry){
+        const auto body=DecodeRelayTransaction(entry.body,RelayTransactionReadMode::AvailableFamilies);
+        orchard|=body.IsOrchard();historical|=!body.IsOrchard();
+        const auto result=reopened->SubmitBody(body,TxOrigin::WALLET);EXPECT_TRUE(result.accepted())<<result.message;++admitted;
+    });
+    EXPECT_EQ(admitted,2u);EXPECT_TRUE(orchard);EXPECT_TRUE(historical);EXPECT_EQ(reopened->mempool().size(),2u);
+    // Keeping the immutable journal also retains unresolved candidates after
+    // a visitor/normal admission failure; there is no destructive consume API.
+    EXPECT_ANY_THROW(journal->ForEach(guard,[&](const auto&){throw std::runtime_error("interrupted readmission");}));
+    unsigned kept=0;journal->ForEach(guard,[&](const auto&){++kept;});EXPECT_EQ(kept,2u);
+    EXPECT_EQ(fixture.f.service->GetActiveTip()->height,101u);
+}
+TEST(OrchardReopenJournal, CancelledCaptureAndInactiveFenceNeverAuthorizeStopOrLoseCandidates){
+    using Journal=daemon::ReopenCandidateJournal;CanonicalPoolFixture fixture;const auto survivor=CanonicalPoolSurvivor(fixture);
+    ASSERT_TRUE(fixture.f.ingress->SubmitBody(survivor,TxOrigin::INTERNAL).accepted());
+    const auto path=ReopenJournalEvidence();daemon::DatadirGuard guard;std::string error;ASSERT_TRUE(guard.Acquire(path,error))<<error;
+    {auto fence=MempoolService::FenceForReopen(fixture.f.ingress,std::chrono::milliseconds(100));
+     EXPECT_ANY_THROW(Journal::Capture(guard,fixture.f.ingress,*fence,[]{return true;}));}
+    EXPECT_EQ(fixture.f.ingress->mempool().size(),1u);
+    unsigned partial=0;
+    for(const auto& item:std::filesystem::directory_iterator(path)){
+        if(!item.path().filename().string().starts_with(".core-reopen-candidates-v1-"))continue;
+        ++partial;EXPECT_TRUE(std::filesystem::is_regular_file(item.path()/"candidates.partial"));
+        EXPECT_FALSE(std::filesystem::exists(item.path()/"candidates.sealed"));
+        EXPECT_ANY_THROW(Journal::Open(guard,item.path().filename().string()));
+    }
+    EXPECT_EQ(partial,1u);
+    auto fence=MempoolService::FenceForReopen(fixture.f.ingress,std::chrono::milliseconds(100));fence->CommitToStop();
+    EXPECT_ANY_THROW(Journal::Capture(guard,fixture.f.ingress,*fence));
+    EXPECT_ANY_THROW(fixture.f.ingress->mempool()); // Committed admission stays closed; fixture owns final Stop.
+}
+TEST(OrchardReopenJournal, CorruptForeignAliasedAndReplacedRootsRefuseBeforeVisitors){
+    using Journal=daemon::ReopenCandidateJournal;CanonicalPoolFixture fixture;const auto survivor=CanonicalPoolSurvivor(fixture);
+    ASSERT_TRUE(fixture.f.ingress->SubmitBody(survivor,TxOrigin::INTERNAL).accepted());
+    const auto path=ReopenJournalEvidence();daemon::DatadirGuard guard;std::string error;ASSERT_TRUE(guard.Acquire(path,error))<<error;
+    auto capture=[&]{auto fence=MempoolService::FenceForReopen(fixture.f.ingress,std::chrono::milliseconds(100));return Journal::Capture(guard,fixture.f.ingress,*fence);};
+    auto intact=capture();const auto name=intact->Name();unsigned visits=0;
+    const auto magic=Params().magic;MutableParams().magic^=1;EXPECT_ANY_THROW(Journal::Open(guard,name));MutableParams().magic=magic;
+    EXPECT_ANY_THROW(Journal::Open(guard,"../"+name));
+    {daemon::DatadirGuard absent;EXPECT_ANY_THROW(Journal::Open(absent,name));}
+    auto damaged=capture();const auto corrupt=path/damaged->Name()/"candidates.sealed";
+    ASSERT_EQ(::chmod(corrupt.c_str(),0600),0);const int fd=::open(corrupt.c_str(),O_RDWR|O_CLOEXEC|O_NOFOLLOW);ASSERT_GE(fd,0);
+    uint8_t byte;ASSERT_EQ(::pread(fd,&byte,1,72+9),1);byte^=1;ASSERT_EQ(::pwrite(fd,&byte,1,72+9),1);
+    ASSERT_EQ(::fchmod(fd,0400),0);ASSERT_EQ(::fsync(fd),0);ASSERT_EQ(::close(fd),0);
+    EXPECT_ANY_THROW(damaged->ForEach(guard,[&](const auto&){++visits;}));EXPECT_EQ(visits,0u);
+    EXPECT_ANY_THROW(Journal::Open(guard,damaged->Name()));
+    auto linked=capture();const auto linked_file=path/linked->Name()/"candidates.sealed";
+    std::filesystem::create_hard_link(linked_file,path/"extra-hard-link");EXPECT_ANY_THROW(Journal::Open(guard,linked->Name()));
+    auto aliased=capture();const auto alias=path/aliased->Name()/"candidates.sealed";
+    std::filesystem::rename(alias,path/"outside.sealed");std::filesystem::create_symlink(path/"outside.sealed",alias);
+    EXPECT_ANY_THROW(Journal::Open(guard,aliased->Name()));
+    auto both_names=capture();const auto both=path/both_names->Name();
+    std::filesystem::create_hard_link(both/"candidates.sealed",both/"candidates.partial");
+    EXPECT_ANY_THROW(Journal::Open(guard,both_names->Name()));
+    // Preserve both roots; the held lock cannot authorize a replacement inode.
+    const auto saved=path.string()+".held-root";std::filesystem::rename(path,saved);std::filesystem::create_directory(path);
+    EXPECT_ANY_THROW(Journal::Open(guard,name));
+    EXPECT_ANY_THROW(intact->ForEach(guard,[&](const auto&){++visits;}));
+    std::filesystem::rename(path,path.string()+".replacement-root");std::filesystem::rename(saved,path);
+    intact->ForEach(guard,[&](const auto&){++visits;});EXPECT_EQ(visits,1u);EXPECT_EQ(fixture.f.ingress->mempool().size(),1u);
+}
+#endif
 TEST(OrchardCatalogClient, SequentialConnectionBoundDownloadAuthenticatesWithoutPublishing){
     using namespace consensus;using Transfer=p2p::OrchardCatalogTransfer;using Client=p2p::OrchardCatalogClient;
     CanonicalPoolFixture source(true);MutableParams().orchard_catalog_commitment_activation_height=102;

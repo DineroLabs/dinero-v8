@@ -3,8 +3,10 @@
 #include <filesystem>
 #include <optional>
 #include <string>
+#include <cstdint>
 
 namespace dinero::daemon {
+class ReopenCandidateJournal;
 
 class DatadirGuard {
 public:
@@ -27,6 +29,7 @@ public:
     static std::optional<int> ReadPidFile(const std::filesystem::path& datadir);
 
 private:
+    friend class ReopenCandidateJournal;
     bool CheckOwnership(std::string& error) const;
     bool WritePidFile(std::string& error);
     void RemovePidFile() noexcept;
@@ -40,6 +43,7 @@ private:
     void* lock_handle_ = nullptr;
 #else
     int lock_fd_ = -1;
+    uint64_t root_device_=0,root_inode_=0;
 #endif
 };
 

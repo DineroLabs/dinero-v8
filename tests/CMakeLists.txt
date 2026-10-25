@@ -5192,6 +5192,7 @@ endif()
 if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_assumeutxo_replay.cpp)
   add_executable(test_assumeutxo_replay
     tests/daemon/test_assumeutxo_replay.cpp
+    src/daemon/datadir_guard.cpp
     src/rpc/methods_pool.cpp
     src/rpc/wallet_raw_transaction_rpc.cpp
     src/rpc/methods_blockchain_context.cpp
@@ -5563,6 +5564,10 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_assumeutxo_replay.cpp)
   set_tests_properties(OrchardCatalogClient PROPERTIES TIMEOUT 120 LABELS "daemon;orchard;p2p;mandatory")
   add_test(NAME OrchardReopenFences COMMAND test_assumeutxo_replay --gtest_filter=OrchardReopenFences.*)
   set_tests_properties(OrchardReopenFences PROPERTIES TIMEOUT 120 LABELS "daemon;orchard;mempool;mandatory")
+  if(UNIX)
+    add_test(NAME OrchardReopenJournal COMMAND test_assumeutxo_replay --gtest_filter=OrchardReopenJournal.*)
+    set_tests_properties(OrchardReopenJournal PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;mempool;storage;mandatory")
+  endif()
   add_test(NAME OrchardActivationOrigin COMMAND test_assumeutxo_replay --gtest_filter=OrchardActivationOrigin.*)
   set_tests_properties(OrchardActivationOrigin PROPERTIES TIMEOUT 120 LABELS "daemon;orchard;recovery;mandatory")
   set_tests_properties(OrchardCatalogTransfer PROPERTIES TIMEOUT 120 LABELS "daemon;orchard;p2p;mandatory")
@@ -16187,7 +16192,7 @@ if(UNIX)
   if(APPLE)
     target_link_libraries(test_rpc_request_framing PRIVATE "-framework Security")
   endif()
-  add_test(NAME RpcRequestFraming COMMAND test_rpc_request_framing)
+  add_test(NAME RpcRequestFraming COMMAND test_rpc_request_framing --gtest_filter=RpcRequestFraming.*)
   set_tests_properties(RpcRequestFraming PROPERTIES TIMEOUT 90 RUN_SERIAL TRUE LABELS "rpc;framing;ownership")
   add_test(NAME RpcReopenPause COMMAND test_rpc_request_framing --gtest_filter=RpcReopenPause.*)
   set_tests_properties(RpcReopenPause PROPERTIES TIMEOUT 90 RUN_SERIAL TRUE LABELS "rpc;restart;ownership")

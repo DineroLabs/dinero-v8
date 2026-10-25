@@ -220,6 +220,15 @@ bool DatadirGuard::Acquire(const std::filesystem::path& datadir, std::string& er
     if (!CheckOwnership(error)) {
         return false;
     }
+#ifndef _WIN32
+    // Additional binding for an internal reopen's durable candidate journal.
+    // Holding a lock inode alone cannot authorize a replaced operator root.
+    struct stat root{};
+    if(::lstat(datadir_.c_str(),&root)!=0||!S_ISDIR(root.st_mode)){
+        error="Cannot pin datadir identity";return false;
+    }
+    root_device_=static_cast<uint64_t>(root.st_dev);root_inode_=static_cast<uint64_t>(root.st_ino);
+#endif
 
 #ifdef _WIN32
     lock_handle_ = ::CreateFileW(lock_path_.wstring().c_str(),
