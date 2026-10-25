@@ -6,13 +6,14 @@
 #include <map>
 #include <sstream>
 
-namespace dinero { class OrchardBranchReplay; class ChainstateService; }
+namespace dinero { class OrchardBranchReplay; class OrchardBoundaryReplay; class ChainstateService; }
 
 namespace dinero::consensus {
-// Created by complete private branch verification or the service-owned
-// extension completion after detached proofs and checked state commitment.
-// The branch verifier does not
-// expose a block result until every block through its requested target passes.
+// Created by complete private branch verification, store-authenticated
+// activation-origin streaming verification, or service-owned extension
+// completion after detached proofs and checked state commitment. Whole-branch
+// replacement verification withholds results through its target; a verified
+// streaming prefix is explicitly not replacement/publication authority.
 // Reuse still requires canonical before-image, profile, parent and exact-wire
 // checks under the selected writer. Possessing this object is not permission
 // to skip those checks or to publish a partially verified replacement branch.
@@ -35,6 +36,7 @@ public:
     ValidatedOrchardBlock& operator=(const ValidatedOrchardBlock&) = delete;
 private:
     friend class ::dinero::OrchardBranchReplay;
+    friend class ::dinero::OrchardBoundaryReplay; // Store-authenticated activation-origin streaming verification only.
     friend class ::dinero::ChainstateService; // Private captured-extension completion only.
     // Include validation controls omitted by the operator-facing checksum.
     // Network parameters remain immutable during a process; this also refuses

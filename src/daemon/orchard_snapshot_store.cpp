@@ -1,5 +1,6 @@
 #include "daemon/orchard_snapshot_store.h"
 #include "daemon/services/orchard_branch_replay.h"
+#include "daemon/services/orchard_boundary_replay.h"
 #include "consensus/orchard_profile.h"
 #include "consensus/orchard_header.h"
 #include "consensus/block_lifecycle.h"
@@ -210,6 +211,16 @@ consensus::OrchardSnapshotSection OrchardSnapshotStore::CaptureActivation(const 
     s.anchors.push_back({s.state.anchor,1});s.accumulator=s.base_catalog.stump;check_cancel();
     Require(OrchardSnapshotSectionEncodedSize(s)<=ORCHARD_SNAPSHOT_MAX_SECTION_BYTES);
     VerifyCatalogTransferProof(s,headers);check_cancel();return s;
+}
+std::unique_ptr<OrchardBoundaryReplay> OrchardSnapshotStore::ReplayActivation(
+    std::shared_ptr<const consensus::OrchardSnapshotSection> proof,
+    std::shared_ptr<const consensus::HeaderChainSelector> headers,uint32_t height,const uint256& hash) {
+    Require(proof&&headers);
+    // Copy metadata/body/map before authenticating; an external mutable alias
+    // cannot change the enrolled private origin. Disk nodes are already sealed.
+    auto immutable=std::make_shared<const consensus::OrchardSnapshotSection>(*proof);
+    VerifyCatalogTransferProof(*immutable,*headers);
+    return std::unique_ptr<OrchardBoundaryReplay>(new OrchardBoundaryReplay(std::move(immutable),std::move(headers),height,hash));
 }
 consensus::OrchardBlockContext OrchardSnapshotStore::Authenticate(const consensus::OrchardSnapshotSection& s,
     const consensus::HeaderChainSelector& headers,uint32_t burial,bool require_best_ancestry) {

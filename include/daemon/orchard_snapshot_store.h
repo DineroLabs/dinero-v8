@@ -7,6 +7,7 @@
 namespace dinero {
 class ChainstateService;
 class OrchardBranchReplay;
+class OrchardBoundaryReplay;
 // Private selected-state authority. Decoding, raw catalog staging and a local
 // checksum cannot enroll a compact owner. Only the service may invoke this
 // installer while holding its real activation mutex and datadir ownership.
@@ -41,6 +42,9 @@ private:
     // checked on each source-node read and between bounded proof phases.
     static consensus::OrchardSnapshotSection CaptureActivation(const ChainDB&,
         const consensus::HeaderChainSelector&,const std::function<bool()>& cancelled);
+    static std::unique_ptr<OrchardBoundaryReplay> ReplayActivation(
+        std::shared_ptr<const consensus::OrchardSnapshotSection>,
+        std::shared_ptr<const consensus::HeaderChainSelector>,uint32_t,const uint256&);
     static consensus::OrchardBlockContext Authenticate(const consensus::OrchardSnapshotSection&,
         const consensus::HeaderChainSelector&,uint32_t burial,bool require_best_ancestry=true);
     static Publication Install(AnnotatedRecursiveMutex&,ChainDB&,const ChainWriteToken&,

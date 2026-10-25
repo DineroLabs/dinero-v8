@@ -1,6 +1,7 @@
 #pragma once
 #include "p2p/orchard_catalog_transfer.h"
 #include "p2p/orchard_catalog_server.h"
+#include "daemon/services/orchard_boundary_replay.h"
 #include "daemon/orchard_snapshot_store.h"
 #include "daemon/services/block_ingress_service.h"
 #include "consensus/validation_queue.h"
@@ -17,6 +18,9 @@ struct OrchardSnapshotStoreTestAccess {
     }
     static auto CaptureActivation(const ChainDB& db,const consensus::HeaderChainSelector& headers,
         const std::function<bool()>& cancelled={}){return OrchardSnapshotStore::CaptureActivation(db,headers,cancelled);}
+    static auto ReplayActivation(std::shared_ptr<const consensus::OrchardSnapshotSection> proof,
+        std::shared_ptr<const consensus::HeaderChainSelector> headers,uint32_t height,const uint256& hash){
+        return OrchardSnapshotStore::ReplayActivation(std::move(proof),std::move(headers),height,hash);}
     static auto Install(AnnotatedRecursiveMutex& mutex,ChainDB& db,const ChainWriteToken& token,BlockStorage& files,
         const consensus::HeaderChainSelector& headers,const consensus::OrchardSnapshotFile& file) {
         std::lock_guard<AnnotatedRecursiveMutex> lock(mutex);
@@ -30,6 +34,55 @@ struct OrchardSnapshotStoreTestAccess {
         std::lock_guard<AnnotatedRecursiveMutex> lock(mutex);return OrchardSnapshotStore::RecoverBaseMarkers(mutex,db,token,headers);
     }
 };
+TEST(OrchardActivationOrigin, FirstBlockIsVerifiedFromEmptyAndStreamingStateMatchesCanonical){
+    using namespace consensus;using Access=OrchardSnapshotStoreTestAccess;
+    CanonicalPoolFixture source(true);MutableParams().orchard_catalog_commitment_activation_height=102;
+    MutableParams().state_commitment_burial_depth=0;source.f.service->setRuntimeBlockNotifications(std::make_shared<CanonicalPoolNotices>());
+    const auto first=SolveCatalogTemplate(source.Build());ASSERT_TRUE(first);ASSERT_TRUE(source.Submit(first->WireBytes()).connected);
+    auto& live=ShieldedStateStartupTestAccess::CatalogWriterCoins(*source.f.service);
+    auto proof=std::make_shared<OrchardSnapshotSection>(Access::Capture(source.f.db,OrchardSnapshotProfile::Compact,
+        UtreexoStump::fromForest(live.GetForest()).serialize()));
+    ASSERT_GT(proof->state.tree_size,0u);const auto expected_first=proof->state;
+    std::vector<OrchardBlockCandidate> suffix;
+    for(unsigned i=0;i<2;++i){BlockAssembler assembler(&source.f.db);WireOrchardAssembler(assembler,source.f);
+        const auto next=SolveCatalogTemplate(assembler.CreateOrchardBlock(OrchardMiningPayout));ASSERT_TRUE(next);
+        ASSERT_TRUE(source.Submit(next->WireBytes()).connected);suffix.push_back(OrchardBlockCandidate::DecodeExact(next->WireBytes()));}
+    auto headers=std::make_shared<HeaderChainSelector>();for(const auto& b:source.f.blocks)ASSERT_TRUE(headers->AddHeader(b.header));
+    ASSERT_TRUE(headers->AddHeader(first->Header()));for(const auto& b:suffix)ASSERT_TRUE(headers->AddHeader(b.Header()));
+    auto owner=Access::ReplayActivation(proof,headers,104,suffix.back().Header().GetHash());EXPECT_EQ(owner->Height(),101u);
+    // Mutating the caller's section cannot rewrite the store-authenticated origin.
+    proof->state.pool_balance+=1;
+    const auto a=owner->Append(OrchardBlockCandidate::DecodeExact(first->WireBytes()),uint64_t(first->Header().timestamp)+7200);
+    ASSERT_TRUE(a);EXPECT_FALSE(a->State().Parent());EXPECT_EQ(a->State().Next(),expected_first);
+    EXPECT_EQ(a->ParentMembership().nullifier_count,0u);EXPECT_EQ(a->ParentMembership().anchor_references,0u);
+    for(const auto& body:suffix){const auto step=owner->Append(body,uint64_t(body.Header().timestamp)+7200);
+        ASSERT_TRUE(step);EXPECT_TRUE(step->State().Parent());EXPECT_TRUE(step->MatchesWire(body));}
+    EXPECT_EQ(owner->State(),source.f.db.getOrchardState().value());
+    const auto catalog=source.f.db.getOrchardCatalogState(suffix.back().Header().GetHash());ASSERT_TRUE(catalog.ok());
+    EXPECT_EQ(owner->Catalog().Encode(),*catalog);EXPECT_NO_THROW(owner->Finish());
+    EXPECT_EQ(source.f.service->GetActiveTip()->hash,suffix.back().Header().GetHash());
+}
+TEST(OrchardActivationOrigin, MissingFirstBlockForeignTargetAndIncompleteFinishFailClosed){
+    using namespace consensus;using Access=OrchardSnapshotStoreTestAccess;
+    CanonicalPoolFixture source(true);MutableParams().orchard_catalog_commitment_activation_height=102;
+    MutableParams().state_commitment_burial_depth=0;
+    const auto first=SolveCatalogTemplate(source.Build());ASSERT_TRUE(first);ASSERT_TRUE(source.Submit(first->WireBytes()).connected);
+    auto headers=std::make_shared<HeaderChainSelector>();for(const auto& b:source.f.blocks)ASSERT_TRUE(headers->AddHeader(b.header));
+    ASSERT_TRUE(headers->AddHeader(first->Header()));
+    auto proof=std::make_shared<const OrchardSnapshotSection>(Access::CaptureActivation(source.f.db,*headers));
+    auto bad=first->Header().GetHash();bad.data[0]^=1;
+    EXPECT_ANY_THROW(Access::ReplayActivation(proof,headers,102,bad));
+    auto owner=Access::ReplayActivation(proof,headers,102,first->Header().GetHash());
+    EXPECT_ANY_THROW(owner->Finish());
+    EXPECT_ANY_THROW(owner->Height());
+    auto wrong=Access::ReplayActivation(proof,headers,102,first->Header().GetHash());
+    auto bytes=first->WireBytes();bytes.at(4)^=1; // Canonically framed foreign parent/header.
+    EXPECT_ANY_THROW(wrong->Append(OrchardBlockCandidate::DecodeExact(bytes),uint64_t(first->Header().timestamp)+7200));
+    EXPECT_ANY_THROW(wrong->Height());
+    auto forged=std::make_shared<OrchardSnapshotSection>(*proof);forged->state.pool_balance+=1;
+    EXPECT_ANY_THROW(Access::ReplayActivation(forged,headers,102,first->Header().GetHash()));
+    EXPECT_EQ(source.f.service->GetActiveTip()->hash,first->Header().GetHash());
+}
 TEST(OrchardCatalogTransfer, ServingCacheSharesPayloadButBindsNonceAndConnection){
     using namespace consensus;using Transfer=p2p::OrchardCatalogTransfer;using Server=p2p::OrchardCatalogServer;
     CanonicalPoolFixture source(true);MutableParams().orchard_catalog_commitment_activation_height=102;

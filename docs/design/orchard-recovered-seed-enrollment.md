@@ -180,6 +180,22 @@ serving. These are local resource policies, not changes to consensus limits.
 Client scheduling, daemon handoff and historical recovery downloads are still
 separate unfinished integration work; serving capability is not phone readiness.
 
+A private activation-origin verifier now starts at the authenticated parent,
+not at the first block's already-computed snapshot state. It verifies the full
+first block and every gap-free selected-header descendant, including scripts,
+Orchard proofs/anchors/nullifiers, pool bounds, filter, stump and DNORST02 root.
+Nullifiers, anchor occurrences and catalog deltas use private MAC-checked disk
+storage; one block result is returned at a time, with no all-history body/token
+vector or duplicate historical header selector. The immutable first catalog is
+shared with a mutable delta overlay, not recopied per block. Grouped ordered
+anchor occurrences derive exact reference counts without mutable spool records.
+Each failure poisons the verifier; incomplete targets never finish. Metadata is
+copied before enrollment so external mutable aliases cannot rewrite its origin.
+This is proof/state-token construction, not canonical admission or a certified
+wallet source. Client wiring, runtime-delivery cursor binding and fresh wallet
+adoption remain mandatory. Disk/RSS/throughput/device budgets are not qualified;
+the consensus-required set digests still scan the accumulated membership rows.
+
 This transport is NOT yet client-driven atomic transition of an
 existing H149999 store, crash-safe startup recovery, or a wallet-history source.
 Those integration gates remain open. Automatic crossing may wait at the
