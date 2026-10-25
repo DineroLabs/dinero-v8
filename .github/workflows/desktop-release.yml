@@ -518,6 +518,7 @@ jobs:
             -DENABLE_GRPC=OFF \
             -DDINERO_ENABLE_PORTMAPPING=ON \
             -DDINERO_ENABLE_QUIC=ON \
+            -DDINERO_REQUIRE_REACHABILITY_STACK=ON \
             -DDINERO_RELEASE_TAG=${{ steps.provenance.outputs.version }} \
             -DDINERO_SV2_SOURCE_ROOT="$DINERO_SV2_SOURCE_ROOT" \
             -DDINERO_TOR_BUNDLE_DIR="$DINERO_TOR_BUNDLE_DIR" \
@@ -529,6 +530,11 @@ jobs:
           cmake --build build-desktop -j"$(sysctl -n hw.ncpu)" --target \
             dinerod dinero-cli dinero-qt dinero-miner dinero-stratum-worker \
             dinero-wallet-cli dinero-gpu-miner dinero-solo-miner-cli dinero-seeder
+
+      - name: Assert reachability stack
+        run: |
+          python3 "${GITHUB_WORKSPACE}/tooling/scripts/ci/check_reachability_stack.py" \
+            --dinerod build-desktop/dinerod --cli build-desktop/dinero-cli
 
       - name: Build unsigned Intel release stage
         env:

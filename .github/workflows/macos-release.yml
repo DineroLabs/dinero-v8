@@ -153,6 +153,7 @@ jobs:
             -DENABLE_GRPC=OFF \
             -DDINERO_ENABLE_PORTMAPPING=ON \
             -DDINERO_ENABLE_QUIC=ON \
+            -DDINERO_REQUIRE_REACHABILITY_STACK=ON \
             -DDINERO_RELEASE_TAG=${{ steps.ver.outputs.version }} \
             -DCMAKE_OSX_DEPLOYMENT_TARGET=13.0 \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache \
@@ -175,6 +176,14 @@ jobs:
           echo "min-OS: $MINOS"
           "$BIN" --version
           "$BIN" --help | grep -qi portmap && echo "✓ port-mapping present"
+
+      # "--help mentions portmap" says nothing about what was compiled in; ask
+      # the binary itself for UPnP, NAT-PMP, QUIC and the QUIC TLS bridge.
+      - name: Assert reachability stack
+        run: |
+          BIN=$(find build -maxdepth 3 -type f -name dinerod -perm +111 | head -1)
+          CLI=$(find build -maxdepth 3 -type f -name dinero-cli -perm +111 | head -1)
+          python3 scripts/ci/check_reachability_stack.py --dinerod "$BIN" --cli "$CLI"
 
       - name: Package operator tarball
         id: pkg
