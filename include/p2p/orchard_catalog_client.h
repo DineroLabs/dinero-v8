@@ -56,6 +56,16 @@ public:
         if(!Live()||peer.address!=peer_.address||peer.session!=peer_.session)return false;
         if(!Fresh(now))return false;
         try {
+            // A cancelled/expired flight may finish on this same connection.
+            // Ignore its nonce/transfer ID without acknowledging our flight or
+            // extending its deadline. Matching-flight corruption still fails.
+            if(command==Transfer::ManifestCommand&&bytes.size()==195){
+                const auto manifest=Transfer::Manifest::Decode(bytes);
+                if(manifest.request.nonce!=request_.nonce)return false;
+            }
+            if(command==Transfer::PageCommand&&bytes.size()>=40&&bytes.size()<=40+Transfer::PageBytes&&state_==State::Pages){
+                if(!std::equal(transfer_id_.begin(),transfer_id_.end(),bytes.begin()))return false;
+            }
             Require(awaiting_);request_.CheckSelected(*headers_);
             if(state_==State::Manifest){
                 Require(command==Transfer::ManifestCommand&&bytes.size()==195);
@@ -67,7 +77,7 @@ public:
                 const auto space=std::filesystem::space(work_);
                 Require(space.available>=2*manifest.bytes+(uint64_t(512)<<20));
                 receiver_=std::make_unique<Transfer::Receiver>(request_,bytes,*headers_,work_);
-                total_pages_=manifest.Pages();state_=State::Pages;
+                total_pages_=manifest.Pages();transfer_id_=manifest.Id();state_=State::Pages;
             } else {
                 Require(command==Transfer::PageCommand&&bytes.size()>=40&&bytes.size()<=40+Transfer::PageBytes);
                 const auto wanted=Transfer::PageRequest::Decode(outstanding_).index;
@@ -98,13 +108,18 @@ private:
     bool Live()const{return state_==State::Manifest||state_==State::Pages;}
     void Fail(){receiver_.reset();proof_.reset();awaiting_=false;state_=State::Failed;}
     bool Fresh(Time now){
-        if(now<last_||now-began_>=std::chrono::minutes(20)||now-received_>=std::chrono::seconds(30)){Fail();return false;}
+        // First archival preparation can consume the server's ten-minute
+        // budget. It allocates no receiver at the client. Once pages begin,
+        // retain the short idle bound. 1GiB at sixteen 64KiB pages/sec alone
+        // takes >17min; preparation plus transfer must fit the total budget.
+        const auto idle=state_==State::Manifest?std::chrono::seconds(660):std::chrono::seconds(30);
+        if(now<last_||now-began_>=std::chrono::minutes(45)||now-received_>=idle){Fail();return false;}
         last_=now;return true;
     }
     const Transfer::Request request_;const std::shared_ptr<const consensus::HeaderChainSelector> headers_;
     const std::filesystem::path work_;const std::thread::id thread_=std::this_thread::get_id();
     Peer peer_;State state_=State::Idle;Time began_{},received_{},sent_{},window_{},last_{};
     std::unique_ptr<Transfer::Receiver> receiver_;std::shared_ptr<const consensus::OrchardSnapshotSection> proof_;
-    Bytes outstanding_;uint32_t total_pages_=0,pages_=0;bool awaiting_=false,retried_=false;
+    Bytes outstanding_;uint256 transfer_id_;uint32_t total_pages_=0,pages_=0;bool awaiting_=false,retried_=false;
 };
 } // namespace dinero::p2p

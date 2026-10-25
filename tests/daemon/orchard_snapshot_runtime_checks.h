@@ -92,21 +92,41 @@ TEST(OrchardCatalogClient, TimeoutCancellationAndCorruptPageNeverYieldProof){
     const auto proof=OrchardSnapshotStoreTestAccess::CaptureActivation(source.f.db,*headers);Transfer::Sender sender(request,proof,source.f.path.parent_path());
     Client::Peer peer{"archive",22,ServiceFlags::NODE_ORCHARD_CATALOG_V1};auto now=Client::Clock::now();
     Client timeout(request,headers,source.f.path.parent_path());ASSERT_TRUE(timeout.Begin(peer,now));ASSERT_TRUE(timeout.Next(now));
-    EXPECT_FALSE(timeout.Next(now+std::chrono::seconds(31)));EXPECT_EQ(timeout.Current(),Client::State::Failed);EXPECT_ANY_THROW(timeout.Take());
+    EXPECT_FALSE(timeout.Next(now+std::chrono::minutes(11)));EXPECT_EQ(timeout.Current(),Client::State::Failed);EXPECT_ANY_THROW(timeout.Take());
     Client cancelled(request,headers,source.f.path.parent_path());ASSERT_TRUE(cancelled.Begin(peer,now));cancelled.Cancel();
     EXPECT_FALSE(cancelled.Next(now));EXPECT_FALSE(cancelled.Receive(peer,Transfer::ManifestCommand,sender.Description().Encode(),now));
     EXPECT_ANY_THROW(cancelled.Take());
     Client damaged(request,headers,source.f.path.parent_path());ASSERT_TRUE(damaged.Begin(peer,now));ASSERT_TRUE(damaged.Next(now));
     ASSERT_TRUE(damaged.Receive(peer,Transfer::ManifestCommand,sender.Description().Encode(),now));const auto outgoing=damaged.Next(now);ASSERT_TRUE(outgoing);
     const auto retry=damaged.Next(now+std::chrono::seconds(15));ASSERT_TRUE(retry);EXPECT_EQ(retry->bytes,outgoing->bytes);
-    auto bytes=sender.Serve(outgoing->bytes);bytes.at(0)^=1;
+    auto bytes=sender.Serve(outgoing->bytes);bytes.at(32)^=1; // Matching transfer, wrong sequential page.
     EXPECT_FALSE(damaged.Receive(peer,Transfer::PageCommand,bytes,now+std::chrono::seconds(16)));
     EXPECT_EQ(damaged.Current(),Client::State::Failed);EXPECT_ANY_THROW(damaged.Take());
     Client foreign(request,headers,source.f.path.parent_path());ASSERT_TRUE(foreign.Begin(peer,now));ASSERT_TRUE(foreign.Next(now));
     auto manifest=sender.Description();manifest.request.nonce.data[0]^=1;
     EXPECT_FALSE(foreign.Receive(peer,Transfer::ManifestCommand,manifest.Encode(),now));
-    EXPECT_EQ(foreign.Current(),Client::State::Failed);
+    EXPECT_EQ(foreign.Current(),Client::State::Manifest);
     EXPECT_ANY_THROW(foreign.Take());
+    EXPECT_FALSE(foreign.Next(now+std::chrono::minutes(11)));EXPECT_EQ(foreign.Current(),Client::State::Failed);
+}
+TEST(OrchardCatalogClient, ArchivalPreparationBudgetAndLateRepliesDoNotExtendPageDeadline){
+    using namespace consensus;using Transfer=p2p::OrchardCatalogTransfer;using Client=p2p::OrchardCatalogClient;
+    CanonicalPoolFixture source(true);MutableParams().orchard_catalog_commitment_activation_height=102;MutableParams().state_commitment_burial_depth=0;
+    const auto first=SolveCatalogTemplate(source.Build());ASSERT_TRUE(first);ASSERT_TRUE(source.Submit(first->WireBytes()).connected);
+    auto headers=std::make_shared<HeaderChainSelector>();for(const auto& b:source.f.blocks)ASSERT_TRUE(headers->AddHeader(b.header));
+    ASSERT_TRUE(headers->AddHeader(first->Header()));uint256 nonce;nonce.data[0]=76;const auto request=Transfer::Request::Selected(*headers,nonce);
+    const auto proof=OrchardSnapshotStoreTestAccess::CaptureActivation(source.f.db,*headers);Transfer::Sender sender(request,proof,source.f.path.parent_path());
+    Client::Peer peer{"archive",23,ServiceFlags::NODE_ORCHARD_CATALOG_V1};const auto now=Client::Clock::now();
+    Client client(request,headers,source.f.path.parent_path());ASSERT_TRUE(client.Begin(peer,now));ASSERT_TRUE(client.Next(now));
+    EXPECT_FALSE(client.Next(now+std::chrono::minutes(10)));EXPECT_EQ(client.Current(),Client::State::Manifest);
+    const auto ready=now+std::chrono::minutes(10)+std::chrono::seconds(30);
+    ASSERT_TRUE(client.Receive(peer,Transfer::ManifestCommand,sender.Description().Encode(),ready));
+    const auto page=client.Next(ready);ASSERT_TRUE(page);
+    auto old=sender.Serve(page->bytes);old.at(0)^=1;
+    EXPECT_FALSE(client.Receive(peer,Transfer::PageCommand,old,ready+std::chrono::seconds(29)));
+    EXPECT_EQ(client.Current(),Client::State::Pages);EXPECT_ANY_THROW(client.Take());
+    EXPECT_FALSE(client.Next(ready+std::chrono::seconds(30)));EXPECT_EQ(client.Current(),Client::State::Failed);
+    EXPECT_ANY_THROW(client.Take());
 }
 TEST(OrchardActivationOrigin, FirstBlockIsVerifiedFromEmptyAndStreamingStateMatchesCanonical){
     using namespace consensus;using Access=OrchardSnapshotStoreTestAccess;
