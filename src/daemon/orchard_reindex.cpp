@@ -368,8 +368,9 @@ std::vector<CBlockIndex*> OrchardCompactStartup::PublishIndexUnderLock() {
         selected_index_.size()==selected_headers_.size() &&
         selected_undo_.size()==selected_headers_.size(),"Compact index handoff incomplete or consumed");
     const auto tip=Need(source_->getTip()),validated=Need(source_->getValidatedTip());
+    if(selected_consistency_)selected_consistency_->Check(*source_);
     Require(tip.height==int64_t(selected.height) && tip.hash==selected.block &&
-        tip.work==selected.work && validated.hash==tip.hash && validated.height==tip.height &&
+        tip.work==selected.work && (selected_consistency_ || (validated.hash==tip.hash && validated.height==tip.height)) &&
         (selected.historical?Need(source_->getHistoricalCompactCatalogState(tip.hash)):Need(source_->getOrchardCatalogState(tip.hash)))==selected.bytes,
         "Compact index source differs from reconstructed owner");
     std::lock_guard<std::recursive_mutex> lock(g_block_index_mutex);
@@ -408,6 +409,8 @@ std::vector<CBlockIndex*> OrchardCompactStartup::PublishIndexUnderLock() {
             pointers.emplace(proved.hash,live);values.emplace(live,*live);
         } else live=found->second;
         auto& v=values.at(live);
+        if(selected_consistency_)
+            Require((v.status&~proved.status)==0,"Selected-origin startup cannot promote assumed prehistory flags");
         Require(v.hash==proved.hash && v.prev_hash==proved.prev_hash &&
             v.height==proved.height && v.version==proved.version && v.merkle_root==proved.merkle_root &&
             v.timestamp==proved.timestamp && v.bits==proved.bits && v.nonce==proved.nonce &&

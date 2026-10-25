@@ -9,6 +9,7 @@
 #include "daemon/iservice.h"
 #include "daemon/runtime_block_notifications.h"
 #include "daemon/runtime_outbox_cursor.h"
+#include "daemon/orchard_activation_handoff.h"
 #include "daemon/active_tip_classification.h"
 #include "storage/chain_db.h"
 #include "consensus/block_status_generation.h"
@@ -84,6 +85,7 @@ struct FilePosition;  // #309: storage/block_storage.h
 
 namespace orchard { class TransactionEnvelope; struct SigningDomain; struct ResolvedInput; struct WalletPayment; struct TransparentOutput; }
 namespace wallet { struct OrchardPreparedSpend; struct OrchardQueuedSpend; class OrchardProofJobs; struct OrchardAccount0RecoveryProgress; }
+namespace daemon {class DatadirGuard;}
 namespace consensus {
     struct OrchardSnapshotSection;
     class VerifiedOrchardAuthorizations;
@@ -1486,6 +1488,8 @@ public:
         std::shared_ptr<ChainstateService> owner);
 
 private:
+    friend class DaemonApp;
+    std::shared_ptr<ChainDB> StageCompletedActivationRoot(const daemon::DatadirGuard&);
     // Startup-only reconstruction. The caller owns the datadir and has not
     // started any writer or consumer. Success initializes storage authority;
     // it does not publish an active tip or open service admission.
@@ -1994,6 +1998,8 @@ private:
     // that from a comment into an enforced invariant. Satisfies Lockable, so
     // every existing lock_guard/unique_lock site is unchanged.
     mutable AnnotatedRecursiveMutex activation_mutex_;  // Protects ActivateBestChain from concurrent entry
+    std::unique_ptr<CompletedOrchardActivationStartup> completed_activation_;
+    const daemon::DatadirGuard* completed_activation_guard_=nullptr;
     // Declared after the bound mutex and database owner so it is destroyed
     // first. Database handoff refuses replacement while this owner exists.
     std::unique_ptr<CompactStartupState> compact_startup_;

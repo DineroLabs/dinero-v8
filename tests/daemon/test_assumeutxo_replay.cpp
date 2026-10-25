@@ -865,6 +865,9 @@ TEST(RuntimeOriginProjection, UnavailableWithoutBackend) {
 #include "../../qt/tests/orchard_http_transport_adapter.h"
 #endif
 
+#ifdef DINERO_TEST_REAL_CORE_HANDOFF
+namespace dinero {void GenerateCompletedActivationFixtures();void DiagnoseCompletedActivationRows();}
+#endif
 int main(int argc, char** argv) {
     dinero::SelectParams(dinero::Chain::REGTEST);  // utreexo active from genesis on all nets
     // state_commitment_v1: dormant for this suite — its blocks are hand-built
@@ -873,6 +876,14 @@ int main(int argc, char** argv) {
     // suites and the forged-snapshot e2e exercise on the active default).
     dinero::MutableParams().state_commitment_activation_height = UINT32_MAX;
     ::testing::InitGoogleTest(&argc, argv);
+#ifdef DINERO_TEST_REAL_CORE_HANDOFF
+    if(argc==2&&std::string(argv[1])=="--export-completed-activation-fixtures") {
+        dinero::GenerateCompletedActivationFixtures();return ::testing::UnitTest::GetInstance()->Passed()?0:1;
+    }
+    if(argc==2&&std::string(argv[1])=="--diagnose-completed-activation-rows") {
+        dinero::DiagnoseCompletedActivationRows();return ::testing::UnitTest::GetInstance()->Passed()?0:1;
+    }
+#endif
 #ifdef DINERO_TEST_ORCHARD_HTTP_TRANSPORT
     if (::testing::GTEST_FLAG(filter)=="OrchardHttpTransport.*")
         return OrchardHttpTransportTest::RunWithApplication([] { return RUN_ALL_TESTS(); });

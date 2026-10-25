@@ -1054,6 +1054,8 @@ std::unique_ptr<consensus::HeaderChainSelector::AncestryRetention> RetainCompact
 struct ChainstateService::CompactStartupState {
 #ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
     std::unique_ptr<OrchardCompactChainstate> owner;
+    std::shared_ptr<const consensus::OrchardSelectedConsistency> selected_consistency;
+    RuntimeOutboxCursor activation_delivery_origin;
     // Verified selected values and permanent global graph pointers. Header
     // selector/consumer binding and selected-read admission remain separate.
     std::vector<OrchardCompactStartup::SelectedHeader> selected_headers;
@@ -2268,7 +2270,8 @@ bool ChainstateService::AuditCompactBoundaryUnderLock(const CBlockIndex& tip,std
         // publishing this index. Historical metadata may retain fewer levels;
         // require the proven levels without changing any durable status or
         // weakening the exact failure/availability/locator comparisons.
-        const uint32_t reconstructed_status=m.status_flags | BLOCK_VALID_MASK;
+        if(compact_startup_->selected_consistency)compact_startup_->selected_consistency->Check(*chain_db_);
+        const uint32_t reconstructed_status=compact_startup_->selected_consistency?m.status_flags:(m.status_flags | BLOCK_VALID_MASK);
         if (header->GetHash()!=tip.hash || tip.prev_hash!=header->prev_block_hash ||
             tip.version!=header->version || tip.merkle_root!=header->merkle_root ||
             tip.timestamp!=header->timestamp || tip.bits!=header->difficulty || tip.nonce!=header->nonce ||
@@ -2292,7 +2295,9 @@ bool ChainstateService::AuditCompactBoundaryUnderLock(const CBlockIndex& tip,std
         (void)compact_startup_->owner->CapturePoolCoinsUnderLock(activation_mutex_,next,*header,{});
         // Compare the proven retirement record with frozen durable legacy state.
         // Never compare empty live legacy containers or invent a replacement.
-        consensus::CheckPreparedLegacyRetirementUnderLock(*chain_db_,*retirement);
+        if(compact_startup_->selected_consistency)
+            consensus::CheckLegacyRetirementBeforeImageUnderLock(*chain_db_,*retirement);
+        else consensus::CheckPreparedLegacyRetirementUnderLock(*chain_db_,*retirement);
         return true;
     } catch (const std::exception&) {return fail("compact activation-parent audit failed");}
 #else
@@ -3189,6 +3194,18 @@ std::unique_ptr<ChainstateService::WalletIndexUse> ChainstateService::AcquireWal
     return std::unique_ptr<WalletIndexUse>(new WalletIndexUse(std::move(source)));
 }
 
+std::shared_ptr<ChainDB> ChainstateService::StageCompletedActivationRoot(const daemon::DatadirGuard& guard){
+#ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
+    std::lock_guard<AnnotatedRecursiveMutex> lock(activation_mutex_);
+    if(started_||chain_db_||compact_startup_||completed_activation_||consensus_utxo_set_||active_tip_)
+        throw std::logic_error("Completed activation staging requires unused service storage");
+    completed_activation_=OrchardSnapshotStore::ReadCompletedActivationRoot(guard);
+    completed_activation_guard_=&guard;
+    return OrchardSnapshotStore::CompletedActivationDatabase(*completed_activation_);
+#else
+    (void)guard;throw std::runtime_error("Completed activation startup requires Orchard runtime");
+#endif
+}
 bool ChainstateService::InitCompactStorage() {
 #ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
     try {
@@ -3204,9 +3221,10 @@ bool ChainstateService::InitCompactStorage() {
         // RestoreCompact creates this directory exclusively and only removes
         // its own newly created scratch. Existing scratch is never reused or
         // deleted; an interrupted reconstruction requires operator recovery.
-        auto restored=OrchardReindexOwner::RestoreCompactPrepared(
-            activation_mutex_,*chain_db_,token,*block_storage_,datadir_,
-            std::filesystem::path(datadir_)/"orchard-startup-replay",true);
+        auto restored=completed_activation_?OrchardSnapshotStore::OpenCompletedActivationRoot(
+            *completed_activation_guard_,activation_mutex_,token,*block_storage_,header_chain_selector_,*completed_activation_):
+            OrchardReindexOwner::RestoreCompactPrepared(activation_mutex_,*chain_db_,token,*block_storage_,datadir_,
+                std::filesystem::path(datadir_)/"orchard-startup-replay",true);
         if(!restored || restored->source_!=chain_db_ || restored->mutex_!=&activation_mutex_ ||
             restored->selected_headers_.empty() ||
             restored->selected_index_.size()!=restored->selected_headers_.size() ||
@@ -3223,6 +3241,8 @@ bool ChainstateService::InitCompactStorage() {
         prepared->owner=std::move(restored->owner_);
         prepared->selected_headers=std::move(restored->selected_headers_);
         prepared->selected_undo=std::move(restored->selected_undo_);
+        prepared->selected_consistency=std::move(restored->selected_consistency_);
+        prepared->activation_delivery_origin=restored->activation_delivery_origin_;
         compact_startup_=std::move(prepared);
         // No full coin map/forest, legacy sidecar, wallet-index recovery,
         // selected-read admission or started flag is created here.
@@ -3276,6 +3296,12 @@ bool ChainstateService::Init(DaemonContext& ctx) {
 
     // Get datadir from config
     datadir_ = config_->DataDir();
+    if(completed_activation_) {
+        if(!compact_storage||!GetConfig().utreexo_stateless||!completed_activation_guard_||!ctx.header_chain||header_chain_selector_)
+            return false;
+        header_chain_selector_=ctx.header_chain;
+        return InitCompactStorage();
+    }
 
     if(chain_db_) {
         std::string snapshot_base;const auto status=chain_db_->getRaw("orchard_snapshot_v6:base",snapshot_base);
@@ -9046,10 +9072,12 @@ void ChainstateService::setHeaderChainSelector(std::shared_ptr<dinero::consensus
             throw std::runtime_error("Compact header binding selected owner changed");
         if (!chain_db_) throw std::runtime_error("Compact header binding source unavailable");
         const auto tip=chain_db_->getTip();const auto validated=chain_db_->getValidatedTip();
+        if(compact_startup_->selected_consistency)compact_startup_->selected_consistency->Check(*chain_db_);
         const auto catalog=historical?chain_db_->getHistoricalCompactCatalogState(block):chain_db_->getOrchardCatalogState(block);
         if (!tip.ok() || !validated.ok() || !catalog.ok() ||
             tip->height!=int64_t(height) || tip->hash!=block ||
-            tip->work!=work || validated->height!=tip->height || validated->hash!=tip->hash || *catalog!=encoded)
+            tip->work!=work || (!compact_startup_->selected_consistency&&
+                (validated->height!=tip->height || validated->hash!=tip->hash)) || *catalog!=encoded)
             throw std::runtime_error("Compact header binding durable selection changed");
         if(historical)storage::CheckHistoricalCompactSelection(*chain_db_,*historical);
         auto retained=RetainCompactHeaderBinding(header_chain,history);
@@ -10652,6 +10680,25 @@ bool ChainstateService::CheckCompactStartupDeliveryUnderLock(
     try {
         const auto profile=consensus::SelectedOrchardBlockContext(BlockHeader{},Params().orchard_activation_height);
         if(!profile)return false;
+        if(compact_startup_->selected_consistency) {
+            compact_startup_->selected_consistency->Check(*chain_db_);
+            const auto origin=storage::ReadOrchardActivationOrigin(*chain_db_);if(!origin)return false;
+            const auto prefix=compact_startup_->activation_delivery_origin;
+            const auto page=ReadRuntimeOutboxUnderLock(*chain_db_,*profile,prefix,1);
+            if(page.events.empty()) {
+                if(page.head!=prefix||audit.tip->hash!=origin->parent||audit.tip->height!=origin->parent_height)return false;
+            } else {
+                const auto& first=page.events.front();
+                if(prefix.sequence==UINT64_MAX||first.cursor.sequence!=prefix.sequence+1||
+                    first.direction!=RuntimeBlockDirection::Connect||!first.orchard_replay||
+                    first.context.height!=profile->activation_height||first.context.parent_hash!=origin->parent)return false;
+                const auto end=ReadRuntimeOutboxUnderLock(*chain_db_,*profile,page.head,1);
+                if(end.head!=page.head||end.next!=page.head||!end.events.empty()||!end.after_tip||
+                    end.after_tip->first!=audit.tip->hash||end.after_tip->second!=audit.tip->height)return false;
+            }
+            if(capture){audit.delivery_origin=prefix;audit.delivery_head=page.head;return true;}
+            return audit.delivery_origin==prefix&&audit.delivery_head==page.head;
+        }
         // Initialization already replayed every retained event independently.
         // Recheck its origin and current head before and after detached proof
         // work. This is a local log-integrity check, never consumer completion.
@@ -10741,7 +10788,7 @@ bool ChainstateService::StartCompactStorage() {
             notifications=runtime_block_notifications_;
         }
         auto audit=PrepareCompactStartupAudit();
-        if(!audit)return false;
+        if(!audit)throw std::runtime_error("Compact startup unpublished inverse/delivery audit refused");
 
         // This is the local wallet index, never a full consensus coin map or
         // forest. Opening its schema may have durable effects even if Start
@@ -19875,8 +19922,9 @@ ChainstateService::CaptureOrchardInverseForIndexUnderLock(
         return std::move(value.value());
     };
     const auto tip=require(chain_db_->getTip());const auto validated=require(chain_db_->getValidatedTip());
+    if(compact_startup_->selected_consistency)compact_startup_->selected_consistency->Check(*chain_db_);
     if(tip.height<0 || uint32_t(tip.height)!=index.height || tip.hash!=index.hash ||
-        validated.hash!=tip.hash || validated.height!=tip.height)return {};
+        (!compact_startup_->selected_consistency&&(validated.hash!=tip.hash || validated.height!=tip.height)))return {};
     auto result=std::make_unique<PreparedOrchardInverse>();
     result->validation=std::make_unique<PreparedOrchardExtension>(
         std::move(use),chain_db_owner_,block_storage_,this);

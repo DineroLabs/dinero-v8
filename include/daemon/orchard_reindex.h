@@ -9,9 +9,11 @@ class ChainWriteToken;
 class AnnotatedRecursiveMutex;
 class OrchardCompactChainstate;
 class CBlockIndex;
-// Created only after independent compact reconstruction and final source
-// rechecks. Selected entries are values with no live graph pointers. This is
-// startup handoff material, not permission to admit readers or publish a tip.
+namespace consensus {class OrchardSelectedConsistency;}
+// Created only after independent compact reconstruction, or a wholly audited
+// completed-root selected-origin reconstruction with its distinct consistency
+// capability. Neither path promotes assumed prehistory. Selected entries are
+// values with no caller-owned live links; admission/tip publication is separate.
 class OrchardCompactStartup final {
 public:
     // Values are constructible; only this private result can bind them to a
@@ -31,6 +33,7 @@ public:
 private:
     friend class OrchardReindexOwner;
     friend class ChainstateService;
+    friend class OrchardSnapshotStore;
     friend struct OrchardCompactStartupTestAccess;
     OrchardCompactStartup();
     // Consumes only this independently reconstructed result. Caller holds the
@@ -39,6 +42,10 @@ private:
     ChainDB* source_=nullptr;
     AnnotatedRecursiveMutex* mutex_=nullptr;
     std::unique_ptr<OrchardCompactChainstate> owner_;
+    // A separate selected-origin proof, never independent prehistory replay.
+    // Only the completed-root factory may populate this typed alternative.
+    std::shared_ptr<const consensus::OrchardSelectedConsistency> selected_consistency_;
+    RuntimeOutboxCursor activation_delivery_origin_;
     std::vector<SelectedHeader> selected_headers_;
     // Aligned by selected height. Present pre-Orchard locations require exact
     // original/reconstructed flatfile byte equality; absence claims no undo.

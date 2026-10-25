@@ -1,6 +1,8 @@
 #include "daemon/orchard_snapshot_store.h"
 #include "daemon/datadir_guard.h"
 #include "daemon/core_reopen.h"
+#include "daemon/orchard_reindex.h"
+#include "consensus/header_store.h"
 #include "daemon/chainstate_recovery_marker.h"
 #include "daemon/services/orchard_branch_replay.h"
 #include "daemon/services/orchard_boundary_replay.h"
@@ -372,6 +374,19 @@ struct PreparedOrchardActivationHandoff::Data {
     std::string selection;
 #endif
 };
+struct CompletedOrchardActivationStartup::Data {
+    std::filesystem::path root_path,source_path,candidate_path,paired_sst;
+    std::unique_ptr<ChainDB> source;
+    std::shared_ptr<ChainDB> candidate;
+    const std::thread::id thread=std::this_thread::get_id();
+#ifndef _WIN32
+    HandoffFd root,blockchain,source_dir,candidate_dir;
+    HandoffFiles source_files,candidate_files;
+    HandoffSelection record;std::string selection;
+#endif
+};
+CompletedOrchardActivationStartup::CompletedOrchardActivationStartup(std::unique_ptr<Data> d):data_(std::move(d)){}
+CompletedOrchardActivationStartup::~CompletedOrchardActivationStartup()=default;
 PreparedOrchardActivationHandoff::PreparedOrchardActivationHandoff(std::unique_ptr<Data> d):data_(std::move(d)){}
 PreparedOrchardActivationHandoff::~PreparedOrchardActivationHandoff()=default;
 const std::filesystem::path& PreparedOrchardActivationHandoff::CandidatePath()const{return data_->candidate_path;}
@@ -412,6 +427,135 @@ uint256 OrchardSnapshotStore::HandoffStoreDigest(const ChainDB& db,const std::fu
         Require(it->status().ok());hash.Write(std::string(1,'\x03'));
     }
     hash.Write(std::string(1,'\x04'));uint256 digest;hash.Finalize(digest.data);return digest;
+}
+std::unique_ptr<CompletedOrchardActivationStartup> OrchardSnapshotStore::ReadCompletedActivationRoot(
+    const daemon::DatadirGuard& guard){
+#ifdef _WIN32
+    (void)guard;Require(false);return {};
+#else
+    auto d=std::make_unique<CompletedOrchardActivationStartup::Data>();d->root_path=guard.DataDir();
+    d->root=HandoffFd(OpenHandoffRoot(guard));
+    d->blockchain=HandoffFd(::openat(d->root.value,"blockchain",O_RDONLY|O_DIRECTORY|O_CLOEXEC|O_NOFOLLOW));
+    Require(d->blockchain.value>=0&&HandoffAbsent(d->blockchain.value,std::string(HandoffIntent)+".partial")&&
+        HandoffAbsent(d->blockchain.value,std::string(HandoffDone)+".partial"));
+    d->selection=HandoffControl(d->blockchain.value,HandoffIntent);Require(!d->selection.empty());
+    Require(HandoffControl(d->blockchain.value,HandoffDone)==HandoffSeal("DNODONE1"+storage::catalog::Hash(d->selection).GetHex()));
+    d->record=HandoffSelection::Decode(d->selection);
+    Require(HandoffAbsent(d->blockchain.value,d->record.Candidate()));
+    d->candidate_path=d->root_path/"blockchain"/"chaindb";
+    d->source_path=d->root_path/"blockchain"/d->record.Original();d->paired_sst=d->root_path/"blockchain"/"chaindb.legacy-v1";
+    d->source_dir=HandoffFd(::openat(d->blockchain.value,d->record.Original().c_str(),O_RDONLY|O_DIRECTORY|O_CLOEXEC|O_NOFOLLOW));
+    d->candidate_dir=HandoffFd(::openat(d->blockchain.value,"chaindb",O_RDONLY|O_DIRECTORY|O_CLOEXEC|O_NOFOLLOW));
+    Require(d->source_dir.value>=0&&d->candidate_dir.value>=0);
+    d->source_files=InspectHandoffFiles(d->source_path,d->paired_sst,{});
+    d->candidate_files=InspectHandoffFiles(d->candidate_path,{},{});
+    d->source=std::make_unique<ChainDB>();Need(d->source->initReadOnlyForHandoff(d->source_path));
+    d->candidate=std::make_shared<ChainDB>();Need(d->candidate->initReadOnlyForHandoff(d->candidate_path));
+    // A normal closed node already persisted its pruning policy. Never let
+    // startup invent it in a converted before-image and only discover that
+    // extra row on the next restart. Absence/noncanonical policy is a refusal,
+    // not permission to seed a default or exempt the key from the full audit.
+    const bool mode=Need(d->source->getPruneMode());std::string policy;
+    rocksdb::ReadOptions reads;reads.verify_checksums=true;
+    Require(d->source->db_->Get(reads,d->source->cf_[d->source->idx_meta_].get(),ChainDB::KEY_PRUNE_MODE,&policy).ok()&&
+        policy==std::string(1,mode?'\x01':'\x00'));
+    auto result=std::unique_ptr<CompletedOrchardActivationStartup>(new CompletedOrchardActivationStartup(std::move(d)));
+    CheckCompletedActivationRoot(guard,*result);return result; // RO routing DATA only.
+#endif
+}
+std::shared_ptr<ChainDB> OrchardSnapshotStore::CompletedActivationDatabase(const CompletedOrchardActivationStartup& prepared){
+    Require(prepared.data_&&prepared.data_->candidate);return prepared.data_->candidate;
+}
+void OrchardSnapshotStore::CheckCompletedActivationRoot(const daemon::DatadirGuard& guard,
+    const CompletedOrchardActivationStartup& prepared){
+#ifdef _WIN32
+    (void)guard;(void)prepared;Require(false);
+#else
+    Require(bool(prepared.data_));const auto& d=*prepared.data_;const auto& r=d.record;
+    Require(d.thread==std::this_thread::get_id()&&d.root_path==guard.DataDir()&&d.source&&d.candidate);
+    HandoffFd root(OpenHandoffRoot(guard));const auto top=HandoffStat(root.value),chain=HandoffStat(d.blockchain.value),
+        original=HandoffStat(d.source_dir.value),selected=HandoffStat(d.candidate_dir.value);
+    Require(HandoffSame(top,HandoffStat(d.root.value))&&HandoffSame(HandoffNamed(root.value,"blockchain"),chain)&&
+        HandoffSame(HandoffNamed(d.blockchain.value,r.Original()),original)&&
+        HandoffSame(HandoffNamed(d.blockchain.value,"chaindb"),selected)&&HandoffAbsent(d.blockchain.value,r.Candidate())&&
+        r.root_dev==uint64_t(top.st_dev)&&r.root_ino==uint64_t(top.st_ino)&&r.chain_dev==uint64_t(chain.st_dev)&&r.chain_ino==uint64_t(chain.st_ino)&&
+        r.source_dev==uint64_t(original.st_dev)&&r.source_ino==uint64_t(original.st_ino)&&r.copy_dev==uint64_t(selected.st_dev)&&r.copy_ino==uint64_t(selected.st_ino)&&
+        r.origin.magic==Params().magic&&r.origin.profile==ConsensusChecksum(Params())&&
+        chain.st_uid==::geteuid()&&!(chain.st_mode&0022)&&original.st_uid==::geteuid()&&!(original.st_mode&0022)&&
+        selected.st_uid==::geteuid()&&!(selected.st_mode&0022));
+    HandoffMaintenanceClear(d.root_path,d.candidate_path);
+    Require(HandoffControl(d.blockchain.value,HandoffIntent)==d.selection&&
+        HandoffControl(d.blockchain.value,HandoffDone)==HandoffSeal("DNODONE1"+storage::catalog::Hash(d.selection).GetHex())&&
+        HandoffAbsent(d.blockchain.value,std::string(HandoffIntent)+".partial")&&HandoffAbsent(d.blockchain.value,std::string(HandoffDone)+".partial")&&
+        InspectHandoffFiles(d.source_path,d.paired_sst,{})==d.source_files&&HandoffFilesDigest(d.source_files)==r.source_files&&
+        InspectHandoffFiles(d.candidate_path,{},{})==d.candidate_files&&HandoffStoreDigest(*d.source,{})==r.origin.source);
+    const auto origin=storage::ReadOrchardActivationOrigin(*d.candidate);
+    std::string selection;Need(d.candidate->getRaw(storage::OrchardActivationSelectionKey,selection));
+    Require(origin&&origin->Encode()==r.origin.Encode()&&selection==r.origin.Selection());
+#endif
+}
+std::shared_ptr<consensus::HeaderChainSelector> OrchardSnapshotStore::CompletedActivationHeaders(
+    const ChainDB& db,consensus::HeaderStore& store){
+    auto retained=std::make_shared<consensus::HeaderChainSelector>();SeedRetainedHeaders(db,*retained);
+    const auto best=retained->GetBestHeaderValue();Require(best.has_value());
+    std::vector<consensus::HeaderIndexEntry> ancestry;ancestry.reserve(uint64_t(best->height)+1);
+    for(uint64_t h=0;h<=best->height;++h){consensus::HeaderIndexEntry value;Require(retained->GetHeaderAtHeightCopy(uint32_t(h),value));ancestry.push_back(value);}
+    return consensus::HeaderChainSelector::RestorePreservingBranches(store,ancestry);
+}
+std::unique_ptr<OrchardCompactStartup> OrchardSnapshotStore::OpenCompletedActivationRoot(
+    const daemon::DatadirGuard& guard,AnnotatedRecursiveMutex& mutex,const ChainWriteToken& token,const BlockStorage& files,
+    std::shared_ptr<const consensus::HeaderChainSelector> headers,CompletedOrchardActivationStartup& prepared){
+#ifdef _WIN32
+    (void)guard;(void)mutex;(void)token;(void)files;(void)headers;(void)prepared;Require(false);return {};
+#else
+    using namespace consensus;mutex.AssertHeld("completed selected activation startup");
+    Require(bool(headers));CheckCompletedActivationRoot(guard,prepared);auto& d=*prepared.data_;auto& db=*d.candidate;
+    auto proof=ReadActivationProof(mutex,db,*headers,d.record.origin.first);Require(proof&&HashOrchardSnapshotSection(*proof)==d.record.origin.proof);
+    auto retained=std::make_shared<const OrchardSnapshotSection>(std::move(*proof));
+    const auto audited=AuditActivationStore(mutex,*d.source,db,token,files,d.record.copy_rows,headers,retained);
+    Require(AuditActivationSuffix(mutex,db,token,files,headers,retained).Encode()==audited.Encode());
+    CheckCompletedActivationRoot(guard,prepared);const auto rows=HandoffStoreDigest(db,{});
+    const auto profile=Authenticate(*retained,*headers,Params().state_commitment_burial_depth);
+    const auto delivery_origin=ReadRuntimeOutboxUnderLock(*d.source,profile,{},1).head;
+    db.close();const ChainDB::SelectedHandoffOpen permit(d.candidate_path);db.dir_=d.candidate_path;
+    Need(db.initAttempt(d.candidate_path,false,false,&permit));
+    // Writable Open may change RocksDB LOG/MANIFEST bookkeeping, never logical
+    // rows, original files, completed choice or held directory identity.
+    Require(HandoffStoreDigest(db,{})==rows);d.candidate_files=InspectHandoffFiles(d.candidate_path,{},{});
+    CheckCompletedActivationRoot(guard,prepared);VerifyCatalogTransferProof(*retained,*headers);
+    auto result=std::unique_ptr<OrchardCompactStartup>(new OrchardCompactStartup());
+    result->source_=&db;result->mutex_=&mutex;
+    result->selected_consistency_=std::shared_ptr<const OrchardSelectedConsistency>(new OrchardSelectedConsistency(db,mutex,d.record.origin));
+    result->activation_delivery_origin_=delivery_origin;
+    result->owner_=std::make_unique<OrchardCompactChainstate>();
+    result->owner_->selected_=std::make_shared<const OrchardCompactChainstate::Selected>(
+        &db,&mutex,audited,retained->retirement.record,result->selected_consistency_);
+    const auto tip=Need(db.getTip());result->selected_undo_.resize(uint64_t(tip.height)+1);
+    for(uint64_t h=0;h<=uint64_t(tip.height);++h){
+        HeaderIndexEntry checked;Require(headers->GetHeaderAtHeightCopy(uint32_t(h),checked));
+        auto index=std::make_unique<CBlockIndex>(checked.header,uint32_t(h));index->chainwork=ChainworkToHex(checked.chainwork);
+        index->status=BLOCK_VALID_HEADER;
+        const auto m=db.getHeaderMetadata(checked.hash);
+        if(m.ok()){
+            Require(m->height==int(h)&&m->parent_hash==checked.prev_hash&&m->chainwork==checked.chainwork&&
+                !(m->status_flags&(BLOCK_FAILED_VALID|BLOCK_FAILED_CHILD)));
+            // Preserve actual prehistory flags; DO NOT promote assumed blocks
+            // to script/chain execution. Post-activation rows were replayed above.
+            index->status=m->status_flags;index->file_number=m->file_number;index->data_pos=m->data_pos;index->data_size=m->data_size;
+            if(m->status_flags&BLOCK_HAVE_UNDO){
+                Require(m->undo_size&&files.readUndo({m->undo_file,m->undo_pos,m->undo_size}).ok());
+                index->undo_file=m->undo_file;index->undo_pos=m->undo_pos;index->undo_size=m->undo_size;
+                result->selected_undo_[h]=OrchardCompactStartup::RetainedUndoLocation{m->undo_file,m->undo_pos,m->undo_size};
+            }
+        }else Require(m.status()==Status::NotFound&&h<d.record.origin.parent_height);
+        result->selected_headers_.push_back({checked.header,uint32_t(h),checked.chainwork,index->file_number,index->data_pos,index->data_size});
+        if(!result->selected_index_.empty()){index->pprev=result->selected_index_.back().get();index->pprev->children.push_back(index.get());}
+        result->selected_index_.push_back(std::move(index));
+    }
+    Require(!result->selected_index_.empty()&&result->selected_index_.back()->hash==audited.block);
+    result->selected_consistency_->Check(db);CheckCompletedActivationRoot(guard,prepared);VerifyCatalogTransferProof(*retained,*headers);
+    return result; // Unpublished service startup material, not admission or a tip.
+#endif
 }
 storage::catalog::State OrchardSnapshotStore::AuditActivationSuffix(AnnotatedRecursiveMutex& mutex,const ChainDB& db,
     const ChainWriteToken& token,const BlockStorage& files,

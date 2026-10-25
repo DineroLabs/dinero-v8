@@ -13,6 +13,7 @@
 #include "daemon/daemon_app.h"
 #include "storage/orchard_activation_origin.h"
 #include <sstream>
+#include <json/json.h>
 #ifndef _WIN32
 #include <fcntl.h>
 #include <sys/stat.h>
@@ -463,9 +464,10 @@ namespace {
 struct ActivationSuffixFixture:ActivationHandoffFixture {
     AnnotatedRecursiveMutex mutex;OrchardSnapshotStoreTestAccess::ActivationPublication live;
     std::filesystem::path original_path;uint256 parent_rows;
-    ActivationSuffixFixture():ActivationHandoffFixture(true){
+    explicit ActivationSuffixFixture(bool runtime_policy=false):ActivationHandoffFixture(true){
         {ChainDB db;OrchardAdmissionFixture::Require(db.init(path)==Status::Ok&&
-            db.setValidatedTip(full.f.token,full.f.blocks.front().GetHash(),0)==Status::Ok);}
+            db.setValidatedTip(full.f.token,full.f.blocks.front().GetHash(),0)==Status::Ok);
+            if(runtime_policy)OrchardAdmissionFixture::Require(db.setPruneMode(full.f.token,false)==Status::Ok);}
         auto selected=OrchardSnapshotStoreTestAccess::SelectHandoff(guard,*receipt,Prepare());
         original_path=selected->OriginalPath();
         live=OrchardSnapshotStoreTestAccess::OpenHandoff(guard,*receipt,mutex,full.f.token,*full.files,headers,std::move(selected));
@@ -521,6 +523,59 @@ TEST(OrchardActivationStore, ExactOriginalAndCanonicalConnectUndoReconnectMatchE
         f.parent_rows,f.headers,f.proof).block,f.full.first->Header().GetHash());
     EXPECT_EQ(ChainDBTransactionReadTestPeer::HandoffRows(cold),rows);
     EXPECT_EQ(ActivationHandoffFixture::Files(f.path),files);
+}
+void GenerateCompletedActivationFixtures(){
+    const auto* destination=std::getenv("DINERO_COMPLETED_ACTIVATION_MANIFEST");ASSERT_NE(destination,nullptr);
+    ASSERT_FALSE(std::filesystem::exists(destination));Json::Value roots(Json::arrayValue);
+    const auto* limit_text=std::getenv("DINERO_COMPLETED_ACTIVATION_LIMIT");
+    const auto limit=limit_text?std::stoul(limit_text):8u;ASSERT_GE(limit,1u);ASSERT_LE(limit,8u);
+    for(unsigned phase=0;phase<limit;++phase){
+        ActivationSuffixFixture f(phase!=7);f.Connect(f.full.first);f.Connect(f.full.second);
+        if(phase==1||phase==2){f.Undo(f.full.second);if(phase==2)f.Undo(f.full.first);}
+        Json::Value row;row["datadir"]=f.root.string();row["original"]=f.original_path.string();
+        row["tip"]=f.live.database->getTip()->hash.GetHex();row["height"]=f.live.database->getTip()->height;
+        row["profile"]=ConsensusChecksum(Params());row["phase"]=phase;
+        row["refuse"]=phase>=3;
+        const auto archives=f.full.files->getBlockFilePath(0).parent_path();
+        if(std::filesystem::exists(f.root/"blocks"))std::filesystem::rename(f.root/"blocks",f.root/"genesis-archives-preserved");
+        std::filesystem::copy(archives,f.root/"blocks",std::filesystem::copy_options::recursive);
+        if(phase==3){rocksdb::WriteBatch extra;extra.Put("untracked-after-conversion","must not be repaired");
+            ASSERT_EQ(f.live.database->writeBatch(f.full.f.token,std::move(extra),true),Status::Ok);}
+        if(phase==5){const auto tip=*f.live.database->getTip();
+            ASSERT_EQ(f.live.database->setValidatedTip(f.full.f.token,tip.hash,tip.height),Status::Ok);}
+        f.live.compact.reset();f.live.database.reset();f.receipt.reset();f.closed_app.reset();f.gate.reset();
+        if(phase==4){
+            std::filesystem::copy(f.original_path,f.root/"original-before-negative",std::filesystem::copy_options::recursive);
+            ActivationHandoffFixture::MutateCopy(f.original_path,[](auto& raw){raw.put("default","changed-original-before-image","must refuse");});
+        }
+        if(phase==6){const auto control=f.root/"blockchain"/storage::OrchardHandoffCompleted;
+            const auto retained=control.string()+".preserved-original";std::filesystem::rename(control,retained);
+            std::filesystem::create_symlink(std::filesystem::path(retained).filename(),control);}
+        f.guard.Release();
+        roots.append(row);
+    }
+    std::ofstream output(destination);ASSERT_TRUE(output);output<<Json::writeString(Json::StreamWriterBuilder(),roots);output.close();ASSERT_TRUE(output);
+}
+void DiagnoseCompletedActivationRows(){
+    const auto* actual=std::getenv("DINERO_COMPLETED_COMPARE_ACTUAL");
+    const auto* expected=std::getenv("DINERO_COMPLETED_COMPARE_EXPECTED");ASSERT_NE(actual,nullptr);ASSERT_NE(expected,nullptr);
+    const auto a=std::filesystem::canonical(actual),e=std::filesystem::canonical(expected);
+    ASSERT_EQ(a.filename(),"chaindb");ASSERT_EQ(a.parent_path().filename(),"blockchain");
+    ASSERT_TRUE(a.parent_path().parent_path().filename().string().starts_with("orchard-handoff-evidence-"));
+    ASSERT_EQ(e.parent_path().parent_path(),a.parent_path());ASSERT_EQ(e.filename(),"expected");
+    ASSERT_TRUE(e.parent_path().filename().string().starts_with(".orchard-store-audit-"));
+    ChainDB actual_db,expected_db;
+    ASSERT_EQ(ChainDBTransactionReadTestPeer::HandoffReadOnly(actual_db,a),Status::Ok);
+    ASSERT_EQ(ChainDBTransactionReadTestPeer::HandoffReadOnly(expected_db,e),Status::Ok);
+    const auto aa=ChainDBTransactionReadTestPeer::HandoffRows(actual_db),ee=ChainDBTransactionReadTestPeer::HandoffRows(expected_db);
+    std::set<std::pair<std::string,std::string>> keys;for(const auto& [key,value]:aa)keys.insert(key);for(const auto& [key,value]:ee)keys.insert(key);
+    Json::Value differences(Json::arrayValue);
+    for(const auto& key:keys){const auto x=aa.find(key),y=ee.find(key);if(x!=aa.end()&&y!=ee.end()&&x->second==y->second)continue;
+        Json::Value row;row["family"]=key.first;row["key_hex"]=util::hex(std::vector<uint8_t>(key.second.begin(),key.second.end()));
+        if(x!=aa.end())row["actual_value_hash"]=storage::catalog::Hash(x->second).GetHex();
+        if(y!=ee.end())row["expected_value_hash"]=storage::catalog::Hash(y->second).GetHex();differences.append(row);
+    }
+    std::cout<<Json::writeString(Json::StreamWriterBuilder(),differences)<<"\n";
 }
 TEST(OrchardActivationStore, UnknownRowsAndInactiveUndoDeletionRefuseWithoutRepair){
     ActivationSuffixFixture f;f.Connect(f.full.first);f.Connect(f.full.second);f.Undo(f.full.second);

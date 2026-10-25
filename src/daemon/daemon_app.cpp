@@ -576,6 +576,7 @@ DaemonApp::DaemonApp() = default;
 void DaemonApp::SetLockedDatadir(const daemon::DatadirGuard& guard) {
     if (!guard.IsHeld()) throw std::logic_error("DaemonApp requires a held datadir guard");
     locked_datadir_ = guard.DataDir();
+    locked_datadir_guard_ = &guard;
 }
 
 // Destructor implementation (must be in .cpp to allow unique_ptr with forward-declared types)
@@ -1017,6 +1018,7 @@ bool DaemonApp::Init(int argc, char** argv) {
     }
 
     // Phase 2: Data layer (depends on logger + config)
+    auto chainstate = std::make_shared<ChainstateService>();
     std::cout << "[DaemonApp] Phase 2: Data layer" << std::endl;
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -1027,6 +1029,7 @@ bool DaemonApp::Init(int argc, char** argv) {
     // Routing only: no state is enrolled until ChainstateService authenticates
     // the retained snapshot proof, selected ancestry and current catalog.
     bool compact_snapshot_reopen = false;
+    bool compact_activation_reopen = false;
     std::unique_ptr<BlockStorage> startup_block_storage;
 
     try {
@@ -1054,7 +1057,17 @@ bool DaemonApp::Init(int argc, char** argv) {
         // Never create/repair/open over a selected or interrupted activation
         // swap. This is routing refusal, not an owner factory. The dedicated
         // authenticated startup path must consume the exact held-root intent.
-        OrchardSnapshotStore::RequireNoActivationHandoff(data_dir_path);
+        if(!storage::OrchardHandoffControlsAbsent(data_dir_path/"blockchain")) {
+            if(fresh_store_bootstrap_only_){fresh_store_created_=false;return true;}
+#ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
+            if(!GetConfig().utreexo_stateless||!locked_datadir_guard_)
+                throw std::runtime_error("Completed activation startup requires the real locked stateless root");
+            chain_db_=chainstate->StageCompletedActivationRoot(*locked_datadir_guard_);
+            compact_activation_reopen=true;compact_snapshot_reopen=true;
+#else
+            OrchardSnapshotStore::RequireNoActivationHandoff(data_dir_path);
+#endif
+        }
 
         std::filesystem::create_directories(chain_db_path.parent_path());
 
@@ -1160,7 +1173,7 @@ bool DaemonApp::Init(int argc, char** argv) {
                 }
             }
         }
-        if (automatic_storage_upgrade_ && !fresh_store_bootstrap_only_ &&
+        if (automatic_storage_upgrade_ && !fresh_store_bootstrap_only_ && !compact_activation_reopen &&
             Params().orchard_activation_height != UINT32_MAX) {
             // A refusal keeps the legacy store: the node runs until Orchard
             // activation and retries on every start (see the header).
@@ -1197,7 +1210,7 @@ bool DaemonApp::Init(int argc, char** argv) {
                 }
             }
         }
-        auto status = chain_db_->init(chain_db_path);
+        auto status = compact_activation_reopen?Status::Ok:chain_db_->init(chain_db_path);
         if (status != Status::Ok) {
             std::cerr << "[DaemonApp] ❌ Failed to initialize ChainDB: " << StatusToString(status) << std::endl;
             return false;
@@ -1208,9 +1221,9 @@ bool DaemonApp::Init(int argc, char** argv) {
             throw std::runtime_error("Compact snapshot storage binding missing");
         if (compact_binding && GetConfig().utreexo_stateless) {
             const auto& base = snapshot_base;
-            compact_snapshot_reopen = base &&
+            compact_snapshot_reopen = compact_activation_reopen || (base &&
                 base->profile == uint8_t(consensus::OrchardSnapshotProfile::Compact) &&
-                consensus::OrchardCatalogCommitmentActive(Params(), base->height);
+                consensus::OrchardCatalogCommitmentActive(Params(), base->height));
         }
         if (compact_snapshot_reopen) {
             // A compact marker/base chooses ONLY the authentication route. It
@@ -1224,7 +1237,9 @@ bool DaemonApp::Init(int argc, char** argv) {
             // Advisory recovery markers may survive a healthy forward sync.
             // Leave them intact; the skipped legacy orchestrator must never
             // replay a root-only store, even if automatic replay is re-armed.
-            std::cout << "[DaemonApp] Compact snapshot reopen routed to retained-proof authentication; legacy backfills disabled" << std::endl;
+            if(compact_activation_reopen)
+                std::cout << "[DaemonApp] Completed activation reopen routed to full origin authentication; legacy backfills disabled" << std::endl;
+            else std::cout << "[DaemonApp] Compact snapshot reopen routed to retained-proof authentication; legacy backfills disabled" << std::endl;
         } else {
             // Preserve the fail-closed full-storage guard for every legacy,
             // misconfigured, unknown or malformed compact store.
@@ -2133,7 +2148,6 @@ bool DaemonApp::Init(int argc, char** argv) {
     } // Full/legacy startup only. Compact storage must reach its authenticated owner untouched.
 
     // Phase 39: Create ChainstateService and pass it the ChainDB
-    auto chainstate = std::make_shared<ChainstateService>();
     chainstate->setOwnedChainDB(chain_db_);
     chainstate->setPoolManager(pool_manager_runtime_);
     if(pool_manager_runtime_)pool_manager_runtime_->setChainstateSource(chainstate);
@@ -2387,6 +2401,12 @@ bool DaemonApp::Init(int argc, char** argv) {
                   << ")" << std::endl;
     }
 
+    if(compact_activation_reopen) {
+#ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
+        header_chain=OrchardSnapshotStore::CompletedActivationHeaders(*chain_db_,*header_store);
+        ctx_.header_chain=header_chain;
+#endif
+    }
     // Phase N: Seed HeaderChainSelector with the full active header chain from ChainDB.
     // IMPORTANT: Do not rely on height index ordering here (it may be stale after prior forks).
     // We reconstruct by walking tip -> genesis via prev_block_hash, then replay genesis -> tip.

@@ -676,6 +676,36 @@ hash/height/work. No mutable prefix is exempt. This is required by the existing
 parent handoff opener; normal descendant/post-undo daemon startup and SDK/phone
 acceptance still require their separate completed-root and service routing.
 
+Normal completed-root startup is now a separate path from unfinished PUBLIC
+reopen-intent recovery. The same real datadir guard pins the recorded completed
+choice and retained original directory/cohort. Stores open read-only first;
+current HeaderStore branches and retained raw headers are independently checked
+before the complete before-image/suffix audits. Only then may an existing-layout
+writer reopen the same selected DB, recheck logical rows and source/root identity,
+and bind a new generation/mutex-specific selected-origin consistency owner.
+Normal startup does not fabricate a closed lifecycle receipt or replay a stale
+capture. A still-pending wallet/pool intent is recovered separately by its host.
+
+The service preserves original prehistory flags and validated anchor instead of
+passing them through the independent-replay equality branch. Its header/index,
+boundary, inverse proof and delivery admission use the distinct bound capability;
+delivery starts from the actual immutable original head, including nonzero or
+empty heads, never a fabricated first-block cursor. Existing full/fresh/snapshot
+and independent-replay guards remain strict for their original owner types.
+An ordinary closed node's canonical persisted pruning policy must be present in
+the before-image. Missing/noncanonical policy refuses before writable startup;
+it is not seeded during restart or exempted from whole-row comparison.
+
+The real-process regression uses fixed test-only parameters and fixture-host
+conversion, then actual production DaemonApp/ChainstateService startup in fresh
+processes. It covers descendant, post-undo and activation-parent states, two cold
+starts each, unchanged original stores/anchor and normal named-wallet opening
+without a phrase. Added-row, changed-original, advanced-anchor, aliased-control
+and absent-policy roots refuse. The queued corpus is empty: this does NOT satisfy
+the real named-wallet/queued-payment crossing, restored-wallet earlier-funds,
+original mobile assumed-history lifecycle, SDK worker or physical-device gates.
+Existing strict wallet-index assumed-history checks are not erased to pass it.
+
 Mutation controls are recorded separately from the earlier positive receipts.
 The original parent-reopen case survived a disabled consistency check; transition
 and engine-reopen cases detected it. The parent case now additionally substitutes

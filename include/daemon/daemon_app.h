@@ -144,6 +144,9 @@ private:
     // Retained identity does not retain this App or any old database reader.
     const std::shared_ptr<const uint8_t> reopen_identity_=std::make_shared<const uint8_t>(0);
     std::optional<std::filesystem::path> locked_datadir_;
+    // Borrowed from the host; the same real guard must outlive this App and
+    // every service through internal close/reopen and final teardown.
+    const daemon::DatadirGuard* locked_datadir_guard_=nullptr;
     bool automatic_storage_upgrade_ = false;
     bool fresh_store_bootstrap_only_ = false;
     bool fresh_store_created_ = false;

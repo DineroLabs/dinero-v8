@@ -9353,6 +9353,14 @@ if(TARGET nodecore_ffi)
       LABELS "integration;nodecore;restart;storage" TIMEOUT 60 RUN_SERIAL TRUE)
   endif()
   add_executable(nodecore_runtime_driver tests/integration/nodecore_runtime_driver.cpp)
+  if(UNIX AND TARGET test_assumeutxo_replay)
+    add_test(NAME OrchardCompletedActivationStartup COMMAND ${CMAKE_COMMAND} -E env
+      NODECORE_DRIVER=$<TARGET_FILE:nodecore_runtime_driver>
+      ACTIVATION_FIXTURE_GENERATOR=$<TARGET_FILE:test_assumeutxo_replay>
+      python3 ${CMAKE_SOURCE_DIR}/tests/integration/test_completed_activation_startup.py)
+    set_tests_properties(OrchardCompletedActivationStartup PROPERTIES TIMEOUT 360 RUN_SERIAL TRUE
+      LABELS "integration;orchard;storage;restart;mandatory")
+  endif()
   if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     # These project archives have backward references (including wallet's
     # SlowReasonAnalyzer -> core's PeerManager). Group the full mutually

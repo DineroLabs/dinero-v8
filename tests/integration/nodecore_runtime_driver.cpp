@@ -12,6 +12,8 @@
 #include "daemon/services/rpc_service.h"
 #include "daemon/http_rpc_server.h"
 #include "consensus/chainparams.h"
+#include "daemon/services/chainstate_service.h"
+#include "daemon/config.h"
 #include "rpc/rpc_registry.h"
 
 #include <json/json.h>
@@ -163,6 +165,52 @@ Json::Value LegacyStorageFixture(const std::string& path) {
     if(!app.Init(int(argv.size()),argv.data())||!app.FreshStoreCreated()||!app.Start()||
         !app.PersistFreshStoreGenesisRecords())throw std::runtime_error("legacy fixture bootstrap failed");
     app.Stop();return 0;
+}
+Json::Value CompletedActivationCold(const Json::Value& request){
+    // Test executable ONLY: fixed isolated genuine-PoW fixture profile. No
+    // production daemon option, public schedule or installed data is changed.
+    if(nodecore_is_running())throw std::runtime_error("cold fixture requires unused process");
+    struct Restore {dinero::ChainParams params;bool stateless;
+        ~Restore(){dinero::MutableParams()=params;GetConfig().utreexo_stateless=stateless;}}
+        restore{dinero::Params(),GetConfig().utreexo_stateless};
+    dinero::SelectParams(dinero::Chain::REGTEST);auto& profile=dinero::MutableParams();
+    profile.state_commitment_activation_height=UINT32_MAX;profile.regtest_enforce_pow=true;
+    profile.sixty_second_activation_height=102;profile.orchard_activation_height=102;profile.orchard_branch_id=1;
+    profile.shielded_activation_height=1;profile.shielded_epoch_reset_height=UINT32_MAX;
+    profile.shielded_spend_auth_epoch_reset_height=UINT32_MAX;profile.orchard_catalog_commitment_activation_height=102;
+    profile.state_commitment_burial_depth=1;
+    if(dinero::ConsensusChecksum(profile)!=request["profile"].asString())throw std::runtime_error("cold fixture profile mismatch");
+    const auto path=std::filesystem::path(request["datadir"].asString());
+    if(!path.is_absolute()||!std::filesystem::is_directory(path/"blockchain"))throw std::runtime_error("cold fixture requires retained root");
+    dinero::daemon::DatadirGuard guard;std::string error;if(!guard.Acquire(path,error))throw std::runtime_error(error);
+    auto app=std::make_unique<dinero::DaemonApp>();app->SetLockedDatadir(guard);app->SetAutomaticStorageUpgrade(true);
+    auto gate=std::make_shared<dinero::ReopenRpcGate>();auto receipt=app->PreparePendingReopen(guard,gate);
+    std::vector<std::string> args{"completed-activation-cold-fixture","--regtest","--datadir="+guard.DataDir().string(),
+        "--p2p.offline=1","--listen=0","--rpc.port=0","--wallet.socket.enable=0",
+        "--lightning.oracles.enable=0","--sync-profile=ios_utreexo","--utreexo-stateless=1"};
+    std::vector<char*> argv;for(auto& arg:args)argv.push_back(arg.data());
+    if(!app->Init(int(argv.size()),argv.data()))throw std::runtime_error("completed activation App Init refused");
+    if(!app->Start())throw std::runtime_error("completed activation App Start refused");
+    Json::Value result;
+    {const auto chain=std::dynamic_pointer_cast<dinero::ChainstateService>(app->GetContext().chainstate);
+    if(!chain||!chain->GetActiveTip()||!chain->GetChainDB())throw std::runtime_error("cold actual service missing");
+    const auto tip=chain->GetChainDB()->getTip(),anchor=chain->GetChainDB()->getValidatedTip();
+    if(!tip.ok()||!anchor.ok())throw std::runtime_error("cold actual persisted selection missing");
+    result["tip"]=tip->hash.GetHex();result["height"]=tip->height;
+    result["validated_height"]=anchor->height;result["validated_hash"]=anchor->hash.GetHex();
+    result["active_tip"]=chain->GetActiveTip()->hash.GetHex();result["profile"]=dinero::ConsensusChecksum(profile);
+    }
+    if(receipt){result["named_wallet"]=receipt->WalletName();app->ResumeAfterInternalReopen(guard,*receipt);}
+    {const auto rpc=std::dynamic_pointer_cast<dinero::RPCService>(app->GetContext().rpc);
+    if(!rpc||!rpc->GetHttpServer())throw std::runtime_error("cold actual RPC dispatcher missing");
+    Json::Value open(Json::arrayValue);open.append("handoff-named-owner");
+    const auto opened=HttpRpcRequestTestAccess::Dispatch(*rpc->GetHttpServer(),"wallet.open",open);
+    if(!opened["result"]["success"].asBool())throw std::runtime_error("cold named wallet.open refused without phrase: "+Encode(opened));
+    result["named_wallet"]="handoff-named-owner";
+    }
+    {const auto wallet=std::dynamic_pointer_cast<dinero::WalletService>(app->GetContext().wallet);
+     auto use=dinero::WalletService::AcquireWalletUse(wallet);result["wallet_open"]=bool(use);}
+    app->Stop();app.reset();result["stopped"]=true;return result;
 }
 Json::Value ActualAppReopen(const std::string& path,const std::string& mode={}){
     if(mode!=""&&mode!="prepare"&&mode!="cold"&&mode!="abandoned"&&mode!="prepared-exit"&&mode!="prepared-resume")
@@ -337,6 +385,8 @@ int main(int argc, char** argv) {
             const auto operation = request["op"].asString();
             if (operation == "reopen_fences") {
                 result = ReopenFences();
+            } else if(operation=="completed_activation_cold") {
+                result=CompletedActivationCold(request);
             } else if (operation == "actual_app_reopen") {
                 result = ActualAppReopen(request["datadir"].asString(),request.get("mode","").asString());
             } else if (operation == "reopen_rpc_pause") {

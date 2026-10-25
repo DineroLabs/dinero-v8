@@ -12,6 +12,7 @@ class ChainstateService;
 class OrchardBranchReplay;
 class OrchardBoundaryReplay;
 class ClosedCoreReopenIntent;
+class OrchardCompactStartup;
 struct RuntimeOutboxEvent;
 namespace daemon {class DatadirGuard;}
 // Private selected-state authority. Decoding, raw catalog staging and a local
@@ -54,6 +55,14 @@ private:
         const ChainWriteToken&,const BlockStorage&,
         std::shared_ptr<const consensus::HeaderChainSelector> current_headers,
         std::unique_ptr<PreparedOrchardActivationHandoff>);
+    static std::unique_ptr<CompletedOrchardActivationStartup> ReadCompletedActivationRoot(const daemon::DatadirGuard&);
+    static std::shared_ptr<ChainDB> CompletedActivationDatabase(const CompletedOrchardActivationStartup&);
+    static std::shared_ptr<consensus::HeaderChainSelector> CompletedActivationHeaders(
+        const ChainDB&,consensus::HeaderStore&);
+    static void CheckCompletedActivationRoot(const daemon::DatadirGuard&,const CompletedOrchardActivationStartup&);
+    static std::unique_ptr<OrchardCompactStartup> OpenCompletedActivationRoot(
+        const daemon::DatadirGuard&,AnnotatedRecursiveMutex&,const ChainWriteToken&,const BlockStorage&,
+        std::shared_ptr<const consensus::HeaderChainSelector>,CompletedOrchardActivationStartup&);
     // Read-only state audit, NOT root selection, lifecycle or owner authority.
     // Replays ALL activation-to-tip bodies, compares complete active Orchard/
     // retirement namespaces and exact archives/indexes/catalog closure. Caller
