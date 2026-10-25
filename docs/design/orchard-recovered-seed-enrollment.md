@@ -149,6 +149,16 @@ alone cannot enroll a compact owner. The first activation proof carries complete
 parent/base catalog reachability and the full activation body, not path-only
 membership or caller metadata. No new consensus schedule is introduced.
 
+Archival proof preparation now reconstructs that first block after the full-node
+tip has advanced: retained parent/base catalogs and the complete first body are
+read into a bounded private disk inventory; genuine coin/Orchard authorizations
+derive the first frontier and membership sets from the empty activation origin.
+The locally selected buried DNORST02 commitment authenticates the result. Current
+sets are not rewound/copied, and the source database is not changed. Cancellation
+is checked per source-node read and between proof phases, not during an individual
+cryptographic operation. This private preparation API is not yet a P2P server,
+shared serving cache, live owner handoff or mobile historical source.
+
 This codec is NOT yet daemon P2P negotiation/serving, atomic transition of an
 existing H149999 store, crash-safe startup recovery, or a wallet-history source.
 Those integration gates remain open. Automatic crossing may wait at the
@@ -182,8 +192,9 @@ of an archival provider remains necessary for this proposed scan. Missing
 providers leave recovery incomplete, with a useful error and no spend readiness.
 
 The reported stateless H149999 stop is an independent release blocker. Enrollment
-does not fix it. The current soak starts from qualified compact snapshots and
-does not prove an ordinary mobile install can cross the boundary. Diagnose and
+does not fix it. The current timed soak has three full producers and an empty
+Orchard tree; a separate completed short snapshot matrix covers both profiles.
+Neither proves an ordinary mobile install can cross the boundary. Diagnose and
 fix the actual historical-to-Orchard compact owner/validation path in a separate
 reviewed commit; test both direct boundary crossing and v6 bootstrap. Do not
 disable catalog/root validation, silently switch to trusting a server, or infer

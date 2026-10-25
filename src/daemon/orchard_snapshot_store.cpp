@@ -141,6 +141,76 @@ consensus::OrchardSnapshotSection OrchardSnapshotStore::Capture(const ChainDB& d
     }
     inventory->Seal();s.disk_nodes=std::move(inventory);ValidateOrchardSnapshotSection(s);return s;
 }
+consensus::OrchardSnapshotSection OrchardSnapshotStore::CaptureActivation(const ChainDB& db,
+    const consensus::HeaderChainSelector& headers,const std::function<bool()>& cancelled) {
+    using namespace consensus;
+    const auto check_cancel=[&]{Require(!cancelled||!cancelled());};
+    check_cancel();const auto& p=Params();
+    Require(OrchardProfileConfigurationValid(p)&&p.orchard_activation_height&&
+        p.orchard_activation_height!=UINT32_MAX&&
+        p.orchard_catalog_commitment_activation_height==p.orchard_activation_height);
+    HeaderIndexEntry base,parent;const auto best=headers.GetBestHeaderValue();
+    Require(best&&headers.GetHeaderAtHeightCopy(p.orchard_activation_height,base)&&
+        headers.GetHeaderAtHeightCopy(p.orchard_activation_height-1,parent)&&base.prev_hash==parent.hash&&
+        base.chainwork>parent.chainwork);
+    uint256 ancestor;uint32_t selected=0;
+    Require(uint64_t(best->height)>=uint64_t(base.height)+p.state_commitment_burial_depth&&
+        headers.GetAncestorHashByHash(best->hash,base.height,ancestor,selected)&&
+        selected==best->height&&ancestor==base.hash);
+    const auto context=SelectedOrchardBlockContext(base.header,base.height);Require(bool(context));
+    OrchardSnapshotSection s;s.profile=OrchardSnapshotProfile::Compact;
+    s.parent_catalog=storage::catalog::State::Decode(Need(db.getOrchardCatalogState(parent.hash)));
+    s.base_catalog=storage::catalog::State::Decode(Need(db.getOrchardCatalogState(base.hash)));
+    Require(s.parent_catalog.block==parent.hash&&s.parent_catalog.height==parent.height&&
+        s.base_catalog.block==base.hash&&s.base_catalog.height==base.height);
+    // Retirement contents are frozen; only its descendant marker changes.
+    // Neither those contents nor the retained catalog are trusted until the
+    // reconstructed first-state root matches the selected coinbase below.
+    s.retirement=Need(db.getLegacyRetirementState());s.retirement.height=base.height;
+    s.retirement.block_hash=base.hash;s.retirement.parent_hash=parent.hash;
+    const bool witness=p.enforce_witness_commitment&&base.height>=p.witness_commitment_enforcement_height;
+    const auto block=ReadStoredOrchardBlock(db,base.hash,witness);s.base_body=block.WireBytes();
+    Require(s.base_body.size()<=ORCHARD_SNAPSHOT_MAX_BASE_BODY_BYTES);
+    auto inventory=std::make_shared<OrchardSnapshotCatalog>(std::filesystem::path(db.db_->GetName()).parent_path());
+    uint64_t visits=0;
+    const auto read=[&](const uint256& id){check_cancel();return Need(db.getOrchardCatalogNode(id));};
+    for(const auto* state:{&s.parent_catalog,&s.base_catalog}) {
+        const auto walk=[&](storage::catalog::Kind kind,const uint256& root,uint64_t count){
+            // Six trees, two inventories at most; even duplicate paths charge
+            // work. The disk inventory separately enforces its byte quota.
+            Require(count<=ORCHARD_SNAPSHOT_MAX_SECTION_BYTES/49);
+            storage::catalog::Tree(kind,read).ForEachNode(root,count,[&](const auto& id,const auto& bytes){
+                Require(++visits<=2*(ORCHARD_SNAPSHOT_MAX_SECTION_BYTES/49));
+                inventory->Insert(id,bytes);return true;
+            });
+        };
+        walk(storage::catalog::Kind::Transactions,state->transactions,state->transaction_count);
+        walk(storage::catalog::Kind::LegacyCoins,state->legacy,state->legacy_count);
+        walk(storage::catalog::Kind::NonTransparentCoins,state->nontransparent,state->nontransparent_count);
+    }
+    inventory->Seal();s.disk_nodes=std::move(inventory);check_cancel();
+    const auto captured_read=[&](const uint256& id){check_cancel();return ReadOrchardSnapshotNode(s,id);};
+    const auto view=CaptureOrchardCatalogCoins(block,*context,parent.header,s.parent_catalog,captured_read);
+    const OrchardBranchMtpLookup mtp=[&](uint32_t height)->std::optional<uint64_t>{
+        uint256 hash;uint32_t selected_height=0,found=0,time=0;
+        if(height>parent.height||!headers.GetAncestorHashByHash(parent.hash,height,hash,selected_height)||
+            selected_height!=parent.height||!headers.GetMedianTimePastByHash(hash,time,found)||found!=height)return {};
+        return time;
+    };
+    const auto coins=PrepareOrchardBlockCoinsUnderChainstateLock(block,*context,view,mtp,witness);
+    (void)CheckOrchardBlockFilter(block,coins);check_cancel();
+    // There is no Orchard parent state at activation. Re-run real transparent
+    // and Orchard authorizations, then derive commitments/frontier from empty;
+    // current nullifiers/anchors/undo are neither copied nor rewound.
+    const OrchardStateLookups empty{[](const uint256&)->StatusOr<bool>{return false;},
+        [](const uint256&)->StatusOr<bool>{return false;}};
+    const auto state=PrepareOrchardStateTransition(*context,std::nullopt,coins.Authorizations(),empty);
+    s.state=state.Next();s.nullifiers=state.Nullifiers();
+    std::sort(s.nullifiers.begin(),s.nullifiers.end(),OrchardSnapshotRawLess{});
+    s.anchors.push_back({s.state.anchor,1});s.accumulator=s.base_catalog.stump;check_cancel();
+    Require(OrchardSnapshotSectionEncodedSize(s)<=ORCHARD_SNAPSHOT_MAX_SECTION_BYTES);
+    VerifyCatalogTransferProof(s,headers);check_cancel();return s;
+}
 consensus::OrchardBlockContext OrchardSnapshotStore::Authenticate(const consensus::OrchardSnapshotSection& s,
     const consensus::HeaderChainSelector& headers,uint32_t burial,bool require_best_ancestry) {
     using namespace consensus;

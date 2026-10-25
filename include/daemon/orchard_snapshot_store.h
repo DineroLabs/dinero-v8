@@ -33,6 +33,14 @@ private:
     static void SeedRetainedHeaders(const ChainDB&,consensus::HeaderChainSelector&);
     static consensus::OrchardSnapshotSection Capture(const ChainDB&,
         consensus::OrchardSnapshotProfile,const std::vector<uint8_t>& accumulator);
+    // Detached, read-only reconstruction of the FIRST Orchard block, even
+    // after the selected tip has advanced. Requires retained bodies/catalog
+    // nodes and the locally selected buried activation header. Never rolls
+    // back the source DB, copies its current sets, or installs a reorg floor.
+    // Caller pins DB lifetime and serializes preparation; cancellation is
+    // checked on each source-node read and between bounded proof phases.
+    static consensus::OrchardSnapshotSection CaptureActivation(const ChainDB&,
+        const consensus::HeaderChainSelector&,const std::function<bool()>& cancelled);
     static consensus::OrchardBlockContext Authenticate(const consensus::OrchardSnapshotSection&,
         const consensus::HeaderChainSelector&,uint32_t burial,bool require_best_ancestry=true);
     static Publication Install(AnnotatedRecursiveMutex&,ChainDB&,const ChainWriteToken&,

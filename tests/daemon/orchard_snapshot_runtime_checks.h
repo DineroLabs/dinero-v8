@@ -14,6 +14,8 @@ struct OrchardSnapshotStoreTestAccess {
     static auto Capture(const ChainDB& db,consensus::OrchardSnapshotProfile profile,const std::vector<uint8_t>& accumulator) {
         return OrchardSnapshotStore::Capture(db,profile,accumulator);
     }
+    static auto CaptureActivation(const ChainDB& db,const consensus::HeaderChainSelector& headers,
+        const std::function<bool()>& cancelled={}){return OrchardSnapshotStore::CaptureActivation(db,headers,cancelled);}
     static auto Install(AnnotatedRecursiveMutex& mutex,ChainDB& db,const ChainWriteToken& token,BlockStorage& files,
         const consensus::HeaderChainSelector& headers,const consensus::OrchardSnapshotFile& file) {
         std::lock_guard<AnnotatedRecursiveMutex> lock(mutex);
@@ -27,6 +29,91 @@ struct OrchardSnapshotStoreTestAccess {
         std::lock_guard<AnnotatedRecursiveMutex> lock(mutex);return OrchardSnapshotStore::RecoverBaseMarkers(mutex,db,token,headers);
     }
 };
+TEST(OrchardCatalogTransfer, ArchivalSourceReconstructsFirstProofAfterTipAdvances){
+    using namespace consensus;using Access=OrchardSnapshotStoreTestAccess;
+    CanonicalPoolFixture source(true);MutableParams().orchard_catalog_commitment_activation_height=102;
+    MutableParams().state_commitment_burial_depth=0;
+    source.f.service->setRuntimeBlockNotifications(std::make_shared<CanonicalPoolNotices>());
+    const auto first=SolveCatalogTemplate(source.Build());ASSERT_TRUE(first);ASSERT_TRUE(source.Submit(first->WireBytes()).connected);
+    HeaderChainSelector headers;for(const auto& b:source.f.blocks)ASSERT_TRUE(headers.AddHeader(b.header));
+    ASSERT_TRUE(headers.AddHeader(first->Header()));
+    auto& live=ShieldedStateStartupTestAccess::CatalogWriterCoins(*source.f.service);
+    const auto original=Access::Capture(source.f.db,OrchardSnapshotProfile::Compact,
+        UtreexoStump::fromForest(live.GetForest()).serialize());
+    ASSERT_GT(original.state.tree_size,0u);ASSERT_FALSE(original.nullifiers.empty());
+    BlockAssembler assembler(&source.f.db);WireOrchardAssembler(assembler,source.f);
+    const auto second=SolveCatalogTemplate(assembler.CreateOrchardBlock(OrchardMiningPayout));ASSERT_TRUE(second);
+    ASSERT_TRUE(source.Submit(second->WireBytes()).connected);ASSERT_TRUE(headers.AddHeader(second->Header()));
+    const auto before=source.f.db.getOrchardState();ASSERT_TRUE(before.ok());ASSERT_EQ(before->height,103u);
+    const auto retired=source.f.db.getLegacyRetirementState();ASSERT_TRUE(retired.ok());
+    const auto archive=Access::CaptureActivation(source.f.db,headers);
+    EXPECT_EQ(HashOrchardSnapshotSection(archive),HashOrchardSnapshotSection(original));
+    EXPECT_EQ(archive.state.height,102u);EXPECT_EQ(archive.anchors.size(),1u);
+    EXPECT_EQ(source.f.db.getOrchardState().value(),*before);
+    EXPECT_EQ(source.f.db.getLegacyRetirementState().value(),*retired);
+    EXPECT_EQ(source.f.service->GetActiveTip()->hash,second->Header().GetHash());
+    uint256 nonce;nonce.data[0]=13;using Transfer=p2p::OrchardCatalogTransfer;
+    const auto request=Transfer::Request::Selected(headers,nonce);Transfer::Sender sender(request,archive);
+    Transfer::Receiver receiver(request,sender.Description().Encode(),headers);
+    for(uint32_t i=0;i<sender.Description().Pages();++i)receiver.Accept(sender.Serve(receiver.RequestNext()));
+    EXPECT_EQ(HashOrchardSnapshotSection(receiver.Finish(headers)),HashOrchardSnapshotSection(original));
+}
+TEST(OrchardCatalogTransfer, ArchivalSourceCancellationAndUnburiedHeadersNeverPublish){
+    using namespace consensus;using Access=OrchardSnapshotStoreTestAccess;
+    CanonicalPoolFixture source(true);MutableParams().orchard_catalog_commitment_activation_height=102;
+    MutableParams().state_commitment_burial_depth=0;
+    const auto first=SolveCatalogTemplate(source.Build());ASSERT_TRUE(first);ASSERT_TRUE(source.Submit(first->WireBytes()).connected);
+    HeaderChainSelector headers;for(const auto& b:source.f.blocks)ASSERT_TRUE(headers.AddHeader(b.header));
+    ASSERT_TRUE(headers.AddHeader(first->Header()));
+    const auto before=source.f.db.getOrchardState();ASSERT_TRUE(before.ok());
+    unsigned calls=0;EXPECT_ANY_THROW(Access::CaptureActivation(source.f.db,headers,[&]{return ++calls>=4;}));
+    EXPECT_EQ(calls,4u);EXPECT_ANY_THROW(Access::CaptureActivation(source.f.db,headers,[]{return true;}));
+    MutableParams().state_commitment_burial_depth=1;EXPECT_ANY_THROW(Access::CaptureActivation(source.f.db,headers));
+    MutableParams().state_commitment_burial_depth=0;
+    HeaderChainSelector missing;for(const auto& b:source.f.blocks)ASSERT_TRUE(missing.AddHeader(b.header));
+    EXPECT_ANY_THROW(Access::CaptureActivation(source.f.db,missing));
+    MutableParams().orchard_catalog_commitment_activation_height=UINT32_MAX;
+    EXPECT_ANY_THROW(Access::CaptureActivation(source.f.db,headers));
+    EXPECT_EQ(source.f.db.getOrchardState().value(),*before);
+    EXPECT_EQ(source.f.service->GetActiveTip()->hash,first->Header().GetHash());
+}
+TEST(OrchardCatalogTransfer, ArchivalSourceMissingNodesAndForgedRetirementRefuse){
+    using namespace consensus;using Access=OrchardSnapshotStoreTestAccess;
+    CanonicalPoolFixture source(true);MutableParams().orchard_catalog_commitment_activation_height=102;
+    MutableParams().state_commitment_burial_depth=0;
+    const auto first=SolveCatalogTemplate(source.Build());ASSERT_TRUE(first);ASSERT_TRUE(source.Submit(first->WireBytes()).connected);
+    HeaderChainSelector headers;for(const auto& b:source.f.blocks)ASSERT_TRUE(headers.AddHeader(b.header));
+    ASSERT_TRUE(headers.AddHeader(first->Header()));
+    const auto before=source.f.db.getOrchardState();ASSERT_TRUE(before.ok());
+    const auto catalog=source.f.db.getOrchardCatalogState(first->Header().GetHash());ASSERT_TRUE(catalog.ok());
+    const auto state=storage::catalog::State::Decode(*catalog);
+    const auto node=source.f.db.getOrchardCatalogNode(state.transactions);ASSERT_TRUE(node.ok());
+    const auto node_key=std::string("Morchard_catalog_v1/node/")+std::string(reinterpret_cast<const char*>(state.transactions.data),32);
+    std::string retirement;source.f.db.close();
+    {shielded_store_fixture::Raw raw(source.f.path);
+        ASSERT_TRUE(raw.db->Get(rocksdb::ReadOptions(),raw.cf(shielded_store_fixture::shielded),"R1S",&retirement).ok());}
+    for(unsigned fault=0;fault<3;++fault){
+        SCOPED_TRACE(fault);
+        {shielded_store_fixture::Raw raw(source.f.path);
+            if(fault==0){rocksdb::WriteOptions w;w.sync=true;ASSERT_TRUE(raw.db->Delete(w,raw.cf("utreexo"),node_key).ok());}
+            else if(fault==1){auto corrupt=*node;corrupt.back()^=1;raw.put("utreexo",node_key,corrupt);}
+            else {
+                // Still structurally decodable: change the frozen SHR1, not
+                // a size/tag. Only the selected DNORST02 root exposes the lie.
+                auto forged=retirement;forged.at(81)^=1;
+                raw.put(shielded_store_fixture::shielded,"R1S",forged);
+            }}
+        ASSERT_EQ(source.f.db.init(source.f.path),Status::Ok);
+        if(fault==2)ASSERT_TRUE(source.f.db.getLegacyRetirementState().ok());
+        EXPECT_ANY_THROW(Access::CaptureActivation(source.f.db,headers));
+        EXPECT_EQ(source.f.db.getOrchardState().value(),*before);
+        EXPECT_EQ(source.f.service->GetActiveTip()->hash,first->Header().GetHash());
+        source.f.db.close();{shielded_store_fixture::Raw raw(source.f.path);
+            raw.put("utreexo",node_key,*node);raw.put(shielded_store_fixture::shielded,"R1S",retirement);}
+    }
+    ASSERT_EQ(source.f.db.init(source.f.path),Status::Ok);
+    EXPECT_NO_THROW(Access::CaptureActivation(source.f.db,headers));
+}
 TEST(OrchardCatalogTransfer, BoundaryProofStreamsWithoutPeerGrantedPublication){
     using namespace consensus;using Transfer=p2p::OrchardCatalogTransfer;
     CanonicalPoolFixture source(true);MutableParams().orchard_catalog_commitment_activation_height=102;
