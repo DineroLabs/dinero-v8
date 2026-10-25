@@ -3,6 +3,7 @@
 #include "daemon/services/orchard_boundary_replay.h"
 #include "consensus/orchard_profile.h"
 #include "consensus/orchard_header.h"
+#include "consensus/orchard_catalog_validation.h"
 #include "consensus/block_lifecycle.h"
 #include "consensus/utreexo_maturity_leaf_activation.h"
 #include "common/annotated_mutex.h"
@@ -221,6 +222,53 @@ std::unique_ptr<OrchardBoundaryReplay> OrchardSnapshotStore::ReplayActivation(
     auto immutable=std::make_shared<const consensus::OrchardSnapshotSection>(*proof);
     VerifyCatalogTransferProof(*immutable,*headers);
     return std::unique_ptr<OrchardBoundaryReplay>(new OrchardBoundaryReplay(std::move(immutable),std::move(headers),height,hash));
+}
+std::unique_ptr<OrchardCompactChainstate> OrchardSnapshotStore::RestoreActivationParent(
+    AnnotatedRecursiveMutex& mutex,const ChainDB& db,const consensus::HeaderChainSelector& headers,
+    const consensus::OrchardSnapshotSection& untrusted) {
+    using namespace consensus;mutex.AssertHeld("restore authenticated activation parent");
+    // Copy mutable metadata before verification; production node inventories
+    // are sealed/shared, not reconstructed in a history-sized RAM container.
+    const OrchardSnapshotSection proof=untrusted;VerifyCatalogTransferProof(proof,headers);
+    const auto& parent=proof.parent_catalog;const auto& retired=proof.retirement.record;
+    Require(db.hasSeparatedShieldedState()&&!storage::ReadOrchardSnapshotBase(db)&&
+        uint64_t(parent.height)+1==proof.state.height&&parent.block==retired.boundary_parent);
+    // Keep all existing before-image checks. In particular, the snapshot
+    // shortcut for omitted legacy bytes is NOT available at this boundary.
+    CheckPreparedLegacyRetirementUnderLock(db,retired);
+    Require(storage::ReadOrchardCompactStorageBinding(db)==storage::EncodeOrchardCompactStorageBinding(parent)&&
+        Need(db.getOrchardCatalogState(parent.block))==parent.Encode());
+    const auto tip=Need(db.getTip());const auto header=Need(db.getHeader(parent.block));
+    Require(tip.height==int32_t(parent.height)&&tip.hash==parent.block&&tip.work==parent.work);
+    const auto context=SelectedOrchardBlockContext(OrchardBlockCandidate::DecodeExact(proof.base_body).Header(),proof.state.height);
+    Require(bool(context));
+    CheckOrchardCatalogStump(db,parent,*context,header,parent.height,UtreexoStump::deserialize(parent.stump));
+    const auto forest=Need(db.getForestTipMarker());
+    Require(forest.height==int32_t(parent.height)&&forest.block_hash==parent.block&&forest.forest_root==header.utreexo_root);
+    // This also rejects untracked active/undo namespace rows, not just a
+    // missing state head. No synthetic empty Orchard frontier is installed.
+    Require(Need(db.previewOrchardCommitmentSets(std::nullopt,proof.state,proof.nullifiers))==ComputeOrchardSnapshotSets(proof));
+    bool empty=true;Need(db.forEachUTXO([&](const auto&,uint32_t,const auto&){empty=false;return false;}));Require(empty);
+    const auto read=[&](const uint256& id){
+        const auto bytes=Need(db.getOrchardCatalogNode(id));Require(bytes==ReadOrchardSnapshotNode(proof,id));return bytes;
+    };
+    const auto walk=[&](storage::catalog::Kind kind,const uint256& root,uint64_t count){
+        storage::catalog::Tree(kind,read).ForEachNode(root,count,[](const auto&,const auto&){return true;});
+    };
+    walk(storage::catalog::Kind::Transactions,parent.transactions,parent.transaction_count);
+    walk(storage::catalog::Kind::LegacyCoins,parent.legacy,parent.legacy_count);
+    walk(storage::catalog::Kind::NonTransparentCoins,parent.nontransparent,parent.nontransparent_count);
+    auto owner=std::make_unique<OrchardCompactChainstate>();
+    owner->selected_=std::make_shared<const OrchardCompactChainstate::Selected>(&db,&mutex,parent,retired);
+    // Header selection is separate from the selected writer mutex. Pin the
+    // exact first-block authority and burial through private enrollment; no
+    // header APIs/callbacks may run while this selector lock is held.
+    std::unique_lock<std::mutex> selection(headers.mutex_);const auto* best=headers.best_header_;
+    const auto* first=best?best->GetAncestor(proof.state.height):nullptr;
+    const auto* previous=first?first->GetAncestor(parent.height):nullptr;
+    Require(first&&first->hash==proof.state.block_hash&&previous&&previous->hash==parent.block&&
+        uint64_t(best->height)>=uint64_t(proof.state.height)+Params().state_commitment_burial_depth);
+    return owner;
 }
 consensus::OrchardBlockContext OrchardSnapshotStore::Authenticate(const consensus::OrchardSnapshotSection& s,
     const consensus::HeaderChainSelector& headers,uint32_t burial,bool require_best_ancestry) {

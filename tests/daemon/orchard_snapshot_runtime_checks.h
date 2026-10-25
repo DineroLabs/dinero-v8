@@ -29,6 +29,9 @@ struct OrchardSnapshotStoreTestAccess {
     static auto ReplayActivation(std::shared_ptr<const consensus::OrchardSnapshotSection> proof,
         std::shared_ptr<const consensus::HeaderChainSelector> headers,uint32_t height,const uint256& hash){
         return OrchardSnapshotStore::ReplayActivation(std::move(proof),std::move(headers),height,hash);}
+    static auto RestoreParent(AnnotatedRecursiveMutex& mutex,const ChainDB& db,const consensus::HeaderChainSelector& headers,
+        const consensus::OrchardSnapshotSection& proof){
+        std::lock_guard<AnnotatedRecursiveMutex> lock(mutex);return OrchardSnapshotStore::RestoreActivationParent(mutex,db,headers,proof);}
     static auto Install(AnnotatedRecursiveMutex& mutex,ChainDB& db,const ChainWriteToken& token,BlockStorage& files,
         const consensus::HeaderChainSelector& headers,const consensus::OrchardSnapshotFile& file) {
         std::lock_guard<AnnotatedRecursiveMutex> lock(mutex);
@@ -232,6 +235,81 @@ TEST(OrchardReopenIntent, CorruptForeignAliasedAndReplacedControlRefusesBeforeRe
     }
 }
 #endif
+namespace {
+struct TransferredActivationParentFixture {
+    std::shared_ptr<consensus::HeaderChainSelector> headers=std::make_shared<consensus::HeaderChainSelector>();
+    std::optional<consensus::OrchardSnapshotSection> proof;
+    CompactStartupFixture disk;
+    TransferredActivationParentFixture():disk([this](auto& source){
+        for(const auto& b:source.f.blocks)OrchardAdmissionFixture::Require(headers->AddHeader(b.header));
+        OrchardAdmissionFixture::Require(headers->AddHeader(source.first->Header())&&headers->AddHeader(source.second->Header()));
+        proof=OrchardSnapshotStoreTestAccess::CaptureActivation(source.f.db,*headers);
+    },OrchardAdmissionFixture::HistoricalSpend::None,true){}
+    void Parent(){auto old=disk.Restore();disk.Undo(*old,disk.second);disk.Undo(*old,disk.first);}
+    auto Restore(){return OrchardSnapshotStoreTestAccess::RestoreParent(disk.startup_mutex,disk.reopened,*headers,*proof);}
+};
+}
+TEST(OrchardActivationParent, AuthenticatedParentFirstConnectUndoColdDatabaseAndReconnectHaveNoSnapshotFloor){
+    using namespace consensus;TransferredActivationParentFixture f;f.Parent();
+    const auto rows=f.disk.Rows();const auto archives=f.disk.ArchiveBytes();auto owner=f.Restore();ASSERT_TRUE(owner);
+    EXPECT_EQ(f.disk.Rows(),rows);EXPECT_EQ(f.disk.ArchiveBytes(),archives);
+    EXPECT_FALSE(storage::ReadOrchardSnapshotBase(f.disk.reopened));
+    EXPECT_ANY_THROW(storage::RequireFullOrchardStorage(f.disk.reopened));
+    {
+        std::lock_guard<AnnotatedRecursiveMutex> lock(f.disk.startup_mutex);
+        ASSERT_NE(owner->SelectedUnderLock(f.disk.startup_mutex),nullptr);
+        EXPECT_EQ(owner->SelectedUnderLock(f.disk.startup_mutex)->height,101u);
+        EXPECT_EQ(owner->SelectedUnderLock(f.disk.startup_mutex)->Encode(),f.proof->parent_catalog.Encode());
+    }
+    const auto context=*SelectedOrchardBlockContext(f.disk.first->Header(),102);
+    const auto before=ReadRuntimeOutboxUnderLock(f.disk.reopened,context).head;
+    f.disk.Connect(*owner,f.disk.first);
+    const auto state=f.disk.reopened.getOrchardState();ASSERT_TRUE(state.ok());EXPECT_EQ(*state,f.proof->state);
+    const auto undo=f.disk.reopened.getOrchardUndoParent(*state);ASSERT_TRUE(undo.ok());EXPECT_FALSE(undo->has_value());
+    const auto event=ReadRuntimeOutboxUnderLock(f.disk.reopened,context,before,1);ASSERT_EQ(event.events.size(),1u);
+    EXPECT_EQ(event.events[0].direction,RuntimeBlockDirection::Connect);EXPECT_EQ(event.events[0].context.height,102u);
+    ASSERT_TRUE(event.events[0].orchard_replay);EXPECT_FALSE(event.events[0].orchard_replay->parent);
+    EXPECT_EQ(event.events[0].orchard_replay->next,*state);EXPECT_FALSE(storage::ReadOrchardSnapshotBase(f.disk.reopened));
+    f.disk.Undo(*owner,f.disk.first);owner.reset();
+    EXPECT_EQ(f.disk.reopened.getTip()->height,101);EXPECT_EQ(f.disk.reopened.getOrchardState().status(),Status::NotFound);
+    EXPECT_EQ(f.disk.reopened.getLegacyRetirementState().status(),Status::NotFound);
+    f.disk.reopened.close();ASSERT_EQ(f.disk.reopened.init(f.disk.f.path),Status::Ok);
+    const auto cold_rows=f.disk.Rows();const auto cold_archives=f.disk.ArchiveBytes();owner=f.Restore();ASSERT_TRUE(owner);
+    EXPECT_EQ(f.disk.Rows(),cold_rows);EXPECT_EQ(f.disk.ArchiveBytes(),cold_archives);
+    f.disk.Connect(*owner,f.disk.first);f.disk.Connect(*owner,f.disk.second);
+    EXPECT_EQ(f.disk.reopened.getTip()->height,103);f.disk.Undo(*owner,f.disk.second);f.disk.Undo(*owner,f.disk.first);
+    EXPECT_EQ(f.disk.reopened.getTip()->height,101);EXPECT_FALSE(storage::ReadOrchardSnapshotBase(f.disk.reopened));
+    EXPECT_ANY_THROW(storage::RequireFullOrchardStorage(f.disk.reopened));
+}
+TEST(OrchardActivationParent, DescendantUnburiedCorruptBeforeImagesAndMissingOffPathNodesRefuseWithoutRepair){
+    using namespace consensus;TransferredActivationParentFixture f;
+    const auto descendant=f.disk.Rows();EXPECT_ANY_THROW(f.Restore());EXPECT_EQ(f.disk.Rows(),descendant);
+    f.Parent();const auto intact=f.disk.Rows();const auto archives=f.disk.ArchiveBytes();
+    MutableParams().state_commitment_burial_depth=2;EXPECT_ANY_THROW(f.Restore());MutableParams().state_commitment_burial_depth=1;
+    auto forged=*f.proof;++forged.retirement.record.retired_value;
+    EXPECT_ANY_THROW(OrchardSnapshotStoreTestAccess::RestoreParent(f.disk.startup_mutex,f.disk.reopened,*f.headers,forged));
+    const auto marker=f.disk.reopened.getForestTipMarker();ASSERT_TRUE(marker.ok());auto wrong=*marker;++wrong.height;
+    ASSERT_EQ(f.disk.reopened.putForestTipMarker(f.disk.f.token,wrong),Status::Ok);const auto bad_marker=f.disk.Rows();
+    EXPECT_ANY_THROW(f.Restore());EXPECT_EQ(f.disk.Rows(),bad_marker);
+    ASSERT_EQ(f.disk.reopened.putForestTipMarker(f.disk.f.token,*marker),Status::Ok);
+    const auto frontier=f.disk.reopened.getShieldedState(ChainDB::ShieldedStateRecord::Frontier);ASSERT_TRUE(frontier.ok());
+    ASSERT_EQ(f.disk.reopened.putShieldedState(f.disk.f.token,ChainDB::ShieldedStateRecord::Frontier,"corrupt"),Status::Ok);
+    const auto bad_frontier=f.disk.Rows();EXPECT_ANY_THROW(f.Restore());EXPECT_EQ(f.disk.Rows(),bad_frontier);
+    ASSERT_EQ(f.disk.reopened.putShieldedState(f.disk.f.token,ChainDB::ShieldedStateRecord::Frontier,*frontier),Status::Ok);
+    EXPECT_EQ(f.disk.Rows(),intact);EXPECT_EQ(f.disk.ArchiveBytes(),archives);ASSERT_TRUE(f.Restore());
+    uint256 offpath;const auto& catalog=f.proof->parent_catalog;
+    storage::catalog::Tree(storage::catalog::Kind::Transactions,[&](const auto& id){return ReadOrchardSnapshotNode(*f.proof,id);})
+        .ForEachNode(catalog.transactions,catalog.transaction_count,[&](const auto& id,const auto&){
+            if(offpath.IsNull()&&id!=catalog.transactions)offpath=id;return true;
+        });ASSERT_FALSE(offpath.IsNull());
+    const auto key=std::string("Morchard_catalog_v1/node/")+std::string(reinterpret_cast<const char*>(offpath.data),32);
+    f.disk.Mutate([&](auto& raw){rocksdb::WriteOptions sync;sync.sync=true;ASSERT_TRUE(raw.db->Delete(sync,raw.cf("utreexo"),key).ok());});
+    const auto missing=f.disk.Rows();EXPECT_ANY_THROW(f.Restore());EXPECT_EQ(f.disk.Rows(),missing);
+    f.disk.Mutate([&](auto& raw){raw.put("utreexo",key,ReadOrchardSnapshotNode(*f.proof,offpath));});ASSERT_TRUE(f.Restore());
+    f.disk.Mutate([](auto& raw){raw.put("shielded_state_v1","O1Zuntracked","retain-corruption");});
+    const auto untracked=f.disk.Rows();EXPECT_ANY_THROW(f.Restore());EXPECT_EQ(f.disk.Rows(),untracked);
+    EXPECT_EQ(f.disk.ArchiveBytes(),archives);
+}
 TEST(OrchardCatalogClient, SequentialConnectionBoundDownloadAuthenticatesWithoutPublishing){
     using namespace consensus;using Transfer=p2p::OrchardCatalogTransfer;using Client=p2p::OrchardCatalogClient;
     CanonicalPoolFixture source(true);MutableParams().orchard_catalog_commitment_activation_height=102;

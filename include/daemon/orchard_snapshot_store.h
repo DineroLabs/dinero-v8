@@ -45,6 +45,16 @@ private:
     static std::unique_ptr<OrchardBoundaryReplay> ReplayActivation(
         std::shared_ptr<const consensus::OrchardSnapshotSection>,
         std::shared_ptr<const consensus::HeaderChainSelector>,uint32_t,const uint256&);
+    // Startup-only re-enrollment at activation MINUS ONE, NOT a v6 snapshot
+    // floor. Requires a locally selected/buried joint-activation proof, exact
+    // retained parent catalog/nodes/stump and full frozen legacy before-image.
+    // Source must ALREADY be compact, root-locked and quiescent; this method
+    // does not convert full/assumed storage, install proof bytes, repair rows,
+    // mark pre-parent history validated, or publish any service/tip/readers.
+    // The ordinary first connect/undo/runtime writer remains mandatory.
+    static std::unique_ptr<OrchardCompactChainstate> RestoreActivationParent(
+        AnnotatedRecursiveMutex&,const ChainDB&,const consensus::HeaderChainSelector&,
+        const consensus::OrchardSnapshotSection&);
     static consensus::OrchardBlockContext Authenticate(const consensus::OrchardSnapshotSection&,
         const consensus::HeaderChainSelector&,uint32_t burial,bool require_best_ancestry=true);
     static Publication Install(AnnotatedRecursiveMutex&,ChainDB&,const ChainWriteToken&,

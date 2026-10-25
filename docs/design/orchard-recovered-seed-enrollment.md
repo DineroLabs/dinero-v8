@@ -362,6 +362,21 @@ before-images, genuine first-block validation, canonical undo and runtime event
 must therefore survive first connect, disconnect, cold reopen and reconnect.
 This remains separate unfinished owner-install/startup work; none of the
 generic reopen APIs or transfer codec grants that state-conversion authority.
+The private store now has a separate read-only activation-parent re-enrollment
+factory: it authenticates a selected/buried joint-activation transfer proof,
+requires an already compact/quiescent store at activation minus one, checks its
+exact retained catalog and every reachable parent node, stump/header/work/forest
+marker, complete frozen legacy before-image and empty active Orchard namespace,
+and rechecks header selection/burial across private enrollment. Full-storage
+guards and the original fresh-only v6 importer are unchanged. It installs no
+snapshot base, fake empty Orchard state, proof chunks, tip or validation marker,
+does not convert a full/assumed store or publish graph/readers, and cannot restore
+a descendant through the parent route. The first connect still uses the normal
+writer's authorizations, root checks, actual nullifier owners, undo and outbox;
+inverse removes the first active state and permits parent re-enrollment after a
+database close/open. The host still must retain/authenticate proof data for cold
+startup and implement atomic closed-store conversion/activation routing. This
+factory alone is not the seamless protocol or a live App crossing qualification.
 The running 72-hour private soak is three full producers on an older pinned
 source with an empty Orchard tree. The earlier short six-consumer matrix covered
 both v6 profiles; neither is a 72-hour compact/nonempty/new-source qualification.

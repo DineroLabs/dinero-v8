@@ -660,7 +660,9 @@ struct CompactStartupFixture:CanonicalPoolFixture {
     consensus::HeaderChainSelector headers;
     unsigned attempts=0;
     explicit CompactStartupFixture(const std::function<void(CompactStartupFixture&)>& capture={},
-        OrchardAdmissionFixture::HistoricalSpend historical_spend=OrchardAdmissionFixture::HistoricalSpend::None):CanonicalPoolFixture(true,historical_spend) {
+        OrchardAdmissionFixture::HistoricalSpend historical_spend=OrchardAdmissionFixture::HistoricalSpend::None,
+        bool joint_boundary=false):CanonicalPoolFixture(true,historical_spend) {
+        if(joint_boundary){MutableParams().orchard_catalog_commitment_activation_height=102;MutableParams().state_commitment_burial_depth=1;}
         const auto require=[](bool ok){OrchardAdmissionFixture::Require(ok);};
         // Persist the actual independently validated historical bodies and
         // locators. The source store is then produced solely by real writers.
