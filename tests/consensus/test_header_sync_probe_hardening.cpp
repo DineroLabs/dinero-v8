@@ -357,3 +357,33 @@ TEST(HeaderSyncProbeHardening, AnsweringOwnerStartsFreshWindowOnNextRequest) {
     EXPECT_FALSE(f.Begin(2, HeaderRequestMode::REFRESH))
         << "2 s into a new request is not a silent owner";
 }
+
+// A slow but honest owner that loses the flight still contributes: its late
+// reply is validated and inserted, so handing the flight over during a slow
+// initial sync costs no headers.
+TEST(HeaderSyncProbeHardening, LateReplyAfterTakeoverStillInsertsHeaders) {
+    Fixture f;
+    uint256 none;
+    none.SetNull();
+    f.mgr.UpdatePeerBest(1, 3, none);
+    f.mgr.UpdatePeerBest(2, 3, none);
+    ASSERT_TRUE(f.Begin(1, HeaderRequestMode::SYNCHRONIZATION));
+    f.Advance(kTakeoverMs + kSec);
+    ASSERT_TRUE(f.Begin(2, HeaderRequestMode::SYNCHRONIZATION));
+
+    HeaderIndexEntry genesis{};
+    ASSERT_TRUE(f.selector.GetBestHeaderCopy(genesis));
+    std::vector<BlockHeader> chain;
+    uint256 prev = genesis.hash;
+    for (uint32_t i = 1; i <= 3; ++i) {
+        chain.push_back(MakeHeader(prev, 1000000 + i));
+        prev = chain.back().GetHash();
+    }
+    const auto late = f.mgr.ProcessHeadersWithResult(1, chain);
+    EXPECT_TRUE(late.accepted);
+    HeaderIndexEntry best{};
+    ASSERT_TRUE(f.selector.GetBestHeaderCopy(best));
+    EXPECT_EQ(best.height, 3U) << "the late reply's headers must still be inserted";
+    EXPECT_EQ(f.mgr.GetStats().current_sync_peer, 2U)
+        << "a late reply must not cancel the new owner's request";
+}
