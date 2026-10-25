@@ -26,6 +26,7 @@
 #include <mutex>
 
 namespace dinero {
+namespace p2p {class OrchardCatalogServer;}
 
 // Forward declarations
 class ILogger;
@@ -490,6 +491,7 @@ private:
 
     // Internal message handler
     void HandleP2PMessage(const std::string& peer_addr, const ::P2PMessage& msg);
+    std::shared_ptr<p2p::OrchardCatalogServer> orchard_catalog_server_;
     void StartSchedulerTickLoop();
     void StopSchedulerTickLoop();
     bool IsDynamicP2PActive() const;

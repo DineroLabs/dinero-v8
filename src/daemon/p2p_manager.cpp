@@ -6862,7 +6862,15 @@ void P2PManager::relay_addresses_to_peers(
               << " address(es) to " << fanout << " peer(s)" << std::endl;
 }
 
-bool P2PManager::send_to_peer(const std::string& peer_address, const P2PMessage& message) {
+std::optional<uint64_t> P2PManager::peer_session_nonce(const std::string& peer_address) const {
+    std::lock_guard lock(peers_mutex_);const auto it=connected_peers_.find(peer_address);
+    // The acquire pairs with handshake publication; our_nonce is immutable
+    // afterwards. Do not read partially initialized handshake fields.
+    if(it==connected_peers_.end()||!it->second->release_handshake_complete.load(std::memory_order_acquire)||
+        !it->second->our_nonce)return {};
+    return it->second->our_nonce;
+}
+bool P2PManager::send_to_peer(const std::string& peer_address, const P2PMessage& message,uint64_t expected_session) {
     if (!enforce_release_compatibility(peer_address)) return false;
     if (!network_active_.load(std::memory_order_acquire)) {
         return false;
@@ -6874,7 +6882,9 @@ bool P2PManager::send_to_peer(const std::string& peer_address, const P2PMessage&
     {
         std::lock_guard<std::mutex> lock(peers_mutex_);
         auto it = connected_peers_.find(peer_address);
-        if (it != connected_peers_.end() && it->second->is_connected) {
+        if (it != connected_peers_.end() && it->second->is_connected &&
+            (!expected_session||(it->second->release_handshake_complete.load(std::memory_order_acquire)&&
+                                  it->second->our_nonce==expected_session))) {
             peer_info = it->second;
             socket_fd = it->second->socket_fd;
         }

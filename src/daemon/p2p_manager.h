@@ -540,7 +540,10 @@ public:
     void set_user_agent(const std::string& user_agent);
     
     // Send messages
-    bool send_to_peer(const std::string& peer_address, const P2PMessage& message);
+    // Optional session binding is checked under peers_mutex_ while retaining
+    // the exact peer. Existing callers (zero) keep their ordinary behavior.
+    bool send_to_peer(const std::string& peer_address, const P2PMessage& message,uint64_t expected_session=0);
+    std::optional<uint64_t> peer_session_nonce(const std::string& peer_address) const;
     void broadcast_message(const P2PMessage& message);
     void broadcast_message_async(const P2PMessage& message);  // Non-blocking broadcast
     

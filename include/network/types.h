@@ -144,6 +144,8 @@ namespace ServiceFlags {
     // Claims typed Orchard transaction/block protocol support. This separate
     // bit is not wallet readiness, consensus validation or binary attestation.
     constexpr uint64_t NODE_ORCHARD_V1 = 1ULL << 30;
+    // Version-1 boundary catalog serving, not validated balance or mobile readiness.
+    constexpr uint64_t NODE_ORCHARD_CATALOG_V1 = 1ULL << 31;
 } // namespace ServiceFlags
 
 } // namespace dinero

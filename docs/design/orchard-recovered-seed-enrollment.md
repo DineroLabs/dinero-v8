@@ -156,10 +156,31 @@ derive the first frontier and membership sets from the empty activation origin.
 The locally selected buried DNORST02 commitment authenticates the result. Current
 sets are not rewound/copied, and the source database is not changed. Cancellation
 is checked per source-node read and between proof phases, not during an individual
-cryptographic operation. This private preparation API is not yet a P2P server,
-shared serving cache, live owner handoff or mobile historical source.
+cryptographic operation. This preparation API is not a live owner handoff or
+mobile historical source.
 
-This codec is NOT yet daemon P2P negotiation/serving, atomic transition of an
+Full, non-pruned nodes now advertise a separate catalog-serving capability and
+route `getocat`/`getocatpg` through a single bounded worker, outside peer/selected
+locks. Preparation takes a real service shutdown-use; the source/header owners
+are checked again after proof work. One immutable MAC-checked disk payload is
+shared by up to eight connection-bound nonce sessions, with at most 32 queued
+requests and one queued flight per connection. Replies retain the requesting
+connection nonce; a replacement connection cannot be selected by a delayed send.
+Malformed, foreign, unburied or unselected requests cannot start preparation.
+Failed preparation has a global one-minute cooldown. Preparation cancellation
+is cooperative at the documented checkpoints; Stop joins the worker before
+destroying its source or P2P manager.
+
+Per-peer/global serving rates are 16/64 pages per second, with an eight-GiB
+hourly global wire budget, 30-second idle/queue expiry and a 30-minute session
+lifetime. A disconnected/replaced peer cannot receive a session-bound reply;
+its idle session is discarded within the expiry window on the next work item.
+The compact snapshot load/export switch does not disable catalog validation or
+serving. These are local resource policies, not changes to consensus limits.
+Client scheduling, daemon handoff and historical recovery downloads are still
+separate unfinished integration work; serving capability is not phone readiness.
+
+This transport is NOT yet client-driven atomic transition of an
 existing H149999 store, crash-safe startup recovery, or a wallet-history source.
 Those integration gates remain open. Automatic crossing may wait at the
 activation parent for the configured commitment burial. It does not require a

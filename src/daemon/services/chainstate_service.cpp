@@ -13435,6 +13435,31 @@ bool ChainstateService::AuditOrchardSnapshotBaseUnderLock() const {
 #endif
 }
 
+StatusOr<std::shared_ptr<const consensus::OrchardSnapshotSection>> ChainstateService::captureOrchardActivationProof(
+    const std::function<bool()>& cancelled) {
+#ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
+    if(activation_mutex_.HeldByCurrentThread())return Status::Invalid;
+    try {
+        SelectedReadUse use(weak_from_this().lock());std::shared_ptr<ChainDB> db;
+        std::shared_ptr<consensus::HeaderChainSelector> headers;
+        {std::lock_guard<AnnotatedRecursiveMutex> selected(activation_mutex_);
+         if(safe_mode_active_||GetConfig().utreexo_stateless||!consensus_utxo_set_||
+            !chain_db_owner_||chain_db_owner_.get()!=chain_db_||!header_chain_selector_||
+            !active_tip_||active_tip_->height<Params().orchard_activation_height)return Status::Invalid;
+         db=chain_db_owner_;headers=header_chain_selector_;}
+        auto proof=std::make_shared<const consensus::OrchardSnapshotSection>(
+            OrchardSnapshotStore::CaptureActivation(*db,*headers,cancelled));
+        {std::lock_guard<AnnotatedRecursiveMutex> selected(activation_mutex_);
+         if(safe_mode_active_||db!=chain_db_owner_||headers!=header_chain_selector_)return Status::Invalid;}
+        if(cancelled&&cancelled())return Status::Invalid;
+        return proof;
+    } catch(const SelectedReadUse::Unavailable&){return Status::Internal;}
+      catch(...){return Status::Corruption;}
+#else
+    (void)cancelled;return Status::Internal;
+#endif
+}
+
 consensus::SnapshotExportResult ChainstateService::ExportOrchardSnapshot(const std::filesystem::path& path) {
     consensus::SnapshotExportResult result{};
 #ifdef DINERO_HAS_ORCHARD_RUNTIME_READER

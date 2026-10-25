@@ -1,5 +1,6 @@
 #pragma once
 #include "p2p/orchard_catalog_transfer.h"
+#include "p2p/orchard_catalog_server.h"
 #include "daemon/orchard_snapshot_store.h"
 #include "daemon/services/block_ingress_service.h"
 #include "consensus/validation_queue.h"
@@ -29,6 +30,58 @@ struct OrchardSnapshotStoreTestAccess {
         std::lock_guard<AnnotatedRecursiveMutex> lock(mutex);return OrchardSnapshotStore::RecoverBaseMarkers(mutex,db,token,headers);
     }
 };
+TEST(OrchardCatalogTransfer, ServingCacheSharesPayloadButBindsNonceAndConnection){
+    using namespace consensus;using Transfer=p2p::OrchardCatalogTransfer;using Server=p2p::OrchardCatalogServer;
+    CanonicalPoolFixture source(true);MutableParams().orchard_catalog_commitment_activation_height=102;
+    MutableParams().state_commitment_burial_depth=0;
+    const auto first=SolveCatalogTemplate(source.Build());ASSERT_TRUE(first);ASSERT_TRUE(source.Submit(first->WireBytes()).connected);
+    HeaderChainSelector headers;for(const auto& b:source.f.blocks)ASSERT_TRUE(headers.AddHeader(b.header));ASSERT_TRUE(headers.AddHeader(first->Header()));
+    uint256 nonce;nonce.data[0]=61;const auto request=Transfer::Request::Selected(headers,nonce);
+    struct Reply{Server::Peer peer;std::string command;std::vector<uint8_t> bytes;};
+    std::mutex mutex;std::condition_variable cv;std::deque<Reply> replies;std::atomic<unsigned> builds=0;
+    Server server([&](const auto& r){r.CheckSelected(headers);},[&](const auto& cancel){
+        ++builds;return std::make_shared<const OrchardSnapshotSection>(OrchardSnapshotStoreTestAccess::CaptureActivation(source.f.db,headers,cancel));
+    },[&](const auto& peer,const auto& command,const auto& bytes){
+        std::lock_guard lock(mutex);replies.push_back({peer,command,bytes});cv.notify_all();return true;
+    });
+    const auto receive=[&]()->Reply{
+        std::unique_lock lock(mutex);if(!cv.wait_for(lock,std::chrono::seconds(15),[&]{return !replies.empty();}))throw std::runtime_error("catalog reply timeout");
+        auto reply=std::move(replies.front());replies.pop_front();return reply;
+    };
+    EXPECT_FALSE(server.Enqueue({"peer",0},Transfer::RequestCommand,request.Encode()));
+    auto large=request.Encode();large.push_back(0);EXPECT_FALSE(server.Enqueue({"peer",1},Transfer::RequestCommand,large));
+    ASSERT_TRUE(server.Enqueue({"peer",1},Transfer::RequestCommand,request.Encode()));
+    const auto one=receive();ASSERT_EQ(one.command,Transfer::ManifestCommand);
+    auto next_request=request;next_request.nonce.data[0]++;
+    ASSERT_TRUE(server.Enqueue({"peer",2},Transfer::RequestCommand,next_request.Encode()));
+    const auto two=receive();const auto a=Transfer::Manifest::Decode(one.bytes),b=Transfer::Manifest::Decode(two.bytes);
+    EXPECT_EQ(builds.load(),1u);EXPECT_EQ(a.digest,b.digest);EXPECT_NE(a.Id(),b.Id());EXPECT_EQ(two.peer.session,2u);
+    Transfer::Receiver receiver(next_request,two.bytes,headers);
+    while(receiver.NextPage()<b.Pages()){
+        ASSERT_TRUE(server.Enqueue({"peer",2},Transfer::PageRequestCommand,receiver.RequestNext()));
+        const auto reply=receive();ASSERT_EQ(reply.command,Transfer::PageCommand);ASSERT_EQ(reply.peer.session,2u);receiver.Accept(reply.bytes);
+    }
+    EXPECT_NO_THROW(receiver.Finish(headers));server.Stop();
+    EXPECT_FALSE(server.Enqueue({"peer",3},Transfer::RequestCommand,request.Encode()));
+    EXPECT_EQ(source.f.service->GetActiveTip()->hash,first->Header().GetHash());
+}
+TEST(OrchardCatalogTransfer, ServerBoundsIngressAndCancelsPreparationOnStop){
+    using Server=p2p::OrchardCatalogServer;using Transfer=p2p::OrchardCatalogTransfer;
+    Transfer::Request request;request.magic=1;request.network=2;request.genesis.data[0]=1;request.nonce.data[0]=2;
+    request.parent.data[0]=3;request.base.data[0]=4;request.branch=1;request.activation=2;
+    std::mutex mutex;std::condition_variable cv;bool entered=false;std::atomic<bool> cancelled_seen=false;
+    std::atomic<unsigned> sends=0;
+    Server server([](const auto&){},[&](const auto& cancel)->std::shared_ptr<const consensus::OrchardSnapshotSection>{
+        {std::lock_guard lock(mutex);entered=true;cv.notify_all();}
+        const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(10);
+        while(!cancel()&&std::chrono::steady_clock::now()<deadline)std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        cancelled_seen=cancel();return {};
+    },[&](const auto&,const auto&,const auto&){++sends;return true;});
+    ASSERT_TRUE(server.Enqueue({"first",1},Transfer::RequestCommand,request.Encode()));
+    {std::unique_lock lock(mutex);ASSERT_TRUE(cv.wait_for(lock,std::chrono::seconds(5),[&]{return entered;}));}
+    unsigned accepted=0;for(unsigned i=0;i<100;++i)accepted+=server.Enqueue({std::to_string(i),1},Transfer::RequestCommand,request.Encode());
+    EXPECT_EQ(accepted,Server::MaximumQueue);server.Stop();EXPECT_TRUE(cancelled_seen);EXPECT_EQ(sends,0u);
+}
 TEST(OrchardCatalogTransfer, ArchivalSourceReconstructsFirstProofAfterTipAdvances){
     using namespace consensus;using Access=OrchardSnapshotStoreTestAccess;
     CanonicalPoolFixture source(true);MutableParams().orchard_catalog_commitment_activation_height=102;

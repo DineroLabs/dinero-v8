@@ -28,6 +28,10 @@
 #include "storage/chain_db.h"
 #include "common/ilogger.h"  // For ILogger interface dependency injection
 #include "network/types.h"   // For dinero::ServiceFlags
+#ifdef DINERO_HAS_ORCHARD_P2P
+#include "p2p/orchard_catalog_server.h"
+#include "daemon/config.h"
+#endif
 #include <algorithm>
 #include <cctype>
 #include <filesystem>
@@ -288,6 +292,9 @@ bool BuildProactiveHeaderBurst(ChainDB* chain_db,
 
 P2PService::~P2PService() {
     StopSchedulerTickLoop();
+#ifdef DINERO_HAS_ORCHARD_P2P
+    if(orchard_catalog_server_)orchard_catalog_server_->Stop();
+#endif
     StopPortMapping();
 }
 
@@ -2288,6 +2295,7 @@ bool P2PService::Start() {
                 uint64_t flags = ServiceFlags::NODE_UTREEXO | ServiceFlags::NODE_COMPACT_TIMING_V1;
 #ifdef DINERO_HAS_ORCHARD_P2P
                 flags |= ServiceFlags::NODE_ORCHARD_V1;
+                if(orchard_catalog_server_)flags |= ServiceFlags::NODE_ORCHARD_CATALOG_V1;
 #endif
                 if (bridge_enabled) {
                     flags |= ServiceFlags::NODE_UTREEXO_BRIDGE;
@@ -2327,6 +2335,23 @@ bool P2PService::Start() {
             logger_interface_->info("[P2PService] User agent set to " + user_agent);
         }
 
+        // Only a full archival profile serves activation catalogs. The local
+        // load/export switch does not gate this consensus-state transport.
+#ifdef DINERO_HAS_ORCHARD_P2P
+        if(chainstate_&&!GetConfig().utreexo_stateless&&(!prune_||!prune_->isEnabled())&&
+           consensus::OrchardProfileConfigurationValid(Params())&&Params().orchard_activation_height!=UINT32_MAX&&
+           Params().orchard_catalog_commitment_activation_height==Params().orchard_activation_height){
+            auto* context=DaemonContext::instance();const auto headers=context?context->header_chain:nullptr;
+            if(headers)orchard_catalog_server_=std::make_shared<p2p::OrchardCatalogServer>(
+                [headers](const auto& request){request.CheckSelected(*headers);},
+                [source=chainstate_](const auto& cancelled)->std::shared_ptr<const consensus::OrchardSnapshotSection>{
+                    const auto proof=source->captureOrchardActivationProof(cancelled);return proof.ok()?*proof:nullptr;
+                },[this](const auto& peer,const auto& command,const auto& bytes){
+                    ::P2PMessage message{};message.command=command;message.payload=bytes;
+                    return p2p_mgr_&&p2p_mgr_->send_to_peer(peer.address,message,peer.session);
+                });
+        }
+#endif
         // Start P2P networking (spawns threads)
         if (!p2p_mgr_->start()) {
             logger_interface_->error("[P2PService] Failed to start P2P manager");
@@ -2382,6 +2407,7 @@ bool P2PService::Start() {
 }
 
 void P2PService::ReleaseStoppedDependencies() {
+    orchard_catalog_server_.reset();
     OnNewBlock = {};
     OnNewTx = {};
     OnInv = {};
@@ -2411,6 +2437,9 @@ void P2PService::Stop() {
     // cleanup and final persistence still happen in P2PManager::stop().
     if (p2p_mgr_) p2p_mgr_->begin_shutdown();
     StopSchedulerTickLoop();
+#ifdef DINERO_HAS_ORCHARD_P2P
+    if(orchard_catalog_server_)orchard_catalog_server_->Stop();
+#endif
 
     if (!p2p_mgr_) {
         if (logger_interface_) {
@@ -2478,6 +2507,15 @@ void P2PService::Stop() {
 }
 
 void P2PService::HandleP2PMessage(const std::string& peer_addr, const ::P2PMessage& msg) {
+#ifdef DINERO_HAS_ORCHARD_P2P
+    if(msg.command==p2p::OrchardCatalogTransfer::RequestCommand||msg.command==p2p::OrchardCatalogTransfer::PageRequestCommand){
+        if(orchard_catalog_server_&&p2p_mgr_){
+            const auto session=p2p_mgr_->peer_session_nonce(peer_addr);
+            if(session)orchard_catalog_server_->Enqueue({peer_addr,*session},msg.command,msg.payload);
+        }
+        return;
+    }
+#endif
     // Route messages to appropriate handlers
     // Debug: Log all messages for relay debugging
     logger_interface_->info("[P2PService] HandleP2PMessage: cmd='" + msg.command + "' from " + peer_addr);

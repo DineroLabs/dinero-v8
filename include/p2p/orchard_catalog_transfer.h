@@ -96,35 +96,46 @@ public:
     };
     class Sender {
     public:
-        Sender(const Request& request,const consensus::OrchardSnapshotSection& proof,const std::filesystem::path& work={})
-            :spool_(work,true) {
+        Sender(const Request& request,const consensus::OrchardSnapshotSection& proof,const std::filesystem::path& work={},
+            const std::function<bool()>& cancelled={})
+            :spool_(std::make_shared<wallet::detail::RuntimeReplaySpool>(work,true)) {
+            const auto check_cancel=[&]{Check(!cancelled||!cancelled());};check_cancel();
             CheckProofBinding(request,proof);manifest_.request=request;
             // Structural walk is mandatory even for internally captured proof
             // data. The actual selected-chain verifier is a separate gate.
             consensus::ValidateOrchardSnapshotSection(proof);
+            check_cancel();
             Bytes pending;pending.reserve(PageBytes);uint32_t page=0;crypto::CSHA256 hash;
-            wallet::detail::RuntimeReplaySpool::Batch batch(spool_);
+            wallet::detail::RuntimeReplaySpool::Batch batch(*spool_);
             manifest_.bytes=consensus::StreamOrchardSnapshotSection(proof,[&](auto bytes){
+                check_cancel();
                 hash.Write(bytes.data(),bytes.size());
                 while(!bytes.empty()){
                     const auto n=std::min<size_t>(PageBytes-pending.size(),bytes.size());
                     pending.insert(pending.end(),bytes.begin(),bytes.begin()+n);bytes=bytes.subspan(n);
-                    if(pending.size()==PageBytes){spool_.Insert(Key(page++),pending);pending.clear();}
+                    if(pending.size()==PageBytes){spool_->Insert(Key(page++),pending);pending.clear();}
                 }
             });
-            if(!pending.empty())spool_.Insert(Key(page++),pending);
-            hash.Finalize(manifest_.digest.data);Check(page==manifest_.Pages());batch.Commit();spool_.Freeze();
+            if(!pending.empty())spool_->Insert(Key(page++),pending);
+            hash.Finalize(manifest_.digest.data);Check(page==manifest_.Pages());batch.Commit();spool_->Freeze();
+            check_cancel();
+        }
+        // One immutable disk payload serves bounded peer sessions. Only their
+        // nonce/manifest ID differ; no repeat catalog walk or section copy.
+        Sender Rebind(const Request& request)const {
+            (void)request.Encode();auto expected=manifest_.request;expected.nonce=request.nonce;
+            Check(expected==request);Sender result(*this);result.manifest_.request=request;return result;
         }
         const Manifest& Description()const{return manifest_;}
         Bytes Serve(std::span<const uint8_t> request)const {
             const auto page=PageRequest::Decode(request);Check(page.transfer==manifest_.Id());return Page(page.index);
         }
         Bytes Page(uint32_t index)const {
-            Check(index<manifest_.Pages());const auto bytes=spool_.Get(Key(index));Check(bool(bytes));
+            Check(index<manifest_.Pages());const auto bytes=spool_->Get(Key(index));Check(bool(bytes));
             Check(bytes->size()==PageSize(manifest_,index));Bytes b;Hash(b,manifest_.Id());Put(b,index,4);
             Put(b,bytes->size(),4);b.insert(b.end(),bytes->begin(),bytes->end());return b;
         }
-    private:wallet::detail::RuntimeReplaySpool spool_;Manifest manifest_;
+    private:std::shared_ptr<wallet::detail::RuntimeReplaySpool> spool_;Manifest manifest_;
     };
     class Receiver {
     public:

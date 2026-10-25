@@ -85,6 +85,7 @@ struct FilePosition;  // #309: storage/block_storage.h
 namespace orchard { class TransactionEnvelope; struct SigningDomain; struct ResolvedInput; struct WalletPayment; struct TransparentOutput; }
 namespace wallet { struct OrchardPreparedSpend; struct OrchardQueuedSpend; class OrchardProofJobs; struct OrchardAccount0RecoveryProgress; }
 namespace consensus {
+    struct OrchardSnapshotSection;
     class VerifiedOrchardAuthorizations;
     class ValidatedOrchardBlock;
     class WalletUTXOAdapter;  // v2.2.0: Forward declare adapter (breaks header dependency)
@@ -1001,6 +1002,10 @@ public:
     // Explicit limits/missing origin material
     // refuse; this is not baseline certification or all-consumer readiness.
     StatusOr<std::shared_ptr<const RuntimeAccountReplay>> getRuntimeAccountReplay() const;
+    // Read-only archival source. No selected lock during proof work; a real
+    // service-use pins DB/header lifetimes through shutdown and rechecks them.
+    StatusOr<std::shared_ptr<const consensus::OrchardSnapshotSection>> captureOrchardActivationProof(
+        const std::function<bool()>& cancelled);
     // Actual source lifetime owner required. Refuse outer selected/SQLite
     // ownership before capture; pin the exact wallet session at this boundary.
     // Caller retains both service lifetime owners through the later operation.
