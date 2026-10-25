@@ -4,11 +4,13 @@
 #include "daemon/orchard_chainstate_write.h"
 #include "storage/orchard_snapshot_base.h"
 #include "daemon/orchard_activation_handoff.h"
+#include "storage/orchard_handoff_names.h"
 
 namespace dinero {
 class ChainstateService;
 class OrchardBranchReplay;
 class OrchardBoundaryReplay;
+class ClosedCoreReopenIntent;
 namespace daemon {class DatadirGuard;}
 // Private selected-state authority. Decoding, raw catalog staging and a local
 // checksum cannot enroll a compact owner. Only the service may invoke this
@@ -41,6 +43,22 @@ private:
         const std::function<bool()>& cancelled={});
     static void CheckActivationHandoff(const daemon::DatadirGuard&,
         const PreparedOrchardActivationHandoff&);
+    // Durable closed-store name selection only, never typed state authority.
+    // Exact lifecycle receipt, same retained root, destroyed old App/readers.
+    // An immutable intent precedes no-replace renames. Original is retained;
+    // cancellation after intent leaves explicitly recoverable closed work.
+    static std::unique_ptr<PreparedOrchardActivationHandoff> SelectActivationHandoff(
+        const daemon::DatadirGuard&,const ClosedCoreReopenIntent&,
+        std::unique_ptr<PreparedOrchardActivationHandoff>,const std::function<bool()>& cancelled={});
+    static std::unique_ptr<PreparedOrchardActivationHandoff> RecoverActivationHandoff(
+        const daemon::DatadirGuard&,const ClosedCoreReopenIntent&,
+        std::shared_ptr<const consensus::HeaderChainSelector>,const std::function<bool()>& cancelled={});
+    // Until authenticated selected-origin startup is wired, generic startup
+    // must refuse even a missing live name instead of creating a new store.
+    static void RequireNoActivationHandoff(const std::filesystem::path& root){
+        if(!storage::OrchardHandoffControlsAbsent(root/"blockchain"))
+            throw std::runtime_error("Authenticated activation handoff requires dedicated closed-store recovery");
+    }
     static int OpenHandoffRoot(const daemon::DatadirGuard&);
     static uint256 HandoffStoreDigest(const ChainDB&,const std::function<bool()>&);
     // New directories only, under the caller's datadir guard. No existing

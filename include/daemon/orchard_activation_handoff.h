@@ -16,6 +16,7 @@ public:
     PreparedOrchardActivationHandoff(const PreparedOrchardActivationHandoff&)=delete;
     PreparedOrchardActivationHandoff& operator=(const PreparedOrchardActivationHandoff&)=delete;
     const std::filesystem::path& CandidatePath()const;
+    const std::filesystem::path& OriginalPath()const;
     const ChainDB& OriginalForInspection()const;
     const ChainDB& CandidateForInspection()const;
 private:

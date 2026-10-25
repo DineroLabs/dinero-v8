@@ -8,6 +8,7 @@
 
 namespace dinero {
 class DaemonApp;
+class CoreReopenReceipt;
 struct ReopenRpcGateTestAccess;
 // Admission only, never wallet or chainstate authority. The host retains this
 // shared epoch across old-App destruction and new-App publication. It must
@@ -34,6 +35,7 @@ public:
     private:
         friend class ReopenRpcGate;
         friend class DaemonApp;
+        friend class CoreReopenReceipt;
         friend struct ReopenRpcGateTestAccess;
         void Check()const {
             if(thread_!=std::this_thread::get_id()||!active_||gate_->Snapshot()!=epoch_)

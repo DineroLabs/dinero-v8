@@ -3,6 +3,7 @@
 #include "storage/orchard_catalog_nodes.h"
 #include "storage/orchard_catalog_state.h"
 #include "storage/shielded_cf_comparator.h"
+#include "storage/orchard_handoff_names.h"
 #include "common/serialization.h"
 #include "common/json_adapter.h"
 #include "consensus/undo.h"
@@ -180,11 +181,17 @@ std::string SerializePersistedHeaderMetadataValue(const ChainDB::PersistedHeader
 Status ChainDB::init(const std::filesystem::path& dir) {
     close();  // Ensure clean state
 
+    if(!storage::OrchardHandoffControlsAbsent(dir.parent_path())){
+        std::cerr<<"ChainDB::init: Authenticated activation handoff requires dedicated closed-store recovery\n";
+        return Status::Corruption; // BEFORE create_directories, including an absent live swap name.
+    }
+
     try {
         std::filesystem::create_directories(dir);
         // RocksDB's same-process lock registry is keyed by pathname. Normalize
         // aliases before acquiring LOCK so two ChainDB owners cannot bypass it.
         dir_ = std::filesystem::canonical(dir);
+        if(!storage::OrchardHandoffControlsAbsent(dir_.parent_path()))return Status::Corruption;
     } catch (const std::exception&) {
         return Status::Io;
     }
@@ -372,6 +379,7 @@ Status ChainDB::initReadOnlyForHandoff(const std::filesystem::path& dir) {
 }
 
 Status ChainDB::initAttempt(const std::filesystem::path& dir, bool allow_lock_recovery, bool read_only) {
+    if(!read_only&&!storage::OrchardHandoffControlsAbsent(dir.parent_path()))return Status::Corruption;
     auto owner = ProcessDirectoryOwner::Acquire(dir);
     if (!owner) {
         std::cerr << "ChainDB::init: Database directory unavailable or already owned in this process\n";

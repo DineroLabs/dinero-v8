@@ -9304,6 +9304,26 @@ endif()
 # Link and execute the actual embedding entry points, not only inline guards.
 # The Linux full-test configuration explicitly enables BUILD_NODECORE.
 if(TARGET nodecore_ffi)
+  if(TARGET test_assumeutxo_replay AND DINERO_BUILD_ORCHARD_BACKEND AND UNIX)
+    # The activation-selection fixture obtains REAL closed App receipts; no
+    # test can construct a lifecycle capability or fake a pause. The storage
+    # archive itself remains independent of DaemonApp through a checked borrow.
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+      # Same complete archive closure as the actual runtime driver below.
+      # Do not replace real Core owners with test stubs or suppress symbols.
+      target_link_libraries(test_assumeutxo_replay PRIVATE
+        "-Wl,--start-group" nodecore_ffi dinero_rpc_handlers dinero_core
+        dinero_wallet dinero_chainstate dinero_consensus dinero_shielded
+        dinero_bridge dinero_pool dinero_lightning_keys dinero_address_encoding
+        dinero_bip32 dinero_pq dinero_zk dinero_tx_primitives dinero_crypto
+        "-Wl,--end-group" jsoncpp_static)
+    else()
+      target_link_libraries(test_assumeutxo_replay PRIVATE nodecore_ffi)
+    endif()
+    target_compile_definitions(test_assumeutxo_replay PRIVATE DINERO_TEST_REAL_CORE_HANDOFF=1)
+    add_test(NAME OrchardActivationSelection COMMAND test_assumeutxo_replay --gtest_filter=OrchardActivationSelection.*)
+    set_tests_properties(OrchardActivationSelection PROPERTIES TIMEOUT 300 LABELS "daemon;orchard;storage;restart;mandatory")
+  endif()
   # Test-only POSIX fault adapter; the shipped library has no injection seam.
   if(NOT CMAKE_CROSSCOMPILING AND CMAKE_SYSTEM_NAME MATCHES "^(Darwin|Linux)$")
     add_library(nodecore_journal_fault_subject OBJECT src/nodecore/maintenance_journal.cpp)

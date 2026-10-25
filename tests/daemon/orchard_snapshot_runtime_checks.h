@@ -9,6 +9,7 @@
 #include "consensus/validation_queue.h"
 #include "daemon/reopen_candidate_journal.h"
 #include "daemon/datadir_guard.h"
+#include "daemon/daemon_app.h"
 #include "storage/orchard_activation_origin.h"
 #include <sstream>
 #ifndef _WIN32
@@ -25,6 +26,15 @@ struct OrchardSnapshotStoreTestAccess {
         return OrchardSnapshotStore::PrepareActivationHandoff(root,token,std::move(headers),std::move(proof),cancelled);}
     static void CheckHandoff(const daemon::DatadirGuard& root,const PreparedOrchardActivationHandoff& prepared){
         OrchardSnapshotStore::CheckActivationHandoff(root,prepared);}
+#ifdef DINERO_TEST_REAL_CORE_HANDOFF
+    static auto SelectHandoff(const daemon::DatadirGuard& root,const CoreReopenReceipt& receipt,
+        std::unique_ptr<PreparedOrchardActivationHandoff> prepared,const std::function<bool()>& cancel={}){
+        return OrchardSnapshotStore::SelectActivationHandoff(root,receipt.ClosedForHandoff(root),std::move(prepared),cancel);}
+    static auto RecoverHandoff(const daemon::DatadirGuard& root,const CoreReopenReceipt& receipt,
+        std::shared_ptr<const consensus::HeaderChainSelector> headers,const std::function<bool()>& cancel={}){
+        return OrchardSnapshotStore::RecoverActivationHandoff(root,receipt.ClosedForHandoff(root),std::move(headers),cancel);}
+#endif
+    static void NoHandoff(const std::filesystem::path& root){OrchardSnapshotStore::RequireNoActivationHandoff(root);}
     static auto Authenticate(const consensus::OrchardSnapshotSection& proof,const consensus::HeaderChainSelector& headers){
         return OrchardSnapshotStore::Authenticate(proof,headers,Params().state_commitment_burial_depth);
     }
@@ -273,7 +283,12 @@ struct ActivationHandoffFixture {
     std::shared_ptr<const consensus::OrchardSnapshotSection> proof;
     CompactStartupFixture full;
     std::filesystem::path root,path;daemon::DatadirGuard guard;
-    ActivationHandoffFixture():full([this](auto& source){
+#ifdef DINERO_TEST_REAL_CORE_HANDOFF
+    std::unique_ptr<DaemonApp> closed_app;
+    std::unique_ptr<CoreReopenReceipt> receipt;
+    std::shared_ptr<ReopenRpcGate> gate;
+#endif
+    explicit ActivationHandoffFixture(bool lifecycle=false):full([this](auto& source){
         for(const auto& block:source.f.blocks)OrchardAdmissionFixture::Require(headers->AddHeader(block.header));
         OrchardAdmissionFixture::Require(headers->AddHeader(source.first->Header())&&headers->AddHeader(source.second->Header()));
         proof=std::make_shared<const consensus::OrchardSnapshotSection>(OrchardSnapshotStoreTestAccess::CaptureActivation(source.f.db,*headers));
@@ -281,15 +296,52 @@ struct ActivationHandoffFixture {
         auto name=(std::filesystem::temp_directory_path()/"orchard-handoff-evidence-XXXXXX").string();
         OrchardAdmissionFixture::Require(::mkdtemp(name.data())!=nullptr);root=std::filesystem::canonical(name);
         std::filesystem::create_directory(root/"blockchain");path=root/"blockchain"/"chaindb";
+        std::string error;OrchardAdmissionFixture::Require(guard.Acquire(root,error));
+        if(lifecycle){
+#ifdef DINERO_TEST_REAL_CORE_HANDOFF
+            // A REAL, EMPTY-GENESIS lifecycle receipt under this exact root.
+            // Only after full Stop do we substitute the separate offline parent
+            // fixture. This composes the control mechanisms; it is deliberately
+            // NOT the actual activation/named-wallet/queued-payment acceptance.
+            closed_app=std::make_unique<DaemonApp>();closed_app->SetLockedDatadir(guard);
+            closed_app->SetAutomaticStorageUpgrade(true);
+            std::vector<std::string> args{"handoff-lifecycle-fixture","--regtest","--datadir="+root.string(),
+                "--p2p.offline=1","--listen=0","--rpc.port=0","--wallet.socket.enable=0",
+                "--lightning.oracles.enable=0","--sync-profile=mac_fullblock","--utreexo-stateless=0"};
+            std::vector<char*> argv;for(auto& arg:args)argv.push_back(arg.data());
+            OrchardAdmissionFixture::Require(closed_app->Init(int(argv.size()),argv.data())&&closed_app->Start());
+            const auto wallet=std::dynamic_pointer_cast<WalletService>(closed_app->GetContext().wallet);
+            {auto use=WalletService::AcquireWalletUse(wallet);
+                use->Wallet().createFromBip39("handoff-named-owner",
+                    "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about","",false);
+                wallet->EnsureRuntimeWalletBindings();}
+            gate=closed_app->GetContext().reopen_rpc_gate;receipt=closed_app->CloseForInternalReopen(guard);
+            OrchardAdmissionFixture::Require(receipt&&receipt->WalletName()=="handoff-named-owner");
+            // App must first be destroyed before moving even this test-only
+            // genesis store: keep its identity alive separately for a refusal
+            // assertion using a fresh pending-recovery App below.
+            closed_app.reset();
+            std::filesystem::rename(path,root/"blockchain"/"genesis-fixture-preserved");
+#else
+            OrchardAdmissionFixture::Require(false); // Real App fixture requires the linked SDK.
+#endif
+        }
         std::filesystem::copy(full.f.path,path,std::filesystem::copy_options::recursive);
         {std::ofstream wallet(root/"named-wallet.sentinel");wallet<<"opaque test-only named wallet/pending bytes";}
         {std::ofstream lifecycle(root/"blockchain"/"original-lifecycle.sentinel");lifecycle<<"do not rebase or promote original history";}
-        std::string error;OrchardAdmissionFixture::Require(guard.Acquire(root,error));
         std::cout<<"Activation handoff evidence: "<<root.string()<<"\n";
     }
     auto Prepare(const std::function<bool()>& cancel={}){
         return OrchardSnapshotStoreTestAccess::PrepareHandoff(guard,full.f.token,headers,proof,cancel);
     }
+#ifdef DINERO_TEST_REAL_CORE_HANDOFF
+    void ColdReceipt(){
+        receipt.reset();auto fresh=std::make_unique<DaemonApp>();fresh->SetLockedDatadir(guard);
+        receipt=fresh->PreparePendingReopen(guard,gate);
+        OrchardAdmissionFixture::Require(receipt&&receipt->WalletName()=="handoff-named-owner");
+        closed_app=std::move(fresh); // Must be destroyed before actual selection.
+    }
+#endif
     static auto Files(const std::filesystem::path& dir){
         std::map<std::string,std::string> result;
         for(const auto& item:std::filesystem::recursive_directory_iterator(dir))if(item.is_regular_file()){
@@ -309,6 +361,115 @@ struct ActivationHandoffFixture {
 #endif
 }
 #ifndef _WIN32
+#ifdef DINERO_TEST_REAL_CORE_HANDOFF
+TEST(OrchardActivationSelection, ClosedLifecycleBorrowIsThreadBoundAndCannotReviveAfterAbandonment){
+    ActivationHandoffFixture f(true);auto intent=f.receipt->ClosedForHandoff(f.guard);
+    EXPECT_NO_THROW(intent.Check(f.guard));
+    auto foreign=std::async(std::launch::async,[&]{try{intent.Check(f.guard);return false;}catch(const std::logic_error&){return true;}});
+    EXPECT_TRUE(foreign.get());
+    f.receipt.reset();EXPECT_ANY_THROW(intent.Check(f.guard));EXPECT_FALSE(f.gate->Allows(f.gate->Snapshot()));
+    f.ColdReceipt();EXPECT_ANY_THROW(f.receipt->ClosedForHandoff(f.guard));f.closed_app.reset();
+    EXPECT_NO_THROW(f.receipt->ClosedForHandoff(f.guard).Check(f.guard));
+    EXPECT_ANY_THROW(intent.Check(f.guard)); // Same journal/new receipt cannot resurrect a dead borrow.
+}
+TEST(OrchardActivationSelection, ExactLifecycleIntentSelectsWithoutDeletingOriginalOrOpeningRpc){
+    ActivationHandoffFixture f(true);const auto original=ActivationHandoffFixture::Files(f.path);
+    auto prepared=f.Prepare();const auto candidate=prepared->CandidatePath();
+    const auto expected_rows=ChainDBTransactionReadTestPeer::HandoffRows(prepared->CandidateForInspection());
+    const auto validated=prepared->OriginalForInspection().getValidatedTip();ASSERT_TRUE(validated.ok());
+    f.ColdReceipt(); // Live fresh pending App must also be destroyed, even before Init.
+    EXPECT_ANY_THROW(OrchardSnapshotStoreTestAccess::SelectHandoff(f.guard,*f.receipt,std::move(prepared)));
+    EXPECT_EQ(ActivationHandoffFixture::Files(f.path),original);
+    EXPECT_NO_THROW(OrchardSnapshotStoreTestAccess::NoHandoff(f.root));f.closed_app.reset();
+    prepared=f.Prepare();const auto selected_candidate=prepared->CandidatePath();
+    auto selected=OrchardSnapshotStoreTestAccess::SelectHandoff(f.guard,*f.receipt,std::move(prepared));
+    ASSERT_TRUE(selected);EXPECT_EQ(selected->CandidatePath(),f.path);EXPECT_FALSE(std::filesystem::exists(selected_candidate));
+    EXPECT_TRUE(std::filesystem::exists(candidate)); // The refused earlier candidate remains unselected evidence.
+    EXPECT_EQ(ActivationHandoffFixture::Files(selected->OriginalPath()),original);
+    EXPECT_EQ(ChainDBTransactionReadTestPeer::HandoffRows(selected->CandidateForInspection()),expected_rows);
+    EXPECT_EQ(selected->CandidateForInspection().getValidatedTip()->hash,validated->hash);
+    EXPECT_EQ(selected->CandidateForInspection().getValidatedTip()->height,validated->height);
+    EXPECT_FALSE(f.gate->Allows(f.gate->Snapshot()));EXPECT_EQ(f.receipt->WalletName(),"handoff-named-owner");
+    EXPECT_ANY_THROW(OrchardSnapshotStoreTestAccess::NoHandoff(f.root));
+    ChainDB generic;EXPECT_EQ(generic.init(f.path),Status::Corruption);
+    EXPECT_EQ(generic.init(selected->OriginalPath()),Status::Corruption);
+    EXPECT_ANY_THROW(storage::RequireFullOrchardStorage(selected->CandidateForInspection()));
+    const auto backup=selected->OriginalPath();selected.reset();f.ColdReceipt();f.closed_app.reset();
+    selected=OrchardSnapshotStoreTestAccess::RecoverHandoff(f.guard,*f.receipt,f.headers);
+    ASSERT_TRUE(selected);EXPECT_EQ(selected->OriginalPath(),backup);
+    EXPECT_EQ(ActivationHandoffFixture::Files(backup),original);
+    EXPECT_EQ(ChainDBTransactionReadTestPeer::HandoffRows(selected->CandidateForInspection()),expected_rows);
+    EXPECT_FALSE(f.gate->Allows(f.gate->Snapshot()));
+}
+TEST(OrchardActivationSelection, InterruptedSelectedPhasesRequireExactColdReceiptAndRetainBothStores){
+    for(unsigned phase=0;phase<3;++phase){
+        ActivationHandoffFixture f(true);const auto original=ActivationHandoffFixture::Files(f.path);
+        auto prepared=f.Prepare();const auto candidate=prepared->CandidatePath();
+        const auto expected=ChainDBTransactionReadTestPeer::HandoffRows(prepared->CandidateForInspection());
+        const auto nonce=candidate.filename().string().substr(std::string("chaindb.orchard-handoff-").size());
+        const auto backup=f.root/"blockchain"/("chaindb.orchard-original-"+nonce);
+        const auto intent=f.root/"blockchain"/".orchard-handoff-selected-v1";
+        const auto done=f.root/"blockchain"/".orchard-handoff-selected-v1.done";
+        auto cancel=[&]{
+            if(!std::filesystem::exists(intent))return false;
+            if(phase==0)return true;
+            if(phase==1)return !std::filesystem::exists(f.path);
+            return std::filesystem::exists(backup)&&!std::filesystem::exists(candidate);
+        };
+        EXPECT_ANY_THROW(OrchardSnapshotStoreTestAccess::SelectHandoff(f.guard,*f.receipt,std::move(prepared),cancel));
+        ASSERT_TRUE(std::filesystem::exists(intent));EXPECT_FALSE(std::filesystem::exists(done));
+        EXPECT_EQ(std::filesystem::exists(f.path),phase!=1);EXPECT_EQ(std::filesystem::exists(candidate),phase!=2);
+        ChainDB generic;EXPECT_EQ(generic.init(f.path),Status::Corruption);
+        EXPECT_EQ(std::filesystem::exists(f.path),phase!=1); // No empty DB created in the between-renames gap.
+        EXPECT_EQ(ActivationHandoffFixture::Files(phase==0?f.path:backup),original);
+        EXPECT_ANY_THROW(OrchardSnapshotStoreTestAccess::NoHandoff(f.root));EXPECT_FALSE(f.gate->Allows(f.gate->Snapshot()));
+        f.ColdReceipt();
+        EXPECT_ANY_THROW(OrchardSnapshotStoreTestAccess::RecoverHandoff(f.guard,*f.receipt,f.headers));
+        f.closed_app.reset();auto recovered=OrchardSnapshotStoreTestAccess::RecoverHandoff(f.guard,*f.receipt,f.headers);
+        ASSERT_TRUE(recovered);EXPECT_TRUE(std::filesystem::exists(done));EXPECT_EQ(recovered->CandidatePath(),f.path);
+        EXPECT_EQ(recovered->OriginalPath(),backup);EXPECT_EQ(ActivationHandoffFixture::Files(backup),original);
+        EXPECT_EQ(ChainDBTransactionReadTestPeer::HandoffRows(recovered->CandidateForInspection()),expected);
+        EXPECT_EQ(f.receipt->WalletName(),"handoff-named-owner");EXPECT_FALSE(f.gate->Allows(f.gate->Snapshot()));
+    }
+}
+TEST(OrchardActivationSelection, ControlAndDirectoryTamperingCannotSelectOrRepairAnotherStore){
+    ActivationHandoffFixture f(true);const auto original=ActivationHandoffFixture::Files(f.path);
+    auto prepared=f.Prepare();const auto candidate=prepared->CandidatePath();const auto chain=f.root/"blockchain";
+    const auto intent=chain/".orchard-handoff-selected-v1";
+    EXPECT_ANY_THROW(OrchardSnapshotStoreTestAccess::SelectHandoff(f.guard,*f.receipt,std::move(prepared),
+        [&]{return std::filesystem::exists(intent);}));
+    ASSERT_TRUE(std::filesystem::exists(intent));
+    // Preserve exact control, all bad variants and displaced names; never
+    // silently fix/delete a production control on a recovery refusal.
+    const auto saved=chain/"selected-control.original-evidence";std::filesystem::rename(intent,saved);
+    for(unsigned variant=0;variant<4;++variant){
+        if(variant==0){std::filesystem::create_symlink(saved,intent);}
+        else if(variant==1){std::filesystem::create_hard_link(saved,intent);}
+        else if(variant==2){std::ofstream out(intent,std::ios::binary);out<<"corrupt selected intent";out.close();::chmod(intent.c_str(),0400);}
+        else {std::filesystem::copy_file(saved,intent);::chmod(intent.c_str(),0600);}
+        EXPECT_ANY_THROW(OrchardSnapshotStoreTestAccess::RecoverHandoff(f.guard,*f.receipt,f.headers));
+        EXPECT_EQ(ActivationHandoffFixture::Files(f.path),original);
+        std::filesystem::rename(intent,chain/("bad-selected-control-"+std::to_string(variant)));
+        // The test-owned extra hardlink must no longer share the real control.
+        if(variant==1){std::filesystem::copy_file(saved,chain/"hardlink-control.bytes");
+            std::filesystem::rename(saved,chain/"hardlinked-control.original");
+            std::filesystem::copy_file(chain/"hardlink-control.bytes",saved);::chmod(saved.c_str(),0400);}
+    }
+    std::filesystem::rename(saved,intent);
+    const auto partial=std::filesystem::path(intent.string()+".partial");
+    {std::ofstream out(partial);out<<"interrupted unpublished control";}
+    EXPECT_ANY_THROW(OrchardSnapshotStoreTestAccess::RecoverHandoff(f.guard,*f.receipt,f.headers));
+    std::filesystem::rename(partial,chain/"partial-control.evidence");
+    const auto displaced=std::filesystem::path(candidate.string()+".displaced-evidence");
+    std::filesystem::rename(candidate,displaced);std::filesystem::create_directory(candidate);
+    EXPECT_ANY_THROW(OrchardSnapshotStoreTestAccess::RecoverHandoff(f.guard,*f.receipt,f.headers));
+    std::filesystem::rename(candidate,chain/"foreign-candidate.evidence");std::filesystem::rename(displaced,candidate);
+    const auto magic=Params().magic;MutableParams().magic^=1;
+    EXPECT_ANY_THROW(OrchardSnapshotStoreTestAccess::RecoverHandoff(f.guard,*f.receipt,f.headers));MutableParams().magic=magic;
+    auto selected=OrchardSnapshotStoreTestAccess::RecoverHandoff(f.guard,*f.receipt,f.headers);ASSERT_TRUE(selected);
+    EXPECT_EQ(ActivationHandoffFixture::Files(selected->OriginalPath()),original);
+}
+#endif
 TEST(OrchardActivationHandoff, ClosedCopyConvertsWithoutMovingHistoryMarkersOrOriginalFiles){
     using namespace consensus;ActivationHandoffFixture f;
     // This simulates lagging independent execution metadata. It is not a

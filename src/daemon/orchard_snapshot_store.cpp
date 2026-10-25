@@ -1,5 +1,6 @@
 #include "daemon/orchard_snapshot_store.h"
 #include "daemon/datadir_guard.h"
+#include "daemon/core_reopen.h"
 #include "daemon/chainstate_recovery_marker.h"
 #include "daemon/services/orchard_branch_replay.h"
 #include "daemon/services/orchard_boundary_replay.h"
@@ -28,6 +29,10 @@
 #include <sys/stat.h>
 #include <sys/statvfs.h>
 #include <unistd.h>
+#ifdef __linux__
+#include <sys/syscall.h>
+#include <linux/fs.h>
+#endif
 #endif
 
 namespace dinero {
@@ -119,6 +124,15 @@ struct stat HandoffNamed(int parent,const std::string& name){
     struct stat s{};Require(::fstatat(parent,name.c_str(),&s,AT_SYMLINK_NOFOLLOW)==0);return s;
 }
 bool HandoffSame(const struct stat& a,const struct stat& b){return a.st_dev==b.st_dev&&a.st_ino==b.st_ino;}
+bool HandoffSameFile(const struct stat& a,const struct stat& b){
+#ifdef __APPLE__
+    const auto am=a.st_mtimespec,ac=a.st_ctimespec,bm=b.st_mtimespec,bc=b.st_ctimespec;
+#else
+    const auto am=a.st_mtim,ac=a.st_ctim,bm=b.st_mtim,bc=b.st_ctim;
+#endif
+    return HandoffSame(a,b)&&a.st_size==b.st_size&&a.st_mode==b.st_mode&&a.st_uid==b.st_uid&&a.st_nlink==b.st_nlink&&
+        am.tv_sec==bm.tv_sec&&am.tv_nsec==bm.tv_nsec&&ac.tv_sec==bc.tv_sec&&ac.tv_nsec==bc.tv_nsec;
+}
 struct HandoffFile {
     uint64_t device,inode,links,size,mode,uid;int64_t modified,changed,modified_ns,changed_ns;
     bool operator==(const HandoffFile&)const=default;
@@ -152,6 +166,104 @@ HandoffFiles InspectHandoffFiles(const std::filesystem::path& path,
     return result;
 }
 void HandoffSync(int fd){Require(::fsync(fd)==0);}
+constexpr const char* HandoffIntent=storage::OrchardHandoffSelected;
+constexpr const char* HandoffDone=storage::OrchardHandoffCompleted;
+bool HandoffAbsent(int parent,const std::string& name){
+    struct stat s{};if(::fstatat(parent,name.c_str(),&s,AT_SYMLINK_NOFOLLOW)==0)return false;
+    Require(errno==ENOENT);return true;
+}
+void HandoffRename(int parent,const std::string& from,const std::string& to){
+    // The retained datadir guard is not a license to overwrite another name.
+    // Require a kernel no-replace primitive; no exists()/rename() fallback.
+#ifdef __APPLE__
+    Require(::renameatx_np(parent,from.c_str(),parent,to.c_str(),RENAME_EXCL)==0);
+#elif defined(__linux__) && defined(SYS_renameat2)
+    Require(::syscall(SYS_renameat2,parent,from.c_str(),parent,to.c_str(),RENAME_NOREPLACE)==0);
+#else
+    (void)parent;(void)from;(void)to;Require(false);
+#endif
+    HandoffSync(parent);
+}
+uint256 HandoffFilesDigest(const HandoffFiles& files){
+    crypto::CSHA256 hash;hash.Write("DIN/orchard/handoff/files/v1");
+    for(const auto& [name,f]:files){
+        std::string row;storage::catalog::Number(row,uint64_t(name.size()),8);row+=name;
+        for(const auto value:{f.device,f.inode,f.links,f.size,f.mode,f.uid,uint64_t(f.modified),
+            uint64_t(f.changed),uint64_t(f.modified_ns),uint64_t(f.changed_ns)})storage::catalog::Number(row,value,8);
+        hash.Write(row);
+    }uint256 result;hash.Finalize(result.data);return result;
+}
+std::string HandoffControl(int parent,const std::string& name){
+    Require(HandoffAbsent(parent,name+".partial"));if(HandoffAbsent(parent,name))return {};
+    HandoffFd file(::openat(parent,name.c_str(),O_RDONLY|O_CLOEXEC|O_NOFOLLOW|O_NONBLOCK));
+    const auto before=HandoffStat(file.value);
+    Require(S_ISREG(before.st_mode)&&before.st_uid==::geteuid()&&before.st_nlink==1&&
+        (before.st_mode&0777)==0400&&before.st_size>32&&before.st_size<=4096&&
+        HandoffSame(before,HandoffNamed(parent,name)));
+    std::string bytes(size_t(before.st_size),'\0');size_t at=0;
+    while(at<bytes.size()){
+        const auto n=::read(file.value,bytes.data()+at,bytes.size()-at);
+        if(n<0&&errno==EINTR)continue;Require(n>0);at+=size_t(n);
+    }
+    const auto after=HandoffStat(file.value),named=HandoffNamed(parent,name);
+    Require(HandoffSameFile(before,after)&&HandoffSameFile(before,named));
+    const auto digest=storage::catalog::Hash(bytes.substr(0,bytes.size()-32));
+    Require(std::equal(digest.begin(),digest.end(),reinterpret_cast<const uint8_t*>(bytes.data()+bytes.size()-32)));
+    // A previous publisher may have seen an uncertain final sync. Re-establish
+    // persistence of the audited explicit intent before any subsequent rename.
+    HandoffSync(file.value);HandoffSync(parent);
+    return bytes;
+}
+std::string HandoffSeal(std::string bytes){
+    const auto digest=storage::catalog::Hash(bytes);bytes.append(reinterpret_cast<const char*>(digest.data),32);return bytes;
+}
+void HandoffPublish(int parent,const std::string& name,const std::string& bytes){
+    Require(bytes.size()>32&&bytes.size()<=4096&&HandoffAbsent(parent,name)&&HandoffAbsent(parent,name+".partial"));
+    HandoffFd file(::openat(parent,(name+".partial").c_str(),O_WRONLY|O_CREAT|O_EXCL|O_CLOEXEC|O_NOFOLLOW,0600));
+    const auto st=HandoffStat(file.value);Require(S_ISREG(st.st_mode)&&st.st_nlink==1&&st.st_uid==::geteuid());
+    size_t at=0;while(at<bytes.size()){
+        const auto n=::write(file.value,bytes.data()+at,bytes.size()-at);
+        if(n<0&&errno==EINTR)continue;Require(n>0);at+=size_t(n);
+    }
+    Require(::fchmod(file.value,0400)==0);HandoffSync(file.value);HandoffSync(parent);
+    Require(HandoffSame(st,HandoffNamed(parent,name+".partial")));HandoffRename(parent,name+".partial",name);
+    Require(HandoffControl(parent,name)==bytes);
+}
+struct HandoffSelection {
+    storage::OrchardActivationOrigin origin;
+    std::string nonce,journal,wallet;
+    uint64_t root_dev=0,root_ino=0,chain_dev=0,chain_ino=0,source_dev=0,source_ino=0,copy_dev=0,copy_ino=0;
+    uint256 source_files,copy_files,copy_rows;
+    std::string Candidate()const{return "chaindb.orchard-handoff-"+nonce;}
+    std::string Original()const{return "chaindb.orchard-original-"+nonce;}
+    std::string Encode()const{
+        const auto hex=[](std::string_view v){return std::all_of(v.begin(),v.end(),[](char c){return (c>='0'&&c<='9')||(c>='a'&&c<='f');});};
+        const std::string prefix=".core-reopen-candidates-v1-";
+        Require(nonce.size()==32&&hex(nonce)&&journal.size()==prefix.size()+32&&journal.starts_with(prefix)&&
+            hex(std::string_view(journal).substr(prefix.size()))&&wallet.size()<=255&&wallet.find('\0')==std::string::npos&&
+            wallet.find('/')==std::string::npos&&wallet.find('\\')==std::string::npos&&
+            !source_files.IsNull()&&!copy_files.IsNull()&&!copy_rows.IsNull());
+        std::string bytes="DNOSEL01";bytes+=origin.Encode();bytes+=nonce;
+        for(auto n:{root_dev,root_ino,chain_dev,chain_ino,source_dev,source_ino,copy_dev,copy_ino})storage::catalog::Number(bytes,n,8);
+        for(const auto& h:{source_files,copy_files,copy_rows})bytes.append(reinterpret_cast<const char*>(h.data),32);
+        storage::catalog::Number(bytes,uint64_t(journal.size()),2);bytes+=journal;
+        storage::catalog::Number(bytes,uint64_t(wallet.size()),2);bytes+=wallet;return HandoffSeal(bytes);
+    }
+    static HandoffSelection Decode(const std::string& bytes){
+        Require(bytes.size()>=629&&bytes.size()<=1024&&bytes.starts_with("DNOSEL01"));HandoffSelection r;
+        r.origin=storage::OrchardActivationOrigin::Decode(bytes.substr(8,339));size_t at=347;
+        r.nonce=bytes.substr(at,32);at+=32;
+        for(auto* n:{&r.root_dev,&r.root_ino,&r.chain_dev,&r.chain_ino,&r.source_dev,&r.source_ino,&r.copy_dev,&r.copy_ino}){
+            *n=storage::catalog::Number(bytes,at,8);at+=8;
+        }
+        for(auto* h:{&r.source_files,&r.copy_files,&r.copy_rows}){
+            std::copy_n(reinterpret_cast<const uint8_t*>(bytes.data()+at),32,h->begin());at+=32;
+        }
+        const auto field=[&]{Require(at+2<=bytes.size()-32);const auto n=storage::catalog::Number(bytes,at,2);at+=2;
+            Require(n<=bytes.size()-32-at);auto value=bytes.substr(at,size_t(n));at+=size_t(n);return value;};
+        r.journal=field();r.wallet=field();Require(at==bytes.size()-32&&r.Encode()==bytes);return r;
+    }
+};
 void HandoffMaintenanceClear(const std::filesystem::path& root,const std::filesystem::path& source){
     for(const auto& path:{daemon::ChainstateRecoveryMarkerPath(root),root/"blockchain"/"reindex_promotion.marker",
         std::filesystem::path(source.string()+".upgrade-state"),std::filesystem::path(source.string()+".upgrade-state.tmp"),
@@ -175,11 +287,13 @@ struct PreparedOrchardActivationHandoff::Data {
     const std::thread::id thread=std::this_thread::get_id();
 #ifndef _WIN32
     HandoffFd root,blockchain,source_dir,candidate_dir;HandoffFiles source_files,candidate_files;
+    std::string selection;
 #endif
 };
 PreparedOrchardActivationHandoff::PreparedOrchardActivationHandoff(std::unique_ptr<Data> d):data_(std::move(d)){}
 PreparedOrchardActivationHandoff::~PreparedOrchardActivationHandoff()=default;
 const std::filesystem::path& PreparedOrchardActivationHandoff::CandidatePath()const{return data_->candidate_path;}
+const std::filesystem::path& PreparedOrchardActivationHandoff::OriginalPath()const{return data_->source_path;}
 const ChainDB& PreparedOrchardActivationHandoff::OriginalForInspection()const{return *data_->source;}
 const ChainDB& PreparedOrchardActivationHandoff::CandidateForInspection()const{return *data_->candidate;}
 
@@ -232,6 +346,7 @@ std::unique_ptr<PreparedOrchardActivationHandoff> OrchardSnapshotStore::PrepareA
     d->proof=std::make_shared<const OrchardSnapshotSection>(*input);
     const auto check_cancel=[&]{Require(!cancelled||!cancelled());};check_cancel();
     d->root=HandoffFd(OpenHandoffRoot(guard));
+    RequireNoActivationHandoff(d->root_path);
     d->blockchain=HandoffFd(::openat(d->root.value,"blockchain",O_RDONLY|O_DIRECTORY|O_CLOEXEC|O_NOFOLLOW));
     const auto chain_id=HandoffStat(d->blockchain.value);
     Require(chain_id.st_uid==::geteuid()&&!(chain_id.st_mode&0022));
@@ -363,9 +478,10 @@ void OrchardSnapshotStore::CheckActivationHandoff(const daemon::DatadirGuard& gu
         d.headers&&d.proof&&d.source&&d.candidate&&(!d.cancelled||!d.cancelled()));
     HandoffFd current(OpenHandoffRoot(guard));Require(HandoffSame(HandoffStat(current.value),HandoffStat(d.root.value))&&
         HandoffSame(HandoffNamed(current.value,"blockchain"),HandoffStat(d.blockchain.value))&&
-        HandoffSame(HandoffNamed(d.blockchain.value,"chaindb"),HandoffStat(d.source_dir.value))&&
+        HandoffSame(HandoffNamed(d.blockchain.value,d.source_path.filename().string()),HandoffStat(d.source_dir.value))&&
         HandoffSame(HandoffNamed(d.blockchain.value,d.candidate_path.filename().string()),HandoffStat(d.candidate_dir.value)));
-    HandoffMaintenanceClear(d.root_path,d.source_path);
+    HandoffMaintenanceClear(d.root_path,d.root_path/"blockchain"/"chaindb");
+    if(!d.selection.empty())Require(HandoffControl(d.blockchain.value,HandoffIntent)==d.selection);
     Require(InspectHandoffFiles(d.source_path,d.paired_sst,d.cancelled)==d.source_files&&
         InspectHandoffFiles(d.candidate_path,{},d.cancelled)==d.candidate_files&&
         HandoffStoreDigest(*d.source,d.cancelled)==d.origin.source&&
@@ -437,6 +553,117 @@ void OrchardSnapshotStore::CheckActivationHandoff(const daemon::DatadirGuard& gu
     }
     std::unique_ptr<rocksdb::Iterator> coins(d.candidate->db_->NewIterator(reads,d.candidate->cf_[d.candidate->idx_utxo_].get()));
     coins->SeekToFirst();Require(!coins->Valid()&&coins->status().ok());
+#endif
+}
+std::unique_ptr<PreparedOrchardActivationHandoff> OrchardSnapshotStore::SelectActivationHandoff(
+    const daemon::DatadirGuard& guard,const ClosedCoreReopenIntent& receipt,
+    std::unique_ptr<PreparedOrchardActivationHandoff> prepared,const std::function<bool()>& cancelled){
+#ifdef _WIN32
+    (void)guard;(void)receipt;(void)prepared;(void)cancelled;Require(false);return {};
+#else
+    Require(prepared&&prepared->data_);receipt.Check(guard);
+    CheckActivationHandoff(guard,*prepared);auto& d=*prepared->data_;
+    Require(d.selection.empty()&&d.source_path==guard.DataDir()/"blockchain"/"chaindb");
+    RequireNoActivationHandoff(guard.DataDir());
+    const std::string prefix="chaindb.orchard-handoff-";const auto name=d.candidate_path.filename().string();
+    Require(name.starts_with(prefix));HandoffSelection record;record.nonce=name.substr(prefix.size());
+    record.origin=d.origin;record.journal=receipt.CandidateJournal();record.wallet=receipt.WalletName();
+    const auto root=HandoffStat(d.root.value),chain=HandoffStat(d.blockchain.value),
+        original=HandoffStat(d.source_dir.value),copy=HandoffStat(d.candidate_dir.value);
+    record.root_dev=root.st_dev;record.root_ino=root.st_ino;record.chain_dev=chain.st_dev;record.chain_ino=chain.st_ino;
+    record.source_dev=original.st_dev;record.source_ino=original.st_ino;record.copy_dev=copy.st_dev;record.copy_ino=copy.st_ino;
+    record.source_files=HandoffFilesDigest(d.source_files);record.copy_files=HandoffFilesDigest(d.candidate_files);
+    record.copy_rows=d.candidate_digest;const auto control=record.Encode();
+    Require(HandoffAbsent(d.blockchain.value,record.Original())&&(!cancelled||!cancelled()));
+    receipt.Check(guard);CheckActivationHandoff(guard,*prepared);
+    {
+        std::unique_lock<std::mutex> selection(d.headers->mutex_);const auto* best=d.headers->best_header_;
+        const auto* first=best?best->GetAncestor(d.proof->state.height):nullptr;
+        Require(first&&first->hash==d.origin.first&&first->prev_hash==d.origin.parent&&
+            uint64_t(best->height)>=uint64_t(first->height)+Params().state_commitment_burial_depth);
+        HandoffPublish(d.blockchain.value,HandoffIntent,control);
+    }
+    const auto headers=d.headers;
+    // Read-only handles own canonical-name process reservations. Release both
+    // before reopening the exact recorded phase. The SAME root guard stays held.
+    prepared.reset();return RecoverActivationHandoff(guard,receipt,headers,cancelled);
+#endif
+}
+
+std::unique_ptr<PreparedOrchardActivationHandoff> OrchardSnapshotStore::RecoverActivationHandoff(
+    const daemon::DatadirGuard& guard,const ClosedCoreReopenIntent& receipt,
+    std::shared_ptr<const consensus::HeaderChainSelector> headers,const std::function<bool()>& cancelled){
+#ifdef _WIN32
+    (void)guard;(void)receipt;(void)headers;(void)cancelled;Require(false);return {};
+#else
+    receipt.Check(guard);Require(headers&&(!cancelled||!cancelled()));
+    auto d=std::make_unique<PreparedOrchardActivationHandoff::Data>();d->root_path=guard.DataDir();
+    d->headers=std::move(headers);d->cancelled=cancelled;d->root=HandoffFd(OpenHandoffRoot(guard));
+    d->blockchain=HandoffFd(::openat(d->root.value,"blockchain",O_RDONLY|O_DIRECTORY|O_CLOEXEC|O_NOFOLLOW));
+    const auto bytes=HandoffControl(d->blockchain.value,HandoffIntent);
+    const auto done=HandoffControl(d->blockchain.value,HandoffDone);
+    Require(!bytes.empty()||done.empty());if(bytes.empty())return {};
+    const auto record=HandoffSelection::Decode(bytes);const auto root=HandoffStat(d->root.value),chain=HandoffStat(d->blockchain.value);
+    Require(record.origin.magic==Params().magic&&record.origin.profile==ConsensusChecksum(Params())&&
+        record.root_dev==uint64_t(root.st_dev)&&record.root_ino==uint64_t(root.st_ino)&&
+        record.chain_dev==uint64_t(chain.st_dev)&&record.chain_ino==uint64_t(chain.st_ino)&&
+        chain.st_uid==::geteuid()&&!(chain.st_mode&0022)&&
+        record.journal==receipt.CandidateJournal()&&record.wallet==receipt.WalletName());
+    const auto completed=HandoffSeal("DNODONE1"+storage::catalog::Hash(bytes).GetHex());
+    Require(done.empty()||done==completed);
+    const auto original=record.Original(),copy=record.Candidate();
+    const bool live_absent=HandoffAbsent(d->blockchain.value,"chaindb"),copy_absent=HandoffAbsent(d->blockchain.value,copy),
+        original_absent=HandoffAbsent(d->blockchain.value,original);
+    unsigned phase=0;
+    if(!live_absent&&!copy_absent&&original_absent)phase=0;
+    else if(live_absent&&!copy_absent&&!original_absent)phase=1;
+    else if(!live_absent&&copy_absent&&!original_absent)phase=2;
+    else Require(false);
+    Require(done.empty()||phase==2);
+    d->source_path=d->root_path/"blockchain"/(phase==0?"chaindb":original);
+    d->candidate_path=d->root_path/"blockchain"/(phase==2?"chaindb":copy);
+    d->paired_sst=d->root_path/"blockchain"/"chaindb.legacy-v1";
+    HandoffMaintenanceClear(d->root_path,d->root_path/"blockchain"/"chaindb");
+    d->source_dir=HandoffFd(::openat(d->blockchain.value,d->source_path.filename().c_str(),O_RDONLY|O_DIRECTORY|O_CLOEXEC|O_NOFOLLOW));
+    d->candidate_dir=HandoffFd(::openat(d->blockchain.value,d->candidate_path.filename().c_str(),O_RDONLY|O_DIRECTORY|O_CLOEXEC|O_NOFOLLOW));
+    const auto source_id=HandoffStat(d->source_dir.value),copy_id=HandoffStat(d->candidate_dir.value);
+    Require(record.source_dev==uint64_t(source_id.st_dev)&&record.source_ino==uint64_t(source_id.st_ino)&&
+        record.copy_dev==uint64_t(copy_id.st_dev)&&record.copy_ino==uint64_t(copy_id.st_ino)&&
+        source_id.st_uid==::geteuid()&&!(source_id.st_mode&0022)&&copy_id.st_uid==::geteuid()&&!(copy_id.st_mode&0022));
+    d->source_files=InspectHandoffFiles(d->source_path,d->paired_sst,cancelled);
+    d->candidate_files=InspectHandoffFiles(d->candidate_path,{},cancelled);
+    Require(record.source_files==HandoffFilesDigest(d->source_files)&&record.copy_files==HandoffFilesDigest(d->candidate_files));
+    d->source=std::make_unique<ChainDB>();Need(d->source->initReadOnlyForHandoff(d->source_path));
+    d->candidate=std::make_unique<ChainDB>();Need(d->candidate->initReadOnlyForHandoff(d->candidate_path));
+    d->origin=record.origin;d->candidate_digest=record.copy_rows;d->selection=bytes;
+    {
+        std::lock_guard<AnnotatedRecursiveMutex> lock(d->candidate_mutex);
+        auto proof=ReadActivationProof(d->candidate_mutex,*d->candidate,*d->headers,d->origin.first,cancelled);
+        Require(proof&&HashOrchardSnapshotSection(*proof)==d->origin.proof);
+        d->proof=std::make_shared<const consensus::OrchardSnapshotSection>(std::move(*proof));
+    }
+    auto result=std::unique_ptr<PreparedOrchardActivationHandoff>(new PreparedOrchardActivationHandoff(std::move(d)));
+    auto& live=*result->data_;CheckActivationHandoff(guard,*result);receipt.Check(guard);
+    if(phase==0){
+        Require(HandoffAbsent(live.blockchain.value,original));
+        HandoffRename(live.blockchain.value,"chaindb",original);live.source_path=live.root_path/"blockchain"/original;
+        CheckActivationHandoff(guard,*result);receipt.Check(guard);phase=1;
+    }
+    if(phase==1){
+        Require(HandoffAbsent(live.blockchain.value,"chaindb"));
+        HandoffRename(live.blockchain.value,copy,"chaindb");live.candidate_path=live.root_path/"blockchain"/"chaindb";
+        CheckActivationHandoff(guard,*result);receipt.Check(guard);
+    }
+    HandoffSync(live.source_dir.value);HandoffSync(live.candidate_dir.value);HandoffSync(live.blockchain.value);
+    if(done.empty()){
+        std::unique_lock<std::mutex> selection(live.headers->mutex_);const auto* best=live.headers->best_header_;
+        const auto* first=best?best->GetAncestor(live.proof->state.height):nullptr;
+        Require(first&&first->hash==live.origin.first&&first->prev_hash==live.origin.parent&&
+            uint64_t(best->height)>=uint64_t(first->height)+Params().state_commitment_burial_depth);
+        HandoffPublish(live.blockchain.value,HandoffDone,completed);
+    }
+    Require(HandoffControl(live.blockchain.value,HandoffIntent)==bytes&&HandoffControl(live.blockchain.value,HandoffDone)==completed);
+    return result; // Both stores stay locked; no Init, writer, lifecycle or RPC publication.
 #endif
 }
 void OrchardSnapshotStore::CreateFreshStore(const std::filesystem::path& destination) {

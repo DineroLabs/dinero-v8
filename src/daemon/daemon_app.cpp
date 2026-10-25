@@ -1051,6 +1051,11 @@ bool DaemonApp::Init(int argc, char** argv) {
         data_dir_path = datadir_str;
         chain_db_path = data_dir_path / "blockchain" / "chaindb";
 
+        // Never create/repair/open over a selected or interrupted activation
+        // swap. This is routing refusal, not an owner factory. The dedicated
+        // authenticated startup path must consume the exact held-root intent.
+        OrchardSnapshotStore::RequireNoActivationHandoff(data_dir_path);
+
         std::filesystem::create_directories(chain_db_path.parent_path());
 
         const auto reindex_promotion_journal = ReindexPromotionJournalPath(data_dir_path);
@@ -7585,6 +7590,16 @@ struct CoreReopenReceipt::Data {
     Data(std::shared_ptr<ReopenRpcGate> g,std::shared_ptr<ReopenRpcGate::Pause> p)
         :gate(std::move(g)),pause(p?std::move(p):std::shared_ptr<ReopenRpcGate::Pause>(ReopenRpcGate::Begin(gate))){}
     void Check()const{if(thread!=std::this_thread::get_id())throw std::logic_error("Foreign Core reopen receipt");}
+    void BeforeInit(const daemon::DatadirGuard& guard)const{
+        Check();if(!committed||resumed||root!=guard.DataDir())throw std::logic_error("Core reopen root/phase mismatch");
+        journal->ForEach(guard,[](const auto&){});journal->CheckPending(guard,wallet_name);
+    }
+    void Closed(const daemon::DatadirGuard& guard)const{
+        BeforeInit(guard);pause->Check();
+        if((original_identity&&original_identity.use_count()!=1)||
+            (replacement_identity&&replacement_identity.use_count()!=1))
+            throw std::logic_error("Core handoff still has live App readers");
+    }
 };
 CoreReopenReceipt::CoreReopenReceipt(std::unique_ptr<Data> data):data_(std::move(data)){}
 CoreReopenReceipt::~CoreReopenReceipt()=default;
@@ -7592,10 +7607,13 @@ std::shared_ptr<ReopenRpcGate> CoreReopenReceipt::Gate()const{data_->Check();ret
 const std::string& CoreReopenReceipt::WalletName()const{data_->Check();return data_->wallet_name;}
 const std::string& CoreReopenReceipt::CandidateJournal()const{data_->Check();return data_->journal->Name();}
 void CoreReopenReceipt::CheckBeforeInit(const daemon::DatadirGuard& guard)const{
-    data_->Check();
-    if(!data_->committed||data_->resumed||data_->root!=guard.DataDir())throw std::logic_error("Core reopen root/phase mismatch");
-    data_->journal->ForEach(guard,[](const auto&){});
-    data_->journal->CheckPending(guard,data_->wallet_name);
+    data_->BeforeInit(guard);
+}
+ClosedCoreReopenIntent CoreReopenReceipt::ClosedForHandoff(const daemon::DatadirGuard& guard)const{
+    data_->Closed(guard);const std::weak_ptr<Data> weak=data_;
+    return ClosedCoreReopenIntent([weak](const daemon::DatadirGuard& root){
+        const auto saved=weak.lock();if(!saved)throw std::logic_error("Expired Core handoff lifecycle intent");saved->Closed(root);
+    },data_->wallet_name,data_->journal->Name());
 }
 
 std::unique_ptr<CoreReopenReceipt> DaemonApp::CloseForInternalReopen(

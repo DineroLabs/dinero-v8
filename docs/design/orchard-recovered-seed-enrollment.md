@@ -467,9 +467,12 @@ branch-cache quotas, crash/power-loss behavior, large-state memory or device
 performance. Host scheduling, durable closed-store conversion, startup routes
 and automatic SDK/P2P/history integration remain unfinished.
 
-The running 72-hour private soak is three full producers on an older pinned
-source with an empty Orchard tree. The earlier short six-consumer matrix covered
-both v6 profiles; neither is a 72-hour compact/nonempty/new-source qualification.
+The historical attempted 72-hour private soak used three full producers on an
+older pinned source with an empty Orchard tree. Its controller stopped after
+about 20 hours 40 minutes due to an SSH sampling failure; it is not a 72-hour
+pass. The earlier short six-consumer matrix covered both v6 profiles separately.
+Neither qualifies compact/nonempty/current-source operation. The owner has
+prioritized integration and acceptance; no new soak is being started here.
 
 The thread-affine catalog download actor now handles one capability/connection/
 nonce-bound flight, sequential disk-backed pages, a single identical page retry,
@@ -482,8 +485,11 @@ clock, enforce cross-attempt cooldown/peer rotation with fresh nonces, and drain
 that worker before teardown. Foreign nonce/transfer-ID late replies on the same
 connection do not acknowledge or extend a flight. Matching-flight corruption
 still fails. Verification itself is not asynchronously interruptible.
-This actor is tested against real generated proof pages, but is not yet wired
-to daemon peer scheduling, live-owner installation or phone history downloads.
+The actor and bounded packet-woken daemon client host are now wired at component
+scope, including connection-bound capabilities/sends, peer rotation and Stop
+cleanup. The generated-page roundtrip uses in-process transport; it does not
+prove real network activation crossing, live-owner installation or complete
+phone history downloads.
 
 SDK store ownership now acquires the daemon's real datadir guard before Init,
 pins the resolved operator root through all arguments and DaemonApp, and holds
@@ -505,6 +511,42 @@ Native tests cover fresh and existing SDK stores, seed-row preservation, cold
 reopen and the inner-symlink refusal. The shared lock uses real flock on iOS too;
 only unavailable libproc process-name diagnostics use the pre-existing
 conservative live-PID fallback. This is not a framework or device qualification.
+
+## Closed-store authenticated activation handoff
+
+Preparation makes an exclusive unpublished READY candidate under the same real
+datadir guard, keeping actual source/candidate DB locks. It copies all column
+families in bounded checksummed, synced batches, verifies complete ordered row
+digests, retains/rechecks the selected buried activation proof, and removes coins
+only from that candidate. Full legacy before-images and the original validated
+marker/history obligation remain unchanged. Origin/selection metadata is DATA,
+not proof that assumed prehistory was independently executed or a compact owner.
+
+Durable selection additionally requires a checked revocable borrow of a genuine
+Core lifecycle receipt after all old App readers have been destroyed. The borrow
+expires with the receipt and refuses foreign threads, resumed phases and live
+replacement Apps. A read-only storage library cannot fabricate this borrow.
+The immutable selection control binds the exact root/directories, source and
+candidate physical inventories/logical digests, origin/proof/profile, nonce,
+selected public-candidate journal and named wallet. Kernel no-replace renames
+retain the original store at its exact recorded backup name before selecting
+the candidate at the canonical name. Every phase is synced and re-audited; a
+separate immutable completion record binds that exact intent. Recovery follows
+only the explicit intent and exact directory shapes, never a prefix scan or the
+newest abandoned candidate. Broken symlinks, extra links, corrupt/foreign
+controls, ambiguous partial publications, changed stores or moved selection
+refuse without deleting evidence or guessing a repair. Cancel after durable
+selection keeps RPC paused and both stores retained for checked recovery.
+
+These mechanisms are private closed-store components. Generic startup refuses
+selected/partial handoff controls before opening/repairing/creating a ChainDB;
+dedicated authenticated parent/descendant startup and typed selected-state
+consistency still need integration. Selection does not change validated markers,
+publish a service, grant a writer or open RPC. Component tests combine real
+EMPTY-GENESIS named-wallet lifecycle receipts with a separate offline authenticated
+activation-parent fixture. They are not the real activation with queued payment,
+whole assumed-state lifecycle, SDK automatic worker, complete phone recovery,
+physical device or crash/power-loss acceptance gates.
 
 - Existing unknown/missing/corrupt/untracked catalog and seed-replacement
   refusals remain negative. New enrollment tests cover atomicity, source gaps,
