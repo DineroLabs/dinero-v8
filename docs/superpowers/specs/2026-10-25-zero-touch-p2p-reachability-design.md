@@ -42,10 +42,11 @@ NAT-PMP, firewalls inbound IPv6), not only on friendly ones.
   | Artifact | UPnP / NAT-PMP / QUIC compiled in |
   |---|---|
   | Released v8.1.12 Mac app | yes |
-  | 8.1.13 pre-release Mac app (now on the owner's Mac) | **none of the three** |
-  | Linux `.deb` / server (`linux-release.yml:136`) | port mapping OFF on purpose |
-  | Linux desktop (`desktop-release.yml:202`) | port mapping OFF |
-  | Windows | probably none (no depends build, vcpkg installs only opencl/curl); unconfirmed |
+  | "8.1.13" app on the owner's Mac | **none of the three**. A local dev build from branch `claude/qt-i18n` (`6f4cb1258`, 2026-09-25), not a release-lane artifact. The macOS release lane already refuses builds without them (`packaging/mac/assert-v8-release-lane.sh`). |
+  | Linux `.deb` / server (`linux-release.yml:136`) | port mapping OFF on purpose; **QUIC not enabled** (no `-DDINERO_ENABLE_QUIC=ON`, and the default is OFF, `cmake/BuildOptions.cmake:19`) |
+  | Linux desktop (`desktop-release.yml:220`) | port mapping OFF, QUIC ON |
+  | Windows (`windows-release.yml`, `build-server-installer.ps1`) | QUIC ON; port mapping probably absent (depends/ never built in the lane); unconfirmed |
+  | Live fleet SJ/NA/EU1 (hand-built `272e01fa`) and the Dell (8.1.12 `.deb`) | fleet: UPnP/NAT-PMP yes, **QUIC no**; Dell: none. **No node has `relay.active`; the encrypted relay data plane is down network-wide.** |
 
   The Linux OFF is deliberate only because the libs once leaked in as unexpected
   shared-library dependencies (`linux-release.yml:10-16`). Static vendoring through
@@ -115,7 +116,8 @@ NAT-PMP, firewalls inbound IPv6), not only on friendly ones.
 - Nodes advertise addresses nobody can dial (today's behavior).
 - The fleet stays a single point of failure for reachability, for example if relays
   still resolve only to SJ/NA/EU1.
-- The feature silently vanishes from a build again (the 8.1.13 failure mode).
+- The feature silently vanishes from a build again (the dev-build and Linux-lane
+  failure mode).
 - Relays can read or alter relayed traffic. Relayed P2P must stay end-to-end
   encrypted, as the existing QUIC relay data plane already is.
 - RPC or anything other than the P2P port gets exposed by any of this.
