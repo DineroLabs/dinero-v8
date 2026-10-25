@@ -290,8 +290,12 @@ if (-not $SkipBuild) {
         '-DDINERO_WINDOWS_SERVER_BUILD=ON',
         '-DDINERO_BUILD_SEEDER=ON',
         '-DDINERO_BUILD_MINER=OFF',
-        '-DDINERO_ENABLE_QUIC=ON'
+        '-DDINERO_ENABLE_QUIC=ON',
+        '-DDINERO_REQUIRE_REACHABILITY_STACK=ON'
     )
+    if ($env:DINERO_DEPENDS_PREFIX) {
+        $configureArgs += "-DDINERO_DEPENDS_PREFIX=$env:DINERO_DEPENDS_PREFIX"
+    }
     $vcpkgToolchain = Join-Path $VcpkgRoot 'scripts\buildsystems\vcpkg.cmake'
     if (Test-Path $vcpkgToolchain) {
         $configureArgs += "-DCMAKE_TOOLCHAIN_FILE=$vcpkgToolchain"
