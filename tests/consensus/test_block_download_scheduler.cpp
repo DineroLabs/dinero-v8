@@ -3574,5 +3574,90 @@ int main() {
                   << std::endl;
     }
 
+    {
+        // SJ fork, 2026-10-25: the pool's own branch was TALLER than the
+        // heavier network branch (its difficulty had adjusted down), so the
+        // scan saw "local tip >= header tip" and never fetched the heavier
+        // branch. 43 blocks were mined on the dead branch until the bodies
+        // were fed by hand. Fork detection must not depend on height.
+        std::cout << "\n25. a heavier but shorter branch is fetched when our chain is taller...\n";
+
+        dcs::HeaderChainSelector selector;
+        std::vector<uint256> local_hashes;  // index == height
+        std::vector<uint256> heavy_hashes;  // heights 3..5
+        try {
+            BuildLinearHeaders(selector, 8, &local_hashes, 7'000'000);
+            constexpr uint32_t kHeavierBits = 0x1c00ffff;  // 256x the work per block
+            uint256 prev = local_hashes[2];
+            for (uint32_t i = 0; i < 3; ++i) {
+                BlockHeader next = CreateTestHeader(prev, 8'000'000 + i, kHeavierBits);
+                if (!selector.AddHeader(next)) throw std::runtime_error("heavy header rejected");
+                prev = next.GetHash();
+                heavy_hashes.push_back(prev);
+            }
+        } catch (const std::exception& e) {
+            std::cerr << "   ❌ failed to build headers: " << e.what() << std::endl;
+            return 1;
+        }
+
+        const auto best = selector.GetBestHeaderValue();
+        if (!Require(best && best->hash == heavy_hashes.back() && best->height == 5,
+                     "the heavier branch (height 5) must be the best header")) {
+            return 1;
+        }
+
+        auto active_chain = BuildActiveChainIndex(local_hashes);  // local tip at 8
+        dcs::BlockDownloadScheduler scheduler(&selector, nullptr);
+        scheduler.SetLocalTipHeight(8);
+        std::vector<uint256> requested;
+        scheduler.SetSendGetDataCallback([&requested](const uint256& hash, uint32_t) {
+            requested.push_back(hash);
+        });
+        scheduler.SetGetBlockHashAtHeightCallback(
+            [&active_chain](uint32_t height, uint256& out) -> bool {
+                return dcs::GetActiveChainHashAtHeight(active_chain.back().get(), height, out);
+            });
+
+        scheduler.OnHeadersProcessed();
+        if (!Require(scheduler.GetMissingBlockCount() == 3,
+                     "expected heights 3-5 of the heavier branch to be queued, got " +
+                         std::to_string(scheduler.GetMissingBlockCount()))) {
+            return 1;
+        }
+        scheduler.Tick();
+        if (!Require(!requested.empty() && requested[0] == heavy_hashes[0],
+                     "expected the first heavier-branch block to be requested first")) {
+            return 1;
+        }
+
+        // Same chain, headers simply behind our tip: nothing to fetch.
+        dcs::HeaderChainSelector same;
+        std::vector<uint256> same_hashes;
+        try {
+            BuildLinearHeaders(same, 5, &same_hashes, 9'000'000);
+        } catch (const std::exception& e) {
+            std::cerr << "   ❌ failed to build headers: " << e.what() << std::endl;
+            return 1;
+        }
+        std::vector<uint256> taller = same_hashes;
+        for (uint32_t i = 0; i < 3; ++i) {
+            // Our own blocks beyond the known headers (not in the selector).
+            taller.push_back(CreateTestHeader(taller.back(), 9'500'000 + i).GetHash());
+        }
+        auto taller_chain = BuildActiveChainIndex(taller);
+        dcs::BlockDownloadScheduler same_scheduler(&same, nullptr);
+        same_scheduler.SetLocalTipHeight(8);
+        same_scheduler.SetGetBlockHashAtHeightCallback(
+            [&taller_chain](uint32_t height, uint256& out) -> bool {
+                return dcs::GetActiveChainHashAtHeight(taller_chain.back().get(), height, out);
+            });
+        same_scheduler.OnHeadersProcessed();
+        if (!Require(same_scheduler.GetMissingBlockCount() == 0,
+                     "headers behind our tip on the same chain must queue nothing")) {
+            return 1;
+        }
+        std::cout << "   ✅ heavier shorter branch queued from the fork point; same chain left alone\n";
+    }
+
     return 0;
 }

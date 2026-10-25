@@ -1740,14 +1740,19 @@ void BlockDownloadScheduler::ScanForMissingBlocks() {
     // Fork detection: if the best header chain diverges from our local chain,
     // we need to download blocks from the fork point, not from local_tip+1.
     // Without this, reorg blocks below our tip would never be queued.
+    //
+    // Compare at the lower of the two tips, not only when our chain is the
+    // shorter one: a lighter local branch can be TALLER than the heavier best
+    // header (its difficulty adjusted down). SJ, 2026-10-25, mined 43 blocks
+    // on such a branch while every scan said "already synchronized".
     std::vector<std::pair<uint256, uint32_t>> header_window;
-    if (get_block_hash_at_height_callback_ && local_tip_height_ > 0 &&
-        local_tip_height_ <= best_height) {
+    const uint32_t compare_height = std::min(local_tip_height_.load(), best_height);
+    if (get_block_hash_at_height_callback_ && compare_height > 0) {
         uint32_t anchor_height = 0;
         if (!header_chain_->CollectAncestorsByHash(
-                best_header.hash, local_tip_height_, anchor_height, header_window) ||
+                best_header.hash, compare_height, anchor_height, header_window) ||
             anchor_height != best_height || header_window.empty() ||
-            header_window.front().second != local_tip_height_) {
+            header_window.front().second != compare_height) {
             // The copied tip may have been demoted and evicted before the
             // hash-anchored collection. A later scheduler tick/headers event
             // retries from the then-current best tip; never mix snapshots.
@@ -1756,7 +1761,7 @@ void BlockDownloadScheduler::ScanForMissingBlocks() {
         }
 
         uint256 local_hash;
-        if (get_block_hash_at_height_callback_(local_tip_height_, local_hash) &&
+        if (get_block_hash_at_height_callback_(compare_height, local_hash) &&
             local_hash != header_window.front().first) {
             // Fork detected. Expand the SAME hash-anchored branch snapshot to
             // genesis once, then compare it to the active-chain oracle while
@@ -1772,7 +1777,7 @@ void BlockDownloadScheduler::ScanForMissingBlocks() {
                 return;
             }
 
-            uint32_t fork_height = local_tip_height_;
+            uint32_t fork_height = compare_height;
             while (fork_height > 0) {
                 fork_height--;
                 uint256 chain_hash;
