@@ -7595,6 +7595,7 @@ void CoreReopenReceipt::CheckBeforeInit(const daemon::DatadirGuard& guard)const{
     data_->Check();
     if(!data_->committed||data_->resumed||data_->root!=guard.DataDir())throw std::logic_error("Core reopen root/phase mismatch");
     data_->journal->ForEach(guard,[](const auto&){});
+    data_->journal->CheckPending(guard,data_->wallet_name);
 }
 
 std::unique_ptr<CoreReopenReceipt> DaemonApp::CloseForInternalReopen(
@@ -7618,7 +7619,10 @@ std::unique_ptr<CoreReopenReceipt> DaemonApp::CloseForInternalReopen(
         // Nothing above replaced an owner; failure aborts gates in reverse
         // order, with RPC LAST. After this irreversible point, abandon stays
         // paused. This private flag cannot be set from a decoded old journal.
-        saved.pause->HoldClosed();saved.committed=true;reopen_mempool_sealed_=true;
+        saved.journal->SelectForReopen(guard,saved.wallet_name,[&]{
+            saved.pause->HoldClosed();saved.committed=true;
+        });
+        reopen_mempool_sealed_=true;
         saved.pool_fence->CommitToStop();saved.wallet_fence->CommitToStop();
         saved.pool_fence.reset();saved.wallet_fence.reset();
     }
@@ -7661,6 +7665,9 @@ CoreReopenReceipt::Readmission DaemonApp::ResumeAfterInternalReopen(
         ++result.retained; // Never delete unresolved bodies, dependencies or stale proofs.
     });
     if(result.candidates!=result.resolved+result.retained)throw std::logic_error("Core reopen inventory mismatch");
+    // An unresolved corpus remains the sole pending intent for a later normal
+    // admission attempt. Never replace it with a newer empty capture.
+    if(!result.retained)saved.journal->ArchivePending(guard,saved.wallet_name);
     saved.pause->Resume();saved.resumed=true;return result;
 }
 

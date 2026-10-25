@@ -314,6 +314,39 @@ with an empty pool at genesis: NOT the automatic NodeCore worker, activation,
 nonempty private queue/mempool, authenticated catalog conversion or phone-history
 acceptance. The required real queued-payment activation crossing remains open.
 
+An orderly close now durably selects exactly one current journal and named
+wallet before committing Stop. Only the private fresh-capture path may select
+this lifecycle intent; opening old candidate files grants no such permission.
+The bounded control record binds the journal's profile/root inode/nonce and
+full-corpus footer digest, the wallet name, and its own checksum. No seed,
+password, private payment plan or chainstate authority is added. Root/lock
+ownership, no-follow/regular-file/owner/mode/hardlink checks, full journal audit,
+synced writes and no-replace publication remain mandatory. RPC is irreversibly
+latched closed before intent publication starts. Partial or ambiguous control
+names refuse; no automatic cleanup or overwrite is permitted. Unselected sealed
+captures remain diagnostic evidence, not automatic rebroadcast permission.
+
+Pending read opens only that exact journal; it never scans for a newest capture.
+After all candidates resolve through normal canonical admission, completion
+archives the control by no-replace publication and keeps the original corpus.
+Unresolved candidates retain the pending selection and block another close from
+overwriting it. The App receipt checks the intent before replacement Init and
+resume. This adds durable identification, not a completed cold-process/SDK
+recovery worker or a power-loss qualification. Those paths must recover only a
+valid selected intent and keep RPC closed until the named wallet and canonical
+readmission are ready; they may not adopt a live pause token or reset an epoch.
+
+Owner decision: automatic crossing must retain H149999 (activation minus one)
+as an available compact undo/cold-reopen state. It may not silently establish
+H150000 as the snapshot/reorg floor. The activation-parent proof, original
+before-images, genuine first-block validation, canonical undo and runtime event
+must therefore survive first connect, disconnect, cold reopen and reconnect.
+This remains separate unfinished owner-install/startup work; none of the
+generic reopen APIs or transfer codec grants that state-conversion authority.
+The running 72-hour private soak is three full producers on an older pinned
+source with an empty Orchard tree. The earlier short six-consumer matrix covered
+both v6 profiles; neither is a 72-hour compact/nonempty/new-source qualification.
+
 The thread-affine catalog download actor now handles one capability/connection/
 nonce-bound flight, sequential disk-backed pages, a single identical page retry,
 16 requests/second, an 11-minute initial manifest wait (server preparation is

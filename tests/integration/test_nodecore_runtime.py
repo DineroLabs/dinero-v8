@@ -293,7 +293,8 @@ def app_reopen(node):
     check("actual App sealed close/fresh App/named open", probe == {
         "candidates":0, "resolved":0, "retained":0, "wallet_name":"reopen-owner",
         "paused_queues_retryable":True, "wallet_open_without_phrase":True,
-        "stale_epoch_refused":True, "repeat_resume_refused":True, "resumed_epoch_allowed":True}, probe)
+        "stale_epoch_refused":True, "repeat_resume_refused":True, "resumed_epoch_allowed":True,
+        "completed_intent_archived":True}, probe)
 
 
 def stopped_wallet_birth_height(path, name):

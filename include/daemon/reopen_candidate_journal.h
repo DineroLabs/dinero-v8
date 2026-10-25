@@ -6,7 +6,8 @@
 #include <vector>
 
 namespace dinero {
-class MempoolService;class ReopenServiceFence;
+class CoreReopenReceipt;class DaemonApp;class MempoolService;class ReopenServiceFence;
+struct ReopenIntentTestAccess;
 namespace daemon {
 class DatadirGuard;
 // Durable PUBLIC wire candidates, never cached admission/fee/ownership flags.
@@ -24,6 +25,11 @@ public:
         const std::shared_ptr<MempoolService>&,const ReopenServiceFence&,
         const std::function<bool()>& cancelled={});
     static std::unique_ptr<ReopenCandidateJournal> Open(const DatadirGuard&,const std::string& name);
+    // Only a durably selected lifecycle intent is eligible for automatic
+    // readmission. Ordinary abandoned captures are NOT pending work. Missing
+    // means neither control name exists; malformed/ambiguous controls throw.
+    // This opens public candidates only, never wallet or chainstate authority.
+    static std::unique_ptr<ReopenCandidateJournal> OpenPending(const DatadirGuard&,std::string& wallet_name);
     ~ReopenCandidateJournal();
     ReopenCandidateJournal(const ReopenCandidateJournal&)=delete;
     ReopenCandidateJournal& operator=(const ReopenCandidateJournal&)=delete;
@@ -35,9 +41,18 @@ public:
     // state or trusted input metadata is supplied. Thread-affine, nonrecursive.
     void ForEach(const DatadirGuard&,const std::function<void(const Candidate&)>&)const;
 private:
+    friend class ::dinero::DaemonApp;
+    friend class ::dinero::CoreReopenReceipt;
+    friend struct ::dinero::ReopenIntentTestAccess;
     struct Data;std::unique_ptr<Data> data_;
     explicit ReopenCandidateJournal(std::unique_ptr<Data>);
     static int OpenRoot(const DatadirGuard&);
+    // Only a genuine current Capture may select an intent. The callback
+    // irreversibly latches RPC CLOSED before no-replace publication starts;
+    // uncertain writes retain both control/evidence names and fail closed.
+    void SelectForReopen(const DatadirGuard&,const std::string&,const std::function<void()>& before_publish);
+    void CheckPending(const DatadirGuard&,const std::string&)const;
+    void ArchivePending(const DatadirGuard&,const std::string&);
 };
 } // namespace daemon
 } // namespace dinero

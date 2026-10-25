@@ -26,6 +26,8 @@ using Journal=ReopenCandidateJournal;using Bytes=std::vector<uint8_t>;
 void Require(bool ok){if(!ok)throw std::runtime_error("Reopen candidate journal refused");}
 constexpr const char* Prefix=".core-reopen-candidates-v1-";
 constexpr const char* Sealed="candidates.sealed";
+constexpr const char* Pending=".core-reopen-pending-v1";
+constexpr const char* Partial=".core-reopen-pending-v1.partial";
 #ifndef _WIN32
 struct Fd {
     int value=-1;explicit Fd(int v):value(v){Require(v>=0);}
@@ -115,6 +117,31 @@ struct Reader {
     }
     uint64_t Number(unsigned width){const auto b=Read(width);uint64_t n=0;for(unsigned i=0;i<width;++i)n|=uint64_t(b[i])<<(8*i);return n;}
 };
+bool Absent(int root,const char* name){
+    struct stat st{};if(::fstatat(root,name,&st,AT_SYMLINK_NOFOLLOW)==0)return false;
+    Require(errno==ENOENT);return true;
+}
+void WalletName(const std::string& name){
+    Require(name.size()<=255&&name.find('\0')==std::string::npos&&
+        name.find('/')==std::string::npos&&name.find('\\')==std::string::npos);
+}
+std::array<uint8_t,32> Digest(std::span<const uint8_t> bytes){
+    std::array<uint8_t,32> digest;crypto::CSHA256().Write(bytes.data(),bytes.size()).Finalize(digest.data());return digest;
+}
+Bytes Control(int root){
+    // A partial/dual-name publication is ambiguous even if the sealed name
+    // exists. Do not delete it, follow it, or reinterpret it as no work.
+    Require(Absent(root,Partial));
+    if(Absent(root,Pending))return {};
+    Fd file(::openat(root,Pending,O_RDONLY|O_CLOEXEC|O_NOFOLLOW|O_NONBLOCK));const auto before=Stat(file.value);
+    Require(S_ISREG(before.st_mode)&&before.st_uid==::geteuid()&&before.st_nlink==1&&
+        (before.st_mode&0777)==0400&&before.st_size>=146&&before.st_size<=401);
+    Reader read{file.value};auto bytes=read.Read(size_t(before.st_size),false);
+    Require(SameFile(before,Stat(file.value))&&SameFile(before,Named(root,Pending)));
+    Require(std::equal(bytes.begin(),bytes.begin()+8,std::string_view("DNRPEN01").begin()));
+    const auto digest=Digest(std::span(bytes).first(bytes.size()-32));
+    Require(std::equal(digest.begin(),digest.end(),bytes.end()-32));return bytes;
+}
 #endif
 }
 
@@ -131,7 +158,7 @@ int ReopenCandidateJournal::OpenRoot(const DatadirGuard& guard){
 }
 struct ReopenCandidateJournal::Data {
     Fd root,dir,file;std::string name;Bytes header;struct stat directory,record;
-    const std::thread::id thread=std::this_thread::get_id();mutable bool visiting=false;uint64_t count=0;
+    const std::thread::id thread=std::this_thread::get_id();mutable bool visiting=false;uint64_t count=0;bool captured_here=false;
     Data(Fd r,Fd d,Fd f,std::string n):root(std::move(r)),dir(std::move(d)),file(std::move(f)),name(std::move(n)),
         header(Header(root.value,name)),directory(Stat(dir.value)),record(Stat(file.value)){}
     void Check(const DatadirGuard& guard)const {
@@ -158,6 +185,15 @@ struct ReopenCandidateJournal::Data {
             Candidate candidate{reader.Read(size_t(body)),reader.Read(size_t(proof))};CheckWire(candidate);
             ++rows;if(visitor)visitor(candidate);
         }
+    }
+    Bytes Intent(const DatadirGuard& guard,const std::string& wallet)const {
+        WalletName(wallet);Check(guard);Require(!visiting&&Scan()==count);Check(guard);
+        // The journal footer authenticates its complete canonical wire corpus.
+        Bytes footer(32);Require(::pread(file.value,footer.data(),footer.size(),record.st_size-32)==32);
+        Bytes bytes{'D','N','R','P','E','N','0','1'};
+        bytes.insert(bytes.end(),header.begin(),header.end());bytes.insert(bytes.end(),footer.begin(),footer.end());
+        Put(bytes,wallet.size(),2);bytes.insert(bytes.end(),wallet.begin(),wallet.end());
+        const auto digest=Digest(bytes);bytes.insert(bytes.end(),digest.begin(),digest.end());Check(guard);return bytes;
     }
 };
 ReopenCandidateJournal::ReopenCandidateJournal(std::unique_ptr<Data> data):data_(std::move(data)){}
@@ -206,7 +242,47 @@ std::unique_ptr<ReopenCandidateJournal> ReopenCandidateJournal::Capture(const Da
     Require(::linkat(dir.value,"candidates.partial",dir.value,Sealed,0)==0);
     Require(::unlinkat(dir.value,"candidates.partial",0)==0);
     Require(::fsync(dir.value)==0&&::fsync(root.value)==0);
-    auto result=Open(guard,name);Require(result->Count()==rows);return result;
+    auto result=Open(guard,name);Require(result->Count()==rows);result->data_->captured_here=true;return result;
+}
+std::unique_ptr<ReopenCandidateJournal> ReopenCandidateJournal::OpenPending(const DatadirGuard& guard,std::string& wallet){
+    Fd root(OpenRoot(guard));const auto bytes=Control(root.value);
+    if(bytes.empty()){wallet.clear();return {};}
+    // Header is 72 bytes (profile/root inode/nonce). Never choose a journal by
+    // scanning directories or trusting a caller-supplied path in this record.
+    constexpr size_t wallet_at=8+72+32;const auto size=uint64_t(bytes[wallet_at])|(uint64_t(bytes[wallet_at+1])<<8);
+    Require(size<=255&&bytes.size()==wallet_at+2+size+32);
+    const std::string name(bytes.begin()+wallet_at+2,bytes.end()-32);WalletName(name);
+    std::string journal=Prefix;constexpr char hex[]="0123456789abcdef";
+    for(size_t i=8+56;i<8+72;++i){journal.push_back(hex[bytes[i]>>4]);journal.push_back(hex[bytes[i]&15]);}
+    auto opened=Open(guard,journal);Require(opened->data_->Intent(guard,name)==bytes);
+    Require(Control(root.value)==bytes);wallet=name;return opened;
+}
+void ReopenCandidateJournal::SelectForReopen(const DatadirGuard& guard,const std::string& wallet,
+    const std::function<void()>& before_publish){
+    Require(data_->captured_here&&bool(before_publish));const auto bytes=data_->Intent(guard,wallet);
+    Fd root(OpenRoot(guard));Require(Control(root.value).empty());Space(root.value,bytes.size());
+    Fd file(::openat(root.value,Partial,O_WRONLY|O_CREAT|O_EXCL|O_CLOEXEC|O_NOFOLLOW,0600));
+    Writer writer{file.value};writer.Write(bytes,false);
+    const auto original=Stat(file.value);Require(S_ISREG(original.st_mode)&&original.st_nlink==1&&
+        original.st_uid==::geteuid()&&Same(original,Named(root.value,Partial)));
+    Require(::fchmod(file.value,0400)==0&&::fsync(file.value)==0);data_->Check(guard);
+    before_publish(); // Any failure from here must leave transport CLOSED.
+    data_->captured_here=false;
+    Require(::linkat(root.value,Partial,root.value,Pending,0)==0);
+    Require(::unlinkat(root.value,Partial,0)==0&&::fsync(root.value)==0);
+    CheckPending(guard,wallet);
+}
+void ReopenCandidateJournal::CheckPending(const DatadirGuard& guard,const std::string& wallet)const {
+    const auto expected=data_->Intent(guard,wallet);Fd root(OpenRoot(guard));Require(Control(root.value)==expected);
+}
+void ReopenCandidateJournal::ArchivePending(const DatadirGuard& guard,const std::string& wallet){
+    CheckPending(guard,wallet);Fd root(OpenRoot(guard));
+    const auto archive=std::string(Pending)+".completed-"+data_->name.substr(std::strlen(Prefix));
+    // Preserve completed intent AND original journal. Dual-name interruption
+    // has nlink2 and refuses; do not silently resolve an uncertain completion.
+    Require(::linkat(root.value,Pending,root.value,archive.c_str(),0)==0);
+    Require(::unlinkat(root.value,Pending,0)==0&&::fsync(root.value)==0);
+    Require(Control(root.value).empty());data_->Check(guard);
 }
 void ReopenCandidateJournal::ForEach(const DatadirGuard& guard,const std::function<void(const Candidate&)>& visitor)const {
     data_->Check(guard);Require(bool(visitor)&&!data_->visiting);data_->visiting=true;
@@ -222,6 +298,10 @@ int ReopenCandidateJournal::OpenRoot(const DatadirGuard&){Require(false);return 
 const std::string& ReopenCandidateJournal::Name()const{throw std::runtime_error("Reopen journal unavailable on this platform");}
 uint64_t ReopenCandidateJournal::Count()const{Require(false);return 0;}
 std::unique_ptr<ReopenCandidateJournal> ReopenCandidateJournal::Open(const DatadirGuard&,const std::string&){Require(false);return {};}
+std::unique_ptr<ReopenCandidateJournal> ReopenCandidateJournal::OpenPending(const DatadirGuard&,std::string&){Require(false);return {};}
+void ReopenCandidateJournal::SelectForReopen(const DatadirGuard&,const std::string&,const std::function<void()>&){Require(false);}
+void ReopenCandidateJournal::CheckPending(const DatadirGuard&,const std::string&)const{Require(false);}
+void ReopenCandidateJournal::ArchivePending(const DatadirGuard&,const std::string&){Require(false);}
 std::unique_ptr<ReopenCandidateJournal> ReopenCandidateJournal::Capture(const DatadirGuard&,const std::shared_ptr<MempoolService>&,
     const ReopenServiceFence&,const std::function<bool()>&){Require(false);return {};}
 void ReopenCandidateJournal::ForEach(const DatadirGuard&,const std::function<void(const Candidate&)>&)const{Require(false);}

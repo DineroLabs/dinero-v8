@@ -5,6 +5,7 @@
 #include "storage/chain_direct.h"
 #include "daemon/daemon_app.h"
 #include "daemon/datadir_guard.h"
+#include "daemon/reopen_candidate_journal.h"
 #include "daemon/daemon_context.h"
 #include "daemon/services/wallet_service.h"
 #include "daemon/services/mempool_service.h"
@@ -191,6 +192,10 @@ Json::Value ActualAppReopen(const std::string& path){
     auto pause=std::shared_ptr<dinero::ReopenRpcGate::Pause>(dinero::ReopenRpcGate::Begin(gate));
     auto receipt=old->CloseForInternalReopen(guard,pause);
     if(receipt->WalletName()!="reopen-owner"||gate->Allows(epoch))throw std::runtime_error("close did not fence/retain named wallet");
+    std::string selected_wallet;
+    auto pending=dinero::daemon::ReopenCandidateJournal::OpenPending(guard,selected_wallet);
+    if(!pending||pending->Name()!=receipt->CandidateJournal()||selected_wallet!="reopen-owner")
+        throw std::runtime_error("close did not durably select the exact named-wallet intent");
     old.reset(); // ALL raw forest/bridge/validation readers end before new Init.
     receipt->CheckBeforeInit(guard);
     auto reopened=std::make_unique<dinero::DaemonApp>();reopened->GetContext().reopen_rpc_gate=receipt->Gate();initialize(*reopened);
@@ -201,6 +206,7 @@ Json::Value ActualAppReopen(const std::string& path){
             paused["error"]["code"].asInt()==-28&&paused["error"]["data"]["retryable"].asBool()&&!paused.isMember("result");
     }
     const auto admitted=reopened->ResumeAfterInternalReopen(guard,*receipt);
+    result["completed_intent_archived"]=!dinero::daemon::ReopenCandidateJournal::OpenPending(guard,selected_wallet);
     result["candidates"]=Json::UInt64(admitted.candidates);result["resolved"]=Json::UInt64(admitted.resolved);result["retained"]=Json::UInt64(admitted.retained);
     Json::Value open(Json::arrayValue);open.append("reopen-owner");const auto opened=call(*reopened,"wallet.open",open);
     result["wallet_open_without_phrase"]=opened["result"]["success"].asBool();

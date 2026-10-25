@@ -65,6 +65,13 @@ TEST(OrchardReopenFences, CommittedPoolFenceExportsTypedCandidatesForCanonicalRe
     EXPECT_EQ(reopened->mempool().size(),2u);EXPECT_EQ(fixture.f.service->GetActiveTip()->height,101u);
 }
 #ifndef _WIN32
+struct ReopenIntentTestAccess {
+    using Journal=daemon::ReopenCandidateJournal;
+    static void Select(Journal& journal,const daemon::DatadirGuard& guard,const std::string& wallet,
+        const std::function<void()>& latch=[] {}){journal.SelectForReopen(guard,wallet,latch);}
+    static void Check(const Journal& journal,const daemon::DatadirGuard& guard,const std::string& wallet){journal.CheckPending(guard,wallet);}
+    static void Archive(Journal& journal,const daemon::DatadirGuard& guard,const std::string& wallet){journal.ArchivePending(guard,wallet);}
+};
 namespace {
 auto ReopenJournalEvidence(){
     auto path=(std::filesystem::temp_directory_path()/"reopen-journal-evidence-XXXXXX").string();
@@ -148,6 +155,81 @@ TEST(OrchardReopenJournal, CorruptForeignAliasedAndReplacedRootsRefuseBeforeVisi
     EXPECT_ANY_THROW(intact->ForEach(guard,[&](const auto&){++visits;}));
     std::filesystem::rename(path,path.string()+".replacement-root");std::filesystem::rename(saved,path);
     intact->ForEach(guard,[&](const auto&){++visits;});EXPECT_EQ(visits,1u);EXPECT_EQ(fixture.f.ingress->mempool().size(),1u);
+}
+TEST(OrchardReopenIntent, OnlyExplicitCurrentCaptureIsSelectedAndSurvivesGuardReopen){
+    using Journal=daemon::ReopenCandidateJournal;using Access=ReopenIntentTestAccess;
+    CanonicalPoolFixture fixture;const auto survivor=CanonicalPoolSurvivor(fixture);
+    ASSERT_TRUE(fixture.f.ingress->SubmitBody(survivor,TxOrigin::INTERNAL).accepted());
+    const auto path=ReopenJournalEvidence();daemon::DatadirGuard guard;std::string error,wallet="unchanged";
+    ASSERT_TRUE(guard.Acquire(path,error))<<error;
+    auto capture=[&]{auto fence=MempoolService::FenceForReopen(fixture.f.ingress,std::chrono::milliseconds(100));return Journal::Capture(guard,fixture.f.ingress,*fence);};
+    auto abandoned=capture();EXPECT_FALSE(Journal::OpenPending(guard,wallet));EXPECT_TRUE(wallet.empty());
+    auto current=capture();auto opened=Journal::Open(guard,current->Name());
+    EXPECT_ANY_THROW(Access::Select(*opened,guard,"recovery-owner")); // Read access is not a current capture.
+    bool latched=false;Access::Select(*current,guard,"recovery-owner",[&]{latched=true;});EXPECT_TRUE(latched);
+    auto newer=capture();EXPECT_ANY_THROW(Access::Select(*newer,guard,"different-owner"));
+    EXPECT_ANY_THROW(Access::Check(*current,guard,"different-owner"));
+    const auto name=current->Name();current.reset();opened.reset();guard.Release();
+    ASSERT_TRUE(guard.Acquire(path,error))<<error;
+    auto pending=Journal::OpenPending(guard,wallet);ASSERT_TRUE(pending);EXPECT_EQ(wallet,"recovery-owner");EXPECT_EQ(pending->Name(),name);
+    unsigned count=0;pending->ForEach(guard,[&](const auto& row){EXPECT_EQ(row.body,survivor.Serialize());++count;});EXPECT_EQ(count,1u);
+    // A failed/rejected readmission retains the exact selected candidates.
+    EXPECT_ANY_THROW(pending->ForEach(guard,[](const auto&){throw std::runtime_error("normal admission unavailable");}));
+    auto again=Journal::OpenPending(guard,wallet);ASSERT_TRUE(again);EXPECT_EQ(again->Name(),name);
+    Access::Archive(*pending,guard,wallet);EXPECT_FALSE(Journal::OpenPending(guard,wallet));
+    EXPECT_TRUE(std::filesystem::is_regular_file(path/(std::string(".core-reopen-pending-v1.completed-")+name.substr(std::string(".core-reopen-candidates-v1-").size()))));
+    EXPECT_TRUE(std::filesystem::is_regular_file(path/name/"candidates.sealed"));
+    EXPECT_TRUE(std::filesystem::is_regular_file(path/abandoned->Name()/"candidates.sealed"));
+    EXPECT_ANY_THROW(Access::Select(*pending,guard,"recovery-owner"));
+}
+TEST(OrchardReopenIntent, PartialPublicationAndCompletionNeverBecomeMissingWork){
+    using Journal=daemon::ReopenCandidateJournal;using Access=ReopenIntentTestAccess;CanonicalPoolFixture fixture;
+    const auto survivor=CanonicalPoolSurvivor(fixture);ASSERT_TRUE(fixture.f.ingress->SubmitBody(survivor,TxOrigin::INTERNAL).accepted());
+    const auto path=ReopenJournalEvidence();daemon::DatadirGuard guard;std::string error,wallet;
+    ASSERT_TRUE(guard.Acquire(path,error))<<error;
+    auto capture=[&]{auto fence=MempoolService::FenceForReopen(fixture.f.ingress,std::chrono::milliseconds(100));return Journal::Capture(guard,fixture.f.ingress,*fence);};
+    auto current=capture();
+    EXPECT_ANY_THROW(Access::Select(*current,guard,"named",[]{throw std::runtime_error("publication interrupted");}));
+    EXPECT_TRUE(std::filesystem::is_regular_file(path/".core-reopen-pending-v1.partial"));
+    EXPECT_FALSE(std::filesystem::exists(path/".core-reopen-pending-v1"));
+    EXPECT_ANY_THROW(Journal::OpenPending(guard,wallet));
+    EXPECT_ANY_THROW(Access::Select(*current,guard,"named"));
+    EXPECT_EQ(fixture.f.ingress->mempool().size(),1u);
+    // Retain the interrupted artifact; an explicit test-only new root gets a
+    // separate control namespace, never an automatic production cleanup.
+    const auto other=ReopenJournalEvidence();guard.Release();ASSERT_TRUE(guard.Acquire(other,error))<<error;
+    auto next=capture();Access::Select(*next,guard,"named");
+    std::filesystem::create_hard_link(other/".core-reopen-pending-v1",other/"interrupted-completion");
+    EXPECT_ANY_THROW(Journal::OpenPending(guard,wallet));
+    EXPECT_ANY_THROW(Access::Archive(*next,guard,"named"));
+}
+TEST(OrchardReopenIntent, CorruptForeignAliasedAndReplacedControlRefusesBeforeReadmission){
+    using Journal=daemon::ReopenCandidateJournal;using Access=ReopenIntentTestAccess;CanonicalPoolFixture fixture;
+    const auto survivor=CanonicalPoolSurvivor(fixture);ASSERT_TRUE(fixture.f.ingress->SubmitBody(survivor,TxOrigin::INTERNAL).accepted());
+    for(unsigned variant=0;variant<5;++variant){
+        const auto path=ReopenJournalEvidence();daemon::DatadirGuard guard;std::string error,wallet="unchanged";
+        ASSERT_TRUE(guard.Acquire(path,error))<<error;
+        auto fence=MempoolService::FenceForReopen(fixture.f.ingress,std::chrono::milliseconds(100));
+        auto current=Journal::Capture(guard,fixture.f.ingress,*fence);Access::Select(*current,guard,"named");fence.reset();
+        const auto control=path/".core-reopen-pending-v1";
+        if(variant==0){
+            ASSERT_EQ(::chmod(control.c_str(),0600),0);const int fd=::open(control.c_str(),O_RDWR|O_CLOEXEC|O_NOFOLLOW);ASSERT_GE(fd,0);
+            uint8_t byte;ASSERT_EQ(::pread(fd,&byte,1,80),1);byte^=1;ASSERT_EQ(::pwrite(fd,&byte,1,80),1);
+            ASSERT_EQ(::fchmod(fd,0400),0);ASSERT_EQ(::fsync(fd),0);ASSERT_EQ(::close(fd),0);
+        }else if(variant==1){
+            std::filesystem::rename(control,path/"outside-control");std::filesystem::create_symlink(path/"outside-control",control);
+        }else if(variant==2){
+            std::filesystem::create_hard_link(control,path/"extra-control-link");
+        }else if(variant==3){
+            const auto magic=Params().magic;MutableParams().magic^=1;
+            EXPECT_ANY_THROW(Journal::OpenPending(guard,wallet));MutableParams().magic=magic;
+            EXPECT_EQ(wallet,"unchanged");ASSERT_TRUE(Journal::OpenPending(guard,wallet));continue;
+        }else{
+            // Replace the actual held root, retaining both original names.
+            std::filesystem::rename(path,path.string()+".held-root");std::filesystem::create_directory(path);
+        }
+        EXPECT_ANY_THROW(Journal::OpenPending(guard,wallet));EXPECT_EQ(wallet,"unchanged");
+    }
 }
 #endif
 TEST(OrchardCatalogClient, SequentialConnectionBoundDownloadAuthenticatesWithoutPublishing){
