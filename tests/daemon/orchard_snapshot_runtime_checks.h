@@ -92,9 +92,13 @@ TEST(OrchardCatalogTransfer, ArchivalSourceMissingNodesAndForgedRetirementRefuse
     std::string retirement;source.f.db.close();
     {shielded_store_fixture::Raw raw(source.f.path);
         ASSERT_TRUE(raw.db->Get(rocksdb::ReadOptions(),raw.cf(shielded_store_fixture::shielded),"R1S",&retirement).ok());}
+    // Raw(path) deliberately opens read-only. Only these disposable fault
+    // injections/restorations use its explicit writable-existing-CF mode.
+    std::vector<std::string> families;
+    ASSERT_TRUE(rocksdb::DB::ListColumnFamilies(rocksdb::Options(),source.f.path.string(),&families).ok());
     for(unsigned fault=0;fault<3;++fault){
         SCOPED_TRACE(fault);
-        {shielded_store_fixture::Raw raw(source.f.path);
+        {shielded_store_fixture::Raw raw(source.f.path,families);
             if(fault==0){rocksdb::WriteOptions w;w.sync=true;ASSERT_TRUE(raw.db->Delete(w,raw.cf("utreexo"),node_key).ok());}
             else if(fault==1){auto corrupt=*node;corrupt.back()^=1;raw.put("utreexo",node_key,corrupt);}
             else {
@@ -108,7 +112,7 @@ TEST(OrchardCatalogTransfer, ArchivalSourceMissingNodesAndForgedRetirementRefuse
         EXPECT_ANY_THROW(Access::CaptureActivation(source.f.db,headers));
         EXPECT_EQ(source.f.db.getOrchardState().value(),*before);
         EXPECT_EQ(source.f.service->GetActiveTip()->hash,first->Header().GetHash());
-        source.f.db.close();{shielded_store_fixture::Raw raw(source.f.path);
+        source.f.db.close();{shielded_store_fixture::Raw raw(source.f.path,families);
             raw.put("utreexo",node_key,*node);raw.put(shielded_store_fixture::shielded,"R1S",retirement);}
     }
     ASSERT_EQ(source.f.db.init(source.f.path),Status::Ok);
