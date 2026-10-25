@@ -146,6 +146,45 @@ def lifecycle(node):
     check("restart closes cleanly", node.call("stop") == 0)
 
 
+def datadir_lock(node):
+    # Native kernel-lock regression using the real linked C ABI. No mock
+    # owner, forced database unlock or installed datadir is involved.
+    import fcntl
+    path = datadir("locked-root").resolve()
+    alias = WORK / "root-alias"
+    alias.symlink_to(path, target_is_directory=True)
+    with (path / "dinerod.lock").open("a+b") as lease:
+        fcntl.flock(lease, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        refused = node.start(alias)
+        check("existing root lock refuses alias before Init", refused == -3, refused)
+        check("lock refusal does not create ChainDB", not (path / "blockchain").exists())
+        fcntl.flock(lease, fcntl.LOCK_UN)
+        check("alias starts after external lock release", node.start(alias) == 0)
+        check("locked alias node answers", node.rpc("getblockcount") == 0)
+        try:
+            fcntl.flock(lease, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            held = False
+            fcntl.flock(lease, fcntl.LOCK_UN)
+        except BlockingIOError:
+            held = True
+        check("SDK retains root lock while running", held)
+        contender = Embedded()
+        try:
+            check("second process cannot open resolved root", contender.start(path) == -3)
+            check("owner still answers after contention", node.rpc("getblockcount") == 0)
+            check("SDK closes before root release", node.call("stop") == 0)
+            fcntl.flock(lease, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            check("completed stop releases root lock", not (path / "dinerod.pid").exists())
+            fcntl.flock(lease, fcntl.LOCK_UN)
+            check("other process reopens resolved root", contender.start(path) == 0)
+            check("alias cannot bypass reopened root lock", node.start(alias) == -3)
+            check("second process closes cleanly", contender.call("stop") == 0)
+        finally:
+            contender.close()
+        check("alias cold reopen after both owners close", node.start(alias) == 0)
+        check("final alias owner closes", node.call("stop") == 0)
+
+
 def state(node):
     commitment = node.rpc("blockchain.getutreexocommitment")
     return {"height": node.rpc("getblockcount"), "hash": node.rpc("getbestblockhash"),
@@ -428,7 +467,7 @@ node = Embedded()
 success = False
 try:
     try:
-        {"lifecycle": lifecycle, "snapshot": snapshot, "maintenance": maintenance,
+        {"lifecycle": lifecycle, "datadir_lock": datadir_lock, "snapshot": snapshot, "maintenance": maintenance,
          "maintenance_gate": maintenance_gate}[os.environ["NODECORE_SCENARIO"]](node)
         success = True
     finally:

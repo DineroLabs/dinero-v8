@@ -239,6 +239,15 @@ physical-phone viability from host/synthetic memory measurements.
 
 ## Acceptance gates
 
+SDK store ownership now acquires the daemon's real datadir guard before Init,
+pins the resolved operator root through all arguments and DaemonApp, and holds
+the guard until the worker, services and database have closed. The persistent
+maintenance fence is checked both before lock acquisition and on that pinned
+root. Native executable tests exercise root-lock contention through alias and
+resolved paths and release after completed stop. This prerequisite does not
+itself enable legacy-store migration, install a catalog or qualify iOS/Android
+filesystem behavior; those remain separate gates.
+
 - Existing unknown/missing/corrupt/untracked catalog and seed-replacement
   refusals remain negative. New enrollment tests cover atomicity, source gaps,
   borrowed owners, reopen and actual funds received across activation.

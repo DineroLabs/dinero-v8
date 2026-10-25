@@ -43,6 +43,7 @@ if(BUILD_NODECORE OR (CMAKE_SYSTEM_NAME STREQUAL "iOS" AND NOT BUILD_FFI_ONLY))
 
     # DaemonApp lifecycle (same as dinerod, minus main.cpp)
     src/daemon/daemon_app.cpp
+    src/daemon/datadir_guard.cpp
     src/daemon/legacy_globals_stub.cpp
     src/daemon/config.cpp
     src/daemon/rpc_context_wiring.cpp

@@ -12,6 +12,7 @@
 
 #include "nodecore/nodecore_ffi.h"
 #include "daemon/daemon_app.h"
+#include "daemon/datadir_guard.h"
 #include "daemon/services/config_service.h"
 #include "daemon/services/chainstate_service.h"
 #include "daemon/services/p2p_service.h"
@@ -78,6 +79,9 @@ thread_local bool in_nodecore_callback = false;
 
 struct NodeCoreState {
     std::mutex mtx;
+    // Declared before app so even static teardown closes every store first.
+    // The lock spans Init, the worker and completed Stop, not just migration.
+    std::unique_ptr<dinero::daemon::DatadirGuard> datadir_guard;
     std::unique_ptr<dinero::DaemonApp> app;
     std::thread node_thread;
     std::atomic<bool> running{false};
@@ -135,6 +139,7 @@ int CloseNodeLocked(NodeCoreState& s) {
             s.node_thread.join();
         }
         s.app.reset();
+        s.datadir_guard.reset();
         return NODECORE_OK;
     } catch (...) { return NODECORE_ERROR_INTERNAL; }
 }
@@ -490,6 +495,21 @@ int32_t nodecore_start(const char* datadir, const char* config_json) {
         dinero::SelectParams(dinero::Chain::MAINNET);
     }
 
+    // Use the same operator-root lock as dinerod. Resolve an alias exactly
+    // once before Init; inner database symlinks remain subject to the existing
+    // storage guards. A concurrent daemon/SDK must not migrate or open it.
+    auto datadir_guard = std::make_unique<dinero::daemon::DatadirGuard>();
+    std::string lock_error;
+    if (!datadir_guard->Acquire(s.datadir, lock_error)) {
+        fprintf(stderr, "[nodecore_ffi] datadir lock refused: %s\n", lock_error.c_str());
+        return NODECORE_ERROR_INIT_FAILED;
+    }
+    s.datadir = datadir_guard->DataDir().string();
+    // Recheck the persistent fence on the exact locked root before any Init
+    // writes; an alias spelling must not select a different maintenance owner.
+    const int locked_gate = dinero::nodecore::MaintenanceJournal::StartupGate(s.datadir);
+    if (locked_gate != NODECORE_OK) return locked_gate;
+
     // Build argc/argv for DaemonApp::Init
     std::vector<std::string> args_storage;
     args_storage.push_back("dinerod-ios");
@@ -555,11 +575,13 @@ int32_t nodecore_start(const char* datadir, const char* config_json) {
 
     // Create and initialize DaemonApp
     s.app = std::make_unique<dinero::DaemonApp>();
+    s.app->SetLockedDatadir(*datadir_guard);
 
     if (!s.app->Init(static_cast<int>(argv_ptrs.size()), argv_ptrs.data())) {
         s.app.reset();
         return NODECORE_ERROR_INIT_FAILED;
     }
+    s.datadir_guard = std::move(datadir_guard);
 
     // ChainDB's unrecovered-write loop-breaker defaults to std::exit(1)
     // ("service manager restarts the node") — correct under systemd, fatal
@@ -662,6 +684,7 @@ int32_t nodecore_start(const char* datadir, const char* config_json) {
             s.node_thread.join();
         }
         s.app.reset();
+        s.datadir_guard.reset();
         return NODECORE_ERROR_START_FAILED;
     }
 
