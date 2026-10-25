@@ -288,6 +288,9 @@ jobs:
           test -x deb-check/usr/bin/dinero-cli
           deb-check/usr/bin/dinerod --version
           deb-check/usr/bin/dinero-cli version
+          # The .deb has its own configure (debian/rules); gate its binary too.
+          python3 scripts/ci/check_reachability_stack.py \
+            --dinerod deb-check/usr/bin/dinerod --cli deb-check/usr/bin/dinero-cli
           sudo dpkg -i "$DEB"
           test "$(dpkg-query -W -f='${Status}' dinero-core)" = 'install ok installed'
           test "$(systemctl is-active dinero.service || true)" != active
