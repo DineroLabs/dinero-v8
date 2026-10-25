@@ -35,6 +35,8 @@ struct OrchardSnapshotStoreTestAccess {
         return OrchardSnapshotStore::RecoverActivationHandoff(root,receipt.ClosedForHandoff(root),std::move(headers),cancel);}
 #endif
     static void NoHandoff(const std::filesystem::path& root){OrchardSnapshotStore::RequireNoActivationHandoff(root);}
+    static auto ReadHandoffHeaders(const ChainDB& db,const uint256& first,const std::function<bool()>& cancel={}){
+        return OrchardSnapshotStore::ReadActivationHeaders(db,first,cancel);}
     static auto Authenticate(const consensus::OrchardSnapshotSection& proof,const consensus::HeaderChainSelector& headers){
         return OrchardSnapshotStore::Authenticate(proof,headers,Params().state_commitment_burial_depth);
     }
@@ -361,7 +363,80 @@ struct ActivationHandoffFixture {
 #endif
 }
 #ifndef _WIN32
+TEST(OrchardActivationHeaders, MissingPrehistoryAndBurialRowsPersistAsHeadersOnlyWithoutMovingMarkers){
+    ActivationHandoffFixture f;
+    const std::vector<uint256> absent{f.full.f.blocks.at(1).GetHash(),f.full.f.blocks.at(50).GetHash(),
+        f.full.first->Header().GetHash(),f.full.second->Header().GetHash()};
+    f.MutateSource([&](auto& raw){
+        rocksdb::WriteOptions sync;sync.sync=true;
+        for(const auto& hash:absent){
+            ASSERT_TRUE(raw.db->Delete(sync,raw.cf("headers"),"h"+hash.GetHex()).ok());
+            ASSERT_TRUE(raw.db->Delete(sync,raw.cf("headers"),"m"+hash.GetHex()).ok());
+        }
+    });
+    {ChainDB source;ASSERT_EQ(source.init(f.path),Status::Ok);
+        ASSERT_EQ(source.setValidatedTip(f.full.f.token,f.full.f.blocks.front().GetHash(),0),Status::Ok);}
+    const auto original=ActivationHandoffFixture::Files(f.path);auto prepared=f.Prepare();ASSERT_TRUE(prepared);
+    const auto& source=prepared->OriginalForInspection();const auto& copy=prepared->CandidateForInspection();
+    const auto cold=OrchardSnapshotStoreTestAccess::ReadHandoffHeaders(copy,f.proof->state.block_hash);
+    ASSERT_TRUE(cold);ASSERT_TRUE(cold->GetBestHeaderValue());EXPECT_EQ(cold->GetBestHeaderValue()->height,103u);
+    EXPECT_EQ(cold->GetBestHeaderValue()->hash,f.full.second->Header().GetHash());
+    for(const auto& hash:absent){
+        const auto expected=f.headers->GetHeaderValue(hash);ASSERT_TRUE(expected);
+        EXPECT_EQ(source.getHeader(hash).status(),Status::NotFound);ASSERT_TRUE(copy.getHeader(hash).ok());
+        EXPECT_EQ(copy.getHeader(hash)->SerializeForHash(),expected->header.SerializeForHash());
+        EXPECT_EQ(copy.getBlockHeight(hash).value(),int(expected->height));EXPECT_EQ(copy.getBlockWork(hash).value(),expected->chainwork);
+        EXPECT_EQ(copy.getHeaderMetadata(hash).status(),Status::NotFound); // No body/CHAIN/SCRIPTS flags manufactured.
+    }
+    EXPECT_EQ(copy.getBlockHashByHeight(102).status(),Status::NotFound);EXPECT_EQ(copy.getBlockHashByHeight(103).status(),Status::NotFound);
+    EXPECT_EQ(copy.getTip()->height,101);EXPECT_EQ(copy.getValidatedTip()->height,0);
+    EXPECT_ANY_THROW(consensus::CheckPreparedLegacyRetirementUnderLock(copy,f.proof->retirement.record));
+    EXPECT_EQ(ActivationHandoffFixture::Files(f.path),original);
+    EXPECT_NO_THROW(OrchardSnapshotStoreTestAccess::CheckHandoff(f.guard,*prepared));
+}
+TEST(OrchardActivationHeaders, ColdClosureMissingCorruptRowsAndConflictingOriginalNeverRepairOrGrantOwner){
+    ActivationHandoffFixture f;auto prepared=f.Prepare();const auto candidate=prepared->CandidatePath();prepared.reset();
+    const auto first=f.proof->state.block_hash;const auto key="orchard_activation_headers_v1:"+first.GetHex();
+    for(unsigned variant=0;variant<4;++variant){
+        const auto path=f.root/"blockchain"/("header-negative-"+std::to_string(variant));
+        std::filesystem::copy(candidate,path,std::filesystem::copy_options::recursive);
+        ActivationHandoffFixture::MutateCopy(path,[&](auto& raw){
+            rocksdb::WriteOptions sync;sync.sync=true;
+            if(variant==0)ASSERT_TRUE(raw.db->Delete(sync,raw.cf("default"),key).ok());
+            else if(variant==1)raw.put("default",key,"corrupt descriptor");
+            else if(variant==2)ASSERT_TRUE(raw.db->Delete(sync,raw.cf("headers"),"h"+first.GetHex()).ok());
+            else {std::string row;ASSERT_TRUE(raw.db->Get(rocksdb::ReadOptions(),raw.cf("headers"),"h"+first.GetHex(),&row).ok());
+                row.push_back('x');raw.put("headers","h"+first.GetHex(),row);}
+        });
+        ChainDB cold;ASSERT_EQ(cold.init(path),Status::Ok);const auto before=ChainDBTransactionReadTestPeer::HandoffRows(cold);
+        EXPECT_ANY_THROW(OrchardSnapshotStoreTestAccess::ReadHandoffHeaders(cold,first));
+        EXPECT_ANY_THROW(storage::RequireFullOrchardStorage(cold));
+        EXPECT_EQ(ChainDBTransactionReadTestPeer::HandoffRows(cold),before);
+    }
+    f.MutateSource([&](auto& raw){
+        const auto h=f.full.f.blocks.at(1).GetHash();std::string row;
+        ASSERT_TRUE(raw.db->Get(rocksdb::ReadOptions(),raw.cf("headers"),"h"+h.GetHex(),&row).ok());
+        row.back()^=1;raw.put("headers","h"+h.GetHex(),row);
+    });
+    const auto original=ActivationHandoffFixture::Files(f.path);EXPECT_ANY_THROW(f.Prepare());
+    EXPECT_EQ(ActivationHandoffFixture::Files(f.path),original);
+}
 #ifdef DINERO_TEST_REAL_CORE_HANDOFF
+TEST(OrchardActivationHeaders, SelectedInterruptionRecoversAfterDiscardingRamProofAndSelector){
+    ActivationHandoffFixture f(true);auto prepared=f.Prepare();const auto original=ActivationHandoffFixture::Files(f.path);
+    const auto expected=ChainDBTransactionReadTestPeer::HandoffRows(prepared->CandidateForInspection());
+    const auto first=f.proof->state.block_hash;const auto intent=f.root/"blockchain"/storage::OrchardHandoffSelected;
+    EXPECT_ANY_THROW(OrchardSnapshotStoreTestAccess::SelectHandoff(f.guard,*f.receipt,std::move(prepared),
+        [&]{return std::filesystem::exists(intent);}));
+    f.headers.reset();f.proof.reset();f.ColdReceipt();f.closed_app.reset();
+    auto recovered=OrchardSnapshotStoreTestAccess::RecoverHandoff(f.guard,*f.receipt,{});
+    ASSERT_TRUE(recovered);EXPECT_EQ(recovered->CandidatePath(),f.path);
+    EXPECT_EQ(ActivationHandoffFixture::Files(recovered->OriginalPath()),original);
+    EXPECT_EQ(ChainDBTransactionReadTestPeer::HandoffRows(recovered->CandidateForInspection()),expected);
+    EXPECT_FALSE(f.gate->Allows(f.gate->Snapshot()));EXPECT_EQ(f.receipt->WalletName(),"handoff-named-owner");
+    const auto cold=OrchardSnapshotStoreTestAccess::ReadHandoffHeaders(recovered->CandidateForInspection(),first);
+    ASSERT_TRUE(cold->GetHeaderValue(first));EXPECT_ANY_THROW(storage::RequireFullOrchardStorage(recovered->CandidateForInspection()));
+}
 TEST(OrchardActivationSelection, ClosedLifecycleBorrowIsThreadBoundAndCannotReviveAfterAbandonment){
     ActivationHandoffFixture f(true);auto intent=f.receipt->ClosedForHandoff(f.guard);
     EXPECT_NO_THROW(intent.Check(f.guard));

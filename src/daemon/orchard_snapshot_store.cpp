@@ -4,6 +4,7 @@
 #include "daemon/chainstate_recovery_marker.h"
 #include "daemon/services/orchard_branch_replay.h"
 #include "daemon/services/orchard_boundary_replay.h"
+#include "daemon/services/orchard_history_capture.h"
 #include "consensus/orchard_profile.h"
 #include "consensus/orchard_header.h"
 #include "consensus/orchard_catalog_validation.h"
@@ -69,6 +70,63 @@ std::string ActivationProofKey(const uint256& first) {
 }
 std::string ActivationProofChunkKey(const uint256& digest,uint64_t part) {
     return "orchard_activation_proof_v1:chunk:"+digest.GetHex()+":"+std::to_string(part);
+}
+std::string ActivationHeadersKey(const uint256& first){
+    Require(!first.IsNull());return "orchard_activation_headers_v1:"+first.GetHex();
+}
+struct ActivationHeadersDescriptor {
+    uint256 first,target;uint32_t height=0;
+    std::string Encode()const{
+        const auto& p=Params();const auto end=uint64_t(p.orchard_activation_height)+p.state_commitment_burial_depth;
+        Require(p.orchard_activation_height&&p.orchard_activation_height!=UINT32_MAX&&end<=INT32_MAX&&
+            height==end&&!first.IsNull()&&!target.IsNull());
+        std::string out="DNOHC01";storage::catalog::Number(out,p.magic,4);out+=ConsensusChecksum(p);
+        storage::catalog::Number(out,height,4);
+        for(const auto& hash:{first,target})out.append(reinterpret_cast<const char*>(hash.data),32);
+        const auto digest=storage::catalog::Hash(out);out.append(reinterpret_cast<const char*>(digest.data),32);return out;
+    }
+    static ActivationHeadersDescriptor Decode(const std::string& bytes){
+        Require(bytes.size()==175&&bytes.starts_with("DNOHC01"));ActivationHeadersDescriptor d;
+        d.height=uint32_t(storage::catalog::Number(bytes,75,4));
+        std::copy_n(reinterpret_cast<const uint8_t*>(bytes.data()+79),32,d.first.begin());
+        std::copy_n(reinterpret_cast<const uint8_t*>(bytes.data()+111),32,d.target.begin());
+        Require(d.Encode()==bytes);return d;
+    }
+};
+std::string ActivationHeaderRow(const BlockHeader& header,uint32_t height,const arith_uint256& work){
+    Require(height<=INT32_MAX);VectorWriter encoded;Serialize(encoded,header);encoded.write(height);encoded.write(work);
+    return encoded.release_string();
+}
+void ActivationHeaderSpace(const std::filesystem::path& workspace){
+    std::error_code error;const auto space=std::filesystem::space(workspace,error);
+    Require(!error&&space.available>=(uint64_t(512)<<20)+uint64_t(1<<20));
+}
+wallet::detail::RuntimeReplaySpool::Bytes ActivationHeaderCacheKey(const uint256& hash){
+    wallet::detail::RuntimeReplaySpool::Bytes key{'h'};key.insert(key.end(),hash.begin(),hash.end());return key;
+}
+std::unique_ptr<wallet::detail::RuntimeReplaySpool> ActivationHeaderCache(rocksdb::DB& db,
+    rocksdb::ColumnFamilyHandle* family,const std::filesystem::path& workspace,const std::function<bool()>& cancelled){
+    using Spool=wallet::detail::RuntimeReplaySpool;ActivationHeaderSpace(workspace);
+    auto cache=std::make_unique<Spool>(workspace,true);
+    std::vector<std::pair<Spool::Bytes,Spool::Bytes>> rows;rows.reserve(256);
+    const auto flush=[&]{if(!rows.empty()){
+        Require(!cancelled||!cancelled());ActivationHeaderSpace(workspace);
+        {Spool::Batch batch(*cache);for(const auto& [key,value]:rows)cache->Insert(key,value);batch.Commit();}rows.clear();
+    }};
+    // One checksummed CF stream, not one giant-SST materialization/checksum
+    // per ancestry lookup. The temporary cache authenticates values, NEVER
+    // absence; retain falls back to the actual DB before any missing-row Put.
+    rocksdb::ReadOptions reads;reads.verify_checksums=true;reads.fill_cache=false;
+    std::unique_ptr<rocksdb::Iterator> it(db.NewIterator(reads,family));
+    for(it->Seek("h");it->Valid()&&it->key().starts_with("h");it->Next()){
+        Require(!cancelled||!cancelled());const auto key=it->key();
+        if(key.size()!=65||it->value().size()!=128+sizeof(uint32_t)+sizeof(arith_uint256))continue;
+        uint256 hash;const auto name=key.ToString();
+        if(!uint256::FromHex(name.substr(1),hash)||name!="h"+hash.GetHex())continue;
+        const auto bytes=it->value();rows.emplace_back(ActivationHeaderCacheKey(hash),
+            Spool::Bytes(reinterpret_cast<const uint8_t*>(bytes.data()),reinterpret_cast<const uint8_t*>(bytes.data()+bytes.size())));
+        if(rows.size()==256)flush();
+    }Require(it->status().ok());flush();cache->Freeze();return cache;
 }
 struct ActivationProofDescriptor {
     uint256 first,parent,digest;uint64_t bytes=0;
@@ -332,6 +390,76 @@ uint256 OrchardSnapshotStore::HandoffStoreDigest(const ChainDB& db,const std::fu
     hash.Write(std::string(1,'\x04'));uint256 digest;hash.Finalize(digest.data);return digest;
 }
 
+void OrchardSnapshotStore::RetainActivationHeaders(ChainDB& db,const ChainWriteToken& token,
+    const consensus::HeaderChainSelector& source,const uint256& first,const std::function<bool()>& cancelled){
+    using namespace consensus;Require(db.hasSeparatedShieldedState());
+    const auto check=[&]{Require(!cancelled||!cancelled());};check();
+    const auto end=uint64_t(Params().orchard_activation_height)+Params().state_commitment_burial_depth;
+    Require(end<=INT32_MAX);HeaderIndexEntry target,activation;
+    Require(source.GetHeaderAtHeightCopy(uint32_t(end),target)&&
+        source.GetHeaderAtHeightCopy(Params().orchard_activation_height,activation)&&activation.hash==first);
+    ActivationHeadersDescriptor descriptor{first,target.hash,uint32_t(end)};const auto encoded=descriptor.Encode();
+    const auto workspace=std::filesystem::path(db.db_->GetName()).parent_path();ActivationHeaderSpace(workspace);
+    const auto existing_headers=ActivationHeaderCache(*db.db_,db.cf_[db.idx_headers_].get(),workspace,cancelled);
+    OrchardHistoryCapture captured(target.height,target.hash,workspace);
+    std::vector<OrchardHistoryCapture::Header> rows;rows.reserve(OrchardHistoryCapture::HeaderBatchLimit);
+    auto hash=target.hash;
+    for(uint64_t remaining=end+1;remaining;--remaining){
+        check();const auto row=source.GetHeaderValue(hash);Require(row&&row->height==remaining-1);
+        rows.push_back({row->hash,row->header,row->chainwork});hash=row->prev_hash;
+        if(rows.size()==OrchardHistoryCapture::HeaderBatchLimit||remaining==1){ActivationHeaderSpace(workspace);captured.CaptureReverse(rows);rows.clear();}
+    }Require(hash.IsNull());HeaderChainSelector verified;rocksdb::WriteBatch batch;unsigned pending=0;
+    rocksdb::ReadOptions reads;reads.verify_checksums=true;reads.fill_cache=false;
+    const auto flush=[&]{if(batch.Count()){check();ActivationHeaderSpace(workspace);Need(db.writeBatch(token,std::move(batch),true));batch=rocksdb::WriteBatch();pending=0;}};
+    for(uint64_t height=0;height<=end;++height){
+        check();const auto row=captured.HeaderAt(uint32_t(height));Require(verified.AddHeader(row.header));
+        const auto checked=verified.GetHeaderValue(row.hash);Require(checked&&checked->height==height&&checked->chainwork==row.work);
+        const auto expected=ActivationHeaderRow(row.header,uint32_t(height),row.work);
+        if(const auto existing=existing_headers->Get(ActivationHeaderCacheKey(row.hash))){
+            Require(std::string(existing->begin(),existing->end())==expected);
+        }else{
+            std::string stored;const auto status=db.db_->Get(reads,db.cf_[db.idx_headers_].get(),db.makeHeaderKey(row.hash),&stored);
+            Require(status.IsNotFound()||(status.ok()&&stored==expected));
+            if(status.IsNotFound()){Need(db.putHeader(token,row.hash,row.header,int(height),row.work,&batch));if(++pending==256)flush();}
+        }
+    }flush();std::string old;const auto status=db.getRaw(ActivationHeadersKey(first),old);
+    Require(status==Status::NotFound||(status==Status::Ok&&old==encoded));check();
+    {
+        std::unique_lock<std::mutex> selected(source.mutex_);const auto* best=source.best_header_;
+        const auto* current=best?best->GetAncestor(target.height):nullptr;
+        Require(current&&current->hash==target.hash);
+        if(status==Status::NotFound){batch.Put(ActivationHeadersKey(first),encoded);Need(db.writeBatch(token,std::move(batch),true));}
+    }
+    const auto cold=ReadActivationHeaders(db,first,cancelled);Require(cold->GetBestHeaderValue()->hash==target.hash);
+}
+
+std::shared_ptr<consensus::HeaderChainSelector> OrchardSnapshotStore::ReadActivationHeaders(
+    const ChainDB& db,const uint256& first,const std::function<bool()>& cancelled){
+    const auto check=[&]{Require(!cancelled||!cancelled());};check();
+    std::string encoded;Need(db.getRaw(ActivationHeadersKey(first),encoded));
+    const auto descriptor=ActivationHeadersDescriptor::Decode(encoded);
+    Require(descriptor.first==first&&db.hasSeparatedShieldedState());
+    const auto workspace=std::filesystem::path(db.db_->GetName()).parent_path();ActivationHeaderSpace(workspace);
+    const auto stored_headers=ActivationHeaderCache(*db.db_,db.cf_[db.idx_headers_].get(),workspace,cancelled);
+    OrchardHistoryCapture captured(descriptor.height,descriptor.target,workspace);
+    std::vector<OrchardHistoryCapture::Header> rows;rows.reserve(OrchardHistoryCapture::HeaderBatchLimit);
+    auto hash=descriptor.target;
+    for(uint64_t remaining=uint64_t(descriptor.height)+1;remaining;--remaining){
+        check();const auto stored=stored_headers->Get(ActivationHeaderCacheKey(hash));Require(bool(stored));
+        const std::string wire(stored->begin(),stored->end());
+        Reader in(wire);BlockHeader header;Deserialize(in,header);const auto height=in.read<uint32_t>();const auto work=in.read<arith_uint256>();
+        Require(in.eof()&&height==remaining-1&&header.GetHash()==hash&&ActivationHeaderRow(header,height,work)==wire);
+        rows.push_back({hash,header,work});hash=header.prev_block_hash;
+        if(rows.size()==OrchardHistoryCapture::HeaderBatchLimit||remaining==1){ActivationHeaderSpace(workspace);captured.CaptureReverse(rows);rows.clear();}
+    }Require(hash.IsNull());auto verified=std::make_shared<consensus::HeaderChainSelector>();
+    for(uint64_t height=0;height<=descriptor.height;++height){
+        check();const auto row=captured.HeaderAt(uint32_t(height));Require(verified->AddHeader(row.header));
+        const auto checked=verified->GetHeaderValue(row.hash);Require(checked&&checked->height==height&&checked->chainwork==row.work);
+    }
+    consensus::HeaderIndexEntry activation;Require(verified->GetHeaderAtHeightCopy(Params().orchard_activation_height,activation)&&
+        activation.hash==first&&verified->GetBestHeaderValue()->hash==descriptor.target);check();return verified;
+}
+
 std::unique_ptr<PreparedOrchardActivationHandoff> OrchardSnapshotStore::PrepareActivationHandoff(
     const daemon::DatadirGuard& guard,const ChainWriteToken& token,
     std::shared_ptr<const consensus::HeaderChainSelector> headers,
@@ -418,6 +546,10 @@ std::unique_ptr<PreparedOrchardActivationHandoff> OrchardSnapshotStore::PrepareA
             if(++rows==1024||batch.GetDataSize()>=4*1024*1024)flush();
         }Require(it->status().ok());
     }flush();Require(HandoffStoreDigest(candidate,cancelled)==before);
+    // Header-first peers can persist their ahead-of-body ancestry only in
+    // HeaderStore. Retain the exact minimal genesis-to-burial closure here too,
+    // so a cold interrupted swap can revalidate it without an old RAM selector.
+    RetainActivationHeaders(candidate,token,*d->headers,proof.state.block_hash,cancelled);
     {
         std::lock_guard<AnnotatedRecursiveMutex> lock(d->candidate_mutex);
         RetainActivationProof(d->candidate_mutex,candidate,token,*d->headers,proof,cancelled);
@@ -487,6 +619,8 @@ void OrchardSnapshotStore::CheckActivationHandoff(const daemon::DatadirGuard& gu
         HandoffStoreDigest(*d.source,d.cancelled)==d.origin.source&&
         HandoffStoreDigest(*d.candidate,d.cancelled)==d.candidate_digest);
     VerifyCatalogTransferProof(*d.proof,*d.headers);
+    const auto cold_headers=ReadActivationHeaders(*d.candidate,d.origin.first,d.cancelled);
+    VerifyCatalogTransferProof(*d.proof,*cold_headers);
     CheckLegacyRetirementBeforeImageUnderLock(*d.source,d.proof->retirement.record);
     CheckLegacyRetirementBeforeImageUnderLock(*d.candidate,d.proof->retirement.record);
     const auto tip=Need(d.candidate->getTip()),validated=Need(d.candidate->getValidatedTip());
@@ -510,6 +644,10 @@ void OrchardSnapshotStore::CheckActivationHandoff(const daemon::DatadirGuard& gu
     const auto allowed_extra=[&](size_t family,const rocksdb::Slice& key,const rocksdb::Slice& value){
         const auto k=key.ToString(),v=value.ToString();
         if(family==0){
+            if(k==ActivationHeadersKey(d.origin.first)){
+                const auto descriptor=ActivationHeadersDescriptor::Decode(v);
+                return descriptor.first==d.origin.first&&descriptor.target==cold_headers->GetBestHeaderValue()->hash;
+            }
             if(k==storage::OrchardActivationOriginKey)return v==d.origin.Encode();
             if(k==storage::OrchardActivationSelectionKey)return v==d.origin.Selection();
             if(k==storage::OrchardCompactStorageKey)return v==storage::EncodeOrchardCompactStorageBinding(d.proof->parent_catalog);
@@ -524,6 +662,11 @@ void OrchardSnapshotStore::CheckActivationHandoff(const daemon::DatadirGuard& gu
                     storage::OrchardSnapshotProofChunkBytes-1)/storage::OrchardSnapshotProofChunkBytes;
             }
             return false;
+        }
+        if(family==size_t(d.source->idx_headers_)){
+            if(k.size()!=65||k.front()!=ChainDB::PREFIX_HEADER)return false;uint256 id;
+            if(!uint256::FromHex(k.substr(1),id))return false;const auto header=cold_headers->GetHeaderValue(id);
+            return header&&k==d.source->makeHeaderKey(id)&&v==ActivationHeaderRow(header->header,header->height,header->chainwork);
         }
         if(family==size_t(d.source->idx_utreexo_)){
             const std::string nodes="Morchard_catalog_v1/node/",states="Morchard_catalog_v1/state/";
@@ -596,7 +739,7 @@ std::unique_ptr<PreparedOrchardActivationHandoff> OrchardSnapshotStore::RecoverA
 #ifdef _WIN32
     (void)guard;(void)receipt;(void)headers;(void)cancelled;Require(false);return {};
 #else
-    receipt.Check(guard);Require(headers&&(!cancelled||!cancelled()));
+    receipt.Check(guard);Require(!cancelled||!cancelled());
     auto d=std::make_unique<PreparedOrchardActivationHandoff::Data>();d->root_path=guard.DataDir();
     d->headers=std::move(headers);d->cancelled=cancelled;d->root=HandoffFd(OpenHandoffRoot(guard));
     d->blockchain=HandoffFd(::openat(d->root.value,"blockchain",O_RDONLY|O_DIRECTORY|O_CLOEXEC|O_NOFOLLOW));
@@ -635,6 +778,10 @@ std::unique_ptr<PreparedOrchardActivationHandoff> OrchardSnapshotStore::RecoverA
     Require(record.source_files==HandoffFilesDigest(d->source_files)&&record.copy_files==HandoffFilesDigest(d->candidate_files));
     d->source=std::make_unique<ChainDB>();Need(d->source->initReadOnlyForHandoff(d->source_path));
     d->candidate=std::make_unique<ChainDB>();Need(d->candidate->initReadOnlyForHandoff(d->candidate_path));
+    // No state/owner is granted by completing this recorded filesystem choice.
+    // A cold recovery without RAM selection revalidates the persisted as-of-
+    // handoff header closure; startup must still merge/recheck current branches.
+    if(!d->headers)d->headers=ReadActivationHeaders(*d->candidate,record.origin.first,cancelled);
     d->origin=record.origin;d->candidate_digest=record.copy_rows;d->selection=bytes;
     {
         std::lock_guard<AnnotatedRecursiveMutex> lock(d->candidate_mutex);

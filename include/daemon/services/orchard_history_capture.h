@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <span>
 #include <thread>
+#include <filesystem>
 
 namespace dinero {
 // Disposable inputs for one independently replayed historical branch. This is
@@ -21,8 +22,9 @@ class OrchardHistoryCapture final {
 public:
     struct Header { uint256 hash; BlockHeader header; arith_uint256 work; };
     static constexpr size_t HeaderBatchLimit=256;
-    OrchardHistoryCapture(uint32_t target_height,const uint256& target_hash)
-        : count_(uint64_t(target_height)+1),reverse_remaining_(count_),previous_(target_hash) {
+    OrchardHistoryCapture(uint32_t target_height,const uint256& target_hash,
+        const std::filesystem::path& work_directory={})
+        : spool_(work_directory),count_(uint64_t(target_height)+1),reverse_remaining_(count_),previous_(target_hash) {
         Require(target_height<UINT32_MAX && !target_hash.IsNull());
     }
     OrchardHistoryCapture(const OrchardHistoryCapture&)=delete;

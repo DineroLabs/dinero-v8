@@ -548,6 +548,33 @@ activation-parent fixture. They are not the real activation with queued payment,
 whole assumed-state lifecycle, SDK automatic worker, complete phone recovery,
 physical device or crash/power-loss acceptance gates.
 
+The handoff candidate now also retains the exact minimal genesis-to-configured-
+burial header closure. Header-first sync has a separate HeaderStore, so a source
+ChainDB need not already contain ahead-of-body headers (or every pre-base raw
+header). The converter reads a captured hash-linked ancestry in 256-row batches
+into a bounded-pager, private MAC disk spool in the app workspace, then runs a
+fresh HeaderChainSelector forward from compiled genesis and checks every exact
+height/work/header encoding. Only missing raw header rows are added; conflicting
+original rows refuse. No active height index, body/undo locator or CHAIN/SCRIPTS
+metadata is manufactured. A synced immutable descriptor pins profile, magic,
+first block and exact configured-burial target. Checksums stay on, source rows
+stay unchanged, and the scratch/write batches periodically retain a free-space
+floor. This is not a production-scale CPU/RSS/disk measurement.
+Header values stream once from the checksummed CF into a bounded-batch private
+MAC cache; ancestry reads do not repeatedly materialize a giant cached SST.
+Cache absence never authorizes a write: missing-row additions recheck the actual
+exclusive DB, and the final whole-store before-image audit remains mandatory.
+
+Cold recovery may reconstruct a fresh selector from those retained bytes when
+the old in-memory selector is gone, then reauthenticate the complete DNORST02
+proof before finishing the explicitly selected filesystem transaction. That
+closure is an as-of-intent header view, not proof of globally latest work and
+not live state/owner authority. Dedicated startup must still merge/recheck
+current stored header branches before enrolling any compact owner. Missing,
+corrupt, wrong-work or conflicting header data refuses without repairing the
+original store. Native tests discard proof/selector inputs in the same process;
+they do not establish fresh-process crash recovery or phone/App acceptance.
+
 - Existing unknown/missing/corrupt/untracked catalog and seed-replacement
   refusals remain negative. New enrollment tests cover atomicity, source gaps,
   borrowed owners, reopen and actual funds received across activation.

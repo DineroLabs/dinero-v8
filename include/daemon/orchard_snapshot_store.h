@@ -53,6 +53,10 @@ private:
     static std::unique_ptr<PreparedOrchardActivationHandoff> RecoverActivationHandoff(
         const daemon::DatadirGuard&,const ClosedCoreReopenIntent&,
         std::shared_ptr<const consensus::HeaderChainSelector>,const std::function<bool()>& cancelled={});
+    // A null recovery selector uses only the retained, freshly revalidated
+    // as-of-intent header closure to finish that explicit filesystem choice.
+    // It never establishes current best-work selection or live state authority;
+    // startup must merge/recheck current header branches before owner enrollment.
     // Until authenticated selected-origin startup is wired, generic startup
     // must refuse even a missing live name instead of creating a new store.
     static void RequireNoActivationHandoff(const std::filesystem::path& root){
@@ -61,6 +65,13 @@ private:
     }
     static int OpenHandoffRoot(const daemon::DatadirGuard&);
     static uint256 HandoffStoreDigest(const ChainDB&,const std::function<bool()>&);
+    // Header DATA closure, not compact/state/replay authority. Persist only
+    // independently checked raw header rows through exact configured burial;
+    // never add active heights, body/undo locators or CHAIN/SCRIPTS flags.
+    static void RetainActivationHeaders(ChainDB&,const ChainWriteToken&,
+        const consensus::HeaderChainSelector&,const uint256& first,const std::function<bool()>&);
+    static std::shared_ptr<consensus::HeaderChainSelector> ReadActivationHeaders(
+        const ChainDB&,const uint256& first,const std::function<bool()>&);
     // New directories only, under the caller's datadir guard. No existing
     // database is opened/migrated/replaced and no chainstate is enrolled.
     static void CreateFreshStore(const std::filesystem::path&);
