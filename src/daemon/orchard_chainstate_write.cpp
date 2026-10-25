@@ -584,6 +584,12 @@ struct PreparedOrchardChainstateWrite::Impl {
     void PrepareIndex(BlockStorage& files, CBlockIndex& entry,
                       const OrchardBlockContext& context, const OrchardBlockCandidate& block,
                       bool connecting, bool contextual_header_validated=false) {
+        PrepareIndexWithPolicy(files,&files,entry,context,block,connecting,contextual_header_validated);
+    }
+    void PrepareIndexWithPolicy(const BlockStorage& files,BlockStorage* append,CBlockIndex& entry,
+                      const OrchardBlockContext& context,const OrchardBlockCandidate& block,
+                      bool connecting,bool contextual_header_validated=false) {
+        CatalogRequire(!append||append==&files);
         const char* operation="index/read-metadata";
         try {
         auto before=RequiredDisk(db.getHeaderMetadata(context.block_hash));
@@ -623,10 +629,10 @@ struct PreparedOrchardChainstateWrite::Impl {
                 throw OrchardStateLookupError(Status::Corruption);
         } else {
             operation="index/new-body-locator";
-            if (!connecting || before.data_size || before.data_pos || before.file_number)
+            if (!append || !connecting || before.data_size || before.data_pos || before.file_number)
                 throw OrchardStateLookupError(Status::Corruption);
             operation="index/write-body";
-            const auto pos=RequiredDisk(files.writeBlockBytes(context.block_hash,exact));
+            const auto pos=RequiredDisk(append->writeBlockBytes(context.block_hash,exact));
             if (pos.offset>UINT32_MAX) throw OrchardStateLookupError(Status::Invalid);
             after.file_number=pos.file_number;after.data_pos=uint32_t(pos.offset);after.data_size=pos.size;
             after.status_flags|=BLOCK_HAVE_DATA;
@@ -638,10 +644,10 @@ struct PreparedOrchardChainstateWrite::Impl {
                 throw OrchardStateLookupError(Status::Corruption);
         } else {
             operation="index/new-undo-locator";
-            if (!connecting || before.undo_size || before.undo_pos || before.undo_file)
+            if (!append || !connecting || before.undo_size || before.undo_pos || before.undo_file)
                 throw OrchardStateLookupError(Status::Corruption);
             operation="index/write-undo";
-            const auto pos=RequiredDisk(files.writeUndo(context.block_hash,undo_bytes));
+            const auto pos=RequiredDisk(append->writeUndo(context.block_hash,undo_bytes));
             if (pos.offset>UINT32_MAX) throw OrchardStateLookupError(Status::Invalid);
             after.undo_file=pos.file_number;after.undo_pos=uint32_t(pos.offset);after.undo_size=pos.size;
             after.status_flags|=BLOCK_HAVE_UNDO;
@@ -899,6 +905,16 @@ std::unique_ptr<PreparedOrchardChainstateWrite> PreparedOrchardChainstateWrite::
     const BlockHeader& parent,const OrchardBranchMtpLookup& mtp,bool witness,
     const std::optional<storage::LegacyRetirementRecord>& boundary,bool contextual_header_validated,
     const PreparedOrchardCatalog* initial,const ValidatedOrchardBlock* detached) {
+    return ConnectCompactPrepared(mutex,db,token,files,&files,index,live,context,block,parent,mtp,witness,
+        boundary,contextual_header_validated,initial,detached);
+}
+std::unique_ptr<PreparedOrchardChainstateWrite> PreparedOrchardChainstateWrite::ConnectCompactPrepared(
+    AnnotatedRecursiveMutex& mutex,ChainDB& db,const ChainWriteToken& token,
+    const BlockStorage& files,BlockStorage* append,CBlockIndex& index,OrchardCompactChainstate& live,
+    const OrchardBlockContext& context,const OrchardBlockCandidate& block,
+    const BlockHeader& parent,const OrchardBranchMtpLookup& mtp,bool witness,
+    const std::optional<storage::LegacyRetirementRecord>& boundary,bool contextual_header_validated,
+    const PreparedOrchardCatalog* initial,const ValidatedOrchardBlock* detached) {
     auto result=std::unique_ptr<PreparedOrchardChainstateWrite>(
         new PreparedOrchardChainstateWrite(mutex,db,token));
     auto& owner=*result->impl_;
@@ -946,7 +962,7 @@ std::unique_ptr<PreparedOrchardChainstateWrite> PreparedOrchardChainstateWrite::
         OrchardCompactChainstate::Selected{&db,&mutex,std::move(*next),
             owner.compact_before?owner.compact_before->OrchardState().retirement:*effective_boundary,
             owner.compact_before?owner.compact_before->consistency:nullptr});
-    owner.PrepareIndex(files,index,context,block,true,contextual_header_validated);
+    owner.PrepareIndexWithPolicy(files,append,index,context,block,true,contextual_header_validated);
     owner.outbox_before=outbox_detail::Append(db,owner.batch,context,block,true,owner.replay);
     owner.outbox_staged=true;
     owner.phase=Impl::Phase::Prepared;
@@ -956,6 +972,14 @@ std::unique_ptr<PreparedOrchardChainstateWrite> PreparedOrchardChainstateWrite::
 std::unique_ptr<PreparedOrchardChainstateWrite> PreparedOrchardChainstateWrite::DisconnectCompactIndexed(
     AnnotatedRecursiveMutex& mutex,ChainDB& db,const ChainWriteToken& token,
     BlockStorage& files,CBlockIndex& index,OrchardCompactChainstate& live,
+    const OrchardBlockContext& context,const OrchardBlockCandidate& block,
+    const BlockHeader& parent,const OrchardBranchMtpLookup& mtp,bool witness,
+    const ValidatedOrchardBlock* detached) {
+    return DisconnectCompactPrepared(mutex,db,token,files,&files,index,live,context,block,parent,mtp,witness,detached);
+}
+std::unique_ptr<PreparedOrchardChainstateWrite> PreparedOrchardChainstateWrite::DisconnectCompactPrepared(
+    AnnotatedRecursiveMutex& mutex,ChainDB& db,const ChainWriteToken& token,
+    const BlockStorage& files,BlockStorage* append,CBlockIndex& index,OrchardCompactChainstate& live,
     const OrchardBlockContext& context,const OrchardBlockCandidate& block,
     const BlockHeader& parent,const OrchardBranchMtpLookup& mtp,bool witness,
     const ValidatedOrchardBlock* detached) {
@@ -983,7 +1007,7 @@ std::unique_ptr<PreparedOrchardChainstateWrite> PreparedOrchardChainstateWrite::
     owner.compact_after=std::make_shared<const OrchardCompactChainstate::Selected>(
         OrchardCompactChainstate::Selected{&db,&mutex,previous,owner.compact_before->OrchardState().retirement,
             owner.compact_before->consistency});
-    owner.PrepareIndex(files,index,context,block,false);
+    owner.PrepareIndexWithPolicy(files,append,index,context,block,false);
     owner.outbox_before=outbox_detail::Append(db,owner.batch,context,block,false,owner.replay);
     owner.outbox_staged=true;owner.phase=Impl::Phase::Prepared;
     return result;

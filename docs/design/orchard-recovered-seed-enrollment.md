@@ -659,6 +659,23 @@ wrong source digest or cancellation before creation, and preserve missing choice
 rows if the final fence refuses. This builder is DATA copying, not a state owner,
 normal descendant startup, lifecycle recovery or permission to replay a capture.
 
+The private handoff opener now also reconstructs the exact converted parent
+from the immutable original and retained as-of-intent headers. Its whole-row
+digest must match the recorded selection. Authenticated actual delivery events
+then drive the same canonical compact connect/undo writer in an exclusive
+scratch engine. The scratch policy can read only retained body/undo archives;
+missing locators refuse instead of appending to the real archives. A scratch
+selected-consistency owner is private, bound to that engine, never published and
+never presented as independent execution of pre-activation history.
+
+The expected engine retains canonical rows from undone blocks as well as the
+active branch. Every CF name/key/value is compared, including unknown original
+metadata and non-Orchard namespaces. Only the canonical tip receipt's wall-clock
+timestamp is normalized, after exact parsing, canonical re-encoding and matching
+hash/height/work. No mutable prefix is exempt. This is required by the existing
+parent handoff opener; normal descendant/post-undo daemon startup and SDK/phone
+acceptance still require their separate completed-root and service routing.
+
 Mutation controls are recorded separately from the earlier positive receipts.
 The original parent-reopen case survived a disabled consistency check; transition
 and engine-reopen cases detected it. The parent case now additionally substitutes

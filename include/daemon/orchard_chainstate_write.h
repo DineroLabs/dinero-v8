@@ -168,6 +168,22 @@ public:
     // potentially divergent memory. Database and token must outlive this object.
     void Commit();
 private:
+    friend class OrchardSnapshotStore;
+    // Same canonical staging and guards; only the sealed store may request
+    // read-only retained-archive replay into its private expected-row engine.
+    // A null append pointer makes missing body/undo locators a refusal, never
+    // a write to the actual archive. Neither method exposes a batch or token.
+    static std::unique_ptr<PreparedOrchardChainstateWrite> ConnectCompactPrepared(
+        AnnotatedRecursiveMutex&,ChainDB&,const ChainWriteToken&,const BlockStorage&,BlockStorage*,
+        CBlockIndex&,OrchardCompactChainstate&,const consensus::OrchardBlockContext&,
+        const OrchardBlockCandidate&,const BlockHeader&,const consensus::OrchardBranchMtpLookup&,bool,
+        const std::optional<storage::LegacyRetirementRecord>&,bool,const PreparedOrchardCatalog*,
+        const consensus::ValidatedOrchardBlock*);
+    static std::unique_ptr<PreparedOrchardChainstateWrite> DisconnectCompactPrepared(
+        AnnotatedRecursiveMutex&,ChainDB&,const ChainWriteToken&,const BlockStorage&,BlockStorage*,
+        CBlockIndex&,OrchardCompactChainstate&,const consensus::OrchardBlockContext&,
+        const OrchardBlockCandidate&,const BlockHeader&,const consensus::OrchardBranchMtpLookup&,bool,
+        const consensus::ValidatedOrchardBlock*);
     static std::unique_ptr<PreparedOrchardChainstateWrite> HistoricalCompactPrepared(
         AnnotatedRecursiveMutex&,ChainDB&,const ChainWriteToken&,BlockStorage&,
         CBlockIndex&,OrchardCompactChainstate&,const Block&,

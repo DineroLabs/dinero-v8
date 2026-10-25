@@ -12,6 +12,7 @@ class ChainstateService;
 class OrchardBranchReplay;
 class OrchardBoundaryReplay;
 class ClosedCoreReopenIntent;
+struct RuntimeOutboxEvent;
 namespace daemon {class DatadirGuard;}
 // Private selected-state authority. Decoding, raw catalog staging and a local
 // checksum cannot enroll a compact owner. Only the service may invoke this
@@ -67,6 +68,16 @@ private:
     // DATA audit only, no root choice, writer or lifecycle authority.
     static storage::catalog::State AuditActivationEvents(AnnotatedRecursiveMutex&,const ChainDB& original,
         const ChainDB& selected,const BlockStorage&,
+        std::shared_ptr<const consensus::HeaderChainSelector>,
+        std::shared_ptr<const consensus::OrchardSnapshotSection>,const std::function<bool()>& cancelled={},
+        const std::function<void(const RuntimeOutboxEvent&,const OrchardBlockCandidate&,
+            const consensus::ValidatedOrchardBlock*)>& observed={});
+    // Reconstruct the selected parent from the immutable original, then apply
+    // only authenticated actual delivery events through the canonical writer
+    // in private scratch. Every CF row must match; no mutable-prefix exemption.
+    // The scratch owner never escapes and archive appends are forbidden.
+    static storage::catalog::State AuditActivationStore(AnnotatedRecursiveMutex&,const ChainDB& original,
+        const ChainDB& selected,const ChainWriteToken&,const BlockStorage&,const uint256& parent_rows,
         std::shared_ptr<const consensus::HeaderChainSelector>,
         std::shared_ptr<const consensus::OrchardSnapshotSection>,const std::function<bool()>& cancelled={});
     class CommitUncertain final:public std::runtime_error {

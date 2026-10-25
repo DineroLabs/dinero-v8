@@ -10,6 +10,7 @@
 #include "consensus/orchard_header.h"
 #include "consensus/orchard_catalog_validation.h"
 #include "consensus/block_lifecycle.h"
+#include "consensus/chainwork.h"
 #include "consensus/utreexo_maturity_leaf_activation.h"
 #include "common/annotated_mutex.h"
 #include "storage/block_storage.h"
@@ -544,7 +545,9 @@ storage::catalog::State OrchardSnapshotStore::AuditActivationSuffix(AnnotatedRec
 storage::catalog::State OrchardSnapshotStore::AuditActivationEvents(AnnotatedRecursiveMutex& mutex,
     const ChainDB& original,const ChainDB& db,const BlockStorage& files,
     std::shared_ptr<const consensus::HeaderChainSelector> headers,
-    std::shared_ptr<const consensus::OrchardSnapshotSection> proof,const std::function<bool()>& cancelled){
+    std::shared_ptr<const consensus::OrchardSnapshotSection> proof,const std::function<bool()>& cancelled,
+    const std::function<void(const RuntimeOutboxEvent&,const OrchardBlockCandidate&,
+        const consensus::ValidatedOrchardBlock*)>& observed){
     using namespace consensus;mutex.AssertHeld("audit authenticated activation delivery history");
     const auto check=[&]{Require(!cancelled||!cancelled());};check();Require(headers&&proof);
     VerifyCatalogTransferProof(*proof,*headers);const auto origin=storage::ReadOrchardActivationOrigin(db);
@@ -573,7 +576,11 @@ storage::catalog::State OrchardSnapshotStore::AuditActivationEvents(AnnotatedRec
                 const RuntimeOrchardReplay actual{verified->State().Parent(),verified->State().Next(),
                     BuildOrchardCoinUndo(verified->Coins()).Serialize(),verified->BranchMtp()};
                 Require(equal(actual,*event.orchard_replay));
-            }else Require(event.direction==RuntimeBlockDirection::Disconnect&&equal(replay->Rewind(block),*event.orchard_replay));
+                if(observed)observed(event,block,verified.get());
+            }else{
+                Require(event.direction==RuntimeBlockDirection::Disconnect&&equal(replay->Rewind(block),*event.orchard_replay));
+                if(observed)observed(event,block,nullptr);
+            }
         }
         if(page.next==head)break;check();const auto before=page.next;
         page=ReadRuntimeOutboxPrefixUnderLock(db,profile,head,before,32,16*1024*1024);Require(page.next!=before);
@@ -582,6 +589,95 @@ storage::catalog::State OrchardSnapshotStore::AuditActivationEvents(AnnotatedRec
         const auto state=db.getOrchardState();if(state.status()==Status::NotFound)return {};return Need(state);}())&&
         Need(db.getOrchardCatalogState(tip.hash))==replay->Catalog().Encode());
     VerifyCatalogTransferProof(*proof,*headers);check();return replay->Catalog();
+}
+
+storage::catalog::State OrchardSnapshotStore::AuditActivationStore(AnnotatedRecursiveMutex& mutex,
+    const ChainDB& original,const ChainDB& selected,const ChainWriteToken& token,const BlockStorage& files,
+    const uint256& parent_rows,std::shared_ptr<const consensus::HeaderChainSelector> headers,
+    std::shared_ptr<const consensus::OrchardSnapshotSection> proof,const std::function<bool()>& cancelled){
+#ifdef _WIN32
+    (void)mutex;(void)original;(void)selected;(void)token;(void)files;(void)parent_rows;
+    (void)headers;(void)proof;(void)cancelled;Require(false);return {};
+#else
+    using namespace consensus;mutex.AssertHeld("audit complete activation store before-image");
+    const auto check=[&]{Require(!cancelled||!cancelled());};check();Require(headers&&proof&&!parent_rows.IsNull());
+    VerifyCatalogTransferProof(*proof,*headers);
+    const auto workspace=std::filesystem::path(selected.db_->GetName()).parent_path();ActivationHeaderSpace(workspace);
+    const auto work=workspace/(".orchard-store-audit-"+util::hex(secure_random_bytes(16)));
+    Require(::mkdir(work.c_str(),0700)==0);
+    struct Workspace {
+        std::filesystem::path path;HandoffFd fd;int exceptions=std::uncaught_exceptions();
+        explicit Workspace(std::filesystem::path p):path(std::move(p)),fd(::open(path.c_str(),O_RDONLY|O_DIRECTORY|O_CLOEXEC|O_NOFOLLOW)){Require(fd.value>=0);}
+        ~Workspace(){if(std::uncaught_exceptions()!=exceptions)return;try{
+            struct stat named{};if(::lstat(path.c_str(),&named)||!HandoffSame(HandoffStat(fd.value),named))return;
+            std::error_code error;std::filesystem::remove_all(path,error); // ONLY newly created, pinned scratch.
+        }catch(...){}}
+    } owned(work);
+    const auto source=HandoffStoreDigest(original,cancelled);
+    // The original selection used the retained as-of-intent closure, NOT the
+    // current selector with later header arrivals. Rebuild that exact baseline.
+    const auto cold=ReadActivationHeaders(selected,proof->state.block_hash,cancelled);
+    auto copy=CopyActivationParent(original,token,mutex,*cold,*proof,source,work/"expected",[]{},check,cancelled);
+    auto& expected=*copy.database;
+    const auto selected_origin=storage::ReadOrchardActivationOrigin(selected);
+    Require(selected_origin&&HandoffStoreDigest(expected,cancelled)==parent_rows&&
+        copy.origin.Encode()==selected_origin->Encode());
+    auto consistency=std::shared_ptr<const OrchardSelectedConsistency>(new OrchardSelectedConsistency(expected,mutex,copy.origin));
+    OrchardCompactChainstate owner;
+    owner.selected_=std::make_shared<const OrchardCompactChainstate::Selected>(
+        &expected,&mutex,proof->parent_catalog,proof->retirement.record,std::move(consistency));
+    const auto catalog=AuditActivationEvents(mutex,original,selected,files,headers,proof,cancelled,
+        [&](const RuntimeOutboxEvent& event,const OrchardBlockCandidate& block,const ValidatedOrchardBlock* verified){
+            check();ActivationHeaderSpace(work);
+            const auto& context=event.context;const auto& header=block.Header();
+            const auto checked=headers->GetHeaderValue(context.block_hash);
+            Require(checked&&checked->header.SerializeForHash()==header.SerializeForHash()&&checked->height==context.height&&
+                checked->prev_hash==context.parent_hash);
+            const auto actual=Need(selected.getHeaderMetadata(context.block_hash));
+            constexpr uint32_t required=BLOCK_VALID_MASK|BLOCK_HAVE_DATA|BLOCK_HAVE_UNDO;
+            Require(actual.height==int(context.height)&&actual.parent_hash==context.parent_hash&&actual.chainwork==checked->chainwork&&
+                (actual.status_flags&required)==required&&(actual.status_flags&~required)==0);
+            // Only exact retained archive locators enter scratch; never append
+            // or infer missing body/undo bytes. Existing before-images are fixed.
+            const auto old=expected.getHeaderMetadata(context.block_hash);
+            if(old.ok()){
+                Require(old->height==actual.height&&old->parent_hash==actual.parent_hash&&old->chainwork==actual.chainwork&&
+                    (old->status_flags&~required)==0);
+                if(old->status_flags&BLOCK_HAVE_DATA)Require(old->file_number==actual.file_number&&old->data_pos==actual.data_pos&&old->data_size==actual.data_size);
+                else Require(!old->file_number&&!old->data_pos&&!old->data_size);
+                if(old->status_flags&BLOCK_HAVE_UNDO)Require(old->undo_file==actual.undo_file&&old->undo_pos==actual.undo_pos&&old->undo_size==actual.undo_size);
+                else Require(!old->undo_file&&!old->undo_pos&&!old->undo_size);
+            }else Require(old.status()==Status::NotFound);
+            rocksdb::WriteBatch batch;
+            Need(expected.putHeader(token,context.block_hash,header,int(context.height),checked->chainwork,&batch));
+            Need(expected.putHeaderMetadata(token,context.block_hash,actual,&batch));Need(expected.writeBatch(token,std::move(batch),true));
+            CBlockIndex index(header,context.height);index.chainwork=ChainworkToHex(actual.chainwork);index.status=actual.status_flags;
+            index.file_number=actual.file_number;index.data_pos=actual.data_pos;index.data_size=actual.data_size;
+            index.undo_file=actual.undo_file;index.undo_pos=actual.undo_pos;index.undo_size=actual.undo_size;
+            const auto parent=Need(expected.getHeader(context.parent_hash));
+            const OrchardBranchMtpLookup mtp=[&](uint32_t h)->std::optional<uint64_t>{
+                const auto at=event.orchard_replay->branch_mtp.find(h);
+                return at==event.orchard_replay->branch_mtp.end()?std::nullopt:std::optional<uint64_t>(at->second);};
+            const bool witness=Params().enforce_witness_commitment&&context.height>=Params().witness_commitment_enforcement_height;
+            auto write=verified?PreparedOrchardChainstateWrite::ConnectCompactPrepared(mutex,expected,token,files,nullptr,
+                index,owner,context,block,parent,mtp,witness,std::nullopt,true,nullptr,verified):
+                PreparedOrchardChainstateWrite::DisconnectCompactPrepared(mutex,expected,token,files,nullptr,
+                    index,owner,context,block,parent,mtp,witness,nullptr);
+            write->Commit();
+        });
+    const auto tip=Need(selected.getTip()),replayed=Need(expected.getTip());
+    Require(tip.hash==replayed.hash&&tip.height==replayed.height&&tip.work==replayed.work&&
+        owner.SelectedUnderLock(mutex)->Encode()==catalog.Encode());
+    // The sole non-deterministic canonical write is KEY_TIP's wall-clock
+    // receipt timestamp. Re-encode its exact parsed fields before accepting it;
+    // no other meta key, prefix, row or schema is exempted from comparison.
+    VectorWriter encoded;encoded.writeString(tip.hash.GetHex());encoded.write(uint32_t(tip.height));encoded.write(tip.work);encoded.write(tip.timestamp);
+    rocksdb::ReadOptions reads;reads.verify_checksums=true;reads.fill_cache=false;std::string actual_tip;
+    Require(selected.db_->Get(reads,selected.cf_[selected.idx_meta_].get(),ChainDB::KEY_TIP,&actual_tip).ok()&&actual_tip==encoded.release_string());
+    rocksdb::WriteBatch time;time.Put(expected.cf_[expected.idx_meta_].get(),ChainDB::KEY_TIP,actual_tip);Need(expected.writeBatch(token,std::move(time),true));
+    Require(HandoffStoreDigest(expected,cancelled)==HandoffStoreDigest(selected,cancelled));
+    check();VerifyCatalogTransferProof(*proof,*headers);return catalog;
+#endif
 }
 
 void OrchardSnapshotStore::RetainActivationHeaders(ChainDB& db,const ChainWriteToken& token,
@@ -1056,13 +1152,14 @@ OrchardSnapshotStore::ActivationPublication OrchardSnapshotStore::OpenActivation
     CheckActivationHandoff(guard,*prepared);
     const auto audited=AuditActivationSuffix(mutex,*d.candidate,token,files,d.headers,d.proof,d.cancelled);
     Require(audited.Encode()==d.proof->parent_catalog.Encode());
-    Require(AuditActivationEvents(mutex,*d.source,*d.candidate,files,d.headers,d.proof,d.cancelled).Encode()==audited.Encode());
     Require(d.candidate_path==guard.DataDir()/"blockchain"/"chaindb"&&!d.selection.empty()&&
         HandoffControl(d.blockchain.value,HandoffIntent)==d.selection&&
         HandoffControl(d.blockchain.value,HandoffDone)==HandoffSeal("DNODONE1"+storage::catalog::Hash(d.selection).GetHex()));
     const auto record=HandoffSelection::Decode(d.selection);
     Require(record.origin.Encode()==d.origin.Encode()&&record.copy_rows==d.candidate_digest&&
         record.journal==receipt.CandidateJournal()&&record.wallet==receipt.WalletName());
+    Require(AuditActivationStore(mutex,*d.source,*d.candidate,token,files,record.copy_rows,
+        d.headers,d.proof,d.cancelled).Encode()==audited.Encode());
     // Only this completed, wholly audited selection can request an existing-
     // layout writer. No create, lock retry, migration/schema append or generic
     // no-handoff fence bypass is exposed to callers.
