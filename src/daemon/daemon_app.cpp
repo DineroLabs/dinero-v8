@@ -11,6 +11,7 @@
 #include "daemon/utreexo_block_payload.h"
 #include "consensus/csn_replay_data.h"
 #include "daemon/daemon_app.h"
+#include "daemon/reopen_candidate_journal.h"
 #include "storage/orchard_storage_mode.h"
 #include "storage/orchard_snapshot_base.h"
 #include "daemon/runtime_delivery_worker.h"
@@ -612,8 +613,10 @@ bool DaemonApp::Init(int argc, char** argv) {
     // Defensive reset for repeated Init() on the same DaemonApp instance.
     // Drop any retained service pointers/DB handles from prior attempts.
     auto request_shutdown = std::move(ctx_.request_shutdown);
+    auto reopen_rpc_gate = std::move(ctx_.reopen_rpc_gate);
     ctx_ = DaemonContext{};
     ctx_.request_shutdown = std::move(request_shutdown);
+    ctx_.reopen_rpc_gate = std::move(reopen_rpc_gate);
     services_.clear();
     chain_db_.reset();
 
@@ -629,9 +632,11 @@ bool DaemonApp::Init(int argc, char** argv) {
             // subsequent in-process retry does not inherit stale singletons/handles.
             self->ClosePoolRuntime();
             auto request_shutdown = std::move(self->ctx_.request_shutdown);
+            auto reopen_rpc_gate = std::move(self->ctx_.reopen_rpc_gate);
             DaemonContext::setInstance(nullptr);
             self->ctx_ = DaemonContext{};
             self->ctx_.request_shutdown = std::move(request_shutdown);
+            self->ctx_.reopen_rpc_gate = std::move(reopen_rpc_gate);
             self->services_.clear();
             self->chain_db_.reset();
             self->wallet_logger_.reset();
@@ -7569,7 +7574,98 @@ bool DaemonApp::Start() {
     return true;
 }
 
+struct CoreReopenReceipt::Data {
+    std::shared_ptr<ReopenRpcGate> gate;
+    std::shared_ptr<ReopenRpcGate::Pause> pause;
+    std::unique_ptr<ReopenServiceFence> wallet_fence,pool_fence;
+    std::unique_ptr<daemon::ReopenCandidateJournal> journal;
+    std::string wallet_name;std::filesystem::path root;
+    std::shared_ptr<const uint8_t> original_identity;bool committed=false,resumed=false;
+    const std::thread::id thread=std::this_thread::get_id();
+    Data(std::shared_ptr<ReopenRpcGate> g,std::shared_ptr<ReopenRpcGate::Pause> p)
+        :gate(std::move(g)),pause(p?std::move(p):std::shared_ptr<ReopenRpcGate::Pause>(ReopenRpcGate::Begin(gate))){}
+    void Check()const{if(thread!=std::this_thread::get_id())throw std::logic_error("Foreign Core reopen receipt");}
+};
+CoreReopenReceipt::CoreReopenReceipt(std::unique_ptr<Data> data):data_(std::move(data)){}
+CoreReopenReceipt::~CoreReopenReceipt()=default;
+std::shared_ptr<ReopenRpcGate> CoreReopenReceipt::Gate()const{data_->Check();return data_->gate;}
+const std::string& CoreReopenReceipt::WalletName()const{data_->Check();return data_->wallet_name;}
+const std::string& CoreReopenReceipt::CandidateJournal()const{data_->Check();return data_->journal->Name();}
+void CoreReopenReceipt::CheckBeforeInit(const daemon::DatadirGuard& guard)const{
+    data_->Check();
+    if(!data_->committed||data_->resumed||data_->root!=guard.DataDir())throw std::logic_error("Core reopen root/phase mismatch");
+    data_->journal->ForEach(guard,[](const auto&){});
+}
+
+std::unique_ptr<CoreReopenReceipt> DaemonApp::CloseForInternalReopen(
+    const daemon::DatadirGuard& guard,std::shared_ptr<ReopenRpcGate::Pause> pause){
+    std::lock_guard<std::recursive_mutex> lifecycle(close_reopen_mutex_);
+    if(!started_||reopen_mempool_sealed_||!guard.IsHeld()||!locked_datadir_||
+        *locked_datadir_!=guard.DataDir()||!ctx_.config||
+        std::filesystem::path(ctx_.config->DataDir())!=guard.DataDir())
+        throw std::logic_error("Core reopen requires the actual started locked root");
+    if(pause){pause->Check();if(pause->gate_!=ctx_.reopen_rpc_gate)throw std::logic_error("Wrong Core reopen RPC gate");}
+    auto receipt=std::unique_ptr<CoreReopenReceipt>(new CoreReopenReceipt(
+        std::make_unique<CoreReopenReceipt::Data>(ctx_.reopen_rpc_gate,std::move(pause))));
+    auto& saved=*receipt->data_;saved.original_identity=reopen_identity_;saved.root=guard.DataDir();
+    {
+        const auto wallet=std::dynamic_pointer_cast<WalletService>(ctx_.wallet);
+        const auto pool=std::dynamic_pointer_cast<MempoolService>(ctx_.mempool);
+        saved.wallet_fence=WalletService::FenceForReopen(wallet,std::chrono::seconds(30));
+        saved.pool_fence=MempoolService::FenceForReopen(pool,std::chrono::seconds(30));
+        saved.wallet_name=wallet->ReopenWalletName(*saved.wallet_fence);
+        saved.journal=daemon::ReopenCandidateJournal::Capture(guard,pool,*saved.pool_fence);
+        // Nothing above replaced an owner; failure aborts gates in reverse
+        // order, with RPC LAST. After this irreversible point, abandon stays
+        // paused. This private flag cannot be set from a decoded old journal.
+        saved.pause->HoldClosed();saved.committed=true;reopen_mempool_sealed_=true;
+        saved.pool_fence->CommitToStop();saved.wallet_fence->CommitToStop();
+        saved.pool_fence.reset();saved.wallet_fence.reset();
+    }
+    // Ordinary teardown still joins ALL validation/bridge/P2P/wallet readers.
+    // No selected-chain/database/operation mutex is held while joining them.
+    Stop();return receipt;
+}
+
+CoreReopenReceipt::Readmission DaemonApp::ResumeAfterInternalReopen(
+    const daemon::DatadirGuard& guard,CoreReopenReceipt& receipt){
+    std::lock_guard<std::recursive_mutex> lifecycle(close_reopen_mutex_);auto& saved=*receipt.data_;saved.Check();
+    if(!started_||saved.original_identity==reopen_identity_||saved.resumed||ctx_.reopen_rpc_gate!=saved.gate||
+        !locked_datadir_||*locked_datadir_!=saved.root||!ctx_.config||
+        std::filesystem::path(ctx_.config->DataDir())!=saved.root)
+        throw std::logic_error("Core reopen replacement is not ready");
+    receipt.CheckBeforeInit(guard);saved.pause->Check();
+    const auto wallet=std::dynamic_pointer_cast<WalletService>(ctx_.wallet);
+    if(!saved.wallet_name.empty()){
+        auto use=WalletService::AcquireWalletUse(wallet);
+        if(!use->Wallet().hasActiveWallet()||use->Wallet().getCurrentWalletName()!=saved.wallet_name)
+            use->Wallet().open(saved.wallet_name); // Normal registry open, never seed replacement/unlock.
+        wallet->EnsureRuntimeWalletBindings();
+        if(use->Wallet().getCurrentWalletName()!=saved.wallet_name)throw std::runtime_error("Named wallet reopen failed");
+    }
+    const auto pool=std::dynamic_pointer_cast<MempoolService>(ctx_.mempool);
+    if(!pool)throw std::runtime_error("Core reopen canonical pool unavailable");
+    CoreReopenReceipt::Readmission result;result.candidates=saved.journal->Count();
+    saved.journal->ForEach(guard,[&](const auto& candidate){
+        const auto body=DecodeRelayTransaction(candidate.body,RelayTransactionReadMode::AvailableFamilies);
+        auto accepted=TxAcceptResult::Rejected(TxRejectCode::UNAVAILABLE,"Reopen proof/body not yet admitted");
+        if(!candidate.proof.empty())accepted=pool->SubmitProofBody(
+            UtreexoTransactionPayload::Decode(candidate.proof,RelayTransactionReadMode::AvailableFamilies),TxOrigin::CORE_REOPEN);
+        if(!accepted.accepted()&&accepted.code!=TxRejectCode::ALREADY_IN_MEMPOOL&&accepted.code!=TxRejectCode::ALREADY_IN_CHAIN)
+            accepted=pool->SubmitBody(body,TxOrigin::CORE_REOPEN); // Same canonical validator, not cached validity.
+        if(accepted.accepted()||accepted.code==TxRejectCode::ALREADY_IN_CHAIN){++result.resolved;return;}
+        if(accepted.code==TxRejectCode::ALREADY_IN_MEMPOOL){
+            auto use=MempoolService::AcquirePoolUse(pool);const auto present=use->Pool().getMempoolEntry(body.GetTxid().AsUint256());
+            if(present&&present->tx.Serialize()==candidate.body){++result.resolved;return;}
+        }
+        ++result.retained; // Never delete unresolved bodies, dependencies or stale proofs.
+    });
+    if(result.candidates!=result.resolved+result.retained)throw std::logic_error("Core reopen inventory mismatch");
+    saved.pause->Resume();saved.resumed=true;return result;
+}
+
 void DaemonApp::Stop() {
+    std::lock_guard<std::recursive_mutex> lifecycle(close_reopen_mutex_);
     // Free any thread parked on a test barrier so shutdown cannot block on
     // one waiting out its timeout.
     dinero::testing::BarriersAborted().store(true);
@@ -7694,7 +7790,7 @@ void DaemonApp::Stop() {
 
     // v0.13.0.2 Step B: Save mempool to disk before shutdown
     // CRITICAL: Must happen BEFORE services stop (mempool needs to be operational)
-    if (ctx_.mempool) {
+    if (ctx_.mempool && !reopen_mempool_sealed_) {
         auto mempool_service = std::dynamic_pointer_cast<MempoolService>(ctx_.mempool);
         if (mempool_service) {
             std::cout << "[DaemonApp] Saving mempool to disk..." << std::endl;

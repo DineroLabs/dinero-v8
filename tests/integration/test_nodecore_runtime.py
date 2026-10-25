@@ -285,6 +285,17 @@ def reopen_rpc_pause(node):
     check("RPC pause fixture closes", node.call("stop") == 0)
 
 
+def app_reopen(node):
+    # Real linked DaemonApp instances, not a source mocked owner. No nodecore
+    # worker/automatic boundary is claimed by this sequential host fixture.
+    path = datadir("actual-app-reopen")
+    probe = node.call("actual_app_reopen", datadir=str(path))
+    check("actual App sealed close/fresh App/named open", probe == {
+        "candidates":0, "resolved":0, "retained":0, "wallet_name":"reopen-owner",
+        "paused_queues_retryable":True, "wallet_open_without_phrase":True,
+        "stale_epoch_refused":True, "repeat_resume_refused":True, "resumed_epoch_allowed":True}, probe)
+
+
 def stopped_wallet_birth_height(path, name):
     # Only inspect the synthetic wallet after nodecore_stop has closed it.
     database = path / "wallets" / f"wallet_{name}.db"
@@ -562,6 +573,7 @@ try:
         {"lifecycle": lifecycle, "datadir_lock": datadir_lock, "storage_readiness": storage_readiness,
          "reopen_fences": reopen_fences,
          "reopen_rpc_pause": reopen_rpc_pause,
+         "app_reopen": app_reopen,
          "snapshot": snapshot, "maintenance": maintenance,
          "maintenance_gate": maintenance_gate}[os.environ["NODECORE_SCENARIO"]](node)
         success = True

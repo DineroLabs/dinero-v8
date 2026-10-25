@@ -8,6 +8,8 @@
 #include "daemon/daemon_context.h"
 #include "daemon/services/wallet_service.h"
 #include "daemon/services/mempool_service.h"
+#include "daemon/services/rpc_service.h"
+#include "daemon/http_rpc_server.h"
 #include "consensus/chainparams.h"
 #include "rpc/rpc_registry.h"
 
@@ -23,6 +25,13 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
+
+struct HttpRpcRequestTestAccess {
+    static Json::Value Dispatch(HttpRpcServer& server,const std::string& method,const Json::Value& params){
+        Json::Value request;request["jsonrpc"]="2.0";request["id"]=84;request["method"]=method;request["params"]=params;
+        return server.process_rpc_call(request);
+    }
+};
 
 namespace {
 using namespace std::chrono_literals;
@@ -154,6 +163,53 @@ Json::Value LegacyStorageFixture(const std::string& path) {
         !app.PersistFreshStoreGenesisRecords())throw std::runtime_error("legacy fixture bootstrap failed");
     app.Stop();return 0;
 }
+Json::Value ActualAppReopen(const std::string& path){
+    if(nodecore_is_running()||!std::filesystem::path(path).is_absolute()||std::filesystem::exists(std::filesystem::path(path)/"blockchain"))
+        throw std::runtime_error("reopen fixture needs a fresh isolated root");
+    dinero::daemon::DatadirGuard guard;std::string error;
+    if(!guard.Acquire(path,error))throw std::runtime_error(error);
+    dinero::SelectParams(dinero::Chain::REGTEST);
+    std::vector<std::string> args{"real-app-reopen-fixture","--regtest","--datadir="+guard.DataDir().string(),
+        "--p2p.offline=1","--listen=0","--rpc.port=0","--wallet.socket.enable=0",
+        "--lightning.oracles.enable=0","--sync-profile=mac_fullblock","--utreexo-stateless=0"};
+    std::vector<char*> argv;for(auto& arg:args)argv.push_back(arg.data());
+    auto initialize=[&](dinero::DaemonApp& app){
+        app.SetLockedDatadir(guard);app.SetAutomaticStorageUpgrade(true);
+        if(!app.Init(int(argv.size()),argv.data())||!app.Start())throw std::runtime_error("real reopen App startup failed");
+    };
+    auto call=[](dinero::DaemonApp& app,const std::string& method,const Json::Value& params){
+        const auto rpc=std::dynamic_pointer_cast<dinero::RPCService>(app.GetContext().rpc);
+        if(!rpc||!rpc->GetHttpServer())throw std::runtime_error("real App HTTP dispatcher missing");
+        return HttpRpcRequestTestAccess::Dispatch(*rpc->GetHttpServer(),method,params);
+    };
+    auto old=std::make_unique<dinero::DaemonApp>();initialize(*old);
+    Json::Value restore;restore["name"]="reopen-owner";
+    restore["mnemonic"]="abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+    restore["rescan"]=false;
+    if(!call(*old,"wallet.restore",restore)["result"]["success"].asBool())throw std::runtime_error("fixture named restore failed");
+    const auto gate=old->GetContext().reopen_rpc_gate;const auto epoch=gate->Snapshot();
+    auto pause=std::shared_ptr<dinero::ReopenRpcGate::Pause>(dinero::ReopenRpcGate::Begin(gate));
+    auto receipt=old->CloseForInternalReopen(guard,pause);
+    if(receipt->WalletName()!="reopen-owner"||gate->Allows(epoch))throw std::runtime_error("close did not fence/retain named wallet");
+    old.reset(); // ALL raw forest/bridge/validation readers end before new Init.
+    receipt->CheckBeforeInit(guard);
+    auto reopened=std::make_unique<dinero::DaemonApp>();reopened->GetContext().reopen_rpc_gate=receipt->Gate();initialize(*reopened);
+    Json::Value result;result["paused_queues_retryable"]=true;
+    for(const auto* method:{"wallet.orchard.queueshield","wallet.orchard.queuespend","wallet.orchard.queuesend"}){
+        const auto paused=call(*reopened,method,Json::Value(Json::objectValue));
+        result["paused_queues_retryable"]=result["paused_queues_retryable"].asBool()&&
+            paused["error"]["code"].asInt()==-28&&paused["error"]["data"]["retryable"].asBool()&&!paused.isMember("result");
+    }
+    const auto admitted=reopened->ResumeAfterInternalReopen(guard,*receipt);
+    result["candidates"]=Json::UInt64(admitted.candidates);result["resolved"]=Json::UInt64(admitted.resolved);result["retained"]=Json::UInt64(admitted.retained);
+    Json::Value open(Json::arrayValue);open.append("reopen-owner");const auto opened=call(*reopened,"wallet.open",open);
+    result["wallet_open_without_phrase"]=opened["result"]["success"].asBool();
+    result["wallet_name"]=opened["result"]["wallet_name"];result["stale_epoch_refused"]=!gate->Allows(epoch);
+    try{(void)reopened->ResumeAfterInternalReopen(guard,*receipt);result["repeat_resume_refused"]=false;}
+    catch(const std::logic_error&){result["repeat_resume_refused"]=true;}
+    result["resumed_epoch_allowed"]=gate->Allows(gate->Snapshot());
+    reopened->Stop();reopened.reset();return result;
+}
 Json::Value ReopenFences(){
     auto* context=DaemonContext::instance();
     if(!nodecore_is_running()||!context||!context->wallet||!context->mempool)
@@ -229,6 +285,8 @@ int main(int argc, char** argv) {
             const auto operation = request["op"].asString();
             if (operation == "reopen_fences") {
                 result = ReopenFences();
+            } else if (operation == "actual_app_reopen") {
+                result = ActualAppReopen(request["datadir"].asString());
             } else if (operation == "reopen_rpc_pause") {
                 result = ReopenRpcPause();
             } else if (operation == "legacy_storage_fixture") {

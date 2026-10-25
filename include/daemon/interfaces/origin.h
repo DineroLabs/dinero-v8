@@ -14,6 +14,7 @@ enum class TxOrigin {
     P2P,            // Received from peer
     WALLET,         // Local wallet sendtoaddress
     INTERNAL,       // Internal/test usage
+    CORE_REOPEN,    // Durable public candidates; normal validation and relay
 };
 
 /**
@@ -37,6 +38,7 @@ inline const char* TxOriginToString(TxOrigin origin) {
         case TxOrigin::P2P: return "p2p";
         case TxOrigin::WALLET: return "wallet";
         case TxOrigin::INTERNAL: return "internal";
+        case TxOrigin::CORE_REOPEN: return "core-reopen";
         default: return "unknown";
     }
 }

@@ -7,8 +7,10 @@
 #include "iservice.h"
 #include "daemon/notify_drain_worker.h"
 #include "daemon/stop_gate.h"
+#include "daemon/core_reopen.h"
 #include <vector>
 #include <memory>
+#include <mutex>
 
 // Forward declarations
 namespace dinero {
@@ -104,12 +106,26 @@ public:
      */
     void Stop();
 
+    // No owner conversion is authorized by these lifecycle methods. Failure
+    // before commit resumes the SAME services; after commit RPC stays paused
+    // until ResumeAfterInternalReopen succeeds on a fresh, started App.
+    // An SDK host may pause under its publication mutex BEFORE moving the
+    // old App out. Retain its shared pause until abort republishes that App;
+    // do not release it in the unavailable publication gap on capture failure.
+    std::unique_ptr<CoreReopenReceipt> CloseForInternalReopen(const daemon::DatadirGuard&,
+        std::shared_ptr<ReopenRpcGate::Pause> pause={});
+    CoreReopenReceipt::Readmission ResumeAfterInternalReopen(const daemon::DatadirGuard&,CoreReopenReceipt&);
+
     /**
      * Get daemon context (for testing/inspection)
      */
     DaemonContext& GetContext() { return ctx_; }
 
 private:
+    std::recursive_mutex close_reopen_mutex_;
+    bool reopen_mempool_sealed_=false; // Set only by a genuine current capture.
+    // Retained identity does not retain this App or any old database reader.
+    const std::shared_ptr<const uint8_t> reopen_identity_=std::make_shared<const uint8_t>(0);
     std::optional<std::filesystem::path> locked_datadir_;
     bool automatic_storage_upgrade_ = false;
     bool fresh_store_bootstrap_only_ = false;

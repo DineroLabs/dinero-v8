@@ -7,6 +7,7 @@
 #include <thread>
 
 namespace dinero {
+class DaemonApp;
 // Admission only, never wallet or chainstate authority. The host retains this
 // shared epoch across old-App destruction and new-App publication. It must
 // begin a pause BEFORE closing service admission, and finish only after either
@@ -20,14 +21,20 @@ public:
     class Pause final {
     public:
         ~Pause()noexcept {
-            if(thread_!=std::this_thread::get_id())std::terminate();
-            // No callback/move ambiguity: this unique, nonmovable token owns
-            // exactly one odd epoch. Nested/concurrent pauses cannot enter.
-            gate_->epoch_.store(epoch_+1,std::memory_order_release);
+            if(auto_resume_&&active_)Resume();
         }
         Pause(const Pause&)=delete;Pause& operator=(const Pause&)=delete;
     private:
         friend class ReopenRpcGate;
+        friend class DaemonApp;
+        void Check()const {
+            if(thread_!=std::this_thread::get_id()||!active_||gate_->Snapshot()!=epoch_)
+                throw std::logic_error("Inactive or foreign RPC reopen pause");
+        }
+        // An irreversible close must fail CLOSED if its host abandons the
+        // receipt. Only a successfully initialized replacement can Resume.
+        void HoldClosed(){Check();auto_resume_=false;}
+        void Resume(){Check();active_=false;auto_resume_=false;gate_->epoch_.store(epoch_+1,std::memory_order_release);}
         explicit Pause(std::shared_ptr<ReopenRpcGate> gate):gate_(std::move(gate)){
             if(!gate_)throw std::logic_error("Missing RPC reopen gate");
             auto old=gate_->Snapshot();
@@ -36,7 +43,7 @@ public:
                 throw std::logic_error("RPC reopen pause already active or exhausted");
             epoch_=old+1;
         }
-        const std::shared_ptr<ReopenRpcGate> gate_;uint64_t epoch_=0;
+        const std::shared_ptr<ReopenRpcGate> gate_;uint64_t epoch_=0;bool active_=true,auto_resume_=true;
         const std::thread::id thread_=std::this_thread::get_id();
     };
     static std::unique_ptr<Pause> Begin(std::shared_ptr<ReopenRpcGate> gate){

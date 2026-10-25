@@ -291,6 +291,29 @@ Windows journal capture remains explicitly unavailable/fail-closed. Private
 wallet intents stay in their existing encrypted durable queue; no mnemonic,
 password, randomized proving plan or unlock continuation is written here.
 
+The App now has an explicit orderly-reopen receipt API. It pauses RPC, fences
+wallet then pool, captures the current named wallet and durably seals the genuine
+current pool before committing closed admission. Only that private path skips
+the legacy best-effort save, which otherwise cannot borrow a closed pool. Normal
+Stop/save behavior is unchanged. Full Stop still joins old services/readers;
+the host must destroy that App before replacement Init under the same root lock.
+The receipt is not state-conversion or catalog authority. It rechecks its root
+before Init and resume; the replacement must be a fresh started App on the same
+RPC epoch. Init, including failed Init cleanup, preserves the inherited gate.
+Resume uses normal named-wallet open without a phrase/unlock bypass and normal
+canonical proof/body admission with a distinct core-reopen origin. Unresolved
+candidates remain retained. Successful resume alone releases RPC; abandoning an
+irreversibly committed receipt stays paused/fail-closed. An SDK caller may retain
+a shared pause across its publication-mutex/App-move gap so an aborted capture
+does not unpause before the SAME App is republished.
+
+The real linked CoreOrderlyReopen fixture closes and destroys one App, starts a
+fresh App with that receipt, checks paused queue calls return retryable -28, and
+opens the named wallet without its phrase. It is a sequential native host fixture
+with an empty pool at genesis: NOT the automatic NodeCore worker, activation,
+nonempty private queue/mempool, authenticated catalog conversion or phone-history
+acceptance. The required real queued-payment activation crossing remains open.
+
 The thread-affine catalog download actor now handles one capability/connection/
 nonce-bound flight, sequential disk-backed pages, a single identical page retry,
 16 requests/second, an 11-minute initial manifest wait (server preparation is
