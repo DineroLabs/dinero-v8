@@ -153,6 +153,14 @@ struct PeerInfo {
     std::deque<std::vector<uint8_t>> relay_inbox_frames;
     std::shared_ptr<dinero::network::QuicSession> relay_quic_session;
     std::optional<dinero::network::QuicSessionOptions> relay_quic_options;
+    // Direct QUIC peer: no relay and no TCP socket. Its session (in
+    // relay_quic_session) carries the same framed stream as an encrypted relay
+    // circuit, so both share the inbox, reader loop and send path below.
+    bool quic_direct{false};
+    dinero::network::UdpAddr quic_remote{};
+    bool uses_quic_stream() const {
+        return quic_direct || (via_relay && via_relay->encrypted_quic);
+    }
 
     // Ring 3 Phase 4c: Move constructor (atomic is not movable, must load/store)
     PeerInfo(PeerInfo&& other) noexcept
@@ -186,6 +194,8 @@ struct PeerInfo {
           via_relay(std::move(other.via_relay)),
           relay_quic_session(std::move(other.relay_quic_session)),
           relay_quic_options(std::move(other.relay_quic_options)),
+          quic_direct(other.quic_direct),
+          quic_remote(other.quic_remote),
           lifetime_state(other.lifetime_state.load()),
           compact_timing_capable(other.compact_timing_capable.load()),
           release_handshake_complete(other.release_handshake_complete.load()) {}
@@ -723,6 +733,12 @@ public:
     // outbound_direction=ClientToTarget. Inserts into connected_peers_
     // keyed on the synthetic "relay:<node_id_hex>:<circuit_id_hex>" key
     // and returns that key (caller passes it to start_peer_handler_thread).
+    // Direct QUIC: wrap an already-started session (from QuicEndpoint) in a
+    // PeerInfo keyed "ip:port", insert it and start its handler thread.
+    // Returns the peer key.
+    std::string install_direct_quic_peer(std::shared_ptr<dinero::network::QuicSession> session,
+                                         const dinero::network::UdpAddr& remote,
+                                         bool outbound);
     std::string install_outbound_virtual_relay_peer(
         const std::array<uint8_t, 20>& target_node_id,
         const std::string& relay_peer_address,
@@ -1258,6 +1274,8 @@ private:
                               const std::optional<std::string>& pre_resolved_ip = std::nullopt);
     // Ring 3 Phase 4c: Changed to shared_ptr for TS1 compliance
     bool start_peer_handler_thread(std::shared_ptr<PeerInfo> peer);
+    // Frame one message onto a QUIC peer's stream (relay circuit or direct).
+    bool send_quic_stream_message(PeerInfo& peer, const P2PMessage& message);
     void peer_handler_loop(std::shared_ptr<PeerInfo> peer);
     // Task 5: Decrypted-stream reader for QUIC relay virtual peers.
     // Spawned by start_peer_handler_thread (Task 6) for encrypted circuits.

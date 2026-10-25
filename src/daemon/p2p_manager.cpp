@@ -3403,6 +3403,9 @@ bool P2PManager::send_peer_message(PeerInfo* peer, const P2PMessage& message) {
     // obey the current policy here too. The periodic sweep closes idle peers.
     if (peer->release_handshake_complete.load(std::memory_order_acquire) &&
         !release_peer_allowed(*peer)) return false;
+    if (peer->quic_direct) {
+        return send_quic_stream_message(*peer, message);
+    }
     if (peer->via_relay) {
         if (peer->via_relay->encrypted_quic) {
             if (!encrypted_relay_transport_allowed()) {
@@ -3427,10 +3430,12 @@ std::unique_ptr<P2PMessage> P2PManager::receive_peer_message(
     if (!peer) {
         return nullptr;
     }
-    if (!peer->via_relay) {
+    if (!peer->via_relay && !peer->quic_direct) {
         return peer->socket_fd >= 0 ? receive_message(peer->socket_fd) : nullptr;
     }
-    if (peer->via_relay->encrypted_quic) {
+    if (peer->quic_direct) {
+        // Direct QUIC is not a relay transport; no relay policy applies.
+    } else if (peer->via_relay->encrypted_quic) {
         if (!encrypted_relay_transport_allowed()) {
             std::cout << "[P2P] relay-transport: encrypted virtual peer receive refused until "
                       << "QUIC relay is enabled for this network for "
@@ -3489,7 +3494,7 @@ bool P2PManager::enqueue_relay_frame(const std::string& virtual_peer_key,
             peer = it->second;
         }
     }
-    if (!peer || !peer->via_relay) {
+    if (!peer || !(peer->via_relay || peer->quic_direct)) {
         return false;
     }
 
@@ -4436,7 +4441,9 @@ void P2PManager::stop() {
             if (pair.second->socket_fd >= 0) {
                 ::shutdown(pair.second->socket_fd, SHUT_RDWR);
             }
-            if (pair.second->via_relay) {
+            // QUIC peers (relay circuit or direct) block on their inbox, not
+            // a socket: wake them or each one costs its 10 s idle receive.
+            if (pair.second->via_relay || pair.second->quic_direct) {
                 pair.second->relay_inbox_cv.notify_all();
             }
         }
@@ -5523,12 +5530,14 @@ void P2PManager::peer_handler_loop(std::shared_ptr<PeerInfo> peer) {
     // For QUIC-encrypted virtual peers, wait for the QUIC handshake to complete
     // before invoking the dineroid app-layer handshake. perform_handshake() sends
     // bytes via send_relay_data_to_virtual_peer which requires handshake_ready().
-    if (peer_locked->via_relay && peer_locked->via_relay->encrypted_quic) {
-        const std::string circuit_relay = peer_locked->via_relay->relay_peer_address;
+    if (peer_locked->uses_quic_stream()) {
+        // Relay outcomes feed relay health scoring; a direct peer has no relay.
+        const std::string circuit_relay =
+            peer_locked->via_relay ? peer_locked->via_relay->relay_peer_address : std::string();
         if (!peer_locked->relay_quic_session) {
             std::cerr << "[P2P] relay-handshake: QUIC virtual peer has no session for "
                       << peer_key << std::endl;
-            note_relay_outcome(circuit_relay, false);  // circuit through this relay failed
+            if (!circuit_relay.empty()) note_relay_outcome(circuit_relay, false);
             cleanup_peer(peer_key);
             return;
         }
@@ -5537,11 +5546,11 @@ void P2PManager::peer_handler_loop(std::shared_ptr<PeerInfo> peer) {
             !ready.get()) {
             std::cout << "[P2P] relay-transport: QUIC handshake did not become ready "
                       << "within 10s for " << peer_key << std::endl;
-            note_relay_outcome(circuit_relay, false);  // handshake never completed via this relay
+            if (!circuit_relay.empty()) note_relay_outcome(circuit_relay, false);
             cleanup_peer(peer_key);
             return;
         }
-        note_relay_outcome(circuit_relay, true);  // data plane works through this relay
+        if (!circuit_relay.empty()) note_relay_outcome(circuit_relay, true);
         std::cout << "[P2P] relay-handshake: QUIC handshake ready for "
                   << peer_key << " — starting dineroid" << std::endl;
 
@@ -6169,7 +6178,7 @@ void P2PManager::cleanup_peer(const std::string& peer_address) {
             // Mark peer as disconnected (but keep in map until threads are joined)
             it->second->is_connected = false;
             it->second->lifetime_state.store(PeerLifetimeState::STOPPING);
-            if (it->second->via_relay) {
+            if (it->second->via_relay || it->second->quic_direct) {
                 it->second->relay_inbox_cv.notify_all();
             }
 
@@ -6848,8 +6857,10 @@ bool P2PManager::send_to_peer(const std::string& peer_address, const P2PMessage&
         }
     }
 
-    if (peer_info && peer_info->via_relay) {
-        const bool sent = send_relay_data_to_virtual_peer(*peer_info, message);
+    if (peer_info && (peer_info->via_relay || peer_info->quic_direct)) {
+        const bool sent = peer_info->quic_direct
+            ? send_quic_stream_message(*peer_info, message)
+            : send_relay_data_to_virtual_peer(*peer_info, message);
         // Zombie-circuit eviction (parity with the socket path below): a relay
         // virtual peer whose transport can never deliver — QUIC session never
         // handshake-ready, transport policy refusal, relay connection gone —
@@ -6933,6 +6944,62 @@ bool P2PManager::send_relay_payload_to_virtual_peer(PeerInfo& peer,
     return ok;
 }
 
+bool P2PManager::send_quic_stream_message(PeerInfo& peer, const P2PMessage& message) {
+    const bool have_session = static_cast<bool>(peer.relay_quic_session);
+    const bool is_active = have_session && peer.relay_quic_session->active();
+    const bool is_ready = is_active && peer.relay_quic_session->handshake_ready();
+    if (!have_session || !is_active || !is_ready) {
+        std::string last_err;
+        if (have_session) {
+            last_err = peer.relay_quic_session->last_error();
+        }
+        std::cout << "[P2P] quic-transport: QUIC peer is not handshake-ready for "
+                  << peer.to_string()
+                  << " (session=" << have_session
+                  << " active=" << is_active
+                  << " ready=" << is_ready
+                  << " err=\"" << last_err << "\")" << std::endl;
+        return false;
+    }
+    const auto inner_data = message.serialize();
+    const auto framed = FrameRelayQuicStreamPayload(inner_data);
+    peer.relay_quic_session->EnqueueOutgoingStream(framed, false);
+    return true;
+}
+
+std::string P2PManager::install_direct_quic_peer(
+    std::shared_ptr<dinero::network::QuicSession> session,
+    const dinero::network::UdpAddr& remote,
+    bool outbound) {
+    char host[INET6_ADDRSTRLEN] = {0};
+    if (remote.family == dinero::network::UdpAddr::Family::V4) {
+        inet_ntop(AF_INET, remote.ip.data(), host, sizeof(host));
+    } else {
+        inet_ntop(AF_INET6, remote.ip.data(), host, sizeof(host));
+    }
+    auto peer = std::make_shared<PeerInfo>();
+    peer->address = host;
+    peer->port = remote.port;
+    peer->user_agent = user_agent_;
+    peer->is_outbound = outbound;
+    peer->is_connected = false;  // the handshake flips this
+    peer->socket_fd = -1;
+    peer->connected_since = std::chrono::system_clock::now();
+    peer->last_message_at = peer->connected_since;
+    peer->last_seen = peer->connected_since;
+    peer->lifetime_state.store(PeerLifetimeState::RUNNING);
+    peer->quic_direct = true;
+    peer->quic_remote = remote;
+    peer->relay_quic_session = std::move(session);
+    const std::string key = peer->to_string();
+    {
+        std::lock_guard<std::mutex> lock(peers_mutex_);
+        connected_peers_[key] = peer;
+    }
+    start_peer_handler_thread(peer);
+    return key;
+}
+
 bool P2PManager::send_relay_data_to_virtual_peer(PeerInfo& peer,
                                                  const P2PMessage& message) {
     if (!peer.via_relay) {
@@ -6945,28 +7012,7 @@ bool P2PManager::send_relay_data_to_virtual_peer(PeerInfo& peer,
                       << peer.to_string() << std::endl;
             return false;
         }
-        {
-            const bool have_session = static_cast<bool>(peer.relay_quic_session);
-            const bool is_active = have_session && peer.relay_quic_session->active();
-            const bool is_ready = is_active && peer.relay_quic_session->handshake_ready();
-            if (!have_session || !is_active || !is_ready) {
-                std::string last_err;
-                if (have_session) {
-                    last_err = peer.relay_quic_session->last_error();
-                }
-                std::cout << "[P2P] relay-transport: QUIC virtual peer is not handshake-ready for "
-                          << peer.to_string()
-                          << " (session=" << have_session
-                          << " active=" << is_active
-                          << " ready=" << is_ready
-                          << " err=\"" << last_err << "\")" << std::endl;
-                return false;
-            }
-        }
-        const auto inner_data = message.serialize();
-        const auto framed = FrameRelayQuicStreamPayload(inner_data);
-        peer.relay_quic_session->EnqueueOutgoingStream(framed, false);
-        return true;
+        return send_quic_stream_message(peer, message);
     }
 
     if (!plaintext_relay_transport_allowed()) {
@@ -7490,8 +7536,7 @@ void P2PManager::outbox_loop() {
             auto it = connected_peers_.find(msg.peer_id);
             if (it != connected_peers_.end() && it->second->is_connected) {
                 peer_ptr = it->second;
-                is_relay_virtual = (peer_ptr->via_relay &&
-                                    peer_ptr->via_relay->encrypted_quic);
+                is_relay_virtual = peer_ptr->uses_quic_stream();
                 if (!is_relay_virtual) {
                     socket_fd = peer_ptr->socket_fd;
                 }

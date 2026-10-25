@@ -3776,6 +3776,68 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/p2p/test_relay_virtual_transport.cpp)
     LABELS "p2p;relay;transport;nat;quic-relay-focused"
     TIMEOUT 10
   )
+
+  add_executable(test_quic_direct_peer
+    tests/p2p/test_quic_direct_peer.cpp
+    src/daemon/p2p_manager.cpp
+    src/network/relay_hints_eviction.cpp
+    src/network/relay_registry.cpp
+    src/network/quic_session.cpp
+    src/network/quic_transport.cpp
+    src/network/relay_tls_keypair.cpp
+    src/network/udp_socket.cpp
+    src/daemon/node_identity.cpp
+    src/p2p/addr_v2.cpp
+    src/p2p/addrman.cpp
+    src/crypto/params_stub.cpp
+    src/common/sha256d.cpp
+    src/common/logger.cpp
+    src/daemon/secure_random.cpp
+  )
+
+  target_compile_definitions(test_quic_direct_peer PRIVATE DINERO_TEST_BUILD)
+
+  if(APPLE)
+    target_link_libraries(test_quic_direct_peer PRIVATE
+      GTest::gtest GTest::gtest_main
+      Threads::Threads
+      dinero_crypto
+      secp256k1
+      OpenSSL::SSL
+      OpenSSL::Crypto
+      "-framework Security"
+    )
+  else()
+    target_link_libraries(test_quic_direct_peer PRIVATE
+      GTest::gtest GTest::gtest_main
+      Threads::Threads
+      dinero_crypto
+      secp256k1
+      OpenSSL::SSL
+      OpenSSL::Crypto
+    )
+  endif()
+
+  if(DINERO_ENABLE_QUIC AND TARGET dinero_ngtcp2)
+    target_link_libraries(test_quic_direct_peer PRIVATE dinero_ngtcp2)
+    if(TARGET dinero_ngtcp2_crypto_ossl)
+      target_link_libraries(test_quic_direct_peer PRIVATE dinero_ngtcp2_crypto_ossl)
+    elseif(TARGET dinero_ngtcp2_crypto_quictls)
+      target_link_libraries(test_quic_direct_peer PRIVATE dinero_ngtcp2_crypto_quictls)
+    endif()
+  endif()
+
+  if(WIN32)
+    target_link_libraries(test_quic_direct_peer PRIVATE ws2_32)
+  endif()
+
+  target_include_directories(test_quic_direct_peer PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src/daemon
+  )
+
+  add_test(NAME QuicDirectPeer COMMAND test_quic_direct_peer)
+  set_tests_properties(QuicDirectPeer PROPERTIES LABELS "p2p;quic;transport" TIMEOUT 120)
   list(APPEND DINERO_QUIC_RELAY_TEST_TARGETS test_relay_virtual_transport)
 endif()
 
