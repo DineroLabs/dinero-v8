@@ -377,6 +377,26 @@ inverse removes the first active state and permits parent re-enrollment after a
 database close/open. The host still must retain/authenticate proof data for cold
 startup and implement atomic closed-store conversion/activation routing. This
 factory alone is not the seamless protocol or a live App crossing qualification.
+
+A separate private activation-proof data cache now retains canonical proof
+bytes in bounded immutable, synced ChainDB chunks before atomically publishing
+an immutable descriptor keyed by the exact first-block hash. It has no mutable
+"latest proof" selector. The descriptor pins wire magic and the consensus
+profile, exact first/parent hashes, size and full canonical-stream SHA256.
+Reads decode into disk-backed node storage and rerun complete selected/buried
+DNORST02 authentication; the digest and local descriptor alone never authorize
+state. A quiescent host can discard its original proof object, close/open the
+database and recover the data without manufacturing a snapshot base or skipping
+the first block. Retaining it does not convert full/assumed storage, publish a
+compact owner, change lifecycle/history validation flags, or start services.
+Cancelled unselected prefixes may resume only with identical bytes; completed
+missing/corrupt/conflicting chunks and wrong profile descriptors refuse without
+repair. Root ownership and writer lifetime remain the caller's responsibility.
+The per-proof format ceiling and free-space floor do not qualify repeated
+branch-cache quotas, crash/power-loss behavior, large-state memory or device
+performance. Host scheduling, durable closed-store conversion, startup routes
+and automatic SDK/P2P/history integration remain unfinished.
+
 The running 72-hour private soak is three full producers on an older pinned
 source with an empty Orchard tree. The earlier short six-consumer matrix covered
 both v6 profiles; neither is a 72-hour compact/nonempty/new-source qualification.

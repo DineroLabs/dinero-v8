@@ -32,6 +32,13 @@ struct OrchardSnapshotStoreTestAccess {
     static auto RestoreParent(AnnotatedRecursiveMutex& mutex,const ChainDB& db,const consensus::HeaderChainSelector& headers,
         const consensus::OrchardSnapshotSection& proof){
         std::lock_guard<AnnotatedRecursiveMutex> lock(mutex);return OrchardSnapshotStore::RestoreActivationParent(mutex,db,headers,proof);}
+    static void RetainProof(AnnotatedRecursiveMutex& mutex,ChainDB& db,const ChainWriteToken& token,
+        const consensus::HeaderChainSelector& headers,const consensus::OrchardSnapshotSection& proof,
+        const std::function<bool()>& cancelled={}){
+        std::lock_guard<AnnotatedRecursiveMutex> lock(mutex);OrchardSnapshotStore::RetainActivationProof(mutex,db,token,headers,proof,cancelled);}
+    static auto ReadProof(AnnotatedRecursiveMutex& mutex,const ChainDB& db,const consensus::HeaderChainSelector& headers,
+        const uint256& first,const std::function<bool()>& cancelled={}){
+        std::lock_guard<AnnotatedRecursiveMutex> lock(mutex);return OrchardSnapshotStore::ReadActivationProof(mutex,db,headers,first,cancelled);}
     static auto Install(AnnotatedRecursiveMutex& mutex,ChainDB& db,const ChainWriteToken& token,BlockStorage& files,
         const consensus::HeaderChainSelector& headers,const consensus::OrchardSnapshotFile& file) {
         std::lock_guard<AnnotatedRecursiveMutex> lock(mutex);
@@ -247,7 +254,81 @@ struct TransferredActivationParentFixture {
     },OrchardAdmissionFixture::HistoricalSpend::None,true){}
     void Parent(){auto old=disk.Restore();disk.Undo(*old,disk.second);disk.Undo(*old,disk.first);}
     auto Restore(){return OrchardSnapshotStoreTestAccess::RestoreParent(disk.startup_mutex,disk.reopened,*headers,*proof);}
+    void Retain(const std::function<bool()>& cancelled={}){
+        OrchardSnapshotStoreTestAccess::RetainProof(disk.startup_mutex,disk.reopened,disk.f.token,*headers,*proof,cancelled);}
+    auto Read(const uint256& first,const std::function<bool()>& cancelled={}){
+        return OrchardSnapshotStoreTestAccess::ReadProof(disk.startup_mutex,disk.reopened,*headers,first,cancelled);}
 };
+}
+TEST(OrchardActivationProof, ColdDatabaseReadsAuthenticateWithoutHostProofOrSnapshotFloor){
+    using namespace consensus;TransferredActivationParentFixture f;f.Parent();
+    const auto first=f.proof->state.block_hash,expected=HashOrchardSnapshotSection(*f.proof);
+    EXPECT_FALSE(f.Read(first));const auto before=f.disk.Rows();const auto archives=f.disk.ArchiveBytes();f.Retain();
+    auto retained=f.disk.Rows();for(auto it=retained.begin();it!=retained.end();){
+        if(it->first.first=="default"&&it->first.second.starts_with("orchard_activation_proof_v1:"))it=retained.erase(it);
+        else ++it;
+    }
+    EXPECT_EQ(retained,before);EXPECT_EQ(f.disk.ArchiveBytes(),archives);
+    const auto complete=f.disk.Rows();f.Retain();EXPECT_EQ(f.disk.Rows(),complete);
+    f.proof.reset();f.disk.reopened.close();ASSERT_EQ(f.disk.reopened.init(f.disk.f.path),Status::Ok);
+    const auto cold=f.disk.Rows();auto proof=f.Read(first);ASSERT_TRUE(proof);
+    EXPECT_EQ(HashOrchardSnapshotSection(*proof),expected);EXPECT_EQ(f.disk.Rows(),cold);
+    EXPECT_FALSE(storage::ReadOrchardSnapshotBase(f.disk.reopened));
+    EXPECT_EQ(f.disk.reopened.getTip()->height,101);EXPECT_EQ(f.disk.reopened.getOrchardState().status(),Status::NotFound);
+    EXPECT_ANY_THROW(storage::RequireFullOrchardStorage(f.disk.reopened));
+    auto owner=OrchardSnapshotStoreTestAccess::RestoreParent(f.disk.startup_mutex,f.disk.reopened,*f.headers,*proof);
+    ASSERT_TRUE(owner);proof.reset();f.disk.Connect(*owner,f.disk.first);f.disk.Undo(*owner,f.disk.first);owner.reset();
+    f.disk.reopened.close();ASSERT_EQ(f.disk.reopened.init(f.disk.f.path),Status::Ok);
+    proof=f.Read(first);ASSERT_TRUE(proof);EXPECT_EQ(HashOrchardSnapshotSection(*proof),expected);
+    EXPECT_FALSE(storage::ReadOrchardSnapshotBase(f.disk.reopened));EXPECT_EQ(f.disk.reopened.getTip()->height,101);
+}
+TEST(OrchardActivationProof, InterruptedUnselectedChunksResumeOnlyIdenticallyAndGrantNoOwner){
+    using namespace consensus;TransferredActivationParentFixture f;f.Parent();
+    const auto first=f.proof->state.block_hash,digest=HashOrchardSnapshotSection(*f.proof);
+    // HashOrchardSnapshotSection is the same SHA256 as the canonical stream.
+    const auto chunk_key="orchard_activation_proof_v1:chunk:"+digest.GetHex()+":0";
+    const auto before=f.disk.Rows();bool interrupted=false;
+    EXPECT_ANY_THROW(f.Retain([&]{std::string bytes;interrupted=f.disk.reopened.getRaw(chunk_key,bytes)==Status::Ok;return interrupted;}));
+    ASSERT_TRUE(interrupted);EXPECT_FALSE(f.Read(first));EXPECT_FALSE(storage::ReadOrchardSnapshotBase(f.disk.reopened));
+    auto prefix=f.disk.Rows();ASSERT_NE(prefix,before);
+    for(auto it=prefix.begin();it!=prefix.end();){
+        if(it->first.first=="default"&&it->first.second.starts_with("orchard_activation_proof_v1:chunk:"))it=prefix.erase(it);
+        else ++it;
+    }EXPECT_EQ(prefix,before);
+    f.disk.reopened.close();ASSERT_EQ(f.disk.reopened.init(f.disk.f.path),Status::Ok);
+    EXPECT_FALSE(f.Read(first));f.Retain();auto proof=f.Read(first);ASSERT_TRUE(proof);
+    EXPECT_EQ(HashOrchardSnapshotSection(*proof),digest);const auto complete=f.disk.Rows();
+    EXPECT_ANY_THROW(f.Read(first,[]{return true;}));EXPECT_EQ(f.disk.Rows(),complete);
+}
+TEST(OrchardActivationProof, MissingCorruptWrongProfileAndUnburiedCompletedProofsNeverRepair){
+    using namespace consensus;TransferredActivationParentFixture f;f.Parent();f.Retain();
+    const auto first=f.proof->state.block_hash,digest=HashOrchardSnapshotSection(*f.proof);
+    const auto chunk_key="orchard_activation_proof_v1:chunk:"+digest.GetHex()+":0";
+    const auto record_key="orchard_activation_proof_v1:record:"+first.GetHex();
+    std::string chunk,record;ASSERT_EQ(f.disk.reopened.getRaw(chunk_key,chunk),Status::Ok);
+    ASSERT_EQ(f.disk.reopened.getRaw(record_key,record),Status::Ok);
+    const auto refuse=[&]{const auto rows=f.disk.Rows();
+        EXPECT_ANY_THROW(f.Read(first));
+        EXPECT_ANY_THROW(f.Retain());
+        EXPECT_EQ(f.disk.Rows(),rows);
+    };
+    HeaderChainSelector unburied;for(const auto& block:f.disk.f.blocks)ASSERT_TRUE(unburied.AddHeader(block.header));
+    ASSERT_TRUE(unburied.AddHeader(f.disk.first->Header()));const auto complete=f.disk.Rows();
+    // Same profile/descriptor bytes, different locally selected burial: this
+    // specifically requires live header authentication on every cache read.
+    EXPECT_ANY_THROW(OrchardSnapshotStoreTestAccess::ReadProof(f.disk.startup_mutex,f.disk.reopened,unburied,first));
+    EXPECT_ANY_THROW(OrchardSnapshotStoreTestAccess::RetainProof(f.disk.startup_mutex,f.disk.reopened,f.disk.f.token,unburied,*f.proof));
+    EXPECT_EQ(f.disk.Rows(),complete);
+    MutableParams().state_commitment_burial_depth=2;refuse();MutableParams().state_commitment_burial_depth=1;
+    const auto magic=Params().magic;MutableParams().magic^=1;refuse();MutableParams().magic=magic;
+    f.disk.Mutate([&](auto& raw){auto corrupt=chunk;corrupt.back()^=1;raw.put("default",chunk_key,corrupt);});refuse();
+    f.disk.Mutate([&](auto& raw){rocksdb::WriteOptions sync;sync.sync=true;ASSERT_TRUE(raw.db->Delete(sync,chunk_key).ok());});refuse();
+    f.disk.Mutate([&](auto& raw){raw.put("default",chunk_key,chunk);raw.put("default",record_key,"malformed");});refuse();
+    f.disk.Mutate([&](auto& raw){raw.put("default",record_key,record);});ASSERT_TRUE(f.Read(first));
+    const auto other=f.disk.second->Header().GetHash();const auto wrong_key="orchard_activation_proof_v1:record:"+other.GetHex();
+    f.disk.Mutate([&](auto& raw){raw.put("default",wrong_key,record);});const auto wrong=f.disk.Rows();
+    EXPECT_ANY_THROW(f.Read(other));EXPECT_EQ(f.disk.Rows(),wrong);
+    EXPECT_FALSE(storage::ReadOrchardSnapshotBase(f.disk.reopened));EXPECT_EQ(f.disk.reopened.getTip()->height,101);
 }
 TEST(OrchardActivationParent, AuthenticatedParentFirstConnectUndoColdDatabaseAndReconnectHaveNoSnapshotFloor){
     using namespace consensus;TransferredActivationParentFixture f;f.Parent();

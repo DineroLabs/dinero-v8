@@ -48,6 +48,54 @@ std::unique_ptr<ConsensusUTXOSet> FullPublication(const OrchardSnapshotSection& 
     Require(live->BulkLoad(coins,s.state.height,s.state.block_hash));
     live->ReplaceForestGuarded(UtreexoForest::deserialize(s.accumulator));return live;
 }
+// Separate namespace from v6 snapshot-base/floor metadata. The descriptor is
+// only a durable reference to untrusted proof bytes; every use reauthenticates.
+std::string ActivationProofKey(const uint256& first) {
+    Require(!first.IsNull());return "orchard_activation_proof_v1:record:"+first.GetHex();
+}
+std::string ActivationProofChunkKey(const uint256& digest,uint64_t part) {
+    return "orchard_activation_proof_v1:chunk:"+digest.GetHex()+":"+std::to_string(part);
+}
+struct ActivationProofDescriptor {
+    uint256 first,parent,digest;uint64_t bytes=0;
+    std::string Encode()const {
+        Require(!first.IsNull()&&!parent.IsNull()&&!digest.IsNull()&&bytes&&bytes<=ORCHARD_SNAPSHOT_MAX_SECTION_BYTES);
+        std::string out="DNOAP01";storage::catalog::Number(out,Params().magic,4);
+        // The consensus checksum intentionally does not cover wire magic.
+        const auto profile=ConsensusChecksum(Params());Require(profile.size()==64);out+=profile;
+        for(const auto& h:{first,parent,digest})out.append(reinterpret_cast<const char*>(h.data),32);
+        storage::catalog::Number(out,bytes,8);return out;
+    }
+    static ActivationProofDescriptor Decode(const std::string& in) {
+        Require(in.size()==179&&in.compare(0,7,"DNOAP01")==0);
+        ActivationProofDescriptor d;size_t at=75;
+        for(auto* h:{&d.first,&d.parent,&d.digest}) {
+            std::copy_n(reinterpret_cast<const uint8_t*>(in.data()+at),32,h->begin());at+=32;
+        }
+        d.bytes=storage::catalog::Number(in,at,8);Require(d.Encode()==in);return d;
+    }
+};
+OrchardSnapshotSection ReadActivationProofChunks(const ChainDB& db,const ActivationProofDescriptor& d,
+    const std::filesystem::path& work,const std::function<bool()>& cancelled) {
+    crypto::CSHA256 hash;uint64_t loaded=0,part=0;size_t position=0;std::string chunk;
+    auto proof=ReadOrchardSnapshotSection(d.bytes,[&](std::span<uint8_t> out){
+        Require(!cancelled||!cancelled());
+        while(!out.empty()) {
+            if(position==chunk.size()) {
+                Require(loaded<d.bytes);Need(db.getRaw(ActivationProofChunkKey(d.digest,part++),chunk));
+                Require(chunk.size()==std::min<uint64_t>(storage::OrchardSnapshotProofChunkBytes,d.bytes-loaded));
+                hash.Write(chunk);loaded+=chunk.size();position=0;
+            }
+            const auto n=std::min(out.size(),chunk.size()-position);
+            std::copy_n(reinterpret_cast<const uint8_t*>(chunk.data()+position),n,out.data());
+            position+=n;out=out.subspan(n);
+        }
+    },work);
+    uint256 digest;hash.Finalize(digest.data);
+    Require(loaded==d.bytes&&position==chunk.size()&&digest==d.digest&&
+        proof.state.block_hash==d.first&&proof.parent_catalog.block==d.parent);
+    Require(!cancelled||!cancelled());return proof;
+}
 }
 void OrchardSnapshotStore::CreateFreshStore(const std::filesystem::path& destination) {
     namespace fs=std::filesystem;
@@ -222,6 +270,66 @@ std::unique_ptr<OrchardBoundaryReplay> OrchardSnapshotStore::ReplayActivation(
     auto immutable=std::make_shared<const consensus::OrchardSnapshotSection>(*proof);
     VerifyCatalogTransferProof(*immutable,*headers);
     return std::unique_ptr<OrchardBoundaryReplay>(new OrchardBoundaryReplay(std::move(immutable),std::move(headers),height,hash));
+}
+void OrchardSnapshotStore::RetainActivationProof(AnnotatedRecursiveMutex& mutex,ChainDB& db,const ChainWriteToken& token,
+    const consensus::HeaderChainSelector& headers,const consensus::OrchardSnapshotSection& untrusted,
+    const std::function<bool()>& cancelled) {
+    mutex.AssertHeld("retain authenticated activation proof");
+    const auto check=[&]{Require(!cancelled||!cancelled());};check();
+    Require(db.hasSeparatedShieldedState());
+    const OrchardSnapshotSection proof=untrusted;VerifyCatalogTransferProof(proof,headers);check();
+    crypto::CSHA256 hash;
+    ActivationProofDescriptor d;d.first=proof.state.block_hash;d.parent=proof.parent_catalog.block;
+    d.bytes=StreamOrchardSnapshotSection(proof,[&](auto bytes){check();hash.Write(bytes.data(),bytes.size());});
+    hash.Finalize(d.digest.data);const auto encoded=d.Encode(),key=ActivationProofKey(d.first);
+    std::string existing;const auto status=db.getRaw(key,existing);
+    Require(status==Status::NotFound||(status==Status::Ok&&existing==encoded));
+    const bool completed=status==Status::Ok;
+    if(!completed) {
+        const auto space=std::filesystem::space(std::filesystem::path(db.db_->GetName()).parent_path());
+        Require(space.available>=2*d.bytes+(uint64_t(512)<<20));
+    }
+    // An interrupted, unselected prefix can resume only byte-identically.
+    // A completed descriptor with missing chunks is corruption, not permission
+    // to repair. All writes use the normal WAL/checksums and synced batch path.
+    std::string chunk;chunk.reserve(storage::OrchardSnapshotProofChunkBytes);uint64_t part=0;
+    const auto flush=[&]{
+        check();const auto chunk_key=ActivationProofChunkKey(d.digest,part++);
+        std::string old;const auto found=db.getRaw(chunk_key,old);
+        Require(found==Status::NotFound? !completed : found==Status::Ok&&old==chunk);
+        if(found==Status::NotFound) {
+            rocksdb::WriteBatch batch;batch.Put(chunk_key,chunk);Need(db.writeBatch(token,std::move(batch),true));
+        }
+        chunk.clear();
+    };
+    Require(StreamOrchardSnapshotSection(proof,[&](std::span<const uint8_t> bytes){
+        check();while(!bytes.empty()) {
+            const auto n=std::min<size_t>(bytes.size(),storage::OrchardSnapshotProofChunkBytes-chunk.size());
+            chunk.append(reinterpret_cast<const char*>(bytes.data()),n);bytes=bytes.subspan(n);
+            if(chunk.size()==storage::OrchardSnapshotProofChunkBytes)flush();
+        }
+    })==d.bytes);if(!chunk.empty())flush();
+    // Audit bytes actually read back from storage, not the original in-memory
+    // proof. A descriptor never selects a merely partial or unaudited stream.
+    auto reread=ReadActivationProofChunks(db,d,std::filesystem::path(db.db_->GetName()).parent_path(),cancelled);
+    VerifyCatalogTransferProof(reread,headers);check();
+    std::unique_lock<std::mutex> selection(headers.mutex_);const auto* best=headers.best_header_;
+    const auto* selected=best?best->GetAncestor(proof.state.height):nullptr;
+    Require(selected&&selected->hash==d.first&&selected->prev_hash==d.parent&&
+        uint64_t(best->height)>=uint64_t(proof.state.height)+Params().state_commitment_burial_depth);
+    if(!completed) {
+        rocksdb::WriteBatch batch;batch.Put(key,encoded);Need(db.writeBatch(token,std::move(batch),true));
+    }
+}
+std::optional<consensus::OrchardSnapshotSection> OrchardSnapshotStore::ReadActivationProof(
+    AnnotatedRecursiveMutex& mutex,const ChainDB& db,const consensus::HeaderChainSelector& headers,
+    const uint256& activation_block,const std::function<bool()>& cancelled) {
+    mutex.AssertHeld("read authenticated activation proof");Require(!cancelled||!cancelled());
+    Require(db.hasSeparatedShieldedState());std::string encoded;const auto status=db.getRaw(ActivationProofKey(activation_block),encoded);
+    if(status==Status::NotFound)return {};Need(status);
+    const auto d=ActivationProofDescriptor::Decode(encoded);Require(d.first==activation_block);
+    auto proof=ReadActivationProofChunks(db,d,std::filesystem::path(db.db_->GetName()).parent_path(),cancelled);
+    VerifyCatalogTransferProof(proof,headers);Require(!cancelled||!cancelled());return proof;
 }
 std::unique_ptr<OrchardCompactChainstate> OrchardSnapshotStore::RestoreActivationParent(
     AnnotatedRecursiveMutex& mutex,const ChainDB& db,const consensus::HeaderChainSelector& headers,

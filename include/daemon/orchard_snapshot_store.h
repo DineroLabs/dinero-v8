@@ -45,6 +45,20 @@ private:
     static std::unique_ptr<OrchardBoundaryReplay> ReplayActivation(
         std::shared_ptr<const consensus::OrchardSnapshotSection>,
         std::shared_ptr<const consensus::HeaderChainSelector>,uint32_t,const uint256&);
+    // Private durable DATA cache, not a state/lifecycle/owner certificate.
+    // The caller pins the real datadir/DB lifetime and selected writer mutex.
+    // Bounded synced immutable chunks precede an atomic immutable descriptor
+    // keyed by the exact activation block. No "latest"/active proof pointer,
+    // state, catalog binding, replay flag or snapshot floor is installed.
+    // Reads require the explicitly requested locally selected/buried block and
+    // rerun the complete DNORST02 verifier. Incomplete chunks are never read
+    // as a completed proof; conflicting/corrupt retained bytes are not repaired.
+    static void RetainActivationProof(AnnotatedRecursiveMutex&,ChainDB&,const ChainWriteToken&,
+        const consensus::HeaderChainSelector&,const consensus::OrchardSnapshotSection&,
+        const std::function<bool()>& cancelled={});
+    static std::optional<consensus::OrchardSnapshotSection> ReadActivationProof(
+        AnnotatedRecursiveMutex&,const ChainDB&,const consensus::HeaderChainSelector&,
+        const uint256& activation_block,const std::function<bool()>& cancelled={});
     // Startup-only re-enrollment at activation MINUS ONE, NOT a v6 snapshot
     // floor. Requires a locally selected/buried joint-activation proof, exact
     // retained parent catalog/nodes/stump and full frozen legacy before-image.
