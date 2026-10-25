@@ -165,7 +165,8 @@ Json::Value LegacyStorageFixture(const std::string& path) {
     app.Stop();return 0;
 }
 Json::Value ActualAppReopen(const std::string& path,const std::string& mode={}){
-    if(mode!=""&&mode!="prepare"&&mode!="cold"&&mode!="abandoned")throw std::runtime_error("unknown reopen fixture mode");
+    if(mode!=""&&mode!="prepare"&&mode!="cold"&&mode!="abandoned"&&mode!="prepared-exit"&&mode!="prepared-resume")
+        throw std::runtime_error("unknown reopen fixture mode");
     if(nodecore_is_running()||!std::filesystem::path(path).is_absolute()||
         (std::filesystem::exists(std::filesystem::path(path)/"blockchain")!=(mode=="cold")))
         throw std::runtime_error("reopen fixture needs a fresh isolated root");
@@ -230,6 +231,25 @@ Json::Value ActualAppReopen(const std::string& path,const std::string& mode={}){
         const auto paused=call(*reopened,method,Json::Value(Json::objectValue));
         result["paused_queues_retryable"]=result["paused_queues_retryable"].asBool()&&
             paused["error"]["code"].asInt()==-28&&paused["error"]["data"]["retryable"].asBool()&&!paused.isMember("result");
+    }
+    if(mode=="prepared-exit"||mode=="prepared-resume"){
+        const auto prepared=reopened->PrepareReadmissionAfterInternalReopen(guard,*receipt);
+        result["prepared_candidates"]=Json::UInt64(prepared.candidates);
+        result["prepared_resolved"]=Json::UInt64(prepared.resolved);result["prepared_retained"]=Json::UInt64(prepared.retained);
+        result["prepared_gate_closed"]=!gate->Allows(gate->Snapshot());
+        const auto pending=dinero::daemon::ReopenCandidateJournal::OpenPending(guard,selected_wallet);
+        result["prepared_exact_intent_retained"]=pending&&pending->Name()==receipt->CandidateJournal()&&selected_wallet==receipt->WalletName();
+        {auto use=dinero::WalletService::AcquireWalletUse(std::dynamic_pointer_cast<dinero::WalletService>(reopened->GetContext().wallet));
+         result["prepared_named_wallet"]=use->Wallet().getCurrentWalletName();}
+        result["prepared_queues_retryable"]=true;
+        for(const auto* method:{"wallet.orchard.queueshield","wallet.orchard.queuespend","wallet.orchard.queuesend"}){
+            const auto paused=call(*reopened,method,Json::Value(Json::objectValue));
+            result["prepared_queues_retryable"]=result["prepared_queues_retryable"].asBool()&&
+                paused["error"]["code"].asInt()==-28&&paused["error"]["data"]["retryable"].asBool()&&!paused.isMember("result");
+        }
+        if(mode=="prepared-exit"){
+            reopened->Stop();reopened.reset();return result;
+        }
     }
     const auto admitted=reopened->ResumeAfterInternalReopen(guard,*receipt);
     result["completed_intent_archived"]=!dinero::daemon::ReopenCandidateJournal::OpenPending(guard,selected_wallet);

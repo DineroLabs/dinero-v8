@@ -121,6 +121,16 @@ public:
     // the same real root lock until replacement teardown. No owner conversion.
     std::unique_ptr<CoreReopenReceipt> PreparePendingReopen(const daemon::DatadirGuard&,
         const std::shared_ptr<ReopenRpcGate>&);
+    // Long normal wallet/pool work, with RPC STILL CLOSED and the selected
+    // durable corpus retained even if this replacement is abandoned/stopped.
+    // Binds the receipt to this replacement App. Repeated preparation uses
+    // canonical admission again, never cached validity. No publication, intent
+    // archive, state conversion or permission to open an SDK publication gap.
+    CoreReopenReceipt::Readmission PrepareReadmissionAfterInternalReopen(
+        const daemon::DatadirGuard&,CoreReopenReceipt&);
+    // Direct-App completion retains its original checked readmission/archive/
+    // gate-open ordering. This is NOT a short SDK publication primitive: a
+    // future host must coordinate replacement publication and publicStop.
     CoreReopenReceipt::Readmission ResumeAfterInternalReopen(const daemon::DatadirGuard&,CoreReopenReceipt&);
 
     /**

@@ -9380,7 +9380,13 @@ if(TARGET nodecore_ffi)
       NODECORE_SCENARIO=app_pending_reopen
       NODECORE_EVIDENCE_DIR=${CMAKE_BINARY_DIR}/Testing/nodecore-runtime
       python3 ${CMAKE_SOURCE_DIR}/tests/integration/test_nodecore_runtime.py)
-  set_tests_properties(NodeCoreRuntimeLifecycle NodeCoreSnapshotConsumers NodeCoreDatadirLock NodeCoreStorageReadiness NodeCoreReopenFences NodeCoreReopenRpcPause CoreOrderlyReopen CorePendingReopen PROPERTIES
+  add_test(NAME CorePreparedReadmission
+    COMMAND ${CMAKE_COMMAND} -E env
+      NODECORE_DRIVER=$<TARGET_FILE:nodecore_runtime_driver>
+      NODECORE_SCENARIO=app_prepared_readmission
+      NODECORE_EVIDENCE_DIR=${CMAKE_BINARY_DIR}/Testing/nodecore-runtime
+      python3 ${CMAKE_SOURCE_DIR}/tests/integration/test_nodecore_runtime.py)
+  set_tests_properties(NodeCoreRuntimeLifecycle NodeCoreSnapshotConsumers NodeCoreDatadirLock NodeCoreStorageReadiness NodeCoreReopenFences NodeCoreReopenRpcPause CoreOrderlyReopen CorePendingReopen CorePreparedReadmission PROPERTIES
     LABELS "integration;nodecore;restart;storage" TIMEOUT 300 RUN_SERIAL TRUE)
   add_test(NAME NodeCoreMaintenanceGate
     COMMAND ${CMAKE_COMMAND} -E env

@@ -355,6 +355,20 @@ abandoned same-process receipt and complete original driver exit followed by a
 fresh driver reopening the named wallet without a phrase. These remain genesis/
 empty-pool fixtures, not activation, nonempty pending payments or device tests.
 
+The App host can now prepare normal named-wallet binding and canonical
+proof/body readmission separately while keeping RPC closed and the complete
+selected durable candidate intent untouched. The receipt is bound to that
+replacement App, not transferable to another live instance. An abandoned
+prepared replacement may stop and exit; fresh intent-checked recovery retains
+the wallet name and public corpus. Preparation never archives the corpus,
+opens the gate, converts a store or caches transaction validity. Direct-App
+completion still redoes current-owner binding and normal admission before its
+existing archive/resume. This is not a short SDK publication primitive: the
+automatic worker still needs checked publication/publicStop ordering, and
+must not open the gate while its replacement App is unpublished. Native
+genesis/empty-pool tests cover prepare/completion and complete host exit/fresh
+host recovery, not real queued payments across activation or SDK concurrency.
+
 Owner decision: automatic crossing must retain H149999 (activation minus one)
 as an available compact undo/cold-reopen state. It may not silently establish
 H150000 as the snapshot/reorg floor. The activation-parent proof, original

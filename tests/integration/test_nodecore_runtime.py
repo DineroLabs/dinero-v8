@@ -320,6 +320,33 @@ def app_pending_reopen(node):
     check("cold recovery driver exits cleanly", fresh.process.returncode == 0, fresh.process.returncode)
 
 
+def app_prepared_readmission(node):
+    # Actual linked Apps at GENESIS/EMPTY pool. No automatic SDK publication,
+    # activation crossing or nonempty private-payment survival is claimed.
+    prepared = {"paused_queues_retryable":True, "prepared_candidates":0,
+        "prepared_resolved":0, "prepared_retained":0, "prepared_gate_closed":True,
+        "prepared_exact_intent_retained":True, "prepared_named_wallet":"reopen-owner",
+        "prepared_queues_retryable":True}
+    resumed = {"candidates":0, "resolved":0, "retained":0, "wallet_name":"reopen-owner",
+        "paused_queues_retryable":True, "wallet_open_without_phrase":True,
+        "stale_epoch_refused":True, "repeat_resume_refused":True, "resumed_epoch_allowed":True,
+        "completed_intent_archived":True}
+    probe = node.call("actual_app_reopen", datadir=str(datadir("prepared-resume")), mode="prepared-resume")
+    check("readmission keeps RPC and durable intent closed until explicit completion", probe == {**prepared, **resumed}, probe)
+    path = datadir("prepared-exit")
+    probe = node.call("actual_app_reopen", datadir=str(path), mode="prepared-exit")
+    check("prepared replacement stops without archiving intent or reopening queues", probe == prepared, probe)
+    node.close()
+    check("prepared host exits cleanly with its intent still selected", node.process.returncode == 0, node.process.returncode)
+    fresh = Embedded()
+    try:
+        recovered = fresh.call("actual_app_reopen", datadir=str(path), mode="cold")
+        check("fresh process recovers prepared named wallet without phrase", recovered == resumed, recovered)
+    finally:
+        fresh.close()
+    check("prepared recovery host exits cleanly", fresh.process.returncode == 0, fresh.process.returncode)
+
+
 def stopped_wallet_birth_height(path, name):
     # Only inspect the synthetic wallet after nodecore_stop has closed it.
     database = path / "wallets" / f"wallet_{name}.db"
@@ -599,6 +626,7 @@ try:
          "reopen_rpc_pause": reopen_rpc_pause,
          "app_reopen": app_reopen,
          "app_pending_reopen": app_pending_reopen,
+         "app_prepared_readmission": app_prepared_readmission,
          "snapshot": snapshot, "maintenance": maintenance,
          "maintenance_gate": maintenance_gate}[os.environ["NODECORE_SCENARIO"]](node)
         success = True

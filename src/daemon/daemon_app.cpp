@@ -7651,7 +7651,7 @@ std::unique_ptr<CoreReopenReceipt> DaemonApp::PreparePendingReopen(
     ctx_.reopen_rpc_gate=gate;receipt->CheckBeforeInit(guard);return receipt;
 }
 
-CoreReopenReceipt::Readmission DaemonApp::ResumeAfterInternalReopen(
+CoreReopenReceipt::Readmission DaemonApp::PrepareReadmissionAfterInternalReopen(
     const daemon::DatadirGuard& guard,CoreReopenReceipt& receipt){
     std::lock_guard<std::recursive_mutex> lifecycle(close_reopen_mutex_);auto& saved=*receipt.data_;saved.Check();
     if(!started_||saved.original_identity==reopen_identity_||saved.resumed||ctx_.reopen_rpc_gate!=saved.gate||
@@ -7660,6 +7660,10 @@ CoreReopenReceipt::Readmission DaemonApp::ResumeAfterInternalReopen(
         std::filesystem::path(ctx_.config->DataDir())!=saved.root)
         throw std::logic_error("Core reopen replacement is not ready");
     receipt.CheckBeforeInit(guard);saved.pause->Check();
+    // A successful/partially completed preparation belongs to this App only.
+    // Another replacement must recover the durable intent AFTER abandonment,
+    // not steal this still-live receipt/pause or reuse its prepared pool view.
+    saved.replacement_identity=reopen_identity_;
     const auto wallet=std::dynamic_pointer_cast<WalletService>(ctx_.wallet);
     if(!saved.wallet_name.empty()){
         auto use=WalletService::AcquireWalletUse(wallet);
@@ -7686,6 +7690,16 @@ CoreReopenReceipt::Readmission DaemonApp::ResumeAfterInternalReopen(
         ++result.retained; // Never delete unresolved bodies, dependencies or stale proofs.
     });
     if(result.candidates!=result.resolved+result.retained)throw std::logic_error("Core reopen inventory mismatch");
+    // No archive or RPC resume here. The complete typed corpus remains the
+    // selected durable fallback across a stop/exit before host publication.
+    return result;
+}
+CoreReopenReceipt::Readmission DaemonApp::ResumeAfterInternalReopen(
+    const daemon::DatadirGuard& guard,CoreReopenReceipt& receipt){
+    std::lock_guard<std::recursive_mutex> lifecycle(close_reopen_mutex_);
+    // Never trust a previously prepared result: normal wallet binding and
+    // canonical proof/body admission are repeated against the CURRENT owners.
+    const auto result=PrepareReadmissionAfterInternalReopen(guard,receipt);auto& saved=*receipt.data_;
     // An unresolved corpus remains the sole pending intent for a later normal
     // admission attempt. Never replace it with a newer empty capture.
     if(!result.retained)saved.journal->ArchivePending(guard,saved.wallet_name);
