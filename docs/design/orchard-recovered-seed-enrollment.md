@@ -253,17 +253,32 @@ state and same-thread Stop requires an explicit fence decision. Existing wallet
 operations may finish lazy proof-worker setup during this reversible drain, but
 not during actual Stop. Native tests cover named-wallet fence abort/cold open
 and export/normal re-admission of genuinely accepted mixed-family candidates.
-No RPC pause, durable candidate journal or automatic restart is enabled by these
-fences alone; their callers must fence RPC first and persist work before commit.
+No durable candidate journal or automatic restart is enabled by these fences
+alone; their callers must fence RPC first and persist work before commit.
+
+HTTP and the embedded RPC bridge now check a shared monotonic reopen epoch
+before and after dispatch. HTTP returns retryable -28/restarting without a result;
+the embedded bridge returns no reply (NULL), so callers retry the same request ID.
+An entire pause/abort inside a call still invalidates that call's result, including
+a transient queue refusal. A pause must start before service fences, and survive
+until the same owners resume or replacement services are fully queryable. NodeCore
+retains the gate independently of the App/context. These transport checks are
+tested with real queue names behind closed wallet/pool admission, and with a
+deterministic in-handler epoch change. They are not an automatic restart or a
+live owner install. Other transports must be stopped/drained before service
+fences (or bound to the same epoch); an HTTP/FFI pass alone does not qualify them.
 
 The thread-affine catalog download actor now handles one capability/connection/
 nonce-bound flight, sequential disk-backed pages, a single identical page retry,
-16 requests/second, 30-second idle and 20-minute network-flight limits, cancellation
+16 requests/second, an 11-minute initial manifest wait (server preparation is
+bounded to 10 minutes), a 30-second page idle and 45-minute total flight, cancellation
 and a conservative free-disk check before staging. It authenticates completion
 with the existing full DNORST02 verifier and yields only an immutable unpublished
 section. The host must serialize calls on its owner worker, use a real steady
 clock, enforce cross-attempt cooldown/peer rotation with fresh nonces, and drain
-that worker before teardown. Verification itself is not asynchronously interruptible.
+that worker before teardown. Foreign nonce/transfer-ID late replies on the same
+connection do not acknowledge or extend a flight. Matching-flight corruption
+still fails. Verification itself is not asynchronously interruptible.
 This actor is tested against real generated proof pages, but is not yet wired
 to daemon peer scheduling, live-owner installation or phone history downloads.
 

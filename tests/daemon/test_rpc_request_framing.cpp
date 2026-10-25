@@ -22,6 +22,10 @@
 #include <thread>
 
 struct HttpRpcRequestTestAccess {
+    static Json::Value Dispatch(HttpRpcServer& server,const std::string& method){
+        Json::Value request;request["jsonrpc"]="2.0";request["id"]=71;
+        request["method"]=method;return server.process_rpc_call(request);
+    }
     // A captured refusal exercises the real frame reader without changing the
     // token bucket, limits, or production admission policy.
     static void RefusedConnection(HttpRpcServer& server, int fd) {
@@ -117,6 +121,38 @@ TEST(RpcRequestFraming, SegmentedHeadersAndBodyReachHandlerExactlyOnce) {
     const auto response=Response(Read(client.fd),200);
     EXPECT_EQ(response["result"].asString(),value);EXPECT_EQ(response["id"].asInt(),17);
     server.stop();EXPECT_EQ(calls.load(),1U);
+}
+void RequireRestarting(const Json::Value& response){
+    EXPECT_EQ(response["id"].asInt(),71);EXPECT_FALSE(response.isMember("result"));
+    ASSERT_TRUE(response["error"].isObject());EXPECT_EQ(response["error"]["code"].asInt(),-28);
+    EXPECT_EQ(response["error"]["message"].asString(),"Core restarting; retry request");
+    EXPECT_TRUE(response["error"]["data"]["retryable"].asBool());
+    EXPECT_EQ(response["error"]["data"]["reason"].asString(),"restarting");
+}
+TEST(RpcReopenPause, PausedQueuesNeverReachHandlersAndAbortInvalidatesOldEpoch){
+    DaemonContext context;HttpRpcServer server("127.0.0.1",0);server.set_daemon_context(&context);
+    unsigned calls=0;const auto gate=context.reopen_rpc_gate;const auto old=gate->Snapshot();
+    for(const auto* method:{"wallet.orchard.queueshield","wallet.orchard.queuespend","wallet.orchard.queuesend"})
+        server.register_method(method,[&](const Json::Value&){++calls;Json::Value refused;refused["accepted"]=false;return refused;});
+    {auto pause=dinero::ReopenRpcGate::Begin(gate);
+     EXPECT_ANY_THROW(dinero::ReopenRpcGate::Begin(gate));
+     for(const auto* method:{"wallet.orchard.queueshield","wallet.orchard.queuespend","wallet.orchard.queuesend"})
+         RequireRestarting(HttpRpcRequestTestAccess::Dispatch(server,method));
+     EXPECT_EQ(calls,0u);}
+    EXPECT_FALSE(gate->Allows(old));EXPECT_TRUE(gate->Allows(gate->Snapshot()));
+    const auto result=HttpRpcRequestTestAccess::Dispatch(server,"wallet.orchard.queueshield");
+    EXPECT_FALSE(result["result"]["accepted"].asBool());EXPECT_EQ(calls,1u);
+}
+TEST(RpcReopenPause, CompletePauseInsideDispatchSuppressesBothRefusalAndSuccess){
+    DaemonContext context;HttpRpcServer server("127.0.0.1",0);server.set_daemon_context(&context);
+    bool refuse=true;unsigned calls=0;
+    server.register_method("test.overlap",[&](const Json::Value&){
+        ++calls;{auto pause=dinero::ReopenRpcGate::Begin(context.reopen_rpc_gate);}
+        Json::Value result;result["accepted"]=!refuse;if(refuse)result["error"]="must not escape";return result;
+    });
+    RequireRestarting(HttpRpcRequestTestAccess::Dispatch(server,"test.overlap"));refuse=false;
+    RequireRestarting(HttpRpcRequestTestAccess::Dispatch(server,"test.overlap"));EXPECT_EQ(calls,2u);
+    EXPECT_TRUE(context.reopen_rpc_gate->Allows(context.reopen_rpc_gate->Snapshot()));
 }
 TEST(RpcRequestFraming, CapturedRateRefusalConsumesOneFrameWithoutDispatch) {
     HttpRpcServer server("127.0.0.1",0);std::atomic<unsigned> calls{0};

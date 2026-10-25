@@ -9,6 +9,7 @@
 #include "daemon/services/wallet_service.h"
 #include "daemon/services/mempool_service.h"
 #include "consensus/chainparams.h"
+#include "rpc/rpc_registry.h"
 
 #include <json/json.h>
 #include <chrono>
@@ -183,6 +184,37 @@ Json::Value ReopenFences(){
     // Abandoning both leases restores the exact prior owners, not new stores.
     return result;
 }
+Json::Value ReopenRpcPause(){
+    auto* context=DaemonContext::instance();
+    if(!nodecore_is_running()||!context||!context->wallet||!context->mempool)
+        throw std::runtime_error("real running Core required for RPC pause probe");
+    const auto gate=context->reopen_rpc_gate;
+    const auto before=gate->Snapshot();Json::Value result;
+    {
+        const auto pause=dinero::ReopenRpcGate::Begin(gate);
+        try{auto bad=dinero::ReopenRpcGate::Begin(gate);result["nested_refused"]=false;}
+        catch(const std::logic_error&){result["nested_refused"]=true;}
+        const auto wallet=std::dynamic_pointer_cast<dinero::WalletService>(context->wallet);
+        const auto pool=std::dynamic_pointer_cast<dinero::MempoolService>(context->mempool);
+        const auto wf=dinero::WalletService::FenceForReopen(wallet,100ms);
+        const auto pf=dinero::MempoolService::FenceForReopen(pool,100ms);
+        for(const auto* method:{"wallet.orchard.queueshield","wallet.orchard.queuespend","wallet.orchard.queuesend","getblockcount"}){
+            char* reply=nodecore_rpc_call(method,"{}");result[method]=reply==nullptr;nodecore_free_string(reply);
+        }
+        // Both fences abort back to the SAME owners before the RPC pause ends.
+    }
+    result["stale_epoch_refused"]=!gate->Allows(before);
+    result["resumed_epoch_allowed"]=gate->Allows(gate->Snapshot());
+    // A deterministic complete pause/abort INSIDE dispatch must suppress an
+    // otherwise semantic refusal even though admission has already reopened.
+    if(!g_rpcRegistry.registerHandler("test.reopenepoch",[gate](const ExecutionContext&,const Json::Value&){
+        {auto pause=dinero::ReopenRpcGate::Begin(gate);}
+        Json::Value refused;refused["error"]="must not escape";refused["accepted"]=false;return refused;
+    },"test"))throw std::runtime_error("pause probe registration refused");
+    char* reply=nodecore_rpc_call("test.reopenepoch","{}");
+    result["overlap_refusal_suppressed"]=reply==nullptr;nodecore_free_string(reply);
+    return result;
+}
 } // namespace
 
 int main(int argc, char** argv) {
@@ -197,6 +229,8 @@ int main(int argc, char** argv) {
             const auto operation = request["op"].asString();
             if (operation == "reopen_fences") {
                 result = ReopenFences();
+            } else if (operation == "reopen_rpc_pause") {
+                result = ReopenRpcPause();
             } else if (operation == "legacy_storage_fixture") {
                 result = LegacyStorageFixture(request["datadir"].asString());
             } else if (operation == "start") {

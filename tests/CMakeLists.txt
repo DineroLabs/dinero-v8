@@ -9351,7 +9351,13 @@ if(TARGET nodecore_ffi)
       NODECORE_SCENARIO=reopen_fences
       NODECORE_EVIDENCE_DIR=${CMAKE_BINARY_DIR}/Testing/nodecore-runtime
       python3 ${CMAKE_SOURCE_DIR}/tests/integration/test_nodecore_runtime.py)
-  set_tests_properties(NodeCoreRuntimeLifecycle NodeCoreSnapshotConsumers NodeCoreDatadirLock NodeCoreStorageReadiness NodeCoreReopenFences PROPERTIES
+  add_test(NAME NodeCoreReopenRpcPause
+    COMMAND ${CMAKE_COMMAND} -E env
+      NODECORE_DRIVER=$<TARGET_FILE:nodecore_runtime_driver>
+      NODECORE_SCENARIO=reopen_rpc_pause
+      NODECORE_EVIDENCE_DIR=${CMAKE_BINARY_DIR}/Testing/nodecore-runtime
+      python3 ${CMAKE_SOURCE_DIR}/tests/integration/test_nodecore_runtime.py)
+  set_tests_properties(NodeCoreRuntimeLifecycle NodeCoreSnapshotConsumers NodeCoreDatadirLock NodeCoreStorageReadiness NodeCoreReopenFences NodeCoreReopenRpcPause PROPERTIES
     LABELS "integration;nodecore;restart;storage" TIMEOUT 300 RUN_SERIAL TRUE)
   add_test(NAME NodeCoreMaintenanceGate
     COMMAND ${CMAKE_COMMAND} -E env
@@ -16183,6 +16189,8 @@ if(UNIX)
   endif()
   add_test(NAME RpcRequestFraming COMMAND test_rpc_request_framing)
   set_tests_properties(RpcRequestFraming PROPERTIES TIMEOUT 90 RUN_SERIAL TRUE LABELS "rpc;framing;ownership")
+  add_test(NAME RpcReopenPause COMMAND test_rpc_request_framing --gtest_filter=RpcReopenPause.*)
+  set_tests_properties(RpcReopenPause PROPERTIES TIMEOUT 90 RUN_SERIAL TRUE LABELS "rpc;restart;ownership")
 endif()
 
 if(UNIX)

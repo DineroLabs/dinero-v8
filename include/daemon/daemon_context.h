@@ -6,6 +6,7 @@
 #include "storage/disk_space_monitor.h"
 #include "p2p/network_limits_monitor.h"
 #include "daemon/orchard_storage_upgrade_state.h"
+#include "daemon/reopen_rpc_gate.h"
 
 // Forward declarations
 class Subscriptions;  // WebSocket subscription manager
@@ -144,6 +145,10 @@ struct DaemonContext {
     // RPC "stop" and similar control paths should request shutdown through
     // this callback instead of reaching into process globals directly.
     std::function<void()> request_shutdown;
+
+    // A host doing an internal reopen must give the replacement context the
+    // SAME gate, retaining the pause through all teardown/republication work.
+    std::shared_ptr<dinero::ReopenRpcGate> reopen_rpc_gate = std::make_shared<dinero::ReopenRpcGate>();
 
     // Set by the native daemon's automatic shielded-store upgrade before
     // services start. One atomic value keeps the refusal and its sanitized

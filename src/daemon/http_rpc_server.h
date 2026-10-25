@@ -97,6 +97,7 @@ private:
     void handle_connection(int client_socket, bool rate_allowed);
     std::string process_http_request(const std::string& request);
     Json::Value process_rpc_call(const Json::Value& request);
+    Json::Value process_admitted_rpc_call(const Json::Value& request);
     
     // HTTP utilities
     std::string build_http_response(const std::string& content, 

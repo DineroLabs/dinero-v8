@@ -715,6 +715,29 @@ std::string HttpRpcServer::process_http_request(const std::string& request) {
 }
 
 Json::Value HttpRpcServer::process_rpc_call(const Json::Value& request) {
+    const auto gate=daemon_context_?daemon_context_->reopen_rpc_gate:nullptr;
+    const auto epoch=gate?gate->Snapshot():0;
+    auto restarting=[&]{
+        Json::Value response(Json::objectValue);response["jsonrpc"]="2.0";
+        response["id"]=request.get("id",Json::nullValue);
+        response["error"]["code"]=-28;
+        response["error"]["message"]="Core restarting; retry request";
+        response["error"]["data"]["retryable"]=true;
+        response["error"]["data"]["reason"]="restarting";
+        return response;
+    };
+    if(gate&&!gate->Allows(epoch))return restarting();
+    try {
+        auto response=process_admitted_rpc_call(request);
+        if(gate&&!gate->Allows(epoch))return restarting();
+        return response;
+    } catch(...) {
+        if(gate&&!gate->Allows(epoch))return restarting();
+        throw;
+    }
+}
+
+Json::Value HttpRpcServer::process_admitted_rpc_call(const Json::Value& request) {
     Json::Value response;
     response["jsonrpc"] = "2.0";
     response["id"] = request.get("id", Json::nullValue);

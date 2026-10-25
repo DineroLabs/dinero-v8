@@ -86,6 +86,7 @@ struct NodeCoreState {
     std::thread node_thread;
     std::atomic<bool> running{false};
     std::atomic<bool> shutdown_requested{false};
+    const std::shared_ptr<dinero::ReopenRpcGate> reopen_rpc_gate=std::make_shared<dinero::ReopenRpcGate>();
     std::chrono::steady_clock::time_point start_time;
 
     // Event callback
@@ -613,6 +614,7 @@ int32_t nodecore_start(const char* datadir, const char* config_json) {
         s.app.reset();
         return NODECORE_ERROR_INIT_FAILED;
     }
+    s.app->GetContext().reopen_rpc_gate=s.reopen_rpc_gate;
     s.datadir_guard = std::move(datadir_guard);
 
     // ChainDB's unrecovered-write loop-breaker defaults to std::exit(1)
@@ -1600,10 +1602,16 @@ char* nodecore_p2mr_sign_witness_json(
 
 char* nodecore_rpc_call(const char* method, const char* params_json) {
     auto& s = state();
-    auto write_json = [](const Json::Value& value) -> char* {
+    const auto gate=s.reopen_rpc_gate;
+    const auto epoch=gate->Snapshot();
+    if(!gate->Allows(epoch))return nullptr; // Retry/no reply, not a queue refusal.
+    auto write_json = [&](const Json::Value& value) -> char* {
+        if(!gate->Allows(epoch))return nullptr;
         Json::StreamWriterBuilder builder;
         builder["indentation"] = "";
-        return strdup_c(Json::writeString(builder, value));
+        char* response=strdup_c(Json::writeString(builder, value));
+        if(!gate->Allows(epoch)){std::free(response);return nullptr;}
+        return response;
     };
 
     if (!method) {
@@ -1614,6 +1622,7 @@ char* nodecore_rpc_call(const char* method, const char* params_json) {
     }
 
     std::lock_guard<std::mutex> lock(s.mtx);
+    if(!gate->Allows(epoch))return nullptr;
     if (!is_queryable_locked(s)) {
         Json::Value err(Json::objectValue);
         err["error"] = "NodeCore is not running";

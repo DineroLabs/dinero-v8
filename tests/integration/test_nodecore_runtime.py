@@ -270,6 +270,21 @@ def reopen_fences(node):
     check("fence fixture closes", node.call("stop") == 0)
 
 
+def reopen_rpc_pause(node):
+    path = datadir("reopen-rpc-owner")
+    phrase = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
+    check("RPC pause real Core starts", node.start(path) == 0)
+    check("RPC pause named wallet opens", node.rpc("wallet.restore", {"name":"rpc-owner", "mnemonic":phrase, "rescan":False})["success"] is True)
+    probe = node.call("reopen_rpc_pause")
+    expected = {key:True for key in ["nested_refused", "stale_epoch_refused", "resumed_epoch_allowed",
+        "overlap_refusal_suppressed", "wallet.orchard.queueshield", "wallet.orchard.queuespend",
+        "wallet.orchard.queuesend", "getblockcount"]}
+    check("paused queues return no reply, including complete overlap", probe == expected, probe)
+    check("RPC resumes on same context", node.rpc("getblockcount") == 0)
+    check("named wallet remains openable without phrase", node.rpc("wallet.open", ["rpc-owner"])["success"] is True)
+    check("RPC pause fixture closes", node.call("stop") == 0)
+
+
 def stopped_wallet_birth_height(path, name):
     # Only inspect the synthetic wallet after nodecore_stop has closed it.
     database = path / "wallets" / f"wallet_{name}.db"
@@ -546,6 +561,7 @@ try:
     try:
         {"lifecycle": lifecycle, "datadir_lock": datadir_lock, "storage_readiness": storage_readiness,
          "reopen_fences": reopen_fences,
+         "reopen_rpc_pause": reopen_rpc_pause,
          "snapshot": snapshot, "maintenance": maintenance,
          "maintenance_gate": maintenance_gate}[os.environ["NODECORE_SCENARIO"]](node)
         success = True
