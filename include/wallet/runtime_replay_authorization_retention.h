@@ -5,6 +5,7 @@
 #include <list>
 #include <limits>
 
+namespace dinero { class RuntimeAccountReplay; }
 namespace dinero::wallet::detail {
 // Process-local retention of ALREADY verified transaction authorizations. This is not a decoder
 // for certificates supplied by callers or read from an existing database.
@@ -66,6 +67,19 @@ public:
     }
     void Freeze(){std::lock_guard guard(mutex_);Check(!frozen_);spool_.Freeze();frozen_=true;}
 private:
+    friend class dinero::RuntimeAccountReplay;
+    // Private to the replay's verifier-root-bound index, never caller/import
+    // authority. The index root preserves this originally minted digest even
+    // if the authorization spool row and its storage MAC are both altered.
+    RuntimeReplaySpool::Bytes IndexToken(const Token& token) const {
+        Check(token.owner_==identity_&&token.id_>0&&token.id_<next_);
+        replay_spool_codec::Writer w;w.Number(token.id_,8);w.Raw(token.digest_);return std::move(w.bytes);
+    }
+    Token IndexToken(std::span<const uint8_t> bytes) const {
+        replay_spool_codec::Reader r{bytes};const auto id=r.Number(8);std::array<uint8_t,32> digest{};
+        const auto raw=r.Raw(32);std::copy(raw.begin(),raw.end(),digest.begin());
+        Check(r.bytes.empty()&&id>0&&id<next_);return Token(identity_,id,digest);
+    }
     friend struct RuntimeReplayAuthorizationRetentionTestAccess;
     using Bytes=RuntimeReplaySpool::Bytes;
     static constexpr size_t CacheEntries=4,CacheBytes=RuntimeReplaySpool::MaximumRecordBytes;

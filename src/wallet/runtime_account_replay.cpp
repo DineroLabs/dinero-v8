@@ -3,6 +3,7 @@
 #include "wallet/runtime_replay_spool_codec.h"
 #include "wallet/runtime_replay_state_retention.h"
 #include "wallet/runtime_replay_authorization_retention.h"
+#include "wallet/runtime_replay_index.h"
 #include "consensus/undo.h"
 #include "primitives/block.h"
 #include <set>
@@ -103,6 +104,7 @@ struct RuntimeAccountReplay::Data {
     wallet::detail::RuntimeReplayStateRetention states;
     wallet::detail::RuntimeReplayAuthorizationRetention authorizations;
     wallet::detail::RuntimeReplayDiskMembership membership{spool};
+    wallet::detail::RuntimeReplayIndex index{spool};
     // A small owned cache preserves recent handles without retaining every
     // raw event. The byte charge is encoded material, not a total RSS bound.
     static constexpr size_t EventCacheEntries=4;
@@ -169,9 +171,33 @@ struct RuntimeAccountReplay::Data {
         }
         return value;
     }
-    std::vector<uint256> positions;std::map<uint256,Node> nodes;
-    const Node& At(const uint256& hash) const {auto i=nodes.find(hash);Require(i!=nodes.end());return i->second;}
-    const Node& Ancestor(uint256 tip,uint32_t height,const uint256& hash) const {
+    using IndexKey=wallet::detail::RuntimeReplayIndex::Key;
+    static IndexKey NodeKey(const uint256& hash){IndexKey key{'n'};std::copy(hash.begin(),hash.end(),key.begin()+1);return key;}
+    static IndexKey PositionKey(uint64_t sequence){IndexKey key{'p'};for(unsigned i=0;i<8;++i)key[i+1]=uint8_t(sequence>>(8*i));return key;}
+    std::optional<Node> Find(const uint256& hash) const {
+        const auto bytes=index.Get(NodeKey(hash));if(!bytes)return std::nullopt;
+        wallet::detail::replay_spool_codec::Reader r{*bytes};Require(r.Number(1)==1);
+        Node n;n.height=r.Number(4);n.parent=r.Hash();n.event_sequence=r.Number(8);
+        const auto historical=r.Number(1),has_state=r.Number(1);Require(historical<=1&&has_state<=1);n.historical=historical;
+        if(has_state)n.state=states.IndexToken(r.Raw(40));
+        const auto has_auths=r.Number(1);Require(has_auths<=1);if(has_auths)n.auths=authorizations.IndexToken(r.Raw(40));
+        n.checkpoint=r.State();n.nullifiers=r.Number(8);n.anchors=r.Number(8);
+        Require(r.bytes.empty()&&n.checkpoint.block_hash==hash&&n.height==n.checkpoint.height);return n;
+    }
+    Node At(const uint256& hash) const {auto n=Find(hash);Require(n.has_value());return std::move(*n);}
+    void Put(const uint256& hash,const Node& n){
+        Require(n.checkpoint.block_hash==hash&&n.height==n.checkpoint.height);
+        wallet::detail::replay_spool_codec::Writer w;w.Number(1,1);w.Number(n.height,4);w.Hash(n.parent);w.Number(n.event_sequence,8);
+        w.Number(n.historical,1);w.Number(n.state.has_value(),1);if(n.state)w.Raw(states.IndexToken(*n.state));
+        w.Number(n.auths.has_value(),1);if(n.auths)w.Raw(authorizations.IndexToken(*n.auths));
+        w.State(n.checkpoint);w.Number(n.nullifiers,8);w.Number(n.anchors,8);index.Set(NodeKey(hash),w.bytes);
+    }
+    uint256 Position(uint64_t sequence) const {
+        const auto bytes=index.Get(PositionKey(sequence));Require(bytes&&bytes->size()==32);
+        uint256 hash;std::copy(bytes->begin(),bytes->end(),hash.begin());return hash;
+    }
+    void Position(uint64_t sequence,const uint256& hash){index.Set(PositionKey(sequence),{hash.data,32});}
+    Node Ancestor(uint256 tip,uint32_t height,const uint256& hash) const {
         for(;;){const auto& n=At(tip);Require(n.height>=height);if(n.height==height){Require(tip==hash);return n;}tip=n.parent;}
     }
     static wallet::detail::RuntimeReplayDiskMembership::Key MembershipKey(const uint256& hash) {
@@ -191,23 +217,20 @@ std::shared_ptr<const RuntimeAccountReplay> RuntimeAccountReplay::Capture(const 
     return Build(ReadSource(source));
 }
 std::shared_ptr<RuntimeAccountReplay::Data> RuntimeAccountReplay::ReadSource(const Source& source) {
-    // Explicit operational ceiling: fail without wallet writes, never truncate
-    // a history and report EOF/readiness. This is not a resident-memory limit.
-    constexpr size_t max_records=2048,max_material=64*1024*1024;
-    auto data=std::make_shared<Data>();RuntimeOutboxCursor after;size_t material=0;
+    // Stream bounded pages into private disk storage. Total history is not a
+    // material/record ceiling: disk/allocation/read failures still fail closed,
+    // and EOF is accepted only at the original captured, source-checked head.
+    auto data=std::make_shared<Data>();RuntimeOutboxCursor after;
     for(;;){
         auto page=source(after,128);
-        if(!after.sequence){data->head=page.head;Require(data->head.sequence&&data->head.sequence<=max_records);}
+        if(!after.sequence){data->head=page.head;Require(data->head.sequence&&data->head.sequence<UINT64_MAX);}
         Require(page.head==data->head&&!page.events.empty()&&page.events.size()<=128);
         // The source callback returned before this private transaction starts.
         // No selected-chain access or external callback under this batch.
         wallet::detail::RuntimeReplaySpool::Batch batch(data->spool);
         for(auto& e:page.events){
             Require(e.cursor.sequence==after.sequence+1&&e.previous_digest==after.digest&&e.cursor.sequence<=data->head.sequence);
-            size_t charge=e.body.size()+224;
-            if(e.orchard_replay){const auto& r=*e.orchard_replay;charge+=128+r.coin_undo.size()+r.next.frontier.size()+r.branch_mtp.size()*12;
-                if(r.parent)charge+=88+r.parent->frontier.size();}
-            Require(charge<=max_material-material);material+=charge;after=e.cursor;
+            after=e.cursor;
             data->spool.Insert(wallet::detail::replay_spool_codec::EventKey(e.cursor.sequence),
                                wallet::detail::replay_spool_codec::Encode(e));
         }
@@ -226,13 +249,13 @@ std::shared_ptr<const RuntimeAccountReplay> RuntimeAccountReplay::Build(std::sha
     const auto first_handle=data->ReadEvent(1);const auto& first=*first_handle;data->activation=first.context.activation_height;data->domain=first.context.domain;
     Require(data->activation>0&&data->activation!=UINT32_MAX&&first.direction==RuntimeBlockDirection::Connect&&first.context.height==data->activation&&first.orchard_replay&&
         !first.orchard_replay->parent);
-    data->origin=first.context.parent_hash;data->positions.push_back(data->origin);
-    Data::Node root;root.height=data->activation-1;root.checkpoint=Empty(root.height,data->origin);data->nodes.emplace(data->origin,std::move(root));
+    data->origin=first.context.parent_hash;data->Position(0,data->origin);
+    Data::Node root;root.height=data->activation-1;root.checkpoint=Empty(root.height,data->origin);data->Put(data->origin,root);
     for(uint64_t sequence=1;sequence<=data->head.sequence;++sequence){
         const auto event=data->ReadEvent(sequence);const auto& e=*event;
         Require(e.context.height>0&&e.context.activation_height==data->activation&&Domain(e.context.domain,data->domain)&&
             (e.direction==RuntimeBlockDirection::Connect||e.direction==RuntimeBlockDirection::Disconnect));
-        const bool connect=e.direction==RuntimeBlockDirection::Connect;const auto before=data->positions.back();
+        const bool connect=e.direction==RuntimeBlockDirection::Connect;const auto before=data->Position(sequence-1);
         Require(before==(connect?e.context.parent_hash:e.context.block_hash));
         Require(data->At(before).height==(connect?e.context.height-1:e.context.height));
         if(e.IsOrchardProfile()){
@@ -269,13 +292,13 @@ std::shared_ptr<const RuntimeAccountReplay> RuntimeAccountReplay::Build(std::sha
                 }
                 // The private spool batch has released its lock before any
                 // event-cache lookup (which itself reads the spool).
-                auto old=data->nodes.find(e.context.block_hash);
-                if(old!=data->nodes.end()) {
-                    const auto previous=data->ReadEvent(old->second.event_sequence);
-                    Require(old->second.state&&previous->body==e.body&&old->second.checkpoint==node.checkpoint&&
+                const auto old=data->Find(e.context.block_hash);
+                if(old) {
+                    const auto previous=data->ReadEvent(old->event_sequence);
+                    Require(old->state&&previous->body==e.body&&old->checkpoint==node.checkpoint&&
                         previous->orchard_replay&&previous->orchard_replay->coin_undo==frame.coin_undo&&
                         previous->orchard_replay->branch_mtp==frame.branch_mtp);
-                } else data->nodes.emplace(e.context.block_hash,std::move(node));
+                } else data->Put(e.context.block_hash,node);
             }else{
                 const auto& node=data->At(before);const auto previous=data->ReadEvent(node.event_sequence);
                 Require(node.state&&previous->body==e.body&&node.checkpoint==frame.next&&data->states.Load(*node.state)->Parent()==frame.parent&&
@@ -285,18 +308,20 @@ std::shared_ptr<const RuntimeAccountReplay> RuntimeAccountReplay::Build(std::sha
         }else{
             auto decoded=dinero::Block::Deserialize(e.body);Require(decoded.has_value());
             const std::string wire(e.body.begin(),e.body.end());Require(decoded->Serialize()==wire&&decoded->GetHash()==e.context.block_hash&&decoded->header.prev_block_hash==e.context.parent_hash);
-            auto& node=data->nodes[e.context.block_hash];Require(!node.state);
+            const auto old=data->Find(e.context.block_hash);auto node=old.value_or(Data::Node{});Require(!node.state);
             if(node.historical)Require(data->ReadEvent(node.event_sequence)->body==e.body);
             node.height=e.context.height;node.parent=e.context.parent_hash;node.historical=true;
             if(!node.event_sequence)node.event_sequence=sequence;
             node.checkpoint=Empty(node.height,e.context.block_hash);
-            if(!data->nodes.contains(node.parent)){
+            if(!data->Find(node.parent)){
                 Require(!connect);Data::Node parent;parent.height=node.height-1;parent.checkpoint=Empty(parent.height,node.parent);
-                data->nodes.emplace(node.parent,std::move(parent));
+                data->Put(node.parent,parent);
             }
+            data->Put(e.context.block_hash,node);
         }
-        data->positions.push_back(connect?e.context.block_hash:e.context.parent_hash);
+        data->Position(sequence,connect?e.context.block_hash:e.context.parent_hash);
     }
+    data->index.Freeze();
     data->spool.Freeze();data->states.Freeze();data->authorizations.Freeze();
     return std::shared_ptr<const RuntimeAccountReplay>(new RuntimeAccountReplay(std::move(data)));
 }
@@ -306,7 +331,7 @@ RuntimeAccountReplay::EventHandle RuntimeAccountReplay::Event(uint64_t sequence)
 }
 wallet::OrchardAccountDelivery::RestorePoint RuntimeAccountReplay::Point(RuntimeOutboxCursor cursor) const {
     Require(cursor.sequence<=data_->head.sequence&&(cursor.sequence?Event(cursor.sequence)->cursor==cursor:cursor.digest.IsNull()));
-    const auto tip=data_->positions[cursor.sequence];const auto data=data_;wallet::OrchardWalletRestoreLookups lookup;
+    const auto tip=data_->Position(cursor.sequence);const auto data=data_;wallet::OrchardWalletRestoreLookups lookup;
     lookup.origin=[data,tip](uint32_t height,const uint256& block,const orchard::Hash& txid){
         const auto& node=data->Ancestor(tip,height,block);Require(bool(node.state)&&bool(node.auths));
         const auto retained=data->authorizations.Load(*node.auths);
@@ -320,16 +345,16 @@ wallet::OrchardAccountDelivery::RestorePoint RuntimeAccountReplay::Point(Runtime
 }
 std::function<StatusOr<uint256>(uint32_t)> RuntimeAccountReplay::SelectedHashes(RuntimeOutboxCursor cursor) const {
     (void)Point(cursor); // Validate cursor/digest before publishing a callback.
-    const auto tip=data_->positions[cursor.sequence];const auto data=data_;
+    const auto tip=data_->Position(cursor.sequence);const auto data=data_;
     return [data,tip](uint32_t height)->StatusOr<uint256>{
         auto hash=tip;auto expected=data->At(tip).height;
         if(height>expected)return Status::NotFound;
         for(;;){
-            const auto it=data->nodes.find(hash);
-            if(it==data->nodes.end())return Status::NotFound;
-            if(it->second.height!=expected)return Status::Corruption;
+            const auto node=data->Find(hash);
+            if(!node)return Status::NotFound;
+            if(node->height!=expected)return Status::Corruption;
             if(expected==height)return hash;
-            hash=it->second.parent;--expected;
+            hash=node->parent;--expected;
         }
     };
 }
@@ -350,10 +375,10 @@ bool RuntimeAccountReplay::IsAncestorOf(RuntimeOutboxCursor cursor,const uint256
     const auto point=Point(cursor).checkpoint;auto hash=block;
     if(height<point.height)return false;
     for(;;){
-        const auto it=data_->nodes.find(hash);
-        Require(it!=data_->nodes.end()&&it->second.height==height);
+        const auto node=data_->Find(hash);
+        Require(node&&node->height==height);
         if(height==point.height)return hash==point.block_hash;
-        hash=it->second.parent;--height;
+        hash=node->parent;--height;
     }
 }
 RuntimeAccountReplay::BlockHandle RuntimeAccountReplay::Block(uint64_t sequence) const{

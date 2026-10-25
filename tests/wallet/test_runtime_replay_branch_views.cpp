@@ -11,6 +11,20 @@
 
 namespace dinero {
 struct RuntimeAccountReplayTestAccess {
+    static void ReadOnly(const std::vector<RuntimeOutboxEvent>& events) {
+        Require(!events.empty());size_t seen=0;
+        const auto data=RuntimeAccountReplay::ReadSource([&](RuntimeOutboxCursor after,size_t maximum){
+            Require(after.sequence<=events.size());
+            Require(after.sequence?events[after.sequence-1].cursor==after:after.digest.IsNull());
+            RuntimeOutboxPage page;page.head=events.back().cursor;page.next=after;
+            if(after.sequence){const auto& e=events[after.sequence-1];const bool connect=e.direction==RuntimeBlockDirection::Connect;
+                page.after_tip=std::pair{connect?e.context.block_hash:e.context.parent_hash,e.context.height-(connect?0u:1u)};}
+            const auto end=std::min(events.size(),size_t(after.sequence)+std::min(maximum,size_t(2)));
+            for(size_t i=after.sequence;i<end;++i){page.events.push_back(events[i]);++seen;}
+            if(!page.events.empty())page.next=page.events.back().cursor;return page;
+        });
+        Require(bool(data)&&seen==events.size());
+    }
     static auto Capture(const std::vector<RuntimeOutboxEvent>& events) {
         Require(!events.empty());
         return RuntimeAccountReplay::Capture([&](RuntimeOutboxCursor after,size_t maximum) {
@@ -81,7 +95,7 @@ struct Trace {
     explicit Trace(const std::string& base):domain(Fixture(base).domain){}
     void Append(RuntimeOutboxEvent event) {
         event.previous_digest=events.empty()?uint256{}:events.back().cursor.digest;
-        Require(events.size()<200);event.cursor={events.size()+1,H(uint8_t(events.size()+1))};
+        Require(events.size()<10000);event.cursor={events.size()+1,H(uint8_t(events.size()+1))};
         events.push_back(std::move(event));
     }
     Branch Connect(const Branch& parent,std::span<const VerifiedOrchardAuthorizations> auths,uint32_t nonce) {
@@ -449,9 +463,30 @@ void RawSpoolCodec() {
     }
     std::cout<<"RuntimeReplayBranchViews RawSpoolCodec PASS\n";
 }
+void BeyondOldHistoryCeilings(const std::string& base){
+    // Genuine state/identity replay with >2048 distinct blocks. No mined PoW
+    // or historical chain-consensus claim; this is the same component source
+    // contract as the smaller branch cases above.
+    Trace trace(base);Branch parent{{},{},{},H(240),20000};
+    for(uint32_t i=0;i<2050;++i)parent=trace.Connect(parent,{},1000+i);
+    const auto view=RuntimeAccountReplayTestAccess::Capture(trace.events);
+    Require(view->Head().sequence==2050&&view->Point(view->Head()).checkpoint==*parent.checkpoint);
+    Require(view->Point(trace.events.front().cursor).checkpoint.height==20001);
+    Require(view->State(2049)->Next().height==22049);
+    std::cout<<"RuntimeReplayBranchViews Beyond2048VerifiedBlocks PASS\n";
+    // Raw page/spool fidelity ONLY, not block/proof validation: feed >64MiB
+    // of material through the actual reader without constructing a view from
+    // these deliberately padded bodies. All proof checks remain in Build.
+    for(auto& event:trace.events)event.body.resize(33000,0);
+    RuntimeAccountReplayTestAccess::ReadOnly(trace.events);
+    std::cout<<"RuntimeReplayBranchViews Beyond64MiBRawCapture PASS\n";
+    auto missing=trace.events;missing.erase(missing.begin()+1024);
+    LookupReject(Status::Corruption,[&]{RuntimeAccountReplayTestAccess::ReadOnly(missing);});
+    std::cout<<"RuntimeReplayBranchViews LongPrefixGapRefuses PASS\n";
+}
 }
 int main(int argc,char** argv) {
-    try { Require(argc==2);BranchMembership(argv[1]);RawSpoolCodec();EventEvictionReload(argv[1]);BodyEvictionReload(argv[1]);HistoricalBodyEvictionReload(argv[1]);StateEvictionReload(argv[1]);StateRetentionProvenance(argv[1]);StateRetentionFailures(argv[1]);AuthorizationEvictionReload(argv[1]);AuthorizationRetentionProvenance(argv[1]);AuthorizationRetentionFailures(argv[1]); }
+    try { Require(argc==2);BranchMembership(argv[1]);RawSpoolCodec();EventEvictionReload(argv[1]);BodyEvictionReload(argv[1]);HistoricalBodyEvictionReload(argv[1]);StateEvictionReload(argv[1]);StateRetentionProvenance(argv[1]);StateRetentionFailures(argv[1]);AuthorizationEvictionReload(argv[1]);AuthorizationRetentionProvenance(argv[1]);AuthorizationRetentionFailures(argv[1]);BeyondOldHistoryCeilings(argv[1]); }
     catch(const std::exception& error){std::cerr<<error.what()<<'\n';return 1;}
     return 0;
 }

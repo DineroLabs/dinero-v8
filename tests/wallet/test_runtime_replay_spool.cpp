@@ -1,11 +1,25 @@
 #include "wallet/runtime_replay_spool.h"
 #include "wallet/runtime_replay_disk_membership.h"
+#include "wallet/runtime_replay_index.h"
 #include <gtest/gtest.h>
 #include <set>
 
 namespace dinero::wallet::detail {
 struct RuntimeReplaySpoolTestAccess {
     static sqlite3* Handle(RuntimeReplaySpool& spool){return spool.db_.get();}
+    static void AlterIndexWithValidStorageMac(RuntimeReplaySpool& spool){
+        const auto row=spool.Next('i',RuntimeReplaySpool::Bytes{'i'});if(!row)throw std::runtime_error("missing test index");
+        auto bytes=row->second;bytes.back()^=1;std::array<uint8_t,32> tag;
+        {std::lock_guard guard(spool.mutex_);tag=spool.Tag(row->first,bytes);}
+        sqlite3_stmt* statement=nullptr;auto* db=spool.db_.get();
+        if(sqlite3_prepare_v2(db,"UPDATE records SET v=?1,tag=?2 WHERE k=?3",-1,&statement,nullptr)!=SQLITE_OK)
+            throw std::runtime_error("test alteration prepare");
+        sqlite3_bind_blob(statement,1,bytes.data(),int(bytes.size()),SQLITE_TRANSIENT);
+        sqlite3_bind_blob(statement,2,tag.data(),int(tag.size()),SQLITE_TRANSIENT);
+        sqlite3_bind_blob(statement,3,row->first.data(),int(row->first.size()),SQLITE_TRANSIENT);
+        const int rc=sqlite3_step(statement);sqlite3_finalize(statement);
+        if(rc!=SQLITE_DONE||spool.Get(row->first)!=bytes)throw std::runtime_error("test alteration failed");
+    }
 };
 }
 namespace {
@@ -15,6 +29,41 @@ using Membership=RuntimeReplayDiskMembership;
 using Key=Membership::Key;
 Key SingleBit(unsigned bit){Key k{};k[bit/8]=uint8_t(1u<<(7-bit%8));return k;}
 Bytes Sequence(uint64_t sequence){Bytes k{'e'};for(unsigned i=0;i<8;++i){k.push_back(uint8_t(sequence));sequence>>=8;}return k;}
+RuntimeReplayIndex::Key IndexSequence(uint64_t sequence){RuntimeReplayIndex::Key key{'n'};for(unsigned i=0;i<8;++i)key[i+1]=uint8_t(sequence>>(8*i));return key;}
+TEST(RuntimeReplayIndex,DiskMetadataExceedsOldHistoryCeilingsWithBoundedPager){
+    RuntimeReplaySpool spool({},true);RuntimeReplayIndex index(spool);
+    Bytes value(16384,17);
+    for(uint64_t i=0;i<4200;++i){value[0]=uint8_t(i);value[1]=uint8_t(i>>8);index.Set(IndexSequence(i),value);}
+    EXPECT_LT(spool.UsageNow().pager_bytes,2*1024*1024);
+    EXPECT_LT(spool.UsageNow().statement_bytes,65536);
+    for(uint64_t i:{0,1,127,2047,2048,4199}){value[0]=uint8_t(i);value[1]=uint8_t(i>>8);EXPECT_EQ(index.Get(IndexSequence(i)),value);}
+    EXPECT_FALSE(index.Get(IndexSequence(4200)));
+    index.Set(IndexSequence(2048),Bytes{0,9,0});EXPECT_EQ(index.Get(IndexSequence(2048)),(Bytes{0,9,0}));
+    index.Freeze();spool.Freeze();EXPECT_EQ(index.Get(IndexSequence(2048)),(Bytes{0,9,0}));
+    EXPECT_THROW(index.Set(IndexSequence(4),Bytes{}),std::runtime_error);
+}
+TEST(RuntimeReplayIndex,EverySplitAndValueReplacementKeepExactKeys){
+    RuntimeReplaySpool spool;RuntimeReplayIndex index(spool);RuntimeReplayIndex::Key zero{};
+    index.Set(zero,Bytes{0});
+    for(unsigned bit=0;bit<264;++bit){auto key=zero;key[bit/8]|=uint8_t(1u<<(7-bit%8));index.Set(key,Bytes{uint8_t(bit),uint8_t(bit>>8)});}
+    for(unsigned bit=0;bit<264;++bit){auto key=zero;key[bit/8]|=uint8_t(1u<<(7-bit%8));EXPECT_EQ(index.Get(key),(Bytes{uint8_t(bit),uint8_t(bit>>8)}));}
+    index.Set(zero,Bytes{});EXPECT_EQ(index.Get(zero),Bytes{});
+    auto missing=zero;missing[0]=3;EXPECT_FALSE(index.Get(missing));
+}
+TEST(RuntimeReplayIndex,FailedCommitDoesNotPublishRootAndReMacCannotChangeMetadata){
+    RuntimeReplaySpool spool;RuntimeReplayIndex index(spool);auto* db=RuntimeReplaySpoolTestAccess::Handle(spool);
+    index.Set(IndexSequence(0),Bytes{1,2});
+    sqlite3_commit_hook(db,[](void*){return 1;},nullptr);
+    EXPECT_THROW(index.Set(IndexSequence(0),Bytes{3,4}),std::runtime_error);
+    sqlite3_commit_hook(db,nullptr,nullptr);EXPECT_EQ(index.Get(IndexSequence(0)),(Bytes{1,2}));
+    RuntimeReplaySpoolTestAccess::AlterIndexWithValidStorageMac(spool);
+    EXPECT_THROW((void)index.Get(IndexSequence(0)),std::runtime_error);
+}
+TEST(RuntimeReplayIndex,MissingCommittedRowIsCorruptionNotAbsentKey){
+    RuntimeReplaySpool spool;RuntimeReplayIndex index(spool);index.Set(IndexSequence(0),Bytes{1,2});
+    ASSERT_EQ(sqlite3_exec(RuntimeReplaySpoolTestAccess::Handle(spool),"DELETE FROM records",nullptr,nullptr,nullptr),SQLITE_OK);
+    EXPECT_THROW((void)index.Get(IndexSequence(0)),std::runtime_error);
+}
 TEST(RuntimeReplaySpool,OwnedCopiesCheckedWritesRollbackAndFreeze) {
     RuntimeReplaySpool spool;const Bytes key{1,0,2},value{0,9,0,8};
     EXPECT_FALSE(spool.Get(key));EXPECT_THROW(spool.Insert(key,value),std::runtime_error);

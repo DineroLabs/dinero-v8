@@ -5,6 +5,7 @@
 #include <list>
 #include <limits>
 
+namespace dinero { class RuntimeAccountReplay; }
 namespace dinero::wallet::detail {
 // Process-local retention of an ALREADY prepared state. This is not a decoder
 // for certificates supplied by callers or read from an existing database.
@@ -66,6 +67,19 @@ public:
     }
     void Freeze(){std::lock_guard guard(mutex_);Check(!frozen_);spool_.Freeze();frozen_=true;}
 private:
+    friend class dinero::RuntimeAccountReplay;
+    // Only the replay's content-addressed index may retain these bytes. Its
+    // in-memory root binds the originally minted digest independently of this
+    // state's scratch spool MAC. Never expose a raw token import API.
+    RuntimeReplaySpool::Bytes IndexToken(const Token& token) const {
+        Check(token.owner_==identity_&&token.id_>0&&token.id_<next_);
+        replay_spool_codec::Writer w;w.Number(token.id_,8);w.Raw(token.digest_);return std::move(w.bytes);
+    }
+    Token IndexToken(std::span<const uint8_t> bytes) const {
+        replay_spool_codec::Reader r{bytes};const auto id=r.Number(8);std::array<uint8_t,32> digest{};
+        const auto raw=r.Raw(32);std::copy(raw.begin(),raw.end(),digest.begin());
+        Check(r.bytes.empty()&&id>0&&id<next_);return Token(identity_,id,digest);
+    }
     friend struct RuntimeReplayStateRetentionTestAccess;
     using Bytes=RuntimeReplaySpool::Bytes;
     static constexpr size_t CacheEntries=4,CacheBytes=RuntimeReplaySpool::MaximumRecordBytes;

@@ -12,7 +12,7 @@ class RuntimeAccountReplay {
 public:
     // Each non-null handle owns its immutable value independently of this
     // view and of other records. Retain the handle while borrowing references
-    // into its value. This allows later bounded storage to release unrelated
+    // into its value. This allows bounded storage to release unrelated
     // records without invalidating a caller's active record.
     using EventHandle = std::shared_ptr<const RuntimeOutboxEvent>;
     using BlockHandle = std::shared_ptr<const OrchardBlockCandidate>;

@@ -96,10 +96,21 @@ Neither case may get a trusted-empty current wallet just because it uses
    an empty scan. No automatic rebroadcast or reservation release follows from
    a recovery certificate.
 
-The existing runtime replay capture has explicit 2048-record/64MiB material
-ceilings and requires retained origin material. Do NOT silently raise these,
-truncate a prefix or label that path production-scale recovery. The recovery
-lane needs bounded streaming and disk-backed ancestry/checkpoints first.
+Runtime replay capture now streams retained origin material into private disk
+storage without the former 2048-record/64MiB total-history ceilings. Branch
+metadata and cursor positions are disk indexed under a verifier-owned
+content-addressed root; original authorization/state token digests remain bound
+independently of their scratch-record storage MACs. Event/body/state/authorization
+caches and SQLite pagers remain bounded; source-page, per-record, source-head,
+ancestry, real-proof and EOF checks still apply. Disk/allocation errors refuse;
+there is no truncated-prefix success. This is not a total RSS, latency or disk
+budget certificate and does not supply missing historical material.
+
+These private scratch spools cannot reopen after process death. They are not the
+resumable encrypted recovery staging owner proposed above. Production recovery
+still needs that owner, an authenticated historical transport, account-0 scoped
+publication and real-device qualification; replay scalability alone grants no
+recovered-wallet or mobile chain-validation authority.
 
 ## Stateless phone: selected transport and outstanding gate
 
