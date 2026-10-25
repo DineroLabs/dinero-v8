@@ -30,6 +30,7 @@
 #include "network/types.h"   // For dinero::ServiceFlags
 #ifdef DINERO_HAS_ORCHARD_P2P
 #include "p2p/orchard_catalog_server.h"
+#include "p2p/orchard_catalog_download.h"
 #include "daemon/config.h"
 #endif
 #include <algorithm>
@@ -292,10 +293,26 @@ bool BuildProactiveHeaderBurst(ChainDB* chain_db,
 
 P2PService::~P2PService() {
     StopSchedulerTickLoop();
+    StopCatalogWorkers();
+    StopPortMapping();
+}
+
+void P2PService::StopCatalogWorkers() {
 #ifdef DINERO_HAS_ORCHARD_P2P
+    if(const auto client=CatalogDownload())client->Stop();
     if(orchard_catalog_server_)orchard_catalog_server_->Stop();
 #endif
-    StopPortMapping();
+}
+
+std::shared_ptr<p2p::OrchardCatalogDownload> P2PService::CatalogDownload() const {
+    std::lock_guard lock(orchard_catalog_download_mutex_);return orchard_catalog_download_;
+}
+
+std::shared_ptr<const consensus::OrchardSnapshotSection> P2PService::ReadyActivationCatalog() const {
+#ifdef DINERO_HAS_ORCHARD_P2P
+    if(const auto client=CatalogDownload())return client->ReadyProof();
+#endif
+    return {};
 }
 
 bool P2PService::SetNetworkActive(bool active) {
@@ -313,6 +330,9 @@ bool P2PService::SetNetworkActive(bool active) {
     }
 
     p2p_mgr_->set_network_active(active);
+#ifdef DINERO_HAS_ORCHARD_P2P
+    if(const auto client=CatalogDownload())client->Wake();
+#endif
     if (active) {
         StartSchedulerTickLoop();
     } else {
@@ -2338,6 +2358,27 @@ bool P2PService::Start() {
         // Only a full archival profile serves activation catalogs. The local
         // load/export switch does not gate this consensus-state transport.
 #ifdef DINERO_HAS_ORCHARD_P2P
+        if(chainstate_&&GetConfig().utreexo_stateless&&
+           consensus::OrchardProfileConfigurationValid(Params())&&Params().orchard_activation_height!=UINT32_MAX&&
+           Params().orchard_catalog_commitment_activation_height==Params().orchard_activation_height){
+            auto* context=DaemonContext::instance();const auto headers=context?context->header_chain:nullptr;
+            if(headers){
+                auto download=std::make_shared<p2p::OrchardCatalogDownload>(
+                headers,std::filesystem::path(GetConfig().datadir),
+                [this,source=chainstate_]{
+                    return p2p_mgr_&&p2p_mgr_->is_network_active()&&source->NeedsOrchardActivationCatalog();
+                },[this]{
+                    std::vector<p2p::OrchardCatalogDownload::Peer> peers;
+                    if(p2p_mgr_)for(const auto& p:p2p_mgr_->connected_peer_sessions())
+                        peers.push_back({p.address,p.nonce,p.services});
+                    return peers;
+                },[this](const auto& peer,const auto& command,const auto& bytes){
+                    ::P2PMessage message{};message.command=command;message.payload=bytes;
+                    return p2p_mgr_&&p2p_mgr_->send_to_peer(peer.address,message,peer.session);
+                });
+                std::lock_guard lock(orchard_catalog_download_mutex_);orchard_catalog_download_=std::move(download);
+            }
+        }
         if(chainstate_&&!GetConfig().utreexo_stateless&&(!prune_||!prune_->isEnabled())&&
            consensus::OrchardProfileConfigurationValid(Params())&&Params().orchard_activation_height!=UINT32_MAX&&
            Params().orchard_catalog_commitment_activation_height==Params().orchard_activation_height){
@@ -2354,6 +2395,7 @@ bool P2PService::Start() {
 #endif
         // Start P2P networking (spawns threads)
         if (!p2p_mgr_->start()) {
+            StopCatalogWorkers();
             logger_interface_->error("[P2PService] Failed to start P2P manager");
             return false;
         }
@@ -2400,6 +2442,7 @@ bool P2PService::Start() {
 
     } catch (const std::exception& e) {
         StopSchedulerTickLoop();
+        StopCatalogWorkers();
         StopPortMapping();
         logger_interface_->error("[P2PService] Failed to start: " + std::string(e.what()));
         return false;
@@ -2407,6 +2450,7 @@ bool P2PService::Start() {
 }
 
 void P2PService::ReleaseStoppedDependencies() {
+    {std::lock_guard lock(orchard_catalog_download_mutex_);orchard_catalog_download_.reset();}
     orchard_catalog_server_.reset();
     OnNewBlock = {};
     OnNewTx = {};
@@ -2437,9 +2481,7 @@ void P2PService::Stop() {
     // cleanup and final persistence still happen in P2PManager::stop().
     if (p2p_mgr_) p2p_mgr_->begin_shutdown();
     StopSchedulerTickLoop();
-#ifdef DINERO_HAS_ORCHARD_P2P
-    if(orchard_catalog_server_)orchard_catalog_server_->Stop();
-#endif
+    StopCatalogWorkers();
 
     if (!p2p_mgr_) {
         if (logger_interface_) {
@@ -2508,6 +2550,13 @@ void P2PService::Stop() {
 
 void P2PService::HandleP2PMessage(const std::string& peer_addr, const ::P2PMessage& msg) {
 #ifdef DINERO_HAS_ORCHARD_P2P
+    if(msg.command==p2p::OrchardCatalogTransfer::ManifestCommand||msg.command==p2p::OrchardCatalogTransfer::PageCommand){
+        if(const auto client=CatalogDownload();client&&p2p_mgr_){
+            const auto session=p2p_mgr_->peer_session_nonce(peer_addr);
+            if(session)client->Enqueue({peer_addr,*session,0},msg.command,msg.payload);
+        }
+        return;
+    }
     if(msg.command==p2p::OrchardCatalogTransfer::RequestCommand||msg.command==p2p::OrchardCatalogTransfer::PageRequestCommand){
         if(orchard_catalog_server_&&p2p_mgr_){
             const auto session=p2p_mgr_->peer_session_nonce(peer_addr);

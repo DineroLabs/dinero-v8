@@ -1457,6 +1457,9 @@ public:
     // compact storage owner. No chain lock remains held when this returns;
     // canonical tasks still prepare and validate their exact block separately.
     bool MatchesOrchardNetworkStorageMode(bool stateless);
+    // Scheduling predicate only, not conversion/owner authority. Header
+    // selection and burial are checked separately by the catalog client.
+    bool NeedsOrchardActivationCatalog();
     // A brand-new store holds no shielded frontier/anchors or forest tip until
     // its first block connects, so the storage upgrade cannot migrate it. At
     // genesis, write them from this service's own state with the same writers

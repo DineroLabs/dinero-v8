@@ -544,6 +544,10 @@ public:
     // the exact peer. Existing callers (zero) keep their ordinary behavior.
     bool send_to_peer(const std::string& peer_address, const P2PMessage& message,uint64_t expected_session=0);
     std::optional<uint64_t> peer_session_nonce(const std::string& peer_address) const;
+    struct PeerSession {std::string address;uint64_t nonce=0,services=0;};
+    // One locked snapshot: never combine a former connection's capabilities
+    // with a replacement connection's nonce. No height-provider callback.
+    std::vector<PeerSession> connected_peer_sessions() const;
     void broadcast_message(const P2PMessage& message);
     void broadcast_message_async(const P2PMessage& message);  // Non-blocking broadcast
     

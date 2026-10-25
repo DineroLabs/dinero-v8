@@ -6870,6 +6870,13 @@ std::optional<uint64_t> P2PManager::peer_session_nonce(const std::string& peer_a
         !it->second->our_nonce)return {};
     return it->second->our_nonce;
 }
+std::vector<P2PManager::PeerSession> P2PManager::connected_peer_sessions() const {
+    std::lock_guard lock(peers_mutex_);std::vector<PeerSession> result;
+    for(const auto& [address,peer]:connected_peers_)
+        if(peer->is_connected&&peer->release_handshake_complete.load(std::memory_order_acquire)&&peer->our_nonce)
+            result.push_back({address,peer->our_nonce,peer->service_flags});
+    return result;
+}
 bool P2PManager::send_to_peer(const std::string& peer_address, const P2PMessage& message,uint64_t expected_session) {
     if (!enforce_release_compatibility(peer_address)) return false;
     if (!network_active_.load(std::memory_order_acquire)) {

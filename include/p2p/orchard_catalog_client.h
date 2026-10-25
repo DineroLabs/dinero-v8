@@ -16,7 +16,8 @@ public:
     struct Outbound {Peer peer;std::string command;Bytes bytes;};
     enum class State { Idle, Manifest, Pages, Ready, Failed, Cancelled, Taken };
     OrchardCatalogClient(Transfer::Request request,std::shared_ptr<const consensus::HeaderChainSelector> headers,
-        std::filesystem::path work):request_(std::move(request)),headers_(std::move(headers)),work_(std::move(work)) {
+        std::filesystem::path work,std::function<bool()> cancelled={}):request_(std::move(request)),
+        headers_(std::move(headers)),work_(std::move(work)),cancelled_(std::move(cancelled)) {
         Require(headers_&&!work_.empty()&&std::filesystem::is_directory(work_));request_.CheckSelected(*headers_);
     }
     OrchardCatalogClient(const OrchardCatalogClient&)=delete;
@@ -78,6 +79,11 @@ public:
                 Require(space.available>=2*manifest.bytes+(uint64_t(512)<<20));
                 receiver_=std::make_unique<Transfer::Receiver>(request_,bytes,*headers_,work_);
                 total_pages_=manifest.Pages();transfer_id_=manifest.Id();state_=State::Pages;
+                // The server's per-session window starts when it sends the
+                // manifest, not when we requested potentially slow preparation.
+                // Start no earlier than receipt, avoiding a quota-edge drop
+                // and a needless 15-second retry at every window boundary.
+                window_=now;pages_=0;
             } else {
                 Require(command==Transfer::PageCommand&&bytes.size()>=40&&bytes.size()<=40+Transfer::PageBytes);
                 const auto wanted=Transfer::PageRequest::Decode(outstanding_).index;
@@ -88,7 +94,7 @@ public:
                 Require(index==wanted);
                 receiver_->Accept(bytes);
                 if(receiver_->NextPage()==total_pages_){
-                    proof_=std::make_shared<const consensus::OrchardSnapshotSection>(receiver_->Finish(*headers_));
+                    proof_=std::make_shared<const consensus::OrchardSnapshotSection>(receiver_->Finish(*headers_,cancelled_));
                     receiver_.reset();state_=State::Ready;
                 }
             }
@@ -113,11 +119,12 @@ private:
         // retain the short idle bound. 1GiB at sixteen 64KiB pages/sec alone
         // takes >17min; preparation plus transfer must fit the total budget.
         const auto idle=state_==State::Manifest?std::chrono::seconds(660):std::chrono::seconds(30);
-        if(now<last_||now-began_>=std::chrono::minutes(45)||now-received_>=idle){Fail();return false;}
+        if((cancelled_&&cancelled_())||now<last_||now-began_>=std::chrono::minutes(45)||now-received_>=idle){Fail();return false;}
         last_=now;return true;
     }
     const Transfer::Request request_;const std::shared_ptr<const consensus::HeaderChainSelector> headers_;
-    const std::filesystem::path work_;const std::thread::id thread_=std::this_thread::get_id();
+    const std::filesystem::path work_;const std::function<bool()> cancelled_;
+    const std::thread::id thread_=std::this_thread::get_id();
     Peer peer_;State state_=State::Idle;Time began_{},received_{},sent_{},window_{},last_{};
     std::unique_ptr<Transfer::Receiver> receiver_;std::shared_ptr<const consensus::OrchardSnapshotSection> proof_;
     Bytes outstanding_;uint256 transfer_id_;uint32_t total_pages_=0,pages_=0;bool awaiting_=false,retried_=false;

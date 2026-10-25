@@ -177,8 +177,27 @@ lifetime. A disconnected/replaced peer cannot receive a session-bound reply;
 its idle session is discarded within the expiry window on the next work item.
 The compact snapshot load/export switch does not disable catalog validation or
 serving. These are local resource policies, not changes to consensus limits.
-Client scheduling, daemon handoff and historical recovery downloads are still
-separate unfinished integration work; serving capability is not phone readiness.
+The stateless daemon now schedules a separate, packet-woken download worker
+when its selected legacy tip reaches activation minus one. It waits for locally
+selected buried activation headers and a capability-negotiated archival peer.
+Peer endpoint/session/capabilities are copied together under the peer mutex;
+outbound sends pin that exact connection. The thread-affine client, receive
+queue (four packets maximum), private disk decoding and verification all stay
+on that worker, outside peer/ingress locks. A 50-ms timer drives quotas and
+deadlines independently of the general five-second scheduler. Failed addresses
+receive a one-minute cooldown (at most 32 retained entries); new flights use
+fresh OS-random nonces. Network disable, replaced/disconnected peers and lost
+selection cancel/discard the applicable flight. Stop joins before dependencies
+are released. Cancellation is checked while decoding and around complete proof
+authentication, not within an individual verifier operation. There is no new
+claim of an exact cryptographic cancellation latency.
+
+The completed immutable proof is only unpublished DATA. Its accessor checks
+local header selection again; the future closed-store converter must separately
+recheck all before-images and authenticate it. No conversion, marker, catalog
+binding, runtime event, wallet operation or validation flag is published by the
+worker. Daemon handoff and historical recovery downloads remain unfinished;
+serving/client component tests are not actual mobile crossing or phone readiness.
 
 A private activation-origin verifier now starts at the authenticated parent,
 not at the first block's already-computed snapshot state. It verifies the full
@@ -229,8 +248,10 @@ of an archival provider remains necessary for this proposed scan. Missing
 providers leave recovery incomplete, with a useful error and no spend readiness.
 
 The reported stateless H149999 stop is an independent release blocker. Enrollment
-does not fix it. The current timed soak has three full producers and an empty
-Orchard tree; a separate completed short snapshot matrix covers both profiles.
+does not fix it. The historical timed soak had three full producers and an empty
+Orchard tree; its controller stopped after about 20h40m on an SSH sampling error,
+not a 72-hour pass. The owner has deferred further soak work. A separate
+completed short snapshot matrix covered both profiles on its older source.
 Neither proves an ordinary mobile install can cross the boundary. Diagnose and
 fix the actual historical-to-Orchard compact owner/validation path in a separate
 reviewed commit; test both direct boundary crossing and v6 bootstrap. Do not

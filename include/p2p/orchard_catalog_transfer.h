@@ -165,11 +165,14 @@ public:
         // Returns UNPUBLISHED proof material. Chainstate installation must
         // reauthenticate against its selected source under exclusive ownership.
         // The network checksum, transport digest and disk MAC grant no authority.
-        consensus::OrchardSnapshotSection Finish(const consensus::HeaderChainSelector& headers){
+        consensus::OrchardSnapshotSection Finish(const consensus::HeaderChainSelector& headers,
+            const std::function<bool()>& cancelled={}){
             const bool usable=!poisoned_&&!finished_;poisoned_=true;Check(usable&&next_==manifest_.Pages());
+            const auto check_cancel=[&]{Check(!cancelled||!cancelled());};check_cancel();
             manifest_.request.CheckSelected(headers);uint256 hash;hash_.Finalize(hash.data);Check(hash==manifest_.digest);
             spool_.Freeze();uint64_t offset=0;Bytes cached;uint32_t cached_index=UINT32_MAX;
             auto proof=consensus::ReadOrchardSnapshotSection(manifest_.bytes,[&](std::span<uint8_t> out){
+                check_cancel();
                 Check(out.size()<=manifest_.bytes-offset);
                 while(!out.empty()){
                     const auto index=uint32_t(offset/PageBytes),at=uint32_t(offset%PageBytes);
@@ -179,7 +182,7 @@ public:
                 }
             },spool_work_);
             Check(offset==manifest_.bytes);CheckProofBinding(manifest_.request,proof);
-            Authenticate(proof,headers);
+            check_cancel();Authenticate(proof,headers);check_cancel();
             manifest_.request.CheckSelected(headers);finished_=true;return proof;
         }
     private:

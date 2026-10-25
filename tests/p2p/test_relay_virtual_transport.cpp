@@ -448,16 +448,25 @@ TEST(OrchardCatalogSessions, DelayedReplyCannotSelectDifferentConnectionNonce) {
     P2PManager manager(0);auto sockets=LoopbackSocketPair::Create();
     const std::string key="127.0.0.1:"+std::to_string(sockets.port());
     EXPECT_FALSE(manager.peer_session_nonce(key));
+    EXPECT_TRUE(manager.connected_peer_sessions().empty());
     manager.test_install_connected_direct_peer(key,sockets.client_fd(),true,false,{});
     auto* peer=manager.get_peer_info(key);ASSERT_NE(peer,nullptr);peer->our_nonce=11;
+    EXPECT_TRUE(manager.connected_peer_sessions().empty());
     manager.test_set_release_capability(key,true);
     EXPECT_EQ(manager.peer_session_nonce(key),11u);
+    const auto old=manager.connected_peer_sessions();ASSERT_EQ(old.size(),1u);
+    EXPECT_EQ(old[0].address,key);EXPECT_EQ(old[0].nonce,11u);EXPECT_EQ(old[0].services,peer->service_flags);
     const auto message=MakePing(77);
     EXPECT_FALSE(manager.send_to_peer(key,message,12));EXPECT_EQ(sockets.ReceiveMessage(),nullptr);
     ASSERT_TRUE(manager.send_to_peer(key,message,11));const auto received=sockets.ReceiveMessage();ASSERT_TRUE(received);
     EXPECT_EQ(received->payload,message.payload);
     peer->our_nonce=12; // Deterministic generation substitution, not a churn/race test.
+    peer->service_flags=dinero::ServiceFlags::NODE_ORCHARD_CATALOG_V1;
+    const auto replacement=manager.connected_peer_sessions();ASSERT_EQ(replacement.size(),1u);
+    EXPECT_EQ(replacement[0].nonce,12u);EXPECT_EQ(replacement[0].services,dinero::ServiceFlags::NODE_ORCHARD_CATALOG_V1);
+    EXPECT_EQ(old[0].nonce,11u); // retained snapshot is immutable
     EXPECT_FALSE(manager.send_to_peer(key,message,11));EXPECT_EQ(sockets.ReceiveMessage(),nullptr);
+    peer->is_connected=false;EXPECT_TRUE(manager.connected_peer_sessions().empty());
     peer->socket_fd=-1; // The loopback fixture owns/closes this borrowed descriptor.
 }
 

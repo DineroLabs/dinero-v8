@@ -2,6 +2,7 @@
 #include "p2p/orchard_catalog_transfer.h"
 #include "p2p/orchard_catalog_server.h"
 #include "p2p/orchard_catalog_client.h"
+#include "p2p/orchard_catalog_download.h"
 #include "daemon/services/orchard_boundary_replay.h"
 #include "daemon/orchard_snapshot_store.h"
 #include "daemon/services/block_ingress_service.h"
@@ -461,6 +462,158 @@ TEST(OrchardCatalogClient, ArchivalPreparationBudgetAndLateRepliesDoNotExtendPag
     EXPECT_EQ(client.Current(),Client::State::Pages);EXPECT_ANY_THROW(client.Take());
     EXPECT_FALSE(client.Next(ready+std::chrono::seconds(30)));EXPECT_EQ(client.Current(),Client::State::Failed);
     EXPECT_ANY_THROW(client.Take());
+}
+TEST(OrchardCatalogDownload, OwnedWorkerDrivesActualServerAndRetainsOnlyUnpublishedProof){
+    using namespace consensus;using Download=p2p::OrchardCatalogDownload;using Server=p2p::OrchardCatalogServer;
+    using Transfer=p2p::OrchardCatalogTransfer;
+    CanonicalPoolFixture source(true);MutableParams().orchard_catalog_commitment_activation_height=102;
+    MutableParams().state_commitment_burial_depth=0;
+    const auto first=SolveCatalogTemplate(source.Build());ASSERT_TRUE(first);ASSERT_TRUE(source.Submit(first->WireBytes()).connected);
+    auto headers=std::make_shared<HeaderChainSelector>();for(const auto& b:source.f.blocks)ASSERT_TRUE(headers->AddHeader(b.header));
+    ASSERT_TRUE(headers->AddHeader(first->Header()));
+    const auto proof=std::make_shared<const OrchardSnapshotSection>(OrchardSnapshotStoreTestAccess::CaptureActivation(source.f.db,*headers));
+    const auto before=source.f.db.getOrchardState().value();
+    std::atomic<bool> enabled=false;std::atomic<unsigned> requests=0,pages=0,builds=0;
+    std::mutex mutex;std::condition_variable cv;std::shared_ptr<Download> host;
+    Server server([&](const auto& r){r.CheckSelected(*headers);},[&](const auto&){++builds;return proof;},
+        [&](const auto& peer,const auto& command,const auto& bytes){
+            return host->Enqueue({peer.address,peer.session,0},command,bytes);
+        });
+    host=std::make_shared<Download>(headers,source.f.path.parent_path(),[&]{return enabled.load();},
+        []{return std::vector<Download::Peer>{{"archive",31,ServiceFlags::NODE_ORCHARD_CATALOG_V1}};},
+        [&](const auto& peer,const auto& command,const auto& bytes){
+            if(command==Transfer::RequestCommand)++requests;else ++pages;
+            const auto accepted=server.Enqueue({peer.address,peer.session},command,bytes);
+            cv.notify_all();return accepted;
+        });
+    enabled=true;host->Wake();
+    // No daemon scheduler tick or direct actor calls. Both actual protocol
+    // workers exchange their bounded messages over this in-process transport.
+    const auto deadline=Download::Clock::now()+std::chrono::seconds(15);
+    while(!host->ReadyProof()&&Download::Clock::now()<deadline){
+        std::unique_lock lock(mutex);cv.wait_for(lock,std::chrono::milliseconds(20));
+    }
+    const auto result=host->ReadyProof();ASSERT_TRUE(result);
+    EXPECT_EQ(HashOrchardSnapshotSection(*result),HashOrchardSnapshotSection(*proof));
+    EXPECT_EQ(requests,1u);EXPECT_GT(pages,0u);EXPECT_EQ(builds,1u);
+    uint256 nonce;nonce.data[0]=1;const auto request=Transfer::Request::Selected(*headers,nonce);
+    const auto manifest=Transfer::Manifest{request,1,nonce}.Encode();
+    EXPECT_FALSE(host->Enqueue({"archive",32,0},Transfer::ManifestCommand,manifest));
+    EXPECT_FALSE(host->Enqueue({"archive",31,0},Transfer::ManifestCommand,manifest)); // no remaining flight
+    EXPECT_EQ(source.f.db.getOrchardState().value(),before);
+    EXPECT_EQ(source.f.service->GetActiveTip()->hash,first->Header().GetHash());
+    host->Stop();server.Stop();EXPECT_FALSE(host->ReadyProof());
+    // Host shutdown cannot revoke immutable DATA already copied by a caller.
+    EXPECT_NO_THROW(OrchardSnapshotStore::VerifyCatalogTransferProof(*result,*headers));
+}
+TEST(OrchardCatalogClient, HostCancellationPoisonsCompletion){
+    using namespace consensus;using Client=p2p::OrchardCatalogClient;using Transfer=p2p::OrchardCatalogTransfer;
+    CanonicalPoolFixture source(true);MutableParams().orchard_catalog_commitment_activation_height=102;
+    MutableParams().state_commitment_burial_depth=0;
+    const auto first=SolveCatalogTemplate(source.Build());ASSERT_TRUE(first);ASSERT_TRUE(source.Submit(first->WireBytes()).connected);
+    auto headers=std::make_shared<HeaderChainSelector>();for(const auto& b:source.f.blocks)ASSERT_TRUE(headers->AddHeader(b.header));
+    ASSERT_TRUE(headers->AddHeader(first->Header()));uint256 nonce;nonce.data[0]=77;
+    const auto request=Transfer::Request::Selected(*headers,nonce);
+    const auto proof=OrchardSnapshotStoreTestAccess::CaptureActivation(source.f.db,*headers);
+    Transfer::Sender sender(request,proof,source.f.path.parent_path());bool cancelled=false;
+    Client client(request,headers,source.f.path.parent_path(),[&]{return cancelled;});
+    Client::Peer peer{"archive",61,ServiceFlags::NODE_ORCHARD_CATALOG_V1};const auto began=Client::Clock::now();
+    ASSERT_TRUE(client.Begin(peer,began));ASSERT_TRUE(client.Next(began));
+    const auto manifest_at=began+std::chrono::minutes(5)+std::chrono::milliseconds(900);
+    ASSERT_TRUE(client.Receive(peer,Transfer::ManifestCommand,sender.Description().Encode(),manifest_at));
+    ASSERT_TRUE(client.Next(manifest_at));cancelled=true;
+    EXPECT_FALSE(client.Next(manifest_at+std::chrono::milliseconds(1)));
+    EXPECT_EQ(client.Current(),Client::State::Failed);EXPECT_ANY_THROW(client.Take());
+    // Receiver cancellation must poison a complete staged stream too, even
+    // when every page and its digest were otherwise correct.
+    Transfer::Receiver receiver(request,sender.Description().Encode(),*headers,source.f.path.parent_path());
+    while(receiver.NextPage()<sender.Description().Pages())receiver.Accept(sender.Serve(receiver.RequestNext()));
+    EXPECT_ANY_THROW(receiver.Finish(*headers,[]{return true;}));
+    EXPECT_ANY_THROW(receiver.Finish(*headers));
+}
+TEST(OrchardCatalogClient, SlowPreparationDoesNotStartPagesInAnOldRateWindow){
+    using namespace consensus;using Client=p2p::OrchardCatalogClient;using Transfer=p2p::OrchardCatalogTransfer;
+    CanonicalPoolFixture source(true);MutableParams().orchard_catalog_commitment_activation_height=102;
+    MutableParams().state_commitment_burial_depth=0;
+    const auto first=SolveCatalogTemplate(source.Build());ASSERT_TRUE(first);ASSERT_TRUE(source.Submit(first->WireBytes()).connected);
+    auto headers=std::make_shared<HeaderChainSelector>();for(const auto& b:source.f.blocks)ASSERT_TRUE(headers->AddHeader(b.header));
+    ASSERT_TRUE(headers->AddHeader(first->Header()));uint256 nonce;nonce.data[0]=78;
+    const auto request=Transfer::Request::Selected(*headers,nonce);
+    // Deliberately unfinished/untrusted page stream tests scheduling only.
+    // No complete digest/proof is supplied and no owner may be taken from it.
+    const Transfer::Manifest manifest{request,uint64_t(32)*Transfer::PageBytes,nonce};
+    Client client(request,headers,source.f.path.parent_path());Client::Peer peer{"archive",62,ServiceFlags::NODE_ORCHARD_CATALOG_V1};
+    const auto began=Client::Clock::now(),tick=began+std::chrono::minutes(5),received=tick+std::chrono::milliseconds(900);
+    ASSERT_TRUE(client.Begin(peer,began));ASSERT_TRUE(client.Next(began));EXPECT_FALSE(client.Next(tick));
+    ASSERT_TRUE(client.Receive(peer,Transfer::ManifestCommand,manifest.Encode(),received));
+    for(uint32_t i=0;i<16;++i){
+        const auto out=client.Next(received);ASSERT_TRUE(out);EXPECT_EQ(Transfer::PageRequest::Decode(out->bytes).index,i);
+        const auto id=manifest.Id();std::vector<uint8_t> page(id.begin(),id.end());
+        for(unsigned j=0;j<4;++j)page.push_back(uint8_t(i>>(8*j)));
+        for(unsigned j=0;j<4;++j)page.push_back(uint8_t(Transfer::PageBytes>>(8*j)));
+        page.resize(40+Transfer::PageBytes);
+        ASSERT_TRUE(client.Receive(peer,Transfer::PageCommand,page,received));
+    }
+    EXPECT_FALSE(client.Next(received+std::chrono::milliseconds(200)));
+    EXPECT_TRUE(client.Next(received+std::chrono::seconds(1)));
+    EXPECT_ANY_THROW(client.Take());client.Cancel();
+}
+TEST(OrchardCatalogDownload, FailedPeerRotatesAndNetworkPauseDiscardsOldFlight){
+    using namespace consensus;using Download=p2p::OrchardCatalogDownload;using Transfer=p2p::OrchardCatalogTransfer;
+    CanonicalPoolFixture source(true);MutableParams().orchard_catalog_commitment_activation_height=102;
+    MutableParams().state_commitment_burial_depth=0;
+    const auto first=SolveCatalogTemplate(source.Build());ASSERT_TRUE(first);ASSERT_TRUE(source.Submit(first->WireBytes()).connected);
+    auto headers=std::make_shared<HeaderChainSelector>();for(const auto& b:source.f.blocks)ASSERT_TRUE(headers->AddHeader(b.header));
+    ASSERT_TRUE(headers->AddHeader(first->Header()));const auto proof=OrchardSnapshotStoreTestAccess::CaptureActivation(source.f.db,*headers);
+    std::atomic<bool> enabled=false;std::atomic<unsigned> bad=0,good=0;
+    std::mutex mutex;std::condition_variable cv;std::vector<uint256> nonces;
+    std::unique_ptr<Transfer::Sender> sender;std::unique_ptr<Download> host;
+    host=std::make_unique<Download>(headers,source.f.path.parent_path(),[&]{return enabled.load();},
+        []{return std::vector<Download::Peer>{{"bad",41,ServiceFlags::NODE_ORCHARD_CATALOG_V1},
+                                             {"good",42,ServiceFlags::NODE_ORCHARD_CATALOG_V1}};},
+        [&](const auto& peer,const auto& command,const auto& bytes){
+            if(peer.address=="bad"){++bad;return false;}
+            if(command==Transfer::RequestCommand){
+                const auto request=Transfer::Request::Decode(bytes);sender=std::make_unique<Transfer::Sender>(request,proof,source.f.path.parent_path());
+                {std::lock_guard lock(mutex);nonces.push_back(request.nonce);}++good;
+                return host->Enqueue(peer,Transfer::ManifestCommand,sender->Description().Encode());
+            }
+            return host->Enqueue(peer,Transfer::PageCommand,sender->Serve(bytes));
+        });
+    const auto await=[&](auto predicate){
+        const auto deadline=Download::Clock::now()+std::chrono::seconds(15);
+        while(!predicate()&&Download::Clock::now()<deadline){std::unique_lock lock(mutex);cv.wait_for(lock,std::chrono::milliseconds(20));}
+        return predicate();
+    };
+    enabled=true;host->Wake();ASSERT_TRUE(await([&]{return bool(host->ReadyProof());}));
+    EXPECT_EQ(bad,1u);EXPECT_EQ(good,1u);
+    enabled=false;host->Wake();ASSERT_TRUE(await([&]{return !host->ReadyProof();}));
+    enabled=true;host->Wake();ASSERT_TRUE(await([&]{return bool(host->ReadyProof());}));
+    EXPECT_EQ(bad,1u);EXPECT_EQ(good,2u); // bad ADDRESS remains in bounded cooldown
+    host->Stop();ASSERT_EQ(nonces.size(),2u);EXPECT_NE(nonces[0],nonces[1]);
+}
+TEST(OrchardCatalogDownload, IngressIsBoundedAndStopJoinsWithoutPublishing){
+    using namespace consensus;using Download=p2p::OrchardCatalogDownload;using Transfer=p2p::OrchardCatalogTransfer;
+    CanonicalPoolFixture source(true);MutableParams().orchard_catalog_commitment_activation_height=102;
+    MutableParams().state_commitment_burial_depth=0;
+    const auto first=SolveCatalogTemplate(source.Build());ASSERT_TRUE(first);ASSERT_TRUE(source.Submit(first->WireBytes()).connected);
+    auto headers=std::make_shared<HeaderChainSelector>();for(const auto& b:source.f.blocks)ASSERT_TRUE(headers->AddHeader(b.header));
+    ASSERT_TRUE(headers->AddHeader(first->Header()));
+    std::mutex mutex;std::condition_variable cv;bool entered=false,release=false;std::atomic<unsigned> sends=0;
+    Download host(headers,source.f.path.parent_path(),[]{return true;},
+        []{return std::vector<Download::Peer>{{"archive",51,ServiceFlags::NODE_ORCHARD_CATALOG_V1}};},
+        [&](const auto&,const auto&,const auto&){
+            ++sends;std::unique_lock lock(mutex);entered=true;cv.notify_all();
+            cv.wait_for(lock,std::chrono::seconds(10),[&]{return release;});return false;
+        });
+    {std::unique_lock lock(mutex);ASSERT_TRUE(cv.wait_for(lock,std::chrono::seconds(5),[&]{return entered;}));}
+    std::vector<uint8_t> bytes(195);
+    EXPECT_FALSE(host.Enqueue({"archive",52,0},Transfer::ManifestCommand,bytes));
+    auto oversized=bytes;oversized.push_back(0);EXPECT_FALSE(host.Enqueue({"archive",51,0},Transfer::ManifestCommand,oversized));
+    for(unsigned i=0;i<Download::MaximumQueue;++i)EXPECT_TRUE(host.Enqueue({"archive",51,0},Transfer::ManifestCommand,bytes));
+    EXPECT_FALSE(host.Enqueue({"archive",51,0},Transfer::ManifestCommand,bytes));
+    {std::lock_guard lock(mutex);release=true;cv.notify_all();}host.Stop();
+    EXPECT_EQ(sends,1u);EXPECT_FALSE(host.ReadyProof());EXPECT_FALSE(host.Enqueue({"archive",51,0},Transfer::ManifestCommand,bytes));
 }
 TEST(OrchardActivationOrigin, FirstBlockIsVerifiedFromEmptyAndStreamingStateMatchesCanonical){
     using namespace consensus;using Access=OrchardSnapshotStoreTestAccess;

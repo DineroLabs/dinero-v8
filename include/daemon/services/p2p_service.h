@@ -26,12 +26,13 @@
 #include <mutex>
 
 namespace dinero {
-namespace p2p {class OrchardCatalogServer;}
+namespace p2p {class OrchardCatalogServer;class OrchardCatalogDownload;}
 
 // Forward declarations
 class ILogger;
 namespace consensus {
 enum class HeaderRequestMode : uint8_t;
+struct OrchardSnapshotSection;
 }
 namespace daemon {
 class AddressManagerService;
@@ -199,6 +200,9 @@ public:
      */
     ::P2PManager& get() { return *p2p_mgr_; }
     const ::P2PManager& get() const { return *p2p_mgr_; }
+    // Unpublished downloaded proof data only. The closed-store handoff must
+    // reauthenticate independently under its retained root/selected ownership.
+    std::shared_ptr<const consensus::OrchardSnapshotSection> ReadyActivationCatalog() const;
 
     /**
      * Event hooks for block/tx relay
@@ -492,6 +496,10 @@ private:
     // Internal message handler
     void HandleP2PMessage(const std::string& peer_addr, const ::P2PMessage& msg);
     std::shared_ptr<p2p::OrchardCatalogServer> orchard_catalog_server_;
+    mutable std::mutex orchard_catalog_download_mutex_;
+    std::shared_ptr<p2p::OrchardCatalogDownload> orchard_catalog_download_;
+    std::shared_ptr<p2p::OrchardCatalogDownload> CatalogDownload() const;
+    void StopCatalogWorkers();
     void StartSchedulerTickLoop();
     void StopSchedulerTickLoop();
     bool IsDynamicP2PActive() const;

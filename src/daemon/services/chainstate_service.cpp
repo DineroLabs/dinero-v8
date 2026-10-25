@@ -18267,6 +18267,21 @@ bool ChainstateService::MatchesOrchardNetworkStorageMode(bool stateless) {
 #endif
 }
 
+bool ChainstateService::NeedsOrchardActivationCatalog() {
+#ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
+    std::lock_guard<AnnotatedRecursiveMutex> selected(activation_mutex_);
+    std::lock_guard<std::mutex> lifetime(wallet_index_use_mutex_);
+    const auto activation=Params().orchard_activation_height;
+    return IsStarted()&&selected_read_accepting_&&!wallet_index_stopping_&&!safe_mode_active_&&
+        chain_db_&&block_storage_&&GetConfig().utreexo_stateless&&!compact_startup_&&active_tip_&&
+        activation&&activation!=UINT32_MAX&&uint64_t(active_tip_->height)+1==activation&&
+        Params().orchard_catalog_commitment_activation_height==activation&&
+        consensus::OrchardProfileConfigurationValid(Params());
+#else
+    return false;
+#endif
+}
+
 struct ChainstateService::BlockIngressUse::State {
     const std::shared_ptr<ChainstateService> source;
     ParentPreparationScope preparation;
