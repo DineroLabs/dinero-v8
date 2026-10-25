@@ -6,7 +6,7 @@
 #include <span>
 #include <vector>
 struct sqlite3;
-namespace dinero { class WalletManager; }
+namespace dinero { class WalletManager; class ChainstateService; }
 namespace dinero::wallet {
 // Seed-authenticated account inventory. Missing legacy metadata and recovered
 // identities are not certificates of an empty historical wallet. Authentication
@@ -24,6 +24,22 @@ public:
         bool generated;
         uint64_t revision;
         std::vector<Entry> accounts;
+        // A distinct, profile-scoped origin, never a claim of Core generation
+        // or current selected-chain scan completeness.
+        struct Preactivation {
+            uint8_t network;
+            std::array<uint8_t,32> genesis;
+            uint32_t branch, activation, height;
+            std::array<uint8_t,32> block;
+            bool operator==(const Preactivation&) const = default;
+        };
+        std::optional<Preactivation> preactivation{};
+        bool KnownInventory() const { return generated || preactivation.has_value(); }
+        bool Covers(const Entry& e) const {
+            return generated || (preactivation && preactivation->network==e.network &&
+                preactivation->genesis==e.genesis && preactivation->branch==e.branch &&
+                preactivation->activation==e.activation);
+        }
         bool operator==(const Snapshot&) const = default;
     };
     static constexpr size_t kMaxAccounts=1024;
@@ -33,6 +49,11 @@ public:
 private:
     friend class dinero::WalletManager;
     friend class OrchardAccountDelivery;
+    friend class dinero::ChainstateService;
+    // Only the selected service may supply this checkpoint. Existing unknown
+    // initial catalog and every empty storage row are checked; no repair/DDL.
+    static Snapshot StagePreactivation(sqlite3*,std::span<const uint8_t>,
+                                      const Snapshot::Preactivation&);
     // Caller owns the complete authenticated account inventory and transaction.
     // Compare the authenticated revision and add exactly one never-used number;
     // commit this with its first encrypted account snapshot, never separately.

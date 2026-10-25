@@ -1006,6 +1006,16 @@ public:
     // Caller retains both service lifetime owners through the later operation.
     StatusOr<std::shared_ptr<const RuntimeAccountReplay>> getRuntimeAccountReplayForWallet(
         WalletManager&,uint64_t expected_session) const;
+    struct OrchardPreactivationEnrollment {
+        uint32_t height;
+        uint256 block_hash;
+        bool already_enrolled;
+    };
+    // Explicit one-time recovered-wallet enrollment, not account creation or
+    // current scan certification. Requires both service/wallet lifetime owners,
+    // a converged fully validated pre-activation source and no retained history.
+    StatusOr<OrchardPreactivationEnrollment> enrollPreactivationOrchardWallet(
+        WalletManager&,uint64_t expected_session);
     // Requires caller-held WalletUse and this service's WalletIndexUse, with
     // no outer selected/SQLite owner. Capture proofs first, then recheck the
     // exact canonical head under the selected lock and hold it through the

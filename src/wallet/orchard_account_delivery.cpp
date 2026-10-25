@@ -262,7 +262,7 @@ struct OrchardAccountDelivery::Owner {
         if(creating){
             Check(!sqlite3_get_autocommit(lease->Database()));
             catalog=OrchardAccountCatalog::Read(lease->Database(),seed->Bytes());
-            Check(catalog&&catalog->generated&&catalog->accounts.size()<OrchardAccountCatalog::kMaxAccounts);
+            Check(catalog&&catalog->Covers({p.account,static_cast<uint8_t>(p.domain.network_code),p.domain.genesis_wire,p.domain.branch_id,p.activation})&&catalog->accounts.size()<OrchardAccountCatalog::kMaxAccounts);
             Check(std::none_of(catalog->accounts.begin(),catalog->accounts.end(),[&](const auto& e){return e.account==p.account;}));
             const auto identity=ExistingIdentity(lease->Database(),p,!catalog->accounts.empty());
             // Only the authenticated genuinely empty catalog may initialize
@@ -511,6 +511,8 @@ struct OrchardAccountDelivery::Owner {
         auto seed=lease->CopyRecoverySeed(session);
         auto result=std::make_unique<CapturedCatalog>(
             OrchardOwnershipInventory::Read(lease->Database(),seed->Bytes()),lease->InstanceToken());
+        Check(result->ownership.catalog.Covers({profile.account,static_cast<uint8_t>(profile.domain.network_code),
+            profile.domain.genesis_wire,profile.domain.branch_id,profile.activation}));
         const auto histories=[&](const OrchardOperationQueue& queue){
             for(const auto& [id,entry]:queue.Entries())if(entry.shield_ready_time)
                 lease->ValidateShieldHistoryInTransaction(*seed,ShieldHistory(entry));
@@ -1008,7 +1010,8 @@ OrchardAccountDelivery::CatalogEnrolled OrchardAccountDelivery::ReadCatalogForRe
     std::optional<OrchardAccountCatalog::Snapshot> catalog;
     {
         auto seed=lease->CopyRecoverySeed(session);
-        catalog=OrchardAccountCatalog::Read(lease->Database(),seed->Bytes());Check(catalog&&catalog->generated);
+        catalog=OrchardAccountCatalog::Read(lease->Database(),seed->Bytes());
+        Check(catalog&&catalog->Covers({profile.account,static_cast<uint8_t>(profile.domain.network_code),profile.domain.genesis_wire,profile.domain.branch_id,profile.activation}));
         (void)ExistingIdentity(lease->Database(),profile,!catalog->accounts.empty());
     }
     if(catalog->accounts.empty()){
@@ -1042,7 +1045,8 @@ std::vector<OrchardAccountDelivery::Enrolled> OrchardAccountDelivery::Owner::Val
     const auto origin_event=view.Event(1);const auto& context=origin_event->context;
     Check(context.activation_height==p.activation&&context.domain.network_code==p.domain.network_code&&
         context.domain.genesis_wire==p.domain.genesis_wire&&context.domain.branch_id==p.domain.branch_id);
-    catalog=OrchardAccountCatalog::Read(lease->Database(),seed->Bytes());Check(catalog&&catalog->generated);
+    catalog=OrchardAccountCatalog::Read(lease->Database(),seed->Bytes());
+    Check(catalog&&catalog->Covers({p.account,static_cast<uint8_t>(p.domain.network_code),p.domain.genesis_wire,p.domain.branch_id,p.activation}));
     // First genuine creation is between schema initialization and its first
     // retained write here. Keep that existing empty-catalog initialization
     // owner; established catalogs must have the complete read-only schema.

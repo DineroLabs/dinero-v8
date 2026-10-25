@@ -235,6 +235,12 @@ struct ShieldedStateStartupTestAccess {
         if (!service.shielded_nullifiers_.DeserializeContent(replay.ShieldedNullifiers()->SerializeContent()))
             throw std::runtime_error("fixture proven parent nullifiers");
     }
+    // Init-only fixtures bypass Start's publication. Publish the already
+    // populated/validated parent via the production setter, not a fake sync bit.
+    static void PublishEnrollmentParent(ChainstateService& service,CBlockIndex& tip) {
+        auto selected=service.AcquireBlockIngressActivationLock();
+        service.PublishActiveTipLocked(&tip,ChainstateService::TipPublishReason::kStartupLoad);
+    }
 #endif
     static void Select(ChainstateService& service, CBlockIndex& tip) {
         service.active_tip_ = &tip;

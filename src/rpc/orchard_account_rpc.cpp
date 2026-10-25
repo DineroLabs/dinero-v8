@@ -133,6 +133,34 @@ din::Json rpc_context_wallet_orchard_getwalletbinding(const ExecutionContext& ct
     return result;
 }
 
+din::Json rpc_context_wallet_orchard_enrollpreactivation(const ExecutionContext& ctx,const din::Json& params){
+    din::Json result;
+    try {
+        if(!params.isObject()||!params.empty())
+            throw std::runtime_error("wallet.orchard.enrollpreactivation takes no checkpoint, birthday or account parameters");
+#if DINERO_WALLET_RAW_ORCHARD
+        if(!ctx.daemon)throw std::runtime_error("Daemon services unavailable");
+        auto source=std::dynamic_pointer_cast<dinero::ChainstateService>(ctx.daemon->chainstate);
+        auto wallet=std::dynamic_pointer_cast<dinero::WalletService>(ctx.daemon->wallet);
+        auto source_use=dinero::ChainstateService::AcquireWalletIndexUse(source);
+        auto wallet_use=dinero::WalletService::AcquireWalletUse(wallet);
+        uint64_t session;
+        {auto lease=wallet_use->Wallet().AcquireDatabaseLease();CheckOrchardRequestWallet(ctx,*lease);session=lease->Session();}
+        const auto enrolled=source->enrollPreactivationOrchardWallet(wallet_use->Wallet(),session);
+        if(!enrolled.ok())throw OrchardBindingError("preactivation_enrollment_unavailable",
+            "Requires an unlocked recovered wallet, intact empty catalog and a converged validated pre-activation source");
+        result["enrolled"]=true;result["provenance"]="preactivation";
+        result["already_enrolled"]=enrolled->already_enrolled;
+        result["checkpoint_height"]=Json::UInt64(enrolled->height);result["checkpoint_hash"]=enrolled->block_hash.GetHex();
+        result["activation_height"]=Json::UInt64(dinero::Params().orchard_activation_height);
+        result["scan_complete_to_current_tip"]=false;
+#else
+        (void)ctx;throw std::runtime_error("Orchard wallet backend unavailable");
+#endif
+    }catch(const std::exception& error){OrchardRpcFailure(result,error);}
+    return result;
+}
+
 namespace {
 din::Json OrchardAccountRequest(const ExecutionContext& ctx,const din::Json& params,bool creating){
     din::Json result;
@@ -823,6 +851,12 @@ void RegisterOrchardAccountRpc(){
         {"object","Opaque wallet_binding and selected wallet_name."},
         "No keys, balances or readiness are returned. Requires an existing database identity; never enrolls a wallet. Binding changes on reopen, switch or manager/process replacement. RPC authentication remains required independently."};
     g_rpcRegistry.registerHandler(binding.name,rpc_context_wallet_orchard_getwalletbinding,binding,RegisterMode::Overwrite,"orchard-account-owner");
+    const RpcMethodMeta enrollment{
+        "wallet.orchard.enrollpreactivation","wallet",
+        "Explicitly enroll an intact recovered wallet at a checked empty pre-activation Orchard baseline.",
+        {},{"object","Profile-bound preactivation provenance and its observed checkpoint; no address or current scan certificate."},
+        "Requires the bound unlocked recovered wallet, intact empty catalog and storage, FULL durability, converged fully validated recent selected chain, and no retained activation history. Core chooses all profile/checkpoint fields. Missing, corrupt, foreign or retained owners refuse; no repair or seed replacement. Generated provenance is unchanged. Refuses at/after activation, even when the wallet has no notes. Does not recover post-activation history or certify current spend readiness."};
+    RegisterBoundOrchard(enrollment,rpc_context_wallet_orchard_enrollpreactivation);
     const RpcMethodMeta shielding{
         "wallet.orchard.queueshield","wallet",
         "Select owned mature transparent coins and durably reserve a shield request before queueing its proof.",
@@ -877,14 +911,14 @@ void RegisterOrchardAccountRpc(){
         "Persist and return an external receiving address for an existing authenticated Orchard account.",
         {{"account","integer","Existing account number (0 through 2147483647).",true}},
         {"object","Address, account number and committed account revision."},
-        "Requires an unlocked wallet, authenticated generated account catalog and complete current/reached account history. Unknown recovery inventory refuses. Does not create an account or report spend readiness."};
+        "Requires an unlocked wallet, authenticated complete account catalog and complete current/reached account history. Unknown recovery inventory refuses. Does not create an account or report spend readiness."};
     RegisterBoundOrchard(metadata,rpc_context_wallet_orchard_getnewaddress);
     const RpcMethodMeta balance{
         "wallet.orchard.getbalance","wallet",
         "Read authenticated confirmed Orchard note amounts and durable reservations at an account checkpoint.",
         {{"account","integer","Existing account number (0 through 2147483647).",true}},
         {"object","Integer atomic-unit balances, account revision, checkpoint and captured source progress."},
-        "Requires an unlocked wallet and complete authenticated generated account catalog. confirmed_una includes notes unspent at the reported checkpoint; reserved_confirmed_una counts those notes held by durable operations; unreserved_confirmed_una is their difference. A lagging checkpoint is not current balance. account_caught_up_to_captured_source refers only to this account and captured source, not lasting readiness or other accounts. Unreserved funds are not a spendability, fee, proof, mempool or relay guarantee. Errors return no balances. No pending incoming amount is inferred."};
+        "Requires an unlocked wallet and complete authenticated complete account catalog. confirmed_una includes notes unspent at the reported checkpoint; reserved_confirmed_una counts those notes held by durable operations; unreserved_confirmed_una is their difference. A lagging checkpoint is not current balance. account_caught_up_to_captured_source refers only to this account and captured source, not lasting readiness or other accounts. Unreserved funds are not a spendability, fee, proof, mempool or relay guarantee. Errors return no balances. No pending incoming amount is inferred."};
     RegisterBoundOrchard(balance,rpc_context_wallet_orchard_getbalance);
     const RpcMethodMeta history{
         "wallet.orchard.listreceived","wallet",
@@ -908,14 +942,14 @@ void RegisterOrchardAccountRpc(){
         "List authenticated durable pending Orchard operations for an existing account.",
         {{"account","integer","Existing account number (0 through 2147483647).",true}},
         {"object","Account revision, captured progress and operation IDs with durable states."},
-        "Requires an unlocked wallet and complete authenticated generated account catalog. Reserved and signed describe stored wallet states. Signed entries include their transaction ID. chain_observation is null when no outcome is recorded, otherwise it identifies the confirmed or conflicting transaction and block at the reported account checkpoint. Compare account and captured source progress before interpreting it as current. Does not return signed bytes or change reservations."};
+        "Requires an unlocked wallet and complete authenticated complete account catalog. Reserved and signed describe stored wallet states. Signed entries include their transaction ID. chain_observation is null when no outcome is recorded, otherwise it identifies the confirmed or conflicting transaction and block at the reported account checkpoint. Compare account and captured source progress before interpreting it as current. Does not return signed bytes or change reservations."};
     RegisterBoundOrchard(operations,rpc_context_wallet_orchard_listoperations);
     const RpcMethodMeta creation{
         "wallet.orchard.createaccount","wallet",
         "Create a new catalog-owned Orchard account and return its first receiving address.",
         {{"account","integer","Previously unused account number (0 through 2147483647).",true}},
         {"object","Address, account number, committed account revision and synchronization requirement."},
-        "Requires an unlocked generated wallet with authenticated complete account ownership and an available checked source. Recovery or legacy unknown inventory refuses. The account must synchronize before spending."};
+        "Requires an unlocked generated or explicitly preactivation-enrolled wallet with authenticated complete account ownership and an available checked source. Uncertified recovery or legacy unknown inventory refuses. The account must synchronize before spending."};
     RegisterBoundOrchard(creation,rpc_context_wallet_orchard_createaccount);
 
 }

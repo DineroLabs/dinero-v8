@@ -49,7 +49,7 @@ std::pair<uint32_t,uint64_t> Numbers(sqlite3_stmt* q) {
 OrchardOwnershipInventory::Snapshot OrchardOwnershipInventory::Read(
     sqlite3* db,std::span<const uint8_t> seed) {
   Check(db&&!sqlite3_get_autocommit(db)&&seed.size()==64);
-  auto catalog=OrchardAccountCatalog::Read(db,seed);Check(catalog&&catalog->generated);
+  auto catalog=OrchardAccountCatalog::Read(db,seed);Check(catalog&&catalog->KnownInventory());
   Statement identity_row(db,"SELECT runtime_delivery_id FROM wallet_meta WHERE id=1");
   Check(sqlite3_step(identity_row.p)==SQLITE_ROW);
   const auto wallet_id=BlobIdentity(identity_row.p,0);Check(sqlite3_step(identity_row.p)==SQLITE_DONE);
@@ -127,7 +127,7 @@ OrchardOwnershipInventory::Snapshot OrchardOwnershipInventory::Read(
       }
     result.accounts.push_back(std::move(account));
   }
-  // This also refuses present/retained rows when the generated catalog is empty.
+  // This also refuses present/retained rows when the known catalog is empty.
   Check(claimed.size()==rows.size());
   return result;
 }

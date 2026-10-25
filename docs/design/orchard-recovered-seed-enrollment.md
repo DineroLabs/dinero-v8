@@ -1,0 +1,160 @@
+# Orchard recovered-seed enrollment and mobile recovery
+
+## Scope and release status
+
+The bounded implementation adds `wallet.orchard.enrollpreactivation` for an
+explicitly bound, unlocked, named recovered wallet. It is NOT post-activation
+recovery, mobile sync support, or release qualification. Public activation
+schedules and consensus rules are unchanged. Mainnet Orchard starts at H150000;
+implementation uses the selected network parameters, not a hard-coded height.
+
+Both apps must use `wallet.restore` to create a separate named wallet, then
+`wallet.open` to reopen it. Check the active wallet and deterministic first
+Taproot address. Never replace the generated default wallet's phrase, select a
+different seed, or weaken the seed-orphan guard. Same-seed mnemonic import remains
+idempotent, but is not the first-bind mechanism. On refused queue requests the
+apps must clear the corresponding unaccepted local request ID, without dropping
+requests that Core actually committed. No app changes are made by this Core work.
+
+## Implemented bounded enrollment contract
+
+The public bound RPC takes no birthday, height, checkpoint, network or account
+argument. The selected service obtains the profile and checkpoint. It requires:
+
+- Service and exact wallet/session lifetime ownership, no borrowed selected lock
+  or SQLite owner, and a supported scheduled Orchard profile.
+- A converged selected tip, identical durable and validated tip, authenticated
+  accumulator backing, no initial download or incomplete assumed-state history.
+  Public-network tips older than two hours refuse; regtest permits offline time.
+- A tip strictly below activation and no retained activation/outbox history,
+  including after a reorg back below activation.
+- An authenticated recovered initial seed owner and intact unknown catalog;
+  no missing/corrupt catalog repair and no replacement of generated provenance.
+- No current, retained, archived or pending Orchard owner rows. Partial or
+  malformed wallet storage refuses. No new schema is manufactured to pass.
+
+Snapshot/load and selected locks serialize the source check through a FULL
+SQLite transaction. Seed and wallet identity remain pinned until commit. An
+existing matching empty enrollment is idempotent; it does not refresh or reset
+the certificate or account state. Required-write/commit failure publishes none
+of the new provenance. No callback or network request occurs under wallet SQL.
+
+Existing `DNOAC01` generated/unknown records keep their encoding. Enrolled
+recovered wallets use `DNOAC02`, with `generated=false`, a separate provenance
+mode, and a seed-authenticated wallet/profile/checkpoint record. Its authority
+is limited to the recorded network, genesis, branch and activation rules.
+Initial PQ ownership is unchanged. Every existing inventory, retained revision,
+reservation and orphan-state check still applies. Unknown recovered wallets do
+not enroll implicitly on account creation, balance reads, signing or startup.
+Older Core versions do not understand the new catalog mode and must fail closed;
+enrollment is not a promise of wallet downgrade compatibility. Preserve backups.
+
+The checkpoint is an as-of observation, not proof of a globally latest chain.
+Header convergence and tip age are conservative liveness policies, not protection
+against every eclipse or hidden competing chain. The consensus fact certified
+is empty Orchard history through a pre-activation checkpoint. It is not a
+certificate of current balance or completed post-activation scanning. A later
+pre-activation fork cannot contain Orchard notes under the same bound rules;
+actual account state still starts at the authenticated activation parent of the
+selected replay source and follows normal connect/disconnect verification.
+
+## Planned post-activation recovery: not implemented by enrollment
+
+This is required for new installs, reinstalls and new phones after activation.
+Core cannot distinguish an app-generated phrase from an old recovered phrase.
+Neither case may get a trusted-empty current wallet just because it uses
+`wallet.restore` or supplies a recent birthday.
+
+1. Add explicit account-0 recovery for the apps. Report coverage as account 0,
+   not every possible BIP32 account of the seed. Arbitrary/nonconsecutive Core
+   accounts require an explicit bounded account set or authenticated catalog
+   backup. Do not silently erase or declare recovery of unlisted accounts.
+   Account-scope expansion requires the corresponding history scan.
+2. Capture selected network/genesis/branch/activation, a validated target hash
+   and height, and the actual activation-parent hash. The empty tree at that
+   parent is the starting baseline, not the final recovery result.
+3. Scan every selected block from activation through that target, gap-free.
+   Trial-decrypt both wallet scopes locally, process all note commitments in
+   exact order, track owned nullifiers/spends and witnesses, and retain receipt
+   txids, action positions, heights, hashes, amounts and memos. Compare computed
+   tree sizes/roots with authenticated chain commitments. Reorged ancestry or
+   any missing body/proof/checkpoint refuses completion.
+4. Use a resumable disk-backed staging owner separate from the active catalog.
+   Persist verified prefixes and their identity, not a caller-chosen cursor.
+   Derive only the necessary viewing authority under a short wallet lease;
+   download/decrypt/verify outside wallet/selected locks. Encrypt sensitive
+   temporary material and keep seeds/viewing keys off remote services.
+5. Before publication, recheck wallet/session, account scope, existing DB
+   ownership and selected ancestry. Commit the recovered account snapshots,
+   scoped catalog provenance and scan checkpoint atomically with FULL durability.
+   A moved target means an explicit retry/rebase or a clearly labelled verified
+   prefix, never `caught_up=true`. Signing and spend admission retain fresh
+   selected-source checks. Process death must never expose partial recovery.
+6. A phrase recovers on-chain notes, not lost off-chain payment requests,
+   reservations, previously issued unused addresses or cross-device exclusivity.
+   Existing retained owners must be reconciled/preserved, never overwritten by
+   an empty scan. No automatic rebroadcast or reservation release follows from
+   a recovery certificate.
+
+The existing runtime replay capture has explicit 2048-record/64MiB material
+ceilings and requires retained origin material. Do NOT silently raise these,
+truncate a prefix or label that path production-scale recovery. The recovery
+lane needs bounded streaming and disk-backed ancestry/checkpoints first.
+
+## Stateless phone: selected transport and outstanding gate
+
+Proposed initial transport is on-demand full canonical block download from
+archival peers, not a trusted balance service. A phone need not keep history
+permanently: spool bounded verified data, update the note tree/owned witnesses,
+persist the verified prefix, then discard temporary bodies according to the
+reorg/crash policy. An HTTP gateway may transport the same bytes, but cannot
+choose a scan start, omit blocks/transactions or supply authoritative balances.
+
+Authenticate complete bodies/transaction counts and Merkle roots against the
+locally validated selected chain, enforce Orchard encoding/profile and state
+commitments, and reject gaps, duplicates, reordering and fork substitutions.
+Header PoW or a server's tip assertion alone is NOT full chain validation.
+Use the existing verified compact-state/proof owner for chain validation; its
+startup/boundary and proof-retention paths must be qualified independently.
+
+Ordinary transparent compact filters do not prove a complete Orchard scan. A
+future Orchard-specific compact protocol would need authenticated complete
+commitments, ciphertexts, nullifiers, positions and omission protection for
+every covered block. It is a separate protocol, not a shortcut assumed here.
+
+A v6 snapshot authenticates network state; it does not contain a recovered
+seed's complete historical notes/memos or prove account discovery. Availability
+of an archival provider remains necessary for this proposed scan. Missing
+providers leave recovery incomplete, with a useful error and no spend readiness.
+
+The reported stateless H149999 stop is an independent release blocker. Enrollment
+does not fix it. The current soak starts from qualified compact snapshots and
+does not prove an ordinary mobile install can cross the boundary. Diagnose and
+fix the actual historical-to-Orchard compact owner/validation path in a separate
+reviewed commit; test both direct boundary crossing and v6 bootstrap. Do not
+disable catalog/root validation, silently switch to trusting a server, or infer
+physical-phone viability from host/synthetic memory measurements.
+
+## Acceptance gates
+
+- Existing unknown/missing/corrupt/untracked catalog and seed-replacement
+  refusals remain negative. New enrollment tests cover atomicity, source gaps,
+  borrowed owners, reopen and actual funds received across activation.
+- Post-activation positive: a fresh named wallet restored after activation finds
+  funds shielded earlier to account 0, including memo and spent-note handling;
+  matches the original wallet, can spend, and survives two cold restarts.
+- Android `OrchardWalletLiveRegtestTest.appRecoveryPhraseBinding_*` is an
+  acceptance check, not currently satisfied by the enrollment-only commit.
+  Run an equivalent iOS app-generated-phrase path, not a Core-generated wallet.
+- Missing/tampered/forked/omitted scan data, wrong profile/seed/session, concurrent
+  source movement and interrupted publication must fail closed without changing
+  existing owners. Qualify new install, reinstall and second-device recovery.
+- Demonstrate real stateless boundary sync and authenticated historical recovery
+  on physical iOS and Android devices with measured disk, RSS/footprint,
+  background suspension and interrupted restart behavior. No device authority
+  or device success is implied by this plan.
+
+If only enrollment is shipped, release notes must explicitly exclude
+post-activation new-install/phrase-only recovery. Even pre-enrolled private
+payments cannot be advertised on mobile until the H149999 sync blocker and
+actual app/device gates pass. The November 2 go/no-go remains independent.

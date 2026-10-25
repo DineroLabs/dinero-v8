@@ -11,6 +11,13 @@ TEST(OrchardAccountCreation, MalformedRequestsRefuseBeforeServices){
     auto extra=OrchardCreationRequest();extra["replace_existing"]=true;invalid.push_back(extra);
     for(const auto& p:invalid){const auto result=rpc_context_wallet_orchard_createaccount(context,p);EXPECT_TRUE(result.isMember("error"));EXPECT_FALSE(result.isMember("address"));EXPECT_FALSE(result.isMember("revision"));}
 }
+TEST(OrchardPreactivationEnrollment, CallerCannotSupplyBirthdayCheckpointOrProfile){
+    ExecutionContext c;
+    for(const char* key:{"birthday_height","height","checkpoint_hash","account","network"}){
+        din::Json p;p[key]=0;const auto denied=rpc_context_wallet_orchard_enrollpreactivation(c,p);
+        EXPECT_TRUE(denied.isMember("error"));EXPECT_FALSE(denied.isMember("enrolled"));
+    }
+}
 TEST(OrchardAccountCreation, RegistryAndBackendOrServiceAbsenceRefuse){
     RegisterOrchardAccountRpc();const auto* method=g_rpcRegistry.lookup("wallet.orchard.createaccount");ASSERT_NE(method,nullptr);
     ExecutionContext context;const auto result=(*method)(context,OrchardBoundParamsForTest(context,OrchardCreationRequest()));EXPECT_TRUE(result.isMember("error"));EXPECT_FALSE(result.isMember("address"));
@@ -21,8 +28,8 @@ TEST(OrchardAccountCreation, RegistryAndBackendOrServiceAbsenceRefuse){
 #ifdef DINERO_TEST_ORCHARD_ORIGIN
 namespace {
 struct OrchardCreationFixture : CanonicalRecoveryFixture {
-    OrchardCreationFixture():CanonicalRecoveryFixture(true){MineEmpty();}
-    ExecutionContext RequestContext(){ExecutionContext c;c.daemon=&context;c.walletName="canonical-recovery";return c;}
+    explicit OrchardCreationFixture(bool mine=true):CanonicalRecoveryFixture(true){if(mine)MineEmpty();}
+    ExecutionContext RequestContext(){ExecutionContext c;c.daemon=&context;auto use=WalletService::AcquireWalletUse(wallet);c.walletName=use->Wallet().getCurrentWalletName();return c;}
     din::Json Call(uint32_t account=3){return rpc_context_wallet_orchard_createaccount(RequestContext(),OrchardCreationRequest(account));}
     din::Json Issue(uint32_t account=3){return rpc_context_wallet_orchard_getnewaddress(RequestContext(),OrchardCreationRequest(account));}
     void Sql(const std::string& text){auto use=WalletService::AcquireWalletUse(wallet);auto lease=use->Wallet().AcquireDatabaseLease();OrchardAdmissionFixture::Require(sqlite3_exec(lease->Database(),text.c_str(),nullptr,nullptr,nullptr)==SQLITE_OK);}
@@ -111,6 +118,103 @@ TEST(OrchardAccountCreation, CreatedOwnerReplaysRealShieldAndUndoWithoutCatalogR
     f.Sql("CREATE TEMP TABLE saved_creation_parent AS SELECT * FROM orchard_wallet_retained WHERE revision="+std::to_string(before));
     f.Sql("DELETE FROM orchard_wallet_retained WHERE revision="+std::to_string(before));const auto missing=f.Snapshot();EXPECT_TRUE(f.Call(17).isMember("error"));EXPECT_EQ(f.Snapshot(),missing);
     f.Sql("INSERT INTO orchard_wallet_retained SELECT * FROM saved_creation_parent; DROP TABLE saved_creation_parent");ASSERT_FALSE(f.Call(17).isMember("error"));EXPECT_EQ(f.Account().account.Scan().BalanceUna(),0u);
+}
+namespace {
+struct PreactivationEnrollmentFixture : OrchardCreationFixture {
+    PreactivationEnrollmentFixture():OrchardCreationFixture(false){
+        ShieldedStateStartupTestAccess::PublishEnrollmentParent(*f.service,*parent);
+        auto use=WalletService::AcquireWalletUse(wallet);
+        use->Wallet().createFromBip39("preactivation-recovered",
+            "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about","");
+    }
+    din::Json Enroll(){return rpc_context_wallet_orchard_enrollpreactivation(RequestContext(),din::obj());}
+};
+}
+TEST(OrchardPreactivationEnrollment, RecoveredSeedReopensAndFindsRealShieldAcrossActivation){
+    PreactivationEnrollmentFixture f;const auto initial=f.Catalog();ASSERT_TRUE(initial);ASSERT_FALSE(initial->generated);
+    const auto owner=f.Setting("wallet_initial_owner_v1");const auto keys=f.AccountKeys(0);
+    const auto enrolled=f.Enroll();ASSERT_FALSE(enrolled.isMember("error"))<<enrolled.toStyledString();
+    EXPECT_EQ(enrolled["checkpoint_height"].asUInt(),101u);EXPECT_FALSE(enrolled["scan_complete_to_current_tip"].asBool());
+    auto catalog=f.Catalog();ASSERT_TRUE(catalog&&catalog->preactivation);EXPECT_FALSE(catalog->generated);
+    EXPECT_EQ(catalog->revision,2u);EXPECT_EQ(catalog->preactivation->activation,102u);EXPECT_EQ(catalog->preactivation->height,101u);
+    EXPECT_EQ(f.Setting("wallet_initial_owner_v1"),owner);const auto before=f.Snapshot();
+    const auto again=f.Enroll();ASSERT_FALSE(again.isMember("error"));EXPECT_TRUE(again["already_enrolled"].asBool());EXPECT_EQ(f.Snapshot(),before);
+    {auto use=WalletService::AcquireWalletUse(f.wallet);use->Wallet().encryptWallet("preactivation-pass");
+     use->Wallet().open("preactivation-recovered");use->Wallet().unlockWallet("preactivation-pass",0);}
+    EXPECT_EQ(f.Catalog(),catalog);EXPECT_EQ(f.AccountKeys(0).ExportFullViewingKey(),keys.ExportFullViewingKey());
+    f.MineEmpty();const auto created=f.Call(0);ASSERT_FALSE(created.isMember("error"))<<created.toStyledString();
+    const auto [body,bundle]=f.Shield(keys);(void)f.Mine(body);f.ReplayAccount(0);
+    const auto account=f.Account(0);EXPECT_EQ(account.account.Scan().BalanceUna(),500000u);
+    EXPECT_EQ(account.account.Scan().Notes().size(),1u);EXPECT_EQ(account.account.Scan().Checkpoint().height,103u);
+    catalog=f.Catalog();ASSERT_TRUE(catalog&&catalog->preactivation);EXPECT_FALSE(catalog->generated);
+    EXPECT_EQ(catalog->accounts.size(),1u);EXPECT_EQ(f.Setting("wallet_initial_owner_v1"),owner);EXPECT_TRUE(f.Enroll().isMember("error"));
+}
+TEST(OrchardPreactivationEnrollment, MissingCorruptOrUntrackedStateNeverRepairs){
+    PreactivationEnrollmentFixture f;const auto good=f.Setting("orchard_account_catalog_v1");
+    const auto owner=f.Setting("wallet_initial_owner_v1");
+    for(const char* sql:{"DELETE FROM settings WHERE key='orchard_account_catalog_v1'",
+                        "UPDATE settings SET value='00' WHERE key='orchard_account_catalog_v1'",
+                        "DELETE FROM settings WHERE key='wallet_initial_owner_v1'"}){
+        f.Sql(sql);const auto before=f.Snapshot();EXPECT_TRUE(f.Enroll().isMember("error"));EXPECT_EQ(f.Snapshot(),before);
+        auto use=WalletService::AcquireWalletUse(f.wallet);use->Wallet().setSetting("orchard_account_catalog_v1",good);
+        use->Wallet().setSetting("wallet_initial_owner_v1",owner);
+    }
+    {auto use=WalletService::AcquireWalletUse(f.wallet);auto lease=use->Wallet().AcquireDatabaseLease();
+     f.Sql("PRAGMA synchronous=FULL; BEGIN IMMEDIATE");orchard::WalletSnapshotStore::InitializeSchemaUnderTransaction(lease->Database());
+     f.Sql("CREATE TABLE orchard_wallet_retained(wallet_id BLOB,account INTEGER,revision INTEGER,sealed BLOB); COMMIT");}
+    f.Sql("INSERT INTO orchard_wallet_snapshots(wallet_id,account,revision,sealed) VALUES(randomblob(32),0,1,zeroblob(128))");
+    const auto before=f.Snapshot();EXPECT_TRUE(f.Enroll().isMember("error"));EXPECT_EQ(f.Snapshot(),before);
+}
+TEST(OrchardPreactivationEnrollment, UpdateCommitAndBorrowedOwnerRefusalsAreAtomic){
+    PreactivationEnrollmentFixture f;const auto before=f.Snapshot();
+    f.Sql("CREATE TRIGGER refuse_enrollment BEFORE UPDATE ON settings WHEN NEW.key='orchard_account_catalog_v1' BEGIN SELECT RAISE(ABORT,'enrollment refused'); END");
+    EXPECT_TRUE(f.Enroll().isMember("error"));EXPECT_EQ(f.Snapshot(),before);f.Sql("DROP TRIGGER refuse_enrollment");
+    {auto use=WalletService::AcquireWalletUse(f.wallet);sqlite3* db;
+     {auto lease=use->Wallet().AcquireDatabaseLease();db=lease->Database();}
+     bool seen=false;sqlite3_commit_hook(db,[](void* p){*static_cast<bool*>(p)=true;return 1;},&seen);
+     EXPECT_TRUE(f.Enroll().isMember("error"));sqlite3_commit_hook(db,nullptr,nullptr);EXPECT_TRUE(seen);}
+    EXPECT_EQ(f.Snapshot(),before);
+    {auto use=WalletService::AcquireWalletUse(f.wallet);auto lease=use->Wallet().AcquireDatabaseLease();EXPECT_TRUE(f.Enroll().isMember("error"));}
+    {auto selected=f.f.service->AcquireBlockIngressActivationLock();EXPECT_TRUE(f.Enroll().isMember("error"));}
+    EXPECT_EQ(f.Snapshot(),before);EXPECT_FALSE(f.Enroll().isMember("error"));
+}
+TEST(OrchardPreactivationEnrollment, UnknownHeadersValidatedMarkerAndRetainedActivationHistoryRefuse){
+    PreactivationEnrollmentFixture f;const auto before=f.Snapshot();
+    f.f.service->setHeaderChainSelector(std::make_shared<consensus::HeaderChainSelector>());
+    EXPECT_TRUE(f.Enroll().isMember("error"));EXPECT_EQ(f.Snapshot(),before);
+    auto headers=std::make_shared<consensus::HeaderChainSelector>();
+    for(const auto& b:f.f.blocks)ASSERT_TRUE(headers->AddHeader(b.header));f.f.service->setHeaderChainSelector(headers);
+    ASSERT_EQ(f.f.db.setValidatedTip(f.f.token,f.f.blocks[100].GetHash(),100),Status::Ok);
+    EXPECT_TRUE(f.Enroll().isMember("error"));EXPECT_EQ(f.Snapshot(),before);
+    ASSERT_EQ(f.f.db.setValidatedTip(f.f.token,f.parent->hash,101),Status::Ok);
+    f.MineEmpty();EXPECT_TRUE(f.Enroll().isMember("error"));EXPECT_EQ(f.Snapshot(),before);
+    ASSERT_TRUE(ShieldedStateStartupTestAccess::DisconnectBoundary(*f.f.service,f.f.service->GetActiveTip()));
+    EXPECT_TRUE(f.Enroll().isMember("error"));EXPECT_EQ(f.Snapshot(),before);
+}
+TEST(OrchardPreactivationEnrollment, ScopedCertificateTamperingAndStalePublicBindingRefuse){
+    PreactivationEnrollmentFixture f;RegisterOrchardAccountRpc();
+    const auto* method=g_rpcRegistry.lookup("wallet.orchard.enrollpreactivation");ASSERT_NE(method,nullptr);
+    const auto request=OrchardBoundParamsForTest(f.RequestContext(),din::obj());
+    {auto use=WalletService::AcquireWalletUse(f.wallet);use->Wallet().open("preactivation-recovered");}
+    const auto before=f.Snapshot();EXPECT_TRUE((*method)(f.RequestContext(),request).isMember("error"));EXPECT_EQ(f.Snapshot(),before);
+    const auto fresh=OrchardBoundParamsForTest(f.RequestContext(),din::obj());
+    const auto result=(*method)(f.RequestContext(),fresh);ASSERT_FALSE(result.isMember("error"))<<result.toStyledString();
+    const auto catalog=f.Catalog();ASSERT_TRUE(catalog&&catalog->preactivation);const auto& p=*catalog->preactivation;
+    wallet::OrchardAccountCatalog::Entry e{0,p.network,p.genesis,p.branch,p.activation};EXPECT_TRUE(catalog->Covers(e));
+    e.branch^=1;EXPECT_FALSE(catalog->Covers(e));e.branch=p.branch;e.genesis[0]^=1;EXPECT_FALSE(catalog->Covers(e));
+    e.genesis=p.genesis;++e.activation;EXPECT_FALSE(catalog->Covers(e));e.activation=p.activation;e.network^=1;EXPECT_FALSE(catalog->Covers(e));
+    const auto good=f.Setting("orchard_account_catalog_v1");std::vector<uint8_t> bytes;ASSERT_TRUE(util::unhex(good,bytes));
+    bytes.back()^=1;
+    {auto use=WalletService::AcquireWalletUse(f.wallet);use->Wallet().setSetting("orchard_account_catalog_v1",util::hex(bytes));}
+    const auto damaged=f.Snapshot();EXPECT_TRUE(f.Enroll().isMember("error"));EXPECT_THROW((void)f.Catalog(),std::runtime_error);EXPECT_EQ(f.Snapshot(),damaged);
+    {auto use=WalletService::AcquireWalletUse(f.wallet);use->Wallet().setSetting("orchard_account_catalog_v1",good);}
+    EXPECT_EQ(f.Catalog(),catalog);
+}
+TEST(OrchardPreactivationEnrollment, GeneratedCatalogNeverReclassified){
+    OrchardCreationFixture f(false);ShieldedStateStartupTestAccess::PublishEnrollmentParent(*f.f.service,*f.parent);
+    const auto before=f.Snapshot();const auto catalog=f.Catalog();ASSERT_TRUE(catalog&&catalog->generated);
+    EXPECT_TRUE(rpc_context_wallet_orchard_enrollpreactivation(f.RequestContext(),din::obj()).isMember("error"));
+    EXPECT_EQ(f.Snapshot(),before);EXPECT_EQ(f.Catalog(),catalog);
 }
 #endif
 } // namespace dinero

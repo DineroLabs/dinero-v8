@@ -28,6 +28,7 @@
 #include "daemon/runtime_reorg_store.h"
 #include "daemon/runtime_block_outbox.h"
 #include "wallet/runtime_account_replay.h"
+#include "wallet/orchard_account_catalog.h"
 #include "wallet/runtime_wallet_recovery.h"
 #include "daemon/orchard_chainstate_write.h"
 #include "daemon/orchard_snapshot_store.h"
@@ -6936,6 +6937,76 @@ ChainstateService::resumeRuntimeWalletRecoveryIfNeeded(WalletManager& wallet, UT
         return Status::Internal;
 #endif
     } catch (...) { return Status::Internal; }
+}
+
+StatusOr<ChainstateService::OrchardPreactivationEnrollment> ChainstateService::enrollPreactivationOrchardWallet(
+        WalletManager& wallet,uint64_t expected_session) {
+#ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
+    if(activation_mutex_.HeldByCurrentThread())return Status::Invalid;
+    try {
+        UTXOIndex* index=nullptr;
+        {std::lock_guard<std::mutex> lock(wallet_index_use_mutex_);
+         if(!wallet_index_uses_by_thread_.count(std::this_thread::get_id())||!utxo_index_)return Status::Invalid;
+         index=utxo_index_.get();}
+        {auto lease=wallet.AcquireDatabaseLease();
+         if(wallet.database_leases_!=1||!lease->Database()||lease->Session()!=expected_session||
+            wallet.getUTXOIndex()!=index||!sqlite3_get_autocommit(lease->Database()))return Status::Invalid;}
+        // Same lock order as snapshot load and ordinary/Orchard reservation.
+        // Hold selected ownership through FULL wallet commit: activation, an
+        // equal-height fork and snapshot publication cannot race enrollment.
+        std::lock_guard<std::mutex> snapshot(snapshot_load_mutex_);
+        std::lock_guard<AnnotatedRecursiveMutex> selected(activation_mutex_);
+        const auto profile=consensus::SelectedOrchardBlockContext(BlockHeader{},Params().orchard_activation_height);
+        if(!profile||!active_tip_||active_tip_->height>=profile->activation_height||IsInIBD()||
+           (assumeutxo_active_&&!IsBackgroundValidationComplete()))return Status::Invalid;
+        const auto sync=GetSyncSnapshot();
+        if(!sync.IsConverged()||sync.active_tip_hash!=active_tip_->hash||
+           sync.active_tip_height!=active_tip_->height)return Status::Invalid;
+        // A liveness policy, NOT proof of a globally latest tip. Unknown peers
+        // or an eclipse cannot turn this baseline into post-activation recovery.
+        if(Params().name!="regtest"&&uint64_t(std::time(nullptr))>uint64_t(active_tip_->timestamp)+7200)
+            return Status::Invalid;
+        const auto capture=UtreexoRpcSnapshotUnderLock();
+        const auto tip=chain_db_->getTip(),validated=chain_db_->getValidatedTip();
+        const auto history=getRuntimeDeliveryPage({},1);
+        if(!capture.ok()||!tip.ok()||!validated.ok()||!history.ok()||(*history)->head.sequence||
+           !(*history)->events.empty()||tip->hash!=capture->block_hash||tip->height!=int(capture->height)||
+           validated->hash!=tip->hash||validated->height!=tip->height)return Status::Invalid;
+        wallet::OrchardAccountCatalog::Snapshot::Preactivation proof{};
+        proof.network=profile->domain.network_code;proof.genesis=profile->domain.genesis_wire;
+        proof.branch=profile->domain.branch_id;proof.activation=profile->activation_height;proof.height=capture->height;
+        std::copy(capture->block_hash.begin(),capture->block_hash.end(),proof.block.begin());
+        auto lease=wallet.AcquireDatabaseLease();
+        if(wallet.database_leases_!=1||lease->Session()!=expected_session||wallet.getUTXOIndex()!=index)
+            return Status::Invalid;
+        auto* db=lease->Database();
+        if(!db||!sqlite3_get_autocommit(db))return Status::Invalid;
+        if(sqlite3_exec(db,"PRAGMA synchronous=FULL",nullptr,nullptr,nullptr)!=SQLITE_OK)return Status::Invalid;
+        if(sqlite3_exec(db,"BEGIN IMMEDIATE",nullptr,nullptr,nullptr)!=SQLITE_OK)return Status::Invalid;
+        struct Tx {
+            sqlite3* db;bool committed=false;
+            ~Tx(){if(!committed&&sqlite3_exec(db,"ROLLBACK",nullptr,nullptr,nullptr)!=SQLITE_OK&&
+                         !sqlite3_get_autocommit(db))std::terminate();}
+        } tx{db};
+        auto seed=lease->CopyRecoverySeed(expected_session);
+        if(wallet.getSetting("wallet_initial_owner_v1").empty())return Status::Invalid;
+        const auto before=wallet::OrchardAccountCatalog::Read(db,seed->Bytes());
+        if(!before||before->generated)return Status::Invalid;
+        // Authenticate the sealed initial owner without changing Generated /
+        // Recovered provenance or minting an unrelated PQ master key.
+        std::vector<uint8_t> seed_bytes(seed->Bytes().begin(),seed->Bytes().end());
+        struct Clear {std::vector<uint8_t>& bytes;~Clear(){OPENSSL_cleanse(bytes.data(),bytes.size());}} clear{seed_bytes};
+        if(wallet.loadInitialPqMaster(seed_bytes))return Status::Invalid;
+        const auto result=wallet::OrchardAccountCatalog::StagePreactivation(db,seed->Bytes(),proof);
+        if(sqlite3_exec(db,"COMMIT",nullptr,nullptr,nullptr)!=SQLITE_OK)return Status::Invalid;
+        tx.committed=true;
+        OrchardPreactivationEnrollment receipt{result.preactivation->height,{},before&&before->preactivation.has_value()};
+        std::copy(result.preactivation->block.begin(),result.preactivation->block.end(),receipt.block_hash.begin());
+        return receipt;
+    }catch(...){return Status::Invalid;}
+#else
+    (void)wallet;(void)expected_session;return Status::Internal;
+#endif
 }
 
 StatusOr<std::shared_ptr<const RuntimeAccountReplay>> ChainstateService::getRuntimeAccountReplayForWallet(

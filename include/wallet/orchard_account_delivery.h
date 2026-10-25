@@ -133,17 +133,17 @@ public:
     static IssuedReceiver IssueReceiverForReplay(WalletManager&,uint64_t session,
         const Profile&,const RuntimeAccountReplay&,orchard::WalletScope);
 
-    // Generated catalog only: capture and fully restore existing current and
+    // Generated or explicitly preactivation-enrolled catalog only: fully restore current and
     // retained owners before the writer, then recheck and allocate a never-used
     // number and its encrypted origin
     // snapshot in one FULL transaction. Returns its first external receiver.
     // Origin is actual immutable activation-parent state, not caught-up progress.
-    // Legacy/recovery unknown, missing declared accounts, and foreign rows refuse.
+    // Uncertified recovery, missing declared accounts, and foreign rows refuse.
     // Both catalog writers require a released caller wallet lease and SQL transaction.
     static IssuedReceiver CreateAccountForReplay(WalletManager&,uint64_t session,
         const Profile&,const RuntimeAccountReplay&);
 
-    // Actual receiving RPC boundary: capture and restore the complete generated
+    // Actual receiving RPC boundary: capture and restore the complete known
     // catalog outside wallet/seed/SQL owners, then recheck its exact bytes before
     // advancing the requested counter in a FULL transaction. Unknown inventory refuses.
     // This does not assert chain catch-up or change the narrow legacy read API.

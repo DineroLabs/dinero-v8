@@ -14,7 +14,8 @@ constexpr char kSetting[]="orchard_account_catalog_v1";
 constexpr std::string_view kMagic="DNOAC01";
 constexpr std::string_view kDomain="Dinero Orchard account catalog authentication v1";
 constexpr size_t kHeader=7+32+1+8+4, kEntry=4+1+32+4+4, kTag=32;
-constexpr size_t kMaxBytes=kHeader+OrchardAccountCatalog::kMaxAccounts*kEntry+kTag;
+constexpr size_t kPreactivation=1+32+4+4+4+32;
+constexpr size_t kMaxBytes=kHeader+OrchardAccountCatalog::kMaxAccounts*kEntry+kPreactivation+kTag;
 void Check(bool ok) { if(!ok) throw std::runtime_error("Orchard account catalog unavailable or invalid"); }
 struct Statement {
     sqlite3_stmt* p=nullptr;
@@ -76,12 +77,14 @@ std::optional<OrchardAccountCatalog::Snapshot> OrchardAccountCatalog::Read(sqlit
     const auto bytes=Decode(std::string_view(text,static_cast<size_t>(size)));q.Done();
     const std::span<const uint8_t> payload(bytes.data(),bytes.size()-kTag);
     const auto tag=Tag(seed,payload);Check(CRYPTO_memcmp(tag.data(),bytes.data()+payload.size(),kTag)==0);
-    const auto id=Identity(db);Check(std::equal(kMagic.begin(),kMagic.end(),payload.begin()));
+    const auto id=Identity(db);
+    const bool v2=std::equal(payload.begin(),payload.begin()+7,"DNOAC02");
+    Check(v2||std::equal(kMagic.begin(),kMagic.end(),payload.begin()));
     Check(CRYPTO_memcmp(id.data(),payload.data()+kMagic.size(),id.size())==0);
-    size_t pos=kMagic.size()+id.size();const uint64_t mode=Get(payload,pos,1);Check(mode<=1);
+    size_t pos=kMagic.size()+id.size();const uint64_t mode=Get(payload,pos,1);Check(v2?mode==2:mode<=1);
     Snapshot result{mode==1,Get(payload,pos,8),{}};const auto count=Get(payload,pos,4);
     Check(result.revision>0&&result.revision<=uint64_t(std::numeric_limits<int64_t>::max())&&count<=kMaxAccounts);
-    Check(payload.size()==kHeader+count*kEntry&&(result.generated||count==0));
+    Check(payload.size()==kHeader+count*kEntry+(v2?kPreactivation:0)&&(result.generated||v2||count==0));
     result.accounts.reserve(static_cast<size_t>(count));
     for(size_t i=0;i<count;++i){
         Entry entry{};entry.account=static_cast<uint32_t>(Get(payload,pos,4));entry.network=static_cast<uint8_t>(Get(payload,pos,1));
@@ -91,7 +94,59 @@ std::optional<OrchardAccountCatalog::Snapshot> OrchardAccountCatalog::Read(sqlit
         Check(std::any_of(entry.genesis.begin(),entry.genesis.end(),[](uint8_t b){return b!=0;}));
         Check(result.accounts.empty()||result.accounts.back().account<entry.account);result.accounts.push_back(entry);
     }
+    if(v2){
+        Snapshot::Preactivation p{};
+        p.network=Get(payload,pos,1);
+        std::copy_n(payload.data()+pos,32,p.genesis.begin());pos+=32;
+        p.branch=Get(payload,pos,4);p.activation=Get(payload,pos,4);p.height=Get(payload,pos,4);
+        std::copy_n(payload.data()+pos,32,p.block.begin());pos+=32;
+        Check(p.network<=2&&p.branch&&p.activation&&p.activation!=UINT32_MAX&&p.height<p.activation&&
+              p.genesis!=std::array<uint8_t,32>{}&&p.block!=std::array<uint8_t,32>{});
+        result.preactivation=p;
+        for(const auto& entry:result.accounts)Check(result.Covers(entry));
+    }
     Check(pos==payload.size());return result;
+}
+namespace {
+void AppendPreactivation(std::vector<uint8_t>& bytes,const OrchardAccountCatalog::Snapshot::Preactivation& p){
+    bytes.push_back(p.network);bytes.insert(bytes.end(),p.genesis.begin(),p.genesis.end());
+    Put(bytes,p.branch,4);Put(bytes,p.activation,4);Put(bytes,p.height,4);
+    bytes.insert(bytes.end(),p.block.begin(),p.block.end());
+}
+}
+OrchardAccountCatalog::Snapshot OrchardAccountCatalog::StagePreactivation(
+        sqlite3* db,std::span<const uint8_t> seed,const Snapshot::Preactivation& p){
+    Check(db&&!sqlite3_get_autocommit(db)&&seed.size()==64);RequireFull(db);
+    Check(p.network<=2&&p.branch&&p.activation&&p.activation!=UINT32_MAX&&p.height<p.activation&&
+          p.genesis!=std::array<uint8_t,32>{}&&p.block!=std::array<uint8_t,32>{});
+    const auto current=Read(db,seed);
+    Check(current&&!current->generated&&current->accounts.empty());
+    bool schema[3]{};size_t n=0;
+    for(const char* name:{"orchard_wallet_schema","orchard_wallet_snapshots","orchard_wallet_retained"}){
+        Statement q(db,"SELECT 1 FROM sqlite_master WHERE type='table' AND name=?");q.Text(1,name);
+        const int rc=sqlite3_step(q.p);Check(rc==SQLITE_DONE||rc==SQLITE_ROW);
+        schema[n++]=rc==SQLITE_ROW;if(rc==SQLITE_ROW)q.Done();
+    }
+    Check((!schema[0]&&!schema[1]&&!schema[2])||(schema[0]&&schema[1]&&schema[2]));
+    if(schema[0]){
+        Statement v(db,"SELECT version FROM orchard_wallet_schema WHERE id=1");
+        Check(sqlite3_step(v.p)==SQLITE_ROW&&sqlite3_column_type(v.p,0)==SQLITE_INTEGER&&sqlite3_column_int64(v.p,0)==1);v.Done();
+        Statement a(db,"SELECT wallet_id,account,revision,sealed FROM orchard_wallet_snapshots");a.Done();
+        Statement b(db,"SELECT wallet_id,account,revision,sealed FROM orchard_wallet_retained");b.Done();
+    }
+    if(current->preactivation){
+        const Entry profile{0,p.network,p.genesis,p.branch,p.activation};
+        Check(current->revision==2&&current->Covers(profile));return *current;
+    }
+    Check(current->revision==1);
+    const auto id=Identity(db);std::vector<uint8_t> bytes{'D','N','O','A','C','0','2'};
+    bytes.insert(bytes.end(),id.begin(),id.end());bytes.push_back(2);Put(bytes,2,8);Put(bytes,0,4);
+    AppendPreactivation(bytes,p);const auto tag=Tag(seed,bytes);bytes.insert(bytes.end(),tag.begin(),tag.end());
+    // Exact existing bytes are authenticated above; UPDATE cannot invent a
+    // missing/invalid catalog or erase another owner.
+    Statement write(db,"UPDATE settings SET value=?,updated_at=strftime('%s','now') WHERE key=?");
+    write.Text(1,Encode(bytes));write.Text(2,kSetting);write.Done();Check(sqlite3_changes(db)==1);
+    const auto result=Read(db,seed);Check(result&&result->preactivation);return *result;
 }
 void OrchardAccountCatalog::InitializeForInitialSeed(sqlite3* db,std::span<const uint8_t> seed,bool generated){
     Check(db&&!sqlite3_get_autocommit(db)&&seed.size()==64);RequireFull(db);
@@ -104,7 +159,7 @@ void OrchardAccountCatalog::InitializeForInitialSeed(sqlite3* db,std::span<const
 }
 uint64_t OrchardAccountCatalog::StageAppend(sqlite3* db,std::span<const uint8_t> seed,uint64_t expected,const Entry& entry){
     Check(db&&!sqlite3_get_autocommit(db)&&seed.size()==64);RequireFull(db);
-    const auto current=Read(db,seed);Check(current&&current->generated&&current->revision==expected);
+    const auto current=Read(db,seed);Check(current&&current->Covers(entry)&&current->revision==expected);
     Check(expected<uint64_t(std::numeric_limits<int64_t>::max())&&current->accounts.size()<kMaxAccounts);
     Check(entry.account<0x80000000U&&entry.network<=2&&entry.branch&&entry.activation&&entry.activation!=UINT32_MAX);
     Check(std::any_of(entry.genesis.begin(),entry.genesis.end(),[](uint8_t b){return b!=0;}));
@@ -113,9 +168,11 @@ uint64_t OrchardAccountCatalog::StageAppend(sqlite3* db,std::span<const uint8_t>
     Check(where==entries.end()||where->account!=entry.account);entries.insert(where,entry);
     const auto id=Identity(db);
     const auto seal=[&](const std::vector<Entry>& records,uint64_t revision){
-        std::vector<uint8_t> bytes(kMagic.begin(),kMagic.end());bytes.insert(bytes.end(),id.begin(),id.end());
-        bytes.push_back(1);Put(bytes,revision,8);Put(bytes,records.size(),4);
+        std::vector<uint8_t> bytes(kMagic.begin(),kMagic.end());if(current->preactivation)bytes[6]='2';
+        bytes.insert(bytes.end(),id.begin(),id.end());
+        bytes.push_back(current->preactivation?2:1);Put(bytes,revision,8);Put(bytes,records.size(),4);
         for(const auto& e:records){Put(bytes,e.account,4);bytes.push_back(e.network);bytes.insert(bytes.end(),e.genesis.begin(),e.genesis.end());Put(bytes,e.branch,4);Put(bytes,e.activation,4);}
+        if(current->preactivation)AppendPreactivation(bytes,*current->preactivation);
         const auto tag=Tag(seed,bytes);bytes.insert(bytes.end(),tag.begin(),tag.end());return Encode(bytes);
     };
     const auto before=seal(current->accounts,expected),after=seal(entries,expected+1);
