@@ -537,6 +537,30 @@ TEST(OrchardSelectedConsistency, CompletedParentOpensWithoutAdvancingIndependent
     EXPECT_ANY_THROW(OrchardSnapshotStoreTestAccess::RestoreParent(mutex,*live.database,*f.headers,*f.proof));
     {std::lock_guard<AnnotatedRecursiveMutex> lock(mutex);
         EXPECT_EQ(live.compact->SelectedUnderLock(mutex)->Encode(),f.proof->parent_catalog.Encode());}
+    const auto header=*live.database->getHeader(f.proof->parent_catalog.block);
+    const auto c=*consensus::SelectedOrchardBlockContext(f.full.first->Header(),102);
+    const consensus::OrchardTransactionContext tx{102,header.GetHash(),c.activation_height,c.domain};
+    const auto capture=[&]{std::lock_guard<AnnotatedRecursiveMutex> lock(mutex);
+        return live.compact->CapturePoolCoinsUnderLock(mutex,tx,header,{}).CapturedInputs();};
+    EXPECT_EQ(capture(),0u);
+    const auto origin=*storage::ReadOrchardActivationOrigin(*live.database);auto foreign=origin;
+    foreign.source=storage::catalog::Hash("different validly framed parent source");ASSERT_NE(foreign.source,origin.source);
+    // Keep BOTH metadata rows valid and mutually consistent. Framing/hash
+    // checks alone must not substitute this foreign origin for the bound one.
+    rocksdb::WriteBatch replace_origin;replace_origin.Put(storage::OrchardActivationOriginKey,foreign.Encode());
+    replace_origin.Put(storage::OrchardActivationSelectionKey,foreign.Selection());
+    ASSERT_EQ(live.database->writeBatch(f.full.f.token,std::move(replace_origin),true),Status::Ok);
+    const auto changed_origin=ChainDBTransactionReadTestPeer::HandoffRows(*live.database);
+    EXPECT_ANY_THROW(capture());EXPECT_EQ(ChainDBTransactionReadTestPeer::HandoffRows(*live.database),changed_origin);
+    rocksdb::WriteBatch restore_origin;restore_origin.Put(storage::OrchardActivationOriginKey,origin.Encode());
+    restore_origin.Put(storage::OrchardActivationSelectionKey,origin.Selection());
+    ASSERT_EQ(live.database->writeBatch(f.full.f.token,std::move(restore_origin),true),Status::Ok);
+    EXPECT_EQ(capture(),0u);
+    ASSERT_EQ(live.database->setValidatedTip(f.full.f.token,f.full.first->Header().GetHash(),102),Status::Ok);
+    const auto changed_anchor=ChainDBTransactionReadTestPeer::HandoffRows(*live.database);
+    EXPECT_ANY_THROW(capture());EXPECT_EQ(ChainDBTransactionReadTestPeer::HandoffRows(*live.database),changed_anchor);
+    ASSERT_EQ(live.database->setValidatedTip(f.full.f.token,f.full.f.blocks.front().GetHash(),0),Status::Ok);
+    EXPECT_EQ(capture(),0u);EXPECT_EQ(live.database->getValidatedTip()->height,0);
     live.compact.reset();live.database.reset();f.ColdReceipt();f.closed_app.reset();
     // A harmless private engine open may rotate LOG files. The completed
     // route still reauthenticates the entire exact parent logical baseline.

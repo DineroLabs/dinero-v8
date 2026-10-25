@@ -631,6 +631,15 @@ and full original/current before-image audit. Local delivery hash-chain checks
 alone are not adversarial authentication or a first-runtime-event certificate.
 No actual queued-wallet crossing, restored-phone or device acceptance is implied.
 
+Mutation controls are recorded separately from the earlier positive receipts.
+The original parent-reopen case survived a disabled consistency check; transition
+and engine-reopen cases detected it. The parent case now additionally substitutes
+a validly encoded, paired foreign origin and advances the independent anchor,
+requiring refusal without writes and successful capture again after each test
+restoration. Isolated origin/anchor, generation and disabled-check mutants must
+be paired with the unchanged/restored check before claiming mutation coverage.
+These test-only substitutions never change release guard code or installed data.
+
 - Existing unknown/missing/corrupt/untracked catalog and seed-replacement
   refusals remain negative. New enrollment tests cover atomicity, source gaps,
   borrowed owners, reopen and actual funds received across activation.
