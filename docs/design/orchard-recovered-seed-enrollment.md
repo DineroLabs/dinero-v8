@@ -125,7 +125,13 @@ snapshot/selected ownership and enumerates the exact body to the compact owner,
 including authenticated output absences. Empty proof DATA does not grant a
 general coin view. The existing domain/activation, resource, signing, note proof,
 anchor/nullifier and selected state checks remain mandatory; full-node behavior
-keeps its ordinary full backing. `NodeCoreCompactPrivateSend` exercises actual
+keeps its ordinary full backing. The existing lexical parent preparation scope
+captures and genuinely verifies the current compact tip's inverse off-lock,
+then freshly rebinds its exact body/catalog/state/undo/MTP/source before-image
+during the mandatory selected audit. This is not a cached timestamp/capability,
+marker change or skipped inverse guard. Its missing warm lifetime is retained
+as a separate failed-source result, not relabelled as private-payment success.
+`NodeCoreCompactPrivateSend` exercises actual
 public `queuespend` and `finishspend`, not a manual proof-backed spend, using the
 funded encrypted named payer and a different-seed named recovered recipient.
 It checks idempotent queue/Ready retries, real native block105 confirmation and

@@ -20692,6 +20692,11 @@ ChainstateService::AuthorizeOrchardWalletTransaction(const orchard::TransactionE
     // This wallet path authorizes private spends only, never a compact
     // transparent-input lookup. Such inputs require their own explicit proofs.
     if(!envelope.Inputs().empty())throw std::runtime_error("Orchard wallet selected context unavailable");
+    // The warm compact journal audit still needs an actual detached inverse of
+    // the selected tip. Capture/verify it BEFORE snapshot/selected ownership;
+    // its existing lexical scope freshly rebinds the exact before-image during
+    // the normal audit. Never persist a capability or skip the inverse guard.
+    ParentPreparationScope preparation(*this);
     std::lock_guard<std::mutex> snapshot_owner(snapshot_load_mutex_);
     auto lock=AcquireBlockIngressActivationLock();
     const MempoolProofView private_body{MempoolTransaction::FromOrchard(envelope),{}};
