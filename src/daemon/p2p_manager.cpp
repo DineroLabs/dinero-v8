@@ -1733,6 +1733,7 @@ void P2PManager::handle_relay_register_ok(const std::string& peer_address,
         key = LowerEndpoint(peer.to_string());
     }
     note_relay_outcome(key, true);  // the relay confirmed it carries us
+    signed_hints_due_.store(true);  // tell the network on the next tick
     std::cout << "[P2P] relay-register: confirmed by " << key << std::endl;
 }
 
@@ -2326,12 +2327,169 @@ P2PManager::ManualRelayDialResult P2PManager::TryDialRelayHint(
 // peer (direct or virtual) and aren't in the kRelayDialBackoff window,
 // then issues SendRelayConnect for each. The completion callback
 // installs the outbound virtual peer and kicks the handshake.
+namespace {
+uint32_t UnixSeconds(std::chrono::system_clock::time_point t) {
+    return static_cast<uint32_t>(std::chrono::system_clock::to_time_t(t));
+}
+// IPv4/IPv6 literal -> addrv2 network type + bytes.
+bool HostToAddrV2(const std::string& host, dinero::p2p::NetworkType* net,
+                  std::vector<uint8_t>* bytes) {
+    in_addr v4{};
+    if (inet_pton(AF_INET, host.c_str(), &v4) == 1) {
+        *net = dinero::p2p::NetworkType::IPV4;
+        const auto* b = reinterpret_cast<const uint8_t*>(&v4);
+        bytes->assign(b, b + 4);
+        return true;
+    }
+    in6_addr v6{};
+    if (inet_pton(AF_INET6, host.c_str(), &v6) == 1) {
+        *net = dinero::p2p::NetworkType::IPV6;
+        const auto* b = reinterpret_cast<const uint8_t*>(&v6);
+        bytes->assign(b, b + 16);
+        return true;
+    }
+    return false;
+}
+}  // namespace
+
+void P2PManager::handle_relay_hint_v2(const std::string& peer_address,
+                                      const P2PMessage& message) {
+    const uint32_t now_unix = UnixSeconds(clock_->SystemNow());
+    const auto hint = dinero::p2p::VerifyHint(message.payload, now_unix);
+    if (!hint) {
+        hints_v2_rejected_.fetch_add(1, std::memory_order_relaxed);
+        return;  // forged, tampered or stale: not stored, not forwarded
+    }
+    if (node_identity_ && hint->node_id == node_identity_->get_node_id_bytes()) return;
+
+    const std::string key = NodeIdHex(hint->node_id);
+    {
+        std::lock_guard<std::mutex> lock(relay_hints_mutex_);
+        auto& bucket = relay_hints_by_target_[key];
+        bool refreshed = false;
+        for (auto& existing : bucket) {
+            if (existing.net == hint->relay_net && existing.relay_addr == hint->relay_addr &&
+                existing.relay_port == hint->relay_port) {
+                existing.learned_at = clock_->SteadyNow();
+                existing.consecutive_dial_failures = 0;
+                if (hint->expiry >= existing.v2_expiry) {
+                    existing.v2_expiry = hint->expiry;
+                    existing.v2_payload = dinero::p2p::WithHop(message.payload, 0);
+                }
+                refreshed = true;
+                break;
+            }
+        }
+        if (!refreshed) {
+            RelayHintRecord rec;
+            rec.net = hint->relay_net;
+            rec.relay_addr = hint->relay_addr;
+            rec.relay_port = hint->relay_port;
+            rec.learned_at = clock_->SteadyNow();
+            rec.v2_expiry = hint->expiry;
+            rec.v2_payload = dinero::p2p::WithHop(message.payload, 0);
+            if (bucket.size() >= kMaxHintsPerTarget) bucket.erase(bucket.begin());
+            bucket.push_back(std::move(rec));
+        }
+    }
+    relay_hints_dirty_.store(true, std::memory_order_release);
+
+    bool forward = false;
+    {
+        std::lock_guard<std::mutex> lock(hint_forwarder_mutex_);
+        forward = hint_forwarder_.ShouldForward(*hint, now_unix, clock_->SteadyNow());
+    }
+    if (forward) {
+        SendSignedRelayHint(dinero::p2p::WithHop(message.payload, hint->hop + 1), peer_address);
+    }
+}
+
+void P2PManager::SendSignedRelayHint(const std::vector<uint8_t>& payload,
+                                     const std::string& except_peer) {
+    P2PMessage msg;
+    msg.command = "relayhn2";
+    msg.payload = payload;
+    std::vector<std::shared_ptr<PeerInfo>> recipients;
+    {
+        std::lock_guard<std::mutex> lock(peers_mutex_);
+        for (const auto& [key, peer] : connected_peers_) {
+            if (!peer || !peer->is_connected || key == except_peer) continue;
+            // NODE_DIALBACK is the v8.2.0 bit: those peers understand relayhn2.
+            if (!(peer->service_flags & ServiceFlags::NODE_DIALBACK)) continue;
+            recipients.push_back(peer);
+        }
+    }
+    for (const auto& peer : recipients) send_peer_message(peer.get(), msg);
+}
+
+void P2PManager::SignedRelayHintsTick(bool force) {
+    const auto now = clock_->SteadyNow();
+    const bool due = signed_hints_due_.exchange(false);
+    if (!force && !due && last_signed_hint_round_.time_since_epoch().count() != 0 &&
+        now - last_signed_hint_round_ < kSignedHintPeriod) {
+        return;
+    }
+    last_signed_hint_round_ = now;
+    const uint32_t now_unix = UnixSeconds(clock_->SystemNow());
+
+    // As a NAT'd target: one freshly signed hint per confirmed relay.
+    std::vector<std::vector<uint8_t>> ours;
+    if (node_identity_) {
+        std::vector<std::pair<std::string, uint16_t>> relays;
+        {
+            std::lock_guard<std::mutex> lock(peers_mutex_);
+            for (const auto& [_, peer] : connected_peers_) {
+                if (peer && peer->is_connected && peer->is_our_relay && !peer->via_relay) {
+                    relays.emplace_back(peer->address, peer->port);
+                }
+            }
+        }
+        for (const auto& [host, port] : relays) {
+            dinero::p2p::HintFields fields;
+            if (!HostToAddrV2(host, &fields.relay_net, &fields.relay_addr)) continue;
+            fields.relay_port = port;
+            fields.expiry = now_unix + kSignedHintLifetimeSeconds;
+            auto payload = dinero::p2p::SignHint(*node_identity_, fields);
+            if (!payload.empty()) ours.push_back(std::move(payload));
+        }
+    }
+    // As a relay: re-advertise the signed hints of targets registered here.
+    std::vector<std::vector<uint8_t>> registrants;
+    {
+        std::lock_guard<std::mutex> lock(relay_hints_mutex_);
+        for (const auto& [target_hex, hints] : relay_hints_by_target_) {
+            std::array<uint8_t, 20> target{};
+            if (!DecodeNodeIdHex(target_hex, &target) || !relay_registry_.Lookup(target)) continue;
+            for (const auto& h : hints) {
+                if (!h.v2_payload.empty() && h.v2_expiry > now_unix) registrants.push_back(h.v2_payload);
+            }
+        }
+    }
+    for (const auto& p : ours) SendSignedRelayHint(p, {});
+    for (const auto& p : registrants) SendSignedRelayHint(p, {});
+}
+
+#ifdef DINERO_TEST_BUILD
+size_t P2PManager::test_relay_hint_count(const std::array<uint8_t, 20>& target) const {
+    std::lock_guard<std::mutex> lock(relay_hints_mutex_);
+    auto it = relay_hints_by_target_.find(NodeIdHex(target));
+    return it == relay_hints_by_target_.end() ? 0 : it->second.size();
+}
+
+void P2PManager::test_set_peer_services(const std::string& peer_key, uint64_t services) {
+    std::lock_guard<std::mutex> lock(peers_mutex_);
+    auto it = connected_peers_.find(peer_key);
+    if (it != connected_peers_.end()) it->second->service_flags = services;
+}
+#endif
+
 void P2PManager::OrchestrateRelayDials() {
     if (!node_identity_) return;  // can't drive dineroid for the inner handshake
 
     // Snapshot the side-table + already-connected key set so the rest
     // of the orchestrator runs without holding peers_mutex_ / relay_hints_mutex_.
     std::vector<std::pair<std::string /*hex*/, RelayHintRecord>> candidates;
+    std::vector<std::pair<std::string, uint16_t>> relays_to_dial;
     std::unordered_set<std::string> already_connected_targets_hex;
     std::unordered_set<std::string> connected_peer_addresses;
     size_t current_outbound = 0;
@@ -2390,6 +2548,7 @@ void P2PManager::OrchestrateRelayDials() {
             // only send RELAY_CONNECT through a relay peer we are already
             // connected to.
             const RelayHintRecord* best = nullptr;
+            const RelayHintRecord* signed_unconnected = nullptr;
             for (const auto& h : hints) {
                 // Only IPv4 hints are dialable today (slice 4b ingest accepts
                 // all four BIP155 types but TORV3/I2P aren't routable yet).
@@ -2402,15 +2561,43 @@ void P2PManager::OrchestrateRelayDials() {
                               h.relay_addr[0], h.relay_addr[1],
                               h.relay_addr[2], h.relay_addr[3], h.relay_port);
                 if (connected_peer_addresses.count(relay_buf) == 0) {
+                    // Only a target-signed hint may make us dial a relay we
+                    // aren't connected to: a legacy hint could name anything.
+                    if (!h.v2_payload.empty()) signed_unconnected = &h;
                     continue;
                 }
                 if (!best || h.learned_at > best->learned_at) best = &h;
             }
             if (!best) {
+                if (signed_unconnected) {
+                    char relay_buf[24];
+                    std::snprintf(relay_buf, sizeof(relay_buf), "%u.%u.%u.%u",
+                                  signed_unconnected->relay_addr[0], signed_unconnected->relay_addr[1],
+                                  signed_unconnected->relay_addr[2], signed_unconnected->relay_addr[3]);
+                    relays_to_dial.emplace_back(relay_buf, signed_unconnected->relay_port);
+                }
                 continue;
             }
             candidates.emplace_back(target_hex, *best);
         }
+    }
+
+    // Connect to relays we only know from signed hints; RELAY_CONNECT
+    // follows on a later pass once the connection is up.
+    for (const auto& [host, port] : relays_to_dial) {
+        if (current_outbound >= MAX_OUTBOUND_CONNECTIONS) break;
+        const std::string relay_key = host + ":" + std::to_string(port);
+        auto it = last_hint_relay_dial_.find(relay_key);
+        if (it != last_hint_relay_dial_.end() && now - it->second < kRelayDialBackoff) continue;
+        last_hint_relay_dial_[relay_key] = now;
+#ifdef DINERO_TEST_BUILD
+        if (test_connection_manager_dial_) {
+            test_connection_manager_dial_(host, port);
+            continue;
+        }
+#endif
+        connect_to_peer(host, port);
+        current_outbound++;
     }
 
     if (candidates.empty()) return;
@@ -7045,6 +7232,8 @@ void P2PManager::process_message(const std::string& peer_address, const P2PMessa
         handle_relay_ping(peer_address, message);
     } else if (message.command == "relayrok") {
         handle_relay_register_ok(peer_address, message);
+    } else if (message.command == "relayhn2") {
+        handle_relay_hint_v2(peer_address, message);
     } else if (message.command == "relayhnt") {
         // NAT Phase C3 slice 4b: ingest into relay_hints_by_target_.
         handle_relay_hints(peer_address, message);
@@ -9093,6 +9282,7 @@ void P2PManager::keepalive_loop() {
         // peers whose last register is older than the refresh interval.
         RefreshRelayRegistrations();
         RelayRegistrationTick();
+        SignedRelayHintsTick(/*force=*/false);
         // NAT traversal: keep relay registrations topped up when this
         // node has no confirmed inbound path. No-op when relays are
         // operator-configured or the MainnetRelayReady() gate is closed.

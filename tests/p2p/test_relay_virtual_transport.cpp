@@ -18,6 +18,7 @@
 #include "daemon/peer_send_health.h"
 #include "network/types.h"
 #include "p2p/addrman.h"
+#include "p2p/relay_hint_v2.h"
 
 #include <gtest/gtest.h>
 
@@ -1286,4 +1287,177 @@ TEST(RelayRegistration, RelayAcksRegistrationAndEchoesPings) {
     EXPECT_EQ(pong->command, "relaypng");
     EXPECT_EQ(ReadLE64ForTest(pong->payload, 0), 0u);
     EXPECT_EQ(ReadLE64ForTest(pong->payload, 8), 777u);
+}
+
+// Plan 3 Task 4: relayhn2 — the NAT'd target signs "reach me via relay R
+// until T"; nodes store only what verifies and forward it a bounded number
+// of hops, so a node that isn't connected to R or the target can still
+// find the target, dial R and ask it for a circuit.
+namespace {
+
+std::unique_ptr<dinero::daemon::NodeIdentity> NewIdentity() {
+    const auto dir = std::filesystem::temp_directory_path() /
+                     ("dinero-hint-target-" + std::to_string(
+                         std::chrono::steady_clock::now().time_since_epoch().count()));
+    std::filesystem::create_directories(dir);
+    auto id = std::make_unique<dinero::daemon::NodeIdentity>();
+    const bool ok = id->initialize(dir.string());
+    std::filesystem::remove_all(dir);
+    if (!ok) throw std::runtime_error("identity");
+    return id;
+}
+
+uint32_t UnixNow() {
+    return static_cast<uint32_t>(
+        std::chrono::system_clock::to_time_t(std::chrono::system_clock::now()));
+}
+
+P2PMessage SignedHintMessage(const dinero::daemon::NodeIdentity& target, uint8_t hop,
+                             std::vector<uint8_t> relay_ip = {8, 8, 10, 1}) {
+    dinero::p2p::HintFields f;
+    f.relay_addr = std::move(relay_ip);
+    f.relay_port = 20999;
+    f.expiry = UnixNow() + 1800;
+    P2PMessage m;
+    m.command = "relayhn2";
+    m.payload = dinero::p2p::WithHop(dinero::p2p::SignHint(target, f), hop);
+    return m;
+}
+
+constexpr uint64_t kDialbackPeer = dinero::ServiceFlags::NODE_DIALBACK;
+
+}  // namespace
+
+TEST(SignedHints, ForgedHintIsNotStoredOrForwarded) {
+    auto target = NewIdentity();
+    auto mallory = NewIdentity();
+    P2PManager m(0);
+    auto sender = LoopbackSocketPair::Create();
+    auto other = LoopbackSocketPair::Create();
+    const std::string sender_key = "10.1.0.1:20999", other_key = "10.1.0.2:20999";
+    m.test_install_connected_direct_peer(sender_key, sender.client_fd(), false, false, {});
+    m.test_install_connected_direct_peer(other_key, other.client_fd(), true, false, {});
+    m.test_set_peer_services(sender_key, kDialbackPeer);
+    m.test_set_peer_services(other_key, kDialbackPeer);
+
+    // Mallory claims to be the target: right node id, Mallory's key and signature.
+    auto forged = SignedHintMessage(*mallory, 0);
+    const auto id = target->get_node_id_bytes();
+    std::copy(id.begin(), id.end(), forged.payload.begin());
+    m.handle_relay_hint_v2(sender_key, forged);
+    EXPECT_EQ(m.test_relay_hint_count(id), 0u) << "a forged hint must not be stored";
+    EXPECT_EQ(other.ReceiveMessage(), nullptr) << "a forged hint must not be forwarded";
+
+    m.handle_relay_hint_v2(sender_key, SignedHintMessage(*target, 0));
+    EXPECT_EQ(m.test_relay_hint_count(id), 1u);
+    auto fwd = other.ReceiveMessage();
+    ASSERT_NE(fwd, nullptr);
+    EXPECT_EQ(fwd->command, "relayhn2");
+    const auto h = dinero::p2p::VerifyHint(fwd->payload, UnixNow());
+    ASSERT_TRUE(h.has_value());
+    EXPECT_EQ(h->hop, 1);
+    EXPECT_EQ(sender.ReceiveMessage(), nullptr) << "never sent back to the sender";
+}
+
+TEST(SignedHints, ForwardingIsBoundedInACycle) {
+    // Five nodes, every one connected to every other: each pair of nodes
+    // closes a cycle, so without dedup copies multiply within the hop limit.
+    constexpr int kN = 5;
+    std::vector<std::unique_ptr<P2PManager>> nodes;
+    for (int i = 0; i < kN; ++i) nodes.push_back(std::make_unique<P2PManager>(0));
+    auto key_of = [](int i) { return "10.2.0." + std::to_string(i + 1) + ":20999"; };
+    struct Link { int from, to; std::unique_ptr<LoopbackSocketPair> sock; };
+    std::vector<Link> links;  // what `from` sends to `to` arrives on sock
+    for (int i = 0; i < kN; ++i) {
+        for (int j = 0; j < kN; ++j) {
+            if (j == i) continue;
+            auto sock = std::make_unique<LoopbackSocketPair>(LoopbackSocketPair::Create());
+            nodes[i]->test_install_connected_direct_peer(key_of(j), sock->client_fd(), true, false, {});
+            nodes[i]->test_set_peer_services(key_of(j), kDialbackPeer);
+            links.push_back({i, j, std::move(sock)});
+        }
+    }
+    auto target = NewIdentity();
+    // The target's hint arrives at node 0 from outside the ring (hop 0).
+    nodes[0]->handle_relay_hint_v2("10.9.9.9:20999", SignedHintMessage(*target, 0));
+
+    std::vector<int> sent_by(kN, 0);
+    std::set<std::pair<int, int>> deliveries;
+    for (int round = 0; round < 10; ++round) {
+        bool any = false;
+        for (auto& l : links) {
+            while (auto msg = l.sock->ReceiveMessage()) {
+                any = true;
+                ++sent_by[l.from];
+                EXPECT_TRUE(deliveries.insert({l.from, l.to}).second)
+                    << l.from << "->" << l.to << " sent twice";
+                nodes[l.to]->handle_relay_hint_v2(key_of(l.from), *msg);
+            }
+        }
+        if (!any) break;
+    }
+    for (int i = 0; i < kN; ++i) {
+        EXPECT_EQ(nodes[i]->test_relay_hint_count(target->get_node_id_bytes()), 1u) << "node " << i;
+        EXPECT_LE(sent_by[i], kN - 1) << "node " << i << " forwards once (to each other peer)";
+    }
+    int total = 0;
+    for (int n : sent_by) total += n;
+    EXPECT_LE(total, kN * (kN - 1)) << "no amplification";
+
+    // Hop limit: a hint that has already travelled 3 hops is stored, not forwarded.
+    auto far = NewIdentity();
+    nodes[2]->handle_relay_hint_v2(key_of(1), SignedHintMessage(*far, dinero::p2p::kHintMaxHops));
+    EXPECT_EQ(nodes[2]->test_relay_hint_count(far->get_node_id_bytes()), 1u);
+    for (auto& l : links) {
+        if (l.from == 2) EXPECT_EQ(l.sock->ReceiveMessage(), nullptr) << "hop limit";
+    }
+}
+
+TEST(SignedHints, ThirdHopNodeCanDialTarget) {
+    // A (NAT'd) is registered with relay R = 8.8.10.1. D hears about it from
+    // C, two hops from R, and is connected to neither R nor A.
+    auto a = NewIdentity();
+    P2PManager d(0);
+    InstallNodeIdentity(d);
+    auto c_sock = LoopbackSocketPair::Create();
+    const std::string c_key = "10.3.0.3:20999";
+    d.test_install_connected_direct_peer(c_key, c_sock.client_fd(), true, false, {});
+    d.test_set_peer_services(c_key, kDialbackPeer);
+    std::vector<std::pair<std::string, uint16_t>> dialed;
+    d.test_set_connection_manager_dial([&](const std::string& host, uint16_t port) {
+        dialed.emplace_back(host, port);
+        return true;
+    });
+
+    d.handle_relay_hint_v2(c_key, SignedHintMessage(*a, 2));
+    d.test_orchestrate_relay_dials();
+    ASSERT_EQ(dialed.size(), 1u) << "D must connect to the relay named by the signed hint";
+    EXPECT_EQ(dialed[0].first, "8.8.10.1");
+    EXPECT_EQ(dialed[0].second, 20999);
+
+    // Once D is connected to R, the next pass asks R for a circuit to A.
+    auto r_sock = LoopbackSocketPair::Create();
+    d.test_install_connected_direct_peer("8.8.10.1:20999", r_sock.client_fd(), true, false, {});
+    d.test_orchestrate_relay_dials();
+    std::unique_ptr<P2PMessage> connect;
+    for (int i = 0; i < 4 && !connect; ++i) {
+        auto m = r_sock.ReceiveMessage();
+        if (!m) break;
+        if (m->command == "relaycon") connect = std::move(m);
+    }
+    ASSERT_NE(connect, nullptr) << "D sends RELAY_CONNECT for A through R";
+    const auto a_id = a->get_node_id_bytes();
+    EXPECT_TRUE(std::equal(a_id.begin(), a_id.end(), connect->payload.begin()));
+
+    // A legacy (unsigned) hint must never make a node dial an address.
+    P2PManager e(0);
+    InstallNodeIdentity(e);
+    std::vector<std::pair<std::string, uint16_t>> e_dialed;
+    e.test_set_connection_manager_dial([&](const std::string& h, uint16_t p) {
+        e_dialed.emplace_back(h, p);
+        return true;
+    });
+    AddRelayHint(e, MakeNodeId(0x61), 20999);
+    e.test_orchestrate_relay_dials();
+    EXPECT_TRUE(e_dialed.empty());
 }

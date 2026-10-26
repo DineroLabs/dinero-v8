@@ -23,6 +23,7 @@
 #include "network/clock_source.h"     // relay-hints Phase 1a: injectable time source for TTL logic
 #include "network/rolling_24h_counter.h"  // Phase 2b: rolling 24h byte counter for relay-virtual traffic
 #include "network/endpoint_format.h"   // [v6]:port peer keys
+#include "p2p/relay_hint_v2.h"         // relayhn2: target-signed, forwardable relay hints
 #include "p2p/self_reachability.h"      // dial-back verified self addresses
 #include "network/quic_session.h"     // NAT traversal Phase B2: encrypted relay virtual peers
 #include "network/relay_registry.h"   // NAT traversal Phase C3 slice 2: relay-side directory
@@ -764,6 +765,10 @@ public:
     // target to a freshly-connected NODE_DINERO_V2 peer, so an origin that
     // joins after a target registered still learns how to reach it.
     void SendRelayRegistryToNewPeer(PeerInfo* peer);
+    // relayhn2: verify (only the target can sign its own hint), store, then
+    // forward once with hop+1 to NODE_DIALBACK peers while hop < 3, at most
+    // 50 forwards a minute.
+    void handle_relay_hint_v2(const std::string& peer_address, const P2PMessage& message);
 
     // NAT traversal Phase D-1: match an incoming RELAY_CONNECT_ACK
     // against pending_connects_ and (on Ok) install the circuit_id into
@@ -993,6 +998,10 @@ public:
                                  bool connected);
     void test_maybe_auto_register_with_relays();
     void test_relay_registration_tick() { RelayRegistrationTick(); }
+    void test_signed_relay_hints_tick() { SignedRelayHintsTick(/*force=*/true); }
+    void test_orchestrate_relay_dials() { OrchestrateRelayDials(); }
+    size_t test_relay_hint_count(const std::array<uint8_t, 20>& target) const;
+    void test_set_peer_services(const std::string& peer_key, uint64_t services);
     // Gives a test-installed peer (keyed "host:port", port 0) its real
     // endpoint, so to_string() matches relay endpoint keys.
     void test_set_peer_endpoint(const std::string& peer_key, const std::string& host,
@@ -1378,6 +1387,10 @@ private:
         // on any successful handshake or on receipt of a fresh duplicate
         // hint. Drop when >= kHintMaxFailures.
         int consecutive_dial_failures{0};
+        // relayhn2 only: the target's own signed hint (empty for legacy
+        // relayhnt) and its expiry, unix seconds.
+        std::vector<uint8_t> v2_payload;
+        uint32_t v2_expiry{0};
     };
     // Time source for TTL/expiry logic in the hints subsystem.
     // Defaults to SystemClockSource; tests inject a FakeClockSource.
@@ -1421,6 +1434,20 @@ private:
     std::unordered_map<std::string /*target_node_id_hex*/,
                        std::chrono::steady_clock::time_point>
         last_relay_dial_attempt_;
+    // Relays named only by a signed hint, dialed so RELAY_CONNECT can follow.
+    std::unordered_map<std::string /*relay host:port*/, std::chrono::steady_clock::time_point>
+        last_hint_relay_dial_;
+    // relayhn2: every 10 min a NAT'd target re-signs its hints (30 min
+    // expiry) and a relay re-advertises the signed hints of its registrants.
+    static constexpr std::chrono::minutes kSignedHintPeriod{10};
+    static constexpr uint32_t kSignedHintLifetimeSeconds = 30 * 60;
+    std::chrono::steady_clock::time_point last_signed_hint_round_{};
+    std::atomic<bool> signed_hints_due_{false};  // a relay just confirmed us
+    std::mutex hint_forwarder_mutex_;
+    dinero::p2p::HintForwarder hint_forwarder_;
+    std::atomic<uint64_t> hints_v2_rejected_{0};
+    void SignedRelayHintsTick(bool force);
+    void SendSignedRelayHint(const std::vector<uint8_t>& payload, const std::string& except_peer);
 
 public:
     // ── Relay health scoring (auto-registration SET) ────────────────────
