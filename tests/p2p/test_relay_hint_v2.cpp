@@ -125,3 +125,40 @@ TEST(SignedHints, ForwardingIsRateLimited) {
     }
     EXPECT_EQ(forwarded, 50);
 }
+
+// Review I4: a hint the budget refused used to be marked seen anyway, so it
+// was never forwarded even after the bucket refilled.
+TEST(SignedHints, RefusedForBudgetIsForwardedLater) {
+    auto a = MakeIdentity();
+    HintForwarder f(1.0);  // one forward a minute
+    const auto t = std::chrono::steady_clock::now();
+    HintFields first = ViaRelay(kNow + 100);
+    first.node_id = a->get_node_id_bytes();
+    HintFields second = ViaRelay(kNow + 200);
+    second.node_id = a->get_node_id_bytes();
+    ASSERT_TRUE(f.ShouldForward(first, kNow, t));
+    EXPECT_FALSE(f.ShouldForward(second, kNow, t)) << "budget exhausted";
+    EXPECT_TRUE(f.ShouldForward(second, kNow + 61, t + std::chrono::seconds(61)))
+        << "a hint refused for budget was never forwarded";
+}
+
+// Review I1: the signature authenticates the target, not the relay address,
+// so a hint may only name a public relay: nodes would dial it.
+TEST(SignedHints, HintNamingAPrivateRelayIsRejected) {
+    auto a = MakeIdentity();
+    for (std::vector<uint8_t> ip : {std::vector<uint8_t>{127, 0, 0, 1}, {192, 168, 1, 1}, {10, 0, 0, 5},
+                                    {172, 16, 3, 4}, {169, 254, 1, 1}, {100, 64, 0, 1}, {0, 0, 0, 0},
+                                    {224, 0, 0, 1}}) {
+        HintFields h = ViaRelay(kNow + 1800);
+        h.relay_addr = ip;
+        const auto wire = SignHint(*a, h);
+        EXPECT_FALSE(VerifyHint(wire, kNow).has_value())
+            << int(ip[0]) << "." << int(ip[1]) << "." << int(ip[2]) << "." << int(ip[3]);
+        EXPECT_TRUE(VerifyHint(wire, kNow, /*allow_private_relay=*/true).has_value());
+    }
+    HintFields v6 = ViaRelay(kNow + 1800);
+    v6.relay_net = NetworkType::IPV6;
+    v6.relay_addr.assign(16, 0);
+    v6.relay_addr[15] = 1;  // ::1
+    EXPECT_FALSE(VerifyHint(SignHint(*a, v6), kNow).has_value());
+}

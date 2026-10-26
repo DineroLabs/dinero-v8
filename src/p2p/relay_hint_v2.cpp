@@ -64,7 +64,32 @@ std::vector<uint8_t> SignHint(const dinero::daemon::NodeIdentity& identity,
     return out;
 }
 
-std::optional<HintFields> VerifyHint(std::span<const uint8_t> p, uint32_t now) {
+bool IsPublicRelayAddress(NetworkType net, const std::vector<uint8_t>& a) {
+    if (net == NetworkType::IPV4 && a.size() == 4) {
+        if (a[0] == 0 || a[0] == 10 || a[0] == 127 || a[0] >= 224) return false;
+        if (a[0] == 169 && a[1] == 254) return false;
+        if (a[0] == 172 && (a[1] & 0xF0) == 16) return false;
+        if (a[0] == 192 && a[1] == 168) return false;
+        if (a[0] == 100 && (a[1] & 0xC0) == 64) return false;  // CGNAT 100.64/10
+        return true;
+    }
+    if (net == NetworkType::IPV6 && a.size() == 16) {
+        bool all_zero = true;
+        for (size_t i = 0; i < 15; ++i) all_zero = all_zero && a[i] == 0;
+        if (all_zero && (a[15] == 0 || a[15] == 1)) return false;  // :: and ::1
+        if ((a[0] & 0xFE) == 0xFC) return false;                   // fc00::/7
+        if (a[0] == 0xFE && (a[1] & 0xC0) == 0x80) return false;   // fe80::/10
+        if (a[0] == 0xFF) return false;                            // multicast
+        bool mapped = true;                                        // ::ffff:0:0/96
+        for (size_t i = 0; i < 10; ++i) mapped = mapped && a[i] == 0;
+        if (mapped && a[10] == 0xFF && a[11] == 0xFF) return false;
+        return true;
+    }
+    return false;
+}
+
+std::optional<HintFields> VerifyHint(std::span<const uint8_t> p, uint32_t now,
+                                     bool allow_private_relay) {
     if (p.size() < kFixedHead) return std::nullopt;
     HintFields h;
     std::memcpy(h.node_id.data(), p.data(), 20);
@@ -87,6 +112,7 @@ std::optional<HintFields> VerifyHint(std::span<const uint8_t> p, uint32_t now) {
     const size_t sig_len = p[off++];
     if (sig_len == 0 || sig_len > 72 || p.size() != off + sig_len) return std::nullopt;
     if (h.relay_port == 0) return std::nullopt;
+    if (!allow_private_relay && !IsPublicRelayAddress(h.relay_net, h.relay_addr)) return std::nullopt;
     if (h.expiry <= now || h.expiry > now + kHintMaxLifetimeSeconds) return std::nullopt;
 
     // The key must be the one the node id names, and it must have signed.
@@ -112,14 +138,21 @@ HintForwarder::HintForwarder(double per_minute) : bucket_(per_minute / 60.0, per
 
 bool HintForwarder::ShouldForward(const HintFields& hint, uint32_t now_unix,
                                   std::chrono::steady_clock::time_point now) {
-    for (auto it = seen_.begin(); it != seen_.end();) {
-        it = it->second <= now_unix ? seen_.erase(it) : std::next(it);
+    if (now - last_prune_ >= std::chrono::minutes(1)) {
+        for (auto it = seen_.begin(); it != seen_.end();) {
+            it = it->second <= now_unix ? seen_.erase(it) : std::next(it);
+        }
+        last_prune_ = now;
     }
+    if (hint.hop >= kHintMaxHops) return false;
     const Key key{hint.node_id, static_cast<uint8_t>(hint.relay_net), hint.relay_addr,
                   hint.relay_port, hint.expiry};
-    if (!seen_.emplace(key, hint.expiry).second) return false;  // already forwarded
-    if (hint.hop >= kHintMaxHops) return false;
-    return bucket_.TryConsume(1, now);
+    if (seen_.count(key)) return false;  // already forwarded
+    // Record only what we actually forward: a hint refused for budget may
+    // go out later, when the bucket has refilled.
+    if (!bucket_.TryConsume(1, now)) return false;
+    seen_.emplace(key, hint.expiry);
+    return true;
 }
 
 }  // namespace dinero::p2p

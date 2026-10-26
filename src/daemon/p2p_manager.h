@@ -485,9 +485,10 @@ public:
         uint32_t requests_per_peer_per_minute{6};
         uint64_t monthly_quota_bytes{20ULL * 1024 * 1024 * 1024};
     };
-    void set_relay_service_enabled(bool enabled) {
-        relay_service_enabled_.store(enabled, std::memory_order_release);
-    }
+    // Turning the role off also drops every registration we hold.
+    void set_relay_service_enabled(bool enabled);
+    // Enabled, not syncing, and quota left: what acks and pongs require.
+    bool relay_serving() const;
     void set_relay_service_limits(const RelayServiceLimits& limits);
     // <datadir>/relay_quota: this calendar month's (UTC) relayed bytes, so a
     // restart does not reset the monthly cap. Loads it now; written at most
@@ -496,12 +497,12 @@ public:
     uint64_t relay_quota_month_bytes() const;
     uint64_t relay_quota_month_limit() const;
     // Why new circuits are refused right now: "" (not paused), "syncing"
-    // (IBD or more than 6 blocks behind the best header) or "quota".
+    // (still at genesis, or more than 6 blocks behind the best validated
+    // header) or "quota".
     std::string relay_paused_reason() const;
     void set_best_header_height_provider(HeightProvider provider) {
         best_header_height_provider_ = std::move(provider);
     }
-    void set_ibd_provider(std::function<bool()> provider) { ibd_provider_ = std::move(provider); }
     void set_address_manager(dinero::p2p::AddressManager* address_manager);
 
     // NAT traversal Phase 1A: caller wires in the daemon-wide NodeIdentity
@@ -1022,10 +1023,15 @@ public:
                                  bool connected);
     void test_maybe_auto_register_with_relays();
     void test_relay_registration_tick() { RelayRegistrationTick(); }
+    void test_refresh_relay_registrations() { RefreshRelayRegistrations(); }
     void test_signed_relay_hints_tick() { SignedRelayHintsTick(/*force=*/true); }
     void test_orchestrate_relay_dials() { OrchestrateRelayDials(); }
     size_t test_relay_hint_count(const std::array<uint8_t, 20>& target) const;
+    size_t test_signed_relay_hint_count(const std::array<uint8_t, 20>& target) const;
+    size_t test_relay_hint_target_count() const;
+    size_t test_relay_circuit_count() const;
     void test_set_peer_services(const std::string& peer_key, uint64_t services);
+    void test_set_peer_best_height(const std::string& peer_key, uint32_t height);
     // A relayed (via_relay, encrypted QUIC) peer on a caller-owned session;
     // `expected_target` set means an outbound dial of that node id.
     std::string test_install_quic_relay_peer(
@@ -1356,7 +1362,6 @@ private:
     std::chrono::steady_clock::time_point relay_quota_saved_at_{};
     std::atomic<bool> relay_quota_exhausted_{false};
     HeightProvider best_header_height_provider_;
-    std::function<bool()> ibd_provider_;
     std::atomic<bool> relay_behind_throttle_{false};
     std::atomic<uint64_t> relay_drops_circuit_{0};
     std::atomic<uint64_t> relay_drops_global_{0};
@@ -1401,6 +1406,7 @@ private:
     std::unordered_map<uint64_t /*circuit_id*/, OriginatedCircuit> originated_circuits_;
     static constexpr std::chrono::seconds kRelayConnectTimeout{10};
     static constexpr std::chrono::seconds kRelayConnectSweepPeriod{2};
+    static constexpr size_t kRelayMaxCircuitsPerNetGroup = 4;
 
     // NAT traversal Phase C3 slice 4b: ingested relay-hints side-table.
     // Keyed on target_node_id_hex (40 chars). Value is a list of relay
@@ -1470,9 +1476,14 @@ private:
     std::unordered_map<std::string /*target_node_id_hex*/,
                        std::chrono::steady_clock::time_point>
         last_relay_dial_attempt_;
-    // Relays named only by a signed hint, dialed so RELAY_CONNECT can follow.
+    // Relays named only by a signed hint, dialed so RELAY_CONNECT can follow:
+    // relay host:port -> not before. Failed ones wait kHintRelaySkipAfterFailure.
     std::unordered_map<std::string /*relay host:port*/, std::chrono::steady_clock::time_point>
         last_hint_relay_dial_;
+    static constexpr std::chrono::hours kHintRelaySkipAfterFailure{6};
+    // At most 2 such cold dials per 10 minutes.
+    dinero::network::TokenBucket hint_cold_dial_budget_{2.0 / 600.0, 2.0};
+    void drop_all_relay_hints_via(const std::string& relay_address);
     // relayhn2: every 10 min a NAT'd target re-signs its hints (30 min
     // expiry) and a relay re-advertises the signed hints of its registrants.
     static constexpr std::chrono::minutes kSignedHintPeriod{10};
@@ -1483,6 +1494,15 @@ private:
     std::atomic<uint64_t> hints_v2_rejected_{0};
     // An outbound relayed dial reached someone other than the target: drop
     // the target's hints through that relay.
+    // Caller holds relay_hints_mutex_. False: no room for this hint.
+    bool MakeRoomForHint(std::vector<RelayHintRecord>& bucket, bool incoming_signed);
+    // Caller holds relay_hints_mutex_. Keeps the table at kMaxHintTargets.
+    void EnforceHintTargetCap();
+    static constexpr size_t kMaxHintTargets = 1024;
+    static constexpr uint32_t kHintIngestPerPeerPerMinute = 30;
+    // peer -> (window start, relayhn2 seen); guarded by hint_forwarder_mutex_.
+    std::unordered_map<std::string, std::pair<std::chrono::steady_clock::time_point, uint32_t>>
+        hint_ingest_windows_;
     void drop_relay_hints_via(const std::array<uint8_t, 20>& target, const std::string& relay_address);
     void SignedRelayHintsTick(bool force);
     void SendSignedRelayHint(const std::vector<uint8_t>& payload, const std::string& except_peer);

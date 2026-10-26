@@ -2333,9 +2333,9 @@ bool P2PService::Start() {
             p2p_mgr_->set_height_provider([this]() -> uint32_t {
                 return chainstate_->getBlockHeight();
             });
-            // A relay that is syncing (IBD, or more than 6 blocks behind its
-            // best validated header) stops taking new circuits.
-            p2p_mgr_->set_ibd_provider([this]() { return chainstate_->IsInIBD(); });
+            // A relay more than 6 blocks behind its best validated header
+            // stops taking new circuits (validated headers only: peers'
+            // claimed heights must not be able to pause it).
             p2p_mgr_->set_best_header_height_provider([]() -> uint32_t {
                 auto* ctx = DaemonContext::instance();
                 consensus::HeaderIndexEntry best{};

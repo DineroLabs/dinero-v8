@@ -56,8 +56,15 @@ std::vector<uint8_t> SignHint(const dinero::daemon::NodeIdentity& identity,
                               const HintFields& fields);
 
 // The hint, if the payload parses, HASH160(pubkey) == node_id, the
-// signature is valid, and now < expiry <= now + kHintMaxLifetimeSeconds.
-std::optional<HintFields> VerifyHint(std::span<const uint8_t> payload, uint32_t now);
+// signature is valid, now < expiry <= now + kHintMaxLifetimeSeconds, and the
+// relay address is a public one (nodes dial it): no loopback, private,
+// link-local, CGNAT, multicast or unspecified address unless
+// `allow_private_relay` (regtest and tests).
+std::optional<HintFields> VerifyHint(std::span<const uint8_t> payload, uint32_t now,
+                                     bool allow_private_relay = false);
+
+// True for an IPv4/IPv6 address that is reachable on the public internet.
+bool IsPublicRelayAddress(NetworkType net, const std::vector<uint8_t>& addr);
 
 // The same payload with its (unsigned) hop count replaced.
 std::vector<uint8_t> WithHop(std::span<const uint8_t> payload, uint8_t hop);
@@ -73,8 +80,9 @@ public:
 private:
     using Key = std::tuple<std::array<uint8_t, 20>, uint8_t, std::vector<uint8_t>, uint16_t,
                            uint32_t>;
-    std::map<Key, uint32_t> seen_;  // -> expiry, pruned once past
+    std::map<Key, uint32_t> seen_;  // -> expiry, pruned once past (at most once a minute)
     dinero::network::TokenBucket bucket_;
+    std::chrono::steady_clock::time_point last_prune_{};
 };
 
 }  // namespace dinero::p2p

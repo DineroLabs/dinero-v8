@@ -72,8 +72,12 @@ or **Custom**. Automatic uses the home-relay caps (8 concurrent circuits,
 200 KB/s aggregate relay bandwidth, 20 GB per calendar month kept across
 restarts in `<datadir>/relay_quota`, two circuits per peer, a 30-minute circuit
 lifetime, and six requests per peer per minute). New circuits are refused while
-the node is syncing (initial block download, or more than 6 blocks behind its
-best header) or once the month's quota is used; open circuits finish.
+the node is syncing (still at genesis, or more than 6 blocks behind its best
+validated header — peers' claimed heights never count) or once the month's
+quota is used; open circuits finish. While it can't serve, a relay also stops
+confirming registrations and answering their pings, so NAT'd nodes move to
+another relay. A NAT'd node keeps two relays on different networks; fleet
+relays hold the slots until two community relays have confirmed.
 `getnetworkinfo.relay` reports `quota_month_bytes`, `quota_month_limit` and
 `paused_reason`. Custom values are validated
 against hard ceilings before being persisted. Disabling this Dinero-only relay
