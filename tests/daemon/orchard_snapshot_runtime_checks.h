@@ -692,6 +692,19 @@ void GenerateSdkActivationFixture(){
                 const auto header=mined->Header().SerializeForHash();result["header"]=util::hex({header.begin(),header.end()});
                 result["transactions"]=Json::Value(Json::arrayValue);
                 for(const auto& tx:mined->Transactions())result["transactions"].append(tx.GetTxid().AsUint256().GetHex());
+            }else if(op=="mine_private"){
+                std::vector<uint8_t> wire;ASSERT_TRUE(util::unhex(request["body"].asString(),wire));
+                const auto body=DecodeRelayTransaction(wire,RelayTransactionReadMode::AvailableFamilies);
+                ASSERT_TRUE(body.IsOrchard());ASSERT_TRUE(body.Inputs().empty());
+                ASSERT_TRUE(source.f.ingress->SubmitBody(body,TxOrigin::P2P).accepted());
+                BlockAssembler assembler(&source.f.db);WireOrchardAssembler(assembler,source.f);
+                const auto mined=SolveCatalogTemplate(assembler.CreateOrchardBlock(OrchardMiningPayout));ASSERT_TRUE(mined);
+                ASSERT_EQ(mined->Height(),105u);ASSERT_GT(mined->Transactions().size(),1u);
+                ASSERT_TRUE(source.Submit(mined->WireBytes()).connected);
+                result["body"]=util::hex(mined->WireBytes());result["hash"]=mined->Header().GetHash().GetHex();
+                const auto header=mined->Header().SerializeForHash();result["header"]=util::hex({header.begin(),header.end()});
+                result["transactions"]=Json::Value(Json::arrayValue);
+                for(const auto& tx:mined->Transactions())result["transactions"].append(tx.GetTxid().AsUint256().GetHex());
             }else{ASSERT_EQ(op,"stop");break;}
             reply<<Json::writeString(compact_json,result)<<std::endl;ASSERT_TRUE(reply);
         }

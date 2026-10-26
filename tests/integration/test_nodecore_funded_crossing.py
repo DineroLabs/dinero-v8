@@ -269,10 +269,71 @@ try:
     balance=rpc('wallet.orchard.getbalance',dict(later,account=0));notes=rpc('wallet.orchard.listreceived',dict(later,account=0))
     assert balance['confirmed_una']==520000 and notes['total_count']==2,(balance,notes)
     assert any(n['amount_una']==20000 and n['height']==104 and bytes.fromhex(n['memo_hex'])==b'funded queued crossing'.ljust(512,b'\0') for n in notes['received']),notes
+    private_send=None
+    if os.environ.get('DINERO_SDK_COMPACT_PRIVATE_SEND')=='1':
+        # Distinct seed, normal named restore and explicit authenticated account0
+        # recovery. The native producer never knows either wallet's spend plan.
+        assert rpc('wallet.restore',dict(name='private-recipient',mnemonic='legal winner thank year wave sausage worth useful legal winner thank yellow',rescan=False))['success'] is True
+        recipient_binding=bound('private-recipient')
+        for _ in range(8):
+            recipient_recovery=rpc('wallet.orchard.recoveraccount0',recipient_binding)
+            if recipient_recovery.get('complete'):break
+        assert recipient_recovery.get('complete') and recipient_recovery['generated'] is False,recipient_recovery
+        receiver=rpc('wallet.orchard.getnewaddress',dict(recipient_binding,account=0))['address']
+        assert rpc('wallet.open',['wire-named-owner'])['success'] is True
+        assert rpc('wallet.unlock',['funded-crossing-password',0])['success'] is True
+        payer=bound('wire-named-owner');payer_balance=rpc('wallet.orchard.getbalance',dict(payer,account=0))
+        assert payer_balance['confirmed_una']==520000,payer_balance
+        private_id='81'+'00'*31
+        payment=dict(payer,account=0,request_id=private_id,expected_revision=payer_balance['account_revision'],
+            payments=[dict(address=receiver,amount_una=10000,memo_hex=b'compact private payment'.hex())],outputs=[],fee_una=1000)
+        private_queued=rpc('wallet.orchard.queuespend',payment)
+        assert private_queued['proof_queued'] and not private_queued['existing_request'],private_queued
+        reserved_rows=wallet_rows();private_retry=rpc('wallet.orchard.queuespend',payment)
+        assert private_retry['existing_request'] and not private_retry['proof_queued'] and wallet_rows()==reserved_rows,private_retry
+        deadline=time.monotonic()+30
+        while time.monotonic()<deadline:
+            private_finished=call('rpc',method='wallet.orchard.finishspend',params=dict(payer,account=0,request_id=private_id))
+            (root/'private-send-progress.json').write_text(json.dumps(dict(queued=private_queued,finished=private_finished),indent=2)+'\n')
+            if isinstance(private_finished,dict) and private_finished.get('admitted'):break
+            assert isinstance(private_finished,dict) and private_finished.get('error_code')=='proof_not_ready' and private_finished.get('proof_state') in ('queued','running'),private_finished
+            time.sleep(.25)
+        assert private_finished.get('admitted'),private_finished
+        private_txid=private_finished['txid'];private_body=rpc('wallet.getrawtransaction',[private_txid])['hex']
+        ready_rows=wallet_rows();private_refinished=rpc('wallet.orchard.finishspend',dict(payer,account=0,request_id=private_id))
+        assert private_refinished['already_in_mempool'] and private_refinished['txid']==private_txid,private_refinished
+        assert wallet_rows()==ready_rows and rpc('wallet.getrawtransaction',[private_txid])['hex']==private_body
+        private_mined=native_call('mine_private',body=private_body);assert private_txid in private_mined['transactions'],private_mined
+        bodies[bytes.fromhex(private_mined['hash'])[::-1]]=bytes.fromhex(private_mined['body'])
+        headers.append(bytes.fromhex(private_mined['header']));deadline=time.monotonic()+60
+        while time.monotonic()<deadline:
+            assert not failures,failures
+            if rpc('getblockcount',[])==105:break
+            time.sleep(.25)
+        assert rpc('getblockcount',[])==105
+        deadline=time.monotonic()+20
+        while time.monotonic()<deadline:
+            payer_balance=rpc('wallet.orchard.getbalance',dict(payer,account=0))
+            if payer_balance['confirmed_una']==509000:break
+            time.sleep(.25)
+        assert payer_balance['confirmed_una']==509000,payer_balance
+        assert rpc('wallet.open',['private-recipient'])['success'] is True
+        recipient_binding=bound('private-recipient');deadline=time.monotonic()+20
+        while time.monotonic()<deadline:
+            recipient_balance=rpc('wallet.orchard.getbalance',dict(recipient_binding,account=0))
+            if recipient_balance['confirmed_una']==10000:break
+            time.sleep(.25)
+        received=rpc('wallet.orchard.listreceived',dict(recipient_binding,account=0))
+        assert recipient_balance['confirmed_una']==10000 and received['total_count']==1,(recipient_balance,received)
+        assert any(n['amount_una']==10000 and n['height']==105 and bytes.fromhex(n['memo_hex'])==b'compact private payment'.ljust(512,b'\0') for n in received['received']),received
+        private_send=dict(queued=private_queued,finished=private_finished,refinished=private_refinished,mined=private_mined,
+            payer_balance=payer_balance,recipient_balance=recipient_balance,received=received,recipient_recovery=recipient_recovery)
+        print('PASS actual compact SDK queuespend/finishspend, native105 confirmation and distinct recovered recipient memo',flush=True)
     (root/'receipt.json').write_text(json.dumps(dict(fixture=fixture,request=queued,transaction_id=txid,
         named_wallet_without_phrase=True,pause_no_reply=state['pause_probes'],pending_rows_identical=True,
         pool_revalidated_and_proof_served=True,operations=operations,mined=mined,recovered=recovered,notes=notes,
         compact_exact_queue_retry=True,compact_ready_retry_with_current_proof=True,unproved_retries_refused=True,
+        compact_private_send=private_send,
         scope='Actual native C ABI automatic handoff from independently executed full parent, funded named recovered wallet and nonempty signed encrypted request/pool, real confirmation and later account0 recovery. NOT original assumed mobile SQL, physical app/device, minimum OS, SDK slices or release qualification.'),indent=2)+'\n')
     assert call('stop')==0;success=True
     print('PASS funded named-wallet nonempty queued SDK handoff and real confirmation/recovery',flush=True)
