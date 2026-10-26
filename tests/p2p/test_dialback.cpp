@@ -13,7 +13,10 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include <atomic>
 #include <chrono>
+#include <future>
+#include <iostream>
 #include <filesystem>
 #include <memory>
 #include <thread>
@@ -198,4 +201,75 @@ TEST(DialBack, StunReflexiveChangeResetsVerification) {
     a.mgr->update_stun_candidates({{"99.1.2.3", 45123}});
     EXPECT_EQ(stun_rows(), std::vector<std::string>{"99.1.2.3:45123"});
     EXPECT_FALSE(a.mgr->has_proven_reachable());
+}
+
+TEST(DialBack, RefusalUnderLoadDoesNotDeadlock) {
+    // A refused reachchk replies to the requester. The reply must not be sent
+    // with reach_mutex_ held: handshakes and getaddr answers take reach_mutex_
+    // under peers_mutex_, and the reply path takes peers_mutex_.
+    Node a("dl-a"), b("dl-b");
+    ASSERT_TRUE(a.mgr->connect_to_peer("127.0.0.1", b.port));
+    ASSERT_TRUE(WaitProven(*a.mgr, b.Key()));
+    std::string a_on_b;
+    for (int i = 0; i < 100 && a_on_b.empty(); ++i) {
+        for (const auto& p : b.mgr->get_connected_peers()) {
+            if (p.is_connected && !p.is_outbound) a_on_b = p.to_string();
+        }
+        if (a_on_b.empty()) std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+    ASSERT_FALSE(a_on_b.empty());
+    // A learned (not explicit) address: gossipable_locked must ask reach_mutex_.
+    b.mgr->add_advertised_address("44.1.2.3", b.port, /*learned=*/true);
+
+    ASSERT_TRUE(WaitProven(*b.mgr, a_on_b)) << "reachchk is ignored from unproven peers";
+
+    std::atomic<bool> stop{false};
+    std::atomic<uint64_t> reads{0}, checks{0};
+    std::vector<std::thread> threads;
+    for (int t = 0; t < 4; ++t) {
+        threads.emplace_back([&] {
+            while (!stop.load()) { (void)b.mgr->get_advertised_addresses(); ++reads; }
+        });
+    }
+    for (int t = 0; t < 2; ++t) {
+        threads.emplace_back([&] {
+            P2PMessage m;
+            m.command = dinero::MessageCommands::REACH_CHECK;
+            m.payload = {1, 0, 0, 0, 0, 0, 0, 0, 0x39, 0x30, 0};  // nonce, port 12345, tcp
+            while (!stop.load()) { b.mgr->test_process_message(a_on_b, m); ++checks; }
+        });
+    }
+    std::this_thread::sleep_for(std::chrono::seconds(5));
+    stop.store(true);
+    // A stuck loop is the lock inversion; joining it would hang ctest.
+    auto joined = std::async(std::launch::async, [&] { for (auto& t : threads) t.join(); });
+    if (joined.wait_for(std::chrono::seconds(5)) != std::future_status::ready) {
+        std::cerr << "DEADLOCK: reachchk refusal vs advertised-address read (reads=" << reads
+                  << " checks=" << checks << ")" << std::endl;
+        std::_Exit(1);
+    }
+    std::cout << "reads=" << reads << " checks=" << checks << std::endl;
+    EXPECT_GT(checks.load(), 2u);  // refusals actually happened
+}
+
+TEST(DialBack, SilentListenerProbeTimesOut) {
+    // The requester picks the port. A listener that accepts and never speaks
+    // must not pin a verifier's in-flight slot forever: the probe gives up.
+    Node a("silent-a"), b("silent-b");
+    ASSERT_TRUE(a.mgr->connect_to_peer("127.0.0.1", b.port));
+    ASSERT_TRUE(WaitProven(*a.mgr, b.Key()));
+    const uint16_t silent_port = FreePort();
+    int s = ::socket(AF_INET, SOCK_STREAM, 0);
+    sockaddr_in sa{}; sa.sin_family = AF_INET; sa.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    sa.sin_port = htons(silent_port);
+    ASSERT_EQ(::bind(s, reinterpret_cast<sockaddr*>(&sa), sizeof(sa)), 0);
+    ASSERT_EQ(::listen(s, 8), 0);  // the kernel completes the handshake; nobody reads
+
+    const auto t0 = std::chrono::steady_clock::now();
+    const uint64_t nonce = a.mgr->test_send_reachchk(b.Key(), silent_port, {});
+    const auto r = WaitResult(*a.mgr, nonce, 30);
+    ::close(s);
+    ASSERT_TRUE(r.has_value()) << "probe of a silent listener never finished";
+    EXPECT_EQ(*r, 2);  // connect failed: no handshake
+    EXPECT_LT(std::chrono::steady_clock::now() - t0, std::chrono::seconds(20));
 }

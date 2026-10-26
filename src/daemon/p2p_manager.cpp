@@ -7171,6 +7171,8 @@ constexpr auto kReachGlobalWindow = std::chrono::minutes(1);
 constexpr size_t kReachGlobalMax = 30;
 constexpr size_t kReachMaxInFlight = 4;
 constexpr auto kReachPendingTimeout = std::chrono::seconds(60);
+// Whole dial-back probe (connect + handshake); well under kReachPendingTimeout.
+constexpr auto kDialbackProbeDeadline = std::chrono::seconds(10);
 
 enum ReachResultCode : uint8_t {
     kReachOk = 0,
@@ -7317,7 +7319,25 @@ uint8_t P2PManager::dialback_probe(const std::string& ip, uint16_t port,
     probe.socket_fd = fd;
     probe.is_outbound = true;
     probe.is_feeler = true;
+    // The requester picks the port: a listener that accepts and never speaks
+    // would hold this thread (and an in-flight slot) forever. Past the
+    // deadline, shutting the socket down makes the pending read fail.
+    std::mutex wd_mu;
+    std::condition_variable wd_cv;
+    bool done = false;
+    std::thread watchdog([&] {
+        std::unique_lock<std::mutex> l(wd_mu);
+        if (!wd_cv.wait_for(l, kDialbackProbeDeadline, [&] { return done; })) {
+            ::shutdown(fd, SHUT_RDWR);
+        }
+    });
     const bool ok = perform_handshake(&probe);
+    {
+        std::lock_guard<std::mutex> l(wd_mu);
+        done = true;
+    }
+    wd_cv.notify_all();
+    watchdog.join();
     close_socket(fd);
     erase_socket_send_mutex(fd);
     if (!ok) return kReachConnectFailed;
@@ -7363,6 +7383,9 @@ void P2PManager::handle_reach_check(const std::string& peer_address, const P2PMe
         return;
     }
     const std::string dialed = dinero::network::FormatEndpoint(target_ip, port);
+    // reply() takes peers_mutex_, so it never runs under reach_mutex_ (the
+    // gossip paths take reach_mutex_ under peers_mutex_).
+    bool refused = false;
     {
         const auto now = std::chrono::steady_clock::now();
         std::lock_guard<std::mutex> lock(reach_mutex_);
@@ -7373,14 +7396,18 @@ void P2PManager::handle_reach_check(const std::string& peer_address, const P2PMe
         }
         if (mine.size() >= kReachPerPeerMax || reach_window_global_.size() >= kReachGlobalMax ||
             dialbacks_in_flight_ >= kReachMaxInFlight) {
-            reply(kReachRefusedRate, {});
-            return;
+            refused = true;
+        } else {
+            mine.push_back(now);
+            reach_window_global_.push_back(now);
+            ++dialbacks_in_flight_;
+            dialback_targets_.push_back(dialed);
+            if (dialback_targets_.size() > 64) dialback_targets_.pop_front();
         }
-        mine.push_back(now);
-        reach_window_global_.push_back(now);
-        ++dialbacks_in_flight_;
-        dialback_targets_.push_back(dialed);
-        if (dialback_targets_.size() > 64) dialback_targets_.pop_front();
+    }
+    if (refused) {
+        reply(kReachRefusedRate, {});
+        return;
     }
     std::lock_guard<std::mutex> lock(peer_threads_mutex_);
     if (shutdown_requested_.load(std::memory_order_acquire) ||
