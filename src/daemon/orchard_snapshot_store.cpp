@@ -16,6 +16,7 @@
 #include "consensus/utreexo_maturity_leaf_activation.h"
 #include "common/annotated_mutex.h"
 #include "storage/block_storage.h"
+#include "storage/archival_block_reader.h"
 #include "storage/forest_restore.h"
 #include "storage/orchard_storage_mode.h"
 #include "storage/shielded_cf_comparator.h"
@@ -644,6 +645,21 @@ std::unique_ptr<OrchardCompactStartup> OrchardSnapshotStore::OpenCompletedActiva
                 result->selected_undo_[h]=OrchardCompactStartup::RetainedUndoLocation{m->undo_file,m->undo_pos,m->undo_size};
             }
         }else Require(m.status()==Status::NotFound&&h<d.record.origin.parent_height);
+        if(h==0&&d.record.origin.validated_height==0){
+            // Legacy genesis initialization persists CHAIN/TRANSACTIONS but
+            // its live graph also carries SCRIPTS. Reconstruct that ONE known
+            // execution fact from the independently retained genesis anchor
+            // and exact compiled body, not from assumed-parent authority or
+            // a stale in-memory flag. Never promote any assumed h>0 here.
+            const auto anchor=Need(db.getValidatedTip());
+            const auto genesis=Need(storage::ReadArchivalBlock(db,&files,checked.hash));
+            Require(anchor.height==0&&anchor.hash==checked.hash&&
+                anchor.hash==d.record.origin.validated&&checked.hash.GetHex()==Params().genesis_hash&&
+                genesis.header.SerializeForHash()==checked.header.SerializeForHash()&&genesis.vtx.size()==1&&
+                genesis.vtx.front().Serialize(TxSerializationMode::WithWitness)==
+                    CompiledGenesis().Serialize(TxSerializationMode::WithWitness));
+            index->status|=BLOCK_VALID_SCRIPTS;
+        }
         result->selected_headers_.push_back({checked.header,uint32_t(h),checked.chainwork,index->file_number,index->data_pos,index->data_size});
         if(!result->selected_index_.empty()){index->pprev=result->selected_index_.back().get();index->pprev->children.push_back(index.get());}
         result->selected_index_.push_back(std::move(index));

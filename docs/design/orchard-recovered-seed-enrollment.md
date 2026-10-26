@@ -1028,3 +1028,12 @@ original-base/lifecycle restoration and wallet/index readiness need separate
 integration and the actual imported-source crossing/cold-reopen gates. No
 source/caller birthday, fabricated first event, generated provenance change,
 snapshot floor or automatic mixed-wallet readiness is introduced.
+# Imported-parent genesis graph reconciliation
+
+Completed-root startup may reconstruct the legacy live genesis SCRIPTS bit
+only at height zero with the unchanged independent genesis anchor and exact
+compiled genesis header/transaction body. Legacy genesis persistence records
+CHAIN/TRANSACTIONS while its old live graph also carries SCRIPTS. No assumed
+ancestor above zero is promoted, no persisted flag/anchor is moved, and the
+strict existing-graph subset/locator checks remain. This is not SQL lifecycle
+admission or original-assumed mobile crossing acceptance.
