@@ -3997,7 +3997,7 @@ void P2PManager::MaybeAutoRegisterWithRelays() {
     // gate on the old assumption). IsDirectlyReachable keeps a learned-only
     // NAT'd node eligible so it actually sends RELAYREG.
     if (IsDirectlyReachable(inbound_observed > 0,
-                            has_explicit_advertised_.load(std::memory_order_acquire),
+                            has_proven_reachable(),
                             port_mapping_active_.load(std::memory_order_acquire))) {
         return;
     }
@@ -4304,8 +4304,7 @@ void P2PManager::remove_explicit_advertised_address(const std::string& address,
 }
 
 std::vector<std::pair<std::string, uint16_t>> P2PManager::get_advertised_addresses() const {
-    std::lock_guard<std::mutex> lock(peers_mutex_);
-    return advertised_addresses_;
+    return get_local_advertised_addresses();  // localaddresses shows what we gossip
 }
 
 void P2PManager::record_self_address_report(const std::string& reported_addr,
@@ -4342,6 +4341,11 @@ void P2PManager::record_self_address_report(const std::string& reported_addr,
                   << " distinct reporters): " << reported_addr << ":" << listen_port_
                   << " — advertising" << std::endl;
         add_advertised_address(reported_addr, listen_port_, /*learned=*/true);
+        // Learned addresses are gossiped only once dial-back verifies them.
+        std::lock_guard<std::mutex> lock(reach_mutex_);
+        self_reach_->AddCandidate(dinero::p2p::Candidate{
+            reported_addr, listen_port_, dinero::p2p::Transport::Tcp,
+            dinero::p2p::CandidateSource::PeerVote});
     }
 }
 
@@ -4670,8 +4674,14 @@ void P2PManager::mark_peer_address_attempt(const std::string& address,
 }
 
 std::vector<std::pair<std::string, uint16_t>> P2PManager::get_local_advertised_addresses() const {
+    // What we tell peers about ourselves: explicit addresses, plus learned ones
+    // only once peers have dialed them back successfully.
     std::lock_guard<std::mutex> lock(peers_mutex_);
-    return advertised_addresses_;
+    std::vector<std::pair<std::string, uint16_t>> out;
+    for (const auto& [address, port] : advertised_addresses_) {
+        if (gossipable_locked(address, port)) out.emplace_back(address, port);
+    }
+    return out;
 }
 
 std::vector<std::pair<std::string, uint16_t>> P2PManager::collect_advertisable_addresses(
@@ -4695,7 +4705,10 @@ std::vector<std::pair<std::string, uint16_t>> P2PManager::collect_advertisable_a
     {
         std::lock_guard<std::mutex> lock(peers_mutex_);
         for (const auto& advertised : advertised_addresses_) {
-            add_address(advertised.first, advertised.second);
+            // Our own addresses: explicit, or verified by dial-back.
+            if (gossipable_locked(advertised.first, advertised.second)) {
+                add_address(advertised.first, advertised.second);
+            }
         }
         for (const auto& pair : connected_peers_) {
             const auto& peer = pair.second;
@@ -6726,6 +6739,10 @@ void P2PManager::process_message(const std::string& peer_address, const P2PMessa
     } else if (message.command == "relayack") {
         // NAT Phase D-1: match against pending RELAY_CONNECT requests.
         handle_relay_connect_ack(peer_address, message);
+    } else if (message.command == dinero::MessageCommands::REACH_CHECK) {
+        handle_reach_check(peer_address, message);
+    } else if (message.command == dinero::MessageCommands::REACH_RESULT) {
+        handle_reach_result(peer_address, message);
     } else {
         // Forward to application handler
         if (message_handler_) {
@@ -7101,6 +7118,300 @@ bool P2PManager::start_quic_endpoint(uint16_t port) {
               << std::endl;
     return true;
 }
+
+// ============================================================================
+// Dial-back verification (reachchk / reachres)
+// ============================================================================
+
+namespace {
+
+constexpr size_t kReachCheckMinPayload = 8 + 2 + 1;  // nonce, port, transport
+constexpr auto kReachPerPeerWindow = std::chrono::minutes(10);
+constexpr size_t kReachPerPeerMax = 2;
+constexpr auto kReachGlobalWindow = std::chrono::minutes(1);
+constexpr size_t kReachGlobalMax = 30;
+constexpr size_t kReachMaxInFlight = 4;
+constexpr auto kReachPendingTimeout = std::chrono::seconds(60);
+
+enum ReachResultCode : uint8_t {
+    kReachOk = 0,
+    kReachRefusedRate = 1,
+    kReachConnectFailed = 2,
+    kReachIdentityMismatch = 3,
+    kReachUnsupportedTransport = 4,
+};
+
+void PutLE(std::vector<uint8_t>& out, uint64_t v, int bytes) {
+    for (int i = 0; i < bytes; ++i) out.push_back(static_cast<uint8_t>(v >> (8 * i)));
+}
+
+uint64_t GetLE(const std::vector<uint8_t>& in, size_t at, int bytes) {
+    uint64_t v = 0;
+    for (int i = 0; i < bytes; ++i) v |= static_cast<uint64_t>(in[at + i]) << (8 * i);
+    return v;
+}
+
+uint64_t RandomNonce() {
+    uint64_t n = 0;
+    std::random_device rd;
+    for (int i = 0; i < 4; ++i) n = (n << 16) ^ (rd() & 0xffff);
+    return n ? n : 1;
+}
+
+}  // namespace
+
+void P2PManager::set_dialback_min_groups(uint32_t min_groups) {
+    dinero::p2p::SelfReachability::Params params;
+    params.min_groups = std::max<uint32_t>(1, min_groups);
+    std::lock_guard<std::mutex> lock(reach_mutex_);
+    self_reach_ = std::make_unique<dinero::p2p::SelfReachability>(
+        params, [] { return std::chrono::steady_clock::now(); });
+}
+
+std::vector<dinero::p2p::CandidateStatus> P2PManager::self_reachability_status() const {
+    std::lock_guard<std::mutex> lock(reach_mutex_);
+    return self_reach_->Status();
+}
+
+bool P2PManager::has_proven_reachable() const {
+    if (has_explicit_advertised_.load(std::memory_order_acquire)) return true;
+    std::lock_guard<std::mutex> lock(reach_mutex_);
+    return self_reach_->AnyVerified(dinero::p2p::Transport::Tcp);
+}
+
+bool P2PManager::gossipable_locked(const std::string& address, uint16_t port) const {
+    if (explicit_advertised_addresses_.count(AddressKey(address, port))) return true;
+    std::lock_guard<std::mutex> lock(reach_mutex_);
+    return self_reach_->IsVerified(dinero::p2p::Candidate{
+        address, port, dinero::p2p::Transport::Tcp, dinero::p2p::CandidateSource::PeerVote});
+}
+
+uint64_t P2PManager::send_reach_check(const std::string& peer_key,
+                                      const dinero::p2p::Candidate& c,
+                                      const dinero::p2p::Verifier& v,
+                                      const std::vector<uint8_t>& trailing) {
+    const uint64_t nonce = RandomNonce();
+    P2PMessage msg;
+    msg.command = dinero::MessageCommands::REACH_CHECK;
+    PutLE(msg.payload, nonce, 8);
+    PutLE(msg.payload, c.port, 2);
+    msg.payload.push_back(static_cast<uint8_t>(c.transport));
+    msg.payload.insert(msg.payload.end(), trailing.begin(), trailing.end());
+    {
+        std::lock_guard<std::mutex> lock(reach_mutex_);
+        pending_reach_[nonce] = PendingReach{c, v, std::chrono::steady_clock::now()};
+        ++reach_checks_sent_;
+    }
+    if (!send_to_peer(peer_key, msg)) {
+        std::lock_guard<std::mutex> lock(reach_mutex_);
+        pending_reach_.erase(nonce);
+        --reach_checks_sent_;
+        return 0;
+    }
+    return nonce;
+}
+
+void P2PManager::run_reachability_tick() {
+    const auto now = std::chrono::steady_clock::now();
+    // Requests that never got an answer count as failures.
+    {
+        std::lock_guard<std::mutex> lock(reach_mutex_);
+        for (auto it = pending_reach_.begin(); it != pending_reach_.end();) {
+            if (now - it->second.sent_at > kReachPendingTimeout) {
+                self_reach_->OnResult(it->second.candidate, it->second.verifier,
+                                      kReachConnectFailed);
+                it = pending_reach_.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    }
+    // Verifiers: identity-proven direct peers that advertise NODE_DIALBACK.
+    std::vector<dinero::p2p::Verifier> verifiers;
+    {
+        std::lock_guard<std::mutex> lock(peers_mutex_);
+        for (const auto& [key, peer] : connected_peers_) {
+            if (!peer->is_connected || !peer->identity_proven || peer->via_relay) continue;
+            if ((peer->service_flags & ServiceFlags::NODE_DIALBACK) == 0) continue;
+            verifiers.push_back(dinero::p2p::Verifier{key, peer->address});
+        }
+    }
+    if (verifiers.empty()) return;
+    std::vector<std::pair<dinero::p2p::Candidate, dinero::p2p::Verifier>> plan;
+    {
+        std::lock_guard<std::mutex> lock(reach_mutex_);
+        plan = self_reach_->PlanChecks(verifiers);
+    }
+    for (const auto& [candidate, verifier] : plan) {
+        send_reach_check(verifier.peer_key, candidate, verifier, {});
+    }
+}
+
+uint8_t P2PManager::dialback_probe(const std::string& ip, uint16_t port,
+                                   const std::array<uint8_t, 20>& expected) {
+    const int fd = create_client_socket(ip, port);
+    if (fd < 0) return kReachConnectFailed;
+    // Transient, never in connected_peers_: a feeler-style handshake that
+    // skips relay registration, getaddr and self-advertisement.
+    PeerInfo probe;
+    probe.address = ip;
+    probe.port = port;
+    probe.socket_fd = fd;
+    probe.is_outbound = true;
+    probe.is_feeler = true;
+    const bool ok = perform_handshake(&probe);
+    close_socket(fd);
+    erase_socket_send_mutex(fd);
+    if (!ok) return kReachConnectFailed;
+    if (!probe.identity_proven || probe.their_node_id != expected) return kReachIdentityMismatch;
+    return kReachOk;
+}
+
+void P2PManager::handle_reach_check(const std::string& peer_address, const P2PMessage& message) {
+    if (message.payload.size() < kReachCheckMinPayload) return;
+    const uint64_t nonce = GetLE(message.payload, 0, 8);
+    const uint16_t port = static_cast<uint16_t>(GetLE(message.payload, 8, 2));
+    const uint8_t transport = message.payload[10];
+    // Trailing bytes are ignored: nothing in the request names a target IP.
+
+    std::string target_ip;
+    std::array<uint8_t, 20> expected{};
+    bool via_relay = false;
+    {
+        std::lock_guard<std::mutex> lock(peers_mutex_);
+        auto it = connected_peers_.find(peer_address);
+        if (it == connected_peers_.end() || !it->second->is_connected ||
+            !it->second->identity_proven) {
+            return;  // only identity-proven peers can be checked
+        }
+        via_relay = it->second->via_relay.has_value();
+        target_ip = it->second->address;  // the requester's socket source IP
+        expected = it->second->their_node_id;
+    }
+
+    auto reply = [this, peer_address, nonce](uint8_t code, const std::string& dialed) {
+        P2PMessage res;
+        res.command = dinero::MessageCommands::REACH_RESULT;
+        PutLE(res.payload, nonce, 8);
+        res.payload.push_back(code);
+        const size_t n = std::min<size_t>(dialed.size(), 255);
+        res.payload.push_back(static_cast<uint8_t>(n));
+        res.payload.insert(res.payload.end(), dialed.begin(), dialed.begin() + n);
+        send_to_peer(peer_address, res);
+    };
+
+    if (transport != static_cast<uint8_t>(dinero::p2p::Transport::Tcp) || via_relay || port == 0) {
+        reply(kReachUnsupportedTransport, {});
+        return;
+    }
+    const std::string dialed = dinero::network::FormatEndpoint(target_ip, port);
+    {
+        const auto now = std::chrono::steady_clock::now();
+        std::lock_guard<std::mutex> lock(reach_mutex_);
+        auto& mine = reach_window_by_peer_[peer_address];
+        while (!mine.empty() && now - mine.front() > kReachPerPeerWindow) mine.pop_front();
+        while (!reach_window_global_.empty() && now - reach_window_global_.front() > kReachGlobalWindow) {
+            reach_window_global_.pop_front();
+        }
+        if (mine.size() >= kReachPerPeerMax || reach_window_global_.size() >= kReachGlobalMax ||
+            dialbacks_in_flight_ >= kReachMaxInFlight) {
+            reply(kReachRefusedRate, {});
+            return;
+        }
+        mine.push_back(now);
+        reach_window_global_.push_back(now);
+        ++dialbacks_in_flight_;
+        dialback_targets_.push_back(dialed);
+        if (dialback_targets_.size() > 64) dialback_targets_.pop_front();
+    }
+    std::lock_guard<std::mutex> lock(peer_threads_mutex_);
+    if (shutdown_requested_.load(std::memory_order_acquire) ||
+        !spawn_peer_thread_locked([this, target_ip, port, expected, dialed, reply] {
+            const uint8_t code = dialback_probe(target_ip, port, expected);
+            {
+                std::lock_guard<std::mutex> l(reach_mutex_);
+                --dialbacks_in_flight_;
+            }
+            reply(code, dialed);
+        })) {
+        std::lock_guard<std::mutex> l(reach_mutex_);
+        --dialbacks_in_flight_;
+    }
+}
+
+void P2PManager::handle_reach_result(const std::string& peer_address, const P2PMessage& message) {
+    if (message.payload.size() < 10) return;
+    const uint64_t nonce = GetLE(message.payload, 0, 8);
+    const uint8_t code = message.payload[8];
+    const size_t n = message.payload[9];
+    std::string dialed;
+    if (message.payload.size() >= 10 + n) {
+        dialed.assign(message.payload.begin() + 10, message.payload.begin() + 10 + n);
+    }
+    std::lock_guard<std::mutex> lock(reach_mutex_);
+    auto it = pending_reach_.find(nonce);
+    if (it == pending_reach_.end() || it->second.verifier.peer_key != peer_address) return;
+    uint8_t effective = code;
+    if (code == kReachOk) {
+        // Credit only the address the verifier actually dialed.
+        std::string host;
+        uint16_t port = 0;
+        bool has_port = false;
+        if (!dinero::network::SplitEndpoint(dialed, &host, &port, &has_port) ||
+            (!it->second.candidate.ip.empty() && host != it->second.candidate.ip) ||
+            port != it->second.candidate.port) {
+            effective = kReachConnectFailed;
+        }
+    }
+    self_reach_->OnResult(it->second.candidate, it->second.verifier, effective);
+    reach_results_[nonce] = effective;
+    if (reach_results_.size() > 256) reach_results_.erase(reach_results_.begin());
+    pending_reach_.erase(it);
+}
+
+#ifdef DINERO_TEST_BUILD
+void P2PManager::test_add_self_candidate(const std::string& ip, uint16_t port) {
+    std::lock_guard<std::mutex> lock(reach_mutex_);
+    self_reach_->AddCandidate(dinero::p2p::Candidate{
+        ip, port, dinero::p2p::Transport::Tcp, dinero::p2p::CandidateSource::PeerVote});
+}
+
+uint64_t P2PManager::test_send_reachchk(const std::string& peer_key, uint16_t port,
+                                        const std::vector<uint8_t>& trailing) {
+    // Candidate ip left empty: the result is recorded but credits nothing.
+    return send_reach_check(peer_key,
+                            dinero::p2p::Candidate{"", port, dinero::p2p::Transport::Tcp,
+                                                   dinero::p2p::CandidateSource::PeerVote},
+                            dinero::p2p::Verifier{peer_key, ""}, trailing);
+}
+
+std::optional<uint8_t> P2PManager::test_reach_result(uint64_t nonce) const {
+    std::lock_guard<std::mutex> lock(reach_mutex_);
+    auto it = reach_results_.find(nonce);
+    if (it == reach_results_.end()) return std::nullopt;
+    return it->second;
+}
+
+std::vector<std::string> P2PManager::test_dialback_targets() const {
+    std::lock_guard<std::mutex> lock(reach_mutex_);
+    return {dialback_targets_.begin(), dialback_targets_.end()};
+}
+
+void P2PManager::test_mark_self_verified(const std::string& ip, uint16_t port) {
+    std::lock_guard<std::mutex> lock(reach_mutex_);
+    const dinero::p2p::Candidate c{ip, port, dinero::p2p::Transport::Tcp,
+                                   dinero::p2p::CandidateSource::PeerVote};
+    self_reach_->AddCandidate(c);
+    for (const char* group_ip : {"198.51.100.1", "203.0.113.1", "192.0.2.1"}) {
+        self_reach_->OnResult(c, dinero::p2p::Verifier{group_ip, group_ip}, 0);
+    }
+}
+
+size_t P2PManager::test_reach_checks_sent() const {
+    std::lock_guard<std::mutex> lock(reach_mutex_);
+    return reach_checks_sent_;
+}
+#endif
 
 uint64_t P2PManager::local_quic_service_bits() const {
     return (quic_endpoint_ && quic_endpoint_->Listening()) ? ServiceFlags::NODE_P2P_QUIC : 0;
@@ -8298,6 +8609,8 @@ void P2PManager::keepalive_loop() {
     uint64_t prev_relay_drops_total = 0;
 
     while (!shutdown_requested_) {
+        // Dial-back verification of our own addresses (30 s cadence).
+        run_reachability_tick();
         // Ring 3 Phase 4e: TS3 Fix - Interruptible wait instead of sleep_for
         // Allows immediate wakeup on shutdown, fixing TS3.1 and TS3.4 violations
         {

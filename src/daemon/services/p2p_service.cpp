@@ -361,7 +361,9 @@ P2PService::NetworkStatus P2PService::GetNetworkStatus() const {
     status.listening = p2p_mgr_->IsListening();
     status.listen_port = p2p_mgr_->get_listen_port();
     status.advertised_addresses = p2p_mgr_->get_advertised_addresses();
-    status.has_explicit_advertised = p2p_mgr_->has_explicit_advertised();
+    // Explicit address or dial-back verified: what peers can actually dial.
+    status.has_explicit_advertised = p2p_mgr_->has_proven_reachable();
+    status.self_reachability = p2p_mgr_->self_reachability_status();
     status.onion_transport_configured = onion_proxy_configured_;
     status.onion_transport_enabled = p2p_mgr_->onion_proxy_enabled();
     status.onion_transport_reachable = onion_proxy_reachable_;
@@ -432,6 +434,7 @@ P2PService::NetworkStatus P2PService::GetNetworkStatus() const {
             ++status.outbound;
         } else {
             ++status.inbound;
+            if (!peer.via_relay) ++status.direct_inbound;
         }
         if (configured_seed) {
             ++status.configured_seed_connections;
@@ -2279,6 +2282,7 @@ bool P2PService::Start() {
                     flags |= ServiceFlags::NODE_RELAY;
                 }
                 flags |= p2p_mgr_->local_quic_service_bits();
+                flags |= ServiceFlags::NODE_DIALBACK;  // we answer reachchk
                 return flags;
             });
             bool pruned = prune_svc && prune_svc->isEnabled();
@@ -2308,6 +2312,12 @@ bool P2PService::Start() {
         // Direct QUIC peers on UDP at the P2P port (p2p.quic, default on) and
         // the peers to keep connected over it (p2p.quic_connect, ip:port list).
         p2p_mgr_->set_quic_enabled(config_->GetBool("p2p.quic", true));
+        // Dial-back needs verifiers in 2 network groups; a single-host regtest
+        // setup can lower it to 1. Ignored on any other network.
+        if (Params().name == "regtest") {
+            const int groups = config_->GetInt("p2p.dialback_min_groups", 2);
+            if (groups >= 1) p2p_mgr_->set_dialback_min_groups(static_cast<uint32_t>(groups));
+        }
         {
             std::vector<std::string> quic_targets;
             std::istringstream ss(config_->GetString("p2p.quic_connect", ""));

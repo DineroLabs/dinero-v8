@@ -8,6 +8,7 @@
 #include <mutex>
 #include <condition_variable>
 #include <deque>
+#include <map>
 #include <unordered_map>
 #include <unordered_set>
 #include <functional>
@@ -21,6 +22,7 @@
 #include "network/clock_source.h"     // relay-hints Phase 1a: injectable time source for TTL logic
 #include "network/rolling_24h_counter.h"  // Phase 2b: rolling 24h byte counter for relay-virtual traffic
 #include "network/endpoint_format.h"   // [v6]:port peer keys
+#include "p2p/self_reachability.h"      // dial-back verified self addresses
 #include "network/quic_session.h"     // NAT traversal Phase B2: encrypted relay virtual peers
 #include "network/relay_registry.h"   // NAT traversal Phase C3 slice 2: relay-side directory
 #include "network/token_bucket.h"     // NAT traversal: relay circuit bandwidth caps
@@ -504,6 +506,13 @@ public:
     void add_advertised_address(const std::string& address, uint16_t port, bool learned = false);
     void remove_explicit_advertised_address(const std::string& address, uint16_t port);
     std::vector<std::pair<std::string, uint16_t>> get_advertised_addresses() const;
+    // Dial-back verification of our own addresses. min_groups is 2 by default;
+    // 1 is only for single-host (regtest) setups.
+    void set_dialback_min_groups(uint32_t min_groups);
+    std::vector<dinero::p2p::CandidateStatus> self_reachability_status() const;
+    // Directly reachable as far as we can prove: an explicit address (operator
+    // externalip / port mapping) or one that peers dialed back successfully.
+    bool has_proven_reachable() const;
     // True iff we have an EXPLICIT/confirmed reachable advertised address
     // (operator externalip or port-mapping) — not merely a Gap-1-learned one.
     // Used so a NAT'd node (only a learned, dead address) stays relay-fallback
@@ -885,6 +894,17 @@ public:
         std::lock_guard<std::mutex> lock(peer_threads_mutex_);
         return peer_threads_.size();
     }
+    void test_add_self_candidate(const std::string& ip, uint16_t port);
+    void test_run_reachability_tick() { run_reachability_tick(); }
+    uint64_t test_send_reachchk(const std::string& peer_key, uint16_t port,
+                                const std::vector<uint8_t>& trailing = {});
+    std::optional<uint8_t> test_reach_result(uint64_t nonce) const;
+    std::vector<std::string> test_dialback_targets() const;
+    void test_mark_self_verified(const std::string& ip, uint16_t port);
+    size_t test_reach_checks_sent() const;
+    std::vector<std::pair<std::string, uint16_t>> test_local_advertised_addresses() const {
+        return get_local_advertised_addresses();
+    }
     void test_set_inbound_limits(size_t total, size_t per_ip) {
         max_inbound_ = total;
         max_inbound_per_ip_ = per_ip;
@@ -996,6 +1016,37 @@ private:
     dinero::network::QuicSessionOptions quic_p2p_options_;
     bool quic_enabled_{true};
     std::vector<std::string> quic_connect_targets_;
+
+    // ---- dial-back verification ----
+    // Lock order: peers_mutex_ before reach_mutex_; reach_mutex_ is a leaf.
+    mutable std::mutex reach_mutex_;
+    std::unique_ptr<dinero::p2p::SelfReachability> self_reach_ =
+        std::make_unique<dinero::p2p::SelfReachability>(
+            dinero::p2p::SelfReachability::Params{}, [] { return std::chrono::steady_clock::now(); });
+    struct PendingReach {
+        dinero::p2p::Candidate candidate;
+        dinero::p2p::Verifier verifier;
+        std::chrono::steady_clock::time_point sent_at;
+    };
+    std::map<uint64_t, PendingReach> pending_reach_;          // our requests by nonce
+    std::map<uint64_t, uint8_t> reach_results_;               // last results (bounded)
+    size_t reach_checks_sent_{0};
+    // Verifier side: request windows and the targets we dialed (bounded).
+    std::map<std::string, std::deque<std::chrono::steady_clock::time_point>> reach_window_by_peer_;
+    std::deque<std::chrono::steady_clock::time_point> reach_window_global_;
+    size_t dialbacks_in_flight_{0};
+    std::deque<std::string> dialback_targets_;
+    void run_reachability_tick();
+    void handle_reach_check(const std::string& peer_address, const P2PMessage& message);
+    void handle_reach_result(const std::string& peer_address, const P2PMessage& message);
+    uint64_t send_reach_check(const std::string& peer_key, const dinero::p2p::Candidate& c,
+                              const dinero::p2p::Verifier& v, const std::vector<uint8_t>& trailing);
+    // Dial ip:port, run a version handshake, report whether it is `expected`:
+    // 0 ok, 2 connect/handshake failed, 3 a different node answered.
+    uint8_t dialback_probe(const std::string& ip, uint16_t port,
+                           const std::array<uint8_t, 20>& expected);
+    // Caller holds peers_mutex_: explicit, or dial-back verified.
+    bool gossipable_locked(const std::string& address, uint16_t port) const;
     std::atomic<bool> quic_connect_warned_{false};
     size_t max_inbound_ = MAX_INBOUND_CONNECTIONS;
     size_t max_inbound_per_ip_ = MAX_INBOUND_PER_IP;

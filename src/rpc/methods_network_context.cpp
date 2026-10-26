@@ -235,7 +235,8 @@ din::Json rpc_context_getnetworkinfo(const ExecutionContext& ctx, const din::Jso
     result["connections_out"] = static_cast<Json::UInt64>(status.outbound);
     result["listen"] = status.listening;
     result["listen_port"] = static_cast<int>(status.listen_port);
-    const bool direct_inbound_observed = status.inbound > 0;
+    // Relay-virtual inbound peers prove nothing about our own address.
+    const bool direct_inbound_observed = status.direct_inbound > 0;
     // Gap 2 fix: only an EXPLICIT/confirmed reachable advertisement (operator
     // externalip or port-mapping) proves direct reachability — a Gap-1-LEARNED
     // address is just the IP peers see us from (the NAT gateway's public IP for
@@ -399,6 +400,27 @@ din::Json rpc_context_getnetworkinfo(const ExecutionContext& ctx, const din::Jso
         local_addresses.append(entry);
     }
     result["localaddresses"] = local_addresses;
+    {
+        din::Json reach(Json::arrayValue);
+        for (const auto& st : status.self_reachability) {
+            din::Json e;
+            e["address"] = dinero::network::FormatEndpoint(st.c.ip, st.c.port);
+            e["transport"] = st.c.transport == dinero::p2p::Transport::Quic ? "quic" : "tcp";
+            switch (st.c.source) {
+                case dinero::p2p::CandidateSource::PeerVote: e["source"] = "peer_vote"; break;
+                case dinero::p2p::CandidateSource::Stun: e["source"] = "stun"; break;
+                case dinero::p2p::CandidateSource::PortMapping: e["source"] = "port_mapping"; break;
+                case dinero::p2p::CandidateSource::ExternalIp: e["source"] = "externalip"; break;
+            }
+            e["state"] = st.state == dinero::p2p::VerifyState::Verified ? "verified"
+                       : st.state == dinero::p2p::VerifyState::Verifying ? "verifying" : "unverified";
+            e["ok_groups"] = static_cast<Json::UInt64>(st.ok_groups);
+            e["verified_at"] = static_cast<Json::Int64>(
+                std::chrono::duration_cast<std::chrono::seconds>(st.verified_at.time_since_epoch()).count());
+            reach.append(e);
+        }
+        result["self_reachability"] = reach;
+    }
     result["advertised_addresses_count"] = static_cast<Json::UInt64>(status.advertised_addresses.size());
 
     din::Json portmap;

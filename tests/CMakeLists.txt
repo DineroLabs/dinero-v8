@@ -3591,6 +3591,7 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/p2p/test_p2p_manager_ts1_integration.cpp)
     tests/p2p/test_release_peer_cutoff.cpp
     tests/p2p/test_addr_relay_known.cpp
     src/daemon/p2p_manager.cpp
+    src/p2p/self_reachability.cpp
     src/network/relay_hints_eviction.cpp
     src/network/relay_registry.cpp # Required by NAT C3 relay registry member in P2PManager
     src/network/quic_endpoint.cpp
@@ -3671,6 +3672,7 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/p2p/test_p2p_idle_peer_reap.cpp)
   add_executable(test_p2p_idle_peer_reap
     tests/p2p/test_p2p_idle_peer_reap.cpp
     src/daemon/p2p_manager.cpp
+    src/p2p/self_reachability.cpp
     src/network/relay_hints_eviction.cpp
     src/network/relay_registry.cpp
     src/network/quic_endpoint.cpp
@@ -3738,6 +3740,7 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/p2p/test_relay_virtual_transport.cpp)
     tests/p2p/test_relay_virtual_transport.cpp
     tests/p2p/test_p2p_fd_hygiene.cpp
     src/daemon/p2p_manager.cpp
+    src/p2p/self_reachability.cpp
     src/network/relay_hints_eviction.cpp
     src/network/relay_registry.cpp
     src/network/quic_endpoint.cpp
@@ -3806,6 +3809,7 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/p2p/test_relay_virtual_transport.cpp)
   add_executable(test_quic_direct_peer
     tests/p2p/test_quic_direct_peer.cpp
     src/daemon/p2p_manager.cpp
+    src/p2p/self_reachability.cpp
     src/network/relay_hints_eviction.cpp
     src/network/relay_registry.cpp
     src/network/quic_endpoint.cpp
@@ -3868,6 +3872,7 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/p2p/test_relay_virtual_transport.cpp)
   add_executable(test_peer_key_ipv6
     tests/p2p/test_peer_key_ipv6.cpp
     src/daemon/p2p_manager.cpp
+    src/p2p/self_reachability.cpp
     src/network/relay_hints_eviction.cpp
     src/network/relay_registry.cpp
     src/network/quic_endpoint.cpp
@@ -3927,6 +3932,69 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/p2p/test_relay_virtual_transport.cpp)
 
   add_test(NAME PeerKeyIpv6 COMMAND test_peer_key_ipv6)
   set_tests_properties(PeerKeyIpv6 PROPERTIES LABELS "p2p;ipv6" TIMEOUT 60)
+  add_executable(test_dialback
+    tests/p2p/test_dialback.cpp
+    src/daemon/p2p_manager.cpp
+    src/p2p/self_reachability.cpp
+    src/network/relay_hints_eviction.cpp
+    src/network/relay_registry.cpp
+    src/network/quic_endpoint.cpp
+    src/network/quic_session.cpp
+    src/network/quic_transport.cpp
+    src/network/relay_tls_keypair.cpp
+    src/network/udp_socket.cpp
+    src/daemon/node_identity.cpp
+    src/p2p/addr_v2.cpp
+    src/p2p/addrman.cpp
+    src/crypto/params_stub.cpp
+    src/common/sha256d.cpp
+    src/common/logger.cpp
+    src/daemon/secure_random.cpp
+  )
+
+  target_compile_definitions(test_dialback PRIVATE DINERO_TEST_BUILD)
+
+  if(APPLE)
+    target_link_libraries(test_dialback PRIVATE
+      GTest::gtest GTest::gtest_main
+      Threads::Threads
+      dinero_crypto
+      secp256k1
+      OpenSSL::SSL
+      OpenSSL::Crypto
+      "-framework Security"
+    )
+  else()
+    target_link_libraries(test_dialback PRIVATE
+      GTest::gtest GTest::gtest_main
+      Threads::Threads
+      dinero_crypto
+      secp256k1
+      OpenSSL::SSL
+      OpenSSL::Crypto
+    )
+  endif()
+
+  if(DINERO_ENABLE_QUIC AND TARGET dinero_ngtcp2)
+    target_link_libraries(test_dialback PRIVATE dinero_ngtcp2)
+    if(TARGET dinero_ngtcp2_crypto_ossl)
+      target_link_libraries(test_dialback PRIVATE dinero_ngtcp2_crypto_ossl)
+    elseif(TARGET dinero_ngtcp2_crypto_quictls)
+      target_link_libraries(test_dialback PRIVATE dinero_ngtcp2_crypto_quictls)
+    endif()
+  endif()
+
+  if(WIN32)
+    target_link_libraries(test_dialback PRIVATE ws2_32)
+  endif()
+
+  target_include_directories(test_dialback PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src/daemon
+  )
+
+  add_test(NAME DialBack COMMAND test_dialback)
+  set_tests_properties(DialBack PROPERTIES LABELS "p2p;reachability" TIMEOUT 240)
   endif()
   list(APPEND DINERO_QUIC_RELAY_TEST_TARGETS test_relay_virtual_transport)
 endif()
@@ -8298,6 +8366,7 @@ if(FALSE AND EXISTS ${CMAKE_SOURCE_DIR}/tests/integration/test_codebase_verifica
     src/daemon/ws_globals.cpp
     src/daemon/p2p_message.cpp
     src/daemon/p2p_manager.cpp
+    src/p2p/self_reachability.cpp
     src/network/relay_hints_eviction.cpp
     src/network/relay_registry.cpp
     src/network/quic_session.cpp
@@ -8492,6 +8561,7 @@ if(FALSE AND EXISTS ${CMAKE_SOURCE_DIR}/tests/mining/test_mining_comprehensive.c
     src/daemon/bech32_decode.cpp
     src/daemon/p2p_message.cpp
     src/daemon/p2p_manager.cpp
+    src/p2p/self_reachability.cpp
     src/network/relay_hints_eviction.cpp
     src/network/relay_registry.cpp
     src/network/quic_endpoint.cpp
@@ -8844,7 +8914,8 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/mining/test_mining_smoke.cpp)
     src/daemon/bech32_decode.cpp
     src/daemon/ws_globals.cpp
     src/daemon/p2p_message.cpp
-    src/daemon/p2p_manager.cpp  # For P2PMessage::create_inv() and P2PManager
+    src/daemon/p2p_manager.cpp
+    src/p2p/self_reachability.cpp  # For P2PMessage::create_inv() and P2PManager
     src/network/relay_hints_eviction.cpp
     src/network/relay_registry.cpp # Required by NAT C3 relay registry member in P2PManager
     src/network/quic_session.cpp   # Required by relay virtual-peer QUIC members in P2PManager
@@ -11279,6 +11350,7 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/p2p/test_handshake_simple.cpp)
     tests/p2p/test_handshake_simple.cpp
     tests/p2p/test_harness.cpp
     src/daemon/p2p_manager.cpp
+    src/p2p/self_reachability.cpp
     src/network/relay_hints_eviction.cpp
     src/network/relay_registry.cpp
     src/network/quic_endpoint.cpp
@@ -11341,6 +11413,7 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/p2p/test_ping_pong.cpp)
     tests/p2p/test_ping_pong.cpp
     tests/p2p/test_harness.cpp
     src/daemon/p2p_manager.cpp
+    src/p2p/self_reachability.cpp
     src/network/relay_hints_eviction.cpp
     src/network/relay_registry.cpp
     src/network/quic_endpoint.cpp

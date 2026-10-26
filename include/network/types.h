@@ -79,6 +79,10 @@ namespace MessageCommands {
     // forever for backward compat with rc7- peers.
     constexpr const char* SENDADDRV2 = "sendaddrv2";
     constexpr const char* ADDRV2 = "addrv2";
+    // Dial-back verification: "dial me back at <my source IP>:<port>" and the
+    // verifier's answer. Only sent to peers advertising NODE_DIALBACK.
+    constexpr const char* REACH_CHECK = "reachchk";
+    constexpr const char* REACH_RESULT = "reachres";
 
     // NAT traversal Phase C3 / circuit relay protocol — slice 1 lays
     // down the wire format and dispatch surface; later slices add the
@@ -144,6 +148,9 @@ namespace ServiceFlags {
     // Accepts direct QUIC peer sessions on UDP at its P2P port (ALPN
     // "dinero-p2p/1"). Advertised only while the endpoint is actually bound.
     constexpr uint64_t NODE_P2P_QUIC = 1ULL << 30;
+    // Answers `reachchk`: dials the requester back at its own source IP and
+    // reports whether it reached the same node (dial-back verification).
+    constexpr uint64_t NODE_DIALBACK = 1ULL << 31;
 } // namespace ServiceFlags
 
 } // namespace dinero

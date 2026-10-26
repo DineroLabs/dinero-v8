@@ -1,5 +1,6 @@
 #pragma once
 #include "daemon/iservice.h"
+#include "p2p/self_reachability.h"
 #include "daemon/p2p_manager.h"
 #include "daemon/services/prune_service.h"
 #include "daemon/services/header_refresh_coalescer.h"
@@ -151,6 +152,11 @@ public:
         std::string stun_server_used;
         std::string stun_message;
         // Direct QUIC peers on UDP at the P2P port.
+        // Inbound peers on a real socket or direct QUIC (relay circuits are
+        // not evidence that our own address is dialable).
+        size_t direct_inbound{0};
+        // Dial-back verification state of our own candidate addresses.
+        std::vector<dinero::p2p::CandidateStatus> self_reachability;
         bool quic_listening{false};
         uint16_t quic_listen_port{0};
         size_t quic_sessions{0};
