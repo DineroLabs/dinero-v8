@@ -435,6 +435,49 @@ if tcp_probe "${NS_ORIGIN}" "${TARGET_NAT_WAN_IP}" "${TARGET_P2P}"; then
 fi
 pass "Hostile NAT blocks unsolicited origin-to-target TCP"
 
+# ── DIRECT_QUIC=1: a NAT'd node syncs over direct QUIC (UDP) ─────────────
+# The origin sits behind MASQUERADE with inbound blocked; it dials the public
+# node over QUIC on UDP and conntrack carries the replies back -- the same
+# path a home node behind a router uses. No relay is involved.
+if [[ "${DIRECT_QUIC:-0}" == "1" ]]; then
+    RELAY_PID="$(start_node "${NS_RELAY}" "${DATA_RELAY}" "${RELAY_RPC}" "${RELAY_P2P}" "${LOG_RELAY}" \
+        "--externalip=${RELAY_IP}:${RELAY_P2P}")"
+    ORIGIN_PID="$(start_node "${NS_ORIGIN}" "${DATA_ORIGIN}" "${ORIGIN_RPC}" "${ORIGIN_P2P}" "${LOG_ORIGIN}" \
+        "--quicconnect=${RELAY_IP}:${RELAY_P2P}")"
+    PIDS+=("${RELAY_PID}" "${ORIGIN_PID}")
+    wait_rpc "${NS_RELAY}" "${RELAY_RPC}" "${DATA_RELAY}" || fail "public node RPC did not come up"
+    wait_rpc "${NS_ORIGIN}" "${ORIGIN_RPC}" "${DATA_ORIGIN}" || fail "origin RPC did not come up"
+
+    miner="$(rpc_call "${NS_RELAY}" "${RELAY_RPC}" "${DATA_RELAY}" "wallet.createhd" '["miner"]' |
+        python3 -c 'import json,sys; print(json.load(sys.stdin)["result"]["first_address"])')"
+    rpc_call "${NS_RELAY}" "${RELAY_RPC}" "${DATA_RELAY}" "generatetoaddress" "[10, \"${miner}\"]" \
+        >/dev/null || fail "public node could not mine"
+    synced=0
+    for _ in $(seq 1 90); do
+        h="$(rpc_call "${NS_ORIGIN}" "${ORIGIN_RPC}" "${DATA_ORIGIN}" "getblockcount" '[]' |
+            python3 -c 'import json,sys; print(json.load(sys.stdin)["result"])')"
+        if [[ "${h}" -ge 10 ]]; then synced=1; break; fi
+        sleep 1
+    done
+    [[ "${synced}" == 1 ]] || fail "NAT'd origin did not sync over direct QUIC (height ${h})"
+    pass "NAT'd origin synced 10 blocks over direct QUIC through MASQUERADE"
+
+    rpc_call "${NS_ORIGIN}" "${ORIGIN_RPC}" "${DATA_ORIGIN}" "getpeerinfo" '[]' | python3 -c '
+import json,sys
+peers=json.load(sys.stdin)["result"]
+assert any(p.get("transport")=="quic" and not p.get("inbound") for p in peers), peers' ||
+        fail "origin has no outbound transport=quic peer"
+    rpc_call "${NS_RELAY}" "${RELAY_RPC}" "${DATA_RELAY}" "getpeerinfo" '[]' | python3 -c '
+import json,sys
+peers=json.load(sys.stdin)["result"]
+nat_wan=sys.argv[1]
+assert any(p.get("transport")=="quic" and p.get("inbound") and p["addr"].startswith(nat_wan + ":")
+           for p in peers), peers' "${ORIGIN_NAT_WAN_IP}" ||
+        fail "public node does not see the origin (as its NAT address) over QUIC"
+    pass "Both sides report the direct QUIC peer; the public node sees the NAT's WAN address"
+    exit 0
+fi
+
 RELAY_PID="$(start_node "${NS_RELAY}" "${DATA_RELAY}" "${RELAY_RPC}" "${RELAY_P2P}" "${LOG_RELAY}" \
     "--externalip=${RELAY_IP}:${RELAY_P2P}")"
 ORIGIN_PID="$(start_node "${NS_ORIGIN}" "${DATA_ORIGIN}" "${ORIGIN_RPC}" "${ORIGIN_P2P}" "${LOG_ORIGIN}")"

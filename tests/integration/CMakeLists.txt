@@ -877,6 +877,23 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_p2p_staleness_recovery.sh)
     message(STATUS "  ✓ P2PStalenessRecovery (#214) registered")
 endif()
 
+if(UNIX AND DINERO_ENABLE_QUIC AND EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_direct_quic_sync.sh)
+    find_program(DINERO_BASH_EXECUTABLE bash)
+    if(DINERO_BASH_EXECUTABLE)
+        add_test(
+            NAME DirectQuicSync
+            COMMAND ${CMAKE_COMMAND} -E env
+                "DINEROD=$<TARGET_FILE:dinerod>"
+                ${DINERO_BASH_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/test_direct_quic_sync.sh
+        )
+        set_tests_properties(DirectQuicSync PROPERTIES
+            LABELS "integration;p2p;quic"
+            TIMEOUT 300
+        )
+    endif()
+endif()
+
 if(UNIX AND NOT APPLE AND EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_relay_nat_netns.sh)
     find_program(DINERO_BASH_EXECUTABLE bash)
     if(DINERO_BASH_EXECUTABLE)
