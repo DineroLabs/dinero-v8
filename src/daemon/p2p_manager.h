@@ -522,8 +522,8 @@ public:
     // externalip / port mapping) or one that peers dialed back successfully.
     bool has_proven_reachable() const;
     // This round's STUN reflexive addresses (ip, port) on the P2P UDP port,
-    // fed in as QUIC candidates. A different set from the last round means our
-    // public address moved: every candidate goes back to unverified.
+    // fed in as QUIC candidates. A different set of IPs from the last round
+    // means our public address moved: every candidate goes back to unverified.
     void update_stun_candidates(const std::vector<std::pair<std::string, uint16_t>>& reflexive);
     // True iff we have an EXPLICIT/confirmed reachable advertised address
     // (operator externalip or port-mapping) — not merely a Gap-1-learned one.

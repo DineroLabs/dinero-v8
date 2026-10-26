@@ -199,6 +199,12 @@ TEST(DialBack, StunReflexiveChangeResetsVerification) {
     a.mgr->update_stun_candidates({{"162.200.227.214", 45123}});
     EXPECT_TRUE(a.mgr->has_proven_reachable());  // same answer: still nothing changed
 
+    // A new UDP port alone is the NAT re-mapping an expired binding (normal
+    // on non-port-preserving routers), not a new public address.
+    a.mgr->update_stun_candidates({{"162.200.227.214", 50001}});
+    EXPECT_EQ(stun_rows(), std::vector<std::string>{"162.200.227.214:50001"});
+    EXPECT_TRUE(a.mgr->has_proven_reachable()) << "a STUN port change un-verified everything";
+
     a.mgr->update_stun_candidates({{"99.1.2.3", 45123}});
     EXPECT_EQ(stun_rows(), std::vector<std::string>{"99.1.2.3:45123"});
     EXPECT_FALSE(a.mgr->has_proven_reachable());

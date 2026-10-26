@@ -7247,7 +7247,12 @@ void P2PManager::update_stun_candidates(
     for (const auto& r : stun_reflexive_) {
         if (!now.count(r)) self_reach_->RemoveCandidate(stun(r));
     }
-    if (!stun_reflexive_.empty()) self_reach_->OnNetworkChange();
+    // Only a new public IP is a network change; a new port alone is the NAT
+    // re-mapping an expired UDP binding.
+    std::set<std::string> old_ips, new_ips;
+    for (const auto& r : stun_reflexive_) old_ips.insert(r.first);
+    for (const auto& r : now) new_ips.insert(r.first);
+    if (!old_ips.empty() && old_ips != new_ips) self_reach_->OnNetworkChange();
     for (const auto& r : now) self_reach_->AddCandidate(stun(r));
     stun_reflexive_ = std::move(now);
 }
