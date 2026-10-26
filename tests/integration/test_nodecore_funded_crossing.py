@@ -445,7 +445,8 @@ try:
     txid=finished['txid'];signed=rpc('wallet.getrawtransaction',[txid])['hex'];assert isinstance(signed,str) and signed
     notification=call('sdk_activation_state')['observed_transaction']
     assert notification['txid']==txid and notification['format']=='orchard',notification
-    assert any(o['script']==fixture['funding_change_script'] and o['amount']==970000 for o in notification['outputs']),notification
+    change_amount=470000 if new_compact_reservation else 970000
+    assert any(o['script']==fixture['funding_change_script'] and o['amount']==change_amount for o in notification['outputs']),notification
     untrusted=native_call('proof',body=signed);assert untrusted['txid']==txid,untrusted
     proof_wire=bytes.fromhex(untrusted['proof']);proof_ready.set()
     deadline=time.monotonic()+15
