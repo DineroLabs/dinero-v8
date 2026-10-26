@@ -119,6 +119,20 @@ then restores the same genuine proof and continues real confirmation/recovery.
 These controls are separate from original assumed-mobile SQL integration and
 new compact input-proof acquisition, which remain necessary for full app use.
 
+The private-spend authorizer separately handles an actual inputless Orchard
+body after compact handoff. It first rejects every transparent input, then holds
+snapshot/selected ownership and enumerates the exact body to the compact owner,
+including authenticated output absences. Empty proof DATA does not grant a
+general coin view. The existing domain/activation, resource, signing, note proof,
+anchor/nullifier and selected state checks remain mandatory; full-node behavior
+keeps its ordinary full backing. `NodeCoreCompactPrivateSend` exercises actual
+public `queuespend` and `finishspend`, not a manual proof-backed spend, using the
+funded encrypted named payer and a different-seed named recovered recipient.
+It checks idempotent queue/Ready retries, real native block105 confirmation and
+recipient funds/memo. Exact pre-fix and fixed results remain separate. This
+does not qualify original assumed-mobile SQL, new compact transparent funding,
+unshielding/app/device acceptance or release readiness.
+
 The public bound RPC takes no birthday, height, checkpoint, network or account
 argument. The selected service obtains the profile and checkpoint. It requires:
 

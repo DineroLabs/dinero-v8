@@ -20689,14 +20689,23 @@ std::shared_ptr<const consensus::VerifiedOrchardAuthorizations>
 ChainstateService::AuthorizeOrchardWalletTransaction(const orchard::TransactionEnvelope& envelope,
         const orchard::SigningDomain& domain,uint32_t activation) {
 #ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
+    // This wallet path authorizes private spends only, never a compact
+    // transparent-input lookup. Such inputs require their own explicit proofs.
+    if(!envelope.Inputs().empty())throw std::runtime_error("Orchard wallet selected context unavailable");
+    std::lock_guard<std::mutex> snapshot_owner(snapshot_load_mutex_);
     auto lock=AcquireBlockIngressActivationLock();
-    auto selected=CaptureSelectedOrchardPoolContextUnderLock();
+    const MempoolProofView private_body{MempoolTransaction::FromOrchard(envelope),{}};
+    // Enumerate the actual body so the compact owner also authenticates its
+    // output absences. Empty input proof DATA grants NO arbitrary coin view.
+    auto selected=compact_startup_?CaptureSelectedOrchardPoolContextUnderLock(
+        std::span<const MempoolProofView>(&private_body,1)):CaptureSelectedOrchardPoolContextUnderLock();
     if(!selected || !envelope.Inputs().empty() ||
        selected->context.activation_height!=activation ||
        selected->context.domain.network_code!=domain.network_code ||
        selected->context.domain.genesis_wire!=domain.genesis_wire ||
        selected->context.domain.branch_id!=domain.branch_id)
         throw std::runtime_error("Orchard wallet selected context unavailable");
+    (void)selected->CheckProof(private_body);
     const auto parsed=ParsedTransaction::DecodeExact(envelope.CanonicalBytes(),TransactionReadMode::StagedOrchard);
     consensus::OrchardResourceUsage usage;
     consensus::AccumulateOrchardTransactionResources(parsed,usage);
