@@ -44,6 +44,7 @@ TEST(OrchardPoolCatalogView, ReopenedCompactOwnerAuthenticatesLegacyAndModernInp
 TEST(OrchardPoolCatalogView, NewWalletReservationPathsDoNotGrantGeneralCoinAccess){
     std::vector<OrchardProvedWalletInput> inputs;
     CompactStartupFixture f([&](auto& fixture){
+        fixture.f.preserve_evidence=true;
         CompactPoolInputs selected;selected.Capture(fixture);
         for(const auto& body:{selected.legacy,selected.modern}){
             const auto point=body.Inputs().front();const auto row=fixture.f.db.getCoin(point.txid.AsUint256(),point.vout);
