@@ -6,6 +6,7 @@
 #include "consensus/chainparams.h"  // Canonical source of the P2P network magic
 #include "network/local_interfaces.h"      // Self-loop filter at dial time
 #include "network/quic_transport.h"        // Mainnet relay safety gate for encrypted QUIC transport
+#include "network/quic_endpoint.h"         // Direct QUIC peers on the P2P UDP port
 #include "network/relay_hints_eviction.h"  // ShouldEvictByTtl / ShouldEvictByFailure
 #include "daemon/peer_send_health.h"       // issue #241/#214: stalled-peer eviction on send failures
 #include "network/relay_tls_keypair.h"     // Self-signed cert+key for the QUIC relay TLS layer
@@ -4370,6 +4371,11 @@ bool P2PManager::start() {
 
     shutdown_requested_ = false;
     network_active_.store(true, std::memory_order_release);
+
+    if (quic_enabled_ && relay_tls_ready_ && !start_quic_endpoint(listen_port_)) {
+        std::cout << "[P2P] quic: direct QUIC peers unavailable (UDP " << listen_port_
+                  << " not bound or QUIC not compiled in)" << std::endl;
+    }
     
     // Start listen thread
     listen_thread_ = std::make_unique<std::thread>(&P2PManager::listen_loop, this);
@@ -4447,6 +4453,9 @@ void P2PManager::stop() {
                 pair.second->relay_inbox_cv.notify_all();
             }
         }
+    }
+    if (quic_endpoint_) {
+        quic_endpoint_->Stop();  // outside peers_mutex_ (see lock-order note)
     }
 
     // Wait for management threads to finish
@@ -5329,25 +5338,9 @@ void P2PManager::handle_incoming_connection(int client_socket, const std::string
     // Enforce inbound connection caps to prevent resource exhaustion
     {
         std::lock_guard<std::mutex> lock(peers_mutex_);
-        size_t inbound_count = 0;
-        size_t same_ip_count = 0;
-        for (const auto& [key, peer] : connected_peers_) {
-            if (!peer->is_outbound && peer->is_connected) {
-                ++inbound_count;
-                if (peer->address == client_address) {
-                    ++same_ip_count;
-                }
-            }
-        }
-        if (inbound_count >= MAX_INBOUND_CONNECTIONS) {
-            std::cout << "[P2P] Inbound connection limit reached (" << MAX_INBOUND_CONNECTIONS
-                      << "), rejecting " << client_address << std::endl;
-            close_socket(client_socket);
-            return;
-        }
-        if (same_ip_count >= MAX_INBOUND_PER_IP) {
-            std::cout << "[P2P] Per-IP inbound limit reached (" << MAX_INBOUND_PER_IP
-                      << "), rejecting " << client_address << std::endl;
+        std::string why;
+        if (!inbound_slot_available_locked(client_address, &why)) {
+            std::cout << "[P2P] " << why << ", rejecting " << client_address << std::endl;
             close_socket(client_socket);
             return;
         }
@@ -5447,7 +5440,19 @@ void P2PManager::run_relay_quic_reader_loop(std::shared_ptr<PeerInfo> peer) {
         if (!peer->relay_quic_session) break;
         auto chunk = peer->relay_quic_session->ReadDecryptedStream(
             std::chrono::milliseconds(200));
-        if (chunk.empty()) continue;
+        if (chunk.empty()) {
+            // A session that died (idle timeout, peer close, fatal error)
+            // returns immediately with nothing: without this the loop spins
+            // and the peer is never cleaned up.
+            if (!peer->relay_quic_session->active()) {
+                std::cout << "[P2P] quic-transport: session ended for " << virtual_peer_key
+                          << " (" << peer->relay_quic_session->last_error()
+                          << ") — disconnecting" << std::endl;
+                disconnect_peer(virtual_peer_key);
+                break;
+            }
+            continue;
+        }
         stream_buffer.insert(stream_buffer.end(), chunk.begin(), chunk.end());
 
         while (!stream_buffer.empty()) {
@@ -6147,6 +6152,8 @@ void P2PManager::set_network_active(bool active) {
 void P2PManager::cleanup_peer(const std::string& peer_address) {
     int fd_to_clean = -1;
     bool cleaned_feeler = false;
+    std::shared_ptr<dinero::network::QuicSession> quic_to_close;
+    std::optional<dinero::network::UdpAddr> quic_to_forget;
     const size_t grace_marked = relay_registry_.MarkGracePendingByPeerAddress(
         peer_address,
         std::chrono::steady_clock::now() + kRelayDirectoryGracePeriod);
@@ -6181,6 +6188,10 @@ void P2PManager::cleanup_peer(const std::string& peer_address) {
             if (it->second->via_relay || it->second->quic_direct) {
                 it->second->relay_inbox_cv.notify_all();
             }
+            if (it->second->quic_direct) {
+                quic_to_close = it->second->relay_quic_session;
+                quic_to_forget = it->second->quic_remote;
+            }
 
             // TS1 Note: We do NOT erase here because the peer thread may still
             // be running. The erase will happen in stop() after join.
@@ -6193,6 +6204,9 @@ void P2PManager::cleanup_peer(const std::string& peer_address) {
     if (fd_to_clean >= 0) {
         erase_socket_send_mutex(fd_to_clean);
     }
+    // Endpoint calls happen outside peers_mutex_ (lock-order note in header).
+    if (quic_to_close) quic_to_close->Close();
+    if (quic_to_forget && quic_endpoint_) quic_endpoint_->Forget(*quic_to_forget);
 }
 
 std::vector<PeerInfo> P2PManager::get_connected_peers() const {
@@ -6967,18 +6981,123 @@ bool P2PManager::send_quic_stream_message(PeerInfo& peer, const P2PMessage& mess
     return true;
 }
 
+namespace {
+std::string QuicRemoteHost(const dinero::network::UdpAddr& remote) {
+    char host[INET6_ADDRSTRLEN] = {0};
+    inet_ntop(remote.family == dinero::network::UdpAddr::Family::V4 ? AF_INET : AF_INET6,
+              remote.ip.data(), host, sizeof(host));
+    return host;
+}
+}  // namespace
+
+bool P2PManager::inbound_slot_available_locked(const std::string& ip, std::string* why) const {
+    size_t inbound_count = 0;
+    size_t same_ip_count = 0;
+    for (const auto& [key, peer] : connected_peers_) {
+        if (!peer->is_outbound && peer->is_connected) {
+            ++inbound_count;
+            if (peer->address == ip) ++same_ip_count;
+        }
+    }
+    if (inbound_count >= max_inbound_) {
+        if (why) *why = "Inbound connection limit reached (" + std::to_string(max_inbound_) + ")";
+        return false;
+    }
+    if (same_ip_count >= max_inbound_per_ip_) {
+        if (why) *why = "Per-IP inbound limit reached (" + std::to_string(max_inbound_per_ip_) + ")";
+        return false;
+    }
+    return true;
+}
+
+bool P2PManager::start_quic_endpoint(uint16_t port) {
+    if (quic_endpoint_ && quic_endpoint_->Listening()) return true;
+    if (!relay_tls_ready_) {
+        std::string err, cert, key;
+        if (!dinero::network::GenerateRelayTlsKeypair(&cert, &key, &err)) return false;
+        relay_tls_options_.alpn = "dinero-relay/1";
+        relay_tls_options_.server_name = "localhost";
+        relay_tls_options_.certificate_pem = std::move(cert);
+        relay_tls_options_.private_key_pem = std::move(key);
+        relay_tls_options_.verify_peer = false;
+        relay_tls_ready_ = true;
+    }
+    quic_p2p_options_ = relay_tls_options_;
+    quic_p2p_options_.alpn = "dinero-p2p/1";
+    auto endpoint = std::make_unique<dinero::network::QuicEndpoint>();
+    const bool ok = endpoint->Start(
+        port, quic_p2p_options_,
+        // Runs on the endpoint's socket thread under its mutex: no endpoint
+        // calls from here, and is_peer_banned before taking peers_mutex_.
+        [this](const dinero::network::UdpAddr& remote) {
+            if (shutdown_requested_.load(std::memory_order_acquire) ||
+                !network_active_.load(std::memory_order_acquire)) {
+                return false;
+            }
+            const std::string host = QuicRemoteHost(remote);
+            if (is_peer_banned(host, remote.port)) return false;
+            const std::string key = host + ":" + std::to_string(remote.port);
+            std::lock_guard<std::mutex> lock(peers_mutex_);
+            auto it = connected_peers_.find(key);
+            if (it != connected_peers_.end() && it->second->is_connected) return false;
+            if (connecting_peers_.count(key)) return false;
+            std::string why;
+            if (!inbound_slot_available_locked(host, &why)) {
+                std::cout << "[P2P] quic: " << why << ", rejecting " << key << std::endl;
+                return false;
+            }
+            return true;
+        },
+        [this](std::shared_ptr<dinero::network::QuicSession> session,
+               const dinero::network::UdpAddr& remote) {
+            install_direct_quic_peer(std::move(session), remote, /*outbound=*/false);
+        });
+    if (!ok) return false;
+    quic_endpoint_ = std::move(endpoint);
+    std::cout << "[P2P] quic: direct QUIC peers listening on UDP " << quic_endpoint_->Port()
+              << std::endl;
+    return true;
+}
+
+bool P2PManager::connect_to_peer_quic(const std::string& ip, uint16_t port) {
+    if (shutdown_requested_.load(std::memory_order_acquire) ||
+        !network_active_.load(std::memory_order_acquire) ||
+        !quic_endpoint_ || !quic_endpoint_->Listening()) {
+        return false;
+    }
+    dinero::network::UdpAddr remote;
+    uint8_t buf[16];
+    if (inet_pton(AF_INET, ip.c_str(), buf) == 1) {
+        remote = dinero::network::UdpAddr::FromIPv4(buf, port);
+    } else if (inet_pton(AF_INET6, ip.c_str(), buf) == 1) {
+        remote = dinero::network::UdpAddr::FromIPv6(buf, port);
+    } else {
+        return false;
+    }
+    if (port == quic_endpoint_->Port() &&
+        ((!external_ip_.empty() && ip == external_ip_) || dinero::network::IsLocalInterfaceIp(ip))) {
+        return false;  // ourselves
+    }
+    if (is_peer_banned(ip, port)) return false;
+    const std::string key = QuicRemoteHost(remote) + ":" + std::to_string(port);
+    {
+        std::lock_guard<std::mutex> lock(peers_mutex_);
+        auto it = connected_peers_.find(key);
+        if (it != connected_peers_.end() && it->second->is_connected) return false;
+        if (connecting_peers_.count(key)) return false;
+    }
+    auto session = quic_endpoint_->Connect(remote, quic_p2p_options_);
+    if (!session) return false;
+    install_direct_quic_peer(std::move(session), remote, /*outbound=*/true);
+    return true;
+}
+
 std::string P2PManager::install_direct_quic_peer(
     std::shared_ptr<dinero::network::QuicSession> session,
     const dinero::network::UdpAddr& remote,
     bool outbound) {
-    char host[INET6_ADDRSTRLEN] = {0};
-    if (remote.family == dinero::network::UdpAddr::Family::V4) {
-        inet_ntop(AF_INET, remote.ip.data(), host, sizeof(host));
-    } else {
-        inet_ntop(AF_INET6, remote.ip.data(), host, sizeof(host));
-    }
     auto peer = std::make_shared<PeerInfo>();
-    peer->address = host;
+    peer->address = QuicRemoteHost(remote);
     peer->port = remote.port;
     peer->user_agent = user_agent_;
     peer->is_outbound = outbound;

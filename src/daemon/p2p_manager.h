@@ -26,6 +26,7 @@
 #include "network/version_nonce_tracker.h"
 
 namespace dinero { namespace daemon { class NodeIdentity; } }
+namespace dinero { namespace network { class QuicEndpoint; } }
 
 // Cross-platform P2P networking (no Qt dependencies)
 // Handles peer discovery, connections, and message routing
@@ -733,6 +734,15 @@ public:
     // outbound_direction=ClientToTarget. Inserts into connected_peers_
     // keyed on the synthetic "relay:<node_id_hex>:<circuit_id_hex>" key
     // and returns that key (caller passes it to start_peer_handler_thread).
+    // Direct QUIC peers on the P2P port (UDP). start() calls
+    // start_quic_endpoint(listen_port_) when enabled; tests call it with 0.
+    void set_quic_enabled(bool enabled) { quic_enabled_ = enabled; }
+    bool start_quic_endpoint(uint16_t port);
+    dinero::network::QuicEndpoint* quic_endpoint() const { return quic_endpoint_.get(); }
+    // Dial ip:port over QUIC. False if not listening, banned, self, or a peer
+    // (either transport) already exists at that address.
+    bool connect_to_peer_quic(const std::string& ip, uint16_t port);
+
     // Direct QUIC: wrap an already-started session (from QuicEndpoint) in a
     // PeerInfo keyed "ip:port", insert it and start its handler thread.
     // Returns the peer key.
@@ -856,6 +866,10 @@ public:
     // stored fd so tests can prove close-and-invalidate (no double-close).
     bool test_send_peer_message(PeerInfo* peer, const P2PMessage& message) { return send_peer_message(peer, message); }
     bool test_perform_handshake(PeerInfo* peer) { return perform_handshake(peer); }
+    void test_set_inbound_limits(size_t total, size_t per_ip) {
+        max_inbound_ = total;
+        max_inbound_per_ip_ = per_ip;
+    }
     void test_sweep_release_compatibility() { sweep_release_compatibility(); }
     void test_process_message(const std::string& key, const P2PMessage& message) { process_message(key, message); }
     void test_set_release_capability(const std::string& key, bool capable, bool complete = true);
@@ -956,6 +970,14 @@ private:
     std::atomic<bool> running_{false};
     std::atomic<bool> shutdown_requested_{false};
     std::atomic<bool> network_active_{true};
+    // Direct QUIC transport. Lock order: the endpoint calls AcceptFn under its
+    // own mutex and AcceptFn takes peers_mutex_, so never call into the
+    // endpoint while holding peers_mutex_.
+    std::unique_ptr<dinero::network::QuicEndpoint> quic_endpoint_;
+    dinero::network::QuicSessionOptions quic_p2p_options_;
+    bool quic_enabled_{true};
+    size_t max_inbound_ = MAX_INBOUND_CONNECTIONS;
+    size_t max_inbound_per_ip_ = MAX_INBOUND_PER_IP;
 
     // Socket readiness observability (for deterministic tests)
     std::atomic<bool> socket_listening_{false};
@@ -1274,6 +1296,8 @@ private:
                               const std::optional<std::string>& pre_resolved_ip = std::nullopt);
     // Ring 3 Phase 4c: Changed to shared_ptr for TS1 compliance
     bool start_peer_handler_thread(std::shared_ptr<PeerInfo> peer);
+    // Inbound caps shared by TCP and QUIC. Caller holds peers_mutex_.
+    bool inbound_slot_available_locked(const std::string& ip, std::string* why) const;
     // Frame one message onto a QUIC peer's stream (relay circuit or direct).
     bool send_quic_stream_message(PeerInfo& peer, const P2PMessage& message);
     void peer_handler_loop(std::shared_ptr<PeerInfo> peer);

@@ -227,3 +227,29 @@ TEST(QuicSession, AlpnMismatchFailsHandshake) {
     ASSERT_EQ(cr.wait_for(std::chrono::seconds(5)), std::future_status::ready);
     EXPECT_FALSE(cr.get());
 }
+
+// A peer that silently disappears must end the session by the negotiated
+// 60 s idle timeout, even while we keep trying to send to it.
+TEST(QuicSession, SilentPeerEndsByIdleTimeout) {
+    const auto options = TestOptions("dinero-p2p/1");
+    dinero::network::test::QuicLoopbackPair pair;
+    const auto client_addr = Localhost(22401);
+    const auto server_addr = Localhost(22402);
+    ASSERT_TRUE(pair.server->StartServer(server_addr, client_addr, options));
+    ASSERT_TRUE(pair.client->StartClient(client_addr, server_addr, options));
+    ASSERT_TRUE(pair.client->WaitHandshakeReady().get());
+    ASSERT_TRUE(pair.server->WaitHandshakeReady().get());
+
+    pair.SeverForTest();  // drop every packet in both directions from now on
+    // Several payloads: the second and later wait behind the single send slot.
+    for (int i = 0; i < 3; ++i) {
+        pair.server->EnqueueOutgoingStream(std::vector<uint8_t>(100, static_cast<uint8_t>(i)));
+    }
+
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(75);
+    while (pair.server->active() && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(250));
+    }
+    EXPECT_FALSE(pair.server->active()) << "still active 75 s after the peer vanished; err="
+                                        << pair.server->last_error();
+}

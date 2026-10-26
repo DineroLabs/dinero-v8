@@ -4,6 +4,7 @@
 
 #include "p2p_manager.h"
 #include "daemon/node_identity.h"
+#include "network/quic_endpoint.h"
 #include "network/quic_session.h"
 #include "network/relay_tls_keypair.h"
 #include "network/types.h"
@@ -161,4 +162,105 @@ TEST(QuicDirectPeer, StopDoesNotWaitOnIdleQuicPeer) {
         << "stop() took " << std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count()
         << " ms with one idle QUIC peer";
     link.Disconnect();
+}
+
+// ---- Task 4: real UDP dial/accept through each manager's QuicEndpoint ----
+
+namespace {
+
+std::string LoopKey(uint16_t port) { return "127.0.0.1:" + std::to_string(port); }
+
+size_t PeerCount(P2PManager& m) {
+    size_t n = 0;
+    for (const auto& p : m.get_connected_peers()) if (p.is_connected) ++n;
+    return n;
+}
+
+}  // namespace
+
+TEST(QuicPeer, DialOverRealUdpReachesConnected) {
+    Node a("dial-a"), b("dial-b");
+    ASSERT_TRUE(a.mgr->start_quic_endpoint(0));
+    ASSERT_TRUE(b.mgr->start_quic_endpoint(0));
+    const uint16_t ap = a.mgr->quic_endpoint()->Port(), bp = b.mgr->quic_endpoint()->Port();
+    ASSERT_TRUE(a.mgr->connect_to_peer_quic("127.0.0.1", bp));
+    ASSERT_TRUE(WaitConnected(*a.mgr, LoopKey(bp)));
+    ASSERT_TRUE(WaitConnected(*b.mgr, LoopKey(ap)));
+    EXPECT_TRUE(a.mgr->get_peer_info(LoopKey(bp))->is_outbound);
+    EXPECT_FALSE(b.mgr->get_peer_info(LoopKey(ap))->is_outbound);
+    EXPECT_TRUE(b.mgr->get_peer_info(LoopKey(ap))->quic_direct);
+}
+
+TEST(QuicPeer, DuplicateTransportToSameAddressIsRejected) {
+    Node a("dup-a"), b("dup-b");
+    ASSERT_TRUE(a.mgr->start_quic_endpoint(0));
+    ASSERT_TRUE(b.mgr->start_quic_endpoint(0));
+    const uint16_t ap = a.mgr->quic_endpoint()->Port(), bp = b.mgr->quic_endpoint()->Port();
+
+    // Dial side: an existing (TCP) peer at ip:port means no second session.
+    a.mgr->test_install_connected_direct_peer(LoopKey(bp), -1, true, false, {});
+    EXPECT_FALSE(a.mgr->connect_to_peer_quic("127.0.0.1", bp));
+    a.mgr->test_cleanup_peer(LoopKey(bp));
+
+    // Accept side: B already has a peer at A's address, so B refuses A's Initial.
+    b.mgr->test_install_connected_direct_peer(LoopKey(ap), -1, false, false, {});
+    ASSERT_TRUE(a.mgr->connect_to_peer_quic("127.0.0.1", bp));
+    EXPECT_FALSE(WaitConnected(*a.mgr, LoopKey(bp), 5));
+    EXPECT_EQ(b.mgr->quic_endpoint()->SessionCount(), 0u);
+}
+
+TEST(QuicPeer, InboundLimitAppliesToQuic) {
+    Node a1("lim-a1"), a2("lim-a2"), b("lim-b");
+    b.mgr->test_set_inbound_limits(/*total=*/1, /*per_ip=*/12);
+    ASSERT_TRUE(a1.mgr->start_quic_endpoint(0));
+    ASSERT_TRUE(a2.mgr->start_quic_endpoint(0));
+    ASSERT_TRUE(b.mgr->start_quic_endpoint(0));
+    const uint16_t bp = b.mgr->quic_endpoint()->Port();
+    ASSERT_TRUE(a1.mgr->connect_to_peer_quic("127.0.0.1", bp));
+    ASSERT_TRUE(WaitConnected(*a1.mgr, LoopKey(bp)));
+    ASSERT_TRUE(a2.mgr->connect_to_peer_quic("127.0.0.1", bp));
+    EXPECT_FALSE(WaitConnected(*a2.mgr, LoopKey(bp), 5)) << "second inbound QUIC peer exceeded cap 1";
+    EXPECT_EQ(PeerCount(*b.mgr), 1u);
+}
+
+TEST(QuicPeer, BannedIpCannotConnectOverQuic) {
+    Node a("ban-a"), b("ban-b");
+    ASSERT_TRUE(a.mgr->start_quic_endpoint(0));
+    ASSERT_TRUE(b.mgr->start_quic_endpoint(0));
+    ASSERT_TRUE(b.mgr->ban_peer("127.0.0.1", std::chrono::seconds(600)));
+    const uint16_t bp = b.mgr->quic_endpoint()->Port();
+    ASSERT_TRUE(a.mgr->connect_to_peer_quic("127.0.0.1", bp));
+    EXPECT_FALSE(WaitConnected(*a.mgr, LoopKey(bp), 5));
+    EXPECT_EQ(b.mgr->quic_endpoint()->SessionCount(), 0u);
+}
+
+// A peer that vanishes without a CONNECTION_CLOSE (sleep, NAT drop) must be
+// noticed by QUIC's idle timeout and cleaned up, freeing its slot.
+TEST(QuicPeer, SilentRemoteIsReapedAndSlotFreed) {
+    Node a("silent-a"), b("silent-b");
+    ASSERT_TRUE(a.mgr->start_quic_endpoint(0));
+    ASSERT_TRUE(b.mgr->start_quic_endpoint(0));
+    const uint16_t ap = a.mgr->quic_endpoint()->Port(), bp = b.mgr->quic_endpoint()->Port();
+    ASSERT_TRUE(a.mgr->connect_to_peer_quic("127.0.0.1", bp));
+    ASSERT_TRUE(WaitConnected(*b.mgr, LoopKey(ap)));
+
+    a.mgr->quic_endpoint()->Stop();  // marks the socket dead first: nothing more reaches B
+
+    // Worst case is keep-alive (20 s) + idle timeout (60 s): QUIC restarts the
+    // idle timer on the first ack-eliciting packet sent after the last receipt.
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(90);
+    while (std::chrono::steady_clock::now() < deadline) {
+        auto* p = b.mgr->get_peer_info(LoopKey(ap));
+        if ((!p || !p->is_connected) && b.mgr->quic_endpoint()->SessionCount() == 0) break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(250));
+    }
+    auto* p = b.mgr->get_peer_info(LoopKey(ap));
+    std::string state = "peer gone";
+    if (p && p->relay_quic_session) {
+        state = std::string("session active=") + (p->relay_quic_session->active() ? "1" : "0") +
+                " ready=" + (p->relay_quic_session->handshake_ready() ? "1" : "0") +
+                " err=" + p->relay_quic_session->last_error();
+    }
+    EXPECT_TRUE(!p || !p->is_connected) << "vanished QUIC peer still connected after 90 s; " << state;
+    EXPECT_EQ(b.mgr->quic_endpoint()->SessionCount(), 0u) << "endpoint still routes to the dead session";
 }

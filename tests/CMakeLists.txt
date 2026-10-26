@@ -3572,6 +3572,7 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/p2p/test_p2p_manager_ts1_integration.cpp)
     src/daemon/p2p_manager.cpp
     src/network/relay_hints_eviction.cpp
     src/network/relay_registry.cpp # Required by NAT C3 relay registry member in P2PManager
+    src/network/quic_endpoint.cpp
     src/network/quic_session.cpp   # Required by relay virtual-peer QUIC members in P2PManager
     src/network/quic_transport.cpp # Required by encrypted relay readiness checks in P2PManager
     src/network/udp_socket.cpp     # Required by QuicTransport
@@ -3651,6 +3652,7 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/p2p/test_p2p_idle_peer_reap.cpp)
     src/daemon/p2p_manager.cpp
     src/network/relay_hints_eviction.cpp
     src/network/relay_registry.cpp
+    src/network/quic_endpoint.cpp
     src/network/quic_session.cpp
     src/network/quic_transport.cpp
     src/network/udp_socket.cpp
@@ -3717,6 +3719,7 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/p2p/test_relay_virtual_transport.cpp)
     src/daemon/p2p_manager.cpp
     src/network/relay_hints_eviction.cpp
     src/network/relay_registry.cpp
+    src/network/quic_endpoint.cpp
     src/network/quic_session.cpp
     src/network/quic_transport.cpp
     src/network/relay_tls_keypair.cpp
@@ -3782,6 +3785,7 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/p2p/test_relay_virtual_transport.cpp)
     src/daemon/p2p_manager.cpp
     src/network/relay_hints_eviction.cpp
     src/network/relay_registry.cpp
+    src/network/quic_endpoint.cpp
     src/network/quic_session.cpp
     src/network/quic_transport.cpp
     src/network/relay_tls_keypair.cpp
@@ -3837,7 +3841,7 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/p2p/test_relay_virtual_transport.cpp)
   )
 
   add_test(NAME QuicDirectPeer COMMAND test_quic_direct_peer)
-  set_tests_properties(QuicDirectPeer PROPERTIES LABELS "p2p;quic;transport" TIMEOUT 120)
+  set_tests_properties(QuicDirectPeer PROPERTIES LABELS "p2p;quic;transport" TIMEOUT 300)
   list(APPEND DINERO_QUIC_RELAY_TEST_TARGETS test_relay_virtual_transport)
 endif()
 
@@ -3944,7 +3948,7 @@ if(DINERO_ENABLE_QUIC AND TARGET dinero_ngtcp2_crypto_ossl AND EXISTS ${CMAKE_SO
   add_test(NAME QuicSession COMMAND test_quic_session)
   set_tests_properties(QuicSession PROPERTIES
     LABELS "p2p;quic;ngtcp2;transport;crypto;quic-relay-focused"
-    TIMEOUT 10
+    TIMEOUT 120
   )
   list(APPEND DINERO_QUIC_RELAY_TEST_TARGETS test_quic_session)
 endif()
@@ -8404,6 +8408,7 @@ if(FALSE AND EXISTS ${CMAKE_SOURCE_DIR}/tests/mining/test_mining_comprehensive.c
     src/daemon/p2p_manager.cpp
     src/network/relay_hints_eviction.cpp
     src/network/relay_registry.cpp
+    src/network/quic_endpoint.cpp
     src/network/quic_session.cpp
     src/network/quic_transport.cpp
     src/network/udp_socket.cpp
@@ -11190,6 +11195,7 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/p2p/test_handshake_simple.cpp)
     src/daemon/p2p_manager.cpp
     src/network/relay_hints_eviction.cpp
     src/network/relay_registry.cpp
+    src/network/quic_endpoint.cpp
     src/network/quic_session.cpp
     src/network/quic_transport.cpp
     src/network/udp_socket.cpp
@@ -11251,6 +11257,7 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/p2p/test_ping_pong.cpp)
     src/daemon/p2p_manager.cpp
     src/network/relay_hints_eviction.cpp
     src/network/relay_registry.cpp
+    src/network/quic_endpoint.cpp
     src/network/quic_session.cpp
     src/network/quic_transport.cpp
     src/network/udp_socket.cpp
