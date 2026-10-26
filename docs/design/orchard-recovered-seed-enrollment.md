@@ -1407,6 +1407,23 @@ and SDK validation105/confirmation535000una are required. This is not forced-kil
 crash/powerloss, changed-tip/reorg or activation-parent recovery, old-live Reserved
 rebind, mixed readiness, mainnet/v5/all lifecycle, app/device or release qualification.
 
+## Post-base compact funding native gate
+
+`NodeCoreCompactPostBaseShield` is a distinct actual post-base discovery case.
+After normal original-assumed import/nonempty crossing104 and new compact
+shield105, both original historical funding outputs have been spent. Normal
+named wallet.open/unlock (no phrase) must discover the actual owned475000una
+change created105, not relabel it as frozen snapshot funding. A NEW public
+queue/finish must acquire CURRENT105 input proofs and sign/admit it normally.
+The independent FULL producer records the actual canonical input's outpoint,
+value, script, creation height/coinbase before validating/mining the SAME SDK
+body106; SDK validation and authenticated550000una account confirmation are
+required. No wallet coins, proof-backed manual spend, balance or history receipt
+is injected by the fixture. Original ten SQL and absent mixed baselines/schema
+must remain unchanged. This case does not presume discovery is implemented;
+qualification requires a real positive and honest isolated negative controls.
+It is not mainnet/v5/all lifecycles/many-input/mixed readiness or app/device/release.
+
 ## Original-import private send and unshield native gate
 
 `NodeCoreAssumedPrivateSendUnshield` extends the real imported-source funded

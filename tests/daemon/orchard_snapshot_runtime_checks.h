@@ -730,6 +730,13 @@ void GenerateSdkActivationFixture(){
                 const auto body=DecodeRelayTransaction(wire,RelayTransactionReadMode::AvailableFamilies);
                 ASSERT_TRUE(body.IsOrchard());ASSERT_EQ(body.Inputs().empty(),op=="mine_private");
                 const auto before=source.f.service->GetActiveTip()->height;
+                result["transparent_inputs"]=Json::Value(Json::arrayValue);
+                for(const auto& point:body.Inputs()){
+                    const auto coin=source.f.db.getCoin(point.txid.AsUint256(),point.vout);ASSERT_TRUE(coin.ok());
+                    Json::Value input;input["txid"]=point.txid.AsUint256().GetHex();input["index"]=point.vout;
+                    input["amount_una"]=Json::UInt64(coin->amount);input["script"]=coin->script_pubkey;
+                    input["height"]=coin->height;input["coinbase"]=coin->coinbase;result["transparent_inputs"].append(input);
+                }
                 ASSERT_TRUE(source.f.ingress->SubmitBody(body,TxOrigin::P2P).accepted());
                 BlockAssembler assembler(&source.f.db);WireOrchardAssembler(assembler,source.f);
                 const auto mined=SolveCatalogTemplate(assembler.CreateOrchardBlock(OrchardMiningPayout));ASSERT_TRUE(mined);

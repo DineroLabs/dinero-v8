@@ -34,6 +34,8 @@ reserved_restart=bool(os.environ.get('DINERO_SDK_COMPACT_RESERVED_RESTART'))
 if reserved_restart:assert new_compact_ready
 ready_restart=bool(os.environ.get('DINERO_SDK_COMPACT_READY_RESTART'))
 if ready_restart:assert new_compact_ready and not reserved_restart
+post_base_shield=bool(os.environ.get('DINERO_SDK_POST_BASE_SHIELD'))
+if post_base_shield:assert new_compact_ready and not reserved_restart and not ready_restart
 assumed_unshield=bool(os.environ.get('DINERO_SDK_ASSUMED_PRIVATE_UNSHIELD'))
 if assumed_unshield:assert assumed and os.environ.get('DINERO_SDK_COMPACT_PRIVATE_SEND')=='1' and not new_compact_reservation
 native_lock=threading.Lock()
@@ -732,9 +734,80 @@ try:
             assert original_lifecycle()==original and mixed_runtime_receipts()==mixed_before
             new_ready=dict(finished=new_finished,body=new_signed,pool=pool,proof=own_proofs[0].hex(),retry=ready_retry,reopened_ready=reopened_ready,
                 mined=shield_mined,operations=new_operations,balance=new_balance,reserved_cold_restart=cold_reserved,ready_cold_restart=cold_ready)
+            if post_base_shield:
+                # Both historical funding outputs are now genuinely spent.
+                # Only actual owned change made AFTER base101 can fund this
+                # next request; neither the script nor the native source may
+                # inject a wallet coin, caller balance or proof-backed spend.
+                change=next(o for o in shield_mined['transparent_outputs'] if o['amount_una']==475000)
+                assert change['height']==105
+                live_candidates=rpc('wallet.listunspent',[])
+                opened_post=rpc('wallet.open',['wire-named-owner']);assert opened_post['success'] is True
+                unlocked_post=rpc('wallet.unlock',['funded-crossing-password',0]);assert unlocked_post['success'] is True
+                binding=bound('wire-named-owner')
+                discovered_post=rpc('wallet.listunspent',[])
+                discovery=dict(live=live_candidates,reopened=discovered_post,opened=opened_post,unlocked=unlocked_post,
+                    expected_txid=txid,expected_change=change,ordinary=candidate_wallet_state())
+                (root/'post-base-discovery.json').write_text(json.dumps(discovery,indent=2)+'\n')
+                found=[c for c in discovered_post if c.get('txid')==txid and c.get('vout')==change['index']]
+                assert len(found)==1,'normal named-wallet discovery did not find real post-base105 change'
+                assert found[0]['amount_una']==475000 and found[0]['scriptPubKey']==change['script'],found
+                assert not found[0].get('snapshot_candidate',False),'post-base change was relabelled as original frozen funding'
+                assert original_lifecycle()==original and mixed_runtime_receipts()==mixed_before
+                before_post=wallet_rows();wire_post=len(packets)
+                post_balance=rpc('wallet.orchard.getbalance',dict(binding,account=0))
+                post_request=dict(binding,account=0,request_id='b1'+'00'*31,expected_revision=post_balance['account_revision'],fee_una=10000,
+                    payments=[dict(address=account['address'],amount_una=15000,memo_hex=b'post-base change'.hex())])
+                post_pending=call('rpc',method='wallet.orchard.queueshield',params=post_request)
+                assert post_pending.get('error_code')=='funding_source_pending' and post_pending['retryable'],post_pending
+                assert wallet_rows()==before_post,'pending post-base input DATA changed encrypted owners'
+                deadline=time.monotonic()+35
+                while time.monotonic()<deadline:
+                    post_queued=call('rpc',method='wallet.orchard.queueshield',params=post_request)
+                    if post_queued.get('proof_queued'):break
+                    assert post_queued.get('error_code')=='funding_source_pending' and post_queued['retryable'],post_queued
+                    assert wallet_rows()==before_post
+                    time.sleep(.1)
+                assert post_queued.get('proof_queued') and post_queued['input_count']==1 and not post_queued['existing_request'],post_queued
+                post_reserved=wallet_rows();assert post_reserved!=before_post
+                assert rpc('wallet.orchard.queueshield',post_request)['existing_request'] and wallet_rows()==post_reserved
+                finish_post=dict(binding,account=0,request_id=post_request['request_id']);deadline=time.monotonic()+35
+                while time.monotonic()<deadline:
+                    post_finished=call('rpc',method='wallet.orchard.finishshield',params=finish_post)
+                    if post_finished.get('error_code') not in ('proof_not_ready','funding_source_pending'):break
+                    assert wallet_rows()==post_reserved
+                    time.sleep(.1)
+                assert post_finished.get('durable_state')=='signed' and post_finished.get('admitted'),post_finished
+                post_signed=rpc('wallet.getrawtransaction',[post_finished['txid']])['hex']
+                post_signed_rows=wallet_rows()
+                assert rpc('wallet.orchard.finishshield',finish_post)['already_in_mempool'] and wallet_rows()==post_signed_rows
+                assert not proof_ready.is_set()
+                post_mined=native_call('mine_shield',body=post_signed)
+                assert post_finished['txid'] in post_mined['transactions']
+                assert post_mined['transparent_inputs']==[dict(txid=txid,index=change['index'],amount_una=475000,
+                    script=change['script'],height=105,coinbase=False)],post_mined['transparent_inputs']
+                bodies[bytes.fromhex(post_mined['hash'])[::-1]]=bytes.fromhex(post_mined['body']);headers.append(bytes.fromhex(post_mined['header']))
+                deadline=time.monotonic()+45
+                while time.monotonic()<deadline:
+                    assert not failures,failures
+                    if rpc('getblockcount',[])==106:break
+                    time.sleep(.1)
+                assert rpc('getblockcount',[])==106
+                deadline=time.monotonic()+20
+                while time.monotonic()<deadline:
+                    post_operations=rpc('wallet.orchard.listoperations',dict(binding,account=0))
+                    if any(o['operation_id']==post_request['request_id'] and (o.get('chain_observation') or {}).get('outcome')=='confirmed' for o in post_operations['operations']):break
+                    time.sleep(.1)
+                assert any(o['operation_id']==post_request['request_id'] and (o.get('chain_observation') or {}).get('outcome')=='confirmed' for o in post_operations['operations']),post_operations
+                post_result=rpc('wallet.orchard.getbalance',dict(binding,account=0));assert post_result['confirmed_una']==550000,post_result
+                assert original_lifecycle()==original and mixed_runtime_receipts()==mixed_before
+                assert any(p['command']=='getwinput' and struct.unpack_from('<I',(root/p['file']).read_bytes(),54)[0]==105 for p in packets[wire_post:])
+                new_ready['post_base_shield']=dict(discovery=discovery,pending=post_pending,queued=post_queued,finished=post_finished,
+                    body=post_signed,mined=post_mined,operations=post_operations,balance=post_result,
+                    scope='Actual original-assumed compact NEW post-base105 owned-change discovery during normal named reopen/unlock, CURRENT105 TCP input proof acquisition and public NEW queue/finish with real canonical FULL validation/mining106/SDK106/550000una. Both original historical funding outputs already spent; no wallet coin or caller balance injection, manual proof-backed spend, mixed/independent baseline, mainnet/v5/all lifecycles/apps/devices/release claim.')
         (root/'receipt.json').write_text(json.dumps(dict(original_assumed_mobile=True,new_compact_reservation=True,
             pending=pending_input,queued=new_queued,retry=new_retry,reopened=reopened,original_lifecycle=original,
-            mixed_receipts_unchanged=mixed_before,prior_confirmation=operations,new_compact_ready=new_ready,
+            mixed_receipts_unchanged=mixed_before,prior_confirmation=operations,new_compact_ready=new_ready,post_base_shield=post_base_shield,
             scope='Actual native imported funded crossing to104, then a DIFFERENT unspent historical output obtains a new exact-tip proof over TCP and atomically queues a NEW bound shield reservation through public SDK C ABI. '+('Reserved-restart variant orderly stops and EXITS the original SDK PID, starts a fresh executor without snapshot re-import, opens/unlocks the SAME encrypted named wallet without phrase and authenticates its unchanged durable randomized intent before fresh CURRENT paths/signing. ' if reserved_restart else 'Ready variant signs in the SAME executor/session. ')+('Ready-restart variant additionally EXITS the signed-Ready process; a fresh PID/no-phrase wallet reopen retains identical encrypted signed intent, refuses default missing-pool retry, then explicitly reacquires CURRENT per-input DATA for independent admission of the SAME signed bytes. Existing poisoned entries refuse even explicit recovery. ' if ready_restart else '')+ 'Ready uses selected exact-current coins, freshly recaptures body/proofs for encrypted Ready, admits through ordinary proof-bearing ingress with peer full-proof refill disabled, preserves strict bad retained-proof refusals/retries and no-phrase SIGNED-Ready reopen, and truly mines/validates105 with confirmed535000una. Reservation-only variant retains its separate unsigned-reservation reopen gate. NO live-executor Reserved-job wallet-session rebind, forced/crash/powerloss, changed-tip/reorg recovery, mixed/index/independent history, apps/devices or release qualification.'),indent=2)+'\n')
         assert call('stop')==0;success=True
         print('PASS actual original-assumed current compact proof download and NEW '+('signing/Ready/pool/confirmation' if new_compact_ready else 'atomic reservation'),flush=True)
