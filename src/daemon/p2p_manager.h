@@ -880,6 +880,10 @@ public:
     // never active), connected via `relay_endpoint`. Returns its key.
     std::string test_install_dead_quic_relay_peer(const std::string& relay_endpoint);
     void test_run_quic_reader_loop(const std::string& key);
+    size_t test_peer_thread_count() {
+        std::lock_guard<std::mutex> lock(peer_threads_mutex_);
+        return peer_threads_.size();
+    }
     void test_set_inbound_limits(size_t total, size_t per_ip) {
         max_inbound_ = total;
         max_inbound_per_ip_ = per_ip;
@@ -1005,7 +1009,17 @@ private:
     std::unique_ptr<std::thread> connection_manager_thread_;
     std::unique_ptr<std::thread> keepalive_thread_;  // Phase C: Adaptive keepalive
     std::mutex peer_threads_mutex_;
-    std::vector<std::unique_ptr<std::thread>> peer_threads_;
+    // Per-peer threads (handlers, QUIC readers). `done` is set when the
+    // thread's function returns so spawn_peer_thread_locked can join and drop
+    // it; stop() joins whatever is left.
+    struct PeerThread {
+        std::unique_ptr<std::thread> thread;
+        std::shared_ptr<std::atomic<bool>> done;
+    };
+    std::vector<PeerThread> peer_threads_;
+    // Caller holds peer_threads_mutex_. Reaps finished threads, then starts
+    // `fn`. False if the thread could not be created (never throws).
+    bool spawn_peer_thread_locked(std::function<void()> fn);
 
     // Peer management
     mutable std::mutex peers_mutex_;

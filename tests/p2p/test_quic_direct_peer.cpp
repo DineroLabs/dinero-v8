@@ -409,3 +409,25 @@ TEST(QuicPeer, DeadRelayCircuitCountsAgainstItsRelay) {
     auto* p = mgr.get_peer_info(key);
     EXPECT_TRUE(!p || !p->is_connected);
 }
+
+// Handler threads of peers that are gone must be reaped, not kept until
+// stop(): otherwise every failed inbound handshake (cheap to forge over QUIC)
+// leaks a thread until std::thread creation fails and the daemon aborts.
+TEST(PeerThreads, FinishedHandlerThreadsAreReaped) {
+    P2PManager mgr(0);
+    for (int i = 0; i < 30; ++i) {
+        int fds[2];
+        ASSERT_EQ(::socketpair(AF_UNIX, SOCK_STREAM, 0, fds), 0);
+        ::close(fds[1]);  // remote hangs up: the handshake fails at once
+        mgr.test_handle_incoming_connection(fds[0], "198.51.100." + std::to_string(i + 1));
+    }
+    std::this_thread::sleep_for(std::chrono::seconds(2));  // let the handlers fail and exit
+    int fds[2];
+    ASSERT_EQ(::socketpair(AF_UNIX, SOCK_STREAM, 0, fds), 0);
+    ::close(fds[1]);
+    mgr.test_handle_incoming_connection(fds[0], "198.51.100.200");  // spawning reaps finished ones
+    EXPECT_LE(mgr.test_peer_thread_count(), 3u) << "finished handler threads were not reaped";
+    mgr.test_set_running(true);
+    mgr.stop();
+}
+

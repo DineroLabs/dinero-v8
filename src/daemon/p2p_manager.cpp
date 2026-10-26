@@ -4508,14 +4508,14 @@ void P2PManager::stop() {
     // This is the core TS1 invariant: join-before-erase
 
     // Step 1: Join all peer threads (blocks until all peer_handler_loop exit)
-    std::vector<std::unique_ptr<std::thread>> peer_threads_to_join;
+    std::vector<PeerThread> peer_threads_to_join;
     {
         std::lock_guard<std::mutex> lock(peer_threads_mutex_);
         peer_threads_to_join.swap(peer_threads_);
     }
-    for (auto& thread : peer_threads_to_join) {
-        if (thread && thread->joinable()) {
-            thread->join();
+    for (auto& entry : peer_threads_to_join) {
+        if (entry.thread && entry.thread->joinable()) {
+            entry.thread->join();
         }
     }
 
@@ -5529,9 +5529,33 @@ bool P2PManager::start_peer_handler_thread(std::shared_ptr<PeerInfo> peer) {
     if (shutdown_requested_.load(std::memory_order_acquire)) {
         return false;
     }
-    peer_threads_.emplace_back(
-        std::make_unique<std::thread>(&P2PManager::peer_handler_loop, this, std::move(peer))
-    );
+    return spawn_peer_thread_locked(
+        [this, peer = std::move(peer)]() mutable { peer_handler_loop(std::move(peer)); });
+}
+
+bool P2PManager::spawn_peer_thread_locked(std::function<void()> fn) {
+    // Reap threads whose function already returned: join() is immediate.
+    // Without this every peer that ever connected (or failed to) kept its
+    // thread until stop().
+    for (auto it = peer_threads_.begin(); it != peer_threads_.end();) {
+        if (it->done && it->done->load(std::memory_order_acquire)) {
+            if (it->thread && it->thread->joinable()) it->thread->join();
+            it = peer_threads_.erase(it);
+        } else {
+            ++it;
+        }
+    }
+    auto done = std::make_shared<std::atomic<bool>>(false);
+    try {
+        auto thread = std::make_unique<std::thread>([fn = std::move(fn), done]() {
+            fn();
+            done->store(true, std::memory_order_release);
+        });
+        peer_threads_.push_back(PeerThread{std::move(thread), done});
+    } catch (const std::system_error& e) {
+        std::cerr << "[P2P] could not start peer thread: " << e.what() << std::endl;
+        return false;
+    }
     return true;
 }
 
@@ -5599,8 +5623,8 @@ void P2PManager::peer_handler_loop(std::shared_ptr<PeerInfo> peer) {
         {
             std::lock_guard<std::mutex> lock(peer_threads_mutex_);
             if (!shutdown_requested_.load(std::memory_order_acquire)) {
-                peer_threads_.emplace_back(std::make_unique<std::thread>(
-                    &P2PManager::run_relay_quic_reader_loop, this, peer_locked));
+                spawn_peer_thread_locked(
+                    [this, peer_locked]() { run_relay_quic_reader_loop(peer_locked); });
             }
         }
     }
@@ -7207,7 +7231,10 @@ std::string P2PManager::install_direct_quic_peer(
         if (quic_endpoint_) quic_endpoint_->Forget(remote);  // outside peers_mutex_
         return std::string();
     }
-    start_peer_handler_thread(peer);
+    if (!start_peer_handler_thread(peer)) {
+        cleanup_peer(key);  // closes the session and releases the endpoint route
+        return std::string();
+    }
     return key;
 }
 
