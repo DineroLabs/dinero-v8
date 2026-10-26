@@ -11304,6 +11304,11 @@ void ChainstateService::ActivateBestChainPass(const ActivationParentPlan* prepar
     std::unique_ptr<ActivationParentPlan>& request,bool may_prepare,PreparedOrchardInverse* selected_inverse) {
     // Thread safety: prevent concurrent entry from P2P handler + P1 reorg tick
     std::lock_guard<AnnotatedRecursiveMutex> activation_lock(activation_mutex_);
+    // LoadSnapshot owns snapshot_load_mutex_ then this selected mutex while
+    // publishing its interval. Never classify its partial UTXO/tip view as
+    // corruption, self-heal it, or activate against it. The normal tick retries
+    // after publication; any still-invalid view then takes the ORIGINAL guard.
+    if(snapshot_import_publishing_)return;
     std::unique_ptr<ParentPreparationScope> entry_scope;
     if(selected_inverse) {
         // A stale detached entry proof is an operational deferral, not durable
@@ -14497,6 +14502,22 @@ int ChainstateService::RescanWalletFromSnapshotUTXOs(WalletManager& wallet, uint
         base_height);
 }
 
+ChainstateService::SnapshotImportPublication::SnapshotImportPublication(
+    ChainstateService& source,std::unique_lock<std::mutex>& owner):source_(source),owner_(owner){
+    if(!owner_.owns_lock()||owner_.mutex()!=&source_.snapshot_load_mutex_||source_.activation_mutex_.HeldByCurrentThread())
+        throw std::logic_error("Snapshot publication requires owned load lock before selected ownership");
+    std::lock_guard<AnnotatedRecursiveMutex> selected(source_.activation_mutex_);
+    if(source_.snapshot_import_publishing_)throw std::logic_error("Snapshot publication already owned");
+    source_.snapshot_import_publishing_=true;
+}
+ChainstateService::SnapshotImportPublication::~SnapshotImportPublication(){
+    if(thread_!=std::this_thread::get_id()||!owner_.owns_lock()||owner_.mutex()!=&source_.snapshot_load_mutex_)
+        std::terminate();
+    std::lock_guard<AnnotatedRecursiveMutex> selected(source_.activation_mutex_);
+    if(!source_.snapshot_import_publishing_)std::terminate();
+    source_.snapshot_import_publishing_=false;
+}
+
 consensus::SnapshotImportResult ChainstateService::LoadSnapshot(const std::filesystem::path& snapshot_path) {
     using namespace consensus;
     // rc24.1 single-flight: LoadSnapshot mutates the consensus UTXO set in place
@@ -14504,12 +14525,16 @@ consensus::SnapshotImportResult ChainstateService::LoadSnapshot(const std::files
     // Serialize so two callers can never mutate the set concurrently — the
     // empty-set precondition below then cleanly rejects the loser. Held for the
     // full load (a one-time bootstrap; block download stays deferred meanwhile).
-    std::lock_guard<std::mutex> load_guard(snapshot_load_mutex_);
     SnapshotImportResult result;
     result.success = false;
     result.utxos_imported = 0;
     result.bytes_read = 0;
     result.checksum_valid = false;
+    if(activation_mutex_.HeldByCurrentThread()){
+        result.error_message="Snapshot load requires load ownership before selected ownership";return result;
+    }
+    std::unique_lock<std::mutex> load_guard(snapshot_load_mutex_);
+    SnapshotImportPublication publication(*this,load_guard);
 
     // Fatal gate, hoisted ahead of EVERY mutation (spec: fatal_mismatch refuses
     // all snapshot loads until explicit operator reset). Even the genesis-only
@@ -18584,7 +18609,7 @@ bool ChainstateService::NeedsOrchardActivationCatalog() {
     std::lock_guard<AnnotatedRecursiveMutex> selected(activation_mutex_);
     std::lock_guard<std::mutex> lifetime(wallet_index_use_mutex_);
     const auto activation=Params().orchard_activation_height;
-    return IsStarted()&&selected_read_accepting_&&!wallet_index_stopping_&&!safe_mode_active_&&
+    return IsStarted()&&selected_read_accepting_&&!wallet_index_stopping_&&!safe_mode_active_&&!snapshot_import_publishing_&&
         chain_db_&&block_storage_&&GetConfig().utreexo_stateless&&!compact_startup_&&active_tip_&&
         activation&&activation!=UINT32_MAX&&uint64_t(active_tip_->height)+1==activation&&
         Params().orchard_catalog_commitment_activation_height==activation&&

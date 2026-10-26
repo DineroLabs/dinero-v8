@@ -1172,6 +1172,47 @@ TEST(OrchardActivationBaseline, IndependentCopyMatchesEveryRowWithoutReusingAnEn
     EXPECT_FALSE(called);EXPECT_EQ(ActivationHandoffFixture::Files(path),rebuilt_files);
     EXPECT_EQ(ChainDBTransactionReadTestPeer::HandoffRows(original),rows);EXPECT_EQ(ActivationHandoffFixture::Files(f.path),files);
 }
+struct SnapshotImportPublicationTestAccess {
+    static void During(ChainstateService& source,const std::function<void()>& action){
+        std::unique_lock<std::mutex> load(source.snapshot_load_mutex_);
+        ChainstateService::SnapshotImportPublication publication(source,load);action();
+    }
+    static bool Publishing(ChainstateService& source){
+        std::lock_guard<AnnotatedRecursiveMutex> selected(source.activation_mutex_);return source.snapshot_import_publishing_;
+    }
+    static void Misalign(ChainstateService& source){
+        std::lock_guard<AnnotatedRecursiveMutex> selected(source.activation_mutex_);
+        source.consensus_utxo_set_->SetBestBlock(uint256{},0);
+    }
+    static void ForeignOwner(ChainstateService& source){
+        std::mutex foreign;std::unique_lock<std::mutex> load(foreign);
+        ChainstateService::SnapshotImportPublication publication(source,load);
+    }
+};
+TEST(OrchardActivationBaseline, OwnedImportDefersActivationButNeverClearsRealMisalignment){
+    OrchardAdmissionFixture f;auto& source=*f.service;using Access=SnapshotImportPublicationTestAccess;
+    const auto rows=ChainDBTransactionReadTestPeer::HandoffRows(f.db);
+    const auto* tip=source.GetActiveTip();ASSERT_NE(tip,nullptr);ASSERT_FALSE(source.IsInSafeMode());
+    Access::During(source,[&]{
+        ASSERT_TRUE(Access::Publishing(source));Access::Misalign(source);
+        source.ActivateBestChain();EXPECT_FALSE(source.IsInSafeMode());EXPECT_EQ(source.GetActiveTip(),tip);
+        EXPECT_EQ(ChainDBTransactionReadTestPeer::HandoffRows(f.db),rows);
+    });
+    EXPECT_FALSE(Access::Publishing(source));
+    // Leave the deliberately invalid in-memory tip in place. Once its owner
+    // ends the publication interval, ORIGINAL fail-stop must still fire.
+    source.ActivateBestChain();EXPECT_TRUE(source.IsInSafeMode());
+    EXPECT_NE(source.GetSafeModeReason().find("chainstate misaligned"),std::string::npos);
+    EXPECT_EQ(ChainDBTransactionReadTestPeer::HandoffRows(f.db),rows);
+}
+TEST(OrchardActivationBaseline, ImportPublicationRequiresRealOwnerAndUnwindsOnException){
+    OrchardAdmissionFixture f;auto& source=*f.service;using Access=SnapshotImportPublicationTestAccess;
+    EXPECT_THROW(Access::ForeignOwner(source),std::logic_error);EXPECT_FALSE(Access::Publishing(source));
+    EXPECT_THROW(Access::During(source,[&]{
+        EXPECT_TRUE(Access::Publishing(source));throw std::runtime_error("owned test callback failure");
+    }),std::runtime_error);
+    EXPECT_FALSE(Access::Publishing(source));EXPECT_FALSE(source.IsInSafeMode());
+}
 TEST(OrchardActivationBaseline, CompleteParentCoinsRejectMissingValueMetadataAndWrongCheckpoint){
     ActivationHandoffFixture f;ChainDB source;
     ASSERT_EQ(ChainDBTransactionReadTestPeer::HandoffReadOnly(source,f.path),Status::Ok);

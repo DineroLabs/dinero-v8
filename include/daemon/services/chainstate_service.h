@@ -2129,6 +2129,21 @@ private:
     // Serializes LoadSnapshot across the auto-bootstrap path AND the manual RPC
     // path so the consensus UTXO set is never mutated concurrently (rc24.1 crash).
     std::mutex snapshot_load_mutex_;
+    // Protected by activation_mutex_. This is ONLY an owned publication
+    // interval, never state validity or permission to reset SafeMode.
+    bool snapshot_import_publishing_=false;
+    class SnapshotImportPublication final {
+    public:
+        SnapshotImportPublication(ChainstateService&,std::unique_lock<std::mutex>&);
+        ~SnapshotImportPublication();
+        SnapshotImportPublication(const SnapshotImportPublication&)=delete;
+        SnapshotImportPublication& operator=(const SnapshotImportPublication&)=delete;
+    private:
+        ChainstateService& source_;
+        std::unique_lock<std::mutex>& owner_;
+        const std::thread::id thread_=std::this_thread::get_id();
+    };
+    friend struct SnapshotImportPublicationTestAccess;
 
     // Phase 44: Background validation state (parallel validation of assumed UTXO)
     BackgroundValidationStatus bg_validation_status_ = BackgroundValidationStatus::NotStarted;

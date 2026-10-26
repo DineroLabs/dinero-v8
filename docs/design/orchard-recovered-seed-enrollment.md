@@ -1030,6 +1030,15 @@ source/caller birthday, fabricated first event, generated provenance change,
 snapshot floor or automatic mixed-wallet readiness is introduced.
 # Imported-parent genesis graph reconciliation
 
+LoadSnapshot now owns a private publication interval under its existing load
+mutex, then selected ownership. Normal activation and catalog readiness defer
+only during that interval, before examining its intermediate UTXO/tip view.
+The interval ends on return or exception; remaining misalignment takes the
+unchanged normal SafeMode path. No SafeMode reset, alignment bypass outside
+the owned interval, snapshot-format relaxation or independent-history receipt
+is introduced. Focused phase/ownership tests are deterministic and serial,
+not generic race/deadlock/churn stress qualification.
+
 For this freshly authenticated ORIGINAL imported-parent class only, the parent
 audit accepts exact header-only metadata with zero body/undo locators, the
 unchanged genesis validation anchor, frozen cohort, catalog/stump owner and
