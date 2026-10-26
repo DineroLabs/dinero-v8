@@ -10987,7 +10987,10 @@ bool ChainstateService::StartCompactStorage() {
                 wallet_index->ReadAssumedStartupMetadata()!=original_assumed)
                 throw std::runtime_error("Imported startup lifecycle restore refused");
             imported_base=*frozen;
-        }else wallet_index->RequireMetadataAbsent(unsupported_recovery);
+        }else{
+            wallet_index->RequireMetadataAbsent(unsupported_recovery);
+            if(!original_assumed.empty())throw std::runtime_error("Compact startup retains unbound assumed lifecycle keys");
+        }
         p2p::OrphanBlockPool::Config orphan_config;
         orphan_config.max_orphan_blocks=256;orphan_config.max_orphan_size_mb=16;
         orphan_config.max_orphans_per_peer=64;orphan_config.orphan_timeout_seconds=600;

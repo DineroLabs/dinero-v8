@@ -75,7 +75,7 @@ TEST(OrchardCompactStart, WalletOpenFailureDoesNotPublish) {
 TEST(OrchardCompactStart, LegacyRecoveryMarkersRemainIntactAndRefuse) {
     CompactServiceStartFixture f;std::filesystem::create_directories(f.WalletPath().parent_path());
     const auto rows=f.storage->Rows();const auto archives=f.storage->ArchiveBytes();
-    for(const std::string key:{"reorg_in_progress","incomplete_reorg_recovery_tip","wallet_snapshot_recovery_base_height","assumeutxo_active","assumeutxo_lifecycle_state"}) {
+    for(const std::string key:{"reorg_in_progress","incomplete_reorg_recovery_tip","wallet_snapshot_recovery_base_height","assumeutxo_active","assumeutxo_lifecycle_state","assumeutxo_untracked_startup_key"}) {
         {dinero::UTXOIndex index(f.WalletPath().string());ASSERT_TRUE(index.Initialize());ASSERT_TRUE(index.SetMetadata(key,"preserve"));}
         EXPECT_FALSE(f.service->Start());f.Closed();
         {dinero::UTXOIndex index(f.WalletPath().string());ASSERT_TRUE(index.Initialize());EXPECT_EQ(index.GetMetadata(key),"preserve");ASSERT_TRUE(index.DeleteMetadata(key));}
