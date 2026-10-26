@@ -725,10 +725,10 @@ void GenerateSdkActivationFixture(){
                 const auto header=mined->Header().SerializeForHash();result["header"]=util::hex({header.begin(),header.end()});
                 result["transactions"]=Json::Value(Json::arrayValue);
                 for(const auto& tx:mined->Transactions())result["transactions"].append(tx.GetTxid().AsUint256().GetHex());
-            }else if(op=="mine_private"){
+            }else if(op=="mine_private"||op=="mine_shield"){
                 std::vector<uint8_t> wire;ASSERT_TRUE(util::unhex(request["body"].asString(),wire));
                 const auto body=DecodeRelayTransaction(wire,RelayTransactionReadMode::AvailableFamilies);
-                ASSERT_TRUE(body.IsOrchard());ASSERT_TRUE(body.Inputs().empty());
+                ASSERT_TRUE(body.IsOrchard());ASSERT_EQ(body.Inputs().empty(),op=="mine_private");
                 const auto before=source.f.service->GetActiveTip()->height;
                 ASSERT_TRUE(source.f.ingress->SubmitBody(body,TxOrigin::P2P).accepted());
                 BlockAssembler assembler(&source.f.db);WireOrchardAssembler(assembler,source.f);

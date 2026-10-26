@@ -21377,11 +21377,66 @@ std::unique_ptr<wallet::OrchardQueuedSpend> ChainstateService::queueRuntimeWalle
 #endif
 }
 
+std::unique_ptr<ChainstateService::SelectedOrchardPoolContext>
+ChainstateService::CaptureCompactWalletTransactionUnderLock(const std::unique_lock<std::mutex>& snapshot,
+        const MempoolTransaction& body,std::vector<uint8_t>& proof){
+#ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
+    activation_mutex_.AssertHeld("capture current compact wallet transaction");
+    if(!snapshot.owns_lock()||snapshot.mutex()!=&snapshot_load_mutex_||snapshot_import_publishing_||
+       !compact_startup_||!body.IsOrchard()||body.Inputs().empty()||
+       body.Inputs().size()>p2p::WalletInputProofDownload::MaximumItems||!proof.empty())
+        throw std::runtime_error("Compact shield current transaction scope unavailable");
+    // Empty capture authenticates STATE only, never the enumerated coins.
+    auto state=CaptureSelectedOrchardPoolContextUnderLock(std::span<const MempoolProofView>{});
+    if(!state||!state->compact_stump)throw std::runtime_error("Compact shield current state unavailable");
+    auto* context=DaemonContext::instance();
+    const auto peers=context&&context->chainstate.get()==this?std::dynamic_pointer_cast<P2PService>(context->p2p):nullptr;
+    const auto download=peers?peers->WalletInputProofs():nullptr;
+    const auto header=chain_db_->getHeader(state->context.parent_hash);
+    if(!download||!header.ok())throw std::runtime_error("Compact shield current input transport unavailable");
+    const auto bytes=body.Serialize();
+    if(bytes.empty()||bytes.size()>1024*1024)throw std::runtime_error("Compact shield body bound");
+    // Existing v2 utxotx DATA, not a new capability or proof authority. The
+    // bounds above (eight paths, each <=16KiB) keep this below its 2MiB cap.
+    using Wire=p2p::WalletInputProof;std::vector<uint8_t> wire{2};
+    Wire::Hash(wire,body.GetTxid().AsUint256());Wire::Put(wire,bytes.size(),4);
+    wire.insert(wire.end(),bytes.begin(),bytes.end());Wire::Put(wire,body.Inputs().size(),4);
+    for(const auto& point:body.Inputs()){
+        Wire::Request request;request.magic=Params().magic;request.genesis=uint256::FromHexUnsafe(Params().genesis_hash);
+        request.branch=state->context.domain.branch_id;request.activation=state->context.activation_height;
+        request.leaf_activation=consensus::GetUtreexoMaturityLeafActivationHeight();
+        request.height=state->context.height-1;request.tip=state->context.parent_hash;request.root=header->utreexo_root;request.point=point;
+        const auto data=download->Request(request);if(!data)throw wallet::ShieldFundingPending();
+        auto actual=data->request;actual.nonce=Wire::KeyNonce();request.nonce=Wire::KeyNonce();
+        if(actual!=request||!data->VerifyPath(*state->compact_stump))
+            throw std::runtime_error("Compact shield current input DATA refused");
+        const auto path=data->path.serialize();Wire::Put(wire,path.size(),4);wire.insert(wire.end(),path.begin(),path.end());
+        Wire::Put(wire,data->value,8);Wire::Put(wire,data->script.size(),4);wire.insert(wire.end(),data->script.begin(),data->script.end());
+        Wire::Put(wire,data->created,4);Wire::Put(wire,data->coinbase,1);
+    }
+    Wire::Hash(wire,header->utreexo_root);
+    const auto payload=UtreexoTransactionPayload::Decode(wire,RelayTransactionReadMode::AvailableFamilies);
+    const MempoolProofView entry{body,wire};
+    // Genuine original owner: checks EACH path, legacy metadata, transaction
+    // membership, nontransparent exclusion, actual body's output absences,
+    // retirement/storage/header/work/root/selected consistency before/after.
+    auto selected=CaptureSelectedOrchardPoolContextUnderLock(std::span<const MempoolProofView>(&entry,1));
+    if(!selected||payload.Body().Serialize()!=bytes||DaemonContext::instance()!=context||
+       context->chainstate.get()!=this||context->p2p!=peers)
+        throw std::runtime_error("Compact shield current selected source changed");
+    (void)selected->CheckProof(entry);proof=std::move(wire);return selected;
+#else
+    (void)snapshot;(void)body;(void)proof;throw std::runtime_error("Authenticated Orchard wallet backend unavailable");
+#endif
+}
+
 std::vector<uint8_t> ChainstateService::finalizeRuntimeWalletShield(
         WalletManager& wallet,uint64_t session,uint32_t account,const std::array<uint8_t,32>& operation,
         std::span<const orchard::ResolvedInput> inputs,std::span<const orchard::WalletPayment> payments,
-        std::span<const orchard::TransparentOutput> outputs,uint64_t fee,wallet::OrchardProofJobs& jobs){
+        std::span<const orchard::TransparentOutput> outputs,uint64_t fee,wallet::OrchardProofJobs& jobs,
+        std::vector<uint8_t>* current_input_proof){
 #ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
+    if(current_input_proof)current_input_proof->clear();
     const auto captured=getRuntimeAccountReplayForWallet(wallet,session);
     if(!captured.ok())throw std::runtime_error("Authenticated shield replay source unavailable");
     const auto& replay=**captured;
@@ -21389,6 +21444,9 @@ std::vector<uint8_t> ChainstateService::finalizeRuntimeWalletShield(
     const wallet::OrchardAccountDelivery::Profile profile{origin.domain,origin.activation_height,account};
     auto request=wallet::OrchardAccountDelivery::ReadCatalogShieldRequestProofForReplay(
         wallet,session,profile,replay,operation,inputs,payments,outputs,fee,jobs,true);
+    // Verify the actual selected inverse OFF-LOCK; the existing warm audit
+    // freshly rebinds it, rather than bypassing compact journal checks.
+    ParentPreparationScope preparation(*this);
     std::unique_ptr<orchard::TransactionEnvelope> envelope;
     if(request.durable.phase==wallet::OrchardOperationQueue::Phase::Ready){
         envelope=std::make_unique<orchard::TransactionEnvelope>(orchard::TransactionEnvelope::DecodeExact(request.durable.transaction));
@@ -21404,8 +21462,10 @@ std::vector<uint8_t> ChainstateService::finalizeRuntimeWalletShield(
             std::unique_lock<std::mutex> snapshot_owner(snapshot_load_mutex_);
             auto lock=AcquireBlockIngressActivationLock();
             const MempoolProofView body{MempoolTransaction::FromOrchard(draft),{}};
+            std::vector<uint8_t> current_proof;
             auto selected=assumeutxo_active_&&!compact_startup_&&!IsBackgroundValidationComplete()
                 ?CaptureImportedOrchardTransactionUnderLock(snapshot_owner,{&body,1})
+                :compact_startup_?CaptureCompactWalletTransactionUnderLock(snapshot_owner,body.body,current_proof)
                 :CaptureSelectedOrchardPoolContextUnderLock();
             if(!selected||!CheckRuntimeAccountReplayCurrentUnderLock(replay,*selected)||
                selected->context.activation_height!=profile.activation||selected->context.domain.network_code!=profile.domain.network_code||
@@ -21424,17 +21484,21 @@ std::vector<uint8_t> ChainstateService::finalizeRuntimeWalletShield(
         wallet,session,profile,replay,operation,inputs,payments,outputs,fee,jobs);
     std::unique_lock<std::mutex> snapshot_owner(snapshot_load_mutex_);
     auto lock=AcquireBlockIngressActivationLock();
+    const auto final_body=MempoolTransaction::FromOrchard(*envelope);
+    std::vector<uint8_t> compact_input_proof;bool submit_current_proof=false;
     auto selected=[&]() -> std::unique_ptr<SelectedOrchardPoolContext> {
         if(assumeutxo_active_&&!compact_startup_&&!IsBackgroundValidationComplete()){
             const MempoolProofView body{MempoolTransaction::FromOrchard(*envelope),{}};
             return CaptureImportedOrchardTransactionUnderLock(snapshot_owner,{&body,1});
         }
         if(!compact_startup_)return CaptureSelectedOrchardPoolContextUnderLock();
-        // Only already-signed durable requests may use this path. The pool
-        // cache is untrusted DATA, not a coin authority or a Ready certificate.
-        // Snapshot-then-selected ownership precedes the retained pool use/read.
-        if(request.durable.phase!=wallet::OrchardOperationQueue::Phase::Ready)
-            throw std::runtime_error("Compact shield signing requires authenticated input proofs");
+        if(request.durable.phase!=wallet::OrchardOperationQueue::Phase::Ready){
+            submit_current_proof=true;
+            return CaptureCompactWalletTransactionUnderLock(snapshot_owner,final_body,compact_input_proof);
+        }
+        // Existing signed retries keep their original strict retained-pool
+        // proof requirement. Cold/interrupted Ready reacquisition is separate;
+        // never silently repair a missing/stale/invalid retained proof here.
         auto* context=DaemonContext::instance();
         if(!context||context->chainstate.get()!=this||!context->mempool)
             throw std::runtime_error("Shield retry pool owner unavailable");
@@ -21450,12 +21514,21 @@ std::vector<uint8_t> ChainstateService::finalizeRuntimeWalletShield(
         (void)captured->CheckProof(proof);
         if(DaemonContext::instance()!=context||context->chainstate.get()!=this||context->mempool!=service)
             throw std::runtime_error("Shield retry pool owner changed");
+        compact_input_proof=entry->cached_utxotx_payload;
         return captured; // Owned exact proved coins; no borrowed pool pointer.
     }();
     if(!selected||!CheckRuntimeAccountReplayCurrentUnderLock(replay,*selected)||
        selected->context.activation_height!=profile.activation||selected->context.domain.network_code!=profile.domain.network_code||
        selected->context.domain.genesis_wire!=profile.domain.genesis_wire||selected->context.domain.branch_id!=profile.domain.branch_id)
         throw std::runtime_error("Shield finalization source changed");
+    std::unique_ptr<const ImportedOrchardDeliverySource> compact_origin;UTXOIndex* compact_index=nullptr;
+    if(compact_startup_&&compact_startup_->imported_parent){
+        {std::lock_guard<std::mutex> use(wallet_index_use_mutex_);
+         if(!wallet_index_uses_by_thread_.contains(std::this_thread::get_id())||!utxo_index_)
+            throw std::runtime_error("Compact signing original index lifetime unavailable");compact_index=utxo_index_.get();}
+        compact_origin=CaptureImportedOrchardDeliveryUnderLock(snapshot_owner,*compact_index,replay);
+        if(!compact_origin)throw std::runtime_error("Compact signing original cohort unavailable");
+    }
     const auto parsed=ParsedTransaction::DecodeExact(envelope->CanonicalBytes(),TransactionReadMode::StagedOrchard);
     consensus::OrchardResourceUsage usage;consensus::AccumulateOrchardTransactionResources(parsed,usage);
     const auto snapshot=consensus::OrchardCoinSnapshot::ResolveUnderChainstateLock(*envelope,selected->coins);
@@ -21463,7 +21536,21 @@ std::vector<uint8_t> ChainstateService::finalizeRuntimeWalletShield(
     const auto authorization=consensus::VerifyOrchardAuthorizations(snapshot,selected->context.domain,selected->context.height,selected->Mtp());
     (void)consensus::CheckOrchardTransactions(selected->context,selected->parent,{&authorization,1},selected->Lookups());
     auto bytes=envelope->CanonicalBytes(); // Preallocate before the durable Ready commit.
-    const std::function<void()> current_source=selected->imported_source?std::function<void()>([&]{
+    const std::function<void()> current_source=selected->compact_coins?std::function<void()>([&]{
+        activation_mutex_.AssertHeld("compact shield Ready commit");
+        if(!snapshot_owner.owns_lock()||snapshot_owner.mutex()!=&snapshot_load_mutex_||snapshot_import_publishing_||
+           safe_mode_active_||!compact_startup_||consensus_utxo_set_||
+           !CheckRuntimeAccountReplayCurrentUnderLock(replay,*selected))
+            throw std::runtime_error("Compact signing source changed before Ready commit");
+        if(compact_origin&&(!compact_origin->lifecycle||!compact_index||utxo_index_.get()!=compact_index||
+            wallet.getUTXOIndex()!=compact_index||compact_index->ReadAssumedStartupMetadata()!=compact_origin->metadata))
+            throw std::runtime_error("Compact signing original cohort changed before Ready commit");
+        const MempoolProofView entry{final_body,compact_input_proof};
+        const auto fresh=CaptureSelectedOrchardPoolContextUnderLock(std::span<const MempoolProofView>(&entry,1));
+        if(!fresh||!CheckRuntimeAccountReplayCurrentUnderLock(replay,*fresh))
+            throw std::runtime_error("Compact signing current body/proof changed before Ready commit");
+        (void)fresh->CheckProof(entry);
+    }):selected->imported_source?std::function<void()>([&]{
         // No lifecycle re-lock under SnapshotUse. Source/selected/snapshot
         // ownership survives the complete FULL Ready/history transaction.
         const auto& source=*selected->imported_source;
@@ -21487,9 +21574,11 @@ std::vector<uint8_t> ChainstateService::finalizeRuntimeWalletShield(
     }):std::function<void()>{};
     (void)wallet::OrchardAccountDelivery::CommitCatalogFinalization(
         wallet,session,std::move(finalization),authorization,current_source);
+    if(submit_current_proof&&current_input_proof)*current_input_proof=std::move(compact_input_proof);
     return bytes; // No admission/relay; selected owner leaves before caller receives bytes.
 #else
     (void)wallet;(void)session;(void)account;(void)operation;(void)inputs;(void)payments;(void)outputs;(void)fee;(void)jobs;
+    (void)current_input_proof;
     throw std::runtime_error("Authenticated Orchard wallet backend unavailable");
 #endif
 }

@@ -1319,6 +1319,41 @@ insufficient balance or endlessly evicting/re-requesting the prefix. It does not
 change the original full-source/exact-input bounds or claim large/many-input
 wallet qualification.
 
+### New compact signing, Ready and proof-bearing admission
+
+For a NEW reserved shield, completion now requests the exact-current per-input
+DATA again rather than asking a compact store for general coins. The actual
+selected compact owner authenticates the resulting ordinary v2 utxotx body:
+every path and legacy metadata binding, transaction membership, nontransparent
+exclusion and the actual body's output absences. Existing selected/header/work/
+stump/storage/retirement/consistency guards are unchanged. Its genuine inverse
+is prepared off-lock and freshly rebound through the original warm audit.
+
+The owned coin snapshot leaves selected ownership before wallet key signing.
+The final signed body then reacquires CURRENT proof DATA and its complete owner,
+and verifies transparent scripts, Orchard authorizations, resources and state.
+The original imported cohort/lifecycle and ten SnapshotLoaded values are pinned
+through the FULL encrypted Ready/history writer, with a fresh selected body/proof
+and source check immediately before COMMIT. No proof or wallet row grants Ready.
+After all those owners leave, the public RPC submits the exact proof-bearing
+body to normal ingress, which independently recaptures the current source and
+all pool conflicts, policy, observer and authorization checks. A changed tip can
+still refuse admission without losing the durable signed intent.
+
+Existing signed retries retain their strict exact retained-pool proof requirement:
+missing, stale or invalid DATA is not silently repaired or treated as authority.
+Cold/interrupted Ready reacquisition and restarted proof work remain separate
+unfinished paths. New signing does not create a general coin view, a mixed
+transparent/index baseline, independent prehistory or a lifecycle repair.
+
+`NodeCoreCompactNewShieldReady` requires real original-import funding, current
+TCP input proofs, a new public queue/finish, encrypted retries, bad retained-proof
+refusals and genuine proof-bearing admission with full-proof peer refill disabled.
+It requires independent FULL mining of the SAME SDK body and SDK validation105,
+active account confirmation535000una and unchanged original SQL/missing mixed
+receipts. This bounded native test is not app/device, mainnet/v5, many-input,
+other-lifecycle or release qualification.
+
 ## Original-import private send and unshield native gate
 
 `NodeCoreAssumedPrivateSendUnshield` extends the real imported-source funded

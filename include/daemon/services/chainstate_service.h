@@ -1083,10 +1083,13 @@ public:
     // recheck the selected head and verify both authorizations, then retain
     // Ready in a checked FULL commit before returning any signed bytes. Caller
     // still requires fresh admission outside all wallet/selected owners.
+    // New compact signing may return untrusted exact-current v2 input DATA for
+    // SubmitProofBody; admission MUST independently recapture and verify it.
     std::vector<uint8_t> finalizeRuntimeWalletShield(
         WalletManager&,uint64_t session,uint32_t account,const std::array<uint8_t,32>& operation,
         std::span<const orchard::ResolvedInput>,std::span<const orchard::WalletPayment>,
-        std::span<const orchard::TransparentOutput>,uint64_t fee_una,wallet::OrchardProofJobs&);
+        std::span<const orchard::TransparentOutput>,uint64_t fee_una,wallet::OrchardProofJobs&,
+        std::vector<uint8_t>* current_input_proof=nullptr);
 
 
 
@@ -1686,6 +1689,11 @@ private:
     // unknown coin queries fail. Does not authorize a block or prehistory.
     std::unique_ptr<SelectedOrchardPoolContext> CaptureImportedOrchardTransactionUnderLock(
         const std::unique_lock<std::mutex>&,std::span<const MempoolProofView>);
+    // Compose untrusted exact-current input DATA for this actual body, then
+    // use the UNCHANGED compact catalog/stump/body/output-absence capture.
+    // Does not sign, commit Ready, admit, or return general coin authority.
+    std::unique_ptr<SelectedOrchardPoolContext> CaptureCompactWalletTransactionUnderLock(
+        const std::unique_lock<std::mutex>&,const MempoolTransaction&,std::vector<uint8_t>&);
     MempoolSelectionValidation ValidateOrchardSelectionUnderLock(
         std::span<const MempoolTransaction>, uint32_t);
     MempoolOrchardValidation ValidateOrchardPoolUnderLock(

@@ -20,6 +20,7 @@
 #include "wallet/authenticated_shield_inputs.h"
 #include "rpc/orchard_issuance_retry.h"
 #include "daemon/services/mempool_service.h"
+#include "daemon/utreexo_tx_reader.h"
 #include "consensus/orchard_authorization.h"
 #include "address/addr_codec.h"
 #include "wallet/address.h"
@@ -786,13 +787,16 @@ din::Json OrchardShieldCall(const ExecutionContext& ctx,const din::Json& params,
                 wallet_use->Wallet(),session,profile,**view,request.id,payments,request.fee);
             if(!stored||!stored->durable)throw std::runtime_error("Unknown shield request; completion does not select inputs");
             if(stored->archived)throw std::runtime_error("Shield request is archived; no new submission");
+            std::vector<uint8_t> input_proof;
             const auto bytes=source->finalizeRuntimeWalletShield(wallet_use->Wallet(),session,request.account,request.id,
-                stored->durable->inputs,payments,stored->transparent_outputs,request.fee,jobs);
+                stored->durable->inputs,payments,stored->transparent_outputs,request.fee,jobs,&input_proof);
             const auto envelope=dinero::orchard::TransactionEnvelope::DecodeExact(bytes);
             const auto body=dinero::MempoolTransaction::FromOrchard(envelope);
             // Ready already committed. No wallet SQLite or selected owner is
             // held here; admission captures its own current source/pool state.
-            const auto submitted=ingress->SubmitBody(body,dinero::TxOrigin::WALLET);
+            const auto submitted=input_proof.empty()?ingress->SubmitBody(body,dinero::TxOrigin::WALLET):
+                ingress->SubmitProofBody(dinero::UtreexoTransactionPayload::Decode(input_proof,
+                    dinero::RelayTransactionReadMode::AvailableFamilies),dinero::TxOrigin::WALLET);
             result["durable_state"]="signed";result["txid"]=body.GetTxid().AsUint256().GetHex();
             result["admitted"]=submitted.accepted();
             result["already_in_mempool"]=submitted.code==dinero::TxRejectCode::ALREADY_IN_MEMPOOL;
