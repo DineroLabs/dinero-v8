@@ -1783,13 +1783,17 @@ OrchardAccountDelivery::ShieldResult OrchardAccountDelivery::CommitShieldReserva
             wallet_inputs.push_back({txid.GetHex(),input.output_index,input.amount_una,input.script_pub_key});
         }
         if(source){
-            Check(source->wallet_==&w&&source->session_==session&&source->inputs_.size()==wallet_inputs.size()&&bool(source->current_));
+            Check(source->wallet_==&w&&source->session_==session&&source->inputs_.size()==wallet_inputs.size()&&
+                source->snapshot_candidates_.size()==wallet_inputs.size()&&bool(source->current_));
             for(size_t i=0;i<wallet_inputs.size();++i){const auto& a=source->inputs_[i];const auto& b=wallet_inputs[i];
                 Check(a.txid==b.txid&&a.vout==b.vout&&a.amount_una==b.amount_una&&a.script==b.script);}
             source->current_();
-            if(source->snapshot_candidate_)
-                lease->ValidateSnapshotShieldInputsInTransaction(*owner.seed,wallet_inputs,source->height_,source->base_,source->root_);
-            else lease->ValidateUnreservedInputsInTransaction(*owner.seed,wallet_inputs);
+            std::vector<PendingPaymentInput> snapshot_inputs,ordinary_inputs;
+            for(size_t i=0;i<wallet_inputs.size();++i)
+                (source->snapshot_candidates_[i]?snapshot_inputs:ordinary_inputs).push_back(wallet_inputs[i]);
+            if(!snapshot_inputs.empty())
+                lease->ValidateSnapshotShieldInputsInTransaction(*owner.seed,snapshot_inputs,source->height_,source->base_,source->root_);
+            if(!ordinary_inputs.empty())lease->ValidateUnreservedInputsInTransaction(*owner.seed,ordinary_inputs);
         }else lease->ValidateUnreservedInputsInTransaction(*owner.seed,wallet_inputs);
         for(const auto& output:outputs)
             Check(bool(lease->ResolveSigningKeyInTransaction(util::hex(output.script_pub_key),*owner.seed)));

@@ -21194,7 +21194,11 @@ std::unique_ptr<wallet::OrchardQueuedSpend> ChainstateService::queueRuntimeWalle
             if(!download||!selected->compact_stump)throw std::runtime_error("Current compact input transport unavailable");
             std::unique_ptr<const ImportedOrchardDeliverySource> imported;
             UTXOIndex* index=nullptr;uint32_t candidate_height=0;uint256 candidate_base;std::string candidate_root;
-            std::vector<orchard::ResolvedInput> candidates;
+            // Both namespaces are candidate DATA only. A normal named reopen
+            // may have ordinary historical rows, without earning either mixed
+            // baseline; CURRENT source proofs, not those rows, grant coins.
+            auto candidates=wallet::OrchardAccountDelivery::ReadPreparedShieldCandidates(wallet,session,profile,expected,*catalog);
+            std::set<OutPoint> snapshot_points;
             if(compact_startup_->imported_parent){
                 {std::lock_guard<std::mutex> use(wallet_index_use_mutex_);
                  if(!wallet_index_uses_by_thread_.contains(std::this_thread::get_id())||!utxo_index_)
@@ -21204,13 +21208,19 @@ std::unique_ptr<wallet::OrchardQueuedSpend> ChainstateService::queueRuntimeWalle
                 candidate_height=compact_startup_->imported_parent->second;candidate_base=compact_startup_->imported_parent->first;
                 const auto root=uint256::FromHexUnsafe(imported->metadata.at(assumeutxo::kExpectedUtreexoRootKey));
                 candidate_root=util::hex(std::vector<uint8_t>(root.begin(),root.end()));
-                candidates=wallet::OrchardAccountDelivery::ReadPreparedSnapshotShieldCandidates(
+                const auto frozen_candidates=wallet::OrchardAccountDelivery::ReadPreparedSnapshotShieldCandidates(
                     wallet,session,profile,expected,*catalog,candidate_height,candidate_base,candidate_root);
-            }else candidates=wallet::OrchardAccountDelivery::ReadPreparedShieldCandidates(wallet,session,profile,expected,*catalog);
+                for(const auto& coin:frozen_candidates){uint256 id;std::copy(coin.txid_wire.begin(),coin.txid_wire.end(),id.begin());
+                    if(!snapshot_points.emplace(TxId(id),coin.output_index).second||std::any_of(candidates.begin(),candidates.end(),[&](const auto& c){return c.txid_wire==coin.txid_wire&&c.output_index==coin.output_index;}))
+                        throw std::runtime_error("Compact candidate namespace overlap");
+                    candidates.push_back(coin);}
+            }
+            std::sort(candidates.begin(),candidates.end(),[](const auto& a,const auto& b){return a.amount_una!=b.amount_una?
+                a.amount_una>b.amount_una:std::tie(a.txid_wire,a.output_index)<std::tie(b.txid_wire,b.output_index);});
             const auto header=chain_db_->getHeader(selected->context.parent_hash);
             if(!header.ok())throw std::runtime_error("Compact input selected header unavailable");
             std::vector<OrchardProvedWalletInput> proofs;std::vector<orchard::ResolvedInput> inputs;
-            std::vector<PendingPaymentInput> wallet_inputs;uint64_t total=0;size_t examined=0;
+            std::vector<PendingPaymentInput> wallet_inputs;std::vector<bool> input_kinds;uint64_t total=0;size_t examined=0;
             for(const auto& candidate:candidates){
                 if(++examined>1000)throw std::runtime_error("Compact input candidate work capacity exceeded");
                 uint256 id;std::copy(candidate.txid_wire.begin(),candidate.txid_wire.end(),id.begin());
@@ -21232,6 +21242,7 @@ std::unique_ptr<wallet::OrchardQueuedSpend> ChainstateService::queueRuntimeWalle
                 if(coin.isCoinbase&&selected->context.height-coin.height<consensus::UTREEXO_STATELESS_COINBASE_MATURITY)continue;
                 if(candidate.amount_una>orchard::kMaxMoneyUna-total)throw std::runtime_error("Compact selected value exceeds money range");
                 proofs.push_back(proved);inputs.push_back(candidate);wallet_inputs.push_back({id.GetHex(),candidate.output_index,candidate.amount_una,candidate.script_pub_key});
+                input_kinds.push_back(snapshot_points.contains(request.point));
                 total+=candidate.amount_una;if(total>=required)break;
             }
             if(total<required)throw std::runtime_error("Insufficient authenticated current compact funds");
@@ -21254,7 +21265,7 @@ std::unique_ptr<wallet::OrchardQueuedSpend> ChainstateService::queueRuntimeWalle
                 const auto decoded=DecodeWitnessAddress(address,network==0?"din":network==1?"tdin":"rdin");
                 if(!decoded.is_valid||decoded.witness_version!=1||decoded.witness_program.size()!=32)
                     throw std::runtime_error("Compact input change issuance refused");outputs.push_back({total-required,decoded.script_pubkey});}}
-            wallet::AuthenticatedShieldInputs authority(wallet,session,candidate_height,candidate_base,candidate_root,std::move(wallet_inputs),current,bool(imported));
+            wallet::AuthenticatedShieldInputs authority(wallet,session,candidate_height,candidate_base,candidate_root,std::move(wallet_inputs),current,std::move(input_kinds));
             prepared=wallet::OrchardAccountDelivery::CommitShieldReservation(wallet,session,std::move(catalog),inputs,outputs,&jobs,
                 &authority).queued;
         }else{

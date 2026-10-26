@@ -1302,3 +1302,13 @@ is freshly checked immediately before COMMIT, and real prover publication follow
 that commit. A pending network proof returns retryable funding-source-pending
 before change issuance or wallet writes. Ready signing/pool admission are separate
 checks; queue success does not assert those later stages or app/device readiness.
+
+Normal wallet reopen may already have written historical ordinary wallet rows.
+They are not proof of current coins or a mixed baseline. Compact selection reads
+both disjoint candidate namespaces, then requires the same CURRENT cryptographic
+source check for every selected input. The lexical source binds each exact input
+to its existing ordinary or original-snapshot wallet validation path, and the
+one FULL writer runs both validators on their respective subsets, together with
+all catalog/pending/seed/session/manual-lock checks. No row is deleted/rebased,
+no spent ordinary row is resurrected through snapshot fallback, and no history,
+transparent/index readiness or independent-replay receipt is created.
