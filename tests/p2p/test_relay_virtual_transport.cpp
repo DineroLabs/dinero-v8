@@ -29,7 +29,9 @@
 #include <cstdint>
 #include <filesystem>
 #include <iomanip>
+#include <map>
 #include <memory>
+#include <set>
 #include <optional>
 #include <sstream>
 #include <stdexcept>
@@ -657,36 +659,6 @@ TEST(RelayHintsDial, IgnoresStaleDisconnectedVirtualPeerForAlreadyConnected) {
     EXPECT_EQ(manager.test_pending_relay_connect_count(), 1u);
 }
 
-TEST(RelayAutoRegister, KeepsBootstrapRelayWhenDynamicCandidatesFillBudget) {
-    P2PManager manager(20999);
-    dinero::p2p::AddressManager addrman;
-    manager.set_address_manager(&addrman);
-
-    addrman.addAddress(MakeRelayAddress("8.8.10.1", 20999));
-    addrman.addAddress(MakeRelayAddress("9.9.20.2", 20999));
-    addrman.addAddress(MakeRelayAddress("13.13.30.3", 20999));
-    addrman.addAddress(MakeRelayAddress("14.14.40.4", 20999));
-
-    std::vector<LoopbackSocketPair> sockets;
-    auto install_connected = [&](const std::string& endpoint) {
-        sockets.push_back(LoopbackSocketPair::Create());
-        manager.test_install_connected_direct_peer(endpoint,
-                                                   sockets.back().client_fd(),
-                                                   true, false, {});
-    };
-    install_connected("173.249.200.59:20999");  // SJ / bootstrap fleet relay
-    install_connected("8.8.10.1:20999");
-    install_connected("9.9.20.2:20999");
-    install_connected("13.13.30.3:20999");
-    install_connected("14.14.40.4:20999");
-
-    manager.test_maybe_auto_register_with_relays();
-
-    const auto endpoints = manager.test_configured_relay_endpoints();
-    EXPECT_EQ(endpoints.size(), 5u);
-    EXPECT_TRUE(ContainsEndpoint(endpoints, "173.249.200.59:20999"));
-}
-
 TEST(RelayHintPersistence, FreshHintsSurviveRestartButExpiredHintsDoNot) {
     const auto suffix = std::chrono::steady_clock::now().time_since_epoch().count();
     const auto path = std::filesystem::temp_directory_path() /
@@ -1117,4 +1089,201 @@ TEST(RelayCaps, SyncingRelayRefusesNewCircuits) {
     ibd = true;  // initial block download always pauses
     manager.test_recompute_relay_behind_throttle();
     EXPECT_EQ(connect_status(3), kRateLimited);
+}
+
+// Plan 3 Task 3: a NAT'd node keeps two relays on different networks,
+// community relays first and the fleet only to fill; a relay counts only
+// once it acks the registration (relayrok), and one that stops answering
+// relay pings is replaced.
+namespace {
+
+struct RelayWorld {
+    dinero::p2p::AddressManager addrman;  // outlives the manager
+    dinero::network::FakeClockSource* clock{nullptr};
+    std::unique_ptr<P2PManager> manager;
+    std::map<std::string, std::unique_ptr<LoopbackSocketPair>> sockets;
+
+    RelayWorld() {
+        auto c = std::make_unique<dinero::network::FakeClockSource>();
+        c->AdvanceSystem(std::chrono::hours(500000));
+        c->AdvanceSteady(std::chrono::hours(1));
+        clock = c.get();
+        manager = std::make_unique<P2PManager>(20999, "", std::move(c));
+        manager->set_address_manager(&addrman);
+        InstallNodeIdentity(*manager);
+    }
+    // A connected, identity-proven peer; `gossiped` also puts it in addrman as NODE_RELAY.
+    void Connect(const std::string& endpoint, bool gossiped) {
+        sockets[endpoint] = std::make_unique<LoopbackSocketPair>(LoopbackSocketPair::Create());
+        manager->test_install_connected_direct_peer(endpoint, sockets[endpoint]->client_fd(), true,
+                                                    true, MakeNodeId(0x50));
+        const auto colon = endpoint.rfind(':');
+        manager->test_set_peer_endpoint(endpoint, endpoint.substr(0, colon), 20999);
+        if (gossiped) addrman.addAddress(MakeRelayAddress(endpoint.substr(0, colon), 20999));
+    }
+    // The next message with `command` the manager sent to `endpoint`.
+    std::unique_ptr<P2PMessage> Next(const std::string& endpoint, const std::string& command) {
+        for (int i = 0; i < 16; ++i) {
+            auto m = sockets[endpoint]->ReceiveMessage();
+            if (!m || m->command == command) return m;
+        }
+        return nullptr;
+    }
+    void Ack(const std::string& endpoint) {
+        manager->handle_relay_register_ok(endpoint, P2PMessage::create_relay_register_ok(3600));
+    }
+    // Answers the relay ping the manager sent to `endpoint`.
+    void Pong(const std::string& endpoint) {
+        auto ping = Next(endpoint, "relaypng");
+        ASSERT_NE(ping, nullptr) << "no relay ping sent to " << endpoint;
+        manager->handle_relay_ping(endpoint, *ping);  // relays echo circuit 0 pings
+    }
+    void Tick(std::chrono::seconds s) {
+        clock->AdvanceSteady(s);
+        manager->test_relay_registration_tick();
+        manager->test_maybe_auto_register_with_relays();
+    }
+    std::vector<std::string> Relays() const { return manager->test_configured_relay_endpoints(); }
+};
+
+}  // namespace
+
+TEST(RelayRegistration, TargetsTwoRelaysInDistinctNetgroups) {
+    dinero::p2p::AddressManager later_gossip;  // outlives the manager
+    RelayWorld w;
+    w.Connect("173.249.200.59:20999", false);  // fleet, so nothing real is dialed
+    w.Connect("8.8.10.1:20999", true);
+    w.manager->test_maybe_auto_register_with_relays();
+    ASSERT_TRUE(ContainsEndpoint(w.Relays(), "8.8.10.1:20999"));  // now registered (live)
+    // Addrman spreads its own answers over /16s; the live set and gossip must
+    // be spread together: 8.8.20.2 shares 8.8.10.1's /16 and is the healthiest.
+    w.manager->set_address_manager(&later_gossip);
+    w.Connect("8.8.20.2:20999", false);
+    w.Connect("9.9.20.2:20999", false);
+    later_gossip.addAddress(MakeRelayAddress("8.8.20.2", 20999));
+    later_gossip.addAddress(MakeRelayAddress("9.9.20.2", 20999));
+    for (int i = 0; i < 5; ++i) w.manager->note_relay_outcome("8.8.20.2:20999", true);
+    w.manager->test_maybe_auto_register_with_relays();
+    const auto relays = w.Relays();
+    ASSERT_EQ(relays.size(), 2u);
+    std::set<std::string> groups;
+    for (const auto& r : relays) groups.insert(dinero::p2p::AddrManNetGroup(r.substr(0, r.rfind(':'))));
+    EXPECT_EQ(groups.size(), 2u) << relays[0] << " " << relays[1];
+    EXPECT_TRUE(ContainsEndpoint(relays, "8.8.10.1:20999"));
+    EXPECT_TRUE(ContainsEndpoint(relays, "9.9.20.2:20999"));
+}
+
+TEST(RelayRegistration, PrefersCommunityOverFleet) {
+    RelayWorld w;
+    w.Connect("173.249.200.59:20999", false);  // SJ (fleet), already connected
+    w.Connect("8.8.10.1:20999", true);
+    w.Connect("9.9.20.2:20999", true);
+    w.manager->test_maybe_auto_register_with_relays();
+    const auto relays = w.Relays();
+    EXPECT_EQ(relays.size(), 2u);
+    EXPECT_TRUE(ContainsEndpoint(relays, "8.8.10.1:20999"));
+    EXPECT_TRUE(ContainsEndpoint(relays, "9.9.20.2:20999"));
+    EXPECT_FALSE(ContainsEndpoint(relays, "173.249.200.59:20999"));
+}
+
+TEST(RelayRegistration, FleetFillsWhenNoCommunity) {
+    RelayWorld w;
+    w.Connect("173.249.200.59:20999", false);
+    w.Connect("172.93.167.32:20999", false);
+    w.manager->test_maybe_auto_register_with_relays();
+    const auto relays = w.Relays();
+    EXPECT_EQ(relays.size(), 2u);
+    EXPECT_TRUE(ContainsEndpoint(relays, "173.249.200.59:20999"));
+    EXPECT_TRUE(ContainsEndpoint(relays, "172.93.167.32:20999"));
+
+    // One community relay appears: it takes a slot, the fleet keeps the other.
+    w.Connect("8.8.10.1:20999", true);
+    w.manager->test_maybe_auto_register_with_relays();
+    const auto mixed = w.Relays();
+    EXPECT_EQ(mixed.size(), 2u);
+    EXPECT_TRUE(ContainsEndpoint(mixed, "8.8.10.1:20999"));
+}
+
+TEST(RelayRegistration, UnackedRegistrationIsReplaced) {
+    RelayWorld w;
+    w.Connect("8.8.10.1:20999", true);
+    w.Connect("9.9.20.2:20999", true);
+    w.manager->test_maybe_auto_register_with_relays();
+    ASSERT_NE(w.Next("8.8.10.1:20999", "relayreg"), nullptr);
+    ASSERT_NE(w.Next("9.9.20.2:20999", "relayreg"), nullptr);
+    EXPECT_EQ(w.manager->test_confirmed_relay_count(), 0u) << "nothing counts before relayrok";
+
+    w.Ack("8.8.10.1:20999");  // 9.9.20.2 (role off, old build) stays silent
+    EXPECT_EQ(w.manager->test_confirmed_relay_count(), 1u);
+
+    w.Connect("13.13.30.3:20999", true);
+    w.Tick(std::chrono::seconds(31));
+    const auto relays = w.Relays();
+    EXPECT_TRUE(ContainsEndpoint(relays, "8.8.10.1:20999"));
+    EXPECT_TRUE(ContainsEndpoint(relays, "13.13.30.3:20999"));
+    EXPECT_FALSE(ContainsEndpoint(relays, "9.9.20.2:20999")) << "unacked relay must be replaced";
+    ASSERT_NE(w.Next("13.13.30.3:20999", "relayreg"), nullptr);
+    w.Ack("13.13.30.3:20999");
+    EXPECT_EQ(w.manager->test_confirmed_relay_count(), 2u);
+
+    // Still skipped while the 30-minute penalty runs.
+    w.Tick(std::chrono::minutes(10));
+    EXPECT_FALSE(ContainsEndpoint(w.Relays(), "9.9.20.2:20999"));
+}
+
+TEST(RelayRegistration, DeadRelayDetectedByMissedPingsAndReplaced) {
+    RelayWorld w;
+    w.Connect("8.8.10.1:20999", true);
+    w.Connect("9.9.20.2:20999", true);
+    w.manager->test_maybe_auto_register_with_relays();
+    w.Ack("8.8.10.1:20999");
+    w.Ack("9.9.20.2:20999");
+    ASSERT_EQ(w.manager->test_confirmed_relay_count(), 2u);
+    w.Connect("13.13.30.3:20999", true);
+
+    // 8.8.10.1 answers every ping; 9.9.20.2 goes silent.
+    for (int round = 0; round < 3; ++round) {
+        w.Tick(std::chrono::seconds(30));
+        w.Pong("8.8.10.1:20999");
+        ASSERT_NE(w.Next("9.9.20.2:20999", "relaypng"), nullptr) << "round " << round;
+    }
+    EXPECT_TRUE(ContainsEndpoint(w.Relays(), "9.9.20.2:20999")) << "three pings sent, not yet missed";
+    w.Tick(std::chrono::seconds(30));  // the third missed pong
+    const auto relays = w.Relays();
+    EXPECT_TRUE(ContainsEndpoint(relays, "8.8.10.1:20999"));
+    EXPECT_FALSE(ContainsEndpoint(relays, "9.9.20.2:20999"));
+    EXPECT_TRUE(ContainsEndpoint(relays, "13.13.30.3:20999"));
+    EXPECT_EQ(w.manager->test_confirmed_relay_count(), 1u);
+}
+
+TEST(RelayRegistration, RelayAcksRegistrationAndEchoesPings) {
+    P2PManager relay(0);
+    const auto dir = std::filesystem::temp_directory_path() /
+                     ("dinero-registrant-" + std::to_string(
+                         std::chrono::steady_clock::now().time_since_epoch().count()));
+    std::filesystem::create_directories(dir);
+    dinero::daemon::NodeIdentity registrant;
+    ASSERT_TRUE(registrant.initialize(dir.string()));
+    std::filesystem::remove_all(dir);
+
+    auto sock = LoopbackSocketPair::Create();
+    const std::string key = "127.0.0.1:" + std::to_string(sock.port());
+    relay.test_install_connected_direct_peer(key, sock.client_fd(), false, true, {});
+    constexpr uint64_t kNonce = 0x1234567890ABCDEFULL;
+    relay.test_set_peer_proven_identity(key, registrant.get_node_id_bytes(),
+                                        registrant.get_pubkey_bytes(), kNonce);
+
+    relay.handle_relay_register(key, P2PMessage::create_relay_register(registrant, kNonce, 3600));
+    auto ack = sock.ReceiveMessage();
+    ASSERT_NE(ack, nullptr);
+    EXPECT_EQ(ack->command, "relayrok");
+    ASSERT_EQ(ack->payload.size(), 4u);
+    EXPECT_EQ(ack->payload[0] | (ack->payload[1] << 8), 3600);
+
+    relay.handle_relay_ping(key, P2PMessage::create_relay_ping(0, 777));
+    auto pong = sock.ReceiveMessage();
+    ASSERT_NE(pong, nullptr);
+    EXPECT_EQ(pong->command, "relaypng");
+    EXPECT_EQ(ReadLE64ForTest(pong->payload, 0), 0u);
+    EXPECT_EQ(ReadLE64ForTest(pong->payload, 8), 777u);
 }

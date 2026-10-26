@@ -1,4 +1,5 @@
 #include "p2p_manager.h"
+#include "consensus/chainparamsseeds.h"  // fleet = relay list + fixed seeds
 #include "daemon/p2p_message.h"
 #include "secure_random.h"
 #include "crypto/sha256.h"
@@ -829,6 +830,13 @@ P2PMessage P2PMessage::create_relay_ping(uint64_t circuit_id, uint64_t nonce) {
     return msg;
 }
 
+P2PMessage P2PMessage::create_relay_register_ok(uint32_t ttl_seconds) {
+    P2PMessage msg;
+    msg.command = "relayrok";
+    for (int i = 0; i < 4; i++) msg.payload.push_back(static_cast<uint8_t>(ttl_seconds >> (i * 8)));
+    return msg;
+}
+
 P2PMessage P2PMessage::create_relay_hints(const std::vector<RelayHint>& hints) {
     P2PMessage msg;
     msg.command = "relayhnt";
@@ -979,6 +987,9 @@ void P2PManager::handle_relay_register(const std::string& peer_address,
                   << std::endl;
         return;
     }
+    // Tell the registrant it counts: without this ack it keeps looking for
+    // another relay (an old build or a relay with the role off stays silent).
+    send_to_peer(peer_address, P2PMessage::create_relay_register_ok(effective_ttl));
 
     std::ostringstream id_hex;
     id_hex << std::hex << std::setfill('0');
@@ -1663,6 +1674,32 @@ void P2PManager::handle_relay_ping(const std::string& peer_address,
                                    const P2PMessage& message) {
     if (message.payload.size() < 8) return;
     const uint64_t circuit_id = ReadLE64(message.payload, 0);
+    if (circuit_id == 0) {
+        // Registration liveness (no circuit): a registrant pings its relay,
+        // and the relay echoes the nonce back.
+        if (message.payload.size() < 16) return;
+        const uint64_t nonce = ReadLE64(message.payload, 8);
+        std::shared_ptr<PeerInfo> peer;
+        {
+            std::lock_guard<std::mutex> lock(peers_mutex_);
+            auto it = connected_peers_.find(peer_address);
+            if (it != connected_peers_.end()) peer = it->second;
+        }
+        if (!peer || nonce == 0) return;
+        {
+            std::lock_guard<std::mutex> lock(peers_mutex_);
+            if (peer->is_our_relay && nonce == peer->relay_ping_nonce) {
+                peer->relay_ping_nonce = 0;  // answered
+                peer->relay_pings_missed = 0;
+                return;
+            }
+        }
+        const auto reg = relay_registry_.Lookup(peer->their_node_id);
+        if (reg && reg->peer_address == peer_address) {
+            send_to_peer(peer_address, P2PMessage::create_relay_ping(0, nonce));
+        }
+        return;
+    }
     std::lock_guard<std::mutex> lock(circuits_mutex_);
     auto it = circuits_.find(circuit_id);
     if (it == circuits_.end()) return;
@@ -1674,6 +1711,104 @@ void P2PManager::handle_relay_ping(const std::string& peer_address,
         return;
     }
     it->second.last_data_at = std::chrono::steady_clock::now();
+}
+
+void P2PManager::handle_relay_register_ok(const std::string& peer_address,
+                                          const P2PMessage& message) {
+    if (message.payload.size() != 4) return;
+    std::string key;
+    {
+        std::lock_guard<std::mutex> lock(peers_mutex_);
+        auto it = connected_peers_.find(peer_address);
+        if (it == connected_peers_.end() || !it->second) return;
+        auto& peer = *it->second;
+        if (!peer.relay_register_pending && !peer.is_our_relay) return;  // unsolicited
+        if (!peer.is_our_relay) {
+            peer.is_our_relay = true;
+            peer.relay_pings_missed = 0;
+            peer.relay_ping_nonce = 0;
+            peer.last_relay_ping_at = clock_->SteadyNow();
+        }
+        peer.relay_register_pending = false;
+        key = LowerEndpoint(peer.to_string());
+    }
+    note_relay_outcome(key, true);  // the relay confirmed it carries us
+    std::cout << "[P2P] relay-register: confirmed by " << key << std::endl;
+}
+
+#ifdef DINERO_TEST_BUILD
+void P2PManager::test_set_peer_endpoint(const std::string& peer_key, const std::string& host,
+                                        uint16_t port) {
+    std::lock_guard<std::mutex> lock(peers_mutex_);
+    auto it = connected_peers_.find(peer_key);
+    if (it == connected_peers_.end()) return;
+    it->second->address = host;
+    it->second->port = port;
+}
+
+void P2PManager::test_set_peer_proven_identity(const std::string& peer_key,
+                                               const std::array<uint8_t, 20>& node_id,
+                                               const std::array<uint8_t, 33>& pubkey,
+                                               uint64_t our_nonce) {
+    std::lock_guard<std::mutex> lock(peers_mutex_);
+    auto it = connected_peers_.find(peer_key);
+    if (it == connected_peers_.end()) return;
+    it->second->identity_proven = true;
+    it->second->their_node_id = node_id;
+    it->second->their_pubkey = pubkey;
+    it->second->our_nonce = our_nonce;
+}
+#endif
+
+#ifdef DINERO_TEST_BUILD
+size_t P2PManager::test_confirmed_relay_count() const {
+    std::lock_guard<std::mutex> lock(peers_mutex_);
+    return static_cast<size_t>(std::count_if(
+        connected_peers_.begin(), connected_peers_.end(),
+        [](const auto& kv) { return kv.second && kv.second->is_our_relay; }));
+}
+#endif
+
+void P2PManager::RelayRegistrationTick() {
+    const auto now = clock_->SteadyNow();
+    std::vector<std::string> failed;
+    std::vector<std::pair<std::shared_ptr<PeerInfo>, uint64_t>> to_ping;
+    {
+        std::lock_guard<std::mutex> lock(peers_mutex_);
+        for (const auto& [_, peer] : connected_peers_) {
+            if (!peer || !peer->is_connected) continue;
+            if (peer->relay_register_pending &&
+                now - peer->relay_register_pending_since >= kRelayAckTimeout) {
+                peer->relay_register_pending = false;
+                failed.push_back(LowerEndpoint(peer->to_string()));
+                continue;
+            }
+            if (!peer->is_our_relay || now - peer->last_relay_ping_at < kRelayPingInterval) continue;
+            if (peer->relay_ping_nonce != 0 && ++peer->relay_pings_missed >= kRelayMaxMissedPings) {
+                peer->is_our_relay = false;
+                peer->relay_ping_nonce = 0;
+                failed.push_back(LowerEndpoint(peer->to_string()));
+                continue;
+            }
+            uint64_t nonce = 0;
+            while (nonce == 0) nonce = SecureRandom::GetUInt64();
+            peer->relay_ping_nonce = nonce;
+            peer->last_relay_ping_at = now;
+            to_ping.emplace_back(peer, nonce);
+        }
+    }
+    if (!failed.empty()) {
+        std::lock_guard<std::mutex> lock(relay_endpoints_mutex_);
+        for (const auto& key : failed) relay_skip_until_[key] = now + kRelaySkipAfterFailure;
+    }
+    for (const auto& key : failed) {
+        note_relay_outcome(key, false);
+        std::cout << "[P2P] relay-register: " << key
+                  << " did not confirm or stopped answering; picking another relay" << std::endl;
+    }
+    for (const auto& [peer, nonce] : to_ping) {
+        send_peer_message(peer.get(), P2PMessage::create_relay_ping(0, nonce));
+    }
 }
 
 // NAT traversal Phase C3 slice 3: periodic cleanup of stalled
@@ -2880,9 +3015,10 @@ void P2PManager::SendRelayRegisterIfConfigured(PeerInfo* peer) {
         std::cout << "[P2P] relay-register: send failed to " << key << std::endl;
         return;
     }
-    peer->is_our_relay = true;
+    // Counted only once the relay acks (relayrok); see RelayRegistrationTick.
+    peer->relay_register_pending = true;
+    peer->relay_register_pending_since = clock_->SteadyNow();
     peer->last_register_sent_at = std::chrono::steady_clock::now();
-    note_relay_outcome(key, true);  // registered with this relay — positive health
     std::cout << "[P2P] relay-register: sent to " << key << " (ttl="
               << kRelayRegisterTtlSeconds << "s)" << std::endl;
 }
@@ -4058,9 +4194,7 @@ void P2PManager::set_configured_relay_endpoints(std::vector<std::string> endpoin
 }
 
 namespace {
-// Bootstrap relay endpoints for cold-start auto-registration. NAT'd nodes keep
-// at least one of these known-good fleet relays in their small registration set
-// so dynamic gossip cannot fill the whole budget with unvetted relays.
+// Fleet relay endpoints: the fallback when no community relay is known.
 constexpr std::pair<const char*, uint16_t> kMainnetRelayPeers[] = {
     {"173.249.200.59", 20999},   // SJ / us-west
     {"172.93.167.32", 20999},    // NA / us-east
@@ -4111,7 +4245,8 @@ void P2PManager::MaybeAutoRegisterWithRelays() {
                                return static_cast<char>(std::tolower(c));
                            });
             connected_keys.insert(pk);
-            if (peer->is_our_relay) live_relays.push_back(pk);
+            // Confirmed, or registered and still inside the ack window.
+            if (peer->is_our_relay || peer->relay_register_pending) live_relays.push_back(pk);
         }
     }
     // Gap 2 Stage A.1: skip relay auto-registration ONLY when this node is
@@ -4135,9 +4270,14 @@ void P2PManager::MaybeAutoRegisterWithRelays() {
         return key;
     };
 
-    std::unordered_set<std::string> bootstrap_keys;
+    // Fleet = the hardcoded relay list plus the fixed seeds; every other
+    // relay is a community relay, and those come first.
+    std::unordered_set<std::string> fleet_keys;
     for (const auto& bp : kMainnetRelayPeers) {
-        bootstrap_keys.insert(endpoint_key(bp.first, bp.second));
+        fleet_keys.insert(endpoint_key(bp.first, bp.second));
+    }
+    for (const auto& seed : dinero::consensus::kFixedSeedsMainnet) {
+        fleet_keys.insert(LowerEndpoint(seed));
     }
 
     auto is_self = [&](const std::string& host, uint16_t port) {
@@ -4145,26 +4285,27 @@ void P2PManager::MaybeAutoRegisterWithRelays() {
                port == listen_port_;
     };
 
-    // Keep the target count small, but compose it deliberately:
-    // 1. preserve any already-live bootstrap/fleet relays;
-    // 2. if none are live, reserve one slot for a bootstrap/fleet relay;
-    // 3. preserve remaining live relays;
-    // 4. fill the rest from dynamic NODE_RELAY gossip;
-    // 5. use additional bootstrap relays as cold-start fallback.
+    std::unordered_map<std::string, std::chrono::steady_clock::time_point> skip;
+    {
+        const auto now = clock_->SteadyNow();
+        std::lock_guard<std::mutex> lock(relay_endpoints_mutex_);
+        for (auto it = relay_skip_until_.begin(); it != relay_skip_until_.end();) {
+            it = it->second <= now ? relay_skip_until_.erase(it) : std::next(it);
+        }
+        skip = relay_skip_until_;
+    }
+
     std::vector<std::pair<std::string, uint16_t>> dynamic_candidates;
     if (address_manager_) {
         for (const auto& a : address_manager_->getAddressesByService(
-                 ServiceFlags::NODE_RELAY, kAutoRelayTargetCount * 2)) {
+                 ServiceFlags::NODE_RELAY, 16)) {
             dynamic_candidates.emplace_back(a.ip, a.port);
         }
     }
 
     // Relay health scoring (#3): prefer healthy relays and let bad ones be
     // replaced. Sort live relays + dynamic candidates by EWMA health score
-    // (best first) so the target cap keeps the healthiest; the preservation
-    // loops below skip replace-eligible relays so a persistently-failing relay
-    // is dropped and backfilled by a fresher candidate. The bootstrap reserve
-    // step still guarantees >=1 known-good fleet relay.
+    // (best first); replace-eligible live relays are not kept.
     std::sort(live_relays.begin(), live_relays.end(),
               [&](const std::string& a, const std::string& b) {
                   return relay_health_score(a) > relay_health_score(b);
@@ -4176,57 +4317,43 @@ void P2PManager::MaybeAutoRegisterWithRelays() {
                          relay_health_score(endpoint_key(b.first, b.second));
               });
 
+    // kAutoRelayTargetCount relays, at most one per netgroup, in order:
+    // live community relays, gossiped community relays, live fleet relays,
+    // the fleet list.
     std::vector<std::string> desired;
+    std::unordered_set<std::string> groups;
     std::vector<std::pair<std::string, uint16_t>> to_connect;
-    auto add_live_key = [&](const std::string& key) {
-        if (desired.size() >= kAutoRelayTargetCount) return;
-        if (std::find(desired.begin(), desired.end(), key) != desired.end()) return;
-        desired.push_back(key);
-    };
     auto add_endpoint = [&](const std::string& host, uint16_t port) -> bool {
         if (desired.size() >= kAutoRelayTargetCount) return false;
-        if (port == 0) return false;
-        if (is_self(host, port)) {
-            return false;  // never relay through ourselves
-        }
+        if (port == 0 || is_self(host, port)) return false;  // never relay through ourselves
         const std::string key = endpoint_key(host, port);
-        if (std::find(desired.begin(), desired.end(), key) != desired.end()) {
-            return false;  // already designated
-        }
+        if (skip.count(key)) return false;  // never acked or went silent recently
+        if (std::find(desired.begin(), desired.end(), key) != desired.end()) return false;
+        const std::string group = dinero::p2p::AddrManNetGroup(host);
+        if (!groups.insert(group).second) return false;  // one relay per network
         desired.push_back(key);
         if (connected_keys.find(key) == connected_keys.end()) {
             to_connect.emplace_back(host, port);
         }
         return true;
     };
-
-    for (const auto& key : live_relays) {
-        if (bootstrap_keys.count(key) && !relay_health_replace_eligible(key)) {
-            add_live_key(key);
-        }
-    }
-    if (std::none_of(desired.begin(), desired.end(),
-                     [&](const std::string& key) {
-                         return bootstrap_keys.count(key) != 0;
-                     })) {
-        for (const auto& bp : kMainnetRelayPeers) {
-            add_endpoint(bp.first, bp.second);
-            if (std::any_of(desired.begin(), desired.end(),
-                            [&](const std::string& key) {
-                                return bootstrap_keys.count(key) != 0;
-                            })) {
-                break;
+    auto add_live = [&](bool fleet) {
+        for (const auto& key : live_relays) {
+            if (fleet_keys.count(key) != (fleet ? 1u : 0u)) continue;
+            if (relay_health_replace_eligible(key)) continue;
+            std::string host;
+            uint16_t port = 0;
+            bool has_port = false;
+            if (dinero::network::SplitEndpoint(key, &host, &port, &has_port) && has_port) {
+                add_endpoint(host, port);
             }
         }
-    }
-    for (const auto& key : live_relays) {
-        if (!bootstrap_keys.count(key) && !relay_health_replace_eligible(key)) {
-            add_live_key(key);
-        }
-    }
+    };
+    add_live(/*fleet=*/false);
     for (const auto& [host, port] : dynamic_candidates) {
-        add_endpoint(host, port);
+        if (!fleet_keys.count(endpoint_key(host, port))) add_endpoint(host, port);
     }
+    add_live(/*fleet=*/true);
     for (const auto& bp : kMainnetRelayPeers) {
         add_endpoint(bp.first, bp.second);
     }
@@ -4260,7 +4387,10 @@ void P2PManager::MaybeAutoRegisterWithRelays() {
         std::lock_guard<std::mutex> lock(peers_mutex_);
         for (const auto& kv : connected_peers_) {
             const auto& peer = kv.second;
-            if (!peer || !peer->is_connected || peer->is_our_relay) continue;
+            if (!peer || !peer->is_connected || peer->is_our_relay ||
+                peer->relay_register_pending) {
+                continue;
+            }
             std::string pk = peer->to_string();
             std::transform(pk.begin(), pk.end(), pk.begin(),
                            [](unsigned char c) {
@@ -6913,6 +7043,8 @@ void P2PManager::process_message(const std::string& peer_address, const P2PMessa
     } else if (message.command == "relaypng") {
         // NAT Phase C3 slice 3: keepalive — refresh circuit last_data_at.
         handle_relay_ping(peer_address, message);
+    } else if (message.command == "relayrok") {
+        handle_relay_register_ok(peer_address, message);
     } else if (message.command == "relayhnt") {
         // NAT Phase C3 slice 4b: ingest into relay_hints_by_target_.
         handle_relay_hints(peer_address, message);
@@ -8960,6 +9092,7 @@ void P2PManager::keepalive_loop() {
         // refresh cadence vs 30s wake-up); only fires for is_our_relay
         // peers whose last register is older than the refresh interval.
         RefreshRelayRegistrations();
+        RelayRegistrationTick();
         // NAT traversal: keep relay registrations topped up when this
         // node has no confirmed inbound path. No-op when relays are
         // operator-configured or the MainnetRelayReady() gate is closed.

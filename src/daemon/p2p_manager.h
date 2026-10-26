@@ -148,6 +148,15 @@ struct PeerInfo {
     //   refresh cadence; epoch sentinel means "never sent yet".
     bool is_our_relay{false};
     std::chrono::steady_clock::time_point last_register_sent_at{};
+    // A RELAY_REGISTER is out and its relayrok not yet back. is_our_relay
+    // becomes true only on the ack (an old build or a relay with the role
+    // off never acks, and must not be counted).
+    bool relay_register_pending{false};
+    std::chrono::steady_clock::time_point relay_register_pending_since{};
+    // Liveness of a confirmed relay: one outstanding circuit-0 relay ping.
+    uint64_t relay_ping_nonce{0};
+    uint32_t relay_pings_missed{0};
+    std::chrono::steady_clock::time_point last_relay_ping_at{};
 
     // NAT traversal slice 4c: synthetic peer carried over a relay circuit
     // instead of a direct TCP socket. address is a stable virtual key:
@@ -309,6 +318,8 @@ struct P2PMessage {
         const std::vector<uint8_t>& payload);
 
     static P2PMessage create_relay_ping(uint64_t circuit_id, uint64_t nonce);
+    // relayrok: a relay accepted our RELAY_REGISTER. Payload: ttl_u32 LE.
+    static P2PMessage create_relay_register_ok(uint32_t ttl_seconds);
 
     // relay_hints: target_node_id is usually our own node_id; relay_addr
     // is one of the relays we've registered with. Multiple entries per
@@ -719,6 +730,8 @@ public:
                            const P2PMessage& message);
     void handle_relay_ping(const std::string& peer_address,
                            const P2PMessage& message);
+    void handle_relay_register_ok(const std::string& peer_address,
+                                  const P2PMessage& message);
 
     // Periodic maintenance: drop circuits whose last_data_at is older
     // than kCircuitIdleTimeout. Called from keepalive_loop.
@@ -832,6 +845,10 @@ public:
     // last_register_sent_at is older than kRelayRegisterRefreshInterval.
     void SendRelayRegisterIfConfigured(PeerInfo* peer);
     void RefreshRelayRegistrations();
+    // Keepalive tick: registrations with no relayrok within 30 s, and
+    // confirmed relays that missed 3 relay pings (one every 30 s), are
+    // dropped and the relay is skipped for 30 min; then re-plan.
+    void RelayRegistrationTick();
 
     // Phase 2b — value-type snapshot for the relay_hints.list RPC.
     // Built under relay_hints_mutex_; JSON construction happens with
@@ -975,6 +992,15 @@ public:
     void test_set_peer_connected(const std::string& peer_address,
                                  bool connected);
     void test_maybe_auto_register_with_relays();
+    void test_relay_registration_tick() { RelayRegistrationTick(); }
+    // Gives a test-installed peer (keyed "host:port", port 0) its real
+    // endpoint, so to_string() matches relay endpoint keys.
+    void test_set_peer_endpoint(const std::string& peer_key, const std::string& host,
+                                uint16_t port);
+    void test_set_peer_proven_identity(const std::string& peer_key,
+                                       const std::array<uint8_t, 20>& node_id,
+                                       const std::array<uint8_t, 33>& pubkey, uint64_t our_nonce);
+    size_t test_confirmed_relay_count() const;
     std::vector<std::string> test_configured_relay_endpoints() const;
     void test_insert_pending_relay_connect(
         uint64_t request_id,
@@ -1229,7 +1255,14 @@ private:
     // no confirmed inbound path it keeps up to kAutoRelayTargetCount relay
     // registrations alive, discovered via addrman NODE_RELAY peers with a
     // hardcoded bootstrap fallback. Runs on the keepalive tick.
-    static constexpr size_t kAutoRelayTargetCount = 5;
+    static constexpr size_t kAutoRelayTargetCount = 2;  // on distinct netgroups
+    static constexpr std::chrono::seconds kRelayAckTimeout{30};
+    static constexpr std::chrono::seconds kRelayPingInterval{30};
+    static constexpr uint32_t kRelayMaxMissedPings = 3;
+    static constexpr std::chrono::minutes kRelaySkipAfterFailure{30};
+    // Relays that never acked or stopped answering pings; guarded by
+    // relay_endpoints_mutex_.
+    std::unordered_map<std::string, std::chrono::steady_clock::time_point> relay_skip_until_;
     void MaybeAutoRegisterWithRelays();
 
     // NAT traversal Phase C3 slice 3: relay-side circuit table.
