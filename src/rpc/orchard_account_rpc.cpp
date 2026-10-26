@@ -225,7 +225,7 @@ din::Json OrchardAccountRequest(const ExecutionContext& ctx,const din::Json& par
             // The original session is retained; a wallet switch must refuse.
             const auto view=source->getRuntimeAccountReplayForWallet(wallet_use->Wallet(),session);
             if(!view.ok())throw std::runtime_error("Authenticated Orchard replay source unavailable");
-            const auto origin_event=(*view)->Event(1);const auto& context=origin_event->context;
+            const auto context=(*view)->Profile();
             const dinero::wallet::OrchardAccountDelivery::Profile profile{
                 context.domain,context.activation_height,account};
             return creating?

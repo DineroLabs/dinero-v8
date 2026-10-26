@@ -22,6 +22,10 @@ public:
     using StateHandle = std::shared_ptr<const consensus::PreparedOrchardState>;
     using AuthorizationHandle = std::shared_ptr<const std::vector<consensus::VerifiedOrchardAuthorizations>>;
     RuntimeOutboxCursor Head() const;
+    // Profile facts are not a delivery event. In particular an authenticated
+    // activation parent has no Event(1), body, authorization or applied cursor.
+    struct ProfileFacts {orchard::SigningDomain domain;uint32_t activation_height;};
+    ProfileFacts Profile() const;
     EventHandle Event(uint64_t sequence) const;
     wallet::OrchardAccountDelivery::RestorePoint Point(RuntimeOutboxCursor) const;
     // Immutable branch identity at a covered height; missing ancestry refuses.
@@ -52,6 +56,8 @@ private:
     struct Data;
     static std::shared_ptr<Data> ReadSource(const Source&);
     static std::shared_ptr<const RuntimeAccountReplay> Build(std::shared_ptr<Data>);
+    static std::shared_ptr<const RuntimeAccountReplay> EmptyActivationParent(
+        const consensus::OrchardTransactionContext&);
     static std::optional<std::pair<uint32_t,uint256>> ActivationPrefixBase(const std::shared_ptr<Data>&);
     struct VerifiedPrefixStep {
         BlockHandle block;

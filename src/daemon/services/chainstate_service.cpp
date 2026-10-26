@@ -7263,6 +7263,24 @@ StatusOr<std::shared_ptr<const RuntimeAccountReplay>> ChainstateService::getRunt
     if(activation_mutex_.HeldByCurrentThread())return Status::Invalid;
 #ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
     try {
+        bool empty=false;
+        {
+            std::lock_guard<AnnotatedRecursiveMutex> lock(activation_mutex_);
+            const auto first=getRuntimeDeliveryPage({},1);
+            if(!first.ok())return first.status();
+            empty=!(*first)->head.sequence;
+        }
+        if(empty){
+            auto self=std::const_pointer_cast<ChainstateService>(weak_from_this().lock());
+            if(!self)return Status::Invalid;
+            // Same order as snapshot replacement. Recapture the actual zero
+            // source after both owners; never hold selected while waiting here.
+            std::lock_guard<std::mutex> snapshot(self->snapshot_load_mutex_);
+            std::lock_guard<AnnotatedRecursiveMutex> lock(activation_mutex_);
+            const auto parent=self->CaptureEmptyActivationParentReplayUnderLock();
+            if(!parent)return Status::Invalid;
+            return parent;
+        }
         std::optional<RuntimeOutboxCursor> captured_head;
         auto material=RuntimeAccountReplay::ReadSource([this,&captured_head](RuntimeOutboxCursor cursor,size_t count) {
             const auto page=getRuntimeDeliveryPageAtPrefix(captured_head,cursor,count,16*1024*1024);
@@ -19727,6 +19745,28 @@ ChainstateService::CaptureSelectedOrchardPoolContextUnderLock(
         *consensus_utxo_set_, headers, std::move(context), std::move(parent));
 #else
     (void)proved_entries;
+    return {};
+#endif
+}
+
+std::shared_ptr<const RuntimeAccountReplay> ChainstateService::CaptureEmptyActivationParentReplayUnderLock(){
+#ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
+    activation_mutex_.AssertHeld("capture empty activation-parent account baseline");
+    if(!active_tip_||Params().orchard_activation_height==UINT32_MAX||
+       uint64_t(active_tip_->height)+1!=Params().orchard_activation_height)return {};
+    const auto page=getRuntimeDeliveryPage({},1);
+    if(!page.ok()||(*page)->head.sequence||!(*page)->head.digest.IsNull()||
+       (*page)->next.sequence||!(*page)->next.digest.IsNull()||!(*page)->events.empty()||(*page)->after_tip)return {};
+    if(!chain_db_->getEmptyOrchardCommitmentSets().ok())return {};
+    // Reuse the actual full or compact selected input-owner checks, including
+    // journal/header/work, prepared legacy boundary and the original independent
+    // marker OR typed bound consistency. Empty explicit proofs grant NO coins.
+    const auto selected=compact_startup_?CaptureSelectedOrchardPoolContextUnderLock(std::span<const MempoolProofView>{}):
+        CaptureSelectedOrchardPoolContextUnderLock();
+    if(!selected||selected->parent||selected->context.height!=Params().orchard_activation_height||
+       selected->context.parent_hash!=active_tip_->hash)return {};
+    return RuntimeAccountReplay::EmptyActivationParent(selected->context);
+#else
     return {};
 #endif
 }

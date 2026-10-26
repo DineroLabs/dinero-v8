@@ -129,6 +129,19 @@ struct PreactivationEnrollmentFixture : OrchardCreationFixture {
     }
     din::Json Enroll(){return rpc_context_wallet_orchard_enrollpreactivation(RequestContext(),din::obj());}
 };
+template<class Rows> void PreserveEmptyParentCase(const std::string& label,const Rows& rows,
+        const std::string& wallet_before,const std::string& wallet_after){
+    const auto root=std::filesystem::canonical(std::filesystem::temp_directory_path())/
+        ("empty-parent-account-evidence-"+label+"-"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    OrchardAdmissionFixture::Require(std::filesystem::create_directory(root));
+    std::cout<<"Empty parent evidence: "<<root.string()<<std::endl;
+    Json::Value result;result["label"]=label;result["wallet_before"]=wallet_before;result["wallet_after"]=wallet_after;
+    result["source_rows"]=Json::Value(Json::arrayValue);
+    const auto hex=[](const std::string& bytes){return util::hex(std::vector<uint8_t>(bytes.begin(),bytes.end()));};
+    for(const auto& [key,value]:rows){Json::Value row;row["family"]=key.first;row["key_hex"]=hex(key.second);row["value_hex"]=hex(value);result["source_rows"].append(row);}
+    std::ofstream file(root/"case.json",std::ios::binary);OrchardAdmissionFixture::Require(bool(file));
+    file<<Json::writeString(Json::StreamWriterBuilder(),result);file.close();OrchardAdmissionFixture::Require(bool(file));
+}
 }
 TEST(OrchardPreactivationEnrollment, RecoveredSeedReopensAndFindsRealShieldAcrossActivation){
     PreactivationEnrollmentFixture f;const auto initial=f.Catalog();ASSERT_TRUE(initial);ASSERT_FALSE(initial->generated);
@@ -148,6 +161,66 @@ TEST(OrchardPreactivationEnrollment, RecoveredSeedReopensAndFindsRealShieldAcros
     EXPECT_EQ(account.account.Scan().Notes().size(),1u);EXPECT_EQ(account.account.Scan().Checkpoint().height,103u);
     catalog=f.Catalog();ASSERT_TRUE(catalog&&catalog->preactivation);EXPECT_FALSE(catalog->generated);
     EXPECT_EQ(catalog->accounts.size(),1u);EXPECT_EQ(f.Setting("wallet_initial_owner_v1"),owner);EXPECT_TRUE(f.Enroll().isMember("error"));
+}
+TEST(OrchardEmptyParentAccount, PublicNamedAccountIssuanceNeedsNoFabricatedFirstEvent){
+    PreactivationEnrollmentFixture f;
+    ASSERT_FALSE(f.Enroll().isMember("error"));const auto enrolled=f.Catalog();
+    ASSERT_TRUE(enrolled&&enrolled->preactivation&&!enrolled->generated);
+    const auto before=f.f.service->getRuntimeDeliveryPage({},1);ASSERT_TRUE(before.ok());
+    const auto source_before=ChainDBTransactionReadTestPeer::HandoffRows(f.f.db);const auto wallet_before=f.Snapshot();
+    ASSERT_EQ((*before)->head.sequence,0u);ASSERT_TRUE((*before)->events.empty());ASSERT_FALSE((*before)->after_tip);
+    const auto captured=f.f.service->getRuntimeAccountReplay();ASSERT_TRUE(captured.ok());const auto& view=**captured;
+    EXPECT_EQ(view.Head().sequence,0u);EXPECT_TRUE(view.Head().digest.IsNull());
+    EXPECT_EQ(view.Profile().activation_height,102u);EXPECT_EQ(view.Profile().domain.genesis_wire,f.Domain().genesis_wire);
+    EXPECT_EQ(view.Point({}).checkpoint.height,101u);EXPECT_EQ(view.Point({}).checkpoint.block_hash,f.parent->hash);
+    EXPECT_EQ(view.Point({}).checkpoint.tree_size,0u);
+    EXPECT_ANY_THROW(view.Event(1));
+    EXPECT_ANY_THROW(view.Block(1));
+    EXPECT_ANY_THROW(view.State(1));
+    EXPECT_ANY_THROW(view.Authorizations(1));
+    RegisterOrchardAccountRpc();const auto* create=g_rpcRegistry.lookup("wallet.orchard.createaccount");ASSERT_NE(create,nullptr);
+    const auto context=f.RequestContext();
+    const auto created=(*create)(context,OrchardBoundParamsForTest(context,OrchardCreationRequest(0)));
+    ASSERT_FALSE(created.isMember("error"))<<created.toStyledString();
+    const auto issued=f.Issue(0);ASSERT_FALSE(issued.isMember("error"))<<issued.toStyledString();
+    EXPECT_NE(issued["address"].asString(),created["address"].asString());
+    const auto account=f.Account(0);EXPECT_EQ(account.account.Delivery().sequence,0u);
+    EXPECT_EQ(account.account.Scan().Checkpoint().block_hash,f.parent->hash);EXPECT_EQ(account.account.Scan().BalanceUna(),0u);
+    const auto catalog=f.Catalog();ASSERT_TRUE(catalog&&!catalog->generated&&catalog->preactivation);
+    {auto use=WalletService::AcquireWalletUse(f.wallet);use->Wallet().encryptWallet("empty-parent-password");
+     use->Wallet().open("preactivation-recovered");use->Wallet().unlockWallet("empty-parent-password",0);}
+    ASSERT_TRUE(f.wallet->EnsureRuntimeWalletBindings());EXPECT_EQ(f.Catalog(),catalog);
+    EXPECT_EQ(f.Account(0).account.Scan().Checkpoint().block_hash,f.parent->hash);
+    const auto unchanged=f.f.service->getRuntimeDeliveryPage({},1);ASSERT_TRUE(unchanged.ok());
+    EXPECT_EQ((*unchanged)->head,(*before)->head);EXPECT_TRUE((*unchanged)->events.empty());EXPECT_FALSE((*unchanged)->after_tip);
+    EXPECT_EQ(ChainDBTransactionReadTestPeer::HandoffRows(f.f.db),source_before);
+    PreserveEmptyParentCase("issued-at-parent",source_before,wallet_before,f.Snapshot());
+    f.MineEmpty();f.ReplayAccount(0);EXPECT_EQ(f.Account(0).account.Delivery().sequence,1u);EXPECT_EQ(f.Catalog(),catalog);
+    ASSERT_TRUE(ShieldedStateStartupTestAccess::DisconnectBoundary(*f.f.service,f.f.service->GetActiveTip()));
+    const auto undone=f.f.service->getRuntimeAccountReplay();ASSERT_TRUE(undone.ok());
+    EXPECT_EQ((*undone)->Head().sequence,2u);EXPECT_EQ((*undone)->Event(1)->context.height,102u);
+}
+TEST(OrchardEmptyParentAccount, BadSourceAndMissingCatalogNeverCreateOwnersOrResetHistory){
+    PreactivationEnrollmentFixture f;ASSERT_FALSE(f.Enroll().isMember("error"));
+    const auto before=f.Snapshot();
+    f.f.service->setHeaderChainSelector(std::make_shared<consensus::HeaderChainSelector>());
+    EXPECT_FALSE(f.f.service->getRuntimeAccountReplay().ok());EXPECT_TRUE(f.Call(0).isMember("error"));EXPECT_EQ(f.Snapshot(),before);
+    auto headers=std::make_shared<consensus::HeaderChainSelector>();for(const auto& b:f.f.blocks)ASSERT_TRUE(headers->AddHeader(b.header));
+    f.f.service->setHeaderChainSelector(headers);
+    ASSERT_EQ(f.f.db.setValidatedTip(f.f.token,f.f.blocks[100].GetHash(),100),Status::Ok);
+    EXPECT_FALSE(f.f.service->getRuntimeAccountReplay().ok());EXPECT_TRUE(f.Call(0).isMember("error"));EXPECT_EQ(f.Snapshot(),before);
+    ASSERT_EQ(f.f.db.setValidatedTip(f.f.token,f.parent->hash,101),Status::Ok);
+    ASSERT_TRUE(f.f.service->getRuntimeAccountReplay().ok());
+    ChainDBTransactionReadTestPeer::HandoffPutOrchardRow(f.f.db,f.f.token,"O1-untracked-parent","refusal evidence");
+    const auto corrupt=ChainDBTransactionReadTestPeer::HandoffRows(f.f.db);
+    EXPECT_FALSE(f.f.service->getRuntimeAccountReplay().ok());EXPECT_TRUE(f.Call(0).isMember("error"));EXPECT_EQ(f.Snapshot(),before);
+    EXPECT_EQ(ChainDBTransactionReadTestPeer::HandoffRows(f.f.db),corrupt);
+    PreserveEmptyParentCase("untracked-namespace-refusal",corrupt,before,f.Snapshot());
+    ChainDBTransactionReadTestPeer::HandoffDeleteOrchardRow(f.f.db,f.f.token,"O1-untracked-parent");
+    f.Sql("DELETE FROM settings WHERE key='orchard_account_catalog_v1'");const auto missing=f.Snapshot();
+    EXPECT_TRUE(f.Call(0).isMember("error"));EXPECT_EQ(f.Snapshot(),missing);
+    const auto page=f.f.service->getRuntimeDeliveryPage({},1);ASSERT_TRUE(page.ok());EXPECT_EQ((*page)->head.sequence,0u);
+    EXPECT_TRUE((*page)->events.empty());EXPECT_FALSE((*page)->after_tip);
 }
 TEST(OrchardPreactivationEnrollment, MissingCorruptOrUntrackedStateNeverRepairs){
     PreactivationEnrollmentFixture f;const auto good=f.Setting("orchard_account_catalog_v1");

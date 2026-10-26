@@ -354,7 +354,7 @@ struct OrchardAccountDelivery::Owner {
         return {saved->revision,std::move(account)};
     }
     OrchardAccountDelivery::Applied RestoreReplay(const OrchardAccountDelivery::Profile& p,const RuntimeAccountReplay& view){
-        const auto origin_event=view.Event(1);const auto& context=origin_event->context;
+        const auto context=view.Profile();
         Check(context.activation_height==p.activation&&context.domain.network_code==p.domain.network_code&&
             context.domain.genesis_wire==p.domain.genesis_wire&&context.domain.branch_id==p.domain.branch_id);
         const auto saved=store.Read();Check(saved.has_value());
@@ -836,7 +836,7 @@ std::unique_ptr<OrchardCatalogCapture> OrchardAccountDelivery::PrepareCatalogWit
         WalletManager& w,uint64_t session,std::shared_ptr<const RuntimeAccountReplay> replay,
         const std::function<RestorePoint(RuntimeOutboxCursor)>& points){
     Check(bool(replay)&&bool(points));
-    const auto first=replay->Event(1);const auto& context=first->context;
+    const auto context=replay->Profile();
     const Profile profile{context.domain,context.activation_height,0};
     std::unique_ptr<Owner::CapturedCatalog> captured;
     {
@@ -901,7 +901,7 @@ std::unique_ptr<OrchardCatalogRecoveryPlan> OrchardAccountDelivery::PrepareCatal
         WalletManager& w,uint64_t session,const RuntimeAccountReplay& view,CatalogRecoveryAction action,uint64_t sequence,
         const std::function<RestorePoint(RuntimeOutboxCursor)>& points){
     Check(bool(points)&&((action==CatalogRecoveryAction::Apply)==(sequence!=0)));
-    const auto first=view.Event(1);const Profile profile{first->context.domain,first->context.activation_height,0};
+    const auto facts=view.Profile();const Profile profile{facts.domain,facts.activation_height,0};
     auto data=std::make_unique<OrchardCatalogRecoveryPlan::Data>();
     // RuntimeAccountReplay copies retain the same immutable shared source data.
     data->replay=std::make_shared<const RuntimeAccountReplay>(view);data->profile=profile;data->session=session;data->head=view.Head();
@@ -1051,7 +1051,7 @@ OrchardAccountDelivery::Applied OrchardAccountDelivery::Read(WalletManager& w,ui
     return result;
 }
 OrchardAccountDelivery::Applied OrchardAccountDelivery::ReadForReplay(WalletManager& w,uint64_t s,const Profile& p,const RuntimeAccountReplay& view){
-    const auto origin_event=view.Event(1);const auto& context=origin_event->context;
+    const auto context=view.Profile();
     Check(context.activation_height==p.activation&&context.domain.network_code==p.domain.network_code&&
         context.domain.genesis_wire==p.domain.genesis_wire&&context.domain.branch_id==p.domain.branch_id);
     std::unique_ptr<Owner::CapturedRead> captured;
@@ -1088,7 +1088,7 @@ OrchardAccountDelivery::IssuedReceiver OrchardAccountDelivery::IssueReceiverForR
 }
 std::vector<OrchardAccountDelivery::Enrolled> OrchardAccountDelivery::Owner::ReadInventory(
         const RuntimeAccountReplay& view,bool allow_empty){
-    auto& owner=*this;const auto origin_event=view.Event(1);const auto& context=origin_event->context;
+    auto& owner=*this;const auto context=view.Profile();
     struct Statement {
         sqlite3_stmt* p=nullptr;
         ~Statement(){sqlite3_finalize(p);}
@@ -1178,7 +1178,7 @@ void OrchardAccountDelivery::Owner::ValidateRetainedInventory(const std::vector<
         (void)retained.ReadRetained(static_cast<uint64_t>(revision));
     }
     Check(rc==SQLITE_DONE);
-    size_t predecessors=0;const auto origin_event=view.Event(1);const auto& context=origin_event->context;
+    size_t predecessors=0;const auto context=view.Profile();
     for(const auto& enrolled:accounts){
         auto account_identity=identity;account_identity.account=enrolled.number;
         const auto keys=orchard::WalletKeys::FromSeed(seed->Bytes(),enrolled.number);ViewingKey viewing(keys);
@@ -1198,7 +1198,7 @@ void OrchardAccountDelivery::Owner::ValidateRetainedInventory(const std::vector<
 }
 std::vector<OrchardAccountDelivery::Enrolled> OrchardAccountDelivery::ReadEnrolledForReplay(
         WalletManager& w,uint64_t session,const RuntimeAccountReplay& view){
-    const auto origin_event=view.Event(1);const auto& context=origin_event->context;
+    const auto context=view.Profile();
     const Profile profile{context.domain,context.activation_height,0};
     Owner owner(w,session,profile);Transaction tx(owner.lease->Database());
     auto result=owner.ReadInventory(view,false);tx.Commit();return result;
@@ -1210,7 +1210,7 @@ OrchardAccountDelivery::CatalogEnrolled OrchardAccountDelivery::ReadCatalogForRe
 OrchardAccountDelivery::CatalogEnrolled OrchardAccountDelivery::ReadCatalogWithRestorePoints(
         WalletManager& w,uint64_t session,const RuntimeAccountReplay& view,
         const std::function<RestorePoint(RuntimeOutboxCursor)>& points){
-    const auto event=view.Event(1);const auto& context=event->context;
+    const auto context=view.Profile();
     const Profile profile{context.domain,context.activation_height,0};
     std::unique_ptr<Owner::CapturedCatalog> captured;
     {
@@ -1232,7 +1232,7 @@ OrchardAccountDelivery::CatalogEnrolled OrchardAccountDelivery::ReadCatalogWithR
 }
 OrchardAccountDelivery::CatalogEnrolled OrchardAccountDelivery::ReadCatalogForReplayInTransaction(
         WalletManager& w,uint64_t session,const RuntimeAccountReplay& view){
-    const auto origin_event=view.Event(1);const auto& context=origin_event->context;
+    const auto context=view.Profile();
     const Profile profile{context.domain,context.activation_height,0};
     auto lease=w.AcquireDatabaseLease();Check(lease->Session()==session);
     Check(lease->Database()&&!sqlite3_get_autocommit(lease->Database()));
@@ -1271,7 +1271,7 @@ OrchardAccountDelivery::CatalogEnrolled OrchardAccountDelivery::ReadCatalogForRe
 }
 std::vector<OrchardAccountDelivery::Enrolled> OrchardAccountDelivery::Owner::ValidateCatalogInventory(
         const OrchardAccountDelivery::Profile& p,const RuntimeAccountReplay& view){
-    const auto origin_event=view.Event(1);const auto& context=origin_event->context;
+    const auto context=view.Profile();
     Check(context.activation_height==p.activation&&context.domain.network_code==p.domain.network_code&&
         context.domain.genesis_wire==p.domain.genesis_wire&&context.domain.branch_id==p.domain.branch_id);
     catalog=OrchardAccountCatalog::Read(lease->Database(),seed->Bytes());
@@ -1314,7 +1314,7 @@ OrchardAccountDelivery::IssuedReceiver OrchardAccountDelivery::IssueCatalogWithR
         orchard::WalletScope scope,bool creating,const std::function<RestorePoint(RuntimeOutboxCursor)>& points){
     Check(bool(points)&&p.domain.network_code<=2&&p.account<0x80000000&&p.activation>0&&
         (scope==orchard::WalletScope::External||scope==orchard::WalletScope::Internal));
-    const auto first=view.Event(1);const auto& context=first->context;
+    const auto context=view.Profile();
     Check(context.activation_height==p.activation&&context.domain.network_code==p.domain.network_code&&
         context.domain.genesis_wire==p.domain.genesis_wire&&context.domain.branch_id==p.domain.branch_id);
     std::unique_ptr<Owner::CapturedCatalog> captured;
@@ -1997,7 +1997,7 @@ OrchardAccountDelivery::RequestProof OrchardAccountDelivery::ReadCatalogProofWit
         kind==CatalogProofRequest::StoredSpend||kind==CatalogProofRequest::StoredShield);
     if(kind==CatalogProofRequest::Spend)Check(!payments.empty()||!outputs.empty());
     if(kind==CatalogProofRequest::Shield)Check(!inputs.empty()&&!payments.empty());
-    const auto event=view.Event(1);const auto& context=event->context;
+    const auto context=view.Profile();
     Check(context.activation_height==p.activation&&context.domain.network_code==p.domain.network_code&&
         context.domain.genesis_wire==p.domain.genesis_wire&&context.domain.branch_id==p.domain.branch_id);
     std::unique_ptr<Owner::CapturedCatalog> captured;
@@ -2116,7 +2116,7 @@ std::unique_ptr<OrchardCatalogFinalizationPlan> OrchardAccountDelivery::PrepareF
     // The selected service calls preparation before acquiring its source lock.
     // No caller wallet lease/transaction is accepted, and no source callback is
     // retained in the returned plan or invoked by its writer.
-    const auto event=view.Event(1);const auto& context=event->context;
+    const auto context=view.Profile();
     Check(context.activation_height==p.activation&&context.domain.network_code==p.domain.network_code&&
         context.domain.genesis_wire==p.domain.genesis_wire&&context.domain.branch_id==p.domain.branch_id);
     auto inventory=captured->Restore(points);
@@ -2249,7 +2249,7 @@ std::unique_ptr<orchard::TransactionEnvelope> OrchardAccountDelivery::SignShield
     }
     // Full restoration and all replay callbacks precede the signing key owner.
     // The service has already released selected ownership after coin capture.
-    const auto event=view.Event(1);const auto& context=event->context;
+    const auto context=view.Profile();
     Check(context.activation_height==p.activation&&context.domain.network_code==p.domain.network_code&&
         context.domain.genesis_wire==p.domain.genesis_wire&&context.domain.branch_id==p.domain.branch_id);
     auto inventory=catalog->Restore(points);

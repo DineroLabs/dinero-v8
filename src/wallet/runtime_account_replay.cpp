@@ -272,6 +272,19 @@ std::shared_ptr<const RuntimeAccountReplay> RuntimeAccountReplay::Build(std::sha
     Data::Node root;root.height=data->activation-1;root.checkpoint=Empty(root.height,data->origin);data->Put(data->origin,root);
     return BuildTail(std::move(data));
 }
+std::shared_ptr<const RuntimeAccountReplay> RuntimeAccountReplay::EmptyActivationParent(
+        const consensus::OrchardTransactionContext& next){
+    // Called ONLY by the selected service's checked empty-parent capture.
+    // No source callback, serialized data, event or state capability can mint
+    // this baseline. The ordinary ReadSource/Build origin guards stay intact.
+    Require(next.activation_height>0&&next.activation_height!=UINT32_MAX&&
+        next.height==next.activation_height&&!next.parent_hash.IsNull()&&next.domain.network_code<=2);
+    auto data=std::make_shared<Data>();data->activation=next.activation_height;data->domain=next.domain;
+    data->origin=next.parent_hash;data->Position(0,data->origin);
+    Data::Node root;root.height=data->activation-1;root.checkpoint=Empty(root.height,data->origin);data->Put(data->origin,root);
+    data->index.Freeze();data->spool.Freeze();data->states.Freeze();data->authorizations.Freeze();
+    return std::shared_ptr<const RuntimeAccountReplay>(new RuntimeAccountReplay(std::move(data)));
+}
 std::optional<std::pair<uint32_t,uint256>> RuntimeAccountReplay::ActivationPrefixBase(const std::shared_ptr<Data>& data){
     const auto first=data->ReadEvent(1);
     if(first->direction!=RuntimeBlockDirection::Connect||!first->context.activation_height||
@@ -390,6 +403,7 @@ std::shared_ptr<const RuntimeAccountReplay> RuntimeAccountReplay::BuildTail(std:
     return std::shared_ptr<const RuntimeAccountReplay>(new RuntimeAccountReplay(std::move(data)));
 }
 RuntimeOutboxCursor RuntimeAccountReplay::Head() const{return data_->head;}
+RuntimeAccountReplay::ProfileFacts RuntimeAccountReplay::Profile()const{return {data_->domain,data_->activation};}
 RuntimeAccountReplay::EventHandle RuntimeAccountReplay::Event(uint64_t sequence) const{
     return data_->ReadEvent(sequence);
 }

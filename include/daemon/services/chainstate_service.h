@@ -1642,6 +1642,7 @@ private:
     std::shared_ptr<const OrchardMiningTemplate> BindOrchardMiningUnderLock(PreparedOrchardMining&);
     friend struct OrchardDetachedMiningTestAccess;
     struct SelectedOrchardPoolContext;
+    std::shared_ptr<const RuntimeAccountReplay> CaptureEmptyActivationParentReplayUnderLock();
     // Compact callers must enumerate every body/proof that will be queried.
     // No argument requests the general full-node view, not an empty catalog.
     std::unique_ptr<SelectedOrchardPoolContext> CaptureSelectedOrchardPoolContextUnderLock(

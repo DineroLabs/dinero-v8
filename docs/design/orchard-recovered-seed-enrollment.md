@@ -215,6 +215,23 @@ retention does not grant real-device/app acceptance.
 
 ## Stateless phone: seamless transfer selected, integration unfinished
 
+At exactly activation minus one, account allocation/receiver issuance can use
+a distinct private EMPTY parent replay view, not a fabricated first delivery.
+The selected service checks the genuine zero/empty outbox (with no `after_tip`),
+empty separated Orchard namespace, actual header/work/journal, full independent
+boundary replay or the existing compact bound owner, and the retained original
+anchor/consistency rules. Snapshot replacement and selected ownership are held
+in that order through capture. Immutable profile facts are separate from events;
+`Event(1)`, bodies, authorizations and state tokens remain unavailable in this
+view. The ordinary nonempty replay origin guard is unchanged. A retained visited
+activation/undo log is replayed normally, never reset into an empty baseline.
+Wallet catalog/seed/domain/enrollment/current-and-retained-row guards remain.
+This prerequisite does not yet make a funded queued request cross activation:
+queue admission still needs an explicit EMPTY-parent current-source fence rather
+than the nonzero-cursor `after_tip` contract, plus genuine compact input proofs
+and the real named-wallet/nonempty pending-payment acceptance test. No on-chain
+funds, independent history or active account may be fabricated for that test.
+
 The owner selected automatic authenticated catalog transfer, not a manual v6
 file or a fresh-datadir reset. The new boundary wire codec pins genesis, network
 magic, branch, activation, maturity-leaf rule, selected activation parent/block,
