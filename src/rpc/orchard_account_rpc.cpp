@@ -745,8 +745,14 @@ namespace {
 din::Json OrchardShieldCall(const ExecutionContext& ctx,const din::Json& params,bool finishing){
     din::Json result;
     try{
-        const bool stored_only=finishing&&params.isObject()&&params.size()==2;
-        auto request=stored_only?ParseStoredFinishRequest(params):ParseShieldRequest(params);
+        auto normalized=params;bool reacquire_input_proofs=false;
+        if(params.isObject()&&params.isMember("reacquire_input_proofs")){
+            if(!finishing||!params["reacquire_input_proofs"].isBool()||!params["reacquire_input_proofs"].asBool())
+                throw std::runtime_error("reacquire_input_proofs must be true on explicit signed shield completion only");
+            reacquire_input_proofs=true;normalized.removeMember("reacquire_input_proofs");
+        }
+        const bool stored_only=finishing&&normalized.isObject()&&normalized.size()==2;
+        auto request=stored_only?ParseStoredFinishRequest(normalized):ParseShieldRequest(normalized);
 #if DINERO_WALLET_RAW_ORCHARD
         if(!ctx.daemon)throw std::runtime_error("Daemon services unavailable");
         auto source=std::dynamic_pointer_cast<dinero::ChainstateService>(ctx.daemon->chainstate);
@@ -789,7 +795,7 @@ din::Json OrchardShieldCall(const ExecutionContext& ctx,const din::Json& params,
             if(stored->archived)throw std::runtime_error("Shield request is archived; no new submission");
             std::vector<uint8_t> input_proof;
             const auto bytes=source->finalizeRuntimeWalletShield(wallet_use->Wallet(),session,request.account,request.id,
-                stored->durable->inputs,payments,stored->transparent_outputs,request.fee,jobs,&input_proof);
+                stored->durable->inputs,payments,stored->transparent_outputs,request.fee,jobs,&input_proof,reacquire_input_proofs);
             const auto envelope=dinero::orchard::TransactionEnvelope::DecodeExact(bytes);
             const auto body=dinero::MempoolTransaction::FromOrchard(envelope);
             // Ready already committed. No wallet SQLite or selected owner is
@@ -925,9 +931,10 @@ void RegisterOrchardAccountRpc(){
          {"request_id","string","Existing nonzero 32-byte hex request ID.",true},
          {"expected_revision","integer","Original revision when resending the complete intent.",false},
          {"payments","array","Original recipients when resending the complete intent.",false},
-         {"fee_una","integer","Original fee when resending the complete intent.",false}},
+         {"fee_una","integer","Original fee when resending the complete intent.",false},
+         {"reacquire_input_proofs","boolean","Explicit true: reacquire CURRENT compact input DATA for an already signed current request whose pool entry is absent; never repair an existing invalid entry.",false}},
         {"object","Durable signed transaction ID and separate admission result."},
-        "Provide account and request_id only to use authenticated stored details, or resend the complete original queue intent. Completion loads the retained selected inputs/change; it never selects replacements or regenerates missing proofs. Signing and full source verification precede Ready commit; submission follows outside owners. Failed admission retains the same bytes for retry. Archived requests are not resubmitted."};
+        "Provide account and request_id to use authenticated stored details, or resend the complete original queue intent. Completion loads retained inputs/change; it never selects replacements. Missing process-local Reserved work requires the original encrypted randomized intent and complete current catalog; it never steals an old session job. Signing and full source verification precede Ready commit; submission follows outside owners. Explicit reacquire_input_proofs=true authenticates the same signed Ready and fetches CURRENT per-input DATA only when its compact pool entry is absent. Existing missing/stale/invalid retained proof DATA still refuses, with no fallback/repair. No new Orchard proof, wallet owner, history or mixed readiness is created. Failed admission retains the same bytes; archived requests are not resubmitted."};
     RegisterBoundOrchard(shield_completion,rpc_context_wallet_orchard_finishshield);
 
     const RpcMethodMeta spending{

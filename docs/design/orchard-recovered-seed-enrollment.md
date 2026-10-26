@@ -1345,8 +1345,9 @@ missing, stale or invalid DATA is not silently repaired or treated as authority.
 Their activation-parent route remains valid without Event1; it does not call the
 post-activation imported delivery factory. The added lifecycle/cohort pin applies
 only to NEW post-activation compact signing, never a fabricated zero/first event.
-Cold/interrupted Ready reacquisition and restarted proof work remain separate
-unfinished paths. New signing does not create a general coin view, a mixed
+Default Ready retries never silently reacquire proof DATA. Explicit absent-entry
+recovery and fresh-process Reserved work have separate gates below. New signing
+does not create a general coin view, a mixed
 transparent/index baseline, independent prehistory or a lifecycle repair.
 
 `NodeCoreCompactNewShieldReady` requires real original-import funding, current
@@ -1373,6 +1374,38 @@ and real independent mining/SDK validation105 must confirm535000una. This does
 not claim wallet-only rebind of an OLD live job, forced-process/crash recovery,
 or interrupted SIGNED-Ready proof recovery. Those remain separate paths, as do
 app/device, mixed readiness and release qualification.
+
+### Explicit signed-Ready current-input recovery
+
+`wallet.orchard.finishshield` accepts optional `reacquire_input_proofs=true` for
+an already signed CURRENT request on completed compact backing. This mode first
+authenticates the complete encrypted catalog, request details, original inputs,
+change, signed bytes and wallet/session/SQL-instance owners. It does not resume
+a Reserved prover, steal an old job or use an ID alone as authority. The default
+RPC still refuses an absent pool proof; recovery is never an exception fallback.
+
+Only when the entire pool entry is ABSENT may this explicit mode request fresh
+CURRENT per-input DATA. Existing entries retain their exact body/nonstale/nonempty
+proof and full cryptographic checks, even with the flag: missing, stale or invalid
+DATA is not silently repaired. The original normal compact body/stump owner checks
+all paths, membership, legacy metadata, nontransparent exclusion and actual output
+absences. The original imported cohort/lifecycle/ten-SQL source remains pinned
+through the FULL encrypted current/retained/pending writer with fresh pre-COMMIT
+source checks. Ready must keep identical signed bytes and revisions; no key signing,
+new Orchard proof, input reselection, owner reset, original SQL repair or baseline
+receipt is created. Normal proof-bearing ingress independently reauthenticates
+authorization, selected source, conflicts, policy and observer after all wallet/
+selected owners leave. Pending input DATA remains retryable without wallet writes.
+
+`NodeCoreCompactReadyRestart` must sign/admit a genuine NEW compact shield, then
+orderly stop AND exit its process. A fresh PID on the same root (no snapshot
+re-import) opens/unlocks the named wallet without phrase, preserves encrypted
+Ready/retained rows, refuses default missing-entry completion, and explicitly
+reacquires CURRENT paths over TCP for the SAME signed body. It must also refuse
+poisoned existing entries with the recovery flag before restart. Real FULL mining
+and SDK validation105/confirmation535000una are required. This is not forced-kill/
+crash/powerloss, changed-tip/reorg or activation-parent recovery, old-live Reserved
+rebind, mixed readiness, mainnet/v5/all lifecycle, app/device or release qualification.
 
 ## Original-import private send and unshield native gate
 

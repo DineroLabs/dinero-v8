@@ -1085,11 +1085,14 @@ public:
     // still requires fresh admission outside all wallet/selected owners.
     // New compact signing may return untrusted exact-current v2 input DATA for
     // SubmitProofBody; admission MUST independently recapture and verify it.
+    // Explicit Ready reacquisition is only for an absent compact pool entry.
+    // Existing missing/stale/invalid proof DATA still refuses. It authenticates
+    // the same durable signed intent, never reselects inputs or reproves it.
     std::vector<uint8_t> finalizeRuntimeWalletShield(
         WalletManager&,uint64_t session,uint32_t account,const std::array<uint8_t,32>& operation,
         std::span<const orchard::ResolvedInput>,std::span<const orchard::WalletPayment>,
         std::span<const orchard::TransparentOutput>,uint64_t fee_una,wallet::OrchardProofJobs&,
-        std::vector<uint8_t>* current_input_proof=nullptr);
+        std::vector<uint8_t>* current_input_proof=nullptr,bool reacquire_input_proofs=false);
 
 
 

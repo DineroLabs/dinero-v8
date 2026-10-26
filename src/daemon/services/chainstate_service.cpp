@@ -21434,16 +21434,20 @@ std::vector<uint8_t> ChainstateService::finalizeRuntimeWalletShield(
         WalletManager& wallet,uint64_t session,uint32_t account,const std::array<uint8_t,32>& operation,
         std::span<const orchard::ResolvedInput> inputs,std::span<const orchard::WalletPayment> payments,
         std::span<const orchard::TransparentOutput> outputs,uint64_t fee,wallet::OrchardProofJobs& jobs,
-        std::vector<uint8_t>* current_input_proof){
+        std::vector<uint8_t>* current_input_proof,bool reacquire_input_proofs){
 #ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
     if(current_input_proof)current_input_proof->clear();
+    if(reacquire_input_proofs&&!current_input_proof)
+        throw std::runtime_error("Ready input reacquisition requires proof-bearing admission");
     const auto captured=getRuntimeAccountReplayForWallet(wallet,session);
     if(!captured.ok())throw std::runtime_error("Authenticated shield replay source unavailable");
     const auto& replay=**captured;
     const auto origin=replay.Profile();
     const wallet::OrchardAccountDelivery::Profile profile{origin.domain,origin.activation_height,account};
     auto request=wallet::OrchardAccountDelivery::ReadCatalogShieldRequestProofForReplay(
-        wallet,session,profile,replay,operation,inputs,payments,outputs,fee,jobs,true);
+        wallet,session,profile,replay,operation,inputs,payments,outputs,fee,jobs,!reacquire_input_proofs);
+    if(reacquire_input_proofs&&request.durable.phase!=wallet::OrchardOperationQueue::Phase::Ready)
+        throw std::runtime_error("Input reacquisition requires an already signed current shield request");
     // Verify the actual selected inverse OFF-LOCK; the existing warm audit
     // freshly rebinds it, rather than bypassing compact journal checks.
     ParentPreparationScope preparation(*this);
@@ -21487,6 +21491,8 @@ std::vector<uint8_t> ChainstateService::finalizeRuntimeWalletShield(
     const auto final_body=MempoolTransaction::FromOrchard(*envelope);
     std::vector<uint8_t> compact_input_proof;bool submit_current_proof=false;
     auto selected=[&]() -> std::unique_ptr<SelectedOrchardPoolContext> {
+        if(reacquire_input_proofs&&!compact_startup_)
+            throw std::runtime_error("Ready input reacquisition requires completed compact backing");
         if(assumeutxo_active_&&!compact_startup_&&!IsBackgroundValidationComplete()){
             const MempoolProofView body{MempoolTransaction::FromOrchard(*envelope),{}};
             return CaptureImportedOrchardTransactionUnderLock(snapshot_owner,{&body,1});
@@ -21496,15 +21502,20 @@ std::vector<uint8_t> ChainstateService::finalizeRuntimeWalletShield(
             submit_current_proof=true;
             return CaptureCompactWalletTransactionUnderLock(snapshot_owner,final_body,compact_input_proof);
         }
-        // Existing signed retries keep their original strict retained-pool
-        // proof requirement. Cold/interrupted Ready reacquisition is separate;
-        // never silently repair a missing/stale/invalid retained proof here.
+        // Default retries and ALL existing pool entries keep the original
+        // retained-proof requirement. Only explicit authenticated Ready recovery
+        // may reacquire current input DATA when the entire entry is absent.
+        // A poisoned/stale existing entry never selects this branch.
         auto* context=DaemonContext::instance();
         if(!context||context->chainstate.get()!=this||!context->mempool)
             throw std::runtime_error("Shield retry pool owner unavailable");
         const auto service=context->mempool;auto use=MempoolService::AcquirePoolUse(service);
         const auto body=MempoolTransaction::FromOrchard(*envelope);
         const auto entry=use->Pool().getMempoolEntry(body.GetTxid().AsUint256());
+        if(reacquire_input_proofs&&!entry){
+            submit_current_proof=true;
+            return CaptureCompactWalletTransactionUnderLock(snapshot_owner,final_body,compact_input_proof);
+        }
         if(!entry||!entry->tx.IsOrchard()||entry->tx.Serialize()!=envelope->CanonicalBytes()||
            entry->is_proof_stale||entry->cached_utxotx_payload.empty())
             throw std::runtime_error("Shield retry current input proof unavailable");
@@ -21582,7 +21593,7 @@ std::vector<uint8_t> ChainstateService::finalizeRuntimeWalletShield(
     return bytes; // No admission/relay; selected owner leaves before caller receives bytes.
 #else
     (void)wallet;(void)session;(void)account;(void)operation;(void)inputs;(void)payments;(void)outputs;(void)fee;(void)jobs;
-    (void)current_input_proof;
+    (void)current_input_proof;(void)reacquire_input_proofs;
     throw std::runtime_error("Authenticated Orchard wallet backend unavailable");
 #endif
 }

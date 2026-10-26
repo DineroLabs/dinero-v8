@@ -32,6 +32,8 @@ new_compact_ready=bool(os.environ.get('DINERO_SDK_COMPACT_NEW_READY'))
 if new_compact_ready:assert assumed and new_compact_reservation
 reserved_restart=bool(os.environ.get('DINERO_SDK_COMPACT_RESERVED_RESTART'))
 if reserved_restart:assert new_compact_ready
+ready_restart=bool(os.environ.get('DINERO_SDK_COMPACT_READY_RESTART'))
+if ready_restart:assert new_compact_ready and not reserved_restart
 assumed_unshield=bool(os.environ.get('DINERO_SDK_ASSUMED_PRIVATE_UNSHIELD'))
 if assumed_unshield:assert assumed and os.environ.get('DINERO_SDK_COMPACT_PRIVATE_SEND')=='1' and not new_compact_reservation
 native_lock=threading.Lock()
@@ -176,15 +178,15 @@ def response(reader,child,op,timeout=90):
     raise AssertionError(('operation timed out',op,root))
 def call(op,**args):
     process.stdin.write(json.dumps(dict(op=op,**args))+'\n');process.stdin.flush();return response(reply,process,op)
-def restart_reserved_sdk():
+def restart_sdk_process(stage):
     global process,reply,output,replies
     old_pid=process.pid
     assert call('stop')==0
     process.stdin.close();process.wait(timeout=30)
     assert process.returncode==0
     output.close();reply.close()
-    replies=root/'reserved-cold-replies.jsonl';replies.touch();reply=replies.open()
-    output=(root/'reserved-cold-nodecore.log').open('xb')
+    replies=root/(stage+'-cold-replies.jsonl');replies.touch();reply=replies.open()
+    output=(root/(stage+'-cold-nodecore.log')).open('xb')
     process=subprocess.Popen([str(driver),str(replies)],stdin=subprocess.PIPE,text=True,stdout=output,stderr=subprocess.STDOUT)
     assert process.pid!=old_pid
     assert call('sdk_activation_events') is True
@@ -194,7 +196,7 @@ def restart_reserved_sdk():
     cold_config={k:v for k,v in config.items() if k!='assumeutxo_snapshot'}
     assert call('start',datadir=str(datadir),config=cold_config)==0
     return dict(old_pid=old_pid,new_pid=process.pid,old_exit=0,replies=str(replies),
-        log=str(root/'reserved-cold-nodecore.log'),snapshot_reimport=False)
+        log=str(root/(stage+'-cold-nodecore.log')),snapshot_reimport=False)
 def rpc(method,params):
     value=call('rpc',method=method,params=params)
     assert not isinstance(value,dict) or 'error' not in value,(method,value,root)
@@ -616,9 +618,14 @@ try:
         new_ready=None
         if new_compact_ready:
             cold_reserved=None
+            if ready_restart:
+                premature=call('rpc',method='wallet.orchard.finishshield',params=dict(binding,account=0,
+                    request_id=new_request['request_id'],reacquire_input_proofs=True))
+                assert 'already signed current shield request' in premature.get('error',''),premature
+                assert wallet_rows()==after_new,'Ready-only recovery replaced Reserved work'
             if reserved_restart:
                 prior_binding=dict(binding);wire_before=len(packets)
-                cold_reserved=restart_reserved_sdk()
+                cold_reserved=restart_sdk_process('reserved')
                 assert wallet_rows()==after_new,'orderly restart changed encrypted Reserved/retained rows'
                 assert original_lifecycle()==original and mixed_runtime_receipts()==mixed_before
                 assert rpc('wallet.open',['wire-named-owner'])['success'] is True
@@ -657,6 +664,10 @@ try:
                 refused_new=call('rpc',method='wallet.orchard.finishshield',params=finish_new)
                 assert 'error' in refused_new and wallet_rows()==signed_rows,(label,refused_new)
                 assert txid in rpc('mempool.getrawmempool',[])
+                if ready_restart:
+                    refused_recovery=call('rpc',method='wallet.orchard.finishshield',params=dict(finish_new,reacquire_input_proofs=True))
+                    assert 'error' in refused_recovery and wallet_rows()==signed_rows,(label,refused_recovery)
+                    assert txid in rpc('mempool.getrawmempool',[]),'explicit recovery dropped an existing poisoned entry'
             assert call('sdk_activation_set_proof',txid=txid,payload=own_proofs[0].hex()) is True
             ready_retry=rpc('wallet.orchard.finishshield',finish_new)
             assert ready_retry['already_in_mempool'] and ready_retry['txid']==txid and wallet_rows()==signed_rows,ready_retry
@@ -668,6 +679,39 @@ try:
             reopened_ready=rpc('wallet.orchard.finishshield',finish_new)
             assert reopened['existing_request'] and reopened_ready['already_in_mempool'] and reopened_ready['txid']==txid
             assert wallet_rows()==signed_rows,'signed-Ready no-phrase reopen changed encrypted rows'
+            cold_ready=None
+            if ready_restart:
+                wire_before_ready=len(packets);cold_ready=restart_sdk_process('ready')
+                assert wallet_rows()==signed_rows and original_lifecycle()==original
+                assert mixed_runtime_receipts()==mixed_before
+                assert rpc('wallet.open',['wire-named-owner'])['success'] is True
+                assert rpc('wallet.unlock',['funded-crossing-password',0])['success'] is True
+                binding=bound('wire-named-owner');new_request.update(binding);finish_new.update(binding)
+                assert rpc('getblockcount',[])==104 and txid not in rpc('mempool.getrawmempool',[])
+                assert wallet_rows()==signed_rows,'Ready restart changed the durable signed intent'
+                default_refusal=call('rpc',method='wallet.orchard.finishshield',params=finish_new)
+                assert 'error' in default_refusal and wallet_rows()==signed_rows,default_refusal
+                assert txid not in rpc('mempool.getrawmempool',[]),'default retry silently reacquired an absent pool proof'
+                conflicting=dict(new_request,reacquire_input_proofs=True,payments=[dict(new_request['payments'][0],memo_hex='ff')])
+                conflict=call('rpc',method='wallet.orchard.finishshield',params=conflicting)
+                assert 'error' in conflict and wallet_rows()==signed_rows and txid not in rpc('mempool.getrawmempool',[]),conflict
+                recovered_request=dict(finish_new,reacquire_input_proofs=True)
+                deadline=time.monotonic()+35
+                while time.monotonic()<deadline:
+                    recovered_ready=call('rpc',method='wallet.orchard.finishshield',params=recovered_request)
+                    assert wallet_rows()==signed_rows,'Ready input recovery changed sealed signed bytes or owners'
+                    if recovered_ready.get('error_code')!='funding_source_pending':break
+                    assert recovered_ready['retryable'],recovered_ready
+                    time.sleep(.1)
+                assert recovered_ready.get('admitted') and recovered_ready.get('durable_state')=='signed' and recovered_ready.get('txid')==txid,recovered_ready
+                assert rpc('wallet.getrawtransaction',[txid])['hex']==new_signed,'Ready recovery signed a replacement transaction'
+                recovered_pool=call('sdk_activation_state')['pool']
+                assert any(p['txid']==txid and p['cached_proof_bytes'] for p in recovered_pool),recovered_pool
+                assert any(p['direction']=='in' and p['command']=='getwinput' for p in packets[wire_before_ready:])
+                assert any(p['direction']=='out' and p['command']=='winput' for p in packets[wire_before_ready:])
+                assert not proof_ready.is_set(),'Ready recovery relied on a whole peer utxotx refill'
+                cold_ready.update(default_refusal=default_refusal,conflicting_intent_refusal=conflict,recovered=recovered_ready,pool=recovered_pool,
+                    encrypted_ready_rows=signed_rows,current_inputs_reacquired=True)
             # Ordinary independent FULL admission/mining of the SAME canonical
             # SDK-signed body, not a manually built proof-backed spend.
             shield_mined=native_call('mine_shield',body=new_signed);assert txid in shield_mined['transactions'],shield_mined
@@ -687,11 +731,11 @@ try:
             new_balance=rpc('wallet.orchard.getbalance',dict(binding,account=0));assert new_balance['confirmed_una']==535000,new_balance
             assert original_lifecycle()==original and mixed_runtime_receipts()==mixed_before
             new_ready=dict(finished=new_finished,body=new_signed,pool=pool,proof=own_proofs[0].hex(),retry=ready_retry,reopened_ready=reopened_ready,
-                mined=shield_mined,operations=new_operations,balance=new_balance,reserved_cold_restart=cold_reserved)
+                mined=shield_mined,operations=new_operations,balance=new_balance,reserved_cold_restart=cold_reserved,ready_cold_restart=cold_ready)
         (root/'receipt.json').write_text(json.dumps(dict(original_assumed_mobile=True,new_compact_reservation=True,
             pending=pending_input,queued=new_queued,retry=new_retry,reopened=reopened,original_lifecycle=original,
             mixed_receipts_unchanged=mixed_before,prior_confirmation=operations,new_compact_ready=new_ready,
-            scope='Actual native imported funded crossing to104, then a DIFFERENT unspent historical output obtains a new exact-tip proof over TCP and atomically queues a NEW bound shield reservation through public SDK C ABI. '+('Reserved-restart variant orderly stops and EXITS the original SDK PID, starts a fresh executor without snapshot re-import, opens/unlocks the SAME encrypted named wallet without phrase and authenticates its unchanged durable randomized intent before fresh CURRENT paths/signing. ' if reserved_restart else 'Ready variant signs in the SAME executor/session. ')+ 'Ready uses selected exact-current coins, freshly recaptures body/proofs for encrypted Ready, admits through ordinary proof-bearing ingress with peer full-proof refill disabled, preserves strict bad retained-proof refusals/retries and no-phrase SIGNED-Ready reopen, and truly mines/validates105 with confirmed535000una. Reservation-only variant retains its separate unsigned-reservation reopen gate. NO live-executor Reserved-job wallet-session rebind, interrupted signed-Ready recovery, mixed/index/independent history, apps/devices or release qualification.'),indent=2)+'\n')
+            scope='Actual native imported funded crossing to104, then a DIFFERENT unspent historical output obtains a new exact-tip proof over TCP and atomically queues a NEW bound shield reservation through public SDK C ABI. '+('Reserved-restart variant orderly stops and EXITS the original SDK PID, starts a fresh executor without snapshot re-import, opens/unlocks the SAME encrypted named wallet without phrase and authenticates its unchanged durable randomized intent before fresh CURRENT paths/signing. ' if reserved_restart else 'Ready variant signs in the SAME executor/session. ')+('Ready-restart variant additionally EXITS the signed-Ready process; a fresh PID/no-phrase wallet reopen retains identical encrypted signed intent, refuses default missing-pool retry, then explicitly reacquires CURRENT per-input DATA for independent admission of the SAME signed bytes. Existing poisoned entries refuse even explicit recovery. ' if ready_restart else '')+ 'Ready uses selected exact-current coins, freshly recaptures body/proofs for encrypted Ready, admits through ordinary proof-bearing ingress with peer full-proof refill disabled, preserves strict bad retained-proof refusals/retries and no-phrase SIGNED-Ready reopen, and truly mines/validates105 with confirmed535000una. Reservation-only variant retains its separate unsigned-reservation reopen gate. NO live-executor Reserved-job wallet-session rebind, forced/crash/powerloss, changed-tip/reorg recovery, mixed/index/independent history, apps/devices or release qualification.'),indent=2)+'\n')
         assert call('stop')==0;success=True
         print('PASS actual original-assumed current compact proof download and NEW '+('signing/Ready/pool/confirmation' if new_compact_ready else 'atomic reservation'),flush=True)
         sys.exit(0)

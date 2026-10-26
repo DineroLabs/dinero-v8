@@ -17,6 +17,22 @@ TEST(WalletShieldRpc, MalformedIntentRefusesBeforeServices){
         p=ShieldRpcShape();p["inputs"]=din::arr();SpendRpcRefused(call(p));
         p=ShieldRpcShape();p["payments"]=din::arr();SpendRpcRefused(call(p));
         p=ShieldRpcShape();p["payments"][0]["memo_hex"]="0";SpendRpcRefused(call(p));
+        for(const auto value:{din::Json(false),din::Json(1),din::Json("true"),din::Json()}){
+            p=ShieldRpcShape();p["reacquire_input_proofs"]=value;
+            const auto refused=call(p);SpendRpcRefused(refused);
+            EXPECT_NE(refused["error"].asString(),"Daemon services unavailable");
+        }
+        p=ShieldRpcShape();p["reacquire_input_proofs"]=true;
+        const auto explicit_request=call(p);SpendRpcRefused(explicit_request);
+        if(!finish){EXPECT_EQ(explicit_request["error"].asString(),
+            "reacquire_input_proofs must be true on explicit signed shield completion only");}
+        else{
+#ifdef DINERO_TEST_ORCHARD_ORIGIN
+            EXPECT_EQ(explicit_request["error"].asString(),"Daemon services unavailable");
+#else
+            EXPECT_EQ(explicit_request["error"].asString(),"Orchard wallet backend unavailable");
+#endif
+        }
     }
 }
 TEST(WalletShieldRpc, RegistryAndBackendPolicyRemainExplicit){
