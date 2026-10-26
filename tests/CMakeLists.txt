@@ -276,6 +276,16 @@ set_tests_properties(TokenBucket PROPERTIES
   TIMEOUT 10
 )
 
+add_executable(test_self_reachability
+  tests/p2p/test_self_reachability.cpp
+  src/p2p/self_reachability.cpp
+  src/p2p/addrman.cpp
+)
+target_include_directories(test_self_reachability PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(test_self_reachability PRIVATE GTest::gtest GTest::gtest_main)
+add_test(NAME SelfReachability COMMAND test_self_reachability)
+set_tests_properties(SelfReachability PROPERTIES LABELS "p2p;reachability" TIMEOUT 10)
+
 add_executable(test_addrman_ipv6
   tests/p2p/test_addrman_ipv6.cpp
   src/p2p/addrman.cpp
