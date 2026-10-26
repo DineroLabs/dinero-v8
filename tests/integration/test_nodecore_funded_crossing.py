@@ -187,11 +187,15 @@ def candidate_wallet_state():
         encoded=lambda row:[v.hex() if isinstance(v,bytes) else v for v in row]
         tables={name:[encoded(row) for row in db.execute('SELECT * FROM '+name+' ORDER BY rowid')]
                 for name in ('utxos','sync_meta','tip')}
-        has_candidates=db.execute("SELECT 1 FROM sqlite_schema WHERE type='table' AND name='wallet_snapshot_candidates'").fetchone()
-        tables['snapshot_candidates']=([encoded(row) for row in db.execute('SELECT * FROM wallet_snapshot_candidates ORDER BY rowid')]
-            if has_candidates else [])
         tables['catalog']=db.execute("SELECT value FROM settings WHERE key='orchard_account_catalog_v1'").fetchall()
         return tables
+def snapshot_candidate_rows():
+    # Separate DATA inventory: successful discovery legitimately adds these
+    # rows, unlike the ordinary coin/progress/tip/catalog invariant above.
+    paths=list(datadir.rglob('wallet_wire-named-owner.db'));assert len(paths)==1
+    with sqlite3.connect('file:'+str(paths[0])+'?mode=ro',uri=True) as db:
+        exists=db.execute("SELECT 1 FROM sqlite_schema WHERE type='table' AND name='wallet_snapshot_candidates'").fetchone()
+        return [list(row) for row in db.execute('SELECT * FROM wallet_snapshot_candidates ORDER BY rowid')] if exists else []
 try:
     assert call('sdk_activation_events') is True
     assert call('watch_script',script=fixture['funding_change_script'])==0
@@ -340,9 +344,11 @@ try:
     if input_queue:
         assert assumed and not future.is_set()
         before_queue=wallet_rows();before_state=candidate_wallet_state();before_coins=rpc('wallet.listunspent',[])
+        before_candidate_rows=snapshot_candidate_rows()
         pending_reply=call('rpc',method='wallet.orchard.queueshield',params=request)
         assert pending_reply.get('error_code')=='funding_source_pending' and pending_reply.get('retryable') is True,pending_reply
         assert wallet_rows()==before_queue and candidate_wallet_state()==before_state,'pending source mutated wallet owner/selection'
+        assert snapshot_candidate_rows()==before_candidate_rows
         funding_release.set();deadline=time.monotonic()+30
         while time.monotonic()<deadline:
             queued=call('rpc',method='wallet.orchard.queueshield',params=request)
@@ -391,7 +397,8 @@ try:
             reopened=rpc('wallet.orchard.finishshield',dict(binding,account=0,request_id=request_id))
             assert reopened['already_in_mempool'] and reopened['txid']==finished['txid'] and wallet_rows()==ready_rows,reopened
         after_state=candidate_wallet_state()
-        for table in ('utxos','sync_meta','tip','snapshot_candidates'):assert after_state[table]==before_state[table],table
+        for table in ('utxos','sync_meta','tip'):assert after_state[table]==before_state[table],table
+        assert snapshot_candidate_rows()==before_candidate_rows,'Ready/admission changed candidate DATA'
         assert original_lifecycle()==original
         # Candidate DATA stays byte-identical. The ordinary existing mempool
         # input-spent filter must hide it after real admission, not resurrect
