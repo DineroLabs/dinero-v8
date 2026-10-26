@@ -51,10 +51,12 @@ so a compile-time omission cannot silently remove both inbound paths.
 
 ## Tier 3 — Public relay operator (opt-in)
 
-A subset of nodes choose to *be* the relay — accept dial-through
+A subset of nodes *are* the relay — they accept dial-through
 RELAY_CONNECT messages from other NAT'd peers and forward their
-encrypted (QUIC) traffic. This costs real bandwidth and exposes the node
-to abuse vectors, so it stays opt-in.
+encrypted (QUIC) traffic. In `auto` this happens without any setting on
+a node that other nodes have dialed back (verified reachable) or that is
+mining: those are the nodes a NAT'd peer can actually reach. Hard caps
+bound what relaying costs, and the operator can always turn it off.
 
 The `p2p.relay` config flag controls Tier 3 only:
 
@@ -62,7 +64,7 @@ The `p2p.relay` config flag controls Tier 3 only:
 | --- | --- |
 | `1` / `on` / `true` | Tier 3 on, always. Operator-pinned. |
 | `0` / `off` / `no` | Tier 3 off, always. Hard opt-out. |
-| `auto` (default, unset) | Tier 3 on while the daemon's auto-mode flag is engaged. |
+| `auto` (default, unset) | Tier 3 on while the node is dial-back verified reachable, or while the auto-mode flag is engaged. |
 
 The owner-facing `network.setrelayservice` RPC and Command-K panel add a durable
 operator policy above that runtime trigger: **Off**, **Automatic — recommended**,
@@ -75,10 +77,17 @@ P2P or existing outbound recovery paths. Both mutation RPCs are admin-only;
 cookie-authenticated local Dinero Qt is an admin session, while `--rpc-readonly`
 sessions cannot change them.
 
+In `auto`, verified reachability is the main trigger: once peers on at
+least two different networks have dialed this node back (see
+`getnetworkinfo.self_reachability`), it relays; when verification
+lapses, it stops taking new circuits. An operator `externalip` counts as
+reachable too. **Off** in `network.setrelayservice`, or `p2p.relay=0`,
+always wins.
+
 The auto-mode flag (`P2PService::relay_active_`, exposed as
-`getnetworkinfo.relay.active`) is currently engaged by exactly one
-trigger: `mining.start` / `mining.stop` (a mining node moves more value,
-so the incremental relay cost pays for itself). The lever is general,
+`getnetworkinfo.relay.active`) is the second trigger, engaged by
+`mining.start` / `mining.stop` (a mining node moves more value, so the
+incremental relay cost pays for itself). The lever is general,
 not mining-specific — future triggers (operator dashboard opt-in,
 spare-bandwidth heuristic, scheduled hours, etc.) can engage the same
 flag via `P2PService::SetRelayActive(true)` without protocol or RPC
@@ -125,17 +134,3 @@ encrypted stream as the trust anchor.
 This is why Tier 3 is safe to be default-on for any operator who
 chooses to enable it, and why running a public relay does not turn a
 node into a surveillance choke point.
-
-## Roadmap to flipping Tier 3 default
-
-Tier 3 will not be flipped to default-on (i.e., on for `auto` mode
-without a mining-or-similar trigger) until abuse-protection lands:
-per-source registration rate limits, per-source circuit caps, ban-score
-for misbehaving relay clients, and the existing bandwidth caps
-(`kRelayPerCircuitBurstBytes`, the 50 GB / 24h rolling quota, etc.)
-covering enough of the threat surface.
-
-Until that lands, the conservative default is: a node runs as a public
-relay only when there's a positive trigger (mining, operator opt-in).
-Tier 1 and Tier 2 — the parts that *make this a real P2P network* —
-remain unconditional.

@@ -7243,23 +7243,26 @@ std::vector<dinero::p2p::CandidateStatus> P2PManager::self_reachability_status()
 void P2PManager::update_stun_candidates(
     const std::vector<std::pair<std::string, uint16_t>>& reflexive) {
     std::set<std::pair<std::string, uint16_t>> now(reflexive.begin(), reflexive.end());
-    std::lock_guard<std::mutex> lock(reach_mutex_);
-    if (now == stun_reflexive_) return;
-    auto stun = [](const std::pair<std::string, uint16_t>& r) {
-        return dinero::p2p::Candidate{r.first, r.second, dinero::p2p::Transport::Quic,
-                                      dinero::p2p::CandidateSource::Stun};
-    };
-    for (const auto& r : stun_reflexive_) {
-        if (!now.count(r)) self_reach_->RemoveCandidate(stun(r));
+    {
+        std::lock_guard<std::mutex> lock(reach_mutex_);
+        if (now == stun_reflexive_) return;
+        auto stun = [](const std::pair<std::string, uint16_t>& r) {
+            return dinero::p2p::Candidate{r.first, r.second, dinero::p2p::Transport::Quic,
+                                          dinero::p2p::CandidateSource::Stun};
+        };
+        for (const auto& r : stun_reflexive_) {
+            if (!now.count(r)) self_reach_->RemoveCandidate(stun(r));
+        }
+        // Only a new public IP is a network change; a new port alone is the NAT
+        // re-mapping an expired UDP binding.
+        std::set<std::string> old_ips, new_ips;
+        for (const auto& r : stun_reflexive_) old_ips.insert(r.first);
+        for (const auto& r : now) new_ips.insert(r.first);
+        if (!old_ips.empty() && old_ips != new_ips) self_reach_->OnNetworkChange();
+        for (const auto& r : now) self_reach_->AddCandidate(stun(r));
+        stun_reflexive_ = std::move(now);
     }
-    // Only a new public IP is a network change; a new port alone is the NAT
-    // re-mapping an expired UDP binding.
-    std::set<std::string> old_ips, new_ips;
-    for (const auto& r : stun_reflexive_) old_ips.insert(r.first);
-    for (const auto& r : now) new_ips.insert(r.first);
-    if (!old_ips.empty() && old_ips != new_ips) self_reach_->OnNetworkChange();
-    for (const auto& r : now) self_reach_->AddCandidate(stun(r));
-    stun_reflexive_ = std::move(now);
+    notify_reachability_if_changed();
 }
 
 bool P2PManager::has_proven_reachable() const {
@@ -7269,6 +7272,23 @@ bool P2PManager::has_proven_reachable() const {
     std::lock_guard<std::mutex> lock(reach_mutex_);
     return self_reach_->AnyVerified(dinero::p2p::Transport::Tcp) ||
            self_reach_->AnyVerified(dinero::p2p::Transport::Quic);
+}
+
+void P2PManager::set_reachability_changed_handler(std::function<void(bool)> handler) {
+    std::lock_guard<std::mutex> lock(reachability_handler_mutex_);
+    reachability_changed_handler_ = std::move(handler);
+}
+
+void P2PManager::notify_reachability_if_changed() {
+    const bool now = has_proven_reachable();
+    std::function<void(bool)> handler;
+    {
+        std::lock_guard<std::mutex> lock(reachability_handler_mutex_);
+        if (now == last_reported_reachable_) return;
+        last_reported_reachable_ = now;
+        handler = reachability_changed_handler_;
+    }
+    if (handler) handler(now);
 }
 
 bool P2PManager::gossipable_locked(const std::string& address, uint16_t port) const {
@@ -7320,6 +7340,7 @@ void P2PManager::run_reachability_tick() {
             }
         }
     }
+    notify_reachability_if_changed();  // verification also lapses by time
     // Verifiers: identity-proven direct peers that advertise NODE_DIALBACK.
     std::vector<dinero::p2p::Verifier> verifiers;
     {
@@ -7485,22 +7506,25 @@ void P2PManager::handle_reach_result(const std::string& peer_address, const P2PM
     const bool have_dialed = dinero::p2p::DecodeAddrV2Endpoint(
         std::vector<uint8_t>(message.payload.begin() + 9, message.payload.end()), &dialed_host,
         &dialed_port);
-    std::lock_guard<std::mutex> lock(reach_mutex_);
-    auto it = pending_reach_.find(nonce);
-    if (it == pending_reach_.end() || it->second.verifier.peer_key != peer_address) return;
-    uint8_t effective = code;
-    if (code == kReachOk) {
-        // Credit only the address the verifier actually dialed.
-        if (!have_dialed ||
-            (!it->second.candidate.ip.empty() && dialed_host != it->second.candidate.ip) ||
-            dialed_port != it->second.candidate.port) {
-            effective = kReachConnectFailed;
+    {
+        std::lock_guard<std::mutex> lock(reach_mutex_);
+        auto it = pending_reach_.find(nonce);
+        if (it == pending_reach_.end() || it->second.verifier.peer_key != peer_address) return;
+        uint8_t effective = code;
+        if (code == kReachOk) {
+            // Credit only the address the verifier actually dialed.
+            if (!have_dialed ||
+                (!it->second.candidate.ip.empty() && dialed_host != it->second.candidate.ip) ||
+                dialed_port != it->second.candidate.port) {
+                effective = kReachConnectFailed;
+            }
         }
+        self_reach_->OnResult(it->second.candidate, it->second.verifier, effective);
+        reach_results_[nonce] = effective;
+        if (reach_results_.size() > 256) reach_results_.erase(reach_results_.begin());
+        pending_reach_.erase(it);
     }
-    self_reach_->OnResult(it->second.candidate, it->second.verifier, effective);
-    reach_results_[nonce] = effective;
-    if (reach_results_.size() > 256) reach_results_.erase(reach_results_.begin());
-    pending_reach_.erase(it);
+    notify_reachability_if_changed();
 }
 
 #ifdef DINERO_TEST_BUILD

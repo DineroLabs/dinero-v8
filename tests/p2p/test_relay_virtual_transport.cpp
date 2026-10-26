@@ -13,6 +13,7 @@
 #endif
 
 #include "p2p_manager.h"
+#include "daemon/services/relay_role_policy.h"
 #include "daemon/node_identity.h"
 #include "daemon/peer_send_health.h"
 #include "network/types.h"
@@ -869,4 +870,52 @@ TEST(RelayHealthScoring, ScoreEwmaAndReplacementEligibility) {
 int main(int argc, char** argv) {
     ::testing::InitGoogleTest(&argc, argv);
     return RUN_ALL_TESTS();
+}
+
+// Plan 3 Task 1: a node whose address other nodes dialed back relays for the
+// NAT'd nodes that can't be reached, without the owner turning anything on.
+TEST(RelayServicePolicy, VerifiedReachableEnablesRelayInAuto) {
+    using dinero::daemon::RelayRoleEnabled;
+    EXPECT_TRUE(RelayRoleEnabled("automatic", "auto", /*mining=*/false, /*verified=*/true));
+    EXPECT_TRUE(RelayRoleEnabled("automatic", "auto", /*mining=*/true, /*verified=*/false));
+    EXPECT_TRUE(RelayRoleEnabled("automatic", "on", false, false));
+}
+
+TEST(RelayServicePolicy, OperatorOffBeatsVerified) {
+    using dinero::daemon::RelayRoleEnabled;
+    EXPECT_FALSE(RelayRoleEnabled("off", "auto", true, true));
+    EXPECT_FALSE(RelayRoleEnabled("off", "on", true, true));
+    EXPECT_FALSE(RelayRoleEnabled("automatic", "off", true, true));
+    EXPECT_FALSE(RelayRoleEnabled("automatic", "0", false, true));
+    EXPECT_TRUE(RelayRoleEnabled("custom", "off", false, false));
+}
+
+TEST(RelayServicePolicy, UnverifiedNonMiningStaysOff) {
+    EXPECT_FALSE(dinero::daemon::RelayRoleEnabled("automatic", "auto", false, false));
+    EXPECT_FALSE(dinero::daemon::RelayRoleEnabled("automatic", "", false, false));
+}
+
+TEST(RelayServicePolicy, ServiceBitFollowsVerification) {
+    P2PManager manager(0);
+    std::vector<bool> seen;
+    manager.set_reachability_changed_handler([&](bool reachable) { seen.push_back(reachable); });
+
+    manager.update_stun_candidates({{"198.51.100.9", 20999}});
+    manager.test_run_reachability_tick();
+    EXPECT_TRUE(seen.empty()) << "nothing verified yet, nothing changed";
+
+    manager.test_mark_self_verified("203.0.113.50", 20999);
+    manager.test_run_reachability_tick();
+    ASSERT_EQ(seen.size(), 1u);
+    EXPECT_TRUE(seen.back());
+    EXPECT_TRUE(dinero::daemon::RelayRoleEnabled("automatic", "auto", false, seen.back()));
+
+    manager.test_run_reachability_tick();
+    EXPECT_EQ(seen.size(), 1u) << "fires on a change only";
+
+    // New public IP: nothing stays verified, so the relay role (and NODE_RELAY) goes.
+    manager.update_stun_candidates({{"192.0.2.77", 20999}});
+    ASSERT_EQ(seen.size(), 2u);
+    EXPECT_FALSE(seen.back());
+    EXPECT_FALSE(dinero::daemon::RelayRoleEnabled("automatic", "auto", false, seen.back()));
 }

@@ -1,5 +1,6 @@
 #include "consensus/release_profile.h"
 #include "daemon/services/p2p_service.h"
+#include "daemon/services/relay_role_policy.h"
 #include "daemon/services/logger_service.h"
 #include "daemon/services/config_service.h"
 #include "daemon/services/chainstate_service.h"
@@ -59,15 +60,7 @@ std::string LowerAscii(std::string value) {
     return value;
 }
 
-bool IsRelayModeOn(const std::string& mode) {
-    const std::string value = LowerAscii(mode);
-    return value == "1" || value == "true" || value == "yes" || value == "on";
-}
-
-bool IsRelayModeOff(const std::string& mode) {
-    const std::string value = LowerAscii(mode);
-    return value == "0" || value == "false" || value == "no" || value == "off";
-}
+using dinero::daemon::RelayRoleEnabled;
 
 bool ValidRelayServiceLimits(const P2PService::RelayServiceLimits& limits) {
     return limits.max_circuits >= 1 && limits.max_circuits <= 25 &&
@@ -617,26 +610,17 @@ bool P2PService::IsRelayRoleEnabled() const {
         std::lock_guard<std::mutex> lock(relay_service_mutex_);
         operator_mode = relay_service_status_.mode;
     }
-    if (operator_mode == "off") return false;
-    if (operator_mode == "custom") return true;
-    const std::string mode = RelayMode();
-    if (IsRelayModeOn(mode)) {
-        return true;
-    }
-    if (IsRelayModeOff(mode)) {
-        return false;
-    }
-    return relay_active_.load(std::memory_order_acquire);
+    return RelayRoleEnabled(operator_mode, RelayMode(),
+                            relay_active_.load(std::memory_order_acquire),
+                            relay_verified_.load(std::memory_order_acquire));
 }
 
 P2PService::RelayServiceStatus P2PService::GetRelayServiceStatus() const {
     std::lock_guard<std::mutex> lock(relay_service_mutex_);
     auto status = relay_service_status_;
     const std::string configured = RelayMode();
-    status.enabled = status.mode == "custom" ||
-        (status.mode == "automatic" &&
-         (IsRelayModeOn(configured) ||
-          (!IsRelayModeOff(configured) && relay_active_.load())));
+    status.enabled = RelayRoleEnabled(status.mode, configured, relay_active_.load(),
+                                      relay_verified_.load());
     return status;
 }
 
@@ -657,10 +641,8 @@ P2PService::RelayServiceStatus P2PService::SetRelayService(
         return status;
     }
     const std::string configured = RelayMode();
-    candidate.enabled = mode == "custom" ||
-        (mode == "automatic" &&
-         (IsRelayModeOn(configured) ||
-          (!IsRelayModeOff(configured) && relay_active_.load())));
+    candidate.enabled = RelayRoleEnabled(mode, configured, relay_active_.load(),
+                                         relay_verified_.load());
     candidate.message = "relay-service preference applied";
     relay_service_status_ = candidate;
     if (p2p_mgr_) {
@@ -1851,6 +1833,18 @@ bool P2PService::Init(DaemonContext& ctx) {
             p2p_mgr_->set_relay_service_limits(limits);
             p2p_mgr_->set_relay_service_enabled(IsRelayRoleEnabled());
         }
+        // Verified reachable (dial-back) turns the relay role on in auto. The
+        // service-flags provider reads IsRelayRoleEnabled() on every version,
+        // so NODE_RELAY follows without a separate push.
+        p2p_mgr_->set_reachability_changed_handler([this](bool reachable) {
+            relay_verified_.store(reachable, std::memory_order_release);
+            if (p2p_mgr_) p2p_mgr_->set_relay_service_enabled(IsRelayRoleEnabled());
+            if (logger_interface_) {
+                logger_interface_->info(std::string("[P2PService] Verified reachability ") +
+                                        (reachable ? "gained" : "lost") + "; relay role " +
+                                        (IsRelayRoleEnabled() ? "on" : "off"));
+            }
+        });
         p2p_mgr_->set_peer_height_updated_handler(
             [this](const std::string& peer_addr, uint32_t height) {
                 MaybeRequestHeadersForPeerTip(peer_addr, height, "peer-height-update");
@@ -2346,7 +2340,8 @@ bool P2PService::Start() {
             auto prune_svc = prune_;  // capture shared_ptr by value for lambda safety
             const bool bridge_enabled = config_->GetBool("utreexo-bridge", true);
             // NAT traversal: p2p.relay is tri-state. Explicit on/off wins;
-            // auto (the default) advertises NODE_RELAY only while mining.
+            // auto (the default) advertises NODE_RELAY while mining or while
+            // dial-back verified reachable.
             // Relay data is still guarded by the P2PManager caps: 64 KB/s per
             // circuit, 5 MB/s global, and 50 GB/day.
             p2p_mgr_->set_service_flags_provider([this, prune_svc,

@@ -441,6 +441,7 @@ private:
     //                          etc. — can flip the same lever via
     //                          SetRelayActive() without protocol change.
     std::atomic<bool> relay_active_{false};
+    std::atomic<bool> relay_verified_{false};  // dial-back verified reachable
     mutable std::mutex relay_service_mutex_;
     RelayServiceStatus relay_service_status_{};
     std::string relay_service_policy_path_;

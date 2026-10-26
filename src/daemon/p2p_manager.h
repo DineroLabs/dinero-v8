@@ -531,6 +531,10 @@ public:
     // Directly reachable as far as we can prove: an explicit address (operator
     // externalip / port mapping) or one that peers dialed back successfully.
     bool has_proven_reachable() const;
+    // Called (outside every P2PManager lock) when has_proven_reachable()
+    // flips. Verification also lapses by time, so the reachability tick
+    // re-checks too.
+    void set_reachability_changed_handler(std::function<void(bool)> handler);
     // This round's STUN reflexive addresses (ip, port) on the P2P UDP port,
     // fed in as QUIC candidates. A different set of IPs from the last round
     // means our public address moved: every candidate goes back to unverified.
@@ -1125,6 +1129,10 @@ private:
     // Drives the relay-fallback gate so NAT'd nodes (learned-only) stay eligible.
     std::atomic<bool> has_explicit_advertised_{false};
     std::atomic<bool> has_operator_address_{false};
+    void notify_reachability_if_changed();
+    std::mutex reachability_handler_mutex_;
+    std::function<void(bool)> reachability_changed_handler_;
+    bool last_reported_reachable_{false};  // guarded by reachability_handler_mutex_
     // Gap 2 (A.1): lock-free mirror of P2PService::port_mapping_active_, pushed
     // via set_port_mapping_active(). Lets the relay auto-register gate apply the
     // same reachability predicate (IsDirectlyReachable) as the getnetworkinfo RPC.
