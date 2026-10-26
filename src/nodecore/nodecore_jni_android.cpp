@@ -36,6 +36,45 @@ struct ScopedShieldedAccountKeys {
 
 } // namespace
 
+namespace {
+
+// m/88'/1448'/0'/{0|1}/index -> nodecore_p2mr_derive_address_json (leaf 0), the
+// app's P2MR lane. Throws on any failure; the caller cleanses [seed].
+Json::Value DeriveP2mr(const std::vector<uint8_t>& seed, bool is_change, uint32_t index) {
+    dinero::BIP32Deriver child(seed.data(), seed.size());
+    child.deriveHardened(88);
+    child.deriveHardened(1448);
+    child.deriveHardened(0);
+    child.deriveNormal(is_change ? 1 : 0);
+    child.deriveNormal(index);
+    auto priv = child.getPrivateKey();
+    auto chain = child.getChainCode();
+    char* json = nodecore_p2mr_derive_address_json(
+        "din", priv.data(), priv.size(), chain.data(), chain.size(), 0);
+    OPENSSL_cleanse(priv.data(), priv.size());
+    OPENSSL_cleanse(chain.data(), chain.size());
+    if (json == nullptr) throw std::runtime_error("P2MR derivation failed");
+    Json::Value root;
+    Json::CharReaderBuilder builder;
+    std::string errors;
+    std::istringstream input(json);
+    const bool parsed = Json::parseFromStream(builder, input, &root, &errors);
+    nodecore_free_string(json);
+    if (!parsed || !root["ok"].asBool() || root["address"].asString().empty()) {
+        throw std::runtime_error("P2MR derivation failed");
+    }
+    return root;
+}
+
+std::vector<uint8_t> DecodeHex(const std::string& hex) {
+    if (hex.size() % 2 != 0) throw std::runtime_error("bad hex");
+    std::vector<uint8_t> out(hex.size() / 2);
+    for (size_t i = 0; i < out.size(); ++i) out[i] = static_cast<uint8_t>(std::stoul(hex.substr(2 * i, 2), nullptr, 16));
+    return out;
+}
+
+} // namespace
+
 extern "C" JNIEXPORT jstring JNICALL
 Java_org_dinerolabs_dinerodpi_node_NativeNodeCore_nativeP2mrAddresses(
     JNIEnv* env, jobject, jstring mnemonic, jstring passphrase,
@@ -54,28 +93,9 @@ Java_org_dinerolabs_dinerodpi_node_NativeNodeCore_nativeP2mrAddresses(
             throw std::runtime_error("invalid mnemonic");
         }
         for (int index = 0; index < count; ++index) {
-            dinero::BIP32Deriver child(seed.data(), seed.size());
-            child.deriveHardened(88);
-            child.deriveHardened(1448);
-            child.deriveHardened(0);
-            child.deriveNormal(is_change ? 1 : 0);
-            child.deriveNormal(static_cast<uint32_t>(index));
-            auto priv = child.getPrivateKey();
-            auto chain = child.getChainCode();
-            char* json = nodecore_p2mr_derive_address_json(
-                "din", priv.data(), priv.size(), chain.data(), chain.size(), 0);
-            OPENSSL_cleanse(priv.data(), priv.size());
-            OPENSSL_cleanse(chain.data(), chain.size());
-            if (json == nullptr) throw std::runtime_error("P2MR derivation failed");
-            Json::Value root;
-            Json::CharReaderBuilder builder;
-            std::string errors;
-            std::istringstream input(json);
-            const bool parsed = Json::parseFromStream(builder, input, &root, &errors);
-            nodecore_free_string(json);
-            if (!parsed || !root["ok"].asBool() || root["address"].asString().empty()) {
-                throw std::runtime_error("P2MR derivation failed");
-            }
+            Json::Value root = DeriveP2mr(seed, is_change, static_cast<uint32_t>(index));
+            std::string pq_seed = root["pq_seed"].asString();
+            OPENSSL_cleanse(pq_seed.data(), pq_seed.size());
             if (index != 0) addresses << '\n';
             addresses << root["address"].asString();
         }
@@ -89,6 +109,59 @@ Java_org_dinerolabs_dinerodpi_node_NativeNodeCore_nativeP2mrAddresses(
     ReleaseUtf(env, passphrase, passphrase_chars);
     ReleaseUtf(env, mnemonic, mnemonic_chars);
     return env->NewStringUTF(addresses.str().c_str());
+}
+
+// Signs a P2MR input's 32-byte BIP341 key-path sighash with the key for
+// m/88'/1448'/0'/{0|1}/index, after checking that key's script is the coin's.
+// Returns the canonical witness item as hex, or null. The key never leaves here.
+extern "C" JNIEXPORT jstring JNICALL
+Java_org_dinerolabs_dinerodpi_node_NativeNodeCore_nativeP2mrSignWitness(
+    JNIEnv* env, jobject, jstring mnemonic, jstring passphrase, jboolean is_change,
+    jint index, jstring script_hex, jstring sighash_hex) {
+    const char* mnemonic_chars = GetUtf(env, mnemonic);
+    const char* passphrase_chars = GetUtf(env, passphrase);
+    const char* script_chars = GetUtf(env, script_hex);
+    const char* sighash_chars = GetUtf(env, sighash_hex);
+    std::vector<uint8_t> seed;
+    std::vector<uint8_t> pq_seed;
+    jstring result = nullptr;
+    try {
+        if (mnemonic_chars == nullptr || passphrase_chars == nullptr || script_chars == nullptr ||
+            sighash_chars == nullptr || index < 0) throw std::runtime_error("bad arguments");
+        if (!dinero::bip39::MnemonicToSeed(mnemonic_chars, passphrase_chars, seed) || seed.size() != 64) {
+            throw std::runtime_error("invalid mnemonic");
+        }
+        Json::Value root = DeriveP2mr(seed, is_change, static_cast<uint32_t>(index));
+        std::string pq_hex = root["pq_seed"].asString();
+        pq_seed = DecodeHex(pq_hex);
+        OPENSSL_cleanse(pq_hex.data(), pq_hex.size());
+        if (pq_seed.size() != 32 || root["script_pubkey"].asString() != script_chars) {
+            throw std::runtime_error("key does not own this coin");
+        }
+        const auto sighash = DecodeHex(sighash_chars);
+        if (sighash.size() != 32) throw std::runtime_error("bad sighash");
+        char* json = nodecore_p2mr_sign_witness_json(pq_seed.data(), pq_seed.size(), sighash.data(), sighash.size());
+        if (json == nullptr) throw std::runtime_error("P2MR signing failed");
+        Json::Value signed_root;
+        Json::CharReaderBuilder builder;
+        std::string errors;
+        std::istringstream input(json);
+        const bool parsed = Json::parseFromStream(builder, input, &signed_root, &errors);
+        nodecore_free_string(json);
+        if (!parsed || !signed_root["ok"].asBool() || signed_root["witness"].asString().empty()) {
+            throw std::runtime_error("P2MR signing failed");
+        }
+        result = env->NewStringUTF(signed_root["witness"].asString().c_str());
+    } catch (...) {
+        result = nullptr;
+    }
+    if (!pq_seed.empty()) OPENSSL_cleanse(pq_seed.data(), pq_seed.size());
+    if (!seed.empty()) OPENSSL_cleanse(seed.data(), seed.size());
+    ReleaseUtf(env, sighash_hex, sighash_chars);
+    ReleaseUtf(env, script_hex, script_chars);
+    ReleaseUtf(env, passphrase, passphrase_chars);
+    ReleaseUtf(env, mnemonic, mnemonic_chars);
+    return result;
 }
 
 extern "C" JNIEXPORT jstring JNICALL
