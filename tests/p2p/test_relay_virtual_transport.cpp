@@ -13,6 +13,7 @@
 #endif
 
 #include "p2p_manager.h"
+#include "consensus/chainparams.h"
 #include "daemon/services/relay_role_policy.h"
 #include "daemon/node_identity.h"
 #include "daemon/peer_send_health.h"
@@ -1113,7 +1114,13 @@ struct RelayWorld {
         manager = std::make_unique<P2PManager>(20999, "", std::move(c));
         manager->set_address_manager(&addrman);
         InstallNodeIdentity(*manager);
+        // Never touch the network: record what auto-registration would dial.
+        manager->test_set_connection_manager_dial([this](const std::string& host, uint16_t port) {
+            dialed.push_back(host + ":" + std::to_string(port));
+            return false;
+        });
     }
+    std::vector<std::string> dialed;
     // A connected, identity-proven peer; `gossiped` also puts it in addrman as NODE_RELAY.
     void Connect(const std::string& endpoint, bool gossiped) {
         sockets[endpoint] = std::make_unique<LoopbackSocketPair>(LoopbackSocketPair::Create());
@@ -1138,7 +1145,9 @@ struct RelayWorld {
     void Pong(const std::string& endpoint) {
         auto ping = Next(endpoint, "relaypng");
         ASSERT_NE(ping, nullptr) << "no relay ping sent to " << endpoint;
-        manager->handle_relay_ping(endpoint, *ping);  // relays echo circuit 0 pings
+        ASSERT_EQ(ping->payload.size(), 16u);
+        manager->handle_relay_ping(endpoint,
+                                   P2PMessage::create_relay_pong(ReadLE64ForTest(ping->payload, 8)));
     }
     void Tick(std::chrono::seconds s) {
         clock->AdvanceSteady(s);
@@ -1286,8 +1295,55 @@ TEST(RelayRegistration, RelayAcksRegistrationAndEchoesPings) {
     auto pong = sock.ReceiveMessage();
     ASSERT_NE(pong, nullptr);
     EXPECT_EQ(pong->command, "relaypng");
+    ASSERT_EQ(pong->payload.size(), 17u);
     EXPECT_EQ(ReadLE64ForTest(pong->payload, 0), 0u);
     EXPECT_EQ(ReadLE64ForTest(pong->payload, 8), 777u);
+    EXPECT_EQ(pong->payload[16], P2PMessage::kRelayPongFlag);
+}
+
+TEST(RelayRegistration, StalePongIsNeverEchoed) {
+    // Two nodes registered with each other: a pong that arrives late (its
+    // nonce already replaced) must not be answered, or they bounce it forever.
+    RelayWorld w;
+    w.Connect("8.8.10.1:20999", true);
+    w.manager->test_maybe_auto_register_with_relays();
+    ASSERT_NE(w.Next("8.8.10.1:20999", "relayreg"), nullptr);
+    w.Ack("8.8.10.1:20999");                                         // it is our relay
+    w.manager->test_register_relay_target(MakeNodeId(0x50), "8.8.10.1:20999");  // we are its
+    w.manager->handle_relay_ping("8.8.10.1:20999", P2PMessage::create_relay_pong(0xDEAD));
+    EXPECT_EQ(w.Next("8.8.10.1:20999", "relaypng"), nullptr) << "a pong was answered";
+    // A real ping from it is still answered, with a pong.
+    w.manager->handle_relay_ping("8.8.10.1:20999", P2PMessage::create_relay_ping(0, 0xBEEF));
+    auto pong = w.Next("8.8.10.1:20999", "relaypng");
+    ASSERT_NE(pong, nullptr);
+    EXPECT_EQ(pong->payload.size(), 17u);
+}
+
+TEST(RelayRegistration, OffMainnetUsesCommunityRelaysButNeverTheFleet) {
+    // Issue #470: a regtest node must never dial the mainnet fleet, but it
+    // still registers with community relays it learned from gossip.
+    auto& params = const_cast<dinero::ChainParams&>(dinero::Params());
+    const std::string was = params.name;
+    params.name = "regtest";
+    struct Restore {
+        dinero::ChainParams& p;
+        std::string name;
+        ~Restore() { p.name = name; }
+    } restore{params, was};
+
+    RelayWorld w;
+    w.Connect("173.249.200.59:20999", false);  // a fleet address, even if connected
+    w.manager->test_maybe_auto_register_with_relays();
+    EXPECT_TRUE(w.Relays().empty()) << "regtest picked a mainnet fleet relay";
+    EXPECT_TRUE(w.dialed.empty()) << "regtest dialed " << (w.dialed.empty() ? "" : w.dialed[0]);
+    EXPECT_EQ(w.Next("173.249.200.59:20999", "relayreg"), nullptr);
+
+    w.Connect("8.8.10.1:20999", true);
+    w.manager->test_maybe_auto_register_with_relays();
+    const auto relays = w.Relays();
+    ASSERT_EQ(relays.size(), 1u);
+    EXPECT_EQ(relays[0], "8.8.10.1:20999");
+    EXPECT_NE(w.Next("8.8.10.1:20999", "relayreg"), nullptr);
 }
 
 // Plan 3 Task 4: relayhn2 — the NAT'd target signs "reach me via relay R
@@ -1515,4 +1571,78 @@ TEST(RelayOrchestrator, TimeoutFiresWithin12Seconds) {
     const double after = std::chrono::duration<double>(at - sent).count();
     EXPECT_GE(after, 9.9) << reason;
     EXPECT_LE(after, 12.0) << reason;
+}
+
+// A node that becomes verified reachable starts relaying; peers that are
+// already connected learn its new NODE_RELAY bit from a fresh
+// self-advertisement (their view of its version message is stale).
+TEST(RelayServicePolicy, VerifiedRelayReannouncesItsServices) {
+    P2PManager manager(0);
+    std::atomic<bool> verified{false};
+    manager.set_reachability_changed_handler([&](bool r) { verified = r; });
+    manager.set_service_flags_provider([&]() -> uint64_t {
+        return dinero::ServiceFlags::NODE_NETWORK | dinero::ServiceFlags::NODE_DINERO_V2 |
+               (verified ? dinero::ServiceFlags::NODE_RELAY : 0);
+    });
+    auto peer = LoopbackSocketPair::Create();
+    const std::string key = "127.0.0.1:" + std::to_string(peer.port());
+    manager.test_install_connected_direct_peer(key, peer.client_fd(), true, false, {});
+    manager.test_set_peer_services(key, dinero::ServiceFlags::NODE_DINERO_V2);
+    manager.add_advertised_address("203.0.113.50", 20999, /*learned=*/true);
+
+    manager.test_mark_self_verified("203.0.113.50", 20999);
+    manager.test_run_reachability_tick();
+    std::unique_ptr<P2PMessage> addr;
+    for (int i = 0; i < 4 && !addr; ++i) {
+        auto m = peer.ReceiveMessage();
+        if (!m) break;
+        if (m->command == "addrv2") addr = std::move(m);
+    }
+    ASSERT_NE(addr, nullptr) << "no self-advertisement after verification";
+    std::vector<dinero::p2p::AddrV2Entry> entries;
+    std::string err;
+    ASSERT_TRUE(dinero::p2p::DecodeAddrV2(addr->payload, &entries, &err)) << err;
+    ASSERT_EQ(entries.size(), 1u);
+    EXPECT_EQ(entries[0].port, 20999);
+    EXPECT_NE(entries[0].services & dinero::ServiceFlags::NODE_RELAY, 0u);
+}
+
+TEST(RelayServicePolicy, GetaddrReplyDoesNotStampOurServicesOnOthers) {
+    // A relay answering getaddr labels the addresses it knows with THEIR
+    // services, so NAT'd nodes do not try to register with non-relays.
+    P2PManager manager(0);
+    dinero::p2p::AddressManager addrman;
+    manager.set_address_manager(&addrman);
+    manager.set_service_flags_provider([] {
+        return dinero::ServiceFlags::NODE_NETWORK | dinero::ServiceFlags::NODE_DINERO_V2 |
+               dinero::ServiceFlags::NODE_RELAY;
+    });
+    dinero::p2p::NetworkAddress other;
+    other.ip = "8.8.10.1";
+    other.port = 20999;
+    other.services = dinero::ServiceFlags::NODE_NETWORK;
+    other.timestamp = std::chrono::system_clock::now();
+    addrman.addAddress(other);
+    addrman.markGood(other);  // getaddr answers from the tried table
+    auto peer = LoopbackSocketPair::Create();
+    const std::string key = "127.0.0.1:" + std::to_string(peer.port());
+    manager.test_install_connected_direct_peer(key, peer.client_fd(), false, false, {});
+    manager.test_set_peer_services(key, dinero::ServiceFlags::NODE_DINERO_V2);
+
+    manager.test_handle_getaddr(key);
+    auto reply = peer.ReceiveMessage();
+    ASSERT_NE(reply, nullptr);
+    ASSERT_EQ(reply->command, "addrv2");
+    std::vector<dinero::p2p::AddrV2Entry> entries;
+    std::string err;
+    ASSERT_TRUE(dinero::p2p::DecodeAddrV2(reply->payload, &entries, &err)) << err;
+    bool found = false;
+    for (const auto& e : entries) {
+        if (e.port == 20999 && e.addr == std::vector<uint8_t>{8, 8, 10, 1}) {
+            found = true;
+            EXPECT_EQ(e.services & dinero::ServiceFlags::NODE_RELAY, 0u)
+                << "another node's address was labelled with our NODE_RELAY";
+        }
+    }
+    EXPECT_TRUE(found);
 }

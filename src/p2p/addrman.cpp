@@ -329,6 +329,16 @@ std::vector<NetworkAddress> AddressManager::getAddressesByService(
     return result;
 }
 
+std::optional<uint64_t> AddressManager::getServices(const std::string& ip, uint16_t port) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    const std::string key = dinero::network::FormatEndpoint(ip, port);
+    for (const auto* pool : {&tried_addresses_, &new_addresses_}) {
+        auto it = pool->find(key);
+        if (it != pool->end()) return it->second.addr.services;
+    }
+    return std::nullopt;
+}
+
 size_t AddressManager::countAddressesByService(uint64_t service_bit) const {
     std::lock_guard<std::mutex> lock(mutex_);
     size_t count = 0;

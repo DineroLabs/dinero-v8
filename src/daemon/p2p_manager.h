@@ -324,6 +324,9 @@ struct P2PMessage {
         const std::vector<uint8_t>& payload);
 
     static P2PMessage create_relay_ping(uint64_t circuit_id, uint64_t nonce);
+    // Registration pong: circuit 0 | nonce | kRelayPongFlag.
+    static P2PMessage create_relay_pong(uint64_t nonce);
+    static constexpr uint8_t kRelayPongFlag = 0x01;
     // relayrok: a relay accepted our RELAY_REGISTER. Payload: ttl_u32 LE.
     static P2PMessage create_relay_register_ok(uint32_t ttl_seconds);
 
@@ -1024,6 +1027,7 @@ public:
         uint64_t circuit_id, std::optional<std::array<uint8_t, 20>> expected_target);
     // Behave like a pre-v8.2.0 build: send only dineroid v1.
     void test_set_dineroid_v1_only(bool v1_only) { test_dineroid_v1_only_ = v1_only; }
+    void test_handle_getaddr(const std::string& peer_key) { handle_getaddr(peer_key, P2PMessage{}); }
     // Gives a test-installed peer (keyed "host:port", port 0) its real
     // endpoint, so to_string() matches relay endpoint keys.
     void test_set_peer_endpoint(const std::string& peer_key, const std::string& host,

@@ -830,6 +830,12 @@ P2PMessage P2PMessage::create_relay_ping(uint64_t circuit_id, uint64_t nonce) {
     return msg;
 }
 
+P2PMessage P2PMessage::create_relay_pong(uint64_t nonce) {
+    P2PMessage msg = create_relay_ping(0, nonce);
+    msg.payload.push_back(kRelayPongFlag);
+    return msg;
+}
+
 P2PMessage P2PMessage::create_relay_register_ok(uint32_t ttl_seconds) {
     P2PMessage msg;
     msg.command = "relayrok";
@@ -1677,10 +1683,14 @@ void P2PManager::handle_relay_ping(const std::string& peer_address,
     if (message.payload.size() < 8) return;
     const uint64_t circuit_id = ReadLE64(message.payload, 0);
     if (circuit_id == 0) {
-        // Registration liveness (no circuit): a registrant pings its relay,
-        // and the relay echoes the nonce back.
+        // Registration liveness (no circuit): a registrant pings its relay
+        // (16 bytes) and the relay answers with a pong (the same plus a flag
+        // byte). A pong is never answered, so two nodes registered with each
+        // other cannot bounce a late one back and forth.
         if (message.payload.size() < 16) return;
         const uint64_t nonce = ReadLE64(message.payload, 8);
+        const bool is_pong = message.payload.size() == 17 &&
+                             message.payload[16] == P2PMessage::kRelayPongFlag;
         std::shared_ptr<PeerInfo> peer;
         {
             std::lock_guard<std::mutex> lock(peers_mutex_);
@@ -1688,17 +1698,18 @@ void P2PManager::handle_relay_ping(const std::string& peer_address,
             if (it != connected_peers_.end()) peer = it->second;
         }
         if (!peer || nonce == 0) return;
-        {
+        if (is_pong) {
             std::lock_guard<std::mutex> lock(peers_mutex_);
             if (peer->is_our_relay && nonce == peer->relay_ping_nonce) {
                 peer->relay_ping_nonce = 0;  // answered
                 peer->relay_pings_missed = 0;
-                return;
             }
+            return;
         }
+        if (message.payload.size() != 16) return;
         const auto reg = relay_registry_.Lookup(peer->their_node_id);
         if (reg && reg->peer_address == peer_address) {
-            send_to_peer(peer_address, P2PMessage::create_relay_ping(0, nonce));
+            send_to_peer(peer_address, P2PMessage::create_relay_pong(nonce));
         }
         return;
     }
@@ -4469,23 +4480,12 @@ void P2PManager::MaybeAutoRegisterWithRelays() {
     // An operator pinned relays via relayregister= — never override them.
     if (relay_endpoints_from_config_.load(std::memory_order_acquire)) return;
 
-    // Issue #470 — kMainnetRelayPeers below are MAINNET fleet addresses. Only
-    // dial them when this node is actually on mainnet.
-    //
-    // The MainnetRelayReady() gate immediately below does NOT provide this.
-    // Despite its name, and despite the comment that used to sit here claiming
-    // "relay path not enabled for this network", QuicTransport::MainnetRelayReady()
-    // is `return true;` — it never inspects the active network. So every node,
-    // on every network, reached the connect_to_peer() calls below and dialed
-    // 173.249.200.59 / 172.93.167.32 / 92.118.190.62 on port 20999.
-    //
-    // Observed on a regtest integration test: a node that lost its only peer
-    // ran zero-peer recovery, dialed those three mainnet addresses, failed the
-    // handshake against each (mainnet vs regtest), and never recovered its
-    // local peer. Regtest/testnet nodes must not generate traffic to the
-    // production fleet, and must not have their peer recovery consumed by
-    // handshakes that cannot succeed.
-    if (dinero::Params().name != "mainnet") return;
+    // Issue #470: kMainnetRelayPeers and the fixed seeds are MAINNET fleet
+    // addresses. A regtest/testnet node must never dial them (observed: a
+    // regtest node in zero-peer recovery spent its recovery on three mainnet
+    // handshakes that could not succeed). Off mainnet only gossiped
+    // community relays are candidates.
+    const bool on_mainnet = dinero::Params().name == "mainnet";
 
     // Relay path not enabled yet. NOTE: this gate is currently unconditional
     // (`return true`); the network check above is what actually protects the
@@ -4616,9 +4616,11 @@ void P2PManager::MaybeAutoRegisterWithRelays() {
     for (const auto& [host, port] : dynamic_candidates) {
         if (!fleet_keys.count(endpoint_key(host, port))) add_endpoint(host, port);
     }
-    add_live(/*fleet=*/true);
-    for (const auto& bp : kMainnetRelayPeers) {
-        add_endpoint(bp.first, bp.second);
+    if (on_mainnet) {
+        add_live(/*fleet=*/true);
+        for (const auto& bp : kMainnetRelayPeers) {
+            add_endpoint(bp.first, bp.second);
+        }
     }
 
     {
@@ -4627,6 +4629,12 @@ void P2PManager::MaybeAutoRegisterWithRelays() {
     }
     // connect_to_peer does I/O — call it outside every lock.
     for (const auto& [host, port] : to_connect) {
+#ifdef DINERO_TEST_BUILD
+        if (test_connection_manager_dial_) {
+            test_connection_manager_dial_(host, port);
+            continue;
+        }
+#endif
         connect_to_peer(host, port);
     }
     if (!to_connect.empty()) {
@@ -5291,6 +5299,11 @@ bool P2PManager::send_addr_list_to_peer(
             std::chrono::duration_cast<std::chrono::seconds>(
                 std::chrono::system_clock::now().time_since_epoch())
                 .count());
+        // Our own addresses carry our service flags; anyone else's carry
+        // what addrman recorded for them, never ours (a relay answering
+        // getaddr must not label every address it knows NODE_RELAY).
+        std::unordered_set<std::string> own;
+        for (const auto& [a, p] : get_local_advertised_addresses()) own.insert(AddressKey(a, p));
         std::vector<dinero::p2p::AddrV2Entry> entries;
         entries.reserve(addresses.size());
         for (const auto& [address, port] : addresses) {
@@ -5306,9 +5319,13 @@ bool P2PManager::send_addr_list_to_peer(
             }
             e.addr = std::move(addr_bytes);
             e.port = port;
-            // These are our own advertised addresses, so they carry our
-            // own service flags (NODE_RELAY included when relay-role is on).
-            e.services = our_services;
+            if (own.count(AddressKey(address, port))) {
+                e.services = our_services;  // NODE_RELAY included when relay-role is on
+            } else {
+                std::optional<uint64_t> known;
+                if (address_manager_) known = address_manager_->getServices(address, port);
+                e.services = known.value_or(ServiceFlags::NODE_NETWORK);
+            }
             e.time = now_secs;
             entries.push_back(std::move(e));
         }
@@ -7843,6 +7860,18 @@ void P2PManager::notify_reachability_if_changed() {
         handler = reachability_changed_handler_;
     }
     if (handler) handler(now);
+    // Our services just changed (NODE_RELAY follows verification); peers
+    // already connected only learn that from a fresh self-advertisement.
+    const auto local = get_local_advertised_addresses();
+    if (local.empty()) return;
+    std::vector<std::shared_ptr<PeerInfo>> peers;
+    {
+        std::lock_guard<std::mutex> lock(peers_mutex_);
+        for (const auto& [_, peer] : connected_peers_) {
+            if (peer && peer->is_connected && !peer->via_relay) peers.push_back(peer);
+        }
+    }
+    for (const auto& peer : peers) send_addr_list_to_peer(peer.get(), local);
 }
 
 bool P2PManager::gossipable_locked(const std::string& address, uint16_t port) const {
