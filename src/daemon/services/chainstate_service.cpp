@@ -20481,7 +20481,12 @@ std::unique_ptr<wallet::OrchardQueuedSpend> ChainstateService::queueRuntimeWalle
     wallet::OrchardShieldRequest prepared;
     {
         std::lock_guard<std::mutex> snapshot_owner(snapshot_load_mutex_);
-        auto lock=AcquireBlockIngressActivationLock();auto selected=CaptureSelectedOrchardPoolContextUnderLock();
+        auto lock=AcquireBlockIngressActivationLock();
+        // Existing request lookup requires current state and complete catalog
+        // ownership, not a general compact coin view. This empty capture grants
+        // NO input authority; only the exact committed retry may return below.
+        auto selected=compact_startup_?CaptureSelectedOrchardPoolContextUnderLock(std::span<const MempoolProofView>{}):
+            CaptureSelectedOrchardPoolContextUnderLock();
         if(!selected||!CheckRuntimeAccountReplayCurrentUnderLock(replay,*selected))
             throw std::runtime_error("Shield selected replay head changed");
     if(selected->context.domain.network_code!=profile.domain.network_code||
@@ -20489,6 +20494,7 @@ std::unique_ptr<wallet::OrchardQueuedSpend> ChainstateService::queueRuntimeWalle
        selected->context.domain.branch_id!=profile.domain.branch_id||selected->context.activation_height!=profile.activation)
         throw std::runtime_error("Shield prepared source profile changed");
         if(auto stored=wallet::OrchardAccountDelivery::TakePreparedShieldRetry(wallet,session,*catalog))return stored;
+        if(compact_startup_)throw std::runtime_error("New compact shield reservation requires authenticated input proofs");
         const auto candidates=wallet::OrchardAccountDelivery::ReadPreparedShieldCandidates(
             wallet,session,profile,expected,*catalog);
         std::vector<orchard::ResolvedInput> inputs;uint64_t total=0;
@@ -20555,7 +20561,8 @@ std::unique_ptr<wallet::OrchardQueuedSpend> ChainstateService::queueRuntimeWalle
     {
     std::lock_guard<std::mutex> snapshot_owner(snapshot_load_mutex_);
     auto lock=AcquireBlockIngressActivationLock();
-    auto selected=CaptureSelectedOrchardPoolContextUnderLock();
+    auto selected=compact_startup_?CaptureSelectedOrchardPoolContextUnderLock(std::span<const MempoolProofView>{}):
+        CaptureSelectedOrchardPoolContextUnderLock();
     if(!selected)throw std::runtime_error("Shield selected source unavailable");
     if(!CheckRuntimeAccountReplayCurrentUnderLock(replay,*selected))
         throw std::runtime_error("Shield selected replay head changed");
@@ -20564,6 +20571,7 @@ std::unique_ptr<wallet::OrchardQueuedSpend> ChainstateService::queueRuntimeWalle
        selected->context.domain.branch_id!=profile.domain.branch_id||selected->context.activation_height!=profile.activation)
         throw std::runtime_error("Shield prepared source profile changed");
     if(auto retry=wallet::OrchardAccountDelivery::TakePreparedShieldRetry(wallet,session,*catalog))return retry;
+    if(compact_startup_)throw std::runtime_error("New compact shield reservation requires authenticated input proofs");
     std::set<OutPoint> points;
     for(const auto& input:inputs){
         uint256 txid;std::copy(input.txid_wire.begin(),input.txid_wire.end(),txid.begin());
@@ -20632,7 +20640,31 @@ std::vector<uint8_t> ChainstateService::finalizeRuntimeWalletShield(
     auto finalization=wallet::OrchardAccountDelivery::PrepareShieldFinalizationForReplay(
         wallet,session,profile,replay,operation,inputs,payments,outputs,fee,jobs);
     std::lock_guard<std::mutex> snapshot_owner(snapshot_load_mutex_);
-    auto lock=AcquireBlockIngressActivationLock();auto selected=CaptureSelectedOrchardPoolContextUnderLock();
+    auto lock=AcquireBlockIngressActivationLock();
+    auto selected=[&]() -> std::unique_ptr<SelectedOrchardPoolContext> {
+        if(!compact_startup_)return CaptureSelectedOrchardPoolContextUnderLock();
+        // Only already-signed durable requests may use this path. The pool
+        // cache is untrusted DATA, not a coin authority or a Ready certificate.
+        // Snapshot-then-selected ownership precedes the retained pool use/read.
+        if(request.durable.phase!=wallet::OrchardOperationQueue::Phase::Ready)
+            throw std::runtime_error("Compact shield signing requires authenticated input proofs");
+        auto* context=DaemonContext::instance();
+        if(!context||context->chainstate.get()!=this||!context->mempool)
+            throw std::runtime_error("Shield retry pool owner unavailable");
+        const auto service=context->mempool;auto use=MempoolService::AcquirePoolUse(service);
+        const auto body=MempoolTransaction::FromOrchard(*envelope);
+        const auto entry=use->Pool().getMempoolEntry(body.GetTxid().AsUint256());
+        if(!entry||!entry->tx.IsOrchard()||entry->tx.Serialize()!=envelope->CanonicalBytes()||
+           entry->is_proof_stale||entry->cached_utxotx_payload.empty())
+            throw std::runtime_error("Shield retry current input proof unavailable");
+        const MempoolProofView proof{entry->tx,entry->cached_utxotx_payload};
+        auto captured=CaptureSelectedOrchardPoolContextUnderLock(std::span<const MempoolProofView>(&proof,1));
+        if(!captured)throw std::runtime_error("Shield retry selected proof unavailable");
+        (void)captured->CheckProof(proof);
+        if(DaemonContext::instance()!=context||context->chainstate.get()!=this||context->mempool!=service)
+            throw std::runtime_error("Shield retry pool owner changed");
+        return captured; // Owned exact proved coins; no borrowed pool pointer.
+    }();
     if(!selected||!CheckRuntimeAccountReplayCurrentUnderLock(replay,*selected)||
        selected->context.activation_height!=profile.activation||selected->context.domain.network_code!=profile.domain.network_code||
        selected->context.domain.genesis_wire!=profile.domain.genesis_wire||selected->context.domain.branch_id!=profile.domain.branch_id)

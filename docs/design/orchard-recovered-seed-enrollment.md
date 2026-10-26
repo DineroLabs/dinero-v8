@@ -100,8 +100,24 @@ readmitted pool must retain the transaction and serve its proof. A full native
 source really mines its confirmation; a later named restore must recover the
 earlier funds and memo. Exact-commit results and the preserved whole prior-commit
 observer-refusal negative are reported separately from draft runs. This is not
-original assumed-mobile SQL, physical app/device, post-handoff request-retry or
-release qualification. No failed run is relabelled as a crossing pass.
+original assumed-mobile SQL, physical app/device or release qualification. No
+failed run is relabelled as a crossing pass.
+
+After compact handoff an exact committed shield request may be returned only
+after current selected-source and complete encrypted catalog rechecks. The
+state-only empty proof capture grants no coins: a new request still cannot
+select/reserve compact inputs through this path. Already signed shield completion
+requires the actual retained pool entry's identical canonical body and nonstale,
+nonempty proof DATA. The normal compact owner freshly verifies that exact proof
+against the current selected catalog/stump and inputs; ordinary script, Orchard,
+resource, profile/session/source and FULL wallet-finalization checks still run.
+Neither cached bytes nor a previous Ready record is current coin authority.
+Missing/invalid proofs refuse without changing wallet owners or discarding the
+retained request. The extended native regression repeats the real queue/finish
+RPCs after handoff, tests conflicting requests and missing/invalid proof DATA,
+then restores the same genuine proof and continues real confirmation/recovery.
+These controls are separate from original assumed-mobile SQL integration and
+new compact input-proof acquisition, which remain necessary for full app use.
 
 The public bound RPC takes no birthday, height, checkpoint, network or account
 argument. The selected service obtains the profile and checkpoint. It requires:
