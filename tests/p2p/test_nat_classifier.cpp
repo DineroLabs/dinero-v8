@@ -68,3 +68,10 @@ TEST(NatClassifier, Ipv6AnswersDoNotCountAsAMappingChange) {
                               {UdpAddr::FromIPv6(s6, 3478), UdpAddr::FromIPv6(r6, 45123)}});
     EXPECT_EQ(m.mapping, NatMappingType::EndpointIndependent);
 }
+
+TEST(NatClassifier, WireNamesMatchContract) {
+    // getnetworkinfo.nat.mapping values, read by Plan 2c's reports and Plan 4.
+    EXPECT_STREQ(dinero::p2p::NatMappingName(NatMappingType::EndpointIndependent), "endpoint_independent");
+    EXPECT_STREQ(dinero::p2p::NatMappingName(NatMappingType::EndpointDependent), "endpoint_dependent");
+    EXPECT_STREQ(dinero::p2p::NatMappingName(NatMappingType::Unknown), "unknown");
+}

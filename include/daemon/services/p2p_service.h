@@ -152,7 +152,7 @@ public:
         std::string stun_server_used;
         std::string stun_message;
         // NAT mapping measured by STUN on the P2P UDP port (RFC 4787):
-        // "endpoint-independent", "endpoint-dependent" or "unknown" (fewer
+        // "endpoint_independent", "endpoint_dependent" or "unknown" (fewer
         // than two servers answered, or QUIC is off so STUN used its own
         // ephemeral socket and says nothing about the P2P port).
         std::string nat_mapping{"unknown"};

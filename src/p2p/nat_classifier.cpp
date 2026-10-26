@@ -29,8 +29,8 @@ NatMapping Classify(uint16_t local_port,
 
 const char* NatMappingName(NatMappingType t) {
     switch (t) {
-        case NatMappingType::EndpointIndependent: return "endpoint-independent";
-        case NatMappingType::EndpointDependent: return "endpoint-dependent";
+        case NatMappingType::EndpointIndependent: return "endpoint_independent";
+        case NatMappingType::EndpointDependent: return "endpoint_dependent";
         case NatMappingType::Unknown: break;
     }
     return "unknown";
