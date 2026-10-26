@@ -6544,6 +6544,15 @@ bool DaemonApp::Init(int argc, char** argv) {
                 // instead of broadcast_message (async outbox queue which may be
                 // congested during startup and silently drop messages).
                 auto peers = p2p_service->get().get_connected_peers();
+                if (peers.empty()) {
+                    // No peer yet (startup before the first handshake, or between
+                    // reconnects): nothing to select. Report the zero-recipient
+                    // send so the scheduler releases its slot and retries later,
+                    // without the misleading "no NODE_UTREEXO_BRIDGE peers" warning
+                    // a phone logged hundreds of times per start.
+                    if (sched) sched->NotifyGetDataDispatched(block_hash, 0, std::string());
+                    return;
+                }
                 int sent = 0;
                 int eligible = 0;
                 std::string selected_peer;

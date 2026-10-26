@@ -24,6 +24,7 @@
 #include "consensus/block_lifecycle.h"  // BLOCK_HAVE_DATA status flag
 #include "consensus/fork_acceptance_policy.h"  // #803: fork-prior-to-checkpoint, overlay depth cap
 #include "consensus/header_chain.h"  // Fork-aware MTP: HeaderIndexEntry::GetMedianTimePast
+#include "daemon/block_announce_policy.h"
 #include "metrics/metrics_registry.h"
 #include "primitives/block.h"
 #include "wallet/wallet_manager.h"
@@ -2951,7 +2952,15 @@ void BlockAcceptor::NotifyBlockConnected(const ParsedBlock& block, uint64_t heig
                 // Activation gate: announce only when this callback height matches
                 // the active tip hash. This prevents stale/side-chain accepts from
                 // being advertised as canonical new blocks.
-                if (!active_tip_hash.empty() && active_tip_hash == active_hash_at_height) {
+                std::optional<uint32_t> best_header_height;
+                if (ctx_->header_chain) {
+                    if (auto best = ctx_->header_chain->GetBestHeaderValue()) best_header_height = best->height;
+                }
+                const bool historical = !dinero::daemon::ShouldAnnounceConnectedBlock(
+                    static_cast<uint32_t>(height), best_header_height);
+                if (historical) {
+                    LOG_INFO("Block connected while catching up; not announced: height=" + std::to_string(height));
+                } else if (!active_tip_hash.empty() && active_tip_hash == active_hash_at_height) {
                     chainstate_service->BroadcastNewBlock(active_tip_hash);
                     LOG_INFO("✅ Block announced via ChainstateService (active tip) hash=" +
                              active_tip_hash.substr(0, 16) + "...");

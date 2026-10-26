@@ -34,6 +34,16 @@ if(TARGET v7_p2mr_inventory_test)
     LABELS "unit;wallet;p2mr;mandatory" TIMEOUT 30)
 endif()
 
+add_executable(test_block_announce_policy tests/daemon/test_block_announce_policy.cpp)
+target_include_directories(test_block_announce_policy PRIVATE ${CMAKE_SOURCE_DIR}/include)
+add_test(NAME BlockAnnouncePolicy COMMAND test_block_announce_policy)
+set_tests_properties(BlockAnnouncePolicy PROPERTIES LABELS "unit;p2p;mandatory" TIMEOUT 10)
+if(UNIX AND TARGET dinerod)
+  add_test(NAME HistoricalBlockAnnounce
+    COMMAND bash ${CMAKE_SOURCE_DIR}/tests/p2p/test_historical_block_announce.sh ${CMAKE_BINARY_DIR})
+  set_tests_properties(HistoricalBlockAnnounce PROPERTIES LABELS "integration;p2p" TIMEOUT 300 RUN_SERIAL TRUE)
+endif()
+
 add_executable(test_p2p_header_parser tests/daemon/test_p2p_header_parser.cpp)
 target_link_libraries(test_p2p_header_parser PRIVATE dinero_core)
 add_test(NAME P2PHeaderParserAlignment COMMAND test_p2p_header_parser)

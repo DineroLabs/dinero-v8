@@ -116,11 +116,32 @@ def mainnet_schedule(node):
     seeds = [line for line in (WORK / "nodecore.log").read_text(errors="replace").splitlines()
              if "[P2PService]   Seed nodes:" in line]
     check("app static peers reach the daemon", bool(seeds) and seeds[0].endswith("Seed nodes: 2"), seeds[:1])
+    # An embedded host is a client: no Utreexo bridge mode (proof pre-caching,
+    # NODE_UTREEXO_BRIDGE advertised) unless it opts in with "utreexo_bridge".
+    log = (WORK / "nodecore.log").read_text(errors="replace")
+    check("embedded node is not a Utreexo bridge by default", "Utreexo bridge mode ENABLED" not in log)
     check("mainnet stop", node.call("stop") == 0)
+    bridge = datadir("mainnet-bridge-opt-in")
+    check("bridge opt-in starts", node.start(bridge, network="mainnet", utreexo_bridge=True) == 0)
+    log = (WORK / "nodecore.log").read_text(errors="replace")
+    check("utreexo_bridge: true still enables bridge mode", "Utreexo bridge mode ENABLED" in log)
+    check("bridge opt-in stop", node.call("stop") == 0)
+
+
+def status_during_start(node):
+    # Hosts poll status from UI timers; it must not wait for a start in progress.
+    path = datadir("status-during-start")
+    probe = node.call("status_during_start", datadir=str(path), config={
+        "network": "regtest", "verbose_logging": True, "sync_profile": "mac_fullblock"})
+    check("start under status polling succeeds", probe["start_result"] == 0, probe)
+    check("status reports starting while a start runs", probe["saw_starting"], probe)
+    check("status answers at once during start", probe["slowest_status_ms_during_start"] < 200, probe)
+    check("status-during-start stop", node.call("stop") == 0)
 
 
 def lifecycle(node):
     mainnet_schedule(node)
+    status_during_start(node)
     path = datadir("lifecycle")
     check("already stopped is idempotent", node.call("stop") == 0)
     started = node.start(path)
