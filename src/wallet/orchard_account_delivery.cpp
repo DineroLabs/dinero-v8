@@ -1653,7 +1653,10 @@ RuntimeFundingCandidates OrchardAccountDelivery::ReadPreparedPostBaseCandidates(
         for(const auto& coin:source.coins){
             Check(coin.height>=p.activation&&coin.height<=source.height&&coin.value&&coin.value<=orchard::kMaxMoneyUna&&
                 !coin.point.txid.IsNull()&&!coin.script.empty()&&coin.script.size()<=10000);
-            if(result.unavailable.contains(coin.point)||w.isUTXOLocked(coin.point.txid.AsUint256().GetHex(),coin.point.vout))continue;
+            // Pending ownership was authenticated above in THIS transaction.
+            // The public lock reader opens its own transaction and cannot be
+            // called here. The exact lease also pins the actual manual set.
+            if(result.unavailable.contains(coin.point)||w.locked_utxos_.contains(coin.point.txid.AsUint256().GetHex()+":"+std::to_string(coin.point.vout)))continue;
             const bool taproot=coin.script.size()==34&&coin.script[0]==0x51&&coin.script[1]==0x20;
             const bool p2wpkh=coin.script.size()==22&&coin.script[0]==0&&coin.script[1]==20;
             if(!taproot&&!p2wpkh)continue; // Bounded supported signer DATA, NOT a complete balance.
