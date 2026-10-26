@@ -342,3 +342,52 @@ TEST(DialBack, NonAdvertisableVotedAddressIsNotACandidate) {
     EXPECT_EQ(CandidatesAt(m, "10.1.2.3"), 0u);
     EXPECT_FALSE(m.has_proven_reachable());
 }
+
+namespace {
+bool Gossips(const P2PManager& m, const std::string& ip) {
+    for (const auto& [a, p] : m.test_local_advertised_addresses()) if (a == ip) return true;
+    return false;
+}
+const dinero::p2p::CandidateStatus* Row(const P2PManager& m, const std::string& ip,
+                                        std::vector<dinero::p2p::CandidateStatus>& keep) {
+    keep = m.self_reachability_status();
+    for (const auto& st : keep) if (st.c.ip == ip) return &st;
+    return nullptr;
+}
+}  // namespace
+
+TEST(DialBack, OperatorExternalIpIsGossipedAndAlsoVerified) {
+    P2PManager m(FreePort());
+    m.add_advertised_address("44.9.9.9", 20999);
+    EXPECT_TRUE(Gossips(m, "44.9.9.9"));
+    EXPECT_TRUE(m.has_proven_reachable());  // operator assertion
+    std::vector<dinero::p2p::CandidateStatus> keep;
+    const auto* row = Row(m, "44.9.9.9", keep);
+    ASSERT_NE(row, nullptr) << "externalip is not checked/reported";
+    EXPECT_EQ(row->c.source, dinero::p2p::CandidateSource::ExternalIp);
+}
+
+TEST(DialBack, PortMappedAddressCountsOnlyOnceVerified) {
+    // UPnP saying "mapped" is not proof: double NAT maps on the inner router.
+    P2PManager m(FreePort());
+    m.add_advertised_address("44.8.8.8", 20999, /*learned=*/false,
+                             dinero::p2p::CandidateSource::PortMapping);
+    std::vector<dinero::p2p::CandidateStatus> keep;
+    const auto* row = Row(m, "44.8.8.8", keep);
+    ASSERT_NE(row, nullptr);
+    EXPECT_EQ(row->c.source, dinero::p2p::CandidateSource::PortMapping);
+    EXPECT_FALSE(m.has_proven_reachable());
+    EXPECT_FALSE(Gossips(m, "44.8.8.8"));
+    m.test_mark_self_verified("44.8.8.8", 20999);
+    EXPECT_TRUE(m.has_proven_reachable());
+    EXPECT_TRUE(Gossips(m, "44.8.8.8"));
+}
+
+TEST(DialBack, OnionServiceAddressIsGossipedWithoutDialBack) {
+    // Our own hidden service: nobody can dial it back over clearnet, and it
+    // must stay announced.
+    P2PManager m(FreePort());
+    const std::string onion = "pg6mmjiyjmcrsslvykfwnntlaru7p5svn6y2ymmju6nubxndf4pscryd.onion";
+    m.add_advertised_address(onion, 20999, /*learned=*/true);
+    EXPECT_TRUE(Gossips(m, onion));
+}

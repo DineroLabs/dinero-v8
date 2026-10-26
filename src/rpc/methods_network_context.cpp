@@ -247,8 +247,7 @@ din::Json rpc_context_getnetworkinfo(const ExecutionContext& ctx, const din::Jso
     // Same predicate the relay auto-register gate uses (IsDirectlyReachable in
     // p2p_manager.h) — keep these two call sites identical so the relay-fallback
     // report can never disagree with the registration behavior it gates.
-    const bool direct_reachable = IsDirectlyReachable(
-        direct_inbound_observed, direct_advertised, status.port_mapping_active);
+    const bool direct_reachable = IsDirectlyReachable(direct_advertised);
     const bool relay_fallback_eligible =
         status.network_active && status.listening && !direct_reachable;
     result["reachable"] = direct_reachable;

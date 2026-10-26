@@ -3983,23 +3983,13 @@ void P2PManager::MaybeAutoRegisterWithRelays() {
     // Collect live relay connections and count observed inbound peers.
     std::vector<std::string> live_relays;
     std::unordered_set<std::string> connected_keys;
-    size_t inbound_observed = 0;
     {
         std::lock_guard<std::mutex> lock(peers_mutex_);
         for (const auto& kv : connected_peers_) {
             const auto& peer = kv.second;
             if (!peer || !peer->is_connected) continue;
-            // Count ONLY real direct inbound sockets as proof of reachability.
-            // Relay-virtual peers (via_relay) are inserted with is_outbound=false
-            // but a node reachable ONLY through a relay is NOT directly reachable;
-            // counting them would self-suppress its own relay registration once
-            // Stage B dialing lands, then it expires at the 2h TTL and oscillates.
-            // Deliberate divergence from status.inbound (which counts all conns
-            // for display) — here inbound means "a peer dialed our real socket".
-            if (!peer->is_outbound && !peer->via_relay.has_value() &&
-                peer->socket_fd >= 0) {
-                ++inbound_observed;
-            }
+            // Inbound connections are no longer reachability evidence (only
+            // dial-back is), so they are not counted here.
             std::string pk = peer->to_string();
             std::transform(pk.begin(), pk.end(), pk.begin(),
                            [](unsigned char c) {
@@ -4017,9 +4007,7 @@ void P2PManager::MaybeAutoRegisterWithRelays() {
     // with a relay (Stage A fixed the RPC report but left this behavioral
     // gate on the old assumption). IsDirectlyReachable keeps a learned-only
     // NAT'd node eligible so it actually sends RELAYREG.
-    if (IsDirectlyReachable(inbound_observed > 0,
-                            has_proven_reachable(),
-                            port_mapping_active_.load(std::memory_order_acquire))) {
+    if (IsDirectlyReachable(has_proven_reachable())) {
         return;
     }
 
@@ -4271,7 +4259,8 @@ bool P2PManager::probe_onion_proxy(std::string* message) {
     return ok;
 }
 
-void P2PManager::add_advertised_address(const std::string& address, uint16_t port, bool learned) {
+void P2PManager::add_advertised_address(const std::string& address, uint16_t port, bool learned,
+                                        dinero::p2p::CandidateSource source) {
     if (IsLocalOrWildcardAddress(address) || port == 0) {
         std::cout << "[P2P] Skipping unroutable advertised address: "
                   << address << ":" << port << std::endl;
@@ -4297,6 +4286,17 @@ void P2PManager::add_advertised_address(const std::string& address, uint16_t por
     if (!learned) {
         explicit_advertised_addresses_.insert(key);
         has_explicit_advertised_.store(true, std::memory_order_release);
+        if (source == dinero::p2p::CandidateSource::ExternalIp) {
+            operator_addresses_.insert(key);
+            has_operator_address_.store(true, std::memory_order_release);
+        }
+        if (!IsOnionAddress(address)) {
+            // Checked and reported like any other candidate (lock order:
+            // peers_mutex_ before reach_mutex_).
+            std::lock_guard<std::mutex> reach_lock(reach_mutex_);
+            self_reach_->AddCandidate(
+                dinero::p2p::Candidate{address, port, dinero::p2p::Transport::Tcp, source});
+        }
     }
     for (const auto& existing : advertised_addresses_) {
         if (AddressKey(existing.first, existing.second) == key) {
@@ -4313,6 +4313,11 @@ void P2PManager::remove_explicit_advertised_address(const std::string& address,
     const std::string key = AddressKey(address, port);
     std::lock_guard<std::mutex> lock(peers_mutex_);
     if (explicit_advertised_addresses_.erase(key) == 0) return;
+    {
+        std::lock_guard<std::mutex> reach_lock(reach_mutex_);
+        self_reach_->RemoveCandidate(dinero::p2p::Candidate{address, port, dinero::p2p::Transport::Tcp,
+                                                            dinero::p2p::CandidateSource::PortMapping});
+    }
     advertised_addresses_.erase(
         std::remove_if(advertised_addresses_.begin(), advertised_addresses_.end(),
                        [&](const auto& endpoint) {
@@ -7258,13 +7263,18 @@ void P2PManager::update_stun_candidates(
 }
 
 bool P2PManager::has_proven_reachable() const {
-    if (has_explicit_advertised_.load(std::memory_order_acquire)) return true;
+    // An operator's externalip is an assertion we honour; everything else
+    // (port mapping, peer votes, STUN) has to be dialed back first.
+    if (has_operator_address_.load(std::memory_order_acquire)) return true;
     std::lock_guard<std::mutex> lock(reach_mutex_);
-    return self_reach_->AnyVerified(dinero::p2p::Transport::Tcp);
+    return self_reach_->AnyVerified(dinero::p2p::Transport::Tcp) ||
+           self_reach_->AnyVerified(dinero::p2p::Transport::Quic);
 }
 
 bool P2PManager::gossipable_locked(const std::string& address, uint16_t port) const {
-    if (explicit_advertised_addresses_.count(AddressKey(address, port))) return true;
+    if (operator_addresses_.count(AddressKey(address, port))) return true;
+    // Our own hidden service: published by Tor, not dialable back over clearnet.
+    if (IsOnionAddress(address)) return true;
     std::lock_guard<std::mutex> lock(reach_mutex_);
     return self_reach_->IsVerified(dinero::p2p::Candidate{
         address, port, dinero::p2p::Transport::Tcp, dinero::p2p::CandidateSource::PeerVote});

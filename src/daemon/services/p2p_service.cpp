@@ -1636,7 +1636,8 @@ void P2PService::StartPortMappingIfEnabled() {
                 advertised_port = 0;
             }
             if (have_advertise && !timed_out && p2p_mgr_) {
-                p2p_mgr_->add_advertised_address(next_host, next_port);
+                p2p_mgr_->add_advertised_address(next_host, next_port, /*learned=*/false,
+                                                 dinero::p2p::CandidateSource::PortMapping);
                 advertised_host = next_host;
                 advertised_port = next_port;
             }

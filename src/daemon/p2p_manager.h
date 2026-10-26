@@ -351,10 +351,14 @@ struct P2PMessage {
 // diverge — the divergence that left Stage A reporting-complete but
 // behavior-incomplete (the RPC said relay_fallback_eligible=true while the
 // auto-register gate still suppressed registration on a learned address).
-inline bool IsDirectlyReachable(bool inbound_observed,
-                                bool has_explicit_advertised,
-                                bool port_mapping_active) {
-    return inbound_observed || has_explicit_advertised || port_mapping_active;
+//
+// Since dial-back: reachable means another node proved it (an address of ours
+// verified by dial-back, which covers a port mapping only once its address
+// verified) or the operator asserted it (externalip). An inbound connection
+// alone is not proof -- it may be a relay, a LAN peer, or a mapping that only
+// works from inside a double NAT.
+inline bool IsDirectlyReachable(bool proven_reachable) {
+    return proven_reachable;
 }
 
 class P2PManager {
@@ -507,7 +511,13 @@ public:
     // proof of direct inbound reachability; learned=false (default) is an
     // explicit/trusted source (operator externalip, UPnP/NAT-PMP) and sets the
     // has_explicit_advertised_ flag used by the relay-fallback gate.
-    void add_advertised_address(const std::string& address, uint16_t port, bool learned = false);
+    // Explicit addresses (learned=false) are dial-back checked and reported
+    // too; `source` says where they came from. Operator externalip addresses
+    // are always gossiped and count as reachable; port-mapped ones only once
+    // verified (a mapping on an inner router of a double NAT dials nowhere).
+    void add_advertised_address(const std::string& address, uint16_t port, bool learned = false,
+                                dinero::p2p::CandidateSource source =
+                                    dinero::p2p::CandidateSource::ExternalIp);
     void remove_explicit_advertised_address(const std::string& address, uint16_t port);
     std::vector<std::pair<std::string, uint16_t>> get_advertised_addresses() const;
     // Dial-back verification of our own addresses. min_groups is 2 by default;
@@ -1108,10 +1118,13 @@ private:
     std::vector<std::pair<std::string, uint16_t>> anchor_nodes_;
     std::vector<std::pair<std::string, uint16_t>> advertised_addresses_;
     std::unordered_set<std::string> explicit_advertised_addresses_;
+    // Operator externalip subset: always gossiped, always reachable.
+    std::unordered_set<std::string> operator_addresses_;
     // True once an EXPLICIT/trusted reachable address (operator externalip or
     // port-mapping) has been advertised — distinct from Gap-1-learned addresses.
     // Drives the relay-fallback gate so NAT'd nodes (learned-only) stay eligible.
     std::atomic<bool> has_explicit_advertised_{false};
+    std::atomic<bool> has_operator_address_{false};
     // Gap 2 (A.1): lock-free mirror of P2PService::port_mapping_active_, pushed
     // via set_port_mapping_active(). Lets the relay auto-register gate apply the
     // same reachability predicate (IsDirectlyReachable) as the getnetworkinfo RPC.
