@@ -531,6 +531,10 @@ int32_t nodecore_start(const char* datadir, const char* config_json) {
     // peers asked them for proofs. Local proofs are unaffected (the BridgeNode
     // is built either way). Opt in with "utreexo_bridge": true.
     bool utreexo_bridge = false;
+    // Hosts call RPC in-process; the daemon's loopback listener otherwise takes
+    // the canonical port (20998 on mainnet). A desktop running dinero-qt/dinerod
+    // already owns it, and a failed bind refuses the whole start. 0 = any free port.
+    int rpc_port = 0;
     bool verbose_logging = false;  // embedded default: quiet (see below)
 
     if (config_json) {
@@ -558,6 +562,13 @@ int32_t nodecore_start(const char* datadir, const char* config_json) {
             }
             if (config.isMember("p2p_port")) p2p_port = config["p2p_port"].asInt();
             if (config.isMember("max_peers")) max_peers = config["max_peers"].asInt();
+            if (config.isMember("rpc_port")) {
+                if (!config["rpc_port"].isInt() || config["rpc_port"].asInt() < 0 ||
+                    config["rpc_port"].asInt() > 65535) {
+                    return NODECORE_ERROR_INVALID_ARGS;
+                }
+                rpc_port = config["rpc_port"].asInt();
+            }
             if (config.isMember("addnode")) {
                 // Host static peers, comma-separated host:port (the daemon's addnode).
                 if (!config["addnode"].isString()) {
@@ -670,6 +681,7 @@ int32_t nodecore_start(const char* datadir, const char* config_json) {
     args_storage.push_back("--sync-profile=" + s.sync_profile);
     args_storage.push_back("--utreexo-stateless=" + std::string(utreexo_stateless ? "1" : "0"));
     args_storage.push_back("--utreexo-bridge=" + std::string(utreexo_bridge ? "1" : "0"));
+    args_storage.push_back("--rpc.port=" + std::to_string(rpc_port));
     if (!wallet_schema_path.empty()) {
         args_storage.push_back("--wallet-schema-path=" + wallet_schema_path);
     }
