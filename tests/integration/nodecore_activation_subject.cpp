@@ -2,6 +2,7 @@
 // isolated genuine-PoW profile selection, not a shipped configuration escape.
 // No owner, proof verifier, database, service or lifecycle function is replaced.
 #include "consensus/chainparams.h"
+#include "util/hex.h"
 #include <stdexcept>
 namespace dinero {
 void SelectSdkActivationFixture(Chain chain) {
