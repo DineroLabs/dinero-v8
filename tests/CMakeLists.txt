@@ -3780,6 +3780,8 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/p2p/test_relay_virtual_transport.cpp)
     TIMEOUT 10
   )
 
+  # Direct QUIC peers need the real QuicSession/QuicEndpoint (QUIC on).
+  if(DINERO_ENABLE_QUIC)
   add_executable(test_quic_direct_peer
     tests/p2p/test_quic_direct_peer.cpp
     src/daemon/p2p_manager.cpp
@@ -3842,6 +3844,7 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/p2p/test_relay_virtual_transport.cpp)
 
   add_test(NAME QuicDirectPeer COMMAND test_quic_direct_peer)
   set_tests_properties(QuicDirectPeer PROPERTIES LABELS "p2p;quic;transport" TIMEOUT 300)
+  endif()
   list(APPEND DINERO_QUIC_RELAY_TEST_TARGETS test_relay_virtual_transport)
 endif()
 
