@@ -1025,6 +1025,15 @@ void P2PManager::handle_relay_register(const std::string& peer_address,
 // (or from us, when we forward it). Slice 4's client-side dispatch
 // uses circuit_id from the first RELAY_DATA to register the inbound
 // "virtual peer" on the target side.
+void P2PManager::refuse_relay_connect(const std::string& peer_address, uint64_t request_id,
+                                      P2PMessage::RelayConnectStatus status,
+                                      const std::string& why) {
+    std::cout << "[P2P] relaycon: refused request " << std::hex << request_id << std::dec
+              << " from " << peer_address << " (status " << static_cast<int>(status) << "): " << why
+              << std::endl;
+    send_to_peer(peer_address, P2PMessage::create_relay_connect_ack(request_id, 0, status, why));
+}
+
 void P2PManager::handle_relay_connect(const std::string& peer_address,
                                       const P2PMessage& message) {
     if (message.payload.size() != 28) {
@@ -1036,9 +1045,8 @@ void P2PManager::handle_relay_connect(const std::string& peer_address,
     std::copy_n(message.payload.begin(), 20, target_node_id.begin());
     const uint64_t request_id = ReadLE64(message.payload, 20);
     if (!relay_service_enabled_.load(std::memory_order_acquire)) {
-        send_to_peer(peer_address, P2PMessage::create_relay_connect_ack(
-            request_id, 0, P2PMessage::RelayConnectStatus::RateLimited,
-            "relay service is disabled"));
+        refuse_relay_connect(peer_address, request_id, P2PMessage::RelayConnectStatus::RateLimited,
+                             "relay service is disabled");
         return;
     }
 
@@ -1047,16 +1055,13 @@ void P2PManager::handle_relay_connect(const std::string& peer_address,
     // setup is visible to the originator, while dropping data mid-circuit just
     // black-holes the tunneled QUIC handshake until it idle-closes.
     if (relay_behind_throttle_.load(std::memory_order_relaxed)) {
-        auto ack = P2PMessage::create_relay_connect_ack(
-            request_id, 0, P2PMessage::RelayConnectStatus::RateLimited,
-            "relay is syncing; try another relay");
-        send_to_peer(peer_address, ack);
+        refuse_relay_connect(peer_address, request_id, P2PMessage::RelayConnectStatus::RateLimited,
+                             "relay is syncing; try another relay");
         return;
     }
     if (relay_paused_reason() == "quota") {
-        send_to_peer(peer_address, P2PMessage::create_relay_connect_ack(
-            request_id, 0, P2PMessage::RelayConnectStatus::RateLimited,
-            "relay used its monthly quota; try another relay"));
+        refuse_relay_connect(peer_address, request_id, P2PMessage::RelayConnectStatus::RateLimited,
+                             "relay used its monthly quota; try another relay");
         return;
     }
 
@@ -1070,19 +1075,15 @@ void P2PManager::handle_relay_connect(const std::string& peer_address,
     // Lookup the target's registration.
     auto reg = relay_registry_.Lookup(target_node_id);
     if (!reg.has_value()) {
-        auto ack = P2PMessage::create_relay_connect_ack(
-            request_id, 0, P2PMessage::RelayConnectStatus::NoSuchPeer,
-            "target node_id is not registered with this relay");
-        send_to_peer(peer_address, ack);
+        refuse_relay_connect(peer_address, request_id, P2PMessage::RelayConnectStatus::NoSuchPeer,
+                             "target node_id is not registered with this relay");
         return;
     }
     // Don't bridge a circuit back to its own initiator (self-relay)
     // and don't bridge a circuit through a peer-not-connected target.
     if (reg->peer_address == peer_address) {
-        auto ack = P2PMessage::create_relay_connect_ack(
-            request_id, 0, P2PMessage::RelayConnectStatus::NoSuchPeer,
-            "cannot relay a connection back to its initiator");
-        send_to_peer(peer_address, ack);
+        refuse_relay_connect(peer_address, request_id, P2PMessage::RelayConnectStatus::NoSuchPeer,
+                             "cannot relay a connection back to its initiator");
         return;
     }
 
@@ -1120,12 +1121,10 @@ void P2PManager::handle_relay_connect(const std::string& peer_address,
         }
     }
     if (circuit_id == 0) {
-        auto ack = P2PMessage::create_relay_connect_ack(
-            request_id, 0, P2PMessage::RelayConnectStatus::RelayFull,
-            "relay is at its configured circuit or request limit (" +
-                std::to_string(relay_service_limits_.max_circuits) +
-                " concurrent circuits");
-        send_to_peer(peer_address, ack);
+        refuse_relay_connect(peer_address, request_id, P2PMessage::RelayConnectStatus::RelayFull,
+                             "relay is at its configured circuit or request limit (" +
+                                 std::to_string(relay_service_limits_.max_circuits) +
+                                 " concurrent circuits");
         return;
     }
 
@@ -1223,7 +1222,10 @@ void P2PManager::handle_relay_data(const std::string& peer_address,
             break;
     }
     // Forward the EXACT same frame (preserving direction + payload).
-    send_to_peer(dest, message);
+    if (!send_to_peer(dest, message)) {
+        std::cout << "[P2P] relaydat: forward on circuit " << std::hex << circuit_id << std::dec
+                  << " to " << dest << " failed (send)" << std::endl;
+    }
 }
 
 namespace {
@@ -1920,6 +1922,8 @@ void P2PManager::handle_relay_connect_ack(const std::string& peer_address,
                                           const P2PMessage& message) {
     if (message.payload.size() < 18) {
         // 8 + 8 + 1 + 1 minimum (empty msg)
+        std::cout << "[P2P] relayack: dropped short ack (" << message.payload.size()
+                  << " bytes) from " << peer_address << std::endl;
         return;
     }
     const uint64_t request_id = ReadLE64(message.payload, 0);
@@ -1927,6 +1931,9 @@ void P2PManager::handle_relay_connect_ack(const std::string& peer_address,
     const uint8_t status_byte = message.payload[16];
     const uint8_t msg_len = message.payload[17];
     if (message.payload.size() < static_cast<size_t>(18) + msg_len) {
+        std::cout << "[P2P] relayack: dropped ack for request " << std::hex << request_id
+                  << std::dec << " from " << peer_address << ": message length "
+                  << static_cast<int>(msg_len) << " overruns payload" << std::endl;
         return;
     }
     std::string err_msg(message.payload.begin() + 18,
@@ -1950,8 +1957,11 @@ void P2PManager::handle_relay_connect_ack(const std::string& peer_address,
         }
     }
     if (!found) {
-        // Unknown / wrong-source ack — silently drop. Could log at
-        // debug level but the noise isn't worth it.
+        // Unknown (already timed out / failed) or from a peer other than the
+        // relay we asked: drop, but say so — a lost ack looks like a timeout.
+        std::cout << "[P2P] relayack: dropped ack for request " << std::hex << request_id
+                  << std::dec << " from " << peer_address
+                  << " (no pending request from that relay)" << std::endl;
         return;
     }
 
@@ -6775,6 +6785,35 @@ void P2PManager::set_network_active(bool active) {
 // TS1 Solution: cleanup_peer only marks peer as disconnected and closes socket.
 // The actual erase-from-map happens in stop() AFTER all threads are joined.
 void P2PManager::cleanup_peer(const std::string& peer_address) {
+    // RELAY_CONNECTs waiting on this relay can no longer be answered: fail
+    // them now instead of after the timeout.
+    std::vector<PendingConnect> orphaned;
+    {
+        std::lock_guard<std::mutex> lock(originator_mutex_);
+        for (auto it = pending_connects_.begin(); it != pending_connects_.end();) {
+            if (it->second.relay_peer_address == peer_address) {
+                orphaned.push_back(std::move(it->second));
+                it = pending_connects_.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    }
+    for (auto& pc : orphaned) {
+        std::cout << "[P2P] relay-connect: to " << NodeIdHex(pc.target_node_id) << " via "
+                  << peer_address << " failed: relay_disconnected" << std::endl;
+        if (pc.callback) pc.callback(false, 0, "relay_disconnected");
+    }
+    {
+        std::lock_guard<std::mutex> lock(circuits_mutex_);
+        for (const auto& [id, c] : circuits_) {
+            if (c.requester_addr == peer_address || c.target_addr == peer_address) {
+                std::cout << "[P2P] relay: circuit " << std::hex << id << std::dec
+                          << " loses endpoint " << peer_address << " (peer disconnected)"
+                          << std::endl;
+            }
+        }
+    }
     int fd_to_clean = -1;
     bool cleaned_feeler = false;
     std::shared_ptr<dinero::network::QuicSession> quic_to_close;
@@ -9330,10 +9369,15 @@ void P2PManager::keepalive_loop() {
         run_reachability_tick();
         // Ring 3 Phase 4e: TS3 Fix - Interruptible wait instead of sleep_for
         // Allows immediate wakeup on shutdown, fixing TS3.1 and TS3.4 violations
-        {
-            std::unique_lock<std::mutex> lock(keepalive_mutex_);
-            keepalive_cv_.wait_for(lock, std::chrono::seconds(30),
-                [this]{ return shutdown_requested_.load(); });
+        // 30 s keepalive cadence, but RELAY_CONNECT timeouts are swept every
+        // 2 s so the 10 s timeout fires within 12 s.
+        for (int slice = 0; slice < 15 && !shutdown_requested_; ++slice) {
+            {
+                std::unique_lock<std::mutex> lock(keepalive_mutex_);
+                keepalive_cv_.wait_for(lock, kRelayConnectSweepPeriod,
+                    [this]{ return shutdown_requested_.load(); });
+            }
+            SweepRelayConnectTimeouts();
         }
 
         if (shutdown_requested_) break;
@@ -9365,9 +9409,7 @@ void P2PManager::keepalive_loop() {
         // node has no confirmed inbound path. No-op when relays are
         // operator-configured or the MainnetRelayReady() gate is closed.
         MaybeAutoRegisterWithRelays();
-        // NAT Phase D-1: time out pending RELAY_CONNECT requests
-        // whose ack hasn't arrived within kRelayConnectTimeout (10s).
-        SweepRelayConnectTimeouts();
+        // (RELAY_CONNECT timeouts are swept every 2 s in the wait above.)
         // NAT: refresh the cached relay auto-suspend flag, and surface
         // relay bandwidth-cap drops to the operator when new ones occur.
         RecomputeRelayBehindThrottle();

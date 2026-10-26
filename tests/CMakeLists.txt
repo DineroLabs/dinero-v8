@@ -3843,7 +3843,7 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/p2p/test_relay_virtual_transport.cpp)
   add_test(NAME RelayVirtualTransport COMMAND test_relay_virtual_transport)
   set_tests_properties(RelayVirtualTransport PROPERTIES
     LABELS "p2p;relay;transport;nat;quic-relay-focused"
-    TIMEOUT 30
+    TIMEOUT 60
   )
 
   # Identity bound to the QUIC session (TLS exporter), incl. a MITM relay.

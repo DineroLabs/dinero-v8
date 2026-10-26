@@ -744,6 +744,9 @@ public:
                            const P2PMessage& message);
     void handle_relay_register_ok(const std::string& peer_address,
                                   const P2PMessage& message);
+    // Logs the reason, then acks the RELAY_CONNECT with `status`.
+    void refuse_relay_connect(const std::string& peer_address, uint64_t request_id,
+                              P2PMessage::RelayConnectStatus status, const std::string& why);
 
     // Periodic maintenance: drop circuits whose last_data_at is older
     // than kCircuitIdleTimeout. Called from keepalive_loop.
@@ -1384,6 +1387,7 @@ private:
     std::unordered_map<uint64_t /*request_id*/, PendingConnect> pending_connects_;
     std::unordered_map<uint64_t /*circuit_id*/, OriginatedCircuit> originated_circuits_;
     static constexpr std::chrono::seconds kRelayConnectTimeout{10};
+    static constexpr std::chrono::seconds kRelayConnectSweepPeriod{2};
 
     // NAT traversal Phase C3 slice 4b: ingested relay-hints side-table.
     // Keyed on target_node_id_hex (40 chars). Value is a list of relay

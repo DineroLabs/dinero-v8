@@ -24,6 +24,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cstring>
 #include <ctime>
@@ -1460,4 +1461,58 @@ TEST(SignedHints, ThirdHopNodeCanDialTarget) {
     AddRelayHint(e, MakeNodeId(0x61), 20999);
     e.test_orchestrate_relay_dials();
     EXPECT_TRUE(e_dialed.empty());
+}
+
+// Plan 3 Task 6: a RELAY_CONNECT whose relay goes away fails at once (not
+// after the timeout), and the 10 s timeout is enforced within 12 s.
+TEST(RelayOrchestrator, PendingConnectFailsImmediatelyWhenRelayDisconnects) {
+    P2PManager manager(0);
+    auto relay = LoopbackSocketPair::Create();
+    const std::string relay_key = "127.0.0.1:" + std::to_string(relay.port());
+    manager.test_install_connected_direct_peer(relay_key, relay.client_fd(), true, false, {});
+    std::atomic<int> fired{0};
+    bool ok = true;
+    std::string reason;
+    manager.test_insert_pending_relay_connect(
+        0x4242, MakeNodeId(0x70), relay_key, [&](bool o, uint64_t, const std::string& m) {
+            ok = o;
+            reason = m;
+            fired++;
+        });
+    manager.test_insert_pending_relay_connect(0x4343, MakeNodeId(0x71), "10.0.0.99:20999",
+                                              [&](bool, uint64_t, const std::string&) { fired += 10; });
+    manager.test_cleanup_peer(relay_key);
+    EXPECT_EQ(fired.load(), 1) << "only the connect through the departed relay fails";
+    EXPECT_FALSE(ok);
+    EXPECT_NE(reason.find("relay_disconnected"), std::string::npos) << reason;
+    EXPECT_EQ(manager.test_pending_relay_connect_count(), 1u);
+}
+
+TEST(RelayOrchestrator, TimeoutFiresWithin12Seconds) {
+    uint16_t port = 0;
+    {
+        auto probe = LoopbackSocketPair::Create();
+        port = probe.port();
+    }
+    P2PManager manager(port);
+    manager.set_quic_enabled(false);
+    ASSERT_TRUE(manager.start());
+    std::atomic<bool> fired{false};
+    std::string reason;
+    const auto sent = std::chrono::steady_clock::now();
+    std::chrono::steady_clock::time_point at{};
+    manager.test_insert_pending_relay_connect(
+        0x5151, MakeNodeId(0x72), "10.0.0.98:20999", [&](bool, uint64_t, const std::string& m) {
+            reason = m;
+            at = std::chrono::steady_clock::now();
+            fired = true;
+        });
+    while (!fired && std::chrono::steady_clock::now() - sent < std::chrono::seconds(13)) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+    manager.stop();
+    ASSERT_TRUE(fired.load()) << "no timeout within 13 s";
+    const double after = std::chrono::duration<double>(at - sent).count();
+    EXPECT_GE(after, 9.9) << reason;
+    EXPECT_LE(after, 12.0) << reason;
 }
