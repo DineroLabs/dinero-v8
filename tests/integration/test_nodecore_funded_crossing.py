@@ -212,6 +212,33 @@ try:
     assert rpc('wallet.getrawtransaction',[txid])['hex']==signed
     binding=bound('wire-named-owner');operations=rpc('wallet.orchard.listoperations',dict(binding,account=0))
     assert any(o['operation_id']==request_id and o['txid']==txid and o['durable_state']=='signed' for o in operations['operations']),operations
+    # A committed request is not new compact coin selection. Retry through the
+    # real public API after the automatic handoff, with a fresh wallet binding.
+    retry_request=dict(request,**binding)
+    retried=rpc('wallet.orchard.queueshield',retry_request)
+    assert retried['existing_request'] and not retried['proof_queued'] and retried['durable_state']=='signed',retried
+    assert wallet_rows()==before,'exact queue retry changed encrypted owners'
+    conflicting=dict(retry_request,payments=[dict(request['payments'][0],memo_hex=b'different request'.hex())])
+    refused=call('rpc',method='wallet.orchard.queueshield',params=conflicting)
+    assert isinstance(refused,dict) and 'error' in refused,refused
+    conflict_refusal=refused
+    assert wallet_rows()==before,'conflicting retry changed encrypted owners'
+    finish_request=dict(binding,account=0,request_id=request_id)
+    proof_refusals=[]
+    for name,payload in [('missing',b''),('invalid',proof_wire[:-1]+bytes([proof_wire[-1]^1]))]:
+        assert call('sdk_activation_set_proof',txid=txid,payload=payload.hex()) is True
+        refused=call('rpc',method='wallet.orchard.finishshield',params=finish_request)
+        assert isinstance(refused,dict) and 'error' in refused,(name,refused)
+        assert wallet_rows()==before,'unproved Ready retry changed encrypted owners'
+        assert txid in rpc('mempool.getrawmempool',[]),'refusal discarded the retained request'
+        proof_refusals.append(dict(control=name,result=refused))
+    assert call('sdk_activation_set_proof',txid=txid,payload=proof_wire.hex()) is True
+    refinished=rpc('wallet.orchard.finishshield',finish_request)
+    assert refinished['already_in_mempool'] and refinished['txid']==txid,refinished
+    assert rpc('wallet.getrawtransaction',[txid])['hex']==signed
+    assert wallet_rows()==before,'proof-backed Ready retry changed encrypted owners'
+    (root/'compact-retries.json').write_text(json.dumps(dict(queue=retried,conflict=conflict_refusal,
+        proof_controls=proof_refusals,finish=refinished),indent=2)+'\n')
     journals=list(datadir.glob('.core-reopen-candidates-v1-*/candidates.sealed'));assert len(journals)==1,journals
     journal=journals[0].read_bytes();assert hashlib.sha256(journal[:-32]).digest()==journal[-32:]
     assert int.from_bytes(journal[-48:-40],'little')==1 and bytes.fromhex(signed) in journal and proof_wire in journal
@@ -245,6 +272,7 @@ try:
     (root/'receipt.json').write_text(json.dumps(dict(fixture=fixture,request=queued,transaction_id=txid,
         named_wallet_without_phrase=True,pause_no_reply=state['pause_probes'],pending_rows_identical=True,
         pool_revalidated_and_proof_served=True,operations=operations,mined=mined,recovered=recovered,notes=notes,
+        compact_exact_queue_retry=True,compact_ready_retry_with_current_proof=True,unproved_retries_refused=True,
         scope='Actual native C ABI automatic handoff from independently executed full parent, funded named recovered wallet and nonempty signed encrypted request/pool, real confirmation and later account0 recovery. NOT original assumed mobile SQL, physical app/device, minimum OS, SDK slices or release qualification.'),indent=2)+'\n')
     assert call('stop')==0;success=True
     print('PASS funded named-wallet nonempty queued SDK handoff and real confirmation/recovery',flush=True)

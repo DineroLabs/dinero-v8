@@ -112,3 +112,24 @@ Json::Value SdkActivationTestState(){
     }
     return row;
 }
+
+// Fixed-profile native test ONLY: replace untrusted DATA in an already present
+// pool entry to test the real selected-proof refusal. No validation/owner flag,
+// transaction identity, wallet row or durable candidate journal is modified.
+Json::Value SdkActivationSetProof(const Json::Value& request){
+    auto& s=state();std::lock_guard lock(s.mtx);
+    if(!s.running||!s.app||dinero::Params().magic!=0x02a1c925)
+        throw std::runtime_error("Missing fixed-profile native subject");
+    const auto& context=s.app->GetContext();
+    const auto chain=std::dynamic_pointer_cast<dinero::ChainstateService>(context.chainstate);
+    const auto pool=std::dynamic_pointer_cast<dinero::MempoolService>(context.mempool);
+    dinero::uint256 id;std::vector<unsigned char> wire;
+    if(!chain||!pool||!dinero::uint256::FromHex(request["txid"].asString(),id)||
+       request["payload"].asString().size()>4*1024*1024||!util::unhex(request["payload"].asString(),wire))
+        throw std::runtime_error("Invalid native proof-data request");
+    auto selected=chain->AcquireBlockIngressActivationLock();
+    auto use=dinero::MempoolService::AcquirePoolUse(pool);
+    const auto entry=use->Pool().getMempoolEntry(id);
+    if(!entry||!entry->tx.IsOrchard())throw std::runtime_error("Missing native Orchard pool entry");
+    return use->Pool().setCachedUtxoTxPayload(id,std::move(wire));
+}
