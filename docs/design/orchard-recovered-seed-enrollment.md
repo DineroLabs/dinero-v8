@@ -1352,6 +1352,10 @@ transparent/index baseline, independent prehistory or a lifecycle repair.
 `NodeCoreCompactNewShieldReady` requires real original-import funding, current
 TCP input proofs, a new public queue/finish, encrypted retries, bad retained-proof
 refusals and genuine proof-bearing admission with full-proof peer refill disabled.
+It signs the NEW reservation in its SAME executor/session, then tests normal
+no-phrase signed-Ready reopen. Reopening a Reserved job changes its wallet/SQL
+binding and the existing executor correctly refuses that old active binding;
+this gate does NOT fix/claim that separate job-rebind/restart integration.
 It requires independent FULL mining of the SAME SDK body and SDK validation105,
 active account confirmation535000una and unchanged original SQL/missing mixed
 receipts. This bounded native test is not app/device, mainnet/v5, many-input,

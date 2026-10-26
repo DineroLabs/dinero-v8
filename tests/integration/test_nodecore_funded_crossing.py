@@ -579,11 +579,16 @@ try:
         assert new_queued.get('proof_queued') and new_queued['input_count']==1 and not new_queued['existing_request'],new_queued
         after_new=wallet_rows();new_retry=rpc('wallet.orchard.queueshield',new_request)
         assert new_retry['existing_request'] and not new_retry['proof_queued'] and wallet_rows()==after_new,new_retry
-        assert rpc('wallet.open',['wire-named-owner'])['success'] is True
-        assert rpc('wallet.unlock',['funded-crossing-password',0])['success'] is True
-        binding=bound('wire-named-owner');new_request.update(binding)
-        reopened=rpc('wallet.orchard.queueshield',new_request)
-        assert reopened['existing_request'] and wallet_rows()==after_new,reopened
+        reopened=None
+        if not new_compact_ready:
+            # Reservation-only gate preserves its original no-phrase reopen.
+            # Ready gate below first signs in the SAME executor/session, then
+            # tests signed-Ready reopen. Reserved live-job rebind is separate.
+            assert rpc('wallet.open',['wire-named-owner'])['success'] is True
+            assert rpc('wallet.unlock',['funded-crossing-password',0])['success'] is True
+            binding=bound('wire-named-owner');new_request.update(binding)
+            reopened=rpc('wallet.orchard.queueshield',new_request)
+            assert reopened['existing_request'] and wallet_rows()==after_new,reopened
         assert original_lifecycle()==original and mixed_runtime_receipts()==mixed_before
         assert snapshot_candidate_rows()==original_candidates
         assert any(p['command']=='getwinput' for p in packets) and any(p['command']=='winput' for p in packets)
@@ -616,6 +621,13 @@ try:
             ready_retry=rpc('wallet.orchard.finishshield',finish_new)
             assert ready_retry['already_in_mempool'] and ready_retry['txid']==txid and wallet_rows()==signed_rows,ready_retry
             assert rpc('wallet.orchard.queueshield',new_request)['existing_request'] and wallet_rows()==signed_rows
+            assert rpc('wallet.open',['wire-named-owner'])['success'] is True
+            assert rpc('wallet.unlock',['funded-crossing-password',0])['success'] is True
+            binding=bound('wire-named-owner');new_request.update(binding);finish_new.update(binding)
+            reopened=rpc('wallet.orchard.queueshield',new_request)
+            reopened_ready=rpc('wallet.orchard.finishshield',finish_new)
+            assert reopened['existing_request'] and reopened_ready['already_in_mempool'] and reopened_ready['txid']==txid
+            assert wallet_rows()==signed_rows,'signed-Ready no-phrase reopen changed encrypted rows'
             # Ordinary independent FULL admission/mining of the SAME canonical
             # SDK-signed body, not a manually built proof-backed spend.
             shield_mined=native_call('mine_shield',body=new_signed);assert txid in shield_mined['transactions'],shield_mined
@@ -634,12 +646,12 @@ try:
             assert any(o['operation_id']==new_request['request_id'] and (o.get('chain_observation') or {}).get('outcome')=='confirmed' for o in new_operations['operations']),new_operations
             new_balance=rpc('wallet.orchard.getbalance',dict(binding,account=0));assert new_balance['confirmed_una']==535000,new_balance
             assert original_lifecycle()==original and mixed_runtime_receipts()==mixed_before
-            new_ready=dict(finished=new_finished,body=new_signed,pool=pool,proof=own_proofs[0].hex(),retry=ready_retry,
+            new_ready=dict(finished=new_finished,body=new_signed,pool=pool,proof=own_proofs[0].hex(),retry=ready_retry,reopened_ready=reopened_ready,
                 mined=shield_mined,operations=new_operations,balance=new_balance)
         (root/'receipt.json').write_text(json.dumps(dict(original_assumed_mobile=True,new_compact_reservation=True,
             pending=pending_input,queued=new_queued,retry=new_retry,reopened=reopened,original_lifecycle=original,
             mixed_receipts_unchanged=mixed_before,prior_confirmation=operations,new_compact_ready=new_ready,
-            scope='Actual native imported funded crossing to104, then a DIFFERENT unspent historical output obtains a new exact-tip proof over TCP and atomically queues a NEW bound shield reservation through public SDK C ABI. Ready variant genuinely signs using selected exact-current coins, freshly recaptures body/proofs for encrypted Ready, admits through ordinary proof-bearing ingress with peer full-proof refill disabled, preserves strict bad retained-proof refusals/retries, and truly mines/validates105 with confirmed535000una. Reservation-only variant ends before signing. No proof-job restart, mixed/index/independent history, apps/devices or release qualification.'),indent=2)+'\n')
+            scope='Actual native imported funded crossing to104, then a DIFFERENT unspent historical output obtains a new exact-tip proof over TCP and atomically queues a NEW bound shield reservation through public SDK C ABI. Ready variant signs in the SAME executor/session using selected exact-current coins, freshly recaptures body/proofs for encrypted Ready, admits through ordinary proof-bearing ingress with peer full-proof refill disabled, preserves strict bad retained-proof refusals/retries and no-phrase SIGNED-Ready reopen, and truly mines/validates105 with confirmed535000una. Reservation-only variant retains its separate unsigned-reservation reopen gate. NO Reserved-job wallet-session rebind/restart, mixed/index/independent history, apps/devices or release qualification.'),indent=2)+'\n')
         assert call('stop')==0;success=True
         print('PASS actual original-assumed current compact proof download and NEW '+('signing/Ready/pool/confirmation' if new_compact_ready else 'atomic reservation'),flush=True)
         sys.exit(0)
