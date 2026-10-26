@@ -25,6 +25,7 @@ while not manifest.exists():
     time.sleep(.05)
 fixture=json.loads(manifest.read_text());assumed=bool(os.environ.get('DINERO_SDK_ASSUMED_MOBILE_FIXTURE'))
 input_queue=bool(os.environ.get('DINERO_SDK_IMPORTED_SHIELD_QUEUE'))
+ready_only=bool(os.environ.get('DINERO_SDK_IMPORTED_SHIELD_READY'))
 wrong_input_height=bool(os.environ.get('DINERO_SDK_IMPORTED_SHIELD_WRONG_HEIGHT'))
 if wrong_input_height:
     assert assumed and input_queue and fixture['assumed_snapshot_version']==4
@@ -345,6 +346,14 @@ try:
             if queued.get('error_code')!='funding_source_pending':break
             assert wallet_rows()==before_queue and candidate_wallet_state()==before_state
             time.sleep(.1)
+    elif assumed:
+        # Real input DATA may need its ordinary asynchronous getdata flight.
+        # No other source/owner/refusal is retried or reclassified as success.
+        funding_release.set();deadline=time.monotonic()+30
+        while time.monotonic()<deadline:
+            queued=call('rpc',method='wallet.orchard.queueshield',params=request)
+            if queued.get('error_code')!='funding_source_pending':break
+            assert queued.get('retryable') is True,queued;time.sleep(.1)
     else:queued=rpc('wallet.orchard.queueshield',request)
     assert queued.get('proof_queued') and queued['input_count']>0,queued
     if input_queue:
@@ -352,19 +361,32 @@ try:
         reserved=wallet_rows();assert reserved!=before_queue and reserved['orchard_wallet_retained']
         retry=rpc('wallet.orchard.queueshield',request)
         assert retry['existing_request'] and not retry['proof_queued'] and wallet_rows()==reserved,retry
-        # This component earns only genuine queued input authority. It does
-        # NOT relax the separate signing/first-authorization/pool source fence.
-        deadline=time.monotonic()+30
-        while time.monotonic()<deadline:
-            refused=call('rpc',method='wallet.orchard.finishshield',params=dict(binding,account=0,request_id=request_id))
-            if refused.get('error_code')!='proof_not_ready':break
-            assert refused.get('proof_state') in ('queued','running'),refused;time.sleep(.1)
-        assert refused.get('error')=='Shield signing source changed',refused
-        assert wallet_rows()==reserved,'separate signing refusal released encrypted reservation'
+        finished=None;signed=None;ready_rows=reserved
+        if ready_only:
+            deadline=time.monotonic()+30
+            while time.monotonic()<deadline:
+                finished=call('rpc',method='wallet.orchard.finishshield',params=dict(binding,account=0,request_id=request_id))
+                if finished.get('error_code')!='proof_not_ready':break
+                assert finished.get('proof_state') in ('queued','running'),finished;time.sleep(.1)
+            assert finished.get('durable_state')=='signed' and finished.get('admitted'),finished
+            signed=rpc('wallet.getrawtransaction',[finished['txid']])['hex'];assert signed
+            observed=call('sdk_activation_state')['observed_transaction']
+            assert observed['txid']==finished['txid'] and observed['format']=='orchard',observed
+            # The ordinary independent producer checks the ACTUAL signed body
+            # and builds its untrusted proof; no wallet coins or Ready injected.
+            proof_result=native_call('proof',body=signed)
+            assert proof_result['txid']==finished['txid'] and proof_result['proof'],proof_result
+            ready_rows=wallet_rows();assert ready_rows!=reserved and ready_rows['orchard_wallet_retained']
+            refinished=rpc('wallet.orchard.finishshield',dict(binding,account=0,request_id=request_id))
+            assert refinished['already_in_mempool'] and refinished['txid']==finished['txid'],refinished
+            assert wallet_rows()==ready_rows
         assert rpc('wallet.open',['wire-named-owner'])['success'] is True
         assert rpc('wallet.unlock',['funded-crossing-password',0])['success'] is True
         binding=bound('wire-named-owner');retry=rpc('wallet.orchard.queueshield',dict(request,**binding))
-        assert retry['existing_request'] and not retry['proof_queued'] and wallet_rows()==reserved,retry
+        assert retry['existing_request'] and not retry['proof_queued'] and wallet_rows()==ready_rows,retry
+        if ready_only:
+            reopened=rpc('wallet.orchard.finishshield',dict(binding,account=0,request_id=request_id))
+            assert reopened['already_in_mempool'] and reopened['txid']==finished['txid'] and wallet_rows()==ready_rows,reopened
         after_state=candidate_wallet_state()
         for table in ('utxos','sync_meta','tip'):assert after_state[table]==before_state[table],table
         assert original_lifecycle()==original and rpc('wallet.listunspent',[])==before_coins
@@ -372,10 +394,10 @@ try:
         assert any(b['hash']==fixture['parent'] and b['kind']==2 for b in body_requests),body_requests
         assert call('stop')==0;success=True
         (root/'receipt.json').write_text(json.dumps(dict(original_assumed_mobile=True,queued=queued,retry=retry,
-            pending=pending_reply,reserved=reserved,finish_refusal=refused,original_lifecycle=original,
-            nonempty_queue=True,funded_crossing=False,
-            scope='Actual normally imported named wallet acquires historical creation inclusion plus current selected input membership, atomically reserves a real funded shield request and publishes its real prover job. Encrypted pending/current/retained rows and no-phrase reopen/retry survive. Separate signing source fence still refuses; no Ready, pool, handoff, confirmation, app/device or release claim.'),indent=2)+'\n')
-        print('PASS actual authenticated imported-input nonempty shield queue; signing fence preserved',flush=True)
+            pending=pending_reply,reserved=reserved,finished=finished,signed=signed,ready_rows=ready_rows,original_lifecycle=original,
+            nonempty_queue=True,signed_ready_and_pool=ready_only,funded_crossing=False,
+            scope='Actual normally imported named wallet acquires historical creation inclusion plus current selected membership and atomically reserves a real funded shield request. Ready variant uses actual prover/key signing, freshly recaptured exact-input transaction authorization, encrypted Ready commit and ordinary pool admission; independent producer checks same signed body. No-phrase reopen and exact queue/finish retries preserve encrypted owners. Original assumed SQL and ordinary coins unchanged; no independent history, first block/Event1, handoff/confirmation, app/device or release claim.'),indent=2)+'\n')
+        print('PASS actual authenticated imported '+('signed Ready and pool with exact retries' if ready_only else 'nonempty input queue'),flush=True)
         sys.exit(0)
     deadline=time.monotonic()+30
     while time.monotonic()<deadline:

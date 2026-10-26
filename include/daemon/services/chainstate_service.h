@@ -1672,12 +1672,18 @@ private:
     // No argument requests the general full-node view, not an empty catalog.
     std::unique_ptr<SelectedOrchardPoolContext> CaptureSelectedOrchardPoolContextUnderLock(
         std::optional<std::span<const MempoolProofView>> proved_entries=std::nullopt);
+    // Separate imported transaction-only capture. Reauthenticates actual
+    // creating bodies and current membership for EVERY enumerated input;
+    // unknown coin queries fail. Does not authorize a block or prehistory.
+    std::unique_ptr<SelectedOrchardPoolContext> CaptureImportedOrchardTransactionUnderLock(
+        const std::unique_lock<std::mutex>&,std::span<const MempoolProofView>);
     MempoolSelectionValidation ValidateOrchardSelectionUnderLock(
         std::span<const MempoolTransaction>, uint32_t);
     MempoolOrchardValidation ValidateOrchardPoolUnderLock(
         const MempoolTransaction&, const std::vector<MempoolTransaction>&);
     MempoolOrchardValidation ValidateOrchardPoolProofsUnderLock(
-        const MempoolProofView&, std::span<const MempoolProofView>);
+        const MempoolProofView&, std::span<const MempoolProofView>,
+        const std::unique_lock<std::mutex>* snapshot=nullptr);
     MempoolSelectionValidation ValidateOrchardSelectionProofsUnderLock(
         std::span<const MempoolProofView>, uint32_t);
     // Storage-layout startup regression exercises the actual loader without

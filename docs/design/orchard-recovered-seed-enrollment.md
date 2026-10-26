@@ -1211,3 +1211,23 @@ ordinary independent delivery, full-parent pool/coin context, compact input-proo
 guards and post-activation recovery requirements remain unchanged. Candidate
 funding remains non-spendable DATA; this is not authenticated new-input queueing,
 transparent/index completeness, a funded handoff or app/device acceptance.
+# Imported transaction-only signing and admission
+
+An original SnapshotLoaded parent is not an independently executed full-store
+coin view. Shield signing and pool admission use a distinct lexical capture:
+the unchanged complete imported-source audit, owning snapshot lock before
+selected lock, exact index use and actual lifecycle pin; every enumerated
+input's actual selected creating body and merkle inclusion; current live
+membership path; and explicit output absences in the complete frozen and
+ordinary namespaces. Unknown coin queries fail. Source metadata is not trusted
+as legacy creation metadata. Signing releases source ownership before the key
+owner signs, then recaptures it for actual authorization and durable Ready.
+
+Pool admission acquires snapshot before selected ownership and checks the
+complete pending plus incoming corpus using the same narrow source. It retains
+ordinary script, maturity, resource, proof, anchor/nullifier and value-flow
+checks. This authorizes transactions only: it does not derive a first-block
+boundary, retirement record, Event1, cursor or independent replay capability.
+Original general full/compact captures, mining and block-admission guards are
+unchanged. Original assumed SQL/base/anchors remain unchanged; this is not a
+complete-history or transparent/index-readiness receipt.

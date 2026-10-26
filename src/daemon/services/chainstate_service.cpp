@@ -19846,15 +19846,24 @@ struct ChainstateService::MempoolReadGuard final : MempoolChainstateReadGuard {
     std::shared_ptr<ChainstateService> owner;
     // Construct preparation before locking; destroy it after unlocking.
     ParentPreparationScope preparation;
+    std::unique_ptr<WalletIndexUse> index_use;
+    // Snapshot publication always precedes selected ownership. In particular,
+    // imported pool validation must never acquire this mutex under lock below.
+    std::unique_lock<std::mutex> snapshot;
     std::unique_lock<AnnotatedRecursiveMutex> lock;
     const std::thread::id thread=std::this_thread::get_id();
     explicit MempoolReadGuard(std::shared_ptr<ChainstateService> service)
-        :owner(std::move(service)),preparation(*owner),lock(owner->AcquireBlockIngressActivationLock()) {}
+        :owner(std::move(service)),preparation(*owner),
+         snapshot(owner->snapshot_load_mutex_),lock(owner->AcquireBlockIngressActivationLock()) {
+        // Ordinary service startup may not yet have an index. That never
+        // grants imported authority: its factory requires this actual use.
+        try{index_use=AcquireWalletIndexUse(owner);}catch(const WalletIndexUnavailable&){}
+    }
     ~MempoolReadGuard() override { if(thread!=std::this_thread::get_id())std::terminate(); }
     MempoolOrchardValidation ValidateOrchardWithProofs(const MempoolProofView& body,
         std::span<const MempoolProofView> pending) override {
         if(thread!=std::this_thread::get_id())throw std::logic_error("Selected pool owner is thread-affine");
-        return owner->ValidateOrchardPoolProofsUnderLock(body,pending);
+        return owner->ValidateOrchardPoolProofsUnderLock(body,pending,&snapshot);
     }
     MempoolSelectionValidation ValidateBlockSelectionWithProofs(
         std::span<const MempoolProofView> bodies,uint32_t height) override {
@@ -19875,13 +19884,31 @@ struct ChainstateService::MempoolReadGuard final : MempoolChainstateReadGuard {
 };
 std::unique_ptr<MempoolChainstateReadGuard> ChainstateService::AcquireMempoolChainstateRead(
     std::shared_ptr<ChainstateService> owner) {
-    if(!owner)return {};
+    // Do not invert snapshot -> selected ordering on reentrant callers. They
+    // must leave their selected owner before requesting fresh pool admission.
+    if(!owner||owner->activation_mutex_.HeldByCurrentThread())return {};
     try { return std::make_unique<MempoolReadGuard>(std::move(owner)); }
     catch(const SelectedReadUse::Unavailable&) { return {}; }
 }
 
 struct ChainstateService::SelectedOrchardPoolContext {
 #ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
+    struct ImportedCoins final:consensus::ChainStateView {
+        uint32_t height=0;
+        std::map<OutPoint,consensus::UTXOEntry> inputs;
+        std::set<OutPoint> absent;
+        StatusOr<consensus::UTXOEntry> getCoin(const OutPoint& point)const override{
+            if(const auto i=inputs.find(point);i!=inputs.end())return i->second;
+            if(absent.contains(point))return Status::NotFound;
+            return Status::Internal; // NEVER a general assumed coin view.
+        }
+        bool hasCoin(const OutPoint& point)const override{
+            const auto row=getCoin(point);
+            if(!row.ok()&&row.status()!=Status::NotFound)throw consensus::OrchardCoinLookupError(row.status());
+            return row.ok();
+        }
+        uint32_t getHeight()const override{return height;}
+    };
     struct SelectedCoins final:consensus::ChainStateView {
             const ChainDB& db;const consensus::ConsensusUTXOSet& live;
             SelectedCoins(const ChainDB& d,const consensus::ConsensusUTXOSet& l):db(d),live(l){}
@@ -19913,6 +19940,8 @@ struct ChainstateService::SelectedOrchardPoolContext {
     std::shared_ptr<consensus::HeaderChainSelector> headers;
     std::unique_ptr<SelectedCoins> full_coins;
     std::unique_ptr<OrchardPoolCoinView> compact_coins;
+    std::unique_ptr<ImportedCoins> imported_coins;
+    std::unique_ptr<const ImportedWalletSource> imported_source;
     const consensus::ChainStateView& coins;
     std::optional<consensus::UtreexoStump> compact_stump;
     SelectedOrchardPoolContext(const ChainDB& database,
@@ -19932,6 +19961,12 @@ struct ChainstateService::SelectedOrchardPoolContext {
           headers(std::move(selected_headers)),
           compact_coins(std::make_unique<OrchardPoolCoinView>(std::move(captured))),
           coins(*compact_coins), compact_stump(std::move(stump)) {}
+    SelectedOrchardPoolContext(const ChainDB& database,std::unique_ptr<ImportedCoins> captured,
+        std::unique_ptr<const ImportedWalletSource> source,consensus::UtreexoStump stump,
+        std::shared_ptr<consensus::HeaderChainSelector> selected_headers)
+        :db(database),context(source->next),headers(std::move(selected_headers)),
+         imported_coins(std::move(captured)),imported_source(std::move(source)),
+         coins(*imported_coins),compact_stump(std::move(stump)){}
     std::vector<uint8_t> CheckProof(const MempoolProofView& entry) const {
         if(entry.proof.empty()) {
             if(compact_coins && !entry.body.Inputs().empty())
@@ -19940,7 +19975,7 @@ struct ChainstateService::SelectedOrchardPoolContext {
         }
         const auto payload=UtreexoTransactionPayload::Decode(entry.proof,RelayTransactionReadMode::AvailableFamilies);
         if(payload.Body().Serialize()!=entry.body.Serialize())throw std::invalid_argument("Pool proof body mismatch");
-        if(compact_coins) {
+        if(compact_coins || imported_coins) {
             if(!compact_stump || !payload.VerifyInputs(*compact_stump,context.height-1,coins))
                 throw std::invalid_argument("Compact pool proof selected input mismatch");
         } else {
@@ -19968,6 +20003,80 @@ struct ChainstateService::SelectedOrchardPoolContext {
     }
 #endif
 };
+
+std::unique_ptr<ChainstateService::SelectedOrchardPoolContext>
+ChainstateService::CaptureImportedOrchardTransactionUnderLock(
+        const std::unique_lock<std::mutex>& snapshot,std::span<const MempoolProofView> entries){
+#ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
+    activation_mutex_.AssertHeld("capture exact imported transaction inputs");
+    UTXOIndex* index=nullptr;
+    {std::lock_guard<std::mutex> use(wallet_index_use_mutex_);
+     if(!wallet_index_uses_by_thread_.contains(std::this_thread::get_id())||!utxo_index_)return {};
+     index=utxo_index_.get();}
+    // Keep the original complete frozen/cohort/PoW/checkpoint/namespace audit
+    // and actual lifecycle pin. Neither original durable nor validated moves.
+    auto checked=CaptureImportedWalletSourceUnderLock(snapshot,*index);
+    if(!checked.ok()||entries.empty()||entries.size()>1024)return {};
+    auto source=std::move(*checked);
+    auto* daemon=DaemonContext::instance();
+    const auto p2p=daemon&&daemon->chainstate.get()==this?std::dynamic_pointer_cast<P2PService>(daemon->p2p):nullptr;
+    const auto download=p2p?p2p->WalletFundingBodies():nullptr;
+    if(!download)return {};
+    std::map<OutPoint,const WalletManager::UtxoSetEntry*> records;
+    for(const auto& row:source->records){uint256 id;
+        if(!uint256::FromHex(row.txid_hex,id)||!records.emplace(OutPoint(TxId(id),row.vout),&row).second)return {};
+    }
+    auto coins=std::make_unique<SelectedOrchardPoolContext::ImportedCoins>();
+    coins->height=source->next.height-1;
+    size_t points=0,bytes=0;
+    for(const auto& entry:entries){
+        if(!entry.body.IsOrchard())return {};
+        const auto body_bytes=entry.body.Serialize();
+        if(body_bytes.size()>4*1024*1024-bytes)return {};bytes+=body_bytes.size();
+        for(const auto& point:entry.body.Inputs()){
+            if(++points>1024)return {};
+            const auto record=records.find(point);if(record==records.end())return {};
+            const auto& row=*record->second;
+            consensus::UTXOEntry coin(AmountUna::Una(row.amount_una),row.script_pubkey,row.height,row.is_coinbase);
+            uint256 creation;uint32_t parent_height=0;
+            if(!header_chain_selector_->GetAncestorHashByHash(source->next.parent_hash,row.height,creation,parent_height)||
+                parent_height!=coins->height)return {};
+            const auto raw=download->Request(creation);if(!raw)throw wallet::ShieldFundingPending();
+            const auto creating=Block::Deserialize(*raw);const auto header=header_chain_selector_->GetHeaderValue(creation);
+            if(!creating||!header||header->height!=row.height||header->header.GetHash()!=creation||
+                !CheckImportedFundingCreation(*creating,header->header,row.height,point,coin))return {};
+            // Metadata is now checked against its actual selected creating
+            // body, not trusted from legacy unbound snapshot leaf fields.
+            const auto leaf=consensus::HashUTXOForCreationHeight(point.txid.AsUint256(),point.vout,
+                row.amount_una,row.script_pubkey,row.height,row.is_coinbase);
+            {const auto guard=consensus_utxo_set_->LockForestShared();const auto& forest=consensus_utxo_set_->GetForest();
+             const auto position=forest.findLeafPosition(leaf);const auto proof=position?forest.prove(*position):std::nullopt;
+             if(!position||forest.isDeleted(*position)||!proof||!proof->verify(leaf,forest.getRoots())||
+                util::hex(forest.getCommitment())!=source->root)return {};}
+            coins->inputs.emplace(point,std::move(coin));
+        }
+        for(size_t output=0;output<entry.body.Orchard().Outputs().size();++output){
+            if(++points>1024)return {};
+            const OutPoint point(entry.body.GetTxid(),uint32_t(output));
+            // Exact output absences in the COMPLETE frozen set and ordinary
+            // namespace; unknown lookups are not converted into absences.
+            if(records.contains(point)||chain_db_->getCoin(point.txid.AsUint256(),point.vout).status()!=Status::NotFound)
+                return {};
+            coins->absent.insert(point);
+        }
+    }
+    const auto guard=consensus_utxo_set_->LockForestShared();
+    const auto stump=consensus::UtreexoStump::fromForest(consensus_utxo_set_->GetForest());
+    if(util::hex(consensus_utxo_set_->GetForest().getCommitment())!=source->root||
+        index->ReadAssumedStartupMetadata()!=source->metadata)return {};
+    // This is transaction authorization ONLY. No independently executed
+    // boundary, retirement record, block capability or Event1 is produced.
+    return std::make_unique<SelectedOrchardPoolContext>(*chain_db_,std::move(coins),
+        std::move(source),stump,header_chain_selector_);
+#else
+    (void)snapshot;(void)entries;return {};
+#endif
+}
 
 std::unique_ptr<ChainstateService::SelectedOrchardPoolContext>
 ChainstateService::CaptureSelectedOrchardPoolContextUnderLock(
@@ -20105,6 +20214,20 @@ bool ChainstateService::CheckRuntimeAccountReplayCurrentUnderLock(
     activation_mutex_.AssertHeld("check current account replay source");
     const auto head=replay.Head();const auto point=replay.Point(head).checkpoint;const auto facts=replay.Profile();
     const auto& context=selected.context;
+    if(selected.imported_source){
+        // Avoid reacquiring the lifecycle mutex while its REAL SnapshotUse is
+        // held. This raw zero-outbox check is not ordinary delivery authority.
+        const auto profile=consensus::SelectedOrchardBlockContext(BlockHeader{},context.activation_height);
+        if(!profile)return false;
+        const auto page=ReadRuntimeOutboxUnderLock(*chain_db_,*profile,{},1,1024*1024);
+        return !head.sequence&&head.digest.IsNull()&&!point.tree_size&&
+            !page.head.sequence&&page.head.digest.IsNull()&&!page.next.sequence&&page.next.digest.IsNull()&&
+            page.events.empty()&&!page.after_tip&&!selected.parent&&
+            context.height==context.activation_height&&context.parent_hash==point.block_hash&&
+            uint64_t(point.height)+1==context.height&&context.activation_height==facts.activation_height&&
+            context.domain.network_code==facts.domain.network_code&&context.domain.genesis_wire==facts.domain.genesis_wire&&
+            context.domain.branch_id==facts.domain.branch_id;
+    }
     const auto page=getRuntimeDeliveryPage(head,1);
     if(!page.ok()||(*page)->head!=head||(*page)->next!=head||!(*page)->events.empty()||
        context.parent_hash!=point.block_hash||uint64_t(point.height)+1!=context.height||
@@ -21035,8 +21158,12 @@ std::vector<uint8_t> ChainstateService::finalizeRuntimeWalletShield(
             std::vector<orchard::TransparentOutput>(outputs.begin(),outputs.end()),fee,request.proof->Bytes());
         std::unique_ptr<const consensus::OrchardCoinSnapshot> snapshot;
         {
-            std::lock_guard<std::mutex> snapshot_owner(snapshot_load_mutex_);
-            auto lock=AcquireBlockIngressActivationLock();auto selected=CaptureSelectedOrchardPoolContextUnderLock();
+            std::unique_lock<std::mutex> snapshot_owner(snapshot_load_mutex_);
+            auto lock=AcquireBlockIngressActivationLock();
+            const MempoolProofView body{MempoolTransaction::FromOrchard(draft),{}};
+            auto selected=assumeutxo_active_&&!compact_startup_&&!IsBackgroundValidationComplete()
+                ?CaptureImportedOrchardTransactionUnderLock(snapshot_owner,{&body,1})
+                :CaptureSelectedOrchardPoolContextUnderLock();
             if(!selected||!CheckRuntimeAccountReplayCurrentUnderLock(replay,*selected)||
                selected->context.activation_height!=profile.activation||selected->context.domain.network_code!=profile.domain.network_code||
                selected->context.domain.genesis_wire!=profile.domain.genesis_wire||selected->context.domain.branch_id!=profile.domain.branch_id)
@@ -21052,9 +21179,13 @@ std::vector<uint8_t> ChainstateService::finalizeRuntimeWalletShield(
     // The consumed writer below rechecks every captured owner before Ready.
     auto finalization=wallet::OrchardAccountDelivery::PrepareShieldFinalizationForReplay(
         wallet,session,profile,replay,operation,inputs,payments,outputs,fee,jobs);
-    std::lock_guard<std::mutex> snapshot_owner(snapshot_load_mutex_);
+    std::unique_lock<std::mutex> snapshot_owner(snapshot_load_mutex_);
     auto lock=AcquireBlockIngressActivationLock();
     auto selected=[&]() -> std::unique_ptr<SelectedOrchardPoolContext> {
+        if(assumeutxo_active_&&!compact_startup_&&!IsBackgroundValidationComplete()){
+            const MempoolProofView body{MempoolTransaction::FromOrchard(*envelope),{}};
+            return CaptureImportedOrchardTransactionUnderLock(snapshot_owner,{&body,1});
+        }
         if(!compact_startup_)return CaptureSelectedOrchardPoolContextUnderLock();
         // Only already-signed durable requests may use this path. The pool
         // cache is untrusted DATA, not a coin authority or a Ready certificate.
@@ -21089,8 +21220,30 @@ std::vector<uint8_t> ChainstateService::finalizeRuntimeWalletShield(
     const auto authorization=consensus::VerifyOrchardAuthorizations(snapshot,selected->context.domain,selected->context.height,selected->Mtp());
     (void)consensus::CheckOrchardTransactions(selected->context,selected->parent,{&authorization,1},selected->Lookups());
     auto bytes=envelope->CanonicalBytes(); // Preallocate before the durable Ready commit.
+    const std::function<void()> current_source=selected->imported_source?std::function<void()>([&]{
+        // No lifecycle re-lock under SnapshotUse. Source/selected/snapshot
+        // ownership survives the complete FULL Ready/history transaction.
+        const auto& source=*selected->imported_source;
+        UTXOIndex* index=nullptr;
+        {std::lock_guard<std::mutex> use(wallet_index_use_mutex_);
+         if(!wallet_index_uses_by_thread_.contains(std::this_thread::get_id()))throw std::runtime_error("Imported signing index use changed");
+         index=utxo_index_.get();}
+        if(!snapshot_owner.owns_lock()||!activation_mutex_.HeldByCurrentThread()||!source.lifecycle||
+            !index||wallet.getUTXOIndex()!=index||index->ReadAssumedStartupMetadata()!=source.metadata||
+            !active_tip_||active_tip_->hash!=source.next.parent_hash||active_tip_->height+1!=source.next.height||
+            snapshot_import_publishing_||safe_mode_active_||!assumeutxo_active_||compact_startup_||!consensus_utxo_set_)
+            throw std::runtime_error("Imported signing source changed before Ready commit");
+        const auto tip=chain_db_->getTip(),validated=chain_db_->getValidatedTip();const auto frozen=chain_db_->getPreBaseCoinSetBase();
+        const auto guard=consensus_utxo_set_->LockForestShared();
+        if(!tip.ok()||!validated.ok()||tip->height||validated->height||tip->hash!=validated->hash||
+            tip->hash!=uint256::FromHexUnsafe(Params().genesis_hash)||!frozen.ok()||
+            frozen->first!=source.next.parent_hash||uint64_t(frozen->second)+1!=source.next.height||
+            util::hex(consensus_utxo_set_->GetForest().getCommitment())!=source.root||
+            !chain_db_->getEmptyOrchardCommitmentSets().ok()||chain_db_->getLegacyRetirementState().status()!=Status::NotFound)
+            throw std::runtime_error("Imported signing current state changed before Ready commit");
+    }):std::function<void()>{};
     (void)wallet::OrchardAccountDelivery::CommitCatalogFinalization(
-        wallet,session,std::move(finalization),authorization);
+        wallet,session,std::move(finalization),authorization,current_source);
     return bytes; // No admission/relay; selected owner leaves before caller receives bytes.
 #else
     (void)wallet;(void)session;(void)account;(void)operation;(void)inputs;(void)payments;(void)outputs;(void)fee;(void)jobs;
@@ -21146,7 +21299,8 @@ MempoolOrchardValidation ChainstateService::ValidateOrchardPoolUnderLock(
     return ValidateOrchardPoolProofsUnderLock({body,{}},entries);
 }
 MempoolOrchardValidation ChainstateService::ValidateOrchardPoolProofsUnderLock(
-    const MempoolProofView& incoming,std::span<const MempoolProofView> pending) {
+    const MempoolProofView& incoming,std::span<const MempoolProofView> pending,
+    const std::unique_lock<std::mutex>* snapshot) {
     const auto& body=incoming.body;
     MempoolOrchardValidation result;
     const auto fail=[&](const char* message,TxRejectCode code=TxRejectCode::UNAVAILABLE) {
@@ -21160,8 +21314,10 @@ MempoolOrchardValidation ChainstateService::ValidateOrchardPoolProofsUnderLock(
         // pending checks without authenticated input authority.
         std::vector<MempoolProofView> complete(pending.begin(),pending.end());
         complete.push_back(incoming);
-        auto selected = CaptureSelectedOrchardPoolContextUnderLock(
-            std::span<const MempoolProofView>(complete));
+        const auto entries=std::span<const MempoolProofView>(complete);
+        auto selected = snapshot&&assumeutxo_active_&&!compact_startup_&&!IsBackgroundValidationComplete()
+            ?CaptureImportedOrchardTransactionUnderLock(*snapshot,entries)
+            :CaptureSelectedOrchardPoolContextUnderLock(entries);
         if (!selected) return fail("Orchard selected service unavailable");
         const auto& context = selected->context;
         const auto& parent = selected->parent;

@@ -2196,7 +2196,7 @@ std::unique_ptr<OrchardCatalogFinalizationPlan> OrchardAccountDelivery::PrepareF
 }
 OrchardAccountDelivery::FinalizedProof OrchardAccountDelivery::CommitCatalogFinalization(
         WalletManager& w,uint64_t session,std::unique_ptr<OrchardCatalogFinalizationPlan> plan,
-        const consensus::VerifiedOrchardAuthorizations& authorization){
+        const consensus::VerifiedOrchardAuthorizations& authorization,const std::function<void()>& current_source){
     Check(plan&&plan->data_&&plan->data_->session==session);
     auto data=std::move(plan->data_); // Every outcome consumes this process-local preparation.
     const auto& p=data->profile;const auto& id=data->operation;
@@ -2251,6 +2251,7 @@ OrchardAccountDelivery::FinalizedProof OrchardAccountDelivery::CommitCatalogFina
         // Authenticate every expected account/archive again after the writes.
         // A late SQL refusal or altered other owner rolls back history and Ready.
         {auto fresh=Owner::CaptureCatalog(w,session,p);data->captured->Recheck(*fresh);}
+        if(current_source)current_source();
         tx.Commit();
     }
     if(data->jobs)result.retired_job=data->jobs->RetireCaptured(id,data->job_token);

@@ -399,7 +399,8 @@ private:
     // Does not acquire or call the source. The selected service retains its
     // already-validated selected owner through this checked Ready/history commit.
     static FinalizedProof CommitCatalogFinalization(WalletManager&,uint64_t,
-        std::unique_ptr<OrchardCatalogFinalizationPlan>,const consensus::VerifiedOrchardAuthorizations&);
+        std::unique_ptr<OrchardCatalogFinalizationPlan>,const consensus::VerifiedOrchardAuthorizations&,
+        const std::function<void()>& current_source={});
     friend struct OrchardDetachedIssuanceTestAccess;
     friend struct OrchardDetachedProofReadTestAccess;
     enum class CatalogProofRequest { Any, Spend, Shield, StoredSpend, StoredShield };

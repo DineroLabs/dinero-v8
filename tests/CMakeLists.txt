@@ -9440,10 +9440,12 @@ if(TARGET nodecore_ffi)
       python3 ${CMAKE_SOURCE_DIR}/tests/integration/test_nodecore_funded_crossing.py)
     set_tests_properties(NodeCoreAssumedFundedCrossing PROPERTIES TIMEOUT 360 RUN_SERIAL TRUE
       LABELS "integration;nodecore;orchard;assumedmobile;wallet")
-    foreach(_imported_input_case IN ITEMS Queue MetadataRefusal)
+    foreach(_imported_input_case IN ITEMS Queue MetadataRefusal Ready)
       set(_imported_input_env DINERO_SDK_IMPORTED_SHIELD_QUEUE=1)
       if(_imported_input_case STREQUAL "MetadataRefusal")
         list(APPEND _imported_input_env DINERO_SDK_IMPORTED_SHIELD_WRONG_HEIGHT=1)
+      elseif(_imported_input_case STREQUAL "Ready")
+        list(APPEND _imported_input_env DINERO_SDK_IMPORTED_SHIELD_READY=1)
       endif()
       add_test(NAME NodeCoreImportedShield${_imported_input_case} COMMAND ${CMAKE_COMMAND} -E env
         NODECORE_DRIVER=$<TARGET_FILE:nodecore_activation_driver>
