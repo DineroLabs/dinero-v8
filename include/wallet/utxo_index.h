@@ -181,6 +181,10 @@ public:
     // Checked startup refusal, never absence on a SQL error. Does not clear
     // recovery markers or certify wallet delivery/ownership completeness.
     void RequireMetadataAbsent(const std::vector<std::string>& keys) const;
+    // Complete checked startup inventory, including unknown assumeutxo_ keys.
+    // SQL errors, borrowed transactions, invalid text and oversized inventories
+    // refuse, never become absence. No mutation or history-readiness receipt.
+    std::map<std::string,std::string> ReadAssumedStartupMetadata() const;
     bool DeleteMetadata(const std::string& key);
 
     // Query functions

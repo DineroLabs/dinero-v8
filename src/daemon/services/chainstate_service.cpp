@@ -1058,6 +1058,8 @@ struct ChainstateService::CompactStartupState {
 #ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
     std::unique_ptr<OrchardCompactChainstate> owner;
     std::shared_ptr<const consensus::OrchardSelectedConsistency> selected_consistency;
+    // Fresh original imported cohort binding, never restored from SQL flags.
+    std::optional<std::pair<uint256,uint32_t>> imported_parent;
     RuntimeOutboxCursor activation_delivery_origin;
     // Verified selected values and permanent global graph pointers. Header
     // selector/consumer binding and selected-read admission remain separate.
@@ -2274,6 +2276,8 @@ bool ChainstateService::AuditCompactBoundaryUnderLock(const CBlockIndex& tip,std
         // require the proven levels without changing any durable status or
         // weakening the exact failure/availability/locator comparisons.
         if(compact_startup_->selected_consistency)compact_startup_->selected_consistency->Check(*chain_db_);
+        const bool imported=compact_startup_->imported_parent&&compact_startup_->selected_consistency&&
+            compact_startup_->imported_parent->first==tip.hash&&compact_startup_->imported_parent->second==tip.height;
         const uint32_t reconstructed_status=compact_startup_->selected_consistency?m.status_flags:(m.status_flags | BLOCK_VALID_MASK);
         if (header->GetHash()!=tip.hash || tip.prev_hash!=header->prev_block_hash ||
             tip.version!=header->version || tip.merkle_root!=header->merkle_root ||
@@ -2281,14 +2285,29 @@ bool ChainstateService::AuditCompactBoundaryUnderLock(const CBlockIndex& tip,std
             indexed->header.SerializeForHash()!=header->SerializeForHash() || indexed->height!=tip.height ||
             indexed->chainwork!=catalog->work || ChainworkFromHex(tip.chainwork)!=catalog->work ||
             m.chainwork!=catalog->work || (m.status_flags&(BLOCK_FAILED_VALID|BLOCK_FAILED_CHILD)) ||
-            !(m.status_flags&BLOCK_HAVE_DATA) || !m.data_size ||
+            (!imported&&(!(m.status_flags&BLOCK_HAVE_DATA)||!m.data_size)) ||
+            (imported&&(m.status_flags!=BLOCK_VALID_HEADER||m.file_number||m.data_pos||m.data_size||m.undo_file||m.undo_pos||m.undo_size)) ||
             std::tie(tip.status,tip.file_number,tip.data_pos,tip.data_size,tip.undo_file,tip.undo_pos,tip.undo_size)!=
             std::tie(reconstructed_status,m.file_number,m.data_pos,m.data_size,m.undo_file,m.undo_pos,m.undo_size))
             return fail("compact activation-parent index mismatch");
-        const auto body=ReadRuntimeBlockUnderLock(*chain_db_,block_storage_.get(),tip.hash,tip.height);
-        if (!body.ok() || body->IsOrchardProfile() ||
-            body->Historical().header.SerializeForHash()!=header->SerializeForHash())
-            return fail("compact activation-parent archive mismatch");
+        if(imported){
+            // The factory proved EVERY original frozen coin/checkpoint and
+            // legacy before-image against the locally authenticated parent.
+            // This is not an archival/independent execution claim. Rebind the
+            // exact frozen cohort and unchanged independent genesis anchor.
+            const auto frozen=chain_db_->getPreBaseCoinSetBase();
+            const auto anchor=chain_db_->getValidatedTip();
+            const auto origin=storage::ReadOrchardActivationOrigin(*chain_db_);
+            if(!frozen.ok()||*frozen!=*compact_startup_->imported_parent||!anchor.ok()||!origin||
+                anchor->height!=0||origin->validated_height!=0||anchor->hash!=origin->validated||
+                anchor->hash.GetHex()!=Params().genesis_hash||origin->parent!=tip.hash||origin->parent_height!=tip.height)
+                return fail("compact imported-parent cohort mismatch");
+        }else{
+            const auto body=ReadRuntimeBlockUnderLock(*chain_db_,block_storage_.get(),tip.hash,tip.height);
+            if (!body.ok() || body->IsOrchardProfile() ||
+                body->Historical().header.SerializeForHash()!=header->SerializeForHash())
+                return fail("compact activation-parent archive mismatch");
+        }
         const auto domain=consensus::SelectedOrchardBlockContext(BlockHeader{},Params().orchard_activation_height);
         if (!domain) return fail("compact activation-parent profile unavailable");
         const consensus::OrchardTransactionContext next{
@@ -3246,6 +3265,8 @@ bool ChainstateService::InitCompactStorage() {
         prepared->selected_headers=std::move(restored->selected_headers_);
         prepared->selected_undo=std::move(restored->selected_undo_);
         prepared->selected_consistency=std::move(restored->selected_consistency_);
+        if(restored->imported_header_prefix_)prepared->imported_parent=std::pair{
+            restored->imported_header_prefix_->parent,restored->imported_header_prefix_->height};
         prepared->activation_delivery_origin=restored->activation_delivery_origin_;
         compact_startup_=std::move(prepared);
         // No full coin map/forest, legacy sidecar, wallet-index recovery,
@@ -10894,7 +10915,7 @@ bool ChainstateService::StartCompactStorage() {
                 !utxo_index_ && !utxo_position_index_ && !p2p_orphan_pool_ &&
                 (!pending_validation_mode_ || *pending_validation_mode_==consensus::ValidationMode::STATELESS) &&
                 runtime_block_notifications_ && !chain_oracle_client_ && !time_oracle_client_ &&
-                !transaction_oracle_client_ && wallet_notifiers_.empty();
+                !transaction_oracle_client_ && wallet_notifiers_.empty() && !assumeutxo_active_ && !assumeutxo_lifecycle_;
         };
         {
             std::lock_guard<AnnotatedRecursiveMutex> selected(activation_mutex_);
@@ -10916,7 +10937,57 @@ bool ChainstateService::StartCompactStorage() {
             assumeutxo::kActiveKey,assumeutxo::kBaseBlockKey,assumeutxo::kBaseHeightKey,
             assumeutxo::kLifecycleStateKey,assumeutxo::kFatalReasonKey,
             assumeutxo::kLcBaseBlockKey,assumeutxo::kLcBaseHeightKey,"assumeutxo_coins_loaded"};
-        wallet_index->RequireMetadataAbsent(unsupported_recovery);
+        wallet_index->RequireMetadataAbsent({"reorg_in_progress",kIncompleteReorgRecoveryTipKey});
+        const auto original_assumed=wallet_index->ReadAssumedStartupMetadata();
+        std::unique_ptr<assumeutxo::AssumeUtxoLifecycle> imported_lifecycle;
+        std::optional<std::pair<uint256,uint32_t>> imported_base;
+        if(compact_startup_->imported_parent){
+            std::lock_guard<AnnotatedRecursiveMutex> selected(activation_mutex_);
+            if(!completed_activation_||!compact_startup_->selected_consistency||!header_chain_selector_||
+                !BindCompactStartupAuditUnderLock(*audit))throw std::runtime_error("Imported startup source unavailable");
+            compact_startup_->selected_consistency->Check(*chain_db_);
+            const auto origin=storage::ReadOrchardActivationOrigin(*chain_db_);
+            const auto frozen=chain_db_->getPreBaseCoinSetBase();
+            if(!origin||!frozen.ok()||*frozen!=*compact_startup_->imported_parent||
+                origin->parent!=frozen->first||origin->parent_height!=frozen->second||origin->validated_height!=0)
+                throw std::runtime_error("Imported startup base mismatch");
+            const auto proof=OrchardSnapshotStore::ReadActivationProof(activation_mutex_,*chain_db_,*header_chain_selector_,origin->first);
+            const auto header=chain_db_->getHeader(frozen->first);
+            if(!proof||!header.ok()||consensus::HashOrchardSnapshotSection(*proof)!=origin->proof||
+                proof->parent_catalog.block!=frozen->first||proof->parent_catalog.height!=frozen->second)
+                throw std::runtime_error("Imported startup proof mismatch");
+            consensus::OrchardSnapshotCoins coins;
+            if(chain_db_->forEachPreBaseCoin([&](const uint256& id,uint32_t n,const Coin& row){
+                if(row.height<0||uint32_t(row.height)>frozen->second||row.amount>orchard::kMaxMoneyUna)
+                    throw std::runtime_error("Imported startup coin height/value invalid");
+                consensus::UTXOEntry coin;coin.value=AmountUna::Una(row.amount);coin.height=uint32_t(row.height);coin.isCoinbase=row.coinbase;
+                coin.is_confidential=row.is_confidential;coin.commitment=row.commitment;
+                if(!util::unhex(row.script_pubkey,coin.scriptPubKey)||coin.scriptPubKey.size()>10000||!consensus::UtxoRecordIsSnapshotSafe(coin)||
+                    !coins.emplace(OutPoint(TxId(id),n),std::move(coin)).second)throw std::runtime_error("Imported startup coin invalid");
+                return true;
+            })!=Status::Ok)throw std::runtime_error("Imported startup coins incomplete");
+            const auto height=std::to_string(frozen->second),hash=frozen->first.GetHex();
+            const std::map<std::string,std::string> expected={
+                {assumeutxo::kActiveKey,"true"},{assumeutxo::kBaseBlockKey,hash},{assumeutxo::kBaseHeightKey,height},
+                {assumeutxo::kExpectedCommitmentKey,consensus::ComputeUtxoRecordsDigest(coins).GetHex()},
+                {assumeutxo::kExpectedShieldedRootKey,proof->retirement.record.legacy_state_root.GetHex()},
+                {assumeutxo::kExpectedUtreexoRootKey,header->utreexo_root.GetHex()},
+                {assumeutxo::kLcBaseBlockKey,hash},{assumeutxo::kLcBaseHeightKey,height},
+                {assumeutxo::kLifecycleStateKey,"snapshot_loaded"},{"wallet_snapshot_recovery_base_height",height}};
+            if(original_assumed!=expected)throw std::runtime_error("Imported startup lifecycle does not match authenticated cohort");
+            imported_lifecycle=std::make_unique<assumeutxo::AssumeUtxoLifecycle>(wallet_index.get(),logger_?&logger_->get():nullptr,
+                std::chrono::seconds(std::max(1,config_?config_->GetInt("assumeutxo_bg_stall_timeout",1800):1800)));
+            // SnapshotLoaded restoration is read-only. FALSE explicitly grants
+            // no independently completed history; exact inventory precheck
+            // excludes every fatal/full/progress/unknown lifecycle branch.
+            imported_lifecycle->RestoreFromPersistence(false);
+            const auto status=imported_lifecycle->GetStatus(std::chrono::steady_clock::now());
+            if(status.state!=assumeutxo::AssumeUtxoLifecycle::State::SnapshotLoaded||!status.assumeutxo_active||status.fatal||status.history_fully_validated||
+                status.snapshot_base_block!=frozen->first||status.snapshot_base_height!=frozen->second||
+                wallet_index->ReadAssumedStartupMetadata()!=original_assumed)
+                throw std::runtime_error("Imported startup lifecycle restore refused");
+            imported_base=*frozen;
+        }else wallet_index->RequireMetadataAbsent(unsupported_recovery);
         p2p::OrphanBlockPool::Config orphan_config;
         orphan_config.max_orphan_blocks=256;orphan_config.max_orphan_size_mb=16;
         orphan_config.max_orphans_per_peer=64;orphan_config.orphan_timeout_seconds=600;
@@ -10926,7 +10997,9 @@ bool ChainstateService::StartCompactStorage() {
             std::lock_guard<AnnotatedRecursiveMutex> selected(activation_mutex_);
             if(!composition_matches() || runtime_block_notifications_!=notifications ||
                 !BindCompactStartupAuditUnderLock(*audit))return false;
-            wallet_index->RequireMetadataAbsent(unsupported_recovery);
+            wallet_index->RequireMetadataAbsent({"reorg_in_progress",kIncompleteReorgRecoveryTipKey});
+            if(wallet_index->ReadAssumedStartupMetadata()!=original_assumed)return false;
+            if(!imported_base)wallet_index->RequireMetadataAbsent(unsupported_recovery);
             // Acquire the final lifetime mutex before any live publication.
             // Bind above checks it too, but shutdown can close admission in
             // between. All refusals still leave tip/index/started unpublished.
@@ -10935,6 +11008,11 @@ bool ChainstateService::StartCompactStorage() {
                 wallet_index_uses_ || selected_read_uses_ || compact_startup_uses_!=1 ||
                 !compact_startup_uses_by_thread_.count(std::this_thread::get_id()))return false;
             utxo_index_=std::move(wallet_index);
+            if(imported_base){
+                {std::lock_guard<std::mutex> state(assumeutxo_lifecycle_init_mutex_);
+                 assumeutxo_lifecycle_=std::move(imported_lifecycle);}
+                SetAssumeUTXOState(imported_base->first,imported_base->second,false);
+            }
             p2p_orphan_pool_=std::move(orphans);
             BlockAcceptor::SetContext(context);
             PublishActiveTipLocked(audit->tip,TipPublishReason::kStartupLoad);

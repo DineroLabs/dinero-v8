@@ -1375,6 +1375,21 @@ void UTXOIndex::RequireMetadataAbsent(const std::vector<std::string>& keys) cons
     if(rc!=SQLITE_DONE)throw std::runtime_error("Wallet index startup metadata read incomplete");
 }
 
+std::map<std::string,std::string> UTXOIndex::ReadAssumedStartupMetadata() const {
+    std::lock_guard<std::recursive_mutex> lock(db_mutex_);
+    if(!db_||atomic_write_active_||!sqlite3_get_autocommit(db_))
+        throw std::runtime_error("Wallet index assumed startup read unavailable");
+    OwnershipSchemaStatement row(db_,"SELECT key,value FROM utxo_metadata WHERE substr(key,1,11)='assumeutxo_' OR key='wallet_snapshot_recovery_base_height' ORDER BY key");
+    std::map<std::string,std::string> result;int rc;
+    while((rc=sqlite3_step(row.value))==SQLITE_ROW){
+        auto key=OwnershipSchemaText(row.value,0),value=OwnershipSchemaText(row.value,1);
+        if(result.size()>=64||key.size()>128||value.size()>256||!result.emplace(std::move(key),std::move(value)).second)
+            throw std::runtime_error("Wallet index assumed startup inventory invalid");
+    }
+    if(rc!=SQLITE_DONE)throw std::runtime_error("Wallet index assumed startup inventory incomplete");
+    return result;
+}
+
 bool UTXOIndex::DeleteMetadata(const std::string& key) {
     if (key.starts_with("runtime_delivery:")) return false;
     std::lock_guard<std::recursive_mutex> lock(db_mutex_);

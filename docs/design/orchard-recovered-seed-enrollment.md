@@ -1030,6 +1030,22 @@ source/caller birthday, fabricated first event, generated provenance change,
 snapshot floor or automatic mixed-wallet readiness is introduced.
 # Imported-parent genesis graph reconciliation
 
+For this freshly authenticated ORIGINAL imported-parent class only, the parent
+audit accepts exact header-only metadata with zero body/undo locators, the
+unchanged genesis validation anchor, frozen cohort, catalog/stump owner and
+complete retained legacy before-image. The ordinary archival-parent branch
+continues to require its actual body and exact locators. No historical-body
+execution claim is substituted for the imported checkpoint.
+
+Compact startup preserves and read-only rebinds the exact original ten-key
+`snapshot_loaded` SQL inventory to this cohort: base, content digest over EVERY
+frozen record, expected Utreexo/legacy roots and lifecycle base. Unknown, missing,
+fatal, fully-validated, progress, reorg or incomplete keys refuse. The local
+lifecycle restores with `chainstate_matches_marker=false`, explicitly not full
+history validation. Metadata is compared again before closed-to-running
+publication; no original SQL key is deleted, rebased or repaired, and no mixed
+transparent/index readiness receipt is earned by this Orchard integration.
+
 The original imported activation-parent seam also freshly identifies the exact
 header-only selected prefix which legacy LoadSnapshot marked CHAIN in memory.
 Publication may drop ONLY exact HEADER|CHAIN to HEADER in unpublished graph

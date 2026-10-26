@@ -94,8 +94,13 @@ TEST(OrchardCompactStart, MetadataAbsenceChecksSqlErrorsAndBorrowedTransaction) 
     dinero::UTXOIndex index(f.WalletPath().string());ASSERT_TRUE(index.Initialize());
     ASSERT_TRUE(index.SetMetadata("unrelated","preserve"));
     EXPECT_NO_THROW(index.RequireMetadataAbsent({"reorg_in_progress","assumeutxo_active"}));
+    EXPECT_TRUE(index.ReadAssumedStartupMetadata().empty());
+    ASSERT_TRUE(index.SetMetadata("assumeutxo_unknown_guard","retain"));
+    EXPECT_EQ(index.ReadAssumedStartupMetadata(),(std::map<std::string,std::string>{{"assumeutxo_unknown_guard","retain"}}));
+    ASSERT_TRUE(index.DeleteMetadata("assumeutxo_unknown_guard"));
     ASSERT_TRUE(index.BeginTransaction());
     EXPECT_THROW(index.RequireMetadataAbsent({"reorg_in_progress"}),std::exception);
+    EXPECT_THROW(index.ReadAssumedStartupMetadata(),std::exception);
     ASSERT_TRUE(index.SetMetadata("borrowed","retain transaction"));
     ASSERT_TRUE(index.RollbackTransaction());EXPECT_FALSE(index.GetMetadata("borrowed"));
     EXPECT_EQ(index.GetMetadata("unrelated"),"preserve");
@@ -103,6 +108,7 @@ TEST(OrchardCompactStart, MetadataAbsenceChecksSqlErrorsAndBorrowedTransaction) 
     std::unique_ptr<sqlite3,decltype(&sqlite3_close)> connection(raw,sqlite3_close);
     ASSERT_EQ(sqlite3_exec(raw,"DROP TABLE utxo_metadata",nullptr,nullptr,nullptr),SQLITE_OK);
     EXPECT_THROW(index.RequireMetadataAbsent({"reorg_in_progress"}),std::exception);
+    EXPECT_THROW(index.ReadAssumedStartupMetadata(),std::exception);
     f.Closed();
 }
 #endif
