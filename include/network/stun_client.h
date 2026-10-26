@@ -6,9 +6,14 @@
 //
 // Discovers the daemon's public IP + port by sending BINDING REQUEST
 // datagrams to a small set of STUN servers and parsing the
-// XOR-MAPPED-ADDRESS attribute in their responses. The first valid
-// non-private response wins; later responses are used to detect
-// inconsistent (symmetric NAT-style) mappings.
+// XOR-MAPPED-ADDRESS attribute in their responses. Every server's answer
+// in a round is kept (NAT classification needs them all); the first one
+// is reported as public_addr.
+//
+// Sockets: by default the client binds its own ephemeral UDP socket. Built
+// with a SendFn it owns no socket: requests go out through the caller's
+// socket (the P2P port's QuicEndpoint) and the caller hands answers back via
+// HandleDatagram, so the reflexive address is the one peers can dial.
 //
 // Why we DON'T just use Bitcoin Core's externalip flag or rely on
 // peers to echo our source address: those work fine when you HAVE
@@ -37,6 +42,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -46,22 +52,27 @@ struct StunResult {
     UdpAddr public_addr{};            // discovered public IP+port (empty on timeout)
     std::string server_endpoint;      // "stun.example.com:3478" — which server answered
     std::string error_message;        // populated when public_addr.empty()
+    // Every answer this round, in arrival order: (server, reflexive address).
+    std::vector<std::pair<UdpAddr, UdpAddr>> responses;
 };
 
 class StunClient {
 public:
     using ResultCallback = std::function<void(const StunResult&)>;
+    using SendFn = std::function<bool(const UdpAddr& dest, const uint8_t* data, size_t len)>;
 
     StunClient();
+    // No socket of its own: send with `send`, receive via HandleDatagram().
+    explicit StunClient(SendFn send);
     ~StunClient();
 
     StunClient(const StunClient&) = delete;
     StunClient& operator=(const StunClient&) = delete;
 
     // Launch a discovery round. Sends a BINDING REQUEST to each
-    // configured STUN server; callback fires once with the FIRST
-    // valid response, or once with an error if every server times
-    // out within `timeout`.
+    // configured STUN server; callback fires once, when every server has
+    // answered or `timeout` passes, with all answers received (error set
+    // only if there were none).
     //
     // Subsequent calls before completion are rejected (returns false).
     bool Discover(std::chrono::seconds timeout, ResultCallback cb);
@@ -78,12 +89,28 @@ public:
     // True between Discover() launch and result callback firing.
     bool busy() const { return busy_.load(std::memory_order_acquire); }
 
+    // A datagram the caller's socket received (SendFn mode); non-STUN or
+    // unmatched packets are ignored.
+    void HandleDatagram(const UdpAddr& src, const uint8_t* data, size_t len);
+
+    // RFC 7983 demux: STUN's first byte is 0x00/0x01 and the magic cookie
+    // sits at offset 4. QUIC always sets the 0x40 fixed bit, so a QUIC packet
+    // never matches.
+    static bool IsStunPacket(const uint8_t* data, size_t len) {
+        return len >= 20 && data[0] <= 0x01 && data[4] == 0x21 && data[5] == 0x12 &&
+               data[6] == 0xA4 && data[7] == 0x42;
+    }
+    // XOR-MAPPED-ADDRESS of a Binding success response; nullopt if `data` is
+    // not one or is malformed. Does not check the transaction id.
+    static std::optional<UdpAddr> ParseBindingResponse(const uint8_t* data, size_t len);
+
 private:
     void OnDatagram(const UdpAddr& src, std::vector<uint8_t> data);
     void DispatchResult(const StunResult& result);
     void TimeoutWatcher(std::chrono::seconds timeout);
 
     UdpSocket socket_;
+    SendFn send_;  // set: external socket, socket_ unused
     std::vector<std::pair<std::string, uint16_t>> servers_;
 
     mutable std::mutex state_mutex_;
@@ -93,9 +120,12 @@ private:
     struct Outstanding {
         std::array<uint8_t, 12> txn_id;
         std::string server_endpoint;
+        UdpAddr server_addr;
         bool fulfilled{false};
     };
     std::vector<Outstanding> outstanding_;
+    std::vector<std::pair<UdpAddr, UdpAddr>> responses_;  // this round's answers
+    std::string first_server_endpoint_;
 
     ResultCallback result_cb_;
     std::atomic<bool> busy_{false};

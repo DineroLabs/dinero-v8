@@ -11,6 +11,11 @@
 // remote can only start a session if it is shaped like a QUIC v1 client
 // Initial, passes the per-IP and global rate limits, and the owner's AcceptFn
 // agrees. Everything else is dropped and counted.
+//
+// STUN shares the socket (so the reflexive address STUN reports is the one
+// QUIC peers can reach). STUN packets are recognised before any QUIC handling
+// and go only to the STUN handler (RFC 7983); QUIC's fixed bit keeps the two
+// from ever overlapping.
 
 #include "network/quic_session.h"
 #include "network/udp_socket.h"
@@ -50,6 +55,8 @@ public:
     // A new inbound session; the callee shares ownership. Runs on the socket
     // thread; must not block.
     using InboundFn = std::function<void(std::shared_ptr<QuicSession>, const UdpAddr& remote)>;
+    // A STUN packet arrived. Runs on the socket thread; must not block.
+    using StunFn = std::function<void(const UdpAddr& src, const uint8_t* data, size_t len)>;
 
     QuicEndpoint();
     ~QuicEndpoint();
@@ -64,6 +71,11 @@ public:
     // Dial `remote`. Null if a session to `remote` already exists or the
     // endpoint is not running. The handshake completes asynchronously.
     std::shared_ptr<QuicSession> Connect(const UdpAddr& remote, QuicSessionOptions client_opts);
+    // Where STUN packets go; empty drops them. Safe to call at any time.
+    void SetStunHandler(StunFn fn);
+    // Send one raw datagram from the endpoint's socket (STUN requests).
+    // False when not running.
+    bool SendDatagram(const UdpAddr& dest, const uint8_t* data, size_t len);
     // Stop routing to `remote` (its owner tore the session down).
     void Forget(const UdpAddr& remote);
     // Close every session (each sends CONNECTION_CLOSE), give them a moment to
@@ -106,6 +118,8 @@ private:
     AcceptFn accept_;
     InboundFn inbound_;
     Limits limits_;
+    std::mutex stun_mu_;
+    std::shared_ptr<const StunFn> stun_;
 
     mutable std::mutex mu_;
     std::map<std::pair<std::array<uint8_t, 17>, uint16_t>, Entry> sessions_;

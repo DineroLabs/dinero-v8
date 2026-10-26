@@ -1,5 +1,7 @@
 #include "network/quic_endpoint.h"
 
+#include "network/stun_client.h"
+
 #include <algorithm>
 #include <thread>
 
@@ -122,6 +124,17 @@ std::shared_ptr<QuicSession> QuicEndpoint::Connect(const UdpAddr& remote,
     return session;
 }
 
+void QuicEndpoint::SetStunHandler(StunFn fn) {
+    auto p = fn ? std::make_shared<const StunFn>(std::move(fn)) : nullptr;
+    std::lock_guard<std::mutex> lock(stun_mu_);
+    stun_ = std::move(p);
+}
+
+bool QuicEndpoint::SendDatagram(const UdpAddr& dest, const uint8_t* data, size_t len) {
+    if (!shared_->alive.load() || shared_->muted.load()) return false;
+    return shared_->socket.SendTo(dest, data, len);
+}
+
 void QuicEndpoint::Forget(const UdpAddr& remote) {
     std::lock_guard<std::mutex> lock(mu_);
     sessions_.erase(std::make_pair(IpKey(remote), remote.port));
@@ -139,6 +152,15 @@ bool QuicEndpoint::TakeToken(Bucket& b, uint32_t per_sec,
 
 void QuicEndpoint::OnDatagram(const UdpAddr& src, std::vector<uint8_t> data) {
     if (data.empty()) return;
+    if (StunClient::IsStunPacket(data.data(), data.size())) {
+        std::shared_ptr<const StunFn> stun;
+        {
+            std::lock_guard<std::mutex> lock(stun_mu_);
+            stun = stun_;
+        }
+        if (stun) (*stun)(src, data.data(), data.size());
+        return;
+    }
     const auto now = std::chrono::steady_clock::now();
     const auto key = std::make_pair(IpKey(src), src.port);
     std::shared_ptr<QuicSession> session;

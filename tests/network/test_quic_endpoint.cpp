@@ -242,3 +242,49 @@ TEST(QuicEndpoint, PendingInboundSessionsAreCappedAndExpire) {
     client.Stop();
     server.ep.Stop();
 }
+
+// Review Focus 5: STUN answers and QUIC share the P2P UDP port. A STUN
+// response must reach the STUN handler and never a QUIC session; a QUIC
+// Initial must reach QUIC and never the STUN handler (RFC 7983 demux).
+TEST(StunDemux, QuicAndStunNeverCrossRoute) {
+    Server server;
+    ASSERT_TRUE(server.Start());
+    std::atomic<int> stun_seen{0};
+    server.ep.SetStunHandler([&](const UdpAddr&, const uint8_t*, size_t) { stun_seen.fetch_add(1); });
+
+    // RFC 5769 §2.2 response header + XOR-MAPPED-ADDRESS (attributes trimmed).
+    std::vector<uint8_t> stun = {0x01, 0x01, 0x00, 0x0c, 0x21, 0x12, 0xa4, 0x42,
+                                 0xb7, 0xe7, 0xa7, 0x01, 0xbc, 0x34, 0xd6, 0x86,
+                                 0xfa, 0x87, 0xdf, 0xae, 0x00, 0x20, 0x00, 0x08,
+                                 0x00, 0x01, 0xa1, 0x47, 0xe1, 0x12, 0xa6, 0x43};
+    UdpSocket s;
+    ASSERT_TRUE(s.Bind(0));
+    s.SendTo(Loopback(server.ep.Port()), stun.data(), stun.size());
+    for (int i = 0; i < 50 && stun_seen.load() == 0; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+    EXPECT_EQ(stun_seen.load(), 1);
+    EXPECT_EQ(server.ep.SessionCount(), 0u);
+    EXPECT_EQ(server.ep.Stats().datagrams_dropped, 0u);
+
+    std::mt19937 rng(7);
+    server.ep.TestInjectDatagram(Loopback(40001), FakeInitial(rng));
+    EXPECT_EQ(server.ep.SessionCount(), 1u);
+    EXPECT_EQ(server.ep.Stats().sessions_accepted, 1u);
+    EXPECT_EQ(stun_seen.load(), 1);
+
+    // And our own STUN requests leave from the P2P port, so the reflexive
+    // address a server reports is the one QUIC peers can reach.
+    UdpSocket stun_server;
+    std::atomic<uint16_t> seen_port{0};
+    stun_server.OnReceive([&](const UdpAddr& src, std::vector<uint8_t>) { seen_port.store(src.port); });
+    ASSERT_TRUE(stun_server.Bind(0));
+    ASSERT_TRUE(server.ep.SendDatagram(Loopback(stun_server.bound_port()), stun.data(), stun.size()));
+    for (int i = 0; i < 50 && seen_port.load() == 0; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+    EXPECT_EQ(seen_port.load(), server.ep.Port());
+    stun_server.Stop();
+    s.Stop();
+    server.ep.Stop();
+}

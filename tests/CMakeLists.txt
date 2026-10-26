@@ -286,6 +286,32 @@ target_link_libraries(test_self_reachability PRIVATE GTest::gtest GTest::gtest_m
 add_test(NAME SelfReachability COMMAND test_self_reachability)
 set_tests_properties(SelfReachability PROPERTIES LABELS "p2p;reachability" TIMEOUT 10)
 
+add_executable(test_stun_parse
+  tests/network/test_stun_parse.cpp
+  src/network/stun_client.cpp
+  src/network/udp_socket.cpp
+)
+target_include_directories(test_stun_parse PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(test_stun_parse PRIVATE GTest::gtest GTest::gtest_main Threads::Threads)
+if(WIN32)
+  target_link_libraries(test_stun_parse PRIVATE ws2_32)
+endif()
+add_test(NAME StunParse COMMAND test_stun_parse)
+set_tests_properties(StunParse PROPERTIES LABELS "p2p;stun;nat" TIMEOUT 20)
+
+add_executable(test_nat_classifier
+  tests/p2p/test_nat_classifier.cpp
+  src/p2p/nat_classifier.cpp
+  src/network/udp_socket.cpp
+)
+target_include_directories(test_nat_classifier PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(test_nat_classifier PRIVATE GTest::gtest GTest::gtest_main Threads::Threads)
+if(WIN32)
+  target_link_libraries(test_nat_classifier PRIVATE ws2_32)
+endif()
+add_test(NAME NatClassifier COMMAND test_nat_classifier)
+set_tests_properties(NatClassifier PROPERTIES LABELS "p2p;stun;nat" TIMEOUT 10)
+
 add_executable(test_addrman_ipv6
   tests/p2p/test_addrman_ipv6.cpp
   src/p2p/addrman.cpp
