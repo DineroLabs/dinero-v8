@@ -7130,8 +7130,7 @@ bool P2PManager::connect_to_peer_quic(const std::string& ip, uint16_t port) {
     }
     auto session = quic_endpoint_->Connect(remote, quic_p2p_options_);
     if (!session) return false;
-    install_direct_quic_peer(std::move(session), remote, /*outbound=*/true);
-    return true;
+    return !install_direct_quic_peer(std::move(session), remote, /*outbound=*/true).empty();
 }
 
 std::string P2PManager::install_direct_quic_peer(
@@ -7151,11 +7150,30 @@ std::string P2PManager::install_direct_quic_peer(
     peer->lifetime_state.store(PeerLifetimeState::RUNNING);
     peer->quic_direct = true;
     peer->quic_remote = remote;
-    peer->relay_quic_session = std::move(session);
+    peer->relay_quic_session = session;
     const std::string key = peer->to_string();
+    bool refused = false;
     {
         std::lock_guard<std::mutex> lock(peers_mutex_);
-        connected_peers_[key] = peer;
+        // One live peer per ip:port across transports. Entries left STOPPING
+        // by cleanup_peer stay in the map until stop() and do not count.
+        auto it = connected_peers_.find(key);
+        const bool live = it != connected_peers_.end() &&
+            it->second->lifetime_state.load(std::memory_order_acquire) != PeerLifetimeState::STOPPING;
+        if (live || connecting_peers_.count(key)) {
+            refused = true;
+        } else {
+            // Reserve the address until the handshake ends (the handler or
+            // cleanup_peer clears it), so a TCP dial in the same pass cannot
+            // replace this still-handshaking peer.
+            connecting_peers_.insert(key);
+            connected_peers_[key] = peer;
+        }
+    }
+    if (refused) {
+        session->Close();
+        if (quic_endpoint_) quic_endpoint_->Forget(remote);  // outside peers_mutex_
+        return std::string();
     }
     start_peer_handler_thread(peer);
     return key;

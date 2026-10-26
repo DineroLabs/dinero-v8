@@ -353,3 +353,20 @@ TEST(QuicPeerConfig, QuicConnectTargetsAreDialed) {
     a.mgr->dial_quic_connect_targets();  // already connected: no second session
     EXPECT_EQ(a.mgr->quic_endpoint()->SessionCount(), 1u);
 }
+
+// ---- final-review fixes ----
+
+// A QUIC dial must reserve its ip:port until the handshake finishes, or a TCP
+// dial to the same address in the same connection-loop pass replaces the
+// still-handshaking QUIC peer (two handlers on one key).
+TEST(QuicPeer, HandshakingQuicPeerReservesItsAddress) {
+    Node a("resv-a"), b("resv-b");
+    ASSERT_TRUE(a.mgr->start_quic_endpoint(0));
+    ASSERT_TRUE(b.mgr->start_quic_endpoint(0));
+    const uint16_t bp = b.mgr->quic_endpoint()->Port();
+    ASSERT_TRUE(a.mgr->connect_to_peer_quic("127.0.0.1", bp));
+    EXPECT_TRUE(a.mgr->test_is_connecting_peer("127.0.0.1", bp))
+        << "QUIC dial did not reserve its address in connecting_peers_";
+    ASSERT_TRUE(WaitConnected(*a.mgr, LoopKey(bp)));
+    EXPECT_FALSE(a.mgr->test_is_connecting_peer("127.0.0.1", bp));
+}
