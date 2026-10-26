@@ -16,6 +16,7 @@
 #include "dinero/network/network_invariants.h"
 #include "consensus/header_chain.h"  // HeaderChainSelector value snapshots
 #include "network/local_interfaces.h"  // Self-loop filter (shared with P2PManager)
+#include "network/endpoint_format.h"
 #include "network/quic_endpoint.h"
 #include "network/port_mapper.h"
 #include "network/stun_client.h"       // NAT traversal Phase C1: public-IP discovery
@@ -154,32 +155,15 @@ bool ParseEndpoint(const std::string& endpoint,
     if (!out_host || !out_port) {
         return false;
     }
-    if (endpoint.empty()) {
+    bool has_port = false;
+    if (!dinero::network::SplitEndpoint(endpoint, out_host, out_port, &has_port) ||
+        out_host->empty()) {
         return false;
     }
-
-    const size_t colon = endpoint.rfind(':');
-    if (colon == std::string::npos) {
-        *out_host = endpoint;
+    if (!has_port) {
         *out_port = default_port;
-        return true;
     }
-
-    *out_host = endpoint.substr(0, colon);
-    if (out_host->empty()) {
-        return false;
-    }
-
-    try {
-        unsigned long parsed = std::stoul(endpoint.substr(colon + 1));
-        if (parsed == 0 || parsed > 65535) {
-            return false;
-        }
-        *out_port = static_cast<uint16_t>(parsed);
-        return true;
-    } catch (...) {
-        return false;
-    }
+    return true;
 }
 
 std::string ToLowerAscii(std::string value) {

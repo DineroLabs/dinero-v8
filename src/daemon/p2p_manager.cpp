@@ -243,7 +243,7 @@ dinero::network::UdpAddr RelayQuicAddress(uint64_t circuit_id, bool client_side)
 }
 
 std::string AddressKey(const std::string& address, uint16_t port) {
-    return address + ":" + std::to_string(port);
+    return dinero::network::FormatEndpoint(address, port);
 }
 
 bool IsLocalOrWildcardAddress(const std::string& address) {
@@ -349,67 +349,11 @@ std::string TrimAscii(std::string value) {
     return value;
 }
 
-bool ParseUint16(const std::string& value, uint16_t* out_port) {
-    if (!out_port || value.empty()) {
-        return false;
-    }
-    try {
-        size_t consumed = 0;
-        const unsigned long parsed = std::stoul(value, &consumed);
-        if (consumed != value.size() || parsed == 0 || parsed > 65535) {
-            return false;
-        }
-        *out_port = static_cast<uint16_t>(parsed);
-        return true;
-    } catch (...) {
-        return false;
-    }
-}
-
 bool SplitHostPort(const std::string& target,
                    std::string* out_host,
                    uint16_t* out_port,
                    bool* out_has_port) {
-    if (!out_host || !out_port || !out_has_port) {
-        return false;
-    }
-
-    const std::string trimmed = TrimAscii(target);
-    if (trimmed.empty()) {
-        return false;
-    }
-
-    *out_host = trimmed;
-    *out_port = 0;
-    *out_has_port = false;
-
-    if (trimmed.front() == '[') {
-        const size_t close = trimmed.find(']');
-        if (close == std::string::npos || close == 1) {
-            return false;
-        }
-        *out_host = trimmed.substr(1, close - 1);
-        if (close + 1 < trimmed.size()) {
-            if (trimmed[close + 1] != ':') {
-                return false;
-            }
-            *out_has_port = ParseUint16(trimmed.substr(close + 2), out_port);
-            return *out_has_port;
-        }
-        return true;
-    }
-
-    const size_t first_colon = trimmed.find(':');
-    if (first_colon != std::string::npos && first_colon == trimmed.rfind(':')) {
-        uint16_t parsed_port = 0;
-        if (ParseUint16(trimmed.substr(first_colon + 1), &parsed_port)) {
-            *out_host = trimmed.substr(0, first_colon);
-            *out_port = parsed_port;
-            *out_has_port = true;
-        }
-    }
-
-    return !out_host->empty();
+    return dinero::network::SplitEndpoint(target, out_host, out_port, out_has_port);
 }
 
 bool Ipv4ToHostOrder(const std::string& value, uint32_t* out) {
@@ -424,10 +368,34 @@ bool Ipv4ToHostOrder(const std::string& value, uint32_t* out) {
     return true;
 }
 
+bool Cidr6Matches(const std::string& base_text, int prefix, const std::string& address) {
+    in6_addr base{}, cand{};
+    if (inet_pton(AF_INET6, base_text.c_str(), &base) != 1 ||
+        inet_pton(AF_INET6, address.c_str(), &cand) != 1) {
+        return false;
+    }
+    for (int i = 0; i < 16 && prefix > 0; ++i, prefix -= 8) {
+        const uint8_t mask = prefix >= 8 ? 0xff : static_cast<uint8_t>(0xff << (8 - prefix));
+        if ((base.s6_addr[i] & mask) != (cand.s6_addr[i] & mask)) return false;
+    }
+    return true;
+}
+
 bool CidrMatches(const std::string& cidr, const std::string& address) {
     const size_t slash = cidr.find('/');
     if (slash == std::string::npos || slash == 0 || slash + 1 >= cidr.size()) {
         return false;
+    }
+    if (cidr.substr(0, slash).find(':') != std::string::npos) {
+        int prefix6 = -1;
+        try {
+            size_t consumed = 0;
+            prefix6 = std::stoi(cidr.substr(slash + 1), &consumed);
+            if (consumed != cidr.size() - slash - 1 || prefix6 < 0 || prefix6 > 128) return false;
+        } catch (...) {
+            return false;
+        }
+        return Cidr6Matches(cidr.substr(0, slash), prefix6, address);
     }
 
     int prefix = -1;
@@ -2335,16 +2303,16 @@ namespace {
 bool ParseIPv4HostPort(const std::string& hostport,
                        std::array<uint8_t, 4>* out_ip,
                        uint16_t* out_port) {
-    auto colon = hostport.rfind(':');
-    if (colon == std::string::npos) return false;
-    const std::string host = hostport.substr(0, colon);
-    const std::string port_str = hostport.substr(colon + 1);
+    std::string host;
+    uint16_t parsed_port = 0;
+    bool has_port = false;
+    if (!dinero::network::SplitEndpoint(hostport, &host, &parsed_port, &has_port) || !has_port) {
+        return false;  // also rejects "[v6]:port": this parser is IPv4-only
+    }
     int a, b, c, d;
     if (std::sscanf(host.c_str(), "%d.%d.%d.%d", &a, &b, &c, &d) != 4) return false;
     if (a < 0 || a > 255 || b < 0 || b > 255 || c < 0 || c > 255 || d < 0 || d > 255) return false;
-    int port_int = 0;
-    if (std::sscanf(port_str.c_str(), "%d", &port_int) != 1) return false;
-    if (port_int <= 0 || port_int > 65535) return false;
+    const int port_int = parsed_port;
     (*out_ip)[0] = static_cast<uint8_t>(a);
     (*out_ip)[1] = static_cast<uint8_t>(b);
     (*out_ip)[2] = static_cast<uint8_t>(c);
@@ -4025,7 +3993,7 @@ void P2PManager::MaybeAutoRegisterWithRelays() {
     }
 
     auto endpoint_key = [](std::string host, uint16_t port) {
-        std::string key = std::move(host) + ":" + std::to_string(port);
+        std::string key = dinero::network::FormatEndpoint(host, port);
         std::transform(key.begin(), key.end(), key.begin(),
                        [](unsigned char c) {
                            return static_cast<char>(std::tolower(c));
@@ -4903,7 +4871,7 @@ bool P2PManager::connect_to_peer_impl(const std::string& address, uint16_t port,
     }
 
     // Check if already connected or connection in progress
-    std::string peer_key = address + ":" + std::to_string(port);
+    std::string peer_key = dinero::network::FormatEndpoint(address, port);
     {
         std::lock_guard<std::mutex> lock(peers_mutex_);
         auto it = connected_peers_.find(peer_key);
@@ -5159,7 +5127,7 @@ void P2PManager::connection_manager_loop() {
                         return;
                     }
 
-                    std::string peer_key = address + ":" + std::to_string(port);
+                    std::string peer_key = dinero::network::FormatEndpoint(address, port);
 
                     // Skip if already connected (by peer key)
                     auto it = connected_peers_.find(peer_key);
@@ -7101,7 +7069,7 @@ bool P2PManager::start_quic_endpoint(uint16_t port) {
             }
             const std::string host = QuicRemoteHost(remote);
             if (is_peer_banned(host, remote.port)) return false;
-            const std::string key = host + ":" + std::to_string(remote.port);
+            const std::string key = dinero::network::FormatEndpoint(host, remote.port);
             std::lock_guard<std::mutex> lock(peers_mutex_);
             auto it = connected_peers_.find(key);
             if (it != connected_peers_.end() && it->second->is_connected) return false;
@@ -7181,7 +7149,7 @@ bool P2PManager::connect_to_peer_quic(const std::string& ip, uint16_t port) {
         return false;  // ourselves
     }
     if (is_peer_banned(ip, port)) return false;
-    const std::string key = QuicRemoteHost(remote) + ":" + std::to_string(port);
+    const std::string key = dinero::network::FormatEndpoint(QuicRemoteHost(remote), port);
     {
         std::lock_guard<std::mutex> lock(peers_mutex_);
         auto it = connected_peers_.find(key);
@@ -8109,7 +8077,7 @@ void P2PManager::save_peers_with_seeds(const std::string& peers_file_path) {
         for (const auto& anchor : anchor_nodes_) {
             if (total >= PEERS_FILE_MAX_ENTRIES) break;
             const std::string key =
-                anchor.first + ":" + std::to_string(anchor.second);
+                dinero::network::FormatEndpoint(anchor.first, anchor.second);
             if (written.insert(key).second) {
                 buf << anchor.first << " " << anchor.second << " " << now << "\n";
                 ++total;
@@ -8122,7 +8090,7 @@ void P2PManager::save_peers_with_seeds(const std::string& peers_file_path) {
             if (total >= PEERS_FILE_MAX_ENTRIES) break;
             const auto& peer = pair.second;
             if (!peer->is_outbound) continue;
-            std::string key = peer->address + ":" + std::to_string(peer->port);
+            std::string key = dinero::network::FormatEndpoint(peer->address, peer->port);
             if (written.insert(key).second) {
                 buf << peer->address << " " << peer->port << " "
                     << (peer->last_seen_unix > 0 ? peer->last_seen_unix : now) << "\n";
@@ -8139,7 +8107,7 @@ void P2PManager::save_peers_with_seeds(const std::string& peers_file_path) {
             // Preserve the accepted address bytes. DNS here could block
             // shutdown under peers_mutex_ and could reinterpret a peer's
             // advertised address during persistence.
-            const std::string key = seed.first + ":" + std::to_string(seed.second);
+            const std::string key = dinero::network::FormatEndpoint(seed.first, seed.second);
             if (written.count(key) == 0) {
                 buf << seed.first << " " << seed.second << " " << now << "\n";
                 written.insert(key);

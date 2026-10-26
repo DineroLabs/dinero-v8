@@ -26,6 +26,7 @@
 #include "daemon/services/p2p_service.h"
 #include "daemon/block_relay_manager.h"  // Task 5: BlocksServed24h()
 #include "network/quic_transport.h"      // Stage B: surface QUIC relay-transport readiness
+#include "network/endpoint_format.h"
 #include "consensus/chainparams.h"
 #include "common/logger.h"
 #include <memory>
@@ -40,32 +41,14 @@ bool ParseNodeEndpoint(const std::string& node, std::string* host, uint16_t* por
     if (!host || !port) {
         return false;
     }
-    if (node.empty()) {
+    bool has_port = false;
+    if (!dinero::network::SplitEndpoint(node, host, port, &has_port) || host->empty()) {
         return false;
     }
-
-    const size_t colon_pos = node.rfind(':');
-    if (colon_pos == std::string::npos) {
-        *host = node;
+    if (!has_port) {
         *port = 20999;
-        return true;
     }
-
-    *host = node.substr(0, colon_pos);
-    if (host->empty()) {
-        return false;
-    }
-
-    try {
-        const auto parsed = std::stoul(node.substr(colon_pos + 1));
-        if (parsed == 0 || parsed > 65535) {
-            return false;
-        }
-        *port = static_cast<uint16_t>(parsed);
-        return true;
-    } catch (...) {
-        return false;
-    }
+    return true;
 }
 
 std::shared_ptr<dinero::P2PService> GetP2PService(const ExecutionContext& ctx) {

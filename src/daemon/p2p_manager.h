@@ -20,6 +20,7 @@
 #include "p2p/outbound_policy.h"
 #include "network/clock_source.h"     // relay-hints Phase 1a: injectable time source for TTL logic
 #include "network/rolling_24h_counter.h"  // Phase 2b: rolling 24h byte counter for relay-virtual traffic
+#include "network/endpoint_format.h"   // [v6]:port peer keys
 #include "network/quic_session.h"     // NAT traversal Phase B2: encrypted relay virtual peers
 #include "network/relay_registry.h"   // NAT traversal Phase C3 slice 2: relay-side directory
 #include "network/token_bucket.h"     // NAT traversal: relay circuit bandwidth caps
@@ -221,7 +222,7 @@ struct PeerInfo {
         if (via_relay.has_value()) {
             return address;
         }
-        return address + ":" + std::to_string(port);
+        return dinero::network::FormatEndpoint(address, port);
     }
 };
 
@@ -855,7 +856,7 @@ public:
     }
     bool test_is_connecting_peer(const std::string& address, uint16_t port) const {
         std::lock_guard<std::mutex> lock(peers_mutex_);
-        return connecting_peers_.count(address + ":" + std::to_string(port)) != 0;
+        return connecting_peers_.count(dinero::network::FormatEndpoint(address, port)) != 0;
     }
     void test_handle_incoming_connection(int socket_fd, const std::string& address) {
         handle_incoming_connection(socket_fd, address);
