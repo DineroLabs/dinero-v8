@@ -10,6 +10,29 @@ TEST(WalletFundingDownload, BoundedRequestsAndStoppedOwner){
     download.Stop();EXPECT_FALSE(download.Request(extra));
 }
 #ifdef DINERO_TEST_ORCHARD_ORIGIN
+struct ImportedFundingCreationTestAccess {
+    static bool Check(const Block& body,const BlockHeader& header,uint32_t height,const OutPoint& point,const consensus::UTXOEntry& coin){
+        return ChainstateService::CheckImportedFundingCreation(body,header,height,point,coin);
+    }
+};
+TEST(WalletFundingDownload, ActualCreationMetadataAndMerkleComparison){
+    OrchardAdmissionFixture f;f.preserve_evidence=true;const auto& body=f.blocks.at(1);const auto& tx=body.vtx.front();
+    const OutPoint point(tx.GetTxid(),0);
+    const consensus::UTXOEntry coin(tx.vout.front().value,tx.vout.front().scriptPubKey,1,true);
+    const auto check=[&](const auto& b,const auto& h,uint32_t height,const auto& p,const auto& c){
+        return ImportedFundingCreationTestAccess::Check(b,h,height,p,c);};
+    ASSERT_TRUE(check(body,body.header,1,point,coin));
+    auto wrong=coin;wrong.height=2;EXPECT_FALSE(check(body,body.header,1,point,wrong));
+    wrong=coin;wrong.isCoinbase=false;EXPECT_FALSE(check(body,body.header,1,point,wrong));
+    wrong=coin;wrong.value=AmountUna::Una(1);EXPECT_FALSE(check(body,body.header,1,point,wrong));
+    wrong=coin;wrong.scriptPubKey.push_back(0);EXPECT_FALSE(check(body,body.header,1,point,wrong));
+    wrong=coin;wrong.is_confidential=true;EXPECT_FALSE(check(body,body.header,1,point,wrong));
+    auto missing=point;++missing.vout;EXPECT_FALSE(check(body,body.header,1,missing,coin));
+    auto changed=body;changed.vtx.front().vout.front().scriptPubKey.push_back(0);
+    EXPECT_FALSE(check(changed,body.header,1,point,coin));
+    changed=body;changed.vtx.push_back(changed.vtx.front());EXPECT_FALSE(check(changed,body.header,1,point,coin));
+    // Pure actual-body comparison only, not a selected source/coin capability.
+}
 TEST(WalletFundingDownload, ExactSessionAndBodyDataOnly){
     OrchardAdmissionFixture f;
     const auto raw=f.blocks.at(101).Serialize();const std::vector<uint8_t> bytes(raw.begin(),raw.end());

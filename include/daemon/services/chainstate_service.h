@@ -1653,6 +1653,11 @@ private:
     // Imported empty-account source only, never an independently replayed
     // parent or coin view. Owns the real lifecycle pin, not a serialized seal.
     struct ImportedWalletSource;
+    // Pure DATA comparison only; selected ancestry/current membership and all
+    // ownership checks remain with the actual queue caller.
+    static bool CheckImportedFundingCreation(const Block&,const BlockHeader&,uint32_t,
+        const OutPoint&,const consensus::UTXOEntry&);
+    friend struct ImportedFundingCreationTestAccess;
     StatusOr<std::unique_ptr<const ImportedWalletSource>> CaptureImportedWalletSourceUnderLock(
         const std::unique_lock<std::mutex>& snapshot, UTXOIndex&);
     // Transport is not storage authority. This narrower pre-boundary route

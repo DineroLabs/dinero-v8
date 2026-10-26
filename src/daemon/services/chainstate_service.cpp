@@ -20752,6 +20752,19 @@ std::unique_ptr<wallet::OrchardPreparedSpend> ChainstateService::reserveRuntimeW
 #endif
 }
 
+bool ChainstateService::CheckImportedFundingCreation(const Block& body,const BlockHeader& selected,uint32_t height,
+        const OutPoint& point,const consensus::UTXOEntry& coin){
+    bool mutated=false;
+    if(coin.height!=height||coin.is_confidential||!coin.commitment.empty()||body.header.SerializeForHash()!=selected.SerializeForHash()||
+        body.vtx.empty()||!body.vtx.front().IsCoinbase()||consensus::ComputeMerkleRoot(body.vtx,&mutated)!=selected.merkle_root||mutated)return false;
+    const Transaction* transaction=nullptr;size_t matches=0,position=0;
+    for(size_t n=0;n<body.vtx.size();++n)if(body.vtx[n].GetTxid()==point.txid){transaction=&body.vtx[n];position=n;++matches;}
+    if(matches!=1||!transaction||point.vout>=transaction->vout.size()||transaction->IsCoinbase()!=(position==0)||
+        coin.isCoinbase!=transaction->IsCoinbase())return false;
+    const auto& output=transaction->vout[point.vout];
+    return !output.is_confidential&&output.commitment.empty()&&output.value==coin.value&&output.scriptPubKey==coin.scriptPubKey;
+}
+
 std::unique_ptr<wallet::OrchardQueuedSpend> ChainstateService::queueRuntimeWalletShieldPayment(
         WalletManager& wallet,uint64_t session,uint32_t account,uint64_t expected,
         const std::array<uint8_t,32>& operation,std::span<const orchard::WalletPayment> payments,
@@ -20822,17 +20835,12 @@ std::unique_ptr<wallet::OrchardQueuedSpend> ChainstateService::queueRuntimeWalle
                     throw std::runtime_error("Imported shield creation ancestry unavailable");
                 const auto bytes=download->Request(creation);
                 if(!bytes)throw wallet::ShieldFundingPending();
-                const auto body=Block::Deserialize(*bytes);bool mutated=false;
+                const auto body=Block::Deserialize(*bytes);
                 const auto header=header_chain_selector_->GetHeaderValue(creation);
-                if(!body||!header||body->GetHash()!=creation||header->height!=coin.height||
-                    body->header.SerializeForHash()!=header->header.SerializeForHash()||body->vtx.empty()||
-                    consensus::ComputeMerkleRoot(body->vtx,&mutated)!=header->header.merkle_root||mutated||!body->vtx.front().IsCoinbase())
+                if(!body||!header||body->GetHash()!=creation||header->height!=coin.height)
                     throw std::runtime_error("Imported shield funding inclusion refused");
-                const Transaction* transaction=nullptr;size_t matches=0,position=0;
-                for(size_t n=0;n<body->vtx.size();++n)if(body->vtx[n].GetTxid().AsUint256()==id){transaction=&body->vtx[n];position=n;++matches;}
-                if(matches!=1||!transaction||coin.vout>=transaction->vout.size()||
-                    transaction->IsCoinbase()!=(position==0)||coin.is_coinbase!=transaction->IsCoinbase()||
-                    transaction->vout[coin.vout].value.GetUna()!=coin.amount_una||transaction->vout[coin.vout].scriptPubKey!=coin.script_pubkey)
+                consensus::UTXOEntry claimed(AmountUna::Una(coin.amount_una),coin.script_pubkey,coin.height,coin.is_coinbase);
+                if(!CheckImportedFundingCreation(*body,header->header,header->height,OutPoint(TxId(id),coin.vout),claimed))
                     throw std::runtime_error("Imported shield funding metadata refused");
                 if(coin.is_coinbase&&source.next.height-coin.height<consensus::UTREEXO_STATELESS_COINBASE_MATURITY)continue;
                 const auto leaf=consensus::HashUTXOForCreationHeight(id,coin.vout,coin.amount_una,coin.script_pubkey,coin.height,coin.is_coinbase);

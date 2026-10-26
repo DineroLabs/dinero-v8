@@ -28,9 +28,9 @@ input_queue=bool(os.environ.get('DINERO_SDK_IMPORTED_SHIELD_QUEUE'))
 wrong_input_height=bool(os.environ.get('DINERO_SDK_IMPORTED_SHIELD_WRONG_HEIGHT'))
 if wrong_input_height:
     assert assumed and input_queue and fixture['assumed_snapshot_version']==4
-    # A correct-checksum v4 file can claim a wrong LEGACY creation height
-    # without changing its authenticated v1 Utreexo leaf. Never trust this
-    # metadata for maturity/source authority merely because import accepts it.
+    # Deliberately corrupt creation metadata with a recomputed file checksum.
+    # Regtest fork20 already binds this height101 output in its v2 leaf; the
+    # original complete source audit must refuse before discovery/enrollment.
     original_snapshot=Path(fixture['assumed_snapshot']);snapshot=bytearray(original_snapshot.read_bytes())
     assert struct.unpack_from('<I',snapshot,4)[0]==4 and hashlib.sha256(snapshot[:-32]).digest()==snapshot[-32:]
     count=struct.unpack_from('<Q',snapshot,44)[0];offset=68;changed=0
@@ -50,7 +50,7 @@ magic=fixture['magic'];headers=[bytes.fromhex(h) for h in fixture['headers']]
 assert len(headers)==104 and all(len(h)==128 for h in headers)
 stop=threading.Event();future=threading.Event();bodies_ready=threading.Event();proof_ready=threading.Event();echo_ready=threading.Event()
 funding_release=threading.Event();funding_pending={}
-funding_bodies={hashlib.sha256(hashlib.sha256(Path(path).read_bytes()[:128]).digest()).digest():Path(path).read_bytes()
+funding_bodies={hashlib.sha256(hashlib.sha256(Path(path).read_bytes()[:128]).digest()).digest()[::-1]:Path(path).read_bytes()
     for path in fixture.get('funding_bodies',{}).values()}
 packets=[];failures=[];connections=[];pending={};handshaken={};sent_headers=set();sent_proof=set();asked_echo=set();echo=[]
 body_requests=[];proof_wire=b'';txid=''
@@ -245,6 +245,20 @@ try:
             assert candidates==[],'invalid snapshot cohort was silently accepted/repaired'
             assert 'Snapshot funding candidates discovered' not in unlocked.get('recovery_warning',''),unlocked
         else:
+            if wrong_input_height:
+                # In this fixed regtest profile, height101 is ALREADY a v2
+                # maturity-bound leaf (fork20). The complete source audit must
+                # refuse this altered file BEFORE discovery/enrollment. Do not
+                # call this a reached creating-body comparison negative.
+                assert candidates==[] and 'Snapshot funding candidates discovered' not in unlocked.get('recovery_warning',''),unlocked
+                assert candidate_wallet_state()==before_discovery and original_lifecycle()==original
+                assert call('stop')==0;success=True
+                (root/'receipt.json').write_text(json.dumps(dict(original_assumed_mobile=True,wrong_snapshot_height=100,
+                    actual_creation_height=101,original_lifecycle=original,nonempty_queue=False,
+                    source_leaf_refusal=True,creation_body_check_reached=False,
+                    scope='Correct-checksum altered v4 metadata refuses in the unchanged complete maturity-bound leaf audit before discovery/enrollment. NOT a reached legacy creating-body/maturity-negative, queue, handoff, app/device or release gate.'),indent=2)+'\n')
+                print('PASS maturity-bound imported source refuses altered metadata before discovery',flush=True)
+                sys.exit(0)
             found=[c for c in candidates if c.get('txid')==fixture['funding_txid']]
             assert len(found)==1,'normal snapshot restore/unlock did not discover actual named-wallet funding'
             assert found[0]['amount_una']==1000000 and found[0]['snapshot_candidate'] and not found[0]['spendable'] and not found[0]['safe'] and found[0]['confirmations']==0,found
@@ -331,18 +345,8 @@ try:
             if queued.get('error_code')!='funding_source_pending':break
             assert wallet_rows()==before_queue and candidate_wallet_state()==before_state
             time.sleep(.1)
-        if wrong_input_height:
-            assert queued.get('error')=='Imported shield funding metadata refused',queued
-            assert wallet_rows()==before_queue and candidate_wallet_state()==before_state,'bad legacy metadata acquired input authority'
-            assert original_lifecycle()==original and rpc('wallet.listunspent',[])==before_coins
-            assert call('stop')==0;success=True
-            (root/'receipt.json').write_text(json.dumps(dict(original_assumed_mobile=True,wrong_legacy_height=100,
-                actual_creation_height=101,reply=queued,pending=pending_reply,original_lifecycle=original,
-                nonempty_queue=False,scope='Correct-checksum dormant v4 import and genuine discovery/enrollment succeed; claimed legacy metadata is refused by actual selected historical full-body inclusion before any reservation. No handoff, Ready, app/device or release claim.'),indent=2)+'\n')
-            print('PASS imported shield refuses correct-checksum wrong legacy metadata before reservation',flush=True)
-            sys.exit(0)
     else:queued=rpc('wallet.orchard.queueshield',request)
-    assert queued['proof_queued'] and queued['input_count']>0,queued
+    assert queued.get('proof_queued') and queued['input_count']>0,queued
     if input_queue:
         assert queued['input_count']==1 and not queued['existing_request'],queued
         reserved=wallet_rows();assert reserved!=before_queue and reserved['orchard_wallet_retained']

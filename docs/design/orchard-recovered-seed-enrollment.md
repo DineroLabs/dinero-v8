@@ -102,6 +102,11 @@ queue is NOT the original-assumed nonempty activation crossing: completing and
 readmitting it, generic NEW compact input acquisition, other imported bases and
 physical app/device acceptance remain open. In particular, the dormant v4
 private fixture does not qualify mainnet/v5 binding or production maturity.
+The native funded output at101 is already maturity-leaf-v2 under regtest fork20.
+Its altered correct-checksum height fixture must refuse in the original full
+source audit, BEFORE discovery, not at the later creating-body checker. Separate
+pure actual-body tests exercise that comparison on a real height1 legacy leaf;
+they are not a full legacy-input imported-wallet crossing qualification.
 
 The older timed soak used three FULL producers and an empty Orchard tree; it
 stopped as FAIL_CONTROLLER_STOPPED after about20h40m, not a 72-hour pass. The
