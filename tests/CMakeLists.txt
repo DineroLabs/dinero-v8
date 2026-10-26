@@ -276,6 +276,17 @@ set_tests_properties(TokenBucket PROPERTIES
   TIMEOUT 10
 )
 
+add_executable(test_addrman_ipv6
+  tests/p2p/test_addrman_ipv6.cpp
+  src/p2p/addrman.cpp
+)
+target_include_directories(test_addrman_ipv6 PRIVATE
+  ${CMAKE_SOURCE_DIR}/include
+)
+target_link_libraries(test_addrman_ipv6 PRIVATE GTest::gtest GTest::gtest_main)
+add_test(NAME AddrManIpv6 COMMAND test_addrman_ipv6)
+set_tests_properties(AddrManIpv6 PROPERTIES LABELS "p2p;ipv6" TIMEOUT 10)
+
 add_executable(test_addrman_relay_select
   tests/network/test_addrman_relay_select.cpp
   src/p2p/addrman.cpp

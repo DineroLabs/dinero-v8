@@ -61,3 +61,28 @@ TEST(PeerKey, BanMatchesIpv6ExactAndCidr) {
     EXPECT_TRUE(mgr.is_peer_banned("2a00::9", 20999));
     EXPECT_FALSE(mgr.is_peer_banned("2a00::9", 20998));
 }
+
+#include "p2p/addr_v2.h"
+#include "p2p/addrman.h"
+#include "network/types.h"
+
+TEST(AddrV2, Ipv6EntriesAreStoredNotDropped) {
+    P2PManager mgr(20999);
+    dinero::p2p::AddressManager addrman;
+    mgr.set_address_manager(&addrman);
+    dinero::p2p::AddrV2Entry e;
+    e.time = static_cast<uint32_t>(std::time(nullptr));
+    e.services = dinero::ServiceFlags::NODE_NETWORK;
+    e.net = dinero::p2p::NetworkType::IPV6;
+    e.addr = {0x26, 0x00, 0x17, 0x00, 0x7d, 0xe1, 0x71, 0x70, 0, 0, 0, 0, 0, 0, 0, 0x2d};
+    e.port = 20999;
+    P2PMessage msg;
+    msg.command = dinero::MessageCommands::ADDRV2;
+    msg.payload = dinero::p2p::EncodeAddrV2({e});
+    mgr.test_process_message("203.0.113.1:20999", msg);
+    bool found = false;
+    for (const auto& a : addrman.getAddresses(1000)) {
+        if (a.ip == "2600:1700:7de1:7170::2d" && a.port == 20999) found = true;
+    }
+    EXPECT_TRUE(found) << "gossiped IPv6 address was dropped";
+}

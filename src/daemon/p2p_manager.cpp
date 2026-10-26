@@ -3817,6 +3817,7 @@ void P2PManager::handle_addrv2(const std::string& peer_address, const P2PMessage
     int ipv4_added = 0;
     int torv3_added = 0;
     int ipv6_seen = 0;
+    int ipv6_added = 0;
     int torv3_skipped = 0;
     int i2p_skipped = 0;
     std::vector<std::pair<std::string, uint16_t>> new_for_relay;
@@ -3842,13 +3843,22 @@ void P2PManager::handle_addrv2(const std::string& peer_address, const P2PMessage
                 }
                 break;
             }
-            case dinero::p2p::NetworkType::IPV6:
+            case dinero::p2p::NetworkType::IPV6: {
                 ipv6_seen++;
-                // TODO Phase A2 follow-up: format the 16 bytes as a
-                // bracketed IPv6 string and pass through the same
-                // remember_peer_address path. Existing addrman is
-                // string-keyed so the format must be canonical.
+                // Canonical inet_ntop text (addrman is string-keyed), then the
+                // same filters and path as IPv4. Routability is checked by
+                // remember_peer_address via NetworkAddress::isRoutable.
+                char buf[INET6_ADDRSTRLEN] = {0};
+                if (!inet_ntop(AF_INET6, e.addr.data(), buf, sizeof(buf))) continue;
+                std::string addr(buf);
+                if (e.port == 0 || e.port != listen_port_) continue;
+                if (!external_ip_.empty() && addr == external_ip_) continue;
+                if (remember_peer_address(addr, e.port, peer_address, e.services)) {
+                    ipv6_added++;
+                    new_for_relay.emplace_back(addr, e.port);
+                }
                 break;
+            }
             case dinero::p2p::NetworkType::TORV3:
                 {
                     std::string onion;
@@ -3874,7 +3884,7 @@ void P2PManager::handle_addrv2(const std::string& peer_address, const P2PMessage
         std::cout << "[P2P] addrv2 from " << peer_address
                   << ": ipv4_added=" << ipv4_added
                   << " torv3_added=" << torv3_added
-                  << " ipv6_seen=" << ipv6_seen
+                  << " ipv6_seen=" << ipv6_seen << " ipv6_added=" << ipv6_added
                   << " torv3_skipped=" << torv3_skipped
                   << " i2p_skipped=" << i2p_skipped
                   << " (I2P/IPv6 ingestion is a Phase A2 follow-up)"

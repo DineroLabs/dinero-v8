@@ -1,4 +1,14 @@
 #include "p2p/addrman.h"
+#include "network/endpoint_format.h"
+
+#ifdef _WIN32
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#else
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#endif
+#include <cstdio>
 #include <algorithm>
 #include <fstream>
 #include <sstream>
@@ -13,12 +23,61 @@ namespace p2p {
 // std::unique_ptr<AddressManager> g_addrman;
 
 // NetworkAddress implementation
+namespace {
+
+bool ParseV6(const std::string& ip, in6_addr* out) {
+    return ip.find(':') != std::string::npos && inet_pton(AF_INET6, ip.c_str(), out) == 1;
+}
+
+bool IsV4Mapped(const in6_addr& a) {
+    for (int i = 0; i < 10; ++i) if (a.s6_addr[i] != 0) return false;
+    return a.s6_addr[10] == 0xff && a.s6_addr[11] == 0xff;
+}
+
+std::string MappedV4String(const in6_addr& a) {
+    char buf[INET_ADDRSTRLEN] = {0};
+    inet_ntop(AF_INET, a.s6_addr + 12, buf, sizeof(buf));
+    return buf;
+}
+
+// Not reachable on the public internet: unspecified, loopback, link-local
+// fe80::/10, unique-local fc00::/7, documentation 2001:db8::/32.
+bool IsNonRoutableV6(const in6_addr& a) {
+    bool all_zero = true;
+    for (int i = 0; i < 15; ++i) if (a.s6_addr[i] != 0) all_zero = false;
+    if (all_zero && (a.s6_addr[15] == 0 || a.s6_addr[15] == 1)) return true;
+    if (a.s6_addr[0] == 0xfe && (a.s6_addr[1] & 0xc0) == 0x80) return true;
+    if ((a.s6_addr[0] & 0xfe) == 0xfc) return true;
+    return a.s6_addr[0] == 0x20 && a.s6_addr[1] == 0x01 && a.s6_addr[2] == 0x0d &&
+           a.s6_addr[3] == 0xb8;
+}
+
+}  // namespace
+
+std::string AddrManNetGroup(const std::string& ip) {
+    in6_addr a{};
+    if (ParseV6(ip, &a)) {
+        if (IsV4Mapped(a)) return AddrManNetGroup(MappedV4String(a));
+        char buf[16];
+        std::snprintf(buf, sizeof(buf), "v6:%02x%02x%02x%02x", a.s6_addr[0], a.s6_addr[1],
+                      a.s6_addr[2], a.s6_addr[3]);
+        return buf;
+    }
+    auto dot1 = ip.find('.');
+    if (dot1 == std::string::npos) return ip;
+    auto dot2 = ip.find('.', dot1 + 1);
+    if (dot2 == std::string::npos) return ip;
+    return ip.substr(0, dot2);  // "192.168" from "192.168.1.100"
+}
+
 std::string NetworkAddress::toString() const {
-    return ip + ":" + std::to_string(port);
+    return dinero::network::FormatEndpoint(ip, port);
 }
 
 bool NetworkAddress::isValid() const {
     if (ip.empty() || port == 0) return false;
+    in6_addr v6{};
+    if (ip.find(':') != std::string::npos) return ParseV6(ip, &v6);
     
     // Basic IP validation (IPv4 for now)
     std::istringstream iss(ip);
@@ -40,6 +99,15 @@ bool NetworkAddress::isValid() const {
 
 bool NetworkAddress::isRoutable() const {
     if (!isValid()) return false;
+    in6_addr v6{};
+    if (ParseV6(ip, &v6)) {
+        if (IsV4Mapped(v6)) {
+            NetworkAddress v4 = *this;
+            v4.ip = MappedV4String(v6);
+            return v4.isRoutable();
+        }
+        return !IsNonRoutableV6(v6);
+    }
     
     // Check for non-routable addresses
     if (ip.substr(0, 3) == "10." ||
@@ -610,11 +678,7 @@ const AddressEntry* AddressManager::findAddress(const NetworkAddress& addr) cons
 }
 
 std::string AddressManager::extractSubnet16(const std::string& ip) {
-    auto dot1 = ip.find('.');
-    if (dot1 == std::string::npos) return ip;
-    auto dot2 = ip.find('.', dot1 + 1);
-    if (dot2 == std::string::npos) return ip;
-    return ip.substr(0, dot2);  // "192.168" from "192.168.1.100"
+    return AddrManNetGroup(ip);  // /16 for IPv4, /32 for IPv6
 }
 
 size_t AddressManager::countInSubnet16(

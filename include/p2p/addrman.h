@@ -14,6 +14,10 @@
 namespace dinero {
 namespace p2p {
 
+// Network group used for diversity limits: the /16 for IPv4 ("1.2"), the /32
+// for IPv6 ("v6:26001700"); IPv4-mapped IPv6 groups as its IPv4 /16.
+std::string AddrManNetGroup(const std::string& ip);
+
 /**
  * Network address information for peers
  */
