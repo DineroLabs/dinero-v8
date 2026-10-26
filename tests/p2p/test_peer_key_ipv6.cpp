@@ -150,3 +150,18 @@ TEST(PeerKey, Ipv6LoopbackDialHandshake) {
     b.stop();
     a.stop();
 }
+
+TEST(PeerKey, Ipv6InboundLimitIsPerSlash64) {
+    // Every home and VPS gets a whole /64: a per-address limit would let one
+    // host fill every inbound slot from 12 * 2^64 addresses.
+    P2PManager m(0);
+    m.test_set_inbound_limits(/*total=*/100, /*per_ip=*/12);
+    for (int i = 1; i <= 12; ++i) {
+        m.test_install_connected_direct_peer("2600:1700:1:2::" + std::to_string(i), -1,
+                                             /*is_outbound=*/false, false, {});
+    }
+    EXPECT_FALSE(m.test_inbound_slot_available("2600:1700:1:2::ff")) << "13th peer from one /64 admitted";
+    EXPECT_FALSE(m.test_inbound_slot_available("2600:1700:1:2:abcd::1"));
+    EXPECT_TRUE(m.test_inbound_slot_available("2600:1700:1:3::1")) << "a neighbouring /64 is someone else";
+    EXPECT_TRUE(m.test_inbound_slot_available("1.2.3.4"));
+}

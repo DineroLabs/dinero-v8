@@ -339,6 +339,19 @@ bool IsAdvertisableAddress(const std::string& address, uint16_t port) {
     return network_addr.isValid() && network_addr.isRoutable();
 }
 
+// One host's identity for per-host limits (inbound slots, dial-back budget):
+// its IPv4 address, or its IPv6 /64 -- every home or VPS gets a whole /64, so
+// a per-address limit would not limit anyone.
+std::string AddressLimitKey(const std::string& ip) {
+    struct in6_addr v6 {};
+    if (inet_pton(AF_INET6, ip.c_str(), &v6) != 1) return ip;
+    char buf[24];
+    const uint8_t* b = reinterpret_cast<const uint8_t*>(&v6);
+    std::snprintf(buf, sizeof(buf), "v6:%02x%02x%02x%02x%02x%02x%02x%02x", b[0], b[1], b[2], b[3],
+                  b[4], b[5], b[6], b[7]);
+    return buf;
+}
+
 std::string TrimAscii(std::string value) {
     auto is_space = [](unsigned char c) { return std::isspace(c) != 0; };
     value.erase(value.begin(), std::find_if(value.begin(), value.end(),
@@ -7094,7 +7107,8 @@ std::string QuicRemoteHost(const dinero::network::UdpAddr& remote) {
 
 bool P2PManager::inbound_slot_available_locked(const std::string& ip, std::string* why) const {
     size_t inbound_count = 0;
-    size_t same_ip_count = 0;
+    size_t same_ip_count = 0;  // same IPv4 address or same IPv6 /64
+    const std::string host_key = AddressLimitKey(ip);
     for (const auto& [key, peer] : connected_peers_) {
         // Count inbound peers still handshaking too (not only is_connected),
         // or a burst of unfinished handshakes walks straight past the caps.
@@ -7102,7 +7116,7 @@ bool P2PManager::inbound_slot_available_locked(const std::string& ip, std::strin
             peer->lifetime_state.load(std::memory_order_acquire) == PeerLifetimeState::RUNNING;
         if (!peer->is_outbound && live) {
             ++inbound_count;
-            if (peer->address == ip) ++same_ip_count;
+            if (AddressLimitKey(peer->address) == host_key) ++same_ip_count;
         }
     }
     if (inbound_count >= max_inbound_) {
@@ -7178,19 +7192,6 @@ constexpr auto kReachGlobalWindow = std::chrono::minutes(1);
 constexpr size_t kReachGlobalMax = 30;
 constexpr size_t kReachMaxInFlight = 4;
 constexpr auto kReachPendingTimeout = std::chrono::seconds(60);
-// A requester's rate-limit identity: its IPv4 address, or its IPv6 /64 (one
-// home or VPS gets a whole /64, so per-address limits would be per-attacker
-// unlimited). Reconnecting from a new source port changes nothing.
-std::string ReachRequesterKey(const std::string& ip) {
-    struct in6_addr v6 {};
-    if (inet_pton(AF_INET6, ip.c_str(), &v6) != 1) return ip;
-    char buf[24];
-    const uint8_t* b = reinterpret_cast<const uint8_t*>(&v6);
-    std::snprintf(buf, sizeof(buf), "v6:%02x%02x%02x%02x%02x%02x%02x%02x", b[0], b[1], b[2], b[3],
-                  b[4], b[5], b[6], b[7]);
-    return buf;
-}
-
 // Whole dial-back probe (connect + handshake); well under kReachPendingTimeout.
 constexpr auto kDialbackProbeDeadline = std::chrono::seconds(10);
 
@@ -7423,7 +7424,7 @@ void P2PManager::handle_reach_check(const std::string& peer_address, const P2PMe
             while (!q.empty() && now - q.front() > kReachPerPeerWindow) q.pop_front();
             it = q.empty() ? reach_window_by_peer_.erase(it) : std::next(it);
         }
-        auto& mine = reach_window_by_peer_[ReachRequesterKey(target_ip)];
+        auto& mine = reach_window_by_peer_[AddressLimitKey(target_ip)];
         while (!reach_window_global_.empty() && now - reach_window_global_.front() > kReachGlobalWindow) {
             reach_window_global_.pop_front();
         }

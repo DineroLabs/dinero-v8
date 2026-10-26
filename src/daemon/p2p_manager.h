@@ -917,6 +917,10 @@ public:
     std::vector<std::pair<std::string, uint16_t>> test_local_advertised_addresses() const {
         return get_local_advertised_addresses();
     }
+    bool test_inbound_slot_available(const std::string& ip) const {
+        std::lock_guard<std::mutex> lock(peers_mutex_);
+        return inbound_slot_available_locked(ip, nullptr);
+    }
     void test_set_inbound_limits(size_t total, size_t per_ip) {
         max_inbound_ = total;
         max_inbound_per_ip_ = per_ip;
