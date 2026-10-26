@@ -468,9 +468,10 @@ STUN
     done
     STUN_SERVERS="${P2_IP}:3478,${P3_IP}:3478"
 
-    # Everything E sends: its gateway address may only leave E inside addr
-    # gossip, so the bytes "gateway IP + listen port" must never appear.
-    ip netns exec "${NS_EIM}" tcpdump -i eth0 -s 0 -U -w "${RUN_DIR}/e.pcap" tcp 2>/dev/null &
+    # Everything E sends (only what it sends: verifiers' reachres replies
+    # carry the dialed gateway endpoint inbound): its gateway address may only
+    # leave E inside addr gossip, so "gateway IP + listen port" must never appear.
+    ip netns exec "${NS_EIM}" tcpdump -i eth0 -s 0 -U -w "${RUN_DIR}/e.pcap" "tcp and src host 10.144.1.2" 2>/dev/null &
     TCPDUMP_PID="$!"
     PIDS+=("${TCPDUMP_PID}")
 
