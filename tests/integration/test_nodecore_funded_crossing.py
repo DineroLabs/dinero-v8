@@ -236,7 +236,54 @@ try:
     assert fixture['funding_address'] in json.dumps(addresses),addresses
     # Funding was genuinely signed/mined in historical101 and found normally;
     # neither this script nor the source helper writes a wallet coin/HD path.
-    binding=bound('wire-named-owner');enrolled=rpc('wallet.orchard.enrollpreactivation',binding)
+    binding=bound('wire-named-owner')
+    if os.environ.get('DINERO_SDK_IMPORTED_ENROLLMENT_ONLY'):
+        assert assumed
+        before_enrollment=candidate_wallet_state();before_candidates=rpc('wallet.listunspent',[])
+        refusal=os.environ.get('DINERO_SDK_IMPORTED_ENROLLMENT_REFUSAL')
+        if refusal=='content-commitment':
+            with sqlite3.connect(datadir/'blockchain/utxo') as db:
+                assert db.execute("UPDATE utxo_metadata SET value=? WHERE key='assumeutxo_expected_commitment'",('f'*64,)).rowcount==1
+            original=original_lifecycle() # Deliberately retain bad input; no repair/retry.
+        elif refusal=='missing-catalog':
+            paths=list(datadir.rglob('wallet_wire-named-owner.db'));assert len(paths)==1
+            with sqlite3.connect(paths[0]) as db:
+                assert db.execute("DELETE FROM settings WHERE key='orchard_account_catalog_v1'").rowcount==1
+            before_enrollment=candidate_wallet_state()
+        else:assert not refusal,refusal
+        enrolled=call('rpc',method='wallet.orchard.enrollpreactivation',params=binding)
+        account=None;inventory=None;owners=None
+        if refusal:
+            assert enrolled.get('error_code')=='preactivation_enrollment_unavailable',enrolled
+            assert candidate_wallet_state()==before_enrollment,'refusal repaired/changed wallet state or catalog'
+        else:
+            assert enrolled['enrolled'] and enrolled['checkpoint_height']==101 and enrolled['checkpoint_hash']==fixture['parent'],enrolled
+            assert not enrolled['scan_complete_to_current_tip'],enrolled
+            account=rpc('wallet.orchard.createaccount',dict(binding,account=0))
+            assert account['revision']==1 and account['address'],account
+            inventory=rpc('wallet.orchard.listaccounts',binding)
+            assert inventory['captured_source_sequence']==0 and inventory['captured_source_digest']=='0'*64,inventory
+            assert len(inventory['accounts'])==1 and inventory['accounts'][0]['account']==0,inventory
+            assert inventory['accounts'][0]['account_sequence']==0 and inventory['accounts'][0]['checkpoint_height']==101,inventory
+            owners=wallet_rows();assert owners['orchard_wallet_snapshots'] and not owners['orchard_wallet_retained'],owners
+            assert rpc('wallet.open',['wire-named-owner'])['success'] is True
+            assert rpc('wallet.unlock',['funded-crossing-password',0])['success'] is True
+            binding=bound('wire-named-owner')
+            assert rpc('wallet.orchard.listaccounts',binding)==inventory
+            assert wallet_rows()==owners,'normal named open/unlock changed encrypted account owner'
+            after_enrollment=candidate_wallet_state()
+            for name in ('utxos','sync_meta','tip'):assert after_enrollment[name]==before_enrollment[name],name
+            assert after_enrollment['catalog']!=before_enrollment['catalog'],'no actual preactivation catalog was written'
+        assert original_lifecycle()==original,'enrollment changed original assumed lifecycle'
+        assert rpc('wallet.listunspent',[])==before_candidates,'enrollment promoted/changed candidate DATA'
+        assert call('stop')==0;success=True
+        (root/'receipt.json').write_text(json.dumps(dict(original_assumed_mobile=True,original_lifecycle=original,
+            refusal=refusal,enrolled=enrolled,account=account,inventory=inventory,owners=owners,
+            candidates=before_candidates,named_wallet_without_phrase=not refusal,funded_crossing=False,
+            scope='Actual imported named recovered wallet enrolls domain/seed/wallet/checkpoint-bound empty preactivation history and creates/reopens encrypted account0 at real zero cursor, or refuses invalid cohort/missing catalog without repair. No independent history, ordinary coin/input, queue/Ready, app/device or release authority.'),indent=2)+'\n')
+        print('PASS actual imported account enrollment '+('refusal '+refusal if refusal else 'and named encrypted account0 reopen without coin authority'),flush=True)
+        sys.exit(0)
+    enrolled=rpc('wallet.orchard.enrollpreactivation',binding)
     assert enrolled['checkpoint_height']==101,enrolled
     account=rpc('wallet.orchard.createaccount',dict(binding,account=0))
     if not assumed:assert rpc('wallet.encrypt',['funded-crossing-password'])['success'] is True

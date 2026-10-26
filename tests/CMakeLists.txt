@@ -9461,6 +9461,21 @@ if(TARGET nodecore_ffi)
       python3 ${CMAKE_SOURCE_DIR}/tests/integration/test_nodecore_funded_crossing.py)
     set_tests_properties(NodeCoreSnapshotCandidates NodeCoreSnapshotCandidatesSourceRefusal PROPERTIES TIMEOUT 300 RUN_SERIAL TRUE
       LABELS "integration;nodecore;orchard;assumedmobile;wallet")
+    foreach(_imported_enrollment_case IN ITEMS Account ContentRefusal CatalogRefusal)
+      set(_imported_enrollment_env DINERO_SDK_IMPORTED_ENROLLMENT_ONLY=1)
+      if(_imported_enrollment_case STREQUAL "ContentRefusal")
+        list(APPEND _imported_enrollment_env DINERO_SDK_IMPORTED_ENROLLMENT_REFUSAL=content-commitment)
+      elseif(_imported_enrollment_case STREQUAL "CatalogRefusal")
+        list(APPEND _imported_enrollment_env DINERO_SDK_IMPORTED_ENROLLMENT_REFUSAL=missing-catalog)
+      endif()
+      add_test(NAME NodeCoreImportedEnrollment${_imported_enrollment_case} COMMAND ${CMAKE_COMMAND} -E env
+        NODECORE_DRIVER=$<TARGET_FILE:nodecore_activation_driver>
+        ACTIVATION_FIXTURE_GENERATOR=$<TARGET_FILE:test_assumeutxo_replay>
+        DINERO_SDK_ASSUMED_MOBILE_FIXTURE=1 ${_imported_enrollment_env}
+        python3 ${CMAKE_SOURCE_DIR}/tests/integration/test_nodecore_funded_crossing.py)
+      set_tests_properties(NodeCoreImportedEnrollment${_imported_enrollment_case} PROPERTIES TIMEOUT 300 RUN_SERIAL TRUE
+        LABELS "integration;nodecore;orchard;assumedmobile;wallet")
+    endforeach()
     add_test(NAME NodeCoreCompactPrivateSend COMMAND ${CMAKE_COMMAND} -E env
       NODECORE_DRIVER=$<TARGET_FILE:nodecore_activation_driver>
       ACTIVATION_FIXTURE_GENERATOR=$<TARGET_FILE:test_assumeutxo_replay>

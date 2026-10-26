@@ -1134,3 +1134,24 @@ progress lifecycles remain unsupported by this first route. Two separate native
 SDK cases exercise actual encrypted named-wallet unlock discovery and refusal
 of a wrong original content commitment. Registration alone is not a test pass,
 funded queued crossing, app/device or release claim.
+
+### Imported activation-parent account enrollment
+
+The original imported activation parent has a separate private account-source
+route, not an independently executed parent or general coin view. It consumes
+the exact same complete frozen-source/cohort/forest audit as candidate discovery,
+under the real owning snapshot-load unique lock, selected ownership and original
+SnapshotLoaded lifecycle pin. The durable/validated genesis anchor and ten
+original imported SQL values remain unchanged. The original FULL catalog writer
+still authenticates the unlocked recovered seed, wallet identity and empty
+catalog/owner inventory; no generated flag is set, missing/corrupt metadata is
+never initialized, and the source cohort is freshly rechecked before COMMIT.
+
+Only genuine empty pre-activation Orchard account history is certified, scoped
+to the selected profile/checkpoint. The wallet-bound replay view can expose its
+real zero cursor and account0 origin without inventing Event1 or after_tip.
+Normal named account creation/receiver issuance may consume those facts. The
+ordinary independent delivery, full-parent pool/coin context, compact input-proof
+guards and post-activation recovery requirements remain unchanged. Candidate
+funding remains non-spendable DATA; this is not authenticated new-input queueing,
+transparent/index completeness, a funded handoff or app/device acceptance.

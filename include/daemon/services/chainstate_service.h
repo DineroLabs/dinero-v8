@@ -1650,6 +1650,11 @@ private:
     std::shared_ptr<const OrchardMiningTemplate> BindOrchardMiningUnderLock(PreparedOrchardMining&);
     friend struct OrchardDetachedMiningTestAccess;
     struct SelectedOrchardPoolContext;
+    // Imported empty-account source only, never an independently replayed
+    // parent or coin view. Owns the real lifecycle pin, not a serialized seal.
+    struct ImportedWalletSource;
+    StatusOr<std::unique_ptr<const ImportedWalletSource>> CaptureImportedWalletSourceUnderLock(
+        const std::unique_lock<std::mutex>& snapshot, UTXOIndex&);
     // Transport is not storage authority. This narrower pre-boundary route
     // accepts ONLY independently executed full backing, never assumed state.
     bool CheckIndependentLegacyMobileParentUnderLock() const;

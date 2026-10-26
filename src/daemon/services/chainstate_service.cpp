@@ -7012,6 +7012,16 @@ ChainstateService::resumeRuntimeWalletRecoveryIfNeeded(WalletManager& wallet, UT
     } catch (...) { return Status::Internal; }
 }
 
+struct ChainstateService::ImportedWalletSource {
+#ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
+    consensus::OrchardTransactionContext next;
+    std::vector<WalletManager::UtxoSetEntry> records;
+    std::string root;
+    std::map<std::string,std::string> metadata;
+    std::unique_ptr<assumeutxo::AssumeUtxoLifecycle::SnapshotUse> lifecycle;
+#endif
+};
+
 StatusOr<ChainstateService::OrchardPreactivationEnrollment> ChainstateService::enrollPreactivationOrchardWallet(
         WalletManager& wallet,uint64_t expected_session) {
 #ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
@@ -7027,11 +7037,10 @@ StatusOr<ChainstateService::OrchardPreactivationEnrollment> ChainstateService::e
         // Same lock order as snapshot load and ordinary/Orchard reservation.
         // Hold selected ownership through FULL wallet commit: activation, an
         // equal-height fork and snapshot publication cannot race enrollment.
-        std::lock_guard<std::mutex> snapshot(snapshot_load_mutex_);
+        std::unique_lock<std::mutex> snapshot(snapshot_load_mutex_);
         std::lock_guard<AnnotatedRecursiveMutex> selected(activation_mutex_);
         const auto profile=consensus::SelectedOrchardBlockContext(BlockHeader{},Params().orchard_activation_height);
-        if(!profile||!active_tip_||active_tip_->height>=profile->activation_height||IsInIBD()||
-           (assumeutxo_active_&&!IsBackgroundValidationComplete()))return Status::Invalid;
+        if(!profile||!active_tip_||active_tip_->height>=profile->activation_height||IsInIBD())return Status::Invalid;
         const auto sync=GetSyncSnapshot();
         if(!sync.IsConverged()||sync.active_tip_hash!=active_tip_->hash||
            sync.active_tip_height!=active_tip_->height)return Status::Invalid;
@@ -7039,16 +7048,28 @@ StatusOr<ChainstateService::OrchardPreactivationEnrollment> ChainstateService::e
         // or an eclipse cannot turn this baseline into post-activation recovery.
         if(Params().name!="regtest"&&uint64_t(std::time(nullptr))>uint64_t(active_tip_->timestamp)+7200)
             return Status::Invalid;
-        const auto capture=UtreexoRpcSnapshotUnderLock();
-        const auto tip=chain_db_->getTip(),validated=chain_db_->getValidatedTip();
-        const auto history=getRuntimeDeliveryPage({},1);
-        if(!capture.ok()||!tip.ok()||!validated.ok()||!history.ok()||(*history)->head.sequence||
-           !(*history)->events.empty()||tip->hash!=capture->block_hash||tip->height!=int(capture->height)||
-           validated->hash!=tip->hash||validated->height!=tip->height)return Status::Invalid;
         wallet::OrchardAccountCatalog::Snapshot::Preactivation proof{};
         proof.network=profile->domain.network_code;proof.genesis=profile->domain.genesis_wire;
-        proof.branch=profile->domain.branch_id;proof.activation=profile->activation_height;proof.height=capture->height;
-        std::copy(capture->block_hash.begin(),capture->block_hash.end(),proof.block.begin());
+        proof.branch=profile->domain.branch_id;proof.activation=profile->activation_height;
+        std::unique_ptr<const ImportedWalletSource> imported;
+        if(assumeutxo_active_&&!IsBackgroundValidationComplete()){
+            // A distinct checked IMPORTED account origin, never a claim that
+            // its frozen prehistory was independently executed. Hold its real
+            // lifecycle pin through the same original FULL catalog writer.
+            auto checked=CaptureImportedWalletSourceUnderLock(snapshot,*index);
+            if(!checked.ok())return checked.status();
+            imported=std::move(*checked);proof.height=imported->next.height-1;
+            std::copy(imported->next.parent_hash.begin(),imported->next.parent_hash.end(),proof.block.begin());
+        }else{
+            const auto capture=UtreexoRpcSnapshotUnderLock();
+            const auto tip=chain_db_->getTip(),validated=chain_db_->getValidatedTip();
+            const auto history=getRuntimeDeliveryPage({},1);
+            if(!capture.ok()||!tip.ok()||!validated.ok()||!history.ok()||(*history)->head.sequence||
+               !(*history)->events.empty()||tip->hash!=capture->block_hash||tip->height!=int(capture->height)||
+               validated->hash!=tip->hash||validated->height!=tip->height)return Status::Invalid;
+            proof.height=capture->height;
+            std::copy(capture->block_hash.begin(),capture->block_hash.end(),proof.block.begin());
+        }
         auto lease=wallet.AcquireDatabaseLease();
         if(wallet.database_leases_!=1||lease->Session()!=expected_session||wallet.getUTXOIndex()!=index)
             return Status::Invalid;
@@ -7071,6 +7092,7 @@ StatusOr<ChainstateService::OrchardPreactivationEnrollment> ChainstateService::e
         struct Clear {std::vector<uint8_t>& bytes;~Clear(){OPENSSL_cleanse(bytes.data(),bytes.size());}} clear{seed_bytes};
         if(wallet.loadInitialPqMaster(seed_bytes))return Status::Invalid;
         const auto result=wallet::OrchardAccountCatalog::StagePreactivation(db,seed->Bytes(),proof);
+        if(imported&&index->ReadAssumedStartupMetadata()!=imported->metadata)return Status::Corruption;
         if(sqlite3_exec(db,"COMMIT",nullptr,nullptr,nullptr)!=SQLITE_OK)return Status::Invalid;
         tx.committed=true;
         OrchardPreactivationEnrollment receipt{result.preactivation->height,{},before&&before->preactivation.has_value()};
@@ -7178,6 +7200,20 @@ StatusOr<std::shared_ptr<const RuntimeAccountReplay>> ChainstateService::getRunt
             if(wallet.database_leases_!=1||!lease->Database()||lease->Session()!=expected_session||
                wallet.getUTXOIndex()!=expected_index)return Status::Invalid;
         }
+#ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
+        {
+            // Account facts only. Ordinary delivery, pool/full-coin capture and
+            // post-activation recovery retain their original independent guards.
+            auto* self=const_cast<ChainstateService*>(this);
+            std::unique_lock<std::mutex> snapshot(self->snapshot_load_mutex_);
+            std::lock_guard<AnnotatedRecursiveMutex> selected(activation_mutex_);
+            if(assumeutxo_active_&&!compact_startup_&&!IsBackgroundValidationComplete()){
+                auto imported=self->CaptureImportedWalletSourceUnderLock(snapshot,*expected_index);
+                if(!imported.ok())return imported.status();
+                return RuntimeAccountReplay::EmptyActivationParent((*imported)->next);
+            }
+        }
+#endif
         // Both the short wallet lease and owner-registry mutex are released.
         return getRuntimeAccountReplay();
     }catch(...){return Status::Internal;}
@@ -14407,24 +14443,20 @@ std::optional<uint32_t> ChainstateService::RescanWalletFromSelectedHistory(
     }
 }
 
-StatusOr<size_t> ChainstateService::DiscoverSnapshotWalletCandidates(WalletManager& wallet,uint64_t session){
+StatusOr<std::unique_ptr<const ChainstateService::ImportedWalletSource>>
+ChainstateService::CaptureImportedWalletSourceUnderLock(const std::unique_lock<std::mutex>& snapshot,UTXOIndex& expected_index){
 #ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
     const char* phase="lifetime";
-    const auto refuse=[&](Status status)->StatusOr<size_t>{
+    const auto refuse=[&](Status status)->StatusOr<std::unique_ptr<const ImportedWalletSource>>{
         try{if(logger_)logger_->warning(std::string("[Snapshot candidates] Refused at ")+phase);}catch(...){}
         return status;
     };
-    if(activation_mutex_.HeldByCurrentThread()||!session)return refuse(Status::Invalid);
+    if(!activation_mutex_.HeldByCurrentThread()||!snapshot.owns_lock()||snapshot.mutex()!=&snapshot_load_mutex_)
+        return refuse(Status::Invalid);
     try{
-        SelectedReadUse source_use(weak_from_this().lock());UTXOIndex* index=nullptr;
+        UTXOIndex* const index=&expected_index;
         {std::lock_guard<std::mutex> owner(wallet_index_use_mutex_);
-         if(!wallet_index_uses_by_thread_.contains(std::this_thread::get_id())||!utxo_index_)return refuse(Status::Invalid);
-         index=utxo_index_.get();}
-        {auto lease=wallet.AcquireDatabaseLease();
-         if(wallet.database_leases_!=1||lease->Session()!=session||!lease->Database()||
-             wallet.getUTXOIndex()!=index||!sqlite3_get_autocommit(lease->Database()))return refuse(Status::Invalid);}
-        std::lock_guard<std::mutex> snapshot(snapshot_load_mutex_);
-        std::lock_guard<AnnotatedRecursiveMutex> selected(activation_mutex_);
+         if(!wallet_index_uses_by_thread_.contains(std::this_thread::get_id())||utxo_index_.get()!=index)return refuse(Status::Invalid);}
         phase="imported-selected-parent";
         if(snapshot_import_publishing_||compact_startup_||orchard_snapshot_startup_||!GetConfig().utreexo_stateless||
             !consensus_utxo_set_||!chain_db_||!active_tip_||safe_mode_active_||!assumeutxo_active_||!assumeutxo_lifecycle_||
@@ -14524,11 +14556,38 @@ StatusOr<size_t> ChainstateService::DiscoverSnapshotWalletCandidates(WalletManag
         phase="lifecycle-pin";
         auto lifecycle=assumeutxo_lifecycle_->AcquireSnapshotUse(frozen->first,frozen->second);
         if(!lifecycle||index->ReadAssumedStartupMetadata()!=metadata)return refuse(Status::Invalid);
-        phase="wallet-transaction";
-        const auto count=wallet.DiscoverSnapshotCandidates(records,frozen->second,frozen->first,util::hex(capture->commitment),session);
-        if(count<0)return refuse(Status::Invalid);
-        return size_t(count);
+        auto result=std::make_unique<ImportedWalletSource>();
+        result->next={frozen->second+1,frozen->first,profile->activation_height,profile->domain};
+        result->records=std::move(records);result->root=util::hex(capture->commitment);
+        result->metadata=metadata;result->lifecycle=std::move(lifecycle);
+        return std::unique_ptr<const ImportedWalletSource>(std::move(result));
     }catch(...){return refuse(Status::Invalid);}
+#else
+    (void)snapshot;(void)expected_index;return Status::Invalid;
+#endif
+}
+
+StatusOr<size_t> ChainstateService::DiscoverSnapshotWalletCandidates(WalletManager& wallet,uint64_t session){
+#ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
+    if(activation_mutex_.HeldByCurrentThread()||!session)return Status::Invalid;
+    try{
+        SelectedReadUse source_use(weak_from_this().lock());UTXOIndex* index=nullptr;
+        {std::lock_guard<std::mutex> owner(wallet_index_use_mutex_);
+         if(!wallet_index_uses_by_thread_.contains(std::this_thread::get_id())||!utxo_index_)return Status::Invalid;
+         index=utxo_index_.get();}
+        {auto lease=wallet.AcquireDatabaseLease();
+         if(wallet.database_leases_!=1||lease->Session()!=session||!lease->Database()||
+             wallet.getUTXOIndex()!=index||!sqlite3_get_autocommit(lease->Database()))return Status::Invalid;}
+        std::unique_lock<std::mutex> snapshot(snapshot_load_mutex_);
+        std::lock_guard<AnnotatedRecursiveMutex> selected(activation_mutex_);
+        auto source=CaptureImportedWalletSourceUnderLock(snapshot,*index);
+        if(!source.ok())return source.status();
+        const auto& current=**source;
+        const auto count=wallet.DiscoverSnapshotCandidates(current.records,current.next.height-1,
+            current.next.parent_hash,current.root,session);
+        if(count<0)return Status::Invalid;
+        return size_t(count);
+    }catch(...){return Status::Invalid;}
 #else
     (void)wallet;(void)session;return Status::Invalid;
 #endif
