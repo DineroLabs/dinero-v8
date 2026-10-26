@@ -96,6 +96,8 @@ private:
       std::shared_ptr<const orchard::WalletStateBytes> = {}) const;
   static DeliveryCheckpoint ReadDeliveryMetadata(const orchard::WalletStateBytes&,
       orchard::SigningDomain,const orchard::FullViewingKeyBytes&,uint32_t,const uint256&);
+  static std::pair<uint32_t,uint256> ReadScanLocator(const orchard::WalletStateBytes&,
+      orchard::SigningDomain,const orchard::FullViewingKeyBytes&,uint32_t);
   [[nodiscard]] OrchardAccountState WithParentSnapshotRevision(uint64_t) const;
   void CheckDelivery(const RuntimeOutboxEvent &, const OrchardBlockCandidate &,
                      bool connecting) const;

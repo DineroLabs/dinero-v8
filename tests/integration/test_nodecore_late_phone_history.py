@@ -1,4 +1,4 @@
-"""Fresh SDK v6-floor history DATA over real untrusted TCP; not wallet adoption."""
+"""Fresh SDK v6-floor authenticated download and later account-0 funds recovery."""
 import hashlib,json,os,socket,sqlite3,struct,subprocess,tempfile,threading,time,traceback
 from pathlib import Path
 
@@ -125,24 +125,30 @@ try:
         (root/'progress.json').write_text(json.dumps(progress,indent=2)+'\n')
         state=call('sdk_activation_state');(root/'sdk-state.json').write_text(json.dumps(state,indent=2)+'\n')
         assert isinstance(progress,dict) and 'error' not in progress,progress
-        assert not progress['complete'] and not progress['scan_complete_to_current_tip'] and progress['applied_sequence']==0,progress
-        if progress.get('history_ready'):break
+        if progress.get('complete'):break
+        assert not progress['scan_complete_to_current_tip'] and progress['applied_sequence']==0,progress
         time.sleep(.25)
-    else:raise AssertionError('fresh late-phone authenticated full-body history did not become ready')
-    assert progress['history_verified_height']==103 and progress['history_target_hash']==fixture['second_hash'],progress
+    else:raise AssertionError('fresh late-phone account-0 recovery did not complete')
+    assert progress['complete'] and progress['generated'] is False and progress['coverage']=='account_0_only',progress
+    assert progress['applied_sequence']==1 and progress['checkpoint_height']==103,progress
     for name in ('first','second'):
         assert dict(kind=2,hash=fixture[name+'_hash'],history=True) in requests,requests
-    after=inventory();assert before==after,(before,after)
-    refused=call('rpc',method='wallet.orchard.createaccount',params=dict(bound,account=0))
-    assert 'error' in refused,'History DATA must not silently certify the wallet'
+    after=inventory();assert before!=after,'Only final authenticated recovery may adopt wallet state'
+    balance=call('rpc',method='wallet.orchard.getbalance',params=dict(bound,account=0))
+    received=call('rpc',method='wallet.orchard.listreceived',params=dict(bound,account=0))
+    assert balance['confirmed_una']==500000,balance
+    assert received['history_complete'] and received['total_count']==1,received
+    note=received['received'][0]
+    assert note['amount_una']==500000 and note['height']==102 and note['block_hash']==fixture['first_hash'],note
+    assert bytes.fromhex(note['memo_hex'])==b'authenticated phone history'.ljust(512,b'\0'),note
     assert call('rpc',method='getblockcount',params=[])==103
     canonical_after=call('sdk_activation_state')['canonical_outbox'];assert canonical_after==canonical_before
     assert call('stop')==0;success=True
     (root/'receipt.json').write_text(json.dumps(dict(fixture=fixture,packets=packets,requests=requests,
-        progress=progress,wallet_before=before,wallet_after=after,active_wallet_unchanged=True,
+        progress=progress,wallet_before=before,wallet_after=after,balance=balance,received=received,
         canonical_before=canonical_before,canonical_after=canonical_after,
-        scope='Fresh authenticated v6 floor102, actual SDK canonical103 plus separate untrusted full102/103 download and genuine private replay. DATA only; no wallet adoption, fabricated outbox/cursor, original assumed SQL, nonempty queued crossing or device qualification.'),indent=2)+'\n')
-    print('PASS fresh late-phone authenticated full-body history DATA; wallet and canonical source unchanged',flush=True)
+        scope='Fresh authenticated v6 floor102, actual SDK canonical103, untrusted full102/103 download, genuine private prefix plus real canonical103 event and explicit recovered account0 funds/memo adoption. Not cold source retention, original assumed SQL, nonempty queued crossing or devices.'),indent=2)+'\n')
+    print('PASS fresh late-phone downloaded history recovers earlier account-0 funds and memo; canonical source unchanged',flush=True)
 finally:
     stop.set();listener.close()
     for conn in connections:

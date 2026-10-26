@@ -83,6 +83,10 @@ public:
 
 private:
   friend class OrchardAccountState;
+  // A locator from an already authenticated envelope, never scan validity.
+  // The caller must restore against an actual authenticated source point.
+  static std::pair<uint32_t,uint256> ReadLocator(const orchard::WalletStateBytes&,
+      orchard::SigningDomain,const orchard::FullViewingKeyBytes&,uint32_t);
   static OrchardWalletScanState AtHistoricalTip(orchard::SigningDomain,
       const orchard::FullViewingKeyBytes &, uint32_t activation, uint32_t height,
       const uint256 &hash);

@@ -20,13 +20,33 @@ bodies), disk reserve and private disk staging limit acquisition resources.
 Targets may extend only along the selected descendant branch; changed branches
 discard the unadopted source, never active ownership.
 
-This stage returns `complete=false`, `applied_sequence=0` and transport-only
+Acquisition returns `complete=false`, `applied_sequence=0` and transport-only
 `history_*` progress. `history_ready` means DATA ready for a separate authenticated
 wallet scan/adoption, not recovered ownership, usable funds or a canonical
 delivery cursor. The snapshot-floor outbox remains unchanged. No catalog is
 initialized/repaired and no runtime event is fabricated for downloaded history.
-Fresh late-phone wallet adoption, cold-source retention and nonempty queued
-activation crossing remain open; this stage must not be marketed as those gates.
+The explicit recovery RPC now separately reauthenticates ready bodies to build
+a private activation prefix, checking every genuine first-block token, domain,
+parent state and exact-wire binding. It binds the terminal prefix to the real
+snapshot-floor outbox parent, then revalidates the actual retained local tail.
+The original retained-only replay factory still refuses a missing origin.
+Prefix blocks are never encoded as events or assigned synthetic sequence IDs.
+
+Encrypted recovery staging scans the prefix with ordinary account `Advance`,
+then consumes only real local events with `AdvanceDelivery`. Each call performs
+at most 64 combined scan/delivery steps; capturing/revalidating the full source
+is additional work, not a bounded latency or RSS guarantee. The final fresh
+selected-source/session/seed/profile/SQL-generation fences and FULL atomic table
+adoption remain mandatory. Unknown/corrupt/missing catalog checks are unchanged;
+the recovered catalog stays `generated=false` and account-0-only. Uncertified
+pre-floor staging parents are not adopted as canonical event-0 undo positions.
+This respects the existing fresh-v6 import floor, and does not add an automatic
+activation floor to converted nodes or remove their activation-minus-one undo.
+
+The native fresh-v6 SDK test now recovers earlier funds and the exact memo via
+public RPC while keeping its real outbox unchanged. Cold-source retention/open,
+original assumed-mobile storage, the nonempty queued activation crossing and
+physical apps/devices remain open. This bounded positive is not release sign-off.
 
 Both apps must use `wallet.restore` to create a separate named wallet, then
 `wallet.open` to reopen it. Check the active wallet and deterministic first

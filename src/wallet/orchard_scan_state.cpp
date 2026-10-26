@@ -357,6 +357,15 @@ WalletStateBytes OrchardWalletScanState::Encode() const {
   }
   return WalletStateBytes(w.bytes);
 }
+std::pair<uint32_t,uint256> OrchardWalletScanState::ReadLocator(
+    const WalletStateBytes& encoded,SigningDomain domain,const FullViewingKeyBytes& fvk,uint32_t activation){
+  Reader r{encoded.Bytes()};const auto magic=r.Raw(kScanMagic.size());
+  Check(std::equal(magic.begin(),magic.end(),kLegacyScanMagic.begin())||
+        std::equal(magic.begin(),magic.end(),kScanMagic.begin()));
+  Check(r.Number(1)==domain.network_code&&r.Hash32()==domain.genesis_wire&&r.Number(4)==domain.branch_id&&
+        r.Number(4)==activation&&r.Hash32()==ViewingIdentity(fvk));
+  const auto checkpoint=ReadCheckpoint(r);return {checkpoint.height,checkpoint.block_hash};
+}
 OrchardWalletScanState OrchardWalletScanState::Restore(
     const WalletStateBytes &encoded, SigningDomain domain,
     const FullViewingKeyBytes &fvk, uint32_t activation,

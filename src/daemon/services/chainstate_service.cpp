@@ -7270,6 +7270,30 @@ StatusOr<std::shared_ptr<const RuntimeAccountReplay>> ChainstateService::getRunt
             if(!captured_head)captured_head=(*page)->head;
             return **page;
         });
+        if(const auto base=RuntimeAccountReplay::ActivationPrefixBase(material)){
+            const auto source=std::const_pointer_cast<ChainstateService>(weak_from_this().lock());
+            if(!source)return Status::Invalid;
+            const auto target=source->PhoneHistoryTarget();
+            const auto* context=DaemonContext::instance();
+            if(!target||!context||context->chainstate.get()!=this||base->second!=target->base)return Status::Invalid;
+            const auto peers=std::dynamic_pointer_cast<P2PService>(context->p2p);
+            const auto download=peers?peers->PhoneHistoryDownload():nullptr;
+            const auto history=download?download->Ready():nullptr;
+            if(!history||history->target!=*target||base->first<target->activation||base->first>target->height)return Status::Invalid;
+            auto verifier=source->PreparePhoneHistoryVerifier(history->activation_proof,*target);
+            if(!verifier)return Status::Invalid;
+            auto replay=RuntimeAccountReplay::BuildWithActivationPrefix(std::move(material),[&](uint32_t height){
+                auto body=std::make_shared<const OrchardBlockCandidate>(OrchardBlockCandidate::DecodeExact(history->Body(height)));
+                const auto now=std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+                auto checked=verifier->Append(*body,uint64_t(now));
+                return RuntimeAccountReplay::VerifiedPrefixStep{std::move(body),std::move(checked)};
+            });
+            const auto head=replay->Head();const auto point=replay->Point(head).checkpoint;
+            const auto final=getRuntimeDeliveryPage(head,1);
+            if(source->PhoneHistoryTarget()!=target||!download->Ready()||point.height!=target->height||point.block_hash!=target->hash||
+                !final.ok()||(*final)->head!=head||!(*final)->events.empty()||(*final)->next!=head)return Status::Invalid;
+            return replay;
+        }
         return RuntimeAccountReplay::Build(std::move(material));
     } catch(const consensus::OrchardStateLookupError& e){return e.SourceStatus();}
       catch(...){return Status::Internal;}

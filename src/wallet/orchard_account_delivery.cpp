@@ -628,7 +628,7 @@ std::unique_ptr<OrchardAccount0RecoveryPlan> OrchardAccountDelivery::PrepareReco
         WalletManager& w,uint64_t session,const RuntimeAccountReplay& view,bool restart){
     using Store=orchard::WalletSnapshotStore;constexpr auto scope=Store::Scope::Recovery;
     const auto first=view.Event(1);const Profile p{first->context.domain,first->context.activation_height,0};
-    const auto origin=view.Point({}).checkpoint;const auto head=view.Head();
+    const auto origin=view.ActivationOrigin().checkpoint;const auto head=view.Head();
     Check(origin.height+1==p.activation&&view.Point(head).checkpoint.height>=p.activation);
     auto data=std::make_unique<OrchardAccount0RecoveryPlan::Data>();data->profile=p;data->session=session;
     data->observation.target=head.sequence;
@@ -695,7 +695,12 @@ std::unique_ptr<OrchardAccount0RecoveryPlan> OrchardAccountDelivery::PrepareReco
     }
     const auto restore=[&](const orchard::LoadedWalletState& row){
         const auto receipt=OrchardAccountState::ReadDeliveryMetadata(row.state,p.domain,viewing->bytes,p.activation,origin.block_hash);
-        const auto point=view.Point({receipt.sequence,receipt.digest});
+        const auto point=[&]{
+            if(receipt.sequence)return view.Point({receipt.sequence,receipt.digest});
+            Check(receipt.digest.IsNull());
+            const auto [height,hash]=OrchardAccountState::ReadScanLocator(row.state,p.domain,viewing->bytes,p.activation);
+            return view.UnappliedPrefixPoint(height,hash);
+        }();
         auto account=OrchardAccountState::Restore(row.state,p.domain,viewing->bytes,p.activation,point.checkpoint,point.lookups);
         Check(account.ParentSnapshotRevision()<row.revision&&account.Operations().Entries().empty());return account;
     };
@@ -706,7 +711,24 @@ std::unique_ptr<OrchardAccount0RecoveryPlan> OrchardAccountDelivery::PrepareReco
         const auto now=store.Read();Check(now&&now->revision==saved->revision&&RecoveryDigest(now->state)==RecoveryDigest(saved->state));
         auto parent=store.ReadRetained(revision);tx.Commit();return parent;
     };
-    for(size_t work=0;work<64&&current.Delivery().sequence<head.sequence;++work){
+    size_t work=0;
+    for(;work<64&&!current.Delivery().sequence&&current.Scan().Checkpoint().height<view.ActivationPrefixHeight();++work){
+        const auto step=view.PrefixStep(current.Scan().Checkpoint().height+1);
+        auto next=current.Advance(step.context,*step.block,*step.state,*step.authorizations);
+        // This is an uncertified scan, not delivery. A fresh v6 source cannot
+        // undo below its real import floor; do not adopt pre-floor parent rows
+        // as though they were canonical event-0 positions.
+        next=next.WithParentSnapshotRevision(step.context.height==view.ActivationPrefixHeight()?0:saved->revision);
+        const auto bytes=next.Encode();
+        {
+            auto lease=w.AcquireDatabaseLease();RequireShieldFullSync(lease->Database());Transaction tx(lease->Database());
+            auto seed=lease->CopyRecoverySeed(session);unknown(lease,seed);Store store(lease->Database(),data->identity,seed->Bytes(),scope);
+            const auto now=store.Read();Check(now&&now->revision==saved->revision&&RecoveryDigest(now->state)==RecoveryDigest(saved->state));
+            const auto revision=store.StageReplaceRetaining(saved->revision,bytes);saved=store.Read();Check(saved&&saved->revision==revision);tx.Commit();
+        }
+        current=std::move(next);
+    }
+    for(;work<64&&current.Scan().Checkpoint().height>=view.ActivationPrefixHeight()&&current.Delivery().sequence<head.sequence;++work){
         const auto sequence=current.Delivery().sequence+1;const auto event=view.Event(sequence);
         auto next=[&]{
             if(!event->IsOrchardProfile())return current.ApplyHistoricalDelivery(*event);

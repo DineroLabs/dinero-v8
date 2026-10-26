@@ -5,6 +5,9 @@
 #include "wallet/runtime_replay_authorization_retention.h"
 #include "wallet/runtime_replay_index.h"
 #include "consensus/undo.h"
+#include "consensus/orchard_validated_block.h"
+#include "consensus/orchard_header.h"
+#include "storage/orchard_catalog_state.h"
 #include "primitives/block.h"
 #include <set>
 #include <list>
@@ -92,6 +95,8 @@ struct RuntimeAccountReplay::Data {
         // Locator of the already verified body/frame in the immutable spool.
         // Owner/content-bound authorization and prepared-state tokens remain below.
         uint64_t event_sequence=0;
+        bool prefix=false;
+        uint256 wire_digest;
         bool historical=false;
         std::optional<wallet::detail::RuntimeReplayStateRetention::Token> state;
         std::optional<wallet::detail::RuntimeReplayAuthorizationRetention::Token> auths;
@@ -99,7 +104,7 @@ struct RuntimeAccountReplay::Data {
         wallet::detail::RuntimeReplayDiskMembership::Root nullifiers=0,anchors=0;
     };
     RuntimeOutboxCursor head;uint32_t activation=0;orchard::SigningDomain domain;
-    uint256 origin;
+    uint256 origin;uint32_t prefix_height=0;
     wallet::detail::RuntimeReplaySpool spool;
     wallet::detail::RuntimeReplayStateRetention states;
     wallet::detail::RuntimeReplayAuthorizationRetention authorizations;
@@ -134,20 +139,28 @@ struct RuntimeAccountReplay::Data {
         BlockHandle orchard;
         std::shared_ptr<const dinero::Block> historical;
     };
-    struct CachedBody {uint64_t sequence;Body value;size_t charge;};
+    struct CachedBody {uint256 hash;Body value;size_t charge;};
     static constexpr size_t BodyCacheEntries=4;
     static constexpr size_t BodyCacheBytes=wallet::detail::RuntimeReplaySpool::MaximumRecordBytes;
     mutable std::mutex body_mutex;
     mutable std::list<CachedBody> body_cache;
     mutable size_t body_cache_bytes=0;
     Body ReadBody(const Node& node) const {
-        Require(node.event_sequence&&(bool(node.state)!=node.historical));
+        Require((node.event_sequence||node.prefix)&&(bool(node.state)!=node.historical));
         // Lock order: body cache -> event cache -> private spool. No callback,
         // proof verification, or wallet/selected-chain acquisition here.
         std::lock_guard guard(body_mutex);
         for(auto it=body_cache.begin();it!=body_cache.end();++it) {
-            if(it->sequence!=node.event_sequence)continue;
+            if(it->hash!=node.checkpoint.block_hash)continue;
             const auto value=it->value;body_cache.splice(body_cache.begin(),body_cache,it);return value;
+        }
+        if(node.prefix){
+            Require(!node.event_sequence&&node.state&&!node.historical);
+            const auto bytes=spool.Get(PrefixBodyKey(node.checkpoint.block_hash));Require(bytes.has_value());
+            Require(storage::catalog::Hash(std::string(bytes->begin(),bytes->end()))==node.wire_digest);
+            Body value;value.orchard=std::make_shared<const OrchardBlockCandidate>(OrchardBlockCandidate::DecodeExact(*bytes));
+            Require(value.orchard->Header().GetHash()==node.checkpoint.block_hash&&value.orchard->Header().prev_block_hash==node.parent);
+            return value; // Prefix bodies are already disk bounded; no cursor-keyed cache.
         }
         const auto event=ReadEvent(node.event_sequence);
         Require(event->context.height==node.height&&event->context.parent_hash==node.parent&&
@@ -165,19 +178,24 @@ struct RuntimeAccountReplay::Data {
         // Charge serialized bytes, not total resident memory. Returned shared
         // handles own their bodies even after this bounded cache evicts them.
         const size_t charge=event->body.size();
-        body_cache.push_front({node.event_sequence,value,charge});body_cache_bytes+=charge;
+        body_cache.push_front({node.checkpoint.block_hash,value,charge});body_cache_bytes+=charge;
         while(body_cache.size()>BodyCacheEntries||body_cache_bytes>BodyCacheBytes) {
             body_cache_bytes-=body_cache.back().charge;body_cache.pop_back();
         }
         return value;
     }
     using IndexKey=wallet::detail::RuntimeReplayIndex::Key;
+    static std::vector<uint8_t> PrefixBodyKey(const uint256& hash){std::vector<uint8_t> k{'b'};k.insert(k.end(),hash.begin(),hash.end());return k;}
+    static IndexKey PrefixHeightKey(uint32_t height){IndexKey k{'h'};for(unsigned i=0;i<4;++i)k[i+1]=uint8_t(height>>(8*i));return k;}
+    uint256 PrefixHash(uint32_t height)const{const auto bytes=index.Get(PrefixHeightKey(height));Require(bytes&&bytes->size()==32);
+        uint256 hash;std::copy(bytes->begin(),bytes->end(),hash.begin());return hash;}
     static IndexKey NodeKey(const uint256& hash){IndexKey key{'n'};std::copy(hash.begin(),hash.end(),key.begin()+1);return key;}
     static IndexKey PositionKey(uint64_t sequence){IndexKey key{'p'};for(unsigned i=0;i<8;++i)key[i+1]=uint8_t(sequence>>(8*i));return key;}
     std::optional<Node> Find(const uint256& hash) const {
         const auto bytes=index.Get(NodeKey(hash));if(!bytes)return std::nullopt;
-        wallet::detail::replay_spool_codec::Reader r{*bytes};Require(r.Number(1)==1);
+        wallet::detail::replay_spool_codec::Reader r{*bytes};Require(r.Number(1)==2);
         Node n;n.height=r.Number(4);n.parent=r.Hash();n.event_sequence=r.Number(8);
+        const auto prefix=r.Number(1);Require(prefix<=1);n.prefix=prefix;n.wire_digest=r.Hash();
         const auto historical=r.Number(1),has_state=r.Number(1);Require(historical<=1&&has_state<=1);n.historical=historical;
         if(has_state)n.state=states.IndexToken(r.Raw(40));
         const auto has_auths=r.Number(1);Require(has_auths<=1);if(has_auths)n.auths=authorizations.IndexToken(r.Raw(40));
@@ -187,7 +205,8 @@ struct RuntimeAccountReplay::Data {
     Node At(const uint256& hash) const {auto n=Find(hash);Require(n.has_value());return std::move(*n);}
     void Put(const uint256& hash,const Node& n){
         Require(n.checkpoint.block_hash==hash&&n.height==n.checkpoint.height);
-        wallet::detail::replay_spool_codec::Writer w;w.Number(1,1);w.Number(n.height,4);w.Hash(n.parent);w.Number(n.event_sequence,8);
+        wallet::detail::replay_spool_codec::Writer w;w.Number(2,1);w.Number(n.height,4);w.Hash(n.parent);w.Number(n.event_sequence,8);
+        w.Number(n.prefix,1);w.Hash(n.wire_digest);
         w.Number(n.historical,1);w.Number(n.state.has_value(),1);if(n.state)w.Raw(states.IndexToken(*n.state));
         w.Number(n.auths.has_value(),1);if(n.auths)w.Raw(authorizations.IndexToken(*n.auths));
         w.State(n.checkpoint);w.Number(n.nullifiers,8);w.Number(n.anchors,8);index.Set(NodeKey(hash),w.bytes);
@@ -251,6 +270,51 @@ std::shared_ptr<const RuntimeAccountReplay> RuntimeAccountReplay::Build(std::sha
         !first.orchard_replay->parent);
     data->origin=first.context.parent_hash;data->Position(0,data->origin);
     Data::Node root;root.height=data->activation-1;root.checkpoint=Empty(root.height,data->origin);data->Put(data->origin,root);
+    return BuildTail(std::move(data));
+}
+std::optional<std::pair<uint32_t,uint256>> RuntimeAccountReplay::ActivationPrefixBase(const std::shared_ptr<Data>& data){
+    const auto first=data->ReadEvent(1);
+    if(first->direction!=RuntimeBlockDirection::Connect||!first->context.activation_height||
+        first->context.activation_height==UINT32_MAX||first->context.height<=first->context.activation_height||
+        !first->orchard_replay||!first->orchard_replay->parent)return {};
+    return std::pair{first->context.height-1,first->context.parent_hash};
+}
+std::shared_ptr<const RuntimeAccountReplay> RuntimeAccountReplay::BuildWithActivationPrefix(
+        std::shared_ptr<Data> data,const std::function<VerifiedPrefixStep(uint32_t)>& source){
+    const auto first=data->ReadEvent(1);const auto& e=*first;
+    Require(bool(source)&&e.direction==RuntimeBlockDirection::Connect&&e.context.activation_height>0&&
+        e.context.activation_height!=UINT32_MAX&&e.context.height>e.context.activation_height&&
+        e.context.height<uint32_t(INT32_MAX)&&e.orchard_replay&&e.orchard_replay->parent);
+    data->activation=e.context.activation_height;data->domain=e.context.domain;data->prefix_height=e.context.height-1;
+    for(uint32_t height=data->activation;height<=data->prefix_height;++height){
+        auto step=source(height);Require(step.block&&step.checked&&step.checked->MatchesProfile()&&step.checked->MatchesWire(*step.block));
+        const auto& checked=*step.checked;const auto& c=checked.Context();const auto& state=checked.State();
+        Require(c.height==height&&c.activation_height==data->activation&&Domain(c.domain,data->domain)&&
+            c.block_hash==step.block->Header().GetHash()&&c.parent_hash==step.block->Header().prev_block_hash);
+        if(height==data->activation){
+            Require(!state.Parent());data->origin=c.parent_hash;
+            Data::Node root;root.height=height-1;root.checkpoint=Empty(height-1,data->origin);data->Put(data->origin,root);
+            data->index.Set(Data::PrefixHeightKey(height-1),{data->origin.data,32});
+        }
+        const auto parent=data->At(c.parent_hash);Require(parent.height+1==height&&
+            ((height==data->activation&&!state.Parent())||(state.Parent()&&*state.Parent()==parent.checkpoint)));
+        Data::Node node;node.prefix=true;node.height=height;node.parent=c.parent_hash;node.checkpoint=state.Next();
+        node.wire_digest=storage::catalog::Hash(std::string(step.block->WireBytes().begin(),step.block->WireBytes().end()));
+        node.state=data->states.Capture(state);node.auths=data->authorizations.Capture(checked.Coins().Authorizations());
+        {
+            wallet::detail::RuntimeReplaySpool::Batch batch(data->spool);
+            data->spool.Insert(Data::PrefixBodyKey(c.block_hash),step.block->WireBytes());node.nullifiers=parent.nullifiers;
+            for(const auto& nf:state.Nullifiers())node.nullifiers=data->membership.With(node.nullifiers,Data::MembershipKey(nf));
+            node.anchors=data->membership.With(parent.anchors,Data::MembershipKey(node.checkpoint.anchor));batch.Commit();
+        }
+        data->Put(c.block_hash,node);data->index.Set(Data::PrefixHeightKey(height),{c.block_hash.data,32});
+    }
+    Require(data->PrefixHash(data->prefix_height)==e.context.parent_hash&&
+        data->At(e.context.parent_hash).checkpoint==*e.orchard_replay->parent);
+    data->Position(0,e.context.parent_hash); // Actual outbox origin, NOT activation parent or an applied event.
+    return BuildTail(std::move(data));
+}
+std::shared_ptr<const RuntimeAccountReplay> RuntimeAccountReplay::BuildTail(std::shared_ptr<Data> data){
     for(uint64_t sequence=1;sequence<=data->head.sequence;++sequence){
         const auto event=data->ReadEvent(sequence);const auto& e=*event;
         Require(e.context.height>0&&e.context.activation_height==data->activation&&Domain(e.context.domain,data->domain)&&
@@ -331,7 +395,10 @@ RuntimeAccountReplay::EventHandle RuntimeAccountReplay::Event(uint64_t sequence)
 }
 wallet::OrchardAccountDelivery::RestorePoint RuntimeAccountReplay::Point(RuntimeOutboxCursor cursor) const {
     Require(cursor.sequence<=data_->head.sequence&&(cursor.sequence?Event(cursor.sequence)->cursor==cursor:cursor.digest.IsNull()));
-    const auto tip=data_->Position(cursor.sequence);const auto data=data_;wallet::OrchardWalletRestoreLookups lookup;
+    return PointAt(data_->Position(cursor.sequence));
+}
+wallet::OrchardAccountDelivery::RestorePoint RuntimeAccountReplay::PointAt(const uint256& tip) const {
+    const auto data=data_;wallet::OrchardWalletRestoreLookups lookup;
     lookup.origin=[data,tip](uint32_t height,const uint256& block,const orchard::Hash& txid){
         const auto& node=data->Ancestor(tip,height,block);Require(bool(node.state)&&bool(node.auths));
         const auto retained=data->authorizations.Load(*node.auths);
@@ -342,6 +409,18 @@ wallet::OrchardAccountDelivery::RestorePoint RuntimeAccountReplay::Point(Runtime
     lookup.selected_block=[data,tip](uint32_t height,const uint256& hash){const auto& n=data->Ancestor(tip,height,hash);Require(bool(n.state));return data->ReadBody(n).orchard;};
     lookup.selected_historical_block=[data,tip](uint32_t height,const uint256& hash){const auto& n=data->Ancestor(tip,height,hash);Require(n.historical);return data->ReadBody(n).historical;};
     return {data->At(tip).checkpoint,std::move(lookup)};
+}
+uint32_t RuntimeAccountReplay::ActivationPrefixHeight()const{return data_->prefix_height?data_->prefix_height:data_->activation-1;}
+wallet::OrchardAccountDelivery::RestorePoint RuntimeAccountReplay::ActivationOrigin()const{return PointAt(data_->origin);}
+wallet::OrchardAccountDelivery::RestorePoint RuntimeAccountReplay::UnappliedPrefixPoint(uint32_t height,const uint256& hash)const{
+    if(!data_->prefix_height){const auto point=Point({});Require(point.checkpoint.height==height&&point.checkpoint.block_hash==hash);return point;}
+    Require(height>=data_->activation-1&&height<=data_->prefix_height&&data_->PrefixHash(height)==hash);return PointAt(hash);
+}
+RuntimeAccountReplay::ActivationPrefixStep RuntimeAccountReplay::PrefixStep(uint32_t height)const{
+    Require(data_->prefix_height&&height>=data_->activation&&height<=data_->prefix_height);
+    const auto node=data_->At(data_->PrefixHash(height));Require(node.prefix&&node.state&&node.auths);
+    const auto body=data_->ReadBody(node).orchard;const auto context=SelectedOrchardBlockContext(body->Header(),height);Require(context.has_value());
+    return {*context,body,data_->states.Load(*node.state),data_->authorizations.Load(*node.auths)};
 }
 std::function<StatusOr<uint256>(uint32_t)> RuntimeAccountReplay::SelectedHashes(RuntimeOutboxCursor cursor) const {
     (void)Point(cursor); // Validate cursor/digest before publishing a callback.

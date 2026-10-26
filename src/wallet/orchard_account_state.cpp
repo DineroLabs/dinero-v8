@@ -436,6 +436,12 @@ OrchardAccountState::DeliveryCheckpoint OrchardAccountState::ReadDeliveryMetadat
     uint32_t activation,const uint256&) {
   return OrchardAccountMetadata::Read(bytes,domain,fvk,activation).Delivery();
 }
+std::pair<uint32_t,uint256> OrchardAccountState::ReadScanLocator(const WalletStateBytes& bytes,
+    SigningDomain domain,const FullViewingKeyBytes& fvk,uint32_t activation){
+  std::span<const uint8_t> scan;
+  (void)OrchardAccountMetadata::Read(bytes,domain,fvk,activation,scan);
+  return OrchardWalletScanState::ReadLocator(WalletStateBytes(scan),domain,fvk,activation);
+}
 OrchardAccountState OrchardAccountState::Restore(
     const WalletStateBytes &bytes, SigningDomain domain,
     const FullViewingKeyBytes &fvk, uint32_t activation,
