@@ -6,6 +6,26 @@ TEST(WalletFundingDownload, NewInputProofCodecBounds){
     EXPECT_THROW(W::Request::Decode(std::vector<uint8_t>(W::RequestBytes)),std::invalid_argument);
     EXPECT_THROW(W::Reply::Decode(std::vector<uint8_t>(W::MaximumBytes+1)),std::invalid_argument);
 }
+TEST(WalletFundingDownload, CurrentSourceChangeCancelsBlockedInputFlight){
+    using W=p2p::WalletInputProof;W::Request request;
+    request.magic=Params().magic;request.genesis=uint256::FromHexUnsafe(Params().genesis_hash);
+    request.branch=Params().orchard_branch_id;request.activation=Params().orchard_activation_height;
+    request.leaf_activation=consensus::GetUtreexoMaturityLeafActivationHeight();request.height=request.activation;
+    request.tip=W::KeyNonce();request.root=W::KeyNonce();request.point=OutPoint(TxId(W::KeyNonce()),0);
+    std::mutex mutex;std::vector<W::Request> sent;
+    const p2p::OrchardCatalogClient::Peer peer{"blocked-input-peer",21,ServiceFlags::NODE_NETWORK};
+    p2p::WalletInputProofDownload download([&]{return std::vector{peer};},[&](const auto&,const auto& command,const auto& bytes){
+        if(command!=W::RequestCommand)return false;std::lock_guard lock(mutex);sent.push_back(W::Request::Decode(bytes));return true;});
+    EXPECT_FALSE(download.Request(request));
+    const auto count=[&]{std::lock_guard lock(mutex);return sent.size();};
+    auto until=std::chrono::steady_clock::now()+std::chrono::seconds(2);
+    while(count()<1&&std::chrono::steady_clock::now()<until)std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    ASSERT_EQ(count(),1u);auto changed=request;changed.tip.begin()[1]=3;++changed.height;
+    EXPECT_FALSE(download.Request(changed));until=std::chrono::steady_clock::now()+std::chrono::seconds(2);
+    while(count()<2&&std::chrono::steady_clock::now()<until)std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    download.Stop();ASSERT_EQ(count(),2u);EXPECT_EQ(sent[0].tip,request.tip);EXPECT_EQ(sent[1].tip,changed.tip);
+    EXPECT_NE(sent[0].nonce,sent[1].nonce);
+}
 TEST(WalletFundingDownload, BoundedRequestsAndStoppedOwner){
     p2p::WalletFundingDownload download([]{return std::vector<p2p::WalletFundingDownload::Peer>{};},
         [](const auto&,const auto&,const auto&){return false;});
@@ -22,7 +42,7 @@ TEST(WalletFundingDownload, CurrentFullSourceInputProofAndExactSessionDownload){
     request.branch=Params().orchard_branch_id;request.activation=Params().orchard_activation_height;
     request.leaf_activation=consensus::GetUtreexoMaturityLeafActivationHeight();request.height=current->height;
     request.tip=current->block_hash;std::copy(current->commitment.begin(),current->commitment.end(),request.root.begin());
-    request.nonce=uint256(1);request.point=OutPoint(f.f.blocks.at(2).vtx.front().GetTxid(),0);
+    request.nonce=W::KeyNonce();request.point=OutPoint(f.f.blocks.at(2).vtx.front().GetTxid(),0);
     const auto proof=ServeWalletInputProof(*f.f.service,request);ASSERT_TRUE(proof);
     ASSERT_EQ(request.Encode().size(),W::RequestBytes);ASSERT_EQ(W::Reply::Decode(proof->Encode()).Encode(),proof->Encode());
     const auto* live=f.f.service->GetConsensusUTXOSet();ASSERT_NE(live,nullptr);

@@ -18,6 +18,7 @@ struct WalletInputProof {
     static constexpr const char* RequestCommand="getwinput";
     static constexpr const char* ReplyCommand="winput";
     static constexpr size_t MaximumBytes=16*1024,RequestBytes=6+4+32+4*4+32*4+4;
+    static uint256 KeyNonce(){uint256 v;v.begin()[0]=1;return v;}
     struct Request {
         uint32_t magic=0;uint256 genesis;uint32_t branch=0,activation=0,leaf_activation=0,height=0;
         uint256 tip,root,nonce;OutPoint point;
@@ -90,8 +91,15 @@ public:
     WalletInputProofDownload(Peers peers,Send send):peers_(std::move(peers)),send_(std::move(send)),worker_([this]{Run();}){}
     ~WalletInputProofDownload(){Stop();}
     std::shared_ptr<const Wire::Reply> Request(Wire::Request request){
-        request.nonce=uint256(1);request.CheckProfile();const auto key=request.Encode();
+        request.nonce=Wire::KeyNonce();request.CheckProfile();const auto key=request.Encode();
         std::lock_guard lock(mutex_);if(stop_)return {};
+        if(!wanted_.empty()&&(wanted_.front().tip!=request.tip||wanted_.front().root!=request.root||wanted_.front().height!=request.height)){
+            // A no-longer-selected head must not block the current request.
+            // Generation checks prevent an already copied old packet from
+            // publishing into this new flight/cache after cancellation.
+            if(generation_==UINT64_MAX)throw std::runtime_error("Input source generation exhausted");
+            ++generation_;wanted_.clear();ready_.clear();flight_.reset();packet_.reset();
+        }
         if(const auto found=ready_.find(key);found!=ready_.end())return found->second;
         if(std::none_of(wanted_.begin(),wanted_.end(),[&](const auto& v){return v.Encode()==key;})){
             if(wanted_.size()>=8)throw std::runtime_error("Wallet input proof request capacity exceeded");
@@ -108,23 +116,25 @@ public:
         cv_.notify_all();if(worker_.joinable())worker_.join();}
 private:
     using Clock=std::chrono::steady_clock;const Peers peers_;const Send send_;
-    std::mutex mutex_,join_;std::condition_variable cv_;bool stop_=false;
+    std::mutex mutex_,join_;std::condition_variable cv_;bool stop_=false;uint64_t generation_=0;
     std::deque<Wire::Request> wanted_;std::map<Bytes,std::shared_ptr<const Wire::Reply>> ready_;
     std::optional<Peer> flight_;std::optional<Bytes> packet_;std::thread worker_;
     void Run()noexcept{
         std::map<std::string,Clock::time_point> cooldown;Clock::time_point sent{},window=Clock::now();size_t used=0;
         std::optional<Wire::Request> sent_request;
         for(;;){
-            std::optional<Peer> peer;std::optional<Bytes> packet;Wire::Request request;
+            std::optional<Peer> peer;std::optional<Bytes> packet;Wire::Request request;uint64_t generation=0;
             {std::unique_lock lock(mutex_);cv_.wait_for(lock,std::chrono::milliseconds(50),[&]{return stop_||packet_.has_value();});
-             if(stop_)return;if(wanted_.empty())continue;request=wanted_.front();peer=flight_;packet=std::move(packet_);packet_.reset();}
-            const auto fail=[&]{if(peer){if(cooldown.size()>=32)cooldown.erase(cooldown.begin());cooldown[peer->address]=Clock::now()+std::chrono::minutes(1);}
-                std::lock_guard lock(mutex_);flight_.reset();packet_.reset();sent_request.reset();};
+             if(stop_)return;if(wanted_.empty())continue;generation=generation_;request=wanted_.front();peer=flight_;packet=std::move(packet_);packet_.reset();}
+            const auto fail=[&]{std::lock_guard lock(mutex_);if(generation==generation_){
+                if(peer){if(cooldown.size()>=32)cooldown.erase(cooldown.begin());cooldown[peer->address]=Clock::now()+std::chrono::minutes(1);}
+                flight_.reset();packet_.reset();}sent_request.reset();};
             try{
                 const auto now=Clock::now();const auto connected=peers_();
                 if(packet){used+=packet->size();const auto reply=Wire::Reply::Decode(*packet);
                     Wire::Check(sent_request&&reply.request==*sent_request);auto key=request.Encode();
                     auto data=std::make_shared<const Wire::Reply>(reply);std::lock_guard lock(mutex_);if(stop_)return;
+                    if(generation!=generation_)continue;
                     if(ready_.size()>=8)ready_.erase(ready_.begin());ready_.emplace(std::move(key),std::move(data));
                     wanted_.pop_front();flight_.reset();sent_request.reset();continue;}
                 if(peer){if(now-sent>=std::chrono::seconds(30)||!std::any_of(connected.begin(),connected.end(),[&](const auto& p){return p.address==peer->address&&p.session==peer->session;}))fail();continue;}
@@ -132,7 +142,7 @@ private:
                 if(now-window>=std::chrono::minutes(1)){window=now;used=0;}if(used>=1024*1024)continue;
                 for(const auto& p:connected)if(p.session&&!p.address.empty()&&p.address.size()<=256&&(p.services&ServiceFlags::NODE_NETWORK)&&!cooldown.contains(p.address)){peer=p;break;}
                 if(!peer)continue;const auto random=secure_random_bytes(32);std::copy(random.begin(),random.end(),request.nonce.begin());
-                const auto bytes=request.Encode();{std::lock_guard lock(mutex_);if(stop_)return;flight_=peer;sent_request=request;}
+                const auto bytes=request.Encode();{std::lock_guard lock(mutex_);if(stop_)return;if(generation!=generation_)continue;flight_=peer;sent_request=request;}
                 sent=now;if(!send_(*peer,Wire::RequestCommand,bytes))fail();
             }catch(...){fail();}
         }

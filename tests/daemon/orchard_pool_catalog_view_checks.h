@@ -59,7 +59,7 @@ TEST(OrchardPoolCatalogView, NewWalletReservationPathsDoNotGrantGeneralCoinAcces
     std::lock_guard<AnnotatedRecursiveMutex> held(f.startup_mutex);
     const auto capture=[&](const auto& data){return owner->CaptureWalletInputsUnderLock(f.startup_mutex,context,f.second->Header(),data);};
     const auto good=capture(inputs);EXPECT_EQ(good.CapturedInputs(),2u);EXPECT_EQ(good.ProvedOutputAbsences(),0u);
-    EXPECT_EQ(good.getCoin(OutPoint(TxId(uint256(7)),0)).status(),Status::Internal);
+    EXPECT_EQ(good.getCoin(OutPoint(TxId(uint256{}),UINT32_MAX)).status(),Status::Internal);
     for(int change:{0,1,2,3,4,5}){auto bad=inputs;
         if(change==0)bad[0].coin.isCoinbase=false; // Legacy hash does NOT bind this bit: catalog MUST.
         if(change==1)++bad[0].coin.height;

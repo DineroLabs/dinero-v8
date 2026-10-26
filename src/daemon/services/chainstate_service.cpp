@@ -21220,7 +21220,7 @@ std::unique_ptr<wallet::OrchardQueuedSpend> ChainstateService::queueRuntimeWalle
                 request.height=selected->context.height-1;request.tip=selected->context.parent_hash;
                 request.root=header->utreexo_root;request.point=OutPoint(TxId(id),candidate.output_index);
                 const auto data=download->Request(request);if(!data)throw wallet::ShieldFundingPending();
-                auto actual=data->request;actual.nonce=uint256(1);request.nonce=uint256(1);
+                auto actual=data->request;actual.nonce=p2p::WalletInputProof::KeyNonce();request.nonce=p2p::WalletInputProof::KeyNonce();
                 if(actual!=request||data->value!=candidate.amount_una||data->script!=candidate.script_pub_key||
                    !data->VerifyPath(*selected->compact_stump))throw std::runtime_error("Compact current input path refused");
                 consensus::UTXOEntry coin(AmountUna::Una(data->value),data->script,data->created,data->coinbase);
