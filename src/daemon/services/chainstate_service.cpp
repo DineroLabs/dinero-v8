@@ -20319,6 +20319,13 @@ ChainstateService::CaptureImportedOrchardDeliveryUnderLock(const std::unique_loc
        !replay.Head().sequence)return {};
     {std::lock_guard<std::mutex> lifetime(wallet_index_use_mutex_);
      if(!wallet_index_uses_by_thread_.contains(std::this_thread::get_id())||utxo_index_.get()!=&index)return {};}
+    const auto point=replay.Point(replay.Head()).checkpoint;
+    if(active_tip_->height!=point.height||active_tip_->hash!=point.block_hash)return {};
+    // Rebind the genuinely prepared inverse BEFORE the journal's fail-stop
+    // audit. A changed detached before-image is an operational deferral, never
+    // permission to skip the inverse guard or reset an existing SafeMode.
+    if(consensus::OrchardActiveForHeight(Params(),active_tip_->height)&&
+       !DetachedOrchardBlockUnderLock(active_tip_->height,active_tip_->hash))return {};
     compact_startup_->selected_consistency->Check(*chain_db_);
     const auto origin=storage::ReadOrchardActivationOrigin(*chain_db_);
     const auto frozen=chain_db_->getPreBaseCoinSetBase();const auto anchor=chain_db_->getValidatedTip();
@@ -20396,6 +20403,10 @@ ChainstateService::resumeRuntimeImportedOrchardRecovery(WalletManager& wallet,UT
         if(!captured.ok())return captured.status();
         const auto& replay=**captured;
         const RuntimeWalletRecovery::OrchardSourceOwner bind=[&](const auto& write){
+            // The compact selected journal requires its ACTUAL inverse,
+            // revalidated off-lock and freshly rebound inside the source guard.
+            // Keep the scope/thread/reader lifetime through every FULL commit.
+            ParentPreparationScope preparation(*this);
             std::unique_lock<std::mutex> snapshot(snapshot_load_mutex_);
             auto selected=AcquireBlockIngressActivationLock();
             auto source=CaptureImportedOrchardDeliveryUnderLock(snapshot,index,replay);

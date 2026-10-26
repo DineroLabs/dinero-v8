@@ -1268,3 +1268,10 @@ route never writes either mixed baseline or repairs/rebases original assumed
 keys. The funded native imported regression must independently prove nonempty
 handoff, confirmation, and later restored funds/memos; source wiring alone is
 not that result, physical app/device acceptance, or release qualification.
+
+The selected journal's genuine inverse is prepared off-lock in the existing
+`ParentPreparationScope`, then rebound before its original fail-stop audit.
+A stale capture defers before that audit; no inverse check or SafeMode is
+disabled/reset. The separate native changed-cohort case preserves intentional
+bad original metadata after handoff and requires account delivery to refuse
+even though the SDK genuinely validates block104. It never repairs that root.

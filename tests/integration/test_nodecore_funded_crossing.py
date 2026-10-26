@@ -501,6 +501,17 @@ try:
     echo_ready.set();deadline=time.monotonic()+10
     while not echo and time.monotonic()<deadline:assert not failures,failures;time.sleep(.1)
     assert proof_wire in echo,'reopened compact peer did not serve its actually readmitted proof/body'
+    cohort_refusal=bool(os.environ.get('DINERO_SDK_IMPORTED_DELIVERY_COHORT_REFUSAL'))
+    if cohort_refusal:
+        assert assumed and not input_queue
+        # Normal lock excludes new encrypted account writes before this explicit
+        # isolated negative corruption. Never repair or reuse this failed source.
+        assert rpc('wallet.lock',[])['success'] is True
+        refusal_rows=wallet_rows()
+        with sqlite3.connect(datadir/'blockchain/utxo') as db:
+            assert db.execute("UPDATE utxo_metadata SET value=? WHERE key='assumeutxo_expected_commitment'",('f'*64,)).rowcount==1
+        bad_cohort=original_lifecycle();assert bad_cohort!=original
+        assert rpc('wallet.unlock',['funded-crossing-password',0])['success'] is True
     mined=native_call('mine');assert txid in mined['transactions'],mined
     bodies[bytes.fromhex(mined['hash'])[::-1]]=bytes.fromhex(mined['body'])
     headers.append(bytes.fromhex(mined['header']));bodies_ready.set();deadline=time.monotonic()+60
@@ -509,6 +520,22 @@ try:
         if rpc('getblockcount',[])==104:break
         time.sleep(.25)
     assert rpc('getblockcount',[])==104
+    if cohort_refusal:
+        deadline=time.monotonic()+5
+        while time.monotonic()<deadline:
+            operations=rpc('wallet.orchard.listoperations',dict(binding,account=0))
+            assert not any(o.get('chain_observation') and o['chain_observation']['outcome']=='confirmed' for o in operations['operations']),operations
+            assert wallet_rows()==refusal_rows,'invalid imported cohort advanced an encrypted account'
+            time.sleep(.25)
+        assert original_lifecycle()==bad_cohort,'invalid imported metadata was repaired'
+        assert mixed_runtime_receipts()==mixed_before,'invalid source minted mixed receipts'
+        (root/'receipt.json').write_text(json.dumps(dict(original_assumed_mobile=True,
+            actual_sdk_height=104,invalid_cohort_retained=bad_cohort,account_rows_unchanged=refusal_rows,
+            mixed_receipts_unchanged=mixed_before,operations=operations,funded_crossing=False,
+            scope='Actual imported nonempty queue/Ready/handoff survives; a deliberately corrupted ORIGINAL cohort after handoff refuses automatic account delivery through real104. No repair, confirmed funds or whole-crossing PASS.'),indent=2)+'\n')
+        assert call('stop')==0;success=True
+        print('PASS actual imported account delivery refuses changed original cohort after nonempty handoff',flush=True)
+        sys.exit(0)
     deadline=time.monotonic()+20
     while time.monotonic()<deadline:
         operations=rpc('wallet.orchard.listoperations',dict(binding,account=0))
