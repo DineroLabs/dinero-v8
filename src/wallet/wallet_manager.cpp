@@ -7616,15 +7616,18 @@ int WalletManager::DiscoverSnapshotCandidates(std::span<const UtxoSetEntry> coin
     auto lease=AcquireDatabaseLease();
     if(!db_||database_leases_!=1||!expected_session||lease->Session()!=expected_session||
         current_wallet_id_<=0||!sqlite3_get_autocommit(db_)||base.IsNull()||!height)return -1;
+    const char* phase="unlocked-seed";
     try{
         auto seed=lease->CopyRecoverySeed(expected_session);
         IssuedAddressTransaction transaction(db_);
+        phase="unknown-empty-catalog";
         // Do not repair a missing/corrupt catalog, certify a recovered seed or
         // touch any current/retained/archive/pending account owner. This first
         // bounded discovery route requires their original unknown-empty state.
         const auto catalog=wallet::OrchardAccountCatalog::RequireUnknownEmpty(db_,seed->Bytes());
         const auto identity=lease->ReadDeliveryIdentity();(void)identity;
         const auto old=ReadSnapshotCandidatesOwned();(void)old;
+        phase="watch-inventory";
         std::set<std::vector<uint8_t>> watched;
         {IssuedStatement scripts(db_,"SELECT script_pubkey FROM watch_scripts");int rc;
          while((rc=sqlite3_step(scripts.value.get()))==SQLITE_ROW){
@@ -7633,6 +7636,7 @@ int WalletManager::DiscoverSnapshotCandidates(std::span<const UtxoSetEntry> coin
                  throw std::runtime_error("Snapshot watch inventory invalid");
              watched.emplace(p,p+n);
          }IssuanceCheck(db_,rc,SQLITE_DONE);}
+        phase="candidate-schema";
         exec(db_,"CREATE TABLE IF NOT EXISTS wallet_snapshot_candidates(wallet_id INTEGER NOT NULL,version INTEGER NOT NULL,txid TEXT NOT NULL,vout INTEGER NOT NULL,amount INTEGER NOT NULL,script_pubkey TEXT NOT NULL,created_height INTEGER NOT NULL,is_coinbase INTEGER NOT NULL,base_height INTEGER NOT NULL,base_block TEXT NOT NULL,source_root TEXT NOT NULL,network TEXT NOT NULL,genesis TEXT NOT NULL,PRIMARY KEY(wallet_id,txid,vout))");
         {IssuedStatement cohort(db_,"SELECT base_height,base_block,source_root,network,genesis FROM wallet_snapshot_candidates WHERE wallet_id=?");
          cohort.Int(1,current_wallet_id_);int rc;
@@ -7643,6 +7647,7 @@ int WalletManager::DiscoverSnapshotCandidates(std::span<const UtxoSetEntry> coin
                  !same(2,root)||!same(3,Params().network_id)||!same(4,Params().genesis_hash))throw std::runtime_error("Snapshot candidate cohort changed");
          }IssuanceCheck(db_,rc,SQLITE_DONE);}
         int count=0;
+        phase="owned-records";
         for(const auto& coin:coins){
             if(!watched.contains(coin.script_pubkey))continue;
             if(coin.txid_hex.size()!=64||coin.amount_una==0||coin.amount_una>uint64_t(INT64_MAX)||coin.height>height)
@@ -7672,10 +7677,11 @@ int WalletManager::DiscoverSnapshotCandidates(std::span<const UtxoSetEntry> coin
         }
         // Full recheck before commit. No scan_meta/tip, ordinary utxos, index
         // coverage, payment owner or Orchard catalog is ever updated here.
+        phase="final-catalog-and-commit";
         if(wallet::OrchardAccountCatalog::RequireUnknownEmpty(db_,seed->Bytes())!=catalog)
             throw std::runtime_error("Snapshot candidate catalog changed");
         (void)ReadSnapshotCandidatesOwned();transaction.Commit();return count;
-    }catch(...){return -1;}
+    }catch(...){try{WLOG_WARN(std::string("[Snapshot candidates] Wallet refused at ")+phase);}catch(...){}return -1;}
 }
 
 // ============================================================================
