@@ -15,6 +15,11 @@ public:
     std::shared_ptr<MempoolService> ingress;
     std::vector<uint8_t> script;
     orchard::Hash secret{};
+    // Optional receiver DATA for actual-executable recovery fixtures. Ordinary
+    // fixtures retain the original deterministic seed, value and empty memo.
+    std::array<uint8_t,64> shield_seed{51};
+    uint64_t shield_amount=5000;
+    std::array<uint8_t,512> shield_memo{};
     std::vector<uint8_t> last_bundle;
     CBlockIndex tip;
     std::vector<Block> blocks;
@@ -268,10 +273,10 @@ public:
         std::copy(genesis.begin(),genesis.end(),domain.genesis_wire.begin());
         orchard::EnvelopeInput input{};std::copy(point.txid.AsUint256().begin(),point.txid.AsUint256().end(),input.txid_wire.begin());
         input.output_index=0;input.sequence=UINT32_MAX;
-        constexpr uint64_t fee=100000,shield=5000;
+        constexpr uint64_t fee=100000;const auto shield=shield_amount;
         std::vector<orchard::TransparentOutput> outputs{{coin.value.GetUna()-fee-shield,script}};
-        std::array<uint8_t,64> seed{51};auto keys=orchard::WalletKeys::FromSeed(seed,0);
-        const std::vector<orchard::WalletPayment> payments{{shield,keys.Receiver(orchard::WalletScope::External,{})}};
+        auto keys=orchard::WalletKeys::FromSeed(shield_seed,0);
+        const std::vector<orchard::WalletPayment> payments{{shield,keys.Receiver(orchard::WalletScope::External,{}),shield_memo}};
         auto plan=orchard::WalletBundlePlan::PrepareShield(keys,payments);
         const std::vector<orchard::ResolvedInput> resolved{{input.txid_wire,0,input.sequence,coin.value.GetUna(),script}};
         const auto signing=orchard::SigningContext::Create(domain,0,resolved,outputs,fee);

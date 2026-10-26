@@ -1,4 +1,4 @@
-"""Real loopback catalog ingress and SDK automatic handoff, source-ready parent.
+"""Real catalog/handoff/full-body ingress and late account-0 recovery.
 
 This is not original mobile assumed-history or queued-payment acceptance. Every
 root, child log, reply and untrusted packet is retained, including failures.
@@ -20,7 +20,10 @@ fixture=json.loads(manifest.read_text());datadir=Path(fixture['datadir'])
 proof=Path(fixture['proof']).read_bytes();assert 0<len(proof)<=1<<30
 magic=fixture['magic'];headers=[bytes.fromhex(h) for h in fixture['headers']]
 assert len(headers)==104 and all(len(h)==128 for h in headers)
-stop=threading.Event();ready=threading.Event();packets=[];failures=[];connections=[]
+stop=threading.Event();ready=threading.Event();bodies_ready=threading.Event()
+packets=[];failures=[];connections=[];pending={};body_requests=[]
+bodies={bytes.fromhex(fixture[name+'_hash'])[::-1]:Path(fixture[name]).read_bytes()
+        for name in ('first','second')}
 listener=socket.socket();listener.bind(('127.0.0.1',0));listener.listen(4);listener.settimeout(.5)
 port=listener.getsockname()[1]
 def double_sha(data):return hashlib.sha256(hashlib.sha256(data).digest()).digest()
@@ -32,6 +35,7 @@ def record(direction,command,payload):
 def exact(conn,size):
     out=bytearray()
     while len(out)<size:
+        flush_bodies(conn)
         try:part=conn.recv(size-len(out))
         except socket.timeout:
             if stop.is_set():raise EOFError()
@@ -42,6 +46,18 @@ def exact(conn,size):
 def send(conn,command,payload=b''):
     record('out',command,payload)
     conn.sendall(struct.pack('<I12sI4s',magic,command.encode(),len(payload),double_sha(payload)[:4])+payload)
+def flush_bodies(conn):
+    if bodies_ready.is_set():
+        for key in list(pending.get(conn,{})):
+            send(conn,'block',bodies[key]);del pending[conn][key]
+def inventory(payload):
+    assert payload,'empty getdata'
+    prefix=payload[0]
+    width={253:2,254:4,255:8}.get(prefix,0)
+    count=int.from_bytes(payload[1:1+width],'little') if width else prefix
+    offset=1+width
+    assert count<=50000 and len(payload)==offset+36*count
+    return [struct.unpack_from('<I32s',payload,offset+36*i) for i in range(count)]
 def version():
     services=1|(1<<29)|(1<<30)|(1<<31)
     address=struct.pack('<Q',services)+b'\x00'*10+b'\xff\xff\x7f\x00\x00\x01'+struct.pack('>H',port)
@@ -55,7 +71,7 @@ def serve():
             except OSError:
                 if stop.is_set():return
                 raise
-            connections.append(conn);conn.settimeout(.5);transfer=None
+            connections.append(conn);pending[conn]={};conn.settimeout(.5);transfer=None
             with conn:
                 while not stop.is_set():
                     try:raw=exact(conn,24)
@@ -81,9 +97,15 @@ def serve():
                         assert transfer and len(payload)==42 and payload[:6]==b'DNOPG\x01' and payload[6:38]==transfer
                         index=struct.unpack_from('<I',payload,38)[0];page=proof[index*65536:(index+1)*65536]
                         assert page;send(conn,'ocatpage',transfer+struct.pack('<II',index,len(page))+page)
-                    # Bodies are deliberately withheld until automatic parent
-                    # handoff is proved. No peer-controlled current tip is an
-                    # ownership or wallet-history certificate.
+                    elif command=='getdata':
+                        for kind,key in inventory(payload):
+                            body_requests.append(dict(kind=kind,hash=key[::-1].hex()))
+                            if key in bodies:
+                                assert kind==2,'Orchard body must use full MSG_BLOCK, not a legacy proof'
+                                pending[conn][key]=True
+                        flush_bodies(conn)
+                    # Publication is observed independently through the public
+                    # SDK. The peer supplies bytes, never a wallet certificate.
     except BaseException:
         if not stop.is_set():failures.append(traceback.format_exc())
 thread=threading.Thread(target=serve);thread.start()
@@ -103,10 +125,11 @@ def call(op,**args):
         time.sleep(.05)
     raise AssertionError(('SDK call timed out',op))
 success=False
+config=dict(network='regtest',sync_profile='ios_utreexo',
+    addnode=f'127.0.0.1:{port}',max_peers=1,verbose_logging=True)
 try:
     assert call('sdk_activation_events') is True
-    assert call('start',datadir=str(datadir),config=dict(network='regtest',sync_profile='ios_utreexo',
-        addnode=f'127.0.0.1:{port}',max_peers=1,verbose_logging=True))==0
+    assert call('start',datadir=str(datadir),config=config)==0
     assert call('rpc',method='getblockcount',params=[])==101,'source-ready parent not loaded'
     restored=call('rpc',method='wallet.restore',params=dict(name='wire-named-owner',
         mnemonic='abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about',rescan=False))
@@ -132,12 +155,55 @@ try:
     assert call('rpc',method='wallet.open',params=['wire-named-owner'])['success'] is True
     assert call('rpc',method='getblockcount',params=[])==101
     assert any(p['command']=='getocat' for p in packets) and any(p['command']=='getocatpg' for p in packets)
+    bodies_ready.set();deadline=time.monotonic()+60
+    while time.monotonic()<deadline:
+        assert not failures,failures
+        height=call('rpc',method='getblockcount',params=[])
+        if height==103:break
+        time.sleep(.25)
+    else:raise AssertionError(('SDK did not canonically validate downloaded first/descendant bodies',height,body_requests))
+    for name in ('first','second'):
+        assert dict(kind=2,hash=fixture[name+'_hash']) in body_requests,body_requests
+    assert not (datadir/'chainstate_recovery.marker').exists(),'completed activation must finish its guarded integrity audit'
+    restored=call('rpc',method='wallet.restore',params=dict(name='late-history-owner',
+        mnemonic='abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about',rescan=False))
+    assert restored.get('success') is True,restored
+    binding=call('rpc',method='wallet.orchard.getwalletbinding',params=dict(wallet_name='late-history-owner'))
+    bound=dict(wallet_binding=binding['wallet_binding'])
+    for _ in range(8):
+        recovery=call('rpc',method='wallet.orchard.recoveraccount0',params=bound)
+        assert isinstance(recovery,dict) and 'error' not in recovery,recovery
+        if recovery.get('complete'):break
+    assert recovery.get('complete') is True,recovery
+    assert recovery['generated'] is False and recovery['coverage']=='account_0_only',recovery
+    balance=call('rpc',method='wallet.orchard.getbalance',params=dict(bound,account=0))
+    received=call('rpc',method='wallet.orchard.listreceived',params=dict(bound,account=0))
+    assert balance['confirmed_una']==500000,balance
+    assert received['history_complete'] is True and received['total_count']==1,received
+    note=received['received'][0]
+    assert note['amount_una']==500000 and note['height']==102 and note['block_hash']==fixture['first_hash'],note
+    assert bytes.fromhex(note['memo_hex'])==b'authenticated phone history'.ljust(512,b'\0'),note
+    (root/'recovery.json').write_text(json.dumps(dict(recovery=recovery,balance=balance,received=received),indent=2)+'\n')
+    assert call('rpc',method='wallet.encrypt',params=['history-test-password'])['success'] is True
+    assert call('stop')==0
+    assert call('start',datadir=str(datadir),config=config)==0
+    assert call('rpc',method='getblockcount',params=[])==103
+    assert call('rpc',method='wallet.open',params=['late-history-owner'])['success'] is True
+    assert call('rpc',method='wallet.unlock',params=['history-test-password',0])['success'] is True
+    binding=call('rpc',method='wallet.orchard.getwalletbinding',params=dict(wallet_name='late-history-owner'))
+    bound=dict(wallet_binding=binding['wallet_binding'])
+    reopened_balance=call('rpc',method='wallet.orchard.getbalance',params=dict(bound,account=0))
+    reopened_received=call('rpc',method='wallet.orchard.listreceived',params=dict(bound,account=0))
+    assert reopened_balance['confirmed_una']==500000,reopened_balance
+    assert reopened_received['history_complete'] and reopened_received['received']==received['received'],reopened_received
+    (root/'reopened-recovery.json').write_text(json.dumps(dict(balance=reopened_balance,received=reopened_received),indent=2)+'\n')
     assert call('stop')==0
     success=True
     (root/'receipt.json').write_text(json.dumps(dict(fixture=fixture,packets=packets,
         source_ready_parent_handoff=True,named_wallet_without_phrase=True,paused_queue_no_reply=state['pause_probes'],
-        scope='Actual loopback P2P catalog/SDK worker at independently replayed parent; no queued payment, original assumed mobile history, descendant body download or device acceptance.'),indent=2)+'\n')
-    print('PASS actual SDK loopback catalog and automatic parent handoff; named wallet retained',flush=True)
+        body_requests=body_requests,late_restored_funds_and_memo=True,
+        scope='Actual loopback catalog/SDK parent handoff plus full activation/descendant body download and retained authenticated account-0 recovery. Not a fresh late snapshot phone, original assumed mobile SQL, nonempty queued crossing or device acceptance.'),indent=2)+'\n')
+    print('PASS actual SDK full-body activation download and encrypted late account-0 funds/memo cold reopen',flush=True)
 finally:
     ready.set();stop.set();listener.close()
     for conn in connections:

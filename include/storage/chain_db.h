@@ -453,6 +453,9 @@ public:
     // Projection validates storage shape/membership, not proofs or pool flows.
     StatusOr<storage::OrchardCommitmentSets> getOrchardCommitmentSets(
         const storage::OrchardStoredState& expected) const;
+    // Canonical logical-set digests only after checking separated storage has
+    // no Orchard state or O1 namespace rows. Not an empty-history certificate.
+    StatusOr<storage::OrchardCommitmentSets> getEmptyOrchardCommitmentSets() const;
     StatusOr<storage::OrchardCommitmentSets> previewOrchardCommitmentSets(
         const std::optional<storage::OrchardStoredState>& expected_parent,
         const storage::OrchardStoredState& next, const std::vector<uint256>& nullifiers) const;

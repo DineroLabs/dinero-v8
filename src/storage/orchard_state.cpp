@@ -389,6 +389,9 @@ StatusOr<storage::OrchardCommitmentSets> ChainDB::getOrchardCommitmentSets(
     if (!Valid(expected)) return Status::Invalid;
     return readOrchardCommitmentSets(expected, {}, std::nullopt);
 }
+StatusOr<storage::OrchardCommitmentSets> ChainDB::getEmptyOrchardCommitmentSets() const {
+    return readOrchardCommitmentSets(std::nullopt, {}, std::nullopt);
+}
 StatusOr<storage::OrchardCommitmentSets> ChainDB::previewOrchardCommitmentSets(
     const std::optional<OrchardStoredState>& parent, const OrchardStoredState& next,
     const std::vector<uint256>& nullifiers) const {

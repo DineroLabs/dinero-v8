@@ -2431,7 +2431,8 @@ bool ChainstateService::AuditSelectedOrchardTipUnderLock(std::string* reason) co
                     *parent, consensus_utxo_set_->GetForest(), witness, true);
             }
             return true;
-        } catch (const std::exception&) {
+        } catch (const std::exception& error) {
+            if(logger_)logger_->warning(std::string("[OrchardSelectedAudit] ")+error.what());
             return fail_orchard("tip-local consistency audit failed");
         }
 #else
@@ -10972,6 +10973,22 @@ const consensus::ValidatedOrchardBlock* ChainstateService::DetachedOrchardBlockU
 #ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
     const auto* scope=ParentPreparationScope::Find(*this);
     if(!scope)return nullptr;
+    // A single extension was genuinely validated and rebound BEFORE its
+    // commit. At transition completion its parent is no longer selected, so
+    // rebinding that before-image would be wrong. Retain the same immutable
+    // proof for the existing post-commit inverse audit instead. That audit
+    // still checks the live catalog, exact committed body, undo and locators.
+    if(scope->extension) {
+        const auto& extension=*scope->extension;
+        if(extension.source==this && extension.thread==std::this_thread::get_id() &&
+            extension.db==chain_db_owner_ && extension.blocks==block_storage_ &&
+            extension.body && extension.bound && extension.bound->MatchesProfile() &&
+            extension.context.height==height && extension.context.block_hash==hash &&
+            extension.bound->Context().height==height && extension.bound->Context().block_hash==hash &&
+            extension.bound->MatchesWire(*extension.body) && active_tip_ &&
+            active_tip_->height==height && active_tip_->hash==hash)
+            return extension.bound.get();
+    }
     if(scope->inverse && scope->inverse->completed && scope->inverse->validation) {
         const auto& captured=scope->inverse->validation->context;
         if(captured.height==height && captured.block_hash==hash)
@@ -12755,8 +12772,14 @@ void ChainstateService::ActivateBestChainPass(const ActivationParentPlan* prepar
 
     // Completion acknowledges only a verified selected final state. The
     // transition destructor otherwise reports the actual committed prefix.
-    if(compact_transition && (!active_tip_ || active_tip_!=best_candidate ||
-        !IsCanonicalStateAligned(nullptr)))return;
+    if(compact_transition) {
+        std::string reason;
+        if(!active_tip_ || active_tip_!=best_candidate || !IsCanonicalStateAligned(&reason)) {
+            if(logger_)logger_->warning("[ActivateBestChain] Compact completion deferred: "+
+                (reason.empty()?std::string("selected candidate identity changed"):reason));
+            return;
+        }
+    }
     if (runtime_reorg) runtime_reorg->Complete();
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -19654,6 +19677,14 @@ ChainstateService::CaptureOrchardExtensionUnderLock(const std::string& hex) {
     CheckOrchardHeaderUnderChainstateLock(result->body->Header(),*parent,*context,
         *header_chain_selector_,now>0?uint64_t(now):0);
     result->parent_state=selected->parent;
+    if(!result->parent_state) {
+        // First-block inverse validation compares the canonical empty-set
+        // hashes, not zero-initialized structs. Read their exact shape under
+        // the held source lock; any untracked namespace row still refuses.
+        const auto empty=chain_db_->getEmptyOrchardCommitmentSets();
+        if(!empty.ok())return {};
+        result->parent_membership=*empty;
+    }
     if(result->parent_state) {
         const auto sets=chain_db_->getOrchardCommitmentSets(*result->parent_state);
         const auto retired=chain_db_->getLegacyRetirementState();

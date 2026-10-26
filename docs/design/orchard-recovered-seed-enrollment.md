@@ -802,6 +802,32 @@ and named-wallet reopening without a phrase. Its exact pre-Orchard source comes
 from independent execution with genuine historical undo/delta/checkpoints; the
 visited proof-producing fixture is preserved separately. No lifecycle receipt,
 ready proof, first event, replay authority or accepted owner is injected.
-The test also observes no reply from queue RPCs during the real pause.
-It is not original mobile assumed-history/SQL, nonempty queued-payment survival,
-post-activation body history, physical-device or release acceptance.
+The test also observes no reply from queue RPCs during the real pause. After
+publication, the untrusted peer serves the requested full `MSG_BLOCK` bodies
+for activation and its descendant. The actual queue validates and connects
+both; no first runtime event or cursor is injected. A newly restored named
+wallet then uses the public account-0 recovery RPC to find the earlier private
+funds and exact 512-byte memo, remains `generated=false`, encrypts and passes a
+normal SDK cold reopen and wallet open/unlock without re-entering the phrase.
+
+This is a short activation-origin download into retained authenticated history,
+not a fresh late phone at a post-activation snapshot floor. Original mobile
+assumed-history/SQL readiness, detached activation-to-tip historical backfill
+for that late phone, nonempty queued-payment crossing, physical-device and
+release acceptance remain separate gates. The original parent-only receipts
+remain scoped to their original source and are not relabelled by this test.
+
+The first actual full-body SDK cold-reopen regression also caught a missing
+proof lifetime lookup: a single compact extension retained its genuine bound
+validation, but transition completion could only find the old-tip inverse or
+the multi-block branch proof. Its final audit consequently deferred, leaving
+the activation recovery marker behind despite the committed tip. Completion
+now exposes that same immutable extension proof to the existing strict inverse
+audit, with source/database/storage/thread/profile/body/selected-tip binding.
+No parent rebind is attempted after commit, no audit is skipped, and no startup
+marker is deleted as a workaround. Failed input roots and their marker remain
+preserved separately.
+The first-block extension also captures canonical empty logical-set hashes from
+the checked empty separated namespace, not a zero-initialized digest struct.
+The shared reader refuses existing state or any untracked Orchard namespace
+row; this does not certify wallet history or independently executed prehistory.

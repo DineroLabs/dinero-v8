@@ -11,6 +11,7 @@
 #include "daemon/reopen_candidate_journal.h"
 #include "daemon/datadir_guard.h"
 #include "daemon/daemon_app.h"
+#include "wallet/bip39.h"
 #include "storage/orchard_activation_origin.h"
 #include <sstream>
 #include <json/json.h>
@@ -568,6 +569,14 @@ void GenerateSdkActivationFixture(){
     for(const auto& name:shielded_store_fixture::legacy)parent_rows[name];
     parent_rows[shielded_store_fixture::shielded];
     ActivationHandoffFixture f(false,[&](auto& source){
+        std::vector<uint8_t> seed;
+        OrchardAdmissionFixture::Require(bip39::MnemonicToSeed(
+            "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about","",seed));
+        OrchardAdmissionFixture::Require(seed.size()==source.f.shield_seed.size());
+        std::copy(seed.begin(),seed.end(),source.f.shield_seed.begin());
+        source.f.shield_amount=500000;
+        constexpr std::string_view memo="authenticated phone history";
+        std::copy(memo.begin(),memo.end(),source.f.shield_memo.begin());
         const auto* coins=source.f.service->GetConsensusUTXOSet();OrchardAdmissionFixture::Require(coins!=nullptr);
         const auto lock=coins->LockForestShared();
         OrchardAdmissionFixture::Require(source.f.db.putUtreexoCheckpointWithChecksum(

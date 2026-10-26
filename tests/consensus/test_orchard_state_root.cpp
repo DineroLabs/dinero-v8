@@ -22,6 +22,21 @@ int main(int argc,char**argv){try{
     const auto record=Record(c.domain);
     OrchardStateRootContext root_context{c.domain,c.activation_height,c.height,c.parent_hash};
     TempDir tmp;Seed(tmp.path);ChainDB db;Require(db.init(tmp.path)==Status::Ok);
+    const auto empty_parent=RequiredValue(db.getEmptyOrchardCommitmentSets());
+    Require(!empty_parent.nullifiers.IsNull()&&!empty_parent.anchors.IsNull());
+    Require(!empty_parent.nullifier_count&&!empty_parent.anchor_count&&!empty_parent.anchor_references);
+    // The public empty reader must reject unknown namespace content without
+    // repairing it, not return mathematically empty digests over corrupt data.
+    db.close();const auto empty_rows=Inspect(tmp.path);
+    std::vector<std::string> empty_names;for(const auto& [name,rows]:empty_rows)empty_names.push_back(name);
+    {Raw raw(tmp.path,empty_names);raw.put(shielded_store_fixture::shielded,"O1-untracked","must refuse");}
+    const auto unknown_rows=Inspect(tmp.path);Require(db.init(tmp.path)==Status::Ok);
+    Require(db.getEmptyOrchardCommitmentSets().status()==Status::Corruption);db.close();
+    Require(Inspect(tmp.path)==unknown_rows);
+    {Raw raw(tmp.path,empty_names);rocksdb::WriteOptions options;
+     Require(raw.db->Delete(options,raw.cf(shielded_store_fixture::shielded),"O1-untracked").ok());}
+    Require(Inspect(tmp.path)==empty_rows);Require(db.init(tmp.path)==Status::Ok);
+    Require(RequiredValue(db.getEmptyOrchardCommitmentSets())==empty_parent);
     const auto projected=RequiredValue(db.previewOrchardCommitmentSets({},funded.Next(),funded.Nullifiers()));
     Require(Eq(projected.nullifiers,Load(base+"/state-set.nullifiers")));
     Require(Eq(projected.anchors,Load(base+"/state-funded.anchors")));
@@ -67,6 +82,7 @@ int main(int argc,char**argv){try{
     Require(Eq(empty_initial_sets.nullifiers,Load(base+"/state-empty.nullifiers")));
     Require(ComputeOrchardStateRoot(root_context,record,empty_initial.Next(),empty_initial_sets)!=root);
     Stage(db,funded);db.close();Require(db.init(tmp.path)==Status::Ok);
+    Require(db.getEmptyOrchardCommitmentSets().status()==Status::AlreadyExists);
     Require(RequiredValue(db.getOrchardCommitmentSets(funded.Next()))==projected);
     auto own_hash=funded.Next();own_hash.block_hash=H(100);
     Require(ComputeOrchardStateRoot(root_context,record,own_hash,projected)==root); // No cycle.
@@ -162,6 +178,7 @@ int main(int argc,char**argv){try{
     rocksdb::WriteBatch undo_paid;Require(db.stageOrchardDisconnect(token,paid.Next(),undo_paid)==Status::Ok);
     Require(db.writeBatch(token,std::move(undo_paid),true)==Status::Ok);
     const auto before_boundary=RequiredValue(db.previewOrchardDisconnectCommitmentSets(funded.Next()));
+    Require(before_boundary==empty_parent);
     Require(before_boundary.nullifier_count==0&&before_boundary.anchor_count==0&&before_boundary.anchor_references==0);
     Require(Eq(before_boundary.nullifiers,Load(base+"/state-empty.nullifiers")));
     Require(RequiredValue(db.getOrchardCommitmentSets(funded.Next()))==projected);
