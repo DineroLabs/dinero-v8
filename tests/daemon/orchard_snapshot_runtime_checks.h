@@ -4,6 +4,7 @@
 #include "p2p/orchard_catalog_server.h"
 #include "p2p/orchard_catalog_client.h"
 #include "p2p/orchard_catalog_download.h"
+#include "p2p/orchard_phone_history.h"
 #include "daemon/services/orchard_boundary_replay.h"
 #include "daemon/orchard_snapshot_store.h"
 #include "daemon/services/block_ingress_service.h"
@@ -606,6 +607,30 @@ void GenerateSdkActivationFixture(){
     Json::Value row;row["datadir"]=f.root.string();row["profile"]=ConsensusChecksum(Params());
     row["magic"]=Json::UInt(Params().magic);row["parent"]=f.proof->parent_catalog.block.GetHex();
     row["first_hash"]=f.full.first->Header().GetHash().GetHex();row["second_hash"]=f.full.second->Header().GetHash().GetHex();
+    if(std::getenv("DINERO_SDK_LATE_HISTORY_FIXTURE")){
+        // A genuinely NEW root with only a normal authenticated v6 floor.
+        // No original parent DB, pre-floor bodies or canonical runtime events
+        // are copied. The actual SDK must obtain missing history over TCP.
+        const auto late=f.root/"late-phone";ASSERT_TRUE(std::filesystem::create_directory(late));
+        ASSERT_TRUE(std::filesystem::create_directory(late/"blockchain"));
+        daemon::DatadirGuard guard;std::string error;ASSERT_TRUE(guard.Acquire(late,error));
+        consensus::HeaderStore store((late/"headers").string());ASSERT_TRUE(store.Open());
+        consensus::HeaderChainSelector headers(&store);
+        for(const auto& block:f.full.f.blocks)ASSERT_TRUE(headers.AddHeader(block.header));
+        ASSERT_TRUE(headers.AddHeader(f.full.first->Header()));ASSERT_TRUE(headers.AddHeader(f.full.second->Header()));
+        consensus::SnapshotMetadata metadata;metadata.version=consensus::SNAPSHOT_VERSION_V6;
+        metadata.block_height=102;metadata.block_hash=f.full.first->Header().GetHash();metadata.timestamp=f.full.first->Header().timestamp;
+        const auto snapshot=late/"input.v6";
+        ASSERT_TRUE(consensus::WriteOrchardSnapshotFileAtomically(snapshot,metadata,*f.proof,{}).success);
+        std::ifstream input(snapshot,std::ios::binary);
+        const auto file=consensus::ReadOrchardSnapshotFile(input,std::filesystem::file_size(snapshot),consensus::OrchardSnapshotProfile::Compact);
+        const auto path=late/"blockchain/chaindb";OrchardSnapshotStoreTestAccess::CreateFresh(path);
+        ChainDB db;ASSERT_EQ(db.init(path),Status::Ok);BlockStorage files;ASSERT_EQ(files.init(late/"blocks"),Status::Ok);
+        AnnotatedRecursiveMutex mutex;
+        const auto installed=OrchardSnapshotStoreTestAccess::Install(mutex,db,f.full.f.token,files,headers,file);
+        ASSERT_TRUE(installed.compact);ASSERT_FALSE(installed.full);
+        row["late_datadir"]=late.string();row["late_floor"]=102;
+    }
     const auto proof_file=f.root/"untrusted-catalog-section.bin";
     {std::ofstream out(proof_file,std::ios::binary);ASSERT_TRUE(out);
      consensus::StreamOrchardSnapshotSection(*f.proof,[&](auto bytes){out.write(reinterpret_cast<const char*>(bytes.data()),bytes.size());
@@ -1603,6 +1628,84 @@ TEST(OrchardActivationOrigin, MissingFirstBlockForeignTargetAndIncompleteFinishF
     auto forged=std::make_shared<OrchardSnapshotSection>(*proof);forged->state.pool_balance+=1;
     EXPECT_ANY_THROW(Access::ReplayActivation(forged,headers,102,first->Header().GetHash()));
     EXPECT_EQ(source.f.service->GetActiveTip()->hash,first->Header().GetHash());
+}
+TEST(OrchardPhoneHistory, SequentialBodiesExtendWithoutSkippingAndReadyDataIsNotState){
+    using namespace consensus;using Access=OrchardSnapshotStoreTestAccess;using Download=p2p::OrchardPhoneHistoryDownload;
+    CanonicalPoolFixture source(true);MutableParams().orchard_catalog_commitment_activation_height=102;
+    MutableParams().state_commitment_burial_depth=0;
+    source.f.service->setRuntimeBlockNotifications(std::make_shared<CanonicalPoolNotices>());
+    const auto first=SolveCatalogTemplate(source.Build());ASSERT_TRUE(first);ASSERT_TRUE(source.Submit(first->WireBytes()).connected);
+    auto headers=std::make_shared<HeaderChainSelector>();for(const auto& b:source.f.blocks)ASSERT_TRUE(headers->AddHeader(b.header));
+    ASSERT_TRUE(headers->AddHeader(first->Header()));
+    auto proof=std::make_shared<const OrchardSnapshotSection>(Access::CaptureActivation(source.f.db,*headers));
+    const auto a=source.f.db.getOrchardCatalogState(first->Header().GetHash());ASSERT_TRUE(a.ok());
+    BlockAssembler assembler(&source.f.db);WireOrchardAssembler(assembler,source.f);
+    const auto second=SolveCatalogTemplate(assembler.CreateOrchardBlock(OrchardMiningPayout));ASSERT_TRUE(second);
+    ASSERT_TRUE(source.Submit(second->WireBytes()).connected);ASSERT_TRUE(headers->AddHeader(second->Header()));
+    const auto b=source.f.db.getOrchardCatalogState(second->Header().GetHash());ASSERT_TRUE(b.ok());
+    const auto unchanged=ChainDBTransactionReadTestPeer::HandoffRows(source.f.db);
+    std::mutex mutex;std::condition_variable cv;std::deque<std::vector<uint8_t>> requests;
+    std::optional<Download::Target> target;
+    Download host(headers,source.f.path.parent_path(),[&]{std::lock_guard lock(mutex);return target;},[&]{return proof;},
+        [&](auto p,const auto& t){return Access::ReplayActivation(std::move(p),headers,t.height,t.hash);},
+        []{return std::vector<Download::Peer>{{"archive",71,ServiceFlags::NODE_NETWORK}};},
+        [&](const auto&,const auto& command,const auto& bytes){
+            std::lock_guard lock(mutex);EXPECT_EQ(command,"getdata");requests.push_back(bytes);cv.notify_all();return true;});
+    const auto request=[&](const auto& body){
+        std::unique_lock lock(mutex);
+        if(!cv.wait_for(lock,std::chrono::seconds(5),[&]{return !requests.empty();}))return false;
+        const auto bytes=std::move(requests.front());requests.pop_front();
+        std::vector<uint8_t> expected{1,2,0,0,0};const auto hash=body.Header().GetHash();expected.insert(expected.end(),hash.begin(),hash.end());
+        return bytes==expected;
+    };
+    const auto ready=[&]{const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(5);
+        while(std::chrono::steady_clock::now()<deadline){if(host.Ready())return true;std::this_thread::sleep_for(std::chrono::milliseconds(10));}return false;};
+    {std::lock_guard lock(mutex);target=Download::Target{102,102,first->Header().GetHash(),storage::catalog::Hash(*a),first->Header().GetHash()};}
+    ASSERT_TRUE(request(*first));EXPECT_FALSE(host.Enqueue({"archive",72,0},first->WireBytes()));
+    ASSERT_TRUE(host.Enqueue({"archive",71,0},first->WireBytes()));
+    ASSERT_TRUE(ready());auto prefix=host.Ready();ASSERT_TRUE(prefix);
+    EXPECT_EQ(prefix->Body(102),first->WireBytes());EXPECT_ANY_THROW(prefix->Body(103));
+    EXPECT_FALSE(host.Enqueue({"archive",71,0},first->WireBytes()));
+    {std::lock_guard lock(mutex);target=Download::Target{102,103,second->Header().GetHash(),storage::catalog::Hash(*b),first->Header().GetHash()};}
+    ASSERT_TRUE(request(*second));ASSERT_TRUE(host.Enqueue({"archive",71,0},second->WireBytes()));ASSERT_TRUE(ready());
+    auto complete=host.Ready();ASSERT_TRUE(complete);EXPECT_EQ(complete->Body(102),first->WireBytes());EXPECT_EQ(complete->Body(103),second->WireBytes());
+    // A retained earlier DATA view cannot silently acquire a later target.
+    EXPECT_ANY_THROW(prefix->Body(103));EXPECT_EQ(host.Observe().verified_height,103u);
+    {std::lock_guard lock(mutex);target->catalog.data[0]^=1;}
+    const auto refused=std::chrono::steady_clock::now()+std::chrono::seconds(5);
+    while(host.Observe().error.empty()&&std::chrono::steady_clock::now()<refused)std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    EXPECT_FALSE(host.Observe().error.empty());EXPECT_FALSE(host.Ready());
+    {std::lock_guard lock(mutex);target->hash.data[0]^=1;}
+    EXPECT_FALSE(host.Ready());host.Stop();EXPECT_FALSE(host.Ready());
+    EXPECT_FALSE(host.Enqueue({"archive",71,0},second->WireBytes()));
+    EXPECT_EQ(ChainDBTransactionReadTestPeer::HandoffRows(source.f.db),unchanged);
+}
+TEST(OrchardPhoneHistory, CorruptFirstBodyNeverPublishesAndStopDiscardsFlight){
+    using namespace consensus;using Access=OrchardSnapshotStoreTestAccess;using Download=p2p::OrchardPhoneHistoryDownload;
+    CanonicalPoolFixture source(true);MutableParams().orchard_catalog_commitment_activation_height=102;
+    MutableParams().state_commitment_burial_depth=0;
+    const auto first=SolveCatalogTemplate(source.Build());ASSERT_TRUE(first);ASSERT_TRUE(source.Submit(first->WireBytes()).connected);
+    auto headers=std::make_shared<HeaderChainSelector>();for(const auto& b:source.f.blocks)ASSERT_TRUE(headers->AddHeader(b.header));
+    ASSERT_TRUE(headers->AddHeader(first->Header()));
+    auto proof=std::make_shared<const OrchardSnapshotSection>(Access::CaptureActivation(source.f.db,*headers));
+    const auto catalog=source.f.db.getOrchardCatalogState(first->Header().GetHash());ASSERT_TRUE(catalog.ok());
+    const auto unchanged=ChainDBTransactionReadTestPeer::HandoffRows(source.f.db);
+    const Download::Target selected{102,102,first->Header().GetHash(),storage::catalog::Hash(*catalog),first->Header().GetHash()};
+    std::mutex mutex;std::condition_variable cv;unsigned sends=0;
+    Download host(headers,source.f.path.parent_path(),[&]{return std::optional(selected);},[&]{return proof;},
+        [&](auto p,const auto& t){return Access::ReplayActivation(std::move(p),headers,t.height,t.hash);},
+        []{return std::vector<Download::Peer>{{"archive",81,ServiceFlags::NODE_NETWORK}};},
+        [&](const auto&,const auto&,const auto&){std::lock_guard lock(mutex);++sends;cv.notify_all();return true;});
+    {std::unique_lock lock(mutex);ASSERT_TRUE(cv.wait_for(lock,std::chrono::seconds(5),[&]{return sends!=0;}));}
+    auto wrong_header=first->WireBytes();wrong_header.at(4)^=1;
+    EXPECT_FALSE(host.Enqueue({"archive",81,0},wrong_header));EXPECT_FALSE(host.Enqueue({"other",81,0},first->WireBytes()));
+    auto corrupt=first->WireBytes();corrupt.back()^=1; // Same requested header, invalid authenticated body.
+    ASSERT_TRUE(host.Enqueue({"archive",81,0},corrupt));
+    const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(5);
+    while(host.Observe().error.empty()&&std::chrono::steady_clock::now()<deadline)std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    EXPECT_FALSE(host.Observe().error.empty());EXPECT_FALSE(host.Ready());EXPECT_EQ(host.Observe().verified_height,0u);
+    host.Stop();EXPECT_FALSE(host.Enqueue({"archive",81,0},first->WireBytes()));
+    EXPECT_EQ(ChainDBTransactionReadTestPeer::HandoffRows(source.f.db),unchanged);
 }
 TEST(OrchardCatalogTransfer, ServingCacheSharesPayloadButBindsNonceAndConnection){
     using namespace consensus;using Transfer=p2p::OrchardCatalogTransfer;using Server=p2p::OrchardCatalogServer;

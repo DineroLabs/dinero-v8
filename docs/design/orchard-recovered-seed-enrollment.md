@@ -5,9 +5,28 @@
 The bounded implementation adds `wallet.orchard.enrollpreactivation` and explicit
 `wallet.orchard.recoveraccount0` for an unlocked, named recovered wallet. The
 latter requires complete authenticated retained history from activation; it is
-not yet phone historical download, seamless mobile sync, or release qualification. Public activation
+not yet complete phone historical recovery, seamless mobile sync, or release qualification. Public activation
 schedules and consensus rules are unchanged. Mainnet Orchard starts at H150000;
 implementation uses the selected network parameters, not a hard-coded height.
+
+The late compact-v6 source now has an explicit requested full-body download
+stage. For an intact bound unknown recovered wallet, `recoveraccount0` can
+request the buried activation catalog and sequential `MSG_BLOCK` bodies from
+activation through the locally selected tip. Each body is genuinely checked
+from the authenticated activation parent (including the first block); the
+terminal catalog must match the selected state. One session-bound flight,
+bounded ingress, timeout/cooldown, per-minute wire budget (including invalid
+bodies), disk reserve and private disk staging limit acquisition resources.
+Targets may extend only along the selected descendant branch; changed branches
+discard the unadopted source, never active ownership.
+
+This stage returns `complete=false`, `applied_sequence=0` and transport-only
+`history_*` progress. `history_ready` means DATA ready for a separate authenticated
+wallet scan/adoption, not recovered ownership, usable funds or a canonical
+delivery cursor. The snapshot-floor outbox remains unchanged. No catalog is
+initialized/repaired and no runtime event is fabricated for downloaded history.
+Fresh late-phone wallet adoption, cold-source retention and nonempty queued
+activation crossing remain open; this stage must not be marketed as those gates.
 
 Both apps must use `wallet.restore` to create a separate named wallet, then
 `wallet.open` to reopen it. Check the active wallet and deterministic first

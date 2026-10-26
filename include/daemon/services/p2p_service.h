@@ -26,7 +26,7 @@
 #include <mutex>
 
 namespace dinero {
-namespace p2p {class OrchardCatalogServer;class OrchardCatalogDownload;}
+namespace p2p {class OrchardCatalogServer;class OrchardCatalogDownload;class OrchardPhoneHistoryDownload;}
 
 // Forward declarations
 class ILogger;
@@ -203,6 +203,7 @@ public:
     // Unpublished downloaded proof data only. The closed-store handoff must
     // reauthenticate independently under its retained root/selected ownership.
     std::shared_ptr<const consensus::OrchardSnapshotSection> ReadyActivationCatalog() const;
+    std::shared_ptr<p2p::OrchardPhoneHistoryDownload> PhoneHistoryDownload() const;
 
     /**
      * Event hooks for block/tx relay
@@ -498,6 +499,7 @@ private:
     std::shared_ptr<p2p::OrchardCatalogServer> orchard_catalog_server_;
     mutable std::mutex orchard_catalog_download_mutex_;
     std::shared_ptr<p2p::OrchardCatalogDownload> orchard_catalog_download_;
+    std::shared_ptr<p2p::OrchardPhoneHistoryDownload> orchard_phone_history_;
     std::shared_ptr<p2p::OrchardCatalogDownload> CatalogDownload() const;
     void StopCatalogWorkers();
     void StartSchedulerTickLoop();

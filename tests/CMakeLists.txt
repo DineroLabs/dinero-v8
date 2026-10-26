@@ -5574,6 +5574,8 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_assumeutxo_replay.cpp)
   endif()
   add_test(NAME OrchardActivationOrigin COMMAND test_assumeutxo_replay --gtest_filter=OrchardActivationOrigin.*)
   set_tests_properties(OrchardActivationOrigin PROPERTIES TIMEOUT 120 LABELS "daemon;orchard;recovery;mandatory")
+  add_test(NAME OrchardPhoneHistory COMMAND test_assumeutxo_replay --gtest_filter=OrchardPhoneHistory.*)
+  set_tests_properties(OrchardPhoneHistory PROPERTIES TIMEOUT 120 LABELS "daemon;orchard;p2p;recovery")
   add_test(NAME OrchardActivationParent COMMAND test_assumeutxo_replay --gtest_filter=OrchardActivationParent.*)
   if(UNIX)
     add_test(NAME OrchardActivationHandoff COMMAND test_assumeutxo_replay --gtest_filter=OrchardActivationHandoff.*)
@@ -9406,6 +9408,12 @@ if(TARGET nodecore_ffi)
       python3 ${CMAKE_SOURCE_DIR}/tests/integration/test_nodecore_activation_wire.py)
     set_tests_properties(NodeCoreActivationWire PROPERTIES TIMEOUT 240 RUN_SERIAL TRUE
       LABELS "integration;nodecore;orchard;restart;wallet")
+    add_test(NAME NodeCoreLatePhoneHistory COMMAND ${CMAKE_COMMAND} -E env
+      NODECORE_DRIVER=$<TARGET_FILE:nodecore_activation_driver>
+      ACTIVATION_FIXTURE_GENERATOR=$<TARGET_FILE:test_assumeutxo_replay>
+      python3 ${CMAKE_SOURCE_DIR}/tests/integration/test_nodecore_late_phone_history.py)
+    set_tests_properties(NodeCoreLatePhoneHistory PROPERTIES TIMEOUT 240 RUN_SERIAL TRUE
+      LABELS "integration;nodecore;orchard;history;wallet")
   endif()
   add_test(NAME NodeCoreSdkPendingReopen
     COMMAND ${CMAKE_COMMAND} -E env

@@ -66,6 +66,9 @@
 #include "daemon/config.h"
 #include "daemon/prepared_pool_tip.h"
 #include "daemon/services/p2p_service.h"  // Phase C.1 v2: For block broadcasting
+#ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
+#include "p2p/orchard_phone_history.h"
+#endif
 #include "daemon/services/mining_service.h"  // Phase 40: For ActivateBestChain service notifications
 #include "daemon/services/mempool_service.h"  // Phase 40: For ActivateBestChain service notifications
 #include "daemon/daemon_context.h"
@@ -7051,7 +7054,53 @@ StatusOr<wallet::OrchardAccount0RecoveryProgress> ChainstateService::recoverOrch
 #ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
     try {
         const auto captured=getRuntimeAccountReplayForWallet(wallet,expected_session);
-        if(!captured.ok())return captured.status();
+        if(!captured.ok()){
+            // A late v6 snapshot is a selected state, NOT an activation-origin
+            // wallet history. Request a separate untrusted full-body source;
+            // never fabricate canonical events/cursors or publish an account.
+            const auto target=PhoneHistoryTarget(false);if(!target)return captured.status();
+            UTXOIndex* index=nullptr;
+            {std::lock_guard<std::mutex> lock(wallet_index_use_mutex_);
+             if(!wallet_index_uses_by_thread_.count(std::this_thread::get_id())||!utxo_index_)return Status::Invalid;
+             index=utxo_index_.get();}
+            {
+                auto lease=wallet.AcquireDatabaseLease();
+                if(wallet.database_leases_!=1||lease->Session()!=expected_session||!lease->Database()||
+                    wallet.getUTXOIndex()!=index||!sqlite3_get_autocommit(lease->Database()))return Status::Invalid;
+                auto* db=lease->Database();
+                if(sqlite3_exec(db,"PRAGMA synchronous=FULL",nullptr,nullptr,nullptr)!=SQLITE_OK||
+                   sqlite3_exec(db,"BEGIN IMMEDIATE",nullptr,nullptr,nullptr)!=SQLITE_OK)return Status::Invalid;
+                struct Tx {
+                    sqlite3* db;bool committed=false;
+                    ~Tx(){if(!committed&&sqlite3_exec(db,"ROLLBACK",nullptr,nullptr,nullptr)!=SQLITE_OK&&
+                                 !sqlite3_get_autocommit(db))std::terminate();}
+                } tx{db};
+                auto seed=lease->CopyRecoverySeed(expected_session);
+                (void)wallet::OrchardAccountCatalog::RequireUnknownEmpty(db,seed->Bytes());
+                if(wallet.getSetting("wallet_initial_owner_v1").empty())return Status::Invalid;
+                std::vector<uint8_t> bytes(seed->Bytes().begin(),seed->Bytes().end());
+                struct Wipe{std::vector<uint8_t>& b;~Wipe(){OPENSSL_cleanse(b.data(),b.size());}} wipe{bytes};
+                if(wallet.loadInitialPqMaster(bytes))return Status::Invalid;
+                // The ownership check requires a FULL transaction even though
+                // this path never stages/adopts wallet state. Release it before
+                // the selected-source and network callbacks below.
+                if(sqlite3_exec(db,"COMMIT",nullptr,nullptr,nullptr)!=SQLITE_OK)return Status::Invalid;
+                tx.committed=true;
+            }
+            if(PhoneHistoryTarget(false)!=target)return Status::Invalid;
+            const auto* context=DaemonContext::instance();
+            if(!context||context->chainstate.get()!=this)return Status::Invalid;
+            const auto peers=std::dynamic_pointer_cast<P2PService>(context->p2p);
+            const auto download=peers?peers->PhoneHistoryDownload():nullptr;if(!download)return Status::Invalid;
+            orchard_phone_history_requested_.store(true);
+            const auto observed=download->Observe();const auto ready=download->Ready();
+            wallet::OrchardAccount0RecoveryProgress progress;
+            progress.history_requested=true;progress.history_ready=bool(ready&&ready->target==*target);
+            progress.history_target_height=target->height;progress.history_target_hash=target->hash;
+            if(observed.requested&&observed.target_height==target->height&&observed.target_hash==target->hash)
+                progress.history_verified_height=observed.verified_height;
+            return progress; // complete=false; no wallet table/cursor/ownership changes.
+        }
         const auto& view=**captured;const auto head=view.Head();const auto target=view.Point(head).checkpoint;
         const auto first=view.Event(1);
         const auto profile=consensus::SelectedOrchardBlockContext(BlockHeader{},Params().orchard_activation_height);
@@ -18344,6 +18393,54 @@ bool ChainstateService::MatchesOrchardNetworkStorageMode(bool stateless) {
 #else
     (void)stateless;
     return false;
+#endif
+}
+
+std::optional<p2p::OrchardPhoneHistoryTarget> ChainstateService::PhoneHistoryTarget(bool require_request) {
+#ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
+    if(activation_mutex_.HeldByCurrentThread()||(require_request&&!orchard_phone_history_requested_.load()))return {};
+    try{
+        std::lock_guard<AnnotatedRecursiveMutex> lock(activation_mutex_);
+        if(!IsStarted()||safe_mode_active_||!selected_read_accepting_||!chain_db_||!active_tip_||
+            !compact_startup_||!compact_startup_->owner||!orchard_snapshot_startup_||
+            !header_chain_selector_||consensus_utxo_set_||!GetConfig().utreexo_stateless||
+            !consensus::OrchardProfileConfigurationValid(Params()))return {};
+        const auto activation=Params().orchard_activation_height;
+        if(!activation||activation==UINT32_MAX||Params().orchard_catalog_commitment_activation_height!=activation||
+            orchard_snapshot_startup_->base.height<activation||active_tip_->height<activation||
+            active_tip_->height>=uint32_t(INT32_MAX))return {};
+        const auto selected=UtreexoRpcSnapshotUnderLock();const auto sync=GetSyncSnapshot();
+        if(!selected.ok()||!selected->compact||selected->height!=active_tip_->height||selected->block_hash!=active_tip_->hash)return {};
+        // The initial explicit wallet request requires convergence. Ongoing
+        // DATA acquisition must not discard its authenticated prefix whenever
+        // a new header briefly leads the canonical tip. Final wallet adoption
+        // still requires its own fresh converged-source fence.
+        if(!require_request&&(!sync.IsConverged()||sync.active_tip_height!=selected->height||
+            sync.active_tip_hash!=selected->block_hash||IsInIBD()))return {};
+        const auto catalog=chain_db_->getOrchardCatalogState(selected->block_hash);if(!catalog.ok())return {};
+        return p2p::OrchardPhoneHistoryTarget{activation,selected->height,selected->block_hash,
+            storage::catalog::Hash(*catalog),orchard_snapshot_startup_->base.block};
+    }catch(...){return {};}
+#else
+    (void)require_request;return {};
+#endif
+}
+
+std::unique_ptr<OrchardBoundaryReplay> ChainstateService::PreparePhoneHistoryVerifier(
+    std::shared_ptr<const consensus::OrchardSnapshotSection> proof,const p2p::OrchardPhoneHistoryTarget& target){
+#ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
+    if(activation_mutex_.HeldByCurrentThread())return {};
+    try{
+        auto use=std::make_unique<SelectedReadUse>(weak_from_this().lock());
+        if(PhoneHistoryTarget()!=std::optional(target))return {};
+        std::shared_ptr<const consensus::HeaderChainSelector> headers;
+        {std::lock_guard<AnnotatedRecursiveMutex> lock(activation_mutex_);headers=header_chain_selector_;}
+        auto replay=OrchardSnapshotStore::ReplayActivation(std::move(proof),std::move(headers),target.height,target.hash);
+        if(PhoneHistoryTarget()!=std::optional(target))return {};
+        return replay;
+    }catch(...){return {};}
+#else
+    (void)proof;(void)target;return {};
 #endif
 }
 

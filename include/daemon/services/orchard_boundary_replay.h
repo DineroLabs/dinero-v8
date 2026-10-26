@@ -104,6 +104,23 @@ public:
         profile_==consensus::ValidatedOrchardBlock::CaptureProfile()&&TargetSelected());
         checkpoints_.Freeze();spool_.Freeze();finished_=true;poisoned_=false;}
     uint32_t Height()const{Check();return height_;}
+    // Extend only along the locally selected descendant branch. The existing
+    // validated prefix is retained; no body, event or state may be skipped.
+    void ExtendSelectedTarget(uint32_t height,const uint256& hash){
+        Check();Require(!finished_&&TargetSelected()&&height>=target_height_&&
+            profile_==consensus::ValidatedOrchardBlock::CaptureProfile());
+        uint256 ancestor;uint32_t found=0;
+        Require(headers_->GetAncestorHashByHash(hash,target_height_,ancestor,found)&&
+            found==height&&ancestor==target_hash_);
+        consensus::HeaderIndexEntry selected;
+        Require(headers_->GetHeaderAtHeightCopy(height,selected)&&selected.hash==hash);
+        target_height_=height;target_hash_=hash;
+    }
+    // Readiness observation only; no serialized seal or publication authority.
+    // The worker may extend a checked target as the selected tip advances.
+    bool AtSelectedTarget()const{Check();return !finished_&&height_==target_height_&&
+        header_.GetHash()==target_hash_&&state_.has_value()&&TargetSelected()&&
+        profile_==consensus::ValidatedOrchardBlock::CaptureProfile();}
     const storage::OrchardStoredState& State()const{Check();Require(state_.has_value());return *state_;}
     const storage::catalog::State& Catalog()const{Check();return catalog_;}
 private:
@@ -206,7 +223,7 @@ private:
     }
     const std::shared_ptr<const consensus::OrchardSnapshotSection> baseline_;
     const std::shared_ptr<const consensus::HeaderChainSelector> headers_;
-    const uint32_t target_height_;const uint256 target_hash_;const std::string profile_;
+    uint32_t target_height_;uint256 target_hash_;const std::string profile_;
     const std::thread::id thread_=std::this_thread::get_id();
     wallet::detail::RuntimeReplaySpool spool_;
     wallet::detail::RuntimeReplayIndex checkpoints_;const bool events_;uint64_t next_checkpoint_=1;

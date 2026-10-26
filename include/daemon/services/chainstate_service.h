@@ -10,6 +10,7 @@
 #include "daemon/runtime_block_notifications.h"
 #include "daemon/runtime_outbox_cursor.h"
 #include "daemon/orchard_activation_handoff.h"
+#include "p2p/orchard_phone_history_target.h"
 #include "daemon/active_tip_classification.h"
 #include "storage/chain_db.h"
 #include "consensus/block_status_generation.h"
@@ -60,6 +61,7 @@ class MempoolChainstateReadGuard;
 class MiningChainstateReadGuard;
 class OrchardMiningTemplate;
 class OrchardBlockCandidate;
+class OrchardBoundaryReplay;
 class PreparedOrchardParent;
 class PreparedHistoricalCatalogRange;
 class PreparedOrchardCatalog;
@@ -1025,6 +1027,11 @@ public:
         WalletManager&,uint64_t expected_session);
     StatusOr<wallet::OrchardAccount0RecoveryProgress> recoverOrchardAccount0(
         WalletManager&,uint64_t expected_session,bool restart=false);
+    // On-demand below-snapshot history DATA only. Never publishes chainstate,
+    // an outbox event, lifecycle flag, wallet owner or applied scan cursor.
+    std::optional<p2p::OrchardPhoneHistoryTarget> PhoneHistoryTarget(bool require_request=true);
+    std::unique_ptr<OrchardBoundaryReplay> PreparePhoneHistoryVerifier(
+        std::shared_ptr<const consensus::OrchardSnapshotSection>,const p2p::OrchardPhoneHistoryTarget&);
     // Requires caller-held WalletUse and this service's WalletIndexUse, with
     // no outer selected/SQLite owner. Capture proofs first, then recheck the
     // exact canonical head under the selected lock and hold it through the
@@ -1956,6 +1963,7 @@ private:
     std::map<std::thread::id,size_t> compact_startup_uses_by_thread_;
     size_t compact_startup_uses_=0;
     bool selected_read_accepting_=true;
+    std::atomic<bool> orchard_phone_history_requested_{false};
     bool wallet_index_accepting_=false;
     bool wallet_index_stopping_=false;
     std::thread::id wallet_index_stopping_thread_;

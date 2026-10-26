@@ -19,6 +19,7 @@ void SelectSdkActivationFixture(Chain chain) {
 #include "../../src/nodecore/nodecore_ffi.cpp"
 #undef SelectParams
 #include "p2p/orchard_catalog_transfer.h"
+#include "p2p/orchard_phone_history.h"
 namespace dinero {
 struct P2PServiceStopTestAccess {
     static bool HasCatalogClient(const P2PService& service){return bool(service.CatalogDownload());}
@@ -65,11 +66,28 @@ Json::Value SdkActivationTestState(){
     if(const auto chain=std::dynamic_pointer_cast<dinero::ChainstateService>(context.chainstate)){
         row["started"]=chain->IsStarted();row["needs_catalog"]=chain->NeedsOrchardActivationCatalog();
         row["height"]=chain->GetSyncSnapshot().active_tip_height;
+        row["converged"]=chain->GetSyncSnapshot().IsConverged();row["ibd"]=chain->IsInIBD();
+        row["phone_target_available"]=chain->PhoneHistoryTarget(false).has_value();
+        const auto capture=chain->getUtreexoRpcSnapshot();
+        row["selected_capture_status"]=int(capture.status());
+        if(capture.ok())row["selected_capture_compact"]=capture->compact;
+        const auto page=chain->getRuntimeDeliveryPage({},4);
+        if(page.ok()){
+            auto& outbox=row["canonical_outbox"];outbox["head"]=Json::UInt64((*page)->head.sequence);
+            outbox["digest"]=(*page)->head.digest.GetHex();outbox["events"]=Json::Value(Json::arrayValue);
+            for(const auto& event:(*page)->events){Json::Value e;e["height"]=event.context.height;
+                e["block"]=event.context.block_hash.GetHex();e["sequence"]=Json::UInt64(event.cursor.sequence);outbox["events"].append(e);}
+        }
     }
     if(const auto peers=std::dynamic_pointer_cast<dinero::P2PService>(context.p2p)){
         row["network_active"]=peers->get().is_network_active();
         row["catalog_client"]=dinero::P2PServiceStopTestAccess::HasCatalogClient(*peers);
         row["proof_ready"]=bool(peers->ReadyActivationCatalog());row["peers"]=Json::Value(Json::arrayValue);
+        if(const auto history=peers->PhoneHistoryDownload()){
+            const auto observed=history->Observe();auto& h=row["phone_history"];
+            h["requested"]=observed.requested;h["ready"]=observed.ready;
+            h["verified_height"]=observed.verified_height;h["target_height"]=observed.target_height;h["error"]=observed.error;
+        }
         for(const auto& peer:peers->get().connected_peer_sessions()){
             Json::Value p;p["address"]=peer.address;p["session"]=Json::UInt64(peer.nonce);
             p["services"]=Json::UInt64(peer.services);row["peers"].append(p);

@@ -31,6 +31,7 @@
 #ifdef DINERO_HAS_ORCHARD_P2P
 #include "p2p/orchard_catalog_server.h"
 #include "p2p/orchard_catalog_download.h"
+#include "p2p/orchard_phone_history.h"
 #include "daemon/config.h"
 #endif
 #include <algorithm>
@@ -299,6 +300,7 @@ P2PService::~P2PService() {
 
 void P2PService::StopCatalogWorkers() {
 #ifdef DINERO_HAS_ORCHARD_P2P
+    if(const auto history=PhoneHistoryDownload())history->Stop();
     if(const auto client=CatalogDownload())client->Stop();
     if(orchard_catalog_server_)orchard_catalog_server_->Stop();
 #endif
@@ -306,6 +308,9 @@ void P2PService::StopCatalogWorkers() {
 
 std::shared_ptr<p2p::OrchardCatalogDownload> P2PService::CatalogDownload() const {
     std::lock_guard lock(orchard_catalog_download_mutex_);return orchard_catalog_download_;
+}
+std::shared_ptr<p2p::OrchardPhoneHistoryDownload> P2PService::PhoneHistoryDownload() const {
+    std::lock_guard lock(orchard_catalog_download_mutex_);return orchard_phone_history_;
 }
 
 std::shared_ptr<const consensus::OrchardSnapshotSection> P2PService::ReadyActivationCatalog() const {
@@ -2368,7 +2373,8 @@ bool P2PService::Start() {
                 // legacy global datadir can be empty in embedded startup.
                 headers,std::filesystem::path(config_->DataDir()),
                 [this,source=chainstate_]{
-                    return p2p_mgr_&&p2p_mgr_->is_network_active()&&source->NeedsOrchardActivationCatalog();
+                    return p2p_mgr_&&p2p_mgr_->is_network_active()&&
+                        (source->NeedsOrchardActivationCatalog()||source->PhoneHistoryTarget().has_value());
                 },[this]{
                     std::vector<p2p::OrchardCatalogDownload::Peer> peers;
                     if(p2p_mgr_)for(const auto& p:p2p_mgr_->connected_peer_sessions())
@@ -2378,7 +2384,19 @@ bool P2PService::Start() {
                     ::P2PMessage message{};message.command=command;message.payload=bytes;
                     return p2p_mgr_&&p2p_mgr_->send_to_peer(peer.address,message,peer.session);
                 });
-                std::lock_guard lock(orchard_catalog_download_mutex_);orchard_catalog_download_=std::move(download);
+                {std::lock_guard lock(orchard_catalog_download_mutex_);orchard_catalog_download_=std::move(download);}
+                auto history=std::make_shared<p2p::OrchardPhoneHistoryDownload>(headers,
+                    std::filesystem::path(config_->DataDir()),[this,source=chainstate_]{
+                        return p2p_mgr_&&p2p_mgr_->is_network_active()?source->PhoneHistoryTarget():std::nullopt;
+                    },[this]{return ReadyActivationCatalog();},
+                    [source=chainstate_](auto proof,const auto& target){return source->PreparePhoneHistoryVerifier(std::move(proof),target);},
+                    [this]{std::vector<p2p::OrchardCatalogClient::Peer> peers;
+                        if(p2p_mgr_)for(const auto& p:p2p_mgr_->connected_peer_sessions())peers.push_back({p.address,p.nonce,p.services});
+                        return peers;},[this](const auto& peer,const auto& command,const auto& bytes){
+                        ::P2PMessage message{};message.command=command;message.payload=bytes;
+                        return p2p_mgr_&&p2p_mgr_->send_to_peer(peer.address,message,peer.session);
+                    });
+                {std::lock_guard lock(orchard_catalog_download_mutex_);orchard_phone_history_=std::move(history);}
             }
         }
         if(chainstate_&&!GetConfig().utreexo_stateless&&(!prune_||!prune_->isEnabled())&&
@@ -2452,7 +2470,12 @@ bool P2PService::Start() {
 }
 
 void P2PService::ReleaseStoppedDependencies() {
-    {std::lock_guard lock(orchard_catalog_download_mutex_);orchard_catalog_download_.reset();}
+    // Never destroy/join an actor under the getter mutex: its proof callback
+    // may be finishing a ReadyActivationCatalog lookup under that same mutex.
+    std::shared_ptr<p2p::OrchardPhoneHistoryDownload> history;
+    std::shared_ptr<p2p::OrchardCatalogDownload> download;
+    {std::lock_guard lock(orchard_catalog_download_mutex_);history=std::move(orchard_phone_history_);download=std::move(orchard_catalog_download_);}
+    history.reset();download.reset();
     orchard_catalog_server_.reset();
     OnNewBlock = {};
     OnNewTx = {};
@@ -2552,6 +2575,10 @@ void P2PService::Stop() {
 
 void P2PService::HandleP2PMessage(const std::string& peer_addr, const ::P2PMessage& msg) {
 #ifdef DINERO_HAS_ORCHARD_P2P
+    if(msg.command=="block")if(const auto history=PhoneHistoryDownload();history&&p2p_mgr_){
+        const auto session=p2p_mgr_->peer_session_nonce(peer_addr);
+        if(session&&history->Enqueue({peer_addr,*session,0},msg.payload))return;
+    }
     if(msg.command==p2p::OrchardCatalogTransfer::ManifestCommand||msg.command==p2p::OrchardCatalogTransfer::PageCommand){
         if(const auto client=CatalogDownload();client&&p2p_mgr_){
             const auto session=p2p_mgr_->peer_session_nonce(peer_addr);
