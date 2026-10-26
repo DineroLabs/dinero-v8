@@ -334,6 +334,25 @@ public:
         // by the RELEVANT_TX_ADDED event above. Block-confirmed spends are
         // already handled by the WalletManager's onBlockConnected path.
     }
+    void onMempoolBody(const dinero::MempoolTransaction& body){
+        if(!body.IsOrchard()){onMempoolTransaction(body.Historical());return;}
+        // Consume the actual immutable Orchard representation. Only visible
+        // watched outputs are notifications; never reinterpret its private
+        // bundle as a historical Transaction or claim private plaintext/funds.
+        const auto watched=state().watched_scripts.Snapshot();Json::Value outputs(Json::arrayValue);
+        for(size_t i=0;i<body.OutputCount();++i){
+            const auto coin=body.OutputCoin(i,0);
+            const auto script=bytes_to_hex(coin.scriptPubKey.data(),coin.scriptPubKey.size());
+            if(!watched.count(script))continue;
+            Json::Value output;output["index"]=Json::UInt(i);output["script"]=script;
+            output["amount"]=Json::UInt64(coin.value.GetUna());outputs.append(std::move(output));
+        }
+        if(!outputs.empty()){
+            Json::Value event;event["format"]="orchard";event["txid"]=body.GetTxid().AsUint256().GetHex();
+            event["height"]=0;event["outputs"]=std::move(outputs);
+            emit_event_json(NODECORE_EVENT_RELEVANT_TX_ADDED,event);
+        }
+    }
 };
 
 // Persistent notifier instance
@@ -355,7 +374,7 @@ void ConfigureEmbeddedRuntime(dinero::DaemonApp& app){
 void ConfigureEmbeddedNotifier(dinero::DaemonApp& app){
     if(!g_notifier)g_notifier=std::make_unique<NodeCoreWalletNotifier>();
     if(auto pool=std::dynamic_pointer_cast<dinero::MempoolService>(app.GetContext().mempool))
-        pool->mempool().setTxAcceptedCallback([](const dinero::Transaction& tx){g_notifier->onMempoolTransaction(tx);});
+        pool->mempool().setTxBodyAcceptedCallback([](const dinero::MempoolTransaction& body){g_notifier->onMempoolBody(body);});
 }
 struct ActivationReopenData {
     std::shared_ptr<const dinero::consensus::HeaderChainSelector> headers;

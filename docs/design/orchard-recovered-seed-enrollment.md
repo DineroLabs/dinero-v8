@@ -81,10 +81,27 @@ preparation still independently replays genesis and compares every selected
 coin/legacy boundary before any writer. No flag, marker or history is promoted.
 Legacy mobile delivery is restricted to a genuinely empty log in this route;
 descendant/visited logs require their normal full or enrolled compact owners.
-The new funded native SDK regression exposes the historical-only embedded
-mempool observer, which correctly refuses Orchard admission. Its separate
-typed-consumer fix is still required. No failed run is a crossing pass or
-physical-phone/original-assumed-history qualification.
+The funded native SDK regression exposed the historical-only embedded mempool
+observer, which correctly refused Orchard admission. The separate SDK fix uses
+the actual immutable `MempoolTransaction` observer on both ordinary startup and
+replacement startup. Historical notifications are unchanged; Orchard notices
+include only watched visible outputs, never historical reinterpretation or a
+claim about private plaintext or balances. The pool's observer/proof/authorization
+guards remain mandatory.
+
+`NodeCoreFundedCrossing` funds a phrase-derived Taproot output with a genuinely
+signed historical transaction and ordinary wallet rescan. It restores/enrolls a
+named wallet, encrypts and actually queues/signs a shield payment, then supplies
+its real checked source proof before releasing the activation headers. It checks
+automatic same-guard SDK handoff, wallet open without phrase, no reply to queue
+RPCs during the pause, unchanged encrypted pending rows and a one-candidate
+body/proof journal. The peer cannot refill the pool after handoff; the actual
+readmitted pool must retain the transaction and serve its proof. A full native
+source really mines its confirmation; a later named restore must recover the
+earlier funds and memo. Exact-commit results and the preserved whole prior-commit
+observer-refusal negative are reported separately from draft runs. This is not
+original assumed-mobile SQL, physical app/device, post-handoff request-retry or
+release qualification. No failed run is relabelled as a crossing pass.
 
 The public bound RPC takes no birthday, height, checkpoint, network or account
 argument. The selected service obtains the profile and checkpoint. It requires:
