@@ -32,6 +32,7 @@
 #include "p2p/orchard_catalog_server.h"
 #include "p2p/orchard_catalog_download.h"
 #include "p2p/orchard_phone_history.h"
+#include "p2p/wallet_funding_download.h"
 #include "daemon/config.h"
 #endif
 #include <algorithm>
@@ -300,6 +301,7 @@ P2PService::~P2PService() {
 
 void P2PService::StopCatalogWorkers() {
 #ifdef DINERO_HAS_ORCHARD_P2P
+    if(const auto funding=WalletFundingBodies())funding->Stop();
     if(const auto history=PhoneHistoryDownload())history->Stop();
     if(const auto client=CatalogDownload())client->Stop();
     if(orchard_catalog_server_)orchard_catalog_server_->Stop();
@@ -311,6 +313,9 @@ std::shared_ptr<p2p::OrchardCatalogDownload> P2PService::CatalogDownload() const
 }
 std::shared_ptr<p2p::OrchardPhoneHistoryDownload> P2PService::PhoneHistoryDownload() const {
     std::lock_guard lock(orchard_catalog_download_mutex_);return orchard_phone_history_;
+}
+std::shared_ptr<p2p::WalletFundingDownload> P2PService::WalletFundingBodies() const {
+    std::lock_guard lock(orchard_catalog_download_mutex_);return wallet_funding_bodies_;
 }
 
 std::shared_ptr<const consensus::OrchardSnapshotSection> P2PService::ReadyActivationCatalog() const {
@@ -1971,6 +1976,16 @@ void P2PService::StartOrchardHistoryWorkers() {
            Params().orchard_catalog_commitment_activation_height==Params().orchard_activation_height){
             auto* context=DaemonContext::instance();const auto headers=context?context->header_chain:nullptr;
             if(headers){
+                auto funding=std::make_shared<p2p::WalletFundingDownload>([this]{
+                    std::vector<p2p::OrchardCatalogClient::Peer> peers;
+                    if(p2p_mgr_&&p2p_mgr_->is_network_active())for(const auto& p:p2p_mgr_->connected_peer_sessions())
+                        peers.push_back({p.address,p.nonce,p.services});
+                    return peers;
+                },[this](const auto& peer,const auto& command,const auto& bytes){
+                    ::P2PMessage message{};message.command=command;message.payload=bytes;
+                    return p2p_mgr_&&p2p_mgr_->is_network_active()&&p2p_mgr_->send_to_peer(peer.address,message,peer.session);
+                });
+                {std::lock_guard lock(orchard_catalog_download_mutex_);wallet_funding_bodies_=std::move(funding);}
 #ifndef _WIN32
                 const auto cache=phone_history_root_?std::make_shared<p2p::OrchardHistoryCache>(*phone_history_root_):nullptr;
 #else
@@ -2505,8 +2520,9 @@ void P2PService::ReleaseStoppedDependencies() {
     // may be finishing a ReadyActivationCatalog lookup under that same mutex.
     std::shared_ptr<p2p::OrchardPhoneHistoryDownload> history;
     std::shared_ptr<p2p::OrchardCatalogDownload> download;
-    {std::lock_guard lock(orchard_catalog_download_mutex_);history=std::move(orchard_phone_history_);download=std::move(orchard_catalog_download_);}
-    history.reset();download.reset();
+    std::shared_ptr<p2p::WalletFundingDownload> funding;
+    {std::lock_guard lock(orchard_catalog_download_mutex_);funding=std::move(wallet_funding_bodies_);history=std::move(orchard_phone_history_);download=std::move(orchard_catalog_download_);}
+    funding.reset();history.reset();download.reset();
     orchard_catalog_server_.reset();
     OnNewBlock = {};
     OnNewTx = {};
@@ -2606,6 +2622,10 @@ void P2PService::Stop() {
 
 void P2PService::HandleP2PMessage(const std::string& peer_addr, const ::P2PMessage& msg) {
 #ifdef DINERO_HAS_ORCHARD_P2P
+    if(msg.command=="block")if(const auto funding=WalletFundingBodies();funding&&p2p_mgr_){
+        const auto session=p2p_mgr_->peer_session_nonce(peer_addr);
+        if(session&&funding->Enqueue({peer_addr,*session,0},msg.payload))return;
+    }
     if(msg.command=="block")if(const auto history=PhoneHistoryDownload();history&&p2p_mgr_){
         const auto session=p2p_mgr_->peer_session_nonce(peer_addr);
         if(session&&history->Enqueue({peer_addr,*session,0},msg.payload))return;

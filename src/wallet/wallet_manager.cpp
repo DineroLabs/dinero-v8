@@ -4073,6 +4073,59 @@ void WalletManager::DatabaseLease::ValidateUnreservedInputsInTransaction(
     }
 }
 
+std::vector<PendingPaymentInput> WalletManager::DatabaseLease::ReadSnapshotShieldCandidatesInTransaction(
+        const RecoverySeed& pin,uint32_t height,const uint256& base,const std::string& root){
+    const auto pending=ReadPendingPaymentsInTransaction(pin); // Exact lease/seed/SQL transaction.
+    std::set<std::pair<std::string,uint32_t>> reserved;
+    for(const auto& payment:pending)for(const auto& input:payment.inputs)
+        if(!reserved.emplace(input.txid,input.vout).second)throw std::runtime_error("Snapshot input owners overlap");
+    const auto candidates=owner_.ReadSnapshotCandidatesOwned();
+    std::vector<PendingPaymentInput> result;
+    for(const auto& coin:candidates){
+        IssuedStatement cohort(db_,"SELECT base_height,base_block,source_root FROM wallet_snapshot_candidates WHERE wallet_id=? AND txid=? AND vout=?");
+        cohort.Int(1,owner_.current_wallet_id_);cohort.Text(2,coin.txid);cohort.Int(3,coin.vout);
+        IssuanceCheck(db_,sqlite3_step(cohort.value.get()),SQLITE_ROW);
+        const auto same=[&](int column,const std::string& text){const auto* p=sqlite3_column_blob(cohort.value.get(),column);
+            return sqlite3_column_type(cohort.value.get(),column)==SQLITE_TEXT&&p&&
+                sqlite3_column_bytes(cohort.value.get(),column)==int(text.size())&&std::memcmp(p,text.data(),text.size())==0;};
+        if(sqlite3_column_type(cohort.value.get(),0)!=SQLITE_INTEGER||sqlite3_column_int64(cohort.value.get(),0)!=height||
+            !same(1,base.GetHex())||!same(2,root))throw std::runtime_error("Snapshot input candidate cohort changed");
+        cohort.Done();
+        // A candidate must never resurrect ANY ordinary wallet row, spent or
+        // otherwise, nor acquire a competing current/retained input owner.
+        IssuedStatement ordinary(db_,"SELECT 1 FROM utxos WHERE wallet_id=? AND txid=? AND vout=?");
+        ordinary.Int(1,owner_.current_wallet_id_);ordinary.Text(2,coin.txid);ordinary.Int(3,coin.vout);
+        const auto present=sqlite3_step(ordinary.value.get());
+        if(present==SQLITE_ROW)continue;IssuanceCheck(db_,present,SQLITE_DONE);
+        if(reserved.contains({coin.txid,coin.vout})||owner_.locked_utxos_.contains(coin.txid+":"+std::to_string(coin.vout)))continue;
+        std::vector<uint8_t> script;
+        if(!util::unhex(coin.script_pubkey,script))throw std::runtime_error("Snapshot input script invalid");
+        const bool taproot=script.size()==34&&script[0]==0x51&&script[1]==0x20;
+        const bool p2wpkh=script.size()==22&&script[0]==0&&script[1]==20;
+        if(!taproot&&!p2wpkh)continue;
+        const auto key=ResolveSigningKeyInTransaction(coin.script_pubkey,pin);
+        if(!key||(taproot&&key->policy!=SigningKeyPolicy::TaprootCanonical&&key->policy!=SigningKeyPolicy::TaprootHistoricalImport)||
+            (p2wpkh&&key->policy!=SigningKeyPolicy::Untweaked))continue;
+        result.push_back({coin.txid,coin.vout,coin.amount_una,std::move(script)});
+    }
+    std::sort(result.begin(),result.end(),[](const auto& a,const auto& b){
+        if(a.amount_una!=b.amount_una)return a.amount_una>b.amount_una;
+        return std::tie(a.txid,a.vout)<std::tie(b.txid,b.vout);});
+    return result;
+}
+
+void WalletManager::DatabaseLease::ValidateSnapshotShieldInputsInTransaction(const RecoverySeed& pin,
+        std::span<const PendingPaymentInput> inputs,uint32_t height,const uint256& base,const std::string& root){
+    if(inputs.empty()||inputs.size()>1024)throw std::runtime_error("Snapshot input count unsupported");
+    const auto candidates=ReadSnapshotShieldCandidatesInTransaction(pin,height,base,root);
+    std::set<std::pair<std::string,uint32_t>> used;
+    for(const auto& input:inputs){
+        if(!used.emplace(input.txid,input.vout).second||!std::any_of(candidates.begin(),candidates.end(),[&](const auto& coin){
+            return coin.txid==input.txid&&coin.vout==input.vout&&coin.amount_una==input.amount_una&&coin.script==input.script;}))
+            throw std::runtime_error("Snapshot input wallet candidate/signing owner changed");
+    }
+}
+
 std::optional<PendingPayment> WalletManager::DatabaseLease::FindPaymentRequestInTransaction(
     const RecoverySeed& pin,const PendingPaymentIntent& intent) {
     ValidatePaymentRequest(intent);

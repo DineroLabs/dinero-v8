@@ -348,6 +348,10 @@ public:
         // selected-chain unspentness/maturity before committing a reservation.
         [[nodiscard]] std::vector<PendingPaymentInput> ReadShieldCandidatesInTransaction(
             const RecoverySeed&);
+        // Candidate DATA only. Still requires a separate current selected
+        // input owner before any reservation; never adds ordinary UTXO rows.
+        [[nodiscard]] std::vector<PendingPaymentInput> ReadSnapshotShieldCandidatesInTransaction(
+            const RecoverySeed&,uint32_t,const uint256&,const std::string&);
         // Validate all present issued/imported signing tuples and PQ records
         // against the pinned live authority in this SQL snapshot. Watch-only
         // registrations stay recognition metadata. No writes or key generation;
@@ -369,6 +373,8 @@ public:
         friend class WalletManager;
         friend class WalletTransactionOwner;
         friend class wallet::OrchardAccountDelivery;
+        void ValidateSnapshotShieldInputsInTransaction(const RecoverySeed&,
+            std::span<const PendingPaymentInput>,uint32_t,const uint256&,const std::string&);
         // Only authenticated Orchard account Ready/current/archive owners may
         // derive this summary; no RPC accepts arbitrary history fields.
         struct ShieldHistory {

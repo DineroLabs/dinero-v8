@@ -8,6 +8,7 @@
 #include "wallet/orchard_proof_jobs.h"
 namespace dinero { class ChainstateService; class RuntimeOrdinaryDelivery; class RuntimeWalletRecovery; struct RuntimeOutboxCursor; class WalletManager; class RuntimeAccountReplay; struct WalletSigningIdentity; struct UnsignedTransaction; struct PendingPaymentIntent; struct SignResult; }
 namespace dinero::wallet {
+class AuthenticatedShieldInputs;
 // Narrow request classification after authenticated catalog restoration.
 // These observations do not authorize retries, replacement IDs, or release of
 // reservations. Ownership/SQL/source failures remain separate generic errors.
@@ -489,8 +490,12 @@ private:
     static std::unique_ptr<QueuedSpend> TakePreparedShieldRetry(WalletManager&,uint64_t,OrchardCatalogRecoveryPlan&);
     static std::vector<orchard::ResolvedInput> ReadPreparedShieldCandidates(
         WalletManager&,uint64_t,const Profile&,uint64_t,const OrchardCatalogRecoveryPlan&);
+    static std::vector<orchard::ResolvedInput> ReadPreparedSnapshotShieldCandidates(
+        WalletManager&,uint64_t,const Profile&,uint64_t,const OrchardCatalogRecoveryPlan&,
+        uint32_t,const uint256&,const std::string&);
     static ShieldResult CommitShieldReservation(WalletManager&,uint64_t,std::unique_ptr<OrchardCatalogRecoveryPlan>,
-        std::span<const orchard::ResolvedInput>,std::span<const orchard::TransparentOutput>,OrchardProofJobs*);
+        std::span<const orchard::ResolvedInput>,std::span<const orchard::TransparentOutput>,OrchardProofJobs*,
+        const AuthenticatedShieldInputs* = nullptr);
     static ShieldResult ReserveShieldForReplay(WalletManager&,uint64_t,const Profile&,uint64_t,
         const RuntimeAccountReplay&,const orchard::Hash&,std::span<const orchard::ResolvedInput>,
         std::span<const orchard::WalletPayment>,std::span<const orchard::TransparentOutput>,uint64_t,OrchardProofJobs*,bool existing_only=false);

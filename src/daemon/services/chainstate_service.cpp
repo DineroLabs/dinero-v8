@@ -68,6 +68,8 @@
 #include "daemon/services/p2p_service.h"  // Phase C.1 v2: For block broadcasting
 #ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
 #include "p2p/orchard_phone_history.h"
+#include "p2p/wallet_funding_download.h"
+#include "wallet/authenticated_shield_inputs.h"
 #endif
 #include "daemon/services/mining_service.h"  // Phase 40: For ActivateBestChain service notifications
 #include "daemon/services/mempool_service.h"  // Phase 40: For ActivateBestChain service notifications
@@ -20772,8 +20774,118 @@ std::unique_ptr<wallet::OrchardQueuedSpend> ChainstateService::queueRuntimeWalle
         replay,operation,{},payments,{},fee,wallet::OrchardAccountDelivery::ShieldRequestMode::Stored);
     wallet::OrchardShieldRequest prepared;
     {
-        std::lock_guard<std::mutex> snapshot_owner(snapshot_load_mutex_);
+        std::unique_lock<std::mutex> snapshot_owner(snapshot_load_mutex_);
         auto lock=AcquireBlockIngressActivationLock();
+        if(assumeutxo_active_&&!compact_startup_&&!IsBackgroundValidationComplete()){
+            // This is NOT the general full-node or compact coin capture below.
+            // An imported parent can reserve only exact owned inputs whose
+            // creation metadata and CURRENT membership were both checked here.
+            UTXOIndex* index=nullptr;
+            {std::lock_guard<std::mutex> use(wallet_index_use_mutex_);
+             if(!wallet_index_uses_by_thread_.contains(std::this_thread::get_id())||!utxo_index_)
+                throw std::runtime_error("Imported shield index lifetime unavailable");
+             index=utxo_index_.get();}
+            auto captured_source=CaptureImportedWalletSourceUnderLock(snapshot_owner,*index);
+            if(!captured_source.ok())throw std::runtime_error("Imported shield current source unavailable");
+            const auto& source=**captured_source;const auto point=replay.Point({}).checkpoint;
+            if(replay.Head().sequence||!replay.Head().digest.IsNull()||point.height+1!=source.next.height||
+                point.block_hash!=source.next.parent_hash||point.tree_size||
+                source.next.domain.network_code!=profile.domain.network_code||
+                source.next.domain.genesis_wire!=profile.domain.genesis_wire||source.next.domain.branch_id!=profile.domain.branch_id||
+                source.next.activation_height!=profile.activation)
+                throw std::runtime_error("Imported shield account source changed");
+            if(auto stored=wallet::OrchardAccountDelivery::TakePreparedShieldRetry(wallet,session,*catalog))return stored;
+            const auto candidates=wallet::OrchardAccountDelivery::ReadPreparedSnapshotShieldCandidates(
+                wallet,session,profile,expected,*catalog,point.height,point.block_hash,source.root);
+            auto* context=DaemonContext::instance();
+            const auto p2p=context&&context->chainstate.get()==this?std::dynamic_pointer_cast<P2PService>(context->p2p):nullptr;
+            const auto download=p2p?p2p->WalletFundingBodies():nullptr;
+            if(!download)throw std::runtime_error("Authenticated shield funding transport unavailable");
+            std::map<std::pair<std::string,uint32_t>,const WalletManager::UtxoSetEntry*> records;
+            for(const auto& candidate:candidates){uint256 id;std::copy(candidate.txid_wire.begin(),candidate.txid_wire.end(),id.begin());
+                records.emplace(std::make_pair(id.GetHex(),candidate.output_index),nullptr);}
+            for(const auto& record:source.records)if(auto it=records.find({record.txid_hex,record.vout});it!=records.end())it->second=&record;
+            std::vector<orchard::ResolvedInput> inputs;std::vector<PendingPaymentInput> wallet_inputs;
+            std::vector<consensus::UtreexoProof> proofs;std::vector<consensus::UtreexoHash> leaves;
+            std::vector<const WalletManager::UtxoSetEntry*> selected_records;
+            uint64_t total=0;size_t examined=0;
+            for(const auto& candidate:candidates){
+                if(++examined>1024)throw std::runtime_error("Imported shield candidate work capacity exceeded");
+                uint256 id;std::copy(candidate.txid_wire.begin(),candidate.txid_wire.end(),id.begin());
+                const auto found=records.find({id.GetHex(),candidate.output_index});
+                if(found==records.end()||!found->second)throw std::runtime_error("Imported shield source coin missing");
+                const auto& coin=*found->second;
+                if(coin.amount_una!=candidate.amount_una||coin.script_pubkey!=candidate.script_pub_key||coin.height>point.height)
+                    throw std::runtime_error("Imported shield candidate/source mismatch");
+                uint256 creation;uint32_t parent_height=0;
+                if(!header_chain_selector_->GetAncestorHashByHash(point.block_hash,coin.height,creation,parent_height)||parent_height!=point.height)
+                    throw std::runtime_error("Imported shield creation ancestry unavailable");
+                const auto bytes=download->Request(creation);
+                if(!bytes)throw wallet::ShieldFundingPending();
+                const auto body=Block::Deserialize(*bytes);bool mutated=false;
+                const auto header=header_chain_selector_->GetHeaderValue(creation);
+                if(!body||!header||body->GetHash()!=creation||header->height!=coin.height||
+                    body->header.SerializeForHash()!=header->header.SerializeForHash()||body->vtx.empty()||
+                    consensus::ComputeMerkleRoot(body->vtx,&mutated)!=header->header.merkle_root||mutated||!body->vtx.front().IsCoinbase())
+                    throw std::runtime_error("Imported shield funding inclusion refused");
+                const Transaction* transaction=nullptr;size_t matches=0,position=0;
+                for(size_t n=0;n<body->vtx.size();++n)if(body->vtx[n].GetTxid().AsUint256()==id){transaction=&body->vtx[n];position=n;++matches;}
+                if(matches!=1||!transaction||coin.vout>=transaction->vout.size()||
+                    transaction->IsCoinbase()!=(position==0)||coin.is_coinbase!=transaction->IsCoinbase()||
+                    transaction->vout[coin.vout].value.GetUna()!=coin.amount_una||transaction->vout[coin.vout].scriptPubKey!=coin.script_pubkey)
+                    throw std::runtime_error("Imported shield funding metadata refused");
+                if(coin.is_coinbase&&source.next.height-coin.height<consensus::UTREEXO_STATELESS_COINBASE_MATURITY)continue;
+                const auto leaf=consensus::HashUTXOForCreationHeight(id,coin.vout,coin.amount_una,coin.script_pubkey,coin.height,coin.is_coinbase);
+                {const auto guard=consensus_utxo_set_->LockForestShared();const auto& forest=consensus_utxo_set_->GetForest();
+                 const auto position=forest.findLeafPosition(leaf);const auto proof=position?forest.prove(*position):std::nullopt;
+                 if(!position||forest.isDeleted(*position)||!proof||!proof->verify(leaf,forest.getRoots())||
+                    util::hex(forest.getCommitment())!=source.root)throw std::runtime_error("Imported shield current input proof refused");
+                 proofs.push_back(*proof);leaves.push_back(leaf);}
+                if(candidate.amount_una>orchard::kMaxMoneyUna-total)throw std::runtime_error("Imported shield selected value exceeds money range");
+                inputs.push_back(candidate);selected_records.push_back(&coin);
+                wallet_inputs.push_back({id.GetHex(),coin.vout,coin.amount_una,coin.script_pubkey});total+=coin.amount_una;
+                if(total>=required)break;
+            }
+            if(total<required)throw std::runtime_error("Insufficient authenticated mature imported shield funds");
+            const auto current=[&]{
+                activation_mutex_.AssertHeld("commit imported shield inputs");
+                if(!snapshot_owner.owns_lock()||snapshot_owner.mutex()!=&snapshot_load_mutex_||!source.lifecycle||
+                    snapshot_import_publishing_||safe_mode_active_||!assumeutxo_active_||compact_startup_||
+                    !active_tip_||active_tip_->hash!=point.block_hash||active_tip_->height!=point.height||
+                    wallet.getUTXOIndex()!=index||utxo_index_.get()!=index||index->ReadAssumedStartupMetadata()!=source.metadata||
+                    !consensus_utxo_set_||consensus_utxo_set_->GetBestBlock()!=point.block_hash||consensus_utxo_set_->GetHeight()!=point.height||
+                    DaemonContext::instance()!=context||context->chainstate.get()!=this||context->p2p!=p2p)
+                    throw std::runtime_error("Imported shield source changed before commit");
+                consensus::HeaderIndexEntry selected;
+                const auto tip=chain_db_->getTip(),validated=chain_db_->getValidatedTip();
+                const auto base=chain_db_->getPreBaseCoinSetBase();const auto stored_header=chain_db_->getHeader(point.block_hash);
+                if(!tip.ok()||!validated.ok()||tip->height||validated->height||tip->hash!=validated->hash||
+                    tip->hash!=uint256::FromHexUnsafe(Params().genesis_hash)||!base.ok()||base->first!=point.block_hash||base->second!=point.height||
+                    !chain_db_->getEmptyOrchardCommitmentSets().ok()||chain_db_->getLegacyRetirementState().status()!=Status::NotFound||
+                    !stored_header.ok()||!header_chain_selector_->GetHeaderAtHeightCopy(point.height,selected)||selected.hash!=point.block_hash||
+                    selected.header.SerializeForHash()!=stored_header->SerializeForHash())
+                    throw std::runtime_error("Imported shield selected ancestry changed before commit");
+                const auto guard=consensus_utxo_set_->LockForestShared();const auto& forest=consensus_utxo_set_->GetForest();
+                if(util::hex(forest.getCommitment())!=source.root)throw std::runtime_error("Imported shield root changed before commit");
+                for(size_t n=0;n<proofs.size();++n){
+                    const auto& coin=*selected_records[n];uint256 id;if(!uint256::FromHex(coin.txid_hex,id))throw std::runtime_error("Imported shield input id changed");
+                    const auto row=chain_db_->getPreBaseCoin(id,coin.vout);
+                    if(!row.ok()||row->height!=int(coin.height)||row->coinbase!=coin.is_coinbase||row->amount!=coin.amount_una||
+                        row->script_pubkey!=util::hex(coin.script_pubkey)||row->is_confidential||!row->commitment.empty()||
+                        proofs[n].numLeaves!=forest.getNumLeaves()||forest.isDeleted(proofs[n].position)||!proofs[n].verify(leaves[n],forest.getRoots()))
+                        throw std::runtime_error("Imported shield current input changed before commit");
+                }
+            };
+            wallet::AuthenticatedShieldInputs authority(wallet,session,point.height,point.block_hash,source.root,std::move(wallet_inputs),current);
+            current();std::vector<orchard::TransparentOutput> outputs;
+            {auto lease=wallet.AcquireDatabaseLease();
+             if(lease->Session()!=session||!sqlite3_get_autocommit(lease->Database()))throw std::runtime_error("Imported shield wallet session changed");
+             if(total>required){const auto address=wallet.getNewChangeAddress("","taproot");const auto network=source.next.domain.network_code;
+                const auto decoded=DecodeWitnessAddress(address,network==0?"din":network==1?"tdin":"rdin");
+                if(!decoded.is_valid||decoded.witness_version!=1||decoded.witness_program.size()!=32)throw std::runtime_error("Imported shield change issuance failed");
+                outputs.push_back({total-required,decoded.script_pubkey});}}
+            prepared=wallet::OrchardAccountDelivery::CommitShieldReservation(wallet,session,std::move(catalog),inputs,outputs,&jobs,&authority).queued;
+        }else{
         // Existing request lookup requires current state and complete catalog
         // ownership, not a general compact coin view. This empty capture grants
         // NO input authority; only the exact committed retry may return below.
@@ -20826,6 +20938,7 @@ std::unique_ptr<wallet::OrchardQueuedSpend> ChainstateService::queueRuntimeWalle
         } // Change-issuance lease ends before reservation ownership.
         prepared=wallet::OrchardAccountDelivery::CommitShieldReservation(wallet,session,std::move(catalog),
             inputs,outputs,&jobs).queued;
+        }
     }
     return std::move(prepared).Publish();
 #else

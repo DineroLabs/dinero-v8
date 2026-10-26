@@ -58,6 +58,57 @@ requests that Core actually committed. No app changes are made by this Core work
 
 ## Implemented bounded enrollment contract
 
+### Current imported-input acquisition and queue scope
+
+The exact original imported activation parent now has a dedicated NEW shield
+reservation route. It does not use or relax the independently executed full
+coin view. Candidate rows remain public, unsafe DATA, not ordinary `utxos` or
+wallet/index/history readiness. The actual selected source rechecks the complete
+frozen cohort, original SQL lifecycle, PoW-selected parent/checkpoint/full forest
+and zero Orchard origin under snapshot-then-selected ownership and the actual
+lifecycle pin. Supported owned signing candidates are separately rechecked
+against seed/session, complete current/retained/pending account owners and manual
+locks. No missing catalog, orphan owner or active recovery inventory is reset.
+
+Legacy leaves do not bind creation height or coinbase status. Their snapshot
+claims are therefore only locators: the node requests the claimed creating
+historical `MSG_BLOCK` body, verifies its exact locally selected ancestor header,
+unmutated transaction merkle root, unique actual funding transaction/output and
+actual coinbase/height metadata. It also generates and verifies a CURRENT live
+membership path against the selected full forest/root, excluding deleted leaves
+and compiled rows absent from the accumulator. Maturity, supported signer,
+amount/script, money bounds and final-input rules still apply. This is proof of
+specific inputs, not independent execution or complete preactivation history.
+
+The packet-woken funding downloader has one exact connection/session flight,
+eight requested and eight volatile cached public bodies (each at most 4 MiB),
+30-second timeout, bounded 32-address cooldown and a 64 MiB/minute receive budget
+including bad bytes, with at most one bounded-body overshoot. It writes no disk,
+ChainDB, cursor, event or wallet. Stop drains it before P2P dependency destruction.
+Waiting returns `funding_source_pending`, `retryable=true`, before change issuance
+or reservation. A ready body is reauthenticated at each use; it is never a seal.
+
+A private lexical exact-input object binds the source, wallet/session and real
+ownership lifetimes through FULL atomic reservation. The original complete
+encrypted catalog writer and before-COMMIT source fences still run. Snapshot
+candidate rows are rechecked in that same wallet transaction; ordinary UTXO rows,
+even spent ones, can never be resurrected. No source token is deserialized,
+persisted or returned to callers. New queued requests publish the real prover
+job only after commit; exact retries do not issue change or requeue work.
+
+This component deliberately leaves signing/first authorization, Ready and pool
+admission on their original separate source checks. An actual imported-input
+queue is NOT the original-assumed nonempty activation crossing: completing and
+readmitting it, generic NEW compact input acquisition, other imported bases and
+physical app/device acceptance remain open. In particular, the dormant v4
+private fixture does not qualify mainnet/v5 binding or production maturity.
+
+The older timed soak used three FULL producers and an empty Orchard tree; it
+stopped as FAIL_CONTROLLER_STOPPED after about20h40m, not a 72-hour pass. The
+completed short six-consumer both-profile snapshot matrix is separate evidence.
+Neither is current-source compact/nonempty/device qualification, and neither is
+resumed by this source work. Public activation schedules remain unchanged.
+
 At the genuinely empty activation parent, queue preparation uses immutable
 profile facts, not a nonexistent first event. Before a reservation or Ready
 commit, snapshot-then-selected ownership rechecks the current full/explicit-proof

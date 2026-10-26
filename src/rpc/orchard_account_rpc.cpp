@@ -17,6 +17,7 @@
 #include "util/hex.h"
 #if DINERO_WALLET_RAW_ORCHARD
 #include "wallet/orchard_account_delivery.h"
+#include "wallet/authenticated_shield_inputs.h"
 #include "rpc/orchard_issuance_retry.h"
 #include "daemon/services/mempool_service.h"
 #include "consensus/orchard_authorization.h"
@@ -42,6 +43,9 @@ void OrchardRpcFailure(din::Json& result,const std::exception& error) {
     if(dynamic_cast<const OrchardHistoryIncomplete*>(&error))result["error_code"]="history_incomplete";
     if(const auto* binding=dynamic_cast<const OrchardBindingError*>(&error))result["error_code"]=binding->code;
 #if DINERO_WALLET_RAW_ORCHARD
+    if(dynamic_cast<const dinero::wallet::ShieldFundingPending*>(&error)){
+        result["error_code"]="funding_source_pending";result["retryable"]=true;
+    }
     if(const auto* request=dynamic_cast<const dinero::wallet::OrchardRequestError*>(&error)) {
         using Code=dinero::wallet::OrchardRequestError::Code;
         switch(request->Reason()) {

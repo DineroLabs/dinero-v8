@@ -24,11 +24,34 @@ while not manifest.exists():
     assert time.monotonic()<deadline,('native fixture timed out',root)
     time.sleep(.05)
 fixture=json.loads(manifest.read_text());assumed=bool(os.environ.get('DINERO_SDK_ASSUMED_MOBILE_FIXTURE'))
+input_queue=bool(os.environ.get('DINERO_SDK_IMPORTED_SHIELD_QUEUE'))
+wrong_input_height=bool(os.environ.get('DINERO_SDK_IMPORTED_SHIELD_WRONG_HEIGHT'))
+if wrong_input_height:
+    assert assumed and input_queue and fixture['assumed_snapshot_version']==4
+    # A correct-checksum v4 file can claim a wrong LEGACY creation height
+    # without changing its authenticated v1 Utreexo leaf. Never trust this
+    # metadata for maturity/source authority merely because import accepts it.
+    original_snapshot=Path(fixture['assumed_snapshot']);snapshot=bytearray(original_snapshot.read_bytes())
+    assert struct.unpack_from('<I',snapshot,4)[0]==4 and hashlib.sha256(snapshot[:-32]).digest()==snapshot[-32:]
+    count=struct.unpack_from('<Q',snapshot,44)[0];offset=68;changed=0
+    for _ in range(count):
+        key=bytes(snapshot[offset:offset+32]);output=struct.unpack_from('<I',snapshot,offset+32)[0]
+        size=struct.unpack_from('<I',snapshot,offset+44)[0];metadata=offset+48+size
+        if key==bytes.fromhex(fixture['funding_txid'])[::-1] and output==0:
+            assert struct.unpack_from('<I',snapshot,metadata)[0]==101 and snapshot[metadata+4]==0
+            struct.pack_into('<I',snapshot,metadata,100);changed+=1
+        offset=metadata+5
+    assert changed==1
+    snapshot[-32:]=hashlib.sha256(snapshot[:-32]).digest()
+    altered=root/'wrong-legacy-height-v4.dat';altered.write_bytes(snapshot);fixture['assumed_snapshot']=str(altered)
 datadir=Path(fixture['assumed_datadir'] if assumed else fixture['datadir'])
 proof=Path(fixture['proof']).read_bytes();assert 0<len(proof)<=1<<30
 magic=fixture['magic'];headers=[bytes.fromhex(h) for h in fixture['headers']]
 assert len(headers)==104 and all(len(h)==128 for h in headers)
 stop=threading.Event();future=threading.Event();bodies_ready=threading.Event();proof_ready=threading.Event();echo_ready=threading.Event()
+funding_release=threading.Event();funding_pending={}
+funding_bodies={hashlib.sha256(hashlib.sha256(Path(path).read_bytes()[:128]).digest()).digest():Path(path).read_bytes()
+    for path in fixture.get('funding_bodies',{}).values()}
 packets=[];failures=[];connections=[];pending={};handshaken={};sent_headers=set();sent_proof=set();asked_echo=set();echo=[]
 body_requests=[];proof_wire=b'';txid=''
 bodies={bytes.fromhex(fixture[name+'_hash'])[::-1]:Path(fixture[name]).read_bytes() for name in ('first','second')}
@@ -44,6 +67,9 @@ def send(conn,command,payload=b''):
     conn.sendall(struct.pack('<I12sI4s',magic,command.encode(),len(payload),double_sha(payload)[:4])+payload)
 def flush(conn):
     if not handshaken.get(conn):return
+    if funding_release.is_set():
+        for key in list(funding_pending.get(conn,{})):
+            send(conn,'block',funding_bodies[key]);del funding_pending[conn][key]
     if future.is_set() and (conn,len(headers)) not in sent_headers:
         send(conn,'headers',bytes([len(headers)])+b''.join(h+b'\0' for h in headers));sent_headers.add((conn,len(headers)))
     if proof_ready.is_set() and conn not in sent_proof:
@@ -82,7 +108,7 @@ def serve():
             except OSError:
                 if stop.is_set():return
                 raise
-            connections.append(conn);pending[conn]={};conn.settimeout(.5);transfer=None
+            connections.append(conn);pending[conn]={};funding_pending[conn]={};conn.settimeout(.5);transfer=None
             with conn:
                 while not stop.is_set():
                     try:raw=exact(conn,24)
@@ -111,7 +137,9 @@ def serve():
                     elif command=='getdata':
                         for kind,key in inventory(payload):
                             body_requests.append(dict(kind=kind,hash=key[::-1].hex()))
-                            if key in bodies:
+                            if input_queue and key in funding_bodies:
+                                assert kind==2;funding_pending[conn][key]=True
+                            elif key in bodies:
                                 assert kind==2;pending[conn][key]=True
                             elif not future.is_set() and txid and key==bytes.fromhex(txid)[::-1] and kind==0x50000001:send(conn,'utxotx',proof_wire)
                         flush(conn)
@@ -291,7 +319,60 @@ try:
     binding=bound('wire-named-owner');request_id='71'+'00'*31
     request=dict(binding,account=0,request_id=request_id,expected_revision=account['revision'],fee_una=10000,
         payments=[dict(address=account['address'],amount_una=20000,memo_hex=b'funded queued crossing'.hex())])
-    queued=rpc('wallet.orchard.queueshield',request);assert queued['proof_queued'] and queued['input_count']>0,queued
+    if input_queue:
+        assert assumed and not future.is_set()
+        before_queue=wallet_rows();before_state=candidate_wallet_state();before_coins=rpc('wallet.listunspent',[])
+        pending_reply=call('rpc',method='wallet.orchard.queueshield',params=request)
+        assert pending_reply.get('error_code')=='funding_source_pending' and pending_reply.get('retryable') is True,pending_reply
+        assert wallet_rows()==before_queue and candidate_wallet_state()==before_state,'pending source mutated wallet owner/selection'
+        funding_release.set();deadline=time.monotonic()+30
+        while time.monotonic()<deadline:
+            queued=call('rpc',method='wallet.orchard.queueshield',params=request)
+            if queued.get('error_code')!='funding_source_pending':break
+            assert wallet_rows()==before_queue and candidate_wallet_state()==before_state
+            time.sleep(.1)
+        if wrong_input_height:
+            assert queued.get('error')=='Imported shield funding metadata refused',queued
+            assert wallet_rows()==before_queue and candidate_wallet_state()==before_state,'bad legacy metadata acquired input authority'
+            assert original_lifecycle()==original and rpc('wallet.listunspent',[])==before_coins
+            assert call('stop')==0;success=True
+            (root/'receipt.json').write_text(json.dumps(dict(original_assumed_mobile=True,wrong_legacy_height=100,
+                actual_creation_height=101,reply=queued,pending=pending_reply,original_lifecycle=original,
+                nonempty_queue=False,scope='Correct-checksum dormant v4 import and genuine discovery/enrollment succeed; claimed legacy metadata is refused by actual selected historical full-body inclusion before any reservation. No handoff, Ready, app/device or release claim.'),indent=2)+'\n')
+            print('PASS imported shield refuses correct-checksum wrong legacy metadata before reservation',flush=True)
+            sys.exit(0)
+    else:queued=rpc('wallet.orchard.queueshield',request)
+    assert queued['proof_queued'] and queued['input_count']>0,queued
+    if input_queue:
+        assert queued['input_count']==1 and not queued['existing_request'],queued
+        reserved=wallet_rows();assert reserved!=before_queue and reserved['orchard_wallet_retained']
+        retry=rpc('wallet.orchard.queueshield',request)
+        assert retry['existing_request'] and not retry['proof_queued'] and wallet_rows()==reserved,retry
+        # This component earns only genuine queued input authority. It does
+        # NOT relax the separate signing/first-authorization/pool source fence.
+        deadline=time.monotonic()+30
+        while time.monotonic()<deadline:
+            refused=call('rpc',method='wallet.orchard.finishshield',params=dict(binding,account=0,request_id=request_id))
+            if refused.get('error_code')!='proof_not_ready':break
+            assert refused.get('proof_state') in ('queued','running'),refused;time.sleep(.1)
+        assert refused.get('error')=='Shield signing source changed',refused
+        assert wallet_rows()==reserved,'separate signing refusal released encrypted reservation'
+        assert rpc('wallet.open',['wire-named-owner'])['success'] is True
+        assert rpc('wallet.unlock',['funded-crossing-password',0])['success'] is True
+        binding=bound('wire-named-owner');retry=rpc('wallet.orchard.queueshield',dict(request,**binding))
+        assert retry['existing_request'] and not retry['proof_queued'] and wallet_rows()==reserved,retry
+        after_state=candidate_wallet_state()
+        for table in ('utxos','sync_meta','tip'):assert after_state[table]==before_state[table],table
+        assert original_lifecycle()==original and rpc('wallet.listunspent',[])==before_coins
+        assert not future.is_set() and not (datadir/'blockchain/.orchard-handoff-selected-v1.done').exists()
+        assert any(b['hash']==fixture['parent'] and b['kind']==2 for b in body_requests),body_requests
+        assert call('stop')==0;success=True
+        (root/'receipt.json').write_text(json.dumps(dict(original_assumed_mobile=True,queued=queued,retry=retry,
+            pending=pending_reply,reserved=reserved,finish_refusal=refused,original_lifecycle=original,
+            nonempty_queue=True,funded_crossing=False,
+            scope='Actual normally imported named wallet acquires historical creation inclusion plus current selected input membership, atomically reserves a real funded shield request and publishes its real prover job. Encrypted pending/current/retained rows and no-phrase reopen/retry survive. Separate signing source fence still refuses; no Ready, pool, handoff, confirmation, app/device or release claim.'),indent=2)+'\n')
+        print('PASS actual authenticated imported-input nonempty shield queue; signing fence preserved',flush=True)
+        sys.exit(0)
     deadline=time.monotonic()+30
     while time.monotonic()<deadline:
         finished=call('rpc',method='wallet.orchard.finishshield',params=dict(binding,account=0,request_id=request_id))

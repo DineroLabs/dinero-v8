@@ -1,6 +1,7 @@
 #include "wallet/orchard_ownership_inventory.h"
 #include "wallet/orchard_account_catalog.h"
 #include "wallet/orchard_account_delivery.h"
+#include "wallet/authenticated_shield_inputs.h"
 #include <ctime>
 #include "wallet/orchard_proof_jobs.h"
 #include "wallet/runtime_account_replay.h"
@@ -1593,6 +1594,33 @@ std::unique_ptr<OrchardAccountDelivery::QueuedSpend> OrchardAccountDelivery::Fin
         ShieldRequestMode::Stored,true);
     return TakePreparedShieldRetry(w,session,*prepared);
 }
+std::vector<orchard::ResolvedInput> OrchardAccountDelivery::ReadPreparedSnapshotShieldCandidates(
+        WalletManager& w,uint64_t session,const Profile& p,uint64_t expected,const OrchardCatalogRecoveryPlan& plan,
+        uint32_t height,const uint256& base,const std::string& root){
+    Check(plan.data_&&plan.data_->usable&&plan.data_->session==session);
+    const auto& data=*plan.data_;
+    Check(data.profile.domain.network_code==p.domain.network_code&&data.profile.domain.genesis_wire==p.domain.genesis_wire&&
+        data.profile.domain.branch_id==p.domain.branch_id&&data.profile.activation==p.activation);
+    const auto found=std::find_if(data.before.accounts.begin(),data.before.accounts.end(),[&](const auto& a){return a.number==p.account;});
+    Check(found!=data.before.accounts.end());
+    CheckRequest(found->state.revision==expected,OrchardRequestError::Code::StaleAccountRevision);
+    std::set<std::pair<orchard::Hash,uint32_t>> reserved;
+    for(const auto& account:data.accounts){
+        const auto receipt=account.result.account.Delivery();Check(receipt.sequence==data.head.sequence&&receipt.digest==data.head.digest);
+        for(const auto& [id,entry]:account.result.account.Operations().Entries())for(const auto& input:entry.inputs)
+            Check(reserved.emplace(input.txid_wire,input.output_index).second);
+    }
+    auto lease=w.AcquireDatabaseLease();Check(w.database_leases_==1&&lease->Session()==session&&lease->Database());
+    RequireShieldFullSync(lease->Database());Transaction transaction(lease->Database());
+    {auto fresh=Owner::CaptureCatalog(w,session,p);data.expected->Recheck(*fresh);}
+    std::vector<orchard::ResolvedInput> result;
+    {Owner owner(w,session,p,Owner::ExistingRead{});
+     for(const auto& coin:lease->ReadSnapshotShieldCandidatesInTransaction(*owner.seed,height,base,root)){
+        uint256 id;Check(uint256::FromHex(coin.txid,id));orchard::Hash wire{};std::copy(id.begin(),id.end(),wire.begin());
+        if(!reserved.contains({wire,coin.vout}))result.push_back({wire,coin.vout,UINT32_MAX,coin.amount_una,coin.script});
+     }}
+    transaction.Commit();return result;
+}
 OrchardAccountDelivery::ShieldResult OrchardAccountDelivery::ReserveShieldForReplay(
         WalletManager& w,uint64_t session,const Profile& p,uint64_t expected,const RuntimeAccountReplay& view,
         const orchard::Hash& id,std::span<const orchard::ResolvedInput> inputs,
@@ -1701,7 +1729,8 @@ std::unique_ptr<OrchardAccountDelivery::QueuedSpend> OrchardAccountDelivery::Tak
 }
 OrchardAccountDelivery::ShieldResult OrchardAccountDelivery::CommitShieldReservation(
         WalletManager& w,uint64_t session,std::unique_ptr<OrchardCatalogRecoveryPlan> prepared,
-        std::span<const orchard::ResolvedInput> inputs,std::span<const orchard::TransparentOutput> outputs,OrchardProofJobs* jobs){
+        std::span<const orchard::ResolvedInput> inputs,std::span<const orchard::TransparentOutput> outputs,OrchardProofJobs* jobs,
+        const AuthenticatedShieldInputs* source){
     Check(prepared&&prepared->data_&&prepared->data_->usable&&prepared->data_->session==session&&prepared->data_->shield);
     auto& data=*prepared->data_;auto& shield=*data.shield;
     if(shield.existing){ShieldResult result;result.queued.result=TakePreparedShieldRetry(w,session,*prepared);return result;}
@@ -1748,7 +1777,13 @@ OrchardAccountDelivery::ShieldResult OrchardAccountDelivery::CommitShieldReserva
             uint256 txid;std::copy(input.txid_wire.begin(),input.txid_wire.end(),txid.begin());
             wallet_inputs.push_back({txid.GetHex(),input.output_index,input.amount_una,input.script_pub_key});
         }
-        lease->ValidateUnreservedInputsInTransaction(*owner.seed,wallet_inputs);
+        if(source){
+            Check(source->wallet_==&w&&source->session_==session&&source->inputs_.size()==wallet_inputs.size()&&bool(source->current_));
+            for(size_t i=0;i<wallet_inputs.size();++i){const auto& a=source->inputs_[i];const auto& b=wallet_inputs[i];
+                Check(a.txid==b.txid&&a.vout==b.vout&&a.amount_una==b.amount_una&&a.script==b.script);}
+            source->current_();
+            lease->ValidateSnapshotShieldInputsInTransaction(*owner.seed,wallet_inputs,source->height_,source->base_,source->root_);
+        }else lease->ValidateUnreservedInputsInTransaction(*owner.seed,wallet_inputs);
         for(const auto& output:outputs)
             Check(bool(lease->ResolveSigningKeyInTransaction(util::hex(output.script_pub_key),*owner.seed)));
         std::vector<orchard::ResolvedInput> resolved(inputs.begin(),inputs.end());
@@ -1778,6 +1813,7 @@ OrchardAccountDelivery::ShieldResult OrchardAccountDelivery::CommitShieldReserva
     }
     {auto fresh=Owner::CaptureCatalog(w,session,p);data.expected->Recheck(*fresh);}
     static_assert(std::is_nothrow_move_constructible_v<ShieldResult>);
+    if(source)source->current_();
     transaction.Commit();return result;
 }
 OrchardAccountDelivery::PreparedSpend OrchardAccountDelivery::ReserveCatalogSpendForReplay(

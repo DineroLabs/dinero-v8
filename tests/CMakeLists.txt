@@ -5579,6 +5579,8 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_assumeutxo_replay.cpp)
   set_tests_properties(OrchardEmptyParentAccount PROPERTIES TIMEOUT 120 LABELS "daemon;orchard;wallet;mandatory")
   add_test(NAME OrchardEmptyParentQueue COMMAND test_assumeutxo_replay --gtest_filter=OrchardEmptyParentQueue.*)
   set_tests_properties(OrchardEmptyParentQueue PROPERTIES TIMEOUT 120 LABELS "daemon;orchard;wallet;mandatory")
+  add_test(NAME WalletFundingDownload COMMAND test_assumeutxo_replay --gtest_filter=WalletFundingDownload.*)
+  set_tests_properties(WalletFundingDownload PROPERTIES TIMEOUT 120 LABELS "daemon;orchard;wallet;inputproof")
   add_test(NAME OrchardLegacyMobileParent COMMAND test_assumeutxo_replay --gtest_filter=OrchardLegacyMobileParent.*)
   set_tests_properties(OrchardLegacyMobileParent PROPERTIES TIMEOUT 120 LABELS "daemon;orchard;wallet;mandatory")
   set_tests_properties(OrchardPhoneHistory PROPERTIES TIMEOUT 120 LABELS "daemon;orchard;p2p;recovery")
@@ -9438,6 +9440,19 @@ if(TARGET nodecore_ffi)
       python3 ${CMAKE_SOURCE_DIR}/tests/integration/test_nodecore_funded_crossing.py)
     set_tests_properties(NodeCoreAssumedFundedCrossing PROPERTIES TIMEOUT 360 RUN_SERIAL TRUE
       LABELS "integration;nodecore;orchard;assumedmobile;wallet")
+    foreach(_imported_input_case IN ITEMS Queue MetadataRefusal)
+      set(_imported_input_env DINERO_SDK_IMPORTED_SHIELD_QUEUE=1)
+      if(_imported_input_case STREQUAL "MetadataRefusal")
+        list(APPEND _imported_input_env DINERO_SDK_IMPORTED_SHIELD_WRONG_HEIGHT=1)
+      endif()
+      add_test(NAME NodeCoreImportedShield${_imported_input_case} COMMAND ${CMAKE_COMMAND} -E env
+        NODECORE_DRIVER=$<TARGET_FILE:nodecore_activation_driver>
+        ACTIVATION_FIXTURE_GENERATOR=$<TARGET_FILE:test_assumeutxo_replay>
+        DINERO_SDK_ASSUMED_MOBILE_FIXTURE=1 ${_imported_input_env}
+        python3 ${CMAKE_SOURCE_DIR}/tests/integration/test_nodecore_funded_crossing.py)
+      set_tests_properties(NodeCoreImportedShield${_imported_input_case} PROPERTIES TIMEOUT 300 RUN_SERIAL TRUE
+        LABELS "integration;nodecore;orchard;assumedmobile;wallet;inputproof")
+    endforeach()
     add_test(NAME NodeCoreAssumedRescanFence COMMAND ${CMAKE_COMMAND} -E env
       NODECORE_DRIVER=$<TARGET_FILE:nodecore_activation_driver>
       ACTIVATION_FIXTURE_GENERATOR=$<TARGET_FILE:test_assumeutxo_replay>

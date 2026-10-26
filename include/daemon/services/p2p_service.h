@@ -27,7 +27,7 @@
 
 namespace dinero {
 namespace daemon {class DatadirGuard;}
-namespace p2p {class OrchardCatalogServer;class OrchardCatalogDownload;class OrchardPhoneHistoryDownload;}
+namespace p2p {class OrchardCatalogServer;class OrchardCatalogDownload;class OrchardPhoneHistoryDownload;class WalletFundingDownload;}
 
 // Forward declarations
 class ILogger;
@@ -205,6 +205,7 @@ public:
     // reauthenticate independently under its retained root/selected ownership.
     std::shared_ptr<const consensus::OrchardSnapshotSection> ReadyActivationCatalog() const;
     std::shared_ptr<p2p::OrchardPhoneHistoryDownload> PhoneHistoryDownload() const;
+    std::shared_ptr<p2p::WalletFundingDownload> WalletFundingBodies() const;
     // Borrow only the App's actual root guard; Stop joins all users before
     // App releases it. Never acquire a second operator-root lock for a cache.
     void SetPhoneHistoryRoot(const daemon::DatadirGuard* guard){phone_history_root_=guard;}
@@ -504,6 +505,7 @@ private:
     mutable std::mutex orchard_catalog_download_mutex_;
     std::shared_ptr<p2p::OrchardCatalogDownload> orchard_catalog_download_;
     std::shared_ptr<p2p::OrchardPhoneHistoryDownload> orchard_phone_history_;
+    std::shared_ptr<p2p::WalletFundingDownload> wallet_funding_bodies_;
     const daemon::DatadirGuard* phone_history_root_=nullptr;
     std::shared_ptr<p2p::OrchardCatalogDownload> CatalogDownload() const;
     void StopCatalogWorkers();

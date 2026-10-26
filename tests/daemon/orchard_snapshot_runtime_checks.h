@@ -636,7 +636,13 @@ void GenerateSdkActivationFixture(){
         row["funding_change_script"]=util::hex(f.full.f.funding_change_script);
         row["native_original_source"]=f.full.f.path.string();
         row["funding_derivation_root"]=f.full.f.funding_derivation_root.string();
-        row["funding_txid"]=f.full.f.blocks.at(101).vtx.at(1).GetTxid().AsUint256().GetHex();}
+        row["funding_txid"]=f.full.f.blocks.at(101).vtx.at(1).GetTxid().AsUint256().GetHex();
+        for(const auto height:{100u,101u}){
+            const auto path=f.root/("funding-body-"+std::to_string(height)+".bin");
+            const auto bytes=f.full.f.blocks.at(height).Serialize();std::ofstream stream(path,std::ios::binary);
+            stream.write(bytes.data(),bytes.size());stream.close();ASSERT_TRUE(stream);
+            row["funding_bodies"][std::to_string(height)]=path.string();
+        }}
     if(std::getenv("DINERO_SDK_LATE_HISTORY_FIXTURE")){
         // A genuinely NEW root with only a normal authenticated v6 floor.
         // No original parent DB, pre-floor bodies or canonical runtime events
