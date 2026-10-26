@@ -28,6 +28,8 @@ input_queue=bool(os.environ.get('DINERO_SDK_IMPORTED_SHIELD_QUEUE'))
 ready_only=bool(os.environ.get('DINERO_SDK_IMPORTED_SHIELD_READY'))
 wrong_input_height=bool(os.environ.get('DINERO_SDK_IMPORTED_SHIELD_WRONG_HEIGHT'))
 new_compact_reservation=bool(os.environ.get('DINERO_SDK_COMPACT_NEW_RESERVATION'))
+assumed_unshield=bool(os.environ.get('DINERO_SDK_ASSUMED_PRIVATE_UNSHIELD'))
+if assumed_unshield:assert assumed and os.environ.get('DINERO_SDK_COMPACT_PRIVATE_SEND')=='1' and not new_compact_reservation
 native_lock=threading.Lock()
 if wrong_input_height:
     assert assumed and input_queue and fixture['assumed_snapshot_version']==4
@@ -189,12 +191,12 @@ if assumed:config['assumeutxo_snapshot']=fixture['assumed_snapshot']
 def original_lifecycle():
     with sqlite3.connect('file:'+str(datadir/'blockchain/utxo')+'?mode=ro',uri=True) as db:
         return dict(db.execute("SELECT key,value FROM utxo_metadata WHERE substr(key,1,11)='assumeutxo_' OR key='wallet_snapshot_recovery_base_height' ORDER BY key"))
-def mixed_runtime_receipts():
+def mixed_runtime_receipts(name='wire-named-owner'):
     # Read-only distinction: real Orchard delivery may NOT manufacture either
     # ordinary or index baseline, including by adding a receipt column/schema.
     with sqlite3.connect('file:'+str(datadir/'blockchain/utxo')+'?mode=ro',uri=True) as db:
         indexed=db.execute("SELECT key,hex(value) FROM utxo_metadata WHERE key='runtime_delivery:v1:receipt'").fetchall()
-    paths=list(datadir.rglob('wallet_wire-named-owner.db'));assert len(paths)==1
+    paths=list(datadir.rglob('wallet_'+name+'.db'));assert len(paths)==1
     with sqlite3.connect('file:'+str(paths[0])+'?mode=ro',uri=True) as db:
         columns=[row[1] for row in db.execute('PRAGMA table_info(wallet_meta)')]
         ordinary=db.execute('SELECT hex(runtime_ordinary_receipt),runtime_ordinary_invalid FROM wallet_meta WHERE id=1').fetchall() if 'runtime_ordinary_receipt' in columns else None
@@ -599,7 +601,7 @@ try:
     balance=rpc('wallet.orchard.getbalance',dict(later,account=0));notes=rpc('wallet.orchard.listreceived',dict(later,account=0))
     assert balance['confirmed_una']==520000 and notes['total_count']==2,(balance,notes)
     assert any(n['amount_una']==20000 and n['height']==104 and bytes.fromhex(n['memo_hex'])==b'funded queued crossing'.ljust(512,b'\0') for n in notes['received']),notes
-    private_send=None
+    private_send=None;unshield=None;private_mixed=None
     if os.environ.get('DINERO_SDK_COMPACT_PRIVATE_SEND')=='1':
         # Distinct seed, normal named restore and explicit authenticated account0
         # recovery. The native producer never knows either wallet's spend plan.
@@ -617,6 +619,7 @@ try:
         assert rpc('wallet.unlock',['late-private-send-password',0])['success'] is True
         payer=bound('late-funded-owner');payer_balance=rpc('wallet.orchard.getbalance',dict(payer,account=0))
         assert payer_balance['confirmed_una']==520000,payer_balance
+        if assumed:private_mixed={name:mixed_runtime_receipts(name) for name in ('late-funded-owner','private-recipient')}
         private_id='81'+'00'*31
         payment=dict(payer,account=0,request_id=private_id,expected_revision=payer_balance['account_revision'],
             payments=[dict(address=receiver,amount_una=10000,memo_hex=b'compact private payment'.hex())],outputs=[],fee_una=100000)
@@ -675,6 +678,70 @@ try:
             payer_balance=payer_balance,recipient_balance=recipient_balance,received=received,recipient_recovery=recipient_recovery,
             payer_continuation=payer_continuation,recipient_continuation=recipient_continuation)
         print('PASS actual compact SDK queuespend/finishspend, native105 confirmation and distinct recovered recipient memo',flush=True)
+        if assumed_unshield:
+            # Normal owned receiver; no injected coins or manual proof spend.
+            destination=rpc('wallet.getnewaddress',['taproot'])['address']
+            decoded=rpc('wallet.validateaddress',[destination]);assert decoded['isvalid'] and decoded['ismine'],decoded
+            destination_script=decoded['scriptPubKey'];assert call('watch_script',script=destination_script)==0
+            assert rpc('wallet.open',['late-funded-owner'])['success'] is True
+            assert rpc('wallet.unlock',['late-private-send-password',0])['success'] is True
+            payer=bound('late-funded-owner');available=rpc('wallet.orchard.getbalance',dict(payer,account=0))
+            assert available['confirmed_una']==410000,available
+            unshield_id='a1'+'00'*31
+            withdrawal=dict(payer,account=0,request_id=unshield_id,expected_revision=available['account_revision'],
+                payments=[],outputs=[dict(address=destination,amount_una=10000)],fee_una=100000)
+            unshield_queued=rpc('wallet.orchard.queuespend',withdrawal)
+            assert unshield_queued['proof_queued'] and not unshield_queued['existing_request'],unshield_queued
+            pending_rows=wallet_rows('late-funded-owner');unshield_retry=rpc('wallet.orchard.queuespend',withdrawal)
+            assert unshield_retry['existing_request'] and not unshield_retry['proof_queued'] and wallet_rows('late-funded-owner')==pending_rows,unshield_retry
+            deadline=time.monotonic()+35
+            while time.monotonic()<deadline:
+                unshield_finished=call('rpc',method='wallet.orchard.finishspend',params=dict(payer,account=0,request_id=unshield_id))
+                (root/'unshield-progress.json').write_text(json.dumps(dict(queued=unshield_queued,finished=unshield_finished),indent=2)+'\n')
+                if unshield_finished.get('admitted'):break
+                assert unshield_finished.get('error_code')=='proof_not_ready' and unshield_finished.get('proof_state') in ('queued','running'),unshield_finished
+                time.sleep(.25)
+            assert unshield_finished.get('admitted'),unshield_finished
+            withdrawal_txid=unshield_finished['txid'];withdrawal_body=rpc('wallet.getrawtransaction',[withdrawal_txid])['hex']
+            ready_withdrawal=wallet_rows('late-funded-owner')
+            unshield_refinished=rpc('wallet.orchard.finishspend',dict(payer,account=0,request_id=unshield_id))
+            assert unshield_refinished['already_in_mempool'] and unshield_refinished['txid']==withdrawal_txid and wallet_rows('late-funded-owner')==ready_withdrawal,unshield_refinished
+            observation=call('sdk_activation_state')['observed_transaction']
+            assert observation['txid']==withdrawal_txid and observation['format']=='orchard',observation
+            assert any(o['amount']==10000 and o['script']==destination_script for o in observation['outputs']),observation
+            withdrawal_mined=native_call('mine_private',body=withdrawal_body)
+            assert withdrawal_txid in withdrawal_mined['transactions'],withdrawal_mined
+            assert withdrawal_mined['transparent_outputs']==[dict(index=0,amount_una=10000,script=destination_script,height=106)],withdrawal_mined
+            bodies[bytes.fromhex(withdrawal_mined['hash'])[::-1]]=bytes.fromhex(withdrawal_mined['body'])
+            headers.append(bytes.fromhex(withdrawal_mined['header']));deadline=time.monotonic()+60
+            while time.monotonic()<deadline:
+                assert not failures,failures
+                if rpc('getblockcount',[])==106:break
+                time.sleep(.25)
+            assert rpc('getblockcount',[])==106
+            for _ in range(8):
+                withdrawal_continuation=rpc('wallet.orchard.recoveraccount0',payer)
+                if withdrawal_continuation.get('complete'):break
+            assert withdrawal_continuation.get('complete') and withdrawal_continuation['already_recovered'] and withdrawal_continuation['generated'] is False,withdrawal_continuation
+            after_withdrawal=rpc('wallet.orchard.getbalance',dict(payer,account=0))
+            assert after_withdrawal['confirmed_una']==300000,after_withdrawal
+            withdrawal_ops=rpc('wallet.orchard.listoperations',dict(payer,account=0))
+            assert any(o['operation_id']==unshield_id and (o.get('chain_observation') or {}).get('outcome')=='confirmed' for o in withdrawal_ops['operations']),withdrawal_ops
+            assert rpc('wallet.open',['private-recipient'])['success'] is True
+            recipient_binding=bound('private-recipient')
+            for _ in range(8):
+                recipient_after=rpc('wallet.orchard.recoveraccount0',recipient_binding)
+                if recipient_after.get('complete'):break
+            assert recipient_after.get('complete') and recipient_after['already_recovered'] and not recipient_after['generated'],recipient_after
+            assert rpc('wallet.orchard.getbalance',dict(recipient_binding,account=0))['confirmed_una']==10000
+            assert original_lifecycle()==original,'private spend/unshield changed original assumed lifecycle'
+            assert mixed_runtime_receipts()==mixed_before
+            assert {name:mixed_runtime_receipts(name) for name in private_mixed}==private_mixed,'Orchard-only spend/unshield minted mixed baseline/schema'
+            unshield=dict(request=withdrawal,queued=unshield_queued,retry=unshield_retry,finished=unshield_finished,
+                refinished=unshield_refinished,observer=observation,mined=withdrawal_mined,continuation=withdrawal_continuation,
+                payer_balance=after_withdrawal,operations=withdrawal_ops,recipient_continuation=recipient_after,
+                scope='Actual original-assumed public queuespend/finishspend unshield, real proof/nullifiers, canonical FULL mining106 and SDK validation106, confirmed encrypted payer300000una and real native transparent output10000una. NOT a transparent wallet/index baseline or ordinary balance-readiness receipt, physical apps/devices or release qualification.')
+            print('PASS actual original-assumed compact unshield106, native transparent coin and payer confirmation',flush=True)
     (root/'receipt.json').write_text(json.dumps(dict(fixture=fixture,request=queued,transaction_id=txid,
         original_assumed_mobile=assumed,original_lifecycle=original if assumed else None,
         orchard_only_automatic_confirmation=assumed,mixed_receipts_unchanged=mixed_before,
@@ -682,6 +749,7 @@ try:
         pool_revalidated_and_proof_served=True,operations=operations,mined=mined,recovered=recovered,notes=notes,
         compact_exact_queue_retry=True,compact_ready_retry_with_current_proof=True,unproved_retries_refused=True,
         compact_private_send=private_send,
+        compact_unshield=unshield,private_mixed_receipts=private_mixed,
         scope=('Actual native C ABI automatic handoff from normal legacy snapshot import with original assumed SQL.' if assumed else 'Actual native C ABI automatic handoff from independently executed full parent.')+' Funded named recovered wallet and nonempty signed encrypted request/pool, real confirmation and later account0 recovery. NOT physical app/device, minimum OS, SDK slices or release qualification.'),indent=2)+'\n')
     assert call('stop')==0;success=True
     print('PASS funded named-wallet nonempty queued SDK handoff and real confirmation/recovery',flush=True)

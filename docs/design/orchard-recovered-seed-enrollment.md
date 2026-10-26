@@ -1318,3 +1318,19 @@ bounded volatile path set. If more are required it reports work capacity, not
 insufficient balance or endlessly evicting/re-requesting the prefix. It does not
 change the original full-source/exact-input bounds or claim large/many-input
 wallet qualification.
+
+## Original-import private send and unshield native gate
+
+`NodeCoreAssumedPrivateSendUnshield` extends the real imported-source funded
+crossing with a later restored account0 payer, a DIFFERENT-seed named recipient,
+actual public queuespend/finishspend proofs and canonical private confirmation105.
+It then requires an actual transparent withdrawal through those same public
+queue/finish APIs, normal owned receiver/address issuance, native FULL validation
+and mining106, SDK full-body validation106 and authenticated account confirmation.
+The FULL source reads back the actual created transparent coin; it never writes
+wallet inputs, Ready bytes, fake events, caller balances or proof capabilities.
+Existing explicit certified-account continuation is used, not a new mixed-wallet
+readiness shortcut. Original ten assumed SQL values and missing mixed baseline/
+receipt schema must remain unchanged for the original wallet, payer and recipient.
+This is a required bounded HOST test, not a source-only PASS or physical app/device,
+ordinary/index balance readiness, current SDK slices or release qualification.

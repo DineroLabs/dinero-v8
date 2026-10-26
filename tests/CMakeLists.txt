@@ -9514,6 +9514,13 @@ if(TARGET nodecore_ffi)
       python3 ${CMAKE_SOURCE_DIR}/tests/integration/test_nodecore_funded_crossing.py)
     set_tests_properties(NodeCoreCompactPrivateSend PROPERTIES TIMEOUT 360 RUN_SERIAL TRUE
       LABELS "integration;nodecore;orchard;privatepayment;wallet")
+    add_test(NAME NodeCoreAssumedPrivateSendUnshield COMMAND ${CMAKE_COMMAND} -E env
+      NODECORE_DRIVER=$<TARGET_FILE:nodecore_activation_driver>
+      ACTIVATION_FIXTURE_GENERATOR=$<TARGET_FILE:test_assumeutxo_replay>
+      DINERO_SDK_ASSUMED_MOBILE_FIXTURE=1 DINERO_SDK_COMPACT_PRIVATE_SEND=1 DINERO_SDK_ASSUMED_PRIVATE_UNSHIELD=1
+      python3 ${CMAKE_SOURCE_DIR}/tests/integration/test_nodecore_funded_crossing.py)
+    set_tests_properties(NodeCoreAssumedPrivateSendUnshield PROPERTIES TIMEOUT 420 RUN_SERIAL TRUE
+      LABELS "integration;nodecore;orchard;assumedmobile;wallet;private;unshield")
     add_test(NAME NodeCoreLatePhoneHistory COMMAND ${CMAKE_COMMAND} -E env
       NODECORE_DRIVER=$<TARGET_FILE:nodecore_activation_driver>
       ACTIVATION_FIXTURE_GENERATOR=$<TARGET_FILE:test_assumeutxo_replay>

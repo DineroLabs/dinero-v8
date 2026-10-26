@@ -729,15 +729,23 @@ void GenerateSdkActivationFixture(){
                 std::vector<uint8_t> wire;ASSERT_TRUE(util::unhex(request["body"].asString(),wire));
                 const auto body=DecodeRelayTransaction(wire,RelayTransactionReadMode::AvailableFamilies);
                 ASSERT_TRUE(body.IsOrchard());ASSERT_TRUE(body.Inputs().empty());
+                const auto before=source.f.service->GetActiveTip()->height;
                 ASSERT_TRUE(source.f.ingress->SubmitBody(body,TxOrigin::P2P).accepted());
                 BlockAssembler assembler(&source.f.db);WireOrchardAssembler(assembler,source.f);
                 const auto mined=SolveCatalogTemplate(assembler.CreateOrchardBlock(OrchardMiningPayout));ASSERT_TRUE(mined);
-                ASSERT_EQ(mined->Height(),105u);ASSERT_GT(mined->Transactions().size(),1u);
+                ASSERT_EQ(mined->Height(),before+1);ASSERT_GT(mined->Transactions().size(),1u);
                 ASSERT_TRUE(source.Submit(mined->WireBytes()).connected);
                 result["body"]=util::hex(mined->WireBytes());result["hash"]=mined->Header().GetHash().GetHex();
                 const auto header=mined->Header().SerializeForHash();result["header"]=util::hex({header.begin(),header.end()});
                 result["transactions"]=Json::Value(Json::arrayValue);
                 for(const auto& tx:mined->Transactions())result["transactions"].append(tx.GetTxid().AsUint256().GetHex());
+                result["transparent_outputs"]=Json::Value(Json::arrayValue);
+                for(size_t n=0;n<body.Orchard().Outputs().size();++n){
+                    const auto coin=source.f.db.getCoin(body.GetTxid().AsUint256(),uint32_t(n));ASSERT_TRUE(coin.ok());
+                    ASSERT_EQ(coin->height,int(mined->Height()));ASSERT_FALSE(coin->coinbase);ASSERT_FALSE(coin->is_confidential);ASSERT_TRUE(coin->commitment.empty());
+                    Json::Value output;output["index"]=Json::UInt(n);output["amount_una"]=Json::UInt64(coin->amount);
+                    output["script"]=coin->script_pubkey;output["height"]=coin->height;result["transparent_outputs"].append(output);
+                }
             }else{ASSERT_EQ(op,"stop");break;}
             reply<<Json::writeString(compact_json,result)<<std::endl;ASSERT_TRUE(reply);
         }
