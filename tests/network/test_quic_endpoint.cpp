@@ -194,3 +194,51 @@ TEST(QuicEndpoint, AcceptFnRefusalCreatesNoSession) {
     client.Stop();
     server.ep.Stop();
 }
+
+// One forged Initial claiming a real peer's address must not park on that
+// address and swallow the peer's real handshake.
+TEST(QuicEndpoint, ForgedInitialFromVictimAddressDoesNotBlockRealClient) {
+    Server server;
+    ASSERT_TRUE(server.Start());
+    QuicEndpoint client;
+    ASSERT_TRUE(client.Start(0, Opts(), [](const UdpAddr&) { return false; },
+                             [](std::shared_ptr<QuicSession>, const UdpAddr&) {}));
+    std::mt19937 rng(9);
+    server.ep.TestInjectDatagram(Loopback(client.Port()), FakeInitial(rng));  // "from" the client
+    auto session = client.Connect(Loopback(server.ep.Port()), Opts());
+    EXPECT_TRUE(Ready(session, 5)) << "a forged Initial blocked the real client's handshake";
+    client.Stop();
+    server.ep.Stop();
+}
+
+// Unestablished inbound sessions are capped (forged Initials from many source
+// addresses cannot pin unbounded sessions/threads) and expire, after which an
+// honest client still gets in.
+TEST(QuicEndpoint, PendingInboundSessionsAreCappedAndExpire) {
+    Server server;
+    QuicEndpoint::Limits limits;
+    limits.initials_per_sec_global = 100000;  // isolate the pending cap from the rate limits
+    limits.initials_per_sec_per_ip = 100000;
+    limits.max_pending_inbound = 16;
+    ASSERT_TRUE(server.ep.Start(0, Opts(),
+        [&](const UdpAddr&) { return true; },
+        [&](std::shared_ptr<QuicSession> s, const UdpAddr&) {
+            std::lock_guard<std::mutex> l(server.mu);
+            server.inbound.push_back(std::move(s));
+            server.inbound_count.fetch_add(1);
+        }, limits));
+    std::mt19937 rng(11);
+    for (int i = 0; i < 100; ++i) {
+        const uint8_t ip[4] = {10, 99, static_cast<uint8_t>(i / 250), static_cast<uint8_t>(1 + i % 250)};
+        server.ep.TestInjectDatagram(UdpAddr::FromIPv4(ip, 40000), FakeInitial(rng));
+    }
+    EXPECT_LE(server.inbound_count.load(), 16) << "pending inbound sessions were not capped";
+
+    QuicEndpoint client;
+    ASSERT_TRUE(client.Start(0, Opts(), [](const UdpAddr&) { return false; },
+                             [](std::shared_ptr<QuicSession>, const UdpAddr&) {}));
+    auto session = client.Connect(Loopback(server.ep.Port()), Opts());
+    EXPECT_TRUE(Ready(session, 20)) << "honest client locked out after pending sessions expired";
+    client.Stop();
+    server.ep.Stop();
+}

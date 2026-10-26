@@ -33,6 +33,9 @@ public:
     struct Limits {
         uint32_t initials_per_sec_global = 20;
         uint32_t initials_per_sec_per_ip = 4;
+        // Inbound sessions that have not finished their handshake. Forged
+        // Initials can only ever hold this many; each expires after 10 s.
+        size_t max_pending_inbound = 32;
     };
     struct Counters {
         uint64_t datagrams_routed{0};      // delivered to an existing session
@@ -69,6 +72,10 @@ public:
     // Tests: simulate this host vanishing -- every outgoing datagram is
     // dropped from now on, nothing is closed.
     void SilenceForTest();
+    // Tests: deliver `data` as if it arrived from `src` (source spoofing).
+    void TestInjectDatagram(const UdpAddr& src, std::vector<uint8_t> data) {
+        OnDatagram(src, std::move(data));
+    }
 
     bool Listening() const;
     uint16_t Port() const;
@@ -81,7 +88,13 @@ public:
 private:
     struct Shared;   // socket + liveness, shared with every session writer
     struct Bucket { double tokens; std::chrono::steady_clock::time_point last; };
-    struct Entry { std::shared_ptr<QuicSession> session; std::chrono::steady_clock::time_point created; };
+    struct Entry {
+        std::shared_ptr<QuicSession> session;
+        std::chrono::steady_clock::time_point created;
+        bool server{false};                 // created from an inbound Initial
+        std::vector<uint8_t> client_scid;   // that Initial's source CID (the client's
+                                            // own CID: constant across its Initials)
+    };
 
     void OnDatagram(const UdpAddr& src, std::vector<uint8_t> data);
     bool TakeToken(Bucket& b, uint32_t per_sec, std::chrono::steady_clock::time_point now);

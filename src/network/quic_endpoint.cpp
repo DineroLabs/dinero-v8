@@ -21,6 +21,22 @@ constexpr size_t kMaxTrackedIps = 4096;
 // A session that never became active (junk Initial, refused handshake) stops
 // receiving routing after this long, so its remote can try again.
 constexpr auto kDeadSessionGrace = std::chrono::seconds(10);
+// An inbound session that has not completed its handshake by then is dropped,
+// freeing its pending slot (forged Initials never complete one).
+constexpr auto kPendingExpiry = std::chrono::seconds(10);
+
+// Source connection ID of a client Initial (LooksLikeClientInitial true). The
+// client keeps it for the whole handshake, unlike the DCID, which switches to
+// the server's chosen CID after the server's first Initial.
+std::vector<uint8_t> InitialScid(const uint8_t* data, size_t len) {
+    const size_t dcid_len = data[5];
+    if (dcid_len > 20 || 7 + dcid_len > len) return {};
+    const size_t scid_len = data[6 + dcid_len];
+    const size_t at = 7 + dcid_len;
+    if (scid_len > 20 || at + scid_len > len) return {};
+    return std::vector<uint8_t>(data + at, data + at + scid_len);
+}
+
 // Stop(): time for sessions to put their CONNECTION_CLOSE on the wire.
 constexpr auto kCloseFlushGrace = std::chrono::milliseconds(100);
 
@@ -131,10 +147,20 @@ void QuicEndpoint::OnDatagram(const UdpAddr& src, std::vector<uint8_t> data) {
         std::lock_guard<std::mutex> lock(mu_);
         auto it = sessions_.find(key);
         if (it != sessions_.end()) {
+            const bool initial = LooksLikeClientInitial(data.data(), data.size());
             const bool dead = !it->second.session->active() &&
                               now - it->second.created > kDeadSessionGrace;
-            if (dead && LooksLikeClientInitial(data.data(), data.size())) {
-                sessions_.erase(it);  // the remote is re-dialing a dead session
+            // An inbound session still handshaking that sees an Initial from a
+            // different client connection (other SCID): a forged Initial may be
+            // sitting on this address, or the remote restarted its dial. Let
+            // the new one through the normal accept path instead of feeding it
+            // to a session that will discard it.
+            const bool superseded = initial && it->second.server &&
+                                    !it->second.session->handshake_ready() &&
+                                    InitialScid(data.data(), data.size()) != it->second.client_scid;
+            if (initial && (dead || superseded)) {
+                it->second.session->Close();
+                sessions_.erase(it);
             } else {
                 ++counters_.datagrams_routed;
                 session = it->second.session;
@@ -142,6 +168,22 @@ void QuicEndpoint::OnDatagram(const UdpAddr& src, std::vector<uint8_t> data) {
         }
         if (!session) {
             if (!LooksLikeClientInitial(data.data(), data.size())) {
+                ++counters_.datagrams_dropped;
+                return;
+            }
+            // Cap unestablished inbound sessions; expire stale ones first.
+            size_t pending = 0;
+            for (auto p = sessions_.begin(); p != sessions_.end();) {
+                const bool is_pending = p->second.server && !p->second.session->handshake_ready();
+                if (is_pending && now - p->second.created > kPendingExpiry) {
+                    p->second.session->Close();
+                    p = sessions_.erase(p);
+                    continue;
+                }
+                if (is_pending) ++pending;
+                ++p;
+            }
+            if (pending >= limits_.max_pending_inbound) {
                 ++counters_.datagrams_dropped;
                 return;
             }
@@ -159,7 +201,8 @@ void QuicEndpoint::OnDatagram(const UdpAddr& src, std::vector<uint8_t> data) {
                 return;
             }
             session = MakeSession(src);
-            sessions_[key] = {session, now};
+            sessions_[key] = {session, now, /*server=*/true,
+                              InitialScid(data.data(), data.size())};
             ++counters_.sessions_accepted;
             created = true;
         }
