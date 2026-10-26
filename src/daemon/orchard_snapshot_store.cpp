@@ -414,22 +414,17 @@ std::unique_ptr<const OrchardSnapshotStore::ActivationSource> OrchardSnapshotSto
     const auto forest_root=forest.getCommitment();
     Require(UtreexoStump::fromForest(forest).serialize()==parent.stump&&
         forest_root.size()==32&&std::equal(forest_root.begin(),forest_root.end(),header.utreexo_root.begin()));
-    OrchardSnapshotCoins all,spendable;const auto genesis=CompiledGenesis().GetTxid();
+    OrchardSnapshotCoins all;const auto genesis=CompiledGenesis().GetTxid();
     Need(source.forEachPreBaseCoin([&](const uint256& id,uint32_t output,const Coin& stored){
         check();Require(stored.height>=0&&uint32_t(stored.height)<=parent.height&&stored.amount<=orchard::kMaxMoneyUna);
         UTXOEntry coin;coin.value=AmountUna::Una(stored.amount);Require(util::unhex(stored.script_pubkey,coin.scriptPubKey));
         coin.height=uint32_t(stored.height);coin.isCoinbase=stored.coinbase;
         coin.is_confidential=stored.is_confidential;coin.commitment=stored.commitment;
         Require(UtxoRecordIsSnapshotSafe(coin)&&coin.scriptPubKey.size()<=10000);
-        const OutPoint point(TxId(id),output);Require(all.emplace(point,coin).second);
-        // Legacy import retains provably unspendable OP_RETURN records. They
-        // stay byte-identical in the frozen original/candidate CF but grant no
-        // live coin authority. Genesis records use the compiled exact check.
-        if(point.txid==genesis||coin.scriptPubKey.empty()||coin.scriptPubKey.front()!=0x6a)
-            Require(spendable.emplace(point,std::move(coin)).second);
+        const OutPoint point(TxId(id),output);Require(all.emplace(point,std::move(coin)).second);
         return true;
     }));
-    VerifyOrchardSnapshotParentCoins(proof,checkpoint,spendable);check();
+    VerifyOrchardSnapshotParentCoins(proof,checkpoint,all);check();
     // The canonical old engine is still GENESIS, not a partially applied
     // imported coin set. Reject every extra current coin, even if parseable.
     for(const auto& [point,coin]:ReadCoins(source)){

@@ -1185,19 +1185,21 @@ TEST(OrchardActivationBaseline, CompleteParentCoinsRejectMissingValueMetadataAnd
         coin.height=uint32_t(stored.height);coin.isCoinbase=stored.coinbase;
         coin.is_confidential=stored.is_confidential;coin.commitment=stored.commitment;
         const OutPoint point(TxId(id),n);
-        if(point.txid==genesis||coin.scriptPubKey.empty()||coin.scriptPubKey.front()!=0x6a)
-            OrchardAdmissionFixture::Require(coins.emplace(point,std::move(coin)).second);
+        OrchardAdmissionFixture::Require(coins.emplace(point,std::move(coin)).second);
         return true;
     }),Status::Ok);
     ASSERT_FALSE(coins.empty());
     ASSERT_NO_THROW(consensus::VerifyOrchardSnapshotParentCoins(*f.proof,forest,coins));
     EXPECT_ANY_THROW(consensus::VerifyOrchardSnapshotParentCoins(*f.proof,forest,{}));
     for(unsigned field=0;field<4;++field){
-        auto changed=coins;auto& coin=changed.begin()->second;
+        auto changed=coins;
+        const auto selected=std::find_if(changed.begin(),changed.end(),[&](const auto& row){
+            return row.first.txid!=genesis&&(row.second.scriptPubKey.empty()||row.second.scriptPubKey.front()!=0x6a);
+        });ASSERT_NE(selected,changed.end());auto& coin=selected->second;
         if(field==0)coin.value=AmountUna::Una(coin.value.GetUna()+1);
         if(field==1)coin.isCoinbase=!coin.isCoinbase;
         if(field==2)coin.height=f.proof->parent_catalog.height+1;
-        if(field==3)changed.erase(changed.begin());
+        if(field==3)changed.erase(selected);
         EXPECT_ANY_THROW(consensus::VerifyOrchardSnapshotParentCoins(*f.proof,forest,changed))<<field;
     }
     auto broken=forest;broken.push_back(0);

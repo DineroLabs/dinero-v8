@@ -141,7 +141,8 @@ SnapshotMetadata ReadOrchardSnapshotMetadata(std::istream& stream,uint64_t maxim
     Input input(stream,maximum);return Metadata(input);
 }
 namespace {
-void VerifyCatalogCoins(const OrchardSnapshotSection& s,const OrchardSnapshotCoins& coins,uint32_t height) {
+void VerifyCatalogCoins(const OrchardSnapshotSection& s,const OrchardSnapshotCoins& coins,uint32_t height,
+    bool imported_parent=false) {
     if(s.profile==OrchardSnapshotProfile::Compact){Require(coins.empty());return;}
     const CoinForestAudit forest(s);
     // These fields are not in Utreexo leaves. A transparent full snapshot must
@@ -156,7 +157,7 @@ void VerifyCatalogCoins(const OrchardSnapshotSection& s,const OrchardSnapshotCoi
     // A bit per forest position, not a separately allocated ordered-set node
     // per coin. Duplicate live-leaf claims still refuse exactly as before.
     std::vector<uint8_t> positions(size_t((forest.Leaves()+7)/8),0);
-    uint64_t positions_count=0,amount=0,legacy_count=0;
+    uint64_t positions_count=0,amount=0,legacy_count=0,unspendable_count=0;
     for(const auto& [point,coin]:coins) {
         Require(UtxoRecordIsSnapshotSafe(coin)&&coin.height<=height&&coin.value.GetUna()<=MAX_MONEY&&
             coin.scriptPubKey.size()<=MaximumScript&&coin.value.GetUna()<=MAX_MONEY-amount);
@@ -170,6 +171,13 @@ void VerifyCatalogCoins(const OrchardSnapshotSection& s,const OrchardSnapshotCoi
             Require(point.vout<genesis.vout.size()&&coin.height==0&&coin.isCoinbase&&
                 coin.value==genesis.vout[point.vout].value&&coin.scriptPubKey==genesis.vout[point.vout].scriptPubKey);
             ++genesis_count;continue;
+        }
+        // Original legacy imports retain these records, and old-height
+        // catalog metadata still covers them below. No forest membership or
+        // live coin authority is inferred for a provably unspendable output.
+        // Ordinary full snapshot verification keeps its existing strict rule.
+        if(imported_parent&&!coin.scriptPubKey.empty()&&coin.scriptPubKey.front()==0x6a){
+            ++unspendable_count;continue;
         }
         const auto position=forest.Find(HashUTXOForCreationHeight(point.txid.AsUint256(),point.vout,
             coin.value.GetUna(),coin.scriptPubKey,coin.height,coin.isCoinbase));
@@ -190,7 +198,7 @@ void VerifyCatalogCoins(const OrchardSnapshotSection& s,const OrchardSnapshotCoi
             coin.isCoinbase==(uint8_t(node.value[40])!=0));++matched;return true;
     });
     Require(legacy_count==matched&&matched==s.base_catalog.legacy_count&&positions_count==forest.Active()&&
-        coins.size()==positions_count+genesis_count);
+        coins.size()==positions_count+genesis_count+unspendable_count);
     storage::catalog::Tree transactions(storage::catalog::Kind::Transactions,read);
     if(transactions.Find(s.parent_catalog.transactions,storage::catalog::TransactionKey(genesis_id)))
         Require(genesis_count==genesis.vout.size());
@@ -206,7 +214,7 @@ void VerifyOrchardSnapshotParentCoins(const OrchardSnapshotSection& proof,
     // Orchard state, runtime event or first authorization is constructed.
     auto view=proof;view.profile=OrchardSnapshotProfile::Full;
     view.base_catalog=proof.parent_catalog;view.accumulator=forest;
-    VerifyCatalogCoins(view,coins,proof.parent_catalog.height);
+    VerifyCatalogCoins(view,coins,proof.parent_catalog.height,true);
 }
 OrchardSnapshotFile ReadOrchardSnapshotFile(std::istream& stream,uint64_t maximum,OrchardSnapshotProfile profile,
     const std::filesystem::path& workspace) {
