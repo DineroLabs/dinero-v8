@@ -16,6 +16,7 @@
 #include "dinero/network/network_invariants.h"
 #include "consensus/header_chain.h"  // HeaderChainSelector value snapshots
 #include "network/local_interfaces.h"  // Self-loop filter (shared with P2PManager)
+#include "network/quic_endpoint.h"
 #include "network/port_mapper.h"
 #include "network/stun_client.h"       // NAT traversal Phase C1: public-IP discovery
 #include "network/quic_transport.h"    // Stage B: log QUIC relay-transport readiness at startup
@@ -513,6 +514,12 @@ P2PService::NetworkStatus P2PService::GetNetworkStatus() const {
         status.stun_discovered_address = stun_discovered_address_;
         status.stun_server_used = stun_server_used_;
         status.stun_message = stun_message_;
+    }
+    if (p2p_mgr_ && p2p_mgr_->quic_endpoint()) {
+        const auto* ep = p2p_mgr_->quic_endpoint();
+        status.quic_listening = ep->Listening();
+        status.quic_listen_port = ep->Port();
+        status.quic_sessions = ep->SessionCount();
     }
     return status;
 }
@@ -2287,6 +2294,7 @@ bool P2PService::Start() {
                 if (IsRelayRoleEnabled()) {
                     flags |= ServiceFlags::NODE_RELAY;
                 }
+                flags |= p2p_mgr_->local_quic_service_bits();
                 return flags;
             });
             bool pruned = prune_svc && prune_svc->isEnabled();
@@ -2313,6 +2321,18 @@ bool P2PService::Start() {
         }
 
         // Start P2P networking (spawns threads)
+        // Direct QUIC peers on UDP at the P2P port (p2p.quic, default on) and
+        // the peers to keep connected over it (p2p.quic_connect, ip:port list).
+        p2p_mgr_->set_quic_enabled(config_->GetBool("p2p.quic", true));
+        {
+            std::vector<std::string> quic_targets;
+            std::istringstream ss(config_->GetString("p2p.quic_connect", ""));
+            std::string node;
+            while (std::getline(ss, node, ',')) {
+                if (!node.empty()) quic_targets.push_back(node);
+            }
+            p2p_mgr_->set_quic_connect_targets(std::move(quic_targets));
+        }
         if (!p2p_mgr_->start()) {
             logger_interface_->error("[P2PService] Failed to start P2P manager");
             return false;

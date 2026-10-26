@@ -26,6 +26,7 @@ inline din::Json BuildPeerInfoJson(const ::PeerInfo& peer_info) {
     const uint32_t observed_sync_height = std::max(peer_info.synced_headers, peer_info.synced_blocks);
 
     peer["addr"] = peer_info.address + ":" + std::to_string(peer_info.port);
+    peer["transport"] = peer_info.transport_name();
     peer["inbound"] = !peer_info.is_outbound;
     peer["version"] = static_cast<int>(peer_info.protocol_version);
     peer["subver"] = peer_info.user_agent;

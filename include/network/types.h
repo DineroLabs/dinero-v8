@@ -141,6 +141,9 @@ namespace ServiceFlags {
     // Claims support for production v6/DZE1 and the height-aware 60-second
     // ASERT/reward rules. Negotiation is not binary attestation or consensus.
     constexpr uint64_t NODE_COMPACT_TIMING_V1 = 1ULL << 29;
+    // Accepts direct QUIC peer sessions on UDP at its P2P port (ALPN
+    // "dinero-p2p/1"). Advertised only while the endpoint is actually bound.
+    constexpr uint64_t NODE_P2P_QUIC = 1ULL << 30;
 } // namespace ServiceFlags
 
 } // namespace dinero

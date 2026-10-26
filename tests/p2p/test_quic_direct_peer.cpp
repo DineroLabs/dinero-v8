@@ -264,3 +264,92 @@ TEST(QuicPeer, SilentRemoteIsReapedAndSlotFreed) {
     EXPECT_TRUE(!p || !p->is_connected) << "vanished QUIC peer still connected after 90 s; " << state;
     EXPECT_EQ(b.mgr->quic_endpoint()->SessionCount(), 0u) << "endpoint still routes to the dead session";
 }
+
+// ---- Task 5: transport visibility, service bit, config ----
+
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <unistd.h>
+
+namespace {
+uint16_t FreeTcpUdpPort() {
+    for (int attempt = 0; attempt < 20; ++attempt) {
+        int t = ::socket(AF_INET, SOCK_STREAM, 0);
+        sockaddr_in a{}; a.sin_family = AF_INET; a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        ::bind(t, reinterpret_cast<sockaddr*>(&a), sizeof(a));
+        socklen_t len = sizeof(a); ::getsockname(t, reinterpret_cast<sockaddr*>(&a), &len);
+        const uint16_t port = ntohs(a.sin_port);
+        ::close(t);
+        int u = ::socket(AF_INET, SOCK_DGRAM, 0);
+        sockaddr_in b{}; b.sin_family = AF_INET; b.sin_port = htons(port); b.sin_addr.s_addr = htonl(INADDR_ANY);
+        const bool udp_free = ::bind(u, reinterpret_cast<sockaddr*>(&b), sizeof(b)) == 0;
+        ::close(u);
+        if (udp_free) return port;
+    }
+    return 0;
+}
+bool UdpPortFree(uint16_t port) {
+    int u = ::socket(AF_INET, SOCK_DGRAM, 0);
+    sockaddr_in b{}; b.sin_family = AF_INET; b.sin_port = htons(port); b.sin_addr.s_addr = htonl(INADDR_ANY);
+    const bool ok = ::bind(u, reinterpret_cast<sockaddr*>(&b), sizeof(b)) == 0;
+    ::close(u);
+    return ok;
+}
+}  // namespace
+
+TEST(PeerJson, TransportFieldReflectsPeerKind) {
+    PeerInfo tcp; tcp.socket_fd = 5;
+    EXPECT_STREQ(tcp.transport_name(), "tcp");
+    PeerInfo relay; relay.via_relay = PeerInfo::ViaRelayInfo{1, "1.2.3.4:20999", 0};
+    EXPECT_STREQ(relay.transport_name(), "relay");
+    PeerInfo quic; quic.quic_direct = true;
+    EXPECT_STREQ(quic.transport_name(), "quic");
+}
+
+TEST(QuicPeer, ConnectedPeersSnapshotKeepsQuicTransport) {
+    Node a("snap-a"), b("snap-b");
+    ASSERT_TRUE(a.mgr->start_quic_endpoint(0));
+    ASSERT_TRUE(b.mgr->start_quic_endpoint(0));
+    const uint16_t bp = b.mgr->quic_endpoint()->Port();
+    ASSERT_TRUE(a.mgr->connect_to_peer_quic("127.0.0.1", bp));
+    ASSERT_TRUE(WaitConnected(*a.mgr, LoopKey(bp)));
+    bool found = false;
+    for (const auto& p : a.mgr->get_connected_peers()) {
+        if (p.to_string() == LoopKey(bp)) { found = true; EXPECT_STREQ(p.transport_name(), "quic"); }
+    }
+    EXPECT_TRUE(found);
+}
+
+TEST(QuicPeerConfig, DisabledEndpointDoesNotAdvertiseOrBind) {
+    const uint16_t port = FreeTcpUdpPort();
+    ASSERT_NE(port, 0);
+    P2PManager mgr(port);
+    mgr.set_quic_enabled(false);
+    mgr.set_quic_connect_targets({"127.0.0.1:1"});
+    ASSERT_TRUE(mgr.start());
+    EXPECT_EQ(mgr.quic_endpoint(), nullptr);
+    EXPECT_EQ(mgr.local_quic_service_bits(), 0u);
+    EXPECT_TRUE(UdpPortFree(port)) << "UDP " << port << " bound although p2p.quic=0";
+    mgr.dial_quic_connect_targets();  // must warn and do nothing, not crash
+    EXPECT_EQ(mgr.quic_endpoint(), nullptr);
+    mgr.stop();
+}
+
+TEST(QuicPeerConfig, EnabledEndpointAdvertisesServiceBit) {
+    Node a("bit-a");
+    EXPECT_EQ(a.mgr->local_quic_service_bits(), 0u);
+    ASSERT_TRUE(a.mgr->start_quic_endpoint(0));
+    EXPECT_EQ(a.mgr->local_quic_service_bits(), dinero::ServiceFlags::NODE_P2P_QUIC);
+}
+
+TEST(QuicPeerConfig, QuicConnectTargetsAreDialed) {
+    Node a("tgt-a"), b("tgt-b");
+    ASSERT_TRUE(a.mgr->start_quic_endpoint(0));
+    ASSERT_TRUE(b.mgr->start_quic_endpoint(0));
+    const uint16_t bp = b.mgr->quic_endpoint()->Port();
+    a.mgr->set_quic_connect_targets({LoopKey(bp)});
+    a.mgr->dial_quic_connect_targets();
+    EXPECT_TRUE(WaitConnected(*a.mgr, LoopKey(bp)));
+    a.mgr->dial_quic_connect_targets();  // already connected: no second session
+    EXPECT_EQ(a.mgr->quic_endpoint()->SessionCount(), 1u);
+}

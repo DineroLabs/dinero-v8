@@ -5016,6 +5016,9 @@ void P2PManager::connection_manager_loop() {
             continue;
         }
 
+        // Configured direct-QUIC peers (p2p.quic_connect) stay connected.
+        dial_quic_connect_targets();
+
         // Try to connect to bootstrap/discovered peers. Seed nodes are the
         // bootstrap surface; addrman is the Bitcoin-style rolling address book
         // fed by addr/getaddr relay.
@@ -6247,6 +6250,8 @@ std::vector<PeerInfo> P2PManager::get_connected_peers() const {
             info.last_seen_unix = pair.second->last_seen_unix;
             info.avg_latency_ms = pair.second->avg_latency_ms;
             info.via_relay = pair.second->via_relay;
+            info.quic_direct = pair.second->quic_direct;
+            info.quic_remote = pair.second->quic_remote;
             // lifetime_state remains at default ALLOCATED (internal detail, not exposed in API)
             seed_peer_sync_telemetry(&info, local_height);
 
@@ -7057,6 +7062,43 @@ bool P2PManager::start_quic_endpoint(uint16_t port) {
     std::cout << "[P2P] quic: direct QUIC peers listening on UDP " << quic_endpoint_->Port()
               << std::endl;
     return true;
+}
+
+uint64_t P2PManager::local_quic_service_bits() const {
+    return (quic_endpoint_ && quic_endpoint_->Listening()) ? ServiceFlags::NODE_P2P_QUIC : 0;
+}
+
+void P2PManager::set_quic_connect_targets(std::vector<std::string> targets) {
+    std::lock_guard<std::mutex> lock(peers_mutex_);
+    quic_connect_targets_ = std::move(targets);
+}
+
+void P2PManager::dial_quic_connect_targets() {
+    std::vector<std::string> targets;
+    {
+        std::lock_guard<std::mutex> lock(peers_mutex_);
+        targets = quic_connect_targets_;
+    }
+    if (targets.empty()) return;
+    if (!quic_endpoint_ || !quic_endpoint_->Listening()) {
+        if (!quic_connect_warned_.exchange(true)) {
+            std::cout << "[P2P] quic: p2p.quic_connect has " << targets.size()
+                      << " target(s) but direct QUIC is disabled or not listening; skipping"
+                      << std::endl;
+        }
+        return;
+    }
+    for (const auto& target : targets) {
+        std::string host;
+        uint16_t port = 0;
+        bool has_port = false;
+        if (!SplitHostPort(target, &host, &port, &has_port) || !has_port || port == 0) {
+            std::cout << "[P2P] quic: ignoring malformed p2p.quic_connect entry '" << target
+                      << "'" << std::endl;
+            continue;
+        }
+        connect_to_peer_quic(host, port);  // no-op when already connected/connecting
+    }
 }
 
 bool P2PManager::connect_to_peer_quic(const std::string& ip, uint16_t port) {

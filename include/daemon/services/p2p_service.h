@@ -150,6 +150,10 @@ public:
         std::string stun_discovered_address;
         std::string stun_server_used;
         std::string stun_message;
+        // Direct QUIC peers on UDP at the P2P port.
+        bool quic_listening{false};
+        uint16_t quic_listen_port{0};
+        size_t quic_sessions{0};
         bool local_relay{false};
         bool relay_active{false};
         std::string relay_mode{"auto"};

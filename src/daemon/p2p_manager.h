@@ -162,6 +162,10 @@ struct PeerInfo {
     bool uses_quic_stream() const {
         return quic_direct || (via_relay && via_relay->encrypted_quic);
     }
+    // getpeerinfo "transport".
+    const char* transport_name() const {
+        return quic_direct ? "quic" : (via_relay ? "relay" : "tcp");
+    }
 
     // Ring 3 Phase 4c: Move constructor (atomic is not movable, must load/store)
     PeerInfo(PeerInfo&& other) noexcept
@@ -742,6 +746,12 @@ public:
     // Dial ip:port over QUIC. False if not listening, banned, self, or a peer
     // (either transport) already exists at that address.
     bool connect_to_peer_quic(const std::string& ip, uint16_t port);
+    // NODE_P2P_QUIC while the endpoint is listening, else 0.
+    uint64_t local_quic_service_bits() const;
+    // p2p.quic_connect: "ip:port" peers to keep connected over QUIC. Dialed by
+    // the connection loop (dial_quic_connect_targets) whenever not connected.
+    void set_quic_connect_targets(std::vector<std::string> targets);
+    void dial_quic_connect_targets();
 
     // Direct QUIC: wrap an already-started session (from QuicEndpoint) in a
     // PeerInfo keyed "ip:port", insert it and start its handler thread.
@@ -976,6 +986,8 @@ private:
     std::unique_ptr<dinero::network::QuicEndpoint> quic_endpoint_;
     dinero::network::QuicSessionOptions quic_p2p_options_;
     bool quic_enabled_{true};
+    std::vector<std::string> quic_connect_targets_;
+    std::atomic<bool> quic_connect_warned_{false};
     size_t max_inbound_ = MAX_INBOUND_CONNECTIONS;
     size_t max_inbound_per_ip_ = MAX_INBOUND_PER_IP;
 
