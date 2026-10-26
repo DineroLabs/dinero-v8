@@ -1361,6 +1361,19 @@ active account confirmation535000una and unchanged original SQL/missing mixed
 receipts. This bounded native test is not app/device, mainnet/v5, many-input,
 other-lifecycle or release qualification.
 
+`NodeCoreCompactReservedRestart` is a distinct functional variant: orderly stop
+and EXIT the SDK process with a genuinely NEW compact Reserved request, then
+start a fresh PID/executor on the same root WITHOUT snapshot re-import. Normal
+named wallet.open/unlock (no phrase) must retain identical encrypted current and
+retained rows. The existing missing-job recovery must authenticate the complete
+catalog, randomized encrypted intent, keys, session/SQL-instance and source; it
+does not inherit a result or loosen an old executor binding. The new PID must
+obtain fresh CURRENT input paths over TCP before actual signing/Ready/admission,
+and real independent mining/SDK validation105 must confirm535000una. This does
+not claim wallet-only rebind of an OLD live job, forced-process/crash recovery,
+or interrupted SIGNED-Ready proof recovery. Those remain separate paths, as do
+app/device, mixed readiness and release qualification.
+
 ## Original-import private send and unshield native gate
 
 `NodeCoreAssumedPrivateSendUnshield` extends the real imported-source funded

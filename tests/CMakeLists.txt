@@ -9454,6 +9454,14 @@ if(TARGET nodecore_ffi)
       python3 ${CMAKE_SOURCE_DIR}/tests/integration/test_nodecore_funded_crossing.py)
     set_tests_properties(NodeCoreCompactNewShieldReady PROPERTIES TIMEOUT 360 RUN_SERIAL TRUE
       LABELS "integration;nodecore;orchard;assumedmobile;inputproof;wallet")
+    add_test(NAME NodeCoreCompactReservedRestart COMMAND ${CMAKE_COMMAND} -E env
+      NODECORE_DRIVER=$<TARGET_FILE:nodecore_activation_driver>
+      ACTIVATION_FIXTURE_GENERATOR=$<TARGET_FILE:test_assumeutxo_replay>
+      DINERO_SDK_ASSUMED_MOBILE_FIXTURE=1 DINERO_SDK_COMPACT_NEW_RESERVATION=1 DINERO_SDK_COMPACT_NEW_READY=1
+      DINERO_SDK_COMPACT_RESERVED_RESTART=1
+      python3 ${CMAKE_SOURCE_DIR}/tests/integration/test_nodecore_funded_crossing.py)
+    set_tests_properties(NodeCoreCompactReservedRestart PROPERTIES TIMEOUT 420 RUN_SERIAL TRUE
+      LABELS "integration;nodecore;orchard;assumedmobile;inputproof;wallet;restart")
     add_test(NAME NodeCoreImportedDeliveryCohortRefusal COMMAND ${CMAKE_COMMAND} -E env
       NODECORE_DRIVER=$<TARGET_FILE:nodecore_activation_driver>
       ACTIVATION_FIXTURE_GENERATOR=$<TARGET_FILE:test_assumeutxo_replay>
