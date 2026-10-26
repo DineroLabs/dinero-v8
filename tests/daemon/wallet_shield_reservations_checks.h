@@ -399,6 +399,20 @@ size_t ShieldDetailsSuffix(const wallet::OrchardOperationQueue::Entry& entry){
 std::vector<uint8_t> ShieldQueueBytes(const wallet::OrchardOperationQueue& queue){
     const auto encoded=queue.Encode();return {encoded.Bytes().begin(),encoded.Bytes().end()};
 }
+size_t ShieldDetailsStart(const std::vector<uint8_t>& bytes,const wallet::OrchardOperationQueue::Entry& entry){
+    // These single-Reserved-entry fixtures now use DNOROP06: details are
+    // followed by history/spend absence flags and the retained proving capsule.
+    // Never corrupt opaque recovery bytes while claiming to test request data.
+    ShieldReservationFixture::Need(bytes.size()>8&&bytes[7]=='6'&&entry.recovery&&
+        entry.phase==wallet::OrchardOperationQueue::Phase::Reserved&&!entry.shield_ready_time&&!entry.spend_request);
+    const auto capsule=entry.recovery->Bytes();const auto tail=7+capsule.size();
+    const auto suffix=ShieldDetailsSuffix(entry);ShieldReservationFixture::Need(bytes.size()>tail+suffix);
+    const auto end=bytes.size()-tail;
+    ShieldReservationFixture::Need(bytes[end]==0&&bytes[end+1]==0&&bytes[end+2]==1);
+    uint64_t length=0;for(size_t i=0;i<4;++i)length|=uint64_t(bytes[end+3+i])<<(8*i);
+    ShieldReservationFixture::Need(length==capsule.size()&&std::equal(capsule.begin(),capsule.end(),bytes.begin()+end+7));
+    return end-suffix;
+}
 }
 TEST(WalletShieldReservations, StoredDetailsSurviveReopenAndPreserveLegacyEncodings){
     ShieldReservationFixture f;wallet::OrchardProofJobs jobs;const auto queued=f.Queue(jobs);
@@ -407,9 +421,14 @@ TEST(WalletShieldReservations, StoredDetailsSurviveReopenAndPreserveLegacyEncodi
     EXPECT_EQ(details.payments[0].amount_una,20000u);EXPECT_EQ(details.payments[0].address,f.Payments()[0].recipient.EncodeAddress(orchard::WalletNetwork::Regtest));
     EXPECT_EQ(details.payments[0].memo,f.Payments()[0].memo);EXPECT_EQ(details.outputs[0].amount_una,70000u);
     EXPECT_EQ(details.outputs[0].script_pub_key,f.script);EXPECT_EQ(details.fee_una,10000u);
-    const auto queue=f.Account(3).account.Operations();const auto bytes=ShieldQueueBytes(queue);ASSERT_EQ(bytes[7],'3');
+    const auto queue=f.Account(3).account.Operations();const auto bytes=ShieldQueueBytes(queue);ASSERT_EQ(bytes[7],'6');
     EXPECT_EQ(ShieldQueueBytes(wallet::OrchardOperationQueue::Restore(orchard::WalletStateBytes(bytes),f.Domain())),bytes);
-    auto legacy=bytes;legacy.resize(legacy.size()-ShieldDetailsSuffix(entry));legacy[7]='2';
+    const auto start=ShieldDetailsStart(bytes,entry);
+    auto legacy=bytes;legacy.resize(start+ShieldDetailsSuffix(entry));legacy[7]='3';
+    const auto detailed=wallet::OrchardOperationQueue::Restore(orchard::WalletStateBytes(legacy),f.Domain());
+    EXPECT_TRUE(detailed.Entries().at(orchard::Hash{81}).shield_request);EXPECT_FALSE(detailed.Entries().at(orchard::Hash{81}).recovery);
+    EXPECT_EQ(ShieldQueueBytes(detailed),legacy);
+    legacy.resize(start);legacy[7]='2';
     const auto old=wallet::OrchardOperationQueue::Restore(orchard::WalletStateBytes(legacy),f.Domain());
     EXPECT_FALSE(old.Entries().at(orchard::Hash{81}).shield_request);EXPECT_EQ(ShieldQueueBytes(old),legacy);
     legacy.resize(legacy.size()-33);legacy[7]='1';
@@ -425,7 +444,7 @@ TEST(WalletShieldReservations, StoredDetailsSurviveReopenAndPreserveLegacyEncodi
 TEST(WalletShieldReservations, StoredDetailsRejectMalformedAndUnknownOldRequests){
     ShieldReservationFixture f;wallet::OrchardProofJobs jobs;const auto queued=f.Queue(jobs);jobs.RequestStop();
     const auto original=ShieldQueueBytes(f.Account(3).account.Operations());const auto suffix=ShieldDetailsSuffix(*queued->durable);
-    const auto start=original.size()-suffix;const auto before=f.Snapshot();
+    const auto start=ShieldDetailsStart(original,*queued->durable);const auto before=f.Snapshot();
     for(size_t length=start;length<original.size();++length){
         const std::vector<uint8_t> truncated(original.begin(),original.begin()+length);
         EXPECT_THROW(wallet::OrchardOperationQueue::Restore(orchard::WalletStateBytes(truncated),f.Domain()),std::runtime_error);
@@ -434,7 +453,7 @@ TEST(WalletShieldReservations, StoredDetailsRejectMalformedAndUnknownOldRequests
         if(mode==0)bad[start]=2;
         if(mode==1)for(size_t i=1;i<=4;++i)bad[start+i]=0xff;
         if(mode==2)bad[start+5+8+4]=0; // Invalid canonical recipient address.
-        if(mode==3)bad.back()^=0x80; // Out-of-range fee.
+        if(mode==3)bad[start+suffix-1]^=0x80; // Actual out-of-range fee, not opaque recovery bytes.
         if(mode==4)bad.push_back(0); // Exact EOF required.
         EXPECT_THROW(wallet::OrchardOperationQueue::Restore(orchard::WalletStateBytes(bad),f.Domain()),std::runtime_error);
     }
@@ -448,7 +467,7 @@ TEST(WalletShieldReservations, StoredDetailsRejectMalformedAndUnknownOldRequests
 TEST(WalletShieldReservations, AuthenticatedDetailsRequireOriginalRequestBinding){
     ShieldReservationFixture f;wallet::OrchardProofJobs jobs;const auto queued=f.Queue(jobs);jobs.RequestStop();
     auto bytes=ShieldQueueBytes(f.Account(3).account.Operations());const auto& details=*queued->durable->shield_request;
-    const auto start=bytes.size()-ShieldDetailsSuffix(*queued->durable);
+    const auto start=ShieldDetailsStart(bytes,*queued->durable);
     const auto memo=start+1+4+8+4+details.payments[0].address.size();bytes[memo+7]^=1;
     // A memo is structurally valid. Only the authenticated host's identity,
     // account and complete request digest can detect this semantic mismatch.
