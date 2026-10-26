@@ -661,7 +661,8 @@ struct CompactStartupFixture:CanonicalPoolFixture {
     unsigned attempts=0;
     explicit CompactStartupFixture(const std::function<void(CompactStartupFixture&)>& capture={},
         OrchardAdmissionFixture::HistoricalSpend historical_spend=OrchardAdmissionFixture::HistoricalSpend::None,
-        bool joint_boundary=false,bool retain_full_parent=false):CanonicalPoolFixture(true,historical_spend) {
+        bool joint_boundary=false,bool retain_full_parent=false,
+        const std::function<void(CompactStartupFixture&)>& capture_parent={}):CanonicalPoolFixture(true,historical_spend) {
         if(joint_boundary){MutableParams().orchard_catalog_commitment_activation_height=102;MutableParams().state_commitment_burial_depth=1;}
         const auto require=[](bool ok){OrchardAdmissionFixture::Require(ok);};
         // Persist the actual independently validated historical bodies and
@@ -670,8 +671,18 @@ struct CompactStartupFixture:CanonicalPoolFixture {
             const auto& b=f.blocks[h];auto* index=dinero::FindBlockIndex(b.GetHash());require(index!=nullptr);
             const auto pos=files->writeBlock(b.GetHash(),b);require(pos.ok());
             index->file_number=pos->file_number;index->data_pos=pos->offset;index->data_size=pos->size;
+            if(capture_parent&&h){
+                const auto& undo=f.historical_undo.at(h-1);const auto inverse=files->writeUndo(b.GetHash(),undo.Serialize());
+                require(inverse.ok()&&inverse->offset<=UINT32_MAX);
+                index->undo_file=inverse->file_number;index->undo_pos=uint32_t(inverse->offset);index->undo_size=inverse->size;
+                index->status|=BLOCK_HAVE_UNDO;
+                require(f.db.putUndo(f.token,b.GetHash(),undo)==Status::Ok);
+                rocksdb::WriteBatch delta;delta.Put(MakeUtreexoDeltaUndoKey(b.GetHash()),f.historical_delta.at(h-1));
+                require(f.db.writeBatch(f.token,std::move(delta),true)==Status::Ok);
+            }
             require(f.db.updateBlockIndex(f.token,index)==Status::Ok);require(headers.AddHeader(b.header));
         }
+        if(capture_parent)capture_parent(*this); // Exact independently replayed, never-Orchard parent DATA.
         f.service->setRuntimeBlockNotifications(std::make_shared<TypedForkNotices>());
         first=SolveCatalogTemplate(Build());require(bool(first));require(Submit(first->WireBytes()).connected);
         require(headers.AddHeader(first->Header()));

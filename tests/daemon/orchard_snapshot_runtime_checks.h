@@ -328,11 +328,12 @@ struct ActivationHandoffFixture {
     std::unique_ptr<CoreReopenReceipt> receipt;
     std::shared_ptr<ReopenRpcGate> gate;
 #endif
-    explicit ActivationHandoffFixture(bool lifecycle=false):full([this](auto& source){
+    explicit ActivationHandoffFixture(bool lifecycle=false,
+        const std::function<void(CompactStartupFixture&)>& capture_parent={}):full([this](auto& source){
         for(const auto& block:source.f.blocks)OrchardAdmissionFixture::Require(headers->AddHeader(block.header));
         OrchardAdmissionFixture::Require(headers->AddHeader(source.first->Header())&&headers->AddHeader(source.second->Header()));
         proof=std::make_shared<const consensus::OrchardSnapshotSection>(OrchardSnapshotStoreTestAccess::CaptureActivation(source.f.db,*headers));
-    },OrchardAdmissionFixture::HistoricalSpend::None,true,true){
+    },OrchardAdmissionFixture::HistoricalSpend::None,true,true,capture_parent){
         auto name=(std::filesystem::temp_directory_path()/"orchard-handoff-evidence-XXXXXX").string();
         OrchardAdmissionFixture::Require(::mkdtemp(name.data())!=nullptr);root=std::filesystem::canonical(name);
         std::filesystem::create_directory(root/"blockchain");path=root/"blockchain"/"chaindb";
@@ -555,6 +556,65 @@ void GenerateCompletedActivationFixtures(){
         roots.append(row);
     }
     std::ofstream output(destination);ASSERT_TRUE(output);output<<Json::writeString(Json::StreamWriterBuilder(),roots);output.close();ASSERT_TRUE(output);
+}
+void GenerateSdkActivationFixture(){
+    const auto* destination=std::getenv("DINERO_SDK_ACTIVATION_MANIFEST");ASSERT_NE(destination,nullptr);
+    ASSERT_FALSE(std::filesystem::exists(destination));
+    // Select the private wire magic BEFORE any BlockStorage archive is written.
+    MutableParams().magic=0x02a1c925;
+    // Source-ready independently replayed parent. No lifecycle receipt or
+    // completed selection is injected: the actual SDK must create both.
+    shielded_store_fixture::Rows parent_rows;
+    for(const auto& name:shielded_store_fixture::legacy)parent_rows[name];
+    parent_rows[shielded_store_fixture::shielded];
+    ActivationHandoffFixture f(false,[&](auto& source){
+        const auto* coins=source.f.service->GetConsensusUTXOSet();OrchardAdmissionFixture::Require(coins!=nullptr);
+        const auto lock=coins->LockForestShared();
+        OrchardAdmissionFixture::Require(source.f.db.putUtreexoCheckpointWithChecksum(
+            source.f.token,101,coins->GetForest().serialize())==Status::Ok);
+        for(const auto& [key,value]:ChainDBTransactionReadTestPeer::HandoffRows(source.f.db))
+            parent_rows.at(key.first).emplace(key.second,value);
+    });
+    // Keep the visited/undone source intact, but start THIS test from the exact
+    // earlier independent parent capture. Never strip an outbox or fabricate a
+    // starting cursor from the subsequently visited source. The real SDK alone
+    // will create its lifecycle intent, selection and genuine first event.
+    std::filesystem::rename(f.path,f.root/"blockchain/visited-source-preserved");
+    {std::vector<std::string> names;for(const auto& [name,rows]:parent_rows)names.push_back(name);
+     shielded_store_fixture::Raw raw(f.path,names);
+     for(const auto& [name,rows]:parent_rows)for(const auto& [key,value]:rows)raw.put(name,key,value);
+     ASSERT_EQ(raw.rows(),parent_rows);}
+    // Retain the real independently executed parent forest checkpoint. Without
+    // it normal legacy startup correctly rewinds to genesis for catch-up; the
+    // peer in this boundary-only test intentionally serves no old CSN bodies.
+    {const auto* coins=f.full.f.service->GetConsensusUTXOSet();ASSERT_NE(coins,nullptr);
+     const auto lock=coins->LockForestShared();
+     ASSERT_EQ(consensus::UtreexoStump::fromForest(coins->GetForest()).serialize(),f.proof->parent_catalog.stump);
+     ChainDB db;ASSERT_EQ(db.init(f.path),Status::Ok);
+     ASSERT_EQ(db.getUtreexoCheckpoint(101).value(),coins->GetForest().serialize());}
+    const auto archives=f.full.files->getBlockFilePath(0).parent_path();
+    std::filesystem::copy(archives,f.root/"blocks",std::filesystem::copy_options::recursive);
+    Json::Value row;row["datadir"]=f.root.string();row["profile"]=ConsensusChecksum(Params());
+    row["magic"]=Json::UInt(Params().magic);row["parent"]=f.proof->parent_catalog.block.GetHex();
+    row["first_hash"]=f.full.first->Header().GetHash().GetHex();row["second_hash"]=f.full.second->Header().GetHash().GetHex();
+    const auto proof_file=f.root/"untrusted-catalog-section.bin";
+    {std::ofstream out(proof_file,std::ios::binary);ASSERT_TRUE(out);
+     consensus::StreamOrchardSnapshotSection(*f.proof,[&](auto bytes){out.write(reinterpret_cast<const char*>(bytes.data()),bytes.size());
+        OrchardAdmissionFixture::Require(bool(out));});}
+    row["proof"]=proof_file.string();row["headers"]=Json::Value(Json::arrayValue);
+    {consensus::HeaderStore store((f.root/"headers").string());ASSERT_TRUE(store.Open());
+     consensus::HeaderChainSelector retained(&store);
+     const auto add=[&](const BlockHeader& header){OrchardAdmissionFixture::Require(retained.AddHeader(header));
+        const auto bytes=header.SerializeForHash();row["headers"].append(util::hex({bytes.begin(),bytes.end()}));};
+     for(const auto& block:f.full.f.blocks)add(block.header);
+     add(f.full.first->Header());add(f.full.second->Header());}
+    for(const auto& [name,block]:std::vector<std::pair<std::string,std::shared_ptr<const CatalogSolvedTemplate>>>{
+        {"first",f.full.first},{"second",f.full.second}}){
+        const auto path=f.root/("untrusted-"+name+"-body.bin");std::ofstream out(path,std::ios::binary);ASSERT_TRUE(out);
+        const auto& bytes=block->WireBytes();out.write(reinterpret_cast<const char*>(bytes.data()),bytes.size());
+        ASSERT_TRUE(out);row[name]=path.string();}
+    f.guard.Release();std::ofstream output(destination);ASSERT_TRUE(output);
+    output<<Json::writeString(Json::StreamWriterBuilder(),row);output.close();ASSERT_TRUE(output);
 }
 void DiagnoseCompletedActivationRows(){
     const auto* actual=std::getenv("DINERO_COMPLETED_COMPARE_ACTUAL");

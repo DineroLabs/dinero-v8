@@ -30,6 +30,9 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
+#ifdef DINERO_TEST_SDK_ACTIVATION_SUBJECT
+Json::Value SdkActivationTestState();
+#endif
 
 struct HttpRpcRequestTestAccess {
     static Json::Value Dispatch(HttpRpcServer& server,const std::string& method,const Json::Value& params){
@@ -438,6 +441,9 @@ int main(int argc, char** argv) {
         try {
             const auto request = Parse(line);
             const auto operation = request["op"].asString();
+#ifdef DINERO_TEST_SDK_ACTIVATION_SUBJECT
+            if(operation=="sdk_activation_state")result=SdkActivationTestState();else
+#endif
             if (operation == "reopen_fences") {
                 result = ReopenFences();
             } else if(operation=="completed_activation_cold") {

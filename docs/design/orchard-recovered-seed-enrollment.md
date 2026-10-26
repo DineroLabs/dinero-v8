@@ -786,3 +786,22 @@ If only enrollment is shipped, release notes must explicitly exclude
 post-activation new-install/phrase-only recovery. Even pre-enrolled private
 payments cannot be advertised on mobile until the H149999 sync blocker and
 actual app/device gates pass. The November 2 go/no-go remains independent.
+
+### Embedded catalog staging root regression
+
+The catalog download host must use `ConfigService::DataDir()`, which is bound to
+the operator root by normal startup. The legacy `GetConfig().datadir` may be
+empty in the embedded process; an empty path prevents the download actor from
+starting even with eligible peers and locally selected activation headers.
+This path selection does not authorize a store or change transfer verification.
+
+`NodeCoreActivationWire` compiles the actual SDK worker with a fixed, native-test-
+only private regtest profile selection. It drives a real loopback peer, nonce-
+bound catalog pages, the SDK's own orderly handoff, normal replacement startup
+and named-wallet reopening without a phrase. Its exact pre-Orchard source comes
+from independent execution with genuine historical undo/delta/checkpoints; the
+visited proof-producing fixture is preserved separately. No lifecycle receipt,
+ready proof, first event, replay authority or accepted owner is injected.
+The test also observes no reply from queue RPCs during the real pause.
+It is not original mobile assumed-history/SQL, nonempty queued-payment survival,
+post-activation body history, physical-device or release acceptance.

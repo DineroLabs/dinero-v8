@@ -18,6 +18,10 @@ public:
     std::vector<uint8_t> last_bundle;
     CBlockIndex tip;
     std::vector<Block> blocks;
+    // Durable fixture material from real historical consensus execution, not
+    // reconstructed validity flags. Used by actual-executable startup fixtures.
+    std::vector<UndoRecord> historical_undo;
+    std::vector<std::string> historical_delta;
     std::unique_ptr<assumeutxo::AssumeUtxoReplayEngine> replay;
     const ChainWriteToken token = ChainWriteToken::CreateForTesting();
     static void Require(bool value,const char* file=__builtin_FILE(),int line=__builtin_LINE()) {
@@ -235,6 +239,20 @@ public:
                 headers.emplace_back(block.header,&headers.back());
             }
             consensus::BlockUndo undo;Require(validator.ConnectBlock(block,height,block.GetHash(),undo,error));
+            if(real_pow){
+                UndoRecord record;
+                for(const auto& entry:undo.spent_coins)record.spent.emplace_back(entry.txid,entry.vout,
+                    entry.coin.value.GetUna(),entry.coin.scriptPubKey,entry.coin.isCoinbase,entry.coin.height,
+                    entry.coin.is_confidential,entry.coin.commitment);
+                for(const auto& tx:block.vtx)for(uint32_t vout=0;vout<tx.vout.size();++vout)
+                    record.created.emplace_back(tx.GetTxid().AsUint256(),vout);
+                record.pre_block_shielded_frontier=undo.pre_block_shielded_frontier;
+                record.pre_block_shielded_anchors=undo.pre_block_shielded_anchors;
+                record.pre_reset_shielded_epoch=undo.pre_reset_shielded_epoch;
+                historical_undo.push_back(std::move(record));
+                Require(undo.utreexo_delta.has_value());std::string delta;
+                Require(SerializeUtreexoDelta(*undo.utreexo_delta,delta,error));historical_delta.push_back(std::move(delta));
+            }
             parent=block.GetHash();chain.push_back(std::move(block));
         }
         return chain;

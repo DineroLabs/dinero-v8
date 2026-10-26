@@ -2364,7 +2364,9 @@ bool P2PService::Start() {
             auto* context=DaemonContext::instance();const auto headers=context?context->header_chain:nullptr;
             if(headers){
                 auto download=std::make_shared<p2p::OrchardCatalogDownload>(
-                headers,std::filesystem::path(GetConfig().datadir),
+                // ConfigService owns the canonical --datadir binding. The
+                // legacy global datadir can be empty in embedded startup.
+                headers,std::filesystem::path(config_->DataDir()),
                 [this,source=chainstate_]{
                     return p2p_mgr_&&p2p_mgr_->is_network_active()&&source->NeedsOrchardActivationCatalog();
                 },[this]{

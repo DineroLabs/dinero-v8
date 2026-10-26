@@ -9391,6 +9391,22 @@ if(TARGET nodecore_ffi)
       NODECORE_SCENARIO=lifecycle
       NODECORE_EVIDENCE_DIR=${CMAKE_BINARY_DIR}/Testing/nodecore-runtime
       python3 ${CMAKE_SOURCE_DIR}/tests/integration/test_nodecore_runtime.py)
+  if(UNIX AND NOT CMAKE_CROSSCOMPILING AND TARGET test_assumeutxo_replay)
+    # Actual SDK source; sole selection redirect is confined to this executable.
+    # Keep the same real archive closure, including the Linux backward refs.
+    add_executable(nodecore_activation_driver tests/integration/nodecore_runtime_driver.cpp
+      tests/integration/nodecore_activation_subject.cpp)
+    get_target_property(_activation_driver_links nodecore_runtime_driver LINK_LIBRARIES)
+    target_link_libraries(nodecore_activation_driver PRIVATE ${_activation_driver_links})
+    target_compile_definitions(nodecore_activation_driver PRIVATE
+      $<TARGET_PROPERTY:nodecore_ffi,COMPILE_DEFINITIONS> DINERO_TEST_SDK_ACTIVATION_SUBJECT=1)
+    add_test(NAME NodeCoreActivationWire COMMAND ${CMAKE_COMMAND} -E env
+      NODECORE_DRIVER=$<TARGET_FILE:nodecore_activation_driver>
+      ACTIVATION_FIXTURE_GENERATOR=$<TARGET_FILE:test_assumeutxo_replay>
+      python3 ${CMAKE_SOURCE_DIR}/tests/integration/test_nodecore_activation_wire.py)
+    set_tests_properties(NodeCoreActivationWire PROPERTIES TIMEOUT 240 RUN_SERIAL TRUE
+      LABELS "integration;nodecore;orchard;restart;wallet")
+  endif()
   add_test(NAME NodeCoreSdkPendingReopen
     COMMAND ${CMAKE_COMMAND} -E env
       NODECORE_DRIVER=$<TARGET_FILE:nodecore_runtime_driver>

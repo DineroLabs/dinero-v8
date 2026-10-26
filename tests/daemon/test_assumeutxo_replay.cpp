@@ -2,6 +2,8 @@
 #include "consensus/pow.hpp"
 #include "consensus/pow.h"
 #include "consensus/pow_context.h"
+#include "consensus/header_store.h"
+#include "consensus/utreexo_delta_codec.h"
 #include <deque>
 #include "daemon/orchard_chainstate_write.h"
 #include "storage/orchard_catalog_state.h"
@@ -866,7 +868,7 @@ TEST(RuntimeOriginProjection, UnavailableWithoutBackend) {
 #endif
 
 #ifdef DINERO_TEST_REAL_CORE_HANDOFF
-namespace dinero {void GenerateCompletedActivationFixtures();void DiagnoseCompletedActivationRows();}
+namespace dinero {void GenerateCompletedActivationFixtures();void GenerateSdkActivationFixture();void DiagnoseCompletedActivationRows();}
 #endif
 int main(int argc, char** argv) {
     dinero::SelectParams(dinero::Chain::REGTEST);  // utreexo active from genesis on all nets
@@ -877,6 +879,9 @@ int main(int argc, char** argv) {
     dinero::MutableParams().state_commitment_activation_height = UINT32_MAX;
     ::testing::InitGoogleTest(&argc, argv);
 #ifdef DINERO_TEST_REAL_CORE_HANDOFF
+    if(argc==2&&std::string(argv[1])=="--export-sdk-activation-fixture") {
+        dinero::GenerateSdkActivationFixture();return ::testing::UnitTest::GetInstance()->Passed()?0:1;
+    }
     if(argc==2&&std::string(argv[1])=="--export-completed-activation-fixtures") {
         dinero::GenerateCompletedActivationFixtures();return ::testing::UnitTest::GetInstance()->Passed()?0:1;
     }
