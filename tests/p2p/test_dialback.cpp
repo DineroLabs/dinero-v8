@@ -56,6 +56,7 @@ struct Node {
         mgr->set_height_provider([] { return 10u; });
         mgr->set_quic_enabled(false);
         mgr->set_dialback_min_groups(1);
+        mgr->set_dialback_private_targets(true);  // everything here is 127.0.0.1
         EXPECT_TRUE(mgr->start());
     }
     ~Node() {
@@ -272,4 +273,39 @@ TEST(DialBack, SilentListenerProbeTimesOut) {
     ASSERT_TRUE(r.has_value()) << "probe of a silent listener never finished";
     EXPECT_EQ(*r, 2);  // connect failed: no handshake
     EXPECT_LT(std::chrono::steady_clock::now() - t0, std::chrono::seconds(20));
+}
+
+TEST(DialBack, NonRoutableRequesterRefusedOutsideRegtest) {
+    // Tor inbound peers all arrive from 127.0.0.1: a verifier must never be
+    // talked into dialing its own loopback (or any private address) on a port
+    // the requester picks.
+    Node a("priv-a"), b("priv-b");
+    b.mgr->set_dialback_private_targets(false);
+    ASSERT_TRUE(a.mgr->connect_to_peer("127.0.0.1", b.port));
+    ASSERT_TRUE(WaitProven(*a.mgr, b.Key()));
+    const uint64_t nonce = a.mgr->test_send_reachchk(b.Key(), a.port, {});
+    const auto r = WaitResult(*a.mgr, nonce);
+    ASSERT_TRUE(r.has_value());
+    EXPECT_EQ(*r, 4);
+    EXPECT_TRUE(b.mgr->test_dialback_targets().empty()) << "verifier dialed a loopback requester";
+}
+
+TEST(DialBack, PerPeerLimitSurvivesReconnect) {
+    // The per-requester budget belongs to the requester's address, not to one
+    // connection: reconnecting (new source port) must not reset it.
+    Node a("rc-a"), b("rc-b");
+    ASSERT_TRUE(a.mgr->connect_to_peer("127.0.0.1", b.port));
+    ASSERT_TRUE(WaitProven(*a.mgr, b.Key()));
+    for (int i = 0; i < 2; ++i) {
+        const auto r = WaitResult(*a.mgr, a.mgr->test_send_reachchk(b.Key(), a.port, {}));
+        ASSERT_TRUE(r.has_value());
+        EXPECT_NE(*r, 1) << "request " << i << " refused before the budget was spent";
+    }
+    a.mgr->disconnect_peer(b.Key());
+    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    ASSERT_TRUE(a.mgr->connect_to_peer("127.0.0.1", b.port));
+    ASSERT_TRUE(WaitProven(*a.mgr, b.Key()));
+    const auto r = WaitResult(*a.mgr, a.mgr->test_send_reachchk(b.Key(), a.port, {}));
+    ASSERT_TRUE(r.has_value());
+    EXPECT_EQ(*r, 1) << "reconnecting reset the per-requester limit";
 }

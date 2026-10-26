@@ -513,6 +513,10 @@ public:
     // Dial-back verification of our own addresses. min_groups is 2 by default;
     // 1 is only for single-host (regtest) setups.
     void set_dialback_min_groups(uint32_t min_groups);
+    // Regtest/tests only: answer reachchk from loopback/private requesters.
+    // Off, they get result 4 without a dial (every Tor inbound peer is
+    // 127.0.0.1, and a verifier must not probe its own localhost).
+    void set_dialback_private_targets(bool allow) { dialback_private_targets_.store(allow); }
     std::vector<dinero::p2p::CandidateStatus> self_reachability_status() const;
     // Directly reachable as far as we can prove: an explicit address (operator
     // externalip / port mapping) or one that peers dialed back successfully.
@@ -1041,7 +1045,9 @@ private:
     std::map<uint64_t, uint8_t> reach_results_;               // last results (bounded)
     size_t reach_checks_sent_{0};
     // Verifier side: request windows and the targets we dialed (bounded).
+    // Keyed by requester address (IPv4, or IPv6 /64), not by connection.
     std::map<std::string, std::deque<std::chrono::steady_clock::time_point>> reach_window_by_peer_;
+    std::atomic<bool> dialback_private_targets_{false};
     std::deque<std::chrono::steady_clock::time_point> reach_window_global_;
     size_t dialbacks_in_flight_{0};
     std::deque<std::string> dialback_targets_;

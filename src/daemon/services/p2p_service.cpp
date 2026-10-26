@@ -2400,6 +2400,7 @@ bool P2PService::Start() {
         if (Params().name == "regtest") {
             const int groups = config_->GetInt("p2p.dialback_min_groups", 2);
             if (groups >= 1) p2p_mgr_->set_dialback_min_groups(static_cast<uint32_t>(groups));
+            p2p_mgr_->set_dialback_private_targets(true);  // local test networks
         }
         {
             std::vector<std::string> quic_targets;

@@ -7171,6 +7171,19 @@ constexpr auto kReachGlobalWindow = std::chrono::minutes(1);
 constexpr size_t kReachGlobalMax = 30;
 constexpr size_t kReachMaxInFlight = 4;
 constexpr auto kReachPendingTimeout = std::chrono::seconds(60);
+// A requester's rate-limit identity: its IPv4 address, or its IPv6 /64 (one
+// home or VPS gets a whole /64, so per-address limits would be per-attacker
+// unlimited). Reconnecting from a new source port changes nothing.
+std::string ReachRequesterKey(const std::string& ip) {
+    struct in6_addr v6 {};
+    if (inet_pton(AF_INET6, ip.c_str(), &v6) != 1) return ip;
+    char buf[24];
+    const uint8_t* b = reinterpret_cast<const uint8_t*>(&v6);
+    std::snprintf(buf, sizeof(buf), "v6:%02x%02x%02x%02x%02x%02x%02x%02x", b[0], b[1], b[2], b[3],
+                  b[4], b[5], b[6], b[7]);
+    return buf;
+}
+
 // Whole dial-back probe (connect + handshake); well under kReachPendingTimeout.
 constexpr auto kDialbackProbeDeadline = std::chrono::seconds(10);
 
@@ -7378,7 +7391,8 @@ void P2PManager::handle_reach_check(const std::string& peer_address, const P2PMe
         send_to_peer(peer_address, res);
     };
 
-    if (transport != static_cast<uint8_t>(dinero::p2p::Transport::Tcp) || via_relay || port == 0) {
+    if (transport != static_cast<uint8_t>(dinero::p2p::Transport::Tcp) || via_relay || port == 0 ||
+        (!dialback_private_targets_.load() && !IsAdvertisableAddress(target_ip, port))) {
         reply(kReachUnsupportedTransport, {});
         return;
     }
@@ -7389,8 +7403,13 @@ void P2PManager::handle_reach_check(const std::string& peer_address, const P2PMe
     {
         const auto now = std::chrono::steady_clock::now();
         std::lock_guard<std::mutex> lock(reach_mutex_);
-        auto& mine = reach_window_by_peer_[peer_address];
-        while (!mine.empty() && now - mine.front() > kReachPerPeerWindow) mine.pop_front();
+        // Drop requesters whose window has emptied, so the map stays bounded.
+        for (auto it = reach_window_by_peer_.begin(); it != reach_window_by_peer_.end();) {
+            auto& q = it->second;
+            while (!q.empty() && now - q.front() > kReachPerPeerWindow) q.pop_front();
+            it = q.empty() ? reach_window_by_peer_.erase(it) : std::next(it);
+        }
+        auto& mine = reach_window_by_peer_[ReachRequesterKey(target_ip)];
         while (!reach_window_global_.empty() && now - reach_window_global_.front() > kReachGlobalWindow) {
             reach_window_global_.pop_front();
         }
