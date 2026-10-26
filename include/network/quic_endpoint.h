@@ -63,7 +63,12 @@ public:
     std::shared_ptr<QuicSession> Connect(const UdpAddr& remote, QuicSessionOptions client_opts);
     // Stop routing to `remote` (its owner tore the session down).
     void Forget(const UdpAddr& remote);
+    // Close every session (each sends CONNECTION_CLOSE), give them a moment to
+    // reach the wire, then stop the socket.
     void Stop();
+    // Tests: simulate this host vanishing -- every outgoing datagram is
+    // dropped from now on, nothing is closed.
+    void SilenceForTest();
 
     bool Listening() const;
     uint16_t Port() const;

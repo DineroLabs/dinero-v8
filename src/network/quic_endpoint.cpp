@@ -1,6 +1,7 @@
 #include "network/quic_endpoint.h"
 
 #include <algorithm>
+#include <thread>
 
 namespace dinero::network {
 
@@ -20,12 +21,15 @@ constexpr size_t kMaxTrackedIps = 4096;
 // A session that never became active (junk Initial, refused handshake) stops
 // receiving routing after this long, so its remote can try again.
 constexpr auto kDeadSessionGrace = std::chrono::seconds(10);
+// Stop(): time for sessions to put their CONNECTION_CLOSE on the wire.
+constexpr auto kCloseFlushGrace = std::chrono::milliseconds(100);
 
 }  // namespace
 
 struct QuicEndpoint::Shared {
     UdpSocket socket;
     std::atomic<bool> alive{false};
+    std::atomic<bool> muted{false};  // SilenceForTest: drop all sends
 };
 
 QuicEndpoint::QuicEndpoint() : shared_(std::make_shared<Shared>()) {}
@@ -78,7 +82,7 @@ std::shared_ptr<QuicSession> QuicEndpoint::MakeSession(const UdpAddr& remote) {
     // can outlive the endpoint by a few packets during shutdown.
     std::weak_ptr<Shared> weak = shared_;
     return std::make_shared<QuicSession>([weak, remote](std::vector<uint8_t> bytes) {
-        if (auto s = weak.lock(); s && s->alive.load()) {
+        if (auto s = weak.lock(); s && s->alive.load() && !s->muted.load()) {
             s->socket.SendTo(remote, bytes.data(), bytes.size());
         }
     });
@@ -170,15 +174,24 @@ void QuicEndpoint::OnDatagram(const UdpAddr& src, std::vector<uint8_t> data) {
 }
 
 void QuicEndpoint::Stop() {
-    if (!shared_->alive.exchange(false)) return;
-    shared_->socket.Stop();
+    if (!shared_->alive.load()) return;
     std::map<std::pair<std::array<uint8_t, 17>, uint16_t>, Entry> sessions;
     {
         std::lock_guard<std::mutex> lock(mu_);
         sessions.swap(sessions_);
     }
+    // Close first, while the socket can still send: each session writes its
+    // CONNECTION_CLOSE on its own thread right after Close(). Peers then learn
+    // of the shutdown at once instead of waiting out the idle timeout.
     for (auto& [k, e] : sessions) e.session->Close();
+    if (!sessions.empty()) {
+        std::this_thread::sleep_for(kCloseFlushGrace);
+    }
+    shared_->alive.store(false);
+    shared_->socket.Stop();
 }
+
+void QuicEndpoint::SilenceForTest() { shared_->muted.store(true); }
 
 bool QuicEndpoint::Listening() const { return shared_->alive.load(); }
 

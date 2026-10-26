@@ -244,7 +244,7 @@ TEST(QuicPeer, SilentRemoteIsReapedAndSlotFreed) {
     ASSERT_TRUE(a.mgr->connect_to_peer_quic("127.0.0.1", bp));
     ASSERT_TRUE(WaitConnected(*b.mgr, LoopKey(ap)));
 
-    a.mgr->quic_endpoint()->Stop();  // marks the socket dead first: nothing more reaches B
+    a.mgr->quic_endpoint()->SilenceForTest();  // drop everything A sends: B hears nothing more
 
     // Worst case is keep-alive (20 s) + idle timeout (60 s): QUIC restarts the
     // idle timer on the first ack-eliciting packet sent after the last receipt.
@@ -369,4 +369,27 @@ TEST(QuicPeer, HandshakingQuicPeerReservesItsAddress) {
         << "QUIC dial did not reserve its address in connecting_peers_";
     ASSERT_TRUE(WaitConnected(*a.mgr, LoopKey(bp)));
     EXPECT_FALSE(a.mgr->test_is_connecting_peer("127.0.0.1", bp));
+}
+
+// A node shutting down tells its QUIC peers (CONNECTION_CLOSE) instead of
+// leaving them to the 60-80 s idle timeout.
+TEST(QuicPeer, ShutdownTellsPeersPromptly) {
+    Node b("shut-b");
+    auto a = std::make_unique<Node>("shut-a");
+    ASSERT_TRUE(a->mgr->start_quic_endpoint(0));
+    ASSERT_TRUE(b.mgr->start_quic_endpoint(0));
+    const uint16_t ap = a->mgr->quic_endpoint()->Port(), bp = b.mgr->quic_endpoint()->Port();
+    ASSERT_TRUE(a->mgr->connect_to_peer_quic("127.0.0.1", bp));
+    ASSERT_TRUE(WaitConnected(*b.mgr, LoopKey(ap)));
+
+    a.reset();  // A's manager stops
+
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+    while (std::chrono::steady_clock::now() < deadline) {
+        auto* p = b.mgr->get_peer_info(LoopKey(ap));
+        if (!p || !p->is_connected) break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+    auto* p = b.mgr->get_peer_info(LoopKey(ap));
+    EXPECT_TRUE(!p || !p->is_connected) << "B still connected 3 s after A shut down";
 }
