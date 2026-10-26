@@ -4336,7 +4336,9 @@ void P2PManager::record_self_address_report(const std::string& reported_addr,
     {
         std::lock_guard<std::mutex> lock(self_addr_mutex_);
         auto& reporters = self_addr_votes_[reported_addr];
-        reporters.insert(reporter_ip);          // distinct reporter IPs only
+        // Distinct reporter NETWORKS (/16, v6 /32): one host or one /64 is
+        // one voice, however many addresses it reports from.
+        reporters.insert(dinero::p2p::AddrManNetGroup(reporter_ip));
         votes = reporters.size();
         promote = votes >= kSelfAddrVoteThreshold;
     }
@@ -4350,6 +4352,11 @@ void P2PManager::record_self_address_report(const std::string& reported_addr,
                   << " — advertising" << std::endl;
         add_advertised_address(reported_addr, listen_port_, /*learned=*/true);
         // Learned addresses are gossiped only once dial-back verifies them.
+        // An address nobody could dial (private, link-local) is not even a
+        // candidate: it would only spend verifier budget.
+        if (!dialback_private_targets_.load() && !IsAdvertisableAddress(reported_addr, listen_port_)) {
+            return;
+        }
         std::lock_guard<std::mutex> lock(reach_mutex_);
         self_reach_->AddCandidate(dinero::p2p::Candidate{
             reported_addr, listen_port_, dinero::p2p::Transport::Tcp,
@@ -7304,7 +7311,14 @@ void P2PManager::run_reachability_tick() {
         for (const auto& [key, peer] : connected_peers_) {
             if (!peer->is_connected || !peer->identity_proven || peer->via_relay) continue;
             if ((peer->service_flags & ServiceFlags::NODE_DIALBACK) == 0) continue;
-            verifiers.push_back(dinero::p2p::Verifier{key, peer->address});
+            // The proven node id: one node is one witness across v4 and v6.
+            std::string node_id;
+            for (uint8_t b : peer->their_node_id) {
+                static const char* kHex = "0123456789abcdef";
+                node_id.push_back(kHex[b >> 4]);
+                node_id.push_back(kHex[b & 0xF]);
+            }
+            verifiers.push_back(dinero::p2p::Verifier{key, peer->address, node_id});
         }
     }
     if (verifiers.empty()) return;

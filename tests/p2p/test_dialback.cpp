@@ -309,3 +309,30 @@ TEST(DialBack, PerPeerLimitSurvivesReconnect) {
     ASSERT_TRUE(r.has_value());
     EXPECT_EQ(*r, 1) << "reconnecting reset the per-requester limit";
 }
+
+namespace {
+size_t CandidatesAt(const P2PManager& m, const std::string& ip) {
+    size_t n = 0;
+    for (const auto& st : m.self_reachability_status()) n += st.c.ip == ip;
+    return n;
+}
+}  // namespace
+
+TEST(DialBack, SelfAddressVotesCountPerNetwork) {
+    // One /64 (or one /16) is one voice: a single host cannot meet the
+    // 3-reporter threshold by itself and seed candidates at will.
+    P2PManager m(FreePort());
+    for (const char* r : {"2600:1700::1", "2600:1700::2", "2600:1700::3", "2600:1700:5::9"}) {
+        m.record_self_address_report("44.1.2.3", r);
+    }
+    EXPECT_EQ(CandidatesAt(m, "44.1.2.3"), 0u) << "votes from one /32 created a candidate";
+    for (const char* r : {"1.1.1.1", "2.2.2.2", "3.3.3.3"}) m.record_self_address_report("44.5.6.7", r);
+    EXPECT_EQ(CandidatesAt(m, "44.5.6.7"), 1u);
+}
+
+TEST(DialBack, NonAdvertisableVotedAddressIsNotACandidate) {
+    P2PManager m(FreePort());
+    for (const char* r : {"1.1.1.1", "2.2.2.2", "3.3.3.3"}) m.record_self_address_report("10.1.2.3", r);
+    EXPECT_EQ(CandidatesAt(m, "10.1.2.3"), 0u);
+    EXPECT_FALSE(m.has_proven_reachable());
+}
