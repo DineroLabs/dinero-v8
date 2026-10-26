@@ -364,12 +364,33 @@ def sdk_pending_reopen(node):
     prepared = node.call("actual_app_reopen", datadir=str(path), mode="published-exit")
     check("published host exits before archive without dropping intent",
           prepared["published_intent_retained"] and prepared["gate_open_after_publication"], prepared)
+    pending = path / ".core-reopen-pending-v1"
+    intent_bytes = pending.read_bytes()
+    journals = {p.name: {str(f.relative_to(p)): hashlib.sha256(f.read_bytes()).hexdigest()
+                        for f in p.rglob("*") if f.is_file()}
+                for p in path.glob(".core-reopen-candidates-v1-*") if p.is_dir()}
+    check("selected pending corpus exists before fresh SDK start", bool(journals))
     node.close()
     check("publication fixture process exits cleanly", node.process.returncode == 0)
     fresh = Embedded()
     try:
         check("actual SDK automatically recovers pending named intent", fresh.start(path) == 0)
         check("SDK recovered App is running", fresh.call("status")["running"] is True)
+        # Loading the named wallet alone is insufficient: WalletService also
+        # remembers the last active wallet. Prove the worker actually consumed
+        # the selected intent through normal readmission, then retained its
+        # completed control and the original public candidate corpus.
+        deadline = time.monotonic() + 10
+        while pending.exists() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        completed = list(path.glob(".core-reopen-pending-v1.completed-*"))
+        check("SDK worker completed selected pending readmission",
+              not pending.exists() and len(completed) == 1)
+        check("SDK retains completed intent bytes", completed[0].read_bytes() == intent_bytes)
+        check("SDK preserves original public candidate corpus", journals == {
+            p.name: {str(f.relative_to(p)): hashlib.sha256(f.read_bytes()).hexdigest()
+                     for f in p.rglob("*") if f.is_file()}
+            for p in path.glob(".core-reopen-candidates-v1-*") if p.is_dir()})
         check("SDK worker loaded the active named wallet before caller open",
               fresh.rpc("wallet.getwalletinfo")["walletname"] == "reopen-owner")
         check("SDK named wallet opens without phrase", fresh.rpc("wallet.open", ["reopen-owner"])["success"] is True)
