@@ -2476,6 +2476,36 @@ size_t P2PManager::test_relay_hint_count(const std::array<uint8_t, 20>& target) 
     return it == relay_hints_by_target_.end() ? 0 : it->second.size();
 }
 
+std::string P2PManager::test_install_quic_relay_peer(
+    std::shared_ptr<dinero::network::QuicSession> session, const std::string& relay_address,
+    uint64_t circuit_id, std::optional<std::array<uint8_t, 20>> expected_target) {
+    auto peer = std::make_shared<PeerInfo>();
+    std::ostringstream key;
+    key << "relay:" << NodeIdHex(expected_target.value_or(std::array<uint8_t, 20>{})) << ":"
+        << std::hex << circuit_id;
+    peer->address = key.str();
+    peer->user_agent = user_agent_;
+    peer->is_outbound = expected_target.has_value();
+    peer->socket_fd = -1;
+    peer->connected_since = std::chrono::system_clock::now();
+    peer->last_message_at = peer->connected_since;
+    peer->last_seen = peer->connected_since;
+    peer->lifetime_state.store(PeerLifetimeState::RUNNING);
+    peer->via_relay = PeerInfo::ViaRelayInfo{
+        circuit_id, relay_address,
+        static_cast<uint8_t>(expected_target ? P2PMessage::RelayDirection::ClientToTarget
+                                             : P2PMessage::RelayDirection::TargetToClient)};
+    peer->via_relay->encrypted_quic = true;
+    if (expected_target) peer->their_node_id = *expected_target;
+    peer->relay_quic_session = std::move(session);
+    {
+        std::lock_guard<std::mutex> lock(peers_mutex_);
+        connected_peers_[peer->address] = peer;
+    }
+    if (!start_peer_handler_thread(peer)) return {};
+    return peer->address;
+}
+
 void P2PManager::test_set_peer_services(const std::string& peer_key, uint64_t services) {
     std::lock_guard<std::mutex> lock(peers_mutex_);
     auto it = connected_peers_.find(peer_key);
@@ -3271,7 +3301,8 @@ P2PMessage P2PMessage::create_addrv2(const std::vector<dinero::p2p::AddrV2Entry>
 }
 
 P2PMessage P2PMessage::create_dineroid(const dinero::daemon::NodeIdentity& identity,
-                                       uint64_t nonce_to_sign) {
+                                       uint64_t nonce_to_sign,
+                                       const std::array<uint8_t, 32>* binding) {
     P2PMessage msg;
     msg.command = "dineroid";
 
@@ -3284,19 +3315,21 @@ P2PMessage P2PMessage::create_dineroid(const dinero::daemon::NodeIdentity& ident
         return msg;  // empty payload; caller must check and skip
     }
 
-    uint8_t nonce_le[8];
+    std::vector<uint8_t> signed_bytes(8);
     for (int i = 0; i < 8; i++) {
-        nonce_le[i] = static_cast<uint8_t>((nonce_to_sign >> (i * 8)) & 0xFF);
+        signed_bytes[i] = static_cast<uint8_t>((nonce_to_sign >> (i * 8)) & 0xFF);
     }
-    auto sig = identity.sign_bytes(nonce_le, 8);
+    if (binding) signed_bytes.insert(signed_bytes.end(), binding->begin(), binding->end());
+    auto sig = identity.sign_bytes(signed_bytes.data(), signed_bytes.size());
     if (sig.empty() || sig.size() > 72) {
         return msg;  // signing failure; caller must check and skip
     }
 
-    msg.payload.reserve(33 + 1 + sig.size());
+    msg.payload.reserve(33 + 1 + sig.size() + 1);
     msg.payload.insert(msg.payload.end(), pubkey.begin(), pubkey.end());
     msg.payload.push_back(static_cast<uint8_t>(sig.size()));
     msg.payload.insert(msg.payload.end(), sig.begin(), sig.end());
+    if (binding) msg.payload.push_back(kDineroIdV2);
     return msg;
 }
 
@@ -4148,78 +4181,111 @@ std::unique_ptr<P2PMessage> P2PManager::test_receive_peer_message(
 // payload malformed / signature invalid → log and return. The peer stays
 // connected (identity_proven=false), the relay subsystem in later phases
 // just refuses to advertise that peer's reachability.
-void P2PManager::ExchangeDineroId(PeerInfo* peer) {
-    if (!peer || !node_identity_) return;
+bool P2PManager::ExchangeDineroId(PeerInfo* peer) {
+    if (!peer || !node_identity_) return true;
+
+    // QUIC peers (relayed or direct) must bind the proof to this session:
+    // the relay TLS has no certificate check, so without the binding a relay
+    // that terminates both legs could forward each side's proof unchanged.
+    const bool bound = peer->uses_quic_stream();
+    std::optional<std::array<uint8_t, 32>> binding;
+    if (bound && peer->relay_quic_session) binding = peer->relay_quic_session->ExportBinding();
+    auto fail = [&](const std::string& why) {
+        std::cout << "[Handshake] dineroid: " << why << " for " << peer->to_string()
+                  << (bound ? "; identity binding failed, disconnecting" : "; continuing legacy")
+                  << std::endl;
+        return !bound;
+    };
+    if (bound && !binding) return fail("no TLS exporter value on this QUIC session");
 
     // Send our dineroid first. Sign over peer->their_nonce so the receiver
     // can verify against the nonce they themselves embedded in their version.
-    auto msg = P2PMessage::create_dineroid(*node_identity_, peer->their_nonce);
-    if (msg.payload.empty()) {
-        std::cout << "[Handshake] dineroid: failed to construct outgoing message for "
-                  << peer->to_string() << "; continuing legacy" << std::endl;
-        return;
-    }
-    if (!send_peer_message(peer, msg)) {
-        std::cout << "[Handshake] dineroid: send failed to " << peer->to_string()
-                  << "; continuing legacy" << std::endl;
-        return;
-    }
+    const std::array<uint8_t, 32>* sign_binding = binding ? &*binding : nullptr;
+#ifdef DINERO_TEST_BUILD
+    if (test_dineroid_v1_only_) sign_binding = nullptr;
+#endif
+    auto msg = P2PMessage::create_dineroid(*node_identity_, peer->their_nonce, sign_binding);
+    if (msg.payload.empty()) return fail("failed to construct outgoing message");
+    if (!send_peer_message(peer, msg)) return fail("send failed");
 
     // Receive remote dineroid. receive_message blocks with its existing
     // socket-level timeout; if the remote peer is on rc8 or older they
     // simply won't send and we'll time out → log and continue.
     auto remote = receive_peer_message(peer);
-    if (!remote) {
-        std::cout << "[Handshake] dineroid: no response from " << peer->to_string()
-                  << " (likely older peer); continuing legacy" << std::endl;
-        return;
-    }
+    if (!remote) return fail("no response (likely older peer)");
     if (remote->command != "dineroid") {
-        std::cout << "[Handshake] dineroid: expected 'dineroid' but got '"
-                  << remote->command << "' from " << peer->to_string()
-                  << "; continuing legacy" << std::endl;
-        return;
+        return fail("expected 'dineroid' but got '" + remote->command + "'");
     }
-    // Wire format: pubkey(33) | sig_len(1) | sig(sig_len)
-    if (remote->payload.size() < 34) {
-        std::cout << "[Handshake] dineroid: short payload (" << remote->payload.size()
-                  << " bytes) from " << peer->to_string() << std::endl;
-        return;
-    }
+    // Wire format: pubkey(33) | sig_len(1) | sig(sig_len) [| 0x02 for v2]
+    if (remote->payload.size() < 34) return fail("short payload");
     const uint8_t sig_len = remote->payload[33];
-    if (sig_len == 0 || sig_len > 72 ||
-        remote->payload.size() != 34u + sig_len) {
-        std::cout << "[Handshake] dineroid: invalid sig_len " << static_cast<int>(sig_len)
-                  << " from " << peer->to_string() << std::endl;
-        return;
+    const size_t v1_size = 34u + sig_len;
+    const bool is_v2 = remote->payload.size() == v1_size + 1 &&
+                       remote->payload.back() == P2PMessage::kDineroIdV2;
+    if (sig_len == 0 || sig_len > 72 || (remote->payload.size() != v1_size && !is_v2)) {
+        return fail("invalid sig_len " + std::to_string(sig_len));
     }
+    if (bound && !is_v2) return fail("no session-bound (v2) proof");
 
-    // Verify the signature is over OUR own version nonce.
-    uint8_t our_nonce_le[8];
+    // Verify the signature is over OUR own version nonce (and, bound, over
+    // OUR view of this session's exporter value).
+    std::vector<uint8_t> expected(8);
     for (int i = 0; i < 8; i++) {
-        our_nonce_le[i] = static_cast<uint8_t>((peer->our_nonce >> (i * 8)) & 0xFF);
+        expected[i] = static_cast<uint8_t>((peer->our_nonce >> (i * 8)) & 0xFF);
+    }
+    if (is_v2) {
+        if (!binding) return fail("v2 proof on a session without an exporter value");
+        expected.insert(expected.end(), binding->begin(), binding->end());
     }
     const uint8_t* pubkey = remote->payload.data();
     const uint8_t* sig = remote->payload.data() + 34;
-    if (!dinero::daemon::NodeIdentity::verify_bytes(our_nonce_le, 8,
+    if (!dinero::daemon::NodeIdentity::verify_bytes(expected.data(), expected.size(),
                                                     sig, sig_len, pubkey)) {
-        std::cout << "[Handshake] dineroid: signature verification FAILED for "
-                  << peer->to_string() << "; identity not proven" << std::endl;
-        return;
+        return fail("signature verification FAILED");
     }
 
-    // Success — derive node_id = HASH160(pubkey) and persist on the peer.
+    // Success — derive node_id = HASH160(pubkey).
+    std::array<uint8_t, 20> derived{};
+    ::HASH160(pubkey, 33, derived.data());
+    if (peer->via_relay && peer->is_outbound && derived != peer->their_node_id) {
+        // We asked the relay for target X and someone else answered.
+        const auto dialed = peer->their_node_id;
+        std::cout << "[Handshake] dineroid: relayed peer " << peer->to_string() << " is "
+                  << NodeIdHex(derived) << ", not the dialed " << NodeIdHex(dialed)
+                  << "; disconnecting and dropping that hint" << std::endl;
+        drop_relay_hints_via(dialed, peer->via_relay->relay_peer_address);
+        return false;
+    }
     std::copy(pubkey, pubkey + 33, peer->their_pubkey.begin());
-    ::HASH160(pubkey, 33, peer->their_node_id.data());
+    peer->their_node_id = derived;
     peer->identity_proven = true;
 
-    std::ostringstream id_hex;
-    id_hex << std::hex << std::setfill('0');
-    for (auto b : peer->their_node_id) {
-        id_hex << std::setw(2) << static_cast<unsigned int>(b);
-    }
-    std::cout << "[Handshake] dineroid: identity proven for " << peer->to_string()
-              << " (node_id=" << id_hex.str() << ")" << std::endl;
+    std::cout << "[Handshake] dineroid" << (is_v2 ? " v2" : "") << ": identity proven for "
+              << peer->to_string() << " (node_id=" << NodeIdHex(derived) << ")" << std::endl;
+    return true;
+}
+
+void P2PManager::drop_relay_hints_via(const std::array<uint8_t, 20>& target,
+                                      const std::string& relay_address) {
+    std::string host;
+    uint16_t port = 0;
+    bool has_port = false;
+    if (!dinero::network::SplitEndpoint(relay_address, &host, &port, &has_port) || !has_port) return;
+    dinero::p2p::NetworkType net{};
+    std::vector<uint8_t> bytes;
+    if (!HostToAddrV2(host, &net, &bytes)) return;
+    std::lock_guard<std::mutex> lock(relay_hints_mutex_);
+    auto it = relay_hints_by_target_.find(NodeIdHex(target));
+    if (it == relay_hints_by_target_.end()) return;
+    auto& hints = it->second;
+    hints.erase(std::remove_if(hints.begin(), hints.end(),
+                               [&](const RelayHintRecord& h) {
+                                   return h.net == net && h.relay_addr == bytes &&
+                                          h.relay_port == port;
+                               }),
+                hints.end());
+    if (hints.empty()) relay_hints_by_target_.erase(it);
+    relay_hints_dirty_.store(true, std::memory_order_release);
 }
 
 // NAT traversal Phase 1A.2 / BIP155: symmetric sendaddrv2 negotiation.
@@ -6405,7 +6471,13 @@ bool P2PManager::perform_handshake(PeerInfo* peer) {
         const bool both_v2 = (peer->service_flags & ServiceFlags::NODE_DINERO_V2) &&
                              (our_services & ServiceFlags::NODE_DINERO_V2);
         if (both_v2 && node_identity_) {
-            ExchangeDineroId(peer);
+            if (!ExchangeDineroId(peer)) return false;
+        } else if (node_identity_ && peer->uses_quic_stream()) {
+            // A QUIC peer must prove its identity: a relay stripping the
+            // NODE_DINERO_V2 bit must not skip the check.
+            std::cout << "[Handshake] QUIC peer " << peer->to_string()
+                      << " did not offer dineroid; disconnecting" << std::endl;
+            return false;
         }
         // NAT traversal Phase 1A.2: BIP155 sendaddrv2 negotiation. Gated on
         // the same NODE_DINERO_V2 capability (no separate flag — addrv2 is
@@ -6483,7 +6555,13 @@ bool P2PManager::perform_handshake(PeerInfo* peer) {
         const bool both_v2 = (peer->service_flags & ServiceFlags::NODE_DINERO_V2) &&
                              (our_services & ServiceFlags::NODE_DINERO_V2);
         if (both_v2 && node_identity_) {
-            ExchangeDineroId(peer);
+            if (!ExchangeDineroId(peer)) return false;
+        } else if (node_identity_ && peer->uses_quic_stream()) {
+            // A QUIC peer must prove its identity: a relay stripping the
+            // NODE_DINERO_V2 bit must not skip the check.
+            std::cout << "[Handshake] QUIC peer " << peer->to_string()
+                      << " did not offer dineroid; disconnecting" << std::endl;
+            return false;
         }
         // NAT traversal Phase 1A.2: BIP155 sendaddrv2 negotiation. Gated on
         // the same NODE_DINERO_V2 capability (no separate flag — addrv2 is

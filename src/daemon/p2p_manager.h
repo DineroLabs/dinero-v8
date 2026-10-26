@@ -264,8 +264,13 @@ struct P2PMessage {
     // specific TCP handshake and prevents cross-connection replay.
     // Returns empty payload if the identity isn't initialized; caller MUST
     // handle that as a non-fatal handshake skip.
+    // With `binding` (a QUIC session's ExportBinding) it builds dineroid v2:
+    // the signature covers nonce_LE8 || binding32 and the payload ends with
+    // version byte 0x02.
     static P2PMessage create_dineroid(const dinero::daemon::NodeIdentity& identity,
-                                      uint64_t nonce_to_sign);
+                                      uint64_t nonce_to_sign,
+                                      const std::array<uint8_t, 32>* binding = nullptr);
+    static constexpr uint8_t kDineroIdV2 = 0x02;
 
     // NAT traversal Phase 1A.2 / BIP155:
     //   sendaddrv2 has empty payload — its presence is the negotiation.
@@ -685,8 +690,14 @@ public:
     // the middle of perform_handshake. Sends our signed pubkey and waits
     // (with the same timeout receive_message uses) for the remote one;
     // populates peer->their_pubkey / their_node_id / identity_proven on
-    // success. Failures are non-fatal — handshake continues legacy-style.
-    void ExchangeDineroId(PeerInfo* peer);
+    // success. On a TCP peer failures are non-fatal — the handshake
+    // continues legacy-style. On a QUIC peer (relayed or direct) the
+    // signature must cover nonce || this session's TLS exporter value
+    // (dineroid v2), so a relay that terminates both TLS legs cannot pass
+    // one side's proof to the other; any failure returns false and the
+    // handshake fails. An outbound relayed peer must also turn out to be
+    // the node we dialed; otherwise that hint is dropped.
+    bool ExchangeDineroId(PeerInfo* peer);
 
     // NAT traversal Phase 1A.2: symmetric `sendaddrv2` negotiation. Sends
     // our (empty-payload) sendaddrv2; receives remote's. Sets
@@ -904,6 +915,7 @@ public:
         bool dry_run);
 
 #ifdef DINERO_TEST_BUILD
+    bool test_dineroid_v1_only_{false};
     bool test_shutdown_requested() const {
         return shutdown_requested_.load(std::memory_order_acquire);
     }
@@ -1002,6 +1014,13 @@ public:
     void test_orchestrate_relay_dials() { OrchestrateRelayDials(); }
     size_t test_relay_hint_count(const std::array<uint8_t, 20>& target) const;
     void test_set_peer_services(const std::string& peer_key, uint64_t services);
+    // A relayed (via_relay, encrypted QUIC) peer on a caller-owned session;
+    // `expected_target` set means an outbound dial of that node id.
+    std::string test_install_quic_relay_peer(
+        std::shared_ptr<dinero::network::QuicSession> session, const std::string& relay_address,
+        uint64_t circuit_id, std::optional<std::array<uint8_t, 20>> expected_target);
+    // Behave like a pre-v8.2.0 build: send only dineroid v1.
+    void test_set_dineroid_v1_only(bool v1_only) { test_dineroid_v1_only_ = v1_only; }
     // Gives a test-installed peer (keyed "host:port", port 0) its real
     // endpoint, so to_string() matches relay endpoint keys.
     void test_set_peer_endpoint(const std::string& peer_key, const std::string& host,
@@ -1446,6 +1465,9 @@ private:
     std::mutex hint_forwarder_mutex_;
     dinero::p2p::HintForwarder hint_forwarder_;
     std::atomic<uint64_t> hints_v2_rejected_{0};
+    // An outbound relayed dial reached someone other than the target: drop
+    // the target's hints through that relay.
+    void drop_relay_hints_via(const std::array<uint8_t, 20>& target, const std::string& relay_address);
     void SignedRelayHintsTick(bool force);
     void SendSignedRelayHint(const std::vector<uint8_t>& payload, const std::string& except_peer);
 

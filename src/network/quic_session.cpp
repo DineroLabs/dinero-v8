@@ -203,6 +203,7 @@ struct QuicSession::Impl {
     // error_mutex (cheap; rarely contended).
     std::string tls_cipher_snapshot;
     std::string selected_alpn_snapshot;
+    std::optional<std::array<uint8_t, 32>> binding_snapshot;
 
     Impl() {
         conn_ref.get_conn = &Impl::GetConn;
@@ -915,9 +916,17 @@ struct QuicSession::Impl {
             alpn_str.assign(reinterpret_cast<const char*>(alpn),
                             reinterpret_cast<const char*>(alpn) + alpn_len);
         }
+        std::optional<std::array<uint8_t, 32>> binding;
+        static constexpr char kLabel[] = "EXPORTER-dinero-p2p-identity";
+        std::array<uint8_t, 32> out{};
+        if (SSL_export_keying_material(ssl, out.data(), out.size(), kLabel, sizeof(kLabel) - 1,
+                                       nullptr, 0, /*use_context=*/0) == 1) {
+            binding = out;
+        }
         std::lock_guard<std::mutex> lock(error_mutex);
         tls_cipher_snapshot = std::move(cipher_str);
         selected_alpn_snapshot = std::move(alpn_str);
+        binding_snapshot = binding;
     }
 
     bool ConnHandshakeReady() const {
@@ -1318,6 +1327,15 @@ void QuicSession::Close() {
     }
     impl_->inbox_cv.notify_all();
     impl_->outbox_cv.notify_all();
+}
+
+std::optional<std::array<uint8_t, 32>> QuicSession::ExportBinding() const {
+#if defined(DINERO_HAVE_NGTCP2) && defined(DINERO_HAVE_NGTCP2_CRYPTO_OSSL)
+    std::lock_guard<std::mutex> lock(impl_->error_mutex);
+    return impl_->binding_snapshot;
+#else
+    return std::nullopt;
+#endif
 }
 
 QuicSessionStats QuicSession::Stats() const {

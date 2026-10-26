@@ -125,6 +125,8 @@ namespace MessageCommands {
     constexpr const char* RELAY_HINTS        = "relayhnt";
     // RELAY_REGISTER_OK: the relay accepted a RELAY_REGISTER. Payload: ttl_u32 LE.
     constexpr const char* RELAY_REGISTER_OK  = "relayrok";
+    // RELAY_HINTS_V2: one target-signed hint, forwardable (p2p/relay_hint_v2.h).
+    constexpr const char* RELAY_HINTS_V2     = "relayhn2";
 } // namespace MessageCommands
 
 // Service flags for node capabilities (Bitcoin P2P protocol standard)

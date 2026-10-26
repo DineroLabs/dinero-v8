@@ -3846,6 +3846,75 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/p2p/test_relay_virtual_transport.cpp)
     TIMEOUT 30
   )
 
+  # Identity bound to the QUIC session (TLS exporter), incl. a MITM relay.
+  if(DINERO_ENABLE_QUIC)
+  add_executable(test_relay_identity_binding
+    tests/p2p/test_relay_identity_binding.cpp
+    src/daemon/p2p_manager.cpp
+    src/p2p/self_reachability.cpp
+    src/p2p/relay_hint_v2.cpp
+    src/network/relay_hints_eviction.cpp
+    src/network/relay_registry.cpp
+    src/network/quic_endpoint.cpp
+    src/network/quic_session.cpp
+    src/network/quic_transport.cpp
+    src/network/relay_tls_keypair.cpp
+    src/network/udp_socket.cpp
+    src/daemon/node_identity.cpp
+    src/p2p/addr_v2.cpp
+    src/p2p/addrman.cpp
+    src/crypto/params_stub.cpp
+    src/common/sha256d.cpp
+    src/common/logger.cpp
+    src/daemon/secure_random.cpp
+  )
+
+  target_compile_definitions(test_relay_identity_binding PRIVATE DINERO_TEST_BUILD)
+
+  if(APPLE)
+    target_link_libraries(test_relay_identity_binding PRIVATE
+      GTest::gtest GTest::gtest_main
+      Threads::Threads
+      dinero_crypto
+      secp256k1
+      OpenSSL::SSL
+      OpenSSL::Crypto
+      "-framework Security"
+    )
+  else()
+    target_link_libraries(test_relay_identity_binding PRIVATE
+      GTest::gtest GTest::gtest_main
+      Threads::Threads
+      dinero_crypto
+      secp256k1
+      OpenSSL::SSL
+      OpenSSL::Crypto
+    )
+  endif()
+
+  if(DINERO_ENABLE_QUIC AND TARGET dinero_ngtcp2)
+    target_link_libraries(test_relay_identity_binding PRIVATE dinero_ngtcp2)
+    if(TARGET dinero_ngtcp2_crypto_ossl)
+      target_link_libraries(test_relay_identity_binding PRIVATE dinero_ngtcp2_crypto_ossl)
+    elseif(TARGET dinero_ngtcp2_crypto_quictls)
+      target_link_libraries(test_relay_identity_binding PRIVATE dinero_ngtcp2_crypto_quictls)
+    endif()
+  endif()
+
+  if(WIN32)
+    target_link_libraries(test_relay_identity_binding PRIVATE ws2_32)
+  endif()
+
+  target_include_directories(test_relay_identity_binding PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src/daemon
+    ${CMAKE_SOURCE_DIR}/tests/network
+  )
+
+  add_test(NAME RelayIdentityBinding COMMAND test_relay_identity_binding)
+  set_tests_properties(RelayIdentityBinding PROPERTIES LABELS "p2p;relay;quic;security" TIMEOUT 120)
+  endif()
+
   # Direct QUIC peers need the real QuicSession/QuicEndpoint (QUIC on).
   if(DINERO_ENABLE_QUIC)
   add_executable(test_quic_direct_peer
