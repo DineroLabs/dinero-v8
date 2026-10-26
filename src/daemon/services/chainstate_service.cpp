@@ -21522,7 +21522,11 @@ std::vector<uint8_t> ChainstateService::finalizeRuntimeWalletShield(
        selected->context.domain.genesis_wire!=profile.domain.genesis_wire||selected->context.domain.branch_id!=profile.domain.branch_id)
         throw std::runtime_error("Shield finalization source changed");
     std::unique_ptr<const ImportedOrchardDeliverySource> compact_origin;UTXOIndex* compact_index=nullptr;
-    if(compact_startup_&&compact_startup_->imported_parent){
+    // NEW compact signing is post-activation and requires this genuine
+    // delivery/cohort source. Existing retained Ready retries also work at
+    // the real empty activation parent: they must not fabricate Event1 or be
+    // forced through the post-activation delivery factory's unchanged guard.
+    if(submit_current_proof&&compact_startup_&&compact_startup_->imported_parent){
         {std::lock_guard<std::mutex> use(wallet_index_use_mutex_);
          if(!wallet_index_uses_by_thread_.contains(std::this_thread::get_id())||!utxo_index_)
             throw std::runtime_error("Compact signing original index lifetime unavailable");compact_index=utxo_index_.get();}

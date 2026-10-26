@@ -1342,6 +1342,9 @@ still refuse admission without losing the durable signed intent.
 
 Existing signed retries retain their strict exact retained-pool proof requirement:
 missing, stale or invalid DATA is not silently repaired or treated as authority.
+Their activation-parent route remains valid without Event1; it does not call the
+post-activation imported delivery factory. The added lifecycle/cohort pin applies
+only to NEW post-activation compact signing, never a fabricated zero/first event.
 Cold/interrupted Ready reacquisition and restarted proof work remain separate
 unfinished paths. New signing does not create a general coin view, a mixed
 transparent/index baseline, independent prehistory or a lifecycle repair.
