@@ -20,6 +20,7 @@
 #include "network/quic_endpoint.h"
 #include "network/port_mapper.h"
 #include "network/stun_client.h"       // NAT traversal Phase C1: public-IP discovery
+#include "p2p/nat_classifier.h"
 #include "network/quic_transport.h"    // Stage B: log QUIC relay-transport readiness at startup
 #include "daemon/node_identity.h"      // NAT traversal Phase 1A: keypair for dineroid handshake
 #include "p2p/block_download_scheduler.h"
@@ -501,6 +502,11 @@ P2PService::NetworkStatus P2PService::GetNetworkStatus() const {
         status.stun_discovered_address = stun_discovered_address_;
         status.stun_server_used = stun_server_used_;
         status.stun_message = stun_message_;
+        status.nat_mapping = nat_mapping_;
+        status.nat_port_preserving = nat_port_preserving_;
+        status.nat_reflexive = nat_reflexive_;
+        status.nat_servers = nat_servers_;
+        status.nat_measured_at = nat_measured_at_;
     }
     if (p2p_mgr_ && p2p_mgr_->quic_endpoint()) {
         const auto* ep = p2p_mgr_->quic_endpoint();
@@ -849,7 +855,24 @@ void P2PService::StartStunDiscoveryIfEnabled() {
         return;
     }
 
-    stun_client_ = std::make_unique<dinero::network::StunClient>();
+    // On the P2P UDP port when the QuicEndpoint is up: the reflexive address
+    // is then the one QUIC peers can dial and the NAT mapping is the one hole
+    // punching meets. Otherwise an ephemeral socket of its own (diagnostic
+    // public IP only; the mapping stays "unknown").
+    auto* ep = p2p_mgr_->quic_endpoint();
+    stun_on_p2p_port_ = ep && ep->Listening();
+    if (stun_on_p2p_port_) {
+        stun_client_ = std::make_shared<dinero::network::StunClient>(
+            [ep](const dinero::network::UdpAddr& dst, const uint8_t* d, size_t n) {
+                return ep->SendDatagram(dst, d, n);
+            });
+        std::weak_ptr<dinero::network::StunClient> weak = stun_client_;
+        ep->SetStunHandler([weak](const dinero::network::UdpAddr& src, const uint8_t* d, size_t n) {
+            if (auto c = weak.lock()) c->HandleDatagram(src, d, n);
+        });
+    } else {
+        stun_client_ = std::make_shared<dinero::network::StunClient>();
+    }
     std::vector<std::pair<std::string, uint16_t>> servers = {
         // DineroLabs primaries (TODO ops: bring these up before rc cut)
         {"stun1.dinerolabs.org", 3478},
@@ -861,37 +884,79 @@ void P2PService::StartStunDiscoveryIfEnabled() {
         {"stun.cloudflare.com", 3478},
     };
     stun_client_->SetServers(std::move(servers));
+    RunStunRound();
+}
 
+void P2PService::MaybeRemeasureStun() {
+    if (!stun_client_ || stun_client_->busy()) return;
+    {
+        std::lock_guard<std::mutex> lock(stun_status_mutex_);
+        if (std::chrono::steady_clock::now() < stun_next_round_) return;
+    }
+    RunStunRound();
+}
+
+void P2PService::RunStunRound() {
+    // Re-measured every 30 min: a lease change or a move to another network
+    // shows up as a new reflexive address, which un-verifies our candidates.
+    constexpr auto kStunRemeasure = std::chrono::minutes(30);
     {
         std::lock_guard<std::mutex> lock(stun_status_mutex_);
         stun_message_ = "discovering (background)";
+        stun_next_round_ = std::chrono::steady_clock::now() + kStunRemeasure;
     }
     if (logger_interface_) {
-        logger_interface_->info("[P2PService] STUN discovery dispatched (5 servers, 8s deadline)");
+        logger_interface_->info(std::string("[P2PService] STUN discovery dispatched (5 servers, 8s deadline, ") +
+                                (stun_on_p2p_port_ ? "P2P UDP port)" : "ephemeral socket)"));
     }
 
+    const uint16_t local_port = stun_on_p2p_port_ ? p2p_mgr_->quic_endpoint()->Port() : 0;
     stun_client_->Discover(std::chrono::seconds(8),
-                           [this](const dinero::network::StunResult& r) {
+                           [this, local_port](const dinero::network::StunResult& r) {
         if (!r.public_addr.empty()) {
             const std::string addr_str = r.public_addr.to_string();
+            std::vector<std::pair<std::string, uint16_t>> reflexive;
+            std::vector<std::string> reflexive_str;
+            for (const auto& [server, refl] : r.responses) {
+                const std::string rs = refl.to_string();
+                if (std::find(reflexive_str.begin(), reflexive_str.end(), rs) != reflexive_str.end()) {
+                    continue;
+                }
+                reflexive_str.push_back(rs);
+                std::string host;
+                uint16_t port = 0;
+                bool has_port = false;
+                if (dinero::network::SplitEndpoint(rs, &host, &port, &has_port) && has_port) {
+                    reflexive.emplace_back(host, port);
+                }
+            }
+            const auto nat = stun_on_p2p_port_
+                                 ? dinero::p2p::Classify(local_port, r.responses)
+                                 : dinero::p2p::NatMapping{};
             {
                 std::lock_guard<std::mutex> lock(stun_status_mutex_);
                 stun_discovered_address_ = addr_str;
                 stun_server_used_ = r.server_endpoint;
                 stun_message_ = "ok";
+                nat_mapping_ = dinero::p2p::NatMappingName(nat.mapping);
+                nat_port_preserving_ = nat.port_preserving;
+                nat_reflexive_ = reflexive_str;
+                nat_servers_ = static_cast<uint32_t>(r.responses.size());
+                nat_measured_at_ = std::chrono::duration_cast<std::chrono::seconds>(
+                                       std::chrono::system_clock::now().time_since_epoch())
+                                       .count();
             }
-            // STUN discovers the router's reflexive UDP endpoint. It is useful
-            // diagnostic data and a future hole-punching input, but it does
-            // not prove that the daemon's TCP/QUIC P2P listener is reachable.
-            // Do not feed it into advertised_addresses_: relay auto-register
-            // treats that list as confirmed direct inbound reachability. UPnP,
-            // NAT-PMP, and explicit externalip remain the sources for direct
-            // P2P address advertisement.
+            // The reflexive address is a QUIC candidate only, and only when it
+            // was measured on the P2P port. It is never advertised until
+            // dial-back verifies it, so the old concern (relay auto-register
+            // treating STUN output as proven inbound) no longer applies.
+            if (stun_on_p2p_port_ && p2p_mgr_) p2p_mgr_->update_stun_candidates(reflexive);
             if (logger_interface_) {
                 logger_interface_->info(
                     "[P2PService] STUN discovered public address " + addr_str +
-                    " via " + r.server_endpoint +
-                    " — keeping as diagnostic data, not advertising as reachable P2P");
+                    " via " + r.server_endpoint + " (" + std::to_string(r.responses.size()) +
+                    " servers, mapping " + dinero::p2p::NatMappingName(nat.mapping) +
+                    (nat.port_preserving ? ", port-preserving" : "") + ")");
             }
         } else {
             std::lock_guard<std::mutex> lock(stun_status_mutex_);
@@ -921,6 +986,7 @@ void P2PService::StartSchedulerTickLoop() {
         auto last_invariant_check = std::chrono::steady_clock::now();
 
         while (scheduler_tick_running_.load(std::memory_order_relaxed)) {
+            MaybeRemeasureStun();
             if (auto* ctx = DaemonContext::instance()) {
                 if (ctx->header_sync) {
                     ctx->header_sync->Tick();
@@ -2452,7 +2518,9 @@ void P2PService::Stop() {
         StopPortMapping();
 
         // NAT traversal Phase C1: tear down the STUN client (closes the
-        // ephemeral UDP socket + joins the reader thread). Idempotent.
+        // ephemeral UDP socket + joins the reader thread). Idempotent. The
+        // endpoint outlives it, so unhook its STUN handler first.
+        if (auto* ep = p2p_mgr_->quic_endpoint()) ep->SetStunHandler(nullptr);
         stun_client_.reset();
 
         // Stop P2P manager (disconnects all peers, stops threads)

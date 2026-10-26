@@ -108,3 +108,21 @@ TEST(SelfReachability, MinGroupsOneForRegtest) {
     Ok(r, V("127.0.0.1"));
     EXPECT_TRUE(r.IsVerified(kAddr));
 }
+
+TEST(SelfReachability, PlanChecksOnlyForRequestedTransport) {
+    // STUN's reflexive address is a QUIC candidate; until verifiers can dial
+    // QUIC back, planning it would only burn their rate budget.
+    FakeClock c;
+    SelfReachability r({}, c.fn());
+    const Candidate quic{"203.0.113.5", 20999, Transport::Quic, CandidateSource::Stun};
+    r.AddCandidate(kAddr);
+    r.AddCandidate(quic);
+    const std::vector<Verifier> vs = {V("1.2.3.4"), V("5.6.7.8")};
+    auto plan = r.PlanChecks(vs, Transport::Tcp);
+    ASSERT_EQ(plan.size(), 2u);
+    for (const auto& [cand, v] : plan) EXPECT_EQ(cand.transport, Transport::Tcp);
+    // The skipped candidate has no round open: it is still plannable later.
+    auto later = r.PlanChecks(vs, Transport::Quic);
+    ASSERT_EQ(later.size(), 2u);
+    EXPECT_EQ(later[0].first.transport, Transport::Quic);
+}

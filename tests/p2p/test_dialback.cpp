@@ -169,3 +169,33 @@ TEST(DialBack, OldPeerWithoutBitNeverReceivesReachchk) {
     EXPECT_TRUE(old.mgr->test_dialback_targets().empty());
     EXPECT_EQ(a.mgr->test_reach_checks_sent(), 0u) << "sent reachchk to a peer without NODE_DIALBACK";
 }
+
+TEST(DialBack, StunReflexiveChangeResetsVerification) {
+    // The router's public address moved (new lease, laptop on a new network):
+    // nothing proven at the old address stands, and the old reflexive
+    // candidate is dropped instead of lingering forever.
+    Node a("stun-change");
+    a.mgr->test_mark_self_verified("203.0.113.5", a.port);
+    ASSERT_TRUE(a.mgr->has_proven_reachable());
+
+    auto stun_rows = [&] {
+        std::vector<std::string> out;
+        for (const auto& st : a.mgr->self_reachability_status()) {
+            if (st.c.source == dinero::p2p::CandidateSource::Stun) {
+                EXPECT_EQ(st.c.transport, dinero::p2p::Transport::Quic);
+                out.push_back(st.c.ip + ":" + std::to_string(st.c.port));
+            }
+        }
+        return out;
+    };
+    a.mgr->update_stun_candidates({{"162.200.227.214", 45123}});
+    EXPECT_EQ(stun_rows(), std::vector<std::string>{"162.200.227.214:45123"});
+    EXPECT_TRUE(a.mgr->has_proven_reachable());  // first measurement is not a change
+
+    a.mgr->update_stun_candidates({{"162.200.227.214", 45123}});
+    EXPECT_TRUE(a.mgr->has_proven_reachable());  // same answer: still nothing changed
+
+    a.mgr->update_stun_candidates({{"99.1.2.3", 45123}});
+    EXPECT_EQ(stun_rows(), std::vector<std::string>{"99.1.2.3:45123"});
+    EXPECT_FALSE(a.mgr->has_proven_reachable());
+}

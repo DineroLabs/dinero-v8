@@ -30,9 +30,20 @@ uint32_t SelfReachability::OkGroups(Entry& e) const {
 
 std::vector<std::pair<Candidate, Verifier>> SelfReachability::PlanChecks(
     const std::vector<Verifier>& available) {
+    return Plan(available, std::nullopt);
+}
+
+std::vector<std::pair<Candidate, Verifier>> SelfReachability::PlanChecks(
+    const std::vector<Verifier>& available, Transport only) {
+    return Plan(available, only);
+}
+
+std::vector<std::pair<Candidate, Verifier>> SelfReachability::Plan(
+    const std::vector<Verifier>& available, std::optional<Transport> only) {
     std::vector<std::pair<Candidate, Verifier>> plan;
     const auto now = clock_();
     for (auto& [key, e] : entries_) {
+        if (only && e.c.transport != *only) continue;
         if (e.round_open) continue;  // results still outstanding
         const bool due = e.state != VerifyState::Verified ||
                          now - e.verified_at >= params_.recheck;

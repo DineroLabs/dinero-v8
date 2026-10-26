@@ -9,6 +9,7 @@
 #include <condition_variable>
 #include <deque>
 #include <map>
+#include <set>
 #include <unordered_map>
 #include <unordered_set>
 #include <functional>
@@ -234,14 +235,17 @@ struct P2PMessage {
     uint32_t checksum;
     
     // Standard Bitcoin-like message types
-    // addr_recv_ip: the IPv4 address of the peer we're sending this version TO,
-    // written into addrRecv so the recipient can learn its own external address
-    // (Bitcoin addrRecv semantics). Empty => 0.0.0.0 (legacy behavior).
+    // addr_recv_ip/port: the address of the peer we're sending this version TO
+    // (IPv4, or IPv6 in v6 form), written into addrRecv so the recipient can
+    // learn its own external address (Bitcoin addrRecv semantics). Empty =>
+    // 0.0.0.0 (legacy behavior). addr_from_port: our listen port.
     static P2PMessage create_version(uint32_t protocol_version, uint32_t best_height,
                                      uint64_t services = 0,
                                      const std::string& user_agent = "",
                                      uint64_t explicit_nonce = 0,
-                                     const std::string& addr_recv_ip = "");
+                                     const std::string& addr_recv_ip = "",
+                                     uint16_t addr_recv_port = 20999,
+                                     uint16_t addr_from_port = 20999);
     static P2PMessage create_verack();
 
     // NAT traversal Phase 1A: post-verack node-identity exchange.
@@ -513,6 +517,10 @@ public:
     // Directly reachable as far as we can prove: an explicit address (operator
     // externalip / port mapping) or one that peers dialed back successfully.
     bool has_proven_reachable() const;
+    // This round's STUN reflexive addresses (ip, port) on the P2P UDP port,
+    // fed in as QUIC candidates. A different set from the last round means our
+    // public address moved: every candidate goes back to unverified.
+    void update_stun_candidates(const std::vector<std::pair<std::string, uint16_t>>& reflexive);
     // True iff we have an EXPLICIT/confirmed reachable advertised address
     // (operator externalip or port-mapping) — not merely a Gap-1-learned one.
     // Used so a NAT'd node (only a learned, dead address) stays relay-fallback
@@ -1023,6 +1031,7 @@ private:
     std::unique_ptr<dinero::p2p::SelfReachability> self_reach_ =
         std::make_unique<dinero::p2p::SelfReachability>(
             dinero::p2p::SelfReachability::Params{}, [] { return std::chrono::steady_clock::now(); });
+    std::set<std::pair<std::string, uint16_t>> stun_reflexive_;  // last STUN round's answers
     struct PendingReach {
         dinero::p2p::Candidate candidate;
         dinero::p2p::Verifier verifier;
@@ -1447,6 +1456,9 @@ private:
     
     // Socket utilities
     int create_listen_socket();
+    // Best-effort IPv6 listener on listen_port_ (IPV6_V6ONLY); -1 if the host
+    // has no usable IPv6, and the node stays v4-only.
+    int create_listen_socket_v6();
     int create_client_socket(const std::string& address, uint16_t port);
     int create_socks5_client_socket(const std::string& proxy_host,
                                     uint16_t proxy_port,

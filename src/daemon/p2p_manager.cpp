@@ -570,7 +570,9 @@ P2PMessage P2PMessage::create_version(uint32_t protocol_version, uint32_t best_h
                                       uint64_t services,
                                       const std::string& user_agent,
                                       uint64_t explicit_nonce,
-                                      const std::string& addr_recv_ip) {
+                                      const std::string& addr_recv_ip,
+                                      uint16_t addr_recv_port,
+                                      uint16_t addr_from_port) {
     P2PMessage msg;
     msg.command = "version";
 
@@ -605,30 +607,36 @@ P2PMessage P2PMessage::create_version(uint32_t protocol_version, uint32_t best_h
     // addrRecv (26 bytes): services(8) + IPv6(16) + port(2).
     // Fill the IPv4 octets with the RECIPIENT's address (addr_recv_ip) so the
     // peer can learn its own external IP from us (Bitcoin addrRecv semantics).
-    // Empty / non-IPv4 => 0.0.0.0 (legacy behavior, harmless).
+    // An IPv6 recipient gets its address in plain v6 form.
+    // Empty / unparseable => 0.0.0.0 (legacy behavior, harmless).
     for (int i = 0; i < 8; i++) payload.push_back((services >> (i * 8)) & 0xFF);  // services
-    for (int i = 0; i < 10; i++) payload.push_back(0);  // IPv6 prefix zeros
-    payload.push_back(0xff); payload.push_back(0xff);  // IPv4-mapped marker
     {
+        struct in6_addr v6 {};
         struct in_addr v4 {};
-        if (!addr_recv_ip.empty() && inet_pton(AF_INET, addr_recv_ip.c_str(), &v4) == 1) {
-            const uint8_t* b = reinterpret_cast<const uint8_t*>(&v4.s_addr);  // network byte order
-            payload.push_back(b[0]); payload.push_back(b[1]);
-            payload.push_back(b[2]); payload.push_back(b[3]);
+        if (!addr_recv_ip.empty() && inet_pton(AF_INET6, addr_recv_ip.c_str(), &v6) == 1) {
+            const uint8_t* b = reinterpret_cast<const uint8_t*>(&v6);
+            payload.insert(payload.end(), b, b + 16);
         } else {
-            payload.push_back(0); payload.push_back(0); payload.push_back(0); payload.push_back(0);
+            for (int i = 0; i < 10; i++) payload.push_back(0);  // IPv6 prefix zeros
+            payload.push_back(0xff); payload.push_back(0xff);  // IPv4-mapped marker
+            if (!addr_recv_ip.empty() && inet_pton(AF_INET, addr_recv_ip.c_str(), &v4) == 1) {
+                const uint8_t* b = reinterpret_cast<const uint8_t*>(&v4.s_addr);  // network byte order
+                payload.insert(payload.end(), b, b + 4);
+            } else {
+                payload.push_back(0); payload.push_back(0); payload.push_back(0); payload.push_back(0);
+            }
         }
     }
-    payload.push_back((20999 >> 8) & 0xFF);  // Port (big-endian)
-    payload.push_back(20999 & 0xFF);
+    payload.push_back((addr_recv_port >> 8) & 0xFF);  // Port (big-endian)
+    payload.push_back(addr_recv_port & 0xFF);
 
     // addrFrom (26 bytes): same structure
     for (int i = 0; i < 8; i++) payload.push_back((services >> (i * 8)) & 0xFF);
     for (int i = 0; i < 10; i++) payload.push_back(0);
     payload.push_back(0xff); payload.push_back(0xff);
     payload.push_back(0); payload.push_back(0); payload.push_back(0); payload.push_back(0);
-    payload.push_back((20999 >> 8) & 0xFF);
-    payload.push_back(20999 & 0xFF);
+    payload.push_back((addr_from_port >> 8) & 0xFF);
+    payload.push_back(addr_from_port & 0xFF);
 
     // Nonce (8 bytes). Caller may supply an explicit nonce (e.g. so the
     // `dineroid` post-verack identity exchange can sign exactly the value
@@ -4793,7 +4801,10 @@ bool P2PManager::connect_to_peer(const std::string& address, uint16_t port) {
 std::optional<std::string> P2PManager::resolve_ipv4_for_dial(
     const std::string& host, std::chrono::milliseconds timeout) const {
     struct in_addr ipv4 {};
+    struct in6_addr ipv6 {};
+    // Literals need no lookup; IPv6 ones dial as-is (only names are v4-only).
     if (inet_pton(AF_INET, host.c_str(), &ipv4) == 1) return host;
+    if (inet_pton(AF_INET6, host.c_str(), &ipv6) == 1) return host;
 #ifdef DINERO_TEST_BUILD
     auto resolver = test_ipv4_resolver_ ? test_ipv4_resolver_ : ResolveIpv4System;
 #else
@@ -4985,36 +4996,48 @@ void P2PManager::listen_loop() {
         std::cerr << "Failed to create listen socket" << std::endl;
         return;
     }
-    
+    // Same port as the v4 listener (create_listen_socket settled listen_port_).
+    const int listen_socket_v6 = create_listen_socket_v6();
+
     while (!shutdown_requested_) {
         fd_set read_fds;
         FD_ZERO(&read_fds);
         FD_SET(listen_socket, &read_fds);
-        
+        if (listen_socket_v6 >= 0) FD_SET(listen_socket_v6, &read_fds);
+
         struct timeval timeout;
         timeout.tv_sec = 1;
         timeout.tv_usec = 0;
-        
-        int activity = select(listen_socket + 1, &read_fds, nullptr, nullptr, &timeout);
-        
+
+        const int max_fd = std::max(listen_socket, listen_socket_v6);
+        int activity = select(max_fd + 1, &read_fds, nullptr, nullptr, &timeout);
+
         if (activity < 0 && !shutdown_requested_) {
             std::cerr << "Select error in P2P listen loop" << std::endl;
             break;
         }
-        
-        if (activity > 0 && FD_ISSET(listen_socket, &read_fds)) {
-            struct sockaddr_in client_addr;
+
+        for (const int fd : {listen_socket, listen_socket_v6}) {
+            if (activity <= 0 || fd < 0 || !FD_ISSET(fd, &read_fds)) continue;
+            struct sockaddr_storage client_addr {};
             socklen_t client_len = sizeof(client_addr);
-            
-            int client_socket = accept(listen_socket, (struct sockaddr*)&client_addr, &client_len);
-            if (client_socket >= 0) {
-                if (!network_active_.load(std::memory_order_acquire)) {
-                    close_socket(client_socket);
-                    continue;
-                }
-                std::string client_address = inet_ntoa(client_addr.sin_addr);
-                handle_incoming_connection(client_socket, client_address);
+
+            int client_socket = accept(fd, (struct sockaddr*)&client_addr, &client_len);
+            if (client_socket < 0) continue;
+            if (!network_active_.load(std::memory_order_acquire)) {
+                close_socket(client_socket);
+                continue;
             }
+            char buf[INET6_ADDRSTRLEN] = {};
+            const bool v6 = client_addr.ss_family == AF_INET6;
+            const void* ip = v6
+                ? static_cast<const void*>(&reinterpret_cast<struct sockaddr_in6*>(&client_addr)->sin6_addr)
+                : static_cast<const void*>(&reinterpret_cast<struct sockaddr_in*>(&client_addr)->sin_addr);
+            if (inet_ntop(v6 ? AF_INET6 : AF_INET, ip, buf, sizeof(buf)) == nullptr) {
+                close_socket(client_socket);
+                continue;
+            }
+            handle_incoming_connection(client_socket, buf);
         }
     }
 
@@ -5022,6 +5045,7 @@ void P2PManager::listen_loop() {
     socket_listening_.store(false, std::memory_order_release);
 
     close_socket(listen_socket);
+    if (listen_socket_v6 >= 0) close_socket(listen_socket_v6);
 }
 
 void P2PManager::connection_manager_loop() {
@@ -5393,12 +5417,14 @@ void P2PManager::handle_incoming_connection(int client_socket, const std::string
     set_socket_keepalive(client_socket);
 
     // Extract actual source port from socket (fixes peer key collision bug)
-    struct sockaddr_in peer_addr;
+    struct sockaddr_storage peer_addr {};
     socklen_t addr_len = sizeof(peer_addr);
     uint16_t source_port = 0;
 
     if (getpeername(client_socket, (struct sockaddr*)&peer_addr, &addr_len) == 0) {
-        source_port = ntohs(peer_addr.sin_port);
+        source_port = peer_addr.ss_family == AF_INET6
+                          ? ntohs(reinterpret_cast<struct sockaddr_in6*>(&peer_addr)->sin6_port)
+                          : ntohs(reinterpret_cast<struct sockaddr_in*>(&peer_addr)->sin_port);
     } else {
         std::cerr << "[P2P] Warning: Failed to get peer source port: " << strerror(errno) << std::endl;
         // Fallback: Use socket FD as unique identifier
@@ -5744,11 +5770,22 @@ static void parse_version_payload(const std::vector<uint8_t>& payload, PeerInfo*
     // 4 IPv4 octets at offset 40-43. 0.0.0.0 means a legacy peer that zero-fills
     // addrRecv — ignore those. The caller (which holds the P2PManager) feeds a
     // non-empty reported_local_addr into self-address vote scoring.
+    // Anything not in the ::ffff:0:0/96 form is a plain IPv6 address.
     if (payload.size() >= 46) {
-        const uint8_t a = payload[40], b = payload[41], c = payload[42], d = payload[43];
-        if (!(a == 0 && b == 0 && c == 0 && d == 0)) {
-            peer->reported_local_addr = std::to_string(a) + "." + std::to_string(b) +
-                                        "." + std::to_string(c) + "." + std::to_string(d);
+        static const uint8_t kMapped[12] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff};
+        static const uint8_t kZero[16] = {};
+        if (std::memcmp(payload.data() + 28, kMapped, 12) != 0) {
+            char buf[INET6_ADDRSTRLEN] = {};
+            if (std::memcmp(payload.data() + 28, kZero, 16) != 0 &&
+                inet_ntop(AF_INET6, payload.data() + 28, buf, sizeof(buf)) != nullptr) {
+                peer->reported_local_addr = buf;
+            }
+        } else {
+            const uint8_t a = payload[40], b = payload[41], c = payload[42], d = payload[43];
+            if (!(a == 0 && b == 0 && c == 0 && d == 0)) {
+                peer->reported_local_addr = std::to_string(a) + "." + std::to_string(b) +
+                                            "." + std::to_string(c) + "." + std::to_string(d);
+            }
         }
     }
 
@@ -5879,7 +5916,8 @@ bool P2PManager::perform_handshake(PeerInfo* peer) {
         // Send version message with actual chain height and service flags.
         // Pass peer->address as addrRecv so the peer can learn its own IP from us.
         auto version_msg = P2PMessage::create_version(protocol_version_, our_height, our_services,
-                                                     user_agent_, peer->our_nonce, peer->address);
+                                                     user_agent_, peer->our_nonce, peer->address,
+                                                     peer->port, listen_port_);
         if (!send_peer_message(peer, version_msg)) {
             return false;
         }
@@ -5975,7 +6013,8 @@ bool P2PManager::perform_handshake(PeerInfo* peer) {
         // Send version response with actual chain height and service flags.
         // Pass peer->address as addrRecv so the peer can learn its own IP from us.
         auto response = P2PMessage::create_version(protocol_version_, our_height, our_services,
-                                                  user_agent_, peer->our_nonce, peer->address);
+                                                  user_agent_, peer->our_nonce, peer->address,
+                                                  peer->port, listen_port_);
         if (!send_peer_message(peer, response)) {
             return false;
         }
@@ -7173,6 +7212,23 @@ std::vector<dinero::p2p::CandidateStatus> P2PManager::self_reachability_status()
     return self_reach_->Status();
 }
 
+void P2PManager::update_stun_candidates(
+    const std::vector<std::pair<std::string, uint16_t>>& reflexive) {
+    std::set<std::pair<std::string, uint16_t>> now(reflexive.begin(), reflexive.end());
+    std::lock_guard<std::mutex> lock(reach_mutex_);
+    if (now == stun_reflexive_) return;
+    auto stun = [](const std::pair<std::string, uint16_t>& r) {
+        return dinero::p2p::Candidate{r.first, r.second, dinero::p2p::Transport::Quic,
+                                      dinero::p2p::CandidateSource::Stun};
+    };
+    for (const auto& r : stun_reflexive_) {
+        if (!now.count(r)) self_reach_->RemoveCandidate(stun(r));
+    }
+    if (!stun_reflexive_.empty()) self_reach_->OnNetworkChange();
+    for (const auto& r : now) self_reach_->AddCandidate(stun(r));
+    stun_reflexive_ = std::move(now);
+}
+
 bool P2PManager::has_proven_reachable() const {
     if (has_explicit_advertised_.load(std::memory_order_acquire)) return true;
     std::lock_guard<std::mutex> lock(reach_mutex_);
@@ -7240,7 +7296,9 @@ void P2PManager::run_reachability_tick() {
     std::vector<std::pair<dinero::p2p::Candidate, dinero::p2p::Verifier>> plan;
     {
         std::lock_guard<std::mutex> lock(reach_mutex_);
-        plan = self_reach_->PlanChecks(verifiers);
+        // TCP only: verifiers cannot dial QUIC back yet (Plan 4), so a
+        // QUIC candidate would only spend their rate budget.
+        plan = self_reach_->PlanChecks(verifiers, dinero::p2p::Transport::Tcp);
     }
     for (const auto& [candidate, verifier] : plan) {
         send_reach_check(verifier.peer_key, candidate, verifier, {});
@@ -7680,6 +7738,37 @@ int P2PManager::create_listen_socket() {
     return socket_fd;
 }
 
+int P2PManager::create_listen_socket_v6() {
+    const int socket_fd = socket(AF_INET6, SOCK_STREAM, 0);
+    if (socket_fd < 0) {
+        std::cout << "P2P: no IPv6 listener (socket: " << strerror(errno) << "), IPv4 only" << std::endl;
+        return -1;
+    }
+    compat_set_cloexec(socket_fd);
+    int opt = 1;
+    setsockopt(socket_fd, SOL_SOCKET, SO_REUSEADDR, (char*)&opt, sizeof(opt));
+    // v6 only on every platform: Windows defaults to it, Linux does not, and a
+    // dual-stack socket here would collide with the v4 listener's port.
+    if (setsockopt(socket_fd, IPPROTO_IPV6, IPV6_V6ONLY, (char*)&opt, sizeof(opt)) < 0) {
+        std::cout << "P2P: no IPv6 listener (IPV6_V6ONLY: " << strerror(errno) << "), IPv4 only" << std::endl;
+        close_socket(socket_fd);
+        return -1;
+    }
+    set_socket_keepalive(socket_fd);
+    struct sockaddr_in6 addr {};
+    addr.sin6_family = AF_INET6;
+    addr.sin6_addr = in6addr_any;
+    addr.sin6_port = htons(listen_port_);
+    if (bind(socket_fd, (struct sockaddr*)&addr, sizeof(addr)) < 0 || listen(socket_fd, 128) < 0) {
+        std::cout << "P2P: no IPv6 listener on port " << listen_port_ << " (" << strerror(errno)
+                  << "), IPv4 only" << std::endl;
+        close_socket(socket_fd);
+        return -1;
+    }
+    std::cout << "P2P server also listening on [::]:" << listen_port_ << std::endl;
+    return socket_fd;
+}
+
 int P2PManager::wait_for_outbound_connect(int socket_fd) {
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
     while (!shutdown_requested_.load(std::memory_order_acquire) &&
@@ -7730,7 +7819,11 @@ int P2PManager::create_client_socket(const std::string& address, uint16_t port) 
 
     std::string numeric_address = address;
     struct in_addr numeric_ipv4 {};
-    if (inet_pton(AF_INET, address.c_str(), &numeric_ipv4) != 1) {
+    struct in6_addr numeric_ipv6 {};
+    // IPv6 literals (addrman, gossip, config) dial as-is; hostnames still
+    // resolve to IPv4 (every seed and DNS seed is v4 today).
+    const bool v6 = inet_pton(AF_INET6, address.c_str(), &numeric_ipv6) == 1;
+    if (!v6 && inet_pton(AF_INET, address.c_str(), &numeric_ipv4) != 1) {
         const auto resolved = resolve_ipv4_for_dial(address);
         if (!resolved) return -1;
         numeric_address = *resolved;
@@ -7738,7 +7831,7 @@ int P2PManager::create_client_socket(const std::string& address, uint16_t port) 
     if (shutdown_requested_.load(std::memory_order_acquire) ||
         !network_active_.load(std::memory_order_acquire)) return -1;
 
-    int socket_fd = socket(AF_INET, SOCK_STREAM, 0);
+    int socket_fd = socket(v6 ? AF_INET6 : AF_INET, SOCK_STREAM, 0);
     if (socket_fd < 0) {
         return -1;
     }
@@ -7755,18 +7848,27 @@ int P2PManager::create_client_socket(const std::string& address, uint16_t port) 
         return -1;
     }
     
-    struct sockaddr_in server_addr;
-    memset(&server_addr, 0, sizeof(server_addr));
-    server_addr.sin_family = AF_INET;
-    server_addr.sin_port = htons(port);
-    
-    if (inet_pton(AF_INET, numeric_address.c_str(), &server_addr.sin_addr) != 1) {
-        close_socket(socket_fd);
-        return -1;
+    struct sockaddr_storage server_addr {};
+    socklen_t server_len = 0;
+    if (v6) {
+        auto* sa6 = reinterpret_cast<struct sockaddr_in6*>(&server_addr);
+        sa6->sin6_family = AF_INET6;
+        sa6->sin6_port = htons(port);
+        sa6->sin6_addr = numeric_ipv6;
+        server_len = sizeof(struct sockaddr_in6);
+    } else {
+        auto* sa4 = reinterpret_cast<struct sockaddr_in*>(&server_addr);
+        sa4->sin_family = AF_INET;
+        sa4->sin_port = htons(port);
+        if (inet_pton(AF_INET, numeric_address.c_str(), &sa4->sin_addr) != 1) {
+            close_socket(socket_fd);
+            return -1;
+        }
+        server_len = sizeof(struct sockaddr_in);
     }
-    
+
     // Non-blocking connect
-    int result = connect(socket_fd, (struct sockaddr*)&server_addr, sizeof(server_addr));
+    int result = connect(socket_fd, (struct sockaddr*)&server_addr, server_len);
     if (result < 0) {
         #ifdef _WIN32
             if (WSAGetLastError() != WSAEWOULDBLOCK) {

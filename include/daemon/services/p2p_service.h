@@ -151,6 +151,15 @@ public:
         std::string stun_discovered_address;
         std::string stun_server_used;
         std::string stun_message;
+        // NAT mapping measured by STUN on the P2P UDP port (RFC 4787):
+        // "endpoint-independent", "endpoint-dependent" or "unknown" (fewer
+        // than two servers answered, or QUIC is off so STUN used its own
+        // ephemeral socket and says nothing about the P2P port).
+        std::string nat_mapping{"unknown"};
+        bool nat_port_preserving{false};
+        std::vector<std::string> nat_reflexive;  // distinct addresses servers saw
+        uint32_t nat_servers{0};                 // servers that answered
+        int64_t nat_measured_at{0};              // unix seconds; 0 = never
         // Direct QUIC peers on UDP at the P2P port.
         // Inbound peers on a real socket or direct QUIC (relay circuits are
         // not evidence that our own address is dialable).
@@ -393,15 +402,21 @@ private:
     std::mutex port_mapping_wait_mutex_;
     std::condition_variable port_mapping_wait_cv_;
 
-    // NAT traversal Phase C1: STUN client + mirror of last result. The
-    // unique_ptr is heap-allocated to avoid pulling stun_client.h
-    // (which pulls udp_socket.h, which pulls winsock2.h) into this
-    // public header transitively.
-    std::unique_ptr<network::StunClient> stun_client_;
+    // NAT traversal Phase C1: STUN client + mirror of last result. Shared
+    // so the QuicEndpoint's STUN handler can hold it weakly: a datagram
+    // arriving during teardown then finds no client instead of a dead one.
+    std::shared_ptr<network::StunClient> stun_client_;
+    bool stun_on_p2p_port_{false};  // sends through the QuicEndpoint socket
     mutable std::mutex stun_status_mutex_;
     std::string stun_discovered_address_;
     std::string stun_server_used_;
     std::string stun_message_{"not run"};
+    std::string nat_mapping_{"unknown"};
+    bool nat_port_preserving_{false};
+    std::vector<std::string> nat_reflexive_;
+    uint32_t nat_servers_{0};
+    int64_t nat_measured_at_{0};
+    std::chrono::steady_clock::time_point stun_next_round_{};
 
     // Public relay role policy (Tier 3 of the three-tier model — see
     // docs/network-participation.md). Tier 1 (be a full P2P node) and
@@ -512,6 +527,9 @@ private:
     // stun_discovered_address_ / stun_message_ under stun_status_mutex_,
     // and on success calls p2p_mgr_->add_advertised_address().
     void StartStunDiscoveryIfEnabled();
+    void RunStunRound();
+    // Scheduler tick: re-measure once stun_next_round_ passes.
+    void MaybeRemeasureStun();
     void StopPortMapping();
 
     // Per-peer headers rate limiting (eclipse/DoS protection)

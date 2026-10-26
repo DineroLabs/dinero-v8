@@ -86,3 +86,67 @@ TEST(AddrV2, Ipv6EntriesAreStoredNotDropped) {
     }
     EXPECT_TRUE(found) << "gossiped IPv6 address was dropped";
 }
+
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <unistd.h>
+
+#include <thread>
+
+namespace {
+// A free TCP port on ::1, or 0 if this host cannot bind IPv6 loopback.
+uint16_t FreeV6Port() {
+    int t = ::socket(AF_INET6, SOCK_STREAM, 0);
+    if (t < 0) return 0;
+    sockaddr_in6 a{};
+    a.sin6_family = AF_INET6;
+    a.sin6_addr = in6addr_loopback;
+    if (::bind(t, reinterpret_cast<sockaddr*>(&a), sizeof(a)) != 0) { ::close(t); return 0; }
+    socklen_t len = sizeof(a);
+    ::getsockname(t, reinterpret_cast<sockaddr*>(&a), &len);
+    ::close(t);
+    return ntohs(a.sin6_port);
+}
+
+const PeerInfo* WaitConnected(P2PManager& m, const std::string& key, int seconds = 10) {
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(seconds);
+    while (std::chrono::steady_clock::now() < deadline) {
+        if (auto* p = m.get_peer_info(key); p && p->is_connected) return p;
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+    return nullptr;
+}
+}  // namespace
+
+TEST(PeerKey, Ipv6LoopbackDialHandshake) {
+    // Dual-stack: a v6 listener next to the v4 one, v6 dials, and the version
+    // message carrying the v6 address the peer saw us at.
+    const uint16_t port_a = FreeV6Port(), port_b = FreeV6Port();
+    if (port_a == 0 || port_b == 0) {
+        std::cout << "[  SKIPPED ] ::1 cannot be bound on this host" << std::endl;
+        GTEST_SKIP() << "::1 cannot be bound on this host";
+    }
+    P2PManager a(port_a), b(port_b);
+    for (P2PManager* m : {&a, &b}) {
+        m->set_quic_enabled(false);
+        m->set_height_provider([] { return 10u; });
+        ASSERT_TRUE(m->start());
+    }
+    ASSERT_TRUE(b.connect_to_peer("::1", port_a));
+    const PeerInfo* out = WaitConnected(b, "[::1]:" + std::to_string(port_a));
+    ASSERT_NE(out, nullptr) << "outbound v6 peer never connected";
+    // A put the address it saw B at into addrRecv, in v6 form.
+    EXPECT_EQ(out->reported_local_addr, "::1");
+
+    bool inbound_v6 = false;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (!inbound_v6 && std::chrono::steady_clock::now() < deadline) {
+        for (const auto& p : a.get_connected_peers()) {
+            if (!p.is_outbound && p.is_connected && p.address == "::1") inbound_v6 = true;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+    EXPECT_TRUE(inbound_v6) << "A never accepted B over its v6 listener";
+    b.stop();
+    a.stop();
+}

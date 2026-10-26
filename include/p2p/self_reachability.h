@@ -17,6 +17,7 @@
 #include <cstdint>
 #include <functional>
 #include <map>
+#include <optional>
 #include <string>
 #include <tuple>
 #include <utility>
@@ -65,6 +66,9 @@ public:
     // The (candidate, verifier) checks to send now. Never two verifiers from
     // one network group for a candidate in a round.
     std::vector<std::pair<Candidate, Verifier>> PlanChecks(const std::vector<Verifier>& available);
+    // Same, for candidates of one transport only; the others are left alone.
+    std::vector<std::pair<Candidate, Verifier>> PlanChecks(const std::vector<Verifier>& available,
+                                                           Transport only);
     // result_code 0 = the verifier reached this node at the address.
     void OnResult(const Candidate& c, const Verifier& v, uint8_t result_code);
     // Local address or network changed: nothing stays verified until re-checked.
@@ -88,6 +92,8 @@ private:
         uint32_t failed_rounds{0};
     };
     static Key KeyOf(const Candidate& c);
+    std::vector<std::pair<Candidate, Verifier>> Plan(const std::vector<Verifier>& available,
+                                                     std::optional<Transport> only);
     uint32_t OkGroups(Entry& e) const;  // also prunes oks outside the window
     void CloseRound(Entry& e);
 

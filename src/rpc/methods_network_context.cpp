@@ -446,6 +446,18 @@ din::Json rpc_context_getnetworkinfo(const ExecutionContext& ctx, const din::Jso
     stun["message"] = status.stun_message;
     result["stun"] = stun;
 
+    // NAT mapping on the P2P UDP port, read by the health self-report and the
+    // hole-punch decision. "unknown" until two STUN servers have answered.
+    din::Json nat;
+    nat["mapping"] = status.nat_mapping;
+    nat["port_preserving"] = status.nat_port_preserving;
+    din::Json reflexive(Json::arrayValue);
+    for (const auto& r : status.nat_reflexive) reflexive.append(r);
+    nat["reflexive"] = reflexive;
+    nat["servers"] = static_cast<int>(status.nat_servers);
+    nat["measured_at"] = static_cast<Json::Int64>(status.nat_measured_at);
+    result["nat"] = nat;
+
     din::Json onion_transport;
     onion_transport["configured"] = status.onion_transport_configured;
     onion_transport["enabled"] = status.onion_transport_enabled;
