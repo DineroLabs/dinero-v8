@@ -5,7 +5,7 @@ assumed-mobile variant uses normal snapshot import into a new header-only
 root, never copied canonical coins, wallet rows or lifecycle keys. This is
 a native C ABI acceptance lane, not a device run.
 """
-import hashlib,json,os,socket,sqlite3,struct,subprocess,tempfile,threading,time,traceback
+import hashlib,json,os,socket,sqlite3,struct,subprocess,sys,tempfile,threading,time,traceback
 from pathlib import Path
 
 root=Path(tempfile.mkdtemp(prefix='sdk-funded-crossing-evidence-')).resolve()
@@ -168,6 +168,21 @@ try:
     restored=rpc('wallet.restore',dict(name='wire-named-owner',mnemonic='abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about',rescan=assumed))
     assert restored['success'] is True
     (root/'restored.json').write_text(json.dumps(restored,indent=2)+'\n')
+    if os.environ.get('DINERO_SDK_ASSUMED_RESCAN_FENCE'):
+        # A separate fail-closed gate, NOT the funded crossing. The genuine
+        # imported selected parent is101 while independent/durable tip is0.
+        # A scan of genesis must never be reported as a102-block history scan.
+        assert assumed and restored.get('rescan_success') is False,restored
+        assert 'Historical rescan source is not the selected active tip' in restored.get('rescan_error',''),restored
+        assert 'rescan' not in restored,'refused scan published a completion result'
+        assert original_lifecycle()==original,'rescan refusal changed original assumed lifecycle'
+        assert rpc('wallet.listunspent',[])==[],'refused scan invented funding'
+        (root/'receipt.json').write_text(json.dumps(dict(original_assumed_mobile=True,
+            original_lifecycle=original,restore=restored,false_completion_refused=True,
+            funded_crossing=False,scope='Actual normal imported SDK named restore refuses historical scan beyond its durable source. No funding discovery, queue, handoff, app/device or release acceptance.'),indent=2)+'\n')
+        assert call('stop')==0;success=True
+        print('PASS actual imported SDK refuses false historical rescan completion without assumed lifecycle changes',flush=True)
+        sys.exit(0)
     deadline=time.monotonic()+20
     while time.monotonic()<deadline:
         state=call('sdk_activation_state');assert not failures,failures

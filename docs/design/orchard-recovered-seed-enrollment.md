@@ -1085,3 +1085,15 @@ complete historical/transparent-index replay receipt; selected-source input
 checks remain mandatory. This new regression defines the remaining nonempty
 original-assumed gate; its registration alone claims neither a pass nor a
 production fix. The older full-parent and empty imported cases stay separate.
+
+The actual imported-funded regression exposed an earlier false completion:
+normal restore reported102 scanned blocks through selected base101 while the
+legacy wallet scanner only read the durable genesis tip0. Funding was absent,
+and normal unlock reported canonical recovery deferred. The historical rescan
+RPC now refuses unequal selected/durable sources BEFORE wallet cleanup or
+progress writes. The separate `NodeCoreAssumedRescanFence` checks this normal
+SDK refusal with the original assumed lifecycle intact. This is a completion
+honesty fence, not snapshot funding discovery, a whole-history/transparent
+baseline, independent validation or the nonempty imported crossing. Complete
+snapshot-aware candidate discovery and subsequent current input authorization
+remain required; no coin/catalog guard or assumed key is relaxed to pass it.

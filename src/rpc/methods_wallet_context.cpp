@@ -6470,6 +6470,23 @@ din::Json rpc_context_wallet_rescanblockchain(const ExecutionContext& ctx, const
             return result;
         }
 
+        // A loaded snapshot may select a base far above the durable replay
+        // tip. The legacy scanner reads through ChainDB::getTip(), not the
+        // selected height used by this RPC's progress/result below. Refuse
+        // before cleanup or wallet progress writes instead of scanning only
+        // genesis and claiming that all pre-base bodies were visited. This
+        // grants no snapshot, transparent-index or Orchard recovery receipt.
+        const auto selected_source = chainstate->GetSyncSnapshot();
+        const auto durable_source = chain_db->getTip();
+        if (!durable_source.ok() || durable_source->height < 0 ||
+            selected_source.active_tip_height != current_height ||
+            uint32_t(durable_source->height) != current_height ||
+            durable_source->hash != selected_source.active_tip_hash) {
+            result["error"] = "Historical rescan source is not the selected active tip; snapshot recovery is required";
+            result["rescan_blocked"] = true;
+            return result;
+        }
+
         // ═══════════════════════════════════════════════════════════════
         // USE BLOCK-SCANNING RESCAN (not forEachUTXO).
         // Dinero is a Utreexo node — the full UTXO set is NOT stored in
