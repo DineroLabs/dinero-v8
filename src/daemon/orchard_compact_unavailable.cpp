@@ -6,6 +6,11 @@
 #include <stdexcept>
 
 namespace dinero {
+OrchardPoolCoinView OrchardCompactChainstate::CaptureWalletInputsUnderLock(
+    AnnotatedRecursiveMutex&, const consensus::OrchardTransactionContext&,
+    const BlockHeader&, std::span<const OrchardProvedWalletInput>) const {
+    throw std::runtime_error("Orchard compact owner backend unavailable");
+}
 OrchardPoolCoinView OrchardCompactChainstate::CapturePoolCoinsUnderLock(
     AnnotatedRecursiveMutex&, const consensus::OrchardTransactionContext&,
     const BlockHeader&, std::span<const MempoolProofView>) const {

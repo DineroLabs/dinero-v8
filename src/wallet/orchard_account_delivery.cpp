@@ -1787,7 +1787,9 @@ OrchardAccountDelivery::ShieldResult OrchardAccountDelivery::CommitShieldReserva
             for(size_t i=0;i<wallet_inputs.size();++i){const auto& a=source->inputs_[i];const auto& b=wallet_inputs[i];
                 Check(a.txid==b.txid&&a.vout==b.vout&&a.amount_una==b.amount_una&&a.script==b.script);}
             source->current_();
-            lease->ValidateSnapshotShieldInputsInTransaction(*owner.seed,wallet_inputs,source->height_,source->base_,source->root_);
+            if(source->snapshot_candidate_)
+                lease->ValidateSnapshotShieldInputsInTransaction(*owner.seed,wallet_inputs,source->height_,source->base_,source->root_);
+            else lease->ValidateUnreservedInputsInTransaction(*owner.seed,wallet_inputs);
         }else lease->ValidateUnreservedInputsInTransaction(*owner.seed,wallet_inputs);
         for(const auto& output:outputs)
             Check(bool(lease->ResolveSigningKeyInTransaction(util::hex(output.script_pub_key),*owner.seed)));

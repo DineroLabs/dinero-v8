@@ -41,6 +41,37 @@ TEST(OrchardPoolCatalogView, ReopenedCompactOwnerAuthenticatesLegacyAndModernInp
     size_t full_coins=0;ASSERT_EQ(f.reopened.forEachUTXO([&](const uint256&,uint32_t,const Coin&){++full_coins;return true;}),Status::Ok);
     EXPECT_EQ(full_coins,0u);EXPECT_EQ(f.Rows(),rows);EXPECT_EQ(f.ArchiveBytes(),archives);
 }
+TEST(OrchardPoolCatalogView, NewWalletReservationPathsDoNotGrantGeneralCoinAccess){
+    std::vector<OrchardProvedWalletInput> inputs;
+    CompactStartupFixture f([&](auto& fixture){
+        CompactPoolInputs selected;selected.Capture(fixture);
+        for(const auto& body:{selected.legacy,selected.modern}){
+            const auto point=body.Inputs().front();const auto row=fixture.f.db.getCoin(point.txid.AsUint256(),point.vout);
+            OrchardAdmissionFixture::Require(row.ok());std::vector<uint8_t> script;OrchardAdmissionFixture::Require(util::unhex(row->script_pubkey,script));
+            const auto* live=fixture.f.service->GetConsensusUTXOSet();const auto held=live->LockForestShared();const auto& forest=live->GetForest();
+            const auto leaf=consensus::HashUTXOForCreationHeight(point.txid.AsUint256(),point.vout,row->amount,script,row->height,row->coinbase);
+            const auto position=forest.findLeafPosition(leaf);const auto path=position?forest.prove(*position):std::nullopt;
+            OrchardAdmissionFixture::Require(bool(path));inputs.push_back({point,
+                consensus::UTXOEntry(AmountUna::Una(row->amount),script,row->height,row->coinbase),*path});
+        }
+    });
+    auto owner=f.Restore();ASSERT_TRUE(owner);const auto rows=f.Rows();const auto context=CompactPoolContext(f);
+    std::lock_guard<AnnotatedRecursiveMutex> held(f.startup_mutex);
+    const auto capture=[&](const auto& data){return owner->CaptureWalletInputsUnderLock(f.startup_mutex,context,f.second->Header(),data);};
+    const auto good=capture(inputs);EXPECT_EQ(good.CapturedInputs(),2u);EXPECT_EQ(good.ProvedOutputAbsences(),0u);
+    EXPECT_EQ(good.getCoin(OutPoint(TxId(uint256(7)),0)).status(),Status::Internal);
+    for(int change:{0,1,2,3,4,5}){auto bad=inputs;
+        if(change==0)bad[0].coin.isCoinbase=false; // Legacy hash does NOT bind this bit: catalog MUST.
+        if(change==1)++bad[0].coin.height;
+        if(change==2){if(bad[1].path.siblings.empty())bad[1].path.siblings.push_back(std::vector<uint8_t>(32));else bad[1].path.siblings.front()[0]^=1;}
+        if(change==3)++bad[1].path.numLeaves;
+        if(change==4)bad[1].coin.is_confidential=true;
+        if(change==5)bad.push_back(bad.front());
+        EXPECT_THROW((void)capture(bad),std::exception);
+    }
+    EXPECT_THROW((void)capture(std::vector<OrchardProvedWalletInput>{}),std::exception);
+    EXPECT_EQ(f.Rows(),rows);EXPECT_EQ(capture(inputs).CapturedInputs(),2u);
+}
 TEST(OrchardPoolCatalogView, MetadataProofAndSelectionFailuresDoNotPublishInputs) {
     CompactPoolInputs inputs;CompactStartupFixture f([&](auto& fixture){inputs.Capture(fixture);});auto owner=f.Restore();ASSERT_TRUE(owner);
     const auto context=CompactPoolContext(f);const auto rows=f.Rows();

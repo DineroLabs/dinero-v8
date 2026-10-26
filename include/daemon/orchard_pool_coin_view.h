@@ -3,11 +3,16 @@
 #include "consensus/orchard_state_transition.h"
 #include "daemon/mempool_chainstate_guard.h"
 #include "storage/orchard_catalog_state.h"
+#include "consensus/utreexo_accumulator.h"
 #include <map>
 #include <set>
 
 namespace dinero {
 class OrchardCompactChainstate;
+// Untrusted path/metadata DATA. Construction grants no source authority.
+struct OrchardProvedWalletInput {
+    OutPoint point;consensus::UTXOEntry coin;consensus::UtreexoProof path;
+};
 // Immutable, bounded input snapshot from an enrolled compact owner. Only exact
 // proved inputs and explicitly catalog-proved output absences are answerable.
 // Unknown lookups are errors. This is not pool admission, signature validation,
@@ -34,6 +39,8 @@ private:
     static OrchardPoolCoinView Capture(const consensus::OrchardTransactionContext&,
         const BlockHeader&,const storage::catalog::State&,
         const storage::catalog::Tree::Read&,std::span<const MempoolProofView>);
+    static OrchardPoolCoinView CaptureWalletInputs(const storage::catalog::State&,
+        const storage::catalog::Tree::Read&,std::span<const OrchardProvedWalletInput>);
     explicit OrchardPoolCoinView(uint32_t height,uint256 parent):height_(height),parent_(parent){}
     uint32_t height_;
     uint256 parent_;

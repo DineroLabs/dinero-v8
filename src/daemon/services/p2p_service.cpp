@@ -33,6 +33,7 @@
 #include "p2p/orchard_catalog_download.h"
 #include "p2p/orchard_phone_history.h"
 #include "p2p/wallet_funding_download.h"
+#include "daemon/wallet_input_proof_source.h"
 #include "daemon/config.h"
 #endif
 #include <algorithm>
@@ -301,6 +302,8 @@ P2PService::~P2PService() {
 
 void P2PService::StopCatalogWorkers() {
 #ifdef DINERO_HAS_ORCHARD_P2P
+    if(const auto inputs=WalletInputProofs())inputs->Stop();
+    if(wallet_input_server_)wallet_input_server_->Stop();
     if(const auto funding=WalletFundingBodies())funding->Stop();
     if(const auto history=PhoneHistoryDownload())history->Stop();
     if(const auto client=CatalogDownload())client->Stop();
@@ -316,6 +319,9 @@ std::shared_ptr<p2p::OrchardPhoneHistoryDownload> P2PService::PhoneHistoryDownlo
 }
 std::shared_ptr<p2p::WalletFundingDownload> P2PService::WalletFundingBodies() const {
     std::lock_guard lock(orchard_catalog_download_mutex_);return wallet_funding_bodies_;
+}
+std::shared_ptr<p2p::WalletInputProofDownload> P2PService::WalletInputProofs() const {
+    std::lock_guard lock(orchard_catalog_download_mutex_);return wallet_input_proofs_;
 }
 
 std::shared_ptr<const consensus::OrchardSnapshotSection> P2PService::ReadyActivationCatalog() const {
@@ -1971,6 +1977,22 @@ void P2PService::StartOrchardHistoryWorkers() {
         // Only a full archival profile serves activation catalogs. The local
         // load/export switch does not gate this consensus-state transport.
 #ifdef DINERO_HAS_ORCHARD_P2P
+        if(!offline_mode_&&chainstate_&&consensus::OrchardProfileConfigurationValid(Params())&&
+           Params().orchard_activation_height!=UINT32_MAX){
+            const auto send=[this](const auto& peer,const auto& command,const auto& bytes){
+                ::P2PMessage message{};message.command=command;message.payload=bytes;
+                return p2p_mgr_&&p2p_mgr_->is_network_active()&&p2p_mgr_->send_to_peer(peer.address,message,peer.session);
+            };
+            if(GetConfig().utreexo_stateless){
+                auto inputs=std::make_shared<p2p::WalletInputProofDownload>([this]{
+                    std::vector<p2p::OrchardCatalogClient::Peer> peers;
+                    if(p2p_mgr_&&p2p_mgr_->is_network_active())for(const auto& p:p2p_mgr_->connected_peer_sessions())
+                        peers.push_back({p.address,p.nonce,p.services});return peers;
+                },send);
+                std::lock_guard lock(orchard_catalog_download_mutex_);wallet_input_proofs_=std::move(inputs);
+            }else wallet_input_server_=std::make_shared<p2p::WalletInputProofServer>(
+                [source=chainstate_](const auto& request){return ServeWalletInputProof(*source,request);},send);
+        }
         if(chainstate_&&GetConfig().utreexo_stateless&&
            consensus::OrchardProfileConfigurationValid(Params())&&Params().orchard_activation_height!=UINT32_MAX&&
            Params().orchard_catalog_commitment_activation_height==Params().orchard_activation_height){
@@ -2521,8 +2543,10 @@ void P2PService::ReleaseStoppedDependencies() {
     std::shared_ptr<p2p::OrchardPhoneHistoryDownload> history;
     std::shared_ptr<p2p::OrchardCatalogDownload> download;
     std::shared_ptr<p2p::WalletFundingDownload> funding;
+    std::shared_ptr<p2p::WalletInputProofDownload> inputs;
+    {std::lock_guard lock(orchard_catalog_download_mutex_);inputs=std::move(wallet_input_proofs_);}
     {std::lock_guard lock(orchard_catalog_download_mutex_);funding=std::move(wallet_funding_bodies_);history=std::move(orchard_phone_history_);download=std::move(orchard_catalog_download_);}
-    funding.reset();history.reset();download.reset();
+    inputs.reset();wallet_input_server_.reset();funding.reset();history.reset();download.reset();
     orchard_catalog_server_.reset();
     OnNewBlock = {};
     OnNewTx = {};
@@ -2622,6 +2646,13 @@ void P2PService::Stop() {
 
 void P2PService::HandleP2PMessage(const std::string& peer_addr, const ::P2PMessage& msg) {
 #ifdef DINERO_HAS_ORCHARD_P2P
+    if(msg.command==p2p::WalletInputProof::RequestCommand||msg.command==p2p::WalletInputProof::ReplyCommand){
+        if(p2p_mgr_){const auto session=p2p_mgr_->peer_session_nonce(peer_addr);
+            if(session){const p2p::OrchardCatalogClient::Peer peer{peer_addr,*session,0};
+                if(msg.command==p2p::WalletInputProof::ReplyCommand){if(const auto client=WalletInputProofs())client->Enqueue(peer,msg.payload);}
+                else if(wallet_input_server_)wallet_input_server_->Enqueue(peer,msg.payload);
+            }}return;
+    }
     if(msg.command=="block")if(const auto funding=WalletFundingBodies();funding&&p2p_mgr_){
         const auto session=p2p_mgr_->peer_session_nonce(peer_addr);
         if(session&&funding->Enqueue({peer_addr,*session,0},msg.payload))return;

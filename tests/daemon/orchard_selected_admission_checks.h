@@ -237,7 +237,10 @@ public:
                     tx.vin.push_back(input);
                     if(historical_spend==HistoricalSpend::NamedWallet){
                         constexpr uint64_t funded=1000000;Require(coin.value.GetUna()>fee+funded);
-                        tx.vout.emplace_back(AmountUna::Una(funded),funding_script);
+                        if(std::getenv("DINERO_SDK_COMPACT_NEW_RESERVATION")){
+                            tx.vout.emplace_back(AmountUna::Una(funded/2),funding_script);
+                            tx.vout.emplace_back(AmountUna::Una(funded/2),funding_script);
+                        }else tx.vout.emplace_back(AmountUna::Una(funded),funding_script);
                         tx.vout.emplace_back(AmountUna::Una(coin.value.GetUna()-fee-funded),script);
                     }else tx.vout.emplace_back(AmountUna::Una(coin.value.GetUna()-fee),script);
                     CanonicalWalletUTXO resolved;resolved.txid=point.txid.AsUint256();resolved.vout=point.vout;

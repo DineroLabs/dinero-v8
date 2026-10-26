@@ -41,6 +41,11 @@ public:
     [[nodiscard]] OrchardPoolCoinView CapturePoolCoinsUnderLock(AnnotatedRecursiveMutex&,
         const consensus::OrchardTransactionContext&,const BlockHeader&,
         std::span<const MempoolProofView>) const;
+    // Exact NEW reservation inputs only; no arbitrary queries/output absences.
+    // Retains all original selected/storage/retirement/consistency guards.
+    [[nodiscard]] OrchardPoolCoinView CaptureWalletInputsUnderLock(AnnotatedRecursiveMutex&,
+        const consensus::OrchardTransactionContext&,const BlockHeader&,
+        std::span<const OrchardProvedWalletInput>) const;
 
 private:
     friend class PreparedOrchardChainstateWrite;

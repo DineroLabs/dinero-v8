@@ -1,6 +1,11 @@
 #pragma once
 #include "p2p/wallet_funding_download.h"
 namespace dinero {
+TEST(WalletFundingDownload, NewInputProofCodecBounds){
+    using W=p2p::WalletInputProof;
+    EXPECT_THROW(W::Request::Decode(std::vector<uint8_t>(W::RequestBytes)),std::invalid_argument);
+    EXPECT_THROW(W::Reply::Decode(std::vector<uint8_t>(W::MaximumBytes+1)),std::invalid_argument);
+}
 TEST(WalletFundingDownload, BoundedRequestsAndStoppedOwner){
     p2p::WalletFundingDownload download([]{return std::vector<p2p::WalletFundingDownload::Peer>{};},
         [](const auto&,const auto&,const auto&){return false;});
@@ -10,6 +15,34 @@ TEST(WalletFundingDownload, BoundedRequestsAndStoppedOwner){
     download.Stop();EXPECT_FALSE(download.Request(extra));
 }
 #ifdef DINERO_TEST_ORCHARD_ORIGIN
+TEST(WalletFundingDownload, CurrentFullSourceInputProofAndExactSessionDownload){
+    CanonicalRecoveryFixture f;f.MineEmpty();using W=p2p::WalletInputProof;
+    const auto current=f.f.service->getUtreexoRpcSnapshot();ASSERT_TRUE(current.ok());
+    W::Request request;request.magic=Params().magic;request.genesis=uint256::FromHexUnsafe(Params().genesis_hash);
+    request.branch=Params().orchard_branch_id;request.activation=Params().orchard_activation_height;
+    request.leaf_activation=consensus::GetUtreexoMaturityLeafActivationHeight();request.height=current->height;
+    request.tip=current->block_hash;std::copy(current->commitment.begin(),current->commitment.end(),request.root.begin());
+    request.nonce=uint256(1);request.point=OutPoint(f.f.blocks.at(2).vtx.front().GetTxid(),0);
+    const auto proof=ServeWalletInputProof(*f.f.service,request);ASSERT_TRUE(proof);
+    ASSERT_EQ(request.Encode().size(),W::RequestBytes);ASSERT_EQ(W::Reply::Decode(proof->Encode()).Encode(),proof->Encode());
+    const auto* live=f.f.service->GetConsensusUTXOSet();ASSERT_NE(live,nullptr);
+    const auto stump=[&]{const auto held=live->LockForestShared();return consensus::UtreexoStump::fromForest(live->GetForest());}();
+    EXPECT_TRUE(proof->VerifyPath(stump));auto wrong=*proof;++wrong.value;EXPECT_FALSE(wrong.VerifyPath(stump));
+    auto trailing=proof->Encode();trailing.push_back(0);EXPECT_THROW(W::Reply::Decode(trailing),std::invalid_argument);
+    auto stale=request;stale.tip.begin()[0]^=1;EXPECT_FALSE(ServeWalletInputProof(*f.f.service,stale));
+    p2p::WalletInputProofDownload* client=nullptr;std::atomic<bool> wrong_session=false,exact=false;
+    const p2p::OrchardCatalogClient::Peer peer{"exact-input-peer",19,ServiceFlags::NODE_NETWORK};
+    p2p::WalletInputProofServer server([&](const auto& q){return ServeWalletInputProof(*f.f.service,q);},
+        [&](const auto& p,const auto& command,const auto& bytes){if(command!=W::ReplyCommand)return false;
+            auto old=p;++old.session;wrong_session=client->Enqueue(old,bytes);exact=client->Enqueue(p,bytes);return bool(exact);});
+    p2p::WalletInputProofDownload download([&]{return std::vector{peer};},[&](const auto& p,const auto& command,const auto& bytes){
+        return command==W::RequestCommand&&server.Enqueue(p,bytes);});client=&download;
+    EXPECT_FALSE(download.Request(request));std::shared_ptr<const W::Reply> ready;
+    const auto end=std::chrono::steady_clock::now()+std::chrono::seconds(5);
+    while(!(ready=download.Request(request))&&std::chrono::steady_clock::now()<end)std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    server.Stop();download.Stop();ASSERT_TRUE(ready);EXPECT_TRUE(ready->VerifyPath(stump));EXPECT_TRUE(exact);EXPECT_FALSE(wrong_session);
+    EXPECT_FALSE(download.Request(request));
+}
 struct ImportedFundingCreationTestAccess {
     static bool Check(const Block& body,const BlockHeader& header,uint32_t height,const OutPoint& point,const consensus::UTXOEntry& coin){
         return ChainstateService::CheckImportedFundingCreation(body,header,height,point,coin);

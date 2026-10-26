@@ -27,6 +27,8 @@ fixture=json.loads(manifest.read_text());assumed=bool(os.environ.get('DINERO_SDK
 input_queue=bool(os.environ.get('DINERO_SDK_IMPORTED_SHIELD_QUEUE'))
 ready_only=bool(os.environ.get('DINERO_SDK_IMPORTED_SHIELD_READY'))
 wrong_input_height=bool(os.environ.get('DINERO_SDK_IMPORTED_SHIELD_WRONG_HEIGHT'))
+new_compact_reservation=bool(os.environ.get('DINERO_SDK_COMPACT_NEW_RESERVATION'))
+native_lock=threading.Lock()
 if wrong_input_height:
     assert assumed and input_queue and fixture['assumed_snapshot_version']==4
     # Deliberately corrupt creation metadata with a recomputed file checksum.
@@ -135,6 +137,11 @@ def serve():
                         assert transfer and len(payload)==42 and payload[:6]==b'DNOPG\x01' and payload[6:38]==transfer
                         index=struct.unpack_from('<I',payload,38)[0];page=proof[index*65536:(index+1)*65536]
                         assert page;send(conn,'ocatpage',transfer+struct.pack('<II',index,len(page))+page)
+                    elif command=='getwinput':
+                        assert new_compact_reservation and future.is_set() and len(payload)==190
+                        assert payload[:6]==b'DNWIP\x01' and payload[122:154]!=bytes(32)
+                        data=native_call('wallet_input',request=payload.hex())
+                        send(conn,'winput',bytes.fromhex(data['reply']))
                     elif command=='getdata':
                         for kind,key in inventory(payload):
                             body_requests.append(dict(kind=kind,hash=key[::-1].hex()))
@@ -168,7 +175,8 @@ def rpc(method,params):
     assert not isinstance(value,dict) or 'error' not in value,(method,value,root)
     return value
 def native_call(op,**args):
-    native.stdin.write(json.dumps(dict(op=op,**args))+'\n');native.stdin.flush();return response(native_read,native,op)
+    with native_lock:
+        native.stdin.write(json.dumps(dict(op=op,**args))+'\n');native.stdin.flush();return response(native_read,native,op)
 def wallet_rows(name='wire-named-owner'):
     paths=list(datadir.rglob('wallet_'+name+'.db'));assert len(paths)==1,paths
     with sqlite3.connect('file:'+str(paths[0])+'?mode=ro',uri=True) as db:
@@ -278,8 +286,9 @@ try:
                 print('PASS maturity-bound imported source refuses altered metadata before discovery',flush=True)
                 sys.exit(0)
             found=[c for c in candidates if c.get('txid')==fixture['funding_txid']]
-            assert len(found)==1,'normal snapshot restore/unlock did not discover actual named-wallet funding'
-            assert found[0]['amount_una']==1000000 and found[0]['snapshot_candidate'] and not found[0]['spendable'] and not found[0]['safe'] and found[0]['confirmations']==0,found
+            assert len(found)==(2 if new_compact_reservation else 1),'normal snapshot restore/unlock did not discover actual named-wallet funding'
+            assert sum(c['amount_una'] for c in found)==1000000,found
+            assert all(c['snapshot_candidate'] and not c['spendable'] and not c['safe'] and c['confirmations']==0 for c in found),found
             assert 'canonical history/index recovery remains deferred' in unlocked['recovery_warning'],unlocked
         assert candidate_wallet_state()==before_discovery,'candidate discovery altered ordinary coins/progress/tip/catalog'
         assert original_lifecycle()==original,'funding discovery changed original assumed lifecycle'
@@ -546,6 +555,40 @@ try:
     if assumed:
         assert original_lifecycle()==original,'Orchard-only confirmation changed original assumed lifecycle'
         assert mixed_runtime_receipts()==mixed_before,'Orchard-only confirmation minted mixed baseline/schema'
+    if new_compact_reservation:
+        assert assumed
+        original_candidates=snapshot_candidate_rows();before_new=wallet_rows();ordinary_before=candidate_wallet_state()
+        current=rpc('wallet.orchard.getbalance',dict(binding,account=0))
+        new_request=dict(binding,account=0,request_id='91'+'00'*31,expected_revision=current['account_revision'],fee_una=10000,
+            payments=[dict(address=account['address'],amount_una=15000,memo_hex=b'new compact input'.hex())])
+        pending_input=call('rpc',method='wallet.orchard.queueshield',params=new_request)
+        assert pending_input.get('error_code')=='funding_source_pending' and pending_input['retryable'],pending_input
+        assert wallet_rows()==before_new and candidate_wallet_state()==ordinary_before
+        deadline=time.monotonic()+35
+        while time.monotonic()<deadline:
+            assert not failures,failures
+            new_queued=call('rpc',method='wallet.orchard.queueshield',params=new_request)
+            if new_queued.get('proof_queued'):break
+            assert new_queued.get('error_code')=='funding_source_pending' and new_queued['retryable'],new_queued
+            time.sleep(.1)
+        assert new_queued.get('proof_queued') and new_queued['input_count']==1 and not new_queued['existing_request'],new_queued
+        after_new=wallet_rows();new_retry=rpc('wallet.orchard.queueshield',new_request)
+        assert new_retry['existing_request'] and not new_retry['proof_queued'] and wallet_rows()==after_new,new_retry
+        assert rpc('wallet.open',['wire-named-owner'])['success'] is True
+        assert rpc('wallet.unlock',['funded-crossing-password',0])['success'] is True
+        binding=bound('wire-named-owner');new_request.update(binding)
+        reopened=rpc('wallet.orchard.queueshield',new_request)
+        assert reopened['existing_request'] and wallet_rows()==after_new,reopened
+        assert original_lifecycle()==original and mixed_runtime_receipts()==mixed_before
+        assert snapshot_candidate_rows()==original_candidates
+        assert any(p['command']=='getwinput' for p in packets) and any(p['command']=='winput' for p in packets)
+        (root/'receipt.json').write_text(json.dumps(dict(original_assumed_mobile=True,new_compact_reservation=True,
+            pending=pending_input,queued=new_queued,retry=new_retry,reopened=reopened,original_lifecycle=original,
+            mixed_receipts_unchanged=mixed_before,prior_confirmation=operations,
+            scope='Actual native imported funded crossing to104, then a DIFFERENT unspent historical output obtains a new exact-tip proof over TCP and atomically queues a NEW bound shield reservation through public SDK C ABI. Pending lookup precedes wallet/change writes; encrypted exact retry and normal no-phrase reopen pass. Original candidate/SQL/ordinary/index authority remains unchanged. This gate ends at actual reservation/prover publication: NOT new compact signing/Ready/admission/confirmation, unshield, apps/devices or release qualification.'),indent=2)+'\n')
+        assert call('stop')==0;success=True
+        print('PASS actual original-assumed current compact proof download and NEW atomic reservation',flush=True)
+        sys.exit(0)
     assert rpc('wallet.restore',dict(name='late-funded-owner',mnemonic='abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about',rescan=False))['success'] is True
     later=bound('late-funded-owner')
     for _ in range(8):

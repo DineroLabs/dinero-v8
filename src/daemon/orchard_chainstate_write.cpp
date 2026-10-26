@@ -758,6 +758,39 @@ OrchardPoolCoinView OrchardPoolCoinView::Capture(const OrchardTransactionContext
     return result;
 }
 
+OrchardPoolCoinView OrchardPoolCoinView::CaptureWalletInputs(const storage::catalog::State& catalog,
+        const storage::catalog::Tree::Read& read,std::span<const OrchardProvedWalletInput> entries){
+    namespace c=storage::catalog;catalog.Validate();RequireOrchardCatalog(!entries.empty()&&entries.size()<=1000);
+    c::Tree transactions(c::Kind::Transactions,read),legacy(c::Kind::LegacyCoins,read),nontransparent(c::Kind::NonTransparentCoins,read);
+    const auto stump=UtreexoStump::deserialize(catalog.stump);OrchardPoolCoinView result(catalog.height,catalog.block);
+    for(const auto& entry:entries){
+        const auto& point=entry.point;const auto& coin=entry.coin;const auto bytes=c::OutpointBytes(point);
+        RequireOrchardCatalog(!point.txid.IsNull()&&!coin.is_confidential&&coin.commitment.empty()&&
+            coin.value.GetUna()&&coin.value.GetUna()<=orchard::kMaxMoneyUna&&coin.height<=catalog.height&&
+            !nontransparent.Find(catalog.nontransparent,c::NonTransparentKey(bytes))&&
+            transactions.Find(catalog.transactions,c::TransactionKey(point.txid)).has_value());
+        const auto old=legacy.Find(catalog.legacy,c::LegacyKey(bytes));
+        if(old)RequireOrchardCatalog(old->size()==41&&old->compare(0,36,bytes)==0&&uint8_t((*old)[40])<=1&&
+            coin.height<catalog.leaf_activation&&coin.height==c::Number(*old,36,4)&&coin.isCoinbase==(uint8_t((*old)[40])!=0));
+        else RequireOrchardCatalog(coin.height>=catalog.leaf_activation);
+        const auto leaf=HashUTXOForCreationHeight(point.txid.AsUint256(),point.vout,coin.value.GetUna(),coin.scriptPubKey,coin.height,coin.isCoinbase);
+        RequireOrchardCatalog(entry.path.numLeaves==stump.getNumLeaves()&&entry.path.siblings.size()<=63&&
+            entry.path.verify(leaf,stump.getRoots())&&result.inputs_.emplace(point,coin).second);
+    }
+    return result;
+}
+
+OrchardPoolCoinView OrchardCompactChainstate::CaptureWalletInputsUnderLock(AnnotatedRecursiveMutex& mutex,
+        const OrchardTransactionContext& context,const BlockHeader& header,
+        std::span<const OrchardProvedWalletInput> entries)const{
+    // Empty ordinary capture authenticates state identity ONLY. It is not
+    // used as an arbitrary coin view; exact paths are authenticated below.
+    (void)CapturePoolCoinsUnderLock(mutex,context,header,{});const auto selected=selected_;
+    RequireOrchardCatalog(selected&&selected->database);const auto& state=selected->OrchardState().catalog;
+    auto coins=OrchardPoolCoinView::CaptureWalletInputs(state,[&](const uint256& id){return RequiredDisk(selected->database->getOrchardCatalogNode(id));},entries);
+    (void)CapturePoolCoinsUnderLock(mutex,context,header,{});RequireOrchardCatalog(selected_==selected);return coins;
+}
+
 OrchardPoolCoinView OrchardCompactChainstate::CapturePoolCoinsUnderLock(AnnotatedRecursiveMutex& mutex,
     const OrchardTransactionContext& context,const BlockHeader& header,
     std::span<const MempoolProofView> entries) const {

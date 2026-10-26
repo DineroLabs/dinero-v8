@@ -22,10 +22,11 @@ class AuthenticatedShieldInputs final {
     const std::string root_;
     const std::vector<PendingPaymentInput> inputs_;
     const std::function<void()> current_;
+    const bool snapshot_candidate_;
     AuthenticatedShieldInputs(WalletManager& wallet,uint64_t session,uint32_t height,uint256 base,
-        std::string root,std::vector<PendingPaymentInput> inputs,std::function<void()> current)
+        std::string root,std::vector<PendingPaymentInput> inputs,std::function<void()> current,bool snapshot_candidate=true)
         :wallet_(&wallet),session_(session),height_(height),base_(base),root_(std::move(root)),
-         inputs_(std::move(inputs)),current_(std::move(current)){}
+         inputs_(std::move(inputs)),current_(std::move(current)),snapshot_candidate_(snapshot_candidate){}
 public:
     AuthenticatedShieldInputs(const AuthenticatedShieldInputs&)=delete;
     AuthenticatedShieldInputs& operator=(const AuthenticatedShieldInputs&)=delete;

@@ -709,6 +709,11 @@ void GenerateSdkActivationFixture(){
                 const auto proof_wire=CanonicalPoolUnverifiedProof(source,body);ASSERT_TRUE(proof_wire);
                 ASSERT_TRUE(source.f.ingress->SubmitBody(body,TxOrigin::P2P).accepted());
                 result["proof"]=util::hex(*proof_wire);result["txid"]=body.GetTxid().AsUint256().GetHex();
+            }else if(op=="wallet_input"){
+                std::vector<uint8_t> wire;ASSERT_TRUE(util::unhex(request["request"].asString(),wire));
+                const auto query=p2p::WalletInputProof::Request::Decode(wire);
+                const auto response=ServeWalletInputProof(*source.f.service,query);ASSERT_TRUE(response);
+                result["reply"]=util::hex(response->Encode());
             }else if(op=="mine"){
                 ASSERT_TRUE(source.Submit(f.full.first->WireBytes()).connected);
                 ASSERT_TRUE(source.Submit(f.full.second->WireBytes()).connected);

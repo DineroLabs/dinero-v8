@@ -1275,3 +1275,30 @@ A stale capture defers before that audit; no inverse check or SafeMode is
 disabled/reset. The separate native changed-cohort case preserves intentional
 bad original metadata after handoff and requires account delivery to refuse
 even though the SDK genuinely validates block104. It never repairs that root.
+
+## New current compact shield reservations
+
+`getwinput` / `winput` transfer bounded PUBLIC outpoint proof DATA for an exact
+locally selected tip/root/profile. The peer cannot select a tip or confer coin,
+wallet, history, index, lifecycle or independent-replay authority. Nonces and
+connection sessions bind one flight; requests never contain keys or a wallet
+identifier. This does reveal the requested public outpoint to that peer. The
+client has eight requested/cached items, a 30-second flight deadline, bounded
+cooldowns and invalid-inclusive wire budget. The asynchronous full source uses
+the existing selected full proof capture, not compact generation or assumed
+promotion; inbound queues and per-address/global work budgets are bounded.
+Stop joins both actors before releasing network/source dependencies.
+
+For a NEW reservation the actual enrolled compact owner independently verifies
+each path against its CURRENT stump, transaction membership, nontransparent
+absence and legacy height/coinbase catalog binding. Unknown inputs stay errors,
+and an empty proof span never grants arbitrary coin access or output absences.
+Only these exact captured inputs survive through the atomic encrypted writer.
+Ordinary inputs retain their original unreserved wallet/key/manual-lock checks;
+original-import candidates retain the complete original frozen/proof/ten-SQL/
+SnapshotLoaded cohort and original candidate ownership checks. The original base,
+independent anchor and mixed baseline refusals do not move. The selected source
+is freshly checked immediately before COMMIT, and real prover publication follows
+that commit. A pending network proof returns retryable funding-source-pending
+before change issuance or wallet writes. Ready signing/pool admission are separate
+checks; queue success does not assert those later stages or app/device readiness.
