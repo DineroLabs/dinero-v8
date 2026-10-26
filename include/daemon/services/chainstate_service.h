@@ -16,6 +16,7 @@
 #include "consensus/block_status_generation.h"
 #include "common/annotated_mutex.h"
 #include "wallet/utxo_index.h"
+#include "wallet/runtime_funding_candidates.h"
 #include "interfaces/wallet_notifier.h"  // Phase 3D: Wallet event notifications
 #include "consensus/utreexo_accumulator.h"  // v0.14.0.4: Utreexo enforcement
 #include "consensus/header_convergence.h"  // #439: HeaderConvergence + pure rule
@@ -269,6 +270,11 @@ public:
     // candidate discovery, NOT wallet history/index completion or coin authority.
     // Caller retains WalletUse/WalletIndexUse and holds no SQLite/selected owner.
     StatusOr<size_t> DiscoverSnapshotWalletCandidates(WalletManager&,uint64_t expected_session);
+    // Explicit completed imported composition only; null means another source.
+    // Complete catalog/body/cohort checked DATA; failure NEVER falls back to a
+    // trusted ordinary balance. Caller owns WalletUse/WalletIndexUse, no lease.
+    StatusOr<std::shared_ptr<const RuntimeFundingCandidates>> getRuntimeFundingCandidates(
+        WalletManager&,uint64_t expected_session);
     // Independently replay and own selected historical bodies before wallet
     // effects. Returns the captured height, not lasting chain/wallet readiness.
     // Bounded archival/stateful pre-Orchard support; failures never substitute

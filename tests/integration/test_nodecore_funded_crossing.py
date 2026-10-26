@@ -35,6 +35,8 @@ if reserved_restart:assert new_compact_ready
 ready_restart=bool(os.environ.get('DINERO_SDK_COMPACT_READY_RESTART'))
 if ready_restart:assert new_compact_ready and not reserved_restart
 post_base_shield=bool(os.environ.get('DINERO_SDK_POST_BASE_SHIELD'))
+post_base_discovery_only=bool(os.environ.get('DINERO_SDK_POST_BASE_DISCOVERY_ONLY'))
+post_base_source_refusal=bool(os.environ.get('DINERO_SDK_POST_BASE_SOURCE_REFUSAL'))
 if post_base_shield:assert new_compact_ready and not reserved_restart and not ready_restart
 assumed_unshield=bool(os.environ.get('DINERO_SDK_ASSUMED_PRIVATE_UNSHIELD'))
 if assumed_unshield:assert assumed and os.environ.get('DINERO_SDK_COMPACT_PRIVATE_SEND')=='1' and not new_compact_reservation
@@ -741,6 +743,7 @@ try:
                 # inject a wallet coin, caller balance or proof-backed spend.
                 change=next(o for o in shield_mined['transparent_outputs'] if o['amount_una']==475000)
                 assert change['height']==105
+                before_discovery_post=candidate_wallet_state();before_candidates_post=snapshot_candidate_rows()
                 live_candidates=rpc('wallet.listunspent',[])
                 opened_post=rpc('wallet.open',['wire-named-owner']);assert opened_post['success'] is True
                 unlocked_post=rpc('wallet.unlock',['funded-crossing-password',0]);assert unlocked_post['success'] is True
@@ -753,7 +756,31 @@ try:
                 assert len(found)==1,'normal named-wallet discovery did not find real post-base105 change'
                 assert found[0]['amount_una']==475000 and found[0]['scriptPubKey']==change['script'],found
                 assert not found[0].get('snapshot_candidate',False),'post-base change was relabelled as original frozen funding'
+                assert found[0]['candidate_only'] and found[0]['funding_source_height']==105 and found[0]['funding_source_hash']==shield_mined['hash'],found
+                assert found[0]['confirmations']==0 and not found[0]['safe'] and not found[0]['spendable'],found
+                assert len(discovered_post)==1,'spent historical inputs remained in the current candidate result'
+                assert candidate_wallet_state()==before_discovery_post and snapshot_candidate_rows()==before_candidates_post,'post-base discovery mutated ordinary/frozen DATA or catalog'
                 assert original_lifecycle()==original and mixed_runtime_receipts()==mixed_before
+                if post_base_discovery_only:
+                    refusal=None
+                    if post_base_source_refusal:
+                        # Deliberately damage ONLY this fresh isolated source.
+                        # No repair/retry/adoption of the refused root.
+                        assert rpc('wallet.lock',[])['success'] is True
+                        with sqlite3.connect(datadir/'blockchain/utxo') as db:
+                            assert db.execute("UPDATE utxo_metadata SET value=? WHERE key='assumeutxo_expected_commitment'",('e'*64,)).rowcount==1
+                        bad_original=original_lifecycle();assert bad_original!=original
+                        assert rpc('wallet.unlock',['funded-crossing-password',0])['success'] is True
+                        before_refusal=candidate_wallet_state();refusal_rows=wallet_rows()
+                        refusal=call('rpc',method='wallet.listunspent',params=[])
+                        assert 'error' in refusal and candidate_wallet_state()==before_refusal and wallet_rows()==refusal_rows,refusal
+                        assert original_lifecycle()==bad_original and mixed_runtime_receipts()==mixed_before
+                    (root/'receipt.json').write_text(json.dumps(dict(original_assumed_mobile=True,post_base_discovery=discovery,
+                        source_refusal=refusal,original_lifecycle=original,mixed_receipts_unchanged=mixed_before,
+                        scope='Actual imported compact105 normal named no-phrase reopen/unlock discovers ONLY genuine owned post-base change as unsafe/conf0/unspendable candidate DATA, hides both genuinely spent historical inputs, leaves ordinary/frozen/catalog state and original ten SQL/missing mixed baselines unchanged. Optional separately isolated bad-original-cohort case refuses without repair/fallback. NO post-base new reservation/signing/106 or mixed/index history/app/device/release claim.'),indent=2)+'\n')
+                    assert call('stop')==0;success=True
+                    print('PASS actual authenticated post-base candidate DATA discovery'+(' and original-cohort refusal' if post_base_source_refusal else ''),flush=True)
+                    sys.exit(0)
                 before_post=wallet_rows();wire_post=len(packets)
                 post_balance=rpc('wallet.orchard.getbalance',dict(binding,account=0))
                 post_request=dict(binding,account=0,request_id='b1'+'00'*31,expected_revision=post_balance['account_revision'],fee_una=10000,

@@ -20435,6 +20435,94 @@ ChainstateService::resumeRuntimeImportedOrchardRecovery(WalletManager& wallet,UT
 }
 
 #ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
+namespace {
+RuntimeFundingCandidates ReadPostBaseFunding(const RuntimeAccountReplay& replay){
+    const auto head=replay.Head();const auto facts=replay.Profile();const auto origin=replay.Point({}).checkpoint;
+    if(!head.sequence||head.sequence>4096||replay.ActivationPrefixHeight()||uint64_t(origin.height)+1!=facts.activation_height)
+        throw std::runtime_error("Post-base funding requires complete bounded activation history");
+    RuntimeFundingCandidates result;std::map<OutPoint,RuntimeFundingCoin> live;std::set<OutPoint> created;
+    uint256 prior=origin.block_hash;size_t material=0,outputs=0,scripts=0;
+    for(uint64_t sequence=1;sequence<=head.sequence;++sequence){
+        const auto event=replay.Event(sequence);const auto block=replay.Block(sequence);
+        if(!event||!block||event->cursor.sequence!=sequence||event->direction!=RuntimeBlockDirection::Connect||
+           uint64_t(event->context.height)!=uint64_t(facts.activation_height)+sequence-1||
+           event->context.parent_hash!=prior||block->Header().GetHash()!=event->context.block_hash||
+           block->Header().prev_block_hash!=prior||block->WireBytes().size()>256*1024*1024-material)
+            throw std::runtime_error("Post-base funding body/ancestry incomplete or unsupported");
+        material+=block->WireBytes().size();
+        const auto spend=[&](const OutPoint& point){
+            if(result.unavailable.size()>=65536||!result.unavailable.insert(point).second)
+                throw std::runtime_error("Post-base funding spent inventory invalid or over capacity");
+            live.erase(point);
+        };
+        const auto output=[&](const TxId& txid,uint32_t n,uint64_t value,const std::vector<uint8_t>& script,bool coinbase){
+            if(++outputs>65536||script.size()>10000||script.size()>16*1024*1024-scripts||value>orchard::kMaxMoneyUna)
+                throw std::runtime_error("Post-base funding output inventory over capacity");
+            scripts+=script.size();if(!value)return;
+            const OutPoint point(txid,n);
+            if(result.unavailable.contains(point)||!created.insert(point).second||
+               !live.emplace(point,RuntimeFundingCoin{point,value,script,event->context.height,coinbase}).second)
+                throw std::runtime_error("Post-base funding repeated output identity");
+        };
+        for(const auto& tx:block->Transactions()){
+            if(tx.IsOrchard()){
+                for(const auto& input:tx.Orchard().Inputs()){
+                    uint256 hash;std::copy(input.txid_wire.begin(),input.txid_wire.end(),hash.begin());spend({TxId(hash),input.output_index});
+                }
+                const auto& coins=tx.Orchard().Outputs();
+                for(size_t n=0;n<coins.size();++n)output(tx.GetTxid(),uint32_t(n),coins[n].amount_una,coins[n].script_pub_key,false);
+            }else{
+                const auto& historical=tx.Historical();
+                if(!historical.IsCoinbase())for(const auto& input:historical.vin)spend({input.prevout.txid,input.prevout.vout});
+                for(size_t n=0;n<historical.vout.size();++n){
+                    const auto& coin=historical.vout[n];
+                    if(coin.is_confidential)throw std::runtime_error("Post-base funding confidential output unsupported");
+                    output(tx.GetTxid(),uint32_t(n),coin.value.GetUna(),coin.scriptPubKey,historical.IsCoinbase());
+                }
+            }
+        }
+        prior=event->context.block_hash;result.height=event->context.height;result.block=prior;
+    }
+    const auto tip=replay.Point(head).checkpoint;
+    if(tip.height!=result.height||tip.block_hash!=result.block)throw std::runtime_error("Post-base funding selected head mismatch");
+    for(auto& [point,coin]:live)result.coins.push_back(std::move(coin));return result;
+}
+}
+#endif
+StatusOr<std::shared_ptr<const RuntimeFundingCandidates>>
+ChainstateService::getRuntimeFundingCandidates(WalletManager& wallet,uint64_t session){
+#ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
+    if(activation_mutex_.HeldByCurrentThread()||!session)return Status::Invalid;
+    try{
+        {auto selected=AcquireBlockIngressActivationLock();
+         if(!compact_startup_||!compact_startup_->imported_parent||!active_tip_||
+            active_tip_->height<Params().orchard_activation_height)
+             return std::shared_ptr<const RuntimeFundingCandidates>{};}
+        const auto captured=getRuntimeAccountReplayForWallet(wallet,session);if(!captured.ok())return captured.status();
+        const auto& replay=**captured;const auto raw=ReadPostBaseFunding(replay);
+        auto catalog=wallet::OrchardAccountDelivery::PrepareCatalogRecovery(wallet,session,replay,
+            wallet::OrchardAccountDelivery::CatalogRecoveryAction::Observe);
+        const auto facts=replay.Profile();const wallet::OrchardAccountDelivery::Profile profile{facts.domain,facts.activation_height,0};
+        ParentPreparationScope preparation(*this);std::unique_lock<std::mutex> snapshot(snapshot_load_mutex_);
+        auto selected=AcquireBlockIngressActivationLock();UTXOIndex* index=nullptr;
+        {std::lock_guard<std::mutex> use(wallet_index_use_mutex_);
+         if(!wallet_index_uses_by_thread_.contains(std::this_thread::get_id())||!utxo_index_)return Status::Invalid;index=utxo_index_.get();}
+        auto source=CaptureImportedOrchardDeliveryUnderLock(snapshot,*index,replay);if(!source)return Status::Invalid;
+        const std::function<void()> current=[&]{
+            compact_startup_->selected_consistency->Check(*chain_db_);
+            if(!source->lifecycle||utxo_index_.get()!=index||wallet.getUTXOIndex()!=index||
+               index->ReadAssumedStartupMetadata()!=source->metadata||!CheckRuntimeAccountReplayCurrentUnderLock(replay,*source->selected))
+                throw std::runtime_error("Post-base funding source changed before read commit");
+        };
+        auto result=wallet::OrchardAccountDelivery::ReadPreparedPostBaseCandidates(wallet,session,profile,*catalog,raw,current);
+        current();return std::make_shared<const RuntimeFundingCandidates>(std::move(result));
+    }catch(...){return Status::Invalid;}
+#else
+    (void)wallet;(void)session;return std::shared_ptr<const RuntimeFundingCandidates>{};
+#endif
+}
+
+#ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
 storage::catalog::State ChainstateService::PreparedOrchardExtension::CaptureCatalog(
     ChainstateService& service,const consensus::OrchardBlockContext& context,
     const BlockHeader& parent,const consensus::UtreexoForest& forest,

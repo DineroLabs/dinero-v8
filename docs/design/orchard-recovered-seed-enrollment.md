@@ -1424,6 +1424,23 @@ must remain unchanged. This case does not presume discovery is implemented;
 qualification requires a real positive and honest isolated negative controls.
 It is not mainnet/v5/all lifecycles/many-input/mixed readiness or app/device/release.
 
+`NodeCoreCompactPostBaseDiscovery` separately ends at real105 discovery, and
+`NodeCoreCompactPostBaseSourceRefusal` then damages only its fresh isolated
+original cohort and requires refusal without repair or ordinary-list fallback.
+The completed imported source reads EVERY bounded activation-to-selected body
+before wallet filtering, excludes actual spends and current/retained/pending
+owners, and resolves real supported keys through a FULL read transaction with
+the complete catalog, original ten-SQL/cohort/lifecycle and selected source pinned.
+It returns PUBLIC DATA only: confirmations0, unsafe and unspendable, with exact
+source height/hash. Spent historical rows are hidden, never erased or rebased;
+ordinary/frozen rows, progress, tip, catalog and mixed baselines stay untouched.
+This bounded route requires a contiguous Connect-only prefix of at most4096
+events/256MiB bodies/65536 inputs and outputs/16MiB scripts; other progress/reorg,
+prefix and unsupported confidential/signing paths refuse or remain outside its
+candidate subset. It creates no current coin or complete transparent/index
+receipt. A later reservation still needs a fresh CURRENT per-input proof and its
+own atomic source-bound writer; discovery DATA never grants that authority.
+
 ## Original-import private send and unshield native gate
 
 `NodeCoreAssumedPrivateSendUnshield` extends the real imported-source funded

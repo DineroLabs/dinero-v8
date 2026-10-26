@@ -1885,6 +1885,12 @@ din::Json rpc_context_wallet_listunspent(const ExecutionContext& ctx, const din:
             throw std::runtime_error("Wallet chainstate owner unavailable");
         auto index_use = chainstate
             ? dinero::ChainstateService::AcquireWalletIndexUse(chainstate) : nullptr;
+        std::shared_ptr<const dinero::RuntimeFundingCandidates> funding;
+        if(chainstate){
+            const auto data=chainstate->getRuntimeFundingCandidates(mgr,session);
+            if(!data.ok())throw std::runtime_error("Authenticated post-base funding source unavailable");
+            funding=*data; // DATA only, never a replacement coin/index baseline.
+        }
         std::unique_ptr<dinero::MempoolService::PoolUse> pool_use;
         uint32_t target_height = 0;
         if (chainstate) {
@@ -1898,7 +1904,7 @@ din::Json rpc_context_wallet_listunspent(const ExecutionContext& ctx, const din:
         }
         // The worker must be able to acquire wallet/chain locks while catching
         // up. Recheck the selected wallet after this existing bounded wait.
-        if (chainstate)
+        if (chainstate && !funding)
             mgr.WaitForHeight(target_height, std::chrono::milliseconds(5000));
         auto lease = mgr.AcquireDatabaseLease();
         if (lease->Session() != session || lease->WalletName() != wallet_name)
@@ -1908,6 +1914,25 @@ din::Json rpc_context_wallet_listunspent(const ExecutionContext& ctx, const din:
         const dinero::Mempool* mempool = pool_use ? &pool_use->Pool() : nullptr;
 
         auto utxos = mgr.listUnspentUTXOs(min_conf, max_conf, mempool);
+        if(funding){
+            utxos.erase(std::remove_if(utxos.begin(),utxos.end(),[&](const auto& coin){
+                return funding->unavailable.contains(dinero::OutPoint(dinero::TxId(dinero::uint256::FromHexUnsafe(coin.txid)),coin.vout));
+            }),utxos.end());
+            for(const auto& coin:funding->coins){
+                if(mempool&&mempool->isOutputSpentInMempool(coin.point))continue;
+                const auto id=coin.point.txid.AsUint256().GetHex(),script=util::hex(coin.script);
+                const auto existing=std::find_if(utxos.begin(),utxos.end(),[&](const auto& row){return row.txid==id&&row.vout==coin.point.vout;});
+                if(existing!=utxos.end()){
+                    if(existing->amount_una!=coin.value||existing->script_pubkey!=script||existing->height!=coin.height||existing->is_coinbase!=coin.coinbase)
+                        throw std::runtime_error("Post-base funding conflicts with existing wallet DATA");
+                }else{
+                    dinero::WalletManager::WalletUTXO row{};row.txid=id;row.vout=coin.point.vout;row.amount_una=coin.value;
+                    row.amount_din=double(coin.value)/100000000.0;row.script_pubkey=script;row.height=coin.height;row.is_coinbase=coin.coinbase;
+                    utxos.push_back(std::move(row));
+                }
+            }
+            for(auto& coin:utxos){coin.confirmations=0;coin.is_mature=false;coin.spendable=false;}
+        }
         din::Json utxo_array = din::arr();
 
         for (const auto& utxo : utxos) {
@@ -1931,6 +1956,8 @@ din::Json rpc_context_wallet_listunspent(const ExecutionContext& ctx, const din:
             utxo_obj["is_mature"] = utxo.is_mature;
             utxo_obj["locked"] = locked;
             utxo_obj["snapshot_candidate"] = utxo.snapshot_candidate;
+            if(funding){utxo_obj["candidate_only"]=true;utxo_obj["funding_source_height"]=funding->height;
+                utxo_obj["funding_source_hash"]=funding->block.GetHex();}
 
             // Parse witness version from scriptPubKey
             uint8_t witness_version = 0xFF;  // Default: legacy (non-witness)

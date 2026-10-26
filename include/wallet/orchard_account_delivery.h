@@ -6,6 +6,7 @@
 #include "wallet/orchard_account_state.h"
 #include "wallet/orchard_account_catalog.h"
 #include "wallet/orchard_proof_jobs.h"
+#include "wallet/runtime_funding_candidates.h"
 namespace dinero { class ChainstateService; class RuntimeOrdinaryDelivery; class RuntimeWalletRecovery; struct RuntimeOutboxCursor; class WalletManager; class RuntimeAccountReplay; struct WalletSigningIdentity; struct UnsignedTransaction; struct PendingPaymentIntent; struct SignResult; }
 namespace dinero::wallet {
 class AuthenticatedShieldInputs;
@@ -496,6 +497,9 @@ private:
     static std::vector<orchard::ResolvedInput> ReadPreparedSnapshotShieldCandidates(
         WalletManager&,uint64_t,const Profile&,uint64_t,const OrchardCatalogRecoveryPlan&,
         uint32_t,const uint256&,const std::string&);
+    static RuntimeFundingCandidates ReadPreparedPostBaseCandidates(
+        WalletManager&,uint64_t,const Profile&,const OrchardCatalogRecoveryPlan&,
+        const RuntimeFundingCandidates&,const std::function<void()>& current_source);
     static ShieldResult CommitShieldReservation(WalletManager&,uint64_t,std::unique_ptr<OrchardCatalogRecoveryPlan>,
         std::span<const orchard::ResolvedInput>,std::span<const orchard::TransparentOutput>,OrchardProofJobs*,
         const AuthenticatedShieldInputs* = nullptr);

@@ -1626,6 +1626,47 @@ std::vector<orchard::ResolvedInput> OrchardAccountDelivery::ReadPreparedSnapshot
      }}
     transaction.Commit();return result;
 }
+RuntimeFundingCandidates OrchardAccountDelivery::ReadPreparedPostBaseCandidates(
+        WalletManager& w,uint64_t session,const Profile& p,const OrchardCatalogRecoveryPlan& plan,
+        const RuntimeFundingCandidates& source,const std::function<void()>& current_source){
+    Check(plan.data_&&plan.data_->usable&&plan.data_->session==session&&bool(current_source));
+    const auto& data=*plan.data_;
+    Check(data.profile.domain.network_code==p.domain.network_code&&data.profile.domain.genesis_wire==p.domain.genesis_wire&&
+        data.profile.domain.branch_id==p.domain.branch_id&&data.profile.activation==p.activation);
+    Check(source.height>=p.activation&&!source.block.IsNull()&&source.coins.size()<=65536);
+    RuntimeFundingCandidates result;result.height=source.height;result.block=source.block;result.unavailable=source.unavailable;
+    for(const auto& account:data.accounts){
+        const auto receipt=account.result.account.Delivery();Check(receipt.sequence==data.head.sequence&&receipt.digest==data.head.digest);
+        for(const auto& [id,entry]:account.result.account.Operations().Entries())for(const auto& input:entry.inputs){
+            uint256 hash;std::copy(input.txid_wire.begin(),input.txid_wire.end(),hash.begin());
+            result.unavailable.emplace(TxId(hash),input.output_index);
+        }
+    }
+    auto lease=w.AcquireDatabaseLease();Check(w.database_leases_==1&&lease->Session()==session&&lease->Database());
+    RequireShieldFullSync(lease->Database());Transaction tx(lease->Database());
+    {auto fresh=Owner::CaptureCatalog(w,session,p);data.expected->Recheck(*fresh);}
+    {
+        Owner owner(w,session,p,Owner::ExistingRead{});
+        for(const auto& pending:lease->ReadPendingPaymentsInTransaction(*owner.seed))for(const auto& input:pending.inputs){
+            uint256 hash;Check(uint256::FromHex(input.txid,hash));result.unavailable.emplace(TxId(hash),input.vout);
+        }
+        for(const auto& coin:source.coins){
+            Check(coin.height>=p.activation&&coin.height<=source.height&&coin.value&&coin.value<=orchard::kMaxMoneyUna&&
+                !coin.point.txid.IsNull()&&!coin.script.empty()&&coin.script.size()<=10000);
+            if(result.unavailable.contains(coin.point)||w.isUTXOLocked(coin.point.txid.AsUint256().GetHex(),coin.point.vout))continue;
+            const bool taproot=coin.script.size()==34&&coin.script[0]==0x51&&coin.script[1]==0x20;
+            const bool p2wpkh=coin.script.size()==22&&coin.script[0]==0&&coin.script[1]==20;
+            if(!taproot&&!p2wpkh)continue; // Bounded supported signer DATA, NOT a complete balance.
+            const auto key=lease->ResolveSigningKeyInTransaction(util::hex(coin.script),*owner.seed);
+            if(!key)continue;
+            if((taproot&&key->policy!=SigningKeyPolicy::TaprootCanonical&&key->policy!=SigningKeyPolicy::TaprootHistoricalImport)||
+               (p2wpkh&&key->policy!=SigningKeyPolicy::Untweaked))continue;
+            Check(key->script==coin.script);result.coins.push_back(coin);
+        }
+    }
+    {auto fresh=Owner::CaptureCatalog(w,session,p);data.expected->Recheck(*fresh);}
+    current_source();tx.Commit();return result;
+}
 OrchardAccountDelivery::ShieldResult OrchardAccountDelivery::ReserveShieldForReplay(
         WalletManager& w,uint64_t session,const Profile& p,uint64_t expected,const RuntimeAccountReplay& view,
         const orchard::Hash& id,std::span<const orchard::ResolvedInput> inputs,
