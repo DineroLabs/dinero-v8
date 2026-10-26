@@ -883,6 +883,23 @@ void P2PService::StartStunDiscoveryIfEnabled() {
         {"stun.l.google.com", 19302},
         {"stun.cloudflare.com", 3478},
     };
+    // p2p.stun.servers=host:port,host:port replaces the list (private
+    // networks, test topologies, operators running their own STUN).
+    const std::string custom = config_ ? config_->GetString("p2p.stun.servers", "") : "";
+    if (!custom.empty()) {
+        servers.clear();
+        size_t pos = 0;
+        while (pos <= custom.size()) {
+            const size_t comma = std::min(custom.find(',', pos), custom.size());
+            std::string host;
+            uint16_t port = 0;
+            bool has_port = false;
+            if (dinero::network::SplitEndpoint(custom.substr(pos, comma - pos), &host, &port, &has_port)) {
+                servers.emplace_back(host, has_port ? port : 3478);
+            }
+            pos = comma + 1;
+        }
+    }
     stun_client_->SetServers(std::move(servers));
     RunStunRound();
 }
@@ -906,7 +923,7 @@ void P2PService::RunStunRound() {
         stun_next_round_ = std::chrono::steady_clock::now() + kStunRemeasure;
     }
     if (logger_interface_) {
-        logger_interface_->info(std::string("[P2PService] STUN discovery dispatched (5 servers, 8s deadline, ") +
+        logger_interface_->info(std::string("[P2PService] STUN discovery dispatched (8s deadline, ") +
                                 (stun_on_p2p_port_ ? "P2P UDP port)" : "ephemeral socket)"));
     }
 
