@@ -620,7 +620,10 @@ std::unique_ptr<OrchardCompactStartup> OrchardSnapshotStore::OpenCompletedActiva
     // rows, original files, completed choice or held directory identity.
     Require(HandoffStoreDigest(db,{})==rows);d.candidate_files=InspectHandoffFiles(d.candidate_path,{},{});
     CheckCompletedActivationRoot(guard,prepared);VerifyCatalogTransferProof(*retained,*headers);
+    const auto original_binding=CheckActivationSource(*d.source,*headers,*retained,{});
     auto result=std::unique_ptr<OrchardCompactStartup>(new OrchardCompactStartup());
+    if(original_binding->imported)result->imported_header_prefix_=OrchardCompactStartup::ImportedHeaderPrefix{
+        retained->parent_catalog.block,retained->parent_catalog.height};
     result->source_=&db;result->mutex_=&mutex;
     result->selected_consistency_=std::shared_ptr<const OrchardSelectedConsistency>(new OrchardSelectedConsistency(db,mutex,d.record.origin));
     result->activation_delivery_origin_=delivery_origin;

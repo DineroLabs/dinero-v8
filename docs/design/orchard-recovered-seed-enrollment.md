@@ -1030,6 +1030,16 @@ source/caller birthday, fabricated first event, generated provenance change,
 snapshot floor or automatic mixed-wallet readiness is introduced.
 # Imported-parent genesis graph reconciliation
 
+The original imported activation-parent seam also freshly identifies the exact
+header-only selected prefix which legacy LoadSnapshot marked CHAIN in memory.
+Publication may drop ONLY exact HEADER|CHAIN to HEADER in unpublished graph
+copies, removing those candidates and preventing orphan routing from granting
+the bit again. Unexpected SCRIPTS/TRANSACTIONS/body/undo/failure bits still hit
+the original strict guard. This binding is constructed only by the completed
+factory after authenticating the immutable original imported cohort, never
+from serialized SQL or an independent-replay claim. Persistent rows and the
+original genesis anchor remain untouched.
+
 Completed-root startup may reconstruct the legacy live genesis SCRIPTS bit
 only at height zero with the unchanged independent genesis anchor and exact
 compiled genesis header/transaction body. Legacy genesis persistence records

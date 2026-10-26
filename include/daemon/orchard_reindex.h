@@ -45,6 +45,13 @@ private:
     // A separate selected-origin proof, never independent prehistory replay.
     // Only the completed-root factory may populate this typed alternative.
     std::shared_ptr<const consensus::OrchardSelectedConsistency> selected_consistency_;
+    // Freshly authenticated ORIGINAL imported cohort, not a decoded SQL flag
+    // or independent replay capability. Only the completed-root factory sets
+    // this after CheckActivationSource. Allows dropping the legacy live-only
+    // assumed CHAIN claim on exact header-only selected ancestors, never
+    // accepting SCRIPTS/TRANSACTIONS/body/undo or mutating persistent history.
+    struct ImportedHeaderPrefix {uint256 parent;uint32_t height;};
+    std::optional<ImportedHeaderPrefix> imported_header_prefix_;
     RuntimeOutboxCursor activation_delivery_origin_;
     std::vector<SelectedHeader> selected_headers_;
     // Aligned by selected height. Present pre-Orchard locations require exact

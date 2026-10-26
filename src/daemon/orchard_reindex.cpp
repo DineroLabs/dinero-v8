@@ -2,6 +2,7 @@
 #include "storage/historical_compact_validation.h"
 #include "daemon/services/historical_catalog.h"
 #include "storage/orchard_storage_mode.h"
+#include "storage/orchard_activation_origin.h"
 #include "daemon/orchard_reindex.h"
 #include "daemon/orchard_chainstate_write.h"
 #include "daemon/services/assumeutxo_replay.h"
@@ -369,6 +370,16 @@ std::vector<CBlockIndex*> OrchardCompactStartup::PublishIndexUnderLock() {
         selected_undo_.size()==selected_headers_.size(),"Compact index handoff incomplete or consumed");
     const auto tip=Need(source_->getTip()),validated=Need(source_->getValidatedTip());
     if(selected_consistency_)selected_consistency_->Check(*source_);
+    if(imported_header_prefix_){
+        const auto frozen=Need(source_->getPreBaseCoinSetBase());
+        const auto origin=storage::ReadOrchardActivationOrigin(*source_);
+        Require(selected_consistency_&&origin&&validated.height==0&&origin->validated_height==0&&
+            validated.hash==origin->validated&&validated.hash.GetHex()==Params().genesis_hash&&
+            frozen.first==imported_header_prefix_->parent&&frozen.second==imported_header_prefix_->height&&
+            origin->parent==frozen.first&&origin->parent_height==frozen.second&&
+            frozen.second<selected_headers_.size()&&selected_headers_[frozen.second].header.GetHash()==frozen.first,
+            "Imported header prefix lost its fresh selected-source binding");
+    }
     Require(tip.height==int64_t(selected.height) && tip.hash==selected.block &&
         tip.work==selected.work && (selected_consistency_ || (validated.hash==tip.hash && validated.height==tip.height)) &&
         (selected.historical?Need(source_->getHistoricalCompactCatalogState(tip.hash)):Need(source_->getOrchardCatalogState(tip.hash)))==selected.bytes,
@@ -395,6 +406,7 @@ std::vector<CBlockIndex*> OrchardCompactStartup::PublishIndexUnderLock() {
     std::vector<CBlockIndex*> result;result.reserve(selected_index_.size());
     std::unordered_set<CBlockIndex*> authenticated;
     authenticated.reserve(selected_index_.size());
+    std::unordered_set<CBlockIndex*> assumed_header_only;
     for(size_t height=0;height<selected_index_.size();++height) {
         const auto& proved=*selected_index_[height];
         const auto& h=selected_headers_[height];
@@ -409,6 +421,14 @@ std::vector<CBlockIndex*> OrchardCompactStartup::PublishIndexUnderLock() {
             pointers.emplace(proved.hash,live);values.emplace(live,*live);
         } else live=found->second;
         auto& v=values.at(live);
+        if(imported_header_prefix_&&height>0&&height<=imported_header_prefix_->height&&proved.status==BLOCK_VALID_HEADER){
+            // LoadSnapshot's EnsureHeaderBranchIndexed(...,true) marks this
+            // assumed prefix CHAIN for legacy forward routing. It is NOT
+            // independent execution. Drop only that exact old live claim in
+            // the unpublished value copy; all other extra flags still refuse.
+            if(v.status==uint32_t(BLOCK_VALID_HEADER|BLOCK_VALID_CHAIN))v.status=BLOCK_VALID_HEADER;
+            assumed_header_only.insert(live);
+        }
         if(selected_consistency_&&(v.status&~proved.status)!=0)
             throw std::runtime_error("Selected-origin startup cannot promote assumed prehistory flags: height="+
                 std::to_string(height)+" live="+std::to_string(v.status)+" authenticated="+std::to_string(proved.status));
@@ -431,6 +451,7 @@ std::vector<CBlockIndex*> OrchardCompactStartup::PublishIndexUnderLock() {
     Require(result.back()->hash==selected.block && result.back()->height==selected.height,
         "Compact index selected tip mismatch");
     auto candidates=g_candidates;auto orphans=g_orphan_pool;
+    for(auto* node:assumed_header_only)candidates.erase(node);
     std::unordered_set<CBlockIndex*> queued;
     for(const auto& [parent,children]:orphans)
         for(auto* child:children) {
@@ -464,7 +485,7 @@ std::vector<CBlockIndex*> OrchardCompactStartup::PublishIndexUnderLock() {
             // Preserve existing orphan reconnection semantics, without granting
             // any new body/script/undo authority to a competing branch.
             v.chainwork=chainwork::AddWork(pv.chainwork,chainwork::WorkForBits(v.bits));
-            if(queued.contains(node) && (pv.status&BLOCK_VALID_CHAIN))v.status|=BLOCK_VALID_CHAIN;
+            if(queued.contains(node) && !assumed_header_only.contains(node) && (pv.status&BLOCK_VALID_CHAIN))v.status|=BLOCK_VALID_CHAIN;
         } else Require(!v.pprev,"Compact index parent pointer has no owned identity");
         if(authenticated.contains(node))
             Require(v.chainwork==selected_headers_[v.height].work.GetHex() &&
