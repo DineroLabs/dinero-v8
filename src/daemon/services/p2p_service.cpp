@@ -2055,6 +2055,9 @@ bool P2PService::Start() {
         }
         if (!connect_only && !relay_hints_file_path_.empty()) {
             try {
+                // Restored signed hints are re-verified; local test networks
+                // may name private relays, so set that before loading.
+                if (Params().name == "regtest") p2p_mgr_->set_dialback_private_targets(true);
                 p2p_mgr_->load_relay_hints(relay_hints_file_path_);
             } catch (const std::exception& e) {
                 logger_interface_->warning(
