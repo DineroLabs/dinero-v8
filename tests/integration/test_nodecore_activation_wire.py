@@ -3,7 +3,7 @@
 This is not original mobile assumed-history or queued-payment acceptance. Every
 root, child log, reply and untrusted packet is retained, including failures.
 """
-import hashlib,json,os,socket,struct,subprocess,tempfile,threading,time,traceback
+import hashlib,json,os,socket,sqlite3,struct,subprocess,tempfile,threading,time,traceback
 from pathlib import Path
 
 root=Path(tempfile.mkdtemp(prefix='sdk-activation-wire-evidence-')).resolve()
@@ -16,7 +16,8 @@ with (root/'generator.log').open('xb') as log:
         env=dict(os.environ,DINERO_SDK_ACTIVATION_MANIFEST=str(manifest)),
         stdin=subprocess.DEVNULL,stdout=log,stderr=subprocess.STDOUT,timeout=120)
 assert result.returncode==0,(root/'generator.log')
-fixture=json.loads(manifest.read_text());datadir=Path(fixture['datadir'])
+fixture=json.loads(manifest.read_text());assumed=bool(os.environ.get('DINERO_SDK_ASSUMED_MOBILE_FIXTURE'))
+datadir=Path(fixture['assumed_datadir'] if assumed else fixture['datadir'])
 proof=Path(fixture['proof']).read_bytes();assert 0<len(proof)<=1<<30
 magic=fixture['magic'];headers=[bytes.fromhex(h) for h in fixture['headers']]
 assert len(headers)==104 and all(len(h)==128 for h in headers)
@@ -127,9 +128,23 @@ def call(op,**args):
 success=False
 config=dict(network='regtest',sync_profile='ios_utreexo',
     addnode=f'127.0.0.1:{port}',max_peers=1,verbose_logging=True)
+if assumed:config['assumeutxo_snapshot']=fixture['assumed_snapshot']
+def original_lifecycle():
+    with sqlite3.connect('file:'+str(datadir/'blockchain/utxo')+'?mode=ro',uri=True) as db:
+        return dict(db.execute("SELECT key,value FROM utxo_metadata WHERE key LIKE 'assumeutxo_%' OR key='wallet_snapshot_recovery_base_height' ORDER BY key"))
 try:
     assert call('sdk_activation_events') is True
     assert call('start',datadir=str(datadir),config=config)==0
+    if assumed:
+        deadline=time.monotonic()+45
+        while time.monotonic()<deadline:
+            if call('rpc',method='getblockcount',params=[])==101:break
+            time.sleep(.25)
+        original=original_lifecycle();(root/'original-lifecycle.json').write_text(json.dumps(original,indent=2)+'\n')
+        assert original['assumeutxo_active']=='true',original
+        assert original['assumeutxo_base_height']=='101',original
+        assert original['assumeutxo_base_block']==fixture['parent'],original
+        assert original.get('assumeutxo_fully_validated')!='true',original
     assert call('rpc',method='getblockcount',params=[])==101,'source-ready parent not loaded'
     restored=call('rpc',method='wallet.restore',params=dict(name='wire-named-owner',
         mnemonic='abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about',rescan=False))
@@ -154,6 +169,9 @@ try:
     assert wallet['walletname']=='wire-named-owner',wallet
     assert call('rpc',method='wallet.open',params=['wire-named-owner'])['success'] is True
     assert call('rpc',method='getblockcount',params=[])==101
+    if assumed:
+        after=original_lifecycle();assert after==original,(original,after)
+        (root/'after-handoff-lifecycle.json').write_text(json.dumps(after,indent=2)+'\n')
     assert any(p['command']=='getocat' for p in packets) and any(p['command']=='getocatpg' for p in packets)
     bodies_ready.set();deadline=time.monotonic()+60
     while time.monotonic()<deadline:
@@ -188,6 +206,7 @@ try:
     assert call('stop')==0
     assert call('start',datadir=str(datadir),config=config)==0
     assert call('rpc',method='getblockcount',params=[])==103
+    if assumed:assert original_lifecycle()==original
     assert call('rpc',method='wallet.open',params=['late-history-owner'])['success'] is True
     assert call('rpc',method='wallet.unlock',params=['history-test-password',0])['success'] is True
     binding=call('rpc',method='wallet.orchard.getwalletbinding',params=dict(wallet_name='late-history-owner'))
@@ -196,11 +215,13 @@ try:
     reopened_received=call('rpc',method='wallet.orchard.listreceived',params=dict(bound,account=0))
     assert reopened_balance['confirmed_una']==500000,reopened_balance
     assert reopened_received['history_complete'] and reopened_received['received']==received['received'],reopened_received
+    if assumed:assert original_lifecycle()==original
     (root/'reopened-recovery.json').write_text(json.dumps(dict(balance=reopened_balance,received=reopened_received),indent=2)+'\n')
     assert call('stop')==0
     success=True
     (root/'receipt.json').write_text(json.dumps(dict(fixture=fixture,packets=packets,
         source_ready_parent_handoff=True,named_wallet_without_phrase=True,paused_queue_no_reply=state['pause_probes'],
+        original_assumed_mobile=assumed,original_lifecycle=original if assumed else None,
         body_requests=body_requests,late_restored_funds_and_memo=True,
         scope='Actual loopback catalog/SDK parent handoff plus full activation/descendant body download and retained authenticated account-0 recovery. Not a fresh late snapshot phone, original assumed mobile SQL, nonempty queued crossing or device acceptance.'),indent=2)+'\n')
     print('PASS actual SDK full-body activation download and encrypted late account-0 funds/memo cold reopen',flush=True)

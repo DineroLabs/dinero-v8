@@ -566,6 +566,8 @@ void GenerateSdkActivationFixture(){
     // Select the private wire magic BEFORE any BlockStorage archive is written.
     MutableParams().magic=0x02a1c925;
     const bool funded=std::getenv("DINERO_SDK_FUNDED_CROSSING_FIXTURE")!=nullptr;
+    const bool assumed=std::getenv("DINERO_SDK_ASSUMED_MOBILE_FIXTURE")!=nullptr;
+    std::filesystem::path assumed_snapshot;
     // Source-ready independently replayed parent. No lifecycle receipt or
     // completed selection is injected: the actual SDK must create both.
     shielded_store_fixture::Rows parent_rows;
@@ -580,6 +582,14 @@ void GenerateSdkActivationFixture(){
         source.f.shield_amount=500000;
         constexpr std::string_view memo="authenticated phone history";
         std::copy(memo.begin(),memo.end(),source.f.shield_memo.begin());
+        if(assumed){
+            // The SDK, not a SQL fixture, must import this ordinary legacy
+            // snapshot into a NEW root. This isolated profile has dormant
+            // legacy state commitments, so the normal exporter emits v4.
+            assumed_snapshot=source.f.path.string()+".sdk-input.v4";
+            const auto exported=source.f.service->ExportSnapshot(assumed_snapshot);
+            OrchardAdmissionFixture::Require(exported.success&&exported.block_height==101);
+        }
         const auto* coins=source.f.service->GetConsensusUTXOSet();OrchardAdmissionFixture::Require(coins!=nullptr);
         const auto lock=coins->LockForestShared();
         OrchardAdmissionFixture::Require(source.f.db.putUtreexoCheckpointWithChecksum(
@@ -587,7 +597,7 @@ void GenerateSdkActivationFixture(){
         for(const auto& [key,value]:ChainDBTransactionReadTestPeer::HandoffRows(source.f.db))
             parent_rows.at(key.first).emplace(key.second,value);
     },funded?OrchardAdmissionFixture::HistoricalSpend::NamedWallet:OrchardAdmissionFixture::HistoricalSpend::None);
-    if(funded)f.full.f.preserve_evidence=true;
+    if(funded||assumed)f.full.f.preserve_evidence=true;
     // Keep the visited/undone source intact, but start THIS test from the exact
     // earlier independent parent capture. Never strip an outbox or fabricate a
     // starting cursor from the subsequently visited source. The real SDK alone
@@ -610,6 +620,18 @@ void GenerateSdkActivationFixture(){
     Json::Value row;row["datadir"]=f.root.string();row["profile"]=ConsensusChecksum(Params());
     row["magic"]=Json::UInt(Params().magic);row["parent"]=f.proof->parent_catalog.block.GetHex();
     row["first_hash"]=f.full.first->Header().GetHash().GetHex();row["second_hash"]=f.full.second->Header().GetHash().GetHex();
+    if(assumed){
+        const auto mobile=f.root/"assumed-mobile";
+        ASSERT_TRUE(std::filesystem::create_directory(mobile));
+        consensus::HeaderStore store((mobile/"headers").string());ASSERT_TRUE(store.Open());
+        consensus::HeaderChainSelector selected(&store);
+        for(const auto& block:f.full.f.blocks)ASSERT_TRUE(selected.AddHeader(block.header));
+        row["assumed_datadir"]=mobile.string();row["assumed_snapshot"]=assumed_snapshot.string();
+        row["assumed_snapshot_version"]=4;row["assumed_base"]=101;
+        // No ChainDB, forest, wallet index, lifecycle keys or historical body
+        // is copied into this new SDK root.
+        ASSERT_FALSE(std::filesystem::exists(mobile/"blockchain"));
+    }
     if(funded){row["funding_address"]=f.full.f.funding_address;row["funding_amount_una"]=1000000;
         row["funding_change_script"]=util::hex(f.full.f.funding_change_script);
         row["native_original_source"]=f.full.f.path.string();
