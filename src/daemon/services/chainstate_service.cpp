@@ -19855,9 +19855,17 @@ struct ChainstateService::MempoolReadGuard final : MempoolChainstateReadGuard {
     // A validation result alone must not drop the actual lifecycle pin.
     std::unique_ptr<const ImportedWalletSource> publication_source;
     const std::thread::id thread=std::this_thread::get_id();
+    static std::unique_lock<std::mutex> SnapshotOwner(ChainstateService& service){
+        std::unique_lock<std::mutex> result(service.snapshot_load_mutex_,std::defer_lock);
+        // Existing independent mining selection can borrow a real outer
+        // selected owner. Do not acquire snapshot backwards in that case.
+        // Imported admission still REQUIRES actual snapshot ownership below.
+        if(!service.activation_mutex_.HeldByCurrentThread())result.lock();
+        return result;
+    }
     explicit MempoolReadGuard(std::shared_ptr<ChainstateService> service)
         :owner(std::move(service)),preparation(*owner),
-         snapshot(owner->snapshot_load_mutex_),lock(owner->AcquireBlockIngressActivationLock()) {
+         snapshot(SnapshotOwner(*owner)),lock(owner->AcquireBlockIngressActivationLock()) {
         // Ordinary service startup may not yet have an index. That never
         // grants imported authority: its factory requires this actual use.
         try{index_use=AcquireWalletIndexUse(owner);}catch(const WalletIndexUnavailable&){}
@@ -19890,9 +19898,7 @@ struct ChainstateService::MempoolReadGuard final : MempoolChainstateReadGuard {
 };
 std::unique_ptr<MempoolChainstateReadGuard> ChainstateService::AcquireMempoolChainstateRead(
     std::shared_ptr<ChainstateService> owner) {
-    // Do not invert snapshot -> selected ordering on reentrant callers. They
-    // must leave their selected owner before requesting fresh pool admission.
-    if(!owner||owner->activation_mutex_.HeldByCurrentThread())return {};
+    if(!owner)return {};
     try { return std::make_unique<MempoolReadGuard>(std::move(owner)); }
     catch(const SelectedReadUse::Unavailable&) { return {}; }
 }
@@ -21327,7 +21333,8 @@ MempoolOrchardValidation ChainstateService::ValidateOrchardPoolProofsUnderLock(
         complete.push_back(incoming);
         const auto entries=std::span<const MempoolProofView>(complete);
         const bool imported=snapshot&&assumeutxo_active_&&!compact_startup_&&!IsBackgroundValidationComplete();
-        if(imported&&(!publication_source||*publication_source))return fail("Imported pool publication owner unavailable");
+        if(imported&&(!snapshot->owns_lock()||!publication_source||*publication_source))
+            return fail("Imported pool publication owner unavailable");
         auto selected = imported
             ?CaptureImportedOrchardTransactionUnderLock(*snapshot,entries)
             :CaptureSelectedOrchardPoolContextUnderLock(entries);
