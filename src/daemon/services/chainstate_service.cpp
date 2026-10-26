@@ -14485,10 +14485,14 @@ StatusOr<size_t> ChainstateService::DiscoverSnapshotWalletCandidates(WalletManag
                 if(point.vout>=genesis.vout.size()||coin.height||!coin.isCoinbase||coin.value!=genesis.vout[point.vout].value||
                     coin.scriptPubKey!=genesis.vout[point.vout].scriptPubKey)return Status::Corruption;
                 ++compiled;
-            }else{
-                const auto leaf=consensus::HashUTXOForCreationHeight(point.txid.AsUint256(),point.vout,coin.value.GetUna(),coin.scriptPubKey,coin.height,coin.isCoinbase);
-                const auto position=forest.findLeafPosition(leaf);
-                if(!position||*position>=forest.getNumLeaves())return Status::Corruption;
+            }
+            const auto leaf=consensus::HashUTXOForCreationHeight(point.txid.AsUint256(),point.vout,coin.value.GetUna(),coin.scriptPubKey,coin.height,coin.isCoinbase);
+            const auto position=forest.findLeafPosition(leaf);
+            // Some original forests retain the compiled genesis coin. Count
+            // that real leaf too; only an exact compiled row may be absent.
+            if(!position){if(point.txid!=genesis.GetTxid())return Status::Corruption;}
+            else{
+                if(*position>=forest.getNumLeaves())return Status::Corruption;
                 auto& seen=positions[size_t(*position/8)];const auto bit=uint8_t(1u<<(*position%8));
                 if(seen&bit)return Status::Corruption;seen|=bit;++covered;
             }

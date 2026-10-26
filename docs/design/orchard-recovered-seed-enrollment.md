@@ -1104,8 +1104,9 @@ Normal unlocked recovery may now discover funding DATA while canonical recovery
 remains deferred. This bounded route supports the exact original imported
 activation parent with durable/validated genesis, original `snapshot_loaded`
 cohort, complete frozen records/digest, checked forest/checksum and selected PoW
-header/root. Every non-genesis leaf is covered exactly once; only exact compiled
-genesis rows are excluded. Unknown/fatal/progress/reorg/cohort mismatches refuse.
+header/root. Every live forest leaf is covered exactly once, including a retained
+compiled genesis leaf. Only an exact compiled genesis row may be absent from the
+forest; a present one is never skipped. Unknown/fatal/progress/reorg/cohort mismatches refuse.
 Snapshot-load, selected-source and lifecycle ownership exclude replacement/reset
 through the FULL wallet transaction, which freshly binds the unlocked seed,
 session, exact wallet/index and original unknown-empty account catalog.
