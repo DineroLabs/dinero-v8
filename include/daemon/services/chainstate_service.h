@@ -1091,6 +1091,10 @@ public:
     // an earned captured prefix, never lasting readiness or global inventory.
     StatusOr<std::shared_ptr<const RuntimeEnrolledWalletRecoveryResult>>
         resumeRuntimeWalletRecoveryIfNeeded(WalletManager&, UTXOIndex&, uint64_t expected_session = 0);
+    // Observation-only readmission fence at the genuinely empty activation
+    // parent. Restores/rechecks every declared encrypted owner under the current
+    // source; does not adopt transparent receipts or manufacture delivery.
+    Status checkRuntimeEmptyParentWallet(WalletManager&, uint64_t expected_session);
 
     // Reconcile one retained reorg intent with actual committed disconnects,
     // then revalidate its non-coinbase bodies through the current real pool.
@@ -1643,6 +1647,10 @@ private:
     friend struct OrchardDetachedMiningTestAccess;
     struct SelectedOrchardPoolContext;
     std::shared_ptr<const RuntimeAccountReplay> CaptureEmptyActivationParentReplayUnderLock();
+    // Caller owns snapshot_load_mutex_ THEN activation_mutex_. The context
+    // retains its original full/explicit-proof coin authority unchanged.
+    bool CheckRuntimeAccountReplayCurrentUnderLock(const RuntimeAccountReplay&,
+        const SelectedOrchardPoolContext&);
     // Compact callers must enumerate every body/proof that will be queried.
     // No argument requests the general full-node view, not an empty catalog.
     std::unique_ptr<SelectedOrchardPoolContext> CaptureSelectedOrchardPoolContextUnderLock(

@@ -58,6 +58,20 @@ requests that Core actually committed. No app changes are made by this Core work
 
 ## Implemented bounded enrollment contract
 
+At the genuinely empty activation parent, queue preparation uses immutable
+profile facts, not a nonexistent first event. Before a reservation or Ready
+commit, snapshot-then-selected ownership rechecks the current full/explicit-proof
+coin owner, exact profile/parent, empty source and empty Orchard namespace.
+The zero-cursor outbox still has no `after_tip`. Nonzero replay keeps the original
+actual-tip fence. No compact arbitrary-coin view is granted by this change.
+
+Empty-parent canonical recovery only restores and rechecks the complete encrypted
+catalog against the current source. It returns `NotRequired`, not an earned
+delivery prefix, and does not create or advance transparent receipts. Locked,
+missing, corrupt or foreign owners defer instead of being repaired. The native
+wrong-coin regression reaches the real selected coin refusal before reservation;
+it is deliberately not a funded wallet or queued SDK crossing acceptance test.
+
 The public bound RPC takes no birthday, height, checkpoint, network or account
 argument. The selected service obtains the profile and checkpoint. It requires:
 

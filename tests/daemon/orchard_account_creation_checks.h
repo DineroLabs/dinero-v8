@@ -222,6 +222,82 @@ TEST(OrchardEmptyParentAccount, BadSourceAndMissingCatalogNeverCreateOwnersOrRes
     const auto page=f.f.service->getRuntimeDeliveryPage({},1);ASSERT_TRUE(page.ok());EXPECT_EQ((*page)->head.sequence,0u);
     EXPECT_TRUE((*page)->events.empty());EXPECT_FALSE((*page)->after_tip);
 }
+TEST(OrchardEmptyParentQueue, CurrentCatalogReadmissionObservesWithoutInventingProgress){
+    PreactivationEnrollmentFixture f;ASSERT_FALSE(f.Enroll().isMember("error"));ASSERT_FALSE(f.Call(0).isMember("error"));
+    const auto audit=[&](uint64_t session){auto use=WalletService::AcquireWalletUse(f.wallet);
+        auto index=ChainstateService::AcquireWalletIndexUse(f.f.service);
+        return f.f.service->checkRuntimeEmptyParentWallet(use->Wallet(),session);};
+    const auto before=f.Snapshot();const auto rows=ChainDBTransactionReadTestPeer::HandoffRows(f.f.db);
+    EXPECT_EQ(audit(f.Session()),Status::Ok);EXPECT_NE(audit(f.Session()+1),Status::Ok);
+    EXPECT_EQ(f.Snapshot(),before);EXPECT_EQ(ChainDBTransactionReadTestPeer::HandoffRows(f.f.db),rows);
+    // Production canonical recovery returns NotRequired, NOT AppliedPrefix.
+    EXPECT_EQ(f.wallet->RecoverActiveWalletFromCanonicalSource(),Recovery::NotRequired);
+    EXPECT_EQ(f.Snapshot(),before);
+    {auto use=WalletService::AcquireWalletUse(f.wallet);use->Wallet().encryptWallet("parent-queue-pass");
+     use->Wallet().open("preactivation-recovered");}
+    ASSERT_TRUE(f.wallet->EnsureRuntimeWalletBindings());EXPECT_NE(audit(f.Session()),Status::Ok);
+    {auto use=WalletService::AcquireWalletUse(f.wallet);use->Wallet().unlockWallet("parent-queue-pass",0);}
+    const auto reopened=f.Snapshot();EXPECT_EQ(audit(f.Session()),Status::Ok);EXPECT_EQ(f.Snapshot(),reopened);
+    f.Sql("CREATE TEMP TABLE saved_empty_queue_owner AS SELECT * FROM orchard_wallet_snapshots; DELETE FROM orchard_wallet_snapshots");
+    const auto missing=f.Snapshot();EXPECT_NE(audit(f.Session()),Status::Ok);EXPECT_EQ(f.Snapshot(),missing);
+    f.Sql("INSERT INTO orchard_wallet_snapshots SELECT * FROM saved_empty_queue_owner; DROP TABLE saved_empty_queue_owner");
+    ASSERT_EQ(f.f.db.setValidatedTip(f.f.token,f.f.blocks[100].GetHash(),100),Status::Ok);
+    EXPECT_NE(audit(f.Session()),Status::Ok);EXPECT_EQ(f.Snapshot(),reopened);
+    ASSERT_EQ(f.f.db.setValidatedTip(f.f.token,f.parent->hash,101),Status::Ok);
+    ChainDBTransactionReadTestPeer::HandoffPutOrchardRow(f.f.db,f.f.token,"O1-untracked-queue","refusal evidence");
+    const auto corrupt=ChainDBTransactionReadTestPeer::HandoffRows(f.f.db);
+    EXPECT_NE(audit(f.Session()),Status::Ok);EXPECT_EQ(f.Snapshot(),reopened);
+    EXPECT_EQ(ChainDBTransactionReadTestPeer::HandoffRows(f.f.db),corrupt);
+    PreserveEmptyParentCase("queue-readmission-refusal",corrupt,reopened,f.Snapshot());
+}
+TEST(OrchardEmptyParentQueue, EmptySourceReachesRealCoinFenceAndNeverBypassesIt){
+    PreactivationEnrollmentFixture f;ASSERT_FALSE(f.Enroll().isMember("error"));ASSERT_FALSE(f.Call(0).isMember("error"));
+    const auto keys=f.AccountKeys(0);const auto current=f.Account(0);const auto session=f.Session();
+    // Deliberately NOT a wallet funding fixture. The real source coin has a
+    // wrong supplied value and must fail at the selected coin fence, before
+    // reservation, proof scheduling or any Ready bytes can be produced.
+    orchard::ResolvedInput input{};const auto id=f.f.blocks[1].vtx.front().GetTxid().AsUint256();
+    std::copy(id.begin(),id.end(),input.txid_wire.begin());input.sequence=UINT32_MAX;
+    input.amount_una=3000;input.script_pub_key=f.f.script;
+    const std::vector<orchard::ResolvedInput> inputs{input};
+    const std::vector<orchard::WalletPayment> payments{{2000,keys.Receiver(orchard::WalletScope::External,{})}};
+    const auto before=f.Snapshot();const auto rows=ChainDBTransactionReadTestPeer::HandoffRows(f.f.db);
+    auto use=WalletService::AcquireWalletUse(f.wallet);auto index=ChainstateService::AcquireWalletIndexUse(f.f.service);
+    wallet::OrchardProofJobs jobs;
+    try{(void)f.f.service->queueRuntimeWalletShield(use->Wallet(),session,0,current.revision,orchard::Hash{91},inputs,payments,{},1000,jobs);
+        FAIL()<<"Wrong selected coin was queued";}
+    catch(const std::runtime_error& error){EXPECT_STREQ(error.what(),"Shield live/durable input mismatch or unavailable");}
+    try{(void)f.f.service->reserveRuntimeWalletShield(use->Wallet(),session,0,current.revision,orchard::Hash{92},inputs,payments,{},1000);
+        FAIL()<<"Wrong selected coin was reserved";}
+    catch(const std::runtime_error& error){EXPECT_STREQ(error.what(),"Shield live/durable input mismatch or unavailable");}
+    EXPECT_FALSE(jobs.Query(orchard::Hash{91}));EXPECT_EQ(f.Snapshot(),before);
+    EXPECT_EQ(ChainDBTransactionReadTestPeer::HandoffRows(f.f.db),rows);
+    const auto page=f.f.service->getRuntimeDeliveryPage({},1);ASSERT_TRUE(page.ok());
+    EXPECT_EQ((*page)->head.sequence,0u);EXPECT_TRUE((*page)->events.empty());EXPECT_FALSE((*page)->after_tip);
+    PreserveEmptyParentCase("queue-coin-refusal",rows,before,f.Snapshot());
+}
+TEST(OrchardEmptyParentQueue, NamespaceChangedAfterCaptureRefusesAtFinalReadmissionFence){
+    PreactivationEnrollmentFixture f;ASSERT_FALSE(f.Enroll().isMember("error"));ASSERT_FALSE(f.Call(0).isMember("error"));
+    const auto before=f.Snapshot();const auto session=f.Session();
+    struct Injection {PreactivationEnrollmentFixture* fixture;bool changed=false;bool failed=false;} injection{&f};
+    auto use=WalletService::AcquireWalletUse(f.wallet);auto index=ChainstateService::AcquireWalletIndexUse(f.f.service);
+    sqlite3* db=nullptr;{auto lease=use->Wallet().AcquireDatabaseLease();db=lease->Database();}
+    // The catalog preparation transaction commits after immutable source capture
+    // and before selected ownership. Inject only untrusted source bytes there;
+    // no private owner, marker, cursor or wallet effect is forged.
+    sqlite3_commit_hook(db,[](void* p){auto& x=*static_cast<Injection*>(p);if(x.changed)return 0;
+        x.changed=true;try{ChainDBTransactionReadTestPeer::HandoffPutOrchardRow(x.fixture->f.db,
+            x.fixture->f.token,"O1-after-empty-source-capture","final fence refusal evidence");}
+        catch(...){x.failed=true;return 1;}return 0;},&injection);
+    const auto result=f.f.service->checkRuntimeEmptyParentWallet(use->Wallet(),session);
+    sqlite3_commit_hook(db,nullptr,nullptr);
+    ASSERT_TRUE(injection.changed);ASSERT_FALSE(injection.failed);EXPECT_NE(result,Status::Ok);
+    EXPECT_EQ(f.Snapshot(),before);
+    const auto corrupted=ChainDBTransactionReadTestPeer::HandoffRows(f.f.db);
+    PreserveEmptyParentCase("queue-final-namespace-fence",corrupted,before,f.Snapshot());
+    ChainDBTransactionReadTestPeer::HandoffDeleteOrchardRow(f.f.db,f.f.token,"O1-after-empty-source-capture");
+    EXPECT_EQ(f.f.service->checkRuntimeEmptyParentWallet(use->Wallet(),session),Status::Ok);
+}
 TEST(OrchardPreactivationEnrollment, MissingCorruptOrUntrackedStateNeverRepairs){
     PreactivationEnrollmentFixture f;const auto good=f.Setting("orchard_account_catalog_v1");
     const auto owner=f.Setting("wallet_initial_owner_v1");

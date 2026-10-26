@@ -26,6 +26,17 @@
 namespace dinero::wallet {
 namespace {
 void Check(bool v) { if(!v) throw std::runtime_error("Orchard account delivery ownership or state mismatch"); }
+void CheckShieldSourcePosition(const RuntimeAccountReplay& view){
+    const auto head=view.Head();
+    if(head.sequence){Check(!head.digest.IsNull());return;}
+    // Only the private selected-service factory can supply this genuine empty
+    // parent view. This permits SHIELD preparation, not an unscanned spend or a
+    // postactivation recovery bypass. The service must still recapture its
+    // actual selected coin owner and empty namespace before a durable writer.
+    const auto facts=view.Profile();const auto origin=view.Point({}).checkpoint;
+    Check(head.digest.IsNull()&&facts.activation_height>0&&facts.activation_height!=UINT32_MAX&&
+        uint64_t(origin.height)+1==facts.activation_height&&!origin.block_hash.IsNull()&&origin.tree_size==0);
+}
 void CheckRequest(bool value, OrchardRequestError::Code code) {
     if(!value) throw OrchardRequestError(code);
 }
@@ -1665,7 +1676,7 @@ std::unique_ptr<OrchardCatalogRecoveryPlan> OrchardAccountDelivery::PrepareShiel
     // change, generate a plan, inspect an executor or release reservations.
     if(retry||existing_only)return prepared;
     CheckRequest(found->state.revision==expected,OrchardRequestError::Code::StaleAccountRevision);
-    Check(data.head.sequence&&!data.head.digest.IsNull());
+    CheckShieldSourcePosition(view);
     for(size_t i=0;i<data.before.accounts.size();++i){
         const auto& account=data.before.accounts[i].state.account;const auto receipt=account.Delivery();
         Check(receipt.sequence==data.head.sequence&&receipt.digest==data.head.digest&&!account.Operations().Entries().contains(id));
@@ -2059,7 +2070,8 @@ OrchardAccountDelivery::RequestProof OrchardAccountDelivery::ReadCatalogProofWit
     }
     if(!recovery_keys)return result; // Status reads and existing/Ready jobs never requeue.
     if(eligible){
-        Check(head.sequence&&!head.digest.IsNull());
+        if(entry.shield_request)CheckShieldSourcePosition(view);
+        else Check(head.sequence&&!head.digest.IsNull());
         for(const auto& account:inventory.accounts){
             const auto receipt=account.state.account.Delivery();
             Check(receipt.sequence==head.sequence&&receipt.digest==head.digest);

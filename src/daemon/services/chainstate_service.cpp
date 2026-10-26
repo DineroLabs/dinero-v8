@@ -6947,6 +6947,7 @@ ChainstateService::resumeRuntimeWalletRecoveryIfNeeded(WalletManager& wallet, UT
             session=lease->Session();
             if (expected_session && session!=expected_session) return Status::Invalid;
         }
+        bool empty_parent=false;
         {
             std::lock_guard<AnnotatedRecursiveMutex> selected(activation_mutex_);
             if (safe_mode_active_ || !consensus::OrchardProfileConfigurationValid(Params()))
@@ -6961,13 +6962,21 @@ ChainstateService::resumeRuntimeWalletRecoveryIfNeeded(WalletManager& wallet, UT
                 // state, never permission to use a height-based recovery scan.
                 if (consensus::OrchardActiveForHeight(Params(),active_tip_->height))
                     return Status::Corruption;
-                return std::shared_ptr<const RuntimeEnrolledWalletRecoveryResult>{};
+                empty_parent=active_tip_&&uint64_t(active_tip_->height)+1==Params().orchard_activation_height;
+                if(!empty_parent)return std::shared_ptr<const RuntimeEnrolledWalletRecoveryResult>{};
             }
 #else
             return Status::Internal;
 #endif
         }
 #ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
+        if(empty_parent){
+            const auto checked=checkRuntimeEmptyParentWallet(wallet,session);
+            if(checked!=Status::Ok)return checked;
+            // Observation only: no event was delivered and neither transparent
+            // baseline is created, advanced or relabelled as replayed.
+            return std::shared_ptr<const RuntimeEnrolledWalletRecoveryResult>{};
+        }
         // Account/source capture and proof verification run after every outer
         // selected lock and the short session lease above have been released.
         return std::make_shared<const RuntimeEnrolledWalletRecoveryResult>(
@@ -19771,6 +19780,61 @@ std::shared_ptr<const RuntimeAccountReplay> ChainstateService::CaptureEmptyActiv
 #endif
 }
 
+bool ChainstateService::CheckRuntimeAccountReplayCurrentUnderLock(
+        const RuntimeAccountReplay& replay,const SelectedOrchardPoolContext& selected){
+#ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
+    activation_mutex_.AssertHeld("check current account replay source");
+    const auto head=replay.Head();const auto point=replay.Point(head).checkpoint;const auto facts=replay.Profile();
+    const auto& context=selected.context;
+    const auto page=getRuntimeDeliveryPage(head,1);
+    if(!page.ok()||(*page)->head!=head||(*page)->next!=head||!(*page)->events.empty()||
+       context.parent_hash!=point.block_hash||uint64_t(point.height)+1!=context.height||
+       context.activation_height!=facts.activation_height||context.domain.network_code!=facts.domain.network_code||
+       context.domain.genesis_wire!=facts.domain.genesis_wire||context.domain.branch_id!=facts.domain.branch_id)return false;
+    if(head.sequence)return (*page)->after_tip&&(*page)->after_tip->first==point.block_hash&&
+        (*page)->after_tip->second==point.height;
+    // The zero cursor has NO after_tip. Recapture its actual selected parent,
+    // empty namespace and real input-owner consistency instead of fabricating
+    // event 1 or weakening the ordinary nonzero delivery fence above.
+    return head.digest.IsNull()&&!(*page)->after_tip&&context.height==context.activation_height&&
+        !selected.parent&&chain_db_->getEmptyOrchardCommitmentSets().ok();
+#else
+    (void)replay;(void)selected;return false;
+#endif
+}
+
+Status ChainstateService::checkRuntimeEmptyParentWallet(WalletManager& wallet,uint64_t session){
+#ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
+    if(activation_mutex_.HeldByCurrentThread())return Status::Invalid;
+    try{
+        const auto captured=getRuntimeAccountReplayForWallet(wallet,session);
+        if(!captured.ok())return captured.status();
+        const auto& replay=**captured;if(replay.Head().sequence)return Status::Invalid;
+        // Restore every current/retained/archive owner without the selected
+        // lock, then recheck the exact captured bytes under the current source.
+        auto plan=wallet::OrchardAccountDelivery::PrepareCatalogRecovery(wallet,session,replay,
+            wallet::OrchardAccountDelivery::CatalogRecoveryAction::Observe);
+        std::lock_guard<std::mutex> snapshot_owner(snapshot_load_mutex_);
+        auto selected_owner=AcquireBlockIngressActivationLock();
+        const auto selected=compact_startup_?CaptureSelectedOrchardPoolContextUnderLock(std::span<const MempoolProofView>{}):
+            CaptureSelectedOrchardPoolContextUnderLock();
+        if(!selected||!CheckRuntimeAccountReplayCurrentUnderLock(replay,*selected))return Status::Invalid;
+        auto lease=wallet.AcquireDatabaseLease();
+        if(lease->Session()!=session||!lease->Database()||!sqlite3_get_autocommit(lease->Database()))return Status::Invalid;
+        auto* db=lease->Database();
+        if(sqlite3_exec(db,"PRAGMA synchronous=FULL",nullptr,nullptr,nullptr)!=SQLITE_OK||
+           sqlite3_exec(db,"BEGIN IMMEDIATE",nullptr,nullptr,nullptr)!=SQLITE_OK)return Status::Internal;
+        try{
+            wallet::OrchardAccountDelivery::RecheckCatalogRecoveryInTransaction(wallet,session,*plan);
+            if(sqlite3_exec(db,"COMMIT",nullptr,nullptr,nullptr)!=SQLITE_OK)throw std::runtime_error("Empty parent catalog capture commit refused");
+        }catch(...){if(sqlite3_exec(db,"ROLLBACK",nullptr,nullptr,nullptr)!=SQLITE_OK&&!sqlite3_get_autocommit(db))std::terminate();throw;}
+        return Status::Ok;
+    }catch(...){return Status::Internal;}
+#else
+    (void)wallet;(void)session;return Status::Internal;
+#endif
+}
+
 #ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
 storage::catalog::State ChainstateService::PreparedOrchardExtension::CaptureCatalog(
     ChainstateService& service,const consensus::OrchardBlockContext& context,
@@ -20328,21 +20392,16 @@ std::unique_ptr<wallet::OrchardPreparedSpend> ChainstateService::reserveRuntimeW
         throw std::runtime_error("Shield input bound");
     const auto captured=getRuntimeAccountReplayForWallet(wallet,session);
     if(!captured.ok())throw std::runtime_error("Authenticated shield replay source unavailable");
-    const auto& replay=**captured;const auto head=replay.Head();
-    const auto checkpoint=replay.Point(head).checkpoint;
-    const auto origin_event=replay.Event(1);const auto& origin=origin_event->context;
+    const auto& replay=**captured;
+    const auto origin=replay.Profile();
     const wallet::OrchardAccountDelivery::Profile profile{origin.domain,origin.activation_height,account};
     auto catalog=wallet::OrchardAccountDelivery::PrepareShieldReservationForReplay(wallet,session,profile,expected,
         replay,operation,inputs,payments,outputs,fee,wallet::OrchardAccountDelivery::ShieldRequestMode::Unbound);
+    std::lock_guard<std::mutex> snapshot_owner(snapshot_load_mutex_);
     auto lock=AcquireBlockIngressActivationLock();
     auto selected=CaptureSelectedOrchardPoolContextUnderLock();
     if(!selected)throw std::runtime_error("Shield selected source unavailable");
-    const auto page=getRuntimeDeliveryPage(head,1);
-    if(!page.ok()||(*page)->head!=head||(*page)->next!=head||!(*page)->events.empty()||
-       !(*page)->after_tip||(*page)->after_tip->first!=checkpoint.block_hash||
-       (*page)->after_tip->second!=checkpoint.height||
-       selected->context.parent_hash!=checkpoint.block_hash||
-       uint64_t(checkpoint.height)+1!=selected->context.height)
+    if(!CheckRuntimeAccountReplayCurrentUnderLock(replay,*selected))
         throw std::runtime_error("Shield selected replay head changed");
     if(selected->context.domain.network_code!=profile.domain.network_code||
        selected->context.domain.genesis_wire!=profile.domain.genesis_wire||
@@ -20389,18 +20448,16 @@ std::unique_ptr<wallet::OrchardQueuedSpend> ChainstateService::queueRuntimeWalle
     }
     const auto captured=getRuntimeAccountReplayForWallet(wallet,session);
     if(!captured.ok())throw std::runtime_error("Authenticated shield replay source unavailable");
-    const auto& replay=**captured;const auto head=replay.Head();const auto checkpoint=replay.Point(head).checkpoint;
-    const auto origin_event=replay.Event(1);const auto& origin=origin_event->context;
+    const auto& replay=**captured;
+    const auto origin=replay.Profile();
     const wallet::OrchardAccountDelivery::Profile profile{origin.domain,origin.activation_height,account};
     auto catalog=wallet::OrchardAccountDelivery::PrepareShieldReservationForReplay(wallet,session,profile,expected,
         replay,operation,{},payments,{},fee,wallet::OrchardAccountDelivery::ShieldRequestMode::Stored);
     wallet::OrchardShieldRequest prepared;
     {
+        std::lock_guard<std::mutex> snapshot_owner(snapshot_load_mutex_);
         auto lock=AcquireBlockIngressActivationLock();auto selected=CaptureSelectedOrchardPoolContextUnderLock();
-        const auto page=getRuntimeDeliveryPage(head,1);
-        if(!selected||!page.ok()||(*page)->head!=head||(*page)->next!=head||!(*page)->events.empty()||
-           !(*page)->after_tip||(*page)->after_tip->first!=checkpoint.block_hash||(*page)->after_tip->second!=checkpoint.height||
-           selected->context.parent_hash!=checkpoint.block_hash||uint64_t(checkpoint.height)+1!=selected->context.height)
+        if(!selected||!CheckRuntimeAccountReplayCurrentUnderLock(replay,*selected))
             throw std::runtime_error("Shield selected replay head changed");
     if(selected->context.domain.network_code!=profile.domain.network_code||
        selected->context.domain.genesis_wire!=profile.domain.genesis_wire||
@@ -20464,23 +20521,18 @@ std::unique_ptr<wallet::OrchardQueuedSpend> ChainstateService::queueRuntimeWalle
         throw std::runtime_error("Shield input bound");
     const auto captured=getRuntimeAccountReplayForWallet(wallet,session);
     if(!captured.ok())throw std::runtime_error("Authenticated shield replay source unavailable");
-    const auto& replay=**captured;const auto head=replay.Head();
-    const auto checkpoint=replay.Point(head).checkpoint;
-    const auto origin_event=replay.Event(1);const auto& origin=origin_event->context;
+    const auto& replay=**captured;
+    const auto origin=replay.Profile();
     const wallet::OrchardAccountDelivery::Profile profile{origin.domain,origin.activation_height,account};
     auto catalog=wallet::OrchardAccountDelivery::PrepareShieldReservationForReplay(wallet,session,profile,expected,
         replay,operation,inputs,payments,outputs,fee,wallet::OrchardAccountDelivery::ShieldRequestMode::Exact);
     wallet::OrchardShieldRequest prepared;
     {
+    std::lock_guard<std::mutex> snapshot_owner(snapshot_load_mutex_);
     auto lock=AcquireBlockIngressActivationLock();
     auto selected=CaptureSelectedOrchardPoolContextUnderLock();
     if(!selected)throw std::runtime_error("Shield selected source unavailable");
-    const auto page=getRuntimeDeliveryPage(head,1);
-    if(!page.ok()||(*page)->head!=head||(*page)->next!=head||!(*page)->events.empty()||
-       !(*page)->after_tip||(*page)->after_tip->first!=checkpoint.block_hash||
-       (*page)->after_tip->second!=checkpoint.height||
-       selected->context.parent_hash!=checkpoint.block_hash||
-       uint64_t(checkpoint.height)+1!=selected->context.height)
+    if(!CheckRuntimeAccountReplayCurrentUnderLock(replay,*selected))
         throw std::runtime_error("Shield selected replay head changed");
     if(selected->context.domain.network_code!=profile.domain.network_code||
        selected->context.domain.genesis_wire!=profile.domain.genesis_wire||
@@ -20520,8 +20572,8 @@ std::vector<uint8_t> ChainstateService::finalizeRuntimeWalletShield(
 #ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
     const auto captured=getRuntimeAccountReplayForWallet(wallet,session);
     if(!captured.ok())throw std::runtime_error("Authenticated shield replay source unavailable");
-    const auto& replay=**captured;const auto head=replay.Head();const auto checkpoint=replay.Point(head).checkpoint;
-    const auto origin_event=replay.Event(1);const auto& origin=origin_event->context;
+    const auto& replay=**captured;
+    const auto origin=replay.Profile();
     const wallet::OrchardAccountDelivery::Profile profile{origin.domain,origin.activation_height,account};
     auto request=wallet::OrchardAccountDelivery::ReadCatalogShieldRequestProofForReplay(
         wallet,session,profile,replay,operation,inputs,payments,outputs,fee,jobs,true);
@@ -20537,11 +20589,9 @@ std::vector<uint8_t> ChainstateService::finalizeRuntimeWalletShield(
             std::vector<orchard::TransparentOutput>(outputs.begin(),outputs.end()),fee,request.proof->Bytes());
         std::unique_ptr<const consensus::OrchardCoinSnapshot> snapshot;
         {
+            std::lock_guard<std::mutex> snapshot_owner(snapshot_load_mutex_);
             auto lock=AcquireBlockIngressActivationLock();auto selected=CaptureSelectedOrchardPoolContextUnderLock();
-            const auto page=getRuntimeDeliveryPage(head,1);
-            if(!selected||!page.ok()||(*page)->head!=head||(*page)->next!=head||!(*page)->events.empty()||
-               !(*page)->after_tip||(*page)->after_tip->first!=checkpoint.block_hash||(*page)->after_tip->second!=checkpoint.height||
-               selected->context.parent_hash!=checkpoint.block_hash||uint64_t(checkpoint.height)+1!=selected->context.height||
+            if(!selected||!CheckRuntimeAccountReplayCurrentUnderLock(replay,*selected)||
                selected->context.activation_height!=profile.activation||selected->context.domain.network_code!=profile.domain.network_code||
                selected->context.domain.genesis_wire!=profile.domain.genesis_wire||selected->context.domain.branch_id!=profile.domain.branch_id)
                 throw std::runtime_error("Shield signing source changed");
@@ -20556,11 +20606,9 @@ std::vector<uint8_t> ChainstateService::finalizeRuntimeWalletShield(
     // The consumed writer below rechecks every captured owner before Ready.
     auto finalization=wallet::OrchardAccountDelivery::PrepareShieldFinalizationForReplay(
         wallet,session,profile,replay,operation,inputs,payments,outputs,fee,jobs);
+    std::lock_guard<std::mutex> snapshot_owner(snapshot_load_mutex_);
     auto lock=AcquireBlockIngressActivationLock();auto selected=CaptureSelectedOrchardPoolContextUnderLock();
-    const auto page=getRuntimeDeliveryPage(head,1);
-    if(!selected||!page.ok()||(*page)->head!=head||(*page)->next!=head||!(*page)->events.empty()||
-       !(*page)->after_tip||(*page)->after_tip->first!=checkpoint.block_hash||(*page)->after_tip->second!=checkpoint.height||
-       selected->context.parent_hash!=checkpoint.block_hash||uint64_t(checkpoint.height)+1!=selected->context.height||
+    if(!selected||!CheckRuntimeAccountReplayCurrentUnderLock(replay,*selected)||
        selected->context.activation_height!=profile.activation||selected->context.domain.network_code!=profile.domain.network_code||
        selected->context.domain.genesis_wire!=profile.domain.genesis_wire||selected->context.domain.branch_id!=profile.domain.branch_id)
         throw std::runtime_error("Shield finalization source changed");
