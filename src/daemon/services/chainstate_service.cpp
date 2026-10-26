@@ -14505,13 +14505,20 @@ StatusOr<size_t> ChainstateService::DiscoverSnapshotWalletCandidates(WalletManag
             // that real leaf too; only an exact compiled row may be absent.
             if(!position){if(point.txid!=genesis.GetTxid())return refuse(Status::Corruption);}
             else{
-                if(*position>=forest.getNumLeaves())return refuse(Status::Corruption);
+                if(*position>=forest.getNumLeaves()||forest.isDeleted(*position))return refuse(Status::Corruption);
                 auto& seen=positions[size_t(*position/8)];const auto bit=uint8_t(1u<<(*position%8));
                 if(seen&bit)return refuse(Status::Corruption);seen|=bit;++covered;
             }
             records.push_back({point.txid.AsUint256().GetHex(),point.vout,coin.value.GetUna(),coin.scriptPubKey,coin.height,coin.isCoinbase});
         }
-        if(covered!=forest.getNumLeaves()||compiled!=genesis.vout.size())return refuse(Status::Corruption);
+        // numLeaves includes spent positions. Require exact coverage of LIVE
+        // positions, not coins for tombstones; also reject out-of-range deleted
+        // positions through the independent active-count comparison.
+        for(uint64_t position=0;position<forest.getNumLeaves();++position){
+            const bool seen=(positions[size_t(position/8)]&uint8_t(1u<<(position%8)))!=0;
+            if(seen==forest.isDeleted(position))return refuse(Status::Corruption);
+        }
+        if(covered!=forest.getActiveLeaves()||compiled!=genesis.vout.size())return refuse(Status::Corruption);
         // Exclude fatal/reset and source replacement through FULL wallet commit.
         // No callback under this lifetime pin may reacquire the lifecycle mutex.
         phase="lifecycle-pin";
