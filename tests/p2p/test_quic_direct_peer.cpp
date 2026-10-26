@@ -393,3 +393,19 @@ TEST(QuicPeer, ShutdownTellsPeersPromptly) {
     auto* p = b.mgr->get_peer_info(LoopKey(ap));
     EXPECT_TRUE(!p || !p->is_connected) << "B still connected 3 s after A shut down";
 }
+
+// The reader loop disconnects a peer whose QUIC session ended. For a relay
+// circuit that must also count against the relay, or health scoring never
+// learns the circuit died (it used to learn from the idle reaper, which the
+// disconnect now pre-empts).
+TEST(QuicPeer, DeadRelayCircuitCountsAgainstItsRelay) {
+    P2PManager mgr(0);
+    const std::string relay = "203.0.113.9:20999";
+    const double before = mgr.relay_health_score(relay);
+    const std::string key = mgr.test_install_dead_quic_relay_peer(relay);
+    mgr.test_run_quic_reader_loop(key);  // returns once it sees the dead session
+    EXPECT_LT(mgr.relay_health_score(relay), before)
+        << "dead encrypted relay circuit did not lower its relay's health score";
+    auto* p = mgr.get_peer_info(key);
+    EXPECT_TRUE(!p || !p->is_connected);
+}

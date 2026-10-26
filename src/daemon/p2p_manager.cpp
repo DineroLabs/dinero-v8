@@ -3513,6 +3513,33 @@ bool P2PManager::enqueue_relay_frame(const std::string& virtual_peer_key,
 }
 
 #ifdef DINERO_TEST_BUILD
+std::string P2PManager::test_install_dead_quic_relay_peer(const std::string& relay_endpoint) {
+    auto peer = std::make_shared<PeerInfo>();
+    peer->address = "relay:dead";
+    peer->port = 0;
+    peer->socket_fd = -1;
+    peer->is_connected = true;
+    peer->lifetime_state.store(PeerLifetimeState::RUNNING);
+    peer->via_relay = PeerInfo::ViaRelayInfo{1, relay_endpoint, 0};
+    peer->via_relay->encrypted_quic = true;
+    peer->relay_quic_session =
+        std::make_shared<dinero::network::QuicSession>([](std::vector<uint8_t>) {});
+    const std::string key = peer->to_string();
+    std::lock_guard<std::mutex> lock(peers_mutex_);
+    connected_peers_[key] = peer;
+    return key;
+}
+
+void P2PManager::test_run_quic_reader_loop(const std::string& key) {
+    std::shared_ptr<PeerInfo> peer;
+    {
+        std::lock_guard<std::mutex> lock(peers_mutex_);
+        auto it = connected_peers_.find(key);
+        if (it != connected_peers_.end()) peer = it->second;
+    }
+    if (peer) run_relay_quic_reader_loop(peer);
+}
+
 void P2PManager::test_set_release_capability(const std::string& key, bool capable, bool complete) {
     std::lock_guard<std::mutex> lock(peers_mutex_);
     auto peer = connected_peers_.at(key);
@@ -5451,6 +5478,11 @@ void P2PManager::run_relay_quic_reader_loop(std::shared_ptr<PeerInfo> peer) {
                 std::cout << "[P2P] quic-transport: session ended for " << virtual_peer_key
                           << " (" << peer->relay_quic_session->last_error()
                           << ") — disconnecting" << std::endl;
+                // A circuit that died counts against its relay; this disconnect
+                // pre-empts the idle reaper that used to report it.
+                if (peer->via_relay) {
+                    note_relay_outcome(peer->via_relay->relay_peer_address, false);
+                }
                 disconnect_peer(virtual_peer_key);
                 break;
             }

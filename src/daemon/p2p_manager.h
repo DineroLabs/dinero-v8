@@ -876,6 +876,10 @@ public:
     // stored fd so tests can prove close-and-invalidate (no double-close).
     bool test_send_peer_message(PeerInfo* peer, const P2PMessage& message) { return send_peer_message(peer, message); }
     bool test_perform_handshake(PeerInfo* peer) { return perform_handshake(peer); }
+    // An encrypted relay virtual peer whose QuicSession never started (so is
+    // never active), connected via `relay_endpoint`. Returns its key.
+    std::string test_install_dead_quic_relay_peer(const std::string& relay_endpoint);
+    void test_run_quic_reader_loop(const std::string& key);
     void test_set_inbound_limits(size_t total, size_t per_ip) {
         max_inbound_ = total;
         max_inbound_per_ip_ = per_ip;
