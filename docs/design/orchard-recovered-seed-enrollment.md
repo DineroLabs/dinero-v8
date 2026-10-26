@@ -1072,3 +1072,16 @@ CHAIN/TRANSACTIONS while its old live graph also carries SCRIPTS. No assumed
 ancestor above zero is promoted, no persisted flag/anchor is moved, and the
 strict existing-graph subset/locator checks remain. This is not SQL lifecycle
 admission or original-assumed mobile crossing acceptance.
+
+The separate `NodeCoreAssumedFundedCrossing` regression uses the same honest
+signed historical funding as the full-parent test, but starts a NEW SDK root
+with only authenticated persistent headers and normal configured legacy
+snapshot import. It requires normal named restore/unlock funding discovery,
+then the actual enrollment, queue/prover/finish, automatic handoff, retained
+pending/pool readmission, real confirmation and late account-0 recovery paths.
+No pre-base bodies, canonical coin DB, wallet coins, account owners or assumed
+SQL keys are copied into that root. Snapshot candidate discovery is not a
+complete historical/transparent-index replay receipt; selected-source input
+checks remain mandatory. This new regression defines the remaining nonempty
+original-assumed gate; its registration alone claims neither a pass nor a
+production fix. The older full-parent and empty imported cases stay separate.

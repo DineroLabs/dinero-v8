@@ -1,7 +1,8 @@
 """Real catalog/handoff/full-body ingress and late account-0 recovery.
 
-This is not original mobile assumed-history or queued-payment acceptance. Every
-root, child log, reply and untrusted packet is retained, including failures.
+The separate assumed-mobile variant uses normal snapshot import with original
+SQL lifecycle keys. Neither variant has a nonempty queued payment. Every root,
+child log, reply and untrusted packet is retained, including failures.
 """
 import hashlib,json,os,socket,sqlite3,struct,subprocess,tempfile,threading,time,traceback
 from pathlib import Path
@@ -223,7 +224,7 @@ try:
         source_ready_parent_handoff=True,named_wallet_without_phrase=True,paused_queue_no_reply=state['pause_probes'],
         original_assumed_mobile=assumed,original_lifecycle=original if assumed else None,
         body_requests=body_requests,late_restored_funds_and_memo=True,
-        scope='Actual loopback catalog/SDK parent handoff plus full activation/descendant body download and retained authenticated account-0 recovery. Not a fresh late snapshot phone, original assumed mobile SQL, nonempty queued crossing or device acceptance.'),indent=2)+'\n')
+        scope=('Actual normal legacy snapshot import with original assumed SQL.' if assumed else 'Actual independently executed full starting parent.')+' Loopback catalog/SDK parent handoff plus full activation/descendant body download and retained authenticated account-0 recovery. Not a fresh late snapshot phone, nonempty queued crossing or device acceptance.'),indent=2)+'\n')
     print('PASS actual SDK full-body activation download and encrypted late account-0 funds/memo cold reopen',flush=True)
 finally:
     ready.set();stop.set();listener.close()

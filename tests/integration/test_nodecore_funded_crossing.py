@@ -1,7 +1,9 @@
 """Funded named-wallet SDK handoff; all traffic/data is isolated and retained.
 
-The starting parent has independently replayed FULL backing, not original
-assumed-mobile SQL. This is a native C ABI acceptance lane, not a device run.
+The default parent has independently replayed FULL backing. The separate
+assumed-mobile variant uses normal snapshot import into a new header-only
+root, never copied canonical coins, wallet rows or lifecycle keys. This is
+a native C ABI acceptance lane, not a device run.
 """
 import hashlib,json,os,socket,sqlite3,struct,subprocess,tempfile,threading,time,traceback
 from pathlib import Path
@@ -21,7 +23,8 @@ while not manifest.exists():
     assert native.poll() is None,('native fixture failed',native.returncode,root)
     assert time.monotonic()<deadline,('native fixture timed out',root)
     time.sleep(.05)
-fixture=json.loads(manifest.read_text());datadir=Path(fixture['datadir'])
+fixture=json.loads(manifest.read_text());assumed=bool(os.environ.get('DINERO_SDK_ASSUMED_MOBILE_FIXTURE'))
+datadir=Path(fixture['assumed_datadir'] if assumed else fixture['datadir'])
 proof=Path(fixture['proof']).read_bytes();assert 0<len(proof)<=1<<30
 magic=fixture['magic'];headers=[bytes.fromhex(h) for h in fixture['headers']]
 assert len(headers)==104 and all(len(h)==128 for h in headers)
@@ -145,19 +148,45 @@ def wallet_rows(name='wire-named-owner'):
 def bound(name):
     return dict(wallet_binding=rpc('wallet.orchard.getwalletbinding',dict(wallet_name=name))['wallet_binding'])
 success=False;config=dict(network='regtest',sync_profile='ios_utreexo',addnode=f'127.0.0.1:{port}',max_peers=1,verbose_logging=True)
+if assumed:config['assumeutxo_snapshot']=fixture['assumed_snapshot']
+def original_lifecycle():
+    with sqlite3.connect('file:'+str(datadir/'blockchain/utxo')+'?mode=ro',uri=True) as db:
+        return dict(db.execute("SELECT key,value FROM utxo_metadata WHERE substr(key,1,11)='assumeutxo_' OR key='wallet_snapshot_recovery_base_height' ORDER BY key"))
 try:
     assert call('sdk_activation_events') is True
     assert call('watch_script',script=fixture['funding_change_script'])==0
     assert call('start',datadir=str(datadir),config=config)==0
+    if assumed:
+        deadline=time.monotonic()+45
+        while time.monotonic()<deadline:
+            if call('rpc',method='getblockcount',params=[])==101:break
+            time.sleep(.25)
+        original=original_lifecycle();(root/'original-lifecycle.json').write_text(json.dumps(original,indent=2)+'\n')
+        assert original['assumeutxo_active']=='true' and original['assumeutxo_base_height']=='101',original
+        assert original['assumeutxo_base_block']==fixture['parent'] and original.get('assumeutxo_fully_validated')!='true',original
     assert rpc('getblockcount',[])==101
-    assert rpc('wallet.restore',dict(name='wire-named-owner',mnemonic='abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about',rescan=False))['success'] is True
+    restored=rpc('wallet.restore',dict(name='wire-named-owner',mnemonic='abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about',rescan=assumed))
+    assert restored['success'] is True
+    (root/'restored.json').write_text(json.dumps(restored,indent=2)+'\n')
     deadline=time.monotonic()+20
     while time.monotonic()<deadline:
         state=call('sdk_activation_state');assert not failures,failures
         if state.get('converged') and not state.get('ibd'):break
         time.sleep(.25)
     assert state.get('converged') and not state.get('ibd'),state
-    scanned=rpc('wallet.rescanblockchain',[0,101]);assert scanned['scanned_blocks']==102,scanned
+    if assumed:
+        # Use only the real restore/unlock discovery path. A snapshot can
+        # discover candidate coins, not certify that absent historical bodies
+        # were scanned. The later selected-source reservation must still
+        # authenticate the exact inputs; a wallet row is not coin authority.
+        assert rpc('wallet.encrypt',['funded-crossing-password'])['success'] is True
+        unlocked=rpc('wallet.unlock',['funded-crossing-password',0]);assert unlocked['success'] is True
+        candidates=rpc('wallet.listunspent',[])
+        (root/'snapshot-funding.json').write_text(json.dumps(dict(restored=restored,unlocked=unlocked,candidates=candidates),indent=2)+'\n')
+        assert any(c.get('txid')==fixture['funding_txid'] for c in candidates),'normal snapshot restore/unlock did not discover actual named-wallet funding'
+        assert original_lifecycle()==original,'funding discovery changed original assumed lifecycle'
+    else:
+        scanned=rpc('wallet.rescanblockchain',[0,101]);assert scanned['scanned_blocks']==102,scanned
     addresses=rpc('wallet.listaddresses',[])
     assert fixture['funding_address'] in json.dumps(addresses),addresses
     # Funding was genuinely signed/mined in historical101 and found normally;
@@ -165,7 +194,7 @@ try:
     binding=bound('wire-named-owner');enrolled=rpc('wallet.orchard.enrollpreactivation',binding)
     assert enrolled['checkpoint_height']==101,enrolled
     account=rpc('wallet.orchard.createaccount',dict(binding,account=0))
-    assert rpc('wallet.encrypt',['funded-crossing-password'])['success'] is True
+    if not assumed:assert rpc('wallet.encrypt',['funded-crossing-password'])['success'] is True
     assert rpc('wallet.unlock',['funded-crossing-password',0])['success'] is True
     binding=bound('wire-named-owner');request_id='71'+'00'*31
     request=dict(binding,account=0,request_id=request_id,expected_revision=account['revision'],fee_una=10000,
@@ -208,6 +237,7 @@ try:
     assert rpc('wallet.open',['wire-named-owner'])['success'] is True
     assert rpc('wallet.unlock',['funded-crossing-password',0])['success'] is True
     assert wallet_rows()==before,'encrypted current/retained pending rows changed during parent handoff'
+    if assumed:assert original_lifecycle()==original,'handoff changed original assumed lifecycle'
     assert txid in rpc('mempool.getrawmempool',[]),'actual proof readmission did not preserve nonempty pool'
     assert rpc('wallet.getrawtransaction',[txid])['hex']==signed
     binding=bound('wire-named-owner');operations=rpc('wallet.orchard.listoperations',dict(binding,account=0))
@@ -346,11 +376,12 @@ try:
             payer_continuation=payer_continuation,recipient_continuation=recipient_continuation)
         print('PASS actual compact SDK queuespend/finishspend, native105 confirmation and distinct recovered recipient memo',flush=True)
     (root/'receipt.json').write_text(json.dumps(dict(fixture=fixture,request=queued,transaction_id=txid,
+        original_assumed_mobile=assumed,original_lifecycle=original if assumed else None,
         named_wallet_without_phrase=True,pause_no_reply=state['pause_probes'],pending_rows_identical=True,
         pool_revalidated_and_proof_served=True,operations=operations,mined=mined,recovered=recovered,notes=notes,
         compact_exact_queue_retry=True,compact_ready_retry_with_current_proof=True,unproved_retries_refused=True,
         compact_private_send=private_send,
-        scope='Actual native C ABI automatic handoff from independently executed full parent, funded named recovered wallet and nonempty signed encrypted request/pool, real confirmation and later account0 recovery. NOT original assumed mobile SQL, physical app/device, minimum OS, SDK slices or release qualification.'),indent=2)+'\n')
+        scope=('Actual native C ABI automatic handoff from normal legacy snapshot import with original assumed SQL.' if assumed else 'Actual native C ABI automatic handoff from independently executed full parent.')+' Funded named recovered wallet and nonempty signed encrypted request/pool, real confirmation and later account0 recovery. NOT physical app/device, minimum OS, SDK slices or release qualification.'),indent=2)+'\n')
     assert call('stop')==0;success=True
     print('PASS funded named-wallet nonempty queued SDK handoff and real confirmation/recovery',flush=True)
 finally:
