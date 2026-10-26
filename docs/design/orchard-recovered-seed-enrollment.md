@@ -1228,6 +1228,9 @@ complete pending plus incoming corpus using the same narrow source. It retains
 ordinary script, maturity, resource, proof, anchor/nullifier and value-flow
 checks. This authorizes transactions only: it does not derive a first-block
 boundary, retirement record, Event1, cursor or independent replay capability.
+The actual imported lifecycle pin transfers to the thread-affine pool owner
+and survives validation through insertion/publication. That imported owner is
+single-operation; reuse fails closed without recursive lifecycle acquisition.
 Original general full/compact captures, mining and block-admission guards are
 unchanged. Original assumed SQL/base/anchors remain unchanged; this is not a
 complete-history or transparent/index-readiness receipt.

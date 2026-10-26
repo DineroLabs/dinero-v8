@@ -1683,7 +1683,8 @@ private:
         const MempoolTransaction&, const std::vector<MempoolTransaction>&);
     MempoolOrchardValidation ValidateOrchardPoolProofsUnderLock(
         const MempoolProofView&, std::span<const MempoolProofView>,
-        const std::unique_lock<std::mutex>* snapshot=nullptr);
+        const std::unique_lock<std::mutex>* snapshot=nullptr,
+        std::unique_ptr<const ImportedWalletSource>* publication_source=nullptr);
     MempoolSelectionValidation ValidateOrchardSelectionProofsUnderLock(
         std::span<const MempoolProofView>, uint32_t);
     // Storage-layout startup regression exercises the actual loader without

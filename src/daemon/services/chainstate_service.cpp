@@ -19851,6 +19851,9 @@ struct ChainstateService::MempoolReadGuard final : MempoolChainstateReadGuard {
     // imported pool validation must never acquire this mutex under lock below.
     std::unique_lock<std::mutex> snapshot;
     std::unique_lock<AnnotatedRecursiveMutex> lock;
+    // Destroy before selected/snapshot/index owners, AFTER pool publication.
+    // A validation result alone must not drop the actual lifecycle pin.
+    std::unique_ptr<const ImportedWalletSource> publication_source;
     const std::thread::id thread=std::this_thread::get_id();
     explicit MempoolReadGuard(std::shared_ptr<ChainstateService> service)
         :owner(std::move(service)),preparation(*owner),
@@ -19863,7 +19866,10 @@ struct ChainstateService::MempoolReadGuard final : MempoolChainstateReadGuard {
     MempoolOrchardValidation ValidateOrchardWithProofs(const MempoolProofView& body,
         std::span<const MempoolProofView> pending) override {
         if(thread!=std::this_thread::get_id())throw std::logic_error("Selected pool owner is thread-affine");
-        return owner->ValidateOrchardPoolProofsUnderLock(body,pending,&snapshot);
+        // Imported publication is single-operation. Never reacquire its
+        // nonrecursive lifecycle mutex while the first real pin is retained.
+        if(publication_source)return {};
+        return owner->ValidateOrchardPoolProofsUnderLock(body,pending,&snapshot,&publication_source);
     }
     MempoolSelectionValidation ValidateBlockSelectionWithProofs(
         std::span<const MempoolProofView> bodies,uint32_t height) override {
@@ -20037,6 +20043,10 @@ ChainstateService::CaptureImportedOrchardTransactionUnderLock(
             if(++points>1024)return {};
             const auto record=records.find(point);if(record==records.end())return {};
             const auto& row=*record->second;
+            const auto frozen=chain_db_->getPreBaseCoin(point.txid.AsUint256(),point.vout);
+            if(!frozen.ok()||frozen->amount!=row.amount_una||frozen->height!=int(row.height)||
+                frozen->coinbase!=row.is_coinbase||frozen->script_pubkey!=util::hex(row.script_pubkey)||
+                frozen->is_confidential||!frozen->commitment.empty())return {};
             consensus::UTXOEntry coin(AmountUna::Una(row.amount_una),row.script_pubkey,row.height,row.is_coinbase);
             uint256 creation;uint32_t parent_height=0;
             if(!header_chain_selector_->GetAncestorHashByHash(source->next.parent_hash,row.height,creation,parent_height)||
@@ -21300,7 +21310,8 @@ MempoolOrchardValidation ChainstateService::ValidateOrchardPoolUnderLock(
 }
 MempoolOrchardValidation ChainstateService::ValidateOrchardPoolProofsUnderLock(
     const MempoolProofView& incoming,std::span<const MempoolProofView> pending,
-    const std::unique_lock<std::mutex>* snapshot) {
+    const std::unique_lock<std::mutex>* snapshot,
+    std::unique_ptr<const ImportedWalletSource>* publication_source) {
     const auto& body=incoming.body;
     MempoolOrchardValidation result;
     const auto fail=[&](const char* message,TxRejectCode code=TxRejectCode::UNAVAILABLE) {
@@ -21315,7 +21326,9 @@ MempoolOrchardValidation ChainstateService::ValidateOrchardPoolProofsUnderLock(
         std::vector<MempoolProofView> complete(pending.begin(),pending.end());
         complete.push_back(incoming);
         const auto entries=std::span<const MempoolProofView>(complete);
-        auto selected = snapshot&&assumeutxo_active_&&!compact_startup_&&!IsBackgroundValidationComplete()
+        const bool imported=snapshot&&assumeutxo_active_&&!compact_startup_&&!IsBackgroundValidationComplete();
+        if(imported&&(!publication_source||*publication_source))return fail("Imported pool publication owner unavailable");
+        auto selected = imported
             ?CaptureImportedOrchardTransactionUnderLock(*snapshot,entries)
             :CaptureSelectedOrchardPoolContextUnderLock(entries);
         if (!selected) return fail("Orchard selected service unavailable");
@@ -21368,6 +21381,11 @@ MempoolOrchardValidation ChainstateService::ValidateOrchardPoolProofsUnderLock(
         catch(const std::exception&){return fail("Existing Orchard pool requires readmission");}
         result.fee=check(incoming);result.parent_height=parent_height;
         result.proof_root=selected->CheckProof(incoming);
+        if(selected->imported_source){
+            if(!utxo_index_||utxo_index_->ReadAssumedStartupMetadata()!=selected->imported_source->metadata)
+                return fail("Imported pool source changed before publication");
+            *publication_source=std::move(selected->imported_source);
+        }
         result.result=TxAcceptResult::Accepted(body.GetTxid().AsUint256());return result;
     } catch(const consensus::OrchardCoinLookupError& e) {
         return fail("Orchard confirmed input unavailable",e.SourceStatus()==Status::NotFound?TxRejectCode::MISSING_INPUTS:TxRejectCode::UNAVAILABLE);
