@@ -44,6 +44,7 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace dinero::network {
@@ -129,6 +130,10 @@ private:
 
     ResultCallback result_cb_;
     std::atomic<bool> busy_{false};
+    // Owned, joined by the destructor: a round can outlive its caller's
+    // interest (shutdown mid-round), and the watcher must never outlive us.
+    std::thread watcher_;
+    std::atomic<bool> stopping_{false};
     std::chrono::steady_clock::time_point deadline_;
 };
 

@@ -9,6 +9,9 @@
 #include <gtest/gtest.h>
 
 #include <array>
+#include <atomic>
+#include <memory>
+#include <thread>
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
@@ -167,4 +170,19 @@ TEST(StunDemux, EveryServerResponseKept) {
         EXPECT_EQ(w.result->responses[i].first.to_string(), wire.sent[i].first.to_string());
         EXPECT_EQ(w.result->responses[i].second.to_string(), "162.200.227.214:45123");
     }
+}
+
+TEST(StunDemux, DestroyedMidRoundNeverCallsBack) {
+    // Shutdown can destroy the client while a round waits out its timeout (UDP
+    // to STUN blocked: every round does). Nothing may touch it afterwards.
+    std::atomic<int> fired{0};
+    {
+        FakeWire wire;
+        auto client = std::make_unique<StunClient>(wire.Fn());
+        client->SetServers({{"192.0.2.10", 3478}});
+        ASSERT_TRUE(client->Discover(std::chrono::seconds(1), [&](const StunResult&) { fired++; }));
+        client.reset();
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(1500));
+    EXPECT_EQ(fired.load(), 0) << "timeout watcher ran on a destroyed client";
 }

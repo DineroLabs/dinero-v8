@@ -117,6 +117,8 @@ StunClient::StunClient() {
 StunClient::StunClient(SendFn send) : send_(std::move(send)) {}
 
 StunClient::~StunClient() {
+    stopping_.store(true, std::memory_order_release);
+    if (watcher_.joinable()) watcher_.join();
     socket_.Stop();
 }
 
@@ -210,10 +212,12 @@ bool StunClient::Discover(std::chrono::seconds timeout, ResultCallback cb) {
         return true;
     }
 
-    // Detached watcher thread that fires the result with a timeout
-    // error if no response is received within `timeout`. The result
-    // callback is fired at most once — DispatchResult guards on that.
-    std::thread([this, timeout]() { TimeoutWatcher(timeout); }).detach();
+    // Watcher thread that fires the result with a timeout error if no
+    // response is received within `timeout`. The result callback is fired at
+    // most once — DispatchResult guards on that. The previous round's watcher
+    // has already seen busy_ drop (or will within 100 ms).
+    if (watcher_.joinable()) watcher_.join();
+    watcher_ = std::thread([this, timeout]() { TimeoutWatcher(timeout); });
     return true;
 }
 
@@ -297,6 +301,7 @@ void StunClient::TimeoutWatcher(std::chrono::seconds timeout) {
     while (std::chrono::steady_clock::now() < end) {
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
         if (!busy_.load(std::memory_order_acquire)) return;  // already dispatched
+        if (stopping_.load(std::memory_order_acquire)) return;  // being destroyed
     }
     StunResult r;
     r.error_message = "STUN: all servers timed out after " +
