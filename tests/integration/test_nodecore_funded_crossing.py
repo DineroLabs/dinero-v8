@@ -137,8 +137,8 @@ def rpc(method,params):
     return value
 def native_call(op,**args):
     native.stdin.write(json.dumps(dict(op=op,**args))+'\n');native.stdin.flush();return response(native_read,native,op)
-def wallet_rows():
-    paths=list(datadir.rglob('wallet_wire-named-owner.db'));assert len(paths)==1,paths
+def wallet_rows(name='wire-named-owner'):
+    paths=list(datadir.rglob('wallet_'+name+'.db'));assert len(paths)==1,paths
     with sqlite3.connect('file:'+str(paths[0])+'?mode=ro',uri=True) as db:
         return {name:db.execute('SELECT hex(wallet_id),account,revision,hex(sealed) FROM '+name+' ORDER BY wallet_id,account,revision').fetchall()
                 for name in ('orchard_wallet_snapshots','orchard_wallet_retained')}
@@ -280,17 +280,20 @@ try:
             if recipient_recovery.get('complete'):break
         assert recipient_recovery.get('complete') and recipient_recovery['generated'] is False,recipient_recovery
         receiver=rpc('wallet.orchard.getnewaddress',dict(recipient_binding,account=0))['address']
-        assert rpc('wallet.open',['wire-named-owner'])['success'] is True
-        assert rpc('wallet.unlock',['funded-crossing-password',0])['success'] is True
-        payer=bound('wire-named-owner');payer_balance=rpc('wallet.orchard.getbalance',dict(payer,account=0))
+        # Spend the earlier funds from the later post-activation account0
+        # recovery itself, not merely the pre-enrolled crossing wallet.
+        assert rpc('wallet.open',['late-funded-owner'])['success'] is True
+        assert rpc('wallet.encrypt',['late-private-send-password'])['success'] is True
+        assert rpc('wallet.unlock',['late-private-send-password',0])['success'] is True
+        payer=bound('late-funded-owner');payer_balance=rpc('wallet.orchard.getbalance',dict(payer,account=0))
         assert payer_balance['confirmed_una']==520000,payer_balance
         private_id='81'+'00'*31
         payment=dict(payer,account=0,request_id=private_id,expected_revision=payer_balance['account_revision'],
-            payments=[dict(address=receiver,amount_una=10000,memo_hex=b'compact private payment'.hex())],outputs=[],fee_una=1000)
+            payments=[dict(address=receiver,amount_una=10000,memo_hex=b'compact private payment'.hex())],outputs=[],fee_una=100000)
         private_queued=rpc('wallet.orchard.queuespend',payment)
         assert private_queued['proof_queued'] and not private_queued['existing_request'],private_queued
-        reserved_rows=wallet_rows();private_retry=rpc('wallet.orchard.queuespend',payment)
-        assert private_retry['existing_request'] and not private_retry['proof_queued'] and wallet_rows()==reserved_rows,private_retry
+        reserved_rows=wallet_rows('late-funded-owner');private_retry=rpc('wallet.orchard.queuespend',payment)
+        assert private_retry['existing_request'] and not private_retry['proof_queued'] and wallet_rows('late-funded-owner')==reserved_rows,private_retry
         deadline=time.monotonic()+30
         while time.monotonic()<deadline:
             private_finished=call('rpc',method='wallet.orchard.finishspend',params=dict(payer,account=0,request_id=private_id))
@@ -300,9 +303,9 @@ try:
             time.sleep(.25)
         assert private_finished.get('admitted'),private_finished
         private_txid=private_finished['txid'];private_body=rpc('wallet.getrawtransaction',[private_txid])['hex']
-        ready_rows=wallet_rows();private_refinished=rpc('wallet.orchard.finishspend',dict(payer,account=0,request_id=private_id))
+        ready_rows=wallet_rows('late-funded-owner');private_refinished=rpc('wallet.orchard.finishspend',dict(payer,account=0,request_id=private_id))
         assert private_refinished['already_in_mempool'] and private_refinished['txid']==private_txid,private_refinished
-        assert wallet_rows()==ready_rows and rpc('wallet.getrawtransaction',[private_txid])['hex']==private_body
+        assert wallet_rows('late-funded-owner')==ready_rows and rpc('wallet.getrawtransaction',[private_txid])['hex']==private_body
         private_mined=native_call('mine_private',body=private_body);assert private_txid in private_mined['transactions'],private_mined
         bodies[bytes.fromhex(private_mined['hash'])[::-1]]=bytes.fromhex(private_mined['body'])
         headers.append(bytes.fromhex(private_mined['header']));deadline=time.monotonic()+60
@@ -314,9 +317,9 @@ try:
         deadline=time.monotonic()+20
         while time.monotonic()<deadline:
             payer_balance=rpc('wallet.orchard.getbalance',dict(payer,account=0))
-            if payer_balance['confirmed_una']==509000:break
+            if payer_balance['confirmed_una']==410000:break
             time.sleep(.25)
-        assert payer_balance['confirmed_una']==509000,payer_balance
+        assert payer_balance['confirmed_una']==410000,payer_balance
         assert rpc('wallet.open',['private-recipient'])['success'] is True
         recipient_binding=bound('private-recipient');deadline=time.monotonic()+20
         while time.monotonic()<deadline:
