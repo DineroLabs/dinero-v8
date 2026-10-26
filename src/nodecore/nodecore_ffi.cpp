@@ -527,8 +527,9 @@ int32_t nodecore_start(const char* datadir, const char* config_json) {
     std::optional<std::string> explicit_profile;
     std::optional<bool> legacy_utreexo_override;
     // Embedded hosts are clients, not proof servers: the daemon's own default
-    // (utreexo-bridge=true) made phones pre-cache proofs and advertise the
-    // bridge service bit. Opt in with "utreexo_bridge": true.
+    // (utreexo-bridge=true) made phones advertise the bridge service bit, so
+    // peers asked them for proofs. Local proofs are unaffected (the BridgeNode
+    // is built either way). Opt in with "utreexo_bridge": true.
     bool utreexo_bridge = false;
     bool verbose_logging = false;  // embedded default: quiet (see below)
 

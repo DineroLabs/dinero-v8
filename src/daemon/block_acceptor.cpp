@@ -2953,11 +2953,20 @@ void BlockAcceptor::NotifyBlockConnected(const ParsedBlock& block, uint64_t heig
                 // the active tip hash. This prevents stale/side-chain accepts from
                 // being advertised as canonical new blocks.
                 std::optional<uint32_t> best_header_height;
+                bool best_descends = false;
                 if (ctx_->header_chain) {
-                    if (auto best = ctx_->header_chain->GetBestHeaderValue()) best_header_height = best->height;
+                    if (auto best = ctx_->header_chain->GetBestHeaderValue()) {
+                        best_header_height = best->height;
+                        uint256 ancestor;
+                        uint32_t best_height = 0;
+                        best_descends = !active_hash_at_height.empty() &&
+                            ctx_->header_chain->GetAncestorHashByHash(best->hash, static_cast<uint32_t>(height),
+                                                                      ancestor, best_height) &&
+                            ancestor.GetHex() == active_hash_at_height;
+                    }
                 }
                 const bool historical = !dinero::daemon::ShouldAnnounceConnectedBlock(
-                    static_cast<uint32_t>(height), best_header_height);
+                    static_cast<uint32_t>(height), best_header_height, best_descends);
                 if (historical) {
                     LOG_INFO("Block connected while catching up; not announced: height=" + std::to_string(height));
                 } else if (!active_tip_hash.empty() && active_tip_hash == active_hash_at_height) {
