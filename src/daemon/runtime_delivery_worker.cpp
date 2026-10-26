@@ -105,6 +105,15 @@ void RuntimeDeliveryWorker::RecoverWallet(Report& report) const {
             session=lease->Session();
         }
         auto index=ChainstateService::AcquireWalletIndexUse(source_);
+#ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
+        // Explicit source-composition routing, NEVER a catch/fallback after a
+        // mixed recovery failure. Imported failure remains closed/deferred.
+        const auto orchard=source_->resumeRuntimeImportedOrchardRecovery(use->Wallet(),index->Index(),session);
+        if(!orchard.ok())return;
+        if(*orchard){
+            report.wallet=WalletOutcome::AppliedOrchardPrefix;report.wallet_head=(*orchard)->observed_head;return;
+        }
+#endif
         const auto recovered=source_->resumeRuntimeWalletRecoveryIfNeeded(use->Wallet(),index->Index(),session);
         if (!recovered.ok()) return;
         if (!*recovered) {report.wallet=WalletOutcome::NoLog;return;}

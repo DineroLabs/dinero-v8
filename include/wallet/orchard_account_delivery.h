@@ -396,8 +396,9 @@ private:
         std::span<const orchard::ResolvedInput>,std::span<const orchard::WalletPayment>,
         std::span<const orchard::TransparentOutput>,uint64_t,
         const std::function<RestorePoint(RuntimeOutboxCursor)>&);
-    // Does not acquire or call the source. The selected service retains its
-    // already-validated selected owner through this checked Ready/history commit.
+    // Never acquires a source owner. The selected service retains its real
+    // validated owner; an optional lexical callback rechecks that held source
+    // immediately before this checked Ready/history COMMIT.
     static FinalizedProof CommitCatalogFinalization(WalletManager&,uint64_t,
         std::unique_ptr<OrchardCatalogFinalizationPlan>,const consensus::VerifiedOrchardAuthorizations&,
         const std::function<void()>& current_source={});
@@ -427,7 +428,8 @@ private:
         const std::function<RestorePoint(RuntimeOutboxCursor)>&);
     static const CatalogEnrolled& CatalogRecoveryBefore(const OrchardCatalogRecoveryPlan&);
     static void RecheckCatalogRecoveryInTransaction(WalletManager&,uint64_t,const OrchardCatalogRecoveryPlan&);
-    static Applied CommitCatalogRecoveryAccount(WalletManager&,uint64_t,OrchardCatalogRecoveryPlan&,size_t);
+    static Applied CommitCatalogRecoveryAccount(WalletManager&,uint64_t,OrchardCatalogRecoveryPlan&,size_t,
+        const std::function<void()>& current_source={});
 
     friend class dinero::RuntimeOrdinaryDelivery;
     friend struct OrchardDetachedCoverageTestAccess;

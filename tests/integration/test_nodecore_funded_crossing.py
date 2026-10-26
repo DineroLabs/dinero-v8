@@ -181,6 +181,16 @@ if assumed:config['assumeutxo_snapshot']=fixture['assumed_snapshot']
 def original_lifecycle():
     with sqlite3.connect('file:'+str(datadir/'blockchain/utxo')+'?mode=ro',uri=True) as db:
         return dict(db.execute("SELECT key,value FROM utxo_metadata WHERE substr(key,1,11)='assumeutxo_' OR key='wallet_snapshot_recovery_base_height' ORDER BY key"))
+def mixed_runtime_receipts():
+    # Read-only distinction: real Orchard delivery may NOT manufacture either
+    # ordinary or index baseline, including by adding a receipt column/schema.
+    with sqlite3.connect('file:'+str(datadir/'blockchain/utxo')+'?mode=ro',uri=True) as db:
+        indexed=db.execute("SELECT key,hex(value) FROM utxo_metadata WHERE key='runtime_delivery:v1:receipt'").fetchall()
+    paths=list(datadir.rglob('wallet_wire-named-owner.db'));assert len(paths)==1
+    with sqlite3.connect('file:'+str(paths[0])+'?mode=ro',uri=True) as db:
+        columns=[row[1] for row in db.execute('PRAGMA table_info(wallet_meta)')]
+        ordinary=db.execute('SELECT hex(runtime_ordinary_receipt),runtime_ordinary_invalid FROM wallet_meta WHERE id=1').fetchall() if 'runtime_ordinary_receipt' in columns else None
+    return dict(indexed=indexed,ordinary=ordinary,receipt_columns=[c for c in columns if c.startswith('runtime_ordinary_')])
 def candidate_wallet_state():
     paths=list(datadir.rglob('wallet_wire-named-owner.db'));assert len(paths)==1,paths
     with sqlite3.connect('file:'+str(paths[0])+'?mode=ro',uri=True) as db:
@@ -436,6 +446,8 @@ try:
         time.sleep(.1)
     assert any(p['txid']==txid and p['cached_proof_bytes'] for p in state.get('pool',[])),state
     before=wallet_rows();assert before['orchard_wallet_snapshots'] and before['orchard_wallet_retained']
+    mixed_before=mixed_runtime_receipts() if assumed else None
+    if assumed:assert not mixed_before['indexed'] and mixed_before['ordinary'] is None,mixed_before
     (root/'pending-before.json').write_text(json.dumps(dict(rows=before,queued=queued,finished=finished,signed=signed,state=state),indent=2)+'\n')
     proof_ready.clear();future.set();deadline=time.monotonic()+70
     completed=datadir/'blockchain/.orchard-handoff-selected-v1.done'
@@ -504,6 +516,9 @@ try:
         time.sleep(.25)
     assert any(o['operation_id']==request_id and o.get('chain_observation') and o['chain_observation']['outcome']=='confirmed' for o in operations['operations']),operations
     assert rpc('wallet.orchard.getbalance',dict(binding,account=0))['confirmed_una']==520000
+    if assumed:
+        assert original_lifecycle()==original,'Orchard-only confirmation changed original assumed lifecycle'
+        assert mixed_runtime_receipts()==mixed_before,'Orchard-only confirmation minted mixed baseline/schema'
     assert rpc('wallet.restore',dict(name='late-funded-owner',mnemonic='abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about',rescan=False))['success'] is True
     later=bound('late-funded-owner')
     for _ in range(8):
@@ -591,6 +606,7 @@ try:
         print('PASS actual compact SDK queuespend/finishspend, native105 confirmation and distinct recovered recipient memo',flush=True)
     (root/'receipt.json').write_text(json.dumps(dict(fixture=fixture,request=queued,transaction_id=txid,
         original_assumed_mobile=assumed,original_lifecycle=original if assumed else None,
+        orchard_only_automatic_confirmation=assumed,mixed_receipts_unchanged=mixed_before,
         named_wallet_without_phrase=True,pause_no_reply=state['pause_probes'],pending_rows_identical=True,
         pool_revalidated_and_proof_served=True,operations=operations,mined=mined,recovered=recovered,notes=notes,
         compact_exact_queue_retry=True,compact_ready_retry_with_current_proof=True,unproved_retries_refused=True,

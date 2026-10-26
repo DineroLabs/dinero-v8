@@ -64,6 +64,10 @@ TEST(RuntimeDeliveryWorker, MissingBaselineRemainsDeferredWithoutEnrollment) {
     EXPECT_EQ(f.ReadAccount().account.Delivery().sequence,0u);
     auto use=WalletService::AcquireWalletUse(f.wallet);auto index=ChainstateService::AcquireWalletIndexUse(f.f.service);
     const auto session=use->Wallet().AcquireDatabaseLease()->Session();
+    // No imported completed owner: Orchard-only routing must be explicitly
+    // absent, never a fallback around this correctly missing mixed baseline.
+    const auto orchard=f.f.service->resumeRuntimeImportedOrchardRecovery(use->Wallet(),index->Index(),session);
+    ASSERT_TRUE(orchard.ok());EXPECT_FALSE(*orchard);
     EXPECT_FALSE(RuntimeOrdinaryDelivery::ReadForWallet(use->Wallet(),session));
     EXPECT_FALSE(RuntimeIndexDelivery::ReadForWallet(use->Wallet(),index->Index(),session));
 }

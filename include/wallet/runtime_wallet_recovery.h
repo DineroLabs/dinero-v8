@@ -31,6 +31,16 @@ struct RuntimeEnrolledWalletRecoveryResult {
     std::optional<uint64_t> catalog_revision;
 };
 
+// Complete encrypted Orchard catalog at one genuinely delivered prefix ONLY.
+// In particular this is not RuntimeIndexProgress, a transparent/index baseline,
+// independent prehistory or mixed-wallet readiness. No cursor is manufactured.
+struct RuntimeOrchardCatalogRecoveryResult {
+    RuntimeOutboxCursor applied;
+    std::vector<std::pair<uint32_t,uint64_t>> account_revisions;
+    RuntimeOutboxCursor observed_head;
+    uint64_t catalog_revision;
+};
+
 class RuntimeWalletRecovery {
 public:
     // Resume already enrolled stores. Missing/invalidated progress requires
@@ -58,6 +68,7 @@ public:
     static RuntimeEnrolledWalletRecoveryResult ResumeCatalogWalletStores(
         ChainstateService&,WalletManager&,UTXOIndex&,uint64_t expected_session);
 private:
+    friend class ChainstateService;
     friend struct RuntimeCatalogRecoveryTestAccess;
     friend struct RuntimeWalletRecoveryTestAccess;
     using Source = std::function<RuntimeOutboxPage(RuntimeOutboxCursor,size_t)>;
@@ -68,6 +79,13 @@ private:
         std::optional<uint32_t> selected_account,bool require_catalog=false);
     static RuntimeEnrolledWalletRecoveryResult ResumePreparedCatalog(
         const RuntimeAccountReplay&,const Source&,WalletManager&,UTXOIndex&,uint64_t);
+    // Only the selected service may provide this lexical source owner. It
+    // acquires snapshot -> selected -> imported lifecycle BEFORE the writer's
+    // wallet/seed/SQL owners and supplies a fresh pre-COMMIT source recheck.
+    using OrchardWrite = std::function<void(const std::function<void()>&)>;
+    using OrchardSourceOwner = std::function<void(const OrchardWrite&)>;
+    static RuntimeOrchardCatalogRecoveryResult ResumePreparedOrchardCatalog(
+        const RuntimeAccountReplay&,const Source&,WalletManager&,uint64_t,const OrchardSourceOwner&);
     static RuntimeWalletRecoveryResult ResumeAccount(
         const RuntimeAccountReplay&,const Source&,WalletManager&,UTXOIndex&,uint64_t,uint32_t);
 };

@@ -1062,6 +1062,9 @@ struct ChainstateService::CompactStartupState {
     std::shared_ptr<const consensus::OrchardSelectedConsistency> selected_consistency;
     // Fresh original imported cohort binding, never restored from SQL flags.
     std::optional<std::pair<uint256,uint32_t>> imported_parent;
+    // Captured only after the completed-store and exact startup cohort audit.
+    // Process-local comparison DATA, not a deserialized state/replay authority.
+    std::map<std::string,std::string> imported_metadata;
     RuntimeOutboxCursor activation_delivery_origin;
     // Verified selected values and permanent global graph pointers. Header
     // selector/consumer binding and selected-read admission remain separate.
@@ -11048,6 +11051,7 @@ bool ChainstateService::StartCompactStorage() {
             if(wallet_index_stopping_ || wallet_index_accepting_ || selected_read_accepting_ ||
                 wallet_index_uses_ || selected_read_uses_ || compact_startup_uses_!=1 ||
                 !compact_startup_uses_by_thread_.count(std::this_thread::get_id()))return false;
+            if(imported_base)compact_startup_->imported_metadata=original_assumed;
             utxo_index_=std::move(wallet_index);
             if(imported_base){
                 {std::lock_guard<std::mutex> state(assumeutxo_lifecycle_init_mutex_);
@@ -20290,6 +20294,131 @@ Status ChainstateService::checkRuntimeEmptyParentWallet(WalletManager& wallet,ui
     }catch(...){return Status::Internal;}
 #else
     (void)wallet;(void)session;return Status::Internal;
+#endif
+}
+
+struct ChainstateService::ImportedOrchardDeliverySource {
+#ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
+    std::map<std::string,std::string> metadata;
+    std::unique_ptr<assumeutxo::AssumeUtxoLifecycle::SnapshotUse> lifecycle;
+    std::unique_ptr<SelectedOrchardPoolContext> selected;
+#endif
+};
+
+std::unique_ptr<const ChainstateService::ImportedOrchardDeliverySource>
+ChainstateService::CaptureImportedOrchardDeliveryUnderLock(const std::unique_lock<std::mutex>& snapshot,
+        UTXOIndex& index,const RuntimeAccountReplay& replay){
+#ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
+    activation_mutex_.AssertHeld("bind imported Orchard-only delivery");
+    if(!snapshot.owns_lock()||snapshot.mutex()!=&snapshot_load_mutex_||snapshot_import_publishing_||
+       !compact_startup_||!completed_activation_||!compact_startup_->owner||
+       !compact_startup_->selected_consistency||!compact_startup_->imported_parent||
+       compact_startup_->imported_metadata.empty()||!chain_db_||!header_chain_selector_||!active_tip_||
+       consensus_utxo_set_||orchard_snapshot_startup_||!GetConfig().utreexo_stateless||safe_mode_active_||
+       !assumeutxo_active_||!assumeutxo_lifecycle_||!consensus::OrchardProfileConfigurationValid(Params())||
+       !replay.Head().sequence)return {};
+    {std::lock_guard<std::mutex> lifetime(wallet_index_use_mutex_);
+     if(!wallet_index_uses_by_thread_.contains(std::this_thread::get_id())||utxo_index_.get()!=&index)return {};}
+    compact_startup_->selected_consistency->Check(*chain_db_);
+    const auto origin=storage::ReadOrchardActivationOrigin(*chain_db_);
+    const auto frozen=chain_db_->getPreBaseCoinSetBase();const auto anchor=chain_db_->getValidatedTip();
+    if(!origin||!frozen.ok()||*frozen!=*compact_startup_->imported_parent||!anchor.ok()||
+       origin->validated_height!=0||anchor->height!=0||anchor->hash!=origin->validated||
+       anchor->hash.GetHex()!=Params().genesis_hash||origin->parent!=frozen->first||
+       origin->parent_height!=frozen->second||uint64_t(frozen->second)+1!=Params().orchard_activation_height||
+       assumeutxo_base_block_!=frozen->first||assumeutxo_base_height_!=frozen->second)return {};
+    const auto proof=OrchardSnapshotStore::ReadActivationProof(activation_mutex_,*chain_db_,*header_chain_selector_,origin->first);
+    const auto header=chain_db_->getHeader(frozen->first);
+    if(!proof||!header.ok()||header->GetHash()!=frozen->first||
+       consensus::HashOrchardSnapshotSection(*proof)!=origin->proof||
+       proof->parent_catalog.block!=frozen->first||proof->parent_catalog.height!=frozen->second)return {};
+    const auto checkpoint=chain_db_->getUtreexoCheckpoint(int(frozen->second));
+    const auto checksum=chain_db_->getUtreexoChecksum(int(frozen->second));unsigned char digest[32];
+    if(!checkpoint.ok()||!checksum.ok()||checksum->size()!=32)return {};
+    crypto::CSHA256().Write(checkpoint->data(),checkpoint->size()).Finalize(digest);
+    if(!std::equal(checksum->begin(),checksum->end(),digest))return {};
+    const auto forest=consensus::UtreexoForest::deserialize(*checkpoint);
+    const auto root=forest.getCommitment();
+    if(!std::equal(root.begin(),root.end(),header->utreexo_root.begin()))return {};
+    // Complete original content, not a wallet filter or current arbitrary coin
+    // view. Compare BOTH the freshly authenticated fields and the exact cohort
+    // captured only after the real completed-store startup audit.
+    consensus::OrchardSnapshotCoins coins;size_t bytes=0;
+    if(chain_db_->forEachPreBaseCoin([&](const uint256& id,uint32_t n,const Coin& row){
+        if(coins.size()>=1000000||row.height<0||uint32_t(row.height)>frozen->second||
+           row.amount>orchard::kMaxMoneyUna||row.script_pubkey.size()>20000)
+            throw std::runtime_error("Imported delivery frozen coin invalid or over capacity");
+        consensus::UTXOEntry coin;coin.value=AmountUna::Una(row.amount);coin.height=uint32_t(row.height);coin.isCoinbase=row.coinbase;
+        coin.is_confidential=row.is_confidential;coin.commitment=row.commitment;
+        if(!util::unhex(row.script_pubkey,coin.scriptPubKey)||!consensus::UtxoRecordIsSnapshotSafe(coin)||
+           coin.scriptPubKey.size()>256*1024*1024-bytes||!coins.emplace(OutPoint(TxId(id),n),coin).second)
+            throw std::runtime_error("Imported delivery frozen record invalid");
+        bytes+=coin.scriptPubKey.size();return true;
+    })!=Status::Ok)return {};
+    const auto height=std::to_string(frozen->second),hash=frozen->first.GetHex();
+    const std::map<std::string,std::string> expected={
+        {assumeutxo::kActiveKey,"true"},{assumeutxo::kBaseBlockKey,hash},{assumeutxo::kBaseHeightKey,height},
+        {assumeutxo::kExpectedCommitmentKey,consensus::ComputeUtxoRecordsDigest(coins).GetHex()},
+        {assumeutxo::kExpectedShieldedRootKey,proof->retirement.record.legacy_state_root.GetHex()},
+        {assumeutxo::kExpectedUtreexoRootKey,header->utreexo_root.GetHex()},
+        {assumeutxo::kLcBaseBlockKey,hash},{assumeutxo::kLcBaseHeightKey,height},
+        {assumeutxo::kLifecycleStateKey,"snapshot_loaded"},{"wallet_snapshot_recovery_base_height",height}};
+    index.RequireMetadataAbsent({"reorg_in_progress",kIncompleteReorgRecoveryTipKey});
+    if(expected!=compact_startup_->imported_metadata||index.ReadAssumedStartupMetadata()!=expected)return {};
+    const auto status=assumeutxo_lifecycle_->GetStatus(std::chrono::steady_clock::now());
+    if(status.state!=assumeutxo::AssumeUtxoLifecycle::State::SnapshotLoaded||!status.assumeutxo_active||
+       status.history_fully_validated||status.fatal||status.snapshot_base_block!=frozen->first||
+       status.snapshot_base_height!=frozen->second)return {};
+    auto selected=CaptureSelectedOrchardPoolContextUnderLock(std::span<const MempoolProofView>{});
+    if(!selected||!CheckRuntimeAccountReplayCurrentUnderLock(replay,*selected))return {};
+    auto lifecycle=assumeutxo_lifecycle_->AcquireSnapshotUse(frozen->first,frozen->second);
+    if(!lifecycle||index.ReadAssumedStartupMetadata()!=expected)return {};
+    auto result=std::make_unique<ImportedOrchardDeliverySource>();result->metadata=expected;
+    result->selected=std::move(selected);result->lifecycle=std::move(lifecycle);return result;
+#else
+    (void)snapshot;(void)index;(void)replay;return {};
+#endif
+}
+
+StatusOr<std::shared_ptr<const RuntimeOrchardCatalogRecoveryResult>>
+ChainstateService::resumeRuntimeImportedOrchardRecovery(WalletManager& wallet,UTXOIndex& index,uint64_t session){
+    if(activation_mutex_.HeldByCurrentThread())return Status::Invalid;
+#ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
+    try{
+        {
+            std::lock_guard<AnnotatedRecursiveMutex> selected(activation_mutex_);
+            // Selection by the real private composition, not by SQL flag and
+            // never by catching a failed mixed transparent/index recovery.
+            if(!compact_startup_||!compact_startup_->imported_parent)
+                return std::shared_ptr<const RuntimeOrchardCatalogRecoveryResult>{};
+        }
+        const auto captured=getRuntimeAccountReplayForWallet(wallet,session);
+        if(!captured.ok())return captured.status();
+        const auto& replay=**captured;
+        const RuntimeWalletRecovery::OrchardSourceOwner bind=[&](const auto& write){
+            std::unique_lock<std::mutex> snapshot(snapshot_load_mutex_);
+            auto selected=AcquireBlockIngressActivationLock();
+            auto source=CaptureImportedOrchardDeliveryUnderLock(snapshot,index,replay);
+            if(!source)throw std::runtime_error("Imported Orchard delivery source changed");
+            // This callback runs inside an existing source/lifecycle interval;
+            // it never reacquires them from wallet/seed/SQL ownership.
+            const std::function<void()> fence=[&]{
+                compact_startup_->selected_consistency->Check(*chain_db_);
+                if(utxo_index_.get()!=&index||wallet.getUTXOIndex()!=&index||
+                   index.ReadAssumedStartupMetadata()!=source->metadata||
+                   !CheckRuntimeAccountReplayCurrentUnderLock(replay,*source->selected))
+                    throw std::runtime_error("Imported Orchard delivery precommit source changed");
+            };
+            write(fence);
+        };
+        auto result=RuntimeWalletRecovery::ResumePreparedOrchardCatalog(replay,[&](RuntimeOutboxCursor cursor,size_t count){
+            const auto page=getRuntimeDeliveryPage(cursor,count);
+            if(!page.ok())throw std::runtime_error("Imported Orchard delivery page unavailable");return **page;
+        },wallet,session,bind);
+        return std::make_shared<const RuntimeOrchardCatalogRecoveryResult>(std::move(result));
+    }catch(...){return Status::Internal;}
+#else
+    (void)wallet;(void)index;(void)session;return Status::Internal;
 #endif
 }
 

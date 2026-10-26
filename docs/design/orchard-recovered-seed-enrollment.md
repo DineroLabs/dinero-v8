@@ -1243,3 +1243,28 @@ owner, wallet coin, Ready record or historical/index receipt.
 Original general full/compact captures, mining and block-admission guards are
 unchanged. Original assumed SQL/base/anchors remain unchanged; this is not a
 complete-history or transparent/index-readiness receipt.
+
+## Automatic Orchard-only delivery on completed imported backing
+
+The runtime worker routes the **actual completed imported compact composition**
+to a distinct `RuntimeOrchardCatalogRecoveryResult` / `AppliedOrchardPrefix`
+outcome. This is not a fallback after failed mixed recovery, `RuntimeIndexProgress`,
+transparent/index enrollment, independent prehistory, or whole-wallet readiness.
+`ResumeCatalogWalletStores` and its two baseline requirements are unchanged.
+
+The normal completed-store startup audit retains a process-local copy of its
+exact original imported metadata for comparison, not a serialized capability.
+Each Orchard write freshly binds the real snapshot lock, selected compact owner,
+typed consistency, original activation proof/frozen records/checkpoint/ten SQL
+values, exact index lifetime and nonfatal SnapshotLoaded lifecycle. The real
+lifecycle pin and selected owner survive the complete-catalog FULL writer; an
+additional fresh source check occurs immediately before each COMMIT. Preparation
+restores every current/retained/pending/archive owner and applies genuine delivered
+events outside source/wallet/seed/SQL ownership. No active owner is reset. Failed
+or interrupted prefixes remain retained and retryable.
+
+Only actual canonical events advance account receipts and observations. This
+route never writes either mixed baseline or repairs/rebases original assumed
+keys. The funded native imported regression must independently prove nonempty
+handoff, confirmation, and later restored funds/memos; source wiring alone is
+not that result, physical app/device acceptance, or release qualification.

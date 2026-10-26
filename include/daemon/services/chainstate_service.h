@@ -80,6 +80,7 @@ struct WalletSigningIdentity;
 struct UnsignedTransaction;
 struct PendingPaymentIntent;
 struct RuntimeEnrolledWalletRecoveryResult;
+struct RuntimeOrchardCatalogRecoveryResult;
 class WalletManager;
 class RuntimeWalletOriginProjection;
 class RuntimeWalletCoverageProjection;
@@ -1095,6 +1096,11 @@ public:
     // an earned captured prefix, never lasting readiness or global inventory.
     StatusOr<std::shared_ptr<const RuntimeEnrolledWalletRecoveryResult>>
         resumeRuntimeWalletRecoveryIfNeeded(WalletManager&, UTXOIndex&, uint64_t expected_session = 0);
+    // Distinct automatic Orchard-only delivery for the authenticated completed
+    // imported owner. Null success means NOT this source composition; failure
+    // never falls back to mixed replay or earns missing transparent baselines.
+    StatusOr<std::shared_ptr<const RuntimeOrchardCatalogRecoveryResult>>
+        resumeRuntimeImportedOrchardRecovery(WalletManager&,UTXOIndex&,uint64_t expected_session);
     // Observation-only readmission fence at the genuinely empty activation
     // parent. Restores/rechecks every declared encrypted owner under the current
     // source; does not adopt transparent receipts or manufacture delivery.
@@ -1660,6 +1666,9 @@ private:
     friend struct ImportedFundingCreationTestAccess;
     StatusOr<std::unique_ptr<const ImportedWalletSource>> CaptureImportedWalletSourceUnderLock(
         const std::unique_lock<std::mutex>& snapshot, UTXOIndex&);
+    struct ImportedOrchardDeliverySource;
+    std::unique_ptr<const ImportedOrchardDeliverySource> CaptureImportedOrchardDeliveryUnderLock(
+        const std::unique_lock<std::mutex>&,UTXOIndex&,const RuntimeAccountReplay&);
     // Transport is not storage authority. This narrower pre-boundary route
     // accepts ONLY independently executed full backing, never assumed state.
     bool CheckIndependentLegacyMobileParentUnderLock() const;

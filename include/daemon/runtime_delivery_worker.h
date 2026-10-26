@@ -23,7 +23,8 @@ namespace vault {class VaultService;}
 class RuntimeDeliveryWorker final {
     struct WakeState;
 public:
-    enum class WalletOutcome { Deferred, ExplicitlyAbsent, NoActiveWallet, NoLog, AppliedPrefix };
+    enum class WalletOutcome { Deferred, ExplicitlyAbsent, NoActiveWallet, NoLog, AppliedPrefix,
+        AppliedOrchardPrefix }; // No transparent/index receipt or mixed readiness.
     enum class VaultOutcome { Deferred, NoAttachedRuntime, ObservedTip, UnchangedSinceObservation };
     struct Report {
         uint64_t slices = 0;

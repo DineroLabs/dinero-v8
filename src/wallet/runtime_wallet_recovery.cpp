@@ -272,4 +272,96 @@ RuntimeEnrolledWalletRecoveryResult RuntimeWalletRecovery::ResumePreparedCatalog
     for(const auto& entry:current.catalog.accounts)revisions.emplace_back(entry.number,entry.state.revision);
     return {current.indexed,std::move(revisions),final.head,current.catalog.catalog.revision};
 }
+RuntimeOrchardCatalogRecoveryResult RuntimeWalletRecovery::ResumePreparedOrchardCatalog(
+        const RuntimeAccountReplay& view,const Source& source,WalletManager& wallet,uint64_t session,
+        const OrchardSourceOwner& bind){
+    using Account=wallet::OrchardAccountDelivery;using Action=Account::CatalogRecoveryAction;
+    Require(bool(bind),"Orchard recovery source owner unavailable");
+    {const auto lease=wallet.AcquireDatabaseLease();Require(wallet.database_leases_==1,
+        "Orchard recovery requires released caller lease");}
+    const auto target=view.Head();Require(target.sequence,"Orchard recovery requires genuine first delivery");
+    const auto first=view.Event(1);const auto origin=view.Point({}).checkpoint;
+    const auto cursor=[](const Account::Enrolled& entry){const auto& d=entry.state.account.Delivery();
+        return RuntimeOutboxCursor{d.sequence,d.digest};};
+    const auto equal=[&](const Account::CatalogEnrolled& a,const Account::CatalogEnrolled& b){
+        if(a.catalog!=b.catalog||a.accounts.size()!=b.accounts.size())return false;
+        for(size_t i=0;i<a.accounts.size();++i){const auto& x=a.accounts[i];const auto& y=b.accounts[i];
+            if(x.number!=y.number||x.state.revision!=y.state.revision||cursor(x)!=cursor(y)||
+               x.archive_revisions!=y.archive_revisions)return false;}
+        return true;
+    };
+    struct CaptureTransaction {
+        sqlite3* db;bool done=false;
+        explicit CaptureTransaction(sqlite3* value):db(value){
+            Require(db&&sqlite3_get_autocommit(db),"Orchard recovery requires unborrowed transaction");
+            Require(sqlite3_exec(db,"PRAGMA synchronous=FULL",nullptr,nullptr,nullptr)==SQLITE_OK,
+                "Orchard recovery durability unavailable");
+            Require(sqlite3_exec(db,"BEGIN IMMEDIATE",nullptr,nullptr,nullptr)==SQLITE_OK,
+                "Orchard recovery capture transaction unavailable");
+        }
+        ~CaptureTransaction(){if(!done&&sqlite3_exec(db,"ROLLBACK",nullptr,nullptr,nullptr)!=SQLITE_OK&&
+            !sqlite3_get_autocommit(db))std::terminate();}
+        void Commit(){Require(sqlite3_exec(db,"COMMIT",nullptr,nullptr,nullptr)==SQLITE_OK,
+            "Orchard recovery capture commit refused");done=true;}
+    };
+    const auto recheck=[&](const wallet::OrchardCatalogRecoveryPlan& plan,const std::function<void()>& fence){
+        const auto lease=wallet.AcquireDatabaseLease();Require(lease->Session()==session,
+            "Orchard recovery selection changed");
+        CaptureTransaction tx(lease->Database());Account::RecheckCatalogRecoveryInTransaction(wallet,session,plan);
+        fence();tx.Commit();
+    };
+    const auto prepare=[&](Action action,uint64_t sequence){
+        // Complete current/retained/pending/archive restoration and real event
+        // application happen OFF source, wallet, seed and SQLite ownership.
+        auto plan=Account::PrepareCatalogRecovery(wallet,session,view,action,sequence);
+        auto before=Account::CatalogRecoveryBefore(*plan);
+        bind([&](const auto& fence){recheck(*plan,fence);});
+        return std::pair{std::move(before),std::move(plan)};
+    };
+    auto initial=prepare(Action::Observe,0);auto current=std::move(initial.first);initial.second.reset();
+    auto sequence=target.sequence;
+    for(const auto& entry:current.accounts){
+        const auto position=cursor(entry);const auto page=source(position,1);
+        const auto& scan=entry.state.account.Scan().Checkpoint();
+        if(position.sequence)Require(page.after_tip&&page.after_tip->first==scan.block_hash&&
+            page.after_tip->second==scan.height,"Orchard recovery account source position mismatch");
+        else Require(position.digest.IsNull()&&scan==origin&&!page.after_tip&&!page.events.empty()&&
+            page.events.front().cursor==first->cursor,"Orchard recovery account source origin mismatch");
+        Require(position.sequence<=target.sequence,"Orchard recovery account exceeds captured head");
+        sequence=std::min(sequence,position.sequence);
+    }
+    while(sequence<target.sequence){
+        ++sequence;const auto event=view.Event(sequence);auto prepared=prepare(Action::Apply,sequence);
+        Require(equal(current,prepared.first),"Orchard recovery catalog changed during preparation");
+        bind([&](const auto& fence){
+            // Keep the same wallet selection across independent ascending FULL
+            // account commits. A refusal retains every already-earned prefix.
+            const auto lease=wallet.AcquireDatabaseLease();recheck(*prepared.second,fence);
+            for(size_t i=0;i<current.accounts.size();++i)if(cursor(current.accounts[i]).sequence<sequence){
+                current.accounts[i].state=Account::CommitCatalogRecoveryAccount(wallet,session,*prepared.second,i,fence);
+                Require(cursor(current.accounts[i])==event->cursor&&
+                    current.accounts[i].state.account.Scan().Checkpoint()==view.Point(event->cursor).checkpoint,
+                    "Orchard recovery applied position mismatch");
+            }
+        });
+    }
+    for(const auto& entry:current.accounts)Require(cursor(entry)==target,"Orchard recovery captured head mismatch");
+    auto reconciled=prepare(Action::Reconcile,0);
+    Require(equal(current,reconciled.first),"Orchard recovery catalog changed before reconciliation");
+    bind([&](const auto& fence){
+        const auto lease=wallet.AcquireDatabaseLease();recheck(*reconciled.second,fence);
+        for(size_t i=0;i<current.accounts.size();++i)
+            current.accounts[i].state=Account::CommitCatalogRecoveryAccount(wallet,session,*reconciled.second,i,fence);
+    });
+    const auto final=source(target,1);const auto point=view.Point(target).checkpoint;
+    Require(final.after_tip&&final.after_tip->first==point.block_hash&&final.after_tip->second==point.height,
+        "Orchard recovery final source position mismatch");
+    auto checked=prepare(Action::Observe,0);
+    Require(equal(current,checked.first),"Orchard recovery stores changed before return");
+    std::vector<std::pair<uint32_t,uint64_t>> revisions;revisions.reserve(current.accounts.size());
+    for(const auto& entry:current.accounts)revisions.emplace_back(entry.number,entry.state.revision);
+    // No ReadStores/coverage/baseline adoption or transparent/index write occurs
+    // on this distinct route. Even success is ONLY this captured Orchard prefix.
+    return {target,std::move(revisions),final.head,current.catalog.revision};
+}
 } // namespace dinero

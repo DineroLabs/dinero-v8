@@ -1016,7 +1016,8 @@ void OrchardAccountDelivery::RecheckCatalogRecoveryInTransaction(WalletManager& 
     auto fresh=Owner::CaptureCatalog(w,session,plan.data_->profile);plan.data_->expected->Recheck(*fresh);
 }
 OrchardAccountDelivery::Applied OrchardAccountDelivery::CommitCatalogRecoveryAccount(
-        WalletManager& w,uint64_t session,OrchardCatalogRecoveryPlan& plan,size_t index){
+        WalletManager& w,uint64_t session,OrchardCatalogRecoveryPlan& plan,size_t index,
+        const std::function<void()>& current_source){
     Check(plan.data_&&plan.data_->usable&&plan.data_->session==session&&index>=plan.data_->next_account&&index<plan.data_->accounts.size());
     auto& data=*plan.data_;data.usable=false; // Any refused write consumes this private computation.
     auto lease=w.AcquireDatabaseLease();Check(lease->Session()==session&&lease->Database());
@@ -1039,8 +1040,12 @@ OrchardAccountDelivery::Applied OrchardAccountDelivery::CommitCatalogRecoveryAcc
         }
     }
     // Reauthenticate the complete expected post-write catalog before committing.
-    // No source lookup, scan restore, archive cause callback or proof runs here.
+    // No scan restore, archive cause computation or proof runs here. The
+    // optional lexical fence below only rechecks an already-held source.
     {auto fresh=Owner::CaptureCatalog(w,session,data.profile);data.expected->Recheck(*fresh);}
+    // Optional private lexical fence under source ownership already retained
+    // by the selected service; never reacquire a source owner from this writer.
+    if(current_source)current_source();
     tx.Commit();data.next_account=index+1;data.usable=true;return result;
 }
 OrchardAccountDelivery::Applied OrchardAccountDelivery::Read(WalletManager& w,uint64_t s,const Profile& p,const RestorePoint& point){
