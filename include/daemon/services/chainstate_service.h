@@ -1646,6 +1646,9 @@ private:
     std::shared_ptr<const OrchardMiningTemplate> BindOrchardMiningUnderLock(PreparedOrchardMining&);
     friend struct OrchardDetachedMiningTestAccess;
     struct SelectedOrchardPoolContext;
+    // Transport is not storage authority. This narrower pre-boundary route
+    // accepts ONLY independently executed full backing, never assumed state.
+    bool CheckIndependentLegacyMobileParentUnderLock() const;
     std::shared_ptr<const RuntimeAccountReplay> CaptureEmptyActivationParentReplayUnderLock();
     // Caller owns snapshot_load_mutex_ THEN activation_mutex_. The context
     // retains its original full/explicit-proof coin authority unchanged.

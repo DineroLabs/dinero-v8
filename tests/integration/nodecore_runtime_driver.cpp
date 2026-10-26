@@ -462,6 +462,11 @@ int main(int argc, char** argv) {
                 result = nodecore_start(path.c_str(), config.c_str());
             } else if (operation == "stop") {
                 result = nodecore_stop();
+            } else if(operation=="watch_script"){
+                std::vector<uint8_t> script;
+                if(!util::unhex(request["script"].asString(),script)||script.empty()||script.size()>10000)
+                    throw std::runtime_error("Invalid test watch script");
+                result=nodecore_watch_script(script.data(),script.size(),"native-sdk-watch");
             } else if (operation == "stop_at_callback" || operation == "maintenance_at_callback") {
                 result = StopAtCallback(request);
             } else if (operation == "maintenance_begin" || operation == "maintenance_resume") {

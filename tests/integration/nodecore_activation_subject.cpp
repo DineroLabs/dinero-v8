@@ -29,7 +29,15 @@ struct P2PServiceStopTestAccess {
 // Read-only native-test diagnostics. No production API or state mutation.
 namespace {
 std::atomic<unsigned> activation_pause_probes{0},activation_pause_refusals{0};
+std::mutex observed_transaction_mutex;Json::Value observed_transaction;
 void ObserveActivationPause(int32_t event,const char* text,void*){
+    if(event==NODECORE_EVENT_RELEVANT_TX_ADDED&&text){
+        Json::Value parsed;Json::CharReaderBuilder builder;std::string error;std::istringstream input(text);
+        if(Json::parseFromStream(builder,input,&parsed,&error)){
+            std::lock_guard<std::mutex> lock(observed_transaction_mutex);observed_transaction=std::move(parsed);
+        }
+        return;
+    }
     if(event!=NODECORE_EVENT_SYNC_STARTED||!text||
         !std::strstr(text,"authenticated_activation_restarting"))return;
     // The actual worker has HELD its gate, and cannot continue to publication
@@ -48,6 +56,7 @@ void InstallSdkActivationTestEvents(){nodecore_set_event_callback(ObserveActivat
 Json::Value SdkActivationTestState(){
     auto& s=state();std::lock_guard lock(s.mtx);Json::Value row;
     row["pause_probes"]=activation_pause_probes.load();row["pause_refusals"]=activation_pause_refusals.load();
+    {std::lock_guard<std::mutex> lock(observed_transaction_mutex);row["observed_transaction"]=observed_transaction;}
     row["running"]=s.running.load();row["shutdown_requested"]=s.shutdown_requested.load();
     if(!s.running||!s.app)return row;
     const auto& context=s.app->GetContext();
@@ -91,6 +100,14 @@ Json::Value SdkActivationTestState(){
         for(const auto& peer:peers->get().connected_peer_sessions()){
             Json::Value p;p["address"]=peer.address;p["session"]=Json::UInt64(peer.nonce);
             p["services"]=Json::UInt64(peer.services);row["peers"].append(p);
+        }
+    }
+    if(const auto pool=std::dynamic_pointer_cast<dinero::MempoolService>(context.mempool)){
+        auto use=dinero::MempoolService::AcquirePoolUse(pool);row["pool"]=Json::Value(Json::arrayValue);
+        for(const auto& id:use->Pool().getTransactionIds()){
+            const auto entry=use->Pool().getMempoolEntry(id);if(!entry)continue;
+            Json::Value item;item["txid"]=id.GetHex();item["cached_proof_bytes"]=Json::UInt64(entry->cached_utxotx_payload.size());
+            row["pool"].append(item);
         }
     }
     return row;

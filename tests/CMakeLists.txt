@@ -5579,6 +5579,8 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_assumeutxo_replay.cpp)
   set_tests_properties(OrchardEmptyParentAccount PROPERTIES TIMEOUT 120 LABELS "daemon;orchard;wallet;mandatory")
   add_test(NAME OrchardEmptyParentQueue COMMAND test_assumeutxo_replay --gtest_filter=OrchardEmptyParentQueue.*)
   set_tests_properties(OrchardEmptyParentQueue PROPERTIES TIMEOUT 120 LABELS "daemon;orchard;wallet;mandatory")
+  add_test(NAME OrchardLegacyMobileParent COMMAND test_assumeutxo_replay --gtest_filter=OrchardLegacyMobileParent.*)
+  set_tests_properties(OrchardLegacyMobileParent PROPERTIES TIMEOUT 120 LABELS "daemon;orchard;wallet;mandatory")
   set_tests_properties(OrchardPhoneHistory PROPERTIES TIMEOUT 120 LABELS "daemon;orchard;p2p;recovery")
   if(UNIX)
     add_test(NAME OrchardHistoryCache COMMAND test_assumeutxo_replay --gtest_filter=OrchardHistoryCache.*)
@@ -9415,6 +9417,12 @@ if(TARGET nodecore_ffi)
       ACTIVATION_FIXTURE_GENERATOR=$<TARGET_FILE:test_assumeutxo_replay>
       python3 ${CMAKE_SOURCE_DIR}/tests/integration/test_nodecore_activation_wire.py)
     set_tests_properties(NodeCoreActivationWire PROPERTIES TIMEOUT 240 RUN_SERIAL TRUE
+      LABELS "integration;nodecore;orchard;restart;wallet")
+    add_test(NAME NodeCoreFundedCrossing COMMAND ${CMAKE_COMMAND} -E env
+      NODECORE_DRIVER=$<TARGET_FILE:nodecore_activation_driver>
+      ACTIVATION_FIXTURE_GENERATOR=$<TARGET_FILE:test_assumeutxo_replay>
+      python3 ${CMAKE_SOURCE_DIR}/tests/integration/test_nodecore_funded_crossing.py)
+    set_tests_properties(NodeCoreFundedCrossing PROPERTIES TIMEOUT 360 RUN_SERIAL TRUE
       LABELS "integration;nodecore;orchard;restart;wallet")
     add_test(NAME NodeCoreLatePhoneHistory COMMAND ${CMAKE_COMMAND} -E env
       NODECORE_DRIVER=$<TARGET_FILE:nodecore_activation_driver>

@@ -331,11 +331,12 @@ struct ActivationHandoffFixture {
     std::shared_ptr<ReopenRpcGate> gate;
 #endif
     explicit ActivationHandoffFixture(bool lifecycle=false,
-        const std::function<void(CompactStartupFixture&)>& capture_parent={}):full([this](auto& source){
+        const std::function<void(CompactStartupFixture&)>& capture_parent={},
+        OrchardAdmissionFixture::HistoricalSpend spend=OrchardAdmissionFixture::HistoricalSpend::None):full([this](auto& source){
         for(const auto& block:source.f.blocks)OrchardAdmissionFixture::Require(headers->AddHeader(block.header));
         OrchardAdmissionFixture::Require(headers->AddHeader(source.first->Header())&&headers->AddHeader(source.second->Header()));
         proof=std::make_shared<const consensus::OrchardSnapshotSection>(OrchardSnapshotStoreTestAccess::CaptureActivation(source.f.db,*headers));
-    },OrchardAdmissionFixture::HistoricalSpend::None,true,true,capture_parent){
+    },spend,true,true,capture_parent){
         auto name=(std::filesystem::temp_directory_path()/"orchard-handoff-evidence-XXXXXX").string();
         OrchardAdmissionFixture::Require(::mkdtemp(name.data())!=nullptr);root=std::filesystem::canonical(name);
         std::filesystem::create_directory(root/"blockchain");path=root/"blockchain"/"chaindb";
@@ -564,6 +565,7 @@ void GenerateSdkActivationFixture(){
     ASSERT_FALSE(std::filesystem::exists(destination));
     // Select the private wire magic BEFORE any BlockStorage archive is written.
     MutableParams().magic=0x02a1c925;
+    const bool funded=std::getenv("DINERO_SDK_FUNDED_CROSSING_FIXTURE")!=nullptr;
     // Source-ready independently replayed parent. No lifecycle receipt or
     // completed selection is injected: the actual SDK must create both.
     shielded_store_fixture::Rows parent_rows;
@@ -584,7 +586,8 @@ void GenerateSdkActivationFixture(){
             source.f.token,101,coins->GetForest().serialize())==Status::Ok);
         for(const auto& [key,value]:ChainDBTransactionReadTestPeer::HandoffRows(source.f.db))
             parent_rows.at(key.first).emplace(key.second,value);
-    });
+    },funded?OrchardAdmissionFixture::HistoricalSpend::NamedWallet:OrchardAdmissionFixture::HistoricalSpend::None);
+    if(funded)f.full.f.preserve_evidence=true;
     // Keep the visited/undone source intact, but start THIS test from the exact
     // earlier independent parent capture. Never strip an outbox or fabricate a
     // starting cursor from the subsequently visited source. The real SDK alone
@@ -607,6 +610,11 @@ void GenerateSdkActivationFixture(){
     Json::Value row;row["datadir"]=f.root.string();row["profile"]=ConsensusChecksum(Params());
     row["magic"]=Json::UInt(Params().magic);row["parent"]=f.proof->parent_catalog.block.GetHex();
     row["first_hash"]=f.full.first->Header().GetHash().GetHex();row["second_hash"]=f.full.second->Header().GetHash().GetHex();
+    if(funded){row["funding_address"]=f.full.f.funding_address;row["funding_amount_una"]=1000000;
+        row["funding_change_script"]=util::hex(f.full.f.funding_change_script);
+        row["native_original_source"]=f.full.f.path.string();
+        row["funding_derivation_root"]=f.full.f.funding_derivation_root.string();
+        row["funding_txid"]=f.full.f.blocks.at(101).vtx.at(1).GetTxid().AsUint256().GetHex();}
     if(std::getenv("DINERO_SDK_LATE_HISTORY_FIXTURE")){
         // A genuinely NEW root with only a normal authenticated v6 floor.
         // No original parent DB, pre-floor bodies or canonical runtime events
@@ -638,10 +646,10 @@ void GenerateSdkActivationFixture(){
     row["proof"]=proof_file.string();row["headers"]=Json::Value(Json::arrayValue);
     {consensus::HeaderStore store((f.root/"headers").string());ASSERT_TRUE(store.Open());
      consensus::HeaderChainSelector retained(&store);
-     const auto add=[&](const BlockHeader& header){OrchardAdmissionFixture::Require(retained.AddHeader(header));
+     const auto add=[&](const BlockHeader& header,bool persist=true){if(persist)OrchardAdmissionFixture::Require(retained.AddHeader(header));
         const auto bytes=header.SerializeForHash();row["headers"].append(util::hex({bytes.begin(),bytes.end()}));};
      for(const auto& block:f.full.f.blocks)add(block.header);
-     add(f.full.first->Header());add(f.full.second->Header());}
+     add(f.full.first->Header(),!funded);add(f.full.second->Header(),!funded);}
     for(const auto& [name,block]:std::vector<std::pair<std::string,std::shared_ptr<const CatalogSolvedTemplate>>>{
         {"first",f.full.first},{"second",f.full.second}}){
         const auto path=f.root/("untrusted-"+name+"-body.bin");std::ofstream out(path,std::ios::binary);ASSERT_TRUE(out);
@@ -649,6 +657,45 @@ void GenerateSdkActivationFixture(){
         ASSERT_TRUE(out);row[name]=path.string();}
     f.guard.Release();std::ofstream output(destination);ASSERT_TRUE(output);
     output<<Json::writeString(Json::StreamWriterBuilder(),row);output.close();ASSERT_TRUE(output);
+    if(funded){
+        const auto* replies=std::getenv("DINERO_SDK_FUNDED_REPLIES");ASSERT_NE(replies,nullptr);
+        // A second genuinely replayed native FULL source has the same signed
+        // historical funding/header chain. It serves untrusted input proofs
+        // and mines a later real block through ordinary admission/assembler.
+        // It never writes the SDK root, wallet rows, Ready bytes or receipts.
+        CanonicalPoolFixture source(true,OrchardAdmissionFixture::HistoricalSpend::NamedWallet);
+        source.f.preserve_evidence=true;
+        std::cout<<"Funded native source evidence: "<<source.f.path.string()<<std::endl;
+        std::cout<<"Funded derivation evidence: "<<source.f.funding_derivation_root.string()<<std::endl;
+        source.f.service->setRuntimeBlockNotifications(std::make_shared<TypedForkNotices>());
+        ASSERT_EQ(source.parent->hash,f.proof->parent_catalog.block);
+        std::ofstream reply(replies,std::ios::app);ASSERT_TRUE(reply);std::string line;
+        Json::StreamWriterBuilder compact_json;compact_json["indentation"]="";
+        while(std::getline(std::cin,line)){
+            Json::Value request,result;Json::CharReaderBuilder builder;std::string error;
+            std::istringstream input(line);ASSERT_TRUE(Json::parseFromStream(builder,input,&request,&error));
+            const auto op=request["op"].asString();
+            if(op=="proof"){
+                std::vector<uint8_t> wire;ASSERT_TRUE(util::unhex(request["body"].asString(),wire));
+                const auto body=DecodeRelayTransaction(wire,RelayTransactionReadMode::AvailableFamilies);
+                const auto proof_wire=CanonicalPoolUnverifiedProof(source,body);ASSERT_TRUE(proof_wire);
+                ASSERT_TRUE(source.f.ingress->SubmitBody(body,TxOrigin::P2P).accepted());
+                result["proof"]=util::hex(*proof_wire);result["txid"]=body.GetTxid().AsUint256().GetHex();
+            }else if(op=="mine"){
+                ASSERT_TRUE(source.Submit(f.full.first->WireBytes()).connected);
+                ASSERT_TRUE(source.Submit(f.full.second->WireBytes()).connected);
+                BlockAssembler assembler(&source.f.db);WireOrchardAssembler(assembler,source.f);
+                const auto mined=SolveCatalogTemplate(assembler.CreateOrchardBlock(OrchardMiningPayout));ASSERT_TRUE(mined);
+                ASSERT_EQ(mined->Height(),104u);ASSERT_GT(mined->Transactions().size(),1u);
+                ASSERT_TRUE(source.Submit(mined->WireBytes()).connected);
+                result["body"]=util::hex(mined->WireBytes());result["hash"]=mined->Header().GetHash().GetHex();
+                const auto header=mined->Header().SerializeForHash();result["header"]=util::hex({header.begin(),header.end()});
+                result["transactions"]=Json::Value(Json::arrayValue);
+                for(const auto& tx:mined->Transactions())result["transactions"].append(tx.GetTxid().AsUint256().GetHex());
+            }else{ASSERT_EQ(op,"stop");break;}
+            reply<<Json::writeString(compact_json,result)<<std::endl;ASSERT_TRUE(reply);
+        }
+    }
 }
 void DiagnoseCompletedActivationRows(){
     const auto* actual=std::getenv("DINERO_COMPLETED_COMPARE_ACTUAL");

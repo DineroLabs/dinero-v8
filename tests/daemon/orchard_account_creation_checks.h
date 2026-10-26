@@ -298,6 +298,41 @@ TEST(OrchardEmptyParentQueue, NamespaceChangedAfterCaptureRefusesAtFinalReadmiss
     ChainDBTransactionReadTestPeer::HandoffDeleteOrchardRow(f.f.db,f.f.token,"O1-after-empty-source-capture");
     EXPECT_EQ(f.f.service->checkRuntimeEmptyParentWallet(use->Wallet(),session),Status::Ok);
 }
+TEST(OrchardLegacyMobileParent, ActualIndependentBackingAndPublicShieldSurfaceKeepCoinGuards){
+    PreactivationEnrollmentFixture f;ASSERT_FALSE(f.Enroll().isMember("error"));const auto created=f.Call(0);
+    ASSERT_FALSE(created.isMember("error"));const auto before=f.Snapshot();const auto initial_rows=ChainDBTransactionReadTestPeer::HandoffRows(f.f.db);
+    GetConfig().utreexo_stateless=true; // Transport choice only; no state or validity marker changes.
+    const auto capture=f.f.service->getUtreexoRpcSnapshot();ASSERT_TRUE(capture.ok());EXPECT_FALSE(capture->compact);
+    const auto prepared=f.f.service->PrepareSelectedOrchardParent();ASSERT_TRUE(prepared);
+    EXPECT_TRUE(f.f.service->CheckPreparedOrchardParent(*prepared));
+    // Normal detached preparation may compile new immutable catalog DATA, not
+    // select a head. Preserve both inventories; every original row must stay
+    // identical. The following public wallet queries must make NO further write.
+    const auto rows=ChainDBTransactionReadTestPeer::HandoffRows(f.f.db);
+    for(const auto& [key,value]:initial_rows){ASSERT_TRUE(rows.contains(key));EXPECT_EQ(rows.at(key),value);}
+    PreserveEmptyParentCase("mobile-before-detached-preparation",initial_rows,before,f.Snapshot());
+    PreserveEmptyParentCase("mobile-after-detached-preparation",rows,before,f.Snapshot());
+    const auto replay=f.f.service->getRuntimeAccountReplay();ASSERT_TRUE(replay.ok());EXPECT_EQ((*replay)->Head().sequence,0u);
+    EXPECT_EQ(f.wallet->RecoverActiveWalletFromCanonicalSource(),Recovery::NotRequired);
+    RegisterOrchardAccountRpc();const auto* queue=g_rpcRegistry.lookup("wallet.orchard.queueshield");ASSERT_NE(queue,nullptr);
+    din::Json request,payment;request["account"]=0;request["request_id"]=std::string(64,'1');
+    request["expected_revision"]=Json::UInt64(f.Account(0).revision);request["fee_una"]=10000;
+    payment["address"]=created["address"];payment["amount_una"]=20000;payment["memo_hex"]="0100";
+    request["payments"]=din::arr();request["payments"].append(payment);const auto context=f.RequestContext();
+    const auto refused=(*queue)(context,OrchardBoundParamsForTest(context,request));
+    ASSERT_TRUE(refused.isMember("error"));EXPECT_EQ(refused["error"].asString(),"Insufficient available mature shield funds");
+    EXPECT_EQ(f.Snapshot(),before);EXPECT_EQ(ChainDBTransactionReadTestPeer::HandoffRows(f.f.db),rows);
+    ASSERT_EQ(f.f.db.setValidatedTip(f.f.token,f.f.blocks[100].GetHash(),100),Status::Ok);
+    EXPECT_FALSE(f.f.service->getRuntimeAccountReplay().ok());const auto lagging=f.Snapshot();
+    EXPECT_FALSE(f.f.service->CheckPreparedOrchardParent(*prepared));
+    EXPECT_FALSE(f.f.service->PrepareSelectedOrchardParent());
+    EXPECT_TRUE((*queue)(context,OrchardBoundParamsForTest(context,request)).isMember("error"));EXPECT_EQ(f.Snapshot(),lagging);
+    ASSERT_EQ(f.f.db.setValidatedTip(f.f.token,f.parent->hash,101),Status::Ok);
+    ChainDBTransactionReadTestPeer::HandoffPutOrchardRow(f.f.db,f.f.token,"O1-mobile-parent-untracked","refusal");
+    EXPECT_FALSE(f.f.service->getRuntimeAccountReplay().ok());EXPECT_EQ(f.Snapshot(),before);
+    PreserveEmptyParentCase("independent-mobile-parent",ChainDBTransactionReadTestPeer::HandoffRows(f.f.db),before,f.Snapshot());
+    GetConfig().utreexo_stateless=false;
+}
 TEST(OrchardPreactivationEnrollment, MissingCorruptOrUntrackedStateNeverRepairs){
     PreactivationEnrollmentFixture f;const auto good=f.Setting("orchard_account_catalog_v1");
     const auto owner=f.Setting("wallet_initial_owner_v1");

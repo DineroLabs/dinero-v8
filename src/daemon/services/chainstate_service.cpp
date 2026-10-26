@@ -6767,7 +6767,8 @@ StatusOr<std::shared_ptr<const RuntimeOutboxPage>> ChainstateService::getRuntime
     const bool compact=bool(compact_startup_);
     if (!chain_db_ || !active_tip_ ||
         (compact ? (!compact_startup_->owner || consensus_utxo_set_) : !consensus_utxo_set_)) return Status::Internal;
-    if (GetConfig().utreexo_stateless!=compact || !consensus::OrchardProfileConfigurationValid(Params()))
+    const bool independent_mobile_parent=!compact&&GetConfig().utreexo_stateless&&CheckIndependentLegacyMobileParentUnderLock();
+    if ((GetConfig().utreexo_stateless!=compact&&!independent_mobile_parent) || !consensus::OrchardProfileConfigurationValid(Params()))
         return Status::Invalid;
     const auto profile=consensus::SelectedOrchardBlockContext(BlockHeader{},Params().orchard_activation_height);
     if (!profile) return Status::Invalid;
@@ -6797,10 +6798,12 @@ StatusOr<std::shared_ptr<const RuntimeOutboxPage>> ChainstateService::getRuntime
             // it supplies no arbitrary coin-absence authority to consumers.
             (void)compact_startup_->owner->CapturePoolCoinsUnderLock(activation_mutex_,next,*header,{});
         } else storage::RequireFullOrchardStorage(*chain_db_);
-        if(captured_head) return std::make_shared<const RuntimeOutboxPage>(ReadRuntimeOutboxPrefixUnderLock(
-            *chain_db_,*profile,*captured_head,after,maximum_events,maximum_bytes));
-        return std::make_shared<const RuntimeOutboxPage>(ReadRuntimeOutboxUnderLock(
-            *chain_db_,*profile,after,maximum_events,maximum_bytes));
+        const auto page=captured_head?ReadRuntimeOutboxPrefixUnderLock(
+            *chain_db_,*profile,*captured_head,after,maximum_events,maximum_bytes):ReadRuntimeOutboxUnderLock(
+            *chain_db_,*profile,after,maximum_events,maximum_bytes);
+        if(independent_mobile_parent&&(page.head.sequence||!page.head.digest.IsNull()||
+            page.next.sequence||!page.next.digest.IsNull()||!page.events.empty()||page.after_tip))return Status::Invalid;
+        return std::make_shared<const RuntimeOutboxPage>(page);
     } catch (const consensus::OrchardStateLookupError& e) { return e.SourceStatus(); }
       catch (...) { return Status::Internal; }
 #else
@@ -18544,7 +18547,7 @@ std::unique_ptr<PreparedOrchardParent> ChainstateService::PrepareSelectedOrchard
         {
             std::lock_guard<AnnotatedRecursiveMutex> lock(activation_mutex_);
             if (!chain_db_owner_ || chain_db_owner_.get()!=chain_db_ || !active_tip_ ||
-                !consensus_utxo_set_ || GetConfig().utreexo_stateless || safe_mode_active_ ||
+                !consensus_utxo_set_ || (GetConfig().utreexo_stateless&&!CheckIndependentLegacyMobileParentUnderLock()) || safe_mode_active_ ||
                 !consensus::OrchardProfileConfigurationValid(Params()) ||
                 uint64_t(active_tip_->height)+1!=Params().orchard_activation_height)
                 return {};
@@ -19319,7 +19322,7 @@ ChainstateService::CheckPreparedOrchardParent(const PreparedOrchardParent& prepa
         if (prepared.state_->source_!=this || !chain_db_owner_ ||
             prepared.state_->db_!=chain_db_owner_ || chain_db_!=prepared.state_->db_.get() ||
             block_storage_!=prepared.state_->blocks_ || !active_tip_ || !consensus_utxo_set_ ||
-            GetConfig().utreexo_stateless || safe_mode_active_) return {};
+            (GetConfig().utreexo_stateless&&!CheckIndependentLegacyMobileParentUnderLock()) || safe_mode_active_) return {};
         const auto& target=prepared.state_->replay_.ValidatedTarget();
         const auto& record=prepared.state_->replay_.Record();
         const auto& replay=prepared.state_->replay_.ProvenState();
@@ -19422,7 +19425,7 @@ ChainstateService::DeriveOrchardBoundaryFromSelectedHistoryUnderLock() {
         return std::nullopt;
     };
     if (!activation_mutex_.HeldByCurrentThread() || !chain_db_ || !active_tip_ ||
-        !consensus_utxo_set_ || GetConfig().utreexo_stateless || safe_mode_active_ ||
+        !consensus_utxo_set_ || (GetConfig().utreexo_stateless&&!CheckIndependentLegacyMobileParentUnderLock()) || safe_mode_active_ ||
         !consensus::OrchardProfileConfigurationValid(Params()) ||
         uint64_t(active_tip_->height) + 1 != Params().orchard_activation_height)
         return refuse("boundary-01");
@@ -19687,7 +19690,7 @@ ChainstateService::CaptureSelectedOrchardPoolContextUnderLock(
     if(compact && (!compact_startup_->owner || !proved_entries ||
         consensus_utxo_set_ || !GetConfig().utreexo_stateless))
         return refuse("selected-compact-scope");
-    if(!compact && (!consensus_utxo_set_ || GetConfig().utreexo_stateless))
+    if(!compact && (!consensus_utxo_set_ || (GetConfig().utreexo_stateless&&!CheckIndependentLegacyMobileParentUnderLock())))
         return refuse("selected-full-scope");
     if(!chain_db_ || !active_tip_ ||
        !header_chain_selector_ || !runtime_block_notifications_ || safe_mode_active_ ||
@@ -19755,6 +19758,28 @@ ChainstateService::CaptureSelectedOrchardPoolContextUnderLock(
 #else
     (void)proved_entries;
     return {};
+#endif
+}
+
+bool ChainstateService::CheckIndependentLegacyMobileParentUnderLock() const{
+#ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
+    activation_mutex_.AssertHeld("check independently executed legacy mobile parent");
+    if(!GetConfig().utreexo_stateless||compact_startup_||orchard_snapshot_startup_||assumeutxo_active_||
+       !consensus_utxo_set_||!chain_db_||!active_tip_||safe_mode_active_||
+       !consensus::OrchardProfileConfigurationValid(Params())||Params().orchard_activation_height==UINT32_MAX||
+       uint64_t(active_tip_->height)+1!=Params().orchard_activation_height)return false;
+    try{
+        const auto tip=chain_db_->getTip(),validated=chain_db_->getValidatedTip();
+        if(!tip.ok()||!validated.ok()||tip->hash!=active_tip_->hash||tip->height!=int(active_tip_->height)||
+           validated->hash!=tip->hash||validated->height!=tip->height||!chain_db_->getEmptyOrchardCommitmentSets().ok())return false;
+        // This existing read-only observation checks actual full storage,
+        // selected header/work/forest backing and its commitment. It grants no
+        // compact owner and does not move any independent/assumed marker.
+        const auto capture=const_cast<ChainstateService*>(this)->UtreexoRpcSnapshotUnderLock();
+        return capture.ok()&&!capture->compact&&capture->block_hash==tip->hash&&capture->height==active_tip_->height;
+    }catch(...){return false;}
+#else
+    return false;
 #endif
 }
 

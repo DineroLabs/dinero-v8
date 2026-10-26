@@ -4,7 +4,7 @@
 namespace {
 class OrchardAdmissionFixture {
 public:
-    enum class HistoricalSpend { None, MatureCoin, SameBlockChild };
+    enum class HistoricalSpend { None, MatureCoin, SameBlockChild, NamedWallet };
     HistoricalSpend historical_spend=HistoricalSpend::None;
     ChainParams previous_params = Params();
     bool previous_stateless = GetConfig().utreexo_stateless;
@@ -14,6 +14,10 @@ public:
     std::shared_ptr<ChainstateService> service=std::make_shared<ChainstateService>();
     std::shared_ptr<MempoolService> ingress;
     std::vector<uint8_t> script;
+    std::string funding_address;
+    std::vector<uint8_t> funding_change_script;
+    std::filesystem::path funding_derivation_root;
+    bool preserve_evidence=false;
     orchard::Hash secret{};
     // Optional receiver DATA for actual-executable recovery fixtures. Ordinary
     // fixtures retain the original deterministic seed, value and empty memo.
@@ -184,6 +188,26 @@ public:
         Require(secp256k1_keypair_xonly_pub(ctx.get(),&key,nullptr,&pair));
         script={0x51,32};script.resize(34);
         Require(secp256k1_xonly_pubkey_serialize(ctx.get(),script.data()+2,&key));
+        std::vector<uint8_t> funding_script;
+        if(historical_spend==HistoricalSpend::NamedWallet){
+            auto temp=(std::filesystem::temp_directory_path()/"funded-phrase-derivation-XXXXXX").string();
+            Require(::mkdtemp(temp.data())!=nullptr);funding_derivation_root=std::filesystem::canonical(temp);
+            WalletManager phrase(funding_derivation_root);
+            phrase.createFromBip39("address-derivation-only",
+                "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about","");
+            funding_address=phrase.getNewAddress("","taproot");
+            const auto decoded=DecodeWitnessAddress(funding_address,"rdin");
+            Require(decoded.is_valid&&decoded.witness_version==1&&decoded.witness_program.size()==32);
+            funding_script=decoded.script_pubkey;
+            // The normal restore primes twenty change addresses before the
+            // queue issues its first change. Derive the same public watch data
+            // through the actual wallet API, never inject a path into the SDK.
+            for(unsigned i=0;i<=20;++i){
+                const auto change=DecodeWitnessAddress(phrase.getNewChangeAddress("","taproot"),"rdin");
+                Require(change.is_valid&&change.witness_version==1&&change.witness_program.size()==32);
+                funding_change_script=change.script_pubkey;
+            }
+        }
         std::vector<Block> chain;consensus::ConsensusUTXOSet coins;
         consensus::BlockValidator validator(&coins);SeedDirect(coins);
         auto parent=SelectedGenesis().GetHash();
@@ -210,7 +234,12 @@ public:
                     Require(coin.value.GetUna()>fee);
                     Transaction tx;tx.version=2;tx.witness_version=1;
                     TxInput input;input.prevout={point.txid,point.vout};input.sequence=0xfffffffe;
-                    tx.vin.push_back(input);tx.vout.emplace_back(AmountUna::Una(coin.value.GetUna()-fee),script);
+                    tx.vin.push_back(input);
+                    if(historical_spend==HistoricalSpend::NamedWallet){
+                        constexpr uint64_t funded=1000000;Require(coin.value.GetUna()>fee+funded);
+                        tx.vout.emplace_back(AmountUna::Una(funded),funding_script);
+                        tx.vout.emplace_back(AmountUna::Una(coin.value.GetUna()-fee-funded),script);
+                    }else tx.vout.emplace_back(AmountUna::Una(coin.value.GetUna()-fee),script);
                     CanonicalWalletUTXO resolved;resolved.txid=point.txid.AsUint256();resolved.vout=point.vout;
                     resolved.value=coin.value;resolved.spk=coin.scriptPubKey;resolved.height=coin.height;
                     resolved.is_coinbase=coin.isCoinbase;
@@ -220,7 +249,7 @@ public:
                     Require(TaprootKeys::SignSchnorr(signature,message,secret));
                     tx.vin.front().witness={std::vector<uint8_t>(signature.begin(),signature.end())};
                     point=OutPoint(tx.GetTxid(),0);
-                    coin=consensus::UTXOEntry(tx.vout.front().value,script,height,false);
+                    coin=consensus::UTXOEntry(tx.vout.front().value,tx.vout.front().scriptPubKey,height,false);
                     block.vtx.push_back(std::move(tx));
                 };
                 append_spend();
@@ -230,7 +259,9 @@ public:
             }
             // Commit the actual historical output filter before txid, Merkle,
             // forest and PoW construction. OP_RETURN is excluded from the filter.
-            const auto filter=consensus::GCSFilter::Build({script},parent);
+            std::vector<std::vector<uint8_t>> filter_scripts{script};
+            if(height==101&&!funding_script.empty())filter_scripts.push_back(funding_script);
+            const auto filter=consensus::GCSFilter::Build(filter_scripts,parent);
             TxOutput commitment;commitment.value=AmountUna::Zero();
             commitment.scriptPubKey=consensus::BuildFilterCommitmentScript(filter.GetHash());
             block.vtx.front().vout.push_back(std::move(commitment));
@@ -369,7 +400,8 @@ public:
         context.logger_interface=logger.get();ingress=std::make_shared<MempoolService>();Require(ingress->Init(context));
     }
     ~OrchardAdmissionFixture() {
-        ingress->Stop();ingress.reset();service->setRuntimeBlockNotifications(nullptr);service->setChainDB(nullptr);db.close();std::error_code ec;std::filesystem::remove_all(path,ec);
+        ingress->Stop();ingress.reset();service->setRuntimeBlockNotifications(nullptr);service->setChainDB(nullptr);db.close();
+        if(!preserve_evidence){std::error_code ec;std::filesystem::remove_all(path,ec);}
         MutableParams()=previous_params;GetConfig().utreexo_stateless=previous_stateless;
     }
     auto Read() {return ShieldedStateStartupTestAccess::Boundary(*service);}

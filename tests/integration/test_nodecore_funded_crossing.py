@@ -1,0 +1,262 @@
+"""Funded named-wallet SDK handoff; all traffic/data is isolated and retained.
+
+The starting parent has independently replayed FULL backing, not original
+assumed-mobile SQL. This is a native C ABI acceptance lane, not a device run.
+"""
+import hashlib,json,os,socket,sqlite3,struct,subprocess,tempfile,threading,time,traceback
+from pathlib import Path
+
+root=Path(tempfile.mkdtemp(prefix='sdk-funded-crossing-evidence-')).resolve()
+print('SDK funded crossing evidence:',root,flush=True)
+driver=Path(os.environ['NODECORE_DRIVER']).resolve()
+generator=Path(os.environ['ACTIVATION_FIXTURE_GENERATOR']).resolve()
+manifest=root/'fixture.json';native_replies=root/'native-replies.jsonl';native_replies.touch()
+native_read=native_replies.open();native_log=(root/'generator.log').open('xb')
+native=subprocess.Popen([str(generator),'--export-sdk-activation-fixture'],
+    env=dict(os.environ,DINERO_SDK_ACTIVATION_MANIFEST=str(manifest),
+        DINERO_SDK_FUNDED_CROSSING_FIXTURE='1',DINERO_SDK_FUNDED_REPLIES=str(native_replies)),
+    stdin=subprocess.PIPE,text=True,stdout=native_log,stderr=subprocess.STDOUT)
+deadline=time.monotonic()+120
+while not manifest.exists():
+    assert native.poll() is None,('native fixture failed',native.returncode,root)
+    assert time.monotonic()<deadline,('native fixture timed out',root)
+    time.sleep(.05)
+fixture=json.loads(manifest.read_text());datadir=Path(fixture['datadir'])
+proof=Path(fixture['proof']).read_bytes();assert 0<len(proof)<=1<<30
+magic=fixture['magic'];headers=[bytes.fromhex(h) for h in fixture['headers']]
+assert len(headers)==104 and all(len(h)==128 for h in headers)
+stop=threading.Event();future=threading.Event();bodies_ready=threading.Event();proof_ready=threading.Event();echo_ready=threading.Event()
+packets=[];failures=[];connections=[];pending={};handshaken={};sent_headers=set();sent_proof=set();asked_echo=set();echo=[]
+body_requests=[];proof_wire=b'';txid=''
+bodies={bytes.fromhex(fixture[name+'_hash'])[::-1]:Path(fixture[name]).read_bytes() for name in ('first','second')}
+listener=socket.socket();listener.bind(('127.0.0.1',0));listener.listen(4);listener.settimeout(.5)
+port=listener.getsockname()[1]
+def double_sha(data):return hashlib.sha256(hashlib.sha256(data).digest()).digest()
+def record(direction,command,payload):
+    path=root/f'packet-{len(packets):05d}-{direction}-{command}.bin';path.write_bytes(payload)
+    packets.append(dict(direction=direction,command=command,size=len(payload),file=path.name,sha256=hashlib.sha256(payload).hexdigest()))
+    (root/'packets.json').write_text(json.dumps(packets,indent=2)+'\n')
+def send(conn,command,payload=b''):
+    record('out',command,payload)
+    conn.sendall(struct.pack('<I12sI4s',magic,command.encode(),len(payload),double_sha(payload)[:4])+payload)
+def flush(conn):
+    if not handshaken.get(conn):return
+    if future.is_set() and (conn,len(headers)) not in sent_headers:
+        send(conn,'headers',bytes([len(headers)])+b''.join(h+b'\0' for h in headers));sent_headers.add((conn,len(headers)))
+    if proof_ready.is_set() and conn not in sent_proof:
+        send(conn,'utxotx',proof_wire);sent_proof.add(conn)
+    if echo_ready.is_set() and conn not in asked_echo:
+        send(conn,'getdata',b'\x01'+struct.pack('<I',0x50000001)+bytes.fromhex(txid)[::-1]);asked_echo.add(conn)
+    if bodies_ready.is_set():
+        for key in list(pending.get(conn,{})):
+            send(conn,'block',bodies[key]);del pending[conn][key]
+def exact(conn,size):
+    out=bytearray()
+    while len(out)<size:
+        flush(conn)
+        try:part=conn.recv(size-len(out))
+        except socket.timeout:
+            if stop.is_set():raise EOFError()
+            continue
+        if not part:raise EOFError()
+        out.extend(part)
+    return bytes(out)
+def inventory(payload):
+    assert payload;prefix=payload[0];width={253:2,254:4,255:8}.get(prefix,0)
+    count=int.from_bytes(payload[1:1+width],'little') if width else prefix;offset=1+width
+    assert count<=50000 and len(payload)==offset+36*count
+    return [struct.unpack_from('<I32s',payload,offset+36*i) for i in range(count)]
+def version():
+    services=1|(1<<29)|(1<<30)|(1<<31)
+    address=struct.pack('<Q',services)+b'\0'*10+b'\xff\xff\x7f\0\0\x01'+struct.pack('>H',port)
+    agent=b'/isolated-funded-sdk-peer/'
+    return struct.pack('<iQq',70016,services,int(time.time()))+address+address+struct.pack('<Q',0x842b193a)+bytes([len(agent)])+agent+struct.pack('<iB',103 if future.is_set() else 101,0)
+def serve():
+    try:
+        while not stop.is_set():
+            try:conn,_=listener.accept()
+            except socket.timeout:continue
+            except OSError:
+                if stop.is_set():return
+                raise
+            connections.append(conn);pending[conn]={};conn.settimeout(.5);transfer=None
+            with conn:
+                while not stop.is_set():
+                    try:raw=exact(conn,24)
+                    except (EOFError,ConnectionResetError):break
+                    received,command,size,checksum=struct.unpack('<I12sI4s',raw)
+                    assert received==magic and size<=2*1024*1024
+                    payload=exact(conn,size);assert double_sha(payload)[:4]==checksum
+                    command=command.rstrip(b'\0').decode('ascii');record('in',command,payload)
+                    if command=='version':send(conn,'version',version());send(conn,'verack')
+                    elif command=='verack':handshaken[conn]=True
+                    elif command=='ping':send(conn,'pong',payload)
+                    elif command=='getheaders':
+                        selected=headers if future.is_set() else headers[:102]
+                        send(conn,'headers',bytes([len(selected)])+b''.join(h+b'\0' for h in selected))
+                        if future.is_set():sent_headers.add((conn,len(headers)))
+                    elif command=='getocat':
+                        assert future.is_set() and len(payload)==151 and payload[:6]==b'DNOCT\x01'
+                        assert payload[87:119]==bytes.fromhex(fixture['parent'])[::-1]
+                        assert payload[119:151]==bytes.fromhex(fixture['first_hash'])[::-1] and payload[43:75]!=bytes(32)
+                        description=payload+struct.pack('<QI',len(proof),65536)+hashlib.sha256(proof).digest()
+                        transfer=hashlib.sha256(description).digest();send(conn,'ocatmeta',description)
+                    elif command=='getocatpg':
+                        assert transfer and len(payload)==42 and payload[:6]==b'DNOPG\x01' and payload[6:38]==transfer
+                        index=struct.unpack_from('<I',payload,38)[0];page=proof[index*65536:(index+1)*65536]
+                        assert page;send(conn,'ocatpage',transfer+struct.pack('<II',index,len(page))+page)
+                    elif command=='getdata':
+                        for kind,key in inventory(payload):
+                            body_requests.append(dict(kind=kind,hash=key[::-1].hex()))
+                            if key in bodies:
+                                assert kind==2;pending[conn][key]=True
+                            elif not future.is_set() and txid and key==bytes.fromhex(txid)[::-1] and kind==0x50000001:send(conn,'utxotx',proof_wire)
+                        flush(conn)
+                    elif command=='utxotx':echo.append(payload)
+    except BaseException:
+        if not stop.is_set():failures.append(traceback.format_exc())
+thread=threading.Thread(target=serve);thread.start()
+(datadir/'dinero.conf').write_text('listen=0\nrpc.port=0\nwallet.socket.enable=0\nutreexo.checkpoint_interval=1000\nassumeutxo_bg_stall_timeout=3600\n')
+replies=root/'replies.jsonl';replies.touch();reply=replies.open();output=(root/'nodecore.log').open('xb')
+process=subprocess.Popen([str(driver),str(replies)],stdin=subprocess.PIPE,text=True,stdout=output,stderr=subprocess.STDOUT)
+def response(reader,child,op,timeout=90):
+    deadline=time.monotonic()+timeout
+    while time.monotonic()<deadline:
+        line=reader.readline()
+        if line:
+            value=json.loads(line);assert not isinstance(value,dict) or 'driver_error' not in value,value
+            return value
+        assert child.poll() is None,(op,child.returncode,root)
+        time.sleep(.05)
+    raise AssertionError(('operation timed out',op,root))
+def call(op,**args):
+    process.stdin.write(json.dumps(dict(op=op,**args))+'\n');process.stdin.flush();return response(reply,process,op)
+def rpc(method,params):
+    value=call('rpc',method=method,params=params)
+    assert not isinstance(value,dict) or 'error' not in value,(method,value,root)
+    return value
+def native_call(op,**args):
+    native.stdin.write(json.dumps(dict(op=op,**args))+'\n');native.stdin.flush();return response(native_read,native,op)
+def wallet_rows():
+    paths=list(datadir.rglob('wallet_wire-named-owner.db'));assert len(paths)==1,paths
+    with sqlite3.connect('file:'+str(paths[0])+'?mode=ro',uri=True) as db:
+        return {name:db.execute('SELECT hex(wallet_id),account,revision,hex(sealed) FROM '+name+' ORDER BY wallet_id,account,revision').fetchall()
+                for name in ('orchard_wallet_snapshots','orchard_wallet_retained')}
+def bound(name):
+    return dict(wallet_binding=rpc('wallet.orchard.getwalletbinding',dict(wallet_name=name))['wallet_binding'])
+success=False;config=dict(network='regtest',sync_profile='ios_utreexo',addnode=f'127.0.0.1:{port}',max_peers=1,verbose_logging=True)
+try:
+    assert call('sdk_activation_events') is True
+    assert call('watch_script',script=fixture['funding_change_script'])==0
+    assert call('start',datadir=str(datadir),config=config)==0
+    assert rpc('getblockcount',[])==101
+    assert rpc('wallet.restore',dict(name='wire-named-owner',mnemonic='abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about',rescan=False))['success'] is True
+    deadline=time.monotonic()+20
+    while time.monotonic()<deadline:
+        state=call('sdk_activation_state');assert not failures,failures
+        if state.get('converged') and not state.get('ibd'):break
+        time.sleep(.25)
+    assert state.get('converged') and not state.get('ibd'),state
+    scanned=rpc('wallet.rescanblockchain',[0,101]);assert scanned['scanned_blocks']==102,scanned
+    addresses=rpc('wallet.listaddresses',[])
+    assert fixture['funding_address'] in json.dumps(addresses),addresses
+    # Funding was genuinely signed/mined in historical101 and found normally;
+    # neither this script nor the source helper writes a wallet coin/HD path.
+    binding=bound('wire-named-owner');enrolled=rpc('wallet.orchard.enrollpreactivation',binding)
+    assert enrolled['checkpoint_height']==101,enrolled
+    account=rpc('wallet.orchard.createaccount',dict(binding,account=0))
+    assert rpc('wallet.encrypt',['funded-crossing-password'])['success'] is True
+    assert rpc('wallet.unlock',['funded-crossing-password',0])['success'] is True
+    binding=bound('wire-named-owner');request_id='71'+'00'*31
+    request=dict(binding,account=0,request_id=request_id,expected_revision=account['revision'],fee_una=10000,
+        payments=[dict(address=account['address'],amount_una=20000,memo_hex=b'funded queued crossing'.hex())])
+    queued=rpc('wallet.orchard.queueshield',request);assert queued['proof_queued'] and queued['input_count']>0,queued
+    deadline=time.monotonic()+30
+    while time.monotonic()<deadline:
+        finished=call('rpc',method='wallet.orchard.finishshield',params=dict(binding,account=0,request_id=request_id))
+        if isinstance(finished,dict) and finished.get('admitted'):break
+        # Only normal owned proof work may still be pending. Never drop a Core
+        # refusal or manufacture a successful Ready/admission result.
+        assert isinstance(finished,dict) and finished.get('error_code')=='proof_not_ready' and finished.get('proof_state') in ('queued','running'),finished
+        time.sleep(.25)
+    assert finished.get('admitted'),finished
+    txid=finished['txid'];signed=rpc('wallet.getrawtransaction',[txid])['hex'];assert isinstance(signed,str) and signed
+    notification=call('sdk_activation_state')['observed_transaction']
+    assert notification['txid']==txid and notification['format']=='orchard',notification
+    assert any(o['script']==fixture['funding_change_script'] and o['amount']==970000 for o in notification['outputs']),notification
+    untrusted=native_call('proof',body=signed);assert untrusted['txid']==txid,untrusted
+    proof_wire=bytes.fromhex(untrusted['proof']);proof_ready.set()
+    deadline=time.monotonic()+15
+    while time.monotonic()<deadline:
+        state=call('sdk_activation_state')
+        if any(p['txid']==txid and p['cached_proof_bytes'] for p in state.get('pool',[])):break
+        time.sleep(.1)
+    assert any(p['txid']==txid and p['cached_proof_bytes'] for p in state.get('pool',[])),state
+    before=wallet_rows();assert before['orchard_wallet_snapshots'] and before['orchard_wallet_retained']
+    (root/'pending-before.json').write_text(json.dumps(dict(rows=before,queued=queued,finished=finished,signed=signed,state=state),indent=2)+'\n')
+    proof_ready.clear();future.set();deadline=time.monotonic()+70
+    completed=datadir/'blockchain/.orchard-handoff-selected-v1.done'
+    while time.monotonic()<deadline:
+        assert not failures,failures;state=call('sdk_activation_state')
+        (root/'sdk-state.json').write_text(json.dumps(state,indent=2)+'\n')
+        assert not state.get('shutdown_requested'),state
+        if completed.exists() and state.get('running'):break
+        time.sleep(.25)
+    assert completed.exists() and state.get('running'),state
+    assert state['pause_probes']==1 and state['pause_refusals']==0,state
+    assert rpc('wallet.getwalletinfo',[])['walletname']=='wire-named-owner'
+    assert rpc('wallet.open',['wire-named-owner'])['success'] is True
+    assert rpc('wallet.unlock',['funded-crossing-password',0])['success'] is True
+    assert wallet_rows()==before,'encrypted current/retained pending rows changed during parent handoff'
+    assert txid in rpc('mempool.getrawmempool',[]),'actual proof readmission did not preserve nonempty pool'
+    assert rpc('wallet.getrawtransaction',[txid])['hex']==signed
+    binding=bound('wire-named-owner');operations=rpc('wallet.orchard.listoperations',dict(binding,account=0))
+    assert any(o['operation_id']==request_id and o['txid']==txid and o['durable_state']=='signed' for o in operations['operations']),operations
+    journals=list(datadir.glob('.core-reopen-candidates-v1-*/candidates.sealed'));assert len(journals)==1,journals
+    journal=journals[0].read_bytes();assert hashlib.sha256(journal[:-32]).digest()==journal[-32:]
+    assert int.from_bytes(journal[-48:-40],'little')==1 and bytes.fromhex(signed) in journal and proof_wire in journal
+    echo_ready.set();deadline=time.monotonic()+10
+    while not echo and time.monotonic()<deadline:assert not failures,failures;time.sleep(.1)
+    assert proof_wire in echo,'reopened compact peer did not serve its actually readmitted proof/body'
+    mined=native_call('mine');assert txid in mined['transactions'],mined
+    bodies[bytes.fromhex(mined['hash'])[::-1]]=bytes.fromhex(mined['body'])
+    headers.append(bytes.fromhex(mined['header']));bodies_ready.set();deadline=time.monotonic()+60
+    while time.monotonic()<deadline:
+        assert not failures,failures
+        if rpc('getblockcount',[])==104:break
+        time.sleep(.25)
+    assert rpc('getblockcount',[])==104
+    deadline=time.monotonic()+20
+    while time.monotonic()<deadline:
+        operations=rpc('wallet.orchard.listoperations',dict(binding,account=0))
+        if any(o['operation_id']==request_id and o.get('chain_observation',{} ) and o['chain_observation']['outcome']=='confirmed' for o in operations['operations']):break
+        time.sleep(.25)
+    assert any(o['operation_id']==request_id and o.get('chain_observation') and o['chain_observation']['outcome']=='confirmed' for o in operations['operations']),operations
+    assert rpc('wallet.orchard.getbalance',dict(binding,account=0))['confirmed_una']==520000
+    assert rpc('wallet.restore',dict(name='late-funded-owner',mnemonic='abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about',rescan=False))['success'] is True
+    later=bound('late-funded-owner')
+    for _ in range(8):
+        recovered=rpc('wallet.orchard.recoveraccount0',later)
+        if recovered.get('complete'):break
+    assert recovered.get('complete') and recovered['generated'] is False,recovered
+    balance=rpc('wallet.orchard.getbalance',dict(later,account=0));notes=rpc('wallet.orchard.listreceived',dict(later,account=0))
+    assert balance['confirmed_una']==520000 and notes['total_count']==2,(balance,notes)
+    assert any(n['amount_una']==20000 and n['height']==104 and bytes.fromhex(n['memo_hex'])==b'funded queued crossing'.ljust(512,b'\0') for n in notes['received']),notes
+    (root/'receipt.json').write_text(json.dumps(dict(fixture=fixture,request=queued,transaction_id=txid,
+        named_wallet_without_phrase=True,pause_no_reply=state['pause_probes'],pending_rows_identical=True,
+        pool_revalidated_and_proof_served=True,operations=operations,mined=mined,recovered=recovered,notes=notes,
+        scope='Actual native C ABI automatic handoff from independently executed full parent, funded named recovered wallet and nonempty signed encrypted request/pool, real confirmation and later account0 recovery. NOT original assumed mobile SQL, physical app/device, minimum OS, SDK slices or release qualification.'),indent=2)+'\n')
+    assert call('stop')==0;success=True
+    print('PASS funded named-wallet nonempty queued SDK handoff and real confirmation/recovery',flush=True)
+finally:
+    stop.set();listener.close()
+    for conn in connections:
+        try:conn.shutdown(socket.SHUT_RDWR)
+        except OSError:pass
+    thread.join(timeout=5);process.stdin.close();native.stdin.close()
+    for child in (process,native):
+        try:child.wait(timeout=30)
+        except subprocess.TimeoutExpired:child.kill();child.wait(timeout=5)
+    output.close();reply.close();native_log.close();native_read.close()
+    (root/'peer-failures.json').write_text(json.dumps(failures,indent=2)+'\n')
+    if success:assert process.returncode==0 and native.returncode==0 and not thread.is_alive() and not failures

@@ -72,6 +72,20 @@ missing, corrupt or foreign owners defer instead of being repaired. The native
 wrong-coin regression reaches the real selected coin refusal before reservation;
 it is deliberately not a funded wallet or queued SDK crossing acceptance test.
 
+For the independently executed full activation parent only, the configured
+legacy mobile transport is distinguished from the actual full backing. A private
+current-source check requires the exact parent, identical actual durable and
+validated tips, no assumed/snapshot/compact owner, empty Orchard namespace and
+the existing selected header/work/full-forest commitment observation. Shield
+preparation still independently replays genesis and compares every selected
+coin/legacy boundary before any writer. No flag, marker or history is promoted.
+Legacy mobile delivery is restricted to a genuinely empty log in this route;
+descendant/visited logs require their normal full or enrolled compact owners.
+The new funded native SDK regression exposes the historical-only embedded
+mempool observer, which correctly refuses Orchard admission. Its separate
+typed-consumer fix is still required. No failed run is a crossing pass or
+physical-phone/original-assumed-history qualification.
+
 The public bound RPC takes no birthday, height, checkpoint, network or account
 argument. The selected service obtains the profile and checkpoint. It requires:
 
