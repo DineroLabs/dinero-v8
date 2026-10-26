@@ -138,7 +138,7 @@ def serve():
                     elif command=='getdata':
                         for kind,key in inventory(payload):
                             body_requests.append(dict(kind=kind,hash=key[::-1].hex()))
-                            if input_queue and key in funding_bodies:
+                            if assumed and key in funding_bodies:
                                 assert kind==2;funding_pending[conn][key]=True
                             elif key in bodies:
                                 assert kind==2;pending[conn][key]=True
