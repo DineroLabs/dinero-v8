@@ -1629,6 +1629,100 @@ TEST(OrchardActivationOrigin, MissingFirstBlockForeignTargetAndIncompleteFinishF
     EXPECT_ANY_THROW(Access::ReplayActivation(forged,headers,102,first->Header().GetHash()));
     EXPECT_EQ(source.f.service->GetActiveTip()->hash,first->Header().GetHash());
 }
+#ifndef _WIN32
+namespace history_cache_test {
+std::filesystem::path Root(const std::string& name){
+    const auto root=std::filesystem::temp_directory_path()/("orchard-history-cache-"+name+"-"+
+        std::to_string(::getpid())+"-"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    if(!std::filesystem::create_directory(root))throw std::runtime_error("cache fixture root already exists");
+    std::cout<<"Retained cache evidence: "<<root<<std::endl;return root; // Preserve refusal inputs.
+}
+std::filesystem::path Cell(const std::filesystem::path& root){
+    for(const auto& entry:std::filesystem::directory_iterator(root/p2p::OrchardHistoryCache::Directory))
+        if(entry.path().extension()==".raw")return entry.path();
+    throw std::runtime_error("missing test cell");
+}
+std::vector<uint8_t> Read(p2p::OrchardHistoryCache& cache,const uint256& id){
+    std::vector<uint8_t> bytes;cache.Read('b',id,200000,[&](uint64_t size,const auto& source){bytes.resize(size);source(bytes);});return bytes;
+}
+}
+TEST(OrchardHistoryCache, FreshGuardReadsExactPublicBytesAndNeverOverwritesOrAdoptsPartials){
+    using Cache=p2p::OrchardHistoryCache;const auto root=history_cache_test::Root("restart");
+    uint256 id;id.data[0]=71;std::vector<uint8_t> bytes(130001,53);std::string error;
+    {daemon::DatadirGuard guard;ASSERT_TRUE(guard.Acquire(root,error))<<error;Cache cache(guard);
+        EXPECT_FALSE(cache.Has('b',id));
+        cache.Put('b',id,bytes.size(),bytes.size(),[&](const auto& sink){sink(bytes);});
+        EXPECT_EQ(history_cache_test::Read(cache,id),bytes);
+        cache.Put('b',id,bytes.size(),bytes.size(),[&](const auto& sink){sink(bytes);});
+        auto other=bytes;other.back()^=1;
+        EXPECT_ANY_THROW(cache.Put('b',id,other.size(),other.size(),[&](const auto& sink){sink(other);}));
+        EXPECT_ANY_THROW(cache.Read('b',id,bytes.size()-1,[](auto,const auto&){}));
+        auto partial=id;partial.data[0]++;
+        EXPECT_ANY_THROW(cache.Put('b',partial,10,10,[](const auto& sink){sink(std::vector<uint8_t>{1});throw std::runtime_error("producer interrupted");}));
+        EXPECT_FALSE(cache.Has('b',partial));
+        bool retained=false;for(const auto& p:std::filesystem::directory_iterator(root/Cache::Directory))
+            if(p.path().filename().string().starts_with("partial-"))retained=true;
+        EXPECT_TRUE(retained);
+    }
+    {daemon::DatadirGuard guard;ASSERT_TRUE(guard.Acquire(root,error))<<error;Cache cache(guard);
+        EXPECT_EQ(history_cache_test::Read(cache,id),bytes);}
+}
+TEST(OrchardHistoryCache, DamageLinksModeAndDirectoryOrRootReplacementRefuse){
+    using Cache=p2p::OrchardHistoryCache;
+    for(const std::string fault:{"payload","truncate","mode","hardlink","symlink","directory","root","foreign-root"}){
+        SCOPED_TRACE(fault);const auto root=history_cache_test::Root(fault);std::string error;
+        daemon::DatadirGuard guard;ASSERT_TRUE(guard.Acquire(root,error))<<error;Cache cache(guard);
+        uint256 id;id.data[0]=72;const std::vector<uint8_t> bytes(150,19);
+        cache.Put('b',id,bytes.size(),bytes.size(),[&](const auto& sink){sink(bytes);});
+        const auto cell=history_cache_test::Cell(root);
+        if(fault=="payload"){
+            ASSERT_EQ(::chmod(cell.c_str(),0600),0);std::fstream file(cell,std::ios::in|std::ios::out|std::ios::binary);
+            file.seekp(100);file.put(char(20));file.close();ASSERT_EQ(::chmod(cell.c_str(),0400),0);
+        }else if(fault=="truncate"){ASSERT_EQ(::chmod(cell.c_str(),0600),0);std::filesystem::resize_file(cell,130);ASSERT_EQ(::chmod(cell.c_str(),0400),0);
+        }else if(fault=="mode"){ASSERT_EQ(::chmod(cell.c_str(),0600),0);
+        }else if(fault=="hardlink"){std::filesystem::create_hard_link(cell,root/"extra-link");
+        }else if(fault=="symlink"){std::filesystem::rename(cell,root/"preserved-cell");std::filesystem::create_symlink(root/"preserved-cell",cell);
+        }else if(fault=="directory"){
+            std::filesystem::rename(root/Cache::Directory,root/"preserved-cache");
+            std::filesystem::create_directory(root/Cache::Directory);ASSERT_EQ(::chmod((root/Cache::Directory).c_str(),0700),0);
+        }else if(fault=="root"){
+            std::filesystem::rename(root,root.string()+"-preserved");std::filesystem::create_directory(root);
+        }else{
+            const auto foreign=history_cache_test::Root("copied-root");daemon::DatadirGuard other;ASSERT_TRUE(other.Acquire(foreign,error))<<error;
+            std::filesystem::copy(root/Cache::Directory,foreign/Cache::Directory,std::filesystem::copy_options::recursive);
+            Cache copied(other);EXPECT_ANY_THROW(history_cache_test::Read(copied,id));continue;
+        }
+        EXPECT_ANY_THROW(history_cache_test::Read(cache,id));
+    }
+}
+TEST(OrchardHistoryCache, ValidDataChecksumCannotCertifyCorruptSelectedBody){
+    using namespace consensus;using Access=OrchardSnapshotStoreTestAccess;using Download=p2p::OrchardPhoneHistoryDownload;
+    CanonicalPoolFixture source(true);MutableParams().orchard_catalog_commitment_activation_height=102;
+    MutableParams().state_commitment_burial_depth=0;
+    const auto first=SolveCatalogTemplate(source.Build());ASSERT_TRUE(first);ASSERT_TRUE(source.Submit(first->WireBytes()).connected);
+    auto headers=std::make_shared<HeaderChainSelector>();for(const auto& b:source.f.blocks)ASSERT_TRUE(headers->AddHeader(b.header));
+    ASSERT_TRUE(headers->AddHeader(first->Header()));
+    auto proof=std::make_shared<const OrchardSnapshotSection>(Access::CaptureActivation(source.f.db,*headers));
+    const auto catalog=source.f.db.getOrchardCatalogState(first->Header().GetHash());ASSERT_TRUE(catalog.ok());
+    const auto unchanged=ChainDBTransactionReadTestPeer::HandoffRows(source.f.db);
+    const auto root=history_cache_test::Root("auth-body");daemon::DatadirGuard guard;std::string error;
+    ASSERT_TRUE(guard.Acquire(root,error))<<error;auto cache=std::make_shared<p2p::OrchardHistoryCache>(guard);
+    auto bytes=first->WireBytes();bytes.back()^=1;
+    // The ordinary cache writer emits a correct DATA checksum for these bad
+    // peer bytes. Only the real block verifier may certify the selected body.
+    cache->Put('b',first->Header().GetHash(),bytes.size(),OrchardBlockCandidate::MaxWireSize(),[&](const auto& sink){sink(bytes);});
+    EXPECT_EQ(history_cache_test::Read(*cache,first->Header().GetHash()),bytes);
+    const Download::Target target{102,102,first->Header().GetHash(),storage::catalog::Hash(*catalog),first->Header().GetHash()};
+    std::atomic<unsigned> sends=0;
+    Download host(headers,root,[&]{return std::optional(target);},[&]{return proof;},
+        [&](auto p,const auto& t){return Access::ReplayActivation(std::move(p),headers,t.height,t.hash);},
+        []{return std::vector<Download::Peer>{};},[&](const auto&,const auto&,const auto&){++sends;return false;},cache);
+    const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(5);
+    while(host.Observe().error.empty()&&std::chrono::steady_clock::now()<deadline)std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    EXPECT_FALSE(host.Observe().error.empty());EXPECT_FALSE(host.Ready());EXPECT_EQ(sends.load(),0u);host.Stop();
+    EXPECT_EQ(ChainDBTransactionReadTestPeer::HandoffRows(source.f.db),unchanged);
+}
+#endif
 TEST(OrchardPhoneHistory, SequentialBodiesExtendWithoutSkippingAndReadyDataIsNotState){
     using namespace consensus;using Access=OrchardSnapshotStoreTestAccess;using Download=p2p::OrchardPhoneHistoryDownload;
     CanonicalPoolFixture source(true);MutableParams().orchard_catalog_commitment_activation_height=102;

@@ -1,4 +1,4 @@
-"""Fresh SDK v6-floor authenticated download and later account-0 funds recovery."""
+"""Late SDK recovery and fresh-process offline reauthentication of retained DATA."""
 import hashlib,json,os,socket,sqlite3,struct,subprocess,tempfile,threading,time,traceback
 from pathlib import Path
 
@@ -86,6 +86,18 @@ thread=threading.Thread(target=serve);thread.start()
 (datadir/'dinero.conf').write_text('listen=0\nrpc.port=0\nwallet.socket.enable=0\nassumeutxo_bg_stall_timeout=3600\n')
 replies=root/'replies.jsonl';replies.touch();reply=replies.open();output=(root/'nodecore.log').open('xb')
 process=subprocess.Popen([str(driver),str(replies)],stdin=subprocess.PIPE,text=True,stdout=output,stderr=subprocess.STDOUT)
+original_pid=process.pid;cold_restarts=[]
+def finish_driver():
+    process.stdin.close();process.wait(timeout=30)
+    assert process.returncode==0,process.returncode
+    output.close();reply.close()
+def cache_inventory():
+    cache=datadir/'.orchard-phone-history-v1'
+    files=sorted(cache.glob('*.raw'));assert len(files)==3,files
+    result={p.name:dict(size=p.stat().st_size,sha256=hashlib.sha256(p.read_bytes()).hexdigest(),
+        mode=p.stat().st_mode&0o777,links=p.stat().st_nlink) for p in files}
+    assert all(v['mode']==0o400 and v['links']==1 for v in result.values()),result
+    return result
 def call(op,**args):
     process.stdin.write(json.dumps(dict(op=op,**args))+'\n');process.stdin.flush();deadline=time.monotonic()+90
     while time.monotonic()<deadline:
@@ -143,18 +155,60 @@ try:
     assert bytes.fromhex(note['memo_hex'])==b'authenticated phone history'.ljust(512,b'\0'),note
     assert call('rpc',method='getblockcount',params=[])==103
     canonical_after=call('sdk_activation_state')['canonical_outbox'];assert canonical_after==canonical_before
-    assert call('stop')==0;success=True
+    assert call('rpc',method='wallet.encrypt',params=['retained-history-test-password'])['success'] is True
+    assert call('stop')==0
+    cache_before=cache_inventory();finish_driver()
+    # No process-local corpus/key, peer or phrase may stand in for retention.
+    stop.set();listener.close()
+    for conn in connections:
+        try:conn.shutdown(socket.SHUT_RDWR)
+        except OSError:pass
+    thread.join(timeout=5);assert not thread.is_alive() and not failures,failures
+    packet_count=len(packets)
+    (datadir/'dinero.conf').write_text('p2p.offline=1\nlisten=0\nrpc.port=0\nwallet.socket.enable=0\nassumeutxo_bg_stall_timeout=3600\n')
+    for restart in range(2):
+        replies=root/f'cold-{restart}-replies.jsonl';replies.touch();reply=replies.open()
+        output=(root/f'cold-{restart}-nodecore.log').open('xb')
+        process=subprocess.Popen([str(driver),str(replies)],stdin=subprocess.PIPE,text=True,stdout=output,stderr=subprocess.STDOUT)
+        assert process.pid!=original_pid
+        assert call('start',datadir=str(datadir),config=dict(network='regtest',sync_profile='ios_utreexo',
+            max_peers=1,verbose_logging=True))==0
+        deadline=time.monotonic()+70
+        while time.monotonic()<deadline:
+            state=call('sdk_activation_state')
+            if state.get('phone_history',{}).get('ready'):break
+            time.sleep(.1)
+        else:raise AssertionError(('cold process did not reauthenticate retained history',state))
+        assert call('rpc',method='wallet.open',params=['late-phone-owner'])['success'] is True
+        assert call('rpc',method='wallet.unlock',params=['retained-history-test-password',0])['success'] is True
+        binding=call('rpc',method='wallet.orchard.getwalletbinding',params=dict(wallet_name='late-phone-owner'))
+        bound=dict(wallet_binding=binding['wallet_binding'])
+        recovered=call('rpc',method='wallet.orchard.recoveraccount0',params=bound)
+        reopened_balance=call('rpc',method='wallet.orchard.getbalance',params=dict(bound,account=0))
+        reopened_received=call('rpc',method='wallet.orchard.listreceived',params=dict(bound,account=0))
+        assert recovered.get('complete') and recovered['generated'] is False,recovered
+        assert reopened_balance['confirmed_una']==500000,reopened_balance
+        assert reopened_received['history_complete'] and reopened_received['received']==received['received'],reopened_received
+        assert call('sdk_activation_state')['canonical_outbox']==canonical_before
+        assert cache_inventory()==cache_before,'Cold reauthentication must not rewrite retained DATA'
+        cold_restarts.append(dict(pid=process.pid,state=state,recovered=recovered,
+            balance=reopened_balance,received=reopened_received))
+        assert call('stop')==0;finish_driver()
+    assert len(packets)==packet_count,'Offline retention must not require a peer'
+    success=True
     (root/'receipt.json').write_text(json.dumps(dict(fixture=fixture,packets=packets,requests=requests,
         progress=progress,wallet_before=before,wallet_after=after,balance=balance,received=received,
         canonical_before=canonical_before,canonical_after=canonical_after,
-        scope='Fresh authenticated v6 floor102, actual SDK canonical103, untrusted full102/103 download, genuine private prefix plus real canonical103 event and explicit recovered account0 funds/memo adoption. Not cold source retention, original assumed SQL, nonempty queued crossing or devices.'),indent=2)+'\n')
-    print('PASS fresh late-phone downloaded history recovers earlier account-0 funds and memo; canonical source unchanged',flush=True)
+        original_pid=original_pid,cold_restarts=cold_restarts,cache=cache_before,
+        scope='Fresh authenticated v6 floor102, actual SDK canonical103, untrusted full102/103 download, recovered account0 funds/memo adoption, then two fresh-process offline encrypted named-wallet reopens with genuine proof/body reauthentication. Not original assumed SQL, nonempty queued crossing or devices.'),indent=2)+'\n')
+    print('PASS late-phone funds/memo recovery and two fresh-process offline authenticated history reopens',flush=True)
 finally:
     stop.set();listener.close()
     for conn in connections:
         try:conn.shutdown(socket.SHUT_RDWR)
         except OSError:pass
-    thread.join(timeout=5);process.stdin.close()
+    thread.join(timeout=5)
+    if not process.stdin.closed:process.stdin.close()
     try:process.wait(timeout=30)
     except subprocess.TimeoutExpired:process.kill();process.wait(timeout=5)
     output.close();reply.close();(root/'peer-failures.json').write_text(json.dumps(failures,indent=2)+'\n')

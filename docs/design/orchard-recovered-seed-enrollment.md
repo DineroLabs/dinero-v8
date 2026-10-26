@@ -185,11 +185,33 @@ ancestry, real-proof and EOF checks still apply. Disk/allocation errors refuse;
 there is no truncated-prefix success. This is not a total RSS, latency or disk
 budget certificate and does not supply missing historical material.
 
-These private source scratch spools cannot reopen after process death. The
-separate encrypted wallet staging owner can resume, but the source is rebuilt
-and reverified. Source-capture latency, disk use and device feasibility remain
-unqualified. Authenticated historical download and real-device qualification are
-still required for phones; replay scalability alone grants no mobile authority.
+Private source scratch spools cannot reopen after process death. The separate
+encrypted wallet staging owner can resume, but its source is rebuilt and
+reverified. Embedded stateless nodes with a borrowed real DatadirGuard also
+retain immutable PUBLIC proof/full-block bytes in `.orchard-phone-history-v1`.
+These files are not wallet completion, balances, catalogs, runtime events or
+serialized verifier capabilities. A fresh process rechecks the held root/lock,
+owned no-follow file and directory identities, one-link/read-only modes, exact
+domain/root/selected-block framing and a full bounded streaming checksum. It
+then reauthenticates the actual activation proof and every selected body through
+the existing full verifier, and checks the fresh selected target/catalog again.
+A correct cache checksum alone cannot admit even one invalid body.
+
+Retention uses exclusive partials and synced no-replace publication, with no
+overwrite/repair of conflicting or corrupt records. Ambiguous/failed partials
+remain evidence and never become a selected source. Missing cells may be fetched
+normally only when networking is permitted; corrupt existing cells fail closed.
+Proofs retain the existing one-GiB cap, individual bodies their wire bound,
+streaming uses 64-KiB chunks and writes retain a 512-MiB disk reserve. There is
+no total-history truncation or silently certified prefix. The same locked root
+is borrowed until worker shutdown; it is not reacquired while services run.
+Retention is currently POSIX-only; other platforms retain the original
+genuinely verified volatile source, not a weakened persistence implementation.
+Offline startup runs only local DATA replay, with no peer bootstrap, listener
+or network threads. The active wallet catalog and encrypted pending rows are
+never cleared to trigger a download. Source-capture latency, cumulative disk,
+total RSS and device feasibility remain unqualified; native fresh-process
+retention does not grant real-device/app acceptance.
 
 ## Stateless phone: seamless transfer selected, integration unfinished
 

@@ -1,6 +1,7 @@
 #pragma once
 #include "p2p/orchard_catalog_client.h"
 #include "p2p/orchard_phone_history_target.h"
+#include "p2p/orchard_history_cache.h"
 #include "daemon/services/orchard_boundary_replay.h"
 #include <condition_variable>
 #include <deque>
@@ -65,9 +66,10 @@ public:
     using Send=std::function<bool(const Peer&,const std::string&,const Bytes&)>;
     struct Progress {bool requested=false,ready=false;uint32_t verified_height=0,target_height=0;uint256 target_hash;std::string error;};
     OrchardPhoneHistoryDownload(std::shared_ptr<const consensus::HeaderChainSelector> headers,
-        std::filesystem::path work,TargetSource target,ProofSource proof,Verifier verify,Peers peers,Send send)
+        std::filesystem::path work,TargetSource target,ProofSource proof,Verifier verify,Peers peers,Send send,
+        std::shared_ptr<OrchardHistoryCache> cache={})
         :headers_(std::move(headers)),work_(std::move(work)),target_(std::move(target)),proof_(std::move(proof)),
-         verify_(std::move(verify)),peers_(std::move(peers)),send_(std::move(send)),worker_([this]{Run();}){}
+         verify_(std::move(verify)),peers_(std::move(peers)),send_(std::move(send)),cache_(std::move(cache)),worker_([this]{Run();}){}
     ~OrchardPhoneHistoryDownload(){Stop();}
     bool Enqueue(const Peer& peer,std::span<const uint8_t> bytes){
         if(bytes.size()<128||bytes.size()>OrchardBlockCandidate::MaxWireSize())return false;
@@ -81,7 +83,7 @@ public:
     std::shared_ptr<const Data> Ready()const {
         std::shared_ptr<const Data> ready;{std::lock_guard lock(mutex_);if(stop_)return {};ready=ready_;}
         if(!ready)return {};
-        try{const auto current=target_();return current&&*current==ready->target?ready:nullptr;}catch(...){return {};}
+        try{if(cache_)cache_->Check();const auto current=target_();return current&&*current==ready->target?ready:nullptr;}catch(...){return {};}
     }
     void Stop(){
         std::lock_guard joining(join_);
@@ -91,6 +93,7 @@ public:
 private:
     const std::shared_ptr<const consensus::HeaderChainSelector> headers_;const std::filesystem::path work_;
     const TargetSource target_;const ProofSource proof_;const Verifier verify_;const Peers peers_;const Send send_;
+    const std::shared_ptr<OrchardHistoryCache> cache_;
     mutable std::mutex mutex_;std::mutex join_;std::condition_variable cv_;
     std::optional<Peer> flight_;uint256 wanted_;std::optional<Bytes> packet_;
     bool body_received_=false;
@@ -124,6 +127,9 @@ private:
                     proof=proof_();if(!proof)continue;
                     selected=current;replay=verify_(proof,*selected);if(!replay){discard();continue;}
                     if(target_()!=selected){discard();continue;}
+                    if(cache_){const auto size=consensus::OrchardSnapshotSectionEncodedSize(*proof);
+                        cache_->Put('p',proof->state.block_hash,size,consensus::ORCHARD_SNAPSHOT_MAX_SECTION_BYTES,
+                            [&](const auto& sink){Data::Require(consensus::StreamOrchardSnapshotSection(*proof,sink)==size);});}
                     corpus=std::make_shared<Data::Corpus>(work_);next=selected->activation;
                 }
                 {std::lock_guard lock(mutex_);progress_={true,false,next-1,selected->height,selected->hash,{}};}
@@ -131,15 +137,26 @@ private:
                     if(!replay->AtSelectedTarget()||storage::catalog::Hash(replay->Catalog().Encode())!=selected->catalog)
                         throw std::runtime_error("phone history final catalog mismatch");
                     if(target_()!=selected){discard();continue;}
+                    if(cache_)cache_->Check();
                     std::lock_guard lock(mutex_);if(stop_)break;
                     ready_=std::shared_ptr<const Data>(new Data(*selected,proof,corpus));progress_.ready=true;continue;
                 }
+                bool cached_packet=false;
+                if(!packet&&!awaiting&&cache_){
+                    uint256 hash;uint32_t found=0;
+                    if(!headers_->GetAncestorHashByHash(selected->hash,next,hash,found)||found!=selected->height)
+                        throw std::runtime_error("phone cache selected header unavailable");
+                    if(cache_->Has('b',hash)){
+                        cache_->Read('b',hash,OrchardBlockCandidate::MaxWireSize(),[&](uint64_t size,const auto& read){
+                            packet=Bytes(size);read(*packet);});cached_packet=true;
+                    }
+                }
                 if(packet){
-                    if(!awaiting||!peer)continue;
+                    if(!cached_packet&&(!awaiting||!peer))continue;
                     // Charge received bytes even if decoding/proof checks
                     // refuse them. Invalid peers cannot evade the wire budget
                     // by rotating through the bounded cooldown inventory.
-                    window_bytes+=packet->size();
+                    if(!cached_packet)window_bytes+=packet->size();
                     const auto body=OrchardBlockCandidate::DecodeExact(*packet);
                     uint256 expected;uint32_t found=0;
                     if(!headers_->GetAncestorHashByHash(selected->hash,next,expected,found)||found!=selected->height||body.Header().GetHash()!=expected)
@@ -150,6 +167,8 @@ private:
                     const auto checked=replay->Append(body,uint64_t(now));
                     if(!checked||checked->Context().height!=next||!checked->MatchesWire(body))throw std::runtime_error("phone history validation unavailable");
                     if(stop_)break;if(target_()!=selected){discard();continue;}
+                    if(cache_&&!cached_packet)cache_->Put('b',expected,packet->size(),OrchardBlockCandidate::MaxWireSize(),
+                        [&](const auto& sink){sink(*packet);});
                     corpus->Append(next,*packet);++next;awaiting=false;
                     std::lock_guard lock(mutex_);flight_.reset();
                 }

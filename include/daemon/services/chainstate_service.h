@@ -1030,6 +1030,9 @@ public:
     // On-demand below-snapshot history DATA only. Never publishes chainstate,
     // an outbox event, lifecycle flag, wallet owner or applied scan cursor.
     std::optional<p2p::OrchardPhoneHistoryTarget> PhoneHistoryTarget(bool require_request=true);
+    // Scheduling PUBLIC cached bytes only, not wallet/state authority. A warm
+    // cache still passes the same proof/body/selected-target constructors.
+    void RequestRetainedPhoneHistoryData(){orchard_phone_history_requested_.store(true);}
     std::unique_ptr<OrchardBoundaryReplay> PreparePhoneHistoryVerifier(
         std::shared_ptr<const consensus::OrchardSnapshotSection>,const p2p::OrchardPhoneHistoryTarget&);
     // Requires caller-held WalletUse and this service's WalletIndexUse, with

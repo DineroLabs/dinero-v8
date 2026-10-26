@@ -1962,6 +1962,86 @@ bool P2PService::Init(DaemonContext& ctx) {
     }
 }
 
+void P2PService::StartOrchardHistoryWorkers() {
+        // Only a full archival profile serves activation catalogs. The local
+        // load/export switch does not gate this consensus-state transport.
+#ifdef DINERO_HAS_ORCHARD_P2P
+        if(chainstate_&&GetConfig().utreexo_stateless&&
+           consensus::OrchardProfileConfigurationValid(Params())&&Params().orchard_activation_height!=UINT32_MAX&&
+           Params().orchard_catalog_commitment_activation_height==Params().orchard_activation_height){
+            auto* context=DaemonContext::instance();const auto headers=context?context->header_chain:nullptr;
+            if(headers){
+#ifndef _WIN32
+                const auto cache=phone_history_root_?std::make_shared<p2p::OrchardHistoryCache>(*phone_history_root_):nullptr;
+#else
+                // Retention requires the POSIX no-follow/no-replace contract.
+                // Keep the existing genuinely verified volatile source on
+                // other platforms; never replace these checks with weaker IO.
+                const std::shared_ptr<p2p::OrchardHistoryCache> cache;
+#endif
+                const auto cached_proof=[cache,headers]()->std::optional<uint256>{
+                    consensus::HeaderIndexEntry first;
+                    if(cache&&headers->GetHeaderAtHeightCopy(Params().orchard_activation_height,first)&&cache->Has('p',first.hash))return first.hash;
+                    return {};
+                };
+                auto download=std::make_shared<p2p::OrchardCatalogDownload>(
+                // ConfigService owns the canonical --datadir binding. The
+                // legacy global datadir can be empty in embedded startup.
+                headers,std::filesystem::path(config_->DataDir()),
+                [this,source=chainstate_,cached_proof]{
+                    return p2p_mgr_&&p2p_mgr_->is_network_active()&&
+                        (source->NeedsOrchardActivationCatalog()||(source->PhoneHistoryTarget().has_value()&&!cached_proof()));
+                },[this]{
+                    std::vector<p2p::OrchardCatalogDownload::Peer> peers;
+                    if(p2p_mgr_)for(const auto& p:p2p_mgr_->connected_peer_sessions())
+                        peers.push_back({p.address,p.nonce,p.services});
+                    return peers;
+                },[this](const auto& peer,const auto& command,const auto& bytes){
+                    ::P2PMessage message{};message.command=command;message.payload=bytes;
+                    return p2p_mgr_&&p2p_mgr_->send_to_peer(peer.address,message,peer.session);
+                });
+                {std::lock_guard lock(orchard_catalog_download_mutex_);orchard_catalog_download_=std::move(download);}
+                auto history=std::make_shared<p2p::OrchardPhoneHistoryDownload>(headers,
+                    std::filesystem::path(config_->DataDir()),[this,source=chainstate_,cached_proof]{
+                        const bool retained=bool(cached_proof());
+                        if(retained)source->RequestRetainedPhoneHistoryData(); // PUBLIC DATA scheduling only.
+                        return retained||(p2p_mgr_&&p2p_mgr_->is_network_active())?source->PhoneHistoryTarget():std::nullopt;
+                    },[this,cache,cached_proof]{
+                        if(const auto first=cached_proof()){
+                            std::shared_ptr<const consensus::OrchardSnapshotSection> proof;
+                            cache->Read('p',*first,consensus::ORCHARD_SNAPSHOT_MAX_SECTION_BYTES,[&](uint64_t size,const auto& read){
+                                proof=std::make_shared<const consensus::OrchardSnapshotSection>(
+                                    consensus::ReadOrchardSnapshotSection(size,read,std::filesystem::path(config_->DataDir())));});
+                            return proof; // Untrusted until PreparePhoneHistoryVerifier reauthenticates.
+                        }
+                        return ReadyActivationCatalog();
+                    },
+                    [source=chainstate_](auto proof,const auto& target){return source->PreparePhoneHistoryVerifier(std::move(proof),target);},
+                    [this]{std::vector<p2p::OrchardCatalogClient::Peer> peers;
+                        if(p2p_mgr_)for(const auto& p:p2p_mgr_->connected_peer_sessions())peers.push_back({p.address,p.nonce,p.services});
+                        return peers;},[this](const auto& peer,const auto& command,const auto& bytes){
+                        ::P2PMessage message{};message.command=command;message.payload=bytes;
+                        return p2p_mgr_&&p2p_mgr_->is_network_active()&&p2p_mgr_->send_to_peer(peer.address,message,peer.session);
+                    },cache);
+                {std::lock_guard lock(orchard_catalog_download_mutex_);orchard_phone_history_=std::move(history);}
+            }
+        }
+        if(!offline_mode_&&chainstate_&&!GetConfig().utreexo_stateless&&(!prune_||!prune_->isEnabled())&&
+           consensus::OrchardProfileConfigurationValid(Params())&&Params().orchard_activation_height!=UINT32_MAX&&
+           Params().orchard_catalog_commitment_activation_height==Params().orchard_activation_height){
+            auto* context=DaemonContext::instance();const auto headers=context?context->header_chain:nullptr;
+            if(headers)orchard_catalog_server_=std::make_shared<p2p::OrchardCatalogServer>(
+                [headers](const auto& request){request.CheckSelected(*headers);},
+                [source=chainstate_](const auto& cancelled)->std::shared_ptr<const consensus::OrchardSnapshotSection>{
+                    const auto proof=source->captureOrchardActivationProof(cancelled);return proof.ok()?*proof:nullptr;
+                },[this](const auto& peer,const auto& command,const auto& bytes){
+                    ::P2PMessage message{};message.command=command;message.payload=bytes;
+                    return p2p_mgr_&&p2p_mgr_->send_to_peer(peer.address,message,peer.session);
+                });
+        }
+#endif
+}
+
 bool P2PService::Start() {
     if (!p2p_mgr_) {
         logger_interface_->error("[P2PService] Cannot start - P2P manager not initialized");
@@ -1974,6 +2054,9 @@ bool P2PService::Start() {
         if (offline_mode_) {
             reconnect_targets_.clear();
             p2p_mgr_->set_network_active(false);
+            // Retained PUBLIC history can be reauthenticated without opening
+            // sockets, bootstrapping peers or enabling network sends.
+            StartOrchardHistoryWorkers();
             logger_interface_->info(
                 "[P2PService] Offline mode enabled (p2p.offline=1) - "
                 "skipping peer bootstrap, listeners, and networking threads");
@@ -2360,59 +2443,7 @@ bool P2PService::Start() {
             logger_interface_->info("[P2PService] User agent set to " + user_agent);
         }
 
-        // Only a full archival profile serves activation catalogs. The local
-        // load/export switch does not gate this consensus-state transport.
-#ifdef DINERO_HAS_ORCHARD_P2P
-        if(chainstate_&&GetConfig().utreexo_stateless&&
-           consensus::OrchardProfileConfigurationValid(Params())&&Params().orchard_activation_height!=UINT32_MAX&&
-           Params().orchard_catalog_commitment_activation_height==Params().orchard_activation_height){
-            auto* context=DaemonContext::instance();const auto headers=context?context->header_chain:nullptr;
-            if(headers){
-                auto download=std::make_shared<p2p::OrchardCatalogDownload>(
-                // ConfigService owns the canonical --datadir binding. The
-                // legacy global datadir can be empty in embedded startup.
-                headers,std::filesystem::path(config_->DataDir()),
-                [this,source=chainstate_]{
-                    return p2p_mgr_&&p2p_mgr_->is_network_active()&&
-                        (source->NeedsOrchardActivationCatalog()||source->PhoneHistoryTarget().has_value());
-                },[this]{
-                    std::vector<p2p::OrchardCatalogDownload::Peer> peers;
-                    if(p2p_mgr_)for(const auto& p:p2p_mgr_->connected_peer_sessions())
-                        peers.push_back({p.address,p.nonce,p.services});
-                    return peers;
-                },[this](const auto& peer,const auto& command,const auto& bytes){
-                    ::P2PMessage message{};message.command=command;message.payload=bytes;
-                    return p2p_mgr_&&p2p_mgr_->send_to_peer(peer.address,message,peer.session);
-                });
-                {std::lock_guard lock(orchard_catalog_download_mutex_);orchard_catalog_download_=std::move(download);}
-                auto history=std::make_shared<p2p::OrchardPhoneHistoryDownload>(headers,
-                    std::filesystem::path(config_->DataDir()),[this,source=chainstate_]{
-                        return p2p_mgr_&&p2p_mgr_->is_network_active()?source->PhoneHistoryTarget():std::nullopt;
-                    },[this]{return ReadyActivationCatalog();},
-                    [source=chainstate_](auto proof,const auto& target){return source->PreparePhoneHistoryVerifier(std::move(proof),target);},
-                    [this]{std::vector<p2p::OrchardCatalogClient::Peer> peers;
-                        if(p2p_mgr_)for(const auto& p:p2p_mgr_->connected_peer_sessions())peers.push_back({p.address,p.nonce,p.services});
-                        return peers;},[this](const auto& peer,const auto& command,const auto& bytes){
-                        ::P2PMessage message{};message.command=command;message.payload=bytes;
-                        return p2p_mgr_&&p2p_mgr_->send_to_peer(peer.address,message,peer.session);
-                    });
-                {std::lock_guard lock(orchard_catalog_download_mutex_);orchard_phone_history_=std::move(history);}
-            }
-        }
-        if(chainstate_&&!GetConfig().utreexo_stateless&&(!prune_||!prune_->isEnabled())&&
-           consensus::OrchardProfileConfigurationValid(Params())&&Params().orchard_activation_height!=UINT32_MAX&&
-           Params().orchard_catalog_commitment_activation_height==Params().orchard_activation_height){
-            auto* context=DaemonContext::instance();const auto headers=context?context->header_chain:nullptr;
-            if(headers)orchard_catalog_server_=std::make_shared<p2p::OrchardCatalogServer>(
-                [headers](const auto& request){request.CheckSelected(*headers);},
-                [source=chainstate_](const auto& cancelled)->std::shared_ptr<const consensus::OrchardSnapshotSection>{
-                    const auto proof=source->captureOrchardActivationProof(cancelled);return proof.ok()?*proof:nullptr;
-                },[this](const auto& peer,const auto& command,const auto& bytes){
-                    ::P2PMessage message{};message.command=command;message.payload=bytes;
-                    return p2p_mgr_&&p2p_mgr_->send_to_peer(peer.address,message,peer.session);
-                });
-        }
-#endif
+        StartOrchardHistoryWorkers();
         // Start P2P networking (spawns threads)
         if (!p2p_mgr_->start()) {
             StopCatalogWorkers();

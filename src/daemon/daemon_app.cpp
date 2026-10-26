@@ -2771,6 +2771,7 @@ bool DaemonApp::Init(int argc, char** argv) {
     std::cout << "[DaemonApp] Phase 3: Network layer" << std::endl;
 
     auto p2p = std::make_shared<P2PService>();
+    p2p->SetPhoneHistoryRoot(locked_datadir_guard_);
     ctx_.p2p = p2p;
     services_.push_back(p2p);
 
