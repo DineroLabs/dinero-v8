@@ -409,8 +409,9 @@ std::vector<CBlockIndex*> OrchardCompactStartup::PublishIndexUnderLock() {
             pointers.emplace(proved.hash,live);values.emplace(live,*live);
         } else live=found->second;
         auto& v=values.at(live);
-        if(selected_consistency_)
-            Require((v.status&~proved.status)==0,"Selected-origin startup cannot promote assumed prehistory flags");
+        if(selected_consistency_&&(v.status&~proved.status)!=0)
+            throw std::runtime_error("Selected-origin startup cannot promote assumed prehistory flags: height="+
+                std::to_string(height)+" live="+std::to_string(v.status)+" authenticated="+std::to_string(proved.status));
         Require(v.hash==proved.hash && v.prev_hash==proved.prev_hash &&
             v.height==proved.height && v.version==proved.version && v.merkle_root==proved.merkle_root &&
             v.timestamp==proved.timestamp && v.bits==proved.bits && v.nonce==proved.nonce &&
