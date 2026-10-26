@@ -339,6 +339,7 @@ P2PService::NetworkStatus P2PService::GetNetworkStatus() const {
         status.relay_quota_month_bytes = p2p_mgr_->relay_quota_month_bytes();
         status.relay_quota_month_limit = p2p_mgr_->relay_quota_month_limit();
         status.relay_paused_reason = p2p_mgr_->relay_paused_reason();
+        status.relay_registered = p2p_mgr_->confirmed_relay_endpoints();
     }
     status.dynamic_p2p_enabled = IsDynamicP2PActive();
     status.dynamic_p2p_mode = DynamicP2PMode();

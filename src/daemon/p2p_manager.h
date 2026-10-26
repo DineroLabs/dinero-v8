@@ -210,6 +210,10 @@ struct PeerInfo {
           last_seen_unix(other.last_seen_unix),
           avg_latency_ms(other.avg_latency_ms),
           last_getaddr_sent(other.last_getaddr_sent),
+          their_pubkey(other.their_pubkey),
+          their_node_id(other.their_node_id),
+          identity_proven(other.identity_proven),
+          is_our_relay(other.is_our_relay),
           via_relay(std::move(other.via_relay)),
           relay_quic_session(std::move(other.relay_quic_session)),
           relay_quic_options(std::move(other.relay_quic_options)),
@@ -571,6 +575,8 @@ public:
     // flips. Verification also lapses by time, so the reachability tick
     // re-checks too.
     void set_reachability_changed_handler(std::function<void(bool)> handler);
+    // Relays that confirmed our registration (relayrok), as host:port.
+    std::vector<std::string> confirmed_relay_endpoints() const;
     // This round's STUN reflexive addresses (ip, port) on the P2P UDP port,
     // fed in as QUIC candidates. A different set of IPs from the last round
     // means our public address moved: every candidate goes back to unverified.
@@ -1298,6 +1304,9 @@ private:
     // Relays that never acked or stopped answering pings; guarded by
     // relay_endpoints_mutex_.
     std::unordered_map<std::string, std::chrono::steady_clock::time_point> relay_skip_until_;
+    // Relay candidates we dialed and are waiting to connect; guarded by
+    // relay_endpoints_mutex_.
+    std::unordered_map<std::string, std::chrono::steady_clock::time_point> relay_dialed_at_;
     void MaybeAutoRegisterWithRelays();
 
     // NAT traversal Phase C3 slice 3: relay-side circuit table.
@@ -1469,7 +1478,6 @@ private:
     static constexpr std::chrono::minutes kSignedHintPeriod{10};
     static constexpr uint32_t kSignedHintLifetimeSeconds = 30 * 60;
     std::chrono::steady_clock::time_point last_signed_hint_round_{};
-    std::atomic<bool> signed_hints_due_{false};  // a relay just confirmed us
     std::mutex hint_forwarder_mutex_;
     dinero::p2p::HintForwarder hint_forwarder_;
     std::atomic<uint64_t> hints_v2_rejected_{0};

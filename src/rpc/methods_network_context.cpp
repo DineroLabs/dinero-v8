@@ -262,6 +262,9 @@ din::Json rpc_context_getnetworkinfo(const ExecutionContext& ctx, const din::Jso
     relay["quota_month_bytes"] = static_cast<Json::UInt64>(status.relay_quota_month_bytes);
     relay["quota_month_limit"] = static_cast<Json::UInt64>(status.relay_quota_month_limit);
     relay["paused_reason"] = status.relay_paused_reason;
+    din::Json registered(Json::arrayValue);
+    for (const auto& r : status.relay_registered) registered.append(r);
+    relay["registered"] = registered;
     // Auto-mode toggle: true when the relay role is currently engaged for
     // any reason (today: mining is running; future: spare-bandwidth
     // heuristic, dashboard opt-in, etc.). NOT a mining-only signal — see

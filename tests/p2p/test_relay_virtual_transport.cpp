@@ -31,6 +31,7 @@
 #include <ctime>
 #include <cstdint>
 #include <filesystem>
+#include <fstream>
 #include <iomanip>
 #include <map>
 #include <memory>
@@ -1645,4 +1646,102 @@ TEST(RelayServicePolicy, GetaddrReplyDoesNotStampOurServicesOnOthers) {
         }
     }
     EXPECT_TRUE(found);
+}
+
+// getpeerinfo reads a snapshot; it must carry the proven node id so an
+// operator (and the end-to-end scenarios) can see who a relayed peer is.
+TEST(RelayOrchestrator, ConnectedPeersSnapshotKeepsProvenIdentity) {
+    P2PManager manager(0);
+    auto sock = LoopbackSocketPair::Create();
+    const std::string key = "127.0.0.1:" + std::to_string(sock.port());
+    manager.test_install_connected_direct_peer(key, sock.client_fd(), true, true, MakeNodeId(0x77));
+    const auto peers = manager.get_connected_peers();
+    ASSERT_EQ(peers.size(), 1u);
+    EXPECT_TRUE(peers[0].identity_proven);
+    EXPECT_EQ(peers[0].their_node_id, MakeNodeId(0x77));
+}
+
+// Found end to end (TWO_RELAYS on DineroTX): a gossiped relay that went
+// down stays in addrman as NODE_RELAY; dialing it fails every pass and it
+// must not keep holding one of the two slots.
+TEST(RelayRegistration, UnreachableCandidateIsReplaced) {
+    RelayWorld w;
+    w.addrman.addAddress(MakeRelayAddress("8.8.10.1", 20999));  // gossiped, but down
+    for (int i = 0; i < 5; ++i) w.manager->note_relay_outcome("8.8.10.1:20999", true);
+    w.Connect("9.9.20.2:20999", true);
+    w.Connect("13.13.30.3:20999", true);
+    w.manager->test_maybe_auto_register_with_relays();
+    ASSERT_TRUE(ContainsEndpoint(w.Relays(), "8.8.10.1:20999"));
+    ASSERT_TRUE(ContainsEndpoint(w.dialed, "8.8.10.1:20999"));
+
+    w.Tick(std::chrono::seconds(31));  // still not connected 30 s after the dial
+    const auto relays = w.Relays();
+    EXPECT_FALSE(ContainsEndpoint(relays, "8.8.10.1:20999")) << "a relay we cannot reach keeps its slot";
+    EXPECT_EQ(relays.size(), 2u);
+}
+
+// Found end to end (default scenario's restart step): after a restart a
+// NAT'd origin knows the target only from relay_hints.dat and is connected
+// to no relay. A persisted SIGNED hint must still let it dial the relay; a
+// persisted hint whose signature no longer verifies must not.
+TEST(RelayHintPersistence, SignedHintSurvivesRestartAndStillDialsRelay) {
+    auto target = NewIdentity();
+    const auto path = std::filesystem::temp_directory_path() /
+                      ("dinero-v2-hints-" + std::to_string(
+                          std::chrono::steady_clock::now().time_since_epoch().count()));
+    {
+        P2PManager before(0);
+        before.handle_relay_hint_v2("10.5.0.1:20999", SignedHintMessage(*target, 1));
+        before.save_relay_hints(path.string());
+    }
+    auto dials_after_load = [&](const std::filesystem::path& file) {
+        P2PManager after(0);
+        InstallNodeIdentity(after);
+        std::vector<std::string> dialed;
+        after.test_set_connection_manager_dial([&](const std::string& h, uint16_t p) {
+            dialed.push_back(h + ":" + std::to_string(p));
+            return false;
+        });
+        after.load_relay_hints(file.string());
+        after.test_orchestrate_relay_dials();
+        return dialed;
+    };
+    const auto dialed = dials_after_load(path);
+    ASSERT_EQ(dialed.size(), 1u) << "restored signed hint did not lead to the relay";
+    EXPECT_EQ(dialed[0], "8.8.10.1:20999");
+
+    // Tamper with the stored signed payload: it may load as a plain hint but
+    // never makes the node dial.
+    std::ifstream in(path);
+    std::stringstream all;
+    all << in.rdbuf();
+    std::string text = all.str();
+    const auto last_space = text.rfind(' ');
+    ASSERT_NE(last_space, std::string::npos);
+    text[last_space + 1 + 2 * (20 + 33 + 2 + 3)] ^= 0x01;  // a hex digit of the relay address
+    const auto tampered = path.string() + ".tampered";
+    std::ofstream(tampered) << text;
+    EXPECT_TRUE(dials_after_load(tampered).empty()) << "a tampered stored hint made the node dial";
+    std::filesystem::remove(path);
+    std::filesystem::remove(tampered);
+}
+
+// Found end to end: the signed hint waited for the next keepalive tick (up
+// to 30 s), so peers that left in between never learned how to reach us.
+TEST(RelayRegistration, ConfirmedRelayGetsSignedHintImmediately) {
+    RelayWorld w;
+    w.Connect("8.8.10.1:20999", true);
+    w.Connect("9.9.20.2:20999", false);
+    w.manager->test_set_peer_services("8.8.10.1:20999", dinero::ServiceFlags::NODE_DIALBACK);
+    w.manager->test_set_peer_services("9.9.20.2:20999", dinero::ServiceFlags::NODE_DIALBACK);
+    w.manager->test_maybe_auto_register_with_relays();
+    ASSERT_NE(w.Next("8.8.10.1:20999", "relayreg"), nullptr);
+    w.Ack("8.8.10.1:20999");
+    auto hint = w.Next("9.9.20.2:20999", "relayhn2");
+    ASSERT_NE(hint, nullptr) << "no signed hint right after the relay confirmed us";
+    const auto now = static_cast<uint32_t>(std::chrono::system_clock::to_time_t(w.clock->SystemNow()));
+    const auto h = dinero::p2p::VerifyHint(hint->payload, now);
+    ASSERT_TRUE(h.has_value());
+    EXPECT_EQ(h->relay_addr, (std::vector<uint8_t>{8, 8, 10, 1}));
+    EXPECT_EQ(h->relay_port, 20999);
 }

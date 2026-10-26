@@ -174,6 +174,7 @@ public:
         uint64_t relay_quota_month_bytes{0};
         uint64_t relay_quota_month_limit{0};
         std::string relay_paused_reason;
+        std::vector<std::string> relay_registered;  // relays that confirmed us
         bool relay_active{false};
         std::string relay_mode{"auto"};
         size_t relay_hints_received_self{0};
