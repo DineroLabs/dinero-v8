@@ -314,6 +314,13 @@ try:
             if rpc('getblockcount',[])==105:break
             time.sleep(.25)
         assert rpc('getblockcount',[])==105
+        # Certified post-activation accounts have their own existing public
+        # continuation RPC. Advancing Orchard does NOT fabricate transparent
+        # wallet/index baseline receipts or claim mixed-wallet readiness.
+        for _ in range(8):
+            payer_continuation=rpc('wallet.orchard.recoveraccount0',payer)
+            if payer_continuation.get('complete'):break
+        assert payer_continuation.get('complete') and payer_continuation['already_recovered'] and payer_continuation['generated'] is False,payer_continuation
         deadline=time.monotonic()+20
         while time.monotonic()<deadline:
             payer_balance=rpc('wallet.orchard.getbalance',dict(payer,account=0))
@@ -321,7 +328,12 @@ try:
             time.sleep(.25)
         assert payer_balance['confirmed_una']==410000,payer_balance
         assert rpc('wallet.open',['private-recipient'])['success'] is True
-        recipient_binding=bound('private-recipient');deadline=time.monotonic()+20
+        recipient_binding=bound('private-recipient')
+        for _ in range(8):
+            recipient_continuation=rpc('wallet.orchard.recoveraccount0',recipient_binding)
+            if recipient_continuation.get('complete'):break
+        assert recipient_continuation.get('complete') and recipient_continuation['already_recovered'] and recipient_continuation['generated'] is False,recipient_continuation
+        deadline=time.monotonic()+20
         while time.monotonic()<deadline:
             recipient_balance=rpc('wallet.orchard.getbalance',dict(recipient_binding,account=0))
             if recipient_balance['confirmed_una']==10000:break
@@ -330,7 +342,8 @@ try:
         assert recipient_balance['confirmed_una']==10000 and received['total_count']==1,(recipient_balance,received)
         assert any(n['amount_una']==10000 and n['height']==105 and bytes.fromhex(n['memo_hex'])==b'compact private payment'.ljust(512,b'\0') for n in received['received']),received
         private_send=dict(queued=private_queued,finished=private_finished,refinished=private_refinished,mined=private_mined,
-            payer_balance=payer_balance,recipient_balance=recipient_balance,received=received,recipient_recovery=recipient_recovery)
+            payer_balance=payer_balance,recipient_balance=recipient_balance,received=received,recipient_recovery=recipient_recovery,
+            payer_continuation=payer_continuation,recipient_continuation=recipient_continuation)
         print('PASS actual compact SDK queuespend/finishspend, native105 confirmation and distinct recovered recipient memo',flush=True)
     (root/'receipt.json').write_text(json.dumps(dict(fixture=fixture,request=queued,transaction_id=txid,
         named_wallet_without_phrase=True,pause_no_reply=state['pause_probes'],pending_rows_identical=True,

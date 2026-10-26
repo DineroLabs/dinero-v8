@@ -135,7 +135,12 @@ as a separate failed-source result, not relabelled as private-payment success.
 public `queuespend` and `finishspend`, not a manual proof-backed spend, using the
 funded encrypted named payer and a different-seed named recovered recipient.
 It checks idempotent queue/Ready retries, real native block105 confirmation and
-recipient funds/memo. Exact pre-fix and fixed results remain separate. This
+recipient funds/memo using the existing explicit `recoveraccount0` continuation
+for already-certified recovered owners. It never resets an active catalog or
+manufactures transparent wallet/index receipts: the balance's separate captured-
+source/caught-up fields remain authoritative, and mixed-wallet automatic
+readiness is not established by these Orchard-only calls. Exact pre-fix and
+fixed results remain separate. This
 does not qualify original assumed-mobile SQL, new compact transparent funding,
 unshielding/app/device acceptance or release readiness.
 
