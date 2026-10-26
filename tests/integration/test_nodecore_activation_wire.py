@@ -104,25 +104,20 @@ def call(op,**args):
     raise AssertionError(('SDK call timed out',op))
 success=False
 try:
+    assert call('sdk_activation_events') is True
     assert call('start',datadir=str(datadir),config=dict(network='regtest',sync_profile='ios_utreexo',
         addnode=f'127.0.0.1:{port}',max_peers=1,verbose_logging=True))==0
     assert call('rpc',method='getblockcount',params=[])==101,'source-ready parent not loaded'
     restored=call('rpc',method='wallet.restore',params=dict(name='wire-named-owner',
         mnemonic='abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about',rescan=False))
     assert restored.get('success') is True,restored
-    ready.set();deadline=time.monotonic()+70;paused_observations=0
+    ready.set();deadline=time.monotonic()+70
     completed=datadir/'blockchain/.orchard-handoff-selected-v1.done'
     while time.monotonic()<deadline:
         assert not failures,failures
         state=call('sdk_activation_state')
         (root/'sdk-state.json').write_text(json.dumps(state,indent=2)+'\n')
         assert not state.get('shutdown_requested'),'SDK worker failed closed; inspect retained nodecore.log'
-        if not state.get('running'):
-            # A deliberately incomplete request must NEVER reach semantic queue
-            # validation while restarting. The actual C ABI returns no reply.
-            for method in ['wallet.orchard.queueshield','wallet.orchard.queuesend']:
-                assert call('rpc',method=method,params={}) is None,method
-            paused_observations+=1
         if completed.exists():
             status=call('status')
             # The public API intentionally has no queryable App during the
@@ -130,7 +125,8 @@ try:
             if isinstance(status,dict) and status.get('running'):break
         time.sleep(.5)
     else:raise AssertionError('actual SDK automatic activation handoff did not complete')
-    assert paused_observations,'test did not observe actual orderly RPC pause'
+    state=call('sdk_activation_state')
+    assert state['pause_probes']==1 and state['pause_refusals']==0,state
     wallet=call('rpc',method='wallet.getwalletinfo',params=[])
     assert wallet['walletname']=='wire-named-owner',wallet
     assert call('rpc',method='wallet.open',params=['wire-named-owner'])['success'] is True
@@ -139,7 +135,7 @@ try:
     assert call('stop')==0
     success=True
     (root/'receipt.json').write_text(json.dumps(dict(fixture=fixture,packets=packets,
-        source_ready_parent_handoff=True,named_wallet_without_phrase=True,paused_queue_no_reply=paused_observations,
+        source_ready_parent_handoff=True,named_wallet_without_phrase=True,paused_queue_no_reply=state['pause_probes'],
         scope='Actual loopback P2P catalog/SDK worker at independently replayed parent; no queued payment, original assumed mobile history, descendant body download or device acceptance.'),indent=2)+'\n')
     print('PASS actual SDK loopback catalog and automatic parent handoff; named wallet retained',flush=True)
 finally:

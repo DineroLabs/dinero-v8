@@ -26,8 +26,27 @@ struct P2PServiceStopTestAccess {
 }
 
 // Read-only native-test diagnostics. No production API or state mutation.
+namespace {
+std::atomic<unsigned> activation_pause_probes{0},activation_pause_refusals{0};
+void ObserveActivationPause(int32_t event,const char* text,void*){
+    if(event!=NODECORE_EVENT_SYNC_STARTED||!text||
+        !std::strstr(text,"authenticated_activation_restarting"))return;
+    // The actual worker has HELD its gate, and cannot continue to publication
+    // until this callback returns. No sleep, parked lifecycle thread or private
+    // gate manipulation is needed to make this real C ABI observation stable.
+    try{
+        for(const auto* method:{"wallet.orchard.queueshield","wallet.orchard.queuesend"})
+            if(char* reply=nodecore_rpc_call(method,"{}")){
+                ++activation_pause_refusals;nodecore_free_string(reply);
+            }
+    }catch(...){++activation_pause_refusals;}
+    ++activation_pause_probes;
+}
+}
+void InstallSdkActivationTestEvents(){nodecore_set_event_callback(ObserveActivationPause,nullptr);}
 Json::Value SdkActivationTestState(){
     auto& s=state();std::lock_guard lock(s.mtx);Json::Value row;
+    row["pause_probes"]=activation_pause_probes.load();row["pause_refusals"]=activation_pause_refusals.load();
     row["running"]=s.running.load();row["shutdown_requested"]=s.shutdown_requested.load();
     if(!s.running||!s.app)return row;
     const auto& context=s.app->GetContext();

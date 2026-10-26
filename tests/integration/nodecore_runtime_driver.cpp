@@ -32,6 +32,7 @@
 #include <vector>
 #ifdef DINERO_TEST_SDK_ACTIVATION_SUBJECT
 Json::Value SdkActivationTestState();
+void InstallSdkActivationTestEvents();
 #endif
 
 struct HttpRpcRequestTestAccess {
@@ -442,6 +443,7 @@ int main(int argc, char** argv) {
             const auto request = Parse(line);
             const auto operation = request["op"].asString();
 #ifdef DINERO_TEST_SDK_ACTIVATION_SUBJECT
+            if(operation=="sdk_activation_events"){InstallSdkActivationTestEvents();result=true;}else
             if(operation=="sdk_activation_state")result=SdkActivationTestState();else
 #endif
             if (operation == "reopen_fences") {
