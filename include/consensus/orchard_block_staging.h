@@ -56,6 +56,11 @@ void CheckPreparedLegacyRetirementUnderLock(const ChainDB&,
 // The original prepared-retirement guard still requires that marker.
 void CheckLegacyRetirementBeforeImageUnderLock(const ChainDB&,
     const storage::LegacyRetirementRecord&);
+// Frozen bytes ONLY; no durable-tip, historical execution or owner authority.
+// The closed-store importer must separately authenticate its imported parent,
+// complete coin/checkpoint cohort and selected proof before using this audit.
+void CheckLegacyRetirementContentsUnderLock(const ChainDB&,
+    const storage::LegacyRetirementRecord&);
 // Full frozen-content check at a selected Orchard tip or its activation
 // parent. Contents only: grants no historical execution/startup authority.
 void CheckOrchardFrozenLegacyUnderLock(const ChainDB&,const storage::LegacyRetirementRecord&,

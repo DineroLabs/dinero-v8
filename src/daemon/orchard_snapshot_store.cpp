@@ -23,6 +23,8 @@
 #include "consensus/shielded/commitment_tree.h"
 #include "consensus/shielded/anchor_history.h"
 #include "crypto/secure_random.h"
+#include "crypto/sha256.h"
+#include "consensus/utxo_set_digest.h"
 #include "util/hex.h"
 #include "common/serialization.h"
 #include <rocksdb/iterator.h>
@@ -358,6 +360,105 @@ void HandoffMaintenanceClear(const std::filesystem::path& root,const std::filesy
     }
 }
 #endif
+}
+
+struct OrchardSnapshotStore::ActivationSource {
+    TipInfo durable,validated;
+    bool imported=false;
+    // Exact selected-CANDIDATE writes only, not mutable-prefix permissions.
+    std::map<std::pair<size_t,std::string>,std::string> writes;
+};
+std::unique_ptr<const OrchardSnapshotStore::ActivationSource> OrchardSnapshotStore::CheckActivationSource(
+    const ChainDB& source,const consensus::HeaderChainSelector& headers,
+    const consensus::OrchardSnapshotSection& proof,const std::function<bool()>& cancelled){
+    using namespace consensus;
+    const auto check=[&]{Require(!cancelled||!cancelled());};check();VerifyCatalogTransferProof(proof,headers);
+    const auto& parent=proof.parent_catalog;auto result=std::make_unique<ActivationSource>();
+    result->durable=Need(source.getTip());result->validated=Need(source.getValidatedTip());
+    const auto& tip=result->durable;const auto& validated=result->validated;
+    Require(source.hasSeparatedShieldedState()&&!storage::ReadOrchardSnapshotBase(source)&&
+        !storage::ReadOrchardCompactStorageBinding(source)&&tip.height>=0&&validated.height>=0&&
+        validated.height<=tip.height&&tip.height<=int(parent.height));
+    HeaderIndexEntry selected,anchor;
+    const auto header=Need(source.getHeader(parent.block));
+    Require(headers.GetHeaderAtHeightCopy(parent.height,selected)&&selected.hash==parent.block&&
+        selected.chainwork==parent.work&&selected.header.SerializeForHash()==header.SerializeForHash()&&
+        Need(source.getBlockHeight(parent.block))==int(parent.height)&&Need(source.getBlockWork(parent.block))==parent.work&&
+        headers.GetHeaderAtHeightCopy(uint32_t(validated.height),anchor)&&anchor.hash==validated.hash);
+    const auto marker=Need(source.getForestTipMarker());
+    if(tip.height==int(parent.height)){
+        CheckLegacyRetirementBeforeImageUnderLock(source,proof.retirement.record);
+        Require(tip.hash==parent.block&&tip.work==parent.work&&
+            Need(source.getBlockHashByHeight(int(parent.height)))==parent.block&&
+            marker.height==tip.height&&marker.block_hash==tip.hash&&marker.forest_root==header.utreexo_root);
+        return result;
+    }
+    // Bounded first imported route: EXACT imported activation parent, no
+    // post-base forward execution or partially promoted history. Older bases
+    // still require a separately authenticated replay seam, never a guessed tip.
+    result->imported=true;
+    Require(tip.height==0&&validated.height==0&&tip.hash==validated.hash&&
+        tip.hash==uint256::FromHexUnsafe(Params().genesis_hash));
+    const auto old_header=Need(source.getHeader(tip.hash));
+    Require(marker.height==tip.height&&marker.block_hash==tip.hash&&marker.forest_root==old_header.utreexo_root);
+    const auto frozen=Need(source.getPreBaseCoinSetBase());
+    Require(frozen.first==parent.block&&frozen.second==parent.height&&
+        source.getBlockHashByHeight(int(parent.height)).status()==Status::NotFound&&
+        source.getEmptyOrchardCommitmentSets().ok());
+    CheckLegacyRetirementContentsUnderLock(source,proof.retirement.record);
+    const auto checkpoint=Need(source.getUtreexoCheckpoint(int(parent.height)));
+    const auto checksum=Need(source.getUtreexoChecksum(int(parent.height)));unsigned char digest[32];
+    crypto::CSHA256().Write(checkpoint.data(),checkpoint.size()).Finalize(digest);
+    Require(checksum.size()==32&&std::equal(checksum.begin(),checksum.end(),digest));
+    const auto forest=UtreexoForest::deserialize(checkpoint);
+    const auto forest_root=forest.getCommitment();
+    Require(UtreexoStump::fromForest(forest).serialize()==parent.stump&&
+        forest_root.size()==32&&std::equal(forest_root.begin(),forest_root.end(),header.utreexo_root.begin()));
+    OrchardSnapshotCoins all,spendable;const auto genesis=CompiledGenesis().GetTxid();
+    Need(source.forEachPreBaseCoin([&](const uint256& id,uint32_t output,const Coin& stored){
+        check();Require(stored.height>=0&&uint32_t(stored.height)<=parent.height&&stored.amount<=orchard::kMaxMoneyUna);
+        UTXOEntry coin;coin.value=AmountUna::Una(stored.amount);Require(util::unhex(stored.script_pubkey,coin.scriptPubKey));
+        coin.height=uint32_t(stored.height);coin.isCoinbase=stored.coinbase;
+        coin.is_confidential=stored.is_confidential;coin.commitment=stored.commitment;
+        Require(UtxoRecordIsSnapshotSafe(coin)&&coin.scriptPubKey.size()<=10000);
+        const OutPoint point(TxId(id),output);Require(all.emplace(point,coin).second);
+        // Legacy import retains provably unspendable OP_RETURN records. They
+        // stay byte-identical in the frozen original/candidate CF but grant no
+        // live coin authority. Genesis records use the compiled exact check.
+        if(point.txid==genesis||coin.scriptPubKey.empty()||coin.scriptPubKey.front()!=0x6a)
+            Require(spendable.emplace(point,std::move(coin)).second);
+        return true;
+    }));
+    VerifyOrchardSnapshotParentCoins(proof,checkpoint,spendable);check();
+    // The canonical old engine is still GENESIS, not a partially applied
+    // imported coin set. Reject every extra current coin, even if parseable.
+    for(const auto& [point,coin]:ReadCoins(source)){
+        const auto found=all.find(point);Require(point.txid==genesis&&found!=all.end()&&
+            UtxoRecordIsSnapshotSafe(coin)&&SerializeUtxoRecord(point,coin)==SerializeUtxoRecord(point,found->second));
+    }
+    std::string outbox;Require(source.getRaw("runtime_orchard_outbox:v1:head",outbox)==Status::NotFound);
+    rocksdb::ReadOptions reads;reads.verify_checksums=true;reads.fill_cache=false;
+    std::unique_ptr<rocksdb::Iterator> records(source.db_->NewIterator(reads));records->Seek("runtime_orchard_outbox:v1:");
+    Require(records->status().ok()&&(!records->Valid()||!records->key().starts_with("runtime_orchard_outbox:v1:")));
+    VectorWriter tip_bytes;tip_bytes.writeString(parent.block.GetHex());tip_bytes.write(parent.height);
+    tip_bytes.write(parent.work);tip_bytes.write(uint32_t(header.timestamp));
+    result->writes[{size_t(source.idx_meta_),ChainDB::KEY_TIP}]=tip_bytes.release_string();
+    std::string forest_bytes;storage::catalog::Number(forest_bytes,parent.height,4);
+    forest_bytes.append(reinterpret_cast<const char*>(parent.block.data),32);
+    forest_bytes.append(reinterpret_cast<const char*>(header.utreexo_root.data),32);
+    result->writes[{size_t(source.idx_meta_),ChainDB::KEY_FOREST_TIP}]=std::move(forest_bytes);
+    result->writes[{size_t(source.idx_height_),source.makeHeightKey(int(parent.height))}]=parent.block.GetHex();
+    const auto metadata=source.getHeaderMetadata(parent.block);
+    if(metadata.status()==Status::NotFound){
+        // Header-only topology, not CHAIN/SCRIPTS/body/undo validity. Keep the
+        // existing v2 canonical encoding; cold decoding rechecks every field.
+        VectorWriter row;row.write(ChainDB::PersistedHeaderMetadata::SCHEMA_VERSION);row.writeString(header.prev_block_hash.GetHex());
+        row.write(int32_t(parent.height));row.write(parent.work);row.write(uint32_t(BLOCK_VALID_HEADER));
+        for(unsigned i=0;i<6;++i)row.write(uint32_t(0));
+        result->writes[{size_t(source.idx_headers_),source.makeHeaderMetadataKey(parent.block)}]=row.release_string();
+    }else Require(metadata.ok()&&metadata->height==int(parent.height)&&metadata->parent_hash==header.prev_block_hash&&
+        metadata->chainwork==parent.work&&!(metadata->status_flags&(BLOCK_FAILED_VALID|BLOCK_FAILED_CHILD)));
+    check();return result;
 }
 
 struct PreparedOrchardActivationHandoff::Data {
@@ -698,11 +799,10 @@ storage::catalog::State OrchardSnapshotStore::AuditActivationEvents(AnnotatedRec
     Require(origin&&origin->proof==HashOrchardSnapshotSection(*proof)&&
         origin->parent_catalog==storage::catalog::Hash(proof->parent_catalog.Encode())&&
         origin->source==HandoffStoreDigest(original,cancelled));
-    const auto base=Need(original.getTip()),anchor=Need(original.getValidatedTip()),tip=Need(db.getTip());
-    Require(base.height==int(proof->parent_catalog.height)&&base.hash==proof->parent_catalog.block&&base.work==proof->parent_catalog.work&&
-        anchor.height==int(origin->validated_height)&&anchor.hash==origin->validated&&
+    const auto source=CheckActivationSource(original,*headers,*proof,cancelled);
+    const auto anchor=source->validated,tip=Need(db.getTip());
+    Require(anchor.height==int(origin->validated_height)&&anchor.hash==origin->validated&&
         Need(db.getValidatedTip()).hash==anchor.hash&&Need(db.getValidatedTip()).height==anchor.height);
-    CheckLegacyRetirementBeforeImageUnderLock(original,proof->retirement.record);
     const auto profile=Authenticate(*proof,*headers,Params().state_commitment_burial_depth);
     const auto old=ReadRuntimeOutboxUnderLock(original,profile,{},1).head;
     auto page=ReadRuntimeOutboxUnderLock(db,profile,old,32,16*1024*1024);const auto head=page.head;
@@ -903,11 +1003,9 @@ OrchardSnapshotStore::ActivationParentCopy OrchardSnapshotStore::CopyActivationP
     using namespace consensus;Require(on_created&&before_choice);
     const auto check_cancel=[&]{Require(!cancelled||!cancelled());};check_cancel();
     VerifyCatalogTransferProof(proof,headers);
-    const auto& parent=proof.parent_catalog;const auto validated=Need(source.getValidatedTip());
-    const auto tip=Need(source.getTip());
-    Require(source.hasSeparatedShieldedState()&&validated.height>=0&&validated.height<=tip.height&&
-        tip.height==int(parent.height)&&tip.hash==parent.block&&tip.work==parent.work&&
-        HandoffStoreDigest(source,cancelled)==before);
+    const auto& parent=proof.parent_catalog;const auto checked=CheckActivationSource(source,headers,proof,cancelled);
+    const auto validated=checked->validated;
+    Require(HandoffStoreDigest(source,cancelled)==before);
     // This helper cannot clear or overwrite any caller-supplied live engine.
     // Its ONLY destination is created exclusively here; the caller pins its
     // actual inode before the first DB open or row write.
@@ -936,6 +1034,13 @@ OrchardSnapshotStore::ActivationParentCopy OrchardSnapshotStore::CopyActivationP
             if(++rows==1024||batch.GetDataSize()>=4*1024*1024)flush();
         }Require(it->status().ok());
     }flush();Require(HandoffStoreDigest(candidate,cancelled)==before);
+    // Only an independently rechecked imported-state binding may select a
+    // NEW candidate parent. Original tip, validated anchor and every source
+    // row remain unchanged. The exact same builder drives cold full-CF audit.
+    for(const auto& [key,value]:checked->writes){
+        Require(key.first<candidate.cf_.size());
+        Require(batch.Put(candidate.cf_[key.first].get(),key.second,value).ok());
+    }flush();
     // Header-first peers can persist their ahead-of-body ancestry only in
     // HeaderStore. Retain the exact minimal genesis-to-burial closure here too,
     // so a cold interrupted swap can revalidate it without an old RAM selector.
@@ -1016,17 +1121,8 @@ std::unique_ptr<PreparedOrchardActivationHandoff> OrchardSnapshotStore::PrepareA
     for(const char* key:{storage::OrchardActivationOriginKey,storage::OrchardActivationSelectionKey,storage::OrchardSnapshotFreshKey}){
         std::string value;Require(source.getRaw(key,value)==Status::NotFound);
     }
-    CheckLegacyRetirementBeforeImageUnderLock(source,proof.retirement.record);
-    const auto tip=Need(source.getTip()),validated=Need(source.getValidatedTip());
-    const auto marker=Need(source.getForestTipMarker());const auto stored_header=Need(source.getHeader(parent.block));
-    Require(tip.height==int32_t(parent.height)&&tip.hash==parent.block&&tip.work==parent.work&&
-        Need(source.getBlockHashByHeight(int(parent.height)))==parent.block&&
-        Need(source.getBlockHeight(parent.block))==int(parent.height)&&Need(source.getBlockWork(parent.block))==parent.work&&
-        marker.height==tip.height&&marker.block_hash==tip.hash&&marker.forest_root==stored_header.utreexo_root);
-    const auto selected=d->headers->GetHeaderValue(parent.block);HeaderIndexEntry anchor;
-    Require(selected&&selected->height==parent.height&&selected->header.SerializeForHash()==stored_header.SerializeForHash()&&
-        selected->chainwork==parent.work&&validated.height>=0&&validated.height<=tip.height&&
-        d->headers->GetHeaderAtHeightCopy(uint32_t(validated.height),anchor)&&anchor.hash==validated.hash);
+    const auto checked_source=CheckActivationSource(source,*d->headers,proof,cancelled);
+    const auto stored_header=Need(source.getHeader(parent.block));
     const auto stump=UtreexoStump::deserialize(parent.stump);const auto root=stump.getCommitment();
     Require(root.size()==32&&std::equal(root.begin(),root.end(),stored_header.utreexo_root.begin()));
     Require(Need(source.previewOrchardCommitmentSets(std::nullopt,proof.state,proof.nullifiers))==ComputeOrchardSnapshotSets(proof));
@@ -1082,7 +1178,7 @@ void OrchardSnapshotStore::CheckActivationHandoff(const daemon::DatadirGuard& gu
     VerifyCatalogTransferProof(*d.proof,*d.headers);
     const auto cold_headers=ReadActivationHeaders(*d.candidate,d.origin.first,d.cancelled);
     VerifyCatalogTransferProof(*d.proof,*cold_headers);
-    CheckLegacyRetirementBeforeImageUnderLock(*d.source,d.proof->retirement.record);
+    const auto source_binding=CheckActivationSource(*d.source,*cold_headers,*d.proof,d.cancelled);
     CheckLegacyRetirementBeforeImageUnderLock(*d.candidate,d.proof->retirement.record);
     const auto tip=Need(d.candidate->getTip()),validated=Need(d.candidate->getValidatedTip());
     Require(tip.height==int32_t(d.origin.parent_height)&&tip.hash==d.origin.parent&&
@@ -1098,12 +1194,19 @@ void OrchardSnapshotStore::CheckActivationHandoff(const daemon::DatadirGuard& gu
     const auto retained=ReadActivationProof(prepared.data_->candidate_mutex,*d.candidate,*d.headers,d.origin.first,d.cancelled);
     Require(retained&&HashOrchardSnapshotSection(*retained)==d.origin.proof);
     rocksdb::ReadOptions reads;reads.verify_checksums=true;reads.fill_cache=false;
+    // Every permitted replacement/addition must be the exact deterministic
+    // row derived from the immutable source plus authenticated parent proof.
+    for(const auto& [key,value]:source_binding->writes){
+        std::string actual;Require(key.first<d.candidate->cf_.size()&&
+            d.candidate->db_->Get(reads,d.candidate->cf_[key.first].get(),key.second,&actual).ok()&&actual==value);
+    }
     // Compare every original non-coin row byte-for-byte. Only explicitly
     // checked new proof/catalog/origin rows may appear; prefix alone is not
     // permission to hide arbitrary extra data or a deleted before-image.
     const auto proof_size=OrchardSnapshotSectionEncodedSize(*d.proof);
     const auto allowed_extra=[&](size_t family,const rocksdb::Slice& key,const rocksdb::Slice& value){
         const auto k=key.ToString(),v=value.ToString();
+        if(const auto row=source_binding->writes.find({family,k});row!=source_binding->writes.end())return row->second==v;
         if(family==0){
             if(k==ActivationHeadersKey(d.origin.first)){
                 const auto descriptor=ActivationHeadersDescriptor::Decode(v);
@@ -1150,7 +1253,9 @@ void OrchardSnapshotStore::CheckActivationHandoff(const daemon::DatadirGuard& gu
             if(copy->Valid()&&(!original->Valid()||copy->key().compare(original->key())<0)){
                 Require(allowed_extra(family,copy->key(),copy->value()));copy->Next();continue;
             }
-            Require(original->Valid()&&copy->Valid()&&original->key()==copy->key()&&original->value()==copy->value());
+            Require(original->Valid()&&copy->Valid()&&original->key()==copy->key());
+            const auto changed=source_binding->writes.find({family,original->key().ToString()});
+            Require(changed==source_binding->writes.end()?original->value()==copy->value():copy->value()==changed->second);
             original->Next();copy->Next();
         }
         Require(original->status().ok()&&copy->status().ok());

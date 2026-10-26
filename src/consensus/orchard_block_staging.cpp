@@ -410,7 +410,7 @@ storage::LegacyRetirementRecord DeriveSelectedLegacyRetirementUnderLock(
         throw OrchardStateLookupError(Status::Corruption);
     return result;
 }
-void CheckLegacyRetirementBeforeImageUnderLock(const ChainDB& db,
+void CheckLegacyRetirementContentsUnderLock(const ChainDB& db,
     const storage::LegacyRetirementRecord& record) {
     const auto& p=Params();
     uint256 genesis;
@@ -426,6 +426,10 @@ void CheckLegacyRetirementBeforeImageUnderLock(const ChainDB& db,
     auto stored=record;
     FillFrozenLegacy(db,stored,record.activation_height-1,record.boundary_parent);
     if(stored!=record) throw OrchardStateLookupError(Status::Corruption);
+}
+void CheckLegacyRetirementBeforeImageUnderLock(const ChainDB& db,
+    const storage::LegacyRetirementRecord& record) {
+    CheckLegacyRetirementContentsUnderLock(db,record);
     const auto tip=RequiredLocal(db.getTip());
     if(tip.height<0 || uint64_t(tip.height)+1!=record.activation_height ||
         tip.hash!=record.boundary_parent)

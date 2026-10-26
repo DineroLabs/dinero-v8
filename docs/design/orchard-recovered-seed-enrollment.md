@@ -995,3 +995,36 @@ The first-block extension also captures canonical empty logical-set hashes from
 the checked empty separated namespace, not a zero-initialized digest struct.
 The shared reader refuses existing state or any untracked Orchard namespace
 row; this does not certify wallet history or independently executed prehistory.
+
+### Imported activation-parent conversion (bounded source component)
+
+A real legacy snapshot import may select the activation parent while its
+durable engine and independently validated anchor remain at genesis. Conversion
+must not rewrite that original store or call those histories independently
+executed. The closed-store checker now distinguishes this **exact imported
+activation-parent** cohort from the existing canonical-parent cohort. Older
+imported bases or partial forward histories still refuse pending their own
+authenticated reconstruction; this is not all-mobile readiness.
+
+The imported route reauthenticates the locally selected buried catalog proof,
+exact frozen base, checksummed full forest checkpoint and complete frozen coin
+coverage against the parent catalog, including old-height metadata. Every
+original active coin must be an exact compiled-genesis record in that frozen
+cohort. Legacy OP_RETURN rows remain in the frozen before-image but grant no
+live coin authority. The entire frozen legacy tree/nullifier/anchor state must
+match the proven retirement before-image. The ordinary actual-parent and
+independent prepared-retirement checks are unchanged for their original paths.
+
+Only the new unselected candidate gets deterministic selected tip, parent
+height/forest marker and, if absent, header-only topology. No CHAIN/SCRIPTS,
+body/undo or validated-marker promotion is added. Exact per-CF/key/value
+overrides replace no other original row; the common baseline builder and
+complete expected-write replay audit reconstruct the same candidate from the
+immutable original. The opaque source check is freshly derived, not loaded
+from a flag, SQL assertion or checksum sidecar.
+
+This component does not remove compact startup's SQL recovery refusal. Honest
+original-base/lifecycle restoration and wallet/index readiness need separate
+integration and the actual imported-source crossing/cold-reopen gates. No
+source/caller birthday, fabricated first event, generated provenance change,
+snapshot floor or automatic mixed-wallet readiness is introduced.

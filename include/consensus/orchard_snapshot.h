@@ -117,6 +117,11 @@ SnapshotMetadata ReadOrchardSnapshotMetadata(std::istream&,uint64_t maximum_byte
 void WriteOrchardSnapshotFile(std::ostream&,const SnapshotMetadata&,
     const OrchardSnapshotSection&,const OrchardSnapshotCoins&);
 void VerifyOrchardSnapshotCoins(const OrchardSnapshotSection&,const OrchardSnapshotCoins&);
+// Read-only COMPLETE parent-coin/checkpoint audit against the transfer's
+// authenticated parent catalog. Does not fabricate an Orchard state/event,
+// install storage, or certify execution of the imported prehistory.
+void VerifyOrchardSnapshotParentCoins(const OrchardSnapshotSection&,
+    const std::vector<uint8_t>& parent_forest,const OrchardSnapshotCoins&);
 SnapshotExportResult WriteOrchardSnapshotFileAtomically(const std::filesystem::path&,
     const SnapshotMetadata&,const OrchardSnapshotSection&,const OrchardSnapshotCoins&);
 } // namespace dinero::consensus

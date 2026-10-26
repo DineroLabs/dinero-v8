@@ -1172,6 +1172,39 @@ TEST(OrchardActivationBaseline, IndependentCopyMatchesEveryRowWithoutReusingAnEn
     EXPECT_FALSE(called);EXPECT_EQ(ActivationHandoffFixture::Files(path),rebuilt_files);
     EXPECT_EQ(ChainDBTransactionReadTestPeer::HandoffRows(original),rows);EXPECT_EQ(ActivationHandoffFixture::Files(f.path),files);
 }
+TEST(OrchardActivationBaseline, CompleteParentCoinsRejectMissingValueMetadataAndWrongCheckpoint){
+    ActivationHandoffFixture f;ChainDB source;
+    ASSERT_EQ(ChainDBTransactionReadTestPeer::HandoffReadOnly(source,f.path),Status::Ok);
+    const auto* live=f.full.f.service->GetConsensusUTXOSet();ASSERT_NE(live,nullptr);
+    std::vector<uint8_t> forest;
+    {const auto lock=live->LockForestShared();forest=live->GetForest().serialize();}
+    consensus::OrchardSnapshotCoins coins;const auto genesis=f.full.f.blocks.front().vtx.front().GetTxid();
+    ASSERT_EQ(source.forEachUTXO([&](const uint256& id,uint32_t n,const Coin& stored){
+        consensus::UTXOEntry coin;coin.value=AmountUna::Una(stored.amount);
+        OrchardAdmissionFixture::Require(util::unhex(stored.script_pubkey,coin.scriptPubKey));
+        coin.height=uint32_t(stored.height);coin.isCoinbase=stored.coinbase;
+        coin.is_confidential=stored.is_confidential;coin.commitment=stored.commitment;
+        const OutPoint point(TxId(id),n);
+        if(point.txid==genesis||coin.scriptPubKey.empty()||coin.scriptPubKey.front()!=0x6a)
+            OrchardAdmissionFixture::Require(coins.emplace(point,std::move(coin)).second);
+        return true;
+    }),Status::Ok);
+    ASSERT_FALSE(coins.empty());
+    ASSERT_NO_THROW(consensus::VerifyOrchardSnapshotParentCoins(*f.proof,forest,coins));
+    EXPECT_ANY_THROW(consensus::VerifyOrchardSnapshotParentCoins(*f.proof,forest,{}));
+    for(unsigned field=0;field<4;++field){
+        auto changed=coins;auto& coin=changed.begin()->second;
+        if(field==0)coin.value=AmountUna::Una(coin.value.GetUna()+1);
+        if(field==1)coin.isCoinbase=!coin.isCoinbase;
+        if(field==2)coin.height=f.proof->parent_catalog.height+1;
+        if(field==3)changed.erase(changed.begin());
+        EXPECT_ANY_THROW(consensus::VerifyOrchardSnapshotParentCoins(*f.proof,forest,changed))<<field;
+    }
+    auto broken=forest;broken.push_back(0);
+    EXPECT_ANY_THROW(consensus::VerifyOrchardSnapshotParentCoins(*f.proof,broken,coins));
+    auto proof=*f.proof;proof.parent_catalog.nontransparent_count=1;
+    EXPECT_ANY_THROW(consensus::VerifyOrchardSnapshotParentCoins(proof,forest,coins));
+}
 TEST(OrchardActivationBaseline, WrongSourceAndCancellationNeverCreateOrAlterTheOriginal){
     ActivationHandoffFixture f;auto prepared=f.Prepare();const auto& original=prepared->OriginalForInspection();
     const auto origin=*storage::ReadOrchardActivationOrigin(prepared->CandidateForInspection());

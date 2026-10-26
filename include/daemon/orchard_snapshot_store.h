@@ -45,6 +45,12 @@ private:
         std::unique_ptr<ChainDB> database;
         storage::OrchardActivationOrigin origin;
     };
+    // Opaque, freshly checked closed-source binding, never deserialized from
+    // origin/SQL/sidecar bytes. Original and candidate tips remain distinct.
+    struct ActivationSource;
+    static std::unique_ptr<const ActivationSource> CheckActivationSource(const ChainDB&,
+        const consensus::HeaderChainSelector&,const consensus::OrchardSnapshotSection&,
+        const std::function<bool()>& cancelled);
     static ActivationParentCopy CopyActivationParent(const ChainDB&,const ChainWriteToken&,
         AnnotatedRecursiveMutex&,const consensus::HeaderChainSelector&,
         const consensus::OrchardSnapshotSection&,const uint256& source_digest,

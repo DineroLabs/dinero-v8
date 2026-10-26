@@ -140,7 +140,8 @@ public:
 SnapshotMetadata ReadOrchardSnapshotMetadata(std::istream& stream,uint64_t maximum) {
     Input input(stream,maximum);return Metadata(input);
 }
-void VerifyOrchardSnapshotCoins(const OrchardSnapshotSection& s,const OrchardSnapshotCoins& coins) {
+namespace {
+void VerifyCatalogCoins(const OrchardSnapshotSection& s,const OrchardSnapshotCoins& coins,uint32_t height) {
     if(s.profile==OrchardSnapshotProfile::Compact){Require(coins.empty());return;}
     const CoinForestAudit forest(s);
     // These fields are not in Utreexo leaves. A transparent full snapshot must
@@ -157,7 +158,7 @@ void VerifyOrchardSnapshotCoins(const OrchardSnapshotSection& s,const OrchardSna
     std::vector<uint8_t> positions(size_t((forest.Leaves()+7)/8),0);
     uint64_t positions_count=0,amount=0,legacy_count=0;
     for(const auto& [point,coin]:coins) {
-        Require(UtxoRecordIsSnapshotSafe(coin)&&coin.height<=s.state.height&&coin.value.GetUna()<=MAX_MONEY&&
+        Require(UtxoRecordIsSnapshotSafe(coin)&&coin.height<=height&&coin.value.GetUna()<=MAX_MONEY&&
             coin.scriptPubKey.size()<=MaximumScript&&coin.value.GetUna()<=MAX_MONEY-amount);
         amount+=coin.value.GetUna();
         if(coin.height<s.base_catalog.leaf_activation) {
@@ -193,6 +194,19 @@ void VerifyOrchardSnapshotCoins(const OrchardSnapshotSection& s,const OrchardSna
     storage::catalog::Tree transactions(storage::catalog::Kind::Transactions,read);
     if(transactions.Find(s.parent_catalog.transactions,storage::catalog::TransactionKey(genesis_id)))
         Require(genesis_count==genesis.vout.size());
+}
+}
+void VerifyOrchardSnapshotCoins(const OrchardSnapshotSection& s,const OrchardSnapshotCoins& coins) {
+    VerifyCatalogCoins(s,coins,s.state.height);
+}
+void VerifyOrchardSnapshotParentCoins(const OrchardSnapshotSection& proof,
+    const std::vector<uint8_t>& forest,const OrchardSnapshotCoins& coins) {
+    Require(proof.profile==OrchardSnapshotProfile::Compact);
+    // This view is DATA for the existing complete coin auditor only. No
+    // Orchard state, runtime event or first authorization is constructed.
+    auto view=proof;view.profile=OrchardSnapshotProfile::Full;
+    view.base_catalog=proof.parent_catalog;view.accumulator=forest;
+    VerifyCatalogCoins(view,coins,proof.parent_catalog.height);
 }
 OrchardSnapshotFile ReadOrchardSnapshotFile(std::istream& stream,uint64_t maximum,OrchardSnapshotProfile profile,
     const std::filesystem::path& workspace) {
