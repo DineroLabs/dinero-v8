@@ -1234,6 +1234,9 @@ single-operation; reuse fails closed without recursive lifecycle acquisition.
 Independent full-node mining selection retains its original reentrant selected
 owner contract without acquiring snapshot in reverse order. Such borrowing
 does not grant imported admission: that path requires its actual snapshot lock.
+The Ready test compares the original candidate SQL rows, not an unchanged
+`listunspent` display: normal mempool input-spent filtering must hide the
+admitted input even though unspendable snapshot candidate DATA is retained.
 Original general full/compact captures, mining and block-admission guards are
 unchanged. Original assumed SQL/base/anchors remain unchanged; this is not a
 complete-history or transparent/index-readiness receipt.

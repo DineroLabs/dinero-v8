@@ -187,6 +187,9 @@ def candidate_wallet_state():
         encoded=lambda row:[v.hex() if isinstance(v,bytes) else v for v in row]
         tables={name:[encoded(row) for row in db.execute('SELECT * FROM '+name+' ORDER BY rowid')]
                 for name in ('utxos','sync_meta','tip')}
+        has_candidates=db.execute("SELECT 1 FROM sqlite_schema WHERE type='table' AND name='wallet_snapshot_candidates'").fetchone()
+        tables['snapshot_candidates']=([encoded(row) for row in db.execute('SELECT * FROM wallet_snapshot_candidates ORDER BY rowid')]
+            if has_candidates else [])
         tables['catalog']=db.execute("SELECT value FROM settings WHERE key='orchard_account_catalog_v1'").fetchall()
         return tables
 try:
@@ -388,8 +391,13 @@ try:
             reopened=rpc('wallet.orchard.finishshield',dict(binding,account=0,request_id=request_id))
             assert reopened['already_in_mempool'] and reopened['txid']==finished['txid'] and wallet_rows()==ready_rows,reopened
         after_state=candidate_wallet_state()
-        for table in ('utxos','sync_meta','tip'):assert after_state[table]==before_state[table],table
-        assert original_lifecycle()==original and rpc('wallet.listunspent',[])==before_coins
+        for table in ('utxos','sync_meta','tip','snapshot_candidates'):assert after_state[table]==before_state[table],table
+        assert original_lifecycle()==original
+        # Candidate DATA stays byte-identical. The ordinary existing mempool
+        # input-spent filter must hide it after real admission, not resurrect
+        # an already-reserved input merely because it came from a snapshot.
+        after_coins=rpc('wallet.listunspent',[])
+        assert after_coins==([] if ready_only else before_coins),after_coins
         assert not future.is_set() and not (datadir/'blockchain/.orchard-handoff-selected-v1.done').exists()
         assert any(b['hash']==fixture['parent'] and b['kind']==2 for b in body_requests),body_requests
         assert call('stop')==0;success=True
