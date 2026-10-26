@@ -14407,6 +14407,107 @@ std::optional<uint32_t> ChainstateService::RescanWalletFromSelectedHistory(
     }
 }
 
+StatusOr<size_t> ChainstateService::DiscoverSnapshotWalletCandidates(WalletManager& wallet,uint64_t session){
+#ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
+    if(activation_mutex_.HeldByCurrentThread()||!session)return Status::Invalid;
+    try{
+        SelectedReadUse source_use(weak_from_this().lock());UTXOIndex* index=nullptr;
+        {std::lock_guard<std::mutex> owner(wallet_index_use_mutex_);
+         if(!wallet_index_uses_by_thread_.contains(std::this_thread::get_id())||!utxo_index_)return Status::Invalid;
+         index=utxo_index_.get();}
+        {auto lease=wallet.AcquireDatabaseLease();
+         if(wallet.database_leases_!=1||lease->Session()!=session||!lease->Database()||
+             wallet.getUTXOIndex()!=index||!sqlite3_get_autocommit(lease->Database()))return Status::Invalid;}
+        std::lock_guard<std::mutex> snapshot(snapshot_load_mutex_);
+        std::lock_guard<AnnotatedRecursiveMutex> selected(activation_mutex_);
+        if(snapshot_import_publishing_||compact_startup_||orchard_snapshot_startup_||!GetConfig().utreexo_stateless||
+            !consensus_utxo_set_||!chain_db_||!active_tip_||safe_mode_active_||!assumeutxo_active_||!assumeutxo_lifecycle_||
+            !consensus::OrchardProfileConfigurationValid(Params())||Params().orchard_activation_height==UINT32_MAX||
+            uint64_t(active_tip_->height)+1!=Params().orchard_activation_height||
+            active_tip_->height!=assumeutxo_base_height_||active_tip_->hash!=assumeutxo_base_block_||
+            assumeutxo_lifecycle_->GetState()!=assumeutxo::AssumeUtxoLifecycle::State::SnapshotLoaded)return Status::Invalid;
+        const auto capture=UtreexoRpcSnapshotUnderLock();
+        const auto tip=chain_db_->getTip(),validated=chain_db_->getValidatedTip();const auto frozen=chain_db_->getPreBaseCoinSetBase();
+        if(!capture.ok()||capture->compact||capture->height!=active_tip_->height||capture->block_hash!=active_tip_->hash||
+            !tip.ok()||!validated.ok()||tip->height!=0||validated->height!=0||tip->hash!=validated->hash||
+            tip->hash!=uint256::FromHexUnsafe(Params().genesis_hash)||!frozen.ok()||frozen->first!=active_tip_->hash||
+            frozen->second!=active_tip_->height||!chain_db_->getEmptyOrchardCommitmentSets().ok()||
+            chain_db_->getLegacyRetirementState().status()!=Status::NotFound)return Status::Invalid;
+        const auto profile=consensus::SelectedOrchardBlockContext(BlockHeader{},Params().orchard_activation_height);
+        if(!profile)return Status::Invalid;
+        const auto page=ReadRuntimeOutboxUnderLock(*chain_db_,*profile,{},1,1024*1024);
+        if(page.head.sequence||!page.head.digest.IsNull()||page.next.sequence||!page.next.digest.IsNull()||!page.events.empty()||page.after_tip)
+            return Status::Corruption;
+        index->RequireMetadataAbsent({"reorg_in_progress",kIncompleteReorgRecoveryTipKey});
+        const auto metadata=index->ReadAssumedStartupMetadata();
+        const auto claimed_legacy=metadata.find(assumeutxo::kExpectedShieldedRootKey);uint256 legacy;
+        if(claimed_legacy==metadata.end()||!uint256::FromHex(claimed_legacy->second,legacy)||legacy.GetHex()!=claimed_legacy->second)
+            return Status::Corruption;
+        const auto checkpoint=chain_db_->getUtreexoCheckpoint(int(frozen->second));
+        const auto checksum=chain_db_->getUtreexoChecksum(int(frozen->second));unsigned char digest[32];
+        if(!checkpoint.ok()||!checksum.ok()||checksum->size()!=32)return Status::Corruption;
+        crypto::CSHA256().Write(checkpoint->data(),checkpoint->size()).Finalize(digest);
+        if(!std::equal(checksum->begin(),checksum->end(),digest))return Status::Corruption;
+        const auto forest=consensus::UtreexoForest::deserialize(*checkpoint);
+        if(forest.getCommitment()!=capture->commitment||forest.getNumLeaves()!=capture->num_leaves||
+            forest.getNumLeaves()>1000000)return Status::Corruption;
+        consensus::OrchardSnapshotCoins all;size_t bytes=0;
+        if(chain_db_->forEachPreBaseCoin([&](const uint256& id,uint32_t output,const Coin& row){
+            if(all.size()>=1000000||row.height<0||uint32_t(row.height)>frozen->second||row.amount>orchard::kMaxMoneyUna||
+                row.script_pubkey.size()>20000)throw std::runtime_error("Snapshot candidate source coin invalid or over capacity");
+            consensus::UTXOEntry coin;coin.value=AmountUna::Una(row.amount);coin.height=uint32_t(row.height);coin.isCoinbase=row.coinbase;
+            coin.is_confidential=row.is_confidential;coin.commitment=row.commitment;
+            if(!util::unhex(row.script_pubkey,coin.scriptPubKey)||!consensus::UtxoRecordIsSnapshotSafe(coin)||
+                coin.scriptPubKey.size()>256*1024*1024-bytes)throw std::runtime_error("Snapshot candidate source record invalid");
+            bytes+=coin.scriptPubKey.size();
+            if(!all.emplace(OutPoint(TxId(id),output),std::move(coin)).second)throw std::runtime_error("Duplicate snapshot source coin");
+            return true;
+        })!=Status::Ok)return Status::Corruption;
+        uint256 source_root;std::copy(capture->commitment.begin(),capture->commitment.end(),source_root.begin());
+        const auto height=std::to_string(frozen->second),hash=frozen->first.GetHex();
+        const std::map<std::string,std::string> expected={
+            {assumeutxo::kActiveKey,"true"},{assumeutxo::kBaseBlockKey,hash},{assumeutxo::kBaseHeightKey,height},
+            {assumeutxo::kExpectedCommitmentKey,consensus::ComputeUtxoRecordsDigest(all).GetHex()},
+            {assumeutxo::kExpectedShieldedRootKey,claimed_legacy->second},
+            {assumeutxo::kExpectedUtreexoRootKey,source_root.GetHex()},
+            {assumeutxo::kLcBaseBlockKey,hash},{assumeutxo::kLcBaseHeightKey,height},
+            {assumeutxo::kLifecycleStateKey,"snapshot_loaded"},{"wallet_snapshot_recovery_base_height",height}};
+        if(metadata!=expected)return Status::Corruption;
+        // Complete value/script coverage, not a wallet filter: no omitted or
+        // duplicate live leaf may be hidden by returning only owned records.
+        // Legacy height/coinbase claims remain DATA until catalog authorization.
+        Transaction genesis;
+        if(!TransactionSerializer::Deserialize(genesis,Params().genesis.genesisCoinbaseHex))return Status::Corruption;
+        std::vector<uint8_t> positions(size_t((forest.getNumLeaves()+7)/8),0);
+        size_t covered=0,compiled=0;std::vector<WalletManager::UtxoSetEntry> records;records.reserve(all.size());
+        for(const auto& [point,coin]:all){
+            if(point.txid==genesis.GetTxid()){
+                if(point.vout>=genesis.vout.size()||coin.height||!coin.isCoinbase||coin.value!=genesis.vout[point.vout].value||
+                    coin.scriptPubKey!=genesis.vout[point.vout].scriptPubKey)return Status::Corruption;
+                ++compiled;
+            }else{
+                const auto leaf=consensus::HashUTXOForCreationHeight(point.txid.AsUint256(),point.vout,coin.value.GetUna(),coin.scriptPubKey,coin.height,coin.isCoinbase);
+                const auto position=forest.findLeafPosition(leaf);
+                if(!position||*position>=forest.getNumLeaves())return Status::Corruption;
+                auto& seen=positions[size_t(*position/8)];const auto bit=uint8_t(1u<<(*position%8));
+                if(seen&bit)return Status::Corruption;seen|=bit;++covered;
+            }
+            records.push_back({point.txid.AsUint256().GetHex(),point.vout,coin.value.GetUna(),coin.scriptPubKey,coin.height,coin.isCoinbase});
+        }
+        if(covered!=forest.getNumLeaves()||compiled!=genesis.vout.size())return Status::Corruption;
+        // Exclude fatal/reset and source replacement through FULL wallet commit.
+        // No callback under this lifetime pin may reacquire the lifecycle mutex.
+        auto lifecycle=assumeutxo_lifecycle_->AcquireSnapshotUse(frozen->first,frozen->second);
+        if(!lifecycle||index->ReadAssumedStartupMetadata()!=metadata)return Status::Invalid;
+        const auto count=wallet.DiscoverSnapshotCandidates(records,frozen->second,frozen->first,util::hex(capture->commitment),session);
+        if(count<0)return Status::Invalid;
+        return size_t(count);
+    }catch(...){return Status::Invalid;}
+#else
+    (void)wallet;(void)session;return Status::Invalid;
+#endif
+}
+
 int ChainstateService::RescanWalletFromSnapshotUTXOs(WalletManager& wallet, uint32_t base_height) {
     // PRIMARY PATH: read the configured snapshot .dat directly. On a utreexo node
     // the in-memory consensus_utxo_set_ does NOT hold the snapshot's UTXOs (they

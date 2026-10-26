@@ -50,6 +50,7 @@ class Mempool;
 class ILogger;  // Dependency injection for logging
 class UTXOIndex;  // UTXO indexing for address registration
 class ChainDB;  // Chain database for UTXO discovery during rescan
+class uint256;
 class BlockStorage;
 class SelectedWalletHistory;
 class WalletTransactionOwner;
@@ -579,6 +580,8 @@ public:
         bool is_spent;
         std::string derivation_path;  // BIP32 path e.g. "m/86'/1448'/0'/0/0"
         bool is_confidential = false; // True if this is a CT (confidential) output
+        // Discovery DATA only. Not a current coin, maturity, spend or history receipt.
+        bool snapshot_candidate = false;
 
         // Convenience getters for spend RPC handlers
         int64_t getAmount() const { return static_cast<int64_t>(amount_una); }
@@ -1127,6 +1130,11 @@ private:
     friend struct WalletUnlockOwnerTestAccess;
     bool RescanBlockchainImpl(int start_height, int gap_limit, ChainDB*, BlockStorage*,
                               const SelectedWalletHistory*, uint64_t expected_session);
+    // Sole producer is the selected service's checked frozen-base capture.
+    // Separate DATA table; no utxos, progress, tip or account-owner updates.
+    int DiscoverSnapshotCandidates(std::span<const UtxoSetEntry>,uint32_t base_height,
+        const uint256& base,const std::string& root,uint64_t expected_session);
+    std::vector<WalletUTXO> ReadSnapshotCandidatesOwned() const;
     friend class RuntimeOrdinaryDelivery;
     friend class RuntimeWalletRecovery;
     friend class wallet::OrchardAccountDelivery;

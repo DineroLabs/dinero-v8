@@ -573,7 +573,19 @@ bool WalletService::RecoverActiveWalletFromSnapshotIfNeeded(std::string* error, 
 
     const auto canonical=RecoverActiveWalletFromCanonicalSource(error,expected_session);
     if (canonical==CanonicalRecovery::AppliedPrefix) return true;
-    if (canonical==CanonicalRecovery::Deferred) return false;
+    if (canonical==CanonicalRecovery::Deferred) {
+        // Keep recovery deferred. Discovery of real frozen-base candidates is
+        // useful to a restored phone, but is NOT permission to fall through to
+        // the old scan/watermark writer or mark an incomplete history complete.
+        if (!wallet_mgr_->isLocked()) {
+            uint64_t session=expected_session;
+            if(!session){auto lease=wallet_mgr_->AcquireDatabaseLease();session=lease->Session();}
+            const auto discovered=chainstate_->DiscoverSnapshotWalletCandidates(*wallet_mgr_,session);
+            if(discovered.ok()&&error)*error="Snapshot funding candidates discovered: "+std::to_string(*discovered)+
+                "; canonical history/index recovery remains deferred";
+        }
+        return false;
+    }
 
     try {
         const uint32_t base_height = chainstate_->GetSnapshotWalletRecoveryBaseHeight();

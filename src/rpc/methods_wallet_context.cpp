@@ -1930,6 +1930,7 @@ din::Json rpc_context_wallet_listunspent(const ExecutionContext& ctx, const din:
             utxo_obj["is_coinbase"] = utxo.is_coinbase;
             utxo_obj["is_mature"] = utxo.is_mature;
             utxo_obj["locked"] = locked;
+            utxo_obj["snapshot_candidate"] = utxo.snapshot_candidate;
 
             // Parse witness version from scriptPubKey
             uint8_t witness_version = 0xFF;  // Default: legacy (non-witness)

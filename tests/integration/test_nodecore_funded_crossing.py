@@ -152,6 +152,14 @@ if assumed:config['assumeutxo_snapshot']=fixture['assumed_snapshot']
 def original_lifecycle():
     with sqlite3.connect('file:'+str(datadir/'blockchain/utxo')+'?mode=ro',uri=True) as db:
         return dict(db.execute("SELECT key,value FROM utxo_metadata WHERE substr(key,1,11)='assumeutxo_' OR key='wallet_snapshot_recovery_base_height' ORDER BY key"))
+def candidate_wallet_state():
+    paths=list(datadir.rglob('wallet_wire-named-owner.db'));assert len(paths)==1,paths
+    with sqlite3.connect('file:'+str(paths[0])+'?mode=ro',uri=True) as db:
+        encoded=lambda row:[v.hex() if isinstance(v,bytes) else v for v in row]
+        tables={name:[encoded(row) for row in db.execute('SELECT * FROM '+name+' ORDER BY rowid')]
+                for name in ('utxos','sync_meta','tip')}
+        tables['catalog']=db.execute("SELECT value FROM settings WHERE key='orchard_account_catalog_v1'").fetchall()
+        return tables
 try:
     assert call('sdk_activation_events') is True
     assert call('watch_script',script=fixture['funding_change_script'])==0
@@ -195,11 +203,33 @@ try:
         # were scanned. The later selected-source reservation must still
         # authenticate the exact inputs; a wallet row is not coin authority.
         assert rpc('wallet.encrypt',['funded-crossing-password'])['success'] is True
+        source_refusal=os.environ.get('DINERO_SDK_SNAPSHOT_CANDIDATE_REFUSAL')
+        if source_refusal:
+            assert source_refusal=='content-commitment'
+            with sqlite3.connect(datadir/'blockchain/utxo') as db:
+                assert db.execute("UPDATE utxo_metadata SET value=? WHERE key='assumeutxo_expected_commitment'",('f'*64,)).rowcount==1
+            original=original_lifecycle() # Retain the intentional bad value; no repair/retry.
+        before_discovery=candidate_wallet_state()
         unlocked=rpc('wallet.unlock',['funded-crossing-password',0]);assert unlocked['success'] is True
         candidates=rpc('wallet.listunspent',[])
         (root/'snapshot-funding.json').write_text(json.dumps(dict(restored=restored,unlocked=unlocked,candidates=candidates),indent=2)+'\n')
-        assert any(c.get('txid')==fixture['funding_txid'] for c in candidates),'normal snapshot restore/unlock did not discover actual named-wallet funding'
+        if source_refusal:
+            assert candidates==[],'invalid snapshot cohort was silently accepted/repaired'
+            assert 'Snapshot funding candidates discovered' not in unlocked.get('recovery_warning',''),unlocked
+        else:
+            found=[c for c in candidates if c.get('txid')==fixture['funding_txid']]
+            assert len(found)==1,'normal snapshot restore/unlock did not discover actual named-wallet funding'
+            assert found[0]['amount_una']==1000000 and found[0]['snapshot_candidate'] and not found[0]['spendable'] and not found[0]['safe'] and found[0]['confirmations']==0,found
+            assert 'canonical history/index recovery remains deferred' in unlocked['recovery_warning'],unlocked
+        assert candidate_wallet_state()==before_discovery,'candidate discovery altered ordinary coins/progress/tip/catalog'
         assert original_lifecycle()==original,'funding discovery changed original assumed lifecycle'
+        if os.environ.get('DINERO_SDK_SNAPSHOT_CANDIDATES_ONLY'):
+            assert call('stop')==0;success=True
+            (root/'receipt.json').write_text(json.dumps(dict(original_assumed_mobile=True,original_lifecycle=original,
+                candidates=candidates,source_refusal=source_refusal,ordinary_state=before_discovery,unlocked=unlocked,
+                funded_crossing=False,scope='Actual normal imported SDK encrypted named-wallet unlock discovers checked source-bound candidate DATA, or refuses a mismatched original content commitment. Ordinary coins/progress/tip/catalog unchanged; no coin authority, queue, history/index baseline, handoff/app/device or release acceptance.'),indent=2)+'\n')
+            print('PASS actual snapshot candidate '+('source refusal' if source_refusal else 'discovery without spend/history authority'),flush=True)
+            sys.exit(0)
     else:
         scanned=rpc('wallet.rescanblockchain',[0,101]);assert scanned['scanned_blocks']==102,scanned
     addresses=rpc('wallet.listaddresses',[])

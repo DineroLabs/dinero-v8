@@ -1097,3 +1097,36 @@ honesty fence, not snapshot funding discovery, a whole-history/transparent
 baseline, independent validation or the nonempty imported crossing. Complete
 snapshot-aware candidate discovery and subsequent current input authorization
 remain required; no coin/catalog guard or assumed key is relaxed to pass it.
+
+### Imported snapshot funding candidates (not wallet readiness)
+
+Normal unlocked recovery may now discover funding DATA while canonical recovery
+remains deferred. This bounded route supports the exact original imported
+activation parent with durable/validated genesis, original `snapshot_loaded`
+cohort, complete frozen records/digest, checked forest/checksum and selected PoW
+header/root. Every non-genesis leaf is covered exactly once; only exact compiled
+genesis rows are excluded. Unknown/fatal/progress/reorg/cohort mismatches refuse.
+Snapshot-load, selected-source and lifecycle ownership exclude replacement/reset
+through the FULL wallet transaction, which freshly binds the unlocked seed,
+session, exact wallet/index and original unknown-empty account catalog.
+
+The separate `wallet_snapshot_candidates` table is public candidate DATA, never
+coin/source authority or a persisted replay capability. Idempotent exact rows
+are retained; conflicts are not repaired or overwritten. Current/retained/
+archived/pending account owners, ordinary `utxos`, wallet/index scan progress,
+tip and catalog are not advanced or reset. `wallet.listunspent` labels candidates
+`snapshot_candidate=true` with zero confirmations and `spendable=false`; normal
+balance/input selection must not treat them as confirmed ordinary coins. Old
+legacy maturity metadata remains a claim until authenticated catalog/input
+authorization. Unlock still explicitly warns that history/index recovery is
+deferred. New queue reservations must obtain and freshly verify exact current
+source-bound input proofs; this discovery is not that authorization.
+
+The source capture currently fails closed above one million frozen records/
+leaves or256MiB of script bytes; owned candidate inventories are bounded to65536
+rows/16MiB of scripts. These are work bounds, not measured phone RSS/latency or
+production-scale qualification. Other imported bases, active account owners and
+progress lifecycles remain unsupported by this first route. Two separate native
+SDK cases exercise actual encrypted named-wallet unlock discovery and refusal
+of a wrong original content commitment. Registration alone is not a test pass,
+funded queued crossing, app/device or release claim.

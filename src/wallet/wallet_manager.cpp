@@ -6230,6 +6230,29 @@ std::vector<WalletManager::WalletUTXO> WalletManager::listUnspentUTXOs(
         if (utxo.amount_una > 0) utxos.push_back(std::move(utxo));
     }
     checked(rc, SQLITE_DONE);
+    // A discovered snapshot candidate is deliberately outside the ordinary
+    // coin/index tables. Never give it confirmations or spendability from the
+    // selected display height. Only a later current-source reservation may
+    // authenticate it; this reader does not promote or repair anything.
+    for(auto candidate:ReadSnapshotCandidatesOwned()){
+        auto ordinary=prepare("SELECT amount,script_pubkey,height,is_coinbase,is_spent FROM utxos WHERE wallet_id=? AND txid=? AND vout=?");
+        checked(sqlite3_bind_int(ordinary.get(),1,current_wallet_id_),SQLITE_OK);
+        checked(sqlite3_bind_text(ordinary.get(),2,candidate.txid.c_str(),-1,SQLITE_TRANSIENT),SQLITE_OK);
+        checked(sqlite3_bind_int64(ordinary.get(),3,candidate.vout),SQLITE_OK);
+        const int found=sqlite3_step(ordinary.get());
+        if(found==SQLITE_ROW){
+            if(uint64_t(number(ordinary.get(),0,INT64_MAX))!=candidate.amount_una||
+                text(ordinary.get(),1,false)!=candidate.script_pubkey||
+                uint32_t(number(ordinary.get(),2,UINT32_MAX))!=candidate.height||
+                (number(ordinary.get(),3,1)!=0)!=candidate.is_coinbase)
+                throw std::runtime_error("Snapshot candidate conflicts with existing wallet coin");
+            (void)number(ordinary.get(),4,1);checked(sqlite3_step(ordinary.get()),SQLITE_DONE);
+            continue; // Also preserve an ordinary spent row; never resurrect it.
+        }
+        checked(found,SQLITE_DONE);
+        if(mempool&&mempool->isOutputSpentInMempool(OutPoint(TxId(uint256::FromHexUnsafe(candidate.txid)),candidate.vout)))continue;
+        utxos.push_back(std::move(candidate));
+    }
     return utxos;
 }
 
@@ -7547,6 +7570,112 @@ bool WalletManager::RescanBlockchainImpl(int start_height, int gap_limit,
     height_lock.unlock();
     height_cv_.notify_all();
     return true;
+}
+
+std::vector<WalletManager::WalletUTXO> WalletManager::ReadSnapshotCandidatesOwned() const {
+    if(!db_||!database_leases_||current_wallet_id_<=0)throw std::runtime_error("Snapshot candidate wallet owner unavailable");
+    IssuedStatement exists(db_,"SELECT 1 FROM sqlite_schema WHERE type='table' AND name='wallet_snapshot_candidates'");
+    const int present=sqlite3_step(exists.value.get());
+    if(present==SQLITE_DONE)return {};
+    IssuanceCheck(db_,present,SQLITE_ROW);exists.Done();
+    IssuedStatement rows(db_,"SELECT version,txid,vout,amount,script_pubkey,created_height,is_coinbase,base_height,base_block,source_root,network,genesis FROM wallet_snapshot_candidates WHERE wallet_id=? ORDER BY txid,vout");
+    rows.Int(1,current_wallet_id_);std::vector<WalletUTXO> result;size_t bytes=0;int rc;
+    std::set<std::pair<std::string,uint32_t>> seen;
+    const auto text=[&](int n,size_t max){
+        auto* q=rows.value.get();const auto* p=static_cast<const char*>(sqlite3_column_blob(q,n));const int size=sqlite3_column_bytes(q,n);
+        if(sqlite3_column_type(q,n)!=SQLITE_TEXT||!p||size<=0||size>int(max)||std::memchr(p,0,size))
+            throw std::runtime_error("Snapshot candidate text malformed");
+        return std::string(p,size);
+    };
+    const auto number=[&](int n,int64_t max){
+        auto* q=rows.value.get();const auto v=sqlite3_column_int64(q,n);
+        if(sqlite3_column_type(q,n)!=SQLITE_INTEGER||v<0||v>max)throw std::runtime_error("Snapshot candidate number malformed");return v;
+    };
+    const auto hash=[&](int n){const auto s=text(n,64);uint256 value;
+        if(s.size()!=64||!uint256::FromHex(s,value)||value.IsNull()||value.GetHex()!=s)throw std::runtime_error("Snapshot candidate hash malformed");return s;};
+    while((rc=sqlite3_step(rows.value.get()))==SQLITE_ROW){
+        if(result.size()>=65536||number(0,1)!=1)throw std::runtime_error("Snapshot candidate version/capacity invalid");
+        WalletUTXO coin{};coin.txid=hash(1);coin.vout=uint32_t(number(2,UINT32_MAX));coin.amount_una=uint64_t(number(3,INT64_MAX));
+        coin.script_pubkey=text(4,20000);coin.height=uint32_t(number(5,UINT32_MAX));coin.is_coinbase=number(6,1)!=0;
+        const auto base=number(7,UINT32_MAX);(void)hash(8);(void)hash(9);
+        std::vector<uint8_t> script;
+        (void)PaymentSum(0,coin.amount_una);
+        if(!coin.amount_una||coin.height>base||!base||!seen.emplace(coin.txid,coin.vout).second||text(10,16)!=Params().network_id||hash(11)!=Params().genesis_hash||
+            !util::unhex(coin.script_pubkey,script)||script.empty()||util::hex(script)!=coin.script_pubkey||
+            script.size()>16*1024*1024-bytes)throw std::runtime_error("Snapshot candidate data invalid");
+        bytes+=script.size();coin.address=extractAddressFromScript(script);
+        coin.amount_din=static_cast<double>(coin.amount_una)/ConsensusSubsidy::UNA_PER_DIN;
+        coin.confirmations=0;coin.is_mature=false;coin.spendable=false;coin.is_spent=false;coin.snapshot_candidate=true;
+        result.push_back(std::move(coin));
+    }
+    IssuanceCheck(db_,rc,SQLITE_DONE);return result;
+}
+
+int WalletManager::DiscoverSnapshotCandidates(std::span<const UtxoSetEntry> coins,uint32_t height,
+        const uint256& base,const std::string& root,uint64_t expected_session){
+    auto lease=AcquireDatabaseLease();
+    if(!db_||database_leases_!=1||!expected_session||lease->Session()!=expected_session||
+        current_wallet_id_<=0||!sqlite3_get_autocommit(db_)||base.IsNull()||!height)return -1;
+    try{
+        auto seed=lease->CopyRecoverySeed(expected_session);
+        IssuedAddressTransaction transaction(db_);
+        // Do not repair a missing/corrupt catalog, certify a recovered seed or
+        // touch any current/retained/archive/pending account owner. This first
+        // bounded discovery route requires their original unknown-empty state.
+        const auto catalog=wallet::OrchardAccountCatalog::RequireUnknownEmpty(db_,seed->Bytes());
+        const auto identity=lease->ReadDeliveryIdentity();(void)identity;
+        const auto old=ReadSnapshotCandidatesOwned();(void)old;
+        std::set<std::vector<uint8_t>> watched;
+        {IssuedStatement scripts(db_,"SELECT script_pubkey FROM watch_scripts");int rc;
+         while((rc=sqlite3_step(scripts.value.get()))==SQLITE_ROW){
+             const auto* p=static_cast<const uint8_t*>(sqlite3_column_blob(scripts.value.get(),0));const auto n=sqlite3_column_bytes(scripts.value.get(),0);
+             if(sqlite3_column_type(scripts.value.get(),0)!=SQLITE_BLOB||!p||n<=0||n>10000||watched.size()>=65536)
+                 throw std::runtime_error("Snapshot watch inventory invalid");
+             watched.emplace(p,p+n);
+         }IssuanceCheck(db_,rc,SQLITE_DONE);}
+        exec(db_,"CREATE TABLE IF NOT EXISTS wallet_snapshot_candidates(wallet_id INTEGER NOT NULL,version INTEGER NOT NULL,txid TEXT NOT NULL,vout INTEGER NOT NULL,amount INTEGER NOT NULL,script_pubkey TEXT NOT NULL,created_height INTEGER NOT NULL,is_coinbase INTEGER NOT NULL,base_height INTEGER NOT NULL,base_block TEXT NOT NULL,source_root TEXT NOT NULL,network TEXT NOT NULL,genesis TEXT NOT NULL,PRIMARY KEY(wallet_id,txid,vout))");
+        {IssuedStatement cohort(db_,"SELECT base_height,base_block,source_root,network,genesis FROM wallet_snapshot_candidates WHERE wallet_id=?");
+         cohort.Int(1,current_wallet_id_);int rc;
+         while((rc=sqlite3_step(cohort.value.get()))==SQLITE_ROW){
+             auto* q=cohort.value.get();
+             const auto same=[&](int n,const std::string& value){const auto* p=sqlite3_column_blob(q,n);return sqlite3_column_type(q,n)==SQLITE_TEXT&&sqlite3_column_bytes(q,n)==int(value.size())&&p&&std::memcmp(p,value.data(),value.size())==0;};
+             if(sqlite3_column_type(q,0)!=SQLITE_INTEGER||sqlite3_column_int64(q,0)!=height||!same(1,base.GetHex())||
+                 !same(2,root)||!same(3,Params().network_id)||!same(4,Params().genesis_hash))throw std::runtime_error("Snapshot candidate cohort changed");
+         }IssuanceCheck(db_,rc,SQLITE_DONE);}
+        int count=0;
+        for(const auto& coin:coins){
+            if(!watched.contains(coin.script_pubkey))continue;
+            if(coin.txid_hex.size()!=64||coin.amount_una==0||coin.amount_una>uint64_t(INT64_MAX)||coin.height>height)
+                throw std::runtime_error("Snapshot owned candidate invalid");
+            (void)PaymentSum(0,coin.amount_una);
+            const auto script=util::hex(coin.script_pubkey);
+            const auto key=lease->ResolveSigningKeyInTransaction(script,*seed);
+            if(!key||key->script!=coin.script_pubkey)throw std::runtime_error("Snapshot watched script has no authenticated key owner");
+            IssuedStatement existing(db_,"SELECT version,amount,script_pubkey,created_height,is_coinbase,base_height,base_block,source_root,network,genesis FROM wallet_snapshot_candidates WHERE wallet_id=? AND txid=? AND vout=?");
+            existing.Int(1,current_wallet_id_);existing.Text(2,coin.txid_hex);existing.Int(3,coin.vout);
+            const int found=sqlite3_step(existing.value.get());
+            if(found==SQLITE_ROW){
+                const auto same_number=[&](int n,int64_t value){return sqlite3_column_type(existing.value.get(),n)==SQLITE_INTEGER&&sqlite3_column_int64(existing.value.get(),n)==value;};
+                const auto same_text=[&](int n,const std::string& value){const auto* p=sqlite3_column_blob(existing.value.get(),n);return sqlite3_column_type(existing.value.get(),n)==SQLITE_TEXT&&sqlite3_column_bytes(existing.value.get(),n)==int(value.size())&&p&&std::memcmp(p,value.data(),value.size())==0;};
+                if(!same_number(0,1)||!same_number(1,coin.amount_una)||!same_text(2,script)||!same_number(3,coin.height)||!same_number(4,coin.is_coinbase)||
+                    !same_number(5,height)||!same_text(6,base.GetHex())||!same_text(7,root)||!same_text(8,Params().network_id)||!same_text(9,Params().genesis_hash))
+                    throw std::runtime_error("Snapshot candidate conflicts with retained data");
+                existing.Done();
+            }else{
+                IssuanceCheck(db_,found,SQLITE_DONE);
+                IssuedStatement put(db_,"INSERT INTO wallet_snapshot_candidates VALUES(?,1,?,?,?,?,?,?,?,?,?,?,?)");
+                put.Int(1,current_wallet_id_);put.Text(2,coin.txid_hex);put.Int(3,coin.vout);put.Int(4,coin.amount_una);put.Text(5,script);
+                put.Int(6,coin.height);put.Int(7,coin.is_coinbase);put.Int(8,height);put.Text(9,base.GetHex());put.Text(10,root);
+                put.Text(11,Params().network_id);put.Text(12,Params().genesis_hash);put.Done(true);
+            }
+            if(++count>65536)throw std::runtime_error("Snapshot owned candidate capacity exceeded");
+        }
+        // Full recheck before commit. No scan_meta/tip, ordinary utxos, index
+        // coverage, payment owner or Orchard catalog is ever updated here.
+        if(wallet::OrchardAccountCatalog::RequireUnknownEmpty(db_,seed->Bytes())!=catalog)
+            throw std::runtime_error("Snapshot candidate catalog changed");
+        (void)ReadSnapshotCandidatesOwned();transaction.Commit();return count;
+    }catch(...){return -1;}
 }
 
 // ============================================================================

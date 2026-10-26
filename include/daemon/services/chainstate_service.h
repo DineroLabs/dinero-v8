@@ -264,6 +264,10 @@ public:
     // WalletService startup sweep, and wallet.importmnemonic when the mnemonic
     // is imported only after snapshot activation.
     int RescanWalletFromSnapshotUTXOs(WalletManager& wallet, uint32_t base_height);
+    // Exact fresh imported activation parent only. Checked source/seed-bound
+    // candidate discovery, NOT wallet history/index completion or coin authority.
+    // Caller retains WalletUse/WalletIndexUse and holds no SQLite/selected owner.
+    StatusOr<size_t> DiscoverSnapshotWalletCandidates(WalletManager&,uint64_t expected_session);
     // Independently replay and own selected historical bodies before wallet
     // effects. Returns the captured height, not lasting chain/wallet readiness.
     // Bounded archival/stateful pre-Orchard support; failures never substitute
