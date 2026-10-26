@@ -20438,7 +20438,9 @@ ChainstateService::resumeRuntimeImportedOrchardRecovery(WalletManager& wallet,UT
 namespace {
 RuntimeFundingCandidates ReadPostBaseFunding(const RuntimeAccountReplay& replay){
     const auto head=replay.Head();const auto facts=replay.Profile();const auto origin=replay.Point({}).checkpoint;
-    if(!head.sequence||head.sequence>4096||replay.ActivationPrefixHeight()||uint64_t(origin.height)+1!=facts.activation_height)
+    // This API reports activation-minus-one even when no separate prefix
+    // exists. A later prefix floor is unsupported here, never skipped.
+    if(!head.sequence||head.sequence>4096||replay.ActivationPrefixHeight()!=origin.height||uint64_t(origin.height)+1!=facts.activation_height)
         throw std::runtime_error("Post-base funding requires complete bounded activation history");
     RuntimeFundingCandidates result;std::map<OutPoint,RuntimeFundingCoin> live;std::set<OutPoint> created;
     uint256 prior=origin.block_hash;size_t material=0,outputs=0,scripts=0;

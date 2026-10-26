@@ -758,7 +758,11 @@ try:
                 assert not found[0].get('snapshot_candidate',False),'post-base change was relabelled as original frozen funding'
                 assert found[0]['candidate_only'] and found[0]['funding_source_height']==105 and found[0]['funding_source_hash']==shield_mined['hash'],found
                 assert found[0]['confirmations']==0 and not found[0]['safe'] and not found[0]['spendable'],found
-                assert len(discovered_post)==1,'spent historical inputs remained in the current candidate result'
+                first_change_index=next(n for n,o in enumerate(notification['outputs']) if o['script']==fixture['funding_change_script'] and o['amount']==470000)
+                expected_post={(finished['txid'],first_change_index):(470000,fixture['funding_change_script'],104),
+                               (txid,change['index']):(475000,change['script'],105)}
+                assert {(c['txid'],c['vout']):(c['amount_una'],c['scriptPubKey'],c['height']) for c in discovered_post}==expected_post,'candidate result omitted real post-base change or retained spent historical inputs'
+                assert all(c['candidate_only'] and c['confirmations']==0 and not c['safe'] and not c['spendable'] for c in discovered_post)
                 assert candidate_wallet_state()==before_discovery_post and snapshot_candidate_rows()==before_candidates_post,'post-base discovery mutated ordinary/frozen DATA or catalog'
                 assert original_lifecycle()==original and mixed_runtime_receipts()==mixed_before
                 if post_base_discovery_only:
