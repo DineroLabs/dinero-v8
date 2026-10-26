@@ -165,3 +165,26 @@ TEST(PeerKey, Ipv6InboundLimitIsPerSlash64) {
     EXPECT_TRUE(m.test_inbound_slot_available("2600:1700:1:3::1")) << "a neighbouring /64 is someone else";
     EXPECT_TRUE(m.test_inbound_slot_available("1.2.3.4"));
 }
+
+TEST(AddrV2, ReachResultDialedEndpointWireFormat) {
+    // reachres "dialed" is one addrv2 entry (time 0, services 0): pinned
+    // bytes, since the first release freezes them.
+    const auto v4 = dinero::p2p::EncodeAddrV2Endpoint("1.2.3.4", 20999);
+    const std::vector<uint8_t> want4 = {0x01, 0, 0, 0, 0, 0x00, 0x01, 0x04, 1, 2, 3, 4, 0x52, 0x07};
+    EXPECT_EQ(v4, want4);
+    std::string ip;
+    uint16_t port = 0;
+    ASSERT_TRUE(dinero::p2p::DecodeAddrV2Endpoint(v4, &ip, &port));
+    EXPECT_EQ(ip, "1.2.3.4");
+    EXPECT_EQ(port, 20999);
+
+    const auto v6 = dinero::p2p::EncodeAddrV2Endpoint("2600:1700::2d", 20999);
+    ASSERT_EQ(v6.size(), 2u + 4 + 1 + 1 + 16 + 2);
+    EXPECT_EQ(v6[6], 0x02);  // NetworkType::IPV6
+    ASSERT_TRUE(dinero::p2p::DecodeAddrV2Endpoint(v6, &ip, &port));
+    EXPECT_EQ(ip, "2600:1700::2d");
+
+    EXPECT_TRUE(dinero::p2p::EncodeAddrV2Endpoint("not-an-ip", 1).empty());
+    EXPECT_FALSE(dinero::p2p::DecodeAddrV2Endpoint({0x01, 0, 0}, &ip, &port));
+    EXPECT_FALSE(dinero::p2p::DecodeAddrV2Endpoint({}, &ip, &port));
+}

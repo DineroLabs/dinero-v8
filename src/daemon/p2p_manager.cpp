@@ -7400,20 +7400,23 @@ void P2PManager::handle_reach_check(const std::string& peer_address, const P2PMe
         expected = it->second->their_node_id;
     }
 
-    auto reply = [this, peer_address, nonce](uint8_t code, const std::string& dialed) {
+    // reachres: nonce, result, then "dialed" as one addrv2 entry (empty when
+    // nothing was dialed).
+    auto reply = [this, peer_address, nonce, target_ip](uint8_t code, uint16_t dialed_port) {
         P2PMessage res;
         res.command = dinero::MessageCommands::REACH_RESULT;
         PutLE(res.payload, nonce, 8);
         res.payload.push_back(code);
-        const size_t n = std::min<size_t>(dialed.size(), 255);
-        res.payload.push_back(static_cast<uint8_t>(n));
-        res.payload.insert(res.payload.end(), dialed.begin(), dialed.begin() + n);
+        if (dialed_port != 0) {
+            const auto dialed = dinero::p2p::EncodeAddrV2Endpoint(target_ip, dialed_port);
+            res.payload.insert(res.payload.end(), dialed.begin(), dialed.end());
+        }
         send_to_peer(peer_address, res);
     };
 
     if (transport != static_cast<uint8_t>(dinero::p2p::Transport::Tcp) || via_relay || port == 0 ||
         (!dialback_private_targets_.load() && !IsAdvertisableAddress(target_ip, port))) {
-        reply(kReachUnsupportedTransport, {});
+        reply(kReachUnsupportedTransport, 0);
         return;
     }
     const std::string dialed = dinero::network::FormatEndpoint(target_ip, port);
@@ -7445,18 +7448,18 @@ void P2PManager::handle_reach_check(const std::string& peer_address, const P2PMe
         }
     }
     if (refused) {
-        reply(kReachRefusedRate, {});
+        reply(kReachRefusedRate, 0);
         return;
     }
     std::lock_guard<std::mutex> lock(peer_threads_mutex_);
     if (shutdown_requested_.load(std::memory_order_acquire) ||
-        !spawn_peer_thread_locked([this, target_ip, port, expected, dialed, reply] {
+        !spawn_peer_thread_locked([this, target_ip, port, expected, reply] {
             const uint8_t code = dialback_probe(target_ip, port, expected);
             {
                 std::lock_guard<std::mutex> l(reach_mutex_);
                 --dialbacks_in_flight_;
             }
-            reply(code, dialed);
+            reply(code, port);
         })) {
         std::lock_guard<std::mutex> l(reach_mutex_);
         --dialbacks_in_flight_;
@@ -7464,26 +7467,23 @@ void P2PManager::handle_reach_check(const std::string& peer_address, const P2PMe
 }
 
 void P2PManager::handle_reach_result(const std::string& peer_address, const P2PMessage& message) {
-    if (message.payload.size() < 10) return;
+    if (message.payload.size() < 9) return;
     const uint64_t nonce = GetLE(message.payload, 0, 8);
     const uint8_t code = message.payload[8];
-    const size_t n = message.payload[9];
-    std::string dialed;
-    if (message.payload.size() >= 10 + n) {
-        dialed.assign(message.payload.begin() + 10, message.payload.begin() + 10 + n);
-    }
+    std::string dialed_host;
+    uint16_t dialed_port = 0;
+    const bool have_dialed = dinero::p2p::DecodeAddrV2Endpoint(
+        std::vector<uint8_t>(message.payload.begin() + 9, message.payload.end()), &dialed_host,
+        &dialed_port);
     std::lock_guard<std::mutex> lock(reach_mutex_);
     auto it = pending_reach_.find(nonce);
     if (it == pending_reach_.end() || it->second.verifier.peer_key != peer_address) return;
     uint8_t effective = code;
     if (code == kReachOk) {
         // Credit only the address the verifier actually dialed.
-        std::string host;
-        uint16_t port = 0;
-        bool has_port = false;
-        if (!dinero::network::SplitEndpoint(dialed, &host, &port, &has_port) ||
-            (!it->second.candidate.ip.empty() && host != it->second.candidate.ip) ||
-            port != it->second.candidate.port) {
+        if (!have_dialed ||
+            (!it->second.candidate.ip.empty() && dialed_host != it->second.candidate.ip) ||
+            dialed_port != it->second.candidate.port) {
             effective = kReachConnectFailed;
         }
     }
