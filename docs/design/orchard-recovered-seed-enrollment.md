@@ -1312,3 +1312,9 @@ one FULL writer runs both validators on their respective subsets, together with
 all catalog/pending/seed/session/manual-lock checks. No row is deleted/rebased,
 no spent ordinary row is resurrected through snapshot fallback, and no history,
 transparent/index readiness or independent-replay receipt is created.
+
+This new selector examines at most eight candidates per attempt, matching the
+bounded volatile path set. If more are required it reports work capacity, not
+insufficient balance or endlessly evicting/re-requesting the prefix. It does not
+change the original full-source/exact-input bounds or claim large/many-input
+wallet qualification.

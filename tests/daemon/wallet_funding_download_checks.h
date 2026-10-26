@@ -7,6 +7,18 @@ TEST(WalletFundingDownload, NewInputProofCodecBounds){
     EXPECT_THROW(W::Reply::Decode(std::vector<uint8_t>(W::MaximumBytes+1)),std::invalid_argument);
 }
 #ifdef DINERO_TEST_ORCHARD_ORIGIN
+TEST(WalletFundingDownload, NewInputRequestCapacityAndStop){
+    OrchardAdmissionFixture f;using W=p2p::WalletInputProof;W::Request request;
+    request.magic=Params().magic;request.genesis=uint256::FromHexUnsafe(Params().genesis_hash);
+    request.branch=Params().orchard_branch_id;request.activation=Params().orchard_activation_height;
+    request.leaf_activation=consensus::GetUtreexoMaturityLeafActivationHeight();request.height=request.activation;
+    request.tip=W::KeyNonce();request.root=W::KeyNonce();request.point=OutPoint(TxId(W::KeyNonce()),0);
+    p2p::WalletInputProofDownload download([]{return std::vector<p2p::OrchardCatalogClient::Peer>{};},
+        [](const auto&,const auto&,const auto&){return false;});
+    for(size_t n=0;n<p2p::WalletInputProofDownload::MaximumItems;++n){request.point.vout=uint32_t(n);EXPECT_FALSE(download.Request(request));}
+    request.point.vout=100;EXPECT_THROW(download.Request(request),std::runtime_error);
+    download.Stop();EXPECT_FALSE(download.Request(request));
+}
 TEST(WalletFundingDownload, CurrentSourceChangeCancelsBlockedInputFlight){
     OrchardAdmissionFixture f;using W=p2p::WalletInputProof;W::Request request;
     request.magic=Params().magic;request.genesis=uint256::FromHexUnsafe(Params().genesis_hash);

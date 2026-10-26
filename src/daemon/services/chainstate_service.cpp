@@ -21222,7 +21222,10 @@ std::unique_ptr<wallet::OrchardQueuedSpend> ChainstateService::queueRuntimeWalle
             std::vector<OrchardProvedWalletInput> proofs;std::vector<orchard::ResolvedInput> inputs;
             std::vector<PendingPaymentInput> wallet_inputs;std::vector<bool> input_kinds;uint64_t total=0;size_t examined=0;
             for(const auto& candidate:candidates){
-                if(++examined>1000)throw std::runtime_error("Compact input candidate work capacity exceeded");
+                // Match the bounded volatile proof set: never churn an
+                // unretainable ninth path or misreport a capacity as balance.
+                if(++examined>p2p::WalletInputProofDownload::MaximumItems)
+                    throw std::runtime_error("Compact input candidate work capacity exceeded");
                 uint256 id;std::copy(candidate.txid_wire.begin(),candidate.txid_wire.end(),id.begin());
                 p2p::WalletInputProof::Request request;request.magic=Params().magic;request.genesis=uint256::FromHexUnsafe(Params().genesis_hash);
                 request.branch=profile.domain.branch_id;request.activation=profile.activation;

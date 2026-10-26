@@ -87,6 +87,7 @@ struct WalletInputProof {
 class WalletInputProofDownload final {
 public:
     using Wire=WalletInputProof;using Bytes=Wire::Bytes;using Peer=OrchardCatalogClient::Peer;
+    static constexpr size_t MaximumItems=8;
     using Peers=std::function<std::vector<Peer>()>;using Send=std::function<bool(const Peer&,const std::string&,const Bytes&)>;
     WalletInputProofDownload(Peers peers,Send send):peers_(std::move(peers)),send_(std::move(send)),worker_([this]{Run();}){}
     ~WalletInputProofDownload(){Stop();}
@@ -102,7 +103,7 @@ public:
         }
         if(const auto found=ready_.find(key);found!=ready_.end())return found->second;
         if(std::none_of(wanted_.begin(),wanted_.end(),[&](const auto& v){return v.Encode()==key;})){
-            if(wanted_.size()>=8)throw std::runtime_error("Wallet input proof request capacity exceeded");
+            if(wanted_.size()>=MaximumItems)throw std::runtime_error("Wallet input proof request capacity exceeded");
             wanted_.push_back(std::move(request));cv_.notify_one();}
         return {};
     }
@@ -135,7 +136,7 @@ private:
                     Wire::Check(sent_request&&reply.request==*sent_request);auto key=request.Encode();
                     auto data=std::make_shared<const Wire::Reply>(reply);std::lock_guard lock(mutex_);if(stop_)return;
                     if(generation!=generation_)continue;
-                    if(ready_.size()>=8)ready_.erase(ready_.begin());ready_.emplace(std::move(key),std::move(data));
+                    if(ready_.size()>=MaximumItems)ready_.erase(ready_.begin());ready_.emplace(std::move(key),std::move(data));
                     wanted_.pop_front();flight_.reset();sent_request.reset();continue;}
                 if(peer){if(now-sent>=std::chrono::seconds(30)||!std::any_of(connected.begin(),connected.end(),[&](const auto& p){return p.address==peer->address&&p.session==peer->session;}))fail();continue;}
                 for(auto i=cooldown.begin();i!=cooldown.end();)if(i->second<=now)i=cooldown.erase(i);else ++i;
