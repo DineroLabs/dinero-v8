@@ -761,7 +761,7 @@ try:
                 first_change_index=next(n for n,o in enumerate(notification['outputs']) if o['script']==fixture['funding_change_script'] and o['amount']==470000)
                 expected_post={(finished['txid'],first_change_index):(470000,fixture['funding_change_script'],104),
                                (txid,change['index']):(475000,change['script'],105)}
-                assert {(c['txid'],c['vout']):(c['amount_una'],c['scriptPubKey'],c['height']) for c in discovered_post}==expected_post,'candidate result omitted real post-base change or retained spent historical inputs'
+                assert {(c['txid'],c['vout']):(c['amount_una'],c['scriptPubKey'],c['candidate_created_height']) for c in discovered_post}==expected_post,'candidate result omitted real post-base change or retained spent historical inputs'
                 assert all(c['candidate_only'] and c['confirmations']==0 and not c['safe'] and not c['spendable'] for c in discovered_post)
                 assert candidate_wallet_state()==before_discovery_post and snapshot_candidate_rows()==before_candidates_post,'post-base discovery mutated ordinary/frozen DATA or catalog'
                 assert original_lifecycle()==original and mixed_runtime_receipts()==mixed_before

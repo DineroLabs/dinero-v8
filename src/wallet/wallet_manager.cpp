@@ -4126,6 +4126,38 @@ void WalletManager::DatabaseLease::ValidateSnapshotShieldInputsInTransaction(con
     }
 }
 
+void WalletManager::DatabaseLease::ValidatePostBaseShieldOwnersInTransaction(
+        const RecoverySeed& pin,std::span<const PendingPaymentInput> inputs){
+    const auto pending=ReadPendingPaymentsInTransaction(pin); // Exact live lease/seed/transaction.
+    if(inputs.empty()||inputs.size()>1024)throw std::runtime_error("Post-base input count unsupported");
+    std::set<std::pair<std::string,uint32_t>> used;
+    for(const auto& payment:pending)for(const auto& input:payment.inputs)
+        if(!used.emplace(input.txid,input.vout).second)throw std::runtime_error("Post-base pending input owners overlap");
+    for(const auto& input:inputs){
+        (void)PaymentSum(0,input.amount_una);std::vector<uint8_t> hash;
+        if(input.txid.size()!=64||!util::unhex(input.txid,hash)||hash.size()!=32||util::hex(hash)!=input.txid||
+           !input.amount_una||input.script.empty()||input.script.size()>10000||!used.emplace(input.txid,input.vout).second||
+           owner_.locked_utxos_.contains(input.txid+":"+std::to_string(input.vout)))
+            throw std::runtime_error("Post-base input malformed, reserved or manually locked");
+        // These are genuinely NEW outputs, never an alternate interpretation
+        // of ANY ordinary row (spent or otherwise) or frozen candidate row.
+        for(const auto* table:{"utxos","wallet_snapshot_candidates"}){
+            const auto sql=std::string("SELECT 1 FROM ")+table+" WHERE wallet_id=? AND txid=? AND vout=?";
+            IssuedStatement row(db_,sql.c_str());
+            row.Int(1,owner_.current_wallet_id_);row.Text(2,input.txid);row.Int(3,input.vout);
+            if(sqlite3_step(row.value.get())!=SQLITE_DONE)
+                throw std::runtime_error("Post-base input overlaps an existing ordinary/frozen namespace");
+        }
+        const auto key=ResolveSigningKeyInTransaction(util::hex(input.script),pin);
+        const bool taproot=input.script.size()==34&&input.script[0]==0x51&&input.script[1]==0x20;
+        const bool p2wpkh=input.script.size()==22&&input.script[0]==0&&input.script[1]==20;
+        if(!key||key->script!=input.script||(!taproot&&!p2wpkh)||
+           (taproot&&key->policy!=SigningKeyPolicy::TaprootCanonical&&key->policy!=SigningKeyPolicy::TaprootHistoricalImport)||
+           (p2wpkh&&key->policy!=SigningKeyPolicy::Untweaked))
+            throw std::runtime_error("Post-base input signing owner unavailable");
+    }
+}
+
 std::optional<PendingPayment> WalletManager::DatabaseLease::FindPaymentRequestInTransaction(
     const RecoverySeed& pin,const PendingPaymentIntent& intent) {
     ValidatePaymentRequest(intent);

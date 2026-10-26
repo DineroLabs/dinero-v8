@@ -23,11 +23,14 @@ class AuthenticatedShieldInputs final {
     const std::vector<PendingPaymentInput> inputs_;
     const std::function<void()> current_;
     const std::vector<bool> snapshot_candidates_;
+    const std::vector<bool> post_base_candidates_;
     AuthenticatedShieldInputs(WalletManager& wallet,uint64_t session,uint32_t height,uint256 base,
-        std::string root,std::vector<PendingPaymentInput> inputs,std::function<void()> current,std::vector<bool> snapshot_candidates={})
+        std::string root,std::vector<PendingPaymentInput> inputs,std::function<void()> current,
+        std::vector<bool> snapshot_candidates={},std::vector<bool> post_base_candidates={})
         :wallet_(&wallet),session_(session),height_(height),base_(base),root_(std::move(root)),
          inputs_(std::move(inputs)),current_(std::move(current)),snapshot_candidates_(snapshot_candidates.empty()?
-             std::vector<bool>(inputs_.size(),true):std::move(snapshot_candidates)){}
+             std::vector<bool>(inputs_.size(),true):std::move(snapshot_candidates)),
+         post_base_candidates_(post_base_candidates.empty()?std::vector<bool>(inputs_.size(),false):std::move(post_base_candidates)){}
 public:
     AuthenticatedShieldInputs(const AuthenticatedShieldInputs&)=delete;
     AuthenticatedShieldInputs& operator=(const AuthenticatedShieldInputs&)=delete;

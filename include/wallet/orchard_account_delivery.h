@@ -500,6 +500,9 @@ private:
     static RuntimeFundingCandidates ReadPreparedPostBaseCandidates(
         WalletManager&,uint64_t,const Profile&,const OrchardCatalogRecoveryPlan&,
         const RuntimeFundingCandidates&,const std::function<void()>& current_source);
+    // Off-lock DATA work selection only; final retry still uses its unchanged
+    // source-bound complete-catalog recheck before returning anything.
+    static bool PreparedShieldNeedsInputSelection(const OrchardCatalogRecoveryPlan&);
     static ShieldResult CommitShieldReservation(WalletManager&,uint64_t,std::unique_ptr<OrchardCatalogRecoveryPlan>,
         std::span<const orchard::ResolvedInput>,std::span<const orchard::TransparentOutput>,OrchardProofJobs*,
         const AuthenticatedShieldInputs* = nullptr);

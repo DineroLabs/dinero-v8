@@ -1760,6 +1760,10 @@ std::unique_ptr<OrchardCatalogRecoveryPlan> OrchardAccountDelivery::PrepareShiel
     CompleteCatalogRecoveryWithPoints(*prepared,CatalogRecoveryAction::Reconcile,0,points);
     return prepared;
 }
+bool OrchardAccountDelivery::PreparedShieldNeedsInputSelection(const OrchardCatalogRecoveryPlan& prepared){
+    Check(prepared.data_&&prepared.data_->usable&&prepared.data_->shield);
+    return !prepared.data_->shield->existing;
+}
 std::unique_ptr<OrchardAccountDelivery::QueuedSpend> OrchardAccountDelivery::TakePreparedShieldRetry(
         WalletManager& w,uint64_t session,OrchardCatalogRecoveryPlan& prepared){
     Check(prepared.data_&&prepared.data_->usable&&prepared.data_->session==session&&prepared.data_->shield);
@@ -1825,16 +1829,21 @@ OrchardAccountDelivery::ShieldResult OrchardAccountDelivery::CommitShieldReserva
         }
         if(source){
             Check(source->wallet_==&w&&source->session_==session&&source->inputs_.size()==wallet_inputs.size()&&
-                source->snapshot_candidates_.size()==wallet_inputs.size()&&bool(source->current_));
+                source->snapshot_candidates_.size()==wallet_inputs.size()&&
+                source->post_base_candidates_.size()==wallet_inputs.size()&&bool(source->current_));
             for(size_t i=0;i<wallet_inputs.size();++i){const auto& a=source->inputs_[i];const auto& b=wallet_inputs[i];
                 Check(a.txid==b.txid&&a.vout==b.vout&&a.amount_una==b.amount_una&&a.script==b.script);}
             source->current_();
-            std::vector<PendingPaymentInput> snapshot_inputs,ordinary_inputs;
-            for(size_t i=0;i<wallet_inputs.size();++i)
-                (source->snapshot_candidates_[i]?snapshot_inputs:ordinary_inputs).push_back(wallet_inputs[i]);
+            std::vector<PendingPaymentInput> snapshot_inputs,ordinary_inputs,post_base_inputs;
+            for(size_t i=0;i<wallet_inputs.size();++i){
+                Check(!(source->snapshot_candidates_[i]&&source->post_base_candidates_[i]));
+                (source->post_base_candidates_[i]?post_base_inputs:
+                    source->snapshot_candidates_[i]?snapshot_inputs:ordinary_inputs).push_back(wallet_inputs[i]);
+            }
             if(!snapshot_inputs.empty())
                 lease->ValidateSnapshotShieldInputsInTransaction(*owner.seed,snapshot_inputs,source->height_,source->base_,source->root_);
             if(!ordinary_inputs.empty())lease->ValidateUnreservedInputsInTransaction(*owner.seed,ordinary_inputs);
+            if(!post_base_inputs.empty())lease->ValidatePostBaseShieldOwnersInTransaction(*owner.seed,post_base_inputs);
         }else lease->ValidateUnreservedInputsInTransaction(*owner.seed,wallet_inputs);
         for(const auto& output:outputs)
             Check(bool(lease->ResolveSigningKeyInTransaction(util::hex(output.script_pub_key),*owner.seed)));

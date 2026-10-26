@@ -1957,7 +1957,7 @@ din::Json rpc_context_wallet_listunspent(const ExecutionContext& ctx, const din:
             utxo_obj["locked"] = locked;
             utxo_obj["snapshot_candidate"] = utxo.snapshot_candidate;
             if(funding){utxo_obj["candidate_only"]=true;utxo_obj["funding_source_height"]=funding->height;
-                utxo_obj["funding_source_hash"]=funding->block.GetHex();}
+                utxo_obj["funding_source_hash"]=funding->block.GetHex();utxo_obj["candidate_created_height"]=utxo.height;}
 
             // Parse witness version from scriptPubKey
             uint8_t witness_version = 0xFF;  // Default: legacy (non-witness)

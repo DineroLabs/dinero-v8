@@ -1441,6 +1441,20 @@ candidate subset. It creates no current coin or complete transparent/index
 receipt. A later reservation still needs a fresh CURRENT per-input proof and its
 own atomic source-bound writer; discovery DATA never grants that authority.
 
+NEW imported compact selection reads that same complete post-base DATA off-lock,
+then rebinds the actual source/cohort/lifecycle and complete encrypted catalog.
+Every selected input still obtains a fresh CURRENT TCP path and passes the
+UNCHANGED normal compact input/stump/catalog/legacy-metadata owner. Exact actual
+creating-body height/coinbase must agree too. A private lexical, nonserialized
+per-input provenance vector dispatches ONE FULL encrypted reservation writer to
+the original ordinary or frozen validator, or a distinct post-base OWNER check
+for genuinely NEW outputs absent from BOTH old namespaces. That new owner check
+still requires real seed/key policies, manual-lock/pending exclusions and exact
+input equality, and grants no coin authority independently of the selected source.
+Fresh source and full proof checks run again immediately before COMMIT. Existing
+exact requests do not depend on NEW body/selection work capacity. No original SQL,
+ordinary/frozen rows, first cursor or mixed/index readiness receipt is rewritten.
+
 ## Original-import private send and unshield native gate
 
 `NodeCoreAssumedPrivateSendUnshield` extends the real imported-source funded

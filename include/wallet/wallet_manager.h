@@ -352,6 +352,12 @@ public:
         // input owner before any reservation; never adds ordinary UTXO rows.
         [[nodiscard]] std::vector<PendingPaymentInput> ReadSnapshotShieldCandidatesInTransaction(
             const RecoverySeed&,uint32_t,const uint256&,const std::string&);
+        // OWNER checks only, NOT coin or history authority. Called by the
+        // source-private exact-input writer AFTER current path/body checks.
+        // Rejects ANY existing ordinary/frozen row rather than resurrecting or
+        // rebasing it, plus manual locks, pending owners and missing real keys.
+        void ValidatePostBaseShieldOwnersInTransaction(
+            const RecoverySeed&,std::span<const PendingPaymentInput>);
         // Validate all present issued/imported signing tuples and PQ records
         // against the pinned live authority in this SQL snapshot. Watch-only
         // registrations stay recognition metadata. No writes or key generation;
