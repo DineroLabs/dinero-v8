@@ -214,6 +214,41 @@ binding, runtime event, wallet operation or validation flag is published by the
 worker. Daemon handoff and historical recovery downloads remain unfinished;
 serving/client component tests are not actual mobile crossing or phone readiness.
 
+### Embedded close/reopen host
+
+NodeCore now schedules its internal activation handoff on the existing node
+worker. The worker owns argument strings and thread-affine lifecycle receipts;
+the same real datadir guard remains held until the worker has stopped and all
+old/new services are destroyed. It detaches and revalidates a coherent
+genesis-to-burial header ancestry without retaining an old HeaderStore/forest
+reader. Proof data and a genuine drained current-pool/named-wallet receipt feed
+the existing closed-store converter and selection guards, followed by normal
+completed-root startup. The first Orchard block is not skipped or made a floor.
+
+Long wallet/pool readmission stays behind the held RPC gate. A separate short
+publication callback puts the started replacement App in the SDK and marks it
+running before opening that gate. Full journal scans/archive happen afterwards,
+not under the SDK publication mutex. An interrupted prepare/publication/Stop
+retains the selected corpus; unresolved bodies are not archived and completed
+journals are retained. Explicit startup recovers a genuine pending named-wallet
+intent on its owning worker. A fresh unused recovery shell is destroyed before
+closed filesystem recovery; binding the replacement re-applies the unchanged
+closed-receipt/readers/root checks before Init. No arbitrary capture is adopted.
+
+Public Stop declares a monotonic cancellation generation before waiting for
+the SDK mutex. The internal worker uses only try-lock publication while Stop
+may hold that mutex and join it. Failed/uncertain capture stays closed/no-reply;
+it is not permission to reset the gate or automatically retry an uncertain swap.
+Init keeps its previous unbounded phase and App Start its 30-second confirmation
+window; journal/readmission is separate bounded-corpus work. No total latency,
+resident-memory or cryptographic cancellation deadline is claimed.
+
+`NodeCoreSdkPendingReopen` exercises actual C ABI cold recovery of the named
+wallet plus publication refusal/throw/interruption controls at genesis with an
+empty pool. It is not an actual P2P activation transfer, original assumed SQL
+lifecycle, nonempty queued payment, phone history or device acceptance. Those
+must pass separately, including activation-minus-one undo/cold startup.
+
 Closed-store conversion preparation now creates a separate, private candidate
 under the same real resolved datadir lock. The source is opened read-only with
 the normal directory reservation, actual ChainDB LOCK, schema/layout and READY

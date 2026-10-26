@@ -7606,6 +7606,7 @@ struct CoreReopenReceipt::Data {
     std::unique_ptr<daemon::ReopenCandidateJournal> journal;
     std::string wallet_name;std::filesystem::path root;
     std::shared_ptr<const uint8_t> original_identity,replacement_identity;bool committed=false,resumed=false;
+    std::optional<CoreReopenReceipt::Readmission> prepared;
     const std::thread::id thread=std::this_thread::get_id();
     Data(std::shared_ptr<ReopenRpcGate> g,std::shared_ptr<ReopenRpcGate::Pause> p)
         :gate(std::move(g)),pause(p?std::move(p):std::shared_ptr<ReopenRpcGate::Pause>(ReopenRpcGate::Begin(gate))){}
@@ -7688,6 +7689,14 @@ std::unique_ptr<CoreReopenReceipt> DaemonApp::PreparePendingReopen(
     saved.root=guard.DataDir();saved.replacement_identity=reopen_identity_;saved.committed=true;
     ctx_.reopen_rpc_gate=gate;receipt->CheckBeforeInit(guard);return receipt;
 }
+void DaemonApp::BindClosedReopenBeforeInit(const daemon::DatadirGuard& guard,CoreReopenReceipt& receipt){
+    std::lock_guard<std::recursive_mutex> lifecycle(close_reopen_mutex_);
+    if(started_||chain_db_||ctx_.config||ctx_.chainstate||ctx_.wallet||ctx_.mempool||!services_.empty()||
+        !guard.IsHeld()||!locked_datadir_||*locked_datadir_!=guard.DataDir())
+        throw std::logic_error("Core reopen binding requires a fresh unused locked App");
+    auto& saved=*receipt.data_;saved.Closed(guard);
+    saved.replacement_identity=reopen_identity_;ctx_.reopen_rpc_gate=saved.gate;
+}
 
 CoreReopenReceipt::Readmission DaemonApp::PrepareReadmissionAfterInternalReopen(
     const daemon::DatadirGuard& guard,CoreReopenReceipt& receipt){
@@ -7698,6 +7707,7 @@ CoreReopenReceipt::Readmission DaemonApp::PrepareReadmissionAfterInternalReopen(
         std::filesystem::path(ctx_.config->DataDir())!=saved.root)
         throw std::logic_error("Core reopen replacement is not ready");
     receipt.CheckBeforeInit(guard);saved.pause->Check();
+    saved.prepared.reset();
     // A successful/partially completed preparation belongs to this App only.
     // Another replacement must recover the durable intent AFTER abandonment,
     // not steal this still-live receipt/pause or reuse its prepared pool view.
@@ -7730,7 +7740,52 @@ CoreReopenReceipt::Readmission DaemonApp::PrepareReadmissionAfterInternalReopen(
     if(result.candidates!=result.resolved+result.retained)throw std::logic_error("Core reopen inventory mismatch");
     // No archive or RPC resume here. The complete typed corpus remains the
     // selected durable fallback across a stop/exit before host publication.
+    saved.prepared=result;
     return result;
+}
+void DaemonApp::PublishPreparedReadmission(CoreReopenReceipt& receipt,const std::function<void()>& publish){
+    std::lock_guard<std::recursive_mutex> lifecycle(close_reopen_mutex_);auto& saved=*receipt.data_;saved.Check();
+    if(!publish||!started_||!saved.prepared||saved.resumed||
+        saved.replacement_identity!=reopen_identity_||ctx_.reopen_rpc_gate!=saved.gate)
+        throw std::logic_error("Core reopen publication is not prepared for this running App");
+    saved.pause->Check();
+    publish(); // A throwing/aborted publication leaves the SAME gate HELD.
+    saved.pause->Resume();saved.resumed=true;
+}
+void DaemonApp::FailClosedReopenPause(const std::shared_ptr<ReopenRpcGate::Pause>& pause){
+    if(!pause)throw std::logic_error("Missing failed Core reopen pause");
+    pause->HoldClosed();
+}
+void DaemonApp::ArchivePublishedReadmission(const daemon::DatadirGuard& guard,CoreReopenReceipt& receipt){
+    std::lock_guard<std::recursive_mutex> lifecycle(close_reopen_mutex_);auto& saved=*receipt.data_;saved.Check();
+    if(!started_||!saved.resumed||!saved.prepared||saved.replacement_identity!=reopen_identity_||
+        !guard.IsHeld()||!locked_datadir_||*locked_datadir_!=guard.DataDir()||saved.root!=guard.DataDir())
+        throw std::logic_error("Core reopen archive is not bound to the published App/root");
+    if(!saved.prepared->retained)saved.journal->ArchivePending(guard,saved.wallet_name);
+}
+void DaemonApp::SelectClosedActivationForReopen(const daemon::DatadirGuard& guard,CoreReopenReceipt& receipt,
+    std::shared_ptr<const consensus::HeaderChainSelector> headers,
+    std::shared_ptr<const consensus::OrchardSnapshotSection> proof,const std::function<bool()>& cancelled){
+    const auto closed=receipt.ClosedForHandoff(guard);closed.Check(guard);
+    if(!headers||!proof)throw std::logic_error("Core activation handoff needs authenticated proof DATA");
+    ChainWriteToken token;
+    auto prepared=OrchardSnapshotStore::PrepareActivationHandoff(guard,token,std::move(headers),std::move(proof),cancelled);
+    auto selected=OrchardSnapshotStore::SelectActivationHandoff(guard,closed,std::move(prepared),cancelled);
+    if(!selected)throw std::runtime_error("Core activation handoff did not select its prepared root");
+    // Close both read-only source reservations before normal replacement Init.
+}
+void DaemonApp::RecoverInterruptedActivationForReopen(const daemon::DatadirGuard& guard,CoreReopenReceipt& receipt,
+    const std::function<bool()>& cancelled){
+    const auto closed=receipt.ClosedForHandoff(guard);closed.Check(guard);
+    const auto chain=guard.DataDir()/"blockchain";
+    if(storage::OrchardHandoffControlsAbsent(chain))return;
+    std::error_code error;const auto done=std::filesystem::symlink_status(chain/storage::OrchardHandoffCompleted,error);
+    if(done.type()!=std::filesystem::file_type::not_found)return; // Normal completed-root Init still audits/refuses it.
+    if(error&&error!=std::errc::no_such_file_or_directory)throw std::runtime_error("Core activation completion control unreadable");
+    // Explicit durable intent, full cohort and immutable retained headers only.
+    // Malformed partials and unmatched/missing intents still fail closed.
+    auto selected=OrchardSnapshotStore::RecoverActivationHandoff(guard,closed,{},cancelled);
+    if(!selected)throw std::runtime_error("Core activation handoff controls lack a recoverable selection");
 }
 CoreReopenReceipt::Readmission DaemonApp::ResumeAfterInternalReopen(
     const daemon::DatadirGuard& guard,CoreReopenReceipt& receipt){

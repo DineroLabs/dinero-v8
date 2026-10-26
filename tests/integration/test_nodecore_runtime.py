@@ -347,6 +347,42 @@ def app_prepared_readmission(node):
     check("prepared recovery host exits cleanly", fresh.process.returncode == 0, fresh.process.returncode)
 
 
+def sdk_pending_reopen(node):
+    # Real Apps and the actual linked SDK worker, GENESIS/EMPTY corpus only.
+    # Publication/pending-intent controls, not activation/queued acceptance.
+    path = datadir("short-publication")
+    probe = node.call("actual_app_reopen", datadir=str(path), mode="published")
+    for field in ["unprepared_publish_refused", "foreign_publish_refused",
+                  "throw_keeps_gate_closed", "gate_closed_inside_publication",
+                  "gate_open_after_publication", "published_intent_retained",
+                  "prepared_gate_closed", "prepared_exact_intent_retained",
+                  "prepared_queues_retryable", "paused_queues_retryable",
+                  "completed_intent_archived", "wallet_open_without_phrase"]:
+        check("publication contract: " + field, probe[field] is True, probe)
+    check("short publication reopens intended named wallet", probe["wallet_name"] == "reopen-owner", probe)
+    path = datadir("published-before-archive-exit")
+    prepared = node.call("actual_app_reopen", datadir=str(path), mode="published-exit")
+    check("published host exits before archive without dropping intent",
+          prepared["published_intent_retained"] and prepared["gate_open_after_publication"], prepared)
+    node.close()
+    check("publication fixture process exits cleanly", node.process.returncode == 0)
+    fresh = Embedded()
+    try:
+        check("actual SDK automatically recovers pending named intent", fresh.start(path) == 0)
+        check("SDK recovered App is running", fresh.call("status")["running"] is True)
+        check("SDK worker loaded the active named wallet before caller open",
+              fresh.rpc("wallet.getwalletinfo")["walletname"] == "reopen-owner")
+        check("SDK named wallet opens without phrase", fresh.rpc("wallet.open", ["reopen-owner"])["success"] is True)
+        check("SDK canonical RPC uses replacement App", fresh.rpc("getblockcount") == 0)
+        check("SDK recovered owner stops normally", fresh.call("stop") == 0)
+        check("SDK ordinary restart after publication", fresh.start(path) == 0)
+        check("SDK named wallet still opens without phrase", fresh.rpc("wallet.open", ["reopen-owner"])["success"] is True)
+        check("SDK closes recovered restart", fresh.call("stop") == 0)
+    finally:
+        fresh.close()
+    check("SDK recovery process exits cleanly", fresh.process.returncode == 0)
+
+
 def stopped_wallet_birth_height(path, name):
     # Only inspect the synthetic wallet after nodecore_stop has closed it.
     database = path / "wallets" / f"wallet_{name}.db"
@@ -627,6 +663,7 @@ try:
          "app_reopen": app_reopen,
          "app_pending_reopen": app_pending_reopen,
          "app_prepared_readmission": app_prepared_readmission,
+         "sdk_pending_reopen": sdk_pending_reopen,
          "snapshot": snapshot, "maintenance": maintenance,
          "maintenance_gate": maintenance_gate}[os.environ["NODECORE_SCENARIO"]](node)
         success = True

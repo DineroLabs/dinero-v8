@@ -14,6 +14,7 @@
 
 // Forward declarations
 namespace dinero {
+namespace consensus {struct OrchardSnapshotSection;}
 namespace daemon { class DatadirGuard; }
 namespace pool {
 class PoolManager;
@@ -121,6 +122,10 @@ public:
     // the same real root lock until replacement teardown. No owner conversion.
     std::unique_ptr<CoreReopenReceipt> PreparePendingReopen(const daemon::DatadirGuard&,
         const std::shared_ptr<ReopenRpcGate>&);
+    // Explicit fresh-App binding after the old App AND any unused intent
+    // recovery shell were destroyed. Closed receipt/readers/root checks are
+    // unchanged. Binding prevents further closed-store work once Init begins.
+    void BindClosedReopenBeforeInit(const daemon::DatadirGuard&,CoreReopenReceipt&);
     // Long normal wallet/pool work, with RPC STILL CLOSED and the selected
     // durable corpus retained even if this replacement is abandoned/stopped.
     // Binds the receipt to this replacement App. Repeated preparation uses
@@ -128,6 +133,29 @@ public:
     // archive, state conversion or permission to open an SDK publication gap.
     CoreReopenReceipt::Readmission PrepareReadmissionAfterInternalReopen(
         const daemon::DatadirGuard&,CoreReopenReceipt&);
+    // Short host publication only after this exact App completed normal
+    // readmission. The callback must publish the running App before RPC opens.
+    // No journal scan/archive, network, wallet or pool callback runs here.
+    // Durable candidates stay selected through publication/interrupted Stop.
+    void PublishPreparedReadmission(CoreReopenReceipt&,const std::function<void()>& publish);
+    // Failed/uncertain host capture stays retryable/no-reply; this is admission
+    // fail-closed only, not pending-intent recovery or state authority.
+    static void FailClosedReopenPause(const std::shared_ptr<ReopenRpcGate::Pause>&);
+    // Optional post-publication housekeeping, OUTSIDE the host publication
+    // mutex. All original checks/full journal scans remain mandatory; unresolved
+    // bodies are never archived. Completed journals are retained, not deleted.
+    void ArchivePublishedReadmission(const daemon::DatadirGuard&,CoreReopenReceipt&);
+    // Closed-store name selection only, with a genuine drained lifecycle
+    // receipt after ALL old App readers have been destroyed. Header/proof DATA
+    // must not keep an old HeaderStore/forest alive across replacement Init.
+    static void SelectClosedActivationForReopen(const daemon::DatadirGuard&,CoreReopenReceipt&,
+        std::shared_ptr<const consensus::HeaderChainSelector>,
+        std::shared_ptr<const consensus::OrchardSnapshotSection>,const std::function<bool()>& cancelled);
+    // Explicit pending-intent startup only. Finish an interrupted, recorded
+    // selection, never scan/adopt arbitrary candidates or rerun parent-only
+    // recovery over a completed descendant store. Normal Init audits completion.
+    static void RecoverInterruptedActivationForReopen(const daemon::DatadirGuard&,
+        CoreReopenReceipt&,const std::function<bool()>& cancelled);
     // Direct-App completion retains its original checked readmission/archive/
     // gate-open ordering. This is NOT a short SDK publication primitive: a
     // future host must coordinate replacement publication and publicStop.

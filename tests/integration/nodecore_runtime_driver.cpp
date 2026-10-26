@@ -247,7 +247,7 @@ Json::Value CompletedActivationCold(const Json::Value& request){
     app->Stop();app.reset();result["stopped"]=true;return result;
 }
 Json::Value ActualAppReopen(const std::string& path,const std::string& mode={}){
-    if(mode!=""&&mode!="prepare"&&mode!="cold"&&mode!="abandoned"&&mode!="prepared-exit"&&mode!="prepared-resume")
+    if(mode!=""&&mode!="prepare"&&mode!="cold"&&mode!="abandoned"&&mode!="prepared-exit"&&mode!="prepared-resume"&&mode!="published"&&mode!="published-exit")
         throw std::runtime_error("unknown reopen fixture mode");
     if(nodecore_is_running()||!std::filesystem::path(path).is_absolute()||
         (std::filesystem::exists(std::filesystem::path(path)/"blockchain")!=(mode=="cold")))
@@ -314,7 +314,13 @@ Json::Value ActualAppReopen(const std::string& path,const std::string& mode={}){
         result["paused_queues_retryable"]=result["paused_queues_retryable"].asBool()&&
             paused["error"]["code"].asInt()==-28&&paused["error"]["data"]["retryable"].asBool()&&!paused.isMember("result");
     }
-    if(mode=="prepared-exit"||mode=="prepared-resume"){
+    const bool publishing=mode=="published"||mode=="published-exit";
+    if(publishing){
+        bool called=false;
+        try{reopened->PublishPreparedReadmission(*receipt,[&]{called=true;});result["unprepared_publish_refused"]=false;}
+        catch(const std::logic_error&){result["unprepared_publish_refused"]=!called&&!gate->Allows(gate->Snapshot());}
+    }
+    if(mode=="prepared-exit"||mode=="prepared-resume"||publishing){
         const auto prepared=reopened->PrepareReadmissionAfterInternalReopen(guard,*receipt);
         result["prepared_candidates"]=Json::UInt64(prepared.candidates);
         result["prepared_resolved"]=Json::UInt64(prepared.resolved);result["prepared_retained"]=Json::UInt64(prepared.retained);
@@ -333,7 +339,22 @@ Json::Value ActualAppReopen(const std::string& path,const std::string& mode={}){
             reopened->Stop();reopened.reset();return result;
         }
     }
-    const auto admitted=reopened->ResumeAfterInternalReopen(guard,*receipt);
+    dinero::CoreReopenReceipt::Readmission admitted;
+    if(publishing){
+        auto foreign=std::make_unique<dinero::DaemonApp>();bool called=false;
+        try{foreign->PublishPreparedReadmission(*receipt,[&]{called=true;});result["foreign_publish_refused"]=false;}
+        catch(const std::logic_error&){result["foreign_publish_refused"]=!called&&!gate->Allows(gate->Snapshot());}
+        foreign.reset();
+        try{reopened->PublishPreparedReadmission(*receipt,[]{throw std::runtime_error("test host publication aborted");});
+            result["throw_keeps_gate_closed"]=false;}
+        catch(const std::runtime_error&){result["throw_keeps_gate_closed"]=!gate->Allows(gate->Snapshot());}
+        reopened->PublishPreparedReadmission(*receipt,[&]{result["gate_closed_inside_publication"]=!gate->Allows(gate->Snapshot());});
+        result["gate_open_after_publication"]=gate->Allows(gate->Snapshot());
+        const auto pending=dinero::daemon::ReopenCandidateJournal::OpenPending(guard,selected_wallet);
+        result["published_intent_retained"]=pending&&pending->Name()==receipt->CandidateJournal()&&selected_wallet=="reopen-owner";
+        if(mode=="published-exit"){reopened->Stop();reopened.reset();return result;}
+        reopened->ArchivePublishedReadmission(guard,*receipt);
+    }else admitted=reopened->ResumeAfterInternalReopen(guard,*receipt);
     result["completed_intent_archived"]=!dinero::daemon::ReopenCandidateJournal::OpenPending(guard,selected_wallet);
     result["candidates"]=Json::UInt64(admitted.candidates);result["resolved"]=Json::UInt64(admitted.resolved);result["retained"]=Json::UInt64(admitted.retained);
     Json::Value open(Json::arrayValue);open.append("reopen-owner");const auto opened=call(*reopened,"wallet.open",open);
