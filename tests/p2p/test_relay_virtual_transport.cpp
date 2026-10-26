@@ -25,6 +25,7 @@
 #include <array>
 #include <chrono>
 #include <cstring>
+#include <ctime>
 #include <cstdint>
 #include <filesystem>
 #include <iomanip>
@@ -918,4 +919,202 @@ TEST(RelayServicePolicy, ServiceBitFollowsVerification) {
     ASSERT_EQ(seen.size(), 2u);
     EXPECT_FALSE(seen.back());
     EXPECT_FALSE(dinero::daemon::RelayRoleEnabled("automatic", "auto", false, seen.back()));
+}
+
+// Plan 3 Task 2: the owner's caps are the defaults — at most 8 circuits,
+// 200 KB/s of relayed traffic, 20 GB a calendar month (kept across
+// restarts) — and a relay that is syncing stops taking new circuits.
+namespace {
+
+std::chrono::system_clock::time_point Utc(int year, int month, int day) {
+    std::tm tm{};
+    tm.tm_year = year - 1900;
+    tm.tm_mon = month - 1;
+    tm.tm_mday = day;
+    tm.tm_hour = 12;
+#ifdef _WIN32
+    const std::time_t t = _mkgmtime(&tm);
+#else
+    const std::time_t t = timegm(&tm);
+#endif
+    return std::chrono::system_clock::from_time_t(t);
+}
+
+std::unique_ptr<P2PManager> ManagerAt(std::chrono::system_clock::time_point when) {
+    auto clock = std::make_unique<dinero::network::FakeClockSource>();
+    clock->AdvanceSystem(when.time_since_epoch());
+    return std::make_unique<P2PManager>(0, "", std::move(clock));
+}
+
+}  // namespace
+
+TEST(RelayCaps, DefaultsAreTheOwnersCaps) {
+    const P2PManager::RelayServiceLimits limits;
+    EXPECT_EQ(limits.max_circuits, 8u);
+    EXPECT_EQ(limits.bandwidth_bytes_per_second, 200u * 1024u);
+    EXPECT_EQ(limits.monthly_quota_bytes, 20ULL * 1024 * 1024 * 1024);
+    EXPECT_EQ(limits.max_circuits_per_peer, 2u);
+    EXPECT_EQ(limits.circuit_lifetime_seconds, 1800u);
+}
+
+TEST(RelayCaps, NinthCircuitRefused) {
+    P2PManager manager(0);
+    auto target = LoopbackSocketPair::Create();
+    const std::string target_key = "127.0.0.1:" + std::to_string(target.port());
+    manager.test_install_connected_direct_peer(target_key, target.client_fd(), false, true,
+                                               MakeNodeId(0x30));
+    manager.test_register_relay_target(MakeNodeId(0x30), target_key);
+
+    std::vector<LoopbackSocketPair> requesters;
+    for (int i = 0; i < 9; ++i) requesters.push_back(LoopbackSocketPair::Create());
+    for (int i = 0; i < 9; ++i) {
+        const std::string key = "127.0.0.1:" + std::to_string(requesters[i].port());
+        manager.test_install_connected_direct_peer(key, requesters[i].client_fd(), true, false, {});
+        manager.handle_relay_connect(key, P2PMessage::create_relay_connect(MakeNodeId(0x30), 100 + i));
+        auto ack = requesters[i].ReceiveMessage();
+        ASSERT_NE(ack, nullptr) << "requester " << i;
+        const auto expected = i < 8 ? P2PMessage::RelayConnectStatus::Ok
+                                    : P2PMessage::RelayConnectStatus::RelayFull;
+        EXPECT_EQ(RelayAckStatus(*ack), static_cast<uint8_t>(expected)) << "requester " << i;
+    }
+}
+
+TEST(RelayCaps, GlobalRateStaysUnder200KBps) {
+    // Frames over the cap are dropped (the tunneled QUIC retransmits), so the
+    // cap shows up as the bytes forwarded per second of wall time.
+    P2PManager manager(0);
+    auto target = LoopbackSocketPair::Create();
+    const std::string target_key = "127.0.0.1:" + std::to_string(target.port());
+    manager.test_install_connected_direct_peer(target_key, target.client_fd(), true, false, {});
+    const std::vector<std::string> requesters = {"10.0.0.1:20999", "10.0.0.2:20999",
+                                                 "10.0.0.3:20999"};
+    for (size_t i = 0; i < requesters.size(); ++i) {
+        manager.test_install_relay_circuit(0x1000 + i, requesters[i], target_key);
+    }
+    const std::vector<uint8_t> chunk(4096, 0x5A);
+    uint64_t offered = 0, frames = 0;
+    size_t frame_bytes = 0;
+    const auto start = std::chrono::steady_clock::now();
+    while (std::chrono::steady_clock::now() - start < std::chrono::seconds(2)) {
+        const size_t i = frames % requesters.size();
+        const auto frame = P2PMessage::create_relay_data(
+            0x1000 + i, P2PMessage::RelayDirection::ClientToTarget, chunk);
+        frame_bytes = frame.payload.size();
+        manager.handle_relay_data(requesters[i], frame);
+        offered += frame_bytes;
+        ++frames;
+        std::this_thread::sleep_for(std::chrono::microseconds(200));
+    }
+    const double elapsed =
+        std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+    const uint64_t forwarded = offered - manager.test_relay_cap_drop_frames() * frame_bytes;
+    const double cap = 200.0 * 1024.0;
+    ASSERT_GT(offered, 3 * cap) << "the test must offer more than the cap";
+    EXPECT_LE(forwarded, (cap * elapsed + cap) * 1.1) << "forwarded " << forwarded;
+    EXPECT_GE(forwarded, cap * elapsed * 0.9) << "forwarded " << forwarded;
+}
+
+TEST(RelayCaps, MonthlyQuotaPersistsAcrossRestartAndResetsOnNewMonth) {
+    const auto dir = std::filesystem::temp_directory_path() /
+                     ("relay_quota_test_" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    std::filesystem::create_directories(dir);
+    const std::string path = (dir / "relay_quota").string();
+    std::filesystem::remove(path);
+    P2PManager::RelayServiceLimits small;
+    small.monthly_quota_bytes = 10000;
+    const std::vector<uint8_t> chunk(1000, 0x5A);
+    auto send = [&](P2PManager& m) {
+        const auto frame = P2PMessage::create_relay_data(
+            0x77, P2PMessage::RelayDirection::ClientToTarget, chunk);
+        const uint64_t before = m.test_relay_cap_drop_frames();
+        m.handle_relay_data("10.0.0.9:20999", frame);
+        return m.test_relay_cap_drop_frames() == before;  // forwarded
+    };
+    auto target = LoopbackSocketPair::Create();
+    const std::string target_key = "127.0.0.1:" + std::to_string(target.port());
+    uint64_t used = 0;
+    {
+        auto m = ManagerAt(Utc(2026, 10, 15));
+        m->set_relay_service_limits(small);
+        m->set_relay_quota_path(path);
+        m->test_install_connected_direct_peer(target_key, target.client_fd(), true, false, {});
+        m->test_install_relay_circuit(0x77, "10.0.0.9:20999", target_key);
+        int forwarded = 0;
+        for (int i = 0; i < 20; ++i) forwarded += send(*m) ? 1 : 0;
+        EXPECT_GE(forwarded, 1);
+        EXPECT_LT(forwarded, 20) << "the quota must bite";
+        used = m->relay_quota_month_bytes();
+        EXPECT_GT(used, 0u);
+        EXPECT_LE(used, 10000u);
+        EXPECT_EQ(m->relay_paused_reason(), "quota");
+    }  // shutdown writes the quota
+    {
+        auto m = ManagerAt(Utc(2026, 10, 28));
+        m->set_relay_service_limits(small);
+        m->set_relay_quota_path(path);
+        EXPECT_EQ(m->relay_quota_month_bytes(), used) << "restart must not reset the month";
+        auto t2 = LoopbackSocketPair::Create();
+        const std::string t2_key = "127.0.0.1:" + std::to_string(t2.port());
+        m->test_install_connected_direct_peer(t2_key, t2.client_fd(), true, false, {});
+        m->test_install_relay_circuit(0x77, "10.0.0.9:20999", t2_key);
+        EXPECT_FALSE(send(*m)) << "still over this month's quota after restart";
+    }
+    {
+        auto m = ManagerAt(Utc(2026, 11, 1));
+        m->set_relay_service_limits(small);
+        m->set_relay_quota_path(path);
+        EXPECT_EQ(m->relay_quota_month_bytes(), 0u) << "a new month starts at zero";
+        auto t3 = LoopbackSocketPair::Create();
+        const std::string t3_key = "127.0.0.1:" + std::to_string(t3.port());
+        m->test_install_connected_direct_peer(t3_key, t3.client_fd(), true, false, {});
+        m->test_install_relay_circuit(0x77, "10.0.0.9:20999", t3_key);
+        EXPECT_TRUE(send(*m));
+    }
+    std::filesystem::remove_all(dir);
+}
+
+TEST(RelayCaps, SyncingRelayRefusesNewCircuits) {
+    P2PManager manager(0);
+    uint32_t header_height = 107;
+    bool ibd = false;
+    manager.set_height_provider([] { return 100u; });
+    manager.set_best_header_height_provider([&] { return header_height; });
+    manager.set_ibd_provider([&] { return ibd; });
+    auto requester = LoopbackSocketPair::Create();
+    const std::string requester_key = "127.0.0.1:" + std::to_string(requester.port());
+    manager.test_install_connected_direct_peer(requester_key, requester.client_fd(), true, false,
+                                               {});
+    auto target = LoopbackSocketPair::Create();
+    const std::string target_key = "127.0.0.1:" + std::to_string(target.port());
+    manager.test_install_connected_direct_peer(target_key, target.client_fd(), true, false, {});
+    manager.test_install_relay_circuit(0xABCD, "10.0.0.7:20999", target_key);
+
+    auto connect_status = [&](uint64_t id) {
+        manager.handle_relay_connect(requester_key,
+                                     P2PMessage::create_relay_connect(MakeNodeId(0x40), id));
+        auto ack = requester.ReceiveMessage();
+        return ack ? RelayAckStatus(*ack) : uint8_t{0xFF};
+    };
+    const auto kRateLimited = static_cast<uint8_t>(P2PMessage::RelayConnectStatus::RateLimited);
+
+    manager.test_recompute_relay_behind_throttle();  // 7 blocks behind its best header
+    EXPECT_EQ(connect_status(1), kRateLimited);
+    EXPECT_EQ(manager.relay_paused_reason(), "syncing");
+
+    // An established circuit still carries data.
+    const auto frame = P2PMessage::create_relay_data(
+        0xABCD, P2PMessage::RelayDirection::ClientToTarget, std::vector<uint8_t>(64, 0x5A));
+    manager.handle_relay_data("10.0.0.7:20999", frame);
+    auto forwarded = target.ReceiveMessage();
+    ASSERT_NE(forwarded, nullptr);
+    EXPECT_EQ(forwarded->payload, frame.payload);
+
+    header_height = 106;  // 6 behind is fine
+    manager.test_recompute_relay_behind_throttle();
+    EXPECT_NE(connect_status(2), kRateLimited);
+    EXPECT_EQ(manager.relay_paused_reason(), "");
+
+    ibd = true;  // initial block download always pauses
+    manager.test_recompute_relay_behind_throttle();
+    EXPECT_EQ(connect_status(3), kRateLimited);
 }

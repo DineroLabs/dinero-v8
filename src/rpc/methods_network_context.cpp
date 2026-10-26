@@ -259,6 +259,9 @@ din::Json rpc_context_getnetworkinfo(const ExecutionContext& ctx, const din::Jso
     din::Json relay;
     relay["mode"] = status.relay_mode;
     relay["local"] = status.local_relay;
+    relay["quota_month_bytes"] = static_cast<Json::UInt64>(status.relay_quota_month_bytes);
+    relay["quota_month_limit"] = static_cast<Json::UInt64>(status.relay_quota_month_limit);
+    relay["paused_reason"] = status.relay_paused_reason;
     // Auto-mode toggle: true when the relay role is currently engaged for
     // any reason (today: mining is running; future: spare-bandwidth
     // heuristic, dashboard opt-in, etc.). NOT a mining-only signal — see
@@ -787,7 +790,12 @@ din::Json rpc_context_getrelayservice(const ExecutionContext& ctx, const din::Js
         error["error"]["message"] = "P2P service not available";
         return error;
     }
-    return RelayServiceJson(p2p->GetRelayServiceStatus());
+    din::Json result = RelayServiceJson(p2p->GetRelayServiceStatus());
+    const auto net = p2p->GetNetworkStatus();
+    result["quota_month_bytes"] = static_cast<Json::UInt64>(net.relay_quota_month_bytes);
+    result["quota_month_limit"] = static_cast<Json::UInt64>(net.relay_quota_month_limit);
+    result["paused_reason"] = net.relay_paused_reason;
+    return result;
 }
 
 din::Json rpc_context_setrelayservice(const ExecutionContext& ctx,

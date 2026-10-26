@@ -61,9 +61,10 @@ public:
         uint64_t bytes_recv{0};
         uint64_t bytes_sent{0};
     };
+    // Same defaults as ::P2PManager::RelayServiceLimits (the owner's caps).
     struct RelayServiceLimits {
-        size_t max_circuits{12};
-        uint64_t bandwidth_bytes_per_second{2ULL * 1024 * 1024};
+        size_t max_circuits{8};
+        uint64_t bandwidth_bytes_per_second{200ULL * 1024};
         size_t max_circuits_per_peer{2};
         uint32_t circuit_lifetime_seconds{1800};
         uint32_t requests_per_peer_per_minute{6};
@@ -170,6 +171,9 @@ public:
         uint16_t quic_listen_port{0};
         size_t quic_sessions{0};
         bool local_relay{false};
+        uint64_t relay_quota_month_bytes{0};
+        uint64_t relay_quota_month_limit{0};
+        std::string relay_paused_reason;
         bool relay_active{false};
         std::string relay_mode{"auto"};
         size_t relay_hints_received_self{0};
@@ -445,6 +449,7 @@ private:
     mutable std::mutex relay_service_mutex_;
     RelayServiceStatus relay_service_status_{};
     std::string relay_service_policy_path_;
+    std::string relay_quota_path_;
 
     // Periodic sync loop for headers-first + block scheduler in P2PService mode.
     std::atomic<bool> scheduler_tick_running_{false};

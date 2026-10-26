@@ -451,17 +451,33 @@ public:
     bool is_peer_banned(const std::string& address, uint16_t port = 0) const;
     void set_network_active(bool active);
     bool is_network_active() const { return network_active_.load(std::memory_order_acquire); }
+    // Defaults are the owner's caps for a home relay: 8 circuits, 200 KB/s,
+    // 20 GB per calendar month.
     struct RelayServiceLimits {
-        size_t max_circuits{12};
-        uint64_t bandwidth_bytes_per_second{2ULL * 1024 * 1024};
+        size_t max_circuits{8};
+        uint64_t bandwidth_bytes_per_second{200ULL * 1024};
         size_t max_circuits_per_peer{2};
         uint32_t circuit_lifetime_seconds{1800};
         uint32_t requests_per_peer_per_minute{6};
+        uint64_t monthly_quota_bytes{20ULL * 1024 * 1024 * 1024};
     };
     void set_relay_service_enabled(bool enabled) {
         relay_service_enabled_.store(enabled, std::memory_order_release);
     }
     void set_relay_service_limits(const RelayServiceLimits& limits);
+    // <datadir>/relay_quota: this calendar month's (UTC) relayed bytes, so a
+    // restart does not reset the monthly cap. Loads it now; written at most
+    // once a minute and at shutdown.
+    void set_relay_quota_path(const std::string& path);
+    uint64_t relay_quota_month_bytes() const;
+    uint64_t relay_quota_month_limit() const;
+    // Why new circuits are refused right now: "" (not paused), "syncing"
+    // (IBD or more than 6 blocks behind the best header) or "quota".
+    std::string relay_paused_reason() const;
+    void set_best_header_height_provider(HeightProvider provider) {
+        best_header_height_provider_ = std::move(provider);
+    }
+    void set_ibd_provider(std::function<bool()> provider) { ibd_provider_ = std::move(provider); }
     void set_address_manager(dinero::p2p::AddressManager* address_manager);
 
     // NAT traversal Phase 1A: caller wires in the daemon-wide NodeIdentity
@@ -988,6 +1004,11 @@ public:
     void test_install_relay_circuit(uint64_t circuit_id,
                                     const std::string& requester_addr,
                                     const std::string& target_addr);
+    void test_register_relay_target(const std::array<uint8_t, 20>& node_id,
+                                    const std::string& peer_address);
+    // Frames dropped by the per-circuit, global or monthly cap.
+    uint64_t test_relay_cap_drop_frames() const;
+    void test_recompute_relay_behind_throttle() { RecomputeRelayBehindThrottle(); }
 #endif
 
 private:
@@ -1235,18 +1256,13 @@ private:
     static constexpr size_t kMaxConcurrentCircuits = 25;
     static constexpr std::chrono::seconds kCircuitIdleTimeout{300};  // 5 min
 
-    // Relay bandwidth caps — global egress token bucket, fixed-window
-    // daily quota, and the chain-behind auto-suspend gate. The quota is
-    // a fixed 24h window (resets on the boundary); worst case is ~2x the
-    // cap across an unlucky boundary — acceptable vs uncapped, upgrade to
-    // an hourly-ring rolling window only if operational data shows it
-    // matters. relay_global_bucket_ / relay_quota_* are touched only
-    // under circuits_mutex_; the atomics need no lock.
-    static constexpr double kRelayGlobalRateBps = 5.0 * 1024.0 * 1024.0;     // 5 MB/s
-    static constexpr double kRelayGlobalBurstBytes = 5.0 * 1024.0 * 1024.0;  // 1s burst
-    static constexpr uint64_t kRelayDailyQuotaBytes =
-        50ULL * 1024 * 1024 * 1024;  // 50 GB / 24h
-    static constexpr uint32_t kRelayMaxBlocksBehind = 100;
+    // Relay bandwidth caps — global egress token bucket, a calendar-month
+    // (UTC) quota persisted across restarts, and the syncing auto-suspend
+    // gate. relay_global_bucket_ / relay_quota_* are touched only under
+    // circuits_mutex_; the atomics need no lock.
+    static constexpr double kRelayGlobalRateBps = 200.0 * 1024.0;     // 200 KB/s
+    static constexpr double kRelayGlobalBurstBytes = 200.0 * 1024.0;  // 1s burst
+    static constexpr uint32_t kRelayMaxBlocksBehind = 6;
     dinero::network::TokenBucket relay_global_bucket_{kRelayGlobalRateBps,
                                                       kRelayGlobalBurstBytes};
     std::atomic<bool> relay_service_enabled_{true};
@@ -1257,15 +1273,24 @@ private:
     };
     std::unordered_map<std::string, RelayRequestWindow> relay_request_windows_;
     uint64_t relay_quota_bytes_ = 0;
-    std::chrono::steady_clock::time_point relay_quota_window_start_{};
+    std::string relay_quota_month_;  // "YYYY-MM" the bytes belong to
+    std::string relay_quota_path_;
+    bool relay_quota_dirty_ = false;
+    std::chrono::steady_clock::time_point relay_quota_saved_at_{};
+    std::atomic<bool> relay_quota_exhausted_{false};
+    HeightProvider best_header_height_provider_;
+    std::function<bool()> ibd_provider_;
     std::atomic<bool> relay_behind_throttle_{false};
     std::atomic<uint64_t> relay_drops_circuit_{0};
     std::atomic<uint64_t> relay_drops_global_{0};
     std::atomic<uint64_t> relay_drops_quota_{0};
     std::atomic<uint64_t> relay_drops_behind_{0};
-    // Fixed-window quota check; caller holds circuits_mutex_.
-    bool RelayQuotaAllows(size_t bytes,
-                          std::chrono::steady_clock::time_point now);
+    // Monthly quota check; caller holds circuits_mutex_.
+    bool RelayQuotaAllows(size_t bytes);
+    std::string RelayQuotaMonthNow() const;  // "YYYY-MM", UTC, from clock_
+    // Writes relay_quota_path_ when dirty: always if `force`, else at most
+    // once a minute.
+    void save_relay_quota(bool force);
     // Recompute the cached >kRelayMaxBlocksBehind throttle (keepalive tick).
     void RecomputeRelayBehindThrottle();
 

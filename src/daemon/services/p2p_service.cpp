@@ -133,6 +133,9 @@ std::optional<P2PService::RelayServiceStatus> ReadRelayPolicy(
         !ValidRelayServiceLimits(status.limits)) return std::nullopt;
     if (status.mode != "off" && status.mode != "automatic" &&
         status.mode != "custom") return std::nullopt;
+    // Only custom keeps its own numbers; automatic always follows the
+    // current defaults (older builds persisted their defaults here too).
+    if (status.mode != "custom") status.limits = P2PService::RelayServiceLimits{};
     return status;
 }
 
@@ -332,6 +335,11 @@ P2PService::NetworkStatus P2PService::GetNetworkStatus() const {
     status.relay_mode = RelayMode();
     status.relay_active = relay_active_.load(std::memory_order_acquire);
     status.local_relay = IsRelayRoleEnabled();
+    if (p2p_mgr_) {
+        status.relay_quota_month_bytes = p2p_mgr_->relay_quota_month_bytes();
+        status.relay_quota_month_limit = p2p_mgr_->relay_quota_month_limit();
+        status.relay_paused_reason = p2p_mgr_->relay_paused_reason();
+    }
     status.dynamic_p2p_enabled = IsDynamicP2PActive();
     status.dynamic_p2p_mode = DynamicP2PMode();
     if (!p2p_mgr_) {
@@ -634,7 +642,8 @@ P2PService::RelayServiceStatus P2PService::SetRelayService(
         status.message = "invalid relay-service mode or limits";
         return status;
     }
-    RelayServiceStatus candidate{mode, false, limits, {}};
+    RelayServiceStatus candidate{mode, false,
+                                 mode == "custom" ? limits : RelayServiceLimits{}, {}};
     if (!WriteRelayPolicy(relay_service_policy_path_, candidate)) {
         auto status = relay_service_status_;
         status.message = "relay-service preference could not be saved";
@@ -647,11 +656,11 @@ P2PService::RelayServiceStatus P2PService::SetRelayService(
     relay_service_status_ = candidate;
     if (p2p_mgr_) {
         ::P2PManager::RelayServiceLimits applied;
-        applied.max_circuits = limits.max_circuits;
-        applied.bandwidth_bytes_per_second = limits.bandwidth_bytes_per_second;
-        applied.max_circuits_per_peer = limits.max_circuits_per_peer;
-        applied.circuit_lifetime_seconds = limits.circuit_lifetime_seconds;
-        applied.requests_per_peer_per_minute = limits.requests_per_peer_per_minute;
+        applied.max_circuits = candidate.limits.max_circuits;
+        applied.bandwidth_bytes_per_second = candidate.limits.bandwidth_bytes_per_second;
+        applied.max_circuits_per_peer = candidate.limits.max_circuits_per_peer;
+        applied.circuit_lifetime_seconds = candidate.limits.circuit_lifetime_seconds;
+        applied.requests_per_peer_per_minute = candidate.limits.requests_per_peer_per_minute;
         p2p_mgr_->set_relay_service_limits(applied);
         p2p_mgr_->set_relay_service_enabled(candidate.enabled);
     }
@@ -1761,6 +1770,7 @@ bool P2PService::Init(DaemonContext& ctx) {
     if (const auto persisted = ReadRelayPolicy(relay_service_policy_path_)) {
         relay_service_status_ = *persisted;
     }
+    relay_quota_path_ = datadir + "/relay_quota";
 
     // Parse seed nodes from config (support both addnode and connect)
     std::string addnode = config_->GetString("addnode", "");
@@ -1832,6 +1842,7 @@ bool P2PService::Init(DaemonContext& ctx) {
                 relay_service_status_.limits.requests_per_peer_per_minute;
             p2p_mgr_->set_relay_service_limits(limits);
             p2p_mgr_->set_relay_service_enabled(IsRelayRoleEnabled());
+            if (!relay_quota_path_.empty()) p2p_mgr_->set_relay_quota_path(relay_quota_path_);
         }
         // Verified reachable (dial-back) turns the relay role on in auto. The
         // service-flags provider reads IsRelayRoleEnabled() on every version,
@@ -2320,6 +2331,17 @@ bool P2PService::Start() {
         if (chainstate_) {
             p2p_mgr_->set_height_provider([this]() -> uint32_t {
                 return chainstate_->getBlockHeight();
+            });
+            // A relay that is syncing (IBD, or more than 6 blocks behind its
+            // best validated header) stops taking new circuits.
+            p2p_mgr_->set_ibd_provider([this]() { return chainstate_->IsInIBD(); });
+            p2p_mgr_->set_best_header_height_provider([]() -> uint32_t {
+                auto* ctx = DaemonContext::instance();
+                consensus::HeaderIndexEntry best{};
+                if (ctx && ctx->header_chain && ctx->header_chain->GetBestHeaderCopy(best)) {
+                    return best.height;
+                }
+                return 0;
             });
             logger_interface_->info("[P2PService] Height provider wired to chainstate");
         } else {

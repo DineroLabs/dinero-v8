@@ -68,9 +68,14 @@ The `p2p.relay` config flag controls Tier 3 only:
 
 The owner-facing `network.setrelayservice` RPC and Command-K panel add a durable
 operator policy above that runtime trigger: **Off**, **Automatic — recommended**,
-or **Custom**. Automatic uses conservative caps (12 concurrent circuits,
-2 MiB/s aggregate relay bandwidth, two circuits per peer, a 30-minute circuit
-lifetime, and six requests per peer per minute). Custom values are validated
+or **Custom**. Automatic uses the home-relay caps (8 concurrent circuits,
+200 KB/s aggregate relay bandwidth, 20 GB per calendar month kept across
+restarts in `<datadir>/relay_quota`, two circuits per peer, a 30-minute circuit
+lifetime, and six requests per peer per minute). New circuits are refused while
+the node is syncing (initial block download, or more than 6 blocks behind its
+best header) or once the month's quota is used; open circuits finish.
+`getnetworkinfo.relay` reports `quota_month_bytes`, `quota_month_limit` and
+`paused_reason`. Custom values are validated
 against hard ceilings before being persisted. Disabling this Dinero-only relay
 service rejects new relay registrations and circuits without disabling ordinary
 P2P or existing outbound recovery paths. Both mutation RPCs are admin-only;

@@ -22,6 +22,7 @@
 #include <cerrno>
 #include <cassert>  // Ring 3 Phase 4c: TS1 invariant assertions
 #include <cctype>
+#include <cstdio>
 #include <ctime>
 #include <deque>
 #include <optional>  // Ring 3 Phase 4d: TS2 lock-free pattern
@@ -1041,6 +1042,12 @@ void P2PManager::handle_relay_connect(const std::string& peer_address,
         send_to_peer(peer_address, ack);
         return;
     }
+    if (relay_paused_reason() == "quota") {
+        send_to_peer(peer_address, P2PMessage::create_relay_connect_ack(
+            request_id, 0, P2PMessage::RelayConnectStatus::RateLimited,
+            "relay used its monthly quota; try another relay"));
+        return;
+    }
 
     // Pre-b79fde09 this site refused to forward connects on mainnet because
     // the resulting RELAY_DATA would be plaintext. Now that the install
@@ -1187,7 +1194,7 @@ void P2PManager::handle_relay_data(const std::string& peer_address,
             verdict = Verdict::kCircuitCap;
         } else if (!relay_global_bucket_.TryConsume(frame_bytes, now)) {
             verdict = Verdict::kGlobalCap;
-        } else if (!RelayQuotaAllows(frame_bytes, now)) {
+        } else if (!RelayQuotaAllows(frame_bytes)) {
             verdict = Verdict::kQuotaCap;
         }
     }
@@ -1208,23 +1215,113 @@ void P2PManager::handle_relay_data(const std::string& peer_address,
     send_to_peer(dest, message);
 }
 
-// Fixed 24h-window relay quota. Caller holds circuits_mutex_. The window
-// (and its byte counter) resets once 24h has elapsed since it opened;
-// returns false — consuming nothing — once the window is full.
-bool P2PManager::RelayQuotaAllows(size_t bytes,
-                                  std::chrono::steady_clock::time_point now) {
-    if (relay_quota_window_start_.time_since_epoch().count() == 0) {
-        relay_quota_window_start_ = now;
-    }
-    if (now - relay_quota_window_start_ >= std::chrono::hours(24)) {
-        relay_quota_window_start_ = now;
+namespace {
+// Below this much quota left, new circuits are refused: one could not carry
+// even a single burst.
+constexpr uint64_t kRelayQuotaHeadroomBytes = 256 * 1024;
+}  // namespace
+
+std::string P2PManager::RelayQuotaMonthNow() const {
+    const auto now = clock_ ? clock_->SystemNow() : std::chrono::system_clock::now();
+    const std::time_t t = std::chrono::system_clock::to_time_t(now);
+    std::tm tm{};
+#ifdef _WIN32
+    gmtime_s(&tm, &t);
+#else
+    gmtime_r(&t, &tm);
+#endif
+    char buf[8];
+    std::snprintf(buf, sizeof(buf), "%04d-%02d", tm.tm_year + 1900, tm.tm_mon + 1);
+    return buf;
+}
+
+// Calendar-month (UTC) relay quota. Caller holds circuits_mutex_. The byte
+// counter resets when the month changes; returns false — consuming nothing —
+// once the month's quota is used up.
+bool P2PManager::RelayQuotaAllows(size_t bytes) {
+    const std::string month = RelayQuotaMonthNow();
+    if (month != relay_quota_month_) {
+        relay_quota_month_ = month;
         relay_quota_bytes_ = 0;
+        relay_quota_dirty_ = true;
     }
-    if (relay_quota_bytes_ + bytes > kRelayDailyQuotaBytes) {
+    if (relay_quota_bytes_ + bytes > relay_service_limits_.monthly_quota_bytes) {
         return false;
     }
     relay_quota_bytes_ += bytes;
+    relay_quota_dirty_ = true;
     return true;
+}
+
+void P2PManager::set_relay_quota_path(const std::string& path) {
+    const std::string month = RelayQuotaMonthNow();
+    uint64_t bytes = 0;
+    std::ifstream in(path);
+    std::string line;
+    if (in && std::getline(in, line)) {
+        // {"month":"YYYY-MM","bytes":N}
+        char file_month[8] = {};
+        unsigned long long file_bytes = 0;
+        if (std::sscanf(line.c_str(), "{\"month\":\"%7[0-9-]\",\"bytes\":%llu}", file_month,
+                        &file_bytes) == 2 &&
+            month == file_month) {
+            bytes = file_bytes;
+        }
+    }
+    std::lock_guard<std::mutex> lock(circuits_mutex_);
+    relay_quota_path_ = path;
+    relay_quota_month_ = month;
+    relay_quota_bytes_ = bytes;
+    relay_quota_dirty_ = false;
+    relay_quota_saved_at_ = clock_ ? clock_->SteadyNow() : std::chrono::steady_clock::now();
+}
+
+void P2PManager::save_relay_quota(bool force) {
+    std::string path, month;
+    uint64_t bytes = 0;
+    {
+        std::lock_guard<std::mutex> lock(circuits_mutex_);
+        const auto now = clock_ ? clock_->SteadyNow() : std::chrono::steady_clock::now();
+        if (relay_quota_path_.empty() || !relay_quota_dirty_) return;
+        if (!force && now - relay_quota_saved_at_ < std::chrono::minutes(1)) return;
+        path = relay_quota_path_;
+        month = relay_quota_month_;
+        bytes = relay_quota_bytes_;
+        relay_quota_dirty_ = false;
+        relay_quota_saved_at_ = now;
+    }
+    const std::string tmp = path + ".tmp";
+    {
+        std::ofstream out(tmp, std::ios::trunc);
+        out << "{\"month\":\"" << month << "\",\"bytes\":" << bytes << "}\n";
+        if (!out) return;
+    }
+    std::error_code ec;
+    std::filesystem::rename(tmp, path, ec);
+#ifdef _WIN32
+    if (ec) {
+        std::filesystem::remove(path, ec);
+        std::filesystem::rename(tmp, path, ec);
+    }
+#endif
+}
+
+uint64_t P2PManager::relay_quota_month_bytes() const {
+    std::lock_guard<std::mutex> lock(circuits_mutex_);
+    return relay_quota_month_ == RelayQuotaMonthNow() ? relay_quota_bytes_ : 0;
+}
+
+uint64_t P2PManager::relay_quota_month_limit() const {
+    std::lock_guard<std::mutex> lock(circuits_mutex_);
+    return relay_service_limits_.monthly_quota_bytes;
+}
+
+std::string P2PManager::relay_paused_reason() const {
+    if (relay_behind_throttle_.load(std::memory_order_relaxed)) return "syncing";
+    const uint64_t used = relay_quota_month_bytes();
+    const uint64_t limit = relay_quota_month_limit();
+    if (used + std::min(limit, kRelayQuotaHeadroomBytes) >= limit && used > 0) return "quota";
+    return "";
 }
 
 // Recompute the cached relay auto-suspend flag: are we more than
@@ -1284,7 +1381,11 @@ bool P2PManager::relay_health_replace_eligible(const std::string& relay_endpoint
 void P2PManager::RecomputeRelayBehindThrottle() {
     const uint32_t our_height = height_provider_ ? height_provider_() : 0;
     uint32_t tip = our_height;
-    {
+    if (best_header_height_provider_) {
+        // Validated (proof-of-work) headers: a peer cannot pause our relay by
+        // claiming a height it doesn't have.
+        tip = std::max(tip, best_header_height_provider_());
+    } else {
         std::lock_guard<std::mutex> lock(peers_mutex_);
         for (const auto& pair : connected_peers_) {
             const auto& peer = pair.second;
@@ -1293,8 +1394,9 @@ void P2PManager::RecomputeRelayBehindThrottle() {
             }
         }
     }
-    const bool behind = tip > our_height &&
-                        (tip - our_height) > kRelayMaxBlocksBehind;
+    const bool in_ibd = ibd_provider_ && ibd_provider_();
+    const bool behind = in_ibd || (tip > our_height &&
+                                   (tip - our_height) > kRelayMaxBlocksBehind);
     relay_behind_throttle_.store(behind, std::memory_order_relaxed);
 }
 
@@ -3578,6 +3680,19 @@ void P2PManager::test_install_relay_circuit(uint64_t circuit_id,
     circuits_[circuit_id] = CircuitInfo{requester_addr, target_addr, now, now};
 }
 
+void P2PManager::test_register_relay_target(const std::array<uint8_t, 20>& node_id,
+                                            const std::string& peer_address) {
+    dinero::network::RelayRegistration reg;
+    reg.node_id = node_id;
+    reg.peer_address = peer_address;
+    reg.expires_at = std::chrono::steady_clock::now() + std::chrono::hours(1);
+    relay_registry_.Register(reg);
+}
+
+uint64_t P2PManager::test_relay_cap_drop_frames() const {
+    return relay_drops_circuit_.load() + relay_drops_global_.load() + relay_drops_quota_.load();
+}
+
 void P2PManager::test_install_connected_direct_peer(
     const std::string& peer_address,
     int socket_fd,
@@ -4457,6 +4572,7 @@ void P2PManager::begin_shutdown() {
 
 // THREAD-SAFE: Multiple concurrent calls to stop() are safe (idempotent)
 void P2PManager::stop() {
+    save_relay_quota(/*force=*/true);  // also when start() never ran
     // Atomically check and transition to shutdown state
     bool expected = true;
     if (!running_.compare_exchange_strong(expected, false)) {
@@ -8854,6 +8970,7 @@ void P2PManager::keepalive_loop() {
         // NAT: refresh the cached relay auto-suspend flag, and surface
         // relay bandwidth-cap drops to the operator when new ones occur.
         RecomputeRelayBehindThrottle();
+        save_relay_quota(/*force=*/false);
         {
             const uint64_t relay_drops_total =
                 relay_drops_circuit_.load(std::memory_order_relaxed) +
