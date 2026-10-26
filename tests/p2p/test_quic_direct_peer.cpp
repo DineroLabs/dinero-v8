@@ -431,3 +431,22 @@ TEST(PeerThreads, FinishedHandlerThreadsAreReaped) {
     mgr.stop();
 }
 
+// Inbound caps must count peers still in their handshake, or a burst of
+// unfinished handshakes (cheap to forge over QUIC) bypasses the 125 / 12 caps.
+TEST(PeerThreads, HandshakingInboundPeersCountTowardTheCap) {
+    P2PManager mgr(0);
+    mgr.test_set_inbound_limits(/*total=*/1, /*per_ip=*/12);
+    int a[2], b[2];
+    ASSERT_EQ(::socketpair(AF_UNIX, SOCK_STREAM, 0, a), 0);  // a[1] stays open: handshake pending
+    mgr.test_handle_incoming_connection(a[0], "198.51.100.1");
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    ASSERT_EQ(::socketpair(AF_UNIX, SOCK_STREAM, 0, b), 0);
+    const size_t before = mgr.test_peer_thread_count();
+    mgr.test_handle_incoming_connection(b[0], "198.51.100.2");
+    EXPECT_EQ(mgr.test_peer_thread_count(), before)
+        << "a second inbound peer was accepted while the first was still handshaking (cap 1)";
+    ::close(a[1]);
+    ::close(b[1]);
+    mgr.test_set_running(true);
+    mgr.stop();
+}

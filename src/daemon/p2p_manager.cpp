@@ -7055,7 +7055,11 @@ bool P2PManager::inbound_slot_available_locked(const std::string& ip, std::strin
     size_t inbound_count = 0;
     size_t same_ip_count = 0;
     for (const auto& [key, peer] : connected_peers_) {
-        if (!peer->is_outbound && peer->is_connected) {
+        // Count inbound peers still handshaking too (not only is_connected),
+        // or a burst of unfinished handshakes walks straight past the caps.
+        const bool live = peer->is_connected ||
+            peer->lifetime_state.load(std::memory_order_acquire) == PeerLifetimeState::RUNNING;
+        if (!peer->is_outbound && live) {
             ++inbound_count;
             if (peer->address == ip) ++same_ip_count;
         }
