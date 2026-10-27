@@ -18843,9 +18843,9 @@ std::optional<p2p::OrchardPhoneHistoryTarget> ChainstateService::PhoneHistoryTar
 #endif
 }
 
+#ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
 std::unique_ptr<OrchardBoundaryReplay> ChainstateService::PreparePhoneHistoryVerifier(
     std::shared_ptr<const consensus::OrchardSnapshotSection> proof,const p2p::OrchardPhoneHistoryTarget& target){
-#ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
     if(activation_mutex_.HeldByCurrentThread())return {};
     try{
         auto use=std::make_unique<SelectedReadUse>(weak_from_this().lock());
@@ -18856,10 +18856,8 @@ std::unique_ptr<OrchardBoundaryReplay> ChainstateService::PreparePhoneHistoryVer
         if(PhoneHistoryTarget()!=std::optional(target))return {};
         return replay;
     }catch(...){return {};}
-#else
-    (void)proof;(void)target;return {};
-#endif
 }
+#endif
 
 bool ChainstateService::NeedsOrchardActivationCatalog() {
 #ifdef DINERO_HAS_ORCHARD_RUNTIME_READER

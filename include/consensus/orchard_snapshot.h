@@ -1,4 +1,5 @@
 #pragma once
+#include "consensus/orchard_snapshot_profile.h"
 
 #include "storage/orchard_catalog_state.h"
 #include "storage/orchard_state.h"
@@ -19,7 +20,7 @@ namespace dinero::consensus {
 // v6 section codec. Parsing/framing is deliberately separate from
 // selected-header authentication and canonical publication. A decoded section
 // is untrusted input and cannot enroll a compact chainstate owner.
-enum class OrchardSnapshotProfile : uint8_t { Full=1, Compact=2 };
+
 struct OrchardSnapshotRawLess {
     bool operator()(const uint256& a,const uint256& b) const noexcept {
         return std::lexicographical_compare(a.begin(),a.end(),b.begin(),b.end());

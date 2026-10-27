@@ -300,6 +300,13 @@ if(TARGET dinero_chainstate)
     target_link_libraries(dinero_core PUBLIC dinero_orchard_reindex)
   endif()
   target_link_libraries(dinero_orchard_chainstate_write PUBLIC dinero_orchard_block_staging)
+  if(TARGET dinero_core)
+    # These writers use the real core replay, header and reindex owners. Record
+    # the backward archive edges so CMake rescans the static component on GNU
+    # linkers, even for small fixtures that first enter through genesis/storage.
+    target_link_libraries(dinero_orchard_chainstate_write PRIVATE dinero_core)
+    target_link_libraries(dinero_orchard_reindex PRIVATE dinero_core)
+  endif()
   add_library(dinero_orchard_snapshot STATIC
     "${ORCHARD_HOST_ROOT}/src/consensus/orchard_snapshot_catalog.cpp"
     "${ORCHARD_HOST_ROOT}/src/consensus/orchard_snapshot.cpp"

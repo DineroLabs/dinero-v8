@@ -1,5 +1,6 @@
 #pragma once
 #include <span>
+#include "wallet/orchard_recovery_progress.h"
 #include <array>
 #include <stdexcept>
 #include "daemon/mempool_transaction.h"
@@ -1057,6 +1058,7 @@ public:
     // Scheduling PUBLIC cached bytes only, not wallet/state authority. A warm
     // cache still passes the same proof/body/selected-target constructors.
     void RequestRetainedPhoneHistoryData(){orchard_phone_history_requested_.store(true);}
+    // Implemented only by the Orchard runtime; disabled builds never create a verifier.
     std::unique_ptr<OrchardBoundaryReplay> PreparePhoneHistoryVerifier(
         std::shared_ptr<const consensus::OrchardSnapshotSection>,const p2p::OrchardPhoneHistoryTarget&);
     // Requires caller-held WalletUse and this service's WalletIndexUse, with

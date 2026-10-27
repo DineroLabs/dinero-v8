@@ -17,7 +17,10 @@
 #include "daemon/runtime_delivery_worker.h"
 #include "daemon/runtime_notification_composition.h"
 #include "consensus/orchard_profile.h"
+#include "consensus/orchard_snapshot_profile.h"
+#ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
 #include "consensus/orchard_snapshot.h"
+#endif
 #ifdef __APPLE__
 #include <TargetConditionals.h>
 #endif

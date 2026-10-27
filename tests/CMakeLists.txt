@@ -17116,3 +17116,9 @@ if(UNIX)
   add_test(NAME ValidatedTipTransition COMMAND test_validated_tip_transition)
   set_tests_properties(ValidatedTipTransition PROPERTIES LABELS "storage;csn;regression" TIMEOUT 60)
 endif()
+
+# Validate checkout line endings without accepting upstream checksum changes.
+add_test(NAME RocksDBSourcePreparation COMMAND python3
+  ${CMAKE_SOURCE_DIR}/tests/cmake/test_rocksdb_source_preparation.py
+  ${CMAKE_SOURCE_DIR} ${CMAKE_COMMAND})
+set_tests_properties(RocksDBSourcePreparation PROPERTIES TIMEOUT 30 LABELS "build;storage;mandatory")

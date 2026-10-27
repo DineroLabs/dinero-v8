@@ -123,7 +123,9 @@ if(DINERO_USE_VENDORED_DEPS)
     )
   endif()
 
-  set(DINERO_ROCKSDB_BUILD_JOBS 8 CACHE STRING "Maximum compiler jobs in the nested RocksDB build")
+  # This nested build runs alongside the parent build on small CI runners.
+  # Keep its default bounded; larger builders can explicitly raise the budget.
+  set(DINERO_ROCKSDB_BUILD_JOBS 2 CACHE STRING "Maximum compiler jobs in the nested RocksDB build")
   if(NOT DINERO_ROCKSDB_BUILD_JOBS MATCHES "^[1-9][0-9]*$")
     message(FATAL_ERROR "DINERO_ROCKSDB_BUILD_JOBS must be a positive integer")
   endif()
@@ -155,6 +157,7 @@ if(DINERO_USE_VENDORED_DEPS)
     LOG_CONFIGURE     TRUE
     LOG_BUILD         TRUE
     LOG_INSTALL       TRUE
+    LOG_OUTPUT_ON_FAILURE TRUE
   )
 
   # The custom install step below controls the vendored layout, so lib/ is

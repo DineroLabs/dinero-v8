@@ -3301,6 +3301,7 @@ jobs:
           PYVERIFY
       - name: Require and execute vendored RocksDB checksum correctness
         run: |
+          ctest --test-dir build-orchard-root -R '^RocksDBSourcePreparation$' --verbose --no-tests=error
           ctest --test-dir build-orchard-root -R '^RocksDBChecksum$' --show-only=json-v1 > orchard-rocksdb-checksum-inventory.json
           python3 - <<'PYTEST'
           import json
