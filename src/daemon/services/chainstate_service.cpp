@@ -7397,10 +7397,10 @@ StatusOr<std::shared_ptr<const RuntimeAccountReplay>> ChainstateService::getRunt
 
 StatusOr<std::shared_ptr<const RuntimeWalletOriginProjection>> ChainstateService::getRuntimeWalletOrigin(
         WalletManager& wallet,uint64_t session,UTXOIndex* index,bool existing_identity_only) const {
-    return captureRuntimeWalletOrigin(wallet,session,index,existing_identity_only,false);
+    bool pending=false;return captureRuntimeWalletOrigin(wallet,session,index,existing_identity_only,false,pending);
 }
 StatusOr<std::shared_ptr<const RuntimeWalletOriginProjection>> ChainstateService::captureRuntimeWalletOrigin(
-        WalletManager& wallet,uint64_t session,UTXOIndex* index,bool existing_identity_only,bool public_history) const {
+        WalletManager& wallet,uint64_t session,UTXOIndex* index,bool existing_identity_only,bool public_history,bool& body_data_pending) const {
 #ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
     try {
         auto result=RuntimeOrdinaryDelivery::CaptureOriginDomain(wallet,session,index,existing_identity_only);
@@ -7468,11 +7468,11 @@ StatusOr<std::shared_ptr<const RuntimeWalletOriginProjection>> ChainstateService
                 const auto size=body->Serialize().size();
                 if(size>256*1024*1024-material)return Status::Invalid;material+=size;
             }
-            if(missing)return Status::NotFound;
+            if(missing){body_data_pending=true;return Status::NotFound;}
         }
         assumeutxo::AssumeUtxoReplayEngine replay;
         for(uint32_t height=0;height<ancestry.size();++height) {
-            const auto owned=read_body(height);if(!owned)return Status::NotFound;
+            const auto owned=read_body(height);if(!owned){body_data_pending=true;return Status::NotFound;}
             std::string error;
             if(height==0 ? !replay.SeedGenesis(*owned,error) :
                 !replay.ConnectAndAdvance(*owned,height,ancestry[height],error))return Status::Invalid;
@@ -7509,10 +7509,10 @@ StatusOr<std::shared_ptr<const RuntimeWalletOriginProjection>> ChainstateService
 
 StatusOr<std::shared_ptr<const RuntimeWalletCoverageProjection>> ChainstateService::getRuntimeWalletCoverage(
         WalletManager& wallet,uint64_t session,UTXOIndex& index) const {
-    return captureRuntimeWalletCoverage(wallet,session,index,false);
+    bool pending=false;return captureRuntimeWalletCoverage(wallet,session,index,false,pending);
 }
 StatusOr<std::shared_ptr<const RuntimeWalletCoverageProjection>> ChainstateService::captureRuntimeWalletCoverage(
-        WalletManager& wallet,uint64_t session,UTXOIndex& index,bool public_history) const {
+        WalletManager& wallet,uint64_t session,UTXOIndex& index,bool public_history,bool& body_data_pending) const {
 #ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
     if(activation_mutex_.HeldByCurrentThread())return Status::Invalid;
     try {
@@ -7531,7 +7531,7 @@ StatusOr<std::shared_ptr<const RuntimeWalletCoverageProjection>> ChainstateServi
         // authority; every projected coin is rebuilt from the owned source.
         const auto replay=getRuntimeAccountReplayForWallet(wallet,session);
         if(!replay.ok())return replay.status();
-        const auto origin=captureRuntimeWalletOrigin(wallet,session,&index,true,public_history);
+        const auto origin=captureRuntimeWalletOrigin(wallet,session,&index,true,public_history,body_data_pending);
         if(!origin.ok())return origin.status();
         const auto result=RuntimeWalletCoverageProjection::Build(*origin,*replay);
         {
@@ -20496,8 +20496,12 @@ ChainstateService::reconcileImportedRuntimeWalletCoverage(WalletManager& wallet,
          if(!compact_startup_||!compact_startup_->imported_parent)return Status::Invalid;}
         // No selected/SQLite owner spans network/cache IO, independent legacy
         // consensus replay, current runtime capture or catalog restoration.
-        const auto captured=captureRuntimeWalletCoverage(wallet,session,index,true);
-        if(!captured.ok())return captured.status();const auto& coverage=**captured;
+        bool pending=false;const auto captured=captureRuntimeWalletCoverage(wallet,session,index,true,pending);
+        // Only an ACTUAL bounded body-DATA request may become the public
+        // retry result. Missing outbox/runtime/catalog/storage is NOT that
+        // operation and must never be concealed by a generic NotFound retry.
+        if(!captured.ok())return captured.status()==Status::NotFound&&!pending?Status::Invalid:captured.status();
+        const auto& coverage=**captured;
         const auto prepared=RuntimeOrdinaryDelivery::PrepareCoverage(wallet,coverage);
         ParentPreparationScope preparation(*this);
         std::unique_lock<std::mutex> snapshot(snapshot_load_mutex_);
@@ -20516,7 +20520,7 @@ ChainstateService::reconcileImportedRuntimeWalletCoverage(WalletManager& wallet,
         };
         fence();RuntimeOrdinaryDelivery::ReconcileCoverage(wallet,index,coverage,*prepared,fence);
         fence();return *captured;
-    }catch(const consensus::OrchardStateLookupError& e){return e.SourceStatus();}
+    }catch(const consensus::OrchardStateLookupError& e){return e.SourceStatus()==Status::NotFound?Status::Invalid:e.SourceStatus();}
      catch(...){return Status::Invalid;}
 #else
     (void)wallet;(void)index;(void)session;return Status::Internal;

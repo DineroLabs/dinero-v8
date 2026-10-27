@@ -1691,9 +1691,9 @@ private:
         const std::unique_lock<std::mutex>& snapshot, UTXOIndex&);
     struct ImportedOrchardDeliverySource;
     StatusOr<std::shared_ptr<const RuntimeWalletOriginProjection>> captureRuntimeWalletOrigin(
-        WalletManager&,uint64_t,UTXOIndex*,bool existing_identity_only,bool public_history) const;
+        WalletManager&,uint64_t,UTXOIndex*,bool existing_identity_only,bool public_history,bool& body_data_pending) const;
     StatusOr<std::shared_ptr<const RuntimeWalletCoverageProjection>> captureRuntimeWalletCoverage(
-        WalletManager&,uint64_t,UTXOIndex&,bool public_history) const;
+        WalletManager&,uint64_t,UTXOIndex&,bool public_history,bool& body_data_pending) const;
     std::unique_ptr<const ImportedOrchardDeliverySource> CaptureImportedOrchardDeliveryUnderLock(
         const std::unique_lock<std::mutex>&,UTXOIndex&,const RuntimeAccountReplay&);
     // Transport is not storage authority. This narrower pre-boundary route

@@ -1517,6 +1517,9 @@ Two deterministic serial tests cover source refusal at those distinct commit
 points; they are not generic concurrency/crash qualification. The explicit RPC
 accepts only the intended opaque wallet binding, never caller tip/base/reset or
 baseline data. Both earned receipts remain distinct from balance-read readiness.
+The retry result is bound only to an actual bounded body-DATA request in this
+capture. A missing runtime/outbox/catalog/storage source is not silently mapped
+to pending; no failure after entering a writer can become that acquisition retry.
 
 `NodeCoreAssumedPrivateSendUnshield` extends the real imported-source funded
 crossing with a later restored account0 payer, a DIFFERENT-seed named recipient,
