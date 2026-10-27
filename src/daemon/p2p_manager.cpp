@@ -2777,23 +2777,19 @@ void P2PManager::OrchestrateRelayDials() {
                 }
             }
             // The target signs a hint for every relay that confirmed it, so
-            // with a signed hint in hand a legacy one (stale or forged) only
-            // leads to a relay that does not hold the target.
+            // a connected signed relay beats any legacy hint (stale or
+            // forged). An unconnected one is dialed, and the legacy route
+            // stays in use until it connects: the dial may never stick.
             if (best_signed) {
                 best = best_signed;
             } else if (signed_unconnected) {
-                best = nullptr;
+                char relay_buf[24];
+                std::snprintf(relay_buf, sizeof(relay_buf), "%u.%u.%u.%u",
+                              signed_unconnected->relay_addr[0], signed_unconnected->relay_addr[1],
+                              signed_unconnected->relay_addr[2], signed_unconnected->relay_addr[3]);
+                relays_to_dial.emplace_back(relay_buf, signed_unconnected->relay_port);
             }
-            if (!best) {
-                if (signed_unconnected) {
-                    char relay_buf[24];
-                    std::snprintf(relay_buf, sizeof(relay_buf), "%u.%u.%u.%u",
-                                  signed_unconnected->relay_addr[0], signed_unconnected->relay_addr[1],
-                                  signed_unconnected->relay_addr[2], signed_unconnected->relay_addr[3]);
-                    relays_to_dial.emplace_back(relay_buf, signed_unconnected->relay_port);
-                }
-                continue;
-            }
+            if (!best) continue;
             candidates.emplace_back(target_hex, *best);
         }
     }

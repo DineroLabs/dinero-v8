@@ -2060,7 +2060,9 @@ TEST(RelayOrchestrator, SignedHintPreferredOverFresherLegacyHint) {
     EXPECT_TRUE(std::equal(id.begin(), id.end(), connect->payload.begin()));
 }
 
-TEST(RelayOrchestrator, SignedRelayIsDialedRatherThanAConnectedLegacyRelay) {
+// Review: the signed relay may never stick (full, drops us after version);
+// the target keeps re-signing, so dropping the legacy route meant no route.
+TEST(RelayOrchestrator, SignedRelayIsDialedWhileTheLegacyRouteStaysInUse) {
     auto target = NewIdentity();
     P2PManager d(0);
     InstallNodeIdentity(d);
@@ -2076,7 +2078,7 @@ TEST(RelayOrchestrator, SignedRelayIsDialedRatherThanAConnectedLegacyRelay) {
     AddLegacyHint(d, target->get_node_id_bytes(), {9, 9, 20, 2});
 
     d.test_orchestrate_relay_dials();
-    EXPECT_EQ(NextRelayConnect(legacy_relay), nullptr) << "dialed through the legacy hint's relay";
+    EXPECT_NE(NextRelayConnect(legacy_relay), nullptr) << "the only working route was dropped";
     ASSERT_EQ(dialed.size(), 1u) << "the target's signed relay was not dialed";
     EXPECT_EQ(dialed[0], "8.8.10.1:20999");
 }
