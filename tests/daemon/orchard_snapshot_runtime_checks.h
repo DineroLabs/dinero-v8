@@ -735,7 +735,7 @@ void GenerateSdkActivationFixture(){
                 std::vector<uint8_t> payout;ASSERT_TRUE(util::unhex(request["script"].asString(),payout));
                 ASSERT_FALSE(payout.empty());const auto before=source.f.service->GetActiveTip()->height;
                 BlockAssembler assembler(&source.f.db);WireOrchardAssembler(assembler,source.f);
-                const auto mined=SolveCatalogTemplate(assembler.CreateOrchardBlock(payout));ASSERT_TRUE(mined);
+                const auto mined=SolveCatalogTemplate(assembler.CreateOrchardBlock(util::hex(payout)));ASSERT_TRUE(mined);
                 ASSERT_EQ(mined->Height(),before+1);ASSERT_TRUE(source.Submit(mined->WireBytes()).connected);
                 const auto id=mined->Transactions().front().GetTxid();const auto coin=source.f.db.getCoin(id.AsUint256(),0);
                 ASSERT_TRUE(coin.ok());ASSERT_TRUE(coin->coinbase);ASSERT_EQ(coin->height,int(mined->Height()));
