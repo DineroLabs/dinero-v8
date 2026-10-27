@@ -1995,3 +1995,88 @@ TEST(RelayCaps, OneNetworkHoldsAtMostHalfTheCircuits) {
     }
     EXPECT_EQ(ok, 4);
 }
+
+// Candidates came only from addrman's first 16 NODE_RELAY entries (one per
+// /16, in map order), and nearly every address carries NODE_RELAY because
+// old builds stamp it on the addresses they gossip. A node that has met many
+// peers never drew the community relay it was connected to.
+TEST(RelayRegistration, ConnectedRelayIsCandidateWhenAddrmanIsCrowded) {
+    RelayWorld w;
+    for (int i = 0; i < 20; ++i) {  // earlier peers, all claiming NODE_RELAY
+        auto a = MakeRelayAddress(std::to_string(20 + i) + "." + std::to_string(i) + ".1.1", 20999);
+        w.addrman.addAddress(a);
+        w.addrman.markGood(a);
+    }
+    const std::string r2 = "64.44.157.100:20999";
+    w.Connect(r2, true);
+    w.manager->test_set_peer_services(r2, dinero::ServiceFlags::NODE_RELAY);  // its own version
+    bool asked = false;
+    for (int i = 0; i < 15 && !asked; ++i) {
+        w.Tick(std::chrono::seconds(30));
+        asked = ContainsEndpoint(w.Relays(), r2);
+    }
+    ASSERT_TRUE(asked) << "a connected relay was never tried: addrman's draw left it out";
+    ASSERT_NE(w.Next(r2, "relayreg"), nullptr);
+}
+
+// Found on mainnet (Plan 3 Task 7): old relays keep re-advertising legacy
+// hints for a target's unconfirmed registrations, so the freshest hint was
+// usually legacy and the origin never used the relay the target had signed.
+namespace {
+void AddLegacyHint(P2PManager& m, const std::array<uint8_t, 20>& target, std::vector<uint8_t> ip) {
+    P2PMessage::RelayHint h;
+    h.target_node_id = target;
+    h.relay_net = dinero::p2p::NetworkType::IPV4;
+    h.relay_addr = std::move(ip);
+    h.relay_port = 20999;
+    m.handle_relay_hints("10.4.0.9:20999", P2PMessage::create_relay_hints({h}));
+}
+std::unique_ptr<P2PMessage> NextRelayConnect(LoopbackSocketPair& sock) {
+    for (int i = 0; i < 8; ++i) {
+        auto m = sock.ReceiveMessage();
+        if (!m || m->command == "relaycon") return m;
+    }
+    return nullptr;
+}
+}  // namespace
+
+TEST(RelayOrchestrator, SignedHintPreferredOverFresherLegacyHint) {
+    auto target = NewIdentity();
+    P2PManager d(0);
+    InstallNodeIdentity(d);
+    auto signed_relay = LoopbackSocketPair::Create();
+    auto legacy_relay = LoopbackSocketPair::Create();
+    d.test_install_connected_direct_peer("8.8.10.1:20999", signed_relay.client_fd(), true, false, {});
+    d.test_install_connected_direct_peer("9.9.20.2:20999", legacy_relay.client_fd(), true, false, {});
+    d.handle_relay_hint_v2("10.5.0.1:20999", SignedHintMessage(*target, 1));  // via 8.8.10.1
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    AddLegacyHint(d, target->get_node_id_bytes(), {9, 9, 20, 2});  // fresher
+
+    d.test_orchestrate_relay_dials();
+    EXPECT_EQ(NextRelayConnect(legacy_relay), nullptr) << "dialed through the legacy hint's relay";
+    auto connect = NextRelayConnect(signed_relay);
+    ASSERT_NE(connect, nullptr) << "the target's signed relay was not used";
+    const auto id = target->get_node_id_bytes();
+    EXPECT_TRUE(std::equal(id.begin(), id.end(), connect->payload.begin()));
+}
+
+TEST(RelayOrchestrator, SignedRelayIsDialedRatherThanAConnectedLegacyRelay) {
+    auto target = NewIdentity();
+    P2PManager d(0);
+    InstallNodeIdentity(d);
+    std::vector<std::string> dialed;
+    d.test_set_connection_manager_dial([&](const std::string& h, uint16_t p) {
+        dialed.push_back(h + ":" + std::to_string(p));
+        return false;
+    });
+    auto legacy_relay = LoopbackSocketPair::Create();
+    d.test_install_connected_direct_peer("9.9.20.2:20999", legacy_relay.client_fd(), true, false, {});
+    d.handle_relay_hint_v2("10.5.0.1:20999", SignedHintMessage(*target, 1));  // via 8.8.10.1, not connected
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    AddLegacyHint(d, target->get_node_id_bytes(), {9, 9, 20, 2});
+
+    d.test_orchestrate_relay_dials();
+    EXPECT_EQ(NextRelayConnect(legacy_relay), nullptr) << "dialed through the legacy hint's relay";
+    ASSERT_EQ(dialed.size(), 1u) << "the target's signed relay was not dialed";
+    EXPECT_EQ(dialed[0], "8.8.10.1:20999");
+}

@@ -2747,6 +2747,7 @@ void P2PManager::OrchestrateRelayDials() {
             // only send RELAY_CONNECT through a relay peer we are already
             // connected to.
             const RelayHintRecord* best = nullptr;
+            const RelayHintRecord* best_signed = nullptr;
             const RelayHintRecord* signed_unconnected = nullptr;
             for (const auto& h : hints) {
                 // Only IPv4 hints are dialable today (slice 4b ingest accepts
@@ -2759,10 +2760,11 @@ void P2PManager::OrchestrateRelayDials() {
                 std::snprintf(relay_buf, sizeof(relay_buf), "%u.%u.%u.%u:%u",
                               h.relay_addr[0], h.relay_addr[1],
                               h.relay_addr[2], h.relay_addr[3], h.relay_port);
+                const bool is_signed = !h.v2_payload.empty() && h.v2_expiry > now_unix;
                 if (connected_peer_addresses.count(relay_buf) == 0) {
                     // Only a target-signed hint may make us dial a relay we
                     // aren't connected to: a legacy hint could name anything.
-                    if (!h.v2_payload.empty() && h.v2_expiry > now_unix &&
+                    if (is_signed &&
                         (dialback_private_targets_.load() ||
                          dinero::p2p::IsPublicRelayAddress(h.net, h.relay_addr))) {
                         signed_unconnected = &h;
@@ -2770,6 +2772,17 @@ void P2PManager::OrchestrateRelayDials() {
                     continue;
                 }
                 if (!best || h.learned_at > best->learned_at) best = &h;
+                if (is_signed && (!best_signed || h.learned_at > best_signed->learned_at)) {
+                    best_signed = &h;
+                }
+            }
+            // The target signs a hint for every relay that confirmed it, so
+            // with a signed hint in hand a legacy one (stale or forged) only
+            // leads to a relay that does not hold the target.
+            if (best_signed) {
+                best = best_signed;
+            } else if (signed_unconnected) {
+                best = nullptr;
             }
             if (!best) {
                 if (signed_unconnected) {
@@ -4682,6 +4695,9 @@ void P2PManager::MaybeAutoRegisterWithRelays() {
     std::vector<std::string> live_relays;
     std::unordered_set<std::string> confirmed_keys;
     std::unordered_set<std::string> connected_keys;
+    // Outbound peers whose own version advertises NODE_RELAY. addrman's
+    // draw below is capped and in map order, so it can leave them out.
+    std::vector<std::string> connected_relay_keys;
     {
         std::lock_guard<std::mutex> lock(peers_mutex_);
         for (const auto& kv : connected_peers_) {
@@ -4698,6 +4714,10 @@ void P2PManager::MaybeAutoRegisterWithRelays() {
             // Confirmed, or registered and still inside the ack window.
             if (peer->is_our_relay || peer->relay_register_pending) live_relays.push_back(pk);
             if (peer->is_our_relay) confirmed_keys.insert(pk);
+            if (peer->is_outbound && !peer->via_relay && peer->identity_proven &&
+                (peer->service_flags & ServiceFlags::NODE_RELAY)) {
+                connected_relay_keys.push_back(pk);
+            }
         }
     }
     // Gap 2 Stage A.1: skip relay auto-registration ONLY when this node is
@@ -4759,6 +4779,14 @@ void P2PManager::MaybeAutoRegisterWithRelays() {
     }
 
     std::vector<std::pair<std::string, uint16_t>> dynamic_candidates;
+    for (const auto& key : connected_relay_keys) {
+        std::string host;
+        uint16_t port = 0;
+        bool has_port = false;
+        if (dinero::network::SplitEndpoint(key, &host, &port, &has_port) && has_port) {
+            dynamic_candidates.emplace_back(host, port);
+        }
+    }
     if (address_manager_) {
         for (const auto& a : address_manager_->getAddressesByService(
                  ServiceFlags::NODE_RELAY, 16)) {
@@ -4773,7 +4801,8 @@ void P2PManager::MaybeAutoRegisterWithRelays() {
               [&](const std::string& a, const std::string& b) {
                   return relay_health_score(a) > relay_health_score(b);
               });
-    std::sort(dynamic_candidates.begin(), dynamic_candidates.end(),
+    // Stable: on equal scores connected relays stay ahead of addrman's.
+    std::stable_sort(dynamic_candidates.begin(), dynamic_candidates.end(),
               [&](const std::pair<std::string, uint16_t>& a,
                   const std::pair<std::string, uint16_t>& b) {
                   return relay_health_score(endpoint_key(a.first, a.second)) >
