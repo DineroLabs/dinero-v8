@@ -3224,7 +3224,9 @@ std::shared_ptr<ChainDB> ChainstateService::StageCompletedActivationRoot(const d
     std::lock_guard<AnnotatedRecursiveMutex> lock(activation_mutex_);
     if(started_||chain_db_||compact_startup_||completed_activation_||consensus_utxo_set_||active_tip_)
         throw std::logic_error("Completed activation staging requires unused service storage");
-    completed_activation_=OrchardSnapshotStore::ReadCompletedActivationRoot(guard);
+    auto staged=OrchardSnapshotStore::ReadCompletedActivationRoot(guard);
+    completed_activation_=CompletedActivationOwner(staged.release(),
+        [](CompletedOrchardActivationStartup* owner){delete owner;});
     completed_activation_guard_=&guard;
     return OrchardSnapshotStore::CompletedActivationDatabase(*completed_activation_);
 #else

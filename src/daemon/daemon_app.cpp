@@ -1068,7 +1068,7 @@ bool DaemonApp::Init(int argc, char** argv) {
             chain_db_=chainstate->StageCompletedActivationRoot(*locked_datadir_guard_);
             compact_activation_reopen=true;compact_snapshot_reopen=true;
 #else
-            OrchardSnapshotStore::RequireNoActivationHandoff(data_dir_path);
+            throw std::runtime_error("Authenticated activation handoff requires the Orchard runtime for dedicated closed-store recovery");
 #endif
         }
 
@@ -7791,6 +7791,7 @@ void DaemonApp::ArchivePublishedReadmission(const daemon::DatadirGuard& guard,Co
 void DaemonApp::SelectClosedActivationForReopen(const daemon::DatadirGuard& guard,CoreReopenReceipt& receipt,
     std::shared_ptr<const consensus::HeaderChainSelector> headers,
     std::shared_ptr<const consensus::OrchardSnapshotSection> proof,const std::function<bool()>& cancelled){
+#ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
     const auto closed=receipt.ClosedForHandoff(guard);closed.Check(guard);
     if(!headers||!proof)throw std::logic_error("Core activation handoff needs authenticated proof DATA");
     ChainWriteToken token;
@@ -7798,6 +7799,10 @@ void DaemonApp::SelectClosedActivationForReopen(const daemon::DatadirGuard& guar
     auto selected=OrchardSnapshotStore::SelectActivationHandoff(guard,closed,std::move(prepared),cancelled);
     if(!selected)throw std::runtime_error("Core activation handoff did not select its prepared root");
     // Close both read-only source reservations before normal replacement Init.
+#else
+    (void)guard;(void)receipt;(void)headers;(void)proof;(void)cancelled;
+    throw std::runtime_error("Activation handoff unavailable without the Orchard runtime");
+#endif
 }
 void DaemonApp::RecoverInterruptedActivationForReopen(const daemon::DatadirGuard& guard,CoreReopenReceipt& receipt,
     const std::function<bool()>& cancelled){
@@ -7809,8 +7814,13 @@ void DaemonApp::RecoverInterruptedActivationForReopen(const daemon::DatadirGuard
     if(error&&error!=std::errc::no_such_file_or_directory)throw std::runtime_error("Core activation completion control unreadable");
     // Explicit durable intent, full cohort and immutable retained headers only.
     // Malformed partials and unmatched/missing intents still fail closed.
+#ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
     auto selected=OrchardSnapshotStore::RecoverActivationHandoff(guard,closed,{},cancelled);
     if(!selected)throw std::runtime_error("Core activation handoff controls lack a recoverable selection");
+#else
+    (void)cancelled;
+    throw std::runtime_error("Activation handoff recovery unavailable without the Orchard runtime");
+#endif
 }
 CoreReopenReceipt::Readmission DaemonApp::ResumeAfterInternalReopen(
     const daemon::DatadirGuard& guard,CoreReopenReceipt& receipt){

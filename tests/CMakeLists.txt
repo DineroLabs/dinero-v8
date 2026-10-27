@@ -1071,9 +1071,7 @@ endif()
 if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_header_metadata_recovery.cpp)
   add_executable(test_header_metadata_recovery
     tests/daemon/test_header_metadata_recovery.cpp
-    # This archival metadata fixture does not exercise a live mempool. The
-    # transitive wallet object references its API; use the existing test seam.
-    tests/stubs/mempool_test_stubs.cpp
+    src/daemon/config.cpp  # Real core replay/reindex owners consult configuration.
   )
   target_link_libraries(test_header_metadata_recovery PRIVATE
     dinero_core
@@ -16637,6 +16635,7 @@ function(dinero_attach_real_mempool_fixture_runtime)
     dinero_core dinero_consensus dinero_pq dinero_shielded dinero_chainstate
     dinero_crypto secp256k1 RocksDB::rocksdb ${SQLITE3_LIBRARIES})
   set(_real_mempool_fixture_targets
+    test_header_metadata_recovery
     test_assumeutxo_replay
     test_block_acceptor_fees
     test_block_ingress_service
@@ -17122,3 +17121,10 @@ add_test(NAME RocksDBSourcePreparation COMMAND python3
   ${CMAKE_SOURCE_DIR}/tests/cmake/test_rocksdb_source_preparation.py
   ${CMAKE_SOURCE_DIR} ${CMAKE_COMMAND})
 set_tests_properties(RocksDBSourcePreparation PROPERTIES TIMEOUT 30 LABELS "build;storage;mandatory")
+
+if(UNIX AND TARGET dinerod AND NOT DINERO_BUILD_ORCHARD_BACKEND)
+  add_test(NAME OrchardBackendOffHandoffRefusal COMMAND python3
+    ${CMAKE_SOURCE_DIR}/tests/integration/test_orchard_backend_off_handoff.py $<TARGET_FILE:dinerod>)
+  set_tests_properties(OrchardBackendOffHandoffRefusal PROPERTIES
+    TIMEOUT 150 RUN_SERIAL TRUE LABELS "orchard;storage;regression;mandatory")
+endif()

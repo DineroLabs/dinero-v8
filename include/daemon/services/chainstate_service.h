@@ -2102,7 +2102,12 @@ private:
     // that from a comment into an enforced invariant. Satisfies Lockable, so
     // every existing lock_guard/unique_lock site is unchanged.
     mutable AnnotatedRecursiveMutex activation_mutex_;  // Protects ActivateBestChain from concurrent entry
-    std::unique_ptr<CompletedOrchardActivationStartup> completed_activation_;
+    // Keep exclusive ownership, but install destruction only in the real
+    // runtime factory. Backend-OFF services retain an empty owner and do not
+    // reference a destructor whose implementation is absent from that build.
+    using CompletedActivationOwner = std::unique_ptr<CompletedOrchardActivationStartup,
+        void (*)(CompletedOrchardActivationStartup*)>;
+    CompletedActivationOwner completed_activation_{nullptr, nullptr};
     const daemon::DatadirGuard* completed_activation_guard_=nullptr;
     // Declared after the bound mutex and database owner so it is destroyed
     // first. Database handoff refuses replacement while this owner exists.

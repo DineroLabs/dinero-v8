@@ -7,7 +7,7 @@ import tempfile
 
 root = Path(sys.argv[1]).resolve()
 cmake = sys.argv[2]
-original = (root / "third_party/rocksdb/util/crc32c_arm64.cc").read_bytes()
+original = (root / "third_party/rocksdb/util/crc32c_arm64.cc").read_bytes().replace(b"\r\n", b"\n")
 assert b"\r" not in original
 with tempfile.TemporaryDirectory(prefix="dinero-rocksdb-source-") as directory:
     work = Path(directory)
