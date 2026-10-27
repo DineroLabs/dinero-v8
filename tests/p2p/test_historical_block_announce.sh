@@ -28,5 +28,19 @@ sleep 2
 announced=$(grep -o "Block announced via ChainstateService (active tip) hash=[0-9a-f]*" "$B/node.log" | sort -u | wc -l | tr -d ' ')
 held=$(grep -c "catching up; not announced" "$B/node.log")
 echo "B announced=$announced held_back=$held (work $WORK)"
-if (( held >= 20 && announced <= 7 )); then echo "PASS"; rm -rf "$WORK"; exit 0; fi
+# Acceptance notifications can arrive after a batch has advanced the active
+# tip. Those callbacks intentionally announce nothing, so held + announced
+# need not equal 30. Check which blocks were announced, not a scheduler-
+# dependent minimum count of historical callbacks.
+allowed=" "
+for height in $(seq 24 30); do
+    hash=$(cli "$A" 32996 getblockhash "$height")
+    [[ ${#hash} == 64 ]] || { echo "FAIL: cannot read allowed block $height"; exit 1; }
+    allowed+="${hash:0:16} "
+done
+bad=0
+while read -r hash; do
+    [[ "$allowed" == *" $hash "* ]] || bad=1
+done < <(grep -o "Block announced via ChainstateService (active tip) hash=[0-9a-f]*" "$B/node.log" | sed 's/.*hash=//' | sort -u)
+if (( held > 0 && announced >= 1 && announced <= 7 && bad == 0 )); then echo "PASS"; rm -rf "$WORK"; exit 0; fi
 echo "FAIL: a syncing node announced historical blocks"; exit 1
