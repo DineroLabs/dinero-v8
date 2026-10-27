@@ -77,6 +77,15 @@ public:
     bool Open();
 
     /**
+     * @brief Use a smaller RocksDB write buffer (call before Open)
+     *
+     * RocksDB preallocates its write-ahead log at 1.1 x write_buffer_size, so
+     * the 64 MB default reserves ~70 MB of disk for a log that holds a few KB
+     * of headers. Phones set this; desktop keeps the default.
+     */
+    void SetWriteBufferBytes(size_t bytes) { write_buffer_bytes_ = bytes; }
+
+    /**
      * @brief Close the database
      */
     void Close();
@@ -212,6 +221,7 @@ public:
 private:
     friend struct HeaderStoreStartupTestAccess;
     std::string db_path_;
+    size_t write_buffer_bytes_ = 0;  // 0 = RocksDB default
     rocksdb::DB* db_;
     bool is_open_;
     bool has_legacy_entries_{false};

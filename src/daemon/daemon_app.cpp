@@ -2333,6 +2333,10 @@ bool DaemonApp::Init(int argc, char** argv) {
 
     // Initialize HeaderStore (persistent header storage)
     auto header_store = std::make_shared<dinero::consensus::HeaderStore>(datadir + "/headers");
+    if (GetConfig().sync_profile == "ios_utreexo") {
+        // Phones: a 4 MB buffer preallocates ~4.4 MB of WAL instead of ~70 MB.
+        header_store->SetWriteBufferBytes(4u << 20);
+    }
     if (!header_store->Open()) {
         std::cerr << "[DaemonApp] ❌ Failed to open header store" << std::endl;
         return false;
