@@ -125,6 +125,9 @@ private:
         bool fulfilled{false};
     };
     std::vector<Outstanding> outstanding_;
+    // Discover is still registering requests: a fast answer must not
+    // complete the round before every server has been asked.
+    bool sending_{false};
     std::vector<std::pair<UdpAddr, UdpAddr>> responses_;  // this round's answers
     std::string first_server_endpoint_;
 

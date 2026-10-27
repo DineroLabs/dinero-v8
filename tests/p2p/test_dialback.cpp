@@ -391,3 +391,29 @@ TEST(DialBack, OnionServiceAddressIsGossipedWithoutDialBack) {
     m.add_advertised_address(onion, 20999, /*learned=*/true);
     EXPECT_TRUE(Gossips(m, onion));
 }
+
+// Review of #852 (Codex): a reachchk that could not be sent was removed
+// without a result, so its round never closed and the candidate was never
+// checked again, even once the verifier was usable.
+TEST(DialBack, FailedSendDoesNotStrandTheCandidate) {
+    P2PManager m(0);
+    m.set_dialback_min_groups(1);
+    std::array<uint8_t, 20> id{};
+    id[0] = 1;
+    m.test_install_connected_direct_peer("44.55.66.77", -1, true, true, id);  // no socket yet
+    m.get_peer_info("44.55.66.77")->service_flags = Services(true);
+    m.test_set_release_capability("44.55.66.77", true);
+    m.test_add_self_candidate("88.99.11.22", 20999);
+    m.test_run_reachability_tick();
+    ASSERT_EQ(m.test_reach_checks_sent(), 0u) << "the send was expected to fail";
+
+    int sockets[2];
+    ASSERT_EQ(socketpair(AF_UNIX, SOCK_STREAM, 0, sockets), 0);
+    m.get_peer_info("44.55.66.77")->socket_fd = sockets[0];
+    std::this_thread::sleep_for(std::chrono::seconds(31));  // past the 30 s retry backoff
+    m.test_run_reachability_tick();
+    EXPECT_GT(m.test_reach_checks_sent(), 0u) << "candidate stranded by a failed send";
+    m.get_peer_info("44.55.66.77")->socket_fd = -1;
+    close(sockets[0]);
+    close(sockets[1]);
+}
