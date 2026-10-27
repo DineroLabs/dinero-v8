@@ -1457,6 +1457,16 @@ ordinary/frozen rows, first cursor or mixed/index readiness receipt is rewritten
 
 ## Original-import private send and unshield native gate
 
+`NodeCoreCompactMixedBalanceRefusal` additionally queries normal wallet balance,
+wallet-info and wallet-scoped snapshot RPCs after genuine post-base shield106.
+An authenticated Orchard balance does not certify the ordinary/index baselines.
+Until both stores have genuinely reconciled and caught up, these mixed-balance
+surfaces must return retryable `wallet_balance_not_current`, without stale numeric
+balances or a zero substituted for unknown funds. Original ordinary/frozen rows,
+ten imported SQL values, encrypted owners and missing baseline schema/receipts
+must remain unchanged. This is an honest refusal gate, not mixed recovery or
+complete wallet-readiness qualification.
+
 `NodeCoreAssumedPrivateSendUnshield` extends the real imported-source funded
 crossing with a later restored account0 payer, a DIFFERENT-seed named recipient,
 actual public queuespend/finishspend proofs and canonical private confirmation105.

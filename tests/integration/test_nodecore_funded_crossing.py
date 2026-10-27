@@ -37,6 +37,8 @@ if ready_restart:assert new_compact_ready and not reserved_restart
 post_base_shield=bool(os.environ.get('DINERO_SDK_POST_BASE_SHIELD'))
 post_base_discovery_only=bool(os.environ.get('DINERO_SDK_POST_BASE_DISCOVERY_ONLY'))
 post_base_source_refusal=bool(os.environ.get('DINERO_SDK_POST_BASE_SOURCE_REFUSAL'))
+mixed_balance_refusal=bool(os.environ.get('DINERO_SDK_MIXED_BALANCE_REFUSAL'))
+if mixed_balance_refusal:assert post_base_shield and not post_base_discovery_only
 if post_base_shield:assert new_compact_ready and not reserved_restart and not ready_restart
 assumed_unshield=bool(os.environ.get('DINERO_SDK_ASSUMED_PRIVATE_UNSHIELD'))
 if assumed_unshield:assert assumed and os.environ.get('DINERO_SDK_COMPACT_PRIVATE_SEND')=='1' and not new_compact_reservation
@@ -832,9 +834,29 @@ try:
                 assert any(o['operation_id']==post_request['request_id'] and (o.get('chain_observation') or {}).get('outcome')=='confirmed' for o in post_operations['operations']),post_operations
                 post_result=rpc('wallet.orchard.getbalance',dict(binding,account=0));assert post_result['confirmed_una']==550000,post_result
                 assert original_lifecycle()==original and mixed_runtime_receipts()==mixed_before
+                mixed_balance=None
+                if mixed_balance_refusal:
+                    # Genuine Orchard confirmation is NOT both transparent
+                    # baselines. Query normal public surfaces, not injected
+                    # wallet rows or a caller-provided balance/readiness flag.
+                    before_balance=candidate_wallet_state();balance_rows=wallet_rows()
+                    balance_candidates=snapshot_candidate_rows()
+                    replies={method:call('rpc',method=method,params=[]) for method in
+                        ('wallet.getbalance','wallet.getwalletinfo','wallet.snapshot')}
+                    mixed_balance=dict(replies=replies,ordinary_before=before_balance,
+                        ordinary_after=candidate_wallet_state(),mixed_before=mixed_before,
+                        mixed_after=mixed_runtime_receipts(),orchard_balance=post_result)
+                    (root/'mixed-balance-observation.json').write_text(json.dumps(mixed_balance,indent=2)+'\n')
+                    assert candidate_wallet_state()==before_balance and wallet_rows()==balance_rows
+                    assert snapshot_candidate_rows()==balance_candidates and original_lifecycle()==original
+                    assert mixed_runtime_receipts()==mixed_before,'balance query minted mixed baselines/schema'
+                    for method,reply in replies.items():
+                        assert reply.get('error_code')=='wallet_balance_not_current' and reply.get('retryable') is True,(method,reply)
+                        assert not any(key in reply for key in ('confirmed','balance','total','spendable','balances')),(method,reply)
                 assert any(p['command']=='getwinput' and struct.unpack_from('<I',(root/p['file']).read_bytes(),54)[0]==105 for p in packets[wire_post:])
                 new_ready['post_base_shield']=dict(discovery=discovery,pending=post_pending,queued=post_queued,finished=post_finished,
                     body=post_signed,mined=post_mined,operations=post_operations,balance=post_result,
+                    mixed_balance_refusal=mixed_balance,
                     scope='Actual original-assumed compact NEW post-base105 owned-change discovery during normal named reopen/unlock, CURRENT105 TCP input proof acquisition and public NEW queue/finish with real canonical FULL validation/mining106/SDK106/550000una. Both original historical funding outputs already spent; no wallet coin or caller balance injection, manual proof-backed spend, mixed/independent baseline, mainnet/v5/all lifecycles/apps/devices/release claim.')
         (root/'receipt.json').write_text(json.dumps(dict(original_assumed_mobile=True,new_compact_reservation=True,
             pending=pending_input,queued=new_queued,retry=new_retry,reopened=reopened,original_lifecycle=original,
