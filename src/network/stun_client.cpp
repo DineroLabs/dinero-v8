@@ -160,6 +160,7 @@ bool StunClient::Discover(std::chrono::seconds timeout, ResultCallback cb) {
         std::lock_guard<std::mutex> lock(state_mutex_);
         outstanding_.clear();
         responses_.clear();
+        sending_ = true;
         result_cb_ = std::move(cb);
         deadline_ = std::chrono::steady_clock::now() + timeout;
     }
@@ -205,10 +206,22 @@ bool StunClient::Discover(std::chrono::seconds timeout, ResultCallback cb) {
         }
     }
 
+    bool all_answered = false;
+    {
+        std::lock_guard<std::mutex> lock(state_mutex_);
+        sending_ = false;
+        all_answered = !outstanding_.empty() &&
+                       std::all_of(outstanding_.begin(), outstanding_.end(),
+                                   [](const Outstanding& o) { return o.fulfilled; });
+    }
     if (sent == 0) {
         StunResult r;
         r.error_message = "STUN: all server resolutions / sends failed";
         DispatchResult(r);
+        return true;
+    }
+    if (all_answered) {  // every server answered while we were still sending
+        DispatchResult(StunResult{});
         return true;
     }
 
@@ -290,7 +303,8 @@ void StunClient::HandleDatagram(const UdpAddr& /*src*/, const uint8_t* data, siz
         it->fulfilled = true;
         if (responses_.empty()) first_server_endpoint_ = it->server_endpoint;
         responses_.emplace_back(it->server_addr, *mapped);
-        all_answered = std::all_of(outstanding_.begin(), outstanding_.end(),
+        all_answered = !sending_ &&
+                       std::all_of(outstanding_.begin(), outstanding_.end(),
                                    [](const Outstanding& o) { return o.fulfilled; });
     }
     if (all_answered) DispatchResult(StunResult{});

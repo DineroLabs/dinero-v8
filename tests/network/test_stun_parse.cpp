@@ -186,3 +186,25 @@ TEST(StunDemux, DestroyedMidRoundNeverCallsBack) {
     std::this_thread::sleep_for(std::chrono::milliseconds(1500));
     EXPECT_EQ(fired.load(), 0) << "timeout watcher ran on a destroyed client";
 }
+
+// Review of #852 (Codex): through an external socket a reply can arrive
+// before Discover has registered the next server's request; the round then
+// counted as complete with one observation and later replies were lost.
+TEST(StunDemux, FastFirstReplyDoesNotEndATwoServerRound) {
+    StunClient* client = nullptr;
+    size_t delivered = 0;
+    int callbacks = 0;
+    StunClient c([&](const UdpAddr& server, const uint8_t* request, size_t) {
+        auto response = Response(request + 8, V4(44, 55, 66, 77, 20999));
+        client->HandleDatagram(server, response.data(), response.size());  // answers at once
+        return true;
+    });
+    client = &c;
+    c.SetServers({{"192.0.2.10", 3478}, {"198.51.100.10", 3478}});
+    ASSERT_TRUE(c.Discover(std::chrono::seconds(1), [&](const StunResult& r) {
+        ++callbacks;
+        delivered = r.responses.size();
+    }));
+    EXPECT_EQ(callbacks, 1);
+    EXPECT_EQ(delivered, 2u) << "the round ended before the second server was asked";
+}

@@ -8190,6 +8190,10 @@ uint64_t P2PManager::send_reach_check(const std::string& peer_key,
         std::lock_guard<std::mutex> lock(reach_mutex_);
         pending_reach_.erase(nonce);
         --reach_checks_sent_;
+        // PlanChecks counted this verifier in the round; without a result
+        // the round never closes. An unsent check says nothing about us, so
+        // it is neutral, like a busy verifier.
+        self_reach_->OnResult(c, v, kReachRefusedRate);
         return 0;
     }
     return nonce;
