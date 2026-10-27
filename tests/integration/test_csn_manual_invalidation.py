@@ -99,13 +99,15 @@ try:
         (root / f"receipt-{cycle}.json").write_text(json.dumps(receipt, indent=2))
         print(json.dumps(receipt), flush=True)
         assert receipt["tip"] == parent
+        assert after["verified_block_hash"] == parent, "snapshot identity did not roll back with the tip"
         assert after["verified_height"] == parent_height
         assert after["commitment"] == expected, "manual CSN rollback left accumulator ahead of tip"
         rpc("csn", "blockchain.reconsiderblock", [invalidated])
         wait(lambda: rpc("csn", "getbestblockhash") == tip)
-        assert rpc("csn", "blockchain.getutreexocommitment")["commitment"] == before["commitment"], (
-            "reconsider did not replay the forest"
-        )
+        replayed = rpc("csn", "blockchain.getutreexocommitment")
+        assert replayed["verified_block_hash"] == tip, "replay left a stale validation identity"
+        assert replayed["verified_height"] == 5
+        assert replayed["commitment"] == before["commitment"], "reconsider did not replay the forest"
         print(f"PASS manual CSN rollback/replay cycle {cycle + 1}", flush=True)
     success = True
 finally:

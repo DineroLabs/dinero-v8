@@ -1,3 +1,4 @@
+#include "storage/validated_tip_transition.h"
 #include "storage/orchard_storage_mode.h"
 #include "daemon/services/prepared_orchard_parent.h"
 #ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
@@ -18110,6 +18111,17 @@ bool ChainstateService::DisconnectTip(CBlockIndex* tip_to_disconnect) {
             return false;
         }
 
+        // Mirror ordinary disconnect's validation marker, atomically with the
+        // restored coins and parent tip. Never advance a behind assumed-history
+        // marker just because the canonical tip was allowed to move.
+        const auto validated_status = storage::StageMatchingValidatedTip(
+            *chain_db_, token, tip_to_disconnect->hash, tip_to_disconnect->height,
+            new_tip->hash, new_tip->height, coin_batch);
+        if (validated_status != Status::Ok) {
+            if (logger_) logger_->error("[DisconnectTip-CSN] Failed to stage validation-tip rollback");
+            return false;
+        }
+
         // Phase 3b step 4 (CSN mirror): stage ShieldedTipMarker into the
         // unified coin_batch — atomic with UTXO rollback + tip pointer.
         // No more standalone fsync after the rollback batch where the
@@ -25182,6 +25194,15 @@ bool ChainstateService::CommitConnectedBlockBookkeeping(CBlockIndex* block_index
         if (tip_status != Status::Ok) {
             return fail("persist-tip-stage-failed");
         }
+
+        // ReplayBlock has checked rewards and the resulting forest commitment,
+        // and the shielded replay owner has applied this block. Extend only an
+        // exact parent validation marker; preserve assumed-history frontiers.
+        const auto validated_status = storage::StageMatchingValidatedTip(
+            *chain_db_, token, block.header.prev_block_hash, block_index->height - 1,
+            block_index->hash, block_index->height, utxo_batch);
+        if (validated_status != Status::Ok)
+            return fail("persist-validation-tip-stage-failed");
 
         const auto height_idx_status = chain_db_->putHeightIndex(
             token, static_cast<int>(block_index->height), block_index->hash,

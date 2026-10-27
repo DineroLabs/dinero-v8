@@ -17108,3 +17108,11 @@ if(UNIX AND TARGET test_orchard_wallet_cycle_daemon AND TARGET migrate_shielded_
       $<TARGET_FILE:test_orchard_wallet_cycle_daemon> $<TARGET_FILE:migrate_shielded_datadir>)
   set_tests_properties(PhoneRollbackWarning PROPERTIES LABELS "integration;storage;nodecore" TIMEOUT 180 RUN_SERIAL TRUE)
 endif()
+
+if(UNIX)
+  add_executable(test_validated_tip_transition tests/storage/test_validated_tip_transition.cpp src/common/logger.cpp)
+  target_include_directories(test_validated_tip_transition PRIVATE ${CMAKE_SOURCE_DIR}/include)
+  target_link_libraries(test_validated_tip_transition PRIVATE dinero_chainstate dinero_consensus dinero_crypto RocksDB::rocksdb)
+  add_test(NAME ValidatedTipTransition COMMAND test_validated_tip_transition)
+  set_tests_properties(ValidatedTipTransition PROPERTIES LABELS "storage;csn;regression" TIMEOUT 60)
+endif()
