@@ -4704,7 +4704,9 @@ void P2PManager::MaybeAutoRegisterWithRelays() {
         std::vector<uint8_t> bytes;
         return HostToAddrV2(host, &net, &bytes) && net == dinero::p2p::NetworkType::IPV4;
     };
-    // A direct IPv4 connection: IPv4-only origins must be able to reach us.
+    // A direct IPv4 connection within kDualStackMemory: IPv4-only origins
+    // must be able to reach us. Remembered so that losing it (or the IPv4
+    // relay itself) neither drops IPv4 coverage nor churns the relay set.
     bool has_ipv4 = false;
     {
         std::lock_guard<std::mutex> lock(peers_mutex_);
@@ -4727,6 +4729,13 @@ void P2PManager::MaybeAutoRegisterWithRelays() {
                 connected_relay_keys.push_back(pk);
             }
             if (peer->is_outbound && !peer->via_relay && is_ipv4(peer->address)) has_ipv4 = true;
+        }
+        const auto steady_now = clock_->SteadyNow();
+        if (has_ipv4) {
+            last_direct_ipv4_at_ = steady_now;
+        } else {
+            has_ipv4 = last_direct_ipv4_at_.time_since_epoch().count() != 0 &&
+                       steady_now - last_direct_ipv4_at_ < kDualStackMemory;
         }
     }
     // Gap 2 Stage A.1: skip relay auto-registration ONLY when this node is

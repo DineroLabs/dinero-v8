@@ -1307,6 +1307,11 @@ private:
     static constexpr std::chrono::seconds kRelayPingInterval{30};
     static constexpr uint32_t kRelayMaxMissedPings = 3;
     static constexpr std::chrono::minutes kRelaySkipAfterFailure{30};
+    // How long a node still counts as dual-stack after its last direct
+    // outbound IPv4 connection (see MaybeAutoRegisterWithRelays); guarded
+    // by peers_mutex_.
+    static constexpr std::chrono::hours kDualStackMemory{1};
+    std::chrono::steady_clock::time_point last_direct_ipv4_at_{};
     // Relays that never acked or stopped answering pings; guarded by
     // relay_endpoints_mutex_.
     std::unordered_map<std::string, std::chrono::steady_clock::time_point> relay_skip_until_;

@@ -2084,6 +2084,35 @@ TEST(RelayRegistration, DualStackNodeFallsBackToAnIPv4FleetRelay) {
     EXPECT_EQ(w.dialed.size(), 1u);
 }
 
+// Dual-stack is inferred from a direct IPv4 connection. Losing it (or the
+// IPv4 relay itself) must not drop the IPv4 relay or start churn; only
+// after an hour with no IPv4 connection does the node stop trying.
+TEST(RelayRegistration, DualStackIsRememberedAfterTheIPv4PeerGoes) {
+    RelayWorld w;
+    const std::string a = "[2a01:4f8::1]:20999";
+    const std::string b = "[2604:a880::1]:20999";
+    w.Connect(a, true);
+    w.Connect(b, true);
+    w.manager->test_maybe_auto_register_with_relays();
+    w.Ack(a);
+    w.Ack(b);
+    const std::string peer = "8.8.10.1:20999";  // an ordinary IPv4 peer
+    w.Connect(peer, false);
+    w.manager->test_maybe_auto_register_with_relays();
+    ASSERT_EQ(w.Relays().size(), 3u);
+    const auto probe = w.Relays();
+
+    w.manager->test_cleanup_peer(peer);
+    w.manager->test_maybe_auto_register_with_relays();
+    EXPECT_EQ(w.Relays(), probe) << "the IPv4 relay went with the IPv4 peer";
+
+    w.clock->AdvanceSteady(std::chrono::minutes(61));
+    w.dialed.clear();
+    w.manager->test_maybe_auto_register_with_relays();
+    EXPECT_EQ(w.Relays().size(), 2u) << "still trying IPv4 an hour after the last IPv4 connection";
+    EXPECT_TRUE(w.dialed.empty());
+}
+
 // An IPv6-only node can't use an IPv4 relay: it never tries one.
 TEST(RelayRegistration, IPv6OnlyNodeDoesNotProbeIPv4Relays) {
     RelayWorld w;
