@@ -465,6 +465,19 @@ bool BanTargetMatches(const std::string& target,
     return host == address;
 }
 
+// Canonical host text of a hint's relay ("1.2.3.4" or inet_ntop IPv6), or
+// empty when the hint names no dialable IP relay (TORV3/I2P, bad length).
+std::string HintRelayHost(dinero::p2p::NetworkType net, const std::vector<uint8_t>& addr) {
+    char buf[INET6_ADDRSTRLEN] = {0};
+    if (net == dinero::p2p::NetworkType::IPV4 && addr.size() == 4) {
+        return inet_ntop(AF_INET, addr.data(), buf, sizeof(buf)) ? buf : "";
+    }
+    if (net == dinero::p2p::NetworkType::IPV6 && addr.size() == 16) {
+        return inet_ntop(AF_INET6, addr.data(), buf, sizeof(buf)) ? buf : "";
+    }
+    return {};
+}
+
 PeerInfo PeerInfoForAddress(const std::string& address, uint16_t port) {
     PeerInfo info;
     info.address = address;
@@ -2750,16 +2763,12 @@ void P2PManager::OrchestrateRelayDials() {
             const RelayHintRecord* best_signed = nullptr;
             const RelayHintRecord* signed_unconnected = nullptr;
             for (const auto& h : hints) {
-                // Only IPv4 hints are dialable today (slice 4b ingest accepts
-                // all four BIP155 types but TORV3/I2P aren't routable yet).
-                if (h.net != dinero::p2p::NetworkType::IPV4 ||
-                    h.relay_addr.size() != 4 || h.relay_port == 0) {
-                    continue;
-                }
-                char relay_buf[24];
-                std::snprintf(relay_buf, sizeof(relay_buf), "%u.%u.%u.%u:%u",
-                              h.relay_addr[0], h.relay_addr[1],
-                              h.relay_addr[2], h.relay_addr[3], h.relay_port);
+                // Only IP hints are dialable (slice 4b ingest accepts all
+                // four BIP155 types but TORV3/I2P aren't routable yet).
+                const std::string relay_host = HintRelayHost(h.net, h.relay_addr);
+                if (relay_host.empty() || h.relay_port == 0) continue;
+                const std::string relay_buf =
+                    dinero::network::FormatEndpoint(relay_host, h.relay_port);
                 const bool is_signed = !h.v2_payload.empty() && h.v2_expiry > now_unix;
                 if (connected_peer_addresses.count(relay_buf) == 0) {
                     // Only a target-signed hint may make us dial a relay we
@@ -2783,44 +2792,14 @@ void P2PManager::OrchestrateRelayDials() {
             if (best_signed) {
                 best = best_signed;
             } else if (signed_unconnected) {
-                char relay_buf[24];
-                std::snprintf(relay_buf, sizeof(relay_buf), "%u.%u.%u.%u",
-                              signed_unconnected->relay_addr[0], signed_unconnected->relay_addr[1],
-                              signed_unconnected->relay_addr[2], signed_unconnected->relay_addr[3]);
-                relays_to_dial.emplace_back(relay_buf, signed_unconnected->relay_port);
+                relays_to_dial.emplace_back(
+                    HintRelayHost(signed_unconnected->net, signed_unconnected->relay_addr),
+                    signed_unconnected->relay_port);
             }
             if (!best) continue;
             candidates.emplace_back(target_hex, *best);
         }
     }
-
-    // Connect to relays we only know from signed hints; RELAY_CONNECT
-    // follows on a later pass once the connection is up. A hint can name any
-    // public address, so these cold dials have a small global budget, and a
-    // relay that can't be reached loses every hint naming it for hours.
-    for (const auto& [host, port] : relays_to_dial) {
-        if (current_outbound >= MAX_OUTBOUND_CONNECTIONS) break;
-        const std::string relay_key = host + ":" + std::to_string(port);
-        auto it = last_hint_relay_dial_.find(relay_key);
-        if (it != last_hint_relay_dial_.end() && now < it->second) continue;
-        if (!hint_cold_dial_budget_.TryConsume(1, now)) break;
-        last_hint_relay_dial_[relay_key] = now + kRelayDialBackoff;
-        bool connected = false;
-#ifdef DINERO_TEST_BUILD
-        if (test_connection_manager_dial_) {
-            connected = test_connection_manager_dial_(host, port);
-        } else
-#endif
-        connected = connect_to_peer(host, port);
-        if (!connected) {
-            last_hint_relay_dial_[relay_key] = now + kHintRelaySkipAfterFailure;
-            drop_all_relay_hints_via(relay_key);
-            continue;
-        }
-        current_outbound++;
-    }
-
-    if (candidates.empty()) return;
 
     // For each candidate, verify the relay peer is currently connected
     // (we need an open TCP connection to send RELAY_CONNECT through), then
@@ -2828,11 +2807,8 @@ void P2PManager::OrchestrateRelayDials() {
     for (const auto& [target_hex, hint] : candidates) {
         if (current_outbound >= MAX_OUTBOUND_CONNECTIONS) break;
 
-        char relay_buf[24];
-        std::snprintf(relay_buf, sizeof(relay_buf), "%u.%u.%u.%u:%u",
-                      hint.relay_addr[0], hint.relay_addr[1],
-                      hint.relay_addr[2], hint.relay_addr[3], hint.relay_port);
-        const std::string relay_peer_address = relay_buf;
+        const std::string relay_peer_address = dinero::network::FormatEndpoint(
+            HintRelayHost(hint.net, hint.relay_addr), hint.relay_port);
 
         bool relay_connected = false;
         {
@@ -2915,6 +2891,35 @@ void P2PManager::OrchestrateRelayDials() {
         if (request_id != 0) {
             current_outbound++;  // optimistically reserve a slot
         }
+    }
+
+    // Connect to relays we only know from signed hints; RELAY_CONNECT
+    // follows on a later pass once the connection is up. These run after
+    // the RELAY_CONNECTs above: connect_to_peer counts once TCP is accepted,
+    // so a speculative dial must not take the slot a working route needs.
+    // A hint can name any public address, so these cold dials have a small
+    // global budget, and a relay that can't be reached loses every hint
+    // naming it for hours.
+    for (const auto& [host, port] : relays_to_dial) {
+        if (current_outbound >= MAX_OUTBOUND_CONNECTIONS) break;
+        const std::string relay_key = dinero::network::FormatEndpoint(host, port);
+        auto it = last_hint_relay_dial_.find(relay_key);
+        if (it != last_hint_relay_dial_.end() && now < it->second) continue;
+        if (!hint_cold_dial_budget_.TryConsume(1, now)) break;
+        last_hint_relay_dial_[relay_key] = now + kRelayDialBackoff;
+        bool connected = false;
+#ifdef DINERO_TEST_BUILD
+        if (test_connection_manager_dial_) {
+            connected = test_connection_manager_dial_(host, port);
+        } else
+#endif
+        connected = connect_to_peer(host, port);
+        if (!connected) {
+            last_hint_relay_dial_[relay_key] = now + kHintRelaySkipAfterFailure;
+            drop_all_relay_hints_via(relay_key);
+            continue;
+        }
+        current_outbound++;
     }
 }
 

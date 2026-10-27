@@ -962,6 +962,12 @@ TEST(RelayCaps, GlobalRateStaysUnder200KBps) {
     auto target = LoopbackSocketPair::Create();
     const std::string target_key = "127.0.0.1:" + std::to_string(target.port());
     manager.test_install_connected_direct_peer(target_key, target.client_fd(), true, false, {});
+    // The target reads what it is sent: an undrained socket fills (macOS
+    // buffers hold ~340 KB) and blocked sends stretch the wall time measured.
+    std::atomic<bool> stop{false};
+    std::thread drain([&] {
+        while (!stop.load()) target.ReceiveMessage();
+    });
     const std::vector<std::string> requesters = {"10.0.0.1:20999", "10.0.0.2:20999",
                                                  "10.0.0.3:20999"};
     for (size_t i = 0; i < requesters.size(); ++i) {
@@ -983,6 +989,8 @@ TEST(RelayCaps, GlobalRateStaysUnder200KBps) {
     }
     const double elapsed =
         std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+    stop = true;
+    drain.join();
     const uint64_t forwarded = offered - manager.test_relay_cap_drop_frames() * frame_bytes;
     const double cap = 200.0 * 1024.0;
     ASSERT_GT(offered, 3 * cap) << "the test must offer more than the cap";
@@ -2081,4 +2089,54 @@ TEST(RelayOrchestrator, SignedRelayIsDialedWhileTheLegacyRouteStaysInUse) {
     EXPECT_NE(NextRelayConnect(legacy_relay), nullptr) << "the only working route was dropped";
     ASSERT_EQ(dialed.size(), 1u) << "the target's signed relay was not dialed";
     EXPECT_EQ(dialed[0], "8.8.10.1:20999");
+}
+
+// Review of #853 (Codex): community selection and signed hints accept IPv6
+// relays, but the orchestrator only formatted IPv4, so a valid signed route
+// through a connected IPv6 relay was never used.
+TEST(RelayOrchestrator, ConnectedSignedIPv6RelayIsUsed) {
+    auto target = NewIdentity();
+    P2PManager d(0);
+    InstallNodeIdentity(d);
+    auto relay = LoopbackSocketPair::Create();
+    d.test_install_connected_direct_peer("[2606:4700::1]:20999", relay.client_fd(), true, false, {});
+    dinero::p2p::HintFields f;
+    f.relay_net = dinero::p2p::NetworkType::IPV6;
+    f.relay_addr.resize(16);
+    ASSERT_EQ(inet_pton(AF_INET6, "2606:4700::1", f.relay_addr.data()), 1);
+    f.relay_port = 20999;
+    f.expiry = UnixNow() + 1800;
+    P2PMessage hint;
+    hint.command = "relayhn2";
+    hint.payload = dinero::p2p::SignHint(*target, f);
+    d.handle_relay_hint_v2("10.5.0.1:20999", hint);
+    ASSERT_EQ(d.test_signed_relay_hint_count(target->get_node_id_bytes()), 1u);
+    d.test_orchestrate_relay_dials();
+    auto connect = NextRelayConnect(relay);
+    ASSERT_NE(connect, nullptr) << "a valid signed IPv6 route was ignored";
+    const auto id = target->get_node_id_bytes();
+    EXPECT_TRUE(std::equal(id.begin(), id.end(), connect->payload.begin()));
+}
+
+// Review of #853 (Codex): connect_to_peer returns true once TCP is accepted,
+// so a speculative cold dial took the last outbound slot before the
+// RELAY_CONNECT through an already-connected relay was sent.
+TEST(RelayOrchestrator, AcceptedColdDialDoesNotStarveTheConnectedRoute) {
+    for (const bool accepted : {false, true}) {
+        auto target = NewIdentity();
+        P2PManager d(0);
+        InstallNodeIdentity(d);
+        auto relay = LoopbackSocketPair::Create();
+        d.test_install_connected_direct_peer("9.9.20.2:20999", relay.client_fd(), true, false, {});
+        for (int i = 0; i < 6; ++i) {  // seven outbound peers in all: one slot left
+            d.test_install_connected_direct_peer("44.55.66." + std::to_string(i + 1) + ":20999", -1,
+                                                 true, false, {});
+        }
+        d.test_set_connection_manager_dial([&](const std::string&, uint16_t) { return accepted; });
+        d.handle_relay_hint_v2("10.5.0.1:20999", SignedHintMessage(*target, 1));  // via 8.8.10.1
+        AddLegacyHint(d, target->get_node_id_bytes(), {9, 9, 20, 2});
+        d.test_orchestrate_relay_dials();
+        EXPECT_NE(NextRelayConnect(relay), nullptr)
+            << "the connected route was not tried (cold dial accepted=" << accepted << ")";
+    }
 }
