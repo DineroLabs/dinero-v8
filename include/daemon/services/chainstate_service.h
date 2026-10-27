@@ -82,6 +82,7 @@ struct UnsignedTransaction;
 struct PendingPaymentIntent;
 struct RuntimeEnrolledWalletRecoveryResult;
 struct RuntimeOrchardCatalogRecoveryResult;
+struct RuntimeImportedMixedRecoveryResult;
 class WalletManager;
 class RuntimeWalletOriginProjection;
 class RuntimeWalletCoverageProjection;
@@ -1119,6 +1120,10 @@ public:
     // never falls back to mixed replay or earns missing transparent baselines.
     StatusOr<std::shared_ptr<const RuntimeOrchardCatalogRecoveryResult>>
         resumeRuntimeImportedOrchardRecovery(WalletManager&,UTXOIndex&,uint64_t expected_session);
+    // Null ONLY for another source composition or BOTH absent baselines.
+    // Every failed/partial/invalid mixed attempt remains closed, never fallback.
+    StatusOr<std::shared_ptr<const RuntimeImportedMixedRecoveryResult>>
+        resumeRuntimeImportedMixedRecovery(WalletManager&,UTXOIndex&,uint64_t expected_session);
     // Observation-only readmission fence at the genuinely empty activation
     // parent. Restores/rechecks every declared encrypted owner under the current
     // source; does not adopt transparent receipts or manufacture delivery.

@@ -344,6 +344,57 @@ TEST(WalletScriptCoverage, BorrowedOwnersWrongSessionAndDeniedInventoryRefuse) {
     f.Sql("UPDATE wallet_meta SET runtime_delivery_id=(SELECT runtime_delivery_id FROM coverage_saved_identity) WHERE id=1");
     EXPECT_EQ(f.Snapshot(),before);
 }
+TEST(WalletMixedIncremental, IndexPrecommitRefusalKeepsBothPrefixes){
+    SharedPaymentFixture f;f.f.preserve_evidence=true;std::cerr<<"Mixed incremental evidence: "<<f.f.path.string()<<std::endl;
+    const auto source=CaptureScriptCoverage(f);ASSERT_TRUE(source.ok());
+    auto use=WalletService::AcquireWalletUse(f.wallet);auto index=ChainstateService::AcquireWalletIndexUse(f.f.service);
+    ASSERT_EQ(f.f.service->reconcileRuntimeWalletCoverage(use->Wallet(),index->Index(),**source),Status::Ok);
+    f.MineEmpty();const auto next=CaptureScriptCoverage(f);ASSERT_TRUE(next.ok());
+    const auto prepared=RuntimeOriginProjectionTestAccess::PrepareCoverage(use->Wallet(),**next);
+    const auto before=f.Snapshot(),indexed=CoverageIndexSnapshot(f);int checks=0;
+    auto selected=f.f.service->AcquireBlockIngressActivationLock();
+    EXPECT_THROW(RuntimeOriginProjectionTestAccess::Advance(use->Wallet(),index->Index(),**next,*prepared,[&]{
+        EXPECT_TRUE(ShieldedStateStartupTestAccess::VaultSelectedHeld(*f.f.service));
+        EXPECT_FALSE(sqlite3_get_autocommit(use->Wallet().getCurrentDatabase()));
+        if(++checks==2)throw std::runtime_error("Source refuses actual index precommit");
+    }),std::runtime_error);
+    EXPECT_EQ(checks,2);EXPECT_EQ(f.Snapshot(),before);EXPECT_EQ(CoverageIndexSnapshot(f),indexed);
+}
+TEST(WalletMixedIncremental, OrdinaryRefusalRetainsGenuineIndexPrefixAndRetries){
+    SharedPaymentFixture f;f.f.preserve_evidence=true;std::cerr<<"Mixed incremental evidence: "<<f.f.path.string()<<std::endl;
+    const auto source=CaptureScriptCoverage(f);ASSERT_TRUE(source.ok());
+    auto use=WalletService::AcquireWalletUse(f.wallet);auto index=ChainstateService::AcquireWalletIndexUse(f.f.service);
+    ASSERT_EQ(f.f.service->reconcileRuntimeWalletCoverage(use->Wallet(),index->Index(),**source),Status::Ok);
+    f.MineEmpty();const auto next=CaptureScriptCoverage(f);ASSERT_TRUE(next.ok());
+    const auto prepared=RuntimeOriginProjectionTestAccess::PrepareCoverage(use->Wallet(),**next);
+    const auto before=f.Snapshot();int checks=0;
+    {auto selected=f.f.service->AcquireBlockIngressActivationLock();
+     EXPECT_THROW(RuntimeOriginProjectionTestAccess::Advance(use->Wallet(),index->Index(),**next,*prepared,[&]{
+         if(++checks==3)throw std::runtime_error("Source refuses actual ordinary precommit");
+     }),std::runtime_error);}
+    EXPECT_EQ(checks,3);EXPECT_EQ(f.Snapshot(),before);
+    const auto partial=RuntimeOriginProjectionTestAccess::Existing(use->Wallet(),index->Index(),f.Selected().session);
+    ASSERT_TRUE(partial);EXPECT_EQ(partial->first.cursor,(*next)->Head());EXPECT_EQ(partial->second.cursor,(*source)->Head());
+    {auto selected=f.f.service->AcquireBlockIngressActivationLock();
+     const auto applied=RuntimeOriginProjectionTestAccess::Advance(use->Wallet(),index->Index(),**next,*prepared,[]{});
+     EXPECT_EQ(applied.cursor,(*next)->Head());}
+    const auto complete=RuntimeOriginProjectionTestAccess::Existing(use->Wallet(),index->Index(),f.Selected().session);
+    ASSERT_TRUE(complete);EXPECT_EQ(complete->first.cursor,(*next)->Head());EXPECT_EQ(complete->second.cursor,(*next)->Head());
+    const auto after=f.Snapshot(),indexed=CoverageIndexSnapshot(f);
+    {auto selected=f.f.service->AcquireBlockIngressActivationLock();
+     EXPECT_NO_THROW(RuntimeOriginProjectionTestAccess::Advance(use->Wallet(),index->Index(),**next,*prepared,[]{}));}
+    EXPECT_EQ(f.Snapshot(),after);EXPECT_EQ(CoverageIndexSnapshot(f),indexed);
+}
+TEST(WalletMixedIncremental, InvalidatedBaselineIsNotOrchardOnlyAbsence){
+    SharedPaymentFixture f;f.f.preserve_evidence=true;std::cerr<<"Mixed incremental evidence: "<<f.f.path.string()<<std::endl;
+    const auto source=CaptureScriptCoverage(f);ASSERT_TRUE(source.ok());
+    auto use=WalletService::AcquireWalletUse(f.wallet);auto index=ChainstateService::AcquireWalletIndexUse(f.f.service);
+    ASSERT_EQ(f.f.service->reconcileRuntimeWalletCoverage(use->Wallet(),index->Index(),**source),Status::Ok);
+    f.Sql("UPDATE wallet_meta SET runtime_ordinary_invalid=1,runtime_ordinary_receipt=NULL WHERE id=1");
+    const auto before=f.Snapshot(),indexed=CoverageIndexSnapshot(f);
+    EXPECT_THROW(RuntimeOriginProjectionTestAccess::Existing(use->Wallet(),index->Index(),f.Selected().session),std::runtime_error);
+    EXPECT_EQ(f.Snapshot(),before);EXPECT_EQ(CoverageIndexSnapshot(f),indexed);
+}
 TEST(WalletBalanceCapture, ExactReceiptsAndSourceOwnerSpanNumericCapture){
     SharedPaymentFixture f;f.f.preserve_evidence=true;std::cerr<<"Balance capture evidence: "<<f.f.path.string()<<std::endl;
     const auto source=CaptureScriptCoverage(f);ASSERT_TRUE(source.ok());

@@ -41,6 +41,14 @@ struct RuntimeOrchardCatalogRecoveryResult {
     uint64_t catalog_revision;
 };
 
+// Genuine already-baselined ordinary/index delivery AND the authenticated
+// complete encrypted catalog at a captured imported source head. Distinct from
+// Orchard-only progress; never whole-wallet/all-consumer readiness.
+struct RuntimeImportedMixedRecoveryResult {
+    RuntimeIndexProgress applied;
+    RuntimeOutboxCursor observed_head;
+};
+
 class RuntimeWalletRecovery {
 public:
     // Resume already enrolled stores. Missing/invalidated progress requires

@@ -102,7 +102,7 @@ private:
     RuntimeWalletCoverageProjection() = default;
     static std::shared_ptr<const RuntimeWalletCoverageProjection> Build(
         std::shared_ptr<const RuntimeWalletOriginProjection>,
-        std::shared_ptr<const RuntimeAccountReplay>);
+        std::shared_ptr<const RuntimeAccountReplay>,RuntimeOutboxCursor through = {});
     std::shared_ptr<const RuntimeWalletOriginProjection> origin_;
     std::shared_ptr<const RuntimeAccountReplay> replay_;
     std::map<TxOutPoint,Coin> coins_;

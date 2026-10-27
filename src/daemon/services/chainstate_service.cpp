@@ -20531,6 +20531,64 @@ ChainstateService::reconcileImportedRuntimeWalletCoverage(WalletManager& wallet,
 #endif
 }
 
+StatusOr<std::shared_ptr<const RuntimeImportedMixedRecoveryResult>>
+ChainstateService::resumeRuntimeImportedMixedRecovery(WalletManager& wallet,UTXOIndex& index,uint64_t session){
+#ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
+    if(activation_mutex_.HeldByCurrentThread()||!session)return Status::Invalid;
+    try {
+        {auto selected=AcquireBlockIngressActivationLock();
+         if(!compact_startup_||!compact_startup_->imported_parent)
+             return std::shared_ptr<const RuntimeImportedMixedRecoveryResult>{};}
+        // Explicit pre-effect composition classification, not a failed mixed
+        // recovery exception/fallback. Either invalid receipt remains CLOSED.
+        if(!RuntimeOrdinaryDelivery::ExistingCoverage(wallet,index,session))
+            return std::shared_ptr<const RuntimeImportedMixedRecoveryResult>{};
+        const auto orchard=resumeRuntimeImportedOrchardRecovery(wallet,index,session);
+        if(!orchard.ok()||!*orchard)return Status::Invalid;
+        bool pending=false;const auto captured=captureRuntimeWalletCoverage(wallet,session,index,false,pending,true);
+        if(!captured.ok()||pending)return Status::Invalid;
+        const auto& coverage=**captured;
+        if((*orchard)->applied!=coverage.Head()||(*orchard)->observed_head!=coverage.Head())return Status::Invalid;
+        const auto prepared=RuntimeOrdinaryDelivery::PrepareCoverage(wallet,coverage);
+        using Account=wallet::OrchardAccountDelivery;
+        const auto catalog=Account::PrepareCatalogRecovery(wallet,session,*coverage.replay_,
+            Account::CatalogRecoveryAction::Observe);
+        const auto owners=Account::CatalogRecoveryBefore(*catalog);
+        if(owners.catalog.revision!=(*orchard)->catalog_revision||owners.accounts.size()!=(*orchard)->account_revisions.size())
+            return Status::Invalid;
+        const auto checkpoint=coverage.replay_->Point(coverage.Head()).checkpoint;
+        for(size_t n=0;n<owners.accounts.size();++n){const auto& account=owners.accounts[n];
+            const auto& revision=(*orchard)->account_revisions[n];
+            const auto& delivered=account.state.account.Delivery();
+            if(account.number!=revision.first||account.state.revision!=revision.second||
+               delivered.sequence!=coverage.Head().sequence||delivered.digest!=coverage.Head().digest||
+               account.state.account.Scan().Checkpoint()!=checkpoint)return Status::Invalid;
+        }
+        ParentPreparationScope preparation(*this);
+        std::unique_lock<std::mutex> snapshot(snapshot_load_mutex_);
+        auto selected=AcquireBlockIngressActivationLock();
+        auto source=CaptureImportedOrchardDeliveryUnderLock(snapshot,index,*coverage.replay_);
+        if(!source||!coverage.Origin().imported_cohort_||*coverage.Origin().imported_cohort_!=source->metadata)
+            return Status::Invalid;
+        const std::function<void()> current=[&]{
+            compact_startup_->selected_consistency->Check(*chain_db_);
+            if(!source->lifecycle||utxo_index_.get()!=&index||wallet.getUTXOIndex()!=&index||
+               !CheckRuntimeAccountReplayCurrentUnderLock(*coverage.replay_,*source->selected))
+                throw std::runtime_error("Imported mixed source changed before commit");
+            // Every call is in the SAME real ordinary transaction, including
+            // the callback immediately before the actual index COMMIT.
+            Account::RecheckCatalogRecoveryInTransaction(wallet,session,*catalog);
+        };
+        const auto applied=RuntimeOrdinaryDelivery::AdvanceCoverage(wallet,index,coverage,*prepared,current);
+        if(applied.cursor!=coverage.Head()||applied.tip_hash!=coverage.TipHash()||applied.tip_height!=coverage.TipHeight())
+            return Status::Invalid;
+        return std::make_shared<const RuntimeImportedMixedRecoveryResult>(RuntimeImportedMixedRecoveryResult{applied,coverage.Head()});
+    }catch(...){return Status::Invalid;}
+#else
+    (void)wallet;(void)index;(void)session;return Status::Internal;
+#endif
+}
+
 StatusOr<std::shared_ptr<const RuntimeWalletBalanceSnapshot>>
 ChainstateService::readImportedRuntimeWalletBalance(WalletManager& wallet,UTXOIndex& index,uint64_t session,
         const std::string& expected_wallet){

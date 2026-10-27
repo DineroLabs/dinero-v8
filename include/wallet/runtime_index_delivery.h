@@ -41,11 +41,14 @@ private:
     static void CheckCoverageImportedCohort(UTXOIndex&,const RuntimeWalletOriginProjection&);
     static void WithCoverageBalance(UTXOIndex&,const RuntimeWalletCoverageProjection&,
         const std::function<void()>& capture);
+    static void CheckIncrementalRows(UTXOIndex&,const RuntimeWalletCoverageProjection&);
     static void CaptureOriginDomain(UTXOIndex&,RuntimeWalletOriginProjection&);
     static void CheckOriginDomain(UTXOIndex&,const RuntimeWalletOriginProjection&);
     static std::optional<RuntimeIndexProgress> Read(UTXOIndex&, const std::string& wallet_identity, const HistoricalScripts* = nullptr);
     static RuntimeIndexProgress Apply(UTXOIndex&, const std::string& wallet_identity,
-                                      const RuntimeOutboxEvent&, const RuntimeWalletOriginProjection* origin = nullptr, const std::function<void()>& finish = {}, const HistoricalScripts* = nullptr);
+                                      const RuntimeOutboxEvent&, const RuntimeWalletOriginProjection* origin = nullptr, const std::function<void()>& finish = {}, const HistoricalScripts* = nullptr,
+                                      const RuntimeWalletCoverageProjection* previous = nullptr,
+                                      const RuntimeWalletCoverageProjection* next = nullptr,const std::function<void()>& source_before_commit = {});
 };
 // Ordinary wallet UTXOs/history and their source progress share the selected
 // wallet SQLite transaction. This is independent of the index/account receipts:
@@ -68,6 +71,14 @@ class RuntimeOrdinaryDelivery {
         const RuntimeWalletCoverageProjection&,const wallet::OrchardCatalogCapture&,
         const std::string& expected_wallet,const std::function<void()>& source_before_capture);
     static RuntimeIndexProgress Apply(WalletManager&,uint64_t,const RuntimeOutboxEvent&,const RuntimeWalletOriginProjection*);
+    static RuntimeIndexProgress ApplyInTransaction(WalletManager&,WalletManager::DatabaseLease*,const std::string&,
+        const RuntimeOutboxEvent&,const RuntimeWalletOriginProjection*);
+    // Strict classification: only BOTH genuinely absent is the Orchard-only
+    // composition. Invalidated/corrupt/one-store partial coverage throws.
+    static std::optional<std::pair<RuntimeIndexProgress,RuntimeIndexProgress>> ExistingCoverage(
+        WalletManager&,UTXOIndex&,uint64_t);
+    static RuntimeIndexProgress AdvanceCoverage(WalletManager&,UTXOIndex&,const RuntimeWalletCoverageProjection&,
+        const wallet::OrchardCatalogCapture&,const std::function<void()>& source_before_commit);
 public:
     // Read-only classification of missing/invalidated/script-changed receipts.
     // Corrupt metadata and unavailable reads throw; they are not a reset flag.

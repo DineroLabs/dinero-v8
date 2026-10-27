@@ -293,8 +293,12 @@ std::optional<RuntimeIndexProgress> RuntimeIndexDelivery::Read(UTXOIndex& index,
     const auto receipt=dinero::Read(index.db_,identity,IndexScripts(index.watched_scripts_,index.historical_scripts_));
     return receipt?std::optional(receipt->progress):std::nullopt;
 }
-RuntimeIndexProgress RuntimeIndexDelivery::Apply(UTXOIndex& index,const std::string& identity,const RuntimeOutboxEvent& event,const RuntimeWalletOriginProjection* origin,const std::function<void()>& finish,const HistoricalScripts* historical) {
+RuntimeIndexProgress RuntimeIndexDelivery::Apply(UTXOIndex& index,const std::string& identity,const RuntimeOutboxEvent& event,const RuntimeWalletOriginProjection* origin,const std::function<void()>& finish,const HistoricalScripts* historical,
+        const RuntimeWalletCoverageProjection* previous,const RuntimeWalletCoverageProjection* next,const std::function<void()>& source_before_commit) {
     const auto effects=Effects(event);Identity(identity);
+    if((previous||next||source_before_commit)&&(!previous||!next||!source_before_commit||origin||
+       previous->Origin().OriginHash()!=next->Origin().OriginHash()||next->Head()!=event.cursor))
+        Fail("Incremental index source binding incomplete");
     std::lock_guard<std::recursive_mutex> lock(index.db_mutex_);std::lock_guard<std::mutex> scripts(index.scripts_mutex_);
     if(!index.db_ || index.atomic_write_active_ || !sqlite3_get_autocommit(index.db_))Fail("Index delivery write ownership unavailable");
     if(origin && (!origin->index_scripts_ || *origin->index_scripts_!=index.watched_scripts_ ||
@@ -309,6 +313,7 @@ RuntimeIndexProgress RuntimeIndexDelivery::Apply(UTXOIndex& index,const std::str
         if(existing->profile!=profile || Tip{existing->progress.tip_hash,existing->progress.tip_height}!=after)
             Fail("Index delivery replay mismatch");
         if(origin)IndexOriginRows(index.db_,index.watched_scripts_,published,*origin,&event);
+        if(next)index.ApplyAtomically([&]{CheckIncrementalRows(index,*next);source_before_commit();});
         if(finish)finish();
         index.historical_scripts_.swap(published);
         return existing->progress;
@@ -333,6 +338,7 @@ RuntimeIndexProgress RuntimeIndexDelivery::Apply(UTXOIndex& index,const std::str
     if(sqlite3_step(durability.value)!=SQLITE_ROW || sqlite3_column_int(durability.value,0)!=2 || sqlite3_step(durability.value)!=SQLITE_DONE)
         Fail("Index delivery durability unavailable");
     index.ApplyAtomically([&] {
+        if(previous)CheckIncrementalRows(index,*previous);
         // Ordinary writers atomically invalidate tracked progress. The source
         // owner replaces it only after all effects below succeed.
         for(const auto* action:{"INSERT","UPDATE","DELETE"}) {
@@ -367,6 +373,7 @@ RuntimeIndexProgress RuntimeIndexDelivery::Apply(UTXOIndex& index,const std::str
         }
         Statement write(index.db_,"INSERT OR REPLACE INTO utxo_metadata(key,value) VALUES(?,?)");write.Text(1,receipt_key);write.Blob(2,bytes);write.Done();
         Exec(index.db_,"DELETE FROM utxo_metadata WHERE key='runtime_delivery:v1:invalidated'");
+        if(next){CheckIncrementalRows(index,*next);source_before_commit();} // Actual index pre-COMMIT fence.
     });
     if(finish)finish();
     index.historical_scripts_.swap(published);
@@ -653,7 +660,7 @@ std::optional<std::pair<uint256,uint32_t>> RuntimeWalletCoverageProjection::Pref
 
 std::shared_ptr<const RuntimeWalletCoverageProjection> RuntimeWalletCoverageProjection::Build(
         std::shared_ptr<const RuntimeWalletOriginProjection> origin,
-        std::shared_ptr<const RuntimeAccountReplay> replay) {
+        std::shared_ptr<const RuntimeAccountReplay> replay,RuntimeOutboxCursor through) {
     if(!origin || !origin->existing_identity_only_ || !replay || !replay->Head().sequence ||
        origin->first_.cursor!=replay->Event(1)->cursor ||
        origin->first_.context.parent_hash!=replay->Event(1)->context.parent_hash)
@@ -711,7 +718,10 @@ std::shared_ptr<const RuntimeWalletCoverageProjection> RuntimeWalletCoverageProj
         auto recorded=activity(e,h.height);observe_activity(recorded);
         if(!result->history_.emplace(e.id,std::move(recorded)).second)Fail("Coverage historical transaction repeated");
     }
-    const auto target=result->replay_->Head();
+    if(!through.sequence&&!through.digest.IsNull())Fail("Coverage prefix cursor malformed");
+    const auto target=through.sequence?through:result->replay_->Head();
+    if(target.sequence>result->replay_->Head().sequence||result->replay_->Event(target.sequence)->cursor!=target)
+        Fail("Coverage prefix is not an authenticated event");
     for(uint64_t sequence=1;;++sequence) {
         const auto event_handle=result->replay_->Event(sequence);const auto& event=*event_handle;
         if(event.cursor.sequence!=sequence || event.previous_digest!=result->head_.digest ||
@@ -1121,6 +1131,128 @@ void CurrentBalanceReceipt(const std::optional<Receipt>& receipt,const RuntimeWa
         Fail("Balance requires BOTH exact current compatible baseline receipts");
 }
 }
+// Caller retains the ACTUAL index mutex/script owner and SQLite transaction.
+// Reuse the original exact current inventory contract before/after delivery;
+// a receipt checksum or apparent subset alone never grants baseline authority.
+void RuntimeIndexDelivery::CheckIncrementalRows(UTXOIndex& index,const RuntimeWalletCoverageProjection& source){
+    const auto& origin=source.Origin();
+    if(!index.db_||!origin.index_scripts_||*origin.index_scripts_!=index.watched_scripts_||
+       origin.historical_scripts_!=index.historical_scripts_||origin.index_path_!=index.db_path_)
+        Fail("Incremental index domain changed");
+    CurrentBalanceReceipt(dinero::Read(index.db_,origin.identity_,
+        IndexScripts(index.watched_scripts_,index.historical_scripts_)),source);
+    CoverageImportedCohort(index.db_,origin.imported_cohort_);
+    const auto existing=CoverageIndexRows(index.db_,index.watched_scripts_,index.historical_scripts_,source);
+    std::set<TxOutPoint> expected;
+    for(const auto& [point,coin]:source.Coins()){
+        WalletUTXO owner;owner.spk=coin.output.scriptPubKey;
+        if(SetIndexOwner(owner,index.watched_scripts_,index.historical_scripts_))expected.insert(point);
+    }
+    if(existing!=expected)Fail("Incremental index inventory incomplete");
+    Statement rows(index.db_,"SELECT txid,vout,height,spend_height FROM wallet_utxos");int rc;
+    while((rc=sqlite3_step(rows.value))==SQLITE_ROW){
+        const auto& coin=source.Coins().at(CoveragePoint(rows.value,0,1));
+        if(CoverageInt(rows.value,2)!=coin.height||
+           (coin.spent?(sqlite3_column_type(rows.value,3)!=SQLITE_INTEGER||CoverageInt(rows.value,3)!=coin.spent->height):
+                       sqlite3_column_type(rows.value,3)!=SQLITE_NULL))Fail("Incremental index row is not current");
+    }
+    if(rc!=SQLITE_DONE)Fail("Incremental index inventory read incomplete");
+}
+
+std::optional<std::pair<RuntimeIndexProgress,RuntimeIndexProgress>> RuntimeOrdinaryDelivery::ExistingCoverage(
+        WalletManager& wallet,UTXOIndex& index,uint64_t session){
+    auto lease=wallet.AcquireDatabaseLease();
+    if(wallet.database_leases_!=1||lease->Session()!=session||!lease->Database())Fail("Incremental wallet selection changed");
+    OrdinaryTransaction tx(lease->Database());const auto identity=ExistingIdentity(lease->Database());
+    const auto scripts=OrdinaryScripts(*lease);
+    const auto ordinary=OrdinaryRead(lease->Database(),identity,scripts.digest);
+    const auto indexed=RuntimeIndexDelivery::Read(index,identity,&scripts.historical);
+    if(bool(ordinary)!=bool(indexed))Fail("Incremental coverage requires BOTH existing baselines");
+    tx.Commit();if(!ordinary)return {};
+    return std::pair<RuntimeIndexProgress,RuntimeIndexProgress>{*indexed,ordinary->progress};
+}
+
+RuntimeIndexProgress RuntimeOrdinaryDelivery::AdvanceCoverage(WalletManager& wallet,UTXOIndex& index,
+        const RuntimeWalletCoverageProjection& source,const wallet::OrchardCatalogCapture& prepared,
+        const std::function<void()>& source_before_commit){
+    const auto& origin=source.Origin();
+    if(!source_before_commit||source.Head().sequence<2||!origin.existing_identity_only_||!origin.index_scripts_)
+        Fail("Incremental coverage requires authenticated existing prefix");
+    // Reconstruct this ONE predecessor solely from immutable checked DATA,
+    // before wallet/SQL ownership; no selected-source callback occurs. No baseline adoption or full-store rebuild.
+    const auto event=source.replay_->Event(source.Head().sequence);
+    const auto prior_event=source.replay_->Event(source.Head().sequence-1);
+    const auto previous=RuntimeWalletCoverageProjection::Build(source.origin_,source.replay_,prior_event->cursor);
+    if(event->direction!=RuntimeBlockDirection::Connect||event->previous_digest!=previous->Head().digest||
+       event->context.parent_hash!=previous->TipHash()||uint64_t(event->context.height)!=uint64_t(previous->TipHeight())+1)
+        Fail("Incremental coverage currently requires ONE contiguous Connect");
+    auto lease=wallet.AcquireDatabaseLease();
+    if(wallet.database_leases_!=1||lease->Session()!=origin.session_||wallet.current_wallet_id_<0||wallet.getUTXOIndex()!=&index)
+        Fail("Incremental wallet owner changed");
+    auto* db=lease->Database();CoverageDurability(db);OrdinaryTransaction transaction(db);
+    if(ExistingIdentity(db)!=origin.identity_)Fail("Incremental persistent wallet identity changed");
+    const auto scripts=OrdinaryScripts(*lease);
+    if(scripts.digest!=origin.scripts_digest_||scripts.historical!=origin.historical_scripts_)
+        Fail("Incremental wallet script domain changed");
+    std::map<std::vector<uint8_t>,std::string> watched;Statement paths(db,"SELECT script_pubkey,path FROM watch_scripts");int rc;
+    while((rc=sqlite3_step(paths.value))==SQLITE_ROW){
+        const auto* bytes=static_cast<const uint8_t*>(sqlite3_column_blob(paths.value,0));const int size=sqlite3_column_bytes(paths.value,0);
+        if(sqlite3_column_type(paths.value,0)!=SQLITE_BLOB||!bytes||size<=0||size>10000||
+           !watched.emplace(std::vector<uint8_t>(bytes,bytes+size),CoverageText(paths.value,1)).second)
+            Fail("Incremental watched domain malformed");
+    }
+    if(rc!=SQLITE_DONE||watched!=*origin.index_scripts_)Fail("Incremental durable/index script domains differ");
+    const auto rows_current=[&](const RuntimeWalletCoverageProjection& view){
+        CurrentBalanceReceipt(OrdinaryRead(db,origin.identity_,scripts.digest),view);
+        const auto plan=CoverageOrdinaryRows(db,wallet.current_wallet_id_,scripts,view);
+        std::set<TxOutPoint> expected;for(const auto& [point,coin]:view.Coins())
+            if(scripts.addresses.contains(coin.output.scriptPubKey))expected.insert(point);
+        if(plan.existing_coins!=expected||!plan.unconfirm_history.empty())Fail("Incremental ordinary inventory incomplete");
+        Statement rows(db,"SELECT txid,vout,height,is_spent,spent_txid,spent_height FROM utxos");int step;
+        while((step=sqlite3_step(rows.value))==SQLITE_ROW){
+            const auto& coin=view.Coins().at(CoveragePoint(rows.value,0,1));
+            if(CoverageInt(rows.value,2)!=coin.height||CoverageInt(rows.value,3)!=coin.spent.has_value()||
+               (coin.spent&&(CoverageText(rows.value,4)!=coin.spent->txid.AsUint256().GetHex()||CoverageInt(rows.value,5)!=coin.spent->height)))
+                Fail("Incremental ordinary row is not current");
+        }
+        if(step!=SQLITE_DONE)Fail("Incremental ordinary inventory read incomplete");
+        Statement tip(db,"SELECT height FROM tip WHERE rowid=1");
+        if(sqlite3_step(tip.value)!=SQLITE_ROW||CoverageInt(tip.value,0)!=view.TipHeight()||sqlite3_step(tip.value)!=SQLITE_DONE)
+            Fail("Incremental ordinary tip is not current");
+    };
+    const auto owners_current=[&]{
+        ::dinero::wallet::OrchardAccountDelivery::RecheckCatalogCaptureInTransaction(wallet,origin.session_,source.replay_,prepared);
+        {auto pin=lease->CopyRecoverySeed(origin.session_);lease->ValidateRecoveryInventoryInTransaction(*pin);
+         const auto ownership=::dinero::wallet::OrchardOwnershipInventory::Read(db,pin->Bytes());
+         const auto pending=lease->ReadPendingPaymentsInTransaction(*pin);std::set<TxOutPoint> reserved;
+         const auto reserve=[&](const TxOutPoint& point,uint64_t value,const std::vector<uint8_t>& script){
+             const auto found=source.ObservedCoins().find(point);
+             if(!reserved.insert(point).second||found==source.ObservedCoins().end()||
+                !std::any_of(found->second.begin(),found->second.end(),[&](const auto& coin){
+                    return coin.output.value.GetUna()==value&&coin.output.scriptPubKey==script;}))
+                 Fail("Incremental encrypted pending input changed");
+         };
+         for(const auto& entry:ownership.current_inputs){uint256 hash;std::copy(entry.input.txid_wire.begin(),entry.input.txid_wire.end(),hash.begin());
+             reserve({TxId(hash),entry.input.output_index},entry.input.amount_una,entry.input.script_pub_key);}
+         for(const auto& payment:pending)for(const auto& input:payment.inputs){const auto id=uint256::FromHexUnsafe(input.txid);
+             if(id.GetHex()!=input.txid)Fail("Incremental pending input identity malformed");
+             reserve({TxId(id),input.vout},input.amount_una,input.script);}
+        } // End the SAME key owner before the next complete-catalog capture.
+        source_before_commit();
+    };
+    const auto old=OrdinaryRead(db,origin.identity_,scripts.digest);
+    rows_current(old&&old->progress.cursor==source.Head()?source:*previous);
+    owners_current();
+    RuntimeIndexProgress applied;
+    RuntimeIndexDelivery::Apply(index,origin.identity_,*event,nullptr,[&]{
+        applied=ApplyInTransaction(wallet,lease.get(),origin.identity_,*event,nullptr);
+        rows_current(source);owners_current();
+        RuntimeIndexDelivery::CheckCoverageImportedCohort(index,origin);
+        transaction.Commit(); // Index's ACTUAL owners remain held through here.
+    },&origin.historical_scripts_,previous.get(),&source,owners_current);
+    return applied;
+}
+
 void RuntimeIndexDelivery::WithCoverageBalance(UTXOIndex& index,const RuntimeWalletCoverageProjection& source,
         const std::function<void()>& capture) {
     const auto& origin=source.Origin();
@@ -1293,11 +1425,21 @@ RuntimeIndexProgress RuntimeOrdinaryDelivery::ApplyForWallet(WalletManager& wall
     return Apply(wallet,session,event,nullptr);
 }
 RuntimeIndexProgress RuntimeOrdinaryDelivery::Apply(WalletManager& wallet,uint64_t session,const RuntimeOutboxEvent& event,const RuntimeWalletOriginProjection* origin) {
-    const auto effects=Effects(event); // Exact typed decoding before taking wallet ownership.
+    (void)Effects(event); // Keep original typed refusal before wallet ownership.
     const auto lease=wallet.AcquireDatabaseLease();if(lease->Session()!=session)Fail("Wallet delivery selection changed");
     const auto identity=lease->EnsureDeliveryIdentity();auto* db=lease->Database();
     if(wallet.current_wallet_id_<0)Fail("Ordinary delivery wallet unavailable");
     OrdinaryTransaction transaction(db);
+    const auto applied=ApplyInTransaction(wallet,lease.get(),identity,event,origin);
+    transaction.Commit();return applied;
+}
+RuntimeIndexProgress RuntimeOrdinaryDelivery::ApplyInTransaction(WalletManager& wallet,WalletManager::DatabaseLease* lease,
+        const std::string& identity,const RuntimeOutboxEvent& event,const RuntimeWalletOriginProjection* origin) {
+    if(!lease||!lease->Database()||lease->Database()!=wallet.db_||lease->Session()!=wallet.database_session_||
+       sqlite3_get_autocommit(lease->Database())||wallet.current_wallet_id_<0)
+        Fail("Ordinary delivery actual transaction owner unavailable");
+    const auto effects=Effects(event);auto* db=lease->Database();
+    if(ExistingIdentity(db)!=identity)Fail("Ordinary delivery transaction identity changed");
     { Statement foreign(db,"SELECT 1 FROM utxos WHERE wallet_id<>? UNION ALL SELECT 1 FROM transactions WHERE wallet_id<>? LIMIT 1");
       foreign.Int(1,wallet.current_wallet_id_);foreign.Int(2,wallet.current_wallet_id_);const auto rc=sqlite3_step(foreign.value);
       if(rc==SQLITE_ROW)Fail("Ordinary delivery baseline wallet mismatch");if(rc!=SQLITE_DONE)Fail("Ordinary delivery ownership read failed"); }
@@ -1306,7 +1448,7 @@ RuntimeIndexProgress RuntimeOrdinaryDelivery::Apply(WalletManager& wallet,uint64
     if(old && old->progress.cursor==event.cursor) {
         if(old->profile!=profile || Tip{old->progress.tip_hash,old->progress.tip_height}!=after)Fail("Ordinary delivery replay mismatch");
         if(origin)OrdinaryOrigin(db,wallet.current_wallet_id_,scripts,*origin,false,&event);
-        transaction.Commit();return old->progress;
+        return old->progress;
     }
     if(old) {
         const auto& p=old->progress;
@@ -1388,6 +1530,6 @@ RuntimeIndexProgress RuntimeOrdinaryDelivery::Apply(WalletManager& wallet,uint64
     const auto bytes=Encode(next,identity,scripts.digest,"DNOW01");
     Statement checkpoint(db,"UPDATE wallet_meta SET runtime_ordinary_receipt=?,runtime_ordinary_invalid=0 WHERE id=1");checkpoint.Blob(1,bytes);checkpoint.Done();
     if(sqlite3_changes(db)!=1)Fail("Ordinary delivery receipt unavailable");
-    transaction.Commit();return next.progress;
+    return next.progress;
 }
 } // namespace dinero

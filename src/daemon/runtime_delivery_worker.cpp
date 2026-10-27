@@ -106,6 +106,10 @@ void RuntimeDeliveryWorker::RecoverWallet(Report& report) const {
         }
         auto index=ChainstateService::AcquireWalletIndexUse(source_);
 #ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
+        const auto mixed=source_->resumeRuntimeImportedMixedRecovery(use->Wallet(),index->Index(),session);
+        if(!mixed.ok())return;
+        if(*mixed){report.wallet=WalletOutcome::AppliedImportedMixedPrefix;
+            report.wallet_head=(*mixed)->observed_head;return;}
         // Explicit source-composition routing, NEVER a catch/fallback after a
         // mixed recovery failure. Imported failure remains closed/deferred.
         const auto orchard=source_->resumeRuntimeImportedOrchardRecovery(use->Wallet(),index->Index(),session);

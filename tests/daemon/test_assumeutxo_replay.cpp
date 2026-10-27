@@ -161,6 +161,13 @@ struct RuntimeOriginProjectionTestAccess {
             const wallet::OrchardCatalogCapture& prepared,const std::string& name,const std::function<void()>& fence){
         return RuntimeOrdinaryDelivery::ReadCoverageBalance(wallet,index,source,prepared,name,fence);
     }
+    static auto Advance(WalletManager& wallet,UTXOIndex& index,const RuntimeWalletCoverageProjection& source,
+            const wallet::OrchardCatalogCapture& prepared,const std::function<void()>& fence){
+        return RuntimeOrdinaryDelivery::AdvanceCoverage(wallet,index,source,prepared,fence);
+    }
+    static auto Existing(WalletManager& wallet,UTXOIndex& index,uint64_t session){
+        return RuntimeOrdinaryDelivery::ExistingCoverage(wallet,index,session);
+    }
 };
 #endif
 

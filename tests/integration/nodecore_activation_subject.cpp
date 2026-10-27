@@ -21,7 +21,18 @@ void SelectSdkActivationFixture(Chain chain) {
 #undef SelectParams
 #include "p2p/orchard_catalog_transfer.h"
 #include "p2p/orchard_phone_history.h"
+#include "daemon/runtime_delivery_worker.h"
 namespace dinero {
+struct RuntimeDeliveryStartupTestAccess {
+    static Json::Value Observe(DaemonApp& app){
+        Json::Value row;if(!app.runtime_delivery_worker_)return row;
+        const auto report=app.runtime_delivery_worker_->Snapshot();
+        row["mixed_prefix"]=report.wallet==RuntimeDeliveryWorker::WalletOutcome::AppliedImportedMixedPrefix;
+        row["orchard_only_prefix"]=report.wallet==RuntimeDeliveryWorker::WalletOutcome::AppliedOrchardPrefix;
+        if(report.wallet_head){row["sequence"]=Json::UInt64(report.wallet_head->sequence);row["digest"]=report.wallet_head->digest.GetHex();}
+        return row;
+    }
+};
 struct P2PServiceStopTestAccess {
     static bool HasCatalogClient(const P2PService& service){return bool(service.CatalogDownload());}
 };
@@ -61,6 +72,7 @@ Json::Value SdkActivationTestState(){
     row["running"]=s.running.load();row["shutdown_requested"]=s.shutdown_requested.load();
     if(!s.running||!s.app)return row;
     const auto& context=s.app->GetContext();
+    row["delivery_worker"]=dinero::RuntimeDeliveryStartupTestAccess::Observe(*s.app);
     row["global_context_matches"]=&context==DaemonContext::instance();
     row["stateless"]=GetConfig().utreexo_stateless;
     row["profile_valid"]=dinero::consensus::OrchardProfileConfigurationValid(dinero::Params());

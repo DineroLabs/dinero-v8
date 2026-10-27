@@ -947,6 +947,12 @@ try:
                             assert value['confirmed']==.0092 and value['utxo_count']==3,value
                             assert abs(value['immature']-next_block['amount_una']/1e8)<1e-12,value
                             assert abs(value['total']-(920000+next_block['amount_una'])/1e8)<1e-12,value
+                            deadline=time.monotonic()+15
+                            while time.monotonic()<deadline:
+                                worker=call('sdk_activation_state').get('delivery_worker',{})
+                                if worker.get('mixed_prefix') and worker.get('sequence')==6:break
+                                time.sleep(.1)
+                            assert worker.get('mixed_prefix') and not worker.get('orchard_only_prefix') and worker.get('sequence')==6,worker
                             with sqlite3.connect('file:'+str(wallet_paths[0])+'?mode=ro',uri=True) as db:
                                 forward_ordinary=db.execute('SELECT txid,vout,amount,height FROM utxos WHERE is_spent=0 ORDER BY txid,vout').fetchall()
                             with sqlite3.connect('file:'+str(datadir/'blockchain/utxo')+'?mode=ro',uri=True) as db:
@@ -956,7 +962,7 @@ try:
                             assert original_lifecycle()==original and snapshot_candidate_rows()==before_baseline_candidates
                             assert any(p['command']=='block' and (root/p['file']).read_bytes()==bytes.fromhex(next_block['body']) for p in packets[wire_forward:])
                             (root/'mixed-forward.json').write_text(json.dumps(dict(mined=next_block,balance=value,
-                                ordinary=forward_ordinary,index=forward_index,receipts=mixed_runtime_receipts(),
+                                ordinary=forward_ordinary,index=forward_index,worker=worker,receipts=mixed_runtime_receipts(),
                                 scope='Actual canonical owned coinbase107 and automatic incremental BOTH-store delivery after earned106 baselines, followed by normal owner-bound numeric107 capture; not whole-wallet/app/device/release readiness.'),indent=2)+'\n')
                     baseline_result=dict(result=baseline_reply,repeated=repeated_baseline,history_probe=probe,replies=baseline_replies,receipts=receipts,
                         ordinary_live=ordinary_live,index_live=index_live,balance_refusal=refused_balance,

@@ -5,9 +5,20 @@
 The next bounded native case, `NodeCoreImportedMixedForward`, extends genuinely
 earned two-store coverage106 with a canonical owned coinbase107. It requires
 automatic incremental ordinary/index delivery and a fresh normal numeric107
-read without another coverage RPC, wallet reset or injected coin. This case is
-not yet a passing gate; existing Orchard-only delivery does not earn mixed
-readiness. Full info/snapshot payloads and other lifecycle/device gates remain
+read without another coverage RPC, wallet reset or injected coin. Initial66e
+execution reached real107 and correctly refused the numeric read because only
+Orchard delivery advanced; its stopped failed root and whole inputs are retained.
+The new distinct imported mixed route classifies BOTH absent baselines before
+effects; invalidated/corrupt/partial baselines refuse, never fallback. It consumes
+retained DATA only, independently authenticates origin and exact current prefix,
+recovers/rechecks the complete Orchard catalog, and pins original cohort/lifecycle
+and wallet/index/session/seed/SQL owners through actual index-first incremental
+event application and FULL ordinary commit. Both exact predecessor inventories
+are checked; no coverage/adoption/schema/coin rebuild occurs. The bounded new
+writer supports ONE contiguous Connect (or exact retry); gaps/reorgs remain
+unsupported and closed. Genuine first-store partial completion stays retryable.
+This source implementation still needs its own exact build/new-source gates;
+no passing claim is made here. Full info/snapshot and other lifecycle/device gates remain
 separate. Public schedules and all source/owner guards stay unchanged.
 
 The bounded implementation adds `wallet.orchard.enrollpreactivation` and explicit
