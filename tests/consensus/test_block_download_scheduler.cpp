@@ -3560,6 +3560,29 @@ int main() {
                                "deliveries that outweigh the misses must restore the peer") ? 0 : 1;
             })) return 1;
 
+        // The merge of the legacy receipt path with the shared legacy/Orchard
+        // credit helper must not credit a delivery twice. Three misses minus
+        // one delivery stays at the two-miss demotion threshold, including
+        // when the same body is delivered again.
+        if (run(3, [&](auto& scheduler, auto& selector, auto& hashes, auto& skips) {
+                expire_all(scheduler);
+                const auto body = MakeBlockForHash(selector, hashes[1]);
+                if (!Require(scheduler.OnBlockReceived(body), "credit boundary: first receipt")) return 1;
+                if (!Require(scheduler.OnBlockReceived(body), "credit boundary: duplicate receipt")) return 1;
+                skips.clear();
+                if (!Require(scheduler.ReRequestBlock(hashes[3]), "credit boundary: probe request")) return 1;
+                for (int t = 0; t < 5; ++t) scheduler.Tick();
+                if (!Require(all_skip(skips, true),
+                             "one unique receipt cancels exactly one of three misses")) return 1;
+                if (!Require(scheduler.OnBlockReceived(MakeBlockForHash(selector, hashes[2])),
+                             "credit boundary: second unique receipt")) return 1;
+                skips.clear();
+                if (!Require(scheduler.ReRequestBlock(hashes[3]), "credit boundary: recovered request")) return 1;
+                for (int t = 0; t < 5; ++t) scheduler.Tick();
+                return Require(all_skip(skips, false),
+                               "two unique receipts reduce three misses below the threshold") ? 0 : 1;
+            })) return 1;
+
         // The cooldown lapses on its own.
         if (run(6, [&](auto& scheduler, auto&, auto& hashes, auto& skips) {
                 expire_all(scheduler);
