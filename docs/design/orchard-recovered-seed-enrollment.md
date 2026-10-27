@@ -1573,3 +1573,11 @@ Unsupported/missing/corrupt/stale sources remain closed; no baseline, anchor,
 SQL key, owner or history repair is performed by a read. Only getbalance is
 wired here; getwalletinfo/snapshot numeric surfaces remain conservatively
 closed on imported backing until their complete payloads have owned capture.
+
+The first new execution refused at the intact single-recovery-seed guard: the
+new coordinator and factored summary both attempted to acquire a pin. The
+correction passes the SAME existing pin into the private transaction helper,
+checks it with the original lease/session/thread/transaction inventory reader,
+and ends that lexical key interval before final complete-catalog recapture.
+No seed/session/instance guard is relaxed; the first failed root and exact
+whole inputs stay separate and are never retried or retroactively passed.

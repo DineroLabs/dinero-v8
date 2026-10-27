@@ -6468,7 +6468,7 @@ WalletManager::BalanceSummary WalletManager::getBalanceSummary(const std::string
 }
 
 WalletManager::BalanceSummary WalletManager::ReadBalanceSummaryInTransaction(DatabaseLease& lease,int64_t tip,
-        const std::set<std::string>& additional_reservations) const {
+        const std::set<std::string>& additional_reservations,const RecoverySeed* existing_seed) const {
     auto& self=const_cast<WalletManager&>(*this);
     if(!db_||lease.Database()!=db_||sqlite3_get_autocommit(db_)||tip<0||tip>UINT32_MAX)
         throw std::runtime_error("Balance transaction ownership unavailable");
@@ -6482,8 +6482,10 @@ WalletManager::BalanceSummary WalletManager::ReadBalanceSummaryInTransaction(Dat
     if (installed && wallet_locked_) {
         result.reservations = ReservationStatus::UnlockRequired;
     } else if (installed) {
-        pin = lease.CopyRecoverySeed(lease.Session());
-        for (const auto& payment : ReadPendingPaymentsOwned(pin->Bytes()))
+        if(!existing_seed){pin=lease.CopyRecoverySeed(lease.Session());existing_seed=pin.get();}
+        // Reuse the caller's SAME real pin, authenticating its lease/thread/
+        // session/SQL owner. Never recursively acquire or weaken seed ownership.
+        for (const auto& payment : lease.ReadPendingPaymentsInTransaction(*existing_seed))
             for (const auto& input : payment.inputs)
                 locks.insert(input.txid + ":" + std::to_string(input.vout));
         result.reservations = ReservationStatus::Authenticated;

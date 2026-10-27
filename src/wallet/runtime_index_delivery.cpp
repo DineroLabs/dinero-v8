@@ -1201,7 +1201,10 @@ WalletManager::BalanceSummary RuntimeOrdinaryDelivery::ReadCoverageBalance(Walle
         Fail("Balance ordinary height is not current");
     WalletManager::BalanceSummary result;
     RuntimeIndexDelivery::WithCoverageBalance(index,source,[&]{
-        current();result=wallet.ReadBalanceSummaryInTransaction(*lease,source.TipHeight(),reservations);
+        current();result=wallet.ReadBalanceSummaryInTransaction(*lease,source.TipHeight(),reservations,pin.get());
+        // Final complete-catalog capture acquires its own real seed pin. End
+        // this lexical key interval first; SQL/lease/source owners never leave.
+        pin.reset();
         ::dinero::wallet::OrchardAccountDelivery::RecheckCatalogCaptureInTransaction(wallet,origin.session_,source.replay_,prepared);
         current();
     });

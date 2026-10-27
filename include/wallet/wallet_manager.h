@@ -1113,7 +1113,7 @@ private:
     // Same recorded-reservation calculation as getBalanceSummary, but only
     // under the caller's actual lease/SQL owner and explicit captured height.
     BalanceSummary ReadBalanceSummaryInTransaction(DatabaseLease&,int64_t,
-        const std::set<std::string>& additional_reservations) const;
+        const std::set<std::string>& additional_reservations,const RecoverySeed* existing_seed = nullptr) const;
     std::vector<PendingPayment> ReadPendingPaymentsOwned(std::span<const uint8_t> seed) const;
     std::optional<std::vector<uint8_t>> deriveKeyForScriptPubKeyOwned(
         const std::string& script_pubkey, SigningKeyPolicy* policy, bool pinned_signing = false, bool owned_transaction = false);
