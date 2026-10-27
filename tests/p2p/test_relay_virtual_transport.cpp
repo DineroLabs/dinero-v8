@@ -1144,9 +1144,10 @@ struct RelayWorld {
         sockets[endpoint] = std::make_unique<LoopbackSocketPair>(LoopbackSocketPair::Create());
         manager->test_install_connected_direct_peer(endpoint, sockets[endpoint]->client_fd(), true,
                                                     true, MakeNodeId(0x50));
-        const auto colon = endpoint.rfind(':');
-        manager->test_set_peer_endpoint(endpoint, endpoint.substr(0, colon), 20999);
-        if (gossiped) addrman.addAddress(MakeRelayAddress(endpoint.substr(0, colon), 20999));
+        std::string host = endpoint.substr(0, endpoint.rfind(':'));
+        if (host.front() == '[') host = host.substr(1, host.size() - 2);  // "[v6]:port"
+        manager->test_set_peer_endpoint(endpoint, host, 20999);
+        if (gossiped) addrman.addAddress(MakeRelayAddress(host, 20999));
     }
     // The next message with `command` the manager sent to `endpoint`.
     std::unique_ptr<P2PMessage> Next(const std::string& endpoint, const std::string& command) {
@@ -2025,6 +2026,79 @@ TEST(RelayRegistration, ConnectedRelayIsCandidateWhenAddrmanIsCrowded) {
     }
     ASSERT_TRUE(asked) << "a connected relay was never tried: addrman's draw left it out";
     ASSERT_NE(w.Next(r2, "relayreg"), nullptr);
+}
+
+// Owner ruling (Codex review of #853): two confirmed IPv6 relays left a
+// dual-stack target with no route an IPv4-only origin can use. A relay
+// counts as IPv4 when we are registered with it over IPv4 (that is the
+// address the signed hint carries), so a dual-stack relay qualifies.
+TEST(RelayRegistration, DualStackNodeKeepsAnIPv4Relay) {
+    RelayWorld w;
+    const std::string a = "[2a01:4f8::1]:20999";
+    const std::string b = "[2604:a880::1]:20999";
+    w.Connect(a, true);
+    w.Connect(b, true);
+    w.manager->test_maybe_auto_register_with_relays();
+    w.Ack(a);
+    w.Ack(b);
+    for (int i = 0; i < 5; ++i) w.manager->note_relay_outcome(a, true);
+    for (int i = 0; i < 3; ++i) w.manager->note_relay_outcome(b, true);  // healthier than a new relay
+    w.manager->test_maybe_auto_register_with_relays();
+    ASSERT_EQ(w.Relays().size(), 2u);
+
+    // An IPv4 connection: this node is dual-stack. The IPv4 relay is tried
+    // beside the two working IPv6 relays, never in place of one.
+    const std::string v4 = "8.8.10.1:20999";
+    w.Connect(v4, true);
+    w.manager->test_maybe_auto_register_with_relays();
+    auto relays = w.Relays();
+    EXPECT_TRUE(ContainsEndpoint(relays, v4)) << "no IPv4 relay tried";
+    EXPECT_TRUE(ContainsEndpoint(relays, a));
+    EXPECT_TRUE(ContainsEndpoint(relays, b)) << "a working relay was dropped for an untried one";
+
+    // Confirmed, it takes the weaker IPv6 relay's slot.
+    w.Ack(v4);
+    w.manager->test_maybe_auto_register_with_relays();
+    relays = w.Relays();
+    EXPECT_EQ(relays.size(), 2u);
+    EXPECT_TRUE(ContainsEndpoint(relays, v4));
+    EXPECT_TRUE(ContainsEndpoint(relays, a));
+}
+
+TEST(RelayRegistration, DualStackNodeFallsBackToAnIPv4FleetRelay) {
+    RelayWorld w;
+    const std::string a = "[2a01:4f8::1]:20999";
+    const std::string b = "[2604:a880::1]:20999";
+    w.Connect(a, true);
+    w.Connect(b, true);
+    w.manager->test_maybe_auto_register_with_relays();
+    w.Ack(a);
+    w.Ack(b);
+    w.Connect("8.8.10.1:20999", false);  // an ordinary IPv4 peer, not a relay
+    w.dialed.clear();
+    w.manager->test_maybe_auto_register_with_relays();
+    const auto relays = w.Relays();
+    EXPECT_EQ(relays.size(), 3u) << "no IPv4 fleet relay beside the IPv6 community relays";
+    EXPECT_TRUE(ContainsEndpoint(relays, a));
+    EXPECT_TRUE(ContainsEndpoint(relays, b));
+    EXPECT_EQ(w.dialed.size(), 1u);
+}
+
+// An IPv6-only node can't use an IPv4 relay: it never tries one.
+TEST(RelayRegistration, IPv6OnlyNodeDoesNotProbeIPv4Relays) {
+    RelayWorld w;
+    const std::string a = "[2a01:4f8::1]:20999";
+    const std::string b = "[2604:a880::1]:20999";
+    w.Connect(a, true);
+    w.Connect(b, true);
+    w.manager->test_maybe_auto_register_with_relays();
+    w.Ack(a);
+    w.Ack(b);
+    w.addrman.addAddress(MakeRelayAddress("8.8.10.1", 20999));
+    w.dialed.clear();
+    w.manager->test_maybe_auto_register_with_relays();
+    EXPECT_EQ(w.Relays().size(), 2u);
+    EXPECT_TRUE(w.dialed.empty()) << "dialed " << w.dialed.front();
 }
 
 // Found on mainnet (Plan 3 Task 7): old relays keep re-advertising legacy

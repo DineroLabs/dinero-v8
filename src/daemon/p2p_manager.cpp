@@ -4699,6 +4699,13 @@ void P2PManager::MaybeAutoRegisterWithRelays() {
     // Outbound peers whose own version advertises NODE_RELAY. addrman's
     // draw below is capped and in map order, so it can leave them out.
     std::vector<std::string> connected_relay_keys;
+    auto is_ipv4 = [](const std::string& host) {
+        dinero::p2p::NetworkType net = dinero::p2p::NetworkType::Unknown;
+        std::vector<uint8_t> bytes;
+        return HostToAddrV2(host, &net, &bytes) && net == dinero::p2p::NetworkType::IPV4;
+    };
+    // A direct IPv4 connection: IPv4-only origins must be able to reach us.
+    bool has_ipv4 = false;
     {
         std::lock_guard<std::mutex> lock(peers_mutex_);
         for (const auto& kv : connected_peers_) {
@@ -4719,6 +4726,7 @@ void P2PManager::MaybeAutoRegisterWithRelays() {
                 (peer->service_flags & ServiceFlags::NODE_RELAY)) {
                 connected_relay_keys.push_back(pk);
             }
+            if (peer->is_outbound && !peer->via_relay && is_ipv4(peer->address)) has_ipv4 = true;
         }
     }
     // Gap 2 Stage A.1: skip relay auto-registration ONLY when this node is
@@ -4849,8 +4857,41 @@ void P2PManager::MaybeAutoRegisterWithRelays() {
         }
         return added;
     };
+    // Live relays (best first) as endpoints, for the IPv4 rule below.
+    auto live_endpoints = [&](bool fleet, bool confirmed) {
+        std::vector<std::pair<std::string, uint16_t>> out;
+        for (const auto& key : live_relays) {
+            if (fleet_keys.count(key) != (fleet ? 1u : 0u)) continue;
+            if (confirmed_keys.count(key) != (confirmed ? 1u : 0u)) continue;
+            if (relay_health_replace_eligible(key)) continue;
+            std::string host;
+            uint16_t port = 0;
+            bool has_port = false;
+            if (dinero::network::SplitEndpoint(key, &host, &port, &has_port) && has_port) {
+                out.emplace_back(std::move(host), port);
+            }
+        }
+        return out;
+    };
+    // Owner ruling: a dual-stack node keeps at least one IPv4 relay whenever
+    // one is available, so IPv4-only origins can reach it. The signed hint
+    // names the address we registered over, so that is what must be IPv4;
+    // a dual-stack relay registered over IPv4 counts. A confirmed one holds
+    // a slot (community first) ahead of the IPv6 relays.
+    size_t pinned = 0;
+    if (has_ipv4) {
+        for (const bool fleet : {false, true}) {
+            if (pinned > 0 || (fleet && !on_mainnet)) break;
+            for (const auto& [host, port] : live_endpoints(fleet, /*confirmed=*/true)) {
+                if (is_ipv4(host) && add_endpoint(host, port)) {
+                    pinned = 1;
+                    break;
+                }
+            }
+        }
+    }
     const size_t confirmed_community =
-        add_live(/*fleet=*/false, /*confirmed=*/true, kAutoRelayTargetCount);
+        pinned + add_live(/*fleet=*/false, /*confirmed=*/true, kAutoRelayTargetCount - pinned);
     const size_t open_slots = kAutoRelayTargetCount - confirmed_community;
     size_t probes = add_live(/*fleet=*/false, /*confirmed=*/false, open_slots);
     for (const auto& [host, port] : dynamic_candidates) {
@@ -4863,6 +4904,31 @@ void P2PManager::MaybeAutoRegisterWithRelays() {
         for (const auto& bp : kMainnetRelayPeers) {
             if (fleet >= open_slots) break;
             if (add_endpoint(bp.first, bp.second)) ++fleet;
+        }
+    }
+    // Still no IPv4 relay: try one beside the others, never in place of a
+    // working one. Once it confirms it takes a slot above.
+    const bool desired_has_ipv4 =
+        std::any_of(desired.begin(), desired.end(), [&](const std::string& key) {
+            std::string host;
+            uint16_t port = 0;
+            bool has_port = false;
+            return dinero::network::SplitEndpoint(key, &host, &port, &has_port) && is_ipv4(host);
+        });
+    if (has_ipv4 && !desired_has_ipv4) {
+        std::vector<std::pair<std::string, uint16_t>> v4_candidates =
+            live_endpoints(/*fleet=*/false, /*confirmed=*/false);
+        for (const auto& c : dynamic_candidates) {
+            if (!fleet_keys.count(endpoint_key(c.first, c.second))) v4_candidates.push_back(c);
+        }
+        if (on_mainnet) {
+            for (const bool confirmed : {true, false}) {
+                for (auto& c : live_endpoints(/*fleet=*/true, confirmed)) v4_candidates.push_back(c);
+            }
+            for (const auto& bp : kMainnetRelayPeers) v4_candidates.emplace_back(bp.first, bp.second);
+        }
+        for (const auto& [host, port] : v4_candidates) {
+            if (is_ipv4(host) && add_endpoint(host, port)) break;
         }
     }
 
