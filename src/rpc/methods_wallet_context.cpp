@@ -640,6 +640,23 @@ static const char* ReservationStatusName(dinero::WalletManager::ReservationStatu
     throw std::logic_error("Unknown reservation status");
 }
 
+// A current compact proof tuple and Orchard-only delivery cannot authenticate
+// stale ordinary UTXOs. This is an explicit unsupported-source refusal, not a
+// failed mixed-recovery fallback or a baseline reader that creates identity or
+// schema. Other source compositions retain their existing behavior; absence of
+// this refusal is NOT a newly earned readiness certificate.
+static std::optional<din::Json> ImportedRuntimeBalanceRefusal(const ExecutionContext& ctx) {
+    if (!ctx.daemon || !ctx.daemon->chainstate) return std::nullopt;
+    const auto source = std::dynamic_pointer_cast<dinero::ChainstateService>(ctx.daemon->chainstate);
+    if (!source) throw std::runtime_error("Wallet balance source owner unavailable");
+    if (!source->requiresImportedRuntimeBalanceReconciliation()) return std::nullopt;
+    din::Json refusal;
+    refusal["error"] = "Current imported-source mixed wallet balance unavailable; ordinary/index baseline reconciliation required";
+    refusal["error_code"] = "wallet_balance_not_current";
+    refusal["retryable"] = true;
+    return refusal;
+}
+
 din::Json rpc_context_wallet_getbalance(const ExecutionContext& ctx, const din::Json& params) {
     din::Json result;
 
@@ -660,6 +677,7 @@ din::Json rpc_context_wallet_getbalance(const ExecutionContext& ctx, const din::
     }
 
     try {
+        if (const auto refusal = ImportedRuntimeBalanceRefusal(ctx)) return *refusal;
         auto& mgr = wallet_service->get();
 
         // Sync gate: wait for wallet worker to catch up to chain tip.
@@ -803,6 +821,7 @@ din::Json rpc_context_wallet_getwalletinfo(const ExecutionContext& ctx, const di
     }
 
     try {
+        if (const auto refusal = ImportedRuntimeBalanceRefusal(ctx)) return *refusal;
         auto& mgr = wallet_service->get();
 
         // Wallet name
@@ -1329,6 +1348,7 @@ din::Json rpc_context_wallet_snapshot(const ExecutionContext& ctx, const din::Js
     }
 
     try {
+        if (const auto refusal = ImportedRuntimeBalanceRefusal(ctx)) return *refusal;
         auto& mgr = wallet_service->get();
         wallet_obj["name"] = mgr.current();
         wallet_obj["encrypted"] = mgr.isWalletEncrypted();

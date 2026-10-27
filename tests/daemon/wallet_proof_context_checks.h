@@ -1,6 +1,8 @@
 #pragma once
 #include "rpc/methods_utreexo.h"
 din::Json rpc_context_wallet_snapshot(const ExecutionContext&, const din::Json&);
+din::Json rpc_context_wallet_getbalance(const ExecutionContext&, const din::Json&);
+din::Json rpc_context_wallet_getwalletinfo(const ExecutionContext&, const din::Json&);
 namespace din { Json rpc_getaddressbatch(const ExecutionContext&, const Json&); }
 namespace dinero {
 namespace {
@@ -27,6 +29,21 @@ TEST(WalletProofContext, MissingOwnerHasNoTuple) {
     ASSERT_NO_FATAL_FAILURE(ExpectUnavailableProofContext(din::BuildUtreexoProofContext(ctx)));
 }
 #ifdef DINERO_TEST_ORCHARD_ORIGIN
+TEST(WalletProofContext, IndependentFullSourceRetainsNormalBalanceSurfaces) {
+    CanonicalRecoveryFixture f; ExecutionContext ctx; ctx.daemon = &f.context;
+    EXPECT_FALSE(f.f.service->requiresImportedRuntimeBalanceReconciliation());
+    // Regression of the existing source path only, not a new all-store
+    // baseline/readiness receipt or permission to promote assumed history.
+    const auto balance = rpc_context_wallet_getbalance(ctx, din::obj());
+    ASSERT_FALSE(balance.isMember("error")) << balance.toStyledString();
+    EXPECT_TRUE(balance["confirmed"].isNumeric());
+    const auto info = rpc_context_wallet_getwalletinfo(ctx, din::obj());
+    ASSERT_FALSE(info.isMember("error")) << info.toStyledString();
+    EXPECT_TRUE(info["balance"].isNumeric());
+    const auto snapshot = rpc_context_wallet_snapshot(ctx, din::obj());
+    ASSERT_FALSE(snapshot.isMember("error")) << snapshot.toStyledString();
+    EXPECT_TRUE(snapshot["balances"]["confirmed"].isNumeric());
+}
 TEST(WalletProofContext, ActualWalletSnapshotRefusesUnavailableTuple) {
     CanonicalRecoveryFixture f; ExecutionContext ctx; ctx.daemon = &f.context;
     const auto current = f.f.service->getUtreexoRpcSnapshot(); ASSERT_TRUE(current.ok());

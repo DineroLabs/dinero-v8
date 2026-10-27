@@ -275,6 +275,11 @@ public:
     // trusted ordinary balance. Caller owns WalletUse/WalletIndexUse, no lease.
     StatusOr<std::shared_ptr<const RuntimeFundingCandidates>> getRuntimeFundingCandidates(
         WalletManager&,uint64_t expected_session);
+    // Conservative source-composition refusal only. Completed imported compact
+    // startup/Orchard delivery has no supported mixed ordinary/index baseline
+    // reconciliation yet. False is NOT wallet readiness or a balance receipt.
+    // No SQLite/schema/identity/progress writes or candidate coin authority.
+    bool requiresImportedRuntimeBalanceReconciliation() const;
     // Independently replay and own selected historical bodies before wallet
     // effects. Returns the captured height, not lasting chain/wallet readiness.
     // Bounded archival/stateful pre-Orchard support; failures never substitute

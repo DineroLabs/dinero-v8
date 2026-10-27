@@ -1467,6 +1467,16 @@ ten imported SQL values, encrypted owners and missing baseline schema/receipts
 must remain unchanged. This is an honest refusal gate, not mixed recovery or
 complete wallet-readiness qualification.
 
+The production refusal is deliberately conservative for the completed imported
+compact composition. There is not yet a supported mixed baseline reconciliation
+route there, so apparent ordinary rows, a current proof context or Orchard-only
+progress never make these RPCs available. The source-composition predicate reads
+under selected ownership, writes no schema/identity/receipt and grants no coin or
+readiness authority when false. Other source compositions retain their existing
+behavior, not a new readiness claim. Address-scoped index snapshots remain a
+separate API and are not qualified by this wallet-scoped gate. Genuine mixed
+baseline/recovery integration remains open.
+
 `NodeCoreAssumedPrivateSendUnshield` extends the real imported-source funded
 crossing with a later restored account0 payer, a DIFFERENT-seed named recipient,
 actual public queuespend/finishspend proofs and canonical private confirmation105.

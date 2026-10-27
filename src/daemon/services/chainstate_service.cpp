@@ -20491,6 +20491,15 @@ RuntimeFundingCandidates ReadPostBaseFunding(const RuntimeAccountReplay& replay)
 }
 }
 #endif
+bool ChainstateService::requiresImportedRuntimeBalanceReconciliation() const {
+    std::lock_guard<AnnotatedRecursiveMutex> selected(activation_mutex_);
+#ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
+    return compact_startup_ && compact_startup_->imported_parent.has_value();
+#else
+    return false;
+#endif
+}
+
 StatusOr<std::shared_ptr<const RuntimeFundingCandidates>>
 ChainstateService::getRuntimeFundingCandidates(WalletManager& wallet,uint64_t session){
 #ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
