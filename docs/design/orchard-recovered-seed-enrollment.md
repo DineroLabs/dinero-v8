@@ -2,6 +2,14 @@
 
 ## Scope and release status
 
+The next bounded native case, `NodeCoreImportedMixedForward`, extends genuinely
+earned two-store coverage106 with a canonical owned coinbase107. It requires
+automatic incremental ordinary/index delivery and a fresh normal numeric107
+read without another coverage RPC, wallet reset or injected coin. This case is
+not yet a passing gate; existing Orchard-only delivery does not earn mixed
+readiness. Full info/snapshot payloads and other lifecycle/device gates remain
+separate. Public schedules and all source/owner guards stay unchanged.
+
 The bounded implementation adds `wallet.orchard.enrollpreactivation` and explicit
 `wallet.orchard.recoveraccount0` for an unlocked, named recovered wallet. The
 latter requires complete authenticated retained history from activation; it is

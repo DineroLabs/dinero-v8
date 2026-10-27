@@ -43,6 +43,8 @@ mixed_baseline=bool(os.environ.get('DINERO_SDK_MIXED_BASELINE'))
 if mixed_baseline:assert post_base_shield and not post_base_discovery_only and not mixed_balance_refusal
 mixed_balance_read=bool(os.environ.get('DINERO_SDK_MIXED_BALANCE_READ'))
 if mixed_balance_read:assert mixed_baseline
+mixed_forward=bool(os.environ.get('DINERO_SDK_MIXED_FORWARD'))
+if mixed_forward:assert mixed_balance_read
 if post_base_shield:assert new_compact_ready and not reserved_restart and not ready_restart
 assumed_unshield=bool(os.environ.get('DINERO_SDK_ASSUMED_PRIVATE_UNSHIELD'))
 if assumed_unshield:assert assumed and os.environ.get('DINERO_SDK_COMPACT_PRIVATE_SEND')=='1' and not new_compact_reservation
@@ -923,6 +925,37 @@ try:
                         assert original_lifecycle()==original and mixed_runtime_receipts()==receipts and wallet_rows()==before_baseline_rows
                         (root/'mixed-balance-read.json').write_text(json.dumps(dict(before_coverage=early_balance,
                             current=refused_balance,reopened=reopened_balance,scope='Fresh source-bound ordinary balance read only; no whole-wallet, confidential/asset, address-index or app/device readiness.'),indent=2)+'\n')
+                        if mixed_forward:
+                            # No second reconcilecoverage, wallet reopen/reset,
+                            # fabricated output or caller-provided numeric total.
+                            wire_forward=len(packets);next_block=native_call('mine_next',script=post_mined['transparent_outputs'][0]['script'])
+                            assert next_block['height']==107 and next_block['amount_una']>0,next_block
+                            bodies[bytes.fromhex(next_block['hash'])[::-1]]=bytes.fromhex(next_block['body'])
+                            headers.append(bytes.fromhex(next_block['header']))
+                            forward_reads=[];deadline=time.monotonic()+45
+                            while time.monotonic()<deadline:
+                                assert not failures,failures
+                                height=rpc('getblockcount',[])
+                                value=call('rpc',method='wallet.getbalance',params=[])
+                                forward_reads.append(dict(height=height,balance=value))
+                                (root/'mixed-forward-reads.json').write_text(json.dumps(forward_reads,indent=2)+'\n')
+                                if height==107 and value.get('source_height')==107 and value.get('utxo_count')==3:break
+                                time.sleep(.2)
+                            assert height==107 and value.get('source_height')==107 and value.get('source_hash')==next_block['hash'],value
+                            assert value['confirmed']==.0092 and value['utxo_count']==3,value
+                            assert abs(value['immature']-next_block['amount_una']/1e8)<1e-12,value
+                            assert abs(value['total']-(920000+next_block['amount_una'])/1e8)<1e-12,value
+                            with sqlite3.connect('file:'+str(wallet_paths[0])+'?mode=ro',uri=True) as db:
+                                forward_ordinary=db.execute('SELECT txid,vout,amount,height FROM utxos WHERE is_spent=0 ORDER BY txid,vout').fetchall()
+                            with sqlite3.connect('file:'+str(datadir/'blockchain/utxo')+'?mode=ro',uri=True) as db:
+                                forward_index=db.execute('SELECT txid,vout,value,height FROM wallet_utxos WHERE spend_height IS NULL ORDER BY txid,vout').fetchall()
+                            assert forward_ordinary==forward_index and len(forward_index)==3,(forward_ordinary,forward_index)
+                            assert (next_block['coinbase_txid'],0,next_block['amount_una'],107) in forward_index
+                            assert original_lifecycle()==original and snapshot_candidate_rows()==before_baseline_candidates
+                            assert any(p['command']=='block' and (root/p['file']).read_bytes()==bytes.fromhex(next_block['body']) for p in packets[wire_forward:])
+                            (root/'mixed-forward.json').write_text(json.dumps(dict(mined=next_block,balance=value,
+                                ordinary=forward_ordinary,index=forward_index,receipts=mixed_runtime_receipts(),
+                                scope='Actual canonical owned coinbase107 and automatic incremental BOTH-store delivery after earned106 baselines, followed by normal owner-bound numeric107 capture; not whole-wallet/app/device/release readiness.'),indent=2)+'\n')
                     baseline_result=dict(result=baseline_reply,repeated=repeated_baseline,history_probe=probe,replies=baseline_replies,receipts=receipts,
                         ordinary_live=ordinary_live,index_live=index_live,balance_refusal=refused_balance,
                         scope='Genuine independent genesis-to-parent replay of public legacy body DATA plus actual canonical102..106 events, original audited coverage writer/index-first and FULL ordinary commits. Original imported cohort/anchor/lifecycle and encrypted owners unchanged. Captured two-store baseline only; NO live history promotion, general coin view, whole-wallet balance-read readiness or app/device/release qualification.')
@@ -955,9 +988,10 @@ try:
                     mixed_baseline=baseline_result,
                     scope='Actual original-assumed compact NEW post-base105 owned-change discovery during normal named reopen/unlock, CURRENT105 TCP input proof acquisition and public NEW queue/finish with real canonical FULL validation/mining106/SDK106/550000una. Both original historical funding outputs already spent; no wallet coin or caller balance injection, manual proof-backed spend, mixed/independent baseline, mainnet/v5/all lifecycles/apps/devices/release claim.')
         (root/'receipt.json').write_text(json.dumps(dict(original_assumed_mobile=True,new_compact_reservation=True,
+            mixed_scope=('Genuine independently replayed two-store coverage and, where actually asserted, fresh ordinary numeric publication; never live-chain marker/history promotion or whole-wallet readiness.' if mixed_baseline else 'No mixed baseline qualified.'),
             pending=pending_input,queued=new_queued,retry=new_retry,reopened=reopened,original_lifecycle=original,
             mixed_receipts_unchanged=mixed_before,prior_confirmation=operations,new_compact_ready=new_ready,post_base_shield=post_base_shield,
-            scope='Actual native imported funded crossing to104, then a DIFFERENT unspent historical output obtains a new exact-tip proof over TCP and atomically queues a NEW bound shield reservation through public SDK C ABI. '+('Reserved-restart variant orderly stops and EXITS the original SDK PID, starts a fresh executor without snapshot re-import, opens/unlocks the SAME encrypted named wallet without phrase and authenticates its unchanged durable randomized intent before fresh CURRENT paths/signing. ' if reserved_restart else 'Ready variant signs in the SAME executor/session. ')+('Ready-restart variant additionally EXITS the signed-Ready process; a fresh PID/no-phrase wallet reopen retains identical encrypted signed intent, refuses default missing-pool retry, then explicitly reacquires CURRENT per-input DATA for independent admission of the SAME signed bytes. Existing poisoned entries refuse even explicit recovery. ' if ready_restart else '')+ 'Ready uses selected exact-current coins, freshly recaptures body/proofs for encrypted Ready, admits through ordinary proof-bearing ingress with peer full-proof refill disabled, preserves strict bad retained-proof refusals/retries and no-phrase SIGNED-Ready reopen, and truly mines/validates105 with confirmed535000una. Reservation-only variant retains its separate unsigned-reservation reopen gate. NO live-executor Reserved-job wallet-session rebind, forced/crash/powerloss, changed-tip/reorg recovery, mixed/index/independent history, apps/devices or release qualification.'),indent=2)+'\n')
+            scope='Actual original-assumed funded104 and current-proof NEW reservation via public SDK C ABI. Variant-specific structured assertions and separate primary reports define signing/Ready/restart/post-base/mixed baseline/numeric/forward scope; no stronger variant is inferred. Mixed baseline variants genuinely replay origin history and earn BOTH receipts, never live-chain history/validated-marker promotion. No old-live-executor Reserved-job wallet-only rebind, forced crash/powerloss, changed-tip/reorg, whole-wallet, mainnet/v5/all lifecycles/app/device or release qualification.'),indent=2)+'\n')
         assert call('stop')==0;success=True
         print('PASS actual original-assumed current compact proof download and NEW '+('signing/Ready/pool/confirmation' if new_compact_ready else 'atomic reservation'),flush=True)
         sys.exit(0)
