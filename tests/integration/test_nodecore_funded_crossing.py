@@ -39,6 +39,8 @@ post_base_discovery_only=bool(os.environ.get('DINERO_SDK_POST_BASE_DISCOVERY_ONL
 post_base_source_refusal=bool(os.environ.get('DINERO_SDK_POST_BASE_SOURCE_REFUSAL'))
 mixed_balance_refusal=bool(os.environ.get('DINERO_SDK_MIXED_BALANCE_REFUSAL'))
 if mixed_balance_refusal:assert post_base_shield and not post_base_discovery_only
+mixed_baseline=bool(os.environ.get('DINERO_SDK_MIXED_BASELINE'))
+if mixed_baseline:assert post_base_shield and not post_base_discovery_only and not mixed_balance_refusal
 if post_base_shield:assert new_compact_ready and not reserved_restart and not ready_restart
 assumed_unshield=bool(os.environ.get('DINERO_SDK_ASSUMED_PRIVATE_UNSHIELD'))
 if assumed_unshield:assert assumed and os.environ.get('DINERO_SDK_COMPACT_PRIVATE_SEND')=='1' and not new_compact_reservation
@@ -834,6 +836,40 @@ try:
                 assert any(o['operation_id']==post_request['request_id'] and (o.get('chain_observation') or {}).get('outcome')=='confirmed' for o in post_operations['operations']),post_operations
                 post_result=rpc('wallet.orchard.getbalance',dict(binding,account=0));assert post_result['confirmed_una']==550000,post_result
                 assert original_lifecycle()==original and mixed_runtime_receipts()==mixed_before
+                baseline_result=None
+                if mixed_baseline:
+                    before_baseline_rows=wallet_rows();before_baseline_candidates=snapshot_candidate_rows()
+                    baseline_replies=[];deadline=time.monotonic()+120
+                    while time.monotonic()<deadline:
+                        baseline_reply=call('rpc',method='wallet.reconcilecoverage',params=binding)
+                        baseline_replies.append(baseline_reply)
+                        (root/'baseline-replies.json').write_text(json.dumps(baseline_replies,indent=2)+'\n')
+                        if baseline_reply.get('complete'):break
+                        assert baseline_reply.get('error_code')=='coverage_source_pending' and baseline_reply.get('retryable') is True,baseline_reply
+                        assert wallet_rows()==before_baseline_rows and original_lifecycle()==original
+                        time.sleep(.1)
+                    assert baseline_reply.get('complete') and baseline_reply['checkpoint_height']==106,baseline_reply
+                    assert baseline_reply['checkpoint_hash']==post_mined['hash'] and baseline_reply['applied_sequence']==5,baseline_reply
+                    assert baseline_reply['historical_replay']=='genesis_to_activation_parent' and not baseline_reply['whole_wallet_ready'],baseline_reply
+                    receipts=mixed_runtime_receipts()
+                    assert len(receipts['indexed'])==1 and receipts['ordinary'] and receipts['ordinary'][0][0] and receipts['ordinary'][0][1]==0,receipts
+                    assert sorted(receipts['receipt_columns'])==['runtime_ordinary_invalid','runtime_ordinary_receipt']
+                    wallet_paths=list(datadir.rglob('wallet_wire-named-owner.db'));assert len(wallet_paths)==1
+                    with sqlite3.connect('file:'+str(wallet_paths[0])+'?mode=ro',uri=True) as db:
+                        ordinary_live=db.execute('SELECT txid,vout,amount,height FROM utxos WHERE is_spent=0 ORDER BY txid,vout').fetchall()
+                    with sqlite3.connect('file:'+str(datadir/'blockchain/utxo')+'?mode=ro',uri=True) as db:
+                        index_live=db.execute('SELECT txid,vout,amount_una,height FROM wallet_utxos WHERE spend_height IS NULL ORDER BY txid,vout').fetchall()
+                    assert ordinary_live==index_live and sum(r[2] for r in ordinary_live)==920000,(ordinary_live,index_live)
+                    assert sorted((r[2],r[3]) for r in ordinary_live)==[(450000,106),(470000,104)]
+                    assert wallet_rows()==before_baseline_rows and snapshot_candidate_rows()==before_baseline_candidates
+                    assert original_lifecycle()==original,'coverage moved original assumed lifecycle'
+                    # Earning actual baseline effects is separate from the
+                    # later owner-bound balance-read publication gate.
+                    refused_balance=call('rpc',method='wallet.getbalance',params=[])
+                    assert refused_balance.get('error_code')=='wallet_balance_not_current',refused_balance
+                    baseline_result=dict(result=baseline_reply,replies=baseline_replies,receipts=receipts,
+                        ordinary_live=ordinary_live,index_live=index_live,balance_refusal=refused_balance,
+                        scope='Genuine independent genesis-to-parent replay of public legacy body DATA plus actual canonical102..106 events, original audited coverage writer/index-first and FULL ordinary commits. Original imported cohort/anchor/lifecycle and encrypted owners unchanged. Captured two-store baseline only; NO live history promotion, general coin view, whole-wallet balance-read readiness or app/device/release qualification.')
                 mixed_balance=None
                 if mixed_balance_refusal:
                     # Genuine Orchard confirmation is NOT both transparent
@@ -860,6 +896,7 @@ try:
                 new_ready['post_base_shield']=dict(discovery=discovery,pending=post_pending,queued=post_queued,finished=post_finished,
                     body=post_signed,mined=post_mined,operations=post_operations,balance=post_result,
                     mixed_balance_refusal=mixed_balance,
+                    mixed_baseline=baseline_result,
                     scope='Actual original-assumed compact NEW post-base105 owned-change discovery during normal named reopen/unlock, CURRENT105 TCP input proof acquisition and public NEW queue/finish with real canonical FULL validation/mining106/SDK106/550000una. Both original historical funding outputs already spent; no wallet coin or caller balance injection, manual proof-backed spend, mixed/independent baseline, mainnet/v5/all lifecycles/apps/devices/release claim.')
         (root/'receipt.json').write_text(json.dumps(dict(original_assumed_mobile=True,new_compact_reservation=True,
             pending=pending_input,queued=new_queued,retry=new_retry,reopened=reopened,original_lifecycle=original,

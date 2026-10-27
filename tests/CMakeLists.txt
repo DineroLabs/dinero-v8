@@ -9486,6 +9486,14 @@ if(TARGET nodecore_ffi)
       python3 ${CMAKE_SOURCE_DIR}/tests/integration/test_nodecore_funded_crossing.py)
     set_tests_properties(NodeCoreCompactMixedBalanceRefusal PROPERTIES TIMEOUT 480 RUN_SERIAL TRUE
       LABELS "integration;nodecore;orchard;assumedmobile;inputproof;wallet;readiness")
+    add_test(NAME NodeCoreImportedMixedBaseline COMMAND ${CMAKE_COMMAND} -E env
+      NODECORE_DRIVER=$<TARGET_FILE:nodecore_activation_driver>
+      ACTIVATION_FIXTURE_GENERATOR=$<TARGET_FILE:test_assumeutxo_replay>
+      DINERO_SDK_ASSUMED_MOBILE_FIXTURE=1 DINERO_SDK_COMPACT_NEW_RESERVATION=1 DINERO_SDK_COMPACT_NEW_READY=1
+      DINERO_SDK_POST_BASE_SHIELD=1 DINERO_SDK_MIXED_BASELINE=1
+      python3 ${CMAKE_SOURCE_DIR}/tests/integration/test_nodecore_funded_crossing.py)
+    set_tests_properties(NodeCoreImportedMixedBaseline PROPERTIES TIMEOUT 600 RUN_SERIAL TRUE
+      LABELS "integration;nodecore;orchard;assumedmobile;wallet;recovery")
     foreach(_post_base_case IN ITEMS Discovery SourceRefusal)
       set(_post_base_env DINERO_SDK_POST_BASE_DISCOVERY_ONLY=1)
       if(_post_base_case STREQUAL "SourceRefusal")

@@ -1487,6 +1487,18 @@ behavior, not a new readiness claim. Address-scoped index snapshots remain a
 separate API and are not qualified by this wallet-scoped gate. Genuine mixed
 baseline/recovery integration remains open.
 
+The explicit `wallet.reconcilecoverage` operation must earn both current-tip
+ordinary/index baselines through actual genesis-to-parent consensus replay and
+the checked canonical runtime prefix. It may request public legacy bodies as
+DATA; cache checksums never replace replay, cohort validation or owner checks.
+No automatic startup history download is implied. Original assumed SQL, frozen
+base, validated anchor and lifecycle stay unchanged; this is wallet coverage,
+not live-chain promotion. `NodeCoreImportedMixedBaseline` requires real imported
+funding/shields through106, genuine peer body DATA and matching two-store live
+coins920000una, with encrypted owners and snapshot candidates unchanged. Existing
+balance-read refusal remains until a separate fresh owner-bound read gate is
+earned. Unknown/corrupt history or owners must refuse, not reset or rebase.
+
 `NodeCoreAssumedPrivateSendUnshield` extends the real imported-source funded
 crossing with a later restored account0 payer, a DIFFERENT-seed named recipient,
 actual public queuespend/finishspend proofs and canonical private confirmation105.

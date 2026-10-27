@@ -637,7 +637,11 @@ void GenerateSdkActivationFixture(){
         row["native_original_source"]=f.full.f.path.string();
         row["funding_derivation_root"]=f.full.f.funding_derivation_root.string();
         row["funding_txid"]=f.full.f.blocks.at(101).vtx.at(1).GetTxid().AsUint256().GetHex();
-        for(const auto height:{100u,101u}){
+        std::vector<unsigned> funding_heights{100u,101u};
+        if(std::getenv("DINERO_SDK_MIXED_BASELINE")){
+            funding_heights.clear();for(unsigned h=0;h<=101;++h)funding_heights.push_back(h);
+        }
+        for(const auto height:funding_heights){
             const auto path=f.root/("funding-body-"+std::to_string(height)+".bin");
             const auto bytes=f.full.f.blocks.at(height).Serialize();std::ofstream stream(path,std::ios::binary);
             stream.write(bytes.data(),bytes.size());stream.close();ASSERT_TRUE(stream);
