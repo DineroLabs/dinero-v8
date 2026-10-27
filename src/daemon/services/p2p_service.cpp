@@ -28,6 +28,8 @@
 #include "storage/chain_db.h"
 #include "common/ilogger.h"  // For ILogger interface dependency injection
 #include "network/types.h"   // For dinero::ServiceFlags
+#include "daemon/config.h"            // GetConfig: sync profile for the backfill gate
+#include "nodecore/sync_profile_policy.h"
 #ifdef DINERO_HAS_ORCHARD_P2P
 #include "p2p/orchard_catalog_server.h"
 #include "p2p/orchard_catalog_download.h"
@@ -994,7 +996,13 @@ void P2PService::StartSchedulerTickLoop() {
                         const auto st = lc->GetStatus(std::chrono::steady_clock::now());
                         const bool validating =
                             st.assumeutxo_active && !st.history_fully_validated && !st.fatal;
-                        if (validating && st.snapshot_base_height > 0) {
+                        // Pre-base bodies exist only to feed background
+                        // validation, which a profile without historical
+                        // bodies (ios_utreexo phones) never runs.
+                        const auto& config = GetConfig();
+                        const bool wants_history = dinero::nodecore::RuntimeRetainsHistoricalBodies(
+                            config.sync_profile, config.utreexo_stateless);
+                        if (validating && wants_history && st.snapshot_base_height > 0) {
                             ctx->block_download->EnableBackfill(
                                 1, st.snapshot_base_height, st.snapshot_base_block);
                         } else {

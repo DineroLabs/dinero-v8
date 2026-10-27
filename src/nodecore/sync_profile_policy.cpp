@@ -45,6 +45,10 @@ bool ProfileRetainsHistoricalBodies(const std::string& profile) {
     return profile == "mac_fullblock";
 }
 
+bool RuntimeRetainsHistoricalBodies(const std::string& profile, bool utreexo_stateless) {
+    return profile.empty() ? !utreexo_stateless : ProfileRetainsHistoricalBodies(profile);
+}
+
 uint64_t CapabilitiesForProfile(const std::string& profile) {
     if (profile == "ios_utreexo") {
         return NODECORE_CAP_SYNC_STATELESS;

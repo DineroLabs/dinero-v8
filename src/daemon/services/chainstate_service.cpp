@@ -200,13 +200,7 @@ using consensus::DecodeCsnReplayData;
 
 bool RuntimeRetainsHistoricalBodies() {
     const auto& config = GetConfig();
-    if (!config.sync_profile.empty()) {
-        return dinero::nodecore::ProfileRetainsHistoricalBodies(config.sync_profile);
-    }
-    // Direct service tests and legacy callers may not have resolved a named
-    // profile yet. Preserve their established behavior via the authoritative
-    // compatibility flag.
-    return !config.utreexo_stateless;
+    return dinero::nodecore::RuntimeRetainsHistoricalBodies(config.sync_profile, config.utreexo_stateless);
 }
 
 // Startup undo audit window: the number of active-chain blocks (tail) that

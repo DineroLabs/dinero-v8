@@ -45,6 +45,10 @@ if(UNIX AND TARGET dinerod)
   add_test(NAME SplitBranchBlockAnnounce
     COMMAND bash ${CMAKE_SOURCE_DIR}/tests/p2p/test_split_branch_announce.sh ${CMAKE_BINARY_DIR})
   set_tests_properties(SplitBranchBlockAnnounce PROPERTIES LABELS "integration;p2p" TIMEOUT 300 RUN_SERIAL TRUE)
+  add_test(NAME PhoneBackfillGate
+    COMMAND ${CMAKE_COMMAND} -E env DINEROD=$<TARGET_FILE:dinerod>
+      bash ${CMAKE_SOURCE_DIR}/tests/integration/test_phone_backfill_gate.sh)
+  set_tests_properties(PhoneBackfillGate PROPERTIES LABELS "integration;assumeutxo;nodecore" TIMEOUT 300 RUN_SERIAL TRUE)
 endif()
 
 add_executable(test_p2p_header_parser tests/daemon/test_p2p_header_parser.cpp)
