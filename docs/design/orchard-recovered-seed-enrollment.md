@@ -1550,3 +1550,13 @@ readiness shortcut. Original ten assumed SQL values and missing mixed baseline/
 receipt schema must remain unchanged for the original wallet, payer and recipient.
 This is a required bounded HOST test, not a source-only PASS or physical app/device,
 ordinary/index balance readiness, current SDK slices or release qualification.
+### Current-tip imported ordinary read (new functional gate)
+
+`NodeCoreImportedBalanceRead` extends the actual original-imported106 flow with
+normal `wallet.getbalance` before and after genuine two-store coverage, and after
+normal no-phrase named open/unlock. A successful baseline alone must not bypass
+the fresh original source/cohort/lifecycle and complete wallet/SQL/catalog owners
+through balance capture. This gate is not yet an execution result. Numeric
+confidential/assets, wallet snapshots, whole-wallet readiness and device/release
+acceptance remain separate; no public schedule or soak changes are authorized.
+

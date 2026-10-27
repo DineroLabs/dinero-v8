@@ -41,6 +41,8 @@ mixed_balance_refusal=bool(os.environ.get('DINERO_SDK_MIXED_BALANCE_REFUSAL'))
 if mixed_balance_refusal:assert post_base_shield and not post_base_discovery_only
 mixed_baseline=bool(os.environ.get('DINERO_SDK_MIXED_BASELINE'))
 if mixed_baseline:assert post_base_shield and not post_base_discovery_only and not mixed_balance_refusal
+mixed_balance_read=bool(os.environ.get('DINERO_SDK_MIXED_BALANCE_READ'))
+if mixed_balance_read:assert mixed_baseline
 if post_base_shield:assert new_compact_ready and not reserved_restart and not ready_restart
 assumed_unshield=bool(os.environ.get('DINERO_SDK_ASSUMED_PRIVATE_UNSHIELD'))
 if assumed_unshield:assert assumed and os.environ.get('DINERO_SDK_COMPACT_PRIVATE_SEND')=='1' and not new_compact_reservation
@@ -845,6 +847,10 @@ try:
                 assert original_lifecycle()==original and mixed_runtime_receipts()==mixed_before
                 baseline_result=None
                 if mixed_baseline:
+                    if mixed_balance_read:
+                        early_balance=call('rpc',method='wallet.getbalance',params=[])
+                        assert early_balance.get('error_code')=='wallet_balance_not_current' and not any(
+                            key in early_balance for key in ('confirmed','total','spendable')),early_balance
                     for forbidden in ({'tip':106},{'reset':True},{'base':101}):
                         bad_baseline=call('rpc',method='wallet.reconcilecoverage',params=dict(binding,**forbidden))
                         assert 'error' in bad_baseline and not bad_baseline.get('complete'),bad_baseline
@@ -898,7 +904,23 @@ try:
                     # Earning actual baseline effects is separate from the
                     # later owner-bound balance-read publication gate.
                     refused_balance=call('rpc',method='wallet.getbalance',params=[])
-                    assert refused_balance.get('error_code')=='wallet_balance_not_current',refused_balance
+                    if mixed_balance_read:
+                        assert 'error' not in refused_balance and refused_balance['confirmed']==.0092,refused_balance
+                        assert refused_balance['total']==.0092 and refused_balance['utxo_count']==2,refused_balance
+                        assert refused_balance['reservation_status']=='authenticated',refused_balance
+                        assert refused_balance['checkpoint_height']==106 and refused_balance['checkpoint_hash']==post_mined['hash'],refused_balance
+                        assert refused_balance['balance_scope']=='current_tip_ordinary' and not refused_balance['whole_wallet_ready'],refused_balance
+                        assert 'confidential' not in refused_balance and 'assets' not in refused_balance,refused_balance
+                        assert original_lifecycle()==original and mixed_runtime_receipts()==receipts and wallet_rows()==before_baseline_rows
+                        reopened_balance_owner=rpc('wallet.open',dict(name='wire-named-owner'))
+                        assert reopened_balance_owner['success'] and rpc('wallet.unlock',['funded-crossing-password',0])['success']
+                        reopened_balance=call('rpc',method='wallet.getbalance',params=[])
+                        assert 'error' not in reopened_balance and reopened_balance['confirmed']==.0092 and reopened_balance['utxo_count']==2,reopened_balance
+                        assert original_lifecycle()==original and mixed_runtime_receipts()==receipts and wallet_rows()==before_baseline_rows
+                        (root/'mixed-balance-read.json').write_text(json.dumps(dict(before_coverage=early_balance,
+                            current=refused_balance,reopened=reopened_balance,scope='Fresh source-bound ordinary balance read only; no whole-wallet, confidential/asset, address-index or app/device readiness.'),indent=2)+'\n')
+                    else:
+                        assert refused_balance.get('error_code')=='wallet_balance_not_current',refused_balance
                     baseline_result=dict(result=baseline_reply,repeated=repeated_baseline,history_probe=probe,replies=baseline_replies,receipts=receipts,
                         ordinary_live=ordinary_live,index_live=index_live,balance_refusal=refused_balance,
                         scope='Genuine independent genesis-to-parent replay of public legacy body DATA plus actual canonical102..106 events, original audited coverage writer/index-first and FULL ordinary commits. Original imported cohort/anchor/lifecycle and encrypted owners unchanged. Captured two-store baseline only; NO live history promotion, general coin view, whole-wallet balance-read readiness or app/device/release qualification.')
