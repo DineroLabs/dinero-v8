@@ -1,6 +1,7 @@
 #include <jni.h>
 
 #include "nodecore/nodecore_ffi.h"
+#include "nodecore/p2mr_hex.h"
 #include "wallet/bip39.h"
 #include "wallet/bip32_deriver.h"
 #include "wallet/shielded_derivation.h"
@@ -67,10 +68,7 @@ Json::Value DeriveP2mr(const std::vector<uint8_t>& seed, bool is_change, uint32_
 }
 
 std::vector<uint8_t> DecodeHex(const std::string& hex) {
-    if (hex.size() % 2 != 0) throw std::runtime_error("bad hex");
-    std::vector<uint8_t> out(hex.size() / 2);
-    for (size_t i = 0; i < out.size(); ++i) out[i] = static_cast<uint8_t>(std::stoul(hex.substr(2 * i, 2), nullptr, 16));
-    return out;
+    return dinero::nodecore::DecodeP2mrHex(hex);
 }
 
 } // namespace

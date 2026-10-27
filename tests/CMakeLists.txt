@@ -17001,3 +17001,8 @@ if(TARGET dinero_wallet AND TARGET gtest)
   add_test(NAME EscrowBuildersFailSafe COMMAND test_escrow_builders_fail_safe)
   set_tests_properties(EscrowBuildersFailSafe PROPERTIES LABELS "wallet;contracts;mandatory")
 endif()
+
+add_executable(test_nodecore_p2mr_hex tests/nodecore/test_p2mr_hex.cpp)
+target_include_directories(test_nodecore_p2mr_hex PRIVATE ${CMAKE_SOURCE_DIR}/src)
+add_test(NAME NodeCoreP2mrHex COMMAND test_nodecore_p2mr_hex)
+set_tests_properties(NodeCoreP2mrHex PROPERTIES LABELS "nodecore;unit" TIMEOUT 30)
