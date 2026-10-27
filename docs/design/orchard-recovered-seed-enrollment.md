@@ -1498,6 +1498,10 @@ funding/shields through106, genuine peer body DATA and matching two-store live
 coins920000una, with encrypted owners and snapshot candidates unchanged. Existing
 balance-read refusal remains until a separate fresh owner-bound read gate is
 earned. Unknown/corrupt history or owners must refuse, not reset or rebase.
+The fixture withholds its additional pre-base bodies until the explicit coverage
+step. Earlier ordinary scheduler requests must not mutate the activation-parent
+index during handoff. The initial early-body SafeMode refusal is retained as a
+failed case, not a reached reconciliation test or a reason to relax startup.
 
 `NodeCoreAssumedPrivateSendUnshield` extends the real imported-source funded
 crossing with a later restored account0 payer, a DIFFERENT-seed named recipient,

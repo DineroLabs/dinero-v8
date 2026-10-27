@@ -68,9 +68,11 @@ proof=Path(fixture['proof']).read_bytes();assert 0<len(proof)<=1<<30
 magic=fixture['magic'];headers=[bytes.fromhex(h) for h in fixture['headers']]
 assert len(headers)==104 and all(len(h)==128 for h in headers)
 stop=threading.Event();future=threading.Event();bodies_ready=threading.Event();proof_ready=threading.Event();echo_ready=threading.Event()
-funding_release=threading.Event();funding_pending={}
+funding_release=threading.Event();historical_release=threading.Event();funding_pending={}
 funding_bodies={hashlib.sha256(hashlib.sha256(Path(path).read_bytes()[:128]).digest()).digest()[::-1]:Path(path).read_bytes()
     for path in fixture.get('funding_bodies',{}).values()}
+historical_only={key for key in funding_bodies if mixed_baseline and key not in
+    {bytes.fromhex(fixture['parent'])[::-1],hashlib.sha256(hashlib.sha256(Path(fixture['funding_bodies']['100']).read_bytes()[:128]).digest()).digest()[::-1]}}
 packets=[];failures=[];connections=[];pending={};handshaken={};sent_headers=set();sent_proof=set();asked_echo=set();echo=[]
 body_requests=[];proof_wire=b'';txid=''
 bodies={bytes.fromhex(fixture[name+'_hash'])[::-1]:Path(fixture[name]).read_bytes() for name in ('first','second')}
@@ -88,6 +90,7 @@ def flush(conn):
     if not handshaken.get(conn):return
     if funding_release.is_set():
         for key in list(funding_pending.get(conn,{})):
+            if key in historical_only and not historical_release.is_set():continue
             send(conn,'block',funding_bodies[key]);del funding_pending[conn][key]
     if future.is_set() and (conn,len(headers)) not in sent_headers:
         send(conn,'headers',bytes([len(headers)])+b''.join(h+b'\0' for h in headers));sent_headers.add((conn,len(headers)))
@@ -838,6 +841,7 @@ try:
                 assert original_lifecycle()==original and mixed_runtime_receipts()==mixed_before
                 baseline_result=None
                 if mixed_baseline:
+                    historical_release.set()
                     before_baseline_rows=wallet_rows();before_baseline_candidates=snapshot_candidate_rows()
                     baseline_replies=[];deadline=time.monotonic()+120
                     while time.monotonic()<deadline:
@@ -858,7 +862,7 @@ try:
                     with sqlite3.connect('file:'+str(wallet_paths[0])+'?mode=ro',uri=True) as db:
                         ordinary_live=db.execute('SELECT txid,vout,amount,height FROM utxos WHERE is_spent=0 ORDER BY txid,vout').fetchall()
                     with sqlite3.connect('file:'+str(datadir/'blockchain/utxo')+'?mode=ro',uri=True) as db:
-                        index_live=db.execute('SELECT txid,vout,amount_una,height FROM wallet_utxos WHERE spend_height IS NULL ORDER BY txid,vout').fetchall()
+                        index_live=db.execute('SELECT txid,vout,value,height FROM wallet_utxos WHERE spend_height IS NULL ORDER BY txid,vout').fetchall()
                     assert ordinary_live==index_live and sum(r[2] for r in ordinary_live)==920000,(ordinary_live,index_live)
                     assert sorted((r[2],r[3]) for r in ordinary_live)==[(450000,106),(470000,104)]
                     assert wallet_rows()==before_baseline_rows and snapshot_candidate_rows()==before_baseline_candidates
