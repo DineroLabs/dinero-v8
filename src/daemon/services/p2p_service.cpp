@@ -2704,6 +2704,7 @@ void P2PService::HandleP2PMessage(const std::string& peer_addr, const ::P2PMessa
 }
 
 bool P2PService::checkTxRate(const std::string& peer_addr) {
+    std::lock_guard<std::mutex> lock(rate_tracker_mutex_);
     auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now().time_since_epoch()).count();
 
@@ -2721,6 +2722,7 @@ bool P2PService::checkTxRate(const std::string& peer_addr) {
 }
 
 bool P2PService::checkHeadersRate(const std::string& peer_addr) {
+    std::lock_guard<std::mutex> lock(rate_tracker_mutex_);
     auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now().time_since_epoch()).count();
 

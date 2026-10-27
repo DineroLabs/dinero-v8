@@ -40,6 +40,18 @@ if(NOT WIN32)
   target_link_libraries(test_p2p_service_shutdown_order PRIVATE
     dinero_core GTest::gtest_main)
   link_zstd_if_needed(test_p2p_service_shutdown_order)
+  add_executable(test_p2p_service_rate_limits
+    tests/services/test_p2p_service_rate_limits.cpp
+    tests/stubs/mempool_test_stubs.cpp
+    tests/stubs/daemon_test_stubs.cpp
+    src/daemon/config.cpp)
+  target_link_libraries(test_p2p_service_rate_limits PRIVATE
+    dinero_core GTest::gtest_main)
+  link_zstd_if_needed(test_p2p_service_rate_limits)
+  add_test(NAME P2PServiceRateLimits COMMAND test_p2p_service_rate_limits)
+  set_tests_properties(P2PServiceRateLimits PROPERTIES
+    LABELS "unit;p2p;mandatory" TIMEOUT 30)
+
   add_test(NAME P2PServiceShutdownOrder COMMAND test_p2p_service_shutdown_order)
   set_tests_properties(P2PServiceShutdownOrder PROPERTIES
     LABELS "unit;p2p;shutdown;mandatory" TIMEOUT 30)

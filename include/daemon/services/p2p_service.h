@@ -348,6 +348,7 @@ private:
     // Allows the lifecycle regression to install a real manager and a
     // deliberately blocked logger without initializing unrelated services.
     friend struct P2PServiceStopTestAccess;
+    friend struct P2PServiceRateTestAccess;
     // Only after scheduler/network workers have joined. Break callback and
     // dependency cycles so a stopped service graph can actually be destroyed.
     void ReleaseStoppedDependencies();
@@ -538,6 +539,10 @@ private:
     // Scheduler tick: re-measure once stun_next_round_ passes.
     void MaybeRemeasureStun();
     void StopPortMapping();
+
+    // Peer handlers run concurrently, including insertions for different peers.
+    // Guard both maps and each complete window/count update.
+    std::mutex rate_tracker_mutex_;
 
     // Per-peer headers rate limiting (eclipse/DoS protection)
     // Tracks timestamps of recent headers messages per peer
