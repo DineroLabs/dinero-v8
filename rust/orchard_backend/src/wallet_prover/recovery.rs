@@ -19,7 +19,9 @@ pub(super) struct BuildRng {
     legacy_profile1: bool,
 }
 impl BuildRng {
-    pub(super) fn is_profile1(&self) -> bool { self.legacy_profile1 }
+    pub(super) fn is_profile1(&self) -> bool {
+        self.legacy_profile1
+    }
     pub(super) fn record() -> Self {
         Self {
             bytes: Zeroizing::new(Vec::new()),
@@ -117,7 +119,6 @@ impl rand_next::TryRng for BuildRng {
     }
 }
 impl rand_next::TryCryptoRng for BuildRng {}
-
 
 fn number(bytes: &mut Vec<u8>, n: usize) -> Result<(), Status> {
     bytes.extend_from_slice(&u32::try_from(n).map_err(|_| Status::Limit)?.to_le_bytes());

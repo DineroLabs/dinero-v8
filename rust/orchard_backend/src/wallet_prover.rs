@@ -294,9 +294,16 @@ fn prove(
     let complete = pool.install(|| {
         let key = PROVING_KEY.get_or_init(|| ProvingKey::build(BUNDLE_VERSION.circuit_version()));
         bundle
-            .create_proof(key, &mut rand_next::rand_core::UnwrapErr(rand_next::rngs::SysRng))
+            .create_proof(
+                key,
+                &mut rand_next::rand_core::UnwrapErr(rand_next::rngs::SysRng),
+            )
             .map_err(|_| Status::Proof)?
-            .apply_signatures(rand_next::rand_core::UnwrapErr(rand_next::rngs::SysRng), *digest, &authorities)
+            .apply_signatures(
+                rand_next::rand_core::UnwrapErr(rand_next::rngs::SysRng),
+                *digest,
+                &authorities,
+            )
             .map_err(|_| Status::SpendSignature)
     })?;
     let bytes = encode(&complete)?;

@@ -138,7 +138,11 @@ impl ParsedBundle {
             facts.nullifiers[i] = action.nullifier().to_bytes();
             facts.commitments[i] = action.cmx().to_bytes();
         }
-        Ok(Self { bundle, facts, encoded: bytes.into() })
+        Ok(Self {
+            bundle,
+            facts,
+            encoded: bytes.into(),
+        })
     }
 
     fn verify(&self, digest: &[u8; 32], required_value_balance: i64) -> Result<(), Status> {
@@ -246,7 +250,9 @@ fn parse_bundle(bytes: &[u8]) -> Result<Bundle<Authorized, i64>, Status> {
         .ok_or(Status::Encoding)?;
         let encrypted_note = TransmittedNoteCiphertext {
             epk_bytes: reader.array::<32>()?,
-            enc_ciphertext: zcash_note_encryption::note_bytes::NoteBytesData(reader.array::<580>()?),
+            enc_ciphertext: zcash_note_encryption::note_bytes::NoteBytesData(
+                reader.array::<580>()?,
+            ),
             out_ciphertext: reader.array::<80>()?,
         };
         let signature = redpallas::Signature::<SpendAuth>::from(reader.array::<64>()?);
@@ -410,7 +416,8 @@ mod tests {
     const BUNDLE: &[u8] = include_bytes!("../tests/fixtures/candidate-spend.bundle");
     const DIGEST: &[u8; 32] = include_bytes!("../tests/fixtures/candidate-spend.digest");
     const EFFECT: &[u8; 32] = include_bytes!("../tests/fixtures/candidate-spend.effect");
-    const AUTHORIZATION: &[u8; 32] = include_bytes!("../tests/fixtures/candidate-spend.authorization");
+    const AUTHORIZATION: &[u8; 32] =
+        include_bytes!("../tests/fixtures/candidate-spend.authorization");
 
     #[test]
     fn honest_fixture_verifies_and_exports_exact_bound_effects() {

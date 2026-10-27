@@ -151,7 +151,10 @@ fn main() {
     builder
         .add_output(None, recipient, NoteValue::from_raw(5000), [0; 512])
         .unwrap();
-    let (unproven, _) = builder.build_with_profile1_shuffle::<i64>(&mut rng).unwrap().unwrap();
+    let (unproven, _) = builder
+        .build_with_profile1_shuffle::<i64>(&mut rng)
+        .unwrap()
+        .unwrap();
     assert_eq!(*unproven.value_balance(), -5000);
     let effect: [u8; 32] = unproven.commitment(TxVersion::V5).unwrap().into();
     let d = intent(effect, unproven.actions().len(), -5000, 32);
@@ -211,7 +214,10 @@ fn main() {
     builder
         .add_output(None, destination, NoteValue::from_raw(4500), [0; 512])
         .unwrap();
-    let (unproven, _) = builder.build_with_profile1_shuffle::<i64>(&mut rng).unwrap().unwrap();
+    let (unproven, _) = builder
+        .build_with_profile1_shuffle::<i64>(&mut rng)
+        .unwrap()
+        .unwrap();
     assert_eq!(*unproven.value_balance(), 500);
     let effect: [u8; 32] = unproven.commitment(TxVersion::V5).unwrap().into();
     let d = intent(effect, unproven.actions().len(), 500, 96);
