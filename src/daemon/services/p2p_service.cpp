@@ -320,7 +320,7 @@ std::shared_ptr<p2p::OrchardPhoneHistoryDownload> P2PService::PhoneHistoryDownlo
 std::shared_ptr<p2p::WalletFundingDownload> P2PService::WalletFundingBodies() const {
     std::lock_guard lock(orchard_catalog_download_mutex_);return wallet_funding_bodies_;
 }
-std::shared_ptr<const std::vector<uint8_t>> P2PService::WalletHistoricalBody(const uint256& hash) const {
+std::shared_ptr<const std::vector<uint8_t>> P2PService::WalletHistoricalBody(const uint256& hash,bool acquire) const {
 #ifdef DINERO_HAS_ORCHARD_P2P
     std::shared_ptr<p2p::OrchardHistoryCache> cache;std::shared_ptr<p2p::WalletFundingDownload> funding;
     {std::lock_guard lock(orchard_catalog_download_mutex_);cache=wallet_history_cache_;funding=wallet_funding_bodies_;}
@@ -332,11 +332,14 @@ std::shared_ptr<const std::vector<uint8_t>> P2PService::WalletHistoricalBody(con
         });
         return std::make_shared<const std::vector<uint8_t>>(std::move(bytes));
     }
+    // A normal balance read may consume retained DATA, never start/resume a
+    // historical download or publish another cache record.
+    if(!acquire)return {};
     const auto bytes=funding->Request(hash);if(!bytes)return {};
     cache->Put('b',hash,bytes->size(),p2p::WalletFundingDownload::MaximumBody,[&](const auto& write){write(*bytes);});
     return bytes;
 #else
-    (void)hash;throw std::runtime_error("Wallet historical body retention unavailable");
+    (void)hash;(void)acquire;throw std::runtime_error("Wallet historical body retention unavailable");
 #endif
 }
 std::shared_ptr<p2p::WalletInputProofDownload> P2PService::WalletInputProofs() const {

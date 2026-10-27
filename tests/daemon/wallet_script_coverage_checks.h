@@ -344,5 +344,53 @@ TEST(WalletScriptCoverage, BorrowedOwnersWrongSessionAndDeniedInventoryRefuse) {
     f.Sql("UPDATE wallet_meta SET runtime_delivery_id=(SELECT runtime_delivery_id FROM coverage_saved_identity) WHERE id=1");
     EXPECT_EQ(f.Snapshot(),before);
 }
+TEST(WalletBalanceCapture, ExactReceiptsAndSourceOwnerSpanNumericCapture){
+    SharedPaymentFixture f;f.f.preserve_evidence=true;std::cerr<<"Balance capture evidence: "<<f.f.path.string()<<std::endl;
+    const auto source=CaptureScriptCoverage(f);ASSERT_TRUE(source.ok());
+    auto use=WalletService::AcquireWalletUse(f.wallet);auto index=ChainstateService::AcquireWalletIndexUse(f.f.service);
+    ASSERT_EQ(f.f.service->reconcileRuntimeWalletCoverage(use->Wallet(),index->Index(),**source),Status::Ok);
+    const auto fresh=CaptureScriptCoverage(f);ASSERT_TRUE(fresh.ok());
+    const auto prepared=RuntimeOriginProjectionTestAccess::PrepareCoverage(use->Wallet(),**fresh);
+    const auto before=f.Snapshot(),indexed=CoverageIndexSnapshot(f);const auto name=use->Wallet().current();
+    auto selected=f.f.service->AcquireBlockIngressActivationLock();int checks=0;
+    const auto result=RuntimeOriginProjectionTestAccess::ReadBalance(use->Wallet(),index->Index(),**fresh,*prepared,name,[&]{
+        ++checks;EXPECT_TRUE(ShieldedStateStartupTestAccess::VaultSelectedHeld(*f.f.service));
+        EXPECT_FALSE(sqlite3_get_autocommit(use->Wallet().getCurrentDatabase()));
+    });
+    EXPECT_EQ(checks,2);EXPECT_EQ(result.wallet_name,name);EXPECT_EQ(f.Snapshot(),before);EXPECT_EQ(CoverageIndexSnapshot(f),indexed);
+    EXPECT_THROW(RuntimeOriginProjectionTestAccess::ReadBalance(use->Wallet(),index->Index(),**fresh,*prepared,name+"-other",[]{}),std::runtime_error);
+}
+TEST(WalletBalanceCapture, FinalSourceRefusalPublishesNoNumbersOrEffects){
+    SharedPaymentFixture f;f.f.preserve_evidence=true;std::cerr<<"Balance capture evidence: "<<f.f.path.string()<<std::endl;
+    const auto source=CaptureScriptCoverage(f);ASSERT_TRUE(source.ok());
+    auto use=WalletService::AcquireWalletUse(f.wallet);auto index=ChainstateService::AcquireWalletIndexUse(f.f.service);
+    ASSERT_EQ(f.f.service->reconcileRuntimeWalletCoverage(use->Wallet(),index->Index(),**source),Status::Ok);
+    const auto fresh=CaptureScriptCoverage(f);ASSERT_TRUE(fresh.ok());
+    const auto prepared=RuntimeOriginProjectionTestAccess::PrepareCoverage(use->Wallet(),**fresh);
+    const auto before=f.Snapshot(),indexed=CoverageIndexSnapshot(f);int checks=0;
+    auto selected=f.f.service->AcquireBlockIngressActivationLock();
+    EXPECT_THROW(RuntimeOriginProjectionTestAccess::ReadBalance(use->Wallet(),index->Index(),**fresh,*prepared,use->Wallet().current(),[&]{
+        if(++checks==2)throw std::runtime_error("Current source refused after numeric capture");
+    }),std::runtime_error);
+    EXPECT_EQ(checks,2);EXPECT_TRUE(sqlite3_get_autocommit(use->Wallet().getCurrentDatabase()));
+    EXPECT_EQ(f.Snapshot(),before);EXPECT_EQ(CoverageIndexSnapshot(f),indexed);
+}
+TEST(WalletBalanceCapture, EitherInvalidatedBaselineRefusesWithoutRepair){
+    for(bool ordinary:{true,false}) {
+        SharedPaymentFixture f;f.f.preserve_evidence=true;std::cerr<<"Balance capture evidence: "<<f.f.path.string()<<std::endl;
+        const auto source=CaptureScriptCoverage(f);ASSERT_TRUE(source.ok());
+        auto use=WalletService::AcquireWalletUse(f.wallet);auto index=ChainstateService::AcquireWalletIndexUse(f.f.service);
+        ASSERT_EQ(f.f.service->reconcileRuntimeWalletCoverage(use->Wallet(),index->Index(),**source),Status::Ok);
+        const auto fresh=CaptureScriptCoverage(f);ASSERT_TRUE(fresh.ok());
+        const auto prepared=RuntimeOriginProjectionTestAccess::PrepareCoverage(use->Wallet(),**fresh);
+        if(ordinary)f.Sql("UPDATE wallet_meta SET runtime_ordinary_invalid=1,runtime_ordinary_receipt=NULL WHERE id=1");
+        else {sqlite3* db=nullptr;ASSERT_EQ(sqlite3_open((f.f.path/"wallet-runtime"/"blockchain"/"utxo").string().c_str(),&db),SQLITE_OK);
+            const auto rc=sqlite3_exec(db,"INSERT OR REPLACE INTO utxo_metadata(key,value) VALUES('runtime_delivery:v1:invalidated','1')",nullptr,nullptr,nullptr);
+            sqlite3_close(db);ASSERT_EQ(rc,SQLITE_OK);}
+        const auto before=f.Snapshot(),indexed=CoverageIndexSnapshot(f);auto selected=f.f.service->AcquireBlockIngressActivationLock();
+        EXPECT_THROW(RuntimeOriginProjectionTestAccess::ReadBalance(use->Wallet(),index->Index(),**fresh,*prepared,use->Wallet().current(),[]{}),std::runtime_error);
+        EXPECT_EQ(f.Snapshot(),before);EXPECT_EQ(CoverageIndexSnapshot(f),indexed);
+    }
+}
 } // namespace dinero
 #endif

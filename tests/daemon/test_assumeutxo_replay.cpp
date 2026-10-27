@@ -157,6 +157,10 @@ struct RuntimeOriginProjectionTestAccess {
             const wallet::OrchardCatalogCapture& prepared,const std::function<void()>& fence){
         RuntimeOrdinaryDelivery::ReconcileCoverage(wallet,index,source,prepared,fence);
     }
+    static auto ReadBalance(WalletManager& wallet,UTXOIndex& index,const RuntimeWalletCoverageProjection& source,
+            const wallet::OrchardCatalogCapture& prepared,const std::string& name,const std::function<void()>& fence){
+        return RuntimeOrdinaryDelivery::ReadCoverageBalance(wallet,index,source,prepared,name,fence);
+    }
 };
 #endif
 

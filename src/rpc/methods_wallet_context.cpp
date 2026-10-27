@@ -31,6 +31,7 @@
 #include "daemon/services/mempool_service.h"
 #include "daemon/interfaces/tx_ingress.h"
 #include "wallet/wallet_manager.h"
+#include "wallet/runtime_wallet_balance.h"
 #include "wallet/hd_wallet.h"
 #include "wallet/wallet_transaction_signer.h"
 #include "util/hex.h"
@@ -677,7 +678,37 @@ din::Json rpc_context_wallet_getbalance(const ExecutionContext& ctx, const din::
     }
 
     try {
-        if (const auto refusal = ImportedRuntimeBalanceRefusal(ctx)) return *refusal;
+        if (const auto refusal = ImportedRuntimeBalanceRefusal(ctx)) {
+            auto source=std::dynamic_pointer_cast<dinero::ChainstateService>(ctx.daemon->chainstate);
+            auto index_use=dinero::ChainstateService::AcquireWalletIndexUse(source);
+            auto wallet_use=dinero::WalletService::AcquireWalletUse(wallet_service);
+            uint64_t session;std::string intended;
+            {auto lease=wallet_use->Wallet().AcquireDatabaseLease();
+             if(!ctx.walletName.empty()&&ctx.walletName!=lease->WalletName())return *refusal;
+             intended=lease->WalletName();session=lease->Session();}
+            const auto captured=source->readImportedRuntimeWalletBalance(wallet_use->Wallet(),index_use->Index(),session,intended);
+            if(!captured.ok())return *refusal;
+            // Entire numeric payload uses this immutable owned capture. Do not
+            // fall through to independent confidential/asset/legacy row reads.
+            const auto& summary=(*captured)->Summary();const auto& balance=summary.balance;
+            result["reservation_status"]=ReservationStatusName(summary.reservations);
+            result["confirmed"]=balance.confirmed;result["unconfirmed"]=balance.unconfirmed;
+            result["immature"]=balance.immature;result["total"]=balance.total;
+            result["locked"]=ReservationAmount(summary.locked);
+            result["spendable"]=ReservationAmount(summary.available_confirmed);result["utxo_count"]=balance.utxo_count;
+            result["pq_balance_una"]=Json::UInt64(summary.pq_confirmed_una);
+            result["pq_balance_din"]=double(summary.pq_confirmed_una)/1e8;
+            result["pq_ratio"]=balance.confirmed>0?(double(summary.pq_confirmed_una)/1e8)/balance.confirmed:0.0;
+            result["breakdown"]["spendable"]=ReservationAmount(summary.available_confirmed);
+            result["breakdown"]["pending"]=balance.unconfirmed;
+            result["breakdown"]["unspendable"]=ReservationAmount(summary.unavailable_confirmed_and_immature);
+            result["walletname"]=summary.wallet_name;
+            result["balance_scope"]="current_tip_ordinary";result["whole_wallet_ready"]=false;
+            result["checkpoint_height"]=Json::UInt64((*captured)->TipHeight());
+            result["checkpoint_hash"]=(*captured)->TipHash().GetHex();
+            result["applied_sequence"]=Json::UInt64((*captured)->Cursor().sequence);
+            result["rpc_schema"]="din.wallet.v1";return result;
+        }
         auto& mgr = wallet_service->get();
 
         // Sync gate: wait for wallet worker to catch up to chain tip.

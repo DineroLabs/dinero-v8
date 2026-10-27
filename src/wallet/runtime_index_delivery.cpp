@@ -1112,6 +1112,101 @@ std::unique_ptr<wallet::OrchardCatalogCapture> RuntimeOrdinaryDelivery::PrepareC
     return ::dinero::wallet::OrchardAccountDelivery::PrepareCatalogForReplay(
         wallet,source.Origin().session_,source.replay_);
 }
+
+namespace {
+void CurrentBalanceReceipt(const std::optional<Receipt>& receipt,const RuntimeWalletCoverageProjection& source) {
+    if(!receipt||receipt->profile!=source.ProfileDigest()||receipt->progress.cursor!=source.Head()||
+       receipt->progress.origin_hash!=source.Origin().OriginHash()||receipt->progress.origin_height!=source.Origin().OriginHeight()||
+       receipt->progress.tip_hash!=source.TipHash()||receipt->progress.tip_height!=source.TipHeight())
+        Fail("Balance requires BOTH exact current compatible baseline receipts");
+}
+}
+void RuntimeIndexDelivery::WithCoverageBalance(UTXOIndex& index,const RuntimeWalletCoverageProjection& source,
+        const std::function<void()>& capture) {
+    const auto& origin=source.Origin();
+    std::lock_guard<std::recursive_mutex> lock(index.db_mutex_);std::lock_guard<std::mutex> scripts(index.scripts_mutex_);
+    if(!capture||!index.db_||index.atomic_write_active_||!sqlite3_get_autocommit(index.db_)||
+       !origin.index_scripts_||*origin.index_scripts_!=index.watched_scripts_||
+       origin.historical_scripts_!=index.historical_scripts_||origin.index_path_!=index.db_path_)
+        Fail("Balance index owner changed");
+    // A real read snapshot plus both in-process index owners span ordinary
+    // capture/publication. No autocommit guard is relaxed or receipt written.
+    Exec(index.db_,"BEGIN");
+    try {
+        CurrentBalanceReceipt(dinero::Read(index.db_,origin.identity_,
+            IndexScripts(index.watched_scripts_,index.historical_scripts_)),source);
+        CoverageImportedCohort(index.db_,origin.imported_cohort_);
+        const auto existing=CoverageIndexRows(index.db_,index.watched_scripts_,index.historical_scripts_,source);
+        std::set<TxOutPoint> expected;
+        for(const auto& [point,coin]:source.Coins()) {
+            WalletUTXO owner;owner.spk=coin.output.scriptPubKey;
+            if(SetIndexOwner(owner,index.watched_scripts_,index.historical_scripts_))expected.insert(point);
+        }
+        if(existing!=expected)Fail("Balance index current coin inventory incomplete");
+        Statement rows(index.db_,"SELECT txid,vout,height,spend_height FROM wallet_utxos");int rc;
+        while((rc=sqlite3_step(rows.value))==SQLITE_ROW) {
+            const auto& coin=source.Coins().at(CoveragePoint(rows.value,0,1));
+            if(CoverageInt(rows.value,2)!=coin.height||
+               (coin.spent?(sqlite3_column_type(rows.value,3)!=SQLITE_INTEGER||CoverageInt(rows.value,3)!=coin.spent->height):
+                           sqlite3_column_type(rows.value,3)!=SQLITE_NULL))Fail("Balance index row is not current");
+        }
+        if(rc!=SQLITE_DONE)Fail("Balance index read incomplete");
+        capture(); // Wallet SQL and current imported source/lifecycle still held.
+        Exec(index.db_,"COMMIT");
+    }catch(...){if(sqlite3_exec(index.db_,"ROLLBACK",nullptr,nullptr,nullptr)!=SQLITE_OK&&!sqlite3_get_autocommit(index.db_))std::terminate();throw;}
+}
+WalletManager::BalanceSummary RuntimeOrdinaryDelivery::ReadCoverageBalance(WalletManager& wallet,UTXOIndex& index,
+        const RuntimeWalletCoverageProjection& source,const wallet::OrchardCatalogCapture& prepared,
+        const std::string& expected_wallet,const std::function<void()>& current) {
+    const auto& origin=source.Origin();auto lease=wallet.AcquireDatabaseLease();
+    if(!current||!origin.existing_identity_only_||!source.Head().sequence||
+       wallet.database_leases_!=1||lease->Session()!=origin.session_||lease->WalletName()!=expected_wallet||
+       expected_wallet.empty()||wallet.getUTXOIndex()!=&index||wallet.current_wallet_id_<0)
+        Fail("Balance wallet owner changed");
+    auto* db=lease->Database();OrdinaryTransaction transaction(db);
+    if(ExistingIdentity(db)!=origin.identity_)Fail("Balance persistent wallet identity changed");
+    const auto scripts=OrdinaryScripts(*lease);
+    if(scripts.digest!=origin.scripts_digest_||scripts.historical!=origin.historical_scripts_)
+        Fail("Balance script domain changed");
+    CurrentBalanceReceipt(OrdinaryRead(db,origin.identity_,scripts.digest),source);
+    ::dinero::wallet::OrchardAccountDelivery::RecheckCatalogCaptureInTransaction(wallet,origin.session_,source.replay_,prepared);
+    auto pin=lease->CopyRecoverySeed(origin.session_);lease->ValidateRecoveryInventoryInTransaction(*pin);
+    const auto ownership=::dinero::wallet::OrchardOwnershipInventory::Read(db,pin->Bytes());
+    const auto pending=lease->ReadPendingPaymentsInTransaction(*pin);std::set<std::string> reservations;
+    const auto reserve=[&](const std::string& id,uint32_t n,uint64_t value,const std::vector<uint8_t>& script){
+        const TxOutPoint point{TxId(uint256::FromHexUnsafe(id)),n};
+        const auto observed=source.ObservedCoins().find(point);
+        if(point.txid.AsUint256().GetHex()!=id||!reservations.insert(id+":"+std::to_string(n)).second||
+           observed==source.ObservedCoins().end()||!std::any_of(observed->second.begin(),observed->second.end(),[&](const auto& coin){
+               return coin.output.value.GetUna()==value&&coin.output.scriptPubKey==script;}))
+            Fail("Balance pending input ownership changed");
+    };
+    for(const auto& input:ownership.current_inputs){uint256 hash;
+        std::copy(input.input.txid_wire.begin(),input.input.txid_wire.end(),hash.begin());
+        reserve(hash.GetHex(),input.input.output_index,input.input.amount_una,input.input.script_pub_key);}
+    for(const auto& payment:pending)for(const auto& input:payment.inputs)reserve(input.txid,input.vout,input.amount_una,input.script);
+    const auto plan=CoverageOrdinaryRows(db,wallet.current_wallet_id_,scripts,source);
+    std::set<TxOutPoint> expected;for(const auto& [point,coin]:source.Coins())if(scripts.addresses.contains(coin.output.scriptPubKey))expected.insert(point);
+    if(plan.existing_coins!=expected||!plan.unconfirm_history.empty())Fail("Balance ordinary current inventory incomplete");
+    Statement rows(db,"SELECT txid,vout,height,is_spent,spent_txid,spent_height FROM utxos");int rc;
+    while((rc=sqlite3_step(rows.value))==SQLITE_ROW) {
+        const auto& coin=source.Coins().at(CoveragePoint(rows.value,0,1));
+        if(CoverageInt(rows.value,2)!=coin.height||CoverageInt(rows.value,3)!=coin.spent.has_value()||
+           (coin.spent&&(CoverageText(rows.value,4)!=coin.spent->txid.AsUint256().GetHex()||CoverageInt(rows.value,5)!=coin.spent->height)))
+            Fail("Balance ordinary row is not current");
+    }
+    if(rc!=SQLITE_DONE)Fail("Balance ordinary read incomplete");
+    Statement tip(db,"SELECT height FROM tip WHERE rowid=1");
+    if(sqlite3_step(tip.value)!=SQLITE_ROW||CoverageInt(tip.value,0)!=source.TipHeight()||sqlite3_step(tip.value)!=SQLITE_DONE)
+        Fail("Balance ordinary height is not current");
+    WalletManager::BalanceSummary result;
+    RuntimeIndexDelivery::WithCoverageBalance(index,source,[&]{
+        current();result=wallet.ReadBalanceSummaryInTransaction(*lease,source.TipHeight(),reservations);
+        ::dinero::wallet::OrchardAccountDelivery::RecheckCatalogCaptureInTransaction(wallet,origin.session_,source.replay_,prepared);
+        current();
+    });
+    transaction.Commit();return result;
+}
 void RuntimeOrdinaryDelivery::ReconcileCoverage(WalletManager& wallet,UTXOIndex& index,
         const RuntimeWalletCoverageProjection& source,const wallet::OrchardCatalogCapture& prepared,
         const std::function<void()>& source_before_commit) {

@@ -1560,3 +1560,16 @@ through balance capture. This gate is not yet an execution result. Numeric
 confidential/assets, wallet snapshots, whole-wallet readiness and device/release
 acceptance remain separate; no public schedule or soak changes are authorized.
 
+The implementation returns a private immutable ordinary summary, not a
+readiness boolean followed by an unowned read. Retained history is DATA and
+normal reads cannot request missing bodies. Actual independent origin replay
+and checked canonical prefix precede the real snapshot -> selected -> original
+cohort/lifecycle interval. BOTH exact compatible current receipts, script
+domains, invalidation guards, complete encrypted catalog and seed/pending
+owners and every ordinary/index row are reauthenticated in the actual SQL
+owners. Those owners span numeric capture and fresh source rechecks. Orchard
+input reservations join ordinary/manual locks without changing intent rows.
+Unsupported/missing/corrupt/stale sources remain closed; no baseline, anchor,
+SQL key, owner or history repair is performed by a read. Only getbalance is
+wired here; getwalletinfo/snapshot numeric surfaces remain conservatively
+closed on imported backing until their complete payloads have owned capture.

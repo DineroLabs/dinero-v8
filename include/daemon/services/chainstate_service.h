@@ -85,6 +85,7 @@ struct RuntimeOrchardCatalogRecoveryResult;
 class WalletManager;
 class RuntimeWalletOriginProjection;
 class RuntimeWalletCoverageProjection;
+class RuntimeWalletBalanceSnapshot;
 struct FilePosition;  // #309: storage/block_storage.h
 
 namespace orchard { class TransactionEnvelope; struct SigningDomain; struct ResolvedInput; struct WalletPayment; struct TransparentOutput; }
@@ -1154,6 +1155,11 @@ public:
     // Does not promote live chain history or publish mixed balance readiness.
     StatusOr<std::shared_ptr<const RuntimeWalletCoverageProjection>> reconcileImportedRuntimeWalletCoverage(
         WalletManager&,UTXOIndex&,uint64_t expected_session);
+    // Captures ordinary amounts only while the current imported source and
+    // BOTH earned baseline/SQL/catalog owners are held. No network acquisition,
+    // receipt installation, readiness boolean, or general coin view.
+    StatusOr<std::shared_ptr<const RuntimeWalletBalanceSnapshot>> readImportedRuntimeWalletBalance(
+        WalletManager&,UTXOIndex&,uint64_t expected_session,const std::string& expected_wallet);
     // Installs a compatible known-script baseline and applies actual event1 to
     // index then ordinary store. Partial commits are retryable; no readiness.
     Status adoptRuntimeWalletOrigin(WalletManager&,UTXOIndex&,const RuntimeWalletOriginProjection&) const;
@@ -1691,9 +1697,9 @@ private:
         const std::unique_lock<std::mutex>& snapshot, UTXOIndex&);
     struct ImportedOrchardDeliverySource;
     StatusOr<std::shared_ptr<const RuntimeWalletOriginProjection>> captureRuntimeWalletOrigin(
-        WalletManager&,uint64_t,UTXOIndex*,bool existing_identity_only,bool public_history,bool& body_data_pending) const;
+        WalletManager&,uint64_t,UTXOIndex*,bool existing_identity_only,bool public_history,bool& body_data_pending,bool retained_history = false) const;
     StatusOr<std::shared_ptr<const RuntimeWalletCoverageProjection>> captureRuntimeWalletCoverage(
-        WalletManager&,uint64_t,UTXOIndex&,bool public_history,bool& body_data_pending) const;
+        WalletManager&,uint64_t,UTXOIndex&,bool public_history,bool& body_data_pending,bool retained_history = false) const;
     std::unique_ptr<const ImportedOrchardDeliverySource> CaptureImportedOrchardDeliveryUnderLock(
         const std::unique_lock<std::mutex>&,UTXOIndex&,const RuntimeAccountReplay&);
     // Transport is not storage authority. This narrower pre-boundary route

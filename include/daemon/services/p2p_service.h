@@ -210,7 +210,7 @@ public:
     // records are immutable and strictly rechecked, never repaired on failure.
     // A null result means a bounded network request is pending; unsupported
     // root retention and corrupt records throw rather than falling back.
-    std::shared_ptr<const std::vector<uint8_t>> WalletHistoricalBody(const uint256&) const;
+    std::shared_ptr<const std::vector<uint8_t>> WalletHistoricalBody(const uint256&,bool acquire = true) const;
     std::shared_ptr<p2p::WalletInputProofDownload> WalletInputProofs() const;
     // Borrow only the App's actual root guard; Stop joins all users before
     // App releases it. Never acquire a second operator-root lock for a cache.

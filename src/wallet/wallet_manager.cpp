@@ -6462,24 +6462,34 @@ WalletManager::BalanceSummary WalletManager::getBalanceSummary(const std::string
         (!expected_wallet.empty() && lease->WalletName() != expected_wallet))
         throw std::runtime_error("Balance wallet ownership unavailable");
     IssuedAddressTransaction transaction(db_);
+    auto result=ReadBalanceSummaryInTransaction(*lease,getBlockchainHeight(),{});
+    transaction.Commit();
+    return result;
+}
+
+WalletManager::BalanceSummary WalletManager::ReadBalanceSummaryInTransaction(DatabaseLease& lease,int64_t tip,
+        const std::set<std::string>& additional_reservations) const {
+    auto& self=const_cast<WalletManager&>(*this);
+    if(!db_||lease.Database()!=db_||sqlite3_get_autocommit(db_)||tip<0||tip>UINT32_MAX)
+        throw std::runtime_error("Balance transaction ownership unavailable");
     BalanceSummary result;
-    result.wallet_name = lease->WalletName();
+    result.wallet_name = lease.WalletName();
     auto locks = locked_utxos_;
+    locks.insert(additional_reservations.begin(),additional_reservations.end());
     std::unique_ptr<RecoverySeed> pin;
     const bool installed = PaymentColumn(db_);
     self.checkUnlockTimeout();
     if (installed && wallet_locked_) {
         result.reservations = ReservationStatus::UnlockRequired;
     } else if (installed) {
-        pin = lease->CopyRecoverySeed(lease->Session());
+        pin = lease.CopyRecoverySeed(lease.Session());
         for (const auto& payment : ReadPendingPaymentsOwned(pin->Bytes()))
             for (const auto& input : payment.inputs)
                 locks.insert(input.txid + ":" + std::to_string(input.vout));
         result.reservations = ReservationStatus::Authenticated;
     }
-    // Capture the wallet's observed height without acquiring selected-chain locks.
-    // This is not a certificate that the wallet has caught up to the chain.
-    const int64_t tip = getBlockchainHeight();
+    // Caller supplies either the ordinary observed height or a genuinely held
+    // current-source height. This helper never acquires selected-chain locks.
     uint64_t confirmed = 0, unconfirmed = 0, immature = 0, locked = 0, locked_confirmed = 0;
     std::map<std::string, uint64_t> available_by_script;
     IssuedStatement query(db_, "SELECT txid,vout,amount,height,is_coinbase,is_spent,script_pubkey "
@@ -6548,7 +6558,6 @@ WalletManager::BalanceSummary WalletManager::getBalanceSummary(const std::string
         result.available_confirmed = static_cast<double>(confirmed - locked_confirmed) / 1e8;
         result.unavailable_confirmed_and_immature = static_cast<double>(PaymentSum(immature, locked_confirmed)) / 1e8;
     }
-    transaction.Commit();
     return result;
 }
 

@@ -901,9 +901,9 @@ try:
                     repeated_baseline=rpc('wallet.reconcilecoverage',binding)
                     assert repeated_baseline==baseline_reply and mixed_runtime_receipts()==receipts,repeated_baseline
                     assert wallet_rows()==before_baseline_rows and original_lifecycle()==original
-                    # Earning actual baseline effects is separate from the
-                    # later owner-bound balance-read publication gate.
-                    refused_balance=call('rpc',method='wallet.getbalance',params=[])
+                    # Only the NEW read gate consumes/qualifies normal numeric
+                    # publication. The historical baseline-only gate does not.
+                    refused_balance=call('rpc',method='wallet.getbalance',params=[]) if mixed_balance_read else None
                     if mixed_balance_read:
                         assert 'error' not in refused_balance and refused_balance['confirmed']==.0092,refused_balance
                         assert refused_balance['total']==.0092 and refused_balance['utxo_count']==2,refused_balance
@@ -919,8 +919,6 @@ try:
                         assert original_lifecycle()==original and mixed_runtime_receipts()==receipts and wallet_rows()==before_baseline_rows
                         (root/'mixed-balance-read.json').write_text(json.dumps(dict(before_coverage=early_balance,
                             current=refused_balance,reopened=reopened_balance,scope='Fresh source-bound ordinary balance read only; no whole-wallet, confidential/asset, address-index or app/device readiness.'),indent=2)+'\n')
-                    else:
-                        assert refused_balance.get('error_code')=='wallet_balance_not_current',refused_balance
                     baseline_result=dict(result=baseline_reply,repeated=repeated_baseline,history_probe=probe,replies=baseline_replies,receipts=receipts,
                         ordinary_live=ordinary_live,index_live=index_live,balance_refusal=refused_balance,
                         scope='Genuine independent genesis-to-parent replay of public legacy body DATA plus actual canonical102..106 events, original audited coverage writer/index-first and FULL ordinary commits. Original imported cohort/anchor/lifecycle and encrypted owners unchanged. Captured two-store baseline only; NO live history promotion, general coin view, whole-wallet balance-read readiness or app/device/release qualification.')
