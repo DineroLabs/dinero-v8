@@ -1525,7 +1525,11 @@ The downloader retains its original eight-entry volatile ready/wanted limits and
 all wire budgets: batching a full workset ahead can evict unpersisted ready DATA
 while later requests occupy that workset. Capacity errors must not be swallowed.
 The native case makes one explicit RPC, lets its DATA actor drain without another
-source call, and checks exactly one legacy wire body before proceeding. This is a
+source call, and checks exactly one legacy wire body in the first unarchived
+prefix window1..8 before proceeding. Unrelated ordinary scheduler backfill DATA
+is recorded separately; the initial overly broad count included heights41..48
+alongside the real requested height1 and remains a failed case, not a streaming
+source PASS. No scheduler/peer policy is changed to hide those packets. This is a
 serial acquisition-phase check, not generic race/churn/stress qualification.
 
 `NodeCoreAssumedPrivateSendUnshield` extends the real imported-source funded

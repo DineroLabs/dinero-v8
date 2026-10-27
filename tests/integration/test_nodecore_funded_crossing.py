@@ -855,13 +855,18 @@ try:
                     assert first_baseline.get('error_code')=='coverage_source_pending' and first_baseline.get('retryable') is True,first_baseline
                     # One actual RPC, then let its bounded DATA actor finish;
                     # NO second source call can persist/queue a successor here.
-                    # Old batching deterministically exposes eight wire bodies.
+                    # Attribute only its first unarchived prefix window1..8.
+                    # The ordinary scheduler also backfills other heights; keep
+                    # those packets as DATA evidence, not this actor's requests.
                     time.sleep(1)
                     probe_bodies={double_sha((root/p['file']).read_bytes()[:128])[::-1] for p in list(packets)[probe_start:]
                         if p['direction']=='out' and p['command']=='block'} & historical_only
-                    probe=dict(reply=first_baseline,packet_start=probe_start,legacy_bodies=[h.hex() for h in sorted(probe_bodies)])
+                    prefix_window={double_sha(Path(fixture['funding_bodies'][str(h)]).read_bytes()[:128])[::-1] for h in range(1,9)}
+                    prefix_bodies=probe_bodies & prefix_window
+                    probe=dict(reply=first_baseline,packet_start=probe_start,legacy_bodies=[h.hex() for h in sorted(prefix_bodies)],
+                        other_legacy_bodies=[h.hex() for h in sorted(probe_bodies-prefix_window)],scope='First unarchived prefix window1..8 only; unrelated scheduler backfill packets retained separately.')
                     (root/'history-probe.json').write_text(json.dumps(probe,indent=2)+'\n')
-                    assert len(probe_bodies)==1,probe
+                    assert len(prefix_bodies)==1,probe
                     assert wallet_rows()==before_baseline_rows and original_lifecycle()==original and mixed_runtime_receipts()==mixed_before
                     baseline_replies=[];deadline=time.monotonic()+120
                     while time.monotonic()<deadline:
