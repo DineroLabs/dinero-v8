@@ -67,20 +67,29 @@ v8.2.0 (owner decision, 2026-10-27).
 
 ## Review Focus
 
-1. **Both sides try to initiate.** Two nodes each dialed the other through a relay, so
+1. **The initiator already has 8 outbound peers** (the usual case). Before this plan,
+   `OrchestrateRelayDials` returned at `MAX_OUTBOUND_CONNECTIONS`, so a busy home node
+   never formed the relayed link that punching starts from, and a punched dial could be
+   refused for want of a slot. Expect the relayed dial and the punched dial both to go
+   ahead within the home-peer budget (Task 4 tests).
+2. **Both sides try to initiate.** Two nodes each dialed the other through a relay, so
    each holds an outbound relayed peer. Expect exactly one attempt: only the side with
-   the lower node id initiates (Task 1 `PunchRole`, Task 4 test).
-2. **Someone else answers at the punched address.** The direct session proves a
+   the lower node id initiates (Task 1 `RoleFor`, Task 5 test).
+3. **Someone else answers at the punched address.** The direct session proves a
    different node id. Expect it to be disconnected and counted as `mismatch`, with the
-   relayed peer kept (Task 5 test).
-3. **Stale candidates.** The address changed since the last STUN round, so the attempt
+   relayed peer kept (Task 6 test).
+4. **A malicious relayed peer names a victim's address.** Its candidates are only its
+   own claim, so it could try to get acceptors to probe someone else. Expect the
+   acceptor side to apply the same in-flight cap and per-peer backoff, to probe at most
+   3 targets per attempt, and to send a bounded total (at most 3 × 40 probes of 8 bytes
+   per attempt) (Task 5 test).
+5. **Stale candidates.** The address changed since the last STUN round, so the attempt
    times out. Expect `timeout` to be counted, the relayed peer kept, and no new attempt
-   for that node for 30 min (Task 4 test).
-4. **The acceptor has no free inbound slot.** Its `AcceptFn` refuses the Initial. Expect
-   a failure, the relayed peer kept, and no retry loop (Task 4 test).
-5. **Both nodes share one public IPv4 address** (same home network). IPv4 punching
-   toward our own public IP would need router hairpinning. Expect the IPv4 pairing to be
-   skipped; IPv6 may still be used (Task 1 test).
+   for that node for 30 min (Task 5 test).
+
+Also pinned by tests, below the top five: the acceptor has no free inbound slot
+(Task 5), and both nodes share one public IPv4 address, so the IPv4 pairing is skipped
+(Task 1).
 
 ---
 
@@ -97,7 +106,7 @@ v8.2.0 (owner decision, 2026-10-27).
   - `struct PunchCandidates { std::vector<network::UdpAddr> v6; std::optional<network::UdpAddr> v4; NatMappingType v4_mapping{NatMappingType::Unknown}; };`
   - `std::vector<network::UdpAddr> ChoosePunchTargets(const PunchCandidates& local, const PunchCandidates& remote);`
     Returns the remote addresses to try, in order: every remote v6 address (only if
-    `local.v6` is non-empty), then `remote.v4`. `remote.v4` is included only if both
+    `local.v6` is non-empty), then `remote.v4`, capped at `kPunchMaxTargets = 3`. `remote.v4` is included only if both
     sides have a v4, neither mapping is `EndpointDependent`, and the two v4 IPs differ.
   - `enum class PunchRole { None, Initiator, Acceptor };`
     `PunchRole RoleFor(bool we_dialed_relayed, bool they_dialed_relayed_too, const std::array<uint8_t,20>& ours, const std::array<uint8_t,20>& theirs);`
@@ -109,7 +118,7 @@ v8.2.0 (owner decision, 2026-10-27).
       already in flight, or this peer failed less than 30 min ago.
     - `void Started(peer)`, `void Succeeded(peer)`, `void Failed(peer)`.
   - Constants: `kPunchAttemptTimeout = 10s`, `kPunchProbeInterval = 250ms`,
-    `kPunchMaxInFlight = 2`, `kPunchFailureBackoff = 30min`.
+    `kPunchMaxInFlight = 2`, `kPunchFailureBackoff = 30min`, `kPunchMaxTargets = 3`.
 
 - [ ] **Step 1: Write the failing tests**
   - `HolePunch.Ipv6FirstThenIpv4`: both sides have v6 and v4, both `EndpointIndependent`,
@@ -119,6 +128,7 @@ v8.2.0 (owner decision, 2026-10-27).
     result has v6 only.
   - `HolePunch.UnknownMappingIsAttempted`: `Unknown` on both sides still includes v4.
   - `HolePunch.NoLocalV6SkipsRemoteV6`.
+  - `HolePunch.TargetsCappedAtThree`: 5 remote v6 addresses plus a v4 give 3 targets.
   - `HolePunch.SamePublicIpv4SkipsIpv4` (Review Focus 5): the v4 IPs are equal (ports
     differ), so the result has no v4.
   - `HolePunch.RoleWhenBothDialed` (Review Focus 1): the node with the lower id is
@@ -136,7 +146,7 @@ v8.2.0 (owner decision, 2026-10-27).
   Compare IPs with the same key `QuicEndpoint` uses (`IpKey`, address bytes only).
 
 - [ ] **Step 4: Run them to verify they pass**
-  Run: `./build/test_hole_punch`. Expected: 7/7 PASS.
+  Run: `./build/test_hole_punch`. Expected: 8/8 PASS.
 
 - [ ] **Step 5: Neuter-check, then commit**
   Remove the same-IP rule and confirm `SamePublicIpv4SkipsIpv4` fails. Remove the
@@ -206,25 +216,72 @@ v8.2.0 (owner decision, 2026-10-27).
   - `void P2PManager::set_nat_mapping(dinero::p2p::NatMapping)`. P2PService calls it
     next to `nat_mapping_ = ...`.
   - `dinero::p2p::PunchCandidates P2PManager::LocalPunchCandidates() const`:
-    - v6 = the routable IPv6 entries of `stun_reflexive_`;
-    - v4 = its first routable IPv4 entry;
+    - v6 = this host's routable (global unicast) IPv6 interface addresses, enumerated
+      with the `getifaddrs` code in `include/network/local_interfaces.h`, each with the
+      QUIC endpoint's port. Not `stun_reflexive_`: `StunClient` resolves each server to
+      IPv4 first (`stun_client.cpp` ~line 83), so STUN almost never yields a v6
+      address, and IPv6 has no translation to measure anyway;
+    - v4 = the first routable IPv4 entry of `stun_reflexive_`;
     - `v4_mapping` = the last mapping set.
     - The result is empty when the QUIC endpoint is not listening.
 
 - [ ] **Step 1: Write the failing tests**
-  - `PunchCandidates.FromStunRoundAndMapping`: inject reflexive
-    `{203.0.113.5:20999, [2001:db8::5]:20999}` and `EndpointIndependent`, and expect the
-    matching struct.
+  - `PunchCandidates.FromStunRoundAndMapping`: inject reflexive `203.0.113.5:20999` and
+    `EndpointIndependent`, plus an injected interface list with `2001:db8::5`. Expect v4
+    `203.0.113.5:20999`, v6 `[2001:db8::5]:<endpoint port>`, and the mapping.
   - `PunchCandidates.EmptyWithoutQuicEndpoint`.
-  - `PunchCandidates.SkipsNonRoutable`: `10.0.0.5` and `fe80::1` are excluded.
+  - `PunchCandidates.SkipsNonRoutable`: `10.0.0.5`, `fe80::1` and `fd00::1` are
+    excluded.
 
 - [ ] **Step 2: Run them to verify they fail.**
-- [ ] **Step 3: Implement.** Add a `test_set_stun_reflexive(...)` hook only if no
-  existing setter covers it (`update_stun_candidates` may be enough).
+- [ ] **Step 3: Implement.**
+  - Use `update_stun_candidates` for the v4 input.
+  - Add one test hook, `test_set_local_interface_ips(std::vector<std::string>)`, that
+    replaces the `getifaddrs` read in test builds only.
 - [ ] **Step 4: Run them to verify they pass, then commit**
   `feat(p2p): local punch candidates from STUN and NAT mapping`.
 
-### Task 4: The punch exchange (initiator and acceptor)
+### Task 4: Home-peer outbound budget
+
+**Files:**
+- Modify: `src/daemon/p2p_manager.h/.cpp`: `OrchestrateRelayDials` (~line 2697, the
+  early return at ~line 2729) and `connect_to_peer_quic` (~line 8560).
+- Test: `tests/p2p/test_relay_virtual_transport.cpp` (`RelayOrchestrator` group; it
+  already builds 7-peer setups).
+
+**Interfaces:**
+- Produces:
+  - `PeerInfo` fields:
+    - `bool punched{false}`;
+    - `std::optional<std::array<uint8_t,20>> punch_expected_id`, set on an outbound
+      punched dial.
+  - `static constexpr size_t kHomePeerSlots = 2;`
+  - Outbound peers that are `via_relay` or `punched` count against `kHomePeerSlots`,
+    not against `MAX_OUTBOUND_CONNECTIONS`, both in the orchestrator's count and in any
+    other outbound-cap check they pass through.
+  - `bool P2PManager::connect_to_peer_quic(const std::string& ip, uint16_t port, std::optional<std::array<uint8_t,20>> punch_expected_id = std::nullopt);`
+    A dial with `punch_expected_id` set is a punched dial: it is counted in the
+    home-peer budget, and it replaces the relayed peer.
+
+- [ ] **Step 1: Write the failing tests**
+  - `RelayOrchestrator.RelayedDialAtFullOutbound` (Review Focus 1): with 8 direct
+    outbound peers and a signed hint for target T through a connected relay, a
+    `relaycon` for T is sent.
+  - `RelayOrchestrator.HomePeerBudgetCapsAtTwo`: 8 direct outbound peers, 2 relayed
+    outbound peers and a hint for a 3rd target, so no `relaycon` is sent.
+  - `RelayOrchestrator.DirectSlotsUnchangedByRelayedPeers`: 7 direct and 2 relayed, so
+    the normal direct-dial pass still sees 1 free slot.
+- [ ] **Step 2: Run them to verify they fail.** Expected: the first fails, because the
+  orchestrator returns at 8.
+- [ ] **Step 3: Implement the split count.**
+- [ ] **Step 4: Run them to verify they pass.** Then rerun the whole
+  `test_relay_virtual_transport` binary. Every existing `RelayOrchestrator` test must
+  still pass, including the 7-peer `AcceptedColdDialDoesNotStarveTheConnectedRoute`.
+- [ ] **Step 5: Neuter the split** (count relayed peers as direct again) and confirm
+  `RelayedDialAtFullOutbound` fails. Restore it, then commit
+  `feat(p2p): home-peer outbound budget for relayed and punched peers`.
+
+### Task 5: The punch exchange (initiator and acceptor)
 
 **Files:**
 - Modify: `src/daemon/p2p_manager.h/.cpp`:
@@ -236,15 +293,11 @@ v8.2.0 (owner decision, 2026-10-27).
 
 **Interfaces:**
 - Consumes:
-  - Tasks 1-3;
+  - Tasks 1-4 (`punched` and `punch_expected_id` come from Task 4);
   - `QuicEndpoint::SendDatagram(dest, data, len)` for probes;
-  - `connect_to_peer_quic`-style dialing;
+  - Task 4 `connect_to_peer_quic(..., punch_expected_id)`;
   - `PeerInfo::via_relay`, `identity_proven`, `their_node_id`, `is_outbound`.
 - Produces:
-  - `PeerInfo` fields:
-    - `bool punched{false}`;
-    - `std::optional<std::array<uint8_t,20>> punch_expected_id`, set on the initiator's
-      outbound punched dial.
   - Per-peer punch state in P2PManager, under its own leaf mutex `punch_mutex_`:
     `nonce`, `role`, `offer_sent_at`, `deadline`, `targets`.
   - Test hooks:
@@ -258,8 +311,10 @@ v8.2.0 (owner decision, 2026-10-27).
   - sends `punchoff` with `LocalPunchCandidates()`;
   - records `offer_sent_at`.
 - **Acceptor on `punchoff`.** This is accepted only from a relayed, identity-proven peer
-  whose role for us is `Acceptor`. The acceptor answers `punchans` with its own
-  candidates.
+  whose role for us is `Acceptor`, and only when the acceptor's own `PunchScheduler`
+  `MayStart` allows it (the same in-flight cap and per-peer backoff as the initiator).
+  The acceptor answers `punchans` with its own candidates. A refused offer gets no
+  answer.
 - **Initiator on `punchans`.**
   - It computes `targets = ChoosePunchTargets(local, remote)`. If that's empty, it
     counts `skipped` and stops.
@@ -274,8 +329,10 @@ v8.2.0 (owner decision, 2026-10-27).
     header, so `LooksLikeClientInitial` is false. The receiver drops it as an unknown
     datagram.
   - The probe exists only to open the acceptor's router.
+- **Probe budget.** At most `kPunchMaxTargets` targets, one probe each per
+  `kPunchProbeInterval`, until the deadline: at most 3 × 40 probes per attempt.
 - **Deadline.** Both sides use `kPunchAttemptTimeout` from `punchgo`. If it expires
-  without a punched peer, the attempt has failed (Task 5 decides success).
+  without a punched peer, the attempt has failed (Task 6 decides success).
 - **Messages ignored with a log line, no misbehavior:**
   - from non-relayed peers, or peers without the bit;
   - with the wrong nonce;
@@ -286,7 +343,9 @@ v8.2.0 (owner decision, 2026-10-27).
     - nodes A and B are linked by a relayed peer (A dialed it);
     - both have loopback "reflexive" candidates;
     - after ticks, A has an outbound `quic_direct` peer to B with `punched=true`;
-    - the probes B sent were counted at A's endpoint as `datagrams_dropped`.
+    - B's punch stats show probes sent (`probes_sent > 0`). Don't assert how A's
+      endpoint counted them: once A's client session exists, they route into it
+      instead of being dropped.
   - `HolePunchManager.OnlyLowerIdInitiatesWhenBothDialed` (Review Focus 1): two
     relayed links, one in each direction, give exactly one `punchoff` on the wire in
     total.
@@ -299,6 +358,12 @@ v8.2.0 (owner decision, 2026-10-27).
   - `HolePunchManager.AcceptorWithoutInboundSlotFailsCleanly` (Review Focus 4): B's
     inbound slots are full, so the attempt fails, the relayed peer stays, and exactly
     one attempt is made.
+  - `HolePunchManager.AcceptorBoundsProbesToClaimedTargets` (Review Focus 4):
+    - a relayed peer offers 8 v6 candidates naming third-party addresses;
+    - B probes at most 3 targets, and sends at most 120 probes in total for the attempt;
+    - a second `punchoff` from the same peer within 30 min of a failure gets no answer.
+  - `HolePunchManager.InitiatorAtFullOutboundStillPunches` (Review Focus 1): A has 8
+    direct outbound peers, and the punch still completes.
   - `HolePunchManager.UnsolicitedPunchMessagesIgnored`: `punchoff` from a direct TCP
     peer, and `punchgo` with a wrong nonce, change no state.
 
@@ -312,7 +377,7 @@ v8.2.0 (owner decision, 2026-10-27).
 - [ ] **Step 5: Neuter-check** the role tie-break and the failure backoff, one at a
   time. Then commit `feat(p2p): relay-coordinated punch exchange`.
 
-### Task 5: Prove, replace and report
+### Task 6: Prove, replace and report
 
 **Files:**
 - Modify: `src/daemon/p2p_manager.cpp`:
@@ -326,7 +391,7 @@ v8.2.0 (owner decision, 2026-10-27).
   `test_quic_direct_peer.cpp`.
 
 **Interfaces:**
-- Consumes: Task 4 `punched` / `punch_expected_id` and the punch state.
+- Consumes: Task 4 `punched` / `punch_expected_id`, and Task 5's punch state.
 - Produces:
   - `PeerInfo::path_name()` returns `"punched"` when `punched`, `"relayed"` when
     `via_relay`, else `"direct"`. `getpeerinfo` gets a new `"path"` field, and
@@ -335,8 +400,10 @@ v8.2.0 (owner decision, 2026-10-27).
     `{attempts, succeeded, failed: {timeout, mismatch, refused}, skipped, by_family: {ipv4: {attempts, succeeded}, ipv6: {...}}}`.
 
 **Rules:**
-- **Initiator's punched session.** Its `dineroid` must be session-bound (v2), and the
-  derived id must equal `punch_expected_id`. Otherwise it is disconnected and counted
+- **Initiator's punched session.** Its `dineroid` must be session-bound (v2). That is
+  already enforced for every direct QUIC peer, since `bound = peer->uses_quic_stream()`
+  covers `quic_direct` (`p2p_manager.cpp` ~line 4388), so no new binding wiring is
+  needed. The derived id must equal `punch_expected_id`. Otherwise it is disconnected and counted
   as `mismatch`, and the relayed peer is kept. This mirrors the existing relayed-target
   check.
 - **Acceptor's punched session.** An inbound `quic_direct` peer whose proven
@@ -369,7 +436,7 @@ v8.2.0 (owner decision, 2026-10-27).
   - Neuter the relayed-peer disconnect: `SuccessReplaces...` must fail.
   - Restore both, then commit `feat(p2p): punched peers replace relayed ones; path and counters`.
 
-### Task 6: netns scenarios on DineroTX
+### Task 7: netns scenarios on DineroTX
 
 **Files:**
 - Modify: `tests/integration/test_relay_nat_netns.sh`. Reuse `configure_nat` (EIM by
@@ -379,7 +446,7 @@ v8.2.0 (owner decision, 2026-10-27).
 
 **Interfaces:**
 - Consumes:
-  - Task 5 `getpeerinfo.path` and `getnetworkinfo.hole_punch`;
+  - Task 6 `getpeerinfo.path` and `getnetworkinfo.hole_punch`;
   - the existing helpers `wait_relay_peerinfo`, `wait_networkinfo_jq`,
     `wait_peer_gone`.
 
@@ -401,19 +468,19 @@ v8.2.0 (owner decision, 2026-10-27).
       firewall-only `ip6tables` in each node's namespace (`-m conntrack --ctstate NEW`
       drops inbound, established is allowed);
     - same PASS checks as `PUNCH_V4`, but on `by_family.ipv6`.
-- [ ] **Step 2: Run them against the Task 5 build** (detached:
+- [ ] **Step 2: Run them against the Task 6 build** (detached:
   `setsid nohup nice -n 10 bash run.sh`, as in the existing harness on DineroTX). Each
   must fail on a build with the punch trigger neutered, and pass on the real one.
 - [ ] **Step 3: Rerun the existing five scenarios** (DEFAULT, DIRECT_QUIC, DIALBACK,
   COMMUNITY_RELAY, TWO_RELAYS). All must still pass.
 - [ ] **Step 4: Commit** `test(netns): punch v4, v6 and symmetric fallback scenarios`.
 
-### Task 7: Real-router acceptance (owner present)
+### Task 8: Real-router acceptance (owner present)
 
 **Files:** none (manual, results go in the ledger and the PR).
 
 - [ ] **Step 1: Get the owner's go-ahead.** This needs the Dell behind the AT&T gateway
-  and a NAT'd namespace node on DineroTX, both running the Task 5 build. No router
+  and a NAT'd namespace node on DineroTX, both running the Task 6 build. No router
   changes and no fleet changes.
 - [ ] **Step 2:**
   - Dell and the DineroTX NAT node connect through a community relay, then punch over
@@ -423,6 +490,21 @@ v8.2.0 (owner decision, 2026-10-27).
   - repeat over IPv6 if the AT&T gateway's IPv6 firewall allows outbound-initiated UDP.
 - [ ] **Step 3: Record what was observed**, including any failure and its counter, in
   the ledger and the PR body. Failures here are findings, not test edits.
+
+## Departures from spec E (my calls; owner to check)
+
+- **Coordination runs end to end.** The spec says the relay sends each side the other's
+  reflexive addresses. Here, the two peers exchange them over the relayed session, so a
+  relay can't lie about them, and relays need no update.
+- **Replacement, not migration.** The spec says the session migrates to the direct
+  path. Here, a new direct session is set up and proven, and then the relayed one is
+  dropped.
+- **An `unknown` mapping is attempted.** The spec only says to skip
+  `endpoint_dependent`.
+- **Path types reach the RPC only.** The spec also names the UI. That comes later.
+- **A home-peer budget of 2 outbound slots** for relayed and punched peers, outside the
+  8 direct ones (Task 4). The spec doesn't address it, but without it a busy home node
+  never forms the relayed link that punching starts from.
 
 ## Left out on purpose
 
