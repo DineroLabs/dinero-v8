@@ -821,13 +821,26 @@ din::Json rpc_context_wallet_getwalletinfo(const ExecutionContext& ctx, const di
     }
 
     try {
-        if (const auto refusal = ImportedRuntimeBalanceRefusal(ctx)) return *refusal;
         auto& mgr = wallet_service->get();
 
         // Wallet name
         result["walletname"] = mgr.current();
 
-        // Balance aggregation (read-only)
+        // Keep non-secret loaded-wallet metadata available without reporting
+        // ordinary rows as a current mixed balance. This branch writes no
+        // baseline/schema/identity, and still checks the requested wallet.
+        if (const auto refusal = ImportedRuntimeBalanceRefusal(ctx)) {
+            auto lease = mgr.AcquireDatabaseLease();
+            if (lease->WalletName().empty() ||
+                (!ctx.walletName.empty() && lease->WalletName() != ctx.walletName))
+                throw std::runtime_error("Wallet info selection changed");
+            result["walletname"] = lease->WalletName();
+            result["balance_status"] = "reconciliation_required";
+            result["balance_error"] = (*refusal)["error"];
+            result["error_code"] = (*refusal)["error_code"];
+            result["retryable"] = true;
+        } else {
+        // Balance aggregation (read-only), original non-imported behavior.
         const auto summary = mgr.getBalanceSummary(ctx.walletName);
         const auto& balance = summary.balance;
         result["walletname"] = summary.wallet_name;
@@ -859,6 +872,9 @@ din::Json rpc_context_wallet_getwalletinfo(const ExecutionContext& ctx, const di
 
         // Spendable balance
         result["spendable_balance"] = ReservationAmount(summary.available_confirmed);
+        result["utxo_count"] = balance.utxo_count;
+        result["immature_utxo_count"] = balance.immature_utxo_count;
+        }
 
         // Transaction count (read-only - no limit to get full count)
         auto tx_history = mgr.getTransactionHistory(999999, 0);
@@ -867,10 +883,6 @@ din::Json rpc_context_wallet_getwalletinfo(const ExecutionContext& ctx, const di
         // Address count (read-only)
         auto addresses = mgr.listAddresses(false);  // Don't need labels for count
         result["address_count"] = static_cast<int>(addresses.size());
-
-        // UTXO count
-        result["utxo_count"] = balance.utxo_count;
-        result["immature_utxo_count"] = balance.immature_utxo_count;
 
         // HD wallet status (read-only check)
         result["hd_enabled"] = (mgr.getHDWallet() != nullptr);

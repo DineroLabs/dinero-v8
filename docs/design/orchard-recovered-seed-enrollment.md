@@ -1467,6 +1467,14 @@ ten imported SQL values, encrypted owners and missing baseline schema/receipts
 must remain unchanged. This is an honest refusal gate, not mixed recovery or
 complete wallet-readiness qualification.
 
+`wallet.getwalletinfo` retains normal non-secret named-wallet metadata and no
+top-level error so loaded/encrypted/unlocked identity remains observable. Its
+balance fields/counts are absent, with `balance_status=reconciliation_required`,
+`balance_error`, `error_code` and `retryable=true`. This is not a successful
+balance query. `wallet.getbalance` and the wallet-scoped snapshot return an
+explicit error without numeric balances. Normal wallet.open/unlock without the
+phrase remains independent of mixed balance availability.
+
 The production refusal is deliberately conservative for the completed imported
 compact composition. There is not yet a supported mixed baseline reconciliation
 route there, so apparent ordinary rows, a current proof context or Orchard-only
