@@ -730,12 +730,14 @@ void GenerateSdkActivationFixture(){
                 result["transactions"]=Json::Value(Json::arrayValue);
                 for(const auto& tx:mined->Transactions())result["transactions"].append(tx.GetTxid().AsUint256().GetHex());
             }else if(op=="mine_next"){
-                // Real next-block coinbase to a public owned script. Ordinary
+                // Real next-block coinbase to a public owned address. Ordinary
                 // assembler/consensus, never wallet-coin injection.
                 std::vector<uint8_t> payout;ASSERT_TRUE(util::unhex(request["script"].asString(),payout));
+                const auto address=request["address"].asString();const auto decoded=DecodeWitnessAddress(address,"rdin");
+                ASSERT_TRUE(decoded.is_valid);ASSERT_EQ(decoded.script_pubkey,payout);
                 ASSERT_FALSE(payout.empty());const auto before=source.f.service->GetActiveTip()->height;
                 BlockAssembler assembler(&source.f.db);WireOrchardAssembler(assembler,source.f);
-                const auto mined=SolveCatalogTemplate(assembler.CreateOrchardBlock(util::hex(payout)));ASSERT_TRUE(mined);
+                const auto mined=SolveCatalogTemplate(assembler.CreateOrchardBlock(address));ASSERT_TRUE(mined);
                 ASSERT_EQ(mined->Height(),before+1);ASSERT_TRUE(source.Submit(mined->WireBytes()).connected);
                 const auto id=mined->Transactions().front().GetTxid();const auto coin=source.f.db.getCoin(id.AsUint256(),0);
                 ASSERT_TRUE(coin.ok());ASSERT_TRUE(coin->coinbase);ASSERT_EQ(coin->height,int(mined->Height()));

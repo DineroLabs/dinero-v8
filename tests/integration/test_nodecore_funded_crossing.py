@@ -928,7 +928,9 @@ try:
                         if mixed_forward:
                             # No second reconcilecoverage, wallet reopen/reset,
                             # fabricated output or caller-provided numeric total.
-                            wire_forward=len(packets);next_block=native_call('mine_next',script=post_mined['transparent_outputs'][0]['script'])
+                            with sqlite3.connect('file:'+str(wallet_paths[0])+'?mode=ro',uri=True) as db:
+                                payout_address=db.execute('SELECT address FROM utxos WHERE txid=? AND vout=0',(post_finished['txid'],)).fetchone()[0]
+                            wire_forward=len(packets);next_block=native_call('mine_next',address=payout_address,script=post_mined['transparent_outputs'][0]['script'])
                             assert next_block['height']==107 and next_block['amount_una']>0,next_block
                             bodies[bytes.fromhex(next_block['hash'])[::-1]]=bytes.fromhex(next_block['body'])
                             headers.append(bytes.fromhex(next_block['header']))
@@ -939,9 +941,9 @@ try:
                                 value=call('rpc',method='wallet.getbalance',params=[])
                                 forward_reads.append(dict(height=height,balance=value))
                                 (root/'mixed-forward-reads.json').write_text(json.dumps(forward_reads,indent=2)+'\n')
-                                if height==107 and value.get('source_height')==107 and value.get('utxo_count')==3:break
+                                if height==107 and value.get('checkpoint_height')==107 and value.get('utxo_count')==3:break
                                 time.sleep(.2)
-                            assert height==107 and value.get('source_height')==107 and value.get('source_hash')==next_block['hash'],value
+                            assert height==107 and value.get('checkpoint_height')==107 and value.get('checkpoint_hash')==next_block['hash'],value
                             assert value['confirmed']==.0092 and value['utxo_count']==3,value
                             assert abs(value['immature']-next_block['amount_una']/1e8)<1e-12,value
                             assert abs(value['total']-(920000+next_block['amount_una'])/1e8)<1e-12,value
