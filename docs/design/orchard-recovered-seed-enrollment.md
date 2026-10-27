@@ -1531,6 +1531,11 @@ is recorded separately; the initial overly broad count included heights41..48
 alongside the real requested height1 and remains a failed case, not a streaming
 source PASS. No scheduler/peer policy is changed to hide those packets. This is a
 serial acquisition-phase check, not generic race/churn/stress qualification.
+Both new commit-fence fixtures explicitly retain and identify their isolated
+database roots on success or failure. Earlier in-process controls used inherited
+default cleanup: their exact logs/binaries/input maps survive, but those scratch
+databases do not. Fresh retention checks never stand in for the missing originals
+or retroactively change earlier results. SDK failed roots remain separately retained.
 
 `NodeCoreAssumedPrivateSendUnshield` extends the real imported-source funded
 crossing with a later restored account0 payer, a DIFFERENT-seed named recipient,

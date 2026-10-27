@@ -76,6 +76,7 @@ TEST(WalletScriptReconciliation, PreparationCommitRefusalLeavesBothStoresUnchang
 }
 TEST(WalletScriptReconciliation, FreshSourceRefusalBeforeIndexCommitLeavesBothOwnersUnchanged){
     SharedPaymentFixture f;(void)f.wallet->get().getNewChangeAddress("","taproot");
+    f.f.preserve_evidence=true;std::cerr<<"Coverage commit-fence evidence: "<<f.f.path.string()<<std::endl;
     const auto source=CaptureScriptCoverage(f);ASSERT_TRUE(source.ok());
     const auto before=f.Snapshot(),indexed=CoverageIndexSnapshot(f);
     auto use=WalletService::AcquireWalletUse(f.wallet);auto index=ChainstateService::AcquireWalletIndexUse(f.f.service);
@@ -88,6 +89,7 @@ TEST(WalletScriptReconciliation, FreshSourceRefusalBeforeIndexCommitLeavesBothOw
 }
 TEST(WalletScriptReconciliation, FreshSourceRefusalBeforeOrdinaryCommitRetainsOnlyGenuineIndexPrefix){
     SharedPaymentFixture f;(void)f.wallet->get().getNewChangeAddress("","taproot");
+    f.f.preserve_evidence=true;std::cerr<<"Coverage commit-fence evidence: "<<f.f.path.string()<<std::endl;
     const auto source=CaptureScriptCoverage(f);ASSERT_TRUE(source.ok());
     const auto before=f.Snapshot(),indexed=CoverageIndexSnapshot(f);
     auto use=WalletService::AcquireWalletUse(f.wallet);auto index=ChainstateService::AcquireWalletIndexUse(f.f.service);
