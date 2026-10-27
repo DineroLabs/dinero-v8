@@ -850,9 +850,9 @@ try:
                     assert candidate_wallet_state()==before_balance and wallet_rows()==balance_rows
                     assert snapshot_candidate_rows()==balance_candidates and original_lifecycle()==original
                     assert mixed_runtime_receipts()==mixed_before,'balance query minted mixed baselines/schema'
-                    for method,reply in replies.items():
-                        assert reply.get('error_code')=='wallet_balance_not_current' and reply.get('retryable') is True,(method,reply)
-                        assert not any(key in reply for key in ('confirmed','balance','total','spendable','balances')),(method,reply)
+                    for method,balance_reply in replies.items():
+                        assert balance_reply.get('error_code')=='wallet_balance_not_current' and balance_reply.get('retryable') is True,(method,balance_reply)
+                        assert not any(key in balance_reply for key in ('confirmed','balance','total','spendable','balances')),(method,balance_reply)
                     info=replies['wallet.getwalletinfo']
                     assert 'error' not in info and info['walletname']=='wire-named-owner' and info['encrypted'] and info['unlocked'],info
                     assert info['balance_status']=='reconciliation_required' and info['balance_error'],info

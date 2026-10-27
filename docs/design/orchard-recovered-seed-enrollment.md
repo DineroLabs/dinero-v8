@@ -1474,6 +1474,8 @@ balance fields/counts are absent, with `balance_status=reconciliation_required`,
 balance query. `wallet.getbalance` and the wallet-scoped snapshot return an
 explicit error without numeric balances. Normal wallet.open/unlock without the
 phrase remains independent of mixed balance availability.
+The native case must finish normal SDK stop/reader cleanup as well as the
+functional assertions; reaching the observations alone is not a passing case.
 
 The production refusal is deliberately conservative for the completed imported
 compact composition. There is not yet a supported mixed baseline reconciliation
