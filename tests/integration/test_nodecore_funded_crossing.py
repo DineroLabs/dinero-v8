@@ -850,6 +850,19 @@ try:
                         assert 'error' in bad_baseline and not bad_baseline.get('complete'),bad_baseline
                     historical_release.set()
                     before_baseline_rows=wallet_rows();before_baseline_candidates=snapshot_candidate_rows()
+                    probe_start=len(packets)
+                    first_baseline=call('rpc',method='wallet.reconcilecoverage',params=binding)
+                    assert first_baseline.get('error_code')=='coverage_source_pending' and first_baseline.get('retryable') is True,first_baseline
+                    # One actual RPC, then let its bounded DATA actor finish;
+                    # NO second source call can persist/queue a successor here.
+                    # Old batching deterministically exposes eight wire bodies.
+                    time.sleep(1)
+                    probe_bodies={double_sha((root/p['file']).read_bytes()[:128])[::-1] for p in list(packets)[probe_start:]
+                        if p['direction']=='out' and p['command']=='block'} & historical_only
+                    probe=dict(reply=first_baseline,packet_start=probe_start,legacy_bodies=[h.hex() for h in sorted(probe_bodies)])
+                    (root/'history-probe.json').write_text(json.dumps(probe,indent=2)+'\n')
+                    assert len(probe_bodies)==1,probe
+                    assert wallet_rows()==before_baseline_rows and original_lifecycle()==original and mixed_runtime_receipts()==mixed_before
                     baseline_replies=[];deadline=time.monotonic()+120
                     while time.monotonic()<deadline:
                         baseline_reply=call('rpc',method='wallet.reconcilecoverage',params=binding)
@@ -881,7 +894,7 @@ try:
                     # later owner-bound balance-read publication gate.
                     refused_balance=call('rpc',method='wallet.getbalance',params=[])
                     assert refused_balance.get('error_code')=='wallet_balance_not_current',refused_balance
-                    baseline_result=dict(result=baseline_reply,repeated=repeated_baseline,replies=baseline_replies,receipts=receipts,
+                    baseline_result=dict(result=baseline_reply,repeated=repeated_baseline,history_probe=probe,replies=baseline_replies,receipts=receipts,
                         ordinary_live=ordinary_live,index_live=index_live,balance_refusal=refused_balance,
                         scope='Genuine independent genesis-to-parent replay of public legacy body DATA plus actual canonical102..106 events, original audited coverage writer/index-first and FULL ordinary commits. Original imported cohort/anchor/lifecycle and encrypted owners unchanged. Captured two-store baseline only; NO live history promotion, general coin view, whole-wallet balance-read readiness or app/device/release qualification.')
                 mixed_balance=None

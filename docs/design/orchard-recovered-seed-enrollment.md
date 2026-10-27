@@ -1520,6 +1520,13 @@ baseline data. Both earned receipts remain distinct from balance-read readiness.
 The retry result is bound only to an actual bounded body-DATA request in this
 capture. A missing runtime/outbox/catalog/storage source is not silently mapped
 to pending; no failure after entering a writer can become that acquisition retry.
+The explicit consumer persists ONE completed body before requesting its successor.
+The downloader retains its original eight-entry volatile ready/wanted limits and
+all wire budgets: batching a full workset ahead can evict unpersisted ready DATA
+while later requests occupy that workset. Capacity errors must not be swallowed.
+The native case makes one explicit RPC, lets its DATA actor drain without another
+source call, and checks exactly one legacy wire body before proceeding. This is a
+serial acquisition-phase check, not generic race/churn/stress qualification.
 
 `NodeCoreAssumedPrivateSendUnshield` extends the real imported-source funded
 crossing with a later restored account0 payer, a DIFFERENT-seed named recipient,

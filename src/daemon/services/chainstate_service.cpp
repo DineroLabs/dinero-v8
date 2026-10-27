@@ -7461,10 +7461,13 @@ StatusOr<std::shared_ptr<const RuntimeWalletOriginProjection>> ChainstateService
         if(public_history){
             size_t missing=0,material=0;
             // Do not repeatedly replay a partial prefix while bodies arrive.
-            // Bound each request wave by the existing funding actor workset.
+            // Persist ONE ready body before requesting its successor. Queuing
+            // eight ahead can evict unpersisted ready DATA while later wanted
+            // entries still fill the unchanged actor workset. Never catch or
+            // relax that capacity guard as an acquisition retry.
             for(uint32_t height=0;height<ancestry.size();++height){
                 const auto body=read_body(height);
-                if(!body){if(++missing==p2p::WalletFundingDownload::MaximumBodies)break;continue;}
+                if(!body){if(++missing==1)break;continue;}
                 const auto size=body->Serialize().size();
                 if(size>256*1024*1024-material)return Status::Invalid;material+=size;
             }
