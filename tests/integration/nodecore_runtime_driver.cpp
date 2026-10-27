@@ -19,6 +19,8 @@
 #include "util/hex.h"
 
 #include <json/json.h>
+#include <atomic>
+#include <thread>
 #include <chrono>
 #include <condition_variable>
 #include <fstream>
@@ -462,6 +464,33 @@ int main(int argc, char** argv) {
                 const auto path = request["datadir"].asString();
                 const auto config = Encode(request["config"]);
                 result = nodecore_start(path.c_str(), config.c_str());
+            } else if (operation == "status_during_start") {
+                // Poll status while nodecore_start is still running on another
+                // thread: it must answer at once instead of waiting for the start.
+                const auto path = request["datadir"].asString();
+                const auto config = Encode(request["config"]);
+                std::atomic<bool> done{false};
+                int32_t start_result = 0;
+                std::thread starter([&] { start_result = nodecore_start(path.c_str(), config.c_str()); done = true; });
+                Json::Value sample;
+                long long slowest_ms = 0;
+                bool saw_starting = false;
+                while (!done.load()) {
+                    const auto begin = std::chrono::steady_clock::now();
+                    char* raw = nodecore_get_status_json();
+                    const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                        std::chrono::steady_clock::now() - begin).count();
+                    if (!done.load()) {
+                        slowest_ms = std::max<long long>(slowest_ms, ms);
+                        if (raw) { sample = Parse(raw); saw_starting = saw_starting || sample.get("starting", false).asBool(); }
+                    }
+                    if (raw) nodecore_free_string(raw);
+                    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+                }
+                starter.join();
+                result["start_result"] = start_result;
+                result["slowest_status_ms_during_start"] = Json::Int64(slowest_ms);
+                result["saw_starting"] = saw_starting;
             } else if (operation == "stop") {
                 result = nodecore_stop();
             } else if(operation=="watch_script"){

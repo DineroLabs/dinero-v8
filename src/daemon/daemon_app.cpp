@@ -1202,7 +1202,7 @@ bool DaemonApp::Init(int argc, char** argv) {
         // interrupted swap's rollback copy.
         if (!std::filesystem::exists(chain_db_path)) {
             for (const char* suffix : {".upgrade-candidate", ".upgrade-state",
-                                       ".upgrade-state.tmp", ".legacy-v1"}) {
+                                       ".upgrade-state.tmp", ".legacy-v1", ".legacy-v1.retiring"}) {
                 if (std::filesystem::exists(chain_db_path.string() + suffix)) {
                     std::cerr << "[DaemonApp] ❌ Incomplete shielded-state storage swap; refusing to create ChainDB"
                               << std::endl;
@@ -2149,6 +2149,14 @@ bool DaemonApp::Init(int argc, char** argv) {
 
     // Phase 39: Create ChainstateService and pass it the ChainDB
     chainstate->setOwnedChainDB(chain_db_);
+    if (automatic_storage_upgrade_ && locked_datadir_guard_ &&
+        GetConfig().sync_profile == "ios_utreexo") {
+        chainstate->SetPostConnectStorageCleanup([data_dir_path, chain_db_path,
+                                                after_phase = storage_upgrade_after_phase_] {
+            daemon::RetirePhoneStorageRollback(data_dir_path, chain_db_path, "ios_utreexo", after_phase);
+            return true;
+        });
+    }
     chainstate->setPoolManager(pool_manager_runtime_);
     if(pool_manager_runtime_)pool_manager_runtime_->setChainstateSource(chainstate);
 
@@ -2333,6 +2341,10 @@ bool DaemonApp::Init(int argc, char** argv) {
 
     // Initialize HeaderStore (persistent header storage)
     auto header_store = std::make_shared<dinero::consensus::HeaderStore>(datadir + "/headers");
+    if (GetConfig().sync_profile == "ios_utreexo") {
+        // Phones: a 4 MB buffer preallocates ~4.4 MB of WAL instead of ~70 MB.
+        header_store->SetWriteBufferBytes(4u << 20);
+    }
     if (!header_store->Open()) {
         std::cerr << "[DaemonApp] ❌ Failed to open header store" << std::endl;
         return false;
@@ -6544,6 +6556,15 @@ bool DaemonApp::Init(int argc, char** argv) {
                 // instead of broadcast_message (async outbox queue which may be
                 // congested during startup and silently drop messages).
                 auto peers = p2p_service->get().get_connected_peers();
+                if (peers.empty()) {
+                    // No peer yet (startup before the first handshake, or between
+                    // reconnects): nothing to select. Report the zero-recipient
+                    // send so the scheduler releases its slot and retries later,
+                    // without the misleading "no NODE_UTREEXO_BRIDGE peers" warning
+                    // a phone logged hundreds of times per start.
+                    if (sched) sched->NotifyGetDataDispatched(block_hash, 0, std::string());
+                    return;
+                }
                 int sent = 0;
                 int eligible = 0;
                 std::string selected_peer;

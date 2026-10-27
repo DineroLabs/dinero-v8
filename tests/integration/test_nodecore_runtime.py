@@ -116,11 +116,59 @@ def mainnet_schedule(node):
     seeds = [line for line in (WORK / "nodecore.log").read_text(errors="replace").splitlines()
              if "[P2PService]   Seed nodes:" in line]
     check("app static peers reach the daemon", bool(seeds) and seeds[0].endswith("Seed nodes: 2"), seeds[:1])
+    # An embedded host is a client: no Utreexo bridge mode (proof pre-caching,
+    # NODE_UTREEXO_BRIDGE advertised) unless it opts in with "utreexo_bridge".
+    log = (WORK / "nodecore.log").read_text(errors="replace")
+    check("embedded node is not a Utreexo bridge by default", "Utreexo bridge mode ENABLED" not in log)
     check("mainnet stop", node.call("stop") == 0)
+    bridge = datadir("mainnet-bridge-opt-in")
+    check("bridge opt-in starts", node.start(bridge, network="mainnet", utreexo_bridge=True) == 0)
+    log = (WORK / "nodecore.log").read_text(errors="replace")
+    check("utreexo_bridge: true still enables bridge mode", "Utreexo bridge mode ENABLED" in log)
+    check("bridge opt-in stop", node.call("stop") == 0)
+
+
+def rpc_port_held_by_desktop_daemon(node):
+    # A Mac running dinero-qt has dinerod on the canonical mainnet RPC port 20998.
+    # The embedded node must still start: hosts use in-process RPC, so NodeCore
+    # takes any free loopback port unless the host asks for one ("rpc_port").
+    import socket
+    holder = socket.socket()
+    try:
+        holder.bind(("127.0.0.1", 20998))
+        holder.listen(1)
+    except OSError:
+        holder.close()
+        holder = None  # already held (e.g. a real dinero-qt on this machine)
+    path = WORK / "rpc-port-held"
+    path.mkdir()
+    (path / "dinero.conf").write_text(  # no rpc.port: the embedded default decides
+        "p2p.offline=1\nlisten=0\nwallet.socket.enable=0\n"
+        "utreexo.checkpoint_interval=1000\nassumeutxo_bg_stall_timeout=3600\n")
+    started = node.start(path, network="mainnet")
+    check("embedded mainnet starts while 20998 is held", started == 0, started)
+    check("rpc-port-held stop", node.call("stop") == 0)
+    rejected = node.start(WORK / "rpc-port-bad", network="mainnet", rpc_port=70000)
+    check("an out-of-range rpc_port is refused", rejected != 0, rejected)
+    if holder:
+        holder.close()
+
+
+def status_during_start(node):
+    # Hosts poll status from UI timers; it must not wait for a start in progress.
+    path = datadir("status-during-start")
+    probe = node.call("status_during_start", datadir=str(path), config={
+        "network": "regtest", "verbose_logging": True, "sync_profile": "mac_fullblock"})
+    check("start under status polling succeeds", probe["start_result"] == 0, probe)
+    check("status reports starting while a start runs", probe["saw_starting"], probe)
+    check("status answers at once during start", probe["slowest_status_ms_during_start"] < 200, probe)
+    check("status-during-start stop", node.call("stop") == 0)
 
 
 def lifecycle(node):
     mainnet_schedule(node)
+    status_during_start(node)
+    rpc_port_held_by_desktop_daemon(node)
     path = datadir("lifecycle")
     check("already stopped is idempotent", node.call("stop") == 0)
     started = node.start(path)

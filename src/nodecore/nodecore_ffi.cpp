@@ -526,6 +526,15 @@ int32_t nodecore_start(const char* datadir, const char* config_json) {
     bool assumeutxo_require_manifest = false;
     std::optional<std::string> explicit_profile;
     std::optional<bool> legacy_utreexo_override;
+    // Embedded hosts are clients, not proof servers: the daemon's own default
+    // (utreexo-bridge=true) made phones advertise the bridge service bit, so
+    // peers asked them for proofs. Local proofs are unaffected (the BridgeNode
+    // is built either way). Opt in with "utreexo_bridge": true.
+    bool utreexo_bridge = false;
+    // Hosts call RPC in-process; the daemon's loopback listener otherwise takes
+    // the canonical port (20998 on mainnet). A desktop running dinero-qt/dinerod
+    // already owns it, and a failed bind refuses the whole start. 0 = any free port.
+    int rpc_port = 0;
     bool verbose_logging = false;  // embedded default: quiet (see below)
 
     if (config_json) {
@@ -553,6 +562,13 @@ int32_t nodecore_start(const char* datadir, const char* config_json) {
             }
             if (config.isMember("p2p_port")) p2p_port = config["p2p_port"].asInt();
             if (config.isMember("max_peers")) max_peers = config["max_peers"].asInt();
+            if (config.isMember("rpc_port")) {
+                if (!config["rpc_port"].isInt() || config["rpc_port"].asInt() < 0 ||
+                    config["rpc_port"].asInt() > 65535) {
+                    return NODECORE_ERROR_INVALID_ARGS;
+                }
+                rpc_port = config["rpc_port"].asInt();
+            }
             if (config.isMember("addnode")) {
                 // Host static peers, comma-separated host:port (the daemon's addnode).
                 if (!config["addnode"].isString()) {
@@ -612,6 +628,9 @@ int32_t nodecore_start(const char* datadir, const char* config_json) {
                 }
                 explicit_profile = config["sync_profile"].asString();
             }
+            if (config.isMember("utreexo_bridge")) {
+                utreexo_bridge = parse_bool(config["utreexo_bridge"], false);
+            }
             if (config.isMember("utreexo_stateless")) {
                 legacy_utreexo_override = parse_bool(config["utreexo_stateless"], utreexo_stateless);
             }
@@ -661,6 +680,8 @@ int32_t nodecore_start(const char* datadir, const char* config_json) {
     args_storage.push_back("--p2pport=" + std::to_string(p2p_port));
     args_storage.push_back("--sync-profile=" + s.sync_profile);
     args_storage.push_back("--utreexo-stateless=" + std::string(utreexo_stateless ? "1" : "0"));
+    args_storage.push_back("--utreexo-bridge=" + std::string(utreexo_bridge ? "1" : "0"));
+    args_storage.push_back("--rpc.port=" + std::to_string(rpc_port));
     if (!wallet_schema_path.empty()) {
         args_storage.push_back("--wallet-schema-path=" + wallet_schema_path);
     }
@@ -944,7 +965,19 @@ char* nodecore_maintenance_status(const char* datadir) {
 
 char* nodecore_get_status_json(void) {
     auto& s = state();
-    std::lock_guard<std::mutex> lock(s.mtx);
+    // nodecore_start holds s.mtx through the whole startup (block index load,
+    // snapshot checks), which can take tens of seconds on a phone. A status poll
+    // must not wait for it: hosts call this from UI timers, and blocking made
+    // Android raise "app not responding" and restart the node.
+    std::unique_lock<std::mutex> lock(s.mtx, std::try_to_lock);
+    if (!lock.owns_lock()) {
+        Json::Value busy;
+        busy["running"] = false;
+        busy["starting"] = true;
+        Json::StreamWriterBuilder busy_writer;
+        busy_writer["indentation"] = "";
+        return strdup_c(Json::writeString(busy_writer, busy));
+    }
     if (!is_queryable_locked(s)) {
         return nullptr;
     }

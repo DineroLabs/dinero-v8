@@ -34,6 +34,27 @@ if(TARGET v7_p2mr_inventory_test)
     LABELS "unit;wallet;p2mr;mandatory" TIMEOUT 30)
 endif()
 
+add_executable(test_block_announce_policy tests/daemon/test_block_announce_policy.cpp)
+target_include_directories(test_block_announce_policy PRIVATE ${CMAKE_SOURCE_DIR}/include)
+add_test(NAME BlockAnnouncePolicy COMMAND test_block_announce_policy)
+set_tests_properties(BlockAnnouncePolicy PROPERTIES LABELS "unit;p2p;mandatory" TIMEOUT 10)
+if(UNIX AND TARGET dinerod)
+  add_test(NAME HistoricalBlockAnnounce
+    COMMAND bash ${CMAKE_SOURCE_DIR}/tests/p2p/test_historical_block_announce.sh ${CMAKE_BINARY_DIR})
+  set_tests_properties(HistoricalBlockAnnounce PROPERTIES LABELS "integration;p2p" TIMEOUT 300 RUN_SERIAL TRUE)
+  add_test(NAME SplitBranchBlockAnnounce
+    COMMAND bash ${CMAKE_SOURCE_DIR}/tests/p2p/test_split_branch_announce.sh ${CMAKE_BINARY_DIR})
+  set_tests_properties(SplitBranchBlockAnnounce PROPERTIES LABELS "integration;p2p" TIMEOUT 300 RUN_SERIAL TRUE)
+  add_test(NAME PhoneBackfillGate
+    COMMAND ${CMAKE_COMMAND} -E env DINEROD=$<TARGET_FILE:dinerod>
+      bash ${CMAKE_SOURCE_DIR}/tests/integration/test_phone_backfill_gate.sh)
+  set_tests_properties(PhoneBackfillGate PROPERTIES LABELS "integration;assumeutxo;nodecore" TIMEOUT 300 RUN_SERIAL TRUE)
+  add_test(NAME PhoneHeaderStoreBuffer
+    COMMAND ${CMAKE_COMMAND} -E env DINEROD=$<TARGET_FILE:dinerod>
+      bash ${CMAKE_SOURCE_DIR}/tests/integration/test_phone_header_store_buffer.sh)
+  set_tests_properties(PhoneHeaderStoreBuffer PROPERTIES LABELS "integration;storage;nodecore" TIMEOUT 300 RUN_SERIAL TRUE)
+endif()
+
 add_executable(test_p2p_header_parser tests/daemon/test_p2p_header_parser.cpp)
 target_link_libraries(test_p2p_header_parser PRIVATE dinero_core)
 add_test(NAME P2PHeaderParserAlignment COMMAND test_p2p_header_parser)
@@ -17053,4 +17074,37 @@ if(TARGET dinero_wallet AND TARGET gtest)
   endif()
   add_test(NAME EscrowBuildersFailSafe COMMAND test_escrow_builders_fail_safe)
   set_tests_properties(EscrowBuildersFailSafe PROPERTIES LABELS "wallet;contracts;mandatory")
+endif()
+
+if(UNIX)
+add_executable(test_phone_storage_rollback tests/daemon/test_phone_storage_rollback.cpp)
+target_include_directories(test_phone_storage_rollback PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(test_phone_storage_rollback PRIVATE RocksDB::rocksdb)
+add_test(NAME PhoneStorageRollback COMMAND test_phone_storage_rollback)
+set_tests_properties(PhoneStorageRollback PROPERTIES LABELS "storage;nodecore" TIMEOUT 60)
+endif()
+
+add_executable(test_nodecore_p2mr_hex tests/nodecore/test_p2mr_hex.cpp)
+target_include_directories(test_nodecore_p2mr_hex PRIVATE ${CMAKE_SOURCE_DIR}/src)
+add_test(NAME NodeCoreP2mrHex COMMAND test_nodecore_p2mr_hex)
+set_tests_properties(NodeCoreP2mrHex PROPERTIES LABELS "nodecore;unit" TIMEOUT 30)
+if(UNIX AND TARGET test_orchard_wallet_cycle_daemon AND TARGET migrate_shielded_datadir)
+  add_test(NAME PhoneStorageRollbackLifecycle
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/integration/test_phone_storage_rollback.py
+      $<TARGET_FILE:test_orchard_wallet_cycle_daemon> $<TARGET_FILE:migrate_shielded_datadir>)
+  set_tests_properties(PhoneStorageRollbackLifecycle PROPERTIES LABELS "storage;nodecore;integration" TIMEOUT 300 RUN_SERIAL TRUE)
+endif()
+
+if(UNIX AND TARGET test_orchard_wallet_cycle_daemon AND TARGET migrate_shielded_datadir)
+  add_test(NAME PhoneCsnCoinbaseReconnect
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/integration/test_phone_csn_coinbase_reconnect.py
+      $<TARGET_FILE:test_orchard_wallet_cycle_daemon> $<TARGET_FILE:migrate_shielded_datadir>)
+  set_tests_properties(PhoneCsnCoinbaseReconnect PROPERTIES LABELS "integration;csn;utreexo;reorg;restart" TIMEOUT 300 RUN_SERIAL TRUE)
+endif()
+
+if(UNIX AND TARGET test_orchard_wallet_cycle_daemon AND TARGET migrate_shielded_datadir)
+  add_test(NAME PhoneRollbackWarning
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/integration/test_phone_rollback_warning.py
+      $<TARGET_FILE:test_orchard_wallet_cycle_daemon> $<TARGET_FILE:migrate_shielded_datadir>)
+  set_tests_properties(PhoneRollbackWarning PROPERTIES LABELS "integration;storage;nodecore" TIMEOUT 180 RUN_SERIAL TRUE)
 endif()

@@ -194,6 +194,9 @@ bool HeaderStore::Open() {
     rocksdb::Options options;
     options.create_if_missing = true;
     options.error_if_exists = false;
+    if (write_buffer_bytes_ != 0) {
+        options.write_buffer_size = write_buffer_bytes_;
+    }
     ConfigureEmbeddedLockBehavior(options, db_path_);
 
 #if defined(__APPLE__)

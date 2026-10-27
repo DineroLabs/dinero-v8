@@ -24,6 +24,7 @@
 #include "consensus/chainparams.h"
 #include "daemon/chainstate_recovery_marker.h"
 #include "storage/shielded_migration.h"
+#include "storage/orchard_handoff_names.h"
 
 #include <rocksdb/db.h>
 #include <rocksdb/options.h>
@@ -148,7 +149,7 @@ inline void CopyTree(const fs::path& from, const fs::path& to, bool link_sst) {
 // directory is briefly absent, which must not be mistaken for a new install.
 inline bool IsBrandNewStore(const std::filesystem::path& chaindb) {
     namespace fs = std::filesystem;
-    for (const char* suffix : {"", ".upgrade-candidate", ".upgrade-state", ".legacy-v1"})
+    for (const char* suffix : {"", ".upgrade-candidate", ".upgrade-state", ".legacy-v1", ".legacy-v1.retiring"})
         if (fs::exists(fs::path(chaindb.string() + suffix))) return false;
     return true;
 }
@@ -267,6 +268,57 @@ inline StorageUpgradeReport EnsureSeparatedShieldedLayout(
     fs::remove(journal);
     phase("swapped");
     return {StorageUpgradeOutcome::Upgraded, "legacy store kept at " + legacy.string()};
+}
+
+// Called only after a successful durable block connection, under the datadir
+// lock. A rename separates disposal from migration recovery: a partial removal
+// must never look like a rollback database that can still finish a swap.
+inline void RetirePhoneStorageRollback(
+    const std::filesystem::path& datadir, const std::filesystem::path& chaindb,
+    const std::string& profile,
+    const std::function<void(const char*)>& after_phase = {}) {
+    namespace fs = std::filesystem;
+    using namespace storage_upgrade_detail;
+    if (profile != "ios_utreexo") return;
+    const fs::path legacy = chaindb.string() + ".legacy-v1";
+    const fs::path retiring = chaindb.string() + ".legacy-v1.retiring";
+    if (!fs::exists(legacy) && !fs::exists(retiring)) return;
+    // Do not interfere with an incomplete swap, reindex or recovery. The
+    // caller has opened the replacement; family count alone is not readiness.
+    // Activation handoff authentication records SST identity/link counts in
+    // the retained source. Unlinking its rollback pair changes that evidence,
+    // even after handoff completion. Keep it until that owner retires it.
+    if (!storage::OrchardHandoffControlsAbsent(chaindb.parent_path()))
+        throw std::runtime_error("rollback cleanup deferred: activation handoff retains source identity");
+    for (const auto& path : {fs::path(chaindb.string() + ".upgrade-state"),
+                             fs::path(chaindb.string() + ".upgrade-state.tmp"),
+                             fs::path(chaindb.string() + ".upgrade-candidate"),
+                             fs::path(chaindb.string() + ".reindex.tmp"),
+                             datadir / "blockchain" / "reindex_promotion.marker",
+                             ChainstateRecoveryMarkerPath(datadir)})
+    {
+        std::error_code error;
+        const auto status = fs::symlink_status(path, error);
+        if (status.type() != fs::file_type::not_found ||
+            (error && error != std::errc::no_such_file_or_directory))
+            throw std::runtime_error("rollback cleanup deferred: unfinished operation at " + path.string());
+    }
+    if (fs::is_symlink(chaindb) || fs::is_symlink(legacy) || fs::is_symlink(retiring) ||
+        FamilyCount(chaindb) != 10)
+        throw std::runtime_error("rollback cleanup refused: unexpected storage layout");
+    if (fs::exists(legacy) && FamilyCount(legacy) != 9)
+        throw std::runtime_error("rollback cleanup refused: unexpected rollback layout");
+    if (fs::exists(legacy) && fs::exists(retiring))
+        throw std::runtime_error("rollback cleanup refused: conflicting retirement directories");
+    // Make the completed migration's journal removal durable before disposal.
+    SyncPath(chaindb.parent_path());
+    if (fs::exists(legacy)) {
+        fs::rename(legacy, retiring);
+        SyncPath(chaindb.parent_path());
+        if (after_phase) after_phase("rollback-retired");
+    }
+    fs::remove_all(retiring); // retry-safe, including a partially removed tree
+    SyncPath(chaindb.parent_path());
 }
 
 }  // namespace dinero::daemon
