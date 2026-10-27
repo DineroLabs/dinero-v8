@@ -226,17 +226,39 @@ TEST(RelayIdentityBinding, RelayPeerWithoutV2ProofIsDisconnected) {
     if (auto* p = a.mgr->get_peer_info(key_a)) EXPECT_FALSE(p->identity_proven);
 }
 
-TEST(RelayIdentityBinding, TcpPeerLegacyBehaviorUnchanged) {
-    // Over TCP a v1 dineroid (an older build) still proves the identity.
-    Node a(24051), b(24052);
+namespace {
+
+void ExpectLegacyTcpIdentity(uint16_t requested_port = 0) {
+    Node a, b(requested_port);
     b.mgr->test_set_dineroid_v1_only(true);
     for (Node* n : {&a, &b}) {
         n->mgr->set_quic_enabled(false);
         ASSERT_TRUE(n->mgr->start());
     }
-    ASSERT_TRUE(a.mgr->connect_to_peer("127.0.0.1", 24052));
-    ASSERT_TRUE(WaitProven(*a.mgr, "127.0.0.1:24052")) << "TCP + dineroid v1 must keep working";
-    EXPECT_EQ(a.mgr->get_peer_info("127.0.0.1:24052")->their_node_id, b.id->get_node_id_bytes());
+    const auto port = b.mgr->get_listen_port();
+    ASSERT_NE(port, 0);
+    const auto peer = "127.0.0.1:" + std::to_string(port);
+    ASSERT_TRUE(a.mgr->connect_to_peer("127.0.0.1", port));
+    ASSERT_TRUE(WaitProven(*a.mgr, peer)) << "TCP + dineroid v1 must keep working";
+    ASSERT_NE(a.mgr->get_peer_info(peer), nullptr);
+    EXPECT_EQ(a.mgr->get_peer_info(peer)->their_node_id, b.id->get_node_id_bytes());
+}
+
+}  // namespace
+
+TEST(RelayIdentityBinding, TcpPeerLegacyBehaviorUnchanged) {
+    // Use OS-assigned ports: parallel tests may own any fixed test port.
+    ExpectLegacyTcpIdentity();
+}
+
+TEST(RelayIdentityBinding, TcpPeerLegacyBehaviorAfterPortFallback) {
+    Node occupied;
+    occupied.mgr->set_quic_enabled(false);
+    ASSERT_TRUE(occupied.mgr->start());
+    ASSERT_NE(occupied.mgr->get_listen_port(), 0);
+    // Deliberately force the server to fall back from an occupied port. The
+    // identity exchange must reach its actual listener, not the requested one.
+    ExpectLegacyTcpIdentity(occupied.mgr->get_listen_port());
 }
 
 TEST(RelayIdentityBinding, RelayPeerThatHidesDineroIdIsDisconnected) {
