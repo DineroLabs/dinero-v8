@@ -40,17 +40,6 @@ if(NOT WIN32)
   target_link_libraries(test_p2p_service_shutdown_order PRIVATE
     dinero_core GTest::gtest_main)
   link_zstd_if_needed(test_p2p_service_shutdown_order)
-  add_executable(test_p2p_service_rate_limits
-    tests/services/test_p2p_service_rate_limits.cpp
-    tests/stubs/mempool_test_stubs.cpp
-    tests/stubs/daemon_test_stubs.cpp
-    src/daemon/config.cpp)
-  target_link_libraries(test_p2p_service_rate_limits PRIVATE
-    dinero_core GTest::gtest_main)
-  link_zstd_if_needed(test_p2p_service_rate_limits)
-  add_test(NAME P2PServiceRateLimits COMMAND test_p2p_service_rate_limits)
-  set_tests_properties(P2PServiceRateLimits PROPERTIES
-    LABELS "unit;p2p;mandatory" TIMEOUT 30)
 
   add_test(NAME P2PServiceShutdownOrder COMMAND test_p2p_service_shutdown_order)
   set_tests_properties(P2PServiceShutdownOrder PROPERTIES
@@ -63,6 +52,23 @@ endif()
 if(NOT WIN32)
   get_target_property(_release_sources dinerod SOURCES)
   list(FILTER _release_sources EXCLUDE REGEX "/src/daemon/main\\.cpp$")
+  # UBSan vptr checks retain service RTTI/vtables and their daemon-only
+  # dependencies even though this fixture never initializes those services.
+  # Use the real daemon sources/settings, as the lifecycle test does, instead
+  # of relying on Release-only dead-code elimination or extending no-op stubs.
+  add_executable(test_p2p_service_rate_limits
+    tests/services/test_p2p_service_rate_limits.cpp ${_release_sources})
+  foreach(_property INCLUDE_DIRECTORIES COMPILE_DEFINITIONS COMPILE_OPTIONS LINK_LIBRARIES LINK_OPTIONS)
+    get_target_property(_rate_property dinerod ${_property})
+    if(_rate_property)
+      set_property(TARGET test_p2p_service_rate_limits PROPERTY ${_property} "${_rate_property}")
+    endif()
+  endforeach()
+  target_link_libraries(test_p2p_service_rate_limits PRIVATE GTest::gtest_main)
+  add_test(NAME P2PServiceRateLimits COMMAND test_p2p_service_rate_limits)
+  set_tests_properties(P2PServiceRateLimits PROPERTIES
+    LABELS "unit;p2p;mandatory" TIMEOUT 30)
+
   add_executable(test_daemon_service_release
     tests/daemon/test_daemon_service_release.cpp ${_release_sources})
   foreach(_property INCLUDE_DIRECTORIES COMPILE_DEFINITIONS COMPILE_OPTIONS LINK_LIBRARIES LINK_OPTIONS)
