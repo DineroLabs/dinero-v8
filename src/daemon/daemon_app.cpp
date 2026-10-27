@@ -1202,7 +1202,7 @@ bool DaemonApp::Init(int argc, char** argv) {
         // interrupted swap's rollback copy.
         if (!std::filesystem::exists(chain_db_path)) {
             for (const char* suffix : {".upgrade-candidate", ".upgrade-state",
-                                       ".upgrade-state.tmp", ".legacy-v1"}) {
+                                       ".upgrade-state.tmp", ".legacy-v1", ".legacy-v1.retiring"}) {
                 if (std::filesystem::exists(chain_db_path.string() + suffix)) {
                     std::cerr << "[DaemonApp] ❌ Incomplete shielded-state storage swap; refusing to create ChainDB"
                               << std::endl;
@@ -2149,6 +2149,14 @@ bool DaemonApp::Init(int argc, char** argv) {
 
     // Phase 39: Create ChainstateService and pass it the ChainDB
     chainstate->setOwnedChainDB(chain_db_);
+    if (automatic_storage_upgrade_ && locked_datadir_guard_ &&
+        GetConfig().sync_profile == "ios_utreexo") {
+        chainstate->SetPostConnectStorageCleanup([data_dir_path, chain_db_path,
+                                                after_phase = storage_upgrade_after_phase_] {
+            daemon::RetirePhoneStorageRollback(data_dir_path, chain_db_path, "ios_utreexo", after_phase);
+            return true;
+        });
+    }
     chainstate->setPoolManager(pool_manager_runtime_);
     if(pool_manager_runtime_)pool_manager_runtime_->setChainstateSource(chainstate);
 

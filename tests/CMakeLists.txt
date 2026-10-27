@@ -17002,7 +17002,28 @@ if(TARGET dinero_wallet AND TARGET gtest)
   set_tests_properties(EscrowBuildersFailSafe PROPERTIES LABELS "wallet;contracts;mandatory")
 endif()
 
+if(UNIX)
+add_executable(test_phone_storage_rollback tests/daemon/test_phone_storage_rollback.cpp)
+target_include_directories(test_phone_storage_rollback PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(test_phone_storage_rollback PRIVATE RocksDB::rocksdb)
+add_test(NAME PhoneStorageRollback COMMAND test_phone_storage_rollback)
+set_tests_properties(PhoneStorageRollback PROPERTIES LABELS "storage;nodecore" TIMEOUT 60)
+endif()
+
 add_executable(test_nodecore_p2mr_hex tests/nodecore/test_p2mr_hex.cpp)
 target_include_directories(test_nodecore_p2mr_hex PRIVATE ${CMAKE_SOURCE_DIR}/src)
 add_test(NAME NodeCoreP2mrHex COMMAND test_nodecore_p2mr_hex)
 set_tests_properties(NodeCoreP2mrHex PROPERTIES LABELS "nodecore;unit" TIMEOUT 30)
+if(UNIX AND TARGET test_orchard_wallet_cycle_daemon AND TARGET migrate_shielded_datadir)
+  add_test(NAME PhoneStorageRollbackLifecycle
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/integration/test_phone_storage_rollback.py
+      $<TARGET_FILE:test_orchard_wallet_cycle_daemon> $<TARGET_FILE:migrate_shielded_datadir>)
+  set_tests_properties(PhoneStorageRollbackLifecycle PROPERTIES LABELS "storage;nodecore;integration" TIMEOUT 300 RUN_SERIAL TRUE)
+endif()
+
+if(UNIX AND TARGET test_orchard_wallet_cycle_daemon AND TARGET migrate_shielded_datadir)
+  add_test(NAME PhoneRollbackWarning
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/integration/test_phone_rollback_warning.py
+      $<TARGET_FILE:test_orchard_wallet_cycle_daemon> $<TARGET_FILE:migrate_shielded_datadir>)
+  set_tests_properties(PhoneRollbackWarning PROPERTIES LABELS "integration;storage;nodecore" TIMEOUT 180 RUN_SERIAL TRUE)
+endif()

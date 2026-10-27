@@ -12546,6 +12546,7 @@ void ChainstateService::ActivateBestChainPass(const ActivationParentPlan* prepar
                                    std::to_string(fork_point->height) +
                                    " new_tip=" + std::to_string(best_candidate->height));
         std::cout << "✅ [ABC-CSN] STATELESS reorg complete. New tip: " << best_candidate->height << std::endl;
+        if (!connect_path.empty()) RunPostConnectStorageCleanup();
         return;  // Skip normal full-node disconnect/connect loops
     }
 
@@ -13132,6 +13133,10 @@ void ChainstateService::ActivateBestChainPass(const ActivationParentPlan* prepar
             logger_->debug("[ActivateBestChain] Durable activation recovery marker cleared");
         }
     }
+
+    // ConnectTip has verified the durable batch and disconnect material; the
+    // activation recovery marker above must also be cleared before disposal.
+    if (!connect_path.empty()) RunPostConnectStorageCleanup();
 
     std::cout << "✅ [ActivateBestChain] Chain activation COMPLETE" << std::endl;
     std::cout << "✅ [ActivateBestChain] New tip: height=" << active_tip_->height
@@ -22533,6 +22538,27 @@ bool ChainstateService::ConnectOrchardTip(CBlockIndex* tip, std::string* error, 
     (void)tip;
     return fail("orchard-connect-runtime-unavailable");
 #endif
+}
+
+void ChainstateService::RunPostConnectStorageCleanup() noexcept {
+    try {
+        if (post_connect_storage_cleanup_ && post_connect_storage_cleanup_()) {
+            post_connect_storage_cleanup_ = {};
+            post_connect_storage_cleanup_warning_.reset();
+        }
+    } catch (const std::exception& e) {
+        // Disposal is maintenance, never a reason to undo a committed block.
+        // Persistent handoff records can retain the copy indefinitely. Keep
+        // retrying, but warn only when the reason changes during this run.
+        try {
+            const std::string reason = e.what();
+            if (logger_ && (!post_connect_storage_cleanup_warning_ ||
+                            *post_connect_storage_cleanup_warning_ != reason)) {
+                logger_->warning("[StorageUpgrade] rollback cleanup deferred: " + reason);
+                post_connect_storage_cleanup_warning_ = reason;
+            }
+        } catch (...) {}
+    } catch (...) {}
 }
 
 bool ChainstateService::ConnectTip(CBlockIndex* tip_to_connect, std::string* out_error,

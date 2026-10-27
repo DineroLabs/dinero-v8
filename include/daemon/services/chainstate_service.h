@@ -201,6 +201,12 @@ public:
 
     // Phase 39: Set ChainDB pointer (called by DaemonApp during initialization)
     void setChainDB(ChainDB* db);
+    // Initialization only. Runs after a durable successful chain activation; true
+    // retires the callback, false retries on a later block.
+    void SetPostConnectStorageCleanup(std::function<bool()> cleanup) {
+        post_connect_storage_cleanup_ = std::move(cleanup);
+        post_connect_storage_cleanup_warning_.reset();
+    }
     // Initialization/lifetime handoff, never call with the selected lock held.
     // Raw fixtures remain supported but cannot start detached preparation.
     void setOwnedChainDB(std::shared_ptr<ChainDB> db);
@@ -2255,6 +2261,9 @@ private:
     uint64_t bytes_freed_ = 0;                           // Total bytes freed by pruning
     static constexpr int PRUNING_SAFETY_MARGIN = 1000;   // Keep last N blocks for reorg protection
 
+    void RunPostConnectStorageCleanup() noexcept;
+    std::function<bool()> post_connect_storage_cleanup_;
+    std::optional<std::string> post_connect_storage_cleanup_warning_;
     std::string datadir_;
     bool started_ = false;
     // Thread-safe mirror of started_ for cross-thread readiness checks
