@@ -826,6 +826,19 @@ std::optional<std::string> CoverageMetadata(sqlite3* db,const char* key,int type
     if(!bytes||size<1||size>2048)Fail("Coverage index metadata malformed");
     std::string value(bytes,size);if(sqlite3_step(q.value)!=SQLITE_DONE)Fail("Coverage index metadata incomplete");return value;
 }
+// Runs in the ACTUAL index transaction/owner, not through its normal
+// autocommit-only startup reader. No guard on that reader is relaxed.
+void CoverageImportedCohort(sqlite3* db,const std::optional<std::map<std::string,std::string>>& expected){
+    if(!expected)return;
+    Statement q(db,"SELECT key,value FROM utxo_metadata WHERE substr(key,1,11)='assumeutxo_' OR key='wallet_snapshot_recovery_base_height' OR key IN ('reorg_in_progress','incomplete_reorg_recovery_tip') ORDER BY key");
+    std::map<std::string,std::string> actual;int rc;
+    while((rc=sqlite3_step(q.value))==SQLITE_ROW){
+        auto key=CoverageText(q.value,0),value=CoverageText(q.value,1);
+        if(actual.size()>=64||key.size()>128||value.size()>256||!actual.emplace(std::move(key),std::move(value)).second)
+            Fail("Coverage imported SQL cohort malformed");
+    }
+    if(rc!=SQLITE_DONE||actual!=*expected)Fail("Coverage imported SQL cohort changed");
+}
 int64_t CoverageInt(sqlite3_stmt* q,int col) {
     if(sqlite3_column_type(q,col)!=SQLITE_INTEGER)Fail("Coverage integer type invalid");return sqlite3_column_int64(q,col);
 }
@@ -1037,8 +1050,13 @@ bool RuntimeOrdinaryDelivery::CoverageRequiredForWallet(WalletManager& wallet,UT
     transaction.Commit();return required||index_required;
 }
 
+void RuntimeIndexDelivery::CheckCoverageImportedCohort(UTXOIndex& index,const RuntimeWalletOriginProjection& origin){
+    std::lock_guard<std::recursive_mutex> lock(index.db_mutex_);
+    if(!index.db_)Fail("Coverage imported index unavailable");
+    CoverageImportedCohort(index.db_,origin.imported_cohort_);
+}
 void RuntimeIndexDelivery::ReconcileCoverage(UTXOIndex& index,const RuntimeWalletCoverageProjection& source,
-        const std::function<void()>& finish) {
+        const std::function<void()>& finish,const std::function<void()>& source_before_commit) {
     const auto& origin=source.Origin();
     std::lock_guard<std::recursive_mutex> lock(index.db_mutex_);std::lock_guard<std::mutex> scripts(index.scripts_mutex_);
     if(!index.db_||index.atomic_write_active_||!sqlite3_get_autocommit(index.db_)||
@@ -1076,6 +1094,8 @@ void RuntimeIndexDelivery::ReconcileCoverage(UTXOIndex& index,const RuntimeWalle
         Statement write(index.db_,"INSERT OR REPLACE INTO utxo_metadata(key,value) VALUES(?,?)");
         write.Text(1,receipt_key);write.Blob(2,Encode(next,origin.identity_,ownership));write.Done();
         Exec(index.db_,"DELETE FROM utxo_metadata WHERE key='runtime_delivery:v1:invalidated'");
+        CheckCoverageImportedCohort(index,origin);
+        if(source_before_commit)source_before_commit();
     });
     // Index committed first. A refusal below leaves its genuine source prefix
     // for a fresh-session retry; its locks remain held through ordinary commit.
@@ -1093,8 +1113,10 @@ std::unique_ptr<wallet::OrchardCatalogCapture> RuntimeOrdinaryDelivery::PrepareC
         wallet,source.Origin().session_,source.replay_);
 }
 void RuntimeOrdinaryDelivery::ReconcileCoverage(WalletManager& wallet,UTXOIndex& index,
-        const RuntimeWalletCoverageProjection& source,const wallet::OrchardCatalogCapture& prepared) {
+        const RuntimeWalletCoverageProjection& source,const wallet::OrchardCatalogCapture& prepared,
+        const std::function<void()>& source_before_commit) {
     const auto& origin=source.Origin();auto lease=wallet.AcquireDatabaseLease();
+    if(origin.imported_cohort_&&!source_before_commit)Fail("Imported coverage requires live precommit source ownership");
     if(wallet.database_leases_!=1||lease->Session()!=origin.session_||!origin.existing_identity_only_||
        !origin.index_scripts_||!source.Head().sequence||wallet.current_wallet_id_<0)
         Fail("Coverage wallet owner changed");
@@ -1163,8 +1185,10 @@ void RuntimeOrdinaryDelivery::ReconcileCoverage(WalletManager& wallet,UTXOIndex&
         Statement receipt(db,"UPDATE wallet_meta SET runtime_ordinary_receipt=?,runtime_ordinary_invalid=0 WHERE id=1");
         receipt.Blob(1,Encode(next,origin.identity_,scripts.digest,"DNOW01"));receipt.Done();
         if(sqlite3_changes(db)!=1)Fail("Coverage ordinary receipt write failed");
+        RuntimeIndexDelivery::CheckCoverageImportedCohort(index,origin);
+        if(source_before_commit)source_before_commit();
         transaction.Commit();
-    });
+    },source_before_commit);
 }
 
 RuntimeIndexProgress RuntimeOrdinaryDelivery::ApplyForWallet(WalletManager& wallet,uint64_t session,const RuntimeOutboxEvent& event) {

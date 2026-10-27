@@ -320,6 +320,25 @@ std::shared_ptr<p2p::OrchardPhoneHistoryDownload> P2PService::PhoneHistoryDownlo
 std::shared_ptr<p2p::WalletFundingDownload> P2PService::WalletFundingBodies() const {
     std::lock_guard lock(orchard_catalog_download_mutex_);return wallet_funding_bodies_;
 }
+std::shared_ptr<const std::vector<uint8_t>> P2PService::WalletHistoricalBody(const uint256& hash) const {
+#ifdef DINERO_HAS_ORCHARD_P2P
+    std::shared_ptr<p2p::OrchardHistoryCache> cache;std::shared_ptr<p2p::WalletFundingDownload> funding;
+    {std::lock_guard lock(orchard_catalog_download_mutex_);cache=wallet_history_cache_;funding=wallet_funding_bodies_;}
+    if(!cache||!funding)throw std::runtime_error("Wallet historical body retention unavailable");
+    if(cache->Has('b',hash)){
+        std::vector<uint8_t> bytes;
+        cache->Read('b',hash,p2p::WalletFundingDownload::MaximumBody,[&](uint64_t size,const auto& read){
+            bytes.resize(size);read(bytes);
+        });
+        return std::make_shared<const std::vector<uint8_t>>(std::move(bytes));
+    }
+    const auto bytes=funding->Request(hash);if(!bytes)return {};
+    cache->Put('b',hash,bytes->size(),p2p::WalletFundingDownload::MaximumBody,[&](const auto& write){write(*bytes);});
+    return bytes;
+#else
+    (void)hash;throw std::runtime_error("Wallet historical body retention unavailable");
+#endif
+}
 std::shared_ptr<p2p::WalletInputProofDownload> P2PService::WalletInputProofs() const {
     std::lock_guard lock(orchard_catalog_download_mutex_);return wallet_input_proofs_;
 }
@@ -2016,6 +2035,7 @@ void P2PService::StartOrchardHistoryWorkers() {
                 // other platforms; never replace these checks with weaker IO.
                 const std::shared_ptr<p2p::OrchardHistoryCache> cache;
 #endif
+                {std::lock_guard lock(orchard_catalog_download_mutex_);wallet_history_cache_=cache;}
                 const auto cached_proof=[cache,headers]()->std::optional<uint256>{
                     consensus::HeaderIndexEntry first;
                     if(cache&&headers->GetHeaderAtHeightCopy(Params().orchard_activation_height,first)&&cache->Has('p',first.hash))return first.hash;
@@ -2547,6 +2567,7 @@ void P2PService::ReleaseStoppedDependencies() {
     {std::lock_guard lock(orchard_catalog_download_mutex_);inputs=std::move(wallet_input_proofs_);}
     {std::lock_guard lock(orchard_catalog_download_mutex_);funding=std::move(wallet_funding_bodies_);history=std::move(orchard_phone_history_);download=std::move(orchard_catalog_download_);}
     inputs.reset();wallet_input_server_.reset();funding.reset();history.reset();download.reset();
+    {std::lock_guard lock(orchard_catalog_download_mutex_);wallet_history_cache_.reset();}
     orchard_catalog_server_.reset();
     OnNewBlock = {};
     OnNewTx = {};

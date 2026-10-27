@@ -56,6 +56,10 @@ private:
     std::optional<std::map<std::vector<uint8_t>,std::string>> index_historical_scripts_;
     std::string index_path_;
     RuntimeOutboxEvent first_;
+    // Comparison DATA from a genuine private genesis replay, not a live-chain
+    // validation marker or serialized capability. The imported writer must
+    // independently recapture the original cohort and retain its real pin.
+    std::optional<std::map<std::string,std::string>> imported_cohort_;
     std::map<TxOutPoint,Coin> coins_;
     std::vector<History> history_;
     size_t retained_bytes_ = 0;

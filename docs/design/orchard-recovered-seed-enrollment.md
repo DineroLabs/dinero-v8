@@ -1502,6 +1502,21 @@ The fixture withholds its additional pre-base bodies until the explicit coverage
 step. Earlier ordinary scheduler requests must not mutate the activation-parent
 index during handoff. The initial early-body SafeMode refusal is retained as a
 failed case, not a reached reconciliation test or a reason to relax startup.
+The explicit source now uses the existing no-follow/no-replace public body cache
+and bounded funding downloader (8 requested/cache bodies,4MiB each), without
+inserting pre-base DATA into ChainDB or granting block flags. Each capture caps
+total legacy material256MiB/ancestry1million and genuinely replays every body
+before joining records/Utreexo/legacy composite commitments to the original cohort.
+The unchanged automatic origin path never requests network history. Existing
+complete-catalog, script-domain, pending-input and every-row audits remain; new
+private source callbacks run immediately before BOTH commits under the same real
+snapshot/selected/lifecycle pin. The exact tenSQL cohort/reorg absence is checked
+inside the actual index owner, without changing its autocommit-only public reader.
+Index-first partial completion remains honest and retryable after ordinary refusal.
+Two deterministic serial tests cover source refusal at those distinct commit
+points; they are not generic concurrency/crash qualification. The explicit RPC
+accepts only the intended opaque wallet binding, never caller tip/base/reset or
+baseline data. Both earned receipts remain distinct from balance-read readiness.
 
 `NodeCoreAssumedPrivateSendUnshield` extends the real imported-source funded
 crossing with a later restored account0 payer, a DIFFERENT-seed named recipient,

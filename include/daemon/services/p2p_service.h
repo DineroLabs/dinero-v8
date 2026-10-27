@@ -27,7 +27,7 @@
 
 namespace dinero {
 namespace daemon {class DatadirGuard;}
-namespace p2p {class OrchardCatalogServer;class OrchardCatalogDownload;class OrchardPhoneHistoryDownload;class WalletFundingDownload;class WalletInputProofDownload;class WalletInputProofServer;}
+namespace p2p {class OrchardCatalogServer;class OrchardCatalogDownload;class OrchardPhoneHistoryDownload;class OrchardHistoryCache;class WalletFundingDownload;class WalletInputProofDownload;class WalletInputProofServer;}
 
 // Forward declarations
 class ILogger;
@@ -206,6 +206,11 @@ public:
     std::shared_ptr<const consensus::OrchardSnapshotSection> ReadyActivationCatalog() const;
     std::shared_ptr<p2p::OrchardPhoneHistoryDownload> PhoneHistoryDownload() const;
     std::shared_ptr<p2p::WalletFundingDownload> WalletFundingBodies() const;
+    // Explicit wallet history acquisition, PUBLIC DATA only. Existing cache
+    // records are immutable and strictly rechecked, never repaired on failure.
+    // A null result means a bounded network request is pending; unsupported
+    // root retention and corrupt records throw rather than falling back.
+    std::shared_ptr<const std::vector<uint8_t>> WalletHistoricalBody(const uint256&) const;
     std::shared_ptr<p2p::WalletInputProofDownload> WalletInputProofs() const;
     // Borrow only the App's actual root guard; Stop joins all users before
     // App releases it. Never acquire a second operator-root lock for a cache.
@@ -507,6 +512,7 @@ private:
     std::shared_ptr<p2p::OrchardCatalogDownload> orchard_catalog_download_;
     std::shared_ptr<p2p::OrchardPhoneHistoryDownload> orchard_phone_history_;
     std::shared_ptr<p2p::WalletFundingDownload> wallet_funding_bodies_;
+    std::shared_ptr<p2p::OrchardHistoryCache> wallet_history_cache_;
     std::shared_ptr<p2p::WalletInputProofDownload> wallet_input_proofs_;
     std::shared_ptr<p2p::WalletInputProofServer> wallet_input_server_;
     const daemon::DatadirGuard* phone_history_root_=nullptr;

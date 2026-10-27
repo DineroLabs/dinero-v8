@@ -35,7 +35,9 @@ private:
     friend class RuntimeOrdinaryDelivery;
     using HistoricalScripts = std::map<std::vector<uint8_t>,std::string>;
     static bool CoverageRequired(UTXOIndex&,const std::string&,const HistoricalScripts* = nullptr);
-    static void ReconcileCoverage(UTXOIndex&,const RuntimeWalletCoverageProjection&,const std::function<void()>&);
+    static void ReconcileCoverage(UTXOIndex&,const RuntimeWalletCoverageProjection&,
+        const std::function<void()>& finish,const std::function<void()>& source_before_commit);
+    static void CheckCoverageImportedCohort(UTXOIndex&,const RuntimeWalletOriginProjection&);
     static void CaptureOriginDomain(UTXOIndex&,RuntimeWalletOriginProjection&);
     static void CheckOriginDomain(UTXOIndex&,const RuntimeWalletOriginProjection&);
     static std::optional<RuntimeIndexProgress> Read(UTXOIndex&, const std::string& wallet_identity, const HistoricalScripts* = nullptr);
@@ -58,7 +60,7 @@ class RuntimeOrdinaryDelivery {
     static std::unique_ptr<wallet::OrchardCatalogCapture> PrepareCoverage(
         WalletManager&,const RuntimeWalletCoverageProjection&);
     static void ReconcileCoverage(WalletManager&,UTXOIndex&,const RuntimeWalletCoverageProjection&,
-        const wallet::OrchardCatalogCapture&);
+        const wallet::OrchardCatalogCapture&,const std::function<void()>& source_before_commit = {});
     static RuntimeIndexProgress Apply(WalletManager&,uint64_t,const RuntimeOutboxEvent&,const RuntimeWalletOriginProjection*);
 public:
     // Read-only classification of missing/invalidated/script-changed receipts.

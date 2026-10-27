@@ -150,6 +150,13 @@ struct RuntimeOriginProjectionTestAccess {
         p->scripts_[script]="fixture";return p;
     }
     static void Append(RuntimeWalletOriginProjection& p,const Block& b,uint32_t height) {p.AppendValidated(b,height);}
+    static auto PrepareCoverage(WalletManager& wallet,const RuntimeWalletCoverageProjection& source){
+        return RuntimeOrdinaryDelivery::PrepareCoverage(wallet,source);
+    }
+    static void WriteCoverage(WalletManager& wallet,UTXOIndex& index,const RuntimeWalletCoverageProjection& source,
+            const wallet::OrchardCatalogCapture& prepared,const std::function<void()>& fence){
+        RuntimeOrdinaryDelivery::ReconcileCoverage(wallet,index,source,prepared,fence);
+    }
 };
 #endif
 

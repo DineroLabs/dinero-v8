@@ -74,6 +74,32 @@ TEST(WalletScriptReconciliation, PreparationCommitRefusalLeavesBothStoresUnchang
     ASSERT_EQ(f.f.service->reconcileRuntimeWalletCoverage(use->Wallet(),index->Index(),**retry),Status::Ok);
     EXPECT_FALSE(RuntimeOrdinaryDelivery::CoverageRequiredForWallet(use->Wallet(),index->Index(),f.Selected().session));
 }
+TEST(WalletScriptReconciliation, FreshSourceRefusalBeforeIndexCommitLeavesBothOwnersUnchanged){
+    SharedPaymentFixture f;(void)f.wallet->get().getNewChangeAddress("","taproot");
+    const auto source=CaptureScriptCoverage(f);ASSERT_TRUE(source.ok());
+    const auto before=f.Snapshot(),indexed=CoverageIndexSnapshot(f);
+    auto use=WalletService::AcquireWalletUse(f.wallet);auto index=ChainstateService::AcquireWalletIndexUse(f.f.service);
+    const auto prepared=RuntimeOriginProjectionTestAccess::PrepareCoverage(use->Wallet(),**source);
+    auto selected=f.f.service->AcquireBlockIngressActivationLock();int checks=0;
+    EXPECT_THROW(RuntimeOriginProjectionTestAccess::WriteCoverage(use->Wallet(),index->Index(),**source,*prepared,[&]{
+        ++checks;throw std::runtime_error("Actual source owner refused before index commit");
+    }),std::runtime_error);
+    EXPECT_EQ(checks,1);EXPECT_EQ(f.Snapshot(),before);EXPECT_EQ(CoverageIndexSnapshot(f),indexed);
+}
+TEST(WalletScriptReconciliation, FreshSourceRefusalBeforeOrdinaryCommitRetainsOnlyGenuineIndexPrefix){
+    SharedPaymentFixture f;(void)f.wallet->get().getNewChangeAddress("","taproot");
+    const auto source=CaptureScriptCoverage(f);ASSERT_TRUE(source.ok());
+    const auto before=f.Snapshot(),indexed=CoverageIndexSnapshot(f);
+    auto use=WalletService::AcquireWalletUse(f.wallet);auto index=ChainstateService::AcquireWalletIndexUse(f.f.service);
+    const auto prepared=RuntimeOriginProjectionTestAccess::PrepareCoverage(use->Wallet(),**source);
+    auto selected=f.f.service->AcquireBlockIngressActivationLock();int checks=0;
+    EXPECT_THROW(RuntimeOriginProjectionTestAccess::WriteCoverage(use->Wallet(),index->Index(),**source,*prepared,[&]{
+        if(++checks==2)throw std::runtime_error("Actual source owner refused before ordinary commit");
+    }),std::runtime_error);
+    EXPECT_EQ(checks,2);EXPECT_EQ(f.Snapshot(),before);EXPECT_NE(CoverageIndexSnapshot(f),indexed);
+    const auto progress=RuntimeIndexDelivery::ReadForWallet(use->Wallet(),index->Index(),f.Selected().session);
+    ASSERT_TRUE(progress);EXPECT_EQ(progress->cursor,(*source)->Head());
+}
 TEST(WalletScriptReconciliation, OrdinaryCommitRefusalRetainsIndexPrefixForRetry) {
     SharedPaymentFixture f;(void)f.wallet->get().getNewChangeAddress("","taproot");
     const auto source=CaptureScriptCoverage(f);ASSERT_TRUE(source.ok());const auto before=f.Snapshot();

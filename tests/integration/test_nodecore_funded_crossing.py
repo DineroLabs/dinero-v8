@@ -165,7 +165,11 @@ def serve():
                         for kind,key in inventory(payload):
                             body_requests.append(dict(kind=kind,hash=key[::-1].hex()))
                             if assumed and key in funding_bodies:
-                                assert kind==2;funding_pending[conn][key]=True
+                                assert kind==2
+                                # Do not retain scheduler's old pre-base DATA
+                                # requests for a later unsolicited burst. Only
+                                # the explicit acquisition phase gets bodies.
+                                if key not in historical_only or historical_release.is_set():funding_pending[conn][key]=True
                             elif key in bodies:
                                 assert kind==2;pending[conn][key]=True
                             elif not future.is_set() and txid and key==bytes.fromhex(txid)[::-1] and kind==0x50000001:send(conn,'utxotx',proof_wire)
@@ -841,6 +845,9 @@ try:
                 assert original_lifecycle()==original and mixed_runtime_receipts()==mixed_before
                 baseline_result=None
                 if mixed_baseline:
+                    for forbidden in ({'tip':106},{'reset':True},{'base':101}):
+                        bad_baseline=call('rpc',method='wallet.reconcilecoverage',params=dict(binding,**forbidden))
+                        assert 'error' in bad_baseline and not bad_baseline.get('complete'),bad_baseline
                     historical_release.set()
                     before_baseline_rows=wallet_rows();before_baseline_candidates=snapshot_candidate_rows()
                     baseline_replies=[];deadline=time.monotonic()+120
@@ -867,11 +874,14 @@ try:
                     assert sorted((r[2],r[3]) for r in ordinary_live)==[(450000,106),(470000,104)]
                     assert wallet_rows()==before_baseline_rows and snapshot_candidate_rows()==before_baseline_candidates
                     assert original_lifecycle()==original,'coverage moved original assumed lifecycle'
+                    repeated_baseline=rpc('wallet.reconcilecoverage',binding)
+                    assert repeated_baseline==baseline_reply and mixed_runtime_receipts()==receipts,repeated_baseline
+                    assert wallet_rows()==before_baseline_rows and original_lifecycle()==original
                     # Earning actual baseline effects is separate from the
                     # later owner-bound balance-read publication gate.
                     refused_balance=call('rpc',method='wallet.getbalance',params=[])
                     assert refused_balance.get('error_code')=='wallet_balance_not_current',refused_balance
-                    baseline_result=dict(result=baseline_reply,replies=baseline_replies,receipts=receipts,
+                    baseline_result=dict(result=baseline_reply,repeated=repeated_baseline,replies=baseline_replies,receipts=receipts,
                         ordinary_live=ordinary_live,index_live=index_live,balance_refusal=refused_balance,
                         scope='Genuine independent genesis-to-parent replay of public legacy body DATA plus actual canonical102..106 events, original audited coverage writer/index-first and FULL ordinary commits. Original imported cohort/anchor/lifecycle and encrypted owners unchanged. Captured two-store baseline only; NO live history promotion, general coin view, whole-wallet balance-read readiness or app/device/release qualification.')
                 mixed_balance=None

@@ -26,6 +26,7 @@
 #include "wallet/address.h"
 #include "wallet/p2mr_address.h"
 #include "wallet/runtime_account_replay.h"
+#include "wallet/runtime_origin_projection.h"
 #endif
 
 namespace {
@@ -131,6 +132,37 @@ din::Json rpc_context_wallet_orchard_getwalletbinding(const ExecutionContext& ct
             (!ctx.walletName.empty() && ctx.walletName!=lease->WalletName()))
             throw OrchardBindingError("wallet_binding_mismatch","Selected wallet does not match requested wallet name");
         result["wallet_binding"]=OrchardBindingValue(*lease);result["wallet_name"]=lease->WalletName();
+#else
+        (void)ctx;throw std::runtime_error("Orchard wallet backend unavailable");
+#endif
+    }catch(const std::exception& error){OrchardRpcFailure(result,error);}
+    return result;
+}
+
+din::Json rpc_context_wallet_reconcilecoverage(const ExecutionContext& ctx,const din::Json& params){
+    din::Json result;
+    try{
+        if(!params.isObject()||!params.empty())
+            throw std::runtime_error("wallet.reconcilecoverage takes no base, tip, cursor, profile or reset parameters");
+#if DINERO_WALLET_RAW_ORCHARD
+        if(!ctx.daemon)throw std::runtime_error("Daemon services unavailable");
+        auto source=std::dynamic_pointer_cast<dinero::ChainstateService>(ctx.daemon->chainstate);
+        auto wallet=std::dynamic_pointer_cast<dinero::WalletService>(ctx.daemon->wallet);
+        auto source_use=dinero::ChainstateService::AcquireWalletIndexUse(source);
+        auto wallet_use=dinero::WalletService::AcquireWalletUse(wallet);uint64_t session;
+        {auto lease=wallet_use->Wallet().AcquireDatabaseLease();CheckOrchardRequestWallet(ctx,*lease);session=lease->Session();}
+        const auto coverage=source->reconcileImportedRuntimeWalletCoverage(wallet_use->Wallet(),source_use->Index(),session);
+        if(!coverage.ok()){
+            if(coverage.status()==dinero::Status::NotFound){
+                result["error"]="Complete historical body DATA requested; no baseline was written";
+                result["error_code"]="coverage_source_pending";result["retryable"]=true;return result;
+            }
+            throw OrchardBindingError("coverage_reconciliation_unavailable",
+                "Requires complete independently replayed origin history and intact current imported source and wallet/index owners");
+        }
+        result["complete"]=true;result["checkpoint_height"]=Json::UInt64((*coverage)->TipHeight());
+        result["checkpoint_hash"]=(*coverage)->TipHash().GetHex();result["applied_sequence"]=Json::UInt64((*coverage)->Head().sequence);
+        result["historical_replay"]="genesis_to_activation_parent";result["whole_wallet_ready"]=false;
 #else
         (void)ctx;throw std::runtime_error("Orchard wallet backend unavailable");
 #endif
@@ -900,6 +932,12 @@ void RegisterOrchardAccountRpc(){
         {"object","Opaque wallet_binding and selected wallet_name."},
         "No keys, balances or readiness are returned. Requires an existing database identity; never enrolls a wallet. Binding changes on reopen, switch or manager/process replacement. RPC authentication remains required independently."};
     g_rpcRegistry.registerHandler(binding.name,rpc_context_wallet_orchard_getwalletbinding,binding,RegisterMode::Overwrite,"orchard-account-owner");
+    const RpcMethodMeta coverage{
+        "wallet.reconcilecoverage","wallet",
+        "Explicitly earn compatible current-tip ordinary/index coverage on the original imported source.",
+        {},{"object","Captured source checkpoint and actual two-store baseline completion; not whole-wallet readiness."},
+        "Requires the bound unlocked named wallet and intact complete catalog. May request PUBLIC pre-base body DATA; call again only on coverage_source_pending. Independently replays every legacy body from genesis through activation-parent, joins the original frozen content/Utreexo/legacy commitments and checks the real current runtime prefix. Existing audited index-first/FULL ordinary commits retain original assumed lifecycle/base/anchor and encrypted account/pending owners. Corrupt/unsupported source, missing owners or bad existing cache records refuse without repair. No caller checkpoint/reset, chain promotion, automatic startup download, general coin authority or balance-read readiness."};
+    RegisterBoundOrchard(coverage,rpc_context_wallet_reconcilecoverage);
     const RpcMethodMeta enrollment{
         "wallet.orchard.enrollpreactivation","wallet",
         "Explicitly enroll an intact recovered wallet at a checked empty pre-activation Orchard baseline.",

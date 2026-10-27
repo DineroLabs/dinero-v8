@@ -1148,6 +1148,12 @@ public:
     // index-first and ordinary-second baseline commits. Not account catch-up
     // or all-consumer readiness; caller must complete normal recovery after it.
     Status reconcileRuntimeWalletCoverage(WalletManager&,UTXOIndex&,const RuntimeWalletCoverageProjection&) const;
+    // Explicit imported-source coverage only. May request public pre-base
+    // body DATA; independently replays genesis and joins the actual original
+    // cohort before the existing audited index-first/FULL ordinary writer.
+    // Does not promote live chain history or publish mixed balance readiness.
+    StatusOr<std::shared_ptr<const RuntimeWalletCoverageProjection>> reconcileImportedRuntimeWalletCoverage(
+        WalletManager&,UTXOIndex&,uint64_t expected_session);
     // Installs a compatible known-script baseline and applies actual event1 to
     // index then ordinary store. Partial commits are retryable; no readiness.
     Status adoptRuntimeWalletOrigin(WalletManager&,UTXOIndex&,const RuntimeWalletOriginProjection&) const;
@@ -1684,6 +1690,10 @@ private:
     StatusOr<std::unique_ptr<const ImportedWalletSource>> CaptureImportedWalletSourceUnderLock(
         const std::unique_lock<std::mutex>& snapshot, UTXOIndex&);
     struct ImportedOrchardDeliverySource;
+    StatusOr<std::shared_ptr<const RuntimeWalletOriginProjection>> captureRuntimeWalletOrigin(
+        WalletManager&,uint64_t,UTXOIndex*,bool existing_identity_only,bool public_history) const;
+    StatusOr<std::shared_ptr<const RuntimeWalletCoverageProjection>> captureRuntimeWalletCoverage(
+        WalletManager&,uint64_t,UTXOIndex&,bool public_history) const;
     std::unique_ptr<const ImportedOrchardDeliverySource> CaptureImportedOrchardDeliveryUnderLock(
         const std::unique_lock<std::mutex>&,UTXOIndex&,const RuntimeAccountReplay&);
     // Transport is not storage authority. This narrower pre-boundary route
