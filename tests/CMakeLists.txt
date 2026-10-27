@@ -17022,6 +17022,13 @@ if(UNIX AND TARGET test_orchard_wallet_cycle_daemon AND TARGET migrate_shielded_
 endif()
 
 if(UNIX AND TARGET test_orchard_wallet_cycle_daemon AND TARGET migrate_shielded_datadir)
+  add_test(NAME PhoneCsnCoinbaseReconnect
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/integration/test_phone_csn_coinbase_reconnect.py
+      $<TARGET_FILE:test_orchard_wallet_cycle_daemon> $<TARGET_FILE:migrate_shielded_datadir>)
+  set_tests_properties(PhoneCsnCoinbaseReconnect PROPERTIES LABELS "integration;csn;utreexo;reorg;restart" TIMEOUT 300 RUN_SERIAL TRUE)
+endif()
+
+if(UNIX AND TARGET test_orchard_wallet_cycle_daemon AND TARGET migrate_shielded_datadir)
   add_test(NAME PhoneRollbackWarning
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/integration/test_phone_rollback_warning.py
       $<TARGET_FILE:test_orchard_wallet_cycle_daemon> $<TARGET_FILE:migrate_shielded_datadir>)

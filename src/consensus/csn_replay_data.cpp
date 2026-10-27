@@ -1,4 +1,5 @@
 #include "consensus/csn_replay_data.h"
+#include "primitives/block.h"
 
 #include <cstring>
 #include <exception>
@@ -142,6 +143,17 @@ bool DecodeCsnReplayData(const std::string& blob, CsnReplayData& out) {
     } catch (const std::exception&) {
         return false;
     }
+}
+
+bool DecodeCsnReplayDataForBlock(const Block& block,
+    const std::string* record, CsnReplayData& out) {
+    out = {};
+    if (record) return DecodeCsnReplayData(*record, out);
+    if (block.vtx.size() != 1 || !block.vtx.front().IsCoinbase()) return false;
+    // No non-coinbase inputs exist, so there are no deletion targets or input
+    // values to recover. Replay still verifies reward and the header root.
+    out.has_spent_outputs = true;
+    return true;
 }
 
 std::string SerializeCsnReplayData(

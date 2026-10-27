@@ -20,6 +20,14 @@ struct CsnReplayData {
 // hash-only success also clears metadata left by a previous CSN2 decode.
 bool DecodeCsnReplayData(const std::string& blob, CsnReplayData& out);
 
+// A missing record is deterministically empty only for a coinbase-only body.
+// Existing (including malformed) records are always decoded, never replaced.
+// Callers must distinguish NotFound from storage errors before passing nullptr.
+// This supplies replay inputs only; reward and accumulator validation remain
+// mandatory before the block can become canonical.
+bool DecodeCsnReplayDataForBlock(const Block& block,
+    const std::string* record, CsnReplayData& out);
+
 // Writes the existing CSN2 wire format byte-for-byte. Throws invalid_argument
 // for an unsupported format or a target other than 32 bytes, and length_error
 // for an excessive count or a field that cannot fit its u32 wire length.

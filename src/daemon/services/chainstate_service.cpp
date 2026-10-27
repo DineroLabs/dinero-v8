@@ -12268,8 +12268,9 @@ void ChainstateService::ActivateBestChainPass(const ActivationParentPlan* prepar
 
         // Preflight the complete branch before touching any canonical state.
         // A side branch becomes visible to candidate import only after the CSN
-        // speculative validator persisted its replay record, so absence of
-        // either artifact means the plan is incomplete or stale. Previously a
+        // speculative validator persisted its replay record. Coinbase-only
+        // local bodies have no spends and need no such record. For every
+        // other body, absence means the plan is incomplete or stale. Previously a
         // missing body was discovered only after DisconnectTip had already
         // moved the active chain to the fork, leaving the node stranded there.
         for (const auto* block_index : connect_path) {
@@ -12283,9 +12284,11 @@ void ChainstateService::ActivateBestChainPass(const ActivationParentPlan* prepar
                 return;
             }
             const auto replay_result = chain_db_->getCSNSpendTargets(block_index->hash);
+            const auto& candidate = block_result.value();
             CsnReplayData replay_data;
-            if (replay_result.status() != Status::Ok ||
-                !DecodeCsnReplayData(replay_result.value(), replay_data)) {
+            const std::string* record = replay_result.status() == Status::Ok ? &replay_result.value() : nullptr;
+            if ((replay_result.status() != Status::Ok && replay_result.status() != Status::NotFound) ||
+                !consensus::DecodeCsnReplayDataForBlock(candidate, record, replay_data)) {
                 if (logger_) {
                     logger_->warning("[ABC-CSN] Reorg plan incomplete: replay data unavailable at height " +
                                      std::to_string(block_index->height) +
@@ -12298,8 +12301,7 @@ void ChainstateService::ActivateBestChainPass(const ActivationParentPlan* prepar
             // rewinding the canonical tip. Bind input amounts to the stored
             // targets and real intra-block outputs here; ReplayBlock repeats
             // this gate and verifies the resulting forest against the header.
-            const auto& candidate = block_result.value();
-            if (!EnsureCsnReplayMetadata(block_index, candidate, replay_result.value(), replay_data)) return;
+            if (record && !EnsureCsnReplayMetadata(block_index, candidate, *record, replay_data)) return;
             const auto* fee_coins = replay_data.has_spent_outputs
                 ? &replay_data.spent_outputs
                 : (candidate.utreexo ? &candidate.utreexo->spent_outputs : nullptr);
@@ -12425,24 +12427,18 @@ void ChainstateService::ActivateBestChainPass(const ActivationParentPlan* prepar
                 spent_outputs = &replay_block.utreexo->spent_outputs;
             }
             auto st_result = chain_db_->getCSNSpendTargets(block_index->hash);
-            if (st_result.status() == Status::Ok && st_result.value().size() >= 4) {
-                CsnReplayData replay_data;
-                if (!DecodeCsnReplayData(st_result.value(), replay_data)) {
-                    if (logger_) logger_->error("[ABC-CSN] Malformed CSN replay data for height " +
-                                                std::to_string(block_index->height));
-                    return;
-                }
-                spend_targets = std::move(replay_data.spend_targets);
-                if (replay_data.has_spent_outputs) {
-                    replay_spent_outputs = std::move(replay_data.spent_outputs);
-                    spent_outputs = &replay_spent_outputs;
-                }
-                if (logger_) logger_->info("[ABC-CSN] Loaded " + std::to_string(spend_targets.size()) +
-                                           " spend targets for height " + std::to_string(block_index->height));
-            } else {
-                if (logger_) logger_->warning("[ABC-CSN] No spend targets for height " +
-                                              std::to_string(block_index->height) +
-                                              " — forest replay may fail");
+            CsnReplayData replay_data;
+            const std::string* record = st_result.status() == Status::Ok ? &st_result.value() : nullptr;
+            if ((st_result.status() != Status::Ok && st_result.status() != Status::NotFound) ||
+                !consensus::DecodeCsnReplayDataForBlock(replay_block, record, replay_data)) {
+                if (logger_) logger_->error("[ABC-CSN] Replay data unavailable at height " +
+                                            std::to_string(block_index->height));
+                return;
+            }
+            spend_targets = std::move(replay_data.spend_targets);
+            if (replay_data.has_spent_outputs) {
+                replay_spent_outputs = std::move(replay_data.spent_outputs);
+                spent_outputs = &replay_spent_outputs;
             }
 
             // Capture replay positions while the pre-state still exists.

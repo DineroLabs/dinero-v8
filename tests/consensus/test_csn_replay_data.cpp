@@ -1,4 +1,5 @@
 #include "consensus/csn_replay_data.h"
+#include "primitives/block.h"
 
 #include <gtest/gtest.h>
 
@@ -284,4 +285,46 @@ TEST(CsnReplayData, VariableFieldsAreNotSubjectToUnrelatedProofLimits) {
     ASSERT_TRUE(DecodeCsnReplayData(blob, data));
     ExpectMetadata(data.spent_outputs, spent, 6);
     EXPECT_EQ(SerializeCsnReplayData(data.spend_targets, data.spent_outputs, 6), blob);
+}
+
+TEST(CsnReplayData, MissingRecordIsEmptyOnlyForExactlyOneCoinbase) {
+    dinero::Block block;
+    CsnReplayData data = StaleData();
+    EXPECT_FALSE(dinero::consensus::DecodeCsnReplayDataForBlock(block, nullptr, data));
+    ExpectEmpty(data);
+    block.vtx.emplace_back();
+    EXPECT_FALSE(dinero::consensus::DecodeCsnReplayDataForBlock(block, nullptr, data));
+    block.vtx.front().vin.resize(1);
+    block.vtx.front().vin.front().prevout.vout = 0xffffffff;
+    ASSERT_TRUE(block.vtx.front().IsCoinbase());
+    ASSERT_TRUE(dinero::consensus::DecodeCsnReplayDataForBlock(block, nullptr, data));
+    EXPECT_TRUE(data.has_spent_outputs);
+    EXPECT_TRUE(data.spend_targets.empty());
+    EXPECT_TRUE(data.spent_outputs.empty());
+    // Even a zero-input non-coinbase transaction must not gain this exemption.
+    block.vtx.emplace_back();
+    EXPECT_FALSE(dinero::consensus::DecodeCsnReplayDataForBlock(block, nullptr, data));
+    ExpectEmpty(data);
+    block.vtx.back().vin.resize(1);
+    block.vtx.back().vin.front().prevout.vout = 0;
+    EXPECT_FALSE(dinero::consensus::DecodeCsnReplayDataForBlock(block, nullptr, data));
+    ExpectEmpty(data);
+}
+
+TEST(CsnReplayData, CoinbaseDoesNotMaskAnExistingMalformedRecord) {
+    dinero::Block block;
+    block.vtx.emplace_back();
+    block.vtx.front().vin.resize(1);
+    block.vtx.front().vin.front().prevout.vout = 0xffffffff;
+    for (const std::string record : {std::string(), std::string("garbage"), std::string("CSN2")}) {
+        CsnReplayData data = StaleData();
+        EXPECT_FALSE(dinero::consensus::DecodeCsnReplayDataForBlock(block, &record, data));
+        ExpectEmpty(data);
+    }
+    const auto targets = std::vector<UtreexoHash>{Hash(17)};
+    CsnReplayData data;
+    const auto legacy = LegacyRecord(targets);
+    ASSERT_TRUE(dinero::consensus::DecodeCsnReplayDataForBlock(block, &legacy, data));
+    EXPECT_EQ(data.spend_targets, targets);
+    EXPECT_FALSE(data.has_spent_outputs);
 }
