@@ -294,10 +294,10 @@ std::optional<RuntimeIndexProgress> RuntimeIndexDelivery::Read(UTXOIndex& index,
     return receipt?std::optional(receipt->progress):std::nullopt;
 }
 RuntimeIndexProgress RuntimeIndexDelivery::Apply(UTXOIndex& index,const std::string& identity,const RuntimeOutboxEvent& event,const RuntimeWalletOriginProjection* origin,const std::function<void()>& finish,const HistoricalScripts* historical,
-        const RuntimeWalletCoverageProjection* previous,const RuntimeWalletCoverageProjection* next,const std::function<void()>& source_before_commit) {
+        const RuntimeWalletCoverageProjection* previous,const RuntimeWalletCoverageProjection* target_source,const std::function<void()>& source_before_commit) {
     const auto effects=Effects(event);Identity(identity);
-    if((previous||next||source_before_commit)&&(!previous||!next||!source_before_commit||origin||
-       previous->Origin().OriginHash()!=next->Origin().OriginHash()||next->Head()!=event.cursor))
+    if((previous||target_source||source_before_commit)&&(!previous||!target_source||!source_before_commit||origin||
+       previous->Origin().OriginHash()!=target_source->Origin().OriginHash()||target_source->Head()!=event.cursor))
         Fail("Incremental index source binding incomplete");
     std::lock_guard<std::recursive_mutex> lock(index.db_mutex_);std::lock_guard<std::mutex> scripts(index.scripts_mutex_);
     if(!index.db_ || index.atomic_write_active_ || !sqlite3_get_autocommit(index.db_))Fail("Index delivery write ownership unavailable");
@@ -313,7 +313,7 @@ RuntimeIndexProgress RuntimeIndexDelivery::Apply(UTXOIndex& index,const std::str
         if(existing->profile!=profile || Tip{existing->progress.tip_hash,existing->progress.tip_height}!=after)
             Fail("Index delivery replay mismatch");
         if(origin)IndexOriginRows(index.db_,index.watched_scripts_,published,*origin,&event);
-        if(next)index.ApplyAtomically([&]{CheckIncrementalRows(index,*next);source_before_commit();});
+        if(target_source)index.ApplyAtomically([&]{CheckIncrementalRows(index,*target_source);source_before_commit();});
         if(finish)finish();
         index.historical_scripts_.swap(published);
         return existing->progress;
@@ -373,7 +373,7 @@ RuntimeIndexProgress RuntimeIndexDelivery::Apply(UTXOIndex& index,const std::str
         }
         Statement write(index.db_,"INSERT OR REPLACE INTO utxo_metadata(key,value) VALUES(?,?)");write.Text(1,receipt_key);write.Blob(2,bytes);write.Done();
         Exec(index.db_,"DELETE FROM utxo_metadata WHERE key='runtime_delivery:v1:invalidated'");
-        if(next){CheckIncrementalRows(index,*next);source_before_commit();} // Actual index pre-COMMIT fence.
+        if(target_source){CheckIncrementalRows(index,*target_source);source_before_commit();} // Actual index pre-COMMIT fence.
     });
     if(finish)finish();
     index.historical_scripts_.swap(published);
