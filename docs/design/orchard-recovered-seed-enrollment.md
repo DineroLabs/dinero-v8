@@ -1581,3 +1581,10 @@ checks it with the original lease/session/thread/transaction inventory reader,
 and ends that lexical key interval before final complete-catalog recapture.
 No seed/session/instance guard is relaxed; the first failed root and exact
 whole inputs stay separate and are never retried or retroactively passed.
+
+The corrected native flow returned the genuine920000una/current106 ordinary
+summary but the new fixture wrongly expected ordinary reservation tracking to
+be `authenticated`. Its ordinary pending-payment schema is absent, so the
+existing `untracked` classification is correct. The followup is TEST/DOC-only;
+no tracking/schema/owner metadata is minted and no production change is made.
+That partial failed case does not prove no-phrase reopen or complete acceptance.

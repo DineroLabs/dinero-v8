@@ -907,7 +907,11 @@ try:
                     if mixed_balance_read:
                         assert 'error' not in refused_balance and refused_balance['confirmed']==.0092,refused_balance
                         assert refused_balance['total']==.0092 and refused_balance['utxo_count']==2,refused_balance
-                        assert refused_balance['reservation_status']=='authenticated',refused_balance
+                        # Orchard/current catalog owners were authenticated;
+                        # this fixture has NO ordinary pending-payment schema.
+                        # Preserve the existing honest summary classification,
+                        # never mint ordinary tracking/owner metadata to pass.
+                        assert refused_balance['reservation_status']=='untracked',refused_balance
                         assert refused_balance['checkpoint_height']==106 and refused_balance['checkpoint_hash']==post_mined['hash'],refused_balance
                         assert refused_balance['balance_scope']=='current_tip_ordinary' and not refused_balance['whole_wallet_ready'],refused_balance
                         assert 'confidential' not in refused_balance and 'assets' not in refused_balance,refused_balance
