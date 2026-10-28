@@ -13861,7 +13861,7 @@ StatusOr<std::shared_ptr<const consensus::OrchardSnapshotSection>> ChainstateSer
 #endif
 }
 
-consensus::SnapshotExportResult ChainstateService::ExportOrchardSnapshot(const std::filesystem::path& path) {
+consensus::SnapshotExportResult ChainstateService::ExportOrchardSnapshot(const std::filesystem::path& path, bool compact_export) {
     consensus::SnapshotExportResult result{};
 #ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
     try {
@@ -13872,14 +13872,14 @@ consensus::SnapshotExportResult ChainstateService::ExportOrchardSnapshot(const s
             throw std::runtime_error("Orchard v6 export requires an active DNORST02 base");
         if(!chain_db_||!active_tip_||!header_chain_selector_||safe_mode_active_)
             throw std::runtime_error("Orchard v6 export requires a selected authenticated chainstate");
-        const bool compact=bool(compact_startup_);
+        const bool compact=bool(compact_startup_)||compact_export;
         if(compact&&config_&&!config_->CompactSnapshotBootstrapEnabled())
             throw std::runtime_error("Compact v6 snapshot bootstrap disabled by local policy");
         if(!tip.ok()||tip->height!=int(active_tip_->height)||tip->hash!=active_tip_->hash||
             !consensus::OrchardCatalogCommitmentActive(Params(),active_tip_->height))
             throw std::runtime_error("Orchard v6 export requires an active DNORST02 base");
         std::vector<uint8_t> accumulator;consensus::OrchardSnapshotCoins coins;
-        if(compact) {
+        if(compact_startup_) {
             if(!compact_startup_->owner||consensus_utxo_set_)throw std::runtime_error("Compact snapshot owner unavailable");
             const auto* state=compact_startup_->owner->SelectedUnderLock(activation_mutex_);
             if(!state||state->block!=tip->hash)throw std::runtime_error("Compact snapshot selection changed");
@@ -13888,8 +13888,11 @@ consensus::SnapshotExportResult ChainstateService::ExportOrchardSnapshot(const s
             if(!consensus_utxo_set_||consensus_utxo_set_->GetBestBlock()!=tip->hash||
                 consensus_utxo_set_->GetHeight()!=uint32_t(tip->height))throw std::runtime_error("Full snapshot selection changed");
             const auto forest=consensus_utxo_set_->LockForestShared();
-            accumulator=consensus_utxo_set_->GetForest().serializeCanonicalLeaves(consensus::ORCHARD_SNAPSHOT_MAX_SECTION_BYTES);
-            coins=consensus_utxo_set_->GetUTXOs();
+            if(compact) accumulator=consensus::UtreexoStump::fromForest(consensus_utxo_set_->GetForest()).serialize();
+            else {
+                accumulator=consensus_utxo_set_->GetForest().serializeCanonicalLeaves(consensus::ORCHARD_SNAPSHOT_MAX_SECTION_BYTES);
+                coins=consensus_utxo_set_->GetUTXOs();
+            }
         }
         const auto section=OrchardSnapshotStore::Capture(*chain_db_,compact?
             consensus::OrchardSnapshotProfile::Compact:consensus::OrchardSnapshotProfile::Full,accumulator);
@@ -14008,7 +14011,7 @@ consensus::SnapshotImportResult ChainstateService::LoadOrchardSnapshot(const std
     return result;
 }
 
-consensus::SnapshotExportResult ChainstateService::ExportSnapshot(const std::filesystem::path& snapshot_path) {
+consensus::SnapshotExportResult ChainstateService::ExportSnapshot(const std::filesystem::path& snapshot_path, bool compact_export) {
     using namespace consensus;
     SnapshotExportResult result;
     result.success = false;
@@ -14024,7 +14027,7 @@ consensus::SnapshotExportResult ChainstateService::ExportSnapshot(const std::fil
         std::lock_guard<AnnotatedRecursiveMutex> selected(activation_mutex_);
         const auto tip=chain_db_->getTip();
         if(tip.ok()&&tip->height>=0&&OrchardActiveForHeight(Params(),uint32_t(tip->height)))
-            return ExportOrchardSnapshot(snapshot_path);
+            return ExportOrchardSnapshot(snapshot_path, compact_export);
     }
 
     if (!consensus_utxo_set_) {

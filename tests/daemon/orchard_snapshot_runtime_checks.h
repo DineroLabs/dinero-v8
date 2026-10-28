@@ -2384,6 +2384,15 @@ TEST(OrchardSnapshotRuntime, ActualServiceBootstrapExportAndRestartBothProfiles)
     metadata.block_height=first->Height();metadata.timestamp=first->Header().timestamp;
     const auto compact_path=exports.path/"compact.v6";
     ASSERT_TRUE(WriteOrchardSnapshotFileAtomically(compact_path,metadata,compact,{}).success);
+    const auto compact_export_path=exports.path/"compact-export.v6";
+    const auto compact_exported=source.f.service->ExportSnapshot(compact_export_path,true);
+    ASSERT_TRUE(compact_exported.success)<<compact_exported.error_message;
+    {
+        std::ifstream actual(compact_export_path,std::ios::binary),expected(compact_path,std::ios::binary);
+        EXPECT_TRUE(std::string(std::istreambuf_iterator<char>(actual),{})==std::string(std::istreambuf_iterator<char>(expected),{}));
+    }
+    // Exporting for a phone must not replace the live full-node owner.
+    EXPECT_EQ(&ShieldedStateStartupTestAccess::CatalogWriterCoins(*source.f.service),&live);
     source.f.service->setRuntimeBlockNotifications(std::make_shared<TypedForkNotices>());
     const auto empty=orchard::OrchardFrontier::Empty();const auto leaves=CycleCommitments(shield_bundle.Authorization());
     const auto frontier=empty.Append(leaves);auto [note,note_index]=CycleReceive(receiver,shield_bundle.Authorization());

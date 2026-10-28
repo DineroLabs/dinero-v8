@@ -1836,7 +1836,15 @@ static din::Json rpc_context_dumptxoutset(const ExecutionContext& ctx, const din
         }
 
         // Phase 42: AssumeUTXO snapshot export (restored)
-        auto export_result = chainstate->ExportSnapshot(snapshot_path);
+        if (params.size() > 2 || (params.size() == 2 &&
+            (!params[1].isString() || params[1].asString() != "compact"))) {
+            result["error"]["code"] = -32602;
+            result["error"]["message"] = "Usage: blockchain.dumptxoutset <path> [compact]";
+            return result;
+        }
+        // Compact export changes the artifact, never the live full-node owner.
+        // Before Orchard the shared legacy format remains unchanged.
+        auto export_result = chainstate->ExportSnapshot(snapshot_path, params.size() == 2);
 
         if (!export_result.success) {
             result["error"]["code"] = -1;

@@ -595,7 +595,7 @@ public:
 
     // Phase 42: AssumeUTXO Snapshot Export/Import
     // Export current UTXO set to snapshot file
-    consensus::SnapshotExportResult ExportSnapshot(const std::filesystem::path& snapshot_path);
+    consensus::SnapshotExportResult ExportSnapshot(const std::filesystem::path& snapshot_path, bool compact_export = false);
     // Load UTXO set from snapshot file (fast sync)
     consensus::SnapshotImportResult LoadSnapshot(const std::filesystem::path& snapshot_path);
 
@@ -1773,7 +1773,7 @@ private:
     std::optional<storage::LegacyRetirementRecord> DeriveOrchardBoundaryFromSelectedHistoryUnderLock();
 
     bool LoadShieldedState();
-    consensus::SnapshotExportResult ExportOrchardSnapshot(const std::filesystem::path&);
+    consensus::SnapshotExportResult ExportOrchardSnapshot(const std::filesystem::path&, bool compact_export = false);
     consensus::SnapshotImportResult LoadOrchardSnapshot(const std::filesystem::path&);
     bool InitOrchardSnapshotStorage();
     bool StartOrchardSnapshotStorage();
