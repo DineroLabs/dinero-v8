@@ -1,6 +1,7 @@
 // Swap manager: seed-derived keys, offer/accept between two wallets, index
 // never reused (even after a restored backup), locked wallet refuses and
-// pauses, cancel only before funds are locked, payout address parsing.
+// pauses, cancel only before funds are locked, offers limited to the spendable
+// balance, payout address parsing.
 #include "wallet/swap/swap_manager.h"
 
 #include "bech32/bech32.hpp"
@@ -65,10 +66,20 @@ SwapManagerConfig Config(const std::string& dir) {
     return c;
 }
 
-// A Dinero node that only reports its height (the scan start of a new swap).
-const DinRpc kNoDin = [](const std::string& m, const Json::Value&) {
-    return m == "getblockcount" ? std::optional<Json::Value>(Json::Value(1000)) : std::optional<Json::Value>{};
-};
+// A Dinero node that reports its height (the scan start of a new swap) and a
+// wallet balance of `spendable_din` (DIN, as wallet.getbalance reports it).
+DinRpc DinWithBalance(double spendable_din) {
+    return [spendable_din](const std::string& m, const Json::Value&) -> std::optional<Json::Value> {
+        if (m == "getblockcount") return Json::Value(1000);
+        if (m == "wallet.getbalance") {
+            Json::Value b(Json::objectValue);
+            b["spendable"] = spendable_din;
+            return b;
+        }
+        return std::nullopt;
+    };
+}
+const DinRpc kNoDin = DinWithBalance(1'000'000);
 // A Bitcoin node that only reports its height (the scan start of a new swap).
 const BtcRpc kNoBtc = [](const std::string& m, const Json::Value&) {
     return m == "getblockcount" ? std::optional<Json::Value>(Json::Value(500)) : std::optional<Json::Value>{};
@@ -544,6 +555,61 @@ TEST(SwapManager, BobsSwapIsNotFinishedUntilHisDinIsSwept) {
     SwapManager bob2(Config(db.path), wb.Deriver(), kNoDin, kNoBtc);
     bob2.TickAll(kNow + 120);
     EXPECT_FALSE(bob2.Status(id).sweep_pending);
+}
+
+// An offer is refused unless the wallet can pay it: spendable DIN must cover
+// its amount plus the funding fee allowance, on top of what open offers and
+// unfunded swaps already promise. Request() offers 10 DIN.
+TEST(SwapManager, OfferBeyondTheSpendableBalanceIsRefused) {
+    TempDir d("balance_short");
+    FakeWallet w{0x51};
+    SwapManager m(Config(d.path), w.Deriver(), DinWithBalance(5), kNoBtc);
+    try {
+        m.MakeOffer(Request(), kNow);
+        FAIL() << "a 10 DIN offer from a 5 DIN wallet was accepted";
+    } catch (const std::invalid_argument& e) {
+        EXPECT_NE(std::string(e.what()).find("offer exceeds available balance"), std::string::npos) << e.what();
+    }
+    EXPECT_TRUE(m.List().empty()) << "nothing is written for a refused offer";
+    // Exactly the amount is not enough: the funding fee needs room too.
+    TempDir d2("balance_exact");
+    SwapManager exact(Config(d2.path), w.Deriver(), DinWithBalance(10), kNoBtc);
+    EXPECT_THROW(exact.MakeOffer(Request(), kNow), std::invalid_argument);
+    TempDir d3("balance_enough");
+    SwapManager enough(Config(d3.path), w.Deriver(), DinWithBalance(10.01), kNoBtc);
+    EXPECT_NO_THROW(enough.MakeOffer(Request(), kNow));
+}
+
+TEST(SwapManager, OpenOffersAndUnfundedSwapsReserveTheirDin) {
+    TempDir da("reserve_alice"), db("reserve_bob");
+    FakeWallet wa{0x52}, wb{0x53};
+    SwapManager alice(Config(da.path), wa.Deriver(), DinWithBalance(15), kNoBtc);
+    SwapManager bob(Config(db.path), wb.Deriver(), kNoDin, kNoBtc);
+
+    const std::string offer = alice.MakeOffer(Request(), kNow);
+    EXPECT_THROW(alice.MakeOffer(Request(), kNow + 1), std::invalid_argument)
+        << "two 10 DIN offers against 15 DIN";
+
+    // Still reserved once the offer turns into a swap that has not funded yet.
+    const auto b = bob.Accept(offer, P2trAddress("rdin", 0x31), P2trAddress("bcrt", 0x32), kNow + 60);
+    const auto a = alice.Accept(*b.accept_text, "", "", kNow + 120);
+    ASSERT_EQ(alice.Status(a.id).state, SwapState::Accepted);
+    EXPECT_THROW(alice.MakeOffer(Request(), kNow + 130), std::invalid_argument);
+
+    // Cancelling releases it.
+    alice.Cancel(a.id);
+    EXPECT_NO_THROW(alice.MakeOffer(Request(), kNow + 140));
+}
+
+TEST(SwapManager, AnUnreadableBalanceRefusesTheOffer) {
+    TempDir d("balance_unreadable");
+    FakeWallet w{0x54};
+    const DinRpc no_wallet = [](const std::string& m, const Json::Value&) {
+        return m == "getblockcount" ? std::optional<Json::Value>(Json::Value(1000)) : std::optional<Json::Value>{};
+    };
+    SwapManager m(Config(d.path), w.Deriver(), no_wallet, kNoBtc);
+    EXPECT_THROW(m.MakeOffer(Request(), kNow), std::runtime_error);
+    EXPECT_TRUE(m.List().empty());
 }
 
 TEST(SwapManager, PayoutScriptFromAddress) {

@@ -137,6 +137,11 @@ private:
     SwapSession LoadSession(uint32_t index, const Bytes32& store_key) const;
     SwapSummary Summarize(uint32_t index, const SwapSession& s, const std::vector<std::string>& events) const;
     std::optional<uint32_t> FindIndex(const std::string& id, bool& is_offer);
+    // DIN this wallet has promised but not yet sent: every pending offer, and
+    // every swap where it sells DIN and has not seen its DIN lock yet. Each
+    // counts its amount plus kDinFundingFeeAllowanceUna.
+    uint64_t CommittedDinUna(const Bytes32& store_key);
+    void RequireDinBalanceFor(uint64_t din_amount_una, const Bytes32& store_key);
     void StartSession(uint32_t index, SwapSession session, const Bytes32& store_key);
 
     SwapManagerConfig config_;

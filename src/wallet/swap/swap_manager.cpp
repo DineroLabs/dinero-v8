@@ -7,6 +7,7 @@
 #include "wallet/swap/tower.h"
 
 #include <algorithm>
+#include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
@@ -19,6 +20,9 @@ using namespace detail;
 
 constexpr uint32_t kScanMargin = 6;  // start BTC scans a few blocks back (reorg slack)
 constexpr size_t kKeepEvents = 12;
+// Set aside per promised DIN funding on top of its amount: a bound on the
+// wallet's own fee for the one HTLC funding transaction (0.01 DIN).
+constexpr uint64_t kDinFundingFeeAllowanceUna = 1'000'000;
 
 bool Terminal(SwapState s) {
     return s == SwapState::Done || s == SwapState::Refunded || s == SwapState::Aborted || s == SwapState::Lost;
@@ -192,6 +196,49 @@ SwapSession SwapManager::LoadSession(uint32_t index, const Bytes32& store_key) c
     return EncryptedFileSwapStore::Load(SwapPath(index), store_key);
 }
 
+uint64_t SwapManager::CommittedDinUna(const Bytes32& store_key) {
+    uint64_t total = 0;
+    // Pending offers stay committed until cancelled: Alice's accept does not
+    // check the offer's expiry, so an expired offer can still start a swap.
+    for (const auto& [index, path] : ScanDir(".offer")) {
+        try {
+            const SwapOffer o = DecodeOffer(ParseKeyValues(OpenSealedFile(path, store_key))["offer"]);
+            total += o.din_amount_una + kDinFundingFeeAllowanceUna;
+        } catch (const std::exception&) {
+        }
+    }
+    for (const auto& [index, path] : ScanDir(".swap")) {
+        try {
+            const SwapSession s = live_.count(index) ? live_[index].runner->session() : LoadSession(index, store_key);
+            const bool unfunded =
+                s.record.state == SwapState::Accepted || s.record.state == SwapState::DinLockBroadcast;
+            if (s.record.role == Role::DinSeller && unfunded) {
+                total += s.record.offer.din_amount_una + kDinFundingFeeAllowanceUna;
+            }
+        } catch (const std::exception&) {
+        }
+    }
+    return total;
+}
+
+void SwapManager::RequireDinBalanceFor(uint64_t din_amount_una, const Bytes32& store_key) {
+    const auto bal = din_("wallet.getbalance", Json::Value(Json::objectValue));
+    if (!bal || !bal->isObject() || !(*bal)["spendable"].isNumeric()) {
+        throw std::runtime_error("cannot read the wallet balance");
+    }
+    const double spendable_din = (*bal)["spendable"].asDouble();  // DIN, not una
+    if (!std::isfinite(spendable_din) || spendable_din < 0) throw std::runtime_error("cannot read the wallet balance");
+    const uint64_t spendable = static_cast<uint64_t>(std::llround(spendable_din * 1e8));
+    const uint64_t committed = CommittedDinUna(store_key);
+    const uint64_t needed = din_amount_una + kDinFundingFeeAllowanceUna;
+    if (committed > spendable || needed > spendable - committed) {
+        throw std::invalid_argument("offer exceeds available balance (" + std::to_string(spendable) +
+                                    " una spendable, " + std::to_string(committed) +
+                                    " una already committed to open offers and swaps; this offer needs " +
+                                    std::to_string(needed) + " una)");
+    }
+}
+
 void SwapManager::StartSession(uint32_t index, SwapSession session, const Bytes32& store_key) {
     const auto mat = SwapKeysForIndex(derive_, config_.network, index);
     RunnerConfig rc = config_.runner;
@@ -212,6 +259,7 @@ std::string SwapManager::MakeOffer(const OfferRequest& r, uint32_t now) {
     if (r.din_lock_hours < r.btc_lock_hours + 24) throw std::invalid_argument("DIN lock must be >= BTC lock + 24 h");
     RequireWithinCaps(config_, r.din_amount_una, r.btc_amount_sat);
     RequireSane(config_, r.din_amount_una, r.btc_amount_sat, r.n_btc_confirmations);
+    RequireDinBalanceFor(r.din_amount_una, StoreKey());
     const auto din_payout = PayoutScriptFromAddress(r.din_refund_address, config_.runner.din_hrp);
     const auto btc_payout = PayoutScriptFromAddress(r.btc_claim_address, config_.runner.btc_hrp);
     // The cached store key outlives a relock: ask the wallet itself, so a
