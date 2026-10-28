@@ -457,6 +457,7 @@ message(STATUS "   Tests: RPC API endpoints (10 tests)")
 
 add_executable(test_wallet_sync_integration
     ../wallet/test_wallet_sync_integration.cpp
+    ${CMAKE_SOURCE_DIR}/tests/stubs/vault_test_stubs.cpp # optional vault observer isolation
     ${CMAKE_SOURCE_DIR}/src/daemon/mempool.cpp    # Provides dinero::Mempool implementation
     ${CMAKE_SOURCE_DIR}/src/daemon/config.cpp     # Provides GetConfig()
     ${CMAKE_SOURCE_DIR}/src/network/bridge_node.cpp  # Provides BridgeNode::GenerateProofForBlock

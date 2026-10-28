@@ -16660,6 +16660,7 @@ function(dinero_attach_real_mempool_fixture_runtime)
     test_wallet_height2_coinbase
     test_pruning
     test_header_status_bits
+    test_orchard_account_delivery
     test_orchard_index_delivery
     test_reindex_deep_chain
     test_header_metadata_recovery
@@ -16688,12 +16689,22 @@ function(dinero_attach_real_mempool_fixture_runtime)
     test_wallet_pq_rpc_owner
     test_wallet_psbt_policy_context
   )
+  # The real Core/Orchard owners are mutually dependent static archives. Keep
+  # the whole component inside the GNU rescan group, not after its end marker.
+  set(_fixture_orchard_owners "")
+  foreach(_owner dinero_orchard_account_replay dinero_orchard_chainstate_write
+      dinero_orchard_runtime_reader dinero_orchard_reindex dinero_orchard_snapshot_store
+      dinero_orchard_index_delivery dinero_orchard_header dinero_orchard_block_staging)
+    if(TARGET ${_owner})
+      list(APPEND _fixture_orchard_owners ${_owner})
+    endif()
+  endforeach()
   set(_built_mempool_fixture_targets "")
   foreach(_fixture IN LISTS _real_mempool_fixture_targets)
     if(NOT TARGET ${_fixture})
       continue()
     endif()
-    if(_fixture STREQUAL "test_orchard_index_delivery")
+    if(_fixture MATCHES "^test_orchard_(account|index)_delivery$")
       target_sources(${_fixture} PRIVATE src/daemon/config.cpp)
     endif()
     get_target_property(_sources ${_fixture} SOURCES)
@@ -16714,7 +16725,7 @@ function(dinero_attach_real_mempool_fixture_runtime)
         "-Wl,--start-group" ${_fixture_rpc_owner} dinero_core dinero_wallet dinero_chainstate
         dinero_consensus dinero_shielded dinero_bridge dinero_pool dinero_lightning_keys
         dinero_address_encoding dinero_bip32 dinero_pq dinero_zk dinero_tx_primitives
-        dinero_crypto "-Wl,--end-group" secp256k1 RocksDB::rocksdb ${SQLITE3_LIBRARIES})
+        dinero_crypto ${_fixture_orchard_owners} "-Wl,--end-group" secp256k1 RocksDB::rocksdb ${SQLITE3_LIBRARIES})
     else()
       target_link_libraries(${_fixture} PRIVATE
         ${_fixture_rpc_owner} dinero_core dinero_wallet dinero_chainstate dinero_consensus dinero_shielded

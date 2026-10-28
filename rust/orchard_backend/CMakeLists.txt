@@ -306,6 +306,7 @@ if(TARGET dinero_chainstate)
     # linkers, even for small fixtures that first enter through genesis/storage.
     target_link_libraries(dinero_orchard_chainstate_write PRIVATE dinero_core)
     target_link_libraries(dinero_orchard_reindex PRIVATE dinero_core)
+    target_link_libraries(dinero_orchard_header PRIVATE dinero_core)
   endif()
   add_library(dinero_orchard_snapshot STATIC
     "${ORCHARD_HOST_ROOT}/src/consensus/orchard_snapshot_catalog.cpp"
