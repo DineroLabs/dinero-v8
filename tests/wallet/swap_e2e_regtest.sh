@@ -60,7 +60,11 @@ DADDR=$(dcall wallet.getnewaddress '["taproot","mine"]' | python3 -c 'import sys
 s=sys.stdin.read().strip()
 try: print(json.loads(s)["address"])
 except Exception: print(s)')
-dcall generatetoaddress "[110, \"$DADDR\"]" >/dev/null
+# The two short signature/race cases need their first funding block at the
+# activation boundary; longer runner scenarios cross it from height 110.
+INITIAL_HEIGHT=110
+case "$SCENARIO" in din-sign-first|din-race) INITIAL_HEIGHT=129 ;; esac
+dcall generatetoaddress "[$INITIAL_HEIGHT, \"$DADDR\"]" >/dev/null
 
 # Bob's Bitcoin wallet (funds the BTC lock).
 "${BCLI[@]}" createwallet bob >/dev/null
