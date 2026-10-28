@@ -157,7 +157,7 @@ try:
     shutil.copytree(source.path / "headers", WORK / "buried_headers")
     source.start()
 
-    for profile, flags in (("full", []), ("csn", ["--utreexo-stateless=1"])):
+    for profile, flags in (("full", []), ("csn", ["--utreexo-stateless=1", "--utreexo-bridge=0"])):
         node = Node(profile, WORK / "buried_headers", extra=[
             "--assumeutxo_forward_connect=1", "--utreexo.checkpoint_interval=1", *flags])
         imported = node.call("loadtxoutset", [str(snapshot)])
@@ -167,10 +167,13 @@ try:
         if profile == "csn":
             require("mode=STATELESS" in node.logtext(), "CSN case must be stateless")
             role = node.call("blockchain.getutreexocommitment")
+            # A legacy v5 import retains its authenticated full forest. The
+            # phone transport profile does not enroll a root-only owner.
             require(role["sync_profile"] == "ios_utreexo" and
-                    role["validation_role"] == "compact_validator" and
-                    role["retains_full_state"] is False,
-                    "CSN case must use the phone's compact validation role")
+                    role["validation_role"] == "full_validator" and
+                    role["retains_full_state"] is True and
+                    role["forest_memory_bytes_estimate"] > 0,
+                    f"legacy v5 CSN must report its actual full-forest owner: {role}")
         # The base-only case can hide lost nullifiers by loading the snapshot
         # again. Forward progress is what makes checkpoint restore skip that.
         for height in range(base_height + 1, base_height + 9):
