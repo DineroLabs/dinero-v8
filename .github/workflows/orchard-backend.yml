@@ -221,6 +221,12 @@ jobs:
       - name: Exercise real Orchard-enabled SDK runtime
         run: |
           ctest --test-dir build-orchard-root -R '^(NodeCoreRuntimeLifecycle|NodeCoreStorageReadiness|OrchardActivationRuntime|OrchardMigrationDatadirAlias)$' --verbose --no-tests=error --output-log orchard-sdk-runtime-execution.log
+      - name: Exercise phone migration, rollback cleanup and CSN reconnect
+        run: |
+          cmake --build build-orchard-root --target test_orchard_wallet_cycle_daemon migrate_shielded_datadir --parallel 2
+          for t in PhoneStorageRollbackLifecycle PhoneRollbackWarning PhoneCsnCoinbaseReconnect; do
+            ctest --test-dir build-orchard-root --verbose --no-tests=error -R "^${t}$" --output-log "orchard-${t}-execution.log"
+          done
       - name: Require and execute Orchard release profile and peer capabilities
         run: |
           cmake --build build-orchard-root --target test_p2p_manager_ts1_integration test_shielded_resource_limits --parallel 2
