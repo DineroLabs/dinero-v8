@@ -362,6 +362,33 @@ TEST(HolePunchManager, InitiatorAtFullOutboundStillPunches) {
     EXPECT_TRUE(a.mgr->get_peer_info(Key6(bp))->punched);
 }
 
+// A dead first target (stale or firewalled IPv6 silently drops the Initial)
+// must not use up the whole attempt: each target gets its share of the window,
+// then the next one is dialed.
+TEST(HolePunchManager, DeadFirstTargetFallsBackToNext) {
+    Node a, b;
+    a.Listen();
+    const uint16_t bp = b.Listen();
+    PunchCandidates two;
+    two.v6.push_back(Loop6(25930));  // nothing listens here
+    two.v6.push_back(Loop6(bp));
+    b.mgr->test_set_local_punch_candidates(two);
+    Leg leg(25061, 25062);
+    Relay(a, b, leg, 0x801);
+
+    ASSERT_TRUE(TickUntil({&a, &b}, [&] { return a.mgr->test_punch_stats().dials == 1; }));
+    // Half the 10 s window has passed for the first of two targets.
+    a.Advance(5s + 100ms);
+    b.Advance(5s + 100ms);
+    ASSERT_TRUE(TickUntil({&a, &b}, [&] { return Proven(*a.mgr, Key6(bp)); }, 4))
+        << "the second target was never dialed inside the attempt deadline";
+    EXPECT_TRUE(a.mgr->get_peer_info(Key6(bp))->punched);
+    const auto s = a.mgr->test_punch_stats();
+    EXPECT_EQ(s.dials, 2u);
+    EXPECT_EQ(s.timeout, 0u);
+    EXPECT_FALSE(Live(*a.mgr, Key6(25930))) << "the dead first dial was left behind";
+}
+
 TEST(HolePunchManager, UnsolicitedPunchMessagesIgnored) {
     Node b;
     b.Listen();

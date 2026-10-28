@@ -1274,10 +1274,13 @@ private:
         std::chrono::steady_clock::time_point offer_sent_at{};
         std::chrono::steady_clock::time_point deadline{};
         std::vector<dinero::network::UdpAddr> targets;
-        // Initiator: when to dial, the next target to try, the dialed peer key.
+        // Initiator: when to dial, the next target to try, the dialed peer key
+        // and when that dial gives way to the next target (each target gets an
+        // equal share of what is left of the window).
         std::chrono::steady_clock::time_point dial_at{};
         size_t next_target{0};
         std::string dialed_key;
+        std::chrono::steady_clock::time_point dial_expires{};
         // Acceptor: probe rounds sent and when the next one is due.
         size_t probe_rounds{0};
         std::chrono::steady_clock::time_point next_probe_at{};

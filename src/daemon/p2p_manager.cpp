@@ -8509,9 +8509,15 @@ void P2PManager::PunchTick() {
                 continue;
             }
             if (initiator && a.phase == PunchAttempt::Phase::Dialing && now >= a.dial_at &&
-                a.next_target < a.targets.size() &&
-                (a.dialed_key.empty() || !dial_live[a.dialed_key])) {
-                dials.push_back({id, a.nonce, a.next_target, a.targets});
+                a.next_target < a.targets.size()) {
+                // A target that silently drops the Initial keeps its dial
+                // handshaking past the deadline; once its share is used up,
+                // drop it and try the next one.
+                const bool expired = !a.dialed_key.empty() && now >= a.dial_expires;
+                if (expired) teardown.push_back(a.dialed_key);
+                if (a.dialed_key.empty() || !dial_live[a.dialed_key] || expired) {
+                    dials.push_back({id, a.nonce, a.next_target, a.targets});
+                }
             }
             if (!initiator) {
                 auto round = TakeProbeRoundLocked(a, now);
@@ -8543,8 +8549,14 @@ void P2PManager::PunchTick() {
         auto it = punch_attempts_.find(d.id);
         if (key.empty()) idx = d.targets.size();
         if (it != punch_attempts_.end() && it->second.nonce == d.nonce) {
-            it->second.next_target = idx + 1;
-            it->second.dialed_key = key;
+            PunchAttempt& a = it->second;
+            a.next_target = idx + 1;
+            a.dialed_key = key;
+            const auto now = PunchNow();
+            const size_t remaining = d.targets.size() - std::min(idx, d.targets.size());
+            a.dial_expires = remaining > 0 && a.deadline > now
+                                 ? now + (a.deadline - now) / static_cast<long>(remaining)
+                                 : a.deadline;
         } else if (!key.empty()) {
             teardown.push_back(key);  // the attempt ended meanwhile
         }
