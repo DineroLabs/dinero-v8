@@ -127,6 +127,26 @@ def mainnet_schedule(node):
     check("utreexo_bridge: true still enables bridge mode", "Utreexo bridge mode ENABLED" in log)
     check("bridge opt-in stop", node.call("stop") == 0)
 
+    # Prove explicit app false beats a conflicting daemon config, for both
+    # supported SDK profiles (phones share ios_utreexo). Observe the live daemon, not only its startup narration.
+    for profile in ("ios_utreexo", "mac_fullblock"):
+        phone = datadir("bridge-disabled-" + profile)
+        with (phone / "dinero.conf").open("a") as config:
+            config.write("utreexo-bridge=1\n")
+        check(profile + " starts with explicit bridge false",
+              node.start(phone, sync_profile=profile, utreexo_bridge=False) == 0)
+        commitment = node.rpc("blockchain.getutreexocommitment")
+        commitment = commitment.get("result", commitment)
+        check(profile + " disables daemon bridge mode despite config true",
+              commitment.get("bridge_enabled") is False, commitment)
+        check(profile + " is not an active proof bridge",
+              commitment.get("bridge_active") is False, commitment)
+        status = node.call("status")
+        check(profile + " preserves the requested validation profile",
+              status.get("sync_profile") == profile and
+              status.get("utreexo_stateless") is (profile == "ios_utreexo"), status)
+        check(profile + " stop", node.call("stop") == 0)
+
 
 def rpc_port_held_by_desktop_daemon(node):
     # A Mac running dinero-qt has dinerod on the canonical mainnet RPC port 20998.
