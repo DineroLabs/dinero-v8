@@ -77,6 +77,8 @@ for _ in $(seq 1 60); do [[ "$(rpc $BPORT getblockcount '[]')" == "$(rpc $APORT 
 check "bob's daemon follows alice's chain" '[[ "$(rpc $BPORT getblockcount "[]")" == "$(rpc $APORT getblockcount "[]")" ]]'
 
 # --- Offer / accept through RPCs only ----------------------------------------------
+out=$(rpc $APORT swap.offer "{\"din_amount_una\":2000000000000000,\"btc_amount_sat\":1000000,\"btc_address\":\"$ALICE_BTC\"}" 2>&1 || true)
+check "an offer beyond alice's spendable DIN is refused (${out:0:60})" '[[ "$out" == *"exceeds available balance"* ]]'
 OFFER_JSON=$(rpc $APORT swap.offer "{\"din_amount_una\":1000000000,\"btc_amount_sat\":1000000,\"btc_address\":\"$ALICE_BTC\"}")
 OFFER=$(field "$OFFER_JSON" offer); ID=$(field "$OFFER_JSON" id)
 echo "  offer $ID: ${OFFER:0:40}..."
