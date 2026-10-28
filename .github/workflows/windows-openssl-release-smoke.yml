@@ -27,6 +27,12 @@ jobs:
       - name: Setup MSVC
         uses: ilammy/msvc-dev-cmd@v1
 
+      - name: Windows monitor header compile regression
+        shell: powershell
+        run: |
+          cl.exe /nologo /std:c++20 /EHsc /DNOMINMAX /DWIN32_LEAN_AND_MEAN /Zs /Iinclude /Isrc tests\consensus\test_monitor_macro_hygiene.cpp
+          if ($LASTEXITCODE -ne 0) { throw 'Windows monitor header regression failed' }
+
       - name: Cache vendored OpenSSL
         uses: actions/cache@v4
         with:

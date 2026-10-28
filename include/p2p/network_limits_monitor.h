@@ -27,6 +27,12 @@
 #include <string>
 #include <memory>
 
+// wingdi.h defines ERROR as 0. These public enum names must remain valid
+// regardless of whether Windows headers were included before this header.
+#ifdef ERROR
+#undef ERROR
+#endif
+
 namespace dinero {
 namespace p2p {
 

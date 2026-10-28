@@ -13558,12 +13558,14 @@ bool ChainstateService::InitCompactSnapshotBootstrap(const std::filesystem::path
         std::ifstream input(snapshot,std::ios::binary);const auto metadata=consensus::ReadOrchardSnapshotMetadata(input,68);
         if(metadata.utxo_count||!consensus::OrchardCatalogCommitmentActive(Params(),metadata.block_height))
             throw std::runtime_error("Compact v6 snapshot profile/activation mismatch");
+        // Convert the native (wide on Windows) path before publishing owners.
+        auto bootstrap_path=snapshot.string();
         const auto directory=std::filesystem::path(datadir_)/"blockchain";std::filesystem::create_directories(directory);
         auto wallet=std::make_unique<UTXOIndex>((directory/"utxo").string());
         if(!wallet->Initialize())throw std::runtime_error("Compact v6 wallet index unavailable");
         wallet->RequireMetadataAbsent({"reorg_in_progress",assumeutxo::kActiveKey,assumeutxo::kBaseBlockKey,
             assumeutxo::kBaseHeightKey,assumeutxo::kLifecycleStateKey,assumeutxo::kLcBaseBlockKey});
-        utxo_index_=std::move(wallet);snapshot_bootstrap_path_=snapshot;snapshot_bootstrap_base_hash_=metadata.block_hash;
+        utxo_index_=std::move(wallet);snapshot_bootstrap_path_=std::move(bootstrap_path);snapshot_bootstrap_base_hash_=metadata.block_hash;
         snapshot_bootstrap_base_height_=metadata.block_height;snapshot_bootstrap_v6_=true;
         snapshot_bootstrap_state_.store(SnapshotBootstrapState::Pending);orchard_compact_bootstrap_pending_.store(true);
         // No temporary full coin owner/forest is exposed to later provider

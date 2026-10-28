@@ -17128,3 +17128,13 @@ if(UNIX AND TARGET dinerod AND NOT DINERO_BUILD_ORCHARD_BACKEND)
   set_tests_properties(OrchardBackendOffHandoffRefusal PROPERTIES
     TIMEOUT 150 RUN_SERIAL TRUE LABELS "orchard;storage;regression;mandatory")
 endif()
+
+# Reproduce wingdi.h's ERROR macro on every compiler, including non-Windows CI.
+add_executable(test_monitor_macro_hygiene tests/consensus/test_monitor_macro_hygiene.cpp)
+target_include_directories(test_monitor_macro_hygiene PRIVATE
+  ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src)
+if(WIN32)
+  target_compile_definitions(test_monitor_macro_hygiene PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+endif()
+add_test(NAME MonitorMacroHygiene COMMAND test_monitor_macro_hygiene)
+set_tests_properties(MonitorMacroHygiene PROPERTIES TIMEOUT 10 LABELS "unit;portability;mandatory")
