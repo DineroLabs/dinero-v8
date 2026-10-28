@@ -222,7 +222,10 @@ wait_status() {  # <rpcport> <datadir> <jq-bool-expr over snapshot_bootstrap> <t
 rpc_result() {
     local response
     response="$(rpc "$1" "$2" "$3" "${4:-[]}")" || return 1
-    jq -e '.error == null and has("result")' <<<"$response" >/dev/null 2>&1 || return 1
+    jq -e '.error == null and has("result")' <<<"$response" >/dev/null 2>&1 || {
+        printf '[RPC failure] %s: %s\n' "$3" "$response" >&2
+        return 1
+    }
     jq -c '.result' <<<"$response"
 }
 

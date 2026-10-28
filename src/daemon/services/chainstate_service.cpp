@@ -824,6 +824,11 @@ void ApplyPersistedMetadataToBlockIndex(CBlockIndex* block_index,
     }
 
     std::lock_guard<std::recursive_mutex> index_lock(g_block_index_mutex);
+    // An AssumeUTXO height index can begin at its imported base. Rebuilding
+    // those entries before their header-only ancestors computes only suffix
+    // work. Restore the already-persisted cumulative work with the other
+    // metadata; selected reads still cross-check it against the header and tip.
+    block_index->chainwork = metadata.chainwork.GetHex();
     block_index->status = metadata.status_flags;
     if (metadata.status_flags & BLOCK_FAILED_VALID) {
         InvalidateAncestryCache();
