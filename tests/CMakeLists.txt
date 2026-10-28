@@ -17069,7 +17069,7 @@ add_executable(swap_e2e_tool
 target_link_libraries(swap_e2e_tool PRIVATE dinero_rpc_client dinero_consensus argon2 OpenSSL::Crypto)
 link_zstd_if_needed(swap_e2e_tool)
 target_include_directories(swap_e2e_tool PRIVATE ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/external)
-if(TARGET dinerod AND TARGET dinero-swap-tower AND DINERO_BITCOIND AND NOT WIN32)
+if(TARGET dinerod AND TARGET dinero-swap-tower AND DINERO_BITCOIND)
   add_executable(swap_e2e_fixture_daemon tests/wallet/swap_e2e_fixture_daemon.cpp ${_release_sources})
   foreach(_property INCLUDE_DIRECTORIES COMPILE_DEFINITIONS COMPILE_OPTIONS LINK_LIBRARIES LINK_OPTIONS)
     get_target_property(_swap_fixture_property dinerod ${_property})
