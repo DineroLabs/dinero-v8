@@ -25,14 +25,20 @@ TEST(WalletShieldHistory, ReadyHistoryAndTimestampSurviveReopenMiningAndRewind){
     EXPECT_EQ(row[0],f.Payments()[0].recipient.EncodeAddress(orchard::WalletNetwork::Regtest));
     EXPECT_DOUBLE_EQ(std::stod(row[1]),-0.00030);EXPECT_EQ(row[2],"shield");EXPECT_TRUE(row[3].empty());
     EXPECT_EQ(std::stoull(row[4]),*entry.shield_ready_time);EXPECT_EQ(row[5],"0");EXPECT_EQ(row[6],"0");
-    const auto bytes=ShieldQueueBytes(f.Account(3).account.Operations());ASSERT_EQ(bytes[7],'4');
+    const auto queue=f.Account(3).account.Operations();ASSERT_EQ(queue.Entries().size(),1u);
+    const auto bytes=ShieldQueueBytes(queue);ASSERT_EQ(bytes[7],'6');
+    ASSERT_TRUE(entry.recovery);ASSERT_FALSE(entry.spend_request);
+    // v6 appends the absent-spend flag and the length-prefixed recovery
+    // capsule after the v4 history field. Exercise the history bytes themselves.
+    const size_t trailing=entry.recovery->Bytes().size()+6;
+    ASSERT_GT(bytes.size(),trailing+9);const size_t history=bytes.size()-trailing-9;
     EXPECT_EQ(ShieldQueueBytes(wallet::OrchardOperationQueue::Restore(orchard::WalletStateBytes(bytes),f.Domain())),bytes);
-    for(size_t size=bytes.size()-9;size<bytes.size();++size){const std::vector<uint8_t> bad(bytes.begin(),bytes.begin()+size);
+    for(size_t size=history;size<history+9;++size){const std::vector<uint8_t> bad(bytes.begin(),bytes.begin()+size);
         EXPECT_THROW(wallet::OrchardOperationQueue::Restore(orchard::WalletStateBytes(bad),f.Domain()),std::runtime_error);}
     for(int mode:{0,1,2}){auto bad=bytes;
-        if(mode==0)bad[bad.size()-9]=2;
-        if(mode==1)std::fill(bad.end()-8,bad.end(),0);
-        if(mode==2)bad.back()|=0x80;
+        if(mode==0)bad[history]=2;
+        if(mode==1)std::fill(bad.begin()+history+1,bad.begin()+history+9,0);
+        if(mode==2)bad[history+8]|=0x80;
         EXPECT_THROW(wallet::OrchardOperationQueue::Restore(orchard::WalletStateBytes(bad),f.Domain()),std::runtime_error);}
     const auto ready=f.Snapshot();f.Reopen();ASSERT_TRUE(f.wallet->EnsureRuntimeWalletBindings());
     EXPECT_EQ(f.FinishOwned(),body);EXPECT_EQ(f.Snapshot(),ready);EXPECT_EQ(f.History(id),row);
@@ -78,7 +84,12 @@ TEST(WalletShieldHistory, AlteredMissingAndLegacyReadyHistoryRefuseWithoutRecons
     // ordinary receipt invalidation caused by the earlier tampering cases.
     ShieldHistoryFixture old_fixture;old_fixture.Complete();const auto old_body=old_fixture.FinishOwned();
     const auto old_id=old_fixture.Txid(old_body);const auto old_history=old_fixture.History(old_id);
-    auto legacy=ShieldQueueBytes(old_fixture.Account(3).account.Operations());legacy.resize(legacy.size()-9);legacy[7]='3';
+    const auto old_queue=old_fixture.Account(3).account.Operations();ASSERT_EQ(old_queue.Entries().size(),1u);
+    const auto& old_entry=old_queue.Entries().begin()->second;
+    ASSERT_TRUE(old_entry.recovery);ASSERT_FALSE(old_entry.spend_request);ASSERT_TRUE(old_entry.shield_ready_time);
+    auto legacy=ShieldQueueBytes(old_queue);ASSERT_EQ(legacy[7],'6');
+    const size_t removed=old_entry.recovery->Bytes().size()+6+9;
+    ASSERT_GT(legacy.size(),removed);legacy.resize(legacy.size()-removed);legacy[7]='3';
     EXPECT_NO_THROW(wallet::OrchardOperationQueue::Restore(orchard::WalletStateBytes(legacy),old_fixture.Domain()));
     old_fixture.StoreQueueFixture(legacy);const auto old=old_fixture.Snapshot();
     EXPECT_THROW(old_fixture.FinishOwned(),std::runtime_error);EXPECT_EQ(old_fixture.Snapshot(),old);EXPECT_EQ(old_fixture.History(old_id),old_history);

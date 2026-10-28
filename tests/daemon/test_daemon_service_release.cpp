@@ -189,7 +189,9 @@ int main(int argc, char** argv) try {
         }
         if (!wake.Running() || !report.running || !report.slices)
             throw std::runtime_error("daemon worker did not perform its initial durable scan");
-        if (report.wallet_head || report.reorg_head || report.intents || report.admission_attempts)
+        if (report.wallet_head ||
+            (report.reorg_head && (*report.reorg_head != dinero::RuntimeOutboxCursor{} || !report.reorg_eof)) ||
+            report.after_intent != dinero::RuntimeOutboxCursor{} || report.intents || report.admission_attempts)
             throw std::runtime_error("fresh daemon invented runtime recovery progress");
         std::cout << "PASS actual daemon initial durable scan without fabricated progress\n";
         if (report.vault!=dinero::RuntimeDeliveryWorker::VaultOutcome::NoAttachedRuntime ||

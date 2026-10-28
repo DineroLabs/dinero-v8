@@ -56,8 +56,21 @@ int main() {
             CHECK(!SelectedOrchardBlockContext(BlockHeader{}, UINT32_MAX));
         }
         auto scheduled = Params();
-        if (network == Chain::MAINNET)
+        if (network == Chain::MAINNET) {
+            // The public catalog commitment cannot remain armed while Orchard
+            // is disabled. Verify transactional refusal before isolating the copy.
+            const auto catalog = scheduled.orchard_catalog_commitment_activation_height;
+            CHECK(catalog != UINT32_MAX);
+            bool refused = false;
+            try { ConfigureOrchardRelease(scheduled, UINT32_MAX, 0); }
+            catch (const std::invalid_argument&) { refused = true; }
+            CHECK(refused);
+            CHECK(scheduled.orchard_activation_height == Params().orchard_activation_height);
+            CHECK(scheduled.orchard_branch_id == Params().orchard_branch_id);
+            CHECK(scheduled.orchard_catalog_commitment_activation_height == catalog);
+            scheduled.orchard_catalog_commitment_activation_height = UINT32_MAX;
             ConfigureOrchardRelease(scheduled, UINT32_MAX, 0);
+        }
         // Synthetic prerequisites isolate the copied fixture from mainnet.
         scheduled.shielded_activation_height = 1;
         scheduled.shielded_input_binding_activation_height = 2;

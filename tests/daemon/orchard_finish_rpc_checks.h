@@ -116,15 +116,21 @@ TEST(OrchardFinishRpc, RejectedAdmissionRetainsReadyForExactReopenRetry){
     const auto accepted=f.Finish(params);ASSERT_FALSE(accepted.isMember("error"))<<accepted["error"].asString();EXPECT_TRUE(accepted["admitted"].asBool());EXPECT_EQ(accepted["txid"],refused["txid"]);EXPECT_EQ(f.broadcast_body,bytes);EXPECT_EQ(f.Snapshot(),before);
     EXPECT_TRUE(f.ready_at_broadcast);EXPECT_TRUE(f.autocommit_at_broadcast);EXPECT_TRUE(f.retired_at_broadcast);
 }
-TEST(OrchardFinishRpc, SelectedDomainAndMissingOwnedProofRefuseWithoutRegeneration){
+TEST(OrchardFinishRpc, SelectedDomainAndMissingProofResumeRetainExactReservation){
     OrchardFinishRpcFixture f;const auto params=f.RequestJson();
     {wallet::OrchardProofJobs idle;const auto request=f.Request(idle);EXPECT_TRUE(request->enqueued);
-     const auto before=f.Snapshot();const auto missing=f.Finish(params);
+     const auto before=f.Snapshot();
+     {auto use=WalletService::AcquireWalletUse(f.wallet);const auto status=f.Read(use->OrchardProofs());
+      EXPECT_FALSE(status.state);EXPECT_FALSE(status.proof);EXPECT_FALSE(use->OrchardProofs().Query(f.Operation(1)));}
+     EXPECT_EQ(f.Snapshot(),before);f.ExpectUnsubmitted();
+     const auto missing=f.Finish(params);
      EXPECT_TRUE(missing.isMember("error"));EXPECT_EQ(missing.size(),4u);
      EXPECT_EQ(missing["error_code"].asString(),"proof_not_ready");
-     EXPECT_EQ(missing["proof_state"].asString(),"missing");EXPECT_TRUE(missing["reservation_retained"].asBool());
+     // Explicit finish may restore only this authenticated persisted intent.
+     // It still refuses admission until the resumed proof is ready.
+     EXPECT_EQ(missing["proof_state"].asString(),"queued");EXPECT_TRUE(missing["reservation_retained"].asBool());
      EXPECT_EQ(f.Snapshot(),before);f.ExpectUnsubmitted();
-     auto use=WalletService::AcquireWalletUse(f.wallet);EXPECT_FALSE(use->OrchardProofs().Query(f.Operation(1)));}
+     auto use=WalletService::AcquireWalletUse(f.wallet);EXPECT_TRUE(use->OrchardProofs().Query(f.Operation(1)));}
     OrchardFinishRpcFixture complete;const auto valid=complete.RequestJson();ASSERT_FALSE(complete.CallSpend(valid).isMember("error"));complete.CompleteProof();
     auto use=WalletService::AcquireWalletUse(complete.wallet);auto captured=complete.Read(use->OrchardProofs());ASSERT_TRUE(captured.proof);
     const auto envelope=orchard::TransactionEnvelope::Create(0,{}, {},100000,captured.proof->Bytes());const auto before=complete.Snapshot();

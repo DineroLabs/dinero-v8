@@ -803,6 +803,8 @@ private:
         const storage::LegacyRetirementState&,rocksdb::WriteBatch&);
     // Reconstruct authentic catalog heads only in its unpublished scratch candidate.
     friend class OrchardReindexOwner;
+    // Unit-store seeding only; no selected-owner or ancestry authority.
+    friend struct OrchardCatalogFixtureTestAccess;
     Status stageOrchardCatalogState(const ChainWriteToken&,const uint256&,
         const std::string&,rocksdb::WriteBatch&);
     Status stageHistoricalCompactCatalogState(const ChainWriteToken&,const uint256&,

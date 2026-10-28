@@ -330,8 +330,8 @@ jobs:
       - name: Build and execute real mempool runtime test consumers
         run: |
           mapfile -t targets < build-orchard-root/real-mempool-fixture-targets.txt
-          if test "${#targets[@]}" -ne 21; then
-            printf 'Expected 21 real mempool fixture targets; found %s\n' "${#targets[@]}" >&2
+          if test "${#targets[@]}" -ne 31; then
+            printf 'Expected 31 real mempool fixture targets; found %s\n' "${#targets[@]}" >&2
             printf '%s\n' "${targets[@]}" >&2
             exit 1
           fi
@@ -354,7 +354,8 @@ jobs:
               raise SystemExit('Execution policy excludes: '+', '.join(forbidden))
           json.dump({'tests':tests},open('orchard-real-mempool-inventory.json','w'),indent=2)
           pathlib.Path('orchard-real-mempool-regex.txt').write_text('^('+'|'.join(re.escape(t['name']) for t in tests)+')$')
-          # Every compiled replay-binary case must have exactly one enabled CTest owner.
+          # Every compiled replay-binary case must have an enabled CTest owner.
+          # The historical full replay and focused replay intentionally overlap.
           import fnmatch,subprocess
           replay=[t for t in tests if pathlib.Path(t['command'][0]).name=='test_assumeutxo_replay']
           assert replay
@@ -372,7 +373,10 @@ jobs:
               matched=[case for case in cases if any(fnmatch.fnmatchcase(case,p) for p in filters[0].split(':'))]
               assert matched,(test['name'],'empty filter')
               for case in matched:owners[case].append(test['name'])
-          assert all(len(v)==1 for v in owners.values()),owners
+          for case, tests in owners.items():
+              expected=2 if case.startswith('AssumeUtxoReplay.') else 1
+              assert len(tests)==expected,(case,tests)
+              if expected==2:assert set(tests)=={'AssumeUtxoReplay','AssumeUtxoReplayFocused'},(case,tests)
           json.dump(owners,open('orchard-replay-case-owners.json','w'),indent=2)
           PYTEST
           ctest --test-dir build-orchard-root -R "$(cat orchard-real-mempool-regex.txt)" --verbose --no-tests=error --output-log orchard-real-mempool-execution.log
@@ -382,8 +386,8 @@ jobs:
           log=open('orchard-real-mempool-execution.log').read()
           if sorted(re.findall(r'Test\s+#\d+:\s+(\S+)\s+\.+\s+Passed',log))!=sorted(names):
               raise SystemExit('Real mempool test consumer executions incomplete')
-          for case in json.load(open('orchard-replay-case-owners.json')):
-              assert log.count('[       OK ] '+case+' (')==1,case
+          for case, owners in json.load(open('orchard-replay-case-owners.json')).items():
+              assert log.count('[       OK ] '+case+' (')==len(owners),case
           PYTEST
       - name: Consistent mining selection and fee snapshot
         run: |
@@ -1485,7 +1489,7 @@ jobs:
           python3 - <<'PYCODE'
           from pathlib import Path
           log=Path('orchard-finish-rpc-execution.log').read_text()
-          for case in ['MalformedRequestsRefuseBeforeServices', 'RegistryAndBackendOrServiceAbsenceRefuse', 'ActualTransferAndUnshieldCommitBeforeAdmissionAndRelay', 'UnknownChangedAndIncompleteCatalogRequestsRefuseWithoutEffects', 'ReadyWriteAndCommitRefusalRetainProofWithoutSubmission', 'RejectedAdmissionRetainsReadyForExactReopenRetry', 'SelectedDomainAndMissingOwnedProofRefuseWithoutRegeneration']:
+          for case in ['MalformedRequestsRefuseBeforeServices', 'RegistryAndBackendOrServiceAbsenceRefuse', 'ActualTransferAndUnshieldCommitBeforeAdmissionAndRelay', 'UnknownChangedAndIncompleteCatalogRequestsRefuseWithoutEffects', 'ReadyWriteAndCommitRefusalRetainProofWithoutSubmission', 'RejectedAdmissionRetainsReadyForExactReopenRetry', 'SelectedDomainAndMissingProofResumeRetainExactReservation']:
               assert log.count('[       OK ] OrchardFinishRpc.'+case+' (')==1,case
           assert '100% tests passed, 0 tests failed out of 1' in log
           PYCODE
