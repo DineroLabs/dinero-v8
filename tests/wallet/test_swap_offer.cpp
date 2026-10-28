@@ -227,3 +227,16 @@ TEST(SwapOffer, TakerRefusesLocksThatLastTooLong) {
     ok.t_din_unix = ok.t_btc_unix + 6 * 24 * kHour;
     EXPECT_NO_THROW(RequireAcceptableNow(ok, kNow));
 }
+
+// Golden bytes: offers and accepts already sent between wallets, and stored in
+// swap files on disk, must keep decoding to the same terms and re-encoding to
+// the same text. Round trips alone would not notice the format drifting.
+TEST(SwapOffer, GoldenOfferAndAcceptBytesAreStable) {
+    const char* kOffer = "dinswap1o010200e876481700000040420f0000000000ababababababababababababababababababababababababababababababababf9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f902e493dbf1c10d80f3581e4904930b1404cc6c13900ee0758474fa94abe8c4cd1320914c6ba03f4b6b1e0000000200000020ee496be5278da7";
+    const char* kAccept = "dinswap1a01e5278da7ee36375c297b632758616a63ffbc3194e677de63b03ee08918c182142f8bde4d1a07209355b4a7250a5c5128e88b84bddc619ab7cba8d569b240efe403fff97bd5755eeea420453a14355235d382f6472f8568a18b2f057a146029755605540993";
+    const auto offer = ValidOffer();
+    EXPECT_EQ(EncodeOffer(offer), kOffer);
+    EXPECT_EQ(EncodeOffer(DecodeOffer(kOffer)), kOffer);
+    EXPECT_EQ(EncodeAccept(ValidAccept(offer)), kAccept);
+    EXPECT_EQ(EncodeAccept(DecodeAccept(kAccept)), kAccept);
+}
