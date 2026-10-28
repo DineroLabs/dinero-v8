@@ -50,6 +50,7 @@ jobs:
 
       - name: CMake configure (as ci.yml, without ccache)
         run: |
+          export SOURCE_DATE_EPOCH="$(git show -s --format=%ct HEAD)"
           cmake -S . -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DDINERO_REPRODUCIBLE_BUILD=ON \
