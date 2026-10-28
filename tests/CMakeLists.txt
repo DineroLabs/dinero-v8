@@ -6968,6 +6968,7 @@ set_tests_properties(MempoolRankedRpc PROPERTIES
 
 add_executable(test_mempool_address_capture
   tests/rpc/test_mempool_address_capture.cpp
+  tests/stubs/vault_test_stubs.cpp  # Isolate vault observers; keep the real mempool below.
   src/daemon/mempool.cpp
   src/daemon/config.cpp
   src/daemon/legacy_globals_stub.cpp
@@ -6981,7 +6982,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   # project archive closure must share the rescan group: grouping only the
   # transaction reader leaves late wallet->core backreferences unresolved.
   # These targets are declared later; generation-time presence keeps OFF and
-  # CMake 3.20 supported without adding stubs or whole-archive extraction.
+  # CMake 3.20 supported without mempool stubs or whole-archive extraction.
   target_link_libraries(test_mempool_address_capture PRIVATE
     "-Wl,--start-group" dinero_rpc_handlers dinero_core
     "$<TARGET_NAME_IF_EXISTS:dinero_orchard_mempool_body>"
@@ -7049,6 +7050,7 @@ set_tests_properties(MempoolAddressCapture PROPERTIES
 
 add_executable(test_mempool_retained_load
   tests/mempool/test_mempool_retained_load.cpp
+  tests/stubs/vault_test_stubs.cpp  # Isolate vault observers; keep the real mempool below.
   src/daemon/mempool.cpp
   src/daemon/config.cpp
   src/daemon/legacy_globals_stub.cpp
@@ -7062,7 +7064,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   # project archive closure must share the rescan group: grouping only the
   # transaction reader leaves late wallet->core backreferences unresolved.
   # These targets are declared later; generation-time presence keeps OFF and
-  # CMake 3.20 supported without adding stubs or whole-archive extraction.
+  # CMake 3.20 supported without mempool stubs or whole-archive extraction.
   target_link_libraries(test_mempool_retained_load PRIVATE
     "-Wl,--start-group" dinero_rpc_handlers dinero_core
     "$<TARGET_NAME_IF_EXISTS:dinero_orchard_mempool_body>"
@@ -7130,6 +7132,7 @@ set_tests_properties(MempoolRetainedLoad PROPERTIES
 
 add_executable(test_mempool_typed_package
   tests/mempool/test_mempool_typed_package.cpp
+  tests/stubs/vault_test_stubs.cpp  # Isolate vault observers; keep the real mempool below.
   src/daemon/mempool.cpp
   src/daemon/config.cpp
   src/daemon/legacy_globals_stub.cpp
@@ -7143,7 +7146,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   # project archive closure must share the rescan group: grouping only the
   # transaction reader leaves late wallet->core backreferences unresolved.
   # These targets are declared later; generation-time presence keeps OFF and
-  # CMake 3.20 supported without adding stubs or whole-archive extraction.
+  # CMake 3.20 supported without mempool stubs or whole-archive extraction.
   target_link_libraries(test_mempool_typed_package PRIVATE
     "-Wl,--start-group" dinero_rpc_handlers dinero_core
     "$<TARGET_NAME_IF_EXISTS:dinero_orchard_mempool_body>"
