@@ -221,6 +221,18 @@ jobs:
       - name: Exercise real Orchard-enabled SDK runtime
         run: |
           ctest --test-dir build-orchard-root -R '^(NodeCoreRuntimeLifecycle|NodeCoreStorageReadiness|OrchardActivationRuntime|OrchardMigrationDatadirAlias)$' --verbose --no-tests=error --output-log orchard-sdk-runtime-execution.log
+      - name: Input-proof wire codec and exact-session download
+        run: |
+          # Catch compiler-dependent wire reads before the long consumer suite.
+          # The complete consumer inventory still executes this family below.
+          ctest --test-dir build-orchard-root -R '^WalletFundingDownload$' --verbose --no-tests=error --output-log orchard-input-proof-execution.log
+          python3 - <<'PYINPUT'
+          import re
+          log=open('orchard-input-proof-execution.log').read()
+          assert re.findall(r'Test\s+#\d+:\s+(\S+)\s+\.+\s+Passed',log)==['WalletFundingDownload']
+          cases=['NewInputProofCodecBounds','InputRequestOutpointUsesWireFieldOrder','NewInputRequestCapacityAndStop','CurrentSourceChangeCancelsBlockedInputFlight','BoundedRequestsAndStoppedOwner','CurrentFullSourceInputProofAndExactSessionDownload','ActualCreationMetadataAndMerkleComparison','ExactSessionAndBodyDataOnly']
+          assert sorted(re.findall(r'\[       OK \] WalletFundingDownload\.(\w+)',log))==sorted(cases)
+          PYINPUT
       - name: Exercise phone migration, rollback cleanup and CSN reconnect
         run: |
           cmake --build build-orchard-root --target test_orchard_wallet_cycle_daemon migrate_shielded_datadir --parallel 2

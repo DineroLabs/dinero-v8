@@ -34,7 +34,10 @@ struct WalletInputProof {
             Reader r(bytes);Check(bytes.size()==RequestBytes);r.Tag();Request v;
             v.magic=r.Number(4);v.genesis=r.Hash();v.branch=r.Number(4);v.activation=r.Number(4);
             v.leaf_activation=r.Number(4);v.height=r.Number(4);v.tip=r.Hash();v.root=r.Hash();v.nonce=r.Hash();
-            v.point=OutPoint(TxId(r.Hash()),uint32_t(r.Number(4)));r.End();Check(v.Encode()==Bytes(bytes.begin(),bytes.end()));return v;
+            // Reader calls mutate the same cursor. Function arguments may be
+            // evaluated in either order; consume txid before the output index.
+            const auto txid=r.Hash();const auto index=uint32_t(r.Number(4));
+            v.point=OutPoint(TxId(txid),index);r.End();Check(v.Encode()==Bytes(bytes.begin(),bytes.end()));return v;
         }
         void CheckProfile()const {
             const auto& p=Params();Check(consensus::OrchardProfileConfigurationValid(p)&&magic==p.magic&&

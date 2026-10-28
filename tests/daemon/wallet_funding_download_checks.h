@@ -6,6 +6,21 @@ TEST(WalletFundingDownload, NewInputProofCodecBounds){
     EXPECT_THROW(W::Request::Decode(std::vector<uint8_t>(W::RequestBytes)),std::invalid_argument);
     EXPECT_THROW(W::Reply::Decode(std::vector<uint8_t>(W::MaximumBytes+1)),std::invalid_argument);
 }
+TEST(WalletFundingDownload, InputRequestOutpointUsesWireFieldOrder){
+    using W=p2p::WalletInputProof;W::Request request;
+    request.magic=0x10203040;request.branch=7;request.activation=11;request.leaf_activation=9;request.height=19;
+    std::fill(request.genesis.begin(),request.genesis.end(),0x21);
+    std::fill(request.tip.begin(),request.tip.end(),0x43);
+    std::fill(request.root.begin(),request.root.end(),0x65);
+    std::fill(request.nonce.begin(),request.nonce.end(),0x87);
+    uint256 txid;for(size_t i=0;i<32;++i)txid.begin()[i]=uint8_t(0x90+i);
+    for(const uint32_t index:{0u,0x12345678u,UINT32_MAX}){
+        request.point=OutPoint(TxId(txid),index);const auto bytes=request.Encode();
+        const auto decoded=W::Request::Decode(bytes);
+        EXPECT_EQ(decoded,request);EXPECT_EQ(decoded.point.txid,TxId(txid));
+        EXPECT_EQ(decoded.point.vout,index);EXPECT_EQ(decoded.Encode(),bytes);
+    }
+}
 #ifdef DINERO_TEST_ORCHARD_ORIGIN
 TEST(WalletFundingDownload, NewInputRequestCapacityAndStop){
     OrchardAdmissionFixture f;using W=p2p::WalletInputProof;W::Request request;
