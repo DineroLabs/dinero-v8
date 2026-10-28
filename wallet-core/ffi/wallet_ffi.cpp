@@ -228,60 +228,38 @@ int dinero_wallet_init(const char* datadir) {
 }
 
 int dinero_wallet_create(char** mnemonic_out) {
-    if (!mnemonic_out) {
-        return -1;
-    }
-    
+    if (!mnemonic_out) return -1;
+    *mnemonic_out = nullptr;
     std::lock_guard<WalletMutex> lock(g_wallet_mutex);
-    
     std::string mnemonic;
-    std::vector<uint8_t> seed;
-    [[maybe_unused]] auto cleanup_sensitive = MakeScopeExit([&]() {
-        secure_clear_bytes(seed);
+    char* output = nullptr;
+    [[maybe_unused]] auto cleanup = MakeScopeExit([&]() {
+        if (output) {
+            OPENSSL_cleanse(output, mnemonic.size());
+            std::free(output);
+        }
         secure_clear_string(mnemonic);
     });
     try {
-        dinero::WalletManager* wm = get_wallet_manager_nolock();
-        if (!wm || !ensure_active_wallet_nolock(wm, true)) {
-            return -1;
-        }
-
-        if (wm->isWalletEncrypted()) {
-            // Avoid replacing seed under encrypted metadata without migration.
-            return -1;
-        }
-
-        mnemonic = dinero::bip39::Generate(dinero::bip39::WordCount::Words12);
-        if (mnemonic.empty()) {
-            return -1;
-        }
-
-        if (!dinero::bip39::MnemonicToSeed(mnemonic, "", seed)) {
-            return -1;
-        }
-
-        if (!wm->storeMasterSeed(seed, "", true)) {
-            return -1;
-        }
-
-        *mnemonic_out = allocate_c_string(mnemonic);
-        if (!*mnemonic_out) {
-            return -1;
-        }
-
+        auto* wm = get_wallet_manager_nolock();
+        // Creation cannot replace an existing wallet's seed or catalog.
+        if (!wm || wm->hasActiveWallet() || wm->exists(kDefaultFFIWalletName)) return -1;
+        auto identity = dinero::WalletManager::GenerateBip39Identity(12, "");
+        mnemonic = identity.Mnemonic();
+        output = allocate_c_string(mnemonic);
+        if (!output) return -1;
+        // Initialize the recovery seed as the first identity, before publishing
+        // the database, rather than creating a random seed and replacing it.
+        wm->createFromGeneratedBip39(kDefaultFFIWalletName, std::move(identity), "");
+        *mnemonic_out = output;
+        output = nullptr;
         return 0;
-    } catch (...) {
-        return -1;
-    }
+    } catch (...) { return -1; }
 }
 
 int dinero_wallet_restore(const char* mnemonic, const char* passphrase) {
-    if (!mnemonic) {
-        return -1;
-    }
-    
+    if (!mnemonic) return -1;
     std::lock_guard<WalletMutex> lock(g_wallet_mutex);
-    
     std::string mnemonic_str;
     std::vector<uint8_t> seed;
     [[maybe_unused]] auto cleanup_sensitive = MakeScopeExit([&]() {
@@ -289,34 +267,25 @@ int dinero_wallet_restore(const char* mnemonic, const char* passphrase) {
         secure_clear_string(mnemonic_str);
     });
     try {
-        dinero::WalletManager* wm = get_wallet_manager_nolock();
-        if (!wm || !ensure_active_wallet_nolock(wm, true)) {
-            return -1;
-        }
-
-        if (wm->isWalletEncrypted()) {
-            // Restoring into encrypted wallet requires dedicated migration flow.
-            return -1;
-        }
-
+        auto* wm = get_wallet_manager_nolock();
+        if (!wm) return -1;
         mnemonic_str = mnemonic;
-        if (!dinero::bip39::ValidateMnemonic(mnemonic_str)) {
-            return -1;
-        }
-
+        if (!dinero::bip39::ValidateMnemonic(mnemonic_str)) return -1;
         const std::string bip39_passphrase = passphrase ? passphrase : "";
-        if (!dinero::bip39::MnemonicToSeed(mnemonic_str, bip39_passphrase, seed)) {
-            return -1;
+        if (!dinero::bip39::MnemonicToSeed(mnemonic_str, bip39_passphrase, seed)) return -1;
+        if (!wm->hasActiveWallet() && !wm->exists(kDefaultFFIWalletName)) {
+            wm->createFromBip39(kDefaultFFIWalletName, mnemonic_str, bip39_passphrase);
+            return 0;
         }
-
-        if (!wm->storeMasterSeed(seed, "", true)) {
-            return -1;
-        }
-
-        return 0;
-    } catch (...) {
-        return -1;
-    }
+        if (!ensure_active_wallet_nolock(wm, false) || wm->isWalletEncrypted()) return -1;
+        // Same-identity rebinding does not rewrite seed or address state. Refuse every
+        // different seed, including legacy wallets without an Orchard catalog.
+        auto current = wm->GetMasterSeed();
+        if (!current) return -1;
+        [[maybe_unused]] auto cleanup_current = MakeScopeExit([&]() { secure_clear_bytes(*current); });
+        return current->size() == seed.size() &&
+            CRYPTO_memcmp(current->data(), seed.data(), seed.size()) == 0 ? 0 : -1;
+    } catch (...) { return -1; }
 }
 
 // ============================================================================

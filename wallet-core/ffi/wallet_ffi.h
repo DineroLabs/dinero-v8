@@ -81,14 +81,14 @@ typedef struct {
 int dinero_wallet_init(const char* datadir);
 
 /**
- * Create new HD wallet
+ * Create a new HD wallet. Existing wallet identities are never replaced.
  * @param mnemonic_out Output mnemonic phrase (caller must free with dinero_wallet_free_string)
  * @return 0 on success, non-zero on error
  */
 int dinero_wallet_create(char** mnemonic_out);
 
 /**
- * Restore wallet from mnemonic
+ * Restore a fresh wallet from mnemonic, or rebind the existing identical seed.
  * @param mnemonic BIP-39 mnemonic phrase
  * @param passphrase Optional BIP-39 passphrase (can be NULL or empty)
  * @return 0 on success, non-zero on error
