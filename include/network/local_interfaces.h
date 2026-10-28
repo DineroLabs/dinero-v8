@@ -53,8 +53,8 @@ namespace network {
 //
 // On Windows the helper returns an empty set so the filter becomes a no-op,
 // preserving prior behavior — the production fleet is Linux-only.
-inline const std::unordered_set<std::string>& LocalInterfaceIps() {
-    static const std::unordered_set<std::string> kLocalIps = []() {
+inline std::unordered_set<std::string> EnumerateLocalInterfaceIps() {
+    {
         std::unordered_set<std::string> ips;
 #ifndef _WIN32
         // Primary: getifaddrs() — covers IPv4 + IPv6, but needs AF_NETLINK.
@@ -117,7 +117,14 @@ inline const std::unordered_set<std::string>& LocalInterfaceIps() {
         }
 #endif
         return ips;
-    }();
+    }
+}
+
+// Cached once at first call; for self-loop filtering, where staleness is harmless.
+// Callers that need the current addresses (IPv6 prefixes and privacy addresses
+// rotate) must call EnumerateLocalInterfaceIps() instead.
+inline const std::unordered_set<std::string>& LocalInterfaceIps() {
+    static const std::unordered_set<std::string> kLocalIps = EnumerateLocalInterfaceIps();
     return kLocalIps;
 }
 

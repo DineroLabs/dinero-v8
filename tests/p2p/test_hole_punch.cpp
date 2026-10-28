@@ -295,3 +295,16 @@ TEST(PunchCandidates, SkipsNonRoutable) {
     EXPECT_FALSE(c.v4.has_value());
     EXPECT_TRUE(c.v6.empty());
 }
+
+TEST(PunchCandidates, ReadsInterfacesFreshEachCall) {
+    P2PManager mgr(0);
+    mgr.test_set_quic_port(24444);
+    mgr.test_set_local_interface_ips({"2606:4700::5"});
+    auto c = mgr.LocalPunchCandidates();
+    ASSERT_EQ(c.v6.size(), 1u);
+    EXPECT_TRUE(SameStr(c.v6[0], "[2606:4700::5]:24444"));
+    mgr.test_set_local_interface_ips({"2606:4700::7"});  // prefix / privacy address rotated
+    c = mgr.LocalPunchCandidates();
+    ASSERT_EQ(c.v6.size(), 1u);
+    EXPECT_TRUE(SameStr(c.v6[0], "[2606:4700::7]:24444"));
+}

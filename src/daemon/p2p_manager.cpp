@@ -8225,18 +8225,22 @@ dinero::p2p::PunchCandidates P2PManager::LocalPunchCandidates() const {
 
     std::vector<std::string> iface_ips;
     std::set<std::pair<std::string, uint16_t>> reflexive;
+    bool have_test_ips = false;
     {
         std::lock_guard<std::mutex> lock(reach_mutex_);
         reflexive = stun_reflexive_;
         out.v4_mapping = nat_mapping_type_;
 #ifdef DINERO_TEST_BUILD
-        if (test_local_interface_ips_) iface_ips = *test_local_interface_ips_;
-        else
-#endif
-        {
-            const auto& ips = dinero::network::LocalInterfaceIps();
-            iface_ips.assign(ips.begin(), ips.end());
+        if (test_local_interface_ips_) {
+            iface_ips = *test_local_interface_ips_;
+            have_test_ips = true;
         }
+#endif
+    }
+    if (!have_test_ips) {
+        // Fresh read every call: IPv6 prefixes and privacy addresses rotate.
+        const auto ips = dinero::network::EnumerateLocalInterfaceIps();
+        iface_ips.assign(ips.begin(), ips.end());
     }
     auto routable = [](const std::string& ip, uint16_t port) {
         dinero::p2p::NetworkAddress a;
