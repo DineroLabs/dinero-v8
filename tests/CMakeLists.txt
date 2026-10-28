@@ -16651,6 +16651,7 @@ function(dinero_attach_real_mempool_fixture_runtime)
     dinero_core dinero_consensus dinero_pq dinero_shielded dinero_chainstate
     dinero_crypto secp256k1 RocksDB::rocksdb ${SQLITE3_LIBRARIES})
   set(_real_mempool_fixture_targets
+    test_orchard_index_delivery
     test_reindex_deep_chain
     test_header_metadata_recovery
     test_assumeutxo_replay
@@ -16682,6 +16683,9 @@ function(dinero_attach_real_mempool_fixture_runtime)
   foreach(_fixture IN LISTS _real_mempool_fixture_targets)
     if(NOT TARGET ${_fixture})
       continue()
+    endif()
+    if(_fixture STREQUAL "test_orchard_index_delivery")
+      target_sources(${_fixture} PRIVATE src/daemon/config.cpp)
     endif()
     get_target_property(_sources ${_fixture} SOURCES)
     list(FILTER _sources EXCLUDE REGEX "(^|/)tests/stubs/(mempool_test_stubs|daemon_test_stubs)\\.cpp$")
