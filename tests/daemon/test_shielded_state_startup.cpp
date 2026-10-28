@@ -330,10 +330,15 @@ void OrchardSnapshotPolicyRuntime() {
                     result.error_message.find("Legacy snapshot container cannot bootstrap Orchard")!=std::string::npos);
                 CHECK(read()==payload);
             }
+#if DINERO_TEST_ORCHARD_RUNTIME
+            const std::string refusal="active DNORST02";
+#else
+            const std::string refusal="Orchard v6 snapshot runtime backend unavailable";
+#endif
             write(6,150000);const auto dormant=service.LoadSnapshot(file);
-            CHECK(!dormant.success&&dormant.error_message.find("active DNORST02")!=std::string::npos);
+            CHECK(!dormant.success&&dormant.error_message.find(refusal)!=std::string::npos);
             const auto sentinel=read();const auto exported=service.ExportSnapshot(file);
-            CHECK(!exported.success&&exported.error_message.find("active DNORST02")!=std::string::npos);
+            CHECK(!exported.success&&exported.error_message.find(refusal)!=std::string::npos);
             CHECK(read()==sentinel); // Refusal precedes opening/truncating output.
         }
         db.close();CHECK(Inspect(database)==before);CHECK(db.init(database)==Status::Ok);

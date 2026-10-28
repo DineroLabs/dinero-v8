@@ -6,9 +6,8 @@
 # Integration test for relay_hints.list RPC + getnetworkinfo.relay 24h-counter
 # fields (Phase 2b daemon).
 #
-# Two-node topology (mirrors test_dashboard_rpcs.sh):
-#   Node A (rpcport=19022, p2pport=19021, HOME=TMP/home_a)
-#   Node B (rpcport=19032, p2pport=19031, HOME=TMP/home_b, addnode=A)
+# Two-node topology with explicit private datadirs, ephemeral ports and
+# owned foreground child processes, matching test_dashboard_rpcs.sh.
 #
 # Asserts:
 #   1. relay_hints.list returns the documented shape (rpc_schema, ttl_seconds,
@@ -27,41 +26,52 @@ set -euo pipefail
 DINEROD="${DINEROD:?DINEROD must point to dinerod binary}"
 DINERO_CLI="${DINERO_CLI:?DINERO_CLI must point to dinero-cli binary}"
 TMP="$(mktemp -d)"
-HA="$TMP/home_a"
-HB="$TMP/home_b"
+HA="$TMP/a"
+HB="$TMP/b"
 mkdir -p "$HA" "$HB"
-
+read -r RA PA WA RB PB WB < <(python3 - <<'PORTS'
+import socket
+sockets=[socket.socket() for _ in range(6)]
+for s in sockets: s.bind(('127.0.0.1',0))
+print(*(s.getsockname()[1] for s in sockets))
+for s in sockets: s.close()
+PORTS
+)
+PIDA=""; PIDB=""
 cleanup() {
-    HOME="$HA" "$DINERO_CLI" -rpcport=19022 stop 2>/dev/null || true
-    HOME="$HB" "$DINERO_CLI" -rpcport=19032 stop 2>/dev/null || true
-    sleep 2
-    rm -rf "$TMP"
+    code=$?
+    for pid in "$PIDA" "$PIDB"; do
+        if [[ -n "$pid" ]]; then
+            kill -TERM "$pid" 2>/dev/null || true
+            wait "$pid" 2>/dev/null || true
+        fi
+    done
+    if [[ "$code" == 0 ]]; then
+        rm -rf "$TMP"
+    else
+        echo "Relay RPC evidence: $TMP" >&2
+        tail -n 60 "$HA/daemon.log" "$HB/daemon.log" 2>/dev/null || true
+    fi
 }
 trap cleanup EXIT
-
 wait_rpc() {
-    local home_dir="$1" port="$2" deadline=$((SECONDS + 30))
-    until HOME="$home_dir" "$DINERO_CLI" -rpcport="$port" getnetworkinfo >/dev/null 2>&1; do
-        [ $SECONDS -lt $deadline ] || { echo "FAIL: daemon at port $port did not become ready within 30s"; exit 1; }
+    local dir="$1" port="$2" deadline=$((SECONDS + 30))
+    until "$DINERO_CLI" -datadir="$dir" -rpcport="$port" getnetworkinfo >/dev/null 2>&1; do
+        [ $SECONDS -lt $deadline ] || { echo "FAIL: daemon at port $port not ready"; exit 1; }
         sleep 1
     done
 }
-
-# Spin two regtest nodes so getpeerinfo has at least one entry.
-HOME="$HA" "$DINEROD" --regtest --rpcport=19022 --p2pport=19021 --listen -daemon
-wait_rpc "$HA" 19022
-echo "Node A ready"
-
-HOME="$HB" "$DINEROD" --regtest --rpcport=19032 --p2pport=19031 \
-    --addnode=127.0.0.1:19021 -daemon
-wait_rpc "$HB" 19032
-echo "Node B ready"
-
-# Allow time for peer handshake to complete.
+"$DINEROD" --regtest --datadir="$HA" --rpcport="$RA" --port="$PA" \
+    --wallet-socket-port="$WA" --listen=1 >"$HA/daemon.log" 2>&1 &
+PIDA=$!
+wait_rpc "$HA" "$RA"
+"$DINEROD" --regtest --datadir="$HB" --rpcport="$RB" --port="$PB" \
+    --wallet-socket-port="$WB" --listen=1 --addnode="127.0.0.1:$PA" >"$HB/daemon.log" 2>&1 &
+PIDB=$!
+wait_rpc "$HB" "$RB"
+cli_a() { "$DINERO_CLI" -datadir="$HA" -rpcport="$RA" "$@"; }
+cli_b() { "$DINERO_CLI" -datadir="$HB" -rpcport="$RB" "$@"; }
 sleep 6
-
-cli_a() { HOME="$HA" "$DINERO_CLI" -rpcport=19022 "$@"; }
-cli_b() { HOME="$HB" "$DINERO_CLI" -rpcport=19032 "$@"; }
 
 # ─── Assertion 1: relay_hints.list empty-cache shape ────────────────────────
 HINTS=$(cli_a relay_hints.list)

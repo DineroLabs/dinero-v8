@@ -46,6 +46,7 @@
 #include <chrono>
 #include <filesystem>
 #include <cstdlib>
+#include <cerrno>
 #include <sys/wait.h>
 #include <signal.h>
 #include <unistd.h>
@@ -200,13 +201,24 @@ pid_t launchNode() {
 // Helper: Stop Node
 // ============================================================================
 
-void stopNode(pid_t pid) {
-    if (pid > 0) {
-        kill(pid, SIGTERM);
-        int status;
-        waitpid(pid, &status, 0);
+void stopNode(pid_t& owned_pid) {
+    const pid_t pid = owned_pid;
+    owned_pid = 0;
+    if (pid <= 0) return;
+    kill(pid, SIGTERM);
+    int status = 0;
+    for (unsigned i = 0; i < 300; ++i) {
+        const auto result = waitpid(pid, &status, WNOHANG);
+        if (result == pid || (result < 0 && errno == ECHILD)) return;
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
+    kill(pid, SIGKILL);
+    while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {}
 }
+struct OwnedNode {
+    pid_t& pid;
+    ~OwnedNode() { stopNode(pid); }
+};
 
 // ============================================================================
 // Helper: Wait for Wallet to be Ready (after rescan)
@@ -245,6 +257,7 @@ TEST(WalletRestoreRescan, RestoreFindsFunds_W11) {
 
     std::cout << "Step 1: Launching node..." << std::endl;
     pid_t node = launchNode();
+    OwnedNode owner{node};
     ASSERT_GT(node, 0) << "Failed to launch node";
     ASSERT_TRUE(waitForNode(NODE_RPC_PORT)) << "Node did not start";
     std::cout << "✅ Node started" << std::endl;
@@ -262,11 +275,16 @@ TEST(WalletRestoreRescan, RestoreFindsFunds_W11) {
     std::string mnemonic = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
     std::cout << "✅ Using test mnemonic: " << mnemonic << std::endl;
 
-    // Import mnemonic via wallet.importmnemonic RPC.
-    // This replaces the random seed with the test mnemonic's seed. Derive one
+    // Restore into a new wallet rather than replacing the bootstrap wallet's
+    // seed: its Orchard catalog must remain bound to its original identity.
+    const auto created = rpcCall(NODE_RPC_PORT, "wallet.restore", {
+        {"name", TEST_WALLET_NAME}, {"mnemonic", mnemonic}, {"rescan", false}});
+    ASSERT_TRUE(created.contains("result") && created["result"].value("success", false))
+        << "Fresh restore failed: " << created.dump();
+
+    // Rebind the same recovery identity through wallet.importmnemonic. Derive one
     // receive/change address so the import satisfies its watch-script
-    // invariant; generate() will then mine to receive index 1, which is inside
-    // the default restore lookahead window.
+    // invariant, then verify the explicit same-seed retry preserves the set.
     try {
         json import_params;
         import_params["mnemonic"] = mnemonic;
@@ -319,7 +337,11 @@ TEST(WalletRestoreRescan, RestoreFindsFunds_W11) {
 
     // Mine 105 blocks so coinbase outputs mature (need 100 confirmations)
     // After 105 blocks, coinbase from block 2 has 103 confirms (mature)
-    json mine_response = rpcCall(NODE_RPC_PORT, "generate", {105});
+    // Restore pre-derives a gap window. Fund its first address explicitly;
+    // generate() would allocate the next address just outside that window.
+    const auto payout = created["result"].value("first_address", std::string{});
+    ASSERT_FALSE(payout.empty());
+    json mine_response = rpcCall(NODE_RPC_PORT, "mining.generatetoaddress", {105, payout});
     ASSERT_TRUE(mine_response.contains("result")) << "Mining failed";
     std::cout << "✅ Mined 105 blocks (first coinbase outputs now mature)" << std::endl;
 
@@ -402,11 +424,16 @@ TEST(WalletRestoreRescan, RestoreFindsFunds_W11) {
     std::cout << "\nStep 8: Restoring wallet from mnemonic..." << std::endl;
 
     json restore_params;
+    restore_params["name"] = RESTORE_WALLET_NAME;
     restore_params["mnemonic"] = mnemonic;
     restore_params["rescan"] = true;  // Trigger rescan
 
-    json restore_response = rpcCall(NODE_RPC_PORT, "wallet.importmnemonic", restore_params);
-    ASSERT_TRUE(restore_response.contains("result")) << "Failed to restore wallet";
+    json restore_response = rpcCall(NODE_RPC_PORT, "wallet.restore", restore_params);
+    ASSERT_TRUE(restore_response.contains("result") &&
+                restore_response["result"].value("success", false))
+        << "Failed to restore wallet: " << restore_response.dump();
+    ASSERT_TRUE(restore_response["result"].value("rescan_success", false))
+        << "Restore rescan failed: " << restore_response.dump();
     std::cout << "✅ Wallet restored from mnemonic" << std::endl;
 
     // Wait for wallet to complete rescan
@@ -456,7 +483,8 @@ TEST(WalletRestoreRescan, RestoreFindsFunds_W11) {
     EXPECT_EQ(restored_utxo_count, expected_utxo_count)
         << "Restored UTXO count does not match expected count!";
 
-    std::cout << "\n✅ Test W.1.1 PASSED: Wallet restore found all funds!" << std::endl;
+    if (!::testing::Test::HasFailure())
+        std::cout << "\n✅ Test W.1.1 PASSED: Wallet restore found all funds!" << std::endl;
 
     // ========================================================================
     // Cleanup

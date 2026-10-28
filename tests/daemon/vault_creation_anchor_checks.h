@@ -71,12 +71,13 @@ TEST(VaultCreationAnchor, MissingAndUnselectedSourceRefuseBeforeWalletWrites) {
 TEST(VaultCreationAnchor, ActualSelectedRpcAndCommitRefusalPreserveCreationBoundary) {
     VaultRuntimeReset reset;VaultExplicitChainCreationFixture fixture;auto& f=*fixture.f;
     const auto historical=fixture.CreateOwned();const auto rows=f.Rows();auto* db=f.Db();
-    // Real ordinary startup has no legacy validation marker. Creation records
-    // position only; the existing stronger canonical reader remains refusing.
-    EXPECT_EQ(fixture.chain.db.getValidatedTip().status(),Status::NotFound);
-    EXPECT_FALSE(fixture.chain.source->getCanonicalBlockHash(0).ok());
     const auto token=ChainWriteToken::CreateForTesting();
     const auto tip=fixture.chain.db.getTip();ASSERT_TRUE(tip.ok());
+    // Startup now persists genesis validation. Install an explicitly stale
+    // validation marker: vault creation must not upgrade that historical claim.
+    auto stale=tip->hash;stale.begin()[1]^=1;
+    ASSERT_EQ(fixture.chain.db.setValidatedTip(token,stale,tip->height),Status::Ok);
+    EXPECT_FALSE(fixture.chain.source->getCanonicalBlockHash(0).ok());
     auto wrong=tip->hash;wrong.begin()[0]^=1;
     ASSERT_EQ(fixture.chain.db.setTip(token,wrong,tip->height,tip->work),Status::Ok);
     EXPECT_TRUE(din::rpc_vault_create(fixture.Context(),fixture.Request()).isMember("error"));
@@ -108,7 +109,8 @@ TEST(VaultCreationAnchor, ActualSelectedRpcAndCommitRefusalPreserveCreationBound
         EXPECT_EQ(summary["creation_block_hash"].asString(),created["creation_block_hash"].asString());
     }
     EXPECT_EQ(anchored,1u);EXPECT_FALSE(vault::GetVaultRuntimeService());
-    EXPECT_EQ(fixture.chain.db.getValidatedTip().status(),Status::NotFound);
+    ASSERT_TRUE(fixture.chain.db.getValidatedTip().ok());
+    EXPECT_EQ(fixture.chain.db.getValidatedTip()->hash,stale);
     EXPECT_FALSE(fixture.chain.source->getCanonicalBlockHash(0).ok());
     fixture.chain.source->EnterSafeMode("fixture creation position unavailable");
     const auto preserved=f.Rows();

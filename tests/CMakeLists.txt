@@ -1174,6 +1174,8 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_shielded_state_startup.cpp)
     tests/stubs/daemon_test_stubs.cpp   # Mempool extras + vault isolation seams
     src/daemon/config.cpp               # GetConfig() — referenced by chainstate_service.obj
   )
+  target_compile_definitions(test_shielded_state_startup PRIVATE
+    DINERO_TEST_ORCHARD_RUNTIME=$<TARGET_EXISTS:dinero_orchard_runtime_reader>)
   target_link_libraries(test_shielded_state_startup PRIVATE
     dinero_core
     dinero_chainstate
@@ -9135,12 +9137,12 @@ endif()
 if(EXISTS ${CMAKE_SOURCE_DIR}/tests/storage/test_pruning.cpp)
   add_executable(test_pruning
     tests/storage/test_pruning.cpp
-    tests/stubs/mempool_test_stubs.cpp
+    src/daemon/config.cpp
   )
 
   if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-    # Storage fixtures do not exercise mempool behavior. The existing stub above
-    # isolates that daemon-only dependency; rescan real mutually dependent archives.
+    # The deferred fixture attachment supplies real mempool/config owners and
+    # vault isolation; rescan mutually dependent production archives.
     target_link_libraries(test_pruning PRIVATE
       "-Wl,--start-group" dinero_core dinero_wallet dinero_chainstate
       dinero_consensus dinero_shielded dinero_bridge dinero_pool
@@ -9186,11 +9188,11 @@ endif()
 if(EXISTS ${CMAKE_SOURCE_DIR}/tests/storage/test_header_status_bits.cpp)
   add_executable(test_header_status_bits
     tests/storage/test_header_status_bits.cpp
-    tests/stubs/mempool_test_stubs.cpp
+    src/daemon/config.cpp
   )
   if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-    # Storage fixtures do not exercise mempool behavior. The existing stub above
-    # isolates that daemon-only dependency; rescan real mutually dependent archives.
+    # The deferred fixture attachment supplies real mempool/config owners and
+    # vault isolation; rescan mutually dependent production archives.
     target_link_libraries(test_header_status_bits PRIVATE
       "-Wl,--start-group" dinero_core dinero_wallet dinero_chainstate
       dinero_consensus dinero_shielded dinero_bridge dinero_pool
@@ -15368,7 +15370,7 @@ endif()
 if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_mining_height2.cpp)
   add_executable(test_mining_height2
     tests/consensus/test_mining_height2.cpp
-    tests/stubs/mempool_test_stubs.cpp
+    src/daemon/config.cpp
   )
 
   target_include_directories(test_mining_height2 PRIVATE
@@ -15400,7 +15402,7 @@ endif()
 if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_wallet_height2_coinbase.cpp)
   add_executable(test_wallet_height2_coinbase
     tests/consensus/test_wallet_height2_coinbase.cpp
-    tests/stubs/mempool_test_stubs.cpp
+    src/daemon/config.cpp
   )
 
   target_include_directories(test_wallet_height2_coinbase PRIVATE
@@ -16654,6 +16656,10 @@ function(dinero_attach_real_mempool_fixture_runtime)
     dinero_core dinero_consensus dinero_pq dinero_shielded dinero_chainstate
     dinero_crypto secp256k1 RocksDB::rocksdb ${SQLITE3_LIBRARIES})
   set(_real_mempool_fixture_targets
+    test_mining_height2
+    test_wallet_height2_coinbase
+    test_pruning
+    test_header_status_bits
     test_orchard_index_delivery
     test_reindex_deep_chain
     test_header_metadata_recovery
