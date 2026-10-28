@@ -8209,6 +8209,69 @@ void P2PManager::update_stun_candidates(
     notify_reachability_if_changed();
 }
 
+void P2PManager::set_nat_mapping(dinero::p2p::NatMappingType mapping) {
+    std::lock_guard<std::mutex> lock(reach_mutex_);
+    nat_mapping_type_ = mapping;
+}
+
+dinero::p2p::PunchCandidates P2PManager::LocalPunchCandidates() const {
+    dinero::p2p::PunchCandidates out;
+    uint16_t quic_port = 0;
+    if (quic_endpoint_ && quic_endpoint_->Listening()) quic_port = quic_endpoint_->Port();
+#ifdef DINERO_TEST_BUILD
+    if (quic_port == 0) quic_port = test_quic_port_;
+#endif
+    if (quic_port == 0) return out;
+
+    std::vector<std::string> iface_ips;
+    std::set<std::pair<std::string, uint16_t>> reflexive;
+    {
+        std::lock_guard<std::mutex> lock(reach_mutex_);
+        reflexive = stun_reflexive_;
+        out.v4_mapping = nat_mapping_type_;
+#ifdef DINERO_TEST_BUILD
+        if (test_local_interface_ips_) iface_ips = *test_local_interface_ips_;
+        else
+#endif
+        {
+            const auto& ips = dinero::network::LocalInterfaceIps();
+            iface_ips.assign(ips.begin(), ips.end());
+        }
+    }
+    auto routable = [](const std::string& ip, uint16_t port) {
+        dinero::p2p::NetworkAddress a;
+        a.ip = ip;
+        a.port = port;
+        a.services = 0;
+        return a.isRoutable();
+    };
+    std::sort(iface_ips.begin(), iface_ips.end());
+    for (const auto& ip : iface_ips) {
+        in6_addr a6{};
+        if (inet_pton(AF_INET6, ip.c_str(), &a6) != 1) continue;
+        if ((a6.s6_addr[0] & 0xe0) != 0x20) continue;  // global unicast 2000::/3 only
+        if (!routable(ip, quic_port)) continue;
+        out.v6.push_back(dinero::network::UdpAddr::FromIPv6(a6.s6_addr, quic_port));
+    }
+    for (const auto& r : reflexive) {
+        in_addr a4{};
+        if (inet_pton(AF_INET, r.first.c_str(), &a4) != 1) continue;
+        if (!routable(r.first, r.second)) continue;
+        out.v4 = dinero::network::UdpAddr::FromIPv4(reinterpret_cast<const uint8_t*>(&a4), r.second);
+        break;
+    }
+    return out;
+}
+
+#ifdef DINERO_TEST_BUILD
+void P2PManager::test_set_local_interface_ips(std::vector<std::string> ips) {
+    std::lock_guard<std::mutex> lock(reach_mutex_);
+    test_local_interface_ips_ = std::move(ips);
+}
+
+void P2PManager::test_set_quic_port(uint16_t port) { test_quic_port_ = port; }
+#endif
+
 bool P2PManager::has_proven_reachable() const {
     // An operator's externalip is an assertion we honour; everything else
     // (port mapping, peer votes, STUN) has to be dialed back first.

@@ -959,6 +959,7 @@ void P2PService::RunStunRound() {
             // was measured on the P2P port. It is never advertised until
             // dial-back verifies it, so the old concern (relay auto-register
             // treating STUN output as proven inbound) no longer applies.
+            if (p2p_mgr_) p2p_mgr_->set_nat_mapping(nat.mapping);
             if (stun_on_p2p_port_ && p2p_mgr_) p2p_mgr_->update_stun_candidates(reflexive);
             if (logger_interface_) {
                 logger_interface_->info(
