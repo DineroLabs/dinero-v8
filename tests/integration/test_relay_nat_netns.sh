@@ -885,6 +885,13 @@ if [[ "${PUNCH_V4:-0}" == "1" || "${PUNCH_SYMMETRIC:-0}" == "1" || "${PUNCH_V6:-
              any($p[]; .path=="punched" and .transport=="quic" and .identity_proven) and
              all($p[]; .transport!="relay" and .path!="relayed")' >/dev/null 2>&1
     }
+    one_addr() {  # one_addr <node> <id> <path>: ONE_ADDR := the addr of the only such peer
+        local json n
+        json="$(peers_of "$1" "$2")"
+        n="$(jq --arg p "$3" 'map(select(.path==$p)) | length' <<<"${json}")"
+        [[ "${n}" == 1 ]] || fail "$1: expected exactly one $3 peer to $2, found ${n}: ${json}"
+        ONE_ADDR="$(jq -r --arg p "$3" 'map(select(.path==$p)) | .[0].addr' <<<"${json}")"
+    }
     any_punched() {  # any peer at all reported as punched
         nrpc "$1" getpeerinfo '[]' | jq -e 'any(.result[]; .path=="punched")' >/dev/null 2>&1
     }
@@ -913,7 +920,8 @@ if [[ "${PUNCH_V4:-0}" == "1" || "${PUNCH_SYMMETRIC:-0}" == "1" || "${PUNCH_V6:-
             "${ini} skipped the punch (E2's mapping is endpoint-dependent)"
         wait_log "${RUN_DIR}/${ini}.log" "[P2P] punch: no usable address pair with" "${ini} logged the skip"
         info "${ini} hole_punch: $(nrpc "${ini}" getnetworkinfo '[]' | jq -c '.result.hole_punch')"
-        relayed_addr="$(peers_of e1 "${e2_id}" | jq -r '.[] | select(.transport=="relay") | .addr')"
+        one_addr e1 "${e2_id}" relayed
+        relayed_addr="${ONE_ADDR}"
         # 2. The relayed peer stays up for 2 min and nothing gets punched.
         t1="$(date +%s)"
         while (( $(date +%s) - t1 < 120 )); do
@@ -924,7 +932,8 @@ if [[ "${PUNCH_V4:-0}" == "1" || "${PUNCH_SYMMETRIC:-0}" == "1" || "${PUNCH_V6:-
                 fail "the relayed peer dropped after the skipped punch: E1 $(peers_of e1 "${e2_id}") E2 $(peers_of e2 "${e1_id}")"
             sleep 5
         done
-        [[ "$(peers_of e1 "${e2_id}" | jq -r '.[] | select(.transport=="relay") | .addr')" == "${relayed_addr}" ]] ||
+        one_addr e1 "${e2_id}" relayed
+        [[ "${ONE_ADDR}" == "${relayed_addr}" ]] ||
             fail "E1's relayed peer to E2 was replaced (was ${relayed_addr}): $(peers_of e1 "${e2_id}")"
         assert_log_absent "${LOG_ORIGIN}" "[P2P] punch: dialing" "E1 never dialed a punch target"
         assert_log_absent "${LOG_TARGET}" "[P2P] punch: dialing" "E2 never dialed a punch target"
@@ -950,43 +959,68 @@ if [[ "${PUNCH_V4:-0}" == "1" || "${PUNCH_SYMMETRIC:-0}" == "1" || "${PUNCH_V6:-
         PEER_PATH="punched"
     fi
 
-    # Blocks: E1 mines 10 and E2 syncs them. R relays them too, so height alone
-    # does not show which peer carried them: E2's ${PEER_PATH} peer to E1 must
-    # carry E1's announcements of them (inv/cmpctblock). bestknownheight is no
-    # proof either way: R usually delivers first, and it does not move on an
-    # announcement of a block E2 already has.
-    e2_peer_log="$(peers_of e2 "${e1_id}" | jq -r --arg path "${PEER_PATH}" '.[] | select(.path==$path) | .addr')"
-    [[ -n "${e2_peer_log}" ]] || fail "E2 has no ${PEER_PATH} peer to E1: $(peers_of e2 "${e1_id}")"
-    if [[ "${PEER_PATH}" == "relayed" ]]; then
-        e2_peer_log="${e2_peer_log%:0}"  # the log omits the virtual port
-    elif [[ "${e2_peer_log%:*}" == *:* ]]; then
-        e2_peer_log="[${e2_peer_log%:*}]:${e2_peer_log##*:}"  # the log brackets IPv6
-    fi
-    e2_peer_re="${e2_peer_log//./\\.}"; e2_peer_re="${e2_peer_re//\[/\\[}"; e2_peer_re="${e2_peer_re//]/\\]}"
-    announced() {
-        grep -cE "HandleP2PMessage: cmd='(inv|cmpctblock)' from ${e2_peer_re}([^:0-9]|\$)" "${LOG_TARGET}" || true
-    }
-    announced_before="$(announced)"
-    miner="$(nrpc e1 wallet.createhd '["miner"]' | jq -r '.result.first_address')"
-    nrpc e1 generatetoaddress "[10, \"${miner}\"]" >/dev/null || fail "E1 could not mine"
-    e1_height="$(nrpc e1 getblockcount '[]' | jq -r '.result')"
-    synced() {
-        [[ "$(nrpc e2 getblockcount '[]' | jq -r '.result')" -ge "${e1_height}" ]] || return 1
-        (( $(announced) > announced_before ))
-    }
-    ok=0
-    for _ in $(seq 1 90); do
-        if synced; then ok=1; break; fi
-        sleep 1
-    done
-    [[ "${ok}" == 1 ]] || fail "E2 did not sync E1's blocks (height ${e1_height}) with its ${PEER_PATH} peer ${e2_peer_log} carrying them: $(peers_of e2 "${e1_id}"), $(( $(announced) - announced_before )) announcement(s) over it"
+    # Blocks: E1 mines 10 and E2 syncs them.
     if [[ "${PEER_PATH}" == "punched" ]]; then
+        # Cut E2 off from R first (both directions), so E2 can only get the
+        # blocks over the punched peer. synced_blocks is the height of the
+        # highest block E2 accepted from that peer.
+        if [[ "${FAMILY}" == "ipv4" ]]; then
+            ip netns exec "${NS_NAT_RND}" iptables -I FORWARD -d "${R_IP}" -j DROP
+            ip netns exec "${NS_NAT_RND}" iptables -I FORWARD -s "${R_IP}" -j DROP
+        else
+            # R is on IPv4 only.
+            ip netns exec "${NS_RND}" iptables -I OUTPUT -d "${R_IP}" -j DROP
+            ip netns exec "${NS_RND}" iptables -I INPUT -s "${R_IP}" -j DROP
+        fi
+        if tcp_probe "${NS_RND}" "${R_IP}" "${P2P_PORT}"; then
+            fail "E2 still reaches R after the cut"
+        fi
+        pass "E2 is cut off from R"
+        one_addr e2 "${e1_id}" punched
+        e2_peer="${ONE_ADDR}"
+        miner="$(nrpc e1 wallet.createhd '["miner"]' | jq -r '.result.first_address')"
+        nrpc e1 generatetoaddress "[10, \"${miner}\"]" >/dev/null || fail "E1 could not mine"
+        e1_height="$(nrpc e1 getblockcount '[]' | jq -r '.result')"
+        ok=0
+        for _ in $(seq 1 90); do
+            if [[ "$(nrpc e2 getblockcount '[]' | jq -r '.result')" -ge "${e1_height}" ]] &&
+               nrpc e2 getpeerinfo '[]' | jq -e --arg a "${e2_peer}" --argjson h "${e1_height}" \
+                   'any(.result[]; .addr==$a and .path=="punched" and .synced_blocks >= $h)' >/dev/null 2>&1; then
+                ok=1; break
+            fi
+            sleep 1
+        done
+        [[ "${ok}" == 1 ]] || fail "with R cut off, E2 did not sync E1's blocks to ${e1_height} over the punched peer ${e2_peer}: height $(nrpc e2 getblockcount '[]' | jq -r '.result'), $(nrpc e2 getpeerinfo '[]' | jq -c --arg id "${e1_id}" '[.result[] | select(.node_id==$id) | {addr, path, synced_blocks}]')"
         punched_to e1 "${e2_id}" && punched_to e2 "${e1_id}" ||
             fail "the punched link did not hold (or a relayed peer came back): E1 $(peers_of e1 "${e2_id}") E2 $(peers_of e2 "${e1_id}")"
+        pass "with R cut off, E1 mined to ${e1_height} and E2 synced it over the punched peer ${e2_peer} (synced_blocks $(nrpc e2 getpeerinfo '[]' | jq -r --arg a "${e2_peer}" '.result[] | select(.addr==$a) | .synced_blocks'))"
     else
+        # R cannot be cut here (it carries the relayed peer), and R usually
+        # delivers the blocks first: the relayed peer to E1 has to carry E1's
+        # announcements of them (inv/cmpctblock). bestknownheight is no proof:
+        # it does not move on an announcement of a block E2 already has.
+        one_addr e2 "${e1_id}" relayed
+        e2_peer_log="${ONE_ADDR%:0}"  # the log omits the virtual port
+        e2_peer_re="${e2_peer_log//./\\.}"
+        announced() {
+            grep -cE "HandleP2PMessage: cmd='(inv|cmpctblock)' from ${e2_peer_re}([^:0-9]|\$)" "${LOG_TARGET}" || true
+        }
+        announced_before="$(announced)"
+        miner="$(nrpc e1 wallet.createhd '["miner"]' | jq -r '.result.first_address')"
+        nrpc e1 generatetoaddress "[10, \"${miner}\"]" >/dev/null || fail "E1 could not mine"
+        e1_height="$(nrpc e1 getblockcount '[]' | jq -r '.result')"
+        ok=0
+        for _ in $(seq 1 90); do
+            if [[ "$(nrpc e2 getblockcount '[]' | jq -r '.result')" -ge "${e1_height}" ]] &&
+               (( $(announced) > announced_before )); then
+                ok=1; break
+            fi
+            sleep 1
+        done
+        [[ "${ok}" == 1 ]] || fail "E2 did not sync E1's blocks (height ${e1_height}) with its relayed peer ${e2_peer_log} carrying them: $(peers_of e2 "${e1_id}"), $(( $(announced) - announced_before )) announcement(s) over it"
         relayed_to e1 "${e2_id}" && relayed_to e2 "${e1_id}" || fail "the relayed peer dropped while syncing"
+        pass "E1 mined to ${e1_height}; E2 synced it, and E1 sent $(( $(announced) - announced_before )) block announcement(s) over the relayed peer ${e2_peer_log}"
     fi
-    pass "E1 mined to ${e1_height}; E2 synced it, and E1 sent $(( $(announced) - announced_before )) block announcement(s) over the ${PEER_PATH} peer ${e2_peer_log}"
     exit 0
 fi
 
