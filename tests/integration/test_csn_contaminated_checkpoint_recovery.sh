@@ -390,7 +390,14 @@ pass "CSN detected stale checkpoint, wiped it, and recovered exact tip state"
 
 info "\n[STEP 6] Restarting recovered CSN offline to verify stable post-recovery checkpoints..."
 stop_node PID_CSN "${DATADIR_CSN}" "${RPC_PORT_CSN}"
+# Inspect before another startup can backfill a missing genesis checkpoint.
+# Recovery itself must have durably replaced the anchor erased by its wipe.
+GENESIS_STATE=$("${MUTATOR}" "${CHAINDIR_CSN}" --inspect-height 0) || fail "Failed to inspect recovered genesis checkpoint"
+echo "${GENESIS_STATE}"
+grep -qx 'checkpoint_present=1' <<< "${GENESIS_STATE}" || fail "Recovery did not persist its genesis checkpoint"
+grep -qx 'checksum_present=1' <<< "${GENESIS_STATE}" || fail "Recovery did not persist the genesis checkpoint checksum"
 start_csn
+wait_for_sync "${RPC_PORT_CSN}" "${DATADIR_CSN}" "${HEIGHT_BRIDGE}" "${TIP_BRIDGE}" "${SYNC_TIMEOUT}" || fail "Recovered CSN failed to retain exact tip on second offline restart"
 SECOND_RECOVERY_STATE=$(capture_state_json "${RPC_PORT_CSN}" "${DATADIR_CSN}")
 assert_same_state "${RECOVERED_STATE}" "${SECOND_RECOVERY_STATE}" "post-recovery checkpoint stability"
 pass "Recovered CSN persisted stable checkpoints after repair"

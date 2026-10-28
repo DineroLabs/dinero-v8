@@ -4590,6 +4590,33 @@ bool ChainstateService::Start() {
                         return false;
                     }
 
+                    // Full-node snapshot recovery has separate fail-closed
+                    // admission; it must not publish a replacement checkpoint
+                    // when the configured snapshot is unavailable.
+                    if (GetConfig().utreexo_stateless) {
+                        // The startup backfill above ran before this wipe. Restore
+                        // a fresh trusted height-zero anchor now: CSN branch replay
+                        // calls RestoreHistoricalForest at the genesis fork even
+                        // while recovering offline from locally stored blocks.
+                        // Never retain the old (possibly corrupt) checkpoint.
+                        // Persist the anchor and checksum together before recovery
+                        // continues; interrupted recovery can repeat the backfill.
+                        const auto recovery_token = ChainWriteToken::CreateForTesting();
+                        const consensus::UtreexoForest recovery_genesis;
+                        rocksdb::WriteBatch recovery_batch;
+                        auto anchor_status = chain_db_->putUtreexoCheckpointWithChecksum(
+                            recovery_token, 0, recovery_genesis.serialize(), &recovery_batch);
+                        if (anchor_status == Status::Ok) {
+                            anchor_status = chain_db_->writeBatch(
+                                recovery_token, std::move(recovery_batch), true);
+                        }
+                        if (anchor_status != Status::Ok) {
+                            logger_->error("[ChainstateService] Failed to restore genesis checkpoint after recovery wipe");
+                            return false;
+                        }
+
+                    }
+
                     // Record recovery event (loop guard)
                     auto tip_result = chain_db_->getTip();
                     ChainDB::RecoveryMarker rm;

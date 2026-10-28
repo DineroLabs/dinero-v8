@@ -68,8 +68,15 @@ int main(int argc, char** argv) {
         } else if (arg == "--inspect") {
             inspect = true;
         } else if (arg == "--inspect-height") {
-            if (i + 1 >= argc || !ParsePositiveInt(argv[++i], inspect_height)) {
-                std::cerr << "--inspect-height requires a positive height\n";
+            if (i + 1 >= argc) {
+                std::cerr << "--inspect-height requires a nonnegative height\n";
+                return 1;
+            }
+            const std::string height = argv[++i];
+            if (height == "0") {
+                inspect_height = 0;
+            } else if (!ParsePositiveInt(height, inspect_height)) {
+                std::cerr << "--inspect-height requires a nonnegative height\n";
                 return 1;
             }
             inspect = true;
