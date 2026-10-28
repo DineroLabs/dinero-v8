@@ -15,15 +15,19 @@
 #
 set -euo pipefail
 
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+SNAPSHOT_PROFILE=${SNAPSHOT_PROFILE:-compact}
+case "$SNAPSHOT_PROFILE" in compact) SYNC_PROFILE=ios_utreexo;; full) SYNC_PROFILE=mac_fullblock;; *) echo "invalid SNAPSHOT_PROFILE" >&2; exit 2;; esac
+
 DATADIR=${DATADIR:-/var/lib/dinero}
 DUMPDIR=$DATADIR/snapshots
 PUBROOT=${PUBROOT:-/var/www/dinero-snapshots}
 KEY=${KEY:-/etc/dinero-snapshot/ed25519.key}
 CLI=("${CLI_BIN:-dinero-cli}" "-datadir=$DATADIR")
 DINEROD=${DINEROD:-/usr/bin/dinerod}
-GATE_PORT=26999
-GATE_RPC=26998
-GATE_TIMEOUT=1200
+GATE_PORT=${GATE_PORT:-26999}
+GATE_RPC=${GATE_RPC:-26998}
+GATE_TIMEOUT=${GATE_TIMEOUT:-1200}
 KEEP=7
 TS=$(date -u +%Y%m%dT%H%M%SZ)
 LOG_PREFIX="[snapshot-publish $TS]"
@@ -44,39 +48,36 @@ DUMP_FILE=$DUMPDIR/pending.dat
 PENDING=$DUMPDIR/pending.json
 if [ ! -f "$PENDING" ]; then
     rm -f "$DUMP_FILE"
-    OUT=$("${CLI[@]}" dumptxoutset "$DUMP_FILE") || fail "dumptxoutset RPC failed"
+    EXPORT_ARGS=(); [ "$SNAPSHOT_PROFILE" != compact ] || EXPORT_ARGS+=(compact)
+    OUT=$("${CLI[@]}" dumptxoutset "$DUMP_FILE" "${EXPORT_ARGS[@]}") || fail "dumptxoutset RPC failed"
     printf '%s\n' "$OUT" > "$PENDING.tmp"
     mv "$PENDING.tmp" "$PENDING"
 fi
-FIELDS=$(python3 - "$PENDING" "$DUMP_FILE" <<'PYFIELDS'
-import json,sys,struct
-with open(sys.argv[1]) as f: d=json.load(f)
-height=d['base_height']; block=d['base_hash']
-assert type(height) is int and height >= 0
-assert isinstance(block,str) and len(block)==64 and all(c in '0123456789abcdefABCDEF' for c in block)
-with open(sys.argv[2],'rb') as f: header=f.read(8)
-assert len(header)==8 and header[:4]==b'UXTO', 'invalid snapshot magic'
-version=struct.unpack('<I',header[4:])[0]
-assert version in (4,5), 'unsupported snapshot version'
-print(height,block.lower(),version)
+FIELDS=$(python3 - "$SCRIPT_DIR" "$PENDING" "$DUMP_FILE" "$SNAPSHOT_PROFILE" <<'PYFIELDS'
+import json,sys
+sys.path.insert(0,sys.argv[1])
+from snapshot_transport import inspect
+def require(ok,message):
+    if not ok: raise ValueError(message)
+with open(sys.argv[2]) as f: d=json.load(f)
+version,height,block,profile=inspect(sys.argv[3])
+require(type(d['base_height']) is int and d['base_height']==height, 'RPC/header height mismatch')
+require(isinstance(d['base_hash'],str) and d['base_hash'].lower()==block, 'RPC/header hash mismatch')
+require(version!=6 or profile==sys.argv[4], 'exporter profile differs from publication profile')
+print(height,block,version,profile)
 PYFIELDS
-) || fail "invalid pending snapshot metadata/header"
-read -r HEIGHT BASE_HASH FORMAT <<< "$FIELDS"
-# Mainnet activation policy; this job is deliberately mainnet-only.
-if [ "$HEIGHT" -ge 111000 ] && [ "$FORMAT" != 5 ]; then
-    rm -f "$PENDING" "$DUMP_FILE"
-    fail "base $HEIGHT requires v5; upgrade exporting daemon (received v$FORMAT)"
-fi
+) || { rm -f "$PENDING" "$DUMP_FILE"; fail "invalid pending snapshot metadata/header/profile"; }
+read -r HEIGHT BASE_HASH FORMAT FILE_PROFILE <<< "$FIELDS"
 CURRENT_HASH=$("${CLI[@]}" getblockhash "$HEIGHT" | tr -d '\"\r\n') || fail "base ancestry RPC failed"
 if [ "$CURRENT_HASH" != "$BASE_HASH" ]; then
     rm -f "$PENDING" "$DUMP_FILE"
     fail "pending base left selected chain; discarded candidate, kept latest"
 fi
-if [ "$FORMAT" = 5 ]; then
+if [ "$FORMAT" -ge 5 ]; then
     TIP=$("${CLI[@]}" getblockcount) || fail "tip RPC failed"
     [[ "$TIP" =~ ^[0-9]+$ ]] || fail "invalid tip RPC response"
     if [ "$TIP" -lt "$((HEIGHT + 288))" ]; then
-        log "retaining v5 base=$HEIGHT; waiting for tip=$((HEIGHT + 288)) (now $TIP)"
+        log "retaining v$FORMAT base=$HEIGHT; waiting for tip=$((HEIGHT + 288)) (now $TIP)"
         exit 0
     fi
 fi
@@ -100,6 +101,7 @@ cat > "$MANIFEST" <<EOF
   "network": "mainnet",
   "generated_at": "$TS",
   "format_version": $FORMAT,
+  "snapshot_profile": "$FILE_PROFILE",
   "source": "dinero-snapshot-publish (automated, self-check gated)"
 }
 EOF
@@ -115,10 +117,10 @@ openssl pkeyutl -verify -pubin \
     -rawin -in "$MANIFEST" -sigfile "$SIG" >/dev/null \
     || fail "signature self-verification failed"
 
-elif [ "$FORMAT" != 5 ] || [ "$HEIGHT" -lt 111000 ]; then
-    fail "legacy publication requires a signing key"
+elif [ "$SNAPSHOT_PROFILE" = compact ] || [ "$FORMAT" -lt 5 ] || [ "$HEIGHT" -lt 111000 ]; then
+    fail "phone/legacy publication requires a signing key"
 else
-    log "publishing v5 without optional publisher signature; chain binding is mandatory"
+    log "publishing v$FORMAT without optional publisher signature; chain binding is mandatory"
 fi
 
 # ── 4. SELF-CHECK GATE: a throwaway node must load this snapshot ────────────
@@ -127,7 +129,8 @@ GATE_PID=""
 trap '[ -z "$GATE_PID" ] || kill -9 "$GATE_PID" 2>/dev/null || true; rm -rf "$GATE_DIR"' EXIT
 mkdir -p "$GATE_DIR/datadir"
 cat > "$GATE_DIR/datadir/dinero.conf" <<EOF
-sync-profile=ios_utreexo
+sync-profile=$SYNC_PROFILE
+utreexo_bridge=0
 assumeutxo_forward_connect=1
 port=$GATE_PORT
 rpcport=$GATE_RPC
@@ -135,6 +138,8 @@ portmap=0
 listen=0
 connect=127.0.0.1:20999
 assumeutxo_snapshot=$DUMP_FILE
+assumeutxo_manifest=$MANIFEST
+assumeutxo_require_manifest=1
 EOF
 "$DINEROD" --datadir="$GATE_DIR/datadir" > "$GATE_DIR/node.log" 2>&1 &
 GATE_PID=$!
@@ -147,11 +152,19 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
     if grep -qE "rejected|checksum mismatch|refusing partial|FATAL" "$GATE_DIR/node.log"; then
         break
     fi
-    if grep -q "Snapshot header validated: height=$HEIGHT" "$GATE_DIR/node.log" \
-       && grep -q "Pass 2 complete" "$GATE_DIR/node.log"; then
-        # Header binding + full UTXO/forest/shielded load succeeded — the
-        # trust-critical part. Forward blocks depend on mainnet cadence, so
-        # they are a bonus check, not a requirement.
+    # RPC state is shared by legacy and v6 loaders. Log text is not an import receipt.
+    if "${CLI[0]}" -rpcport="$GATE_RPC" -datadir="$GATE_DIR/datadir" getbackgroundvalidationprogress > "$GATE_DIR/state.json" 2>/dev/null \
+       && python3 - "$GATE_DIR/state.json" "$HEIGHT" "$BASE_HASH" <<'PYGATE'
+import json,sys
+with open(sys.argv[1]) as f: state=json.load(f)
+if (state.get('assumeutxo_active') is not True or
+    type(state.get('snapshot_base_height')) is not int or
+    state['snapshot_base_height']!=int(sys.argv[2]) or
+    state.get('snapshot_base_block')!=sys.argv[3] or
+    state.get('status')=='Failed' or state.get('error_message')):
+    raise ValueError('native gate has not admitted the expected snapshot base')
+PYGATE
+    then
         GATE_OK=1
         break
     fi
@@ -164,7 +177,7 @@ fi
 # Bonus parity check when the gate connected any forward block
 GTIP=$(grep -oE "Connecting block: height=[0-9]+" "$GATE_DIR/node.log" | tail -1 | grep -oE "[0-9]+$" || true)
 if [ -n "$GTIP" ]; then
-    GHASH=$(dinero-cli -rpcport=$GATE_RPC -datadir="$GATE_DIR/datadir" getblockhash "$GTIP" 2>/dev/null | tr -d '"' || true)
+    GHASH=$("${CLI[0]}" -rpcport=$GATE_RPC -datadir="$GATE_DIR/datadir" getblockhash "$GTIP" 2>/dev/null | tr -d '"' || true)
     MHASH=$("${CLI[@]}" getblockhash "$GTIP" 2>/dev/null | tr -d '"' || true)
     if [ -n "$GHASH" ] && [ -n "$MHASH" ] && [ "$GHASH" != "$MHASH" ]; then
         fail "gate/main hash mismatch at $GTIP: gate=$GHASH main=$MHASH"
@@ -176,6 +189,10 @@ for _ in $(seq 1 30); do kill -0 $GATE_PID 2>/dev/null || break; sleep 1; done
 kill -9 $GATE_PID 2>/dev/null || true
 wait "$GATE_PID" 2>/dev/null || true
 GATE_PID=""
+
+# Recheck ancestry after the potentially long native validation gate.
+CURRENT_HASH=$("${CLI[@]}" getblockhash "$HEIGHT" | tr -d '\"\r\n') || fail "final ancestry RPC failed"
+[ "$CURRENT_HASH" = "$BASE_HASH" ] || { rm -f "$PENDING" "$DUMP_FILE"; fail "base left selected chain during gate"; }
 
 # ── 5. Publish atomically ───────────────────────────────────────────────────
 SET_DIR=$PUBROOT/archive/$TS
