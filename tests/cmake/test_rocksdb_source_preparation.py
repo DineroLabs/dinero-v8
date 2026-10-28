@@ -19,6 +19,8 @@ with tempfile.TemporaryDirectory(prefix="dinero-rocksdb-source-") as directory:
     for label, source, accepted in (
         ("LF", original, True),
         ("CRLF", original.replace(b"\n", b"\r\n"), True),
+        ("NUL suffix", original + b"\x00changed", False),
+        ("lone CR suffix", original + b"\r", False),
         ("modified LF", original + b"// changed upstream\n", False),
         ("modified CRLF", original.replace(b"\n", b"\r\n") + b"// changed upstream\r\n", False),
     ):
