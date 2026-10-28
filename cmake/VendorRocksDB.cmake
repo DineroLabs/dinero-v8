@@ -71,6 +71,14 @@ if(DINERO_USE_VENDORED_DEPS)
     -DWITH_SYNC_POINT=OFF
   )
 
+  # Do not depend on incidental libstdc++ transitive includes (GCC 14+).
+  # Keep compatibility declarations local to the isolated vendor build.
+  if(MSVC)
+    set(_rocksdb_cxx_flags "/FIcstdint")
+  else()
+    set(_rocksdb_cxx_flags "-include cstdint")
+  endif()
+
   # ExternalProject has an isolated CMake directory and therefore does not
   # inherit the top-level add_compile_options() reproducibility policy. Without
   # explicit prefix maps, RocksDB embeds the checkout path in DWARF and in its
@@ -81,9 +89,9 @@ if(DINERO_USE_VENDORED_DEPS)
      CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
     set(_rocksdb_repro_flags
       "-ffile-prefix-map=${CMAKE_SOURCE_DIR}=. -fdebug-prefix-map=${CMAKE_SOURCE_DIR}=. -fmacro-prefix-map=${CMAKE_SOURCE_DIR}=. -ffile-prefix-map=${CMAKE_BINARY_DIR}=./build -fdebug-prefix-map=${CMAKE_BINARY_DIR}=./build -fmacro-prefix-map=${CMAKE_BINARY_DIR}=./build -fno-record-gcc-switches -Wdate-time")
+    string(APPEND _rocksdb_cxx_flags " ${_rocksdb_repro_flags}")
     list(APPEND _rocksdb_cmake_args
       "-DCMAKE_C_FLAGS=${_rocksdb_repro_flags}"
-      "-DCMAKE_CXX_FLAGS=${_rocksdb_repro_flags}"
     )
   endif()
 
@@ -114,14 +122,16 @@ if(DINERO_USE_VENDORED_DEPS)
   endif()
 
   if(CMAKE_SYSTEM_NAME STREQUAL "Android")
+    string(APPEND _rocksdb_cxx_flags " -include ${CMAKE_SOURCE_DIR}/cmake/android_rocksdb_compat.h")
     list(APPEND _rocksdb_cmake_args
       -DCMAKE_TOOLCHAIN_FILE=${CMAKE_TOOLCHAIN_FILE}
       -DANDROID_ABI=${ANDROID_ABI}
       -DANDROID_PLATFORM=${ANDROID_PLATFORM}
       -DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY
-      "-DCMAKE_CXX_FLAGS=-include ${CMAKE_SOURCE_DIR}/cmake/android_rocksdb_compat.h"
     )
   endif()
+
+  list(APPEND _rocksdb_cmake_args "-DCMAKE_CXX_FLAGS=${_rocksdb_cxx_flags}")
 
   # This nested build runs alongside the parent build on small CI runners.
   # Keep its default bounded; larger builders can explicitly raise the budget.
