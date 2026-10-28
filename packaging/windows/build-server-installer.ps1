@@ -27,10 +27,22 @@ param(
     [string]$SnapshotAssetName  = '',
     [string]$SnapshotFileName   = 'dinero-assumeutxo-99677-v4.dat',
     [string]$SnapshotReleaseTag = 'v8.1.2',
-    [switch]$SkipBuild
+    [switch]$SkipBuild,
+    [switch]$CiOrchardQualification
 )
 
 $ErrorActionPreference = 'Stop'
+
+# Testing opt-in only. Ordinary configure calls clear a reused qualification
+# cache; this switch cannot grant Windows release qualification.
+$orchardQualificationMode = 'OFF'
+if ($CiOrchardQualification) {
+    if ($env:GITHUB_ACTIONS -ne 'true' -or $Version -notmatch '-ci$') {
+        throw 'Orchard qualification is restricted to GitHub CI smoke versions ending in -ci.'
+    }
+    $orchardQualificationMode = 'ON'
+    Write-Warning 'CI-only Orchard qualification build; not a qualified Windows release.'
+}
 
 $ScriptDir   = Split-Path -Parent $MyInvocation.MyCommand.Path
 $ProjectRoot = (Resolve-Path (Join-Path $ScriptDir '..\..')).Path
@@ -291,6 +303,7 @@ if (-not $SkipBuild) {
         '-DDINERO_BUILD_SEEDER=ON',
         '-DDINERO_BUILD_MINER=OFF',
         '-DDINERO_BUILD_ORCHARD_BACKEND=ON',
+        "-DDINERO_ORCHARD_WINDOWS_QUALIFICATION=$orchardQualificationMode",
         '-DDINERO_ENABLE_QUIC=ON'
     )
     $vcpkgToolchain = Join-Path $VcpkgRoot 'scripts\buildsystems\vcpkg.cmake'
