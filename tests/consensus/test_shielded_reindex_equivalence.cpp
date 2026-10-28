@@ -773,6 +773,11 @@ int main(int argc, char** argv) {
             Require(tip_result.value().hash == expected.block_hash,
                     "tip hash mismatch at prefix " + std::to_string(prefix));
 
+            const auto validated = chain_db.getValidatedTip();
+            Require(validated.ok() && validated->height == tip_result->height &&
+                    validated->hash == tip_result->hash,
+                    "rebuilt validation tip must match the durable owner");
+
             const auto frontier_bytes = ReadFileBytes(config.shielded_frontier_output_path);
             Require(frontier_bytes == expected.frontier_after,
                     "shielded frontier mismatch at prefix " + std::to_string(prefix));

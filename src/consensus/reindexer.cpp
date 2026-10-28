@@ -1133,6 +1133,9 @@ Status BlockReindexer::seedGenesis(arith_uint256& genesis_work_out, const FilePo
     status = chain_db_->putHeightIndex(token, 0, genesis_hash, &batch);
     if (status != Status::Ok) return status;
 
+    status = chain_db_->setValidatedTip(token, genesis_hash, 0, &batch);
+    if (status != Status::Ok) return status;
+
     status = chain_db_->setTip(token, genesis_hash, 0, genesis_work_out, &batch);
     if (status != Status::Ok) return status;
 
@@ -2986,6 +2989,12 @@ Status BlockReindexer::processBlock(const Block& block, const FilePosition& pos,
             }
         }
     }
+
+    // The rebuilt coin/forest owner and its validation consistency marker
+    // belong to the same durable block batch. Without this, a successfully
+    // reindexed store has a tip but selected RPC readers must refuse it.
+    const auto validated_status = chain_db_->setValidatedTip(token, block_hash, height, &batch);
+    if (validated_status != Status::Ok) return validated_status;
 
     // Canonical tip pointer is last in the batch, preserving the invariant
     // that the tip pointer becoming durable implies all referenced state
