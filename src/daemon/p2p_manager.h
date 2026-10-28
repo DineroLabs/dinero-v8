@@ -605,6 +605,21 @@ public:
     // IPv6 interface addresses on the QUIC port, plus the first routable STUN
     // reflexive IPv4. Empty when the QUIC endpoint is not listening.
     dinero::p2p::PunchCandidates LocalPunchCandidates() const;
+    // Relay-coordinated hole punching: what the punch exchange has done so far.
+    struct PunchStats {
+        uint64_t attempts{0};          // Started, either role
+        uint64_t offers_sent{0};
+        uint64_t answers_sent{0};
+        uint64_t gos_sent{0};
+        uint64_t dials{0};             // punched QUIC dials started
+        uint64_t probes_sent{0};
+        size_t max_probe_targets{0};   // most distinct targets one attempt probed
+        uint64_t succeeded{0};
+        uint64_t timeout{0};
+        uint64_t skipped{0};           // no usable target pair
+        uint64_t ignored{0};           // punch messages dropped (unsolicited, refused, stale)
+        uint64_t received{0};          // punch messages received, any outcome
+    };
     // True iff we have an EXPLICIT/confirmed reachable advertised address
     // (operator externalip or port-mapping) — not merely a Gap-1-learned one.
     // Used so a NAT'd node (only a learned, dead address) stays relay-fallback
@@ -784,6 +799,16 @@ public:
     // Periodic maintenance: drop circuits whose last_data_at is older
     // than kCircuitIdleTimeout. Called from keepalive_loop.
     void SweepIdleCircuits();
+
+    // Relay-coordinated hole punching (Plan 4). PunchTick starts offers to
+    // relayed peers we initiate for, fires due dials and probe rounds, and
+    // ends expired attempts. Called from keepalive_loop and, while an attempt
+    // is active, from punch_loop every kPunchProbeInterval.
+    void PunchTick();
+    void punch_loop();
+    void handle_punch_offer(const std::string& peer_address, const P2PMessage& message);
+    void handle_punch_answer(const std::string& peer_address, const P2PMessage& message);
+    void handle_punch_go(const std::string& peer_address, const P2PMessage& message);
 
     // NAT traversal Phase C3 slice 4b: advertise + ingest RELAY_HINTS.
     //
@@ -1070,6 +1095,13 @@ public:
     // one). Interface addresses are injected through
     // network::test_set_interface_enumerator_override (local_interfaces.h).
     void test_set_quic_port(uint16_t port);
+    // Hole punching: drive the punch state machine, replace its clock (set it
+    // before any punch traffic), override LocalPunchCandidates (loopback
+    // candidates are never routable), read the counters.
+    void test_punch_tick() { PunchTick(); }
+    void test_set_punch_clock(std::function<std::chrono::steady_clock::time_point()> clock);
+    void test_set_local_punch_candidates(std::optional<dinero::p2p::PunchCandidates> c);
+    PunchStats test_punch_stats() const;
     void test_handle_getaddr(const std::string& peer_key) { handle_getaddr(peer_key, P2PMessage{}); }
     // Gives a test-installed peer (keyed "host:port", port 0) its real
     // endpoint, so to_string() matches relay endpoint keys.
@@ -1225,6 +1257,47 @@ private:
     std::unique_ptr<std::thread> listen_thread_;
     std::unique_ptr<std::thread> connection_manager_thread_;
     std::unique_ptr<std::thread> keepalive_thread_;  // Phase C: Adaptive keepalive
+    std::unique_ptr<std::thread> punch_thread_;      // drives active hole punches
+
+    // ---- hole punching ----
+    // One attempt per remote node id, either role. Lock order: punch_mutex_
+    // is a leaf; nothing else is taken while it is held, and sends, dials and
+    // probes happen with no lock held. punch_tick_mutex_ serializes PunchTick
+    // (keepalive, punch_loop, tests) and is taken before any other lock.
+    struct PunchAttempt {
+        enum class Phase { Offered, AwaitGo, Dialing, Probing };
+        dinero::p2p::PunchRole role{dinero::p2p::PunchRole::None};
+        Phase phase{Phase::Offered};
+        uint64_t nonce{0};
+        std::string relay_key;  // the relayed peer the exchange runs on
+        dinero::p2p::PunchCandidates local;  // what we sent
+        std::chrono::steady_clock::time_point offer_sent_at{};
+        std::chrono::steady_clock::time_point deadline{};
+        std::vector<dinero::network::UdpAddr> targets;
+        // Initiator: when to dial, the next target to try, the dialed peer key.
+        std::chrono::steady_clock::time_point dial_at{};
+        size_t next_target{0};
+        std::string dialed_key;
+        // Acceptor: probe rounds sent and when the next one is due.
+        size_t probe_rounds{0};
+        std::chrono::steady_clock::time_point next_probe_at{};
+    };
+    std::mutex punch_tick_mutex_;
+    mutable std::mutex punch_mutex_;
+    std::condition_variable punch_cv_;
+    bool punch_wake_{false};  // guarded by punch_mutex_
+    std::map<std::array<uint8_t, 20>, PunchAttempt> punch_attempts_;
+    std::function<std::chrono::steady_clock::time_point()> punch_clock_;
+    std::optional<dinero::p2p::PunchScheduler> punch_scheduler_;
+    PunchStats punch_stats_;
+    std::chrono::steady_clock::time_point PunchNow() const;
+    // Under punch_mutex_: the next probe round's targets, or empty when none is due.
+    std::vector<dinero::network::UdpAddr> TakeProbeRoundLocked(
+        PunchAttempt& a, std::chrono::steady_clock::time_point now);
+    void SendPunchProbes(const std::vector<dinero::network::UdpAddr>& targets);
+#ifdef DINERO_TEST_BUILD
+    std::optional<dinero::p2p::PunchCandidates> test_local_punch_candidates_;  // reach_mutex_
+#endif
     std::mutex peer_threads_mutex_;
     // Per-peer threads (handlers, QUIC readers). `done` is set when the
     // thread's function returns so spawn_peer_thread_locked can join and drop

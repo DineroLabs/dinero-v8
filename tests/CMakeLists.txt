@@ -4049,6 +4049,72 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/p2p/test_relay_virtual_transport.cpp)
 
   add_test(NAME QuicDirectPeer COMMAND test_quic_direct_peer)
   set_tests_properties(QuicDirectPeer PROPERTIES LABELS "p2p;quic;transport" TIMEOUT 300)
+  # Hole punching through two real managers and loopback QuicEndpoints.
+  add_executable(test_hole_punch_manager
+    tests/p2p/test_hole_punch_manager.cpp
+    src/daemon/p2p_manager.cpp
+    src/p2p/self_reachability.cpp
+    src/p2p/hole_punch.cpp
+    src/p2p/relay_hint_v2.cpp
+    src/network/relay_hints_eviction.cpp
+    src/network/relay_registry.cpp
+    src/network/quic_endpoint.cpp
+    src/network/quic_session.cpp
+    src/network/quic_transport.cpp
+    src/network/relay_tls_keypair.cpp
+    src/network/udp_socket.cpp
+    src/daemon/node_identity.cpp
+    src/p2p/addr_v2.cpp
+    src/p2p/addrman.cpp
+    src/crypto/params_stub.cpp
+    src/common/sha256d.cpp
+    src/common/logger.cpp
+    src/daemon/secure_random.cpp
+  )
+
+  target_compile_definitions(test_hole_punch_manager PRIVATE DINERO_TEST_BUILD)
+
+  if(APPLE)
+    target_link_libraries(test_hole_punch_manager PRIVATE
+      GTest::gtest GTest::gtest_main
+      Threads::Threads
+      dinero_crypto
+      secp256k1
+      OpenSSL::SSL
+      OpenSSL::Crypto
+      "-framework Security"
+    )
+  else()
+    target_link_libraries(test_hole_punch_manager PRIVATE
+      GTest::gtest GTest::gtest_main
+      Threads::Threads
+      dinero_crypto
+      secp256k1
+      OpenSSL::SSL
+      OpenSSL::Crypto
+    )
+  endif()
+
+  if(DINERO_ENABLE_QUIC AND TARGET dinero_ngtcp2)
+    target_link_libraries(test_hole_punch_manager PRIVATE dinero_ngtcp2)
+    if(TARGET dinero_ngtcp2_crypto_ossl)
+      target_link_libraries(test_hole_punch_manager PRIVATE dinero_ngtcp2_crypto_ossl)
+    elseif(TARGET dinero_ngtcp2_crypto_quictls)
+      target_link_libraries(test_hole_punch_manager PRIVATE dinero_ngtcp2_crypto_quictls)
+    endif()
+  endif()
+
+  if(WIN32)
+    target_link_libraries(test_hole_punch_manager PRIVATE ws2_32)
+  endif()
+
+  target_include_directories(test_hole_punch_manager PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src/daemon
+  )
+
+  add_test(NAME HolePunchManager COMMAND test_hole_punch_manager)
+  set_tests_properties(HolePunchManager PROPERTIES LABELS "p2p;quic;holepunch" TIMEOUT 300)
   add_executable(test_peer_key_ipv6
     tests/p2p/test_peer_key_ipv6.cpp
     src/daemon/p2p_manager.cpp
