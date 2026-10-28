@@ -13,7 +13,9 @@
 #include "daemon/http_rpc_server.h"
 #include "consensus/chainparams.h"
 #include "daemon/services/chainstate_service.h"
+#if DINERO_NODECORE_ORCHARD_RUNTIME
 #include "daemon/runtime_block_reader.h"
+#endif
 #include "daemon/config.h"
 #include "rpc/rpc_registry.h"
 #include "util/hex.h"
@@ -175,6 +177,7 @@ Json::Value LegacyStorageFixture(const std::string& path) {
         !app.PersistFreshStoreGenesisRecords())throw std::runtime_error("legacy fixture bootstrap failed");
     app.Stop();return 0;
 }
+#if DINERO_NODECORE_ORCHARD_RUNTIME
 Json::Value CompletedActivationCold(const Json::Value& request){
     // Test executable ONLY: fixed isolated genuine-PoW fixture profile. No
     // production daemon option, public schedule or installed data is changed.
@@ -253,6 +256,11 @@ Json::Value CompletedActivationCold(const Json::Value& request){
      auto use=dinero::WalletService::AcquireWalletUse(wallet);result["wallet_open"]=bool(use);}
     app->Stop();app.reset();result["stopped"]=true;return result;
 }
+#else
+Json::Value CompletedActivationCold(const Json::Value&){
+    throw std::runtime_error("Completed activation requires the Orchard runtime");
+}
+#endif
 Json::Value ActualAppReopen(const std::string& path,const std::string& mode={}){
     if(mode!=""&&mode!="prepare"&&mode!="cold"&&mode!="abandoned"&&mode!="prepared-exit"&&mode!="prepared-resume"&&mode!="published"&&mode!="published-exit")
         throw std::runtime_error("unknown reopen fixture mode");

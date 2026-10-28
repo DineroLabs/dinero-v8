@@ -81,6 +81,11 @@ if(BUILD_NODECORE OR (CMAKE_SYSTEM_NAME STREQUAL "iOS" AND NOT BUILD_FFI_ONLY))
     ${CMAKE_SOURCE_DIR}/src
   )
 
+  # Resolve at generation time, after the optional real runtime is declared.
+  # BUILD_NODECORE alone must never enable Orchard activation or Rust linkage.
+  target_compile_definitions(nodecore_ffi PRIVATE
+    DINERO_NODECORE_ORCHARD_RUNTIME=$<TARGET_EXISTS:dinero_orchard_runtime_reader>)
+
   target_link_libraries(nodecore_ffi PUBLIC
     dinero_core
     dinero_rpc_handlers

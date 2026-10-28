@@ -19,7 +19,9 @@
 #include "daemon/services/p2p_service.h"
 #include "daemon/services/wallet_service.h"
 #include "daemon/services/mempool_service.h"
+#if DINERO_NODECORE_ORCHARD_RUNTIME
 #include "daemon/orchard_snapshot_store.h"
+#endif
 #include "consensus/header_chain.h"
 #include "consensus/orchard_profile.h"
 #include "consensus/chainparams.h"
@@ -376,6 +378,7 @@ void ConfigureEmbeddedNotifier(dinero::DaemonApp& app){
     if(auto pool=std::dynamic_pointer_cast<dinero::MempoolService>(app.GetContext().mempool))
         pool->mempool().setTxBodyAcceptedCallback([](const dinero::MempoolTransaction& body){g_notifier->onMempoolBody(body);});
 }
+#if DINERO_NODECORE_ORCHARD_RUNTIME
 struct ActivationReopenData {
     std::shared_ptr<const dinero::consensus::HeaderChainSelector> headers;
     std::shared_ptr<const dinero::consensus::OrchardSnapshotSection> proof;
@@ -472,6 +475,13 @@ bool AutomaticActivationReopen(NodeCoreState& s,const std::vector<std::string>& 
     }
     return false; // Local replacement destructs/Stops before guard can release.
 }
+
+#else
+bool AutomaticActivationReopen(NodeCoreState&,const std::vector<std::string>&,uint64_t){
+    // A backend-OFF SDK cannot authenticate or select an Orchard replacement.
+    return false;
+}
+#endif
 
 } // anonymous namespace
 

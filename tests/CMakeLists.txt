@@ -112,11 +112,13 @@ if(NOT WIN32)
   set_tests_properties(RPCListenerStartup PROPERTIES
     LABELS "integration;e2e-daemon;rpc;mandatory" TIMEOUT 300 RUN_SERIAL TRUE)
 
+  if(DINERO_BUILD_ORCHARD_BACKEND)
   add_test(NAME OrchardMigrationDatadirAlias COMMAND python3 -B
     ${CMAKE_SOURCE_DIR}/tests/integration/test_orchard_migration_datadir_alias.py
     --dinerod $<TARGET_FILE:dinerod>)
   set_tests_properties(OrchardMigrationDatadirAlias PROPERTIES
     LABELS "integration;e2e-daemon;storage;orchard;mandatory" TIMEOUT 600 RUN_SERIAL TRUE)
+  endif()
 
   # Actual executable (main.cpp), not the direct DaemonApp fixture. This
   # opt-in gate needs authenticated, buried snapshots plus an isolated peer;
@@ -4582,6 +4584,7 @@ set_tests_properties(ReindexWireInventory PROPERTIES
 if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_reindex_deep_chain.cpp)
   add_executable(test_reindex_deep_chain
     tests/consensus/test_reindex_deep_chain.cpp
+    src/daemon/config.cpp
   )
   target_link_libraries(test_reindex_deep_chain PRIVATE
     dinero_core
@@ -9390,7 +9393,16 @@ if(TARGET nodecore_ffi)
       LABELS "integration;nodecore;restart;storage" TIMEOUT 60 RUN_SERIAL TRUE)
   endif()
   add_executable(nodecore_runtime_driver tests/integration/nodecore_runtime_driver.cpp)
-  if(UNIX AND TARGET test_assumeutxo_replay)
+  target_compile_definitions(nodecore_runtime_driver PRIVATE
+    DINERO_NODECORE_ORCHARD_RUNTIME=$<TARGET_EXISTS:dinero_orchard_runtime_reader>)
+  if(NOT DINERO_BUILD_ORCHARD_BACKEND)
+    add_test(NAME NodeCoreBackendOffActivationRefusal COMMAND python3
+      ${CMAKE_SOURCE_DIR}/tests/integration/test_nodecore_backend_off_activation.py
+      $<TARGET_FILE:nodecore_runtime_driver>)
+    set_tests_properties(NodeCoreBackendOffActivationRefusal PROPERTIES
+      TIMEOUT 30 LABELS "nodecore;orchard;policy;mandatory")
+  endif()
+  if(UNIX AND TARGET test_assumeutxo_replay AND DINERO_BUILD_ORCHARD_BACKEND)
     add_test(NAME OrchardCompletedActivationStartup COMMAND ${CMAKE_COMMAND} -E env
       NODECORE_DRIVER=$<TARGET_FILE:nodecore_runtime_driver>
       ACTIVATION_FIXTURE_GENERATOR=$<TARGET_FILE:test_assumeutxo_replay>
@@ -9428,7 +9440,7 @@ if(TARGET nodecore_ffi)
       NODECORE_SCENARIO=lifecycle
       NODECORE_EVIDENCE_DIR=${CMAKE_BINARY_DIR}/Testing/nodecore-runtime
       python3 ${CMAKE_SOURCE_DIR}/tests/integration/test_nodecore_runtime.py)
-  if(UNIX AND NOT CMAKE_CROSSCOMPILING AND TARGET test_assumeutxo_replay)
+  if(UNIX AND NOT CMAKE_CROSSCOMPILING AND TARGET test_assumeutxo_replay AND DINERO_BUILD_ORCHARD_BACKEND)
     # Actual SDK source; sole selection redirect is confined to this executable.
     # Keep the same real archive closure, including the Linux backward refs.
     add_executable(nodecore_activation_driver tests/integration/nodecore_runtime_driver.cpp
@@ -9648,12 +9660,16 @@ if(TARGET nodecore_ffi)
       NODECORE_SCENARIO=datadir_lock
       NODECORE_EVIDENCE_DIR=${CMAKE_BINARY_DIR}/Testing/nodecore-runtime
       python3 ${CMAKE_SOURCE_DIR}/tests/integration/test_nodecore_runtime.py)
+  if(DINERO_BUILD_ORCHARD_BACKEND)
   add_test(NAME NodeCoreStorageReadiness
     COMMAND ${CMAKE_COMMAND} -E env
       NODECORE_DRIVER=$<TARGET_FILE:nodecore_runtime_driver>
       NODECORE_SCENARIO=storage_readiness
       NODECORE_EVIDENCE_DIR=${CMAKE_BINARY_DIR}/Testing/nodecore-runtime
       python3 ${CMAKE_SOURCE_DIR}/tests/integration/test_nodecore_runtime.py)
+    set_tests_properties(NodeCoreStorageReadiness PROPERTIES
+      LABELS "integration;nodecore;restart;storage;orchard" TIMEOUT 300 RUN_SERIAL TRUE)
+  endif()
   add_test(NAME NodeCoreReopenFences
     COMMAND ${CMAKE_COMMAND} -E env
       NODECORE_DRIVER=$<TARGET_FILE:nodecore_runtime_driver>
@@ -9684,7 +9700,7 @@ if(TARGET nodecore_ffi)
       NODECORE_SCENARIO=app_prepared_readmission
       NODECORE_EVIDENCE_DIR=${CMAKE_BINARY_DIR}/Testing/nodecore-runtime
       python3 ${CMAKE_SOURCE_DIR}/tests/integration/test_nodecore_runtime.py)
-  set_tests_properties(NodeCoreRuntimeLifecycle NodeCoreSnapshotConsumers NodeCoreDatadirLock NodeCoreStorageReadiness NodeCoreReopenFences NodeCoreReopenRpcPause CoreOrderlyReopen CorePendingReopen CorePreparedReadmission PROPERTIES
+  set_tests_properties(NodeCoreRuntimeLifecycle NodeCoreSnapshotConsumers NodeCoreDatadirLock NodeCoreReopenFences NodeCoreReopenRpcPause CoreOrderlyReopen CorePendingReopen CorePreparedReadmission PROPERTIES
     LABELS "integration;nodecore;restart;storage" TIMEOUT 300 RUN_SERIAL TRUE)
   add_test(NAME NodeCoreMaintenanceGate
     COMMAND ${CMAKE_COMMAND} -E env
@@ -16635,6 +16651,7 @@ function(dinero_attach_real_mempool_fixture_runtime)
     dinero_core dinero_consensus dinero_pq dinero_shielded dinero_chainstate
     dinero_crypto secp256k1 RocksDB::rocksdb ${SQLITE3_LIBRARIES})
   set(_real_mempool_fixture_targets
+    test_reindex_deep_chain
     test_header_metadata_recovery
     test_assumeutxo_replay
     test_block_acceptor_fees
