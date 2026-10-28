@@ -1,0 +1,134 @@
+name: CI-only QUIC retransmit check (Windows)
+
+# Build/test only, for draft PR #855 (fix/quic-stream-retransmit-main,
+# d1d28de16). Runs only on pushes to this throwaway branch. No secrets,
+# no signing, no release, no tag, read-only token; the only upload is a
+# workflow log artifact. Toolchain setup mirrors
+# windows-openssl-release-smoke.yml.
+
+on:
+  push:
+    branches: [ci/quic-retransmit-windows]
+
+permissions:
+  contents: read
+
+jobs:
+  quic-tests-windows:
+    name: Windows MSVC — QUIC tests (RED on base, GREEN with fix)
+    runs-on: windows-2022
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 3
+
+      - name: Setup MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Cache vendored OpenSSL
+        uses: actions/cache@v4
+        with:
+          path: |
+            third_party/openssl-3.5.7
+          key: windows-msvc-openssl-3.5.7-${{ hashFiles('scripts/build-openssl-vendored.ps1') }}
+
+      - name: Build vendored OpenSSL 3.5.7
+        shell: powershell
+        run: |
+          $env:OPENSSL_VERSION = '3.5.7'
+          .\scripts\build-openssl-vendored.ps1
+
+      - name: Cache vendored curl
+        uses: actions/cache@v4
+        with:
+          path: |
+            third_party/curl-8.21.0
+          key: windows-msvc-curl-8.21.0-${{ hashFiles('scripts/build-curl-vendored.ps1') }}
+
+      - name: Build vendored static libcurl (OpenSSL 3.5.7)
+        shell: powershell
+        run: |
+          $env:OPENSSL_VERSION = '3.5.7'
+          .\scripts\build-curl-vendored.ps1
+
+      - name: Provision curl via runner vcpkg
+        shell: powershell
+        run: |
+          & "$env:VCPKG_INSTALLATION_ROOT\vcpkg.exe" install curl:x64-windows --no-print-usage
+
+      - name: Confirm the fix commit is under test
+        shell: powershell
+        run: |
+          git log --oneline -3
+          git merge-base --is-ancestor d1d28de16 HEAD
+          if ($LASTEXITCODE -ne 0) { throw "d1d28de16 is not an ancestor of HEAD" }
+          git diff --quiet d1d28de16 HEAD -- src include tests CMakeLists.txt cmake
+          if ($LASTEXITCODE -ne 0) { throw "sources differ from d1d28de16" }
+
+      - name: Configure (QUIC ON, server build flags)
+        shell: powershell
+        run: |
+          cmake -S . -B build-quic -G "Visual Studio 17 2022" -A x64 `
+            -DDINERO_WINDOWS_SERVER_BUILD=ON `
+            -DDINERO_BUILD_SEEDER=OFF `
+            -DDINERO_BUILD_MINER=OFF `
+            -DDINERO_ENABLE_QUIC=ON `
+            -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT\scripts\buildsystems\vcpkg.cmake"
+          if ($LASTEXITCODE -ne 0) { throw "configure failed" }
+
+      - name: Build QUIC test targets (with fix)
+        shell: powershell
+        run: |
+          cmake --build build-quic --config Release --parallel 2 --target `
+            test_relay_virtual_transport test_quic_dependency test_quic_crypto_capability `
+            test_quic_transport test_quic_session test_quic_session_stress `
+            test_relay_tls_keypair test_quic_session_retransmit
+          if ($LASTEXITCODE -ne 0) { throw "build failed" }
+          if (-not (Test-Path build-quic\Release\test_quic_session_retransmit.exe)) {
+            throw "test_quic_session_retransmit.exe was not built"
+          }
+
+      - name: GREEN — retransmit/order tests x30 (with fix)
+        shell: powershell
+        run: |
+          New-Item -ItemType Directory -Force logs | Out-Null
+          & build-quic\Release\test_quic_session_retransmit.exe --gtest_repeat=30 *> logs\green-r30.log
+          $rc = $LASTEXITCODE
+          Select-String -Path logs\green-r30.log -Pattern '^\[ +(FAILED|OK) +\] QuicSession' |
+            ForEach-Object { $_.Line -replace ' \(\d+ ms\)','' } | Group-Object | ForEach-Object { "$($_.Count) $($_.Name)" }
+          if ($rc -ne 0) { throw "GREEN run failed (rc=$rc)" }
+
+      - name: ctest -L quic (with fix)
+        shell: powershell
+        run: |
+          ctest --test-dir build-quic -C Release -L quic --output-on-failure *> logs\ctest-quic.log
+          $rc = $LASTEXITCODE
+          Get-Content logs\ctest-quic.log | Select-String -Pattern 'Test +#|tests passed'
+          if ($rc -ne 0) { throw "ctest -L quic failed (rc=$rc)" }
+
+      - name: RED — same tests on the base source (expected to fail)
+        shell: powershell
+        run: |
+          # cmd redirection keeps the bytes unchanged (PowerShell 5 '>' writes UTF-16).
+          cmd /c "git show d1d28de16~1:src/network/quic_session.cpp > src\network\quic_session.cpp"
+          if ($LASTEXITCODE -ne 0) { throw "could not restore the base source" }
+          git diff --stat -- src/network/quic_session.cpp
+          cmake --build build-quic --config Release --parallel 2 --target test_quic_session_retransmit
+          if ($LASTEXITCODE -ne 0) { throw "base build failed" }
+          & build-quic\Release\test_quic_session_retransmit.exe --gtest_repeat=10 *> logs\red-r10.log
+          $rc = $LASTEXITCODE
+          Select-String -Path logs\red-r10.log -Pattern '^\[ +(FAILED|OK) +\] QuicSession' |
+            ForEach-Object { $_.Line -replace ' \(\d+ ms\)','' } | Group-Object | ForEach-Object { "$($_.Count) $($_.Name)" }
+          if ($rc -eq 0) { throw "RED run passed on the base source: the test does not catch the bug on Windows" }
+          git checkout -- src/network/quic_session.cpp
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: quic-retransmit-windows-logs
+          path: logs/
