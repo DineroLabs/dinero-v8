@@ -2725,14 +2725,21 @@ void P2PManager::OrchestrateRelayDials() {
     const uint32_t now_unix = UnixSeconds(clock_->SystemNow());
     std::unordered_set<std::string> already_connected_targets_hex;
     std::unordered_set<std::string> connected_peer_addresses;
-    size_t current_outbound = 0;
+    size_t current_outbound = 0;  // direct outbound peers
+    size_t home_peers = 0;        // relayed/punched outbound peers (kHomePeerSlots)
     const auto now = std::chrono::steady_clock::now();
 
     {
         std::lock_guard<std::mutex> lock(peers_mutex_);
         for (const auto& [peer_key, peer] : connected_peers_) {
             if (!peer) continue;
-            if (peer->is_outbound) current_outbound++;
+            if (peer->is_outbound) {
+                if (peer->is_home_peer()) {
+                    home_peers++;
+                } else {
+                    current_outbound++;
+                }
+            }
             if (peer->is_connected) {
                 connected_peer_addresses.insert(peer_key);
             }
@@ -2747,8 +2754,12 @@ void P2PManager::OrchestrateRelayDials() {
         }
     }
 
-    if (current_outbound >= MAX_OUTBOUND_CONNECTIONS) {
-        return;  // slot budget already met by direct dials
+    // Relayed dials draw on the home-peer budget, not the direct one: a node
+    // with every direct slot full still needs a relayed link to hole-punch
+    // from. The cold dials below are ordinary direct peers and stay on the
+    // direct budget.
+    if (current_outbound >= MAX_OUTBOUND_CONNECTIONS && home_peers >= kHomePeerSlots) {
+        return;
     }
 
     std::string own_node_id_hex;
@@ -2826,7 +2837,7 @@ void P2PManager::OrchestrateRelayDials() {
     // (we need an open TCP connection to send RELAY_CONNECT through), then
     // fire SendRelayConnect.
     for (const auto& [target_hex, hint] : candidates) {
-        if (current_outbound >= MAX_OUTBOUND_CONNECTIONS) break;
+        if (home_peers >= kHomePeerSlots) break;
 
         const std::string relay_peer_address = dinero::network::FormatEndpoint(
             HintRelayHost(hint.net, hint.relay_addr), hint.relay_port);
@@ -2910,7 +2921,7 @@ void P2PManager::OrchestrateRelayDials() {
         uint64_t request_id = SendRelayConnect(
             relay_peer_address, target_node_id, std::move(callback));
         if (request_id != 0) {
-            current_outbound++;  // optimistically reserve a slot
+            home_peers++;  // optimistically reserve a home-peer slot
         }
     }
 
@@ -5997,7 +6008,9 @@ void P2PManager::connection_manager_loop() {
             size_t active_outbound = 0;
             for (const auto& pair : connected_peers_) {
                 const auto& peer = pair.second;
-                if (peer->is_connected && peer->is_outbound && !peer->is_feeler) {
+                // Relayed/punched peers have their own kHomePeerSlots budget.
+                if (peer->is_connected && peer->is_outbound && !peer->is_feeler &&
+                    !peer->is_home_peer()) {
                     ++active_outbound;
                 }
             }
@@ -6059,7 +6072,7 @@ void P2PManager::connection_manager_loop() {
                 for (const auto& pair : connected_peers_) {
                     if (pair.second->is_connected && pair.second->is_outbound &&
                         !pair.second->is_feeler) {
-                        active_peer_count++;
+                        if (!pair.second->is_home_peer()) active_peer_count++;
                         connected_endpoints.insert(
                             AddressKey(pair.second->address, pair.second->port));
                     }
@@ -8638,7 +8651,9 @@ void P2PManager::dial_quic_connect_targets() {
     }
 }
 
-bool P2PManager::connect_to_peer_quic(const std::string& ip, uint16_t port) {
+bool P2PManager::connect_to_peer_quic(
+    const std::string& ip, uint16_t port,
+    std::optional<std::array<uint8_t, 20>> punch_expected_id) {
     if (shutdown_requested_.load(std::memory_order_acquire) ||
         !network_active_.load(std::memory_order_acquire) ||
         !quic_endpoint_ || !quic_endpoint_->Listening()) {
@@ -8667,13 +8682,15 @@ bool P2PManager::connect_to_peer_quic(const std::string& ip, uint16_t port) {
     }
     auto session = quic_endpoint_->Connect(remote, quic_p2p_options_);
     if (!session) return false;
-    return !install_direct_quic_peer(std::move(session), remote, /*outbound=*/true).empty();
+    return !install_direct_quic_peer(std::move(session), remote, /*outbound=*/true,
+                                     std::move(punch_expected_id)).empty();
 }
 
 std::string P2PManager::install_direct_quic_peer(
     std::shared_ptr<dinero::network::QuicSession> session,
     const dinero::network::UdpAddr& remote,
-    bool outbound) {
+    bool outbound,
+    std::optional<std::array<uint8_t, 20>> punch_expected_id) {
     auto peer = std::make_shared<PeerInfo>();
     peer->address = QuicRemoteHost(remote);
     peer->port = remote.port;
@@ -8687,6 +8704,12 @@ std::string P2PManager::install_direct_quic_peer(
     peer->lifetime_state.store(PeerLifetimeState::RUNNING);
     peer->quic_direct = true;
     peer->quic_remote = remote;
+    if (punch_expected_id) {
+        // A punched dial counts against the home-peer budget. The expected
+        // id is only recorded here; the identity check comes later.
+        peer->punched = true;
+        peer->punch_expected_id = punch_expected_id;
+    }
     peer->relay_quic_session = session;
     const std::string key = peer->to_string();
     bool refused = false;

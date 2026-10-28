@@ -174,6 +174,15 @@ struct PeerInfo {
     // circuit, so both share the inbox, reader loop and send path below.
     bool quic_direct{false};
     dinero::network::UdpAddr quic_remote{};
+    // Hole-punched direct QUIC peer (Plan 4): dialed from a relayed link, so
+    // like a relayed peer it draws on the home-peer budget rather than the
+    // direct outbound slots. punch_expected_id is the node id the dial must
+    // authenticate as.
+    bool punched{false};
+    std::optional<std::array<uint8_t, 20>> punch_expected_id;
+    // Outbound relayed and punched peers share kHomePeerSlots instead of
+    // MAX_OUTBOUND_CONNECTIONS.
+    bool is_home_peer() const { return via_relay.has_value() || punched; }
     bool uses_quic_stream() const {
         return quic_direct || (via_relay && via_relay->encrypted_quic);
     }
@@ -220,6 +229,8 @@ struct PeerInfo {
           relay_quic_options(std::move(other.relay_quic_options)),
           quic_direct(other.quic_direct),
           quic_remote(other.quic_remote),
+          punched(other.punched),
+          punch_expected_id(other.punch_expected_id),
           lifetime_state(other.lifetime_state.load()),
           compact_timing_capable(other.compact_timing_capable.load()),
           release_handshake_complete(other.release_handshake_complete.load()) {}
@@ -851,7 +862,9 @@ public:
     dinero::network::QuicEndpoint* quic_endpoint() const { return quic_endpoint_.get(); }
     // Dial ip:port over QUIC. False if not listening, banned, self, or a peer
     // (either transport) already exists at that address.
-    bool connect_to_peer_quic(const std::string& ip, uint16_t port);
+    bool connect_to_peer_quic(
+        const std::string& ip, uint16_t port,
+        std::optional<std::array<uint8_t, 20>> punch_expected_id = std::nullopt);
     // NODE_P2P_QUIC while the endpoint is listening, else 0.
     uint64_t local_quic_service_bits() const;
     // p2p.quic_connect: "ip:port" peers to keep connected over QUIC. Dialed by
@@ -864,7 +877,9 @@ public:
     // Returns the peer key.
     std::string install_direct_quic_peer(std::shared_ptr<dinero::network::QuicSession> session,
                                          const dinero::network::UdpAddr& remote,
-                                         bool outbound);
+                                         bool outbound,
+                                         std::optional<std::array<uint8_t, 20>> punch_expected_id =
+                                             std::nullopt);
     std::string install_outbound_virtual_relay_peer(
         const std::array<uint8_t, 20>& target_node_id,
         const std::string& relay_peer_address,
@@ -1119,6 +1134,9 @@ private:
     static constexpr int SEND_TIMEOUT_SEC = 5;
     static constexpr size_t MAX_OUTBOUND_CONNECTIONS =
         dinero::p2p::kTargetDurableOutbound;
+    // Outbound slots for relayed/punched ("home") peers, counted apart from
+    // MAX_OUTBOUND_CONNECTIONS so a full direct set still gets a relayed link.
+    static constexpr size_t kHomePeerSlots = 2;
     static constexpr std::chrono::minutes FEELER_INTERVAL{2};
     static constexpr size_t MAX_INBOUND_CONNECTIONS = 125;
     // Two full nodes behind one household/office NAT can each maintain several
