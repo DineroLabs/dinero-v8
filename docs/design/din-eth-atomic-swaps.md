@@ -106,7 +106,7 @@ A wallet can only offer or accept what it can actually pay. Today's DIN↔BTC `s
 | Accepting an offer | ETH or USDC buyer | Asset balance ≥ amount (+ committed to other running swaps), and ETH ≥ gas for lock plus refund | accept exceeds available balance |
 | Funding the lock | Both | Re-check at signing; the balance can change between offer and lock | the swap aborts before anything is sent; the counterparty has not committed yet |
 
-Committed amounts come from the swap store: every open offer and every swap not yet settled or refunded reserves its amount plus maximum fee. Cancelling or expiring an offer releases its reservation. The offer-time check is advisory to the counterparty (they cannot see your wallet); the funding-time check is the one that guarantees nothing is overspent. Each check ships with a regression test that fails without it, including two offers that together exceed the balance.
+Committed amounts come from the swap store: every open offer and every swap not yet settled or refunded reserves its amount plus maximum fee. Cancelling an offer releases its reservation. An expired offer stays reserved until cancelled, because the DIN seller's wallet can still start a swap from it. The offer-time check is advisory to the counterparty (they cannot see your wallet); the funding-time check is the one that guarantees nothing is overspent. Each check ships with a regression test that fails without it, including two offers that together exceed the balance.
 
 ## Base and USDC
 
