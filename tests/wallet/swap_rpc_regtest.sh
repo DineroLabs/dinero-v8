@@ -36,7 +36,7 @@ start_node() {  # <name> <rpcport> <p2pport> [extra args...]
   "$DINEROD" -regtest -daemon=0 -server -rpcuser=test -rpcpassword=test -rpcport=$port -port=$p2p \
     -datadir="$DIR/$name" -listenonion=0 -discover=0 -dnsseed=0 -fixedseeds=0 "${CONSENSUS[@]}" "$@" \
     >>"$DIR/$name.log" 2>&1 &
-  echo $!
+  STARTED_PID=$!
 }
 wait_rpc() { for _ in $(seq 1 90); do rpc "$1" getblockcount '[]' >/dev/null 2>&1 && return 0; sleep 1; done; return 1; }
 
@@ -54,18 +54,24 @@ ALICE_BTC=$("${BCLI[@]}" getnewaddress "" bech32m)   # Alice's payout address (o
 BOB_BTC_REFUND=$("${BCLI[@]}" getnewaddress "" bech32m)
 
 # --- A daemon without swap.enable is inert --------------------------------------
-XPID=$(start_node inert $XPORT $XP2P); wait_rpc $XPORT
+start_node inert $XPORT $XP2P; XPID=$STARTED_PID; wait_rpc $XPORT
 out=$(rpc $XPORT swap.list '[]' 2>&1 || true)
 check "without swap.enable, swap.* reports disabled" '[[ "$out" == *disabled* ]]'
 check "without swap.enable, no swap directory is created" '[[ ! -e "$DIR/inert/swaps" ]]'
 kill "$XPID"; wait "$XPID" 2>/dev/null || true; XPID=
 
 # --- Alice's and Bob's daemons ---------------------------------------------------
-APID=$(start_node alice $APORT $AP2P "${SWAPCFG[@]}"); wait_rpc $APORT
-BPID=$(start_node bob $BPORT $BP2P "${SWAPCFG[@]}" --connect=127.0.0.1:$AP2P); wait_rpc $BPORT
+# Establish each intended payer before SwapService captures its durable owner.
+start_node alice $APORT $AP2P; APID=$STARTED_PID; wait_rpc $APORT
+start_node bob $BPORT $BP2P --connect=127.0.0.1:$AP2P; BPID=$STARTED_PID; wait_rpc $BPORT
 for port in $APORT $BPORT; do
   rpc $port wallet.createhd '["w"]' >/dev/null
   rpc $port wallet.encrypt '["pw-swap-rpc"]' >/dev/null
+done
+kill "$APID" "$BPID"; wait "$APID"; wait "$BPID"; APID=; BPID=
+start_node alice $APORT $AP2P "${SWAPCFG[@]}"; APID=$STARTED_PID; wait_rpc $APORT
+start_node bob $BPORT $BP2P "${SWAPCFG[@]}" --connect=127.0.0.1:$AP2P; BPID=$STARTED_PID; wait_rpc $BPORT
+for port in $APORT $BPORT; do
   rpc $port wallet.unlock '["pw-swap-rpc", 7200]' >/dev/null
 done
 ALICE_DIN=$(rpc $APORT wallet.getnewaddress '["taproot","mine"]' | python3 -c 'import sys,json
@@ -77,7 +83,7 @@ for _ in $(seq 1 60); do [[ "$(rpc $BPORT getblockcount '[]')" == "$(rpc $APORT 
 check "bob's daemon follows alice's chain" '[[ "$(rpc $BPORT getblockcount "[]")" == "$(rpc $APORT getblockcount "[]")" ]]'
 
 # --- Offer / accept through RPCs only ----------------------------------------------
-OFFER_JSON=$(rpc $APORT swap.offer "{\"din_amount_una\":1000000000,\"btc_amount_sat\":1000000,\"btc_address\":\"$ALICE_BTC\"}")
+OFFER_JSON=$(rpc $APORT swap.offer "{\"din_amount_una\":1000000000,\"btc_amount_sat\":1000000,\"btc_address\":\"$ALICE_BTC\",\"din_funding_fee_rate_hint\":2,\"din_funding_maximum_fee_una\":5000000}")
 OFFER=$(field "$OFFER_JSON" offer); ID=$(field "$OFFER_JSON" id)
 echo "  offer $ID: ${OFFER:0:40}..."
 DECODED=$(rpc $BPORT swap.decode "{\"text\":\"$OFFER\"}")
@@ -109,7 +115,7 @@ for round in $(seq 1 150); do
   if [[ $killed == 0 && ( "$SB" == btc-lock-broadcast || "$SB" == btc-locked ) ]]; then  # Bob's BTC is committed
     echo "  [$round] SIGKILL bob's daemon, restart, unlock"
     kill -9 "$BPID"; wait "$BPID" 2>/dev/null || true
-    BPID=$(start_node bob $BPORT $BP2P "${SWAPCFG[@]}" --connect=127.0.0.1:$AP2P); wait_rpc $BPORT
+    start_node bob $BPORT $BP2P "${SWAPCFG[@]}" --connect=127.0.0.1:$AP2P; BPID=$STARTED_PID; wait_rpc $BPORT
     check "after restart, bob's swap is paused while the wallet is locked" \
       '[[ "$(state $BPORT)" == "paused: wallet locked" ]]'
     rpc $BPORT wallet.unlock '["pw-swap-rpc", 7200]' >/dev/null

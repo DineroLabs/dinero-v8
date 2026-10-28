@@ -13,10 +13,9 @@
 //               returns, does NOT claim (no secret leak) and her DIN stays
 //               locked until T_din (dinerod has no mock time; the node refuses
 //               the early refund as non-final).
-// stale-clocks: both parties' clocks run 100 h behind the chains, so by chain
-//               time Alice's DIN refund is already open. Bob must abort WITHOUT
-//               locking BTC (else Alice could refund DIN and also take his
-//               BTC); Alice then refunds her DIN on chain.
+// stale-clocks: both parties' clocks run 100 h behind the chains. The
+//               payer must refuse the expired offer before creating a DIN
+//               funding transaction, and Bob must never lock BTC.
 #include "wallet/swap/encrypted_store.h"
 #include "wallet/swap/runner.h"
 #include "wallet/swap/swap_crypto.h"
@@ -261,13 +260,20 @@ int main(int argc, char** argv) {
             config.din_bump_stuck_seconds = 3;  // regtest: "stuck" after 3 s
         }
 
+        const auto payer=din("test.swap_funding.identity",Json::Value(Json::arrayValue));
+        if(!payer || !(*payer)["wallet_id"].isString())
+            throw std::runtime_error("Real fixture payer identity unavailable");
+        const auto funding_binding=ParseDinFundingBinding((*payer)["wallet_id"].asString(),"2","5000000");
         auto make_session = [&](Role role) {
             SwapSession s;
             s.record.role = role;
             s.record.offer = o;
             s.record.accept = a;
             s.record.state_since_unix = base;
-            if (role == Role::DinSeller) s.record.secret = secret;
+            if (role == Role::DinSeller) {
+                s.record.secret = secret;
+                s.din_funding_binding=funding_binding;
+            }
             s.btc_scan_from_height = btc_tip->asUInt();
             s.din_scan_from_height = din_tip->asUInt();
             // Alice: DIN refund -> key 9, BTC claim -> key 7. Bob: DIN claim -> key 8, BTC refund -> key 10.
@@ -289,6 +295,21 @@ int main(int argc, char** argv) {
             p.io.reset();
             const auto s = EncryptedFileSwapStore::Load(p.store_path, p.store_key);
             p.io = std::make_unique<RpcSwapChainIo>(din, btc, s, config);
+            p.io->SetDinFundingOwner([&](const DinFundingRequest& request,DinFundingOperation operation,
+                                        const std::vector<uint8_t>& expected)->PreparedDinFunding {
+                Json::Value args(Json::objectValue);
+                args["wallet_id"]=Hex(std::vector<uint8_t>(request.binding.wallet_id.begin(),request.binding.wallet_id.end()));
+                args["offer_id"]=Hex(std::vector<uint8_t>(request.offer_id.begin(),request.offer_id.end()));
+                args["address"]=request.address;args["amount_una"]=Json::UInt64(request.amount_una);
+                args["fee_rate_hint"]=Json::UInt64(request.binding.fee_rate_hint);
+                args["maximum_fee_una"]=Json::UInt64(request.binding.maximum_fee_una);
+                args["operation"]=static_cast<unsigned>(operation);
+                args["expected_body"]=Hex(expected);
+                const auto result=din("test.swap_funding.owner",args);
+                if(!result || !(*result)["hex"].isString() || !(*result)["txid"].isString())
+                    throw std::runtime_error("Real retained funding owner refused request");
+                return {detail::FromHex((*result)["hex"].asString()),(*result)["txid"].asString()};
+            });
             if (use_tower && s.record.role == Role::BtcSeller) {
                 p.io->SetTowerSink([&](const std::string& package) {
                     std::cout << "        package -> " << WriteTowerInbox(inbox, package) << "\n";
@@ -812,16 +833,21 @@ int main(int argc, char** argv) {
                       std::string(name) + ": the watcher reports the first one as the winner");
             }
         } else if (stale) {
-            for (int round = 0; round < 40 && (alive(alice) || alive(bob)); ++round) {
-                if (alive(alice)) tick(alice, round);
-                if (alive(bob)) tick(bob, round);
-                mine();
-            }
-            Check(bob.State() == SwapState::Aborted, std::string("bob Aborted (is ") + StateName(bob.State()) + ")");
+            const auto before = din("getrawmempool", Json::Value(Json::arrayValue));
+            Check(before.has_value(), "payer mempool is readable before expired-offer test");
+            const auto rejected = alice.runner->Tick(alice.Now());
+            Check(std::any_of(rejected.events.begin(), rejected.events.end(), [](const auto& event) {
+                return event.find("offer has expired") != std::string::npos;
+            }), "payer explicitly refuses the expired offer");
+            tick(bob, 0);
+            Check(alice.State() == SwapState::Accepted, "expired offer never leaves payer's Accepted state");
+            Check(!alice.io->ObserveDin().funding, "expired offer creates no DIN HTLC");
             Check(std::find(bob.history.begin(), bob.history.end(), ActionKind::FundBtcHtlc) == bob.history.end(),
-                  "bob never locked BTC against a DIN lock whose refund was already open");
-            Check(alice.State() == SwapState::Refunded, std::string("alice Refunded (is ") + StateName(alice.State()) + ")");
-            Check(din_balance(kAliceDinRefund) == int64_t(kDinAmount - config.din_fee_una), "alice got her DIN back minus fee on chain");
+                  "bob never locks BTC against the expired offer");
+            Check(din("getrawmempool", Json::Value(Json::arrayValue)) == before,
+                  "expired offer adds no mempool transaction");
+            // Keep the chain/CSN activation checks even for this refusal case.
+            for (int i = 0; i < 21; ++i) mine();
         } else {
             // Phase 1: Alice funds the DIN lock, then goes offline.
             int round = 0;
