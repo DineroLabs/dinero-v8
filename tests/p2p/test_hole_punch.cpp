@@ -260,12 +260,15 @@ TEST(HolePunchWire, ServiceBit32SurvivesVersion) {
 
 namespace {
 bool SameStr(const UdpAddr& a, const std::string& s) { return a.to_string() == s; }
+void SetIfaces(P2PManager& mgr, std::vector<std::string> ips) {
+    mgr.test_set_local_interface_enumerator([ips] { return ips; });
+}
 }  // namespace
 
 TEST(PunchCandidates, EmptyWithoutQuicEndpoint) {
     P2PManager mgr(0);
     mgr.update_stun_candidates({{"203.0.113.5", 20999}});
-    mgr.test_set_local_interface_ips({"2606:4700::5"});
+    SetIfaces(mgr, {"2606:4700::5"});
     mgr.set_nat_mapping(NatMappingType::EndpointIndependent);
     const auto c = mgr.LocalPunchCandidates();
     EXPECT_TRUE(c.v6.empty());
@@ -276,7 +279,7 @@ TEST(PunchCandidates, FromStunRoundAndMapping) {
     P2PManager mgr(0);
     mgr.test_set_quic_port(24444);
     mgr.update_stun_candidates({{"203.0.113.5", 20999}});
-    mgr.test_set_local_interface_ips({"2606:4700::5"});
+    SetIfaces(mgr, {"2606:4700::5"});
     mgr.set_nat_mapping(NatMappingType::EndpointIndependent);
     const auto c = mgr.LocalPunchCandidates();
     ASSERT_TRUE(c.v4.has_value());
@@ -290,7 +293,7 @@ TEST(PunchCandidates, SkipsNonRoutable) {
     P2PManager mgr(0);
     mgr.test_set_quic_port(24444);
     mgr.update_stun_candidates({{"10.0.0.5", 20999}});
-    mgr.test_set_local_interface_ips({"10.0.0.5", "fe80::1", "fd00::1", "::1", "127.0.0.1"});
+    SetIfaces(mgr, {"10.0.0.5", "fe80::1", "fd00::1", "::1", "127.0.0.1"});
     const auto c = mgr.LocalPunchCandidates();
     EXPECT_FALSE(c.v4.has_value());
     EXPECT_TRUE(c.v6.empty());
@@ -299,12 +302,16 @@ TEST(PunchCandidates, SkipsNonRoutable) {
 TEST(PunchCandidates, ReadsInterfacesFreshEachCall) {
     P2PManager mgr(0);
     mgr.test_set_quic_port(24444);
-    mgr.test_set_local_interface_ips({"2606:4700::5"});
+    int calls = 0;
+    mgr.test_set_local_interface_enumerator([&calls] {
+        ++calls;
+        return std::vector<std::string>{calls == 1 ? "2606:4700::5" : "2606:4700::7"};
+    });
     auto c = mgr.LocalPunchCandidates();
     ASSERT_EQ(c.v6.size(), 1u);
     EXPECT_TRUE(SameStr(c.v6[0], "[2606:4700::5]:24444"));
-    mgr.test_set_local_interface_ips({"2606:4700::7"});  // prefix / privacy address rotated
-    c = mgr.LocalPunchCandidates();
+    c = mgr.LocalPunchCandidates();  // prefix / privacy address rotated
     ASSERT_EQ(c.v6.size(), 1u);
     EXPECT_TRUE(SameStr(c.v6[0], "[2606:4700::7]:24444"));
+    EXPECT_EQ(calls, 2);
 }

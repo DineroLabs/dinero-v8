@@ -8225,20 +8225,20 @@ dinero::p2p::PunchCandidates P2PManager::LocalPunchCandidates() const {
 
     std::vector<std::string> iface_ips;
     std::set<std::pair<std::string, uint16_t>> reflexive;
-    bool have_test_ips = false;
+    std::function<std::vector<std::string>()> test_enumerator;
     {
         std::lock_guard<std::mutex> lock(reach_mutex_);
         reflexive = stun_reflexive_;
         out.v4_mapping = nat_mapping_type_;
 #ifdef DINERO_TEST_BUILD
-        if (test_local_interface_ips_) {
-            iface_ips = *test_local_interface_ips_;
-            have_test_ips = true;
-        }
+        test_enumerator = test_local_interface_enumerator_;
 #endif
     }
-    if (!have_test_ips) {
-        // Fresh read every call: IPv6 prefixes and privacy addresses rotate.
+    // Fresh read every call (outside the lock): IPv6 prefixes and privacy
+    // addresses rotate.
+    if (test_enumerator) {
+        iface_ips = test_enumerator();
+    } else {
         const auto ips = dinero::network::EnumerateLocalInterfaceIps();
         iface_ips.assign(ips.begin(), ips.end());
     }
@@ -8268,9 +8268,10 @@ dinero::p2p::PunchCandidates P2PManager::LocalPunchCandidates() const {
 }
 
 #ifdef DINERO_TEST_BUILD
-void P2PManager::test_set_local_interface_ips(std::vector<std::string> ips) {
+void P2PManager::test_set_local_interface_enumerator(
+    std::function<std::vector<std::string>()> fn) {
     std::lock_guard<std::mutex> lock(reach_mutex_);
-    test_local_interface_ips_ = std::move(ips);
+    test_local_interface_enumerator_ = std::move(fn);
 }
 
 void P2PManager::test_set_quic_port(uint16_t port) { test_quic_port_ = port; }
