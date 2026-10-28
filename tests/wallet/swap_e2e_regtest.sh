@@ -8,9 +8,10 @@
 # Bob's watchtower runs as its own process (dinero-swap-tower) on an inbox dir.
 #   usage: swap_e2e_regtest.sh <dinerod> <swap_e2e_tool> <dinero-swap-tower>
 set -euo pipefail
+. "$(cd "$(dirname "$0")" && pwd)/swap_regtest_lib.sh"
 DINEROD=${1:?dinerod}; TOOL=${2:?swap_e2e_tool}; TOWER=${3:?dinero-swap-tower}
 DIR=$(mktemp -d)
-DPORT=$((30000 + RANDOM % 9000)); DP2P=$((DPORT + 7)); BPORT=$((DPORT + 13))
+DPORT=$(swap_free_base 23); DP2P=$((DPORT + 7)); BPORT=$((DPORT + 13))
 CPORT=$((DPORT + 21)); CP2P=$((DPORT + 23))
 CONSENSUS=(--consensus-contextual-locks-height=1 --consensus-sixty-second-height=130)
 BCLI=(bitcoin-cli -regtest -datadir="$DIR/btc" -rpcport=$BPORT -rpcuser=test -rpcpassword=test)
@@ -35,7 +36,9 @@ mkdir -p "$DIR/din" "$DIR/csn" "$DIR/btc" "$DIR/swaps" "$DIR/inbox"; chmod 700 "
 bitcoind -regtest -datadir="$DIR/btc" -listen=0 -rpcport=$BPORT -rpcuser=test -rpcpassword=test \
   -daemon -fallbackfee=0.0002 >/dev/null
 for _ in $(seq 1 90); do dcall getblockcount '[]' >/dev/null 2>&1 && break; sleep 1; done
+swap_require_regtest dinerod "$(dcall getblockchaininfo '[]')"
 for _ in $(seq 1 60); do "${BCLI[@]}" getblockchaininfo >/dev/null 2>&1 && break; sleep 0.5; done
+swap_require_regtest bitcoind "$("${BCLI[@]}" getblockchaininfo)"
 
 # Alice's Dinero wallet (funds the DIN lock).
 dcall wallet.createhd '["alice"]' >/dev/null

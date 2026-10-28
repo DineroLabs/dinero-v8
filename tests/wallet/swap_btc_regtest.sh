@@ -4,10 +4,11 @@
 # accept the refund once median time past reaches the lock.
 #   usage: swap_btc_regtest.sh <path-to-swap_btc_regtest_tool>
 set -euo pipefail
+. "$(cd "$(dirname "$0")" && pwd)/swap_regtest_lib.sh"
 TOOL=${1:?path to swap_btc_regtest_tool}
 LOCK=1800000000
 DIR=$(mktemp -d)
-RPCPORT=$((30000 + RANDOM % 9000))
+RPCPORT=$(swap_free_base 0)
 CLI=(bitcoin-cli -regtest -datadir="$DIR" -rpcport=$RPCPORT)
 cleanup() { "${CLI[@]}" stop >/dev/null 2>&1 || true; sleep 1; rm -rf "$DIR"; }
 trap cleanup EXIT
@@ -16,6 +17,7 @@ trap cleanup EXIT
 bitcoind -regtest -datadir="$DIR" -listen=0 -rpcport=$RPCPORT -daemon -fallbackfee=0.0002 \
   -txindex=1 >/dev/null
 for _ in $(seq 1 60); do "${CLI[@]}" getblockchaininfo >/dev/null 2>&1 && break; sleep 0.5; done
+swap_require_regtest bitcoind "$("${CLI[@]}" getblockchaininfo)"
 "${CLI[@]}" createwallet test >/dev/null
 MINER=$("${CLI[@]}" getnewaddress)
 "${CLI[@]}" generatetoaddress 101 "$MINER" >/dev/null

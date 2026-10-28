@@ -6,9 +6,10 @@
 # without swap.enable must stay inert.
 #   usage: swap_rpc_regtest.sh <dinerod>
 set -euo pipefail
+. "$(cd "$(dirname "$0")" && pwd)/swap_regtest_lib.sh"
 DINEROD=${1:?dinerod}
 DIR=$(mktemp -d)
-BASE=$((30000 + RANDOM % 9000))  # clear of a local mainnet dinerod (20998/20999)
+BASE=$(swap_free_base 11)
 APORT=$BASE; AP2P=$((BASE + 1)); BPORT=$((BASE + 2)); BP2P=$((BASE + 3)); XPORT=$((BASE + 4)); XP2P=$((BASE + 5))
 CPORT=$((BASE + 11))  # bitcoind RPC
 BCLI=(bitcoin-cli -regtest -datadir="$DIR/btc" -rpcport=$CPORT -rpcuser=test -rpcpassword=test)
@@ -38,7 +39,13 @@ start_node() {  # <name> <rpcport> <p2pport> [extra args...]
     >>"$DIR/$name.log" 2>&1 &
   echo $!
 }
-wait_rpc() { for _ in $(seq 1 90); do rpc "$1" getblockcount '[]' >/dev/null 2>&1 && return 0; sleep 1; done; return 1; }
+wait_rpc() {
+  for _ in $(seq 1 90); do
+    if rpc "$1" getblockcount '[]' >/dev/null 2>&1; then swap_require_regtest "dinerod :$1" "$(rpc "$1" getblockchaininfo '[]')"; return 0; fi
+    sleep 1
+  done
+  return 1
+}
 
 fail=0
 check() { if eval "$2"; then echo "  OK   $1"; else echo "  FAIL $1"; fail=1; fi; }
@@ -47,6 +54,7 @@ mkdir -p "$DIR/alice" "$DIR/bob" "$DIR/inert" "$DIR/btc"
 bitcoind -regtest -datadir="$DIR/btc" -listen=0 -rpcport=$CPORT -rpcuser=test -rpcpassword=test -daemon \
   -fallbackfee=0.0002 >/dev/null
 for _ in $(seq 1 60); do "${BCLI[@]}" getblockchaininfo >/dev/null 2>&1 && break; sleep 0.5; done
+swap_require_regtest bitcoind "$("${BCLI[@]}" getblockchaininfo)"
 "${BCLI[@]}" createwallet bob >/dev/null
 BTC_MINER=$("${BCLI[@]}" getnewaddress)
 "${BCLI[@]}" generatetoaddress 101 "$BTC_MINER" >/dev/null
