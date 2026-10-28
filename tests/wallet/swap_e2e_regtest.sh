@@ -10,7 +10,7 @@
 set -euo pipefail
 DINEROD=${1:?dinerod}; TOOL=${2:?swap_e2e_tool}; TOWER=${3:?dinero-swap-tower}
 DIR=$(mktemp -d)
-DPORT=$((20000 + RANDOM % 20000)); DP2P=$((DPORT + 7)); BPORT=$((DPORT + 13))
+DPORT=$((30000 + RANDOM % 9000)); DP2P=$((DPORT + 7)); BPORT=$((DPORT + 13))
 CPORT=$((DPORT + 21)); CP2P=$((DPORT + 23))
 CONSENSUS=(--consensus-contextual-locks-height=1 --consensus-sixty-second-height=130)
 BCLI=(bitcoin-cli -regtest -datadir="$DIR/btc" -rpcport=$BPORT -rpcuser=test -rpcpassword=test)

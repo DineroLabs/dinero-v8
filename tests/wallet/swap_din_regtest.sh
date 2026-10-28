@@ -6,7 +6,7 @@
 #   usage: swap_din_regtest.sh <dinerod> <swap_din_tool>
 set -euo pipefail
 DINEROD=${1:?dinerod}; TOOL=${2:?swap_din_tool}
-DIR=$(mktemp -d); RPCPORT=$((20000 + RANDOM % 20000)); P2P=$((RPCPORT + 7))
+DIR=$(mktemp -d); RPCPORT=$((30000 + RANDOM % 9000)); P2P=$((RPCPORT + 7))
 FUTURE=1800000000
 cleanup() { exec 3>&- 4<&- 2>/dev/null || true; [[ -n "${WPID:-}" ]] && kill "$WPID" 2>/dev/null || true
             [[ -n "${NPID:-}" ]] && kill "$NPID" 2>/dev/null || true; sleep 1; rm -rf "$DIR"; }

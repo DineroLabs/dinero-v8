@@ -7,7 +7,7 @@ set -euo pipefail
 TOOL=${1:?path to swap_btc_regtest_tool}
 LOCK=1800000000
 DIR=$(mktemp -d)
-RPCPORT=$((20000 + RANDOM % 20000))
+RPCPORT=$((30000 + RANDOM % 9000))
 CLI=(bitcoin-cli -regtest -datadir="$DIR" -rpcport=$RPCPORT)
 cleanup() { "${CLI[@]}" stop >/dev/null 2>&1 || true; sleep 1; rm -rf "$DIR"; }
 trap cleanup EXIT

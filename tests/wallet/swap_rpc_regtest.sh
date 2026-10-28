@@ -8,7 +8,7 @@
 set -euo pipefail
 DINEROD=${1:?dinerod}
 DIR=$(mktemp -d)
-BASE=$((20000 + RANDOM % 20000))
+BASE=$((30000 + RANDOM % 9000))  # clear of a local mainnet dinerod (20998/20999)
 APORT=$BASE; AP2P=$((BASE + 1)); BPORT=$((BASE + 2)); BP2P=$((BASE + 3)); XPORT=$((BASE + 4)); XP2P=$((BASE + 5))
 CPORT=$((BASE + 11))  # bitcoind RPC
 BCLI=(bitcoin-cli -regtest -datadir="$DIR/btc" -rpcport=$CPORT -rpcuser=test -rpcpassword=test)
