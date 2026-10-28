@@ -13,6 +13,7 @@
 #include <cstring>
 #include <deque>
 #include <future>
+#include <iterator>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -192,8 +193,13 @@ struct QuicSession::Impl {
     std::atomic<bool> stream_closed{false};
 
     int64_t stream_id{-1};
-    std::vector<uint8_t> send_buffer;
-    size_t send_offset{0};
+    // Stream payloads handed to ngtcp2, oldest first. ngtcp2 keeps pointers
+    // into these bytes and re-reads them to retransmit lost STREAM frames,
+    // so a chunk is freed only once AckedStreamDataOffset reports all of it
+    // acknowledged. Only the back chunk is ever written.
+    std::deque<std::vector<uint8_t>> send_chunks;
+    uint64_t send_chunks_base{0};  // stream offset of send_chunks.front()
+    size_t send_offset{0};         // bytes of send_chunks.back() written
     bool send_fin{true};
     bool stream_fin_sent{false};
 
@@ -242,7 +248,8 @@ struct QuicSession::Impl {
         handshake_confirmed.store(false);
         stream_closed.store(false);
         stream_id = -1;
-        send_buffer.clear();
+        send_chunks.clear();
+        send_chunks_base = 0;
         send_offset = 0;
         stream_fin_sent = false;
         received_stream_data.clear();
@@ -291,6 +298,26 @@ struct QuicSession::Impl {
         ngtcp2_conn_extend_max_offset(conn, datalen);
         if ((flags & NGTCP2_STREAM_DATA_FLAG_FIN) != 0) {
             self->stream_closed.store(true);
+        }
+        return 0;
+    }
+
+    // ngtcp2 reports the contiguous acked range [offset, offset + datalen).
+    static int AckedStreamDataOffset(ngtcp2_conn*,
+                                     int64_t ack_stream_id,
+                                     uint64_t offset,
+                                     uint64_t datalen,
+                                     void* user_data,
+                                     void*) {
+        auto* self = static_cast<Impl*>(user_data);
+        if (ack_stream_id != self->stream_id) {
+            return 0;
+        }
+        const uint64_t acked_end = offset + datalen;
+        while (!self->send_chunks.empty() &&
+               self->send_chunks_base + self->send_chunks.front().size() <= acked_end) {
+            self->send_chunks_base += self->send_chunks.front().size();
+            self->send_chunks.pop_front();
         }
         return 0;
     }
@@ -348,6 +375,7 @@ struct QuicSession::Impl {
         callbacks.decrypt = ngtcp2_crypto_decrypt_cb;
         callbacks.hp_mask = ngtcp2_crypto_hp_mask_cb;
         callbacks.recv_stream_data = &Impl::RecvStreamData;
+        callbacks.acked_stream_data_offset = &Impl::AckedStreamDataOffset;
         callbacks.rand = &Impl::Rand;
         callbacks.update_key = ngtcp2_crypto_update_key_cb;
         callbacks.delete_crypto_aead_ctx = ngtcp2_crypto_delete_crypto_aead_ctx_cb;
@@ -770,6 +798,11 @@ struct QuicSession::Impl {
         return true;
     }
 
+    // True while the back chunk still has bytes not yet handed to ngtcp2.
+    bool SendPending() const {
+        return !send_chunks.empty() && send_offset < send_chunks.back().size();
+    }
+
     // Session-thread-only: queue a single app-layer payload for the next
     // writev_stream call. Multi-payload queueing is handled at the
     // SessionLoop layer via the outgoing_streams deque; this method only
@@ -779,7 +812,7 @@ struct QuicSession::Impl {
             SetError("refusing to queue empty QUIC stream payload");
             return false;
         }
-        if (!send_buffer.empty()) {
+        if (SendPending()) {
             SetError("a QUIC stream payload is already queued");
             return false;
         }
@@ -787,14 +820,14 @@ struct QuicSession::Impl {
             SetError("the QUIC stream has already been closed");
             return false;
         }
-        send_buffer = payload;
+        send_chunks.push_back(payload);
         send_offset = 0;
         send_fin = fin;
         return true;
     }
 
     bool MaybeOpenStream() {
-        if (stream_id != -1 || send_buffer.empty() || !ConnHandshakeReady()) {
+        if (stream_id != -1 || !SendPending() || !ConnHandshakeReady()) {
             return true;
         }
         if (ngtcp2_conn_get_streams_bidi_left(conn) == 0) {
@@ -833,10 +866,10 @@ struct QuicSession::Impl {
             const ngtcp2_vec* vecs = nullptr;
             size_t veccnt = 0;
             uint32_t flags = NGTCP2_WRITE_STREAM_FLAG_NONE;
-            if (stream_id != -1 && !stream_fin_sent && send_offset < send_buffer.size()) {
+            if (stream_id != -1 && !stream_fin_sent && SendPending()) {
                 write_stream_id = stream_id;
-                vec.base = send_buffer.data() + send_offset;
-                vec.len = send_buffer.size() - send_offset;
+                vec.base = send_chunks.back().data() + send_offset;
+                vec.len = send_chunks.back().size() - send_offset;
                 vecs = &vec;
                 veccnt = 1;
                 if (send_fin) {
@@ -872,23 +905,14 @@ struct QuicSession::Impl {
             buf.resize(static_cast<size_t>(nwrite));
             packets->push_back(std::move(buf));
 
+            // A fully written chunk stays in send_chunks until acked.
             if (ndatalen > 0) {
                 send_offset += static_cast<size_t>(ndatalen);
-                if (send_offset >= send_buffer.size()) {
-                    if (send_fin) {
-                        stream_fin_sent = true;
-                    } else {
-                        send_buffer.clear();
-                        send_offset = 0;
-                    }
-                }
-            } else if (ndatalen == 0 && send_offset >= send_buffer.size()) {
-                if (send_fin) {
+                if (!SendPending() && send_fin) {
                     stream_fin_sent = true;
-                } else {
-                    send_buffer.clear();
-                    send_offset = 0;
                 }
+            } else if (ndatalen == 0 && !SendPending() && send_fin) {
+                stream_fin_sent = true;
             }
         }
         return true;
@@ -1003,22 +1027,21 @@ struct QuicSession::Impl {
         return impl.ReceivePacket(impl.session_local, impl.session_remote, packet);
     }
 
-    static void ProcessOutgoingStream(Impl& impl,
-                                      std::vector<uint8_t> payload,
+    // Returns false, leaving the payload with the caller, when the
+    // single send slot still holds unwritten bytes.
+    static bool ProcessOutgoingStream(Impl& impl,
+                                      const std::vector<uint8_t>& payload,
                                       bool fin) {
         if (!impl.active_published.load() || !impl.conn) {
             // No conn yet — drop. Callers should not enqueue before
             // StartClient/StartServer returns.
-            return;
+            return true;
         }
-        // QueueStreamData is single-slot; if a previous payload is still
-        // in flight, requeue at the BACK so failed entries preserve their
-        // relative order with other entries in this batch (front-push
-        // would reverse a burst of N>1 enqueues — stream ordering bug).
-        if (!impl.QueueStreamData(payload, fin)) {
-            std::lock_guard<std::mutex> lock(impl.inbox_mutex);
-            impl.outgoing_streams.emplace_back(std::move(payload), fin);
+        if (impl.SendPending()) {
+            return false;
         }
+        impl.QueueStreamData(payload, fin);
+        return true;
     }
 
     static void DrainAndShip(Impl& impl) {
@@ -1120,8 +1143,17 @@ struct QuicSession::Impl {
                 }
             }
             if (!ngtcp2_failed) {
-                for (auto& entry : outgoing) {
-                    ProcessOutgoingStream(impl, std::move(entry.first), entry.second);
+                for (auto it = outgoing.begin(); it != outgoing.end(); ++it) {
+                    if (!ProcessOutgoingStream(impl, it->first, it->second)) {
+                        // Slot busy: put this entry and the rest back AHEAD
+                        // of anything enqueued since the swap, so payloads
+                        // reach the stream in enqueue order.
+                        std::lock_guard<std::mutex> requeue_lock(impl.inbox_mutex);
+                        impl.outgoing_streams.insert(impl.outgoing_streams.begin(),
+                                                     std::make_move_iterator(it),
+                                                     std::make_move_iterator(outgoing.end()));
+                        break;
+                    }
                 }
             }
             if (!ngtcp2_failed && ExpiryDue(impl)) {
