@@ -19,6 +19,7 @@
 
 #include "p2p/addrman.h"
 #include "p2p/addr_v2.h"  // NAT traversal Phase 1A.2: AddrV2Entry struct for create_addrv2()
+#include "p2p/hole_punch.h"
 #include "p2p/outbound_policy.h"
 #include "network/clock_source.h"     // relay-hints Phase 1a: injectable time source for TTL logic
 #include "network/rolling_24h_counter.h"  // Phase 2b: rolling 24h byte counter for relay-virtual traffic
@@ -345,6 +346,11 @@ struct P2PMessage {
         uint16_t relay_port{0};
     };
     static P2PMessage create_relay_hints(const std::vector<RelayHint>& hints);
+
+    // Relay-coordinated hole punching (p2p/hole_punch.h for the payload).
+    static P2PMessage create_punch_offer(uint64_t nonce, const dinero::p2p::PunchCandidates& c);
+    static P2PMessage create_punch_answer(uint64_t nonce, const dinero::p2p::PunchCandidates& c);
+    static P2PMessage create_punch_go(uint64_t nonce);
 
     static P2PMessage create_ping(uint64_t nonce);
     static P2PMessage create_pong(uint64_t nonce);

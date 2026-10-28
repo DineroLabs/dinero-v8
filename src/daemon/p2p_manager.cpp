@@ -885,6 +885,27 @@ P2PMessage P2PMessage::create_relay_hints(const std::vector<RelayHint>& hints) {
     return msg;
 }
 
+P2PMessage P2PMessage::create_punch_offer(uint64_t nonce, const dinero::p2p::PunchCandidates& c) {
+    P2PMessage msg;
+    msg.command = "punchoff";
+    msg.payload = dinero::p2p::EncodePunchCandidates(nonce, c);
+    return msg;
+}
+
+P2PMessage P2PMessage::create_punch_answer(uint64_t nonce, const dinero::p2p::PunchCandidates& c) {
+    P2PMessage msg;
+    msg.command = "punchans";
+    msg.payload = dinero::p2p::EncodePunchCandidates(nonce, c);
+    return msg;
+}
+
+P2PMessage P2PMessage::create_punch_go(uint64_t nonce) {
+    P2PMessage msg;
+    msg.command = "punchgo";
+    for (int i = 0; i < 8; i++) msg.payload.push_back(static_cast<uint8_t>(nonce >> (i * 8)));
+    return msg;
+}
+
 std::string P2PManager::RelayVirtualPeerAddress(
     const std::array<uint8_t, 20>& target_node_id,
     uint64_t circuit_id) const {
@@ -8521,7 +8542,9 @@ size_t P2PManager::test_reach_checks_sent() const {
 #endif
 
 uint64_t P2PManager::local_quic_service_bits() const {
-    return (quic_endpoint_ && quic_endpoint_->Listening()) ? ServiceFlags::NODE_P2P_QUIC : 0;
+    return (quic_endpoint_ && quic_endpoint_->Listening())
+               ? (ServiceFlags::NODE_P2P_QUIC | ServiceFlags::NODE_HOLEPUNCH)
+               : 0;
 }
 
 void P2PManager::set_quic_connect_targets(std::vector<std::string> targets) {

@@ -23,6 +23,7 @@
 #include <map>
 #include <optional>
 #include <set>
+#include <utility>
 #include <vector>
 
 namespace dinero::p2p {
@@ -38,6 +39,15 @@ struct PunchCandidates {
     std::optional<network::UdpAddr> v4;
     NatMappingType v4_mapping{NatMappingType::Unknown};
 };
+
+// Wire payload shared by punchoff and punchans:
+//   nonce u64 LE | v4_mapping u8 (0 unknown, 1 independent, 2 dependent)
+//   | count u8 (<= 8) | count x (net u8 [BIP155 1=v4, 2=v6] | addr 4/16 | port u16 BE)
+// At most one v4 entry (written first). Anything else, trailing bytes
+// included, is rejected whole.
+std::vector<uint8_t> EncodePunchCandidates(uint64_t nonce, const PunchCandidates& c);
+std::optional<std::pair<uint64_t, PunchCandidates>> ParsePunchCandidates(
+    const std::vector<uint8_t>& payload);
 
 // Remote addresses to probe, in order, at most kPunchMaxTargets.
 std::vector<network::UdpAddr> ChoosePunchTargets(const PunchCandidates& local,

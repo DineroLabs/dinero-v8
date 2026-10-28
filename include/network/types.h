@@ -155,6 +155,10 @@ namespace ServiceFlags {
     // Answers `reachchk`: dials the requester back at its own source IP and
     // reports whether it reached the same node (dial-back verification).
     constexpr uint64_t NODE_DIALBACK = 1ULL << 31;
+    // Takes part in relay-coordinated QUIC hole punching (punchoff / punchans /
+    // punchgo). Service flags are uint64_t end to end, so bit 32 is safe.
+    // Advertised with NODE_P2P_QUIC, only while the endpoint is bound.
+    constexpr uint64_t NODE_HOLEPUNCH = 1ULL << 32;
 } // namespace ServiceFlags
 
 } // namespace dinero
