@@ -117,7 +117,10 @@ jobs:
         shell: powershell
         run: |
           # cmd redirection keeps the bytes unchanged (PowerShell 5 '>' writes UTF-16).
-          cmd /c "git show d1d28de16~1:src/network/quic_session.cpp > src\network\quic_session.cpp"
+          # Base = dinero-main 4440fc3c1, the parent of d1d28de16.
+          git fetch --no-tags --depth=1 origin 4440fc3c1238fb55771996038da5483a3762a966
+          if ($LASTEXITCODE -ne 0) { throw "could not fetch the base commit" }
+          cmd /c "git show 4440fc3c1238fb55771996038da5483a3762a966:src/network/quic_session.cpp > src\network\quic_session.cpp"
           if ($LASTEXITCODE -ne 0) { throw "could not restore the base source" }
           git diff --stat -- src/network/quic_session.cpp
           cmake --build build-quic --config Release --parallel 2 --target test_quic_session_retransmit
