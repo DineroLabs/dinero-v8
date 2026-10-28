@@ -1051,10 +1051,9 @@ public:
         uint64_t circuit_id, std::optional<std::array<uint8_t, 20>> expected_target);
     // Behave like a pre-v8.2.0 build: send only dineroid v1.
     void test_set_dineroid_v1_only(bool v1_only) { test_dineroid_v1_only_ = v1_only; }
-    // Replace the interface enumerator LocalPunchCandidates calls (once per call),
-    // and stand in for a
-    // listening QUIC endpoint (NGTCP2-off builds cannot start one).
-    void test_set_local_interface_enumerator(std::function<std::vector<std::string>()> fn);
+    // Stands in for a listening QUIC endpoint (NGTCP2-off builds cannot start
+    // one). Interface addresses are injected through
+    // network::test_set_interface_enumerator_override (local_interfaces.h).
     void test_set_quic_port(uint16_t port);
     void test_handle_getaddr(const std::string& peer_key) { handle_getaddr(peer_key, P2PMessage{}); }
     // Gives a test-installed peer (keyed "host:port", port 0) its real
@@ -1167,7 +1166,6 @@ private:
     std::set<std::pair<std::string, uint16_t>> stun_reflexive_;  // last STUN round's answers
     dinero::p2p::NatMappingType nat_mapping_type_{dinero::p2p::NatMappingType::Unknown};
 #ifdef DINERO_TEST_BUILD
-    std::function<std::vector<std::string>()> test_local_interface_enumerator_;
     uint16_t test_quic_port_{0};
 #endif
     struct PendingReach {

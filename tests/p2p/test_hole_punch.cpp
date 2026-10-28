@@ -5,6 +5,7 @@
 #include "p2p/hole_punch.h"
 
 #include "p2p_manager.h"
+#include "network/local_interfaces.h"
 #include "network/types.h"
 
 #include <gtest/gtest.h>
@@ -260,12 +261,20 @@ TEST(HolePunchWire, ServiceBit32SurvivesVersion) {
 
 namespace {
 bool SameStr(const UdpAddr& a, const std::string& s) { return a.to_string() == s; }
-void SetIfaces(P2PManager& mgr, std::vector<std::string> ips) {
-    mgr.test_set_local_interface_enumerator([ips] { return ips; });
+void SetIfaces(P2PManager&, std::vector<std::string> ips) {
+    dinero::network::test_set_interface_enumerator_override([ips] {
+        return std::unordered_set<std::string>(ips.begin(), ips.end());
+    });
 }
+
+// Clears the enumerator override when a test ends, so it cannot leak.
+struct IfaceOverrideReset {
+    ~IfaceOverrideReset() { dinero::network::test_set_interface_enumerator_override({}); }
+};
 }  // namespace
 
 TEST(PunchCandidates, EmptyWithoutQuicEndpoint) {
+    IfaceOverrideReset reset_override;
     P2PManager mgr(0);
     mgr.update_stun_candidates({{"203.0.113.5", 20999}});
     SetIfaces(mgr, {"2606:4700::5"});
@@ -276,6 +285,7 @@ TEST(PunchCandidates, EmptyWithoutQuicEndpoint) {
 }
 
 TEST(PunchCandidates, FromStunRoundAndMapping) {
+    IfaceOverrideReset reset_override;
     P2PManager mgr(0);
     mgr.test_set_quic_port(24444);
     mgr.update_stun_candidates({{"203.0.113.5", 20999}});
@@ -290,6 +300,7 @@ TEST(PunchCandidates, FromStunRoundAndMapping) {
 }
 
 TEST(PunchCandidates, SkipsNonRoutable) {
+    IfaceOverrideReset reset_override;
     P2PManager mgr(0);
     mgr.test_set_quic_port(24444);
     mgr.update_stun_candidates({{"10.0.0.5", 20999}});
@@ -300,12 +311,13 @@ TEST(PunchCandidates, SkipsNonRoutable) {
 }
 
 TEST(PunchCandidates, ReadsInterfacesFreshEachCall) {
+    IfaceOverrideReset reset_override;
     P2PManager mgr(0);
     mgr.test_set_quic_port(24444);
     int calls = 0;
-    mgr.test_set_local_interface_enumerator([&calls] {
+    dinero::network::test_set_interface_enumerator_override([&calls] {
         ++calls;
-        return std::vector<std::string>{calls == 1 ? "2606:4700::5" : "2606:4700::7"};
+        return std::unordered_set<std::string>{calls == 1 ? "2606:4700::5" : "2606:4700::7"};
     });
     auto c = mgr.LocalPunchCandidates();
     ASSERT_EQ(c.v6.size(), 1u);
