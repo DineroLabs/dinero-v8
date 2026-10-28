@@ -190,6 +190,8 @@ struct PeerInfo {
     const char* transport_name() const {
         return quic_direct ? "quic" : (via_relay ? "relay" : "tcp");
     }
+    // getpeerinfo "path": how this peer is reached.
+    const char* path_name() const { return punched ? "punched" : (via_relay ? "relayed" : "direct"); }
 
     // Ring 3 Phase 4c: Move constructor (atomic is not movable, must load/store)
     PeerInfo(PeerInfo&& other) noexcept
@@ -616,10 +618,18 @@ public:
         size_t max_probe_targets{0};   // most distinct targets one attempt probed
         uint64_t succeeded{0};
         uint64_t timeout{0};
+        uint64_t mismatch{0};          // a punched session proved another node id
+        uint64_t refused{0};           // a punched session's dineroid was refused
+                                       // (missing, not session-bound, or invalid)
         uint64_t skipped{0};           // no usable target pair
         uint64_t ignored{0};           // punch messages dropped (unsolicited, refused, stale)
         uint64_t received{0};          // punch messages received, any outcome
+        // attempts: attempts with a target of that family; succeeded: by
+        // the family of the punched session's address.
+        struct Family { uint64_t attempts{0}; uint64_t succeeded{0}; };
+        Family ipv4, ipv6;
     };
+    PunchStats punch_stats() const;
     // True iff we have an EXPLICIT/confirmed reachable advertised address
     // (operator externalip or port-mapping) — not merely a Gap-1-learned one.
     // Used so a NAT'd node (only a learned, dead address) stays relay-fallback
@@ -809,6 +819,10 @@ public:
     void handle_punch_offer(const std::string& peer_address, const P2PMessage& message);
     void handle_punch_answer(const std::string& peer_address, const P2PMessage& message);
     void handle_punch_go(const std::string& peer_address, const P2PMessage& message);
+    // The punched session at peer_key failed its dineroid: count it and end
+    // the initiator attempt that dialed it (the relayed peer stays).
+    void EndPunchOnFailedProof(const std::array<uint8_t, 20>& expected_id,
+                               const std::string& peer_key, bool mismatch);
 
     // NAT traversal Phase C3 slice 4b: advertise + ingest RELAY_HINTS.
     //

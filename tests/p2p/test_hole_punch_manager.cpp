@@ -478,3 +478,169 @@ TEST(HolePunchManager, PunchedPeerCountsAsHomePeer) {
         << "a relayed + a punched peer left room for a third home peer";
     ::close(relay[1]);
 }
+
+// ---- Task 6: prove, replace and report ----
+
+namespace {
+// Connected, identity-proven peers for one node id, from the snapshot
+// getpeerinfo reads.
+std::vector<PeerInfo> PeersFor(P2PManager& m, const std::array<uint8_t, 20>& id) {
+    std::vector<PeerInfo> out;
+    for (auto& p : m.get_connected_peers()) {
+        if (p.identity_proven && p.their_node_id == id) out.push_back(std::move(p));
+    }
+    return out;
+}
+
+std::chrono::system_clock::time_point LastMessageAt(P2PManager& m, const std::string& key) {
+    auto* p = m.get_peer_info(key);
+    return p ? p->last_message_at : std::chrono::system_clock::time_point{};
+}
+}  // namespace
+
+TEST(HolePunchManager, SuccessReplacesRelayedPeer) {
+    Node a, b;
+    a.Listen();
+    const uint16_t bp = b.Listen();
+    Leg leg(25071, 25072);
+    const auto [key_a, key_b] = Relay(a, b, leg, 0x901);
+
+    ASSERT_TRUE(TickUntil({&a, &b}, [&] {
+        return a.mgr->test_punch_stats().succeeded == 1 && b.mgr->test_punch_stats().succeeded == 1;
+    })) << "the punch never succeeded on both sides";
+    ASSERT_TRUE(TickUntil({&a, &b}, [&] { return !Live(*a.mgr, key_a) && !Live(*b.mgr, key_b); }, 5))
+        << "the relayed peer survived a successful punch";
+
+    const auto pa = PeersFor(*a.mgr, b.NodeId());
+    ASSERT_EQ(pa.size(), 1u) << "A does not have exactly one peer for B";
+    EXPECT_EQ(pa[0].to_string(), Key6(bp));
+    EXPECT_STREQ(pa[0].path_name(), "punched");
+    EXPECT_STREQ(pa[0].transport_name(), "quic");
+    const auto pb = PeersFor(*b.mgr, a.NodeId());
+    ASSERT_EQ(pb.size(), 1u) << "B does not have exactly one peer for A";
+    EXPECT_TRUE(pb[0].quic_direct);
+    EXPECT_FALSE(pb[0].is_outbound);
+    EXPECT_STREQ(pb[0].path_name(), "punched");
+    const std::string key_ba = pb[0].to_string();
+    for (const auto& s : {a.mgr->test_punch_stats(), b.mgr->test_punch_stats()}) {
+        EXPECT_EQ(s.ipv6.succeeded, 1u);
+        EXPECT_EQ(s.ipv4.succeeded, 0u);
+    }
+
+    // A ping over the punched session reaches B, and B's pong reaches A.
+    // No keepalive runs here, so wait for the post-handshake chatter to settle.
+    for (int i = 0; i < 20; ++i) {
+        const auto ta = LastMessageAt(*a.mgr, Key6(bp)), tb = LastMessageAt(*b.mgr, key_ba);
+        std::this_thread::sleep_for(300ms);
+        if (ta == LastMessageAt(*a.mgr, Key6(bp)) && tb == LastMessageAt(*b.mgr, key_ba)) break;
+    }
+    const auto sent_at = std::chrono::system_clock::now();
+    ASSERT_TRUE(a.mgr->send_to_peer(Key6(bp), P2PMessage::create_ping(0x5150)));
+    const auto deadline = std::chrono::steady_clock::now() + 5s;
+    while (std::chrono::steady_clock::now() < deadline &&
+           (LastMessageAt(*b.mgr, key_ba) < sent_at || LastMessageAt(*a.mgr, Key6(bp)) < sent_at)) {
+        std::this_thread::sleep_for(20ms);
+    }
+    EXPECT_GE(LastMessageAt(*b.mgr, key_ba), sent_at) << "the ping never reached B";
+    EXPECT_GE(LastMessageAt(*a.mgr, Key6(bp)), sent_at) << "the pong never came back to A";
+}
+
+// Review Focus 3: a third node C answers at the address B claimed.
+TEST(HolePunchManager, WrongIdentityAtPunchedAddressIsDropped) {
+    Node a, b, c;
+    a.Listen();
+    b.Listen();
+    const uint16_t cp = c.Listen();
+    b.mgr->test_set_local_punch_candidates(Cands(cp));
+    Leg leg(25081, 25082);
+    const auto [key_a, key_b] = Relay(a, b, leg, 0xA01);
+
+    ASSERT_TRUE(TickUntil({&a, &b, &c}, [&] { return a.mgr->test_punch_stats().mismatch == 1; }))
+        << "C's identity at the punched address was not counted as a mismatch";
+    ASSERT_TRUE(TickUntil({&a, &b, &c}, [&] { return !Live(*a.mgr, Key6(cp)); }, 5))
+        << "the punched session to C was not disconnected";
+    EXPECT_TRUE(PeersFor(*a.mgr, c.NodeId()).empty());
+    EXPECT_TRUE(Live(*a.mgr, key_a)) << "the relayed peer to B was dropped";
+    EXPECT_TRUE(Live(*b.mgr, key_b));
+    const auto pa = PeersFor(*a.mgr, b.NodeId());
+    ASSERT_EQ(pa.size(), 1u);
+    EXPECT_STREQ(pa[0].path_name(), "relayed");
+
+    // The mismatch ended the attempt: the deadline adds no timeout.
+    a.Advance(10s + 1ms);
+    b.Advance(10s + 1ms);
+    TickAll({&a, &b, &c});
+    const auto s = a.mgr->test_punch_stats();
+    EXPECT_EQ(s.mismatch, 1u);
+    EXPECT_EQ(s.timeout, 0u);
+    EXPECT_EQ(s.succeeded, 0u);
+    EXPECT_TRUE(Live(*a.mgr, key_a));
+}
+
+TEST(HolePunchManager, NonBoundProofOnPunchedSessionIsRefused) {
+    Node a, b;
+    a.Listen();
+    const uint16_t bp = b.Listen();
+    Leg leg(25091, 25092);
+    const auto [key_a, key_b] = Relay(a, b, leg, 0xB01);
+    b.mgr->test_set_dineroid_v1_only(true);  // only after the relayed link is proven
+
+    ASSERT_TRUE(TickUntil({&a, &b}, [&] { return a.mgr->test_punch_stats().refused == 1; }))
+        << "a v1-only proof on the punched session was not refused";
+    ASSERT_TRUE(TickUntil({&a, &b}, [&] { return !Live(*a.mgr, Key6(bp)); }, 5))
+        << "the punched session with a v1-only proof stayed up";
+    EXPECT_FALSE(Proven(*a.mgr, Key6(bp)));
+    EXPECT_TRUE(Live(*a.mgr, key_a));
+    EXPECT_TRUE(Live(*b.mgr, key_b));
+    a.Advance(10s + 1ms);
+    TickAll({&a});
+    EXPECT_EQ(a.mgr->test_punch_stats().succeeded, 0u);
+    EXPECT_EQ(a.mgr->test_punch_stats().timeout, 0u);
+}
+
+// A succeeds with B over IPv6 and times out with C over IPv4.
+TEST(HolePunchManager, NetworkInfoCountsOutcomes) {
+    Node a, b, c;
+    const uint16_t ap = a.Listen();
+    const uint16_t bp = b.Listen();
+    PunchCandidates al = Cands(ap);
+    const uint8_t lo2[4] = {127, 0, 0, 2};
+    al.v4 = UdpAddr::FromIPv4(lo2, ap);
+    a.mgr->test_set_local_punch_candidates(al);
+    PunchCandidates cl;
+    cl.v4 = Addr4(25941);  // nothing listens there
+    c.mgr->test_set_local_punch_candidates(cl);
+    Leg ab(25101, 25102), ac(25103, 25104);
+    Relay(a, b, ab, 0xC01);
+    Relay(a, c, ac, 0xD01);
+
+    ASSERT_TRUE(TickUntil({&a, &b, &c}, [&] {
+        const auto s = a.mgr->test_punch_stats();
+        return s.succeeded == 1 && s.dials == 2;
+    })) << "A never punched B and dialed C";
+    EXPECT_TRUE(Proven(*a.mgr, Key6(bp)));
+    a.Advance(10s + 1ms);
+    c.Advance(10s + 1ms);
+    TickAll({&a, &b, &c});
+
+    const auto s = a.mgr->test_punch_stats();
+    EXPECT_EQ(s.attempts, 2u);
+    EXPECT_EQ(s.succeeded, 1u);
+    EXPECT_EQ(s.timeout, 1u);
+    EXPECT_EQ(s.mismatch, 0u);
+    EXPECT_EQ(s.refused, 0u);
+    EXPECT_EQ(s.ipv6.attempts, 1u);
+    EXPECT_EQ(s.ipv6.succeeded, 1u);
+    EXPECT_EQ(s.ipv4.attempts, 1u);
+    EXPECT_EQ(s.ipv4.succeeded, 0u);
+    const auto sb = b.mgr->test_punch_stats();
+    EXPECT_EQ(sb.succeeded, 1u);
+    EXPECT_EQ(sb.ipv6.attempts, 1u);
+    EXPECT_EQ(sb.ipv6.succeeded, 1u);
+    EXPECT_EQ(sb.ipv4.attempts, 0u);
+    const auto sc = c.mgr->test_punch_stats();
+    EXPECT_EQ(sc.timeout, 1u);
+    EXPECT_EQ(sc.ipv4.attempts, 1u);
+    EXPECT_EQ(sc.ipv4.succeeded, 0u);
+    EXPECT_EQ(sc.ipv6.attempts, 0u);
+}

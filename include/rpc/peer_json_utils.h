@@ -27,6 +27,7 @@ inline din::Json BuildPeerInfoJson(const ::PeerInfo& peer_info) {
 
     peer["addr"] = peer_info.address + ":" + std::to_string(peer_info.port);
     peer["transport"] = peer_info.transport_name();
+    peer["path"] = peer_info.path_name();
     peer["identity_proven"] = peer_info.identity_proven;
     if (peer_info.identity_proven) {
         static const char* kHex = "0123456789abcdef";

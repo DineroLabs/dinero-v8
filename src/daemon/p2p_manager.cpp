@@ -4425,6 +4425,9 @@ bool P2PManager::ExchangeDineroId(PeerInfo* peer) {
         std::cout << "[Handshake] dineroid: " << why << " for " << peer->to_string()
                   << (bound ? "; identity binding failed, disconnecting" : "; continuing legacy")
                   << std::endl;
+        if (bound && peer->punched && peer->punch_expected_id) {
+            EndPunchOnFailedProof(*peer->punch_expected_id, peer->to_string(), /*mismatch=*/false);
+        }
         return !bound;
     };
     if (bound && !binding) return fail("no TLS exporter value on this QUIC session");
@@ -4485,6 +4488,16 @@ bool P2PManager::ExchangeDineroId(PeerInfo* peer) {
                   << NodeIdHex(derived) << ", not the dialed " << NodeIdHex(dialed)
                   << "; disconnecting and dropping that hint" << std::endl;
         drop_relay_hints_via(dialed, peer->via_relay->relay_peer_address);
+        return false;
+    }
+    if (peer->punched && peer->is_outbound && peer->punch_expected_id &&
+        derived != *peer->punch_expected_id) {
+        // We punched toward X and someone else answered at that address.
+        std::cout << "[Handshake] dineroid: punched peer " << peer->to_string() << " is "
+                  << NodeIdHex(derived) << ", not the expected "
+                  << NodeIdHex(*peer->punch_expected_id) << "; disconnecting, staying relayed"
+                  << std::endl;
+        EndPunchOnFailedProof(*peer->punch_expected_id, peer->to_string(), /*mismatch=*/true);
         return false;
     }
     std::copy(pubkey, pubkey + 33, peer->their_pubkey.begin());
@@ -7323,6 +7336,8 @@ std::vector<PeerInfo> P2PManager::get_connected_peers() const {
             info.via_relay = pair.second->via_relay;
             info.quic_direct = pair.second->quic_direct;
             info.quic_remote = pair.second->quic_remote;
+            info.punched = pair.second->punched;
+            info.punch_expected_id = pair.second->punch_expected_id;
             info.identity_proven = pair.second->identity_proven;
             info.their_node_id = pair.second->their_node_id;
             info.is_our_relay = pair.second->is_our_relay;
@@ -8311,11 +8326,13 @@ void P2PManager::test_set_local_punch_candidates(std::optional<dinero::p2p::Punc
     test_local_punch_candidates_ = std::move(c);
 }
 
-P2PManager::PunchStats P2PManager::test_punch_stats() const {
+P2PManager::PunchStats P2PManager::test_punch_stats() const { return punch_stats(); }
+#endif
+
+P2PManager::PunchStats P2PManager::punch_stats() const {
     std::lock_guard<std::mutex> lock(punch_mutex_);
     return punch_stats_;
 }
-#endif
 
 // ============================================================================
 // Relay-coordinated hole punching (punchoff / punchans / punchgo)
@@ -8375,6 +8392,21 @@ std::vector<dinero::network::UdpAddr> UsablePunchTargets(const dinero::p2p::Punc
 
 bool HasPunchCandidates(const dinero::p2p::PunchCandidates& c) { return !c.v6.empty() || c.v4; }
 
+// IPv6 unless IPv4 or IPv4-mapped (::ffff:a.b.c.d).
+bool PunchAddrIsV6(const dinero::network::UdpAddr& a) {
+    if (a.family != dinero::network::UdpAddr::Family::V6) return false;
+    static constexpr uint8_t kMapped[12] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff};
+    return !std::equal(std::begin(kMapped), std::end(kMapped), a.ip.begin());
+}
+
+// Caller holds punch_mutex_: one attempt per family its targets include.
+void CountPunchFamilies(P2PManager::PunchStats& s, const std::vector<dinero::network::UdpAddr>& targets) {
+    bool v4 = false, v6 = false;
+    for (const auto& t : targets) (PunchAddrIsV6(t) ? v6 : v4) = true;
+    if (v4) ++s.ipv4.attempts;
+    if (v6) ++s.ipv6.attempts;
+}
+
 // One probe round per interval until the deadline: 40 rounds at most.
 constexpr size_t kPunchMaxProbeRounds =
     static_cast<size_t>(dinero::p2p::kPunchAttemptTimeout / dinero::p2p::kPunchProbeInterval);
@@ -8429,15 +8461,29 @@ void P2PManager::PunchTick() {
         }
     }
     std::map<PunchPeerId, PunchLinks> links;
-    std::set<PunchPeerId> initiator_done, acceptor_done;
+    // A connected, session-bound direct peer for a node id: for the initiator
+    // its punched dial (dineroid matched punch_expected_id), for the acceptor
+    // any inbound direct QUIC peer. And every relayed peer per node id.
+    struct DirectUp { std::string key; bool v6{false}; };
+    std::map<PunchPeerId, DirectUp> initiator_done, acceptor_done;
+    std::map<PunchPeerId, std::vector<std::string>> relayed_keys;
     std::unordered_map<std::string, bool> dial_live;  // dialed key -> still alive
     {
         std::lock_guard<std::mutex> lock(peers_mutex_);
         links = CollectPunchLinks(connected_peers_);
-        for (const auto& [_, p] : connected_peers_) {
-            if (!p || !p->is_connected || !p->identity_proven) continue;
-            if (p->punched && p->punch_expected_id) initiator_done.insert(*p->punch_expected_id);
-            if (p->quic_direct && !p->is_outbound) acceptor_done.insert(p->their_node_id);
+        for (const auto& [key, p] : connected_peers_) {
+            if (!p || !p->is_connected || !p->identity_proven ||
+                p->lifetime_state.load(std::memory_order_acquire) == PeerLifetimeState::STOPPING) {
+                continue;
+            }
+            if (p->punched && p->is_outbound && p->punch_expected_id &&
+                p->their_node_id == *p->punch_expected_id) {
+                initiator_done[p->their_node_id] = {key, PunchAddrIsV6(p->quic_remote)};
+            }
+            if (p->quic_direct && !p->is_outbound) {
+                acceptor_done[p->their_node_id] = {key, PunchAddrIsV6(p->quic_remote)};
+            }
+            if (p->via_relay) relayed_keys[p->their_node_id].push_back(key);
         }
         for (const auto& k : dialed_keys) {
             auto it = connected_peers_.find(k);
@@ -8463,6 +8509,7 @@ void P2PManager::PunchTick() {
     std::vector<Dial> dials;
     std::vector<dinero::network::UdpAddr> probes;
     std::vector<std::string> teardown;
+    std::vector<std::string> mark_punched, replaced;  // acceptor's direct peers; relayed peers to drop
     {
         std::lock_guard<std::mutex> lock(punch_mutex_);
         const auto now = PunchNow();
@@ -8492,10 +8539,17 @@ void P2PManager::PunchTick() {
             const PunchPeerId& id = it->first;
             PunchAttempt& a = it->second;
             const bool initiator = a.role == dinero::p2p::PunchRole::Initiator;
-            if (initiator ? initiator_done.count(id) : acceptor_done.count(id)) {
-                std::cout << "[P2P] punch: direct link to " << NodeIdHex(id) << " is up" << std::endl;
+            const auto& done = initiator ? initiator_done : acceptor_done;
+            if (auto up = done.find(id); up != done.end()) {
+                std::cout << "[P2P] punch: direct link to " << NodeIdHex(id) << " is up at "
+                          << up->second.key << "; replacing the relayed peer" << std::endl;
+                if (!initiator) mark_punched.push_back(up->second.key);
+                if (auto r = relayed_keys.find(id); r != relayed_keys.end()) {
+                    replaced.insert(replaced.end(), r->second.begin(), r->second.end());
+                }
                 punch_scheduler_->Succeeded(id);
                 ++punch_stats_.succeeded;
+                ++(up->second.v6 ? punch_stats_.ipv6 : punch_stats_.ipv4).succeeded;
                 it = punch_attempts_.erase(it);
                 continue;
             }
@@ -8574,6 +8628,36 @@ void P2PManager::PunchTick() {
         }
         if (stale) disconnect_peer(key);
     }
+    // A punch that succeeded replaces the relayed peer; the relay's circuit
+    // then idle-closes on its own.
+    if (!mark_punched.empty()) {
+        std::lock_guard<std::mutex> lock(peers_mutex_);
+        for (const auto& key : mark_punched) {
+            if (auto it = connected_peers_.find(key); it != connected_peers_.end() && it->second) {
+                it->second->punched = true;
+            }
+        }
+    }
+    for (const auto& key : replaced) disconnect_peer(key);
+}
+
+void P2PManager::EndPunchOnFailedProof(const std::array<uint8_t, 20>& expected_id,
+                                       const std::string& peer_key, bool mismatch) {
+    std::lock_guard<std::mutex> lock(punch_mutex_);
+    ++(mismatch ? punch_stats_.mismatch : punch_stats_.refused);
+    auto it = punch_attempts_.find(expected_id);
+    // Only the attempt's current dial ends it; an earlier target torn down
+    // mid-handshake must not cut short the one being tried now.
+    if (it == punch_attempts_.end() || it->second.role != dinero::p2p::PunchRole::Initiator ||
+        it->second.phase != PunchAttempt::Phase::Dialing ||
+        (!it->second.dialed_key.empty() && it->second.dialed_key != peer_key)) {
+        return;
+    }
+    std::cout << "[P2P] punch: attempt with " << NodeIdHex(expected_id) << " failed ("
+              << (mismatch ? "identity mismatch" : "identity proof refused") << "); staying relayed"
+              << std::endl;
+    punch_scheduler_->Failed(expected_id);
+    punch_attempts_.erase(it);
 }
 
 void P2PManager::punch_loop() {
@@ -8665,6 +8749,7 @@ void P2PManager::handle_punch_offer(const std::string& peer_address, const P2PMe
             a.offer_sent_at = now;
             a.deadline = now + dinero::p2p::kPunchAttemptTimeout;  // for a punchgo that never comes
             a.targets = UsablePunchTargets(local, parsed->second);
+            CountPunchFamilies(punch_stats_, a.targets);
             punch_attempts_[from.id] = std::move(a);
             punch_scheduler_->Started(from.id);
             ++punch_stats_.attempts;
@@ -8722,6 +8807,7 @@ void P2PManager::handle_punch_answer(const std::string& peer_address, const P2PM
                 punch_scheduler_->Failed(from.id);
                 punch_attempts_.erase(it);
             } else {
+                CountPunchFamilies(punch_stats_, a.targets);
                 const auto now = PunchNow();
                 const auto rtt = now - a.offer_sent_at;
                 a.phase = PunchAttempt::Phase::Dialing;

@@ -510,6 +510,7 @@ P2PService::NetworkStatus P2PService::GetNetworkStatus() const {
         status.nat_servers = nat_servers_;
         status.nat_measured_at = nat_measured_at_;
     }
+    if (p2p_mgr_) status.hole_punch = p2p_mgr_->punch_stats();
     if (p2p_mgr_ && p2p_mgr_->quic_endpoint()) {
         const auto* ep = p2p_mgr_->quic_endpoint();
         status.quic_listening = ep->Listening();

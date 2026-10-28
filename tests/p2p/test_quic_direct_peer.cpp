@@ -306,6 +306,18 @@ TEST(PeerJson, TransportFieldReflectsPeerKind) {
     EXPECT_STREQ(quic.transport_name(), "quic");
 }
 
+TEST(PeerJson, PathFieldReflectsPunchedRelayedDirect) {
+    PeerInfo tcp; tcp.socket_fd = 5;
+    EXPECT_STREQ(tcp.path_name(), "direct");
+    PeerInfo quic; quic.quic_direct = true;
+    EXPECT_STREQ(quic.path_name(), "direct");
+    PeerInfo relay; relay.via_relay = PeerInfo::ViaRelayInfo{1, "1.2.3.4:20999", 0};
+    EXPECT_STREQ(relay.path_name(), "relayed");
+    PeerInfo punched; punched.quic_direct = true; punched.punched = true;
+    EXPECT_STREQ(punched.path_name(), "punched");
+    EXPECT_STREQ(punched.transport_name(), "quic");  // transport is unchanged
+}
+
 TEST(QuicPeer, ConnectedPeersSnapshotKeepsQuicTransport) {
     Node a("snap-a"), b("snap-b");
     ASSERT_TRUE(a.mgr->start_quic_endpoint(0));
