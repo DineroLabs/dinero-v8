@@ -339,7 +339,8 @@ TEST(QuicPeerConfig, EnabledEndpointAdvertisesServiceBit) {
     Node a("bit-a");
     EXPECT_EQ(a.mgr->local_quic_service_bits(), 0u);
     ASSERT_TRUE(a.mgr->start_quic_endpoint(0));
-    EXPECT_EQ(a.mgr->local_quic_service_bits(), dinero::ServiceFlags::NODE_P2P_QUIC);
+    EXPECT_EQ(a.mgr->local_quic_service_bits(),
+              dinero::ServiceFlags::NODE_P2P_QUIC | dinero::ServiceFlags::NODE_HOLEPUNCH);
 }
 
 TEST(QuicPeerConfig, QuicConnectTargetsAreDialed) {
