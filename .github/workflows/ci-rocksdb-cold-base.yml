@@ -1,0 +1,71 @@
+name: CI-only RocksDB cold build on dinero-main base (diagnosis)
+
+# Diagnosis for draft PR #855: its Linux jobs fail in the vendored RocksDB
+# build with no cache available. This builds RocksDB cold from the
+# untouched dinero-main base (4440fc3c1, the parent of d1d28de16) on the
+# same runner image as ci.yml, and prints RocksDB's own build log.
+# Runs only on pushes to this throwaway branch; read-only token, no
+# secrets, no caches, no uploads.
+
+on:
+  push:
+    branches: [ci/quic-retransmit-windows]
+
+permissions:
+  contents: read
+
+jobs:
+  rocksdb-cold-base:
+    name: Linux — RocksDB cold build at dinero-main 4440fc3c1
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout dinero-main base
+        uses: actions/checkout@v4
+        with:
+          ref: 4440fc3c1238fb55771996038da5483a3762a966
+          submodules: recursive
+          fetch-depth: 1
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake ninja-build pkg-config python3 perl \
+            libcurl4-openssl-dev libudev-dev libusb-1.0-0-dev
+          gcc --version | head -1
+          cmake --version | head -1
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@1.75.0
+
+      - name: Build vendored OpenSSL
+        run: OPENSSL_VERSION=3.5.7 bash scripts/build-openssl-vendored.sh
+
+      - name: Build depends
+        run: |
+          cmake -S depends -B depends/build
+          cmake --build depends/build -j
+
+      - name: CMake configure (as ci.yml, without ccache)
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DDINERO_REPRODUCIBLE_BUILD=ON \
+            -DDINERO_USE_VENDORED_DEPS=ON \
+            -DENABLE_GRPC=OFF
+
+      - name: Build rocksdb_external only
+        run: cmake --build build --target rocksdb_external -j
+
+      - name: Print RocksDB build logs
+        if: always()
+        run: |
+          for f in build/rocksdb_external-prefix/src/rocksdb_external-stamp/rocksdb_external-*.log; do
+            [ -f "$f" ] || continue
+            echo "===== $f"
+            grep -nE "error|Error" "$f" | head -40 || true
+            echo "----- tail"
+            tail -40 "$f"
+          done
