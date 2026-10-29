@@ -371,6 +371,10 @@ jobs:
           forbidden=sorted({t['name'] for t in tests} & set(EXCLUDED_TESTS))
           if forbidden:
               raise SystemExit('Execution policy excludes: '+', '.join(forbidden))
+          operation_status=[t for t in tests if t['name']=='OrchardOperationStatus']
+          assert len(operation_status)==1
+          properties={p['name']:p['value'] for p in operation_status[0].get('properties',[])}
+          assert properties.get('RUN_SERIAL') and properties['TIMEOUT']==180,properties
           json.dump({'tests':tests},open('orchard-real-mempool-inventory.json','w'),indent=2)
           pathlib.Path('orchard-real-mempool-regex.txt').write_text('^('+'|'.join(re.escape(t['name']) for t in tests)+')$')
           # Every compiled replay-binary case must have an enabled CTest owner.
@@ -1623,7 +1627,7 @@ jobs:
           tests=json.load(open('orchard-operation-status-inventory.json'))['tests']
           assert len(tests)==1 and tests[0]['name']=='OrchardOperationStatus'
           props={p['name']:p['value'] for p in tests[0].get('properties',[])}
-          assert not props.get('DISABLED') and props['TIMEOUT']==180
+          assert not props.get('DISABLED') and props['TIMEOUT']==180 and props.get('RUN_SERIAL')
           PYCODE
           ctest --test-dir build-orchard-root -R '^OrchardOperationStatus$' --verbose --no-tests=error --output-log orchard-operation-status-execution.log
           python3 - <<'PYCODE'

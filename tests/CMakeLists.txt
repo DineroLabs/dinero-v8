@@ -5443,7 +5443,10 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_assumeutxo_replay.cpp)
   add_test(NAME OrchardBalance COMMAND test_assumeutxo_replay --gtest_filter=OrchardBalance.*)
   set_tests_properties(OrchardBalance PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;wallet;rpc;mandatory")
   add_test(NAME OrchardOperationStatus COMMAND test_assumeutxo_replay --gtest_filter=OrchardOperationStatus.*)
-  set_tests_properties(OrchardOperationStatus PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;wallet;rpc;mandatory")
+  # This suite performs real proofs/recovery across all operation status cases.
+  # Keep its existing deadline, but give it exclusive execution in the two-slot
+  # CI test schedule: concurrent proving can consume the aggregate suite budget.
+  set_tests_properties(OrchardOperationStatus PROPERTIES TIMEOUT 180 RUN_SERIAL TRUE LABELS "daemon;orchard;wallet;rpc;mandatory")
   add_test(NAME OrchardServiceProofs COMMAND test_assumeutxo_replay --gtest_filter=OrchardServiceProofs.*)
   set_tests_properties(OrchardServiceProofs PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;wallet;ownership;mandatory")
   if(DINERO_BUILD_ORCHARD_BACKEND)
