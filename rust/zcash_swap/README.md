@@ -37,6 +37,15 @@ The `SwapZecTx` ctest builds this crate with `--features script-verify` into
   lock and a refund with a final sequence;
 - golden bytes for the signed spends.
 
+`python3 rust/zcash_swap/tests/mutate.py <build-dir>` breaks 21 rules one at a
+time (in `src/lib.rs` and `src/wallet/swap/zec_tx.cpp`) and checks that each
+makes `test_swap_zec_tx` fail.
+
+What this does not prove yet: that a Zebra node accepts these transactions
+(regtest, ZEC milestones 4–5). The official vectors test reading and the
+sighash; the writer is checked by the header layout, by librustzcash reading
+its output back, and by golden bytes.
+
 ## Versions and the fold-in
 
 All dependencies are pinned with `=`. zcash_primitives 0.31 / zcash_transparent
