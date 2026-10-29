@@ -1,0 +1,150 @@
+# path	line	expected substring (spec 2026-10-29-wallet-node-separation-design.md, baseline 1667f8ed6)
+src/consensus/tx_validation.cpp	2	coins_db.h
+src/consensus/tx_validation.cpp	97	view.getCoin
+include/consensus/tx_validation.h	33	CoinsViewCache
+include/consensus/tx_validation.h	263	validateTransaction
+include/consensus/tx_validation.h	339	validateInputs
+include/consensus/tx_validation.h	361	checkSequenceLocks
+include/consensus/chain_state_view.h	13	ChainStateView
+include/consensus/chain_state_view.h	41	getCoin
+include/consensus/coins_db.h	194	class CoinsViewCache : public ChainStateView
+src/mining/miner_engine.cpp	527	consensus::validateTransaction(tx, view, ctx, false)
+src/mining/miner_engine.cpp	356	consensus::CoinsDB& coins_db
+src/consensus/coins_db.cpp	2	rocksdb/options.h
+src/consensus/coins_db.cpp	31	rocksdb::DB::Open
+src/consensus/coins_db.cpp	354	rocksdb::WriteBatch
+src/consensus/coins_db.cpp	573	NewIterator
+src/consensus/global_utxo_set_impl.cpp	11	daemon/services/chainstate_service.h
+src/consensus/global_utxo_set_impl.cpp	38	chainstate.GetChainDB()
+src/consensus/global_utxo_set_impl.cpp	58	getCoinWithConfidentialFallback
+src/consensus/global_utxo_set_impl.cpp	75	getCoinWithConfidentialFallback
+src/indexing/utxo_position_index.cpp	12	storage/chain_db.h
+src/indexing/utxo_position_index.cpp	97	chain_db.forEachUTXO
+src/indexing/utxo_position_index.cpp	175	chain_db.getPreBaseCoinSetBase
+src/indexing/utxo_position_index.cpp	205	chain_db.forEachPreBaseCoin
+src/consensus/block_index.cpp	225	dinero::g_logger.info
+src/consensus/sigops.cpp	208	dinero::g_logger.warning
+src/consensus/sigops.cpp	232	dinero::g_logger.debug
+src/common/serialization.cpp	3	storage/tip_info.h
+src/consensus/chainparams_impl.cpp	820	HrpForActiveNetworkRef
+src/consensus/block_undo.cpp	3	json/json.h
+src/consensus/CMakeLists.txt	31	src/consensus/utxo_publication.cpp
+src/consensus/CMakeLists.txt	148	coins_db.cpp
+src/consensus/CMakeLists.txt	149	global_utxo_set_impl.cpp
+src/consensus/CMakeLists.txt	150	utxo_position_index.cpp
+src/consensus/CMakeLists.txt	151	coins_view_cache.cpp
+src/consensus/CMakeLists.txt	152	src/consensus/utxo_publication.cpp
+src/consensus/CMakeLists.txt	183	addr_codec.cpp
+src/consensus/CMakeLists.txt	201	src/daemon
+src/consensus/CMakeLists.txt	207	dinero_pq
+src/consensus/CMakeLists.txt	219	RocksDB::rocksdb
+src/consensus/CMakeLists.txt	220	sqlite3
+src/consensus/CMakeLists.txt	225	dinero_pq
+src/consensus/CMakeLists.txt	232	RocksDB::rocksdb
+src/consensus/CMakeLists.txt	233	sqlite3
+src/consensus/pq/CMakeLists.txt	58	target_link_libraries(dinero_pq PRIVATE
+src/wallet/address.cpp	242	Address::validateAddress
+src/wallet/address.cpp	343	Address::createBech32P2WPKH
+src/wallet/address.cpp	556	Address::createAddress
+src/wallet/address.cpp	780	Address::getAddressMetadata
+src/wallet/address.cpp	1488	Address::decodeAddress
+src/rpc/v7_pq_handlers.cpp	79	DecodeP2MRAddress
+src/rpc/v7_pq_handlers.cpp	134	EncodeP2MRAddress
+src/rpc/v7_pq_handlers.cpp	203	SignP2MRResult SignP2MR
+src/rpc/v7_pq_handlers.cpp	244	EncodeP2MRAddress
+src/wallet/wallet_key_provider.cpp	18	rpc/v7_pq_handlers.h
+src/wallet/wallet_key_provider.cpp	87	WalletKeyProvider::SignP2MR
+src/wallet/wallet_key_provider.cpp	104	SignP2MRParams
+src/wallet/wallet_key_provider.cpp	114	dinero::rpc::v7::SignP2MR
+src/crypto/bip39.cpp	61	PBKDF2_HMAC_SHA512
+src/crypto/encrypted_key.cpp	89	dinero::g_logger.error
+src/wallet/CMakeLists.txt	9	dinero_wallet_catalog
+src/wallet/CMakeLists.txt	14	add_library(dinero_wallet STATIC
+src/wallet/CMakeLists.txt	15	src/common/logger.cpp
+src/wallet/CMakeLists.txt	18	src/address/addr_codec.cpp
+src/wallet/CMakeLists.txt	93	wallet_transaction_signer.cpp
+src/wallet/CMakeLists.txt	105	src/crypto/pbkdf2.cpp
+src/wallet/CMakeLists.txt	118	target_link_libraries(dinero_wallet PUBLIC
+CMakeLists.txt	599	target_link_libraries(dinero_crypto PUBLIC OpenSSL::Crypto)
+CMakeLists.txt	995	src/address/addr_codec.cpp
+CMakeLists.txt	1163	src/common/logger.cpp
+CMakeLists.txt	1166	src/common/address_script_builder.cpp
+CMakeLists.txt	1253	dinero_chainstate
+CMakeLists.txt	1254	dinero_consensus
+CMakeLists.txt	1395	option(DINERO_BUILD_ORCHARD_BACKEND
+src/storage/CMakeLists.txt	35	dinero_consensus
+src/storage/CMakeLists.txt	39	RocksDB::rocksdb
+src/common/CMakeLists.txt	9	logger.cpp
+rust/orchard_backend/CMakeLists.txt	204	dinero_orchard_block_reader
+rust/orchard_backend/CMakeLists.txt	226	dinero_orchard_wallet_scan
+include/consensus/freeze.h	136	tx_validation.h
+src/consensus/freeze.cpp	68	VerifyConsensusIntegrity
+src/consensus/freeze.cpp	187	VerifyConsensusIntegrity(error_msg)
+docs/consensus_map.md	590	FROZEN FILES
+tests/CMakeLists.txt	5860	UTXOPositionIndexRebuild
+tests/CMakeLists.txt	13335	CSNIntegration
+.github/workflows/linux-release.yml	146	DINERO_BUILD_ORCHARD_BACKEND=ON
+.github/workflows/desktop-release.yml	232	DINERO_BUILD_ORCHARD_BACKEND=ON
+.github/workflows/desktop-release.yml	531	DINERO_BUILD_ORCHARD_BACKEND=ON
+.github/workflows/macos-release.yml	163	DINERO_BUILD_ORCHARD_BACKEND=ON
+src/wallet/wallet_manager.cpp	93	storage/chain_db.h
+src/wallet/wallet_manager.cpp	425	open_sqlite
+src/wallet/wallet_manager.cpp	1811	open_sqlite
+src/wallet/wallet_manager.cpp	2069	open_sqlite
+src/wallet/wallet_manager.cpp	2878	ClearRegisteredAddresses
+src/wallet/wallet_manager.cpp	6310	utxo_index_->GetUTXO
+src/wallet/wallet_manager.cpp	6317	isOutputSpentInMempool
+src/wallet/wallet_manager.cpp	6342	isOutputSpentInMempool
+src/wallet/wallet_manager.cpp	7160	utxo_index_->RegisterAddress
+src/wallet/wallet_manager.cpp	7315	utxo_index_->RegisterAddress
+src/wallet/wallet_manager.cpp	7507	if (!chain_db && !prepared)
+src/wallet/wallet_manager.cpp	7557	chain_db->getTip()
+src/wallet/wallet_manager.cpp	7638	chain_db->getBlockHashByHeight
+src/wallet/wallet_manager.cpp	7640	ReadArchivalBlock
+src/wallet/wallet_manager.cpp	7875	utxo_index_->ApplyAtomically
+src/wallet/wallet_manager.cpp	7881	utxo_index_->AddUTXO
+src/wallet/wallet_manager.cpp	10108	MergeRegisteredAddresses
+src/wallet/wallet_manager.cpp	10141	utxo_index_->RegisterAddress
+src/wallet/wallet_manager.cpp	10333	utxo_index_->RegisterAddress
+src/wallet/wallet_manager.cpp	10478	utxo_index_->RegisterAddress
+src/wallet/wallet_manager.cpp	10523	utxo_index_->RegisterAddress
+src/wallet/wallet_manager.cpp	10673	utxo_index_->RegisterAddress
+src/wallet/wallet_sync_status.cpp	25	chain_db->getTip()
+src/wallet/wallet_sync_status.cpp	44	getSyncPhase
+src/wallet/wallet_sync_status.cpp	54	header_sync->GetStatus
+src/wallet/reorg_detector.cpp	104	chain_db->getTip()
+src/wallet/hd_wallet.cpp	1018	RegisterAddress
+src/wallet/hd_wallet.cpp	1050	RegisterAddress
+src/wallet/hd_wallet.cpp	1070	GetBestHeight
+src/wallet/hd_wallet.cpp	1214	GetBestHeight
+src/wallet/hd_wallet.cpp	1490	RegisterAddress
+src/wallet/transaction_builder.cpp	95	utxo_index_->GetUnspentUTXOs
+src/wallet/descriptor_store.cpp	20	open_sqlite
+src/wallet/rbf_cpfp_detector.cpp	85	getMempoolEntry
+src/wallet/rbf_cpfp_detector.cpp	141	getMempoolEntry
+src/wallet/rbf_cpfp_detector.cpp	182	getMempoolEntry
+src/wallet/rbf_cpfp_detector.cpp	261	getMempoolEntry
+src/wallet/fee_bump_engine.cpp	190	getMempoolEntry
+src/wallet/fee_bump_engine.cpp	260	getMempoolEntry
+src/wallet/slow_reason_analyzer.cpp	141	GetQualityStats
+src/wallet/slow_reason_analyzer.cpp	210	mempool->getStats
+src/wallet/descriptor_psbt.cpp	253	BuildScriptPubKeyFromAddress
+src/wallet/descriptor_psbt.cpp	391	BuildScriptPubKeyFromAddress
+src/wallet/recipient_descriptor.cpp	18	BuildScriptPubKeyFromAddress
+include/wallet/selected_history.h	3	daemon/services/snapshot_wallet_source.h
+include/wallet/wallet_sync_status.h	3	p2p/block_download_scheduler.h
+include/wallet/wallet_fee_bump_hooks.h	7	mining/tx_inclusion_analyzer.h
+include/wallet/wallet_manager.h	174	setUTXOIndex
+include/wallet/wallet_manager.h	175	getUTXOIndex
+include/wallet/wallet_manager.h	604	const Mempool* mempool
+include/wallet/wallet_manager.h	796	dinero::ChainDB* chain_db
+include/wallet/wallet_manager.h	1150	RescanBlockchainImpl
+include/wallet/wallet_worker.h	18	class ChainDB;
+include/wallet/wallet_worker.h	169	RescanSynchronously
+include/storage/archival_block_reader.h	70	ReadArchivalBlockDetailed
+include/storage/archival_block_reader.h	110	ReadArchivalBlock
+include/storage/chain_db.h	11	rocksdb/db.h
+include/daemon/mempool.h	4	daemon/connected_block_effects.h
+include/daemon/mempool.h	7	daemon/mempool_chainstate_guard.h
+include/daemon/mempool.h	24	mempool/coins_view_mempool.h
+include/daemon/mempool.h	82	MempoolTransaction tx;
