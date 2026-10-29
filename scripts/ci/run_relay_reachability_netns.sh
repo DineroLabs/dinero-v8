@@ -10,7 +10,7 @@ fi
 binary="$(realpath "$1")"
 evidence="$(realpath -m "$2")"
 [[ -x "$binary" ]] || { echo 'dinerod is not executable' >&2; exit 2; }
-for tool in ip iptables curl jq timeout tc; do command -v "$tool" >/dev/null; done
+for tool in ip iptables ip6tables curl jq timeout tc tcpdump python3; do command -v "$tool" >/dev/null; done
 mkdir -p "$evidence"
 git -c "safe.directory=$root" -C "$root" rev-parse HEAD > "$evidence/source-sha.txt"
 failures=0

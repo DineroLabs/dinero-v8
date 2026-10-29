@@ -899,7 +899,7 @@ jobs:
             libcurl4-openssl-dev \
             libudev-dev \
             libusb-1.0-0-dev \
-            iproute2 iptables curl jq
+            iproute2 iptables curl jq tcpdump
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
