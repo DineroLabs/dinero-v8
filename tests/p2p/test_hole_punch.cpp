@@ -149,6 +149,29 @@ TEST(HolePunch, SchedulerCapsInFlightAndBacksOffFailures) {
     EXPECT_FALSE(s.MayStart(c));
 }
 
+TEST(HolePunch, SchedulerReclaimsExpiredPeerBackoff) {
+    using namespace std::chrono;
+    auto now = steady_clock::time_point{} + hours(1);
+    PunchScheduler scheduler([&] { return now; });
+    for (uint8_t i = 1; i <= 64; ++i) {
+        scheduler.Started(Id(i));
+        scheduler.Failed(Id(i));
+    }
+    ASSERT_EQ(scheduler.test_failed_peer_count(), 64u);
+    now += dinero::p2p::kPunchFailureBackoff;
+    EXPECT_TRUE(scheduler.MayStart(Id(1)));
+    EXPECT_EQ(scheduler.test_failed_peer_count(), 0u);
+    scheduler.Started(Id(65));
+    scheduler.Failed(Id(65));
+    now += minutes(29);
+    scheduler.Started(Id(66));
+    scheduler.Failed(Id(66));
+    now += minutes(1);
+    EXPECT_TRUE(scheduler.MayStart(Id(65)));
+    EXPECT_FALSE(scheduler.MayStart(Id(66)));
+    EXPECT_EQ(scheduler.test_failed_peer_count(), 1u);
+}
+
 // ---- Wire messages and the service bit -------------------------------------
 
 TEST(HolePunchWire, RoundTripsV4AndV6) {
@@ -231,12 +254,12 @@ TEST(HolePunchWire, RejectsMalformed) {
     EXPECT_FALSE(dinero::p2p::ParsePunchCandidates({1, 2, 3}).has_value());
 }
 
-TEST(HolePunchWire, ServiceBit32SurvivesVersion) {
+TEST(HolePunchWire, ServiceBit34SurvivesVersion) {
     using namespace dinero::ServiceFlags;
-    static_assert(NODE_HOLEPUNCH == (1ULL << 32));
+    static_assert(NODE_HOLEPUNCH == (1ULL << 34));
     int fd[2];
     ASSERT_EQ(socketpair(AF_UNIX, SOCK_STREAM, 0, fd), 0);
-    const uint64_t services = NODE_NETWORK | NODE_HOLEPUNCH | NODE_P2P_QUIC;
+    const uint64_t services = NODE_NETWORK | NODE_COMPACT_TIMING_V1 | NODE_HOLEPUNCH | NODE_P2P_QUIC;
     const auto version = P2PMessage::create_version(70016, 0, services, "/t/", 99).serialize();
     const auto verack = P2PMessage::create_verack().serialize();
     ASSERT_EQ(send(fd[1], version.data(), version.size(), 0), static_cast<ssize_t>(version.size()));

@@ -72,6 +72,9 @@ public:
     void Started(const PeerId& peer);
     void Succeeded(const PeerId& peer);
     void Failed(const PeerId& peer);
+#ifdef DINERO_TEST_BUILD
+    size_t test_failed_peer_count() const { return failed_at_.size(); }
+#endif
 
 private:
     Clock clock_;

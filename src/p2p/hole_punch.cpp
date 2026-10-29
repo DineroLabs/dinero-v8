@@ -104,9 +104,15 @@ PunchRole RoleFor(bool we_dialed_relayed, bool they_dialed_relayed_too,
 }
 
 bool PunchScheduler::MayStart(const PeerId& peer) {
+    // A failed identity matters only during its retry window. Otherwise a
+    // long-running node retains every failed punch identity for its lifetime.
+    const auto now = clock_();
+    std::erase_if(failed_at_, [&](const auto& entry) {
+        return now - entry.second >= kPunchFailureBackoff;
+    });
     if (in_flight_.size() >= kPunchMaxInFlight) return false;
     const auto it = failed_at_.find(peer);
-    return it == failed_at_.end() || clock_() - it->second >= kPunchFailureBackoff;
+    return it == failed_at_.end();
 }
 
 void PunchScheduler::Started(const PeerId& peer) { in_flight_.insert(peer); }

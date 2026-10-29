@@ -541,8 +541,8 @@ TEST(HolePunchManager, SuccessReplacesRelayedPeer) {
            (LastMessageAt(*b.mgr, key_ba) < sent_at || LastMessageAt(*a.mgr, Key6(bp)) < sent_at)) {
         std::this_thread::sleep_for(20ms);
     }
-    EXPECT_GE(LastMessageAt(*b.mgr, key_ba), sent_at) << "the ping never reached B";
-    EXPECT_GE(LastMessageAt(*a.mgr, Key6(bp)), sent_at) << "the pong never came back to A";
+    EXPECT_GE(LastMessageAt(*b.mgr, key_ba).time_since_epoch().count(), sent_at.time_since_epoch().count()) << "the ping never reached B";
+    EXPECT_GE(LastMessageAt(*a.mgr, Key6(bp)).time_since_epoch().count(), sent_at.time_since_epoch().count()) << "the pong never came back to A";
 }
 
 // Review Focus 3: a third node C answers at the address B claimed.
