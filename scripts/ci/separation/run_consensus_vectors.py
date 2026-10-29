@@ -92,13 +92,31 @@ def main():
     p = subprocess.run([a.ctest, "--test-dir", a.build, "--show-only=json-v1"],
                        capture_output=True, text=True)
     try:
-        registered = {t["name"] for t in json.loads(p.stdout)["tests"]}
+        all_tests = json.loads(p.stdout)["tests"]
+        registered = {t["name"] for t in all_tests}
     except Exception as exc:
         return fail("ERROR cannot read ctest test list: %r\n%s" % (exc, p.stderr))
     missing = [n for n in names if n not in registered]
     if missing:
         for n in missing:
             print("NOT_RUN " + n)
+        return 1
+
+    # Fixture closure: ctest -R also runs FIXTURES_SETUP/CLEANUP tests for the
+    # selected tests' FIXTURES_REQUIRED. Refuse if any of those is on the floor.
+    def prop(t, key):
+        for pr in t.get("properties", []):
+            if pr.get("name") == key:
+                v = pr.get("value", [])
+                return [v] if isinstance(v, str) else list(v)
+        return []
+    need = {f for t in all_tests if t["name"] in names for f in prop(t, "FIXTURES_REQUIRED")}
+    pulled = sorted(t["name"] for t in all_tests if t["name"] not in names and
+                    need & set(prop(t, "FIXTURES_SETUP") + prop(t, "FIXTURES_CLEANUP")))
+    onfloor = [n for n in pulled if n in floor]
+    if onfloor:
+        for n in onfloor:
+            print("ON_FLOOR " + n)
         return 1
 
     regex = "^(" + "|".join(re.escape(n) for n in names) + ")$"
@@ -116,9 +134,13 @@ def main():
     problems = 0
     for tc in root.iter("testcase"):
         n = tc.get("name")
+        if n not in names:
+            print(("ON_FLOOR " if n in floor else "UNEXPECTED ") + n)
+            problems += 1
+            continue
         out = (tc.findtext("system-out") or "")
         status = tc.get("status")
-        if status not in ("run", "fail"):
+        if status not in ("run", "fail") or tc.find("skipped") is not None:
             print("NOT_RUN " + n)
             problems += 1
             continue
@@ -135,6 +157,8 @@ def main():
             problems += 1
     if problems:
         return 1
+    if p.returncode != 0:
+        return fail("CTEST_RC ctest exited %d but every listed test parsed as passed" % p.returncode)
 
     if a.record:
         ref = {"config": config, "build_dir": str(a.build),
