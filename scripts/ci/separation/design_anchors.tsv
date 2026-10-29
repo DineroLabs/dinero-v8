@@ -148,3 +148,54 @@ include/daemon/mempool.h	4	daemon/connected_block_effects.h
 include/daemon/mempool.h	7	daemon/mempool_chainstate_guard.h
 include/daemon/mempool.h	24	mempool/coins_view_mempool.h
 include/daemon/mempool.h	82	MempoolTransaction tx;
+src/daemon/services/wallet_service.cpp	668	wallet_mgr_->rescanBlockchain(
+src/daemon/services/wallet_service.cpp	672	block_storage_))
+src/daemon/services/wallet_service.cpp	195	wallet_mgr_->setUTXOIndex(utxo_index)
+src/rpc/methods_wallet_context.cpp	6593	wallet.rescanBlockchain(
+src/rpc/methods_wallet_context.cpp	6597	ctx.daemon->block_storage.get()
+src/rpc/methods_wallet_context.cpp	1979	mgr.listUnspentUTXOs(min_conf, max_conf, mempool)
+src/rpc/methods_wallet_context.cpp	1905	listUnspentUTXOs()
+src/nodecore/nodecore_ffi.cpp	1348	ws->get().rescanBlockchain(
+src/nodecore/nodecore_ffi.cpp	1352	ctx.block_storage.get()
+src/wallet/wallet_worker.cpp	217	wallet_manager_->rescanBlockchain(start_height, kDefaultGapLimit, chain_db)
+src/daemon/services/chainstate_service.cpp	14538	wallet.RescanBlockchainImpl(start_height, gap_limit, nullptr, nullptr, immutable.get(), session)
+src/daemon/services/chainstate_service.cpp	14667	wallet.RescanBlockchainImpl(int(base_height+1),0,nullptr,nullptr,prepared.get(),session)
+src/daemon/services/chainstate_service.cpp	3385	std::make_unique<UTXOIndex>(utxo_db_path)
+src/daemon/daemon_app.cpp	1898	UTXOIndex post_reindex_index(utxo_index_path.string())
+src/wallet/rbf_cpfp_detector.cpp	100	entry.tx.Historical().vin
+include/daemon/mempool_transaction.h	75	const Transaction& Historical() const
+include/daemon/mempool_transaction.h	77	Orchard transaction has no historical body
+include/wallet/wallet_manager.h	45	struct Block;
+include/wallet/wallet_manager.h	49	class Mempool;
+include/wallet/wallet_manager.h	51	class UTXOIndex;
+include/wallet/wallet_manager.h	52	class ChainDB;
+include/wallet/wallet_manager.h	54	class BlockStorage;
+include/wallet/wallet_manager.h	57	class ChainstateService;
+include/wallet/wallet_manager.h	58	namespace wallet { class OrchardAccountDelivery; }
+include/wallet/wallet_manager.h	381	friend class wallet::OrchardAccountDelivery;
+include/wallet/wallet_manager.h	1142	friend class ChainstateService;
+include/wallet/wallet_manager.h	1157	friend class RuntimeOrdinaryDelivery;
+include/wallet/wallet_manager.h	1158	friend class RuntimeWalletRecovery;
+include/wallet/wallet_manager.h	1159	friend class wallet::OrchardAccountDelivery;
+tests/CMakeLists.txt	905	src/wallet/utxo_index.cpp
+tests/CMakeLists.txt	4438	src/wallet/utxo_index.cpp
+rust/orchard_backend/CMakeLists.txt	663	src/wallet/utxo_index.cpp
+rust/orchard_backend/CMakeLists.txt	675	src/wallet/utxo_index.cpp
+src/storage/CMakeLists.txt	19	src/wallet/utxo_index.cpp
+src/wallet/utxo_index.cpp	104	open_sqlite(db_path_)
+src/wallet/utxo_index.cpp	176	PRIMARY KEY(txid,vout)
+src/wallet/utxo_index.cpp	187	bool UTXOIndex::CreateTables()
+src/sqlite_open.cpp	35	PRAGMA journal_mode=WAL;
+.github/workflows/tests.yml	42	runs-on: ubuntu-24.04
+.github/workflows/tests.yml	870	runs-on: ubuntu-24.04
+.github/workflows/core-heavy.yml	49	runs-on: ubuntu-24.04
+include/consensus/chain_state_view.h	28	class ChainStateView {
+src/consensus/tx_validation.cpp	475	validateInputs(tx, view, ctx, total_in)
+src/consensus/tx_validation.cpp	526	checkSequenceLocks(tx, view, ctx)
+rust/orchard_backend/CMakeLists.txt	249	target_link_libraries(dinero_core PUBLIC dinero_orchard_runtime_reader)
+rust/orchard_backend/CMakeLists.txt	300	target_link_libraries(dinero_core PUBLIC dinero_orchard_reindex)
+rust/orchard_backend/CMakeLists.txt	307	target_link_libraries(dinero_orchard_chainstate_write PRIVATE dinero_core)
+rust/orchard_backend/CMakeLists.txt	308	target_link_libraries(dinero_orchard_reindex PRIVATE dinero_core)
+rust/orchard_backend/CMakeLists.txt	309	target_link_libraries(dinero_orchard_header PRIVATE dinero_core)
+rust/orchard_backend/CMakeLists.txt	426	target_link_libraries(dinero_core PUBLIC dinero_orchard_index_delivery)
+rust/orchard_backend/CMakeLists.txt	430	target_link_libraries(dinero_core PUBLIC dinero_orchard_chainstate_write)
