@@ -23,7 +23,7 @@ def _entries(items):
     return out
 
 
-def materialize(fixture, build):
+def materialize(fixture, build, version=None):
     """Write a CMake File API codemodel-v2 reply (real shapes) for a compact fixture spec."""
     spec = json.loads((FIXTURES / ("codemodel_" + fixture + ".json")).read_text())
     reply = build / ".cmake" / "api" / "v1" / "reply"
@@ -69,15 +69,19 @@ def materialize(fixture, build):
                 "directoryIndex": 0, "projectIndex": 0}
 
     minor = spec.get("codemodel_minor", 10)
+    if version is None:
+        version = {"major": 2, "minor": minor}
     targets = [write_target(n, t, False) for n, t in spec["targets"].items()]
     abstract = [write_target(n, t, True) for n, t in spec.get("abstract", {}).items()]
     cm = {
         "kind": "codemodel",
-        "version": {"major": 2, "minor": minor},
+        "version": version,
         "paths": {"source": "/repo", "build": str(build)},
         "configurations": [{"name": "Release", "targets": targets,
                             "abstractTargets": abstract, "directories": [], "projects": []}],
     }
+    if version == "absent":
+        del cm["version"]
     (reply / "codemodel-v2-0.json").write_text(json.dumps(cm))
     index = {"reply": {"codemodel-v2": {"jsonFile": "codemodel-v2-0.json", "kind": "codemodel",
                                          "version": {"major": 2, "minor": minor}}}}
@@ -85,8 +89,8 @@ def materialize(fixture, build):
     return build
 
 
-def run(tmp_path, fixture, gate="K2", target="root"):
-    build = materialize(fixture, tmp_path / "build")
+def run(tmp_path, fixture, gate="K2", target="root", version=None):
+    build = materialize(fixture, tmp_path / "build", version)
     return subprocess.run([sys.executable, str(SCRIPT), "--build", str(build), "--target", target,
                            "--rules", str(RULES), "--gate", gate],
                           capture_output=True, text=True)
@@ -180,3 +184,21 @@ def test_legacy_codemodel_fails_closed(tmp_path):
     r = run(tmp_path, "legacy")
     assert r.returncode == 2, r.stdout + r.stderr
     assert "ERROR codemodel 2.8 < 2.9: linkLibraries required" in r.stderr, r.stderr
+
+
+def test_codemodel_major_1_fails_closed(tmp_path):
+    r = run(tmp_path, "private_static", version={"major": 1, "minor": 0})
+    assert r.returncode == 2, r.stdout + r.stderr
+    assert "ERROR codemodel 1.0 unsupported: need 2.x with x >= 9" in r.stderr, r.stderr
+
+
+def test_codemodel_major_3_fails_closed(tmp_path):
+    r = run(tmp_path, "private_static", version={"major": 3, "minor": 0})
+    assert r.returncode == 2, r.stdout + r.stderr
+    assert "ERROR codemodel 3.0 unsupported: need 2.x with x >= 9" in r.stderr, r.stderr
+
+
+def test_codemodel_missing_version_fails_closed(tmp_path):
+    r = run(tmp_path, "private_static", version="absent")
+    assert r.returncode == 2, r.stdout + r.stderr
+    assert "ERROR codemodel none.none unsupported: need 2.x with x >= 9" in r.stderr, r.stderr
