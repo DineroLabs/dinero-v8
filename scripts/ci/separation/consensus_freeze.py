@@ -23,10 +23,17 @@ stage <= N (union). Allowed-file lines ('#' comments, blank lines ignored):
   <stage> modify <path>            any change to an existing file
   <stage> remove <path>            the file may be deleted
   <stage> add <path>               the file may be added
-  <stage> hunk <path> <regex>      file may change, but ONLY on diff lines (removed
-                                   or added, vs the baseline blob) matching one of
-                                   its hunk regexes (re.search); hunk entries of
-                                   all stages <= N are unioned.
+  <stage> hunk   <path>@<line> <regex>
+                                   positional: baseline line <line> of <path> may be
+                                   replaced 1:1 by a single line matching <regex>
+  <stage> insert <path>@<line> <regex>
+                                   at most one line matching <regex> may be inserted
+                                   immediately after baseline line <line>
+A file with hunk/insert entries may differ from the baseline only through those
+entries: any other added/removed/changed line, and any byte difference with no
+line-level change (EOL, trailing newline), is reported as HUNK path:? or
+HUNK path:line. Line numbers refer to the baseline blob. Entries of stages <= N
+are unioned.
 Exit 0 clean, 1 violations, 2 input errors.
 """
 import argparse
@@ -108,11 +115,13 @@ def load_allowed(path, stage):
             st, kind, p = int(parts[0]), parts[1], parts[2]
         except (ValueError, IndexError):
             raise InputError("%s:%d: bad entry" % (path, n))
-        if kind not in ("modify", "remove", "add", "hunk"):
+        if kind not in ("modify", "remove", "add", "hunk", "insert"):
             raise InputError("%s:%d: unknown kind %r" % (path, n, kind))
-        if kind == "hunk":
-            if len(parts) < 4:
-                raise InputError("%s:%d: hunk needs a regex" % (path, n))
+        if kind in ("hunk", "insert"):
+            m = re.match(r"^(.+)@([0-9]+)$", p)
+            if not m or len(parts) < 4:
+                raise InputError("%s:%d: %s needs <path>@<line> <regex>" % (path, n, kind))
+            p, lineno = m.group(1), int(m.group(2))
             try:
                 rx = re.compile(parts[3].strip())
             except re.error as e:
@@ -126,7 +135,7 @@ def load_allowed(path, stage):
         elif kind == "add":
             add.add(p)
         else:
-            hunks.setdefault(p, []).append(rx)
+            hunks.setdefault(p, []).append((kind, lineno, rx))
     return modify, remove, add, hunks
 
 
@@ -142,17 +151,31 @@ def tree_files(repo):
     return out
 
 
-def changed_lines(old, new):
-    """Yield (lineno, text) for each removed ('-', old numbering) / added ('+', new numbering) line."""
-    a = old.decode(errors="replace").splitlines()
-    b = new.decode(errors="replace").splitlines()
+def violations_for(p, old, new, rules):
+    """Positional hunk check; returns list of 'HUNK path:line text' strings."""
+    a = old.decode("latin-1").split("\n")
+    b = new.decode("latin-1").split("\n")
+    repl = {(ln): rx for k, ln, rx in rules if k == "hunk"}
+    ins = {(ln): rx for k, ln, rx in rules if k == "insert"}
+    out = []
     for tag, i1, i2, j1, j2 in difflib.SequenceMatcher(None, a, b, autojunk=False).get_opcodes():
         if tag == "equal":
             continue
+        ok = False
+        if tag == "replace" and i2 - i1 == j2 - j1:
+            ok = all(i + 1 in repl and repl[i + 1].search(b[j1 + i - i1])
+                     for i in range(i1, i2))
+        elif tag == "insert" and j2 - j1 == 1:
+            ok = i1 in ins and ins[i1].search(b[j1]) is not None
+        if ok:
+            continue
         for i in range(i1, i2):
-            yield i + 1, "-" + a[i]
+            out.append("HUNK %s:%d -%s" % (p, i + 1, a[i]))
         for j in range(j1, j2):
-            yield j + 1, "+" + b[j]
+            out.append("HUNK %s:%d +%s" % (p, j + 1, b[j]))
+    if not out and a == b and old != new:
+        out.append("HUNK %s:? <non-line change>" % p)
+    return out
 
 
 def check(args):
@@ -177,9 +200,7 @@ def check(args):
             old = git_bytes(args.repo, "cat-file", "blob", "%s:%s" % (commit, p))
             if sha(old) != base[p]:
                 raise InputError("baseline blob for %s at %s does not match recorded hash" % (p, commit))
-            for ln, text in changed_lines(old, data):
-                if not any(rx.search(text[1:]) for rx in hunks[p]):
-                    bad.append("HUNK %s:%d %s" % (p, ln, text))
+            bad.extend(violations_for(p, old, data, hunks[p]))
     for b in bad:
         print(b)
     if bad:
