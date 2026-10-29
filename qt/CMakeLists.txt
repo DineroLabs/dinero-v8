@@ -1499,6 +1499,16 @@ if(BUILD_TESTING)
       add_test(NAME SwapWidgetRegtest COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/swap_widget_regtest.sh
                ${DINEROD_BINARY} $<TARGET_FILE:test_swap_widget_regtest>)
       set_tests_properties(SwapWidgetRegtest PROPERTIES TIMEOUT 600)
+      # DIN <-> ZEC through the tab: a dinerod built with DINERO_SWAP_ZEC (its build
+      # dir then holds swap_zec_regtest_tool) and Zebra.
+      get_filename_component(_swap_dinerod_dir ${DINEROD_BINARY} DIRECTORY)
+      find_program(DINERO_QT_ZEBRAD zebrad PATHS $ENV{HOME}/.local/zebra-7.0.0/bin)
+      if(EXISTS ${_swap_dinerod_dir}/swap_zec_regtest_tool AND DINERO_QT_ZEBRAD)
+        add_test(NAME SwapWidgetZecRegtest COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/swap_widget_zec_regtest.sh
+                 ${DINEROD_BINARY} $<TARGET_FILE:test_swap_widget_regtest>
+                 ${_swap_dinerod_dir}/swap_zec_regtest_tool ${DINERO_QT_ZEBRAD})
+        set_tests_properties(SwapWidgetZecRegtest PROPERTIES TIMEOUT 900)
+      endif()
     endif()
   endif()
 
