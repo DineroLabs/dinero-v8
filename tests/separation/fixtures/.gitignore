@@ -1,0 +1,2 @@
+# The wallet data directories here are committed SQLite files (W4).
+!*.db

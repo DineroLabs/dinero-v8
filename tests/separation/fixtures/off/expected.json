@@ -1,0 +1,192 @@
+{
+  "format": 1,
+  "config": "off",
+  "registry": {
+    "wallets": [
+      "sepfixture"
+    ],
+    "exists": true
+  },
+  "wallet": {
+    "name": "sepfixture",
+    "blockchain_height": 110,
+    "primary_address": "rdin1pzuexyzg0kl8j3lv3gldgykjftzm57dx8rhcjev9ydn7r2l9asnfsv7ts0m",
+    "addresses": [
+      {
+        "address": "rdin1pzuexyzg0kl8j3lv3gldgykjftzm57dx8rhcjev9ydn7r2l9asnfsv7ts0m",
+        "account": 0,
+        "change": 0,
+        "index": 0,
+        "external": false,
+        "type": "p2tr",
+        "script_pubkey": "5120173262090fb7cf28fd9147da825a4958b74f34c71df12cb0a46cfc357cbd84d3",
+        "label": "",
+        "derivation_path": "m/86'/1448'/0'/0/0",
+        "is_mine": true,
+        "index_owner": "m/86'/1448'/0'/0/0"
+      },
+      {
+        "address": "rdin1pax4y0gsrgug5jx2ymuxpp4v0yq97ql7scuw9ll2v037f9w9mgf9snue5k7",
+        "account": 0,
+        "change": 0,
+        "index": 1,
+        "external": false,
+        "type": "p2tr",
+        "script_pubkey": "5120e9aa47a2034711491944df0c10d58f200be07fd0c71c5ffd4c7c7c92b8bb424b",
+        "label": "",
+        "derivation_path": "m/86'/1448'/0'/0/1",
+        "is_mine": true,
+        "index_owner": "m/86'/1448'/0'/0/1"
+      },
+      {
+        "address": "rdin1pszl9m0g29pvqdltfgju5qw4jee8mnt9tst44t5tgsn9dzq5uwnrqfsasv9",
+        "account": 0,
+        "change": 0,
+        "index": 2,
+        "external": false,
+        "type": "p2tr",
+        "script_pubkey": "512080be5dbd0a285806fd6944b9403ab2ce4fb9acab82eb55d16884cad1029c74c6",
+        "label": "",
+        "derivation_path": "m/86'/1448'/0'/0/2",
+        "is_mine": true,
+        "index_owner": "m/86'/1448'/0'/0/2"
+      }
+    ],
+    "watch_scripts": [
+      {
+        "script_pubkey": "51205e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e",
+        "path": "m/86'/1448'/0'/0/1000",
+        "is_mine": true,
+        "index_owner": "m/86'/1448'/0'/0/1000"
+      }
+    ],
+    "balance": {
+      "confirmed": 1.75,
+      "unconfirmed": 0.0,
+      "immature": 0.0,
+      "total": 1.75,
+      "spendable": 1.75,
+      "utxo_count": 2,
+      "immature_utxo_count": 0
+    },
+    "utxos": [
+      {
+        "txid": "1111111111111111111111111111111111111111111111111111111111111111",
+        "vout": 0,
+        "amount_una": 150000000,
+        "address": "rdin1pzuexyzg0kl8j3lv3gldgykjftzm57dx8rhcjev9ydn7r2l9asnfsv7ts0m",
+        "height": 100,
+        "confirmations": 11,
+        "spendable": true,
+        "is_coinbase": false,
+        "script_pubkey": "5120173262090fb7cf28fd9147da825a4958b74f34c71df12cb0a46cfc357cbd84d3",
+        "derivation_path": "m/86'/1448'/0'/0/0"
+      },
+      {
+        "txid": "2222222222222222222222222222222222222222222222222222222222222222",
+        "vout": 1,
+        "amount_una": 25000000,
+        "address": "rdin1pax4y0gsrgug5jx2ymuxpp4v0yq97ql7scuw9ll2v037f9w9mgf9snue5k7",
+        "height": 101,
+        "confirmations": 10,
+        "spendable": true,
+        "is_coinbase": false,
+        "script_pubkey": "5120e9aa47a2034711491944df0c10d58f200be07fd0c71c5ffd4c7c7c92b8bb424b",
+        "derivation_path": "m/86'/1448'/0'/0/1"
+      }
+    ]
+  },
+  "utxo_index": {
+    "utxos": [
+      {
+        "txid": "1111111111111111111111111111111111111111111111111111111111111111",
+        "vout": 0,
+        "value_una": 150000000,
+        "spk": "5120173262090fb7cf28fd9147da825a4958b74f34c71df12cb0a46cfc357cbd84d3",
+        "path": "m/86'/1448'/0'/0/0",
+        "height": 100,
+        "spend_height": null,
+        "is_coinbase": false,
+        "owner_kind": 0
+      },
+      {
+        "txid": "2222222222222222222222222222222222222222222222222222222222222222",
+        "vout": 1,
+        "value_una": 25000000,
+        "spk": "5120e9aa47a2034711491944df0c10d58f200be07fd0c71c5ffd4c7c7c92b8bb424b",
+        "path": "m/86'/1448'/0'/0/1",
+        "height": 101,
+        "spend_height": null,
+        "is_coinbase": false,
+        "owner_kind": 0
+      }
+    ],
+    "balance_una": 175000000,
+    "utxo_count": 2
+  },
+  "descriptors": [
+    {
+      "id": 1,
+      "descriptor": "tr([73c5da0a/86h/1448h/0h]zpub6qX51uTZeNtgXdNjy9y7mwSvNkURRZfEwQTrMfC4MVdAwtzZrTAB5JkN31mPkWRXuj1pv5XVPbjPEFHWQxDnh2trgSKpxmYvA7eo41x8MBK/0/*)#k0e02m77",
+      "checksum": "k0e02m77",
+      "policy": "BIP86",
+      "account": 0,
+      "is_change": false,
+      "is_active": true,
+      "created_at": 1700000000,
+      "deprecated_at": 0,
+      "metadata": "",
+      "label": "sepfixture"
+    }
+  ],
+  "sqlite": {
+    "wallet_registry.db": {
+      "user_version": 0,
+      "application_id": 0,
+      "page_size": 4096,
+      "auto_vacuum": 0,
+      "encoding": "UTF-8",
+      "journal_mode": "wal",
+      "synchronous": 1,
+      "locking_mode": "normal",
+      "foreign_keys": 1,
+      "temp_store": 2,
+      "wal_autocheckpoint": 1000,
+      "busy_timeout": 5000,
+      "cache_size": 10000,
+      "mmap_size": 67108864
+    },
+    "wallets/wallet_sepfixture.db": {
+      "user_version": 27,
+      "application_id": 0,
+      "page_size": 4096,
+      "auto_vacuum": 0,
+      "encoding": "UTF-8",
+      "journal_mode": "wal",
+      "synchronous": 1,
+      "locking_mode": "normal",
+      "foreign_keys": 1,
+      "temp_store": 2,
+      "wal_autocheckpoint": 1000,
+      "busy_timeout": 5000,
+      "cache_size": 10000,
+      "mmap_size": 67108864
+    },
+    "blockchain/utxo": {
+      "user_version": 2,
+      "application_id": 0,
+      "page_size": 4096,
+      "auto_vacuum": 0,
+      "encoding": "UTF-8",
+      "journal_mode": "wal",
+      "synchronous": 1,
+      "locking_mode": "normal",
+      "foreign_keys": 1,
+      "temp_store": 2,
+      "wal_autocheckpoint": 1000,
+      "busy_timeout": 5000,
+      "cache_size": 10000,
+      "mmap_size": 67108864
+    }
+  }
+}
