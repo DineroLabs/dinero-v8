@@ -22,9 +22,12 @@ Edge rule (which link items are followed out of a target):
     interfaceLinkLibraries (static libraries propagate PRIVATE deps);
   * every other type (SHARED/MODULE/EXECUTABLE/INTERFACE/imported): only
     interfaceLinkLibraries (the PUBLIC/INTERFACE part).
-  For codemodels older than 2.9 (no linkLibraries keys) the build-order
-  'dependencies' list is followed for every target instead; it cannot tell
-  PRIVATE from PUBLIC and may include order-only UTILITY targets.
+  The build-order 'dependencies' list is never used: it cannot tell PRIVATE
+  from PUBLIC, omits imported targets, and is cycle-broken for static libs.
+  Codemodel 2.9 (linkLibraries, interfaceLinkLibraries, abstractTargets) is
+  therefore REQUIRED, i.e. CMake >= 4.1; an older reply exits 2
+  ("ERROR codemodel 2.<n> < 2.9: linkLibraries required"). There is no
+  weaker fallback mode.
 Imported/INTERFACE targets come from 'abstractTargets'. External libraries
 are matched by exact target name, or by normalized basename of raw link
 fragments and imported artifacts (librocksdb.a, -lsqlite3 -> rocksdb, sqlite3).
@@ -92,7 +95,10 @@ class Model:
             raise InputError("index %s has no codemodel-v2 reply" % indexes[-1])
         self.reply = reply
         cm = load_json(reply / cm_ref["jsonFile"])
-        self.cm_minor = cm.get("version", {}).get("minor", 0)
+        ver = cm.get("version", {})
+        self.cm_minor = ver.get("minor", 0)
+        if ver.get("major", 0) == 2 and self.cm_minor < 9:
+            raise InputError("codemodel 2.%d < 2.9: linkLibraries required" % self.cm_minor)
         self.source_root = cm.get("paths", {}).get("source", "")
         configs = cm.get("configurations", [])
         if not configs:
@@ -127,9 +133,7 @@ class Model:
     def out_items(self, tid, is_root):
         """Return (target ids, raw fragments) followed out of tid."""
         tj = self.tjson(tid)
-        if self.cm_minor < 9:
-            items = list(tj.get("dependencies", []))
-        elif is_root or tj.get("type") in FOLLOW_PRIVATE:
+        if is_root or tj.get("type") in FOLLOW_PRIVATE:
             items = list(tj.get("linkLibraries", [])) + list(tj.get("interfaceLinkLibraries", []))
         else:
             items = list(tj.get("interfaceLinkLibraries", []))
