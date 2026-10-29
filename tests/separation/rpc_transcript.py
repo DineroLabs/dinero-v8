@@ -35,6 +35,14 @@ Transcript steps (in order; every entry carries its step name):
     loadtxoutset on consumer C, getbalance, wallet.recovertransparentfromsnapshot
     refused while history is missing, then (S serving bodies over loopback P2P)
     the recovery receipt, getbalance and listunspent.
+  P2MR (phase_p2mr, node P, a created + encrypted wallet): wallet.signp2mr on
+    the locked wallet (error), wallet.getnewp2mraddress (address encode),
+    wallet.importp2mrseed of a fixed seed (deterministic pubkey/address),
+    wallet.listp2mraddresses, wallet.signp2mr (v7rpc::SignP2MR), signp2mr with
+    a malformed sighash (error), sendtoaddress to the P2MR address (address
+    decode to its 0x53 0x20 scriptPubKey), wallet.createrawtransaction and
+    wallet.signrawtransaction spending that P2MR output (WalletKeyProvider ->
+    SignP2MR), sendrawtransaction.
   ON builds only: the marker ORCHARD_ITEM (owner decision: stock regtest
     cannot activate Orchard and the Orchard harness ctests are on the
     never-run floor, so the Orchard mempool entry seen by RBF detection is
@@ -52,19 +60,27 @@ Normalization rules (applied to params and responses; nothing else is masked):
      (hrp din|rdin|tdin|bcrt, separator 1, bech32 charset), whole value or
      token inside a string                          -> "<A#n>"
   N3 64-hex tokens inside a longer string (bounded by non-hex) -> "<H#n>"
-  N4 value (number or string) of a time field (key in TIME_KEYS) -> "<T>"
-  N5 numeric value of a duration field (key in DURATION_KEYS) -> "<D>"
+  N4 value of a time field (key in TIME_KEYS)       -> "<T:int>" / "<T:float>" /
+     "<T:str>" (the JSON type is kept in the tag, so a type change still fails)
+  N5 numeric value of a duration field (DURATION_KEYS) -> "<D:int>" / "<D:float>"
   N6 the run's temp work directory inside any string -> "<WORK>"
   N7 an integer equal to one of this run's ports under a key in PORT_KEYS, or
-     ":<port>" inside a string                      -> "<PORT>"
+     ":<port>" inside a string                      -> "<PORT:int>" / ":<PORT>"
   N8 an integer equal to one of this run's dinerod PIDs under a key in
-     PID_KEYS                                       -> "<PID>"
+     PID_KEYS                                       -> "<PID:int>"
   (N7/N8 are keyed so an unrelated integer -- a byte count, an amount -- that
   happens to equal a random port or PID is never masked.)
-  At baseline only N1, N2, N3, N4 (last_progress_time), N5 (eta) and N6 fire;
-  the others are defensive (they would only apply to a value that varies by
-  run for the same reason).
-  <H#n>/<A#n> are numbered by first appearance across the whole transcript in
+  N9 a string that is entirely hex of even length > 128 chars (ML-DSA-65
+     pubkeys, signatures, raw transactions) -> "<X#n:len=L>", numbered by first
+     appearance like <H#n>, so equal blobs stay equal and the length is kept.
+     It exists because ML-DSA signing is hedged (signature_hex differs every
+     run for the same key and message) and createhd keys are random.
+  N10 an object KEY that is itself a whole address or 64-hex id (e.g. the
+     recipient map of createrawtransaction) -> "<A#n>"/"<H#n>"; every other key
+     is a field name and is never rewritten. Field-name keys are walked sorted,
+     value keys after them in input order.
+  At baseline N1-N6, N9 and N10 fire; N7/N8 are defensive.
+  <H#n>/<A#n>/<X#n> are numbered by first appearance across the whole transcript in
   a depth-first walk with object keys sorted, so a txid returned by
   sendtoaddress must reappear as the same <H#n> later.
 """
@@ -93,7 +109,7 @@ AVOID_PORTS = {20998, 20999, 34100, 34997, 34998, 50051}
 
 TIME_KEYS = {"time", "blocktime", "timereceived", "timestamp", "mediantime",
              "first_seen", "entry_time", "time_in_mempool", "received_time",
-             "last_progress_time"}
+             "last_progress_time", "created_at"}
 PORT_KEYS = {"port", "rpcport", "p2pport", "rpc_port", "p2p_port", "wallet_socket_port"}
 PID_KEYS = {"pid", "process_id"}
 DURATION_KEYS = {"duration", "duration_ms", "elapsed", "elapsed_ms", "eta"}
@@ -106,6 +122,7 @@ ORCHARD_ITEM = ("COVERED_BY_UNIT_TEST orchard_rbf_entry "
 
 HEX64 = re.compile(r"[0-9a-fA-F]{64}")
 HEX64_TOKEN = re.compile(r"(?<![0-9a-fA-F])[0-9a-fA-F]{64}(?![0-9a-fA-F])")
+HEX_BLOB = re.compile(r"(?:[0-9a-fA-F]{2}){65,}")
 ADDR = re.compile(r"(?<![0-9a-z])(?:rdin|tdin|din|bcrt)1[02-9ac-hj-np-z]{6,}(?![0-9a-z])")
 
 
@@ -226,9 +243,17 @@ class Node:
         self.proc = None
 
 
+def is_value_key(k):
+    return bool(HEX64.fullmatch(k) or ADDR.fullmatch(k))
+
+
+def _tag(v):
+    return "int" if isinstance(v, int) else "float" if isinstance(v, float) else "str"
+
+
 class Normalizer:
     def __init__(self, work, ports, pids):
-        self.h, self.a = {}, {}
+        self.h, self.a, self.x = {}, {}, {}
         self.work = os.path.realpath(work)
         self.work_raw = work
         self.ports = set(ports)
@@ -245,9 +270,17 @@ class Normalizer:
             self.a[v] = "<A#%d>" % (len(self.a) + 1)
         return self.a[v]
 
+    def _x(self, v):
+        k = v.lower()
+        if k not in self.x:
+            self.x[k] = "<X#%d:len=%d>" % (len(self.x) + 1, len(v))
+        return self.x[k]
+
     def string(self, s):
         if HEX64.fullmatch(s):
             return self._h(s)
+        if HEX_BLOB.fullmatch(s):
+            return self._x(s)
         for w in sorted({self.work, self.work_raw}, key=len, reverse=True):
             s = s.replace(w, "<WORK>")
         s = ADDR.sub(lambda m: self._a(m.group(0)), s)
@@ -256,26 +289,39 @@ class Normalizer:
             s = re.sub(r":%d(?!\d)" % p, ":<PORT>", s)
         return s
 
+    def key(self, k):
+        """Object keys are field names and are never rewritten, except a key
+        that is itself a whole value: an address or a 64-hex id (N10)."""
+        if HEX64.fullmatch(k):
+            return self._h(k)
+        if ADDR.fullmatch(k):
+            return self._a(k)
+        return k
+
     def value(self, v, key=None):
         if isinstance(v, dict):
-            return {k: self.value(v[k], k) for k in sorted(v)}
+            names = sorted(k for k in v if not is_value_key(k))
+            values = [k for k in v if is_value_key(k)]   # value-keys: input order
+            out = {}
+            for k in names + values:
+                out[self.key(k)] = self.value(v[k], k)
+            return out
         if isinstance(v, list):
             return [self.value(x, key) for x in v]
-        if isinstance(v, str):
-            if key in TIME_KEYS:
-                return "<T>"
-            return self.string(v)
         if isinstance(v, bool) or v is None:
             return v
-        if isinstance(v, (int, float)):
+        if isinstance(v, (str, int, float)):
             if key in TIME_KEYS:
-                return "<T>"
-            if key in DURATION_KEYS:
-                return "<D>"
-            if key in PORT_KEYS and isinstance(v, int) and v in self.ports:
-                return "<PORT>"
-            if key in PID_KEYS and isinstance(v, int) and v in self.pids:
-                return "<PID>"
+                return "<T:%s>" % _tag(v)
+            if key in DURATION_KEYS and not isinstance(v, str):
+                return "<D:%s>" % _tag(v)
+        if isinstance(v, str):
+            return self.string(v)
+        if isinstance(v, int):
+            if key in PORT_KEYS and v in self.ports:
+                return "<PORT:int>"
+            if key in PID_KEYS and v in self.pids:
+                return "<PID:int>"
         return v
 
 
@@ -412,7 +458,66 @@ def phase_snapshot(t, work, dinerod, taken, logs, pids, nodes, foreign):
     src.stop()
 
 
-def run(dinerod, config, keep=False):
+P2MR_PASSWORD = "w5-regtest-password"
+P2MR_SIGHASH = "11" * 32
+P2MR_SEED = "22" * 32
+P2MR_IMPORT_PATH = "m/44'/1448'/0'/0/7"
+
+
+def phase_p2mr(t, work, dinerod, taken, logs, pids, nodes, foreign):
+    """v7 P2MR RPCs (rpc/v7_pq_rpc_json.cpp, rpc/v7_pq_handlers.cpp) on node P.
+
+    Address encode (wallet.getnewp2mraddress), store listing, direct signing
+    (wallet.signp2mr -> v7rpc::SignP2MR), address decode (sendtoaddress to the
+    P2MR address builds its 0x53 0x20 scriptPubKey), and the wallet signing
+    path for a P2MR input (wallet.signrawtransaction -> WalletKeyProvider ->
+    SignP2MR), plus locked-wallet and malformed-sighash errors.
+    """
+    p = Node(dinerod, work, "p", taken, logs, pids)
+    nodes.append(p)
+    p.start()
+    # wallet.createhd, not wallet.restore: only a created wallet carries the
+    # initial PQ master owner that unlock loads (wallet_manager.cpp:5053-5090,
+    # :5300-5316); a restored wallet answers v7_master_key_not_loaded.
+    p.ok("wallet.createhd", ["w5p"])
+    p.ok("wallet.encrypt", [P2MR_PASSWORD])
+    t.call(p, "p2mr.error.locked", "wallet.signp2mr",
+           {"address": "rdin1r0", "sighash_hex": P2MR_SIGHASH})
+    p.ok("wallet.unlock", [P2MR_PASSWORD, 3600])
+    r = result_of(t.call(p, "p2mr.getnewp2mraddress", "wallet.getnewp2mraddress",
+                         {"account": 0, "change": 0, "address_index": 0,
+                          "leaf_index": 0, "label": "w5"}))
+    r = result_of(t.call(p, "p2mr.importp2mrseed", "wallet.importp2mrseed",
+                         {"seed_hex": P2MR_SEED, "derivation_path": P2MR_IMPORT_PATH,
+                          "leaf_index": 0, "label": "w5-import"}))
+    addr, root = r["address"], r["merkle_root_hex"]
+    t.call(p, "p2mr.listp2mraddresses", "wallet.listp2mraddresses", {})
+    t.call(p, "p2mr.signp2mr", "wallet.signp2mr", {"address": addr, "sighash_hex": P2MR_SIGHASH})
+    t.call(p, "p2mr.error.bad_sighash", "wallet.signp2mr", {"address": addr, "sighash_hex": "abcd"})
+    owner = p.ok("getnewaddress", [])["address"]
+    p.ok("generatetoaddress", [1, owner])
+    p.ok("generatetoaddress", [100, foreign])
+    sent = result_of(t.call(p, "p2mr.sendtoaddress", "sendtoaddress", [addr, 30.0]))
+    fund = sent.get("txid") if isinstance(sent, dict) else None
+    if not isinstance(fund, str):
+        raise RunError("P2MR funding failed: %r" % sent)
+    p.ok("generatetoaddress", [1, foreign])
+    spk = "5320" + root
+    tx = p.ok("gettransaction", [fund])
+    vout = [o["vout"] for o in tx["outputs"] if o.get("scriptPubKey") == spk]
+    if len(vout) != 1:
+        raise RunError("P2MR output not found in %s" % json.dumps(tx)[:600])
+    recipient = p.ok("getnewaddress", [])["address"]
+    raw = result_of(t.call(p, "p2mr.createrawtransaction", "wallet.createrawtransaction",
+                           [[{"txid": fund, "vout": vout[0]}], [{recipient: 29.9999}]]))
+    prev = [{"txid": fund, "vout": vout[0], "scriptPubKey": spk, "amount": 30.0}]
+    signed = result_of(t.call(p, "p2mr.signrawtransaction", "wallet.signrawtransaction",
+                              [raw["hex"], prev]))
+    t.call(p, "p2mr.sendrawtransaction", "sendrawtransaction", [signed["hex"]])
+    p.stop()
+
+
+def run(dinerod, config, keep=False, phases=("wallet", "snapshot", "p2mr")):
     work = tempfile.mkdtemp(prefix="sep_w5_")
     logs = os.path.join(work, "logs")
     os.makedirs(logs)
@@ -428,9 +533,13 @@ def run(dinerod, config, keep=False):
         # and discarded (A then switches to the recorded wallet "w5").
         a.ok("wallet.restore", {"name": "foreign", "mnemonic": FOREIGN_MNEMONIC, "rescan": False})
         foreign = a.ok("getnewaddress", [])["address"]
-        phase_wallet(t, a, foreign)
+        if "wallet" in phases:
+            phase_wallet(t, a, foreign)
         a.stop()
-        phase_snapshot(t, work, dinerod, taken, logs, pids, nodes, foreign)
+        if "snapshot" in phases:
+            phase_snapshot(t, work, dinerod, taken, logs, pids, nodes, foreign)
+        if "p2mr" in phases:
+            phase_p2mr(t, work, dinerod, taken, logs, pids, nodes, foreign)
         if config == "on":
             t.marker(ORCHARD_ITEM)
         norm = Normalizer(work, taken, pids)
