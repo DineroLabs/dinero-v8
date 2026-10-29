@@ -24,7 +24,7 @@ jobs:
       - name: Checkout #856 head (7995e0d3b)
         uses: actions/checkout@v4
         with:
-          ref: 7995e0d3b
+          ref: 7995e0d3b623a918fde9659f987e8841c9e91b2e
           submodules: recursive
           fetch-depth: 1
 
