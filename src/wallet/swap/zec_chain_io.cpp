@@ -67,6 +67,28 @@ ZecNetwork ZecNetworkFor(SwapNetwork network) {
     throw std::invalid_argument("unknown swap network");
 }
 
+std::string ZecGenesisFor(SwapNetwork network) {
+    switch (network) {
+    case SwapNetwork::Mainnet: return "00040fe8ec8471911baa1db1266ea15dd06b4a8a5c453883c000b031973dce08";
+    case SwapNetwork::Testnet: return "05a60a92d99d85997cce3b87616c089f6124d7342af37106edc76126334a2c38";
+    case SwapNetwork::Regtest: return "029f11d80ef9765602235e1bc9727e3eb6ba20839319f761fee920d63401e327";
+    }
+    throw std::invalid_argument("unknown swap network");
+}
+
+ZecRpc GuardZecGenesis(ZecRpc rpc, std::string genesis_hash) {
+    return [rpc = std::move(rpc), genesis_hash = std::move(genesis_hash)](
+               const std::string& method, const Json::Value& params) -> std::optional<Json::Value> {
+        if (method == "getblockchaininfo") {
+            Json::Value zero(Json::arrayValue);
+            zero.append(0);
+            const auto genesis = rpc("getblockhash", zero);
+            if (!genesis || !genesis->isString() || genesis->asString() != genesis_hash) return std::nullopt;
+        }
+        return rpc(method, params);
+    };
+}
+
 ZecSwapChainIo::ZecSwapChainIo(DinRpc din, ZecRpc zec, SwapWatchSpec spec, ZecIoConfig config)
     : RpcSwapChainIo(std::move(din), [](const std::string&, const Json::Value&) { return std::optional<Json::Value>{}; },
                      spec),

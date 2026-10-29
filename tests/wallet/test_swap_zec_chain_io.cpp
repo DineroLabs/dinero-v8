@@ -7,6 +7,7 @@
 #include "crypto/sha256.h"
 #include "dinero_zcash_swap.h"
 #include "wallet/swap/swap_crypto.h"
+#include "wallet/swap/swap_manager_zec.h"
 #include "wallet/swap/tower.h"
 
 #include <gtest/gtest.h>
@@ -42,6 +43,7 @@ struct FakeZebra {
     Json::Value utxos{Json::arrayValue};
     std::set<std::string> known_txids;
     bool reachable = true;
+    std::string genesis = "h0";
     std::vector<std::string> sent;
 
     ZecRpc Rpc() {
@@ -59,7 +61,7 @@ struct FakeZebra {
                 }
                 return r;
             }
-            if (m == "getblockhash") return Json::Value("h" + std::to_string(p[0].asUInt()));
+            if (m == "getblockhash") return Json::Value(p[0].asUInt() == 0 ? genesis : "h" + std::to_string(p[0].asUInt()));
             if (m == "getblockheader") {
                 r["time"] = Json::UInt(kNow - (tip - std::stoul(p[0].asString().substr(1))) * 75);
                 return r;
@@ -562,4 +564,31 @@ TEST(SwapZecChainIo, BobClaimsDinEvenWhenZcashRungsCannotBeSigned) {
     for (const auto& e : report.events) std::cout << "    " << e << "\n";
     EXPECT_EQ(report.after, SwapState::DinClaimBroadcast);
     ASSERT_EQ(io->din_sent.size(), 1u);  // his claim (a tower rung, the same the tower holds)
+}
+
+TEST(SwapZecChainIo, DaemonSupportOnlyTrustsTheZcashNetworkOfItsDineroNetwork) {
+    // Zebra calls both testnet and regtest "test": only block 0 tells them apart.
+    EXPECT_EQ(ZecGenesisFor(SwapNetwork::Mainnet), "00040fe8ec8471911baa1db1266ea15dd06b4a8a5c453883c000b031973dce08");
+    EXPECT_EQ(ZecGenesisFor(SwapNetwork::Testnet), "05a60a92d99d85997cce3b87616c089f6124d7342af37106edc76126334a2c38");
+    EXPECT_EQ(ZecGenesisFor(SwapNetwork::Regtest), "029f11d80ef9765602235e1bc9727e3eb6ba20839319f761fee920d63401e327");
+
+    FakeZebra zebra;
+    auto support = [&](SwapNetwork network) {
+        ZecDaemonConfig c;
+        c.zec = zebra.Rpc();
+        c.network = network;
+        c.expected_chain = "test";
+        c.clock = [] { return kNow; };
+        return MakeZecSupport(std::move(c));
+    };
+    zebra.genesis = ZecGenesisFor(SwapNetwork::Testnet);
+    EXPECT_EQ(support(SwapNetwork::Testnet).tip_height(), 1000u);
+    EXPECT_THROW(support(SwapNetwork::Regtest).tip_height(), std::runtime_error);
+    EXPECT_THROW(support(SwapNetwork::Regtest).deposit_status(Key(8)), std::runtime_error);
+
+    zebra.genesis = ZecGenesisFor(SwapNetwork::Regtest);
+    EXPECT_EQ(support(SwapNetwork::Regtest).tip_height(), 1000u);
+    EXPECT_NO_THROW(support(SwapNetwork::Regtest).deposit_status(Key(8)));
+    EXPECT_THROW(support(SwapNetwork::Testnet).tip_height(), std::runtime_error);
+    EXPECT_THROW(support(SwapNetwork::Testnet).deposit_status(Key(8)), std::runtime_error);
 }

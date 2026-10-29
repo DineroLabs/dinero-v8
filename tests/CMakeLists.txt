@@ -13945,6 +13945,7 @@ if(CARGO_EXECUTABLE AND NOT WIN32)
   add_executable(test_swap_zec_chain_io
     tests/wallet/test_swap_zec_chain_io.cpp
     src/wallet/swap/zec_chain_io.cpp
+    src/wallet/swap/swap_manager_zec.cpp
     src/wallet/swap/zec_tx.cpp
     src/wallet/swap/zec_watcher.cpp
     src/wallet/swap/runner.cpp

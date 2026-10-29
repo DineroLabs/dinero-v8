@@ -89,4 +89,12 @@ private:
 
 ZecNetwork ZecNetworkFor(SwapNetwork network);
 
+// Zebra names both testnet and regtest "test", so the chain name alone cannot
+// pair a Dinero network with its Zcash network: the genesis block hash can.
+std::string ZecGenesisFor(SwapNetwork network);
+
+// `rpc`, except that getblockchaininfo answers nothing unless the node's block 0
+// is `genesis_hash`: every observer then treats the node as unreachable.
+ZecRpc GuardZecGenesis(ZecRpc rpc, std::string genesis_hash);
+
 }  // namespace dinero::swap

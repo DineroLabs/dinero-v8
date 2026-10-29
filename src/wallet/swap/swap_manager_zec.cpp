@@ -14,6 +14,7 @@ ZecSupport MakeZecSupport(ZecDaemonConfig c) {
     if (!c.clock) c.clock = [] { return static_cast<uint32_t>(std::time(nullptr)); };
     const ZecNetwork net = ZecNetworkFor(c.network);
     auto cfg = std::make_shared<ZecDaemonConfig>(std::move(c));
+    cfg->zec = GuardZecGenesis(std::move(cfg->zec), ZecGenesisFor(cfg->network));
 
     auto chain_now = [cfg] {
         const auto chain = ObserveZecChain(cfg->zec, cfg->expected_chain);
