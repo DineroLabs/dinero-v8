@@ -84,6 +84,12 @@ struct BtcFeeLadderPolicy {
 TowerPackage BuildTowerPackage(const SwapSession& s, const SwapKeys& keys, const FundingOutput& din_funding,
                                const BtcFunding& btc_funding, const FeeLadderPolicy& din_policy,
                                const BtcFeeLadderPolicy& btc_policy);
+// The two halves of BuildTowerPackage (neither verifies the package): the
+// terms and DIN claim rungs, then the Bitcoin refund rungs.
+TowerPackage BuildTowerPackageDin(const SwapSession& s, const SwapKeys& keys, const FundingOutput& din_funding,
+                                  const FeeLadderPolicy& din_policy);
+void AddBtcRefundRungs(TowerPackage& p, const SwapSession& s, const SwapKeys& keys, const BtcFunding& btc_funding,
+                       const BtcFeeLadderPolicy& btc_policy);
 
 // Throws std::invalid_argument naming the first problem: wrong outpoint, a rung
 // paying anywhere but Bob's payout, fees not strictly rising, a refund whose

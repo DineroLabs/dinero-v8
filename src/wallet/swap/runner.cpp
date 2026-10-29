@@ -412,6 +412,45 @@ std::string RpcSwapChainIo::BroadcastBtc(const std::vector<uint8_t>& raw_tx) {
 
 // ---- Runner -----------------------------------------------------------------
 
+// ---- Counter-chain defaults: Bitcoin ----------------------------------------
+
+std::string SwapChainIo::CounterHtlcAddress(const SwapRecord& record, const RunnerConfig& config) const {
+    return BtcHtlcAddressFor(record, config.btc_hrp);
+}
+
+// Bitcoin replaces by fee: while a claim/refund stays unconfirmed, its fee
+// doubles every 30 minutes since the state began, up to btc_fee_max_percent of
+// the amount. Derived from the persisted state, so a restart picks up where it was.
+uint64_t SwapChainIo::CounterSpendFee(const SwapSession& session, const RunnerConfig& config,
+                                      uint32_t now) const {
+    const uint64_t base = config.btc_fee_sat;
+    const uint64_t cap = std::max(base, session.record.offer.btc_amount_sat / 100 * config.btc_fee_max_percent);
+    const uint32_t since = session.record.state_since_unix;
+    const uint32_t doublings = now > since ? (now - since) / 1800 : 0;
+    uint64_t fee = base;
+    for (uint32_t i = 0; i < doublings && fee < cap; ++i) fee *= 2;
+    return std::min(fee, cap);
+}
+
+std::vector<uint8_t> SwapChainIo::SignCounterClaim(const SwapSession& s, const SwapKeys& keys, const BtcFunding& funding,
+                                                   uint64_t fee) {
+    return SignedBtcClaim(s, keys, funding, fee);
+}
+
+std::vector<uint8_t> SwapChainIo::SignCounterRefund(const SwapSession& s, const SwapKeys& keys, const BtcFunding& funding,
+                                                    uint64_t fee) {
+    return SignedBtcRefund(s, keys, funding, fee);
+}
+
+bool SwapChainIo::CounterBroadcastMayHaveLeft(const std::string& error) const {
+    return error.find("RPC failed") != std::string::npos || error.find("already") != std::string::npos;
+}
+
+void SwapChainIo::AddCounterTowerRungs(TowerPackage& package, const SwapSession& s, const SwapKeys& keys,
+                                       const BtcFunding& funding, const BtcFeeLadderPolicy& policy) const {
+    AddBtcRefundRungs(package, s, keys, funding, policy);
+}
+
 SwapRunner::SwapRunner(SwapSession session, SwapKeys keys, RunnerConfig config, SwapChainIo& io, SwapStore& store)
     : session_(std::move(session)), keys_(keys), config_(std::move(config)), io_(io), store_(store) {
     const auto& r = session_.record;
@@ -446,7 +485,7 @@ TickReport SwapRunner::Tick(uint32_t wall_clock_unix) {
     obs.btc_mtp_unix = btc.mtp_unix;
     obs.din = din.htlc;
     obs.btc = btc.htlc;
-    const StepResult step = Step(session_.record, obs);
+    const StepResult step = Step(session_.record, obs, io_.CounterRules());
     const bool funds_btc = std::any_of(step.actions.begin(), step.actions.end(),
                                        [](const Action& a) { return a.kind == ActionKind::FundBtcHtlc; });
     if (funds_btc && config_.require_tower && !config_.use_tower) {
@@ -502,7 +541,10 @@ TowerPackage SwapRunner::MyTowerPackage(const FundingOutput& din_funding, const 
     btc_policy.min_payout_sat = offer.btc_amount_sat / 2;
     // Deterministic (fixed Schnorr aux, RFC 6979 ECDSA): rebuilding it gives the
     // exact transactions the tower holds.
-    return BuildTowerPackage(session_, keys_, din_funding, btc_funding, din_policy, btc_policy);
+    auto package = BuildTowerPackageDin(session_, keys_, din_funding, din_policy);
+    io_.AddCounterTowerRungs(package, session_, keys_, btc_funding, btc_policy);
+    VerifyTowerPackage(package);
+    return package;
 }
 
 std::optional<BtcFunding> SwapRunner::ArmedBtcFunding(const BtcWatchReport& btc) const {
@@ -595,7 +637,7 @@ void SwapRunner::SendPreparedFunding(const DinWatchReport& din, const BtcWatchRe
         const auto oid = OfferId(r.offer);
         return ToHex(std::vector<uint8_t>(oid.begin(), oid.begin() + 8));
     }();
-    if (!session_.tower_armed || !io_.TowerAcknowledged(id, session_.tower_package_hash)) {
+    if (config_.use_tower && (!session_.tower_armed || !io_.TowerAcknowledged(id, session_.tower_package_hash))) {
         if (now > r.state_since_unix + 30 * 60) {
             events.push_back("ALERT: the watchtower has not confirmed this swap; your BTC was NOT sent. "
                              "Check dinero-swap-tower, or cancel with swap.cancel");
@@ -608,7 +650,7 @@ void SwapRunner::SendPreparedFunding(const DinWatchReport& din, const BtcWatchRe
         next.btc_funding_raw.clear();
         store_.Save(next);
         session_ = std::move(next);
-        events.push_back("funded BTC HTLC (watchtower confirmed): " + txid);
+        events.push_back(std::string("funded BTC HTLC") + (config_.use_tower ? " (watchtower confirmed): " : ": ") + txid);
     } catch (const std::exception& e) {
         events.push_back(std::string("BTC funding not accepted: ") + e.what());
     }
@@ -627,7 +669,7 @@ std::string SwapRunner::ForceRefund(uint32_t now) {
     if (!btc.ok) throw std::runtime_error("Bitcoin node unreachable");
     if (!btc.funding) throw std::runtime_error("no BTC lock found to refund");
     if (btc.htlc.spent) throw std::runtime_error("the BTC lock is already spent");
-    return io_.BroadcastBtc(SignedBtcRefund(session_, keys_, *btc.funding, BtcFeeNow(now)));
+    return io_.BroadcastBtc(io_.SignCounterRefund(session_, keys_, *btc.funding, io_.CounterSpendFee(session_, config_, now)));
 }
 
 // With one chain unobservable nothing is decided or saved, but transactions
@@ -719,19 +761,6 @@ void SwapRunner::BumpOrSweepDin(const DinWatchReport& din, uint32_t now, std::ve
     }
 }
 
-// Bitcoin replaces by fee: while a claim/refund stays unconfirmed, its fee
-// doubles every 30 minutes since the state began, up to btc_fee_max_percent of
-// the amount. Derived from the persisted state, so a restart picks up where it was.
-uint64_t SwapRunner::BtcFeeNow(uint32_t now) const {
-    const uint64_t base = config_.btc_fee_sat;
-    const uint64_t cap = std::max(base, session_.record.offer.btc_amount_sat / 100 * config_.btc_fee_max_percent);
-    const uint32_t since = session_.record.state_since_unix;
-    const uint32_t doublings = now > since ? (now - since) / 1800 : 0;
-    uint64_t fee = base;
-    for (uint32_t i = 0; i < doublings && fee < cap; ++i) fee *= 2;
-    return std::min(fee, cap);
-}
-
 void SwapRunner::SetClaimSeen(bool seen) {
     SwapSession next = session_;
     next.record.claim_seen = seen;
@@ -767,13 +796,13 @@ void SwapRunner::Execute(const Action& action, const DinWatchReport& din, const 
             // to the same address must never become "the lock" for his claim.
             if (!din.funding) throw std::runtime_error("DIN lock unknown; not funding BTC");
             PinAndSave(din.funding->txid.AsUint256().GetHex(), "");
-            if (config_.use_tower) {
+            if (config_.use_tower || io_.CounterFundsByPreparing()) {
                 // Arm before funding: build and sign the funding, give the tower
-                // a package for that exact outpoint, send once it confirms.
+                // a package for that exact outpoint, send once it confirms
+                // (without a tower: send it right away).
                 PreparedBtcFunding prep;
                 try {
-                    prep = io_.PrepareFundBtc(BtcHtlcAddressFor(session_.record, config_.btc_hrp),
-                                              offer.btc_amount_sat);
+                    prep = io_.PrepareFundBtc(io_.CounterHtlcAddress(session_.record, config_), offer.btc_amount_sat);
                 } catch (const std::exception& e) {
                     // Nothing was built or sent: back to Accepted, where Bob's
                     // checks run again next tick and cancel stays possible.
@@ -797,18 +826,18 @@ void SwapRunner::Execute(const Action& action, const DinWatchReport& din, const 
                 std::copy(wire.rbegin(), wire.rend(), f.txid.begin());
                 f.vout = prep.vout;
                 f.value_sat = offer.btc_amount_sat;
-                ArmTowerWith(*din.funding, f, events);
+                if (config_.use_tower) ArmTowerWith(*din.funding, f, events);
                 SendPreparedFunding(din, btc, now, events);
                 return done("prepared BTC funding:", prep.txid);
             }
             const std::string txid =
-                io_.FundBtc(BtcHtlcAddressFor(session_.record, config_.btc_hrp), offer.btc_amount_sat);
+                io_.FundBtc(io_.CounterHtlcAddress(session_.record, config_), offer.btc_amount_sat);
             PinAndSave("", txid);  // a decoy paying the same script is not Bob's lock
             return done("funded BTC HTLC:", txid);
         }
         case ActionKind::ClaimBtc: {
             if (!btc.funding) throw std::runtime_error("BTC HTLC output unknown");
-            const auto raw = SignedBtcClaim(session_, keys_, *btc.funding, BtcFeeNow(now));
+            const auto raw = io_.SignCounterClaim(session_, keys_, *btc.funding, io_.CounterSpendFee(session_, config_, now));
             // Possibly public from the moment it is handed to the node: record that
             // first, so a crash or lost reply never reads as "the secret never left".
             const bool was_seen = session_.record.claim_seen;
@@ -816,17 +845,15 @@ void SwapRunner::Execute(const Action& action, const DinWatchReport& din, const 
             try {
                 return done("broadcast BTC claim:", io_.BroadcastBtc(raw));
             } catch (const std::runtime_error& e) {
-                const std::string why = e.what();
-                const bool ambiguous = why.find("RPC failed") != std::string::npos ||
-                                       why.find("already") != std::string::npos;
-                if (!was_seen && !ambiguous) SetClaimSeen(false);  // the node refused it: it never left
+                if (!was_seen && !io_.CounterBroadcastMayHaveLeft(e.what())) SetClaimSeen(false);  // refused: it never left
                 throw;
             }
         }
         case ActionKind::RefundBtc:
             if (!btc.funding) throw std::runtime_error("BTC HTLC output unknown");
             return done("broadcast BTC refund:",
-                        io_.BroadcastBtc(SignedBtcRefund(session_, keys_, *btc.funding, BtcFeeNow(now))));
+                        io_.BroadcastBtc(io_.SignCounterRefund(session_, keys_, *btc.funding,
+                                                               io_.CounterSpendFee(session_, config_, now))));
         case ActionKind::ClaimDin: {
             if (!din.funding) throw std::runtime_error("DIN HTLC output unknown");
             std::vector<uint8_t> raw;

@@ -156,12 +156,18 @@ TowerPackage DecodeTowerPackage(const std::string& text) {
 TowerPackage BuildTowerPackage(const SwapSession& s, const SwapKeys& keys, const FundingOutput& din_funding,
                                const BtcFunding& btc_funding, const FeeLadderPolicy& din_policy,
                                const BtcFeeLadderPolicy& btc_policy) {
+    auto p = BuildTowerPackageDin(s, keys, din_funding, din_policy);
+    AddBtcRefundRungs(p, s, keys, btc_funding, btc_policy);
+    VerifyTowerPackage(p);
+    return p;
+}
+
+TowerPackage BuildTowerPackageDin(const SwapSession& s, const SwapKeys& keys, const FundingOutput& din_funding,
+                                  const FeeLadderPolicy& din_policy) {
     const auto& rec = s.record;
     if (rec.role != Role::BtcSeller) Fail("only Bob arms a watchtower");
     const auto din_terms = MakeDinTerms(rec.offer, rec.accept);
-    const auto btc_terms = MakeBtcTerms(rec.offer, rec.accept);
     if (XOnlyOf(keys.din_secret_key) != din_terms.claim_pubkey) Fail("DIN key does not match the swap");
-    if (CompressedOf(keys.btc_secret_key) != btc_terms.refund_pubkey) Fail("BTC key does not match the swap");
 
     TowerPackage p;
     p.offer = rec.offer;
@@ -205,7 +211,13 @@ TowerPackage BuildTowerPackage(const SwapSession& s, const SwapKeys& keys, const
         }
         p.din_claims.push_back(std::move(r));
     }
+    return p;
+}
 
+void AddBtcRefundRungs(TowerPackage& p, const SwapSession& s, const SwapKeys& keys, const BtcFunding& btc_funding,
+                       const BtcFeeLadderPolicy& btc_policy) {
+    const auto btc_terms = MakeBtcTerms(s.record.offer, s.record.accept);
+    if (CompressedOf(keys.btc_secret_key) != btc_terms.refund_pubkey) Fail("BTC key does not match the swap");
     if (btc_policy.start_feerate_sat_per_vb == 0 || btc_policy.max_rungs == 0 || btc_policy.max_rungs > 16) {
         Fail("bad BTC fee policy");
     }
@@ -226,8 +238,6 @@ TowerPackage BuildTowerPackage(const SwapSession& s, const SwapKeys& keys, const
         p.btc_refunds.push_back(std::move(r));
     }
     if (p.btc_refunds.empty()) Fail("no BTC refund rung fits the fee policy");
-    VerifyTowerPackage(p);
-    return p;
 }
 
 void VerifyTowerPackage(const TowerPackage& p) {
