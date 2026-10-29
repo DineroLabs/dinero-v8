@@ -1,6 +1,6 @@
 # DIN ↔ ZEC Atomic Swaps
 
-Status: **design, owner decisions recorded 2026-10-28.** No consensus change. Milestones 3 (the Zcash transaction FFI) and 4 (Zebra watcher, deposit flow, upgrade guard) are built and tested on the swaps branch against Zebra 7.0.0 regtest; the rest is not built yet. Target release: v8.2.1.
+Status: **design, owner decisions recorded 2026-10-28.** No consensus change. Milestones 3 (the Zcash transaction FFI), 4 (Zebra watcher, deposit flow, upgrade guard) and 5 (runner, tower package, two-chain regtest) are built and tested on the swaps branch against Zebra 7.0.0 regtest. The Zcash code is linked into test tools only until v8.2.1; `swap.*` in dinerod and the dinero-swap-tower binary do not handle ZEC yet. Target release: v8.2.1.
 
 DIN↔ZEC v1 is the DIN↔BTC swap with a Zcash transparent P2SH hash-lock in place of the Bitcoin P2WSH one. The Dinero side is unchanged, and so are the roles. ZEC holders can pay in from a shielded wallet and shield again afterwards, but the lock itself is transparent. Code starts after Orchard activation.
 
@@ -141,14 +141,14 @@ ZEC is a second racing chain behind the `CounterChain` plug-in that the DIN↔ET
 
 | Area | Change |
 | --- | --- |
-| Plug-in | ZEC implements `CounterChain` with the racing flag on: after T\_zec, claim and refund can both land, as on Bitcoin |
+| Plug-in | Built as counter-chain hooks on `SwapChainIo` (runner.h) whose defaults are Bitcoin; `ZecSwapChainIo` overrides them: racing rules with the 90-minute early-refund allowance, funding prepared from the deposit, fixed fees, the may-have-left check on Zebra's messages, and the tower rung |
 | Transactions and signing | v5 transparent building, ZIP 244 sighash and t-address encoding come from the reviewed librustzcash crates (zcash\_primitives, zcash\_transparent, zcash\_address) through `rust/zcash_swap`, which becomes a dependency of `rust/orchard_backend` at v8.2.1 so the release ships one Rust static library. No hand-written BLAKE2b or v5 serialization in C++; the tree's only BLAKE2b is inside the vendored Orchard crate |
 | Lock-time model | refund treated as possible from T\_zec − 90 min; broadcast once MTP ≥ T\_zec |
-| Funding | new states for the deposit: AwaitingDeposit, DepositConfirmed; FundBtcHtlc becomes FundCounterHtlc, which sweeps the deposit |
+| Funding | No new engine states: Bob accepts only once the deposit is confirmed, so the deposit lives before the record. FundBtcHtlc means "fund the counter lock"; for ZEC it is always prepared from the deposit (expiry 0) and sent after the tower's ack, or at once without a tower |
 | Upgrade guard | at offer, accept and lock: read activation heights, refuse a window that crosses one |
 | Expiry | claims and wallet refunds carry tip + 40 and are re-signed if they expire; tower rungs carry 0 |
-| Offer format | `dinswap2o` / `dinswap2a` from DIN↔ETH with chain = zec: amounts in zatoshi (uint64), 33-byte ZEC pubkeys, N\_zec, T\_zec |
-| Record | `dinswap2r` stores the deposit outpoints, the funding transaction and the tower rung |
+| Offer format | Built: `dinswap2o` = the v1 fields plus a chain byte (Zcash = 1), so the offer id commits to the chain; Bitcoin offers stay `dinswap1o` byte for byte; N\_zec ≥ 40. The accept stays `dinswap1a`: it binds the offer id, which already names the chain. ETH will add its own v2 counter-leg fields |
+| Record | Unchanged `dinswap1r`: it embeds the offer text (now possibly v2). The prepared funding sits in the session as for Bitcoin; the tower package's Zcash section holds the lock outpoint and the rung |
 | Keys | m/SWAP'/net'/5'/i' HTLC key, m/SWAP'/net'/6'/i' deposit key |
 | RPC | `swap.*` gains `chain=zec`; `swap.status` shows the deposit address, amount due and confirmations; `swap.cancel` sweeps an unused deposit |
 | Config | `swap.zec_rpc_*` for Zebra; `swap.zec_lightwalletd` (two URLs) for phones |
