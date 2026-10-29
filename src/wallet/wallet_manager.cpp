@@ -7534,7 +7534,10 @@ bool WalletManager::RescanBlockchainImpl(int start_height, int gap_limit,
             tip_height = static_cast<uint32_t>(tip->height);
         }
         start_height = std::max(start_height, 0);
-        if (static_cast<uint32_t>(start_height) > tip_height) return true;
+        // An unavailable requested prefix is not a completed empty scan. In
+        // particular a phone may select a snapshot tip while the archival tip
+        // is still genesis; callers must not earn a recovery marker from this.
+        if (static_cast<uint32_t>(start_height) > tip_height) return false;
         if (gap_limit < 0) return false;
         auto scripts = watch_scripts();
         // Preserve existing address discovery. Issued addresses are durable
@@ -7586,9 +7589,20 @@ bool WalletManager::RescanBlockchainImpl(int start_height, int gap_limit,
                 const auto& tx = block.vtx[tx_index];
                 const std::string txid = tx.GetTxid().AsUint256().GetHex();
                 const bool coinbase = tx_index == 0;
+                std::map<std::string, int64_t> activity;
+                bool spends_owned = false;
+                const auto accumulate = [&](const std::string& address, int64_t value) {
+                    auto& amount = activity[address];
+                    if ((value > 0 && amount > INT64_MAX - value) ||
+                        (value < 0 && amount < INT64_MIN - value))
+                        throw std::runtime_error("Block rescan history amount out of range");
+                    amount += value;
+                };
                 for (size_t vout = 0; vout < tx.vout.size(); ++vout) {
                     const auto& output = tx.vout[vout];
                     if (!scripts.count(output.scriptPubKey)) continue;
+                    if (output.is_confidential)
+                        throw std::runtime_error("Block rescan confidential history unsupported");
                     if (output.value.GetUna() > uint64_t(INT64_MAX) || vout > UINT32_MAX)
                         throw std::runtime_error("Block rescan owned output out of range");
                     std::string script;
@@ -7599,6 +7613,7 @@ bool WalletManager::RescanBlockchainImpl(int start_height, int gap_limit,
                     }
                     std::string address = extractAddressFromScript(output.scriptPubKey);
                     if (address.empty()) address = "script:" + script.substr(0, 16);
+                    accumulate(address, static_cast<int64_t>(output.value.GetUna()));
                     auto row = prepare(R"(
                         INSERT OR IGNORE INTO utxos
                         (wallet_id,txid,vout,address,amount,script_pubkey,height,is_coinbase,is_spent,created_at)
@@ -7618,6 +7633,20 @@ bool WalletManager::RescanBlockchainImpl(int start_height, int gap_limit,
                 if (!coinbase) {
                     for (const auto& input : tx.vin) {
                         const auto previous = input.prevout.txid.AsUint256().GetHex();
+                        auto owned = prepare("SELECT address,amount FROM utxos WHERE wallet_id=? AND txid=? AND vout=? AND is_spent=0");
+                        checked(sqlite3_bind_int(owned.get(), 1, current_wallet_id_), SQLITE_OK);
+                        checked(sqlite3_bind_text(owned.get(), 2, previous.c_str(), -1, SQLITE_TRANSIENT), SQLITE_OK);
+                        checked(sqlite3_bind_int64(owned.get(), 3, input.prevout.vout), SQLITE_OK);
+                        const int found = sqlite3_step(owned.get());
+                        if (found == SQLITE_ROW) {
+                            const auto* address = reinterpret_cast<const char*>(sqlite3_column_text(owned.get(), 0));
+                            const auto amount = sqlite3_column_int64(owned.get(), 1);
+                            if (!address || sqlite3_column_type(owned.get(), 1) != SQLITE_INTEGER || amount < 0)
+                                throw std::runtime_error("Block rescan owned history input malformed");
+                            spends_owned = true;
+                            accumulate(address, -amount);
+                            checked(sqlite3_step(owned.get()), SQLITE_DONE);
+                        } else checked(found, SQLITE_DONE);
                         auto row = prepare(R"(
                             UPDATE utxos SET is_spent=1,spent_txid=?,spent_height=?
                             WHERE wallet_id=? AND txid=? AND vout=? AND is_spent=0
@@ -7629,6 +7658,58 @@ bool WalletManager::RescanBlockchainImpl(int start_height, int gap_limit,
                         checked(sqlite3_bind_int64(row.get(), 5, input.prevout.vout), SQLITE_OK);
                         checked(sqlite3_step(row.get()), SQLITE_DONE);
                     }
+                }
+                // Keep originating sends/self-transfers and their labels/amounts.
+                // A restored wallet without that record gets the aggregate owned
+                // net change, rather than a false incoming payment for change.
+                if (spends_owned) {
+                    auto existing = prepare("SELECT 1 FROM transactions WHERE wallet_id=? AND txid=? LIMIT 1");
+                    checked(sqlite3_bind_int(existing.get(), 1, current_wallet_id_), SQLITE_OK);
+                    checked(sqlite3_bind_text(existing.get(), 2, txid.c_str(), -1, SQLITE_TRANSIENT), SQLITE_OK);
+                    const int found = sqlite3_step(existing.get());
+                    if (found == SQLITE_ROW) {
+                        activity.clear();
+                        auto confirm = prepare("UPDATE transactions SET height=?,confirmations=? WHERE wallet_id=? AND txid=?");
+                        checked(sqlite3_bind_int64(confirm.get(), 1, height), SQLITE_OK);
+                        checked(sqlite3_bind_int64(confirm.get(), 2, uint64_t(tip_height)-height+1), SQLITE_OK);
+                        checked(sqlite3_bind_int(confirm.get(), 3, current_wallet_id_), SQLITE_OK);
+                        checked(sqlite3_bind_text(confirm.get(), 4, txid.c_str(), -1, SQLITE_TRANSIENT), SQLITE_OK);
+                        checked(sqlite3_step(confirm.get()), SQLITE_DONE);
+                    } else {
+                        checked(found, SQLITE_DONE);
+                        int64_t net = 0;
+                        for (const auto& [address, amount] : activity) {
+                            if ((amount > 0 && net > INT64_MAX-amount) || (amount < 0 && net < INT64_MIN-amount))
+                                throw std::runtime_error("Block rescan net history amount out of range");
+                            net += amount;
+                        }
+                        const auto address = activity.begin()->first;
+                        activity.clear();activity.emplace(address, net);
+                    }
+                }
+                // History shares the transaction with coins/progress. Preserve
+                // records outside this scan; this is not complete key discovery.
+                for (const auto& [address, amount] : activity) {
+                    const std::string category = coinbase ? "generate" : amount < 0 ? "send" : "receive";
+                    auto history = prepare(R"(
+                        INSERT INTO transactions(wallet_id,txid,address,amount,confirmations,category,label,time,is_coinbase,height)
+                        VALUES(?,?,?,?,?,?,NULL,?,?,?)
+                        ON CONFLICT DO UPDATE SET
+                            amount=excluded.amount,confirmations=excluded.confirmations,
+                            category=excluded.category,time=excluded.time,
+                            is_coinbase=excluded.is_coinbase,height=excluded.height
+                    )");
+                    checked(sqlite3_bind_int(history.get(), 1, current_wallet_id_), SQLITE_OK);
+                    checked(sqlite3_bind_text(history.get(), 2, txid.c_str(), -1, SQLITE_TRANSIENT), SQLITE_OK);
+                    checked(sqlite3_bind_text(history.get(), 3, address.c_str(), -1, SQLITE_TRANSIENT), SQLITE_OK);
+                    checked(sqlite3_bind_double(history.get(), 4, static_cast<double>(amount) / ConsensusSubsidy::UNA_PER_DIN), SQLITE_OK);
+                    checked(sqlite3_bind_int64(history.get(), 5, uint64_t(tip_height)-height+1), SQLITE_OK);
+                    checked(sqlite3_bind_text(history.get(), 6, category.c_str(), -1, SQLITE_TRANSIENT), SQLITE_OK);
+                    checked(sqlite3_bind_int64(history.get(), 7, block.header.timestamp), SQLITE_OK);
+                    checked(sqlite3_bind_int(history.get(), 8, coinbase ? 1 : 0), SQLITE_OK);
+                    checked(sqlite3_bind_int64(history.get(), 9, height), SQLITE_OK);
+                    checked(sqlite3_step(history.get()), SQLITE_DONE);
+
                 }
             }
             std::string error;

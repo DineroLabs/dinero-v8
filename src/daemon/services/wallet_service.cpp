@@ -593,6 +593,21 @@ bool WalletService::RecoverActiveWalletFromSnapshotIfNeeded(std::string* error, 
             return true;  // Normal full-chain node; no snapshot recovery is needed.
         }
 
+        // The legacy tail scanner reads the durable archival tip, not the
+        // selected snapshot tip. Check it BEFORE trusting an old completion
+        // marker or importing base coins (which could revive post-base spends).
+        // A snapshot-aware selected-source reconciliation must handle this
+        // mismatch; it is never a completed empty tail scan.
+        const auto selected = chainstate_->GetSyncSnapshot();
+        auto* database = chainstate_->GetChainDB();
+        const auto durable = database ? database->getTip() : StatusOr<TipInfo>(Status::Invalid);
+        if (!durable.ok() || durable->height < 0 ||
+            uint32_t(durable->height) != selected.active_tip_height ||
+            durable->hash != selected.active_tip_hash) {
+            if (error) *error = "snapshot wallet recovery requires a selected historical source; existing inventory preserved";
+            return false;
+        }
+
         static constexpr const char* kRecoveryMarker =
             "assumeutxo_wallet_recovery_base";
         const std::string expected_marker = std::to_string(base_height);

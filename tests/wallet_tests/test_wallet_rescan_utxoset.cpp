@@ -288,6 +288,8 @@ static void atomicBlockRescan() {
         foreign_coinbase.vout[0].scriptPubKey=p2tr(0x71);
         Transaction spend;spend.version=2;TxInput input;input.prevout.txid=receive.GetTxid();input.prevout.vout=0;
         spend.vin.push_back(input);spend.vout.push_back(foreign_coinbase.vout[0]);
+        spend.vout[0].value=AmountUna::Una(3000);
+        spend.vout.push_back(owned);spend.vout.back().value=AmountUna::Una(2000);
         Block second;second.header.timestamp=2;second.header.prev_block_hash=first.GetHash();
         second.vtx={foreign_coinbase,spend};
         for(const auto& [height,block]:std::vector<std::pair<int,Block>>{{1,first},{2,second}}) {
@@ -305,11 +307,14 @@ static void atomicBlockRescan() {
             check(scalar("SELECT last_scanned_height FROM sync_meta WHERE id=1")==scan &&
                   scalar("SELECT COALESCE(MAX(height),0) FROM tip")==tip && wallet.getCurrentBlockchainHeight()==height,
                   "failed block rescan preserves progress and durable/published height");
+            check(scalar("SELECT COUNT(*) FROM transactions")==0,"failed block rescan does not publish partial history");
             check(sqlite3_get_autocommit(wallet.getCurrentDatabase()),"failed block rescan releases owned transaction");
         };
+        check(!wallet.rescanBlockchain(3,0,&chain),"scan beginning above available source tip refuses instead of claiming completion");
+        unchanged();
         for(const auto& [stage,event,condition]:std::vector<std::tuple<std::string,std::string,std::string>>{
                 {"utxos","DELETE",""},{"utxos","UPDATE",""},{"utxos","INSERT",""},
-                {"utxos","UPDATE"," WHEN NEW.is_spent=1"},{"sync_meta","INSERT",""},{"tip","INSERT",""}}) {
+                {"utxos","UPDATE"," WHEN NEW.is_spent=1"},{"transactions","INSERT",""},{"sync_meta","INSERT",""},{"tip","INSERT",""}}) {
             sql("CREATE TEMP TRIGGER reject_block BEFORE "+event+" ON "+stage+condition+
                 " BEGIN SELECT RAISE(ABORT,'block stage unavailable'); END");
             // The unconditional UPDATE needs an actual earlier spent row so
@@ -343,16 +348,34 @@ static void atomicBlockRescan() {
         sqlite3_set_authorizer(wallet.getCurrentDatabase(),nullptr,nullptr);unchanged();
         check(wallet.rescanBlockchain(1,0,&chain),"block rescan complete source commits outputs and spends");
         check(scalar("SELECT COUNT(*) FROM utxos WHERE amount=5000 AND height=1 AND is_spent=1 AND spent_height=2")==1 &&
-              scalar("SELECT COUNT(*) FROM utxos")==1,"block rescan stores real confirmed spend and removes stale output");
+              scalar("SELECT COUNT(*) FROM utxos")==2,"block rescan stores confirmed spend plus owned change and removes stale output");
         check(scalar("SELECT last_scanned_height FROM sync_meta WHERE id=1")==2 &&
               scalar("SELECT scan_complete FROM sync_meta WHERE id=1")==1 &&
               scalar("SELECT height FROM tip WHERE rowid=1")==2 && wallet.getCurrentBlockchainHeight()==2,
               "block effects progress and tip committed together");
+        check(scalar("SELECT COUNT(*) FROM transactions")==2 &&
+              scalar("SELECT COUNT(*) FROM transactions WHERE category='generate' AND is_coinbase=1 AND height=1 AND confirmations=2 AND ROUND(amount*100000000)=5000")==1 &&
+              scalar("SELECT COUNT(*) FROM transactions WHERE category='send' AND is_coinbase=0 AND height=2 AND confirmations=1 AND ROUND(amount*100000000)=-3000")==1,
+              "block rescan recovers mined receipt and owned spend with exact height and amount");
+        sql("UPDATE transactions SET label='keep my label' WHERE category='generate'");
+        sql("UPDATE transactions SET address='original-recipient',label='send label' WHERE category='send'");
         wallet.open("block");
         check(wallet.getCurrentBlockchainHeight()==2 && scalar("SELECT COUNT(*) FROM utxos WHERE is_spent=1")==1,
               "block rescan reopen restores durable height and spend");
-        check(wallet.rescanBlockchain(1,0,&chain) && scalar("SELECT COUNT(*) FROM utxos")==1,
+        check(wallet.rescanBlockchain(1,0,&chain) && scalar("SELECT COUNT(*) FROM utxos")==2,
               "block rescan retry is idempotent");
+        check(scalar("SELECT COUNT(*) FROM transactions")==2 &&
+              scalar("SELECT COUNT(*) FROM transactions WHERE label='keep my label'")==1,
+              "history survives reopen and retry without duplicates or losing labels");
+        check(scalar("SELECT COUNT(*) FROM transactions WHERE category='send' AND address='original-recipient' AND label='send label' AND ROUND(amount*100000000)=-3000")==1 &&
+              scalar("SELECT COUNT(*) FROM transactions WHERE category='receive'")==0,
+              "rescan keeps originating send metadata and does not count owned change as received");
+        sql("CREATE TEMP TRIGGER reject_history BEFORE UPDATE ON transactions BEGIN SELECT RAISE(ABORT,'history unavailable'); END");
+        check(!wallet.rescanBlockchain(1,0,&chain) && scalar("SELECT COUNT(*) FROM transactions")==2 &&
+              scalar("SELECT COUNT(*) FROM transactions WHERE label='keep my label'")==1 &&
+              scalar("SELECT COUNT(*) FROM utxos WHERE is_spent=1")==1,
+              "history write failure rolls back coins and preserves existing labeled history");
+        sql("DROP TRIGGER reject_history");
     }
     fs::remove_all(dir);
 }

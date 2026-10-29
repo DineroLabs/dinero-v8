@@ -7203,6 +7203,35 @@ din::Json rpc_context_wallet_restore(const ExecutionContext& ctx, const din::Jso
         rescan_requested = params["rescan"].asBool();
     }
 
+    // A restore changes the selected wallet/seed before its legacy rescan.
+    // Refuse an unavailable historical source BEFORE those effects; returning
+    // a warning after switching wallets leaves a new partial inventory active.
+    // rescan=false remains an explicit key-import operation, never recovery.
+    if (rescan_requested) {
+        auto source = std::dynamic_pointer_cast<dinero::ChainstateService>(ctx.daemon->chainstate);
+        if (!source) {
+            result["error"] = "Chainstate service not available for wallet recovery";
+            result["recovery_required"] = true;
+            return result;
+        }
+        const auto selected = source->GetSyncSnapshot();
+        auto* database = source->GetChainDB();
+        const auto durable = database ? database->getTip() : dinero::StatusOr<dinero::TipInfo>(dinero::Status::Invalid);
+        if (source->GetSnapshotWalletRecoveryBaseHeight() != 0 || !durable.ok() ||
+            durable->height < 0 || uint32_t(durable->height) != selected.active_tip_height ||
+            durable->hash != selected.active_tip_hash) {
+            result["error"] = "Snapshot-aware wallet recovery is required; existing wallet was not changed";
+            result["recovery_required"] = true;
+            return result;
+        }
+        const auto readiness = CheckRescanReadiness(source);
+        if (!readiness.ok) {
+            result["error"] = readiness.reason;
+            result["rescan_blocked"] = true;
+            return result;
+        }
+    }
+
     result = dinero::rpc::RpcRestoreWallet(params, &wallet_service->get());
     if (!result.isMember("error")) {
         wallet_service->EnsureRuntimeWalletBindings();

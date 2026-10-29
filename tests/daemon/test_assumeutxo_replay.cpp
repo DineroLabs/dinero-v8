@@ -783,6 +783,11 @@ TEST(SelectedWalletHistory, ValidatesBeforeEffectsAndUsesOwnedBodies) {
     sqlite3_set_authorizer(wallet.getCurrentDatabase(),nullptr,nullptr);
     EXPECT_TRUE(observe.ran);EXPECT_TRUE(observe.unlocked);EXPECT_EQ(count(),1);
     EXPECT_EQ(wallet.getCurrentBlockchainHeight(),3u);
+    const auto recovered_history=wallet.getTransactionHistory();
+    ASSERT_EQ(recovered_history.size(),1u);
+    EXPECT_EQ(recovered_history.front().txid,blocks.front().vtx.front().GetTxid().AsUint256().GetHex());
+    EXPECT_TRUE(recovered_history.front().is_coinbase);
+    EXPECT_EQ(recovered_history.front().confirmations,3);
     store(blocks[0],1);
     wallet.open("selected");
     EXPECT_EQ(service.RescanWalletFromSelectedHistory(wallet,0,0,&error),std::optional<uint32_t>(3))<<error;
@@ -946,6 +951,7 @@ int main(int argc, char** argv) {
 #include "wallet_service_owner_checks.h"
 
 #include "chainstate_wallet_index_owner_checks.h"
+#include "wallet_restore_preflight_checks.h"
 
 #include "wallet_canonical_recovery_checks.h"
 #include "orchard_rpc_binding_fixture.h"
