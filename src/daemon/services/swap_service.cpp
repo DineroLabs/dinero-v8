@@ -141,6 +141,7 @@ bool SwapService::Init(DaemonContext& ctx) {
     mc.max_btc_sat = beta.max_btc_sat;
     mc.require_tower_for_bob = mc.network == swap::SwapNetwork::Mainnet;
     mc.max_din_una = beta.max_din_una;
+    mc.btc_configured = colon != std::string::npos;
 
     // Swap keys from the wallet seed at m/SWAP'/... (see swap_manager.h).
     swap::KeyDeriver derive = [&ctx](const std::vector<uint32_t>& path) -> std::optional<swap::Bytes32> {

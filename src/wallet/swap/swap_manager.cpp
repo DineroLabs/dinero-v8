@@ -302,14 +302,17 @@ void SwapManager::StartSession(uint32_t index, SwapSession session, const Bytes3
     live.store = std::make_unique<EncryptedFileSwapStore>(SwapPath(index), store_key);
     if (chain == CounterChain::Zcash) {
         RequireZec();
+        // dinero-swap-tower is Bitcoin-only: it would refuse a Zcash package and
+        // never ack, so a Zcash swap runs without it (Bob stays online).
+        rc.use_tower = false;
         const Bytes32 deposit_key =
             session.record.role == Role::BtcSeller ? ZecDepositKey(derive_, config_.network, index) : Bytes32{};
         live.io = zec_->make_io(session, rc, deposit_key);
     } else {
         live.io = std::make_unique<RpcSwapChainIo>(din_, btc_, session, rc);
+        if (tower_sink_) live.io->SetTowerSink(tower_sink_);
+        if (tower_ack_) live.io->SetTowerAck(tower_ack_);
     }
-    if (tower_sink_) live.io->SetTowerSink(tower_sink_);
-    if (tower_ack_) live.io->SetTowerAck(tower_ack_);
     live.runner = std::make_unique<SwapRunner>(std::move(session), mat.keys, rc, *live.io, *live.store);
     live_[index] = std::move(live);
 }
@@ -615,7 +618,14 @@ std::vector<SwapSummary> SwapManager::List() {
             continue;
         }
         try {
-            out.push_back(Summarize(index, LoadSession(index, *store_key), {}));
+            const SwapSession s = LoadSession(index, *store_key);
+            std::vector<std::string> events;
+            if (s.record.offer.chain == CounterChain::Zcash && !zec_ && !Finished(s)) {
+                // TickAll cannot start it: say so loudly, its funds may be locked.
+                events.push_back("NOT being watched: this Zcash swap needs a dinerod built with DINERO_SWAP_ZEC "
+                                 "and swap.zec_rpc set");
+            }
+            out.push_back(Summarize(index, s, events));
         } catch (const std::exception& e) {
             SwapSummary m;
             m.index = index;
@@ -673,6 +683,7 @@ std::vector<SwapSummary> SwapManager::List() {
             m.t_btc_unix = o.t_btc_unix;
             m.t_din_unix = o.t_din_unix;
             m.deposit_address = d.address;
+            m.deposit_offer = EncodeOffer(o);
             m.deposit_due_zat = d.amount_due_zat;
             m.deposit = d.status;
             out.push_back(m);

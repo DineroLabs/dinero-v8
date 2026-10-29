@@ -52,6 +52,7 @@ din::Json ToJson(const SwapSummary& s) {
         const bool covered = s.deposit && s.deposit->confirmed_zat >= s.deposit_due_zat;
         j["state"] = covered ? "deposit-confirmed" : "awaiting-deposit";
         j["deposit_address"] = s.deposit_address;
+        j["offer"] = s.deposit_offer;
         j["deposit_due_zat"] = Json::UInt64(s.deposit_due_zat);
         if (s.deposit) {
             j["deposit_seen_zat"] = Json::UInt64(s.deposit->seen_zat);
@@ -267,7 +268,7 @@ din::Json RpcCapabilities(const ExecutionContext& ctx, const din::Json&) {
     if (auto e = Refuse(ctx, false)) return *e;
     din::Json out(Json::objectValue);
     out["chains"] = Json::Value(Json::arrayValue);
-    out["chains"].append("btc");
+    if (SwapService::Active()->manager()->SupportsBtc()) out["chains"].append("btc");
     if (SwapService::Active()->manager()->SupportsZec()) out["chains"].append("zec");
     return out;
 }

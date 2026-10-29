@@ -283,6 +283,28 @@ private Q_SLOTS:
         QVERIFY(!box->isVisible());  // the deposit became the swap
     }
 
+    void aRestartedTabResumesThePendingDeposit() {
+        Q_EMIT rpc_->rpcResult("swaptab.caps", QJsonObject{{"chains", QJsonArray{"btc", "zec"}}});
+        auto* box = Find<QFrame>(tab_, "swapDeposit");
+        QVERIFY(!box->isVisible());
+        QJsonObject row{{"id", "7c1e9a0400000000"}, {"role", "btc-seller"}, {"chain", "zec"},
+                        {"state", "deposit-confirmed"}, {"offer", "dinswap2o0102"},
+                        {"deposit_address", "t1Y5CHzCc5pGGUJha1jJTBGFh4Qxx2evjdQ"}, {"deposit_due_zat", 250020000},
+                        {"deposit_seen_zat", 250020000}, {"deposit_confirmed_zat", 250020000},
+                        {"deposit_confirmations", 11}};
+        Q_EMIT rpc_->rpcResult("swaptab.list", QJsonArray{row});
+        QVERIFY(box->isVisible());  // no swap.deposit in this session: restored from the list
+        QVERIFY(Find<QPushButton>(tab_, "acceptDeposit")->isEnabled());
+    }
+
+    void aZcashOnlyNodeOffersOnlyZec() {
+        Q_EMIT rpc_->rpcResult("swaptab.caps", QJsonObject{{"chains", QJsonArray{"zec"}}});
+        QVERIFY(Find<QPushButton>(tab_, "chainZec")->isVisible());
+        QVERIFY(!Find<QPushButton>(tab_, "chainBtc")->isVisible());
+        QVERIFY(Find<QPushButton>(tab_, "chainZec")->isChecked());
+        QCOMPARE(Find<QGroupBox>(tab_, "swapSellForm")->title(), QString("Sell DIN for ZEC"));
+    }
+
     void spareHeightStaysBelowTheContent() {
         tab_->resize(1440, 1400);
         QApplication::processEvents();

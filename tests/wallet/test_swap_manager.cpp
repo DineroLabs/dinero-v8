@@ -638,9 +638,11 @@ struct FakeZec {
     bool upgrade_ahead{false};            // require_no_upgrade refuses
     std::vector<std::pair<Bytes32, std::vector<uint8_t>>> sweeps;
     std::set<std::string> deposit_keys;   // hex of each deposit key asked about
+    std::vector<bool> use_tower_seen;     // RunnerConfig::use_tower of each Zcash session started
     ZecSupport Support() {
         ZecSupport z;
-        z.make_io = [](const SwapSession& s, const RunnerConfig& rc, const Bytes32&) {
+        z.make_io = [this](const SwapSession& s, const RunnerConfig& rc, const Bytes32&) {
+            use_tower_seen.push_back(rc.use_tower);
             return std::make_unique<RpcSwapChainIo>(kNoDin, kNoBtc, s, rc);
         };
         z.deposit_address = [this](const Bytes32& key) {
@@ -810,3 +812,48 @@ TEST(SwapManager, CancellingAZecDepositSweepsItBack) {
     EXPECT_EQ(zb.sweeps.size(), 2u);
     EXPECT_EQ(bob.Status(d3.id).state, SwapState::Aborted);
 }
+
+TEST(SwapManager, ZecSwapsNeverUseTheBitcoinOnlyTower) {
+    TempDir da("zec_tower_a"), db("zec_tower_b");
+    FakeWallet wa{0xa1}, wb{0xb0};
+    FakeZec za, zb;
+    SwapManager alice(Config(da.path), wa.Deriver(), kNoDin, kNoBtc);
+    SwapManager bob(Config(db.path), wb.Deriver(), kNoDin, kNoBtc);
+    alice.SetZecSupport(za.Support());
+    bob.SetZecSupport(zb.Support());
+    std::vector<std::string> delivered;
+    bob.SetTowerSink([&](const std::string& p) { delivered.push_back(p); });  // a tower inbox is configured
+    bob.SetTowerAck([](const std::string&, const std::string&) { return true; });
+    const std::string offer = alice.MakeOffer(ZecRequest(), kNow);
+    bob.PrepareDeposit(offer, "tmBobRefund", kNow + 60);
+    zb.status = {2'520'000, 2'520'000, 12};
+    bob.Accept(offer, P2trAddress("rdin", 0x31), "", kNow + 120);
+    ASSERT_FALSE(zb.use_tower_seen.empty());
+    EXPECT_FALSE(zb.use_tower_seen.back());  // dinero-swap-tower would refuse a Zcash package
+}
+
+TEST(SwapManager, AZecSwapWithoutZcashSupportIsReportedAsUnwatched) {
+    TempDir da("zec_unwatched_a"), db("zec_unwatched_b");
+    FakeWallet wa{0xa1}, wb{0xb0};
+    FakeZec za, zb;
+    SwapManager alice(Config(da.path), wa.Deriver(), kNoDin, kNoBtc);
+    alice.SetZecSupport(za.Support());
+    const std::string offer = alice.MakeOffer(ZecRequest(), kNow);
+    {
+        SwapManager bob(Config(db.path), wb.Deriver(), kNoDin, kNoBtc);
+        bob.SetZecSupport(zb.Support());
+        const auto d = bob.PrepareDeposit(offer, "tmBobRefund", kNow + 60);
+        EXPECT_EQ(bob.List()[0].deposit_offer, offer);  // a wallet can resume the deposit after a restart
+        zb.status = {2'520'000, 2'520'000, 12};
+        bob.Accept(offer, P2trAddress("rdin", 0x31), "", kNow + 120);
+    }
+    // The same swaps directory under a dinerod without Zcash support (rebuilt
+    // with the option off, or swap.zec_rpc removed): it cannot watch the swap.
+    SwapManager bare(Config(db.path), wb.Deriver(), kNoDin, kNoBtc);
+    EXPECT_TRUE(bare.TickAll(kNow + 180));
+    const auto list = bare.List();
+    ASSERT_EQ(list.size(), 1u);
+    ASSERT_FALSE(list[0].last_events.empty());
+    EXPECT_NE(list[0].last_events[0].find("NOT being watched"), std::string::npos);
+}
+

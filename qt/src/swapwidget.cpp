@@ -718,9 +718,13 @@ void SwapWidget::onRpcResult(const QString& method, const QJsonValue& result) {
         return;
     }
     if (method == kCaps) {
-        zecSupported_ = result.toObject().value("chains").toArray().contains(QJsonValue("zec"));
+        const QJsonArray chains = result.toObject().value("chains").toArray();
+        zecSupported_ = chains.contains(QJsonValue("zec"));
+        const bool btc = chains.contains(QJsonValue("btc"));
         chainLabel_->setVisible(zecSupported_);
         chainPick_->setVisible(zecSupported_);
+        chainBtc_->setVisible(btc);  // a Zcash-only node (no swap.btc_rpc) cannot run BTC swaps
+        if (zecSupported_ && !btc) chainZec_->setChecked(true);
         if (zecSupported_) {
             intro_->setText("Swap DIN with BTC or ZEC directly with another person. Both sides lock coins that either "
                             "complete together or go back to their owners: no exchange ever holds your coins.");
@@ -794,8 +798,12 @@ void SwapWidget::onRpcResult(const QString& method, const QJsonValue& result) {
             };
             const QString idText = s.value("id").toString();
             const QString chain = s.value("chain").toString();
-            if (!depositId_.isEmpty() && idText == depositId_ &&
-                (state == "awaiting-deposit" || state == "deposit-confirmed")) {
+            const bool pendingDeposit = state == "awaiting-deposit" || state == "deposit-confirmed";
+            if (pendingDeposit && depositId_.isEmpty() && !s.value("offer").toString().isEmpty()) {
+                depositId_ = idText;  // after a restart: resume the deposit the node still keeps
+                depositOffer_ = s.value("offer").toString();
+            }
+            if (!depositId_.isEmpty() && idText == depositId_ && pendingDeposit) {
                 showDeposit(s);  // live confirmations of Bob's deposit
             }
             auto* id = new QTableWidgetItem(idText.left(8) + QString::fromUtf8("…"));

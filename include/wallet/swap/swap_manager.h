@@ -112,6 +112,7 @@ struct SwapSummary {
     // Bob's Zcash deposit, before he accepts (pending_deposit) and until his lock.
     bool pending_deposit{false};
     std::string deposit_address;
+    std::string deposit_offer;  // the (public) offer text, so a wallet can resume the deposit after a restart
     uint64_t deposit_due_zat{};
     std::optional<ZecDepositStatus> deposit;  // nullopt: Zebra not reachable
 };
@@ -133,6 +134,7 @@ struct SwapManagerConfig {
     uint64_t max_btc_sat{0};
     uint64_t max_din_una{0};
     bool require_tower_for_bob{false};  // mainnet beta: Bob may not accept without a watchtower
+    bool btc_configured{true};          // false: no Bitcoin node (a Zcash-only node)
 };
 
 class SwapManager {
@@ -169,6 +171,7 @@ public:
     // design starts with a testnet beta.
     void SetZecSupport(ZecSupport zec);
     bool SupportsZec() const;
+    bool SupportsBtc() const { return config_.btc_configured; }
     // Bob pastes a Zcash offer: allocates its swap index and deposit address
     // (kept across restarts). Repeating it returns the same deposit.
     DepositInfo PrepareDeposit(const std::string& offer_text, const std::string& zec_refund_address, uint32_t now_unix);
