@@ -836,9 +836,9 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_assumeutxo_forward_connect.sh)
 endif()
 
 # #353 late-import continuation: the snapshot is active before the funded
-# mnemonic is imported.  The import RPC must scan the configured V4 snapshot's
-# UTXO section after installing watch scripts; block replay alone cannot find
-# pre-base coins because their transaction bodies are absent.
+# mnemonic is imported. Missing selected history must defer without publishing
+# partial coins. The explicit authenticated recovery RPC restores the inventory
+# after creation bodies are fetched over loopback P2P, without another import.
 if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_assumeutxo_late_wallet_import.sh)
     add_test(
         NAME AssumeUtxoLateWalletImport
