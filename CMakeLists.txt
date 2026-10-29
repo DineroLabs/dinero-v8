@@ -1399,3 +1399,10 @@ option(DINERO_BUILD_ORCHARD_BACKEND "Build the staged Orchard backend" OFF)
 if(DINERO_BUILD_ORCHARD_BACKEND)
   add_subdirectory(rust/orchard_backend)
 endif()
+
+# Wallet/consensus separation gate probes (K1/W1 forced-link executables and
+# their ctests, label "separation"). Off by default; targets are EXCLUDE_FROM_ALL.
+option(DINERO_SEPARATION_GATES "Build wallet/consensus separation gate probes" OFF)
+if(DINERO_SEPARATION_GATES)
+  add_subdirectory(tests/separation)
+endif()
