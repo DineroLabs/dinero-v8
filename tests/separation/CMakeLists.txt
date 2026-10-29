@@ -96,3 +96,38 @@ add_test(NAME SepWalletFixtureCompat COMMAND ${CMAKE_COMMAND}
   -P ${CMAKE_CURRENT_SOURCE_DIR}/run_built_test.cmake)
 set_tests_properties(SepWalletFixtureCompat PROPERTIES LABELS "separation" TIMEOUT 1800
   RESOURCE_LOCK sep_build_dir)
+
+# W5 external interface freeze and regtest RPC transcript (spec section 8).
+# Baselines: interface_baseline/ (headers, JNI export list, per-platform/config
+# C-linkage symbols) and transcripts/<off|on>.json, recorded at the baseline.
+# Both tests build what they inspect first, so a stale artifact cannot pass.
+if(Python3_EXECUTABLE)
+  set(_sep_python ${Python3_EXECUTABLE})
+else()
+  set(_sep_python python3)
+endif()
+set(_sep_script_driver ${CMAKE_CURRENT_SOURCE_DIR}/run_built_script.cmake)
+
+if(TARGET nodecore_ffi AND TARGET dinero_wallet_ffi)
+  add_test(NAME SepInterfaceFreeze COMMAND ${CMAKE_COMMAND}
+    -DSEP_BUILD_DIR=${CMAKE_BINARY_DIR}
+    -DSEP_TARGETS=nodecore_ffi|dinero_wallet_ffi
+    -DSEP_CONFIG=$<CONFIG>
+    "-DSEP_COMMAND=${_sep_python}|${CMAKE_CURRENT_SOURCE_DIR}/interface_freeze.py|check|--build|${CMAKE_BINARY_DIR}|--nodecore-ffi|$<TARGET_FILE:nodecore_ffi>|--wallet-ffi|$<TARGET_FILE:dinero_wallet_ffi>"
+    -P ${_sep_script_driver})
+else()
+  # Registered anyway so the gate cannot silently vanish without BUILD_NODECORE.
+  # It fails: the FFI targets exist only with -DBUILD_NODECORE=ON.
+  add_test(NAME SepInterfaceFreeze COMMAND ${CMAKE_COMMAND} -E false)
+endif()
+set_tests_properties(SepInterfaceFreeze PROPERTIES LABELS "separation" TIMEOUT 1800
+  RESOURCE_LOCK sep_build_dir)
+
+add_test(NAME SepRpcTranscript COMMAND ${CMAKE_COMMAND}
+  -DSEP_BUILD_DIR=${CMAKE_BINARY_DIR}
+  -DSEP_TARGETS=dinerod
+  -DSEP_CONFIG=$<CONFIG>
+  "-DSEP_COMMAND=${_sep_python}|${CMAKE_CURRENT_SOURCE_DIR}/rpc_transcript.py|check|--dinerod|$<TARGET_FILE:dinerod>|--config|${_sep_fixture_cfg}|--out|${CMAKE_CURRENT_SOURCE_DIR}/transcripts/${_sep_fixture_cfg}.json"
+  -P ${_sep_script_driver})
+set_tests_properties(SepRpcTranscript PROPERTIES LABELS "separation" TIMEOUT 1800
+  RESOURCE_LOCK sep_build_dir)
