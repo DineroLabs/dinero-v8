@@ -134,7 +134,7 @@ class ExecutionExclusions(unittest.TestCase):
         self.assertEqual(status, 1)
         self.assertIn(EXCLUDED[0] + "Other", out)
 
-    def test_actual_generated_selector_guard_refuses_excluded_names(self):
+    def actual_generated_selector_guard(self):
         workflow = Path(__file__).resolve().parents[2] / \
             ".github/workflows/orchard-backend.yml"
         document = yaml.safe_load(workflow.read_text())
@@ -146,18 +146,37 @@ class ExecutionExclusions(unittest.TestCase):
         block = blocks[0]
         begin = block.index("# Refuse excluded controls")
         end = block.index("json.dump({'tests':tests}", begin)
-        guard = block[begin:end]
+        return compile(block[begin:end], str(workflow), "exec")
+
+    def test_actual_generated_selector_guard_refuses_excluded_names(self):
+        guard = self.actual_generated_selector_guard()
         for name in EXCLUDED:
             with self.subTest(name=name), patch("subprocess.Popen",
                     side_effect=AssertionError("No subprocess allowed")):
                 with self.assertRaisesRegex(SystemExit, name):
-                    exec(compile(guard, str(workflow), "exec"),
+                    exec(guard,
                          {"tests": [{"name": "Safe"}, {"name": name}]})
-        records = [{"name": "Safe"}]
+        operation_status = {"name": "OrchardOperationStatus", "properties": [
+            {"name": "RUN_SERIAL", "value": True},
+            {"name": "TIMEOUT", "value": 180}]}
+        records = [{"name": "Safe"}, operation_status]
         with patch("subprocess.Popen", side_effect=AssertionError(
                 "No subprocess allowed")):
-            exec(compile(guard, str(workflow), "exec"), {"tests": records})
-        self.assertEqual(records, [{"name": "Safe"}])
+            exec(guard, {"tests": records})
+        self.assertEqual(records, [{"name": "Safe"}, operation_status])
+
+    def test_actual_generated_selector_requires_serial_status_and_original_deadline(self):
+        guard = self.actual_generated_selector_guard()
+        for serial, timeout in [(None, 180), (False, 180), (True, 181)]:
+            properties = [{"name": "TIMEOUT", "value": timeout}]
+            if serial is not None:
+                properties.append({"name": "RUN_SERIAL", "value": serial})
+            with self.subTest(serial=serial, timeout=timeout), \
+                 patch("subprocess.Popen", side_effect=AssertionError(
+                     "No subprocess allowed")):
+                with self.assertRaises(AssertionError):
+                    exec(guard, {"tests": [{"name": "OrchardOperationStatus",
+                                            "properties": properties}]})
 
 
 if __name__ == "__main__":
