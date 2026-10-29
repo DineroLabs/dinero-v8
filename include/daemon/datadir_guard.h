@@ -3,8 +3,12 @@
 #include <filesystem>
 #include <optional>
 #include <string>
+#include <cstdint>
 
+namespace dinero {class OrchardSnapshotStore;}
+namespace dinero::p2p {class OrchardHistoryCache;}
 namespace dinero::daemon {
+class ReopenCandidateJournal;
 
 class DatadirGuard {
 public:
@@ -18,12 +22,18 @@ public:
     void Release();
 
     bool IsHeld() const { return held_; }
+    // Pinned, resolved root used to acquire the lock. Callers must use this
+    // spelling for startup/migration, not resolve an operator alias again.
+    const std::filesystem::path& DataDir() const { return datadir_; }
 
     static std::filesystem::path LockFilePath(const std::filesystem::path& datadir);
     static std::filesystem::path PidFilePath(const std::filesystem::path& datadir);
     static std::optional<int> ReadPidFile(const std::filesystem::path& datadir);
 
 private:
+    friend class ReopenCandidateJournal;
+    friend class ::dinero::OrchardSnapshotStore;
+    friend class ::dinero::p2p::OrchardHistoryCache;
     bool CheckOwnership(std::string& error) const;
     bool WritePidFile(std::string& error);
     void RemovePidFile() noexcept;
@@ -37,6 +47,7 @@ private:
     void* lock_handle_ = nullptr;
 #else
     int lock_fd_ = -1;
+    uint64_t root_device_=0,root_inode_=0;
 #endif
 };
 

@@ -47,6 +47,7 @@ void ValidationQueue::Metrics::reset() {
     blocks_validated.store(0);
     blocks_connected.store(0);
     blocks_failed.store(0);
+    blocks_retained.store(0);
     blocks_cancelled.store(0);
     total_validation_time_ms.store(0);
     total_apply_time_ms.store(0);
@@ -59,6 +60,7 @@ std::string ValidationQueue::Metrics::toString() const {
     oss << "  Validated:   " << blocks_validated.load() << "\n";
     oss << "  Connected:   " << blocks_connected.load() << "\n";
     oss << "  Failed:      " << blocks_failed.load() << "\n";
+    oss << "  Retained:    " << blocks_retained.load() << "\n";
     oss << "  Cancelled:   " << blocks_cancelled.load() << "\n";
 
     uint64_t total_val = total_validation_time_ms.load();
@@ -114,6 +116,20 @@ ValidationQueue::ValidationQueue(IConsensusUTXOSet* consensus_utxo_set, Chainsta
     worker_pool_ = std::make_unique<ValidationWorkerPool>(worker_config);
 }
 
+std::shared_ptr<ValidationQueue> ValidationQueue::CreateCanonicalOnly(const Config& config) {
+    return std::shared_ptr<ValidationQueue>(new ValidationQueue(CanonicalOnlyTag{}, config));
+}
+
+ValidationQueue::ValidationQueue(CanonicalOnlyTag, const Config& config)
+    : canonical_only_(true)
+    , config_(config)
+    , consensus_utxo_set_(nullptr)
+    , chainstate_guard_(nullptr)
+    , pending_queue_([](const std::shared_ptr<BlockValidationJob>& a,
+                        const std::shared_ptr<BlockValidationJob>& b) {
+          return a->height > b->height;
+      }) {}
+
 ValidationQueue::~ValidationQueue() {
     stop();
 }
@@ -127,6 +143,19 @@ void ValidationQueue::start() {
 
     shutdown_.store(false);
     running_.store(true);
+
+    if (canonical_only_) {
+        // The existing applier owns typed task execution, reservations, identity
+        // checks and completion. No legacy validation thread is started.
+        try {
+            applier_thread_ = std::thread(&ValidationQueue::applierThreadFunc, this);
+        } catch (...) {
+            shutdown_.store(true);
+            running_.store(false);
+            throw;
+        }
+        return;
+    }
 
     // Start worker pool
     worker_pool_->start();
@@ -160,7 +189,7 @@ void ValidationQueue::stop() {
     }
 
     // Stop worker pool
-    worker_pool_->stop();
+    if (worker_pool_) worker_pool_->stop();
 
     auto reject_outstanding = [this](const std::string& reason) {
         std::vector<std::shared_ptr<BlockValidationJob>> outstanding;
@@ -195,6 +224,18 @@ void ValidationQueue::stop() {
     };
 
     reject_outstanding("Validation queue stopped");
+    {
+        std::lock_guard<std::mutex> lock(validated_mutex_);
+        for (const auto& job : canonical_queue_) {
+            job->completion.set_value(BlockAcceptResult::Rejected(
+                BlockRejectCode::CONNECT_FAILED, "Validation queue stopped",
+                job->hash, job->height));
+            metrics_.blocks_cancelled.fetch_add(1);
+        }
+        canonical_queue_.clear();
+        canonical_reserved_bytes_ = canonical_outstanding_ = 0;
+    }
+
 
     std::cout << "[ValidationQueue] Stopped. Final metrics:\n" << metrics_.toString() << "\n";
 }
@@ -202,6 +243,7 @@ void ValidationQueue::stop() {
 // ========== Block Submission ==========
 
 bool ValidationQueue::submit(const Block& block, uint64_t height, const uint256& prev_hash) {
+    if (canonical_only_) return false;
     if (!running_.load()) {
         std::cerr << "[ValidationQueue] Not running, rejecting block " << height << "\n";
         return false;
@@ -213,6 +255,9 @@ bool ValidationQueue::submit(const Block& block, uint64_t height, const uint256&
 }
 
 BlockAcceptResult ValidationQueue::submitAndWait(const Block& block, uint64_t height, const uint256& prev_hash) {
+    if (canonical_only_)
+        return BlockAcceptResult::Rejected(BlockRejectCode::CONNECT_FAILED,
+            "Canonical-only queue refuses historical block jobs", block.GetHash(), height);
     if (!running_.load()) {
         return BlockAcceptResult::Rejected(
             BlockRejectCode::CONNECT_FAILED,
@@ -241,7 +286,77 @@ BlockAcceptResult ValidationQueue::submitAndWait(const Block& block, uint64_t he
     return future.get();
 }
 
+BlockAcceptResult ValidationQueue::submitAndWait(std::shared_ptr<const CanonicalBlockTask> task) {
+    if (!task) return BlockAcceptResult::Rejected(BlockRejectCode::CONNECT_FAILED, "Canonical block task unavailable");
+    auto job = std::make_shared<CanonicalJob>();
+    job->hash = task->Hash();
+    job->height = task->Height();
+    job->wire_bytes = task->WireBytes();
+    job->task = std::move(task);
+    auto completed = job->completion.get_future();
+    {
+        std::lock_guard<std::mutex> lock(validated_mutex_);
+        const size_t bytes = job->wire_bytes;
+        if (!running_.load() || shutdown_.load() || bytes == 0 ||
+            canonical_outstanding_ >= config_.max_queued_blocks ||
+            bytes > config_.max_canonical_wire_bytes ||
+            canonical_reserved_bytes_ > config_.max_canonical_wire_bytes - bytes)
+            return BlockAcceptResult::Rejected(BlockRejectCode::CONNECT_FAILED,
+                "Canonical block queue unavailable or full", job->hash, job->height);
+        canonical_queue_.push_back(job);
+        canonical_reserved_bytes_ += bytes;
+        ++canonical_outstanding_;
+        metrics_.blocks_submitted.fetch_add(1);
+    }
+    validated_cv_.notify_one();
+    return completed.get();
+}
+
+std::shared_ptr<ValidationQueue::CanonicalJob> ValidationQueue::popCanonicalJob() {
+    std::lock_guard<std::mutex> lock(validated_mutex_);
+    if (canonical_queue_.empty()) return {};
+    auto job = canonical_queue_.front();
+    canonical_queue_.pop_front();
+    canonical_active_.fetch_add(1);
+    return job;
+}
+
+void ValidationQueue::applyCanonicalJob(const std::shared_ptr<CanonicalJob>& job) {
+    const auto start = steady_clock::now();
+    auto result = BlockAcceptResult::Rejected(BlockRejectCode::CONNECT_FAILED,
+        "Canonical block validation failed", job->hash, job->height);
+    try {
+        result = job->task->ValidateAndApply();
+        if (((result.accepted() || result.retained()) &&
+             (result.block_hash != job->hash || result.height != job->height)) ||
+            (result.accepted() && !result.connected) ||
+            (result.retained() && (result.connected || result.relayed)))
+            result = BlockAcceptResult::Rejected(BlockRejectCode::CONNECT_FAILED,
+                "Canonical block result identity mismatch", job->hash, job->height);
+    } catch (...) {
+        // The caller receives refusal; an exception is never an acknowledgement.
+    }
+    if (result.accepted()) {
+        metrics_.blocks_validated.fetch_add(1);
+        metrics_.blocks_connected.fetch_add(1);
+        total_processed_.fetch_add(1);
+    } else if (result.retained()) {
+        metrics_.blocks_retained.fetch_add(1);
+    } else {
+        metrics_.blocks_failed.fetch_add(1);
+    }
+    metrics_.total_apply_time_ms.fetch_add(duration_cast<milliseconds>(steady_clock::now() - start).count());
+    {
+        std::lock_guard<std::mutex> lock(validated_mutex_);
+        canonical_reserved_bytes_ -= job->wire_bytes;
+        --canonical_outstanding_;
+        canonical_active_.fetch_sub(1);
+    }
+    job->completion.set_value(std::move(result));
+}
+
 bool ValidationQueue::enqueueJob(const std::shared_ptr<BlockValidationJob>& job) {
+    if (canonical_only_) return false;
     // Check queue capacity
     {
         std::lock_guard<std::mutex> lock(pending_mutex_);
@@ -345,13 +460,18 @@ void ValidationQueue::validationThreadFunc() {
 void ValidationQueue::applierThreadFunc() {
     util::SetThreadName("din-blkapply");  // #298: readable gdb backtraces
     while (!shutdown_.load()) {
+        if (auto canonical = popCanonicalJob()) {
+            applyCanonicalJob(canonical);
+            if (shutdown_.load()) break;
+            // Also service a ready historical job before another typed task.
+        }
         std::shared_ptr<BlockValidationJob> job = popNextValidatedJob();
 
         if (!job) {
             // No validated blocks, wait
             std::unique_lock<std::mutex> lock(validated_mutex_);
             validated_cv_.wait_for(lock, milliseconds(100), [this] {
-                return !validated_queue_.empty() || shutdown_.load();
+                return !canonical_queue_.empty() || !validated_queue_.empty() || shutdown_.load();
             });
             continue;
         }
@@ -533,11 +653,8 @@ bool ValidationQueue::applyBlockToChain(BlockValidationJob& job) {
             return false;
         }
 
-        // Track C: Liquidity Vault block-event hook. Drives the
-        // deposit-flow lifecycle, reorg detection, and withdrawal
-        // settlement of every account-bound deposit/withdrawal the
-        // vault is tracking. No-op when vault is disabled by config.
-        dinero::vault::NotifyVaultTipConnected(static_cast<uint64_t>(job.height));
+        // A validation-only local UTXO transition is not a durable canonical
+        // notification. The daemon worker observes the selected committed tip.
 
         // Store undo data for reorg support
         // Note: Full reorg support requires either:
@@ -623,12 +740,12 @@ std::shared_ptr<BlockValidationJob> ValidationQueue::popNextValidatedJob() {
 }
 
 size_t ValidationQueue::getQueuedCount() const {
-    std::lock_guard<std::mutex> lock(pending_mutex_);
-    return pending_queue_.size();
+    std::scoped_lock lock(pending_mutex_, validated_mutex_);
+    return pending_queue_.size() + canonical_queue_.size();
 }
 
 size_t ValidationQueue::getInFlightCount() const {
-    return in_flight_count_.load();
+    return in_flight_count_.load() + canonical_active_.load();
 }
 
 // ========== Reorg Support ==========
@@ -684,6 +801,20 @@ void ValidationQueue::cancelBlocksAboveHeight(uint64_t height) {
             } else {
                 ++it;
             }
+        }
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(validated_mutex_);
+        for (auto it = canonical_queue_.begin(); it != canonical_queue_.end();) {
+            const auto& job = *it;
+            if (job->height <= height) { ++it; continue; }
+            job->completion.set_value(BlockAcceptResult::Rejected(BlockRejectCode::STALE_REORG,
+                "Canonical block cancelled by reorg", job->hash, job->height));
+            canonical_reserved_bytes_ -= job->wire_bytes;
+            --canonical_outstanding_;
+            ++cancelled;
+            it = canonical_queue_.erase(it);
         }
     }
 

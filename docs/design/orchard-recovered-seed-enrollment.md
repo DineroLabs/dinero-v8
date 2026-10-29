@@ -1,0 +1,1609 @@
+# Orchard recovered-seed enrollment and mobile recovery
+
+## Scope and release status
+
+The next bounded native case, `NodeCoreImportedMixedForward`, extends genuinely
+earned two-store coverage106 with a canonical owned coinbase107. It requires
+automatic incremental ordinary/index delivery and a fresh normal numeric107
+read without another coverage RPC, wallet reset or injected coin. Initial66e
+execution reached real107 and correctly refused the numeric read because only
+Orchard delivery advanced; its stopped failed root and whole inputs are retained.
+The new distinct imported mixed route classifies BOTH absent baselines before
+effects; invalidated/corrupt/partial baselines refuse, never fallback. It consumes
+retained DATA only, independently authenticates origin and exact current prefix,
+recovers/rechecks the complete Orchard catalog, and pins original cohort/lifecycle
+and wallet/index/session/seed/SQL owners through actual index-first incremental
+event application and FULL ordinary commit. Both exact predecessor inventories
+are checked; no coverage/adoption/schema/coin rebuild occurs. The bounded new
+writer supports ONE contiguous Connect (or exact retry); gaps/reorgs remain
+unsupported and closed. Genuine first-store partial completion stays retryable.
+This source implementation still needs its own exact build/new-source gates;
+no passing claim is made here. Full info/snapshot and other lifecycle/device gates remain
+separate. Public schedules and all source/owner guards stay unchanged.
+
+The bounded implementation adds `wallet.orchard.enrollpreactivation` and explicit
+`wallet.orchard.recoveraccount0` for an unlocked, named recovered wallet. The
+latter requires complete authenticated retained history from activation; it is
+not yet complete phone historical recovery, seamless mobile sync, or release qualification. Public activation
+schedules and consensus rules are unchanged. Mainnet Orchard starts at H150000;
+implementation uses the selected network parameters, not a hard-coded height.
+
+The late compact-v6 source now has an explicit requested full-body download
+stage. For an intact bound unknown recovered wallet, `recoveraccount0` can
+request the buried activation catalog and sequential `MSG_BLOCK` bodies from
+activation through the locally selected tip. Each body is genuinely checked
+from the authenticated activation parent (including the first block); the
+terminal catalog must match the selected state. One session-bound flight,
+bounded ingress, timeout/cooldown, per-minute wire budget (including invalid
+bodies), disk reserve and private disk staging limit acquisition resources.
+Targets may extend only along the selected descendant branch; changed branches
+discard the unadopted source, never active ownership.
+
+Acquisition returns `complete=false`, `applied_sequence=0` and transport-only
+`history_*` progress. `history_ready` means DATA ready for a separate authenticated
+wallet scan/adoption, not recovered ownership, usable funds or a canonical
+delivery cursor. The snapshot-floor outbox remains unchanged. No catalog is
+initialized/repaired and no runtime event is fabricated for downloaded history.
+The explicit recovery RPC now separately reauthenticates ready bodies to build
+a private activation prefix, checking every genuine first-block token, domain,
+parent state and exact-wire binding. It binds the terminal prefix to the real
+snapshot-floor outbox parent, then revalidates the actual retained local tail.
+The original retained-only replay factory still refuses a missing origin.
+Prefix blocks are never encoded as events or assigned synthetic sequence IDs.
+
+Encrypted recovery staging scans the prefix with ordinary account `Advance`,
+then consumes only real local events with `AdvanceDelivery`. Each call performs
+at most 64 combined scan/delivery steps; capturing/revalidating the full source
+is additional work, not a bounded latency or RSS guarantee. The final fresh
+selected-source/session/seed/profile/SQL-generation fences and FULL atomic table
+adoption remain mandatory. Unknown/corrupt/missing catalog checks are unchanged;
+the recovered catalog stays `generated=false` and account-0-only. Uncertified
+pre-floor staging parents are not adopted as canonical event-0 undo positions.
+This respects the existing fresh-v6 import floor, and does not add an automatic
+activation floor to converted nodes or remove their activation-minus-one undo.
+
+The native fresh-v6 SDK test now recovers earlier funds and the exact memo via
+public RPC while keeping its real outbox unchanged. Cold-source retention/open,
+original assumed-mobile storage, the nonempty queued activation crossing and
+physical apps/devices remain open. This bounded positive is not release sign-off.
+
+Both apps must use `wallet.restore` to create a separate named wallet, then
+`wallet.open` to reopen it. Check the active wallet and deterministic first
+Taproot address. Never replace the generated default wallet's phrase, select a
+different seed, or weaken the seed-orphan guard. Same-seed mnemonic import remains
+idempotent, but is not the first-bind mechanism. On refused queue requests the
+apps must clear the corresponding unaccepted local request ID, without dropping
+requests that Core actually committed. No app changes are made by this Core work.
+
+## Implemented bounded enrollment contract
+
+### Current imported-input acquisition and queue scope
+
+The exact original imported activation parent now has a dedicated NEW shield
+reservation route. It does not use or relax the independently executed full
+coin view. Candidate rows remain public, unsafe DATA, not ordinary `utxos` or
+wallet/index/history readiness. The actual selected source rechecks the complete
+frozen cohort, original SQL lifecycle, PoW-selected parent/checkpoint/full forest
+and zero Orchard origin under snapshot-then-selected ownership and the actual
+lifecycle pin. Supported owned signing candidates are separately rechecked
+against seed/session, complete current/retained/pending account owners and manual
+locks. No missing catalog, orphan owner or active recovery inventory is reset.
+
+Legacy leaves do not bind creation height or coinbase status. Their snapshot
+claims are therefore only locators: the node requests the claimed creating
+historical `MSG_BLOCK` body, verifies its exact locally selected ancestor header,
+unmutated transaction merkle root, unique actual funding transaction/output and
+actual coinbase/height metadata. It also generates and verifies a CURRENT live
+membership path against the selected full forest/root, excluding deleted leaves
+and compiled rows absent from the accumulator. Maturity, supported signer,
+amount/script, money bounds and final-input rules still apply. This is proof of
+specific inputs, not independent execution or complete preactivation history.
+
+The packet-woken funding downloader has one exact connection/session flight,
+eight requested and eight volatile cached public bodies (each at most 4 MiB),
+30-second timeout, bounded 32-address cooldown and a 64 MiB/minute receive budget
+including bad bytes, with at most one bounded-body overshoot. It writes no disk,
+ChainDB, cursor, event or wallet. Stop drains it before P2P dependency destruction.
+Waiting returns `funding_source_pending`, `retryable=true`, before change issuance
+or reservation. A ready body is reauthenticated at each use; it is never a seal.
+
+A private lexical exact-input object binds the source, wallet/session and real
+ownership lifetimes through FULL atomic reservation. The original complete
+encrypted catalog writer and before-COMMIT source fences still run. Snapshot
+candidate rows are rechecked in that same wallet transaction; ordinary UTXO rows,
+even spent ones, can never be resurrected. No source token is deserialized,
+persisted or returned to callers. New queued requests publish the real prover
+job only after commit; exact retries do not issue change or requeue work.
+
+This component deliberately leaves signing/first authorization, Ready and pool
+admission on their original separate source checks. An actual imported-input
+queue is NOT the original-assumed nonempty activation crossing: completing and
+readmitting it, generic NEW compact input acquisition, other imported bases and
+physical app/device acceptance remain open. In particular, the dormant v4
+private fixture does not qualify mainnet/v5 binding or production maturity.
+The native funded output at101 is already maturity-leaf-v2 under regtest fork20.
+Its altered correct-checksum height fixture must refuse in the original full
+source audit, BEFORE discovery, not at the later creating-body checker. Separate
+pure actual-body tests exercise that comparison on a real height1 legacy leaf;
+they are not a full legacy-input imported-wallet crossing qualification.
+
+The older timed soak used three FULL producers and an empty Orchard tree; it
+stopped as FAIL_CONTROLLER_STOPPED after about20h40m, not a 72-hour pass. The
+completed short six-consumer both-profile snapshot matrix is separate evidence.
+Neither is current-source compact/nonempty/device qualification, and neither is
+resumed by this source work. Public activation schedules remain unchanged.
+
+At the genuinely empty activation parent, queue preparation uses immutable
+profile facts, not a nonexistent first event. Before a reservation or Ready
+commit, snapshot-then-selected ownership rechecks the current full/explicit-proof
+coin owner, exact profile/parent, empty source and empty Orchard namespace.
+The zero-cursor outbox still has no `after_tip`. Nonzero replay keeps the original
+actual-tip fence. No compact arbitrary-coin view is granted by this change.
+
+Empty-parent canonical recovery only restores and rechecks the complete encrypted
+catalog against the current source. It returns `NotRequired`, not an earned
+delivery prefix, and does not create or advance transparent receipts. Locked,
+missing, corrupt or foreign owners defer instead of being repaired. The native
+wrong-coin regression reaches the real selected coin refusal before reservation;
+it is deliberately not a funded wallet or queued SDK crossing acceptance test.
+
+For the independently executed full activation parent only, the configured
+legacy mobile transport is distinguished from the actual full backing. A private
+current-source check requires the exact parent, identical actual durable and
+validated tips, no assumed/snapshot/compact owner, empty Orchard namespace and
+the existing selected header/work/full-forest commitment observation. Shield
+preparation still independently replays genesis and compares every selected
+coin/legacy boundary before any writer. No flag, marker or history is promoted.
+Legacy mobile delivery is restricted to a genuinely empty log in this route;
+descendant/visited logs require their normal full or enrolled compact owners.
+The funded native SDK regression exposed the historical-only embedded mempool
+observer, which correctly refused Orchard admission. The separate SDK fix uses
+the actual immutable `MempoolTransaction` observer on both ordinary startup and
+replacement startup. Historical notifications are unchanged; Orchard notices
+include only watched visible outputs, never historical reinterpretation or a
+claim about private plaintext or balances. The pool's observer/proof/authorization
+guards remain mandatory.
+
+`NodeCoreFundedCrossing` funds a phrase-derived Taproot output with a genuinely
+signed historical transaction and ordinary wallet rescan. It restores/enrolls a
+named wallet, encrypts and actually queues/signs a shield payment, then supplies
+its real checked source proof before releasing the activation headers. It checks
+automatic same-guard SDK handoff, wallet open without phrase, no reply to queue
+RPCs during the pause, unchanged encrypted pending rows and a one-candidate
+body/proof journal. The peer cannot refill the pool after handoff; the actual
+readmitted pool must retain the transaction and serve its proof. A full native
+source really mines its confirmation; a later named restore must recover the
+earlier funds and memo. Exact-commit results and the preserved whole prior-commit
+observer-refusal negative are reported separately from draft runs. This is not
+original assumed-mobile SQL, physical app/device or release qualification. No
+failed run is relabelled as a crossing pass.
+
+After compact handoff an exact committed shield request may be returned only
+after current selected-source and complete encrypted catalog rechecks. The
+state-only empty proof capture grants no coins: a new request still cannot
+select/reserve compact inputs through this path. Already signed shield completion
+requires the actual retained pool entry's identical canonical body and nonstale,
+nonempty proof DATA. The normal compact owner freshly verifies that exact proof
+against the current selected catalog/stump and inputs; ordinary script, Orchard,
+resource, profile/session/source and FULL wallet-finalization checks still run.
+Neither cached bytes nor a previous Ready record is current coin authority.
+Missing/invalid proofs refuse without changing wallet owners or discarding the
+retained request. The extended native regression repeats the real queue/finish
+RPCs after handoff, tests conflicting requests and missing/invalid proof DATA,
+then restores the same genuine proof and continues real confirmation/recovery.
+These controls are separate from original assumed-mobile SQL integration and
+new compact input-proof acquisition, which remain necessary for full app use.
+
+The private-spend authorizer separately handles an actual inputless Orchard
+body after compact handoff. It first rejects every transparent input, then holds
+snapshot/selected ownership and enumerates the exact body to the compact owner,
+including authenticated output absences. Empty proof DATA does not grant a
+general coin view. The existing domain/activation, resource, signing, note proof,
+anchor/nullifier and selected state checks remain mandatory; full-node behavior
+keeps its ordinary full backing. The existing lexical parent preparation scope
+captures and genuinely verifies the current compact tip's inverse off-lock,
+then freshly rebinds its exact body/catalog/state/undo/MTP/source before-image
+during the mandatory selected audit. This is not a cached timestamp/capability,
+marker change or skipped inverse guard. Its missing warm lifetime is retained
+as a separate failed-source result, not relabelled as private-payment success.
+`NodeCoreCompactPrivateSend` exercises actual
+public `queuespend` and `finishspend`, not a manual proof-backed spend, using the
+funded encrypted named payer and a different-seed named recovered recipient.
+It checks idempotent queue/Ready retries, real native block105 confirmation and
+recipient funds/memo using the existing explicit `recoveraccount0` continuation
+for already-certified recovered owners. It never resets an active catalog or
+manufactures transparent wallet/index receipts: the balance's separate captured-
+source/caught-up fields remain authoritative, and mixed-wallet automatic
+readiness is not established by these Orchard-only calls. Exact pre-fix and
+fixed results remain separate. This
+does not qualify original assumed-mobile SQL, new compact transparent funding,
+unshielding/app/device acceptance or release readiness.
+
+The public bound RPC takes no birthday, height, checkpoint, network or account
+argument. The selected service obtains the profile and checkpoint. It requires:
+
+- Service and exact wallet/session lifetime ownership, no borrowed selected lock
+  or SQLite owner, and a supported scheduled Orchard profile.
+- A converged selected tip, identical durable and validated tip, authenticated
+  accumulator backing, no initial download or incomplete assumed-state history.
+  Public-network tips older than two hours refuse; regtest permits offline time.
+- A tip strictly below activation and no retained activation/outbox history,
+  including after a reorg back below activation.
+- An authenticated recovered initial seed owner and intact unknown catalog;
+  no missing/corrupt catalog repair and no replacement of generated provenance.
+- No current, retained, archived or pending Orchard owner rows. Partial or
+  malformed wallet storage refuses. No new schema is manufactured to pass.
+
+Snapshot/load and selected locks serialize the source check through a FULL
+SQLite transaction. Seed and wallet identity remain pinned until commit. An
+existing matching empty enrollment is idempotent; it does not refresh or reset
+the certificate or account state. Required-write/commit failure publishes none
+of the new provenance. No callback or network request occurs under wallet SQL.
+
+Existing `DNOAC01` generated/unknown records keep their encoding. Enrolled
+recovered wallets use `DNOAC02`, with `generated=false`, a separate provenance
+mode, and a seed-authenticated wallet/profile/checkpoint record. Its authority
+is limited to the recorded network, genesis, branch and activation rules.
+Initial PQ ownership is unchanged. Every existing inventory, retained revision,
+reservation and orphan-state check still applies. Unknown recovered wallets do
+not enroll implicitly on account creation, balance reads, signing or startup.
+Older Core versions do not understand the new catalog mode and must fail closed;
+enrollment is not a promise of wallet downgrade compatibility. Preserve backups.
+
+The checkpoint is an as-of observation, not proof of a globally latest chain.
+Header convergence and tip age are conservative liveness policies, not protection
+against every eclipse or hidden competing chain. The consensus fact certified
+is empty Orchard history through a pre-activation checkpoint. It is not a
+certificate of current balance or completed post-activation scanning. A later
+pre-activation fork cannot contain Orchard notes under the same bound rules;
+actual account state still starts at the authenticated activation parent of the
+selected replay source and follows normal connect/disconnect verification.
+
+## Retained-history post-activation account-0 recovery
+
+Completed activation-handoff startup has a distinct selected-state consistency
+capability; it does not advance the original independent validated anchor. Its
+generation/mutex/database/profile/origin/anchor checks now also guard selected
+accumulator observations, delivery-history reads and compact pool/ingress context.
+The ordinary full-store and independently replayed compact paths retain their
+validated-tip equality requirement. Exact catalog/stump/header/work/storage and
+body/proof checks remain mandatory; a matching origin row alone is not authority.
+
+The native `OrchardActivationRuntime` test cold-starts the real App twice on an
+authenticated descendant, resubmits its identical canonical body, obtains the
+public binding for its named wallet and invokes explicit account-0 recovery over
+retained local history. It preserves the original anchor and generated=false.
+This fixture does not establish phone history downloads, funds belonging to that
+phrase, queued-payment crossing or an original mobile assumed-history lifecycle.
+
+This is required for new installs, reinstalls and new phones after activation.
+Core cannot distinguish an app-generated phrase from an old recovered phrase.
+Neither case may get a trusted-empty current wallet just because it uses
+`wallet.restore` or supplies a recent birthday.
+
+The Core RPC implements the following bounded contract when its selected service
+can supply the complete activation-origin replay. It does not make missing
+historical data appear on a snapshot-only/stateless node.
+
+1. Explicit account-0 recovery reports coverage as account 0,
+   not every possible BIP32 account of the seed. Arbitrary/nonconsecutive Core
+   accounts require an explicit bounded account set or authenticated catalog
+   backup. Do not silently erase or declare recovery of unlisted accounts.
+   Account-scope expansion requires the corresponding history scan.
+2. Capture selected network/genesis/branch/activation, a validated target hash
+   and height, and the actual activation-parent hash. The empty tree at that
+   parent is the starting baseline, not the final recovery result.
+3. Scan every selected block from activation through that target, gap-free.
+   Trial-decrypt both wallet scopes locally, process all note commitments in
+   exact order, track owned nullifiers/spends and witnesses, and retain receipt
+   txids, action positions, heights, hashes, amounts and memos. Compare computed
+   tree sizes/roots with authenticated chain commitments. Reorged ancestry or
+   any missing body/proof/checkpoint refuses completion.
+4. Use a resumable encrypted disk-backed staging owner separate from the active catalog.
+   Persist verified prefixes and their identity, not a caller-chosen cursor.
+   Derive only the necessary viewing authority under a short wallet lease;
+   download/decrypt/verify outside wallet/selected locks. Encrypt sensitive
+   temporary material and keep seeds/viewing keys off remote services.
+5. Before publication, recheck wallet/session, account scope, existing DB
+   ownership and selected ancestry. Commit the recovered account snapshots,
+   scoped catalog provenance and scan checkpoint atomically with FULL durability.
+   A moved target means an explicit retry/rebase or a clearly labelled verified
+   prefix, never `caught_up=true`. Signing and spend admission retain fresh
+   selected-source checks. Process death must never expose partial recovery.
+6. A phrase recovers on-chain notes, not lost off-chain payment requests,
+   reservations, previously issued unused addresses or cross-device exclusivity.
+   Existing retained owners must be reconciled/preserved, never overwritten by
+   an empty scan. No automatic rebroadcast or reservation release follows from
+   a recovery certificate.
+
+Each call processes at most 64 delivery events after the selected source has
+been captured and verified. `complete=false` is a verified staged prefix, never
+an active wallet owner. Repeated calls resume after encrypted wallet reopen.
+`restart=true` discards only uncertified recovery cache after rechecking the
+intact unknown/empty active catalog. It never repairs missing/corrupt catalogs,
+replaces a seed, or resets an already admitted owner. Generated provenance stays
+false. `DNOAC03` binds the seed-authenticated wallet, network, activation parent,
+account 0, scanned target and delivery digest. Other accounts remain refused.
+
+Publication atomically adopts the verified encrypted staging tables with the
+catalog in one FULL transaction, after fresh selected-tip/source/session checks.
+Staging is trimmed after every bounded call to at most 256 immediate parent
+snapshots; the next 64-event chunk may temporarily add at most 64 more. The
+initial admitted owner keeps that same window. A deeper source/wallet rewind
+fails closed and requires a complete rescan source; that deep-reorg rescan path
+is still open, not silently synthesized. A retained outbox containing a deeper
+rewind is not necessarily repairable by repeating `restart=true`. Existing inventory and pending-owner checks are
+unchanged. Recovery cannot reconstruct lost off-chain requests or unused receiver
+issuance history. A complete certificate is an as-of scan, not perpetual freshness.
+
+Runtime replay capture now streams retained origin material into private disk
+storage without the former 2048-record/64MiB total-history ceilings. Branch
+metadata and cursor positions are disk indexed under a verifier-owned
+content-addressed root; original authorization/state token digests remain bound
+independently of their scratch-record storage MACs. Event/body/state/authorization
+caches and SQLite pagers remain bounded; source-page, per-record, source-head,
+ancestry, real-proof and EOF checks still apply. Disk/allocation errors refuse;
+there is no truncated-prefix success. This is not a total RSS, latency or disk
+budget certificate and does not supply missing historical material.
+
+Private source scratch spools cannot reopen after process death. The separate
+encrypted wallet staging owner can resume, but its source is rebuilt and
+reverified. Embedded stateless nodes with a borrowed real DatadirGuard also
+retain immutable PUBLIC proof/full-block bytes in `.orchard-phone-history-v1`.
+These files are not wallet completion, balances, catalogs, runtime events or
+serialized verifier capabilities. A fresh process rechecks the held root/lock,
+owned no-follow file and directory identities, one-link/read-only modes, exact
+domain/root/selected-block framing and a full bounded streaming checksum. It
+then reauthenticates the actual activation proof and every selected body through
+the existing full verifier, and checks the fresh selected target/catalog again.
+A correct cache checksum alone cannot admit even one invalid body.
+
+Retention uses exclusive partials and synced no-replace publication, with no
+overwrite/repair of conflicting or corrupt records. Ambiguous/failed partials
+remain evidence and never become a selected source. Missing cells may be fetched
+normally only when networking is permitted; corrupt existing cells fail closed.
+Proofs retain the existing one-GiB cap, individual bodies their wire bound,
+streaming uses 64-KiB chunks and writes retain a 512-MiB disk reserve. There is
+no total-history truncation or silently certified prefix. The same locked root
+is borrowed until worker shutdown; it is not reacquired while services run.
+Retention is currently POSIX-only; other platforms retain the original
+genuinely verified volatile source, not a weakened persistence implementation.
+Offline startup runs only local DATA replay, with no peer bootstrap, listener
+or network threads. The active wallet catalog and encrypted pending rows are
+never cleared to trigger a download. Source-capture latency, cumulative disk,
+total RSS and device feasibility remain unqualified; native fresh-process
+retention does not grant real-device/app acceptance.
+
+## Stateless phone: seamless transfer selected, integration unfinished
+
+At exactly activation minus one, account allocation/receiver issuance can use
+a distinct private EMPTY parent replay view, not a fabricated first delivery.
+The selected service checks the genuine zero/empty outbox (with no `after_tip`),
+empty separated Orchard namespace, actual header/work/journal, full independent
+boundary replay or the existing compact bound owner, and the retained original
+anchor/consistency rules. Snapshot replacement and selected ownership are held
+in that order through capture. Immutable profile facts are separate from events;
+`Event(1)`, bodies, authorizations and state tokens remain unavailable in this
+view. The ordinary nonempty replay origin guard is unchanged. A retained visited
+activation/undo log is replayed normally, never reset into an empty baseline.
+Wallet catalog/seed/domain/enrollment/current-and-retained-row guards remain.
+This prerequisite does not yet make a funded queued request cross activation:
+queue admission still needs an explicit EMPTY-parent current-source fence rather
+than the nonzero-cursor `after_tip` contract, plus genuine compact input proofs
+and the real named-wallet/nonempty pending-payment acceptance test. No on-chain
+funds, independent history or active account may be fabricated for that test.
+
+The owner selected automatic authenticated catalog transfer, not a manual v6
+file or a fresh-datadir reset. The new boundary wire codec pins genesis, network
+magic, branch, activation, maturity-leaf rule, selected activation parent/block,
+and a local request nonce. A bounded sequential 64-KiB page stream uses private
+MAC-checked disk staging and a complete-content digest. Completion reuses the
+existing DNORST02 verifier and configured burial depth; peer hashes and headers
+alone cannot enroll a compact owner. The first activation proof carries complete
+parent/base catalog reachability and the full activation body, not path-only
+membership or caller metadata. No new consensus schedule is introduced.
+
+Archival proof preparation now reconstructs that first block after the full-node
+tip has advanced: retained parent/base catalogs and the complete first body are
+read into a bounded private disk inventory; genuine coin/Orchard authorizations
+derive the first frontier and membership sets from the empty activation origin.
+The locally selected buried DNORST02 commitment authenticates the result. Current
+sets are not rewound/copied, and the source database is not changed. Cancellation
+is checked per source-node read and between proof phases, not during an individual
+cryptographic operation. This preparation API is not a live owner handoff or
+mobile historical source.
+
+Full, non-pruned nodes now advertise a separate catalog-serving capability and
+route `getocat`/`getocatpg` through a single bounded worker, outside peer/selected
+locks. Preparation takes a real service shutdown-use; the source/header owners
+are checked again after proof work. One immutable MAC-checked disk payload is
+shared by up to eight connection-bound nonce sessions, with at most 32 queued
+requests and one queued flight per connection. Replies retain the requesting
+connection nonce; a replacement connection cannot be selected by a delayed send.
+Malformed, foreign, unburied or unselected requests cannot start preparation.
+Failed preparation has a global one-minute cooldown. Preparation cancellation
+is cooperative at the documented checkpoints; Stop joins the worker before
+destroying its source or P2P manager.
+
+Per-peer/global serving rates are 16/64 pages per second, with an eight-GiB
+hourly global wire budget, 30-second idle/queue expiry and a 30-minute session
+lifetime. A disconnected/replaced peer cannot receive a session-bound reply;
+its idle session is discarded within the expiry window on the next work item.
+The compact snapshot load/export switch does not disable catalog validation or
+serving. These are local resource policies, not changes to consensus limits.
+The stateless daemon now schedules a separate, packet-woken download worker
+when its selected legacy tip reaches activation minus one. It waits for locally
+selected buried activation headers and a capability-negotiated archival peer.
+Peer endpoint/session/capabilities are copied together under the peer mutex;
+outbound sends pin that exact connection. The thread-affine client, receive
+queue (four packets maximum), private disk decoding and verification all stay
+on that worker, outside peer/ingress locks. A 50-ms timer drives quotas and
+deadlines independently of the general five-second scheduler. Failed addresses
+receive a one-minute cooldown (at most 32 retained entries); new flights use
+fresh OS-random nonces. Network disable, replaced/disconnected peers and lost
+selection cancel/discard the applicable flight. Stop joins before dependencies
+are released. Cancellation is checked while decoding and around complete proof
+authentication, not within an individual verifier operation. There is no new
+claim of an exact cryptographic cancellation latency.
+
+The completed immutable proof is only unpublished DATA. Its accessor checks
+local header selection again; the future closed-store converter must separately
+recheck all before-images and authenticate it. No conversion, marker, catalog
+binding, runtime event, wallet operation or validation flag is published by the
+worker. Daemon handoff and historical recovery downloads remain unfinished;
+serving/client component tests are not actual mobile crossing or phone readiness.
+
+### Embedded close/reopen host
+
+NodeCore now schedules its internal activation handoff on the existing node
+worker. The worker owns argument strings and thread-affine lifecycle receipts;
+the same real datadir guard remains held until the worker has stopped and all
+old/new services are destroyed. It detaches and revalidates a coherent
+genesis-to-burial header ancestry without retaining an old HeaderStore/forest
+reader. Proof data and a genuine drained current-pool/named-wallet receipt feed
+the existing closed-store converter and selection guards, followed by normal
+completed-root startup. The first Orchard block is not skipped or made a floor.
+
+Long wallet/pool readmission stays behind the held RPC gate. A separate short
+publication callback puts the started replacement App in the SDK and marks it
+running before opening that gate. Full journal scans/archive happen afterwards,
+not under the SDK publication mutex. An interrupted prepare/publication/Stop
+retains the selected corpus; unresolved bodies are not archived and completed
+journals are retained. Explicit startup recovers a genuine pending named-wallet
+intent on its owning worker. A fresh unused recovery shell is destroyed before
+closed filesystem recovery; binding the replacement re-applies the unchanged
+closed-receipt/readers/root checks before Init. No arbitrary capture is adopted.
+
+Public Stop declares a monotonic cancellation generation before waiting for
+the SDK mutex. The internal worker uses only try-lock publication while Stop
+may hold that mutex and join it. Failed/uncertain capture stays closed/no-reply;
+it is not permission to reset the gate or automatically retry an uncertain swap.
+Init keeps its previous unbounded phase and App Start its 30-second confirmation
+window; journal/readmission is separate bounded-corpus work. No total latency,
+resident-memory or cryptographic cancellation deadline is claimed.
+
+`NodeCoreSdkPendingReopen` exercises actual C ABI cold recovery of the named
+wallet plus publication refusal/throw/interruption controls at genesis with an
+empty pool. It is not an actual P2P activation transfer, original assumed SQL
+lifecycle, nonempty queued payment, phone history or device acceptance. Those
+must pass separately, including activation-minus-one undo/cold startup.
+
+Closed-store conversion preparation now creates a separate, private candidate
+under the same real resolved datadir lock. The source is opened read-only with
+the normal directory reservation, actual ChainDB LOCK, schema/layout and READY
+checks; source INFO logging is suppressed rather than rotating its files. A
+live source, inner symlink, foreign hardlink or substituted root refuses. Only
+an existing SST's exact retained layout-upgrade rollback counterpart may share
+its inode. No hardlinks are created for the new candidate.
+
+All original column-family rows are copied with checksums and bounded synced
+batches, then independently compared before conversion. Complete selected/buried
+DNORST02 proof, actual parent header/work/stump, full frozen legacy before-image,
+empty Orchard namespace and the original validated anchor's selected ancestry
+are mandatory. This is distinct from the original independently prepared legacy
+retirement guard, which continues to require the validated marker at the parent.
+The conversion does not advance that marker or alter lifecycle/companion files.
+
+Only the unselected candidate drops its fully parsed coin rows and adds exact
+proof/catalog nodes and a compact compatibility binding. A domain-bound origin
+record and its selection fence are written in one synced candidate batch. They
+bind the original full logical row digest, validated anchor, selected first/parent,
+parent catalog, proof and retirement. Missing/conflicting origin or selection
+never grants fresh parent authority. Every original non-coin row remains exactly
+equal; additional rows are restricted to the fully checked proof/catalog/origin
+data. Both stores remain exclusively locked during the final source/target
+inventory, physical-identity and selected-header recheck. Cancellation leaves
+only an unselected candidate, never an implicitly adopted directory.
+
+This private preparation result is NOT promotion, typed live-state consistency,
+parent/descendant service startup or SDK automatic reopen. It retains candidates
+for investigation instead of deleting/adopting them. Live selection still needs
+a durable closed-store cohort journal and full restart recovery under the same
+guard; re-enrollment must reauthenticate and require the selected origin through
+activation-minus-one undo. Actual lifecycle/queued-payment/device acceptance and
+production-scale preparation disk/RSS/latency remain open.
+
+A private activation-origin verifier now starts at the authenticated parent,
+not at the first block's already-computed snapshot state. It verifies the full
+first block and every gap-free selected-header descendant, including scripts,
+Orchard proofs/anchors/nullifiers, pool bounds, filter, stump and DNORST02 root.
+Nullifiers, anchor occurrences and catalog deltas use private MAC-checked disk
+storage; one block result is returned at a time, with no all-history body/token
+vector or duplicate historical header selector. The immutable first catalog is
+shared with a mutable delta overlay, not recopied per block. Grouped ordered
+anchor occurrences derive exact reference counts without mutable spool records.
+Each failure poisons the verifier; incomplete targets never finish. Metadata is
+copied before enrollment so external mutable aliases cannot rewrite its origin.
+This is proof/state-token construction, not canonical admission or a certified
+wallet source. Client wiring, runtime-delivery cursor binding and fresh wallet
+adoption remain mandatory. Disk/RSS/throughput/device budgets are not qualified;
+the consensus-required set digests still scan the accumulated membership rows.
+
+This transport is NOT yet client-driven atomic transition of an
+existing H149999 store, crash-safe startup recovery, or a wallet-history source.
+Those integration gates remain open. Automatic crossing may wait at the
+activation parent for the configured commitment burial. It does not require a
+user-managed snapshot, but does require an available archival peer and complete
+local authentication before crossing. Never lower burial or disable catalog
+validation to call crossing immediate or seamless.
+
+Proposed initial transport is on-demand full canonical block download from
+archival peers, not a trusted balance service. A phone need not keep history
+permanently: spool bounded verified data, update the note tree/owned witnesses,
+persist the verified prefix, then discard temporary bodies according to the
+reorg/crash policy. An HTTP gateway may transport the same bytes, but cannot
+choose a scan start, omit blocks/transactions or supply authoritative balances.
+
+Authenticate complete bodies/transaction counts and Merkle roots against the
+locally validated selected chain, enforce Orchard encoding/profile and state
+commitments, and reject gaps, duplicates, reordering and fork substitutions.
+Header PoW or a server's tip assertion alone is NOT full chain validation.
+Use the existing verified compact-state/proof owner for chain validation; its
+startup/boundary and proof-retention paths must be qualified independently.
+
+Ordinary transparent compact filters do not prove a complete Orchard scan. A
+future Orchard-specific compact protocol would need authenticated complete
+commitments, ciphertexts, nullifiers, positions and omission protection for
+every covered block. It is a separate protocol, not a shortcut assumed here.
+
+A v6 snapshot authenticates network state; it does not contain a recovered
+seed's complete historical notes/memos or prove account discovery. Availability
+of an archival provider remains necessary for this proposed scan. Missing
+providers leave recovery incomplete, with a useful error and no spend readiness.
+
+The reported stateless H149999 stop is an independent release blocker. Enrollment
+does not fix it. The historical timed soak had three full producers and an empty
+Orchard tree; its controller stopped after about 20h40m on an SSH sampling error,
+not a 72-hour pass. The owner has deferred further soak work. A separate
+completed short snapshot matrix covered both profiles on its older source.
+Neither proves an ordinary mobile install can cross the boundary. Diagnose and
+fix the actual historical-to-Orchard compact owner/validation path in a separate
+reviewed commit; test both direct boundary crossing and v6 bootstrap. Do not
+disable catalog/root validation, silently switch to trusting a server, or infer
+physical-phone viability from host/synthetic memory measurements.
+
+## Acceptance gates
+
+The owner selected automatic internal close/reopen, not an in-place raw-forest
+swap. Before it is enabled, it must preserve/reopen the active named wallet
+without importing its phrase; suppress semantic queueshield/queuesend refusals
+during the pause (retryable restarting/no reply); retain/revalidate or re-broadcast
+mempool and durable pending private payments; and pass a real activation-crossing
+regtest with a named wallet and queued payment. These gates are not yet cleared.
+
+Wallet and mempool services now offer reversible, thread-affine admission fences.
+Existing operations drain; abort resumes the same manager/pool; commit permits
+ordinary Stop with admission still closed. An inactive/foreign fence cannot read
+state and same-thread Stop requires an explicit fence decision. Existing wallet
+operations may finish lazy proof-worker setup during this reversible drain, but
+not during actual Stop. Native tests cover named-wallet fence abort/cold open
+and export/normal re-admission of genuinely accepted mixed-family candidates.
+No durable candidate journal or automatic restart is enabled by these fences
+alone; their callers must fence RPC first and persist work before commit.
+
+HTTP and the embedded RPC bridge now check a shared monotonic reopen epoch
+before and after dispatch. HTTP returns retryable -28/restarting without a result;
+the embedded bridge returns no reply (NULL), so callers retry the same request ID.
+An entire pause/abort inside a call still invalidates that call's result, including
+a transient queue refusal. A pause must start before service fences, and survive
+until the same owners resume or replacement services are fully queryable. NodeCore
+retains the gate independently of the App/context. These transport checks are
+tested with real queue names behind closed wallet/pool admission, and with a
+deterministic in-handler epoch change. They are not an automatic restart or a
+live owner install. Other transports must be stopped/drained before service
+fences (or bound to the same epoch); an HTTP/FFI pass alone does not qualify them.
+
+The reopen candidate journal is a separate prerequisite, not startup wiring.
+It captures exact public transaction and cached-proof bytes while the genuine
+pool fence and operator-root lock are held. No fee, accepted flag, ownership,
+proof-freshness or caller-supplied validity becomes restoration authority. It
+streams at most100,000 rows/1GiB, with a32MiB per-wire bound and a512MiB free-disk
+floor. The root and held lock inode, profile (including wire magic), private
+directory, no-follow regular-file/hardlink constraints and complete inventory
+digest are checked. Sealing syncs the file and directories and uses no-replace
+publication; partial/ambiguous files are retained and refuse. Opening a sealed
+journal re-establishes durability, then a full audit precedes each visitor.
+Normal canonical admission/relay must revalidate every restored candidate;
+unresolved dependencies or stale proofs remain retained, not silently discarded.
+There is no automatic consumption/deletion or direct pool insertion API.
+
+Native fixtures cover actual mixed-family candidates, cached-proof retention,
+closing/reopening the journal and lock, canonical readmission, aborted capture,
+and corrupt/profile/alias/hardlink/root-replacement refusals before visitor use.
+This is not a real cold-daemon activation crossing, power-loss matrix, mobile
+filesystem/RSS qualification or automatic mempool/pending-payment restoration.
+Windows journal capture remains explicitly unavailable/fail-closed. Private
+wallet intents stay in their existing encrypted durable queue; no mnemonic,
+password, randomized proving plan or unlock continuation is written here.
+
+The App now has an explicit orderly-reopen receipt API. It pauses RPC, fences
+wallet then pool, captures the current named wallet and durably seals the genuine
+current pool before committing closed admission. Only that private path skips
+the legacy best-effort save, which otherwise cannot borrow a closed pool. Normal
+Stop/save behavior is unchanged. Full Stop still joins old services/readers;
+the host must destroy that App before replacement Init under the same root lock.
+The receipt is not state-conversion or catalog authority. It rechecks its root
+before Init and resume; the replacement must be a fresh started App on the same
+RPC epoch. Init, including failed Init cleanup, preserves the inherited gate.
+Resume uses normal named-wallet open without a phrase/unlock bypass and normal
+canonical proof/body admission with a distinct core-reopen origin. Unresolved
+candidates remain retained. Successful resume alone releases RPC; abandoning an
+irreversibly committed receipt stays paused/fail-closed. An SDK caller may retain
+a shared pause across its publication-mutex/App-move gap so an aborted capture
+does not unpause before the SAME App is republished.
+
+The real linked CoreOrderlyReopen fixture closes and destroys one App, starts a
+fresh App with that receipt, checks paused queue calls return retryable -28, and
+opens the named wallet without its phrase. It is a sequential native host fixture
+with an empty pool at genesis: NOT the automatic NodeCore worker, activation,
+nonempty private queue/mempool, authenticated catalog conversion or phone-history
+acceptance. The required real queued-payment activation crossing remains open.
+
+An orderly close now durably selects exactly one current journal and named
+wallet before committing Stop. Only the private fresh-capture path may select
+this lifecycle intent; opening old candidate files grants no such permission.
+The bounded control record binds the journal's profile/root inode/nonce and
+full-corpus footer digest, the wallet name, and its own checksum. No seed,
+password, private payment plan or chainstate authority is added. Root/lock
+ownership, no-follow/regular-file/owner/mode/hardlink checks, full journal audit,
+synced writes and no-replace publication remain mandatory. RPC is irreversibly
+latched closed before intent publication starts. Partial or ambiguous control
+names refuse; no automatic cleanup or overwrite is permitted. Unselected sealed
+captures remain diagnostic evidence, not automatic rebroadcast permission.
+
+Pending read opens only that exact journal; it never scans for a newest capture.
+After all candidates resolve through normal canonical admission, completion
+archives the control by no-replace publication and keeps the original corpus.
+Unresolved candidates retain the pending selection and block another close from
+overwriting it. The App receipt checks the intent before replacement Init and
+resume. This adds durable identification, not a completed cold-process/SDK
+recovery worker or a power-loss qualification. Those paths must recover only a
+valid selected intent and keep RPC closed until the named wallet and canonical
+readmission are ready; they may not adopt a live pause token or reset an epoch.
+
+The explicit fresh-App `PreparePendingReopen` host API now opens that selected
+intent before Init, binds its receipt to this replacement instance, and retains
+the same locked root/RPC gate. It does not enroll a catalog or state owner. It
+requires a never-initialized App; ordinary active or stopped-old Apps cannot use
+it to skip teardown. Missing intent returns null without changing RPC; malformed
+or ambiguous controls refuse. The host still must destroy every old service and
+reader before replacement initialization. This API is not yet invoked by an
+automatic NodeCore worker or general SDK startup.
+
+The RPC epoch now distinguishes OPEN, HELD and abandoned UNOWNED states. Every
+state transition is monotonic: no reset/ABA, recovery of a live HELD token, or
+generation wrap is permitted. Dropping an irreversible receipt changes HELD to
+UNOWNED without admitting RPC. Only the intent-checked host path may acquire a
+replacement token, which also remains closed on abandonment. Normal abort still
+resumes the same owners. A real linked native host fixture exercises both an
+abandoned same-process receipt and complete original driver exit followed by a
+fresh driver reopening the named wallet without a phrase. These remain genesis/
+empty-pool fixtures, not activation, nonempty pending payments or device tests.
+
+The App host can now prepare normal named-wallet binding and canonical
+proof/body readmission separately while keeping RPC closed and the complete
+selected durable candidate intent untouched. The receipt is bound to that
+replacement App, not transferable to another live instance. An abandoned
+prepared replacement may stop and exit; fresh intent-checked recovery retains
+the wallet name and public corpus. Preparation never archives the corpus,
+opens the gate, converts a store or caches transaction validity. Direct-App
+completion still redoes current-owner binding and normal admission before its
+existing archive/resume. This is not a short SDK publication primitive: the
+automatic worker still needs checked publication/publicStop ordering, and
+must not open the gate while its replacement App is unpublished. Native
+genesis/empty-pool tests cover prepare/completion and complete host exit/fresh
+host recovery, not real queued payments across activation or SDK concurrency.
+
+Owner decision: automatic crossing must retain H149999 (activation minus one)
+as an available compact undo/cold-reopen state. It may not silently establish
+H150000 as the snapshot/reorg floor. The activation-parent proof, original
+before-images, genuine first-block validation, canonical undo and runtime event
+must therefore survive first connect, disconnect, cold reopen and reconnect.
+This remains separate unfinished owner-install/startup work; none of the
+generic reopen APIs or transfer codec grants that state-conversion authority.
+The private store now has a separate read-only activation-parent re-enrollment
+factory: it authenticates a selected/buried joint-activation transfer proof,
+requires an already compact/quiescent store at activation minus one, checks its
+exact retained catalog and every reachable parent node, stump/header/work/forest
+marker, complete frozen legacy before-image and empty active Orchard namespace,
+and rechecks header selection/burial across private enrollment. Full-storage
+guards and the original fresh-only v6 importer are unchanged. It installs no
+snapshot base, fake empty Orchard state, proof chunks, tip or validation marker,
+does not convert a full/assumed store or publish graph/readers, and cannot restore
+a descendant through the parent route. The first connect still uses the normal
+writer's authorizations, root checks, actual nullifier owners, undo and outbox;
+inverse removes the first active state and permits parent re-enrollment after a
+database close/open. The host still must retain/authenticate proof data for cold
+startup and implement atomic closed-store conversion/activation routing. This
+factory alone is not the seamless protocol or a live App crossing qualification.
+
+A separate private activation-proof data cache now retains canonical proof
+bytes in bounded immutable, synced ChainDB chunks before atomically publishing
+an immutable descriptor keyed by the exact first-block hash. It has no mutable
+"latest proof" selector. The descriptor pins wire magic and the consensus
+profile, exact first/parent hashes, size and full canonical-stream SHA256.
+Reads decode into disk-backed node storage and rerun complete selected/buried
+DNORST02 authentication; the digest and local descriptor alone never authorize
+state. A quiescent host can discard its original proof object, close/open the
+database and recover the data without manufacturing a snapshot base or skipping
+the first block. Retaining it does not convert full/assumed storage, publish a
+compact owner, change lifecycle/history validation flags, or start services.
+Cancelled unselected prefixes may resume only with identical bytes; completed
+missing/corrupt/conflicting chunks and wrong profile descriptors refuse without
+repair. Root ownership and writer lifetime remain the caller's responsibility.
+The per-proof format ceiling and free-space floor do not qualify repeated
+branch-cache quotas, crash/power-loss behavior, large-state memory or device
+performance. Host scheduling, durable closed-store conversion, startup routes
+and automatic SDK/P2P/history integration remain unfinished.
+
+The historical attempted 72-hour private soak used three full producers on an
+older pinned source with an empty Orchard tree. Its controller stopped after
+about 20 hours 40 minutes due to an SSH sampling failure; it is not a 72-hour
+pass. The earlier short six-consumer matrix covered both v6 profiles separately.
+Neither qualifies compact/nonempty/current-source operation. The owner has
+prioritized integration and acceptance; no new soak is being started here.
+
+The thread-affine catalog download actor now handles one capability/connection/
+nonce-bound flight, sequential disk-backed pages, a single identical page retry,
+16 requests/second, an 11-minute initial manifest wait (server preparation is
+bounded to 10 minutes), a 30-second page idle and 45-minute total flight, cancellation
+and a conservative free-disk check before staging. It authenticates completion
+with the existing full DNORST02 verifier and yields only an immutable unpublished
+section. The host must serialize calls on its owner worker, use a real steady
+clock, enforce cross-attempt cooldown/peer rotation with fresh nonces, and drain
+that worker before teardown. Foreign nonce/transfer-ID late replies on the same
+connection do not acknowledge or extend a flight. Matching-flight corruption
+still fails. Verification itself is not asynchronously interruptible.
+The actor and bounded packet-woken daemon client host are now wired at component
+scope, including connection-bound capabilities/sends, peer rotation and Stop
+cleanup. The generated-page roundtrip uses in-process transport; it does not
+prove real network activation crossing, live-owner installation or complete
+phone history downloads.
+
+SDK store ownership now acquires the daemon's real datadir guard before Init,
+pins the resolved operator root through all arguments and DaemonApp, and holds
+the guard until the worker, services and database have closed. The persistent
+maintenance fence is checked both before lock acquisition and on that pinned
+root. Native executable tests exercise root-lock contention through alias and
+resolved paths and release after completed stop. This prerequisite does not
+itself install a catalog or qualify iOS/Android filesystem behavior.
+
+The SDK now opts into the existing reviewed separated-layout upgrade under that
+guard, including stateless profiles. A brand-new scheduled store first runs an
+offline genesis bootstrap under the same lock, persists its real cohort, closes
+all stores, then performs the ordinary copy/verify/swap before the real Init.
+Existing stores skip the fresh bootstrap. The migration engine, original LOCK,
+checksums, synced writes, cohort checks, no-follow/inode/hardlink rules, space
+budget and interrupted-swap handling are unchanged. Refusal still keeps legacy
+storage and reports inability to follow Orchard; it grants no compact owner.
+Native tests cover fresh and existing SDK stores, seed-row preservation, cold
+reopen and the inner-symlink refusal. The shared lock uses real flock on iOS too;
+only unavailable libproc process-name diagnostics use the pre-existing
+conservative live-PID fallback. This is not a framework or device qualification.
+
+## Closed-store authenticated activation handoff
+
+Preparation makes an exclusive unpublished READY candidate under the same real
+datadir guard, keeping actual source/candidate DB locks. It copies all column
+families in bounded checksummed, synced batches, verifies complete ordered row
+digests, retains/rechecks the selected buried activation proof, and removes coins
+only from that candidate. Full legacy before-images and the original validated
+marker/history obligation remain unchanged. Origin/selection metadata is DATA,
+not proof that assumed prehistory was independently executed or a compact owner.
+
+Durable selection additionally requires a checked revocable borrow of a genuine
+Core lifecycle receipt after all old App readers have been destroyed. The borrow
+expires with the receipt and refuses foreign threads, resumed phases and live
+replacement Apps. A read-only storage library cannot fabricate this borrow.
+The immutable selection control binds the exact root/directories, source and
+candidate physical inventories/logical digests, origin/proof/profile, nonce,
+selected public-candidate journal and named wallet. Kernel no-replace renames
+retain the original store at its exact recorded backup name before selecting
+the candidate at the canonical name. Every phase is synced and re-audited; a
+separate immutable completion record binds that exact intent. Recovery follows
+only the explicit intent and exact directory shapes, never a prefix scan or the
+newest abandoned candidate. Broken symlinks, extra links, corrupt/foreign
+controls, ambiguous partial publications, changed stores or moved selection
+refuse without deleting evidence or guessing a repair. Cancel after durable
+selection keeps RPC paused and both stores retained for checked recovery.
+
+These mechanisms are private closed-store components. Generic startup refuses
+selected/partial handoff controls before opening/repairing/creating a ChainDB;
+dedicated authenticated parent/descendant startup and typed selected-state
+consistency still need integration. Selection does not change validated markers,
+publish a service, grant a writer or open RPC. Component tests combine real
+EMPTY-GENESIS named-wallet lifecycle receipts with a separate offline authenticated
+activation-parent fixture. They are not the real activation with queued payment,
+whole assumed-state lifecycle, SDK automatic worker, complete phone recovery,
+physical device or crash/power-loss acceptance gates.
+
+The handoff candidate now also retains the exact minimal genesis-to-configured-
+burial header closure. Header-first sync has a separate HeaderStore, so a source
+ChainDB need not already contain ahead-of-body headers (or every pre-base raw
+header). The converter reads a captured hash-linked ancestry in 256-row batches
+into a bounded-pager, private MAC disk spool in the app workspace, then runs a
+fresh HeaderChainSelector forward from compiled genesis and checks every exact
+height/work/header encoding. Only missing raw header rows are added; conflicting
+original rows refuse. No active height index, body/undo locator or CHAIN/SCRIPTS
+metadata is manufactured. A synced immutable descriptor pins profile, magic,
+first block and exact configured-burial target. Checksums stay on, source rows
+stay unchanged, and the scratch/write batches periodically retain a free-space
+floor. This is not a production-scale CPU/RSS/disk measurement.
+Header values stream once from the checksummed CF into a bounded-batch private
+MAC cache; ancestry reads do not repeatedly materialize a giant cached SST.
+Cache absence never authorizes a write: missing-row additions recheck the actual
+exclusive DB, and the final whole-store before-image audit remains mandatory.
+
+Cold recovery may reconstruct a fresh selector from those retained bytes when
+the old in-memory selector is gone, then reauthenticate the complete DNORST02
+proof before finishing the explicitly selected filesystem transaction. That
+closure is an as-of-intent header view, not proof of globally latest work and
+not live state/owner authority. Dedicated startup must still merge/recheck
+current stored header branches before enrolling any compact owner. Missing,
+corrupt, wrong-work or conflicting header data refuses without repairing the
+original store. Native tests discard proof/selector inputs in the same process;
+they do not establish fresh-process crash recovery or phone/App acceptance.
+
+The selected activation-parent route now has a private existing-layout writable
+open and a distinct typed state-consistency owner. It requires the genuine closed
+lifecycle receipt and retained root, completed exact filesystem selection, current
+branch-preserving HeaderStore selector, complete DNORST02/burial verification,
+all original rows/before-images and the exact candidate logical baseline. The
+retained original is rebound read-only under its backup name before opening the
+new live writer: process lock registries must not retain the old live pathname.
+No create, schema append, migration, lock retry or generic startup-fence bypass
+is exposed. Once a completed baseline has been privately opened, LOG rotations
+may change physical file metadata; cold parent reopening still checks the entire
+recorded logical baseline, original immutable inventory, layout and inner paths.
+This parent-only route refuses mutated descendant/post-undo baselines until their
+dedicated full suffix startup audit is implemented; it never guesses a repair.
+
+The typed consistency owner pins the actual database open generation, writer
+mutex, full existing validation fingerprint, origin/selection and original
+independent-history anchor. Compact connect, disconnect, retirement staging,
+pool input capture and pre-commit readiness use this SAME authority. Real tip,
+forest, active height, frozen legacy, authorizations, sets, body/index/undo,
+catalog and delivery checks remain mandatory. The validated marker is neither
+advanced nor rebased by this route. Missing/corrupt/changed origin or anchor,
+foreign/reopened engine or profile changes refuse; a decoded row cannot mint
+the type. Historical pre-activation writers may not consume it. Default full/
+independent staging retains its previous validated-tip rule. The shared profile
+and error definitions were extracted without changing their token sequence.
+Native tests compose an empty-genesis named-wallet lifecycle receipt with an
+offline authenticated parent, execute first/second compact connects and undo,
+and exercise cold parent open/refusals. This is not automatic App/SDK activation,
+queued-payment survival, descendant cold startup, complete phone history,
+fresh-process crash, physical device or release qualification.
+
+The private suffix DATA audit now revalidates every selected mixed body from
+the authenticated activation proof, including the first block's authorizations,
+state and catalog. A scratch byte oracle stages only those verified Orchard and
+retirement transitions: it has no tip, validated marker, forest, independent
+replay capability or publication owner. Entire `O1` and `R1` namespaces are
+compared, including nullifier **owners**, anchor references and undo, rather than
+only committed set digests. The audit also checks exact embedded/archive bodies,
+undo locators, deltas, filters, transaction indexes, commit journals, reachable
+catalog nodes, full frozen legacy contents and local outbox framing/continuity.
+Checksummed node iteration into private MAC disk staging and a disk-backed seen
+set avoid per-node source-SST reads and an unbounded resident tree walk. Batches,
+free-space and cancellation checks are not a production latency/RSS guarantee.
+No total 2,048-event or 64-MiB historical replay ceiling is reinstated.
+
+Existing parent handoff opening consumes this audit while retaining all its
+original immutable source/cohort/name/receipt/before-image checks. Same-process
+tests additionally close/reopen an actual descendant or undone-parent database
+read-only and exercise wrong-owner, orphan-row, bad-delta, missing-body and
+cancellation refusals without repair or writer publication. The DATA return is
+not completed-root/current-before-image or lifecycle authority. Descendant and
+post-undo **writer/DaemonApp/SDK startup** still require their dedicated routing
+and full original/current before-image audit. Local delivery hash-chain checks
+alone are not adversarial authentication or a first-runtime-event certificate.
+No actual queued-wallet crossing, restored-phone or device acceptance is implied.
+
+The parent opener additionally authenticates the delivery suffix from the actual
+immutable original store's outbox head. A private disk-backed replay validates
+each genuine connect and checks disconnect against checkpoints captured only by
+those validations, including exact bodies, Orchard state, conventional undo and
+branch MTP answers. Immutable anchor/nullifier occurrences are filtered by the
+replayed branch ancestry, so undo/reconnect does not accumulate stale members.
+Owned content-addressed checkpoint roots bind metadata independently of scratch
+MAC records; decoded spool material cannot construct a sealed validation result.
+The final selected state/catalog must match the complete replay. A locally
+reframed event checksum is not enough. No first cursor or independent anchor is
+fabricated, no canonical rows are repaired, and the replay returns DATA only.
+Actual close/read-only-reopen and local-checksum-valid false-MTP cases are
+component controls, not normal descendant/post-undo writer/DaemonApp startup.
+That route still requires an exact full original/current row audit, including
+retained records from undone branches, before a writable owner can be published.
+
+The unpublished conversion now uses one private deterministic parent-copy builder,
+also suitable for reconstructing the exact selected before-image during cold
+auditing. It creates its own exclusive destination, pins its inode before opening
+an engine, checksums and copies every original column-family row in bounded synced
+batches, parses every removed coin, and stages the same proof/header/catalog/origin
+encodings. The actual root/source fence still runs before the final synced choice.
+It cannot reuse or clear a caller-supplied engine. Tests reconstruct through cold
+retained headers and compare every row, retain unknown original metadata, reject a
+wrong source digest or cancellation before creation, and preserve missing choice
+rows if the final fence refuses. This builder is DATA copying, not a state owner,
+normal descendant startup, lifecycle recovery or permission to replay a capture.
+
+The private handoff opener now also reconstructs the exact converted parent
+from the immutable original and retained as-of-intent headers. Its whole-row
+digest must match the recorded selection. Authenticated actual delivery events
+then drive the same canonical compact connect/undo writer in an exclusive
+scratch engine. The scratch policy can read only retained body/undo archives;
+missing locators refuse instead of appending to the real archives. A scratch
+selected-consistency owner is private, bound to that engine, never published and
+never presented as independent execution of pre-activation history.
+
+The expected engine retains canonical rows from undone blocks as well as the
+active branch. Every CF name/key/value is compared, including unknown original
+metadata and non-Orchard namespaces. Only the canonical tip receipt's wall-clock
+timestamp is normalized, after exact parsing, canonical re-encoding and matching
+hash/height/work. No mutable prefix is exempt. This is required by the existing
+parent handoff opener; normal descendant/post-undo daemon startup and SDK/phone
+acceptance still require their separate completed-root and service routing.
+
+Normal completed-root startup is now a separate path from unfinished PUBLIC
+reopen-intent recovery. The same real datadir guard pins the recorded completed
+choice and retained original directory/cohort. Stores open read-only first;
+current HeaderStore branches and retained raw headers are independently checked
+before the complete before-image/suffix audits. Only then may an existing-layout
+writer reopen the same selected DB, recheck logical rows and source/root identity,
+and bind a new generation/mutex-specific selected-origin consistency owner.
+Normal startup does not fabricate a closed lifecycle receipt or replay a stale
+capture. A still-pending wallet/pool intent is recovered separately by its host.
+
+The service preserves original prehistory flags and validated anchor instead of
+passing them through the independent-replay equality branch. Its header/index,
+boundary, inverse proof and delivery admission use the distinct bound capability;
+delivery starts from the actual immutable original head, including nonzero or
+empty heads, never a fabricated first-block cursor. Existing full/fresh/snapshot
+and independent-replay guards remain strict for their original owner types.
+An ordinary closed node's canonical persisted pruning policy must be present in
+the before-image. Missing/noncanonical policy refuses before writable startup;
+it is not seeded during restart or exempted from whole-row comparison.
+
+The real-process regression uses fixed test-only parameters and fixture-host
+conversion, then actual production DaemonApp/ChainstateService startup in fresh
+processes. It covers descendant, post-undo and activation-parent states, two cold
+starts each, unchanged original stores/anchor and normal named-wallet opening
+without a phrase. Added-row, changed-original, advanced-anchor, aliased-control
+and absent-policy roots refuse. The queued corpus is empty: this does NOT satisfy
+the real named-wallet/queued-payment crossing, restored-wallet earlier-funds,
+original mobile assumed-history lifecycle, SDK worker or physical-device gates.
+Existing strict wallet-index assumed-history checks are not erased to pass it.
+
+Mutation controls are recorded separately from the earlier positive receipts.
+The original parent-reopen case survived a disabled consistency check; transition
+and engine-reopen cases detected it. The parent case now additionally substitutes
+a validly encoded, paired foreign origin and advances the independent anchor,
+requiring refusal without writes and successful capture again after each test
+restoration. Isolated origin/anchor, generation and disabled-check mutants must
+be paired with the unchanged/restored check before claiming mutation coverage.
+These test-only substitutions never change release guard code or installed data.
+
+- Existing unknown/missing/corrupt/untracked catalog and seed-replacement
+  refusals remain negative. New enrollment tests cover atomicity, source gaps,
+  borrowed owners, reopen and actual funds received across activation.
+- Post-activation positive: a fresh named wallet restored after activation finds
+  funds shielded earlier to account 0, including memo and spent-note handling;
+  matches the original wallet, can spend, and survives two cold restarts.
+- Android `OrchardWalletLiveRegtestTest.appRecoveryPhraseBinding_*` is an
+  acceptance check, not currently satisfied by the enrollment-only commit.
+  Run an equivalent iOS app-generated-phrase path, not a Core-generated wallet.
+- Missing/tampered/forked/omitted scan data, wrong profile/seed/session, concurrent
+  source movement and interrupted publication must fail closed without changing
+  existing owners. Qualify new install, reinstall and second-device recovery.
+- Demonstrate real stateless boundary sync and authenticated historical recovery
+  on physical iOS and Android devices with measured disk, RSS/footprint,
+  background suspension and interrupted restart behavior. No device authority
+  or device success is implied by this plan.
+
+If only enrollment is shipped, release notes must explicitly exclude
+post-activation new-install/phrase-only recovery. Even pre-enrolled private
+payments cannot be advertised on mobile until the H149999 sync blocker and
+actual app/device gates pass. The November 2 go/no-go remains independent.
+
+### Embedded catalog staging root regression
+
+The catalog download host must use `ConfigService::DataDir()`, which is bound to
+the operator root by normal startup. The legacy `GetConfig().datadir` may be
+empty in the embedded process; an empty path prevents the download actor from
+starting even with eligible peers and locally selected activation headers.
+This path selection does not authorize a store or change transfer verification.
+
+`NodeCoreActivationWire` compiles the actual SDK worker with a fixed, native-test-
+only private regtest profile selection. It drives a real loopback peer, nonce-
+bound catalog pages, the SDK's own orderly handoff, normal replacement startup
+and named-wallet reopening without a phrase. Its exact pre-Orchard source comes
+from independent execution with genuine historical undo/delta/checkpoints; the
+visited proof-producing fixture is preserved separately. No lifecycle receipt,
+ready proof, first event, replay authority or accepted owner is injected.
+The test also observes no reply from queue RPCs during the real pause. After
+publication, the untrusted peer serves the requested full `MSG_BLOCK` bodies
+for activation and its descendant. The actual queue validates and connects
+both; no first runtime event or cursor is injected. A newly restored named
+wallet then uses the public account-0 recovery RPC to find the earlier private
+funds and exact 512-byte memo, remains `generated=false`, encrypts and passes a
+normal SDK cold reopen and wallet open/unlock without re-entering the phrase.
+
+This is a short activation-origin download into retained authenticated history,
+not a fresh late phone at a post-activation snapshot floor. Original mobile
+assumed-history/SQL readiness, detached activation-to-tip historical backfill
+for that late phone, nonempty queued-payment crossing, physical-device and
+release acceptance remain separate gates. The original parent-only receipts
+remain scoped to their original source and are not relabelled by this test.
+
+The first actual full-body SDK cold-reopen regression also caught a missing
+proof lifetime lookup: a single compact extension retained its genuine bound
+validation, but transition completion could only find the old-tip inverse or
+the multi-block branch proof. Its final audit consequently deferred, leaving
+the activation recovery marker behind despite the committed tip. Completion
+now exposes that same immutable extension proof to the existing strict inverse
+audit, with source/database/storage/thread/profile/body/selected-tip binding.
+No parent rebind is attempted after commit, no audit is skipped, and no startup
+marker is deleted as a workaround. Failed input roots and their marker remain
+preserved separately.
+The first-block extension also captures canonical empty logical-set hashes from
+the checked empty separated namespace, not a zero-initialized digest struct.
+The shared reader refuses existing state or any untracked Orchard namespace
+row; this does not certify wallet history or independently executed prehistory.
+
+### Imported activation-parent conversion (bounded source component)
+
+A real legacy snapshot import may select the activation parent while its
+durable engine and independently validated anchor remain at genesis. Conversion
+must not rewrite that original store or call those histories independently
+executed. The closed-store checker now distinguishes this **exact imported
+activation-parent** cohort from the existing canonical-parent cohort. Older
+imported bases or partial forward histories still refuse pending their own
+authenticated reconstruction; this is not all-mobile readiness.
+
+The imported route reauthenticates the locally selected buried catalog proof,
+exact frozen base, checksummed full forest checkpoint and complete frozen coin
+coverage against the parent catalog, including old-height metadata. Every
+original active coin must be an exact compiled-genesis record in that frozen
+cohort. Legacy OP_RETURN rows remain in the frozen before-image but grant no
+live coin authority. The entire frozen legacy tree/nullifier/anchor state must
+match the proven retirement before-image. The ordinary actual-parent and
+independent prepared-retirement checks are unchanged for their original paths.
+
+Only the new unselected candidate gets deterministic selected tip, parent
+height/forest marker and, if absent, header-only topology. No CHAIN/SCRIPTS,
+body/undo or validated-marker promotion is added. Exact per-CF/key/value
+overrides replace no other original row; the common baseline builder and
+complete expected-write replay audit reconstruct the same candidate from the
+immutable original. The opaque source check is freshly derived, not loaded
+from a flag, SQL assertion or checksum sidecar.
+
+This component does not remove compact startup's SQL recovery refusal. Honest
+original-base/lifecycle restoration and wallet/index readiness need separate
+integration and the actual imported-source crossing/cold-reopen gates. No
+source/caller birthday, fabricated first event, generated provenance change,
+snapshot floor or automatic mixed-wallet readiness is introduced.
+# Imported-parent genesis graph reconciliation
+
+LoadSnapshot now owns a private publication interval under its existing load
+mutex, then selected ownership. Normal activation and catalog readiness defer
+only during that interval, before examining its intermediate UTXO/tip view.
+The interval ends on return or exception; remaining misalignment takes the
+unchanged normal SafeMode path. No SafeMode reset, alignment bypass outside
+the owned interval, snapshot-format relaxation or independent-history receipt
+is introduced. Focused phase/ownership tests are deterministic and serial,
+not generic race/deadlock/churn stress qualification.
+
+For this freshly authenticated ORIGINAL imported-parent class only, the parent
+audit accepts exact header-only metadata with zero body/undo locators, the
+unchanged genesis validation anchor, frozen cohort, catalog/stump owner and
+complete retained legacy before-image. The ordinary archival-parent branch
+continues to require its actual body and exact locators. No historical-body
+execution claim is substituted for the imported checkpoint.
+
+Compact startup preserves and read-only rebinds the exact original ten-key
+`snapshot_loaded` SQL inventory to this cohort: base, content digest over EVERY
+frozen record, expected Utreexo/legacy roots and lifecycle base. Unknown, missing,
+fatal, fully-validated, progress, reorg or incomplete keys refuse. The local
+lifecycle restores with `chainstate_matches_marker=false`, explicitly not full
+history validation. Metadata is compared again before closed-to-running
+publication; no original SQL key is deleted, rebased or repaired, and no mixed
+transparent/index readiness receipt is earned by this Orchard integration.
+
+The original imported activation-parent seam also freshly identifies the exact
+header-only selected prefix which legacy LoadSnapshot marked CHAIN in memory.
+Publication may drop ONLY exact HEADER|CHAIN to HEADER in unpublished graph
+copies, removing those candidates and preventing orphan routing from granting
+the bit again. Unexpected SCRIPTS/TRANSACTIONS/body/undo/failure bits still hit
+the original strict guard. This binding is constructed only by the completed
+factory after authenticating the immutable original imported cohort, never
+from serialized SQL or an independent-replay claim. Persistent rows and the
+original genesis anchor remain untouched.
+
+Completed-root startup may reconstruct the legacy live genesis SCRIPTS bit
+only at height zero with the unchanged independent genesis anchor and exact
+compiled genesis header/transaction body. Legacy genesis persistence records
+CHAIN/TRANSACTIONS while its old live graph also carries SCRIPTS. No assumed
+ancestor above zero is promoted, no persisted flag/anchor is moved, and the
+strict existing-graph subset/locator checks remain. This is not SQL lifecycle
+admission or original-assumed mobile crossing acceptance.
+
+The separate `NodeCoreAssumedFundedCrossing` regression uses the same honest
+signed historical funding as the full-parent test, but starts a NEW SDK root
+with only authenticated persistent headers and normal configured legacy
+snapshot import. It requires normal named restore/unlock funding discovery,
+then the actual enrollment, queue/prover/finish, automatic handoff, retained
+pending/pool readmission, real confirmation and late account-0 recovery paths.
+No pre-base bodies, canonical coin DB, wallet coins, account owners or assumed
+SQL keys are copied into that root. Snapshot candidate discovery is not a
+complete historical/transparent-index replay receipt; selected-source input
+checks remain mandatory. This new regression defines the remaining nonempty
+original-assumed gate; its registration alone claims neither a pass nor a
+production fix. The older full-parent and empty imported cases stay separate.
+
+The actual imported-funded regression exposed an earlier false completion:
+normal restore reported102 scanned blocks through selected base101 while the
+legacy wallet scanner only read the durable genesis tip0. Funding was absent,
+and normal unlock reported canonical recovery deferred. The historical rescan
+RPC now refuses unequal selected/durable sources BEFORE wallet cleanup or
+progress writes. The separate `NodeCoreAssumedRescanFence` checks this normal
+SDK refusal with the original assumed lifecycle intact. This is a completion
+honesty fence, not snapshot funding discovery, a whole-history/transparent
+baseline, independent validation or the nonempty imported crossing. Complete
+snapshot-aware candidate discovery and subsequent current input authorization
+remain required; no coin/catalog guard or assumed key is relaxed to pass it.
+
+### Imported snapshot funding candidates (not wallet readiness)
+
+Normal unlocked recovery may now discover funding DATA while canonical recovery
+remains deferred. This bounded route supports the exact original imported
+activation parent with durable/validated genesis, original `snapshot_loaded`
+cohort, complete frozen records/digest, checked forest/checksum and selected PoW
+header/root. Every live forest leaf is covered exactly once, including a retained
+compiled genesis leaf if present. Only an exact compiled genesis row may be
+absent from the forest; a present one is never skipped. The forest's total leaf
+count includes spent positions: every position must be either covered by one
+live record or marked deleted, never both/neither, and the independent active
+count must match. Unknown/fatal/progress/reorg/cohort mismatches refuse.
+Snapshot-load, selected-source and lifecycle ownership exclude replacement/reset
+through the FULL wallet transaction, which freshly binds the unlocked seed,
+session, exact wallet/index and original unknown-empty account catalog.
+
+The separate `wallet_snapshot_candidates` table is public candidate DATA, never
+coin/source authority or a persisted replay capability. Idempotent exact rows
+are retained; conflicts are not repaired or overwritten. Current/retained/
+archived/pending account owners, ordinary `utxos`, wallet/index scan progress,
+tip and catalog are not advanced or reset. `wallet.listunspent` labels candidates
+`snapshot_candidate=true` with zero confirmations and `spendable=false`; normal
+balance/input selection must not treat them as confirmed ordinary coins. Old
+legacy maturity metadata remains a claim until authenticated catalog/input
+authorization. Unlock still explicitly warns that history/index recovery is
+deferred. New queue reservations must obtain and freshly verify exact current
+source-bound input proofs; this discovery is not that authorization.
+
+The source capture currently fails closed above one million frozen records/
+leaves or256MiB of script bytes; owned candidate inventories are bounded to65536
+rows/16MiB of scripts. These are work bounds, not measured phone RSS/latency or
+production-scale qualification. Other imported bases, active account owners and
+progress lifecycles remain unsupported by this first route. Two separate native
+SDK cases exercise actual encrypted named-wallet unlock discovery and refusal
+of a wrong original content commitment. Registration alone is not a test pass,
+funded queued crossing, app/device or release claim.
+
+### Imported activation-parent account enrollment
+
+The original imported activation parent has a separate private account-source
+route, not an independently executed parent or general coin view. It consumes
+the exact same complete frozen-source/cohort/forest audit as candidate discovery,
+under the real owning snapshot-load unique lock, selected ownership and original
+SnapshotLoaded lifecycle pin. The durable/validated genesis anchor and ten
+original imported SQL values remain unchanged. The original FULL catalog writer
+still authenticates the unlocked recovered seed, wallet identity and empty
+catalog/owner inventory; no generated flag is set, missing/corrupt metadata is
+never initialized, and the source cohort is freshly rechecked before COMMIT.
+
+Only genuine empty pre-activation Orchard account history is certified, scoped
+to the selected profile/checkpoint. The wallet-bound replay view can expose its
+real zero cursor and account0 origin without inventing Event1 or after_tip.
+Normal named account creation/receiver issuance may consume those facts. The
+ordinary independent delivery, full-parent pool/coin context, compact input-proof
+guards and post-activation recovery requirements remain unchanged. Candidate
+funding remains non-spendable DATA; this is not authenticated new-input queueing,
+transparent/index completeness, a funded handoff or app/device acceptance.
+# Imported transaction-only signing and admission
+
+An original SnapshotLoaded parent is not an independently executed full-store
+coin view. Shield signing and pool admission use a distinct lexical capture:
+the unchanged complete imported-source audit, owning snapshot lock before
+selected lock, exact index use and actual lifecycle pin; every enumerated
+input's actual selected creating body and merkle inclusion; current live
+membership path; and explicit output absences in the complete frozen and
+ordinary namespaces. Unknown coin queries fail. Source metadata is not trusted
+as legacy creation metadata. Signing releases source ownership before the key
+owner signs, then recaptures it for actual authorization and durable Ready.
+
+Pool admission acquires snapshot before selected ownership and checks the
+complete pending plus incoming corpus using the same narrow source. It retains
+ordinary script, maturity, resource, proof, anchor/nullifier and value-flow
+checks. This authorizes transactions only: it does not derive a first-block
+boundary, retirement record, Event1, cursor or independent replay capability.
+The actual imported lifecycle pin transfers to the thread-affine pool owner
+and survives validation through insertion/publication. That imported owner is
+single-operation; reuse fails closed without recursive lifecycle acquisition.
+Independent full-node mining selection retains its original reentrant selected
+owner contract without acquiring snapshot in reverse order. Such borrowing
+does not grant imported admission: that path requires its actual snapshot lock.
+The Ready test compares the original candidate SQL rows, not an unchanged
+`listunspent` display: normal mempool input-spent filtering must hide the
+admitted input even though unspendable snapshot candidate DATA is retained.
+The isolated peer supplies requested funding-creation body DATA to the full
+imported crossing as well as its queue/Ready subcases. It does not supply an
+owner, wallet coin, Ready record or historical/index receipt.
+Original general full/compact captures, mining and block-admission guards are
+unchanged. Original assumed SQL/base/anchors remain unchanged; this is not a
+complete-history or transparent/index-readiness receipt.
+
+## Automatic Orchard-only delivery on completed imported backing
+
+The runtime worker routes the **actual completed imported compact composition**
+to a distinct `RuntimeOrchardCatalogRecoveryResult` / `AppliedOrchardPrefix`
+outcome. This is not a fallback after failed mixed recovery, `RuntimeIndexProgress`,
+transparent/index enrollment, independent prehistory, or whole-wallet readiness.
+`ResumeCatalogWalletStores` and its two baseline requirements are unchanged.
+
+The normal completed-store startup audit retains a process-local copy of its
+exact original imported metadata for comparison, not a serialized capability.
+Each Orchard write freshly binds the real snapshot lock, selected compact owner,
+typed consistency, original activation proof/frozen records/checkpoint/ten SQL
+values, exact index lifetime and nonfatal SnapshotLoaded lifecycle. The real
+lifecycle pin and selected owner survive the complete-catalog FULL writer; an
+additional fresh source check occurs immediately before each COMMIT. Preparation
+restores every current/retained/pending/archive owner and applies genuine delivered
+events outside source/wallet/seed/SQL ownership. No active owner is reset. Failed
+or interrupted prefixes remain retained and retryable.
+
+Only actual canonical events advance account receipts and observations. This
+route never writes either mixed baseline or repairs/rebases original assumed
+keys. The funded native imported regression must independently prove nonempty
+handoff, confirmation, and later restored funds/memos; source wiring alone is
+not that result, physical app/device acceptance, or release qualification.
+
+The selected journal's genuine inverse is prepared off-lock in the existing
+`ParentPreparationScope`, then rebound before its original fail-stop audit.
+A stale capture defers before that audit; no inverse check or SafeMode is
+disabled/reset. The separate native changed-cohort case preserves intentional
+bad original metadata after handoff and requires account delivery to refuse
+even though the SDK genuinely validates block104. It never repairs that root.
+
+## New current compact shield reservations
+
+`getwinput` / `winput` transfer bounded PUBLIC outpoint proof DATA for an exact
+locally selected tip/root/profile. The peer cannot select a tip or confer coin,
+wallet, history, index, lifecycle or independent-replay authority. Nonces and
+connection sessions bind one flight; requests never contain keys or a wallet
+identifier. This does reveal the requested public outpoint to that peer. The
+client has eight requested/cached items, a 30-second flight deadline, bounded
+cooldowns and invalid-inclusive wire budget. The asynchronous full source uses
+the existing selected full proof capture, not compact generation or assumed
+promotion; inbound queues and per-address/global work budgets are bounded.
+Stop joins both actors before releasing network/source dependencies.
+
+For a NEW reservation the actual enrolled compact owner independently verifies
+each path against its CURRENT stump, transaction membership, nontransparent
+absence and legacy height/coinbase catalog binding. Unknown inputs stay errors,
+and an empty proof span never grants arbitrary coin access or output absences.
+Only these exact captured inputs survive through the atomic encrypted writer.
+Ordinary inputs retain their original unreserved wallet/key/manual-lock checks;
+original-import candidates retain the complete original frozen/proof/ten-SQL/
+SnapshotLoaded cohort and original candidate ownership checks. The original base,
+independent anchor and mixed baseline refusals do not move. The selected source
+is freshly checked immediately before COMMIT, and real prover publication follows
+that commit. A pending network proof returns retryable funding-source-pending
+before change issuance or wallet writes. Ready signing/pool admission are separate
+checks; queue success does not assert those later stages or app/device readiness.
+
+Normal wallet reopen may already have written historical ordinary wallet rows.
+They are not proof of current coins or a mixed baseline. Compact selection reads
+both disjoint candidate namespaces, then requires the same CURRENT cryptographic
+source check for every selected input. The lexical source binds each exact input
+to its existing ordinary or original-snapshot wallet validation path, and the
+one FULL writer runs both validators on their respective subsets, together with
+all catalog/pending/seed/session/manual-lock checks. No row is deleted/rebased,
+no spent ordinary row is resurrected through snapshot fallback, and no history,
+transparent/index readiness or independent-replay receipt is created.
+
+This new selector examines at most eight candidates per attempt, matching the
+bounded volatile path set. If more are required it reports work capacity, not
+insufficient balance or endlessly evicting/re-requesting the prefix. It does not
+change the original full-source/exact-input bounds or claim large/many-input
+wallet qualification.
+
+### New compact signing, Ready and proof-bearing admission
+
+For a NEW reserved shield, completion now requests the exact-current per-input
+DATA again rather than asking a compact store for general coins. The actual
+selected compact owner authenticates the resulting ordinary v2 utxotx body:
+every path and legacy metadata binding, transaction membership, nontransparent
+exclusion and the actual body's output absences. Existing selected/header/work/
+stump/storage/retirement/consistency guards are unchanged. Its genuine inverse
+is prepared off-lock and freshly rebound through the original warm audit.
+
+The owned coin snapshot leaves selected ownership before wallet key signing.
+The final signed body then reacquires CURRENT proof DATA and its complete owner,
+and verifies transparent scripts, Orchard authorizations, resources and state.
+The original imported cohort/lifecycle and ten SnapshotLoaded values are pinned
+through the FULL encrypted Ready/history writer, with a fresh selected body/proof
+and source check immediately before COMMIT. No proof or wallet row grants Ready.
+After all those owners leave, the public RPC submits the exact proof-bearing
+body to normal ingress, which independently recaptures the current source and
+all pool conflicts, policy, observer and authorization checks. A changed tip can
+still refuse admission without losing the durable signed intent.
+
+Existing signed retries retain their strict exact retained-pool proof requirement:
+missing, stale or invalid DATA is not silently repaired or treated as authority.
+Their activation-parent route remains valid without Event1; it does not call the
+post-activation imported delivery factory. The added lifecycle/cohort pin applies
+only to NEW post-activation compact signing, never a fabricated zero/first event.
+Default Ready retries never silently reacquire proof DATA. Explicit absent-entry
+recovery and fresh-process Reserved work have separate gates below. New signing
+does not create a general coin view, a mixed
+transparent/index baseline, independent prehistory or a lifecycle repair.
+
+`NodeCoreCompactNewShieldReady` requires real original-import funding, current
+TCP input proofs, a new public queue/finish, encrypted retries, bad retained-proof
+refusals and genuine proof-bearing admission with full-proof peer refill disabled.
+It signs the NEW reservation in its SAME executor/session, then tests normal
+no-phrase signed-Ready reopen. Reopening a Reserved job changes its wallet/SQL
+binding and the existing executor correctly refuses that old active binding;
+this gate does NOT fix/claim that separate job-rebind/restart integration.
+It requires independent FULL mining of the SAME SDK body and SDK validation105,
+active account confirmation535000una and unchanged original SQL/missing mixed
+receipts. This bounded native test is not app/device, mainnet/v5, many-input,
+other-lifecycle or release qualification.
+
+`NodeCoreCompactReservedRestart` is a distinct functional variant: orderly stop
+and EXIT the SDK process with a genuinely NEW compact Reserved request, then
+start a fresh PID/executor on the same root WITHOUT snapshot re-import. Normal
+named wallet.open/unlock (no phrase) must retain identical encrypted current and
+retained rows. The existing missing-job recovery must authenticate the complete
+catalog, randomized encrypted intent, keys, session/SQL-instance and source; it
+does not inherit a result or loosen an old executor binding. The new PID must
+obtain fresh CURRENT input paths over TCP before actual signing/Ready/admission,
+and real independent mining/SDK validation105 must confirm535000una. This does
+not claim wallet-only rebind of an OLD live job, forced-process/crash recovery,
+or interrupted SIGNED-Ready proof recovery. Those remain separate paths, as do
+app/device, mixed readiness and release qualification.
+
+### Explicit signed-Ready current-input recovery
+
+`wallet.orchard.finishshield` accepts optional `reacquire_input_proofs=true` for
+an already signed CURRENT request on completed compact backing. This mode first
+authenticates the complete encrypted catalog, request details, original inputs,
+change, signed bytes and wallet/session/SQL-instance owners. It does not resume
+a Reserved prover, steal an old job or use an ID alone as authority. The default
+RPC still refuses an absent pool proof; recovery is never an exception fallback.
+
+Only when the entire pool entry is ABSENT may this explicit mode request fresh
+CURRENT per-input DATA. Existing entries retain their exact body/nonstale/nonempty
+proof and full cryptographic checks, even with the flag: missing, stale or invalid
+DATA is not silently repaired. The original normal compact body/stump owner checks
+all paths, membership, legacy metadata, nontransparent exclusion and actual output
+absences. The original imported cohort/lifecycle/ten-SQL source remains pinned
+through the FULL encrypted current/retained/pending writer with fresh pre-COMMIT
+source checks. Ready must keep identical signed bytes and revisions; no key signing,
+new Orchard proof, input reselection, owner reset, original SQL repair or baseline
+receipt is created. Normal proof-bearing ingress independently reauthenticates
+authorization, selected source, conflicts, policy and observer after all wallet/
+selected owners leave. Pending input DATA remains retryable without wallet writes.
+
+`NodeCoreCompactReadyRestart` must sign/admit a genuine NEW compact shield, then
+orderly stop AND exit its process. A fresh PID on the same root (no snapshot
+re-import) opens/unlocks the named wallet without phrase, preserves encrypted
+Ready/retained rows, refuses default missing-entry completion, and explicitly
+reacquires CURRENT paths over TCP for the SAME signed body. It must also refuse
+poisoned existing entries with the recovery flag before restart. Real FULL mining
+and SDK validation105/confirmation535000una are required. This is not forced-kill/
+crash/powerloss, changed-tip/reorg or activation-parent recovery, old-live Reserved
+rebind, mixed readiness, mainnet/v5/all lifecycle, app/device or release qualification.
+
+## Post-base compact funding native gate
+
+`NodeCoreCompactPostBaseShield` is a distinct actual post-base discovery case.
+After normal original-assumed import/nonempty crossing104 and new compact
+shield105, both original historical funding outputs have been spent. Normal
+named wallet.open/unlock (no phrase) must discover the actual owned475000una
+change created105, not relabel it as frozen snapshot funding. A NEW public
+queue/finish must acquire CURRENT105 input proofs and sign/admit it normally.
+The independent FULL producer records the actual canonical input's outpoint,
+value, script, creation height/coinbase before validating/mining the SAME SDK
+body106; SDK validation and authenticated550000una account confirmation are
+required. No wallet coins, proof-backed manual spend, balance or history receipt
+is injected by the fixture. Original ten SQL and absent mixed baselines/schema
+must remain unchanged. This case does not presume discovery is implemented;
+qualification requires a real positive and honest isolated negative controls.
+It is not mainnet/v5/all lifecycles/many-input/mixed readiness or app/device/release.
+
+`NodeCoreCompactPostBaseDiscovery` separately ends at real105 discovery, and
+`NodeCoreCompactPostBaseSourceRefusal` then damages only its fresh isolated
+original cohort and requires refusal without repair or ordinary-list fallback.
+The completed imported source reads EVERY bounded activation-to-selected body
+before wallet filtering, excludes actual spends and current/retained/pending
+owners, and resolves real supported keys through a FULL read transaction with
+the complete catalog, original ten-SQL/cohort/lifecycle and selected source pinned.
+It returns PUBLIC DATA only: confirmations0, unsafe and unspendable, with exact
+source height/hash. Spent historical rows are hidden, never erased or rebased;
+ordinary/frozen rows, progress, tip, catalog and mixed baselines stay untouched.
+This bounded route requires a contiguous Connect-only prefix of at most4096
+events/256MiB bodies/65536 inputs and outputs/16MiB scripts; other progress/reorg,
+prefix and unsupported confidential/signing paths refuse or remain outside its
+candidate subset. It creates no current coin or complete transparent/index
+receipt. A later reservation still needs a fresh CURRENT per-input proof and its
+own atomic source-bound writer; discovery DATA never grants that authority.
+
+NEW imported compact selection reads that same complete post-base DATA off-lock,
+then rebinds the actual source/cohort/lifecycle and complete encrypted catalog.
+Every selected input still obtains a fresh CURRENT TCP path and passes the
+UNCHANGED normal compact input/stump/catalog/legacy-metadata owner. Exact actual
+creating-body height/coinbase must agree too. A private lexical, nonserialized
+per-input provenance vector dispatches ONE FULL encrypted reservation writer to
+the original ordinary or frozen validator, or a distinct post-base OWNER check
+for genuinely NEW outputs absent from BOTH old namespaces. That new owner check
+still requires real seed/key policies, manual-lock/pending exclusions and exact
+input equality, and grants no coin authority independently of the selected source.
+Fresh source and full proof checks run again immediately before COMMIT. Existing
+exact requests do not depend on NEW body/selection work capacity. No original SQL,
+ordinary/frozen rows, first cursor or mixed/index readiness receipt is rewritten.
+
+## Original-import private send and unshield native gate
+
+`NodeCoreCompactMixedBalanceRefusal` additionally queries normal wallet balance,
+wallet-info and wallet-scoped snapshot RPCs after genuine post-base shield106.
+An authenticated Orchard balance does not certify the ordinary/index baselines.
+Until both stores have genuinely reconciled and caught up, these mixed-balance
+surfaces must return retryable `wallet_balance_not_current`, without stale numeric
+balances or a zero substituted for unknown funds. Original ordinary/frozen rows,
+ten imported SQL values, encrypted owners and missing baseline schema/receipts
+must remain unchanged. This is an honest refusal gate, not mixed recovery or
+complete wallet-readiness qualification.
+
+`wallet.getwalletinfo` retains normal non-secret named-wallet metadata and no
+top-level error so loaded/encrypted/unlocked identity remains observable. Its
+balance fields/counts are absent, with `balance_status=reconciliation_required`,
+`balance_error`, `error_code` and `retryable=true`. This is not a successful
+balance query. `wallet.getbalance` and the wallet-scoped snapshot return an
+explicit error without numeric balances. Normal wallet.open/unlock without the
+phrase remains independent of mixed balance availability.
+The native case must finish normal SDK stop/reader cleanup as well as the
+functional assertions; reaching the observations alone is not a passing case.
+
+The production refusal is deliberately conservative for the completed imported
+compact composition. There is not yet a supported mixed baseline reconciliation
+route there, so apparent ordinary rows, a current proof context or Orchard-only
+progress never make these RPCs available. The source-composition predicate reads
+under selected ownership, writes no schema/identity/receipt and grants no coin or
+readiness authority when false. Other source compositions retain their existing
+behavior, not a new readiness claim. Address-scoped index snapshots remain a
+separate API and are not qualified by this wallet-scoped gate. Genuine mixed
+baseline/recovery integration remains open.
+
+The explicit `wallet.reconcilecoverage` operation must earn both current-tip
+ordinary/index baselines through actual genesis-to-parent consensus replay and
+the checked canonical runtime prefix. It may request public legacy bodies as
+DATA; cache checksums never replace replay, cohort validation or owner checks.
+No automatic startup history download is implied. Original assumed SQL, frozen
+base, validated anchor and lifecycle stay unchanged; this is wallet coverage,
+not live-chain promotion. `NodeCoreImportedMixedBaseline` requires real imported
+funding/shields through106, genuine peer body DATA and matching two-store live
+coins920000una, with encrypted owners and snapshot candidates unchanged. Existing
+balance-read refusal remains until a separate fresh owner-bound read gate is
+earned. Unknown/corrupt history or owners must refuse, not reset or rebase.
+The fixture withholds its additional pre-base bodies until the explicit coverage
+step. Earlier ordinary scheduler requests must not mutate the activation-parent
+index during handoff. The initial early-body SafeMode refusal is retained as a
+failed case, not a reached reconciliation test or a reason to relax startup.
+The explicit source now uses the existing no-follow/no-replace public body cache
+and bounded funding downloader (8 requested/cache bodies,4MiB each), without
+inserting pre-base DATA into ChainDB or granting block flags. Each capture caps
+total legacy material256MiB/ancestry1million and genuinely replays every body
+before joining records/Utreexo/legacy composite commitments to the original cohort.
+The unchanged automatic origin path never requests network history. Existing
+complete-catalog, script-domain, pending-input and every-row audits remain; new
+private source callbacks run immediately before BOTH commits under the same real
+snapshot/selected/lifecycle pin. The exact tenSQL cohort/reorg absence is checked
+inside the actual index owner, without changing its autocommit-only public reader.
+Index-first partial completion remains honest and retryable after ordinary refusal.
+Two deterministic serial tests cover source refusal at those distinct commit
+points; they are not generic concurrency/crash qualification. The explicit RPC
+accepts only the intended opaque wallet binding, never caller tip/base/reset or
+baseline data. Both earned receipts remain distinct from balance-read readiness.
+The retry result is bound only to an actual bounded body-DATA request in this
+capture. A missing runtime/outbox/catalog/storage source is not silently mapped
+to pending; no failure after entering a writer can become that acquisition retry.
+The explicit consumer persists ONE completed body before requesting its successor.
+The downloader retains its original eight-entry volatile ready/wanted limits and
+all wire budgets: batching a full workset ahead can evict unpersisted ready DATA
+while later requests occupy that workset. Capacity errors must not be swallowed.
+The native case makes one explicit RPC, lets its DATA actor drain without another
+source call, and checks exactly one legacy wire body in the first unarchived
+prefix window1..8 before proceeding. Unrelated ordinary scheduler backfill DATA
+is recorded separately; the initial overly broad count included heights41..48
+alongside the real requested height1 and remains a failed case, not a streaming
+source PASS. No scheduler/peer policy is changed to hide those packets. This is a
+serial acquisition-phase check, not generic race/churn/stress qualification.
+Both new commit-fence fixtures explicitly retain and identify their isolated
+database roots on success or failure. Earlier in-process controls used inherited
+default cleanup: their exact logs/binaries/input maps survive, but those scratch
+databases do not. Fresh retention checks never stand in for the missing originals
+or retroactively change earlier results. SDK failed roots remain separately retained.
+
+`NodeCoreAssumedPrivateSendUnshield` extends the real imported-source funded
+crossing with a later restored account0 payer, a DIFFERENT-seed named recipient,
+actual public queuespend/finishspend proofs and canonical private confirmation105.
+It then requires an actual transparent withdrawal through those same public
+queue/finish APIs, normal owned receiver/address issuance, native FULL validation
+and mining106, SDK full-body validation106 and authenticated account confirmation.
+The FULL source reads back the actual created transparent coin; it never writes
+wallet inputs, Ready bytes, fake events, caller balances or proof capabilities.
+Existing explicit certified-account continuation is used, not a new mixed-wallet
+readiness shortcut. Original ten assumed SQL values and missing mixed baseline/
+receipt schema must remain unchanged for the original wallet, payer and recipient.
+This is a required bounded HOST test, not a source-only PASS or physical app/device,
+ordinary/index balance readiness, current SDK slices or release qualification.
+### Current-tip imported ordinary read (new functional gate)
+
+`NodeCoreImportedBalanceRead` extends the actual original-imported106 flow with
+normal `wallet.getbalance` before and after genuine two-store coverage, and after
+normal no-phrase named open/unlock. A successful baseline alone must not bypass
+the fresh original source/cohort/lifecycle and complete wallet/SQL/catalog owners
+through balance capture. This gate is not yet an execution result. Numeric
+confidential/assets, wallet snapshots, whole-wallet readiness and device/release
+acceptance remain separate; no public schedule or soak changes are authorized.
+
+The implementation returns a private immutable ordinary summary, not a
+readiness boolean followed by an unowned read. Retained history is DATA and
+normal reads cannot request missing bodies. Actual independent origin replay
+and checked canonical prefix precede the real snapshot -> selected -> original
+cohort/lifecycle interval. BOTH exact compatible current receipts, script
+domains, invalidation guards, complete encrypted catalog and seed/pending
+owners and every ordinary/index row are reauthenticated in the actual SQL
+owners. Those owners span numeric capture and fresh source rechecks. Orchard
+input reservations join ordinary/manual locks without changing intent rows.
+Unsupported/missing/corrupt/stale sources remain closed; no baseline, anchor,
+SQL key, owner or history repair is performed by a read. Only getbalance is
+wired here; getwalletinfo/snapshot numeric surfaces remain conservatively
+closed on imported backing until their complete payloads have owned capture.
+
+The first new execution refused at the intact single-recovery-seed guard: the
+new coordinator and factored summary both attempted to acquire a pin. The
+correction passes the SAME existing pin into the private transaction helper,
+checks it with the original lease/session/thread/transaction inventory reader,
+and ends that lexical key interval before final complete-catalog recapture.
+No seed/session/instance guard is relaxed; the first failed root and exact
+whole inputs stay separate and are never retried or retroactively passed.
+
+The corrected native flow returned the genuine920000una/current106 ordinary
+summary but the new fixture wrongly expected ordinary reservation tracking to
+be `authenticated`. Its ordinary pending-payment schema is absent, so the
+existing `untracked` classification is correct. The followup is TEST/DOC-only;
+no tracking/schema/owner metadata is minted and no production change is made.
+That partial failed case does not prove no-phrase reopen or complete acceptance.

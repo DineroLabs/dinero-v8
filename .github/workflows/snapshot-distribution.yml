@@ -4,6 +4,7 @@ on:
     paths:
       - 'packaging/snapshot/**'
       - 'dinero-linux-server/dinero-snapshot-fetch.sh'
+      - 'dinero-linux-server/snapshot_transport.py'
       - '.github/workflows/snapshot-distribution.yml'
   workflow_dispatch:
 permissions:
@@ -16,5 +17,7 @@ jobs:
       - run: |
           bash -n packaging/snapshot/dinero-snapshot-publish.sh
           bash -n packaging/snapshot/dinero-snapshot-fetch.sh
+          bash -n dinero-linux-server/dinero-snapshot-fetch.sh
           cmp packaging/snapshot/dinero-snapshot-fetch.sh dinero-linux-server/dinero-snapshot-fetch.sh
-          python3 -m unittest discover -s packaging/snapshot -p 'test_*transition.py'
+          cmp packaging/snapshot/snapshot_transport.py dinero-linux-server/snapshot_transport.py
+          python3 -m unittest discover -s packaging/snapshot -p 'test_*.py'

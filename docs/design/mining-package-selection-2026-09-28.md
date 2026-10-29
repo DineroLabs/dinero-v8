@@ -1,0 +1,7 @@
+# Parent-preserving mining selection
+
+Intelligent ranking now considers each transaction with its not-yet-selected ancestors. It orders each package by the captured CPFP parent-before-child sequence, includes shared parents once, uses exact transaction weights and skips packages that do not fit. Both default and intelligent paths then apply the same CT, VWU and scheme policies, tracking accepted parents so a filtered parent cannot leave a selected child. Counters commit only for accepted transactions. Fee totals use the existing immutable capture.
+
+BlockAssembler preserves this topological order through commitments. The current CT batch optimizer partitions transactions by output type without dependency input, so it no longer reorders the block list. Verifiers retain their batching implementation. Snapshot ownership, lifetime guards and policy limits are retained. This is not a global mining/chain concurrency or selected-parent certificate.
+
+Three benign patched component cases use real signed transparent parents/children and the actual template oracle: high-fee child ranking and exact weight boundary, shared parent inclusion once, and VWU parent filtering with child refusal and retry in both selection modes. This does not qualify new confidential or Orchard admissions, proof batching performance or load. No unsafe original/control execution, deadlines or assertions weakened. Mainnet remains unset; provider and release gates remain open.

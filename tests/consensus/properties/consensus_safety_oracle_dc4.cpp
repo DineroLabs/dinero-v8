@@ -1,4 +1,7 @@
 #include "consensus_safety_oracle_dc4.h"
+#include <map>
+#include <set>
+#include <utility>
 
 namespace dinero {
 namespace consensus {
@@ -7,21 +10,72 @@ namespace test {
 std::vector<Violation> DC4Oracle::observeTrace(const ConsensusTrace& trace) {
     std::vector<Violation> violations;
 
-    // Get honest nodes
-    auto honest_nodes = getHonestNodes(trace);
+    const auto honest_nodes = getHonestNodes(trace);
+    const std::set<NodeID> honest(honest_nodes.begin(), honest_nodes.end());
+    std::map<NodeID, std::map<uint32_t, const FinalizedBlockObservation*>> histories;
+    std::map<std::pair<uint32_t, std::string>, std::pair<std::string, NodeID>> parents;
+    std::map<uint32_t, std::pair<std::string, NodeID>> finalized_at_height;
+    std::set<uint32_t> heights_seen_by_multiple_nodes;
 
-    if (honest_nodes.size() < 2) {
-        return violations;
+    for (const auto& block : trace.finalized_blocks) {
+        if (!honest.count(block.node_id)) continue;
+        if (block.block_hash.empty() || block.parent_hash.empty()) {
+            Violation v(getName(), "Finalized block lacks hash or parent identity");
+            v.involved_nodes.push_back(block.node_id);
+            violations.push_back(std::move(v));
+            continue;
+        }
+        const auto [canonical, first_at_height] = finalized_at_height.emplace(
+            block.height, std::make_pair(block.block_hash, block.node_id));
+        if (!first_at_height && canonical->second.second != block.node_id) {
+            heights_seen_by_multiple_nodes.insert(block.height);
+            if (canonical->second.first != block.block_hash) {
+                Violation v(getName(), "Honest nodes have conflicting finalized blocks at one height");
+                v.involved_nodes = {canonical->second.second, block.node_id};
+                v.details = std::to_string(block.height) + ": " +
+                    canonical->second.first + " conflicts with " + block.block_hash;
+                violations.push_back(std::move(v));
+            }
+        }
+        auto& history = histories[block.node_id];
+        const auto [at_height, inserted] = history.emplace(block.height, &block);
+        if (!inserted && at_height->second->block_hash != block.block_hash) {
+            Violation v(getName(), "Honest node has conflicting finalized blocks at one height");
+            v.involved_nodes.push_back(block.node_id);
+            violations.push_back(std::move(v));
+        }
+        const auto [prior, first] = parents.emplace(
+            std::make_pair(block.height, block.block_hash),
+            std::make_pair(block.parent_hash, block.node_id));
+        if (!first && prior->second.first != block.parent_hash) {
+            Violation v(getName(), "Same finalized block has different parents across honest nodes");
+            v.involved_nodes = {prior->second.second, block.node_id};
+            v.details = block.block_hash;
+            violations.push_back(std::move(v));
+        }
     }
 
-    // For Phase 5b, DC4 is implicitly checked by DC1
-    // If nodes agree on blocks at each height (DC1), they have total ordering
-    // Full chain history verification will be added in Phase 5c+
-
-    // We could check for:
-    // - CHAIN_TIP_CHANGED events showing reorgs
-    // - Inconsistent parent→child relationships
-    // But for Phase 5b foundation, we defer to DC1
+    std::set<NodeID> linked_nodes;
+    for (const auto& [node, history] : histories) {
+        for (const auto& [height, block] : history) {
+            if (height == 0) continue;
+            const auto parent = history.find(height - 1);
+            if (parent == history.end()) continue;
+            linked_nodes.insert(node);
+            if (block->parent_hash != parent->second->block_hash) {
+                Violation v(getName(), "Finalized block does not extend the preceding selected block");
+                v.involved_nodes.push_back(node);
+                v.details = block->block_hash;
+                violations.push_back(std::move(v));
+            }
+        }
+    }
+    if (honest.size() < 2 || histories.size() != honest.size() ||
+        linked_nodes.size() != honest.size() || heights_seen_by_multiple_nodes.empty()) {
+        Violation v(getName(), "Insufficient finalized parent-link evidence for honest nodes");
+        v.involved_nodes = honest_nodes;
+        violations.push_back(std::move(v));
+    }
 
     return violations;
 }

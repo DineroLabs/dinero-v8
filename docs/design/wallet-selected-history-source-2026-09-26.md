@@ -1,0 +1,21 @@
+# Selected historical wallet source
+
+`ChainstateService::RescanWalletFromSelectedHistory` acquires exact archival bodies from the selected tip back to the configured genesis before wallet effects. It checks active, persisted, validated and in-memory tip identity under the activation lock, traverses actual parent hashes and checks stored heights. It does not trust the current height index. It then releases that lock and runs the existing genesis-bound `AssumeUtxoReplayEngine`, including header acceptance, Merkle identity, stateful transaction validation and accumulator commitments. A final selected-source identity check precedes wallet application.
+
+The service briefly captures the intended wallet session and releases its lease before chain acquisition. The private `SelectedWalletHistory` value owns its bodies and has no public constructor or setters. It is passed as const ownership to the existing checked wallet rescan transaction, which rechecks the live session and network/genesis domain. Neither its block loop nor its address discovery calls back into the chain service. A caller already holding a wallet lease or transaction is refused.
+
+The result is an as-of scan height. Source changes after the final chain check require later reconciliation; this is not a lasting readiness acknowledgment. Existing wallet output/spend SQL, scan progress and tip commit together. Address issuance remains separately durable. The legacy rescan entry point still exists and still reads mutable archival storage.
+
+## Installation and limits
+
+This service adapter is compiled into the daemon but **not installed in the existing rescan RPC or Orchard recovery provider**. Replacing that RPC now would break unsupported stateless and long-history profiles. No failure falls back inside the new adapter. The draft RPC switch was removed before qualification.
+
+This first implementation supports stateful archival pre-Orchard history only. It refuses missing bodies, ambiguous chain identity, unsupported consensus history, 100,000 or more tip height, or more than 256 MiB of serialized bodies. It retains the bounded actual bodies in memory; the serialized charge is not a resident-memory guarantee or a general long-history solution. It is a current-tip source, not an outbox-origin baseline. The origin owner must instead project complete owned effects while validating history and avoid retaining a second full-chain copy.
+
+The existing historical validator's CT/epoch limitations remain. The wallet effects do not yet reconcile complete ordinary transaction history, originated sends, pending local transactions or all key/script/account discovery. There is no index adoption, delivery receipt, cursor reset, account recreation or baseline certification. Existing rescan success, matching heights and an empty Orchard pool remain insufficient for recovery readiness.
+
+## Regression scope
+
+The actual service and WalletManager fixture uses genesis and independently replayed regtest coinbase blocks. It exercises caller-held lease refusal, wrong height-index independence, malformed body and invalid accumulator refusal before wallet effects, real owned-output restoration, source mutation after acquisition, chain-lock release during wallet SQL, reopen/idempotence and checked SQL failure/retry. Existing eight replay cases and ordinary wallet rescan cases are retained. The fixture explicitly seeds selected service identities; it is not full service Start, outbox-origin recovery, mainnet PoW, CT, Orchard activation, physical power-loss or release-binary qualification.
+
+Local qualification used fresh declared test targets and the full daemon build. `AssumeUtxoReplay` passed eight existing replay cases plus the new actual-service case; `WalletRescanUtxoSet` passed its existing snapshot/block-rescan checks. All 201 linked project C++ translation units were freshly instrumented with ASan/UBSan, including the exercised service implementation. Copied-source controls omitting independent replay, retaining the chain lock during wallet writes, and omitting wallet effects each failed the intended regression; restored source passed. External/Rust libraries were uninstrumented and macOS leak detection was off. The separate ARM RocksDB qualification gate remains open. These are component results, not an installed provider or release certificate.

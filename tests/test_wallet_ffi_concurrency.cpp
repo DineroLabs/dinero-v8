@@ -39,7 +39,32 @@ int main() {
         std::cerr << "wallet create failed" << std::endl;
         return 1;
     }
+    if (!mnemonic) return 1;
+    const std::string recovery(mnemonic);
     free_if_set(mnemonic);
+    char* first = nullptr;
+    if (dinero_wallet_get_new_address("identity", &first) != 0 || !first) return 1;
+    const std::string original_first(first); free_if_set(first);
+    char* duplicate = nullptr;
+    if (dinero_wallet_create(&duplicate) == 0 || duplicate) return 1;
+
+    const auto restored_datadir = make_temp_datadir();
+    if (dinero_wallet_init(restored_datadir.c_str()) != 0 ||
+        dinero_wallet_restore(recovery.c_str(), "") != 0) return 1;
+    char* restored_first = nullptr;
+    if (dinero_wallet_get_new_address("identity", &restored_first) != 0 || !restored_first) return 1;
+    const std::string recovered_first(restored_first); free_if_set(restored_first);
+    if (recovered_first != original_first) return 1;
+    if (dinero_wallet_restore(recovery.c_str(), "") != 0) return 1;
+    if (dinero_wallet_restore(recovery.c_str(), "different BIP39 passphrase") == 0) return 1;
+    char* next = nullptr;
+    if (dinero_wallet_get_new_address("identity-next", &next) != 0 || !next) return 1;
+    const std::string recovered_next(next); free_if_set(next);
+    if (dinero_wallet_init(datadir.c_str()) != 0) return 1;
+    next = nullptr;
+    if (dinero_wallet_get_new_address("identity-next", &next) != 0 || !next) return 1;
+    const std::string original_next(next); free_if_set(next);
+    if (original_next != recovered_next) return 1;
 
     constexpr int kThreads = 8;
     constexpr int kItersPerThread = 250;

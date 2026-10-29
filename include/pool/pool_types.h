@@ -4,6 +4,8 @@
 #include <vector>
 #include <cstdint>
 #include <map>
+#include <array>
+#include <optional>
 
 namespace dinero {
 namespace pool {
@@ -127,6 +129,7 @@ struct WorkerStats {
  * Block found by the pool
  */
 struct PoolBlock {
+    bool operator==(const PoolBlock&) const = default;
     uint64_t block_id;          // Auto-increment ID
     std::string block_hash;
     uint32_t height;
@@ -176,7 +179,12 @@ struct PoolBlock {
  * Individual payout to a worker
  */
 struct Payout {
+    bool operator==(const Payout&) const = default;
     uint64_t payout_id;         // Auto-increment ID
+    // Created only by the checked new-allocation transaction. Historical and
+    // generic inserted rows remain explicitly unowned; absence is not repaired.
+    // This durable identifier alone is not an authenticated allocation catalog.
+    std::optional<std::array<uint8_t,32>> allocation_origin;
     uint64_t block_id;          // Which block this payout is for (0 for PPS)
 
     // Worker info
@@ -212,7 +220,19 @@ struct Payout {
 /**
  * Pool configuration
  */
+// Explicit operator policy; values do not certify an existing wallet or authorize
+// an allocation. A payment attempt must bind the actual persistent wallet owner.
+struct PoolPaymentFunding {
+    std::string wallet_name;
+    uint64_t fee_rate_hint=0;
+    uint64_t maximum_fee_una=0;
+    bool operator==(const PoolPaymentFunding&) const = default;
+};
+
 struct PoolConfig {
+    bool operator==(const PoolConfig&) const = default;
+    // No implicit UI-selected wallet or invented transaction fee ceiling.
+    std::optional<PoolPaymentFunding> payment_funding;
     // Payout mode
     PayoutMode payout_mode;
 

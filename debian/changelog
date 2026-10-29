@@ -1,3 +1,29 @@
+dinero-core (8.2.0~rc1-1) unstable; urgency=medium
+
+  * Stage the mandatory Orchard and 60-second network upgrade as v8.2.0.
+  * Preserve the 150000 activation target pending final release approval.
+
+ -- Dinero Labs <team@dinerolabs.org>  Thu, 22 Oct 2026 00:00:00 -0400
+
+dinero-core (8.1.13~rc1-2) unstable; urgency=medium
+
+  * Keep the configuration example uncompressed so postinst seeds the file.
+  * Start the packaged service with that configuration file explicitly.
+  * Explicitly disable unsupported legacy Lightning oracles in the seeded
+    Orchard mainnet configuration so a fresh service can start.
+
+ -- Dinero Labs <team@dinerolabs.org>  Sun, 11 Oct 2026 00:00:00 -0400
+
+dinero-core (8.1.13~rc1-1) unstable; urgency=medium
+
+  * Build a qualification-only v8.1.13 candidate with the Orchard backend.
+  * Bound the nested RocksDB build to two compiler jobs.
+  * Preserve Orchard's tracked vendor manifest during Debian clean.
+  * Disable dynamic UPnP/NAT-PMP linkage in the server package.
+  * Keep mainnet activation and deployment subject to release qualification.
+
+ -- Dinero Labs <team@dinerolabs.org>  Sun, 11 Oct 2026 00:00:00 -0400
+
 dinero-core (8.1.9-2) unstable; urgency=high
 
   * Bound blockchain.getaddressbalance batch history globally across the

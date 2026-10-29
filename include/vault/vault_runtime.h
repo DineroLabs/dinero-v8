@@ -4,27 +4,32 @@
 // keeps alive the singleton VaultService for the dinerod process,
 // and registers it with the RPC layer.
 //
-// Wiring contract:
-//   - call InitializeVaultRuntime() once at daemon startup, AFTER
-//     chain services exist but BEFORE RegisterAllRPCMethods().
-//   - call NotifyVaultTipConnected(height) on every ConnectBlock
-//     success.
-//   - call NotifyVaultTipDisconnected(height) on every block-disconnect.
-//   - call ShutdownVaultRuntime() at daemon shutdown.
-//
-// All four are no-ops when the vault is disabled (operator hasn't
-// flipped the feature flag yet); the daemon stays correct without
-// vault.
+// Production lifecycle:
+//   - daemon startup registers RPCs with the runtime detached;
+//   - vault.open attaches one explicitly selected authenticated wallet owner;
+//   - typed wallet observations retain that owner through each operation;
+//   - CloseVaultRuntimeDispatch drains dispatch before daemon services stop;
+//   - ShutdownVaultRuntime releases the detached runtime at shutdown.
+// Every process requires explicit attachment. Legacy enable/address settings
+// cannot initialize an owner or authorize recovery of old ledger files.
+// InitializeVaultRuntime remains a narrower legacy component initializer;
+// production daemon startup does not call it.
 
 #pragma once
+
+#include "vault/vault_service.h"
+#include "vault/state_store.h"
+#include "wallet/wallet_transaction_signer.h"
 
 #include <array>
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <string>
 #include <vector>
 
 struct DaemonContext;
+struct ExecutionContext;
 
 namespace dinero::vault {
 
@@ -32,17 +37,17 @@ class VaultService;
 class LedgerStore;
 
 struct VaultRuntimeConfig {
-    /// `true` to start the vault. When false, all wiring hooks
-    /// no-op and the RPC methods return "vault service not
-    /// initialized".
+    /// Explicit attachment/legacy component input. Daemon startup does not
+    /// use this flag to create or attach a vault. RPC methods refuse while
+    /// no authenticated owner is attached.
     bool enabled{false};
     /// `true` to keep the deposit-flow machine in shadow mode
     /// (writes deposit_observed but never opens credits). Stage 0
     /// rollouts.
     bool shadow_mode{false};
-    /// Optional persistence path. When set, a FileLedgerStore is
-    /// created and replayed at startup; appends are tee'd into
-    /// the file.
+    /// Legacy component ledger-file path. Explicit wallet attachment refuses
+    /// this path. Legacy rows cannot restore a complete authenticated owner;
+    /// daemon startup leaves these files untouched.
     std::string persistence_path;
     /// Bech32m operator address (e.g. "din1p..."). Decoded once at
     /// init; the resulting scriptPubKey is the observer's match
@@ -58,20 +63,41 @@ struct VaultRuntimeConfig {
     uint64_t k_observe{1};
     uint64_t k_credit{10};
     uint64_t k_settle{20};
+    /// Whole-tip reader used by production daemon wiring. This captures all
+    /// tracked deposits under one selected-chain owner, outside service locks.
+    VaultTipSnapshotFn capture_tip;
+    /// Narrow per-deposit readers retained for existing injected components.
     /// Chain-query closures wired by the daemon.
     std::function<std::array<uint8_t, 32>(uint64_t)> block_hash_at_height;
     /// Caller looks up whether `(outpoint)` is included in the block
-    /// at `(height, block_hash)`. Daemon implementation walks the
-    /// block's tx list. Stage-0-friendly default: always-true so
-    /// `RE_MINED_SAME_TXID` is the conservative outcome.
+    /// at `(height, block_hash)`. The daemon reader preserves the typed
+    /// body and throws on unavailable or changed source state.
     std::function<bool(const std::array<uint8_t, 32>&, uint32_t, uint64_t,
                        const std::array<uint8_t, 32>&)>
         tx_included_at;
 };
 
-/// Initialise the singleton VaultService + register it with RPC.
-/// Idempotent — second call is a no-op.
-void InitializeVaultRuntime(VaultRuntimeConfig config);
+/// Narrow legacy component initializer; not called by daemon startup.
+/// Returns false only when disabled; an already published runtime returns true.
+/// Enabled initialization failures throw before publication. Nonempty legacy
+/// ledger/idempotency files refuse: those files cannot restore complete vault
+/// state and must never be silently replaced by an empty runtime. This legacy
+/// initializer is not the authenticated wallet-state recovery attachment.
+bool InitializeVaultRuntime(VaultRuntimeConfig config);
+
+// Explicit attachment of an EXISTING authenticated wallet vault. Requires the
+// selected unlocked wallet/session and the immutable saved operator binding.
+// No missing owner creates a new vault; no legacy singleton is replaced.
+// Configuration supplies canonical readers only. Historical routing/policies
+// are never inferred from startup defaults. No callback runs while holding the
+// global runtime mutex. Caller keeps the daemon context alive through shutdown.
+void OpenExistingVaultRuntime(VaultRuntimeConfig, const ExecutionContext&,
+    std::shared_ptr<WalletService>, const WalletSigningIdentity&, const VaultIdentity&);
+
+// Stop new runtime acquisitions and close/drain wallet dispatch BEFORE stopping
+// daemon services. Must be called without wallet/chain/service owners held.
+// Refuses reentrant close on an active dispatch callback's own thread.
+void CloseVaultRuntimeDispatch();
 
 /// Tear down the singleton (daemon shutdown).
 void ShutdownVaultRuntime();
@@ -85,9 +111,10 @@ void NotifyVaultTipConnected(uint64_t height);
 /// ConnectBlock's hash mismatch; reserved for richer signaling.
 void NotifyVaultTipDisconnected(uint64_t height);
 
-/// Get the live service pointer (or nullptr if not initialised).
-/// Internal helper for RPC handlers.
-VaultService* GetVaultRuntimeService();
+/// Capture the current service under runtime ownership, or an empty owner.
+/// Retain it through the complete call; shutdown detaches future acquisitions.
+/// A retained service is not a readiness or durable-completion certificate.
+std::shared_ptr<VaultService> GetVaultRuntimeService();
 
 /// Update the operator address ↔ account binding at runtime. Decodes
 /// the address (must be a Taproot din1p…) and atomically replaces
@@ -105,6 +132,16 @@ struct OperatorBinding {
     std::string account;
 };
 OperatorBinding GetVaultOperator();
+
+/// Capture service, operator script/account and chain-service lifetime before
+/// acquiring a wallet database lease. Invoke after wallet/index commits and
+/// release of that lease. A detached runtime or changed binding cannot retarget
+/// this captured delivery. Empty means no observer configured at capture time.
+/// This is a retained callback, not a durable acknowledgement or readiness.
+using VaultWalletOutputObserver = std::function<void(
+    const std::array<uint8_t,32>&, uint32_t, const std::vector<uint8_t>&,
+    uint64_t, uint64_t, const std::string&)>;
+VaultWalletOutputObserver CaptureVaultWalletOutputObserver();
 
 /// Wallet-side hook: a UTXO with `script_pub_key` matching our
 /// configured operator address landed at (txid, vout) in the block
@@ -127,33 +164,29 @@ void ObserveWalletOutput(const std::array<uint8_t, 32>& txid_raw,
 /// REAL on-chain value/height/consensus-order block-hash via the out-params and
 /// `true`; on any mismatch sets `err` and returns `false`. Callers MUST use the
 /// returned values and never trust caller-supplied amount/height/block_hash.
-bool VerifyOperatorDeposit(const std::array<uint8_t, 32>& txid_raw,
+bool VerifyOperatorDeposit(const std::shared_ptr<VaultService>& expected_service,
+                           const std::array<uint8_t, 32>& txid_raw,
                            uint32_t vout,
                            uint64_t& out_amount,
                            uint64_t& out_height,
                            std::array<uint8_t, 32>& out_block_hash_raw,
                            std::string& err);
 
-/// Build a `block_hash_at_height` closure backed by the live
-/// ChainDB on `ctx`. Returns the canonical hash of the active-chain
-/// block at `height`, or a 32-byte zero array as the "unknown"
-/// sentinel (block not yet on disk, ChainDB unavailable, etc.).
-/// The closure captures `&ctx` by reference; caller must guarantee
-/// `ctx` outlives the vault runtime (true for the daemon-static
-/// DaemonContext).
-std::function<std::array<uint8_t, 32>(uint64_t)>
+/// Capture the current chainstate service by strong ownership. Call after
+/// service wiring. The checked canonical hash reader returns zero when source
+/// state is unavailable; no body read or deposit acknowledgement is implied.
+std::function<std::array<uint8_t,32>(uint64_t)>
 MakeChainstateBlockHashClosure(::DaemonContext& ctx);
 
-/// Build a `tx_included_at` closure backed by the live ChainDB on
-/// `ctx`. Loads the block at `block_hash` and answers whether a
-/// transaction with txid `outpoint.txid_raw` (and ≥ `vout+1`
-/// outputs) is present. On any chain-query failure (block missing,
-/// deserialisation error, ChainDB unavailable) returns `true`
-/// conservatively — keeps the reorg watcher in RE_MINED_SAME_TXID
-/// rather than ORPHANED, avoiding a false compensating-debit cascade
-/// on transient block-fetch hiccups.
-std::function<bool(const std::array<uint8_t, 32>&, uint32_t, uint64_t,
-                   const std::array<uint8_t, 32>&)>
+/// Check one exact output in the selected canonical body, preserving historical
+/// and Orchard transaction families. Throws when unavailable or when the
+/// expected canonical hash changed; only a complete read returns true/false.
+/// The watcher must retain its prior observation if this call throws.
+std::function<bool(const std::array<uint8_t,32>&,uint32_t,uint64_t,const std::array<uint8_t,32>&)>
 MakeChainstateTxIncludedClosure(::DaemonContext& ctx);
+
+/// One selected observation of the exact requested tip and all queries.
+/// Throws on unavailable storage, changed tip or incomplete body reads.
+VaultTipSnapshotFn MakeChainstateVaultSnapshotClosure(::DaemonContext& ctx);
 
 }  // namespace dinero::vault

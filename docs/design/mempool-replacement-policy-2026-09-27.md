@@ -1,0 +1,7 @@
+# Complete replacement policy checks before mempool eviction
+
+Replacement admission must finish the existing fee and package policy checks before evicting conflicts. The retained conflict set now defines the surviving pool for ancestor and descendant traversal in both preflight and actual admission. A replacement cannot rely on an output whose creator would be removed. Test-only admission returns before any removal, and actual admission removes the validated conflict set only after those checks.
+
+Existing BIP125 replacement fee rules and the default-disabled RBF setting are preserved. The tests explicitly enable the existing policy on isolated pools and use genuine signed Taproot transactions against an isolated ChainDB and consensus UTXO set. They check that fee rejection preserves the pool, that preflight and actual admission agree when replacing a descendant chain, and that insufficient replacement fees remain rejected. Tests run only against the repaired path.
+
+This change does not make entry insertion, dependency updates, coin-overlay rebuilding or observer failure transactional. Allocation failure during publication still needs a complete admission owner. Existing descendant checks cover direct input parents; this is not qualification of every ancestor's descendant limit, whole-pool scaling, all consumers, Orchard admission, network relay or release readiness. Mainnet activation remains unset.

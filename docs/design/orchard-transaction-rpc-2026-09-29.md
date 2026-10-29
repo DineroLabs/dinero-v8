@@ -1,0 +1,7 @@
+# Owned typed transaction RPC reads
+
+Locally qualified. The registered wallet.getrawtransaction handler captures one immutable pool entry under the existing PoolUse, or obtains an indexed canonical transaction under the chainstate activation lock. The chain reader checks the indexed block, selected height mapping, exact ordinal and requested transaction identity and preserves the Orchard or historical body. Present but inconsistent storage refuses; an absent index remains not found. Transaction location rows require the established exact 68-byte encoding with a valid hexadecimal block hash; the existing host-endian ordinal format is retained.
+
+The actual wallet.decoderawtransaction and getrawtransaction functions move into a dedicated compiled source file. Historical display fields are retained. Orchard decoding returns public envelope identities, canonical bytes, locktime, exact fee and transparent inputs/outputs. Parsing does not verify authorization or infer hidden amounts, recipients, wallet ownership or confirmations. Reader-family selection is tied to the actual compiled Orchard backend; OFF retains historical decoding and refuses unsupported bytes.
+
+Patched-path cases cover real shield pool reads, canonical mining, reopen and disconnect, identity/ordinal/canonical-map/storage/service refusal, historical flatfile lookup and exact terminal decoder consumption. No production notification provider, wallet operation owner, HTTP/P2P, whole-process restart/reindex, automatic readmission, load or release claim. Mainnet remains unset.

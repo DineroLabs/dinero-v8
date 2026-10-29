@@ -1,16 +1,24 @@
 #pragma once
+#include "daemon/services/reopen_service_fence.h"
+#include <chrono>
 #include "daemon/iservice.h"
 #include "wallet/wallet_manager.h"
 #include "wallet/hd_wallet.h"
 #include <memory>
+#include <cstdint>
 #include <string>
 #include <vector>
+#include <mutex>
+#include <condition_variable>
+#include <map>
+#include <thread>
 
 namespace dinero {
 
 // Forward declarations
 class ILogger;
 class BlockStorage;
+namespace wallet { class OrchardProofJobs; }
 
 /**
  * WalletService - IService wrapper for WalletManager
@@ -58,17 +66,41 @@ public:
      */
     void Stop() override;
 
-    /**
-     * Get reference to wrapped WalletManager
-     * Use this to access wallet functionality
-     */
+    // A thread-affine lifetime owner. This pins the manager through Stop, but
+    // does not pin a selected wallet, database transaction, seed or chain view.
+    class WalletUse final {
+    public:
+        ~WalletUse() noexcept;
+        WalletUse(const WalletUse&)=delete;
+        WalletUse& operator=(const WalletUse&)=delete;
+        WalletManager& Wallet() const;
+        // One bounded executor shared by this service's accounts. Retain this
+        // WalletUse for every access; never keep the reference afterward.
+        // This is execution ownership, not authorization for a selected wallet
+        // or operation. The host still authenticates its durable reservation,
+        // wallet session and exact result before Ready/admission. OFF refuses.
+        wallet::OrchardProofJobs& OrchardProofs() const;
+    private:
+        friend class WalletService;
+        WalletUse(const WalletService&,std::shared_ptr<WalletService>);
+        const WalletService& service_;
+        std::shared_ptr<WalletService> retained_;
+        const std::thread::id thread_=std::this_thread::get_id();
+        WalletManager* wallet_=nullptr;
+    };
+    [[nodiscard]] static std::unique_ptr<WalletUse> AcquireWalletUse(
+        std::shared_ptr<WalletService> service);
+    [[nodiscard]] static std::unique_ptr<ReopenServiceFence> FenceForReopen(
+        std::shared_ptr<WalletService>,std::chrono::milliseconds timeout);
+    std::string ReopenWalletName(const ReopenServiceFence&) const;
+
+    // Legacy borrowed reference: callers still serialize shutdown themselves.
     WalletManager& get() { return *wallet_mgr_; }
     const WalletManager& get() const { return *wallet_mgr_; }
 
-    // Forward commonly used methods for convenience
-    bool hasActiveWallet() const { return wallet_mgr_->hasActiveWallet(); }
-    std::string getCurrentWalletName() const { return wallet_mgr_->getCurrentWalletName(); }
-    std::vector<std::string> listWallets() const { return wallet_mgr_->listWallets(); }
+    bool hasActiveWallet() const { auto use=BorrowWalletUse(); return use->Wallet().hasActiveWallet(); }
+    std::string getCurrentWalletName() const { auto use=BorrowWalletUse(); return use->Wallet().getCurrentWalletName(); }
+    std::vector<std::string> listWallets() const { auto use=BorrowWalletUse(); return use->Wallet().listWallets(); }
 
     // Ensure runtime helpers that depend on an active wallet are wired after
     // wallet.createhd / wallet.open / wallet.restore, not only at daemon start.
@@ -76,10 +108,32 @@ public:
 
     // Recover the active wallet from an already-loaded AssumeUTXO snapshot.
     // Locked encrypted wallets are deliberately deferred until wallet.unlock.
-    bool RecoverActiveWalletFromSnapshotIfNeeded(std::string* error = nullptr);
+    bool RecoverActiveWalletFromSnapshotIfNeeded(std::string* error = nullptr, uint64_t expected_session = 0);
+
+    enum class CanonicalRecovery { NotRequired, AppliedPrefix, Deferred };
+    // Recovery of the current wallet's already enrolled stores only. Missing
+    // baselines/accounts remain deferred; no automatic enrollment or height
+    // reset. Called by startup and the existing unlock recovery path.
+    CanonicalRecovery RecoverActiveWalletFromCanonicalSource(std::string* error = nullptr, uint64_t expected_session = 0);
+
 
 private:
+    std::unique_ptr<WalletUse> BorrowWalletUse() const;
+    mutable std::mutex operation_mutex_;
+    mutable std::condition_variable operation_changed_;
+    mutable std::map<std::thread::id,size_t> operations_by_thread_;
+    mutable size_t active_operations_=0;
+    bool accepting_=false;
+    bool stopping_=false;
+    bool reopen_fenced_=false;
+    std::thread::id reopen_thread_;
+    std::thread::id stopping_thread_;
     std::unique_ptr<WalletManager> wallet_mgr_;
+    struct OrchardProofOwner;
+    // Complete only in wallet_service.cpp; identical public class layout in
+    // backend ON/OFF translation units. Destroy before the manager.
+    mutable std::unique_ptr<OrchardProofOwner> orchard_proofs_;
+    wallet::OrchardProofJobs& ProofsForCurrentUse() const;
 
     // Logger dependencies (dual pattern during migration):
     // - logger_: Legacy LoggerService (keep for compatibility during migration)

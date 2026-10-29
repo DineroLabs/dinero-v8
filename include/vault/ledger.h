@@ -22,6 +22,7 @@
 #include "vault/vault_types.h"
 
 #include <stdexcept>
+#include <set>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -40,6 +41,8 @@ class LedgerError : public std::runtime_error {
         LIFECYCLE_INCONSISTENT,
         PER_USER_CAP_EXCEEDED,
         DEPOSIT_LIFECYCLE_CLOSED,
+        SEQUENCE_EXHAUSTED,
+        ARITHMETIC_OVERFLOW,
     };
 
     LedgerError(Kind kind, const std::string& message)
@@ -51,18 +54,73 @@ class LedgerError : public std::runtime_error {
     Kind kind_;
 };
 
+struct CreditReinstatement {
+    LedgerSeq reversalSeq{0};
+    LedgerSeq compensationSeq{0};
+    UnaAmount amount{0};
+    UnaAmount refund{0};
+    UnaAmount operatorLoss{0};
+};
+
 class Ledger {
    public:
     explicit Ledger(LedgerCaps caps = LedgerCaps::unbounded()) : caps_{caps} {}
 
-    /// Append one entry, validating invariants. On error, ledger
-    /// state is unchanged (validation runs before any mutation).
+    // Publish a prepared ledger without relying on the standard library's
+    // whole-object move/swap traits, which differ across supported platforms.
+    // VaultService keeps pointers to this Ledger object, so exchange values
+    // in place rather than exchanging the object that owns those pointers.
+    void swap(Ledger& other) noexcept {
+        static_assert(noexcept(allocations_.swap(other.allocations_)));
+        static_assert(noexcept(allocationAccounts_.swap(other.allocationAccounts_)));
+        static_assert(noexcept(reversals_.swap(other.reversals_)));
+        static_assert(noexcept(entries_.swap(other.entries_)));
+        static_assert(noexcept(accounts_.swap(other.accounts_)));
+        static_assert(noexcept(openCreditsByAccount_.swap(other.openCreditsByAccount_)));
+        static_assert(noexcept(std::swap(totalOpenCredits_, other.totalOpenCredits_)));
+        static_assert(noexcept(std::swap(totalOperatorLoss_, other.totalOperatorLoss_)));
+        static_assert(noexcept(std::swap(caps_, other.caps_)));
+        static_assert(noexcept(std::swap(nextSeq_, other.nextSeq_)));
+        allocations_.swap(other.allocations_);
+        allocationAccounts_.swap(other.allocationAccounts_);
+        reversals_.swap(other.reversals_);
+        entries_.swap(other.entries_);
+        accounts_.swap(other.accounts_);
+        openCreditsByAccount_.swap(other.openCreditsByAccount_);
+        using std::swap;
+        swap(totalOpenCredits_, other.totalOpenCredits_);
+        swap(totalOperatorLoss_, other.totalOperatorLoss_);
+        swap(caps_, other.caps_);
+        swap(nextSeq_, other.nextSeq_);
+    }
+    friend void swap(Ledger& left, Ledger& right) noexcept { left.swap(right); }
+
+    /// Prepare the derived account/counter state before appending an entry.
+    /// Errors preserve entries, accounts, counters and sequence. Successful
+    /// publication after the entry append uses only nonthrowing swaps.
+    /// This is in-memory atomicity, not a durable storage transaction.
     void append(LedgerEntry entry);
+
+    // Append the existing reversal and compensation shapes together. Loss is
+    // nominal credit minus the balance removed by the actual account transition.
+    // Historical entries retain their recorded amounts when replayed.
+    void revertCredit(const AccountId& account, const OutpointId& deposit,
+                      LedgerTimestamp at);
 
     /// Replay a sequence of entries onto an empty ledger. Used at
     /// startup from persisted log + tests of determinism.
     static Ledger replay(const std::vector<LedgerEntry>& entries,
                          const LedgerCaps& caps = LedgerCaps::unbounded());
+
+    [[nodiscard]] bool hasCreditAllocation(const AccountId& account) const noexcept {
+        return allocationAccounts_.contains(account);
+    }
+    [[nodiscard]] const CreditAllocationState& creditAllocations() const noexcept { return allocations_; }
+    // Select for a NEW request only; the returned references must be recorded
+    // in WithdrawalAllocationReserved before dispatch. Never use this for retry.
+    [[nodiscard]] std::vector<CreditAllocationRef> selectCreditAllocations(
+        const AccountId&,UnaAmount) const;
+    [[nodiscard]] LedgerSeq creditPositionSeq(const AccountId&,const OutpointId&) const;
 
     [[nodiscard]] const std::vector<LedgerEntry>& entries() const noexcept { return entries_; }
     [[nodiscard]] const std::unordered_map<AccountId, LedgerAccount>& accounts() const noexcept {
@@ -72,6 +130,11 @@ class Ledger {
     [[nodiscard]] UnaAmount totalOperatorLoss() const noexcept { return totalOperatorLoss_; }
     [[nodiscard]] LedgerSeq nextSeq() const noexcept { return nextSeq_; }
     [[nodiscard]] const LedgerCaps& caps() const noexcept { return caps_; }
+
+    // Complete, unique reversal/compensation pair for this current reverted
+    // position. Reconstructed from existing entries during normal replay.
+    [[nodiscard]] std::optional<CreditReinstatement> reinstatement(
+        const AccountId& account, const OutpointId& deposit) const;
 
     /// Convenience: lookup account state, returning a default-
     /// constructed `LedgerAccount{account}` if not present. Useful
@@ -88,7 +151,18 @@ class Ledger {
     void validate(const LedgerEntry& entry);
     void applyToAccounts(const LedgerEntry& entry);
     LedgerAccount& ensureAccount(const AccountId& account);
+    CreditAllocationState captureUnambiguousCreditOrigins(const AccountId&) const;
+    bool applyAllocationEntry(const LedgerEntry&);
+    void syncAllocatedAccount(const AccountId&);
+    CreditAllocationState allocations_;
+    std::set<AccountId> allocationAccounts_;
 
+    struct Reversal {
+        CreditReinstatement values;
+        bool compensated{false};
+        bool usable{true};
+    };
+    std::unordered_map<AccountId,std::unordered_map<OutpointId,Reversal>> reversals_;
     std::vector<LedgerEntry> entries_;
     std::unordered_map<AccountId, LedgerAccount> accounts_;
     std::unordered_map<AccountId, UnaAmount> openCreditsByAccount_;
@@ -96,7 +170,8 @@ class Ledger {
     UnaAmount totalOperatorLoss_{0};
     LedgerCaps caps_;
     /// Strict-monotonic sequence head. Next entry must have
-    /// `seq >= nextSeq_`. When `nextSeq_ == 0`, no entries written.
+    /// `seq >= nextSeq_`. Zero is valid initially; UINT64_MAX is an
+    /// exhausted next value and cannot be used for another append.
     LedgerSeq nextSeq_{0};
 };
 

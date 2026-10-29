@@ -15,6 +15,8 @@
 
 #include "rpc/v7_pq_handlers.h"
 
+#include <exception>
+
 #include "consensus/pq/ml_dsa_65.h"
 #include "consensus/pq/scheme_registry.h"
 #include "crypto/sha256.h"
@@ -63,6 +65,36 @@ HandlerStatus MapAddResult(wlt::V7P2MRStore::AddResult rc) {
         case wlt::V7P2MRStore::AddResult::DbError:        return HandlerStatus::StoreError;
     }
     return HandlerStatus::InternalError;
+}
+
+// This guard also covers exceptions before a typed result can be returned.
+struct ScopedMasterKey {
+    wlt::AeadKey& key;
+    ~ScopedMasterKey() { Scrub(key.data(), key.size()); }
+};
+
+HandlerStatus OpenBoundKey(const wlt::V7P2MRStore& store, int64_t wallet_id,
+                          const std::string& address, const wlt::AeadKey& master,
+                          wlt::SecureSeed& seed, std::optional<wlt::SecureKeypair>& key) {
+    const auto decoded = wlt::DecodeP2MRAddress(address);
+    if (!decoded) return HandlerStatus::InvalidParams;
+    std::optional<wlt::V7P2MRStore::KeyRecord> captured;
+    try {
+        captured = store.CaptureKeyByAddress(wallet_id, address);
+    } catch (const std::exception&) {
+        return HandlerStatus::StoreError;
+    }
+    if (!captured) return HandlerStatus::AddressNotFound;
+    const auto& encrypted = captured->encrypted_seed;
+    if (wlt::OpenSeedSecure(encrypted.ciphertext, encrypted.nonce, encrypted.tag,
+                            master, &seed) != wlt::AeadOpenResult::Ok)
+        return HandlerStatus::DecryptFailed;
+    key.emplace(mldsa::KeygenFromSeed(seed.bytes()));
+    const auto root = LeafHash(pq::SCHEME_ID_ML_DSA_65, key->pubkey());
+    if (key->pubkey() != captured->metadata.pubkey ||
+        root != captured->metadata.merkle_root || root != decoded->merkle_root)
+        return HandlerStatus::DerivationMismatch;
+    return HandlerStatus::Ok;
 }
 
 } // namespace
@@ -154,7 +186,13 @@ GetNewP2MRAddressResult GetNewP2MRAddress(wlt::V7P2MRStore&       store,
 ListP2MRAddressesResult ListP2MRAddresses(const wlt::V7P2MRStore&  store,
                                           ListP2MRAddressesParams  params) {
     ListP2MRAddressesResult out;
-    out.entries = store.ListByWallet(params.wallet_id);
+    try {
+        out.entries = store.ListByWallet(params.wallet_id);
+    } catch (const std::exception&) {
+        out.status = HandlerStatus::StoreError;
+        out.error_message = "P2MR inventory unavailable or invalid";
+        return out;
+    }
     out.status  = HandlerStatus::Ok;
     return out;
 }
@@ -162,79 +200,26 @@ ListP2MRAddressesResult ListP2MRAddresses(const wlt::V7P2MRStore&  store,
 // ---------------------------------------------------------------------------
 // wallet.signp2mr
 // ---------------------------------------------------------------------------
-SignP2MRResult SignP2MR(const wlt::V7P2MRStore& store,
-                        SignP2MRParams          params) {
+SignP2MRResult SignP2MR(const wlt::V7P2MRStore& store, SignP2MRParams params) {
     SignP2MRResult out;
-
-    if (params.address.empty()) {
-        out.status        = HandlerStatus::InvalidParams;
-        out.error_message = "address is empty";
-        Scrub(params.master_key.data(), params.master_key.size());
-        return out;
-    }
-
-    // Parse address up front so the caller gets a crisp error distinct
-    // from "not in store".
-    if (!wlt::DecodeP2MRAddress(params.address).has_value()) {
-        out.status        = HandlerStatus::InvalidParams;
-        out.error_message = "address is not a valid bech32m P2MR address";
-        Scrub(params.master_key.data(), params.master_key.size());
-        return out;
-    }
-
-    auto row = store.GetByAddress(params.wallet_id, params.address);
-    if (!row) {
-        out.status        = HandlerStatus::AddressNotFound;
-        out.error_message = "address not in this wallet";
-        Scrub(params.master_key.data(), params.master_key.size());
-        return out;
-    }
-
-    auto enc = store.LoadEncryptedSeed(params.wallet_id, params.address);
-    if (!enc) {
-        out.status        = HandlerStatus::StoreError;
-        out.error_message = "LoadEncryptedSeed failed";
-        Scrub(params.master_key.data(), params.master_key.size());
-        return out;
-    }
-
-    // Decrypt seed into a SecureSeed; zeroize on any error path.
+    ScopedMasterKey master_guard{params.master_key};
     wlt::SecureSeed seed;
-    auto open_rc = wlt::OpenSeedSecure(enc->ciphertext, enc->nonce, enc->tag,
-                                       params.master_key, &seed);
-    if (open_rc != wlt::AeadOpenResult::Ok) {
-        out.status        = HandlerStatus::DecryptFailed;
-        out.error_message = (open_rc == wlt::AeadOpenResult::AuthFailed)
-            ? "wrong master key (AEAD auth failed)"
-            : "decrypt internal error";
-        // seed destructor scrubs the plaintext.
-        Scrub(params.master_key.data(), params.master_key.size());
-        return out;
+    std::optional<wlt::SecureKeypair> key;
+    try {
+        out.status = OpenBoundKey(store, params.wallet_id, params.address,
+                                  params.master_key, seed, key);
+        if (out.status != HandlerStatus::Ok) {
+            out.error_message = "P2MR signing key or stored address binding unavailable";
+            return out;
+        }
+        auto signature = mldsa::Sign(params.sighash.data(), params.sighash.size(), key->secret());
+        out.scheme_id = pq::SCHEME_ID_ML_DSA_65;
+        out.pubkey = key->pubkey();
+        out.signature = signature;
+    } catch (const std::exception&) {
+        out.status = HandlerStatus::InternalError;
+        out.error_message = "P2MR signing failed";
     }
-
-    // Re-derive the keypair. Extra RAII: SecureKeypair scrubs on drop.
-    auto ml_seed = seed.ToMlDsaSeed();
-    wlt::SecureKeypair kp(mldsa::KeygenFromSeed(ml_seed));
-    Scrub(ml_seed.data(), ml_seed.size());
-
-    if (kp.pubkey() != row->pubkey) {
-        out.status        = HandlerStatus::DerivationMismatch;
-        out.error_message = "re-derived pubkey does not match stored pubkey "
-                            "(DB tampered or key rotation bug)";
-        Scrub(params.master_key.data(), params.master_key.size());
-        return out;
-    }
-
-    // Sign the 32-byte sighash.
-    auto sig = mldsa::Sign(params.sighash.data(), params.sighash.size(),
-                           kp.secret());
-
-    out.status    = HandlerStatus::Ok;
-    out.scheme_id = pq::SCHEME_ID_ML_DSA_65;
-    out.pubkey    = kp.pubkey();
-    out.signature = sig;
-
-    Scrub(params.master_key.data(), params.master_key.size());
     return out;
 }
 
@@ -301,55 +286,24 @@ ImportP2MRSeedResult ImportP2MRSeed(wlt::V7P2MRStore&      store,
 // ---------------------------------------------------------------------------
 // wallet.exportp2mrseed
 // ---------------------------------------------------------------------------
-ExportP2MRSeedResult ExportP2MRSeed(const wlt::V7P2MRStore& store,
-                                    ExportP2MRSeedParams    params) {
+ExportP2MRSeedResult ExportP2MRSeed(const wlt::V7P2MRStore& store, ExportP2MRSeedParams params) {
     ExportP2MRSeedResult out;
-
-    if (params.address.empty()) {
-        out.status        = HandlerStatus::InvalidParams;
-        out.error_message = "address is empty";
-        Scrub(params.master_key.data(), params.master_key.size());
-        return out;
+    ScopedMasterKey master_guard{params.master_key};
+    wlt::SecureSeed seed;
+    std::optional<wlt::SecureKeypair> key;
+    try {
+        out.status = OpenBoundKey(store, params.wallet_id, params.address,
+                                  params.master_key, seed, key);
+        if (out.status != HandlerStatus::Ok) {
+            out.error_message = "P2MR export key or stored address binding unavailable";
+            return out;
+        }
+        // Existing explicit export contract: caller owns and must scrub this copy.
+        std::memcpy(out.pq_seed.data(), seed.bytes().data(), out.pq_seed.size());
+    } catch (const std::exception&) {
+        out.status = HandlerStatus::InternalError;
+        out.error_message = "P2MR export failed";
     }
-    if (!wlt::DecodeP2MRAddress(params.address).has_value()) {
-        out.status        = HandlerStatus::InvalidParams;
-        out.error_message = "address is not a valid bech32m P2MR address";
-        Scrub(params.master_key.data(), params.master_key.size());
-        return out;
-    }
-
-    auto enc = store.LoadEncryptedSeed(params.wallet_id, params.address);
-    if (!enc) {
-        // Could be not-found OR store error; store API returns nullopt for
-        // both. Check GetByAddress to distinguish.
-        auto row = store.GetByAddress(params.wallet_id, params.address);
-        out.status = row ? HandlerStatus::StoreError
-                         : HandlerStatus::AddressNotFound;
-        out.error_message = row ? "LoadEncryptedSeed failed"
-                                : "address not in this wallet";
-        Scrub(params.master_key.data(), params.master_key.size());
-        return out;
-    }
-
-    wlt::SecureSeed decrypted;
-    auto open_rc = wlt::OpenSeedSecure(enc->ciphertext, enc->nonce, enc->tag,
-                                       params.master_key, &decrypted);
-    if (open_rc != wlt::AeadOpenResult::Ok) {
-        out.status        = HandlerStatus::DecryptFailed;
-        out.error_message = (open_rc == wlt::AeadOpenResult::AuthFailed)
-            ? "wrong master key (AEAD auth failed)"
-            : "decrypt internal error";
-        Scrub(params.master_key.data(), params.master_key.size());
-        return out;
-    }
-
-    // Copy plaintext into the result. This is the one handler that
-    // intentionally returns seed bytes; callers must scrub.
-    std::memcpy(out.pq_seed.data(), decrypted.bytes().data(), out.pq_seed.size());
-    out.status = HandlerStatus::Ok;
-
-    Scrub(params.master_key.data(), params.master_key.size());
-    // decrypted scrubs on destruction.
     return out;
 }
 

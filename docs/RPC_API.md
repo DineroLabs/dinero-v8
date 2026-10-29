@@ -611,17 +611,19 @@ dinero-cli notarizebackup
 
 **Category:** `wallet`
 
-*No description available*
+The `wallet.restore` mnemonic-recovery handler requires a new wallet name.
+An existing name or database file is refused; `replace_existing=true` cannot
+allow overwrite. The original wallet remains accessible with its original
+passphrase. Use a different name for the recovered wallet.
 
-**Parameters:** None
+Positional parameters: wallet name, mnemonic, optional BIP39 passphrase,
+optional encryption password, policy (`bip86`), optional expected first address,
+and optional checksum bypass. Named parameters use `name`, `mnemonic`,
+`passphrase`, `password`, `policy`, `expected_first_address`, and `skip_checksum`.
 
-**Returns:** *No return information*
-
-**Example:**
-
-```bash
-dinero-cli restorewallet
-```
+Successful recovery returns `success`, `wallet_name`, `first_address`,
+`encrypted`, and the derived receive-address gap window. Recovery from a mnemonic
+does not include separately imported keys or a historical random PQ master.
 
 ---
 

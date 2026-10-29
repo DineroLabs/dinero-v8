@@ -323,6 +323,7 @@ private:
   QLabel* lblPeersStatus_;
   QTableWidget* tblPeersOverview_;
   QTextEdit* txtAlerts_;
+  bool orchardStorageUpgradeAlertShown_ = false;
 
   // v7 Consensus Health (Overview tab)
   QLabel* lblUtreexoHealth_ = nullptr;
@@ -610,6 +611,7 @@ private:
   // path can poke it for an immediate refresh; otherwise it would only
   // re-fetch on its 6s tip-poll timer and display stale balance/notes.
   class ShieldedWidget* shieldedWidget_ = nullptr;
+  class OrchardWidget* orchardWidget_ = nullptr;  // only with DIN_ENABLE_ORCHARD_UI
 
   // NOTE: Lightning Network moved to separate lightning-main branch (L2)
   // dinero::LightningWidget* lightningWidget_;  // REMOVED for L1 purity
@@ -830,6 +832,7 @@ private:
   double cachedTransparentBalance_ = 0.0;
   double cachedP2mrBalance_ = 0.0;
   double cachedShieldedBalance_ = 0.0;
+  bool cachedShieldedRetired_ = false;
   double cachedPendingBalance_ = 0.0;
   double cachedMiningBalance_ = 0.0;
   bool cachedMiningActive_ = false;

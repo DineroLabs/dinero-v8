@@ -20,12 +20,12 @@ private Q_SLOTS:
     void readsTagAndNotice() {
         QTemporaryDir dir;
         QNetworkAccessManager nam;
-        UpdateChecker c(&nam, writeFile(dir, "latest.json", R"({"tag_name":"v8.1.13"})"),
+        UpdateChecker c(&nam, writeFile(dir, "latest.json", R"({"tag_name":"v8.2.0"})"),
                         writeFile(dir, "notice.json", R"({"schema":"dinero.network-upgrade.v1","activation_height":125000})"));
         QSignalSpy spy(&c, &UpdateChecker::resultReady);
         c.checkNow();
         QVERIFY(spy.wait(5000));
-        QCOMPARE(spy.at(0).at(0).toString(), QString("v8.1.13"));
+        QCOMPARE(spy.at(0).at(0).toString(), QString("v8.2.0"));
         QCOMPARE(spy.at(0).at(1).toJsonObject().value("activation_height").toInt(), 125000);
     }
     void missingNoticeGivesEmptyObject() {

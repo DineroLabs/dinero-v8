@@ -51,6 +51,10 @@
 
 namespace dinero {
 
+// Durable owner provenance. This tag alone does not authenticate a key; the
+// historical case must also match a live authenticated script inventory.
+enum class WalletOutputOwner : uint8_t { RecordedPath=0, HistoricalImport=1 };
+
 struct WalletUTXO {
     TxId txid;  // Phase M.4.3-B Step 2: Semantic type safety (malleability-proof)
     uint32_t vout;
@@ -58,6 +62,8 @@ struct WalletUTXO {
     AmountUna value;           // una (AmountUna::Zero() for confidential outputs)
     std::vector<uint8_t> spk;   // scriptPubKey bytes
     std::string path;           // "m/84'/1448'/0'/0/12" etc
+    WalletOutputOwner owner_kind = WalletOutputOwner::RecordedPath;
+    std::string owner_reference; // exact recorded MAIN address for historical imports
     int height;
     std::optional<int> spend_height; // nullopt = unspent
     bool is_coinbase = false;   // true if this is a coinbase output (needs 100 block maturity)
@@ -133,6 +139,9 @@ struct BalanceDetail {
 // ║                                                                           ║
 // ╚═══════════════════════════════════════════════════════════════════════════╝
 class UTXOIndex {
+    friend class RuntimeIndexDelivery;
+    friend struct UTXOIndexSchemaTestAccess;
+    friend struct UTXOIndexHistoricalTestAccess;
 public:
     explicit UTXOIndex(const std::string& db_path);
     ~UTXOIndex();
@@ -141,10 +150,17 @@ public:
     bool Initialize();
 
     // UTXO operations (wallet layer - not consensus interface)
+    // Creation replay preserves an existing spend height. Undo must use
+    // RevertBlock; re-adding an unspent output is not rollback evidence.
     bool AddUTXO(const WalletUTXO& utxo);
     bool SpendUTXO(const TxId& txid, uint32_t vout, uint32_t height);
     bool DeleteUTXO(const TxId& txid, uint32_t vout);
     bool IsUTXOSpent(const TxId& txid, uint32_t vout) const;
+
+    // Runs synchronous index operations under one mutex and owned transaction.
+    // Callback must check every mutation result. Throws on acquisition/commit
+    // failure; unwinding aborts owned writes. Other wallet stores are separate.
+    void ApplyAtomically(const std::function<void()>& writes);
 
     // Transaction control (for atomic bulk operations like snapshot import)
     // Phase 46: Crash Safety - CRITICAL-002 fix
@@ -162,6 +178,13 @@ public:
     // Must be called within a transaction to ensure atomicity with UTXO changes
     bool SetMetadata(const std::string& key, const std::string& value);
     std::optional<std::string> GetMetadata(const std::string& key) const;
+    // Checked startup refusal, never absence on a SQL error. Does not clear
+    // recovery markers or certify wallet delivery/ownership completeness.
+    void RequireMetadataAbsent(const std::vector<std::string>& keys) const;
+    // Complete checked startup inventory, including unknown assumeutxo_ keys.
+    // SQL errors, borrowed transactions, invalid text and oversized inventories
+    // refuse, never become absence. No mutation or history-readiness receipt.
+    std::map<std::string,std::string> ReadAssumedStartupMetadata() const;
     bool DeleteMetadata(const std::string& key);
 
     // Query functions
@@ -193,6 +216,8 @@ public:
     
     // Block processing
     void ProcessBlock(int height, const std::vector<std::string>& block_txs);
+    // Owns one SQLite transaction; throws on failure with no partial rollback.
+    // Refuses an existing caller transaction without committing or aborting it.
     void RevertBlock(int height);
 
     // Priority 3 FIX: Validate wallet UTXOs against consensus
@@ -215,6 +240,9 @@ public:
 
     // CRITICAL: Register wallet addresses/scripts for tracking
     void RegisterAddress(const std::vector<uint8_t>& scriptPubKey, const std::string& derivation_path);
+    // Merge a complete captured inventory without partial publication or path replacement.
+    // This binds recognition metadata only; it does not certify spendability.
+    void MergeRegisteredAddresses(const std::map<std::vector<uint8_t>, std::string>& scripts);
     void ClearRegisteredAddresses();
     
 private:
@@ -222,6 +250,15 @@ private:
     std::string db_path_;
     
     // Helper functions
+    // Only checked runtime delivery may enroll a non-HD coin. The supplied
+    // inventory is captured by the wallet owner, not accepted from public DTOs.
+    bool AddUTXOForDelivery(const WalletUTXO& utxo,
+        const std::map<std::vector<uint8_t>,std::string>& authenticated_historical);
+    bool AddUTXORow(const WalletUTXO& utxo);
+    WalletUTXO DecodeOwnedRow(sqlite3_stmt* statement) const;
+    // Protected by db_mutex_, avoiding recursive acquisition of scripts_mutex_
+    // while runtime delivery owns both locks. Publication follows its commit.
+    std::map<std::vector<uint8_t>,std::string> historical_scripts_;
     bool CreateTables();
     bool PrepareStatements();
     void FinalizeStatements();
@@ -239,7 +276,8 @@ private:
     std::map<std::vector<uint8_t>, std::string> watched_scripts_;
     
     // ✅ Fine-grained locking for thread safety
-    mutable std::mutex db_mutex_;       // Protects all SQLite operations (not thread-safe)
+    mutable std::recursive_mutex db_mutex_;       // Protects all SQLite operations (not thread-safe)
+    bool atomic_write_active_ = false;
     mutable std::mutex scripts_mutex_;  // Protects watched_scripts_ map
 };
 

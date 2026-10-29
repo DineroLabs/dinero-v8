@@ -132,4 +132,50 @@ TEST(SwapEncryptedStore, RepeatedSavesReplaceTheFileAndReopenToTheLastState) {
     std::remove(plain.c_str());
 }
 
+
+TEST(SwapEncryptedStore, FundingBindingIsEncryptedAndSurvivesReopen) {
+    TempFile f;const auto key=DeriveSwapStoreKey(MasterKey(0x31));auto session=AliceSession();
+    DinFundingBinding binding;binding.wallet_id.fill(0x42);binding.fee_rate_hint=7;binding.maximum_fee_una=12345;
+    session.din_funding_binding=binding;
+    EncryptedFileSwapStore(f.path,key).Save(session);const auto disk=Slurp(f.path);
+    EXPECT_EQ(disk.find("din_funding_wallet_id="),std::string::npos);
+    EXPECT_EQ(disk.find(detail::ToHex(std::vector<uint8_t>(binding.wallet_id.begin(),binding.wallet_id.end()))),std::string::npos);
+    const auto loaded=EncryptedFileSwapStore::Load(f.path,key);
+    ASSERT_TRUE(loaded.din_funding_binding);EXPECT_EQ(*loaded.din_funding_binding,binding);
+    EXPECT_EQ(OfferId(loaded.record.offer),OfferId(session.record.offer));
+    EXPECT_EQ(EncodeSession(loaded),EncodeSession(session));
+    EXPECT_THROW(EncryptedFileSwapStore::Load(f.path,DeriveSwapStoreKey(MasterKey(0x32))),std::runtime_error);
+}
+TEST(SwapEncryptedStore, FundingBindingLegacyAbsenceAndMalformedFields) {
+    const auto legacy=EncodeSession(AliceSession());EXPECT_FALSE(DecodeSession(legacy).din_funding_binding);
+    const std::string wallet="din_funding_wallet_id="+std::string(64,'4')+"\n";
+    const std::string rate="din_funding_fee_rate_hint=7\n",ceiling="din_funding_maximum_fee_una=12345\n";
+    for(const auto& partial:{wallet,rate,ceiling,wallet+rate,wallet+ceiling,rate+ceiling})
+        EXPECT_THROW(DecodeSession(legacy+partial),std::invalid_argument);
+    for(const auto& bad:{std::string(),std::string(64,'0'),std::string(63,'4'),std::string(64,'G')})
+        EXPECT_THROW(DecodeSession(legacy+"din_funding_wallet_id="+bad+"\n"+rate+ceiling),std::invalid_argument);
+    for(const char* bad:{"0","-1","+7","07","1.0","18446744073709551616","26542800000000001","7x"}) {
+        EXPECT_THROW(DecodeSession(legacy+wallet+"din_funding_fee_rate_hint="+bad+"\n"+ceiling),std::invalid_argument);
+        EXPECT_THROW(DecodeSession(legacy+wallet+rate+"din_funding_maximum_fee_una="+bad+"\n"),std::invalid_argument);
+    }
+    EXPECT_THROW(DecodeSession(legacy+wallet+rate+ceiling+wallet),std::invalid_argument);
+    const auto valid=DecodeSession(legacy+wallet+rate+ceiling);ASSERT_TRUE(valid.din_funding_binding);
+    EXPECT_EQ(valid.din_funding_binding->fee_rate_hint,7u);EXPECT_EQ(valid.din_funding_binding->maximum_fee_una,12345u);
+}
+TEST(SwapEncryptedStore, InvalidFundingBindingCannotReplaceEstablishedSession) {
+    TempFile f;const auto key=DeriveSwapStoreKey(MasterKey(0x41));auto session=AliceSession();
+    DinFundingBinding binding;binding.wallet_id.fill(0x43);binding.fee_rate_hint=2;binding.maximum_fee_una=5000;
+    session.din_funding_binding=binding;EncryptedFileSwapStore store(f.path,key);store.Save(session);
+    const auto original=Slurp(f.path);
+    for(int mode=0;mode<4;++mode) {
+        auto invalid=session;
+        if(mode==0)invalid.din_funding_binding->wallet_id={};
+        if(mode==1)invalid.din_funding_binding->fee_rate_hint=0;
+        if(mode==2)invalid.din_funding_binding->maximum_fee_una=0;
+        if(mode==3)invalid.record.role=Role::BtcSeller;
+        EXPECT_THROW(store.Save(invalid),std::invalid_argument);EXPECT_EQ(Slurp(f.path),original);
+        EXPECT_EQ(EncryptedFileSwapStore::Load(f.path,key).din_funding_binding,session.din_funding_binding);
+    }
+}
+
 }  // namespace

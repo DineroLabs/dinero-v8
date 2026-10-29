@@ -1,0 +1,96 @@
+name: Rust dependency security
+on:
+  schedule:
+    - cron: '17 7 * * *'
+  push:
+    branches: [main, dinero-main, 'codex/**']
+    paths:
+      - '**/Cargo.lock'
+      - '**/Cargo.toml'
+      - 'rust/orchard_backend/rust-toolchain.toml'
+      - '.github/workflows/rust-dependency-security.yml'
+  pull_request:
+    paths:
+      - '**/Cargo.lock'
+      - '**/Cargo.toml'
+      - 'rust/orchard_backend/rust-toolchain.toml'
+      - '.github/workflows/rust-dependency-security.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: rust-security-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
+jobs:
+  audit:
+    name: Audit ${{ matrix.name }} locked dependencies
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        include:
+          - name: orchard
+            lock: rust/orchard_backend/Cargo.lock
+          - name: bulletproofs
+            lock: third_party/bulletproofs_ffi/Cargo.lock
+    env:
+      CARGO_BUILD_JOBS: '2'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Read pinned compiler
+        id: rust-pin
+        run: |
+          python3 - <<'PYCODE' >> "$GITHUB_OUTPUT"
+          import tomllib
+          with open('rust/orchard_backend/rust-toolchain.toml', 'rb') as f:
+              print('version=' + tomllib.load(f)['toolchain']['channel'])
+          PYCODE
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
+        with:
+          toolchain: ${{ steps.rust-pin.outputs.version }}
+      - name: Install pinned audit tool
+        run: cargo +${{ steps.rust-pin.outputs.version }} install cargo-audit --version 0.22.2 --locked --jobs 2 --root audit-tools
+      - name: Audit exact lockfile against current advisories
+        env:
+          AUDIT_LOCK: ${{ matrix.lock }}
+        run: |
+          mkdir audit-evidence
+          test -f "$AUDIT_LOCK"
+          cp "$AUDIT_LOCK" audit-evidence/Cargo.lock
+          git rev-parse HEAD > audit-evidence/source.txt
+          sha256sum "$AUDIT_LOCK" > audit-evidence/lock-sha256.txt
+          audit-tools/bin/cargo-audit --version > audit-evidence/tool.txt
+          set +e
+          audit-tools/bin/cargo-audit audit --file audit-evidence/Cargo.lock --db advisory-db --deny unsound --deny yanked --format json > audit-evidence/report.json 2> audit-evidence/stderr.txt
+          audit_status=$?
+          set -e
+          printf '%s\n' "$audit_status" > audit-evidence/exit.txt
+          git -C advisory-db rev-parse HEAD > audit-evidence/advisory-commit.txt
+          cmp "$AUDIT_LOCK" audit-evidence/Cargo.lock
+          exit "$audit_status"
+      - name: Show findings
+        if: always()
+        run: |
+          python3 - <<'PYCODE' >> "$GITHUB_STEP_SUMMARY"
+          import json
+          from pathlib import Path
+          print('## Rust dependency security')
+          print('Known vulnerabilities, unsoundness, yanked crates and scanner errors fail this check. Maintenance notices remain visible. This is not a proof of cryptographic safety.')
+          data = json.loads(Path('audit-evidence/report.json').read_text())
+          entries = [('vulnerability', x) for x in data['vulnerabilities']['list']]
+          entries += [(kind, x) for kind, rows in data.get('warnings', {}).items() for x in rows]
+          for kind, entry in entries:
+              package, advisory = entry['package'], entry.get('advisory') or {}
+              print(f"- {kind}: {package['name']} {package['version']} — {advisory.get('id', '')} {advisory.get('title', '')}")
+          PYCODE
+      - name: Preserve audit results
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: rust-security-${{ matrix.name }}-${{ github.sha }}
+          path: audit-evidence/
+          if-no-files-found: error

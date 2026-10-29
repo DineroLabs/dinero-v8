@@ -69,6 +69,17 @@ private:
 namespace dinero {
 namespace consensus {
 
+// Optional block-local rollback owner. The backend must outlive this token.
+// Destruction without Commit restores the exact state captured at construction;
+// Commit is nonthrowing and keeps effects. No backend lock may span validation.
+// This is an in-memory ownership protocol, never a serialized undo substitute.
+class BlockConnectRollback {
+public:
+    virtual ~BlockConnectRollback() = default;
+    virtual void Commit() noexcept = 0;
+    virtual size_t TouchedCoinCount() const noexcept = 0;
+};
+
 /**
  * IConsensusUTXOSet - Abstract interface for consensus UTXO operations
  *
@@ -145,6 +156,12 @@ public:
      *          Snapshot() returning an "empty but valid" object.
      */
     virtual bool SupportsSnapshotRestore() const = 0;
+
+    // Ordinary backends retain full Snapshot/Restore. Private synchronous replay
+    // may return a genuine rollback owner to avoid a full coin-map copy.
+    virtual std::unique_ptr<BlockConnectRollback> BeginBlockConnectRollback() {
+        return nullptr;
+    }
 
     /**
      * Create a snapshot of the current state

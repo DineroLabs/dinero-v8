@@ -1,0 +1,11 @@
+# Staged in-memory vault transitions
+
+Locally qualified. Source and fixtures are prepared against the future qualified runtime-owner revision; not applied or executed.
+
+The actual VaultService stages ledger, deposit tracking, reorg hashes and withdrawal queue state under its existing mutex. Internal candidate pointers bind the candidate ledger/deposit owners. A completed transition publishes via nonthrowing swaps. Record-deposit conflicts preserve the established account/amount/height/hash; exact duplicate observation is idempotent. Tip updates verify inclusion for every non-reverted deposit, including same-hash and not-yet-credited observations, before lifecycle advancement. Unavailable sources, later lookup errors and cap/lifecycle failures discard the candidate state. Enqueue and inclusion marking use the same staged publication. Existing low-level state-machine contracts stay unchanged.
+
+This is in-memory failure atomicity, not durable storage, restart recovery, a coherent chain snapshot across all deposits, proof of unspentness, global completeness or notification acknowledgment. Full-state copies are not load qualified. Signing/broadcast processing remains outside this staged path because its external effects require an actual durable intent owner. Deposit reactivation and whole-vault persistence remain open. No new journal, account reconstruction, mainnet activation or production provider is introduced. No unsafe-original controls.
+
+Five new patched-path cases (four shared, one real canonical backend) exercise unavailable and late source refusal, multiple deposits, reorg rollback, withdrawal settlement gating, observation binding and cap failure, plus actual chain database close/reopen/retry. Prior tests, assertions and deadlines are retained, including the actual VaultService and VaultStateMachines suites.
+
+Both multi-field vault metrics RPCs now return a single service snapshot captured under one mutex acquisition. Existing individual accessors remain. New cases verify unchanged snapshots after refusal, immutable returned values across later publication, and actual account/global RPC fields. This is an in-memory snapshot, not chain-delivery or durability acknowledgment. No concurrent-race or unsafe-original reproduction is used.

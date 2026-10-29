@@ -17,6 +17,7 @@ required = {
     "wallet.shield", "wallet.unshield", "wallet.transfer",
     "wallet.signrawtransaction", "wallet.signpsbt", "sendrawtransaction",
     "vault.observe", "vault.withdraw", "vault.processnext", "vault.setoperator",
+    "vault.create", "vault.open",
     "contract.createescrow", "contract.setlocktx", "contract.release",
     "contract.refund", "contract.broadcastrelease", "contract.broadcastrefund",
     "blockchain.invalidateblock", "blockchain.reconsiderblock",

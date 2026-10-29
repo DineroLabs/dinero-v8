@@ -7,6 +7,14 @@
 
 set -e  # Exit on error
 
+# Bound dependency compilation by default. Validate before source discovery,
+# downloads, cleanup or configuration so malformed limits have no build effects.
+OPENSSL_BUILD_JOBS="${OPENSSL_BUILD_JOBS:-2}"
+if [[ ! "$OPENSSL_BUILD_JOBS" =~ ^[1-9][0-9]*$ ]]; then
+    echo "OPENSSL_BUILD_JOBS must be a positive integer" >&2
+    exit 2
+fi
+
 # Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -70,11 +78,12 @@ ensure_openssl_source() {
     if [[ ! -f "$tarball" ]]; then
         echo -e "${BLUE}Downloading OpenSSL ${OPENSSL_VERSION} source...${NC}"
         # GitHub can return an error page instead of the release asset. Fail on
-        # HTTP errors, retry transient failures, and never cache a partial file.
+        # HTTP errors. Retry receive failures too, with bounded attempts/time,
+        # and never cache a partial file. The pinned checksum remains mandatory.
         local download
         download="$(mktemp "${tarball}.download.XXXXXX")"
-        if ! curl --fail --location --retry 3 --connect-timeout 30 \
-            --max-time 600 "$url" --output "$download"; then
+        if ! curl --fail --location --retry 3 --retry-all-errors --retry-max-time 1800 \
+            --connect-timeout 30 --max-time 600 "$url" --output "$download"; then
             rm -f "$download"
             echo -e "${RED}Error: OpenSSL source download failed${NC}" >&2
             exit 1
@@ -405,14 +414,9 @@ else
     exit 1
 fi
 
-# Build with all available cores
+# Build within the explicit dependency budget (two jobs by default).
 echo -e "${BLUE}Building OpenSSL (this may take a few minutes)...${NC}"
-
-if [ "$OS" = "Darwin" ]; then
-    CORES=$(sysctl -n hw.ncpu)
-else
-    CORES=$(nproc)
-fi
+CORES="$OPENSSL_BUILD_JOBS"
 
 echo -e "${BLUE}Using $CORES CPU cores${NC}"
 make -j"$CORES"

@@ -1,0 +1,13 @@
+# Durable wallet and reorg delivery worker
+
+The worker resumes actual enrolled wallet stores and retained reorg intents from the checked canonical source. Startup and every fresh pass start from the retained intent origin. A bounded slice continues without requiring another callback; wakeups restart the scan and carry no event bodies or acknowledgment. A completed intent scan is revisited on the next periodic pass or explicit wake, including plans whose disconnects were only partly committed before an earlier scan.
+
+Wallet recovery captures the selected session under a brief lease, releases it before source acquisition, and uses the existing wallet/index lifetime owners and authenticated replay operation. Missing or locked keys and missing baselines remain deferred; no baseline or account is created. Wallet failures do not prevent independent readmission attempts. Readmission remains actual current-pool revalidation: rejected entries and temporary presence are counted, never relayed or represented as lasting membership.
+
+The worker holds no internal mutex while calling source or wallet consumers. Start/Stop belong outside chain, wallet and runtime owners. Stop requests cancellation between intent reads, then joins without holding the worker report mutex; an active proof or source operation is not preempted. Thread creation failure restores stopped state. Reports describe observed prefixes and checked intent EOF only, not durable acknowledgments or readiness. Retained intents are never deleted or checkpointed by this worker.
+
+This component is not installed by DaemonApp and does not implement RuntimeBlockNotifications. Complete provider composition still requires vault delivery and all other configured consumer semantics. Mainnet activation remains unset. Total retained history, per-operation memory/proof time, shutdown latency, multi-process delivery and all-consumer readiness remain unqualified. Per-intent source bounds retain their existing refusal behavior; the slice bound does not certify a lifetime or resident-resource bound.
+
+## Qualification
+
+Fresh full daemon and declared replay targets passed ON/OFF with seven actual selected CTests each. All 31 selected ON cases passed with the complete linked project C++ graph freshly ASan/UBSan instrumented. Six new worker cases execute ON and two execute OFF; backend-specific cases remain explicitly scoped. External/Rust/C/PQClean are uninstrumented and macOS LSan is off; daemon and OFF are outside the sanitizer graph. Exact Linux and release qualification remain separate. No original or synchronization-removal controls.

@@ -1,3 +1,4 @@
+#include "rpc/wallet_request_dispatch.h"
 /**
  * Wallet RPC Methods - Context-Aware (Week 2 Migration)
  *
@@ -21,6 +22,7 @@
 
 #include "din_json.h"
 #include "rpc/rpc_registry.h"
+#include "rpc/orchard_account_rpc.h"
 #include "rpc/proof_bundle_consistency.h"
 #include "rpc/amount_parser.h"
 #include "daemon/daemon_context.h"
@@ -29,7 +31,10 @@
 #include "daemon/services/mempool_service.h"
 #include "daemon/interfaces/tx_ingress.h"
 #include "wallet/wallet_manager.h"
+#include "wallet/runtime_wallet_balance.h"
 #include "wallet/hd_wallet.h"
+#include "wallet/wallet_transaction_signer.h"
+#include "util/hex.h"
 #include "wallet/transaction_builder.h"  // Phase 33: Transaction building
 #include "consensus/utreexo_maturity_leaf_activation.h"
 #include <iostream>  // For std::cerr debug logging
@@ -624,6 +629,35 @@ std::vector<SnapshotScopedAddressEntry> ParseScopedSnapshotAddresses(const din::
  * OLD: dinero::legacy::g_wallet_manager()->getBalance()
  * NEW: ctx.daemon->wallet->get().getBalance()
  */
+static din::Json ReservationAmount(const std::optional<double>& value) {
+    return value ? din::Json(*value) : din::Json(Json::nullValue);
+}
+static const char* ReservationStatusName(dinero::WalletManager::ReservationStatus status) {
+    switch (status) {
+        case dinero::WalletManager::ReservationStatus::Authenticated: return "authenticated";
+        case dinero::WalletManager::ReservationStatus::UnlockRequired: return "unlock_required";
+        case dinero::WalletManager::ReservationStatus::Untracked: return "untracked";
+    }
+    throw std::logic_error("Unknown reservation status");
+}
+
+// A current compact proof tuple and Orchard-only delivery cannot authenticate
+// stale ordinary UTXOs. This is an explicit unsupported-source refusal, not a
+// failed mixed-recovery fallback or a baseline reader that creates identity or
+// schema. Other source compositions retain their existing behavior; absence of
+// this refusal is NOT a newly earned readiness certificate.
+static std::optional<din::Json> ImportedRuntimeBalanceRefusal(const ExecutionContext& ctx) {
+    if (!ctx.daemon || !ctx.daemon->chainstate) return std::nullopt;
+    const auto source = std::dynamic_pointer_cast<dinero::ChainstateService>(ctx.daemon->chainstate);
+    if (!source) throw std::runtime_error("Wallet balance source owner unavailable");
+    if (!source->requiresImportedRuntimeBalanceReconciliation()) return std::nullopt;
+    din::Json refusal;
+    refusal["error"] = "Current imported-source mixed wallet balance unavailable; ordinary/index baseline reconciliation required";
+    refusal["error_code"] = "wallet_balance_not_current";
+    refusal["retryable"] = true;
+    return refusal;
+}
+
 din::Json rpc_context_wallet_getbalance(const ExecutionContext& ctx, const din::Json& params) {
     din::Json result;
 
@@ -644,6 +678,37 @@ din::Json rpc_context_wallet_getbalance(const ExecutionContext& ctx, const din::
     }
 
     try {
+        if (const auto refusal = ImportedRuntimeBalanceRefusal(ctx)) {
+            auto source=std::dynamic_pointer_cast<dinero::ChainstateService>(ctx.daemon->chainstate);
+            auto index_use=dinero::ChainstateService::AcquireWalletIndexUse(source);
+            auto wallet_use=dinero::WalletService::AcquireWalletUse(wallet_service);
+            uint64_t session;std::string intended;
+            {auto lease=wallet_use->Wallet().AcquireDatabaseLease();
+             if(!ctx.walletName.empty()&&ctx.walletName!=lease->WalletName())return *refusal;
+             intended=lease->WalletName();session=lease->Session();}
+            const auto captured=source->readImportedRuntimeWalletBalance(wallet_use->Wallet(),index_use->Index(),session,intended);
+            if(!captured.ok())return *refusal;
+            // Entire numeric payload uses this immutable owned capture. Do not
+            // fall through to independent confidential/asset/legacy row reads.
+            const auto& summary=(*captured)->Summary();const auto& balance=summary.balance;
+            result["reservation_status"]=ReservationStatusName(summary.reservations);
+            result["confirmed"]=balance.confirmed;result["unconfirmed"]=balance.unconfirmed;
+            result["immature"]=balance.immature;result["total"]=balance.total;
+            result["locked"]=ReservationAmount(summary.locked);
+            result["spendable"]=ReservationAmount(summary.available_confirmed);result["utxo_count"]=balance.utxo_count;
+            result["pq_balance_una"]=Json::UInt64(summary.pq_confirmed_una);
+            result["pq_balance_din"]=double(summary.pq_confirmed_una)/1e8;
+            result["pq_ratio"]=balance.confirmed>0?(double(summary.pq_confirmed_una)/1e8)/balance.confirmed:0.0;
+            result["breakdown"]["spendable"]=ReservationAmount(summary.available_confirmed);
+            result["breakdown"]["pending"]=balance.unconfirmed;
+            result["breakdown"]["unspendable"]=ReservationAmount(summary.unavailable_confirmed_and_immature);
+            result["walletname"]=summary.wallet_name;
+            result["balance_scope"]="current_tip_ordinary";result["whole_wallet_ready"]=false;
+            result["checkpoint_height"]=Json::UInt64((*captured)->TipHeight());
+            result["checkpoint_hash"]=(*captured)->TipHash().GetHex();
+            result["applied_sequence"]=Json::UInt64((*captured)->Cursor().sequence);
+            result["rpc_schema"]="din.wallet.v1";return result;
+        }
         auto& mgr = wallet_service->get();
 
         // Sync gate: wait for wallet worker to catch up to chain tip.
@@ -654,48 +719,30 @@ din::Json rpc_context_wallet_getbalance(const ExecutionContext& ctx, const din::
             }
         }
 
-        auto balance = mgr.getBalance();
-
-        // Phase 35.3: Compute locked balance
-        double locked_balance = mgr.getLockedBalance();
+        const auto summary = mgr.getBalanceSummary(ctx.walletName);
+        const auto& balance = summary.balance;
+        result["reservation_status"] = ReservationStatusName(summary.reservations);
 
         // Phase 35: Enhanced balance breakdown
         result["confirmed"] = balance.confirmed;
         result["unconfirmed"] = balance.unconfirmed;
         result["immature"] = balance.immature;
-        result["locked"] = locked_balance;  // Phase 35.3: Actual locked balance
+        result["locked"] = ReservationAmount(summary.locked);
         result["total"] = balance.total;
-        result["spendable"] = balance.spendable;
+        result["spendable"] = ReservationAmount(summary.available_confirmed);
         result["utxo_count"] = balance.utxo_count;
 
-        // PQ health ratio: what fraction of the wallet's confirmed balance
-        // is held in quantum-resistant (P2MR) UTXOs. Read-only metric —
-        // no enforcement, just visibility for the user or a future UI.
-        {
-            auto utxos = mgr.listUnspentUTXOs(1, 9999999);
-            int64_t p2mr_una = 0;
-            int64_t total_una = 0;
-            for (const auto& u : utxos) {
-                if (!u.spendable || !u.is_mature) continue;
-                total_una += u.amount_una;
-                const auto& spk = u.script_pubkey;
-                if (spk.length() == 68 && spk.rfind("5320", 0) == 0) {
-                    p2mr_una += u.amount_una;
-                }
-            }
-            double pq_ratio = (total_una > 0)
-                ? static_cast<double>(p2mr_una) / static_cast<double>(total_una)
-                : 0.0;
-            result["pq_ratio"]        = pq_ratio;
-            result["pq_balance_din"]  = static_cast<double>(p2mr_una) / 1e8;
-            result["pq_balance_una"]  = static_cast<int64_t>(p2mr_una);
-        }
+        // Same wallet snapshot as the balance and recorded reservations.
+        result["pq_ratio"] = balance.confirmed > 0
+            ? (static_cast<double>(summary.pq_confirmed_una) / 1e8) / balance.confirmed : 0.0;
+        result["pq_balance_din"] = static_cast<double>(summary.pq_confirmed_una) / 1e8;
+        result["pq_balance_una"] = static_cast<Json::UInt64>(summary.pq_confirmed_una);
 
         // Phase 35: Detailed breakdown for verification
         din::Json breakdown;
-        breakdown["spendable"] = balance.spendable;  // confirmed - locked
+        breakdown["spendable"] = ReservationAmount(summary.available_confirmed);  // confirmed - locked
         breakdown["pending"] = balance.unconfirmed;  // unconfirmed
-        breakdown["unspendable"] = balance.immature + locked_balance;  // immature + locked
+        breakdown["unspendable"] = ReservationAmount(summary.unavailable_confirmed_and_immature);
         result["breakdown"] = breakdown;
 
         // Phase F: Add confidential balance if chainstate/UTXOIndex available
@@ -810,8 +857,25 @@ din::Json rpc_context_wallet_getwalletinfo(const ExecutionContext& ctx, const di
         // Wallet name
         result["walletname"] = mgr.current();
 
-        // Balance aggregation (read-only)
-        auto balance = mgr.getBalance();
+        // Keep non-secret loaded-wallet metadata available without reporting
+        // ordinary rows as a current mixed balance. This branch writes no
+        // baseline/schema/identity, and still checks the requested wallet.
+        if (const auto refusal = ImportedRuntimeBalanceRefusal(ctx)) {
+            auto lease = mgr.AcquireDatabaseLease();
+            if (lease->WalletName().empty() ||
+                (!ctx.walletName.empty() && lease->WalletName() != ctx.walletName))
+                throw std::runtime_error("Wallet info selection changed");
+            result["walletname"] = lease->WalletName();
+            result["balance_status"] = "reconciliation_required";
+            result["balance_error"] = (*refusal)["error"];
+            result["error_code"] = (*refusal)["error_code"];
+            result["retryable"] = true;
+        } else {
+        // Balance aggregation (read-only), original non-imported behavior.
+        const auto summary = mgr.getBalanceSummary(ctx.walletName);
+        const auto& balance = summary.balance;
+        result["walletname"] = summary.wallet_name;
+        result["reservation_status"] = ReservationStatusName(summary.reservations);
         result["balance"] = balance.total;
         result["transparent_balance"] = balance.total;
         result["confirmed_balance"] = balance.confirmed;
@@ -835,11 +899,13 @@ din::Json rpc_context_wallet_getwalletinfo(const ExecutionContext& ctx, const di
         }
 
         // Locked balance (Phase 35.3)
-        double locked_balance = mgr.getLockedBalance();
-        result["locked_balance"] = locked_balance;
+        result["locked_balance"] = ReservationAmount(summary.locked);
 
         // Spendable balance
-        result["spendable_balance"] = balance.spendable;
+        result["spendable_balance"] = ReservationAmount(summary.available_confirmed);
+        result["utxo_count"] = balance.utxo_count;
+        result["immature_utxo_count"] = balance.immature_utxo_count;
+        }
 
         // Transaction count (read-only - no limit to get full count)
         auto tx_history = mgr.getTransactionHistory(999999, 0);
@@ -848,10 +914,6 @@ din::Json rpc_context_wallet_getwalletinfo(const ExecutionContext& ctx, const di
         // Address count (read-only)
         auto addresses = mgr.listAddresses(false);  // Don't need labels for count
         result["address_count"] = static_cast<int>(addresses.size());
-
-        // UTXO count
-        result["utxo_count"] = balance.utxo_count;
-        result["immature_utxo_count"] = balance.immature_utxo_count;
 
         // HD wallet status (read-only check)
         result["hd_enabled"] = (mgr.getHDWallet() != nullptr);
@@ -993,29 +1055,7 @@ din::Json rpc_context_wallet_snapshot(const ExecutionContext& ctx, const din::Js
         sync_obj["error"] = std::string("Failed to build sync snapshot: ") + e.what();
     }
 
-    din::Json proof_context;
-    std::string tip_hash;
-    if (ctx.daemon->chainstate) {
-        tip_hash = ctx.daemon->chainstate->getBestBlockHash();
-        proof_context["tip_height"] = static_cast<Json::UInt64>(ctx.daemon->chainstate->getBlockHeight());
-    } else {
-        proof_context["tip_height"] = static_cast<Json::UInt64>(0);
-    }
-    proof_context["tip_hash"] = tip_hash;
-
-    din::Json commitment_result = din::rpc_getutreexocommitment(ctx, din::arr());
-    if (!commitment_result.isMember("error") &&
-        commitment_result.isMember("commitment") &&
-        commitment_result["commitment"].isString()) {
-        proof_context["utreexo_root"] = commitment_result["commitment"].asString();
-    } else {
-        proof_context["utreexo_root"] = "";
-    }
-    proof_context["available"] =
-        proof_context["tip_hash"].isString() &&
-        !proof_context["tip_hash"].asString().empty() &&
-        proof_context["utreexo_root"].isString() &&
-        !proof_context["utreexo_root"].asString().empty();
+    const auto proof_context = din::BuildUtreexoProofContext(ctx);
 
     din::Json balances;
     balances["confirmed"] = 0.0;
@@ -1351,6 +1391,7 @@ din::Json rpc_context_wallet_snapshot(const ExecutionContext& ctx, const din::Js
     }
 
     try {
+        if (const auto refusal = ImportedRuntimeBalanceRefusal(ctx)) return *refusal;
         auto& mgr = wallet_service->get();
         wallet_obj["name"] = mgr.current();
         wallet_obj["encrypted"] = mgr.isWalletEncrypted();
@@ -1358,19 +1399,21 @@ din::Json rpc_context_wallet_snapshot(const ExecutionContext& ctx, const din::Js
         wallet_obj["unlocked"] = !mgr.isWalletLocked();
         wallet_obj["hd_enabled"] = (mgr.getHDWallet() != nullptr);
 
-        const auto balance = mgr.getBalance();
-        const double locked_balance = mgr.getLockedBalance();
+        const auto summary = mgr.getBalanceSummary(ctx.walletName);
+        const auto& balance = summary.balance;
+        wallet_obj["name"] = summary.wallet_name;
+        balances["reservation_status"] = ReservationStatusName(summary.reservations);
         balances["confirmed"] = balance.confirmed;
         balances["unconfirmed"] = balance.unconfirmed;
         balances["immature"] = balance.immature;
-        balances["locked"] = locked_balance;
+        balances["locked"] = ReservationAmount(summary.locked);
         balances["total"] = balance.total;
-        balances["spendable"] = balance.spendable;
+        balances["spendable"] = ReservationAmount(summary.available_confirmed);
         balances["utxo_count"] = balance.utxo_count;
         balances["immature_utxo_count"] = balance.immature_utxo_count;
-        balances["breakdown"]["spendable"] = balance.spendable;
+        balances["breakdown"]["spendable"] = ReservationAmount(summary.available_confirmed);
         balances["breakdown"]["pending"] = balance.unconfirmed;
-        balances["breakdown"]["unspendable"] = balance.immature + locked_balance;
+        balances["breakdown"]["unspendable"] = ReservationAmount(summary.unavailable_confirmed_and_immature);
 
         const auto addresses = mgr.listAddresses(true);
         receive_obj["known_address_count"] = static_cast<Json::UInt64>(addresses.size());
@@ -1442,7 +1485,12 @@ din::Json rpc_context_wallet_snapshot(const ExecutionContext& ctx, const din::Js
             addr_obj["confirmed"] = addr_balance.confirmed;
             addr_obj["unconfirmed"] = addr_balance.unconfirmed;
             addr_obj["immature"] = addr_balance.immature;
-            addr_obj["spendable"] = addr_balance.spendable;
+            std::vector<uint8_t> exact_script;
+            const bool known_script = util::unhex(addr_row.script_pubkey, exact_script) && !exact_script.empty();
+            const auto available = summary.available_by_script.find(known_script ? util::hex(exact_script) : "");
+            addr_obj["spendable"] = available == summary.available_by_script.end()
+                ? din::Json(Json::nullValue) : din::Json(available->second);
+            addr_obj["reservation_status"] = ReservationStatusName(summary.reservations);
             addr_obj["utxo_count"] = addr_balance.utxo_count;
 
             funded_entries.push_back(FundedAddressEntry{
@@ -1871,11 +1919,6 @@ din::Json rpc_context_wallet_listunspent(const ExecutionContext& ctx, const din:
         return result;
     }
 
-    if (!wallet_service->hasActiveWallet()) {
-        result["error"] = "No active wallet";
-        return result;
-    }
-
     try {
         int min_conf = 1;
         int max_conf = 9999999;
@@ -1887,31 +1930,79 @@ din::Json rpc_context_wallet_listunspent(const ExecutionContext& ctx, const din:
             max_conf = params[1].as<int>();
         }
 
-        const dinero::Mempool* mempool = nullptr;
-        if (ctx.daemon->mempool) {
-            if (auto mempool_service = std::dynamic_pointer_cast<dinero::MempoolService>(ctx.daemon->mempool);
-                mempool_service && mempool_service->isInitialized()) {
-                mempool = &mempool_service->mempool();
-            }
+        // Retain each service through result construction. These owners pin
+        // lifetimes; they do not certify a canonical or complete wallet view.
+        auto wallet_use = dinero::WalletService::AcquireWalletUse(wallet_service);
+        auto& mgr = wallet_use->Wallet();
+        uint64_t session = 0;
+        std::string wallet_name;
+        {
+            auto lease = mgr.AcquireDatabaseLease();
+            session = lease->Session();
+            wallet_name = lease->WalletName();
+            if (wallet_name.empty() || (!ctx.walletName.empty() && ctx.walletName != wallet_name))
+                throw std::runtime_error("Wallet request selection changed");
         }
-
-        auto& mgr = wallet_service->get();
-
-        // Sync gate: wait for wallet worker to catch up to chain tip.
-        if (ctx.daemon->chainstate) {
-            auto cs = std::dynamic_pointer_cast<dinero::ChainstateService>(ctx.daemon->chainstate);
-            if (cs) {
-                mgr.WaitForHeight(cs->getBlockHeight(), std::chrono::milliseconds(5000));
-            }
+        auto chainstate = std::dynamic_pointer_cast<dinero::ChainstateService>(ctx.daemon->chainstate);
+        if (ctx.daemon->chainstate && !chainstate)
+            throw std::runtime_error("Wallet chainstate owner unavailable");
+        auto index_use = chainstate
+            ? dinero::ChainstateService::AcquireWalletIndexUse(chainstate) : nullptr;
+        std::shared_ptr<const dinero::RuntimeFundingCandidates> funding;
+        if(chainstate){
+            const auto data=chainstate->getRuntimeFundingCandidates(mgr,session);
+            if(!data.ok())throw std::runtime_error("Authenticated post-base funding source unavailable");
+            funding=*data; // DATA only, never a replacement coin/index baseline.
         }
+        std::unique_ptr<dinero::MempoolService::PoolUse> pool_use;
+        uint32_t target_height = 0;
+        if (chainstate) {
+            auto selected = chainstate->AcquireBlockIngressActivationLock();
+            target_height = chainstate->getBlockHeight();
+            if (ctx.daemon->mempool)
+                pool_use = dinero::MempoolService::AcquirePoolUse(
+                    std::dynamic_pointer_cast<dinero::MempoolService>(ctx.daemon->mempool));
+        } else if (ctx.daemon->mempool) {
+            throw std::runtime_error("Wallet pool requires a selected-chain owner");
+        }
+        // The worker must be able to acquire wallet/chain locks while catching
+        // up. Recheck the selected wallet after this existing bounded wait.
+        if (chainstate && !funding)
+            mgr.WaitForHeight(target_height, std::chrono::milliseconds(5000));
+        auto lease = mgr.AcquireDatabaseLease();
+        if (lease->Session() != session || lease->WalletName() != wallet_name)
+            throw std::runtime_error("Wallet request selection changed");
+        if (mgr.getUTXOIndex() && (!index_use || mgr.getUTXOIndex() != &index_use->Index()))
+            throw std::runtime_error("Wallet index owner does not match selected wallet");
+        const dinero::Mempool* mempool = pool_use ? &pool_use->Pool() : nullptr;
 
         auto utxos = mgr.listUnspentUTXOs(min_conf, max_conf, mempool);
+        if(funding){
+            utxos.erase(std::remove_if(utxos.begin(),utxos.end(),[&](const auto& coin){
+                return funding->unavailable.contains(dinero::OutPoint(dinero::TxId(dinero::uint256::FromHexUnsafe(coin.txid)),coin.vout));
+            }),utxos.end());
+            for(const auto& coin:funding->coins){
+                if(mempool&&mempool->isOutputSpentInMempool(coin.point))continue;
+                const auto id=coin.point.txid.AsUint256().GetHex(),script=util::hex(coin.script);
+                const auto existing=std::find_if(utxos.begin(),utxos.end(),[&](const auto& row){return row.txid==id&&row.vout==coin.point.vout;});
+                if(existing!=utxos.end()){
+                    if(existing->amount_una!=coin.value||existing->script_pubkey!=script||existing->height!=coin.height||existing->is_coinbase!=coin.coinbase)
+                        throw std::runtime_error("Post-base funding conflicts with existing wallet DATA");
+                }else{
+                    dinero::WalletManager::WalletUTXO row{};row.txid=id;row.vout=coin.point.vout;row.amount_una=coin.value;
+                    row.amount_din=double(coin.value)/100000000.0;row.script_pubkey=script;row.height=coin.height;row.is_coinbase=coin.coinbase;
+                    utxos.push_back(std::move(row));
+                }
+            }
+            for(auto& coin:utxos){coin.confirmations=0;coin.is_mature=false;coin.spendable=false;}
+        }
         din::Json utxo_array = din::arr();
 
         for (const auto& utxo : utxos) {
             din::Json utxo_obj;
             const bool solvable = mgr.hasSigningMaterialForScriptPubKey(utxo.script_pubkey);
-            const bool spendable = utxo.spendable && solvable;
+            const bool locked = mgr.isUTXOLocked(utxo.txid, utxo.vout);
+            const bool spendable = utxo.spendable && solvable && !locked;
 
             // Phase 35: Enhanced UTXO metadata
             utxo_obj["txid"] = utxo.txid;
@@ -1923,10 +2014,13 @@ din::Json rpc_context_wallet_listunspent(const ExecutionContext& ctx, const din:
             utxo_obj["confirmations"] = utxo.confirmations;
             utxo_obj["spendable"] = spendable;
             utxo_obj["solvable"] = solvable;
-            utxo_obj["safe"] = (utxo.confirmations > 0) && solvable;  // Confirmed + signable = safe
+            utxo_obj["safe"] = (utxo.confirmations > 0) && solvable;  // Existing recognition policy; not a readiness certificate
             utxo_obj["is_coinbase"] = utxo.is_coinbase;
             utxo_obj["is_mature"] = utxo.is_mature;
-            utxo_obj["locked"] = mgr.isUTXOLocked(utxo.txid, utxo.vout);  // Phase 35.3: Check lock status
+            utxo_obj["locked"] = locked;
+            utxo_obj["snapshot_candidate"] = utxo.snapshot_candidate;
+            if(funding){utxo_obj["candidate_only"]=true;utxo_obj["funding_source_height"]=funding->height;
+                utxo_obj["funding_source_hash"]=funding->block.GetHex();utxo_obj["candidate_created_height"]=utxo.height;}
 
             // Parse witness version from scriptPubKey
             uint8_t witness_version = 0xFF;  // Default: legacy (non-witness)
@@ -2412,16 +2506,24 @@ din::Json rpc_context_wallet_unlock(const ExecutionContext& ctx, const din::Json
     }
 
     try {
+        auto wallet_use = dinero::WalletService::AcquireWalletUse(wallet_service);
         std::string passphrase = params[0].as<std::string>();
         int timeout = 0;
         if (params.size() >= 2 && params[1].is<int>()) {
             timeout = params[1].as<int>();
         }
 
-        wallet_service->get().unlockWallet(passphrase, timeout);
+        uint64_t unlocked_session = 0;
+        {
+            // Pin the selected wallet only for the actual unlock transaction.
+            // Release this lease before canonical source capture and replay.
+            auto lease = wallet_use->Wallet().AcquireDatabaseLease();
+            unlocked_session = lease->Session();
+            wallet_use->Wallet().unlockWallet(passphrase, timeout);
+        }
         result["success"] = true;
         std::string recovery_error;
-        if (!wallet_service->RecoverActiveWalletFromSnapshotIfNeeded(&recovery_error)) {
+        if (!wallet_service->RecoverActiveWalletFromSnapshotIfNeeded(&recovery_error, unlocked_session)) {
             result["recovery_warning"] = recovery_error;
         }
         if (ctx.logger) {
@@ -2590,6 +2692,9 @@ din::Json rpc_context_wallet_sendtoaddress(const ExecutionContext& ctx, const di
     }
 
     try {
+        const auto wallet_use=dinero::WalletService::AcquireWalletUse(wallet_service);
+        const auto source_use=dinero::ChainstateService::AcquireWalletIndexUse(chainstate_service);
+        const auto signing_identity=dinero::CaptureWalletSigningIdentity(wallet_use->Wallet(),ctx.walletName);
         // Support both array and object parameter formats
         // Array: [address, amount, fee_rate, comment, broadcast]
         // Object: {"address": "...", "amount": 1.0, "preview": true} for dry-run
@@ -3038,89 +3143,22 @@ din::Json rpc_context_wallet_sendtoaddress(const ExecutionContext& ctx, const di
             }
         }
 
-        // Get private keys for selected UTXOs (needed for signing in both normal and test mode)
-        std::map<std::string, std::string> private_keys;
-        for (const auto& utxo : selected_utxos) {
-            std::string script_pubkey = utxo.script_pubkey;
-
-            // Legacy safety net: backfill scriptPubKey from address metadata.
-            if (script_pubkey.empty() && !utxo.address.empty()) {
-                auto spk_opt = wallet_service->get().getScriptPubKeyForAddress(utxo.address);
-                if (spk_opt.has_value() && !spk_opt->empty()) {
-                    script_pubkey = *spk_opt;
-                    log_debug("[wallet.sendtoaddress] Recovered scriptPubKey from address metadata for " +
-                              utxo.txid.substr(0, 16) + ":" + std::to_string(utxo.vout));
+        // Preview reports actual resolvable ordinary keys without retaining
+        // secret hex. Signing independently rechecks this captured session.
+        size_t available_keys=0;
+        if(!broadcast) {
+            auto lease=wallet_service->get().AcquireDatabaseLease();
+            if(lease->Session()!=signing_identity.session || lease->WalletName()!=signing_identity.name)
+                throw std::runtime_error("Selected wallet signing session changed");
+            auto pin=lease->CopyRecoverySeed(signing_identity.session);
+            for(const auto& coin:selected_utxos) {
+                auto script=coin.script_pubkey;
+                if(script.empty() && !coin.address.empty()) {
+                    auto recorded=wallet_service->get().getScriptPubKeyForAddress(coin.address);
+                    if(recorded)script=*recorded;
                 }
-            }
-
-            // Phase 34.3: Direct scriptPubKey → private key lookup
-            // ⚠️ CRITICAL FIX: Use deriveKeyForScriptPubKey() (same as PSBT/raw tx signing)
-            // Replaces legacy listAddresses() approach which fails for mempool-created UTXOs
-            if (script_pubkey.empty()) {
-                log_error("📤 ❌ UTXO has empty scriptPubKey: " + utxo.txid + ":" + std::to_string(utxo.vout));
-                continue;
-            }
-
-            // Phase 10: P2MR (witness v3) inputs have no ECDSA private key.
-            // The signing secret is a PQ seed resolved by WalletKeyProvider at
-            // sign-time via the V7P2MRStore. Skip legacy key derivation here —
-            // deriveKeyForScriptPubKey can't decode a 0x53 0x20 || merkle_root
-            // script and would log a spurious error for every P2MR coin.
-            {
-                std::vector<uint8_t> spk_bytes;
-                spk_bytes.reserve(script_pubkey.size() / 2);
-                for (std::size_t i = 0; i + 1 < script_pubkey.size(); i += 2) {
-                    spk_bytes.push_back(static_cast<uint8_t>(
-                        std::stoi(script_pubkey.substr(i, 2), nullptr, 16)));
-                }
-                if (dinero::consensus::pq::IsP2MRScript(spk_bytes)) {
-                    continue;
-                }
-            }
-
-            // Direct scriptPubKey → private key resolution (Bitcoin Core semantics)
-            auto privkey_bytes = wallet_service->get().deriveKeyForScriptPubKey(script_pubkey);
-            if (privkey_bytes.has_value() && !privkey_bytes->empty()) {
-                // Convert bytes to hex string for compatibility with existing signing code
-                std::ostringstream priv_key_hex;
-                for (uint8_t byte : privkey_bytes.value()) {
-                    priv_key_hex << std::hex << std::setw(2) << std::setfill('0') << static_cast<int>(byte);
-                }
-                // Store by derivation_path (not address) - TransactionSigner
-                // looks up keys by utxo.path which is now the BIP32 derivation path
-                private_keys[utxo.derivation_path] = priv_key_hex.str();
-                log_info("📤 ✅ Retrieved private key for scriptPubKey: " + script_pubkey.substr(0, 16) + "...");
-            } else {
-                // Fallback path: if script-based path lookup is incomplete, derive by known selected path.
-                if (!utxo.derivation_path.empty()) {
-                    std::string priv_key_hex = wallet_service->get().getPrivateKeyForPath(utxo.derivation_path);
-                    if (!priv_key_hex.empty()) {
-                        private_keys[utxo.derivation_path] = priv_key_hex;
-                        log_info("📤 ✅ Retrieved private key via derivation path fallback: " +
-                                 utxo.derivation_path);
-                        continue;
-                    }
-                }
-                log_error("📤 ❌ Could not derive key for scriptPubKey/path: " + script_pubkey +
-                          " / " + utxo.derivation_path);
-            }
-        }
-
-        // Phase 10: empty private_keys is OK if every selected UTXO is P2MR —
-        // those are signed via WalletKeyProvider::SignP2MR (PQ seed, not
-        // secp256k1 private key). Only fail if we have selected UTXOs that
-        // need ECDSA keys AND we couldn't derive any.
-        if (private_keys.empty() && broadcast) {
-            bool has_non_p2mr = false;
-            for (const auto& utxo : selected_utxos) {
-                const std::string& spkhex = utxo.script_pubkey;
-                const bool is_p2mr = (spkhex.length() == 68 && spkhex.rfind("5320", 0) == 0);
-                if (!is_p2mr) { has_non_p2mr = true; break; }
-            }
-            if (has_non_p2mr) {
-                log_error("[wallet.sendtoaddress] No private keys available after script and path derivation attempts");
-                result["error"] = "Could not retrieve private keys for signing";
-                return result;
+                auto key=lease->ResolveSigningKey(script,*pin);
+                if(key && !key->secret.empty())++available_keys;
             }
         }
 
@@ -3169,73 +3207,17 @@ din::Json rpc_context_wallet_sendtoaddress(const ExecutionContext& ctx, const di
                 return result;
             }
 
-            // Step 2: Sign transaction using TransactionSigner + existing key infrastructure
-            // Build key provider from selected UTXOs
-            // NOTE: Keys are indexed by derivation_path because TransactionSigner
-            // looks up keys using utxo.path (which is now the BIP32 derivation path)
-            std::map<std::string, std::string> path_to_key;
-            for (const auto& utxo : selected_utxos) {
-                // Get private key for this derivation path
-                std::string priv_key_hex = private_keys[utxo.derivation_path];
-                if (!priv_key_hex.empty()) {
-                    path_to_key[utxo.derivation_path] = priv_key_hex;
-                }
-            }
-
-            // Phase 10: if any selected UTXO is P2MR (witness v3), we must
-            // use the hybrid provider that knows how to resolve v7 seeds
-            // and produce ML-DSA-65 signatures. Otherwise the legacy
-            // MapKeyProvider is sufficient (and cheaper — no store open).
-            bool any_p2mr = false;
-            for (const auto& cu : utxos_for_builder) {
-                if (dinero::consensus::pq::IsP2MRScript(cu.spk)) {
-                    any_p2mr = true;
-                    break;
-                }
-            }
-
-            std::unique_ptr<dinero::KeyProvider> key_provider_holder;
-            std::unique_ptr<dinero::wallet::V7P2MRStore> p2mr_store_holder;
-
-            if (any_p2mr) {
-                // Wallet must be unlocked: v7 signing needs the AEAD master
-                // key to decrypt the stored seed.
-                auto master_opt = wallet_service->get().GetV7PqMasterKey();
-                if (!master_opt) {
-                    result["error"] = "Cannot spend P2MR coin: wallet locked or v7 master key unavailable";
-                    return result;
-                }
-                const std::string store_path = wallet_service->get().GetV7P2MRStorePath();
-                if (store_path.empty()) {
-                    result["error"] = "Cannot spend P2MR coin: v7 P2MR store path not configured";
-                    return result;
-                }
-                p2mr_store_holder = std::make_unique<dinero::wallet::V7P2MRStore>();
-                if (p2mr_store_holder->Open(store_path) != dinero::wallet::V7P2MRStore::OpenResult::Ok) {
-                    result["error"] = "Cannot spend P2MR coin: failed to open v7 P2MR store";
-                    return result;
-                }
-
-                dinero::wallet::WalletKeyProvider::Config cfg;
-                cfg.legacy_keys_by_path = path_to_key;
-                cfg.p2mr_store          = p2mr_store_holder.get();
-                cfg.wallet_id           = 1;  // single-wallet today, matches v7 RPC handlers
-                std::memcpy(cfg.master_key.data(), master_opt->data(), cfg.master_key.size());
-                // Scrub the caller-side copy after stamping into cfg.
-                OPENSSL_cleanse(const_cast<uint8_t*>(master_opt->data()), master_opt->size());
-
-                key_provider_holder = std::make_unique<dinero::wallet::WalletKeyProvider>(std::move(cfg));
-            } else {
-                key_provider_holder = std::make_unique<dinero::MapKeyProvider>(path_to_key);
-            }
-
-            auto sign_result = dinero::TransactionSigner::Sign(build_result.unsigned_tx, *key_provider_holder);
+            auto sign_result=chainstate_service->signAndStageWalletPayment(
+                wallet_use->Wallet(),signing_identity,build_result.unsigned_tx,
+                dinero::PendingPaymentIntent{address,parsed_amount_una,""});
 
             if (!sign_result.success) {
                 result["error"] = "Failed to sign transaction: " + sign_result.error;
                 return result;
             }
 
+            result["txid"] = sign_result.signed_tx.tx.GetTxid().AsUint256().GetHex();
+            result["payment_retained"] = true;
             // Step 3: Submit to mempool
             if (!ctx.daemon->mempool) {
                 result["error"] = "Mempool service not available";
@@ -3290,20 +3272,10 @@ din::Json rpc_context_wallet_sendtoaddress(const ExecutionContext& ctx, const di
                 result["selected_inputs"] = inputs_arr;
             }
 
-            // Record "send" entry in wallet transaction history
-            if (submit_result.accepted()) {
-                int64_t now = std::chrono::duration_cast<std::chrono::seconds>(
-                    std::chrono::system_clock::now().time_since_epoch()).count();
-                const bool history_recorded = wallet_service->get().addTransaction(
-                    sent_txid, address, -(amount_din + fee_din),
-                    "send", false, "", now, 0);
-                if (!history_recorded) {
-                    result["history_warning"] = "Transaction broadcast succeeded but wallet send history entry could not be recorded";
-                    if (ctx.logger) {
-                        ctx.logger->warning("[wallet.sendtoaddress] Broadcast succeeded but addTransaction(send) failed for tx " + sent_txid);
-                    }
-                }
-            }
+            // The signed body, explicit intent, history and reservations were
+            // committed before submit. Rejection/exception is not proof that
+            // publication did not happen, so this owner remains recoverable.
+            result["payment_retained"] = true;
 
             if (ctx.logger) {
                 ctx.logger->info("[wallet.sendtoaddress] TX " + sent_txid +
@@ -3330,7 +3302,7 @@ din::Json rpc_context_wallet_sendtoaddress(const ExecutionContext& ctx, const di
             result["change_address"] = change_address;
         }
 
-        result["available_keys"] = static_cast<int>(private_keys.size());
+        result["available_keys"] = static_cast<int>(available_keys);
 
         if (ctx.logger) {
             ctx.logger->info("[wallet.sendtoaddress] Preview: " + std::to_string(amount_din) +
@@ -3352,13 +3324,17 @@ din::Json rpc_context_wallet_sendtoaddress(const ExecutionContext& ctx, const di
  *
  * Phase 33.4: Batch payments support
  */
-din::Json rpc_context_wallet_sendmany(const ExecutionContext& ctx, const din::Json& params) {
+static din::Json SendManyWithWalletOwner(const ExecutionContext& ctx, const din::Json& params,
+    const std::shared_ptr<dinero::WalletService>& required_service,
+    const dinero::WalletSigningIdentity* required_identity,
+    dinero::WalletRequestDispatchMode dispatch_mode = dinero::WalletRequestDispatchMode::Submit) {
     din::Json result;
     if (RefuseIfSafeMode(ctx, result)) return result;  // spec Fatal §3
 
     // params[0] = { "address1": amount1, "address2": amount2, ... }
     // params[1] = optional fee_rate
-    if (params.empty() || !params[0].isObject()) {
+    const bool requested = params.isObject();
+    if (!requested && (!params.isArray() || params.empty() || !params[0].isObject())) {
         result["error"] = "Usage: wallet.sendmany {\"address1\": amount1, \"address2\": amount2, ...} [fee_rate]";
         return result;
     }
@@ -3374,52 +3350,174 @@ din::Json rpc_context_wallet_sendmany(const ExecutionContext& ctx, const din::Js
         return result;
     }
 
-    if (wallet_service->get().isWalletLocked()) {
-        result["error"] = "Wallet is locked. Use wallet.unlock first.";
-        return result;
-    }
-
-    if (!ctx.daemon->chainstate) {
-        result["error"] = "Chainstate service not available";
-        return result;
-    }
-
-    auto chainstate_service = std::dynamic_pointer_cast<dinero::ChainstateService>(ctx.daemon->chainstate);
-    if (!chainstate_service || !chainstate_service->utxoIndex()) {
-        result["error"] = "UTXO index not available";
-        return result;
-    }
-
     try {
-        din::Json recipients_obj = params[0];
+        if(required_identity && (!required_service || required_service!=wallet_service || !requested))
+            throw std::runtime_error("Bound payment wallet service or request format changed");
+        // Retain the actual manager through all synchronous callbacks. This
+        // lifetime owner holds no wallet database/key or selected-chain lock.
+        const auto wallet_use=dinero::WalletService::AcquireWalletUse(wallet_service);
+        if(wallet_use->Wallet().isWalletLocked())
+            throw std::runtime_error("Wallet is locked. Use wallet.unlock first.");
+        auto signing_identity=dinero::CaptureWalletSigningIdentity(wallet_use->Wallet(),ctx.walletName);
+        if(required_identity && (required_identity->session==0 || required_identity->name.empty() ||
+            signing_identity.name!=required_identity->name || signing_identity.session!=required_identity->session))
+            throw std::runtime_error("Bound payment selected wallet session changed");
+        if(required_identity) {
+            signing_identity.database_id=required_identity->database_id;
+            if(signing_identity.database_id) {
+                auto lease=wallet_use->Wallet().AcquireDatabaseLease();
+                if(lease->Session()!=signing_identity.session || lease->WalletName()!=signing_identity.name ||
+                   lease->ReadDeliveryIdentity()!=*signing_identity.database_id)
+                    throw std::runtime_error("Bound payment payer database changed");
+            }
+        }
+        din::Json recipients_obj = requested ? din::Json() : params[0];
         double fee_rate = 1.0;
+        std::optional<dinero::PendingPaymentRequest> request_binding;
+        if (requested) {
+            const auto fields = [](const din::Json& object, std::vector<std::string> expected) {
+                if (!object.isObject()) throw std::runtime_error("Payment request requires an object");
+                auto actual = object.getMemberNames();std::sort(actual.begin(),actual.end());std::sort(expected.begin(),expected.end());
+                if (actual != expected) throw std::runtime_error("Payment request fields are incomplete or unknown");
+            };
+            const auto integer = [](const din::Json& value) -> uint64_t {
+                if ((value.type()!=::Json::intValue && value.type()!=::Json::uintValue) ||
+                    (value.type()==::Json::intValue && value.asInt64()<0))
+                    throw std::runtime_error("Payment request requires unsigned integer amounts and fees");
+                const auto amount=value.asUInt64();
+                if(amount>dinero::MAX_SUPPLY_UNA_CONST)throw std::runtime_error("Payment request integer exceeds supply");
+                return amount;
+            };
+            fields(params,{"recipients","request"});
+            const auto& binding=params["request"];
+            std::vector<std::string> request_fields={"domain","owner","id","fee_rate_hint","maximum_fee_una","audit_context"};
+            if(binding.isMember("pool_origins"))request_fields.push_back("pool_origins");
+            fields(binding,request_fields);
+            if(!binding["domain"].isString() ||
+               (binding["domain"].asString()!="vault_withdrawal" && binding["domain"].asString()!="pool_payout" &&
+                binding["domain"].asString()!="swap_funding") ||
+               !binding["owner"].isString() || !binding["id"].isString() || !binding["audit_context"].isString())
+                throw std::runtime_error("Payment request domain or identity type invalid");
+            dinero::PendingPaymentRequest request;
+            request.domain=binding["domain"].asString()=="swap_funding"
+                ? dinero::PendingPaymentRequestDomain::SwapFunding
+                : binding["domain"].asString()=="pool_payout"
+                    ? dinero::PendingPaymentRequestDomain::PoolPayout
+                    : dinero::PendingPaymentRequestDomain::VaultWithdrawal;
+            // A generic selected-wallet send cannot act as the swap adapter.
+            // The caller must retain and supply the intended live wallet owner;
+            // durable swap enrollment remains the adapter's responsibility.
+            if(request.domain==dinero::PendingPaymentRequestDomain::SwapFunding &&
+               (!required_identity || !required_identity->database_id))
+                throw std::runtime_error("Swap funding requires bound wallet dispatch");
+            std::vector<uint8_t> owner,id;
+            const auto owner_hex=binding["owner"].asString(),id_hex=binding["id"].asString();
+            if(owner_hex.size()!=64 || id_hex.size()!=32 || !util::unhex(owner_hex,owner) || !util::unhex(id_hex,id) || owner.size()!=32 || id.size()!=16)
+                throw std::runtime_error("Payment request identity encoding invalid");
+            std::copy(owner.begin(),owner.end(),request.owner.begin());std::copy(id.begin(),id.end(),request.id.begin());
+            request.fee_rate_hint=integer(binding["fee_rate_hint"]);
+            request.maximum_fee_una=integer(binding["maximum_fee_una"]);
+            request.audit_context=binding["audit_context"].asString();
+            if(binding.isMember("pool_origins")) {
+                const auto& origins=binding["pool_origins"];
+                if(request.domain!=dinero::PendingPaymentRequestDomain::PoolPayout ||
+                   !origins.isArray() || origins.empty() || origins.size()>256)
+                    throw std::runtime_error("Pool allocation reference list invalid");
+                for(const auto& value:origins) {
+                    std::vector<uint8_t> bytes;std::array<uint8_t,32> origin{};
+                    if(!value.isString() || value.asString().size()!=64 ||
+                       !util::unhex(value.asString(),bytes) || bytes.size()!=origin.size())
+                        throw std::runtime_error("Pool allocation reference encoding invalid");
+                    std::copy(bytes.begin(),bytes.end(),origin.begin());request.pool_origins.push_back(origin);
+                }
+            }
+            fee_rate=static_cast<double>(request.fee_rate_hint ? request.fee_rate_hint : 1);
+            if(dispatch_mode==dinero::WalletRequestDispatchMode::RetainOnly &&
+               request.domain!=dinero::PendingPaymentRequestDomain::SwapFunding)
+                throw std::runtime_error("Retain-only dispatch requires a bound swap funding request");
+            request_binding=std::move(request);
+            if(!params["recipients"].isArray() || params["recipients"].empty() || params["recipients"].size()>4096)
+                throw std::runtime_error("Payment recipient list invalid");
+            for(const auto& recipient:params["recipients"]) {
+                fields(recipient,{"address","amount_una"});
+                if(!recipient["address"].isString())throw std::runtime_error("Payment recipient address type invalid");
+                (void)integer(recipient["amount_una"]);
+            }
+        }
 
-        if (params.size() >= 2 && params[1].is<double>()) {
-            fee_rate = params[1].as<double>();
+        if (!requested && params.size() >= 2) {
+            if (!params[1].isNumeric()) { result["error"] = "Invalid fee rate"; return result; }
+            fee_rate = params[1].asDouble();
+        }
+        const double max_safe_rate = static_cast<double>(
+            dinero::MAX_SUPPLY_UNA_CONST / dinero::consensus::MAX_BLOCK_WEIGHT);
+        if (!std::isfinite(fee_rate) || fee_rate <= 0 || fee_rate > max_safe_rate) {
+            result["error"] = "Invalid fee rate: outside safe transaction fee range";
+            return result;
         }
 
         // Parse recipients using getMemberNames() for jsoncpp iteration
         std::vector<dinero::TransactionBuilder::Recipient> recipients;
         int64_t total_amount = 0;
 
+        if (requested) {
+            for (const auto& row : params["recipients"]) {
+                const auto amount=row["amount_una"].asUInt64();
+                if(!amount || amount>dinero::MAX_SUPPLY_UNA_CONST-static_cast<uint64_t>(total_amount))
+                    throw std::runtime_error("Payment recipient amount invalid");
+                recipients.push_back({row["address"].asString(),static_cast<int64_t>(amount)});
+                total_amount+=static_cast<int64_t>(amount);
+            }
+        } else {
         auto member_names = recipients_obj.getMemberNames();
+        if (member_names.size() > 4096) { result["error"] = "Payment recipient capacity exceeded"; return result; }
         for (const auto& address : member_names) {
-            double amount_din = recipients_obj[address].as<double>();
-
-            if (amount_din <= 0) {
-                result["error"] = "Invalid amount for address: " + address;
+            uint64_t amount_una = 0; std::string error;
+            if (!dinero::rpc::ParseDinAmountToUna(recipients_obj[address], amount_una, error) ||
+                amount_una > dinero::MAX_SUPPLY_UNA_CONST - static_cast<uint64_t>(total_amount)) {
+                result["error"] = "Invalid amount for address: " + address + ": " + error;
                 return result;
             }
-
-            int64_t amount_una = static_cast<int64_t>(amount_din * 1e8);
-            recipients.push_back({address, amount_una});
-            total_amount += amount_una;
+            recipients.push_back({address, static_cast<int64_t>(amount_una)});
+            total_amount += static_cast<int64_t>(amount_una);
+        }
         }
 
         if (recipients.empty()) {
             result["error"] = "No recipients specified";
             return result;
         }
+
+        dinero::PendingPaymentIntent intent{recipients.front().address, static_cast<uint64_t>(recipients.front().amount), ""};
+        for (size_t i = 1; i < recipients.size(); ++i)
+            intent.additional_recipients.push_back({recipients[i].address, static_cast<uint64_t>(recipients[i].amount)});
+        intent.request=request_binding;
+        if (intent.request) {
+            // Resolve the exact retained origin before chain access, new coin
+            // selection, address issuance, signing or transaction ingress.
+            const auto retained=dinero::FindRetainedWalletPayment(wallet_service->get(),signing_identity,intent);
+            if(retained) {
+                result["txid"]=retained->txid;result["hex"]=util::hex(retained->signed_body);
+                result["payment_retained"]=true;result["status"]="retained_request";
+                result["submitted_this_call"]=false;result["submission_status"]="not_attempted";
+                result["total_amount_una"]=static_cast<din::Json::UInt64>(total_amount);
+                result["fee_paid_una"]=static_cast<din::Json::UInt64>(retained->fee_una);
+                return result;
+            }
+        }
+
+        if (!ctx.daemon->chainstate) {
+            result["error"] = "Chainstate service not available";
+            return result;
+        }
+
+        auto chainstate_service = std::dynamic_pointer_cast<dinero::ChainstateService>(ctx.daemon->chainstate);
+        if (!chainstate_service || !chainstate_service->utxoIndex()) {
+            result["error"] = "UTXO index not available";
+            return result;
+        }
+
+        const auto source_use=dinero::ChainstateService::AcquireWalletIndexUse(chainstate_service);
 
         if (ctx.logger) {
             ctx.logger->info("[wallet.sendmany] Preparing batch transaction to " +
@@ -3476,8 +3574,7 @@ din::Json rpc_context_wallet_sendmany(const ExecutionContext& ctx, const din::Js
         // UTXOs are never passed to the transaction builder.
         // Bug Fix 4: Build candidate_utxos in parallel so the builder uses EXACTLY
         // the same pre-filtered set (avoids "Missing private key" when builder selects
-        // a stale/CT UTXO from UTXOIndex that wasn't included in private_keys).
-        std::map<std::string, std::string> private_keys;
+        // a stale/CT UTXO outside the signable candidate set).
         std::vector<dinero::CanonicalWalletUTXO> candidate_utxos;
         int signable_count = 0;
         for (const auto& utxo : utxos) {
@@ -3497,15 +3594,6 @@ din::Json rpc_context_wallet_sendmany(const ExecutionContext& ctx, const din::Js
                 continue;
             }
 
-            // Skip UTXOs with no derivation path — we cannot sign for them.
-            if (utxo.derivation_path.empty()) {
-                if (ctx.logger) {
-                    ctx.logger->debug("[wallet.sendmany] Skipping UTXO without derivation path: " +
-                                      utxo.txid.substr(0, 16) + ":" + std::to_string(utxo.vout));
-                }
-                continue;
-            }
-
             if (utxo.script_pubkey.empty()) {
                 if (ctx.logger) {
                     ctx.logger->debug("[wallet.sendmany] Skipping UTXO with empty scriptPubKey: " +
@@ -3514,30 +3602,10 @@ din::Json rpc_context_wallet_sendmany(const ExecutionContext& ctx, const din::Js
                 continue;
             }
 
-            // Direct scriptPubKey → private key resolution (Bitcoin Core semantics).
-            auto privkey_bytes = wallet_service->get().deriveKeyForScriptPubKey(utxo.script_pubkey);
-            if (!privkey_bytes.has_value() || privkey_bytes->empty()) {
-                // Fall back to the explicit derivation path for older wallet state
-                // where direct scriptPubKey lookup is incomplete but ownership is known.
-                std::string fallback_privkey = wallet_service->get().getPrivateKeyForPath(utxo.derivation_path);
-                if (!fallback_privkey.empty()) {
-                    private_keys[utxo.derivation_path] = fallback_privkey;
-                } else {
-                    // This UTXO belongs to a watch-only or foreign script — skip it.
-                    if (ctx.logger) {
-                        ctx.logger->debug("[wallet.sendmany] Skipping UTXO with no signing key: " +
-                                          utxo.txid.substr(0, 16) + ":" + std::to_string(utxo.vout));
-                    }
-                    continue;
-                }
-            } else {
-                // Convert raw bytes to hex string for the signing infrastructure.
-                std::ostringstream priv_key_hex;
-                for (uint8_t byte : privkey_bytes.value()) {
-                    priv_key_hex << std::hex << std::setw(2) << std::setfill('0') << static_cast<int>(byte);
-                }
-                private_keys[utxo.derivation_path] = priv_key_hex.str();
-            }
+            // Presence preflight only. The actual signing owner revalidates
+            // every selected key and the captured session after coin selection.
+            auto key=wallet_service->get().resolveSigningKeyForScriptPubKey(utxo.script_pubkey);
+            if(!key || key->secret.empty())continue;
 
             // Build CanonicalWalletUTXO for coin selection (mirrors sendtoaddress).
             // listUnspentUTXOs() is already filtered by the wallet's canonical view
@@ -3592,6 +3660,7 @@ din::Json rpc_context_wallet_sendmany(const ExecutionContext& ctx, const din::Js
         std::string last_reject_reason;
         constexpr int kMaxFeeAttempts = 4;
         int fee_attempt = 0;
+        dinero::UnsignedTransaction unsigned_tx;
 
         // Broadcast through canonical ingress interface (Step 5).
         if (!ctx.daemon->tx_ingress) {
@@ -3600,19 +3669,38 @@ din::Json rpc_context_wallet_sendmany(const ExecutionContext& ctx, const din::Js
         }
 
         for (; fee_attempt < kMaxFeeAttempts; ++fee_attempt) {
+            if (!std::isfinite(effective_fee_rate) || effective_fee_rate > max_safe_rate) {
+                result["error"] = "Required fee rate exceeds safe transaction fee range";
+                return result;
+            }
             dinero::TransactionBuilder::BuildOptions options;
             options.fee_rate = effective_fee_rate;
             options.change_address = change_address;
             options.candidate_utxos = candidate_utxos;  // Bug Fix 4
 
-            build_result = builder.BuildTransaction(recipients, private_keys, options);
+            build_result = builder.PreviewTransaction(recipients, options);
             if (!build_result.success) {
                 result["error"] = "Transaction build failed: " + build_result.error;
                 return result;
             }
 
-            auto submit_result = ctx.daemon->tx_ingress->Submit(
-                build_result.transaction, dinero::TxOrigin::WALLET);
+            unsigned_tx = dinero::UnsignedTransaction{};
+            unsigned_tx.tx=build_result.transaction;
+            unsigned_tx.selected_utxos=build_result.selected_utxos;
+            unsigned_tx.fee=build_result.fee;unsigned_tx.change_amount=build_result.change_amount;
+            unsigned_tx.change_address=build_result.change_address;unsigned_tx.signals_rbf=build_result.is_rbf_enabled;
+            if(intent.request && static_cast<uint64_t>(unsigned_tx.fee)>intent.request->maximum_fee_una) {
+                result["error"]="Payment exceeds explicit request fee limit";return result;
+            }
+            auto signed_result=intent.request
+                ? dinero::SignWalletRequestPreview(wallet_service->get(),signing_identity,unsigned_tx,intent)
+                : dinero::SignWalletTransaction(wallet_service->get(),signing_identity,unsigned_tx);
+            if(!signed_result.success){result["error"]="Transaction signing failed: "+signed_result.error;return result;}
+            build_result.transaction=std::move(signed_result.signed_tx.tx);
+
+            const auto preflight = ctx.daemon->tx_ingress->Test(build_result.transaction, dinero::TxOrigin::WALLET);
+            if (!preflight) { result["error"] = "Transaction preflight unavailable"; return result; }
+            const auto& submit_result = *preflight;
             if (!submit_result.rejected()) {
                 break;
             }
@@ -3622,7 +3710,7 @@ din::Json rpc_context_wallet_sendmany(const ExecutionContext& ctx, const din::Js
 
             if (submit_result.code != dinero::TxRejectCode::INSUFFICIENT_FEE ||
                 fee_attempt + 1 >= kMaxFeeAttempts) {
-                result["error"] = "Transaction rejected by mempool";
+                result["error"] = "Transaction preflight refused";
                 result["reject_code"] = TxRejectCodeToString(last_reject_code);
                 result["reject_reason"] = last_reject_reason;
                 return result;
@@ -3630,14 +3718,43 @@ din::Json rpc_context_wallet_sendmany(const ExecutionContext& ctx, const din::Js
 
             if (ctx.logger) {
                 ctx.logger->warning(
-                    "[wallet.sendmany] Rebuilding after insufficient-fee rejection at " +
+                    "[wallet.sendmany] Rebuilding before submission after insufficient-fee preflight at " +
                     std::to_string(effective_fee_rate) + " sat/vB: " + submit_result.message);
             }
 
             effective_fee_rate = std::max(effective_fee_rate * 2.0, effective_fee_rate + 1.0);
         }
 
-        std::string txid = build_result.transaction.GetTxid().AsUint256().GetHex();
+        auto retained = chainstate_service->signAndStageWalletPayment(wallet_use->Wallet(), signing_identity, unsigned_tx, intent);
+        if (!retained.success) { result["error"] = "Payment retention failed: " + retained.error; return result; }
+        build_result.transaction = std::move(retained.signed_tx.tx);
+        const std::string txid = build_result.transaction.GetTxid().AsUint256().GetHex();
+        result["txid"] = txid;
+        result["payment_retained"] = true;
+        if(dispatch_mode==dinero::WalletRequestDispatchMode::RetainOnly) {
+            result["hex"]=util::hex(build_result.transaction.Serialize(dinero::TxSerializationMode::WithWitness));
+            result["submitted_this_call"]=false;result["submission_status"]="not_attempted";
+            result["status"]="retained_request";
+            result["total_amount_una"]=static_cast<din::Json::UInt64>(total_amount);
+            result["fee_paid_una"]=static_cast<din::Json::UInt64>(retained.signed_tx.fee);
+            return result;
+        }
+        if(intent.request) {
+            result["submitted_this_call"]=true;
+            result["submission_status"]="outcome_unknown";
+            result["total_amount_una"]=static_cast<din::Json::UInt64>(total_amount);
+            result["fee_paid_una"]=static_cast<din::Json::UInt64>(retained.signed_tx.fee);
+        }
+        // Actual admission occurs exactly once, after durable ownership. A
+        // concurrent policy/chain change cannot trigger another exposed body.
+        const auto submitted = ctx.daemon->tx_ingress->Submit(build_result.transaction, dinero::TxOrigin::WALLET);
+        if(intent.request) result["submission_status"]=submitted.rejected()?"rejected":"accepted";
+        if (submitted.rejected()) {
+            result["error"] = "Retained payment rejected by mempool";
+            result["reject_code"] = TxRejectCodeToString(submitted.code);
+            result["reject_reason"] = submitted.message;
+            return result;
+        }
 
         result["txid"] = txid;
         result["recipients"] = static_cast<int>(recipients.size());
@@ -3657,6 +3774,15 @@ din::Json rpc_context_wallet_sendmany(const ExecutionContext& ctx, const din::Js
     }
 
     return result;
+}
+
+din::Json rpc_context_wallet_sendmany(const ExecutionContext& ctx,const din::Json& params) {
+    return SendManyWithWalletOwner(ctx,params,{},nullptr);
+}
+
+din::Json dinero::DispatchBoundWalletRequest(const ExecutionContext& ctx,const din::Json& params,
+    const std::shared_ptr<WalletService>& service,const WalletSigningIdentity& identity, WalletRequestDispatchMode mode) {
+    return SendManyWithWalletOwner(ctx,params,service,&identity,mode);
 }
 
 /**
@@ -3679,7 +3805,7 @@ din::Json rpc_context_wallet_utxoproof(const ExecutionContext& ctx, const din::J
     }
 
     auto chainstate_service = std::dynamic_pointer_cast<dinero::ChainstateService>(ctx.daemon->chainstate);
-    if (!chainstate_service || !chainstate_service->utxoIndex()) {
+    if (!chainstate_service) {
         result["error"] = "UTXO index not available";
         return result;
     }
@@ -3694,25 +3820,22 @@ din::Json rpc_context_wallet_utxoproof(const ExecutionContext& ctx, const din::J
             return result;
         }
         (void)consumed;
-
-        // Get UTXO from index
-        auto utxo = chainstate_service->utxoIndex()->GetUTXO(dinero::TxId(uint256::FromHexUnsafe(txid)), vout);  // Phase M.4: GetUTXO takes TxId
-        if (!utxo.has_value()) {
-            result["error"] = "UTXO not found: " + txid + ":" + std::to_string(vout);
+        if (txid.size() != 64 || txid.find_first_not_of("0123456789abcdefABCDEF") != std::string::npos) {
+            result["error"] = "Invalid txid: expected 32-byte hexadecimal value";
             return result;
         }
 
-        // Get current chain height to compute confirmations
-        int current_height = chainstate_service->getBlockHeight();
-        int confirmations = (current_height >= utxo->height) ? (current_height - utxo->height + 1) : 0;
-
-        result["txid"] = txid;
-        result["vout"] = static_cast<int>(vout);
-        result["amount"] = static_cast<double>(utxo->value.GetUna()) / 1e8;
-        result["height"] = utxo->height;
-        result["confirmations"] = confirmations;
-        result["is_coinbase"] = utxo->is_coinbase;
-        result["tip_height"] = current_height;
+        // The index is a recognition check only. Its metadata is not the
+        // authority for a proof. Release index use before selected capture.
+        {
+            const auto index_use = dinero::ChainstateService::AcquireWalletIndexUse(chainstate_service);
+            const auto utxo = index_use->Index().GetUTXO(
+                dinero::TxId(uint256::FromHexUnsafe(txid)), vout);
+            if (!utxo) {
+                result["error"] = "UTXO not found: " + txid + ":" + std::to_string(vout);
+                return result;
+            }
+        }
 
         // Delegate to canonical proof generation path.
         din::Json proof_params = din::arr();
@@ -3723,27 +3846,20 @@ din::Json rpc_context_wallet_utxoproof(const ExecutionContext& ctx, const din::J
             result["error"] = "Failed to generate UTXO proof: " + ExtractRpcErrorMessage(proof_result);
             return result;
         }
+        const auto current_height = proof_result["height"].asUInt64();
+        const auto created_height = proof_result["created_height"].asUInt64();
+        result["txid"] = txid;
+        result["vout"] = vout;
+        result["amount_una"] = proof_result["amount_una"];
+        result["amount"] = static_cast<double>(proof_result["amount_una"].asInt64()) / 1e8;
+        result["height"] = proof_result["created_height"];
+        result["confirmations"] = static_cast<Json::UInt64>(
+            current_height >= created_height ? current_height - created_height + 1 : 0);
+        result["is_coinbase"] = proof_result["coinbase"];
+        result["tip_height"] = proof_result["height"];
         result["utreexo_proof"] = proof_result;
-
-        // Bind proof bundle to current chain context for optional strict verification.
-        din::Json commitment_params = din::arr();
-        din::Json commitment_result = din::rpc_getutreexocommitment(ctx, commitment_params);
-        if (commitment_result.isMember("error")) {
-            result["error"] = "Failed to bind proof context: " + ExtractRpcErrorMessage(commitment_result);
-            return result;
-        }
-        if (!commitment_result.isMember("commitment") || !commitment_result["commitment"].isString()) {
-            result["error"] = "Failed to bind proof context: missing commitment";
-            return result;
-        }
-        result["utreexo_root"] = commitment_result["commitment"].asString();
-
-        std::string tip_hash = chainstate_service->getBestBlockHash();
-        if (tip_hash.empty()) {
-            result["error"] = "Failed to bind proof context: missing active tip hash";
-            return result;
-        }
-        result["tip_hash"] = tip_hash;
+        result["utreexo_root"] = proof_result["accumulator_root"];
+        result["tip_hash"] = proof_result["block_hash"];
 
         if (ctx.logger) {
             ctx.logger->debug("[wallet.utxoproof] Generated proof for " + txid + ":" + std::to_string(vout) +
@@ -3752,6 +3868,7 @@ din::Json rpc_context_wallet_utxoproof(const ExecutionContext& ctx, const din::J
         }
 
     } catch (const std::exception& e) {
+        result = din::obj();
         result["error"] = std::string("Failed to get UTXO proof: ") + e.what();
     }
 
@@ -3811,12 +3928,6 @@ din::Json rpc_context_wallet_getproofbundle(const ExecutionContext& ctx, const d
         return result;
     }
 
-    auto* forest = chainstate_service->utreexoForest();
-    if (!forest) {
-        result["error"] = "Utreexo forest not available";
-        return result;
-    }
-
     // Parse options
     int min_confirmations = 1;
     bool spendable_only = true;
@@ -3836,8 +3947,18 @@ din::Json rpc_context_wallet_getproofbundle(const ExecutionContext& ctx, const d
     }
 
     try {
-        auto& mgr = wallet_service->get();
-        auto utxos = mgr.listUnspentUTXOs(min_confirmations, 9999999);
+        auto wallet_use = dinero::WalletService::AcquireWalletUse(wallet_service);
+        auto& mgr = wallet_use->Wallet();
+        uint64_t wallet_session;
+        std::vector<dinero::WalletManager::WalletUTXO> utxos;
+        {
+            // listUnspentUTXOs consults the wallet index; pin its service owner
+            // before taking wallet database locks, then release both before capture.
+            const auto index_use = dinero::ChainstateService::AcquireWalletIndexUse(chainstate_service);
+            auto lease = mgr.AcquireDatabaseLease(); wallet_session = lease->Session();
+            utxos = mgr.listUnspentUTXOs(min_confirmations, 9999999);
+        } // Release wallet locks before selected-chain capture.
+
 
         if (spendable_only) {
             utxos.erase(
@@ -3864,129 +3985,40 @@ din::Json rpc_context_wallet_getproofbundle(const ExecutionContext& ctx, const d
         din::Json batch_params = din::arr();
         batch_params.append(proof_input);
 
-        // The individual UTXO proofs and the stump (accumulator root + num_leaves)
-        // must describe ONE Utreexo forest state, or a light client rejects the
-        // bundle with "proof leaf count mismatch" (it requires every proof's
-        // num_leaves == stump_num_leaves, since a proof only verifies against the
-        // stump of the same forest size). Proof generation and the stump snapshot
-        // are separate forest reads, so a block connecting on the sync thread in
-        // between grows the forest and makes them diverge. Rather than hold a
-        // consensus lock from this RPC thread (deadlock risk), assemble
-        // optimistically and bracket the work with a forest-commitment read before
-        // and after: getCommitment() reflects additions AND deletions (num_leaves
-        // alone misses spends), so an unchanged commitment proves the whole bundle
-        // came from one consistent state. If a block landed mid-assembly, retry.
-        // Fails safe: on exhaustion return a transient error the client already
-        // handles via seed failover/retry — never an internally inconsistent bundle.
-        constexpr int kMaxAttempts = 4;
-        bool consistent = false;
-        std::string root_hex;
-
-        for (int attempt = 0; attempt < kMaxAttempts && !consistent; ++attempt) {
-            // Atomic guarded read; the before/after comparison intentionally
-            // reads the LIVE forest at two moments (audit: forest UAF).
-            const auto commitment_before = chainstate_service->GetConsensusUTXOSet()->SnapshotForestCommitment();
-
-            din::Json batch_result = din::rpc_getutxoproofs_batch(ctx, batch_params);
-            if (batch_result.isMember("error")) {
-                result["error"] = "Proof generation failed: " + ExtractRpcErrorMessage(batch_result);
-                return result;
+        const auto batch = din::rpc_getutxoproofs_batch(ctx, batch_params);
+        if (batch.isMember("error")) {
+            result["error"] = "Proof generation failed: " + ExtractRpcErrorMessage(batch); return result;
+        }
+        // All coin metadata comes from the same canonical capture as the proof.
+        // The wallet row selected an outpoint; it is not a source of proof fields.
+        din::Json proofs = din::arr(); size_t successful = 0;
+        for (const auto& item : batch["proofs"]) {
+            din::Json entry;
+            for (const auto* key : {"txid", "vout", "success", "error_code", "error"})
+                if (item.isMember(key)) entry[key] = item[key];
+            if (item["success"].asBool()) {
+                const auto& proof = item["proof"];
+                for (const auto* key : {"leaf_hash", "position", "num_leaves", "siblings",
+                        "script_pubkey", "created_height", "coinbase", "amount_una"}) entry[key] = proof[key];
+                entry["amount_unas"] = proof["amount_una"];
+                ++successful;
             }
-
-            din::Json attempt_result;
-            // Bind to the exact compact accumulator context used by the proofs.
-            {
-                // Structural read of the live forest — hold the shared lock (audit: forest UAF).
-                auto forest_lock = chainstate_service->GetConsensusUTXOSet()->LockForestShared();
-                AppendWalletProofRootsSnapshot(attempt_result, *forest);
-            }
-            const uint64_t stump_num_leaves = attempt_result["stump_num_leaves"].asUInt64();
-
-            // commitment_after must be the LAST forest read so the whole window
-            // (proof gen + stump snapshot) is provably inside the unchanged span.
-            const auto commitment_after = chainstate_service->GetConsensusUTXOSet()->SnapshotForestCommitment();
-            root_hex = BytesToHex(commitment_after);
-            if (commitment_before != commitment_after) {
-                continue;  // a block connected mid-assembly; re-assemble
-            }
-
-            attempt_result["accumulator_root"] = root_hex;
-            attempt_result["block_hash"] = chainstate_service->getBestBlockHash();
-            attempt_result["height"] = chainstate_service->getBlockHeight();
-            attempt_result["truncated"] = truncated;
-
-            // Transform batch result into proof bundle format
-            din::Json proofs_out = din::arr();
-            std::vector<uint64_t> proof_num_leaves;
-            size_t success_count = 0;
-
-            if (batch_result.isMember("proofs") && batch_result["proofs"].isArray()) {
-                for (const auto& p : batch_result["proofs"]) {
-                    din::Json entry;
-                    entry["txid"] = p.isMember("txid") ? p["txid"].asString() : "";
-                    entry["vout"] = p.isMember("vout") ? p["vout"].asUInt() : 0;
-
-                    bool ok = p.isMember("success") && p["success"].isBool() && p["success"].asBool();
-                    entry["success"] = ok;
-
-                    if (ok && p.isMember("proof") && p["proof"].isObject()) {
-                        const auto& proof = p["proof"];
-                        if (proof.isMember("leaf_hash")) entry["leaf_hash"] = proof["leaf_hash"];
-                        if (proof.isMember("position")) entry["position"] = proof["position"];
-                        if (proof.isMember("num_leaves")) {
-                            entry["num_leaves"] = proof["num_leaves"];
-                            proof_num_leaves.push_back(proof["num_leaves"].asUInt64());
-                        }
-                        if (proof.isMember("siblings")) entry["siblings"] = proof["siblings"];
-                        success_count++;
-                    }
-
-                    // Include amount for client-side balance verification
-                    for (const auto& utxo : utxos) {
-                        if (utxo.txid == entry["txid"].asString() &&
-                            utxo.vout == entry["vout"].asUInt()) {
-                            entry["amount_una"] = static_cast<int64_t>(utxo.amount_una);
-                            entry["amount_unas"] = static_cast<int64_t>(utxo.amount_una);
-                            entry["script_pubkey"] = utxo.script_pubkey;
-                            entry["created_height"] = static_cast<uint64_t>(utxo.height);
-                            entry["coinbase"] = utxo.is_coinbase;
-                            break;
-                        }
-                    }
-
-                    proofs_out.append(entry);
-                }
-            }
-
-            // Defense in depth: the commitment gate above already guarantees this,
-            // but assert the exact invariant the client validates before emitting.
-            if (!dinero::rpc::ProofBundleLeafCountsConsistent(proof_num_leaves, stump_num_leaves)) {
-                continue;
-            }
-
-            attempt_result["proofs"] = proofs_out;
-            attempt_result["utxo_count"] = static_cast<int>(success_count);
-
-            result = std::move(attempt_result);
-            consistent = true;
-
-            if (ctx.logger) {
-                ctx.logger->info("[wallet.getproofbundle] Generated " +
-                                 std::to_string(success_count) + "/" +
-                                 std::to_string(utxos.size()) +
-                                 " proofs, root=" + root_hex.substr(0, 16) + "...");
+            proofs.append(entry);
+        }
+        {
+            auto lease = mgr.AcquireDatabaseLease();
+            if (lease->Session() != wallet_session) {
+                result["error"] = "Wallet changed during proof generation"; result["retryable"] = true; return result;
             }
         }
-
-        if (!consistent) {
-            result = din::Json();
-            result["error"] = "Proof bundle could not be assembled from a stable "
-                              "forest state (blocks connecting); please retry";
-            result["retryable"] = true;
-            return result;
-        }
+        result["accumulator_root"] = batch["utreexo_root"];
+        for (const auto* key : {"height", "block_hash", "stump_num_leaves", "stump_roots",
+                                "num_leaves", "num_roots", "roots"}) result[key] = batch[key];
+        result["proofs"] = proofs; result["truncated"] = truncated;
+        result["utxo_count"] = static_cast<Json::UInt64>(successful);
 
     } catch (const std::exception& e) {
+        result = din::Json();
         result["error"] = std::string("Failed to generate proof bundle: ") + e.what();
     }
 
@@ -4013,42 +4045,34 @@ din::Json rpc_context_wallet_getproofbundle(const ExecutionContext& ctx, const d
  */
 din::Json rpc_context_wallet_proofstatus(const ExecutionContext& ctx, const din::Json& params) {
     din::Json result;
-
-    if (params.empty() || !params[0].isString()) {
-        result["error"] = "Usage: wallet.proofstatus <accumulator_root_hex>";
+    std::vector<unsigned char> client_root;
+    if (!params.isArray() || params.size()!=1 || !params[0].isString() ||
+        params[0].asString().size()!=64 ||
+        ![](const std::string& hex) {
+            return std::all_of(hex.begin(),hex.end(),[](unsigned char c) {
+                return (c>='0' && c<='9') || (c>='a' && c<='f') || (c>='A' && c<='F');
+            });
+        }(params[0].asString()) || !util::unhex(params[0].asString(),client_root) ||
+        client_root.size()!=32) {
+        result["error"] = "Usage: wallet.proofstatus <32-byte accumulator_root_hex>";
         return result;
     }
-
-    if (!ctx.daemon || !ctx.daemon->chainstate) {
+    const auto service=ctx.daemon
+        ?std::dynamic_pointer_cast<dinero::ChainstateService>(ctx.daemon->chainstate):nullptr;
+    if (!service) {
         result["error"] = "Chainstate service not available";
         return result;
     }
-
-    auto chainstate_service = std::dynamic_pointer_cast<dinero::ChainstateService>(ctx.daemon->chainstate);
-    if (!chainstate_service) {
-        result["error"] = "Failed to cast chainstate service";
+    const auto snapshot=service->getUtreexoRpcSnapshot();
+    if (!snapshot.ok()) {
+        result["error"] = "Selected accumulator snapshot unavailable";
         return result;
     }
-
-    try {
-        std::string client_root = params[0].asString();
-
-        din::Json commitment_result = din::rpc_getutreexocommitment(ctx, din::arr());
-        std::string current_root;
-        if (commitment_result.isMember("commitment") && commitment_result["commitment"].isString()) {
-            current_root = commitment_result["commitment"].asString();
-        }
-
-        result["stale"] = (client_root != current_root);
-        result["client_root"] = client_root;
-        result["current_root"] = current_root;
-        result["current_height"] = chainstate_service->getBlockHeight();
-        result["current_block_hash"] = chainstate_service->getBestBlockHash();
-
-    } catch (const std::exception& e) {
-        result["error"] = std::string("Failed to check proof status: ") + e.what();
-    }
-
+    result["stale"] = (client_root!=snapshot->commitment);
+    result["client_root"] = util::hex(client_root);
+    result["current_root"] = util::hex(snapshot->commitment);
+    result["current_height"] = snapshot->height;
+    result["current_block_hash"] = snapshot->block_hash.GetHex();
     return result;
 }
 
@@ -4234,15 +4258,10 @@ din::Json rpc_context_wallet_verifyutxoproof(const ExecutionContext& ctx, const 
         result["error_detail"] = first_result["error"];
     }
 
-    auto chainstate_service = std::dynamic_pointer_cast<dinero::ChainstateService>(ctx.daemon->chainstate);
-    std::string tip_hash;
-    if (chainstate_service) {
-        result["tip_height"] = chainstate_service->getBlockHeight();
-        tip_hash = chainstate_service->getBestBlockHash();
-        if (!tip_hash.empty()) {
-            result["tip_hash"] = tip_hash;
-        }
-    }
+    // Bind policy checks to the very observation that verified the proof.
+    const std::string tip_hash = verify_result["block_hash"].asString();
+    result["tip_height"] = verify_result["height"];
+    result["tip_hash"] = verify_result["block_hash"];
 
     if (enforce_bound_context || !expected_utreexo_root.empty() || !expected_tip_hash.empty()) {
         result["context_enforced"] = true;
@@ -4359,9 +4378,20 @@ din::Json rpc_context_wallet_validatestatelessbalance(const ExecutionContext& ct
         max_utxos = 1000;
     }
 
-    auto& mgr = wallet_service->get();
-    auto wallet_balance = mgr.getBalance();
-    auto utxos = mgr.listUnspentUTXOs(min_confirmations, max_confirmations);
+    try {
+    auto wallet_use = dinero::WalletService::AcquireWalletUse(wallet_service);
+    auto& mgr = wallet_use->Wallet();
+    uint64_t wallet_session;
+    std::string wallet_name;
+    dinero::WalletManager::Balance wallet_balance;
+    std::vector<dinero::WalletManager::WalletUTXO> utxos;
+    {
+        const auto index_use = dinero::ChainstateService::AcquireWalletIndexUse(chainstate_service);
+        auto lease = mgr.AcquireDatabaseLease();
+        wallet_session = lease->Session(); wallet_name = lease->WalletName();
+        wallet_balance = mgr.getBalance();
+        utxos = mgr.listUnspentUTXOs(min_confirmations, max_confirmations);
+    }
 
     if (spendable_only) {
         utxos.erase(
@@ -4384,7 +4414,9 @@ din::Json rpc_context_wallet_validatestatelessbalance(const ExecutionContext& ct
 
     uint64_t selected_una = 0;
     for (const auto& utxo : utxos) {
-        selected_una += utxo.amount_una;
+        if (utxo.amount_una < 0 || uint64_t(utxo.amount_una) > UINT64_MAX - selected_una)
+            throw std::runtime_error("Invalid selected wallet amount");
+        selected_una += uint64_t(utxo.amount_una);
     }
 
     din::Json proof_input = din::arr();
@@ -4405,6 +4437,8 @@ din::Json rpc_context_wallet_validatestatelessbalance(const ExecutionContext& ct
 
     std::unordered_map<std::string, std::string> generation_failures;
     std::unordered_map<std::string, bool> verify_valid;
+    std::unordered_map<std::string, uint64_t> canonical_amounts;
+    std::unordered_map<std::string, din::Json> canonical_metadata;
     std::unordered_map<std::string, std::string> verify_error_codes;
     din::Json verify_input = din::arr();
     size_t generated_count = 0;
@@ -4424,6 +4458,12 @@ din::Json rpc_context_wallet_validatestatelessbalance(const ExecutionContext& ct
                     verify_item["txid"] = txid;
                     verify_item["vout"] = vout;
                     verify_item["proof"] = p["proof"];
+                    if (!p["proof"]["amount_una"].isInt64() || p["proof"]["amount_una"].asInt64() < 0) {
+                        generation_failures[key] = "invalid-canonical-amount";
+                        continue;
+                    }
+                    canonical_amounts.emplace(key, uint64_t(p["proof"]["amount_una"].asInt64()));
+                    canonical_metadata.emplace(key, p["proof"]);
                     verify_input.append(verify_item);
                     generated_count++;
                 } else {
@@ -4440,7 +4480,7 @@ din::Json rpc_context_wallet_validatestatelessbalance(const ExecutionContext& ct
     }
 
     din::Json verify_batch;
-    if (!verify_input.empty()) {
+    {
         din::Json verify_params = din::arr();
         verify_params.append(verify_input);
         verify_batch = din::rpc_verifyutxoproofs_batch(ctx, verify_params);
@@ -4471,6 +4511,7 @@ din::Json rpc_context_wallet_validatestatelessbalance(const ExecutionContext& ct
     }
 
     uint64_t verified_una = 0;
+    bool metadata_matches = true;
     size_t verified_valid_count = 0;
     size_t verified_invalid_count = 0;
     din::Json failure_entries = din::arr();
@@ -4494,8 +4535,19 @@ din::Json rpc_context_wallet_validatestatelessbalance(const ExecutionContext& ct
 
         auto valid_it = verify_valid.find(key);
         if (valid_it != verify_valid.end() && valid_it->second) {
+            const auto amount = canonical_amounts.find(key);
+            if (amount == canonical_amounts.end() || amount->second > UINT64_MAX - verified_una)
+                throw std::runtime_error("Canonical proof amount unavailable or overflowing");
+            const auto metadata = canonical_metadata.find(key);
+            if (metadata == canonical_metadata.end())
+                throw std::runtime_error("Canonical proof metadata unavailable");
+            const auto& proved = metadata->second;
+            metadata_matches = metadata_matches && amount->second == uint64_t(utxo.amount_una) &&
+                proved["script_pubkey"].asString() == utxo.script_pubkey &&
+                proved["created_height"].asUInt64() == utxo.height &&
+                proved["coinbase"].asBool() == utxo.is_coinbase;
             verified_valid_count++;
-            verified_una += utxo.amount_una;
+            verified_una += amount->second;
         } else {
             verified_invalid_count++;
             if (include_details) {
@@ -4510,40 +4562,36 @@ din::Json rpc_context_wallet_validatestatelessbalance(const ExecutionContext& ct
         }
     }
 
-    std::string tip_hash = chainstate_service->getBestBlockHash();
-    uint32_t tip_height = static_cast<uint32_t>(chainstate_service->getBlockHeight());
-
-    std::string chain_root;
+    // Generation and verification are distinct observations. Accept the
+    // diagnostic comparison only when their complete selected tuples agree.
+    // A root alone does not identify the block, even for an unchanged forest.
+    const std::string proof_root = proof_batch["utreexo_root"].asString();
+    const std::string verify_root = verify_batch["utreexo_root"].asString();
+    const bool roots_match = !proof_root.empty() && proof_root == verify_root;
+    const bool context_match = roots_match &&
+        proof_batch["block_hash"] == verify_batch["block_hash"] &&
+        proof_batch["height"] == verify_batch["height"];
+    if (!context_match) {
+        result["error"] = "Selected chain changed during balance proof validation";
+        result["retryable"] = true;
+        return result;
+    }
+    const std::string tip_hash = verify_batch["block_hash"].asString();
+    const uint32_t tip_height = verify_batch["height"].asUInt();
+    const std::string chain_root = verify_root;
     {
-        din::Json commitment_params = din::arr();
-        din::Json commitment_result = din::rpc_getutreexocommitment(ctx, commitment_params);
-        if (!commitment_result.isMember("error") &&
-            commitment_result.isMember("commitment") &&
-            commitment_result["commitment"].isString()) {
-            chain_root = commitment_result["commitment"].asString();
+        auto lease = mgr.AcquireDatabaseLease();
+        if (lease->Session() != wallet_session) {
+            result["error"] = "Wallet changed during balance proof validation";
+            result["retryable"] = true;
+            return result;
         }
-    }
-
-    std::string proof_root;
-    if (proof_batch.isMember("utreexo_root") && proof_batch["utreexo_root"].isString()) {
-        proof_root = proof_batch["utreexo_root"].asString();
-    }
-
-    std::string verify_root;
-    if (verify_batch.isMember("utreexo_root") && verify_batch["utreexo_root"].isString()) {
-        verify_root = verify_batch["utreexo_root"].asString();
-    }
-
-    bool roots_match = true;
-    if (!chain_root.empty()) {
-        if (!proof_root.empty()) roots_match = roots_match && (proof_root == chain_root);
-        if (!verify_root.empty()) roots_match = roots_match && (verify_root == chain_root);
     }
 
     const uint64_t delta_una = (selected_una >= verified_una)
         ? (selected_una - verified_una)
         : (verified_una - selected_una);
-    const bool subset_consistent = (delta_una == 0 && verified_invalid_count == 0);
+    const bool subset_consistent = (delta_una == 0 && verified_invalid_count == 0 && metadata_matches);
 
     const uint64_t wallet_spendable_una = static_cast<uint64_t>(
         std::llround(wallet_balance.spendable * static_cast<double>(dinero::ConsensusSubsidy::UNA_PER_DIN)));
@@ -4561,8 +4609,9 @@ din::Json rpc_context_wallet_validatestatelessbalance(const ExecutionContext& ct
 
     const bool pilot_pass = subset_consistent && roots_match && (!full_wallet_scope || wallet_match);
 
-    result["wallet"] = wallet_service->getCurrentWalletName();
+    result["wallet"] = wallet_name;
     result["mode"] = "stateless-wallet-pilot";
+    result["scope"] = "selected-wallet-rows";
     result["pilot_pass"] = pilot_pass;
     result["tip_height"] = tip_height;
     result["tip_hash"] = tip_hash;
@@ -4579,6 +4628,7 @@ din::Json rpc_context_wallet_validatestatelessbalance(const ExecutionContext& ct
     result["summary"]["selected_utxos"] = static_cast<Json::UInt64>(selected_count);
     result["summary"]["truncated"] = truncated;
     result["summary"]["subset_consistent"] = subset_consistent;
+    result["summary"]["canonical_metadata_match"] = metadata_matches;
     result["summary"]["full_wallet_scope"] = full_wallet_scope;
     if (full_wallet_scope) {
         result["summary"]["wallet_spendable_match"] = wallet_match;
@@ -4609,6 +4659,7 @@ din::Json rpc_context_wallet_validatestatelessbalance(const ExecutionContext& ct
     result["balances"]["wallet_spendable_din"] = wallet_balance.spendable;
 
     result["context"]["root_match"] = roots_match;
+    result["context"]["selected_tuple_match"] = context_match;
     if (!proof_root.empty()) {
         result["context"]["proof_root"] = proof_root;
     }
@@ -4624,13 +4675,17 @@ din::Json rpc_context_wallet_validatestatelessbalance(const ExecutionContext& ct
     }
 
     if (ctx.logger) {
-        ctx.logger->info("[wallet.validatestatelessbalance] wallet=" + wallet_service->getCurrentWalletName() +
+        ctx.logger->info("[wallet.validatestatelessbalance] wallet=" + wallet_name +
                          " selected_utxos=" + std::to_string(selected_count) +
                          " valid=" + std::to_string(verified_valid_count) +
                          " invalid=" + std::to_string(verified_invalid_count) +
                          " pilot_pass=" + std::string(pilot_pass ? "true" : "false"));
     }
 
+    } catch (const std::exception& e) {
+        result = din::obj();
+        result["error"] = std::string("Balance proof validation failed: ") + e.what();
+    }
     return result;
 }
 
@@ -5577,21 +5632,8 @@ din::Json rpc_context_wallet_signrawtransaction(const ExecutionContext& ctx, con
         auto& wallet = wallet_service->get();
         auto chainstate = std::dynamic_pointer_cast<dinero::ChainstateService>(ctx.daemon->chainstate);
 
-        std::unordered_map<std::string, std::string> script_to_path;
-        for (const auto& row : wallet.listAddresses(false)) {
-            if (row.script_pubkey.empty()) continue;
-
-            const uint32_t purpose =
-                (row.type == "p2tr" || row.type == "taproot") ? 86 : 84;
-            script_to_path[row.script_pubkey] = BuildStandardDerivationPath(
-                purpose,
-                row.account,
-                row.change,
-                row.index);
-        }
-
         std::vector<dinero::CanonicalWalletUTXO> input_utxos(tx.vin.size());
-        std::vector<std::optional<std::vector<uint8_t>>> input_private_keys(tx.vin.size());
+        std::vector<std::optional<dinero::SigningKey>> input_private_keys(tx.vin.size());
         std::vector<bool> have_prevout(tx.vin.size(), false);
         std::vector<bool> had_witness(tx.vin.size(), false);
         size_t signed_count = 0;
@@ -5629,28 +5671,38 @@ din::Json rpc_context_wallet_signrawtransaction(const ExecutionContext& ctx, con
             wallet_utxo.is_coinbase = false;
             wallet_utxo.height = 0;
 
-            const std::string script_pubkey_hex = dinero::TransactionSerializer::ToHex(script);
-            if (auto path_it = script_to_path.find(script_pubkey_hex); path_it != script_to_path.end()) {
-                wallet_utxo.path = path_it->second;
-            }
-
-            // Preserve any already-populated witness (notably a covenant
-            // script path) and do not ask the HD wallet for a key it cannot
-            // own. Completion is decided below by canonical consensus
-            // validation, so malformed pre-populated witnesses do not get a
-            // free "complete" result.
-            had_witness[i] = !tx.vin[i].witness.empty();
-            if (had_witness[i]) {
-                signed_count++;
-            } else {
-                auto privkey =
-                    wallet.deriveKeyForScriptPubKey(script_pubkey_hex);
-                if (privkey.has_value() && privkey->size() == 32) {
-                    input_private_keys[i] = *privkey;
-                }
-            }
-
             have_prevout[i] = true;
+        }
+
+        // Chain/index reads above finish before acquiring the wallet owner.
+        // Keep one selected session and its unlock authorization through all
+        // key resolution and signing, then release before consensus/chain reads.
+        auto signing_lease=wallet.AcquireDatabaseLease();
+        if(!signing_lease->Database() ||
+           (!ctx.walletName.empty() && signing_lease->WalletName()!=ctx.walletName))
+            throw std::runtime_error("Selected wallet does not match signing request");
+        std::unique_ptr<dinero::WalletManager::RecoverySeed> signing_owner;
+        for(size_t i=0;i<tx.vin.size();++i) {
+            if(have_prevout[i] && tx.vin[i].witness.empty()) {
+                signing_owner=signing_lease->CopyRecoverySeed(signing_lease->Session());break;
+            }
+        }
+        for(size_t i=0;i<tx.vin.size();++i) {
+            if(!have_prevout[i])continue;
+            auto& coin=input_utxos[i];
+            had_witness[i]=!tx.vin[i].witness.empty();
+            if(had_witness[i]){++signed_count;continue;}
+            const auto script_hex=dinero::TransactionSerializer::ToHex(coin.spk);
+            auto key=signing_lease->ResolveSigningKey(script_hex,*signing_owner);
+            if(!key || key->secret.size()!=32)continue;
+            // Use recorded origin metadata for canonical keys only. Historical
+            // imports have no HD origin and must never be assigned one here.
+            if(key->policy==dinero::SigningKeyPolicy::TaprootCanonical) {
+                auto path=wallet.getDerivationPath(script_hex);
+                if(!path)path=wallet.getWatchScriptPath(coin.spk);
+                if(path)coin.path=*path;
+            }
+            input_private_keys[i]=std::move(*key);
         }
 
         const bool have_all_prevouts = std::all_of(
@@ -5745,26 +5797,27 @@ din::Json rpc_context_wallet_signrawtransaction(const ExecutionContext& ctx, con
 
             bool signed_input = false;
             if (dinero::TaprootTxSigner::IsTaprootUTXO(utxo)) {
-                if (!have_all_prevouts || utxo.path.empty()) {
+                if (!have_all_prevouts) {
                     continue;
                 }
-                signed_input = dinero::TaprootTxSigner::SignInput(
+                signed_input = dinero::TaprootTxSigner::SignInputWithKey(
                     tx,
                     i,
                     input_utxos,
                     *input_private_keys[i]);
             } else {
-                signed_input = dinero::BIP143Signer::SignInput(
-                    tx,
-                    i,
-                    utxo,
-                    *input_private_keys[i]);
+                signed_input = input_private_keys[i]->policy==dinero::SigningKeyPolicy::Untweaked &&
+                    input_private_keys[i]->script==utxo.spk && dinero::BIP143Signer::SignInput(
+                    tx,i,utxo,input_private_keys[i]->secret);
             }
 
             if (signed_input) {
                 signed_count++;
             }
         }
+
+        p2mr_provider.reset();p2mr_store.reset();
+        input_private_keys.clear();signing_owner.reset();signing_lease.reset();
 
         tx.DetectWitnessVersion();
         result["hex"] = tx.SerializeHex(true);
@@ -5827,171 +5880,10 @@ din::Json rpc_context_wallet_signrawtransaction(const ExecutionContext& ctx, con
     return result;
 }
 
-/**
- * wallet.decoderawtransaction - Decode a raw transaction hex
- *
- * Params:
- *   [0] hex: raw transaction hex
- *
- * Returns: decoded transaction object
- */
-din::Json rpc_context_wallet_decoderawtransaction(const ExecutionContext& ctx, const din::Json& params) {
-    din::Json result;
-
-    if (params.empty() || !params[0].is<std::string>()) {
-        result["error"] = "Usage: wallet.decoderawtransaction \"hex\"";
-        return result;
-    }
-
-    try {
-        std::string tx_hex = params[0].as<std::string>();
-
-        dinero::Transaction tx;
-        if (!dinero::TransactionSerializer::Deserialize(tx, tx_hex)) {
-            result["error"] = "Failed to decode transaction";
-            return result;
-        }
-
-        result["txid"] = tx.GetTxid().AsUint256().GetHex();
-        result["version"] = tx.version;
-        result["locktime"] = static_cast<int>(tx.lockTime);
-        result["size"] = static_cast<int>(tx_hex.length() / 2);
-
-        // Inputs
-        din::Json vin_arr = din::arr();
-        for (size_t i = 0; i < tx.vin.size(); ++i) {
-            const auto& input = tx.vin[i];
-            din::Json inp;
-            inp["txid"] = input.prevout.txid.AsUint256().GetHex();
-            inp["vout"] = static_cast<int>(input.prevout.vout);
-            inp["sequence"] = static_cast<int64_t>(input.sequence);
-
-            // ScriptSig hex
-            std::ostringstream script_hex;
-            for (uint8_t b : input.scriptSig) {
-                script_hex << std::hex << std::setw(2) << std::setfill('0') << static_cast<int>(b);
-            }
-            inp["scriptSig"] = script_hex.str();
-
-            // Witness
-            if (!input.witness.empty()) {
-                din::Json witness_arr = din::arr();
-                for (const auto& w : input.witness) {
-                    std::ostringstream w_hex;
-                    for (uint8_t b : w) {
-                        w_hex << std::hex << std::setw(2) << std::setfill('0') << static_cast<int>(b);
-                    }
-                    witness_arr.append(w_hex.str());
-                }
-                inp["txinwitness"] = witness_arr;
-            }
-
-            vin_arr.append(inp);
-        }
-        result["vin"] = vin_arr;
-
-        // Outputs
-        din::Json vout_arr = din::arr();
-        for (size_t i = 0; i < tx.vout.size(); ++i) {
-            const auto& output = tx.vout[i];
-            din::Json outp;
-            outp["n"] = static_cast<int>(i);
-            PopulateWalletOutputDisplay(outp, output);
-
-            // ScriptPubKey
-            din::Json spk;
-            std::ostringstream spk_hex;
-            for (uint8_t b : output.scriptPubKey) {
-                spk_hex << std::hex << std::setw(2) << std::setfill('0') << static_cast<int>(b);
-            }
-            spk["hex"] = spk_hex.str();
-
-            // Determine type
-            if (output.IsSegWitV0()) {
-                spk["type"] = output.scriptPubKey.size() == 22 ? "witness_v0_keyhash" : "witness_v0_scripthash";
-            } else if (output.IsTaproot()) {
-                spk["type"] = "witness_v1_taproot";
-            } else {
-                spk["type"] = "unknown";
-            }
-
-            outp["scriptPubKey"] = spk;
-            vout_arr.append(outp);
-        }
-        result["vout"] = vout_arr;
-
-    } catch (const std::exception& e) {
-        result["error"] = std::string("Failed to decode transaction: ") + e.what();
-    }
-
-    return result;
-}
-
-/**
- * wallet.getrawtransaction - Get raw transaction from mempool or blockchain
- *
- * Params:
- *   [0] txid: transaction hash
- *   [1] verbose: bool (default: false)
- *
- * Returns: hex string or decoded object
- */
-din::Json rpc_context_wallet_getrawtransaction(const ExecutionContext& ctx, const din::Json& params) {
-    din::Json result;
-
-    if (params.empty() || !params[0].is<std::string>()) {
-        result["error"] = "Usage: wallet.getrawtransaction \"txid\" [verbose=false]";
-        return result;
-    }
-
-    try {
-        std::string txid = params[0].as<std::string>();
-        bool verbose = params.size() >= 2 && params[1].asBool();
-
-        std::shared_ptr<dinero::Transaction> tx;
-
-        // Check mempool first (Phase M.0: Convert hex string to uint256)
-        if (ctx.daemon && ctx.daemon->mempool) {
-            auto mempool_service = std::dynamic_pointer_cast<dinero::MempoolService>(ctx.daemon->mempool);
-            if (mempool_service) {
-                tx = mempool_service->getTransaction(uint256::FromHexUnsafe(txid));
-            }
-        }
-
-        // Check chainstate/blockchain if not in mempool
-        if (!tx && ctx.daemon && ctx.daemon->chainstate) {
-            auto chainstate = std::dynamic_pointer_cast<dinero::ChainstateService>(ctx.daemon->chainstate);
-            if (chainstate) {
-                auto* chain_db = chainstate->GetChainDB();
-                if (chain_db) {
-                    auto tx_status = chain_db->getTransaction(uint256::FromHexUnsafe(txid));
-                    if (tx_status.ok()) {
-                        tx = std::make_shared<dinero::Transaction>(tx_status.value());
-                    }
-                }
-            }
-        }
-
-        if (!tx) {
-            result["error"] = "Transaction not found";
-            return result;
-        }
-
-        if (verbose) {
-            // Return decoded transaction
-            din::Json decode_params = din::arr();
-            decode_params.append(tx->SerializeHex(true));
-            return rpc_context_wallet_decoderawtransaction(ctx, decode_params);
-        } else {
-            result["hex"] = tx->SerializeHex(true);
-        }
-
-    } catch (const std::exception& e) {
-        result["error"] = std::string("Failed to get transaction: ") + e.what();
-    }
-
-    return result;
-}
+// Implemented in wallet_raw_transaction_rpc.cpp; shared by registered handlers
+// and component qualification without pulling unrelated wallet operations.
+din::Json rpc_context_wallet_decoderawtransaction(const ExecutionContext&, const din::Json&);
+din::Json rpc_context_wallet_getrawtransaction(const ExecutionContext&, const din::Json&);
 
 /**
  * wallet.sendrawtransaction - Submit a raw transaction to the network
@@ -6135,6 +6027,8 @@ din::Json rpc_context_wallet_importprivkey(const ExecutionContext& ctx, const di
         bool rescan = params.size() < 3 || params[2].asBool();
 
         auto& wallet = wallet_service->get();
+        uint64_t expected_session=0;
+        { auto lease=wallet.AcquireDatabaseLease(); expected_session=lease->Session(); }
 
         // Decode private key (WIF or hex)
         std::vector<uint8_t> privkey_bytes;
@@ -6156,7 +6050,7 @@ din::Json rpc_context_wallet_importprivkey(const ExecutionContext& ctx, const di
         }
 
         // Import the key
-        std::string address = wallet.importPrivateKey(privkey_bytes, label);
+        std::string address = wallet.importPrivateKey(privkey_bytes, label, expected_session);
         if (address.empty()) {
             result["error"] = "Failed to import private key";
             return result;
@@ -6169,9 +6063,11 @@ din::Json rpc_context_wallet_importprivkey(const ExecutionContext& ctx, const di
             ctx.logger->info("[wallet.importprivkey] Imported key for address: " + address);
         }
 
+        result["note"] = "Imported using current Taproot address rules; older import formats require separate recovery.";
+
         // Optionally rescan
         if (rescan) {
-            result["note"] = "Rescan recommended - use wallet.rescanblockchain";
+            result["note"] = "Imported using current Taproot address rules; older import formats require separate recovery. Rescan recommended - use wallet.rescanblockchain";
         }
 
     } catch (const std::exception& e) {
@@ -6421,6 +6317,8 @@ din::Json rpc_context_wallet_importwallet(const ExecutionContext& ctx, const din
     try {
         std::string filename = params[0].as<std::string>();
         auto& wallet = wallet_service->get();
+        uint64_t expected_session=0;
+        { auto lease=wallet.AcquireDatabaseLease(); expected_session=lease->Session(); }
 
         std::ifstream file(filename);
         if (!file.is_open()) {
@@ -6456,8 +6354,8 @@ din::Json rpc_context_wallet_importwallet(const ExecutionContext& ctx, const din
 
             // Decode and import
             auto privkey_bytes = wallet.decodeWIF(wif);
-            if (privkey_bytes.size() == 32) {
-                std::string new_addr = wallet.importPrivateKey(privkey_bytes, label);
+            if (privkey_bytes.size() == 32 && !address.empty()) {
+                std::string new_addr = wallet.importPrivateKey(privkey_bytes, label, expected_session, address);
                 if (!new_addr.empty()) {
                     imported++;
                 } else {
@@ -6660,6 +6558,23 @@ din::Json rpc_context_wallet_rescanblockchain(const ExecutionContext& ctx, const
         auto* chain_db = chainstate->GetChainDB();
         if (!chain_db) {
             result["error"] = "Chain database not available";
+            return result;
+        }
+
+        // A loaded snapshot may select a base far above the durable replay
+        // tip. The legacy scanner reads through ChainDB::getTip(), not the
+        // selected height used by this RPC's progress/result below. Refuse
+        // before cleanup or wallet progress writes instead of scanning only
+        // genesis and claiming that all pre-base bodies were visited. This
+        // grants no snapshot, transparent-index or Orchard recovery receipt.
+        const auto selected_source = chainstate->GetSyncSnapshot();
+        const auto durable_source = chain_db->getTip();
+        if (!durable_source.ok() || durable_source->height < 0 ||
+            selected_source.active_tip_height != current_height ||
+            uint32_t(durable_source->height) != current_height ||
+            durable_source->hash != selected_source.active_tip_hash) {
+            result["error"] = "Historical rescan source is not the selected active tip; snapshot recovery is required";
+            result["rescan_blocked"] = true;
             return result;
         }
 
@@ -7269,6 +7184,30 @@ din::Json rpc_context_wallet_createhd(const ExecutionContext& ctx, const din::Js
     return result;
 }
 
+din::Json rpc_context_wallet_recoversnapshot(const ExecutionContext& ctx,const din::Json& params){
+    din::Json result;
+    if(!ctx.daemon){result["error"]="Wallet recovery context unavailable";return result;}
+    const auto service=std::dynamic_pointer_cast<dinero::WalletService>(ctx.daemon->wallet);
+    const auto source=std::dynamic_pointer_cast<dinero::ChainstateService>(ctx.daemon->chainstate);
+    if(!service||!source||!params.isObject()||!params["walletname"].isString()||!params["expected_first_address"].isString()){
+        result["error"]="Expected wallet identity and first address are required";return result;
+    }
+    try{
+        auto use=dinero::WalletService::AcquireWalletUse(service);auto& wallet=use->Wallet();uint64_t session;
+        {auto lease=wallet.AcquireDatabaseLease();const auto addresses=wallet.listAddresses(false);
+         if(lease->WalletName()!=params["walletname"].asString()||addresses.empty()||
+            addresses.front().address!=params["expected_first_address"].asString()){
+            result["error"]="Active wallet differs from requested recovery wallet";return result;
+         }session=lease->Session();}
+        std::string error;const auto recovered=source->RecoverTransparentSnapshotWallet(wallet,&error,session);
+        if(!recovered){result["error"]=error;result["retryable"]=true;return result;}
+        result["success"]=true;result["recovered_height"]=Json::UInt64(*recovered);
+        result["scope"]="transparent-current-coins-and-post-snapshot-history";
+        result["whole_wallet_certified"]=false;
+        return result;
+    }catch(const std::exception& e){result["error"]=e.what();return result;}
+}
+
 din::Json rpc_context_wallet_restore(const ExecutionContext& ctx, const din::Json& params) {
     din::Json result;
 
@@ -7286,6 +7225,35 @@ din::Json rpc_context_wallet_restore(const ExecutionContext& ctx, const din::Jso
     bool rescan_requested = true;
     if (params.isObject() && params.isMember("rescan") && params["rescan"].isBool()) {
         rescan_requested = params["rescan"].asBool();
+    }
+
+    // A restore changes the selected wallet/seed before its legacy rescan.
+    // Refuse an unavailable historical source BEFORE those effects; returning
+    // a warning after switching wallets leaves a new partial inventory active.
+    // rescan=false remains an explicit key-import operation, never recovery.
+    if (rescan_requested) {
+        auto source = std::dynamic_pointer_cast<dinero::ChainstateService>(ctx.daemon->chainstate);
+        if (!source) {
+            result["error"] = "Chainstate service not available for wallet recovery";
+            result["recovery_required"] = true;
+            return result;
+        }
+        const auto selected = source->GetSyncSnapshot();
+        auto* database = source->GetChainDB();
+        const auto durable = database ? database->getTip() : dinero::StatusOr<dinero::TipInfo>(dinero::Status::Invalid);
+        if (source->GetSnapshotWalletRecoveryBaseHeight() != 0 || !durable.ok() ||
+            durable->height < 0 || uint32_t(durable->height) != selected.active_tip_height ||
+            durable->hash != selected.active_tip_hash) {
+            result["error"] = "Snapshot-aware wallet recovery is required; existing wallet was not changed";
+            result["recovery_required"] = true;
+            return result;
+        }
+        const auto readiness = CheckRescanReadiness(source);
+        if (!readiness.ok) {
+            result["error"] = readiness.reason;
+            result["rescan_blocked"] = true;
+            return result;
+        }
     }
 
     result = dinero::rpc::RpcRestoreWallet(params, &wallet_service->get());
@@ -7766,6 +7734,7 @@ din::Json rpc_context_wallet_consolidate(const ExecutionContext& ctx, const din:
     if (!chainstate_service || !chainstate_service->utxoIndex()) { result["ok"] = false; result["error"] = "UTXO index not available"; return result; }
 
     try {
+        const auto signing_identity=dinero::CaptureWalletSigningIdentity(wallet_service->get(),ctx.walletName);
         // RPC may pass the options object directly OR wrapped in a single-element
         // array (params == [ {...} ]). Normalize to the effective options object.
         const din::Json& args = (params.isArray() && !params.empty() && params[0].isObject())
@@ -7978,46 +7947,7 @@ din::Json rpc_context_wallet_consolidate(const ExecutionContext& ctx, const din:
         auto br = dinero::UnsignedTxBuilder::Build(cins, outs, bo);
         if (!br.success) { result["ok"] = false; result["error"] = "Failed to build transaction: " + br.error; return result; }
 
-        // Keys: ECDSA for P2TR via scriptPubKey/path; P2MR signs via WalletKeyProvider (PQ seed).
-        std::map<std::string, std::string> path_to_key;
-        for (const auto& u : selected) {
-            std::vector<uint8_t> spk; spk.reserve(u.script_pubkey.size() / 2);
-            for (size_t i = 0; i + 1 < u.script_pubkey.size(); i += 2)
-                spk.push_back(static_cast<uint8_t>(std::stoi(u.script_pubkey.substr(i, 2), nullptr, 16)));
-            if (dinero::consensus::pq::IsP2MRScript(spk)) continue;
-            auto pk = wallet_service->get().deriveKeyForScriptPubKey(u.script_pubkey);
-            if (pk.has_value() && !pk->empty()) {
-                std::ostringstream h;
-                for (uint8_t b : *pk) h << std::hex << std::setw(2) << std::setfill('0') << static_cast<int>(b);
-                path_to_key[u.derivation_path] = h.str();
-            } else if (!u.derivation_path.empty()) {
-                std::string hk = wallet_service->get().getPrivateKeyForPath(u.derivation_path);
-                if (!hk.empty()) path_to_key[u.derivation_path] = hk;
-            }
-        }
-
-        std::unique_ptr<dinero::KeyProvider> provider;
-        std::unique_ptr<dinero::wallet::V7P2MRStore> store_holder;
-        if (family == "p2mr") {
-            auto master = wallet_service->get().GetV7PqMasterKey();
-            if (!master) { result["ok"] = false; result["error"] = "Cannot spend P2MR coin: wallet locked or v7 master key unavailable"; return result; }
-            const std::string sp = wallet_service->get().GetV7P2MRStorePath();
-            if (sp.empty()) { result["ok"] = false; result["error"] = "v7 P2MR store path not configured"; return result; }
-            store_holder = std::make_unique<dinero::wallet::V7P2MRStore>();
-            if (store_holder->Open(sp) != dinero::wallet::V7P2MRStore::OpenResult::Ok) { result["ok"] = false; result["error"] = "failed to open v7 P2MR store"; return result; }
-            dinero::wallet::WalletKeyProvider::Config cfg;
-            cfg.legacy_keys_by_path = path_to_key;
-            cfg.p2mr_store = store_holder.get();
-            cfg.wallet_id = 1;
-            std::memcpy(cfg.master_key.data(), master->data(), cfg.master_key.size());
-            OPENSSL_cleanse(const_cast<uint8_t*>(master->data()), master->size());
-            provider = std::make_unique<dinero::wallet::WalletKeyProvider>(std::move(cfg));
-        } else {
-            if (path_to_key.empty()) { result["ok"] = false; result["error"] = "Could not retrieve private keys for signing"; return result; }
-            provider = std::make_unique<dinero::MapKeyProvider>(path_to_key);
-        }
-
-        auto sr = dinero::TransactionSigner::Sign(br.unsigned_tx, *provider);
+        auto sr=dinero::SignWalletTransaction(wallet_service->get(),signing_identity,br.unsigned_tx);
         if (!sr.success) { result["ok"] = false; result["error"] = "Failed to sign transaction: " + sr.error; return result; }
 
         const dinero::Transaction& stx = sr.signed_tx.tx;
@@ -8065,7 +7995,68 @@ din::Json rpc_context_wallet_consolidate(const ExecutionContext& ctx, const din:
 
 extern RpcRegistry g_rpcRegistry;
 
+din::Json rpc_context_wallet_listpendingpayments(const ExecutionContext& ctx,const din::Json&) {
+    din::Json result;
+    try {
+        if(!ctx.daemon || !ctx.daemon->wallet)throw std::runtime_error("Wallet service unavailable");
+        auto service=std::dynamic_pointer_cast<dinero::WalletService>(ctx.daemon->wallet);
+        if(!service)throw std::runtime_error("Wallet service unavailable");
+        auto& wallet=service->get();auto lease=wallet.AcquireDatabaseLease();
+        if(lease->WalletName().empty() || (!ctx.walletName.empty() && ctx.walletName!=lease->WalletName()))
+            throw std::runtime_error("Selected wallet does not match payment request");
+        const auto payments=wallet.getPendingPayments();
+        result["payments"]=din::arr();
+        for(const auto& p:payments) {
+            din::Json row;row["txid"]=p.txid;row["hex"]=util::hex(p.signed_body);row["address"]=p.intent.address;
+            row["amount_una"]=static_cast<din::Json::UInt64>(p.intent.amount_una);row["fee_una"]=static_cast<din::Json::UInt64>(p.fee_una);
+            row["recipients"] = din::arr();
+            uint64_t total = p.intent.amount_una;
+            din::Json primary;primary["address"] = p.intent.address;
+            primary["amount_una"] = static_cast<din::Json::UInt64>(p.intent.amount_una);row["recipients"].append(primary);
+            for (const auto& recipient : p.intent.additional_recipients) {
+                din::Json item;item["address"] = recipient.address;item["amount_una"] = static_cast<din::Json::UInt64>(recipient.amount_una);
+                row["recipients"].append(item);total += recipient.amount_una;
+            }
+            row["total_amount_una"] = static_cast<din::Json::UInt64>(total);
+            if (p.intent.request) {
+                // getPendingPayments authenticated the full request and body.
+                // This is retained intent, not vault/pool authorization or delivery.
+                const auto& request = *p.intent.request;
+                din::Json binding;
+                switch (request.domain) {
+                    case dinero::PendingPaymentRequestDomain::VaultWithdrawal:
+                        binding["domain"]="vault_withdrawal";break;
+                    case dinero::PendingPaymentRequestDomain::PoolPayout:
+                        binding["domain"]="pool_payout";break;
+                    case dinero::PendingPaymentRequestDomain::SwapFunding:
+                        binding["domain"]="swap_funding";break;
+                    default:throw std::runtime_error("Retained payment request domain invalid");
+                }
+                binding["owner"] = util::hex(std::vector<uint8_t>(request.owner.begin(), request.owner.end()));
+                binding["id"] = util::hex(std::vector<uint8_t>(request.id.begin(), request.id.end()));
+                binding["fee_rate_hint"] = static_cast<din::Json::UInt64>(request.fee_rate_hint);
+                binding["maximum_fee_una"] = static_cast<din::Json::UInt64>(request.maximum_fee_una);
+                binding["audit_context"] = request.audit_context;
+                if(!request.pool_origins.empty()) {
+                    binding["pool_origins"]=din::Json(Json::arrayValue);
+                    for(const auto& origin:request.pool_origins)
+                        binding["pool_origins"].append(util::hex(std::vector<uint8_t>(origin.begin(),origin.end())));
+                }
+                row["request"] = std::move(binding);
+            }
+            row["label"]=p.intent.label;row["created_at"]=static_cast<din::Json::Int64>(p.created_at);row["state"]="retained";
+            row["inputs"]=din::arr();
+            for(const auto& in:p.inputs){din::Json coin;coin["txid"]=in.txid;coin["vout"]=in.vout;coin["amount_una"]=static_cast<din::Json::UInt64>(in.amount_una);row["inputs"].append(coin);}
+            result["payments"].append(row);
+        }
+        result["note"]="Retained wallet-created payments; not a mempool or confirmation report. Earlier untracked payments are not included.";
+    } catch(const std::exception& e){result=din::Json();result["error"]=e.what();}
+    return result;
+}
+
 void registerWalletMethodsContext() {
+    RegisterOrchardAccountRpc();
+    g_rpcRegistry.registerHandler("wallet.listpendingpayments",rpc_context_wallet_listpendingpayments,RegisterMode::Overwrite,"context-aware");
     // Core wallet methods (fully implemented)
     g_rpcRegistry.registerHandler("wallet.getbalance",
                                  rpc_context_wallet_getbalance,
@@ -8327,6 +8318,11 @@ void registerWalletMethodsContext() {
     // Wallet management methods
     g_rpcRegistry.registerHandler("wallet.listwallets",
                                  rpc_context_wallet_listwallets,
+                                 RegisterMode::Overwrite,
+                                 "context-aware");
+
+    g_rpcRegistry.registerHandler("wallet.recovertransparentfromsnapshot",
+                                 rpc_context_wallet_recoversnapshot,
                                  RegisterMode::Overwrite,
                                  "context-aware");
 

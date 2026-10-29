@@ -12,6 +12,7 @@
 #include <iostream>
 #include <limits>
 #include <stdexcept>
+#include <string_view>
 
 namespace fs = std::filesystem;
 using namespace dinero;
@@ -28,12 +29,30 @@ std::string Read(const fs::path& path) {
     Require(file.good(), "cannot read " + path.string());
     return {std::istreambuf_iterator<char>(file), {}};
 }
+void SelectFixtureStorageProfile(const fs::path& path) {
+    // main.cpp derives flatfile/P2P magic from this persisted PoW profile.
+    // This offline tool reads bytes, not consensus: it must use the same
+    // framing identity without claiming to reconstruct all consensus settings.
+    constexpr std::string_view prefix = "regtest-pow-profile-v1\n";
+    const auto marker = Read(path / "regtest-pow-profile");
+    Require(marker.size() == prefix.size() + 65 &&
+            marker.compare(0, prefix.size(), prefix) == 0 && marker.back() == '\n' &&
+            std::all_of(marker.begin() + prefix.size(), marker.end() - 1, [](char c) {
+                return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
+            }), "invalid PoW fixture profile");
+    const auto magic = static_cast<uint32_t>(std::stoul(marker.substr(prefix.size(), 8), nullptr, 16));
+    Require(magic != 0 && magic != 0xFABFB5DAu && magic != 0xD1A0C0DEu && magic != 0xDAB5BFFAu,
+            "reserved PoW fixture profile magic");
+    SelectParams(Chain::REGTEST);
+    MutableParams().magic = magic;
+}
 Json::Value Inspect(ChainDB& db, BlockStorage& storage, const uint256& hash) {
     const auto metadata = db.getHeaderMetadata(hash);
     Require(metadata.ok(), "missing target header metadata");
     const auto body = storage::ReadArchivalBlockDetailed(
         db, &storage, hash, storage::ArchivalReadMode::RequireFlatfiles);
-    Require(body.result.ok(), "missing target archival body");
+    Require(body.result.ok(), std::string("cannot read target archival body: ") +
+            StatusToString(body.result.status()));
     const auto blob = db.getCSNSpendTargets(hash);
     Require(blob.ok(), "missing CSN replay record");
     consensus::CsnReplayData replay;
@@ -91,14 +110,12 @@ int main(int argc, char** argv) {
         path = fs::canonical(path);
         Require(Read(path / "csn-replay-metadata-test-only") ==
                 "csn-replay-metadata-fixture-v1\n" + path.string() + "\n", "missing or mismatched test-only sentinel");
-        Require(Read(path / "regtest-pow-profile").rfind("regtest-pow-profile-v1\n", 0) == 0,
-                "not a PoW-enforced regtest fixture");
         Require(fs::is_regular_file(path / "blockchain/chaindb/CURRENT"), "missing existing ChainDB");
-        SelectParams(Chain::REGTEST);
         daemon::DatadirGuard owner;
         std::string error;
         const bool acquired = owner.Acquire(path, error);
         Require(acquired, "datadir must be stopped: " + error);
+        SelectFixtureStorageProfile(path);
         ChainDB db;
         Check(db.init(path / "blockchain/chaindb"), "open ChainDB");
         const auto genesis = db.getBlockHashByHeight(0);

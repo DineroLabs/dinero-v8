@@ -1,0 +1,5 @@
+# Authenticated account discovery
+
+`wallet.orchard.listaccounts {}` uses the same wallet binding, selected-session capture, immutable replay source and authenticated complete-catalog restoration as balance/operation reads. It lists actual nonconsecutive account IDs, revisions and checkpoints plus one captured source position. An incomplete catalog fails without publishing a prefix. It creates no account, key, path or readiness record. Empty results never authorize historical-owner regeneration. It reports no balances or incoming-payment history.
+
+Two new case definitions cover strict parameters/backend refusal and real nonconsecutive accounts, checkpoint equality, reopen, missing catalog member refusal and wrong wallet refusal, preserving wallet bytes. Existing account-read bodies and earlier tests remain. Uncompiled and unapplied; fresh ON/OFF/sanitizer and desktop integration are required. Current GUI still needs a selector and strict parser for this command. Incoming full payment history requires a durable authenticated owner; present unspent notes alone cannot be labelled complete history.

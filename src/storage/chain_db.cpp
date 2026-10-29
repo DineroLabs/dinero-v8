@@ -1,4 +1,9 @@
+#include "storage/historical_catalog_state.h"
 #include "storage/chain_db.h"
+#include "storage/orchard_catalog_nodes.h"
+#include "storage/orchard_catalog_state.h"
+#include "storage/shielded_cf_comparator.h"
+#include "storage/orchard_handoff_names.h"
 #include "common/serialization.h"
 #include "common/json_adapter.h"
 #include "consensus/undo.h"
@@ -176,11 +181,17 @@ std::string SerializePersistedHeaderMetadataValue(const ChainDB::PersistedHeader
 Status ChainDB::init(const std::filesystem::path& dir) {
     close();  // Ensure clean state
 
+    if(!storage::OrchardHandoffControlsAbsent(dir.parent_path())){
+        std::cerr<<"ChainDB::init: Authenticated activation handoff requires dedicated closed-store recovery\n";
+        return Status::Corruption; // BEFORE create_directories, including an absent live swap name.
+    }
+
     try {
         std::filesystem::create_directories(dir);
         // RocksDB's same-process lock registry is keyed by pathname. Normalize
         // aliases before acquiring LOCK so two ChainDB owners cannot bypass it.
         dir_ = std::filesystem::canonical(dir);
+        if(!storage::OrchardHandoffControlsAbsent(dir_.parent_path()))return Status::Corruption;
     } catch (const std::exception&) {
         return Status::Io;
     }
@@ -317,7 +328,8 @@ const char* ShieldedStateKey(ChainDB::ShieldedStateRecord record) {
 }
 
 bool IsReservedShieldedMeta(const std::string& key) {
-    return key == "shielded_frontier" || key == "shielded_anchor_history" ||
+    return key.starts_with("orchard_catalog_v1/") ||
+           key == "shielded_frontier" || key == "shielded_anchor_history" ||
            key == "shielded_anchor_history_migrated_v1";
 }
 
@@ -353,13 +365,36 @@ rocksdb::Status CheckReadyShieldedRecords(OpenedChainDB& reader) {
 }
 } // namespace
 
-Status ChainDB::initAttempt(const std::filesystem::path& dir, bool allow_lock_recovery) {
+Status ChainDB::initReadOnlyForHandoff(const std::filesystem::path& dir) {
+    close();
+    try {
+        // This entry point must never create a missing source or normalize a
+        // substituted inner path. The caller already owns the resolved root.
+        if(!std::filesystem::is_directory(std::filesystem::symlink_status(dir)) ||
+           std::filesystem::canonical(dir)!=dir.lexically_normal() ||
+           !std::filesystem::is_regular_file(std::filesystem::symlink_status(dir/"LOCK")))return Status::Invalid;
+        dir_=dir;
+    }catch(...){return Status::Io;}
+    return initAttempt(dir_,false,true);
+}
+
+Status ChainDB::initAttempt(const std::filesystem::path& dir, bool allow_lock_recovery, bool read_only,
+    const SelectedHandoffOpen* selected) {
+    if(selected&&(read_only||allow_lock_recovery||selected->directory!=dir))return Status::Invalid;
+    if(!read_only&&!selected&&!storage::OrchardHandoffControlsAbsent(dir.parent_path()))return Status::Corruption;
     auto owner = ProcessDirectoryOwner::Acquire(dir);
     if (!owner) {
         std::cerr << "ChainDB::init: Database directory unavailable or already owned in this process\n";
         return Status::Io;
     }
     auto options = getDefaultOptions();
+    if(read_only){
+        // Read-only engine access must not rotate/create the source INFO log.
+        class QuietHandoffLogger final:public rocksdb::Logger {
+            void Logv(const char*,va_list)override{}
+        };
+        options.info_log=std::make_shared<QuietHandoffLogger>();
+    }
     auto descriptors = getColumnFamilyDescriptors();
     const auto lock_path = (dir / "LOCK").string();
     rocksdb::FileLock* lock = nullptr;
@@ -368,7 +403,7 @@ Status ChainDB::initAttempt(const std::filesystem::path& dir, bool allow_lock_re
         owner.reset();  // No DB opened; a retry must acquire a fresh reservation.
         if (allow_lock_recovery) {
             std::this_thread::sleep_for(std::chrono::milliseconds(50));
-            return initAttempt(dir, false);
+            return initAttempt(dir, false, read_only, selected);
         }
         std::cerr << "ChainDB::init: Cannot acquire database lock: " << status.ToString() << '\n';
         return convertRocksDBStatus(status);
@@ -403,7 +438,8 @@ Status ChainDB::initAttempt(const std::filesystem::path& dir, bool allow_lock_re
         const std::unordered_set<std::string> found(names.begin(), names.end());
         if (found.size() != names.size()) return Status::Corruption;
         const bool separated = found.count(kShieldedFamily) != 0;
-        if (separated) descriptors.emplace_back(kShieldedFamily, descriptors[idx_utreexo_].options);
+        if (separated) descriptors.emplace_back(
+            kShieldedFamily, storage::ShieldedStateColumnFamilyOptions(descriptors[idx_utreexo_].options));
         for (const auto& name : names) {
             if (std::none_of(descriptors.begin(), descriptors.end(), [&](const auto& d) { return d.name == name; })) {
                 std::cerr << "ChainDB::init: Unsupported column family: " << name << '\n';
@@ -456,12 +492,14 @@ Status ChainDB::initAttempt(const std::filesystem::path& dir, bool allow_lock_re
         }
     }
 
+    if((read_only||selected)&&(fresh||missing_schema||append_prebase))return Status::Corruption;
+    if(open_generation_==UINT64_MAX)return Status::Corruption;
     // All ownership remains local until opening, the approved append, schema
     // initialization and name-based handle resolution have succeeded.
     OpenedChainDB opened;
     options.create_if_missing = fresh;
     options.create_missing_column_families = fresh;
-    status = opened.open(options, dir.string(), fresh ? descriptors : existing, false);
+    status = opened.open(options, dir.string(), fresh ? descriptors : existing, read_only);
     if (!status.ok()) return convertRocksDBStatus(status);
     if (append_prebase) {
         const auto& descriptor = descriptors.back();
@@ -489,6 +527,7 @@ Status ChainDB::initAttempt(const std::filesystem::path& dir, bool allow_lock_re
     open_env_ = std::move(env);
     db_ = std::move(opened.db);
     cf_ = std::move(ordered);
+    ++open_generation_;
     return Status::Ok;
 }
 
@@ -557,6 +596,14 @@ StatusOr<Block> ChainDB::getBlock(const uint256& hash) const {
     }
     
     return std::move(block);
+}
+
+StatusOr<std::vector<uint8_t>> ChainDB::getBlockEncoding(const uint256& hash) const {
+    if (!db_) return Status::Internal;
+    std::string value;
+    const auto status=db_->Get(rocksdb::ReadOptions(),cf_[idx_blocks_].get(),makeBlockKey(hash),&value);
+    if (!status.ok()) return convertRocksDBStatus(status);
+    return std::vector<uint8_t>(value.begin(),value.end());
 }
 
 Status ChainDB::hasBlock(const uint256& hash) const {
@@ -1329,16 +1376,16 @@ StatusOr<std::pair<uint256, uint32_t>> ChainDB::getTxLocation(const uint256& txi
         return convertRocksDBStatus(status);
     }
 
-    // Parse block_hash (first 64 hex chars) + offset (last 4 bytes)
-    if (value.size() < sizeof(uint32_t)) {
-        return Status::Internal; // Invalid data
-    }
-
-    std::string block_hash_str = value.substr(0, value.size() - sizeof(uint32_t));
+    // The established encoding is exactly 64 hexadecimal characters followed
+    // by the original host-endian uint32 ordinal. Reject partial/extra rows.
+    if (value.size() != 64 + sizeof(uint32_t)) return Status::Corruption;
+    const std::string block_hash_str = value.substr(0, 64);
+    uint256 block_hash;
+    if (block_hash_str.find_first_not_of("0123456789abcdefABCDEF") != std::string::npos ||
+        !uint256::FromHex(block_hash_str, block_hash)) return Status::Corruption;
     uint32_t offset;
-    std::memcpy(&offset, value.data() + value.size() - sizeof(uint32_t), sizeof(uint32_t));
-
-    return std::make_pair(uint256::FromHexUnsafe(block_hash_str), offset);
+    std::memcpy(&offset, value.data() + 64, sizeof(offset));
+    return std::make_pair(block_hash, offset);
 }
 
 Status ChainDB::deleteTxIndex(const ChainWriteToken& token, const uint256& txid, rocksdb::WriteBatch* wb) {
@@ -2211,6 +2258,109 @@ StatusOr<std::vector<uint8_t>> ChainDB::getUtreexoChecksum(int height) const {
     return std::vector<uint8_t>(value.begin(), value.end());
 }
 
+Status ChainDB::stageOrchardCatalogNode(const ChainWriteToken& token,const uint256& id,
+    const std::string& bytes,rocksdb::WriteBatch& batch) {
+    (void)token;
+    if(!db_)return Status::Internal;
+    if(!storage::catalog::ValidNode(id,bytes))return Status::Invalid;
+    const auto prior=getOrchardCatalogNode(id);
+    if(prior.ok())return *prior==bytes?Status::Ok:Status::Corruption;
+    if(prior.status()!=Status::NotFound)return prior.status();
+    std::string key(1,PREFIX_UTREEXO_META);key+="orchard_catalog_v1/node/";
+    key.append(reinterpret_cast<const char*>(id.data),32);
+    batch.Put(cf_[idx_utreexo_].get(),key,bytes);return Status::Ok;
+}
+StatusOr<std::string> ChainDB::getOrchardCatalogNode(const uint256& id) const {
+    if(!db_)return Status::Internal;
+    if(id.IsNull())return Status::Invalid;
+    std::string key(1,PREFIX_UTREEXO_META);key+="orchard_catalog_v1/node/";
+    key.append(reinterpret_cast<const char*>(id.data),32);std::string bytes;
+    const auto result=db_->Get(rocksdb::ReadOptions(),cf_[idx_utreexo_].get(),key,&bytes);
+    if(!result.ok())return convertRocksDBStatus(result);
+    if(!storage::catalog::ValidNode(id,bytes))return Status::Corruption;
+    return bytes;
+}
+
+Status ChainDB::stageOrchardCatalogNodes(const ChainWriteToken& token,
+    const std::map<uint256,std::string>& nodes,rocksdb::WriteBatch& batch) {
+    (void)token;
+    if(!db_)return Status::Internal;
+    if(nodes.size()>kOrchardCatalogNodeBatchLimit)return Status::Invalid;
+    for(const auto& [id,bytes]:nodes)
+        if(!storage::catalog::ValidNode(id,bytes))return Status::Invalid;
+    if(nodes.empty())return Status::Ok;
+
+    const std::string prefix=std::string(1,PREFIX_UTREEXO_META)+"orchard_catalog_v1/node/";
+    std::string end=prefix;++end.back();
+    const rocksdb::Slice lower(prefix),upper(end);
+    rocksdb::ReadOptions options;
+    options.verify_checksums=true;
+    options.total_order_seek=true;
+    options.iterate_lower_bound=&lower;options.iterate_upper_bound=&upper;
+    std::unique_ptr<rocksdb::Iterator> it(db_->NewIterator(options,cf_[idx_utreexo_].get()));
+    std::vector<std::pair<std::string,const std::string*>> missing;missing.reserve(nodes.size());
+    for(const auto& [id,bytes]:nodes) {
+        std::string key=prefix;key.append(reinterpret_cast<const char*>(id.data),32);
+        // Seek, not Next across the namespace: work is bounded by the input
+        // batch, not by the millions of previously retained immutable nodes.
+        // The iterator retains its current SST block across these seeks.
+        it->Seek(key);
+        if(!it->status().ok())return convertRocksDBStatus(it->status());
+        if(it->Valid()&&it->key()==rocksdb::Slice(key)) {
+            // Exact equality to the already hash/encoding-validated input also
+            // authenticates the existing bytes. Corruption is never replaced.
+            if(it->value()!=rocksdb::Slice(bytes))return Status::Corruption;
+        } else missing.emplace_back(std::move(key),&bytes);
+    }
+    // Do not append even a valid prefix if a later read/input was corrupt.
+    for(const auto& [key,bytes]:missing)batch.Put(cf_[idx_utreexo_].get(),key,*bytes);
+    return Status::Ok;
+}
+
+StatusOr<std::string> ChainDB::getOrchardCatalogState(const uint256& id) const {
+    if(!db_)return Status::Internal;if(id.IsNull())return Status::Invalid;
+    std::string key(1,PREFIX_UTREEXO_META);key+="orchard_catalog_v1/state/";
+    key.append(reinterpret_cast<const char*>(id.data),32);std::string bytes;
+    const auto result=db_->Get(rocksdb::ReadOptions(),cf_[idx_utreexo_].get(),key,&bytes);
+    if(!result.ok())return convertRocksDBStatus(result);
+    try {if(storage::catalog::State::Decode(bytes).block!=id)return Status::Corruption;}
+    catch(...){return Status::Corruption;}return bytes;
+}
+Status ChainDB::stageOrchardCatalogState(const ChainWriteToken& token,const uint256& id,
+    const std::string& bytes,rocksdb::WriteBatch& batch) {
+    (void)token;if(!db_)return Status::Internal;
+    try {if(storage::catalog::State::Decode(bytes).block!=id)return Status::Invalid;}
+    catch(...){return Status::Invalid;}
+    const auto prior=getOrchardCatalogState(id);
+    if(prior.ok())return *prior==bytes?Status::Ok:Status::Corruption;
+    if(prior.status()!=Status::NotFound)return prior.status();
+    std::string key(1,PREFIX_UTREEXO_META);key+="orchard_catalog_v1/state/";
+    key.append(reinterpret_cast<const char*>(id.data),32);
+    batch.Put(cf_[idx_utreexo_].get(),key,bytes);return Status::Ok;
+}
+
+StatusOr<std::string> ChainDB::getHistoricalCompactCatalogState(const uint256& id) const {
+    if(!db_)return Status::Internal;if(id.IsNull())return Status::Invalid;
+    std::string key(1,PREFIX_UTREEXO_META);key+="orchard_catalog_v1/historical-state/";
+    key.append(reinterpret_cast<const char*>(id.data),32);std::string bytes;
+    const auto result=db_->Get(rocksdb::ReadOptions(),cf_[idx_utreexo_].get(),key,&bytes);
+    if(!result.ok())return convertRocksDBStatus(result);
+    try {if(storage::catalog::HistoricalState::Decode(bytes).block!=id)return Status::Corruption;}
+    catch(...){return Status::Corruption;}return bytes;
+}
+Status ChainDB::stageHistoricalCompactCatalogState(const ChainWriteToken& token,const uint256& id,
+    const std::string& bytes,rocksdb::WriteBatch& batch) {
+    (void)token;if(!db_)return Status::Internal;
+    try {if(storage::catalog::HistoricalState::Decode(bytes).block!=id)return Status::Invalid;}
+    catch(...){return Status::Invalid;}
+    const auto prior=getHistoricalCompactCatalogState(id);
+    if(prior.ok())return *prior==bytes?Status::Ok:Status::Corruption;
+    if(prior.status()!=Status::NotFound)return prior.status();
+    std::string key(1,PREFIX_UTREEXO_META);key+="orchard_catalog_v1/historical-state/";
+    key.append(reinterpret_cast<const char*>(id.data),32);
+    batch.Put(cf_[idx_utreexo_].get(),key,bytes);return Status::Ok;
+}
+
 Status ChainDB::putUtreexoMeta(const ChainWriteToken& token, const std::string& key,
                                 const std::string& value,
                                 rocksdb::WriteBatch* wb) {
@@ -2982,8 +3132,7 @@ Status ChainDB::forEachUTXO(std::function<bool(const uint256& txid, uint32_t vou
 
         // Parse key: PREFIX_UTXO (1 byte) + txid (32 bytes) + vout (4 bytes big-endian)
         if (key.size() != 37 || key[0] != PREFIX_UTXO) {
-            it->Next();
-            continue;  // Skip malformed keys
+            return Status::Corruption;
         }
 
         // Extract txid (bytes 1-32), convert raw bytes to hex string
@@ -3001,29 +3150,34 @@ Status ChainDB::forEachUTXO(std::function<bool(const uint256& txid, uint32_t vou
         std::memcpy(&be_vout, key.data() + 33, sizeof(be_vout));
         uint32_t vout = bswap32(be_vout);
 
-        // Parse value (same format as getCoin)
+        // Decode completely before calling the visitor. A corrupt row cannot
+        // masquerade as absence, and a visitor exception must reach its owner.
+        Coin coin;
         try {
             Reader r(value);
-            Coin coin;
             coin.amount = r.read<uint64_t>();
             coin.script_pubkey = r.readString();
-            coin.height = r.read<uint32_t>();
-            coin.coinbase = (r.read<uint8_t>() != 0);
+            const auto height = r.read<uint32_t>();
+            const auto coinbase = r.read<uint8_t>();
+            if (height > uint32_t(INT32_MAX) || coinbase > 1) return Status::Corruption;
+            coin.height = int(height);
+            coin.coinbase = coinbase != 0;
             if (!r.eof()) {
-                coin.is_confidential = (r.read<uint8_t>() != 0);
+                const auto confidential = r.read<uint8_t>();
+                if (confidential > 1) return Status::Corruption;
+                coin.is_confidential = confidential != 0;
                 if (!r.eof()) {
                     coin.commitment = r.readBytes();
                 }
             }
 
-            // Call callback, stop if it returns false
-            if (!callback(txid, vout, coin)) {
-                break;
-            }
+            if (!r.eof()) return Status::Corruption;
         } catch (const std::exception&) {
-            // Skip malformed UTXO
+            return Status::Corruption;
         }
-
+        // Preserve the existing deliberate early-stop contract. Complete
+        // inventories must keep visiting until EOF and check the return status.
+        if (!callback(txid, vout, coin)) break;
         it->Next();
     }
 

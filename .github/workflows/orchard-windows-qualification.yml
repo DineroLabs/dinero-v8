@@ -1,0 +1,57 @@
+name: Orchard native Windows qualification
+on:
+  push:
+    branches: ['qualification/v8113-orchard-msvc']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: orchard-native-windows-qualification
+  cancel-in-progress: false
+jobs:
+  native-msvc:
+    runs-on: windows-2022
+    timeout-minutes: 120
+    env:
+      CARGO_BUILD_JOBS: '2'
+      RAYON_NUM_THREADS: '2'
+      CMAKE_BUILD_PARALLEL_LEVEL: '2'
+    steps:
+      - name: Checkout exact workflow commit
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          submodules: recursive
+          persist-credentials: false
+      - name: Native x64 MSVC environment
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756
+        with:
+          arch: x64
+      - name: Python for source and execution gates
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.12'
+      - name: Read pinned Rust compiler
+        id: rust-pin
+        shell: pwsh
+        run: |
+          python -c "import tomllib; print('version='+tomllib.load(open('rust/orchard_backend/rust-toolchain.toml','rb'))['toolchain']['channel'])" >> $env:GITHUB_OUTPUT
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Install pinned native Rust toolchain
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
+        with:
+          toolchain: ${{ steps.rust-pin.outputs.version }}
+      - name: Build and qualify the exact standalone component
+        shell: pwsh
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+        run: |
+          python -B scripts/ci/run_orchard_windows.py --source "$env:GITHUB_WORKSPACE" --output "$env:RUNNER_TEMP/orchard-msvc-qualification" --expected-sha "$env:EXPECTED_SHA"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Preserve results even when qualification fails
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: orchard-native-windows-${{ github.sha }}
+          path: ${{ runner.temp }}/orchard-msvc-qualification/evidence/
+          if-no-files-found: error

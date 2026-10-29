@@ -14,6 +14,8 @@
 #include "crypto/sha256.h"
 #include <algorithm>
 #include <iostream>
+#include <limits>
+#include <stdexcept>
 
 namespace dinero {
 namespace consensus {
@@ -125,6 +127,86 @@ HeaderChainSelector::HeaderChainSelector(HeaderStore* store)
     }
 }
 
+std::shared_ptr<HeaderChainSelector> HeaderChainSelector::RestorePreservingBranches(
+        HeaderStore& store, std::span<const HeaderIndexEntry> selected) {
+    if (selected.empty()) throw std::runtime_error("Startup selected ancestry is empty");
+    HeaderStore::StartupSnapshot snapshot;
+    if (!store.ReadStartupSnapshot(snapshot))
+        throw std::runtime_error("Startup header inventory is unavailable or incompatible");
+    std::map<uint256, HeaderIndexEntry> inventory;
+    auto add = [&](const HeaderIndexEntry& entry) {
+        if (entry.height >= static_cast<uint32_t>(std::numeric_limits<int32_t>::max()) ||
+            entry.hash != entry.header.GetHash() || entry.prev_hash != entry.header.prev_block_hash)
+            throw std::runtime_error("Startup header identity or height is invalid");
+        auto [it, inserted] = inventory.emplace(entry.hash, entry);
+        if (!inserted && (it->second.height != entry.height ||
+            it->second.chainwork != entry.chainwork ||
+            it->second.header.Serialize() != entry.header.Serialize()))
+            throw std::runtime_error("Startup header conflicts with selected ancestry");
+        // Never follow a caller-owned parent pointer or trust a stored child count.
+        it->second.parent = nullptr;
+        it->second.child_count = 0;
+    };
+    for (size_t i = 0; i < selected.size(); ++i) {
+        const auto& entry = selected[i];
+        if (entry.height != i || (i == 0 ? !entry.prev_hash.IsNull() :
+                entry.prev_hash != selected[i-1].hash))
+            throw std::runtime_error("Startup selected ancestry is not contiguous");
+        add(entry);
+    }
+    for (const auto& entry : snapshot.headers) add(entry);
+    std::vector<const HeaderIndexEntry*> ordered;
+    ordered.reserve(inventory.size());
+    for (const auto& [hash, entry] : inventory) ordered.push_back(&entry);
+    std::sort(ordered.begin(), ordered.end(), [](const auto* a, const auto* b) {
+        return a->height != b->height ? a->height < b->height : a->hash < b->hash;
+    });
+    auto result = std::make_shared<HeaderChainSelector>();
+    for (const auto* stored : ordered) {
+        HeaderIndexEntry* parent = nullptr;
+        if (stored->height == 0) {
+            if (stored->hash != selected.front().hash || !stored->prev_hash.IsNull())
+                throw std::runtime_error("Startup branch has a foreign genesis");
+        } else {
+            const auto it = result->header_index_.find(stored->prev_hash);
+            if (it == result->header_index_.end() || it->second->height + 1 != stored->height)
+                throw std::runtime_error("Startup branch parent is missing or inconsistent");
+            parent = it->second.get();
+        }
+        if (!result->ValidateHeader(stored->header, parent))
+            throw std::runtime_error("Startup branch header validation failed");
+        auto entry = std::make_unique<HeaderIndexEntry>(stored->header, parent);
+        if (entry->height != stored->height || entry->chainwork != stored->chainwork ||
+            (parent && entry->chainwork <= parent->chainwork))
+            throw std::runtime_error("Startup branch cumulative work is invalid");
+        const auto* value = entry.get();
+        result->header_index_.emplace(value->hash, std::move(entry));
+        if (parent) ++parent->child_count;
+        if (!result->best_header_ || value->chainwork > result->best_header_->chainwork ||
+            (value->chainwork == result->best_header_->chainwork && value->hash < result->best_header_->hash))
+            result->best_header_ = value;
+    }
+    if (snapshot.best && !result->header_index_.contains(*snapshot.best))
+        throw std::runtime_error("Startup best-header marker names an absent header");
+    const size_t best_length = static_cast<size_t>(result->best_header_->height) + 1;
+    if (result->header_index_.size() - best_length > MAX_SIDE_BRANCH_HEADERS)
+        throw std::runtime_error("Startup branch inventory exceeds retention budget");
+    for (const auto& [hash, entry] : result->header_index_)
+        result->RefreshTipStatus(entry.get());
+    // No storage writes or callbacks occurred while the candidate was built.
+    // Publish the caller-owned store pointer only after all checks/allocation.
+    result->header_store_ = &store;
+    return result;
+}
+
+std::shared_ptr<HeaderChainSelector> HeaderChainSelector::RestorePreservingBranches(
+        std::shared_ptr<HeaderStore> store, std::span<const HeaderIndexEntry> selected) {
+    if (!store) throw std::invalid_argument("Startup header store is absent");
+    auto result=RestorePreservingBranches(*store,selected);
+    result->header_store_owner_=std::move(store);
+    return result;
+}
+
 HeaderChainSelector::~HeaderChainSelector() {
     // unique_ptr handles cleanup automatically
     // HeaderStore is not owned, so we don't delete it
@@ -132,6 +214,20 @@ HeaderChainSelector::~HeaderChainSelector() {
 
 bool HeaderChainSelector::AddHeader(const BlockHeader& header) {
     return AddHeaderWithResult(header) != AddResult::REJECTED;
+}
+
+std::optional<uint32_t> HeaderChainSelector::ValidateObservedHeaderHeight(
+    const BlockHeader& header) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto known = header_index_.find(header.GetHash());
+    if (known != header_index_.end()) return known->second->height;
+    auto parent = header_index_.find(header.prev_block_hash);
+    if (parent == header_index_.end() ||
+        parent->second->height == std::numeric_limits<uint32_t>::max() ||
+        !ValidateHeader(header, parent->second.get())) {
+        return std::nullopt;
+    }
+    return parent->second->height + 1;
 }
 
 HeaderChainSelector::AddResult HeaderChainSelector::AddHeaderWithResult(const BlockHeader& header) {
@@ -208,8 +304,13 @@ HeaderChainSelector::AddResult HeaderChainSelector::AddHeaderWithResult(const Bl
             const size_t side_count =
                 header_index_.size() > active_len ? header_index_.size() - active_len : 0;
             if (side_count >= MAX_SIDE_BRANCH_HEADERS) {
+                // The highest-work header chain may differ from the selected
+                // fully validated chain. A selected owner's retained tip is
+                // unavailable for eviction even while it is a losing header.
+                const auto candidate=std::find_if(evictable_tips_.begin(),evictable_tips_.end(),
+                    [&](const HeaderIndexEntry* tip) {return !retained_ancestry_tips_.contains(tip->hash);});
                 const HeaderIndexEntry* min_tip =
-                    evictable_tips_.empty() ? nullptr : *evictable_tips_.begin();
+                    candidate==evictable_tips_.end() ? nullptr : *candidate;
                 if (min_tip == nullptr ||
                     !(entry_ptr->chainwork > min_tip->chainwork)) {
                     // No lower-work tip to displace — this header cannot belong to
@@ -300,8 +401,8 @@ void HeaderChainSelector::EvictBranch(const HeaderIndexEntry* tip) {
             break;
         }
         HeaderIndexEntry* cur = it->second.get();
-        if (cur == best_header_) {
-            break;  // never evict the best tip
+        if (cur == best_header_ || retained_ancestry_tips_.contains(cur_hash)) {
+            break;  // never prune through a best-header or retained selected tip
         }
         if (cur->child_count != 0) {
             break;  // reached a fork point with a surviving branch — stop
@@ -335,6 +436,97 @@ void HeaderChainSelector::EvictBranch(const HeaderIndexEntry* tip) {
         // still has children or is best_header_, the loop stops there.
         cur_hash = parent_hash;
     }
+}
+
+bool HeaderChainSelector::MatchesAncestry(std::span<const HeaderIndexEntry> expected) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return MatchesAncestryUnderLock(expected);
+}
+
+bool HeaderChainSelector::MatchesAncestryUnderLock(std::span<const HeaderIndexEntry> expected) const {
+    if (expected.empty()) return false;
+    const HeaderIndexEntry* previous=nullptr;
+    for (size_t height=0;height<expected.size();++height) {
+        const auto& want=expected[height];
+        if (want.parent || want.height!=height || want.hash!=want.header.GetHash() ||
+            want.prev_hash!=want.header.prev_block_hash) return false;
+        const auto found=header_index_.find(want.hash);
+        if (found==header_index_.end() || !found->second) return false;
+        const auto& have=*found->second;
+        if (have.hash!=want.hash || have.header.GetHash()!=want.hash ||
+            have.prev_hash!=want.prev_hash || have.height!=want.height ||
+            have.chainwork!=want.chainwork || have.parent!=previous ||
+            (previous ? have.prev_hash!=previous->hash : !have.prev_hash.IsNull())) return false;
+        previous=&have;
+    }
+    return true;
+}
+
+std::unique_ptr<HeaderChainSelector::AncestryRetention> HeaderChainSelector::RetainAncestry(
+        std::shared_ptr<HeaderChainSelector> owner,std::span<const HeaderIndexEntry> expected) {
+    if (!owner) return {};
+    // Allocate the guard before changing retention. On refusal it owns no pin.
+    auto retained=std::unique_ptr<AncestryRetention>(new AncestryRetention(std::move(owner)));
+    auto& selector=*retained->owner_;
+    std::lock_guard<std::mutex> lock(selector.mutex_);
+    if (!selector.MatchesAncestryUnderLock(expected)) return {};
+    retained->tip_=expected.back().hash;
+    auto [it,inserted]=selector.retained_ancestry_tips_.try_emplace(retained->tip_,0);
+    if (it->second==std::numeric_limits<size_t>::max())
+        throw std::overflow_error("Header ancestry retention count exhausted");
+    ++it->second;
+    retained->retained_=true;
+    return retained;
+}
+
+std::unique_ptr<HeaderChainSelector::AncestryRetention> HeaderChainSelector::RetainAdjacent(
+        const AncestryRetention& current,const HeaderIndexEntry& expected_current,
+        const HeaderIndexEntry& expected_next) {
+    if (!current.retained_ || !current.owner_) return {};
+    auto retained=std::unique_ptr<AncestryRetention>(new AncestryRetention(current.owner_));
+    auto& selector=*retained->owner_;
+    std::lock_guard<std::mutex> lock(selector.mutex_);
+    const auto pin=selector.retained_ancestry_tips_.find(current.tip_);
+    if (pin==selector.retained_ancestry_tips_.end() || !pin->second ||
+        expected_current.hash!=current.tip_) return {};
+    const auto match=[&](const HeaderIndexEntry& expected)->const HeaderIndexEntry* {
+        if (expected.parent || expected.hash!=expected.header.GetHash() ||
+            expected.prev_hash!=expected.header.prev_block_hash) return nullptr;
+        const auto found=selector.header_index_.find(expected.hash);
+        if (found==selector.header_index_.end() || !found->second) return nullptr;
+        const auto& have=*found->second;
+        if (have.hash!=expected.hash || have.header.GetHash()!=expected.hash ||
+            have.prev_hash!=expected.prev_hash || have.height!=expected.height ||
+            have.chainwork!=expected.chainwork) return nullptr;
+        return &have;
+    };
+    const auto* from=match(expected_current);
+    const auto* to=match(expected_next);
+    if (!from || !to) return {};
+    const bool forward=uint64_t(from->height)+1==to->height &&
+        to->parent==from && to->prev_hash==from->hash;
+    const bool backward=uint64_t(to->height)+1==from->height &&
+        from->parent==to && from->prev_hash==to->hash;
+    if (!forward && !backward) return {};
+    // The current guard already retains the entire checked parent chain.
+    // A direct child adds one checked edge; a parent is a retained prefix.
+    retained->tip_=to->hash;
+    auto [it,inserted]=selector.retained_ancestry_tips_.try_emplace(retained->tip_,0);
+    if (it->second==std::numeric_limits<size_t>::max())
+        throw std::overflow_error("Header ancestry retention count exhausted");
+    ++it->second;
+    retained->retained_=true;
+    return retained;
+}
+
+HeaderChainSelector::AncestryRetention::~AncestryRetention() noexcept {
+    if (!retained_) return;
+    std::lock_guard<std::mutex> lock(owner_->mutex_);
+    const auto it=owner_->retained_ancestry_tips_.find(tip_);
+    if (it==owner_->retained_ancestry_tips_.end() || !it->second) std::terminate();
+    if (!--it->second) owner_->retained_ancestry_tips_.erase(it);
+    // The existing tip-set membership stays unchanged: releasing a pin never
+    // allocates, evicts a header, writes storage or changes fork choice.
 }
 
 bool HeaderChainSelector::GetBestHeaderCopy(HeaderIndexEntry& out) const {
@@ -645,6 +837,8 @@ bool HeaderChainSelector::FindForkPointHash(
 
 void HeaderChainSelector::Clear() {
     std::lock_guard<std::mutex> lock(mutex_);
+    if (!retained_ancestry_tips_.empty())
+        throw std::logic_error("Cannot clear retained header ancestry");
     header_index_.clear();
     best_header_ = nullptr;
     evictable_tips_.clear();          // 4d-2: runtime tip set
@@ -658,6 +852,7 @@ void HeaderChainSelector::Clear() {
 
 bool HeaderChainSelector::LoadFromStorage() {
     std::lock_guard<std::mutex> lock(mutex_);
+    if (!retained_ancestry_tips_.empty()) return false;
     if (!header_store_) {
         return false;
     }
@@ -766,9 +961,23 @@ size_t HeaderChainSelector::GetHeaderCount() const {
 // ============================================================================
 
 bool HeaderChainSelector::ValidateHeader(
-    const BlockHeader& header,
-    const HeaderIndexEntry* prev
-) {
+    const BlockHeader& header, const HeaderIndexEntry* prev) {
+    std::optional<HeaderAsertContext> parent;
+    if (prev) {
+        parent.emplace();
+        parent->parent_height = prev->height;
+        parent->parent_mtp = static_cast<int64_t>(prev->GetMedianTimePast());
+        parent->block1_time = GetKnownAncestryTimestamp(nullptr, prev, 1);
+        const auto consensus = GetConsensusForCurrentNetwork();
+        if (const auto height = TimingUpgradeAnchorHeight(
+                static_cast<int32_t>(prev->height) + 1, consensus))
+            parent->timing_anchor = GetKnownAncestryTimingAnchor(nullptr, prev, *height);
+    }
+    return ValidateHistoricalHeader(header, parent);
+}
+
+bool ValidateHistoricalHeader(const BlockHeader& header,
+                              const std::optional<HeaderAsertContext>& parent) {
     // Phase N.1: Stateless header validation only
 
     // 1. Version sanity
@@ -784,14 +993,14 @@ bool HeaderChainSelector::ValidateHeader(
     // For non-genesis blocks, enforce the same header-level time rule the
     // active chain accepts: a timestamp must be greater than median-time-past.
     // It does not have to be monotonic relative to the direct parent.
-    if (prev != nullptr) {
-        if (header.timestamp <= prev->GetMedianTimePast()) {
+    if (parent.has_value()) {
+        if (header.timestamp <= parent->parent_mtp) {
             return false;
         }
     }
 
     // 3. Difficulty target validation (if not genesis)
-    if (prev != nullptr) {
+    if (parent.has_value()) {
         // In production, this would validate difficulty adjustment
         // For now, just check bits field is non-zero
         if (header.difficulty == 0) {
@@ -846,7 +1055,7 @@ bool HeaderChainSelector::ValidateHeader(
     // header whose claimed bits != the bits required by the ASERT schedule for
     // its height is rejected before its (claimed) chainwork is credited.
     //
-    // Computed from THIS header's own parent (`prev`) — prev->GetMedianTimePast()
+    // Computed from THIS header's own parent (`prev`) — parent->parent_mtp
     // walks prev's own ancestry, so side branches validate against their own
     // anchor context, not the active tip.
     //
@@ -856,21 +1065,20 @@ bool HeaderChainSelector::ValidateHeader(
     // skip rather than reject, so honest persisted headers replay cleanly at
     // startup and block_acceptor remains the backstop. Compact bits are compared
     // for equality against the canonical encoding (never ordered numerically).
-    if (prev != nullptr && !Params().SkipProofOfWork()) {
+    if (parent.has_value() && !Params().SkipProofOfWork()) {
         const Consensus consensus = GetConsensusForCurrentNetwork();
-        const uint32_t expected_bits = GetNextWorkRequiredForCandidate(
-            static_cast<int32_t>(prev->height) + 1,
-            static_cast<int64_t>(header.timestamp),
-            consensus,
-            /*parent_index=*/static_cast<const CBlockIndex*>(nullptr),
-            /*parent_entry=*/prev,
-            /*chain_db=*/static_cast<dinero::NoChainDb*>(nullptr));
+        const auto input = BuildAsertInputForCandidateTimes(
+            parent->parent_mtp, parent->block1_time,
+            static_cast<dinero::NoChainDb*>(nullptr),
+            static_cast<int32_t>(parent->parent_height) + 1,
+            static_cast<int64_t>(header.timestamp), consensus, parent->timing_anchor);
+        const uint32_t expected_bits = input ? ComputeAsertBits(*input) : 0;
         // The isolated qualification profile never credits unverifiable work.
         // Preserve historical replay behavior on existing networks.
         if (expected_bits == 0 && Params().regtest_enforce_pow) return false;
         if (expected_bits != 0 && header.difficulty != expected_bits) {
             std::cerr << "[HeaderChainSelector] ❌ bad-diffbits-header at height "
-                      << (prev->height + 1) << ": header has "
+                      << (parent->parent_height + 1) << ": header has "
                       << std::hex << header.difficulty << ", required "
                       << expected_bits << std::dec
                       << " (hash " << hash.GetHex().substr(0, 16) << "...)"

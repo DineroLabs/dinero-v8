@@ -118,6 +118,9 @@ public:
         size_t inserted{0};
         size_t duplicates{0};
         bool request_more{false};
+        // Highest exact header accepted from this complete batch, including duplicates.
+        // Empty/rejected batches do not authorize a peer-height update.
+        std::optional<uint32_t> accepted_height;
     };
 
     explicit HeaderSyncManager(
@@ -268,6 +271,9 @@ public:
     // retain the normal timeout because a healthy peer can be busy syncing.
     // Override is for tests/regtest only.
     static constexpr uint64_t HEADERS_STALE_TIP_PROBE_TIMEOUT_MS = 60 * 1000;
+    // A flight owner silent this long yields to a peer that is ahead, even if
+    // the owner is credited as ahead (SJ fork, 2026-10-25).
+    static constexpr uint64_t HEADERS_SILENT_FLIGHT_TAKEOVER_MS = 60 * 1000;
     void SetStaleTipProbeTimeoutMs(uint64_t timeout_ms);
 
     // #738 follow-up (audit 2026-09-14, MEDIUM-1): how long a MarkPeerStalled /

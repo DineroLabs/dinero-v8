@@ -34,6 +34,11 @@ public:
     std::string GetString(const std::string& key, const std::string& default_value = "") const;
     int GetInt(const std::string& key, int default_value = 0) const;
     bool GetBool(const std::string& key, bool default_value = false) const;
+    // Local snapshot load/export policy only. Never changes catalog consensus,
+    // existing compact owners, or full-profile snapshot authentication.
+    bool CompactSnapshotBootstrapEnabled() const {
+        return GetBool("assumeutxo_compact_bootstrap", true);
+    }
 
     void Set(const std::string& key, const std::string& value);
 

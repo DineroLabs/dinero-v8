@@ -1,17 +1,20 @@
 #pragma once
 
 #include "pool/pool_types.h"
+#include "pool/payment_attempt.h"
 #include <string>
 #include <vector>
 #include <memory>
 #include <optional>
 #include <functional>
+#include <mutex>
 
 struct sqlite3;
 struct sqlite3_stmt;
 
 namespace dinero {
 namespace pool {
+class PayoutCalculator;
 
 /**
  * Pool Database - SQLite-backed storage for mining pool accounting
@@ -37,7 +40,9 @@ public:
 
     // Initialize database and create tables
     bool initialize();
-    bool isOpen() const { return db_ != nullptr; }
+    bool isOpen() const { std::lock_guard<std::recursive_mutex> owner(connection_mutex_); return db_ != nullptr; }
+    PoolDB(const PoolDB&) = delete;
+    PoolDB& operator=(const PoolDB&) = delete;
 
     // ========================================================================
     // SHARE OPERATIONS
@@ -46,7 +51,9 @@ public:
     // Record a new share
     bool insertShare(const Share& share);
 
-    // Execute a series of DB operations atomically.
+    // Execute DB-only operations atomically. Callers acquire any PoolManager
+    // owner first; callbacks must not acquire manager/selected-chain owners.
+    // The connection owner also serializes direct public PoolDB callers.
     bool runInTransaction(const std::function<bool()>& fn);
 
     // Reserve a dedupe key for a share submission.
@@ -61,9 +68,13 @@ public:
     std::vector<Share> getWorkerShares(const std::string& worker_id,
                                         uint32_t limit = 100);
 
+    // Complete typed inclusive time-range capture. Read/row/EOF errors throw;
+    // borrowed transactions remain caller-owned. No historical completeness claim.
     // Get shares in time range
     std::vector<Share> getSharesInRange(int64_t start_time, int64_t end_time);
 
+    // Complete typed selected VALID-only window, preserving the existing filter.
+    // Read/row/EOF errors and unrepresentable limits throw, never return a prefix.
     // Get last N shares (for PPLNS)
     std::vector<Share> getLastNShares(uint64_t n);
 
@@ -121,12 +132,27 @@ public:
 
     // Get blocks pending confirmation
     std::vector<PoolBlock> getPendingBlocks();
+    // Complete present inventory; refuses errors, malformed rows and over-limit
+    // inventories. This is not proof against deleted rows or backup rollback.
+    std::vector<PoolBlock> getRecordedBlocks();
+    void updateBlockConfirmationsChecked(const PoolBlock& expected,uint32_t confirmations,int64_t observed_at);
 
     // Get blocks ready for payout (confirmed but not paid)
     std::vector<PoolBlock> getBlocksReadyForPayout();
 
+    // Complete typed selected recent-block window; failures throw.
     // Get recent blocks
     std::vector<PoolBlock> getRecentBlocks(uint32_t limit = 50);
+
+    struct OrphanResult {
+        bool found = false;
+        uint64_t pending_reversed = 0;
+        uint64_t already_paid = 0;
+    };
+    // Checked FULL transaction for the existing unpaid-payout reversal policy.
+    // False means unavailable/invalid/failed, never an empty successful read.
+    // The result is assigned only after COMMIT. Missing block is found=false.
+    bool reconcileOrphanedBlock(const std::string& block_hash, OrphanResult& result, const PoolBlock* expected = nullptr);
 
     // Mark block as orphaned
     bool markBlockOrphaned(uint64_t block_id);
@@ -145,6 +171,9 @@ public:
     bool incrementPayoutRetry(uint64_t payout_id, int64_t retry_time, const std::string& error = "");
 
     // Get payouts for block
+    // All four payout readers below capture explicit typed columns through
+    // SQLITE_DONE or throw without a partial result. Borrowed reads remain
+    // caller-owned. Present records alone do not certify payment eligibility.
     std::vector<Payout> getPayoutsForBlock(uint64_t block_id);
 
     // Get payouts for worker
@@ -153,6 +182,11 @@ public:
 
     // Get pending payouts
     std::vector<Payout> getPendingPayouts();
+
+    // Complete present attempt/member capture in one checked FULL transaction.
+    // Missing/corrupt storage refuses. Durable metadata is not a signed catalog
+    // or proof against deletion, backup rollback or canonical eligibility.
+    std::vector<PoolPaymentAttempt> getPaymentAttempts();
 
     // Get payouts ready to send (confirmed blocks)
     std::vector<Payout> getPayoutsReadyToSend();
@@ -170,8 +204,14 @@ public:
     // Get current round
     std::optional<MiningRound> getCurrentRound();
 
-    // Get round by ID
+    // Capture the round and all contribution rows in one checked read snapshot.
+    // Missing returns nullopt; malformed/incomplete reads throw. A caller-owned
+    // transaction is read without being committed or rolled back.
     std::optional<MiningRound> getRound(uint64_t round_id);
+
+    // Resolve the existing rounds.block_id association and capture its complete
+    // round in that same read snapshot. Multiple associated rounds refuse.
+    std::optional<MiningRound> getRoundForBlock(uint64_t block_id);
 
     // Add difficulty to worker in round
     bool addWorkerDifficultyToRound(uint64_t round_id,
@@ -199,9 +239,12 @@ public:
     // ========================================================================
 
     // Get pool config
+    // Complete typed settings read or throw; missing keys retain documented defaults.
     PoolConfig getConfig();
 
     // Update pool config
+    // Validate and persist all settings in one checked FULL transaction.
+    // Refuse borrowed transactions and leave prior settings intact on failure.
     bool updateConfig(const PoolConfig& config);
 
     // ========================================================================
@@ -218,6 +261,36 @@ public:
     uint64_t getDatabaseSize();
 
 private:
+    friend class PayoutProcessor;
+    friend struct PoolPaymentAttemptTestAccess;
+    friend class PoolPaymentCanonicalOwner;
+    friend struct PoolPaymentSettlementTestAccess;
+    friend struct PoolAttemptSourceTestAccess;
+    PoolPaymentSourceSnapshot capturePaymentSources(const std::vector<uint64_t>&);
+    PoolPaymentSourceSnapshot readPaymentSourcesOwned(const std::vector<uint64_t>&);
+    bool reconcilePaymentSettlement(const PoolPaymentAttempt&,const std::optional<PoolPaymentSettlement>&);
+    PoolPaymentAttempt beginPaymentAttempt(const PoolPaymentWalletBinding&,
+                                           const std::vector<uint64_t>& payout_ids,
+                                           const PoolPaymentSourceSnapshot& expected);
+    void retainPaymentAttempt(const PoolPaymentAttempt&,const PoolPaymentRetained&);
+    std::vector<PoolPaymentAttempt> readPaymentAttemptsOwned();
+
+    friend class PayoutCalculator;
+    friend class CanonicalPoolMaintenance;
+    friend struct PoolOrphanRetentionTestAccess;
+    // Only the selected source owner uses this reversible unpaid transition.
+    // It preserves exact rows/actual debits in the SAME FULL transaction.
+    void transitionCanonicalOrphan(const PoolBlock& expected,bool orphaned);
+    friend struct PoolMaintenanceSourceTestAccess;
+    // Actual DB-only calculator dispatch, never an external payment callback.
+    // Owns the full pending allocation batch; returns only after checked COMMIT.
+    uint32_t allocateConfirmedBlockPayouts(PayoutCalculator& calculator, const std::vector<PoolBlock>* expected = nullptr);
+    std::string getAllocationWorkerWallet(const std::string& worker_id);
+    friend struct PoolOrphanAccountingTestAccess;
+    // All use of the SQLite handle is serialized, including whole transactions.
+    // Recursive only for existing DB-to-DB calls and DB-only transaction bodies.
+    // This does not extend the lifetime of PoolDB beyond its owning manager.
+    mutable std::recursive_mutex connection_mutex_;
     std::string db_path_;
     sqlite3* db_;
 

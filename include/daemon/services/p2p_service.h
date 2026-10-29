@@ -26,11 +26,14 @@
 #include <mutex>
 
 namespace dinero {
+namespace daemon {class DatadirGuard;}
+namespace p2p {class OrchardCatalogServer;class OrchardCatalogDownload;class OrchardPhoneHistoryDownload;class OrchardHistoryCache;class WalletFundingDownload;class WalletInputProofDownload;class WalletInputProofServer;}
 
 // Forward declarations
 class ILogger;
 namespace consensus {
 enum class HeaderRequestMode : uint8_t;
+struct OrchardSnapshotSection;
 }
 namespace daemon {
 class AddressManagerService;
@@ -198,6 +201,20 @@ public:
      */
     ::P2PManager& get() { return *p2p_mgr_; }
     const ::P2PManager& get() const { return *p2p_mgr_; }
+    // Unpublished downloaded proof data only. The closed-store handoff must
+    // reauthenticate independently under its retained root/selected ownership.
+    std::shared_ptr<const consensus::OrchardSnapshotSection> ReadyActivationCatalog() const;
+    std::shared_ptr<p2p::OrchardPhoneHistoryDownload> PhoneHistoryDownload() const;
+    std::shared_ptr<p2p::WalletFundingDownload> WalletFundingBodies() const;
+    // Explicit wallet history acquisition, PUBLIC DATA only. Existing cache
+    // records are immutable and strictly rechecked, never repaired on failure.
+    // A null result means a bounded network request is pending; unsupported
+    // root retention and corrupt records throw rather than falling back.
+    std::shared_ptr<const std::vector<uint8_t>> WalletHistoricalBody(const uint256&,bool acquire = true) const;
+    std::shared_ptr<p2p::WalletInputProofDownload> WalletInputProofs() const;
+    // Borrow only the App's actual root guard; Stop joins all users before
+    // App releases it. Never acquire a second operator-root lock for a cache.
+    void SetPhoneHistoryRoot(const daemon::DatadirGuard* guard){phone_history_root_=guard;}
 
     /**
      * Event hooks for block/tx relay
@@ -490,6 +507,18 @@ private:
 
     // Internal message handler
     void HandleP2PMessage(const std::string& peer_addr, const ::P2PMessage& msg);
+    std::shared_ptr<p2p::OrchardCatalogServer> orchard_catalog_server_;
+    mutable std::mutex orchard_catalog_download_mutex_;
+    std::shared_ptr<p2p::OrchardCatalogDownload> orchard_catalog_download_;
+    std::shared_ptr<p2p::OrchardPhoneHistoryDownload> orchard_phone_history_;
+    std::shared_ptr<p2p::WalletFundingDownload> wallet_funding_bodies_;
+    std::shared_ptr<p2p::OrchardHistoryCache> wallet_history_cache_;
+    std::shared_ptr<p2p::WalletInputProofDownload> wallet_input_proofs_;
+    std::shared_ptr<p2p::WalletInputProofServer> wallet_input_server_;
+    const daemon::DatadirGuard* phone_history_root_=nullptr;
+    std::shared_ptr<p2p::OrchardCatalogDownload> CatalogDownload() const;
+    void StopCatalogWorkers();
+    void StartOrchardHistoryWorkers();
     void StartSchedulerTickLoop();
     void StopSchedulerTickLoop();
     bool IsDynamicP2PActive() const;

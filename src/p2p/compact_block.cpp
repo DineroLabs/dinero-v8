@@ -396,7 +396,7 @@ bool CompactBlockCodec::ReconstructPartialBlock(
     // transaction requested via getblocktxn. It is not a malformed block.
     if (mempool != nullptr) {
         mempool->forEachEntry([&](const MempoolEntry& entry) {
-            const Transaction& tx = entry.tx;
+            const Transaction& tx = entry.tx.Historical();
             TxId txid = tx.GetTxid();
             uint64_t short_txid = ComputeShortTxId(block_hash, compact.nonce, txid.AsUint256());
 

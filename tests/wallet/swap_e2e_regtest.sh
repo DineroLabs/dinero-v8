@@ -9,6 +9,21 @@
 #   usage: swap_e2e_regtest.sh <dinerod> <swap_e2e_tool> <dinero-swap-tower>
 set -euo pipefail
 DINEROD=${1:?dinerod}; TOOL=${2:?swap_e2e_tool}; TOWER=${3:?dinero-swap-tower}
+# Each scenario owns fresh chains. Timestamp-refund scenarios advance Bitcoin
+# MTP; sharing that clock eventually puts a later offer beyond the real payer
+# owner's seven-day authorization bound. Never relax that bound for a fixture.
+if [[ $# -eq 3 ]]; then
+  rc=0
+  for scenario in happy din-cpfp stale-clocks tower-claim tower-silent din-sign-first din-race race-late-reveal race-reorg offline tower-refund race-refund-overtaken; do
+    "$0" "$@" "$scenario" || rc=1
+  done
+  exit "$rc"
+fi
+SCENARIO=${4:?scenario}
+case "$SCENARIO" in
+  happy|din-cpfp|stale-clocks|tower-claim|tower-silent|din-sign-first|din-race|race-late-reveal|race-reorg|offline|tower-refund|race-refund-overtaken) ;;
+  *) echo "Unknown swap fixture scenario: $SCENARIO" >&2; exit 1 ;;
+esac
 DIR=$(mktemp -d)
 DPORT=$((20000 + RANDOM % 20000)); DP2P=$((DPORT + 7)); BPORT=$((DPORT + 13))
 CPORT=$((DPORT + 21)); CP2P=$((DPORT + 23))
@@ -45,7 +60,11 @@ DADDR=$(dcall wallet.getnewaddress '["taproot","mine"]' | python3 -c 'import sys
 s=sys.stdin.read().strip()
 try: print(json.loads(s)["address"])
 except Exception: print(s)')
-dcall generatetoaddress "[110, \"$DADDR\"]" >/dev/null
+# The two short signature/race cases need their first funding block at the
+# activation boundary; longer runner scenarios cross it from height 110.
+INITIAL_HEIGHT=110
+case "$SCENARIO" in din-sign-first|din-race) INITIAL_HEIGHT=129 ;; esac
+dcall generatetoaddress "[$INITIAL_HEIGHT, \"$DADDR\"]" >/dev/null
 
 # Bob's Bitcoin wallet (funds the BTC lock).
 "${BCLI[@]}" createwallet bob >/dev/null
@@ -65,12 +84,8 @@ ccall() { DPORT=$CPORT dcall "$@"; }
   >"$DIR/tower.log" 2>&1 & TPID=$!
 
 rc=0
-# Scenarios that move bitcoind's clock forward are safe in any order: each
-# honest scenario starts its locks from max(wall clock, Bitcoin MTP).
-for scenario in happy din-cpfp stale-clocks tower-claim tower-silent din-sign-first din-race race-late-reveal race-reorg offline tower-refund race-refund-overtaken; do
-  echo "=== $scenario ==="
-  "$TOOL" "$scenario" "$DIR/swaps" "$DPORT" "$BPORT" test test "$DADDR" "$BADDR" "$DIR/inbox" || rc=1
-done
+echo "=== $SCENARIO ==="
+"$TOOL" "$SCENARIO" "$DIR/swaps" "$DPORT" "$BPORT" test test "$DADDR" "$BADDR" "$DIR/inbox" || rc=1
 echo "=== CSN node ==="
 TIP=$(dcall getbestblockhash '[]'); HEIGHT=$(dcall getblockcount '[]')
 for _ in $(seq 1 120); do [[ "$(ccall getbestblockhash '[]' 2>/dev/null)" == "$TIP" ]] && break; sleep 1; done

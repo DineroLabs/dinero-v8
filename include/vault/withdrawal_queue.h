@@ -29,12 +29,25 @@ namespace dinero::vault {
 /// signing call.
 using WithdrawalId = std::array<uint8_t, 16>;
 
+// Terms are supplied explicitly when authorizing a new durable withdrawal.
+// Absence on historical requests is preserved and never filled from defaults,
+// account labels or the current operator configuration.
+struct WithdrawalPaymentTerms {
+    uint64_t fee_rate_hint{0};
+    uint64_t maximum_fee_una{0};
+    std::string audit_context;
+    bool operator==(const WithdrawalPaymentTerms&) const = default;
+};
+void ValidateWithdrawalPaymentTerms(const WithdrawalPaymentTerms&);
+
 struct WithdrawalRequest {
     WithdrawalId request_id{};
     AccountId account;
     UnaAmount amount{0};
     std::vector<uint8_t> destination_script_pub_key;
     LedgerTimestamp created_at{0};
+    std::optional<WithdrawalPaymentTerms> payment_terms;
+    bool operator==(const WithdrawalRequest&) const = default;
 };
 
 struct WithdrawalPending {
@@ -62,13 +75,32 @@ struct WithdrawalFailed {
     std::string reason;
     bool operator==(const WithdrawalFailed&) const = default;
 };
+// The exact signed payment remains owned by the wallet, with its inputs
+// reserved. This state says nothing about admission, relay or confirmation.
+// The output index comes from the authenticated body, never an assumed zero.
+struct WithdrawalPaymentRetained {
+    std::array<uint8_t,32> txid{};
+    uint32_t vout{0};
+    std::array<uint8_t,32> body_sha256{};
+    uint64_t fee_una{0};
+    bool operator==(const WithdrawalPaymentRetained&) const = default;
+};
+// A selected-chain inclusion retains the exact signed payment and its block
+// anchor. Disconnect restores that same payment's reservation, not a new send.
+struct WithdrawalPaymentConfirmed {
+    WithdrawalPaymentRetained payment;
+    AllocationInclusion inclusion;
+    bool operator==(const WithdrawalPaymentConfirmed&) const = default;
+};
 using WithdrawalState = std::variant<
     WithdrawalPending,
     WithdrawalSigning,
     WithdrawalBroadcast,
     WithdrawalSettledOnChain,
     WithdrawalRevertedOnChain,
-    WithdrawalFailed
+    WithdrawalFailed,
+    WithdrawalPaymentRetained,
+    WithdrawalPaymentConfirmed
 >;
 
 struct WithdrawalCaps {
@@ -97,6 +129,9 @@ class WithdrawalQueueError : public std::runtime_error {
         UNKNOWN_REQUEST,
         LIFECYCLE_VIOLATION,
         DESTINATION_REJECTED,
+        REQUEST_ID_UNAVAILABLE,
+        INVALID_REQUEST_ID,
+        DUPLICATE_REQUEST,
     };
     WithdrawalQueueError(Kind kind, const std::string& message)
         : std::runtime_error(message), kind_{kind} {}
@@ -129,22 +164,7 @@ class WithdrawalQueue {
                     WithdrawalConfirmationPolicy policy = WithdrawalConfirmationPolicy::defaults())
         : ledger_{ledger}, backend_{backend}, caps_{caps}, policy_{policy} {
         destination_validator_ = [](const std::vector<uint8_t>& spk) { return !spk.empty(); };
-        request_id_generator_ = []() {
-            // Default: derive from monotonic clock + counter. Tests
-            // override with a deterministic generator.
-            static uint64_t counter = 0;
-            counter += 1;
-            WithdrawalId rid{};
-            auto now = static_cast<uint64_t>(
-                std::chrono::duration_cast<std::chrono::nanoseconds>(
-                    std::chrono::steady_clock::now().time_since_epoch())
-                    .count());
-            for (int i = 0; i < 8; ++i) {
-                rid[i] = static_cast<uint8_t>(now >> (i * 8U));
-                rid[i + 8] = static_cast<uint8_t>(counter >> (i * 8U));
-            }
-            return rid;
-        };
+        request_id_generator_ = &WithdrawalQueue::GenerateRequestId;
     }
 
     void setCaps(WithdrawalCaps caps) { caps_ = caps; }
@@ -181,8 +201,12 @@ class WithdrawalQueue {
     [[nodiscard]] UnaAmount currentOutstanding(const AccountId& account) const;
 
    private:
+    friend class VaultService;
     [[nodiscard]] bool isOutstanding(const WithdrawalState& s) const;
     [[nodiscard]] static LedgerTimestamp now();
+    // Random identity is generated only for a new enqueue. Existing requests
+    // retain their IDs; collision/invalid injection refuses before insertion.
+    [[nodiscard]] static WithdrawalId GenerateRequestId();
 
     Ledger* ledger_{nullptr};
     SigningBackend* backend_{nullptr};

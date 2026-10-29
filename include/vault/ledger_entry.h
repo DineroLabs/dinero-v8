@@ -10,10 +10,12 @@
 #pragma once
 
 #include "vault/vault_types.h"
+#include "vault/credit_allocation.h"
 
 #include <optional>
 #include <string>
 #include <variant>
+#include <type_traits>
 
 namespace dinero::vault {
 
@@ -60,6 +62,19 @@ struct CreditReverted {
     OutpointId deposit;
 
     bool operator==(const CreditReverted&) const = default;
+};
+
+// Reinstates one fully compensated reversal after the service has verified
+// canonical inclusion and settlement maturity. Amounts are derived from the
+// referenced ledger history; callers cannot supply a refund or operator loss.
+struct CreditReinstated {
+    LedgerSeq seq{0};
+    LedgerTimestamp at{0};
+    AccountId account;
+    OutpointId deposit;
+    LedgerSeq reversalSeq{0};
+    LedgerSeq compensationSeq{0};
+    bool operator==(const CreditReinstated&) const = default;
 };
 
 struct WithdrawalInitiated {
@@ -120,6 +135,57 @@ struct PolicyAdjustment {
     bool operator==(const PolicyAdjustment&) const = default;
 };
 
+// Versioned principal attribution entries. Old alternatives and their wire tags
+// keep their existing order and replay semantics. Encoding uses DNVS06; live canonical settlement wiring is still WIP.
+// Reserve records selected source identities before any dispatch callback. A
+// later payment binding never selects different funding origins on retry.
+struct WithdrawalAllocationReserved {
+    LedgerSeq seq{0}; LedgerTimestamp at{0}; AccountId account;
+    AllocationRequestId request{}; UnaAmount amount{0};
+    std::vector<CreditAllocationRef> sources;
+    bool operator==(const WithdrawalAllocationReserved&) const = default;
+};
+struct WithdrawalAllocationDispatchStarted {
+    LedgerSeq seq{0}; LedgerTimestamp at{0}; AccountId account;
+    AllocationRequestId request{};
+    bool operator==(const WithdrawalAllocationDispatchStarted&) const = default;
+};
+struct WithdrawalAllocationPaymentBound {
+    LedgerSeq seq{0}; LedgerTimestamp at{0}; AccountId account;
+    AllocationRequestId request{}; AllocationPayment payment; BackendId backend;
+    bool operator==(const WithdrawalAllocationPaymentBound&) const = default;
+};
+struct WithdrawalAllocationIncluded {
+    LedgerSeq seq{0}; LedgerTimestamp at{0}; AccountId account;
+    AllocationRequestId request{}; AllocationInclusion inclusion;
+    bool operator==(const WithdrawalAllocationIncluded&) const = default;
+};
+struct WithdrawalAllocationDisconnected {
+    LedgerSeq seq{0}; LedgerTimestamp at{0}; AccountId account;
+    AllocationRequestId request{}; AllocationInclusion inclusion;
+    bool operator==(const WithdrawalAllocationDisconnected&) const = default;
+};
+struct WithdrawalAllocationReleased {
+    LedgerSeq seq{0}; LedgerTimestamp at{0}; AccountId account;
+    AllocationRequestId request{};
+    bool operator==(const WithdrawalAllocationReleased&) const = default;
+};
+struct CreditPositionMatured {
+    LedgerSeq seq{0}; LedgerTimestamp at{0}; AccountId account;
+    LedgerSeq credit_seq{0}; OutpointId deposit;
+    bool operator==(const CreditPositionMatured&) const = default;
+};
+struct CreditPositionReverted {
+    LedgerSeq seq{0}; LedgerTimestamp at{0}; AccountId account;
+    LedgerSeq credit_seq{0}; OutpointId deposit;
+    bool operator==(const CreditPositionReverted&) const = default;
+};
+struct CreditPositionRestored {
+    LedgerSeq seq{0}; LedgerTimestamp at{0}; AccountId account;
+    LedgerSeq credit_seq{0}; OutpointId deposit;
+    bool operator==(const CreditPositionRestored&) const = default;
+};
+
 using LedgerEntry = std::variant<
     DepositObserved,
     CreditOpened,
@@ -129,8 +195,25 @@ using LedgerEntry = std::variant<
     WithdrawalSettled,
     WithdrawalReverted,
     CompensatingDebit,
-    PolicyAdjustment
+    PolicyAdjustment,
+    CreditReinstated,
+    WithdrawalAllocationReserved,
+    WithdrawalAllocationDispatchStarted,
+    WithdrawalAllocationPaymentBound,
+    WithdrawalAllocationIncluded,
+    WithdrawalAllocationDisconnected,
+    WithdrawalAllocationReleased,
+    CreditPositionMatured,
+    CreditPositionReverted,
+    CreditPositionRestored
 >;
+
+inline bool IsCreditAllocationEntry(const LedgerEntry& entry) {
+    return std::visit([](const auto& value) {
+        using T=std::decay_t<decltype(value)>;
+        return std::is_same_v<T,WithdrawalAllocationReserved> || std::is_same_v<T,WithdrawalAllocationDispatchStarted> || std::is_same_v<T,WithdrawalAllocationPaymentBound> || std::is_same_v<T,WithdrawalAllocationIncluded> || std::is_same_v<T,WithdrawalAllocationDisconnected> || std::is_same_v<T,WithdrawalAllocationReleased> || std::is_same_v<T,CreditPositionMatured> || std::is_same_v<T,CreditPositionReverted> || std::is_same_v<T,CreditPositionRestored>;
+    },entry);
+}
 
 /// Pull the sequence number out of any entry shape.
 inline LedgerSeq entrySeq(const LedgerEntry& e) {

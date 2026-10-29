@@ -28,9 +28,9 @@ namespace test {
  * - Both agree on block_c at height 2, but different at height 1
  * - Result: DC4 violation (ordering inconsistency)
  *
- * Note: This is closely related to DC1 (Agreement).
- * DC1 checks block agreement at each height.
- * DC4 checks that the entire chain history is consistent.
+ * The oracle reads explicitly supplied finalized selected histories. The
+ * Phase-5b simulator does not supply parent links, so its trace alone cannot
+ * establish this property.
  */
 class DC4Oracle : public ConsensusSafetyOracle {
 public:

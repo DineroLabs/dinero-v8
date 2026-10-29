@@ -6,6 +6,11 @@
 # Core wallet library (real implementations only)
 # NOTE: src/wallet/hd_wallet.cpp is LEGACY and intentionally NOT compiled.
 #       Active implementation: src/wallet/hd_wallet.cpp (uses BIP32Deriver)
+add_library(dinero_wallet_catalog STATIC ${CMAKE_CURRENT_SOURCE_DIR}/orchard_account_catalog.cpp)
+target_include_directories(dinero_wallet_catalog PUBLIC ${CMAKE_SOURCE_DIR}/include)
+target_compile_features(dinero_wallet_catalog PUBLIC cxx_std_20)
+target_link_libraries(dinero_wallet_catalog PUBLIC OpenSSL::Crypto sqlite3)
+
 add_library(dinero_wallet STATIC
   ${CMAKE_SOURCE_DIR}/src/common/logger.cpp         # Logger used by wallet code
   ${CMAKE_CURRENT_SOURCE_DIR}/address.cpp
@@ -85,6 +90,7 @@ add_library(dinero_wallet STATIC
   # Milestone 12.4: Unsigned Transaction Construction (v0.12.0)
   ${CMAKE_CURRENT_SOURCE_DIR}/unsigned_tx_builder.cpp  # Pure transaction builder (no side effects)
   # Milestone 12.5: Transaction Signing & Local Validation (v0.12.0)
+  ${CMAKE_CURRENT_SOURCE_DIR}/wallet_transaction_signer.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/transaction_signer.cpp   # Sign unsigned tx + local validation
   # Milestone 12.6: Wallet ↔ Mempool Submission (v0.12.0)
   ${CMAKE_CURRENT_SOURCE_DIR}/wallet_mempool_adapter.cpp  # Adapter between wallet and mempool
@@ -110,6 +116,7 @@ target_include_directories(dinero_wallet PUBLIC
 )
 
 target_link_libraries(dinero_wallet PUBLIC
+  dinero_wallet_catalog
   dinero_address_encoding
   dinero_bip32
   dinero_tx_primitives # ← Transaction structures and Schnorr/Taproot signing

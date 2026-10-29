@@ -29,22 +29,20 @@ int ReorgWatcher::tipChanged(uint64_t /*tip_height*/) {
         }
     }
     for (const auto& [outpoint, dep] : candidates) {
-        ChainInclusion inclusion = check(dep);
-        switch (inclusion) {
+        const auto inclusion = check(dep);
+        switch (inclusion.kind) {
             case ChainInclusion::STILL_INCLUDED:
             case ChainInclusion::UNKNOWN:
                 continue;
             case ChainInclusion::RE_MINED_SAME_TXID: {
                 // Block at deposit's height changed but tx still
                 // present (just re-mined). Update recorded hash.
-                std::array<uint8_t, 32> new_hash = block_hash_at_height_(dep.deposit_height);
-                deposit_block_hashes_[outpoint] = new_hash;
+                deposit_block_hashes_[outpoint] = inclusion.block_hash;
                 continue;
             }
             case ChainInclusion::ORPHANED: {
-                UnaAmount loss = unrecoverableLoss(dep);
                 try {
-                    machine_->revert(outpoint, loss);
+                    machine_->revertOwned(outpoint);
                 } catch (const DepositFlowError& e) {
                     throw ReorgError(ReorgError::Kind::DEPOSIT_FLOW, e.what());
                 }
@@ -56,7 +54,27 @@ int ReorgWatcher::tipChanged(uint64_t /*tip_height*/) {
     return reverts;
 }
 
-ChainInclusion ReorgWatcher::check(const TrackedDeposit& dep) {
+void ReorgWatcher::reconcileTracked() {
+    for (const auto& [outpoint, dep] : machine_->tracked()) {
+        if (dep.stage == DepositStage::REVERTED) continue;
+        const auto inclusion = check(dep, true);
+        if (inclusion.kind == ChainInclusion::UNKNOWN) {
+            throw ReorgError(ReorgError::Kind::SOURCE_UNAVAILABLE,
+                             "canonical deposit observation unavailable");
+        }
+        if (inclusion.kind == ChainInclusion::RE_MINED_SAME_TXID) {
+            deposit_block_hashes_.at(outpoint) = inclusion.block_hash;
+        } else if (inclusion.kind == ChainInclusion::ORPHANED) {
+            try {
+                machine_->revertOwned(outpoint);
+            } catch (const DepositFlowError& e) {
+                throw ReorgError(ReorgError::Kind::DEPOSIT_FLOW, e.what());
+            }
+        }
+    }
+}
+
+ReorgWatcher::CheckedInclusion ReorgWatcher::check(const TrackedDeposit& dep, bool verify_recorded) {
     auto it = deposit_block_hashes_.find(dep.outpoint);
     if (it == deposit_block_hashes_.end()) {
         // Stage advanced to credited without a recorded block hash —
@@ -75,38 +93,16 @@ ChainInclusion ReorgWatcher::check(const TrackedDeposit& dep) {
         }
     }
     if (all_zero) {
-        return ChainInclusion::UNKNOWN;
+        return {ChainInclusion::UNKNOWN,current};
     }
-    if (current == recorded) {
-        return ChainInclusion::STILL_INCLUDED;
+    if (current == recorded && !verify_recorded) {
+        return {ChainInclusion::STILL_INCLUDED,current};
     }
     if (tx_included_at_(dep.outpoint, dep.deposit_height, current)) {
-        return ChainInclusion::RE_MINED_SAME_TXID;
+        return {current == recorded ? ChainInclusion::STILL_INCLUDED : ChainInclusion::RE_MINED_SAME_TXID,current};
     }
-    return ChainInclusion::ORPHANED;
+    return {ChainInclusion::ORPHANED,current};
 }
 
-UnaAmount ReorgWatcher::unrecoverableLoss(const TrackedDeposit& dep) {
-    Ledger* ledger = machine_->ledger();
-    if (ledger == nullptr) {
-        return dep.amount;
-    }
-    auto it = ledger->accounts().find(dep.account);
-    if (it == ledger->accounts().end()) {
-        return dep.amount;
-    }
-    const LedgerAccount& acct = it->second;
-    UnaAmount user_available = 0;
-    if (dep.stage == DepositStage::CREDITED) {
-        UnaAmount p_minus_dep = acct.pending() >= dep.amount ? acct.pending() - dep.amount : 0;
-        user_available = p_minus_dep + acct.confirmed();
-    } else if (dep.stage == DepositStage::SETTLED) {
-        UnaAmount c_minus_dep = acct.confirmed() >= dep.amount ? acct.confirmed() - dep.amount : 0;
-        user_available = acct.pending() + c_minus_dep;
-    } else {
-        user_available = acct.pending() + acct.confirmed();
-    }
-    return dep.amount > user_available ? dep.amount - user_available : 0;
-}
 
 }  // namespace dinero::vault

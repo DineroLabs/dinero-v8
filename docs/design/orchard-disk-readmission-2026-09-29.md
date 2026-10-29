@@ -1,0 +1,7 @@
+# Selected Orchard readmission from retained mempool files
+
+Locally qualified. Actual Mempool::loadFromDisk now routes decoded Orchard bodies through the existing selected-state submitBody validator with relay disabled. Complete file framing/EOF and body decoding still precede admission. Opaque stored fees/heights/time do not grant validity. Accepted bodies and exact existing pool duplicates resolve; every other typed result stays pending, preserving the original file and save refusal. A rejection at one selected tip does not authorize discarding the body across a later reorg. Historical policy handling is unchanged.
+
+This connects an existing durable file owner to actual admission; it adds no new journal, recovery identity, unchecked insertion or historical conversion. It does not install automatic reorg intent consumption, periodic retry, notification provider, whole-node startup ordering or wallet pending completion. Mixed replay may admit a prefix before a later refusal; original bytes remain retained for idempotent retry.
+
+Four ON and one OFF patched-path cases cover real signed Historical plus real-proof Orchard reload/reopen and duplicates, ignored stale metadata/no relay, unavailable selected owner and changed retry file preservation, confirmed refusal followed by actual canonical disconnect and readmission, and unsupported backend/missing owner retention. No unsafe-original or race controls. Fresh full ON/OFF and project sanitizer qualification required. Mainnet unset/provider absent/release incomplete.

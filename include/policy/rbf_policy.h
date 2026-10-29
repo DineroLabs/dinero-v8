@@ -59,6 +59,7 @@ enum class RBFValidationResult {
 
     // General errors
     ORIGINAL_NOT_FOUND,           // Original transaction not in mempool
+    UNSUPPORTED_FAMILY,           // Eviction includes a family without replacement policy
     REPLACEMENT_ADDS_UTXOS        // Replacement would require replacing confirmed txs
 };
 
@@ -71,6 +72,9 @@ enum class RBFValidationResult {
 struct RBFConflictSet {
     std::unordered_set<uint256> direct_conflicts;     // Txs spending same inputs (Phase M.0: uint256)
     std::unordered_set<uint256> descendant_conflicts; // Children of direct conflicts (Phase M.0: uint256)
+
+    // Set by the complete direct-and-descendant inventory, not just direct owners.
+    bool contains_unsupported_family{false};
 
     uint64_t total_fee;              // Sum of all fees being replaced
     size_t total_size;                // Sum of all sizes being replaced

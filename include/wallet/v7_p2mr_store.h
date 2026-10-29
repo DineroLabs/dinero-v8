@@ -62,6 +62,11 @@ public:
      */
     OpenResult Open(const std::string& path);
 
+    /** Open existing storage without creating the database, table or index.
+     * Missing/unreadable storage is an error, not an empty inventory.
+     */
+    OpenResult OpenExistingReadOnly(const std::string& path);
+
     /** Close the DB. Destructor does this automatically. */
     void Close() noexcept;
     ~V7P2MRStore() { Close(); }
@@ -110,7 +115,10 @@ public:
      * require threading chain-params HRP into the signer, coupling the
      * signing layer to chain awareness it otherwise does not need.
      *
-     * Returns nullopt if absent. Never returns secret material.
+     * Checks all matching rows and terminal completion. Coherent aliases may
+     * share the same public key/root; the earliest recorded row is returned.
+     * Returns nullopt for absence, malformed/incomplete reads or a borrowed
+     * transaction. No caller transaction changes; never returns secret material.
      */
     std::optional<P2MRStoredAddress>
     GetByMerkleRoot(int64_t wallet_id,
@@ -119,6 +127,9 @@ public:
     /**
      * List all P2MR addresses for a given wallet_id, ordered by created_at
      * ascending. Intended for wallet UI / RPC listing.
+     * Throws on unavailable storage, invalid rows or incomplete reads; never
+     * returns a partial inventory. Validates stored types and field lengths,
+     * not key ownership, ciphertext authentication or account completeness.
      */
     std::vector<P2MRStoredAddress> ListByWallet(int64_t wallet_id) const;
 
@@ -137,6 +148,27 @@ public:
     };
     std::optional<EncryptedSeed>
     LoadEncryptedSeed(int64_t wallet_id, const std::string& address) const;
+
+    struct KeyRecord {
+        P2MRStoredAddress metadata;
+        EncryptedSeed encrypted_seed;
+    };
+    /** Capture public metadata and ciphertext in one checked SQL statement.
+     * Requires an autocommit connection; refuses caller-owned transactions.
+     * nullopt means checked absence; malformed/unavailable/incomplete reads throw.
+     * Returned bytes describe that statement's snapshot, not lasting readiness.
+     * No decryption or key/path authentication is performed by this reader.
+     */
+    std::optional<KeyRecord>
+    CaptureKeyByAddress(int64_t wallet_id, const std::string& address) const;
+
+    /** Capture every present owner's metadata and ciphertext in ONE checked
+     * statement snapshot. Autocommit required; errors never return a prefix.
+     * This is not a deletion/backup-completeness or derivation-path certificate.
+     */
+    std::vector<KeyRecord> CaptureKeysByWallet(int64_t wallet_id) const;
+
+
 
 private:
     sqlite3* db_ = nullptr;

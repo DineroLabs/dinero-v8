@@ -4,6 +4,9 @@
 #include "common/serialization.h"
 #include "storage/tip_info.h"
 #include "storage/chain_write_token.h"
+#include "storage/orchard_state.h"
+#include "storage/legacy_retirement.h"
+#include <optional>
 #include "consensus/undo.h"
 #include <rocksdb/db.h>
 #include <rocksdb/write_batch.h>
@@ -15,10 +18,16 @@
 #include <filesystem>
 #include <memory>
 #include <functional>
+#include <map>
 #include <vector>
 #include <thread>
 
 namespace dinero {
+class OrchardBlockCandidate;
+class PreparedOrchardChainstateWrite;
+class OrchardSnapshotStore;
+
+namespace consensus { struct OrchardValueFlow; class OrchardSelectedConsistency; }
 
 // Forward declarations
 class CBlockIndex;  // From consensus/block_index.h
@@ -106,6 +115,7 @@ using CfUPtr = std::unique_ptr<rocksdb::ColumnFamilyHandle, CfDeleter>;
  * launches for major projects. Do not weaken these guarantees.
  */
 class ChainDB {
+    friend class ChainDBTransactionReadTestPeer;
 public:
     ChainDB() = default;
     ~ChainDB() { close(); }
@@ -159,8 +169,21 @@ public:
     }
 
 private:
-    Status initAttempt(const std::filesystem::path& dir, bool allow_lock_recovery);
+    friend class consensus::OrchardSelectedConsistency;
+    // Private engine-open permit, not chainstate authority. Only the sealed
+    // store may create it after complete RO handoff selection/proof audits.
+    class SelectedHandoffOpen {
+        friend class OrchardSnapshotStore;friend class ChainDB;
+        explicit SelectedHandoffOpen(std::filesystem::path path):directory(std::move(path)){}
+        const std::filesystem::path directory;
+    };
+    Status initAttempt(const std::filesystem::path& dir, bool allow_lock_recovery, bool read_only = false,
+        const SelectedHandoffOpen* selected = nullptr);
+    // Closed-store handoff only: existing complete layout, the same checked
+    // directory/LOCK lifetime, no schema append/repair or writable Open.
+    Status initReadOnlyForHandoff(const std::filesystem::path& dir);
     std::filesystem::path dir_;  // Remembered for lock recovery
+    uint64_t open_generation_=0;
 
 public:
 
@@ -170,6 +193,10 @@ public:
 
     // Block operations
     Status putBlock(const ChainWriteToken& token, const uint256& hash, const Block& block, rocksdb::WriteBatch* wb = nullptr);
+    // Implemented only by the optional staged Orchard component. Never commits;
+    // full validity and the unified state batch remain the connector's duty.
+    Status stageOrchardBlock(const ChainWriteToken& token, const OrchardBlockCandidate& block,
+                            bool require_witness_commitment, rocksdb::WriteBatch& batch);
     Status deleteBlock(const ChainWriteToken& token, const uint256& hash, rocksdb::WriteBatch* wb = nullptr);
 
     // Header operations
@@ -357,6 +384,24 @@ public:
                           rocksdb::WriteBatch* wb = nullptr);
     StatusOr<std::string> getUtreexoMeta(const std::string& key) const;
 
+    // Immutable content-addressed catalog nodes. Staging never commits or
+    // publishes a root/head; only a completed parent owner can later enroll
+    // roots through the canonical transition. General metadata rejects this
+    // reserved namespace. Reads authenticate the complete node encoding.
+    Status stageOrchardCatalogNode(const ChainWriteToken&, const uint256&,
+        const std::string&, rocksdb::WriteBatch&);
+    // Same immutable-node checks, using one bounded iterator/read view instead
+    // of repeatedly fetching giant checkpoint blocks for absent point reads.
+    // Caller owns the writer throughout staging/publication. Errors leave the
+    // supplied batch unchanged; this method never writes or publishes a head.
+    static constexpr size_t kOrchardCatalogNodeBatchLimit = 1024;
+    Status stageOrchardCatalogNodes(const ChainWriteToken&,
+        const std::map<uint256,std::string>&, rocksdb::WriteBatch&);
+    StatusOr<std::string> getOrchardCatalogNode(const uint256&) const;
+    // Returns the checked immutable record for a block, not a separate tip.
+    StatusOr<std::string> getOrchardCatalogState(const uint256&) const;
+    StatusOr<std::string> getHistoricalCompactCatalogState(const uint256&) const;
+
     // Canonical shielded records have their own access domain. Encodings are
     // unchanged; legacy stores resolve these exact keys inside utreexo, while
     // verified shielded-state-v1:READY stores resolve only shielded_state_v1.
@@ -367,6 +412,76 @@ public:
     StatusOr<std::string> getShieldedState(ShieldedStateRecord record) const;
     // Diagnostic layout query; not permission to reset or migrate a database.
     bool hasSeparatedShieldedState() const { return db_ && cf_.size() == 10; }
+
+    // Staged Orchard block persistence. Only the named, separated layout is
+    // accepted; no implicit migration or legacy-CF fallback. Caller holds the
+    // chainstate writer lock through validation, staging and writeBatch, and
+    // stages coins/forest/tip/height/ordinary undo in this SAME outer batch.
+    // Exactly one Orchard connect OR disconnect may be staged per batch.
+    // These methods never commit, and reject without changing the batch.
+    // The expected state is compared byte-exactly with committed storage; this
+    // is a stale-state check, not a replacement for the caller's writer lock.
+    // No runtime admission caller is enabled by this storage API.
+    // Supply EVERY Orchard transaction's authenticated transparent flow, in
+    // block order. Pool arithmetic does not trust a claimed bundle balance.
+    Status stageOrchardConnect(const ChainWriteToken& token,
+        const std::optional<storage::OrchardStoredState>& expected_parent,
+        const storage::OrchardStoredState& next, const std::vector<uint256>& nullifiers,
+        const std::vector<consensus::OrchardValueFlow>& value_flows,
+        rocksdb::WriteBatch& batch);
+    Status stageOrchardDisconnect(const ChainWriteToken& token,
+        const storage::OrchardStoredState& expected_tip, rocksdb::WriteBatch& batch);
+    StatusOr<storage::OrchardStoredState> getOrchardState() const;
+    // Compare every O1 key/value, including an empty namespace, with a separately
+    // reconstructed store. Caller owns both databases across this read and any
+    // publication. Equality alone does not authenticate the expected store.
+    // Read-only, exact ordered comparison; no row vector or digest is materialized.
+    Status compareOrchardStorage(const ChainDB& expected) const;
+    // Decode the retained undo and require its after-state to match exactly.
+    // Does not authenticate the parent frontier or its selected-chain identity.
+    StatusOr<std::optional<storage::OrchardStoredState>> getOrchardUndoParent(
+        const storage::OrchardStoredState& expected_tip) const;
+    StatusOr<uint256> getOrchardNullifierOwner(const uint256& nullifier) const;
+    StatusOr<uint64_t> getOrchardAnchorReferences(const uint256& anchor) const;
+    // Ordered, checked logical membership export; caller owns the selected
+    // writer across the complete scan. Visitor refusal is not a successful scan.
+    Status forEachOrchardNullifier(const std::function<bool(const uint256&,const uint256&)>&) const;
+    Status forEachOrchardAnchor(const std::function<bool(const uint256&,uint64_t)>&) const;
+    // Read or project canonical logical-set commitments from the exact held
+    // parent view. Caller holds the writer lock across reads and any commit.
+    // Bounded overlay memory, but scans the existing sets (not yet optimized).
+    // Projection validates storage shape/membership, not proofs or pool flows.
+    StatusOr<storage::OrchardCommitmentSets> getOrchardCommitmentSets(
+        const storage::OrchardStoredState& expected) const;
+    // Canonical logical-set digests only after checking separated storage has
+    // no Orchard state or O1 namespace rows. Not an empty-history certificate.
+    StatusOr<storage::OrchardCommitmentSets> getEmptyOrchardCommitmentSets() const;
+    StatusOr<storage::OrchardCommitmentSets> previewOrchardCommitmentSets(
+        const std::optional<storage::OrchardStoredState>& expected_parent,
+        const storage::OrchardStoredState& next, const std::vector<uint256>& nullifiers) const;
+
+    // Logical sets after the exact stored undo, before writing it. At the
+    // activation boundary this returns empty sets; never a pre-activation v2
+    // root. Caller must authenticate the parent context/frontier separately.
+    StatusOr<storage::OrchardCommitmentSets> previewOrchardDisconnectCommitmentSets(
+        const storage::OrchardStoredState& expected_tip) const;
+
+    // Staged retirement receipt and exact undo. Requires separated storage,
+    // the selected validated parent/tip, matching legacy marker, and the same
+    // writer lock through outer commit. Frozen record fields cannot change on
+    // descendants. Updates the legacy active-tip marker in the SAME batch.
+    // Does not authenticate the supplied SHR1/balance, select activation, or
+    // reject legacy activity: the full connector must do those before calling.
+    // No caller may append legacy-content writes after this stage. Orchard and
+    // ordinary companion state must share the batch. No standalone commit.
+    StatusOr<storage::LegacyRetirementState> getLegacyRetirementState() const;
+    Status stageLegacyRetirementConnect(const ChainWriteToken&,
+        const std::optional<storage::LegacyRetirementState>& expected_parent,
+        const storage::LegacyRetirementState& next, rocksdb::WriteBatch&,
+        const consensus::OrchardSelectedConsistency* selected = nullptr);
+    Status stageLegacyRetirementDisconnect(const ChainWriteToken&,
+        const storage::LegacyRetirementState& expected_tip, rocksdb::WriteBatch&,
+        const consensus::OrchardSelectedConsistency* selected = nullptr);
 
     // CSN reorg: Spend targets stored in utreexo CF for forest replay
     Status putCSNSpendTargets(const ChainWriteToken& token, const uint256& block_hash,
@@ -533,6 +648,9 @@ public:
     // ═══════════════════════════════════════════════════════════════════════
 
     StatusOr<Block> getBlock(const uint256& hash) const;
+    // Exact stored encoding; reading bytes does not authenticate a block body.
+    // Typed readers must check framing, header identity and body commitments.
+    StatusOr<std::vector<uint8_t>> getBlockEncoding(const uint256& hash) const;
     Status hasBlock(const uint256& hash) const;
 
     // Legacy undo operations still used by the active reorg path.
@@ -615,6 +733,9 @@ public:
     // Iteration helpers
     Status forEachHeaderHeight(std::function<bool(int height, const uint256& hash)> callback) const;
     Status forEachBlock(std::function<bool(const uint256& hash, const Block& block)> callback) const;
+    // Checked row decoding and terminal iterator status; malformed records
+    // refuse rather than disappear. Visitor exceptions propagate. A false
+    // visitor result still deliberately stops early (not a complete inventory).
     Status forEachUTXO(std::function<bool(const uint256& txid, uint32_t vout, const Coin& coin)> callback) const;
 
     // Phase H.3: Iterate all header metadata (restart recovery - rebuild header tree)
@@ -673,6 +794,21 @@ public:
     bool commitBatch();
 
 private:
+    friend class PreparedOrchardChainstateWrite;
+    friend class OrchardSnapshotStore;
+    Status stageOrchardSnapshotState(const ChainWriteToken&,const storage::OrchardStoredState&,
+        const std::vector<uint256>&,const std::vector<std::pair<uint256,uint64_t>>&,
+        rocksdb::WriteBatch&);
+    Status stageLegacyRetirementSnapshotState(const ChainWriteToken&,
+        const storage::LegacyRetirementState&,rocksdb::WriteBatch&);
+    // Reconstruct authentic catalog heads only in its unpublished scratch candidate.
+    friend class OrchardReindexOwner;
+    // Unit-store seeding only; no selected-owner or ancestry authority.
+    friend struct OrchardCatalogFixtureTestAccess;
+    Status stageOrchardCatalogState(const ChainWriteToken&,const uint256&,
+        const std::string&,rocksdb::WriteBatch&);
+    Status stageHistoricalCompactCatalogState(const ChainWriteToken&,const uint256&,
+        const std::string&,rocksdb::WriteBatch&);
     void moveFrom(ChainDB&& other) {
         open_env_ = std::move(other.open_env_);
         db_ = std::move(other.db_);
@@ -715,6 +851,13 @@ private:
     rocksdb::ColumnFamilyHandle* shieldedStateHandle() const {
         return cf_[hasSeparatedShieldedState() ? 9 : idx_utreexo_].get();
     }
+    Status compareOrchardStorageIterators(
+        rocksdb::Iterator& actual, rocksdb::Iterator& expected) const;
+    StatusOr<storage::OrchardCommitmentSets> readOrchardCommitmentSets(
+        const std::optional<storage::OrchardStoredState>& parent,
+        const std::vector<uint256>& added_nullifiers,
+        const std::optional<uint256>& changed_anchor, bool removing = false,
+        const std::optional<uint256>& restored_anchor = std::nullopt) const;
 
     // Key prefixes (1-byte tags)
     static constexpr uint8_t PREFIX_BLOCK = 'b';

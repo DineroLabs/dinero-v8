@@ -1,4 +1,5 @@
 #pragma once
+#include "daemon/orchard_network_block.h"
 
 /**
  * Phase G.2 + G.7 + G.8 + G.13: Block Propagation & Headers-First Sync & Compact Blocks
@@ -36,6 +37,7 @@
  */
 
 #include "primitives/block.h"
+#include "daemon/interfaces/mempool_access.h"
 #include "primitives/transaction.h"
 #include "primitives/uint256.h"
 #include "p2p/orphan_block_pool.h"    // Phase G.7: Orphan handling
@@ -55,6 +57,7 @@ namespace dinero {
 // Forward declarations
 class P2PManager;
 class ChainstateService;
+class BlockIngressService;
 class Mempool;  // Phase G.13
 class ILogger;
 class HeaderSyncManager;  // Phase G.8
@@ -213,6 +216,28 @@ public:
     /**
      * Set callback for block retrieval from ChainDB
      */
+    // Configure before starting relay dispatch. Full block requests use this
+    // checked source for every family; an unavailable configured owner refuses
+    // without falling back to the historical-only callback. The request retains
+    // a strong owner until it has captured an immutable wire response.
+    void SetFullBlockSource(const std::shared_ptr<ChainstateService>& source);
+
+    // Configure before dispatch. Both actual services are acquired strongly for
+    // each request; an expired owner refuses without historical fallback.
+    void SetOrchardBlockIngress(const std::shared_ptr<ChainstateService>& source,
+                               const std::shared_ptr<BlockIngressService>& ingress) {
+        orchard_block_source_ = source;
+        orchard_block_ingress_ = ingress;
+    }
+
+    // True means exact hash/height canonical acceptance was observed. Receipt,
+    // a previously seen hash, or stored bytes alone never acknowledge delivery.
+    OrchardNetworkDisposition ReceiveOrchardBlock(const std::string& peer_address,
+                                                  const std::vector<uint8_t>& bytes);
+    bool HandleOrchardBlock(const std::string& peer_address,
+                            const std::vector<uint8_t>& bytes);
+
+
     void SetRetrieveBlockCallback(RetrieveBlockCallback callback) {
         retrieve_block_callback_ = callback;
     }
@@ -253,6 +278,11 @@ public:
      * @param block_hash Hash of successfully connected block
      */
     void AnnounceBlock(const uint256& block_hash);
+    // Checked current typed tip, inv/getdata only. True means this canonical
+    // cursor has been handed to transport in this process, not peer receipt.
+    // Missing owners, held selected locks and transport exceptions return false.
+    bool AnnounceOrchardBlock(const uint256& block_hash, uint32_t height) noexcept;
+
 
     /**
      * Callback type for getting the current best block hash
@@ -398,9 +428,14 @@ public:
      * Set mempool for compact block reconstruction
      * @param mempool Mempool instance (non-owning pointer)
      */
-    void SetMempool(Mempool* mempool) {
-        mempool_ = mempool;
-    }
+    // Legacy caller-lifetime contract: replacement and shutdown of the borrowed
+    // pool must wait for all relay operations using it.
+    void SetMempool(Mempool* mempool);
+
+    // Acquire one owner for each synchronous compact relay operation. A configured
+    // factory must return an owner or throw; unavailability is not an empty pool.
+    // Factory invocation and destruction occur outside the configuration mutex.
+    void SetMempoolAccessFactory(MempoolAccessFactory factory);
 
     /**
      * Set ChainDB for sync phase detection (Phase W.1)
@@ -739,6 +774,21 @@ private:
     SendMessageCallback send_message_callback_;
     ValidateBlockCallback validate_block_callback_;
     RetrieveBlockCallback retrieve_block_callback_;
+    struct FullBlockResponse {
+        BlockHeader header;
+        uint32_t height;
+        std::vector<uint8_t> bytes;
+    };
+    std::function<std::optional<FullBlockResponse>(const uint256&)> full_block_source_;
+    bool full_block_source_configured_ = false;
+    std::weak_ptr<ChainstateService> orchard_block_source_;
+    std::weak_ptr<BlockIngressService> orchard_block_ingress_;
+    std::mutex orchard_announcement_mutex_;
+    bool orchard_announcement_pending_ = false;
+    uint64_t orchard_announced_sequence_ = 0;
+    uint256 orchard_announced_digest_;
+    std::weak_ptr<ChainstateService> orchard_announced_source_;
+
     HasBlockCallback has_block_callback_;  // Phase G.7: Check if block exists
     GetBlockStatusCallback get_block_status_callback_;  // Phase P.2: Check block data status
     GetBestBlockHashCallback get_best_block_hash_callback_;  // Phase G.X: Tip announcement
@@ -753,7 +803,14 @@ private:
     HeaderSyncManager* header_sync_manager_;  // Non-owning pointer
 
     // Mempool for compact block reconstruction (Phase G.13)
-    Mempool* mempool_;  // Non-owning pointer
+    Mempool* mempool_;  // Legacy non-owning pointer, protected by mempool_access_mutex_
+    mutable std::mutex mempool_access_mutex_;
+    std::shared_ptr<const MempoolAccessFactory> mempool_access_factory_;
+    struct PoolOperation {
+        std::unique_ptr<MempoolAccess> owner;
+        Mempool* pool = nullptr;
+    };
+    PoolOperation AcquireMempoolAccess() const;
 
     // ChainDB for sync phase detection (Phase W.1)
     ChainDB* chain_db_;  // Non-owning pointer

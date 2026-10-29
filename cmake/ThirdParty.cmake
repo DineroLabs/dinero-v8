@@ -2,10 +2,10 @@
 # Included from the repository root CMakeLists.txt so legacy targets,
 # helper functions, and imported dependency targets remain in root scope.
 
-# RocksDB Vendored Build Configuration (v8.11.3)
+# RocksDB Vendored Build Configuration (v9.9.3)
 # ============================================================================
 # Canonical configuration for protocol-grade RocksDB vendoring
-# Version: 8.11.3 (stable release, locked until v1.0.0)
+# Version: 9.9.3 (stable release, locked until v1.0.0)
 # Source: Official GitHub release tarball (complete, reproducible)
 # Policy: Static library only, no tests/tools/benchmarks in production
 

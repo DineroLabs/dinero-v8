@@ -238,8 +238,7 @@ void RPCServer::initializeMethodHandlers() {
             return result;
         }
 
-        auto& config = m_mempool->mempool().GetCTConfig();
-        config.ct_min_fee_rate = fee_rate;
+        m_mempool->mempool().SetCTMinFeeRate(fee_rate);
 
         result["status"] = "updated";
         result["ct_min_fee_rate"] = fee_rate;
@@ -267,8 +266,7 @@ void RPCServer::initializeMethodHandlers() {
             return result;
         }
 
-        auto& config = m_mempool->mempool().GetCTConfig();
-        config.ct_weight_multiplier = multiplier;
+        m_mempool->mempool().SetCTWeightMultiplier(multiplier);
 
         result["status"] = "updated";
         result["ct_weight_multiplier"] = multiplier;
@@ -296,8 +294,7 @@ void RPCServer::initializeMethodHandlers() {
             return result;
         }
 
-        auto& config = m_mempool->mempool().GetCTConfig();
-        config.max_ct_per_block = max_count;
+        m_mempool->mempool().SetCTMaxPerBlock(max_count);
 
         result["status"] = "updated";
         result["max_ct_per_block"] = max_count;
@@ -351,8 +348,7 @@ void RPCServer::initializeMethodHandlers() {
             return result;
         }
 
-        auto& config = m_mempool->mempool().GetCTConfig();
-        config.ct_proof_weight_factor = factor;
+        m_mempool->mempool().SetCTProofWeightFactor(factor);
 
         result["status"] = "updated";
         result["ct_proof_weight_factor"] = factor;

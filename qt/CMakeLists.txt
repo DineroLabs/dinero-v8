@@ -21,12 +21,14 @@ cmake_minimum_required(VERSION 3.21)
 # In a monorepo release the root owns the shared version. Keep a standalone
 # fallback for legacy direct builds of qt/.
 if(NOT DEFINED DINERO_MONOREPO_VERSION)
-  set(DINERO_MONOREPO_VERSION 8.1.11)
+  set(DINERO_MONOREPO_VERSION 8.2.0)
 endif()
 project(dinero-qt VERSION ${DINERO_MONOREPO_VERSION} LANGUAGES CXX)
 
 option(DIN_ENABLE_LIQUIDITY_VAULT_UI
   "Expose the custodial Liquidity Vault panel in dinero-qt" OFF)
+option(DIN_ENABLE_ORCHARD_UI
+  "Orchard private-payment screens (preview; RPC contract not final)" OFF)
 option(DIN_ENABLE_SWAP_UI
   "Expose the DIN <-> BTC atomic swap tab (swaps stay off unless dinerod enables them)" ON)
 
@@ -643,6 +645,16 @@ if(DIN_EXPERIMENTAL_FEATURES)
   )
 endif()
 
+# Orchard private-payment preview screens (wallet.orchard.* RPCs)
+if(DIN_ENABLE_ORCHARD_UI)
+  list(APPEND GUI_SOURCES
+    src/orchardwidget.cpp
+    src/orchardwidget.h
+    src/orchardflow.h
+    src/orchardcontract.h
+  )
+endif()
+
 # DIN <-> BTC swap tab (talks to the local node's swap.* RPCs)
 if(DIN_ENABLE_SWAP_UI)
   list(APPEND GUI_SOURCES
@@ -727,6 +739,16 @@ target_link_libraries(dinero-qt PRIVATE
   dinero-solo-miner
 )
 
+# The portable Linux GUI links vendored OpenSSL statically, while Qt's TLS
+# plugin opens the distro's libssl/libcrypto at runtime. Keep the static
+# OpenSSL symbols out of the executable's dynamic symbol table so that the
+# plugin resolves both halves of its TLS stack from the same shared libraries.
+if(UNIX AND NOT APPLE AND NOT USE_SYSTEM_OPENSSL)
+  target_link_options(dinero-qt PRIVATE
+    "LINKER:--exclude-libs,libcrypto.a:libssl.a"
+  )
+endif()
+
 if(APPLE)
   target_link_libraries(dinero-qt PRIVATE
     "-framework AppKit"
@@ -779,6 +801,9 @@ endif()
 
 if(DIN_ENABLE_SWAP_UI)
   target_compile_definitions(dinero-qt PRIVATE DIN_ENABLE_SWAP_UI=1)
+endif()
+if(DIN_ENABLE_ORCHARD_UI)
+  target_compile_definitions(dinero-qt PRIVATE DIN_ENABLE_ORCHARD_UI=1)
 endif()
 
 target_compile_definitions(dinero-qt PRIVATE QT_NO_KEYWORDS)
@@ -1464,11 +1489,44 @@ if(BUILD_TESTING)
   target_compile_definitions(test_covenant_form_policy PRIVATE QT_NO_KEYWORDS)
   add_test(NAME CovenantFormPolicy COMMAND test_covenant_form_policy)
 
+  add_executable(test_orchard_flow tests/test_orchard_flow.cpp)
+  target_include_directories(test_orchard_flow PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_link_libraries(test_orchard_flow PRIVATE Qt6::Core Qt6::Test)
+  target_compile_definitions(test_orchard_flow PRIVATE QT_NO_KEYWORDS)
+  add_test(NAME OrchardFlow COMMAND test_orchard_flow)
+
   add_executable(test_swap_form_policy tests/test_swap_form_policy.cpp)
   target_include_directories(test_swap_form_policy PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
   target_link_libraries(test_swap_form_policy PRIVATE Qt6::Core Qt6::Test)
   target_compile_definitions(test_swap_form_policy PRIVATE QT_NO_KEYWORDS)
   add_test(NAME SwapFormPolicy COMMAND test_swap_form_policy)
+
+  # Pure request classification; no RPC client, server, socket or node.
+  add_executable(test_rpc_retry_policy tests/test_rpc_retry_policy.cpp)
+  target_include_directories(test_rpc_retry_policy PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_link_libraries(test_rpc_retry_policy PRIVATE Qt6::Core Qt6::Test)
+  target_compile_definitions(test_rpc_retry_policy PRIVATE QT_NO_KEYWORDS)
+  add_test(NAME RpcRetryPolicy COMMAND test_rpc_retry_policy)
+  set_tests_properties(RpcRetryPolicy PROPERTIES TIMEOUT 60)
+
+  add_executable(test_rpc_connection_policy tests/test_rpc_connection_policy.cpp)
+  target_include_directories(test_rpc_connection_policy PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_link_libraries(test_rpc_connection_policy PRIVATE Qt6::Core Qt6::Test)
+  target_compile_definitions(test_rpc_connection_policy PRIVATE QT_NO_KEYWORDS)
+  add_test(NAME RpcConnectionPolicy COMMAND test_rpc_connection_policy)
+  set_tests_properties(RpcConnectionPolicy PROPERTIES TIMEOUT 60)
+
+
+  if(DIN_ENABLE_ORCHARD_UI)
+    # The Orchard preview screens, offline (no node).
+    add_executable(test_orchard_tab tests/test_orchard_tab.cpp
+      src/orchardwidget.cpp src/orchardwidget.h src/rpcclient.cpp src/rpcclient.h src/paycollectpolicy.cpp)
+    target_include_directories(test_orchard_tab PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_link_libraries(test_orchard_tab PRIVATE Qt6::Widgets Qt6::Network Qt6::Test)
+    target_compile_definitions(test_orchard_tab PRIVATE QT_NO_KEYWORDS)
+    add_test(NAME OrchardTab COMMAND test_orchard_tab)
+    set_tests_properties(OrchardTab PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 60)
+  endif()
 
   if(DIN_ENABLE_SWAP_UI)
     # The Swap tab's look and hints, offline (no node).
@@ -1590,6 +1648,13 @@ if(BUILD_TESTING)
 
   target_compile_definitions(test_wallet_scoped_state PRIVATE QT_NO_KEYWORDS)
   add_test(NAME WalletScopedState COMMAND test_wallet_scoped_state)
+
+  add_executable(test_rpc_error_envelope tests/test_rpc_error_envelope.cpp src/rpcclient.cpp src/rpcclient.h)
+  target_include_directories(test_rpc_error_envelope PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_link_libraries(test_rpc_error_envelope PRIVATE Qt6::Core Qt6::Network Qt6::Test)
+  target_compile_definitions(test_rpc_error_envelope PRIVATE QT_NO_KEYWORDS)
+  add_test(NAME RpcErrorEnvelope COMMAND test_rpc_error_envelope)
+  set_tests_properties(RpcErrorEnvelope PROPERTIES TIMEOUT 60 LABELS "rpc;orchard;offline")
 
   add_executable(test_rpc_reply_alias tests/test_rpc_reply_alias.cpp src/rpcclient.cpp src/rpcclient.h)
   target_include_directories(test_rpc_reply_alias PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)

@@ -35,18 +35,18 @@ bool ReadCompactSize(const uint8_t*& p, const uint8_t* end, uint64_t& out) {
     if (first < 253) {
         out = first;
     } else if (first == 0xFD) {
-        if (p + 2 > end) return false;
+        if (static_cast<size_t>(end - p) < 2) return false;
         out = static_cast<uint64_t>(p[0]) | (static_cast<uint64_t>(p[1]) << 8);
         if (out < 253) return false;  // non-minimal
         p += 2;
     } else if (first == 0xFE) {
-        if (p + 4 > end) return false;
+        if (static_cast<size_t>(end - p) < 4) return false;
         out = 0;
         for (int i = 0; i < 4; ++i) out |= static_cast<uint64_t>(p[i]) << (8*i);
         if (out <= 0xFFFF) return false;  // non-minimal
         p += 4;
     } else {
-        if (p + 8 > end) return false;
+        if (static_cast<size_t>(end - p) < 8) return false;
         out = 0;
         for (int i = 0; i < 8; ++i) out |= static_cast<uint64_t>(p[i]) << (8*i);
         if (out <= 0xFFFFFFFF) return false;  // non-minimal
@@ -62,7 +62,7 @@ void WriteLE64(std::vector<uint8_t>& out, int64_t v) {
 }
 
 bool ReadLE64(const uint8_t*& p, const uint8_t* end, int64_t& out) {
-    if (p + 8 > end) return false;
+    if (static_cast<size_t>(end - p) < 8) return false;
     uint64_t u = 0;
     for (int i = 0; i < 8; ++i) u |= static_cast<uint64_t>(p[i]) << (8*i);
     std::memcpy(&out, &u, 8);
@@ -75,7 +75,7 @@ void WriteHash(std::vector<uint8_t>& out, const Hash& h) {
 }
 
 bool ReadHash(const uint8_t*& p, const uint8_t* end, Hash& out) {
-    if (p + HASH_BYTES > end) return false;
+    if (static_cast<size_t>(end - p) < HASH_BYTES) return false;
     std::memcpy(out.data(), p, HASH_BYTES);
     p += HASH_BYTES;
     return true;
@@ -87,7 +87,7 @@ void WriteSig64(std::vector<uint8_t>& out, const BindingSignature& sig) {
 }
 
 bool ReadSig64(const uint8_t*& p, const uint8_t* end, BindingSignature& out) {
-    if (p + out.size() > end) return false;
+    if (static_cast<size_t>(end - p) < out.size()) return false;
     std::memcpy(out.data(), p, out.size());
     p += out.size();
     return true;
@@ -99,7 +99,7 @@ void WriteCv(std::vector<uint8_t>& out, const ValueCommitment& cv) {
 }
 
 bool ReadCv(const uint8_t*& p, const uint8_t* end, ValueCommitment& out) {
-    if (p + out.size() > end) return false;
+    if (static_cast<size_t>(end - p) < out.size()) return false;
     std::memcpy(out.data(), p, out.size());
     p += out.size();
     return true;
@@ -172,6 +172,10 @@ std::vector<uint8_t> SerializeShieldedBundle(const ShieldedBundle& bundle) {
 BundleDecodeError DeserializeShieldedBundle(const uint8_t* data,
                                             size_t len,
                                             ShieldedBundle* out) {
+    // Empty vectors may have a null data pointer. Reject before constructing
+    // the range or reading the fixed-width balance. All helpers then compare
+    // remaining bytes before advancing within this valid input range.
+    if (!data || !out || len < sizeof(int64_t)) return BundleDecodeError::Truncated;
     const uint8_t* p = data;
     const uint8_t* end = data + len;
 

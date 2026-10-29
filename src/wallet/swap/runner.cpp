@@ -3,6 +3,7 @@
 #include "bech32/bech32.hpp"
 #include "crypto/evp_secp256k1.h"
 #include "crypto/sha256.h"
+#include "primitives/amount.h"
 #include "wallet/swap/btc_tx.h"
 #include "wallet/swap/swap_crypto.h"
 #include "wallet/swap/tower.h"
@@ -64,7 +65,49 @@ std::string TxidFrom(const std::optional<Json::Value>& r, const std::string& wha
 
 // ---- Session persistence ---------------------------------------------------
 
+namespace {
+void ValidateFundingBinding(const SwapSession& session) {
+    if (!session.din_funding_binding) return;
+    const auto& binding = *session.din_funding_binding;
+    if (session.record.role != Role::DinSeller) Refuse("DIN funding binding requires seller role");
+    RequireDinFundingBinding(binding);
+}
+uint64_t FundingInteger(const std::string& value) {
+    if (value.empty() || value.size() > 17 || value.front() == '0' ||
+        value.find_first_not_of("0123456789") != std::string::npos)
+        Refuse("invalid DIN funding fee encoding");
+    const auto result = std::stoull(value);
+    if (result > MAX_SUPPLY_UNA_CONST) Refuse("DIN funding fee exceeds supply");
+    return result;
+}
+} // namespace
+
+void RequireDinFundingBinding(const DinFundingBinding& binding) {
+    if (binding.wallet_id == Bytes32{} || !binding.fee_rate_hint ||
+        binding.fee_rate_hint > MAX_SUPPLY_UNA_CONST || !binding.maximum_fee_una ||
+        binding.maximum_fee_una > MAX_SUPPLY_UNA_CONST)
+        Refuse("invalid DIN funding wallet or fee authorization");
+}
+
+DinFundingBinding ParseDinFundingBinding(const std::string& wallet_id,
+                                        const std::string& fee_rate_hint,
+                                        const std::string& maximum_fee_una) {
+    if (wallet_id.size() != 64 || wallet_id.find_first_not_of("0123456789abcdef") != std::string::npos)
+        Refuse("invalid DIN funding wallet identity encoding");
+    const auto bytes = FromHex(wallet_id);
+    DinFundingBinding binding;
+    std::copy(bytes.begin(), bytes.end(), binding.wallet_id.begin());
+    binding.fee_rate_hint = FundingInteger(fee_rate_hint);
+    binding.maximum_fee_una = FundingInteger(maximum_fee_una);
+    RequireDinFundingBinding(binding);
+    return binding;
+}
+
 std::string EncodeSession(const SwapSession& s) {
+    ValidateFundingBinding(s);
+    if (!s.din_funding_raw.empty())
+        ValidateDinFundingBody(s,{FromHex(s.din_funding_raw),s.din_funding_txid});
+    else if (s.din_funding_submitted) Refuse("DIN submission marker without retained body");
     std::ostringstream out;
     out << "record=" << EncodeRecord(s.record) << "\n"
         << "btc_scan_from_height=" << s.btc_scan_from_height << "\n"
@@ -83,6 +126,15 @@ std::string EncodeSession(const SwapSession& s) {
         << "tower_armed=" << (s.tower_armed ? 1 : 0) << "\n"
         << "tower_package_hash=" << s.tower_package_hash << "\n"
         << "btc_funding_vout=" << s.btc_funding_vout << "\n";
+    if (!s.din_funding_raw.empty())
+        out << "din_funding_raw=" << s.din_funding_raw << "\n"
+            << "din_funding_submitted=" << (s.din_funding_submitted ? 1 : 0) << "\n";
+    if (s.din_funding_binding) {
+        const auto& binding = *s.din_funding_binding;
+        out << "din_funding_wallet_id=" << ToHex(std::vector<uint8_t>(binding.wallet_id.begin(), binding.wallet_id.end())) << "\n"
+            << "din_funding_fee_rate_hint=" << binding.fee_rate_hint << "\n"
+            << "din_funding_maximum_fee_una=" << binding.maximum_fee_una << "\n";
+    }
     return out.str();
 }
 
@@ -156,6 +208,23 @@ SwapSession DecodeSession(const std::string& text) {
             Refuse("bad btc_funding_vout");
         }
         s.btc_funding_vout = std::stoi(v);
+    }
+    const auto binding_fields = kv.count("din_funding_wallet_id") + kv.count("din_funding_fee_rate_hint") +
+                                kv.count("din_funding_maximum_fee_una");
+    if (binding_fields) {
+        if (binding_fields != 3) Refuse("incomplete DIN funding binding");
+        s.din_funding_binding = ParseDinFundingBinding(kv.at("din_funding_wallet_id"),
+            kv.at("din_funding_fee_rate_hint"), kv.at("din_funding_maximum_fee_una"));
+        ValidateFundingBinding(s);
+    }
+    if (kv.count("din_funding_raw") || kv.count("din_funding_submitted")) {
+        if (!kv.count("din_funding_raw") || !kv.count("din_funding_submitted") ||
+            kv.at("din_funding_raw").empty() ||
+            (kv.at("din_funding_submitted") != "0" && kv.at("din_funding_submitted") != "1"))
+            Refuse("incomplete DIN retained funding state");
+        s.din_funding_raw=kv.at("din_funding_raw");
+        s.din_funding_submitted=kv.at("din_funding_submitted")=="1";
+        ValidateDinFundingBody(s,{FromHex(s.din_funding_raw),s.din_funding_txid});
     }
     if (s.din_payout_script.empty() || s.btc_payout_script.empty()) Refuse("empty payout script");
     return s;
@@ -387,11 +456,49 @@ void RpcSwapChainIo::ArmTower(const std::string& package_text) {
 DinWatchReport RpcSwapChainIo::ObserveDin() { return din_watcher_->Observe(); }
 BtcWatchReport RpcSwapChainIo::ObserveBtc() { return btc_watcher_->Observe(); }
 
-std::string RpcSwapChainIo::FundDin(const std::string& address, uint64_t amount_una) {
-    Json::Value p(Json::objectValue);
-    p["address"] = address;
-    p["amount_una"] = Json::UInt64(amount_una);
-    return TxidFrom(din_("wallet.sendtoaddress", p), "wallet.sendtoaddress");
+DinFundingRequest FundingRequestFor(const SwapSession& s,const std::string& hrp) {
+    if (s.record.role!=Role::DinSeller || !s.din_funding_binding)
+        Refuse("DIN funding has no recorded payer authorization");
+    RequireDinFundingBinding(*s.din_funding_binding);
+    return {*s.din_funding_binding,OfferId(s.record.offer),DinHtlcAddressFor(s.record,hrp),s.record.offer.din_amount_una};
+}
+void ValidateDinFundingBody(const SwapSession& s,const PreparedDinFunding& funding) {
+    if (s.record.role!=Role::DinSeller || !s.din_funding_binding) Refuse("DIN funding body has no payer");
+    RequireDinFundingBinding(*s.din_funding_binding);
+    Transaction tx;size_t consumed=0;
+    if (funding.raw.empty() || funding.raw.size()>16*1024*1024 ||
+        !TransactionSerializer::Deserialize(tx,funding.raw,consumed) || consumed!=funding.raw.size() || tx.vin.empty() ||
+        tx.Serialize(TxSerializationMode::WithWitness)!=funding.raw ||
+        tx.GetTxid().AsUint256().GetHex()!=funding.txid)
+        Refuse("retained DIN funding body or transaction identity invalid");
+    const auto script=BuildDinHtlc(MakeDinTerms(s.record.offer,s.record.accept)).script_pubkey;
+    size_t matched=0;
+    for(const auto& output:tx.vout) if(output.scriptPubKey==script) {
+        if(output.is_confidential || output.value.GetUna()!=s.record.offer.din_amount_una)
+            Refuse("retained DIN funding output amount changed");
+        ++matched;
+    }
+    if(matched!=1) Refuse("retained DIN funding requires exactly one intended HTLC output");
+}
+PreparedDinFunding SwapChainIo::PrepareDinFunding(const DinFundingRequest&) { throw std::runtime_error("DIN funding owner unavailable"); }
+PreparedDinFunding SwapChainIo::ResolveDinFunding(const DinFundingRequest&) { throw std::runtime_error("DIN funding recovery owner unavailable"); }
+void SwapChainIo::SubmitDinFunding(const DinFundingRequest&,const PreparedDinFunding&) { throw std::runtime_error("DIN funding submission owner unavailable"); }
+PreparedDinFunding RpcSwapChainIo::PrepareDinFunding(const DinFundingRequest& request) {
+    if(!funding_owner_)throw std::runtime_error("DIN funding owner unavailable");
+    return funding_owner_(request,DinFundingOperation::Prepare,{});
+}
+PreparedDinFunding RpcSwapChainIo::ResolveDinFunding(const DinFundingRequest& request) {
+    if(!funding_owner_)throw std::runtime_error("DIN funding owner unavailable");
+    return funding_owner_(request,DinFundingOperation::Resolve,{});
+}
+void RpcSwapChainIo::SubmitDinFunding(const DinFundingRequest& request,const PreparedDinFunding& funding) {
+    if(!funding_owner_)throw std::runtime_error("DIN funding owner unavailable");
+    const auto retained=funding_owner_(request,DinFundingOperation::SubmitRetained,funding.raw);
+    if(retained.txid!=funding.txid || retained.raw!=funding.raw)
+        throw std::runtime_error("DIN funding submission owner returned another body");
+}
+std::string RpcSwapChainIo::FundDin(const std::string&, uint64_t) {
+    throw std::runtime_error("Generic DIN swap funding is disabled; a retained payer-bound body is required");
 }
 
 std::string RpcSwapChainIo::FundBtc(const std::string& address, uint64_t amount_sat) {
@@ -439,12 +546,27 @@ TickReport SwapRunner::Tick(uint32_t wall_clock_unix) {
         return report;
     }
     report.observed = true;
+    if(session_.record.role==Role::DinSeller && session_.din_funding_txid.empty() &&
+       session_.record.state==SwapState::DinLockBroadcast) {
+        // Old interrupted records may be recovered only from an already
+        // authenticated retained request. Resolve cannot create a payment.
+        try {
+            const auto funding=io_.ResolveDinFunding(FundingRequestFor(session_,config_.din_hrp));
+            ValidateDinFundingBody(session_,funding);
+            auto next=session_;next.din_funding_txid=funding.txid;next.din_funding_raw=ToHex(funding.raw);
+            store_.Save(next);session_=std::move(next);io_.PinFunding(funding.txid,"");
+            report.events.push_back("recovered exact retained DIN funding; waiting for pinned observation");
+        } catch(const std::exception& e) {report.events.push_back(std::string("DIN funding recovery unavailable: ")+e.what());}
+        return report;
+    }
 
     Observations obs;
     obs.wall_clock_unix = wall_clock_unix;
     obs.din_mtp_unix = din.mtp_unix;
     obs.btc_mtp_unix = btc.mtp_unix;
     obs.din = din.htlc;
+    if(session_.record.role==Role::DinSeller && session_.record.state==SwapState::Accepted &&
+       session_.din_funding_txid.empty()) obs.din={}; // an unclaimed matching script is not our funding
     obs.btc = btc.htlc;
     const StepResult step = Step(session_.record, obs);
     const bool funds_btc = std::any_of(step.actions.begin(), step.actions.end(),
@@ -457,15 +579,33 @@ TickReport SwapRunner::Tick(uint32_t wall_clock_unix) {
     }
 
     SwapSession next = session_;
+    const bool funds_din=std::any_of(step.actions.begin(),step.actions.end(),
+        [](const Action& a){return a.kind==ActionKind::FundDinHtlc;});
+    if(funds_din) {
+        try {
+            RequireAcceptableNow(session_.record.offer,wall_clock_unix);
+            RequireAcceptableNow(session_.record.offer,din.mtp_unix);
+            RequireAcceptableNow(session_.record.offer,btc.mtp_unix);
+            const auto funding=io_.PrepareDinFunding(FundingRequestFor(session_,config_.din_hrp));
+            ValidateDinFundingBody(session_,funding);
+            next.din_funding_txid=funding.txid;next.din_funding_raw=ToHex(funding.raw);
+            next.din_funding_submitted=false;
+        } catch(const std::exception& e) {
+            report.events.push_back(std::string("DIN funding preparation refused: ")+e.what());
+            return report; // Accepted: no submission. A retained body can be resolved on retry.
+        }
+    }
     next.record = step.record;
-    if (EncodeRecord(next.record) != EncodeRecord(session_.record)) store_.Save(next);  // throws: nothing done
+    if (EncodeRecord(next.record) != EncodeRecord(session_.record)) store_.Save(next);  // throws: retained wallet body may exist, but no submission
     session_ = std::move(next);
     report.after = session_.record.state;
+    if(funds_din) io_.PinFunding(session_.din_funding_txid,"");
 
     for (const auto& a : step.actions) {
         report.actions.push_back(a.kind);
         Execute(a, din, btc, wall_clock_unix, report.events);
     }
+    if(!funds_din) SendRetainedDinFunding(din,btc,wall_clock_unix,report.events);
     SendPreparedFunding(din, btc, wall_clock_unix, report.events);
     BumpOrSweepDin(din, wall_clock_unix, report.events);
     // Bob's tower must hold the package before he can safely go offline. The
@@ -739,6 +879,23 @@ void SwapRunner::SetClaimSeen(bool seen) {
     session_ = std::move(next);
 }
 
+void SwapRunner::SendRetainedDinFunding(const DinWatchReport& din,const BtcWatchReport& btc,
+                                            uint32_t now,std::vector<std::string>& events) {
+    if(session_.record.role!=Role::DinSeller || session_.record.state!=SwapState::DinLockBroadcast ||
+       session_.din_funding_raw.empty() || session_.din_funding_submitted || !din.ok || !btc.ok ||
+       din.htlc.output_seen || din.htlc.spent) return;
+    try {
+        RequireAcceptableNow(session_.record.offer,now);
+        RequireAcceptableNow(session_.record.offer,din.mtp_unix);
+        RequireAcceptableNow(session_.record.offer,btc.mtp_unix);
+        const PreparedDinFunding funding{FromHex(session_.din_funding_raw),session_.din_funding_txid};
+        ValidateDinFundingBody(session_,funding);
+        io_.SubmitDinFunding(FundingRequestFor(session_,config_.din_hrp),funding);
+        auto next=session_;next.din_funding_submitted=true;store_.Save(next);session_=std::move(next);
+        events.push_back("submitted retained DIN HTLC: "+funding.txid);
+    } catch(const std::exception& e) {events.push_back(std::string("retained DIN submission pending: ")+e.what());}
+}
+
 void SwapRunner::PinAndSave(const std::string& din_txid, const std::string& btc_txid) {
     SwapSession next = session_;
     if (!din_txid.empty()) next.din_funding_txid = din_txid;
@@ -757,10 +914,8 @@ void SwapRunner::Execute(const Action& action, const DinWatchReport& din, const 
     try {
         switch (action.kind) {
         case ActionKind::FundDinHtlc: {
-            const std::string txid =
-                io_.FundDin(DinHtlcAddressFor(session_.record, config_.din_hrp), offer.din_amount_una);
-            PinAndSave(txid, "");  // only this transaction is Alice's lock
-            return done("funded DIN HTLC:", txid);
+            SendRetainedDinFunding(din,btc,now,events);
+            return;
         }
         case ActionKind::FundBtcHtlc: {
             // Pin the DIN lock Bob checked BEFORE his BTC leaves: later payments

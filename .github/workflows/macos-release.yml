@@ -89,6 +89,18 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Install the source-pinned Orchard compiler
+        shell: bash
+        run: |
+          python3 - <<'PY_ORCHARD_TOOLCHAIN'
+          import pathlib, re, subprocess
+          text = pathlib.Path('rust/orchard_backend/rust-toolchain.toml').read_text()
+          pins = re.findall(r'^channel = "([0-9]+\.[0-9]+\.[0-9]+)"$', text, re.MULTILINE)
+          if len(pins) != 1:
+              raise SystemExit('Missing exact Orchard compiler pin')
+          subprocess.run(['rustup', 'toolchain', 'install', pins[0], '--profile', 'minimal'], check=True)
+          PY_ORCHARD_TOOLCHAIN
+
       - name: Install build tools
         run: brew install ninja ccache   # cmake is preinstalled on the image
 
@@ -148,6 +160,7 @@ jobs:
             -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DDINERO_USE_VENDORED_DEPS=ON \
+            -DDINERO_BUILD_ORCHARD_BACKEND=ON \
             -DDINERO_BUILD_QT=OFF \
             -DENABLE_GPU_MINING=OFF \
             -DENABLE_GRPC=OFF \
@@ -161,8 +174,8 @@ jobs:
       - name: Verify generated C++20 compile commands
         run: cmake --build build --target check_first_party_compile_commands_cxx20
 
-      - name: Build daemon + CLI
-        run: cmake --build build --target dinerod dinero-cli -j$(sysctl -n hw.ncpu)
+      - name: Build daemon, CLI and swap tower
+        run: cmake --build build --target dinerod dinero-cli dinero-swap-tower -j$(sysctl -n hw.ncpu)
 
       # Fail loudly if the binary is the wrong arch, too-new min-OS, or doesn't run.
       - name: Verify + smoke-test
@@ -186,17 +199,27 @@ jobs:
           mkdir -p "$ROOT/bin"
           cp "$(find build -maxdepth 3 -type f -name dinerod -perm +111 | head -1)"    "$ROOT/bin/dinerod"
           cp "$(find build -maxdepth 3 -type f -name dinero-cli -perm +111 | head -1)" "$ROOT/bin/dinero-cli"
+          cmake --install build --component swap-tower --prefix "$PWD/$ROOT"
+          python3 scripts/verify-swap-tower-binary.py "$ROOT/bin/dinero-swap-tower"
+          python3 scripts/verify-orchard-package.py --daemon "$ROOT/bin/dinerod"
+          TOWER_ARCH=$(lipo -archs "$ROOT/bin/dinero-swap-tower")
+          test "$TOWER_ARCH" = "$A"
           cp LICENSE "$ROOT/LICENSE" 2>/dev/null || true
           cat > "$ROOT/README.txt" <<EOF
           Dinero macOS operator archive ${V} (${A})
-          Headless daemon + RPC CLI for macOS ${A} node operators (min-OS 13.0).
+          Headless daemon, RPC CLI and swap watchtower for macOS ${A} node operators (min-OS 13.0).
             ./bin/dinerod
             ./bin/dinero-cli
+            ./bin/dinero-swap-tower (requires explicit swap configuration)
           EOF
           ( cd "$ROOT" && shasum -a 256 bin/* > SHA256SUMS )
           TARBALL="dinero-operator-v${V}-macOS-${A}${SUFFIX}.tar.gz"
           CHECKSUM="SHA256SUMS-macos-${A}${SUFFIX}-${V}"
           tar -czf "$TARBALL" "$ROOT"
+          mkdir -p tower-tar-check
+          tar -xzf "$TARBALL" -C tower-tar-check
+          python3 scripts/verify-swap-tower-binary.py "tower-tar-check/$ROOT/bin/dinero-swap-tower"
+          python3 scripts/verify-orchard-package.py --daemon "tower-tar-check/$ROOT/bin/dinerod"
           shasum -a 256 "$TARBALL" | tee "$CHECKSUM"
           echo "tarball=$TARBALL" >> "$GITHUB_OUTPUT"
           echo "checksum=$CHECKSUM" >> "$GITHUB_OUTPUT"

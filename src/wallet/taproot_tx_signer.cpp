@@ -1,11 +1,15 @@
 #include "wallet/taproot_tx_signer.h"
 #include "wallet/taproot_keys.h"
+#include "util/hex.h"
 #include "consensus/script_interpreter.h"
 #include "crypto/sha256.h"
 #include "crypto/tagged_hash.h"
 #include <secp256k1.h>
 #include <secp256k1_schnorrsig.h>
 #include <secp256k1_extrakeys.h>  // For secp256k1_keypair, secp256k1_xonly_pubkey
+#include <openssl/crypto.h>
+#include <openssl/sha.h>
+#include <memory>
 #include <openssl/rand.h>         // For RAND_bytes (cryptographically secure RNG)
 #include <algorithm>
 #include <cstring>
@@ -25,6 +29,15 @@ bool ParseInternalTaprootKey(const std::vector<uint8_t>& private_key,
     std::copy(private_key.begin(), private_key.end(), internal_privkey.begin());
     int parity = 0;
     return TaprootKeys::DeriveXOnlyPubkey(internal_privkey, internal_xonly_pubkey, parity);
+}
+
+// An import label identifies origin metadata, never signing authority. Both
+// entry points still require the full derived TapTweak key to match the script.
+bool HasSupportedKeyOrigin(const CanonicalWalletUTXO& utxo,
+                           const std::array<uint8_t,32>& internal) {
+    if (utxo.is_confidential || utxo.path.rfind("m/",0)==0) return true;
+    const auto label="tr("+util::hex(std::vector<uint8_t>(internal.begin(),internal.end())).substr(0,8)+"...)";
+    return utxo.path==label;
 }
 
 bool VerifyTweakedPubkeyMatchesScript(const CanonicalWalletUTXO& utxo,
@@ -244,25 +257,6 @@ bool TaprootTxSigner::SignInput(
 
     const CanonicalWalletUTXO& utxo = all_utxos[input_index];
 
-    // ═══════════════════════════════════════════════════════════════════════════
-    // WALLET INVARIANT: Never sign transactions using pathless UTXOs
-    // ═══════════════════════════════════════════════════════════════════════════
-    // A UTXO without a derivation path is NOT owned. No exceptions.
-    // Signing with an unknown path means we can't prove ownership.
-    // This could lead to signing someone else's funds or irrecoverable keys.
-    // ═══════════════════════════════════════════════════════════════════════════
-    if (utxo.path.empty() || utxo.path.size() < 2 || utxo.path[0] != 'm' || utxo.path[1] != '/') {
-        // CT (confidential) inputs may not have a derivation path — the key
-        // was provided by the caller via deriveKeyForScriptPubKey(). Only warn,
-        // don't refuse to sign. The private key is already validated upstream.
-        if (!utxo.is_confidential) {
-            std::cerr << "ERROR [SignInput] Cannot sign non-CT UTXO without derivation path" << std::endl;
-            std::cerr << "  txid: " << utxo.GetTxIdHex() << std::endl;
-            std::cerr << "  path: \"" << utxo.path << "\"" << std::endl;
-            return false;
-        }
-    }
-
     if (!IsTaprootUTXO(utxo)) {
         std::cerr << "ERROR: UTXO is not a Taproot output" << std::endl;
         return false;
@@ -277,6 +271,11 @@ bool TaprootTxSigner::SignInput(
     std::array<uint8_t, 32> internal_xonly_pubkey{};
     if (!ParseInternalTaprootKey(private_key, internal_privkey, internal_xonly_pubkey)) {
         std::cerr << "ERROR: Failed to parse internal Taproot key material" << std::endl;
+        return false;
+    }
+
+    if (!HasSupportedKeyOrigin(utxo, internal_xonly_pubkey)) {
+        std::cerr << "ERROR [SignInput]: Unsupported or mismatched key origin" << std::endl;
         return false;
     }
 
@@ -307,6 +306,60 @@ bool TaprootTxSigner::SignInput(
     tx.vin[input_index].witness.push_back(sig_vec);
 
     return true;
+}
+
+namespace {
+bool SignBoundTaprootInput(Transaction& tx,size_t index,
+    const std::vector<CanonicalWalletUTXO>& coins,const SigningKey& key,
+    bool v1,const std::array<uint8_t,32>& extension) {
+    if(index>=tx.vin.size() || coins.size()!=tx.vin.size() || key.secret.size()!=32 ||
+       key.script!=coins[index].spk || !TaprootTxSigner::IsTaprootUTXO(coins[index]))return false;
+    for(size_t i=0;i<coins.size();++i)
+        if(tx.vin[i].prevout.txid!=TxId(coins[i].txid) || tx.vin[i].prevout.vout!=coins[i].vout)return false;
+    if(key.policy==SigningKeyPolicy::TaprootCanonical)
+        return v1?TaprootTxSigner::SignInputV1(tx,index,coins,key.secret,extension)
+                 :TaprootTxSigner::SignInput(tx,index,coins,key.secret);
+    // Historical imports are ordinary key-path outputs. Metadata labels never
+    // substitute for this explicit policy plus full public output binding.
+    if(key.policy!=SigningKeyPolicy::TaprootHistoricalImport || coins[index].is_confidential ||
+       !tx.vin[index].scriptSig.empty())return false;
+    std::unique_ptr<secp256k1_context,decltype(&secp256k1_context_destroy)> context(
+        secp256k1_context_create(SECP256K1_CONTEXT_SIGN|SECP256K1_CONTEXT_VERIFY),secp256k1_context_destroy);
+    struct Pair {secp256k1_keypair value{};~Pair(){OPENSSL_cleanse(&value,sizeof(value));}} pair;
+    if(!context || !secp256k1_keypair_create(context.get(),&pair.value,key.secret.data()))return false;
+    secp256k1_xonly_pubkey internal{},output{};
+    std::array<uint8_t,33> tweak_input{};std::array<uint8_t,32> tweak{},output_bytes{};
+    if(!secp256k1_keypair_xonly_pub(context.get(),&internal,nullptr,&pair.value) ||
+       !secp256k1_xonly_pubkey_serialize(context.get(),tweak_input.data(),&internal))return false;
+    ::SHA256(tweak_input.data(),tweak_input.size(),tweak.data());
+    // Keypair API performs the historical even-Y internal normalization and
+    // keeps secret/public parity coherent; no tweaked scalar escapes this owner.
+    if(!secp256k1_keypair_xonly_tweak_add(context.get(),&pair.value,tweak.data()) ||
+       !secp256k1_keypair_xonly_pub(context.get(),&output,nullptr,&pair.value) ||
+       !secp256k1_xonly_pubkey_serialize(context.get(),output_bytes.data(),&output) ||
+       !std::equal(output_bytes.begin(),output_bytes.end(),coins[index].spk.begin()+2))return false;
+    const auto hash=v1?TaprootTxSigner::ComputeTaprootSighashV1(tx,index,coins,extension)
+                      :TaprootTxSigner::ComputeTaprootSighash(tx,index,coins);
+    if(hash.size()!=32)return false;
+    struct Aux {std::array<uint8_t,32> value{};~Aux(){OPENSSL_cleanse(value.data(),value.size());}} aux;
+    std::vector<uint8_t> signature(64);
+    if(RAND_bytes(aux.value.data(),int(aux.value.size()))!=1 ||
+       !secp256k1_schnorrsig_sign32(context.get(),signature.data(),hash.data(),&pair.value,aux.value.data()) ||
+       !secp256k1_schnorrsig_verify(context.get(),signature.data(),hash.data(),hash.size(),&output))return false;
+    std::vector<std::vector<uint8_t>> witness;witness.push_back(std::move(signature));
+    tx.vin[index].witness.swap(witness);
+    return true;
+}
+}
+
+bool TaprootTxSigner::SignInputWithKey(Transaction& tx,size_t index,
+    const std::vector<CanonicalWalletUTXO>& coins,const SigningKey& key) {
+    return SignBoundTaprootInput(tx,index,coins,key,false,DEFAULT_EXT_COMMITMENT);
+}
+bool TaprootTxSigner::SignInputV1WithKey(Transaction& tx,size_t index,
+    const std::vector<CanonicalWalletUTXO>& coins,const SigningKey& key,
+    const std::array<uint8_t,32>& extension) {
+    return SignBoundTaprootInput(tx,index,coins,key,true,extension);
 }
 
 std::vector<uint8_t> TaprootTxSigner::ComputeTaprootSighash(
@@ -838,14 +891,6 @@ bool TaprootTxSigner::SignInputV1(
 
     const CanonicalWalletUTXO& utxo = all_utxos[input_index];
 
-    // Pathless UTXO invariant check — allow CT inputs (key derived from SPK)
-    if (utxo.path.empty() || utxo.path.size() < 2 || utxo.path[0] != 'm' || utxo.path[1] != '/') {
-        if (!utxo.is_confidential) {
-            std::cerr << "ERROR [SignInputV1] Cannot sign non-CT UTXO without derivation path" << std::endl;
-            return false;
-        }
-    }
-
     if (!IsTaprootUTXO(utxo)) {
         std::cerr << "ERROR: UTXO is not a Taproot output" << std::endl;
         return false;
@@ -860,6 +905,11 @@ bool TaprootTxSigner::SignInputV1(
     std::array<uint8_t, 32> internal_xonly_pubkey{};
     if (!ParseInternalTaprootKey(private_key, internal_privkey, internal_xonly_pubkey)) {
         std::cerr << "ERROR [SignInputV1]: Failed to parse internal Taproot key material" << std::endl;
+        return false;
+    }
+
+    if (!HasSupportedKeyOrigin(utxo, internal_xonly_pubkey)) {
+        std::cerr << "ERROR [SignInputV1]: Unsupported or mismatched key origin" << std::endl;
         return false;
     }
 

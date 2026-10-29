@@ -26,6 +26,10 @@ struct DaemonContext;
 
 namespace dinero {
 
+// Typed component shared by the service and serialized adapter qualification.
+// The context must outlive the callback; each call retains its wallet service.
+swap::DinFundingOwner MakeRetainedSwapFundingOwner(DaemonContext& ctx);
+
 class SwapService : public IService {
 public:
     std::string Name() const override { return "Swap"; }

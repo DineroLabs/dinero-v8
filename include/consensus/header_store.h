@@ -77,6 +77,15 @@ public:
     bool Open();
 
     /**
+     * @brief Use a smaller RocksDB write buffer (call before Open)
+     *
+     * RocksDB preallocates its write-ahead log at 1.1 x write_buffer_size, so
+     * the 64 MB default reserves ~70 MB of disk for a log that holds a few KB
+     * of headers. Phones set this; desktop keeps the default.
+     */
+    void SetWriteBufferBytes(size_t bytes) { write_buffer_bytes_ = bytes; }
+
+    /**
      * @brief Close the database
      */
     void Close();
@@ -132,6 +141,20 @@ public:
      * @return true if successful
      */
     bool LoadAllHeaders(std::vector<HeaderIndexEntry>& headers);
+
+    struct StartupSnapshot {
+        std::vector<HeaderIndexEntry> headers;
+        std::optional<uint256> best;
+    };
+
+    // One nonmutating RocksDB snapshot of the current-format header namespace.
+    // Requires matching schema, exact row-key/serialized-header identity, and
+    // successful iterator completion. Publishes no partial output on refusal.
+    // Does not establish header PoW, ancestry, chainwork or selected authority;
+    // the startup selector must validate those before admitting this inventory.
+    // Caller keeps this store open and owns exclusive startup composition.
+    bool ReadStartupSnapshot(StartupSnapshot& snapshot);
+
 
     /**
      * @brief Get header count in storage
@@ -196,7 +219,9 @@ public:
     }
 
 private:
+    friend struct HeaderStoreStartupTestAccess;
     std::string db_path_;
+    size_t write_buffer_bytes_ = 0;  // 0 = RocksDB default
     rocksdb::DB* db_;
     bool is_open_;
     bool has_legacy_entries_{false};

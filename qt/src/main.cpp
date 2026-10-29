@@ -12,6 +12,7 @@
 #include <QFileInfo>
 #include <QLockFile>
 #include <iostream>
+#include <string>
 #include <QMessageBox>
 #include <QPushButton>
 #include <QCheckBox>
@@ -899,6 +900,9 @@ static QProcess* startDaemon(const QString& datadir, dinero::DebugConsole* debug
         args << "--datadir" << datadir;
     }
     args << QString("--embedded-parent-pid=%1").arg(QCoreApplication::applicationPid());
+    // Scheduled Orchard has no typed adapter for the legacy Lightning oracles.
+    // Desktop does not use them, so declare them disabled before daemon startup.
+    args << "--lightning.oracles.enable=0";
 
     // Enable inbound P2P + RPC so Qt wallet can connect and the node can
     // request UPnP/NAT-PMP mapping from the same early launcher used at app boot.
@@ -1160,6 +1164,17 @@ static bool confirmRpcPortSquatter() {
 }
 
 int main(int argc, char** argv) {
+  // This package inspection must precede QApplication and daemon discovery.
+  // --version is accepted as a safe fallback for package checks of old builds.
+  if ((argc == 2 || (argc == 3 && std::string(argv[2]) == "--version")) &&
+      std::string(argv[1]) == "--orchard-build-info") {
+#if defined(DIN_ENABLE_ORCHARD_UI) && DIN_ENABLE_ORCHARD_UI
+    std::cout << "{\"schema\":1,\"component\":\"dinero-qt\",\"orchard_ui\":true}\n";
+#else
+    std::cout << "{\"schema\":1,\"component\":\"dinero-qt\",\"orchard_ui\":false}\n";
+#endif
+    return 0;
+  }
   for (int i = 1; i < argc; ++i) {
     const QString arg = QString::fromUtf8(argv[i]);
     if (arg == "--version") {
@@ -1264,6 +1279,7 @@ int main(int argc, char** argv) {
         wipeArgs << "--datadir" << datadir;
       }
       wipeArgs << "--wipe-stale-chain";
+      wipeArgs << "--lightning.oracles.enable=0";
       appendDaemonNetworkArgs(wipeArgs);
       wipeArgs << currentBootstrapAddnodes();
 

@@ -6,6 +6,7 @@
  */
 
 #include "pool/pool_manager.h"
+#include "primitives/amount.h"
 #include "common/logger.h"
 #include "consensus/subsidy.h"
 #include "storage/chain_db.h"
@@ -15,6 +16,10 @@
 #include <cctype>
 #include <iomanip>
 #include <sstream>
+#include <type_traits>
+#include <utility>
+#include <stdexcept>
+#include <limits>
 
 namespace dinero {
 namespace pool {
@@ -29,13 +34,13 @@ constexpr int64_t kShareDedupeRetentionSeconds = 6 * 60 * 60;
 } // namespace
 
 PoolManager::PoolManager(const std::string& db_path)
-    : db_(std::make_unique<PoolDB>(db_path))
+    : db_(std::make_shared<PoolDB>(db_path))
     , current_round_id_(0)
     , running_(false)
-    , maintenance_running_(false)
 {}
 
 PoolManager::~PoolManager() {
+    try {ClosePayments();} catch (...) {std::terminate();}
     stopMaintenanceThread();
 }
 
@@ -119,13 +124,19 @@ PoolManager::ShareSubmitResult PoolManager::onShareSubmit(const std::string& wor
         };
     }
 
-    if (difficulty <= 0.0 || !std::isfinite(difficulty)) {
+    // Preserve fractional difficulty while bounding the legacy uint32_t field.
+    if (difficulty <= 0.0 || !std::isfinite(difficulty) || difficulty >= 4294967296.0) {
         registerInvalidSubmission(submit_state, now, "invalid-difficulty");
         return ShareSubmitResult{
             ShareSubmitCode::REJECTED,
             ShareStatus::INVALID,
             "Invalid difficulty"
         };
+    }
+
+    if (is_block && (block_reward == 0 || block_reward > MAX_SUPPLY_UNA_CONST)) {
+        registerInvalidSubmission(submit_state, now, "invalid-block-reward");
+        return ShareSubmitResult{ShareSubmitCode::REJECTED,ShareStatus::INVALID,"Invalid block reward"};
     }
 
     if (!is_valid && is_block) {
@@ -421,40 +432,18 @@ void PoolManager::updateBlockConfirmations(const std::string& block_hash, uint32
     db_->updateBlock(b);
 }
 
-void PoolManager::markBlockOrphaned(const std::string& block_hash) {
+bool PoolManager::markBlockOrphaned(const std::string& block_hash) {
     std::lock_guard<std::mutex> lock(mutex_);
-
-    auto block = db_->getBlockByHash(block_hash);
-    if (!block) return;
-
-    auto payouts = db_->getPayoutsForBlock(block->block_id);
-    uint32_t pending_reversed = 0;
-    uint32_t already_paid = 0;
-    for (const auto& payout : payouts) {
-        if (payout.status == PayoutStatus::PAID) {
-            ++already_paid;
-            continue;
-        }
-        if (payout.status == PayoutStatus::FAILED) {
-            continue;
-        }
-
-        db_->subtractWorkerPending(payout.worker_id, payout.amount);
-        db_->updatePayoutStatus(
-            payout.payout_id,
-            PayoutStatus::FAILED,
-            "",
-            "orphaned block");
-        ++pending_reversed;
-    }
-
-    db_->markBlockOrphaned(block->block_id);
+    PoolDB::OrphanResult result;
+    if (!db_->reconcileOrphanedBlock(block_hash,result)) return false;
+    if (!result.found) return true;
     g_logger.warning("Block " + block_hash.substr(0, 16) + " orphaned!");
-    if (pending_reversed > 0 || already_paid > 0) {
+    if (result.pending_reversed > 0 || result.already_paid > 0) {
         g_logger.warning("Pool payout rollback for orphan block " + block_hash.substr(0, 16) +
-                         ": reversed_pending=" + std::to_string(pending_reversed) +
-                         ", already_paid=" + std::to_string(already_paid));
+                         ": reversed_pending=" + std::to_string(result.pending_reversed) +
+                         ", already_paid=" + std::to_string(result.already_paid));
     }
+    return true;
 }
 
 // ============================================================================
@@ -469,24 +458,55 @@ uint32_t PoolManager::processConfirmedBlocks() {
 }
 
 uint32_t PoolManager::sendPendingPayouts() {
-    std::lock_guard<std::mutex> lock(mutex_);
-
-    if (!processor_) return 0;
-    return processor_->processPendingPayouts();
+    std::shared_ptr<PayoutProcessor> processor;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (payments_closed_) throw std::runtime_error("pool payments closed");
+        processor=processor_;
+    }
+    return processor ? processor->processPendingPayouts() : 0;
 }
 
 uint32_t PoolManager::retryFailedPayouts(uint32_t max_retries) {
-    std::lock_guard<std::mutex> lock(mutex_);
-
-    if (!processor_) return 0;
-    return processor_->retryFailedPayouts(max_retries);
+    std::shared_ptr<PayoutProcessor> processor;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (payments_closed_) throw std::runtime_error("pool payments closed");
+        processor=processor_;
+    }
+    return processor ? processor->retryFailedPayouts(max_retries) : 0;
 }
 
 void PoolManager::setPaymentCallback(PaymentCallback callback) {
-    std::lock_guard<std::mutex> lock(mutex_);
+    // Callback capture construction/destruction can execute arbitrary code;
+    // keep both outside the manager owner, including refusal paths.
+    auto candidate=std::make_shared<PayoutProcessor>(db_,std::move(callback));
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (payments_closed_ || processor_)
+            throw std::logic_error("pool payment callback already installed or closed");
+        processor_.swap(candidate);
+    }
+}
 
-    payment_callback_ = callback;
-    processor_ = std::make_unique<PayoutProcessor>(*db_, callback);
+void PoolManager::setPaymentBackend(std::unique_ptr<PoolPaymentBackend> backend) {
+    auto candidate=std::make_shared<PayoutProcessor>(db_,std::move(backend));
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if(payments_closed_ || processor_)throw std::logic_error("pool payment backend already installed or closed");
+        processor_.swap(candidate);
+    }
+}
+
+void PoolManager::ClosePayments() {
+    std::shared_ptr<PayoutProcessor> processor;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        processor=processor_;
+        if (!processor) {payments_closed_=true;return;}
+    }
+    processor->Close(); // No manager/SQLite/chain/wallet owner while draining.
+    std::lock_guard<std::mutex> lock(mutex_);payments_closed_=true;
 }
 
 // ============================================================================
@@ -521,16 +541,27 @@ PoolConfig PoolManager::getConfig() {
 
 bool PoolManager::setConfig(const PoolConfig& config) {
     std::lock_guard<std::mutex> lock(mutex_);
+    return setConfigOwned(config);
+}
 
-    if (db_->updateConfig(config)) {
-        config_ = config;
+bool PoolManager::compareAndSetConfig(const PoolConfig& expected, const PoolConfig& config) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if(!(config_==expected)) return false;
+    return setConfigOwned(config);
+}
 
-        // Recreate calculator with new config
-        calculator_ = std::make_unique<PayoutCalculator>(*db_, config_);
-
+bool PoolManager::setConfigOwned(const PoolConfig& config) {
+    try {
+        PoolConfig prepared=config;
+        auto calculator=std::make_unique<PayoutCalculator>(*db_,prepared);
+        if(!db_->updateConfig(prepared))return false;
+        // All fallible preparation precedes COMMIT. Publication cannot throw.
+        static_assert(std::is_nothrow_swappable_v<PoolConfig>);
+        using std::swap;swap(config_,prepared);calculator_.swap(calculator);
         return true;
+    } catch(const std::exception&) {
+        g_logger.error("[Pool] Configuration preparation refused");return false;
     }
-    return false;
 }
 
 std::optional<WorkerStats> PoolManager::getWorkerStats(const std::string& worker_id) {
@@ -543,49 +574,79 @@ std::optional<WorkerStats> PoolManager::getWorkerStats(const std::string& worker
 // ============================================================================
 
 void PoolManager::startMaintenanceThread() {
-    if (maintenance_running_.load()) return;
-
-    maintenance_running_ = true;
-    maintenance_thread_ = std::thread([this]() {
-        while (maintenance_running_.load()) {
-            runMaintenance();
-
-            // Sleep for 60 seconds between maintenance runs
-            for (int i = 0; i < 60 && maintenance_running_.load(); ++i) {
-                std::this_thread::sleep_for(std::chrono::seconds(1));
-            }
-        }
-    });
-
-    g_logger.info("Pool maintenance thread started");
-}
-
-void PoolManager::stopMaintenanceThread() {
-    maintenance_running_ = false;
-    if (maintenance_thread_.joinable()) {
-        maintenance_thread_.join();
+    std::lock_guard lifecycle(maintenance_lifecycle_);
+    if(maintenance_thread_.joinable())return;
+    {std::lock_guard owner(mutex_);if(payments_closed_ || chain_source_.expired())throw std::logic_error("pool maintenance owner unavailable or closed");}
+    {
+        std::lock_guard lock(maintenance_state_->mutex);
+        maintenance_state_->stopping=false;maintenance_state_->requested=true;
+        maintenance_state_->report=MaintenanceReport{};maintenance_state_->report.running=true;
     }
+    try {maintenance_thread_=std::thread([this]{RunMaintenanceWorker();});}
+    catch(...) {
+        std::lock_guard lock(maintenance_state_->mutex);maintenance_state_->stopping=true;
+        maintenance_state_->requested=false;maintenance_state_->report.running=false;throw;
+    }
+}
+void PoolManager::stopMaintenanceThread() {
+    std::lock_guard lifecycle(maintenance_lifecycle_);
+    {std::lock_guard lock(maintenance_state_->mutex);maintenance_state_->stopping=true;maintenance_state_->requested=false;}
+    maintenance_state_->wake.notify_one();
+    // No pool/SQLite/source/wallet/mailbox owner is held while joining.
+    if(maintenance_thread_.joinable())maintenance_thread_.join();
+    std::lock_guard lock(maintenance_state_->mutex);maintenance_state_->report.running=false;
+}
+void PoolManager::MaintenanceWakeHandle::RequestReplay() const noexcept {
+    {std::lock_guard lock(state_->mutex);if(state_->stopping)return;state_->requested=true;}
+    state_->wake.notify_one();
+}
+bool PoolManager::MaintenanceWakeHandle::Running() const noexcept {
+    std::lock_guard lock(state_->mutex);return state_->report.running && !state_->stopping;
+}
+PoolManager::MaintenanceReport PoolManager::MaintenanceSnapshot() const {
+    std::lock_guard lock(maintenance_state_->mutex);return maintenance_state_->report;
+}
+void PoolManager::RunMaintenanceWorker() noexcept {
+    try {
+        for(;;) {
+            {
+                std::unique_lock lock(maintenance_state_->mutex);
+                maintenance_state_->wake.wait_for(lock,std::chrono::seconds(60),[&]{return maintenance_state_->stopping || maintenance_state_->requested;});
+                if(maintenance_state_->stopping)break;
+                maintenance_state_->requested=false;
+            }
+            runMaintenance();
+        }
+    } catch(...) {
+        std::lock_guard lock(maintenance_state_->mutex);
+        maintenance_state_->report.accounting_pass_returned=false;maintenance_state_->report.maintenance_pass_returned=false;
+    }
+    std::lock_guard lock(maintenance_state_->mutex);maintenance_state_->report.running=false;maintenance_state_->stopping=true;
 }
 
 void PoolManager::runMaintenance() {
+    bool accounting_returned=false,maintenance_returned=false;
     try {
-        // Process confirmed blocks
-        uint32_t blocks_processed = processConfirmedBlocks();
-        if (blocks_processed > 0) {
-            g_logger.info("Processed " + std::to_string(blocks_processed) + " confirmed blocks");
-        }
-
-        // Check block confirmations
+        // Establish canonical eligibility before allocations. Wallet work is
+        // still outside the selected/manager/SQLite owners after this returns.
         checkBlockConfirmations();
+        accounting_returned=true;
 
-        // Send pending payouts (if payment callback is set)
-        if (payment_callback_) {
+        // Capture configuration under the manager owner; callback execution is
+        // outside it and the processor keeps its database/context alive.
+        bool payments_available;uint32_t max_retries;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            payments_available=processor_ && !payments_closed_;
+            max_retries=config_.max_payout_retries;
+        }
+        if (payments_available) {
             uint32_t payouts_sent = sendPendingPayouts();
             if (payouts_sent > 0) {
                 g_logger.info("Sent " + std::to_string(payouts_sent) + " payouts");
             }
 
-            uint32_t retries_sent = retryFailedPayouts(config_.max_payout_retries);
+            uint32_t retries_sent = retryFailedPayouts(max_retries);
             if (retries_sent > 0) {
                 g_logger.info("Retried " + std::to_string(retries_sent) + " failed payouts");
             }
@@ -609,64 +670,29 @@ void PoolManager::runMaintenance() {
             g_logger.debug("Pruned " + std::to_string(pruned_dedupe) + " share dedupe keys");
         }
 
+        maintenance_returned=true;
     } catch (const std::exception& e) {
         g_logger.error("Maintenance error: " + std::string(e.what()));
+    } catch(...) {
+        g_logger.error("Maintenance refused: unknown error");
     }
+    // Publish only an in-memory observation. A returned payment phase can still
+    // have unknown/deferred attempts; it never certifies settlement/readiness.
+    std::lock_guard lock(maintenance_state_->mutex);
+    auto& report=maintenance_state_->report;
+    if(report.passes!=std::numeric_limits<uint64_t>::max())++report.passes;
+    report.accounting_pass_returned=accounting_returned;report.maintenance_pass_returned=maintenance_returned;
 }
 
 void PoolManager::checkBlockConfirmations() {
-    if (!chain_db_) {
-        g_logger.debug("[Pool] checkBlockConfirmations skipped: ChainDB not wired");
-        return;
-    }
-
-    auto tip_result = chain_db_->getTip();
-    if (tip_result.status() != Status::Ok) {
-        return;
-    }
-
-    const uint32_t tip_height = tip_result.value().height;
-
-    std::vector<PoolBlock> pending_blocks;
+    std::shared_ptr<ChainstateService> source;
+    CanonicalMaintenance reconcile;
     {
-        std::lock_guard<std::mutex> lock(mutex_);
-        pending_blocks = db_->getPendingBlocks();
+        std::lock_guard<std::mutex> owner(mutex_);
+        source=chain_source_.lock();reconcile=canonical_maintenance_;
     }
-
-    for (const auto& pending : pending_blocks) {
-        if (pending.block_hash.size() != 64 ||
-            !std::all_of(pending.block_hash.begin(), pending.block_hash.end(), [](unsigned char c) {
-                return std::isxdigit(c) != 0;
-            })) {
-            markBlockOrphaned(pending.block_hash);
-            continue;
-        }
-
-        if (pending.height > tip_height) {
-            continue;
-        }
-
-        auto active_hash = chain_db_->getBlockHashByHeight(static_cast<int>(pending.height));
-        if (active_hash.status() != Status::Ok) {
-            markBlockOrphaned(pending.block_hash);
-            continue;
-        }
-
-        uint256 pending_hash;
-        if (!uint256::FromHex(pending.block_hash, pending_hash)) {
-            markBlockOrphaned(pending.block_hash);
-            continue;
-        }
-        if (active_hash.value() != pending_hash) {
-            markBlockOrphaned(pending.block_hash);
-            continue;
-        }
-
-        const uint32_t confirmations = tip_height - pending.height + 1;
-        if (pending.confirmations != confirmations) {
-            updateBlockConfirmations(pending.block_hash, confirmations);
-        }
-    }
+    if(!source || !reconcile)throw std::runtime_error("canonical pool accounting source unavailable or changed");
+    reconcile(source,*this);
 }
 
 void PoolManager::updateWorkerHashrate(const std::string& worker_id) {

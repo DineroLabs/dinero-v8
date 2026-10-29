@@ -93,6 +93,7 @@ void ShieldedWidget::setupUI() {
         auto* g = new QGridLayout(balanceBox);
         g->addWidget(new QLabel("Balance:"),     0, 0);
         balanceDinLabel_ = new QLabel("—");
+        balanceDinLabel_->setObjectName("shieldedBalanceDin");
         balanceDinLabel_->setStyleSheet("font-size: 18px; font-weight: 700;");
         g->addWidget(balanceDinLabel_, 0, 1);
         g->addWidget(new QLabel("Balance (una):"), 1, 0);
@@ -333,7 +334,7 @@ void ShieldedWidget::updateFundMovingUi() {
     } else {
         QString msg = "Private payments unavailable";
         if (!shieldedUnavailableReason_.isEmpty()) msg += "  —  " + shieldedUnavailableReason_;
-        msg += "  —  receive addresses still derive locally; shield/unshield/send await activation.";
+        msg += "  —  receive addresses still derive locally; shield/unshield/send remain unavailable while the daemon refuses spending.";
         statusBanner_->setText(msg);
         statusBanner_->setStyleSheet(
             "QLabel { padding: 8px 12px; border-radius: 6px; background: #4a402d; "
@@ -826,8 +827,11 @@ void ShieldedWidget::updateBalanceLabels(const QJsonValue& result) {
     balanceUnaLabel_->setText(QString::number(una));
     balanceDinLabel_->setText(MoneyDinFromUna(una));
     if (obj.contains("covenant_balance_una")) {
-        balanceDinLabel_->setText(MoneyDinFromUna(obj.value("ordinary_balance_una").toInteger()) + " available for ordinary payments\n" +
-            MoneyDinFromUna(obj.value("covenant_balance_una").toInteger()) + " in covenants");
+        const bool spendEnabled = ShieldedTransferPolicy::daemonAllowsSpending(obj);
+        balanceDinLabel_->setText(MoneyDinFromUna(obj.value("ordinary_balance_una").toInteger()) +
+            (spendEnabled ? " available for ordinary payments\n" : " recorded, currently not spendable\n") +
+            MoneyDinFromUna(obj.value("covenant_balance_una").toInteger()) +
+            (spendEnabled ? " in covenants" : " recorded in covenants, currently not spendable"));
     }
     treeSizeLabel_->setText(QString::number(tree));
     noteCountLabel_->setText(QString::number(confirmed));

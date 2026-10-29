@@ -1,0 +1,7 @@
+# Backend-OFF generated graph audit
+
+The replay fixture uses a shared historical protocol type header even with the Orchard runtime disabled. The earlier blanket include-path assertion rejected this intentional test-only include, before full build. Actual completed Linux job logs confirm this failure in Composition379a816 and Startup0a292522; their remaining CI jobs are separate qualification.
+
+The audit permits only the exact shared header directory for test_assumeutxo_replay. The daemon service still rejects every Orchard backend compiler path. Both sources still reject runtime/origin feature macros. The audit additionally rejects backend translation units anywhere in the compile database and backend archive/shared-library/target dependencies in generated Ninja or Make graphs. Missing cache, required source entries or build/link graph refuses. The audit reads generated files without reconfiguring or building them.
+
+Six Python cases exercise both compile-command forms, exact header permission, feature/path/source/library/target refusal, Make graph validation, missing graph/source and explicit backend-ON refusal. Actual completed Startup OFF generated graph is read-only positive evidence; Startup ON is an expected audit refusal. This is graph-audit qualification, not a fresh C++ build, sanitizer execution, whole-node test or release qualification. No production code, fixture bodies, assertion deadline or backend setting changes. Existing Orchard OFF runtime-refusal execution remains required in CI. Mainnet remains unset.

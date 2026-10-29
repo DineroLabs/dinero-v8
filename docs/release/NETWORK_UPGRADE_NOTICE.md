@@ -10,10 +10,10 @@ An absent asset (HTTP 404) means "no mandatory upgrade pending".
   "schema": "dinero.network-upgrade.v1",
   "network": "mainnet",
   "profile": "compact-v1-60s-v1",
-  "release": "8.1.13",
-  "activation_height": 125000,
-  "min_versions": { "dinero-qt": "8.1.13", "dinerod": "8.1.13", "dinerodpi": "1.4.0" },
-  "message": "v8.1.13: 60-second blocks and the new private pool. Update before block 125000."
+  "release": "8.2.0",
+  "activation_height": 150000,
+  "min_versions": { "dinero-qt": "8.2.0", "dinerod": "8.2.0", "dinerodpi": "1.4.0" },
+  "message": "v8.2.0: 60-second blocks and the new private pool. Update before block 150000."
 }
 ```
 
@@ -30,7 +30,7 @@ Rules:
 Publishing rule: wallets read the notice from the release GitHub marks as
 "latest" (prereleases are skipped). Attach the current `network-upgrade.json`
 to **every** normal release from the moment it is first published until a newer
-notice replaces it, including hotfix releases such as `v8.1.13-windows1` if they
+notice replaces it, including hotfix releases such as `v8.2.0-windows1` if they
 are published as normal releases. A release without the asset looks like "no
 upgrade pending" to older wallets and silences their warning.
 

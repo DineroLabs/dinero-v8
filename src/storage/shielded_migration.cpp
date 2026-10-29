@@ -1,4 +1,5 @@
 #include "storage/shielded_migration.h"
+#include "storage/shielded_cf_comparator.h"
 #include "storage/forest_restore.h"
 #include "consensus/utreexo_accumulator.h"
 #include "shielded_migration_internal.h"
@@ -10,6 +11,7 @@
 #include <rocksdb/env.h>
 #include <rocksdb/write_batch.h>
 #include <algorithm>
+#include <cerrno>
 #include <charconv>
 #include <cstring>
 #include <limits>
@@ -19,6 +21,16 @@
 #include <set>
 #include <stdexcept>
 #include <sys/stat.h>
+#include <system_error>
+#if !defined(_WIN32)
+#include <sys/resource.h>
+#endif
+#if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
 #if defined(__APPLE__)
 #include <TargetConditionals.h>
 #endif
@@ -35,6 +47,21 @@ constexpr const char* kAnchors = "Mshielded_anchor_history";
 constexpr const char* kImport = "Mshielded_anchor_history_migrated_v1";
 const std::set<std::string> kLegacy{
     "default", "meta", "blocks", "headers", "height", "txindex", "utxo", "utreexo", "prebase_coins"};
+
+#if !defined(_WIN32)
+void RaiseMigrationOpenFileLimit() {
+    struct rlimit current{};
+    if (::getrlimit(RLIMIT_NOFILE, &current) != 0)
+        throw std::system_error(errno, std::generic_category(), "read migration open-file limit");
+    constexpr rlim_t desired = 8192;
+    if (current.rlim_cur >= desired) return;
+    const rlim_t available = std::min(current.rlim_max, desired);
+    if (available <= current.rlim_cur) return; // The operator's hard limit is binding.
+    current.rlim_cur = available;
+    if (::setrlimit(RLIMIT_NOFILE, &current) != 0)
+        throw std::system_error(errno, std::generic_category(), "raise migration open-file limit");
+}
+#endif
 
 void Require(bool ok, const char* reason) { if (!ok) throw std::runtime_error(reason); }
 void Check(const rocksdb::Status& status, const char* action) {
@@ -56,39 +83,111 @@ struct Digest {
     }
     std::string Finish() { return crypto::bytes_to_hex(hash.Finalize()); }
 };
+#if defined(_WIN32)
+struct WindowsFileIdentity {
+    uint64_t device;
+    uint64_t inode;
+    uint64_t links;
+    bool directory;
+    bool regular;
+};
+std::optional<WindowsFileIdentity> WindowsNoFollowIdentity(const fs::path& path) {
+    HANDLE handle = ::CreateFileW(path.c_str(), FILE_READ_ATTRIBUTES,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
+        FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+    if (handle == INVALID_HANDLE_VALUE) return std::nullopt;
+    BY_HANDLE_FILE_INFORMATION info{};
+    const bool valid = ::GetFileType(handle) == FILE_TYPE_DISK &&
+        ::GetFileInformationByHandle(handle, &info) != 0;
+    const bool closed = ::CloseHandle(handle) != 0;
+    if (!valid || !closed || (info.dwFileAttributes & (FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_DEVICE)))
+        return std::nullopt;
+    const bool directory = (info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+    return WindowsFileIdentity{info.dwVolumeSerialNumber,
+        (uint64_t{info.nFileIndexHigh} << 32) | info.nFileIndexLow,
+        info.nNumberOfLinks, directory, !directory};
+}
+#endif
 struct Identity {
     fs::path path;
+    fs::path paired_sst_root;
+#if defined(_WIN32)
+    uint64_t device;
+    uint64_t inode;
+#else
     dev_t device;
     ino_t inode;
-    Identity(const fs::path& input) {
+#endif
+    Identity(const fs::path& input, const fs::path& paired_root = {}) {
         const auto absolute = fs::absolute(input);
         fs::path cursor;
         for (const auto& part : absolute) {
             cursor /= part;
             Require(!fs::is_symlink(fs::symlink_status(cursor)), "symlink in database path");
+#if defined(_WIN32)
+            if (cursor != absolute.root_name())
+                Require(WindowsNoFollowIdentity(cursor).has_value(), "symlink in database path");
+#endif
         }
         path = fs::canonical(absolute);
+        if (!paired_root.empty()) paired_sst_root = fs::absolute(paired_root);
+#if defined(_WIN32)
+        const auto info = WindowsNoFollowIdentity(path);
+        Require(info && info->directory, "database directory missing");
+        device = info->device; inode = info->inode;
+#else
         struct stat info{};
         Require(::lstat(path.c_str(), &info) == 0 && S_ISDIR(info.st_mode), "database directory missing");
         device = info.st_dev; inode = info.st_ino;
+#endif
         Require(fs::is_regular_file(path / "CURRENT") && fs::is_regular_file(path / "LOCK"), "existing database required");
         CheckFiles();
     }
     void CheckFiles() const {
-        // Reject shared mutable files and links, even to paths within this DB.
-        // Filesystem clones have separate inodes and are not hardlinks.
+        // Standalone migration rejects every hardlink. The automatic upgrade
+        // alone may pair immutable SSTs with the original at the same relative
+        // path; mutable RocksDB controls and outside aliases remain forbidden.
         for (const auto& entry : fs::recursive_directory_iterator(path)) {
+#if defined(_WIN32)
+            const auto info = WindowsNoFollowIdentity(entry.path());
+            Require(info.has_value(), "cannot stat database entry");
+            if (info->directory) continue;
+            Require(info->regular, "nonregular database entry");
+            if (info->links == 1) continue;
+            Require(info->links == 2 && !paired_sst_root.empty() && entry.path().extension() == ".sst",
+                    "nonregular or hardlinked database entry");
+            const auto paired = WindowsNoFollowIdentity(
+                paired_sst_root / entry.path().lexically_relative(path));
+            Require(paired && paired->regular && paired->links == 2 &&
+                    paired->device == info->device && paired->inode == info->inode,
+                    "SST hardlink is not paired with the other database");
+#else
             struct stat info{};
             Require(::lstat(entry.path().c_str(), &info) == 0, "cannot stat database entry");
-            Require(S_ISDIR(info.st_mode) || (S_ISREG(info.st_mode) && info.st_nlink == 1),
+            if (S_ISDIR(info.st_mode)) continue;
+            Require(S_ISREG(info.st_mode), "nonregular database entry");
+            if (info.st_nlink == 1) continue;
+            Require(info.st_nlink == 2 && !paired_sst_root.empty() && entry.path().extension() == ".sst",
                     "nonregular or hardlinked database entry");
+            const auto paired_path = paired_sst_root / entry.path().lexically_relative(path);
+            struct stat paired{};
+            Require(::lstat(paired_path.c_str(), &paired) == 0 && S_ISREG(paired.st_mode) &&
+                    paired.st_nlink == 2 && paired.st_dev == info.st_dev && paired.st_ino == info.st_ino,
+                    "SST hardlink is not paired with the other database");
+#endif
         }
     }
     void Recheck() const {
+#if defined(_WIN32)
+        const auto info = WindowsNoFollowIdentity(path);
+        Require(info && info->directory && info->device == device && info->inode == inode &&
+                fs::canonical(path) == path, "database identity changed");
+#else
         struct stat info{};
         Require(::lstat(path.c_str(), &info) == 0 && S_ISDIR(info.st_mode) &&
                 info.st_dev == device && info.st_ino == inode && fs::canonical(path) == path,
                 "database identity changed");
+#endif
     }
     void Bind(Digest& digest) const {
         digest.Field(path.string()); digest.Field(std::to_string(device)); digest.Field(std::to_string(inode));
@@ -104,11 +203,46 @@ bool Nested(const fs::path& parent, const fs::path& child) {
 // closing a DB returns the loan, and only destruction here releases ownership.
 class LockedEnv final : public rocksdb::EnvWrapper {
     std::string path_;
+#if defined(_WIN32)
+    class WindowsLock final : public rocksdb::FileLock {
+        HANDLE handle_;
+    public:
+        explicit WindowsLock(HANDLE handle) : handle_(handle) {}
+        ~WindowsLock() override { ::CloseHandle(handle_); }
+    };
+    fs::path windows_path_;
+    std::unique_ptr<WindowsLock> owned_lock_;
+#endif
     rocksdb::FileLock* lock_ = nullptr;
     bool borrowed_ = false;
+#if defined(_WIN32)
+    uint64_t device_{};
+    uint64_t inode_{};
+#else
     dev_t device_{};
     ino_t inode_{};
+#endif
 public:
+#if defined(_WIN32)
+    LockedEnv(const fs::path& directory, rocksdb::Env* base)
+        : EnvWrapper(base), path_((directory / "LOCK").string()), windows_path_(directory / "LOCK") {
+        // Deny other writers and deletion while permitting metadata reads of
+        // LOCK. RocksDB's default no-sharing Windows lock forbids those reads.
+        const HANDLE handle = ::CreateFileW(windows_path_.c_str(),
+            GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+            FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+        Require(handle != INVALID_HANDLE_VALUE, "exclusive database lock");
+        owned_lock_ = std::make_unique<WindowsLock>(handle);
+        lock_ = owned_lock_.get();
+        const auto info = WindowsNoFollowIdentity(windows_path_);
+        if (!info || !info->regular || info->links != 1) {
+            owned_lock_.reset(); lock_ = nullptr;
+            throw std::runtime_error("invalid lock identity");
+        }
+        device_ = info->device; inode_ = info->inode;
+    }
+    ~LockedEnv() override = default;
+#else
     LockedEnv(const fs::path& directory, rocksdb::Env* base) : EnvWrapper(base), path_((directory / "LOCK").string()) {
         Check(target()->LockFile(path_, &lock_), "exclusive database lock");
         struct stat info{};
@@ -119,10 +253,17 @@ public:
         device_ = info.st_dev; inode_ = info.st_ino;
     }
     ~LockedEnv() override { if (lock_) target()->UnlockFile(lock_).PermitUncheckedError(); }
+#endif
     void Recheck() const {
+#if defined(_WIN32)
+        const auto info = WindowsNoFollowIdentity(windows_path_);
+        Require(info && info->regular && info->links == 1 && info->device == device_ &&
+                info->inode == inode_, "database lock identity changed");
+#else
         struct stat info{};
         Require(::lstat(path_.c_str(), &info) == 0 && S_ISREG(info.st_mode) && info.st_nlink == 1 &&
                 info.st_dev == device_ && info.st_ino == inode_, "database lock identity changed");
+#endif
     }
     rocksdb::Status LockFile(const std::string& path, rocksdb::FileLock** result) override {
         *result = nullptr;
@@ -142,6 +283,11 @@ struct Store {
     void Close() { for (const auto& [name, h] : families) db->DestroyColumnFamilyHandle(h); families.clear(); db.reset(); }
     void Open(const fs::path& path, LockedEnv& env, bool read_only) {
         Close(); rocksdb::Options options; options.env = &env;
+        // The migration opens both the source and candidate. RocksDB's -1
+        // default keeps every SST open, which exhausts a manual node's usual
+        // 1024-descriptor limit on a full ChainDB. Cap each store separately;
+        // the normal ChainDB already uses a bounded open-file cache.
+        options.max_open_files = 256;
         options.create_if_missing = options.create_missing_column_families = false;
         options.paranoid_checks = true;
         std::vector<std::string> names;
@@ -151,7 +297,11 @@ struct Store {
         Require(names.size() == expected.size() && std::set<std::string>(names.begin(), names.end()) == expected,
                 "unsupported family layout");
         std::vector<rocksdb::ColumnFamilyDescriptor> descriptors;
-        for (const auto& name : names) descriptors.emplace_back(name, options);
+        for (const auto& name : names) {
+            rocksdb::ColumnFamilyOptions cf_options(options);
+            if (name == kFamily) cf_options = ShieldedStateColumnFamilyOptions(std::move(cf_options));
+            descriptors.emplace_back(name, std::move(cf_options));
+        }
         std::vector<rocksdb::ColumnFamilyHandle*> handles; rocksdb::DB* pointer = nullptr;
         const auto status = read_only
             ? rocksdb::DB::OpenForReadOnly(options, path.string(), descriptors, &handles, &pointer)
@@ -495,7 +645,8 @@ void Compare(const Store& original, const Store& candidate, const Journal& journ
 static ShieldedMigrationResult RunMigration(const fs::path& original_path, const fs::path& candidate_path,
     const ShieldedMigrationLimits& limits, bool apply, const std::function<void(const char*)>& checkpoint,
     rocksdb::Env* environment, const std::string& cohort_binding = {},
-    const std::function<void()>& outer_ownership = {}, const detail::ExternalMigrationState* external = nullptr) {
+    const std::function<void()>& outer_ownership = {}, const detail::ExternalMigrationState* external = nullptr,
+    bool paired_sst_links = false) {
     ShieldedMigrationResult result;
     try {
 #if defined(__APPLE__) && TARGET_OS_IOS
@@ -504,7 +655,11 @@ static ShieldedMigrationResult RunMigration(const fs::path& original_path, const
         Require(limits.batch_bytes && limits.batch_rows && limits.max_record_bytes && limits.max_nullifiers &&
                 limits.max_record_bytes <= limits.batch_bytes && limits.max_record_bytes <= std::numeric_limits<size_t>::max() &&
                 limits.max_nullifiers <= std::numeric_limits<size_t>::max() / sizeof(sh::NullifierEntry), "invalid resource budgets");
-        Identity original_id(original_path), candidate_id(candidate_path);
+#if !defined(_WIN32)
+        RaiseMigrationOpenFileLimit();
+#endif
+        Identity original_id(original_path, paired_sst_links ? candidate_path : fs::path{});
+        Identity candidate_id(candidate_path, paired_sst_links ? original_path : fs::path{});
         Require(!Nested(original_id.path, candidate_id.path) && !Nested(candidate_id.path, original_id.path) &&
                 !(original_id.device == candidate_id.device && original_id.inode == candidate_id.inode), "overlapping database paths");
         LockedEnv original_lock(original_id.path, environment), candidate_lock(candidate_id.path, environment);
@@ -546,7 +701,7 @@ static ShieldedMigrationResult RunMigration(const fs::path& original_path, const
         if (!started) { publish("PREPARING"); hit("after_prepare"); }
         if (!candidate.families.count(kFamily)) {
             identity_check(); rocksdb::ColumnFamilyHandle* handle = nullptr;
-            const auto status = candidate.db->CreateColumnFamily(rocksdb::ColumnFamilyOptions(), kFamily, &handle);
+            const auto status = candidate.db->CreateColumnFamily(ShieldedStateColumnFamilyOptions(), kFamily, &handle);
             if (handle) candidate.families.emplace(kFamily, handle);
             Check(status, "create destination family"); hit("after_create");
         }
@@ -589,13 +744,17 @@ static ShieldedMigrationResult RunMigration(const fs::path& original_path, const
         result.ok = result.ready = true;
     } catch (const std::exception& error) {
         result.ok = result.ready = false; result.error = error.what();
+        if (result.error.find("Too many open files") != std::string::npos)
+            result.error += "; increase the process open-file limit (for example, ulimit -n 8192) and restart";
     }
     return result;
 }
 
 ShieldedMigrationResult MigrateShieldedStateCopy(const fs::path& original, const fs::path& candidate,
-    const ShieldedMigrationLimits& limits, bool apply, const std::function<void(const char*)>& checkpoint) {
-    return RunMigration(original, candidate, limits, apply, checkpoint, rocksdb::Env::Default());
+    const ShieldedMigrationLimits& limits, bool apply, const std::function<void(const char*)>& checkpoint,
+    bool paired_sst_links) {
+    return RunMigration(original, candidate, limits, apply, checkpoint, rocksdb::Env::Default(),
+                        {}, {}, nullptr, paired_sst_links);
 }
 
 ShieldedMigrationResult detail::MigrateBoundCopy(const fs::path& original, const fs::path& candidate,

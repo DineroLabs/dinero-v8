@@ -30,7 +30,10 @@ if(DINERO_USE_VENDORED_DEPS)
     message(FATAL_ERROR "RocksDB submodule not initialized. Run: git submodule update --init --recursive")
   endif()
 
-  set(ROCKSDB_SOURCE_DIR  "${CMAKE_SOURCE_DIR}/third_party/rocksdb")
+  include(${CMAKE_CURRENT_LIST_DIR}/PrepareRocksDB.cmake)
+  set(ROCKSDB_SOURCE_DIR "${CMAKE_BINARY_DIR}/_deps/rocksdb-source")
+  dinero_prepare_rocksdb_source("${CMAKE_SOURCE_DIR}/third_party/rocksdb"
+                               "${ROCKSDB_SOURCE_DIR}")
   set(ROCKSDB_BINARY_DIR  "${CMAKE_BINARY_DIR}/_deps/rocksdb-build")
   set(ROCKSDB_INSTALL_DIR "${CMAKE_BINARY_DIR}/_deps/rocksdb-install")
 
@@ -68,35 +71,28 @@ if(DINERO_USE_VENDORED_DEPS)
     -DWITH_SYNC_POINT=OFF
   )
 
+  # Do not depend on incidental libstdc++ transitive includes (GCC 14+).
+  # Keep compatibility declarations local to the isolated vendor build.
+  if(MSVC)
+    set(_rocksdb_cxx_flags "/FIcstdint")
+  else()
+    set(_rocksdb_cxx_flags "-include cstdint")
+  endif()
+
   # ExternalProject has an isolated CMake directory and therefore does not
   # inherit the top-level add_compile_options() reproducibility policy. Without
   # explicit prefix maps, RocksDB embeds the checkout path in DWARF and in its
   # file-name logging strings; two otherwise identical builders then produce
   # different final dinerod bytes. Map the parent source/build roots to the same
   # canonical names used by ReproducibleBuild.cmake.
-  # GCC 15's libstdc++ no longer pulls <cstdint> in transitively. The pinned
-  # RocksDB (v9.9.3) uses uint64_t/uint32_t without including it in
-  # db/blob/blob_file_meta.h, include/rocksdb/trace_record.h,
-  # include/rocksdb/trace_record_result.h and include/rocksdb/write_batch_base.h,
-  # so a cold build fails there. Force-include it for GCC >= 15 only, leaving
-  # older toolchains' flags (and their reproducible output) unchanged.
-  set(_rocksdb_cxx_compat_flags "")
-  if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND
-     CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL 15)
-    set(_rocksdb_cxx_compat_flags "-include cstdint")
-  endif()
-
   if(DINERO_REPRODUCIBLE_BUILD AND
      CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
     set(_rocksdb_repro_flags
       "-ffile-prefix-map=${CMAKE_SOURCE_DIR}=. -fdebug-prefix-map=${CMAKE_SOURCE_DIR}=. -fmacro-prefix-map=${CMAKE_SOURCE_DIR}=. -ffile-prefix-map=${CMAKE_BINARY_DIR}=./build -fdebug-prefix-map=${CMAKE_BINARY_DIR}=./build -fmacro-prefix-map=${CMAKE_BINARY_DIR}=./build -fno-record-gcc-switches -Wdate-time")
-    string(STRIP "${_rocksdb_repro_flags} ${_rocksdb_cxx_compat_flags}" _rocksdb_repro_cxx_flags)
+    string(APPEND _rocksdb_cxx_flags " ${_rocksdb_repro_flags}")
     list(APPEND _rocksdb_cmake_args
       "-DCMAKE_C_FLAGS=${_rocksdb_repro_flags}"
-      "-DCMAKE_CXX_FLAGS=${_rocksdb_repro_cxx_flags}"
     )
-  elseif(_rocksdb_cxx_compat_flags)
-    list(APPEND _rocksdb_cmake_args "-DCMAKE_CXX_FLAGS=${_rocksdb_cxx_compat_flags}")
   endif()
 
   if(APPLE AND NOT CMAKE_SYSTEM_NAME STREQUAL "Android")
@@ -126,16 +122,24 @@ if(DINERO_USE_VENDORED_DEPS)
   endif()
 
   if(CMAKE_SYSTEM_NAME STREQUAL "Android")
+    string(APPEND _rocksdb_cxx_flags " -include ${CMAKE_SOURCE_DIR}/cmake/android_rocksdb_compat.h")
     list(APPEND _rocksdb_cmake_args
       -DCMAKE_TOOLCHAIN_FILE=${CMAKE_TOOLCHAIN_FILE}
       -DANDROID_ABI=${ANDROID_ABI}
       -DANDROID_PLATFORM=${ANDROID_PLATFORM}
       -DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY
-      "-DCMAKE_CXX_FLAGS=-include ${CMAKE_SOURCE_DIR}/cmake/android_rocksdb_compat.h"
     )
   endif()
 
-  set(_rocksdb_build_parallel 8)
+  list(APPEND _rocksdb_cmake_args "-DCMAKE_CXX_FLAGS=${_rocksdb_cxx_flags}")
+
+  # This nested build runs alongside the parent build on small CI runners.
+  # Keep its default bounded; larger builders can explicitly raise the budget.
+  set(DINERO_ROCKSDB_BUILD_JOBS 2 CACHE STRING "Maximum compiler jobs in the nested RocksDB build")
+  if(NOT DINERO_ROCKSDB_BUILD_JOBS MATCHES "^[1-9][0-9]*$")
+    message(FATAL_ERROR "DINERO_ROCKSDB_BUILD_JOBS must be a positive integer")
+  endif()
+  set(_rocksdb_build_parallel ${DINERO_ROCKSDB_BUILD_JOBS})
   if(MSVC)
     # RocksDB compiles many translation units into one static library target.
     # Visual Studio parallel builds otherwise race on rocksdb.pdb and fail with
@@ -163,6 +167,7 @@ if(DINERO_USE_VENDORED_DEPS)
     LOG_CONFIGURE     TRUE
     LOG_BUILD         TRUE
     LOG_INSTALL       TRUE
+    LOG_OUTPUT_ON_FAILURE TRUE
   )
 
   # The custom install step below controls the vendored layout, so lib/ is

@@ -3,6 +3,7 @@
 #include "wallet/swap/runner.h"
 
 #include "crypto/evp_secp256k1.h"
+#include "bech32/bech32.hpp"
 #include "crypto/sha256.h"
 #include "wallet/swap/btc_tx.h"
 #include "wallet/swap/swap_crypto.h"
@@ -78,7 +79,10 @@ SwapSession MakeSession(Role role) {
     r.accept.btc_refund_pubkey = Compressed(6);
     r.state = SwapState::Accepted;
     r.state_since_unix = kNow;
-    if (role == Role::DinSeller) r.secret = kSecret;
+    if (role == Role::DinSeller) {
+        r.secret = kSecret;DinFundingBinding binding;binding.wallet_id.fill(0x42);
+        binding.fee_rate_hint=2;binding.maximum_fee_una=1000000;s.din_funding_binding=binding;
+    }
     s.btc_scan_from_height = 101;
     s.din_payout_script = std::vector<uint8_t>(34, 0x51);
     s.din_payout_script[1] = 0x20;
@@ -123,7 +127,30 @@ struct FakeChains : SwapChainIo {
         if (!write_error.empty()) throw std::runtime_error("sendrawtransaction: " + write_error);
         return std::string(64, 'f');
     }
-    std::string FundDin(const std::string& a, uint64_t v) override { return Write("fund_din:" + a + ":" + std::to_string(v)); }
+    std::string FundDin(const std::string&, uint64_t) override { throw std::logic_error("generic funding must not run"); }
+    std::optional<PreparedDinFunding> retained_din;
+    std::optional<DinFundingRequest> retained_request;
+    int din_preparations=0,din_submissions=0,din_resolutions=0;
+    bool fail_din_prepare=false;
+    PreparedDinFunding PrepareDinFunding(const DinFundingRequest& request) override {
+        ++din_preparations;if(fail_din_prepare)throw std::runtime_error("funding preparation unavailable");
+        if(retained_din)return *retained_din;
+        const auto decoded=bech32::Decode("rdin",request.address);
+        if(!decoded)throw std::runtime_error("fixture funding address invalid");
+        Transaction tx;tx.version=2;tx.vin.resize(1);tx.vin[0].prevout=TxOutPoint(TxId(uint256::FromHexUnsafe(std::string(64,'1'))),0);
+        std::vector<uint8_t> script{0x51,0x20};script.insert(script.end(),decoded->program.begin(),decoded->program.end());
+        tx.vout.emplace_back(AmountUna::Una(request.amount_una),script);
+        retained_din=PreparedDinFunding{tx.Serialize(TxSerializationMode::WithWitness),tx.GetTxid().AsUint256().GetHex()};
+        retained_request=request;return *retained_din;
+    }
+    PreparedDinFunding ResolveDinFunding(const DinFundingRequest&) override {
+        ++din_resolutions;if(!retained_din)throw std::runtime_error("no retained fixture funding");return *retained_din;
+    }
+    void SubmitDinFunding(const DinFundingRequest& request,const PreparedDinFunding& funding) override {
+        ++din_submissions;EXPECT_TRUE(retained_din.has_value());
+        if(retained_din){EXPECT_EQ(funding.raw,retained_din->raw);EXPECT_EQ(funding.txid,retained_din->txid);}
+        Write("fund_din:"+request.address+":"+std::to_string(request.amount_una));
+    }
     std::string FundBtc(const std::string& a, uint64_t v) override { return Write("fund_btc:" + a + ":" + std::to_string(v)); }
     std::string BroadcastDin(const std::vector<uint8_t>& t) override { din_broadcasts.push_back(t); return Write("bcast_din"); }
     std::string BroadcastBtc(const std::vector<uint8_t>& t) override { btc_broadcasts.push_back(t); return Write("bcast_btc"); }
@@ -187,6 +214,71 @@ BtcFunding BtcFundingOf(const SwapSession& s) {
     return f;
 }
 
+
+TEST(SwapRunner, FailedPreparationAndFailedSaveReuseOneRetainedBody) {
+    Log log;FakeStore store(log);FakeChains chains(log);auto initial=MakeSession(Role::DinSeller);
+    SwapRunner alice(initial,kAliceKeys,Config(),chains,store);chains.fail_din_prepare=true;
+    alice.Tick(kNow);EXPECT_EQ(alice.session().record.state,SwapState::Accepted);EXPECT_FALSE(chains.retained_din);EXPECT_EQ(chains.din_submissions,0);
+    chains.fail_din_prepare=false;store.fail=true;EXPECT_THROW(alice.Tick(kNow+1),std::runtime_error);
+    ASSERT_TRUE(chains.retained_din);const auto body=chains.retained_din->raw;EXPECT_EQ(chains.din_submissions,0);
+    EXPECT_EQ(alice.session().record.state,SwapState::Accepted);store.fail=false;
+    alice.Tick(kNow+2);EXPECT_EQ(chains.retained_din->raw,body);EXPECT_EQ(chains.din_submissions,1);
+    EXPECT_EQ(detail::FromHex(store.saved->din_funding_raw),body);
+}
+TEST(SwapRunner, LostSubmissionReplyReopensWithExactBodyAndNoPreparation) {
+    Log log;FakeStore store(log);FakeChains chains(log);chains.write_error="reply lost";
+    {SwapRunner alice(MakeSession(Role::DinSeller),kAliceKeys,Config(),chains,store);alice.Tick(kNow);}
+    ASSERT_TRUE(store.saved);ASSERT_TRUE(chains.retained_din);EXPECT_FALSE(store.saved->din_funding_submitted);
+    const auto raw=chains.retained_din->raw;const auto preparations=chains.din_preparations;chains.write_error.clear();
+    SwapRunner reopened(DecodeSession(EncodeSession(*store.saved)),kAliceKeys,Config(),chains,store);
+    reopened.Tick(kNow+1);EXPECT_EQ(chains.din_preparations,preparations);EXPECT_EQ(chains.din_submissions,2);
+    EXPECT_EQ(detail::FromHex(reopened.session().din_funding_raw),raw);EXPECT_TRUE(reopened.session().din_funding_submitted);
+    reopened.Tick(kNow+2);EXPECT_EQ(chains.din_submissions,2);
+}
+TEST(SwapRunner, UnboundExpiredOrMalformedFundingCannotSubmit) {
+    Log log;FakeStore store(log);FakeChains chains(log);auto unbound=MakeSession(Role::DinSeller);unbound.din_funding_binding.reset();
+    SwapRunner legacy(unbound,kAliceKeys,Config(),chains,store);legacy.Tick(kNow);
+    EXPECT_EQ(chains.din_preparations,0);EXPECT_EQ(chains.din_submissions,0);EXPECT_EQ(legacy.session().record.state,SwapState::Accepted);
+    auto session=MakeSession(Role::DinSeller);auto retained=chains.PrepareDinFunding(FundingRequestFor(session,"rdin"));
+    session.record.state=SwapState::DinLockBroadcast;session.din_funding_raw=detail::ToHex(retained.raw);session.din_funding_txid=retained.txid;
+    auto invalid=session;invalid.din_funding_txid=std::string(64,'2');EXPECT_THROW(EncodeSession(invalid),std::invalid_argument);
+    invalid=session;invalid.record.offer.din_amount_una++;EXPECT_THROW(EncodeSession(invalid),std::invalid_argument);
+    SwapRunner expired(session,kAliceKeys,Config(),chains,store);expired.Tick(session.record.offer.expires_unix+1);
+    EXPECT_EQ(chains.din_submissions,0);EXPECT_FALSE(expired.session().din_funding_submitted);
+}
+TEST(SwapRunner, RetainedBodyRequiresExactOutputAndCompleteEncoding) {
+    Log log;FakeChains chains(log);auto session=MakeSession(Role::DinSeller);
+    const auto prepared=chains.PrepareDinFunding(FundingRequestFor(session,"rdin"));
+    ASSERT_NO_THROW(ValidateDinFundingBody(session,prepared));
+    Transaction original;size_t consumed=0;
+    ASSERT_TRUE(TransactionSerializer::Deserialize(original,prepared.raw,consumed));
+    ASSERT_EQ(consumed,prepared.raw.size());ASSERT_EQ(original.vout.size(),1u);
+    // Keep the offer/accept pair unchanged and recompute the transaction ID:
+    // these refusals must depend on the funding output, not stale metadata.
+    for(int mode=0;mode<3;++mode) {
+        auto changed=original;
+        if(mode==0)changed.vout[0].value=AmountUna::Una(session.record.offer.din_amount_una+1);
+        if(mode==1)changed.vout.push_back(changed.vout[0]);
+        if(mode==2)changed.vout[0].scriptPubKey.back()^=1;
+        const PreparedDinFunding forged{changed.Serialize(TxSerializationMode::WithWitness),changed.GetTxid().AsUint256().GetHex()};
+        EXPECT_THROW(ValidateDinFundingBody(session,forged),std::invalid_argument);
+        auto stored=session;stored.din_funding_raw=detail::ToHex(forged.raw);stored.din_funding_txid=forged.txid;
+        EXPECT_THROW(EncodeSession(stored),std::invalid_argument);
+    }
+    auto trailing=prepared;trailing.raw.push_back(0);
+    EXPECT_THROW(ValidateDinFundingBody(session,trailing),std::invalid_argument);
+    EXPECT_EQ(chains.din_submissions,0);
+}
+
+TEST(SwapRunner, RecoverMissingPinOnlyResolvesExistingWalletRequest) {
+    Log log;FakeStore store(log);FakeChains chains(log);auto session=MakeSession(Role::DinSeller);
+    const auto retained=chains.PrepareDinFunding(FundingRequestFor(session,"rdin"));session.record.state=SwapState::DinLockBroadcast;
+    const auto prepares=chains.din_preparations;SwapRunner recovered(session,kAliceKeys,Config(),chains,store);
+    recovered.Tick(kNow);EXPECT_EQ(chains.din_resolutions,1);EXPECT_EQ(chains.din_preparations,prepares);EXPECT_EQ(chains.din_submissions,0);
+    EXPECT_EQ(recovered.session().din_funding_txid,retained.txid);
+    recovered.Tick(kNow+1);EXPECT_EQ(chains.din_submissions,1);EXPECT_EQ(chains.din_preparations,prepares);
+}
+
 TEST(SwapRunner, SavesTheNewStateBeforeFunding) {
     Log log;
     FakeStore store(log);
@@ -197,7 +289,9 @@ TEST(SwapRunner, SavesTheNewStateBeforeFunding) {
     EXPECT_EQ(r.after, SwapState::DinLockBroadcast);
     ASSERT_GE(log.lines.size(), 2u);  // then: save of the lock txid, pin
     EXPECT_EQ(log.lines[0], std::string("save:") + StateName(SwapState::DinLockBroadcast));
-    EXPECT_EQ(log.lines[1], "fund_din:" + DinHtlcAddressFor(alice.session().record, "rdin") + ":1000000000");
+    ASSERT_GE(log.lines.size(),3u);EXPECT_EQ(log.lines[1],"pin");
+    EXPECT_EQ(log.lines[2], "fund_din:" + DinHtlcAddressFor(alice.session().record, "rdin") + ":1000000000");
+    EXPECT_FALSE(store.saved->din_funding_raw.empty());EXPECT_TRUE(store.saved->din_funding_submitted);
 }
 
 TEST(SwapRunner, StoreFailureMeansNothingIsDone) {
@@ -361,7 +455,7 @@ TEST(SwapRunner, RpcIoReadsTheNodesRealResultShapes) {
     EXPECT_EQ(io.BroadcastDin({0x00}), "d2");
     din_result = Json::Value(Json::objectValue);
     din_result["txid"] = "d3";
-    EXPECT_EQ(io.FundDin("rdin1x", 5), "d3");
+    EXPECT_THROW(io.FundDin("rdin1x", 5), std::runtime_error); // a generic wallet reply cannot authorize funding
     din_result = Json::Value(Json::objectValue);
     din_result["error"] = "No confirmed UTXOs available";
     EXPECT_THROW(io.FundDin("rdin1x", 5), std::runtime_error);
@@ -667,9 +761,9 @@ TEST(SwapRunner, LockTransactionsArePersistedAndPinned) {
         FakeChains chains(log);
         SwapRunner alice(MakeSession(Role::DinSeller), kAliceKeys, Config(), chains, store);
         alice.Tick(kNow);
-        EXPECT_EQ(store.saved->din_funding_txid, std::string(64, 'f'));
+        ASSERT_TRUE(chains.retained_din);EXPECT_EQ(store.saved->din_funding_txid, chains.retained_din->txid);
         ASSERT_FALSE(chains.pins.empty());
-        EXPECT_EQ(chains.pins.back().first, std::string(64, 'f'));
+        EXPECT_EQ(chains.pins.back().first, chains.retained_din->txid);
     }
     // Bob: Alice's DIN lock is pinned BEFORE his BTC leaves, then his own BTC funding.
     {

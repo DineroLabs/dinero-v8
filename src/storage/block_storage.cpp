@@ -2,6 +2,9 @@
 #include "storage/block_index.h"  // F.7.2: For pruning invariants
 #include "storage/disk_space_monitor.h"  // Phase E.2.b: Disk space checking
 #include "consensus/chainparams.h"
+#include "consensus/limits.h"
+#include <limits>
+#include <array>
 #include <iostream>
 #include <cstring>
 
@@ -237,6 +240,19 @@ void BlockStorage::close() {
 // ============================================================================
 
 StatusOr<FilePosition> BlockStorage::writeBlock(const uint256& hash, const Block& block) {
+    return writeSerializedBlock(hash, block.Serialize());
+}
+StatusOr<FilePosition> BlockStorage::writeBlockBytes(const uint256& hash, const std::string& bytes) {
+    if (bytes.size() < DINERO_HEADER_SIZE_BYTES || bytes.size() > consensus::MAX_BLOCK_WEIGHT)
+        return Status::Invalid;
+    const auto header = BlockHeader::Deserialize(
+        reinterpret_cast<const uint8_t*>(bytes.data()), DINERO_HEADER_SIZE_BYTES);
+    if (!header || header->GetHash() != hash) return Status::Invalid;
+    return writeSerializedBlock(hash, bytes);
+}
+StatusOr<FilePosition> BlockStorage::writeSerializedBlock(const uint256& hash, const std::string& serialized) {
+    if (serialized.size() < DINERO_HEADER_SIZE_BYTES || serialized.size() > consensus::MAX_BLOCK_WEIGHT)
+        return Status::Invalid;
     std::lock_guard<std::mutex> lock(write_mutex_);
 
     if (!current_write_file_ || !current_write_file_->is_open()) {
@@ -244,8 +260,6 @@ StatusOr<FilePosition> BlockStorage::writeBlock(const uint256& hash, const Block
         return Status::Io;
     }
 
-    // Serialize the block
-    std::string serialized = block.Serialize();
     uint32_t block_size = static_cast<uint32_t>(serialized.size());
 
     // Phase E.2.b: Check disk space before writing
@@ -332,6 +346,17 @@ StatusOr<FilePosition> BlockStorage::writeBlock(const uint256& hash, const Block
 // ============================================================================
 
 StatusOr<Block> BlockStorage::readBlock(const FilePosition& pos) const {
+    const auto bytes = readBlockBytes(pos);
+    if (!bytes.ok()) return bytes.status();
+    auto parsed = Block::Deserialize(reinterpret_cast<const uint8_t*>(bytes->data()), bytes->size());
+    if (!parsed) return Status::Serialization;
+    return std::move(*parsed);
+}
+StatusOr<std::string> BlockStorage::readBlockBytes(const FilePosition& pos) const {
+    // Validate before addition, seek conversion or any body allocation.
+    if (pos.size < DINERO_HEADER_SIZE_BYTES || pos.size > consensus::MAX_BLOCK_WEIGHT ||
+        pos.offset > uint64_t(std::numeric_limits<std::streamoff>::max()) - 12 - pos.size)
+        return Status::Invalid;
     if (pos.isNull()) {
         std::cerr << "[BlockStorage] Cannot read from null FilePosition" << std::endl;
         return Status::Invalid;
@@ -381,12 +406,18 @@ StatusOr<Block> BlockStorage::readBlock(const FilePosition& pos) const {
     // Clear sticky fail/eof bits before seeking on shared read handles.
     file->clear();
 
-    // Seek to the block position (skip magic + size header)
-    file->seekg(pos.offset + 8, std::ios::beg);
-    if (!file->good()) {
-        std::cerr << "[BlockStorage] Failed to seek to block position" << std::endl;
-        return Status::Io;
-    }
+    // The index is only a locator; require the record header to agree with it.
+    file->seekg(static_cast<std::streamoff>(pos.offset), std::ios::beg);
+    std::array<uint8_t, 8> framing{};
+    file->read(reinterpret_cast<char*>(framing.data()), framing.size());
+    if (!file->good()) return Status::Io;
+    const auto little = [&](size_t offset) {
+        uint32_t n = 0;
+        for (size_t i = 0; i < 4; ++i) n |= uint32_t(framing[offset + i]) << (8 * i);
+        return n;
+    };
+    if (little(0) != getMagicBytes() || little(4) != pos.size)
+        return Status::Corruption;
 
     // Read block data
     std::string block_data(pos.size, '\0');
@@ -414,14 +445,7 @@ StatusOr<Block> BlockStorage::readBlock(const FilePosition& pos) const {
         return Status::Corruption;
     }
 
-    // Deserialize block from Dinero wire format (Block::Serialize output)
-    auto parsed = Block::Deserialize(reinterpret_cast<const uint8_t*>(block_data.data()), block_data.size());
-    if (!parsed.has_value()) {
-        std::cerr << "[BlockStorage] Block deserialization failed (invalid block bytes)" << std::endl;
-        return Status::Serialization;
-    }
-
-    return std::move(parsed.value());
+    return block_data;
 }
 
 Status BlockStorage::hasBlock(const FilePosition& pos) const {

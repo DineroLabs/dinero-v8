@@ -19,8 +19,10 @@
 #include "vault/ledger.h"
 #include "vault/reorg_watcher.h"
 #include "vault/signing_backend.h"
+#include "vault/state_owner.h"
 #include "vault/vault_types.h"
 #include "vault/withdrawal_queue.h"
+#include "vault/withdrawal_dispatch.h"
 
 #include <array>
 #include <cstdint>
@@ -34,6 +36,26 @@
 
 namespace dinero::vault {
 
+// Authenticated routing metadata for an explicitly created durable vault.
+// This binds the exact operator output script and default credit account; it
+// does not certify possession of a signing key or historical completeness.
+struct VaultOperatorBinding {
+    std::vector<uint8_t> script_pub_key;
+    std::string account;
+    bool operator==(const VaultOperatorBinding&) const = default;
+};
+void ValidateVaultOperatorBinding(const VaultOperatorBinding&);
+
+// Exact selected-chain position held through an explicit new vault's first
+// authenticated commit. This is a creation boundary, never an applied-delivery
+// receipt, historical balance certificate or permission to reset an old owner.
+struct VaultCreationAnchor {
+    uint32_t height{0};
+    std::array<uint8_t,32> block_hash{};
+    bool operator==(const VaultCreationAnchor&) const = default;
+};
+void ValidateVaultCreationAnchor(const VaultCreationAnchor&);
+
 /// Settings the service accepts at construction. All fields have
 /// safe defaults so a deployment can spin up an instance without
 /// pre-configuring anything except the signing backend.
@@ -46,19 +68,60 @@ struct VaultServiceConfig {
     /// depositObserved but never opens credits). Default false (real
     /// production behaviour). Stage 0 deployments override.
     bool shadow_mode{false};
+    std::optional<VaultOperatorBinding> operator_binding;
+    std::optional<VaultCreationAnchor> creation_anchor;
 };
+
+/// Immutable metrics captured under one service lock. These describe one
+/// in-memory state; they do not acknowledge chain delivery or durable storage.
+struct VaultAccountMetrics {
+    UnaAmount spendable{0}, confirmed{0}, pending{0}, locked{0}, operator_loss{0};
+    bool operator==(const VaultAccountMetrics&) const = default;
+};
+struct VaultMetrics {
+    UnaAmount total_open_credits{0}, total_operator_loss{0};
+    LedgerSeq ledger_next_seq{0};
+    size_t account_count{0};
+    int withdrawal_queue_depth{0};
+    bool operator==(const VaultMetrics&) const = default;
+};
+
+/// Inputs and results for one selected-chain observation. Included outputs
+/// must bind the exact outpoint, height and transparent amount. An absent
+/// block hash denotes a height above the completely observed selected tip.
+struct VaultDepositQuery {
+    OutpointId outpoint;
+    uint64_t height{0};
+    UnaAmount amount{0};
+    bool operator==(const VaultDepositQuery&) const = default;
+};
+struct VaultDepositObservation {
+    VaultDepositQuery query;
+    std::optional<std::array<uint8_t,32>> block_hash;
+    bool included{false};
+};
+struct VaultTipSnapshot {
+    uint64_t height{0};
+    std::array<uint8_t,32> block_hash{};
+    std::vector<VaultDepositObservation> deposits;
+};
+using VaultTipSnapshotFn = std::function<VaultTipSnapshot(
+    uint64_t, const std::vector<VaultDepositQuery>&)>;
 
 /// Single-actor orchestrator. The vault service serializes through
 /// one mutex for thread-safety. Every public verb is idempotent on
 /// its natural identity (outpoint for deposits, request_id for
 /// withdrawals).
+struct VaultStateSnapshot;
+
 class VaultService {
    public:
     using BlockHashAtHeightFn = ReorgWatcher::BlockHashAtHeightFn;
     using TxIncludedAtFn = ReorgWatcher::TxIncludedAtFn;
 
     VaultService(std::unique_ptr<SigningBackend> backend, VaultServiceConfig config,
-                 BlockHashAtHeightFn block_hash_at_height, TxIncludedAtFn tx_included_at);
+                 BlockHashAtHeightFn block_hash_at_height, TxIncludedAtFn tx_included_at,
+                 VaultTipSnapshotFn capture_tip = {});
 
     /// Chainstate-side: a confirmed UTXO with `txid:vout` belongs to
     /// `account`. Idempotent. The caller (typically a wallet hook
@@ -69,16 +132,38 @@ class VaultService {
                        const std::array<uint8_t, 32>& block_hash);
 
     /// Chainstate-side: a new block was connected. Drives:
-    ///   1. deposit-flow lifecycle advancement
-    ///   2. reorg-watcher checks (cheap when no reorg)
+    ///   1. checked inclusion/reorg reconciliation for every tracked deposit
+    ///   2. deposit-flow lifecycle advancement
     ///   3. withdrawal-queue settlement at K confirmations
-    void tipChanged(uint64_t height);
+    /// Publishes all in-memory state only when these phases complete.
+    /// Unknown chain observations and lifecycle/cap errors propagate without
+    /// changing the prior state.
+    struct TipObservation {
+        uint64_t height=0;
+        std::array<uint8_t,32> block_hash{};
+        uint64_t revision=0;
+    };
+    // Returned source identity and revision are captured by this SAME committed
+    // transition, not by a later independent read. Legacy component readers
+    // without a snapshot return a zero hash and cannot certify a selected tip.
+    TipObservation tipChanged(uint64_t height);
+    [[nodiscard]] uint64_t currentRevision();
+    [[nodiscard]] bool hasWalletStateOwner() const noexcept {return bool(state_owner_);}
+    // A configured snapshot reader runs outside mu_. Publication refuses if
+    // any service mutation occurred during the read. Legacy injected readers
+    // retain their narrower per-deposit behavior.
 
     /// RPC-side: enqueue a withdrawal for `account`. Returns the
     /// stable request id. Throws WithdrawalQueueError on validation
     /// failure (insufficient spendable, cap exceeded, bad destination).
     WithdrawalId enqueueWithdrawal(const AccountId& account, UnaAmount amount,
                                    const std::vector<uint8_t>& destination_script_pub_key);
+
+    // Explicit terms are retained in the same authenticated state transaction
+    // as the new request. Requires a durable wallet owner; no historical terms
+    // are inferred by this overload.
+    WithdrawalId enqueueWithdrawal(const AccountId&, UnaAmount,
+        const std::vector<uint8_t>&, const WithdrawalPaymentTerms&);
 
     /// Driver for the withdrawal queue's signing path. Caller (a
     /// vault main loop or per-tip task) calls this on a cadence; one
@@ -91,6 +176,12 @@ class VaultService {
     void markWithdrawalIncluded(const WithdrawalId& id, uint64_t height);
 
     // ----- introspection (used by RPC handlers) -----
+
+    // Durable Pending/Signing reservations reduce spendable and contribute to
+    // locked. Retained payments already have a ledger lock and count once.
+    // These are captured live metrics, not a chain/readiness certificate.
+    [[nodiscard]] VaultAccountMetrics accountMetrics(const AccountId& account);
+    [[nodiscard]] VaultMetrics metrics();
 
     [[nodiscard]] UnaAmount accountSpendable(const AccountId& account);
     [[nodiscard]] UnaAmount accountConfirmed(const AccountId& account);
@@ -109,11 +200,42 @@ class VaultService {
 
     [[nodiscard]] WithdrawalState withdrawalState(const WithdrawalId& id);
 
+    // Capture all present service fields under one mutex. Returned bytes/state
+    // are not authenticated ownership, deletion completeness or readiness.
+    // No chain, wallet, SQL or signing callback is invoked while capturing.
+    [[nodiscard]] VaultStateSnapshot captureState();
+    // Immutable for the lifetime of this service. Historical states without a
+    // binding remain explicitly unbound; runtime configuration cannot add one.
+    [[nodiscard]] std::optional<VaultOperatorBinding> operatorBinding() const;
+
     /// Backend healthcheck pass-through.
     [[nodiscard]] HealthReport backendHealth();
 
    private:
+    friend class WalletVaultStateOwner;
+    struct PreparedState;
+    void publish(PreparedState& state) noexcept;
+    void commitAndPublish(PreparedState&, VaultStateWrite*);
+    void requireCurrentOwner(const VaultStateWrite*) const;
+    VaultStateSnapshot captureStateLocked() const;
+    static std::shared_ptr<VaultService> RestorePrepared(
+        const VaultStateSnapshot&, std::shared_ptr<const VaultStateOwner>,
+        std::unique_ptr<SigningBackend>, BlockHashAtHeightFn, TxIncludedAtFn,
+        VaultTipSnapshotFn, std::shared_ptr<VaultWithdrawalDispatcher> = {});
+    void requireRevisionCapacity() const;
+    void requirePendingCapacity(const AccountId&, UnaAmount additional) const;
+    UnaAmount pendingReservedLocked(const AccountId&, UnaAmount spendable) const;
+    VaultAccountMetrics accountMetricsLocked(const AccountId&) const;
+    std::optional<WithdrawalId> processDurableWithdrawal();
+    // Immutable after construction; the wallet transaction is always acquired
+    // before mu_. Ordinary injected services retain their in-memory behavior.
+    std::shared_ptr<const VaultStateOwner> state_owner_;
+    std::shared_ptr<VaultWithdrawalDispatcher> withdrawal_dispatcher_;
+    const std::optional<VaultOperatorBinding> operator_binding_;
+    const std::optional<VaultCreationAnchor> creation_anchor_;
     std::mutex mu_;
+    uint64_t revision_{0};
+    VaultTipSnapshotFn capture_tip_;
     std::unique_ptr<SigningBackend> backend_;
     Ledger ledger_;
     DepositFlowMachine deposit_flow_;

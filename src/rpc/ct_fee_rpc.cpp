@@ -67,8 +67,7 @@ din::Json rpc_ct_setminfee(const ExecutionContext& ctx, const din::Json& params)
     }
 
     // Update config
-    auto& config = mempool_service->mempool().GetCTConfig();
-    config.ct_min_fee_rate = fee_rate;
+    mempool_service->mempool().SetCTMinFeeRate(fee_rate);
 
     result["status"] = "updated";
     result["ct_min_fee_rate"] = fee_rate;
@@ -110,8 +109,7 @@ din::Json rpc_ct_setweightmultiplier(const ExecutionContext& ctx, const din::Jso
         return result;
     }
 
-    auto& config = mempool_service->mempool().GetCTConfig();
-    config.ct_weight_multiplier = multiplier;
+    mempool_service->mempool().SetCTWeightMultiplier(multiplier);
 
     result["status"] = "updated";
     result["ct_weight_multiplier"] = multiplier;
@@ -153,8 +151,7 @@ din::Json rpc_ct_setmaxperblock(const ExecutionContext& ctx, const din::Json& pa
         return result;
     }
 
-    auto& config = mempool_service->mempool().GetCTConfig();
-    config.max_ct_per_block = max_count;
+    mempool_service->mempool().SetCTMaxPerBlock(max_count);
 
     result["status"] = "updated";
     result["max_ct_per_block"] = max_count;

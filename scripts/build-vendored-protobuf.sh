@@ -12,6 +12,14 @@
 
 set -e  # Exit on error
 
+# Bound dependency compilation and reject malformed limits before any source,
+# submodule, patch, cleanup, configure or build operation.
+PROTOBUF_BUILD_JOBS="${PROTOBUF_BUILD_JOBS:-2}"
+if [[ ! "$PROTOBUF_BUILD_JOBS" =~ ^[1-9][0-9]*$ ]]; then
+    echo "PROTOBUF_BUILD_JOBS must be a positive integer" >&2
+    exit 2
+fi
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
@@ -110,7 +118,7 @@ cmake "$PROTOBUF_SRC" \
 
 echo ""
 echo "🔨 Building protobuf (this may take 2-3 minutes)..."
-make -j$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
+make -j"$PROTOBUF_BUILD_JOBS"
 
 echo ""
 echo "📦 Installing to: $PROTOBUF_INSTALL"

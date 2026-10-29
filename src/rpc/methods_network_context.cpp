@@ -19,6 +19,9 @@
  * - Thread-safe service access
  */
 
+#include "daemon/orchard_light_node_notice.h"
+#include "daemon/config.h"
+#include "daemon/services/chainstate_service.h"
 #include "din_json.h"
 #include "rpc/rpc_registry.h"
 #include "rpc/peer_json_utils.h"
@@ -464,7 +467,26 @@ din::Json rpc_context_getnetworkinfo(const ExecutionContext& ctx, const din::Jso
         warning = "No confirmed direct reachability (no inbound peer, explicit advertised "
                   "address, or active port mapping) yet; outbound P2P still works";
     }
+    // A light node that cannot follow Orchard says so first.
+    const auto upgrade_issue = ctx.daemon ? ctx.daemon->orchard_storage_upgrade_issue->load() :
+        dinero::daemon::StorageUpgradeIssue::None;
+    const bool upgrade_refused = upgrade_issue != dinero::daemon::StorageUpgradeIssue::None;
+    if (ctx.daemon) {
+        if (auto chainstate = std::dynamic_pointer_cast<dinero::ChainstateService>(ctx.daemon->chainstate)) {
+            if (const auto* tip = chainstate->GetActiveTip()) {
+                const auto notice = dinero::daemon::OrchardLightNodeNotice(
+                    dinero::Params(), GetConfig().utreexo_stateless, tip->height);
+                if (!notice.empty()) warning = warning.empty() ? notice : notice + " " + warning;
+            }
+        }
+        const auto upgrade_notice = dinero::daemon::OrchardStorageUpgradeNotice(
+            dinero::Params(), upgrade_issue);
+        if (!upgrade_notice.empty())
+            warning = warning.empty() ? upgrade_notice : upgrade_notice + " " + warning;
+    }
     result["warnings"] = warning;
+    result["storage_upgrade_refused"] = upgrade_refused;
+    result["storage_upgrade_reason"] = dinero::daemon::StorageUpgradeIssueCode(upgrade_issue);
     result["rpc_schema"] = "din.rpc.v1";
 
     return result;

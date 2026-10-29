@@ -1,17 +1,28 @@
-import hashlib,json,os,struct,subprocess,tempfile,unittest
+import hashlib,json,os,struct,subprocess,tempfile,unittest,shutil
 from pathlib import Path
 SCRIPT=Path(__file__).with_name('dinero-snapshot-fetch.sh').resolve()
 class FetchTransition(unittest.TestCase):
- def run_case(self,version,height,signed=False,require=False,declared=None):
+ script=SCRIPT
+ isolated_bundle=False
+ def run_case(self,version,height,signed=False,require=False,declared=None,profile="compact",manifest_format=None):
   with tempfile.TemporaryDirectory() as tmp:
    root=Path(tmp);mirror=root/'mirror';mirror.mkdir();bin_dir=root/'bin';bin_dir.mkdir();dest=root/'dest'
-   payload=b'UXTO'+struct.pack('<I',version)+bytes(32)+struct.pack('<I',height)+bytes(1048576)
+   section=b'ORCH'+struct.pack('<I',1)+(b'\x02' if profile=='compact' else b'\x01')+bytes(1048576)
+   payload=b'UXTO'+struct.pack('<I',version)+bytes(32)+struct.pack('<I',height)+bytes(24)+(struct.pack('<Q',len(section))+section+bytes(32) if version==6 else bytes(1048576))
    (mirror/'snapshot.dat').write_bytes(payload)
-   (mirror/'manifest.json').write_text(json.dumps({'network':'mainnet','snapshot':{'height':height if declared is None else declared,'bytes':len(payload),'sha256':hashlib.sha256(payload).hexdigest()}}))
+   (mirror/'manifest.json').write_text(json.dumps({'network':'mainnet','format_version':version if manifest_format is None else manifest_format,'snapshot_profile':profile,'snapshot':{'height':height if declared is None else declared,'bytes':len(payload),'sha256':hashlib.sha256(payload).hexdigest()}}))
    if signed:(mirror/'manifest.sig').write_text('fixture')
    curl=bin_dir/'curl';curl.write_text('#!/bin/bash\nwhile [ "$#" -gt 0 ]; do case "$1" in -o) out=$2; shift 2;; *) url=$1; shift;; esac; done\ncp "${url#file://}" "$out" 2>/dev/null\n');curl.chmod(0o755)
    ssl=bin_dir/'openssl';ssl.write_text('#!/bin/sh\nexit '+('0' if signed else '1')+'\n');ssl.chmod(0o755)
-   args=['bash',str(SCRIPT),'--dest',str(dest),'--mirror','file://'+str(mirror)]
+   script=self.script
+   if self.isolated_bundle:
+    bundle=root/'server-package';bundle.mkdir()
+    # Model deploying the server folder without the source checkout nearby.
+    for name in ('dinero-snapshot-fetch.sh','snapshot_transport.py'):
+     source=self.script.parent/name
+     if source.is_file():shutil.copyfile(source,bundle/name)
+    script=bundle/self.script.name
+   args=['bash',str(script),'--dest',str(dest),'--mirror','file://'+str(mirror)]
    if require:args+=['--require-publisher-signature']
    r=subprocess.run(args,env=dict(os.environ,PATH=str(bin_dir)+os.pathsep+os.environ['PATH']),capture_output=True,text=True)
    return r.returncode,(dest/'snapshot.dat').exists(),r.stdout+r.stderr
@@ -28,7 +39,18 @@ class FetchTransition(unittest.TestCase):
  def test_height_lie_rejected(self):
   rc,exists,_=self.run_case(5,110999,declared=111000);self.assertNotEqual(rc,0);self.assertFalse(exists)
  def test_unknown_version_rejected(self):
-  rc,exists,_=self.run_case(6,111000,True);self.assertNotEqual(rc,0);self.assertFalse(exists)
+  rc,exists,_=self.run_case(7,111000,True);self.assertNotEqual(rc,0);self.assertFalse(exists)
  def test_pre_activation_v5_requires_signature(self):
   rc,exists,_=self.run_case(5,110999);self.assertNotEqual(rc,0);self.assertFalse(exists)
+ def test_v6_activation_and_profile_binding(self):
+  rc,exists,_=self.run_case(6,150000);self.assertEqual(rc,0);self.assertTrue(exists)
+  rc,exists,_=self.run_case(6,149999,True);self.assertNotEqual(rc,0);self.assertFalse(exists)
+  rc,exists,_=self.run_case(5,150000,True);self.assertNotEqual(rc,0);self.assertFalse(exists)
+  rc,exists,_=self.run_case(6,150000,manifest_format=5);self.assertNotEqual(rc,0);self.assertFalse(exists)
+ def test_v6_signature_pin_preserved(self):
+  rc,exists,_=self.run_case(6,150000,require=True);self.assertNotEqual(rc,0);self.assertFalse(exists)
+class ServerBundleFetchTransition(FetchTransition):
+ script=SCRIPT.parents[2]/'dinero-linux-server/dinero-snapshot-fetch.sh'
+ isolated_bundle=True
+
 if __name__=='__main__':unittest.main()

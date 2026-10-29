@@ -1,0 +1,7 @@
+# Discovering stored Orchard completion requests
+
+`wallet.orchard.listoperations` optionally includes `completion_method` on each current operation. Its only values are `wallet.orchard.finishshield` and `wallet.orchard.finishspend`. The read derives it from the authenticated retained shield/spend request and requires its request commitment. Ambiguous kinds refuse the read. Older intents without full retained request details omit the field: neither inputs nor signed transaction shape permit guessing.
+
+Clients allowlist those two method names and complete with the listed account and operation ID as `request_id`, plus the current wallet binding. This metadata discloses no recipients, amounts, memo, seed or private key. It neither performs completion nor promises spendability, proof availability, submission or confirmation. Completion still owns all existing wallet/domain/source/request/proof/Ready/admission checks. Lists are checkpoint observations and can lag or change; missing rows are not cancellation evidence.
+
+Two new case definitions cover actual shield and transfer/unshield request owners, read-only reserved/Ready listing, reopen, and exact ID retry. Existing legacy/component tests retain their exact row field counts and additionally require the method to be absent. No previous assertions, selectors, deadlines or lifecycle locks are removed. This candidate is uncompiled and unapplied; full fresh ON/OFF, sanitizer and desktop composition qualification remain required. No network/IPC/production action is part of preparation.

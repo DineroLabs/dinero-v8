@@ -1,0 +1,11 @@
+# HTTP RPC pool operation ownership
+
+The live unified HTTP dispatcher acquires MempoolService::PoolUse before publishing the context's compatibility pool pointer. The operation keeps the service and pool alive through synchronous handler execution and JSON response construction; normal return, returned error and exception paths release it. An unavailable service refuses before the handler. No pool or selected-chain mutex is held by this service lifetime owner.
+
+This covers synchronous unified HTTP handlers, including aliases. Handlers may not retain the pointer beyond the request or transfer the thread-affine owner to another thread. It does not own wallet/chain subviews, the mutable registry, legacy HTTP handlers, other transports or direct C++ callers; those remain separate obligations. No Orchard admission, notification provider, readiness or activation claim.
+
+New benign actual-socket tests exercise ownership during handlers and aliases, exception/returned-error release, and closed-service refusal. Existing RPC drain tests are unchanged. No original-source or synchronization-removal control is run.
+
+Fresh enabled and disabled Orchard backend builds of the full daemon and 34 declared test targets each pass 38 selected component CTests and six daemon integration CTests. All 229 project C++ translation units linked into the new socket test were freshly built with ASan/UBSan; its three cases pass, with all 1,452 source/header hashes unchanged. This sanitizer scope includes the actual HTTP dispatcher and mempool service; the daemon executable, disabled-backend executable, external libraries, Rust, C, PQClean and Objective-C++ are outside it. macOS leak detection is off. Normal discovery maps use archives; the final instrumented map contains no project C++ archive members.
+
+The initial fixture compile required the complete BlockAssembler type for its local DaemonContext. Adding the existing header resolved that compile error; the production implementation, assertions and deadlines were unchanged. Final normal and sanitizer results follow this correction. All 162 prior Orchard CTest commands and prior fixtures remain unchanged. The full-workflow execution parser selects both RpcPoolOwner and RpcHandlerDrain; actual current-source Linux results remain required.

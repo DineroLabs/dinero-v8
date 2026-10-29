@@ -7,12 +7,13 @@
 #include <string>
 #include <functional>
 #include <mutex>
+#include <condition_variable>
 #include <atomic>
 #include <thread>
 #include <unordered_map>
 
 namespace dinero {
-class ChainDB;
+class ChainstateService;
 namespace pool {
 
 /**
@@ -28,7 +29,26 @@ namespace pool {
  * Thread Safety: All public methods are thread-safe
  */
 class PoolManager {
+    struct MaintenanceWakeState;
 public:
+    // Ephemeral pass diagnostics only. Neither a pass nor a wake acknowledges
+    // durable consumer delivery, canonical finality or all-consumer readiness.
+    struct MaintenanceReport {
+        uint64_t passes=0;
+        bool running=false,accounting_pass_returned=false,maintenance_pass_returned=false;
+    };
+    class MaintenanceWakeHandle final {
+    public:
+        void RequestReplay() const noexcept;
+        [[nodiscard]] bool Running() const noexcept;
+    private:
+        friend class PoolManager;
+        explicit MaintenanceWakeHandle(std::shared_ptr<MaintenanceWakeState> state):state_(std::move(state)){}
+        std::shared_ptr<MaintenanceWakeState> state_;
+    };
+    [[nodiscard]] MaintenanceWakeHandle CaptureMaintenanceWakeHandle() const noexcept {return MaintenanceWakeHandle(maintenance_state_);}
+    [[nodiscard]] MaintenanceReport MaintenanceSnapshot() const;
+
     enum class ShareSubmitCode {
         ACCEPTED,
         DUPLICATE,
@@ -63,7 +83,7 @@ public:
     bool initialize();
 
     // Provide active chain view for confirmation/orphan tracking.
-    void setChainDB(ChainDB* chain_db) { chain_db_ = chain_db; }
+    void setChainstateSource(const std::shared_ptr<ChainstateService>& source);
 
     /**
      * Check if pool manager is running
@@ -141,7 +161,7 @@ public:
      * Mark block as orphaned
      * Reverses any pending payouts
      */
-    void markBlockOrphaned(const std::string& block_hash);
+    bool markBlockOrphaned(const std::string& block_hash);
 
     // ========================================================================
     // PAYOUT PROCESSING
@@ -173,7 +193,13 @@ public:
      * Set payment callback
      * Called when payouts need to be sent
      */
+    // Install once for this manager lifetime; replacing a live context refuses.
     void setPaymentCallback(PaymentCallback callback);
+    // Production payments use this exclusive owned backend. ClosePayments drains it.
+    void setPaymentBackend(std::unique_ptr<PoolPaymentBackend>);
+    // Permanent payment shutdown. Call outside wallet/chain/SQLite owners.
+    // Existing synchronous operation drains without holding the manager mutex.
+    void ClosePayments();
 
     // ========================================================================
     // ROUND MANAGEMENT (PROP MODE)
@@ -208,6 +234,9 @@ public:
      * Update pool configuration
      */
     bool setConfig(const PoolConfig& config);
+    // A partial RPC update is prepared outside this owner. Refuse a stale base
+    // rather than overwrite settings changed since the caller captured it.
+    bool compareAndSetConfig(const PoolConfig& expected, const PoolConfig& config);
 
     /**
      * Get worker statistics
@@ -242,9 +271,12 @@ public:
     void runMaintenance();
 
 private:
-    std::unique_ptr<PoolDB> db_;
+    friend class CanonicalPoolMaintenance;
+    friend struct PoolMaintenanceSourceTestAccess;
+    std::shared_ptr<PoolDB> db_;
     std::unique_ptr<PayoutCalculator> calculator_;
-    std::unique_ptr<PayoutProcessor> processor_;
+    std::shared_ptr<PayoutProcessor> processor_;
+    bool payments_closed_{false};
 
     PoolConfig config_;
     uint64_t current_round_id_;
@@ -252,14 +284,22 @@ private:
     mutable std::mutex mutex_;
     std::atomic<bool> running_;
 
-    // Background thread
+    // Only PoolManager owns/joins this thread. Prepared notification tokens
+    // retain a mailbox, never this manager, the thread or the selected source.
+    std::mutex maintenance_lifecycle_;
+    struct MaintenanceWakeState {
+        mutable std::mutex mutex;
+        std::condition_variable wake;
+        bool stopping=true,requested=false;
+        MaintenanceReport report;
+    };
+    const std::shared_ptr<MaintenanceWakeState> maintenance_state_=std::make_shared<MaintenanceWakeState>();
     std::thread maintenance_thread_;
-    std::atomic<bool> maintenance_running_;
+    void RunMaintenanceWorker() noexcept;
 
-    // Callbacks
-    PaymentCallback payment_callback_;
 
     // Internal helpers
+    bool setConfigOwned(const PoolConfig& config); // mutex_ held by caller
     std::string buildShareDedupeKey(const std::string& worker_id,
                                     const std::string& job_id,
                                     double difficulty,
@@ -289,7 +329,12 @@ private:
     void checkBlockConfirmations();
 
     std::unordered_map<std::string, WorkerSubmitState> submit_state_;
-    ChainDB* chain_db_ = nullptr;  // Non-owning pointer managed by DaemonApp
+    std::weak_ptr<ChainstateService> chain_source_; // Captured under mutex_, pinned before use.
+    // Bound only by setChainstateSource's concrete core adapter. Keeping this
+    // call edge indirect lets the standalone accounting archive remain free
+    // of daemon implementation dependencies; callers cannot install a bypass.
+    using CanonicalMaintenance = void (*)(const std::shared_ptr<ChainstateService>&, PoolManager&);
+    CanonicalMaintenance canonical_maintenance_{nullptr};
 };
 
 } // namespace pool

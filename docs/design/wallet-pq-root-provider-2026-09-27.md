@@ -1,0 +1,7 @@
+# PQ input-root provider checks
+
+Root lookup checks statement preparation, binding, typed metadata/cipher fields for every matching row and terminal completion. It refuses borrowed transactions without changing them. Coherent public-key/root aliases retain their exact addresses, labels and paths; the earliest recorded row is selected only after the complete result validates. Failures return no metadata. This is present matching-row validation, not cryptographic authentication of every alias or a complete catalog.
+
+The provider retains the established address-based authenticated key capture/signing handler, then binds the returned public-key leaf commitment to the original consumed output before creating a witness. It also cleanses its local master-key parameter copy; the handler separately owns its by-value copy. No key/master generation, row rewrite or historical address relabel occurs.
+
+Tests use normal synthetic-key imports and verify actual provider witnesses with consensus, valid network-prefix aliases/reopen, malformed later rows, denied/interrupted reads and borrowed transactions. No operational race/exploit or crash reproduction is used. Positive provider signing and existing handler binding checks do not constitute an isolated omission control for the new final root comparison. Main wallet session ownership, cross-store atomic issuance, all alias cryptographic authentication, backup/deletion completeness and readiness remain separate gates.

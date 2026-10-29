@@ -162,6 +162,12 @@ bool RollbackPendingTransaction(
     const std::vector<consensus::shielded::Hash>& pending_commitments,
     std::string* error = nullptr);
 
+/** After the retired pool's activation block commits, restore confirmed
+ *  legacy notes marked spent only by an unconfirmed transaction. Mempool
+ *  retirement eviction has already made those transactions unmineable. */
+bool RestorePendingSpentAfterRetirement(dinero::WalletManager& wallet,
+                                        std::string* error = nullptr);
+
 // ── Issue #273: size-aware fee floor ─────────────────────────────────
 
 /// Safety margin (una) added on top of the exact mempool floor by

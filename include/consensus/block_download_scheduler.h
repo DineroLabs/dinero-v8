@@ -43,6 +43,7 @@
 #include <string>
 #include <thread>
 #include <cstdint>
+#include <span>
 
 namespace dinero {
 
@@ -83,6 +84,9 @@ struct BlockFetchState {
     // full acceptance pass under the block-ingress lock); it is promoted to
     // CONNECTED once the active chain carries this hash at this height.
     bool side_accepted = false;
+    // Ordered CSN proof validation and replay/delta persistence completed for
+    // this exact hash. Receipt alone is not this acknowledgment or activation.
+    bool stateless_proof_staged = false;
 
     BlockFetchState(const uint256& hash, uint32_t h)
         : block_hash(hash), height(h), status(FetchStatus::MISSING) {}
@@ -194,6 +198,12 @@ public:
      * @return true if block is valid and stored
      */
     bool OnBlockReceived(const Block& block, FilePosition* stored_pos_out = nullptr);
+
+    // Header-selected Orchard body storage only: exact framing/identity/size
+    // checks, never proof or canonical acceptance. Requires an expected tip
+    // download and real storage. Stateless mode requires the explicit compact
+    // typed callback; historical proof/backfill routing remains separate.
+    bool OnOrchardBlockReceived(std::span<const uint8_t> bytes);
 
     /**
      * #375: consume a block ONLY if it is an expected AssumeUTXO backfill
@@ -330,6 +340,12 @@ public:
      */
     bool MarkBlockInvalid(const uint256& block_hash);
 
+    // Called by the ordered CSN worker only after successful proof validation
+    // and durable replay/delta staging. Acknowledges a current RECEIVED hash;
+    // never changes canonical membership or turns missing/invalid data valid.
+    bool AcknowledgeStatelessProofStaged(const uint256& block_hash);
+
+
     /**
      * Mark a queued block as consumed by the ordered validation path.
      *
@@ -407,10 +423,26 @@ public:
      */
     using ConnectBlockCallback = std::function<ConnectBlockResult(const Block& block, const std::string& source)>;
 
-    /**
-     * Callback type for querying the actual chainstate tip height.
-     * Used by TryConnectStoredBlocksLocked to enforce strict tip+1 ordering.
-     */
+    // Exact mixed bodies have no implicit historical Block conversion.
+    using ConnectBlockBytesCallback = std::function<ConnectBlockResult(
+        const std::vector<uint8_t>&, const uint256&, uint32_t, const std::string&)>;
+
+    // Set before dispatch begins. Called outside the scheduler mutex with
+    // owned exact bytes and the captured header-selected identity.
+    void SetConnectBlockBytesCallback(ConnectBlockBytesCallback callback) {
+        connect_block_bytes_callback_ = std::move(callback);
+    }
+
+    // Explicit compact Orchard path, configured before dispatch. Historical
+    // stateless bodies still require their separate ordered proof worker.
+    // Invoked outside mutex_; the callback must authenticate the live compact
+    // storage owner and perform canonical validation before CONNECTED.
+    void SetCompactOrchardConnectCallback(ConnectBlockBytesCallback callback) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        compact_orchard_connect_callback_ = std::move(callback);
+    }
+
+    /** Callback for the actual chainstate tip, used for tip+1 ordering. */
     using GetTipHeightCallback = std::function<uint32_t()>;
 
     /**
@@ -796,6 +828,9 @@ private:
     std::function<void(const uint256&, const FilePosition&)> persist_body_position_callback_;
     DisconnectPeerCallback disconnect_peer_callback_;
     ConnectBlockCallback connect_block_callback_;
+    ConnectBlockBytesCallback connect_block_bytes_callback_;
+    ConnectBlockBytesCallback compact_orchard_connect_callback_;
+    bool canonical_drain_active_ = false; // guarded by mutex_, includes unlocked callback
     GetTipHeightCallback get_tip_height_callback_;
     GetBlockHashAtHeightCallback get_block_hash_at_height_callback_;
     ExternalBackpressureCallback external_backpressure_callback_;
@@ -933,7 +968,7 @@ private:
     // On connection failure (missing parent), requests the PARENT hash
     // via SendGetData — never re-requests the same child block.
     // Caller MUST hold mutex_.
-    size_t TryConnectStoredBlocksLocked(size_t max_blocks = 32);
+    size_t TryConnectStoredBlocksLocked(std::unique_lock<std::mutex>& lock, size_t max_blocks = 32);
 
     // Stage a getdata for block_hash/block_height into deferred_sends_ with
     // its skip-set snapshot (from the per-queue *_peer_lacks_body_at_or_below_
@@ -941,6 +976,7 @@ private:
     // hold mutex_. The actual send happens in DispatchDeferredSends().
     // for_backfill selects which per-queue skip-set to apply (bug #4): backfill
     // requests must ignore tip-queue demotions and vice versa.
+    void CreditTipBodyReceiptLocked(const std::string& peer);
     void StageGetdataLocked(const uint256& block_hash, uint32_t block_height,
                             bool for_backfill = false);
 
@@ -951,7 +987,7 @@ private:
 
     // Tick() body. Caller MUST hold mutex_. Network sends are staged via
     // StageGetdataLocked and dispatched by Tick() after the lock is released.
-    void TickLocked();
+    void TickLocked(std::unique_lock<std::mutex>& lock);
 
     // Stall watchdog, run at the top of TickLocked(). Tracks tip progress and,
     // on no-progress-with-work-queued for stall_watchdog_seconds_, force-recovers

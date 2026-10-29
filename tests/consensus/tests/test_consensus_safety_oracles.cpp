@@ -21,6 +21,18 @@ protected:
     dinero::ChainParams params_;
 };
 
+static ConsensusTrace FinalizedTrace() {
+    ConsensusTrace trace{};
+    trace.topology = NetworkTopology::fullMesh({"alice", "bob"});
+    for (const NodeID& node : {NodeID("alice"), NodeID("bob")}) {
+        ConsensusState state{};
+        state.node_id = node;
+        state.is_byzantine = false;
+        trace.snapshots.push_back(state);
+    }
+    return trace;
+}
+
 // ============================================================================
 // DC2: Validity Tests
 // ============================================================================
@@ -67,18 +79,36 @@ TEST_F(SafetyOraclesTest, DC2_Violation_AcceptedWithFailure) {
 // ============================================================================
 
 TEST_F(SafetyOraclesTest, DC3_NoViolation_NoDoubleSpend) {
-    ConsensusSimulator sim(topology_, params_, 42, "dc3_integrity");
-    sim.start();
-
-    sim.broadcastTransaction("alice", "tx_1");
-    sim.tick(20);
-
-    auto trace = sim.getTrace();
+    auto trace = FinalizedTrace();
+    trace.finalized_blocks = {
+        {"alice", 1, "block_1", "genesis", {{"tx_1", "funding:0"}}},
+        {"bob", 1, "block_1", "genesis", {{"tx_1", "funding:0"}}},
+    };
 
     DC3Oracle oracle;
-    auto violations = oracle.check(trace);
+    EXPECT_TRUE(oracle.check(trace).empty()) << "Same confirmed transaction is not a conflict";
+}
 
-    EXPECT_TRUE(violations.empty()) << "No double-spend, no violations";
+TEST_F(SafetyOraclesTest, DC3_Violation_ConflictingFinalizedSpends) {
+    auto trace = FinalizedTrace();
+    trace.finalized_blocks = {
+        {"alice", 1, "block_1", "genesis", {{"tx_1", "funding:0"}}},
+        {"alice", 2, "block_2", "block_1", {{"tx_2", "funding:0"}}},
+        {"bob", 1, "block_1", "genesis", {{"tx_1", "funding:0"}}},
+        {"bob", 2, "block_2", "block_1", {{"tx_2", "funding:0"}}},
+    };
+    DC3Oracle oracle;
+    const auto violations = oracle.check(trace);
+    ASSERT_FALSE(violations.empty());
+    EXPECT_NE(violations.front().description.find("Conflicting finalized spends"), std::string::npos);
+}
+
+TEST_F(SafetyOraclesTest, DC3_InsufficientEvidence_IsNotPass) {
+    auto trace = FinalizedTrace();
+    DC3Oracle oracle;
+    const auto violations = oracle.check(trace);
+    ASSERT_FALSE(violations.empty());
+    EXPECT_NE(violations.front().description.find("Insufficient"), std::string::npos);
 }
 
 // ============================================================================
@@ -86,21 +116,88 @@ TEST_F(SafetyOraclesTest, DC3_NoViolation_NoDoubleSpend) {
 // ============================================================================
 
 TEST_F(SafetyOraclesTest, DC4_NoViolation_ConsistentOrdering) {
-    ConsensusSimulator sim(topology_, params_, 42, "dc4_ordering");
-    sim.start();
-
-    // All nodes mine in same order
-    sim.simulateBlockMined("alice", "block_1");
-    sim.tick(20);
-    sim.simulateBlockMined("bob", "block_2");
-    sim.tick(20);
-
-    auto trace = sim.getTrace();
+    auto trace = FinalizedTrace();
+    trace.finalized_blocks = {
+        {"alice", 1, "block_1", "genesis", {}},
+        {"alice", 2, "block_2", "block_1", {}},
+        {"bob", 1, "block_1", "genesis", {}},
+        {"bob", 2, "block_2", "block_1", {}},
+    };
 
     DC4Oracle oracle;
-    auto violations = oracle.check(trace);
+    EXPECT_TRUE(oracle.check(trace).empty()) << "Selected histories have consistent parents";
+}
 
-    EXPECT_TRUE(violations.empty()) << "Consistent ordering, no violations";
+TEST_F(SafetyOraclesTest, DC4_Violation_IdenticalChildDifferentParents) {
+    auto trace = FinalizedTrace();
+    trace.finalized_blocks = {
+        {"alice", 1, "block_a", "genesis", {}},
+        {"alice", 2, "block_c", "block_a", {}},
+        {"bob", 1, "block_b", "genesis", {}},
+        {"bob", 2, "block_c", "block_b", {}},
+    };
+    DC4Oracle oracle;
+    const auto violations = oracle.check(trace);
+    ASSERT_FALSE(violations.empty());
+    bool found_parent_mismatch = false;
+    for (const auto& violation : violations) {
+        found_parent_mismatch |=
+            violation.description.find("different parents") != std::string::npos;
+    }
+    EXPECT_TRUE(found_parent_mismatch);
+}
+
+TEST_F(SafetyOraclesTest, DC4_Violation_DifferentFinalizedBlocksSameHeight) {
+    auto trace = FinalizedTrace();
+    trace.finalized_blocks = {
+        {"alice", 1, "a_1", "genesis", {}},
+        {"alice", 2, "a_2", "a_1", {}},
+        {"bob", 1, "b_1", "genesis", {}},
+        {"bob", 2, "b_2", "b_1", {}},
+    };
+    DC4Oracle oracle;
+    const auto violations = oracle.check(trace);
+    ASSERT_FALSE(violations.empty());
+    EXPECT_NE(violations.front().description.find("conflicting finalized blocks"), std::string::npos);
+}
+
+TEST_F(SafetyOraclesTest, DC4_InsufficientEvidence_NoOverlappingHeights) {
+    auto trace = FinalizedTrace();
+    trace.finalized_blocks = {
+        {"alice", 1, "a_1", "genesis", {}},
+        {"alice", 2, "a_2", "a_1", {}},
+        {"bob", 3, "b_3", "b_2", {}},
+        {"bob", 4, "b_4", "b_3", {}},
+    };
+    DC4Oracle oracle;
+    const auto violations = oracle.check(trace);
+    ASSERT_FALSE(violations.empty());
+    EXPECT_NE(violations.front().description.find("Insufficient"), std::string::npos);
+}
+
+TEST_F(SafetyOraclesTest, DC4_InsufficientEvidence_OnlyOneHonestNode) {
+    ConsensusTrace trace{};
+    trace.topology = NetworkTopology::fullMesh({"alice"});
+    ConsensusState state{};
+    state.node_id = "alice";
+    state.is_byzantine = false;
+    trace.snapshots.push_back(state);
+    trace.finalized_blocks = {
+        {"alice", 1, "block_1", "genesis", {}},
+        {"alice", 2, "block_2", "block_1", {}},
+    };
+    DC4Oracle oracle;
+    const auto violations = oracle.check(trace);
+    ASSERT_FALSE(violations.empty());
+    EXPECT_NE(violations.front().description.find("Insufficient"), std::string::npos);
+}
+
+TEST_F(SafetyOraclesTest, DC4_InsufficientEvidence_IsNotPass) {
+    auto trace = FinalizedTrace();
+    DC4Oracle oracle;
+    const auto violations = oracle.check(trace);
+    ASSERT_FALSE(violations.empty());
+    EXPECT_NE(violations.front().description.find("Insufficient"), std::string::npos);
 }
 
 // ============================================================================
@@ -159,7 +256,7 @@ TEST_F(SafetyOraclesTest, DC5_Violation_DeepReorg) {
 // Combined Safety Test
 // ============================================================================
 
-TEST_F(SafetyOraclesTest, AllSafetyProperties_HonestNetwork) {
+TEST_F(SafetyOraclesTest, SimulatorTraceReportsMissingDC3DC4Evidence) {
     ConsensusSimulator sim(topology_, params_, 42, "all_safety");
     sim.setNetworkLatency(10);
     sim.start();
@@ -174,7 +271,8 @@ TEST_F(SafetyOraclesTest, AllSafetyProperties_HonestNetwork) {
 
     auto trace = sim.getTrace();
 
-    // Check all safety properties
+    // The Phase-5b simulator does not emit finalized inputs or parent links.
+    // These two oracles must report an evidence gap, rather than green.
     DC1Oracle dc1;
     DC2Oracle dc2;
     DC3Oracle dc3;
@@ -183,8 +281,8 @@ TEST_F(SafetyOraclesTest, AllSafetyProperties_HonestNetwork) {
 
     EXPECT_TRUE(dc1.check(trace).empty()) << "DC1: Agreement should hold";
     EXPECT_TRUE(dc2.check(trace).empty()) << "DC2: Validity should hold";
-    EXPECT_TRUE(dc3.check(trace).empty()) << "DC3: Integrity should hold";
-    EXPECT_TRUE(dc4.check(trace).empty()) << "DC4: Total Ordering should hold";
+    EXPECT_FALSE(dc3.check(trace).empty()) << "DC3: simulator trace lacks finalized spends";
+    EXPECT_FALSE(dc4.check(trace).empty()) << "DC4: simulator trace lacks finalized parents";
     EXPECT_TRUE(dc5.check(trace).empty()) << "DC5: Finality should hold";
 }
 

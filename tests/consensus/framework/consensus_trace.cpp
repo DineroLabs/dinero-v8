@@ -81,6 +81,18 @@ uint64_t ConsensusTrace::computeHash() const {
         hash = hashCombine(hash, snapshot.is_byzantine ? 1 : 0);
     }
 
+    // DC3/DC4 evidence is part of the trace identity when present.
+    for (const auto& block : finalized_blocks) {
+        hash = hashCombine(hash, hashString(block.node_id));
+        hash = hashCombine(hash, block.height);
+        hash = hashCombine(hash, hashString(block.block_hash));
+        hash = hashCombine(hash, hashString(block.parent_hash));
+        for (const auto& spend : block.spends) {
+            hash = hashCombine(hash, hashString(spend.tx_id));
+            hash = hashCombine(hash, hashString(spend.outpoint));
+        }
+    }
+
     return hash;
 }
 

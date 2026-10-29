@@ -7,6 +7,7 @@
 #include "address/addr_codec.h"
 #include "external/bech32/bech32.hpp"
 #include "common/logger.h"
+#include "util/hex.h"
 #include "daemon/daemon_context.h"
 #include "daemon/services/chainstate_service.h"
 #include "daemon/services/wallet_service.h"
@@ -26,8 +27,11 @@
 #include "vault/vault_types.h"
 #include "vault/wallet_signing_backend.h"
 #include "vault/withdrawal_queue.h"
+#include "vault/wallet_withdrawal_dispatch.h"
+#include "consensus/chainparams.h"
 
 #include <atomic>
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
@@ -42,9 +46,53 @@ namespace dinero::vault {
 namespace {
 
 std::mutex g_runtime_mu;
-std::unique_ptr<VaultService> g_service;
+std::shared_ptr<VaultService> g_service;
 std::unique_ptr<LedgerStore> g_store;
 std::atomic<bool> g_initialized{false};
+std::shared_ptr<WalletWithdrawalDispatchOwner> g_dispatch_owner;
+bool g_closing{false};
+uint64_t g_runtime_generation{0};
+
+// This backend identifies the retained wallet-payment path. Legacy broadcast
+// is forbidden: real signing/admission happens through the bound dispatcher.
+// No independently certified liquidity float exists at this boundary yet.
+class RetainedWalletBackend final : public SigningBackend {
+    BackendId id_{"wallet-retained"};
+public:
+    const BackendId& backendId() const noexcept override {return id_;}
+    UnaAmount availableFloat() override {
+        throw SigningBackendError(SigningBackendError::Kind::UNAVAILABLE,
+            "vault liquidity float is not independently qualified");
+    }
+    std::array<uint8_t,32> signAndBroadcast(const UnsignedTx&) override {
+        throw SigningBackendError(SigningBackendError::Kind::UNAVAILABLE,
+            "durable vault requires retained wallet-payment dispatch");
+    }
+    HealthReport healthcheck() override {
+        return {id_,BackendDegraded{"liquidity float is not independently qualified"},0,0};
+    }
+};
+
+struct ClosingRuntime {
+    std::shared_ptr<VaultService> service;
+    std::shared_ptr<WalletWithdrawalDispatchOwner> dispatch;
+};
+ClosingRuntime PrepareRuntimeClose() {
+    ClosingRuntime current;
+    {
+        std::lock_guard lock(g_runtime_mu);
+        g_closing=true;
+        if(g_runtime_generation!=UINT64_MAX)++g_runtime_generation;
+        current={g_service,g_dispatch_owner};
+    }
+    try {if(current.dispatch)current.dispatch->Close();}
+    catch(...) {
+        std::lock_guard lock(g_runtime_mu);
+        if(g_service==current.service && g_dispatch_owner==current.dispatch)g_closing=false;
+        throw;
+    }
+    return current;
+}
 
 // Decoded operator scriptPubKey — the auto-observer's match key.
 // Empty means no auto-observer; deposits flow only via vault.observe.
@@ -81,67 +129,59 @@ std::string scriptToAddress(const std::vector<uint8_t>& spk) {
 
 }  // namespace
 
-void InitializeVaultRuntime(VaultRuntimeConfig config) {
+bool InitializeVaultRuntime(VaultRuntimeConfig config) {
     std::lock_guard<std::mutex> lock(g_runtime_mu);
+    if (g_closing || g_runtime_generation==UINT64_MAX)
+        throw std::runtime_error("vault runtime is closing or exhausted");
     if (g_initialized.load()) {
-        return;
+        return true;
     }
     if (!config.enabled) {
         dinero::g_logger.info("[Vault] disabled by config; runtime not initialised");
-        return;
+        return false;
     }
 
-    if (!config.block_hash_at_height) {
-        dinero::g_logger.warn("[Vault] missing block_hash_at_height closure; refusing to start");
-        return;
-    }
-    if (!config.tx_included_at) {
-        dinero::g_logger.warn("[Vault] missing tx_included_at closure; refusing to start");
-        return;
-    }
+    if (!config.block_hash_at_height || !config.tx_included_at)
+        throw std::runtime_error("enabled vault runtime requires canonical readers");
 
-    // Decode operator address once → scriptPubKey. The observer
-    // matches wallet outputs by the resulting bytes; the address
-    // string is never compared again. Fail loudly on a bad address
-    // so the operator notices before any deposits flow.
-    g_operator_script.clear();
-    g_operator_address_str.clear();
-    g_default_account = AccountId{};
+    // Prepare all publication state locally. Invalid configuration, file reads,
+    // allocation or backend construction must not leave a partial global owner.
+    std::vector<uint8_t> operator_script;
+    std::string operator_address;
+    AccountId default_account{};
     if (!config.operator_address.empty()) {
-        try {
-            std::vector<uint8_t> witness_program =
-                DecodeTaprootWitnessProgram(config.operator_address);
-            g_operator_script = CreateP2TRScriptPubKey(witness_program);
-            g_operator_address_str = config.operator_address;
-        } catch (const std::exception& e) {
-            dinero::g_logger.warn(
-                std::string("[Vault] operator_address decode failed: ") + e.what() +
-                " — auto-observer disabled");
-            g_operator_script.clear();
-            g_operator_address_str.clear();
-        }
-        g_default_account.raw = config.default_account.empty() ? "default" : config.default_account;
+        if (config.operator_address.find('\0')!=std::string::npos ||
+            config.default_account.find('\0')!=std::string::npos)
+            throw std::runtime_error("invalid vault operator binding");
+        operator_script=CreateP2TRScriptPubKey(DecodeTaprootWitnessProgram(config.operator_address));
+        operator_address=config.operator_address;
+        default_account.raw=config.default_account.empty()?"default":config.default_account;
     }
-
-    // Optional persistence.
-    if (!config.persistence_path.empty()) {
-        try {
-            g_store = std::make_unique<FileLedgerStore>(config.persistence_path);
-        } catch (const LedgerStoreError& e) {
-            dinero::g_logger.warn(std::string("[Vault] persistence open failed: ") + e.what());
-            g_store.reset();
-        }
-    }
-
-    // Production signing backend: dispatches through the live wallet
-    // RPC stack. Persistent idempotency map sits next to the ledger
-    // file under <datadir>/vault/.
+    std::unique_ptr<LedgerStore> store;
     std::string idempotency_path;
     if (!config.persistence_path.empty()) {
-        std::filesystem::path p(config.persistence_path);
-        idempotency_path = (p.parent_path() / "idempotency.jsonl").string();
+        const std::filesystem::path path(config.persistence_path);
+        if (config.persistence_path.find('\0')!=std::string::npos)
+            throw std::runtime_error("invalid vault persistence path");
+        idempotency_path=(path.parent_path()/"idempotency.jsonl").string();
+        // This initializer has no complete-state restore implementation. Even
+        // apparently valid old rows or sidecar IDs cannot authorize an empty
+        // service. Inspect before append-open/backend construction; preserve
+        // all bytes and leave recovery to an explicit authenticated owner.
+        for (const auto& existing:{path,std::filesystem::path(idempotency_path)}) {
+            if (!std::filesystem::exists(existing))continue;
+            if (!std::filesystem::is_regular_file(existing) ||
+                std::filesystem::file_size(existing)!=0)
+                throw std::runtime_error("legacy vault records require authenticated complete-state recovery");
+        }
+        if (!path.parent_path().empty())std::filesystem::create_directories(path.parent_path());
+        store=std::make_unique<FileLedgerStore>(config.persistence_path);
+        if (!store->loadAll().empty())
+            throw std::runtime_error("legacy vault records changed during initialization");
     }
 
+    // The legacy signing callback remains scoped to this initializer. New
+    // durable wallet withdrawals use their separate retained-body dispatcher.
     auto send_via_wallet_rpc = [](const std::vector<uint8_t>& script_pub_key,
                                    UnaAmount amount, UnaAmount fee_rate_hint,
                                    const std::string& audit_context) -> std::array<uint8_t, 32> {
@@ -204,7 +244,8 @@ void InitializeVaultRuntime(VaultRuntimeConfig config) {
             return 0;
         }
         try {
-            auto balance = wallet_service->get().getBalance(nullptr);
+            auto wallet_use=WalletService::AcquireWalletUse(wallet_service);
+            auto balance = wallet_use->Wallet().getBalance(nullptr);
             // Balance is in DIN; convert to una.
             return static_cast<UnaAmount>(balance.spendable * 1e8);
         } catch (...) {
@@ -232,74 +273,102 @@ void InitializeVaultRuntime(VaultRuntimeConfig config) {
             return tx_included_fn(op.txid_raw, op.vout, h, bh);
         };
 
-    g_service = std::make_unique<VaultService>(
+    auto service = std::make_shared<VaultService>(
         std::move(backend), service_config,
-        std::move(block_hash_for_watcher), std::move(tx_included_for_watcher));
-
-    // Replay persisted entries through the live ledger.
-    if (g_store) {
-        try {
-            auto persisted = g_store->loadAll();
-            dinero::g_logger.info(std::string("[Vault] replaying ") +
-                                  std::to_string(persisted.size()) + " persisted entries");
-            // We can't reach into VaultService.ledger directly through
-            // its public API; the replay path is owned by the service
-            // construction. For the initial wiring we surface this as
-            // a known limitation: persistence currently writes through
-            // the store but doesn't auto-replay into the service. The
-            // operator's restart path will wire a richer constructor
-            // when needed.
-            (void)persisted;
-        } catch (const LedgerStoreError& e) {
-            dinero::g_logger.warn(std::string("[Vault] replay failed: ") + e.what());
-        }
-    }
-
-    din::SetVaultService(g_service.get());
-    g_initialized.store(true);
+        std::move(block_hash_for_watcher), std::move(tx_included_for_watcher),
+        std::move(config.capture_tip));
 
     std::string status = "[Vault] runtime initialised; shadow_mode=";
     status += (config.shadow_mode ? "true" : "false");
     status += ", k_credit=" + std::to_string(config.k_credit);
     status += ", k_settle=" + std::to_string(config.k_settle);
-    if (!g_operator_script.empty()) {
+    if (!operator_script.empty()) {
         status += ", auto-observer=ON address=" + config.operator_address;
-        status += " account=" + g_default_account.raw;
+        status += " account=" + default_account.raw;
     } else {
         status += ", auto-observer=OFF";
     }
     if (!idempotency_path.empty()) {
         status += ", idempotency=" + idempotency_path;
     }
-    dinero::g_logger.info(status);
+    // The publication operations below do not allocate. The initialized flag
+    // is last, after every reader/backend and configured file has prepared.
+    g_operator_script.swap(operator_script);
+    g_operator_address_str.swap(operator_address);
+    g_default_account.raw.swap(default_account.raw);
+    g_store.swap(store);
+    g_service.swap(service);
+    g_initialized.store(true);
+    try {dinero::g_logger.info(status);}catch(...) {} // logging cannot undo publication
+    return true;
 }
 
+void OpenExistingVaultRuntime(VaultRuntimeConfig config,const ExecutionContext& context,
+    std::shared_ptr<WalletService> wallet,const WalletSigningIdentity& selected,const VaultIdentity& identity) {
+    uint64_t generation;
+    {
+        std::lock_guard lock(g_runtime_mu);
+        if(g_initialized.load() || g_closing || g_runtime_generation==UINT64_MAX)
+            throw std::runtime_error("vault runtime is already attached or unavailable");
+        generation=g_runtime_generation;
+    }
+    if(!config.enabled || !config.block_hash_at_height || !config.tx_included_at ||
+       !config.capture_tip || !config.persistence_path.empty())
+        throw std::runtime_error("existing vault attachment requires canonical readers and wallet storage");
+    VaultStateDomain domain;domain.network=static_cast<uint8_t>(GetActiveChain());
+    uint256 genesis;
+    if(!uint256::FromHex(Params().genesis_hash,genesis))
+        throw std::runtime_error("vault chain domain unavailable");
+    std::copy(genesis.begin(),genesis.end(),domain.genesis.begin());
+    auto dispatch=std::make_shared<WalletWithdrawalDispatchOwner>(context,wallet,selected,domain);
+    auto tx_included=std::move(config.tx_included_at);
+    auto bound=WalletVaultStateOwner::OpenExistingService(wallet,selected.session,domain,identity,
+        std::make_unique<RetainedWalletBackend>(),std::move(config.block_hash_at_height),
+        [tx_included](const OutpointId& out,uint64_t height,const std::array<uint8_t,32>& hash) {
+            return tx_included(out.txid_raw,out.vout,height,hash);
+        },std::move(config.capture_tip),dispatch->Factory());
+    const auto binding=bound.service->operatorBinding();
+    if(!binding)throw std::runtime_error("historical vault has no authenticated operator binding");
+    ValidateVaultOperatorBinding(*binding);
+    auto script=binding->script_pub_key;
+    auto address=scriptToAddress(script);auto account=binding->account;
+    if(address.empty() || (!config.operator_address.empty() && config.operator_address!=address) ||
+       (!config.default_account.empty() && config.default_account!=account))
+        throw std::runtime_error("vault configuration differs from the authenticated operator binding");
+    // All wallet/SQLite/seed owners have been released. Shutdown invalidates
+    // this preparation by generation; it never waits while holding those owners.
+    // Only nonthrowing swaps follow the final publication check.
+    std::lock_guard lock(g_runtime_mu);
+    if(g_initialized.load() || g_closing || generation!=g_runtime_generation)
+        throw std::runtime_error("vault runtime changed during attachment");
+    g_operator_script.swap(script);g_operator_address_str.swap(address);g_default_account.raw.swap(account);
+    g_dispatch_owner.swap(dispatch);g_service.swap(bound.service);g_initialized.store(true);
+}
+
+void CloseVaultRuntimeDispatch() {(void)PrepareRuntimeClose();}
+
 void ShutdownVaultRuntime() {
-    std::lock_guard<std::mutex> lock(g_runtime_mu);
-    if (!g_initialized.load()) {
-        return;
+    const auto closing=PrepareRuntimeClose();
+    std::shared_ptr<VaultService> service;
+    std::shared_ptr<WalletWithdrawalDispatchOwner> dispatch;
+    std::unique_ptr<LedgerStore> store;
+    {
+        std::lock_guard lock(g_runtime_mu);
+        // A second close must never detach a replacement published after the
+        // first close completed. Each retained dispatcher is closed separately.
+        if(g_service!=closing.service || g_dispatch_owner!=closing.dispatch)return;
+        service=std::move(g_service);dispatch=std::move(g_dispatch_owner);store=std::move(g_store);
+        g_operator_script.clear();g_operator_address_str.clear();g_default_account=AccountId{};
+        g_initialized.store(false);g_closing=false;
     }
-    din::SetVaultService(nullptr);
-    g_service.reset();
-    if (g_store) {
-        g_store->flush();
-        g_store.reset();
-    }
-    g_operator_script.clear();
-    g_operator_address_str.clear();
-    g_default_account = AccountId{};
-    g_initialized.store(false);
+    service.reset();dispatch.reset();
+    if(store)store->flush();
     dinero::g_logger.info("[Vault] runtime shut down");
 }
 
 void NotifyVaultTipConnected(uint64_t height) {
-    if (!g_initialized.load()) {
-        return;
-    }
-    auto* svc = g_service.get();
-    if (svc == nullptr) {
-        return;
-    }
+    const auto svc=GetVaultRuntimeService();
+    if (!svc) return;
     try {
         svc->tipChanged(height);
     } catch (const std::exception& e) {
@@ -317,17 +386,23 @@ void NotifyVaultTipDisconnected(uint64_t /*height*/) {
     }
 }
 
-VaultService* GetVaultRuntimeService() {
-    return g_service.get();
+std::shared_ptr<VaultService> GetVaultRuntimeService() {
+    std::lock_guard<std::mutex> lock(g_runtime_mu);
+    return g_initialized.load() && !g_closing?g_service:std::shared_ptr<VaultService>{};
 }
 
 bool SetVaultOperator(const std::string& address, const std::string& account,
                       std::string* error_out) {
     std::lock_guard<std::mutex> lock(g_runtime_mu);
-    if (!g_initialized.load()) {
+    if (!g_initialized.load() || g_closing) {
         if (error_out != nullptr) {
             *error_out = "vault runtime not initialised";
         }
+        return false;
+    }
+
+    if(g_dispatch_owner) {
+        if(error_out)*error_out="authenticated vault operator binding is immutable";
         return false;
     }
 
@@ -365,146 +440,119 @@ bool SetVaultOperator(const std::string& address, const std::string& account,
 OperatorBinding GetVaultOperator() {
     std::lock_guard<std::mutex> lock(g_runtime_mu);
     OperatorBinding out;
+    if(g_closing)return out;
     out.address = g_operator_address_str;
     out.account = g_default_account.raw;
     return out;
 }
 
-bool VerifyOperatorDeposit(const std::array<uint8_t, 32>& txid_raw,
-                           uint32_t vout,
-                           uint64_t& out_amount,
-                           uint64_t& out_height,
-                           std::array<uint8_t, 32>& out_block_hash_raw,
-                           std::string& err) {
-    if (!g_initialized.load()) {
-        err = "vault runtime not initialized";
-        return false;
+bool VerifyOperatorDeposit(const std::shared_ptr<VaultService>& expected_service,
+                           const std::array<uint8_t,32>& txid_raw,uint32_t vout,
+                           uint64_t& out_amount,uint64_t& out_height,
+                           std::array<uint8_t,32>& out_block_hash_raw,std::string& err) {
+    std::vector<uint8_t> script;
+    {
+        std::lock_guard<std::mutex> lock(g_runtime_mu);
+        if (!g_initialized.load() || g_closing || !expected_service || g_service!=expected_service) {
+            err="vault runtime owner changed or unavailable";return false;
+        }
+        script=g_operator_script;
     }
-    if (g_operator_script.empty()) {
-        err = "no vault operator script configured";
-        return false;
-    }
-    auto* daemon = ::DaemonContext::instance();
-    if (daemon == nullptr || !daemon->chainstate) {
-        err = "chainstate unavailable";
-        return false;
-    }
-    auto* chain_db = daemon->chainstate->GetChainDB();
-    if (chain_db == nullptr) {
-        err = "chain db unavailable";
-        return false;
-    }
-
-    // Look the outpoint up in the canonical UTXO set. A missing entry means the
-    // outpoint is unknown, already spent, or not yet confirmed — none of which may
-    // credit the ledger.
-    uint256 txid;
-    std::memcpy(txid.begin(), txid_raw.data(), 32);
-    auto coin_res = chain_db->getCoin(txid, vout);
-    if (!coin_res.ok()) {
-        err = "outpoint not found in UTXO set (unknown, already spent, or unconfirmed)";
-        return false;
-    }
-    const Coin& coin = coin_res.value();
-
-    // The deposit MUST pay the configured operator script. Compare as raw bytes
-    // (memcmp) — script bytes can exceed 0x7f, so a signed-char/uint8 mismatch must
-    // not creep in.
-    if (coin.script_pubkey.size() != g_operator_script.size() ||
-        std::memcmp(coin.script_pubkey.data(), g_operator_script.data(),
-                    g_operator_script.size()) != 0) {
-        err = "outpoint does not pay the vault operator script";
-        return false;
-    }
-
-    // Confidential outputs carry no public value to credit.
-    if (coin.is_confidential) {
-        err = "confidential outputs cannot be credited as vault deposits";
-        return false;
-    }
-
-    // Use the REAL on-chain value/height and the canonical block hash at that height —
-    // never the caller's claimed values.
-    out_amount = coin.amount;
-    out_height = static_cast<uint64_t>(coin.height);
-    auto hash_res = chain_db->getBlockHashByHeight(coin.height);
-    if (!hash_res.ok()) {
-        err = "could not resolve canonical block hash for deposit height";
-        return false;
-    }
-    std::memcpy(out_block_hash_raw.data(), hash_res.value().begin(), 32);
-    return true;
+    if (script.empty()) {err="no vault operator script configured";return false;}
+    auto* daemon=::DaemonContext::instance();
+    const auto source=daemon?daemon->chainstate:nullptr;
+    if (!source) {err="chainstate unavailable";return false;}
+    try {
+        const auto lifetime=ChainstateService::AcquireWalletIndexUse(source);
+        const auto selected=source->AcquireBlockIngressActivationLock();
+        auto* db=source->GetChainDB();
+        if (!db) {err="chain db unavailable";return false;}
+        uint256 txid;std::copy(txid_raw.begin(),txid_raw.end(),txid.begin());
+        const auto coin=db->getCoin(txid,vout);
+        if (!coin.ok() || coin->height<0) {err="canonical unspent output unavailable";return false;}
+        if (coin->is_confidential || coin->amount==0) {
+            err="deposit must be a nonzero transparent output";return false;
+        }
+        std::vector<uint8_t> recorded_script;
+        const auto ascii_hex=[](unsigned char c) {
+            return (c>='0'&&c<='9') || (c>='a'&&c<='f') || (c>='A'&&c<='F');
+        };
+        if (coin->script_pubkey.size()!=script.size()*2 ||
+            !std::all_of(coin->script_pubkey.begin(),coin->script_pubkey.end(),ascii_hex) ||
+            !util::unhex(coin->script_pubkey,recorded_script) || recorded_script!=script) {
+            err="outpoint does not pay the vault operator script";return false;
+        }
+        const auto included=source->getCanonicalOutputInclusion(txid,vout,static_cast<uint32_t>(coin->height));
+        if (!included.ok() || !included->included) {err="canonical deposit inclusion unavailable";return false;}
+        if (!included->MatchesTransparent(coin->amount,recorded_script)) {
+            err="unspent coin differs from its canonical output";return false;
+        }
+        // Publish only after the same selected observation has bound the
+        // persisted unspent coin's amount and script to its canonical body.
+        out_amount=coin->amount;out_height=static_cast<uint64_t>(coin->height);
+        std::copy(included->block_hash.begin(),included->block_hash.end(),out_block_hash_raw.begin());
+        err.clear();return true;
+    } catch (const std::exception& e) {err=std::string("deposit source unavailable: ")+e.what();return false;}
 }
 
-void ObserveWalletOutput(const std::array<uint8_t, 32>& txid_raw,
-                         uint32_t vout,
-                         const std::vector<uint8_t>& script_pub_key,
-                         uint64_t amount_una,
-                         uint64_t height,
-                         const std::string& block_hash_hex) {
-    if (!g_initialized.load()) {
-        return;
+VaultWalletOutputObserver CaptureVaultWalletOutputObserver() {
+    std::shared_ptr<VaultService> service;
+    std::vector<uint8_t> script;
+    AccountId account;
+    {
+        std::lock_guard<std::mutex> lock(g_runtime_mu);
+        if (!g_initialized.load() || g_closing || !g_service || g_operator_script.empty()) return {};
+        service=g_service;script=g_operator_script;account=g_default_account;
     }
-    // Module state below is set under g_runtime_mu at init; we read
-    // without holding the lock because once the runtime is initialised
-    // these never change for the rest of its lifetime.
-    if (g_operator_script.empty()) {
-        return;
-    }
-    if (script_pub_key != g_operator_script) {
-        return;
-    }
-    auto* svc = g_service.get();
-    if (svc == nullptr) {
-        return;
-    }
-    if (block_hash_hex.size() != 64) {
-        dinero::g_logger.warn(
-            "[Vault] auto-observer: malformed block_hash_hex (expected 64 chars)");
-        return;
-    }
-
-    // Block hashes in display-order hex are the byte-reversal of the
-    // raw consensus hash that the reorg watcher records. uint256 in
-    // this codebase already stores the consensus byte-order (see
-    // primitives/uint256.h begin/end), so reverse the hex.
-    std::array<uint8_t, 32> block_hash_raw{};
-    for (size_t i = 0; i < 32; ++i) {
-        unsigned hi = 0;
-        unsigned lo = 0;
-        std::sscanf(block_hash_hex.c_str() + (2 * i), "%1x", &hi);
-        std::sscanf(block_hash_hex.c_str() + (2 * i) + 1, "%1x", &lo);
-        block_hash_raw[31 - i] = static_cast<uint8_t>((hi << 4) | lo);
-    }
-
-    try {
-        svc->recordDeposit(txid_raw, vout, g_default_account,
-                           static_cast<UnaAmount>(amount_una), height, block_hash_raw);
-        // Drive the deposit-flow lifecycle. Use the *current chain
-        // tip*, not the deposit's own block height — during a wallet
-        // rescan the wallet trails the chain by many blocks, so the
-        // deposit's height is stale and confs would be ~0 against it.
-        // Falling back to `height` if chainstate is unavailable still
-        // produces the right answer once the wallet catches up
-        // (NotifyVaultTipConnected continues to drive promotion).
-        uint64_t effective_tip = height;
-        if (auto* daemon = ::DaemonContext::instance(); daemon != nullptr && daemon->chainstate) {
-            if (auto* chain_db = daemon->chainstate->GetChainDB(); chain_db != nullptr) {
-                if (auto tip = chain_db->getTip(); tip.ok()) {
-                    if (auto h64 = static_cast<uint64_t>(tip.value().height); h64 > effective_tip) {
-                        effective_tip = h64;
-                    }
-                }
-            }
+    auto* daemon=::DaemonContext::instance();
+    const auto source=daemon?daemon->chainstate:nullptr;
+    return [service=std::move(service),script=std::move(script),account=std::move(account),source](
+        const std::array<uint8_t,32>& txid_raw,uint32_t vout,
+        const std::vector<uint8_t>& output_script,uint64_t amount,uint64_t height,
+        const std::string& block_hash_hex) {
+        if (output_script!=script) return;
+        // Decode the complete display-order hash before any service effect.
+        const auto digit=[](unsigned char c)->int {
+            if(c>='0'&&c<='9')return c-'0';
+            if(c>='a'&&c<='f')return c-'a'+10;
+            if(c>='A'&&c<='F')return c-'A'+10;
+            return -1;
+        };
+        if(block_hash_hex.size()!=64)
+            throw std::runtime_error("vault wallet observation hash malformed");
+        std::array<uint8_t,32> hash{};
+        for(size_t i=0;i<32;++i) {
+            const int hi=digit(block_hash_hex[2*i]),lo=digit(block_hash_hex[2*i+1]);
+            if(hi<0||lo<0)throw std::runtime_error("vault wallet observation hash malformed");
+            hash[31-i]=static_cast<uint8_t>((hi<<4)|lo);
         }
-        svc->tipChanged(effective_tip);
-        dinero::g_logger.info(std::string("[Vault] auto-observed deposit txid=") +
-                              toHexLower(txid_raw.data(), txid_raw.size()) +
-                              ":" + std::to_string(vout) +
-                              " amount=" + std::to_string(amount_una) +
-                              " height=" + std::to_string(height));
-    } catch (const std::exception& e) {
-        dinero::g_logger.warn(std::string("[Vault] recordDeposit threw: ") + e.what());
+        if(!std::any_of(hash.begin(),hash.end(),[](uint8_t v){return v!=0;}))
+            throw std::runtime_error("vault wallet observation hash missing");
+        uint64_t effective_tip=height;
+        if(source) {
+            // Complete the selected read before service mutation. No wallet,
+            // runtime or vault mutex may be held by this callback's caller.
+            const auto lifetime=ChainstateService::AcquireWalletIndexUse(source);
+            const auto selected=source->AcquireBlockIngressActivationLock();
+            auto* db=source->GetChainDB();
+            if(!db)throw std::runtime_error("vault wallet observation source unavailable");
+            const auto tip=db->getTip();
+            if(!tip.ok() || tip->height<0)
+                throw std::runtime_error("vault wallet observation tip unavailable");
+            effective_tip=std::max(height,static_cast<uint64_t>(tip->height));
+        }
+        service->recordDeposit(txid_raw,vout,account,amount,height,hash);
+        service->tipChanged(effective_tip);
+    };
+}
+
+void ObserveWalletOutput(const std::array<uint8_t,32>& txid_raw,uint32_t vout,
+    const std::vector<uint8_t>& script,uint64_t amount,uint64_t height,const std::string& hash) {
+    try {
+        const auto observer=CaptureVaultWalletOutputObserver();
+        if(observer)observer(txid_raw,vout,script,amount,height,hash);
+    } catch(const std::exception& e) {
+        dinero::g_logger.warn(std::string("[Vault] wallet observation failed: ")+e.what());
     }
 }
 
@@ -526,56 +574,65 @@ uint256 arrayToUint256(const std::array<uint8_t, 32>& a) {
 
 std::function<std::array<uint8_t, 32>(uint64_t)>
 MakeChainstateBlockHashClosure(::DaemonContext& ctx) {
-    return [ctx_ptr = &ctx](uint64_t height) -> std::array<uint8_t, 32> {
-        if (ctx_ptr == nullptr || !ctx_ptr->chainstate) {
-            return std::array<uint8_t, 32>{};
-        }
-        auto* chain_db = ctx_ptr->chainstate->GetChainDB();
-        if (chain_db == nullptr) {
-            return std::array<uint8_t, 32>{};
-        }
-        // ChainDB heights are int; clamp to a safe range. Values
-        // outside int range can't legally exist on this chain.
-        if (height > static_cast<uint64_t>(std::numeric_limits<int>::max())) {
-            return std::array<uint8_t, 32>{};
-        }
-        auto result = chain_db->getBlockHashByHeight(static_cast<int>(height));
-        if (!result.ok()) {
-            return std::array<uint8_t, 32>{};
-        }
-        return uint256ToArray(result.value());
+    return [source=ctx.chainstate](uint64_t height) -> std::array<uint8_t,32> {
+        if (!source || height>uint64_t(std::numeric_limits<uint32_t>::max())) return {};
+        try {
+            const auto index=ChainstateService::AcquireWalletIndexUse(source);
+            const auto hash=source->getCanonicalBlockHash(static_cast<uint32_t>(height));
+            return hash.ok()?uint256ToArray(*hash):std::array<uint8_t,32>{};
+        } catch (...) { return {}; }
     };
 }
 
-std::function<bool(const std::array<uint8_t, 32>&, uint32_t, uint64_t,
-                   const std::array<uint8_t, 32>&)>
+std::function<bool(const std::array<uint8_t,32>&,uint32_t,uint64_t,const std::array<uint8_t,32>&)>
 MakeChainstateTxIncludedClosure(::DaemonContext& ctx) {
-    return [ctx_ptr = &ctx](const std::array<uint8_t, 32>& txid_raw, uint32_t vout,
-                            uint64_t /*height*/, const std::array<uint8_t, 32>& block_hash) -> bool {
-        if (ctx_ptr == nullptr || !ctx_ptr->chainstate) {
-            return true;  // conservative: keep deposits in RE_MINED_SAME_TXID
-        }
-        auto* chain_db = ctx_ptr->chainstate->GetChainDB();
-        if (chain_db == nullptr) {
-            return true;
-        }
-        uint256 hash = arrayToUint256(block_hash);
-        auto block_result = chain_db->getBlock(hash);
-        if (!block_result.ok()) {
-            // Block not on disk (pruned, never fetched, transient
-            // RocksDB error). Conservative path: claim included.
-            return true;
-        }
-        const Block& block = block_result.value();
-        for (const auto& tx : block.vtx) {
-            const uint256& tx_hash = tx.GetTxid().AsUint256();
-            // OutpointId stores raw 32-byte big-endian txid (the same
-            // byte layout as uint256 internally).
-            if (std::memcmp(tx_hash.begin(), txid_raw.data(), 32) == 0) {
-                return vout < tx.vout.size();
+    return [source=ctx.chainstate](const std::array<uint8_t,32>& txid,uint32_t output,
+                                  uint64_t height,const std::array<uint8_t,32>& expected_hash) -> bool {
+        if (!source || height>uint64_t(std::numeric_limits<uint32_t>::max()))
+            throw std::runtime_error("Vault canonical inclusion source unavailable");
+        const auto index=ChainstateService::AcquireWalletIndexUse(source);
+        const auto observed=source->getCanonicalOutputInclusion(arrayToUint256(txid),output,static_cast<uint32_t>(height));
+        if (!observed.ok() || observed->block_hash!=arrayToUint256(expected_hash))
+            throw std::runtime_error("Vault canonical inclusion observation unavailable or changed");
+        return observed->included;
+    };
+}
+
+
+VaultTipSnapshotFn MakeChainstateVaultSnapshotClosure(::DaemonContext& ctx) {
+    return [source=ctx.chainstate](uint64_t height,
+              const std::vector<VaultDepositQuery>& queries) -> VaultTipSnapshot {
+        if (!source || height > uint64_t(std::numeric_limits<uint32_t>::max()))
+            throw std::runtime_error("vault selected source unavailable");
+        const auto lifetime = ChainstateService::AcquireWalletIndexUse(source);
+        const auto selected = source->AcquireBlockIngressActivationLock();
+        auto* db = source->GetChainDB();
+        if (!db) throw std::runtime_error("vault selected database unavailable");
+        const auto tip = db->getTip();
+        if (!tip.ok() || tip->height < 0 || uint64_t(tip->height) != height)
+            throw std::runtime_error("vault requested tip changed or unavailable");
+        const auto canonical = source->getCanonicalBlockHash(static_cast<uint32_t>(height));
+        if (!canonical.ok() || *canonical != tip->hash)
+            throw std::runtime_error("vault selected tip is incoherent");
+        VaultTipSnapshot snapshot{height, uint256ToArray(*canonical), {}};
+        snapshot.deposits.reserve(queries.size());
+        for (const auto& query : queries) {
+            if (query.height > height) {
+                // The selected tip is complete, so this height is absent.
+                snapshot.deposits.push_back({query, std::nullopt, false});
+                continue;
             }
+            const auto output = source->getCanonicalOutputInclusion(
+                arrayToUint256(query.outpoint.txid_raw), query.outpoint.vout,
+                static_cast<uint32_t>(query.height));
+            if (!output.ok())
+                throw std::runtime_error("vault canonical deposit read unavailable");
+            if (output->included && (!output->transparent_amount ||
+                *output->transparent_amount != query.amount))
+                throw std::runtime_error("vault canonical deposit amount mismatch");
+            snapshot.deposits.push_back({query, uint256ToArray(output->block_hash), output->included});
         }
-        return false;
+        return snapshot;
     };
 }
 

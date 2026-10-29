@@ -1,0 +1,7 @@
+# Owned mining RPC template results
+
+CreateNewBlock optionally returns an accepted-transaction fee map from the same immutable selection used to build the successful block. It checks the accepted fee sum and replaces the caller output only as its final nonthrowing action. Failure preserves the previous caller output; a successful empty template replaces it with an empty map.
+
+Actual getblocktemplate retains a MempoolService PoolUse acquired after longpoll through response serialization, and serializes captured fees without a later pool lookup or zero fallback. Actual mining.getjob also retains a PoolUse. Its existing wallet-scoped input provider remains a separate qualification item, including stateless/pre-base behavior. No global pool lock is held during template construction or serialization.
+
+Three benign patched component cases exercise pool removal after capture, request-local parent/child exclusion, and output preservation on failure followed by an empty retry. A separate real isolated daemon test exercises cookie-authenticated transparent admission, getblocktemplate fee/exclusion results, mining.getjob construction, actual PoW/template acceptance and the later empty response. This does not prove concurrent shutdown/chain mutation, all non-wallet-owned input scenarios, confidential/Orchard admission, global assembler concurrency or an independently validated selected-parent certificate. Mainnet unset/provider and release gates open; no unsafe original/control execution.

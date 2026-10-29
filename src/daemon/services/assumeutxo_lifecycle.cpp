@@ -38,6 +38,16 @@ AssumeUtxoLifecycle::AssumeUtxoLifecycle(UTXOIndex* utxo_index, Logger* logger,
                                          std::chrono::seconds stall_timeout)
     : utxo_index_(utxo_index), logger_(logger), stall_timeout_(stall_timeout) {}
 
+std::unique_ptr<AssumeUtxoLifecycle::SnapshotUse>
+AssumeUtxoLifecycle::AcquireSnapshotUse(const uint256& base_block,
+                                       uint32_t base_height) const {
+    auto use = std::unique_ptr<SnapshotUse>(new SnapshotUse(mu_));
+    if (base_block.IsNull() || base_height == 0 || base_block_ != base_block ||
+        base_height_ != base_height || state_ == State::Disabled ||
+        state_ == State::FatalMismatch) return {};
+    return use;
+}
+
 bool AssumeUtxoLifecycle::OnSnapshotLoaded(const uint256& base_block, uint32_t base_height) {
     std::lock_guard<std::mutex> lock(mu_);
     if (state_ == State::FatalMismatch) {

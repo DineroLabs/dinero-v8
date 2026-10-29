@@ -31,9 +31,9 @@ private Q_SLOTS:
         QFile f(QStringLiteral(UPGRADE_VECTORS));
         QVERIFY(f.open(QIODevice::ReadOnly));
         const QByteArray bytes = f.readAll();
-        // Must equal the DineroDPI copy (DineroDPI/test-vectors/network_upgrade_policy_v1.json).
+        // Pin the v8.2.0 desktop vectors. Sync this file with DineroDPI before its release.
         QCOMPARE(QCryptographicHash::hash(bytes, QCryptographicHash::Sha256).toHex(),
-                 QByteArray("b31290b411150f565f57e712f912ba0ffbc5b536f8ccc4f29286af7b86696ac5"));
+                 QByteArray("8da1160917a32657136faaa5db15e19737a4787c61a595df24daa40305661c86"));
         const auto root = QJsonDocument::fromJson(bytes).object();
         const auto cases = root["cases"].toArray();
         QVERIFY(cases.size() >= 19);

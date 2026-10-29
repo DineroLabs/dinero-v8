@@ -23,6 +23,9 @@ bool ProfileIsStateless(const std::string& profile);
 // replay) is impossible by design for the compact iOS profile, which stores
 // headers plus the Utreexo accumulator rather than every historical body.
 bool ProfileRetainsHistoricalBodies(const std::string& profile);
+// The resolved runtime answer: the named profile when set, otherwise the
+// legacy utreexo_stateless flag (direct service tests resolve no profile).
+bool RuntimeRetainsHistoricalBodies(const std::string& profile, bool utreexo_stateless);
 uint64_t CapabilitiesForProfile(const std::string& profile);
 
 // Resolves the runtime profile with precedence:

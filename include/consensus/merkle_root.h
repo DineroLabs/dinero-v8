@@ -15,10 +15,17 @@
  */
 
 #include <vector>
+#include <span>
 #include "primitives/transaction.h"
 #include "primitives/uint256.h"
 
 namespace dinero::consensus {
+// Typed-ID entry points for mixed transaction families. They use exactly the
+// same tree/mutation rules as the historical Transaction wrappers below.
+uint256 ComputeTransactionMerkleRoot(std::span<const TxId> ids, bool* mutated = nullptr);
+// Index zero is replaced by zero, matching the existing coinbase convention.
+uint256 ComputeWitnessMerkleRootFromIds(std::span<const WTxId> ids, bool* mutated = nullptr);
+
 
 /**
  * Compute canonical merkle root from transaction vector

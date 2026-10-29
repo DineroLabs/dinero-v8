@@ -1,10 +1,10 @@
 cmake_minimum_required(VERSION 3.20)
 # Project name is lowercase `dinero` to match the target monorepo
-# repository name (DineroLabs/dinero). VERSION 8.1.13 is the current
+# repository name (DineroLabs/dinero). VERSION 8.2.0 is the current
 # unified release line after the monorepo consolidation; daemon,
 # CLI, Qt GUI, and solo miner all derive their version from this
 # declaration; in-tree subprojects consume DINERO_MONOREPO_VERSION below.
-project(dinero VERSION 8.1.13 LANGUAGES C CXX)
+project(dinero VERSION 8.2.0 LANGUAGES C CXX)
 # In-tree subprojects consume this value instead of each independently deciding
 # the version of binaries shipped in the same release bundle. Standalone builds
 # retain a local fallback in their own CMakeLists.txt.
@@ -360,11 +360,35 @@ endif()
 find_program(CARGO_EXECUTABLE cargo HINTS "$ENV{HOME}/.cargo/bin")
 
 if(CARGO_EXECUTABLE)
-    set(BP_FFI_BUILD_COMMAND "${CARGO_EXECUTABLE}" build --release)
+    set(BP_FFI_TOOLCHAIN_ARG "")
+    set(BP_FFI_RUNTIME_ENV "")
+    if(DINERO_BUILD_ORCHARD_BACKEND)
+        # Both Rust staticlibs enter one native image. LTO-folding an abort
+        # runtime into Bulletproofs' FFI object conflicts with Orchard's unwind
+        # runtime on Android. Use the same pinned compiler/runtime, with std
+        # remaining separate archive members for normal symbol extraction.
+        file(STRINGS "${CMAKE_SOURCE_DIR}/rust/orchard_backend/rust-toolchain.toml"
+            BP_ORCHARD_TOOLCHAIN REGEX "^channel =")
+        string(REGEX MATCH "[0-9]+\\.[0-9]+\\.[0-9]+" BP_ORCHARD_TOOLCHAIN "${BP_ORCHARD_TOOLCHAIN}")
+        set(BP_FFI_TOOLCHAIN_ARG "+${BP_ORCHARD_TOOLCHAIN}")
+        set(BP_FFI_RUNTIME_ENV CARGO_PROFILE_RELEASE_PANIC=unwind
+            CARGO_PROFILE_RELEASE_LTO=false CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16)
+    endif()
+    set(BP_FFI_BUILD_COMMAND ${CMAKE_COMMAND} -E env ${BP_FFI_RUNTIME_ENV}
+        "${CARGO_EXECUTABLE}" ${BP_FFI_TOOLCHAIN_ARG} build --release)
 
     if(ANDROID)
+        string(TOUPPER "${BP_FFI_CARGO_TARGET}" BP_TARGET_ENV)
+        string(REPLACE "-" "_" BP_TARGET_ENV "${BP_TARGET_ENV}")
         set(BP_FFI_BUILD_COMMAND
-            "${CARGO_EXECUTABLE}" build --release --target "${BP_FFI_CARGO_TARGET}"
+            ${CMAKE_COMMAND} -E env
+            ${BP_FFI_RUNTIME_ENV}
+            "CARGO_TARGET_${BP_TARGET_ENV}_LINKER=${CMAKE_C_COMPILER}"
+            "CARGO_TARGET_${BP_TARGET_ENV}_RUSTFLAGS=-C link-arg=--target=${CMAKE_C_COMPILER_TARGET} -C link-arg=--sysroot=${CMAKE_SYSROOT}"
+            "CC_${BP_FFI_CARGO_TARGET}=${CMAKE_C_COMPILER}"
+            "AR_${BP_FFI_CARGO_TARGET}=${CMAKE_AR}"
+            "CFLAGS_${BP_FFI_CARGO_TARGET}=--target=${CMAKE_C_COMPILER_TARGET} --sysroot=${CMAKE_SYSROOT}"
+            "${CARGO_EXECUTABLE}" ${BP_FFI_TOOLCHAIN_ARG} build --release --target "${BP_FFI_CARGO_TARGET}"
         )
         message(STATUS "   Bulletproofs FFI Android cargo target: ${BP_FFI_CARGO_TARGET}")
     elseif(APPLE)
@@ -409,10 +433,11 @@ if(CARGO_EXECUTABLE)
 
         set(BP_FFI_BUILD_COMMAND
             ${CMAKE_COMMAND} -E env
+            ${BP_FFI_RUNTIME_ENV}
             "CARGO_TARGET_${BP_TARGET_ENV}_RUSTFLAGS=-C link-arg=${BP_VERSION_MIN_FLAG}"
             "CFLAGS_${BP_FFI_CARGO_TARGET}=${BP_VERSION_MIN_FLAG}"
             "LDFLAGS_${BP_FFI_CARGO_TARGET}=${BP_VERSION_MIN_FLAG}"
-            "${CARGO_EXECUTABLE}" build --release --target "${BP_FFI_CARGO_TARGET}"
+            "${CARGO_EXECUTABLE}" ${BP_FFI_TOOLCHAIN_ARG} build --release --target "${BP_FFI_CARGO_TARGET}"
         )
 
         message(STATUS "   Bulletproofs FFI Apple target: ${BP_FFI_CARGO_TARGET} (deployment target: ${CMAKE_OSX_DEPLOYMENT_TARGET})")
@@ -745,12 +770,21 @@ add_library(dinero_rpc_handlers STATIC
   src/rpc/methods_utreexo_bridge.cpp  # Phase 34.3: Utreexo Bridge API for light clients (utreexo.getproof, getroots, getstate)
   # Liquidity Vault — daemon-side source of truth (Track C).
   src/vault/ledger.cpp
+    src/vault/ledger_allocation.cpp
+    src/vault/credit_allocation.cpp
   src/vault/ledger_account.cpp
   src/vault/deposit_flow.cpp
   src/vault/reorg_watcher.cpp
   src/vault/withdrawal_queue.cpp
   src/vault/signing_backend.cpp
   src/vault/vault_service.cpp
+  src/vault/state_snapshot.cpp
+  src/vault/state_validation.cpp
+  src/vault/state_store.cpp
+  src/vault/wallet_withdrawal_dispatch.cpp
+  src/pool/wallet_payment_backend.cpp
+  src/pool/canonical_payment.cpp
+  src/pool/canonical_block.cpp
   src/vault/ledger_store.cpp
   src/vault/vault_runtime.cpp
   src/vault/wallet_signing_backend.cpp
@@ -773,6 +807,8 @@ add_library(dinero_rpc_handlers STATIC
   src/rpc/methods_address_index.cpp
   src/core/rpc/blockchain_rpc_metadata.cpp  # RPC metadata registration
   src/rpc/methods_wallet_context.cpp
+  src/rpc/orchard_account_rpc.cpp
+  src/rpc/wallet_raw_transaction_rpc.cpp
   src/rpc/methods_swap.cpp  # swap.* RPCs (DIN<->BTC atomic swaps)
   src/rpc/amount_parser.cpp  # Exact DIN/una RPC boundary conversion
   src/rpc/methods_wallet_covenant_profile.cpp  # Regtest-only profile-v1 construction/recovery RPC
@@ -868,6 +904,7 @@ target_link_libraries(dinero_rpc_handlers PRIVATE
   # RocksDB::rocksdb removed - was only needed for payroll_db.cpp (now disabled)
 )
 target_compile_definitions(dinero_rpc_handlers PRIVATE
+  DINERO_WALLET_RAW_ORCHARD=$<TARGET_EXISTS:dinero_orchard_backend>
   DINERO_CLI_GIT_SHA=${GIT_HASH}
   DINERO_GIT_COMMIT_FULL="${GIT_HASH_FULL}"
 )
@@ -1021,9 +1058,12 @@ set(DINERO_CORE_DAEMON_EDGE_SERVICE_SOURCES
 # Excludes: main(), RPC server, gRPC server, WebSocket server
 # Includes: consensus, mining, mempool, services, metrics, daemon context
 add_library(dinero_core STATIC
+  # Canonical selected-chain maintenance belongs to the core owner, not RPC.
+  src/pool/canonical_maintenance.cpp
   src/contracts/contract_signing_package.cpp
   # Daemon context (dependency injection container access)
   src/daemon/daemon_context.cpp
+  src/daemon/reopen_candidate_journal.cpp
   src/daemon/p2p_header_parser.cpp
   ${DINERO_CORE_WEBSOCKET_SOURCES}
 
@@ -1045,7 +1085,13 @@ add_library(dinero_core STATIC
   # Service wrappers (dependency injection containers)
   src/daemon/services/config_service.cpp
   src/daemon/services/wallet_service.cpp
+  src/daemon/services/wallet_service_owner.cpp # Lightweight manager lifetime owner
+  src/daemon/runtime_delivery_worker.cpp # Durable wallet/readmission replay worker
+  src/daemon/runtime_block_reader.cpp # Historical retained bodies also available without Orchard
+  src/daemon/orchard_compact_unavailable.cpp # Explicit refusal when the optional Orchard owner is absent
+  src/daemon/runtime_notification_composition.cpp # All declared consumers prepare before commit
   src/daemon/services/chainstate_service.cpp
+  src/daemon/services/snapshot_wallet_source.cpp
   src/nodecore/sync_profile_policy.cpp
   src/daemon/sync_stats_recorder.cpp  # Forest checkpoint delta campaign phase 0
   src/daemon/services/assumeutxo_lifecycle.cpp  # AssumeUTXO fatal state machine
@@ -1152,7 +1198,11 @@ add_library(dinero_core STATIC
   src/daemon/assumeutxo_precheck.cpp
   src/daemon/block_write_metrics.cpp
   src/daemon/block_relay_manager.cpp  # Phase G.2: Block propagation
+  src/daemon/block_relay_source.cpp   # Selected chainstate adapter for exact wire serving
+  src/daemon/block_relay_ingress.cpp  # Canonical typed relay adapter
+  src/daemon/orchard_network_block.cpp # Typed network routing and completion
   src/daemon/tx_relay_manager.cpp  # Phase G.3: Mempool relay
+  src/daemon/relay_transaction_reader.cpp
 
   # Privacy
   ${DINERO_CORE_PRIVACY_SOURCES}
@@ -1187,6 +1237,15 @@ if(NOT MSVC)
 else()
   target_compile_options(dinero_core PRIVATE /W3)
 endif()
+
+# RuntimeBlockBody and the unavailable capture entry share protocol value types.
+# Only these sources need their headers here; backend compilation is enabled by the
+# actual Orchard library edge below, never by the presence of headers.
+set_property(SOURCE src/daemon/runtime_block_reader.cpp src/daemon/orchard_compact_unavailable.cpp APPEND PROPERTY
+  INCLUDE_DIRECTORIES "${CMAKE_SOURCE_DIR}/rust/orchard_backend/include")
+
+# The concrete pool chain-source binding lives in the core adapter. Generic
+# pool accounting does not depend on core/daemon code; no reverse archive edge.
 
 target_link_libraries(dinero_core PUBLIC
   dinero_address_encoding
@@ -1329,3 +1388,11 @@ include(${CMAKE_SOURCE_DIR}/tests/CMakeLists.txt)
 
 # Optional in-tree component switches live in cmake/.
 include(cmake/OptionalComponents.cmake)
+
+# Staged Orchard backend: independently build/test the real cryptographic
+# library while transaction, wallet and chainstate integration is unfinished.
+# Enabling this builds the component; it does not activate a transaction type.
+option(DINERO_BUILD_ORCHARD_BACKEND "Build the staged Orchard backend" OFF)
+if(DINERO_BUILD_ORCHARD_BACKEND)
+  add_subdirectory(rust/orchard_backend)
+endif()

@@ -1,0 +1,15 @@
+# Retained wallet request dispatch
+
+The actual wallet.sendmany handler accepts an explicit named request with an ordered recipients array of exact integer amount_una values and the existing authenticated request binding. Existing positional DIN batches retain their behavior. Named requests require precisely recipients and request fields; request requires domain, owner, id, fee_rate_hint, maximum_fee_una and audit_context. Domain is vault_withdrawal, identities are nonzero32/16byte hex, amounts/fees are JSON integers. Zero fee hint starts at the existing minimum1; the actual signed fee must remain within the explicit maximum.
+
+After parsing and capturing the selected wallet session, the handler resolves an existing exact request before chain access, coin selection, new change addresses, signing or ingress. A retained result returns the exact body/txid, status retained_request and submission_status not_attempted. It does not submit again or infer current admission/confirmation. Any changed ordered recipients or request payload for the same identity refuses.
+
+A new request follows the actual batch selection and fee-preflight path. SignWalletRequestPreview checks request absence under the same wallet/key owner and its fee cap before signing, without persistence/submission. Final SignAndStageWalletPayment rechecks and durably retains the exact request/body/history/reservations before one Submit call. Preflight may rebuild unsubmitted candidates, but an already-retained body is never replaced. Rejection or an exception after submission retains the origin and reports rejected or outcome_unknown. Retry resolves the same retained origin without another submission. Separate readmission remains explicit work.
+
+Supplying vault-domain bytes is not proof of a genuine initialized vault or authorization beyond the existing authenticated wallet RPC. Runtime's legacy vault callback/sidecar, durable vault state and cross-store recovery are not converted here. This is an actual wallet RPC dispatch boundary and an internal guarded preflight signer; it does not establish complete catalogs, backup-rollback protection, production notification completion or release readiness.
+
+Patched tests execute the real handler, real wallet encryption/history/reservations and synthetic funded coins with an explicit ingress implementation. They cover accepted/rejected/unknown outcomes, exact retry after reopen with no chain/ingress, changed payload and malformed input refusal, fee cap before ingress, and selected-session checks. No unsafe-original/race/deadlock controls. Full ON/OFF, linked project sanitizer and actual CI qualification are separate required evidence.
+
+Locally qualified.
+
+A new attempt still uses the existing builder/address-issuance path. That path can persist a newly issued address before a later fee or preflight refusal. The no-payment-effects assertions cover retained payment/history/reservations and ingress; they do not claim whole-selection or address-issuance rollback. Existing-request lookup occurs before this path.

@@ -94,12 +94,101 @@ def datadir(name):
     # max_peers=0 does NOT disable networking in the C ABI. Use the real
     # daemon configuration, which is loaded before CLI overrides.
     (path / "dinero.conf").write_text(
-        "p2p.offline=1\nlisten=0\nrpc=0\nwallet.socket.enable=0\n"
+        # The embedded RPC registry still owns a loopback listener even with
+        # rpc=0. Let the OS pick its port; never contend with a user's daemon.
+        "p2p.offline=1\nlisten=0\nrpc=0\nrpc.port=0\nwallet.socket.enable=0\n"
         "utreexo.checkpoint_interval=1000\nassumeutxo_bg_stall_timeout=3600\n")
     return path
 
 
+def mainnet_schedule(node):
+    # Mainnet schedules Orchard (H150000). The daemon refuses to start while the
+    # legacy Lightning oracle clients are enabled, and embedded hosts never run
+    # them, so NodeCore must disable them itself. App static peers (addnode)
+    # must reach the daemon too. Offline: no peer is contacted.
+    path = datadir("mainnet-schedule")
+    started = node.start(path, network="mainnet", addnode="127.0.0.1:9,127.0.0.2:9")
+    check("embedded mainnet with scheduled Orchard starts", started == 0, started)
+    status = node.call("status")
+    check("embedded mainnet is running", status["running"] and status["network"] == "mainnet", status)
+    # The daemon's own startup line counts configured addnode seeds (none on
+    # mainnet otherwise); this is the first P2P start in this driver's log.
+    seeds = [line for line in (WORK / "nodecore.log").read_text(errors="replace").splitlines()
+             if "[P2PService]   Seed nodes:" in line]
+    check("app static peers reach the daemon", bool(seeds) and seeds[0].endswith("Seed nodes: 2"), seeds[:1])
+    # An embedded host is a client: no Utreexo bridge mode (proof pre-caching,
+    # NODE_UTREEXO_BRIDGE advertised) unless it opts in with "utreexo_bridge".
+    log = (WORK / "nodecore.log").read_text(errors="replace")
+    check("embedded node is not a Utreexo bridge by default", "Utreexo bridge mode ENABLED" not in log)
+    check("mainnet stop", node.call("stop") == 0)
+    bridge = datadir("mainnet-bridge-opt-in")
+    check("bridge opt-in starts", node.start(bridge, network="mainnet", utreexo_bridge=True) == 0)
+    log = (WORK / "nodecore.log").read_text(errors="replace")
+    check("utreexo_bridge: true still enables bridge mode", "Utreexo bridge mode ENABLED" in log)
+    check("bridge opt-in stop", node.call("stop") == 0)
+
+    # Prove explicit app false beats a conflicting daemon config, for both
+    # supported SDK profiles (phones share ios_utreexo). Observe the live daemon, not only its startup narration.
+    for profile in ("ios_utreexo", "mac_fullblock"):
+        phone = datadir("bridge-disabled-" + profile)
+        with (phone / "dinero.conf").open("a") as config:
+            config.write("utreexo-bridge=1\n")
+        check(profile + " starts with explicit bridge false",
+              node.start(phone, sync_profile=profile, utreexo_bridge=False) == 0)
+        commitment = node.rpc("blockchain.getutreexocommitment")
+        commitment = commitment.get("result", commitment)
+        check(profile + " disables daemon bridge mode despite config true",
+              commitment.get("bridge_enabled") is False, commitment)
+        check(profile + " is not an active proof bridge",
+              commitment.get("bridge_active") is False, commitment)
+        status = node.call("status")
+        check(profile + " preserves the requested validation profile",
+              status.get("sync_profile") == profile and
+              status.get("utreexo_stateless") is (profile == "ios_utreexo"), status)
+        check(profile + " stop", node.call("stop") == 0)
+
+
+def rpc_port_held_by_desktop_daemon(node):
+    # A Mac running dinero-qt has dinerod on the canonical mainnet RPC port 20998.
+    # The embedded node must still start: hosts use in-process RPC, so NodeCore
+    # takes any free loopback port unless the host asks for one ("rpc_port").
+    import socket
+    holder = socket.socket()
+    try:
+        holder.bind(("127.0.0.1", 20998))
+        holder.listen(1)
+    except OSError:
+        holder.close()
+        holder = None  # already held (e.g. a real dinero-qt on this machine)
+    path = WORK / "rpc-port-held"
+    path.mkdir()
+    (path / "dinero.conf").write_text(  # no rpc.port: the embedded default decides
+        "p2p.offline=1\nlisten=0\nwallet.socket.enable=0\n"
+        "utreexo.checkpoint_interval=1000\nassumeutxo_bg_stall_timeout=3600\n")
+    started = node.start(path, network="mainnet")
+    check("embedded mainnet starts while 20998 is held", started == 0, started)
+    check("rpc-port-held stop", node.call("stop") == 0)
+    rejected = node.start(WORK / "rpc-port-bad", network="mainnet", rpc_port=70000)
+    check("an out-of-range rpc_port is refused", rejected != 0, rejected)
+    if holder:
+        holder.close()
+
+
+def status_during_start(node):
+    # Hosts poll status from UI timers; it must not wait for a start in progress.
+    path = datadir("status-during-start")
+    probe = node.call("status_during_start", datadir=str(path), config={
+        "network": "regtest", "verbose_logging": True, "sync_profile": "mac_fullblock"})
+    check("start under status polling succeeds", probe["start_result"] == 0, probe)
+    check("status reports starting while a start runs", probe["saw_starting"], probe)
+    check("status answers at once during start", probe["slowest_status_ms_during_start"] < 200, probe)
+    check("status-during-start stop", node.call("stop") == 0)
+
+
 def lifecycle(node):
+    mainnet_schedule(node)
+    status_during_start(node)
+    rpc_port_held_by_desktop_daemon(node)
     path = datadir("lifecycle")
     check("already stopped is idempotent", node.call("stop") == 0)
     started = node.start(path)
@@ -125,12 +214,262 @@ def lifecycle(node):
     check("restart closes cleanly", node.call("stop") == 0)
 
 
+def datadir_lock(node):
+    # Native kernel-lock regression using the real linked C ABI. No mock
+    # owner, forced database unlock or installed datadir is involved.
+    import fcntl
+    path = datadir("locked-root").resolve()
+    alias = WORK / "root-alias"
+    alias.symlink_to(path, target_is_directory=True)
+    with (path / "dinerod.lock").open("a+b") as lease:
+        fcntl.flock(lease, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        refused = node.start(alias)
+        check("existing root lock refuses alias before Init", refused == -3, refused)
+        check("lock refusal does not create ChainDB", not (path / "blockchain").exists())
+        fcntl.flock(lease, fcntl.LOCK_UN)
+        check("alias starts after external lock release", node.start(alias) == 0)
+        check("locked alias node answers", node.rpc("getblockcount") == 0)
+        try:
+            fcntl.flock(lease, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            held = False
+            fcntl.flock(lease, fcntl.LOCK_UN)
+        except BlockingIOError:
+            held = True
+        check("SDK retains root lock while running", held)
+        contender = Embedded()
+        try:
+            check("second process cannot open resolved root", contender.start(path) == -3)
+            check("owner still answers after contention", node.rpc("getblockcount") == 0)
+            check("SDK closes before root release", node.call("stop") == 0)
+            fcntl.flock(lease, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            check("completed stop releases root lock", not (path / "dinerod.pid").exists())
+            fcntl.flock(lease, fcntl.LOCK_UN)
+            check("other process reopens resolved root", contender.start(path) == 0)
+            check("alias cannot bypass reopened root lock", node.start(alias) == -3)
+            check("second process closes cleanly", contender.call("stop") == 0)
+        finally:
+            contender.close()
+        check("alias cold reopen after both owners close", node.start(alias) == 0)
+        check("final alias owner closes", node.call("stop") == 0)
+
+
 def state(node):
     commitment = node.rpc("blockchain.getutreexocommitment")
     return {"height": node.rpc("getblockcount"), "hash": node.rpc("getbestblockhash"),
             "utreexo": {key: commitment[key] for key in
                 ("commitment", "num_leaves", "num_roots", "verified_height")},
             "shielded": node.rpc("daemon.shieldedroot")}
+
+
+def storage_readiness(node):
+    def layout(path):
+        db = path / "blockchain" / "chaindb"
+        options = sorted(db.glob("OPTIONS-*"))
+        return bool(options) and "shielded_state_v1" in options[-1].read_text(errors="replace")
+    def seeds(path):
+        # Inspect only closed disposable wallets, retaining digests not seed
+        # material in the test's output. Migration must not change these rows.
+        found = {}
+        for db in sorted((path / "wallets").glob("wallet_*.db")):
+            with sqlite3.connect(db.as_uri()+"?mode=ro", uri=True) as sql:
+                rows = sql.execute("SELECT * FROM hd_seeds ORDER BY id").fetchall()
+            found[db.name] = hashlib.sha256(repr(rows).encode()).hexdigest()
+        assert found, "real bootstrap must create a wallet"
+        return found
+    path = datadir("fresh-stateless-ready").resolve()
+    check("fresh scheduled stateless SDK starts", node.start(path, network="mainnet", sync_profile="ios_utreexo") == 0)
+    before = state(node)
+    check("fresh scheduled SDK is separated before sync", layout(path))
+    check("fresh readiness closes", node.call("stop") == 0)
+    original_seeds = seeds(path)
+    check("fresh readiness cold reopen", node.start(path, network="mainnet", sync_profile="ios_utreexo") == 0)
+    check("fresh readiness roots unchanged", state(node) == before)
+    check("fresh readiness second close", node.call("stop") == 0)
+    check("fresh readiness keeps wallet seed", seeds(path) == original_seeds)
+
+    legacy = datadir("legacy-stateless-ready").resolve()
+    check("real stopped legacy fixture", node.call("legacy_storage_fixture", datadir=str(legacy)) == 0)
+    check("fixture is legacy before embedded start", not layout(legacy))
+    original_seeds = seeds(legacy)
+    sentinel = legacy / "wallets" / "pending-sentinel"
+    sentinel.write_bytes(b"fixture-outside-chaindb-must-not-change")
+    check("SDK upgrades existing legacy store for stateless profile", node.start(legacy, network="mainnet", sync_profile="ios_utreexo") == 0)
+    check("legacy store separated", layout(legacy))
+    check("original legacy store retained", (legacy/"blockchain"/"chaindb.legacy-v1").is_dir())
+    check("migration kept canonical genesis", state(node) == before)
+    check("migration closes", node.call("stop") == 0)
+    check("migration keeps seed and unrelated pending file", seeds(legacy) == original_seeds and sentinel.read_bytes() == b"fixture-outside-chaindb-must-not-change")
+    check("migrated stateless SDK cold reopens", node.start(legacy, network="mainnet", sync_profile="ios_utreexo") == 0)
+    check("migrated cold roots unchanged", state(node) == before)
+    check("migrated final close", node.call("stop") == 0)
+
+    linked = datadir("inner-symlink-refusal").resolve()
+    check("real legacy fixture for inner-symlink negative", node.call("legacy_storage_fixture", datadir=str(linked)) == 0)
+    original_seeds = seeds(linked)
+    (linked/"blockchain").rename(linked/"private-blockchain")
+    (linked/"blockchain").symlink_to(linked/"private-blockchain", target_is_directory=True)
+    check("preactivation refusal can still report its status", node.start(linked, network="mainnet", sync_profile="ios_utreexo") == 0)
+    report = node.rpc("orchard.getactivationstatus")
+    check("inner-symlink migration guard still refuses", report["storage_upgrade_refused"] is True, report)
+    check("refusal does not publish separated layout", not layout(linked) and not (linked/"blockchain"/"chaindb.legacy-v1").exists())
+    check("refusal keeps canonical genesis", state(node) == before)
+    check("refused store closes", node.call("stop") == 0)
+    check("refusal keeps wallet seed", seeds(linked) == original_seeds)
+
+
+def reopen_fences(node):
+    path = datadir("reopen-fence-owner")
+    phrase = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
+    check("real Core for fences starts", node.start(path) == 0)
+    restored = node.rpc("wallet.restore", {"name":"reopen-owner", "mnemonic":phrase, "rescan":False})
+    check("named fixture wallet is open", restored["success"] is True)
+    probe = node.call("reopen_fences")
+    check("real wallet and pool reopen fences", probe == {
+        "wallet_name":"reopen-owner", "candidate_count":0,
+        "foreign_fence_refused":True,
+        "wallet_reentrant_refused":True, "pool_reentrant_refused":True,
+        "wallet_gate_closed":True, "pool_gate_closed":True,
+        "wallet_stop_requires_decision":True, "pool_stop_requires_decision":True}, probe)
+    check("aborted fences keep live context", node.rpc("getblockcount") == 0)
+    check("named wallet opens without phrase after fence abort", node.rpc("wallet.open", ["reopen-owner"])["success"] is True)
+    check("fence fixture stops", node.call("stop") == 0)
+    check("fence fixture cold reopens", node.start(path) == 0)
+    check("named wallet reopens without phrase after ordinary restart", node.rpc("wallet.open", ["reopen-owner"])["success"] is True)
+    check("fence fixture closes", node.call("stop") == 0)
+
+
+def reopen_rpc_pause(node):
+    path = datadir("reopen-rpc-owner")
+    phrase = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
+    check("RPC pause real Core starts", node.start(path) == 0)
+    check("RPC pause named wallet opens", node.rpc("wallet.restore", {"name":"rpc-owner", "mnemonic":phrase, "rescan":False})["success"] is True)
+    probe = node.call("reopen_rpc_pause")
+    expected = {key:True for key in ["nested_refused", "stale_epoch_refused", "resumed_epoch_allowed",
+        "overlap_refusal_suppressed", "wallet.orchard.queueshield", "wallet.orchard.queuespend",
+        "wallet.orchard.queuesend", "getblockcount"]}
+    check("paused queues return no reply, including complete overlap", probe == expected, probe)
+    check("RPC resumes on same context", node.rpc("getblockcount") == 0)
+    check("named wallet remains openable without phrase", node.rpc("wallet.open", ["rpc-owner"])["success"] is True)
+    check("RPC pause fixture closes", node.call("stop") == 0)
+
+
+def app_reopen(node):
+    # Real linked DaemonApp instances, not a source mocked owner. No nodecore
+    # worker/automatic boundary is claimed by this sequential host fixture.
+    path = datadir("actual-app-reopen")
+    probe = node.call("actual_app_reopen", datadir=str(path))
+    check("actual App sealed close/fresh App/named open", probe == {
+        "candidates":0, "resolved":0, "retained":0, "wallet_name":"reopen-owner",
+        "paused_queues_retryable":True, "wallet_open_without_phrase":True,
+        "stale_epoch_refused":True, "repeat_resume_refused":True, "resumed_epoch_allowed":True,
+        "completed_intent_archived":True}, probe)
+
+
+def app_pending_reopen(node):
+    expected = {"candidates":0, "resolved":0, "retained":0, "wallet_name":"reopen-owner",
+        "paused_queues_retryable":True, "wallet_open_without_phrase":True,
+        "stale_epoch_refused":True, "repeat_resume_refused":True, "resumed_epoch_allowed":True,
+        "completed_intent_archived":True}
+    same = node.call("actual_app_reopen", datadir=str(datadir("abandoned-app-reopen")), mode="abandoned")
+    check("live pause is not stolen; abandoned receipt recovers closed", same == {
+        **expected, "live_token_refused":True, "abandoned_gate_stays_closed":True}, same)
+    path = datadir("cold-pending-app-reopen")
+    prepared = node.call("actual_app_reopen", datadir=str(path), mode="prepare")
+    check("pending intent survives complete original host exit", prepared == {
+        "pending_wallet":"reopen-owner", "pending_count":0, "rpc_closed":True}, prepared)
+    node.close()
+    check("original driver exits cleanly before fresh host", node.process.returncode == 0, node.process.returncode)
+    fresh = Embedded()
+    try:
+        recovered = fresh.call("actual_app_reopen", datadir=str(path), mode="cold")
+        check("fresh process reopens named wallet without phrase and retry-gates queues", recovered == expected, recovered)
+    finally:
+        fresh.close()
+    check("cold recovery driver exits cleanly", fresh.process.returncode == 0, fresh.process.returncode)
+
+
+def app_prepared_readmission(node):
+    # Actual linked Apps at GENESIS/EMPTY pool. No automatic SDK publication,
+    # activation crossing or nonempty private-payment survival is claimed.
+    prepared = {"paused_queues_retryable":True, "prepared_candidates":0,
+        "prepared_resolved":0, "prepared_retained":0, "prepared_gate_closed":True,
+        "prepared_exact_intent_retained":True, "prepared_named_wallet":"reopen-owner",
+        "prepared_queues_retryable":True}
+    resumed = {"candidates":0, "resolved":0, "retained":0, "wallet_name":"reopen-owner",
+        "paused_queues_retryable":True, "wallet_open_without_phrase":True,
+        "stale_epoch_refused":True, "repeat_resume_refused":True, "resumed_epoch_allowed":True,
+        "completed_intent_archived":True}
+    probe = node.call("actual_app_reopen", datadir=str(datadir("prepared-resume")), mode="prepared-resume")
+    check("readmission keeps RPC and durable intent closed until explicit completion", probe == {**prepared, **resumed}, probe)
+    path = datadir("prepared-exit")
+    probe = node.call("actual_app_reopen", datadir=str(path), mode="prepared-exit")
+    check("prepared replacement stops without archiving intent or reopening queues", probe == prepared, probe)
+    node.close()
+    check("prepared host exits cleanly with its intent still selected", node.process.returncode == 0, node.process.returncode)
+    fresh = Embedded()
+    try:
+        recovered = fresh.call("actual_app_reopen", datadir=str(path), mode="cold")
+        check("fresh process recovers prepared named wallet without phrase", recovered == resumed, recovered)
+    finally:
+        fresh.close()
+    check("prepared recovery host exits cleanly", fresh.process.returncode == 0, fresh.process.returncode)
+
+
+def sdk_pending_reopen(node):
+    # Real Apps and the actual linked SDK worker, GENESIS/EMPTY corpus only.
+    # Publication/pending-intent controls, not activation/queued acceptance.
+    path = datadir("short-publication")
+    probe = node.call("actual_app_reopen", datadir=str(path), mode="published")
+    for field in ["unprepared_publish_refused", "foreign_publish_refused",
+                  "throw_keeps_gate_closed", "gate_closed_inside_publication",
+                  "gate_open_after_publication", "published_intent_retained",
+                  "prepared_gate_closed", "prepared_exact_intent_retained",
+                  "prepared_queues_retryable", "paused_queues_retryable",
+                  "completed_intent_archived", "wallet_open_without_phrase"]:
+        check("publication contract: " + field, probe[field] is True, probe)
+    check("short publication reopens intended named wallet", probe["wallet_name"] == "reopen-owner", probe)
+    path = datadir("published-before-archive-exit")
+    prepared = node.call("actual_app_reopen", datadir=str(path), mode="published-exit")
+    check("published host exits before archive without dropping intent",
+          prepared["published_intent_retained"] and prepared["gate_open_after_publication"], prepared)
+    pending = path / ".core-reopen-pending-v1"
+    intent_bytes = pending.read_bytes()
+    journals = {p.name: {str(f.relative_to(p)): hashlib.sha256(f.read_bytes()).hexdigest()
+                        for f in p.rglob("*") if f.is_file()}
+                for p in path.glob(".core-reopen-candidates-v1-*") if p.is_dir()}
+    check("selected pending corpus exists before fresh SDK start", bool(journals))
+    node.close()
+    check("publication fixture process exits cleanly", node.process.returncode == 0)
+    fresh = Embedded()
+    try:
+        check("actual SDK automatically recovers pending named intent", fresh.start(path) == 0)
+        check("SDK recovered App is running", fresh.call("status")["running"] is True)
+        # Loading the named wallet alone is insufficient: WalletService also
+        # remembers the last active wallet. Prove the worker actually consumed
+        # the selected intent through normal readmission, then retained its
+        # completed control and the original public candidate corpus.
+        deadline = time.monotonic() + 10
+        while pending.exists() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        completed = list(path.glob(".core-reopen-pending-v1.completed-*"))
+        check("SDK worker completed selected pending readmission",
+              not pending.exists() and len(completed) == 1)
+        check("SDK retains completed intent bytes", completed[0].read_bytes() == intent_bytes)
+        check("SDK preserves original public candidate corpus", journals == {
+            p.name: {str(f.relative_to(p)): hashlib.sha256(f.read_bytes()).hexdigest()
+                     for f in p.rglob("*") if f.is_file()}
+            for p in path.glob(".core-reopen-candidates-v1-*") if p.is_dir()})
+        check("SDK worker loaded the active named wallet before caller open",
+              fresh.rpc("wallet.getwalletinfo")["walletname"] == "reopen-owner")
+        check("SDK named wallet opens without phrase", fresh.rpc("wallet.open", ["reopen-owner"])["success"] is True)
+        check("SDK canonical RPC uses replacement App", fresh.rpc("getblockcount") == 0)
+        check("SDK recovered owner stops normally", fresh.call("stop") == 0)
+        check("SDK ordinary restart after publication", fresh.start(path) == 0)
+        check("SDK named wallet still opens without phrase", fresh.rpc("wallet.open", ["reopen-owner"])["success"] is True)
+        check("SDK closes recovered restart", fresh.call("stop") == 0)
+    finally:
+        fresh.close()
+    check("SDK recovery process exits cleanly", fresh.process.returncode == 0)
 
 
 def stopped_wallet_birth_height(path, name):
@@ -155,6 +494,11 @@ def snapshot(node):
     selected = generation_a / "snapshot.dat"
     newer = staging_b / "snapshot.dat"
     check("source NodeCore starts", node.start(source) == 0)
+    # Startup owns a generated default wallet. Recovery uses a separate name;
+    # the subsequent import exercises the existing same-seed bind handler.
+    restored = node.rpc("wallet.restore", {
+        "name": "snapshot-source", "mnemonic": mnemonic, "rescan": False})
+    check("source recovery uses a new wallet", restored.get("success") is True, restored)
     imported = node.rpc("wallet.importmnemonic", {
         "mnemonic": mnemonic, "rescan": False, "initial_address_count": 4})
     check("source owns fixture scripts", imported["success"] and imported["watch_scripts"] > 0, imported)
@@ -191,6 +535,8 @@ def snapshot(node):
     rejector = datadir("rejector")
     shutil.copytree(source / "headers", rejector / "headers")
     check("empty consumer starts for rejection control", node.start(rejector, **manifest_config) == 0)
+    check("legacy compact profile reports its actual full backing",
+          node.rpc("blockchain.getutreexocommitment")["retains_full_state"] is True)
     before_rejection = state(node)
     damaged_dir = WORK / "damaged"
     damaged_dir.mkdir()
@@ -222,6 +568,8 @@ def snapshot(node):
     else:
         check("startup imported the configured base", startup_height == 130, startup_height)
     check("import preserves source roots and tip", state(node) == expected, state(node))
+    check("legacy assumed-base read does not invent a root-only owner",
+          node.rpc("blockchain.getutreexocommitment")["retains_full_state"] is True)
     check("unrelated consumer wallet owns no fixture coins", len(node.rpc("wallet.listunspent", [0])) == 0)
 
     # The consumer has already returned from nodecore_start. Publish another
@@ -232,6 +580,11 @@ def snapshot(node):
     check("another complete generation is published", newer.is_file()
           and Path(str(newer) + ".manifest.json").is_file())
     check("later generation has different bytes", hashlib.sha256(newer.read_bytes()).hexdigest() != digest)
+    # Establish the recovered seed without replacing the consumer's default
+    # wallet or scanning. The unchanged import below must still read generation A.
+    restored = node.rpc("wallet.restore", {
+        "name": "snapshot-recovered", "mnemonic": mnemonic, "rescan": False})
+    check("late recovery uses a new wallet", restored.get("success") is True, restored)
     imported = node.rpc("wallet.importmnemonic", {
         "mnemonic": mnemonic, "rescan": True, "initial_address_count": 4})
     check("late wallet recovery reads selected generation", imported.get("success") is True
@@ -393,7 +746,14 @@ node = Embedded()
 success = False
 try:
     try:
-        {"lifecycle": lifecycle, "snapshot": snapshot, "maintenance": maintenance,
+        {"lifecycle": lifecycle, "datadir_lock": datadir_lock, "storage_readiness": storage_readiness,
+         "reopen_fences": reopen_fences,
+         "reopen_rpc_pause": reopen_rpc_pause,
+         "app_reopen": app_reopen,
+         "app_pending_reopen": app_pending_reopen,
+         "app_prepared_readmission": app_prepared_readmission,
+         "sdk_pending_reopen": sdk_pending_reopen,
+         "snapshot": snapshot, "maintenance": maintenance,
          "maintenance_gate": maintenance_gate}[os.environ["NODECORE_SCENARIO"]](node)
         success = True
     finally:

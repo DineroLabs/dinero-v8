@@ -135,7 +135,8 @@ def main() -> int:
             if existing != content:
                 mismatches.append(str(path))
             continue
-        path.write_text(content, encoding="utf-8")
+        # Preserve the committed LF bytes on Windows as well as POSIX hosts.
+        path.write_bytes(content.encode("utf-8"))
         print(f"wrote {path}")
 
     if mismatches:

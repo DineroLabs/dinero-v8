@@ -25,15 +25,38 @@ namespace dinero::swap {
 
 struct TowerPackage;  // tower.h
 
+// Captured from the intended wallet before authorizing DIN funding. This is
+// stored inside the existing encrypted session, never reconstructed from the
+// currently selected wallet on recovery. The full offer identity remains in
+// record.offer; a UI's shortened SwapId is not a payment request identity.
+struct DinFundingBinding {
+    Bytes32 wallet_id{};
+    uint64_t fee_rate_hint{};
+    uint64_t maximum_fee_una{};
+    bool operator==(const DinFundingBinding&) const = default;
+};
+
+// Shared strict field parser for both encrypted pending offers and sessions.
+// All three fields are mandatory when a binding is present.
+DinFundingBinding ParseDinFundingBinding(const std::string& wallet_id,
+                                        const std::string& fee_rate_hint,
+                                        const std::string& maximum_fee_una);
+void RequireDinFundingBinding(const DinFundingBinding& binding);
+
 // Everything one party needs to resume a swap after a restart.
 struct SwapSession {
     SwapRecord record;
+    // Absent in legacy records: absence supplies no funding authorization.
+    std::optional<DinFundingBinding> din_funding_binding;
     uint32_t btc_scan_from_height{};          // BTC tip when the swap was accepted
     uint32_t din_scan_from_height{};          // DIN tip when the swap was accepted
     // The lock transactions, pinned once known: Alice's own DIN funding (from
     // her wallet), Alice's DIN lock as Bob saw it when he funded BTC, and Bob's
     // own BTC funding. Payments to the same scripts never stand in for them.
     std::string din_funding_txid;
+    // Exact wallet-retained signed body, saved before any submission.
+    std::string din_funding_raw;
+    bool din_funding_submitted{false};
     std::string btc_funding_txid;
     // Bob with a tower: his funding, built and signed but NOT yet broadcast
     // (sent once the tower confirms it holds the package). Empty once sent.
@@ -106,6 +129,25 @@ struct RunnerConfig {
     std::string btc_chain{"main"};  // Bitcoin Core getblockchaininfo "chain" this swap must run on
 };
 
+struct PreparedDinFunding {
+    std::vector<uint8_t> raw;
+    std::string txid;
+};
+struct DinFundingRequest {
+    DinFundingBinding binding;
+    Bytes32 offer_id{};  // complete public offer identity, never the UI locator
+    std::string address;
+    uint64_t amount_una{};
+};
+enum class DinFundingOperation { Prepare, Resolve, SubmitRetained };
+// The daemon adapter owns the wallet lifetime and final payer/session checks.
+// Prepare only retains; Resolve never creates; SubmitRetained can only submit
+// the exact authenticated retained body supplied by the caller.
+using DinFundingOwner = std::function<PreparedDinFunding(const DinFundingRequest&,
+    DinFundingOperation, const std::vector<uint8_t>& expected_body)>;
+DinFundingRequest FundingRequestFor(const SwapSession&, const std::string& hrp);
+void ValidateDinFundingBody(const SwapSession&, const PreparedDinFunding&);
+
 struct PreparedBtcFunding {
     std::vector<uint8_t> raw;  // signed, not broadcast
     std::string txid;          // display hex
@@ -120,6 +162,9 @@ public:
     virtual DinWatchReport ObserveDin() = 0;
     virtual BtcWatchReport ObserveBtc() = 0;
     virtual std::string FundDin(const std::string& address, uint64_t amount_una) = 0;
+    virtual PreparedDinFunding PrepareDinFunding(const DinFundingRequest&);
+    virtual PreparedDinFunding ResolveDinFunding(const DinFundingRequest&);
+    virtual void SubmitDinFunding(const DinFundingRequest&, const PreparedDinFunding&);
     virtual std::string FundBtc(const std::string& address, uint64_t amount_sat) = 0;
     virtual std::string BroadcastDin(const std::vector<uint8_t>& raw_tx) = 0;
     virtual std::string BroadcastBtc(const std::vector<uint8_t>& raw_tx) = 0;
@@ -170,12 +215,16 @@ struct SwapWatchSpec {
 SwapWatchSpec WatchSpecFor(const SwapSession& session, const RunnerConfig& config);
 
 // Node RPC implementation. `btc` must reach a wallet only for Bob (FundBtc).
-// Dinero funding uses wallet.sendtoaddress {address, amount_una}.
+// Dinero funding requires the explicit retained-payment owner; no generic-send fallback.
 class RpcSwapChainIo : public SwapChainIo {
 public:
     RpcSwapChainIo(DinRpc din, BtcRpc btc, const SwapSession& session, const RunnerConfig& config);
     RpcSwapChainIo(DinRpc din, BtcRpc btc, SwapWatchSpec spec);
     void PinFunding(const std::string& din_txid, const std::string& btc_txid) override;
+    void SetDinFundingOwner(DinFundingOwner owner) { funding_owner_ = std::move(owner); }
+    PreparedDinFunding PrepareDinFunding(const DinFundingRequest&) override;
+    PreparedDinFunding ResolveDinFunding(const DinFundingRequest&) override;
+    void SubmitDinFunding(const DinFundingRequest&, const PreparedDinFunding&) override;
     // Optional: where ArmTower() delivers packages (e.g. writes the tower's inbox).
     void SetTowerSink(std::function<void(const std::string&)> sink) { tower_sink_ = std::move(sink); }
     // Optional: whether the tower confirmed a swap's package (see WriteTowerInbox).
@@ -195,6 +244,7 @@ public:
 
 private:
     DinRpc din_;
+    DinFundingOwner funding_owner_;
     BtcRpc btc_;
     SwapWatchSpec spec_;
     std::unique_ptr<DinWatcher> din_watcher_;
@@ -262,6 +312,8 @@ private:
     void BumpOrSweepDin(const DinWatchReport& din, uint32_t now, std::vector<std::string>& events);
     uint64_t DinFeeByUrgency(uint32_t din_mtp) const;
     void PinAndSave(const std::string& din_txid, const std::string& btc_txid);
+    void SendRetainedDinFunding(const DinWatchReport&, const BtcWatchReport&, uint32_t,
+                                std::vector<std::string>&);
     void SetClaimSeen(bool seen);
     uint64_t BtcFeeNow(uint32_t now) const;
     void SingleChainRebroadcast(const DinWatchReport& din, const BtcWatchReport& btc, uint32_t now,

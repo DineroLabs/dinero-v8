@@ -24,7 +24,16 @@
 #include "wallet/recipient_descriptor.h"
 #include "primitives/block.h"
 #include "rpc/methods_utreexo.h"
+#include "consensus/orchard_profile.h"
+#include "daemon/mempool_transaction.h"
+#if DINERO_WALLET_RAW_ORCHARD
+#include "daemon/runtime_block_reader.h"
+#include "orchard_transaction.h"
+#endif
+#include <cstring>
+#include <optional>
 #include <sstream>
+#include <limits>
 #include <iomanip>
 #include <algorithm>
 #include <chrono>
@@ -219,18 +228,51 @@ static bool decodeAddressToScriptHex(const std::string& address,
     return true;
 }
 
-static std::optional<std::pair<std::string, uint64_t>> getAuthoritativeCoin(
-    const std::shared_ptr<dinero::ChainstateService>& chainstate,
-    dinero::ChainDB* chain_db,
-    const dinero::TxOutPoint& outpoint) {
-    if (chainstate->IsAssumeUTXOActive()) {
-        auto coin = chainstate->GetActiveUTXO(dinero::OutPoint{outpoint.txid, outpoint.vout});
-        if (!coin) return std::nullopt;
-        return std::make_pair(bytesToHex(coin->scriptPubKey), coin->value.GetUna());
-    }
-    auto coin = chain_db->getCoin(outpoint.txid.AsUint256(), outpoint.vout);
-    if (coin.status() != dinero::Status::Ok) return std::nullopt;
-    return std::make_pair(coin.value().script_pubkey, coin.value().amount);
+// All requested addresses share this one owned pool/input snapshot. A missing
+// configured service is an error; an explicitly absent optional pool is empty.
+static std::vector<dinero::Mempool::EntryWithInputCoins> capturePending(
+    const ExecutionContext& ctx) {
+    if (!ctx.daemon || !ctx.daemon->mempool) return {};
+    auto use = dinero::MempoolService::AcquirePoolUse(ctx.daemon->mempool);
+    return use->Pool().CaptureEntriesWithInputCoins();
+}
+
+static void addPendingAmount(int64_t& total, uint64_t amount, bool subtract) {
+    if (amount > static_cast<uint64_t>(std::numeric_limits<int64_t>::max()))
+        throw std::runtime_error("Pending address amount out of range");
+    const auto value = static_cast<int64_t>(amount);
+    if ((!subtract && total > std::numeric_limits<int64_t>::max() - value) ||
+        (subtract && total < std::numeric_limits<int64_t>::min() + value))
+        throw std::runtime_error("Pending address total out of range");
+    total += subtract ? -value : value;
+}
+
+struct PendingAddressEffect {
+    int64_t net = 0;
+    bool input = false;
+    bool output = false;
+};
+static PendingAddressEffect pendingEffect(
+    const dinero::Mempool::EntryWithInputCoins& captured, const std::string& script) {
+    PendingAddressEffect effect;
+    const auto& body = captured.entry.tx;
+    if (captured.input_coins.size() != body.Inputs().size())
+        throw std::runtime_error("Pending address input inventory mismatch");
+    const auto apply = [&](const dinero::consensus::UTXOEntry& coin, bool input) {
+        if (bytesToHex(coin.scriptPubKey) != script) return;
+        if (coin.is_confidential)
+            throw std::runtime_error("Pending confidential address amount unavailable");
+        addPendingAmount(effect.net, coin.value.GetUna(), input);
+        if (input) effect.input = true; else effect.output = true;
+    };
+    for (size_t i = 0; i < body.OutputCount(); ++i)
+        apply(body.OutputCoin(i, captured.entry.height), false);
+    for (const auto& coin : captured.input_coins) apply(coin, true);
+    return effect;
+}
+static void addPendingDelta(int64_t& total, int64_t delta) {
+    // absUna handles INT64_MIN without signed negation overflow.
+    addPendingAmount(total, absUna(delta), delta < 0);
 }
 
 // ─── RPC: getaddressbalance ─────────────────────────────────────────────
@@ -277,6 +319,7 @@ Json rpc_getaddressbalance(const ExecutionContext& ctx, const Json& params) {
             return result;
         }
 
+        auto selected_chain = chainstate->AcquireBlockIngressActivationLock();
         // Sum confirmed UTXOs
         uint64_t confirmed = 0;
         bool scan_ok = true;
@@ -300,41 +343,11 @@ Json rpc_getaddressbalance(const ExecutionContext& ctx, const Json& params) {
             return result;
         }
 
-        // Sum unconfirmed from mempool
+        const auto pending = capturePending(ctx);
+        selected_chain.unlock();
         int64_t unconfirmed = 0;
-        if (ctx.daemon->mempool && ctx.daemon->mempool->isInitialized()) {
-            auto mempool_txs = ctx.daemon->mempool->mempool().getTransactionsForAddress(address);
-            for (const auto& tx : mempool_txs) {
-                // Sum outputs to this address
-                for (const auto& output : tx.vout) {
-                    if (bytesToHex(output.scriptPubKey) == target_script) {
-                        unconfirmed += static_cast<int64_t>(output.value.GetUna());
-                    }
-                }
-                // Subtract inputs spending from this address. Prefer mempool
-                // parents first so descendant spends cancel unconfirmed
-                // receives correctly before the package confirms.
-                for (const auto& input : tx.vin) {
-                    bool matched_input = false;
-
-                    if (auto parent_tx = ctx.daemon->mempool->mempool().getTransaction(input.prevout.txid.AsUint256());
-                        parent_tx && input.prevout.vout < parent_tx->vout.size()) {
-                        const auto& spent_output = parent_tx->vout[input.prevout.vout];
-                        if (bytesToHex(spent_output.scriptPubKey) == target_script) {
-                            unconfirmed -= static_cast<int64_t>(spent_output.value.GetUna());
-                            matched_input = true;
-                        }
-                    }
-
-                    if (!matched_input) {
-                        auto coin = getAuthoritativeCoin(chainstate, chain_db, input.prevout);
-                        if (coin && coin->first == target_script) {
-                            unconfirmed -= static_cast<int64_t>(coin->second);
-                        }
-                    }
-                }
-            }
-        }
+        for (const auto& captured : pending)
+            addPendingDelta(unconfirmed, pendingEffect(captured, target_script).net);
 
         const uint64_t estimated_balance = applySignedDelta(confirmed, unconfirmed);
 
@@ -385,67 +398,18 @@ Json rpc_getaddressmempool(const ExecutionContext& ctx, const Json& params) {
             return result;
         }
 
-        if (!ctx.daemon || !ctx.daemon->mempool || !ctx.daemon->mempool->isInitialized()) {
-            result["address"] = address;
-            result["transactions"] = Json(::Json::arrayValue);
-            return result;
-        }
-
-        auto chainstate = std::dynamic_pointer_cast<dinero::ChainstateService>(ctx.daemon->chainstate);
-        dinero::ChainDB* chain_db = chainstate ? chainstate->GetChainDB() : nullptr;
-        if (!chain_db) {
-            result["error"]["code"] = -1;
-            result["error"]["message"] = "ChainDB not initialized";
-            return result;
-        }
-
-        auto& mempool = ctx.daemon->mempool->mempool();
-        auto mempool_txs = mempool.getTransactionsForAddress(address);
-
+        if (!ctx.daemon) throw std::runtime_error("Daemon not available");
+        const auto pending = capturePending(ctx);
         ::Json::Value txs_arr(::Json::arrayValue);
-        for (const auto& tx : mempool_txs) {
+        for (const auto& captured : pending) {
+            const auto effect = pendingEffect(captured, target_script);
+            if (!effect.input && !effect.output) continue;
             Json entry;
-            entry["txid"] = tx.GetTxid().AsUint256().GetHex();
-
-            // Calculate net amount and determine type
-            int64_t net_amount = 0;
-            bool has_output = false;
-            bool has_input = false;
-
-            for (const auto& output : tx.vout) {
-                if (bytesToHex(output.scriptPubKey) == target_script) {
-                    net_amount += static_cast<int64_t>(output.value.GetUna());
-                    has_output = true;
-                }
-            }
-
-            for (const auto& input : tx.vin) {
-                bool matched_input = false;
-
-                auto parent_tx = mempool.getTransaction(input.prevout.txid.AsUint256());
-                if (parent_tx && input.prevout.vout < parent_tx->vout.size()) {
-                    const auto& spent_output = parent_tx->vout[input.prevout.vout];
-                    if (bytesToHex(spent_output.scriptPubKey) == target_script) {
-                        net_amount -= static_cast<int64_t>(spent_output.value.GetUna());
-                        has_input = true;
-                        matched_input = true;
-                    }
-                }
-
-                if (!matched_input) {
-                    auto coin = getAuthoritativeCoin(chainstate, chain_db, input.prevout);
-                    if (coin && coin->first == target_script) {
-                        net_amount -= static_cast<int64_t>(coin->second);
-                        has_input = true;
-                    }
-                }
-            }
-
-            entry["type"] = has_input ? "send" : "receive";
-            entry["amount"] = static_cast<::Json::Value::Int64>(absUna(net_amount));
-            entry["amount_din"] = formatDIN(absUna(net_amount));
-            entry["size"] = static_cast<::Json::Value::UInt64>(tx.GetSize());
-
+            entry["txid"] = captured.entry.tx.GetTxid().AsUint256().GetHex();
+            entry["type"] = effect.input ? "send" : "receive";
+            entry["amount"] = static_cast<::Json::Value::Int64>(absUna(effect.net));
+            entry["amount_din"] = formatDIN(absUna(effect.net));
+            entry["size"] = static_cast<::Json::Value::UInt64>(captured.entry.tx.GetSize());
             txs_arr.append(entry);
         }
 
@@ -471,6 +435,72 @@ Json rpc_getaddressmempool(const ExecutionContext& ctx, const Json& params) {
  *         [2] from_height (int, optional, default tip)
  * Returns: { address, from_height, transactions: [...] }
  */
+// Address scans must read blocks of both families. An Orchard block cannot be
+// decoded as a legacy Block: getBlockByHash fails and these scans skipped the
+// whole block, so unshields and other Orchard transactions vanished from
+// address history and wallet.snapshot. Each entry is the transaction's
+// transparent view with its real txid.
+struct ScannedTransaction {
+    dinero::Transaction tx;
+    dinero::uint256 txid;
+};
+#if DINERO_WALLET_RAW_ORCHARD
+// A scanning view only: the transparent inputs/outputs of an Orchard
+// envelope, for script matching. It is not the transaction (no Orchard
+// bundle, wrong serialization and txid); callers carry the real txid
+// separately and must never serialize, hash or relay this view.
+static dinero::Transaction TransparentView(const dinero::orchard::TransactionEnvelope& envelope) {
+    dinero::Transaction view;
+    for (const auto& input : envelope.Inputs()) {
+        dinero::uint256 previous;
+        std::memcpy(previous.data, input.txid_wire.data(), 32);
+        dinero::TxInput in;
+        in.prevout = dinero::TxOutPoint(dinero::TxId(previous), input.output_index);
+        view.vin.push_back(in);
+    }
+    for (const auto& output : envelope.Outputs())
+        view.vout.emplace_back(dinero::AmountUna::Una(static_cast<int64_t>(output.amount_una)), output.script_pub_key);
+    return view;
+}
+#endif
+static bool ReadScannedBlock(const dinero::ChainstateService& chainstate, const dinero::uint256& hash, int height,
+                             std::vector<ScannedTransaction>& out) {
+    out.clear();
+#if DINERO_WALLET_RAW_ORCHARD
+    if (height >= 0 && dinero::consensus::OrchardActiveForHeight(dinero::Params(), static_cast<uint32_t>(height))) {
+        const auto block = chainstate.getRuntimeBlockByHash(hash);
+        if (!block.ok() || !(*block)->IsOrchardProfile()) return false;
+        for (const auto& parsed : (*block)->Orchard().Transactions())
+            out.push_back({parsed.IsOrchard() ? TransparentView(parsed.Orchard()) : parsed.Historical(),
+                           parsed.GetTxid().AsUint256()});
+        return true;
+    }
+#endif
+    auto block = chainstate.getBlockByHash(hash);
+    if (!block.ok()) return false;
+    for (const auto& tx : block.value().vtx) out.push_back({tx, tx.GetTxid().AsUint256()});
+    return true;
+}
+// The output an input spends, whichever family created it.
+static std::optional<dinero::TxOutput> PreviousOutput(dinero::ChainDB& chain_db, const dinero::ChainstateService& chainstate,
+                                              const dinero::uint256& txid, uint32_t vout) {
+    auto previous = chain_db.getTransaction(txid);
+    if (previous.ok())
+        return vout < previous.value().vout.size() ? std::optional<dinero::TxOutput>(previous.value().vout[vout]) : std::nullopt;
+    const auto body = chainstate.getTransactionBody(txid);
+    if (!body.ok()) return std::nullopt;
+#if DINERO_WALLET_RAW_ORCHARD
+    if (body->IsOrchard()) {
+        const auto& outputs = body->Orchard().Outputs();
+        if (vout >= outputs.size()) return std::nullopt;
+        return dinero::TxOutput(dinero::AmountUna::Una(static_cast<int64_t>(outputs[vout].amount_una)), outputs[vout].script_pub_key);
+    }
+#endif
+    if (body->IsOrchard()) return std::nullopt;
+    const auto& tx = body->Historical();
+    return vout < tx.vout.size() ? std::optional<dinero::TxOutput>(tx.vout[vout]) : std::nullopt;
+}
+
 Json rpc_getaddresshistory(const ExecutionContext& ctx, const Json& params) {
     Json result;
 
@@ -539,12 +569,10 @@ Json rpc_getaddresshistory(const ExecutionContext& ctx, const Json& params) {
             auto hash_result = chain_db->getBlockHashByHeight(h);
             if (!hash_result.ok()) continue;
 
-            auto block_result = chainstate->getBlockByHash(hash_result.value());
-            if (!block_result.ok()) continue;
+            std::vector<ScannedTransaction> scanned;
+            if (!ReadScannedBlock(*chainstate, hash_result.value(), h, scanned)) continue;
 
-            const auto& block = block_result.value();
-
-            for (const auto& tx : block.vtx) {
+            for (const auto& [tx, real_txid] : scanned) {
                 bool has_output = false;
                 bool has_input = false;
                 bool matched_conf_output = false;
@@ -575,11 +603,10 @@ Json rpc_getaddresshistory(const ExecutionContext& ctx, const Json& params) {
                 // Check inputs (skip coinbase)
                 if (!tx.IsCoinbase()) {
                     for (const auto& input : tx.vin) {
-                        auto prev_tx_result = chain_db->getTransaction(input.prevout.txid.AsUint256());
-                        if (!prev_tx_result.ok()) continue;
-                        const auto& prev_tx = prev_tx_result.value();
-                        if (input.prevout.vout < prev_tx.vout.size()) {
-                            const auto& spent_output = prev_tx.vout[input.prevout.vout];
+                        const auto previous = PreviousOutput(*chain_db, *chainstate,
+                            input.prevout.txid.AsUint256(), input.prevout.vout);
+                        if (previous) {
+                            const auto& spent_output = *previous;
                             tx_has_conf_inputs = tx_has_conf_inputs || spent_output.is_confidential;
                             if (bytesToHex(spent_output.scriptPubKey) == target_script) {
                                 has_input = true;
@@ -604,7 +631,7 @@ Json rpc_getaddresshistory(const ExecutionContext& ctx, const Json& params) {
                             tx_has_conf_inputs,
                             tx_has_conf_outputs);
                     const bool amount_hidden = matched_conf_output || matched_conf_input;
-                    entry["txid"] = tx.GetTxid().AsUint256().GetHex();
+                    entry["txid"] = real_txid.GetHex();
                     entry["height"] = h;
                     entry["confirmations"] = tip_height - h + 1;
                     entry["type"] = has_input ? "send" : "receive";
@@ -706,6 +733,7 @@ static Json computeAddressBatch(const ExecutionContext& ctx,
             return result;
         }
 
+        auto selected_chain = chainstate->AcquireBlockIngressActivationLock();
         const bool assumed_utxo = chainstate->IsAssumeUTXOActive();
         if (assumed_utxo) {
             // An assumed UTXO set is active before its background replay has
@@ -743,35 +771,10 @@ static Json computeAddressBatch(const ExecutionContext& ctx,
             return result;
         }
 
-        if (ctx.daemon->mempool && ctx.daemon->mempool->isInitialized()) {
-            for (auto& state : states) {
-                auto mempool_txs = ctx.daemon->mempool->mempool().getTransactionsForAddress(state.address);
-                for (const auto& tx : mempool_txs) {
-                    for (const auto& output : tx.vout) {
-                        if (bytesToHex(output.scriptPubKey) == state.script)
-                            state.unconfirmed += static_cast<int64_t>(output.value.GetUna());
-                    }
-                    for (const auto& input : tx.vin) {
-                        bool matched_input = false;
-                        if (auto parent_tx = ctx.daemon->mempool->mempool().getTransaction(
-                                input.prevout.txid.AsUint256());
-                            parent_tx && input.prevout.vout < parent_tx->vout.size()) {
-                            const auto& output = parent_tx->vout[input.prevout.vout];
-                            if (bytesToHex(output.scriptPubKey) == state.script) {
-                                state.unconfirmed -= static_cast<int64_t>(output.value.GetUna());
-                                matched_input = true;
-                            }
-                        }
-                        if (!matched_input) {
-                            auto coin = getAuthoritativeCoin(chainstate, chain_db, input.prevout);
-                            if (coin && coin->first == state.script) {
-                                state.unconfirmed -= static_cast<int64_t>(coin->second);
-                            }
-                        }
-                    }
-                }
-            }
-        }
+        const auto pending = capturePending(ctx);
+        for (auto& state : states)
+            for (const auto& captured : pending)
+                addPendingDelta(state.unconfirmed, pendingEffect(captured, state.script).net);
 
         auto tip_result = chain_db->getTip();
         if (!tip_result.ok()) {
@@ -782,6 +785,7 @@ static Json computeAddressBatch(const ExecutionContext& ctx,
         const int tip_height = assumed_utxo
             ? static_cast<int>(chainstate->getBlockHeight())
             : tip_result.value().height;
+        selected_chain.unlock();
         size_t history_transactions = 0;
         // Snapshot bootstrap guarantees the current UTXO set, not historical
         // block bodies. Do not turn a balance query into a futile 90k-height
@@ -796,9 +800,9 @@ static Json computeAddressBatch(const ExecutionContext& ctx,
             }
             auto hash_result = chain_db->getBlockHashByHeight(height);
             if (!hash_result.ok()) continue;
-            auto block_result = chainstate->getBlockByHash(hash_result.value());
-            if (!block_result.ok()) continue;
-            for (const auto& tx : block_result.value().vtx) {
+            std::vector<ScannedTransaction> scanned;
+            if (!ReadScannedBlock(*chainstate, hash_result.value(), height, scanned)) continue;
+            for (const auto& [tx, real_txid] : scanned) {
                 struct Match {
                     bool input = false;
                     bool output = false;
@@ -831,9 +835,10 @@ static Json computeAddressBatch(const ExecutionContext& ctx,
                 bool tx_has_conf_inputs = false;
                 if (!tx.IsCoinbase()) {
                     for (const auto& input : tx.vin) {
-                        auto previous = chain_db->getTransaction(input.prevout.txid.AsUint256());
-                        if (!previous.ok() || input.prevout.vout >= previous.value().vout.size()) continue;
-                        const auto& output = previous.value().vout[input.prevout.vout];
+                        const auto previous = PreviousOutput(*chain_db, *chainstate,
+                            input.prevout.txid.AsUint256(), input.prevout.vout);
+                        if (!previous) continue;
+                        const auto& output = *previous;
                         tx_has_conf_inputs = tx_has_conf_inputs || output.is_confidential;
                         auto found = script_to_index.find(bytesToHex(output.scriptPubKey));
                         if (found == script_to_index.end()) continue;
@@ -849,7 +854,7 @@ static Json computeAddressBatch(const ExecutionContext& ctx,
                     match.tx_conf_inputs = tx_has_conf_inputs;
                     match.tx_conf_outputs = tx_has_conf_outputs;
                     Json entry;
-                    entry["txid"] = tx.GetTxid().AsUint256().GetHex();
+                    entry["txid"] = real_txid.GetHex();
                     entry["height"] = height;
                     entry["confirmations"] = tip_height - height + 1;
                     entry["type"] = match.input ? "send" : "receive";
@@ -892,17 +897,7 @@ static Json computeAddressBatch(const ExecutionContext& ctx,
         result["history_limit"] = MAX_BATCH_HISTORY;
         result["history_scope"] = "wallet_global";
         result["addresses"] = address_results;
-        Json proof_context;
-        proof_context["tip_height"] = tip_height;
-        proof_context["tip_hash"] = ctx.daemon->chainstate->getBestBlockHash();
-        const auto commitment = din::rpc_getutreexocommitment(ctx, din::arr());
-        proof_context["utreexo_root"] = commitment.isMember("commitment")
-            ? commitment["commitment"] : Json("");
-        proof_context["available"] = proof_context["tip_hash"].isString() &&
-            !proof_context["tip_hash"].asString().empty() &&
-            proof_context["utreexo_root"].isString() &&
-            !proof_context["utreexo_root"].asString().empty();
-        result["proof_context"] = proof_context;
+
     } catch (const std::exception& e) {
         result["error"]["code"] = -1;
         result["error"]["message"] = std::string("Exception: ") + e.what();
@@ -943,6 +938,14 @@ Json rpc_getaddressbatch(const ExecutionContext& ctx, const Json& params) {
         return result;
     }
 
+    // Balance/history results may be cached. Proof context is an independent,
+    // current observation and must be captured after releasing the cache lock.
+    const auto with_proof_context = [&](Json response) {
+        if (!response.isMember("error"))
+            response["proof_context"] = BuildUtreexoProofContext(ctx);
+        return response;
+    };
+
     std::ostringstream key_builder;
     key_builder << ctx.daemon->chainstate->getBestBlockHash() << ':' << history_count;
     for (const auto& address : addresses) key_builder << ':' << address;
@@ -960,7 +963,8 @@ Json rpc_getaddressbatch(const ExecutionContext& ctx, const Json& params) {
             ++g_batch_discovery.cache_hits;
             result = cached->second.result;
             addBatchMetadata(result, true, 0, addresses.size(), g_batch_discovery);
-            return result;
+            lock.unlock();
+            return with_proof_context(std::move(result));
         }
 
         if (auto running = g_batch_discovery.flights.find(key);
@@ -973,7 +977,8 @@ Json rpc_getaddressbatch(const ExecutionContext& ctx, const Json& params) {
                 ++g_batch_discovery.cache_hits;
                 result = flight->result;
                 addBatchMetadata(result, true, 0, addresses.size(), g_batch_discovery);
-                return result;
+                lock.unlock();
+                return with_proof_context(std::move(result));
             }
             ++g_batch_discovery.rejected;
             if (completed) result = flight->result;
@@ -1031,7 +1036,7 @@ Json rpc_getaddressbatch(const ExecutionContext& ctx, const Json& params) {
         addBatchMetadata(result, false, scan_ms, addresses.size(), g_batch_discovery);
     }
     flight->changed.notify_all();
-    return result;
+    return with_proof_context(std::move(result));
 }
 
 

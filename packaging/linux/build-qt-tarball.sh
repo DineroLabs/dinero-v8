@@ -65,6 +65,7 @@ Included binaries (usr/bin/):
   dinero-qt              Qt6 GUI wallet (start here)
   dinerod                Full node daemon (started by dinero-qt automatically)
   dinero-cli             CLI RPC client
+  dinero-swap-tower      Swap watchtower (requires explicit configuration)
   dinero-seeder          Network seeder
   dinero-miner           CPU miner
   dinero-gpu-miner       OpenCL GPU miner

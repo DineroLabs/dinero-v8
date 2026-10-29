@@ -114,9 +114,11 @@ exact-name quarantines:
 - `WalletMainnetReadiness_EncryptionRoundTripRestoreAndDerivationPersistence`
   by updating the stale restore expectation to the current 20-address receive
   gap-window contract and asserting continued derivation from index 20.
-- `WalletMainnetReadiness_RestoreResetsLegacyEncryptionStateBeforeReEncrypt`
-  by exercising the restore API's explicit `replace_existing` path for
-  overwrite restore.
+- The former `WalletMainnetReadiness_RestoreResetsLegacyEncryptionStateBeforeReEncrypt`
+  covered overwrite restore. The 2026-09-27 product contract supersedes it with
+  `RestoreRequiresNewNamePreservesOriginal` and
+  `RestoreRefusesUnencryptedAndUnregisteredTargets`: restoration requires a new
+  name and preserves existing encrypted and unencrypted wallets.
 - `WalletMainnetReadiness_ReorgSelfSpendWithChangeRestoresSpentStateAndHeightMetadata`
   by recording wallet-affecting self-spend/change history when a confirmed
   block scan has no pre-existing send row to confirm.

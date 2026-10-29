@@ -5,20 +5,54 @@
  */
 
 #include "pool/payout_calculator.h"
+#include "primitives/amount.h"
+
+#include <set>
 #include <ctime>
 #include <algorithm>
 #include <numeric>
 #include <stdexcept>
+#include <cmath>
+#include <limits>
 
 namespace dinero {
 namespace pool {
+
+namespace {
+void RequireFiniteNonnegative(double value) {
+    if (!std::isfinite(value) || value < 0)
+        throw std::runtime_error("invalid pool calculation value");
+}
+void RequireStoredAmount(uint64_t value) {
+    if (value > static_cast<uint64_t>(std::numeric_limits<int64_t>::max()))
+        throw std::runtime_error("pool calculation amount exceeds storage range");
+}
+uint64_t CheckedCalculationAmount(double value) {
+    RequireFiniteNonnegative(value);
+    // INT64_MAX rounds up as double; compare with the exact exclusive 2^63.
+    if (value >= std::ldexp(1.0, 63))
+        throw std::runtime_error("pool calculated amount exceeds storage range");
+    return static_cast<uint64_t>(value);
+}
+void AddDifficulty(double& total, double contribution) {
+    RequireFiniteNonnegative(total);RequireFiniteNonnegative(contribution);
+    const double next = total + contribution;
+    RequireFiniteNonnegative(next);
+    total = next;
+}
+} // namespace
 
 // ============================================================================
 // PAYOUT CALCULATOR
 // ============================================================================
 
 PayoutCalculator::PayoutCalculator(PoolDB& db, const PoolConfig& config)
-    : db_(db), config_(config) {}
+    : db_(db), config_(config) {
+    RequireFiniteNonnegative(config_.pool_fee_percent);
+    RequireFiniteNonnegative(config_.pps_rate);
+    if (config_.pool_fee_percent > 100.0)
+        throw std::runtime_error("pool fee percentage exceeds 100");
+}
 
 std::vector<Payout> PayoutCalculator::calculatePayouts(const PoolBlock& block) {
     switch (config_.payout_mode) {
@@ -31,7 +65,7 @@ std::vector<Payout> PayoutCalculator::calculatePayouts(const PoolBlock& block) {
         case PayoutMode::SOLO:
             return calculateSOLO(block);
         default:
-            return calculatePPLNS(block);  // Default to PPLNS
+            throw std::runtime_error("unknown pool payout mode");
     }
 }
 
@@ -43,10 +77,11 @@ std::vector<Payout> PayoutCalculator::calculatePROP(const PoolBlock& block) {
     std::vector<Payout> payouts;
 
     // Get the round associated with this block
-    auto round = db_.getRound(block.block_id);
-    if (!round) {
-        return payouts;  // No round data
-    }
+    if (!block.block_id)
+        throw std::runtime_error("PROP payout has no recorded block owner");
+    auto round = db_.getRoundForBlock(block.block_id);
+    if (!round || round->block_id != block.block_id)
+        throw std::runtime_error("PROP payout has no unique associated round");
 
     // Get distributable amount (after pool fee)
     uint64_t distributable = getDistributable(block.total_reward);
@@ -62,7 +97,7 @@ std::vector<Payout> PayoutCalculator::calculatePROP(const PoolBlock& block) {
         double share_percent = calculateSharePercent(worker_diff, round->total_difficulty);
 
         // Calculate amount (rounding down to ensure we don't overpay)
-        uint64_t amount = static_cast<uint64_t>(distributable * share_percent);
+        uint64_t amount = CheckedCalculationAmount(distributable * share_percent);
         if (amount == 0) continue;
 
         // Get worker's wallet address
@@ -78,19 +113,9 @@ std::vector<Payout> PayoutCalculator::calculatePROP(const PoolBlock& block) {
         payouts.push_back(payout);
     }
 
-    // Validate total doesn't exceed distributable
-    if (!validatePayouts(payouts, distributable)) {
-        // Scale down if needed (shouldn't happen with proper rounding)
-        uint64_t total = 0;
-        for (const auto& p : payouts) total += p.amount;
-
-        if (total > distributable) {
-            double scale = static_cast<double>(distributable) / total;
-            for (auto& p : payouts) {
-                p.amount = static_cast<uint64_t>(p.amount * scale);
-            }
-        }
-    }
+    // Inconsistent recorded contributions refuse; do not silently rescale payouts.
+    if (!validatePayouts(payouts, distributable))
+        throw std::runtime_error("invalid proportional pool allocation");
 
     return payouts;
 }
@@ -125,10 +150,10 @@ std::vector<Payout> PayoutCalculator::calculatePPLNS(const PoolBlock& block) {
             continue;  // Only count valid shares
         }
 
-        worker_difficulty[share.worker_id] += share.difficulty_real;
+        AddDifficulty(worker_difficulty[share.worker_id], share.difficulty_real);
         worker_share_count[share.worker_id]++;
         worker_wallet[share.worker_id] = share.wallet_address;
-        total_difficulty += share.difficulty_real;
+        AddDifficulty(total_difficulty, share.difficulty_real);
     }
 
     if (total_difficulty == 0) {
@@ -143,7 +168,7 @@ std::vector<Payout> PayoutCalculator::calculatePPLNS(const PoolBlock& block) {
         double share_percent = calculateSharePercent(worker_diff, total_difficulty);
 
         // Calculate amount
-        uint64_t amount = static_cast<uint64_t>(distributable * share_percent);
+        uint64_t amount = CheckedCalculationAmount(distributable * share_percent);
         if (amount == 0) continue;
 
         // Get wallet address
@@ -164,7 +189,8 @@ std::vector<Payout> PayoutCalculator::calculatePPLNS(const PoolBlock& block) {
     }
 
     // Validate
-    validatePayouts(payouts, distributable);
+    if (!validatePayouts(payouts, distributable))
+        throw std::runtime_error("invalid PPLNS pool allocation");
 
     return payouts;
 }
@@ -175,6 +201,9 @@ std::vector<Payout> PayoutCalculator::calculatePPLNS(const PoolBlock& block) {
 
 std::vector<Payout> PayoutCalculator::calculatePPS(const PoolBlock& block) {
     std::vector<Payout> payouts;
+
+    RequireStoredAmount(block.total_reward);
+    RequireFiniteNonnegative(block.round_difficulty);
 
     // For PPS, payouts are calculated per-share as they're submitted
     // This function handles the case when a block is found
@@ -207,6 +236,8 @@ std::vector<Payout> PayoutCalculator::calculatePPS(const PoolBlock& block) {
     // Apply pool fee to PPS rate
     pps_rate *= (1.0 - config_.pool_fee_percent / 100.0);
 
+    RequireFiniteNonnegative(pps_rate);
+
     // Aggregate by worker
     std::map<std::string, double> worker_difficulty;
     std::map<std::string, uint64_t> worker_share_count;
@@ -217,7 +248,7 @@ std::vector<Payout> PayoutCalculator::calculatePPS(const PoolBlock& block) {
             continue;
         }
 
-        worker_difficulty[share.worker_id] += share.difficulty_real;
+        AddDifficulty(worker_difficulty[share.worker_id], share.difficulty_real);
         worker_share_count[share.worker_id]++;
         worker_wallet[share.worker_id] = share.wallet_address;
     }
@@ -227,7 +258,7 @@ std::vector<Payout> PayoutCalculator::calculatePPS(const PoolBlock& block) {
         if (worker_diff <= 0) continue;
 
         // PPS amount = difficulty * rate
-        uint64_t amount = static_cast<uint64_t>(worker_diff * pps_rate);
+        uint64_t amount = CheckedCalculationAmount(worker_diff * pps_rate);
         if (amount == 0) continue;
 
         std::string wallet = worker_wallet[worker_id];
@@ -282,7 +313,12 @@ std::vector<Payout> PayoutCalculator::calculateSOLO(const PoolBlock& block) {
 // ============================================================================
 
 uint64_t PayoutCalculator::calculatePoolFee(uint64_t total_reward) const {
-    return static_cast<uint64_t>(total_reward * config_.pool_fee_percent / 100.0);
+    RequireStoredAmount(total_reward);
+    if (config_.pool_fee_percent == 100.0) return total_reward;
+    if (config_.pool_fee_percent == 0.0) return 0;
+    const auto fee = CheckedCalculationAmount(total_reward * config_.pool_fee_percent / 100.0);
+    if (fee > total_reward) throw std::runtime_error("pool fee exceeds reward");
+    return fee;
 }
 
 uint64_t PayoutCalculator::getDistributable(uint64_t total_reward) const {
@@ -291,13 +327,21 @@ uint64_t PayoutCalculator::getDistributable(uint64_t total_reward) const {
 }
 
 double PayoutCalculator::calculateSharePercent(double worker_difficulty, double total_difficulty) const {
-    if (total_difficulty <= 0) return 0.0;
-    return worker_difficulty / total_difficulty;
+    RequireFiniteNonnegative(worker_difficulty);RequireFiniteNonnegative(total_difficulty);
+    if (worker_difficulty > total_difficulty)
+        throw std::runtime_error("pool contribution exceeds recorded total");
+    if (total_difficulty == 0) return 0.0;
+    const double fraction = worker_difficulty / total_difficulty;
+    RequireFiniteNonnegative(fraction);
+    return fraction;
 }
 
 double PayoutCalculator::calculatePPSRate(double network_difficulty, uint64_t block_reward) const {
-    if (network_difficulty <= 0) return 0.0;
-    return static_cast<double>(block_reward) / network_difficulty;
+    RequireFiniteNonnegative(network_difficulty);RequireStoredAmount(block_reward);
+    if (network_difficulty == 0) return 0.0;
+    const double rate = static_cast<double>(block_reward) / network_difficulty;
+    RequireFiniteNonnegative(rate);
+    return rate;
 }
 
 bool PayoutCalculator::validatePayouts(const std::vector<Payout>& payouts, uint64_t distributable) const {
@@ -305,9 +349,10 @@ bool PayoutCalculator::validatePayouts(const std::vector<Payout>& payouts, uint6
     for (const auto& p : payouts) {
         if (p.amount == 0) return false;
         if (p.wallet_address.empty()) return false;
+        if (p.amount > distributable - total) return false;
         total += p.amount;
     }
-    return total <= distributable;
+    return true;
 }
 
 Payout PayoutCalculator::createBasePayout(const PoolBlock& block, const std::string& worker_id,
@@ -335,11 +380,7 @@ std::map<std::string, double> PayoutCalculator::aggregateSharesByWorker(uint64_t
 }
 
 std::string PayoutCalculator::getWorkerWallet(const std::string& worker_id) const {
-    auto worker = db_.getWorker(worker_id);
-    if (worker) {
-        return worker->wallet_address;
-    }
-    return "";
+    return db_.getAllocationWorkerWallet(worker_id);
 }
 
 // ============================================================================
@@ -347,35 +388,7 @@ std::string PayoutCalculator::getWorkerWallet(const std::string& worker_id) cons
 // ============================================================================
 
 uint32_t PayoutCalculator::processConfirmedBlocks() {
-    uint32_t processed = 0;
-
-    // Get blocks ready for payout (confirmed but payouts not calculated)
-    auto blocks = db_.getBlocksReadyForPayout();
-
-    for (auto& block : blocks) {
-        if (block.orphaned) continue;
-        if (block.payouts_calculated) continue;
-
-        // Calculate payouts
-        auto payouts = calculatePayouts(block);
-
-        // Insert payout records
-        for (auto& payout : payouts) {
-            payout.status = PayoutStatus::CONFIRMED;
-            db_.insertPayout(payout);
-
-            // Add to worker's pending balance
-            db_.addWorkerPending(payout.worker_id, payout.amount);
-        }
-
-        // Mark block as payouts calculated
-        block.payouts_calculated = true;
-        db_.updateBlock(block);
-
-        processed++;
-    }
-
-    return processed;
+    return db_.allocateConfirmedBlockPayouts(*this);
 }
 
 std::map<std::string, std::vector<Payout>> PayoutCalculator::getPayoutsReadyToSend() {
@@ -404,10 +417,109 @@ std::map<std::string, uint64_t> PayoutCalculator::aggregatePendingByAddress() {
 // PAYOUT PROCESSOR
 // ============================================================================
 
-PayoutProcessor::PayoutProcessor(PoolDB& db, PaymentCallback payment_fn)
-    : db_(db), payment_fn_(payment_fn) {}
+namespace {
+PoolDB& RequiredPoolDatabase(const std::shared_ptr<PoolDB>& db) {
+    if (!db) throw std::invalid_argument("pool payment database owner missing");
+    return *db;
+}
+} // namespace
+struct PayoutProcessor::Use {
+    PayoutProcessor& processor;
+    explicit Use(PayoutProcessor& value):processor(value) {
+        std::lock_guard lock(processor.gate_mutex_);
+        if (processor.closed_) throw std::runtime_error("pool payment processor closed");
+        if (processor.active_) throw std::runtime_error("pool payment processor busy");
+        processor.active_=true;processor.active_thread_=std::this_thread::get_id();
+    }
+    Use(const Use&)=delete;
+    Use& operator=(const Use&)=delete;
+    ~Use() {
+        std::lock_guard lock(processor.gate_mutex_);
+        if (!processor.active_ || processor.active_thread_!=std::this_thread::get_id())
+            std::terminate();
+        processor.active_=false;processor.active_thread_={};processor.drained_.notify_all();
+    }
+};
+PayoutProcessor::PayoutProcessor(std::shared_ptr<PoolDB> db, PaymentCallback payment_fn)
+    : database_owner_(std::move(db)), db_(RequiredPoolDatabase(database_owner_)),
+      payment_fn_(std::move(payment_fn)) {
+    if (!payment_fn_) throw std::invalid_argument("pool payment callback missing");
+}
+PayoutProcessor::PayoutProcessor(std::shared_ptr<PoolDB> db,std::unique_ptr<PoolPaymentBackend> backend)
+    : backend_(std::move(backend)),database_owner_(std::move(db)),db_(RequiredPoolDatabase(database_owner_)) {
+    if(!backend_)throw std::invalid_argument("pool payment backend missing");
+}
+PayoutProcessor::~PayoutProcessor() {
+    try {Close();} catch (...) {std::terminate();}
+}
+void PayoutProcessor::Close() {
+    PaymentCallback retired;
+    std::unique_ptr<PoolPaymentBackend> retired_backend;
+    {
+        std::unique_lock lock(gate_mutex_);
+        if (active_ && active_thread_==std::this_thread::get_id())
+            throw std::logic_error("cannot close pool payment processor from active operation");
+        closed_=true;drained_.wait(lock,[this]{return !active_;});
+        retired.swap(payment_fn_);retired_backend.swap(backend_);
+    }
+    // Destroy arbitrary callback captures only after releasing the gate mutex.
+}
+bool PayoutProcessor::IsClosed() const {
+    std::lock_guard lock(gate_mutex_);return closed_;
+}
+
+uint32_t PayoutProcessor::processOwnedPayments() {
+    // No pool SQLite/manager owner spans Bind, Resolve or DispatchNew. The
+    // processor Use keeps the daemon callback context alive through this call.
+    const auto attempts=db_.getPaymentAttempts();std::set<uint64_t> claimed;
+    uint32_t newly_retained=0;
+    for(auto attempt:attempts) {
+        auto dispatcher=backend_->Bind(attempt.binding.funding);
+        if(!dispatcher || dispatcher->Binding()!=attempt.binding)
+            throw std::runtime_error("pool attempt funding owner changed");
+        const auto retained=dispatcher->Resolve(attempt);
+        if(attempt.retained && (!retained || *retained!=*attempt.retained))
+            throw std::runtime_error("pool retained wallet body unavailable");
+        if(retained && !attempt.retained) {
+            db_.retainPaymentAttempt(attempt,*retained);
+            newly_retained+=static_cast<uint32_t>(attempt.members.size());
+            attempt.retained=*retained;
+        }
+        if(attempt.retained)(void)dispatcher->Reconcile(db_,attempt);
+        for(const auto& member:attempt.members)claimed.insert(member.payout_id);
+    }
+    const auto config=db_.getConfig();if(!config.payment_funding)return newly_retained;
+    const auto payouts=db_.getPayoutsReadyToSend();
+    std::map<std::string,std::vector<uint64_t>> groups;std::map<std::string,uint64_t> totals;
+    for(const auto& payout:payouts) {
+        if(claimed.contains(payout.payout_id))continue;
+        if(!payout.allocation_origin || !payout.amount || payout.amount>MAX_SUPPLY_UNA_CONST-totals[payout.wallet_address])
+            throw std::runtime_error("pool payment requires complete new allocation ownership");
+        totals[payout.wallet_address]+=payout.amount;groups[payout.wallet_address].push_back(payout.payout_id);
+        if(groups[payout.wallet_address].size()>256)throw std::runtime_error("pool payment membership capacity exceeded");
+    }
+    for(const auto& [address,ids]:groups) {
+        if(totals.at(address)<config.min_auto_payout)continue;
+        auto dispatcher=backend_->Bind(*config.payment_funding);
+        if(!dispatcher || dispatcher->Binding().funding!=*config.payment_funding)
+            throw std::runtime_error("pool funding policy unavailable");
+        // A successful commit in THIS call is the sole permission to invoke
+        // DispatchNew. Exceptions after it leave a resolve-only durable attempt.
+        auto attempt=dispatcher->Begin(db_,ids);
+        const auto retained=dispatcher->DispatchNew(attempt);
+        if(retained) {
+            db_.retainPaymentAttempt(attempt,*retained);
+            newly_retained+=static_cast<uint32_t>(attempt.members.size());
+            attempt.retained=*retained;
+            (void)dispatcher->Reconcile(db_,attempt);
+        }
+    }
+    return newly_retained; // retained allocation count, never settled/paid count
+}
 
 uint32_t PayoutProcessor::processPendingPayouts() {
+    const Use use(*this);
+    if(backend_)return processOwnedPayments();
     uint32_t processed = 0;
 
     auto payouts = db_.getPayoutsReadyToSend();
@@ -418,13 +530,25 @@ uint32_t PayoutProcessor::processPendingPayouts() {
         by_address[payout.wallet_address].push_back(&payout);
     }
 
+    // Validate EVERY selected group before any callback or accounting write.
+    // Amounts must remain representable by the existing SQLite accounting owner.
+    std::map<std::string, uint64_t> totals;
+    const auto maximum=static_cast<uint64_t>(std::numeric_limits<int64_t>::max());
+    if (payouts.size()>std::numeric_limits<uint32_t>::max())
+        throw std::runtime_error("pool payout batch count range");
+    for (const auto& [address, payout_ptrs] : by_address) {
+        uint64_t total=0;
+        for (const auto* p : payout_ptrs) {
+            if (!p->amount || p->amount>maximum-total)
+                throw std::runtime_error("pool payout batch amount range");
+            total+=p->amount;
+        }
+        totals.emplace(address,total);
+    }
+
     // Process each address
     for (auto& [address, payout_ptrs] : by_address) {
-        // Calculate total for this address
-        uint64_t total = 0;
-        for (auto* p : payout_ptrs) {
-            total += p->amount;
-        }
+        const auto total=totals.at(address);
 
         // Send payment
         std::string txid;
@@ -454,6 +578,12 @@ uint32_t PayoutProcessor::processPendingPayouts() {
 }
 
 bool PayoutProcessor::processPayout(Payout& payout) {
+    const Use use(*this);
+    if(backend_)throw std::logic_error("owned payments require durable batch membership");
+    return processPayoutOwned(payout);
+}
+
+bool PayoutProcessor::processPayoutOwned(Payout& payout) {
     std::string txid;
     bool success = payment_fn_(payout.wallet_address, payout.amount, txid);
 
@@ -474,6 +604,8 @@ bool PayoutProcessor::processPayout(Payout& payout) {
 }
 
 uint32_t PayoutProcessor::retryFailedPayouts(uint32_t max_retries) {
+    const Use use(*this);
+    if(backend_)return processOwnedPayments(); // existing attempts resolve only
     uint32_t processed = 0;
 
     auto pending = db_.getPendingPayouts();
@@ -490,7 +622,7 @@ uint32_t PayoutProcessor::retryFailedPayouts(uint32_t max_retries) {
                 std::time(nullptr),
                 "Retry attempt " + std::to_string(attempt));
 
-            if (processPayout(payout)) {
+            if (processPayoutOwned(payout)) {
                 processed++;
             } else if (attempt >= max_retries) {
                 db_.updatePayoutStatus(

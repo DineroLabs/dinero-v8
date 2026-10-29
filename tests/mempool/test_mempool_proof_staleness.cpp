@@ -182,6 +182,69 @@ static void test_confirmed_tx_removed() {
     std::cout << "  PASSED" << std::endl;
 }
 
+static void test_typed_block_effects_reconcile_transparent_pool() {
+    Mempool pool(nullptr);
+    const TxId shared = makeTxId(270);
+    const auto conflicting = makeTx({{shared, 0}}, 501);
+    const auto confirmed = makeTx({{makeTxId(271), 0}}, 502);
+    const auto unrelated = makeTx({{makeTxId(272), 0}}, 503);
+    const auto conflict_id = addTxToMempool(pool, conflicting);
+    const auto confirmed_id = addTxToMempool(pool, confirmed);
+    const auto unrelated_id = addTxToMempool(pool, unrelated);
+    pool.refreshProof(unrelated_id, makeFakeRoot(0x30), 10);
+
+    // Effects may originate from a mixed body whose Orchard transaction
+    // spends the same ordinary outpoint; no legacy Block can hold that body.
+    ConnectedBlockEffects effects;
+    effects.confirmed_txids.push_back(confirmed_id);
+    effects.spent_transparent_inputs.emplace_back(shared, 0);
+    const auto evicted = pool.onBlockConnected(effects, 11, makeFakeRoot(0x31));
+    TEST_ASSERT(evicted == 1, "Mixed-body spend must evict conflicting legacy TX");
+    TEST_ASSERT(!pool.hasTransaction(conflict_id), "Conflicting TX must be absent");
+    TEST_ASSERT(!pool.hasTransaction(confirmed_id), "Confirmed TX must be absent");
+    TEST_ASSERT(pool.hasTransaction(unrelated_id), "Unrelated TX must remain");
+    TEST_ASSERT(pool.getStaleCount() == 1, "Remaining proof must become stale");
+    TEST_ASSERT(pool.getStats().last_connected_height == 11, "Connected height must advance");
+}
+
+// Notifications must remove the entire branch of an unconfirmed conflict,
+// but retain children of a transaction which actually confirmed. Test both
+// the shared typed effect path and its historical adapter, including replay.
+static void test_block_effects_remove_conflict_descendants(bool typed) {
+    Mempool pool(nullptr);
+    const auto source = makeTxId(280);
+    auto conflict = makeTx({{source, 0}}, 8000);
+    conflict.vout.push_back(conflict.vout.front());
+    const auto conflict_id = addTxToMempool(pool, conflict);
+    const auto left = addTxToMempool(pool, makeTx({{TxId(conflict_id), 0}}, 6000));
+    const auto right = addTxToMempool(pool, makeTx({{TxId(conflict_id), 1}}, 5000));
+    const auto join = addTxToMempool(pool, makeTx({{TxId(left), 0}, {TxId(right), 0}}, 4000));
+    const auto leaf = addTxToMempool(pool, makeTx({{TxId(join), 0}}, 3000));
+    const auto confirmed = makeTx({{makeTxId(281), 0}}, 7000);
+    const auto confirmed_id = addTxToMempool(pool, confirmed);
+    const auto surviving_child = addTxToMempool(pool, makeTx({{TxId(confirmed_id), 0}}, 6000));
+    const auto independent = addTxToMempool(pool, makeTx({{makeTxId(282), 0}}, 5000));
+    pool.refreshProof(surviving_child, makeFakeRoot(0x50), 10);
+    pool.refreshProof(independent, makeFakeRoot(0x50), 10);
+    ConnectedBlockEffects effects;
+    effects.confirmed_txids = {confirmed_id};
+    effects.spent_transparent_inputs = {OutPoint(source, 0)};
+    const auto block = makeBlock(11, {makeTx({{source, 0}}, 7500), confirmed});
+    const auto apply = [&] {
+        return typed ? pool.onBlockConnected(effects, 11, makeFakeRoot(0x51))
+                     : pool.onBlockConnected(block, 11, makeFakeRoot(0x51));
+    };
+    TEST_ASSERT(apply() == 5, "Conflict eviction must include each descendant exactly once");
+    for (const auto& id : {conflict_id, left, right, join, leaf, confirmed_id})
+        TEST_ASSERT(!pool.hasTransaction(id), "Removed branch and confirmed TX must be absent");
+    TEST_ASSERT(pool.hasTransaction(surviving_child), "Child of confirmed TX must survive");
+    TEST_ASSERT(pool.hasTransaction(independent), "Independent TX must survive");
+    TEST_ASSERT(pool.size() == 2 && pool.getStaleCount() == 2, "Surviving proofs must be stale");
+    TEST_ASSERT(pool.getCoinsView().createdCount() == 2, "Removed descendant outputs must leave overlay");
+    TEST_ASSERT(pool.getCoinsView().spentCount() == 2, "Removed descendant inputs must leave overlay");
+    TEST_ASSERT(apply() == 0 && pool.size() == 2, "Replayed notification must preserve survivors");
+}
+
 // Test 4: no staleness without root
 static void test_no_staleness_without_root() {
     std::cout << "Test 4: no staleness without root..." << std::endl;
@@ -321,6 +384,15 @@ static void test_block_disconnect_marks_stale() {
     TEST_ASSERT(pool.getStaleCount() == 1, "Stale after disconnect");
 
     std::cout << "  PASSED" << std::endl;
+}
+
+static void test_typed_block_disconnect_marks_stale() {
+    Mempool pool(nullptr);
+    auto tx = makeTx({{makeTxId(801), 0}});
+    const auto txid = addTxToMempool(pool, tx);
+    pool.refreshProof(txid, makeFakeRoot(0x40), 10);
+    pool.onBlockDisconnected(10);
+    TEST_ASSERT(pool.getStaleCount() == 1, "Mixed-body disconnect must stale ordinary proofs");
 }
 
 // Test 10: multiple blocks cumulative
@@ -487,6 +559,9 @@ int main() {
     test_staleness_marked_on_block_connect();
     test_conflict_eviction();
     test_confirmed_tx_removed();
+    test_typed_block_effects_reconcile_transparent_pool();
+    test_block_effects_remove_conflict_descendants(true);
+    test_block_effects_remove_conflict_descendants(false);
     test_no_staleness_without_root();
     test_addunchecked_rejects_private_transactions();
     test_refresh_clears_staleness();
@@ -494,6 +569,7 @@ int main() {
     test_get_stale_tx_ids();
     test_stats_include_staleness();
     test_block_disconnect_marks_stale();
+    test_typed_block_disconnect_marks_stale();
     test_multiple_blocks_cumulative();
     test_non_csn_tx_unaffected();
     test_refresh_then_stale_again();

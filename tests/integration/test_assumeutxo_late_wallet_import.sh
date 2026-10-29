@@ -11,13 +11,16 @@
 #   1. Load an AssumeUTXO snapshot while the consumer has an unrelated wallet.
 #   2. Import the funded mnemonic only AFTER snapshot activation, with rescan
 #      disabled, reproducing an already-derived mobile wallet whose DB is empty.
-#   3. Restart and require wallet startup to scan the snapshot UTXO section,
-#      expose the pre-base coins through balance/listunspent/getproofbundle,
-#      and spend one without another import or any user action.
+#   3. Restart without history: recovery must remain deferred, not certify zero
+#      or trust unbound legacy creation metadata.
+#   4. Make the selected archival source available over loopback P2P and invoke
+#      the same explicit authenticated recovery RPC as the phone coordinator.
+#   5. Require exact inventory, proof coverage, retry/restart persistence and a
+#      real spend without another mnemonic import.
 #
-# A normal block rescan cannot recover these coins: snapshot nodes have no
-# pre-base transaction bodies.  Before the fix, importmnemonic reported success
-# while the wallet remained at 0 UTXOs and the proof bundle was 0/0.
+# Legacy snapshots bind live value/script/outpoint but not every creation flag.
+# Recovery therefore needs the authenticated creation bodies too. A snapshot
+# scan or successful key import alone is not a wallet-completeness receipt.
 set -uo pipefail
 
 # Resolve dinerod: honour $DINEROD when set (and require it to be
@@ -105,9 +108,13 @@ start_node() {
     local datadir="$1" rpcport="$2" p2pport="$3" wsport="$4" logfile="$5"
     shift 5
     mkdir -p "$datadir"
+    local -a networking=(--p2p.offline=1 --listen=0)
+    if [[ "${TEST_HISTORY_NETWORK:-0}" == 1 ]]; then
+        networking=(--p2p.offline=0 --listen=1 --bind=127.0.0.1 --dnsseed=0 --fixedseeds=0)
+    fi
     "$DINEROD" --regtest --consensus-state-commitment-height=4294967295 --datadir="$datadir" \
         --rpcport="$rpcport" --port="$p2pport" --wallet-socket-port="$wsport" \
-        --p2p.offline=1 --listen=0 "$@" >"$logfile" 2>&1 &
+        "${networking[@]}" "$@" >"$logfile" 2>&1 &
     for _ in $(seq 1 120); do
         if rpc "$rpcport" "$datadir" getblockcount 2>/dev/null \
             | jq -e '.result >= 0' >/dev/null 2>&1; then
@@ -124,6 +131,11 @@ command -v jq >/dev/null 2>&1 || fail "jq is required"
 
 info "Creating a funded deterministic wallet and V4 snapshot"
 start_node "$SRC_DIR" "$SRC_RPC" "$SRC_P2P" "$SRC_WS" "$SRC_DIR/source.log"
+# Preserve the startup wallet; recover this mnemonic under a separate name.
+RESTORE_SOURCE="$(rpc "$SRC_RPC" "$SRC_DIR" wallet.restore \
+    "{\"name\":\"snapshot-source\",\"mnemonic\":\"$MNEMONIC\",\"rescan\":false}")"
+jq -e '.result.success == true' <<<"$RESTORE_SOURCE" >/dev/null \
+    || fail "new-name recovery failed: $RESTORE_SOURCE"
 IMPORT_SOURCE="$(rpc "$SRC_RPC" "$SRC_DIR" wallet.importmnemonic \
     "{\"mnemonic\":\"$MNEMONIC\",\"rescan\":false,\"initial_address_count\":4}")"
 jq -e '.result.success == true and .result.watch_scripts > 0' <<<"$IMPORT_SOURCE" >/dev/null \
@@ -182,6 +194,11 @@ PRE_IMPORT_COUNT="$(rpc "$CON_RPC" "$CON_DIR" wallet.listunspent '[]' \
 pass "snapshot activated before funded mnemonic import (control wallet has 0 UTXOs)"
 
 info "Creating the affected state: funded mnemonic present, local inventory empty"
+# Preserve the startup wallet; recover this mnemonic under a separate name.
+RESTORE_CONSUMER="$(rpc "$CON_RPC" "$CON_DIR" wallet.restore \
+    "{\"name\":\"snapshot-recovered\",\"mnemonic\":\"$MNEMONIC\",\"rescan\":false}")"
+jq -e '.result.success == true' <<<"$RESTORE_CONSUMER" >/dev/null \
+    || fail "new-name recovery failed: $RESTORE_CONSUMER"
 LATE_IMPORT="$(rpc "$CON_RPC" "$CON_DIR" wallet.importmnemonic \
     "{\"mnemonic\":\"$MNEMONIC\",\"rescan\":false,\"initial_address_count\":4}")"
 jq -e '.result.success == true and .result.rescan_triggered == false' \
@@ -200,19 +217,50 @@ start_node "$CON_DIR" "$CON_RPC" "$CON_P2P" "$CON_WS" "$CON_DIR/consumer-restart
     --assumeutxo_snapshot="$SNAP" --assumeutxo_forward_connect=1 \
     --assumeutxo_bg_stall_timeout=3600
 
+DEFERRED_BALANCE="$(rpc "$CON_RPC" "$CON_DIR" wallet.getbalance '[]')"
+jq -e '.result.total == 0 and .result.utxo_count == 0' <<<"$DEFERRED_BALANCE" >/dev/null \
+    || fail "startup published an inventory without its selected history: $DEFERRED_BALANCE"
+RECOVERY_PARAMS="{\"walletname\":\"snapshot-recovered\",\"expected_first_address\":\"$OWNER\"}"
+DEFERRED="$(rpc "$CON_RPC" "$CON_DIR" wallet.recovertransparentfromsnapshot "$RECOVERY_PARAMS")"
+jq -e '(.result.success != true) and
+       ((.error.message // .result.error // "") | test("legacy owned coin creation ancestry unavailable|waiting for owned legacy coin creation history"))' <<<"$DEFERRED" >/dev/null \
+    || fail "missing selected history was certified: $DEFERRED"
+AFTER_REFUSAL="$(rpc "$CON_RPC" "$CON_DIR" wallet.getbalance '[]')"
+jq -e '.result.total == 0 and .result.utxo_count == 0' <<<"$AFTER_REFUSAL" >/dev/null \
+    || fail "refused recovery published a partial inventory: $AFTER_REFUSAL"
+pass "startup and explicit recovery defer without the required selected history"
+
+# The old startup scanner is intentionally unavailable here. Fetch the actual
+# selected creation bodies; do not reimport keys or patch either wallet store.
+stop_node "$CON_DIR"
+TEST_HISTORY_NETWORK=1 start_node "$SRC_DIR" "$SRC_RPC" "$SRC_P2P" "$SRC_WS" "$SRC_DIR/history-source.log"
+TEST_HISTORY_NETWORK=1 start_node "$CON_DIR" "$CON_RPC" "$CON_P2P" "$CON_WS" "$CON_DIR/consumer-history.log" \
+    --connect="127.0.0.1:$SRC_P2P" --assumeutxo_snapshot="$SNAP" --assumeutxo_forward_connect=1 \
+    --assumeutxo_bg_stall_timeout=3600
+RECOVERED=0
+RECOVERY_DEADLINE=$((SECONDS + 180))
+while (( SECONDS < RECOVERY_DEADLINE )); do
+    RECOVERY="$(rpc "$CON_RPC" "$CON_DIR" wallet.recovertransparentfromsnapshot "$RECOVERY_PARAMS" 2>/dev/null || true)"
+    if jq -e '.result.success == true and .result.whole_wallet_certified == false and
+              .result.scope == "transparent-current-coins-and-post-snapshot-history" and
+              .result.recovered_height >= '"$BASE_HEIGHT" <<<"$RECOVERY" >/dev/null 2>&1; then
+        RECOVERED=1; break
+    fi
+    sleep 0.5
+done
+[[ "$RECOVERED" == 1 ]] || fail "authenticated selected-history recovery did not complete: $RECOVERY"
 LATE_BALANCE="$(rpc "$CON_RPC" "$CON_DIR" wallet.getbalance '[]')"
-TOTAL="$(jq -r '.result.total // ((.result.confirmed // 0) + (.result.immature // 0)) // 0' \
-    <<<"$LATE_BALANCE")"
-awk -v value="$TOTAL" 'BEGIN { exit !(value > 0) }' \
-    || fail "startup did not heal the snapshot-era wallet balance: $LATE_BALANCE"
-pass "startup healed the snapshot-era wallet balance without user action"
+TOTAL="$(jq -r '.result.total // 0' <<<"$LATE_BALANCE")"
+[[ "$TOTAL" == "$SOURCE_BALANCE" ]] \
+    || fail "recovered inventory differs from the funded source (source=$SOURCE_BALANCE): $LATE_BALANCE"
+pass "authenticated recovery restored exactly the funded source inventory without reimport"
 
 UNSPENT="$(rpc "$CON_RPC" "$CON_DIR" wallet.listunspent '[1,9999999]')"
 jq -e '.result | length > 0 and all(.[]; .spendable == true and .solvable == true)' \
     <<<"$UNSPENT" >/dev/null \
     || fail "recovered snapshot coins are not spendable and solvable: $UNSPENT"
 RECORDED="$(jq -r '.result | length' <<<"$UNSPENT")"
-pass "startup recovered $RECORDED spendable and solvable snapshot UTXO(s)"
+pass "recovery restored $RECORDED spendable and solvable snapshot UTXO(s)"
 
 BUNDLE="$(rpc "$CON_RPC" "$CON_DIR" wallet.getproofbundle \
     '[{"min_confirmations":1,"spendable_only":true,"max_utxos":64}]')"
@@ -220,19 +268,17 @@ jq -e '.result.utxo_count > 0 and
        ([.result.proofs[]? | select(.success == true)] | length) > 0' \
     <<<"$BUNDLE" >/dev/null \
     || fail "late-import wallet proof bundle is empty: $BUNDLE"
-pass "startup rebuilt proof coverage for recovered snapshot funds"
+pass "authenticated recovery rebuilt proof coverage for snapshot funds"
 
-# The explicit import/rescan path remains independently gated and must be
-# idempotent after startup repair. This protects both recovery entry points.
-RESCAN_IMPORT="$(rpc "$CON_RPC" "$CON_DIR" wallet.importmnemonic \
-    "{\"mnemonic\":\"$MNEMONIC\",\"rescan\":true,\"initial_address_count\":4}")"
-jq -e '.result.success == true and
-       .result.rescan_success == true and
-       .result.snapshot_utxo_rescan.attempted == true and
-       .result.snapshot_utxo_rescan.base_height == '"$BASE_HEIGHT"'' \
-    <<<"$RESCAN_IMPORT" >/dev/null \
-    || fail "explicit snapshot UTXO rescan did not run after startup repair: $RESCAN_IMPORT"
-pass "explicit import/rescan remains available and idempotent"
+# Retry the explicit recovery receipt; it must not add coins/history twice.
+RETRY="$(rpc "$CON_RPC" "$CON_DIR" wallet.recovertransparentfromsnapshot "$RECOVERY_PARAMS")"
+jq -e '.result.success == true and .result.whole_wallet_certified == false' <<<"$RETRY" >/dev/null \
+    || fail "explicit recovery retry did not complete: $RETRY"
+RETRY_BALANCE="$(rpc "$CON_RPC" "$CON_DIR" wallet.getbalance '[]')"
+jq -e --argjson total "$TOTAL" '.result.total == $total' <<<"$RETRY_BALANCE" >/dev/null \
+    || fail "recovery retry changed funded inventory: $RETRY_BALANCE"
+pass "explicit recovery retry is idempotent"
+stop_node "$SRC_DIR"
 
 # Restart is a separate regression boundary. The UTXO-position index is
 # rebuildable/non-persistent, and the wallet snapshot rescan is idempotent.
@@ -243,6 +289,9 @@ start_node "$CON_DIR" "$CON_RPC" "$CON_P2P" "$CON_WS" "$CON_DIR/consumer-restart
     --assumeutxo_snapshot="$SNAP" --assumeutxo_forward_connect=1 \
     --assumeutxo_bg_stall_timeout=3600
 
+REOPENED="$(rpc "$CON_RPC" "$CON_DIR" wallet.getwalletinfo '[]')"
+jq -e --arg first "$OWNER" '.result.walletname == "snapshot-recovered" and .result.primary_address == $first' <<<"$REOPENED" >/dev/null \
+    || fail "restart changed the recovered wallet identity: $REOPENED"
 RESTART_BALANCE="$(rpc "$CON_RPC" "$CON_DIR" wallet.getbalance '[]')"
 RESTART_TOTAL="$(jq -r '.result.total // ((.result.confirmed // 0) + (.result.immature // 0)) // 0' \
     <<<"$RESTART_BALANCE")"

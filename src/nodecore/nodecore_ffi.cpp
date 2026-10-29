@@ -12,11 +12,18 @@
 
 #include "nodecore/nodecore_ffi.h"
 #include "daemon/daemon_app.h"
+#include "daemon/datadir_guard.h"
+#include "daemon/config.h"
 #include "daemon/services/config_service.h"
 #include "daemon/services/chainstate_service.h"
 #include "daemon/services/p2p_service.h"
 #include "daemon/services/wallet_service.h"
 #include "daemon/services/mempool_service.h"
+#if DINERO_NODECORE_ORCHARD_RUNTIME
+#include "daemon/orchard_snapshot_store.h"
+#endif
+#include "consensus/header_chain.h"
+#include "consensus/orchard_profile.h"
 #include "consensus/chainparams.h"
 #include "consensus/header_sync_manager.h"
 #include "wallet/wallet_manager.h"
@@ -78,10 +85,17 @@ thread_local bool in_nodecore_callback = false;
 
 struct NodeCoreState {
     std::mutex mtx;
+    // Declared before app so even static teardown closes every store first.
+    // The lock spans Init, the worker and completed Stop, not just migration.
+    std::unique_ptr<dinero::daemon::DatadirGuard> datadir_guard;
     std::unique_ptr<dinero::DaemonApp> app;
     std::thread node_thread;
     std::atomic<bool> running{false};
     std::atomic<bool> shutdown_requested{false};
+    // Stop declares cancellation BEFORE waiting for the publication mutex.
+    // A generation also covers Stop during synchronous startup preparation.
+    std::atomic<uint64_t> public_stop_epoch{0};
+    const std::shared_ptr<dinero::ReopenRpcGate> reopen_rpc_gate=std::make_shared<dinero::ReopenRpcGate>();
     std::chrono::steady_clock::time_point start_time;
 
     // Event callback
@@ -135,6 +149,7 @@ int CloseNodeLocked(NodeCoreState& s) {
             s.node_thread.join();
         }
         s.app.reset();
+        s.datadir_guard.reset();
         return NODECORE_OK;
     } catch (...) { return NODECORE_ERROR_INTERNAL; }
 }
@@ -321,10 +336,152 @@ public:
         // by the RELEVANT_TX_ADDED event above. Block-confirmed spends are
         // already handled by the WalletManager's onBlockConnected path.
     }
+    void onMempoolBody(const dinero::MempoolTransaction& body){
+        if(!body.IsOrchard()){onMempoolTransaction(body.Historical());return;}
+        // Consume the actual immutable Orchard representation. Only visible
+        // watched outputs are notifications; never reinterpret its private
+        // bundle as a historical Transaction or claim private plaintext/funds.
+        const auto watched=state().watched_scripts.Snapshot();Json::Value outputs(Json::arrayValue);
+        for(size_t i=0;i<body.OutputCount();++i){
+            const auto coin=body.OutputCoin(i,0);
+            const auto script=bytes_to_hex(coin.scriptPubKey.data(),coin.scriptPubKey.size());
+            if(!watched.count(script))continue;
+            Json::Value output;output["index"]=Json::UInt(i);output["script"]=script;
+            output["amount"]=Json::UInt64(coin.value.GetUna());outputs.append(std::move(output));
+        }
+        if(!outputs.empty()){
+            Json::Value event;event["format"]="orchard";event["txid"]=body.GetTxid().AsUint256().GetHex();
+            event["height"]=0;event["outputs"]=std::move(outputs);
+            emit_event_json(NODECORE_EVENT_RELEVANT_TX_ADDED,event);
+        }
+    }
 };
 
 // Persistent notifier instance
 std::unique_ptr<NodeCoreWalletNotifier> g_notifier;
+
+bool Cancelled(const NodeCoreState& s,uint64_t epoch){
+    return s.shutdown_requested.load()||s.public_stop_epoch.load()!=epoch;
+}
+void ConfigureEmbeddedRuntime(dinero::DaemonApp& app){
+    if(app.GetContext().chainstate)if(auto* db=app.GetContext().chainstate->GetChainDB()){
+        db->setFatalWriteFailureHook([](const std::string& reason){
+            auto& s=state();s.running=false;s.shutdown_requested=true;
+            fprintf(stderr,"[nodecore_ffi] ChainDB fatal: %s — requesting clean shutdown\n",reason.c_str());
+            Json::Value ev;ev["reason"]="chaindb_fatal";ev["error"]=reason;
+            emit_event_json(NODECORE_EVENT_SHUTDOWN,ev);
+        });
+    }
+}
+void ConfigureEmbeddedNotifier(dinero::DaemonApp& app){
+    if(!g_notifier)g_notifier=std::make_unique<NodeCoreWalletNotifier>();
+    if(auto pool=std::dynamic_pointer_cast<dinero::MempoolService>(app.GetContext().mempool))
+        pool->mempool().setTxBodyAcceptedCallback([](const dinero::MempoolTransaction& body){g_notifier->onMempoolBody(body);});
+}
+#if DINERO_NODECORE_ORCHARD_RUNTIME
+struct ActivationReopenData {
+    std::shared_ptr<const dinero::consensus::HeaderChainSelector> headers;
+    std::shared_ptr<const dinero::consensus::OrchardSnapshotSection> proof;
+};
+std::optional<ActivationReopenData> CaptureActivationReopen(dinero::DaemonApp& app,
+    const std::function<bool()>& cancelled){
+    if(!GetConfig().utreexo_stateless)return {};
+    const auto& ctx=app.GetContext();
+    const auto chain=std::dynamic_pointer_cast<dinero::ChainstateService>(ctx.chainstate);
+    const auto peers=std::dynamic_pointer_cast<dinero::P2PService>(ctx.p2p);
+    if(!chain||!peers||!ctx.header_chain)return {};
+    const auto sync=chain->GetSyncSnapshot();const auto activation=dinero::Params().orchard_activation_height;
+    if(activation==UINT32_MAX||uint64_t(sync.active_tip_height)+1!=activation)return {};
+    auto proof=peers->ReadyActivationCatalog();
+    if(!proof)return {};
+    if(proof->state.height!=activation||proof->parent_catalog.height!=sync.active_tip_height||
+        proof->parent_catalog.block!=sync.active_tip_hash)throw std::runtime_error("SDK activation proof/source changed");
+    // Copy values by HASH from one coherent ancestry snapshot, not a quadratic
+    // series of best-height parent walks. Revalidate into an in-memory selector
+    // without an old HeaderStore/DB/forest lifetime. This is proof DATA only.
+    const uint64_t through=uint64_t(activation)+dinero::Params().state_commitment_burial_depth;
+    if(through>1000000)throw std::runtime_error("SDK activation header capture exceeds operational bound");
+    const auto best=ctx.header_chain->GetBestHeaderValue();dinero::uint256 anchor;uint32_t height=0;
+    if(!best||best->height<through||!ctx.header_chain->GetAncestorHashByHash(best->hash,uint32_t(through),anchor,height))return {};
+    std::vector<std::pair<dinero::uint256,uint32_t>> ancestry;
+    if(!ctx.header_chain->CollectAncestorsByHash(anchor,0,height,ancestry)||height!=through||ancestry.size()!=through+1)
+        throw std::runtime_error("SDK activation header ancestry unavailable");
+    auto detached=std::make_shared<dinero::consensus::HeaderChainSelector>();
+    for(const auto& [hash,position]:ancestry){
+        if(cancelled())return {};
+        const auto row=ctx.header_chain->GetHeaderValue(hash);
+        if(!row||row->height!=position||row->hash!=row->header.GetHash()||!detached->AddHeader(row->header))
+            throw std::runtime_error("SDK activation header capture is inconsistent");
+        const auto actual=detached->GetHeaderValue(hash);
+        if(!actual||actual->height!=position||actual->chainwork!=row->chainwork)
+            throw std::runtime_error("SDK activation header work changed");
+    }
+    const auto current=ctx.header_chain->GetHeaderAtHeightValue(uint32_t(through));
+    if(!current||current->hash!=anchor||cancelled())return {};
+    dinero::OrchardSnapshotStore::VerifyCatalogTransferProof(*proof,*detached);
+    return ActivationReopenData{std::move(detached),std::move(proof)};
+}
+bool AutomaticActivationReopen(NodeCoreState& s,const std::vector<std::string>& owned_args,uint64_t stop_epoch){
+    const auto cancelled=[&]{return Cancelled(s,stop_epoch);};
+    if(cancelled()||!s.app)return false;
+    auto data=CaptureActivationReopen(*s.app,cancelled);if(!data||cancelled())return false;
+    std::shared_ptr<dinero::ReopenRpcGate::Pause> pause;
+    {std::unique_lock lock(s.mtx,std::try_to_lock);
+     if(!lock.owns_lock()||cancelled())return false;
+     pause=std::shared_ptr<dinero::ReopenRpcGate::Pause>(dinero::ReopenRpcGate::Begin(s.reopen_rpc_gate));
+     s.running=false;}
+    std::unique_ptr<dinero::CoreReopenReceipt> receipt;
+    try{
+        emit_event(NODECORE_EVENT_SYNC_STARTED,"{\"reason\":\"authenticated_activation_restarting\"}");
+        receipt=s.app->CloseForInternalReopen(*s.datadir_guard,pause);
+    }
+    catch(...){dinero::DaemonApp::FailClosedReopenPause(pause);throw;}
+    // No blocking publication lock: publicStop may hold it while JOINING us.
+    std::unique_ptr<dinero::DaemonApp> old;
+    while(!cancelled()){
+        std::unique_lock lock(s.mtx,std::try_to_lock);
+        if(lock.owns_lock()){old=std::move(s.app);break;}
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    if(cancelled())return false; // Original is stopped; durable intent survives.
+    old.reset(); // ALL old services/raw readers end under SAME root guard.
+    dinero::DaemonApp::SelectClosedActivationForReopen(*s.datadir_guard,*receipt,
+        std::move(data->headers),std::move(data->proof),cancelled);
+    if(cancelled())return false;
+    auto next=std::make_unique<dinero::DaemonApp>();next->SetLockedDatadir(*s.datadir_guard);
+    next->SetAutomaticStorageUpgrade(true);next->BindClosedReopenBeforeInit(*s.datadir_guard,*receipt);
+    auto args=owned_args;std::vector<char*> argv;for(auto& arg:args)argv.push_back(arg.data());
+    if(!next->Init(int(argv.size()),argv.data()))throw std::runtime_error("SDK activation replacement Init refused");
+    ConfigureEmbeddedRuntime(*next);
+    if(cancelled())return false;
+    if(!next->Start())throw std::runtime_error("SDK activation replacement Start refused");
+    ConfigureEmbeddedNotifier(*next);
+    next->PrepareReadmissionAfterInternalReopen(*s.datadir_guard,*receipt);
+    while(!cancelled()){
+        std::unique_lock lock(s.mtx,std::try_to_lock);
+        if(!lock.owns_lock()){std::this_thread::sleep_for(std::chrono::milliseconds(10));continue;}
+        if(cancelled())break;
+        next->PublishPreparedReadmission(*receipt,[&]{
+            if(cancelled())throw std::runtime_error("SDK activation publication cancelled by public Stop");
+            s.app=std::move(next);s.running=true;
+            if(cancelled()){s.running=false;throw std::runtime_error("SDK activation publication lost to public Stop");}
+        });
+        lock.unlock();
+        // Full archive/digest checks stay outside host publication. Interrupted
+        // publication/Stop keeps the selected durable corpus for explicit start.
+        if(!cancelled())s.app->ArchivePublishedReadmission(*s.datadir_guard,*receipt);
+        emit_event(NODECORE_EVENT_SYNC_STARTED,"{\"reason\":\"authenticated_activation_reopen\"}");
+        return true;
+    }
+    return false; // Local replacement destructs/Stops before guard can release.
+}
+
+#else
+bool AutomaticActivationReopen(NodeCoreState&,const std::vector<std::string>&,uint64_t){
+    // A backend-OFF SDK cannot authenticate or select an Orchard replacement.
+    return false;
+}
+#endif
 
 } // anonymous namespace
 
@@ -338,6 +495,8 @@ int32_t nodecore_start(const char* datadir, const char* config_json) {
     if (in_nodecore_callback) return NODECORE_ERROR_CALLBACK_REENTRY;
     auto& s = state();
     std::lock_guard<std::mutex> lock(s.mtx);
+    const auto stop_epoch=s.public_stop_epoch.load();
+    if(stop_epoch==std::numeric_limits<uint64_t>::max())return NODECORE_ERROR_INTERNAL;
 
     if (!s.maintenance_token.empty()) return NODECORE_ERROR_MAINTENANCE_BUSY;
     if (s.maintenance_recovery) return NODECORE_ERROR_RECOVERY_REQUIRED;
@@ -367,6 +526,7 @@ int32_t nodecore_start(const char* datadir, const char* config_json) {
     std::string network = "mainnet";
     int p2p_port = 21001;
     int max_peers = 4;
+    std::string addnode;
     bool utreexo_stateless = dinero::nodecore::DefaultUtreexoStateless();
     std::string sync_profile = dinero::nodecore::DefaultSyncProfile();
     std::string wallet_schema_path;
@@ -376,6 +536,15 @@ int32_t nodecore_start(const char* datadir, const char* config_json) {
     bool assumeutxo_require_manifest = false;
     std::optional<std::string> explicit_profile;
     std::optional<bool> legacy_utreexo_override;
+    // Embedded hosts are clients, not proof servers: the daemon's own default
+    // (utreexo-bridge=true) made phones advertise the bridge service bit, so
+    // peers asked them for proofs. Local proofs are unaffected (the BridgeNode
+    // is built either way). Opt in with "utreexo_bridge": true.
+    bool utreexo_bridge = false;
+    // Hosts call RPC in-process; the daemon's loopback listener otherwise takes
+    // the canonical port (20998 on mainnet). A desktop running dinero-qt/dinerod
+    // already owns it, and a failed bind refuses the whole start. 0 = any free port.
+    int rpc_port = 0;
     bool verbose_logging = false;  // embedded default: quiet (see below)
 
     if (config_json) {
@@ -403,6 +572,20 @@ int32_t nodecore_start(const char* datadir, const char* config_json) {
             }
             if (config.isMember("p2p_port")) p2p_port = config["p2p_port"].asInt();
             if (config.isMember("max_peers")) max_peers = config["max_peers"].asInt();
+            if (config.isMember("rpc_port")) {
+                if (!config["rpc_port"].isInt() || config["rpc_port"].asInt() < 0 ||
+                    config["rpc_port"].asInt() > 65535) {
+                    return NODECORE_ERROR_INVALID_ARGS;
+                }
+                rpc_port = config["rpc_port"].asInt();
+            }
+            if (config.isMember("addnode")) {
+                // Host static peers, comma-separated host:port (the daemon's addnode).
+                if (!config["addnode"].isString()) {
+                    return NODECORE_ERROR_INVALID_ARGS;
+                }
+                addnode = config["addnode"].asString();
+            }
             if (config.isMember("wallet_schema_path")) {
                 if (!config["wallet_schema_path"].isString()) {
                     return NODECORE_ERROR_INVALID_ARGS;
@@ -455,6 +638,9 @@ int32_t nodecore_start(const char* datadir, const char* config_json) {
                 }
                 explicit_profile = config["sync_profile"].asString();
             }
+            if (config.isMember("utreexo_bridge")) {
+                utreexo_bridge = parse_bool(config["utreexo_bridge"], false);
+            }
             if (config.isMember("utreexo_stateless")) {
                 legacy_utreexo_override = parse_bool(config["utreexo_stateless"], utreexo_stateless);
             }
@@ -482,6 +668,21 @@ int32_t nodecore_start(const char* datadir, const char* config_json) {
         dinero::SelectParams(dinero::Chain::MAINNET);
     }
 
+    // Use the same operator-root lock as dinerod. Resolve an alias exactly
+    // once before Init; inner database symlinks remain subject to the existing
+    // storage guards. A concurrent daemon/SDK must not migrate or open it.
+    auto datadir_guard = std::make_unique<dinero::daemon::DatadirGuard>();
+    std::string lock_error;
+    if (!datadir_guard->Acquire(s.datadir, lock_error)) {
+        fprintf(stderr, "[nodecore_ffi] datadir lock refused: %s\n", lock_error.c_str());
+        return NODECORE_ERROR_INIT_FAILED;
+    }
+    s.datadir = datadir_guard->DataDir().string();
+    // Recheck the persistent fence on the exact locked root before any Init
+    // writes; an alias spelling must not select a different maintenance owner.
+    const int locked_gate = dinero::nodecore::MaintenanceJournal::StartupGate(s.datadir);
+    if (locked_gate != NODECORE_OK) return locked_gate;
+
     // Build argc/argv for DaemonApp::Init
     std::vector<std::string> args_storage;
     args_storage.push_back("dinerod-ios");
@@ -489,6 +690,8 @@ int32_t nodecore_start(const char* datadir, const char* config_json) {
     args_storage.push_back("--p2pport=" + std::to_string(p2p_port));
     args_storage.push_back("--sync-profile=" + s.sync_profile);
     args_storage.push_back("--utreexo-stateless=" + std::string(utreexo_stateless ? "1" : "0"));
+    args_storage.push_back("--utreexo-bridge=" + std::string(utreexo_bridge ? "1" : "0"));
+    args_storage.push_back("--rpc.port=" + std::to_string(rpc_port));
     if (!wallet_schema_path.empty()) {
         args_storage.push_back("--wallet-schema-path=" + wallet_schema_path);
     }
@@ -518,147 +721,146 @@ int32_t nodecore_start(const char* datadir, const char* config_json) {
     if (max_peers > 0) {
         args_storage.push_back("--maxconnections=" + std::to_string(max_peers));
     }
+    // Embedded hosts never run the legacy Lightning oracle IPC clients. With a
+    // scheduled Orchard profile (mainnet H150000) the daemon refuses to start
+    // while they are enabled (daemon_app.cpp), so disable them explicitly.
+    args_storage.push_back("--lightning.oracles.enable=0");
+    if (!addnode.empty()) args_storage.push_back("--addnode=" + addnode);
 
     if (network == "regtest") args_storage.push_back("--regtest");
     else if (network == "testnet") args_storage.push_back("--testnet");
 
-    // Build C-style argv
-    std::vector<char*> argv_ptrs;
-    for (auto& a : args_storage) {
-        argv_ptrs.push_back(const_cast<char*>(a.c_str()));
-    }
-
-    // Embedded logging is OFF by default: the daemon narrates every P2P
-    // message, block store, and UTXO add to stdout — thousands of syscalls
-    // per minute during sync, real CPU/battery on a phone, and nobody reads
-    // them in production. verbose_logging=true (Xcode debugging) restores
-    // the full firehose. std::cerr (errors/FATAL) is never silenced, and
-    // the g_logger threshold moves to WARNING so warnings still surface.
+    // All Init/recovery receipts and journals are thread-affine. The actual
+    // worker owns argv AND every receipt through closed-store selection and
+    // replacement teardown. The root guard stays in State until joined.
+    struct Startup {
+        std::atomic<bool> initialized{false},started{false};
+        std::atomic<int32_t> result{std::numeric_limits<int32_t>::max()};
+    };
+    auto startup=std::make_shared<Startup>();
     if (!verbose_logging) {
         dinero::g_logger.setLogLevel(dinero::LogLevel::WARNING);
-        std::cout.rdbuf(nullptr);  // stream sentry fails fast; << becomes a no-op
-        fprintf(stderr, "[nodecore_ffi] quiet logging active (pass verbose_logging=true to restore)\n");
+        std::cout.rdbuf(nullptr);
+        fprintf(stderr,"[nodecore_ffi] quiet logging active (pass verbose_logging=true to restore)\n");
     }
-
-    // Create and initialize DaemonApp
-    s.app = std::make_unique<dinero::DaemonApp>();
-
-    if (!s.app->Init(static_cast<int>(argv_ptrs.size()), argv_ptrs.data())) {
-        s.app.reset();
-        return NODECORE_ERROR_INIT_FAILED;
-    }
-
-    // ChainDB's unrecovered-write loop-breaker defaults to std::exit(1)
-    // ("service manager restarts the node") — correct under systemd, fatal
-    // inside the host app's process: on-device 2026-07-15 a datadir wipe
-    // under the running node latched RocksDB and the loop-breaker took the
-    // whole app down. Route it to a clean node shutdown + host notification
-    // instead. The hook runs on an arbitrary internal service thread, so it
-    // must only set flags and emit — the node thread performs the actual
-    // Stop() via its shutdown_requested wait loop.
-    if (s.app->GetContext().chainstate) {
-        if (auto* fatal_cdb = s.app->GetContext().chainstate->GetChainDB()) {
-            fatal_cdb->setFatalWriteFailureHook([](const std::string& reason) {
-                auto& st = state();
-                fprintf(stderr,
-                        "[nodecore_ffi] ChainDB fatal: %s — requesting clean node "
-                        "shutdown (embedded node never exits the host process)\n",
-                        reason.c_str());
-                Json::Value ev;
-                ev["reason"] = "chaindb_fatal";
-                ev["error"] = reason;
-                emit_event_json(NODECORE_EVENT_SHUTDOWN, ev);
-                st.running = false;
-                st.shutdown_requested = true;
-            });
-        }
-    }
-
-    // Start on a dedicated thread
-    s.start_time = std::chrono::steady_clock::now();
-
-    s.node_thread = std::thread([&s]() {
+    s.app=std::make_unique<dinero::DaemonApp>();
+    s.app->SetLockedDatadir(*datadir_guard);s.app->SetAutomaticStorageUpgrade(true);
+    s.datadir_guard=std::move(datadir_guard);
+    s.start_time=std::chrono::steady_clock::now();
+    s.node_thread=std::thread([&s,startup,stop_epoch,args=std::move(args_storage)]() mutable {
+        const auto cancelled=[&]{return Cancelled(s,stop_epoch);};
+        int32_t failure=NODECORE_ERROR_INIT_FAILED;
         try {
-            if (!s.app->Start()) {
-                emit_event(NODECORE_EVENT_SHUTDOWN, "{\"reason\":\"start_failed\"}");
-                s.running = false;
-                return;
+            std::unique_ptr<dinero::CoreReopenReceipt> pending;
+            {
+                // This unused shell has no store/service readers. Destroy it
+                // before consuming its genuine closed intent for any partial
+                // filesystem selection. A live initialized App never qualifies.
+                auto intent=std::make_unique<dinero::DaemonApp>();intent->SetLockedDatadir(*s.datadir_guard);
+                pending=intent->PreparePendingReopen(*s.datadir_guard,s.reopen_rpc_gate);
             }
-
-            s.running = true;
-            emit_event(NODECORE_EVENT_SYNC_STARTED, "{}");
-
-            // Wire mempool → wallet notifier for watched-script events
-            if (!g_notifier) {
-                g_notifier = std::make_unique<NodeCoreWalletNotifier>();
-            }
-            auto& ctx = s.app->GetContext();
-            if (ctx.mempool) {
-                auto mp = std::dynamic_pointer_cast<dinero::MempoolService>(ctx.mempool);
-                if (mp) {
-                    mp->mempool().setTxAcceptedCallback(
-                        [](const dinero::Transaction& tx) {
-                            g_notifier->onMempoolTransaction(tx);
-                        });
+            if(cancelled())throw std::runtime_error("SDK start cancelled by public Stop");
+            if(pending){
+                dinero::DaemonApp::RecoverInterruptedActivationForReopen(*s.datadir_guard,*pending,cancelled);
+                s.app->BindClosedReopenBeforeInit(*s.datadir_guard,*pending);
+            } else s.app->GetContext().reopen_rpc_gate=s.reopen_rpc_gate;
+            {
+                // Same offline fresh-genesis cohort/migration prerequisites as
+                // native startup, BEFORE the real Init and under SAME guard.
+                auto bootstrap_args=args;
+                bootstrap_args.insert(bootstrap_args.end(),{"--p2p.offline=1","--listen=0",
+                    "--rpc.port=0","--wallet.socket.enable=0"});
+                std::vector<char*> argv;for(auto& a:bootstrap_args)argv.push_back(a.data());
+                dinero::DaemonApp bootstrap;bootstrap.SetLockedDatadir(*s.datadir_guard);
+                bootstrap.SetAutomaticStorageUpgrade(true);bootstrap.SetFreshStoreBootstrapOnly(true);
+                if(!bootstrap.Init(int(argv.size()),argv.data()))throw std::runtime_error("SDK storage bootstrap refused");
+                if(bootstrap.FreshStoreCreated()){
+                    if(!bootstrap.Start()||!bootstrap.PersistFreshStoreGenesisRecords())
+                        throw std::runtime_error("SDK fresh genesis preparation refused");
+                    bootstrap.Stop();
                 }
             }
-
-            // Run until shutdown requested
-            while (!s.shutdown_requested.load()) {
+            if(cancelled())throw std::runtime_error("SDK initialization cancelled by public Stop");
+            std::vector<char*> argv;for(auto& a:args)argv.push_back(a.data());
+            if(!s.app->Init(int(argv.size()),argv.data()))throw std::runtime_error("SDK App Init refused");
+            ConfigureEmbeddedRuntime(*s.app);startup->initialized=true;failure=NODECORE_ERROR_START_FAILED;
+            if(cancelled())throw std::runtime_error("SDK start cancelled by public Stop");
+            if(!s.app->Start())throw std::runtime_error("SDK App Start refused");
+            startup->started=true;ConfigureEmbeddedNotifier(*s.app);
+            if(pending)s.app->PrepareReadmissionAfterInternalReopen(*s.datadir_guard,*pending);
+            if(cancelled())throw std::runtime_error("SDK readmission cancelled by public Stop");
+            // Initial App is already in State and the startup caller holds the
+            // publication mutex until this result is ready. No query can see
+            // running/open with an unpublished App.
+            if(pending)s.app->PublishPreparedReadmission(*pending,[&]{
+                if(cancelled())throw std::runtime_error("SDK publication cancelled by public Stop");
+                s.running=true;
+                if(cancelled()){s.running=false;throw std::runtime_error("SDK publication lost to public Stop");}
+            });
+            else s.running=true;
+            startup->result=NODECORE_OK;
+            if(pending&&!cancelled())s.app->ArchivePublishedReadmission(*s.datadir_guard,*pending);
+            pending.reset();
+            emit_event(NODECORE_EVENT_SYNC_STARTED,"{}");
+            while(!cancelled()){
+                AutomaticActivationReopen(s,args,stop_epoch);
                 std::this_thread::sleep_for(std::chrono::milliseconds(100));
             }
-
-            // Mark the node unavailable before service teardown starts so
-            // concurrent FFI queries return "not running" instead of racing
-            // through a half-destroyed DaemonApp during shutdown.
-            s.running = false;
-            s.app->Stop();
-            emit_event(NODECORE_EVENT_SHUTDOWN, "{\"reason\":\"stopped\"}");
-        } catch (const std::exception& e) {
-            s.running = false;
-            Json::Value event;
-            event["reason"] = "node_thread_exception";
-            event["error"] = e.what();
-            emit_event_json(NODECORE_EVENT_SHUTDOWN, event);
-        } catch (...) {
-            s.running = false;
-            emit_event(NODECORE_EVENT_SHUTDOWN, "{\"reason\":\"node_thread_exception\",\"error\":\"unknown\"}");
+            s.running=false;
+            if(s.app)s.app->Stop();
+            emit_event(NODECORE_EVENT_SHUTDOWN,"{\"reason\":\"stopped\"}");
+        } catch(const std::exception& error) {
+            s.running=false;s.shutdown_requested=true;
+            if(s.app)s.app->Stop();
+            int32_t expected=std::numeric_limits<int32_t>::max();
+            startup->result.compare_exchange_strong(expected,failure);
+            startup->initialized=true;
+            Json::Value event;event["reason"]="node_thread_exception";event["error"]=error.what();
+            fprintf(stderr,"[nodecore_ffi] worker stopped: %s\n",error.what());
+            emit_event_json(NODECORE_EVENT_SHUTDOWN,event);
+        } catch(...) {
+            s.running=false;s.shutdown_requested=true;
+            if(s.app)s.app->Stop();
+            int32_t expected=std::numeric_limits<int32_t>::max();
+            startup->result.compare_exchange_strong(expected,failure);startup->initialized=true;
+            emit_event(NODECORE_EVENT_SHUTDOWN,"{\"reason\":\"node_thread_exception\",\"error\":\"unknown\"}");
         }
     });
 
-    // Wait for startup confirmation. The old 5s window was too short for a RESTART: after
-    // the node has accumulated chainstate (tens of thousands of blocks), DaemonApp::Start()
-    // -> ChainstateService::Start() must reload that state + restore the Utreexo forest +
-    // resume background validation synchronously before it flips `running` — routinely more
-    // than 5s on mobile, so warm-sync restarts kept returning START_FAILED(-4) even though
-    // the node was starting fine. The iOS caller now runs nodecore_start off the main actor,
-    // so a longer wait no longer blocks the UI. 30s window, with a duration log so the real
-    // startup cost is visible.
-    const auto start_wait_begin = std::chrono::steady_clock::now();
-    for (int i = 0; i < 300 && !s.running.load(); ++i) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    // Init was previously synchronous/unbounded; it now runs on its receipt's
+    // owning worker. Preserve the existing 30s App Start confirmation window.
+    // New journal/readmission work is separate from that window; explicit Stop
+    // cancels it, and existing per-record/corpus bounds remain unchanged.
+    const auto begin=std::chrono::steady_clock::now();
+    while(!startup->initialized.load()&&startup->result.load()==std::numeric_limits<int32_t>::max()&&
+          !Cancelled(s,stop_epoch))std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    const auto start_begin=std::chrono::steady_clock::now();
+    while(!startup->started.load()&&startup->result.load()==std::numeric_limits<int32_t>::max()&&
+          !Cancelled(s,stop_epoch)){
+        if(std::chrono::steady_clock::now()-start_begin>std::chrono::seconds(30)){s.shutdown_requested=true;break;}
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
     }
-    const long long start_wait_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-        std::chrono::steady_clock::now() - start_wait_begin).count();
-
-    if (!s.running.load()) {
-        // Start failed — clean up
-        fprintf(stderr, "[nodecore_ffi] start NOT confirmed after %lldms — treating as START_FAILED\n", start_wait_ms);
-        s.shutdown_requested = true;
-        if (s.node_thread.joinable()) {
-            s.node_thread.join();
-        }
-        s.app.reset();
-        return NODECORE_ERROR_START_FAILED;
+    while(startup->result.load()==std::numeric_limits<int32_t>::max()&&!Cancelled(s,stop_epoch))
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    const auto result=startup->result.load();
+    if(result!=NODECORE_OK||Cancelled(s,stop_epoch)){
+        s.shutdown_requested=true;s.running=false;
+        if(s.node_thread.joinable())s.node_thread.join();
+        s.app.reset();s.datadir_guard.reset();
+        return result==NODECORE_ERROR_INIT_FAILED?result:NODECORE_ERROR_START_FAILED;
     }
-
-    fprintf(stderr, "[nodecore_ffi] node started (running confirmed) in %lldms\n", start_wait_ms);
+    fprintf(stderr,"[nodecore_ffi] node started in %lldms\n",
+        (long long)std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now()-begin).count());
     return NODECORE_OK;
 }
 
 int32_t nodecore_stop(void) {
     if (in_nodecore_callback) return NODECORE_ERROR_CALLBACK_REENTRY;
     auto& s = state();
+    auto epoch=s.public_stop_epoch.load();
+    while(epoch!=std::numeric_limits<uint64_t>::max()&&
+        !s.public_stop_epoch.compare_exchange_weak(epoch,epoch+1)){}
+    s.shutdown_requested=true;s.running=false;
     std::lock_guard<std::mutex> lock(s.mtx);
     // Plain stop never releases another operation's token or durable intent.
     return CloseNodeLocked(s);
@@ -773,7 +975,19 @@ char* nodecore_maintenance_status(const char* datadir) {
 
 char* nodecore_get_status_json(void) {
     auto& s = state();
-    std::lock_guard<std::mutex> lock(s.mtx);
+    // nodecore_start holds s.mtx through the whole startup (block index load,
+    // snapshot checks), which can take tens of seconds on a phone. A status poll
+    // must not wait for it: hosts call this from UI timers, and blocking made
+    // Android raise "app not responding" and restart the node.
+    std::unique_lock<std::mutex> lock(s.mtx, std::try_to_lock);
+    if (!lock.owns_lock()) {
+        Json::Value busy;
+        busy["running"] = false;
+        busy["starting"] = true;
+        Json::StreamWriterBuilder busy_writer;
+        busy_writer["indentation"] = "";
+        return strdup_c(Json::writeString(busy_writer, busy));
+    }
     if (!is_queryable_locked(s)) {
         return nullptr;
     }
@@ -1148,36 +1362,51 @@ int32_t nodecore_rescan(uint64_t from_height) {
 // ============================================================================
 
 char* nodecore_list_unspent_json(int32_t min_confirmations) {
-    auto& s = state();
-    std::lock_guard<std::mutex> lock(s.mtx);
-    if (!is_queryable_locked(s)) return nullptr;
+    try {
+        auto& s = state();
+        std::lock_guard<std::mutex> lock(s.mtx);
+        if (!is_queryable_locked(s)) return nullptr;
 
-    auto& ctx = s.app->GetContext();
-    if (!ctx.wallet) return nullptr;
+        auto& ctx = s.app->GetContext();
+        if (!ctx.wallet) return nullptr;
 
-    auto ws = std::dynamic_pointer_cast<dinero::WalletService>(ctx.wallet);
-    if (!ws) return nullptr;
+        auto ws = std::dynamic_pointer_cast<dinero::WalletService>(ctx.wallet);
+        if (!ws) return nullptr;
 
-    auto utxos = ws->get().listUnspentUTXOs(min_confirmations);
+        auto wallet_use = dinero::WalletService::AcquireWalletUse(ws);
+        auto cs = std::dynamic_pointer_cast<dinero::ChainstateService>(ctx.chainstate);
+        std::unique_ptr<dinero::ChainstateService::WalletIndexUse> index_use;
+        if (cs) index_use = dinero::ChainstateService::AcquireWalletIndexUse(cs);
+        auto& wallet = wallet_use->Wallet();
+        // Pin service lifetimes before the database lease. The runtime mutex
+        // also serializes this embedding entry point against close/shutdown.
+        auto lease = wallet.AcquireDatabaseLease();
+        if (wallet.getUTXOIndex() &&
+            (!index_use || wallet.getUTXOIndex() != &index_use->Index()))
+            return nullptr;
+        auto utxos = wallet.listUnspentUTXOs(min_confirmations);
 
-    Json::Value arr(Json::arrayValue);
-    for (const auto& u : utxos) {
-        Json::Value item;
-        item["txid"] = u.txid;
-        item["vout"] = u.vout;
-        item["amount"] = static_cast<Json::UInt64>(u.amount_una);
-        item["script"] = u.script_pubkey;
-        item["address"] = u.address;
-        item["height"] = u.height;
-        item["confirmations"] = u.confirmations;
-        item["coinbase"] = u.is_coinbase;
-        item["spendable"] = u.spendable;
-        arr.append(item);
+        Json::Value arr(Json::arrayValue);
+        for (const auto& u : utxos) {
+            Json::Value item;
+            item["txid"] = u.txid;
+            item["vout"] = u.vout;
+            item["amount"] = static_cast<Json::UInt64>(u.amount_una);
+            item["script"] = u.script_pubkey;
+            item["address"] = u.address;
+            item["height"] = u.height;
+            item["confirmations"] = u.confirmations;
+            item["coinbase"] = u.is_coinbase;
+            item["spendable"] = u.spendable;
+            arr.append(item);
+        }
+
+        Json::StreamWriterBuilder builder;
+        builder["indentation"] = "";
+        return strdup_c(Json::writeString(builder, arr));
+    } catch (...) {
+        return nullptr;
     }
-
-    Json::StreamWriterBuilder builder;
-    builder["indentation"] = "";
-    return strdup_c(Json::writeString(builder, arr));
 }
 
 // ============================================================================
@@ -1517,10 +1746,16 @@ char* nodecore_p2mr_sign_witness_json(
 
 char* nodecore_rpc_call(const char* method, const char* params_json) {
     auto& s = state();
-    auto write_json = [](const Json::Value& value) -> char* {
+    const auto gate=s.reopen_rpc_gate;
+    const auto epoch=gate->Snapshot();
+    if(!gate->Allows(epoch))return nullptr; // Retry/no reply, not a queue refusal.
+    auto write_json = [&](const Json::Value& value) -> char* {
+        if(!gate->Allows(epoch))return nullptr;
         Json::StreamWriterBuilder builder;
         builder["indentation"] = "";
-        return strdup_c(Json::writeString(builder, value));
+        char* response=strdup_c(Json::writeString(builder, value));
+        if(!gate->Allows(epoch)){std::free(response);return nullptr;}
+        return response;
     };
 
     if (!method) {
@@ -1531,6 +1766,7 @@ char* nodecore_rpc_call(const char* method, const char* params_json) {
     }
 
     std::lock_guard<std::mutex> lock(s.mtx);
+    if(!gate->Allows(epoch))return nullptr;
     if (!is_queryable_locked(s)) {
         Json::Value err(Json::objectValue);
         err["error"] = "NodeCore is not running";

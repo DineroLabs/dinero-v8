@@ -5,11 +5,22 @@
  */
 
 #include "pool/pool_db.h"
+#include "primitives/amount.h"
+#include <charconv>
+#include <iomanip>
+#include <locale>
+#include <sstream>
+#include "pool/payout_calculator.h"
+#include <set>
+#include <exception>
 #include "common/logger.h"
 #include <sqlite3.h>
+#include <openssl/rand.h>
 #include <algorithm>
-#include <sstream>
 #include <ctime>
+#include <limits>
+#include <cmath>
+#include <stdexcept>
 
 namespace dinero {
 namespace pool {
@@ -61,6 +72,205 @@ bool EnsureColumn(sqlite3* db, const std::string& table, const std::string& colu
     return true;
 }
 
+// Local checked statements for orphan accounting. Older general getters retain
+// their existing narrower contracts; this transition does not use them.
+class OrphanStatement {
+public:
+    OrphanStatement(sqlite3* db, const char* sql) {
+        if (sqlite3_prepare_v2(db, sql, -1, &stmt_, nullptr) != SQLITE_OK) {
+            sqlite3_finalize(stmt_); stmt_=nullptr;
+            throw std::runtime_error("pool orphan statement unavailable");
+        }
+    }
+    ~OrphanStatement() { sqlite3_finalize(stmt_); }
+    OrphanStatement(const OrphanStatement&)=delete;
+    sqlite3_stmt* get() const { return stmt_; }
+    void integer(int index, sqlite3_int64 value) {
+        if (sqlite3_bind_int64(stmt_,index,value)!=SQLITE_OK)
+            throw std::runtime_error("pool orphan integer bind failed");
+    }
+    void real(int index, double value) {
+        if (!std::isfinite(value) || value<0 || sqlite3_bind_double(stmt_,index,value)!=SQLITE_OK)
+            throw std::runtime_error("invalid pool allocation numeric bind");
+    }
+    double realColumn(int column) const {
+        const auto type=sqlite3_column_type(stmt_,column);
+        const auto value=sqlite3_column_double(stmt_,column);
+        if ((type!=SQLITE_FLOAT && type!=SQLITE_INTEGER) || !std::isfinite(value) || value<0)
+            throw std::runtime_error("invalid pool allocation numeric field");
+        return value;
+    }
+    void text(int index, const std::string& value) {
+        if (value.size()>static_cast<size_t>(std::numeric_limits<int>::max()) ||
+            sqlite3_bind_text(stmt_,index,value.data(),static_cast<int>(value.size()),SQLITE_TRANSIENT)!=SQLITE_OK)
+            throw std::runtime_error("pool orphan text bind failed");
+    }
+    template<size_t N> void blob(int index, const std::array<uint8_t,N>& value) {
+        if(sqlite3_bind_blob(stmt_,index,value.data(),static_cast<int>(value.size()),SQLITE_TRANSIENT)!=SQLITE_OK)
+            throw std::runtime_error("pool allocation reference bind failed");
+    }
+    sqlite3_int64 nonnegative(int column) const {
+        if (sqlite3_column_type(stmt_,column)!=SQLITE_INTEGER || sqlite3_column_int64(stmt_,column)<0)
+            throw std::runtime_error("invalid pool orphan integer");
+        return sqlite3_column_int64(stmt_,column);
+    }
+    std::string textColumn(int column) const {
+        if (sqlite3_column_type(stmt_,column)!=SQLITE_TEXT)
+            throw std::runtime_error("invalid pool orphan text type");
+        const auto* value=sqlite3_column_text(stmt_,column);
+        const int size=sqlite3_column_bytes(stmt_,column);
+        if (!value || size<=0) throw std::runtime_error("empty pool orphan owner");
+        std::string result(reinterpret_cast<const char*>(value),static_cast<size_t>(size));
+        if (result.find('\0')!=std::string::npos) throw std::runtime_error("invalid pool orphan owner bytes");
+        return result;
+    }
+    void done() {
+        if (sqlite3_step(stmt_)!=SQLITE_DONE) throw std::runtime_error("incomplete pool orphan statement");
+    }
+    void changedOne(sqlite3* db) {
+        done();
+        if (sqlite3_changes(db)!=1) throw std::runtime_error("missing pool orphan write owner");
+    }
+private:
+    sqlite3_stmt* stmt_=nullptr;
+};
+
+PoolBlock ReadCalculationBlock(OrphanStatement& rows) {
+    auto narrow=[&](int col) {
+        auto v=rows.nonnegative(col);
+        if (v>std::numeric_limits<uint32_t>::max()) throw std::runtime_error("pool block integer range");
+        return static_cast<uint32_t>(v);
+    };
+    auto flag=[&](int col) {
+        const auto v=rows.nonnegative(col);
+        if (v>1) throw std::runtime_error("invalid pool block flag");
+        return v!=0;
+    };
+    PoolBlock b;b.block_id=rows.nonnegative(0);b.block_hash=rows.textColumn(1);
+    if (!b.block_id) throw std::runtime_error("missing pool block identity");
+    b.height=narrow(2);b.finder_worker=rows.textColumn(3);b.finder_address=rows.textColumn(4);
+    b.reward=rows.nonnegative(5);b.fees=rows.nonnegative(6);b.total_reward=rows.nonnegative(7);
+    b.pool_fee_percent=rows.realColumn(8);b.pool_fee_amount=rows.nonnegative(9);b.distributable=rows.nonnegative(10);
+    b.round_shares=rows.nonnegative(11);b.round_difficulty=rows.realColumn(12);
+    b.confirmations=narrow(13);b.required_confirmations=narrow(14);b.orphaned=flag(15);
+    b.payouts_calculated=flag(16);b.payouts_sent=flag(17);b.found_at=rows.nonnegative(18);b.confirmed_at=rows.nonnegative(19);
+    return b;
+}
+
+// Empty recorded wallet/job text is retained; the existing calculator may use
+// its checked worker-address fallback. Only block_hash may be SQL NULL.
+std::string CalculationText(OrphanStatement& row,int column,bool nullable=false) {
+    const auto type=sqlite3_column_type(row.get(),column);
+    if (type==SQLITE_NULL && nullable) return {};
+    if (type!=SQLITE_TEXT) throw std::runtime_error("invalid pool share text type");
+    const auto* bytes=sqlite3_column_text(row.get(),column);const auto size=sqlite3_column_bytes(row.get(),column);
+    if (!bytes || size<0) throw std::runtime_error("unavailable pool share text");
+    std::string value(reinterpret_cast<const char*>(bytes),static_cast<size_t>(size));
+    if (value.find('\0')!=std::string::npos) throw std::runtime_error("invalid pool share text bytes");
+    return value;
+}
+Share ReadCalculationShare(OrphanStatement& row) {
+    auto narrow=[&](int col) {
+        auto v=row.nonnegative(col);
+        if (v>std::numeric_limits<uint32_t>::max()) throw std::runtime_error("pool share integer range");
+        return static_cast<uint32_t>(v);
+    };
+    Share s;s.share_id=row.nonnegative(0);
+    if (!s.share_id) throw std::runtime_error("missing pool share identity");
+    s.worker_id=row.textColumn(1);s.wallet_address=CalculationText(row,2);s.job_id=CalculationText(row,3);
+    s.difficulty=narrow(4);s.difficulty_real=row.realColumn(5);
+    const auto status=row.nonnegative(6);
+    if (status>static_cast<int>(ShareStatus::BLOCK)) throw std::runtime_error("invalid pool share status");
+    s.status=static_cast<ShareStatus>(status);s.block_hash=CalculationText(row,7,true);
+    s.block_height=narrow(8);s.block_reward=row.nonnegative(9);s.submitted_at=row.nonnegative(10);
+    return s;
+}
+
+// Complete present-row decoding shared by all payout views. Initialization
+// establishes retry columns; a missing column is unavailable data, never zero.
+Payout ReadPayout(OrphanStatement& row) {
+    Payout p;p.payout_id=row.nonnegative(0);p.block_id=row.nonnegative(1);
+    if (!p.payout_id) throw std::runtime_error("missing pool payout identity");
+    p.worker_id=row.textColumn(2);p.wallet_address=row.textColumn(3);
+    p.amount=row.nonnegative(4);p.share_percent=row.realColumn(5);
+    p.share_count=row.nonnegative(6);p.difficulty_sum=row.realColumn(7);
+    const auto status=row.nonnegative(8);
+    if (status>static_cast<int>(PayoutStatus::FAILED)) throw std::runtime_error("invalid pool payout status");
+    p.status=static_cast<PayoutStatus>(status);
+    p.txid=CalculationText(row,9,true);p.error_message=CalculationText(row,10,true);
+    p.calculated_at=row.nonnegative(11);p.paid_at=row.nonnegative(12);
+    const auto retry=row.nonnegative(13);
+    if (retry>std::numeric_limits<uint32_t>::max()) throw std::runtime_error("pool payout retry range");
+    p.retry_count=static_cast<uint32_t>(retry);p.last_retry_at=row.nonnegative(14);
+    if(sqlite3_column_type(row.get(),15)!=SQLITE_NULL) {
+        if(sqlite3_column_type(row.get(),15)!=SQLITE_BLOB || sqlite3_column_bytes(row.get(),15)!=32)
+            throw std::runtime_error("invalid pool allocation reference framing");
+        const auto* bytes=static_cast<const uint8_t*>(sqlite3_column_blob(row.get(),15));
+        std::array<uint8_t,32> origin{};
+        if(!bytes)throw std::runtime_error("pool allocation reference unavailable");
+        std::copy(bytes,bytes+origin.size(),origin.begin());
+        if(std::none_of(origin.begin(),origin.end(),[](uint8_t b){return b!=0;}))
+            throw std::runtime_error("zero pool allocation reference");
+        p.allocation_origin=origin;
+    }
+    return p;
+}
+std::vector<Payout> CompletePayoutRead(OrphanStatement& rows) {
+    std::vector<Payout> payouts;int rc;
+    while ((rc=sqlite3_step(rows.get()))==SQLITE_ROW) payouts.push_back(ReadPayout(rows));
+    if (rc!=SQLITE_DONE) throw std::runtime_error("pool payout capture incomplete");
+    return payouts;
+}
+
+class OrphanTransaction {
+public:
+    explicit OrphanTransaction(sqlite3* db):db_(db) {
+        // Caller checks autocommit before construction, so no pragma or rollback
+        // can affect a borrowed transaction.
+        original_sync_=readSync();
+        if (original_sync_<2) {
+            if (sqlite3_exec(db_,"PRAGMA synchronous=FULL",nullptr,nullptr,nullptr)!=SQLITE_OK)
+                throw std::runtime_error("pool orphan FULL unavailable");
+            restore_sync_=true;
+        }
+        try {
+            if (readSync()<2 || sqlite3_exec(db_,"BEGIN IMMEDIATE",nullptr,nullptr,nullptr)!=SQLITE_OK)
+                throw std::runtime_error("pool orphan transaction unavailable");
+            active_=true;
+        } catch (...) { restoreSync(); throw; }
+    }
+    ~OrphanTransaction() {
+        if (active_ && !sqlite3_get_autocommit(db_) &&
+            sqlite3_exec(db_,"ROLLBACK",nullptr,nullptr,nullptr)!=SQLITE_OK &&
+            !sqlite3_get_autocommit(db_)) std::terminate();
+        restoreSync();
+    }
+    void commit() {
+        if (sqlite3_exec(db_,"COMMIT",nullptr,nullptr,nullptr)!=SQLITE_OK)
+            throw std::runtime_error("pool orphan commit refused");
+        active_=false;
+    }
+private:
+    int readSync() {
+        OrphanStatement s(db_,"PRAGMA synchronous");
+        if (sqlite3_step(s.get())!=SQLITE_ROW) throw std::runtime_error("pool orphan sync unreadable");
+        auto value=s.nonnegative(0);s.done();
+        if (value>3) throw std::runtime_error("invalid pool orphan sync mode");
+        return static_cast<int>(value);
+    }
+    void restoreSync() noexcept {
+        if (!restore_sync_) return;
+        // On a restore refusal retain the stronger mode. COMMIT already defines
+        // success; never report a committed transition as rolled back.
+        sqlite3_exec(db_,original_sync_==0?"PRAGMA synchronous=OFF":"PRAGMA synchronous=NORMAL",nullptr,nullptr,nullptr);
+        restore_sync_=false;
+    }
+    sqlite3* db_;
+    int original_sync_=2;
+    bool restore_sync_=false;
+    bool active_=false;
+};
+
 } // namespace
 
 // ============================================================================
@@ -72,6 +282,7 @@ PoolDB::PoolDB(const std::string& db_path)
 }
 
 PoolDB::~PoolDB() {
+    std::lock_guard<std::recursive_mutex> connection_owner(connection_mutex_);
     if (db_) {
         sqlite3_close(db_);
         db_ = nullptr;
@@ -83,6 +294,7 @@ PoolDB::~PoolDB() {
 // ============================================================================
 
 bool PoolDB::initialize() {
+    std::lock_guard<std::recursive_mutex> connection_owner(connection_mutex_);
     int rc = sqlite3_open(db_path_.c_str(), &db_);
     if (rc != SQLITE_OK) {
         g_logger.error("[PoolDB] Failed to open database: " + db_path_);
@@ -114,11 +326,38 @@ bool PoolDB::initialize() {
         return false;
     }
 
+    // No backfill: old payouts cannot be certified as fresh allocations.
+    if (!EnsureColumn(db_, "payouts", "allocation_origin",
+                      "ALTER TABLE payouts ADD COLUMN allocation_origin BLOB;")) return false;
+    if (!executeSQL("CREATE UNIQUE INDEX IF NOT EXISTS idx_payouts_allocation_origin ON payouts(allocation_origin) WHERE allocation_origin IS NOT NULL;")) return false;
+
+    // Attempt rows are created only by the actual checked allocation owner.
+    // No historical payout is enrolled or marked paid during initialization.
+    if (!executeSQL("CREATE TABLE IF NOT EXISTS pool_payment_attempts("
+        "id BLOB PRIMARY KEY NOT NULL,wallet_name TEXT NOT NULL,wallet_id BLOB NOT NULL,"
+        "network INTEGER NOT NULL,genesis BLOB NOT NULL,fee_rate INTEGER NOT NULL,max_fee INTEGER NOT NULL,"
+        "address TEXT NOT NULL,amount INTEGER NOT NULL,retained_txid BLOB,retained_body BLOB,"
+        "retained_fee INTEGER NOT NULL DEFAULT 0,retained_vout INTEGER NOT NULL DEFAULT 0)")) return false;
+    if (!executeSQL("CREATE TABLE IF NOT EXISTS pool_payment_members("
+        "origin BLOB PRIMARY KEY NOT NULL,payout_id INTEGER UNIQUE NOT NULL,attempt BLOB NOT NULL,"
+        "block_id INTEGER NOT NULL,worker TEXT NOT NULL,amount INTEGER NOT NULL,"
+        "FOREIGN KEY(attempt) REFERENCES pool_payment_attempts(id))")) return false;
+
+    if (!executeSQL("CREATE TABLE IF NOT EXISTS pool_payment_settlements("
+        "attempt BLOB PRIMARY KEY NOT NULL,block_hash BLOB NOT NULL,height INTEGER NOT NULL,"
+        "block_time INTEGER NOT NULL,FOREIGN KEY(attempt) REFERENCES pool_payment_attempts(id))")) return false;
+
+    // No enrollment/backfill. A retained image exists only when the actual
+    // checked canonical orphan transaction records it with its accounting writes.
+    if(!executeSQL("CREATE TABLE IF NOT EXISTS pool_orphan_blocks(block_id INTEGER PRIMARY KEY,block_hash TEXT NOT NULL,height INTEGER NOT NULL,finder_worker TEXT NOT NULL,finder_address TEXT NOT NULL,reward INTEGER NOT NULL,fees INTEGER NOT NULL,total_reward INTEGER NOT NULL,pool_fee_percent REAL NOT NULL,pool_fee_amount INTEGER NOT NULL,distributable INTEGER NOT NULL,round_shares INTEGER NOT NULL,round_difficulty REAL NOT NULL,confirmations INTEGER NOT NULL,required_confirmations INTEGER NOT NULL,orphaned INTEGER NOT NULL,payouts_calculated INTEGER NOT NULL,payouts_sent INTEGER NOT NULL,found_at INTEGER NOT NULL,confirmed_at INTEGER NOT NULL,payout_count INTEGER NOT NULL)"))return false;
+    if(!executeSQL("CREATE TABLE IF NOT EXISTS pool_orphan_payouts(payout_id INTEGER PRIMARY KEY,block_id INTEGER NOT NULL,worker_id TEXT NOT NULL,wallet_address TEXT NOT NULL,amount INTEGER NOT NULL,share_percent REAL NOT NULL,share_count INTEGER NOT NULL,difficulty_sum REAL NOT NULL,status INTEGER NOT NULL,txid TEXT,error_message TEXT,calculated_at INTEGER NOT NULL,paid_at INTEGER NOT NULL,retry_count INTEGER NOT NULL,last_retry_at INTEGER NOT NULL,allocation_origin BLOB,worker_wallet TEXT NOT NULL,balance_before INTEGER NOT NULL,balance_after INTEGER NOT NULL,debit INTEGER NOT NULL)"))return false;
+
     g_logger.info("[PoolDB] Database initialized: " + db_path_);
     return true;
 }
 
 bool PoolDB::createTables() {
+    std::lock_guard<std::recursive_mutex> connection_owner(connection_mutex_);
     // Shares table
     const char* shares_sql = R"(
         CREATE TABLE IF NOT EXISTS shares (
@@ -213,6 +452,7 @@ bool PoolDB::createTables() {
             paid_at INTEGER DEFAULT 0,
             retry_count INTEGER DEFAULT 0,
             last_retry_at INTEGER DEFAULT 0,
+            allocation_origin BLOB,
             FOREIGN KEY (block_id) REFERENCES blocks(block_id)
         );
     )";
@@ -260,6 +500,7 @@ bool PoolDB::createTables() {
 }
 
 bool PoolDB::createIndexes() {
+    std::lock_guard<std::recursive_mutex> connection_owner(connection_mutex_);
     // Shares indexes
     executeSQL("CREATE INDEX IF NOT EXISTS idx_shares_worker ON shares(worker_id);");
     executeSQL("CREATE INDEX IF NOT EXISTS idx_shares_time ON shares(submitted_at);");
@@ -290,6 +531,7 @@ bool PoolDB::createIndexes() {
 // ============================================================================
 
 bool PoolDB::executeSQL(const std::string& sql) {
+    std::lock_guard<std::recursive_mutex> connection_owner(connection_mutex_);
     char* err_msg = nullptr;
     int rc = sqlite3_exec(db_, sql.c_str(), nullptr, nullptr, &err_msg);
     if (rc != SQLITE_OK) {
@@ -301,6 +543,7 @@ bool PoolDB::executeSQL(const std::string& sql) {
 }
 
 bool PoolDB::executeSQL(const std::string& sql, std::function<void(sqlite3_stmt*)> bind_fn) {
+    std::lock_guard<std::recursive_mutex> connection_owner(connection_mutex_);
     sqlite3_stmt* stmt;
     int rc = sqlite3_prepare_v2(db_, sql.c_str(), -1, &stmt, nullptr);
     if (rc != SQLITE_OK) {
@@ -321,6 +564,7 @@ bool PoolDB::executeSQL(const std::string& sql, std::function<void(sqlite3_stmt*
 // ============================================================================
 
 bool PoolDB::insertShare(const Share& share) {
+    std::lock_guard<std::recursive_mutex> connection_owner(connection_mutex_);
     const char* sql = R"(
         INSERT INTO shares (worker_id, wallet_address, job_id, difficulty,
                            difficulty_real, status, block_hash, block_height,
@@ -332,17 +576,18 @@ bool PoolDB::insertShare(const Share& share) {
         sqlite3_bind_text(stmt, 1, share.worker_id.c_str(), -1, SQLITE_TRANSIENT);
         sqlite3_bind_text(stmt, 2, share.wallet_address.c_str(), -1, SQLITE_TRANSIENT);
         sqlite3_bind_text(stmt, 3, share.job_id.c_str(), -1, SQLITE_TRANSIENT);
-        sqlite3_bind_int(stmt, 4, share.difficulty);
+        sqlite3_bind_int64(stmt, 4, static_cast<sqlite3_int64>(share.difficulty));
         sqlite3_bind_double(stmt, 5, share.difficulty_real);
         sqlite3_bind_int(stmt, 6, static_cast<int>(share.status));
         sqlite3_bind_text(stmt, 7, share.block_hash.c_str(), -1, SQLITE_TRANSIENT);
-        sqlite3_bind_int(stmt, 8, share.block_height);
+        sqlite3_bind_int64(stmt, 8, static_cast<sqlite3_int64>(share.block_height));
         sqlite3_bind_int64(stmt, 9, share.block_reward);
         sqlite3_bind_int64(stmt, 10, share.submitted_at);
     });
 }
 
 bool PoolDB::runInTransaction(const std::function<bool()>& fn) {
+    std::lock_guard<std::recursive_mutex> connection_owner(connection_mutex_);
     if (!db_) {
         g_logger.error("[PoolDB] Cannot start transaction: database is not open");
         return false;
@@ -386,6 +631,7 @@ bool PoolDB::runInTransaction(const std::function<bool()>& fn) {
 PoolDB::ShareSubmissionReservationResult PoolDB::reserveShareSubmissionKey(const std::string& dedupe_key,
                                                                            const std::string& worker_id,
                                                                            int64_t submitted_at) {
+    std::lock_guard<std::recursive_mutex> connection_owner(connection_mutex_);
     if (dedupe_key.empty()) {
         g_logger.error("[PoolDB] Cannot reserve empty share dedupe key");
         return ShareSubmissionReservationResult::Error;
@@ -425,6 +671,7 @@ PoolDB::ShareSubmissionReservationResult PoolDB::reserveShareSubmissionKey(const
 }
 
 uint64_t PoolDB::pruneShareSubmissionKeysOlderThan(int64_t cutoff_timestamp) {
+    std::lock_guard<std::recursive_mutex> connection_owner(connection_mutex_);
     const char* sql = "DELETE FROM share_dedupe WHERE submitted_at < ?";
     sqlite3_stmt* stmt = nullptr;
     if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
@@ -443,91 +690,37 @@ uint64_t PoolDB::pruneShareSubmissionKeysOlderThan(int64_t cutoff_timestamp) {
 }
 
 std::vector<Share> PoolDB::getLastNShares(uint64_t n) {
-    std::vector<Share> shares;
-
-    const char* sql = R"(
-        SELECT share_id, worker_id, wallet_address, job_id, difficulty,
-               difficulty_real, status, block_hash, block_height,
-               block_reward, submitted_at
-        FROM shares
-        WHERE status = 0
-        ORDER BY share_id DESC
-        LIMIT ?;
-    )";
-
-    sqlite3_stmt* stmt;
-    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
-        return shares;
-    }
-
-    sqlite3_bind_int64(stmt, 1, n);
-
-    while (sqlite3_step(stmt) == SQLITE_ROW) {
-        Share s;
-        s.share_id = sqlite3_column_int64(stmt, 0);
-        s.worker_id = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
-        s.wallet_address = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 2));
-        s.job_id = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 3));
-        s.difficulty = sqlite3_column_int(stmt, 4);
-        s.difficulty_real = sqlite3_column_double(stmt, 5);
-        s.status = static_cast<ShareStatus>(sqlite3_column_int(stmt, 6));
-        const char* bh = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 7));
-        if (bh) s.block_hash = bh;
-        s.block_height = sqlite3_column_int(stmt, 8);
-        s.block_reward = sqlite3_column_int64(stmt, 9);
-        s.submitted_at = sqlite3_column_int64(stmt, 10);
-        shares.push_back(s);
-    }
-
-    sqlite3_finalize(stmt);
+    std::lock_guard<std::recursive_mutex> connection_owner(connection_mutex_);
+    if (!db_ || n>static_cast<uint64_t>(std::numeric_limits<sqlite3_int64>::max()))
+        throw std::runtime_error("pool share window unavailable");
+    OrphanStatement rows(db_,
+        "SELECT share_id,worker_id,wallet_address,job_id,difficulty,difficulty_real,status,"
+        "block_hash,block_height,block_reward,submitted_at FROM shares "
+        "WHERE status=0 ORDER BY share_id DESC LIMIT ?");
+    rows.integer(1,static_cast<sqlite3_int64>(n));std::vector<Share> shares;int rc;
+    while ((rc=sqlite3_step(rows.get()))==SQLITE_ROW) shares.push_back(ReadCalculationShare(rows));
+    if (rc!=SQLITE_DONE) throw std::runtime_error("pool share window incomplete");
     return shares;
 }
 
 std::vector<Share> PoolDB::getWorkerShares(const std::string& worker_id,
                                            uint32_t limit) {
-    std::vector<Share> shares;
-
-    const char* sql = R"(
-        SELECT share_id, worker_id, wallet_address, job_id, difficulty,
-               difficulty_real, status, block_hash, block_height,
-               block_reward, submitted_at
-        FROM shares
-        WHERE worker_id = ?
-        ORDER BY submitted_at DESC
-        LIMIT ?;
-    )";
-
-    sqlite3_stmt* stmt;
-    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
-        return shares;
-    }
-
-    sqlite3_bind_text(stmt, 1, worker_id.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_int(stmt, 2, static_cast<int>(limit));
-
-    while (sqlite3_step(stmt) == SQLITE_ROW) {
-        Share s;
-        s.share_id = sqlite3_column_int64(stmt, 0);
-        s.worker_id = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
-        s.wallet_address = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 2));
-        s.job_id = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 3));
-        s.difficulty = sqlite3_column_int(stmt, 4);
-        s.difficulty_real = sqlite3_column_double(stmt, 5);
-        s.status = static_cast<ShareStatus>(sqlite3_column_int(stmt, 6));
-        const char* bh = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 7));
-        if (bh) s.block_hash = bh;
-        s.block_height = sqlite3_column_int(stmt, 8);
-        s.block_reward = sqlite3_column_int64(stmt, 9);
-        s.submitted_at = sqlite3_column_int64(stmt, 10);
-        shares.push_back(s);
-    }
-
-    sqlite3_finalize(stmt);
+    std::lock_guard<std::recursive_mutex> connection_owner(connection_mutex_);
+    if (!db_) throw std::runtime_error("pool worker shares unavailable");
+    OrphanStatement rows(db_,
+        "SELECT share_id,worker_id,wallet_address,job_id,difficulty,difficulty_real,status,"
+        "block_hash,block_height,block_reward,submitted_at FROM shares "
+        "WHERE worker_id=? ORDER BY submitted_at DESC LIMIT ?");
+    rows.text(1,worker_id);rows.integer(2,static_cast<sqlite3_int64>(limit));
+    std::vector<Share> shares;int rc;
+    while ((rc=sqlite3_step(rows.get()))==SQLITE_ROW) shares.push_back(ReadCalculationShare(rows));
+    if (rc!=SQLITE_DONE) throw std::runtime_error("pool worker shares incomplete");
     return shares;
 }
 
 double PoolDB::getWorkerDifficultyInRange(const std::string& worker_id,
                                            int64_t start_time, int64_t end_time) {
+    std::lock_guard<std::recursive_mutex> connection_owner(connection_mutex_);
     const char* sql = R"(
         SELECT COALESCE(SUM(difficulty_real), 0.0)
         FROM shares
@@ -559,6 +752,7 @@ double PoolDB::getWorkerDifficultyInRange(const std::string& worker_id,
 
 WorkerStats PoolDB::getOrCreateWorker(const std::string& worker_id,
                                        const std::string& wallet_address) {
+    std::lock_guard<std::recursive_mutex> connection_owner(connection_mutex_);
     // Try to get existing
     auto existing = getWorker(worker_id);
     if (existing) {
@@ -588,6 +782,7 @@ WorkerStats PoolDB::getOrCreateWorker(const std::string& worker_id,
 }
 
 std::optional<WorkerStats> PoolDB::getWorker(const std::string& worker_id) {
+    std::lock_guard<std::recursive_mutex> connection_owner(connection_mutex_);
     const char* sql = R"(
         SELECT worker_id, wallet_address, shares_valid, shares_stale,
                shares_invalid, blocks_found, current_difficulty, total_difficulty,
@@ -633,6 +828,7 @@ std::optional<WorkerStats> PoolDB::getWorker(const std::string& worker_id) {
 }
 
 std::vector<WorkerStats> PoolDB::getWorkersByAddress(const std::string& wallet_address) {
+    std::lock_guard<std::recursive_mutex> connection_owner(connection_mutex_);
     std::vector<WorkerStats> workers;
 
     const char* sql = R"(
@@ -680,6 +876,7 @@ std::vector<WorkerStats> PoolDB::getWorkersByAddress(const std::string& wallet_a
 }
 
 bool PoolDB::updateWorkerStats(const WorkerStats& stats) {
+    std::lock_guard<std::recursive_mutex> connection_owner(connection_mutex_);
     const char* sql = R"(
         UPDATE workers SET
             shares_valid = ?, shares_stale = ?, shares_invalid = ?,
@@ -711,6 +908,7 @@ bool PoolDB::updateWorkerStats(const WorkerStats& stats) {
 }
 
 std::vector<WorkerStats> PoolDB::getActiveWorkers(int64_t seconds) {
+    std::lock_guard<std::recursive_mutex> connection_owner(connection_mutex_);
     std::vector<WorkerStats> workers;
     int64_t cutoff = std::time(nullptr) - seconds;
 
@@ -759,6 +957,7 @@ std::vector<WorkerStats> PoolDB::getActiveWorkers(int64_t seconds) {
 }
 
 bool PoolDB::addWorkerPending(const std::string& worker_id, uint64_t amount) {
+    std::lock_guard<std::recursive_mutex> connection_owner(connection_mutex_);
     const char* sql = R"(
         UPDATE workers SET
             pending_payout = pending_payout + ?,
@@ -778,6 +977,7 @@ bool PoolDB::addWorkerPending(const std::string& worker_id, uint64_t amount) {
 // ============================================================================
 
 bool PoolDB::insertBlock(PoolBlock& block) {
+    std::lock_guard<std::recursive_mutex> connection_owner(connection_mutex_);
     const char* sql = R"(
         INSERT INTO blocks (block_hash, height, finder_worker, finder_address,
                            reward, fees, total_reward, pool_fee_percent,
@@ -814,7 +1014,38 @@ bool PoolDB::insertBlock(PoolBlock& block) {
     return inserted;
 }
 
+std::vector<PoolBlock> PoolDB::getRecordedBlocks() {
+    std::lock_guard<std::recursive_mutex> owner(connection_mutex_);
+    if(!db_ || !sqlite3_get_autocommit(db_))throw std::runtime_error("pool block inventory owner unavailable");
+    OrphanTransaction transaction(db_);
+    OrphanStatement rows(db_,"SELECT block_id,block_hash,height,finder_worker,finder_address,reward,fees,total_reward,pool_fee_percent,pool_fee_amount,distributable,round_shares,round_difficulty,confirmations,required_confirmations,orphaned,payouts_calculated,payouts_sent,found_at,confirmed_at FROM blocks ORDER BY block_id");
+    std::vector<PoolBlock> blocks;int rc;
+    while((rc=sqlite3_step(rows.get()))==SQLITE_ROW) {
+        if(blocks.size()>=65536)throw std::runtime_error("pool block inventory limit exceeded");
+        blocks.push_back(ReadCalculationBlock(rows));
+    }
+    if(rc!=SQLITE_DONE)throw std::runtime_error("pool block inventory incomplete");
+    transaction.commit();return blocks;
+}
+void PoolDB::updateBlockConfirmationsChecked(const PoolBlock& expected,uint32_t confirmations,int64_t observed_at) {
+    std::lock_guard<std::recursive_mutex> owner(connection_mutex_);
+    if(!db_ || !sqlite3_get_autocommit(db_) || observed_at<0)throw std::runtime_error("pool confirmation owner unavailable");
+    OrphanTransaction transaction(db_);
+    OrphanStatement current(db_,"SELECT block_id,block_hash,height,finder_worker,finder_address,reward,fees,total_reward,pool_fee_percent,pool_fee_amount,distributable,round_shares,round_difficulty,confirmations,required_confirmations,orphaned,payouts_calculated,payouts_sent,found_at,confirmed_at FROM blocks WHERE block_id=?");
+    current.integer(1,expected.block_id);
+    if(sqlite3_step(current.get())!=SQLITE_ROW || ReadCalculationBlock(current)!=expected || expected.orphaned)
+        throw std::runtime_error("pool confirmation inventory changed");
+    current.done();
+    const int64_t confirmed_at=confirmations>=expected.required_confirmations && expected.confirmed_at==0 ? observed_at : expected.confirmed_at;
+    if(confirmations!=expected.confirmations || confirmed_at!=expected.confirmed_at) {
+        OrphanStatement write(db_,"UPDATE blocks SET confirmations=?,confirmed_at=? WHERE block_id=?");
+        write.integer(1,confirmations);write.integer(2,confirmed_at);write.integer(3,expected.block_id);write.changedOne(db_);
+    }
+    transaction.commit();
+}
+
 std::vector<PoolBlock> PoolDB::getPendingBlocks() {
+    std::lock_guard<std::recursive_mutex> connection_owner(connection_mutex_);
     std::vector<PoolBlock> blocks;
 
     const char* sql = R"(
@@ -867,6 +1098,9 @@ std::vector<PoolBlock> PoolDB::getPendingBlocks() {
 // ============================================================================
 
 bool PoolDB::insertPayout(const Payout& payout) {
+    std::lock_guard<std::recursive_mutex> connection_owner(connection_mutex_);
+    // The compatibility insertion API does not enroll caller-supplied origins.
+    if(payout.allocation_origin) return false;
     const char* sql = R"(
         INSERT INTO payouts (block_id, worker_id, wallet_address, amount,
                             share_percent, share_count, difficulty_sum,
@@ -892,6 +1126,7 @@ bool PoolDB::insertPayout(const Payout& payout) {
 // ============================================================================
 
 uint64_t PoolDB::startNewRound() {
+    std::lock_guard<std::recursive_mutex> connection_owner(connection_mutex_);
     int64_t now = std::time(nullptr);
     const char* sql = "INSERT INTO rounds (started_at) VALUES (?);";
 
@@ -903,6 +1138,7 @@ uint64_t PoolDB::startNewRound() {
 }
 
 bool PoolDB::endRound(uint64_t round_id, uint64_t block_id) {
+    std::lock_guard<std::recursive_mutex> connection_owner(connection_mutex_);
     int64_t now = std::time(nullptr);
     const char* sql = R"(
         UPDATE rounds SET block_id = ?, ended_at = ?
@@ -919,6 +1155,7 @@ bool PoolDB::endRound(uint64_t round_id, uint64_t block_id) {
 bool PoolDB::addWorkerDifficultyToRound(uint64_t round_id,
                                          const std::string& worker_id,
                                          double difficulty) {
+    std::lock_guard<std::recursive_mutex> connection_owner(connection_mutex_);
     // Upsert: insert or update if exists
     const char* sql = R"(
         INSERT INTO round_shares (round_id, worker_id, difficulty_sum, share_count)
@@ -954,6 +1191,7 @@ bool PoolDB::addWorkerDifficultyToRound(uint64_t round_id,
 
 uint64_t PoolDB::countWorkerSharesInRound(const std::string& worker_id,
                                           uint64_t round_id) {
+    std::lock_guard<std::recursive_mutex> connection_owner(connection_mutex_);
     const char* sql = R"(
         SELECT COALESCE(share_count, 0)
         FROM round_shares
@@ -977,6 +1215,7 @@ uint64_t PoolDB::countWorkerSharesInRound(const std::string& worker_id,
 }
 
 std::optional<MiningRound> PoolDB::getCurrentRound() {
+    std::lock_guard<std::recursive_mutex> connection_owner(connection_mutex_);
     const char* sql = R"(
         SELECT round_id, block_id, total_shares, total_difficulty, started_at, ended_at
         FROM rounds
@@ -1011,6 +1250,7 @@ std::optional<MiningRound> PoolDB::getCurrentRound() {
 // ============================================================================
 
 PoolStats PoolDB::getPoolStats() {
+    std::lock_guard<std::recursive_mutex> connection_owner(connection_mutex_);
     PoolStats stats;
     const int64_t now = std::time(nullptr);
 
@@ -1140,6 +1380,7 @@ PoolStats PoolDB::getPoolStats() {
 }
 
 uint64_t PoolDB::getTotalSharesInPeriod(int64_t start_time, int64_t end_time) {
+    std::lock_guard<std::recursive_mutex> connection_owner(connection_mutex_);
     const char* sql = R"(
         SELECT COUNT(*)
         FROM shares
@@ -1162,6 +1403,7 @@ uint64_t PoolDB::getTotalSharesInPeriod(int64_t start_time, int64_t end_time) {
 }
 
 double PoolDB::getTotalDifficultyInPeriod(int64_t start_time, int64_t end_time) {
+    std::lock_guard<std::recursive_mutex> connection_owner(connection_mutex_);
     const char* sql = R"(
         SELECT COALESCE(SUM(difficulty_real), 0.0)
         FROM shares
@@ -1185,6 +1427,7 @@ double PoolDB::getTotalDifficultyInPeriod(int64_t start_time, int64_t end_time) 
 }
 
 double PoolDB::calculateLuck(int64_t period_seconds) {
+    std::lock_guard<std::recursive_mutex> connection_owner(connection_mutex_);
     if (period_seconds <= 0) {
         return 0.0;
     }
@@ -1261,64 +1504,126 @@ double PoolDB::calculateLuck(int64_t period_seconds) {
 // CONFIG
 // ============================================================================
 
-PoolConfig PoolDB::getConfig() {
-    PoolConfig config;
-
-    const char* sql = "SELECT key, value FROM config;";
-    sqlite3_stmt* stmt;
-    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
-        return config;
+namespace {
+void ValidatePoolSettings(const PoolConfig& config) {
+    if(config.payment_funding) {
+        const auto& funding=*config.payment_funding;
+        if(funding.wallet_name.empty() || funding.wallet_name.size()>256 || funding.wallet_name.find('\0')!=std::string::npos ||
+           funding.fee_rate_hint>MAX_SUPPLY_UNA_CONST || funding.maximum_fee_una>MAX_SUPPLY_UNA_CONST)
+            throw std::runtime_error("invalid pool payment funding policy");
     }
+    switch(config.payout_mode) {
+        case PayoutMode::PROP: case PayoutMode::PPLNS: case PayoutMode::PPS: case PayoutMode::SOLO: break;
+        default: throw std::runtime_error("invalid pool configuration mode");
+    }
+    if (!std::isfinite(config.pool_fee_percent) || config.pool_fee_percent<0 || config.pool_fee_percent>100 ||
+        !std::isfinite(config.pps_rate) || config.pps_rate<0)
+        throw std::runtime_error("invalid pool configuration rate");
+    const auto max=static_cast<uint64_t>(std::numeric_limits<int64_t>::max());
+    if(config.pplns_window>max || config.min_payout>max || config.min_auto_payout>max ||
+       config.pool_fee_address.find('\0')!=std::string::npos)
+        throw std::runtime_error("invalid pool configuration field");
+}
+uint64_t SettingsInteger(const std::string& value,uint64_t maximum) {
+    uint64_t parsed=0;
+    const auto result=std::from_chars(value.data(),value.data()+value.size(),parsed);
+    if(value.empty() || result.ec!=std::errc{} || result.ptr!=value.data()+value.size() || parsed>maximum)
+        throw std::runtime_error("invalid pool configuration integer");
+    return parsed;
+}
+double SettingsReal(const std::string& value) {
+    std::istringstream input(value);input.imbue(std::locale::classic());double parsed=0;
+    input>>std::noskipws>>parsed;
+    if(!input || input.peek()!=std::char_traits<char>::eof() || !std::isfinite(parsed) || parsed<0)
+        throw std::runtime_error("invalid pool configuration number");
+    return parsed;
+}
+std::string SettingsRealText(double value) {
+    std::ostringstream output;output.imbue(std::locale::classic());
+    output<<std::setprecision(std::numeric_limits<double>::max_digits10)<<value;
+    if(!output)throw std::runtime_error("pool configuration formatting failed");
+    const auto text=output.str();
+    if(SettingsReal(text)!=value)throw std::runtime_error("pool configuration number cannot round trip");
+    return text;
+}
+} // namespace
 
-    while (sqlite3_step(stmt) == SQLITE_ROW) {
-        std::string key = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
-        std::string value = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
-
-        if (key == "payout_mode") config.payout_mode = StringToPayoutMode(value);
-        else if (key == "pplns_window") config.pplns_window = std::stoull(value);
-        else if (key == "pps_rate") config.pps_rate = std::stod(value);
-        else if (key == "pool_fee_percent") config.pool_fee_percent = std::stod(value);
-        else if (key == "pool_fee_address") config.pool_fee_address = value;
-        else if (key == "min_payout") config.min_payout = std::stoull(value);
-        else if (key == "min_auto_payout") config.min_auto_payout = std::stoull(value);
-        else if (key == "max_payout_retries") config.max_payout_retries = std::stoul(value);
-        else if (key == "required_confirmations") config.required_confirmations = std::stoul(value);
-        else if (key == "new_round_on_block") {
-            config.new_round_on_block =
-                (value == "1" || value == "true" || value == "TRUE");
+PoolConfig PoolDB::getConfig() {
+    std::lock_guard<std::recursive_mutex> connection_owner(connection_mutex_);
+    if(!db_)throw std::runtime_error("pool configuration database unavailable");
+    PoolConfig config;OrphanStatement rows(db_,"SELECT key,value FROM config ORDER BY key");
+    std::map<std::string,std::string> funding;
+    const auto max=static_cast<uint64_t>(std::numeric_limits<int64_t>::max());int rc;
+    while((rc=sqlite3_step(rows.get()))==SQLITE_ROW) {
+        const auto key=rows.textColumn(0);const auto value=CalculationText(rows,1);
+        if(key=="payout_mode") {
+            if(value!="PROP" && value!="PPLNS" && value!="PPS" && value!="SOLO")
+                throw std::runtime_error("unknown pool configuration mode");
+            config.payout_mode=StringToPayoutMode(value);
+        } else if(key=="pplns_window")config.pplns_window=SettingsInteger(value,max);
+        else if(key=="pps_rate")config.pps_rate=SettingsReal(value);
+        else if(key=="pool_fee_percent")config.pool_fee_percent=SettingsReal(value);
+        else if(key=="pool_fee_address")config.pool_fee_address=value;
+        else if(key=="min_payout")config.min_payout=SettingsInteger(value,max);
+        else if(key=="min_auto_payout")config.min_auto_payout=SettingsInteger(value,max);
+        else if(key=="max_payout_retries")config.max_payout_retries=static_cast<uint32_t>(SettingsInteger(value,UINT32_MAX));
+        else if(key=="required_confirmations")config.required_confirmations=static_cast<uint32_t>(SettingsInteger(value,UINT32_MAX));
+        else if(key=="payment_funding_state" || key=="payment_funding_wallet" ||
+                key=="payment_fee_rate_hint" || key=="payment_maximum_fee_una") funding.emplace(key,value);
+        else if(key=="new_round_on_block") {
+            if(value=="1" || value=="true" || value=="TRUE")config.new_round_on_block=true;
+            else if(value=="0" || value=="false" || value=="FALSE")config.new_round_on_block=false;
+            else throw std::runtime_error("invalid pool configuration flag");
         }
     }
-
-    sqlite3_finalize(stmt);
-    return config;
+    if(rc!=SQLITE_DONE)throw std::runtime_error("pool configuration capture incomplete");
+    if(!funding.empty()) {
+        if(funding.size()!=4)throw std::runtime_error("partial pool payment funding policy");
+        const auto& state=funding.at("payment_funding_state");
+        if(state=="unset") {
+            if(!funding.at("payment_funding_wallet").empty() || !funding.at("payment_fee_rate_hint").empty() ||
+               !funding.at("payment_maximum_fee_una").empty())throw std::runtime_error("conflicting unset pool payment funding policy");
+        } else if(state=="configured") {
+            config.payment_funding=PoolPaymentFunding{funding.at("payment_funding_wallet"),
+                SettingsInteger(funding.at("payment_fee_rate_hint"),MAX_SUPPLY_UNA_CONST),
+                SettingsInteger(funding.at("payment_maximum_fee_una"),MAX_SUPPLY_UNA_CONST)};
+        } else throw std::runtime_error("unknown pool payment funding policy state");
+    }
+    ValidatePoolSettings(config);return config;
 }
 
 bool PoolDB::updateConfig(const PoolConfig& config) {
-    // Simple key-value upserts
-    auto upsert = [this](const std::string& key, const std::string& value) {
-        const char* sql = R"(
-            INSERT INTO config (key, value) VALUES (?, ?)
-            ON CONFLICT(key) DO UPDATE SET value = excluded.value;
-        )";
-        return executeSQL(sql, [&](sqlite3_stmt* stmt) {
-            sqlite3_bind_text(stmt, 1, key.c_str(), -1, SQLITE_TRANSIENT);
-            sqlite3_bind_text(stmt, 2, value.c_str(), -1, SQLITE_TRANSIENT);
-        });
-    };
-
-    bool ok = true;
-    ok = upsert("payout_mode", PayoutModeToString(config.payout_mode)) && ok;
-    ok = upsert("pplns_window", std::to_string(config.pplns_window)) && ok;
-    ok = upsert("pps_rate", std::to_string(config.pps_rate)) && ok;
-    ok = upsert("pool_fee_percent", std::to_string(config.pool_fee_percent)) && ok;
-    ok = upsert("pool_fee_address", config.pool_fee_address) && ok;
-    ok = upsert("min_payout", std::to_string(config.min_payout)) && ok;
-    ok = upsert("min_auto_payout", std::to_string(config.min_auto_payout)) && ok;
-    ok = upsert("max_payout_retries", std::to_string(config.max_payout_retries)) && ok;
-    ok = upsert("required_confirmations", std::to_string(config.required_confirmations)) && ok;
-    ok = upsert("new_round_on_block", config.new_round_on_block ? "1" : "0") && ok;
-
-    return ok;
+    std::lock_guard<std::recursive_mutex> connection_owner(connection_mutex_);
+    if(!db_ || !sqlite3_get_autocommit(db_))return false;
+    try {
+        ValidatePoolSettings(config);
+        // Prepare all strings before the transaction. Round-trip doubles exactly;
+        // std::to_string previously discarded precision before reopen.
+        const std::vector<std::pair<std::string,std::string>> values={
+            {"payout_mode",PayoutModeToString(config.payout_mode)},
+            {"pplns_window",std::to_string(config.pplns_window)},
+            {"pps_rate",SettingsRealText(config.pps_rate)},
+            {"pool_fee_percent",SettingsRealText(config.pool_fee_percent)},
+            {"pool_fee_address",config.pool_fee_address},
+            {"min_payout",std::to_string(config.min_payout)},
+            {"min_auto_payout",std::to_string(config.min_auto_payout)},
+            {"max_payout_retries",std::to_string(config.max_payout_retries)},
+            {"required_confirmations",std::to_string(config.required_confirmations)},
+            {"new_round_on_block",config.new_round_on_block?"1":"0"},
+            {"payment_funding_state",config.payment_funding?"configured":"unset"},
+            {"payment_funding_wallet",config.payment_funding?config.payment_funding->wallet_name:""},
+            {"payment_fee_rate_hint",config.payment_funding?std::to_string(config.payment_funding->fee_rate_hint):""},
+            {"payment_maximum_fee_una",config.payment_funding?std::to_string(config.payment_funding->maximum_fee_una):""}
+        };
+        OrphanTransaction transaction(db_);
+        for(const auto& [key,value]:values) {
+            OrphanStatement row(db_,"INSERT INTO config(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value");
+            row.text(1,key);row.text(2,value);row.changedOne(db_);
+        }
+        transaction.commit();return true;
+    } catch(const std::exception&) {
+        g_logger.error("[PoolDB] Configuration update refused; prior settings retained");return false;
+    }
 }
 
 // ============================================================================
@@ -1326,6 +1631,7 @@ bool PoolDB::updateConfig(const PoolConfig& config) {
 // ============================================================================
 
 uint64_t PoolDB::pruneOldShares(int64_t days) {
+    std::lock_guard<std::recursive_mutex> connection_owner(connection_mutex_);
     int64_t cutoff = std::time(nullptr) - (days * 86400);
 
     const char* sql = "DELETE FROM shares WHERE submitted_at < ? AND status != 4;"; // Keep block shares
@@ -1343,10 +1649,12 @@ uint64_t PoolDB::pruneOldShares(int64_t days) {
 }
 
 bool PoolDB::vacuum() {
+    std::lock_guard<std::recursive_mutex> connection_owner(connection_mutex_);
     return executeSQL("VACUUM;");
 }
 
 uint64_t PoolDB::getDatabaseSize() {
+    std::lock_guard<std::recursive_mutex> connection_owner(connection_mutex_);
     const char* sql = "SELECT page_count * page_size FROM pragma_page_count(), pragma_page_size();";
     sqlite3_stmt* stmt;
     if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
@@ -1366,6 +1674,7 @@ uint64_t PoolDB::getDatabaseSize() {
 // ============================================================================
 
 bool PoolDB::updateBlock(const PoolBlock& block) {
+    std::lock_guard<std::recursive_mutex> connection_owner(connection_mutex_);
     const char* sql = R"(
         UPDATE blocks SET
             confirmations = ?,
@@ -1394,6 +1703,7 @@ bool PoolDB::updateBlock(const PoolBlock& block) {
 }
 
 bool PoolDB::addWorkerPaid(const std::string& worker_id, uint64_t amount) {
+    std::lock_guard<std::recursive_mutex> connection_owner(connection_mutex_);
     const char* sql = "UPDATE workers SET total_paid = total_paid + ? WHERE worker_id = ?";
     sqlite3_stmt* stmt;
     if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
@@ -1407,6 +1717,7 @@ bool PoolDB::addWorkerPaid(const std::string& worker_id, uint64_t amount) {
 }
 
 bool PoolDB::subtractWorkerPending(const std::string& worker_id, uint64_t amount) {
+    std::lock_guard<std::recursive_mutex> connection_owner(connection_mutex_);
     const char* sql = R"(
         UPDATE workers
         SET pending_payout = CASE
@@ -1428,6 +1739,7 @@ bool PoolDB::subtractWorkerPending(const std::string& worker_id, uint64_t amount
 }
 
 std::optional<PoolBlock> PoolDB::getBlockByHash(const std::string& block_hash) {
+    std::lock_guard<std::recursive_mutex> connection_owner(connection_mutex_);
     const char* sql = "SELECT * FROM blocks WHERE block_hash = ?";
     sqlite3_stmt* stmt;
     if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
@@ -1465,6 +1777,7 @@ std::optional<PoolBlock> PoolDB::getBlockByHash(const std::string& block_hash) {
 }
 
 std::optional<PoolBlock> PoolDB::getBlock(uint64_t block_id) {
+    std::lock_guard<std::recursive_mutex> connection_owner(connection_mutex_);
     const char* sql = "SELECT * FROM blocks WHERE block_id = ?";
     sqlite3_stmt* stmt;
     if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
@@ -1502,232 +1815,461 @@ std::optional<PoolBlock> PoolDB::getBlock(uint64_t block_id) {
 }
 
 std::vector<PoolBlock> PoolDB::getRecentBlocks(uint32_t limit) {
-    std::vector<PoolBlock> blocks;
-    const char* sql = "SELECT * FROM blocks ORDER BY found_at DESC LIMIT ?";
-    sqlite3_stmt* stmt;
-    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
-        return blocks;
-    }
-    sqlite3_bind_int(stmt, 1, limit);
-
-    while (sqlite3_step(stmt) == SQLITE_ROW) {
-        PoolBlock block;
-        block.block_id = sqlite3_column_int64(stmt, 0);
-        block.block_hash = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
-        block.height = sqlite3_column_int(stmt, 2);
-        block.finder_worker = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 3));
-        block.finder_address = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 4));
-        block.reward = sqlite3_column_int64(stmt, 5);
-        block.fees = sqlite3_column_int64(stmt, 6);
-        block.total_reward = sqlite3_column_int64(stmt, 7);
-        block.pool_fee_percent = sqlite3_column_double(stmt, 8);
-        block.pool_fee_amount = sqlite3_column_int64(stmt, 9);
-        block.distributable = sqlite3_column_int64(stmt, 10);
-        block.round_shares = sqlite3_column_int64(stmt, 11);
-        block.round_difficulty = sqlite3_column_double(stmt, 12);
-        block.confirmations = sqlite3_column_int(stmt, 13);
-        block.required_confirmations = sqlite3_column_int(stmt, 14);
-        block.orphaned = sqlite3_column_int(stmt, 15) != 0;
-        block.payouts_calculated = sqlite3_column_int(stmt, 16) != 0;
-        block.payouts_sent = sqlite3_column_int(stmt, 17) != 0;
-        block.found_at = sqlite3_column_int64(stmt, 18);
-        block.confirmed_at = sqlite3_column_int64(stmt, 19);
-        blocks.push_back(block);
-    }
-    sqlite3_finalize(stmt);
+    std::lock_guard<std::recursive_mutex> connection_owner(connection_mutex_);
+    if (!db_) throw std::runtime_error("pool recent blocks unavailable");
+    OrphanStatement rows(db_,
+        "SELECT block_id,block_hash,height,finder_worker,finder_address,reward,fees,total_reward,"
+        "pool_fee_percent,pool_fee_amount,distributable,round_shares,round_difficulty,"
+        "confirmations,required_confirmations,orphaned,payouts_calculated,payouts_sent,"
+        "found_at,confirmed_at FROM blocks ORDER BY found_at DESC LIMIT ?");
+    rows.integer(1,limit);std::vector<PoolBlock> blocks;int rc;
+    while ((rc=sqlite3_step(rows.get()))==SQLITE_ROW) blocks.push_back(ReadCalculationBlock(rows));
+    if (rc!=SQLITE_DONE) throw std::runtime_error("pool recent block capture incomplete");
     return blocks;
 }
 
 std::vector<Share> PoolDB::getSharesInRange(int64_t start_time, int64_t end_time) {
-    std::vector<Share> shares;
-    const char* sql = "SELECT * FROM shares WHERE submitted_at >= ? AND submitted_at <= ? ORDER BY submitted_at DESC";
-    sqlite3_stmt* stmt;
-    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
-        return shares;
-    }
-    sqlite3_bind_int64(stmt, 1, start_time);
-    sqlite3_bind_int64(stmt, 2, end_time);
-
-    while (sqlite3_step(stmt) == SQLITE_ROW) {
-        Share share;
-        share.share_id = sqlite3_column_int64(stmt, 0);
-        share.worker_id = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
-        share.wallet_address = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 2));
-        share.job_id = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 3));
-        share.difficulty = sqlite3_column_int(stmt, 4);
-        share.difficulty_real = sqlite3_column_double(stmt, 5);
-        share.status = static_cast<ShareStatus>(sqlite3_column_int(stmt, 6));
-        if (sqlite3_column_text(stmt, 7)) {
-            share.block_hash = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 7));
-        }
-        share.block_height = sqlite3_column_int(stmt, 8);
-        share.block_reward = sqlite3_column_int64(stmt, 9);
-        share.submitted_at = sqlite3_column_int64(stmt, 10);
-        shares.push_back(share);
-    }
-    sqlite3_finalize(stmt);
+    std::lock_guard<std::recursive_mutex> connection_owner(connection_mutex_);
+    if (!db_ || start_time<0 || end_time<start_time) throw std::runtime_error("invalid pool share time range");
+    OrphanStatement rows(db_,
+        "SELECT share_id,worker_id,wallet_address,job_id,difficulty,difficulty_real,status,"
+        "block_hash,block_height,block_reward,submitted_at FROM shares "
+        "WHERE submitted_at>=? AND submitted_at<=? ORDER BY submitted_at DESC");
+    rows.integer(1,start_time);rows.integer(2,end_time);std::vector<Share> shares;int rc;
+    while ((rc=sqlite3_step(rows.get()))==SQLITE_ROW) shares.push_back(ReadCalculationShare(rows));
+    if (rc!=SQLITE_DONE) throw std::runtime_error("pool share time-range capture incomplete");
     return shares;
 }
 
 std::vector<Payout> PoolDB::getPendingPayouts() {
-    std::vector<Payout> payouts;
-    const char* sql = "SELECT * FROM payouts WHERE status IN (0, 3) ORDER BY calculated_at ASC";
-    sqlite3_stmt* stmt;
-    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
-        return payouts;
-    }
-
-    while (sqlite3_step(stmt) == SQLITE_ROW) {
-        const int column_count = sqlite3_column_count(stmt);
-        Payout payout;
-        payout.payout_id = sqlite3_column_int64(stmt, 0);
-        payout.block_id = sqlite3_column_int64(stmt, 1);
-        payout.worker_id = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 2));
-        payout.wallet_address = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 3));
-        payout.amount = sqlite3_column_int64(stmt, 4);
-        payout.share_percent = sqlite3_column_double(stmt, 5);
-        payout.share_count = sqlite3_column_int64(stmt, 6);
-        payout.difficulty_sum = sqlite3_column_double(stmt, 7);
-        payout.status = static_cast<PayoutStatus>(sqlite3_column_int(stmt, 8));
-        if (sqlite3_column_text(stmt, 9)) {
-            payout.txid = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 9));
-        }
-        if (sqlite3_column_text(stmt, 10)) {
-            payout.error_message = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 10));
-        }
-        payout.calculated_at = sqlite3_column_int64(stmt, 11);
-        payout.paid_at = sqlite3_column_int64(stmt, 12);
-        payout.retry_count = column_count > 13 ? static_cast<uint32_t>(sqlite3_column_int(stmt, 13)) : 0;
-        payout.last_retry_at = column_count > 14 ? sqlite3_column_int64(stmt, 14) : 0;
-        payouts.push_back(payout);
-    }
-    sqlite3_finalize(stmt);
-    return payouts;
+    std::lock_guard<std::recursive_mutex> connection_owner(connection_mutex_);
+    if (!db_) throw std::runtime_error("pool payout database unavailable");
+    OrphanStatement rows(db_,"SELECT payout_id,block_id,worker_id,wallet_address,amount,share_percent,share_count,difficulty_sum,status,txid,error_message,calculated_at,paid_at,retry_count,last_retry_at,allocation_origin FROM payouts WHERE status IN (0, 3) ORDER BY calculated_at ASC");
+    return CompletePayoutRead(rows);
 }
 
 std::vector<Payout> PoolDB::getWorkerPayouts(const std::string& worker_id,
                                              uint32_t limit) {
-    std::vector<Payout> payouts;
-    const char* sql = R"(
-        SELECT * FROM payouts
-        WHERE worker_id = ?
-        ORDER BY calculated_at DESC
-        LIMIT ?;
-    )";
-    sqlite3_stmt* stmt;
-    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
-        return payouts;
-    }
-    sqlite3_bind_text(stmt, 1, worker_id.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_int(stmt, 2, static_cast<int>(limit));
-
-    while (sqlite3_step(stmt) == SQLITE_ROW) {
-        const int column_count = sqlite3_column_count(stmt);
-        Payout payout;
-        payout.payout_id = sqlite3_column_int64(stmt, 0);
-        payout.block_id = sqlite3_column_int64(stmt, 1);
-        payout.worker_id = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 2));
-        payout.wallet_address = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 3));
-        payout.amount = sqlite3_column_int64(stmt, 4);
-        payout.share_percent = sqlite3_column_double(stmt, 5);
-        payout.share_count = sqlite3_column_int64(stmt, 6);
-        payout.difficulty_sum = sqlite3_column_double(stmt, 7);
-        payout.status = static_cast<PayoutStatus>(sqlite3_column_int(stmt, 8));
-        if (sqlite3_column_text(stmt, 9)) {
-            payout.txid = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 9));
-        }
-        if (sqlite3_column_text(stmt, 10)) {
-            payout.error_message = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 10));
-        }
-        payout.calculated_at = sqlite3_column_int64(stmt, 11);
-        payout.paid_at = sqlite3_column_int64(stmt, 12);
-        payout.retry_count = column_count > 13 ? static_cast<uint32_t>(sqlite3_column_int(stmt, 13)) : 0;
-        payout.last_retry_at = column_count > 14 ? sqlite3_column_int64(stmt, 14) : 0;
-        payouts.push_back(payout);
-    }
-    sqlite3_finalize(stmt);
-    return payouts;
+    std::lock_guard<std::recursive_mutex> connection_owner(connection_mutex_);
+    if (!db_) throw std::runtime_error("pool payout database unavailable");
+    if (worker_id.empty() || worker_id.find('\0')!=std::string::npos) throw std::runtime_error("invalid pool payout worker");
+    OrphanStatement rows(db_,"SELECT payout_id,block_id,worker_id,wallet_address,amount,share_percent,share_count,difficulty_sum,status,txid,error_message,calculated_at,paid_at,retry_count,last_retry_at,allocation_origin FROM payouts WHERE worker_id=? ORDER BY calculated_at DESC LIMIT ?");
+    rows.text(1,worker_id);rows.integer(2,limit);
+    return CompletePayoutRead(rows);
 }
 
 std::vector<Payout> PoolDB::getPayoutsForBlock(uint64_t block_id) {
-    std::vector<Payout> payouts;
-    const char* sql = R"(
-        SELECT * FROM payouts
-        WHERE block_id = ?
-        ORDER BY amount DESC, payout_id ASC;
-    )";
-    sqlite3_stmt* stmt;
-    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
-        return payouts;
-    }
-    sqlite3_bind_int64(stmt, 1, static_cast<sqlite3_int64>(block_id));
-
-    while (sqlite3_step(stmt) == SQLITE_ROW) {
-        const int column_count = sqlite3_column_count(stmt);
-        Payout payout;
-        payout.payout_id = sqlite3_column_int64(stmt, 0);
-        payout.block_id = sqlite3_column_int64(stmt, 1);
-        payout.worker_id = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 2));
-        payout.wallet_address = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 3));
-        payout.amount = sqlite3_column_int64(stmt, 4);
-        payout.share_percent = sqlite3_column_double(stmt, 5);
-        payout.share_count = sqlite3_column_int64(stmt, 6);
-        payout.difficulty_sum = sqlite3_column_double(stmt, 7);
-        payout.status = static_cast<PayoutStatus>(sqlite3_column_int(stmt, 8));
-        if (sqlite3_column_text(stmt, 9)) {
-            payout.txid = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 9));
-        }
-        if (sqlite3_column_text(stmt, 10)) {
-            payout.error_message = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 10));
-        }
-        payout.calculated_at = sqlite3_column_int64(stmt, 11);
-        payout.paid_at = sqlite3_column_int64(stmt, 12);
-        payout.retry_count = column_count > 13 ? static_cast<uint32_t>(sqlite3_column_int(stmt, 13)) : 0;
-        payout.last_retry_at = column_count > 14 ? sqlite3_column_int64(stmt, 14) : 0;
-        payouts.push_back(payout);
-    }
-    sqlite3_finalize(stmt);
-    return payouts;
+    std::lock_guard<std::recursive_mutex> connection_owner(connection_mutex_);
+    if (!db_) throw std::runtime_error("pool payout database unavailable");
+    if (block_id>static_cast<uint64_t>(std::numeric_limits<sqlite3_int64>::max())) throw std::runtime_error("invalid pool payout block");
+    OrphanStatement rows(db_,"SELECT payout_id,block_id,worker_id,wallet_address,amount,share_percent,share_count,difficulty_sum,status,txid,error_message,calculated_at,paid_at,retry_count,last_retry_at,allocation_origin FROM payouts WHERE block_id=? ORDER BY amount DESC, payout_id ASC");
+    rows.integer(1,static_cast<sqlite3_int64>(block_id));
+    return CompletePayoutRead(rows);
 }
 
 std::vector<Payout> PoolDB::getPayoutsReadyToSend() {
-    std::vector<Payout> payouts;
-    // Get payouts where block is confirmed (status = CONFIRMED = 1)
-    const char* sql = "SELECT * FROM payouts WHERE status = 1 ORDER BY calculated_at ASC";
-    sqlite3_stmt* stmt;
-    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
-        return payouts;
-    }
+    std::lock_guard<std::recursive_mutex> connection_owner(connection_mutex_);
+    if (!db_) throw std::runtime_error("pool payout database unavailable");
+    OrphanStatement rows(db_,"SELECT payout_id,block_id,worker_id,wallet_address,amount,share_percent,share_count,difficulty_sum,status,txid,error_message,calculated_at,paid_at,retry_count,last_retry_at,allocation_origin FROM payouts WHERE status=1 ORDER BY calculated_at ASC");
+    return CompletePayoutRead(rows);
+}
 
-    while (sqlite3_step(stmt) == SQLITE_ROW) {
-        const int column_count = sqlite3_column_count(stmt);
-        Payout payout;
-        payout.payout_id = sqlite3_column_int64(stmt, 0);
-        payout.block_id = sqlite3_column_int64(stmt, 1);
-        payout.worker_id = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 2));
-        payout.wallet_address = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 3));
-        payout.amount = sqlite3_column_int64(stmt, 4);
-        payout.share_percent = sqlite3_column_double(stmt, 5);
-        payout.share_count = sqlite3_column_int64(stmt, 6);
-        payout.difficulty_sum = sqlite3_column_double(stmt, 7);
-        payout.status = static_cast<PayoutStatus>(sqlite3_column_int(stmt, 8));
-        if (sqlite3_column_text(stmt, 9)) {
-            payout.txid = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 9));
-        }
-        if (sqlite3_column_text(stmt, 10)) {
-            payout.error_message = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 10));
-        }
-        payout.calculated_at = sqlite3_column_int64(stmt, 11);
-        payout.paid_at = sqlite3_column_int64(stmt, 12);
-        payout.retry_count = column_count > 13 ? static_cast<uint32_t>(sqlite3_column_int(stmt, 13)) : 0;
-        payout.last_retry_at = column_count > 14 ? sqlite3_column_int64(stmt, 14) : 0;
-        payouts.push_back(payout);
+namespace {
+void PaymentCheck(bool ok) {if(!ok)throw std::runtime_error("pool payment attempt ownership unavailable");}
+bool PaymentNonzero(const auto& value) {return std::any_of(value.begin(),value.end(),[](uint8_t b){return b!=0;});}
+template<size_t N> std::array<uint8_t,N> PaymentBlob(sqlite3_stmt* row,int col) {
+    PaymentCheck(sqlite3_column_type(row,col)==SQLITE_BLOB && sqlite3_column_bytes(row,col)==N);
+    const auto* data=static_cast<const uint8_t*>(sqlite3_column_blob(row,col));PaymentCheck(data!=nullptr);
+    std::array<uint8_t,N> out{};std::copy(data,data+N,out.begin());PaymentCheck(PaymentNonzero(out));return out;
+}
+void ValidatePaymentBinding(const PoolPaymentWalletBinding& b) {
+    PoolConfig c;c.payment_funding=b.funding;ValidatePoolSettings(c);
+    PaymentCheck(b.network<=2 && PaymentNonzero(b.wallet) && PaymentNonzero(b.genesis));
+}
+std::string PaymentTxid(const PoolPaymentRetained& retained) {
+    static constexpr char hex[]="0123456789abcdef";std::string result;result.reserve(64);
+    for(auto it=retained.txid.rbegin();it!=retained.txid.rend();++it){result+=hex[*it>>4];result+=hex[*it&15];}return result;
+}
+void ValidatePaymentAttempt(const PoolPaymentAttempt& a) {
+    ValidatePaymentBinding(a.binding);PaymentCheck(PaymentNonzero(a.id) && !a.address.empty() && a.address.size()<=256 &&
+        a.address.find('\0')==std::string::npos && a.amount && a.amount<=MAX_SUPPLY_UNA_CONST && !a.members.empty() && a.members.size()<=256);
+    uint64_t total=0;std::set<uint64_t> ids;
+    for(size_t i=0;i<a.members.size();++i) {
+        const auto& m=a.members[i];PaymentCheck(m.payout_id && m.payout_id<=INT64_MAX && m.block_id && m.block_id<=INT64_MAX &&
+            m.amount && m.amount<=a.amount-total && !m.worker.empty() && m.worker.find('\0')==std::string::npos &&
+            PaymentNonzero(m.origin) && (!i || a.members[i-1].origin<m.origin) && ids.insert(m.payout_id).second);total+=m.amount;
     }
-    sqlite3_finalize(stmt);
-    return payouts;
+    PaymentCheck(total==a.amount);
+    if(a.retained)PaymentCheck(PaymentNonzero(a.retained->txid) && PaymentNonzero(a.retained->body_sha256) && a.retained->fee_una<=a.binding.funding.maximum_fee_una);
+    if(a.settlement)PaymentCheck(a.retained && PaymentNonzero(a.settlement->block) && a.settlement->block_time && a.settlement->block_time<=INT64_MAX);
+}
+}
+std::vector<PoolPaymentAttempt> PoolDB::readPaymentAttemptsOwned() {
+    PaymentCheck(db_ && !sqlite3_get_autocommit(db_));
+    std::vector<PoolPaymentAttempt> result;std::map<std::array<uint8_t,16>,size_t> positions;
+    {
+        OrphanStatement rows(db_,"SELECT id,wallet_name,wallet_id,network,genesis,fee_rate,max_fee,address,amount,retained_txid,retained_body,retained_fee,retained_vout FROM pool_payment_attempts ORDER BY id");
+        int rc;
+        while((rc=sqlite3_step(rows.get()))==SQLITE_ROW) {
+            PaymentCheck(result.size()<4096);PoolPaymentAttempt a;a.id=PaymentBlob<16>(rows.get(),0);
+            a.binding.funding.wallet_name=rows.textColumn(1);a.binding.wallet=PaymentBlob<32>(rows.get(),2);
+            const auto network=rows.nonnegative(3);PaymentCheck(network<=2);a.binding.network=static_cast<uint8_t>(network);
+            a.binding.genesis=PaymentBlob<32>(rows.get(),4);a.binding.funding.fee_rate_hint=rows.nonnegative(5);
+            a.binding.funding.maximum_fee_una=rows.nonnegative(6);a.address=rows.textColumn(7);a.amount=rows.nonnegative(8);
+            const auto fee=rows.nonnegative(11),vout=rows.nonnegative(12);PaymentCheck(vout<=UINT32_MAX);
+            if(sqlite3_column_type(rows.get(),9)==SQLITE_NULL) {
+                PaymentCheck(sqlite3_column_type(rows.get(),10)==SQLITE_NULL && fee==0 && vout==0);
+            } else a.retained=PoolPaymentRetained{PaymentBlob<32>(rows.get(),9),PaymentBlob<32>(rows.get(),10),static_cast<uint64_t>(fee),static_cast<uint32_t>(vout)};
+            PaymentCheck(positions.emplace(a.id,result.size()).second);result.push_back(std::move(a));
+        }
+        PaymentCheck(rc==SQLITE_DONE);
+    }
+    {
+        OrphanStatement rows(db_,"SELECT attempt,block_hash,height,block_time FROM pool_payment_settlements ORDER BY attempt");
+        int rc;size_t count=0;
+        while((rc=sqlite3_step(rows.get()))==SQLITE_ROW) {
+            PaymentCheck(++count<=4096);const auto owner=positions.find(PaymentBlob<16>(rows.get(),0));
+            PaymentCheck(owner!=positions.end());auto& attempt=result[owner->second];
+            const auto height=rows.nonnegative(2),time=rows.nonnegative(3);PaymentCheck(height<=UINT32_MAX && time>0 && !attempt.settlement);
+            attempt.settlement=PoolPaymentSettlement{PaymentBlob<32>(rows.get(),1),static_cast<uint32_t>(height),static_cast<uint64_t>(time)};
+        }
+        PaymentCheck(rc==SQLITE_DONE);
+    }
+    {
+        OrphanStatement rows(db_,"SELECT m.origin,m.payout_id,m.attempt,m.block_id,m.worker,m.amount,p.block_id,p.worker_id,p.wallet_address,p.amount,p.status,p.allocation_origin,p.txid,p.paid_at FROM pool_payment_members m LEFT JOIN payouts p ON p.payout_id=m.payout_id ORDER BY m.origin");
+        int rc;size_t count=0;std::set<uint64_t> payouts;std::set<std::array<uint8_t,32>> origins;
+        while((rc=sqlite3_step(rows.get()))==SQLITE_ROW) {
+            PaymentCheck(++count<=4096*256);PoolPaymentMember m;m.origin=PaymentBlob<32>(rows.get(),0);
+            m.payout_id=rows.nonnegative(1);const auto owner=positions.find(PaymentBlob<16>(rows.get(),2));PaymentCheck(owner!=positions.end());
+            auto& a=result[owner->second];m.block_id=rows.nonnegative(3);m.worker=rows.textColumn(4);m.amount=rows.nonnegative(5);
+            PaymentCheck(m.block_id==static_cast<uint64_t>(rows.nonnegative(6)) && m.worker==rows.textColumn(7) && a.address==rows.textColumn(8) &&
+                m.amount==static_cast<uint64_t>(rows.nonnegative(9)) &&
+                rows.nonnegative(10)==static_cast<int>(a.settlement?PayoutStatus::PAID:PayoutStatus::CONFIRMED) &&
+                m.origin==PaymentBlob<32>(rows.get(),11) &&
+                (a.settlement ? (a.retained && CalculationText(rows,12)==PaymentTxid(*a.retained) && static_cast<uint64_t>(rows.nonnegative(13))==a.settlement->block_time)
+                              : (CalculationText(rows,12).empty() && rows.nonnegative(13)==0)) &&
+                payouts.insert(m.payout_id).second && origins.insert(m.origin).second);
+            PaymentCheck(a.members.size()<256);a.members.push_back(std::move(m));
+        }
+        PaymentCheck(rc==SQLITE_DONE);
+    }
+    for(const auto& a:result)ValidatePaymentAttempt(a);
+    return result;
+}
+std::vector<PoolPaymentAttempt> PoolDB::getPaymentAttempts() {
+    std::lock_guard<std::recursive_mutex> owner(connection_mutex_);
+    PaymentCheck(db_ && sqlite3_get_autocommit(db_));OrphanTransaction transaction(db_);
+    auto result=readPaymentAttemptsOwned();transaction.commit();return result;
+}
+PoolPaymentSourceSnapshot PoolDB::readPaymentSourcesOwned(const std::vector<uint64_t>& ids) {
+    PaymentCheck(db_ && !sqlite3_get_autocommit(db_) && !ids.empty() && ids.size()<=256);
+    const std::set<uint64_t> selected(ids.begin(),ids.end());PaymentCheck(selected.size()==ids.size());
+    PoolPaymentSourceSnapshot captured;captured.policy=getConfig();
+    for(const auto id:selected) {
+        PaymentCheck(id && id<=INT64_MAX);
+        OrphanStatement row(db_,"SELECT p.block_id,p.worker_id,p.wallet_address,p.amount,p.allocation_origin,b.block_hash,b.height,b.total_reward,b.required_confirmations,b.orphaned,b.payouts_calculated FROM payouts p LEFT JOIN blocks b ON b.block_id=p.block_id WHERE p.payout_id=?");
+        row.integer(1,id);PaymentCheck(sqlite3_step(row.get())==SQLITE_ROW);PoolPaymentSourceRow item;
+        item.member.payout_id=id;item.member.block_id=row.nonnegative(0);item.member.worker=row.textColumn(1);
+        item.address=row.textColumn(2);item.member.amount=row.nonnegative(3);item.member.origin=PaymentBlob<32>(row.get(),4);
+        item.block_hash=row.textColumn(5);const auto height=row.nonnegative(6),confirmations=row.nonnegative(8);
+        item.total_reward=row.nonnegative(7);
+        PaymentCheck(item.member.block_id && item.member.amount && item.member.amount<=MAX_SUPPLY_UNA_CONST &&
+            height>0 && height<=INT32_MAX && confirmations<=UINT32_MAX && item.total_reward>0 && item.total_reward<=MAX_SUPPLY_UNA_CONST &&
+            item.member.amount<=item.total_reward && row.nonnegative(9)==0 && row.nonnegative(10)==1);
+        item.height=static_cast<uint32_t>(height);item.required_confirmations=static_cast<uint32_t>(confirmations);
+        row.done();captured.rows.push_back(std::move(item));
+    }
+    return captured;
+}
+PoolPaymentSourceSnapshot PoolDB::capturePaymentSources(const std::vector<uint64_t>& ids) {
+    std::lock_guard<std::recursive_mutex> owner(connection_mutex_);
+    PaymentCheck(db_ && sqlite3_get_autocommit(db_));OrphanTransaction transaction(db_);
+    auto result=readPaymentSourcesOwned(ids);transaction.commit();return result;
+}
+PoolPaymentAttempt PoolDB::beginPaymentAttempt(const PoolPaymentWalletBinding& binding,const std::vector<uint64_t>& ids,
+                                               const PoolPaymentSourceSnapshot& expected) {
+    std::lock_guard<std::recursive_mutex> owner(connection_mutex_);
+    PaymentCheck(db_ && sqlite3_get_autocommit(db_));ValidatePaymentBinding(binding);
+    PaymentCheck(!ids.empty() && ids.size()<=256);const std::set<uint64_t> selected(ids.begin(),ids.end());PaymentCheck(selected.size()==ids.size());
+    OrphanTransaction transaction(db_);PaymentCheck(readPaymentSourcesOwned(ids)==expected);
+    const auto config=getConfig();PaymentCheck(config.payment_funding && *config.payment_funding==binding.funding);
+    const auto existing=readPaymentAttemptsOwned();PaymentCheck(existing.size()<4096);
+    for(const auto& a:existing)for(const auto& m:a.members)PaymentCheck(!selected.contains(m.payout_id));
+    const auto ready=getPayoutsReadyToSend();PoolPaymentAttempt attempt;attempt.binding=binding;
+    for(const auto& payout:ready)if(selected.contains(payout.payout_id)) {
+        PaymentCheck(payout.allocation_origin && payout.block_id && payout.amount && payout.amount<=MAX_SUPPLY_UNA_CONST-attempt.amount &&
+            payout.txid.empty() && payout.paid_at==0);
+        if(attempt.members.empty())attempt.address=payout.wallet_address;
+        PaymentCheck(attempt.address==payout.wallet_address);
+        OrphanStatement block(db_,"SELECT orphaned,payouts_calculated,confirmations,required_confirmations FROM blocks WHERE block_id=?");
+        block.integer(1,payout.block_id);PaymentCheck(sqlite3_step(block.get())==SQLITE_ROW);
+        PaymentCheck(block.nonnegative(0)==0 && block.nonnegative(1)==1 && block.nonnegative(2)>=block.nonnegative(3));block.done();
+        attempt.amount+=payout.amount;attempt.members.push_back({payout.payout_id,payout.block_id,payout.amount,payout.worker_id,*payout.allocation_origin});
+    }
+    PaymentCheck(attempt.members.size()==selected.size() && attempt.amount>=config.min_auto_payout);
+    std::sort(attempt.members.begin(),attempt.members.end(),[](const auto& a,const auto& b){return a.origin<b.origin;});
+    PaymentCheck(RAND_bytes(attempt.id.data(),static_cast<int>(attempt.id.size()))==1);ValidatePaymentAttempt(attempt);
+    std::map<std::string,uint64_t> credits;
+    for(const auto& m:attempt.members) {PaymentCheck(m.amount<=INT64_MAX-credits[m.worker]);credits[m.worker]+=m.amount;}
+    for(const auto& [worker,amount]:credits) {
+        OrphanStatement row(db_,"SELECT pending_payout FROM workers WHERE worker_id=?");row.text(1,worker);
+        PaymentCheck(sqlite3_step(row.get())==SQLITE_ROW && static_cast<uint64_t>(row.nonnegative(0))>=amount);row.done();
+    }
+    {
+        OrphanStatement row(db_,"INSERT INTO pool_payment_attempts(id,wallet_name,wallet_id,network,genesis,fee_rate,max_fee,address,amount) VALUES(?,?,?,?,?,?,?,?,?)");
+        row.blob(1,attempt.id);row.text(2,binding.funding.wallet_name);row.blob(3,binding.wallet);row.integer(4,binding.network);row.blob(5,binding.genesis);
+        row.integer(6,binding.funding.fee_rate_hint);row.integer(7,binding.funding.maximum_fee_una);row.text(8,attempt.address);row.integer(9,attempt.amount);row.changedOne(db_);
+    }
+    for(const auto& m:attempt.members) {
+        OrphanStatement row(db_,"INSERT INTO pool_payment_members(origin,payout_id,attempt,block_id,worker,amount) VALUES(?,?,?,?,?,?)");
+        row.blob(1,m.origin);row.integer(2,m.payout_id);row.blob(3,attempt.id);row.integer(4,m.block_id);row.text(5,m.worker);row.integer(6,m.amount);row.changedOne(db_);
+    }
+    transaction.commit();return attempt;
+}
+void PoolDB::retainPaymentAttempt(const PoolPaymentAttempt& expected,const PoolPaymentRetained& retained) {
+    std::lock_guard<std::recursive_mutex> owner(connection_mutex_);
+    PaymentCheck(db_ && sqlite3_get_autocommit(db_));auto next=expected;next.retained=retained;ValidatePaymentAttempt(next);
+    OrphanTransaction transaction(db_);const auto existing=readPaymentAttemptsOwned();
+    const auto found=std::find_if(existing.begin(),existing.end(),[&](const auto& a){return a.id==expected.id;});
+    PaymentCheck(found!=existing.end() && *found==expected);
+    if(found->retained){PaymentCheck(*found->retained==retained);transaction.commit();return;}
+    OrphanStatement row(db_,"UPDATE pool_payment_attempts SET retained_txid=?,retained_body=?,retained_fee=?,retained_vout=? WHERE id=? AND retained_txid IS NULL");
+    row.blob(1,retained.txid);row.blob(2,retained.body_sha256);row.integer(3,retained.fee_una);row.integer(4,retained.vout);row.blob(5,expected.id);row.changedOne(db_);
+    // Payout status and worker credits are deliberately unchanged. A retained
+    // signed transaction does not certify chain inclusion or canonical settlement.
+    transaction.commit();
+}
+
+bool PoolDB::reconcilePaymentSettlement(const PoolPaymentAttempt& expected,const std::optional<PoolPaymentSettlement>& settlement) {
+    std::lock_guard<std::recursive_mutex> owner(connection_mutex_);
+    PaymentCheck(db_ && sqlite3_get_autocommit(db_) && expected.retained);
+    auto next=expected;next.settlement=settlement;ValidatePaymentAttempt(next);
+    OrphanTransaction transaction(db_);const auto attempts=readPaymentAttemptsOwned();
+    const auto found=std::find_if(attempts.begin(),attempts.end(),[&](const auto& a){return a.id==expected.id;});
+    PaymentCheck(found!=attempts.end() && *found==expected);
+    if(expected.settlement==settlement){transaction.commit();return false;}
+    std::map<std::string,uint64_t> credits;
+    for(const auto& m:expected.members){PaymentCheck(m.amount<=INT64_MAX-credits[m.worker]);credits[m.worker]+=m.amount;}
+    // Resolve the complete counter replacement before performing any write.
+    struct Balance {std::string worker;uint64_t pending,paid;};std::vector<Balance> balances;
+    if(bool(expected.settlement)!=bool(settlement))for(const auto& [worker,amount]:credits) {
+        OrphanStatement row(db_,"SELECT pending_payout,total_paid FROM workers WHERE worker_id=?");row.text(1,worker);
+        PaymentCheck(sqlite3_step(row.get())==SQLITE_ROW);uint64_t pending=row.nonnegative(0),paid=row.nonnegative(1);row.done();
+        if(settlement){PaymentCheck(pending>=amount && amount<=INT64_MAX-paid);pending-=amount;paid+=amount;}
+        else {PaymentCheck(paid>=amount && amount<=INT64_MAX-pending);paid-=amount;pending+=amount;}
+        balances.push_back({worker,pending,paid});
+    }
+    for(const auto& b:balances) {
+        OrphanStatement row(db_,"UPDATE workers SET pending_payout=?,total_paid=? WHERE worker_id=?");
+        row.integer(1,b.pending);row.integer(2,b.paid);row.text(3,b.worker);row.changedOne(db_);
+    }
+    for(const auto& member:expected.members) {
+        OrphanStatement row(db_,"UPDATE payouts SET status=?,txid=?,paid_at=? WHERE payout_id=? AND allocation_origin=?");
+        row.integer(1,static_cast<int>(settlement?PayoutStatus::PAID:PayoutStatus::CONFIRMED));
+        row.text(2,settlement?PaymentTxid(*expected.retained):std::string{});row.integer(3,settlement?settlement->block_time:0);
+        row.integer(4,member.payout_id);row.blob(5,member.origin);row.changedOne(db_);
+    }
+    if(expected.settlement) {
+        OrphanStatement row(db_,"DELETE FROM pool_payment_settlements WHERE attempt=?");row.blob(1,expected.id);row.changedOne(db_);
+    }
+    if(settlement) {
+        OrphanStatement row(db_,"INSERT INTO pool_payment_settlements(attempt,block_hash,height,block_time) VALUES(?,?,?,?)");
+        row.blob(1,expected.id);row.blob(2,settlement->block);row.integer(3,settlement->height);row.integer(4,settlement->block_time);row.changedOne(db_);
+    }
+    // Immutable attempt/members and the retained wallet origin survive undo.
+    // No receipt here authorizes creating or submitting another transaction.
+    transaction.commit();return true;
+}
+
+bool PoolDB::reconcileOrphanedBlock(const std::string& block_hash, OrphanResult& result,const PoolBlock* expected) {
+    std::lock_guard<std::recursive_mutex> connection_owner(connection_mutex_);
+    if (!db_ || !sqlite3_get_autocommit(db_) || block_hash.empty() ||
+        block_hash.find('\0')!=std::string::npos) return false;
+    try {
+        OrphanTransaction transaction(db_);
+        if(expected) {
+            OrphanStatement current(db_,"SELECT block_id,block_hash,height,finder_worker,finder_address,reward,fees,total_reward,pool_fee_percent,pool_fee_amount,distributable,round_shares,round_difficulty,confirmations,required_confirmations,orphaned,payouts_calculated,payouts_sent,found_at,confirmed_at FROM blocks WHERE block_hash=?");current.text(1,block_hash);
+            if(sqlite3_step(current.get())!=SQLITE_ROW || ReadCalculationBlock(current)!=*expected)
+                throw std::runtime_error("pool orphan source inventory changed");
+            current.done();
+        }
+        OrphanResult prepared;
+        sqlite3_int64 block_id=0;
+        {
+            OrphanStatement block(db_,"SELECT block_id,orphaned FROM blocks WHERE block_hash=?");
+            block.text(1,block_hash);
+            const int rc=sqlite3_step(block.get());
+            if (rc==SQLITE_ROW) {
+                block_id=block.nonnegative(0);
+                if (!block_id || block.nonnegative(1)>1) throw std::runtime_error("invalid pool block owner");
+                block.done();prepared.found=true;
+            } else if (rc!=SQLITE_DONE) throw std::runtime_error("pool block lookup incomplete");
+        }
+        if (prepared.found) {
+            // In-flight/retained payments cannot be reversed by the old unpaid
+            // policy. Independent canonical settlement/reorg handling is required.
+            OrphanStatement attempted(db_,"SELECT 1 FROM pool_payment_members WHERE block_id=? LIMIT 1");
+            attempted.integer(1,block_id);attempted.done();
+            struct Pending { sqlite3_int64 id,amount; std::string worker; };
+            std::vector<Pending> pending;
+            {
+                OrphanStatement payouts(db_,
+                    "SELECT p.payout_id,p.worker_id,p.amount,p.status,w.pending_payout "
+                    "FROM payouts p LEFT JOIN workers w ON w.worker_id=p.worker_id "
+                    "WHERE p.block_id=? ORDER BY p.amount DESC,p.payout_id ASC");
+                payouts.integer(1,block_id);
+                int rc;
+                while ((rc=sqlite3_step(payouts.get()))==SQLITE_ROW) {
+                    auto id=payouts.nonnegative(0);auto worker=payouts.textColumn(1);
+                    auto amount=payouts.nonnegative(2);auto status=payouts.nonnegative(3);
+                    if (!id || status>static_cast<int>(PayoutStatus::FAILED))
+                        throw std::runtime_error("invalid pool payout owner");
+                    if (status==static_cast<int>(PayoutStatus::PAID)) {++prepared.already_paid;continue;}
+                    if (status==static_cast<int>(PayoutStatus::FAILED)) continue;
+                    // Missing/malformed active worker cannot certify zero balance.
+                    (void)payouts.nonnegative(4);
+                    pending.push_back({id,amount,std::move(worker)});
+                }
+                if (rc!=SQLITE_DONE) throw std::runtime_error("pool payout inventory incomplete");
+            }
+            // Inventory is complete before the first write. Preserve the existing
+            // saturating subtraction and PAID/FAILED policies, without fabrication.
+            for (const auto& payout:pending) {
+                OrphanStatement worker(db_,
+                    "UPDATE workers SET pending_payout=CASE WHEN pending_payout>=? "
+                    "THEN pending_payout-? ELSE 0 END WHERE worker_id=? "
+                    "AND typeof(pending_payout)='integer' AND pending_payout>=0");
+                worker.integer(1,payout.amount);worker.integer(2,payout.amount);worker.text(3,payout.worker);
+                worker.changedOne(db_);
+                OrphanStatement failure(db_,
+                    "UPDATE payouts SET status=3,txid='',error_message='orphaned block',paid_at=0 "
+                    "WHERE payout_id=? AND block_id=? AND status IN (0,1)");
+                failure.integer(1,payout.id);failure.integer(2,block_id);failure.changedOne(db_);
+                ++prepared.pending_reversed;
+            }
+            OrphanStatement orphan(db_,"UPDATE blocks SET orphaned=1 WHERE block_id=?");
+            orphan.integer(1,block_id);orphan.changedOne(db_);
+        }
+        transaction.commit();
+        result=prepared;
+        return true;
+    } catch (const std::exception&) {
+        g_logger.error("[PoolDB] Orphan accounting transition refused; no success published");
+        return false;
+    }
+}
+
+
+namespace {
+constexpr const char* OrphanBlockColumns="block_id,block_hash,height,finder_worker,finder_address,reward,fees,total_reward,pool_fee_percent,pool_fee_amount,distributable,round_shares,round_difficulty,confirmations,required_confirmations,orphaned,payouts_calculated,payouts_sent,found_at,confirmed_at";
+constexpr const char* OrphanPayoutColumns="payout_id,block_id,worker_id,wallet_address,amount,share_percent,share_count,difficulty_sum,status,txid,error_message,calculated_at,paid_at,retry_count,last_retry_at,allocation_origin";
+void RetentionCheck(bool ok) {if(!ok)throw std::runtime_error("retained pool orphan owner unavailable or inconsistent");}
+std::vector<Payout> RetentionPayouts(sqlite3* db,const char* table,uint64_t block) {
+    const std::string query=std::string("SELECT ")+OrphanPayoutColumns+" FROM "+table+" WHERE block_id=? ORDER BY amount DESC,payout_id ASC";
+    OrphanStatement rows(db,query.c_str());rows.integer(1,block);std::vector<Payout> result;int rc;
+    while((rc=sqlite3_step(rows.get()))==SQLITE_ROW) {RetentionCheck(result.size()<4096);auto p=ReadPayout(rows);RetentionCheck(p.block_id==block);result.push_back(std::move(p));}
+    RetentionCheck(rc==SQLITE_DONE);return result;
+}
+struct RetainedDebit {uint64_t before,after,amount;std::string wallet;};
+std::map<uint64_t,RetainedDebit> PrepareRetentionDebits(sqlite3* db,const std::vector<Payout>& rows,bool stored) {
+    std::map<std::string,uint64_t> balances;std::map<uint64_t,RetainedDebit> debits;
+    for(const auto& p:rows) {
+        // Existing PAID/attempted or legacy uncertain txids need a separate
+        // liability owner. They are not certified as reversible unpaid credit.
+        RetentionCheck(p.status!=PayoutStatus::PAID && p.txid.empty() && p.paid_at==0);
+        OrphanStatement worker(db,"SELECT wallet_address,pending_payout FROM workers WHERE worker_id=?");worker.text(1,p.worker_id);
+        RetentionCheck(sqlite3_step(worker.get())==SQLITE_ROW);const auto wallet=worker.textColumn(0);const uint64_t live=worker.nonnegative(1);worker.done();
+        RetentionCheck(wallet==p.wallet_address);
+        uint64_t before,after,debit;
+        if(stored) {
+            OrphanStatement saved(db,"SELECT worker_wallet,balance_before,balance_after,debit FROM pool_orphan_payouts WHERE payout_id=? AND block_id=?");
+            saved.integer(1,p.payout_id);saved.integer(2,p.block_id);RetentionCheck(sqlite3_step(saved.get())==SQLITE_ROW && saved.textColumn(0)==wallet);
+            before=saved.nonnegative(1);after=saved.nonnegative(2);debit=saved.nonnegative(3);saved.done();
+            auto found=balances.find(p.worker_id);if(found!=balances.end())RetentionCheck(found->second==before);
+        } else {
+            auto [position,inserted]=balances.emplace(p.worker_id,live);(void)inserted;before=position->second;
+            debit=p.status==PayoutStatus::FAILED?0:std::min(before,p.amount);after=before-debit;
+        }
+        RetentionCheck(debit==(p.status==PayoutStatus::FAILED?0:std::min(before,p.amount)) && before>=debit && after==before-debit);
+        balances[p.worker_id]=after;RetentionCheck(debits.emplace(p.payout_id,RetainedDebit{before,after,debit,wallet}).second);
+    }
+    return debits;
+}
+void MatchRetainedOrphanPayouts(sqlite3* db,uint64_t block,const std::vector<Payout>& current,const std::vector<Payout>& saved) {
+    RetentionCheck(current.size()==saved.size());
+    for(size_t i=0;i<saved.size();++i) {
+        auto expected=saved[i];if(expected.status==PayoutStatus::PENDING || expected.status==PayoutStatus::CONFIRMED) {
+            expected.status=PayoutStatus::FAILED;expected.txid.clear();expected.error_message="orphaned block";expected.paid_at=0;
+        }
+        RetentionCheck(current[i]==expected);
+    }
+    // Preserve raw nullable TEXT identity too: NULL and empty text normalize to
+    // the same C++ value, but a restored field must retain its original SQL form.
+    OrphanStatement exact(db,"SELECT p.payout_id FROM payouts p JOIN pool_orphan_payouts s ON s.payout_id=p.payout_id "
+        "WHERE p.block_id=? AND NOT (p.txid IS CASE WHEN s.status IN (0,1) THEN '' ELSE s.txid END AND "
+        "p.error_message IS CASE WHEN s.status IN (0,1) THEN 'orphaned block' ELSE s.error_message END) LIMIT 1");
+    exact.integer(1,block);exact.done();
+}
+}
+
+void PoolDB::transitionCanonicalOrphan(const PoolBlock& expected,bool orphaned) {
+    std::lock_guard<std::recursive_mutex> owner(connection_mutex_);
+    RetentionCheck(db_ && sqlite3_get_autocommit(db_) && expected.block_id>0);
+    OrphanTransaction transaction(db_);
+    const std::string block_query=std::string("SELECT ")+OrphanBlockColumns+" FROM blocks WHERE block_id=?";
+    OrphanStatement current(db_,block_query.c_str());current.integer(1,expected.block_id);
+    RetentionCheck(sqlite3_step(current.get())==SQLITE_ROW && ReadCalculationBlock(current)==expected);current.done();
+    OrphanStatement attempted(db_,"SELECT 1 FROM pool_payment_members WHERE block_id=? LIMIT 1");attempted.integer(1,expected.block_id);attempted.done();
+    const auto payouts=RetentionPayouts(db_,"payouts",expected.block_id);
+    const std::string saved_query=std::string("SELECT ")+OrphanBlockColumns+",payout_count FROM pool_orphan_blocks WHERE block_id=?";
+    OrphanStatement record(db_,saved_query.c_str());record.integer(1,expected.block_id);const int rc=sqlite3_step(record.get());
+    if(!expected.orphaned) {
+        RetentionCheck(orphaned && rc==SQLITE_DONE);
+        OrphanStatement stray(db_,"SELECT 1 FROM pool_orphan_payouts WHERE block_id=? LIMIT 1");stray.integer(1,expected.block_id);stray.done();
+        RetentionCheck(payouts.empty() || expected.payouts_calculated);
+        const auto debits=PrepareRetentionDebits(db_,payouts,false);
+        const std::string save_block=std::string("INSERT INTO pool_orphan_blocks(")+OrphanBlockColumns+",payout_count) SELECT "+OrphanBlockColumns+",? FROM blocks WHERE block_id=?";
+        OrphanStatement retain(db_,save_block.c_str());retain.integer(1,payouts.size());retain.integer(2,expected.block_id);retain.changedOne(db_);
+        for(const auto& p:payouts) {
+            const auto& debit=debits.at(p.payout_id);
+            const std::string save=std::string("INSERT INTO pool_orphan_payouts(")+OrphanPayoutColumns+",worker_wallet,balance_before,balance_after,debit) SELECT "+OrphanPayoutColumns+",?,?,?,? FROM payouts WHERE payout_id=? AND block_id=?";
+            OrphanStatement image(db_,save.c_str());image.text(1,debit.wallet);image.integer(2,debit.before);image.integer(3,debit.after);image.integer(4,debit.amount);image.integer(5,p.payout_id);image.integer(6,expected.block_id);image.changedOne(db_);
+            if(p.status==PayoutStatus::FAILED)continue;
+            OrphanStatement worker(db_,"UPDATE workers SET pending_payout=? WHERE worker_id=? AND wallet_address=? AND pending_payout=? AND typeof(pending_payout)='integer'");
+            worker.integer(1,debit.after);worker.text(2,p.worker_id);worker.text(3,debit.wallet);worker.integer(4,debit.before);worker.changedOne(db_);
+            OrphanStatement failure(db_,"UPDATE payouts SET status=3,txid='',error_message='orphaned block',paid_at=0 WHERE payout_id=? AND block_id=? AND status IN (0,1)");
+            failure.integer(1,p.payout_id);failure.integer(2,expected.block_id);failure.changedOne(db_);
+        }
+        OrphanStatement mark(db_,"UPDATE blocks SET orphaned=1 WHERE block_id=? AND orphaned=0");mark.integer(1,expected.block_id);mark.changedOne(db_);
+    } else {
+        // An old orphan without a retained owner can never authorize restoration.
+        RetentionCheck(rc==SQLITE_ROW);auto original=ReadCalculationBlock(record);const uint64_t count=record.nonnegative(20);record.done();
+        RetentionCheck(!original.orphaned && count<=4096);original.orphaned=true;RetentionCheck(original==expected);
+        const auto saved=RetentionPayouts(db_,"pool_orphan_payouts",expected.block_id);RetentionCheck(saved.size()==count);
+        MatchRetainedOrphanPayouts(db_,expected.block_id,payouts,saved);const auto debits=PrepareRetentionDebits(db_,saved,true);
+        if(!orphaned) {
+            const auto max=static_cast<uint64_t>(std::numeric_limits<sqlite3_int64>::max());
+            for(const auto& p:saved) {
+                if(p.status==PayoutStatus::FAILED)continue;
+                const auto& debit=debits.at(p.payout_id);
+                OrphanStatement balance(db_,"SELECT pending_payout,wallet_address FROM workers WHERE worker_id=?");balance.text(1,p.worker_id);
+                RetentionCheck(sqlite3_step(balance.get())==SQLITE_ROW);const uint64_t pending=balance.nonnegative(0);RetentionCheck(balance.textColumn(1)==debit.wallet);balance.done();
+                RetentionCheck(debit.amount<=max-pending);
+                OrphanStatement worker(db_,"UPDATE workers SET pending_payout=? WHERE worker_id=? AND wallet_address=? AND pending_payout=? AND typeof(pending_payout)='integer'");
+                worker.integer(1,pending+debit.amount);worker.text(2,p.worker_id);worker.text(3,debit.wallet);worker.integer(4,pending);worker.changedOne(db_);
+                OrphanStatement restore(db_,"UPDATE payouts SET status=(SELECT status FROM pool_orphan_payouts WHERE payout_id=?),txid=(SELECT txid FROM pool_orphan_payouts WHERE payout_id=?),error_message=(SELECT error_message FROM pool_orphan_payouts WHERE payout_id=?),paid_at=(SELECT paid_at FROM pool_orphan_payouts WHERE payout_id=?) WHERE payout_id=? AND block_id=? AND status=3");
+                for(int i=1;i<=5;++i)restore.integer(i,p.payout_id);restore.integer(6,expected.block_id);restore.changedOne(db_);
+            }
+            OrphanStatement mark(db_,"UPDATE blocks SET orphaned=0 WHERE block_id=? AND orphaned=1");mark.integer(1,expected.block_id);mark.changedOne(db_);
+            OrphanStatement remove(db_,"DELETE FROM pool_orphan_payouts WHERE block_id=?");remove.integer(1,expected.block_id);remove.done();RetentionCheck(static_cast<uint64_t>(sqlite3_changes(db_))==count);
+            OrphanStatement remove_block(db_,"DELETE FROM pool_orphan_blocks WHERE block_id=?");remove_block.integer(1,expected.block_id);remove_block.changedOne(db_);
+        }
+    }
+    transaction.commit();
 }
 
 bool PoolDB::markBlockOrphaned(uint64_t block_id) {
+    std::lock_guard<std::recursive_mutex> connection_owner(connection_mutex_);
     const char* sql = "UPDATE blocks SET orphaned = 1 WHERE block_id = ?";
     sqlite3_stmt* stmt;
     if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
@@ -1741,6 +2283,7 @@ bool PoolDB::markBlockOrphaned(uint64_t block_id) {
 
 bool PoolDB::updatePayoutStatus(uint64_t payout_id, PayoutStatus status,
                                 const std::string& txid, const std::string& error) {
+    std::lock_guard<std::recursive_mutex> connection_owner(connection_mutex_);
     const char* sql = R"(
         UPDATE payouts SET
             status = ?,
@@ -1767,6 +2310,7 @@ bool PoolDB::updatePayoutStatus(uint64_t payout_id, PayoutStatus status,
 }
 
 bool PoolDB::incrementPayoutRetry(uint64_t payout_id, int64_t retry_time, const std::string& error) {
+    std::lock_guard<std::recursive_mutex> connection_owner(connection_mutex_);
     const char* sql = R"(
         UPDATE payouts SET
             retry_count = retry_count + 1,
@@ -1794,48 +2338,111 @@ bool PoolDB::incrementPayoutRetry(uint64_t payout_id, int64_t retry_time, const 
 }
 
 std::vector<PoolBlock> PoolDB::getBlocksReadyForPayout() {
-    std::vector<PoolBlock> blocks;
-    const char* sql = R"(
-        SELECT * FROM blocks
-        WHERE orphaned = 0
-        AND payouts_calculated = 0
-        AND confirmations >= required_confirmations
-        ORDER BY found_at ASC
-    )";
-    sqlite3_stmt* stmt;
-    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
-        return blocks;
+    std::lock_guard<std::recursive_mutex> connection_owner(connection_mutex_);
+    if (!db_) throw std::runtime_error("pool allocation database unavailable");
+    // Decode every present block before filtering. Invalid status/confirmation
+    // types must not disappear behind SQL coercion or an eligibility predicate.
+    OrphanStatement rows(db_,
+        "SELECT block_id,block_hash,height,finder_worker,finder_address,reward,fees,total_reward,"
+        "pool_fee_percent,pool_fee_amount,distributable,round_shares,round_difficulty,"
+        "confirmations,required_confirmations,orphaned,payouts_calculated,payouts_sent,"
+        "found_at,confirmed_at FROM blocks ORDER BY found_at,block_id");
+    std::vector<PoolBlock> blocks;int rc;
+    while ((rc=sqlite3_step(rows.get()))==SQLITE_ROW) {
+        auto b=ReadCalculationBlock(rows);
+        if (!b.orphaned && !b.payouts_calculated && b.confirmations>=b.required_confirmations) blocks.push_back(std::move(b));
     }
-
-    while (sqlite3_step(stmt) == SQLITE_ROW) {
-        PoolBlock block;
-        block.block_id = sqlite3_column_int64(stmt, 0);
-        block.block_hash = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
-        block.height = sqlite3_column_int(stmt, 2);
-        block.finder_worker = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 3));
-        block.finder_address = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 4));
-        block.reward = sqlite3_column_int64(stmt, 5);
-        block.fees = sqlite3_column_int64(stmt, 6);
-        block.total_reward = sqlite3_column_int64(stmt, 7);
-        block.pool_fee_percent = sqlite3_column_double(stmt, 8);
-        block.pool_fee_amount = sqlite3_column_int64(stmt, 9);
-        block.distributable = sqlite3_column_int64(stmt, 10);
-        block.round_shares = sqlite3_column_int64(stmt, 11);
-        block.round_difficulty = sqlite3_column_double(stmt, 12);
-        block.confirmations = sqlite3_column_int(stmt, 13);
-        block.required_confirmations = sqlite3_column_int(stmt, 14);
-        block.orphaned = sqlite3_column_int(stmt, 15) != 0;
-        block.payouts_calculated = sqlite3_column_int(stmt, 16) != 0;
-        block.payouts_sent = sqlite3_column_int(stmt, 17) != 0;
-        block.found_at = sqlite3_column_int64(stmt, 18);
-        block.confirmed_at = sqlite3_column_int64(stmt, 19);
-        blocks.push_back(block);
-    }
-    sqlite3_finalize(stmt);
+    if (rc!=SQLITE_DONE) throw std::runtime_error("pool block allocation inventory incomplete");
     return blocks;
 }
 
+std::string PoolDB::getAllocationWorkerWallet(const std::string& worker_id) {
+    std::lock_guard<std::recursive_mutex> connection_owner(connection_mutex_);
+    if (!db_ || worker_id.empty() || worker_id.find('\0')!=std::string::npos)
+        throw std::runtime_error("pool allocation worker identity unavailable");
+    OrphanStatement worker(db_,"SELECT worker_id,wallet_address FROM workers WHERE worker_id=?");
+    worker.text(1,worker_id);
+    if (sqlite3_step(worker.get())!=SQLITE_ROW || worker.textColumn(0)!=worker_id)
+        throw std::runtime_error("pool allocation worker missing");
+    auto address=worker.textColumn(1);worker.done();return address;
+}
+
+uint32_t PoolDB::allocateConfirmedBlockPayouts(PayoutCalculator& calculator, const std::vector<PoolBlock>* expected) {
+    std::lock_guard<std::recursive_mutex> connection_owner(connection_mutex_);
+    if (!db_ || !sqlite3_get_autocommit(db_))
+        throw std::runtime_error("pool allocation requires its own database transaction");
+    OrphanTransaction transaction(db_);
+    const auto blocks=getBlocksReadyForPayout();
+    if(expected) {
+        auto captured=*expected;
+        captured.erase(std::remove_if(captured.begin(),captured.end(),[](const PoolBlock& b) {
+            return b.orphaned || b.payouts_calculated || b.confirmations<b.required_confirmations;
+        }),captured.end());
+        std::sort(captured.begin(),captured.end(),[](const PoolBlock& a,const PoolBlock& b) {
+            return a.found_at<b.found_at || (a.found_at==b.found_at && a.block_id<b.block_id);
+        });
+        if(blocks!=captured)throw std::runtime_error("pool canonical allocation inventory changed");
+    }
+    if (blocks.size()>std::numeric_limits<uint32_t>::max()) throw std::runtime_error("pool allocation batch too large");
+    const auto max=static_cast<uint64_t>(std::numeric_limits<sqlite3_int64>::max());
+    auto ownerText=[](const std::string& value) {return !value.empty() && value.find('\0')==std::string::npos;};
+    for (const auto& block:blocks) {
+        // The actual calculation uses this connection and snapshot. It performs
+        // no wallet, chain, ingress or external payment callback.
+        const auto payouts=calculator.calculatePayouts(block);
+        {
+            OrphanStatement existing(db_,"SELECT payout_id FROM payouts WHERE block_id=? ORDER BY payout_id");
+            existing.integer(1,block.block_id);
+            const auto rc=sqlite3_step(existing.get());
+            if (rc!=SQLITE_DONE) throw std::runtime_error("unallocated block has existing or unreadable payouts");
+        }
+        if (block.payouts_sent) throw std::runtime_error("unallocated block already marked sent");
+        std::set<std::string> workers;uint64_t total=0;
+        for (const auto& payout:payouts) {
+            if (payout.payout_id || payout.allocation_origin || payout.block_id!=block.block_id ||
+                !ownerText(payout.worker_id) || !ownerText(payout.wallet_address) ||
+                !workers.insert(payout.worker_id).second || !payout.amount || payout.amount>max ||
+                payout.share_count>max || !std::isfinite(payout.share_percent) || payout.share_percent<0 ||
+                !std::isfinite(payout.difficulty_sum) || payout.difficulty_sum<0 ||
+                payout.status!=PayoutStatus::PENDING || !payout.txid.empty() || !payout.error_message.empty() ||
+                payout.calculated_at<0 || payout.paid_at || payout.retry_count || payout.last_retry_at)
+                throw std::runtime_error("invalid fresh pool allocation row");
+            if (payout.amount>block.total_reward-total) throw std::runtime_error("pool allocation exceeds block reward");
+            total+=payout.amount;
+            sqlite3_int64 pending;
+            {
+                OrphanStatement worker(db_,"SELECT wallet_address,pending_payout FROM workers WHERE worker_id=?");
+                worker.text(1,payout.worker_id);
+                if (sqlite3_step(worker.get())!=SQLITE_ROW || worker.textColumn(0)!=payout.wallet_address)
+                    throw std::runtime_error("pool allocation worker binding unavailable");
+                pending=worker.nonnegative(1);worker.done();
+                if (payout.amount>max-static_cast<uint64_t>(pending)) throw std::runtime_error("pool pending balance overflow");
+            }
+            // Only this transaction creates a fresh allocation reference. It
+            // commits with the payout, matching credit and block allocation flag.
+            std::array<uint8_t,32> origin{};
+            if(RAND_bytes(origin.data(),static_cast<int>(origin.size()))!=1 ||
+               std::none_of(origin.begin(),origin.end(),[](uint8_t b){return b!=0;}))
+                throw std::runtime_error("pool allocation reference generation failed");
+            OrphanStatement insert(db_,
+                "INSERT INTO payouts(block_id,worker_id,wallet_address,amount,share_percent,share_count,"
+                "difficulty_sum,status,txid,error_message,calculated_at,paid_at,retry_count,last_retry_at,allocation_origin) "
+                "VALUES(?,?,?,?,?,?,?,1,'','',?,0,0,0,?)");
+            insert.integer(1,block.block_id);insert.text(2,payout.worker_id);insert.text(3,payout.wallet_address);
+            insert.integer(4,payout.amount);insert.real(5,payout.share_percent);insert.integer(6,payout.share_count);
+            insert.real(7,payout.difficulty_sum);insert.integer(8,payout.calculated_at);insert.blob(9,origin);insert.changedOne(db_);
+            OrphanStatement credit(db_,"UPDATE workers SET pending_payout=? WHERE worker_id=? AND pending_payout=?");
+            credit.integer(1,pending+static_cast<sqlite3_int64>(payout.amount));credit.text(2,payout.worker_id);credit.integer(3,pending);credit.changedOne(db_);
+        }
+        OrphanStatement mark(db_,"UPDATE blocks SET payouts_calculated=1 WHERE block_id=? AND payouts_calculated=0 AND orphaned=0 AND payouts_sent=0");
+        mark.integer(1,block.block_id);mark.changedOne(db_);
+    }
+    transaction.commit();
+    return static_cast<uint32_t>(blocks.size());
+}
+
 std::vector<WorkerStats> PoolDB::getWorkersWithPendingBalance(uint64_t min_balance) {
+    std::lock_guard<std::recursive_mutex> connection_owner(connection_mutex_);
     std::vector<WorkerStats> workers;
     const char* sql = "SELECT * FROM workers WHERE pending_payout >= ? ORDER BY pending_payout DESC";
     sqlite3_stmt* stmt;
@@ -1871,39 +2478,111 @@ std::vector<WorkerStats> PoolDB::getWorkersWithPendingBalance(uint64_t min_balan
 }
 
 std::optional<MiningRound> PoolDB::getRound(uint64_t round_id) {
-    const char* sql = "SELECT * FROM rounds WHERE round_id = ?";
-    sqlite3_stmt* stmt;
-    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
-        return std::nullopt;
-    }
-    sqlite3_bind_int64(stmt, 1, round_id);
-
-    std::optional<MiningRound> result;
-    if (sqlite3_step(stmt) == SQLITE_ROW) {
-        MiningRound round;
-        round.round_id = sqlite3_column_int64(stmt, 0);
-        round.block_id = sqlite3_column_int64(stmt, 1);
-        round.total_shares = sqlite3_column_int64(stmt, 2);
-        round.total_difficulty = sqlite3_column_double(stmt, 3);
-        round.started_at = sqlite3_column_int64(stmt, 4);
-        round.ended_at = sqlite3_column_int64(stmt, 5);
-        result = round;
-
-        // Load worker difficulties from round_shares table
-        const char* shares_sql = "SELECT worker_id, difficulty_sum FROM round_shares WHERE round_id = ?";
-        sqlite3_stmt* shares_stmt;
-        if (sqlite3_prepare_v2(db_, shares_sql, -1, &shares_stmt, nullptr) == SQLITE_OK) {
-            sqlite3_bind_int64(shares_stmt, 1, round_id);
-            while (sqlite3_step(shares_stmt) == SQLITE_ROW) {
-                std::string worker_id = reinterpret_cast<const char*>(sqlite3_column_text(shares_stmt, 0));
-                double diff = sqlite3_column_double(shares_stmt, 1);
-                result->worker_difficulty[worker_id] = diff;
-            }
-            sqlite3_finalize(shares_stmt);
+    std::lock_guard<std::recursive_mutex> connection_lock(connection_mutex_);
+    if(!db_ || !round_id || round_id>static_cast<uint64_t>(std::numeric_limits<sqlite3_int64>::max()))
+        throw std::runtime_error("Invalid pool round identity");
+    const auto exec=[&](const char* sql) {
+        if(sqlite3_exec(db_,sql,nullptr,nullptr,nullptr)!=SQLITE_OK)
+            throw std::runtime_error("Pool round read transaction unavailable");
+    };
+    const bool owns=sqlite3_get_autocommit(db_)!=0;
+    if(owns)exec("BEGIN");
+    try {
+        const auto prepare=[&](const char* sql) {
+            sqlite3_stmt* raw=nullptr;
+            const int rc=sqlite3_prepare_v2(db_,sql,-1,&raw,nullptr);
+            std::unique_ptr<sqlite3_stmt,decltype(&sqlite3_finalize)> stmt(raw,sqlite3_finalize);
+            if(rc!=SQLITE_OK || sqlite3_bind_int64(raw,1,static_cast<sqlite3_int64>(round_id))!=SQLITE_OK)
+                throw std::runtime_error("Pool round statement unavailable");
+            return stmt;
+        };
+        const auto integer=[](sqlite3_stmt* q,int column) -> uint64_t {
+            if(sqlite3_column_type(q,column)!=SQLITE_INTEGER || sqlite3_column_int64(q,column)<0)
+                throw std::runtime_error("Invalid pool round integer");
+            return static_cast<uint64_t>(sqlite3_column_int64(q,column));
+        };
+        const auto number=[](sqlite3_stmt* q,int column) {
+            const int type=sqlite3_column_type(q,column);const double value=sqlite3_column_double(q,column);
+            if((type!=SQLITE_FLOAT && type!=SQLITE_INTEGER) || !std::isfinite(value) || value<0)
+                throw std::runtime_error("Invalid pool round difficulty");
+            return value;
+        };
+        std::optional<MiningRound> result;
+        {
+            auto q=prepare("SELECT round_id,block_id,total_shares,total_difficulty,started_at,ended_at FROM rounds WHERE round_id=?");
+            const int rc=sqlite3_step(q.get());
+            if(rc==SQLITE_ROW) {
+                MiningRound round;round.round_id=integer(q.get(),0);round.block_id=integer(q.get(),1);
+                round.total_shares=integer(q.get(),2);round.total_difficulty=number(q.get(),3);
+                round.started_at=static_cast<int64_t>(integer(q.get(),4));round.ended_at=static_cast<int64_t>(integer(q.get(),5));
+                if(round.round_id!=round_id || sqlite3_step(q.get())!=SQLITE_DONE)
+                    throw std::runtime_error("Incomplete pool round header");
+                result=std::move(round);
+            } else if(rc!=SQLITE_DONE)throw std::runtime_error("Pool round header read failed");
         }
+        if(result) {
+            auto q=prepare("SELECT worker_id,difficulty_sum FROM round_shares WHERE round_id=? ORDER BY worker_id");int rc;
+            while((rc=sqlite3_step(q.get()))==SQLITE_ROW) {
+                if(sqlite3_column_type(q.get(),0)!=SQLITE_TEXT)throw std::runtime_error("Invalid pool round worker type");
+                const auto* data=sqlite3_column_text(q.get(),0);const int size=sqlite3_column_bytes(q.get(),0);
+                if(!data || size<=0)throw std::runtime_error("Missing pool round worker");
+                std::string worker(reinterpret_cast<const char*>(data),static_cast<size_t>(size));
+                if(worker.find('\0')!=std::string::npos || !result->worker_difficulty.emplace(worker,number(q.get(),1)).second)
+                    throw std::runtime_error("Invalid pool round worker identity");
+            }
+            if(rc!=SQLITE_DONE)throw std::runtime_error("Incomplete pool round contributions");
+        }
+        if(owns)exec("COMMIT");
+        return result;
+    } catch(...) {
+        if(owns && !sqlite3_get_autocommit(db_) &&
+           sqlite3_exec(db_,"ROLLBACK",nullptr,nullptr,nullptr)!=SQLITE_OK && !sqlite3_get_autocommit(db_))std::terminate();
+        throw;
     }
-    sqlite3_finalize(stmt);
-    return result;
+}
+
+std::optional<MiningRound> PoolDB::getRoundForBlock(uint64_t block_id) {
+    std::lock_guard<std::recursive_mutex> connection_lock(connection_mutex_);
+    if(!db_ || !block_id || block_id>static_cast<uint64_t>(std::numeric_limits<sqlite3_int64>::max()))
+        throw std::runtime_error("Invalid pool block identity for round capture");
+    const auto exec=[&](const char* sql) {
+        if(sqlite3_exec(db_,sql,nullptr,nullptr,nullptr)!=SQLITE_OK)
+            throw std::runtime_error("Pool block-round read transaction unavailable");
+    };
+    const bool owns=sqlite3_get_autocommit(db_)!=0;
+    if(owns)exec("BEGIN");
+    try {
+        std::optional<uint64_t> id;
+        {
+            sqlite3_stmt* raw=nullptr;
+            const int rc=sqlite3_prepare_v2(db_,"SELECT round_id FROM rounds WHERE block_id=? ORDER BY round_id",-1,&raw,nullptr);
+            std::unique_ptr<sqlite3_stmt,decltype(&sqlite3_finalize)> q(raw,sqlite3_finalize);
+            if(rc!=SQLITE_OK || sqlite3_bind_int64(raw,1,static_cast<sqlite3_int64>(block_id))!=SQLITE_OK)
+                throw std::runtime_error("Pool block-round association unreadable");
+            const int step=sqlite3_step(raw);
+            if(step==SQLITE_ROW) {
+                if(sqlite3_column_type(raw,0)!=SQLITE_INTEGER || sqlite3_column_int64(raw,0)<=0)
+                    throw std::runtime_error("Invalid pool block-round association");
+                id=static_cast<uint64_t>(sqlite3_column_int64(raw,0));
+                if(sqlite3_step(raw)!=SQLITE_DONE)
+                    throw std::runtime_error("Duplicate or incomplete pool block-round association");
+            } else if(step!=SQLITE_DONE)throw std::runtime_error("Pool block-round association read failed");
+        }
+        std::optional<MiningRound> result;
+        if(id) {
+            // getRound participates in this existing transaction; it cannot
+            // publish a round from a different SQLite snapshot.
+            result=getRound(*id);
+            if(!result || result->round_id!=*id || result->block_id!=block_id)
+                throw std::runtime_error("Pool block-round owner changed during capture");
+        }
+        if(owns)exec("COMMIT");
+        return result;
+    } catch(...) {
+        if(owns && !sqlite3_get_autocommit(db_) &&
+           sqlite3_exec(db_,"ROLLBACK",nullptr,nullptr,nullptr)!=SQLITE_OK && !sqlite3_get_autocommit(db_))std::terminate();
+        throw;
+    }
 }
 
 } // namespace pool

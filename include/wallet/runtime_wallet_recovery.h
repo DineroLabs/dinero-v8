@@ -1,0 +1,100 @@
+#pragma once
+#include "wallet/runtime_index_delivery.h"
+#include "wallet/runtime_account_replay.h"
+#include <functional>
+#include <optional>
+
+namespace dinero {
+class ChainstateService;
+
+// Completion of a captured source prefix for these two stores only. It is not
+// wallet readiness: account/note/vault and other consumers remain independent.
+struct RuntimeTransparentRecoveryResult {
+    RuntimeIndexProgress applied;
+    RuntimeOutboxCursor observed_head;
+};
+struct RuntimeWalletRecoveryResult {
+    RuntimeIndexProgress applied;
+    uint64_t account_revision;
+    RuntimeOutboxCursor observed_head;
+};
+
+// Legacy calls authenticate present rows; catalog-aware calls authenticate every
+// declared owner and return the captured catalog revision.
+// This is captured-prefix completion, not baseline or all-consumer readiness.
+struct RuntimeEnrolledWalletRecoveryResult {
+    RuntimeIndexProgress applied;
+    std::vector<std::pair<uint32_t,uint64_t>> account_revisions;
+    RuntimeOutboxCursor observed_head;
+    // Present only for catalog-aware recovery. A captured revision is not
+    // lasting completeness, chain catch-up or whole-wallet spend readiness.
+    std::optional<uint64_t> catalog_revision;
+};
+
+// Complete encrypted Orchard catalog at one genuinely delivered prefix ONLY.
+// In particular this is not RuntimeIndexProgress, a transparent/index baseline,
+// independent prehistory or mixed-wallet readiness. No cursor is manufactured.
+struct RuntimeOrchardCatalogRecoveryResult {
+    RuntimeOutboxCursor applied;
+    std::vector<std::pair<uint32_t,uint64_t>> account_revisions;
+    RuntimeOutboxCursor observed_head;
+    uint64_t catalog_revision;
+};
+
+// Genuine already-baselined ordinary/index delivery AND the authenticated
+// complete encrypted catalog at a captured imported source head. Distinct from
+// Orchard-only progress; never whole-wallet/all-consumer readiness.
+struct RuntimeImportedMixedRecoveryResult {
+    RuntimeIndexProgress applied;
+    RuntimeOutboxCursor observed_head;
+};
+
+class RuntimeWalletRecovery {
+public:
+    // Resume already enrolled stores. Missing/invalidated progress requires
+    // baseline reconciliation; this method never adopts a baseline or enrolls
+    // a store. The service and wallet/index must outlive this synchronous call.
+    // No wallet lease may be held by the caller: source reads precede leases.
+    // Throws on failure; committed per-store prefixes remain available to retry.
+    static RuntimeTransparentRecoveryResult ResumeTransparentStores(
+        ChainstateService&, WalletManager&, UTXOIndex&, uint64_t expected_session);
+    // Recover already enrolled transparent stores AND one encrypted Orchard
+    // account to one captured prefix. Other consumers/baseline readiness are
+    // separate obligations. Chain capture happens before wallet ownership.
+    static RuntimeWalletRecoveryResult ResumeWalletStores(
+        ChainstateService&,WalletManager&,UTXOIndex&,uint64_t expected_session,uint32_t account);
+    // Existing zero-receipt accounts are accepted only with a fully restored
+    // empty scan at the exact source origin (late account or explicit rescan).
+    // Their first receipt is earned by scanning event 1, never set directly.
+    // Missing accounts and transparent baselines are not created/repaired.
+    static RuntimeEnrolledWalletRecoveryResult ResumeEnrolledWalletStores(
+        ChainstateService&,WalletManager&,UTXOIndex&,uint64_t expected_session);
+    // Production wallet service path. Require generated authenticated catalog,
+    // all declared owners and history; known-empty permits transparent replay
+    // without creating accounts/schema. Recheck catalog around source reads and
+    // before effects. Unknown legacy/recovered inventory remains a refusal.
+    static RuntimeEnrolledWalletRecoveryResult ResumeCatalogWalletStores(
+        ChainstateService&,WalletManager&,UTXOIndex&,uint64_t expected_session);
+private:
+    friend class ChainstateService;
+    friend struct RuntimeCatalogRecoveryTestAccess;
+    friend struct RuntimeWalletRecoveryTestAccess;
+    using Source = std::function<RuntimeOutboxPage(RuntimeOutboxCursor,size_t)>;
+    static RuntimeTransparentRecoveryResult Resume(
+        const Source&, WalletManager&, UTXOIndex&, uint64_t expected_session);
+    static RuntimeEnrolledWalletRecoveryResult ResumeAccounts(
+        const RuntimeAccountReplay&,const Source&,WalletManager&,UTXOIndex&,uint64_t,
+        std::optional<uint32_t> selected_account,bool require_catalog=false);
+    static RuntimeEnrolledWalletRecoveryResult ResumePreparedCatalog(
+        const RuntimeAccountReplay&,const Source&,WalletManager&,UTXOIndex&,uint64_t);
+    // Only the selected service may provide this lexical source owner. It
+    // acquires snapshot -> selected -> imported lifecycle BEFORE the writer's
+    // wallet/seed/SQL owners and supplies a fresh pre-COMMIT source recheck.
+    using OrchardWrite = std::function<void(const std::function<void()>&)>;
+    using OrchardSourceOwner = std::function<void(const OrchardWrite&)>;
+    static RuntimeOrchardCatalogRecoveryResult ResumePreparedOrchardCatalog(
+        const RuntimeAccountReplay&,const Source&,WalletManager&,uint64_t,const OrchardSourceOwner&);
+    static RuntimeWalletRecoveryResult ResumeAccount(
+        const RuntimeAccountReplay&,const Source&,WalletManager&,UTXOIndex&,uint64_t,uint32_t);
+};
+} // namespace dinero

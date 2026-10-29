@@ -235,8 +235,8 @@ bool SpentOutputMatchesBlockOutput(
 // - Snapshot-first validation (failed block = restore snapshot)
 // ═══════════════════════════════════════════════════════════════════════════
 
-BlockValidator::BlockValidator(IConsensusUTXOSet* utxo_set)
-    : consensus_utxo_set_(utxo_set) {
+BlockValidator::BlockValidator(IConsensusUTXOSet* utxo_set, BranchMtpLookup branch_mtp)
+    : consensus_utxo_set_(utxo_set), branch_mtp_(std::move(branch_mtp)) {
     if (!consensus_utxo_set_) {
         throw std::runtime_error("BlockValidator: Consensus UTXO set cannot be null");
     }
@@ -283,13 +283,9 @@ bool BlockValidator::ComputeUtreexoRootPure(const Block& block, uint32_t height,
             Params().shielded_spend_auth_activation_height, error,
             shielded::CompactRulesFor(Params()))) return false;
 
-    std::cout << "\n🔍 [ComputeUtreexoRootPure] ENTRY" << std::endl;
-    std::cout << "   height=" << height << std::endl;
-    std::cout << "   block.vtx.size()=" << block.vtx.size() << std::endl;
 
     // Check if Utreexo is active at this height
     if (!IsUtreexoActive(height)) {
-        std::cout << "   Utreexo NOT active at height " << height << std::endl;
         computed_utreexo_root.SetNull();
         return true;  // Empty root when Utreexo not active
     }
@@ -301,7 +297,6 @@ bool BlockValidator::ComputeUtreexoRootPure(const Block& block, uint32_t height,
         return true;  // No forest = empty root
     }
 
-    std::cout << "   Forest leaves before: " << consensus_utxo_set_->SnapshotForestLeafCount() << std::endl;
 
     // Clone current forest promoted to the semantics at `height`. This is
     // the single-source-of-truth factory (Apr 13 2026 Stage 3 — the old
@@ -317,7 +312,6 @@ bool BlockValidator::ComputeUtreexoRootPure(const Block& block, uint32_t height,
         auto forest_lock = consensus_utxo_set_->LockForestShared();
         snapshot = consensus_utxo_set_->GetForest().cloneForHeight(height);
     }
-    std::cout << "   Cloned forest, snapshot leaves: " << snapshot.getNumLeaves() << std::endl;
 
     // ═══════════════════════════════════════════════════════════════════════════
     // UTREEXO CANONICAL ORDER: REMOVE ALL → ADD ALL
@@ -358,10 +352,6 @@ bool BlockValidator::ComputeUtreexoRootPure(const Block& block, uint32_t height,
         }
     }
 
-    if (!intra_block_spends.empty()) {
-        std::cout << "   [Pure] " << intra_block_spends.size()
-                  << " intra-block ephemeral UTXOs (skipped in forest)" << std::endl;
-    }
 
     // PASS 1: REMOVE ALL spent UTXOs (entire block)
     std::vector<std::pair<uint64_t, UtreexoHash>> removals;
@@ -437,7 +427,6 @@ bool BlockValidator::ComputeUtreexoRootPure(const Block& block, uint32_t height,
 
             // Skip outputs consumed within this block (ephemeral)
             if (intra_block_spends.count(out)) {
-                std::cout << "   [Pure] Skipping ephemeral output " << n << std::endl;
                 continue;
             }
 
@@ -454,18 +443,6 @@ bool BlockValidator::ComputeUtreexoRootPure(const Block& block, uint32_t height,
                 tx.IsCoinbase()
             );
 
-            {
-                std::ostringstream lh;
-                for (size_t b = 0; b < std::min(leafHash.size(), size_t(8)); b++)
-                    lh << std::hex << std::setfill('0') << std::setw(2) << (int)leafHash[b];
-                std::cout << "   [Pure] Adding output " << n << ": "
-                          << "value=" << leaf_value
-                          << ", spk_size=" << output.scriptPubKey.size()
-                          << ", is_ct=" << output.is_confidential
-                          << ", txid=" << txid.AsUint256().GetHex().substr(0, 16)
-                          << ", leaf=" << lh.str()
-                          << std::endl;
-            }
 
             // Add to snapshot
             uint64_t pos = snapshot.add(leafHash);
@@ -474,19 +451,12 @@ bool BlockValidator::ComputeUtreexoRootPure(const Block& block, uint32_t height,
                         snapshot.describeAddFailure(leafHash);
                 return false;
             }
-            std::cout << "   [Pure] Added at position: " << pos << std::endl;
         }
     }
 
     // Extract AFTER-state root from snapshot
-    std::cout << "   [Pure] Snapshot leaves after: " << snapshot.getNumLeaves() << std::endl;
     UtreexoHash temp_root = snapshot.getCommitment();
 
-    std::ostringstream root_hex;
-    for (size_t i = 0; i < std::min(temp_root.size(), size_t(32)); ++i) {
-        root_hex << std::hex << std::setfill('0') << std::setw(2) << static_cast<int>(temp_root[i]);
-    }
-    std::cout << "   [Pure] Computed root: " << root_hex.str() << std::endl;
 
     if (temp_root.size() == 32) {
         std::memcpy(computed_utreexo_root.data, temp_root.data(), 32);
@@ -494,7 +464,6 @@ bool BlockValidator::ComputeUtreexoRootPure(const Block& block, uint32_t height,
         computed_utreexo_root.SetNull();
     }
 
-    std::cout << "🔍 [ComputeUtreexoRootPure] EXIT (success)" << std::endl;
     // temp_forest goes out of scope and is discarded (no mutation of real forest)
     return true;
 }
@@ -954,6 +923,11 @@ bool BlockValidator::ConnectBlockInternal(const Block& block, uint32_t height, c
             shielded::CompactRulesFor(Params()))) return false;
 
 
+    // Private replay checkpoints precede even the historical forest-mode flip.
+    // The ordinary backend returns null and retains its existing snapshot path.
+    auto replay_rollback = consensus_utxo_set_
+        ? consensus_utxo_set_->BeginBlockConnectRollback() : nullptr;
+
     // ═════════════════════════════════════════════════════════════════════════
     // Apr 13 2026 Stage 3 — Utreexo canonical-roots fork activation.
     //
@@ -1015,7 +989,7 @@ bool BlockValidator::ConnectBlockInternal(const Block& block, uint32_t height, c
     // structural rejects that happen before any deeper consensus work.
     UTXOSnapshot pre_block_snapshot;
     const bool snapshot_supported =
-        consensus_utxo_set_ && consensus_utxo_set_->SupportsSnapshotRestore();
+        !replay_rollback && consensus_utxo_set_ && consensus_utxo_set_->SupportsSnapshotRestore();
     if (snapshot_supported) {
         pre_block_snapshot = consensus_utxo_set_->Snapshot();
     }
@@ -1294,13 +1268,9 @@ bool BlockValidator::ConnectBlockInternal(const Block& block, uint32_t height, c
     UtreexoDelta delta;
     bool utreexo_validation_active = false;
 
-    std::cout << "🔍 [UTREEXO] Height=" << height
-              << " | Forest=" << (consensus_utxo_set_ ? "EXISTS" : "NULL")
-              << " | Active=" << IsUtreexoActive(height) << std::endl;
 
     if (consensus_utxo_set_) {
         if (IsUtreexoActive(height)) {
-            std::cout << "✅ [UTREEXO] Active - dual validation enabled" << std::endl;
 
             // ═══════════════════════════════════════════════════════════════════════
             // PRE-VALIDATION INVARIANT: Forest state must match expected root_before
@@ -1330,7 +1300,6 @@ bool BlockValidator::ConnectBlockInternal(const Block& block, uint32_t height, c
 
             // Enforce Phase 3 height limit (prevents accidental production deployment)
             bool snapshot_allowed = IsUtreexoSnapshotAllowed(height);
-            std::cout << "🔍 [UTREEXO] Snapshot allowed: " << snapshot_allowed << std::endl;
 
             if (!snapshot_allowed) {
                 std::cout << "❌ [UTREEXO] BLOCKED by height limit!" << std::endl;
@@ -1341,10 +1310,7 @@ bool BlockValidator::ConnectBlockInternal(const Block& block, uint32_t height, c
             // Initialize delta with current state
             delta.numLeavesBefore = consensus_utxo_set_->SnapshotForestLeafCount();
             utreexo_validation_active = true;
-            std::cout << "📊 [UTREEXO] Delta initialized | Leaves: "
-                      << delta.numLeavesBefore << std::endl;
         } else {
-            std::cout << "⏳ [UTREEXO] Not active yet - accumulator tracking only" << std::endl;
             // Still track leaves even if not enforcing yet
             delta.numLeavesBefore = consensus_utxo_set_->SnapshotForestLeafCount();
             utreexo_validation_active = true;  // Track but don't enforce
@@ -1523,6 +1489,7 @@ bool BlockValidator::ConnectBlockInternal(const Block& block, uint32_t height, c
             };
 
             const auto lookup_lock_mtp = [&](uint32_t wanted) -> std::optional<uint64_t> {
+                if (branch_mtp_) return branch_mtp_(block.header.prev_block_hash, wanted);
                 const auto* cursor = FindBlockIndex(block.header.prev_block_hash);
                 while (cursor && cursor->height > wanted) cursor = cursor->pprev;
                 if (!cursor || cursor->height != wanted) return std::nullopt;
@@ -2186,6 +2153,7 @@ bool BlockValidator::ConnectBlockInternal(const Block& block, uint32_t height, c
             return false;
         }
 
+        if (replay_rollback) replay_rollback->Commit();
         block_connect_success = true;
         std::cout << "✅ [STATELESS] Block " << height
                   << " validated via proofs — skipping forest-clone path" << std::endl;
@@ -2245,8 +2213,6 @@ bool BlockValidator::ConnectBlockInternal(const Block& block, uint32_t height, c
     // ═════════════════════════════════════════════════════════════════════════
 
     if (consensus_utxo_set_) {
-        std::cout << "🔍 [DEBUG] Utreexo forest exists, IsUtreexoActive(" << height << ") = " << IsUtreexoActive(height) << std::endl;
-        std::cout << "🔍 [DEBUG] Forest leaves before: " << consensus_utxo_set_->SnapshotForestLeafCount() << std::endl;
 
         // 1. Clone current accumulator state (non-destructive simulation)
         UtreexoForest snapshot = consensus_utxo_set_->GetForest().clone();
@@ -2287,10 +2253,6 @@ bool BlockValidator::ConnectBlockInternal(const Block& block, uint32_t height, c
                     val_intra_block_spends.insert(outpoint);
                 }
             }
-        }
-        if (!val_intra_block_spends.empty()) {
-            std::cout << "   [Internal] " << val_intra_block_spends.size()
-                      << " intra-block ephemeral UTXOs (skipped in forest)" << std::endl;
         }
 
         // PASS 1: REMOVE ALL spent UTXOs (entire block)
@@ -2434,7 +2396,6 @@ bool BlockValidator::ConnectBlockInternal(const Block& block, uint32_t height, c
 
                 // Skip outputs consumed within this block (ephemeral)
                 if (val_intra_block_spends.count(out)) {
-                    std::cout << "   [Internal] Skipping ephemeral output " << n << std::endl;
                     continue;
                 }
 
@@ -2453,18 +2414,6 @@ bool BlockValidator::ConnectBlockInternal(const Block& block, uint32_t height, c
                     tx.IsCoinbase()
                 );
 
-                {
-                    std::ostringstream lh;
-                    for (size_t b = 0; b < std::min(leafHash.size(), size_t(8)); b++)
-                        lh << std::hex << std::setfill('0') << std::setw(2) << (int)leafHash[b];
-                    std::cout << "   [Internal] Adding output " << n << ": "
-                              << "value=" << leaf_value
-                              << ", spk_size=" << output.scriptPubKey.size()
-                              << ", is_ct=" << output.is_confidential
-                              << ", txid=" << txid.AsUint256().GetHex().substr(0, 16)
-                              << ", leaf=" << lh.str()
-                              << std::endl;
-                }
 
                 // Phase 11a: Add to accumulator and capture assigned position
                 uint64_t position = snapshot.add(leafHash);
@@ -2483,7 +2432,6 @@ bool BlockValidator::ConnectBlockInternal(const Block& block, uint32_t height, c
                             snapshot.describeAddFailure(leafHash);
                     return false;
                 }
-                std::cout << "   [Internal] Added at position: " << position << std::endl;
 
                 // Phase 4/11a: Record addition in delta with position (for undo + indexing)
                 if (IsUtreexoActive(height)) {
@@ -2493,14 +2441,8 @@ bool BlockValidator::ConnectBlockInternal(const Block& block, uint32_t height, c
         }
 
         // 3. Compute AFTER-state root (PURE CONSENSUS)
-        std::cout << "   [Internal] Snapshot leaves after: " << snapshot.getNumLeaves() << std::endl;
         UtreexoHash computed_root = snapshot.getCommitment();
 
-        std::ostringstream computed_hex_internal;
-        for (size_t i = 0; i < std::min(computed_root.size(), size_t(32)); ++i) {
-            computed_hex_internal << std::hex << std::setfill('0') << std::setw(2) << static_cast<int>(computed_root[i]);
-        }
-        std::cout << "   [Internal] Computed root: " << computed_hex_internal.str() << std::endl;
 
         // 4. Store computed root in output parameter (for mining to use)
         if (computed_root.size() == 32) {
@@ -2553,19 +2495,12 @@ bool BlockValidator::ConnectBlockInternal(const Block& block, uint32_t height, c
                 error = "bad-utreexo-root (ROOT_MISMATCH): computed=" + computed_hex.str() +
                         " expected=" + expected_hex.str();
                 return false;
-            } else {
-                std::cout << "✅ [UTREEXO] Root matches header commitment" << std::endl;
             }
         }
 
         // 6. Store delta in undo data (Phase 4: for efficient rollback)
         if (IsUtreexoActive(height)) {
             undo.utreexo_delta = delta;
-            size_t delta_size = delta.getSize();
-            std::cout << "✅ [Phase 4 Delta] Stored delta: "
-                      << delta.deletedLeaves.size() << " deletes, "
-                      << delta.addedLeaves.size() << " adds, "
-                      << delta_size << " bytes" << std::endl;
         }
 
         // ═════════════════════════════════════════════════════════════════════════
@@ -2589,7 +2524,6 @@ bool BlockValidator::ConnectBlockInternal(const Block& block, uint32_t height, c
         auto* active_batch = static_cast<consensus::ConsensusWriteBatch*>(
             active_consensus_write_batch_);
         if (validation_mode_ == ValidationMode::STATEFUL && ibd_config_.isStateful()) {
-            std::cout << "✅ [COMMIT] Applying " << pending_utxo_additions.size() << " pending UTXO additions..." << std::endl;
             for (const auto& [outpoint, entry] : pending_utxo_additions) {
                 if (active_batch != nullptr) {
                     active_batch->StageUTXOAddition(outpoint, entry);
@@ -2605,12 +2539,10 @@ bool BlockValidator::ConnectBlockInternal(const Block& block, uint32_t height, c
                     }
                 }
             }
-            std::cout << "✅ [COMMIT] All " << pending_utxo_additions.size() << " UTXOs committed successfully" << std::endl;
         }
 
         // INV-2: Commit all deferred UTXO spends (proof verification has passed)
         if (validation_mode_ == ValidationMode::STATEFUL && ibd_config_.isStateful()) {
-            std::cout << "✅ [COMMIT] Applying " << pending_utxo_spends.size() << " pending UTXO spends..." << std::endl;
             for (const auto& [outpoint, undo_entry] : pending_utxo_spends) {
                 if (active_batch != nullptr) {
                     active_batch->StageUTXOSpend(outpoint);
@@ -2622,7 +2554,6 @@ bool BlockValidator::ConnectBlockInternal(const Block& block, uint32_t height, c
                     return false;
                 }
             }
-            std::cout << "✅ [COMMIT] All " << pending_utxo_spends.size() << " spends committed successfully" << std::endl;
         }
 
         // INV-5: INVARIANT — All pending AddCoin calls completed above.
@@ -2633,7 +2564,6 @@ bool BlockValidator::ConnectBlockInternal(const Block& block, uint32_t height, c
         // Guarded: takes the forest's exclusive lock so a concurrent RPC/mining/FFI
         // reader cannot be walking the old buffers this move-assign frees.
         consensus_utxo_set_->ReplaceForestGuarded(std::move(snapshot));
-        std::cout << "🔍 [DEBUG] Forest leaves after commit: " << consensus_utxo_set_->SnapshotForestLeafCount() << std::endl;
 
         // ═════════════════════════════════════════════════════════════════════════
         // INV-1: Post-commit forest verification
@@ -2731,11 +2661,8 @@ bool BlockValidator::ConnectBlockInternal(const Block& block, uint32_t height, c
     } else {
         undo.pre_block_shielded_frontier.reset();
     }
+    if (replay_rollback) replay_rollback->Commit();
     block_connect_success = true;
-    std::cout << "✅ [Phase 2] Block " << height
-              << " connected successfully, snapshot "
-              << (has_pre_block_snapshot ? "stored" : "not available (backend unsupported)")
-              << std::endl;
 
     return true;
 }
@@ -3102,6 +3029,7 @@ bool BlockValidator::ValidateTransaction(const Transaction& tx, uint32_t height,
     std::vector<std::optional<uint32_t>> lock_heights;
     for (const auto& coin : input_utxos) lock_heights.push_back(coin.height);
     const auto lookup_mtp = [&](uint32_t wanted) -> std::optional<uint64_t> {
+        if (branch_mtp_) return branch_mtp_(parent_hash, wanted);
         const auto* cursor = FindBlockIndex(parent_hash);
         while (cursor && cursor->height > wanted) cursor = cursor->pprev;
         if (!cursor || cursor->height != wanted) return std::nullopt;

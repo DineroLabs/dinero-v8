@@ -2,6 +2,7 @@
 
 #include <json/json.h>
 #include <string>
+#include <cstdint>
 #include <functional>
 #include <unordered_map>
 #include <memory>
@@ -9,6 +10,8 @@
 #include <atomic>
 #include <mutex>
 #include <chrono>
+#include <condition_variable>
+#include <unordered_set>
 
 // Forward declarations
 class RpcAuth;
@@ -36,7 +39,10 @@ public:
     // Week 2: Dependency injection for service access
     void set_daemon_context(DaemonContext* ctx) { daemon_context_ = ctx; }
 
-    // Server lifecycle
+    // Server lifecycle: start returns only after bind/listen and thread creation.
+    // Startup failure throws; RPCService must not announce readiness.
+    // Lifecycle changes must be requested outside a connection handler.
+    // stop interrupts socket I/O and waits for every handler to finish.
     void start();
     void stop();
     bool is_running() const { return running_; }
@@ -51,6 +57,8 @@ public:
     void register_builtin_methods();
     
 private:
+    friend struct HttpRpcDrainTestAccess;
+    friend struct HttpRpcRequestTestAccess;
     static constexpr uint32_t kMaxConcurrentConnections = 128;
     static constexpr uint32_t kMaxConcurrentRpcHandlers = 64;
     static constexpr std::chrono::milliseconds kClientSocketTimeout{10000};
@@ -78,12 +86,18 @@ private:
 
     // Server thread
     std::unique_ptr<std::thread> server_thread_;
+    std::mutex lifecycle_mutex_;
+    std::mutex connections_mutex_;
+    std::condition_variable connections_drained_;
+    std::unordered_set<int> client_sockets_;
+    void finish_connection(int client_socket) noexcept;
     
     // Server implementation
-    void server_loop();
-    void handle_connection(int client_socket);
+    void server_loop(int server_socket);
+    void handle_connection(int client_socket, bool rate_allowed);
     std::string process_http_request(const std::string& request);
     Json::Value process_rpc_call(const Json::Value& request);
+    Json::Value process_admitted_rpc_call(const Json::Value& request);
     
     // HTTP utilities
     std::string build_http_response(const std::string& content, 

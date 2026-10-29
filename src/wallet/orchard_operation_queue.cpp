@@ -1,0 +1,499 @@
+#include "wallet/orchard_operation_queue.h"
+#include <algorithm>
+#include <openssl/crypto.h>
+#include <set>
+namespace dinero::wallet {
+namespace {
+using namespace orchard;
+using namespace consensus;
+[[noreturn]] void Fail() {
+  throw std::runtime_error("Orchard pending wallet operation rejected");
+}
+void Check(bool v) {
+  if (!v)
+    Fail();
+}
+bool DomainEqual(const SigningDomain &a, const SigningDomain &b) {
+  return a.network_code == b.network_code && a.genesis_wire == b.genesis_wire &&
+         a.branch_id == b.branch_id;
+}
+Hash Bytes(const uint8_t (&v)[32]) {
+  Hash h;
+  std::copy(std::begin(v), std::end(v), h.begin());
+  return h;
+}
+constexpr std::array<uint8_t, 8> magic{'D', 'N', 'O', 'R', 'O', 'P', '0', '1'};
+constexpr std::array<uint8_t, 8> request_magic{'D', 'N', 'O', 'R', 'O', 'P', '0', '2'};
+constexpr std::array<uint8_t, 8> shield_magic{'D', 'N', 'O', 'R', 'O', 'P', '0', '3'};
+constexpr std::array<uint8_t, 8> history_magic{'D', 'N', 'O', 'R', 'O', 'P', '0', '4'};
+constexpr std::array<uint8_t, 8> spend_magic{'D', 'N', 'O', 'R', 'O', 'P', '0', '5'};
+constexpr std::array<uint8_t, 8> recovery_magic{'D', 'N', 'O', 'R', 'O', 'P', '0', '6'};
+struct Writer {
+  std::vector<uint8_t> bytes;
+  ~Writer() {
+    if (!bytes.empty())
+      OPENSSL_cleanse(bytes.data(), bytes.size());
+  }
+  void Raw(std::span<const uint8_t> v) {
+    Check(v.size() <= WalletSnapshotStore::kMaxStateBytes - bytes.size());
+    bytes.insert(bytes.end(), v.begin(), v.end());
+  }
+  void Number(uint64_t n, size_t width) {
+    for (size_t i = 0; i < width; ++i) {
+      uint8_t b = n >> (8 * i);
+      Raw({&b, 1});
+    }
+  }
+  void Blob(std::span<const uint8_t> v) {
+    Check(v.size() <= UINT32_MAX);
+    Number(v.size(), 4);
+    Raw(v);
+  }
+};
+struct Reader {
+  std::span<const uint8_t> bytes;
+  std::span<const uint8_t> Raw(size_t n) {
+    Check(n <= bytes.size());
+    auto b = bytes.first(n);
+    bytes = bytes.subspan(n);
+    return b;
+  }
+  uint64_t Number(size_t n) {
+    auto b = Raw(n);
+    uint64_t v = 0;
+    for (size_t i = 0; i < n; ++i)
+      v |= uint64_t(b[i]) << (8 * i);
+    return v;
+  }
+  Hash Hash32() {
+    Hash h;
+    auto b = Raw(32);
+    std::copy(b.begin(), b.end(), h.begin());
+    return h;
+  }
+  std::vector<uint8_t> Blob(size_t max) {
+    auto n = Number(4);
+    Check(n <= max);
+    auto b = Raw(n);
+    return {b.begin(), b.end()};
+  }
+};
+} // namespace
+OrchardOperationQueue OrchardOperationQueue::Empty(SigningDomain domain) {
+  (void)SigningContext::Create(domain, 0, {}, {}, 0);
+  return OrchardOperationQueue(domain);
+}
+void OrchardOperationQueue::CheckEntry(const Entry &e, bool verify) const {
+  Check(e.inputs.size() <= 1024 && e.nullifiers.size() > 0 &&
+        e.nullifiers.size() <= kMaxActionsV1);
+  uint64_t amount = 0;
+  for (const auto &input : e.inputs) {
+    Check(input.amount_una <= kMaxMoneyUna &&
+          amount <= kMaxMoneyUna - input.amount_una);
+    amount += input.amount_una;
+    Check(!input.script_pub_key.empty() &&
+          input.script_pub_key.size() <= 10000);
+  }
+  Check(e.message != Hash{} && (!e.request_commitment || *e.request_commitment != Hash{}));
+  if (e.shield_request) {
+    const auto &request = *e.shield_request;
+    Check(e.request_commitment.has_value() && !e.inputs.empty() &&
+          !request.payments.empty() && request.payments.size() <= kMaxActionsV1 &&
+          request.outputs.size() <= 1024 && request.fee_una <= kMaxMoneyUna);
+    uint64_t deposit = 0;
+    for (const auto &payment : request.payments) {
+      Check(payment.amount_una > 0 && payment.amount_una <= kMaxMoneyUna - deposit &&
+            !payment.address.empty() && payment.address.size() <= 128);
+      const auto network = static_cast<WalletNetwork>(domain_.network_code);
+      const auto receiver = WalletReceiver::DecodeAddress(payment.address, network);
+      Check(receiver.EncodeAddress(network) == payment.address);
+      deposit += payment.amount_una;
+    }
+    for (const auto &input : e.inputs)
+      Check(input.sequence == UINT32_MAX && input.amount_una > 0);
+    for (const auto &output : request.outputs)
+      Check(!output.script_pub_key.empty() && output.script_pub_key.size() <= 10000);
+    const auto context = SigningContext::Create(domain_, 0, e.inputs,
+                                                request.outputs, request.fee_una);
+    Check(context.RequiredValueBalance() == -static_cast<int64_t>(deposit));
+  }
+  if (e.spend_request) {
+    const auto &request = *e.spend_request;
+    Check(e.request_commitment.has_value() && e.inputs.empty() && !e.shield_request &&
+          (!request.payments.empty() || !request.outputs.empty()) &&
+          request.payments.size() <= kMaxActionsV1 && request.outputs.size() <= 1024 &&
+          request.fee_una <= kMaxMoneyUna);
+    uint64_t required = request.fee_una;
+    const auto add = [&](uint64_t amount) {
+      Check(amount > 0 && amount <= kMaxMoneyUna - required); required += amount;
+    };
+    for (const auto &payment : request.payments) {
+      add(payment.amount_una);
+      Check(!payment.address.empty() && payment.address.size() <= 128);
+      const auto network = static_cast<WalletNetwork>(domain_.network_code);
+      const auto receiver = WalletReceiver::DecodeAddress(payment.address, network);
+      Check(receiver.EncodeAddress(network) == payment.address);
+    }
+    for (const auto &output : request.outputs) {
+      add(output.amount_una);
+      Check(!output.script_pub_key.empty() && output.script_pub_key.size() <= 10000);
+    }
+  }
+  if (e.recovery)
+    Check(e.request_commitment.has_value() && (e.shield_request || e.spend_request) &&
+          !e.recovery->Bytes().empty() && e.recovery->Bytes().size() <= WalletBundlePlan::kMaxRecoveryBytes);
+  if (e.shield_ready_time)
+    Check(e.shield_request.has_value() && e.phase == Phase::Ready &&
+          *e.shield_ready_time > 0 && *e.shield_ready_time <= uint64_t(INT64_MAX));
+  if (e.phase == Phase::Reserved) {
+    Check(e.transaction.empty());
+    return;
+  }
+  Check(e.phase == Phase::Ready && !e.transaction.empty());
+  auto tx = TransactionEnvelope::DecodeExact(e.transaction);
+  Check(tx.Inputs().size() == e.inputs.size());
+  if (e.shield_request || e.spend_request) {
+    const auto &request = e.shield_request ? *e.shield_request : *e.spend_request;
+    Check(tx.LockTime() == 0 && tx.ExplicitFee() == request.fee_una &&
+          tx.Outputs().size() == request.outputs.size());
+    for (size_t i = 0; i < request.outputs.size(); ++i)
+      Check(tx.Outputs()[i].amount_una == request.outputs[i].amount_una &&
+            tx.Outputs()[i].script_pub_key == request.outputs[i].script_pub_key);
+  }
+  std::vector<PreviousOutput> coins;
+  for (size_t i = 0; i < e.inputs.size(); ++i) {
+    const auto &in = e.inputs[i];
+    const auto &wire = tx.Inputs()[i];
+    Check(in.txid_wire == wire.txid_wire &&
+          in.output_index == wire.output_index && in.sequence == wire.sequence);
+    coins.push_back(
+        {in.txid_wire, in.output_index, in.amount_una, in.script_pub_key});
+  }
+  Check(tx.SigningDigest(domain_, coins) == e.message);
+  const auto &facts = tx.UnverifiedFacts();
+  Check(e.nullifiers.size() == facts.action_count);
+  for (size_t i = 0; i < e.nullifiers.size(); ++i)
+    Check(e.nullifiers[i] == Bytes(facts.nullifiers[i]));
+  if (verify)
+    Check(tx.VerifyAuthorization(domain_, coins).Orchard().SigningDigest() ==
+          e.message);
+}
+void OrchardOperationQueue::CheckUniqueReservations() const {
+  Check(entries_.size() <= kMaxPending);
+  std::set<std::pair<Hash, uint32_t>> inputs;
+  std::set<Hash> nullifiers;
+  for (const auto &[id, e] : entries_) {
+    Check(id != Hash{});
+    for (const auto &in : e.inputs)
+      Check(inputs.emplace(in.txid_wire, in.output_index).second);
+    for (const auto &nf : e.nullifiers)
+      Check(nullifiers.insert(nf).second);
+  }
+}
+OrchardOperationQueue
+OrchardOperationQueue::Reserve(const Hash &id,
+                               const WalletProvingIntent &intent) const {
+  Check(id != Hash{} && DomainEqual(domain_, intent.Domain()) &&
+        entries_.size() < kMaxPending && !entries_.contains(id));
+  auto next = *this;
+  Entry entry{Phase::Reserved,
+              intent.Message(),
+              intent.Inputs(),
+              intent.Nullifiers(),
+              {}};
+  CheckEntry(entry, false);
+  next.entries_.emplace(id, std::move(entry));
+  next.CheckUniqueReservations();
+  return next;
+}
+OrchardOperationQueue OrchardOperationQueue::ReserveRequest(
+    const Hash &id, const WalletProvingIntent &intent, const Hash &request) const {
+  Check(request != Hash{});
+  auto next = Reserve(id, intent);
+  next.entries_.at(id).request_commitment = request;
+  return next;
+}
+OrchardOperationQueue OrchardOperationQueue::ReserveSpendRequest(
+    const Hash &id, const WalletProvingIntent &intent, const Hash &request,
+    const SpendRequest &details, std::shared_ptr<const WalletStateBytes> recovery) const {
+  auto next = ReserveRequest(id, intent, request);
+  next.entries_.at(id).spend_request = details;
+  next.entries_.at(id).recovery = std::move(recovery);
+  next.CheckEntry(next.entries_.at(id), false);
+  return next;
+}
+OrchardOperationQueue OrchardOperationQueue::ReserveShieldRequest(
+    const Hash &id, const WalletProvingIntent &intent, const Hash &request,
+    const ShieldRequest &details, std::shared_ptr<const WalletStateBytes> recovery) const {
+  auto next = ReserveRequest(id, intent, request);
+  next.entries_.at(id).shield_request = details;
+  next.entries_.at(id).recovery = std::move(recovery);
+  next.CheckEntry(next.entries_.at(id), false);
+  return next;
+}
+OrchardOperationQueue OrchardOperationQueue::SetReady(
+    const Hash &id, const VerifiedOrchardAuthorizations &auth) const {
+  const auto it = entries_.find(id);
+  Check(it != entries_.end());
+  const auto &old = it->second;
+  // Idempotent retry may return exactly the already-frozen bytes, never a
+  // new proof/txid for the same durable operation after it could be relayed.
+  if (old.phase == Phase::Ready) {
+    Check(old.transaction == auth.Orchard().CanonicalBytes());
+    return *this;
+  }
+  Check(old.phase == Phase::Reserved &&
+        old.message == auth.Orchard().Orchard().SigningDigest());
+  auto next = *this;
+  auto &e = next.entries_.at(id);
+  e.phase = Phase::Ready;
+  e.transaction = auth.Orchard().CanonicalBytes();
+  next.CheckEntry(e, false);
+  return next;
+}
+OrchardOperationQueue OrchardOperationQueue::SetShieldReady(
+    const Hash &id, const VerifiedOrchardAuthorizations &auth, uint64_t created_at) const {
+  const auto old = entries_.find(id);
+  Check(old != entries_.end() && old->second.shield_request.has_value());
+  if (old->second.phase == Phase::Ready)
+    Check(old->second.shield_ready_time == std::optional<uint64_t>(created_at));
+  auto next = SetReady(id, auth);
+  next.entries_.at(id).shield_ready_time = created_at;
+  next.CheckEntry(next.entries_.at(id), false);
+  return next;
+}
+OrchardOperationQueue
+OrchardOperationQueue::CancelReserved(const Hash &id) const {
+  auto it = entries_.find(id);
+  Check(it != entries_.end() && it->second.phase == Phase::Reserved);
+  auto next = *this;
+  next.entries_.erase(id);
+  return next;
+}
+WalletStateBytes OrchardOperationQueue::Encode() const {
+  Writer w;
+  // Preserve byte-identical legacy encoding unless a real bound request exists.
+  const bool recovery = std::any_of(entries_.begin(), entries_.end(),
+      [](const auto &item) { return bool(item.second.recovery); });
+  // Prevent vector reallocations from leaving private capsule copies in freed
+  // allocations. The existing whole-snapshot limit still refuses overflow.
+  if (recovery) w.bytes.reserve(WalletSnapshotStore::kMaxStateBytes);
+  const bool spends = recovery || std::any_of(entries_.begin(), entries_.end(),
+      [](const auto &item) { return item.second.spend_request.has_value(); });
+  const bool requests = spends || std::any_of(entries_.begin(), entries_.end(),
+      [](const auto &item) { return item.second.request_commitment.has_value(); });
+  const bool details = spends || std::any_of(entries_.begin(), entries_.end(),
+      [](const auto &item) { return item.second.shield_request.has_value(); });
+  const bool history = spends || std::any_of(entries_.begin(), entries_.end(),
+      [](const auto &item) { return item.second.shield_ready_time.has_value(); });
+  w.Raw(recovery ? recovery_magic : spends ? spend_magic : history ? history_magic : details ? shield_magic : requests ? request_magic : magic);
+  w.Number(domain_.network_code, 1);
+  w.Raw(domain_.genesis_wire);
+  w.Number(domain_.branch_id, 4);
+  w.Number(entries_.size(), 4);
+  for (const auto &[id, e] : entries_) {
+    w.Raw(id);
+    w.Number(static_cast<uint8_t>(e.phase), 1);
+    w.Raw(e.message);
+    w.Number(e.inputs.size(), 4);
+    for (const auto &in : e.inputs) {
+      w.Raw(in.txid_wire);
+      w.Number(in.output_index, 4);
+      w.Number(in.sequence, 4);
+      w.Number(in.amount_una, 8);
+      w.Blob(in.script_pub_key);
+    }
+    w.Number(e.nullifiers.size(), 1);
+    for (const auto &nf : e.nullifiers)
+      w.Raw(nf);
+    w.Blob(e.transaction);
+    if (requests) {
+      w.Number(e.request_commitment.has_value(), 1);
+      if (e.request_commitment) w.Raw(*e.request_commitment);
+    }
+    if (details) {
+      w.Number(e.shield_request.has_value(), 1);
+      if (e.shield_request) {
+        const auto &request = *e.shield_request;
+        w.Number(request.payments.size(), 4);
+        for (const auto &payment : request.payments) {
+          w.Number(payment.amount_una, 8);
+          w.Blob({reinterpret_cast<const uint8_t*>(payment.address.data()), payment.address.size()});
+          w.Raw(payment.memo);
+        }
+        w.Number(request.outputs.size(), 4);
+        for (const auto &output : request.outputs) {
+          w.Number(output.amount_una, 8); w.Blob(output.script_pub_key);
+        }
+        w.Number(request.fee_una, 8);
+      }
+    }
+    if (history) {
+      w.Number(e.shield_ready_time.has_value(), 1);
+      if (e.shield_ready_time) w.Number(*e.shield_ready_time, 8);
+    }
+    if (spends) {
+      w.Number(e.spend_request.has_value(), 1);
+      if (e.spend_request) {
+        const auto &request = *e.spend_request;
+        w.Number(request.payments.size(), 4);
+        for (const auto &payment : request.payments) {
+          w.Number(payment.amount_una, 8);
+          w.Blob({reinterpret_cast<const uint8_t*>(payment.address.data()), payment.address.size()});
+          w.Raw(payment.memo);
+        }
+        w.Number(request.outputs.size(), 4);
+        for (const auto &output : request.outputs) {
+          w.Number(output.amount_una, 8); w.Blob(output.script_pub_key);
+        }
+        w.Number(request.fee_una, 8);
+      }
+    }
+    if (recovery) {
+      w.Number(bool(e.recovery), 1);
+      if (e.recovery) w.Blob(e.recovery->Bytes());
+    }
+  }
+  return WalletStateBytes(w.bytes);
+}
+OrchardOperationQueue
+OrchardOperationQueue::Restore(const WalletStateBytes &bytes,
+                               SigningDomain domain) {
+  Check(bytes.Bytes().size() <= WalletSnapshotStore::kMaxStateBytes);
+  auto queue = Empty(domain);
+  Reader r{bytes.Bytes()};
+  auto m = r.Raw(magic.size());
+  const bool recovery = std::equal(m.begin(), m.end(), recovery_magic.begin());
+  const bool spends = recovery || std::equal(m.begin(), m.end(), spend_magic.begin());
+  const bool history = spends || std::equal(m.begin(), m.end(), history_magic.begin());
+  const bool details = history || std::equal(m.begin(), m.end(), shield_magic.begin());
+  const bool requests = details || std::equal(m.begin(), m.end(), request_magic.begin());
+  Check(requests || std::equal(m.begin(), m.end(), magic.begin()));
+  bool found_request = false, found_details = false, found_history = false, found_spend = false, found_recovery = false;
+  Check(r.Number(1) == domain.network_code &&
+        r.Hash32() == domain.genesis_wire && r.Number(4) == domain.branch_id);
+  const auto count = r.Number(4);
+  Check(count <= kMaxPending && count <= r.bytes.size() / 74);
+  Hash previous{};
+  for (size_t n = 0; n < count; ++n) {
+    auto id = r.Hash32();
+    Check(id > previous);
+    previous = id;
+    Entry e;
+    auto phase = r.Number(1);
+    Check(phase <= 1);
+    e.phase = static_cast<Phase>(phase);
+    e.message = r.Hash32();
+    const auto inputs = r.Number(4);
+    Check(inputs <= 1024 && inputs <= r.bytes.size() / 52);
+    e.inputs.reserve(inputs);
+    for (size_t i = 0; i < inputs; ++i) {
+      ResolvedInput in;
+      in.txid_wire = r.Hash32();
+      in.output_index = r.Number(4);
+      in.sequence = r.Number(4);
+      in.amount_una = r.Number(8);
+      in.script_pub_key = r.Blob(10000);
+      e.inputs.push_back(std::move(in));
+    }
+    const auto nfs = r.Number(1);
+    Check(nfs > 0 && nfs <= kMaxActionsV1);
+    for (size_t i = 0; i < nfs; ++i)
+      e.nullifiers.push_back(r.Hash32());
+    e.transaction = r.Blob(kMaxTransactionBytes);
+    if (requests) {
+      const auto present = r.Number(1);
+      Check(present <= 1);
+      if (present) { e.request_commitment = r.Hash32(); found_request = true; }
+    }
+    if (details) {
+      const auto present = r.Number(1); Check(present <= 1);
+      if (present) {
+        ShieldRequest request{};
+        const auto payments = r.Number(4);
+        Check(payments > 0 && payments <= kMaxActionsV1 && payments <= r.bytes.size() / 525);
+        for (size_t i = 0; i < payments; ++i) {
+          ShieldPayment payment{}; payment.amount_una = r.Number(8);
+          const auto address = r.Blob(128);
+          payment.address.assign(address.begin(), address.end());
+          const auto memo = r.Raw(payment.memo.size());
+          std::copy(memo.begin(), memo.end(), payment.memo.begin());
+          request.payments.push_back(std::move(payment));
+        }
+        const auto outputs = r.Number(4);
+        Check(outputs <= 1024 && outputs <= r.bytes.size() / 13);
+        for (size_t i = 0; i < outputs; ++i) {
+          TransparentOutput output; output.amount_una = r.Number(8);
+          output.script_pub_key = r.Blob(10000);
+          request.outputs.push_back(std::move(output));
+        }
+        request.fee_una = r.Number(8);
+        e.shield_request = std::move(request); found_details = true;
+      }
+    }
+    if (history) {
+      const auto present = r.Number(1); Check(present <= 1);
+      if (present) { e.shield_ready_time = r.Number(8); found_history = true; }
+    }
+    if (spends) {
+      const auto present = r.Number(1); Check(present <= 1);
+      if (present) {
+        SpendRequest request{};
+        const auto payments = r.Number(4);
+        Check(payments <= kMaxActionsV1 && payments <= r.bytes.size() / 525);
+        for (size_t i = 0; i < payments; ++i) {
+          ShieldPayment payment{}; payment.amount_una = r.Number(8);
+          const auto address = r.Blob(128); payment.address.assign(address.begin(), address.end());
+          const auto memo = r.Raw(payment.memo.size());
+          std::copy(memo.begin(), memo.end(), payment.memo.begin());
+          request.payments.push_back(std::move(payment));
+        }
+        const auto outputs = r.Number(4);
+        Check(outputs <= 1024 && outputs <= r.bytes.size() / 13);
+        for (size_t i = 0; i < outputs; ++i) {
+          TransparentOutput output; output.amount_una = r.Number(8);
+          output.script_pub_key = r.Blob(10000); request.outputs.push_back(std::move(output));
+        }
+        request.fee_una = r.Number(8); e.spend_request = std::move(request); found_spend = true;
+      }
+    }
+    if (recovery) {
+      const auto present = r.Number(1); Check(present <= 1);
+      if (present) {
+        const auto size = r.Number(4);
+        Check(size > 0 && size <= WalletBundlePlan::kMaxRecoveryBytes);
+        e.recovery = std::make_shared<const WalletStateBytes>(r.Raw(size));
+        found_recovery = true;
+      }
+    }
+    queue.CheckEntry(e, false);
+    queue.entries_.emplace(id, std::move(e));
+  }
+  Check(r.bytes.empty() && (!requests || found_request) &&
+        (!details || found_details || spends) && (!history || found_history || spends) &&
+        (!spends || found_spend || recovery) && (!recovery || found_recovery));
+  queue.CheckUniqueReservations();
+  // Only after bounded structural validation of the entire snapshot do any
+  // expensive proof checks. Persisted coin values are authenticated wallet
+  // data, not fresh chain eligibility; broadcasting still requires admission.
+  for (const auto &[id, e] : queue.entries_)
+    queue.CheckEntry(e, true);
+  return queue;
+}
+bool OrchardOperationQueue::ContinuesArchived(
+    const OrchardOperationQueue &previous) const {
+  if (entries_.size() != 1 || previous.entries_.size() != 1 ||
+      entries_.begin()->first != previous.entries_.begin()->first)
+    return false;
+  auto normalized = *this;
+  if (previous.entries_.begin()->second.phase == Phase::Reserved) {
+    auto &entry = normalized.entries_.begin()->second;
+    entry.phase = Phase::Reserved;
+    entry.transaction.clear();
+    entry.shield_ready_time.reset();
+  }
+  const auto a = normalized.Encode(), b = previous.Encode();
+  return std::equal(a.Bytes().begin(), a.Bytes().end(), b.Bytes().begin(),
+                    b.Bytes().end());
+}
+} // namespace dinero::wallet

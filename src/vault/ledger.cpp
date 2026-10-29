@@ -6,6 +6,8 @@
 #include "vault/ledger.h"
 
 #include <sstream>
+#include <limits>
+#include <type_traits>
 #include <utility>
 #include <variant>
 
@@ -20,10 +22,83 @@ void Ledger::append(LedgerEntry entry) {
         throw LedgerError(LedgerError::Kind::SEQUENCE_NOT_MONOTONIC, oss.str());
     }
 
+    if (seq == std::numeric_limits<LedgerSeq>::max()) {
+        throw LedgerError(LedgerError::Kind::SEQUENCE_EXHAUSTED,
+                          "ledger sequence capacity exhausted");
+    }
     validate(entry);
-    applyToAccounts(entry);
+    // Copy the current derived state, but not the entire entry history. A
+    // failed account operation or allocation cannot publish a partial append.
+    Ledger prepared{caps_};
+    prepared.accounts_ = accounts_;
+    prepared.allocations_ = allocations_;
+    prepared.allocationAccounts_ = allocationAccounts_;
+    if (const auto* reserved=std::get_if<WithdrawalAllocationReserved>(&entry);
+        reserved && !hasCreditAllocation(reserved->account)) {
+        prepared.allocations_=captureUnambiguousCreditOrigins(reserved->account);
+        prepared.allocationAccounts_.insert(reserved->account);
+    }
+    prepared.reversals_ = reversals_;
+    prepared.openCreditsByAccount_ = openCreditsByAccount_;
+    prepared.totalOpenCredits_ = totalOpenCredits_;
+    prepared.totalOperatorLoss_ = totalOperatorLoss_;
+    try {
+        prepared.applyToAccounts(entry);
+    } catch (const std::overflow_error& error) {
+        throw LedgerError(LedgerError::Kind::ARITHMETIC_OVERFLOW, error.what());
+    }
+    static_assert(std::is_nothrow_move_constructible_v<LedgerEntry>);
+    static_assert(noexcept(accounts_.swap(prepared.accounts_)));
+    static_assert(noexcept(allocations_.swap(prepared.allocations_)));
+    static_assert(noexcept(allocationAccounts_.swap(prepared.allocationAccounts_)));
+    static_assert(noexcept(reversals_.swap(prepared.reversals_)));
+    static_assert(noexcept(openCreditsByAccount_.swap(prepared.openCreditsByAccount_)));
+    // vector::push_back provides the strong guarantee with this nothrow-move
+    // entry type. Everything after it is nonthrowing publication.
     entries_.push_back(std::move(entry));
+    accounts_.swap(prepared.accounts_);
+    allocations_.swap(prepared.allocations_);
+    allocationAccounts_.swap(prepared.allocationAccounts_);
+    reversals_.swap(prepared.reversals_);
+    openCreditsByAccount_.swap(prepared.openCreditsByAccount_);
+    totalOpenCredits_ = prepared.totalOpenCredits_;
+    totalOperatorLoss_ = prepared.totalOperatorLoss_;
     nextSeq_ = seq + 1;
+}
+
+void Ledger::revertCredit(const AccountId& account, const OutpointId& deposit,
+                          LedgerTimestamp at) {
+    if (hasCreditAllocation(account)) {
+        append(CreditPositionReverted{nextSeq(),at,account,creditPositionSeq(account,deposit),deposit});
+        return;
+    }
+    // A candidate owns both entries and all derived state until both appends
+    // succeed. This copies history; it is not a bounded-memory replay scheme.
+    Ledger prepared = *this;
+    prepared.append(CreditReverted{prepared.nextSeq(), at, account, deposit});
+    const auto& reversed = prepared.reversals_.at(account).at(deposit).values;
+    if (reversed.refund > reversed.amount)
+        throw LedgerError(LedgerError::Kind::LIFECYCLE_INCONSISTENT,
+                          "reversal debit exceeds its nominal credit");
+    const auto amount = reversed.amount;
+    const auto loss = amount - reversed.refund;
+    prepared.append(CompensatingDebit{prepared.nextSeq(), at, account, deposit, amount, loss});
+
+    static_assert(noexcept(entries_.swap(prepared.entries_)));
+    static_assert(noexcept(accounts_.swap(prepared.accounts_)));
+    static_assert(noexcept(allocations_.swap(prepared.allocations_)));
+    static_assert(noexcept(allocationAccounts_.swap(prepared.allocationAccounts_)));
+    static_assert(noexcept(reversals_.swap(prepared.reversals_)));
+    static_assert(noexcept(openCreditsByAccount_.swap(prepared.openCreditsByAccount_)));
+    entries_.swap(prepared.entries_);
+    accounts_.swap(prepared.accounts_);
+    allocations_.swap(prepared.allocations_);
+    allocationAccounts_.swap(prepared.allocationAccounts_);
+    reversals_.swap(prepared.reversals_);
+    openCreditsByAccount_.swap(prepared.openCreditsByAccount_);
+    totalOpenCredits_ = prepared.totalOpenCredits_;
+    totalOperatorLoss_ = prepared.totalOperatorLoss_;
+    nextSeq_ = prepared.nextSeq_;
 }
 
 Ledger Ledger::replay(const std::vector<LedgerEntry>& entries, const LedgerCaps& caps) {
@@ -43,7 +118,29 @@ LedgerAccount& Ledger::ensureAccount(const AccountId& account) {
     return it->second;
 }
 
+std::optional<CreditReinstatement> Ledger::reinstatement(
+    const AccountId& account,const OutpointId& deposit) const {
+    auto a=reversals_.find(account);
+    if(a==reversals_.end())return std::nullopt;
+    auto d=a->second.find(deposit);
+    if(d==a->second.end() || !d->second.usable || !d->second.compensated)return std::nullopt;
+    return d->second.values;
+}
+
 void Ledger::validate(const LedgerEntry& entry) {
+    if(const auto* restored=std::get_if<CreditReinstated>(&entry)) {
+        const auto retained=reinstatement(restored->account,restored->deposit);
+        auto a=accounts_.find(restored->account);
+        if(!retained || a==accounts_.end() || retained->reversalSeq!=restored->reversalSeq ||
+           retained->compensationSeq!=restored->compensationSeq ||
+           retained->operatorLoss>totalOperatorLoss_ || retained->operatorLoss>a->second.operatorLoss())
+            throw LedgerError(LedgerError::Kind::LIFECYCLE_INCONSISTENT,"unbound credit reinstatement");
+        auto d=a->second.deposits().find(restored->deposit);
+        if(d==a->second.deposits().end() || !std::holds_alternative<DepositRevertedState>(d->second) ||
+           std::get<DepositRevertedState>(d->second).amount!=retained->amount)
+            throw LedgerError(LedgerError::Kind::LIFECYCLE_INCONSISTENT,"credit reinstatement without reverted owner");
+        return;
+    }
     if (auto* opened = std::get_if<CreditOpened>(&entry); opened != nullptr) {
         // Replay-protection: reject if deposit is settled or already
         // reverted (design doc §5.4).
@@ -73,16 +170,16 @@ void Ledger::validate(const LedgerEntry& entry) {
         UnaAmount per_account = openCreditsByAccount_.count(opened->account) != 0U
                                     ? openCreditsByAccount_.at(opened->account)
                                     : 0;
-        per_account += opened->amount;
-        if (per_account > caps_.per_user) {
+        if (per_account > caps_.per_user || opened->amount > caps_.per_user - per_account) {
             std::ostringstream oss;
-            oss << "per-user cap exceeded: " << per_account << " > " << caps_.per_user;
+            oss << "per-user cap exceeded: current " << per_account << ", addition "
+                << opened->amount << ", cap " << caps_.per_user;
             throw LedgerError(LedgerError::Kind::PER_USER_CAP_EXCEEDED, oss.str());
         }
-        UnaAmount global = totalOpenCredits_ + opened->amount;
-        if (global > caps_.global) {
+        if (totalOpenCredits_ > caps_.global || opened->amount > caps_.global - totalOpenCredits_) {
             std::ostringstream oss;
-            oss << "global cap exceeded: " << global << " > " << caps_.global;
+            oss << "global cap exceeded: current " << totalOpenCredits_ << ", addition "
+                << opened->amount << ", cap " << caps_.global;
             throw LedgerError(LedgerError::Kind::OPEN_CREDITS_EXCEED_CAP, oss.str());
         }
         return;
@@ -170,6 +267,22 @@ void Ledger::validate(const LedgerEntry& entry) {
 }
 
 void Ledger::applyToAccounts(const LedgerEntry& entry) {
+    if (applyAllocationEntry(entry)) return;
+    const auto owner=entryAccount(entry);
+    if (owner && hasCreditAllocation(*owner) &&
+        !std::holds_alternative<DepositObserved>(entry) && !std::holds_alternative<CreditOpened>(entry))
+        throw LedgerError(LedgerError::Kind::LIFECYCLE_INCONSISTENT,
+                          "attributed account requires attributed monetary transitions");
+    if(const auto* restored=std::get_if<CreditReinstated>(&entry)) {
+        const auto retained=*reinstatement(restored->account,restored->deposit);
+        accounts_.at(restored->account).applyCreditReinstated(restored->deposit,retained.amount,
+                                                           retained.refund,retained.operatorLoss);
+        totalOperatorLoss_-=retained.operatorLoss;
+        reversals_.at(restored->account).erase(restored->deposit);
+        // The service requires full settlement maturity. Reinstatement does
+        // not reopen an advance or consume/release another deposit's cap.
+        return;
+    }
     if (auto* observed = std::get_if<DepositObserved>(&entry); observed != nullptr) {
         ensureAccount(observed->account).applyDepositObserved(observed->deposit, observed->amount);
         return;
@@ -179,6 +292,10 @@ void Ledger::applyToAccounts(const LedgerEntry& entry) {
         ensureAccount(opened->account).applyCreditOpened(opened->deposit, opened->amount);
         openCreditsByAccount_[opened->account] += opened->amount;
         totalOpenCredits_ += opened->amount;
+        if (hasCreditAllocation(opened->account)) {
+            allocations_.open(opened->seq,opened->account,opened->deposit,opened->amount);
+            syncAllocatedAccount(opened->account);
+        }
         return;
     }
 
@@ -209,16 +326,22 @@ void Ledger::applyToAccounts(const LedgerEntry& entry) {
         if (acct_it != accounts_.end()) {
             auto deposits_it = acct_it->second.deposits().find(reverted->deposit);
             if (deposits_it != acct_it->second.deposits().end()) {
+                // Settled deposits left the open-credit counters at settlement.
+                // Reverting one must not release another deposit's capacity.
                 if (auto* credited = std::get_if<DepositCreditedState>(&deposits_it->second);
                     credited != nullptr) {
                     amount = credited->amount;
-                } else if (auto* settled_state = std::get_if<DepositSettledState>(&deposits_it->second);
-                           settled_state != nullptr) {
-                    amount = settled_state->amount;
                 }
             }
         }
-        ensureAccount(reverted->account).applyCreditReverted(reverted->deposit);
+        auto& account=ensureAccount(reverted->account);
+        const auto before=account.pending()+account.confirmed();
+        const auto nominal=std::visit([](const auto& value){return value.amount;},
+                                      account.deposits().at(reverted->deposit));
+        account.applyCreditReverted(reverted->deposit);
+        const auto refund=before-(account.pending()+account.confirmed());
+        reversals_[reverted->account][reverted->deposit]=
+            Reversal{CreditReinstatement{reverted->seq,0,nominal,refund,0},false,true};
         if (amount > 0) {
             UnaAmount existing = openCreditsByAccount_.count(reverted->account) != 0U
                                      ? openCreditsByAccount_.at(reverted->account)
@@ -254,7 +377,18 @@ void Ledger::applyToAccounts(const LedgerEntry& entry) {
         ensureAccount(compensating->account)
             .applyCompensatingDebit(compensating->deposit, compensating->amount, compensating->operatorLoss);
         UnaAmount loss_after = accounts_.at(compensating->account).operatorLoss();
-        totalOperatorLoss_ += (loss_after - loss_before);
+        const UnaAmount increase = loss_after - loss_before;
+        if (increase > std::numeric_limits<UnaAmount>::max() - totalOperatorLoss_)
+            throw std::overflow_error("vault total operator loss overflow");
+        totalOperatorLoss_ += increase;
+        auto& retained=reversals_.at(compensating->account).at(compensating->deposit);
+        if(retained.compensated || compensating->amount!=retained.values.amount ||
+           compensating->operatorLoss>compensating->amount)retained.usable=false;
+        if(!retained.compensated) {
+            retained.values.compensationSeq=compensating->seq;
+            retained.values.operatorLoss=increase;
+            retained.compensated=true;
+        }
         return;
     }
 

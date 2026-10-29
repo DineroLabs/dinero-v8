@@ -22,6 +22,19 @@ public:
     void removeScanner(const std::string& wallet_id);
     void clearScanners();
     
+    // An unsupported transaction family may proceed only while this owner
+    // proves no configured scanner is being skipped. Manager outlives owner.
+    class EmptyRegistry {
+        friend class ScannerManager;
+        explicit EmptyRegistry(std::mutex& mutex):lock_(mutex){}
+        std::unique_lock<std::mutex> lock_;
+    };
+    std::unique_ptr<EmptyRegistry> acquireEmptyRegistry() {
+        auto owner=std::unique_ptr<EmptyRegistry>(new EmptyRegistry(scanners_mutex_));
+        if (!scanners_.empty()) return {};
+        return owner;
+    }
+
     // Scanning operations
     void scanMempoolTransaction(const std::string& tx_hex);
     void scanBlockTransaction(const std::string& tx_hex, uint32_t block_height);

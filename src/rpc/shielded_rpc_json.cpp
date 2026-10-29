@@ -22,6 +22,7 @@
 #include "daemon/services/wallet_service.h"
 #include "dinero/daemon/execution_context.h"
 #include "consensus/chainparams.h"
+#include "consensus/orchard_profile.h"
 #include "consensus/shielded/wallet_activation.h"
 #include "consensus/shielded/compact.h"
 #include "consensus/pq/p2mr_consensus.h"
@@ -163,10 +164,20 @@ WalletManager* AcquireWallet(const ExecutionContext& ctx, Json& err, bool requir
 // Production fund-moving RPCs wait for the committed Auth epoch. Read-only
 // balance/address calls remain available. The same decision is published to Qt.
 bool RejectIfShieldedSpendLocked(const ExecutionContext& ctx, Json& err) {
-    if (GetActiveChain() == Chain::REGTEST) return false;
     auto cs = ctx.daemon ? std::dynamic_pointer_cast<dinero::ChainstateService>(
                               ctx.daemon->chainstate) : nullptr;
     const auto& params = Params();
+    // The historical pool retires at the next Orchard block. Reject before
+    // proving or changing wallet state, including on regtest with an Orchard
+    // activation override. Historical balance and note reads remain available.
+    if (cs && dinero::consensus::OrchardActiveForHeight(
+                  params, cs->getBlockHeight() == UINT32_MAX
+                      ? UINT32_MAX : cs->getBlockHeight() + 1)) {
+        err["error"] = "shielded_pool_retired";
+        err["error_message"] = "The legacy shielded pool is retired at the next block; this spend cannot confirm.";
+        return true;
+    }
+    if (GetActiveChain() == Chain::REGTEST) return false;
     if (!cs || !dinero::consensus::shielded::WalletAuthEpochReady(
                    cs->getBlockHeight(), params.shielded_spend_auth_activation_height,
                    params.shielded_spend_auth_epoch_reset_height)) {
@@ -522,7 +533,7 @@ Json RpcWalletShieldWithCovenant(const ExecutionContext& ctx, const Json& params
         unsigned_tx.signals_rbf     = true;
 
         bool any_p2mr = false;
-        std::map<std::string, std::string> path_to_key;
+        std::map<std::string, std::string> input_keys;
         for (const auto& c : canon_utxos) {
             if (dinero::consensus::pq::IsP2MRScript(c.spk)) {
                 any_p2mr = true;
@@ -537,10 +548,10 @@ Json RpcWalletShieldWithCovenant(const ExecutionContext& ctx, const Json& params
                     std::ostringstream hexs;
                     hexs << std::hex << std::setfill('0');
                     for (uint8_t b : *pk_opt) hexs << std::setw(2) << static_cast<int>(b);
-                    path_to_key[c.path] = hexs.str();
-                } else if (!c.path.empty()) {
+                    input_keys[c.GetOutpointString()] = hexs.str();
+                } else if (c.path.rfind("m/", 0) == 0) {
                     std::string k = wm->getPrivateKeyForPath(c.path);
-                    if (!k.empty()) path_to_key[c.path] = k;
+                    if (!k.empty()) input_keys[c.GetOutpointString()] = k;
                 }
             }
         }
@@ -564,14 +575,14 @@ Json RpcWalletShieldWithCovenant(const ExecutionContext& ctx, const Json& params
                 return false;
             }
             dinero::wallet::WalletKeyProvider::Config cfg;
-            cfg.legacy_keys_by_path = path_to_key;
+            cfg.legacy_keys_by_path = input_keys;
             cfg.p2mr_store          = p2mr_store.get();
             cfg.wallet_id           = 1;
             std::memcpy(cfg.master_key.data(), master->data(), cfg.master_key.size());
             OPENSSL_cleanse(const_cast<uint8_t*>(master->data()), master->size());
             kp = std::make_unique<dinero::wallet::WalletKeyProvider>(std::move(cfg));
         } else {
-            kp = std::make_unique<dinero::MapKeyProvider>(path_to_key);
+            kp = std::make_unique<dinero::MapKeyProvider>(input_keys);
         }
 
         auto sign_result = dinero::TransactionSigner::Sign(unsigned_tx, *kp);

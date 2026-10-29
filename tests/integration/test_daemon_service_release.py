@@ -15,7 +15,7 @@ try:
         datadir = root / mode
         datadir.mkdir()
         config = datadir / "dinero.conf"
-        config.write_text("p2p.offline=true\n")
+        config.write_text("p2p.offline=true\npool.accounting.enable=true\nlightning.oracles.enable=false\n")
         sockets = [socket.socket() for _ in range(3)]
         for sock in sockets:
             sock.bind(("127.0.0.1", 0))
@@ -34,6 +34,22 @@ try:
             print(output[-20000:], flush=True)
             raise RuntimeError(f"{mode} daemon release failed: exit {result.returncode}")
         assert " real daemon services released" in output, "missing release assertion"
+        assert "PASS actual daemon initial durable scan without fabricated progress" in output
+        assert "PASS actual daemon vault reconciliation detached until explicit attachment" in output
+        assert "PASS actual daemon delivery worker drained before dependency release" in output
+        assert output.count("Runtime delivery worker started; recovery remains asynchronous") == 1
+        assert output.count("phase=runtime_delivery_stopped") == 1
+        assert "PASS actual daemon pool maintenance initial pass or explicit absence" in output
+        assert "PASS actual daemon pool maintenance stopped before dependency release" in output
+        assert output.count("Pool maintenance worker started; accounting remains asynchronous") == (1 if mode == "full" else 0)
+        if mode == "full":
+            assert output.index("Pool maintenance worker started; accounting remains asynchronous") < output.index("Startup recovery complete; starting external listeners")
+        assert "PASS actual daemon pool callback lifetime closed" in output
+        assert output.count("phase=pool_payments_closed") == 1
+        assert output.index("phase=pool_payments_closed") < output.index("[DaemonApp] Stopping services...")
+        assert output.index("Runtime delivery worker started; recovery remains asynchronous") < output.index("Startup recovery complete; starting external listeners")
+        assert output.index("phase=runtime_delivery_stopped") < output.index("[DaemonApp] Stopping services...")
+        print("\n".join(line for line in output.splitlines() if line.startswith("PASS actual daemon ")), flush=True)
         print(f"PASS {mode} daemon ownership and repeated Stop", flush=True)
     success = True
 finally:

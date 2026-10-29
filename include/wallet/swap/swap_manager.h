@@ -17,8 +17,10 @@
 //
 // Files in the swap directory (all 0600, directory 0700): swap-<i>.swap and
 // offer-<i>.offer (Alice's offer awaiting Bob's accept, with its secret),
-// both encrypted; a public <file>.id sidecar each, so a locked wallet can
-// still list and cancel; next_index.
+// both encrypted; a public <file>.id sidecar each for listing and locating
+// files. Cancellation authenticates the encrypted owner; a cached key may
+// survive a relock, but an unopened locked wallet cannot delete an offer.
+// next_index.
 
 #include "wallet/swap/encrypted_store.h"
 #include "wallet/swap/runner.h"
@@ -35,17 +37,34 @@ namespace dinero::swap {
 
 inline constexpr uint32_t kSwapKeyPurpose = 1398227280;  // "SWAP"
 
-// Private key at a fully hardened path (components WITHOUT the hardened bit);
-// std::nullopt when the wallet is locked or has no seed.
-using KeyDeriver = std::function<std::optional<Bytes32>(const std::vector<uint32_t>& hardened_path)>;
+// All paths in one call MUST use one captured wallet seed. Components are
+// fully hardened (WITHOUT the hardened bit). No chain/RPC callbacks may run
+// under the seed owner. nullopt means unavailable, never a partial key set.
+// New funding requires the existing persistent identity from that same lease.
+// Existing claim/refund keys do not require or create an identity.
+struct DerivedKeyBatch {
+    std::vector<Bytes32> keys;
+    // Read under the same lease as the seed; zero never authorizes funding.
+    Bytes32 wallet_id{};
+    DerivedKeyBatch() = default;
+    DerivedKeyBatch(const DerivedKeyBatch&) = delete;
+    DerivedKeyBatch& operator=(const DerivedKeyBatch&) = delete;
+    DerivedKeyBatch(DerivedKeyBatch&&) noexcept;
+    DerivedKeyBatch& operator=(DerivedKeyBatch&&) = delete;
+    ~DerivedKeyBatch();
+};
+using KeyDeriver = std::function<std::optional<DerivedKeyBatch>(const std::vector<std::vector<uint32_t>>& hardened_paths, bool require_funding_identity)>;
 
 struct SwapKeyMaterial {
     SwapKeys keys;
+    Bytes32 wallet_id{};
+    Bytes32 store_key{};  // derived in the SAME callback as these three keys
+    ~SwapKeyMaterial();
 };
 
 // Throw std::runtime_error("wallet locked ...") when the deriver returns nullopt.
 Bytes32 SwapStoreKeyFromSeed(const KeyDeriver& derive, SwapNetwork network);
-SwapKeyMaterial SwapKeysForIndex(const KeyDeriver& derive, SwapNetwork network, uint32_t index);
+SwapKeyMaterial SwapKeysForIndex(const KeyDeriver& derive, SwapNetwork network, uint32_t index, bool require_funding_identity = false);
 
 // Witness-program payout script from a bech32/bech32m address with the given
 // HRP: P2WPKH, P2WSH (v0, bech32) or P2TR (v1, bech32m). Throws std::invalid_argument.
@@ -54,6 +73,10 @@ std::vector<uint8_t> PayoutScriptFromAddress(const std::string& address, const s
 struct OfferRequest {
     uint64_t din_amount_una{};
     uint64_t btc_amount_sat{};
+    // Explicit authorization for the wallet-funded DIN lock, independent of
+    // the later claim/refund fees. A missing budget refuses a new offer.
+    uint64_t din_funding_fee_rate_hint{};
+    uint64_t din_funding_maximum_fee_una{};
     std::string din_refund_address;  // Alice's own DIN address (refund payout)
     std::string btc_claim_address;   // where Alice receives the BTC
     uint32_t btc_lock_hours{48};     // T_btc = now + this
@@ -72,6 +95,10 @@ struct SwapSummary {
     uint64_t btc_amount_sat{};
     uint32_t t_btc_unix{};
     uint32_t t_din_unix{};
+    // Only a present, authenticated retained body gives a submission status.
+    // false is an unknown/rejected submission outcome, never proof it was unsent.
+    // true records an acknowledgement, not confirmation or continued admission.
+    std::optional<bool> din_funding_submission_acknowledged;
     bool tower_armed{false};
     bool pending_accept{false};  // Alice's offer, Bob has not answered yet
     bool wallet_locked{false};   // session not readable: wallet locked, swap paused
@@ -91,7 +118,7 @@ struct SwapManagerConfig {
 
 class SwapManager {
 public:
-    SwapManager(SwapManagerConfig config, KeyDeriver derive, DinRpc din, BtcRpc btc);
+    SwapManager(SwapManagerConfig config, KeyDeriver derive, DinRpc din, BtcRpc btc, DinFundingOwner funding = {});
 
     // Alice. Returns the offer text to send to Bob.
     std::string MakeOffer(const OfferRequest& request, uint32_t now_unix);
@@ -143,10 +170,11 @@ private:
     KeyDeriver derive_;
     DinRpc din_;
     BtcRpc btc_;
+    DinFundingOwner funding_;
     std::function<void(const std::string&)> tower_sink_;
     std::function<bool(const std::string&, const std::string&)> tower_ack_;
     std::optional<Bytes32> store_key_;  // kept while the daemon runs: live swaps survive a relock
-    Bytes32 StoreKey();                  // derive (and remember), or the remembered one; throws if neither
+    Bytes32 StoreKey();                  // binds the first key; relock retains it, a different key refuses
     std::mutex mu_;
     std::map<uint32_t, Live> live_;
 };

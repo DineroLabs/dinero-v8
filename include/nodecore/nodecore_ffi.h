@@ -415,7 +415,9 @@ char* nodecore_get_transaction(const char* txid_hex);
  *
  * @param method       RPC method name (e.g., "getblockchaininfo")
  * @param params_json  JSON array of positional params, or NULL for no params
- * @return JSON result string (caller must free), or NULL on error
+ * During an internal Core reopen, or if a pause overlaps dispatch, returns
+ * NULL (no reply). Retry the SAME request_id; this is not a queue refusal.
+ * @return JSON result string (caller must free), or NULL on error/restarting
  */
 char* nodecore_rpc_call(const char* method, const char* params_json);
 

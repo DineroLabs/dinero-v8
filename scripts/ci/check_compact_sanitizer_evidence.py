@@ -9,7 +9,7 @@ import xml.etree.ElementTree as ET
 from check_shielded_sanitizer_coverage import COMPACT_DAEMON_SOURCES
 
 EXPECTED_TESTS = (
-    'P2PHeaderParserAlignment', 'DaemonServiceRelease',
+    'P2PHeaderParserAlignment', 'DaemonServiceRelease', 'RPCListenerStartup',
     'PackedHeaderAlignment', 'SerializationEmptyBuffers',
     'CompactRegtestFixedVectors', 'CompactRegtestVectorOracle', 'ShieldedResourceLimits',
     'CompactProductionV6Vectors', 'CompactProductionV6Oracle',

@@ -177,14 +177,25 @@ public:
     /**
      * @brief Generate Utreexo proofs for all inputs of a transaction
      *
-     * For each non-coinbase input, calls GenerateProofForUTXO() to produce
-     * per-input inclusion proofs + spent output metadata.
+     * Delegates all non-coinbase inputs to one captured forest snapshot;
+     * this compatibility API returns only its per-input proofs and metadata.
      *
      * @param tx Transaction to generate proofs for
      * @return Per-input (UtreexoProof, SpentOutputData) vector, or nullopt if any input fails
      */
     std::optional<std::vector<std::pair<consensus::UtreexoProof, consensus::SpentOutputData>>>
     GenerateProofsForTransaction(const Transaction& tx);
+
+    struct CapturedInputProofs {
+        consensus::UtreexoHash root;
+        std::vector<std::pair<consensus::UtreexoProof, consensus::SpentOutputData>> proofs;
+    };
+    // Caller serializes provider coin access; all copied metadata must prove
+    // under one guarded forest snapshot.
+    // Owns that snapshot's root; does not claim it remains selected afterward.
+    // A bridge without a forest owner requires external forest serialization.
+    std::optional<CapturedInputProofs> CaptureInputProofs(
+        const uint256& txid, const std::vector<OutPoint>& inputs);
 
     // ═══════════════════════════════════════════════════════════════════════
     // Request Handling
@@ -291,6 +302,23 @@ public:
      * proofs must be discarded to avoid serving stale-root proofs.
      */
     void InvalidateTxProofCache();
+
+    // Selected-chain ownership precedes cache ownership. Thread-affine; bridge
+    // outlives the prepared object. Do not reenter cache APIs while held.
+    // Abandon preserves the cache; publication swaps without external calls.
+    class PreparedTxCacheUpdate final {
+    public:
+        ~PreparedTxCacheUpdate();
+        PreparedTxCacheUpdate(const PreparedTxCacheUpdate&) = delete;
+        PreparedTxCacheUpdate& operator=(const PreparedTxCacheUpdate&) = delete;
+        void PublishAfterCommit() noexcept;
+    private:
+        friend class BridgeNode;
+        struct Impl;
+        explicit PreparedTxCacheUpdate(std::unique_ptr<Impl>);
+        std::unique_ptr<Impl> impl_;
+    };
+    [[nodiscard]] std::unique_ptr<PreparedTxCacheUpdate> PrepareTxProofCacheInvalidation();
 
     /**
      * @brief Remove cache entries that are no longer chain-fresh
@@ -526,11 +554,17 @@ private:
     // Transaction proof cache (utxotx serving): txid -> per-input proofs.
     // Entries are valid only for root_at_generation.
     struct CachedTxProofEntry {
+        std::vector<OutPoint> inputs;
         std::vector<std::pair<consensus::UtreexoProof, consensus::SpentOutputData>> proofs;
         consensus::UtreexoHash root_at_generation;
         std::chrono::steady_clock::time_point cached_at;
         size_t access_count = 0;
     };
+    // Object identity prevents an in-flight generation from surviving a clear,
+    // including repeated invalidations at the same forest commitment.
+    struct TxCacheGeneration {};
+    std::shared_ptr<const TxCacheGeneration> tx_cache_generation_ =
+        std::make_shared<const TxCacheGeneration>();
     std::unordered_map<uint256, CachedTxProofEntry> tx_proof_cache_;
     std::list<uint256> tx_cache_lru_list_;
     std::unordered_map<uint256, std::list<uint256>::iterator> tx_cache_lru_lookup_;

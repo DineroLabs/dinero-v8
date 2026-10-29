@@ -4,6 +4,7 @@
 // SigningBackend. Single-actor through a mutex.
 
 #include "vault/vault_service.h"
+#include "vault/state_snapshot.h"
 
 #include "vault/deposit_flow.h"
 #include "vault/ledger_account.h"
@@ -13,68 +14,461 @@
 #include "vault/withdrawal_queue.h"
 
 #include <utility>
+#include <type_traits>
+#include <stdexcept>
+#include <limits>
+#include <algorithm>
 
 namespace dinero::vault {
 
+// These copies own only candidate in-memory state. They neither persist nor
+// invoke signing. Every internal pointer is rebound before candidate mutation.
+struct VaultService::PreparedState {
+    Ledger ledger;
+    DepositFlowMachine deposits;
+    ReorgWatcher watcher;
+    WithdrawalQueue withdrawals;
+
+    explicit PreparedState(VaultService& owner)
+        : ledger(owner.ledger_), deposits(owner.deposit_flow_),
+          watcher(&deposits,
+              [&owner](uint64_t h) { return owner.reorg_watcher_.block_hash_at_height_(h); },
+              [&owner](const OutpointId& op, uint64_t h, const std::array<uint8_t, 32>& hash) {
+                  return owner.reorg_watcher_.tx_included_at_(op, h, hash);
+              }), withdrawals(owner.withdrawals_) {
+        owner.requireRevisionCapacity();
+        deposits.ledger_ = &ledger;
+        watcher.deposit_block_hashes_ = owner.reorg_watcher_.deposit_block_hashes_;
+        withdrawals.ledger_ = &ledger;
+    }
+    PreparedState(const PreparedState&) = delete;
+    PreparedState& operator=(const PreparedState&) = delete;
+};
+
+void VaultService::publish(PreparedState& state) noexcept {
+    static_assert(std::is_nothrow_swappable_v<Ledger>);
+    static_assert(noexcept(deposit_flow_.tracked_.swap(state.deposits.tracked_)));
+    static_assert(noexcept(reorg_watcher_.deposit_block_hashes_.swap(state.watcher.deposit_block_hashes_)));
+    static_assert(noexcept(withdrawals_.requests_.swap(state.withdrawals.requests_)));
+    static_assert(noexcept(withdrawals_.states_.swap(state.withdrawals.states_)));
+    // Swap values only: the live machines retain pointers to this service's
+    // ledger/deposit members, while candidate pointers never escape.
+    using std::swap;
+    swap(ledger_, state.ledger);
+    deposit_flow_.tracked_.swap(state.deposits.tracked_);
+    reorg_watcher_.deposit_block_hashes_.swap(state.watcher.deposit_block_hashes_);
+    withdrawals_.requests_.swap(state.withdrawals.requests_);
+    withdrawals_.states_.swap(state.withdrawals.states_);
+    ++revision_;
+}
+
+void VaultService::requireRevisionCapacity() const {
+    if (revision_ == std::numeric_limits<uint64_t>::max())
+        throw std::runtime_error("vault state revision exhausted");
+}
+
 VaultService::VaultService(std::unique_ptr<SigningBackend> backend, VaultServiceConfig config,
-                           BlockHashAtHeightFn block_hash_at_height, TxIncludedAtFn tx_included_at)
-    : backend_{std::move(backend)},
+                           BlockHashAtHeightFn block_hash_at_height, TxIncludedAtFn tx_included_at,
+                           VaultTipSnapshotFn capture_tip)
+    : operator_binding_(std::move(config.operator_binding)),
+      creation_anchor_(std::move(config.creation_anchor)),
+      capture_tip_(std::move(capture_tip)), backend_{std::move(backend)},
       ledger_{config.ledger_caps},
       deposit_flow_{&ledger_, std::move(config.confirmation_policy), config.shadow_mode},
       reorg_watcher_{&deposit_flow_, std::move(block_hash_at_height), std::move(tx_included_at)},
-      withdrawals_{&ledger_, backend_.get(), config.withdrawal_caps, config.withdrawal_policy} {}
+      withdrawals_{&ledger_, backend_.get(), config.withdrawal_caps, config.withdrawal_policy} {
+    if (operator_binding_) ValidateVaultOperatorBinding(*operator_binding_);
+    if (creation_anchor_) {
+        if (!operator_binding_) throw std::runtime_error("vault creation anchor requires operator binding");
+        ValidateVaultCreationAnchor(*creation_anchor_);
+    }
+}
+
+std::optional<VaultOperatorBinding> VaultService::operatorBinding() const {
+    return operator_binding_;
+}
+
+VaultStateSnapshot VaultService::captureState() {
+    std::lock_guard<std::mutex> lock(mu_);
+    return captureStateLocked();
+}
+
+VaultStateSnapshot VaultService::captureStateLocked() const {
+    VaultStateSnapshot result;
+    result.revision = revision_;
+    result.config.operator_binding = operator_binding_;
+    result.config.creation_anchor = creation_anchor_;
+    result.config.ledger_caps = ledger_.caps();
+    result.config.confirmation_policy = deposit_flow_.policy_;
+    result.config.shadow_mode = deposit_flow_.shadow_mode_;
+    result.config.withdrawal_caps = withdrawals_.caps_;
+    result.config.withdrawal_policy = withdrawals_.policy_;
+    result.entries = ledger_.entries();
+    if (deposit_flow_.tracked_.size() != reorg_watcher_.deposit_block_hashes_.size() ||
+        withdrawals_.requests_.size() != withdrawals_.states_.size())
+        throw std::runtime_error("incomplete vault state inventory");
+    result.deposits.reserve(deposit_flow_.tracked_.size());
+    for (const auto& [outpoint, deposit] : deposit_flow_.tracked_) {
+        if (outpoint != deposit.outpoint)
+            throw std::runtime_error("vault deposit inventory binding mismatch");
+        const auto hash = reorg_watcher_.deposit_block_hashes_.find(outpoint);
+        if (hash == reorg_watcher_.deposit_block_hashes_.end())
+            throw std::runtime_error("missing vault deposit observation");
+        result.deposits.push_back({deposit, hash->second});
+    }
+    result.withdrawals.reserve(withdrawals_.requests_.size());
+    for (const auto& [id, request] : withdrawals_.requests_) {
+        if (id != request.request_id)
+            throw std::runtime_error("vault withdrawal inventory binding mismatch");
+        const auto state = withdrawals_.states_.find(id);
+        if (state == withdrawals_.states_.end())
+            throw std::runtime_error("missing vault withdrawal state");
+        result.withdrawals.push_back({request, state->second});
+    }
+    return result;
+}
+
+void VaultService::requireCurrentOwner(const VaultStateWrite* transaction) const {
+    if (!state_owner_) return;
+    if (!transaction || EncodeVaultState(transaction->Base())!=EncodeVaultState(captureStateLocked()))
+        throw std::runtime_error("vault durable state differs from the live owner");
+}
+
+void VaultService::commitAndPublish(PreparedState& state, VaultStateWrite* transaction) {
+    if (state_owner_) {
+        if (!transaction) throw std::runtime_error("vault durable transaction required");
+        VaultStateSnapshot saved;
+        saved.revision=revision_+1;
+        saved.config.operator_binding=operator_binding_;
+        saved.config.creation_anchor=creation_anchor_;
+        saved.config.ledger_caps=state.ledger.caps();
+        saved.config.confirmation_policy=state.deposits.policy_;
+        saved.config.shadow_mode=state.deposits.shadow_mode_;
+        saved.config.withdrawal_caps=state.withdrawals.caps_;
+        saved.config.withdrawal_policy=state.withdrawals.policy_;
+        saved.entries=state.ledger.entries();
+        if (state.deposits.tracked_.size()!=state.watcher.deposit_block_hashes_.size() ||
+            state.withdrawals.requests_.size()!=state.withdrawals.states_.size())
+            throw std::runtime_error("incomplete candidate vault state");
+        for (const auto& [outpoint,deposit]:state.deposits.tracked_)
+            saved.deposits.push_back({deposit,state.watcher.deposit_block_hashes_.at(outpoint)});
+        for (const auto& [id,request]:state.withdrawals.requests_)
+            saved.withdrawals.push_back({request,state.withdrawals.states_.at(id)});
+        // Replay and all allocations precede the checked durable commit.
+        (void)ReplayVaultStateLedger(saved);
+        transaction->Commit(saved);
+    }
+    publish(state);
+}
+
+std::shared_ptr<VaultService> VaultService::RestorePrepared(
+    const VaultStateSnapshot& saved,std::shared_ptr<const VaultStateOwner> owner,
+    std::unique_ptr<SigningBackend> backend,BlockHashAtHeightFn hash_at,TxIncludedAtFn included,
+    VaultTipSnapshotFn capture_tip,std::shared_ptr<VaultWithdrawalDispatcher> dispatcher) {
+    if (!owner || !backend || !capture_tip)
+        throw std::runtime_error("vault durable service requires complete owners");
+    auto ledger=ReplayVaultStateLedger(saved);
+    auto service=std::make_shared<VaultService>(std::move(backend),saved.config,
+        std::move(hash_at),std::move(included),std::move(capture_tip));
+    service->ledger_=std::move(ledger);
+    for (const auto& row:saved.deposits) {
+        if (!service->deposit_flow_.tracked_.emplace(row.deposit.outpoint,row.deposit).second ||
+            !service->reorg_watcher_.deposit_block_hashes_.emplace(row.deposit.outpoint,row.observed_block).second)
+            throw std::runtime_error("duplicate restored vault deposit");
+    }
+    for (const auto& row:saved.withdrawals) {
+        if (!service->withdrawals_.requests_.emplace(row.request.request_id,row.request).second ||
+            !service->withdrawals_.states_.emplace(row.request.request_id,row.state).second)
+            throw std::runtime_error("duplicate restored vault withdrawal");
+    }
+    service->revision_=saved.revision;
+    service->state_owner_=std::move(owner);
+    service->withdrawal_dispatcher_=std::move(dispatcher);
+    return service;
+}
 
 void VaultService::recordDeposit(const std::array<uint8_t, 32>& txid, uint32_t vout,
                                  const AccountId& account, UnaAmount amount, uint64_t height,
                                  const std::array<uint8_t, 32>& block_hash) {
+    auto transaction=state_owner_?state_owner_->Begin():nullptr;
     std::lock_guard<std::mutex> lock(mu_);
+    requireCurrentOwner(transaction.get());
     OutpointId op;
     op.txid_raw = txid;
     op.vout = vout;
-    deposit_flow_.observe(op, account, amount, height);
-    reorg_watcher_.recordObservation(op, block_hash);
+    const auto existing = deposit_flow_.tracked().find(op);
+    if (existing != deposit_flow_.tracked().end()) {
+        const auto hash = reorg_watcher_.depositBlockHashes().find(op);
+        const auto& prior = existing->second;
+        if (prior.account != account || prior.amount != amount || prior.deposit_height != height ||
+            hash == reorg_watcher_.depositBlockHashes().end() || hash->second != block_hash) {
+            throw std::runtime_error("deposit observation conflicts with its existing owner");
+        }
+        return;
+    }
+    PreparedState state(*this);
+    state.deposits.observe(op, account, amount, height);
+    state.watcher.recordObservation(op, block_hash);
+    commitAndPublish(state,transaction.get());
 }
 
-void VaultService::tipChanged(uint64_t height) {
+uint64_t VaultService::currentRevision() {
+    std::lock_guard<std::mutex> lock(mu_);return revision_;
+}
+VaultService::TipObservation VaultService::tipChanged(uint64_t height) {
+    uint64_t captured_revision=0;
+    std::vector<VaultDepositQuery> queries;
+    std::vector<VaultWithdrawalQuery> payment_queries;
+    {
+        std::lock_guard<std::mutex> lock(mu_);
+        if (!capture_tip_) {
+            if (state_owner_) throw std::runtime_error("vault durable canonical snapshot unavailable");
+            PreparedState state(*this);
+            state.watcher.reconcileTracked();state.deposits.tipChanged(height);state.withdrawals.tipChanged(height);
+            publish(state);return {height,{},revision_};
+        }
+        captured_revision=revision_;queries.reserve(deposit_flow_.tracked().size());
+        for(const auto& [outpoint,dep]:deposit_flow_.tracked())
+            queries.push_back({outpoint,dep.deposit_height,dep.amount});
+        for(const auto& [id,request]:withdrawals_.requests_) {
+            const auto& state=withdrawals_.states_.at(id);
+            const auto* payment=std::get_if<WithdrawalPaymentRetained>(&state);
+            std::optional<AllocationInclusion> prior;
+            if(const auto* confirmed=std::get_if<WithdrawalPaymentConfirmed>(&state)) {
+                payment=&confirmed->payment;prior=confirmed->inclusion;
+            }
+            if(!payment)continue;
+            if(!ledger_.creditAllocations().reservations().contains(id)) {
+                // Preserve historical aggregate payment bytes. They cannot be
+                // enrolled into source accounting by guessing old allocations.
+                if(prior)throw std::runtime_error("confirmed vault payment has no source allocation");
+                continue;
+            }
+            payment_queries.push_back({request,*payment,prior});
+        }
+    }
+    // Capture outside the service mutex. If payments are present their source
+    // lease is acquired before wallet/SQLite and retains selected ownership
+    // through commit. Matching tip hashes bind the earlier deposit snapshot.
+    const auto captured=capture_tip_(height,queries);
+    std::unique_ptr<VaultWithdrawalObservationLease> payments;
+    if(!payment_queries.empty()) {
+        if(!withdrawal_dispatcher_)throw std::runtime_error("vault canonical payment dispatcher unavailable");
+        payments=withdrawal_dispatcher_->CaptureCanonical(height,payment_queries);
+        if(!payments || payments->Height()!=captured.height || payments->Hash()!=captured.block_hash ||
+           payments->Rows().size()!=payment_queries.size())
+            throw std::runtime_error("incomplete vault canonical payment snapshot");
+    }
+    auto transaction=state_owner_?state_owner_->Begin():nullptr;
     std::lock_guard<std::mutex> lock(mu_);
-    // Phase 1: deposit-flow advancement. Cap pressure / lifecycle
-    // errors are wrapped in DepositFlowError; we let those propagate
-    // so the caller sees them, but log + continue with phase 2.
-    try {
-        deposit_flow_.tipChanged(height);
-    } catch (const DepositFlowError&) {
-        // Continue; per-deposit errors don't poison phases 2-3.
+    requireCurrentOwner(transaction.get());
+    if(revision_!=captured_revision)throw std::runtime_error("vault state changed during canonical observation");
+    const auto nonzero=[](const auto& bytes){return std::any_of(bytes.begin(),bytes.end(),[](uint8_t b){return b!=0;});};
+    if(captured.height!=height || !nonzero(captured.block_hash) || captured.deposits.size()!=queries.size())
+        throw std::runtime_error("incomplete vault canonical snapshot");
+    for(size_t i=0;i<queries.size();++i) {
+        const auto& item=captured.deposits[i];
+        if(item.query!=queries[i] || (item.block_hash && !nonzero(*item.block_hash)) ||
+           (item.query.height<=height && !item.block_hash) ||
+           (item.query.height>height && (item.block_hash || item.included)))
+            throw std::runtime_error("vault canonical observation binding mismatch");
     }
-    // Phase 2: reorg detection. UNRECORDED_OBSERVATION means the
-    // wiring is broken; let it propagate.
-    reorg_watcher_.tipChanged(height);
-    // Phase 3: withdrawal settlement.
-    try {
-        withdrawals_.tipChanged(height);
-    } catch (const WithdrawalQueueError&) {
-        // Continue.
+    if(payments)for(size_t i=0;i<payment_queries.size();++i) {
+        const auto& item=payments->Rows()[i];
+        if(item.query!=payment_queries[i] || (item.prior_not_canonical && !item.query.prior) ||
+           (item.included && (!nonzero(item.included->block_hash) || item.included->height>height)) ||
+           (item.query.prior && !item.prior_not_canonical && item.included && *item.query.prior!=*item.included))
+            throw std::runtime_error("vault canonical payment binding mismatch");
     }
+    PreparedState state(*this);
+    for(const auto& item:captured.deposits) {
+        auto& recorded=state.watcher.deposit_block_hashes_.at(item.query.outpoint);
+        if(item.included) {state.deposits.reinstateIncluded(item.query.outpoint,captured.height);recorded=*item.block_hash;}
+        else state.deposits.revertOwned(item.query.outpoint);
+    }
+    state.deposits.tipChanged(captured.height);
+    if(payments)for(const auto& item:payments->Rows()) {
+        const auto& query=item.query;const auto& id=query.request.request_id;
+        auto prior=query.prior;
+        if(prior && item.prior_not_canonical) {
+            state.ledger.append(WithdrawalAllocationDisconnected{state.ledger.nextSeq(),WithdrawalQueue::now(),
+                query.request.account,id,*prior});
+            state.withdrawals.states_.at(id)=query.retained;prior.reset();
+        }
+        // Missing transaction-index data preserves an existing same-anchor
+        // inclusion. It never frees ambiguous inputs or authorizes another send.
+        if(!prior && item.included && (state.withdrawals.policy_.k_settle==0 || height-item.included->height>=state.withdrawals.policy_.k_settle-1)) {
+            state.ledger.append(WithdrawalAllocationIncluded{state.ledger.nextSeq(),WithdrawalQueue::now(),
+                query.request.account,id,*item.included});
+            state.withdrawals.states_.at(id)=WithdrawalPaymentConfirmed{query.retained,*item.included};
+        }
+    }
+    state.withdrawals.tipChanged(captured.height);
+    commitAndPublish(state,transaction.get());
+    return {captured.height,captured.block_hash,revision_};
 }
 
 WithdrawalId VaultService::enqueueWithdrawal(const AccountId& account, UnaAmount amount,
                                              const std::vector<uint8_t>& destination_script_pub_key) {
+    auto transaction=state_owner_?state_owner_->Begin():nullptr;
     std::lock_guard<std::mutex> lock(mu_);
-    return withdrawals_.enqueue(account, amount, destination_script_pub_key);
+    requireCurrentOwner(transaction.get());
+    PreparedState state(*this);
+    if(state_owner_)requirePendingCapacity(account,amount);
+    const auto id = state.withdrawals.enqueue(account, amount, destination_script_pub_key);
+    commitAndPublish(state,transaction.get());
+    return id;
+}
+
+UnaAmount VaultService::pendingReservedLocked(const AccountId& account,UnaAmount spendable) const {
+    UnaAmount reserved=0;
+    for(const auto& [id,request]:withdrawals_.requests_) {
+        if(request.account!=account)continue;
+        // Attributed requests already own a source reservation in Ledger.
+        // Historical Pending/Signing rows retain their older reservation path.
+        if(ledger_.creditAllocations().reservations().contains(id))continue;
+        const auto& state=withdrawals_.states_.at(id);
+        if(!std::holds_alternative<WithdrawalPending>(state) &&
+           !std::holds_alternative<WithdrawalSigning>(state))continue;
+        if(reserved>spendable || request.amount>spendable-reserved)
+            throw std::runtime_error("vault pending reservations exceed spendable funds");
+        reserved+=request.amount;
+    }
+    return reserved;
+}
+void VaultService::requirePendingCapacity(const AccountId& account,UnaAmount additional) const {
+    const auto spendable=ledger_.accountOr(account).spendable();
+    const auto reserved=pendingReservedLocked(account,spendable);
+    if(additional>spendable-reserved)
+        throw std::runtime_error("vault withdrawal exceeds unreserved spendable funds");
+}
+VaultAccountMetrics VaultService::accountMetricsLocked(const AccountId& account) const {
+    VaultAccountMetrics result;
+    const auto found=ledger_.accounts().find(account);
+    if(found!=ledger_.accounts().end()) {
+        const auto& state=found->second;
+        result={state.spendable(),state.confirmed(),state.pending(),state.locked(),state.operatorLoss()};
+    }
+    // Existing in-memory services keep their historical metrics. Durable
+    // requests own Pending/Signing reservations before a body is retained.
+    // Read the existing account in place; never copy its full lifecycle maps.
+    const auto reserved=state_owner_?pendingReservedLocked(account,result.spendable):0;
+    if(reserved>std::numeric_limits<UnaAmount>::max()-result.locked)
+        throw std::runtime_error("vault locked reservation total exceeds range");
+    result.spendable-=reserved;result.locked+=reserved;return result;
+}
+
+WithdrawalId VaultService::enqueueWithdrawal(const AccountId& account,UnaAmount amount,
+    const std::vector<uint8_t>& script,const WithdrawalPaymentTerms& terms) {
+    ValidateWithdrawalPaymentTerms(terms);
+    if(!state_owner_)throw std::runtime_error("explicit durable withdrawal requires wallet state owner");
+    auto transaction=state_owner_->Begin();
+    std::lock_guard<std::mutex> lock(mu_);requireCurrentOwner(transaction.get());
+    requirePendingCapacity(account,amount);
+    PreparedState state(*this);const auto id=state.withdrawals.enqueue(account,amount,script);
+    state.withdrawals.requests_.at(id).payment_terms=terms;
+    const auto refs=state.ledger.selectCreditAllocations(account,amount);
+    state.ledger.append(WithdrawalAllocationReserved{state.ledger.nextSeq(),WithdrawalQueue::now(),
+        account,id,amount,refs});
+    commitAndPublish(state,transaction.get());return id;
+}
+
+std::optional<WithdrawalId> VaultService::processDurableWithdrawal() {
+    if(!withdrawal_dispatcher_)throw std::runtime_error("vault durable withdrawal dispatcher unavailable");
+    WithdrawalRequest request;bool new_dispatch=false;
+    {
+        auto transaction=state_owner_->Begin();
+        std::lock_guard<std::mutex> lock(mu_);requireCurrentOwner(transaction.get());
+        const WithdrawalRequest* selected=nullptr;
+        for(const auto& [id,candidate]:withdrawals_.requests_) {
+            const auto& state=withdrawals_.states_.at(id);
+            if(!std::holds_alternative<WithdrawalPending>(state) &&
+               !std::holds_alternative<WithdrawalSigning>(state))continue;
+            if(!selected || candidate.created_at<selected->created_at ||
+               (candidate.created_at==selected->created_at && id<selected->request_id))selected=&candidate;
+        }
+        if(!selected)return std::nullopt;
+        if(!selected->payment_terms)throw std::runtime_error("vault historical withdrawal lacks explicit payment terms");
+        ValidateWithdrawalPaymentTerms(*selected->payment_terms);
+        const auto allocation=ledger_.creditAllocations().reservations().find(selected->request_id);
+        if(allocation==ledger_.creditAllocations().reservations().end() ||
+           allocation->second.account!=selected->account || allocation->second.amount!=selected->amount)
+            throw std::runtime_error("withdrawal source allocation is unavailable");
+        // Copy all callback input before committing or publishing the transition.
+        request=*selected;
+        new_dispatch=std::holds_alternative<WithdrawalPending>(withdrawals_.states_.at(request.request_id));
+        if(new_dispatch) {
+            requirePendingCapacity(request.account,0);
+            PreparedState state(*this);
+            if(!state.ledger.creditAllocations().reservations().contains(request.request_id))
+                throw std::runtime_error("historical withdrawal lacks source allocation ownership");
+            state.ledger.append(WithdrawalAllocationDispatchStarted{state.ledger.nextSeq(),WithdrawalQueue::now(),
+                request.account,request.request_id});
+            state.withdrawals.states_.at(request.request_id)=WithdrawalSigning{};
+            commitAndPublish(state,transaction.get());
+        }
+    }
+    // All vault/SQLite/recovery-key owners are gone before external work.
+    // A thrown callback preserves Signing; retries never authorize a new body.
+    const auto retained=new_dispatch?withdrawal_dispatcher_->DispatchNew(request):withdrawal_dispatcher_->Resolve(request);
+    if(!retained)throw std::runtime_error("vault signing request has no retained wallet payment; request remains reserved");
+    {
+        auto transaction=state_owner_->Begin();
+        std::lock_guard<std::mutex> lock(mu_);requireCurrentOwner(transaction.get());
+        const auto& current=withdrawals_.requests_.at(request.request_id);
+        const auto& current_state=withdrawals_.states_.at(request.request_id);
+        if(current!=request)throw std::runtime_error("vault withdrawal payload changed during dispatch");
+        if(const auto* prior=std::get_if<WithdrawalPaymentRetained>(&current_state)) {
+            if(*prior!=*retained)throw std::runtime_error("conflicting retained vault payment");
+            return request.request_id;
+        }
+        if(!std::holds_alternative<WithdrawalSigning>(current_state))
+            throw std::runtime_error("vault withdrawal state changed during dispatch");
+        requirePendingCapacity(request.account,0);
+        PreparedState state(*this);
+        state.ledger.append(WithdrawalAllocationPaymentBound{state.ledger.nextSeq(),WithdrawalQueue::now(),
+            request.account,request.request_id,
+            AllocationPayment{OutpointId{retained->txid,retained->vout},retained->body_sha256},backend_->backendId()});
+        state.withdrawals.states_.at(request.request_id)=*retained;
+        commitAndPublish(state,transaction.get());
+    }
+    return request.request_id;
 }
 
 std::optional<WithdrawalId> VaultService::processNextWithdrawal() {
+    if(state_owner_)return processDurableWithdrawal();
     std::lock_guard<std::mutex> lock(mu_);
+    // This existing externally-effectful path may mutate before throwing.
+    // Invalidate captured observations before entering it in either case.
+    requireRevisionCapacity();
+    ++revision_;
     return withdrawals_.processNext();
 }
 
 void VaultService::markWithdrawalIncluded(const WithdrawalId& id, uint64_t height) {
+    if(state_owner_)throw std::runtime_error("durable withdrawal inclusion requires canonical payment reconciliation");
+    auto transaction=state_owner_?state_owner_->Begin():nullptr;
     std::lock_guard<std::mutex> lock(mu_);
-    withdrawals_.markBroadcastIncluded(id, height);
+    requireCurrentOwner(transaction.get());
+    PreparedState state(*this);
+    state.withdrawals.markBroadcastIncluded(id, height);
+    commitAndPublish(state,transaction.get());
+}
+
+VaultAccountMetrics VaultService::accountMetrics(const AccountId& account) {
+    std::lock_guard<std::mutex> lock(mu_);
+    return accountMetricsLocked(account);
+}
+
+VaultMetrics VaultService::metrics() {
+    std::lock_guard<std::mutex> lock(mu_);
+    return {ledger_.totalOpenCredits(), ledger_.totalOperatorLoss(), ledger_.nextSeq(),
+            ledger_.accounts().size(), withdrawals_.outstandingDepth()};
 }
 
 UnaAmount VaultService::accountSpendable(const AccountId& account) {
     std::lock_guard<std::mutex> lock(mu_);
-    return ledger_.accountOr(account).spendable();
+    return accountMetricsLocked(account).spendable;
 }
 
 UnaAmount VaultService::accountConfirmed(const AccountId& account) {
@@ -89,7 +483,7 @@ UnaAmount VaultService::accountPending(const AccountId& account) {
 
 UnaAmount VaultService::accountLocked(const AccountId& account) {
     std::lock_guard<std::mutex> lock(mu_);
-    return ledger_.accountOr(account).locked();
+    return accountMetricsLocked(account).locked;
 }
 
 UnaAmount VaultService::accountOperatorLoss(const AccountId& account) {

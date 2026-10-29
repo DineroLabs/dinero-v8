@@ -6,12 +6,19 @@
 #include <vector>
 #include <map>
 #include <functional>
+#include <condition_variable>
+#include <mutex>
+#include <thread>
 
 namespace dinero {
 namespace pool {
 
 /**
  * Payout Calculator - Implements PROP, PPLNS, PPS, and SOLO payout algorithms
+ * Calculation inputs/configuration must be finite and nonnegative; fee is 0..100.
+ * Invalid arithmetic or amounts outside SQLite int64 storage refuse before conversion.
+ * Finite valid formulas retain their floating-point rounding; this is not a proof
+ * of authenticated share totals, canonical eligibility or payment settlement.
  *
  * Usage:
  *   PayoutCalculator calc(db, config);
@@ -156,7 +163,18 @@ class PayoutProcessor {
 public:
     using PaymentCallback = std::function<bool(const std::string& address, uint64_t amount, std::string& txid)>;
 
-    PayoutProcessor(PoolDB& db, PaymentCallback payment_fn);
+    // Own the database through every synchronous operation. One operation may
+    // be active at a time; concurrent/nested operations refuse rather than wait.
+    PayoutProcessor(std::shared_ptr<PoolDB> db, PaymentCallback payment_fn);
+    PayoutProcessor(std::shared_ptr<PoolDB>,std::unique_ptr<PoolPaymentBackend>);
+    ~PayoutProcessor();
+    PayoutProcessor(const PayoutProcessor&)=delete;
+    PayoutProcessor& operator=(const PayoutProcessor&)=delete;
+    // Close outside manager/wallet/chain/SQLite owners. Prevents new operations,
+    // drains an existing whole operation, then releases the callback context.
+    // Closing from that operation's thread refuses; destruction there terminates.
+    void Close();
+    bool IsClosed() const;
 
     /**
      * Process pending payouts
@@ -177,8 +195,18 @@ public:
     uint32_t retryFailedPayouts(uint32_t max_retries = 3);
 
 private:
+    struct Use;
+    bool processPayoutOwned(Payout& payout);
+    uint32_t processOwnedPayments();
+    std::unique_ptr<PoolPaymentBackend> backend_;
+    std::shared_ptr<PoolDB> database_owner_;
     PoolDB& db_;
     PaymentCallback payment_fn_;
+    mutable std::mutex gate_mutex_;
+    std::condition_variable drained_;
+    std::thread::id active_thread_;
+    bool active_{false};
+    bool closed_{false};
 };
 
 } // namespace pool

@@ -5,6 +5,9 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 # CTest injects the exact in-tree target path.  Keep the source-tree fallback
 # for developers invoking this script directly from the conventional build.
 DINEROD="${DINEROD:-${ROOT_DIR}/build/dinerod}"
+# Retain startup errors even when shutdown and RPC polling fill the log tail.
+# shellcheck source=helpers/failure_log_capture.sh
+source "${ROOT_DIR}/tests/integration/helpers/failure_log_capture.sh"
 # Ports are randomized per run. Fixed ports collided between back-to-back runs
 # and with anything else on the host; see #470/#459.
 pick_base_port() {
@@ -47,9 +50,13 @@ pass() { printf '[PASS] %s\n' "$*"; }
 fail() {
     KEEP_ON_FAIL=1
     printf '[FAIL] %s\n' "$*" >&2
-    [[ -f "${LOG_A}" ]] && { printf -- '--- node A log tail ---\n' >&2; tail -80 "${LOG_A}" >&2 || true; }
-    [[ -f "${LOG_B}" ]] && { printf -- '--- node B log tail ---\n' >&2; tail -80 "${LOG_B}" >&2 || true; }
-    [[ -f "${LOG_C}" ]] && { printf -- '--- node C log tail ---\n' >&2; tail -80 "${LOG_C}" >&2 || true; }
+    local node logfile
+    for node in A B C; do
+        case "${node}" in A) logfile="${LOG_A}" ;; B) logfile="${LOG_B}" ;; C) logfile="${LOG_C}" ;; esac
+        dinero_dump_log_from_mark "${logfile}" 0 "node ${node} startup" 120 >&2 || true
+        dinero_dump_log_matches "${logfile}" 'ERROR|FATAL|Failed|failed|Address already in use|bind\(|listen' "node ${node} startup" 80 >&2 || true
+        [[ -f "${logfile}" ]] && { printf -- '--- node %s final log tail ---\n' "${node}" >&2; tail -80 "${logfile}" >&2 || true; }
+    done
     exit 1
 }
 # Wait for a pid to actually exit. kill() only *sends* SIGTERM; the daemon then

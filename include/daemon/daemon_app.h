@@ -1,13 +1,21 @@
 #pragma once
+#include <cstdint>
+#include <optional>
+#include <functional>
+#include <filesystem>
 #include "daemon_context.h"
 #include "iservice.h"
 #include "daemon/notify_drain_worker.h"
 #include "daemon/stop_gate.h"
+#include "daemon/core_reopen.h"
 #include <vector>
 #include <memory>
+#include <mutex>
 
 // Forward declarations
 namespace dinero {
+namespace consensus {struct OrchardSnapshotSection;}
+namespace daemon { class DatadirGuard; }
 namespace pool {
 class PoolManager;
 }
@@ -22,6 +30,9 @@ class WatchRegistrationServer;  // Phase 9.3: Watch registration server
 }
 class ChainDB;
 class TxOrphanPool;
+class RuntimeDeliveryWorker;
+class RuntimeBlockNotifications;
+struct RuntimeDeliveryStartupTestAccess;
 }
 
 namespace dinero {
@@ -56,6 +67,33 @@ public:
      */
     bool Init(int argc = 0, char** argv = nullptr);
 
+    // Native startup pins the same resolved root as its held datadir lock.
+    // Keep the guard alive until Stop(); config/CLI aliases must not redirect
+    // services or the storage-upgrade cohort to another root after locking.
+    void SetLockedDatadir(const daemon::DatadirGuard& guard);
+
+    // Native daemons upgrade a legacy store to the separated shielded-state
+    // layout before opening it (daemon/orchard_storage_upgrade.h). Off by
+    // default for explicit migrator fixtures; dinerod and NodeCore opt in only
+    // while retaining their real operator-root datadir guard.
+    void SetAutomaticStorageUpgrade(bool enabled) { automatic_storage_upgrade_ = enabled; }
+    // Bootstrap run for a brand-new datadir: Init returns at once if the store
+    // already exists; otherwise it creates genesis and persists the records
+    // the storage upgrade needs. The caller then Start()s/Stop()s this
+    // instance and starts the real one, which upgrades the store at genesis.
+    void SetFreshStoreBootstrapOnly(bool enabled) { fresh_store_bootstrap_only_ = enabled; }
+    // True when this bootstrap run created the store (it must Start() and Stop()).
+    bool FreshStoreCreated() const { return fresh_store_bootstrap_only_ && fresh_store_created_; }
+    // After Start(): persist the genesis records; true when the store can now be upgraded.
+    bool PersistFreshStoreGenesisRecords();
+
+    // Tests only: called after each durable upgrade step; replaces measured free space.
+    void SetStorageUpgradeTestHooks(std::function<void(const char*)> after_phase,
+                                    std::optional<std::uintmax_t> available_bytes) {
+        storage_upgrade_after_phase_ = std::move(after_phase);
+        storage_upgrade_available_bytes_ = available_bytes;
+    }
+
     /**
      * Start all services
      * Calls Start() on each service in order
@@ -69,12 +107,81 @@ public:
      */
     void Stop();
 
+    // No owner conversion is authorized by these lifecycle methods. Failure
+    // before commit resumes the SAME services; after commit RPC stays paused
+    // until ResumeAfterInternalReopen succeeds on a fresh, started App.
+    // An SDK host may pause under its publication mutex BEFORE moving the
+    // old App out. Retain its shared pause until abort republishes that App;
+    // do not release it in the unavailable publication gap on capture failure.
+    std::unique_ptr<CoreReopenReceipt> CloseForInternalReopen(const daemon::DatadirGuard&,
+        std::shared_ptr<ReopenRpcGate::Pause> pause={});
+    // Explicit host startup only, on a fresh App BEFORE Init. Missing intent
+    // returns null; malformed/ambiguous control refuses. A valid selection
+    // recovers only a fresh OPEN or abandoned UNOWNED gate, never a live pause.
+    // The host must already have destroyed all old services/readers and retain
+    // the same real root lock until replacement teardown. No owner conversion.
+    std::unique_ptr<CoreReopenReceipt> PreparePendingReopen(const daemon::DatadirGuard&,
+        const std::shared_ptr<ReopenRpcGate>&);
+    // Explicit fresh-App binding after the old App AND any unused intent
+    // recovery shell were destroyed. Closed receipt/readers/root checks are
+    // unchanged. Binding prevents further closed-store work once Init begins.
+    void BindClosedReopenBeforeInit(const daemon::DatadirGuard&,CoreReopenReceipt&);
+    // Long normal wallet/pool work, with RPC STILL CLOSED and the selected
+    // durable corpus retained even if this replacement is abandoned/stopped.
+    // Binds the receipt to this replacement App. Repeated preparation uses
+    // canonical admission again, never cached validity. No publication, intent
+    // archive, state conversion or permission to open an SDK publication gap.
+    CoreReopenReceipt::Readmission PrepareReadmissionAfterInternalReopen(
+        const daemon::DatadirGuard&,CoreReopenReceipt&);
+    // Short host publication only after this exact App completed normal
+    // readmission. The callback must publish the running App before RPC opens.
+    // No journal scan/archive, network, wallet or pool callback runs here.
+    // Durable candidates stay selected through publication/interrupted Stop.
+    void PublishPreparedReadmission(CoreReopenReceipt&,const std::function<void()>& publish);
+    // Failed/uncertain host capture stays retryable/no-reply; this is admission
+    // fail-closed only, not pending-intent recovery or state authority.
+    static void FailClosedReopenPause(const std::shared_ptr<ReopenRpcGate::Pause>&);
+    // Optional post-publication housekeeping, OUTSIDE the host publication
+    // mutex. All original checks/full journal scans remain mandatory; unresolved
+    // bodies are never archived. Completed journals are retained, not deleted.
+    void ArchivePublishedReadmission(const daemon::DatadirGuard&,CoreReopenReceipt&);
+    // Closed-store name selection only, with a genuine drained lifecycle
+    // receipt after ALL old App readers have been destroyed. Header/proof DATA
+    // must not keep an old HeaderStore/forest alive across replacement Init.
+    static void SelectClosedActivationForReopen(const daemon::DatadirGuard&,CoreReopenReceipt&,
+        std::shared_ptr<const consensus::HeaderChainSelector>,
+        std::shared_ptr<const consensus::OrchardSnapshotSection>,const std::function<bool()>& cancelled);
+    // Explicit pending-intent startup only. Finish an interrupted, recorded
+    // selection, never scan/adopt arbitrary candidates or rerun parent-only
+    // recovery over a completed descendant store. Normal Init audits completion.
+    static void RecoverInterruptedActivationForReopen(const daemon::DatadirGuard&,
+        CoreReopenReceipt&,const std::function<bool()>& cancelled);
+    // Direct-App completion retains its original checked readmission/archive/
+    // gate-open ordering. This is NOT a short SDK publication primitive: a
+    // future host must coordinate replacement publication and publicStop.
+    CoreReopenReceipt::Readmission ResumeAfterInternalReopen(const daemon::DatadirGuard&,CoreReopenReceipt&);
+
     /**
      * Get daemon context (for testing/inspection)
      */
     DaemonContext& GetContext() { return ctx_; }
 
 private:
+    std::recursive_mutex close_reopen_mutex_;
+    bool reopen_mempool_sealed_=false; // Set only by a genuine current capture.
+    // Retained identity does not retain this App or any old database reader.
+    const std::shared_ptr<const uint8_t> reopen_identity_=std::make_shared<const uint8_t>(0);
+    std::optional<std::filesystem::path> locked_datadir_;
+    // Borrowed from the host; the same real guard must outlive this App and
+    // every service through internal close/reopen and final teardown.
+    const daemon::DatadirGuard* locked_datadir_guard_=nullptr;
+    bool automatic_storage_upgrade_ = false;
+    bool fresh_store_bootstrap_only_ = false;
+    bool fresh_store_created_ = false;
+    std::function<void(const char*)> storage_upgrade_after_phase_;
+    std::optional<std::uintmax_t> storage_upgrade_available_bytes_;
+    friend struct RuntimeDeliveryStartupTestAccess;
+    void ClosePoolRuntime() noexcept;
     DaemonContext ctx_;
     std::vector<std::shared_ptr<IService>> services_;
     bool started_ = false;
@@ -83,9 +190,9 @@ private:
     // while concurrent callers wait for it to finish (see stop_gate.h).
     StopGate stop_gate_;
 
-    // Own ChainDB for the full DaemonApp lifetime. Services receive non-owning
-    // pointers to this instance.
-    std::unique_ptr<ChainDB> chain_db_;
+    // The app and chainstate share the real database lifetime. Detached historical
+    // preparation keeps a copy; init-only close/reopen still precedes workers.
+    std::shared_ptr<ChainDB> chain_db_;
 
     // Per-service JSON loggers (Step B: Separate log files)
     std::unique_ptr<class JsonLogger> wallet_logger_;
@@ -119,6 +226,13 @@ private:
 
     // Transaction orphan pool (lifetime owned by DaemonApp)
     std::unique_ptr<TxOrphanPool> orphan_pool_owned_;
+
+    // Started after core recovery and joined before any dependency teardown.
+    // This worker observes durable prefixes; it is not all-consumer readiness.
+    std::unique_ptr<RuntimeDeliveryWorker> runtime_delivery_worker_;
+    // Owns only coalesced wake mailboxes. Detached from chainstate before
+    // worker shutdown; this ownership is not a delivery acknowledgment.
+    std::shared_ptr<RuntimeBlockNotifications> runtime_notifications_;
 
     // Pool accounting runtime (optional)
     std::shared_ptr<pool::PoolManager> pool_manager_runtime_;

@@ -220,7 +220,7 @@ MempoolServiceImpl::MempoolServiceImpl(dinero::Mempool* mempool,
         const MempoolEntry& entry = entry_opt.value();
 
         // Serialize transaction
-        std::vector<uint8_t> serialized_tx = entry.tx.Serialize();
+        std::vector<uint8_t> serialized_tx = entry.tx.Historical().Serialize();
 
         // Fill response
         response->set_found(true);

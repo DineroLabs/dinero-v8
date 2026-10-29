@@ -330,7 +330,13 @@ std::optional<Block> Block::Deserialize(const uint8_t* data, size_t len) {
         return std::nullopt;
     }
 
-    out.vtx.reserve(static_cast<size_t>(tx_count));
+    // Every successfully decoded transaction consumes at least one byte.
+    // Reject impossible counts before allocating any transaction elements.
+    // Grow the vector only after each transaction has actually decoded;
+    // an untrusted count must never become a reserve/allocation request.
+    if (tx_count > len - offset) {
+        return std::nullopt;
+    }
     for (uint64_t i = 0; i < tx_count; ++i) {
         if (offset >= len) {
             return std::nullopt;

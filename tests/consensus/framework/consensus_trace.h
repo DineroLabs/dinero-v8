@@ -10,6 +10,23 @@ namespace dinero {
 namespace consensus {
 namespace test {
 
+// Explicit selected-chain evidence for the DC3/DC4 oracles. TX_ACCEPTED is
+// only a mempool event, and BLOCK_ACCEPTED alone does not identify inputs or
+// a block's parent. Producers must supply this evidence before claiming that
+// either property was checked.
+struct FinalizedSpend {
+    std::string tx_id;
+    std::string outpoint;
+};
+
+struct FinalizedBlockObservation {
+    NodeID node_id;
+    uint32_t height;
+    std::string block_hash;
+    std::string parent_hash;
+    std::vector<FinalizedSpend> spends;
+};
+
 /**
  * ConsensusTrace - Complete execution history for multi-node consensus simulation
  *
@@ -42,6 +59,10 @@ struct ConsensusTrace {
     // State snapshots: Periodic checkpoints of all node states
     std::vector<ConsensusState> snapshots;
 
+    // Selected finalized history, when the producer can actually observe it.
+    // The Phase-5b simulator does not currently populate this field.
+    std::vector<FinalizedBlockObservation> finalized_blocks;
+
     // ========================================================================
     // Determinism Verification
     // ========================================================================
@@ -69,6 +90,7 @@ struct ConsensusTrace {
      * - All actions (type, timestamp, sequence, parameters)
      * - All events (type, timestamp, sequence, node_id, success)
      * - All state snapshots (node_id, timestamp, chain_tip, height, chainwork)
+     * - Supplied finalized selected blocks and their spend evidence
      *
      * Used by DD1 oracle to verify trace reproducibility.
      */

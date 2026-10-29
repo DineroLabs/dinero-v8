@@ -4,12 +4,11 @@
  * inputs (P2WPKH, P2TR) and v7 post-quantum P2MR inputs (ML-DSA-65,
  * witness v3).
  *
- * Legacy path:
- *   - Identical to MapKeyProvider. An in-memory `derivation_path → hex`
- *     map is consulted when TransactionSigner needs a 32-byte secp256k1
- *     private key. Path-keyed, not address-keyed — matches what
- *     deriveKeyForScriptPubKey + getPrivateKeyForPath hand to the
- *     wallet send flow today.
+ * Ordinary inputs:
+ *   - The key map accepts exact txid:vout bindings and legacy HD paths.
+ *     TransactionSigner uses KeyProvider::GetPrivateKeyForInput, requiring
+ *     exact input bindings for imported keys. Full key/script checks remain
+ *     in the ordinary signer. The legacy config field name is retained.
  *
  * PQ path:
  *   - Extracts the 32-byte merkle_root from the P2MR scriptPubKey,
@@ -43,8 +42,11 @@ class V7P2MRStore;  // forward decl
 class WalletKeyProvider : public ::dinero::KeyProvider {
 public:
     struct Config {
-        /** derivation_path → hex-encoded 32-byte secp256k1 private key. */
+        /** txid:vout or legacy HD path → hex-encoded internal private key. */
         std::map<std::string, std::string> legacy_keys_by_path;
+
+        /** Exact outpoint -> explicitly bound internal key and tweak policy. */
+        std::map<std::string, SigningKey> signing_keys_by_input;
 
         /** V7 P2MR SQLite store. Non-owning; must outlive the provider. */
         V7P2MRStore*                       p2mr_store = nullptr;
@@ -67,6 +69,7 @@ public:
     // KeyProvider — legacy ECDSA/Schnorr path
     std::vector<uint8_t> GetPrivateKey(const std::string& path) const override;
     bool                 HasKey(const std::string& path) const override;
+    std::optional<SigningKey> GetSigningKeyForInput(const CanonicalWalletUTXO& input) const override;
 
     // KeyProvider — PQ P2MR path
     std::vector<uint8_t> SignP2MR(
@@ -75,6 +78,7 @@ public:
 
 private:
     std::map<std::string, std::vector<uint8_t>> legacy_keys_;
+    std::map<std::string, SigningKey> signing_keys_;
     V7P2MRStore*                                 p2mr_store_;
     int64_t                                      wallet_id_;
     mutable AeadKey                              master_key_;  ///< scrubbed in dtor

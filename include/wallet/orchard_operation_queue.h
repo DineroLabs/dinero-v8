@@ -1,0 +1,92 @@
+#pragma once
+#include "consensus/orchard_authorization.h"
+#include "orchard_wallet.h"
+#include "orchard_wallet_storage.h"
+#include <map>
+#include <optional>
+namespace dinero::wallet {
+// Wallet-local pending operations, NOT consensus or mempool admission. The host
+// must select owned/unspent inputs under its wallet/chain locks. Every returned
+// replacement must be staged in the same SQLite transaction as ordinary wallet
+// reservations and published only after commit. Never broadcast before the
+// Ready state is durable. Restored Ready bytes require fresh node admission.
+class OrchardOperationQueue {
+public:
+  enum class Phase : uint8_t { Reserved = 0, Ready = 1 };
+  // Complete server-selected shield request, authenticated with its operation.
+  // Old operations have no details; absence never authorizes reconstruction.
+  struct ShieldPayment {
+    uint64_t amount_una;
+    std::string address; // Canonical address for the operation's network.
+    std::array<uint8_t, 512> memo{};
+  };
+  struct ShieldRequest {
+    std::vector<ShieldPayment> payments;
+    std::vector<orchard::TransparentOutput> outputs;
+    uint64_t fee_una;
+  };
+  // Same recipient/output representation; a distinct field and request
+  // commitment domain distinguish pure Orchard spends from shielding.
+  using SpendRequest = ShieldRequest;
+  struct Entry {
+    Phase phase;
+    orchard::Hash message;
+    std::vector<orchard::ResolvedInput> inputs;
+    std::vector<orchard::Hash> nullifiers; // All action NFs, including padding.
+    std::vector<uint8_t> transaction; // Empty until Ready, frozen thereafter.
+    // Absent on legacy/component intents. Only the account host binds a
+    // canonical request before reservation; never inferred from its ID.
+    std::optional<orchard::Hash> request_commitment{};
+    std::optional<ShieldRequest> shield_request{};
+    // Assigned once by the Ready owner and authenticated in this snapshot.
+    // Absence on older formats never authorizes recreating missing history.
+    std::optional<uint64_t> shield_ready_time{};
+    std::optional<SpendRequest> spend_request{};
+    // Exact original randomized plan. Shared immutable owner wipes its buffer
+    // on final release; snapshot encryption remains the persistence boundary.
+    std::shared_ptr<const orchard::WalletStateBytes> recovery{};
+  };
+  static constexpr size_t kMaxPending = 128;
+  [[nodiscard]] static OrchardOperationQueue Empty(orchard::SigningDomain);
+  [[nodiscard]] OrchardOperationQueue
+  Reserve(const orchard::Hash &operation_id,
+          const orchard::WalletProvingIntent &) const;
+  [[nodiscard]] OrchardOperationQueue
+  SetReady(const orchard::Hash &operation_id,
+           const consensus::VerifiedOrchardAuthorizations &) const;
+  // Safe only before a signed transaction is exposed. Ready entries cannot
+  // be cancelled or overwritten through this API. Confirmation/conflict
+  // archival and reorg reconciliation must be supplied by the wallet host.
+  [[nodiscard]] OrchardOperationQueue
+  CancelReserved(const orchard::Hash &) const;
+  const std::map<orchard::Hash, Entry> &Entries() const noexcept {
+    return entries_;
+  }
+  [[nodiscard]] orchard::WalletStateBytes Encode() const;
+  [[nodiscard]] static OrchardOperationQueue
+  Restore(const orchard::WalletStateBytes &, orchard::SigningDomain);
+
+private:
+  friend class OrchardAccountState;
+  friend class OrchardOperationArchive;
+  [[nodiscard]] OrchardOperationQueue ReserveRequest(const orchard::Hash &,
+      const orchard::WalletProvingIntent &, const orchard::Hash &) const;
+  [[nodiscard]] OrchardOperationQueue ReserveSpendRequest(const orchard::Hash &,
+      const orchard::WalletProvingIntent &, const orchard::Hash &,
+      const SpendRequest &, std::shared_ptr<const orchard::WalletStateBytes> = {}) const;
+  [[nodiscard]] OrchardOperationQueue ReserveShieldRequest(const orchard::Hash &,
+      const orchard::WalletProvingIntent &, const orchard::Hash &,
+      const ShieldRequest &, std::shared_ptr<const orchard::WalletStateBytes> = {}) const;
+  [[nodiscard]] OrchardOperationQueue SetShieldReady(const orchard::Hash &,
+      const consensus::VerifiedOrchardAuthorizations &, uint64_t) const;
+  explicit OrchardOperationQueue(orchard::SigningDomain domain)
+      : domain_(domain) {}
+  void CheckEntry(const Entry &, bool verify_proof) const;
+  void CheckUniqueReservations() const;
+  // Singleton archive continuity: an unfinished intent may become Ready once;
+  // completed bytes never change or regress to Reserved.
+  bool ContinuesArchived(const OrchardOperationQueue &) const;
+  orchard::SigningDomain domain_;
+  std::map<orchard::Hash, Entry> entries_;
+};
+} // namespace dinero::wallet

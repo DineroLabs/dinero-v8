@@ -6,6 +6,7 @@
 #include <QJsonArray>
 #include <QNetworkReply>
 #include <QList>
+#include <QUuid>
 
 class QNetworkAccessManager;
 class QTimer;
@@ -87,8 +88,11 @@ public:
 Q_SIGNALS:
   void rpcResult(const QString& method, const QJsonValue& result);
   void rpcError(const QString& method, int code, const QString& message);
+  // One detailed failure per reply. Consumers use this OR rpcError, not both.
+  void rpcErrorDetailed(const QString& method, int code, const QString& message, const QJsonValue& data);
   void connectionOk();
   void connectionFailed(const QString& reason);
+  void connectionContextChanged(); // endpoint, datadir or loaded credentials changed
   void serverChanged(const QString& newServer); // New: notify when switching servers
 
 private Q_SLOTS:
@@ -96,6 +100,15 @@ private Q_SLOTS:
   void onHealthCheckFinished();
 
 private:
+  friend struct RpcReplyTestAccess;
+  struct ReplyOnlyTestTag {};
+  // Offline parser/signal tests: no discovery, cookies, timer or network manager.
+  RpcClient(QObject* parent, ReplyOnlyTestTag);
+  bool deliverRpcResponse(const QString& method, const QByteArray& body);
+  void reportRpcError(const QString& method, int code, const QString& message,
+                      const QJsonValue& data = QJsonValue());
+  void invalidateConnectionContext();
+  QString connectionContext_ = QUuid::createUuid().toString(QUuid::WithoutBraces);
   QByteArray authHeader() const;
   void postJson(const QJsonObject& body);
   void tryNextServer(const QJsonObject& pendingRequest);

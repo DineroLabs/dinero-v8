@@ -389,6 +389,11 @@ uint32_t Fnv1aChecksum(const uint8_t* data, size_t len) {
     return hash;
 }
 
+}  // namespace
+
+// Testable: declared in consensus/reindexer_detail.h. See #708.
+namespace reindex_detail {
+
 StatusOr<std::vector<DiskBlockRecord>> ReadDiskBlocks(
     const std::vector<std::filesystem::path>& block_files,
     BlockReindexer::Stats* stats
@@ -420,7 +425,9 @@ StatusOr<std::vector<DiskBlockRecord>> ReadDiskBlocks(
 
         file.seekg(0, std::ios::end);
         const std::streampos file_size = file.tellg();
+        if (file_size < 0) return Status::Io;
         file.seekg(0, std::ios::beg);
+        if (!file.good()) return Status::Io;
 
         uint64_t offset = 0;
         uint64_t blocks_in_file = 0;
@@ -429,7 +436,8 @@ StatusOr<std::vector<DiskBlockRecord>> ReadDiskBlocks(
             uint32_t magic = 0;
             file.read(reinterpret_cast<char*>(&magic), 4);
             if (file.gcount() != 4) {
-                break;
+                g_logger.error("Incomplete block magic at offset " + std::to_string(offset));
+                return Status::Corruption;
             }
             if (magic != expected_magic) {
                 g_logger.error("Invalid block magic at offset " + std::to_string(offset) +
@@ -483,13 +491,11 @@ StatusOr<std::vector<DiskBlockRecord>> ReadDiskBlocks(
                 continue;
             }
 
-            auto parsed_block = Block::Deserialize(block_data.data(), block_data.size());
-            if (!parsed_block.has_value()) {
-                // Same tolerant-skip rationale as above. A canonical block
-                // that fails to deserialize would manifest downstream as
-                // SelectCanonicalChain producing a shorter-than-expected
-                // chain — observable failure mode, not silent corruption.
-                g_logger.warning("[reindex] Failed to deserialize block at offset " +
+            const auto header = BlockHeader::Deserialize(block_data.data(), block_data.size());
+            if (!header.has_value()) {
+                // No transaction decoder runs before selected ancestry gives
+                // this frame a height and therefore its consensus profile.
+                g_logger.warning("[reindex] Failed to deserialize header at offset " +
                                  std::to_string(offset) + " from " + file_path.string() +
                                  " — skipping (likely orphan/stale from prior chain)");
                 if (stats != nullptr) {
@@ -501,10 +507,11 @@ StatusOr<std::vector<DiskBlockRecord>> ReadDiskBlocks(
             }
 
             DiskBlockRecord record;
-            record.block = std::move(parsed_block.value());
+            record.header = *header;
+            record.body = std::move(block_data);
             record.pos = FilePosition(file_number, offset, block_size);
-            record.hash = record.block.GetHash();
-            record.prev_hash = record.block.header.prev_block_hash;
+            record.hash = record.header.GetHash();
+            record.prev_hash = record.header.prev_block_hash;
             records.push_back(std::move(record));
 
             offset += 12 + block_size;
@@ -515,16 +522,12 @@ StatusOr<std::vector<DiskBlockRecord>> ReadDiskBlocks(
         }
 
         g_logger.info("      Parsed " + std::to_string(blocks_in_file) +
-                      " block bodies from " + filename);
+                      " block frames from " + filename);
     }
 
     return records;
 }
 
-}  // namespace
-
-// Testable: declared in consensus/reindexer_detail.h. See #708.
-namespace reindex_detail {
 
 // Select the canonical chain from a parsed records vector.
 //
@@ -705,7 +708,7 @@ StatusOr<std::vector<size_t>> SelectCanonicalChain(
                     cursor.connected = true;
                     cursor.height = 1;
                     cursor.chainwork =
-                        genesis_work + GetBlockProof(records[idx].block.header.difficulty);
+                        genesis_work + GetBlockProof(records[idx].header.difficulty);
                     cursor.visiting = false;
                     cursor.resolved = true;
                     pending.pop_back();
@@ -727,7 +730,7 @@ StatusOr<std::vector<size_t>> SelectCanonicalChain(
                 cursor.connected = true;
                 cursor.height = cursors[parent].height + 1;
                 cursor.chainwork = cursors[parent].chainwork +
-                                   GetBlockProof(records[idx].block.header.difficulty);
+                                   GetBlockProof(records[idx].header.difficulty);
             }
             cursor.visiting = false;
             cursor.resolved = true;
@@ -786,6 +789,7 @@ StatusOr<std::vector<size_t>> SelectCanonicalChain(
 }  // namespace reindex_detail
 
 using reindex_detail::SelectCanonicalChain;
+using reindex_detail::ReadDiskBlocks;
 
 BlockReindexer::BlockReindexer(
     const std::filesystem::path& datadir,
@@ -1127,6 +1131,9 @@ Status BlockReindexer::seedGenesis(arith_uint256& genesis_work_out, const FilePo
     if (status != Status::Ok) return status;
 
     status = chain_db_->putHeightIndex(token, 0, genesis_hash, &batch);
+    if (status != Status::Ok) return status;
+
+    status = chain_db_->setValidatedTip(token, genesis_hash, 0, &batch);
     if (status != Status::Ok) return status;
 
     status = chain_db_->setTip(token, genesis_hash, 0, genesis_work_out, &batch);
@@ -1806,7 +1813,17 @@ StatusOr<BlockReindexer::Stats> BlockReindexer::execute() {
     for (size_t i = loop_start_index; i < loop_end_index_exclusive; ++i) {
         const auto& record = records[canonical_chain[i]];
         const uint64_t height = static_cast<uint64_t>(i + 1);
-        auto status = processBlock(record.block, record.pos, height);
+        // Inventory does not decide transaction encoding. Historical replay
+        // decodes only the selected frame at its assigned height. Typed
+        // Orchard replay must consume record.body through its own owner.
+        auto block = Block::Deserialize(record.body.data(), record.body.size());
+        if (!block || block->header.SerializeForHash() != record.header.SerializeForHash() ||
+            block->GetHash() != record.hash) {
+            stats_.error = "Selected block body is unavailable to historical reindex at height " +
+                std::to_string(height);
+            return stats_;
+        }
+        auto status = processBlock(*block, record.pos, height);
         if (status == Status::Ok) {
             continue;
         }
@@ -1864,7 +1881,7 @@ StatusOr<BlockReindexer::Stats> BlockReindexer::execute() {
         for (size_t j = first_invalid_index; j < canonical_chain.size(); ++j) {
             const auto& record = records[canonical_chain[j]];
             ChainDB::PersistedHeaderMetadata metadata;
-            metadata.parent_hash = record.block.header.prev_block_hash;
+            metadata.parent_hash = record.prev_hash;
             metadata.height = static_cast<int32_t>(j + 1);
             metadata.chainwork = arith_uint256(0);
             metadata.status_flags = (first ? BLOCK_FAILED_VALID : BLOCK_FAILED_CHILD) |
@@ -2290,8 +2307,11 @@ Status BlockReindexer::processBlock(const Block& block, const FilePosition& pos,
     // ═══════════════════════════════════════════════════════════════════
     // Step 3: Build the undo record BEFORE any UTXO mutation
     // ═══════════════════════════════════════════════════════════════════
-    // Spent coins must be read via getCoin() while they are still in the
-    // ChainDB UTXO set (deleteCoin happens below in Step 6). UndoRecord
+    // Resolve inputs in transaction order: earlier outputs in this block
+    // precede the durable parent UTXO set. Step 6 has not written either yet.
+    // Undo retains every input, including same-block ephemeral coins; its
+    // disconnect owner restores inputs then deletes all created outputs.
+    // UndoRecord
     // holds SpentCoin entries (for restoring the UTXO set on disconnect) and
     // CreatedOut markers (for deleting this block's outputs on disconnect).
     // The Utreexo forest delta is persisted separately as the UD:<blockhash>
@@ -2302,6 +2322,9 @@ Status BlockReindexer::processBlock(const Block& block, const FilePosition& pos,
     undo.pre_block_shielded_anchors = shielded_anchor_history_.SerializePersistenceBytes();
     std::vector<shielded::ShieldedBundle> shielded_bundles;
     std::vector<int64_t> shielded_deltas;
+    std::unordered_map<OutPoint, Coin> earlier_outputs;
+    std::unordered_set<OutPoint> spent_inputs;
+    std::unordered_set<TxId> seen_transactions;
 
     // CONSENSUS: mirrors ConnectBlockInternal's coinbase rule, at the same
     // heights, so replayed history is judged exactly as the live chain judged
@@ -2334,13 +2357,19 @@ Status BlockReindexer::processBlock(const Block& block, const FilePosition& pos,
     for (size_t tx_idx = 0; tx_idx < block.vtx.size(); ++tx_idx) {
         const auto& tx = block.vtx[tx_idx];
         TxId txid = tx.GetTxid();
+        if (!seen_transactions.insert(txid).second) return Status::Invalid;
         std::vector<Coin> input_coins;
         uint64_t total_input_value = 0;
 
         if (tx_idx > 0) {
             for (const auto& input : tx.vin) {
-                auto coin_result = chain_db_->getCoinWithConfidentialFallback(
-                    input.prevout.txid.AsUint256(), input.prevout.vout);
+                const OutPoint outpoint(input.prevout.txid, input.prevout.vout);
+                if (!spent_inputs.insert(outpoint).second) return Status::Invalid;
+                const auto earlier = earlier_outputs.find(outpoint);
+                auto coin_result = earlier != earlier_outputs.end()
+                    ? StatusOr<Coin>(earlier->second)
+                    : chain_db_->getCoinWithConfidentialFallback(
+                        input.prevout.txid.AsUint256(), input.prevout.vout);
                 if (coin_result.status() != Status::Ok) {
                     g_logger.error("reindex-missing-utxo-for-undo at height " +
                                    std::to_string(height) +
@@ -2373,6 +2402,7 @@ Status BlockReindexer::processBlock(const Block& block, const FilePosition& pos,
                 spent.is_confidential = coin.is_confidential;
                 spent.commitment = coin.commitment;
                 undo.spent.push_back(std::move(spent));
+                if (earlier != earlier_outputs.end()) earlier_outputs.erase(earlier);
             }
         }
 
@@ -2405,6 +2435,17 @@ Status BlockReindexer::processBlock(const Block& block, const FilePosition& pos,
         }
 
         for (uint32_t vout = 0; vout < tx.vout.size(); ++vout) {
+            const auto& output = tx.vout[vout];
+            Coin coin;
+            coin.amount = output.value.GetUna();
+            coin.script_pubkey = BytesToHex(output.scriptPubKey.data(), output.scriptPubKey.size());
+            coin.height = height;
+            coin.coinbase = (tx_idx == 0);
+            coin.is_confidential = output.is_confidential;
+            coin.commitment = output.commitment;
+            const OutPoint outpoint(txid, vout);
+            if (spent_inputs.count(outpoint) || !earlier_outputs.emplace(outpoint, std::move(coin)).second)
+                return Status::Invalid;
             undo.created.emplace_back(txid.AsUint256(), vout);
         }
 
@@ -2948,6 +2989,12 @@ Status BlockReindexer::processBlock(const Block& block, const FilePosition& pos,
             }
         }
     }
+
+    // The rebuilt coin/forest owner and its validation consistency marker
+    // belong to the same durable block batch. Without this, a successfully
+    // reindexed store has a tip but selected RPC readers must refuse it.
+    const auto validated_status = chain_db_->setValidatedTip(token, block_hash, height, &batch);
+    if (validated_status != Status::Ok) return validated_status;
 
     // Canonical tip pointer is last in the batch, preserving the invariant
     // that the tip pointer becoming durable implies all referenced state

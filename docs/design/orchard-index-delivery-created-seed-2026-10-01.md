@@ -1,0 +1,9 @@
+# Shared creation seed in the index delivery fixture
+
+The original index fixture created a wallet then replaced its seed with fixed bytes. The authenticated Orchard catalog correctly refused the replacement. The first repair used the new wallet's seed but left the block fixture proving a note to the old fixed seed. Its fresh full ON build succeeded and OrchardAccountDelivery passed, while OrchardIndexDelivery correctly failed its unchanged 5,000-una received-balance assertion. Both earlier builds are read-only; that first repair never reached OFF or sanitizer qualification.
+
+The index runner now creates the actual wallet before proving the note, copies its 64-byte creation-owned seed under the real lease, and releases the lease before proof work. That seed derives the receiver of the actual block transaction, and the same wallet goes into the existing replay/recovery fixture. Each checkpoint mode has a separate wallet. Both seed copies have scoped cleansing. The same-seed persistence assertion remains.
+
+Reversing only the setup and seed plumbing reproduces the original two fixture files byte for byte. All original balance, replay, rollback, identity, archive, reactivation and recovery assertions remain, with the same registrations and 600-second deadlines. Production code and seed/catalog guards are unchanged.
+
+Fresh full dinerod builds passed with the backend ON and OFF; the two enabled ON index/account delivery CTests passed. OFF has neither registration. All 130 linked project C++ translation units were freshly instrumented with ASan/UBSan; the actual index-delivery custom runner passed with its unchanged 600-second deadline and 1718 stable source/header inputs. External/Rust/C/PQClean remain uninstrumented and macOS LSan is off. Both earlier failed builds remain read-only, with independent original assertion-body comparison. Mainnet activation remains unset.

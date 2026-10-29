@@ -3381,6 +3381,94 @@ int main() {
     if (!ok) return 1;
 }
 
+    // CSN_PROOF_RECEIPT_BEGIN
+    // Benign completed-receipt lifecycle. Body storage must not certify that
+    // ordered proof work survived a cursor/branch change; staging is explicit.
+    {
+        dcs::HeaderChainSelector selector;
+        std::vector<uint256> main_hashes, fork_hashes;
+        BuildLinearHeaders(selector, 3, &main_hashes, 31'000'000);
+        AppendForkHeaders(selector, main_hashes[2], 3, &fork_hashes, 32'000'000);
+        dcs::BlockDownloadScheduler scheduler(&selector, nullptr);
+        scheduler.SetStatelessMode(true);
+        scheduler.SetLocalTipHeight(3);
+        scheduler.SetGetTipHeightCallback([] { return uint32_t{3}; });
+        scheduler.SetGetBlockHashAtHeightCallback([&](uint32_t height, uint256& hash) {
+            if (height >= main_hashes.size()) return false;
+            hash = main_hashes[height];
+            return true;
+        });
+        scheduler.SetTipRetryTimeout(std::chrono::hours(1));
+        scheduler.SetStaleRequestTimeoutSeconds(3600);
+        std::vector<uint256> requests;
+        scheduler.SetSendGetDataCallback([&](const uint256& hash, uint32_t) {
+            requests.push_back(hash);
+        });
+        scheduler.OnHeadersProcessed();
+        scheduler.Tick();
+        if (!Require(requests.size() == 3, "receipt fixture assembles all fork bodies")) return 1;
+        if (!Require(!scheduler.AcknowledgeStatelessProofStaged(fork_hashes[0]),
+                     "a request without receipt cannot be acknowledged")) return 1;
+        if (!Require(!scheduler.AcknowledgeStatelessProofStaged(main_hashes[3]),
+                     "another branch hash cannot be acknowledged")) return 1;
+        const Block body = MakeBlockForHash(selector, fork_hashes[0]);
+        if (!Require(scheduler.OnBlockReceived(body), "competing receipt stored")) return 1;
+        // Assemble all replies before advancing the receipt timer. Otherwise
+        // zero also expires an unrelated REQUESTED descendant at active_tip+1.
+        for (size_t i = 1; i < fork_hashes.size(); ++i) {
+            if (!Require(scheduler.OnBlockReceived(MakeBlockForHash(selector, fork_hashes[i])),
+                         "initial descendant receipt stored")) return 1;
+        }
+        requests.clear();
+        scheduler.Tick();
+        if (!Require(requests.empty(), "unexpired receipt must not cause immediate retries")) return 1;
+        scheduler.SetTipRetryTimeout(std::chrono::milliseconds(0));
+        scheduler.Tick();
+        if (!Require(requests.size() == 1 && requests[0] == fork_hashes[0],
+                     "expired unacknowledged competing receipt retries exact frontier")) return 1;
+        if (!Require(!scheduler.HasReceivedBlock(fork_hashes[0]) &&
+                     scheduler.IsBlockInFlight(fork_hashes[0]),
+                     "expired receipt leaves no stale receive authority")) return 1;
+        if (!Require(scheduler.OnBlockReceived(body), "retried receipt stored")) return 1;
+        if (!Require(scheduler.AcknowledgeStatelessProofStaged(fork_hashes[0]),
+                     "ordered worker can acknowledge current receipt")) return 1;
+        if (!Require(!scheduler.IsBlockConnected(fork_hashes[0]),
+                     "proof staging never claims canonical connection")) return 1;
+        for (size_t i = 1; i < fork_hashes.size(); ++i) {
+            if (!Require(scheduler.OnBlockReceived(MakeBlockForHash(selector, fork_hashes[i])),
+                         "descendant receipt stored")) return 1;
+            if (!Require(scheduler.AcknowledgeStatelessProofStaged(fork_hashes[i]),
+                         "descendant proof staged")) return 1;
+        }
+        requests.clear();
+        scheduler.Tick();
+        scheduler.OnHeadersProcessed();
+        scheduler.Tick();
+        if (!Require(requests.empty(), "staged exact hashes survive rescan without retry")) return 1;
+        if (!Require(scheduler.ReRequestBlock(fork_hashes[1]), "descendant retry can be requested")) return 1;
+        if (!Require(scheduler.OnBlockReceived(MakeBlockForHash(selector, fork_hashes[1])),
+                     "descendant gets a fresh unacknowledged receipt")) return 1;
+        scheduler.Tick();
+        if (!Require(requests.size() == 1 && requests[0] == fork_hashes[1],
+                     "staged ancestor must not hide lost descendant proof work")) return 1;
+        if (!Require(scheduler.OnBlockReceived(MakeBlockForHash(selector, fork_hashes[1])) &&
+                     scheduler.AcknowledgeStatelessProofStaged(fork_hashes[1]),
+                     "retried descendant can stage normally")) return 1;
+        if (!Require(scheduler.ReRequestBlock(fork_hashes[0]),
+                     "explicit invalidation of receipt remains available")) return 1;
+        scheduler.Tick();
+        if (!Require(scheduler.OnBlockReceived(body), "explicit retry receipt stored")) return 1;
+        requests.clear();
+        scheduler.Tick();
+        if (!Require(requests.size() == 1 && requests[0] == fork_hashes[0],
+                     "explicit retry requires new ordered proof acknowledgment")) return 1;
+        if (!Require(scheduler.MarkBlockInvalid(fork_hashes[0]), "invalid fixture hash recorded")) return 1;
+        if (!Require(!scheduler.AcknowledgeStatelessProofStaged(fork_hashes[0]),
+                     "acknowledgment cannot revive an invalid block")) return 1;
+        std::cout << "[PASS] StatelessProofReceiptAcknowledgment: bounded retry, staged wait, exact hash and rescan\n";
+    }
+    // CSN_PROOF_RECEIPT_END
+
     {
         std::cout << "\n24. a peer whose block requests keep timing out is skipped for a "
                      "cooldown, and restored when it delivers..." << std::endl;
@@ -3472,6 +3560,29 @@ int main() {
                                "deliveries that outweigh the misses must restore the peer") ? 0 : 1;
             })) return 1;
 
+        // The merge of the legacy receipt path with the shared legacy/Orchard
+        // credit helper must not credit a delivery twice. Three misses minus
+        // one delivery stays at the two-miss demotion threshold, including
+        // when the same body is delivered again.
+        if (run(3, [&](auto& scheduler, auto& selector, auto& hashes, auto& skips) {
+                expire_all(scheduler);
+                const auto body = MakeBlockForHash(selector, hashes[1]);
+                if (!Require(scheduler.OnBlockReceived(body), "credit boundary: first receipt")) return 1;
+                if (!Require(scheduler.OnBlockReceived(body), "credit boundary: duplicate receipt")) return 1;
+                skips.clear();
+                if (!Require(scheduler.ReRequestBlock(hashes[3]), "credit boundary: probe request")) return 1;
+                for (int t = 0; t < 5; ++t) scheduler.Tick();
+                if (!Require(all_skip(skips, true),
+                             "one unique receipt cancels exactly one of three misses")) return 1;
+                if (!Require(scheduler.OnBlockReceived(MakeBlockForHash(selector, hashes[2])),
+                             "credit boundary: second unique receipt")) return 1;
+                skips.clear();
+                if (!Require(scheduler.ReRequestBlock(hashes[3]), "credit boundary: recovered request")) return 1;
+                for (int t = 0; t < 5; ++t) scheduler.Tick();
+                return Require(all_skip(skips, false),
+                               "two unique receipts reduce three misses below the threshold") ? 0 : 1;
+            })) return 1;
+
         // The cooldown lapses on its own.
         if (run(6, [&](auto& scheduler, auto&, auto& hashes, auto& skips) {
                 expire_all(scheduler);
@@ -3484,6 +3595,91 @@ int main() {
             })) return 1;
         std::cout << "   ✅ slow peer demoted on repeated timeouts, restored by deliveries or cooldown"
                   << std::endl;
+    }
+
+    {
+        // SJ fork, 2026-10-25: the pool's own branch was TALLER than the
+        // heavier network branch (its difficulty had adjusted down), so the
+        // scan saw "local tip >= header tip" and never fetched the heavier
+        // branch. 43 blocks were mined on the dead branch until the bodies
+        // were fed by hand. Fork detection must not depend on height.
+        std::cout << "\n25. a heavier but shorter branch is fetched when our chain is taller...\n";
+
+        dcs::HeaderChainSelector selector;
+        std::vector<uint256> local_hashes;  // index == height
+        std::vector<uint256> heavy_hashes;  // heights 3..5
+        try {
+            BuildLinearHeaders(selector, 8, &local_hashes, 7'000'000);
+            constexpr uint32_t kHeavierBits = 0x1c00ffff;  // 256x the work per block
+            uint256 prev = local_hashes[2];
+            for (uint32_t i = 0; i < 3; ++i) {
+                BlockHeader next = CreateTestHeader(prev, 8'000'000 + i, kHeavierBits);
+                if (!selector.AddHeader(next)) throw std::runtime_error("heavy header rejected");
+                prev = next.GetHash();
+                heavy_hashes.push_back(prev);
+            }
+        } catch (const std::exception& e) {
+            std::cerr << "   ❌ failed to build headers: " << e.what() << std::endl;
+            return 1;
+        }
+
+        const auto best = selector.GetBestHeaderValue();
+        if (!Require(best && best->hash == heavy_hashes.back() && best->height == 5,
+                     "the heavier branch (height 5) must be the best header")) {
+            return 1;
+        }
+
+        auto active_chain = BuildActiveChainIndex(local_hashes);  // local tip at 8
+        dcs::BlockDownloadScheduler scheduler(&selector, nullptr);
+        scheduler.SetLocalTipHeight(8);
+        std::vector<uint256> requested;
+        scheduler.SetSendGetDataCallback([&requested](const uint256& hash, uint32_t) {
+            requested.push_back(hash);
+        });
+        scheduler.SetGetBlockHashAtHeightCallback(
+            [&active_chain](uint32_t height, uint256& out) -> bool {
+                return dcs::GetActiveChainHashAtHeight(active_chain.back().get(), height, out);
+            });
+
+        scheduler.OnHeadersProcessed();
+        if (!Require(scheduler.GetMissingBlockCount() == 3,
+                     "expected heights 3-5 of the heavier branch to be queued, got " +
+                         std::to_string(scheduler.GetMissingBlockCount()))) {
+            return 1;
+        }
+        scheduler.Tick();
+        if (!Require(!requested.empty() && requested[0] == heavy_hashes[0],
+                     "expected the first heavier-branch block to be requested first")) {
+            return 1;
+        }
+
+        // Same chain, headers simply behind our tip: nothing to fetch.
+        dcs::HeaderChainSelector same;
+        std::vector<uint256> same_hashes;
+        try {
+            BuildLinearHeaders(same, 5, &same_hashes, 9'000'000);
+        } catch (const std::exception& e) {
+            std::cerr << "   ❌ failed to build headers: " << e.what() << std::endl;
+            return 1;
+        }
+        std::vector<uint256> taller = same_hashes;
+        for (uint32_t i = 0; i < 3; ++i) {
+            // Our own blocks beyond the known headers (not in the selector).
+            taller.push_back(CreateTestHeader(taller.back(), 9'500'000 + i).GetHash());
+        }
+        auto taller_chain = BuildActiveChainIndex(taller);
+        dcs::BlockDownloadScheduler same_scheduler(&same, nullptr);
+        same_scheduler.SetLocalTipHeight(8);
+        same_scheduler.SetGetBlockHashAtHeightCallback(
+            [&taller_chain](uint32_t height, uint256& out) -> bool {
+                return dcs::GetActiveChainHashAtHeight(taller_chain.back().get(), height, out);
+            });
+        same_scheduler.OnHeadersProcessed();
+        if (!Require(same_scheduler.GetMissingBlockCount() == 0,
+                     "headers behind our tip on the same chain must queue nothing")) {
+            return 1;
+        }
+        std::cout << "   ✅ heavier shorter branch queued from the fork point; same chain left alone\n";
     }
 
     return 0;

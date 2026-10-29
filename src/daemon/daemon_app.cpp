@@ -1,9 +1,32 @@
+#ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
+#include "daemon/orchard_reindex.h"
+#include "daemon/orchard_snapshot_store.h"
+#endif
+#include "pool/wallet_payment_backend.h"
+#include "util/hex.h"
+#include "daemon/orchard_network_block.h"
+#include "daemon/datadir_guard.h"
+#include "daemon/utreexo_tx_reader.h"
+#include "daemon/utreexo_tx_payload.h"
+#include "daemon/utreexo_block_payload.h"
 #include "consensus/csn_replay_data.h"
 #include "daemon/daemon_app.h"
+#include "daemon/reopen_candidate_journal.h"
+#include "storage/orchard_storage_mode.h"
+#include "storage/orchard_snapshot_base.h"
+#include "daemon/runtime_delivery_worker.h"
+#include "daemon/runtime_notification_composition.h"
+#include "consensus/orchard_profile.h"
+#include "consensus/orchard_snapshot_profile.h"
+#ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
+#include "consensus/orchard_snapshot.h"
+#endif
 #ifdef __APPLE__
 #include <TargetConditionals.h>
 #endif
 #include "daemon/chainstate_recovery_marker.h"
+#include "daemon/orchard_storage_upgrade.h"
+#include "daemon/orchard_light_node_notice.h"
 #include "daemon/header_seed_resolver.h"
 #include "daemon/header_peer_id.h"
 #include "daemon/p2p_header_parser.h"
@@ -20,6 +43,7 @@
 #include "daemon/services/wallet_service.h"
 #include "wallet/hd_wallet.h"
 #include "wallet/wallet_worker.h"
+#include "vault/vault_runtime.h"
 #include "daemon/services/p2p_service.h"
 #include "daemon/services/rpc_service.h"
 #include "daemon/services/mining_service.h"
@@ -27,7 +51,8 @@
 #include "daemon/services/swap_service.h"
 #include "daemon/utreexo_proof_mode.h"
 #include "daemon/block_relay_manager.h"  // Phase G.2: Block propagation
-#include "daemon/tx_relay_manager.h"  // Phase G.3: Mempool relay
+#include "daemon/tx_relay_manager.h"
+#include "daemon/relay_transaction_reader.h"  // Phase G.3: Mempool relay
 #include "mempool/tx_orphan_pool.h"  // Transaction orphan pool
 #include "network/bridge_node.h"  // Phase P.2: Utreexo proof generation for stateless clients
 #include "network/stateless_node.h"  // Phase P.3: CSN block+proof validation
@@ -517,11 +542,8 @@ Block DeserializeBlockFromP2PMessage(const ::P2PMessage& msg) {
     return *block_opt;
 }
 
-Transaction DeserializeTransactionFromP2PMessage(const ::P2PMessage& msg) {
-    Reader reader(msg.payload);
-    Transaction tx;
-    Deserialize(reader, tx);
-    return tx;
+MempoolTransaction DeserializeTransactionFromP2PMessage(const ::P2PMessage& msg) {
+    return DecodeRelayTransaction(msg.payload, RelayTransactionReadMode::AvailableFamilies);
 }
 
 // Peer ID mapping (simple hash-based for now)
@@ -554,13 +576,30 @@ std::string GetPeerAddress(uint64_t peer_id) {
 // Constructor implementation (must be in .cpp to allow unique_ptr with forward-declared types)
 DaemonApp::DaemonApp() = default;
 
+void DaemonApp::SetLockedDatadir(const daemon::DatadirGuard& guard) {
+    if (!guard.IsHeld()) throw std::logic_error("DaemonApp requires a held datadir guard");
+    locked_datadir_ = guard.DataDir();
+    locked_datadir_guard_ = &guard;
+}
+
 // Destructor implementation (must be in .cpp to allow unique_ptr with forward-declared types)
+void DaemonApp::ClosePoolRuntime() noexcept {
+    const auto owner=pool_manager_runtime_;
+    if (!owner) return;
+    try {owner->ClosePayments();owner->stopMaintenanceThread();}
+    catch (...) {std::terminate();}
+    pool_manager_runtime_.reset();
+}
+
 DaemonApp::~DaemonApp() {
     try {
         Stop();
     } catch (...) {
         std::cerr << "[DaemonApp] Exception in destructor during Stop()" << std::endl;
     }
+    // Stop first detaches typed notifications, then joins workers. This fallback
+    // also covers initialized-but-never-started and failed-start lifetimes.
+    ClosePoolRuntime();
     // Explicitly reset members that might throw during destruction.
     try { chain_db_.reset(); } catch (...) {
         std::cerr << "[DaemonApp] Exception destroying ChainDB" << std::endl;
@@ -574,11 +613,14 @@ DaemonApp::~DaemonApp() {
 bool DaemonApp::Init(int argc, char** argv) {
     std::cout << "[DaemonApp] Initializing services..." << std::endl;
 
+    ClosePoolRuntime();
     // Defensive reset for repeated Init() on the same DaemonApp instance.
     // Drop any retained service pointers/DB handles from prior attempts.
     auto request_shutdown = std::move(ctx_.request_shutdown);
+    auto reopen_rpc_gate = std::move(ctx_.reopen_rpc_gate);
     ctx_ = DaemonContext{};
     ctx_.request_shutdown = std::move(request_shutdown);
+    ctx_.reopen_rpc_gate = std::move(reopen_rpc_gate);
     services_.clear();
     chain_db_.reset();
 
@@ -592,10 +634,13 @@ bool DaemonApp::Init(int argc, char** argv) {
             }
             // Init() failed before Start(); aggressively clear partial state so a
             // subsequent in-process retry does not inherit stale singletons/handles.
+            self->ClosePoolRuntime();
             auto request_shutdown = std::move(self->ctx_.request_shutdown);
+            auto reopen_rpc_gate = std::move(self->ctx_.reopen_rpc_gate);
             DaemonContext::setInstance(nullptr);
             self->ctx_ = DaemonContext{};
             self->ctx_.request_shutdown = std::move(request_shutdown);
+            self->ctx_.reopen_rpc_gate = std::move(reopen_rpc_gate);
             self->services_.clear();
             self->chain_db_.reset();
             self->wallet_logger_.reset();
@@ -675,7 +720,9 @@ bool DaemonApp::Init(int argc, char** argv) {
         // If --datadir was given, seed wallet.datadir before computing the
         // default config path. Set() will be called again during the full
         // CLI parse below — single-value keys are last-wins, so this is safe.
-        if (!cli_datadir.empty()) {
+        if (locked_datadir_) {
+            config->Set("datadir", locked_datadir_->string());
+        } else if (!cli_datadir.empty()) {
             config->Set("datadir", cli_datadir);
         }
 
@@ -769,6 +816,12 @@ bool DaemonApp::Init(int argc, char** argv) {
             }
         }
     }
+
+    // The native executable already owns this resolved root. Keep every
+    // service and upgrade/recovery path on that same root, even if the CLI
+    // spelling is a symlink or a config file supplies a different datadir.
+    // Embedded callers without a datadir guard retain their existing API.
+    if (locked_datadir_) config->Set("datadir", locked_datadir_->string());
 
     // Phase D.1 (Dinero Core 1.0): wire `debug.log_file` from final
     // config (file + CLI overrides applied) into LoggerService BEFORE
@@ -964,72 +1017,11 @@ bool DaemonApp::Init(int argc, char** argv) {
     ConfigurePoolAccountingRuntime();
 
     if (pool_manager_runtime_) {
-        pool_manager_runtime_->setPaymentCallback([this](const std::string& address,
-                                                         uint64_t amount,
-                                                         std::string& txid_out) -> bool {
-            if (amount == 0 || address.empty()) {
-                g_logger.error("[Pool] payout callback rejected empty address or zero amount");
-                return false;
-            }
-
-            if (!ctx_.wallet || !ctx_.tx_ingress) {
-                g_logger.error("[Pool] payout callback unavailable: wallet or tx ingress not ready");
-                return false;
-            }
-
-            auto wallet_service = std::dynamic_pointer_cast<WalletService>(ctx_.wallet);
-            if (!wallet_service) {
-                g_logger.error("[Pool] payout callback unavailable: wallet service cast failed");
-                return false;
-            }
-
-            WalletManager& wallet_mgr = wallet_service->get();
-            if (!wallet_mgr.hasActiveWallet()) {
-                g_logger.error("[Pool] payout callback failed: no active wallet");
-                return false;
-            }
-            if (wallet_mgr.isWalletLocked()) {
-                g_logger.error("[Pool] payout callback failed: active wallet is locked");
-                return false;
-            }
-
-            HDWallet* hd_wallet = wallet_mgr.getHDWallet();
-            if (!hd_wallet) {
-                g_logger.error("[Pool] payout callback failed: HD wallet is unavailable");
-                return false;
-            }
-
-            std::vector<HDWallet::TxOutput> outputs;
-            outputs.push_back(HDWallet::TxOutput{address, amount});
-
-            std::string tx_hex;
-            std::string create_error;
-            constexpr uint64_t kPoolPayoutFeeRate = 2;
-            if (!hd_wallet->CreateTransaction(outputs, kPoolPayoutFeeRate, tx_hex, create_error)) {
-                g_logger.error("[Pool] payout callback failed to create transaction: " + create_error);
-                return false;
-            }
-
-            Transaction payout_tx;
-            if (!TransactionSerializer::Deserialize(payout_tx, tx_hex)) {
-                g_logger.error("[Pool] payout callback failed to deserialize tx hex");
-                return false;
-            }
-
-            auto submit = ctx_.tx_ingress->Submit(payout_tx, TxOrigin::WALLET);
-            if (submit.rejected()) {
-                g_logger.error("[Pool] payout callback rejected by mempool: " + submit.message);
-                return false;
-            }
-
-            txid_out = payout_tx.GetTxid().AsUint256().GetHex();
-            g_logger.info("[Pool] payout transaction submitted: " + txid_out.substr(0, 16) +
-                          "... amount=" + std::to_string(amount));
-            return true;
-        });
+        pool_manager_runtime_->setPaymentBackend(pool::MakeWalletPoolPaymentBackend(ctx_));
     }
 
     // Phase 2: Data layer (depends on logger + config)
+    auto chainstate = std::make_shared<ChainstateService>();
     std::cout << "[DaemonApp] Phase 2: Data layer" << std::endl;
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -1037,9 +1029,14 @@ bool DaemonApp::Init(int argc, char** argv) {
     // ═══════════════════════════════════════════════════════════════════════════
     std::filesystem::path data_dir_path;
     std::filesystem::path chain_db_path;
+    // Routing only: no state is enrolled until ChainstateService authenticates
+    // the retained snapshot proof, selected ancestry and current catalog.
+    bool compact_snapshot_reopen = false;
+    bool compact_activation_reopen = false;
+    std::unique_ptr<BlockStorage> startup_block_storage;
 
     try {
-        chain_db_ = std::make_unique<ChainDB>();
+        chain_db_ = std::make_shared<ChainDB>();
 
         // Get datadir (use same default as ConfigService: ~/.dinero)
         // Note: config isn't initialized yet, so we get the raw value or default
@@ -1060,11 +1057,30 @@ bool DaemonApp::Init(int argc, char** argv) {
         data_dir_path = datadir_str;
         chain_db_path = data_dir_path / "blockchain" / "chaindb";
 
+        // Never create/repair/open over a selected or interrupted activation
+        // swap. This is routing refusal, not an owner factory. The dedicated
+        // authenticated startup path must consume the exact held-root intent.
+        if(!storage::OrchardHandoffControlsAbsent(data_dir_path/"blockchain")) {
+            if(fresh_store_bootstrap_only_){fresh_store_created_=false;return true;}
+#ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
+            if(!GetConfig().utreexo_stateless||!locked_datadir_guard_)
+                throw std::runtime_error("Completed activation startup requires the real locked stateless root");
+            chain_db_=chainstate->StageCompletedActivationRoot(*locked_datadir_guard_);
+            compact_activation_reopen=true;compact_snapshot_reopen=true;
+#else
+            throw std::runtime_error("Authenticated activation handoff requires the Orchard runtime for dedicated closed-store recovery");
+#endif
+        }
+
         std::filesystem::create_directories(chain_db_path.parent_path());
 
         const auto reindex_promotion_journal = ReindexPromotionJournalPath(data_dir_path);
         const bool had_interrupted_reindex_promotion =
             std::filesystem::exists(reindex_promotion_journal);
+        if (had_interrupted_reindex_promotion && GetConfig().utreexo_stateless) {
+            std::cerr << "[DaemonApp] Compact startup refuses interrupted legacy reindex promotion" << std::endl;
+            return false;
+        }
         std::string reindex_recovery_error;
         if (!RecoverInterruptedReindexPromotion(data_dir_path, &reindex_recovery_error)) {
             std::cerr << "[DaemonApp] ❌ Failed to recover interrupted reindex promotion: "
@@ -1114,10 +1130,123 @@ bool DaemonApp::Init(int argc, char** argv) {
             }
         }
 
-        auto status = chain_db_->init(chain_db_path);
+        if (fresh_store_bootstrap_only_) {
+#ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
+            fresh_store_created_ = automatic_storage_upgrade_ &&
+                Params().orchard_activation_height != UINT32_MAX &&
+                daemon::IsBrandNewStore(chain_db_path);
+#else
+            fresh_store_created_ = false;  // no upgrade without the Orchard backend
+#endif
+            if (!fresh_store_created_) {
+                // Nothing to bootstrap: return before ChainDB is opened.
+                std::cout << "[DaemonApp] No fresh-store bootstrap needed" << std::endl;
+                return true;
+            }
+        }
+#ifdef DINERO_HAS_ORCHARD_RUNTIME_READER  // the migration engine ships with the Orchard backend
+        if(daemon::IsBrandNewStore(chain_db_path)) {
+            // A configured v6 bootstrap may create a NEW separated store directly; the
+            // payload still has to pass selected-chain authentication at load.
+            const std::filesystem::path snapshot=ctx_.config->GetString("assumeutxo_snapshot","");
+            std::error_code error;const auto type=std::filesystem::symlink_status(snapshot,error);
+            if(!snapshot.empty()&&!error&&std::filesystem::is_regular_file(type)) {
+                try {
+                    std::ifstream input(snapshot,std::ios::binary);
+                    const auto metadata=consensus::ReadOrchardSnapshotMetadata(input,68);
+                    if(consensus::OrchardCatalogCommitmentActive(Params(),metadata.block_height)) {
+                        if(fresh_store_bootstrap_only_) {
+                            // main's preliminary run must not start P2P or
+                            // attempt this load against a legacy store. The
+                            // real Init below creates the empty READY layout;
+                            // selected-header authentication still gates Load.
+                            fresh_store_created_=false;
+                            std::cout << "[DaemonApp] Configured v6 bootstrap: deferring fresh separated store to the real start" << std::endl;
+                            return true;
+                        }
+                        if(GetConfig().utreexo_stateless&&!ctx_.config->CompactSnapshotBootstrapEnabled()) {
+                            if(ctx_.logger)ctx_.logger->error("Compact v6 snapshot bootstrap disabled by local policy");
+                            return false; // Refuse the requested load before creating storage.
+                        }
+                        OrchardSnapshotStore::CreateFreshStore(chain_db_path);
+                    }
+                } catch(const std::invalid_argument&) {
+                    // Legacy/invalid files do not choose a storage layout.
+                    // Their normal loader supplies the definitive error.
+                }
+            }
+        }
+        if (automatic_storage_upgrade_ && !fresh_store_bootstrap_only_ && !compact_activation_reopen &&
+            Params().orchard_activation_height != UINT32_MAX) {
+            // A refusal keeps the legacy store: the node runs until Orchard
+            // activation and retries on every start (see the header).
+            try {
+                const auto upgrade = daemon::EnsureSeparatedShieldedLayout(
+                    data_dir_path, chain_db_path, storage_upgrade_after_phase_, storage_upgrade_available_bytes_);
+                if (upgrade.outcome == daemon::StorageUpgradeOutcome::Upgraded) {
+                    ctx_.orchard_storage_upgrade_issue->store(daemon::StorageUpgradeIssue::None);
+                    std::cout << "[DaemonApp] ✅ Shielded-state storage upgraded: " << upgrade.detail << std::endl;
+                } else if (upgrade.outcome == daemon::StorageUpgradeOutcome::Refused) {
+                    ctx_.orchard_storage_upgrade_issue->store(daemon::ClassifyStorageUpgradeIssue(upgrade.detail));
+                    std::cerr << "[DaemonApp] ⚠️  Shielded-state storage upgrade refused (" << upgrade.detail
+                              << "). This node cannot follow the chain past Orchard activation at height "
+                              << Params().orchard_activation_height << " until it succeeds." << std::endl;
+                } else ctx_.orchard_storage_upgrade_issue->store(daemon::StorageUpgradeIssue::None);
+            } catch (const std::exception& e) {
+                ctx_.orchard_storage_upgrade_issue->store(daemon::ClassifyStorageUpgradeIssue(e.what()));
+                std::cerr << "[DaemonApp] ⚠️  Shielded-state storage upgrade failed: " << e.what()
+                          << " (will retry on next start)" << std::endl;
+            }
+        }
+#endif
+        // A missing live name is safe only for a genuinely new store. Check
+        // even when automatic upgrading, Orchard, or stateless operation is
+        // disabled: ChainDB::init must not create an empty database over an
+        // interrupted swap's rollback copy.
+        if (!std::filesystem::exists(chain_db_path)) {
+            for (const char* suffix : {".upgrade-candidate", ".upgrade-state",
+                                       ".upgrade-state.tmp", ".legacy-v1", ".legacy-v1.retiring"}) {
+                if (std::filesystem::exists(chain_db_path.string() + suffix)) {
+                    std::cerr << "[DaemonApp] ❌ Incomplete shielded-state storage swap; refusing to create ChainDB"
+                              << std::endl;
+                    return false;
+                }
+            }
+        }
+        auto status = compact_activation_reopen?Status::Ok:chain_db_->init(chain_db_path);
         if (status != Status::Ok) {
             std::cerr << "[DaemonApp] ❌ Failed to initialize ChainDB: " << StatusToString(status) << std::endl;
             return false;
+        }
+        const auto snapshot_base = storage::ReadOrchardSnapshotBase(*chain_db_);
+        const auto compact_binding = storage::ReadOrchardCompactStorageBinding(*chain_db_);
+        if (snapshot_base && snapshot_base->profile == uint8_t(consensus::OrchardSnapshotProfile::Compact) && !compact_binding)
+            throw std::runtime_error("Compact snapshot storage binding missing");
+        if (compact_binding && GetConfig().utreexo_stateless) {
+            const auto& base = snapshot_base;
+            compact_snapshot_reopen = compact_activation_reopen || (base &&
+                base->profile == uint8_t(consensus::OrchardSnapshotProfile::Compact) &&
+                consensus::OrchardCatalogCommitmentActive(Params(), base->height));
+        }
+        if (compact_snapshot_reopen) {
+            // A compact marker/base chooses ONLY the authentication route. It
+            // cannot authorize full-state repair or generic startup backfills.
+            for (int i = 1; argv && i < argc; ++i) {
+                const std::string arg = argv[i];
+                if (arg.starts_with("--reindex") || arg.starts_with("--repair-") ||
+                    arg.starts_with("--recover-") || arg.starts_with("--rebuild-"))
+                    throw std::runtime_error("Compact snapshot reopen refuses legacy maintenance options");
+            }
+            // Advisory recovery markers may survive a healthy forward sync.
+            // Leave them intact; the skipped legacy orchestrator must never
+            // replay a root-only store, even if automatic replay is re-armed.
+            if(compact_activation_reopen)
+                std::cout << "[DaemonApp] Completed activation reopen routed to full origin authentication; legacy backfills disabled" << std::endl;
+            else std::cout << "[DaemonApp] Compact snapshot reopen routed to retained-proof authentication; legacy backfills disabled" << std::endl;
+        } else {
+            // Preserve the fail-closed full-storage guard for every legacy,
+            // misconfigured, unknown or malformed compact store.
+            storage::RequireFullOrchardStorage(*chain_db_);
         }
         std::cout << "[DaemonApp] ✅ ChainDB constructed and initialized (ONE DB)" << std::endl;
     } catch (const std::exception& e) {
@@ -1127,10 +1256,8 @@ bool DaemonApp::Init(int argc, char** argv) {
 
     // ChainDB is owned by DaemonApp; services use non-owning pointers.
     ChainDB* chain_db_ptr = chain_db_.get();
-    if (pool_manager_runtime_) {
-        pool_manager_runtime_->setChainDB(chain_db_ptr);
-    }
 
+    if (!compact_snapshot_reopen) {
     // ─────────────────────────────────────────────────────────────────
     // Offline `--rebuild-undo-range=A:B` orchestrator (commit #5)
     // ─────────────────────────────────────────────────────────────────
@@ -1450,6 +1577,10 @@ bool DaemonApp::Init(int argc, char** argv) {
 
         std::error_code fs_error;
         std::filesystem::remove_all(temp_chain_db_path, fs_error);
+        for (const char* suffix : {".upgrade-candidate", ".upgrade-state", ".upgrade-state.tmp", ".legacy-v1"}) {
+            fs_error.clear();
+            std::filesystem::remove_all(temp_chain_db_path.string() + suffix, fs_error);
+        }
         fs_error.clear();
         std::filesystem::remove_all(temp_shielded_frontier_path, fs_error);
         fs_error.clear();
@@ -1481,8 +1612,26 @@ bool DaemonApp::Init(int argc, char** argv) {
         reindex_config.utreexo_checkpoint_interval =
             GetConfig().utreexo_checkpoint_interval;
 
-        consensus::BlockReindexer reindexer(data_dir_path, rebuilt_chain_db.get(), block_storage.get(), reindex_config);
-        auto reindex_result = reindexer.execute();
+        auto reindex_result = [&]() -> StatusOr<consensus::BlockReindexer::Stats> {
+#ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
+            // Preserve delivery chronology even when a reorg returned the tip
+            // below activation. A missing log at an active tip is not permission
+            // to fabricate a new origin or reset wallet checkpoints.
+            std::string head;
+            const auto retained = chain_db_->getRaw("runtime_orchard_outbox:v1:head", head);
+            if (retained != Status::Ok && retained != Status::NotFound) return retained;
+            const auto old_tip = chain_db_->getTip();
+            if (!old_tip.ok()) return old_tip.status();
+            if (retained == Status::Ok || (old_tip->height >= 0 &&
+                uint64_t(old_tip->height) >= Params().orchard_activation_height)) {
+                ChainWriteToken reindex_token;
+                return OrchardReindexOwner::Run(*chain_db_, *rebuilt_chain_db, reindex_token,
+                    *block_storage, data_dir_path, temp_chain_db_path, reindex_config);
+            }
+#endif
+            consensus::BlockReindexer reindexer(data_dir_path, rebuilt_chain_db.get(), block_storage.get(), reindex_config);
+            return reindexer.execute();
+        }();
         if (!reindex_result.ok()) {
             std::cerr << "[DaemonApp] ❌ Reindex failed with status: "
                       << StatusToString(reindex_result.status()) << std::endl;
@@ -1517,6 +1666,34 @@ bool DaemonApp::Init(int argc, char** argv) {
 
         rebuilt_chain_db->close();
         chain_db_->close();
+
+        // The plain reindexer rebuilds a legacy-layout store; below Orchard
+        // activation that would undo the startup upgrade and stop the node at
+        // the activation block. Upgrade the rebuilt copy before promotion.
+#ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
+        if (automatic_storage_upgrade_ && Params().orchard_activation_height != UINT32_MAX &&
+            !GetConfig().utreexo_stateless) {
+            try {
+                const auto upgrade = daemon::EnsureSeparatedShieldedLayout(
+                    data_dir_path, temp_chain_db_path, storage_upgrade_after_phase_, storage_upgrade_available_bytes_);
+                if (upgrade.outcome == daemon::StorageUpgradeOutcome::Upgraded) {
+                    ctx_.orchard_storage_upgrade_issue->store(daemon::StorageUpgradeIssue::None);
+                    // The live store is the reindex backup; the rebuilt legacy copy is not needed.
+                    std::filesystem::remove_all(temp_chain_db_path.string() + ".legacy-v1", fs_error);
+                    fs_error.clear();
+                    std::cout << "[DaemonApp] ✅ Reindexed store upgraded to the separated shielded-state layout" << std::endl;
+                } else if (upgrade.outcome == daemon::StorageUpgradeOutcome::Refused) {
+                    ctx_.orchard_storage_upgrade_issue->store(daemon::ClassifyStorageUpgradeIssue(upgrade.detail));
+                    std::cerr << "[DaemonApp] ⚠️  Reindexed store upgrade refused (" << upgrade.detail
+                              << "); retried on the next start" << std::endl;
+                }
+            } catch (const std::exception& e) {
+                ctx_.orchard_storage_upgrade_issue->store(daemon::ClassifyStorageUpgradeIssue(e.what()));
+                std::cerr << "[DaemonApp] ⚠️  Reindexed store upgrade failed: " << e.what() << std::endl;
+            }
+        }
+
+#endif
 
         struct ReindexPromotion {
             std::filesystem::path live_path;
@@ -1681,9 +1858,6 @@ bool DaemonApp::Init(int argc, char** argv) {
 
 
         chain_db_ptr = chain_db_.get();
-        if (pool_manager_runtime_) {
-            pool_manager_runtime_->setChainDB(chain_db_ptr);
-        }
 
         if (recovery_marker.has_value()) {
             std::string clear_error;
@@ -1762,7 +1936,6 @@ bool DaemonApp::Init(int argc, char** argv) {
 
     // Temporary archival reader used during startup backfills before the
     // long-lived runtime BlockStorage is initialized.
-    std::unique_ptr<BlockStorage> startup_block_storage;
 
     {
         std::string startup_datadir_str = ctx_.config->GetString("datadir", "~/.dinero");
@@ -1975,11 +2148,20 @@ bool DaemonApp::Init(int argc, char** argv) {
         std::cerr << "[DaemonApp] ❌ Exception during genesis initialization: " << e.what() << std::endl;
         return false;
     }
+    } // Full/legacy startup only. Compact storage must reach its authenticated owner untouched.
 
     // Phase 39: Create ChainstateService and pass it the ChainDB
-    auto chainstate = std::make_shared<ChainstateService>();
-    chainstate->setChainDB(chain_db_ptr);  // Non-owning; DaemonApp owns chain_db_
+    chainstate->setOwnedChainDB(chain_db_);
+    if (automatic_storage_upgrade_ && locked_datadir_guard_ &&
+        GetConfig().sync_profile == "ios_utreexo") {
+        chainstate->SetPostConnectStorageCleanup([data_dir_path, chain_db_path,
+                                                after_phase = storage_upgrade_after_phase_] {
+            daemon::RetirePhoneStorageRollback(data_dir_path, chain_db_path, "ios_utreexo", after_phase);
+            return true;
+        });
+    }
     chainstate->setPoolManager(pool_manager_runtime_);
+    if(pool_manager_runtime_)pool_manager_runtime_->setChainstateSource(chainstate);
 
     // Phase 8: Set validation mode based on config
     if (GetConfig().utreexo_stateless) {
@@ -2100,6 +2282,7 @@ bool DaemonApp::Init(int argc, char** argv) {
 
     // 🧹 Phase 34.8: Initialize Prune Service
     ctx_.prune = std::make_shared<dinero::daemon::PruneService>();
+    auto initialize_pruning = [&]() {
     ctx_.prune->Init(ctx_);
 
     // Configure PruneService from CLI flags
@@ -2137,6 +2320,10 @@ bool DaemonApp::Init(int argc, char** argv) {
         ctx_.prune->setConfig(prune_cfg);
     }
     std::cout << "[DaemonApp] ✅ PruneService initialized" << std::endl;
+    };
+    // PruneService::Init can repair persisted block-index flags. Root-only
+    // storage must authenticate before this or any pruning configuration write.
+    if (!compact_snapshot_reopen) initialize_pruning();
 
     // 🛡️ Phase E.2.c: Initialize Network Limits Monitor
     // NOTE: NetworkLimitsMonitor requires P2P internal components (ConnectionManager, RateLimiter, PeerScoringManager)
@@ -2157,6 +2344,10 @@ bool DaemonApp::Init(int argc, char** argv) {
 
     // Initialize HeaderStore (persistent header storage)
     auto header_store = std::make_shared<dinero::consensus::HeaderStore>(datadir + "/headers");
+    if (GetConfig().sync_profile == "ios_utreexo") {
+        // Phones: a 4 MB buffer preallocates ~4.4 MB of WAL instead of ~70 MB.
+        header_store->SetWriteBufferBytes(4u << 20);
+    }
     if (!header_store->Open()) {
         std::cerr << "[DaemonApp] ❌ Failed to open header store" << std::endl;
         return false;
@@ -2172,6 +2363,10 @@ bool DaemonApp::Init(int argc, char** argv) {
     const bool has_legacy_entries = header_store->HasLegacyEntries();
     const bool schema_recovery_required = header_store->NeedsSchemaRecovery();
     if (has_legacy_entries || schema_recovery_required) {
+        if (compact_snapshot_reopen) {
+            std::cerr << "[DaemonApp] Compact snapshot reopen refuses incompatible header storage" << std::endl;
+            return false; // Never quarantine/reseed compact headers through legacy recovery.
+        }
         std::string recovery_reason;
         if (schema_recovery_required) {
             recovery_reason = header_store->GetSchemaRecoveryReason();
@@ -2221,6 +2416,12 @@ bool DaemonApp::Init(int argc, char** argv) {
                   << ")" << std::endl;
     }
 
+    if(compact_activation_reopen) {
+#ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
+        header_chain=OrchardSnapshotStore::CompletedActivationHeaders(*chain_db_,*header_store);
+        ctx_.header_chain=header_chain;
+#endif
+    }
     // Phase N: Seed HeaderChainSelector with the full active header chain from ChainDB.
     // IMPORTANT: Do not rely on height index ordering here (it may be stale after prior forks).
     // We reconstruct by walking tip -> genesis via prev_block_hash, then replay genesis -> tip.
@@ -2228,7 +2429,7 @@ bool DaemonApp::Init(int argc, char** argv) {
     // though its separately persisted HeaderChainSelector contains the verified
     // chain. ResolveStartupHeader preserves the normal ChainDB-first behavior and
     // uses that selector only for genuine NotFound results.
-    if (chain_db_ptr) {
+    if (chain_db_ptr && !compact_snapshot_reopen) {
         auto tip_result = chain_db_ptr->getTip();
         if (tip_result.status() == Status::Ok) {
             const uint256 tip_hash = tip_result.value().hash;
@@ -2380,7 +2581,7 @@ bool DaemonApp::Init(int argc, char** argv) {
     // that don't match. This is independent of the in-memory block index
     // which may itself have been built from stale height→hash data.
     // ═══════════════════════════════════════════════════════════════════════════
-    {
+    if (!compact_snapshot_reopen) {
         auto tip_result = chain_db_ptr->getTip();
         if (tip_result.status() == Status::Ok) {
             ChainWriteToken token;
@@ -2541,9 +2742,9 @@ bool DaemonApp::Init(int argc, char** argv) {
                 }
 
                 const bool csn_mode = GetConfig().utreexo_stateless;
-                const uint32_t inv_type = csn_mode
-                    ? static_cast<uint32_t>(dinero::InventoryType::MSG_UTREEXO_BLOCK)
-                    : static_cast<uint32_t>(dinero::InventoryType::MSG_BLOCK);
+                const auto request_type=SelectBlockRequestInventory(block_hash,csn_mode);
+                if (!request_type) return false;
+                const uint32_t inv_type=static_cast<uint32_t>(*request_type);
                 ::P2PMessage msg = ::P2PMessage::create_getdata_binary(
                     block_hash.begin(), 32, inv_type
                 );
@@ -2585,6 +2786,7 @@ bool DaemonApp::Init(int argc, char** argv) {
     std::cout << "[DaemonApp] Phase 3: Network layer" << std::endl;
 
     auto p2p = std::make_shared<P2PService>();
+    p2p->SetPhoneHistoryRoot(locked_datadir_guard_);
     ctx_.p2p = p2p;
     services_.push_back(p2p);
 
@@ -2645,6 +2847,7 @@ bool DaemonApp::Init(int argc, char** argv) {
         }
         std::cout << "[DaemonApp] ✅ " << service->Name() << " initialized" << std::endl;
     }
+    if (compact_snapshot_reopen) initialize_pruning();
 
     // Phase 2: Create consensus engine after all services are initialized
     // Consensus engine needs ChainDB (from ChainstateService) and Mining (from MiningService)
@@ -2693,6 +2896,20 @@ bool DaemonApp::Init(int argc, char** argv) {
                 std::cout << "[DaemonApp] ✅ ChainstateService wired to HeaderChainSelector (mined block tracking)" << std::endl;
             }
 
+            // Explicitly disabled means no client construction or socket probe.
+            // Default true preserves the existing optional legacy integration.
+            const auto oracle_config=std::dynamic_pointer_cast<ConfigService>(ctx_.config);
+            const bool legacy_oracles_enabled=!oracle_config || oracle_config->GetBool("lightning.oracles.enable",true);
+#ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
+            if (Params().orchard_activation_height!=UINT32_MAX && legacy_oracles_enabled) {
+                // A configured consumer remains configured even while disconnected.
+                // No typed adapters exist for these legacy IPC clients. Refuse
+                // before any socket probe, rather than declare failed clients absent.
+                std::cerr << "[DaemonApp] Scheduled Orchard requires explicit disabled legacy oracles or typed adapters; refusing before IPC probe" << std::endl;
+                return false;
+            }
+#endif
+            if (legacy_oracles_enabled) {
             // Phase 9.2: Wire ChainOracleClient to Chainstate (for Lightning events)
             {
                 auto chain_oracle = std::make_unique<dinero::ipc::ChainOracleClient>("/tmp/lightningd.sock");
@@ -2740,6 +2957,8 @@ bool DaemonApp::Init(int argc, char** argv) {
                 }
             }
 
+            }
+
             // Phase G.3: Wire TxRelayManager to Mempool (for announcements)
             auto mempool_service = std::dynamic_pointer_cast<MempoolService>(ctx_.mempool);
             if (ctx_.tx_relay && mempool_service) {
@@ -2750,7 +2969,10 @@ bool DaemonApp::Init(int argc, char** argv) {
             // Phase G.13: Wire BlockRelayManager to the canonical daemon mempool for
             // compact-block reconstruction against live transaction state.
             if (ctx_.block_relay && mempool_service) {
-                ctx_.block_relay->SetMempool(&mempool_service->mempool());
+                std::weak_ptr<MempoolService> weak_pool = mempool_service;
+                ctx_.block_relay->SetMempoolAccessFactory([weak_pool]() -> std::unique_ptr<MempoolAccess> {
+                    return MempoolService::AcquirePoolUse(weak_pool.lock());
+                });
                 ctx_.block_relay->SetChainDB(chainstate_service->GetChainDB());
                 std::cout << "[DaemonApp] ✅ BlockRelayManager wired to MempoolService (compact reconstruction)" << std::endl;
             }
@@ -3535,109 +3757,28 @@ bool DaemonApp::Init(int argc, char** argv) {
                         };
 
                         if (bridge_node) {
-                            // BRIDGE PATH: Generate fresh proofs from the forest
-                            auto tx_ptr = mempool_for_getdata->getTransaction(hash);
-                            if (!tx_ptr) {
-                                g_logger.debug("[TX-RELAY] TX not in mempool: " + hash.GetHex().substr(0, 16));
+                            std::unique_ptr<MempoolService::PoolUse> pool_use;
+                            std::optional<std::vector<uint8_t>> payload;
+                            {
+                                auto selected = chainstate_service->AcquireBlockIngressActivationLock();
+                                pool_use = MempoolService::AcquirePoolUse(mempool_for_getdata);
+                                const auto entry = pool_use->Pool().getMempoolEntry(hash);
+                                if (entry && entry->tx.HasBody() && entry->tx.GetTxid().AsUint256() == hash)
+                                    payload = CaptureUtreexoTransactionPayload(entry->tx,*bridge_node);
+                            }
+                            if (!payload) {
                                 sendUtreexoTxNotFound();
                             } else {
-                                const Transaction& tx = *tx_ptr;
-
-                                // 2. Generate per-input proofs
-                                auto proofs_opt = bridge_node->GenerateProofsForTransaction(tx);
-                                if (!proofs_opt.has_value()) {
-                                    g_logger.warning("[TX-RELAY] Failed to generate utreexo proofs for tx " +
-                                                    hash.GetHex().substr(0, 16));
-                                    sendUtreexoTxNotFound();
-                                } else {
-                                    const auto& proofs = proofs_opt.value();
-
-                                    // 3. Get current accumulator root
-                                    auto acc_root = bridge_node->GetCurrentForestCommitment();
-
-                                    // 4. Serialize utxotx wire format
-                                    std::vector<uint8_t> tx_serialized = tx.Serialize();
-                                    uint32_t tx_size = static_cast<uint32_t>(tx_serialized.size());
-                                    uint32_t num_proofs = static_cast<uint32_t>(proofs.size());
-
-                                    std::vector<uint8_t> payload;
-                                    payload.reserve(1 + 32 + 4 + tx_size + 4 + num_proofs * 256 + 32);
-
-                                    // Version (1 byte): v2 carries created_height/is_coinbase metadata.
-                                    payload.push_back(0x02);
-
-                                    // Txid (32 bytes)
-                                    payload.insert(payload.end(), hash.begin(), hash.end());
-
-                                    // TX size (4 bytes LE)
-                                    payload.push_back(tx_size & 0xFF);
-                                    payload.push_back((tx_size >> 8) & 0xFF);
-                                    payload.push_back((tx_size >> 16) & 0xFF);
-                                    payload.push_back((tx_size >> 24) & 0xFF);
-
-                                    // TX data
-                                    payload.insert(payload.end(), tx_serialized.begin(), tx_serialized.end());
-
-                                    // Num proofs (4 bytes LE)
-                                    payload.push_back(num_proofs & 0xFF);
-                                    payload.push_back((num_proofs >> 8) & 0xFF);
-                                    payload.push_back((num_proofs >> 16) & 0xFF);
-                                    payload.push_back((num_proofs >> 24) & 0xFF);
-
-                                    // Per-input proofs
-                                    for (const auto& [proof, spent] : proofs) {
-                                        auto proof_bytes = proof.serialize();
-                                        uint32_t proof_size = static_cast<uint32_t>(proof_bytes.size());
-
-                                        // Proof size (4 bytes LE)
-                                        payload.push_back(proof_size & 0xFF);
-                                        payload.push_back((proof_size >> 8) & 0xFF);
-                                        payload.push_back((proof_size >> 16) & 0xFF);
-                                        payload.push_back((proof_size >> 24) & 0xFF);
-
-                                        // Proof data
-                                        payload.insert(payload.end(), proof_bytes.begin(), proof_bytes.end());
-
-                                        // Value (8 bytes LE)
-                                        uint64_t value = spent.value;
-                                        for (int b = 0; b < 8; b++)
-                                            payload.push_back((value >> (b * 8)) & 0xFF);
-
-                                        // Script size (4 bytes LE)
-                                        uint32_t script_size = static_cast<uint32_t>(spent.scriptPubKey.size());
-                                        payload.push_back(script_size & 0xFF);
-                                        payload.push_back((script_size >> 8) & 0xFF);
-                                        payload.push_back((script_size >> 16) & 0xFF);
-                                        payload.push_back((script_size >> 24) & 0xFF);
-
-                                        // ScriptPubKey
-                                        payload.insert(payload.end(), spent.scriptPubKey.begin(), spent.scriptPubKey.end());
-
-                                        // v2 maturity metadata: created_height (4 bytes LE) + flags (bit 0 = coinbase)
-                                        payload.push_back(spent.created_height & 0xFF);
-                                        payload.push_back((spent.created_height >> 8) & 0xFF);
-                                        payload.push_back((spent.created_height >> 16) & 0xFF);
-                                        payload.push_back((spent.created_height >> 24) & 0xFF);
-                                        payload.push_back(spent.is_coinbase ? 0x01 : 0x00);
-                                    }
-
-                                    // Accumulator root (32 bytes)
-                                    payload.insert(payload.end(), acc_root.begin(), acc_root.end());
-
-                                    // 5. Send utxotx message
-                                    ::P2PMessage utxotx_msg;
-                                    utxotx_msg.command = "utxotx";
-                                    utxotx_msg.payload = std::move(payload);
-                                    utxotx_msg.checksum = 0;
-                                    p2p_service->get().send_to_peer(peer_addr, utxotx_msg);
-
-                                    g_logger.info("[TX-RELAY] Sent utxotx " + hash.GetHex().substr(0, 16) +
-                                                 "... to " + peer_addr + " (" + std::to_string(num_proofs) + " proofs)");
-                                }
+                                ::P2PMessage utxotx_msg;
+                                utxotx_msg.command = "utxotx";
+                                utxotx_msg.payload = std::move(*payload);
+                                utxotx_msg.checksum = 0;
+                                p2p_service->get().send_to_peer(peer_addr,utxotx_msg);
                             }
                         } else {
                             // CSN PATH: Serve cached utxotx payload from mempool
-                            auto cached = mempool_for_getdata->mempool().getCachedUtxoTxPayload(hash);
+                            auto pool_use = MempoolService::AcquirePoolUse(mempool_for_getdata);
+                            auto cached = pool_use->Pool().getCachedUtxoTxPayload(hash);
                             if (!cached.has_value()) {
                                 g_logger.debug("[TX-RELAY] No cached utxotx for " + hash.GetHex().substr(0, 16) +
                                               " (not found or stale)");
@@ -4546,6 +4687,16 @@ bool DaemonApp::Init(int argc, char** argv) {
                                 }
                                 chainstate_service->PersistStoredBodyPosition(
                                     pending.proof_msg.block_hash, pending.stored_pos);
+                                // A raw receipt is not completed ordered proof work.
+                                // Only the successful proof + durable sidecars above
+                                // may suppress competing-frontier receipt retries.
+                                // A concurrent explicit retry can make this a no-op;
+                                // that retry will deliver another owned receipt.
+                                if (block_download_for_csn &&
+                                    chainstate_service->hasBlockByHash(pending.proof_msg.block_hash)) {
+                                    block_download_for_csn->AcknowledgeStatelessProofStaged(
+                                        pending.proof_msg.block_hash);
+                                }
 
                                 lk.lock();
                                 if (!reorg_state->active ||
@@ -4938,159 +5089,35 @@ bool DaemonApp::Init(int argc, char** argv) {
                         const std::string& peer_addr,
                         const ::P2PMessage& msg
                     ) {
-                        const auto& payload = msg.payload;
-
-                        // ── Hardening: payload size bounds ──
-                        constexpr size_t MAX_UTXOBLK_SIZE  = 5 * 1024 * 1024;   // 5 MB total
-                        constexpr uint32_t MAX_BLOCK_BYTES = 4 * 1024 * 1024;   // 4 MB block
-                        constexpr uint32_t MAX_PROOF_BYTES = 1 * 1024 * 1024;   // 1 MB proof
-                        constexpr uint32_t MAX_TP_BYTES    = 512 * 1024;        // 512 KB transition proof
-
-                        // Minimum v2 utxoblk size: version(1) + hash(32) + height(4) + root_after(32)
-                        //                         + block_size(4) + proof_size(4) = 77 bytes minimum
-                        if (payload.size() < 77) {
-                            g_logger.error("[CSN] Invalid utxoblk: payload too small (" +
-                                          std::to_string(payload.size()) + " bytes)");
+                        auto decoded=DecodeUtreexoBlockPayload(msg.payload);
+                        if(!decoded) {
+                            g_logger.error("[CSN] Invalid utxoblk transport frame from " + peer_addr);
                             return;
                         }
-                        if (payload.size() > MAX_UTXOBLK_SIZE) {
-                            g_logger.error("[CSN] utxoblk rejected: payload " +
-                                          std::to_string(payload.size()) + " bytes exceeds " +
-                                          std::to_string(MAX_UTXOBLK_SIZE) + " byte limit");
+                        std::optional<Block> block_value;
+                        try { block_value=Block::Deserialize(decoded->block_bytes); }
+                        catch(const std::exception& e) {
+                            g_logger.error("[CSN] Failed to decode block body in utxoblk from " + peer_addr + ": " + e.what());
                             return;
                         }
-
-                        size_t pos = 0;
-
-                        // Version (1 byte)
-                        uint8_t version = payload[pos++];
-                        if (version < 2) {
-                            g_logger.error("[CSN] Unsupported utxoblk version " + std::to_string(version) +
-                                          " (expected >= 2)");
+                        if(!block_value || block_value->GetHash()!=decoded->hash) {
+                            g_logger.error("[CSN] Invalid block body in utxoblk from " + peer_addr);
                             return;
                         }
-
-                        // Block hash (32 bytes)
-                        uint256 block_hash;
-                        std::memcpy(block_hash.data, &payload[pos], 32);
-                        pos += 32;
-
-                        // Block height (4 bytes LE)
-                        uint32_t block_height = 0;
-                        std::memcpy(&block_height, &payload[pos], 4);
-                        pos += 4;
-
-                        // Accumulator root after (32 bytes)
-                        consensus::UtreexoHash root_after(32, 0);
-                        std::memcpy(root_after.data(), &payload[pos], 32);
-                        pos += 32;
-
-                        // Block size (4 bytes LE)
-                        if (pos + 4 > payload.size()) {
-                            g_logger.error("[CSN] Invalid utxoblk: truncated at block_size");
-                            return;
-                        }
-                        uint32_t block_size = 0;
-                        std::memcpy(&block_size, &payload[pos], 4);
-                        pos += 4;
-
-                        // Validate block_size (overflow-safe: subtract instead of add)
-                        if (block_size == 0 || block_size > MAX_BLOCK_BYTES ||
-                            block_size > payload.size() - pos) {
-                            g_logger.error("[CSN] Invalid utxoblk: block_size=" + std::to_string(block_size) +
-                                          " (max=" + std::to_string(MAX_BLOCK_BYTES) +
-                                          " remaining=" + std::to_string(payload.size() - pos) + ")");
-                            return;
-                        }
-
-                        // Deserialize block
-                        Block block;
-                        try {
-                            std::vector<uint8_t> block_bytes(payload.begin() + pos,
-                                                             payload.begin() + pos + block_size);
-                            auto block_opt = Block::Deserialize(block_bytes);
-                            if (!block_opt.has_value()) {
-                                g_logger.error("[CSN] Failed to deserialize block from utxoblk: Block::Deserialize returned null");
-                                return;
-                            }
-                            block = *block_opt;
-                        } catch (const std::exception& e) {
-                            g_logger.error("[CSN] Failed to deserialize block from utxoblk: " +
-                                          std::string(e.what()));
-                            return;
-                        }
-                        pos += block_size;
-
-                        // Verify block hash matches
-                        if (block.GetHash() != block_hash) {
-                            g_logger.error("[CSN] Block hash mismatch in utxoblk from " + peer_addr);
-                            return;
-                        }
-
-                        // Proof size (4 bytes LE)
-                        if (pos + 4 > payload.size()) {
-                            g_logger.error("[CSN] Invalid utxoblk: truncated at proof_size");
-                            return;
-                        }
-                        uint32_t proof_size = 0;
-                        std::memcpy(&proof_size, &payload[pos], 4);
-                        pos += 4;
-
+                        auto& block=*block_value;
+                        const auto& block_hash=decoded->hash;
+                        const auto block_height=decoded->height;
+                        const auto& root_after=decoded->root_after;
                         consensus::BlockUtreexoData proof_data;
-                        // v3 TP-only historical payloads intentionally carry an empty
-                        // batch-proof section and rely on the transition proof appended
-                        // later in the message. Older CSN parsers rejected proof_size=0
-                        // too early and never reached TP parsing.
-                        if (proof_size == 0) {
-                            if (version < 3) {
-                                g_logger.error("[CSN] Invalid utxoblk: proof_size=0 for legacy version");
-                                return;
-                            }
-                        } else {
-                            // Validate proof_size (overflow-safe: subtract instead of add)
-                            if (proof_size > MAX_PROOF_BYTES ||
-                                proof_size > payload.size() - pos) {
-                                g_logger.error("[CSN] Invalid utxoblk: proof_size=" + std::to_string(proof_size) +
-                                              " (max=" + std::to_string(MAX_PROOF_BYTES) +
-                                              " remaining=" + std::to_string(payload.size() - pos) + ")");
-                                return;
-                            }
-
-                            // Deserialize proof
-                            std::vector<uint8_t> proof_bytes(payload.begin() + pos,
-                                                             payload.begin() + pos + proof_size);
-                            try {
-                                proof_data = consensus::BlockUtreexoData::deserialize(proof_bytes);
-                            } catch (const std::exception& e) {
-                                g_logger.error("[CSN] Failed to deserialize utreexo proof from " +
-                                              peer_addr + ": " + std::string(e.what()));
-                                return;
-                            }
-
-                            pos += proof_size;
-                        }
-
-                        // v3: Parse transition proof (if present)
                         std::optional<consensus::UtreexoTransitionProof> transition_proof;
-                        if (version >= 3 && pos + 4 <= payload.size()) {
-                            uint32_t tp_size = 0;
-                            std::memcpy(&tp_size, &payload[pos], 4);
-                            pos += 4;
-                            if (tp_size > 0 && tp_size <= MAX_TP_BYTES &&
-                                tp_size <= payload.size() - pos) {
-                                try {
-                                    std::vector<uint8_t> tp_bytes(payload.begin() + pos,
-                                                                   payload.begin() + pos + tp_size);
-                                    transition_proof = consensus::UtreexoTransitionProof::deserialize(tp_bytes);
-                                    g_logger.debug("[CSN] Parsed transition proof (" +
-                                                  std::to_string(tp_size) + " bytes) for height " +
-                                                  std::to_string(block_height));
-                                } catch (const std::exception& e) {
-                                    g_logger.warning("[CSN] Failed to parse transition proof: " +
-                                                    std::string(e.what()) + " — falling back to batch proof");
-                                }
-                                pos += tp_size;
-                            }
+                        try {
+                            if(!decoded->batch_proof.empty())
+                                proof_data=consensus::BlockUtreexoData::deserialize(decoded->batch_proof);
+                            if(!decoded->transition_proof.empty())
+                                transition_proof=consensus::UtreexoTransitionProof::deserialize(decoded->transition_proof);
+                        } catch(const std::exception& e) {
+                            g_logger.error("[CSN] Failed to decode utxoblk proof from " + peer_addr + ": " + e.what());
+                            return;
                         }
 
                         // Build UtreexoProofMessage for StatelessNode validation API
@@ -5380,226 +5407,83 @@ bool DaemonApp::Init(int argc, char** argv) {
                         auto tx_relay_for_utxotx = ctx_.tx_relay;
                         auto mempool_for_utxotx = std::dynamic_pointer_cast<MempoolService>(ctx_.mempool);
 
-                        p2p_service->OnUtxoTx = [stateless_node, tx_relay_for_utxotx, mempool_for_utxotx](
-                            const std::string& peer_addr,
-                            const ::P2PMessage& msg
-                        ) {
-                            const auto& payload = msg.payload;
-
-                            // ── Hardening: size bounds ──
-                            constexpr size_t MAX_UTXOTX_SIZE = 2 * 1024 * 1024;
-                            constexpr uint32_t MAX_TX_BYTES = 1 * 1024 * 1024;
-                            constexpr uint32_t MAX_PROOF_BYTES = 256 * 1024;
-                            constexpr uint32_t MAX_SCRIPT_BYTES = 10 * 1024;
-                            constexpr uint32_t MAX_PROOFS = 1000;
-
-                            if (payload.size() < 73) {
-                                g_logger.error("[CSN-TX] utxotx payload too small (" +
-                                              std::to_string(payload.size()) + " bytes)");
-                                return;
-                            }
-                            if (payload.size() > MAX_UTXOTX_SIZE) {
-                                g_logger.error("[CSN-TX] utxotx rejected: " +
-                                              std::to_string(payload.size()) + " bytes exceeds limit");
-                                return;
-                            }
-
-                            size_t pos = 0;
-
-                            // 1. Version
-                            uint8_t version = payload[pos++];
-                            if (version != 0x01 && version != 0x02) {
-                                g_logger.error("[CSN-TX] Unsupported utxotx version " + std::to_string(version));
-                                return;
-                            }
-
-                            // 2. Txid (32 bytes)
-                            if (32 > payload.size() - pos) return;
-                            uint256 txid;
-                            std::memcpy(txid.data, &payload[pos], 32);
-                            pos += 32;
-                            auto complete_refresh = [&]() {
-                                if (tx_relay_for_utxotx) {
+                        p2p_service->OnUtxoTx = [chainstate_service, tx_relay_for_utxotx, mempool_for_utxotx](
+                            const std::string& peer_addr, const ::P2PMessage& msg) {
+                            try {
+                                const auto decoded = UtreexoTransactionPayload::Decode(
+                                    msg.payload, RelayTransactionReadMode::AvailableFamilies);
+                                const auto txid = decoded.Body().GetTxid().AsUint256();
+                                if(decoded.Body().IsOrchard()) {
+                                    const auto result=mempool_for_utxotx->SubmitProofBody(decoded,TxOrigin::P2P);
+                                    if(result.accepted())tx_relay_for_utxotx->AnnounceTx(txid);
+                                    else g_logger.warning("[CSN-TX] Orchard proof admission refused: "+result.message);
                                     tx_relay_for_utxotx->CompleteRefresh(txid);
-                                }
-                            };
-
-                            // 3. TX size + data
-                            if (4 > payload.size() - pos) return;
-                            uint32_t tx_size = 0;
-                            std::memcpy(&tx_size, &payload[pos], 4);
-                            pos += 4;
-
-                            if (tx_size == 0 || tx_size > MAX_TX_BYTES || tx_size > payload.size() - pos) {
-                                complete_refresh();
-                                g_logger.error("[CSN-TX] Invalid tx_size=" + std::to_string(tx_size));
-                                return;
-                            }
-
-                            Transaction tx;
-                            {
-                                std::vector<uint8_t> tx_bytes(payload.begin() + pos,
-                                                               payload.begin() + pos + tx_size);
-                                if (!dinero::TransactionSerializer::Deserialize(tx, tx_bytes)) {
-                                    complete_refresh();
-                                    g_logger.error("[CSN-TX] TX deserialization failed");
                                     return;
                                 }
-                            }
-                            pos += tx_size;
-
-                            // 4. Num proofs
-                            if (4 > payload.size() - pos) return;
-                            uint32_t num_proofs = 0;
-                            std::memcpy(&num_proofs, &payload[pos], 4);
-                            pos += 4;
-
-                            if (num_proofs > MAX_PROOFS) {
-                                complete_refresh();
-                                g_logger.error("[CSN-TX] Too many proofs: " + std::to_string(num_proofs));
-                                return;
-                            }
-
-                            // 5. Parse per-input proofs
-                            std::vector<std::pair<consensus::UtreexoProof, consensus::SpentOutputData>> input_proofs;
-                            input_proofs.reserve(num_proofs);
-
-                            for (uint32_t i = 0; i < num_proofs; i++) {
-                                if (4 > payload.size() - pos) {
-                                    complete_refresh();
-                                    g_logger.error("[CSN-TX] Truncated proof header at index " + std::to_string(i));
-                                    return;
-                                }
-                                uint32_t proof_size = 0;
-                                std::memcpy(&proof_size, &payload[pos], 4);
-                                pos += 4;
-
-                                if (proof_size > MAX_PROOF_BYTES || proof_size > payload.size() - pos) {
-                                    complete_refresh();
-                                    g_logger.error("[CSN-TX] Invalid proof_size=" + std::to_string(proof_size));
-                                    return;
-                                }
-
-                                consensus::UtreexoProof proof;
-                                try {
-                                    std::vector<uint8_t> proof_bytes(payload.begin() + pos,
-                                                                      payload.begin() + pos + proof_size);
-                                    proof = consensus::UtreexoProof::deserialize(proof_bytes);
-                                } catch (const std::exception& e) {
-                                    complete_refresh();
-                                    g_logger.error("[CSN-TX] Proof deserialization failed at index " + std::to_string(i));
-                                    return;
-                                }
-                                pos += proof_size;
-
-                                // Value (8 bytes LE)
-                                if (8 > payload.size() - pos) return;
-                                uint64_t value = 0;
-                                for (int b = 0; b < 8; b++)
-                                    value |= static_cast<uint64_t>(payload[pos + b]) << (b * 8);
-                                pos += 8;
-
-                                // Script size (4 bytes LE)
-                                if (4 > payload.size() - pos) return;
-                                uint32_t script_size = 0;
-                                std::memcpy(&script_size, &payload[pos], 4);
-                                pos += 4;
-
-                                if (script_size > MAX_SCRIPT_BYTES || script_size > payload.size() - pos) {
-                                    complete_refresh();
-                                    g_logger.error("[CSN-TX] Invalid script_size=" + std::to_string(script_size));
-                                    return;
-                                }
-
-                                std::vector<uint8_t> scriptPubKey(payload.begin() + pos,
-                                                                   payload.begin() + pos + script_size);
-                                pos += script_size;
-
-                                consensus::SpentOutputData spent;
-                                spent.value = value;
-                                spent.scriptPubKey = std::move(scriptPubKey);
-                                if (version >= 0x02) {
-                                    if (5 > payload.size() - pos) {
-                                        complete_refresh();
-                                        g_logger.error("[CSN-TX] Truncated maturity metadata at index " + std::to_string(i));
-                                        return;
+                                std::unique_ptr<MempoolService::PoolUse> pool_use;
+                                bool existing = false;
+                                bool published = false;
+                                bool proof_valid = false;
+                                // Called only under selected-chain ownership. Avoid the
+                                // worker's mutable StatelessNode stump/height caches.
+                                auto verify_selected = [&]() -> std::optional<VerifiedUtreexoTransaction> {
+                                    const auto* tip = chainstate_service->GetActiveTip();
+                                    auto* coins = chainstate_service->GetConsensusUTXOSet();
+                                    auto* db = chainstate_service->GetChainDB();
+                                    if (!tip || !coins || !db) return std::nullopt;
+                                    const auto durable = db->getTip();
+                                    if (!durable.ok() || durable->height < 0 ||
+                                        durable->hash != tip->hash || uint32_t(durable->height) != tip->height ||
+                                        coins->GetBestBlock() != tip->hash || coins->GetHeight() != tip->height)
+                                        return std::nullopt;
+                                    auto forest_owner = coins->LockForestShared();
+                                    const auto stump = consensus::UtreexoStump::fromForest(coins->GetForest());
+                                    return decoded.VerifyInputs(stump,tip->height);
+                                };
+                                {
+                                    auto selected = chainstate_service->AcquireBlockIngressActivationLock();
+                                    pool_use = MempoolService::AcquirePoolUse(mempool_for_utxotx);
+                                    const auto verified = verify_selected();
+                                    proof_valid = verified.has_value();
+                                    if (verified) {
+                                        existing = pool_use->Pool().getMempoolEntry(txid).has_value();
+                                        if (existing) published = pool_use->Pool().publishProofPayload(*verified);
                                     }
-                                    spent.created_height =
-                                        static_cast<uint32_t>(payload[pos]) |
-                                        (static_cast<uint32_t>(payload[pos + 1]) << 8) |
-                                        (static_cast<uint32_t>(payload[pos + 2]) << 16) |
-                                        (static_cast<uint32_t>(payload[pos + 3]) << 24);
-                                    pos += 4;
-                                    spent.is_coinbase = (payload[pos++] & 0x01) != 0;
                                 }
-
-                                input_proofs.emplace_back(std::move(proof), std::move(spent));
-                            }
-
-                            // 6. Accumulator root (32 bytes)
-                            if (32 > payload.size() - pos) {
-                                complete_refresh();
-                                g_logger.error("[CSN-TX] Missing accumulator root");
-                                return;
-                            }
-                            consensus::UtreexoHash acc_root;
-                            acc_root.assign(payload.begin() + pos, payload.begin() + pos + 32);
-                            pos += 32;
-
-                            // 7. Validate via StatelessNode
-                            const uint32_t validation_height = stateless_node->GetSyncHeight() + 1;
-                            if (!stateless_node->ValidateUtreexoTx(tx, input_proofs, acc_root, validation_height)) {
-                                complete_refresh();
-                                g_logger.warning("[CSN-TX] utxotx proof validation failed from " + peer_addr);
-                                return;
-                            }
-
-                            // 8. Accept into mempool or refresh existing proof
-                            if (mempool_for_utxotx) {
-                                bool already_in_mempool = mempool_for_utxotx->hasTransaction(txid);
-
-                                if (already_in_mempool) {
-                                    // REFRESH PATH (#6): TX already in mempool, update proof + cache
-                                    mempool_for_utxotx->mempool().refreshProof(
-                                        txid, acc_root, stateless_node->GetSyncHeight());
-                                    mempool_for_utxotx->mempool().setCachedUtxoTxPayload(
-                                        txid, std::vector<uint8_t>(payload.begin(), payload.end()));
-                                    if (tx_relay_for_utxotx) {
-                                        tx_relay_for_utxotx->CompleteRefresh(txid);
-                                        tx_relay_for_utxotx->RecordBridgeResponse(peer_addr);
-                                    }
-                                    g_logger.info("[CSN-TX] Refreshed proof for " + txid.GetHex().substr(0, 16) +
-                                                 "... from " + peer_addr);
-                                } else {
-                                    // NEW TX PATH: accept into mempool
-                                    bool accepted_new_tx = false;
-                                    auto submit_result = mempool_for_utxotx->Submit(tx, TxOrigin::P2P);
-                                    if (submit_result.accepted()) {
-                                        mempool_for_utxotx->mempool().refreshProof(
-                                            txid, acc_root, stateless_node->GetSyncHeight());
-                                        mempool_for_utxotx->mempool().setCachedUtxoTxPayload(
-                                            txid, std::vector<uint8_t>(payload.begin(), payload.end()));
-                                        accepted_new_tx = true;
+                                bool admitted = false;
+                                if (proof_valid && !existing) {
+                                    // Canonical admission owns signatures/policy and its
+                                    // callbacks. Orchard remains unavailable in SubmitBody.
+                                    const auto result = mempool_for_utxotx->SubmitBody(decoded.Body(),TxOrigin::P2P);
+                                    admitted = result.accepted();
+                                    if (admitted) {
+                                        // Admission may span a tip change. Revalidate the
+                                        // complete snapshot before attaching its proof cache.
+                                        auto selected = chainstate_service->AcquireBlockIngressActivationLock();
+                                        const auto verified = verify_selected();
+                                        if (verified) published = pool_use->Pool().publishProofPayload(*verified);
                                     } else {
-                                        g_logger.warning(
-                                            "[CSN-TX] Mempool rejection: " +
-                                            std::string(TxRejectCodeToString(submit_result.code)) +
-                                            ": " + submit_result.message);
-                                    }
-                                    if (tx_relay_for_utxotx) {
-                                        tx_relay_for_utxotx->RecordBridgeResponse(peer_addr);
-                                        if (accepted_new_tx) {
-                                            tx_relay_for_utxotx->AnnounceTx(txid);
-                                        } else {
-                                            tx_relay_for_utxotx->CompleteRefresh(txid);
-                                        }
-                                    }
-                                    if (accepted_new_tx) {
-                                        g_logger.info("[CSN-TX] Accepted utxotx " + txid.GetHex().substr(0, 16) +
-                                                     "... from " + peer_addr + " (" +
-                                                     std::to_string(num_proofs) + " proofs)");
+                                        g_logger.warning("[CSN-TX] Mempool rejection: " +
+                                            std::string(TxRejectCodeToString(result.code)) + ": " + result.message);
                                     }
                                 }
+                                // No selected-chain, forest or pool lock survives into
+                                // relay callbacks; the service operation remains pinned.
+                                if (published) {
+                                    tx_relay_for_utxotx->CompleteRefresh(txid);
+                                    tx_relay_for_utxotx->RecordBridgeResponse(peer_addr);
+                                    if (admitted) tx_relay_for_utxotx->AnnounceTx(txid);
+                                    g_logger.info("[CSN-TX] Published complete proof payload for " +
+                                        txid.GetHex().substr(0,16) + " from " + peer_addr);
+                                } else {
+                                    tx_relay_for_utxotx->CompleteRefresh(txid);
+                                    g_logger.warning("[CSN-TX] Proof payload was not published for " +
+                                        txid.GetHex().substr(0,16));
+                                }
+                            } catch (const std::exception& error) {
+                                // A post-publication callback failure does not undo an
+                                // admitted body or its already published proof payload.
+                                g_logger.warning(std::string("[CSN-TX] Receive operation refused or callback failed: ") + error.what());
                             }
                         };
 
@@ -5629,6 +5513,18 @@ bool DaemonApp::Init(int argc, char** argv) {
             auto header_chain_ptr = ctx_.header_chain;
             auto chainstate_ptr = ctx_.chainstate;
             auto p2p_weak = std::weak_ptr<P2PService>(p2p_service);  // Capture weak to avoid cycle
+            // A valid header proves this peer knows that exact height even when
+            // another path receives/activates its body. Publish before body
+            // processing; never substitute the selector's global best height.
+            auto record_block_header = [header_sync = ctx_.header_sync, p2p_weak](
+                    const std::string& peer_addr, const BlockHeader& header) {
+                const auto height = header_sync->ObserveBlockHeader(header);
+                if (height) {
+                    if (auto p2p = p2p_weak.lock()) {
+                        p2p->get().update_peer_synced_headers(peer_addr, *height);
+                    }
+                }
+            };
             constexpr size_t MAX_HEADERS_PER_MSG = 2000;  // Bitcoin standard
             auto stateless_cmpct_refresh_times =
                 std::make_shared<std::unordered_map<std::string, std::chrono::steady_clock::time_point>>();
@@ -5710,18 +5606,10 @@ bool DaemonApp::Init(int argc, char** argv) {
                             }
                         }
 
-                        // Credit the peer with the last header IT sent, whether or
-                        // not it was new to us: a peer re-sending headers we got
-                        // from someone else first still holds those blocks.
-                        if (header_chain_ptr) {
-                            // #441: copy under the selector's lock.
-                            consensus::HeaderIndexEntry last_copy{};
-                            const bool have_last =
-                                header_chain_ptr->GetHeaderCopy(headers.back().GetHash(), last_copy);
-                            auto p2p_locked = p2p_weak.lock();
-                            if (have_last && p2p_locked) {
-                                p2p_locked->get().update_peer_height(peer_addr, last_copy.height);
-                                p2p_locked->get().update_peer_synced_headers(peer_addr, last_copy.height);
+                        if (process_result.accepted_height) {
+                            if (auto p2p_locked = p2p_weak.lock()) {
+                                p2p_locked->get().update_peer_synced_headers(
+                                    peer_addr, *process_result.accepted_height);
                             }
                         }
 
@@ -5885,7 +5773,7 @@ bool DaemonApp::Init(int argc, char** argv) {
                 auto header_chain = ctx_.header_chain;
                 auto prune_service = ctx_.prune;  // Phase 34.8: Capture prune service
 
-                p2p_service->OnNewBlock = [block_relay, chainstate, block_download, header_chain, prune_service, p2p_service](
+                p2p_service->OnNewBlock = [block_relay, chainstate, block_download, header_chain, prune_service, p2p_service, record_block_header](
                     const std::string& peer_addr,
                     const ::P2PMessage& msg
                 ) {
@@ -5893,6 +5781,20 @@ bool DaemonApp::Init(int argc, char** argv) {
                         // DEBUG: Entry point
                         std::cout << "[P2P-DEBUG] >>> OnNewBlock ENTRY from " << peer_addr
                                   << " payload=" << msg.payload.size() << " bytes" << std::endl;
+
+                        // Select the family from a checked parent/header height before
+                        // the historical decoder can consume a typed envelope.
+                        const auto family=ClassifyNetworkBlock(msg.payload);
+                        if (family.family==NetworkBlockFamily::Unavailable) return;
+                        if (family.family==NetworkBlockFamily::Orchard) {
+                            const auto result=ReceiveOrchardNetworkBlock(peer_addr,msg.payload,GetConfig().utreexo_stateless);
+                            if (result!=OrchardNetworkDisposition::Refused)
+                                record_block_header(peer_addr,family.header);
+                            if (result==OrchardNetworkDisposition::Connected && prune_service) {
+                                try { prune_service->triggerPruneIfNeeded(); } catch (...) {}
+                            }
+                            return;
+                        }
 
                         // Deserialize block from P2P message
                         Block block = DeserializeBlockFromP2PMessage(msg);
@@ -5962,6 +5864,8 @@ bool DaemonApp::Init(int argc, char** argv) {
                                       << "... (scheduler still syncing)" << std::endl;
                             return;
                         }
+
+                        record_block_header(peer_addr, block.header);
 
                         // Relay-requested blocks during sync should be routed through
                         // BlockRelayManager so relay scheduler bookkeeping stays coherent.
@@ -6073,7 +5977,7 @@ bool DaemonApp::Init(int argc, char** argv) {
                 std::cout << "[DaemonApp] ✅ Phase G.2 OnNewBlock wired to ChainstateService + BlockRelayManager" << std::endl;
 
                 const bool csn_mode_for_compact = GetConfig().utreexo_stateless;
-                p2p_service->OnCompactBlock = [block_relay, csn_mode_for_compact, chainstate, p2p_service,
+                p2p_service->OnCompactBlock = [block_relay, csn_mode_for_compact, chainstate, p2p_service, record_block_header,
                                                stateless_cmpct_refresh_times,
                                                stateless_cmpct_refresh_retry_armed,
                                                stateless_cmpct_refresh_mutex](
@@ -6112,6 +6016,7 @@ bool DaemonApp::Init(int argc, char** argv) {
                         if (compact.GetTxCount() == 0) {
                             throw std::runtime_error("empty compact block payload");
                         }
+                        record_block_header(peer_addr, compact.header);
                         block_relay->HandleCompactBlock(peer_addr, compact);
                     } catch (const std::exception& e) {
                         g_logger.error("[BlockRelay] Error processing cmpctblock from " + peer_addr +
@@ -6158,7 +6063,7 @@ bool DaemonApp::Init(int argc, char** argv) {
                 ) {
                     try {
                         // Deserialize transaction from P2P message
-                        Transaction tx = DeserializeTransactionFromP2PMessage(msg);
+                        auto tx = DeserializeTransactionFromP2PMessage(msg);
 
                         // Route to TxRelayManager
                         tx_relay->HandleTx(peer_addr, tx);
@@ -6287,7 +6192,7 @@ bool DaemonApp::Init(int argc, char** argv) {
                 auto chainstate = std::dynamic_pointer_cast<ChainstateService>(ctx_.chainstate);
                 auto* block_ingress = ctx_.block_ingress;
                 if (chainstate) {
-                    block_relay->SetValidateBlockCallback([block_ingress, chainstate, p2p_service, block_download](
+                    block_relay->SetValidateBlockCallback([block_ingress, chainstate, p2p_service, block_download, record_block_header](
                         const Block& block,
                         const std::string& peer_address
                     ) -> dinero::BlockRelayManager::BlockValidationOutcome {
@@ -6300,6 +6205,8 @@ bool DaemonApp::Init(int argc, char** argv) {
                                 return Outcome::Rejected;
                             }
 
+                            // Reconstructed/orphan bodies may now have a known parent.
+                            record_block_header(peer_address, block.header);
                             const auto accept_result = block_ingress->Submit(block, BlockOrigin::P2P);
                             if (!accept_result.accepted()) {
                                 // Losing the single-flight race is not a
@@ -6332,6 +6239,17 @@ bool DaemonApp::Init(int argc, char** argv) {
                             return Outcome::Rejected;
                         }
                     });
+
+                    // Full getdata serving retains the selected reader and exact
+                    // mixed-body bytes. The legacy callback below remains for
+                    // historical compact-block reconstruction only.
+                    block_relay->SetFullBlockSource(chainstate);
+                    for (const auto& service : services_) {
+                        auto ingress = std::dynamic_pointer_cast<BlockIngressService>(service);
+                        if (ingress && ingress.get() == ctx_.block_ingress)
+                            block_relay->SetOrchardBlockIngress(chainstate, ingress);
+                    }
+
 
                     // Wire BlockRelayManager retrieve callback (BlockRelay → ChainDB)
                     block_relay->SetRetrieveBlockCallback([chainstate](
@@ -6450,42 +6368,35 @@ bool DaemonApp::Init(int argc, char** argv) {
                 });
 
                 // Wire TxRelayManager structured submit callback (TxRelay → MempoolService)
-                // Uses submitTransaction() for structured results (enables orphan pool)
+                // Typed ingress preserves P2P origin and structured retryable results
                 auto mempool = std::dynamic_pointer_cast<MempoolService>(ctx_.mempool);
                 if (mempool) {
-                    tx_relay->SetSubmitTxCallback([mempool](
-                        const Transaction& tx,
+                    tx_relay->SetSubmitBodyCallback([mempool](
+                        const MempoolTransaction& tx,
                         const std::string& peer_address
                     ) -> TxAcceptResult {
                         try {
                             // Route to MempoolService for mempool validation
                             // relay=false: TxRelayManager handles relay after acceptance
-                            return mempool->submitTransaction(tx, "p2p:" + peer_address, false);
+                            return mempool->SubmitBody(tx, TxOrigin::P2P);
                         } catch (const std::exception& e) {
-                            g_logger.error("[TxRelay] Transaction validation failed: " + std::string(e.what()));
-                            return TxAcceptResult::Rejected(TxRejectCode::INVALID_TX, e.what());
+                            g_logger.error("[TxRelay] Transaction validation unavailable for " + peer_address + ": " + std::string(e.what()));
+                            return TxAcceptResult::Rejected(TxRejectCode::UNAVAILABLE, e.what());
                         }
                     });
 
                     // Wire TxRelayManager retrieve callback (TxRelay → MempoolService)
-                    tx_relay->SetRetrieveTxCallback([mempool](
-                        const uint256& txid,
-                        Transaction& out_tx
-                    ) -> bool {
+                    tx_relay->SetRetrieveBodyCallback([mempool](
+                        const uint256& txid
+                    ) -> std::optional<MempoolTransaction> {
                         try {
-                            // Retrieve transaction from mempool
-                            auto tx_ptr = mempool->getTransaction(txid);
-                            if (!tx_ptr) {
-                                g_logger.debug("[TxRelay] Transaction not found in mempool: " +
-                                             txid.GetHex().substr(0, 16) + "...");
-                                return false;
-                            }
-
-                            out_tx = *tx_ptr;
-                            return true;
+                            auto use = MempoolService::AcquirePoolUse(mempool);
+                            const auto entry = use->Pool().getMempoolEntry(txid);
+                            if (!entry) return std::nullopt;
+                            return entry->tx;
                         } catch (const std::exception& e) {
                             g_logger.error("[TxRelay] Transaction retrieval failed: " + std::string(e.what()));
-                            return false;
+                            return std::nullopt;
                         }
                     });
                 }
@@ -6633,12 +6544,14 @@ bool DaemonApp::Init(int argc, char** argv) {
                 // backfill with phantom in-flight. The backfill store path keeps
                 // only the raw body and the background validation worker rebuilds
                 // the forest itself (assumeutxo_replay), so the proof is
-                // unnecessary. Tip sync still uses MSG_UTREEXO_BLOCK.
+                // unnecessary. Historical tip sync still uses MSG_UTREEXO_BLOCK; active
+                // Orchard requests exact typed bytes; receive validates the storage owner.
                 const bool for_backfill = sched && sched->CurrentRequestIsBackfill();
                 // Use binary format with raw bytes (not hex) to preserve correct byte order
-                uint32_t inv_type = (csn_mode && !for_backfill)
-                    ? static_cast<uint32_t>(dinero::InventoryType::MSG_UTREEXO_BLOCK)
-                    : static_cast<uint32_t>(dinero::InventoryType::MSG_BLOCK);
+                const auto request_type=SelectBlockRequestInventory(
+                    block_hash,csn_mode,for_backfill,block_height);
+                if (!request_type) return;
+                const uint32_t inv_type=static_cast<uint32_t>(*request_type);
                 ::P2PMessage msg = ::P2PMessage::create_getdata_binary(
                     block_hash.begin(), 32, inv_type
                 );
@@ -6646,6 +6559,15 @@ bool DaemonApp::Init(int argc, char** argv) {
                 // instead of broadcast_message (async outbox queue which may be
                 // congested during startup and silently drop messages).
                 auto peers = p2p_service->get().get_connected_peers();
+                if (peers.empty()) {
+                    // No peer yet (startup before the first handshake, or between
+                    // reconnects): nothing to select. Report the zero-recipient
+                    // send so the scheduler releases its slot and retries later,
+                    // without the misleading "no NODE_UTREEXO_BRIDGE peers" warning
+                    // a phone logged hundreds of times per start.
+                    if (sched) sched->NotifyGetDataDispatched(block_hash, 0, std::string());
+                    return;
+                }
                 int sent = 0;
                 int eligible = 0;
                 std::string selected_peer;
@@ -6905,6 +6827,47 @@ bool DaemonApp::Init(int argc, char** argv) {
                     }
                 );
 
+                // Exact typed bytes use the same bounded canonical ingress queue.
+                // The scheduler releases its mutex before invoking this callback.
+                std::weak_ptr<BlockIngressService> typed_ingress_owner;
+                for (const auto& service : services_) {
+                    auto ingress = std::dynamic_pointer_cast<BlockIngressService>(service);
+                    if (ingress && ingress.get() == ctx_.block_ingress) typed_ingress_owner = ingress;
+                }
+                block_download->SetConnectBlockBytesCallback(
+                    [typed_ingress_owner, chainstate_for_drain, parallel=ctx_.parallel_block_download, prune_for_drain](const std::vector<uint8_t>& bytes,
+                        const uint256& hash, uint32_t height, const std::string&) {
+                        using Result = dinero::consensus::ConnectBlockResult;
+                        auto ingress=typed_ingress_owner.lock();
+                        const auto received=SubmitDownloadedOrchardBlock(chainstate_for_drain,ingress,parallel,bytes,hash,height);
+                        if (received==OrchardNetworkDisposition::Stored) return Result::ACCEPTED_NOT_ACTIVE;
+                        if (received!=OrchardNetworkDisposition::Connected) return Result::TEMPORARY_FAIL;
+                        if (prune_for_drain) {
+                            try { prune_for_drain->triggerPruneIfNeeded(); } catch (...) {}
+                        }
+                        return Result::CONNECTED;
+                    });
+
+                // Compact Orchard has a typed canonical path distinct from
+                // historical CSN proof validation. Keep stateless mode enabled.
+                if (GetConfig().utreexo_stateless) {
+                    block_download->SetCompactOrchardConnectCallback(
+                        [typed_ingress_owner, chainstate_for_drain, parallel=ctx_.parallel_block_download,
+                         prune_for_drain](const std::vector<uint8_t>& bytes,
+                            const uint256& hash, uint32_t height, const std::string&) {
+                            using Result = dinero::consensus::ConnectBlockResult;
+                            const auto received=SubmitDownloadedCompactOrchardBlock(
+                                chainstate_for_drain,typed_ingress_owner.lock(),parallel,bytes,hash,height);
+                            // Stored may mean the queue has not started yet.
+                            // Keep it retryable; never mark it side-accepted.
+                            if (received!=OrchardNetworkDisposition::Connected) return Result::TEMPORARY_FAIL;
+                            if (prune_for_drain) {
+                                try { prune_for_drain->triggerPruneIfNeeded(); } catch (...) {}
+                            }
+                            return Result::CONNECTED;
+                        });
+                }
+
                 // BlockDownloadScheduler → GetTipHeight (queries actual chainstate tip for drain ordering)
                 block_download->SetGetTipHeightCallback(
                     [chainstate_for_drain]() -> uint32_t {
@@ -7021,6 +6984,10 @@ bool DaemonApp::Init(int argc, char** argv) {
                         existing_on_block(peer_addr, msg);
                     }
 
+                    // Typed completion belongs to exact canonical queue acceptance.
+                    // Never decode typed/refused bytes as a historical Block or
+                    // clear a parallel flight merely because storage succeeded.
+                    if (ClassifyNetworkBlock(msg.payload).family!=NetworkBlockFamily::Historical) return;
                     // Notify parallel scheduler
                     if (parallel_download) {
                         try {
@@ -7055,9 +7022,25 @@ bool DaemonApp::Init(int argc, char** argv) {
         std::cout << "[DaemonApp] ═══════════════════════════════════════════════════════\n" << std::endl;
     }
 
+    if (chain_db_) {
+        const auto tip = chain_db_->getTip();
+        const auto notice = daemon::OrchardLightNodeNotice(
+            Params(), GetConfig().utreexo_stateless, tip.ok() && tip->height > 0 ? uint32_t(tip->height) : 0);
+        if (!notice.empty()) std::cerr << "[DaemonApp] ⚠️  " << notice << std::endl;
+    }
+
     std::cout << "[DaemonApp] All services initialized successfully" << std::endl;
     init_succeeded = true;
     return true;
+}
+
+bool DaemonApp::PersistFreshStoreGenesisRecords() {
+    if (!FreshStoreCreated() || !started_) return false;
+    auto chainstate = std::dynamic_pointer_cast<ChainstateService>(ctx_.chainstate);
+    const bool ok = chainstate && chainstate->PersistGenesisStorageRecords();
+    std::cout << "[DaemonApp] Fresh store genesis records "
+              << (ok ? "persisted; restarting to upgrade storage" : "NOT persisted; storage stays legacy") << std::endl;
+    return ok;
 }
 
 bool DaemonApp::Start() {
@@ -7125,7 +7108,8 @@ bool DaemonApp::Start() {
     // ChainstateService::Init()) but BEFORE services Start() so that
     // ChainstateService::Start() → ActivateBestChain() → ConnectBlock()
     if (ctx_.mempool && ctx_.mempool->isInitialized() && ctx_.chainstate) {
-        auto& mempool = ctx_.mempool->mempool();
+        auto pool_use = MempoolService::AcquirePoolUse(ctx_.mempool);
+        auto& mempool = pool_use->Pool();
         auto chainstate = std::dynamic_pointer_cast<ChainstateService>(ctx_.chainstate);
         if (chainstate) {
             mempool.setShieldedState(chainstate->GetShieldedCommitmentTree(),
@@ -7133,6 +7117,69 @@ bool DaemonApp::Start() {
             std::cout << "[DaemonApp] ✅ Shielded state wired to Mempool" << std::endl;
         }
     }
+
+    // A scheduled profile may replay selected blocks in ChainstateService::Start.
+    // Install its real, running mailbox consumers before that pass or P2P starts.
+    // Early worker reads defer until their initialized services grant ownership;
+    // retained outbox work and the normal periodic pass remain authoritative.
+    const auto start_runtime_delivery=[this]() -> bool {
+        try {
+            runtime_delivery_worker_=std::make_unique<RuntimeDeliveryWorker>(ctx_.chainstate,ctx_.wallet);
+            runtime_delivery_worker_->Start();
+            if(pool_manager_runtime_) {
+                pool_manager_runtime_->startMaintenanceThread();
+                std::cout << "[DaemonApp] Pool maintenance worker started; accounting remains asynchronous" << std::endl;
+            }
+    #ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
+            if (Params().orchard_activation_height!=UINT32_MAX) {
+                if (!consensus::OrchardProfileConfigurationValid(Params()))
+                    throw std::runtime_error("Invalid configured Orchard notification profile");
+                const auto config=std::dynamic_pointer_cast<ConfigService>(ctx_.config);
+                if (!config || !ctx_.chainstate)
+                    throw std::runtime_error("Runtime notification configuration unavailable");
+                if (config->GetBool("lightning.oracles.enable",true))
+                    throw std::runtime_error("Configured legacy oracles have no typed notification adapter");
+            const bool expects_pool=config->GetBool("pool.accounting.enable",false) && GetConfig().allow_pool_mining;
+                if (expects_pool!=static_cast<bool>(pool_manager_runtime_))
+                    throw std::runtime_error("Configured pool accounting owner unavailable");
+                // The daemon owns these actual workers. Vault attachment may occur
+                // later; its worker phase remains installed even before attachment.
+                // Legacy family absence is checked from ChainstateService's real
+                // registrations by installation, not inferred from a socket error.
+                const std::array<RuntimeConsumerBinding,static_cast<size_t>(RuntimeConsumerKind::Count)> bindings{{
+                    {RuntimeConsumerKind::WalletAndReadmission,MakeRuntimeWalletNotifications(*runtime_delivery_worker_)},
+                    {RuntimeConsumerKind::PoolAccounting,pool_manager_runtime_?MakeRuntimePoolNotifications(*pool_manager_runtime_):nullptr},
+                    {RuntimeConsumerKind::ChainOracle,nullptr},
+                    {RuntimeConsumerKind::TimeOracle,nullptr},
+                    {RuntimeConsumerKind::TransactionOracle,nullptr},
+                    {RuntimeConsumerKind::Vault,MakeRuntimeVaultNotifications(*runtime_delivery_worker_)},
+                    {RuntimeConsumerKind::ExtraWalletNotifiers,nullptr}
+                }};
+                auto notifications=std::make_shared<RuntimeNotificationComposition>(bindings);
+                ctx_.chainstate->setRuntimeBlockNotifications(notifications);
+                runtime_notifications_=std::move(notifications);
+                std::cout << "[DaemonApp] Typed runtime notifications installed; consumer recovery remains asynchronous" << std::endl;
+            }
+    #endif
+            std::cout << "[DaemonApp] Runtime delivery worker started; recovery remains asynchronous" << std::endl;
+        } catch (const std::exception& e) {
+            std::cerr << "[DaemonApp] Runtime delivery worker startup failed: " << e.what() << std::endl;
+            Stop();
+            return false;
+        } catch (...) {
+            std::cerr << "[DaemonApp] Runtime delivery worker startup failed" << std::endl;
+            Stop();
+            return false;
+        }
+        return true;
+    };
+#ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
+    if (Params().orchard_activation_height!=UINT32_MAX) {
+        // Enable the existing complete Stop path if any subsequent Start fails.
+        started_=true;
+        if (!start_runtime_delivery()) return false;
+    }
+#endif
 
     std::cout << "[DaemonApp] Starting core services..." << std::endl;
 
@@ -7154,9 +7201,11 @@ bool DaemonApp::Start() {
 
     std::cout << "[DaemonApp] ✅ Core services started" << std::endl;
 
-    // Marker discipline: advisory recovery markers may survive a crash, but
-    // they must not outlive a later healthy canonical startup forever.
-    {
+    // Full-state marker discipline is not compact recovery authority. Compact
+    // startup has already authenticated its retained proof and current state;
+    // preserve advisory markers without calling legacy undo/restamp helpers.
+    if (!GetConfig().utreexo_stateless || !chain_db_ ||
+        !storage::ReadOrchardCompactStorageBinding(*chain_db_)) {
         const std::filesystem::path post_start_data_dir =
             ctx_.config ? std::filesystem::path(std::dynamic_pointer_cast<ConfigService>(ctx_.config)->DataDir())
                         : std::filesystem::path{};
@@ -7202,7 +7251,15 @@ bool DaemonApp::Start() {
     // MUST happen after services Init() because Mempool is created in Init()
     // ═══════════════════════════════════════════════════════════════════
     if (ctx_.block_assembler && ctx_.mempool && ctx_.mempool->isInitialized()) {
-        ctx_.block_assembler->setMempool(&ctx_.mempool->mempool());
+        std::weak_ptr<ChainstateService> weak_chain = ctx_.chainstate;
+        ctx_.block_assembler->SetChainstateReadGuardFactory([weak_chain]()
+            -> std::unique_ptr<BlockAssembler::ChainstateReadGuard> {
+            return ChainstateService::AcquireMiningReadGuard(weak_chain.lock());
+        });
+        std::weak_ptr<MempoolService> weak_pool = ctx_.mempool;
+        ctx_.block_assembler->SetMempoolAccessFactory([weak_pool]() -> std::unique_ptr<MempoolAccess> {
+            return MempoolService::AcquirePoolUse(weak_pool.lock());
+        });
         std::cout << "[DaemonApp] ✅ BlockAssembler wired to Mempool" << std::endl;
     } else if (ctx_.block_assembler) {
         std::cerr << "[DaemonApp] ⚠️  BlockAssembler created but Mempool not available" << std::endl;
@@ -7275,6 +7332,20 @@ bool DaemonApp::Start() {
                           << (chainstate->IsInIBD() ? "IBD" : "normal")
                           << ", max_in_flight=" << queue_config.max_in_flight_blocks
                           << ", max_queued=" << queue_config.max_queued_blocks << ")" << std::endl;
+            } else if (GetConfig().utreexo_stateless &&
+                       Params().orchard_activation_height != UINT32_MAX &&
+                       consensus::OrchardProfileConfigurationValid(Params())) {
+                // Root-only Orchard owners deliberately have no full forest.
+                // They still need the canonical typed-task scheduler: each task
+                // owns its proofs and selected-state validation/application.
+                // This immutable queue mode refuses historical Block jobs and
+                // constructs no full UTXO owner, validator or script worker pool.
+                const auto queue_config = chainstate->IsInIBD()
+                    ? dinero::consensus::ValidationQueue::Config::forIBD()
+                    : dinero::consensus::ValidationQueue::Config::forNormalOperation();
+                ctx_.validation_queue = dinero::consensus::ValidationQueue::CreateCanonicalOnly(queue_config);
+                ctx_.validation_queue->start();
+                std::cout << "[DaemonApp] ValidationQueue started (canonical-only compact Orchard)" << std::endl;
             } else {
                 std::cout << "[DaemonApp] ValidationQueue skipped (ConsensusUTXOSet not available)" << std::endl;
             }
@@ -7292,12 +7363,22 @@ bool DaemonApp::Start() {
             auto utreexo_forest = chainstate->utreexoForest();
             auto utxo_index = chainstate->utxoIndex();
 
-            if (utreexo_forest && utxo_index) {
-                ctx_.block_assembler->SetConsensusUTXOSet(chainstate->GetConsensusUTXOSet());  // snapshot forest under shared lock (UAF guard)
-                // v2.2.0: Create adapter to bridge wallet UTXOIndex to consensus IUTXOProvider
-                // BlockAssembler takes shared_ptr<IUTXOProvider> - lifetime managed automatically
-                auto assembler_utxo_adapter = std::make_shared<consensus::WalletUTXOAdapter>(utxo_index);
-                ctx_.block_assembler->SetUTXOProvider(assembler_utxo_adapter);
+            auto* consensus_utxo_set = chainstate->GetConsensusUTXOSet();
+            if (utreexo_forest && consensus_utxo_set &&
+                (!GetConfig().utreexo_stateless || utxo_index)) {
+                ctx_.block_assembler->SetConsensusUTXOSet(consensus_utxo_set);
+                if (!GetConfig().utreexo_stateless) {
+                    // Covered operations retain the selected-chain guard. Mining
+                    // full-node inputs must not depend on local wallet ownership.
+                    std::shared_ptr<consensus::IUTXOProvider> provider(
+                        static_cast<consensus::IUTXOProvider*>(consensus_utxo_set),
+                        [](consensus::IUTXOProvider*) {});
+                    ctx_.block_assembler->SetUTXOProvider(std::move(provider));
+                } else {
+                    // Keep existing stateless behavior pending pre-base/oracle qualification.
+                    ctx_.block_assembler->SetUTXOProvider(
+                        std::make_shared<consensus::WalletUTXOAdapter>(utxo_index));
+                }
 
                 // Wire BlockValidator for Utreexo root computation (single source of truth)
                 // This ensures BlockAssembler uses the same ComputeUtreexoRootPure as validation
@@ -7362,7 +7443,8 @@ bool DaemonApp::Start() {
         if (mempool_service) {
             std::cout << "[DaemonApp] Loading mempool from disk..." << std::endl;
 
-            Mempool& mempool = mempool_service->mempool();
+            auto pool_use = MempoolService::AcquirePoolUse(mempool_service);
+            Mempool& mempool = pool_use->Pool();
             std::string mempool_path = mempool.getDefaultMempoolPath();
 
             // Get data directory for correct path
@@ -7377,12 +7459,21 @@ bool DaemonApp::Start() {
             if (mempool.loadFromDisk(mempool_path)) {
                 std::cout << "[DaemonApp] ✅ Mempool loaded from " << mempool_path << std::endl;
             } else {
-                std::cout << "[DaemonApp] ℹ️  Mempool load failed or file not found (starting with empty mempool)" << std::endl;
+                std::cout << "[DaemonApp] ℹ️  Mempool recovery incomplete; original file retained and overwrite disabled" << std::endl;
             }
         }
     }
 
     started_ = true;
+    if (!runtime_delivery_worker_ && !start_runtime_delivery()) return false;
+    // Scheduled profiles install running mailbox consumers before core Start.
+    // An early pass may correctly defer while the selected source is unavailable.
+    // Wake again after core startup and mempool recovery, without certifying that
+    // any consumer has caught up or waiting under a service/SQLite owner.
+    runtime_delivery_worker_->CaptureWakeHandle().RequestReplay();
+    if (pool_manager_runtime_)
+        pool_manager_runtime_->CaptureMaintenanceWakeHandle().RequestReplay();
+    std::cout << "[DaemonApp] Runtime recovery workers woken after core startup and mempool recovery" << std::endl;
     std::cout << "[DaemonApp] Startup recovery complete; starting external listeners..." << std::endl;
 
     if (ctx_.rpc) {
@@ -7533,7 +7624,218 @@ bool DaemonApp::Start() {
     return true;
 }
 
+struct CoreReopenReceipt::Data {
+    std::shared_ptr<ReopenRpcGate> gate;
+    std::shared_ptr<ReopenRpcGate::Pause> pause;
+    std::unique_ptr<ReopenServiceFence> wallet_fence,pool_fence;
+    std::unique_ptr<daemon::ReopenCandidateJournal> journal;
+    std::string wallet_name;std::filesystem::path root;
+    std::shared_ptr<const uint8_t> original_identity,replacement_identity;bool committed=false,resumed=false;
+    std::optional<CoreReopenReceipt::Readmission> prepared;
+    const std::thread::id thread=std::this_thread::get_id();
+    Data(std::shared_ptr<ReopenRpcGate> g,std::shared_ptr<ReopenRpcGate::Pause> p)
+        :gate(std::move(g)),pause(p?std::move(p):std::shared_ptr<ReopenRpcGate::Pause>(ReopenRpcGate::Begin(gate))){}
+    void Check()const{if(thread!=std::this_thread::get_id())throw std::logic_error("Foreign Core reopen receipt");}
+    void BeforeInit(const daemon::DatadirGuard& guard)const{
+        Check();if(!committed||resumed||root!=guard.DataDir())throw std::logic_error("Core reopen root/phase mismatch");
+        journal->ForEach(guard,[](const auto&){});journal->CheckPending(guard,wallet_name);
+    }
+    void Closed(const daemon::DatadirGuard& guard)const{
+        BeforeInit(guard);pause->Check();
+        if((original_identity&&original_identity.use_count()!=1)||
+            (replacement_identity&&replacement_identity.use_count()!=1))
+            throw std::logic_error("Core handoff still has live App readers");
+    }
+};
+CoreReopenReceipt::CoreReopenReceipt(std::unique_ptr<Data> data):data_(std::move(data)){}
+CoreReopenReceipt::~CoreReopenReceipt()=default;
+std::shared_ptr<ReopenRpcGate> CoreReopenReceipt::Gate()const{data_->Check();return data_->gate;}
+const std::string& CoreReopenReceipt::WalletName()const{data_->Check();return data_->wallet_name;}
+const std::string& CoreReopenReceipt::CandidateJournal()const{data_->Check();return data_->journal->Name();}
+void CoreReopenReceipt::CheckBeforeInit(const daemon::DatadirGuard& guard)const{
+    data_->BeforeInit(guard);
+}
+ClosedCoreReopenIntent CoreReopenReceipt::ClosedForHandoff(const daemon::DatadirGuard& guard)const{
+    data_->Closed(guard);const std::weak_ptr<Data> weak=data_;
+    return ClosedCoreReopenIntent([weak](const daemon::DatadirGuard& root){
+        const auto saved=weak.lock();if(!saved)throw std::logic_error("Expired Core handoff lifecycle intent");saved->Closed(root);
+    },data_->wallet_name,data_->journal->Name());
+}
+
+std::unique_ptr<CoreReopenReceipt> DaemonApp::CloseForInternalReopen(
+    const daemon::DatadirGuard& guard,std::shared_ptr<ReopenRpcGate::Pause> pause){
+    std::lock_guard<std::recursive_mutex> lifecycle(close_reopen_mutex_);
+    if(!started_||reopen_mempool_sealed_||!guard.IsHeld()||!locked_datadir_||
+        *locked_datadir_!=guard.DataDir()||!ctx_.config||
+        std::filesystem::path(ctx_.config->DataDir())!=guard.DataDir())
+        throw std::logic_error("Core reopen requires the actual started locked root");
+    if(pause){pause->Check();if(pause->gate_!=ctx_.reopen_rpc_gate)throw std::logic_error("Wrong Core reopen RPC gate");}
+    auto receipt=std::unique_ptr<CoreReopenReceipt>(new CoreReopenReceipt(
+        std::make_unique<CoreReopenReceipt::Data>(ctx_.reopen_rpc_gate,std::move(pause))));
+    auto& saved=*receipt->data_;saved.original_identity=reopen_identity_;saved.root=guard.DataDir();
+    {
+        const auto wallet=std::dynamic_pointer_cast<WalletService>(ctx_.wallet);
+        const auto pool=std::dynamic_pointer_cast<MempoolService>(ctx_.mempool);
+        saved.wallet_fence=WalletService::FenceForReopen(wallet,std::chrono::seconds(30));
+        saved.pool_fence=MempoolService::FenceForReopen(pool,std::chrono::seconds(30));
+        saved.wallet_name=wallet->ReopenWalletName(*saved.wallet_fence);
+        saved.journal=daemon::ReopenCandidateJournal::Capture(guard,pool,*saved.pool_fence);
+        // Nothing above replaced an owner; failure aborts gates in reverse
+        // order, with RPC LAST. After this irreversible point, abandon stays
+        // paused. This private flag cannot be set from a decoded old journal.
+        saved.journal->SelectForReopen(guard,saved.wallet_name,[&]{
+            saved.pause->HoldClosed();saved.committed=true;
+        });
+        reopen_mempool_sealed_=true;
+        saved.pool_fence->CommitToStop();saved.wallet_fence->CommitToStop();
+        saved.pool_fence.reset();saved.wallet_fence.reset();
+    }
+    // Ordinary teardown still joins ALL validation/bridge/P2P/wallet readers.
+    // No selected-chain/database/operation mutex is held while joining them.
+    Stop();return receipt;
+}
+
+std::unique_ptr<CoreReopenReceipt> DaemonApp::PreparePendingReopen(
+    const daemon::DatadirGuard& guard,const std::shared_ptr<ReopenRpcGate>& gate){
+    std::lock_guard<std::recursive_mutex> lifecycle(close_reopen_mutex_);
+    if(started_||chain_db_||ctx_.config||ctx_.chainstate||ctx_.wallet||ctx_.mempool||!gate||
+        !guard.IsHeld()||!locked_datadir_||*locked_datadir_!=guard.DataDir())
+        throw std::logic_error("Pending Core reopen requires a fresh App and actual locked root");
+    std::string wallet;auto journal=daemon::ReopenCandidateJournal::OpenPending(guard,wallet);
+    if(!journal)return {};
+    // Audit before claiming a pause: a malformed file cannot steal a live
+    // token, change its generation, or turn missing work into startup authority.
+    std::shared_ptr<ReopenRpcGate::Pause> pause=gate->Allows(gate->Snapshot())?
+        ReopenRpcGate::Begin(gate):ReopenRpcGate::Recover(gate);
+    pause->HoldClosed();
+    auto receipt=std::unique_ptr<CoreReopenReceipt>(new CoreReopenReceipt(
+        std::make_unique<CoreReopenReceipt::Data>(gate,std::move(pause))));
+    auto& saved=*receipt->data_;saved.journal=std::move(journal);saved.wallet_name=std::move(wallet);
+    saved.root=guard.DataDir();saved.replacement_identity=reopen_identity_;saved.committed=true;
+    ctx_.reopen_rpc_gate=gate;receipt->CheckBeforeInit(guard);return receipt;
+}
+void DaemonApp::BindClosedReopenBeforeInit(const daemon::DatadirGuard& guard,CoreReopenReceipt& receipt){
+    std::lock_guard<std::recursive_mutex> lifecycle(close_reopen_mutex_);
+    if(started_||chain_db_||ctx_.config||ctx_.chainstate||ctx_.wallet||ctx_.mempool||!services_.empty()||
+        !guard.IsHeld()||!locked_datadir_||*locked_datadir_!=guard.DataDir())
+        throw std::logic_error("Core reopen binding requires a fresh unused locked App");
+    auto& saved=*receipt.data_;saved.Closed(guard);
+    saved.replacement_identity=reopen_identity_;ctx_.reopen_rpc_gate=saved.gate;
+}
+
+CoreReopenReceipt::Readmission DaemonApp::PrepareReadmissionAfterInternalReopen(
+    const daemon::DatadirGuard& guard,CoreReopenReceipt& receipt){
+    std::lock_guard<std::recursive_mutex> lifecycle(close_reopen_mutex_);auto& saved=*receipt.data_;saved.Check();
+    if(!started_||saved.original_identity==reopen_identity_||saved.resumed||ctx_.reopen_rpc_gate!=saved.gate||
+        (saved.replacement_identity&&saved.replacement_identity!=reopen_identity_)||
+        !locked_datadir_||*locked_datadir_!=saved.root||!ctx_.config||
+        std::filesystem::path(ctx_.config->DataDir())!=saved.root)
+        throw std::logic_error("Core reopen replacement is not ready");
+    receipt.CheckBeforeInit(guard);saved.pause->Check();
+    saved.prepared.reset();
+    // A successful/partially completed preparation belongs to this App only.
+    // Another replacement must recover the durable intent AFTER abandonment,
+    // not steal this still-live receipt/pause or reuse its prepared pool view.
+    saved.replacement_identity=reopen_identity_;
+    const auto wallet=std::dynamic_pointer_cast<WalletService>(ctx_.wallet);
+    if(!saved.wallet_name.empty()){
+        auto use=WalletService::AcquireWalletUse(wallet);
+        if(!use->Wallet().hasActiveWallet()||use->Wallet().getCurrentWalletName()!=saved.wallet_name)
+            use->Wallet().open(saved.wallet_name); // Normal registry open, never seed replacement/unlock.
+        wallet->EnsureRuntimeWalletBindings();
+        if(use->Wallet().getCurrentWalletName()!=saved.wallet_name)throw std::runtime_error("Named wallet reopen failed");
+    }
+    const auto pool=std::dynamic_pointer_cast<MempoolService>(ctx_.mempool);
+    if(!pool)throw std::runtime_error("Core reopen canonical pool unavailable");
+    CoreReopenReceipt::Readmission result;result.candidates=saved.journal->Count();
+    saved.journal->ForEach(guard,[&](const auto& candidate){
+        const auto body=DecodeRelayTransaction(candidate.body,RelayTransactionReadMode::AvailableFamilies);
+        auto accepted=TxAcceptResult::Rejected(TxRejectCode::UNAVAILABLE,"Reopen proof/body not yet admitted");
+        if(!candidate.proof.empty())accepted=pool->SubmitProofBody(
+            UtreexoTransactionPayload::Decode(candidate.proof,RelayTransactionReadMode::AvailableFamilies),TxOrigin::CORE_REOPEN);
+        if(!accepted.accepted()&&accepted.code!=TxRejectCode::ALREADY_IN_MEMPOOL&&accepted.code!=TxRejectCode::ALREADY_IN_CHAIN)
+            accepted=pool->SubmitBody(body,TxOrigin::CORE_REOPEN); // Same canonical validator, not cached validity.
+        if(accepted.accepted()||accepted.code==TxRejectCode::ALREADY_IN_CHAIN){++result.resolved;return;}
+        if(accepted.code==TxRejectCode::ALREADY_IN_MEMPOOL){
+            auto use=MempoolService::AcquirePoolUse(pool);const auto present=use->Pool().getMempoolEntry(body.GetTxid().AsUint256());
+            if(present&&present->tx.Serialize()==candidate.body){++result.resolved;return;}
+        }
+        ++result.retained; // Never delete unresolved bodies, dependencies or stale proofs.
+    });
+    if(result.candidates!=result.resolved+result.retained)throw std::logic_error("Core reopen inventory mismatch");
+    // No archive or RPC resume here. The complete typed corpus remains the
+    // selected durable fallback across a stop/exit before host publication.
+    saved.prepared=result;
+    return result;
+}
+void DaemonApp::PublishPreparedReadmission(CoreReopenReceipt& receipt,const std::function<void()>& publish){
+    std::lock_guard<std::recursive_mutex> lifecycle(close_reopen_mutex_);auto& saved=*receipt.data_;saved.Check();
+    if(!publish||!started_||!saved.prepared||saved.resumed||
+        saved.replacement_identity!=reopen_identity_||ctx_.reopen_rpc_gate!=saved.gate)
+        throw std::logic_error("Core reopen publication is not prepared for this running App");
+    saved.pause->Check();
+    publish(); // A throwing/aborted publication leaves the SAME gate HELD.
+    saved.pause->Resume();saved.resumed=true;
+}
+void DaemonApp::FailClosedReopenPause(const std::shared_ptr<ReopenRpcGate::Pause>& pause){
+    if(!pause)throw std::logic_error("Missing failed Core reopen pause");
+    pause->HoldClosed();
+}
+void DaemonApp::ArchivePublishedReadmission(const daemon::DatadirGuard& guard,CoreReopenReceipt& receipt){
+    std::lock_guard<std::recursive_mutex> lifecycle(close_reopen_mutex_);auto& saved=*receipt.data_;saved.Check();
+    if(!started_||!saved.resumed||!saved.prepared||saved.replacement_identity!=reopen_identity_||
+        !guard.IsHeld()||!locked_datadir_||*locked_datadir_!=guard.DataDir()||saved.root!=guard.DataDir())
+        throw std::logic_error("Core reopen archive is not bound to the published App/root");
+    if(!saved.prepared->retained)saved.journal->ArchivePending(guard,saved.wallet_name);
+}
+void DaemonApp::SelectClosedActivationForReopen(const daemon::DatadirGuard& guard,CoreReopenReceipt& receipt,
+    std::shared_ptr<const consensus::HeaderChainSelector> headers,
+    std::shared_ptr<const consensus::OrchardSnapshotSection> proof,const std::function<bool()>& cancelled){
+#ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
+    const auto closed=receipt.ClosedForHandoff(guard);closed.Check(guard);
+    if(!headers||!proof)throw std::logic_error("Core activation handoff needs authenticated proof DATA");
+    ChainWriteToken token;
+    auto prepared=OrchardSnapshotStore::PrepareActivationHandoff(guard,token,std::move(headers),std::move(proof),cancelled);
+    auto selected=OrchardSnapshotStore::SelectActivationHandoff(guard,closed,std::move(prepared),cancelled);
+    if(!selected)throw std::runtime_error("Core activation handoff did not select its prepared root");
+    // Close both read-only source reservations before normal replacement Init.
+#else
+    (void)guard;(void)receipt;(void)headers;(void)proof;(void)cancelled;
+    throw std::runtime_error("Activation handoff unavailable without the Orchard runtime");
+#endif
+}
+void DaemonApp::RecoverInterruptedActivationForReopen(const daemon::DatadirGuard& guard,CoreReopenReceipt& receipt,
+    const std::function<bool()>& cancelled){
+    const auto closed=receipt.ClosedForHandoff(guard);closed.Check(guard);
+    const auto chain=guard.DataDir()/"blockchain";
+    if(storage::OrchardHandoffControlsAbsent(chain))return;
+    std::error_code error;const auto done=std::filesystem::symlink_status(chain/storage::OrchardHandoffCompleted,error);
+    if(done.type()!=std::filesystem::file_type::not_found)return; // Normal completed-root Init still audits/refuses it.
+    if(error&&error!=std::errc::no_such_file_or_directory)throw std::runtime_error("Core activation completion control unreadable");
+    // Explicit durable intent, full cohort and immutable retained headers only.
+    // Malformed partials and unmatched/missing intents still fail closed.
+#ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
+    auto selected=OrchardSnapshotStore::RecoverActivationHandoff(guard,closed,{},cancelled);
+    if(!selected)throw std::runtime_error("Core activation handoff controls lack a recoverable selection");
+#else
+    (void)cancelled;
+    throw std::runtime_error("Activation handoff recovery unavailable without the Orchard runtime");
+#endif
+}
+CoreReopenReceipt::Readmission DaemonApp::ResumeAfterInternalReopen(
+    const daemon::DatadirGuard& guard,CoreReopenReceipt& receipt){
+    std::lock_guard<std::recursive_mutex> lifecycle(close_reopen_mutex_);
+    // Never trust a previously prepared result: normal wallet binding and
+    // canonical proof/body admission are repeated against the CURRENT owners.
+    const auto result=PrepareReadmissionAfterInternalReopen(guard,receipt);auto& saved=*receipt.data_;
+    // An unresolved corpus remains the sole pending intent for a later normal
+    // admission attempt. Never replace it with a newer empty capture.
+    if(!result.retained)saved.journal->ArchivePending(guard,saved.wallet_name);
+    saved.pause->Resume();saved.resumed=true;return result;
+}
+
 void DaemonApp::Stop() {
+    std::lock_guard<std::recursive_mutex> lifecycle(close_reopen_mutex_);
     // Free any thread parked on a test barrier so shutdown cannot block on
     // one waiting out its timeout.
     dinero::testing::BarriersAborted().store(true);
@@ -7555,6 +7857,36 @@ void DaemonApp::Stop() {
 
     const auto shutdown_start = ShutdownClock::now();
     LogShutdownPhase("interrupting", shutdown_start, "DaemonApp::Stop entered");
+
+    // Remove the daemon-owned handoff before joining either worker. These
+    // tokens own only wake mailboxes, so removal cannot join under selected
+    // ownership. Acquiring/releasing selected ownership happens inside setter.
+    if (runtime_notifications_) {
+        if (!ctx_.chainstate) std::terminate();
+        ctx_.chainstate->setRuntimeBlockNotifications(nullptr);
+        runtime_notifications_.reset();
+        LogShutdownPhase("runtime_notifications_detached",shutdown_start,"typed notification provider removed");
+    }
+
+    // Stop and release the worker while its source, wallet and admission
+    // dependencies are alive. Join outside all consumer and selected owners.
+    // Prepared notification handoffs own only a stopped wake mailbox.
+    if (runtime_delivery_worker_) {
+        runtime_delivery_worker_->Stop();
+        runtime_delivery_worker_.reset();
+        LogShutdownPhase("runtime_delivery_stopped", shutdown_start, "durable delivery worker joined");
+    }
+
+    // Drain pool callbacks and maintenance while their raw daemon dependencies
+    // are alive; retained RPC/chain manager handles cannot reopen payment calls.
+    ClosePoolRuntime();
+    LogShutdownPhase("pool_payments_closed", shutdown_start, "pool callbacks drained");
+
+    // Close/drain raw-context vault dispatch while every daemon dependency is
+    // still alive. No wallet/chain/service owner is held here. A reentrant
+    // teardown contract violation cannot proceed into dangling callbacks.
+    try {vault::CloseVaultRuntimeDispatch();}
+    catch (...) {std::terminate();}
 
     // Join before P2P/chainstate callbacks can be torn down.
     if (ctx_.block_download) {
@@ -7628,12 +7960,13 @@ void DaemonApp::Stop() {
 
     // v0.13.0.2 Step B: Save mempool to disk before shutdown
     // CRITICAL: Must happen BEFORE services stop (mempool needs to be operational)
-    if (ctx_.mempool) {
+    if (ctx_.mempool && !reopen_mempool_sealed_) {
         auto mempool_service = std::dynamic_pointer_cast<MempoolService>(ctx_.mempool);
         if (mempool_service) {
             std::cout << "[DaemonApp] Saving mempool to disk..." << std::endl;
 
-            Mempool& mempool = mempool_service->mempool();
+            auto pool_use = MempoolService::AcquirePoolUse(mempool_service);
+            Mempool& mempool = pool_use->Pool();
             std::string mempool_path = mempool.getDefaultMempoolPath();
 
             // Get data directory for correct path
@@ -7731,6 +8064,16 @@ void DaemonApp::Stop() {
         }
     }
     LogShutdownPhase("workers_joined", shutdown_start, "all registered services stopped");
+
+    // RPC and notification producers have stopped. Release the vault's
+    // canonical-read callbacks before the daemon context is destroyed.
+    try {
+        vault::ShutdownVaultRuntime();
+    } catch (const std::exception& e) {
+        std::cerr << "[DaemonApp] Vault shutdown error: " << e.what() << std::endl;
+    } catch (...) {
+        std::cerr << "[DaemonApp] Unknown vault shutdown error" << std::endl;
+    }
 
     // Clear singleton AFTER all services stopped (not before)
     // so service destructors can still access DaemonContext if needed.

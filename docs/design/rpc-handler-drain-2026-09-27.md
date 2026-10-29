@@ -1,0 +1,9 @@
+# HTTP connection ownership during shutdown
+
+HTTP shutdown stops and joins the accept thread, interrupts each enrolled client socket, and waits for every connection handler to finish before returning. Handlers retain responsibility for closing their sockets. Enrollment, shutdown, close and completion publication share one mutex, so shutdown cannot act on a descriptor that has already been closed and reused. Completed handlers make no further access to the server after publishing completion and releasing that mutex.
+
+The previous elapsed-time limit is replaced by completion ownership. A running application handler must finish before dependent services can be destroyed; socket shutdown only releases network I/O and does not cancel application work. A stalled application handler therefore keeps shutdown pending. Synchronous start/stop from a connection handler refuses before acquiring the lifecycle mutex, avoiding a self-wait or lock inversion with an external stop. The built-in stop RPC retains its existing asynchronous shutdown request.
+
+Local component tests use an explicitly registered benign blocking handler, idle clients, lifecycle reentry and an exception-throwing handler. They retain the server object until all clients and handlers finish, including when testing copied older behavior. They verify completion ordering, interruption of idle reads, restart and cleanup. Existing actual-daemon listener-startup and clean-stop cases remain required. No production endpoint, offensive payload, crash reproduction or fleet test is used.
+
+This owns HTTP connection lifetime through ordinary shutdown. It does not cancel arbitrary proofs or long-running work, certify every non-HTTP wallet caller, repair direct explicit WalletService::Stop misuse, or establish whole-node crash/power-loss/reorg/readiness qualification. Mainnet activation and release gates remain unchanged.

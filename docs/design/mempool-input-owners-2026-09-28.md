@@ -1,0 +1,15 @@
+# Mempool input owners
+
+The common mempool input index now associates each outpoint with the IDs of its spending transactions. Signed admission reads these owners and checks that each still names an entry with that input before applying the existing replacement policy. It no longer scans every transaction to discover direct input conflicts. Signature, fee, ancestor, replacement and resource rules are unchanged.
+
+Both removal implementations release only the removed transaction's membership. An outpoint disappears from the index when its last owner is removed. The existing full-state rollback and prepared block publication include the entire index. The transparent synthetic `addUnchecked` helper also uses that rollback while inserting its entry and rebuilding the overlay. This helper can intentionally contain multiple spending owners; it does not grant canonical admission permission.
+
+`getInputSpenders` returns a sorted copy under the pool lock. It checks present owner-to-entry bindings and exposes neither a mutable reference nor a reservation. A result describes that snapshot only. It does not certify that every possible owner was discovered or remains admitted after return.
+
+The old compatibility implementation below `submitTransactionTestOnly` remains compiled out. The active preflight continues to call the same signed admission implementation with `test_only=true`. Updating the old insertion expression for the new index type does not qualify that inactive body.
+
+## Validation
+
+Four benign component cases use real ChainDB, ConsensusUTXOSet and signed Taproot transactions: admission/replacement/preflight/refusal and copied-result retention; abandoned prepared conflict updates followed by confirmation and committed publication; expiry/size maintenance/clear/refill; and explicit synthetic multiple owners with independent removal. Existing fixtures remain unchanged. The required Orchard CI lane checks enabled registration and all four execution markers and retains its inventory and log. Fresh backend ON and OFF full daemon builds plus 35 declared test targets passed. Each configuration executed 39 component CTests and six daemon integration CTests successfully. All 68 project C++ files linked into the new input-owner test were freshly instrumented with ASan/UBSan; all four cases passed, and 1,291 source/header hashes remained stable. External libraries, Rust, C, PQClean, the daemon and the OFF binary are outside this sanitizer scope; macOS leak detection is off. No original-source or synchronization-removal controls were run. All 1,211 checked preexisting C++/header/Python/shell test files and 166 prior Orchard CTest commands remain unchanged. Current-source Linux CI qualification is still required.
+
+This is an input ownership prerequisite, not typed Orchard mempool admission. Orchard nullifier/anchor/pool-balance admission, canonical typed bodies, relay, selection, readmission, pending wallet integration, production notifications and independent selected-parent activation still need implementation and qualification. Whole-state copy costs and load/platform coverage remain open. Mainnet activation remains unset.

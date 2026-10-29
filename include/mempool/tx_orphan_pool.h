@@ -1,7 +1,7 @@
 #pragma once
 
 #include "primitives/uint256.h"
-#include "wallet/transaction.h"
+#include "daemon/mempool_transaction.h"
 #include <chrono>
 #include <mutex>
 #include <set>
@@ -12,7 +12,7 @@
 namespace dinero {
 
 struct OrphanEntry {
-    Transaction tx;
+    MempoolTransaction tx;
     uint256 txid;
     std::string peer_id;
     std::chrono::steady_clock::time_point expiry;
@@ -25,6 +25,7 @@ public:
 
     // Add an orphan transaction. Returns true if added, false if rejected.
     bool addOrphan(const Transaction& tx, const std::string& peer_id);
+    bool addOrphan(MempoolTransaction body, const std::string& peer_id);
 
     // Remove a specific orphan by txid.
     void eraseOrphan(const uint256& txid);
@@ -33,7 +34,9 @@ public:
     void eraseOrphansForPeer(const std::string& peer_id);
 
     // Get orphan transactions whose missing parent matches parent_txid.
+    // Historical compatibility refuses a mixed-family result, never truncates.
     std::vector<Transaction> getOrphansForParent(const uint256& parent_txid);
+    std::vector<MempoolTransaction> getOrphanBodiesForParent(const uint256& parent_txid);
 
     // Check if a txid is already in the orphan pool.
     bool hasOrphan(const uint256& txid) const;

@@ -3,8 +3,11 @@
 #include "bech32/bech32.hpp"
 #include "crypto/sha256.h"
 #include "crypto/secure_random.h"
+#include "primitives/amount.h"
 #include "wallet/swap/swap_crypto.h"
 #include "wallet/swap/tower.h"
+
+#include <openssl/crypto.h>
 
 #include <algorithm>
 #include <filesystem>
@@ -32,10 +35,21 @@ bool SweepPending(const SwapSession& s) {
 
 bool Finished(const SwapSession& s) { return Terminal(s.record.state) && !SweepPending(s); }
 
-Bytes32 Derive(const KeyDeriver& derive, const std::vector<uint32_t>& path) {
-    const auto k = derive(path);
-    if (!k) throw std::runtime_error("wallet locked: unlock it to use swaps");
-    return *k;
+DerivedKeyBatch Derive(const KeyDeriver& derive, const std::vector<std::vector<uint32_t>>& paths,
+                       bool require_funding_identity = false) {
+    auto batch = derive(paths, require_funding_identity);
+    if (!batch) throw std::runtime_error("wallet locked: unlock it to use swaps");
+    // A malformed result is not an ordinary relock and cannot use the cache.
+    if (batch->keys.size() != paths.size()) throw std::invalid_argument("incomplete swap key batch");
+    return std::move(*batch);
+}
+
+SwapKeyMaterial BoundSwapKeysForIndex(const KeyDeriver& derive, SwapNetwork network,
+                                     uint32_t index, const Bytes32& store_key, bool require_funding_identity = false) {
+    auto material = SwapKeysForIndex(derive, network, index, require_funding_identity);
+    if (CRYPTO_memcmp(material.store_key.data(), store_key.data(), store_key.size()) != 0)
+        throw std::runtime_error("swap key batch belongs to a different wallet");
+    return material;
 }
 
 std::map<std::string, std::string> ParseKeyValues(const std::string& text) {
@@ -43,7 +57,8 @@ std::map<std::string, std::string> ParseKeyValues(const std::string& text) {
     std::map<std::string, std::string> kv;
     for (std::string line; std::getline(in, line);) {
         const auto eq = line.find('=');
-        if (eq != std::string::npos) kv[line.substr(0, eq)] = line.substr(eq + 1);
+        if (eq != std::string::npos && !kv.emplace(line.substr(0, eq), line.substr(eq + 1)).second)
+            throw std::invalid_argument("duplicate encrypted swap offer field");
     }
     return kv;
 }
@@ -93,18 +108,41 @@ void RequireWithinCaps(const SwapManagerConfig& c, uint64_t din_una, uint64_t bt
 
 // ---- Keys -------------------------------------------------------------------
 
-Bytes32 SwapStoreKeyFromSeed(const KeyDeriver& derive, SwapNetwork network) {
-    return DeriveSwapStoreKey(Derive(derive, {kSwapKeyPurpose, uint32_t(network), 0}));
+DerivedKeyBatch::DerivedKeyBatch(DerivedKeyBatch&& other) noexcept : wallet_id(other.wallet_id) {
+    keys.swap(other.keys);
+    other.wallet_id = {};
+}
+DerivedKeyBatch::~DerivedKeyBatch() {
+    for (auto& key : keys) OPENSSL_cleanse(key.data(), key.size());
+}
+SwapKeyMaterial::~SwapKeyMaterial() {
+    OPENSSL_cleanse(keys.din_secret_key.data(), keys.din_secret_key.size());
+    OPENSSL_cleanse(keys.btc_secret_key.data(), keys.btc_secret_key.size());
+    OPENSSL_cleanse(keys.din_sweep_secret_key.data(), keys.din_sweep_secret_key.size());
+    OPENSSL_cleanse(store_key.data(), store_key.size());
 }
 
-SwapKeyMaterial SwapKeysForIndex(const KeyDeriver& derive, SwapNetwork network, uint32_t index) {
+Bytes32 SwapStoreKeyFromSeed(const KeyDeriver& derive, SwapNetwork network) {
+    const auto batch = Derive(derive, {{kSwapKeyPurpose, uint32_t(network), 0}});
+    return DeriveSwapStoreKey(batch.keys[0]);
+}
+
+SwapKeyMaterial SwapKeysForIndex(const KeyDeriver& derive, SwapNetwork network, uint32_t index, bool require_funding_identity) {
     if (index >= 0x80000000U) throw std::invalid_argument("swap index out of range");
+    const auto batch = Derive(derive, {
+        {kSwapKeyPurpose, uint32_t(network), 0},
+        {kSwapKeyPurpose, uint32_t(network), 1, index},
+        {kSwapKeyPurpose, uint32_t(network), 2, index},
+        {kSwapKeyPurpose, uint32_t(network), 3, index}}, require_funding_identity);
     SwapKeyMaterial m;
-    m.keys.din_secret_key = Derive(derive, {kSwapKeyPurpose, uint32_t(network), 1, index});
-    m.keys.btc_secret_key = Derive(derive, {kSwapKeyPurpose, uint32_t(network), 2, index});
-    m.keys.din_sweep_secret_key = Derive(derive, {kSwapKeyPurpose, uint32_t(network), 3, index});
-    XOnlyOf(m.keys.din_secret_key);  // throws on an invalid scalar (negligible probability)
+    m.store_key = DeriveSwapStoreKey(batch.keys[0]);
+    m.wallet_id = batch.wallet_id;
+    m.keys.din_secret_key = batch.keys[1];
+    m.keys.btc_secret_key = batch.keys[2];
+    m.keys.din_sweep_secret_key = batch.keys[3];
+    XOnlyOf(m.keys.din_secret_key);
     CompressedOf(m.keys.btc_secret_key);
+    XOnlyOf(m.keys.din_sweep_secret_key);
     return m;
 }
 
@@ -132,8 +170,8 @@ std::string SwapId(const SwapOffer& offer) {
 
 // ---- Manager ----------------------------------------------------------------
 
-SwapManager::SwapManager(SwapManagerConfig config, KeyDeriver derive, DinRpc din, BtcRpc btc)
-    : config_(std::move(config)), derive_(std::move(derive)), din_(std::move(din)), btc_(std::move(btc)) {}
+SwapManager::SwapManager(SwapManagerConfig config, KeyDeriver derive, DinRpc din, BtcRpc btc, DinFundingOwner funding)
+    : config_(std::move(config)), derive_(std::move(derive)), din_(std::move(din)), btc_(std::move(btc)), funding_(std::move(funding)) {}
 
 void SwapManager::SetTowerSink(std::function<void(const std::string&)> sink) {
     std::lock_guard<std::mutex> lock(mu_);
@@ -146,11 +184,23 @@ void SwapManager::SetTowerAck(std::function<bool(const std::string&, const std::
 }
 
 Bytes32 SwapManager::StoreKey() {
+    struct CandidateKey {
+        Bytes32 value{};
+        ~CandidateKey() { OPENSSL_cleanse(value.data(), value.size()); }
+    } candidate;
     try {
-        store_key_ = SwapStoreKeyFromSeed(derive_, config_.network);
+        candidate.value = SwapStoreKeyFromSeed(derive_, config_.network);
     } catch (const std::runtime_error&) {
         if (!store_key_) throw;  // locked and never unlocked since start: paused
+        return *store_key_;     // established live swaps survive an ordinary relock
     }
+    // A successfully derived different key is not a relock. Refuse outside
+    // the unavailable-key catch so it cannot overwrite or bypass the owner
+    // of this manager's cached sessions.
+    if (store_key_ && CRYPTO_memcmp(store_key_->data(), candidate.value.data(), candidate.value.size()) != 0) {
+        throw std::runtime_error("swap wallet changed: restore the original wallet before using this manager");
+    }
+    if (!store_key_) store_key_ = candidate.value;
     return *store_key_;
 }
 
@@ -193,13 +243,14 @@ SwapSession SwapManager::LoadSession(uint32_t index, const Bytes32& store_key) c
 }
 
 void SwapManager::StartSession(uint32_t index, SwapSession session, const Bytes32& store_key) {
-    const auto mat = SwapKeysForIndex(derive_, config_.network, index);
+    const auto mat = BoundSwapKeysForIndex(derive_, config_.network, index, store_key);
     RunnerConfig rc = config_.runner;
     rc.use_tower = static_cast<bool>(tower_sink_);
     rc.require_tower = config_.require_tower_for_bob;
     Live live;
     live.store = std::make_unique<EncryptedFileSwapStore>(SwapPath(index), store_key);
     live.io = std::make_unique<RpcSwapChainIo>(din_, btc_, session, rc);
+    live.io->SetDinFundingOwner(funding_);
     if (tower_sink_) live.io->SetTowerSink(tower_sink_);
     if (tower_ack_) live.io->SetTowerAck(tower_ack_);
     live.runner = std::make_unique<SwapRunner>(std::move(session), mat.keys, rc, *live.io, *live.store);
@@ -208,7 +259,15 @@ void SwapManager::StartSession(uint32_t index, SwapSession session, const Bytes3
 
 std::string SwapManager::MakeOffer(const OfferRequest& r, uint32_t now) {
     std::lock_guard<std::mutex> lock(mu_);
-    StoreKey();  // refuses a locked wallet before using an index
+    const Bytes32 store_key = StoreKey();  // bind this operation to the established store key
+    // Validate explicit fees before address parsing/index allocation. The real
+    // payer is captured with the complete derivation batch below.
+    if (!r.din_funding_fee_rate_hint || r.din_funding_fee_rate_hint > MAX_SUPPLY_UNA_CONST ||
+        !r.din_funding_maximum_fee_una || r.din_funding_maximum_fee_una > MAX_SUPPLY_UNA_CONST)
+        throw std::invalid_argument("new swap offer requires explicit bounded funding fee terms");
+    DinFundingBinding funding;
+    funding.fee_rate_hint = r.din_funding_fee_rate_hint;
+    funding.maximum_fee_una = r.din_funding_maximum_fee_una;
     if (r.din_lock_hours < r.btc_lock_hours + 24) throw std::invalid_argument("DIN lock must be >= BTC lock + 24 h");
     RequireWithinCaps(config_, r.din_amount_una, r.btc_amount_sat);
     RequireSane(config_, r.din_amount_una, r.btc_amount_sat, r.n_btc_confirmations);
@@ -218,7 +277,9 @@ std::string SwapManager::MakeOffer(const OfferRequest& r, uint32_t now) {
     // locked wallet is refused before an index is used up.
     SwapStoreKeyFromSeed(derive_, config_.network);
     const uint32_t index = AllocateIndex();
-    const auto mat = SwapKeysForIndex(derive_, config_.network, index);
+    const auto mat = BoundSwapKeysForIndex(derive_, config_.network, index, store_key, true);
+    funding.wallet_id = mat.wallet_id;
+    RequireDinFundingBinding(funding);  // never synthesize a missing payer
     // Fresh per offer, never derived from the index: see the header.
     const auto random = secure_random_bytes(32);
     Bytes32 secret{};
@@ -241,7 +302,10 @@ std::string SwapManager::MakeOffer(const OfferRequest& r, uint32_t now) {
     std::ostringstream f;
     f << "offer=" << text << "\ndin_payout=" << ToHex(din_payout) << "\nbtc_payout=" << ToHex(btc_payout) << "\n";
     f << "secret=" << ToHex(std::vector<uint8_t>(secret.begin(), secret.end())) << "\n";
-    SealToFile(OfferPath(index), StoreKey(), f.str());
+    f << "din_funding_wallet_id=" << ToHex(std::vector<uint8_t>(funding.wallet_id.begin(), funding.wallet_id.end())) << "\n"
+      << "din_funding_fee_rate_hint=" << funding.fee_rate_hint << "\n"
+      << "din_funding_maximum_fee_una=" << funding.maximum_fee_una << "\n";
+    SealToFile(OfferPath(index), store_key, f.str());
     WriteFileAtomically(OfferPath(index) + ".id", SwapId(o) + "\n");  // public: readable while locked
     return text;
 }
@@ -285,7 +349,7 @@ SwapManager::AcceptResult SwapManager::Accept(const std::string& text, const std
         s.btc_payout_script = PayoutScriptFromAddress(btc_refund_address, config_.runner.btc_hrp);
         SwapStoreKeyFromSeed(derive_, config_.network);  // a relocked wallet: refused before an index is used
         const uint32_t index = AllocateIndex();
-        const auto mat = SwapKeysForIndex(derive_, config_.network, index);
+        const auto mat = BoundSwapKeysForIndex(derive_, config_.network, index, store_key);
         s.record.role = Role::BtcSeller;
         s.record.offer = offer;
         s.record.accept.offer_id = OfferId(offer);
@@ -310,9 +374,15 @@ SwapManager::AcceptResult SwapManager::Accept(const std::string& text, const std
             if (OfferId(offer) != accept.offer_id) continue;
             const std::string id = SwapId(offer);
             if (already_started(id)) throw std::runtime_error("swap " + id + " already started");
-            const auto mat = SwapKeysForIndex(derive_, config_.network, index);
+            const auto mat = BoundSwapKeysForIndex(derive_, config_.network, index, store_key, true);
             SwapSession s;
             s.record.role = Role::DinSeller;
+            // An old pending offer is not permission to use today's selected
+            // wallet or fee defaults. Preserve it for explicit reconciliation.
+            s.din_funding_binding = ParseDinFundingBinding(kv.at("din_funding_wallet_id"),
+                kv.at("din_funding_fee_rate_hint"), kv.at("din_funding_maximum_fee_una"));
+            if (s.din_funding_binding->wallet_id != mat.wallet_id)
+                throw std::runtime_error("pending swap offer belongs to a different payer database");
             s.record.offer = offer;
             s.record.accept = accept;
             const auto secret_bytes = FromHex(kv["secret"]);
@@ -357,6 +427,8 @@ SwapSummary SwapManager::Summarize(uint32_t index, const SwapSession& s, const s
     m.btc_amount_sat = s.record.offer.btc_amount_sat;
     m.t_btc_unix = s.record.offer.t_btc_unix;
     m.t_din_unix = s.record.offer.t_din_unix;
+    if (!s.din_funding_raw.empty())
+        m.din_funding_submission_acknowledged = s.din_funding_submitted;
     m.tower_armed = s.tower_armed;
     m.sweep_pending = SweepPending(s);
     m.last_events = events;
@@ -438,7 +510,34 @@ void SwapManager::Cancel(const std::string& id) {
         std::string offer_id;
         if (std::ifstream in(path + ".id"); in) in >> offer_id;
         if (offer_id == id) {
-            fs::remove(path);  // nothing was locked for an unanswered offer
+            // The public sidecar is only a locator. Authenticate the existing
+            // encrypted offer and its identity before deleting either file.
+            struct ScopedKey {
+                Bytes32 value;
+                ~ScopedKey() { OPENSSL_cleanse(value.data(), value.size()); }
+            } key{StoreKey()};
+            struct ScopedPlaintext {
+                std::string value;
+                ~ScopedPlaintext() { OPENSSL_cleanse(value.data(), value.size()); }
+            } plaintext{OpenSealedFile(path, key.value)};
+            std::string offer_text;  // public offer only; do not copy the secret
+            bool found_offer = false;
+            for (size_t begin = 0; begin < plaintext.value.size();) {
+                const auto end = plaintext.value.find('\n', begin);
+                const auto length = (end == std::string::npos ? plaintext.value.size() : end) - begin;
+                if (length >= 6 && plaintext.value.compare(begin, 6, "offer=") == 0) {
+                    if (found_offer) throw std::runtime_error("ambiguous encrypted swap offer");
+                    found_offer = true;
+                    offer_text = plaintext.value.substr(begin + 6, length - 6);
+                }
+                if (end == std::string::npos) break;
+                begin = end + 1;
+            }
+            if (!found_offer) throw std::runtime_error("missing encrypted swap offer");
+            const auto offer = DecodeOffer(offer_text);
+            if (offer.network != config_.network || SwapId(offer) != id)
+                throw std::runtime_error("encrypted swap offer identity mismatch");
+            fs::remove(path);  // authenticated unanswered offer; nothing was locked
             fs::remove(path + ".id");
             return;
         }

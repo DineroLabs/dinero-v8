@@ -1,0 +1,7 @@
+# Compact package boundary topology
+
+The package fixture formerly built a linear chain of 90 KB transparent transactions beneath a compact transaction. Checking every ancestor correctly applies the 103,424-byte descendant limit to each transparent intermediate. That chain therefore cannot reach the intended 600,000-byte ancestor-package boundary.
+
+The fixture now uses six parallel parents and a final merge. Its shared-ancestor case uses two additional three-input merges, keeping every intermediate subtree within its own limit while reaching the same exact ancestor boundary and counting the common compact root once. The existing 600,000 ± 1 and 103,424 ± 1 boundary assertions, signing/proof generation, dry-run and real-submission checks, canonical-state preservation and rejection handling remain intact. A tenth case checks the transparent grandchild subtree at 103,423, 103,424 and 103,425 bytes despite a compact ancestor.
+
+Fresh local Ninja builds of the full daemon and proof producer passed with experimental compact regtest enabled and Orchard disabled. The actual CompactPackageBoundaries CTest passed all ten cases and recorded 109 admissions. The original nine cases, production policy, workflow, registration and 600-second deadline are retained. This Python fixture change has no new sanitizer or local original-source execution claim. Exact Linux compact-package qualification remains required; mainnet activation and release readiness are unchanged.

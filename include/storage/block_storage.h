@@ -81,12 +81,24 @@ public:
     // Blocks are written atomically with proper file rotation.
     StatusOr<FilePosition> writeBlock(const uint256& hash, const Block& block);
 
+    // Format-neutral storage for typed mixed-transaction callers. Validates
+    // bounded size and header/hash identity, NOT transaction commitments,
+    // scripts, proofs, activation or consensus. Caller validates the exact
+    // bytes before admission and stages this returned position with its index.
+    // Uses the same durable append/checksum/rotation path as historical blocks.
+    StatusOr<FilePosition> writeBlockBytes(const uint256& hash, const std::string& bytes);
+
     // Read a block from flat file storage
     //
     // Requires FilePosition from ChainDB block index.
     // Returns deserialized Block object.
     // Thread-safe: Multiple threads can read concurrently.
     StatusOr<Block> readBlock(const FilePosition& pos) const;
+
+    // Exact on-disk bytes after framing, bounded range and checksum checks.
+    // A checksum is not body authentication. The typed caller must recheck
+    // header identity and transaction/witness commitments before using them.
+    StatusOr<std::string> readBlockBytes(const FilePosition& pos) const;
 
     // Check if a block exists in flat file storage
     Status hasBlock(const FilePosition& pos) const;
@@ -237,6 +249,7 @@ public:
 
 private:
     // Internal helpers
+    StatusOr<FilePosition> writeSerializedBlock(const uint256&, const std::string&);
     Status openFile(uint32_t file_number);
     Status rotateFile();
     std::filesystem::path getFilePath(uint32_t file_number) const;

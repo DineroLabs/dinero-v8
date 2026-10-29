@@ -1,3 +1,4 @@
+#include "consensus/orchard_profile.h"
 #include "consensus/release_profile.h"
 // Canonical ChainParams implementation
 // This is the ONLY file that defines g_chainParams and implements Params()
@@ -47,6 +48,12 @@ static constexpr const char* EXPECTED_MERKLE_ROOT =
 // three-host restart/reorg rehearsal. Keeping this as one constant prevents a
 // partial-activation window from being introduced by changing only one field.
 static constexpr uint32_t MAINNET_COVENANT_PROFILE_V1_HEIGHT = 100000;
+
+// Operator-selected joint v8.2.0 boundary. All four consensus rules and the
+// service cutoff must use this one height. The branch ID was generated from a
+// cryptographic random source and is distinct from the isolated regtest ID 1.
+static constexpr uint32_t MAINNET_V8113_HEIGHT = 150000;
+static constexpr uint32_t MAINNET_ORCHARD_BRANCH_ID = 0x04b4ca97u;
 
 // ============================================================================
 // MAINNET PARAMETERS - Dinero Official Mainnet
@@ -123,6 +130,7 @@ static ChainParams g_mainnet = {
     // Operator-selected mainnet Auth cutover, 2026-09-09. This is a hard fork:
     // upgrade all validating nodes before 110000. Historical rules stay intact.
     .shielded_spend_auth_activation_height = 110000,
+    .shielded_compact_activation_height = MAINNET_V8113_HEIGHT,
     .shielded_private_covenant_activation_height = 110000,
     .shielded_outgoing_recovery_activation_height = 110000,
     .shielded_spend_auth_epoch_reset_height = 110000,
@@ -138,6 +146,7 @@ static ChainParams g_mainnet = {
     // Upgrade validators, miners and snapshot consumers before this height.
     .state_commitment_activation_height = 111000,
     .contextual_locks_activation_height = 111000,
+    .sixty_second_activation_height = MAINNET_V8113_HEIGHT,
     // Local snapshot acceptance policy, not a consensus finality guarantee.
     // A base needs 288 descendant headers on the selected best-work chain.
     .state_commitment_burial_depth = 288,
@@ -278,7 +287,13 @@ static ChainParams g_mainnet = {
         // Chainwork at this height:
         //   0x000000000000000000000000000000000000000000000000000001198ed06efa
         {13000, "0000006f34bdfd52f0d61556175a3ccec56fc57428a1b04f7e012ee7e245c8a3"},
-    }
+    },
+    .release_v8113_activation_height = MAINNET_V8113_HEIGHT,
+    .orchard_activation_height = MAINNET_V8113_HEIGHT,
+    .orchard_branch_id = MAINNET_ORCHARD_BRANCH_ID,
+    // Owner-selected v8.2.0 fork: authenticate the parent catalog from the
+    // first Orchard block. Testnet cutover remains separately coordinated.
+    .orchard_catalog_commitment_activation_height = MAINNET_V8113_HEIGHT,
 };
 
 // ============================================================================
@@ -531,6 +546,20 @@ std::string ConsensusChecksum(const ChainParams& params) {
            << "release_activation_height=" << params.release_v8113_activation_height << '\n';
     }
 
+    // Orchard's signing domain is consensus-authoritative at a scheduled
+    // boundary. Include both values in fleet drift detection while retaining
+    // the exact historical checksum of dormant profiles.
+    if (params.orchard_activation_height != UINT32_MAX) {
+        ss << "orchard_profile=v1\n"
+           << "orchard_activation_height=" << params.orchard_activation_height << '\n'
+           << "orchard_branch_id=" << params.orchard_branch_id << '\n';
+    }
+    if (params.orchard_catalog_commitment_activation_height != UINT32_MAX) {
+        ss << "orchard_catalog_commitment_profile=DNORST02\n"
+           << "orchard_catalog_commitment_activation_height="
+           << params.orchard_catalog_commitment_activation_height << '\n';
+    }
+
     // Preserve all existing network fingerprints when the mode is disabled.
     // Include compact activation and maturity in the isolated profile identity.
     if (params.regtest_enforce_pow) {
@@ -593,6 +622,8 @@ const ChainParams& ParamsImpl() {
 // `const ChainParams&` rather than reading the globals is what makes that
 // mistake impossible to reintroduce -- there is no global here to read.
 static void ValidateChainParams(const ChainParams& params) {
+    if (!consensus::OrchardProfileConfigurationValid(params))
+        throw std::runtime_error("invalid chainparams: Orchard height/branch must be explicit and coupled to the public release");
     if (!consensus::ReleaseProfileConfigurationValid(params))
         throw std::runtime_error("invalid chainparams: joint release requires matching compact, timing and service heights");
     if (!consensus::shielded::CompactActivationConfigurationValid(params)) {

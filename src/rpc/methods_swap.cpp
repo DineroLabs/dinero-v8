@@ -54,6 +54,9 @@ din::Json ToJson(const SwapSummary& s) {
     const int64_t now = std::time(nullptr);
     j["btc_lock_seconds_left"] = Json::Int64(int64_t(s.t_btc_unix) - now);
     j["din_lock_seconds_left"] = Json::Int64(int64_t(s.t_din_unix) - now);
+    // Absence stays unknown for legacy and observer-only sessions.
+    j["din_funding_submission_status"] = !s.din_funding_submission_acknowledged ? "unknown" :
+        *s.din_funding_submission_acknowledged ? "acknowledged" : "unconfirmed";
     j["tower_armed"] = s.tower_armed;
     j["events"] = Json::Value(Json::arrayValue);
     for (const auto& e : s.last_events) j["events"].append(e);
@@ -100,12 +103,18 @@ din::Json RpcOffer(const ExecutionContext& ctx, const din::Json& params) {
     try {
         OfferRequest r;
         if (!Arg(params, "din_amount_una").isUInt64() || !Arg(params, "btc_amount_sat").isUInt64() ||
-            !Arg(params, "btc_address").isString()) {
-            return Error("usage: swap.offer {din_amount_una, btc_amount_sat, btc_address, ...}");
+            !Arg(params, "btc_address").isString() ||
+            !Arg(params, "din_funding_fee_rate_hint").isUInt64() ||
+            !Arg(params, "din_funding_maximum_fee_una").isUInt64()) {
+            return Error("usage: swap.offer {din_amount_una, btc_amount_sat, btc_address, din_funding_fee_rate_hint, din_funding_maximum_fee_una, ...}");
         }
         r.din_amount_una = Arg(params, "din_amount_una").asUInt64();
         r.btc_amount_sat = Arg(params, "btc_amount_sat").asUInt64();
         r.btc_claim_address = Arg(params, "btc_address").asString();
+        r.din_funding_fee_rate_hint = Arg(params, "din_funding_fee_rate_hint").asUInt64();
+        r.din_funding_maximum_fee_una = Arg(params, "din_funding_maximum_fee_una").asUInt64();
+        if (!r.din_funding_fee_rate_hint || !r.din_funding_maximum_fee_una)
+            return Error("DIN funding requires an explicit positive fee rate and maximum fee");
         r.din_refund_address = NewWalletAddress(ctx);
         if (Arg(params, "btc_lock_hours").isUInt()) r.btc_lock_hours = Arg(params, "btc_lock_hours").asUInt();
         if (Arg(params, "din_lock_hours").isUInt()) r.din_lock_hours = Arg(params, "din_lock_hours").asUInt();

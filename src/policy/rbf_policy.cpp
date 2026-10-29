@@ -30,7 +30,7 @@ size_t GetEffectiveVirtualSize(
         return entry.tx.GetVirtualSize();
     }
 
-    const auto weight_info = ct_policy.GetWeightInfo(entry.tx);
+    const auto weight_info = ct_policy.GetWeightInfo(entry.tx.Historical());
     return static_cast<size_t>((weight_info.total_weight + 3) / 4);
 }
 
@@ -76,9 +76,9 @@ bool RBFPolicy::checkNoNewUnconfirmed(
     // Build set of all inputs from original transactions being replaced
     std::unordered_set<std::string> original_inputs;
     for (const auto& entry : original_entries) {
-        for (const auto& input : entry.tx.vin) {
+        for (const auto& input : entry.tx.Inputs()) {
             // Phase M.0: Convert uint256 to hex for outpoint string
-            std::string outpoint = input.prevout.txid.AsUint256().GetHex() + ":" + std::to_string(input.prevout.vout);
+            std::string outpoint = input.txid.AsUint256().GetHex() + ":" + std::to_string(input.vout);
             original_inputs.insert(outpoint);
         }
     }
@@ -218,6 +218,16 @@ RBFValidationResult RBFPolicy::validateReplacement(
         return RBFValidationResult::ORIGINAL_NOT_FOUND;
     }
 
+    // Structural conflict enumeration supports all retained families. The
+    // Historical replacement policy cannot authorize evicting Orchard owners,
+    // including Orchard descendants of a Historical direct conflict.
+    if (conflict_set.contains_unsupported_family ||
+        std::any_of(original_entries.begin(), original_entries.end(),
+            [](const MempoolEntry& entry) { return entry.tx.IsOrchard(); })) {
+        error = "Replacement includes a transaction family without replacement policy";
+        return RBFValidationResult::UNSUPPORTED_FAMILY;
+    }
+
     // ─────────────────────────────────────────────────────────────────────
     // BIP125 Rule #1: Check if original transactions signal RBF
     // ─────────────────────────────────────────────────────────────────────
@@ -296,9 +306,9 @@ RBFConflictSet RBFPolicy::buildConflictSet(
         bool is_conflict = false;
 
         // Check if this transaction spends any of the same outpoints
-        for (const auto& input : entry.tx.vin) {
+        for (const auto& input : entry.tx.Inputs()) {
             // Phase M.0: Convert uint256 to hex for outpoint string
-            std::string outpoint = input.prevout.txid.AsUint256().GetHex() + ":" + std::to_string(input.prevout.vout);
+            std::string outpoint = input.txid.AsUint256().GetHex() + ":" + std::to_string(input.vout);
             if (replacement_outpoints.find(outpoint) != replacement_outpoints.end()) {
                 is_conflict = true;
                 break;
@@ -313,6 +323,7 @@ RBFConflictSet RBFPolicy::buildConflictSet(
             conflict_set.total_size += entry.tx_size;
             conflict_set.total_virtual_size += entry.tx.GetVirtualSize();
             conflict_set.total_effective_vsize += GetEffectiveVirtualSize(entry, ct_policy);
+            conflict_set.contains_unsupported_family |= entry.tx.IsOrchard();
             conflict_set.conflict_count++;
 
             dinero::g_logger.debug("Direct conflict found: " + txid.AsUint256().GetHex() + " (fee: " +
@@ -339,9 +350,9 @@ RBFConflictSet RBFPolicy::buildConflictSet(
             }
 
             // Check if this transaction spends from any conflicting transaction
-            for (const auto& input : entry.tx.vin) {
-                // Phase M.4: input.prevout.txid is TxId, extract uint256 for find()
-                if (all_conflicts.find(input.prevout.txid.AsUint256()) != all_conflicts.end()) {
+            for (const auto& input : entry.tx.Inputs()) {
+                // Phase M.4: input.txid is TxId, extract uint256 for find()
+                if (all_conflicts.find(input.txid.AsUint256()) != all_conflicts.end()) {
                     // This transaction is a descendant of a conflict
                     conflict_set.descendant_conflicts.insert(txid.AsUint256());
                     all_conflicts.insert(txid.AsUint256());
@@ -349,10 +360,11 @@ RBFConflictSet RBFPolicy::buildConflictSet(
                     conflict_set.total_size += entry.tx_size;
                     conflict_set.total_virtual_size += entry.tx.GetVirtualSize();
                     conflict_set.total_effective_vsize += GetEffectiveVirtualSize(entry, ct_policy);
+                    conflict_set.contains_unsupported_family |= entry.tx.IsOrchard();
                     conflict_set.conflict_count++;
 
                     dinero::g_logger.debug("Descendant conflict found: " + txid.AsUint256().GetHex() +
-                                          " (depends on " + input.prevout.txid.AsUint256().GetHex() + ")");
+                                          " (depends on " + input.txid.AsUint256().GetHex() + ")");
 
                     found_new_descendants = true;
                     break;
@@ -396,6 +408,9 @@ std::string RBFPolicy::getErrorMessage(RBFValidationResult result) const {
 
         case RBFValidationResult::ORIGINAL_NOT_FOUND:
             return "Original transaction not found in mempool";
+
+        case RBFValidationResult::UNSUPPORTED_FAMILY:
+            return "Replacement includes a transaction family without replacement policy";
 
         case RBFValidationResult::REPLACEMENT_ADDS_UTXOS:
             return "Replacement would require replacing confirmed transactions";

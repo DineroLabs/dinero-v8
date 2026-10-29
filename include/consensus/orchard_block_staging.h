@@ -1,0 +1,233 @@
+#pragma once
+#include "consensus/orchard_state_transition.h"
+#include "consensus/orchard_validated_block.h"
+#include "primitives/orchard_block_reader.h"
+#include "consensus/orchard_block_coins.h"
+#include "consensus/orchard_forest_transition.h"
+#include "storage/legacy_retirement.h"
+#include "consensus/undo.h"
+#include "consensus/utreexo_stump.h"
+#include "storage/orchard_catalog_state.h"
+
+namespace rocksdb { class WriteBatch; }
+namespace dinero { class ChainDB; class ChainWriteToken; class BlockStorage; }
+
+namespace dinero::consensus {
+class OrchardSelectedConsistency;
+// Complete exact-proof stump transition used by both canonical compact
+// admission and snapshot catalog derivation. Parent authority and complete
+// block coin validation remain the caller's obligations.
+[[nodiscard]] UtreexoStump DeriveOrchardCompactBlockStump(const OrchardBlockCandidate&,
+    const PreparedOrchardBlockCoins&,const BlockHeader&,const UtreexoStump&);
+// Pure proof/transition check for detached compact verification. The caller
+// supplies authenticated parent metadata and already-authorized block coins;
+// this neither enrolls a catalog nor authorizes canonical publication.
+void CheckOrchardCompactBlockUtreexoProof(const OrchardBlockCandidate&,
+    const PreparedOrchardBlockCoins&,const BlockHeader&,const UtreexoStump&);
+// Rebind a sealed result to the caller's enrolled compact selected catalog.
+// All exact external inputs and output absences are recaptured and checked.
+void CheckValidatedOrchardCompactParentUnderLock(const ChainDB&,
+    const OrchardBlockContext&,const OrchardBlockCandidate&,const BlockHeader&,
+    const storage::catalog::State&,const OrchardBranchMtpLookup&,bool witness,
+    const ValidatedOrchardBlock&);
+// Recheck a privately verified block against the held canonical parent before
+// ingress persistence or staging. No writes and no proof re-execution.
+void CheckValidatedOrchardParentUnderLock(const ChainDB&,const OrchardBlockContext&,
+    const OrchardBlockCandidate&,const BlockHeader&,const UtreexoForest&,
+    const OrchardBranchMtpLookup&,bool,const ValidatedOrchardBlock&);
+
+// Read-only boundary factory. Derives amount/epoch from selected archival
+// public flows, then binds frozen contents and marker from the SAME held
+// selected writer view. No amount/domain/epoch is supplied by a wallet, RPC
+// or candidate. Requires independently validated historical state (including
+// fee/coinbase rules and snapshot provenance), not merely matching tip rows.
+// No writes, activation or live admission; missing evidence never yields a
+// partial record. Use only at the selected activation parent.
+[[nodiscard]] storage::LegacyRetirementRecord DeriveSelectedLegacyRetirementUnderLock(
+    const ChainDB&, const BlockStorage*, uint32_t maximum_epoch_blocks);
+// Compare independently proven boundary contents to the selected durable
+// frozen state and require no previous retirement/Orchard state. Does not
+// derive monetary value or authenticate history; the service owns that proof.
+void CheckPreparedLegacyRetirementUnderLock(const ChainDB&,
+    const storage::LegacyRetirementRecord&);
+// Contents/actual-parent check ONLY, not independent historical execution or
+// permission to mint an owner. Authenticated closed-store conversion uses it
+// after selected/buried DNORST02 verification, retaining the old validated tip.
+// The original prepared-retirement guard still requires that marker.
+void CheckLegacyRetirementBeforeImageUnderLock(const ChainDB&,
+    const storage::LegacyRetirementRecord&);
+// Frozen bytes ONLY; no durable-tip, historical execution or owner authority.
+// The closed-store importer must separately authenticate its imported parent,
+// complete coin/checkpoint cohort and selected proof before using this audit.
+void CheckLegacyRetirementContentsUnderLock(const ChainDB&,
+    const storage::LegacyRetirementRecord&);
+// Full frozen-content check at a selected Orchard tip or its activation
+// parent. Contents only: grants no historical execution/startup authority.
+void CheckOrchardFrozenLegacyUnderLock(const ChainDB&,const storage::LegacyRetirementRecord&,
+    const OrchardBlockContext&,uint32_t selected_height,const uint256& selected_hash);
+// Typed stored-body read. Checks exact framing, key/header identity, transaction
+// and witness commitments, and size. Not replay/PoW/proof/transaction validity.
+[[nodiscard]] OrchardBlockCandidate ReadStoredOrchardBlock(
+    const ChainDB&, const uint256& hash, bool require_witness_commitment,
+    const BlockStorage* archival_blocks = nullptr);
+// Startup consistency check under the writer lock, after restoring the forest
+// against authenticated selected headers. Validates the exact local body,
+// markers, commit record, frontier and reversibility of current-tip rows/undo.
+// Never commits, repairs, rewinds a pointer alone, or establishes historical
+// consensus validity. Does not audit every older UTXO/nullifier in the database.
+void AuditOrchardChainstateTipUnderLock(ChainDB&, const ChainWriteToken&,
+    const OrchardBlockContext&, const BlockHeader& parent, const UtreexoForest&,
+    bool require_witness_commitment, bool require_catalog = false);
+// Read-only audit of one retained ACTIVE compact step against real detached
+// activation-origin replay. No full forest or validated-marker fiction. The
+// caller separately authenticates the complete catalog closure and namespaces;
+// this checks actual archive/index/undo/delta/filter/journal rows, not authority.
+void AuditOrchardCompactStoredStepUnderLock(const ChainDB&,const BlockStorage&,
+    const OrchardBlockCandidate&,const ValidatedOrchardBlock&,
+    const storage::catalog::State& parent,const storage::catalog::State& current);
+// Stages only the deterministic local consistency journal, not authority.
+// Used by the sealed snapshot installer in the same atomic state batch.
+void StageOrchardSnapshotJournal(const OrchardBlockContext&,const BlockHeader&,
+    const arith_uint256&,const storage::OrchardStoredState&,const UtreexoStump&,rocksdb::WriteBatch&);
+struct OrchardUndoCoverageStep {
+    std::optional<storage::OrchardStoredState> parent_state;
+    UtreexoForest parent_forest;
+};
+// Read-only retained-undo coverage for one selected historical Orchard block.
+// The caller walks backwards from the authoritative tip/state/forest under its
+// selected writer lock. Checks exact indexed/embedded body and conventional
+// undo, net coin identities and delta leaves, forest reversal, stored filters,
+// active tx indexes and both state commit records. No live coin-row comparison
+// is made for older blocks: descendants may legitimately have spent them.
+// This is not consensus replay or an audit of historical nullifier ownership;
+// the separate tip-local state audit remains mandatory. No DB writes occur.
+[[nodiscard]] OrchardUndoCoverageStep AuditOrchardUndoStepUnderLock(
+    const ChainDB&, const BlockStorage&, const OrchardBlockContext&,
+    const OrchardBlockCandidate&, const BlockHeader& parent,
+    const storage::OrchardStoredState&, const UtreexoForest&,
+    bool require_witness_commitment, bool require_catalog = false);
+// Caller holds the chainstate writer lock from coin resolution/authorization
+// through commit. All supplied authorizations must come from that held view.
+// This stages ONLY Orchard state in the caller's batch. UTXO/forest/tip/index
+// and ordinary undo must be staged in that same batch by the block connector.
+// Neither success nor a ChainWriteToken proves full-block validity or locking.
+// Local storage failures (including an inconsistent persisted parent) use
+// OrchardStateLookupError, never a peer consensus-invalid classification.
+[[nodiscard]] PreparedOrchardState StageOrchardBlockUnderChainstateLock(
+    ChainDB&, const ChainWriteToken&, const OrchardBlockContext&,
+    const OrchardBlockCandidate&, bool require_witness_commitment,
+    std::span<const VerifiedOrchardAuthorizations>, rocksdb::WriteBatch&);
+
+struct StagedOrchardBlock {
+    PreparedOrchardBlockCoins coins;
+    PreparedOrchardState orchard;
+    UndoRecord undo;
+};
+// Stateful ChainDB adapter. Resolve all coins from this same selected database,
+// verify both transaction families, and stage net UTXO changes, coin undo and
+// Orchard state in one batch. Requires an EMPTY batch on entry; on failure it
+// remains empty. Does not commit. Caller must validate the remaining block
+// obligations and add forest, tip/index and forest-undo records to this batch,
+// commit once, then publish memory. Not a stateless/CSN authentication adapter.
+[[nodiscard]] StagedOrchardBlock StageOrchardBlockCoinsAndStateUnderChainstateLock(
+    ChainDB&, const ChainWriteToken&, const OrchardBlockContext&,
+    const OrchardBlockCandidate&, const OrchardBranchMtpLookup&,
+    bool require_witness_commitment, rocksdb::WriteBatch&);
+
+// Reverse the exact net coin changes and Orchard undo for the selected tip.
+// Authenticate the supplied body against that tip, check conventional undo
+// coverage/current coins, and leave retained conventional undo for reconnect.
+// Same empty-batch/lock/outer-commit contract; forest and tip restoration remain
+// the caller's responsibility in this same batch. No historical-path change.
+// Returns the exact reverse coin patch from the checked persisted undo/body.
+// This partial helper does not authenticate those restored coins to a forest;
+// use the full chainstate disconnect before preparing runtime publication.
+std::vector<OrchardCoinChange> StageOrchardBlockCoinsAndStateDisconnectUnderChainstateLock(
+    ChainDB&, const ChainWriteToken&, const OrchardBlockContext&,
+    const OrchardBlockCandidate&, bool require_witness_commitment, rocksdb::WriteBatch&);
+
+struct StagedOrchardChainstate {
+    StagedOrchardBlock block;
+    PreparedOrchardForest forest;
+};
+struct StagedOrchardCompactChainstate {
+    StagedOrchardBlock block;
+    UtreexoStump stump;
+};
+// Compact counterpart of the canonical staging operation. The canonical
+// owner must authenticate this exact selected catalog before calling. Resolves
+// only candidate inputs through catalog membership and the parent's proof;
+// never reads or writes the full coin table or constructs a full forest.
+// The same body, undo, delta, filter, Orchard/retirement state and tip records
+// share the batch. The caller must stage the successor catalog in that batch.
+// Not a catalog-enrollment API or a configured CSN admission path.
+[[nodiscard]] StagedOrchardCompactChainstate StageOrchardCompactChainstateConnectUnderLock(
+    ChainDB&, const ChainWriteToken&, const OrchardBlockContext&,
+    const OrchardBlockCandidate&, const BlockHeader& parent,
+    const storage::catalog::State& authenticated_parent,
+    const OrchardBranchMtpLookup&, bool require_witness_commitment, rocksdb::WriteBatch&,
+    const std::optional<storage::LegacyRetirementRecord>& authenticated_boundary = std::nullopt,
+    const ValidatedOrchardBlock* detached = nullptr,
+    const OrchardSelectedConsistency* selected_consistency = nullptr);
+// Stage authoritative state, body, active transaction indexes, delta, forest
+// marker, height index and both tip markers together. The caller supplies
+// authenticated selected-branch headers with persisted header/work records,
+// holds the writer lock, and must complete header/PoW, remaining resource,
+// service/flatfile-index obligations before committing. The exact mixed compact
+// filter is verified before commit and shares the batch; a retained mismatching
+// filter is local corruption. The versioned commit record
+// shares the batch. Peer proof data
+// is checked against the resolved coins and full parent forest in this path.
+// This neither commits nor publishes memory and is not full-block admission.
+// An optional checkpoint is in the SAME batch; every block has a durable delta.
+// DNRS v2 and frozen legacy contents are mandatory in this full adapter. At the
+// first boundary only, authenticated_boundary must come from validated selected
+// history (especially amount/epoch), never a block, RPC or wallet claim. Local
+// legacy contents/markers are independently checked here, but this is NOT an
+// accounting-history derivation API. On descendants omit the boundary input.
+// Retirement receipt/undo/marker share this batch; append no legacy writes.
+[[nodiscard]] StagedOrchardChainstate StageOrchardChainstateConnectUnderLock(
+    ChainDB&, const ChainWriteToken&, const OrchardBlockContext&,
+    const OrchardBlockCandidate&, const BlockHeader& parent, const UtreexoForest&,
+    const OrchardBranchMtpLookup&,
+    bool require_witness_commitment, bool checkpoint, rocksdb::WriteBatch&,
+    const std::optional<storage::LegacyRetirementRecord>& authenticated_boundary = std::nullopt,
+    const ValidatedOrchardBlock* detached = nullptr,
+    const storage::catalog::State* authenticated_parent_catalog = nullptr);
+
+struct StagedOrchardCompactDisconnect {
+    PreparedOrchardBlockCoins forward_coins;
+    UtreexoStump stump;
+};
+// The caller owns the current selected compact catalog and its exact retained
+// predecessor. Revalidates the candidate proof and forward transition against
+// those roots and exact conventional undo/delta. No full coin-table access.
+// A supplied sealed result is rebound to the selected child, retained parent
+// state/membership/retirement, exact wire, coins and MTP before authorization
+// reuse; proof transition and all inverse storage checks still run.
+// Remaining canonical index/outbox publication belongs to the outer writer.
+[[nodiscard]] StagedOrchardCompactDisconnect StageOrchardCompactChainstateDisconnectUnderLock(
+    ChainDB&, const ChainWriteToken&, const OrchardBlockContext&,
+    const OrchardBlockCandidate&, const BlockHeader& parent,
+    const storage::catalog::State& current, const storage::catalog::State& previous,
+    const OrchardBranchMtpLookup&, bool require_witness_commitment, rocksdb::WriteBatch&,
+    const ValidatedOrchardBlock* detached = nullptr,
+    const OrchardSelectedConsistency* selected_consistency = nullptr);
+
+struct StagedOrchardDisconnect {
+    std::vector<OrchardCoinChange> coins;
+    UtreexoForest forest;
+};
+// Reads the stored delta and conventional undo; no pre-restart transition
+// object is required. The reverse coin patch is bound to the exact delta leaves
+// and authenticated parent forest. Prepare memory publication from this patch
+// and private restored forest, then publish only after the outer commit.
+// Retains block/header/undo/delta/filter records for reconnect; removes the disconnected
+// active transaction/height indexes and checkpoint. Existing transaction-index
+// rows are never overwritten on connect. Same empty-batch/remaining-obligations contract.
+[[nodiscard]] StagedOrchardDisconnect StageOrchardChainstateDisconnectUnderLock(
+    ChainDB&, const ChainWriteToken&, const OrchardBlockContext&,
+    const OrchardBlockCandidate&, const BlockHeader& parent, const UtreexoForest&,
+    bool require_witness_commitment,
+    rocksdb::WriteBatch&);
+} // namespace dinero::consensus

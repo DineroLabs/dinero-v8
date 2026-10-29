@@ -38,9 +38,11 @@
 // separate SelectParamsFreshProcess executable.
 
 #include "consensus/chainparams.h"
+#include "consensus/orchard_profile.h"
 #include "consensus/shielded/wallet_activation.h"
 #include "consensus/utreexo_maturity_leaf_activation.h"
 #include "consensus/utxo_entry.h"
+#include "consensus/utxo_snapshot.h"
 
 #include <gtest/gtest.h>
 
@@ -67,6 +69,8 @@ public:
           compact_(params->shielded_compact_activation_height),
           timing_(params->sixty_second_activation_height),
           release_(params->release_v8113_activation_height),
+          orchard_(params->orchard_activation_height),
+          branch_(params->orchard_branch_id),
           outgoing_(params->shielded_outgoing_recovery_activation_height),
           auth_reset_(params->shielded_spend_auth_epoch_reset_height) {}
 
@@ -78,6 +82,8 @@ public:
         params_->shielded_compact_activation_height = compact_;
         params_->sixty_second_activation_height = timing_;
         params_->release_v8113_activation_height = release_;
+        params_->orchard_activation_height = orchard_;
+        params_->orchard_branch_id = branch_;
         params_->shielded_outgoing_recovery_activation_height = outgoing_;
         params_->shielded_spend_auth_epoch_reset_height = auth_reset_;
     }
@@ -94,6 +100,8 @@ private:
     uint32_t compact_;
     uint32_t timing_;
     uint32_t release_;
+    uint32_t orchard_;
+    uint32_t branch_;
     uint32_t outgoing_;
     uint32_t auth_reset_;
 };
@@ -124,10 +132,13 @@ TEST(ChainParamsSelection, CompactRequiresExistingBoundAuthorityAndNoNewReset) {
     params->shielded_compact_activation_height = auth;
     params->sixty_second_activation_height = auth;
     params->release_v8113_activation_height = auth;
+    params->orchard_activation_height = auth;
+    params->orchard_branch_id = 1; // synthetic schedule in this restored fixture only
     EXPECT_THROW(SelectParams(Chain::MAINNET), std::runtime_error);
     params->shielded_compact_activation_height = auth + 1;
     params->sixty_second_activation_height = auth + 1;
     params->release_v8113_activation_height = auth + 1;
+    params->orchard_activation_height = auth + 1;
     EXPECT_NO_THROW(SelectParams(Chain::MAINNET));
     EXPECT_EQ(Params().shielded_epoch_reset_height, cv_reset);
     EXPECT_EQ(Params().shielded_spend_auth_epoch_reset_height, auth_reset);
@@ -144,19 +155,23 @@ TEST(ChainParamsSelection, PublicReleaseRejectsPartialOrMismatchedSchedules) {
 
     // Exercise the real selection boundary, in addition to the profile helper
     // tests. Every partial or mismatched public schedule must fail selection.
-    for (unsigned mask = 1; mask < 7; ++mask) {
+    params->orchard_branch_id = 1; // synthetic fixture owner, restored on exit
+    for (unsigned mask = 1; mask < 15; ++mask) {
         params->shielded_compact_activation_height = mask & 1 ? activation : UINT32_MAX;
         params->sixty_second_activation_height = mask & 2 ? activation : UINT32_MAX;
         params->release_v8113_activation_height = mask & 4 ? activation : UINT32_MAX;
+        params->orchard_activation_height = mask & 8 ? activation : UINT32_MAX;
         EXPECT_THROW(SelectParams(Chain::MAINNET), std::runtime_error) << "mask=" << mask;
     }
     params->shielded_compact_activation_height = activation;
     params->sixty_second_activation_height = activation;
     params->release_v8113_activation_height = activation;
+    params->orchard_activation_height = activation;
     EXPECT_NO_THROW(SelectParams(Chain::MAINNET));
     for (auto* height : {&params->shielded_compact_activation_height,
                          &params->sixty_second_activation_height,
-                         &params->release_v8113_activation_height}) {
+                         &params->release_v8113_activation_height,
+                         &params->orchard_activation_height}) {
         *height = activation + 1;
         EXPECT_THROW(SelectParams(Chain::MAINNET), std::runtime_error);
         *height = activation;
@@ -164,19 +179,89 @@ TEST(ChainParamsSelection, PublicReleaseRejectsPartialOrMismatchedSchedules) {
     EXPECT_NO_THROW(SelectParams(Chain::MAINNET));
 }
 
-TEST(ChainParamsSelection, SixtySecondRuleIsDormantAndChecksumCommitsActivation) {
+TEST(ChainParamsSelection, SixtySecondBoundaryAndChecksumCommitActivation) {
     const auto original = dinero::GetActiveChain();
     for (auto chain : {Chain::MAINNET, Chain::TESTNET, Chain::REGTEST}) {
         SelectParams(chain);
         const auto baseline = Params();
-        EXPECT_EQ(baseline.sixty_second_activation_height, UINT32_MAX);
-        EXPECT_EQ(baseline.TargetSpacing(UINT32_MAX), 120u);
+        const uint32_t selected = chain == Chain::MAINNET ? 150000u : UINT32_MAX;
+        EXPECT_EQ(baseline.sixty_second_activation_height, selected);
+        EXPECT_EQ(baseline.TargetSpacing(149999), 120u);
+        if (chain == Chain::MAINNET)
+            EXPECT_EQ(baseline.TargetSpacing(150000), 60u);
+        else
+            EXPECT_EQ(baseline.TargetSpacing(UINT32_MAX), 120u);
         auto activated = baseline;
-        activated.sixty_second_activation_height = 1000;
-        EXPECT_EQ(activated.TargetSpacing(999), 120u);
-        EXPECT_EQ(activated.TargetSpacing(1000), 60u);
+        const uint32_t moved = chain == Chain::MAINNET ? 150001u : 1000u;
+        activated.sixty_second_activation_height = moved;
+        EXPECT_EQ(activated.TargetSpacing(moved - 1), 120u);
+        EXPECT_EQ(activated.TargetSpacing(moved), 60u);
         EXPECT_NE(dinero::ConsensusChecksum(baseline), dinero::ConsensusChecksum(activated));
     }
+    SelectParams(original);
+}
+
+TEST(ChainParamsSelection, CatalogScheduleFingerprintsAndSnapshotBoundary) {
+    const auto original=dinero::GetActiveChain();
+    for(const auto chain:{Chain::MAINNET,Chain::TESTNET,Chain::REGTEST}) {
+        SelectParams(chain);const auto profile=Params();
+        const bool mainnet=chain==Chain::MAINNET;
+        EXPECT_EQ(profile.orchard_catalog_commitment_activation_height,mainnet?150000u:UINT32_MAX);
+        // Independently reconstructed preimages and external SHA256 audit:
+        // mainnet adds exactly the two catalog profile/height lines; neither
+        // non-mainnet fingerprint changes. Do not update these blindly.
+        EXPECT_EQ(dinero::ConsensusChecksum(profile),mainnet?
+            "d81a7474229102455fb552224c63c8b0e13947f16cb59e86d9b5d02630057ad2":chain==Chain::TESTNET?
+            "d999b0b59cc9f9575e85f424e763a15a53e50c8e24b50c5a96268cb11d93cbf8":
+            "0caa01581b5cf97410957a2f72a29ec5bc9c61b6a42c49db805ad298bd353ff9");
+        if(!mainnet)continue;
+        auto predecessor=profile;predecessor.orchard_catalog_commitment_activation_height=UINT32_MAX;
+        EXPECT_EQ(dinero::ConsensusChecksum(predecessor),
+            "9675a39fa147bab33c3e35da6df08fca598d90e54e6da7a08b0a1157f60c3111");
+        const auto format=[&](uint32_t version,uint32_t height) {
+            return dinero::consensus::EvaluateSnapshotFormat(version,height,profile.shielded_activation_height,
+                profile.state_commitment_activation_height,profile.orchard_activation_height,
+                profile.orchard_catalog_commitment_activation_height);
+        };
+        using V=dinero::consensus::SnapshotFormatVerdict;
+        EXPECT_EQ(format(5,149999),V::Accept);
+        EXPECT_EQ(format(5,150000),V::RejectLegacyPostOrchardActivation);
+        EXPECT_EQ(format(6,149999),V::RejectV6WithoutCatalogCommitment);
+        EXPECT_EQ(format(6,150000),V::Accept);
+        auto invalid=profile;invalid.orchard_catalog_commitment_activation_height=149999;
+        EXPECT_FALSE(dinero::consensus::OrchardProfileConfigurationValid(invalid));
+    }
+    SelectParams(original);
+}
+
+TEST(ChainParamsSelection, MainnetJointOrchardBoundaryAndSigningDomain) {
+    const auto original = dinero::GetActiveChain();
+    SelectParams(Chain::MAINNET);
+    const auto profile = Params();
+    EXPECT_EQ(profile.release_v8113_activation_height, 150000u);
+    EXPECT_EQ(profile.shielded_compact_activation_height, 150000u);
+    EXPECT_EQ(profile.sixty_second_activation_height, 150000u);
+    EXPECT_EQ(profile.orchard_activation_height, 150000u);
+    EXPECT_EQ(profile.orchard_catalog_commitment_activation_height, 150000u);
+    EXPECT_EQ(profile.orchard_branch_id, 0x04b4ca97u);
+    EXPECT_TRUE(dinero::consensus::OrchardProfileConfigurationValid(profile));
+    EXPECT_FALSE(dinero::consensus::OrchardCatalogCommitmentActive(profile, 149999));
+    EXPECT_TRUE(dinero::consensus::OrchardCatalogCommitmentActive(profile, 150000));
+    EXPECT_TRUE(dinero::consensus::OrchardCatalogCommitmentActive(profile, 150001));
+    EXPECT_FALSE(dinero::consensus::OrchardServiceCutoffActive(profile, 149998));
+    EXPECT_TRUE(dinero::consensus::OrchardServiceCutoffActive(profile, 149999));
+    for (auto field : {&ChainParams::release_v8113_activation_height,
+                       &ChainParams::shielded_compact_activation_height,
+                       &ChainParams::sixty_second_activation_height,
+                       &ChainParams::orchard_activation_height}) {
+        auto changed = profile; ++(changed.*field);
+        EXPECT_FALSE(dinero::consensus::OrchardProfileConfigurationValid(changed));
+        EXPECT_NE(dinero::ConsensusChecksum(changed), dinero::ConsensusChecksum(profile));
+    }
+    auto changed = profile; ++changed.orchard_branch_id;
+    EXPECT_NE(dinero::ConsensusChecksum(changed), dinero::ConsensusChecksum(profile));
+    changed.orchard_branch_id = 0;
+    EXPECT_FALSE(dinero::consensus::OrchardProfileConfigurationValid(changed));
     SelectParams(original);
 }
 

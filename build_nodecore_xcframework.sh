@@ -12,6 +12,10 @@ set -e
 # Then packages all three platform slices into NodeCore.xcframework.
 #
 # Output: build-nodecore/NodeCore.xcframework/
+#
+# Orchard/v6 qualification uses scripts/mobile/build_nodecore_slice.py and
+# package_nodecore_xcframework.py instead. This legacy production allowlist
+# intentionally does not opt into the unqualified Orchard mobile backend.
 # ==============================================================================
 
 PROJECT_ROOT="$(cd "$(dirname "$0")" && pwd)"

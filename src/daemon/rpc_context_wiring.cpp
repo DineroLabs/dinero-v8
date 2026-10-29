@@ -12,7 +12,6 @@
 #include "rpc/rpc_dynamic_p2p_handlers.h"   // Task 6: dynamic_p2p.observe handler
 #include "rpc/rpc_relay_hints_handlers.h"   // Phase 2b: relay_hints.list handler
 #include "rpc/rpc_seeder_handlers.h"        // Dashboard seeder lifecycle handlers
-#include "vault/vault_runtime.h"            // Track C: Liquidity Vault runtime owner
 // DISABLED: Payroll feature (experimental)
 // #include "rpc/payroll_rpc.h"     // For WirePayrollRpcContext()
 // #include "database/payroll_db.h" // For PayrollDB
@@ -386,59 +385,21 @@ bool WireRpcContext(DaemonContext& ctx, HttpRpcServer* http_server) {
         RegisterAllRPCMethods(ctx);
         dinero::g_logger.info("[RPC Context] ✅ CPU stats & resource monitoring handlers registered (Phase E.3.1)");
 
-        // Track C: Liquidity Vault runtime. Disabled by default —
-        // operator flips `enabled = true` in this block once they're
-        // ready to start observing deposits. Stage 0 shadow rollouts
-        // set `shadow_mode = true` so deposit_observed entries flow
-        // but no credits open. Chain-query closures point at
-        // chainstate-backed lookups; the include-by-default policy
-        // for tx_included_at avoids false reorg reports under
-        // transient block-fetch failures.
-        {
-            dinero::vault::VaultRuntimeConfig vault_cfg;
-            // Operator gates. Defaults stay safe (disabled). Flip with
-            //   -vault=1            in dinero.conf or on the cli to start
-            //                       the runtime.
-            //   -vault.shadow=0     to leave shadow mode and open real
-            //                       credits (only after Stage 0 / 1).
-            //   -vault.ledgerpath=  override the JSON-line persistence
-            //                       location (default <datadir>/vault/
-            //                       ledger.jsonl).
-            // Vault on by default. Operators who don't want it pass
-            // `-vault=0` (e.g. headless seed nodes that have no
-            // custodial role). Shadow mode is now off by default
-            // (v2.1.29): the deposit flow opens real credits as soon
-            // as a deposit reaches k_credit confirmations.
-            vault_cfg.enabled = ctx.config->GetBool("vault", true);
-            vault_cfg.shadow_mode = ctx.config->GetBool("vault.shadow", false);
-            vault_cfg.persistence_path = ctx.config->GetString(
-                "vault.ledgerpath", ctx.config->DataDir() + "/vault/ledger.jsonl");
-            // Track C, C.8: operator address ↔ default account, plus
-            // K-confirmation policy. Auto-observer no-ops if the
-            // address is empty. Defaults are conservative for first
-            // real-funds runs (k_credit=10, k_settle=20).
-            vault_cfg.operator_address = ctx.config->GetString("vault.address", "");
-            vault_cfg.default_account = ctx.config->GetString("vault.account", "default");
-            vault_cfg.k_observe = static_cast<uint64_t>(ctx.config->GetInt("vault.k_observe", 1));
-            vault_cfg.k_credit = static_cast<uint64_t>(ctx.config->GetInt("vault.k_credit", 10));
-            vault_cfg.k_settle = static_cast<uint64_t>(ctx.config->GetInt("vault.k_settle", 20));
-            // Real chainstate-backed closures (Track C, C.6).
-            // ChainDB::getBlockHashByHeight gives the canonical
-            // active-chain hash; ChainDB::getBlock + tx walk gives
-            // tx inclusion at a specific block hash. Both are
-            // conservative on failure (zero-array → UNKNOWN for the
-            // hash query; true → RE_MINED_SAME_TXID for the inclusion
-            // query) so transient lookup hiccups never trigger a
-            // false compensating-debit cascade.
-            vault_cfg.block_hash_at_height = dinero::vault::MakeChainstateBlockHashClosure(ctx);
-            vault_cfg.tx_included_at = dinero::vault::MakeChainstateTxIncludedClosure(ctx);
-            dinero::vault::InitializeVaultRuntime(std::move(vault_cfg));
-            dinero::g_logger.info("[RPC Context] ✅ Liquidity Vault runtime initialised (Track C)");
-            if (ctx.wallet) {
-                if (auto wallet_service =
-                        std::dynamic_pointer_cast<dinero::WalletService>(ctx.wallet)) {
-                    wallet_service->EnsureRuntimeWalletBindings();
-                }
+        // Vault RPC registration does not create or select a financial owner.
+        // Every process starts detached. After selecting/unlocking a wallet,
+        // operators inspect vault.list and explicitly attach one authenticated
+        // identity with vault.open; vault.create is a separate new-owner action.
+        // Legacy ledger files/configuration are never opened or rewritten here.
+        if (ctx.config->GetBool("vault", false) ||
+            !ctx.config->GetString("vault.address", "").empty()) {
+            dinero::g_logger.warn(
+                "[Vault] Legacy automatic-start settings do not attach a vault. "
+                "Select and unlock its wallet, then use vault.list and vault.open.");
+        }
+        dinero::g_logger.info("[RPC Context] Vault RPC available; explicit wallet vault attachment required");
+        if (ctx.wallet) {
+            if (auto wallet_service = std::dynamic_pointer_cast<dinero::WalletService>(ctx.wallet)) {
+                wallet_service->EnsureRuntimeWalletBindings();
             }
         }
 

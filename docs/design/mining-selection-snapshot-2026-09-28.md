@@ -1,0 +1,7 @@
+# Consistent mining selection metadata
+
+Mempool CaptureBlockSelection runs the existing CPFP/height/resource selection algorithm under its selected-chain read guard and pool read lock. It copies selected transactions with their exact admitted fees, VWU and entry timestamps plus pool size and bytes before releasing those owners. The compatibility transaction-only selector uses the same implementation. A missing configured chain owner produces an unavailable capture, distinct from an available empty pool.
+
+BlockAssembler CreateJob and CreateNewBlock use the captured transaction metadata for fee totals, caller exclusion and self-heal subsets, VWU limits, network scoring and pool statistics. Subsequent pool removal cannot turn a selected fee into zero or underflow the rejected-count statistic. Each template still retains its service lifetime owner. There is no pool lock held while constructing a block. Captures are snapshots, not continuing admission or chain-tip authorization.
+
+Three benign patched cases use real signed admission, preservation after pool clear, actual job/template construction while a test chain guard clears the pool after selection, and unavailable capture refusal/retry. The cleanup runs only after selection has released its pool lock. No unsafe original/control reproduction. Existing policy/resource limits, deadlines and prior test assertions remain. Intelligent selection topology, broader chain/assembler ownership, Orchard admission/provider/selected-parent qualification and release gates remain open. Mainnet remains unset.

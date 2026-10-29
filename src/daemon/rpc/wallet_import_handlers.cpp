@@ -1217,6 +1217,9 @@ din::Json RpcImportTaprootDescriptor(const din::Json& params,
             throw std::runtime_error("Wallet is locked. Use wallet.unlock first.");
         }
 
+        uint64_t import_session=0;
+        { auto lease=wallet_manager->AcquireDatabaseLease(); import_session=lease->Session(); }
+
         // ═══════════════════════════════════════════════════════════════
         // Parse Taproot Descriptor: tr(<hex-privkey>)
         // ═══════════════════════════════════════════════════════════════
@@ -1286,17 +1289,11 @@ din::Json RpcImportTaprootDescriptor(const din::Json& params,
         std::string script_pubkey_hex = "5120" + output_pubkey_hex;
 
         // ═══════════════════════════════════════════════════════════════
-        // Step 5: Register with UTXOIndex for UTXO scanning
+        // Step 5: Persist the import and publish its committed registration
         // ═══════════════════════════════════════════════════════════════
-        std::string derivation_path = "tr(" + internal_pubkey_hex.substr(0, 8) + "...)";
-        wallet_manager->registerTaprootAddress(script_pubkey, derivation_path, internal_pubkey, output_pubkey);
-
-        dinero::g_logger.info("[TaprootDescriptor] Registered address with UTXOIndex");
-
-        // ═══════════════════════════════════════════════════════════════
-        // Step 6: Store internal private key for signing
-        // ═══════════════════════════════════════════════════════════════
-        wallet_manager->storeTaprootKey(address, privkey, internal_pubkey, output_pubkey, label);
+        if (!wallet_manager->storeTaprootKey(address, privkey, internal_pubkey, output_pubkey, label, import_session)) {
+            throw std::runtime_error("Taproot import could not complete wallet persistence and registration");
+        }
 
         dinero::g_logger.info("[TaprootDescriptor] Stored internal key for signing");
 

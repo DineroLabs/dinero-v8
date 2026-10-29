@@ -43,6 +43,7 @@ if(BUILD_NODECORE OR (CMAKE_SYSTEM_NAME STREQUAL "iOS" AND NOT BUILD_FFI_ONLY))
 
     # DaemonApp lifecycle (same as dinerod, minus main.cpp)
     src/daemon/daemon_app.cpp
+    src/daemon/datadir_guard.cpp
     src/daemon/legacy_globals_stub.cpp
     src/daemon/config.cpp
     src/daemon/rpc_context_wiring.cpp
@@ -79,6 +80,11 @@ if(BUILD_NODECORE OR (CMAKE_SYSTEM_NAME STREQUAL "iOS" AND NOT BUILD_FFI_ONLY))
     ${CMAKE_SOURCE_DIR}/include
     ${CMAKE_SOURCE_DIR}/src
   )
+
+  # Resolve at generation time, after the optional real runtime is declared.
+  # BUILD_NODECORE alone must never enable Orchard activation or Rust linkage.
+  target_compile_definitions(nodecore_ffi PRIVATE
+    DINERO_NODECORE_ORCHARD_RUNTIME=$<TARGET_EXISTS:dinero_orchard_runtime_reader>)
 
   target_link_libraries(nodecore_ffi PUBLIC
     dinero_core
@@ -122,6 +128,13 @@ if(BUILD_NODECORE OR (CMAKE_SYSTEM_NAME STREQUAL "iOS" AND NOT BUILD_FFI_ONLY))
   set_target_properties(nodecore_ffi PROPERTIES
     PUBLIC_HEADER "${CMAKE_SOURCE_DIR}/include/nodecore/nodecore_ffi.h"
   )
+
+  # Archive creation alone cannot detect missing Orchard/Rust dependencies.
+  # Build this executable for every SDK slice before packaging its static libs.
+  add_executable(nodecore_link_smoke EXCLUDE_FROM_ALL
+    tests/mobile/nodecore_link_smoke.cpp)
+  set_target_properties(nodecore_link_smoke PROPERTIES MACOSX_BUNDLE FALSE)
+  target_link_libraries(nodecore_link_smoke PRIVATE nodecore_ffi)
 
   # iOS-specific configuration
   if(CMAKE_SYSTEM_NAME STREQUAL "iOS")

@@ -9,6 +9,9 @@
 #include "miningrewards.h"
 #include "inforow.h"
 #include "mainwindow.h"
+#if defined(DIN_ENABLE_ORCHARD_UI) && DIN_ENABLE_ORCHARD_UI
+#include "orchardwidget.h"
+#endif
 #if defined(DIN_ENABLE_SWAP_UI) && DIN_ENABLE_SWAP_UI
 #include "swapwidget.h"
 #endif
@@ -4073,7 +4076,20 @@ void MainWindow::setupUI() {
   // banner; on regtest it is fully functional.
   {
     shieldedWidget_ = new ShieldedWidget(rpc_, this);
+#if defined(DIN_ENABLE_ORCHARD_UI) && DIN_ENABLE_ORCHARD_UI
+    {
+      // Preview: the new Orchard screens sit beside the current pool, so the
+      // main tab bar keeps its width.
+      auto* shieldedTabs = new QTabWidget(this);
+      shieldedTabs->setObjectName("shieldedSubTabs");
+      shieldedTabs->addTab(shieldedWidget_, "Current pool");
+      orchardWidget_ = new OrchardWidget(rpc_, this);
+      shieldedTabs->addTab(makeScrollableTab(orchardWidget_), "Orchard (preview)");
+      tabs->addTab(shieldedTabs, navigationIcon(NavigationGlyph::Shield), "Shielded");
+    }
+#else
     tabs->addTab(shieldedWidget_, navigationIcon(NavigationGlyph::Shield), "Shielded");
+#endif
   }
 
   // === ⚡ Lightning Network Tab (Phase 7) ===
@@ -6260,15 +6276,17 @@ void MainWindow::updateWalletBalanceDisplay() {
   const double taproot = std::max(0.0, transparent - p2mr);
   const double shielded = std::max(0.0, cachedShieldedBalance_);
   const double total = transparent + shielded;
+  const QString lockedNote = cachedShieldedRetired_ && shielded > 0.0
+      ? " (includes retired, locked shielded funds)" : QString();
   // Thousands separators, as on the Overview. onUseMaxAmount() strips them again.
   const QLocale grouped(QLocale::English);
   auto din = [&grouped](double value) { return grouped.toString(value, 'f', 8) + " DIN"; };
 
   if (lblBalance_) {
-    lblBalance_->setText(din(total));
+    lblBalance_->setText(din(total) + lockedNote);
   }
   if (lblTotalWalletBalance_) {
-    lblTotalWalletBalance_->setText(din(total));
+    lblTotalWalletBalance_->setText(din(total) + lockedNote);
   }
   if (lblTransparentTaprootBalance_) {
     lblTransparentTaprootBalance_->setText(din(taproot));
@@ -6277,7 +6295,8 @@ void MainWindow::updateWalletBalanceDisplay() {
     lblTransparentP2mrBalance_->setText(din(p2mr));
   }
   if (lblShieldedBalance_) {
-    lblShieldedBalance_->setText(din(shielded));
+    lblShieldedBalance_->setText(din(shielded) + (cachedShieldedRetired_ && shielded > 0.0
+        ? " (retired, locked)" : QString()));
   }
 
   auto lblUnconfirmed = findChild<QLabel*>("lblUnconfirmed");
@@ -6766,9 +6785,12 @@ void MainWindow::onRpcResult(const QString& method, const QJsonValue& result) {
       const QString innerError = obj.value("error").toString();
       if (innerError == "shielded_not_active") {
         cachedShieldedBalance_ = 0.0;
+        cachedShieldedRetired_ = false;
       } else if (innerError.isEmpty()) {
         const qint64 balanceUna = obj.value("balance_una").toVariant().toLongLong();
         cachedShieldedBalance_ = static_cast<double>(balanceUna) / 100000000.0;
+        cachedShieldedRetired_ = !obj.value("spend_enabled").toBool(false) &&
+            obj.value("spend_disabled_reason").toString().contains("retired", Qt::CaseInsensitive);
       }
       updateWalletBalanceDisplay();
     }
@@ -6778,7 +6800,9 @@ void MainWindow::onRpcResult(const QString& method, const QJsonValue& result) {
       const auto transparent = obj.value("transparent").toObject();
       const double total = jsonToDouble(obj.value("total_balance"));
       if (lblTotalWalletBalance_) {
-        lblTotalWalletBalance_->setText(QString("%1 DIN").arg(total, 0, 'f', 8));
+        const QString lockedNote = cachedShieldedRetired_ && cachedShieldedBalance_ > 0.0
+            ? " (includes retired, locked shielded funds)" : QString();
+        lblTotalWalletBalance_->setText(QString("%1 DIN").arg(total, 0, 'f', 8) + lockedNote);
       }
     }
   } else if (method == "wallet.rescanblockchain") {
@@ -7658,6 +7682,13 @@ void MainWindow::onRpcResult(const QString& method, const QJsonValue& result) {
   } else if (method == "getnetworkinfo" || method == "network.info") {
     if (result.isObject()) {
       const auto info = result.toObject();
+      if (info.value("storage_upgrade_refused").toBool(false) &&
+          !orchardStorageUpgradeAlertShown_ && txtAlerts_) {
+        orchardStorageUpgradeAlertShown_ = true;
+        txtAlerts_->append(QStringLiteral(
+            "⚠️ Orchard storage upgrade refused. This node cannot follow Orchard activation. "
+            "Check the local daemon log, resolve the cause, and restart."));
+      }
       updateNetworkInfo(info);
       if (overviewConnectivityCard_) overviewConnectivityCard_->setNetworkInfo(info);
     }
@@ -8774,7 +8805,8 @@ void MainWindow::onRpcError(const QString& method, int code, const QString& mess
         daemonProcess_->setProgram(daemonPath);
         daemonProcess_->setArguments(QStringList()
           << QString("--datadir=%1").arg(datadir)
-          << QString("--embedded-parent-pid=%1").arg(QCoreApplication::applicationPid()));
+          << QString("--embedded-parent-pid=%1").arg(QCoreApplication::applicationPid())
+          << QStringLiteral("--lightning.oracles.enable=0"));
 
         qDebug() << "🚀 Starting embedded daemon:" << daemonPath
                  << "--datadir=" << datadir
@@ -14124,7 +14156,8 @@ bool MainWindow::startDaemonWithOptions(bool showFeedback, bool openLogWindow) {
 
   QStringList args = {
     QString("--datadir=%1").arg(datadir),
-    QString("--embedded-parent-pid=%1").arg(QCoreApplication::applicationPid())
+    QString("--embedded-parent-pid=%1").arg(QCoreApplication::applicationPid()),
+    QStringLiteral("--lightning.oracles.enable=0")
   };
   args << "--listen" << "--p2pport" << QString::number(kDineroMainnetP2PPort)
        << "--rpc" << "--rpcport" << "20998";
@@ -14688,6 +14721,9 @@ void MainWindow::bindWalletScopedState(const QString& walletName) {
 
   if (shieldedWidget_) {
     shieldedWidget_->setWalletScope(walletName);
+#if defined(DIN_ENABLE_ORCHARD_UI) && DIN_ENABLE_ORCHARD_UI
+    if (orchardWidget_) orchardWidget_->setWalletScope(walletName);
+#endif
   }
 
   if (vaultPanel_) {
@@ -14964,6 +15000,9 @@ void MainWindow::updateWalletUIState() {
   bool canTransact = hasWallet && walletUnlocked_ && !walletRescanning_;
   if (shieldedWidget_) {
     shieldedWidget_->setWalletUnlocked(hasWallet && walletUnlocked_);
+#if defined(DIN_ENABLE_ORCHARD_UI) && DIN_ENABLE_ORCHARD_UI
+    if (orchardWidget_) orchardWidget_->setWalletUnlocked(hasWallet && walletUnlocked_);
+#endif
   }
   const QString sendMode = currentSendMode();
   const bool standardSendMode = isSendModePublic(sendMode);

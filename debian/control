@@ -27,8 +27,9 @@ Description: Dinero (DIN) full node and CLI
  dinero-prepare-upgrade (rollback binary capture).
  .
  Phase E.3: RocksDB, Boost, secp256k1-zkp, jsoncpp, and OpenSSL are
- statically linked from third_party/ vendoring. GPU mining and
- hardware-wallet HID support are excluded from the packaged daemon
+ statically linked from third_party/ vendoring. GPU mining, automatic
+ UPnP/NAT-PMP port mapping, and hardware-wallet HID support are excluded
+ from the packaged daemon
  (separate desktop / miner packages will ship those). The entire
  gRPC stack (libgrpc++, libprotobuf, abseil, c-ares, re2) is
  excluded via DINERO_RELEASE=ON because the current gRPC server

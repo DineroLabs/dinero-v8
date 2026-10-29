@@ -1,0 +1,9 @@
+# Typed raw mempool RPC capture
+
+`mempool.gettransaction` acquires the service operation owner and captures one existing mempool entry. Its immutable typed body supplies canonical bytes, actual serialized size, virtual size and weight. The handler no longer reads a historical transaction copy or reports every witness byte at four weight units. It validates an exact 64-digit transaction ID before looking up the entry. Missing entries and unavailable services return errors without transaction data.
+
+This changes the raw transaction query only. Other metadata, address, relay, mining and persistence consumers retain their current scope. An owned response is an as-of result, not continued admission or spendability. This does not enable Orchard ingress, proof verification, relay or activation.
+
+## Qualification
+
+Fresh enabled/disabled full daemon builds plus 38 declared targets passed. Each configuration passed 42 component and six daemon CTests. All 230 linked project C++ files were freshly built with ASan/UBSan; three cases passed with 1,459 stable source/header hashes and no project C++ archive members in the instrumented link map. This includes the actual handler, service and mempool. External libraries, Rust, C/PQClean, the daemon, HTTP transport and the disabled binary are outside that instrumentation; macOS leak detection was off. All 1,214 previous fixture files and 172 previous Orchard CTest commands remain unchanged. Linux qualification is pending. The new fixture uses genuine signed historical admission and the actual RPC component. Its Orchard reader case installs an explicitly synthetic, canonical-body entry through a test-only friend; it does not claim admission, valid pool indexes, proof validation or network transport. No unsafe-original or race controls are used. Mainnet remains unset and release qualification remains open.

@@ -281,16 +281,19 @@ def main():
             if legacy:
                 parent = spend(node, [funding], script, target=50_000)
                 admission(node, parent); budget = 103_424
+                previous, used = [parent['outputs'][0]], 50_000
             else:
-                require(unshield['txid'] in node.call('getrawmempool'), 'unshield did not restore canonically')
-                parent = unshield; budget = 600_000
-                for _ in range(6):
-                    tx = spend(node, [parent['outputs'][0]], script, target=90_000)
-                    admission(node, tx); parent = tx
-            used = 50_000 if legacy else unshield['bytes'] + 6*90_000
-            previous = parent['outputs'][0]
+                # Six parallel parents keep each transparent subtree below its
+                # own descendant limit. Only the common compact root supplies
+                # the larger ancestor-package budget; no intermediate inherits it.
+                admission(node, root); budget = 600_000
+                previous = []
+                for index in range(6):
+                    tx = spend(node, [root['outputs'][index]], script, target=90_000)
+                    admission(node, tx); previous.append(tx['outputs'][0])
+                used = root['bytes'] + 6*90_000
             for total, allowed, submit in ((budget-1, True, False), (budget+1, False, True), (budget, True, True)):
-                tx = spend(node, [previous], script, target=total-used)
+                tx = spend(node, previous, script, target=total-used)
                 admission(node, tx, allowed, 'ancestor-size-limit-exceeded', submit)
             return {'package_limit': budget, 'minus_one': 'allowed', 'exact': 'admitted', 'plus_one': 'rejected'}
 
@@ -308,17 +311,32 @@ def main():
         def shared_ancestor(node):
             admission(node, root)
             tips = []
-            for index in range(2):
-                previous = root['outputs'][index]
-                for _ in range(3):
-                    tx = spend(node, [previous], script, target=90_000)
-                    admission(node, tx); previous = tx['outputs'][0]
-                tips.append(previous)
-            used = root['bytes'] + 540_000
+            for branch in range(2):
+                parents = []
+                for index in range(3):
+                    tx = spend(node, [root['outputs'][3*branch+index]], script, target=90_000)
+                    admission(node, tx); parents.append(tx['outputs'][0])
+                merge = spend(node, parents, script, target=5_000)
+                admission(node, merge); tips.append(merge['outputs'][0])
+            used = root['bytes'] + 540_000 + 10_000
             for total, allowed, submit in ((599_999, True, False), (600_001, False, True), (600_000, True, True)):
                 tx = spend(node, tips, script, target=total-used)
                 admission(node, tx, allowed, 'ancestor-size-limit-exceeded', submit)
             return {'package_limit': 600_000, 'shared_ancestor_counted_once': True, 'plus_one': 'rejected'}
+
+        def transparent_subtree(node):
+            admission(node, root)
+            parent = spend(node, [root['outputs'][0]], script)
+            admission(node, parent)
+            child = spend(node, [parent['outputs'][0]], script, target=90_000)
+            admission(node, child)
+            # The candidate is a grandchild of a transparent parent. Even with
+            # a compact ancestor, that parent's own subtree keeps its legacy cap.
+            for total, allowed, submit in ((103_423, True, False), (103_425, False, True), (103_424, True, True)):
+                tx = spend(node, [child['outputs'][0]], script, target=total-90_000)
+                admission(node, tx, allowed, 'descendant-size-limit-exceeded', submit)
+            return {'descendant_limit': 103_424, 'compact_ancestor_does_not_raise_subtree_limit': True,
+                    'minus_one': 'allowed', 'exact': 'admitted', 'plus_one': 'rejected'}
 
         def ancestor_count(node):
             parent = unshield
@@ -379,6 +397,7 @@ def main():
                          ('auth-descendant-bytes', descendant_bytes),
                          ('legacy-descendant-bytes', lambda n: descendant_bytes(n, True)),
                          ('shared-ancestor-bytes', shared_ancestor),
+                         ('transparent-subtree-bytes', transparent_subtree),
                          ('ancestor-count', ancestor_count), ('descendant-count', descendant_count),
                          ('transparent-transaction-bytes', transaction_bytes),
                          ('invalid-controls', invalid_controls)]:

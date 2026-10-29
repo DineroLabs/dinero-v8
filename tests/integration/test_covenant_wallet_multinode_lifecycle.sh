@@ -351,6 +351,7 @@ info "Proving mainnet construction is available while spending stays activation-
 mkdir -p "${DATA_GUARD}"
 "${DINEROD}" \
     --datadir="${DATA_GUARD}" \
+    --lightning.oracles.enable=0 \
     --p2p.offline=1 \
     --rpcport="${GUARD_RPC}" \
     --p2pport="${GUARD_P2P}" \

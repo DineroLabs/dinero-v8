@@ -3,6 +3,7 @@
 #include "version_config.h"
 #include "daemon/rpc_utils.h"
 #include "rpc/rpc_registry.h"
+#include "daemon/rpc_readonly_policy.h"
 #include "metrics/metrics_registry.h"  // Week 5: Metrics export endpoint
 #include "daemon/daemon_context.h"     // Phase 3A: Full definition needed for wallet access
 #include "daemon/services/wallet_service.h"  // Phase 3A: WalletService definition
@@ -15,6 +16,7 @@
 #include <vector>
 #include <cctype>
 #include <limits>
+#include <stdexcept>
 #include <unordered_set>
 #include <cstdlib>  // std::getenv — DINERO_RPC_DEBUG gate (issue #538)
 
@@ -38,6 +40,12 @@
 
 #include "compat/net_compat.h"  // compat_set_cloexec (#295)
 
+namespace {
+// A handler may request asynchronous daemon shutdown, but cannot synchronously
+// acquire the lifecycle lock while an external stop waits for that handler.
+thread_local const HttpRpcServer* rpc_connection_owner = nullptr;
+}
+
 // Admin-only RPC methods that can corrupt state or expose secrets.
 // These are rejected when the server runs in read-only mode (--rpc-readonly).
 static const std::unordered_set<std::string> ADMIN_METHODS = {
@@ -47,6 +55,13 @@ static const std::unordered_set<std::string> ADMIN_METHODS = {
     "swap.accept",
     "swap.cancel",
     "swap.refund",
+    // Orchard account/address issuance and payment effects require write access.
+    "wallet.orchard.createaccount",
+    "wallet.orchard.getnewaddress",
+    "wallet.orchard.queueshield",
+    "wallet.orchard.finishshield",
+    "wallet.orchard.queuespend",
+    "wallet.orchard.finishspend",
     "wallet.importprivkey",
     "wallet.importmnemonic",
     "wallet.exportmnemonic",
@@ -90,6 +105,7 @@ static const std::unordered_set<std::string> ADMIN_METHODS = {
     "pool.processpayouts",
     // Vault (liquidity custody) — mutating methods move funds / credit the ledger.
     // Must NOT be callable by read-only RPC clients (security fix 2026-05-29, F-CRIT-03).
+    "vault.open", "vault.create",
     "vault.observe",
     "vault.withdraw",
     "vault.processnext",
@@ -161,29 +177,65 @@ bool ParseContentLengthValue(const std::string& raw_value, size_t& out_value) {
     return true;
 }
 
-bool TryParseContentLength(const std::string& request, size_t& content_length) {
-    auto cl_pos = request.find("Content-Length:");
-    if (cl_pos == std::string::npos) {
-        cl_pos = request.find("content-length:");
+// Only a completed header block defines the body length. This server handles
+// one Content-Length framed request per connection; transfer coding is unsupported.
+bool TryParseContentLength(const std::string& request, size_t header_end,
+                           size_t& content_length) {
+    content_length = 0;
+    const auto first_end = request.find("\r\n");
+    if (first_end == std::string::npos || first_end > header_end) return false;
+    bool found = false;
+    for (size_t pos = first_end + 2; pos < header_end;) {
+        const auto end = request.find("\r\n", pos);
+        if (end == std::string::npos || end > header_end) return false;
+        const auto colon = request.find(':', pos);
+        if (colon == std::string::npos || colon == pos || colon >= end) return false;
+        std::string name = request.substr(pos, colon - pos);
+        for (char& c : name) {
+            const auto u = static_cast<unsigned char>(c);
+            const bool token = (u >= 'a' && u <= 'z') || (u >= 'A' && u <= 'Z') ||
+                (u >= '0' && u <= '9') || std::string("!#$%&'*+-.^_`|~").find(c) != std::string::npos;
+            if (!token) return false;
+            if (c >= 'A' && c <= 'Z') c = static_cast<char>(c + ('a' - 'A'));
+        }
+        if (name == "transfer-encoding") return false;
+        if (name == "content-length") {
+            if (found) return false;
+            found = true;
+            size_t begin = colon + 1, finish = end;
+            while (begin < finish && (request[begin] == ' ' || request[begin] == '\t')) ++begin;
+            while (finish > begin && (request[finish - 1] == ' ' || request[finish - 1] == '\t')) --finish;
+            if (!ParseContentLengthValue(request.substr(begin, finish - begin), content_length)) return false;
+        }
+        pos = end + 2;
     }
-    if (cl_pos == std::string::npos) {
-        content_length = 0;
-        return true;
-    }
+    return true;
+}
 
-    size_t cl_val_start = cl_pos + 15;  // strlen("Content-Length:")
-    while (cl_val_start < request.size() &&
-           (request[cl_val_start] == ' ' || request[cl_val_start] == '\t')) {
-        ++cl_val_start;
+// Socket shutdown still interrupts the current read. A segmented request cannot
+// renew the original connection-read budget for each chunk.
+int ReadBeforeDeadline(int socket_fd, char* bytes, size_t capacity,
+                       std::chrono::steady_clock::time_point deadline) {
+    for (;;) {
+        const auto now = std::chrono::steady_clock::now();
+        if (now >= deadline) return -1;
+        const auto remaining = std::max<int64_t>(1,
+            std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now).count());
+#ifdef _WIN32
+        const DWORD timeout = static_cast<DWORD>(remaining);
+        if (setsockopt(socket_fd, SOL_SOCKET, SO_RCVTIMEO,
+                       reinterpret_cast<const char*>(&timeout), sizeof(timeout)) != 0) return -1;
+        const int count = recv(socket_fd, bytes, static_cast<int>(capacity), 0);
+        if (count < 0 && WSAGetLastError() == WSAEINTR) continue;
+#else
+        const timeval timeout{static_cast<time_t>(remaining / 1000),
+                              static_cast<suseconds_t>((remaining % 1000) * 1000)};
+        if (setsockopt(socket_fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) != 0) return -1;
+        const int count = static_cast<int>(recv(socket_fd, bytes, capacity, 0));
+        if (count < 0 && errno == EINTR) continue;
+#endif
+        return count;
     }
-
-    const auto cl_val_end = request.find("\r\n", cl_val_start);
-    if (cl_val_end == std::string::npos || cl_val_end == cl_val_start) {
-        return false;
-    }
-
-    const std::string raw_value = request.substr(cl_val_start, cl_val_end - cl_val_start);
-    return ParseContentLengthValue(raw_value, content_length);
 }
 
 bool SendAll(int socket_fd, const char* data, size_t length) {
@@ -194,7 +246,11 @@ bool SendAll(int socket_fd, const char* data, size_t length) {
             std::min(length - total_sent, static_cast<size_t>(std::numeric_limits<int>::max())));
         const int sent = send(socket_fd, data + total_sent, to_send, 0);
 #else
-        const ssize_t sent = send(socket_fd, data + total_sent, length - total_sent, 0);
+        int flags = 0;
+#ifdef MSG_NOSIGNAL
+        flags = MSG_NOSIGNAL;
+#endif
+        const ssize_t sent = send(socket_fd, data + total_sent, length - total_sent, flags);
 #endif
         if (sent <= 0) {
             return false;
@@ -224,16 +280,33 @@ HttpRpcServer::~HttpRpcServer() {
 }
 
 void HttpRpcServer::start() {
+    if (rpc_connection_owner == this)
+        throw std::logic_error("RPC lifecycle change requires an external caller");
+    std::lock_guard<std::mutex> lifecycle(lifecycle_mutex_);
     if (running_) {
         std::cout << "RPC server already running" << std::endl;
         return;
     }
     
+    if (server_thread_) {
+        throw std::runtime_error("RPC listener must be stopped before restart");
+    }
+    // Bind/listen synchronously so RPCService's existing exception path can
+    // fail daemon startup. A fixed sleep cannot establish listener readiness.
+    const int server_socket = create_server_socket();
+    if (server_socket < 0) {
+        throw std::runtime_error("RPC listener bind/listen failed");
+    }
     shutdown_requested_ = false;
-    server_thread_ = std::make_unique<std::thread>(&HttpRpcServer::server_loop, this);
-    
-    // Wait a bit for server to start
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    running_ = true;
+    try {
+        server_thread_ = std::make_unique<std::thread>(&HttpRpcServer::server_loop, this, server_socket);
+    } catch (...) {
+        running_ = false;
+        shutdown_requested_ = true;
+        close_socket(server_socket);
+        throw;
+    }
     std::cout << "HTTP RPC server started on " << bind_address_ << ":" << port_ << std::endl;
 
     // Security warning: RPC has no TLS — credentials sent as cleartext Base64
@@ -247,6 +320,9 @@ void HttpRpcServer::start() {
 }
 
 void HttpRpcServer::stop() {
+    if (rpc_connection_owner == this)
+        throw std::logic_error("RPC lifecycle change requires an external caller");
+    std::lock_guard<std::mutex> lifecycle(lifecycle_mutex_);
     const bool had_server_thread = static_cast<bool>(server_thread_);
     const bool was_running = running_.load();
     shutdown_requested_ = true;
@@ -260,22 +336,22 @@ void HttpRpcServer::stop() {
         return;
     }
 
-    // Detached connection handlers capture `this`. Wait briefly for them to
-    // drain before service teardown to avoid use-after-free during shutdown.
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
-    while (active_connections_.load(std::memory_order_relaxed) > 0 &&
-           std::chrono::steady_clock::now() < deadline) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(25));
+    // The accept thread is joined, so no new connection can be enrolled.
+    // Wake idle reads/writes without closing descriptors owned by handlers.
+    // Closing and erasing use this same mutex, preventing descriptor reuse
+    // between selection and shutdown.
+    {
+        std::unique_lock<std::mutex> connections(connections_mutex_);
+        for (int socket : client_sockets_) {
+#ifdef _WIN32
+            ::shutdown(socket, SD_BOTH);
+#else
+            ::shutdown(socket, SHUT_RDWR);
+#endif
+        }
+        connections_drained_.wait(connections, [this] { return client_sockets_.empty(); });
     }
 
-    const auto remaining = active_connections_.load(std::memory_order_relaxed);
-    const auto active_handlers = active_rpc_handlers_.load(std::memory_order_relaxed);
-    if (remaining > 0) {
-        std::cerr << "RPC server stop timeout with " << remaining
-                  << " active connection(s) and " << active_handlers
-                  << " active RPC handler(s); continuing shutdown" << std::endl;
-    }
-    
     running_ = false;
     std::cout << "HTTP RPC server stopped" << std::endl;
 }
@@ -314,15 +390,8 @@ void HttpRpcServer::register_builtin_methods() {
     });
 }
 
-void HttpRpcServer::server_loop() {
-    int server_socket = create_server_socket();
-    if (server_socket < 0) {
-        std::cerr << "Failed to create server socket" << std::endl;
-        return;
-    }
-    
-    running_ = true;
-    
+void HttpRpcServer::server_loop(int server_socket) {
+    // Owns the already-listening descriptor after successful thread creation.
     while (!shutdown_requested_) {
         // Accept connections with timeout. Use poll() rather than select():
         // select() cannot handle a file descriptor >= FD_SETSIZE (1024), and a
@@ -393,42 +462,38 @@ void HttpRpcServer::server_loop() {
                     continue;
                 }
 
-                // RPC rate limiting: per-IP token bucket (50 req/sec default)
-                {
-                    char rate_ip[INET_ADDRSTRLEN];
-                    inet_ntop(AF_INET, &client_addr.sin_addr, rate_ip, sizeof(rate_ip));
-                    if (!checkRpcRate(std::string(rate_ip))) {
-                        // Well-formed JSON-RPC error (error is an OBJECT). The old
-                        // reply was a bare-string error with a hand-counted
-                        // Content-Length, which made strict clients (incl.
-                        // dinero-cli) abort instead of surfacing the limit.
-                        const std::string response = build_http_response(
-                            "{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":{\"code\":-32000,"
-                            "\"message\":\"Rate limit exceeded. Try again shortly.\"}}",
-                            "application/json",
-                            429);
-                        SendAll(client_socket, response.c_str(), response.size());
-                        close_socket(client_socket);
-                        continue;
-                    }
-                }
+                // Capture the existing admission decision once. Even a refused
+                // request uses a tracked connection to read its bounded frame
+                // before returning 429; it never reaches RPC dispatch.
+                char rate_ip[INET_ADDRSTRLEN]{};
+                const bool rate_allowed = inet_ntop(AF_INET, &client_addr.sin_addr,
+                    rate_ip, sizeof(rate_ip)) && checkRpcRate(std::string(rate_ip));
 
-                active_connections_.fetch_add(1, std::memory_order_relaxed);
                 try {
-                    std::thread([this, client_socket]() {
+                    {
+                        std::lock_guard<std::mutex> connections(connections_mutex_);
+                        client_sockets_.insert(client_socket);
+                        active_connections_.fetch_add(1, std::memory_order_relaxed);
+                    }
+                    std::thread([this, client_socket, rate_allowed]() {
+                        const auto* previous = rpc_connection_owner;
+                        rpc_connection_owner = this;
                         try {
-                            handle_connection(client_socket);
+                            handle_connection(client_socket, rate_allowed);
                         } catch (const std::exception& e) {
-                            std::cerr << "Unhandled RPC connection error: " << e.what() << std::endl;
+                            try { std::cerr << "Unhandled RPC connection error: " << e.what() << std::endl; } catch (...) {}
                         } catch (...) {
-                            std::cerr << "Unhandled RPC connection error: unknown exception" << std::endl;
+                            try { std::cerr << "Unhandled RPC connection error: unknown exception" << std::endl; } catch (...) {}
                         }
-                        close_socket(client_socket);
-                        active_connections_.fetch_sub(1, std::memory_order_relaxed);
+                        rpc_connection_owner = previous;
+                        // Last access to this server. stop cannot finish until
+                        // finish_connection releases connections_mutex_.
+                        finish_connection(client_socket);
                     }).detach();
                 } catch (...) {
-                    active_connections_.fetch_sub(1, std::memory_order_relaxed);
-                    close_socket(client_socket);
+                    // Also handles enrollment allocation or thread creation
+                    // failure. Only an enrolled socket decrements the counter.
+                    finish_connection(client_socket);
                 }
             }
         }
@@ -438,59 +503,62 @@ void HttpRpcServer::server_loop() {
     running_ = false;
 }
 
-void HttpRpcServer::handle_connection(int client_socket) {
-    // Read headers first (up to 8KB should be plenty for HTTP headers)
-    char header_buf[8192];
-    int bytes_received = recv(client_socket, header_buf, sizeof(header_buf) - 1, 0);
+void HttpRpcServer::finish_connection(int client_socket) noexcept {
+    std::lock_guard<std::mutex> connections(connections_mutex_);
+    close_socket(client_socket);
+    if (client_sockets_.erase(client_socket))
+        active_connections_.fetch_sub(1, std::memory_order_relaxed);
+    connections_drained_.notify_all();
+}
 
-    if (bytes_received <= 0) return;
-
-    header_buf[bytes_received] = '\0';
-    std::string request(header_buf, bytes_received);
-
-    // Check if we need to read more body data based on Content-Length
-    auto header_end = request.find("\r\n\r\n");
-    if (header_end != std::string::npos) {
-        constexpr size_t kMaxTotalRead = 2 * 1024 * 1024;
-        size_t content_length = 0;
-        if (!TryParseContentLength(request, content_length)) {
-            const std::string response = build_http_response(
-                "{\"error\":\"Invalid Content-Length header\"}",
-                "application/json",
-                400);
-            SendAll(client_socket, response.c_str(), response.length());
-            return;
+void HttpRpcServer::handle_connection(int client_socket, bool rate_allowed) {
+    constexpr size_t kMaxHeaderBytes = 8191;
+    constexpr size_t kMaxBodyBytes = 2 * 1024 * 1024;
+    const auto deadline = std::chrono::steady_clock::now() + kClientSocketTimeout;
+    auto reply = [&](const std::string& response) {
+        if (SendAll(client_socket, response.data(), response.size())) ShutdownSend(client_socket);
+    };
+    auto refuse = [&](int status, const char* message) {
+        reply(build_http_response(message, "application/json", status));
+    };
+    std::string request;
+    size_t header_end = std::string::npos;
+    while ((header_end = request.find("\r\n\r\n")) == std::string::npos) {
+        if (request.size() >= kMaxHeaderBytes) {
+            refuse(400, "{\"error\":\"Request headers too large\"}"); return;
         }
-
-        if (content_length > kMaxTotalRead) {
-            const std::string response = build_http_response(
-                "{\"error\":\"Request body too large\"}",
-                "application/json",
-                413);
-            SendAll(client_socket, response.c_str(), response.length());
-            return;
-        }
-
-        // How much body we already have vs how much we need
-        size_t body_start = header_end + 4;
-        size_t body_received = request.size() - body_start;
-        size_t body_remaining = (content_length > body_received) ? content_length - body_received : 0;
-
-        // Read remaining body in a loop
-        while (body_remaining > 0) {
-            char chunk[8192];
-            size_t to_read = std::min(body_remaining, sizeof(chunk));
-            int n = recv(client_socket, chunk, to_read, 0);
-            if (n <= 0) break;
-            request.append(chunk, n);
-            body_remaining -= n;
-        }
+        char bytes[8192];
+        const int count = ReadBeforeDeadline(client_socket, bytes,
+            std::min(sizeof(bytes), kMaxHeaderBytes - request.size()), deadline);
+        if (count <= 0) return;
+        request.append(bytes, static_cast<size_t>(count));
     }
-
-    std::string response = process_http_request(request);
-    if (SendAll(client_socket, response.c_str(), response.length())) {
-        ShutdownSend(client_socket);
+    size_t content_length = 0;
+    if (!TryParseContentLength(request, header_end, content_length)) {
+        refuse(400, "{\"error\":\"Invalid request framing\"}"); return;
     }
+    if (content_length > kMaxBodyBytes) {
+        refuse(413, "{\"error\":\"Request body too large\"}"); return;
+    }
+    const size_t frame_size = header_end + 4 + content_length;
+    if (request.size() > frame_size) {
+        refuse(400, "{\"error\":\"Unexpected bytes after request body\"}"); return;
+    }
+    while (request.size() < frame_size) {
+        char bytes[8192];
+        const int count = ReadBeforeDeadline(client_socket, bytes,
+            std::min(sizeof(bytes), frame_size - request.size()), deadline);
+        if (count <= 0) return;
+        request.append(bytes, static_cast<size_t>(count));
+    }
+    if (!rate_allowed) {
+        reply(build_http_response(
+            "{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":{\"code\":-32000,"
+            "\"message\":\"Rate limit exceeded. Try again shortly.\"}}",
+            "application/json", 429));
+        return;
+    }
+    reply(process_http_request(request));
 }
 
 std::string HttpRpcServer::process_http_request(const std::string& request) {
@@ -647,6 +715,29 @@ std::string HttpRpcServer::process_http_request(const std::string& request) {
 }
 
 Json::Value HttpRpcServer::process_rpc_call(const Json::Value& request) {
+    const auto gate=daemon_context_?daemon_context_->reopen_rpc_gate:nullptr;
+    const auto epoch=gate?gate->Snapshot():0;
+    auto restarting=[&]{
+        Json::Value response(Json::objectValue);response["jsonrpc"]="2.0";
+        response["id"]=request.get("id",Json::nullValue);
+        response["error"]["code"]=-28;
+        response["error"]["message"]="Core restarting; retry request";
+        response["error"]["data"]["retryable"]=true;
+        response["error"]["data"]["reason"]="restarting";
+        return response;
+    };
+    if(gate&&!gate->Allows(epoch))return restarting();
+    try {
+        auto response=process_admitted_rpc_call(request);
+        if(gate&&!gate->Allows(epoch))return restarting();
+        return response;
+    } catch(...) {
+        if(gate&&!gate->Allows(epoch))return restarting();
+        throw;
+    }
+}
+
+Json::Value HttpRpcServer::process_admitted_rpc_call(const Json::Value& request) {
     Json::Value response;
     response["jsonrpc"] = "2.0";
     response["id"] = request.get("id", Json::nullValue);
@@ -695,7 +786,24 @@ Json::Value HttpRpcServer::process_rpc_call(const Json::Value& request) {
                 admin_check_method = alias_info->canonical_name;
             }
         }
-        if (readonly_mode_ && (isAdminMethod(method) || isAdminMethod(admin_check_method))) {
+        // Read-only is default-deny: ADMIN_METHODS alone missed wallet.exportseed,
+        // wallet.delete and more (include/daemon/rpc_readonly_policy.h). Decide
+        // on the handler that would run, in the dispatch order below.
+        auto readonly_source = [&]() -> std::string {
+            const bool builtin = method == "stop" || method == "help" || method == "getinfo" ||
+                                 method == "listtransactions";
+            if (builtin && methods_.count(method)) return "http:" + method;
+            if (rpc_registry_ != nullptr) {
+                std::string target = method;
+                if (target == "gettxout" && !rpc_registry_->has(target) && rpc_registry_->has("blockchain.gettxout")) {
+                    target = "blockchain.gettxout";
+                }
+                if (rpc_registry_->has(target)) return rpc_registry_->handlerSource(target);
+            }
+            return methods_.count(method) ? "http:" + method : std::string();
+        };
+        if (readonly_mode_ && (isAdminMethod(method) || isAdminMethod(admin_check_method) ||
+                               !dinero::rpc::ReadOnlyAllows(readonly_source()))) {
             return dinero::rpc::RpcError(dinero::rpc::RPC_FORBIDDEN,
                 "Method '" + method + "' is admin-only (server running in read-only mode)");
         }
@@ -755,12 +863,15 @@ Json::Value HttpRpcServer::process_rpc_call(const Json::Value& request) {
                 ctx.mempool = nullptr;
                 ctx.utxo_view = nullptr;
 
-                // STEP 3.1: Inject NEW policy-aware mempool for stats/policy queries
+                // Keep the service and pool alive through synchronous handler
+                // execution and response construction, including exception paths.
+                // This owner does not hold a pool or selected-chain lock.
+                std::unique_ptr<dinero::MempoolService::PoolUse> mempool_use;
                 if (daemon_context_ && daemon_context_->mempool) {
-                    // Cast MempoolService to get underlying Mempool*
                     auto mempool_service = std::dynamic_pointer_cast<dinero::MempoolService>(daemon_context_->mempool);
                     if (mempool_service) {
-                        ctx.mempool_v2 = const_cast<dinero::Mempool*>(&mempool_service->mempool());
+                        mempool_use = dinero::MempoolService::AcquirePoolUse(std::move(mempool_service));
+                        ctx.mempool_v2 = &mempool_use->Pool();
                     } else {
                         ctx.mempool_v2 = nullptr;
                     }
@@ -768,9 +879,15 @@ Json::Value HttpRpcServer::process_rpc_call(const Json::Value& request) {
                     ctx.mempool_v2 = nullptr;
                 }
 
-                // Phase 3A: Inject wallet_manager from WalletService
-                ctx.wallet_manager = (daemon_context_ && daemon_context_->wallet) ?
-                    &daemon_context_->wallet->get() : nullptr;
+                // Retain this exact manager through unified handler execution
+                // and response construction. This lifetime owner takes no wallet
+                // SQL/session or selected-chain lock and does not select a wallet.
+                std::unique_ptr<dinero::WalletService::WalletUse> wallet_use;
+                ctx.wallet_manager = nullptr;
+                if (daemon_context_ && daemon_context_->wallet) {
+                    wallet_use = dinero::WalletService::AcquireWalletUse(daemon_context_->wallet);
+                    ctx.wallet_manager = &wallet_use->Wallet();
+                }
 
                 // Issue #538 — these four lines fired on EVERY RPC, unconditionally,
                 // in every daemon.  At ~4 lines per call they drown daemon.log: a
@@ -861,6 +978,30 @@ Json::Value HttpRpcServer::process_rpc_call(const Json::Value& request) {
                         if (!raw.isString()) {
                             normalized["data"] = raw;
                         }
+                        // Orchard failures carry typed state used by the desktop
+                        // client. Preserve only these fields, never the whole
+                        // handler result (which may contain payment material).
+                        // Automatic flat aliases are copied handlers and have
+                        // no getAliasInfo entry. Accept their namespace too;
+                        // explicit aliases were resolved above.
+                        const bool orchard = admin_check_method.rfind("wallet.orchard.", 0) == 0 ||
+                            admin_check_method.rfind("orchard.", 0) == 0 ||
+                            admin_check_method == "getactivationstatus";
+                        auto token = [](const Json::Value& value, size_t limit) {
+                            if (!value.isString()) return false;
+                            const auto text = value.asString();
+                            return !text.empty() && text.size() <= limit &&
+                                std::all_of(text.begin(), text.end(), [](unsigned char c) {
+                                    return (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_';
+                                });
+                        };
+                        if (orchard && raw.isString() && token(result["error_code"], 64)) {
+                            Json::Value detail(Json::objectValue);
+                            detail["error_code"] = result["error_code"];
+                            if (token(result["proof_state"], 32)) detail["proof_state"] = result["proof_state"];
+                            if (result["reservation_retained"].isBool()) detail["reservation_retained"] = result["reservation_retained"];
+                            normalized["data"]["orchard"] = detail;
+                        }
                         response["error"] = normalized;
                     }
                     return response;
@@ -930,44 +1071,33 @@ std::string HttpRpcServer::extract_http_body(const std::string& request) {
 }
 
 std::string HttpRpcServer::extract_authorization_header(const std::string& request) {
-    // Find Authorization header (case-insensitive)
-    std::string request_lower = request;
-    std::transform(request_lower.begin(), request_lower.end(), request_lower.begin(), ::tolower);
-    
-    size_t auth_pos = request_lower.find("\nauthorization:");
-    if (auth_pos == std::string::npos) {
-        auth_pos = request_lower.find("\r\nauthorization:");
-        if (auth_pos == std::string::npos) {
-            return "";
+    // Credentials belong to the completed header block. Never search or fold
+    // the message body while selecting authentication metadata.
+    const auto headers_end = request.find("\r\n\r\n");
+    const auto first_end = request.find("\r\n");
+    if (headers_end == std::string::npos || first_end == std::string::npos ||
+        first_end > headers_end) return {};
+    std::string authorization;
+    bool found = false;
+    for (size_t pos = first_end + 2; pos < headers_end;) {
+        const auto end = request.find("\r\n", pos);
+        if (end == std::string::npos || end > headers_end) return {};
+        const auto colon = request.find(':', pos);
+        if (colon == std::string::npos || colon == pos || colon >= end) return {};
+        std::string name = request.substr(pos, colon - pos);
+        for (char& c : name)
+            if (c >= 'A' && c <= 'Z') c = static_cast<char>(c + ('a' - 'A'));
+        if (name == "authorization") {
+            if (found) return {}; // Ambiguous credentials fail authentication.
+            found = true;
+            size_t begin = colon + 1, finish = end;
+            while (begin < finish && (request[begin] == ' ' || request[begin] == '\t')) ++begin;
+            while (finish > begin && (request[finish - 1] == ' ' || request[finish - 1] == '\t')) --finish;
+            authorization.assign(request, begin, finish - begin);
         }
-        auth_pos += 2; // Skip \r\n
-    } else {
-        auth_pos += 1; // Skip \n
+        pos = end + 2;
     }
-    
-    // Find the end of the header line
-    size_t line_end = request.find("\r\n", auth_pos);
-    if (line_end == std::string::npos) {
-        line_end = request.find("\n", auth_pos);
-        if (line_end == std::string::npos) {
-            return "";
-        }
-    }
-    
-    // Extract the header value
-    std::string header_line = request.substr(auth_pos, line_end - auth_pos);
-    size_t colon_pos = header_line.find(':');
-    if (colon_pos == std::string::npos) {
-        return "";
-    }
-    
-    std::string value = header_line.substr(colon_pos + 1);
-
-    // Trim ALL whitespace (including \r\n)
-    value.erase(0, value.find_first_not_of(" \t\r\n"));
-    value.erase(value.find_last_not_of(" \t\r\n") + 1);
-
-    return value;
+    return authorization;
 }
 
 std::string HttpRpcServer::extract_client_ip(int client_socket) {
@@ -989,6 +1119,12 @@ void HttpRpcServer::configure_client_socket(int client_socket) {
     setsockopt(client_socket, SOL_SOCKET, SO_SNDTIMEO,
                reinterpret_cast<const char*>(&timeout_ms), sizeof(timeout_ms));
 #else
+#ifdef SO_NOSIGPIPE
+    // Embedded server callers need the same safe broken-pipe behavior as the
+    // daemon, including a handler sending after stop interrupted its socket.
+    const int no_sigpipe = 1;
+    setsockopt(client_socket, SOL_SOCKET, SO_NOSIGPIPE, &no_sigpipe, sizeof(no_sigpipe));
+#endif
     struct timeval timeout;
     timeout.tv_sec = static_cast<time_t>(kClientSocketTimeout.count() / 1000);
     timeout.tv_usec = static_cast<suseconds_t>((kClientSocketTimeout.count() % 1000) * 1000);

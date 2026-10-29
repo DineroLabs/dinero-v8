@@ -7,9 +7,27 @@
 #include <fstream>
 #include <cstring>
 #include <sqlite3.h>
+#include "daemon/services/config_service.h"
+#include "consensus/utxo_snapshot.h"
+#include "wallet/wallet_manager.h"
+#include "crypto/sha256.h"
+#include <iomanip>
+#include "daemon/services/logger_service.h"
 
 namespace dinero {
 struct ShieldedStateStartupTestAccess {
+    static void SnapshotPolicy(ChainstateService& service) {
+        service.logger_=std::make_shared<LoggerService>("");
+        service.consensus_utxo_set_=std::make_unique<consensus::ConsensusUTXOSet>();
+    }
+    static void SnapshotPath(ChainstateService& service, const std::filesystem::path& path) {
+        service.config_ = std::make_shared<ConfigService>();
+        service.config_->Set("assumeutxo_snapshot", path.string());
+    }
+    static bool Persist(ChainstateService& s) { return s.PersistShieldedState(); }
+    static bool Marker(ChainstateService& s,const uint256& h,uint32_t n) { return s.PersistShieldedTipMarker(h,n); }
+    static bool Import(ChainstateService& s,const uint256& h,uint32_t n) { return s.PersistImportedShieldedState(h,n); }
+    static void Append(ChainstateService& s) { consensus::shielded::Hash h{};h[0]=77;s.shielded_tree_.Append(h); }
     static bool Load(ChainstateService& service, const std::filesystem::path& root) {
         service.datadir_ = root.string();
         service.shielded_frontier_path_ = root / "blockchain/shielded_frontier.bin";
@@ -109,9 +127,240 @@ void Startup(const std::string& fault, bool separated = true) {
     }
 }
 
+// This is the pre-rehydrate startup boundary, not a complete v5 binding test.
+// The payload is a manifest-bound header fixture; LoadSnapshot must still
+// authenticate the complete container before it may publish imported coins.
+void SnapshotMarkerAboveTip() {
+    for (const auto& fault : {"valid", "missing_manifest", "header_height", "late_nullifier"}) {
+        TempDir temp;const auto dir=temp.path/"chaindb";
+        std::filesystem::create_directory(dir);Seed(dir);
+        std::filesystem::create_directory(temp.path/"blockchain");
+        ChainDB db;CHECK(db.init(dir)==Status::Ok);const auto token=ChainWriteToken::CreateForTesting();
+        CHECK(db.deleteAllShieldedNullifiers(token).ok());
+        BlockHeader base{};base.prev_block_hash=uint256::FromHexUnsafe(Params().genesis_hash);base.timestamp=123;
+        const auto hash=base.GetHash();
+        CHECK(db.setTip(token,base.prev_block_hash,0,arith_uint256(1))==Status::Ok);
+        CHECK(db.putHeader(token,hash,base,std::string(fault)=="header_height"?2:3,arith_uint256(2))==Status::Ok);
+        sh::CommitmentTree tree;sh::Hash note{};note[0]=9;tree.Append(note);
+        sh::AnchorHistory anchors;anchors.RecordRoot(3,tree.Root());
+        const auto frontier=tree.SerializeFrontier(),history=anchors.SerializePersistenceBytes();
+        CHECK(db.putShieldedState(token,ChainDB::ShieldedStateRecord::Frontier,
+            std::string(frontier.begin(),frontier.end()))==Status::Ok);
+        CHECK(db.putShieldedState(token,ChainDB::ShieldedStateRecord::AnchorHistory,
+            std::string(history.begin(),history.end()))==Status::Ok);
+        sh::Hash nullifier{};nullifier[0]=11;
+        CHECK(db.putShieldedNullifier(token,std::string(fault)=="late_nullifier"?4:3,nullifier.data())==Status::Ok);
+        ChainDB::ShieldedTipMarker marker;marker.height=3;marker.block_hash=hash;marker.tree_size=tree.Size();marker.nullifier_count=1;
+        const auto tree_root=tree.Root();std::copy(tree_root.begin(),tree_root.end(),marker.shielded_root.begin());
+        CHECK(db.putShieldedTipMarker(token,marker)==Status::Ok);
+        const auto payload=temp.path/"snapshot.dat";
+        {
+            std::ofstream out(payload,std::ios::binary);
+            const auto put=[&](const auto& value){out.write(reinterpret_cast<const char*>(&value),sizeof(value));};
+            put(consensus::SNAPSHOT_MAGIC);put(uint32_t(5));out.write(reinterpret_cast<const char*>(hash.data),32);
+            put(uint32_t(3));put(uint64_t(0));put(uint64_t(0));put(uint64_t(0));
+            const std::array<char,32> tail{};out.write(tail.data(),tail.size());CHECK(out.good());
+        }
+        if(std::string(fault)!="missing_manifest") {
+            std::ifstream in(payload,std::ios::binary);const std::string bytes(std::istreambuf_iterator<char>(in),{});
+            uint8_t digest[32];crypto::CSHA256().Write(reinterpret_cast<const uint8_t*>(bytes.data()),bytes.size()).Finalize(digest);
+            std::ostringstream hex;hex<<std::hex<<std::setfill('0');for(auto b:digest)hex<<std::setw(2)<<unsigned(b);
+            std::ofstream out(payload.string()+".manifest.json");
+            out<<"{\"height\":3,\"block_hash\":\""<<hash.GetHex()<<"\",\"sha256\":\""<<hex.str()<<"\"}";CHECK(out.good());
+        }
+        db.close();const auto before=Inspect(dir);
+        for(unsigned reopen=0;reopen<2;++reopen) {
+            CHECK(db.init(dir)==Status::Ok);
+            {
+                ChainstateService service;service.setChainDB(&db);
+                ShieldedStateStartupTestAccess::SnapshotPath(service,payload);
+                CHECK(ShieldedStateStartupTestAccess::Load(service,temp.path)==(std::string(fault)=="valid"));
+                if(std::string(fault)=="valid") {
+                    CHECK(service.GetShieldedCommitmentTree()->Root()==tree.Root());
+                    CHECK(service.GetShieldedNullifierSet()->Contains(nullifier));
+                    CHECK(db.getTip()->height==0); // Startup loading must not promote history.
+                }
+            }
+            db.close();CHECK(Inspect(dir)==before);
+        }
+    }
+    std::cout<<"PASS snapshot_marker_above_tip\n";
+}
+
+void RetiredPersistence(bool separated=true) {
+    TempDir temp;const auto dir=temp.path/"chaindb";std::filesystem::create_directory(dir);Seed(dir,separated,separated?std::optional<std::string>(ready):std::nullopt);
+    std::filesystem::create_directory(temp.path/"blockchain");
+    ChainDB db;CHECK(db.init(dir)==Status::Ok);const auto token=ChainWriteToken::CreateForTesting();
+    uint256 parent,child,other;parent.data[0]=3;child.data[0]=4;other.data[0]=5;
+    sh::CommitmentTree tree;sh::AnchorHistory anchors;anchors.RecordRoot(3,tree.Root());
+    const auto frontier=tree.SerializeFrontier(),history=anchors.SerializePersistenceBytes();
+    const auto tree_root=tree.Root();uint256 root;std::copy(tree_root.begin(),tree_root.end(),root.begin());
+    CHECK(db.deleteAllShieldedNullifiers(token).ok());
+    CHECK(db.putShieldedState(token,ChainDB::ShieldedStateRecord::Frontier,{frontier.begin(),frontier.end()})==Status::Ok);
+    CHECK(db.putShieldedState(token,ChainDB::ShieldedStateRecord::AnchorHistory,{history.begin(),history.end()})==Status::Ok);
+    CHECK(db.putShieldedTipMarker(token,{3,parent,root,0,0})==Status::Ok);
+    CHECK(db.setTip(token,parent,3,arith_uint256(3))==Status::Ok);
+    CHECK(db.setValidatedTip(token,parent,3)==Status::Ok);
+    WriteFile(temp.path/"blockchain/shielded_frontier.bin",frontier);
+    WriteFile(temp.path/"blockchain/shielded_anchor_history.bin",history);
+    ChainstateService service;service.setChainDB(&db);
+    CHECK(ShieldedStateStartupTestAccess::Load(service,temp.path));
+    CHECK(ShieldedStateStartupTestAccess::Persist(service));
+    CHECK(ShieldedStateStartupTestAccess::Marker(service,parent,3));
+    CHECK(ShieldedStateStartupTestAccess::Import(service,parent,3));
+    if(!separated)return; // Old-schema writes keep their historical behavior.
+    const auto composite=service.ComputeShieldedRoot();CHECK(composite);
+    storage::LegacyRetirementState retired{{2,other,1,4,3,parent,*composite,37,root,0,0},4,child,parent};
+    rocksdb::WriteBatch batch;
+    CHECK(db.stageLegacyRetirementConnect(token,std::nullopt,retired,batch)==Status::Ok);
+    CHECK(db.setTip(token,child,4,arith_uint256(4),&batch)==Status::Ok);
+    CHECK(db.setValidatedTip(token,child,4,&batch)==Status::Ok);
+    CHECK(db.writeBatch(token,std::move(batch),true)==Status::Ok);
+    const auto before=Inspect(dir);
+    const auto unchanged=[&] {
+        CHECK(Inspect(dir)==before);
+        for(const auto& entry:std::vector<std::pair<std::string,std::vector<uint8_t>>>{
+                {"shielded_frontier.bin",frontier},{"shielded_anchor_history.bin",history}}) {
+            std::ifstream in(temp.path/"blockchain"/entry.first,std::ios::binary);
+            const std::vector<uint8_t> actual((std::istreambuf_iterator<char>(in)),{});
+            CHECK(actual==entry.second);
+        }
+    };
+    CHECK(ShieldedStateStartupTestAccess::Persist(service));unchanged();
+    CHECK(ShieldedStateStartupTestAccess::Marker(service,child,4));unchanged();
+    CHECK(!ShieldedStateStartupTestAccess::Marker(service,parent,3));unchanged();
+    CHECK(!ShieldedStateStartupTestAccess::Marker(service,other,4));unchanged();
+    CHECK(!ShieldedStateStartupTestAccess::Import(service,child,4));unchanged();
+    ShieldedStateStartupTestAccess::Append(service);
+    CHECK(!ShieldedStateStartupTestAccess::Persist(service));unchanged();
+    db.close();CHECK(!ShieldedStateStartupTestAccess::Persist(service));
+    CHECK(db.init(dir)==Status::Ok);unchanged();
+    CHECK(ShieldedStateStartupTestAccess::Load(service,temp.path));
+    rocksdb::WriteBatch undo;
+    CHECK(db.stageLegacyRetirementDisconnect(token,retired,undo)==Status::Ok);
+    CHECK(db.setTip(token,parent,3,arith_uint256(3),&undo)==Status::Ok);
+    CHECK(db.setValidatedTip(token,parent,3,&undo)==Status::Ok);
+    CHECK(db.writeBatch(token,std::move(undo),true)==Status::Ok);
+    CHECK(ShieldedStateStartupTestAccess::Persist(service));
+    CHECK(ShieldedStateStartupTestAccess::Marker(service,parent,3));
+}
+
+// Entry-delivery fixture only, not a consensus-qualified snapshot container.
+// The production source is exercised with actual wallet writes and progress.
+void SnapshotWalletImport() {
+    TempDir temp;
+    WalletManager wallet(temp.path);
+    wallet.create("snapshot"); wallet.open("snapshot");
+    std::vector<uint8_t> script(34, 0x42); script[0]=0x51; script[1]=0x20;
+    wallet.addWatchScript(script, "m/86'/1'/0'/0/0", false);
+    auto scalar = [&](const char* sql) {
+        sqlite3_stmt* raw = nullptr;
+        CHECK(sqlite3_prepare_v2(wallet.getCurrentDatabase(),sql,-1,&raw,nullptr)==SQLITE_OK);
+        std::unique_ptr<sqlite3_stmt,decltype(&sqlite3_finalize)> stmt(raw,sqlite3_finalize);
+        CHECK(sqlite3_step(raw)==SQLITE_ROW);
+        const auto result=sqlite3_column_int64(raw,0);
+        CHECK(sqlite3_step(raw)==SQLITE_DONE); return result;
+    };
+    const auto height=wallet.getCurrentBlockchainHeight();
+    const auto progress=scalar("SELECT last_scanned_height FROM sync_meta WHERE id=1");
+    ChainstateService service;
+    const auto path=temp.path/"snapshot.dat";
+    ShieldedStateStartupTestAccess::SnapshotPath(service,path);
+    CHECK(service.RescanWalletFromSnapshotUTXOs(wallet,10)==-1);
+    auto write = [&](uint64_t count) {
+        std::ofstream out(path,std::ios::binary|std::ios::trunc);
+        const auto put=[&](const auto& value) { out.write(reinterpret_cast<const char*>(&value),sizeof(value)); };
+        consensus::SnapshotMetadata header;
+        header.magic=consensus::SNAPSHOT_MAGIC;header.version=consensus::SNAPSHOT_VERSION_V4;
+        header.block_hash.data[0]=10;header.block_height=10;header.utxo_count=count;
+        header.timestamp=1;header.reserved=0;
+        put(header.magic);put(header.version);out.write(reinterpret_cast<const char*>(header.block_hash.data),32);
+        put(header.block_height);put(header.utxo_count);put(header.timestamp);put(header.reserved);
+        uint256 txid;txid.data[0]=44;
+        out.write(reinterpret_cast<const char*>(txid.data),32);
+        put(uint32_t(0));put(uint64_t(5000));put(uint32_t(script.size()));
+        out.write(reinterpret_cast<const char*>(script.data()),script.size());put(uint32_t(4));put(uint8_t(0));
+        CHECK(out.good());
+    };
+    // The producer reaches EOF before its advertised entry count. No partial
+    // wallet import or scan-progress publication may escape that I/O failure.
+    write(2);
+    CHECK(service.RescanWalletFromSnapshotUTXOs(wallet,10)==-1);
+    CHECK(scalar("SELECT COUNT(*) FROM utxos")==0);
+    CHECK(scalar("SELECT last_scanned_height FROM sync_meta WHERE id=1")==progress);
+    CHECK(wallet.getCurrentBlockchainHeight()==height);
+    write(1);
+    CHECK(service.RescanWalletFromSnapshotUTXOs(wallet,11)==-1);
+    CHECK(scalar("SELECT COUNT(*) FROM utxos")==0);
+    CHECK(service.RescanWalletFromSnapshotUTXOs(wallet,10)==1);
+    CHECK(scalar("SELECT COUNT(*) FROM utxos WHERE amount=5000 AND height=4 AND is_spent=0")==1);
+    CHECK(scalar("SELECT last_scanned_height FROM sync_meta WHERE id=1")==10);
+    wallet.open("snapshot");
+    CHECK(wallet.getCurrentBlockchainHeight()==10);
+    CHECK(scalar("SELECT COUNT(*) FROM utxos WHERE amount=5000")==1);
+    CHECK(service.RescanWalletFromSnapshotUTXOs(wallet,10)==1);
+    CHECK(scalar("SELECT COUNT(*) FROM utxos")==1);
+    std::cout << "PASS snapshot_wallet_import\n";
+}
+
+void OrchardSnapshotPolicyRuntime() {
+    struct Restore {ChainParams params;~Restore(){MutableParams()=params;}} restore{Params()};
+    MutableParams().orchard_activation_height=150000;MutableParams().orchard_branch_id=0xa1b2c3d4;
+    MutableParams().state_commitment_activation_height=UINT32_MAX;
+    MutableParams().orchard_catalog_commitment_activation_height=UINT32_MAX;
+    TempDir temp;const auto database=temp.path/"chaindb";std::filesystem::create_directory(database);Seed(database);
+    ChainDB db;CHECK(db.init(database)==Status::Ok);const auto token=ChainWriteToken::CreateForTesting();
+    uint256 hash;hash.data[0]=7;CHECK(db.setTip(token,hash,150000,arith_uint256{1})==Status::Ok);
+    db.close();const auto before=Inspect(database);CHECK(db.init(database)==Status::Ok);
+    const auto file=temp.path/"snapshot.dat";
+    const auto write=[&](uint32_t version,uint32_t height) {
+        std::ofstream out(file,std::ios::binary|std::ios::trunc);
+        const auto put=[&](const auto& value){out.write(reinterpret_cast<const char*>(&value),sizeof(value));};
+        put(consensus::SNAPSHOT_MAGIC);put(version);out.write(reinterpret_cast<const char*>(hash.data),32);
+        put(height);put(uint64_t(0));put(uint64_t(0));put(uint64_t(0));
+        const std::array<char,32> padding{};out.write(padding.data(),padding.size());CHECK(out.good());
+    };
+    const auto read=[&] {std::ifstream in(file,std::ios::binary);return std::string(std::istreambuf_iterator<char>(in),{});};
+    for(unsigned reopen=0;reopen<2;++reopen) {
+        {
+            ChainstateService service;service.setChainDB(&db);ShieldedStateStartupTestAccess::SnapshotPolicy(service);
+            for(uint32_t version:{3,4,5})for(uint32_t height:{150000,150001}) {
+                write(version,height);const auto payload=read();const auto result=service.LoadSnapshot(file);
+                CHECK(!result.success&&result.utxos_imported==0&&
+                    result.error_message.find("Legacy snapshot container cannot bootstrap Orchard")!=std::string::npos);
+                CHECK(read()==payload);
+            }
+#if DINERO_TEST_ORCHARD_RUNTIME
+            const std::string refusal="active DNORST02";
+#else
+            const std::string refusal="Orchard v6 snapshot runtime backend unavailable";
+#endif
+            write(6,150000);const auto dormant=service.LoadSnapshot(file);
+            CHECK(!dormant.success&&dormant.error_message.find(refusal)!=std::string::npos);
+            const auto sentinel=read();const auto exported=service.ExportSnapshot(file);
+            CHECK(!exported.success&&exported.error_message.find(refusal)!=std::string::npos);
+            CHECK(read()==sentinel); // Refusal precedes opening/truncating output.
+        }
+        db.close();CHECK(Inspect(database)==before);CHECK(db.init(database)==Status::Ok);
+    }
+    std::cout<<"PASS orchard_snapshot_policy_runtime: pre-body refusal, unchanged storage/reopen, preserved export destination\n";
+}
+
 int main(int argc, char** argv) {
     SelectParams(Chain::REGTEST);
-    const std::vector<std::string> cases{"valid", "zero_nullifiers", "unstamped_cache", "frontier", "anchors", "count", "root", "composite_root", "size", "height", "hash", "legacy_frontier", "legacy_anchors"};
+    if(argc==2&&std::string(argv[1])=="snapshot_marker_above_tip") {
+        try{SnapshotMarkerAboveTip();return 0;}
+        catch(const std::exception& e){std::cerr<<e.what()<<'\n';return 1;}
+    }
+    if(argc==2&&std::string(argv[1])=="orchard_snapshot_policy_runtime") {
+        try{OrchardSnapshotPolicyRuntime();return 0;}
+        catch(const std::exception& e){std::cerr<<e.what()<<'\n';return 1;}
+    }
+    if (argc == 2 && std::string(argv[1]) == "snapshot_wallet_import") {
+        try { SnapshotWalletImport(); return 0; }
+        catch (const std::exception& e) { std::cerr << e.what() << '\n'; return 1; }
+    }
+    const std::vector<std::string> cases{"valid", "zero_nullifiers", "unstamped_cache", "frontier", "anchors", "count", "root", "composite_root", "size", "height", "hash", "legacy_frontier", "legacy_anchors", "retired_persistence", "legacy_persistence"};
     if (argc == 2 && std::string(argv[1]) == "--list") {
         for (const auto& name : cases) std::cout << name << '\n'; return 0;
     }
@@ -120,7 +369,8 @@ int main(int argc, char** argv) {
         if (argc == 2 && name != argv[1]) continue;
         try {
             const bool legacy_case = name.rfind("legacy_", 0) == 0;
-            Startup(name == "valid" ? "" : legacy_case ? name.substr(7) : name, !legacy_case);
+            if(name=="retired_persistence" || name=="legacy_persistence")RetiredPersistence(name=="retired_persistence");
+            else Startup(name == "valid" ? "" : legacy_case ? name.substr(7) : name, !legacy_case);
             ++passed; std::cout << "PASS " << name << '\n';
         } catch (const Failure& e) { ++failed; std::cerr << "FAIL " << name << ": " << e.what() << '\n'; }
         catch (const std::exception& e) { std::cerr << "SETUP ERROR " << name << ": " << e.what() << '\n'; return 2; }

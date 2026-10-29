@@ -23,7 +23,7 @@ bool Handshake(P2PManager& manager, bool outbound, uint64_t services, uint32_t r
     peer.address = "127.0.0.1"; peer.port = 31000;
     peer.socket_fd = sockets.fd[0]; peer.is_outbound = outbound;
     // Same 70016 as v8.1.12, and a spoofed modern UA: neither proves support.
-    sockets.Send(P2PMessage::create_version(70016, remote_height, services, "/v8.1.13/", 12345));
+    sockets.Send(P2PMessage::create_version(70016, remote_height, services, "/v8.2.0/", 12345));
     sockets.Send(P2PMessage::create_verack());
     const bool result = manager.test_perform_handshake(&peer);
     if (!result) {

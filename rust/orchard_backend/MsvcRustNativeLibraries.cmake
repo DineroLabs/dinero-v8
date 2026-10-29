@@ -1,0 +1,30 @@
+# rustc's ordered native-static-libs report is authoritative. Do not guess a
+# list of Windows libraries or accept arbitrary linker arguments from a log.
+function(dinero_orchard_msvc_native_libraries report out_response)
+  string(REGEX MATCHALL "native-static-libs:[^\r\n]*" matches "${report}")
+  list(LENGTH matches count)
+  if(NOT count EQUAL 1)
+    message(FATAL_ERROR "Expected exactly one rustc native-static-libs report")
+  endif()
+  list(GET matches 0 line)
+  string(REGEX REPLACE "^native-static-libs:[ \t]*" "" line "${line}")
+  string(STRIP "${line}" line)
+  if(line STREQUAL "")
+    message(FATAL_ERROR "Empty rustc native-static-libs report")
+  endif()
+  string(REGEX REPLACE "[ \t]+" ";" libraries "${line}")
+  set(response "")
+  foreach(library IN LISTS libraries)
+    # Native rustc emits this release dynamic-CRT directive on MSVC. Accept
+    # that exact token only; do not generalize to arbitrary /defaultlib options.
+    if(NOT library STREQUAL "/defaultlib:msvcrt" AND
+       NOT library MATCHES "^[A-Za-z0-9_][A-Za-z0-9_.-]*\\.lib$")
+      string(HEX "${library}" library_hex)
+      string(LENGTH "${library}" library_length)
+      message(FATAL_ERROR "Unexpected MSVC native library token: ${library} (bytes=${library_length}, hex=${library_hex})")
+    endif()
+    # Preserve order and duplicates exactly; do not sort or deduplicate.
+    string(APPEND response "${library}\n")
+  endforeach()
+  set(${out_response} "${response}" PARENT_SCOPE)
+endfunction()

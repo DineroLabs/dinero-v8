@@ -1,0 +1,9 @@
+# Real mempool linkage for service fixtures
+
+The composed pool-tip notification introduced prepared mempool methods into ChainstateService. Sixteen Linux test executables failed to link because their historical mempool stubs did not implement those methods. Nineteen service/storage/RPC targets use the same pair of mempool isolation sources, including the three related runtime-reader/startup/RPC-drain targets.
+
+Those targets now link the actual mempool and transaction-relay objects, compiled once for the test graph. Existing vault observer isolation is retained through the existing vault-only source; fixtures already using the real vault retain it. Linux rescans the actual mutually dependent archives through the project's existing group pattern. Fixture bodies, assertions, registrations and deadlines are unchanged. Other test targets retain their existing graph.
+
+The required CI lane builds every configured affected target, requires enabled CTest registrations for each, executes every selected test and retains the complete inventory and execution log. These are actual test executions; linking the real mempool does not mean each fixture exercises mempool admission. No production source change, synthetic prepared-update stub, assertion waiver, or local reproduction of GNU archive behavior is claimed. Current Linux qualification remains required.
+
+Fresh local builds of the full daemon and affected targets passed in both actual backend configurations: 19 targets and 27 selected tests with Orchard enabled, 17 targets and 19 selected tests with it disabled. The two Orchard-only targets are absent from the disabled configuration. Target attachment runs at the end of root CMake processing so those optional targets are included after their declarations. No new sanitizer qualification is claimed for this build-only change.

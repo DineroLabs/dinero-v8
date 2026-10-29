@@ -1,3 +1,8 @@
+#include "wallet/orchard_account_catalog.h"
+#include "wallet/selected_history.h"
+#include "wallet/unsigned_tx_builder.h"
+#include <climits>
+#include <cstring>
 #include "wallet/wallet_manager.h"
 #include "consensus/coin_type.h"
 #include "consensus/subsidy.h"   // For ConsensusSubsidy::UNA_PER_DIN
@@ -24,6 +29,10 @@
 #include "wallet/bip32_deriver.h"  // For BIP32 derivation (canonical engine)
 #include "wallet/bip39.h"
 #include "wallet/v7_p2mr_store.h"
+#include "wallet/p2mr_address.h"
+#include "wallet/secure_keypair.h"
+#include "consensus/pq/scheme_registry.h"
+#include "crypto/sha256.h"
 #include "crypto/pbkdf2.h"       // For key derivation from passphrase
 #include "crypto/wallet_crypto.h"// For AES-256-GCM encryption/decryption
 #include <openssl/evp.h>         // For AES-256-GCM encryption
@@ -35,6 +44,7 @@
 #include <secp256k1_extrakeys.h> // For x-only/taproot operations
 #include <array>
 #include <atomic>
+#include <limits>
 #include <cassert>               // For assert() in debug builds
 #include "wallet/address.h"
 #include "wallet/key_identity.h"  // Week 1 Day 2: KeyID for descriptor wallet
@@ -252,6 +262,20 @@ std::array<uint8_t, 32> DeriveBip39RecoveryKey(const std::vector<uint8_t>& seed)
     return key;
 }
 
+constexpr char kInitialOwnerSetting[] = "wallet_initial_owner_v1";
+std::string InitialOwnerKey(const std::vector<uint8_t>& seed) {
+    if (seed.size() != 64) throw std::runtime_error("Initialization seed unavailable");
+    const std::string domain = "Dinero WalletManager initial PQ owner v1";
+    std::vector<uint8_t> material(domain.begin(), domain.end());
+    material.insert(material.end(), seed.begin(), seed.end());
+    std::array<uint8_t, 32> key{};
+    ::sha256(material.data(), material.size(), key.data());
+    secureClearBytes(material);
+    std::string result(reinterpret_cast<const char*>(key.data()), key.size());
+    OPENSSL_cleanse(key.data(), key.size());
+    return result;
+}
+
 bool ConstantTimeEqual(const std::vector<uint8_t>& lhs,
                        const std::vector<uint8_t>& rhs) {
     return lhs.size() == rhs.size() &&
@@ -423,6 +447,15 @@ void WalletManager::initializeRegistry() {
             fingerprint BLOB,
             created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
             last_opened INTEGER
+        )
+    )");
+
+    // Selection is an explicit wallet ID, not an ordering of wall-clock times.
+    // Existing registries with no selection retain the legacy startup fallback.
+    exec(registry_db_, R"(
+        CREATE TABLE IF NOT EXISTS wallet_selection (
+            singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+            wallet_id INTEGER NOT NULL REFERENCES wallets(id) ON DELETE CASCADE
         )
     )");
 
@@ -1582,9 +1615,32 @@ std::vector<std::string> WalletManager::listWallets() const {
 }
 
 std::string WalletManager::getMostRecentlyOpenedWallet() const {
+    std::lock_guard<std::recursive_mutex> database_lock(database_lifecycle_mutex_);
     if (!registry_db_) {
         WLOG_ERR("Registry database not open");
         return "";
+    }
+
+    {
+        sqlite3_stmt* raw = nullptr;
+        const int prepared = sqlite3_prepare_v2(registry_db_,
+            "SELECT w.name FROM wallet_selection s LEFT JOIN wallets w ON w.id=s.wallet_id "
+            "WHERE s.singleton=1", -1, &raw, nullptr);
+        std::unique_ptr<sqlite3_stmt, decltype(&sqlite3_finalize)> selection(raw, sqlite3_finalize);
+        if (prepared != SQLITE_OK) throw std::runtime_error("Wallet selection read unavailable");
+        const int rc = sqlite3_step(selection.get());
+        if (rc == SQLITE_ROW) {
+            const auto* bytes = sqlite3_column_text(selection.get(), 0);
+            const int size = sqlite3_column_bytes(selection.get(), 0);
+            if (sqlite3_column_type(selection.get(), 0) != SQLITE_TEXT || !bytes ||
+                size <= 0 || std::memchr(bytes, 0, size))
+                throw std::runtime_error("Wallet selection target invalid");
+            const std::string name(reinterpret_cast<const char*>(bytes), size);
+            if (sqlite3_step(selection.get()) != SQLITE_DONE)
+                throw std::runtime_error("Wallet selection read incomplete");
+            return name;
+        }
+        if (rc != SQLITE_DONE) throw std::runtime_error("Wallet selection read failed");
     }
 
     sqlite3_stmt* stmt = nullptr;
@@ -1634,13 +1690,53 @@ bool WalletManager::exists(const std::string& name) const {
     return found;
 }
 
+WalletManager::GeneratedBip39Identity::~GeneratedBip39Identity() {
+    secureClearString(mnemonic_);
+    secureClearBytes(seed_);
+}
+
+WalletManager::GeneratedBip39Identity WalletManager::GenerateBip39Identity(
+    int word_count, const std::string& passphrase) {
+    bip39::WordCount words;
+    switch (word_count) {
+    case 12: words = bip39::WordCount::Words12; break;
+    case 15: words = bip39::WordCount::Words15; break;
+    case 18: words = bip39::WordCount::Words18; break;
+    case 21: words = bip39::WordCount::Words21; break;
+    case 24: words = bip39::WordCount::Words24; break;
+    default: throw std::invalid_argument("Invalid BIP39 word count");
+    }
+    GeneratedBip39Identity identity;
+    identity.mnemonic_ = bip39::Generate(words);
+    if (identity.mnemonic_.empty() ||
+        !bip39::MnemonicToSeed(identity.mnemonic_, passphrase, identity.seed_) ||
+        identity.seed_.size() != 64)
+        throw std::runtime_error("Failed to generate BIP39 identity");
+    return identity;
+}
+
+void WalletManager::createFromGeneratedBip39(const std::string& name,
+    GeneratedBip39Identity&& identity, const std::string& passphrase) {
+    // Consume the generated identity. A moved-from or reused ticket cannot
+    // authorize a second initialization, and recovery has no ticket constructor.
+    GeneratedBip39Identity owned(std::move(identity));
+    secureClearString(identity.mnemonic_);
+    secureClearBytes(identity.seed_);
+    std::vector<uint8_t> check;
+    const bool matches = bip39::MnemonicToSeed(owned.mnemonic_, passphrase, check) &&
+                         ConstantTimeEqual(check, owned.seed_) && check.size() == 64;
+    secureClearBytes(check);
+    if (!matches) throw std::runtime_error("Generated BIP39 identity unavailable or mismatched");
+    createWithInitialSeed(name, owned.seed_, &owned.mnemonic_, passphrase, InitialSeedKind::Generated);
+}
+
 void WalletManager::create(const std::string& name) {
     std::vector<uint8_t> seed(64);
     if (!CF_GenerateRandomBytes(seed.data(), seed.size())) {
         throw std::runtime_error("Failed to generate initial HD wallet seed");
     }
     try {
-        createWithInitialSeed(name, seed, nullptr, "");
+        createWithInitialSeed(name, seed, nullptr, "", InitialSeedKind::Generated);
     } catch (...) {
         secureClearBytes(seed);
         throw;
@@ -1650,17 +1746,18 @@ void WalletManager::create(const std::string& name) {
 
 void WalletManager::createFromBip39(const std::string& name,
                                     const std::string& mnemonic,
-                                    const std::string& bip39_passphrase) {
-    if (!bip39::ValidateMnemonic(mnemonic)) {
+                                    const std::string& bip39_passphrase,
+                                    bool skip_checksum) {
+    if (!skip_checksum && !bip39::ValidateMnemonic(mnemonic)) {
         throw std::invalid_argument("Invalid BIP39 mnemonic");
     }
     std::vector<uint8_t> seed;
-    if (!bip39::MnemonicToSeed(mnemonic, bip39_passphrase, seed) || seed.size() != 64) {
+    if (!bip39::MnemonicToSeed(mnemonic, bip39_passphrase, seed, skip_checksum) || seed.size() != 64) {
         secureClearBytes(seed);
         throw std::runtime_error("Failed to derive BIP39 wallet seed");
     }
     try {
-        createWithInitialSeed(name, seed, &mnemonic, bip39_passphrase);
+        createWithInitialSeed(name, seed, skip_checksum ? nullptr : &mnemonic, bip39_passphrase, InitialSeedKind::Recovered);
     } catch (...) {
         secureClearBytes(seed);
         throw;
@@ -1672,7 +1769,9 @@ void WalletManager::createWithInitialSeed(
     const std::string& name,
     const std::vector<uint8_t>& initial_master_seed,
     const std::string* authoritative_mnemonic,
-    const std::string& bip39_passphrase) {
+    const std::string& bip39_passphrase, InitialSeedKind kind) {
+    std::lock_guard<std::recursive_mutex> database_lock(database_lifecycle_mutex_);
+    if (database_leases_ != 0) throw std::logic_error("Cannot create a wallet during database delivery");
     if (initial_master_seed.size() != 64) {
         throw std::invalid_argument("Initial wallet seed must be exactly 64 bytes");
     }
@@ -1827,6 +1926,7 @@ void WalletManager::createWithInitialSeed(
         std::vector<uint8_t> previous_master_seed = master_seed_;
 
         try {
+            AdvanceDatabaseSession();
             db_ = new_wallet_db;
             current_ = cleanName;
             current_wallet_id_ = 1;  // Per-wallet DB always has id=1
@@ -1834,7 +1934,29 @@ void WalletManager::createWithInitialSeed(
             wallet_locked_ = false;
             ensureWalletIdentityRow();
 
-            if (!storeMasterSeed(initial_master_seed, "", false)) {
+            struct Secret {
+                std::string value;
+                ~Secret() { secureClearString(value); }
+            } owner_key{InitialOwnerKey(initial_master_seed)}, owner_plain;
+            std::string identity;
+            { auto lease = AcquireDatabaseLease(); identity = lease->EnsureDeliveryIdentity(); }
+            owner_plain.value = "DNI02";
+            owner_plain.value.push_back(kind == InitialSeedKind::Generated ? 1 : 0);
+            if (identity.size() != 71 || identity.substr(0,7) != "DNWI01:")
+                throw std::runtime_error("Initial wallet identity invalid");
+            owner_plain.value += identity.substr(7);
+            if (kind == InitialSeedKind::Generated) {
+                std::array<uint8_t, 32> pq{};
+                struct ClearPq { std::array<uint8_t,32>& value;
+                    ~ClearPq() { OPENSSL_cleanse(value.data(),value.size()); } } clear_pq{pq};
+                if (RAND_bytes(pq.data(), pq.size()) != 1)
+                    throw std::runtime_error("Initial PQ master generation failed");
+                owner_plain.value.append(reinterpret_cast<const char*>(pq.data()), pq.size());
+                OPENSSL_cleanse(pq.data(), pq.size());
+            }
+            const auto sealed = encryptData(owner_plain.value, owner_key.value);
+            const auto owner = util::hex(std::vector<uint8_t>(sealed.begin(), sealed.end()));
+            if (!storeMasterSeedOwned(initial_master_seed, "", false, &owner, kind)) {
                 throw std::runtime_error("Failed to persist initial HD wallet seed");
             }
             if (authoritative_mnemonic) {
@@ -1846,6 +1968,7 @@ void WalletManager::createWithInitialSeed(
                 }
             }
         } catch (...) {
+            AdvanceDatabaseSession();
             db_ = previous_db;
             current_ = previous_current;
             current_wallet_id_ = previous_wallet_id;
@@ -1856,6 +1979,7 @@ void WalletManager::createWithInitialSeed(
             throw;
         }
 
+        AdvanceDatabaseSession();
         db_ = previous_db;
         current_ = previous_current;
         current_wallet_id_ = previous_wallet_id;
@@ -1899,6 +2023,8 @@ void WalletManager::createWithInitialSeed(
 }
 
 void WalletManager::open(const std::string& name) {
+    std::lock_guard<std::recursive_mutex> database_lock(database_lifecycle_mutex_);
+    if (database_leases_ != 0) throw std::logic_error("Cannot switch wallet during database delivery");
     WLOG_INFO("[OPEN] Opening wallet: " + name);
 
     // Check if wallet exists in registry
@@ -1931,6 +2057,8 @@ void WalletManager::open(const std::string& name) {
         throw std::runtime_error("Wallet database file not found: " + walletPath);
     }
 
+    // From this point even a failed open may replace or clear the selection.
+    AdvanceDatabaseSession();
     // Close current wallet if open
     if (db_) {
         WLOG_INFO("[OPEN] Closing currently open wallet: " + current_);
@@ -2024,6 +2152,8 @@ void WalletManager::open(const std::string& name) {
 }
 
 void WalletManager::rename(const std::string& oldName, const std::string& newName) {
+    std::lock_guard<std::recursive_mutex> database_lock(database_lifecycle_mutex_);
+    if (database_leases_ != 0) throw std::logic_error("Cannot rename wallet during database delivery");
     const std::string cleanNewName = sanitize(newName);
     if (cleanNewName.empty()) {
         throw std::invalid_argument("Invalid new wallet name");
@@ -2057,6 +2187,7 @@ void WalletManager::rename(const std::string& oldName, const std::string& newNam
     
     // Update current wallet name if it was the renamed one
     if (current_ == oldName) {
+        AdvanceDatabaseSession();
         current_ = cleanNewName;
     }
     
@@ -2256,36 +2387,233 @@ void WalletManager::addHDAddress(const std::string& addr, int account, int chang
     }
 }
 
+namespace {
+// The existing issuance paths own the wallet lifecycle mutex. These SQL
+// owners keep the issued address, key path and watched script indivisible.
+void IssuanceCheck(sqlite3* db,int actual,int expected) {
+    if(actual!=expected)throw std::runtime_error("Address issuance SQL failure: "+std::string(sqlite3_errmsg(db)));
+}
+struct IssuedStatement {
+    sqlite3* db;
+    std::unique_ptr<sqlite3_stmt,decltype(&sqlite3_finalize)> value{nullptr,sqlite3_finalize};
+    IssuedStatement(sqlite3* database,const char* sql):db(database) {
+        sqlite3_stmt* raw=nullptr;const int rc=sqlite3_prepare_v2(db,sql,-1,&raw,nullptr);value.reset(raw);
+        IssuanceCheck(db,rc,SQLITE_OK);
+    }
+    void Int(int i,int64_t n){IssuanceCheck(db,sqlite3_bind_int64(value.get(),i,n),SQLITE_OK);}
+    void Text(int i,const std::string& text){
+        if(text.size()>INT_MAX)throw std::runtime_error("Address issuance text too large");
+        IssuanceCheck(db,sqlite3_bind_text(value.get(),i,text.data(),int(text.size()),SQLITE_TRANSIENT),SQLITE_OK);
+    }
+    void Blob(int i,const void* bytes,int n){IssuanceCheck(db,sqlite3_bind_blob(value.get(),i,bytes,n,SQLITE_TRANSIENT),SQLITE_OK);}
+    void Key(int i,const std::optional<wallet::KeyID>& key) {
+        if(key)Blob(i,key->data(),int(key->size()));
+        else IssuanceCheck(db,sqlite3_bind_null(value.get(),i),SQLITE_OK);
+    }
+    void Done(bool inserted=false){
+        IssuanceCheck(db,sqlite3_step(value.get()),SQLITE_DONE);
+        if(inserted && sqlite3_changes(db)!=1)throw std::runtime_error("Address issuance row not inserted");
+    }
+};
+class IssuedAddressTransaction {
+    sqlite3* db_;bool owned_=false;
+    void Exec(const char* sql){IssuanceCheck(db_,sqlite3_exec(db_,sql,nullptr,nullptr,nullptr),SQLITE_OK);}
+public:
+    explicit IssuedAddressTransaction(sqlite3* db):db_(db) {
+        if(!db_ || !sqlite3_get_autocommit(db_))throw std::runtime_error("Address issuance requires its own transaction");
+        Exec("PRAGMA synchronous=FULL");
+        { IssuedStatement policy(db_,"PRAGMA synchronous");
+          IssuanceCheck(db_,sqlite3_step(policy.value.get()),SQLITE_ROW);
+          if(sqlite3_column_int(policy.value.get(),0)!=2)throw std::runtime_error("Address issuance durability unavailable");
+          policy.Done(); }
+        Exec("BEGIN IMMEDIATE");owned_=true;
+    }
+    ~IssuedAddressTransaction(){
+        if(owned_ && !sqlite3_get_autocommit(db_) &&
+           sqlite3_exec(db_,"ROLLBACK",nullptr,nullptr,nullptr)!=SQLITE_OK && !sqlite3_get_autocommit(db_))std::terminate();
+    }
+    void Commit(){Exec("COMMIT");owned_=false;}
+    IssuedAddressTransaction(const IssuedAddressTransaction&)=delete;
+    IssuedAddressTransaction& operator=(const IssuedAddressTransaction&)=delete;
+};
+bool IssuanceWalletColumn(sqlite3* db,const char* table) {
+    const std::string sql="PRAGMA table_info("+std::string(table)+")";
+    IssuedStatement query(db,sql.c_str());bool found=false;int rc;size_t rows=0;
+    while((rc=sqlite3_step(query.value.get()))==SQLITE_ROW) {
+        const auto* name=sqlite3_column_text(query.value.get(),1);
+        if(!name)throw std::runtime_error("Address issuance schema unavailable");
+        found|=std::string_view(reinterpret_cast<const char*>(name))=="wallet_id";++rows;
+    }
+    IssuanceCheck(db,rc,SQLITE_DONE);
+    if(!rows)throw std::runtime_error("Address issuance table unavailable");
+    return found;
+}
+void PersistIssuedAddress(sqlite3* db,int change,int index,const std::string& address,
+        const std::string& label,const std::string& type,const std::string& script_hex,
+        const std::vector<uint8_t>& script,const std::string& path,
+        const std::optional<wallet::KeyID>& key,const std::optional<wallet::KeyID>& internal,
+        const std::optional<wallet::KeyID>& output) {
+    const auto now=std::time(nullptr);
+    const bool wallet_column=IssuanceWalletColumn(db,"addresses");
+    IssuedStatement row(db,wallet_column?
+        "INSERT INTO addresses(wallet_id,account,change,idx,address,label,type,script_pubkey,key_id,internal_key_id,output_key_id,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)":
+        "INSERT INTO addresses(account,change,idx,address,label,type,script_pubkey,key_id,internal_key_id,output_key_id,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)");
+    int n=1;if(wallet_column)row.Int(n++,1);
+    row.Int(n++,0);row.Int(n++,change);row.Int(n++,index);row.Text(n++,address);row.Text(n++,label);
+    row.Text(n++,type);row.Text(n++,script_hex);row.Key(n++,key);row.Key(n++,internal);row.Key(n++,output);row.Int(n++,now);row.Done(true);
+    const bool path_wallet=IssuanceWalletColumn(db,"address_derivation_paths");
+    IssuedStatement derived(db,path_wallet?
+        "INSERT INTO address_derivation_paths(address,wallet_id,derivation_path,script_pubkey,account,change,address_index,created_at) VALUES(?,?,?,?,?,?,?,?)":
+        "INSERT INTO address_derivation_paths(address,derivation_path,script_pubkey,account,change,address_index,created_at) VALUES(?,?,?,?,?,?,?)");
+    n=1;derived.Text(n++,address);if(path_wallet)derived.Int(n++,1);
+    derived.Text(n++,path);derived.Text(n++,script_hex);derived.Int(n++,0);derived.Int(n++,change);derived.Int(n++,index);derived.Int(n++,now);derived.Done(true);
+    IssuedStatement watched(db,"INSERT OR IGNORE INTO watch_scripts(script_pubkey,path,is_change,last_seen_height,created_at) VALUES(?,?,?,0,?)");
+    watched.Blob(1,script.data(),int(script.size()));watched.Text(2,path);watched.Int(3,change);watched.Int(4,now);watched.Done();
+    // An existing watch row may be reused only with the exact issuance path.
+    IssuedStatement check(db,"SELECT path,is_change FROM watch_scripts WHERE script_pubkey=?");check.Blob(1,script.data(),int(script.size()));
+    IssuanceCheck(db,sqlite3_step(check.value.get()),SQLITE_ROW);
+    const auto* stored=sqlite3_column_text(check.value.get(),0);
+    if(sqlite3_column_type(check.value.get(),0)!=SQLITE_TEXT || !stored ||
+       std::string(reinterpret_cast<const char*>(stored),sqlite3_column_bytes(check.value.get(),0))!=path ||
+       sqlite3_column_type(check.value.get(),1)!=SQLITE_INTEGER || sqlite3_column_int64(check.value.get(),1)!=change)
+        throw std::runtime_error("Address issuance watch ownership mismatch");
+    check.Done();
+}
+// Validate explicit BIP84/BIP86 ownership claims without repairing records or
+// publishing derived secrets. The caller owns the wallet transaction and seed.
+std::optional<std::array<uint32_t,5>> AuthenticateHdInventory(
+    sqlite3* db,const std::vector<uint8_t>& seed,const std::vector<uint8_t>* requested_script=nullptr) {
+    const auto text=[](sqlite3_stmt* q,int col) {
+        if(sqlite3_column_type(q,col)!=SQLITE_TEXT)throw std::runtime_error("HD inventory text type invalid");
+        const auto* p=static_cast<const char*>(sqlite3_column_blob(q,col));
+        const int n=sqlite3_column_bytes(q,col);
+        if(!p || n<=0 || std::memchr(p,0,n))throw std::runtime_error("HD inventory text invalid");
+        return std::string(p,n);
+    };
+    const auto integer=[](sqlite3_stmt* q,int col) {
+        if(sqlite3_column_type(q,col)!=SQLITE_INTEGER)throw std::runtime_error("HD inventory integer type invalid");
+        return sqlite3_column_int64(q,col);
+    };
+    const auto parse=[](const std::string& path) {
+        std::array<uint32_t,5> parts{};size_t pos=2;
+        if(path.compare(0,2,"m/")!=0)throw std::runtime_error("HD inventory path invalid");
+        for(size_t i=0;i<parts.size();++i) {
+            const auto start=pos;uint64_t value=0;
+            while(pos<path.size() && path[pos]>='0' && path[pos]<='9') {
+                value=value*10+uint32_t(path[pos++]-'0');
+                if(value>0x7fffffff)throw std::runtime_error("HD inventory path range invalid");
+            }
+            if(pos==start)throw std::runtime_error("HD inventory path component missing");
+            parts[i]=uint32_t(value);
+            if(i<3 && (pos==path.size() || path[pos++]!='\''))throw std::runtime_error("HD inventory hardened path invalid");
+            if(i<4 && (pos==path.size() || path[pos++]!='/'))throw std::runtime_error("HD inventory path separator invalid");
+        }
+        if(pos!=path.size() || (parts[0]!=84 && parts[0]!=86) || parts[3]>1)
+            throw std::runtime_error("HD inventory path policy unsupported");
+        return parts;
+    };
+    const auto script_text=[&](sqlite3_stmt* q,int col) {
+        std::vector<uint8_t> bytes;
+        if(!util::unhex(text(q,col),bytes) || bytes.empty())throw std::runtime_error("HD inventory script invalid");
+        return bytes;
+    };
+    const bool address_wallet=IssuanceWalletColumn(db,"addresses");
+    const bool path_wallet=IssuanceWalletColumn(db,"address_derivation_paths");
+    const std::string sql=R"(SELECT p.address,p.derivation_path,p.script_pubkey,p.account,p.change,p.address_index,
+        a.address,a.script_pubkey,a.account,a.change,a.idx,a.type,a.key_id,a.internal_key_id,a.output_key_id,)"+
+        std::string(address_wallet?"a.wallet_id":"1")+","+std::string(path_wallet?"p.wallet_id":"1")+R"( FROM address_derivation_paths p
+        LEFT JOIN addresses a ON a.address=p.address)"+
+        std::string(requested_script?" WHERE lower(p.script_pubkey)=? OR lower(a.script_pubkey)=?":"")+" ORDER BY p.address";
+    std::map<std::vector<uint8_t>,std::string> authenticated;
+    IssuedStatement inventory(db,sql.c_str());int rc;
+    std::optional<std::array<uint32_t,5>> requested_path;
+    if(requested_script) {
+        inventory.Text(1,util::hex(*requested_script));inventory.Text(2,util::hex(*requested_script));
+    }
+    while((rc=sqlite3_step(inventory.value.get()))==SQLITE_ROW) {
+        auto* q=inventory.value.get();const auto address=text(q,0),path=text(q,1);const auto parts=parse(path);
+        const auto recorded=script_text(q,2);
+        if(text(q,6)!=address || script_text(q,7)!=recorded || integer(q,15)!=1 || integer(q,16)!=1 ||
+           integer(q,3)!=parts[2] || integer(q,4)!=parts[3] || integer(q,5)!=parts[4] ||
+           integer(q,8)!=parts[2] || integer(q,9)!=parts[3] || integer(q,10)!=parts[4])
+            throw std::runtime_error("HD inventory address/path metadata mismatch");
+        BIP32Deriver derive(seed.data(),seed.size());
+        for(size_t i=0;i<3;++i)derive.deriveHardened(parts[i]);
+        derive.deriveNormal(parts[3]);derive.deriveNormal(parts[4]);
+        std::vector<uint8_t> program,script;
+        wallet::KeyID primary{};std::optional<wallet::KeyID> internal_id,output_id;
+        if(parts[0]==86) {
+            const auto internal=derive.getXOnlyPubkey();std::array<uint8_t,32> output{};
+            if(!TaprootKeys::ComputeTweakedPubkey(internal,output))throw std::runtime_error("HD inventory public derivation failed");
+            program.assign(output.begin(),output.end());script={0x51,0x20};
+            primary=wallet::ComputeKeyIDFromXOnly(internal);internal_id=primary;output_id=wallet::ComputeKeyIDFromXOnly(output);
+        } else {
+            const auto pub=derive.getCompressedPubkey();primary=wallet::ComputeKeyID(std::vector<uint8_t>(pub.begin(),pub.end()));
+            program.assign(primary.begin(),primary.end());script={0x00,0x14};
+        }
+        script.insert(script.end(),program.begin(),program.end());
+        bool address_matches=false;
+        // Preserve recorded historical network encodings; this is ownership
+        // authentication, not authorization to spend on a different network.
+        for(const char* hrp:{"din","tdin","rdin"})
+            address_matches|=address==bech32::Encode(hrp,parts[0]==86?1:0,program,
+                parts[0]==86?bech32::Encoding::BECH32M:bech32::Encoding::BECH32);
+        if(!address_matches || script!=recorded || text(q,11)!=(parts[0]==86?"p2tr":"p2wpkh"))
+            throw std::runtime_error("HD inventory seed/address/script mismatch");
+        const auto key_matches=[&](int col,const std::optional<wallet::KeyID>& expected) {
+            // Older issuance predates KeyID columns. Authenticate every present
+            // value, but do not invent or backfill an absent identifier.
+            if(sqlite3_column_type(q,col)==SQLITE_NULL)return true;
+            return expected && sqlite3_column_type(q,col)==SQLITE_BLOB && sqlite3_column_bytes(q,col)==20 &&
+                sqlite3_column_blob(q,col) && CRYPTO_memcmp(sqlite3_column_blob(q,col),expected->data(),20)==0;
+        };
+        if(!key_matches(12,primary) || !key_matches(13,internal_id) || !key_matches(14,output_id))
+            throw std::runtime_error("HD inventory key identifier mismatch");
+        IssuedStatement watch(db,"SELECT path,is_change FROM watch_scripts WHERE script_pubkey=?");
+        watch.Blob(1,script.data(),int(script.size()));IssuanceCheck(db,sqlite3_step(watch.value.get()),SQLITE_ROW);
+        if(text(watch.value.get(),0)!=path || integer(watch.value.get(),1)!=parts[3])
+            throw std::runtime_error("HD inventory watch binding mismatch");
+        watch.Done();
+        const auto [owner,inserted]=authenticated.emplace(script,path);
+        if(!inserted && owner->second!=path)throw std::runtime_error("HD inventory conflicting script owner");
+        if(requested_script) {
+            if(script!=*requested_script || (requested_path && *requested_path!=parts))
+                throw std::runtime_error("HD signing script owner mismatch");
+            requested_path=parts;
+        }
+    }
+    IssuanceCheck(db,rc,SQLITE_DONE);
+    // Reverse-check explicit HD watch claims so deleting their path/address
+    // companion cannot silently downgrade them to watch-only recognition.
+    const std::string watch_sql=std::string("SELECT script_pubkey,path FROM watch_scripts")+
+        (requested_script?" WHERE script_pubkey=?":"")+" ORDER BY script_pubkey";
+    IssuedStatement watched(db,watch_sql.c_str());
+    if(requested_script)watched.Blob(1,requested_script->data(),int(requested_script->size()));
+    while((rc=sqlite3_step(watched.value.get()))==SQLITE_ROW) {
+        auto* q=watched.value.get();const auto path=text(q,1);
+        if(path.compare(0,4,"m/84")!=0 && path.compare(0,4,"m/86")!=0)continue;
+        parse(path);
+        if(sqlite3_column_type(q,0)!=SQLITE_BLOB || sqlite3_column_bytes(q,0)<=0 || !sqlite3_column_blob(q,0))
+            throw std::runtime_error("HD inventory watch script invalid");
+        const auto* p=static_cast<const uint8_t*>(sqlite3_column_blob(q,0));
+        const std::vector<uint8_t> script(p,p+sqlite3_column_bytes(q,0));
+        const auto found=authenticated.find(script);
+        if(found==authenticated.end() || found->second!=path)throw std::runtime_error("HD inventory orphan watch claim");
+    }
+    IssuanceCheck(db,rc,SQLITE_DONE);
+    return requested_path;
+}
+} // namespace
+
 int WalletManager::getNextAddressIndex(int account, int change) const {
-    if (current_wallet_id_ == -1) {
-        throw std::runtime_error("No wallet is currently open");
-    }
-
-    sqlite3_stmt* stmt;
-    // Per-wallet database: addresses table has no wallet_id column
-    const char* sql = "SELECT COALESCE(MAX(idx), -1) + 1 FROM addresses WHERE account = ? AND change = ?";
-
-    int rc = sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
-    if (rc != SQLITE_OK) {
-        throw std::runtime_error("Failed to prepare next index query: " + std::string(sqlite3_errmsg(db_)));
-    }
-
-    sqlite3_bind_int(stmt, 1, account);
-    sqlite3_bind_int(stmt, 2, change);
-    
-    int next_index = 0;
-    rc = sqlite3_step(stmt);
-    if (rc == SQLITE_ROW) {
-        next_index = sqlite3_column_int(stmt, 0);
-    }
-    
-    sqlite3_finalize(stmt);
-    
-    if (rc != SQLITE_ROW && rc != SQLITE_DONE) {
-        throw std::runtime_error("Failed to get next address index: " + std::string(sqlite3_errmsg(db_)));
-    }
-    
-    return next_index;
+    std::lock_guard<std::recursive_mutex> ownership(database_lifecycle_mutex_);
+    if(!db_ || current_wallet_id_==-1)throw std::runtime_error("No wallet is currently open");
+    IssuedStatement query(db_,"SELECT COALESCE(MAX(idx),-1)+1 FROM addresses WHERE account=? AND change=?");
+    query.Int(1,account);query.Int(2,change);IssuanceCheck(db_,sqlite3_step(query.value.get()),SQLITE_ROW);
+    const auto next=sqlite3_column_int64(query.value.get(),0);
+    if(sqlite3_column_type(query.value.get(),0)!=SQLITE_INTEGER || next<0 || next>INT_MAX)
+        throw std::runtime_error("Address derivation index exhausted or invalid");
+    query.Done();return int(next);
 }
 
 bool WalletManager::isAddressMine(const std::string& addr) const {
@@ -2543,6 +2871,9 @@ void WalletManager::removeAddress(const std::string& addr) {
 }
 
 void WalletManager::close() {
+    std::lock_guard<std::recursive_mutex> database_lock(database_lifecycle_mutex_);
+    if (database_leases_ != 0) throw std::logic_error("Cannot close wallet during database delivery");
+    AdvanceDatabaseSession();
     if (utxo_index_) {
         utxo_index_->ClearRegisteredAddresses();
     }
@@ -2551,6 +2882,8 @@ void WalletManager::close() {
     clearPrivateKeyCache();
     secureClearBytes(master_seed_);
     secureClearString(encryption_key_);
+    OPENSSL_cleanse(pq_master_key_.data(), pq_master_key_.size());
+    pq_master_key_loaded_ = false;
     // Viewing authority may survive wallet.lock so background scanning can
     // continue, but it must never survive closing/switching wallets. Retaining
     // either cache here would let the next wallet opened in this process scan
@@ -2706,20 +3039,20 @@ void WalletManager::updateWalletPathInRegistry(const std::string& name, const st
 }
 
 void WalletManager::updateLastOpened(const std::string& name) {
-    if (!registry_db_) {
-        return;
-    }
-
-    sqlite3_stmt* stmt = nullptr;
-    const char* sql = "UPDATE wallets SET last_opened = strftime('%s','now') WHERE name = ?";
-
-    if (sqlite3_prepare_v2(registry_db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
-        return;
-    }
-
-    sqlite3_bind_text(stmt, 1, name.c_str(), -1, SQLITE_STATIC);
-    sqlite3_step(stmt);
-    sqlite3_finalize(stmt);
+    std::lock_guard<std::recursive_mutex> database_lock(database_lifecycle_mutex_);
+    if (!registry_db_) throw std::runtime_error("Wallet registry unavailable");
+    IssuedAddressTransaction transaction(registry_db_);
+    IssuedStatement timestamp(registry_db_,
+        "UPDATE wallets SET last_opened = strftime('%s','now') WHERE name = ?");
+    timestamp.Text(1, name);
+    timestamp.Done(true);
+    IssuedStatement selected(registry_db_,
+        "INSERT INTO wallet_selection(singleton,wallet_id) "
+        "SELECT 1,id FROM wallets WHERE name=? "
+        "ON CONFLICT(singleton) DO UPDATE SET wallet_id=excluded.wallet_id");
+    selected.Text(1, name);
+    selected.Done(true);
+    transaction.Commit();
 }
 
 std::string WalletManager::sanitize(const std::string& in) {
@@ -2779,6 +3112,7 @@ std::string WalletManager::sanitize(const std::string& in) {
 }
 
 void WalletManager::unload() {
+    std::lock_guard<std::recursive_mutex> database_lock(database_lifecycle_mutex_);
     if (!hasActiveWallet()) {
         return;
     }
@@ -2807,6 +3141,9 @@ int WalletManager::getWalletId(const std::string& name) const {
 }
 
 void WalletManager::setCurrentWallet(const std::string& name, int wallet_id) {
+    std::lock_guard<std::recursive_mutex> database_lock(database_lifecycle_mutex_);
+    if (database_leases_ != 0) throw std::logic_error("Cannot select wallet during database delivery");
+    AdvanceDatabaseSession();
     current_ = name;
     current_wallet_id_ = wallet_id;
 }
@@ -2936,6 +3273,1251 @@ void WalletManager::assertNoRetiredLegacyCoinTypeInWalletDatabase(const std::str
     }
 }
 
+void WalletManager::AdvanceDatabaseSession() noexcept {
+    // Exhaustion must not reuse an identity while a queued job still owns it.
+    if (database_session_ == UINT64_MAX) std::terminate();
+    ++database_session_;
+}
+
+WalletManager::DatabaseLease::DatabaseLease(WalletManager& owner)
+    : owner_(owner), lock_(owner.database_lifecycle_mutex_),
+      thread_(std::this_thread::get_id()), db_(owner.db_), name_(owner.current_),
+      session_(owner.database_session_) {
+    if (db_) {
+        sqlite_mutex_ = sqlite3_db_mutex(db_);
+        if (!sqlite_mutex_) throw std::runtime_error("Wallet database requires serialized SQLite");
+        sqlite3_mutex_enter(sqlite_mutex_);
+        if (!sqlite3_get_autocommit(db_) && owner_.database_leases_ == 0) {
+            sqlite3_mutex_leave(sqlite_mutex_);
+            throw std::runtime_error("Wallet database already has an active transaction");
+        }
+    }
+    ++owner_.database_leases_;
+}
+
+std::array<uint8_t, 32> WalletManager::DatabaseLease::ReadDeliveryIdentity() const {
+    if (thread_ != std::this_thread::get_id())
+        throw std::logic_error("Wallet identity read used on another thread");
+    if (!db_ || name_.empty() || owner_.db_ != db_ || owner_.database_session_ != session_)
+        throw std::runtime_error("Wallet identity read ownership unavailable");
+    sqlite3_stmt* raw = nullptr;
+    const int prepared = sqlite3_prepare_v2(db_, "SELECT runtime_delivery_id FROM wallet_meta WHERE id=1", -1, &raw, nullptr);
+    const std::unique_ptr<sqlite3_stmt, decltype(&sqlite3_finalize)> statement(raw, sqlite3_finalize);
+    if (prepared != SQLITE_OK || sqlite3_step(raw) != SQLITE_ROW ||
+        sqlite3_column_type(raw, 0) != SQLITE_BLOB || sqlite3_column_bytes(raw, 0) != 32)
+        throw std::runtime_error("Existing wallet identity unavailable");
+    const auto* bytes = static_cast<const uint8_t*>(sqlite3_column_blob(raw, 0));
+    if (!bytes) throw std::runtime_error("Existing wallet identity unavailable");
+    std::array<uint8_t, 32> identity{};
+    std::copy_n(bytes, identity.size(), identity.begin());
+    if (sqlite3_step(raw) != SQLITE_DONE ||
+        std::all_of(identity.begin(), identity.end(), [](uint8_t b) { return b == 0; }))
+        throw std::runtime_error("Existing wallet identity malformed or incomplete");
+    return identity;
+}
+
+std::array<uint8_t,32> WalletManager::DatabaseLease::RpcBinding() {
+    // The existing checked identity reader validates this exact lease/thread
+    // and requires an existing identity. No enrollment or database writes.
+    const auto identity=ReadDeliveryIdentity();
+    if(!owner_.rpc_instance_id_) {
+        std::array<uint8_t,32> instance{};
+        if(RAND_bytes(instance.data(),static_cast<int>(instance.size()))!=1 ||
+            std::all_of(instance.begin(),instance.end(),[](uint8_t x){return x==0;}))
+            throw std::runtime_error("Wallet RPC instance identity unavailable");
+        owner_.rpc_instance_id_=instance;
+    }
+    // This identifies request intent, not RPC authorization or key ownership.
+    // A fresh manager/process has a fresh random identity; open/close changes
+    // the existing monotonic session. Never serialize pointers or key material.
+    std::string material="Dinero/Orchard/RpcWalletBinding/v1";
+    material.append(reinterpret_cast<const char*>(owner_.rpc_instance_id_->data()),32);
+    material.append(reinterpret_cast<const char*>(identity.data()),32);
+    const auto number=[&](uint64_t value){for(unsigned i=0;i<8;++i)material.push_back(char(value>>(8*i)));};
+    number(session_);number(name_.size());material.append(name_);
+    std::array<uint8_t,32> binding{};
+    if(!::SHA256(reinterpret_cast<const uint8_t*>(material.data()),material.size(),binding.data()))
+        throw std::runtime_error("Wallet RPC binding unavailable");
+    return binding;
+}
+
+
+std::string WalletManager::DatabaseLease::EnsureDeliveryIdentity() {
+    if (thread_ != std::this_thread::get_id())
+        throw std::logic_error("Wallet delivery identity used on another thread");
+    if (!db_ || name_.empty() || !sqlite3_get_autocommit(db_))
+        throw std::runtime_error("Wallet delivery identity ownership unavailable");
+    struct Statement {
+        sqlite3_stmt* stmt = nullptr;
+        Statement(sqlite3* db, const char* sql) {
+            if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+                sqlite3_finalize(stmt);
+                throw std::runtime_error("Wallet delivery identity prepare failed");
+            }
+        }
+        ~Statement() { sqlite3_finalize(stmt); }
+    };
+    const auto sql = [&](const char* text) {
+        if (sqlite3_exec(db_, text, nullptr, nullptr, nullptr) != SQLITE_OK)
+            throw std::runtime_error("Wallet delivery identity SQL failed");
+    };
+    sql("PRAGMA synchronous=FULL");
+    {
+        Statement policy(db_, "PRAGMA synchronous");
+        if (sqlite3_step(policy.stmt) != SQLITE_ROW || sqlite3_column_int(policy.stmt, 0) != 2 ||
+            sqlite3_step(policy.stmt) != SQLITE_DONE)
+            throw std::runtime_error("Wallet delivery identity durability unavailable");
+    }
+    sql("BEGIN IMMEDIATE"); // Failed BEGIN never adopts another transaction.
+    try {
+        { Statement selected(db_, "SELECT id FROM wallet_meta WHERE id=1");
+          if (sqlite3_step(selected.stmt) != SQLITE_ROW || sqlite3_step(selected.stmt) != SQLITE_DONE)
+              throw std::runtime_error("Wallet delivery identity metadata unavailable"); }
+        bool column = false;
+        { Statement columns(db_, "PRAGMA table_info(wallet_meta)");
+          int rc;
+          while ((rc = sqlite3_step(columns.stmt)) == SQLITE_ROW) {
+              const auto* name = reinterpret_cast<const char*>(sqlite3_column_text(columns.stmt, 1));
+              if (name && std::string_view(name) == "runtime_delivery_id") column = true;
+          }
+          if (rc != SQLITE_DONE) throw std::runtime_error("Wallet delivery identity schema read failed"); }
+        if (!column) sql("ALTER TABLE wallet_meta ADD COLUMN runtime_delivery_id BLOB");
+        std::array<unsigned char, 32> id{};
+        bool create = false;
+        { Statement read(db_, "SELECT runtime_delivery_id FROM wallet_meta WHERE id=1");
+          if (sqlite3_step(read.stmt) != SQLITE_ROW)
+              throw std::runtime_error("Wallet delivery identity read failed");
+          create = sqlite3_column_type(read.stmt, 0) == SQLITE_NULL;
+          if (!create) {
+              if (sqlite3_column_type(read.stmt, 0) != SQLITE_BLOB || sqlite3_column_bytes(read.stmt, 0) != int(id.size()))
+                  throw std::runtime_error("Wallet delivery identity malformed");
+              const auto* bytes = sqlite3_column_blob(read.stmt, 0);
+              if (!bytes) throw std::runtime_error("Wallet delivery identity read failed");
+              std::memcpy(id.data(), bytes, id.size());
+          }
+          if (sqlite3_step(read.stmt) != SQLITE_DONE)
+              throw std::runtime_error("Wallet delivery identity read failed"); }
+        if (create && RAND_bytes(id.data(), int(id.size())) != 1)
+            throw std::runtime_error("Wallet delivery identity randomness unavailable");
+        if (std::all_of(id.begin(), id.end(), [](auto byte) { return byte == 0; }))
+            throw std::runtime_error("Wallet delivery identity malformed");
+        if (create) {
+            Statement write(db_, "UPDATE wallet_meta SET runtime_delivery_id=? WHERE id=1 AND runtime_delivery_id IS NULL");
+            if (sqlite3_bind_blob(write.stmt, 1, id.data(), int(id.size()), SQLITE_TRANSIENT) != SQLITE_OK ||
+                sqlite3_step(write.stmt) != SQLITE_DONE || sqlite3_changes(db_) != 1)
+                throw std::runtime_error("Wallet delivery identity write failed");
+        }
+        static constexpr char hex[] = "0123456789abcdef";
+        std::string result = "DNWI01:";
+        for (auto byte : id) { result += hex[byte >> 4]; result += hex[byte & 15]; }
+        sql("COMMIT");
+        return result; // No allocation or diagnostics after the durable commit.
+    } catch (...) {
+        if (!sqlite3_get_autocommit(db_) &&
+            sqlite3_exec(db_, "ROLLBACK", nullptr, nullptr, nullptr) != SQLITE_OK &&
+            !sqlite3_get_autocommit(db_)) std::terminate();
+        throw;
+    }
+}
+
+WalletManager::RecoverySeed::RecoverySeed(WalletManager& owner, std::span<const uint8_t> seed)
+    : owner_(owner), thread_(std::this_thread::get_id()) {
+    if (seed.size() != bytes_.size()) throw std::runtime_error("Wallet recovery seed unavailable");
+    std::copy(seed.begin(), seed.end(), bytes_.begin());
+    ++owner_.recovery_seeds_;
+}
+WalletManager::RecoverySeed::~RecoverySeed() noexcept {
+    OPENSSL_cleanse(bytes_.data(), bytes_.size());
+    if (thread_ != std::this_thread::get_id() || owner_.recovery_seeds_ != 1)
+        std::terminate();
+    --owner_.recovery_seeds_;
+}
+std::unique_ptr<WalletManager::RecoverySeed>
+WalletManager::DatabaseLease::CopyRecoverySeed(uint64_t expected_session) {
+    if (thread_ != std::this_thread::get_id() || !db_ || name_.empty() ||
+        expected_session != session_ || owner_.database_session_ != session_ || owner_.recovery_seeds_)
+        throw std::runtime_error("Wallet recovery key ownership unavailable");
+    owner_.checkUnlockTimeout();
+    if (owner_.wallet_locked_ || owner_.master_seed_.size() != 64)
+        throw std::runtime_error("Wallet recovery seed unavailable");
+    return std::unique_ptr<RecoverySeed>(new RecoverySeed(owner_,owner_.master_seed_));
+}
+
+std::optional<SigningKey> WalletManager::DatabaseLease::ResolveSigningKey(
+    const std::string& script_pubkey,const RecoverySeed& pin) {
+    if(thread_!=std::this_thread::get_id() || pin.thread_!=thread_ ||
+       &pin.owner_!=&owner_ || !db_ || db_!=owner_.db_ ||
+       session_!=owner_.database_session_ || owner_.recovery_seeds_!=1)
+        throw std::runtime_error("Signing key owner does not match wallet lease");
+    std::vector<uint8_t> script;
+    if(!util::unhex(script_pubkey,script) || script.empty())return std::nullopt;
+    auto policy=script.size()==34 && script[0]==0x51 && script[1]==0x20
+        ?SigningKeyPolicy::TaprootCanonical:SigningKeyPolicy::Untweaked;
+    auto key=owner_.deriveKeyForScriptPubKeyOwned(script_pubkey,&policy,true);
+    if(!key)return std::nullopt;
+    return SigningKey(std::move(*key),std::move(script),policy);
+}
+
+std::optional<SigningKey> WalletManager::DatabaseLease::ResolveSigningKeyInTransaction(
+    const std::string& script_pubkey,const RecoverySeed& pin) {
+    if(thread_!=std::this_thread::get_id() || pin.thread_!=thread_ ||
+       &pin.owner_!=&owner_ || !db_ || db_!=owner_.db_ ||
+       session_!=owner_.database_session_ || owner_.recovery_seeds_!=1 ||
+       sqlite3_get_autocommit(db_))
+        throw std::runtime_error("Signing key requires this wallet's active transaction and seed owner");
+    std::vector<uint8_t> script;
+    if(!util::unhex(script_pubkey,script) || script.empty())return std::nullopt;
+    auto policy=script.size()==34 && script[0]==0x51 && script[1]==0x20
+        ?SigningKeyPolicy::TaprootCanonical:SigningKeyPolicy::Untweaked;
+    auto key=owner_.deriveKeyForScriptPubKeyOwned(script_pubkey,&policy,true,true);
+    if(!key)return std::nullopt;
+    return SigningKey(std::move(*key),std::move(script),policy);
+}
+
+namespace {
+constexpr size_t kPaymentBytes=16*1024*1024;
+constexpr size_t kPaymentCount=4096;
+struct PaymentSecret {
+    std::string value;
+    ~PaymentSecret(){secureClearString(value);}
+};
+std::string PaymentKey(std::span<const uint8_t> seed) {
+    if(seed.size()!=64)throw std::runtime_error("Pending payment seed unavailable");
+    PaymentSecret material{"Dinero wallet pending payment owner v1"};
+    material.value.append(reinterpret_cast<const char*>(seed.data()),seed.size());
+    std::array<uint8_t,32> key{};
+    ::SHA256(reinterpret_cast<const uint8_t*>(material.value.data()),material.value.size(),key.data());
+    std::string out(reinterpret_cast<const char*>(key.data()),key.size());
+    OPENSSL_cleanse(key.data(),key.size());return out;
+}
+bool PaymentColumn(sqlite3* db) {
+    IssuedStatement q(db,"PRAGMA table_info(wallet_meta)");bool found=false;size_t rows=0;int rc;
+    while((rc=sqlite3_step(q.value.get()))==SQLITE_ROW) {
+        if(sqlite3_column_type(q.value.get(),1)!=SQLITE_TEXT)throw std::runtime_error("Payment schema unavailable");
+        const auto* p=static_cast<const char*>(sqlite3_column_blob(q.value.get(),1));
+        const int n=sqlite3_column_bytes(q.value.get(),1);
+        if(!p || n<=0)throw std::runtime_error("Payment schema malformed");
+        found|=std::string_view(p,n)=="pending_payment_owner";++rows;
+    }
+    IssuanceCheck(db,rc,SQLITE_DONE);
+    if(!rows)throw std::runtime_error("Payment wallet metadata missing");
+    return found;
+}
+std::string PaymentIdentity(sqlite3* db) {
+    IssuedStatement q(db,"SELECT runtime_delivery_id FROM wallet_meta WHERE id=1");
+    IssuanceCheck(db,sqlite3_step(q.value.get()),SQLITE_ROW);
+    const auto* p=static_cast<const char*>(sqlite3_column_blob(q.value.get(),0));
+    if(sqlite3_column_type(q.value.get(),0)!=SQLITE_BLOB || sqlite3_column_bytes(q.value.get(),0)!=32 || !p)
+        throw std::runtime_error("Payment identity unavailable");
+    std::string id(p,32);q.Done();
+    if(std::all_of(id.begin(),id.end(),[](char c){return c==0;}))throw std::runtime_error("Payment identity invalid");
+    return id;
+}
+void PaymentU64(std::string& out,uint64_t n) {
+    for(int i=0;i<8;++i)out.push_back(char(n>>(8*i)));
+}
+void PaymentField(std::string& out,std::string_view bytes) {
+    if(bytes.size()>kPaymentBytes-8 || out.size()>kPaymentBytes-bytes.size()-8)
+        throw std::runtime_error("Pending payment capacity exceeded");
+    PaymentU64(out,bytes.size());out.append(bytes);
+}
+void PaymentBlob(std::string& out,const std::vector<uint8_t>& bytes) {
+    PaymentField(out,std::string_view(reinterpret_cast<const char*>(bytes.data()),bytes.size()));
+}
+struct PaymentReader {
+    std::string_view bytes;size_t pos=0;
+    uint64_t U64(){
+        if(bytes.size()-pos<8)throw std::runtime_error("Payment framing incomplete");
+        uint64_t n=0;for(int i=0;i<8;++i)n|=uint64_t(uint8_t(bytes[pos++]))<<(8*i);return n;
+    }
+    std::string Field(){
+        const auto n=U64();if(n>bytes.size()-pos)throw std::runtime_error("Payment field incomplete");
+        std::string out(bytes.substr(pos,size_t(n)));pos+=size_t(n);return out;
+    }
+    std::vector<uint8_t> Blob(){const auto s=Field();return {s.begin(),s.end()};}
+};
+uint64_t PaymentSum(uint64_t sum,uint64_t n) {
+    if(n>MAX_SUPPLY_UNA_CONST || sum>MAX_SUPPLY_UNA_CONST-n)
+        throw std::runtime_error("Payment amount range invalid");
+    return sum+n;
+}
+std::vector<uint8_t> PaymentScript(const std::string& address) {
+    // Use the shared address codec already linked by the wallet library.
+    // Preserve the recorded network prefix; this is not network selection.
+    for(const auto* hrp:{"din","tdin","rdin"}) {
+        const auto parsed=DecodeWitnessAddress(address,hrp);
+        if(parsed.is_valid && parsed.is_witness && !parsed.script_pubkey.empty())return parsed.script_pubkey;
+    }
+    throw std::runtime_error("Pending payment requires a valid witness address");
+}
+std::vector<PendingPaymentRecipient> PaymentRecipients(const PendingPaymentIntent& intent) {
+    if (intent.additional_recipients.size() >= kPaymentCount)
+        throw std::runtime_error("Payment recipient capacity exceeded");
+    std::vector<PendingPaymentRecipient> result{{intent.address, intent.amount_una}};
+    result.insert(result.end(), intent.additional_recipients.begin(), intent.additional_recipients.end());
+    for (const auto& recipient : result) {
+        if (recipient.address.empty() || recipient.address.find('\0') != std::string::npos || !recipient.amount_una)
+            throw std::runtime_error("Payment recipient invalid");
+    }
+    return result;
+}
+uint64_t PaymentIntentTotal(const PendingPaymentIntent& intent) {
+    uint64_t total = 0;
+    for (const auto& recipient : PaymentRecipients(intent)) total = PaymentSum(total, recipient.amount_una);
+    return total;
+}
+void ValidatePaymentRequest(const PendingPaymentIntent& intent) {
+    if (!intent.request) throw std::runtime_error("Explicit payment request required");
+    const auto& request = *intent.request;
+    const auto nonzero = [](const auto& bytes) {
+        return std::any_of(bytes.begin(), bytes.end(), [](uint8_t b) { return b != 0; });
+    };
+    if ((request.domain != PendingPaymentRequestDomain::VaultWithdrawal &&
+         request.domain != PendingPaymentRequestDomain::PoolPayout &&
+         request.domain != PendingPaymentRequestDomain::SwapFunding) ||
+        !nonzero(request.owner) || !nonzero(request.id) ||
+        request.fee_rate_hint > MAX_SUPPLY_UNA_CONST ||
+        request.maximum_fee_una > MAX_SUPPLY_UNA_CONST ||
+        request.audit_context.size() > 4096 || request.audit_context.find('\0') != std::string::npos ||
+        intent.label.find('\0') != std::string::npos)
+        throw std::runtime_error("Payment request binding invalid");
+    if (request.domain == PendingPaymentRequestDomain::SwapFunding &&
+        (!intent.additional_recipients.empty() || !request.maximum_fee_una))
+        throw std::runtime_error("Swap funding requires one recipient and an explicit fee ceiling");
+    if (request.pool_origins.size()>256 ||
+        (!request.pool_origins.empty() && request.domain!=PendingPaymentRequestDomain::PoolPayout))
+        throw std::runtime_error("Pool allocation reference domain or capacity invalid");
+    for(size_t i=0;i<request.pool_origins.size();++i) {
+        if(!nonzero(request.pool_origins[i]) ||
+           (i && !(request.pool_origins[i-1]<request.pool_origins[i])))
+            throw std::runtime_error("Pool allocation references must be nonzero, sorted and unique");
+    }
+    for (const auto& recipient : PaymentRecipients(intent)) (void)PaymentScript(recipient.address);
+    (void)PaymentIntentTotal(intent);
+}
+std::string PaymentRequestIdentity(const PendingPaymentRequest& request) {
+    std::string out;
+    PaymentU64(out, static_cast<uint64_t>(request.domain));
+    out.append(reinterpret_cast<const char*>(request.owner.data()), request.owner.size());
+    out.append(reinterpret_cast<const char*>(request.id.data()), request.id.size());
+    return out;
+}
+std::optional<PendingPayment> FindPaymentRequestInRecords(
+    const std::vector<PendingPayment>& records, const PendingPaymentIntent& intent) {
+    ValidatePaymentRequest(intent);
+    std::optional<PendingPayment> found;
+    const auto identity = PaymentRequestIdentity(*intent.request);
+    for (const auto& record : records) {
+        if (!record.intent.request) continue;
+        const auto& prior=*record.intent.request;
+        const bool same=PaymentRequestIdentity(prior)==identity;
+        if(intent.request->domain==PendingPaymentRequestDomain::PoolPayout &&
+           prior.domain==PendingPaymentRequestDomain::PoolPayout) {
+            // Both vectors are canonical. A new request ID, owner or batch
+            // cannot turn an already-retained allocation into a new payment.
+            const auto& incoming=intent.request->pool_origins;
+            const auto& existing=prior.pool_origins;
+            size_t i=0,j=0;bool overlap=false;
+            while(i<incoming.size() && j<existing.size()) {
+                if(incoming[i]==existing[j]) {overlap=true;break;}
+                if(incoming[i]<existing[j])++i;else ++j;
+            }
+            if(overlap && (!same || record.intent!=intent))
+                throw std::runtime_error("Pool allocation already belongs to a retained payment");
+        }
+        if(!same)continue;
+        if (found || record.intent != intent)
+            throw std::runtime_error("Retained payment request conflicts with supplied intent");
+        found = record;
+    }
+    return found;
+}
+void ValidatePayment(const PendingPayment& p) {
+    Transaction tx;size_t consumed=0;
+    if(p.signed_body.empty() || p.signed_body.size()>kPaymentBytes ||
+       !TransactionSerializer::Deserialize(tx,p.signed_body,consumed) || consumed!=p.signed_body.size() ||
+       tx.Serialize(TxSerializationMode::WithWitness)!=p.signed_body ||
+       tx.GetTxid().AsUint256().GetHex()!=p.txid || p.inputs.empty() || p.inputs.size()!=tx.vin.size() ||
+       p.inputs.size()>kPaymentCount || p.created_at<=0 || p.intent.amount_una==0 ||
+       p.intent.address.empty() || p.intent.address.find('\0')!=std::string::npos || p.intent.label.find('\0')!=std::string::npos)
+        throw std::runtime_error("Pending payment body invalid");
+    std::multiset<std::pair<std::vector<uint8_t>, uint64_t>> required;
+    for (const auto& recipient : PaymentRecipients(p.intent))
+        required.emplace(PaymentScript(recipient.address), recipient.amount_una);
+    std::set<std::string> seen;uint64_t input=0,output=0;
+    for(size_t i=0;i<p.inputs.size();++i) {
+        const auto& coin=p.inputs[i];const auto& in=tx.vin[i];
+        if(coin.txid!=in.prevout.txid.AsUint256().GetHex() || coin.vout!=in.prevout.vout || coin.script.empty() ||
+           in.witness.empty() || !seen.insert(coin.txid+":"+std::to_string(coin.vout)).second)
+            throw std::runtime_error("Payment input binding invalid");
+        input=PaymentSum(input,coin.amount_una);
+    }
+    for(const auto& out:tx.vout) {
+        if(out.is_confidential)throw std::runtime_error("Confidential payment owner unsupported");
+        output=PaymentSum(output,out.value.GetUna());
+        auto match = required.find({out.scriptPubKey, out.value.GetUna()});
+        if (match != required.end()) required.erase(match);
+    }
+    if(!required.empty() || input<output || input-output!=p.fee_una)
+        throw std::runtime_error("Payment intent or fee mismatch");
+    (void)PaymentSum(PaymentIntentTotal(p.intent),p.fee_una);
+    if (p.intent.request) {
+        ValidatePaymentRequest(p.intent);
+        if (p.fee_una > p.intent.request->maximum_fee_una)
+            throw std::runtime_error("Payment exceeds explicit request fee limit");
+    }
+}
+std::string EncodePayments(const std::string& identity,const std::vector<PendingPayment>& records) {
+    if(records.empty() || records.size()>kPaymentCount)throw std::runtime_error("Payment count invalid");
+    const bool batch = std::any_of(records.begin(), records.end(), [](const auto& p) {
+        return !p.intent.additional_recipients.empty();
+    });
+    const bool requests = std::any_of(records.begin(), records.end(), [](const auto& p) {
+        return p.intent.request.has_value();
+    });
+    const bool origins=std::any_of(records.begin(),records.end(),[](const auto& p) {
+        return p.intent.request && !p.intent.request->pool_origins.empty();
+    });
+    std::string out=origins?"DNPP04":(requests?"DNPP03":(batch?"DNPP02":"DNPP01"));PaymentField(out,identity);PaymentU64(out,records.size());
+    std::set<std::string> txids,reservations,request_ids;
+    std::set<std::array<uint8_t,32>> retained_origins;
+    for(const auto& p:records) {
+        ValidatePayment(p);
+        if(!txids.insert(p.txid).second)throw std::runtime_error("Duplicate payment body");
+        PaymentField(out,p.txid);PaymentBlob(out,p.signed_body);PaymentField(out,p.intent.address);
+        PaymentU64(out,p.intent.amount_una);PaymentField(out,p.intent.label);
+        if (batch || requests) {
+            PaymentU64(out, p.intent.additional_recipients.size());
+            for (const auto& recipient : p.intent.additional_recipients) {
+                PaymentField(out, recipient.address);PaymentU64(out, recipient.amount_una);
+            }
+        }
+        if (requests) {
+            PaymentU64(out, p.intent.request ? 1 : 0);
+            if (p.intent.request) {
+                const auto& request = *p.intent.request;
+                if (!request_ids.insert(PaymentRequestIdentity(request)).second)
+                    throw std::runtime_error("Payment request already retained");
+                PaymentU64(out, static_cast<uint64_t>(request.domain));
+                PaymentField(out, std::string_view(reinterpret_cast<const char*>(request.owner.data()), request.owner.size()));
+                PaymentField(out, std::string_view(reinterpret_cast<const char*>(request.id.data()), request.id.size()));
+                PaymentU64(out, request.fee_rate_hint);PaymentU64(out, request.maximum_fee_una);
+                PaymentField(out, request.audit_context);
+                if(origins) {
+                    PaymentU64(out,request.pool_origins.size());
+                    for(const auto& origin:request.pool_origins) {
+                        if(!retained_origins.insert(origin).second)
+                            throw std::runtime_error("Pool allocation retained more than once");
+                        PaymentField(out,std::string_view(reinterpret_cast<const char*>(origin.data()),origin.size()));
+                    }
+                }
+            }
+        }
+        PaymentU64(out,p.fee_una);
+        PaymentU64(out,uint64_t(p.created_at));PaymentU64(out,p.inputs.size());
+        for(const auto& in:p.inputs) {
+            if(!reservations.insert(in.txid+":"+std::to_string(in.vout)).second)
+                throw std::runtime_error("Payment input already reserved");
+            PaymentField(out,in.txid);PaymentU64(out,in.vout);PaymentU64(out,in.amount_una);PaymentBlob(out,in.script);
+        }
+        if(out.size()>kPaymentBytes)throw std::runtime_error("Pending payment capacity exceeded");
+    }
+    return out;
+}
+std::vector<PendingPayment> DecodePayments(const std::string& plain,const std::string& identity) {
+    const bool origins = plain.substr(0,6)=="DNPP04";
+    const bool requests = origins || plain.substr(0,6)=="DNPP03";
+    const bool batch = requests || plain.substr(0,6)=="DNPP02";
+    if(plain.size()>kPaymentBytes || (!batch && plain.substr(0,6)!="DNPP01"))throw std::runtime_error("Payment format invalid");
+    PaymentReader r{std::string_view(plain).substr(6)};
+    if(r.Field()!=identity)throw std::runtime_error("Payment belongs to another wallet");
+    const auto n=r.U64();if(!n || n>kPaymentCount)throw std::runtime_error("Payment count invalid");
+    std::vector<PendingPayment> result;
+    for(uint64_t i=0;i<n;++i) {
+        PendingPayment p;p.txid=r.Field();p.signed_body=r.Blob();p.intent.address=r.Field();
+        p.intent.amount_una=r.U64();p.intent.label=r.Field();
+        if (batch) {
+            const auto count = r.U64();
+            if (count >= kPaymentCount) throw std::runtime_error("Payment recipient capacity exceeded");
+            for (uint64_t j = 0; j < count; ++j) p.intent.additional_recipients.push_back({r.Field(), r.U64()});
+        }
+        if (requests) {
+            const auto present = r.U64();
+            if (present > 1) throw std::runtime_error("Payment request flag invalid");
+            if (present) {
+                PendingPaymentRequest request;
+                request.domain = static_cast<PendingPaymentRequestDomain>(r.U64());
+                const auto owner = r.Field(), id = r.Field();
+                if (owner.size() != request.owner.size() || id.size() != request.id.size())
+                    throw std::runtime_error("Payment request identity framing invalid");
+                std::copy(owner.begin(), owner.end(), request.owner.begin());
+                std::copy(id.begin(), id.end(), request.id.begin());
+                request.fee_rate_hint = r.U64();request.maximum_fee_una = r.U64();
+                request.audit_context = r.Field();
+                if(origins) {
+                    const auto count=r.U64();
+                    if(count>256)throw std::runtime_error("Pool allocation reference capacity exceeded");
+                    for(uint64_t j=0;j<count;++j) {
+                        const auto bytes=r.Field();std::array<uint8_t,32> origin{};
+                        if(bytes.size()!=origin.size())throw std::runtime_error("Pool allocation reference framing invalid");
+                        std::copy(bytes.begin(),bytes.end(),origin.begin());request.pool_origins.push_back(origin);
+                    }
+                }
+                p.intent.request = std::move(request);
+            }
+        }
+        p.fee_una=r.U64();
+        auto time=r.U64();if(time>INT64_MAX)throw std::runtime_error("Payment time invalid");p.created_at=int64_t(time);
+        const auto count=r.U64();if(!count || count>kPaymentCount)throw std::runtime_error("Payment inputs invalid");
+        for(uint64_t j=0;j<count;++j) {
+            PendingPaymentInput in;in.txid=r.Field();const auto index=r.U64();
+            if(index>UINT32_MAX)throw std::runtime_error("Payment output index invalid");in.vout=uint32_t(index);
+            in.amount_una=r.U64();in.script=r.Blob();p.inputs.push_back(std::move(in));
+        }
+        result.push_back(std::move(p));
+    }
+    if(r.pos!=r.bytes.size())throw std::runtime_error("Trailing payment data");
+    PaymentSecret canonical{EncodePayments(identity,result)};
+    if(canonical.value!=plain)throw std::runtime_error("Noncanonical payment owner");
+    return result;
+}
+} // namespace
+
+std::vector<PendingPayment> WalletManager::ReadPendingPaymentsOwned(std::span<const uint8_t> seed) const {
+    if(!db_ || sqlite3_get_autocommit(db_))throw std::logic_error("Payment read requires owned transaction");
+    if(!PaymentColumn(db_))return {};
+    IssuedStatement q(db_,"SELECT pending_payment_owner FROM wallet_meta WHERE id=1");
+    IssuanceCheck(db_,sqlite3_step(q.value.get()),SQLITE_ROW);
+    const auto* bytes=static_cast<const char*>(sqlite3_column_blob(q.value.get(),0));
+    const int size=sqlite3_column_bytes(q.value.get(),0);
+    if(sqlite3_column_type(q.value.get(),0)!=SQLITE_BLOB || !bytes || size<28 || size>int(kPaymentBytes+28))
+        throw std::runtime_error("Pending payment owner missing or malformed");
+    const std::string sealed(bytes,size);q.Done();
+    PaymentSecret key{PaymentKey(seed)},plain{decryptData(sealed,key.value)};
+    auto records=DecodePayments(plain.value,PaymentIdentity(db_));
+    for(const auto& p:records) {
+        IssuedStatement history(db_,"SELECT address,amount,category,label,time FROM transactions WHERE wallet_id=? AND txid=?");
+        history.Int(1,current_wallet_id_);history.Text(2,p.txid);
+        IssuanceCheck(db_,sqlite3_step(history.value.get()),SQLITE_ROW);
+        const auto text=[&](int col,const std::string& expected) {
+            const auto* bytes=static_cast<const char*>(sqlite3_column_blob(history.value.get(),col));
+            const int n=sqlite3_column_bytes(history.value.get(),col);
+            return sqlite3_column_type(history.value.get(),col)==SQLITE_TEXT && n==int(expected.size()) &&
+                (n==0 || (bytes && std::memcmp(bytes,expected.data(),size_t(n))==0));
+        };
+        if(!text(0,p.intent.address) || !text(2,"send") || !text(3,p.intent.label) ||
+           sqlite3_column_type(history.value.get(),1)!=SQLITE_FLOAT ||
+           sqlite3_column_double(history.value.get(),1)!=-static_cast<double>(PaymentSum(PaymentIntentTotal(p.intent),p.fee_una))/1e8 ||
+           sqlite3_column_type(history.value.get(),4)!=SQLITE_INTEGER || sqlite3_column_int64(history.value.get(),4)!=p.created_at)
+            throw std::runtime_error("Pending payment history differs from retained intent");
+        history.Done();
+    }
+    return records;
+}
+
+std::vector<PendingPayment> WalletManager::getPendingPayments() const {
+    auto& self=const_cast<WalletManager&>(*this);auto lease=self.AcquireDatabaseLease();
+    if(!db_)throw std::runtime_error("Wallet not loaded");
+    IssuedAddressTransaction transaction(db_);
+    if(!PaymentColumn(db_)){transaction.Commit();return {};}
+    auto pin=lease->CopyRecoverySeed(lease->Session());
+    auto records=ReadPendingPaymentsOwned(pin->Bytes());transaction.Commit();return records;
+}
+
+std::vector<PendingPayment> WalletManager::DatabaseLease::ReadPendingPaymentsInTransaction(
+    const RecoverySeed& pin) {
+    if(thread_!=std::this_thread::get_id() || pin.thread_!=thread_ || &pin.owner_!=&owner_ ||
+       !db_ || db_!=owner_.db_ || session_!=owner_.database_session_ || owner_.recovery_seeds_!=1 ||
+       sqlite3_get_autocommit(db_))
+        throw std::runtime_error("Payment inventory requires the caller's active wallet owner");
+    return owner_.ReadPendingPaymentsOwned(pin.Bytes());
+}
+
+std::map<std::vector<uint8_t>,std::string>
+WalletManager::DatabaseLease::ReadHistoricalImportScriptsInTransaction(const RecoverySeed* pin) {
+    if(thread_!=std::this_thread::get_id() || !db_ || db_!=owner_.db_ ||
+       session_!=owner_.database_session_ || sqlite3_get_autocommit(db_))
+        throw std::runtime_error("Historical inventory requires this wallet's active transaction");
+    if(pin && (pin->thread_!=thread_ || &pin->owner_!=&owner_ || owner_.recovery_seeds_!=1))
+        throw std::runtime_error("Historical inventory seed owner mismatch");
+    IssuedStatement rows(db_,"SELECT address FROM imported_keys ORDER BY address");
+    std::map<std::vector<uint8_t>,std::string> result;
+    std::unique_ptr<RecoverySeed> local_pin;
+    size_t count=0;int rc;
+    while((rc=sqlite3_step(rows.value.get()))==SQLITE_ROW) {
+        if(++count>65536)throw std::runtime_error("Historical inventory capacity exceeded");
+        auto* q=rows.value.get();const auto* bytes=static_cast<const char*>(sqlite3_column_blob(q,0));
+        const int size=sqlite3_column_bytes(q,0);
+        if(sqlite3_column_type(q,0)!=SQLITE_TEXT || !bytes || size<=0 || size>128 || std::memchr(bytes,0,size))
+            throw std::runtime_error("Historical inventory address malformed");
+        const std::string address(bytes,size);
+        const auto decoded=AddressCodec::decode(address);
+        if(decoded.type!=::AddrType::P2TR || decoded.network!=Network::MAIN || decoded.data.size()!=32 ||
+           AddressCodec::encodeP2TR(Network::MAIN,decoded.data)!=address)
+            throw std::runtime_error("Historical inventory recorded address is not exact MAIN Taproot");
+        std::vector<uint8_t> script{0x51,0x20};script.insert(script.end(),decoded.data.begin(),decoded.data.end());
+        if(!pin){local_pin=CopyRecoverySeed(session_);pin=local_pin.get();}
+        // The actual typed resolver authenticates explicit-length raw32/hex64
+        // ciphertext and the predecessor SHA256(xonly || 0x00) tweak. Its
+        // scoped SigningKey cleanses the scalar; only public ownership escapes.
+        const auto key=ResolveSigningKeyInTransaction(util::hex(script),*pin);
+        if(!key || key->policy!=SigningKeyPolicy::TaprootHistoricalImport || key->script!=script ||
+           !result.emplace(std::move(script),address).second)
+            throw std::runtime_error("Historical inventory signing owner unavailable or ambiguous");
+    }
+    IssuanceCheck(db_,rc,SQLITE_DONE);
+    return result;
+}
+
+void WalletManager::DatabaseLease::ValidateRecoveryInventoryInTransaction(const RecoverySeed& pin) {
+    // This also checks this lease, session, seed pin and active transaction.
+    (void)ReadPendingPaymentsInTransaction(pin);
+    AuthenticateHdInventory(db_,owner_.master_seed_);
+    const auto text=[](sqlite3_stmt* row,int col) {
+        if(sqlite3_column_type(row,col)!=SQLITE_TEXT)throw std::runtime_error("Recovery inventory text type invalid");
+        const auto* bytes=static_cast<const char*>(sqlite3_column_blob(row,col));const int n=sqlite3_column_bytes(row,col);
+        if(!bytes||n<=0||std::memchr(bytes,0,n))throw std::runtime_error("Recovery inventory text invalid");
+        return std::string(bytes,n);
+    };
+    std::map<std::vector<uint8_t>,std::string> signing;
+    std::set<std::string> signing_addresses;
+    const bool wallet_column=IssuanceWalletColumn(db_,"addresses");
+    const std::string sql="SELECT address,script_pubkey,"+std::string(wallet_column?"wallet_id":"1")+" FROM addresses ORDER BY address";
+    IssuedStatement addresses(db_,sql.c_str());int rc;size_t count=0;
+    while((rc=sqlite3_step(addresses.value.get()))==SQLITE_ROW) {
+        if(++count>65536)throw std::runtime_error("Recovery address inventory capacity exceeded");
+        auto* q=addresses.value.get();const auto address=text(q,0),encoded=text(q,1);
+        if(sqlite3_column_type(q,2)!=SQLITE_INTEGER||sqlite3_column_int64(q,2)!=owner_.current_wallet_id_)
+            throw std::runtime_error("Recovery address wallet mismatch");
+        std::vector<uint8_t> script;
+        if(!util::unhex(encoded,script)||script.empty())throw std::runtime_error("Recovery address script invalid");
+        const auto key=ResolveSigningKeyInTransaction(util::hex(script),pin);
+        if(!key||key->script!=script||!signing.emplace(script,address).second)
+            throw std::runtime_error("Recovery address signing owner unavailable or ambiguous");
+        signing_addresses.insert(address);
+    }
+    IssuanceCheck(db_,rc,SQLITE_DONE);
+    // Historical imports have their own exact authenticated script/address
+    // owner. They do not require a fabricated address/path companion row.
+    const auto historical=ReadHistoricalImportScriptsInTransaction(&pin);
+    for(const auto& [script,address]:historical) {
+        const auto [found,inserted]=signing.emplace(script,address);
+        if(!inserted && found->second!=address)
+            throw std::runtime_error("Recovery historical and recorded address owners disagree");
+        signing_addresses.insert(address);
+    }
+    // Reverse inventory: a missing address row cannot hide a present import.
+    for(const auto* table:{"imported_keys","taproot_keys"}) {
+        IssuedStatement exists(db_,"SELECT 1 FROM sqlite_schema WHERE type='table' AND name=?");exists.Text(1,table);
+        const int found=sqlite3_step(exists.value.get());if(found==SQLITE_DONE)continue;
+        IssuanceCheck(db_,found,SQLITE_ROW);exists.Done();
+        const auto query=std::string("SELECT address FROM ")+table+" ORDER BY address";
+        IssuedStatement imports(db_,query.c_str());size_t imported=0;
+        while((rc=sqlite3_step(imports.value.get()))==SQLITE_ROW) {
+            if(++imported>65536)throw std::runtime_error("Recovery imported inventory capacity exceeded");
+            const auto address=text(imports.value.get(),0);
+            if(!signing_addresses.contains(address))
+                throw std::runtime_error("Recovery import address binding missing");
+        }
+        IssuanceCheck(db_,rc,SQLITE_DONE);
+    }
+    std::map<std::vector<uint8_t>,std::string> pq_scripts;
+    const auto path=owner_.GetV7P2MRStorePath();
+    if(path.empty())throw std::runtime_error("Recovery PQ inventory path unavailable");
+    std::error_code error;const auto status=std::filesystem::symlink_status(path,error);
+    if(error&&error!=std::errc::no_such_file_or_directory)throw std::runtime_error("Recovery PQ storage unavailable");
+    if(std::filesystem::exists(status)) {
+        wallet::V7P2MRStore store;
+        if(store.OpenExistingReadOnly(path)!=wallet::V7P2MRStore::OpenResult::Ok)
+            throw std::runtime_error("Recovery PQ storage invalid");
+        const auto rows=store.CaptureKeysByWallet(owner_.current_wallet_id_);
+        if(!rows.empty()&&!owner_.pq_master_key_loaded_)throw std::runtime_error("Recovery PQ master unavailable");
+        struct Master {wallet::AeadKey value{};~Master(){OPENSSL_cleanse(value.data(),value.size());}} master;
+        if(owner_.pq_master_key_loaded_)master.value=owner_.pq_master_key_;
+        auto initial=owner_.loadInitialPqMaster(owner_.master_seed_);
+        struct ClearInitial {std::optional<std::array<uint8_t,32>>& value;
+            ~ClearInitial(){if(value)OPENSSL_cleanse(value->data(),value->size());}} clear_initial{initial};
+        bool durable_master=initial.has_value();
+        if(initial&&owner_.pq_master_key_loaded_&&CRYPTO_memcmp(initial->data(),master.value.data(),32)!=0)
+            throw std::runtime_error("Recovery PQ initial owner mismatch");
+        IssuedStatement wrapper(db_,"SELECT value FROM settings WHERE key='v7_pq_master_key_encrypted'");
+        const auto wrapped=sqlite3_step(wrapper.value.get());
+        if(wrapped==SQLITE_ROW) {
+            std::vector<uint8_t> ciphertext;const auto encoded=text(wrapper.value.get(),0);wrapper.Done();
+            if(!owner_.wallet_encrypted_||owner_.encryption_key_.size()!=32||!util::unhex(encoded,ciphertext)||ciphertext.size()!=60)
+                throw std::runtime_error("Recovery PQ wrapper invalid");
+            struct Secret {std::string value;~Secret(){secureClearString(value);}} plain;
+            plain.value=owner_.decryptData(std::string(ciphertext.begin(),ciphertext.end()),owner_.encryption_key_);
+            if(plain.value.size()!=32||CRYPTO_memcmp(plain.value.data(),master.value.data(),32)!=0)
+                throw std::runtime_error("Recovery PQ durable owner mismatch");
+            durable_master=true;
+        } else IssuanceCheck(db_,wrapped,SQLITE_DONE);
+        if(!rows.empty()&&!durable_master)throw std::runtime_error("Recovery PQ durable master unavailable");
+        for(const auto& record:rows) {
+            wallet::SecureSeed plaintext;const auto& encrypted=record.encrypted_seed;
+            if(wallet::OpenSeedSecure(encrypted.ciphertext,encrypted.nonce,encrypted.tag,master.value,&plaintext)!=wallet::AeadOpenResult::Ok)
+                throw std::runtime_error("Recovery PQ authentication failed");
+            wallet::SecureKeypair pair(consensus::pq::ml_dsa_65::KeygenFromSeed(plaintext.bytes()));
+            std::array<uint8_t,32> root{};const uint8_t scheme=consensus::pq::SCHEME_ID_ML_DSA_65;
+            crypto::CSHA256().Write(&scheme,1).Write(pair.pubkey().data(),pair.pubkey().size()).Finalize(root.data());
+            const auto& row=record.metadata;const auto decoded=wallet::DecodeP2MRAddress(row.address);
+            if(pair.pubkey()!=row.pubkey||root!=row.merkle_root||!decoded||decoded->merkle_root!=root||
+               !pq_scripts.emplace(wallet::BuildP2MRScriptPubKey(root),row.derivation_path).second)
+                throw std::runtime_error("Recovery PQ key binding invalid");
+        }
+    }
+    IssuedStatement watched(db_,"SELECT script_pubkey,path,is_change FROM watch_scripts ORDER BY script_pubkey");
+    std::set<std::vector<uint8_t>> matched_pq;size_t watched_count=0;
+    while((rc=sqlite3_step(watched.value.get()))==SQLITE_ROW) {
+        if(++watched_count>65536)throw std::runtime_error("Recovery watch inventory capacity exceeded");
+        auto* q=watched.value.get();const auto* bytes=static_cast<const uint8_t*>(sqlite3_column_blob(q,0));const int n=sqlite3_column_bytes(q,0);
+        if(sqlite3_column_type(q,0)!=SQLITE_BLOB||!bytes||n<=0||n>10000||sqlite3_column_type(q,2)!=SQLITE_INTEGER)
+            throw std::runtime_error("Recovery watched script invalid");
+        const std::vector<uint8_t> script(bytes,bytes+n);const auto claim=text(q,1);
+        const auto pq=pq_scripts.find(script);
+        if(pq!=pq_scripts.end()) {
+            if(claim!=pq->second||sqlite3_column_int64(q,2)!=0||!matched_pq.insert(script).second)
+                throw std::runtime_error("Recovery PQ recognition binding invalid");
+        } else if(!signing.contains(script)&&(claim.starts_with("m/")||claim.starts_with("tr("))) {
+            throw std::runtime_error("Recovery orphan signing claim");
+        }
+        // Other explicit watch-only registrations stay recognition metadata.
+        // They acquire no signing key or invented account/path here.
+    }
+    IssuanceCheck(db_,rc,SQLITE_DONE);
+    if(matched_pq.size()!=pq_scripts.size())throw std::runtime_error("Recovery PQ recognition owner missing");
+}
+
+std::vector<PendingPaymentInput> WalletManager::DatabaseLease::ReadShieldCandidatesInTransaction(
+    const RecoverySeed& pin) {
+    const auto pending=ReadPendingPaymentsInTransaction(pin);
+    std::set<std::pair<std::string,uint32_t>> reserved;
+    for(const auto& payment:pending)for(const auto& input:payment.inputs)
+        if(!reserved.emplace(input.txid,input.vout).second)
+            throw std::runtime_error("Retained ordinary input ownership overlaps");
+    IssuedStatement rows(db_,"SELECT txid,vout,amount,script_pubkey,is_spent FROM utxos WHERE wallet_id=? AND is_spent=0 ORDER BY amount DESC,txid,vout");
+    rows.Int(1,owner_.current_wallet_id_);
+    std::vector<PendingPaymentInput> result;std::set<std::pair<std::string,uint32_t>> seen;
+    size_t count=0,script_bytes=0;int rc;
+    while((rc=sqlite3_step(rows.value.get()))==SQLITE_ROW){
+        if(++count>65536)throw std::runtime_error("Shield candidate inventory capacity exceeded");
+        const auto text=[&](int column,size_t maximum){
+            if(sqlite3_column_type(rows.value.get(),column)!=SQLITE_TEXT)
+                throw std::runtime_error("Shield wallet coin text has invalid type");
+            const auto* data=static_cast<const char*>(sqlite3_column_blob(rows.value.get(),column));
+            const auto size=sqlite3_column_bytes(rows.value.get(),column);
+            if(!data||size<=0||size>static_cast<int>(maximum))throw std::runtime_error("Shield wallet coin text has invalid length");
+            return std::string(data,size);
+        };
+        const auto txid=text(0,64),script_text=text(3,20000);
+        if(sqlite3_column_type(rows.value.get(),1)!=SQLITE_INTEGER||
+           sqlite3_column_type(rows.value.get(),2)!=SQLITE_INTEGER||
+           sqlite3_column_type(rows.value.get(),4)!=SQLITE_INTEGER||sqlite3_column_int64(rows.value.get(),4)!=0)
+            throw std::runtime_error("Shield wallet coin integers have invalid type");
+        const auto index=sqlite3_column_int64(rows.value.get(),1),amount=sqlite3_column_int64(rows.value.get(),2);
+        if(index<0||uint64_t(index)>UINT32_MAX||amount<=0)throw std::runtime_error("Shield wallet coin amount or index invalid");
+        (void)PaymentSum(0,static_cast<uint64_t>(amount));
+        std::vector<uint8_t> hash,script;
+        if(txid.size()!=64||!util::unhex(txid,hash)||hash.size()!=32||util::hex(hash)!=txid||
+           !util::unhex(script_text,script)||script.empty()||util::hex(script)!=script_text||
+           !seen.emplace(txid,static_cast<uint32_t>(index)).second)
+            throw std::runtime_error("Shield wallet coin encoding or identity invalid");
+        if(script.size()>16*1024*1024-script_bytes)throw std::runtime_error("Shield candidate scripts exceed capacity");
+        script_bytes+=script.size();
+        if(reserved.count({txid,static_cast<uint32_t>(index)})||
+           owner_.locked_utxos_.count(txid+":"+std::to_string(index)))continue;
+        const bool taproot=script.size()==34&&script[0]==0x51&&script[1]==0x20;
+        const bool p2wpkh=script.size()==22&&script[0]==0&&script[1]==20;
+        if(!taproot&&!p2wpkh)continue; // No fabricated path or unsupported signer fallback.
+        const auto key=ResolveSigningKeyInTransaction(script_text,pin);
+        if(!key)continue; // Recognized watch-only coins are not signing owners.
+        if((taproot&&key->policy!=SigningKeyPolicy::TaprootCanonical&&key->policy!=SigningKeyPolicy::TaprootHistoricalImport)||
+           (p2wpkh&&key->policy!=SigningKeyPolicy::Untweaked))continue;
+        result.push_back({txid,static_cast<uint32_t>(index),static_cast<uint64_t>(amount),std::move(script)});
+    }
+    IssuanceCheck(db_,rc,SQLITE_DONE);
+    return result;
+}
+
+void WalletManager::DatabaseLease::ValidateUnreservedInputsInTransaction(
+    const RecoverySeed& pin,std::span<const PendingPaymentInput> inputs) {
+    const auto pending=ReadPendingPaymentsInTransaction(pin); // validates lease, pin and active transaction
+    if(inputs.empty()||inputs.size()>1024)throw std::runtime_error("Transparent reservation input count unsupported");
+    std::set<std::pair<std::string,uint32_t>> used;
+    for(const auto& payment:pending)for(const auto& coin:payment.inputs)
+        if(!used.emplace(coin.txid,coin.vout).second)throw std::runtime_error("Retained ordinary input ownership overlaps");
+    for(const auto& coin:inputs){
+        (void)PaymentSum(0,coin.amount_una);
+        std::vector<uint8_t> hash;
+        if(coin.txid.size()!=64||!util::unhex(coin.txid,hash)||hash.size()!=32||
+           util::hex(hash)!=coin.txid||!coin.amount_una||
+           coin.script.empty()||!used.emplace(coin.txid,coin.vout).second)
+            throw std::runtime_error("Transparent input is malformed or already reserved");
+        if(owner_.locked_utxos_.count(coin.txid+":"+std::to_string(coin.vout)))
+            throw std::runtime_error("Transparent input manually locked");
+        IssuedStatement q(db_,"SELECT amount,script_pubkey,is_spent FROM utxos WHERE wallet_id=? AND txid=? AND vout=?");
+        q.Int(1,owner_.current_wallet_id_);q.Text(2,coin.txid);q.Int(3,coin.vout);
+        IssuanceCheck(db_,sqlite3_step(q.value.get()),SQLITE_ROW);
+        if(sqlite3_column_type(q.value.get(),0)!=SQLITE_INTEGER||sqlite3_column_int64(q.value.get(),0)<0||
+           uint64_t(sqlite3_column_int64(q.value.get(),0))!=coin.amount_una||
+           sqlite3_column_type(q.value.get(),1)!=SQLITE_TEXT||
+           sqlite3_column_type(q.value.get(),2)!=SQLITE_INTEGER||sqlite3_column_int64(q.value.get(),2)!=0)
+            throw std::runtime_error("Transparent wallet coin is unavailable");
+        const auto* bytes=static_cast<const char*>(sqlite3_column_blob(q.value.get(),1));const int size=sqlite3_column_bytes(q.value.get(),1);
+        std::vector<uint8_t> script;
+        if(!bytes||size<=0||!util::unhex(std::string(bytes,size),script)||script!=coin.script)
+            throw std::runtime_error("Transparent wallet coin script changed");
+        q.Done();
+        if(!ResolveSigningKeyInTransaction(util::hex(coin.script),pin))
+            throw std::runtime_error("Transparent wallet coin signing owner unavailable");
+    }
+}
+
+std::vector<PendingPaymentInput> WalletManager::DatabaseLease::ReadSnapshotShieldCandidatesInTransaction(
+        const RecoverySeed& pin,uint32_t height,const uint256& base,const std::string& root){
+    const auto pending=ReadPendingPaymentsInTransaction(pin); // Exact lease/seed/SQL transaction.
+    std::set<std::pair<std::string,uint32_t>> reserved;
+    for(const auto& payment:pending)for(const auto& input:payment.inputs)
+        if(!reserved.emplace(input.txid,input.vout).second)throw std::runtime_error("Snapshot input owners overlap");
+    const auto candidates=owner_.ReadSnapshotCandidatesOwned();
+    std::vector<PendingPaymentInput> result;
+    for(const auto& coin:candidates){
+        IssuedStatement cohort(db_,"SELECT base_height,base_block,source_root FROM wallet_snapshot_candidates WHERE wallet_id=? AND txid=? AND vout=?");
+        cohort.Int(1,owner_.current_wallet_id_);cohort.Text(2,coin.txid);cohort.Int(3,coin.vout);
+        IssuanceCheck(db_,sqlite3_step(cohort.value.get()),SQLITE_ROW);
+        const auto same=[&](int column,const std::string& text){const auto* p=sqlite3_column_blob(cohort.value.get(),column);
+            return sqlite3_column_type(cohort.value.get(),column)==SQLITE_TEXT&&p&&
+                sqlite3_column_bytes(cohort.value.get(),column)==int(text.size())&&std::memcmp(p,text.data(),text.size())==0;};
+        if(sqlite3_column_type(cohort.value.get(),0)!=SQLITE_INTEGER||sqlite3_column_int64(cohort.value.get(),0)!=height||
+            !same(1,base.GetHex())||!same(2,root))throw std::runtime_error("Snapshot input candidate cohort changed");
+        cohort.Done();
+        // A candidate must never resurrect ANY ordinary wallet row, spent or
+        // otherwise, nor acquire a competing current/retained input owner.
+        IssuedStatement ordinary(db_,"SELECT 1 FROM utxos WHERE wallet_id=? AND txid=? AND vout=?");
+        ordinary.Int(1,owner_.current_wallet_id_);ordinary.Text(2,coin.txid);ordinary.Int(3,coin.vout);
+        const auto present=sqlite3_step(ordinary.value.get());
+        if(present==SQLITE_ROW)continue;IssuanceCheck(db_,present,SQLITE_DONE);
+        if(reserved.contains({coin.txid,coin.vout})||owner_.locked_utxos_.contains(coin.txid+":"+std::to_string(coin.vout)))continue;
+        std::vector<uint8_t> script;
+        if(!util::unhex(coin.script_pubkey,script))throw std::runtime_error("Snapshot input script invalid");
+        const bool taproot=script.size()==34&&script[0]==0x51&&script[1]==0x20;
+        const bool p2wpkh=script.size()==22&&script[0]==0&&script[1]==20;
+        if(!taproot&&!p2wpkh)continue;
+        const auto key=ResolveSigningKeyInTransaction(coin.script_pubkey,pin);
+        if(!key||(taproot&&key->policy!=SigningKeyPolicy::TaprootCanonical&&key->policy!=SigningKeyPolicy::TaprootHistoricalImport)||
+            (p2wpkh&&key->policy!=SigningKeyPolicy::Untweaked))continue;
+        result.push_back({coin.txid,coin.vout,coin.amount_una,std::move(script)});
+    }
+    std::sort(result.begin(),result.end(),[](const auto& a,const auto& b){
+        if(a.amount_una!=b.amount_una)return a.amount_una>b.amount_una;
+        return std::tie(a.txid,a.vout)<std::tie(b.txid,b.vout);});
+    return result;
+}
+
+void WalletManager::DatabaseLease::ValidateSnapshotShieldInputsInTransaction(const RecoverySeed& pin,
+        std::span<const PendingPaymentInput> inputs,uint32_t height,const uint256& base,const std::string& root){
+    if(inputs.empty()||inputs.size()>1024)throw std::runtime_error("Snapshot input count unsupported");
+    const auto candidates=ReadSnapshotShieldCandidatesInTransaction(pin,height,base,root);
+    std::set<std::pair<std::string,uint32_t>> used;
+    for(const auto& input:inputs){
+        if(!used.emplace(input.txid,input.vout).second||!std::any_of(candidates.begin(),candidates.end(),[&](const auto& coin){
+            return coin.txid==input.txid&&coin.vout==input.vout&&coin.amount_una==input.amount_una&&coin.script==input.script;}))
+            throw std::runtime_error("Snapshot input wallet candidate/signing owner changed");
+    }
+}
+
+void WalletManager::DatabaseLease::ValidatePostBaseShieldOwnersInTransaction(
+        const RecoverySeed& pin,std::span<const PendingPaymentInput> inputs){
+    const auto pending=ReadPendingPaymentsInTransaction(pin); // Exact live lease/seed/transaction.
+    if(inputs.empty()||inputs.size()>1024)throw std::runtime_error("Post-base input count unsupported");
+    std::set<std::pair<std::string,uint32_t>> used;
+    for(const auto& payment:pending)for(const auto& input:payment.inputs)
+        if(!used.emplace(input.txid,input.vout).second)throw std::runtime_error("Post-base pending input owners overlap");
+    for(const auto& input:inputs){
+        (void)PaymentSum(0,input.amount_una);std::vector<uint8_t> hash;
+        if(input.txid.size()!=64||!util::unhex(input.txid,hash)||hash.size()!=32||util::hex(hash)!=input.txid||
+           !input.amount_una||input.script.empty()||input.script.size()>10000||!used.emplace(input.txid,input.vout).second||
+           owner_.locked_utxos_.contains(input.txid+":"+std::to_string(input.vout)))
+            throw std::runtime_error("Post-base input malformed, reserved or manually locked");
+        // These are genuinely NEW outputs, never an alternate interpretation
+        // of ANY ordinary row (spent or otherwise) or frozen candidate row.
+        for(const auto* table:{"utxos","wallet_snapshot_candidates"}){
+            const auto sql=std::string("SELECT 1 FROM ")+table+" WHERE wallet_id=? AND txid=? AND vout=?";
+            IssuedStatement row(db_,sql.c_str());
+            row.Int(1,owner_.current_wallet_id_);row.Text(2,input.txid);row.Int(3,input.vout);
+            if(sqlite3_step(row.value.get())!=SQLITE_DONE)
+                throw std::runtime_error("Post-base input overlaps an existing ordinary/frozen namespace");
+        }
+        const auto key=ResolveSigningKeyInTransaction(util::hex(input.script),pin);
+        const bool taproot=input.script.size()==34&&input.script[0]==0x51&&input.script[1]==0x20;
+        const bool p2wpkh=input.script.size()==22&&input.script[0]==0&&input.script[1]==20;
+        if(!key||key->script!=input.script||(!taproot&&!p2wpkh)||
+           (taproot&&key->policy!=SigningKeyPolicy::TaprootCanonical&&key->policy!=SigningKeyPolicy::TaprootHistoricalImport)||
+           (p2wpkh&&key->policy!=SigningKeyPolicy::Untweaked))
+            throw std::runtime_error("Post-base input signing owner unavailable");
+    }
+}
+
+std::optional<PendingPayment> WalletManager::DatabaseLease::FindPaymentRequestInTransaction(
+    const RecoverySeed& pin,const PendingPaymentIntent& intent) {
+    ValidatePaymentRequest(intent);
+    return FindPaymentRequestInRecords(ReadPendingPaymentsInTransaction(pin),intent);
+}
+
+std::optional<PendingPayment> WalletManager::DatabaseLease::FindPaymentRequest(
+    const RecoverySeed& pin, const PendingPaymentIntent& intent) {
+    if(thread_!=std::this_thread::get_id() || pin.thread_!=thread_ || &pin.owner_!=&owner_ ||
+       !db_ || db_!=owner_.db_ || session_!=owner_.database_session_ || owner_.recovery_seeds_!=1)
+        throw std::runtime_error("Payment request owner does not match wallet lease");
+    ValidatePaymentRequest(intent);
+    IssuedAddressTransaction transaction(db_);
+    auto records = owner_.ReadPendingPaymentsOwned(pin.Bytes());
+    auto result = FindPaymentRequestInRecords(records, intent);
+    transaction.Commit();
+    return result;
+}
+
+namespace {
+
+// The normal history trigger must still invalidate arbitrary history changes.
+// Only StagePayment may preserve an existing receipt across its exact typed
+// unconfirmed append. The comparison covers all present main-database user
+// tables and schema, including key/account/archive owners. It cannot establish
+// missing history or turn an absent/invalid receipt into a recovery baseline.
+class PendingPaymentBaseline {
+    using Hash=std::array<unsigned char,SHA256_DIGEST_LENGTH>;
+    using Snapshot=std::map<std::string,std::vector<Hash>>;
+    sqlite3* db_;
+    std::optional<std::string> receipt_;
+    Snapshot before_;
+    const bool pending_owner_change_;
+    static constexpr size_t kMaxRows=1000000,kMaxBytes=64*1024*1024;
+    static void Require(bool ok) {
+        if(!ok)throw std::runtime_error("Pending payment baseline changed or unavailable");
+    }
+    static std::string Text(sqlite3_stmt* q,int c) {
+        Require(sqlite3_column_type(q,c)==SQLITE_TEXT);
+        const auto* p=static_cast<const char*>(sqlite3_column_blob(q,c));
+        const auto n=sqlite3_column_bytes(q,c);Require(n>=0&&(p||!n));
+        return n?std::string(p,n):std::string();
+    }
+    static std::string Quote(const std::string& name) {
+        Require(!name.empty()&&name.find('\0')==std::string::npos);
+        std::string q="\"";for(char c:name){q+=c;if(c=='\"')q+=c;}return q+'\"';
+    }
+    static void Bytes(EVP_MD_CTX* out,const void* data,size_t size) {
+        Require(!size||EVP_DigestUpdate(out,data,size)==1);
+    }
+    static void Number(EVP_MD_CTX* out,uint64_t value) {
+        std::array<uint8_t,8> bytes{};for(unsigned n=0;n<8;++n)bytes[n]=uint8_t(value>>(n*8));Bytes(out,bytes.data(),bytes.size());
+    }
+    static void Field(EVP_MD_CTX* out,sqlite3_stmt* q,int c,size_t& budget) {
+        const int type=sqlite3_column_type(q,c);Require(budget>=9);budget-=9;const auto tag=uint8_t(type);Bytes(out,&tag,1);
+        if(type==SQLITE_NULL){Number(out,0);return;}
+        if(type==SQLITE_INTEGER){Number(out,static_cast<uint64_t>(sqlite3_column_int64(q,c)));return;}
+        if(type==SQLITE_FLOAT){const double value=sqlite3_column_double(q,c);uint64_t bits;
+            static_assert(sizeof(bits)==sizeof(value));std::memcpy(&bits,&value,sizeof(bits));Number(out,bits);return;}
+        Require(type==SQLITE_TEXT||type==SQLITE_BLOB);
+        const auto* data=static_cast<const char*>(sqlite3_column_blob(q,c));const auto size=sqlite3_column_bytes(q,c);
+        Require(size>=0&&(data||!size)&&size_t(size)<=budget);budget-=size_t(size);Number(out,uint64_t(size));Bytes(out,data,size_t(size));
+    }
+    Snapshot Capture(const std::string& appended={}) const {
+        Require(!sqlite3_get_autocommit(db_));Snapshot result;size_t rows=0,budget=kMaxBytes;
+        const auto read=[&](const std::string& key,const std::string& sql) {
+            IssuedStatement q(db_,sql.c_str());
+            if(key=="transactions"&&!appended.empty())q.Text(1,appended);
+            int rc;auto& hashes=result[key];
+            while((rc=sqlite3_step(q.value.get()))==SQLITE_ROW) {
+                Require(++rows<=kMaxRows);
+                // Hash SQLite-owned fields directly: no plaintext row/key copy
+                // or additional secret cache is allocated by the comparison.
+                std::unique_ptr<EVP_MD_CTX,decltype(&EVP_MD_CTX_free)> row(EVP_MD_CTX_new(),EVP_MD_CTX_free);
+                Require(row&&EVP_DigestInit_ex(row.get(),EVP_sha256(),nullptr)==1);
+                int id=-1;
+                for(int c=0;c<sqlite3_column_count(q.value.get());++c) {
+                    const auto* name=sqlite3_column_name(q.value.get(),c);Require(name);
+                    if(std::string_view(name)=="id")id=c;
+                }
+                const bool owner=key=="wallet_meta"&&id>=0&&sqlite3_column_type(q.value.get(),id)==SQLITE_INTEGER&&sqlite3_column_int64(q.value.get(),id)==1;
+                for(int c=0;c<sqlite3_column_count(q.value.get());++c) {
+                    const auto* column=sqlite3_column_name(q.value.get(),c);Require(column);
+                    const std::string_view name=column;
+                    if(owner&&((pending_owner_change_&&name=="pending_payment_owner")||name=="runtime_ordinary_receipt"||name=="runtime_ordinary_invalid"))continue;
+                    Field(row.get(),q.value.get(),c,budget);
+                }
+                Hash hash{};unsigned length=0;Require(EVP_DigestFinal_ex(row.get(),hash.data(),&length)==1&&length==hash.size());
+                hashes.push_back(hash);
+            }
+            Require(rc==SQLITE_DONE);std::sort(hashes.begin(),hashes.end());
+        };
+        read("#schema","SELECT type,name,tbl_name,sql FROM sqlite_master WHERE substr(name,1,7)<>'sqlite_'");
+        std::vector<std::string> tables;
+        {IssuedStatement q(db_,"SELECT name FROM sqlite_master WHERE type='table' AND substr(name,1,7)<>'sqlite_' ORDER BY name");int rc;
+         while((rc=sqlite3_step(q.value.get()))==SQLITE_ROW){Require(tables.size()<4096);tables.push_back(Text(q.value.get(),0));}
+         Require(rc==SQLITE_DONE);}
+        for(const auto& table:tables) {
+            Require(table!="#schema");std::string sql="SELECT * FROM "+Quote(table);
+            if(table=="transactions"&&!appended.empty())sql+=" WHERE txid<>? OR txid IS NULL";
+            read(table,sql);
+        }
+        return result;
+    }
+    void Guards() const {
+        for(const auto* table:{"utxos","transactions","watch_scripts","addresses","tip","sync_meta"})for(const auto* action:{"INSERT","UPDATE","DELETE"}) {
+            const auto name=std::string("runtime_ordinary_")+table+"_"+action;
+            const auto expected="CREATE TRIGGER "+name+" AFTER "+action+" ON "+table+
+                " BEGIN UPDATE wallet_meta SET runtime_ordinary_invalid=1,runtime_ordinary_receipt=NULL WHERE id=1 AND runtime_ordinary_receipt IS NOT NULL; END";
+            IssuedStatement q(db_,"SELECT sql FROM sqlite_master WHERE type='trigger' AND name=?");q.Text(1,name);
+            Require(sqlite3_step(q.value.get())==SQLITE_ROW&&Text(q.value.get(),0)==expected);q.Done();
+        }
+    }
+public:
+    // Called after the optional pending column has been installed, inside the
+    // existing FULL payment transaction. No caller-owned transaction is closed.
+    explicit PendingPaymentBaseline(sqlite3* db,bool pending_owner_change=true):db_(db),pending_owner_change_(pending_owner_change) {
+        Require(db_&&!sqlite3_get_autocommit(db_));unsigned found=0;
+        {IssuedStatement q(db_,"PRAGMA table_info(wallet_meta)");int rc;
+         while((rc=sqlite3_step(q.value.get()))==SQLITE_ROW){const auto name=Text(q.value.get(),1);
+            if(name=="runtime_ordinary_receipt")found|=1;if(name=="runtime_ordinary_invalid")found|=2;}
+         Require(rc==SQLITE_DONE&&(found==0||found==3));}
+        if(!found)return;
+        IssuedStatement q(db_,"SELECT runtime_ordinary_receipt,runtime_ordinary_invalid FROM wallet_meta WHERE id=1");
+        Require(sqlite3_step(q.value.get())==SQLITE_ROW&&sqlite3_column_type(q.value.get(),1)==SQLITE_INTEGER);
+        const auto invalid=sqlite3_column_int64(q.value.get(),1);Require(invalid==0||invalid==1);
+        if(!invalid&&sqlite3_column_type(q.value.get(),0)!=SQLITE_NULL) {
+            const auto* data=static_cast<const char*>(sqlite3_column_blob(q.value.get(),0));const int n=sqlite3_column_bytes(q.value.get(),0);
+            Require(sqlite3_column_type(q.value.get(),0)==SQLITE_BLOB&&data&&n>0&&n<=2048);receipt_=std::string(data,n);
+        }
+        q.Done();if(receipt_){
+            Guards();std::set<std::string> columns;IssuedStatement schema(db_,"PRAGMA table_info(transactions)");int rc;
+            while((rc=sqlite3_step(schema.value.get()))==SQLITE_ROW)Require(columns.insert(Text(schema.value.get(),1)).second);
+            Require(rc==SQLITE_DONE&&columns==std::set<std::string>{"id","wallet_id","txid","address","amount","confirmations","category","label","time","is_coinbase","height"});
+            before_=Capture();
+        }
+    }
+    // The shield caller validates the exact appended row before and after this
+    // operation. Unlike ordinary payment append, its pending owner is immutable.
+    void FinishShield(const std::string& txid) {
+        Require(!pending_owner_change_);
+        if(!receipt_)return;
+        Guards();Require(Capture(txid)==before_);
+        IssuedStatement save(db_,"UPDATE wallet_meta SET runtime_ordinary_receipt=?,runtime_ordinary_invalid=0 WHERE id=1");
+        save.Blob(1,receipt_->data(),int(receipt_->size()));save.Done(true);
+        Guards();Require(Capture(txid)==before_);
+        IssuedStatement receipt(db_,"SELECT runtime_ordinary_receipt,runtime_ordinary_invalid FROM wallet_meta WHERE id=1");
+        Require(sqlite3_step(receipt.value.get())==SQLITE_ROW&&sqlite3_column_type(receipt.value.get(),0)==SQLITE_BLOB&&
+            sqlite3_column_type(receipt.value.get(),1)==SQLITE_INTEGER&&sqlite3_column_int64(receipt.value.get(),1)==0);
+        const auto* data=static_cast<const char*>(sqlite3_column_blob(receipt.value.get(),0));const int n=sqlite3_column_bytes(receipt.value.get(),0);
+        Require(data&&n>=0&&std::string_view(data,size_t(n))==*receipt_);receipt.Done();
+    }
+    void Finish(const PendingPayment& payment,int wallet_id,const std::string& sealed) {
+        if(!receipt_)return;
+        const auto check_append=[&]() {
+            IssuedStatement q(db_,"SELECT wallet_id,address,amount,confirmations,category,label,time,is_coinbase,height,id FROM transactions WHERE txid=?");q.Text(1,payment.txid);
+            Require(sqlite3_step(q.value.get())==SQLITE_ROW);
+            const auto integer=[&](int c,int64_t value){return sqlite3_column_type(q.value.get(),c)==SQLITE_INTEGER&&sqlite3_column_int64(q.value.get(),c)==value;};
+            const auto spent=PaymentSum(PaymentIntentTotal(payment.intent),payment.fee_una);
+            Require(integer(0,wallet_id)&&Text(q.value.get(),1)==payment.intent.address&&
+                (sqlite3_column_type(q.value.get(),2)==SQLITE_FLOAT||sqlite3_column_type(q.value.get(),2)==SQLITE_INTEGER)&&
+                sqlite3_column_double(q.value.get(),2)==-static_cast<double>(spent)/1e8&&integer(3,0)&&
+                Text(q.value.get(),4)=="send"&&Text(q.value.get(),5)==payment.intent.label&&integer(6,payment.created_at)&&integer(7,0)&&integer(8,0)&&
+                sqlite3_column_type(q.value.get(),9)==SQLITE_INTEGER&&sqlite3_column_int64(q.value.get(),9)>0);q.Done();
+            IssuedStatement p(db_,"SELECT pending_payment_owner FROM wallet_meta WHERE id=1");
+            Require(sqlite3_step(p.value.get())==SQLITE_ROW&&sqlite3_column_type(p.value.get(),0)==SQLITE_BLOB);
+            const auto* data=static_cast<const char*>(sqlite3_column_blob(p.value.get(),0));const int n=sqlite3_column_bytes(p.value.get(),0);
+            Require(data&&n>=0&&std::string_view(data,size_t(n))==sealed);p.Done();
+        };
+        Guards();check_append();Require(Capture(payment.txid)==before_);
+        // Preserve this exact existing receipt, not a newly computed cursor or
+        // readiness claim. Triggers remain enabled throughout the transition.
+        IssuedStatement save(db_,"UPDATE wallet_meta SET runtime_ordinary_receipt=?,runtime_ordinary_invalid=0 WHERE id=1");
+        save.Blob(1,receipt_->data(),int(receipt_->size()));save.Done(true);
+        check_append();Require(Capture(payment.txid)==before_);
+        IssuedStatement receipt(db_,"SELECT runtime_ordinary_receipt,runtime_ordinary_invalid FROM wallet_meta WHERE id=1");
+        Require(sqlite3_step(receipt.value.get())==SQLITE_ROW&&sqlite3_column_type(receipt.value.get(),0)==SQLITE_BLOB&&
+            sqlite3_column_type(receipt.value.get(),1)==SQLITE_INTEGER&&sqlite3_column_int64(receipt.value.get(),1)==0);
+        const auto* data=static_cast<const char*>(sqlite3_column_blob(receipt.value.get(),0));const int n=sqlite3_column_bytes(receipt.value.get(),0);
+        Require(data&&n>=0&&std::string_view(data,size_t(n))==*receipt_);receipt.Done();
+    }
+};
+
+} // namespace
+
+namespace {
+class PaymentAppendSavepoint {
+    sqlite3* db_;bool owned_=false;
+public:
+    explicit PaymentAppendSavepoint(sqlite3* db):db_(db) {
+        if(!db_||sqlite3_get_autocommit(db_))throw std::runtime_error("Payment append requires an active transaction");
+        IssuedStatement policy(db_,"PRAGMA synchronous");
+        IssuanceCheck(db_,sqlite3_step(policy.value.get()),SQLITE_ROW);
+        if(sqlite3_column_type(policy.value.get(),0)!=SQLITE_INTEGER||sqlite3_column_int64(policy.value.get(),0)!=2)
+            throw std::runtime_error("Payment append requires FULL durability");
+        policy.Done();
+        IssuanceCheck(db_,sqlite3_exec(db_,"SAVEPOINT wallet_payment_append",nullptr,nullptr,nullptr),SQLITE_OK);
+        owned_=true;
+    }
+    ~PaymentAppendSavepoint() {
+        if(!owned_||sqlite3_get_autocommit(db_))return;
+        if(sqlite3_exec(db_,"ROLLBACK TO wallet_payment_append",nullptr,nullptr,nullptr)!=SQLITE_OK||
+           sqlite3_exec(db_,"RELEASE wallet_payment_append",nullptr,nullptr,nullptr)!=SQLITE_OK)std::terminate();
+    }
+    void Release(){IssuanceCheck(db_,sqlite3_exec(db_,"RELEASE wallet_payment_append",nullptr,nullptr,nullptr),SQLITE_OK);owned_=false;}
+    PaymentAppendSavepoint(const PaymentAppendSavepoint&)=delete;
+    PaymentAppendSavepoint& operator=(const PaymentAppendSavepoint&)=delete;
+};
+}
+
+void WalletManager::DatabaseLease::StagePayment(const RecoverySeed& pin,const UnsignedTransaction& input,
+                                               const Transaction& signed_tx,const PendingPaymentIntent& intent) {
+    StagePaymentOwned(pin,input,signed_tx,intent,false);
+}
+void WalletManager::DatabaseLease::StagePaymentInTransaction(const RecoverySeed& pin,const UnsignedTransaction& input,
+                                               const Transaction& signed_tx,const PendingPaymentIntent& intent) {
+    StagePaymentOwned(pin,input,signed_tx,intent,true);
+}
+void WalletManager::DatabaseLease::StagePaymentOwned(const RecoverySeed& pin,const UnsignedTransaction& input,
+        const Transaction& signed_tx,const PendingPaymentIntent& intent,bool caller_transaction) {
+    if(thread_!=std::this_thread::get_id() || pin.thread_!=thread_ || &pin.owner_!=&owner_ ||
+       !db_ || db_!=owner_.db_ || session_!=owner_.database_session_ || owner_.recovery_seeds_!=1)
+        throw std::runtime_error("Payment owner does not match wallet lease");
+    if(caller_transaction&&sqlite3_get_autocommit(db_))
+        throw std::runtime_error("Payment append lost its caller transaction");
+    if(input.tx.Serialize(TxSerializationMode::WithoutWitness)!=signed_tx.Serialize(TxSerializationMode::WithoutWitness) ||
+       input.selected_utxos.size()!=signed_tx.vin.size())throw std::runtime_error("Payment signing body changed");
+    // Exact explicit recipients plus at most one authenticated change output.
+    // This API never replaces another retained body or reuses its reservations.
+    const auto recipients=PaymentRecipients(intent);std::vector<uint8_t> change;
+    if(input.change_amount) {
+        change=PaymentScript(input.change_address);
+        if(!(caller_transaction ? ResolveSigningKeyInTransaction(util::hex(change),pin) : ResolveSigningKey(util::hex(change),pin)))
+            throw std::runtime_error("Payment change owner unavailable");
+    }
+    std::vector<std::pair<std::vector<uint8_t>,uint64_t>> expected,actual;
+    for (const auto& recipient : recipients) expected.emplace_back(PaymentScript(recipient.address), recipient.amount_una);
+    if(input.change_amount)expected.emplace_back(change,input.change_amount);
+    for(const auto& out:signed_tx.vout)actual.emplace_back(out.scriptPubKey,out.value.GetUna());
+    std::sort(expected.begin(),expected.end());std::sort(actual.begin(),actual.end());
+    if(expected!=actual)throw std::runtime_error("Payment outputs differ from authorized intent");
+    PendingPayment p;p.txid=signed_tx.GetTxid().AsUint256().GetHex();p.signed_body=signed_tx.Serialize(TxSerializationMode::WithWitness);
+    p.intent=intent;p.created_at=std::time(nullptr);uint64_t total=0,outputs=0;
+    for(const auto& c:input.selected_utxos) {
+        if(c.is_confidential)throw std::runtime_error("Confidential payment input unsupported");
+        p.inputs.push_back({c.GetTxIdHex(),c.vout,c.value.GetUna(),c.spk});total=PaymentSum(total,c.value.GetUna());
+    }
+    for(const auto& out:signed_tx.vout)outputs=PaymentSum(outputs,out.value.GetUna());
+    if(total<outputs)throw std::runtime_error("Payment outputs exceed inputs");p.fee_una=total-outputs;
+    if(p.fee_una!=input.fee)throw std::runtime_error("Payment fee differs from signed builder result");
+    ValidatePayment(p);
+    std::unique_ptr<IssuedAddressTransaction> transaction;
+    std::unique_ptr<PaymentAppendSavepoint> append;
+    if(caller_transaction) {
+        (void)PaymentIdentity(db_); // Existing authenticated owner only; no enrollment.
+        append=std::make_unique<PaymentAppendSavepoint>(db_);
+    } else {
+        (void)EnsureDeliveryIdentity(); // Separate existing identity prerequisite, not a recovery certificate.
+        transaction=std::make_unique<IssuedAddressTransaction>(db_);
+    }
+    const bool installed=PaymentColumn(db_);
+    auto records=owner_.ReadPendingPaymentsOwned(pin.Bytes());
+    if (p.intent.request && FindPaymentRequestInRecords(records, p.intent))
+        throw std::runtime_error("Payment request already retained; resolve its existing body");
+    for(const auto& c:p.inputs) {
+        if(owner_.locked_utxos_.count(c.txid+":"+std::to_string(c.vout)))throw std::runtime_error("Payment input manually locked");
+        IssuedStatement q(db_,"SELECT amount,script_pubkey,is_spent FROM utxos WHERE wallet_id=? AND txid=? AND vout=?");
+        q.Int(1,owner_.current_wallet_id_);q.Text(2,c.txid);q.Int(3,c.vout);
+        IssuanceCheck(db_,sqlite3_step(q.value.get()),SQLITE_ROW);
+        if(sqlite3_column_type(q.value.get(),0)!=SQLITE_INTEGER || sqlite3_column_int64(q.value.get(),0)<0 ||
+           uint64_t(sqlite3_column_int64(q.value.get(),0))!=c.amount_una || sqlite3_column_type(q.value.get(),1)!=SQLITE_TEXT ||
+           sqlite3_column_type(q.value.get(),2)!=SQLITE_INTEGER || sqlite3_column_int64(q.value.get(),2)!=0)
+            throw std::runtime_error("Payment selected coin no longer available");
+        const auto* text=static_cast<const char*>(sqlite3_column_blob(q.value.get(),1));const int size=sqlite3_column_bytes(q.value.get(),1);
+        std::vector<uint8_t> script;
+        if(!text || size<=0 || !util::unhex(std::string(text,size),script) || script!=c.script)
+            throw std::runtime_error("Payment selected coin script changed");
+        q.Done();
+    }
+    // Exact retries are observable through getPendingPayments; they do not
+    // silently sign another body or replace the retained operation's history.
+    records.push_back(p);
+    PaymentSecret plain{EncodePayments(PaymentIdentity(db_),records)},key{PaymentKey(pin.Bytes())};
+    const auto sealed=owner_.encryptData(plain.value,key.value);
+    if(!installed)IssuanceCheck(db_,sqlite3_exec(db_,"ALTER TABLE wallet_meta ADD COLUMN pending_payment_owner BLOB",nullptr,nullptr,nullptr),SQLITE_OK);
+    // A retained payment adds a new history row; an existing row is never an
+    // implicit replacement or authorization to preserve a recovery receipt.
+    {IssuedStatement existing(db_,"SELECT 1 FROM transactions WHERE txid=?");existing.Text(1,p.txid);existing.Done();}
+    PendingPaymentBaseline baseline(db_);
+    IssuedStatement save(db_,"UPDATE wallet_meta SET pending_payment_owner=? WHERE id=1");save.Blob(1,sealed.data(),int(sealed.size()));save.Done(true);
+    IssuedStatement history(db_,"INSERT INTO transactions(wallet_id,txid,address,amount,confirmations,category,label,time,is_coinbase,height) VALUES(?,?,?,?,0,'send',?,?,0,0)");
+    history.Int(1,owner_.current_wallet_id_);history.Text(2,p.txid);history.Text(3,p.intent.address);
+    const auto spent=PaymentSum(PaymentIntentTotal(p.intent),p.fee_una);
+    IssuanceCheck(db_,sqlite3_bind_double(history.value.get(),4,-static_cast<double>(spent)/1e8),SQLITE_OK);
+    history.Text(5,p.intent.label);history.Int(6,p.created_at);history.Done(true);
+    baseline.Finish(p,owner_.current_wallet_id_,sealed);
+    if(append)append->Release();
+    else transaction->Commit();
+}
+
+void WalletManager::DatabaseLease::ValidateShieldHistoryInTransaction(
+        const RecoverySeed& pin,const ShieldHistory& expected) {
+    if(thread_!=std::this_thread::get_id() || pin.thread_!=thread_ || &pin.owner_!=&owner_ ||
+       !db_ || db_!=owner_.db_ || session_!=owner_.database_session_ || owner_.recovery_seeds_!=1 ||
+       sqlite3_get_autocommit(db_))throw std::runtime_error("Shield history owner unavailable");
+    std::vector<uint8_t> id;
+    if(expected.txid.size()!=64||!util::unhex(expected.txid,id)||id.size()!=32||util::hex(id)!=expected.txid||
+       !expected.debit_una||expected.debit_una>uint64_t(MAX_SUPPLY_UNA_CONST)||expected.created_at<=0||
+       expected.address.size()>128||expected.address.find('\0')!=std::string::npos)
+        throw std::runtime_error("Shield history summary malformed");
+    IssuedStatement row(db_,"SELECT wallet_id,address,amount,category,label,time,is_coinbase,height,confirmations FROM transactions WHERE txid=?");
+    row.Text(1,expected.txid);IssuanceCheck(db_,sqlite3_step(row.value.get()),SQLITE_ROW);
+    const auto text=[&](int c,std::string_view wanted){const auto* bytes=static_cast<const char*>(sqlite3_column_blob(row.value.get(),c));const auto n=sqlite3_column_bytes(row.value.get(),c);
+        return sqlite3_column_type(row.value.get(),c)==SQLITE_TEXT&&n>=0&&size_t(n)==wanted.size()&&(!n||bytes)&&(!n||std::string_view(bytes,size_t(n))==wanted);};
+    const auto integer=[&](int c,int64_t wanted){return sqlite3_column_type(row.value.get(),c)==SQLITE_INTEGER&&sqlite3_column_int64(row.value.get(),c)==wanted;};
+    if(!integer(0,owner_.current_wallet_id_)||!text(1,expected.address)||
+       (sqlite3_column_type(row.value.get(),2)!=SQLITE_FLOAT&&sqlite3_column_type(row.value.get(),2)!=SQLITE_INTEGER)||
+       sqlite3_column_double(row.value.get(),2)!=-static_cast<double>(expected.debit_una)/1e8||
+       !text(3,"shield")||!text(4,"")||!integer(5,expected.created_at)||!integer(6,0)||
+       sqlite3_column_type(row.value.get(),7)!=SQLITE_INTEGER||sqlite3_column_int64(row.value.get(),7)<0||
+       sqlite3_column_type(row.value.get(),8)!=SQLITE_INTEGER||sqlite3_column_int64(row.value.get(),8)<0)
+        throw std::runtime_error("Shield history differs from authenticated operation");
+    row.Done();
+}
+void WalletManager::DatabaseLease::StageShieldHistoryInTransaction(
+        const RecoverySeed& pin,const ShieldHistory& expected,bool already_ready) {
+    // Authenticate existing ordinary reservations under this lease before any
+    // new row. The Orchard caller independently authenticated its full catalog.
+    (void)ReadPendingPaymentsInTransaction(pin);
+    PaymentAppendSavepoint append(db_);
+    if(already_ready){ValidateShieldHistoryInTransaction(pin,expected);append.Release();return;}
+    {IssuedStatement prior(db_,"SELECT 1 FROM transactions WHERE txid=?");prior.Text(1,expected.txid);prior.Done();}
+    PendingPaymentBaseline baseline(db_,false);
+    IssuedStatement row(db_,"INSERT INTO transactions(wallet_id,txid,address,amount,confirmations,category,label,time,is_coinbase,height) VALUES(?,?,?,?,0,'shield','',?,0,0)");
+    row.Int(1,owner_.current_wallet_id_);row.Text(2,expected.txid);row.Text(3,expected.address);
+    IssuanceCheck(db_,sqlite3_bind_double(row.value.get(),4,-static_cast<double>(expected.debit_una)/1e8),SQLITE_OK);
+    row.Int(5,expected.created_at);row.Done(true);
+    ValidateShieldHistoryInTransaction(pin,expected);baseline.FinishShield(expected.txid);ValidateShieldHistoryInTransaction(pin,expected);
+    append.Release(); // The actual Ready owner still must commit the FULL outer transaction.
+}
+
+WalletManager::DatabaseLease::~DatabaseLease() noexcept {
+    if (thread_ != std::this_thread::get_id()) std::terminate();
+    if (owner_.database_leases_ == 1 && owner_.recovery_seeds_) std::terminate();
+    // Entry was in autocommit and no other thread can use this connection.
+    // An unfinished transaction therefore belongs to this lease group, never
+    // an unrelated caller. Nested same-thread operations must not roll back
+    // the outer job; the last lease prevents it escaping into the next job.
+    if (owner_.database_leases_ == 1 && db_ && !sqlite3_get_autocommit(db_)) {
+        if (sqlite3_exec(db_, "ROLLBACK", nullptr, nullptr, nullptr) != SQLITE_OK &&
+            !sqlite3_get_autocommit(db_)) std::terminate();
+    }
+    --owner_.database_leases_;
+    if (sqlite_mutex_) sqlite3_mutex_leave(sqlite_mutex_);
+}
+
+std::unique_ptr<WalletManager::DatabaseLease> WalletManager::AcquireDatabaseLease() {
+    return std::unique_ptr<DatabaseLease>(new DatabaseLease(*this));
+}
+
 sqlite3* WalletManager::getCurrentDatabase() const {
     return db_;
 }
@@ -3024,261 +4606,381 @@ std::string WalletManager::getMiningAddress(const std::string& wallet, const std
 }
 
 // Wallet encryption/decryption methods
-void WalletManager::encryptWallet(const std::string& passphrase) {
-    if (wallet_encrypted_) {
-        throw std::runtime_error("Wallet is already encrypted");
-    }
-
-    if (passphrase.empty()) {
+void WalletManager::rewriteEncryptionPolicy(const std::string &old_passphrase,
+                                            const std::string &new_passphrase, bool encrypted) {
+    auto lease = AcquireDatabaseLease();
+    if (!lease || !db_ || current_wallet_id_ < 0 || recovery_seeds_)
+        throw std::runtime_error("Wallet encryption owner unavailable");
+    if (encrypted && new_passphrase.empty())
         throw std::runtime_error("Passphrase cannot be empty");
-    }
-
-    // Generate salt and derive encryption key
-    unsigned char salt[32];
-    if (!CF_GenerateRandomBytes(salt, sizeof(salt))) {
-        throw std::runtime_error("Failed to generate random salt");
-    }
-
-    // Keep binary salt for key derivation
-    std::string saltStr(reinterpret_cast<char*>(salt), sizeof(salt));
-    encryption_key_ = deriveKey(passphrase, saltStr);
-
-    // Create a verification hash to validate password on unlock
-    // Hash the derived key to create a verification value
-    uint8_t verification_hash[32];
-    ::sha256(
-        reinterpret_cast<const uint8_t*>(encryption_key_.data()),
-        encryption_key_.size(),
-        verification_hash
-    );
-
-    // Convert binary data to hex strings for storage (prevents null-byte truncation)
-    std::vector<unsigned char> saltVec(salt, salt + sizeof(salt));
-    std::vector<unsigned char> verifyVec(verification_hash, verification_hash + sizeof(verification_hash));
-    std::string saltHex = util::hex(saltVec);
-    std::string verifyHex = util::hex(verifyVec);
-
-    // Store encryption metadata (hex-encoded to prevent null-byte corruption)
-    setSetting("wallet_encrypted", "1");
-    setSetting("wallet_salt", saltHex);
-    setSetting("wallet_verify_hash", verifyHex);
-
-    wallet_encrypted_ = true;
-    wallet_locked_ = false;  // Keep unlocked during initial encryption to generate/re-encrypt HD seed
-
-    // ═══════════════════════════════════════════════════════════════
-    // Phase 5: Generate and store HD wallet master seed
-    // ═══════════════════════════════════════════════════════════════
-
-    // Per-wallet DB stores a single seed row at id=1.
-    sqlite3_stmt* stmt = nullptr;
-    const char* check_sql = "SELECT COUNT(*) FROM hd_seeds WHERE id = 1";
-    int seed_exists = 0;
-
-    if (sqlite3_prepare_v2(db_, check_sql, -1, &stmt, nullptr) == SQLITE_OK) {
-        if (sqlite3_step(stmt) == SQLITE_ROW) {
-            seed_exists = sqlite3_column_int(stmt, 0);
-        }
-        sqlite3_finalize(stmt);
-    }
-
-    std::vector<uint8_t> seed_to_store;
-
-    if (!master_seed_.empty()) {
-        seed_to_store = master_seed_;
-        WLOG_INFO("Using in-memory HD seed for wallet encryption");
-    } else if (seed_exists > 0) {
-        auto existing_seed = loadMasterSeed("");
-        if (existing_seed.has_value()) {
-            seed_to_store = std::move(existing_seed.value());
-            WLOG_INFO("Loaded existing HD seed for wallet encryption");
+    IssuedAddressTransaction transaction(db_);
+    struct Secret {
+        std::string value;
+        ~Secret() { secureClearString(value); }
+    } old_key, new_key, pq_plain;
+    struct Seed {
+        std::vector<uint8_t> value;
+        ~Seed() { secureClearBytes(value); }
+    } seed;
+    const bool was_encrypted = wallet_encrypted_;
+    const auto read_text = [](sqlite3_stmt *q, int col) {
+        if (sqlite3_column_type(q, col) != SQLITE_TEXT)
+            throw std::runtime_error("Invalid encryption text field");
+        const auto *p = reinterpret_cast<const char *>(sqlite3_column_text(q, col));
+        const int n = sqlite3_column_bytes(q, col);
+        if (!p || n < 0)
+            throw std::runtime_error("Missing encryption text field");
+        return std::string(p, n);
+    };
+    const auto setting = [&](const char *name) -> std::optional<std::string> {
+        IssuedStatement q(db_, "SELECT value FROM settings WHERE key=?");
+        q.Text(1, name);
+        const int rc = sqlite3_step(q.value.get());
+        if (rc == SQLITE_DONE)
+            return std::nullopt;
+        IssuanceCheck(db_, rc, SQLITE_ROW);
+        auto value = read_text(q.value.get(), 0);
+        q.Done();
+        return value;
+    };
+    const auto policy = setting("wallet_encrypted");
+    if ((policy && *policy != (was_encrypted ? "1" : "0")) || (!policy && was_encrypted))
+        throw std::runtime_error("Wallet encryption policy mismatch");
+    {
+        IssuedStatement q(db_, "SELECT encrypted FROM encryption_metadata WHERE id=1");
+        const int rc = sqlite3_step(q.value.get());
+        if (rc == SQLITE_ROW) {
+            if (sqlite3_column_type(q.value.get(), 0) != SQLITE_INTEGER ||
+                sqlite3_column_int64(q.value.get(), 0) != (was_encrypted ? 1 : 0))
+                throw std::runtime_error("Wallet encryption metadata mismatch");
+            q.Done();
         } else {
-            WLOG_WARN("HD seed exists but could not be decrypted with empty passphrase");
+            IssuanceCheck(db_, rc, SQLITE_DONE);
+            if (was_encrypted)
+                throw std::runtime_error("Wallet encryption metadata missing");
         }
     }
-
-    if (seed_to_store.empty()) {
-        throw std::runtime_error(
-            "Cannot encrypt wallet: no HD seed found. "
-            "Create or restore a wallet first before encrypting.");
-    }
-
-    // Re-encrypt the current seed with the user passphrase.
-    // Do not reset address/UTXO tables during wallet encryption.
-    if (!storeMasterSeed(seed_to_store, passphrase, kResetAddressStateDuringEncryption)) {
-        throw std::runtime_error("Failed to store encrypted HD master seed");
-    }
-
-    // Keep the seed in memory until we lock at the end of this method.
-    master_seed_ = seed_to_store;
-    WLOG_INFO("✅ HD wallet master seed encrypted with wallet passphrase");
-
-    // Populate receive/nullifier/outgoing viewing authority before the first
-    // lock erases master_seed_. Previously these caches were populated only by
-    // unlockWallet(), so a freshly encrypted wallet could not recognize the
-    // very next shielded block while locked. Viewing authority intentionally
-    // survives lock (but is cleansed by close/unload); spend authority does not.
-    shielded_incoming_viewing_keys_.clear();
-    shielded_recipient_viewing_authorities_.clear();
-    shielded_outgoing_viewing_keys_.clear();
-    try {
-        constexpr uint32_t kShieldedScanAccounts = 4;
-        for (uint32_t acct = 0; acct < kShieldedScanAccounts; ++acct) {
-            auto keys = wallet::shielded::DeriveShieldedAccount(
-                master_seed_.data(), master_seed_.size(), acct);
-            ScopedShieldedAccountKeys keys_guard(keys);
-            shielded_incoming_viewing_keys_.push_back(keys.ivk);
-            shielded_recipient_viewing_authorities_.push_back(
-                {keys.ivk, keys.ak, keys.nvk});
-            shielded_outgoing_viewing_keys_.push_back(keys.ovk);
+    if (was_encrypted) {
+        const auto salt = setting("wallet_salt"), verify = setting("wallet_verify_hash");
+        std::vector<uint8_t> salt_bytes, expected;
+        if (!salt || !verify || !util::unhex(*salt, salt_bytes) || salt_bytes.size() != 32 ||
+            !util::unhex(*verify, expected) || expected.size() != 32)
+            throw std::runtime_error("Wallet encryption credentials missing");
+        const std::string binary_salt(reinterpret_cast<const char *>(salt_bytes.data()),
+                                      salt_bytes.size());
+        old_key.value = deriveKey(old_passphrase, binary_salt);
+        const auto verified = [&] {
+            std::array<uint8_t, 32> hash{};
+            ::sha256(reinterpret_cast<const uint8_t *>(old_key.value.data()), old_key.value.size(),
+                     hash.data());
+            return CRYPTO_memcmp(hash.data(), expected.data(), 32) == 0;
+        };
+        if (!verified()) {
+            secureClearString(old_key.value);
+            old_key.value = deriveKeyLegacy(old_passphrase, binary_salt);
+            if (!verified())
+                throw std::runtime_error("Invalid passphrase");
         }
-    } catch (...) {
-        for (auto& ivk : shielded_incoming_viewing_keys_) {
-            OPENSSL_cleanse(ivk.data(), ivk.size());
+        if (!wallet_locked_ && !encryption_key_.empty() && old_key.value != encryption_key_)
+            throw std::runtime_error("Live encryption owner mismatch");
+    }
+    auto loaded = loadMasterSeed(was_encrypted ? old_passphrase : "");
+    if (!loaded || loaded->size() != 64)
+        throw std::runtime_error("Existing wallet seed unavailable");
+    seed.value = std::move(*loaded);
+    (void)ReadPendingPaymentsOwned(seed.value);
+    if (!master_seed_.empty() && !ConstantTimeEqual(seed.value, master_seed_))
+        throw std::runtime_error("Existing wallet seed mismatch");
+    const auto pq = setting("v7_pq_master_key_encrypted");
+    if (pq && !pq->empty()) {
+        // There is no existing unencrypted P2MR master-key representation.
+        // Refuse that policy change before effects instead of losing its owner.
+        if (!was_encrypted || !encrypted)
+            throw std::runtime_error("P2MR master key requires encrypted wallet policy");
+        std::vector<uint8_t> bytes;
+        if (!util::unhex(*pq, bytes) || bytes.size() != 60)
+            throw std::runtime_error("P2MR master key wrapper invalid");
+        pq_plain.value = decryptData(
+            std::string(reinterpret_cast<const char *>(bytes.data()), bytes.size()), old_key.value);
+        if (pq_plain.value.size() != 32)
+            throw std::runtime_error("P2MR master key invalid");
+        if (pq_master_key_loaded_ &&
+            CRYPTO_memcmp(pq_plain.value.data(), pq_master_key_.data(), 32) != 0)
+            throw std::runtime_error("Live P2MR master key mismatch");
+    }
+    std::string salt_hex, verify_hex;
+    if (encrypted) {
+        std::array<uint8_t, 32> salt{}, verify{};
+        if (RAND_bytes(salt.data(), salt.size()) != 1)
+            throw std::runtime_error("Encryption salt generation failed");
+        new_key.value = deriveKey(
+            new_passphrase, std::string(reinterpret_cast<const char *>(salt.data()), salt.size()));
+        ::sha256(reinterpret_cast<const uint8_t *>(new_key.value.data()), new_key.value.size(),
+                 verify.data());
+        salt_hex = util::hex(std::vector<uint8_t>(salt.begin(), salt.end()));
+        verify_hex = util::hex(std::vector<uint8_t>(verify.begin(), verify.end()));
+    }
+    // Prepare all view authority while failure can still roll back, keeping the
+    // same seed and authenticated account identity across the policy change.
+    std::vector<ShieldedIncomingViewingKey> incoming, outgoing;
+    std::vector<ShieldedRecipientViewingAuthority> recipients;
+    struct ClearViews {
+        std::vector<ShieldedIncomingViewingKey> &incoming;
+        std::vector<ShieldedIncomingViewingKey> &outgoing;
+        std::vector<ShieldedRecipientViewingAuthority> &recipients;
+        ~ClearViews() {
+            if (!incoming.empty())
+                OPENSSL_cleanse(incoming.data(), incoming.size() * sizeof(incoming[0]));
+            if (!outgoing.empty())
+                OPENSSL_cleanse(outgoing.data(), outgoing.size() * sizeof(outgoing[0]));
+            if (!recipients.empty())
+                OPENSSL_cleanse(recipients.data(), recipients.size() * sizeof(recipients[0]));
         }
-        for (auto& authority : shielded_recipient_viewing_authorities_) {
-            OPENSSL_cleanse(&authority, sizeof(authority));
+    } clear_views{incoming, outgoing, recipients};
+    for (uint32_t account = 0; account < 4; ++account) {
+        auto keys =
+            wallet::shielded::DeriveShieldedAccount(seed.value.data(), seed.value.size(), account);
+        ScopedShieldedAccountKeys guard(keys);
+        incoming.push_back(keys.ivk);
+        outgoing.push_back(keys.ovk);
+        recipients.push_back({keys.ivk, keys.ak, keys.nvk});
+    }
+    const auto validate_scalar = [](const std::string &bytes) {
+        if (bytes.size() != 32)
+            throw std::runtime_error("Invalid imported key length");
+        struct Key {
+            std::array<uint8_t, 32> value{};
+            ~Key() { OPENSSL_cleanse(value.data(), value.size()); }
+        } key;
+        std::copy(bytes.begin(), bytes.end(), key.value.begin());
+        std::array<uint8_t, 32> pub{};
+        int parity = 0;
+        if (!TaprootKeys::DeriveXOnlyPubkey(key.value, pub, parity))
+            throw std::runtime_error("Invalid imported private key");
+        return pub;
+    };
+    bool taproot = false;
+    {
+        IssuedStatement q(db_,
+                          "SELECT 1 FROM sqlite_schema WHERE type='table' AND name='taproot_keys'");
+        const int rc = sqlite3_step(q.value.get());
+        if (rc == SQLITE_ROW) {
+            taproot = true;
+            q.Done();
+        } else
+            IssuanceCheck(db_, rc, SQLITE_DONE);
+    }
+    if (taproot) {
+        IssuedStatement q(
+            db_,
+            "SELECT address,internal_privkey,internal_pubkey,output_pubkey,is_privkey_encrypted "
+            "FROM taproot_keys ORDER BY address");
+        int rc;
+        while ((rc = sqlite3_step(q.value.get())) == SQLITE_ROW) {
+            const auto address = read_text(q.value.get(), 0);
+            auto *row = q.value.get();
+            if (sqlite3_column_type(row, 1) != SQLITE_BLOB ||
+                sqlite3_column_bytes(row, 1) != (was_encrypted ? 60 : 32) ||
+                sqlite3_column_type(row, 4) != SQLITE_INTEGER ||
+                sqlite3_column_int64(row, 4) != (was_encrypted ? 1 : 0))
+                throw std::runtime_error("Imported encryption policy mismatch");
+            Secret plain, stored;
+            const auto *raw = static_cast<const char *>(sqlite3_column_blob(row, 1));
+            if (!raw)
+                throw std::runtime_error("Imported key missing");
+            stored.value.assign(raw, sqlite3_column_bytes(row, 1));
+            plain.value = was_encrypted ? decryptData(stored.value, old_key.value) : stored.value;
+            const auto internal = validate_scalar(plain.value);
+            std::array<uint8_t, 32> output{};
+            if (!TaprootKeys::ComputeTweakedPubkey(internal, output))
+                throw std::runtime_error("Imported output invalid");
+            for (int col : {2, 3}) {
+                if (sqlite3_column_type(row, col) != SQLITE_BLOB ||
+                    sqlite3_column_bytes(row, col) != 32 || !sqlite3_column_blob(row, col) ||
+                    CRYPTO_memcmp(sqlite3_column_blob(row, col),
+                                  col == 2 ? internal.data() : output.data(), 32) != 0)
+                    throw std::runtime_error("Imported public binding mismatch");
+            }
+            const auto &network = Params().name;
+            if (address != TaprootKeys::CreateTaprootAddress(output, network == "regtest" ? "rdin"
+                                                                     : network == "testnet"
+                                                                         ? "tdin"
+                                                                         : "din"))
+                throw std::runtime_error("Imported address binding mismatch");
+            Secret replacement;
+            replacement.value = encrypted ? encryptData(plain.value, new_key.value) : plain.value;
+            secureClearString(stored.value);
+            stored.value.swap(replacement.value);
+            IssuedStatement write(db_, "UPDATE taproot_keys SET "
+                                       "internal_privkey=?,is_privkey_encrypted=? WHERE address=?");
+            write.Blob(1, stored.value.data(), int(stored.value.size()));
+            write.Int(2, encrypted ? 1 : 0);
+            write.Text(3, address);
+            write.Done(true);
         }
-        for (auto& ovk : shielded_outgoing_viewing_keys_) {
-            OPENSSL_cleanse(ovk.data(), ovk.size());
+        IssuanceCheck(db_, rc, SQLITE_DONE);
+    }
+    {
+        IssuedStatement q(db_,
+                          "SELECT address,private_key_enc FROM imported_keys ORDER BY address");
+        int rc;
+        while ((rc = sqlite3_step(q.value.get())) == SQLITE_ROW) {
+            const auto address = read_text(q.value.get(), 0);
+            Secret stored, plain;
+            stored.value = read_text(q.value.get(), 1);
+            if (was_encrypted) {
+                plain.value = decryptData(stored.value, old_key.value);
+                if (plain.value.size() == 32)
+                    validate_scalar(plain.value);
+                else {
+                    std::vector<uint8_t> bytes;
+                    if (plain.value.size() != 64 || !util::unhex(plain.value, bytes))
+                        throw std::runtime_error("Legacy imported key invalid");
+                    Secret decoded;
+                    decoded.value.assign(reinterpret_cast<const char *>(bytes.data()),
+                                         bytes.size());
+                    secureClearBytes(bytes);
+                    validate_scalar(decoded.value);
+                }
+            } else {
+                std::vector<uint8_t> bytes;
+                if (stored.value.size() != 64 || !util::unhex(stored.value, bytes))
+                    throw std::runtime_error("Legacy imported key invalid");
+                Secret decoded;
+                decoded.value.assign(reinterpret_cast<const char *>(bytes.data()), bytes.size());
+                secureClearBytes(bytes);
+                validate_scalar(decoded.value);
+                plain.value = stored.value;
+            }
+            if (encrypted) {
+                Secret replacement;
+                replacement.value = encryptData(plain.value, new_key.value);
+                secureClearString(stored.value);
+                stored.value.swap(replacement.value);
+            } else if (plain.value.size() == 32) {
+                Seed decoded;
+                decoded.value.assign(plain.value.begin(), plain.value.end());
+                stored.value = util::hex(decoded.value);
+            } else
+                stored.value = plain.value;
+            IssuedStatement write(db_,
+                                  "UPDATE imported_keys SET private_key_enc=? WHERE address=?");
+            write.Text(1, stored.value);
+            write.Text(2, address);
+            write.Done(true);
         }
-        shielded_incoming_viewing_keys_.clear();
-        shielded_recipient_viewing_authorities_.clear();
-        shielded_outgoing_viewing_keys_.clear();
-        WLOG_WARN("Shielded viewing authority cache unavailable during wallet encryption");
+        IssuanceCheck(db_, rc, SQLITE_DONE);
     }
-
-    // ═══════════════════════════════════════════════════════════════
-    // CRITICAL FIX: Update encryption_metadata table
-    // ═══════════════════════════════════════════════════════════════
-    // This table is read by open() method to determine wallet lock state.
-    // Must be updated even if HD seed already existed (and storeMasterSeed wasn't called).
-
-    const char* meta_sql = R"(
-        INSERT OR REPLACE INTO encryption_metadata (
-            id, encrypted, kdf, kdf_iterations, cipher, salt, created_at, updated_at
-        )
-        VALUES (1, 1, 'pbkdf2-hmac-sha512', 600000, 'AES-256-GCM', NULL,
-                strftime('%s','now'), strftime('%s','now'))
-    )";
-
-    sqlite3_stmt* meta_stmt = nullptr;
-    if (sqlite3_prepare_v2(db_, meta_sql, -1, &meta_stmt, nullptr) != SQLITE_OK) {
-        throw std::runtime_error("Failed to prepare encryption_metadata update");
+    // Preserve the existing hd_seeds v2 format, without invoking seed replacement
+    // or publishing its in-memory cache before the transaction commits.
+    std::array<uint8_t, 32> seed_salt{};
+    if (RAND_bytes(seed_salt.data(), seed_salt.size()) != 1)
+        throw std::runtime_error("Seed salt generation failed");
+    struct Derived {
+        std::array<uint8_t, 64> value{};
+        ~Derived() { OPENSSL_cleanse(value.data(), value.size()); }
+    } derived;
+    const std::string_view pass = encrypted ? std::string_view(new_passphrase) : std::string_view{};
+    dinero::crypto::PBKDF2_HMAC_SHA512(reinterpret_cast<const uint8_t *>(pass.data()), pass.size(),
+                                       seed_salt.data(), seed_salt.size(), 600000,
+                                       derived.value.data(), derived.value.size());
+    Secret seed_key, seed_plain;
+    seed_key.value.assign(reinterpret_cast<const char *>(derived.value.data()), 32);
+    seed_plain.value.assign(reinterpret_cast<const char *>(seed.value.data()), seed.value.size());
+    const auto sealed = encryptData(seed_plain.value, seed_key.value);
+    std::string blob(reinterpret_cast<const char *>(seed_salt.data()), seed_salt.size());
+    blob += sealed;
+    {
+        IssuedStatement write(
+            db_, "UPDATE hd_seeds SET encrypted_seed=?,salt=?,encryption_version=2 WHERE id=1");
+        write.Blob(1, blob.data(), int(blob.size()));
+        write.Blob(2, seed_salt.data(), 32);
+        write.Done(true);
     }
-
-    int rc = sqlite3_step(meta_stmt);
-    sqlite3_finalize(meta_stmt);
-
-    if (rc != SQLITE_DONE) {
-        throw std::runtime_error("Failed to update encryption_metadata table");
+    const auto set = [&](const char *name, const std::string &value) {
+        IssuedStatement q(db_, "INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO "
+                               "UPDATE SET value=excluded.value");
+        q.Text(1, name);
+        q.Text(2, value);
+        q.Done(true);
+    };
+    set("wallet_encrypted", encrypted ? "1" : "0");
+    set("wallet_salt", salt_hex);
+    set("wallet_verify_hash", verify_hex);
+    if (!pq_plain.value.empty()) {
+        const auto value = encryptData(pq_plain.value, new_key.value);
+        set("v7_pq_master_key_encrypted",
+            util::hex(std::vector<uint8_t>(value.begin(), value.end())));
     }
-
-    // Lock wallet after encryption (Phase E.1.2 Security Policy)
-    // Newly encrypted wallets should be locked by default
-    lockWallet();
-
-    WLOG_INFO("Wallet encrypted and locked successfully");
-}
-
-void WalletManager::decryptWallet(const std::string& passphrase) {
-    if (!wallet_encrypted_) {
-        throw std::runtime_error("Wallet is not encrypted");
+    {
+        IssuedStatement meta(
+            db_,
+            "INSERT INTO "
+            "encryption_metadata(id,encrypted,kdf,kdf_iterations,cipher,salt,created_at,updated_at)"
+            " VALUES(1,?,'pbkdf2-hmac-sha512',600000,'AES-256-GCM',?,strftime('%s','now'),strftime("
+            "'%s','now')) ON CONFLICT(id) DO UPDATE SET "
+            "encrypted=excluded.encrypted,kdf=excluded.kdf,kdf_iterations=excluded.kdf_iterations,"
+            "cipher=excluded.cipher,salt=excluded.salt,updated_at=excluded.updated_at");
+        meta.Int(1, encrypted ? 1 : 0);
+        meta.Blob(2, seed_salt.data(), 32);
+        meta.Done(true);
     }
-    
-    // Verify passphrase by attempting to derive key
-    std::string salt = getSetting("wallet_salt");
-    std::string derivedKey = deriveKey(passphrase, salt);
-    
-    if (derivedKey != encryption_key_) {
-        throw std::runtime_error("Invalid passphrase");
-    }
-    
-    // Remove encryption metadata
-    setSetting("wallet_encrypted", "");
-    setSetting("wallet_salt", "");
-    
-    wallet_encrypted_ = false;
-    wallet_locked_ = false;
+    const auto now = std::chrono::duration_cast<std::chrono::seconds>(
+                         std::chrono::system_clock::now().time_since_epoch())
+                         .count();
+    const bool unlocked =
+        !encrypted ||
+        (was_encrypted && !wallet_locked_ &&
+         (unlock_timeout_ <= 0 || unlock_time_ <= 0 || now - unlock_time_ < unlock_timeout_));
+    transaction.Commit();
+    // Nothing fallible remains: publish only the committed policy, preserving
+    // seed-derived account identities and clearing old plaintext caches.
+    for (auto &item : private_key_cache_)
+        secureClearBytes(item.second);
+    private_key_cache_.clear();
     secureClearString(encryption_key_);
-    
-    WLOG_INFO("Wallet decrypted successfully");
+    secureClearBytes(master_seed_);
+    OPENSSL_cleanse(pq_master_key_.data(), pq_master_key_.size());
+    pq_master_key_loaded_ = false;
+    wallet_encrypted_ = encrypted;
+    wallet_locked_ = !unlocked;
+    if (unlocked) {
+        master_seed_.swap(seed.value);
+        if (encrypted)
+            encryption_key_.swap(new_key.value);
+        if (!pq_plain.value.empty()) {
+            std::memcpy(pq_master_key_.data(), pq_plain.value.data(), 32);
+            pq_master_key_loaded_ = true;
+        }
+    }
+    if (!encrypted || !unlocked) {
+        unlock_time_ = 0;
+        unlock_timeout_ = 0;
+    }
+    shielded_incoming_viewing_keys_.swap(incoming);
+    shielded_outgoing_viewing_keys_.swap(outgoing);
+    shielded_recipient_viewing_authorities_.swap(recipients);
 }
 
-void WalletManager::changePassphrase(const std::string& oldPassphrase, const std::string& newPassphrase) {
-    if (!wallet_encrypted_) {
+void WalletManager::encryptWallet(const std::string &passphrase) {
+    std::lock_guard<std::recursive_mutex> owner(database_lifecycle_mutex_);
+    if (wallet_encrypted_)
+        throw std::runtime_error("Wallet is already encrypted");
+    rewriteEncryptionPolicy("", passphrase, true);
+}
+void WalletManager::decryptWallet(const std::string &passphrase) {
+    std::lock_guard<std::recursive_mutex> owner(database_lifecycle_mutex_);
+    if (!wallet_encrypted_)
         throw std::runtime_error("Wallet is not encrypted");
-    }
-
-    if (newPassphrase.empty()) {
-        throw std::runtime_error("New passphrase cannot be empty");
-    }
-
-    // Get hex-encoded salt and decode to binary
-    std::string saltHex = getSetting("wallet_salt");
-    std::vector<unsigned char> saltBytes;
-    if (!util::unhex(saltHex, saltBytes) || saltBytes.size() != 32) {
-        throw std::runtime_error("Invalid wallet salt (corrupted or missing)");
-    }
-    std::string salt(reinterpret_cast<char*>(saltBytes.data()), saltBytes.size());
-
-    // Derive key from old passphrase
-    std::string oldKey = deriveKey(oldPassphrase, salt);
-
-    // Validate old passphrase against stored verification hash
-    std::string storedVerifyHex = getSetting("wallet_verify_hash");
-    if (!storedVerifyHex.empty()) {
-        // Decode stored verification hash from hex
-        std::vector<unsigned char> storedVerifyBytes;
-        if (!util::unhex(storedVerifyHex, storedVerifyBytes) || storedVerifyBytes.size() != 32) {
-            throw std::runtime_error("Invalid wallet verification hash (corrupted)");
-        }
-
-        // Compute hash of derived key
-        uint8_t computed_hash[32];
-        ::sha256(
-            reinterpret_cast<const uint8_t*>(oldKey.data()),
-            oldKey.size(),
-            computed_hash
-        );
-
-        // Compare hashes
-        if (std::memcmp(computed_hash, storedVerifyBytes.data(), 32) != 0) {
-            throw std::runtime_error("Invalid old passphrase");
-        }
-    }
-
-    // Generate new salt and key
-    unsigned char newSalt[32];
-    if (!CF_GenerateRandomBytes(newSalt, sizeof(newSalt))) {
-        throw std::runtime_error("Failed to generate random salt");
-    }
-
-    // Keep binary salt for key derivation
-    std::string newSaltStr(reinterpret_cast<char*>(newSalt), sizeof(newSalt));
-    encryption_key_ = deriveKey(newPassphrase, newSaltStr);
-
-    // Create new verification hash
-    uint8_t new_verification_hash[32];
-    ::sha256(
-        reinterpret_cast<const uint8_t*>(encryption_key_.data()),
-        encryption_key_.size(),
-        new_verification_hash
-    );
-
-    // Convert new binary data to hex for storage
-    std::vector<unsigned char> newSaltVec(newSalt, newSalt + sizeof(newSalt));
-    std::vector<unsigned char> newVerifyVec(new_verification_hash, new_verification_hash + sizeof(new_verification_hash));
-    std::string newSaltHex = util::hex(newSaltVec);
-    std::string newVerifyHex = util::hex(newVerifyVec);
-
-    // Update stored salt and verification hash (hex-encoded)
-    setSetting("wallet_salt", newSaltHex);
-    setSetting("wallet_verify_hash", newVerifyHex);
-
-    WLOG_INFO("Wallet passphrase changed successfully");
+    rewriteEncryptionPolicy(passphrase, "", false);
 }
-
+void WalletManager::changePassphrase(const std::string &oldPassphrase,
+                                     const std::string &newPassphrase) {
+    std::lock_guard<std::recursive_mutex> owner(database_lifecycle_mutex_);
+    if (!wallet_encrypted_)
+        throw std::runtime_error("Wallet is not encrypted");
+    rewriteEncryptionPolicy(oldPassphrase, newPassphrase, true);
+}
 std::string WalletManager::getPrimaryAddress() {
     if (primary_address_.empty()) {
         try { derivePrimaryAddresses(); }
@@ -3293,7 +4995,7 @@ void WalletManager::derivePrimaryAddresses() {
         try {
             // Try: index 0 address from addresses table
             sqlite3_stmt* stmt = nullptr;
-            const char* sql = "SELECT address FROM addresses WHERE account_index = 0 AND address_index = 0 AND change = 0 LIMIT 1";
+            const char* sql = "SELECT address FROM addresses WHERE account = 0 AND idx = 0 AND change = 0 LIMIT 1";
             if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) == SQLITE_OK) {
                 if (sqlite3_step(stmt) == SQLITE_ROW) {
                     const char* val = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
@@ -3328,6 +5030,8 @@ void WalletManager::derivePrimaryAddresses() {
 }
 
 void WalletManager::lockWallet() {
+    std::lock_guard<std::recursive_mutex> key_ownership(database_lifecycle_mutex_);
+    if (recovery_seeds_) throw std::logic_error("Wallet recovery key is pinned");
     if (!wallet_encrypted_) {
         throw std::runtime_error("Wallet is not encrypted");
     }
@@ -3346,183 +5050,372 @@ void WalletManager::lockWallet() {
     WLOG_INFO("Wallet locked");
 }
 
+std::optional<std::array<uint8_t, 32>> WalletManager::loadInitialPqMaster(
+    const std::vector<uint8_t>& seed) {
+    if (!db_ || sqlite3_get_autocommit(db_) != 0)
+        throw std::logic_error("Initial owner requires the unlock transaction");
+    IssuedStatement owner(db_, "SELECT value FROM settings WHERE key=?");
+    owner.Text(1, kInitialOwnerSetting);
+    const int rc = sqlite3_step(owner.value.get());
+    if (rc == SQLITE_DONE) return std::nullopt;
+    IssuanceCheck(db_, rc, SQLITE_ROW);
+    if (sqlite3_column_type(owner.value.get(), 0) != SQLITE_TEXT)
+        throw std::runtime_error("Initial owner type invalid");
+    const auto* text = reinterpret_cast<const char*>(sqlite3_column_text(owner.value.get(), 0));
+    const int size = sqlite3_column_bytes(owner.value.get(), 0);
+    if (!text || (size != 196 && size != 260))
+        throw std::runtime_error("Initial owner envelope invalid");
+    std::vector<uint8_t> bytes;
+    if (!util::unhex(std::string(text, size), bytes))
+        throw std::runtime_error("Initial owner encoding invalid");
+    owner.Done();
+    struct Secret { std::string value; ~Secret() { secureClearString(value); } } key{InitialOwnerKey(seed)}, plain;
+    plain.value = decryptData(std::string(bytes.begin(), bytes.end()), key.value);
+    if ((plain.value.size() != 70 && plain.value.size() != 102) || (plain.value.substr(0,5) != "DNI01" && plain.value.substr(0,5) != "DNI02") ||
+        (plain.value[5] != 0 && plain.value[5] != 1) ||
+        plain.value.size() != (plain.value[5] == 1 ? 102u : 70u))
+        throw std::runtime_error("Initial owner payload invalid");
+    IssuedStatement id(db_, "SELECT runtime_delivery_id FROM wallet_meta WHERE id=1");
+    IssuanceCheck(db_, sqlite3_step(id.value.get()), SQLITE_ROW);
+    if (sqlite3_column_type(id.value.get(),0) != SQLITE_BLOB || sqlite3_column_bytes(id.value.get(),0) != 32)
+        throw std::runtime_error("Initial owner identity missing");
+    const auto* identity = static_cast<const uint8_t*>(sqlite3_column_blob(id.value.get(),0));
+    if (!identity || plain.value.substr(6,64) != util::hex(std::vector<uint8_t>(identity,identity+32)))
+        throw std::runtime_error("Initial owner identity mismatch");
+    id.Done();
+    const auto catalog = wallet::OrchardAccountCatalog::Read(db_,seed);
+    if ((plain.value.substr(0,5) == "DNI02" && !catalog) ||
+        (catalog && catalog->generated != (plain.value[5] == 1)))
+        throw std::runtime_error("Initial Orchard catalog owner mismatch");
+    std::optional<std::array<uint8_t,32>> result;
+    if (plain.value[5] == 1) {
+        result.emplace(); std::memcpy(result->data(), plain.value.data()+70,32);
+    }
+    return result;
+}
+
 void WalletManager::unlockWallet(const std::string& passphrase, int timeoutSeconds) {
-    if (!wallet_encrypted_) {
-        throw std::runtime_error("Wallet is not encrypted");
+    std::lock_guard<std::recursive_mutex> key_ownership(database_lifecycle_mutex_);
+    if (recovery_seeds_) throw std::logic_error("Wallet recovery key is pinned");
+    if (!wallet_encrypted_) throw std::runtime_error("Wallet is not encrypted");
+    auto lease = AcquireDatabaseLease();
+    if (!lease || !db_ || current_wallet_id_ < 0)
+        throw std::runtime_error("Wallet unlock owner unavailable");
+    IssuedAddressTransaction transaction(db_);
+    struct Secret {
+        std::string value;
+        ~Secret() { secureClearString(value); }
+    } key, pq;
+    struct Seed {
+        std::vector<uint8_t> value;
+        ~Seed() { secureClearBytes(value); }
+    } seed;
+    const auto setting = [&](const char* name) -> std::optional<std::string> {
+        IssuedStatement q(db_, "SELECT value FROM settings WHERE key=?");
+        q.Text(1, name);
+        const int rc = sqlite3_step(q.value.get());
+        if (rc == SQLITE_DONE) return std::nullopt;
+        IssuanceCheck(db_, rc, SQLITE_ROW);
+        if (sqlite3_column_type(q.value.get(), 0) != SQLITE_TEXT)
+            throw std::runtime_error("Invalid unlock setting type");
+        const auto* text = reinterpret_cast<const char*>(sqlite3_column_text(q.value.get(), 0));
+        const int size = sqlite3_column_bytes(q.value.get(), 0);
+        if (!text || size < 0) throw std::runtime_error("Invalid unlock setting value");
+        std::string value(text, size);
+        q.Done();
+        return value;
+    };
+    if (setting("wallet_encrypted") != std::optional<std::string>("1"))
+        throw std::runtime_error("Wallet encryption policy mismatch");
+    {
+        IssuedStatement q(db_, "SELECT encrypted FROM encryption_metadata WHERE id=1");
+        IssuanceCheck(db_, sqlite3_step(q.value.get()), SQLITE_ROW);
+        if (sqlite3_column_type(q.value.get(),0) != SQLITE_INTEGER ||
+            sqlite3_column_int64(q.value.get(),0) != 1)
+            throw std::runtime_error("Wallet encryption metadata mismatch");
+        q.Done();
     }
-
-    // Get hex-encoded salt and decode to binary
-    std::string saltHex = getSetting("wallet_salt");
-    std::vector<unsigned char> saltBytes;
-    if (!util::unhex(saltHex, saltBytes) || saltBytes.size() != 32) {
-        throw std::runtime_error("Invalid wallet salt (corrupted or missing)");
+    const auto salt = setting("wallet_salt"), verify = setting("wallet_verify_hash");
+    std::vector<uint8_t> salt_bytes, expected;
+    if (!salt || !verify || !util::unhex(*salt, salt_bytes) || salt_bytes.size() != 32 ||
+        !util::unhex(*verify, expected) || expected.size() != 32)
+        throw std::runtime_error("Wallet unlock credentials missing");
+    const std::string binary_salt(reinterpret_cast<const char*>(salt_bytes.data()), salt_bytes.size());
+    key.value = deriveKey(passphrase, binary_salt);
+    const auto verified = [&] {
+        std::array<uint8_t,32> hash{};
+        ::sha256(reinterpret_cast<const uint8_t*>(key.value.data()), key.value.size(), hash.data());
+        const bool result = CRYPTO_memcmp(hash.data(), expected.data(), hash.size()) == 0;
+        OPENSSL_cleanse(hash.data(), hash.size());
+        return result;
+    };
+    bool legacy = false;
+    if (!verified()) {
+        secureClearString(key.value);
+        key.value = deriveKeyLegacy(passphrase, binary_salt);
+        if (!verified()) throw std::runtime_error("Invalid passphrase");
+        legacy = true;
     }
-    std::string salt(reinterpret_cast<char*>(saltBytes.data()), saltBytes.size());
+    auto loaded = loadMasterSeed(passphrase);
+    if (!loaded || loaded->size() != 64)
+        throw std::runtime_error("Required wallet seed unavailable");
+    seed.value = std::move(*loaded);
+    if ((!master_seed_.empty() && !ConstantTimeEqual(seed.value, master_seed_)) ||
+        (!encryption_key_.empty() && key.value != encryption_key_))
+        throw std::runtime_error("Live wallet unlock owner mismatch");
 
-    // Derive key from passphrase using decoded binary salt
-    std::string derivedKey = deriveKey(passphrase, salt);
+    // Authenticate any present catalog even when a predecessor owner is absent.
+    (void)wallet::OrchardAccountCatalog::Read(db_,seed.value);
+    AuthenticateHdInventory(db_,seed.value);
 
-    // Validate passphrase by checking against stored verification hash
-    std::string storedVerifyHex = getSetting("wallet_verify_hash");
-    bool needs_kdf_migration = false;
-
-    if (!storedVerifyHex.empty()) {
-        // Decode stored verification hash from hex
-        std::vector<unsigned char> storedVerifyBytes;
-        if (!util::unhex(storedVerifyHex, storedVerifyBytes) || storedVerifyBytes.size() != 32) {
-            throw std::runtime_error("Invalid wallet verification hash (corrupted)");
+    // Authenticate every present predecessor-format import in the same
+    // snapshot before publishing any unlock authority. These records used the
+    // historical SHA256(internal_xonly || 0x00) tweak and MAIN address domain;
+    // substituting modern TapTweak or the current network changes ownership.
+    {
+        IssuedStatement inventory(db_, "SELECT address,private_key_enc FROM imported_keys ORDER BY address");
+        int rc;
+        while ((rc=sqlite3_step(inventory.value.get()))==SQLITE_ROW) {
+            const auto text=[&](int col) {
+                if (sqlite3_column_type(inventory.value.get(),col)!=SQLITE_TEXT)
+                    throw std::runtime_error("Legacy import field type invalid");
+                const auto* bytes=static_cast<const char*>(sqlite3_column_blob(inventory.value.get(),col));
+                const int size=sqlite3_column_bytes(inventory.value.get(),col);
+                if (!bytes || size<=0) throw std::runtime_error("Legacy import field missing");
+                return std::string(bytes,size);
+            };
+            const auto address=text(0);
+            Secret stored,plain;
+            stored.value=text(1);
+            if (stored.value.size()!=60 && stored.value.size()!=92)
+                throw std::runtime_error("Legacy import ciphertext length invalid");
+            plain.value=decryptData(stored.value,key.value);
+            Seed decoded;
+            if (plain.value.size()==32) decoded.value.assign(plain.value.begin(),plain.value.end());
+            else if (plain.value.size()!=64 || !util::unhex(plain.value,decoded.value) || decoded.value.size()!=32)
+                throw std::runtime_error("Legacy import plaintext invalid");
+            struct Scalar {
+                std::array<uint8_t,32> value{};
+                ~Scalar(){OPENSSL_cleanse(value.data(),value.size());}
+            } scalar;
+            std::copy(decoded.value.begin(),decoded.value.end(),scalar.value.begin());
+            std::array<uint8_t,32> internal{},output{},tweak{};
+            int parity=0;
+            if (!TaprootKeys::DeriveXOnlyPubkey(scalar.value,internal,parity))
+                throw std::runtime_error("Legacy import scalar invalid");
+            std::array<uint8_t,33> input{};
+            std::copy(internal.begin(),internal.end(),input.begin());
+            ::SHA256(input.data(),input.size(),tweak.data());
+            std::unique_ptr<secp256k1_context,decltype(&secp256k1_context_destroy)> context(
+                secp256k1_context_create(SECP256K1_CONTEXT_VERIFY),secp256k1_context_destroy);
+            secp256k1_xonly_pubkey point{},result{};secp256k1_pubkey tweaked{};
+            if (!context || !secp256k1_xonly_pubkey_parse(context.get(),&point,internal.data()) ||
+                !secp256k1_xonly_pubkey_tweak_add(context.get(),&tweaked,&point,tweak.data()) ||
+                !secp256k1_xonly_pubkey_from_pubkey(context.get(),&result,nullptr,&tweaked) ||
+                !secp256k1_xonly_pubkey_serialize(context.get(),output.data(),&result))
+                throw std::runtime_error("Legacy import public binding invalid");
+            const auto expected=AddressCodec::encodeP2TR(Network::MAIN,std::vector<uint8_t>(output.begin(),output.end()));
+            if (expected.empty() || address!=expected)
+                throw std::runtime_error("Legacy import historical address mismatch");
         }
+        IssuanceCheck(db_,rc,SQLITE_DONE);
+    }
 
-        // Compute hash of derived key
-        uint8_t computed_hash[32];
-        ::sha256(
-            reinterpret_cast<const uint8_t*>(derivedKey.data()),
-            derivedKey.size(),
-            computed_hash
-        );
-
-        // Compare hashes
-        if (std::memcmp(computed_hash, storedVerifyBytes.data(), 32) != 0) {
-            // PBKDF2 key didn't match — try legacy HMAC-SHA512 (pre-v0.4.0 wallets)
-            std::string legacyKey = deriveKeyLegacy(passphrase, salt);
-            uint8_t legacy_hash[32];
-            ::sha256(
-                reinterpret_cast<const uint8_t*>(legacyKey.data()),
-                legacyKey.size(),
-                legacy_hash
-            );
-
-            if (std::memcmp(legacy_hash, storedVerifyBytes.data(), 32) != 0) {
-                throw std::runtime_error("Invalid passphrase");
+    // Authenticate present modern imported owners and their recorded script
+    // bindings under this unlock snapshot. Absence is not a completeness proof.
+    {
+        IssuedStatement table(db_, "SELECT 1 FROM sqlite_schema WHERE type='table' AND name='taproot_keys'");
+        const int found=sqlite3_step(table.value.get());
+        if (found==SQLITE_ROW) {
+            table.Done();
+            IssuedStatement inventory(db_, "SELECT address,internal_privkey,internal_pubkey,output_pubkey,is_privkey_encrypted FROM taproot_keys ORDER BY address");
+            const auto text=[](sqlite3_stmt* q,int col) {
+                if(sqlite3_column_type(q,col)!=SQLITE_TEXT)
+                    throw std::runtime_error("Imported text field invalid");
+                const auto* p=static_cast<const char*>(sqlite3_column_blob(q,col));
+                const int n=sqlite3_column_bytes(q,col);
+                if(!p || n<=0)throw std::runtime_error("Imported text field missing");
+                return std::string(p,n);
+            };
+            const auto integer=[](sqlite3_stmt* q,int col,int expected) {
+                return sqlite3_column_type(q,col)==SQLITE_INTEGER &&
+                       sqlite3_column_int64(q,col)==expected;
+            };
+            const auto blob=[](sqlite3_stmt* q,int col,const uint8_t* expected,int n) {
+                return sqlite3_column_type(q,col)==SQLITE_BLOB &&
+                       sqlite3_column_bytes(q,col)==n && sqlite3_column_blob(q,col) &&
+                       CRYPTO_memcmp(sqlite3_column_blob(q,col),expected,n)==0;
+            };
+            const bool wallet_column=IssuanceWalletColumn(db_,"addresses");
+            int rc;
+            while((rc=sqlite3_step(inventory.value.get()))==SQLITE_ROW) {
+                auto* q=inventory.value.get();
+                const auto address=text(q,0);
+                if(!integer(q,4,1) || sqlite3_column_type(q,1)!=SQLITE_BLOB ||
+                   sqlite3_column_bytes(q,1)!=60 || !sqlite3_column_blob(q,1))
+                    throw std::runtime_error("Imported unlock policy invalid");
+                Secret stored,plain;
+                stored.value.assign(static_cast<const char*>(sqlite3_column_blob(q,1)),60);
+                plain.value=decryptData(stored.value,key.value);
+                if(plain.value.size()!=32)throw std::runtime_error("Imported scalar length invalid");
+                struct Scalar {
+                    std::array<uint8_t,32> value{};
+                    ~Scalar(){OPENSSL_cleanse(value.data(),value.size());}
+                } scalar;
+                std::copy(plain.value.begin(),plain.value.end(),scalar.value.begin());
+                std::array<uint8_t,32> internal{},output{};int parity=0;
+                if(!TaprootKeys::DeriveXOnlyPubkey(scalar.value,internal,parity) ||
+                   !TaprootKeys::ComputeTweakedPubkey(internal,output) ||
+                   !blob(q,2,internal.data(),32) || !blob(q,3,output.data(),32))
+                    throw std::runtime_error("Imported unlock public binding mismatch");
+                const auto& network=Params().name;
+                if(address!=TaprootKeys::CreateTaprootAddress(output,
+                   network=="regtest"?"rdin":network=="testnet"?"tdin":"din"))
+                    throw std::runtime_error("Imported unlock address mismatch");
+                std::vector<uint8_t> script{0x51,0x20};
+                script.insert(script.end(),output.begin(),output.end());
+                const auto path="tr("+util::hex(std::vector<uint8_t>(internal.begin(),internal.end())).substr(0,8)+"...)";
+                const std::string sql=R"(SELECT m.internal_pubkey,m.derivation_path,w.path,w.is_change,
+                    a.account,a.change,a.type,a.script_pubkey,)"+
+                    std::string(wallet_column?"a.wallet_id":"1")+R"( FROM taproot_key_mapping m
+                    JOIN watch_scripts w ON w.script_pubkey=?
+                    JOIN addresses a ON a.address=?
+                    WHERE m.output_pubkey=?)";
+                IssuedStatement binding(db_,sql.c_str());
+                binding.Blob(1,script.data(),int(script.size()));
+                binding.Text(2,address);binding.Blob(3,output.data(),32);
+                IssuanceCheck(db_,sqlite3_step(binding.value.get()),SQLITE_ROW);
+                auto* row=binding.value.get();
+                if(!blob(row,0,internal.data(),32) || text(row,1)!=path || text(row,2)!=path ||
+                   !integer(row,3,0) || !integer(row,4,-1) || !integer(row,5,0) ||
+                   text(row,6)!="p2tr" || text(row,7)!=util::hex(script) || !integer(row,8,1))
+                    throw std::runtime_error("Imported unlock script binding mismatch");
+                binding.Done();
             }
+            IssuanceCheck(db_,rc,SQLITE_DONE);
+        } else IssuanceCheck(db_,found,SQLITE_DONE);
+    }
 
-            // Legacy key matched — use it and flag for migration
-            WLOG_INFO("Legacy HMAC-SHA512 wallet detected, will migrate to PBKDF2");
-            derivedKey = legacyKey;
-            needs_kdf_migration = true;
-            OPENSSL_cleanse(legacy_hash, sizeof(legacy_hash));
+    // Read every known master owner in the same transaction. A malformed
+    // present owner is an error even when another wrapper can be decrypted.
+    auto initial = loadInitialPqMaster(seed.value);
+    struct ClearInitial {
+        std::optional<std::array<uint8_t,32>>& value;
+        ~ClearInitial() { if (value) OPENSSL_cleanse(value->data(), value->size()); }
+    } clear_initial{initial};
+    const auto wrapped = setting("v7_pq_master_key_encrypted");
+    if (wrapped) {
+        std::vector<uint8_t> bytes;
+        if (!util::unhex(*wrapped, bytes) || bytes.size() != 60)
+            throw std::runtime_error("PQ master wrapper invalid");
+        pq.value = decryptData(std::string(bytes.begin(),bytes.end()),key.value);
+        if (pq.value.size() != 32) throw std::runtime_error("PQ master invalid");
+        if (initial && CRYPTO_memcmp(pq.value.data(), initial->data(),32) != 0)
+            throw std::runtime_error("PQ master owners disagree");
+    } else if (initial) {
+        pq.value.assign(reinterpret_cast<const char*>(initial->data()),initial->size());
+    }
+    if (pq_master_key_loaded_ && (pq.value.size() != 32 ||
+        CRYPTO_memcmp(pq.value.data(),pq_master_key_.data(),32) != 0))
+        throw std::runtime_error("Live PQ master mismatch");
+
+    // The separate PQ store contributes one immutable statement snapshot.
+    // Keep the actual main-wallet lifecycle owner and staged master throughout
+    // authentication. This does not make the two databases one atomic owner.
+    {
+        const auto path=GetV7P2MRStorePath();
+        if(path.empty())throw std::runtime_error("PQ inventory path unavailable");
+        std::error_code error;
+        const auto status=std::filesystem::symlink_status(path,error);
+        if(error && error!=std::errc::no_such_file_or_directory)
+            throw std::runtime_error("PQ inventory storage unavailable");
+        if(std::filesystem::exists(status)) {
+            wallet::V7P2MRStore store;
+            if(store.OpenExistingReadOnly(path)!=wallet::V7P2MRStore::OpenResult::Ok)
+                throw std::runtime_error("PQ inventory storage invalid");
+            const auto captured=store.CaptureKeysByWallet(current_wallet_id_);
+            if(!captured.empty() && pq.value.size()!=32)
+                throw std::runtime_error("PQ inventory master unavailable");
+            struct Master {
+                wallet::AeadKey value{};
+                ~Master(){OPENSSL_cleanse(value.data(),value.size());}
+            } master;
+            if(pq.value.size()==32)std::memcpy(master.value.data(),pq.value.data(),32);
+            for(const auto& record:captured) {
+                wallet::SecureSeed plaintext;
+                const auto& encrypted=record.encrypted_seed;
+                if(wallet::OpenSeedSecure(encrypted.ciphertext,encrypted.nonce,encrypted.tag,
+                       master.value,&plaintext)!=wallet::AeadOpenResult::Ok)
+                    throw std::runtime_error("PQ inventory authentication failed");
+                wallet::SecureKeypair pair(consensus::pq::ml_dsa_65::KeygenFromSeed(plaintext.bytes()));
+                std::array<uint8_t,32> root{};
+                const uint8_t scheme=consensus::pq::SCHEME_ID_ML_DSA_65;
+                crypto::CSHA256().Write(&scheme,1).Write(pair.pubkey().data(),pair.pubkey().size()).Finalize(root.data());
+                const auto& row=record.metadata;
+                const auto decoded=wallet::DecodeP2MRAddress(row.address);
+                if(pair.pubkey()!=row.pubkey || root!=row.merkle_root ||
+                   !decoded || decoded->merkle_root!=root)
+                    throw std::runtime_error("PQ inventory key binding mismatch");
+                const auto script=wallet::BuildP2MRScriptPubKey(root);
+                IssuedStatement watched(db_,"SELECT path,is_change FROM watch_scripts WHERE script_pubkey=?");
+                watched.Blob(1,script.data(),int(script.size()));
+                IssuanceCheck(db_,sqlite3_step(watched.value.get()),SQLITE_ROW);
+                auto* q=watched.value.get();
+                if(sqlite3_column_type(q,0)!=SQLITE_TEXT ||
+                   sqlite3_column_bytes(q,0)!=int(row.derivation_path.size()) ||
+                   !sqlite3_column_blob(q,0) ||
+                   std::memcmp(sqlite3_column_blob(q,0),row.derivation_path.data(),row.derivation_path.size())!=0 ||
+                   sqlite3_column_type(q,1)!=SQLITE_INTEGER || sqlite3_column_int64(q,1)!=0)
+                    throw std::runtime_error("PQ inventory recognition binding mismatch");
+                watched.Done();
+            }
         }
+        // Missing storage is not a complete inventory or permission to create
+        // any historical master. Watch-only and deleted owners remain unknown.
     }
 
-    // Passphrase is valid, unlock the wallet
-    encryption_key_ = derivedKey;
-    wallet_locked_ = false;
-
-    // Legacy HMAC wallet: keep using legacy key (wallet data was encrypted with it)
-    // Migration happens naturally when user changes their password via changePassphrase()
-    if (needs_kdf_migration) {
-        WLOG_WARN("Wallet uses legacy HMAC-SHA512 KDF — change password to upgrade to PBKDF2");
-    }
-
-    if (timeoutSeconds > 0) {
-        unlock_timeout_ = timeoutSeconds;
-        unlock_time_ = std::chrono::duration_cast<std::chrono::seconds>(
-            std::chrono::system_clock::now().time_since_epoch()).count();
-    } else {
-        unlock_timeout_ = 0;
-        unlock_time_ = 0;
-    }
-
-    // ═══════════════════════════════════════════════════════════════
-    // Phase 5b: Load HD wallet master seed into memory
-    // ═══════════════════════════════════════════════════════════════
-
-    // Load and decrypt the master seed into memory
-    auto seed_opt = loadMasterSeed(passphrase);
-    if (seed_opt) {
-        // Set master_seed_ from returned value (loadMasterSeed returns but doesn't set member)
-        master_seed_ = seed_opt.value();
-        WLOG_INFO("✅ HD wallet master seed loaded into memory (" + std::to_string(master_seed_.size()) + " bytes)");
-
-        shielded_incoming_viewing_keys_.clear();
-        shielded_recipient_viewing_authorities_.clear();
-        shielded_outgoing_viewing_keys_.clear();
-        try {
-            constexpr uint32_t kShieldedScanAccounts = 4;
-            for (uint32_t acct = 0; acct < kShieldedScanAccounts; ++acct) {
-                auto keys = wallet::shielded::DeriveShieldedAccount(
-                    master_seed_.data(), master_seed_.size(), acct);
-                ScopedShieldedAccountKeys keys_guard(keys);
-                shielded_incoming_viewing_keys_.push_back(keys.ivk);
-                shielded_recipient_viewing_authorities_.push_back(
-                    {keys.ivk, keys.ak, keys.nvk});
-                shielded_outgoing_viewing_keys_.push_back(keys.ovk);
-            }
-            WLOG_INFO("✅ Shielded incoming viewing keys cached for receive scanning (" +
-                      std::to_string(shielded_incoming_viewing_keys_.size()) +
-                      " account(s))");
-        } catch (const std::exception& e) {
-            for (auto& ivk : shielded_incoming_viewing_keys_) {
-                OPENSSL_cleanse(ivk.data(), ivk.size());
-            }
-            for (auto& ovk : shielded_outgoing_viewing_keys_) {
-                OPENSSL_cleanse(ovk.data(), ovk.size());
-            }
-            for (auto& authority : shielded_recipient_viewing_authorities_) {
-                OPENSSL_cleanse(&authority, sizeof(authority));
-            }
-            shielded_incoming_viewing_keys_.clear();
-            shielded_outgoing_viewing_keys_.clear();
-            shielded_recipient_viewing_authorities_.clear();
-            WLOG_WARN(std::string("Shielded incoming viewing key cache skipped: ") + e.what());
+    std::vector<ShieldedIncomingViewingKey> incoming, outgoing;
+    std::vector<ShieldedRecipientViewingAuthority> recipients;
+    struct ClearViews {
+        std::vector<ShieldedIncomingViewingKey>& incoming;
+        std::vector<ShieldedIncomingViewingKey>& outgoing;
+        std::vector<ShieldedRecipientViewingAuthority>& recipients;
+        ~ClearViews() {
+            if (!incoming.empty()) OPENSSL_cleanse(incoming.data(),incoming.size()*sizeof(incoming[0]));
+            if (!outgoing.empty()) OPENSSL_cleanse(outgoing.data(),outgoing.size()*sizeof(outgoing[0]));
+            if (!recipients.empty()) OPENSSL_cleanse(recipients.data(),recipients.size()*sizeof(recipients[0]));
         }
-    } else {
-        WLOG_WARN("No HD master seed found in database (wallet may not be HD wallet)");
+    } clear_views{incoming,outgoing,recipients};
+    for (uint32_t account=0; account<4; ++account) {
+        auto keys=wallet::shielded::DeriveShieldedAccount(seed.value.data(),seed.value.size(),account);
+        ScopedShieldedAccountKeys guard(keys);
+        incoming.push_back(keys.ivk); outgoing.push_back(keys.ovk);
+        recipients.push_back({keys.ivk,keys.ak,keys.nvk});
     }
-
-    // ═══════════════════════════════════════════════════════════════
-    // V7 PQ master key — load (or generate-on-first-unlock) and cache.
-    // See docs/consensus/V7_WALLET_SCHEMA.md §5b. Failure here is
-    // logged and swallowed: v5 wallet functionality continues unaffected
-    // if the v7 layer hits a snag.
-    // ═══════════════════════════════════════════════════════════════
-    try {
-        std::string v7_hex = getSetting("v7_pq_master_key_encrypted");
-        if (v7_hex.empty()) {
-            // First unlock since v7 integration landed — generate + persist.
-            std::array<uint8_t, 32> fresh{};
-            if (RAND_bytes(fresh.data(), static_cast<int>(fresh.size())) != 1) {
-                throw std::runtime_error("RAND_bytes failed for v7 PQ master key");
-            }
-            std::string plaintext(reinterpret_cast<const char*>(fresh.data()), fresh.size());
-            std::string encrypted = encryptData(plaintext, encryption_key_);
-            std::vector<uint8_t> encrypted_vec(encrypted.begin(), encrypted.end());
-            std::string encrypted_hex = util::hex(encrypted_vec);
-            setSetting("v7_pq_master_key_encrypted", encrypted_hex);
-
-            std::memcpy(pq_master_key_.data(), fresh.data(), pq_master_key_.size());
-            pq_master_key_loaded_ = true;
-            OPENSSL_cleanse(fresh.data(),          fresh.size());
-            OPENSSL_cleanse(&plaintext[0],         plaintext.size());
-            OPENSSL_cleanse(&encrypted[0],         encrypted.size());
-            WLOG_INFO("✅ V7 PQ master key generated + persisted (first unlock)");
-        } else {
-            std::vector<uint8_t> encrypted_bytes;
-            if (!util::unhex(v7_hex, encrypted_bytes) || encrypted_bytes.size() < 28) {
-                throw std::runtime_error("v7_pq_master_key_encrypted corrupt or too short");
-            }
-            std::string encrypted(reinterpret_cast<const char*>(encrypted_bytes.data()),
-                                  encrypted_bytes.size());
-            std::string plaintext = decryptData(encrypted, encryption_key_);
-            if (plaintext.size() != pq_master_key_.size()) {
-                throw std::runtime_error("v7 PQ master key plaintext length != 32");
-            }
-            std::memcpy(pq_master_key_.data(), plaintext.data(), pq_master_key_.size());
-            pq_master_key_loaded_ = true;
-            OPENSSL_cleanse(&plaintext[0], plaintext.size());
-            OPENSSL_cleanse(&encrypted[0], encrypted.size());
-            WLOG_INFO("✅ V7 PQ master key loaded from wallet settings");
-        }
-    } catch (const std::exception& e) {
-        WLOG_WARN(std::string("V7 PQ master key setup skipped: ") + e.what());
-        OPENSSL_cleanse(pq_master_key_.data(), pq_master_key_.size());
-        pq_master_key_loaded_ = false;
+    if (!wrapped && initial) {
+        const auto encrypted=encryptData(pq.value,key.value);
+        IssuedStatement q(db_, "INSERT INTO settings(key,value,updated_at) VALUES('v7_pq_master_key_encrypted',?,strftime('%s','now'))");
+        q.Text(1,util::hex(std::vector<uint8_t>(encrypted.begin(),encrypted.end())));
+        q.Done(true);
     }
-
-    // Primary addresses are computed lazily on first getPrimaryAddress() call.
-
-    WLOG_INFO("Wallet unlocked for " +
-        (timeoutSeconds > 0 ? std::to_string(timeoutSeconds) + " seconds" : "indefinitely"));
+    const auto now=std::chrono::duration_cast<std::chrono::seconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+    if (legacy) WLOG_WARN("Wallet uses legacy HMAC-SHA512 KDF; change password to upgrade");
+    (void)ReadPendingPaymentsOwned(seed.value);
+    transaction.Commit();
+    // All fallible validation and persistence precede publication. Swaps leave
+    // prior plaintext in scoped buffers for cleansing without changing identity.
+    encryption_key_.swap(key.value);
+    master_seed_.swap(seed.value);
+    OPENSSL_cleanse(pq_master_key_.data(),pq_master_key_.size());
+    pq_master_key_loaded_=!pq.value.empty();
+    if (pq_master_key_loaded_) std::memcpy(pq_master_key_.data(),pq.value.data(),32);
+    shielded_incoming_viewing_keys_.swap(incoming);
+    shielded_outgoing_viewing_keys_.swap(outgoing);
+    shielded_recipient_viewing_authorities_.swap(recipients);
+    unlock_timeout_=timeoutSeconds>0 ? timeoutSeconds : 0;
+    unlock_time_=timeoutSeconds>0 ? now : 0;
+    wallet_locked_=false;
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -3530,6 +5423,7 @@ void WalletManager::unlockWallet(const std::string& passphrase, int timeoutSecon
 // ═══════════════════════════════════════════════════════════════
 
 std::optional<std::array<uint8_t, 32>> WalletManager::GetV7PqMasterKey() const {
+    std::lock_guard<std::recursive_mutex> key_ownership(database_lifecycle_mutex_);
     if (wallet_locked_ || !pq_master_key_loaded_) {
         return std::nullopt;
     }
@@ -3541,6 +5435,7 @@ std::optional<std::array<uint8_t, 32>> WalletManager::GetV7PqMasterKey() const {
 
 std::vector<WalletManager::ShieldedIncomingViewingKey>
 WalletManager::GetShieldedIncomingViewingKeys() const {
+    std::lock_guard<std::recursive_mutex> key_ownership(database_lifecycle_mutex_);
     if (!shielded_incoming_viewing_keys_.empty()) {
         return shielded_incoming_viewing_keys_;
     }
@@ -3566,6 +5461,7 @@ WalletManager::GetShieldedIncomingViewingKeys() const {
 
 std::vector<WalletManager::ShieldedOutgoingViewingKey>
 WalletManager::GetShieldedOutgoingViewingKeys() const {
+    std::lock_guard<std::recursive_mutex> key_ownership(database_lifecycle_mutex_);
     if (!shielded_outgoing_viewing_keys_.empty()) {
         return shielded_outgoing_viewing_keys_;
     }
@@ -3589,6 +5485,7 @@ WalletManager::GetShieldedOutgoingViewingKeys() const {
 
 std::vector<WalletManager::ShieldedRecipientViewingAuthority>
 WalletManager::GetShieldedRecipientViewingAuthorities() const {
+    std::lock_guard<std::recursive_mutex> key_ownership(database_lifecycle_mutex_);
     if (!shielded_recipient_viewing_authorities_.empty()) {
         return shielded_recipient_viewing_authorities_;
     }
@@ -3625,6 +5522,7 @@ std::optional<WalletManager::V7Bip32Material>
 WalletManager::DeriveV7Bip32Material(uint32_t account,
                                      uint32_t change,
                                      uint32_t address_index) const {
+    std::lock_guard<std::recursive_mutex> key_ownership(database_lifecycle_mutex_);
     if (wallet_locked_ || master_seed_.empty()) {
         return std::nullopt;
     }
@@ -3639,13 +5537,18 @@ WalletManager::DeriveV7Bip32Material(uint32_t account,
         deriver.deriveNormal(change);
         deriver.deriveNormal(address_index);
 
+        struct Bytes {
+            std::array<uint8_t,32> value{};
+            ~Bytes() { OPENSSL_cleanse(value.data(),value.size()); }
+        } priv{deriver.getPrivateKey()}, chain{deriver.getChainCode()};
+        if (priv.value.size()!=32 || chain.value.size()!=32) return std::nullopt;
         V7Bip32Material out{};
-        auto priv  = deriver.getPrivateKey();   // 32 bytes
-        auto chain = deriver.getChainCode();    // 32 bytes
-        std::memcpy(out.private_key.data(), priv.data(),  out.private_key.size());
-        std::memcpy(out.chain_code.data(),  chain.data(), out.chain_code.size());
-        // deriver dtor scrubs; our locals (priv, chain) are caller-scrubbed
-        // in the RPC handler per DerivePQKeypair's contract.
+        struct ClearMaterial { V7Bip32Material& value; ~ClearMaterial() {
+            OPENSSL_cleanse(value.private_key.data(),value.private_key.size());
+            OPENSSL_cleanse(value.chain_code.data(),value.chain_code.size());
+        }} clear_out{out};
+        std::memcpy(out.private_key.data(), priv.value.data(), out.private_key.size());
+        std::memcpy(out.chain_code.data(), chain.value.data(), out.chain_code.size());
         return out;
     } catch (const std::exception& e) {
         WLOG_WARN(std::string("DeriveV7Bip32Material failed: ") + e.what());
@@ -3654,10 +5557,12 @@ WalletManager::DeriveV7Bip32Material(uint32_t account,
 }
 
 bool WalletManager::isWalletEncrypted() const {
+    std::lock_guard<std::recursive_mutex> key_ownership(database_lifecycle_mutex_);
     return getSetting("wallet_encrypted") == "1";
 }
 
 bool WalletManager::isWalletLocked() const {
+    std::lock_guard<std::recursive_mutex> key_ownership(database_lifecycle_mutex_);
     if (!isWalletEncrypted()) {
         return false;
     }
@@ -4121,8 +6026,7 @@ std::string WalletManager::extractAddressFromScript(const std::vector<uint8_t>& 
         return "";
     }
 
-    // Use default mainnet HRP "din" - TODO: make this configurable for testnet/regtest
-    const std::string hrp = "din";
+    const std::string hrp = Params().hrp;
 
     // P2WPKH: OP_0 PUSH20 <20-byte-pubkey-hash>
     if (scriptPubKey.size() == 22 &&
@@ -4154,7 +6058,12 @@ std::string WalletManager::extractAddressFromScript(const std::vector<uint8_t>& 
         std::vector<uint8_t> witness_program(scriptPubKey.begin() + 2, scriptPubKey.end());
 
         // Encode as Bech32m Taproot address (witness v1, 32 bytes)
-        return bech32::Encode(hrp, 1, witness_program);
+        return bech32::Encode(hrp, 1, witness_program, bech32::Encoding::BECH32M);
+    }
+
+    // P2MR: OP_3 PUSH32 <merkle root>, using the same codec as live receipts.
+    if (scriptPubKey.size() == 34 && scriptPubKey[0] == 0x53 && scriptPubKey[1] == 0x20) {
+        return wallet::EncodeP2MRAddress(hrp, std::vector<uint8_t>(scriptPubKey.begin()+2, scriptPubKey.end()));
     }
 
     // Unknown or legacy script type - return empty string
@@ -4257,15 +6166,19 @@ std::string WalletManager::decryptData(const std::string& encryptedData, const s
 }
 
 void WalletManager::checkUnlockTimeout() {
+    std::lock_guard<std::recursive_mutex> key_ownership(database_lifecycle_mutex_);
     if (unlock_timeout_ > 0 && unlock_time_ > 0) {
         int64_t currentTime = std::chrono::duration_cast<std::chrono::seconds>(
             std::chrono::system_clock::now().time_since_epoch()).count();
         
         if (currentTime - unlock_time_ >= unlock_timeout_) {
+            if (recovery_seeds_) throw std::logic_error("Wallet recovery key is pinned");
             wallet_locked_ = true;
             secureClearString(encryption_key_);
             clearPrivateKeyCache();
             secureClearBytes(master_seed_);
+            OPENSSL_cleanse(pq_master_key_.data(), pq_master_key_.size());
+            pq_master_key_loaded_ = false;
             unlock_timeout_ = 0;
             unlock_time_ = 0;
             WLOG_INFO("Wallet automatically locked due to timeout");
@@ -4274,29 +6187,65 @@ void WalletManager::checkUnlockTimeout() {
 }
 
 // UTXO management for PSBT creation
-std::vector<WalletManager::WalletUTXO> WalletManager::listUnspentUTXOs(int min_confirmations,
-                                                                       int max_confirmations,
-                                                                       const Mempool* mempool) const {
-    std::vector<WalletManager::WalletUTXO> utxos;
-    
-    if (!db_) {
-        return utxos;
+std::vector<WalletManager::WalletUTXO> WalletManager::listUnspentUTXOs(
+    int min_confirmations, int max_confirmations, const Mempool* mempool) const {
+    auto lease = const_cast<WalletManager&>(*this).AcquireDatabaseLease();
+    if (!db_ || current_wallet_id_ <= 0)
+        throw std::runtime_error("Wallet UTXO inventory unavailable");
+    if (min_confirmations < 0 || max_confirmations < min_confirmations)
+        throw std::runtime_error("Wallet UTXO confirmation range invalid");
+    const auto checked = [this](int actual, int expected) {
+        if (actual != expected)
+            throw std::runtime_error("Wallet UTXO read failed: " + std::string(sqlite3_errmsg(db_)));
+    };
+    const auto prepare = [this, &checked](const char* sql) {
+        sqlite3_stmt* raw = nullptr;
+        const int rc = sqlite3_prepare_v2(db_, sql, -1, &raw, nullptr);
+        std::unique_ptr<sqlite3_stmt, decltype(&sqlite3_finalize)> statement(raw, sqlite3_finalize);
+        checked(rc, SQLITE_OK);
+        return statement;
+    };
+    const auto text = [](sqlite3_stmt* row, int column, bool nullable) {
+        const int type = sqlite3_column_type(row, column);
+        if (nullable && type == SQLITE_NULL) return std::string{};
+        if (type != SQLITE_TEXT) throw std::runtime_error("Wallet UTXO text type invalid");
+        const int size = sqlite3_column_bytes(row, column);
+        const auto* data = static_cast<const char*>(sqlite3_column_blob(row, column));
+        if (size < 0 || (size > 0 && (!data || std::memchr(data, 0, size))))
+            throw std::runtime_error("Wallet UTXO text encoding invalid");
+        return size ? std::string(data, size) : std::string{};
+    };
+    const auto number = [](sqlite3_stmt* row, int column, int64_t maximum) {
+        if (sqlite3_column_type(row, column) != SQLITE_INTEGER)
+            throw std::runtime_error("Wallet UTXO integer type invalid");
+        const int64_t value = sqlite3_column_int64(row, column);
+        if (value < 0 || value > maximum) throw std::runtime_error("Wallet UTXO integer out of range");
+        return value;
+    };
+    const auto hex = [](const std::string& value) {
+        return value.size() % 2 == 0 && std::all_of(value.begin(), value.end(), [](unsigned char c) {
+            return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+        });
+    };
+
+    // Legacy schemas may lack this column. Only a completed schema read proves
+    // absence; access errors do not silently classify anchored coins as spent.
+    bool has_anchor = false;
+    {
+        auto schema = prepare("PRAGMA table_info(utxos)");
+        int rc; size_t columns = 0;
+        while ((rc = sqlite3_step(schema.get())) == SQLITE_ROW) {
+            ++columns;
+            const auto name = text(schema.get(), 1, false);
+            has_anchor = has_anchor || name == "snapshot_anchored";
+        }
+        checked(rc, SQLITE_DONE);
+        if (columns == 0) throw std::runtime_error("Wallet UTXO schema unavailable");
     }
-    
-    // Query UTXOs with dynamic maturity computation (no stored is_mature dependency)
-    // JOIN with address_derivation_paths to get BIP32 derivation path for signing.
-    // FALLBACK 1: If address_derivation_paths is empty (legacy wallets), construct the
-    // derivation path from the addresses table (type, account, change, idx).
-    // FALLBACK 2 (Phase 10): v7 P2MR addresses live in watch_scripts, not
-    // addresses/address_derivation_paths. LEFT JOIN watch_scripts as a third
-    // COALESCE source so P2MR UTXOs carry a non-empty derivation_path, which
-    // wallet.sendtoaddress requires to admit them into the coin-selector input set.
-    // watch_scripts stores the scriptPubKey as a BLOB; utxos.script_pubkey is the
-    // lower-hex string, so we compare via lower(hex(ws.script_pubkey)).
-    // NOTE: JOIN on script_pubkey (not address) because addresses may use different
-    // network prefixes (din1/rdin1) while script_pubkey is network-independent
-    sqlite3_stmt* stmt;
-    const char* sql = R"(
+
+    // Preserve existing recognition/path selection. It is not an authenticated
+    // key-ownership certificate; canonical funding validation remains separate.
+    std::string sql = R"(
         SELECT u.txid, u.vout, u.address, u.amount, u.script_pubkey, u.height, u.is_coinbase, u.is_spent,
                COALESCE(adp.derivation_path,
                         CASE WHEN a.type IS NOT NULL THEN
@@ -4314,159 +6263,85 @@ std::vector<WalletManager::WalletUTXO> WalletManager::listUnspentUTXOs(int min_c
           AND u.wallet_id = ?2
         ORDER BY u.amount DESC
     )";
-
-    if (!SqlLog::prepare(&stmt, db_, sql, "list-utxos-with-derivation-path")) {
-        return utxos;
-    }
-
-    // Bind canonical Dinero coin type for fallback derivation-path reconstruction.
-    if (sqlite3_bind_int(stmt, 1, static_cast<int>(dinero::consensus::DINERO_COIN_TYPE)) != SQLITE_OK) {
-        sqlite3_finalize(stmt);
-        return utxos;
-    }
-
-    if (sqlite3_bind_int(stmt, 2, current_wallet_id_) != SQLITE_OK) {
-        sqlite3_finalize(stmt);
-        return utxos;
-    }
-
-    while (sqlite3_step(stmt) == SQLITE_ROW) {
-        WalletManager::WalletUTXO utxo;
-
-        // Extract UTXO data
-        const char* txid = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
-        uint32_t vout = sqlite3_column_int(stmt, 1);
-        const char* address = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 2));
-        int64_t amount_una = sqlite3_column_int64(stmt, 3);
-        const char* script_pubkey = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 4));
-        uint32_t height = sqlite3_column_int(stmt, 5);
-        bool is_coinbase = sqlite3_column_int(stmt, 6) != 0;
-        bool is_spent = sqlite3_column_int(stmt, 7) != 0;
-        const char* derivation_path = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 8));
-
-        // SEATBELT: Validate critical fields before use
-        if (!txid || strlen(txid) == 0) {
-            logCorruptRow("utxos", "txid", "NULL or empty txid");
-            continue;  // Skip this row, continue with others
-        }
-        if (!address || strlen(address) == 0) {
-            logCorruptRow("utxos", "address", "NULL or empty address");
-            continue;  // Skip this row, continue with others
-        }
-
-        utxo.txid = txid;
-        utxo.vout = vout;
-        utxo.amount_una = amount_una;
-        utxo.amount_din = static_cast<double>(amount_una) / dinero::ConsensusSubsidy::UNA_PER_DIN;
-        utxo.address = address;
-        utxo.height = height;
-        utxo.is_coinbase = is_coinbase;
-        utxo.is_spent = is_spent;
-        utxo.script_pubkey = script_pubkey ? script_pubkey : "";
-        utxo.derivation_path = derivation_path ? derivation_path : "";
-        utxo.label = "";
-
-        // Calculate confirmations from current blockchain height
-        utxo.confirmations = (current_blockchain_height_ > height) ?
-                            (current_blockchain_height_ - height + 1) : 0;
-
-        // Compute maturity dynamically (no stored boolean dependency)
-        const uint32_t COINBASE_MATURITY = 100;
-        utxo.is_mature = !is_coinbase || (utxo.confirmations >= COINBASE_MATURITY); // >= 100 for coinbase
-
-        // Bug Fix 1: Skip immature coinbase outputs — they cannot be spent yet.
-        // A coinbase UTXO with < 100 confirmations will be rejected by consensus.
-        if (is_coinbase && !utxo.is_mature) {
-            continue;
-        }
-
-        // Check if spendable (dynamic maturity + confirmation range)
-        utxo.spendable = utxo.is_mature &&
-                        (utxo.confirmations >= min_confirmations) &&
-                        (utxo.confirmations <= max_confirmations);
-
-        // Bug Fix 2: Validate UTXO against the chain UTXO index to exclude
-        // stale/spent entries that the wallet DB has not yet marked as spent.
-        // This catches transparent UTXOs consumed by ring/unshield transactions
-        // where the wallet index was not updated (e.g. fee inputs for CT spends).
+    const std::string path_column = "AS derivation_path";
+    const auto column_at = sql.find(path_column);
+    if (column_at == std::string::npos) throw std::logic_error("Wallet UTXO query malformed");
+    sql.replace(column_at, path_column.size(), path_column +
+        (has_anchor ? ", u.snapshot_anchored" : ", 0"));
+    auto statement = prepare(sql.c_str());
+    sqlite3_stmt* stmt = statement.get();
+    checked(sqlite3_bind_int(stmt, 1, static_cast<int>(dinero::consensus::DINERO_COIN_TYPE)), SQLITE_OK);
+    checked(sqlite3_bind_int(stmt, 2, current_wallet_id_), SQLITE_OK);
+    std::vector<WalletUTXO> utxos;
+    const uint32_t wallet_height = getBlockchainHeight();
+    std::set<std::pair<std::string, uint32_t>> observed;
+    int rc;
+    while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
+        WalletUTXO utxo{};
+        utxo.txid = text(stmt, 0, false);
+        if (utxo.txid.size() != 64 || !hex(utxo.txid))
+            throw std::runtime_error("Wallet UTXO transaction ID invalid");
+        utxo.vout = static_cast<uint32_t>(number(stmt, 1, UINT32_MAX));
+        // An empty display address remains an owned exact script, not absence.
+        utxo.address = text(stmt, 2, false);
+        utxo.amount_una = static_cast<uint64_t>(number(stmt, 3, INT64_MAX));
+        utxo.amount_din = static_cast<double>(utxo.amount_una) / dinero::ConsensusSubsidy::UNA_PER_DIN;
+        utxo.script_pubkey = text(stmt, 4, false);
+        if (!hex(utxo.script_pubkey)) throw std::runtime_error("Wallet UTXO script encoding invalid");
+        utxo.height = static_cast<uint32_t>(number(stmt, 5, UINT32_MAX));
+        utxo.is_coinbase = number(stmt, 6, 1) != 0;
+        utxo.is_spent = number(stmt, 7, 1) != 0;
+        if (utxo.is_spent) throw std::runtime_error("Wallet UTXO selection changed");
+        utxo.derivation_path = text(stmt, 8, true);
+        const bool anchored = number(stmt, 9, 1) != 0;
+        if (!observed.emplace(uint256::FromHexUnsafe(utxo.txid).GetHex(), utxo.vout).second)
+            throw std::runtime_error("Wallet UTXO recognition metadata ambiguous");
+        utxo.confirmations = utxo.height > 0 && wallet_height >= utxo.height
+            ? static_cast<int>(std::min<uint64_t>(uint64_t(wallet_height) - utxo.height + 1,
+                                                std::numeric_limits<int>::max())) : 0;
+        utxo.is_mature = !utxo.is_coinbase || utxo.confirmations >= 100;
+        if (utxo.is_coinbase && !utxo.is_mature) continue;
+        utxo.spendable = utxo.is_mature && utxo.confirmations >= min_confirmations &&
+                         utxo.confirmations <= max_confirmations;
+        // The index owner must still be pinned by the service caller. Existing
+        // index/mempool filtering is retained; this is not a canonical snapshot.
         if (utxo_index_) {
-            try {
-                TxId chain_txid(uint256::FromHexUnsafe(utxo.txid));
-                auto chain_utxo = utxo_index_->GetUTXO(chain_txid, utxo.vout);
-                if (!chain_utxo.has_value()) {
-                    // A snapshot-anchored coin (recorded from the AssumeUTXO
-                    // snapshot) is committed in the utreexo accumulator and is
-                    // NEVER enumerable in the live utxo_index_. Do NOT infer it
-                    // spent — this read-path was wiping fast-synced wallets'
-                    // pre-snapshot balances. Genuine spends above the base still
-                    // arrive via the input-gated block-connect paths.
-                    bool anchored = false;
-                    {
-                        sqlite3_stmt* astmt = nullptr;
-                        const char* asql = "SELECT snapshot_anchored FROM utxos "
-                                           "WHERE txid = ? AND vout = ? AND wallet_id = ? LIMIT 1";
-                        if (sqlite3_prepare_v2(db_, asql, -1, &astmt, nullptr) == SQLITE_OK) {
-                            sqlite3_bind_text(astmt, 1, utxo.txid.c_str(), -1, SQLITE_TRANSIENT);
-                            sqlite3_bind_int(astmt, 2, static_cast<int>(utxo.vout));
-                            sqlite3_bind_int(astmt, 3, current_wallet_id_);
-                            if (sqlite3_step(astmt) == SQLITE_ROW) {
-                                anchored = sqlite3_column_int(astmt, 0) != 0;
-                            }
-                            sqlite3_finalize(astmt);
-                        }
-                        // If the column doesn't exist (legacy wallet), prepare
-                        // fails and anchored stays false → original behavior.
-                    }
-                    if (!anchored) {
-                        // Cross-store mismatch: the coin is in the wallet DB but
-                        // absent from the in-memory chain UTXO index, and it is NOT
-                        // a snapshot-anchored coin.
-                        //
-                        // SECURITY (fund-loss fix, audit Fix 2): a const READ method
-                        // must NEVER mutate fund state. The previous code persisted
-                        // `UPDATE utxos SET is_spent=1` here, which irreversibly
-                        // zeroed legitimate balances on the first listunspent. We now
-                        // treat the mismatch as non-destructive: skip the coin from
-                        // THIS result set (so coin-selection won't try to spend an
-                        // output the chainstate can't currently see) but leave the DB
-                        // untouched, so the coin reappears once utxo_index_ is
-                        // populated.
-                        logCorruptRow("utxos", "chain-mismatch",
-                                      "wallet UTXO absent from chain index; skipping "
-                                      "(read-only, no state mutation)");
-                        continue;
-                    }
-                    // anchored: valid snapshot coin — keep it (transparent, not CT).
-                } else {
-                    // Propagate CT flag from chain UTXO set into wallet UTXO view
-                    utxo.is_confidential = chain_utxo->is_confidential;
-                }
-            } catch (const std::exception&) {
-                // If the txid is malformed we can't validate — skip to be safe.
-                logCorruptRow("utxos", "txid", "failed to parse txid for chain UTXO validation");
-                continue;
+            const TxId id(uint256::FromHexUnsafe(utxo.txid));
+            const auto coin = utxo_index_->GetUTXO(id, utxo.vout);
+            if (!coin) {
+                if (!anchored) continue;
+            } else {
+                utxo.is_confidential = coin->is_confidential;
             }
         }
-
-        if (mempool) {
-            try {
-                const OutPoint outpoint(TxId(uint256::FromHexUnsafe(utxo.txid)), utxo.vout);
-                if (mempool->isOutputSpentInMempool(outpoint)) {
-                    continue;
-                }
-            } catch (const std::exception&) {
-                logCorruptRow("utxos", "txid", "failed to parse txid for mempool spend filter");
-                continue;
-            }
-        }
-
-        // Only include UTXOs with positive amounts
-        if (utxo.amount_una > 0) {
-            utxos.push_back(utxo);
-        }
+        if (mempool && mempool->isOutputSpentInMempool(
+                OutPoint(TxId(uint256::FromHexUnsafe(utxo.txid)), utxo.vout))) continue;
+        if (utxo.amount_una > 0) utxos.push_back(std::move(utxo));
     }
-    
-    sqlite3_finalize(stmt);
+    checked(rc, SQLITE_DONE);
+    // A discovered snapshot candidate is deliberately outside the ordinary
+    // coin/index tables. Never give it confirmations or spendability from the
+    // selected display height. Only a later current-source reservation may
+    // authenticate it; this reader does not promote or repair anything.
+    for(auto candidate:ReadSnapshotCandidatesOwned()){
+        auto ordinary=prepare("SELECT amount,script_pubkey,height,is_coinbase,is_spent FROM utxos WHERE wallet_id=? AND txid=? AND vout=?");
+        checked(sqlite3_bind_int(ordinary.get(),1,current_wallet_id_),SQLITE_OK);
+        checked(sqlite3_bind_text(ordinary.get(),2,candidate.txid.c_str(),-1,SQLITE_TRANSIENT),SQLITE_OK);
+        checked(sqlite3_bind_int64(ordinary.get(),3,candidate.vout),SQLITE_OK);
+        const int found=sqlite3_step(ordinary.get());
+        if(found==SQLITE_ROW){
+            if(uint64_t(number(ordinary.get(),0,INT64_MAX))!=candidate.amount_una||
+                text(ordinary.get(),1,false)!=candidate.script_pubkey||
+                uint32_t(number(ordinary.get(),2,UINT32_MAX))!=candidate.height||
+                (number(ordinary.get(),3,1)!=0)!=candidate.is_coinbase)
+                throw std::runtime_error("Snapshot candidate conflicts with existing wallet coin");
+            (void)number(ordinary.get(),4,1);checked(sqlite3_step(ordinary.get()),SQLITE_DONE);
+            continue; // Also preserve an ordinary spent row; never resurrect it.
+        }
+        checked(found,SQLITE_DONE);
+        if(mempool&&mempool->isOutputSpentInMempool(OutPoint(TxId(uint256::FromHexUnsafe(candidate.txid)),candidate.vout)))continue;
+        utxos.push_back(std::move(candidate));
+    }
     return utxos;
 }
 
@@ -4543,12 +6418,16 @@ std::vector<WalletManager::WalletUTXO> WalletManager::getUTXOsForAddress(const s
 // ═══════════════════════════════════════════════════════════════
 
 bool WalletManager::lockUTXO(const std::string& txid, uint32_t vout) {
+    auto lease=AcquireDatabaseLease();
     std::string outpoint = txid + ":" + std::to_string(vout);
     locked_utxos_.insert(outpoint);
     return true;
 }
 
 bool WalletManager::unlockUTXO(const std::string& txid, uint32_t vout) {
+    auto lease=AcquireDatabaseLease();
+    for(const auto& p:getPendingPayments())for(const auto& in:p.inputs)
+        if(in.txid==txid && in.vout==vout)return false;
     std::string outpoint = txid + ":" + std::to_string(vout);
     auto it = locked_utxos_.find(outpoint);
     if (it != locked_utxos_.end()) {
@@ -4559,62 +6438,168 @@ bool WalletManager::unlockUTXO(const std::string& txid, uint32_t vout) {
 }
 
 bool WalletManager::isUTXOLocked(const std::string& txid, uint32_t vout) const {
-    std::string outpoint = txid + ":" + std::to_string(vout);
-    return locked_utxos_.find(outpoint) != locked_utxos_.end();
+    auto lease=const_cast<WalletManager&>(*this).AcquireDatabaseLease();
+    const auto records=getPendingPayments(); // Authenticate even if a manual lock matches.
+    for(const auto& p:records)for(const auto& in:p.inputs)
+        if(in.txid==txid && in.vout==vout)return true;
+    return locked_utxos_.count(txid+":"+std::to_string(vout))!=0;
 }
 
 std::vector<std::string> WalletManager::getLockedUTXOs() const {
-    return std::vector<std::string>(locked_utxos_.begin(), locked_utxos_.end());
+    auto lease=const_cast<WalletManager&>(*this).AcquireDatabaseLease();
+    auto result=locked_utxos_;
+    for(const auto& p:getPendingPayments())for(const auto& in:p.inputs)
+        result.insert(in.txid+":"+std::to_string(in.vout));
+    return {result.begin(),result.end()};
 }
 
 size_t WalletManager::unlockAllUTXOs() {
-    size_t count = locked_utxos_.size();
-    locked_utxos_.clear();
-    return count;
+    auto lease=AcquireDatabaseLease();
+    (void)getPendingPayments(); // Refuse unavailable ownership; never release payment reservations.
+    const auto count=locked_utxos_.size();locked_utxos_.clear();return count;
+}
+
+WalletManager::BalanceSummary WalletManager::getBalanceSummary(const std::string& expected_wallet) const {
+    auto& self = const_cast<WalletManager&>(*this);
+    auto lease = self.AcquireDatabaseLease();
+    if (!db_ || current_wallet_id_ < 0 ||
+        (!expected_wallet.empty() && lease->WalletName() != expected_wallet))
+        throw std::runtime_error("Balance wallet ownership unavailable");
+    IssuedAddressTransaction transaction(db_);
+    auto result=ReadBalanceSummaryInTransaction(*lease,getBlockchainHeight(),{});
+    transaction.Commit();
+    return result;
+}
+
+WalletManager::BalanceSummary WalletManager::ReadBalanceSummaryInTransaction(DatabaseLease& lease,int64_t tip,
+        const std::set<std::string>& additional_reservations,const RecoverySeed* existing_seed) const {
+    auto& self=const_cast<WalletManager&>(*this);
+    if(!db_||lease.Database()!=db_||sqlite3_get_autocommit(db_)||tip<0||tip>UINT32_MAX)
+        throw std::runtime_error("Balance transaction ownership unavailable");
+    BalanceSummary result;
+    result.wallet_name = lease.WalletName();
+    auto locks = locked_utxos_;
+    locks.insert(additional_reservations.begin(),additional_reservations.end());
+    std::unique_ptr<RecoverySeed> pin;
+    const bool installed = PaymentColumn(db_);
+    self.checkUnlockTimeout();
+    if (installed && wallet_locked_) {
+        result.reservations = ReservationStatus::UnlockRequired;
+    } else if (installed) {
+        if(!existing_seed){pin=lease.CopyRecoverySeed(lease.Session());existing_seed=pin.get();}
+        // Reuse the caller's SAME real pin, authenticating its lease/thread/
+        // session/SQL owner. Never recursively acquire or weaken seed ownership.
+        for (const auto& payment : lease.ReadPendingPaymentsInTransaction(*existing_seed))
+            for (const auto& input : payment.inputs)
+                locks.insert(input.txid + ":" + std::to_string(input.vout));
+        result.reservations = ReservationStatus::Authenticated;
+    }
+    // Caller supplies either the ordinary observed height or a genuinely held
+    // current-source height. This helper never acquires selected-chain locks.
+    uint64_t confirmed = 0, unconfirmed = 0, immature = 0, locked = 0, locked_confirmed = 0;
+    std::map<std::string, uint64_t> available_by_script;
+    IssuedStatement query(db_, "SELECT txid,vout,amount,height,is_coinbase,is_spent,script_pubkey "
+                               "FROM utxos WHERE wallet_id=? ORDER BY txid,vout");
+    query.Int(1, current_wallet_id_);
+    int rc;
+    while ((rc = sqlite3_step(query.value.get())) == SQLITE_ROW) {
+        auto* q = query.value.get();
+        for (int col : {1, 2, 3, 4, 5})
+            if (sqlite3_column_type(q, col) != SQLITE_INTEGER)
+                throw std::runtime_error("Balance coin integer malformed");
+        const auto index = sqlite3_column_int64(q, 1), amount = sqlite3_column_int64(q, 2);
+        const auto height = sqlite3_column_int64(q, 3), coinbase = sqlite3_column_int64(q, 4);
+        const auto spent = sqlite3_column_int64(q, 5);
+        if (index < 0 || index > UINT32_MAX || amount < 0 || height < -1 || height > UINT32_MAX ||
+            (coinbase != 0 && coinbase != 1) || (spent != 0 && spent != 1))
+            throw std::runtime_error("Balance coin range malformed");
+        const auto text = [&](int col) {
+            if (sqlite3_column_type(q, col) != SQLITE_TEXT)
+                throw std::runtime_error("Balance coin text malformed");
+            const auto* bytes = static_cast<const char*>(sqlite3_column_blob(q, col));
+            const int size = sqlite3_column_bytes(q, col);
+            if (!bytes || size <= 0) throw std::runtime_error("Balance coin text missing");
+            return std::string(bytes, size);
+        };
+        const auto txid = text(0), script = text(6);
+        std::vector<uint8_t> decoded_txid, decoded_script;
+        if (txid.size() != 64 || !util::unhex(txid, decoded_txid) ||
+            txid != util::hex(decoded_txid) ||
+            !util::unhex(script, decoded_script) || decoded_script.empty())
+            throw std::runtime_error("Balance coin encoding malformed");
+        if (spent) continue;
+        if (result.balance.utxo_count == INT_MAX) throw std::runtime_error("Balance coin count exceeded");
+        ++result.balance.utxo_count;
+        const uint64_t value = static_cast<uint64_t>(amount);
+        const int64_t confirmations = height > 0 ? tip - height + 1 : 0;
+        const bool eligible = confirmations >= 1 && (!coinbase || confirmations >= 100);
+        if (confirmations < 1) unconfirmed = PaymentSum(unconfirmed, value);
+        else if (!eligible) {
+            immature = PaymentSum(immature, value);
+            ++result.balance.immature_utxo_count;
+        } else {
+            confirmed = PaymentSum(confirmed, value);
+            if (decoded_script.size() == 34 && decoded_script[0] == 0x53 && decoded_script[1] == 0x20)
+                result.pq_confirmed_una = PaymentSum(result.pq_confirmed_una, value);
+        }
+        auto& script_available = available_by_script[util::hex(decoded_script)];
+        const bool reserved = locks.count(txid + ":" + std::to_string(index)) != 0;
+        if (eligible && !reserved) script_available = PaymentSum(script_available, value);
+        if (reserved) {
+            locked = PaymentSum(locked, value);
+            if (eligible) locked_confirmed = PaymentSum(locked_confirmed, value);
+        }
+    }
+    IssuanceCheck(db_, rc, SQLITE_DONE);
+    const auto total = PaymentSum(PaymentSum(confirmed, unconfirmed), immature);
+    result.balance.confirmed = static_cast<double>(confirmed) / 1e8;
+    result.balance.unconfirmed = static_cast<double>(unconfirmed) / 1e8;
+    result.balance.immature = static_cast<double>(immature) / 1e8;
+    result.balance.total = static_cast<double>(total) / 1e8;
+    // Consumers must use the optional value; never turn unknown reservations into zero locks.
+    if (result.reservations != ReservationStatus::UnlockRequired) {
+        for (const auto& [script, value] : available_by_script)
+            result.available_by_script.emplace(script, static_cast<double>(value) / 1e8);
+        result.locked = static_cast<double>(locked) / 1e8;
+        result.available_confirmed = static_cast<double>(confirmed - locked_confirmed) / 1e8;
+        result.unavailable_confirmed_and_immature = static_cast<double>(PaymentSum(immature, locked_confirmed)) / 1e8;
+    }
+    return result;
 }
 
 double WalletManager::getLockedBalance() const {
-    double locked_balance = 0.0;
-
-    if (!db_) {
-        return 0.0;
+    auto& self=const_cast<WalletManager&>(*this);auto lease=self.AcquireDatabaseLease();
+    if(!db_)return 0.0;
+    IssuedAddressTransaction transaction(db_);auto locks=locked_utxos_;
+    if(PaymentColumn(db_)) {
+        auto pin=lease->CopyRecoverySeed(lease->Session());
+        for(const auto& p:ReadPendingPaymentsOwned(pin->Bytes()))for(const auto& in:p.inputs)
+            locks.insert(in.txid+":"+std::to_string(in.vout));
     }
-
-    // Query all UTXOs and sum amounts for locked ones
-    for (const std::string& outpoint : locked_utxos_) {
-        // Parse txid:vout
-        size_t colon_pos = outpoint.find(':');
-        if (colon_pos == std::string::npos) {
-            continue;
-        }
-
-        std::string txid = outpoint.substr(0, colon_pos);
-        uint32_t vout = std::stoul(outpoint.substr(colon_pos + 1));
-
-        // Query UTXO amount
-        sqlite3_stmt* stmt;
-        const char* sql = "SELECT amount FROM utxos WHERE txid = ? AND vout = ? AND is_spent = 0";
-
-        if (!SqlLog::prepare(&stmt, db_, sql, "get-locked-utxo-amount")) {
-            continue;
-        }
-
-        sqlite3_bind_text(stmt, 1, txid.c_str(), -1, SQLITE_STATIC);
-        sqlite3_bind_int(stmt, 2, vout);
-
-        if (sqlite3_step(stmt) == SQLITE_ROW) {
-            int64_t amount_una = sqlite3_column_int64(stmt, 0);
-            locked_balance += static_cast<double>(amount_una) / dinero::ConsensusSubsidy::UNA_PER_DIN;
-        }
-
-        sqlite3_finalize(stmt);
+    uint64_t amount=0;
+    for(const auto& outpoint:locks) {
+        const auto colon=outpoint.find(':');
+        if(colon==std::string::npos)throw std::runtime_error("Locked outpoint malformed");
+        const auto index=std::stoull(outpoint.substr(colon+1));
+        if(index>UINT32_MAX)throw std::runtime_error("Locked outpoint range invalid");
+        IssuedStatement q(db_,"SELECT amount,is_spent FROM utxos WHERE wallet_id=? AND txid=? AND vout=?");
+        q.Int(1,current_wallet_id_);q.Text(2,outpoint.substr(0,colon));q.Int(3,int64_t(index));
+        const int rc=sqlite3_step(q.value.get());if(rc==SQLITE_DONE)continue;
+        IssuanceCheck(db_,rc,SQLITE_ROW);
+        if(sqlite3_column_type(q.value.get(),0)!=SQLITE_INTEGER || sqlite3_column_int64(q.value.get(),0)<0 ||
+           sqlite3_column_type(q.value.get(),1)!=SQLITE_INTEGER ||
+           (sqlite3_column_int64(q.value.get(),1)!=0 && sqlite3_column_int64(q.value.get(),1)!=1))
+            throw std::runtime_error("Locked coin malformed");
+        if(sqlite3_column_int64(q.value.get(),1)==0)amount=PaymentSum(amount,uint64_t(sqlite3_column_int64(q.value.get(),0)));
+        q.Done();
     }
-
-    return locked_balance;
+    transaction.Commit();return static_cast<double>(amount)/1e8;
 }
 
 // Phase 35.4: Transaction Abandonment
 bool WalletManager::abandonTransaction(const std::string& txid) {
+    auto lease=AcquireDatabaseLease();
+    for(const auto& p:getPendingPayments())if(p.txid==txid)return false;
     if (!db_) {
         return false;
     }
@@ -4653,6 +6638,7 @@ bool WalletManager::isTransactionAbandoned(const std::string& txid) const {
 }
 
 WalletManager::AbandonmentInfo WalletManager::getAbandonmentInfo(const std::string& txid) const {
+    auto lease=const_cast<WalletManager&>(*this).AcquireDatabaseLease();
     AbandonmentInfo info;
     info.success = false;
     info.inputs_returned = 0;
@@ -4660,6 +6646,11 @@ WalletManager::AbandonmentInfo WalletManager::getAbandonmentInfo(const std::stri
 
     if (!db_) {
         info.error = "Wallet not loaded";
+        return info;
+    }
+
+    for(const auto& p:getPendingPayments())if(p.txid==txid) {
+        info.error="Payment retains durable input reservations; reconciliation is required";
         return info;
     }
 
@@ -4790,13 +6781,16 @@ bool WalletManager::addTransaction(const std::string& txid, const std::string& a
     }
 }
 
-bool WalletManager::confirmTransaction(const std::string& txid, uint32_t height) {
+bool WalletManager::confirmTransaction(const std::string& txid, uint32_t height, std::string* error) {
+    if (error) error->clear();
     if (!db_ || current_wallet_id_ == -1 || txid.empty() || height == 0) {
+        if (error) *error = "Wallet confirmation requires a selected wallet and valid identity";
         return false;
     }
 
     if (!columnExists(db_, "transactions", "height") ||
         !columnExists(db_, "transactions", "confirmations")) {
+        if (error) *error = "transactions table lacks height/confirmations columns";
         WLOG_WARN("confirmTransaction: transactions table lacks height/confirmations columns");
         return false;
     }
@@ -4821,22 +6815,29 @@ bool WalletManager::confirmTransaction(const std::string& txid, uint32_t height)
         ? SqlLog::prepare(&stmt, db_, sql_with_wallet_id, "confirm-transaction(with-wallet-id)")
         : SqlLog::prepare(&stmt, db_, sql_without_wallet_id, "confirm-transaction(no-wallet-id)");
     if (!prepared) {
+        if (error) *error = sqlite3_errmsg(db_);
         return false;
     }
 
     int bind_index = 1;
-    sqlite3_bind_int(stmt, bind_index++, static_cast<int>(height));
-    sqlite3_bind_int(stmt, bind_index++, confirmations);
-    if (has_wallet_id) {
-        sqlite3_bind_int(stmt, bind_index++, current_wallet_id_);
+    int bound = sqlite3_bind_int(stmt, bind_index++, static_cast<int>(height));
+    if (bound == SQLITE_OK) bound = sqlite3_bind_int(stmt, bind_index++, confirmations);
+    if (bound == SQLITE_OK && has_wallet_id)
+        bound = sqlite3_bind_int(stmt, bind_index++, current_wallet_id_);
+    if (bound == SQLITE_OK)
+        bound = sqlite3_bind_text(stmt, bind_index++, txid.c_str(), -1, SQLITE_STATIC);
+    if (bound != SQLITE_OK) {
+        if (error) *error = sqlite3_errmsg(db_);
+        sqlite3_finalize(stmt);
+        return false;
     }
-    sqlite3_bind_text(stmt, bind_index++, txid.c_str(), -1, SQLITE_STATIC);
 
     const int result = sqlite3_step(stmt);
     const int changes = sqlite3_changes(db_);
     sqlite3_finalize(stmt);
 
     if (result != SQLITE_DONE) {
+        if (error) *error = sqlite3_errmsg(db_);
         WLOG_ERR("Failed to confirm transaction " + txid + ": " +
                  std::string(sqlite3_errmsg(db_)));
         return false;
@@ -4852,45 +6853,34 @@ bool WalletManager::confirmTransaction(const std::string& txid, uint32_t height)
     return false;
 }
 
-// Phase 36: Remove transactions from orphaned blocks during reorg
+namespace {
+// Caller owns the surrounding checked transaction. Chain rollback changes
+// confirmation metadata; an existing outgoing intent remains local history.
+void UnconfirmOutgoingHistoryAtHeight(sqlite3* db, int wallet_id, uint32_t height, bool scoped) {
+    if (sqlite3_get_autocommit(db)) throw std::logic_error("History rewind requires its transaction owner");
+    IssuedStatement statement(db, scoped
+        ? "UPDATE transactions SET height=0,confirmations=0 WHERE wallet_id=? AND height=? AND category IN ('send','shield') AND amount<0"
+        : "UPDATE transactions SET height=0,confirmations=0 WHERE height=? AND category IN ('send','shield') AND amount<0");
+    int parameter=1;
+    if(scoped) statement.Int(parameter++,wallet_id);
+    statement.Int(parameter,height);statement.Done();
+}
+}
+
 bool WalletManager::removeTransactionsAtHeight(uint32_t height) {
-    if (!db_ || current_wallet_id_ == -1) {
-        return false;
-    }
-
-    sqlite3_stmt* stmt = nullptr;
-    const char* sql_with_wallet_id = "DELETE FROM transactions WHERE wallet_id = ? AND height = ?";
-    const char* sql_without_wallet_id = "DELETE FROM transactions WHERE height = ?";
-
-    const bool has_wallet_id = columnExists(db_, "transactions", "wallet_id");
-    const bool prepared = has_wallet_id
-        ? SqlLog::prepare(&stmt, db_, sql_with_wallet_id, "remove-transactions-at-height(with-wallet-id)")
-        : SqlLog::prepare(&stmt, db_, sql_without_wallet_id, "remove-transactions-at-height(no-wallet-id)");
-    if (!prepared) {
-        return false;
-    }
-    if (!has_wallet_id) {
-        WLOG_WARN("removeTransactionsAtHeight: using legacy transactions schema without wallet_id");
-    }
-
-    int bind_index = 1;
-    if (has_wallet_id) {
-        sqlite3_bind_int(stmt, bind_index++, current_wallet_id_);
-    }
-    sqlite3_bind_int(stmt, bind_index++, static_cast<int>(height));
-
-    int result = sqlite3_step(stmt);
-    int changes = sqlite3_changes(db_);
-    sqlite3_finalize(stmt);
-
-    if (result == SQLITE_DONE) {
-        WLOG_INFO("Removed " + std::to_string(changes) + " transactions at height " + std::to_string(height));
-        return true;
-    } else {
-        WLOG_ERR("Failed to remove transactions at height " + std::to_string(height) + ": " +
-                std::string(sqlite3_errmsg(db_)));
-        return false;
-    }
+    const auto lease=AcquireDatabaseLease();
+    if(!db_ || current_wallet_id_==-1) return false;
+    if(height==0 || height>static_cast<uint32_t>(std::numeric_limits<int>::max()))
+        throw std::runtime_error("Wallet history rewind height is out of range");
+    IssuedAddressTransaction transaction(db_);
+    const bool scoped=IssuanceWalletColumn(db_,"transactions");
+    UnconfirmOutgoingHistoryAtHeight(db_,current_wallet_id_,height,scoped);
+    IssuedStatement statement(db_,scoped
+        ? "DELETE FROM transactions WHERE wallet_id=? AND height=?"
+        : "DELETE FROM transactions WHERE height=?");
+    int parameter=1;if(scoped)statement.Int(parameter++,current_wallet_id_);
+    statement.Int(parameter,height);statement.Done();transaction.Commit();
+    return true;
 }
 
 // Analyze a raw transaction to determine its impact on wallet addresses
@@ -4949,6 +6939,8 @@ double WalletManager::calculateMiningReward(uint32_t height) const {
 
 // Address generation methods
 std::string WalletManager::getNewAddress(const std::string& label, const std::string& address_type) {
+    std::lock_guard<std::recursive_mutex> key_ownership(database_lifecycle_mutex_);
+    if(!db_ || !sqlite3_get_autocommit(db_))return "";
     if (!hasActiveWallet()) {
         WLOG_ERR("No active wallet for address generation");
         return "";
@@ -5034,6 +7026,7 @@ std::string WalletManager::getNewAddress(const std::string& label, const std::st
     }
 
     try {
+        IssuedAddressTransaction issuance(db_);
         std::string address;
         std::string script_pubkey;
         std::vector<uint8_t> script_bytes;
@@ -5151,110 +7144,15 @@ std::string WalletManager::getNewAddress(const std::string& label, const std::st
             }
         }
 
-        // Store address in database
-        sqlite3_stmt* stmt = nullptr;
-        const bool addresses_has_wallet_id = columnExists(db_, "addresses", "wallet_id");
-        // Week 1 Day 2: Added KeyID columns for descriptor wallet foundation
-        // Week 1 Day 3: Added script_pubkey column for Bitcoin-grade ownership (not address strings)
-        const char* sql = addresses_has_wallet_id
-            ? "INSERT INTO addresses (wallet_id, account, change, idx, address, pubkey, label, type, script_pubkey, key_id, internal_key_id, output_key_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
-            : "INSERT INTO addresses (account, change, idx, address, pubkey, label, type, script_pubkey, key_id, internal_key_id, output_key_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
-
-        // Determine address type string for database
-        std::string addr_type_db = (effective_address_type == "taproot") ? "p2tr" : "p2wpkh";
-
-        WLOG_INFO("💾 Attempting to INSERT address: type=" + addr_type_db + ", addr=" + address + ", idx=" + std::to_string(next_index));
-        WLOG_INFO("💾 Database pointer: " + std::string(db_ ? "VALID" : "NULL") + ", wallet_id=" + std::to_string(current_wallet_id_));
-
-        if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) == SQLITE_OK) {
-            int bind_index = 1;
-            if (addresses_has_wallet_id) {
-                sqlite3_bind_int(stmt, bind_index++, 1); // per-wallet DB always uses wallet_id=1
-            }
-            sqlite3_bind_int(stmt, bind_index++, 0); // account 0
-            sqlite3_bind_int(stmt, bind_index++, 0); // external chain
-            sqlite3_bind_int(stmt, bind_index++, next_index);
-            sqlite3_bind_text(stmt, bind_index++, address.c_str(), -1, SQLITE_TRANSIENT);
-            sqlite3_bind_null(stmt, bind_index++); // pubkey (not used yet, reserved for future)
-            sqlite3_bind_text(stmt, bind_index++, label.c_str(), -1, SQLITE_TRANSIENT);
-            sqlite3_bind_text(stmt, bind_index++, addr_type_db.c_str(), -1, SQLITE_TRANSIENT);
-            sqlite3_bind_text(stmt, bind_index++, script_pubkey.c_str(), -1, SQLITE_TRANSIENT);  // Bitcoin-grade: scriptPubKey for ownership
-
-            // Week 1 Day 2: Bind KeyID columns (20 bytes each, or NULL)
-            if (key_id.has_value()) {
-                sqlite3_bind_blob(stmt, bind_index++, key_id->data(), key_id->size(), SQLITE_TRANSIENT);
-            } else {
-                sqlite3_bind_null(stmt, bind_index++);
-            }
-
-            if (internal_key_id.has_value()) {
-                sqlite3_bind_blob(stmt, bind_index++, internal_key_id->data(), internal_key_id->size(), SQLITE_TRANSIENT);
-            } else {
-                sqlite3_bind_null(stmt, bind_index++);
-            }
-
-            if (output_key_id.has_value()) {
-                sqlite3_bind_blob(stmt, bind_index++, output_key_id->data(), output_key_id->size(), SQLITE_TRANSIENT);
-            } else {
-                sqlite3_bind_null(stmt, bind_index++);
-            }
-
-            sqlite3_bind_int64(stmt, bind_index++, std::time(nullptr));
-
-            int step_result = sqlite3_step(stmt);
-            if (step_result != SQLITE_DONE) {
-                std::string error_msg = "Failed to store address in database: ";
-                error_msg += sqlite3_errmsg(db_);
-                error_msg += " (sqlite3_step returned " + std::to_string(step_result) + ")";
-                sqlite3_finalize(stmt);
-                WLOG_ERR("💾 ❌ " + error_msg);
-                return "";
-            }
-            WLOG_INFO("💾 ✅ Successfully stored address in database");
-            sqlite3_finalize(stmt);
-        } else {
-            WLOG_ERR("💾 ❌ Failed to prepare SQL for address storage: " + std::string(sqlite3_errmsg(db_)));
-            return "";
-        }
-
-        // Store derivation path in address_derivation_paths table
-        uint32_t purpose = (effective_address_type == "taproot") ? 86 : 84;
-        std::string derivation_path = "m/" + std::to_string(purpose) + "'/" +
-                                      std::to_string(dinero::consensus::DINERO_COIN_TYPE) +
-                                      "'/0'/0/" + std::to_string(next_index);
-        const bool derivation_has_wallet_id = columnExists(db_, "address_derivation_paths", "wallet_id");
-        const char* path_sql = derivation_has_wallet_id
-            ? "INSERT INTO address_derivation_paths (address, wallet_id, derivation_path, script_pubkey, account, change, address_index, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
-            : "INSERT INTO address_derivation_paths (address, derivation_path, script_pubkey, account, change, address_index, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)";
-
-        if (sqlite3_prepare_v2(db_, path_sql, -1, &stmt, nullptr) == SQLITE_OK) {
-            int bind_index = 1;
-            sqlite3_bind_text(stmt, bind_index++, address.c_str(), -1, SQLITE_TRANSIENT);
-            if (derivation_has_wallet_id) {
-                sqlite3_bind_int(stmt, bind_index++, 1); // per-wallet DB always uses wallet_id=1
-            }
-            sqlite3_bind_text(stmt, bind_index++, derivation_path.c_str(), -1, SQLITE_TRANSIENT);
-            sqlite3_bind_text(stmt, bind_index++, script_pubkey.c_str(), -1, SQLITE_TRANSIENT);
-            sqlite3_bind_int(stmt, bind_index++, 0); // account
-            sqlite3_bind_int(stmt, bind_index++, 0); // external chain
-            sqlite3_bind_int(stmt, bind_index++, next_index);
-            sqlite3_bind_int64(stmt, bind_index++, std::time(nullptr));
-
-            sqlite3_step(stmt);
-            sqlite3_finalize(stmt);
-        }
-
-        // Add to watch_scripts table
-        const char* watch_sql = "INSERT OR IGNORE INTO watch_scripts (script_pubkey, path, is_change, last_seen_height, created_at) VALUES (?, ?, ?, ?, ?)";
-        if (sqlite3_prepare_v2(db_, watch_sql, -1, &stmt, nullptr) == SQLITE_OK) {
-            sqlite3_bind_blob(stmt, 1, script_bytes.data(), script_bytes.size(), SQLITE_STATIC);
-            sqlite3_bind_text(stmt, 2, derivation_path.c_str(), -1, SQLITE_STATIC);
-            sqlite3_bind_int(stmt, 3, 0); // not change
-            sqlite3_bind_int(stmt, 4, 0);
-            sqlite3_bind_int64(stmt, 5, std::time(nullptr));
-            sqlite3_step(stmt);
-            sqlite3_finalize(stmt);
-        }
+        const uint32_t purpose=(effective_address_type=="taproot")?86:84;
+        const std::string derivation_path="m/"+std::to_string(purpose)+"'/"+
+            std::to_string(dinero::consensus::DINERO_COIN_TYPE)+"'/0'/0/"+std::to_string(next_index);
+        PersistIssuedAddress(db_,0,next_index,address,label,
+            effective_address_type=="taproot"?"p2tr":"p2wpkh",script_pubkey,script_bytes,derivation_path,
+            key_id,internal_key_id,output_key_id);
+        issuance.Commit();
+        // Live recognition follows the durable tuple. If publication throws,
+        // the issued address remains retained for ordinary reopen/recovery.
 
         // Register with UTXOIndex if available (daemon mode).
         // In standalone/test contexts, WalletManager can operate without UTXOIndex.
@@ -5275,6 +7173,8 @@ std::string WalletManager::getNewAddress(const std::string& label, const std::st
 }
 
 std::string WalletManager::getNewChangeAddress(const std::string& label, const std::string& address_type) {
+    std::lock_guard<std::recursive_mutex> key_ownership(database_lifecycle_mutex_);
+    if(!db_ || !sqlite3_get_autocommit(db_))return "";
     if (!hasActiveWallet()) {
         WLOG_ERR("No active wallet for change address generation");
         return "";
@@ -5309,6 +7209,7 @@ std::string WalletManager::getNewChangeAddress(const std::string& label, const s
     }
 
     try {
+        IssuedAddressTransaction issuance(db_);
         // Get next change address index
         int next_index = getNextAddressIndex(0, 1);
 
@@ -5399,104 +7300,15 @@ std::string WalletManager::getNewChangeAddress(const std::string& label, const s
             }
         }
 
-        // Store address in database
-        sqlite3_stmt* stmt = nullptr;
-        const bool addresses_has_wallet_id = columnExists(db_, "addresses", "wallet_id");
-        // Week 1 Day 3: Added script_pubkey and KeyID columns
-        const char* sql = addresses_has_wallet_id
-            ? "INSERT INTO addresses (wallet_id, account, change, idx, address, pubkey, label, type, script_pubkey, key_id, internal_key_id, output_key_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
-            : "INSERT INTO addresses (account, change, idx, address, pubkey, label, type, script_pubkey, key_id, internal_key_id, output_key_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
-
-        std::string addr_type_db = (effective_address_type == "taproot") ? "p2tr" : "p2wpkh";
-
-        if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) == SQLITE_OK) {
-            int bind_index = 1;
-            if (addresses_has_wallet_id) {
-                sqlite3_bind_int(stmt, bind_index++, 1); // per-wallet DB always uses wallet_id=1
-            }
-            sqlite3_bind_int(stmt, bind_index++, 0); // account 0
-            sqlite3_bind_int(stmt, bind_index++, 1); // internal chain (change)
-            sqlite3_bind_int(stmt, bind_index++, next_index);
-            sqlite3_bind_text(stmt, bind_index++, address.c_str(), -1, SQLITE_TRANSIENT);
-            sqlite3_bind_null(stmt, bind_index++); // pubkey (reserved for future)
-            sqlite3_bind_text(stmt, bind_index++, label.c_str(), -1, SQLITE_TRANSIENT);
-            sqlite3_bind_text(stmt, bind_index++, addr_type_db.c_str(), -1, SQLITE_TRANSIENT);
-            sqlite3_bind_text(stmt, bind_index++, script_pubkey.c_str(), -1, SQLITE_TRANSIENT);
-
-            // Bind KeyID columns
-            if (key_id.has_value()) {
-                sqlite3_bind_blob(stmt, bind_index++, key_id->data(), key_id->size(), SQLITE_TRANSIENT);
-            } else {
-                sqlite3_bind_null(stmt, bind_index++);
-            }
-
-            if (internal_key_id.has_value()) {
-                sqlite3_bind_blob(stmt, bind_index++, internal_key_id->data(), internal_key_id->size(), SQLITE_TRANSIENT);
-            } else {
-                sqlite3_bind_null(stmt, bind_index++);
-            }
-
-            if (output_key_id.has_value()) {
-                sqlite3_bind_blob(stmt, bind_index++, output_key_id->data(), output_key_id->size(), SQLITE_TRANSIENT);
-            } else {
-                sqlite3_bind_null(stmt, bind_index++);
-            }
-
-            sqlite3_bind_int64(stmt, bind_index++, std::time(nullptr));
-
-            if (sqlite3_step(stmt) != SQLITE_DONE) {
-                sqlite3_finalize(stmt);
-                WLOG_ERR("Failed to store change address in database");
-                return "";
-            }
-            sqlite3_finalize(stmt);
-        } else {
-            WLOG_ERR("Failed to prepare SQL for change address storage");
-            return "";
-        }
-
-        // Store derivation path in address_derivation_paths table
-        uint32_t purpose = (effective_address_type == "taproot") ? 86 : 84;
-        std::string derivation_path = "m/" + std::to_string(purpose) + "'/" +
-                                      std::to_string(dinero::consensus::DINERO_COIN_TYPE) +
-                                      "'/0'/1/" + std::to_string(next_index);
-        const bool derivation_has_wallet_id = columnExists(db_, "address_derivation_paths", "wallet_id");
-        const char* path_sql = derivation_has_wallet_id
-            ? "INSERT INTO address_derivation_paths (address, wallet_id, derivation_path, script_pubkey, account, change, address_index, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
-            : "INSERT INTO address_derivation_paths (address, derivation_path, script_pubkey, account, change, address_index, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)";
-
-        if (sqlite3_prepare_v2(db_, path_sql, -1, &stmt, nullptr) == SQLITE_OK) {
-            int bind_index = 1;
-            sqlite3_bind_text(stmt, bind_index++, address.c_str(), -1, SQLITE_TRANSIENT);
-            if (derivation_has_wallet_id) {
-                sqlite3_bind_int(stmt, bind_index++, 1); // per-wallet DB always uses wallet_id=1
-            }
-            sqlite3_bind_text(stmt, bind_index++, derivation_path.c_str(), -1, SQLITE_TRANSIENT);
-            sqlite3_bind_text(stmt, bind_index++, script_pubkey.c_str(), -1, SQLITE_TRANSIENT);
-            sqlite3_bind_int(stmt, bind_index++, 0); // account
-            sqlite3_bind_int(stmt, bind_index++, 1); // internal chain (change)
-            sqlite3_bind_int(stmt, bind_index++, next_index);
-            sqlite3_bind_int64(stmt, bind_index++, std::time(nullptr));
-
-            if (sqlite3_step(stmt) != SQLITE_DONE) {
-                WLOG_WARN("Failed to store change derivation path: " + std::string(sqlite3_errmsg(db_)));
-            }
-            sqlite3_finalize(stmt);
-        } else {
-            WLOG_WARN("Failed to prepare SQL for change derivation path storage");
-        }
-
-        // Add to watch_scripts table
-        const char* watch_sql = "INSERT OR IGNORE INTO watch_scripts (script_pubkey, path, is_change, last_seen_height, created_at) VALUES (?, ?, ?, ?, ?)";
-        if (sqlite3_prepare_v2(db_, watch_sql, -1, &stmt, nullptr) == SQLITE_OK) {
-            sqlite3_bind_blob(stmt, 1, script_bytes.data(), script_bytes.size(), SQLITE_STATIC);
-            sqlite3_bind_text(stmt, 2, derivation_path.c_str(), -1, SQLITE_STATIC);
-            sqlite3_bind_int(stmt, 3, 1); // is change
-            sqlite3_bind_int(stmt, 4, 0);
-            sqlite3_bind_int64(stmt, 5, std::time(nullptr));
-            sqlite3_step(stmt);
-            sqlite3_finalize(stmt);
-        }
+        const uint32_t purpose=(effective_address_type=="taproot")?86:84;
+        const std::string derivation_path="m/"+std::to_string(purpose)+"'/"+
+            std::to_string(dinero::consensus::DINERO_COIN_TYPE)+"'/0'/1/"+std::to_string(next_index);
+        PersistIssuedAddress(db_,1,next_index,address,label,
+            effective_address_type=="taproot"?"p2tr":"p2wpkh",script_pubkey,script_bytes,derivation_path,
+            key_id,internal_key_id,output_key_id);
+        issuance.Commit();
+        // Live recognition follows the durable tuple. If publication throws,
+        // the issued address remains retained for ordinary reopen/recovery.
 
         // Register with UTXOIndex if available (daemon mode).
         if (utxo_index_) {
@@ -5668,316 +7480,532 @@ bool WalletManager::rescanBlockchain(int start_height,
                                      int gap_limit,
                                      dinero::ChainDB* chain_db,
                                      dinero::BlockStorage* block_storage) {
-    if (!chain_db) {
-        WLOG_ERR("rescanBlockchain: ChainDB is null - cannot scan");
-        return false;
-    }
+    return RescanBlockchainImpl(start_height, gap_limit, chain_db, block_storage, nullptr, 0);
+}
 
-    if (!db_) {
-        WLOG_ERR("rescanBlockchain: Wallet database not initialized");
-        return false;
-    }
-
-    // Get chain tip
-    auto tip_result = chain_db->getTip();
-    if (tip_result.status() != dinero::Status::Ok) {
-        WLOG_ERR("rescanBlockchain: Failed to get chain tip");
-        return false;
-    }
-    uint32_t tip_height = tip_result.value().height;
-
-    if (start_height < 0) start_height = 0;
-    if (static_cast<uint32_t>(start_height) > tip_height) {
-        WLOG_INFO("rescanBlockchain: start_height (" + std::to_string(start_height) +
-                  ") > tip (" + std::to_string(tip_height) + "), nothing to scan");
-        return true;
-    }
-
-    WLOG_INFO("═══════════════════════════════════════════════════════════");
-    WLOG_INFO("  WALLET RESCAN: height " + std::to_string(start_height) +
-              " to " + std::to_string(tip_height));
-    WLOG_INFO("═══════════════════════════════════════════════════════════");
-
-    // Load watch_scripts into memory for fast matching
-    std::set<std::vector<uint8_t>> watch_scripts;
-    {
-        const char* sql = "SELECT script_pubkey FROM watch_scripts";
-        sqlite3_stmt* stmt = nullptr;
-        if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) == SQLITE_OK) {
-            while (sqlite3_step(stmt) == SQLITE_ROW) {
-                const void* blob = sqlite3_column_blob(stmt, 0);
-                int blob_size = sqlite3_column_bytes(stmt, 0);
-                if (blob && blob_size > 0) {
-                    std::vector<uint8_t> script(
-                        static_cast<const uint8_t*>(blob),
-                        static_cast<const uint8_t*>(blob) + blob_size
-                    );
-                    watch_scripts.insert(script);
-                }
-            }
-            sqlite3_finalize(stmt);
-        }
-    }
-
-    // ═══════════════════════════════════════════════════════════════════════
-    // GAP LIMIT: Derive addresses if watch_scripts is under-populated.
-    // After wallet restore, only index-0 may exist. We must derive up to
-    // gap_limit for both external (receive) and internal (change) chains
-    // so the rescan can discover all historical UTXOs.
-    // ═══════════════════════════════════════════════════════════════════════
-    const int expected_scripts = gap_limit * 2;  // external + change
-    if (static_cast<int>(watch_scripts.size()) < expected_scripts && !master_seed_.empty()) {
-        WLOG_INFO("rescanBlockchain: watch_scripts (" + std::to_string(watch_scripts.size()) +
-                  ") < gap_limit*2 (" + std::to_string(expected_scripts) +
-                  "), deriving addresses for discovery");
-
-        int current_external = getNextAddressIndex(0, 0);  // how many external already exist
-        int current_change = getNextAddressIndex(0, 1);     // how many change already exist
-
-        // Derive external addresses up to gap_limit
-        for (int i = current_external; i < gap_limit; ++i) {
-            std::string addr = getNewAddress("", "taproot");
-            if (addr.empty()) break;
-        }
-        // Derive change addresses up to gap_limit
-        for (int i = current_change; i < gap_limit; ++i) {
-            std::string addr = getNewChangeAddress("", "taproot");
-            if (addr.empty()) break;
-        }
-
-        // Reload watch_scripts after derivation
-        watch_scripts.clear();
-        {
-            const char* sql2 = "SELECT script_pubkey FROM watch_scripts";
-            sqlite3_stmt* stmt2 = nullptr;
-            if (sqlite3_prepare_v2(db_, sql2, -1, &stmt2, nullptr) == SQLITE_OK) {
-                while (sqlite3_step(stmt2) == SQLITE_ROW) {
-                    const void* blob = sqlite3_column_blob(stmt2, 0);
-                    int blob_size = sqlite3_column_bytes(stmt2, 0);
-                    if (blob && blob_size > 0) {
-                        std::vector<uint8_t> script(
-                            static_cast<const uint8_t*>(blob),
-                            static_cast<const uint8_t*>(blob) + blob_size
-                        );
-                        watch_scripts.insert(script);
-                    }
-                }
-                sqlite3_finalize(stmt2);
-            }
-        }
-        WLOG_INFO("rescanBlockchain: after derivation, loaded " + std::to_string(watch_scripts.size()) + " watch scripts");
-    }
-
-    if (watch_scripts.empty()) {
-        WLOG_WARN("rescanBlockchain: No watch_scripts registered - nothing to find");
-        return true;
-    }
-
-    WLOG_INFO("Loaded " + std::to_string(watch_scripts.size()) + " watch scripts");
-
-    // ═══════════════════════════════════════════════════════════════════════
-    // Begin the transaction BEFORE reorg cleanup. A rescan can still fail
-    // after cleanup (for example, an encrypted wallet cannot inspect shielded
-    // outputs while it is locked). Keeping cleanup and replay in one
-    // transaction guarantees ROLLBACK restores the last known-good UTXO view.
-    exec(db_, "BEGIN TRANSACTION");
-
-    // REORG SAFETY: Wipe UTXOs >= start_height before scanning
-    // ═══════════════════════════════════════════════════════════════════════
-    // The chain before start_height is canonical NOW, but might have been
-    // different during a previous scan. We must invalidate any wallet state
-    // that could be stale from a reorged chain.
-    // ═══════════════════════════════════════════════════════════════════════
-    {
-        WLOG_INFO("Reorg safety: clearing UTXOs >= height " + std::to_string(start_height));
-
-        // Delete UTXOs found at or after start_height
-        const char* delete_utxos_sql = "DELETE FROM utxos WHERE height >= ?";
-        sqlite3_stmt* stmt = nullptr;
-        if (sqlite3_prepare_v2(db_, delete_utxos_sql, -1, &stmt, nullptr) == SQLITE_OK) {
-            sqlite3_bind_int(stmt, 1, start_height);
-            sqlite3_step(stmt);
-            int deleted = sqlite3_changes(db_);
-            sqlite3_finalize(stmt);
-            if (deleted > 0) {
-                WLOG_INFO("  Cleared " + std::to_string(deleted) + " UTXOs from reorg-unsafe heights");
-            }
-        }
-
-        // Also un-mark UTXOs that were "spent" at heights >= start_height
-        // (the spend might have been on a reorged chain)
-        const char* unspend_sql = "UPDATE utxos SET is_spent = 0, spent_txid = NULL, spent_height = NULL WHERE spent_height >= ?";
-        if (sqlite3_prepare_v2(db_, unspend_sql, -1, &stmt, nullptr) == SQLITE_OK) {
-            sqlite3_bind_int(stmt, 1, start_height);
-            sqlite3_step(stmt);
-            int unspent = sqlite3_changes(db_);
-            sqlite3_finalize(stmt);
-            if (unspent > 0) {
-                WLOG_INFO("  Unmarked " + std::to_string(unspent) + " UTXOs as unspent (reorg recovery)");
-            }
-        }
-    }
-
-    // wallet_id column guaranteed by v24 migration
-
-    // Track progress
-    uint32_t blocks_scanned = 0;
-    uint32_t utxos_found = 0;
-    uint32_t utxos_spent = 0;
-
-    // Scan blocks deterministically (no parallelism - correctness > speed)
-    for (uint32_t height = static_cast<uint32_t>(start_height); height <= tip_height; ++height) {
-        // Get block hash at height
-        auto hash_result = chain_db->getBlockHashByHeight(height);
-        if (hash_result.status() != dinero::Status::Ok) {
-            WLOG_ERR("rescanBlockchain: Failed to get hash at height " + std::to_string(height));
-            exec(db_, "ROLLBACK");
-            return false;
-        }
-
-        // Get full block
-        auto block_result = dinero::storage::ReadArchivalBlock(*chain_db, block_storage, hash_result.value());
-        if (block_result.status() != dinero::Status::Ok) {
-            WLOG_ERR("rescanBlockchain: Failed to get block at height " + std::to_string(height));
-            exec(db_, "ROLLBACK");
-            return false;
-        }
-
-        const dinero::Block& block = block_result.value();
-
-        // Process each transaction in the block
-        for (size_t tx_idx = 0; tx_idx < block.vtx.size(); ++tx_idx) {
-            const dinero::Transaction& tx = block.vtx[tx_idx];
-            std::string txid_hex = tx.GetTxid().AsUint256().GetHex();
-            bool is_coinbase = (tx_idx == 0);
-
-            // Check outputs - do we own any?
-            for (size_t vout_idx = 0; vout_idx < tx.vout.size(); ++vout_idx) {
-                const dinero::TxOutput& output = tx.vout[vout_idx];
-
-                if (watch_scripts.count(output.scriptPubKey) > 0) {
-                    // This output is ours! Add to utxos table
-                    std::string script_pubkey_hex;
-                    script_pubkey_hex.reserve(output.scriptPubKey.size() * 2);
-                    static constexpr char kHex[] = "0123456789abcdef";
-                    for (uint8_t b : output.scriptPubKey) {
-                        script_pubkey_hex.push_back(kHex[(b >> 4) & 0x0F]);
-                        script_pubkey_hex.push_back(kHex[b & 0x0F]);
-                    }
-
-                    std::string address = extractAddressFromScript(output.scriptPubKey);
-                    if (address.empty()) {
-                        // Preserve row integrity even for unknown script templates.
-                        address = "script:" + script_pubkey_hex.substr(0, 16);
-                    }
-
-                    const char* insert_sql = R"(
-                        INSERT OR IGNORE INTO utxos
-                        (wallet_id, txid, vout, address, amount, script_pubkey, height, is_coinbase, is_spent, created_at)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
-                    )";
-
-                    sqlite3_stmt* stmt = nullptr;
-                    if (sqlite3_prepare_v2(db_, insert_sql, -1, &stmt, nullptr) == SQLITE_OK) {
-                        int bind_index = 1;
-                        sqlite3_bind_int(stmt, bind_index++, current_wallet_id_);
-                        sqlite3_bind_text(stmt, bind_index++, txid_hex.c_str(), -1, SQLITE_STATIC);
-                        sqlite3_bind_int(stmt, bind_index++, static_cast<int>(vout_idx));
-                        sqlite3_bind_text(stmt, bind_index++, address.c_str(), -1, SQLITE_STATIC);
-                        sqlite3_bind_int64(stmt, bind_index++, static_cast<int64_t>(output.value.GetUna()));
-                        sqlite3_bind_text(stmt, bind_index++, script_pubkey_hex.c_str(), -1, SQLITE_STATIC);
-                        sqlite3_bind_int(stmt, bind_index++, static_cast<int>(height));
-                        sqlite3_bind_int(stmt, bind_index++, is_coinbase ? 1 : 0);
-                        sqlite3_bind_int64(stmt, bind_index++, std::time(nullptr));
-
-                        if (sqlite3_step(stmt) == SQLITE_DONE) {
-                            utxos_found++;
-                        }
-                        sqlite3_finalize(stmt);
-                    }
-                }
-            }
-
-            // Check inputs - are any of our UTXOs being spent?
-            if (!is_coinbase) {
-                for (const dinero::TxInput& input : tx.vin) {
-                    std::string prev_txid = input.prevout.txid.AsUint256().GetHex();
-                    uint32_t prev_vout = input.prevout.vout;
-
-                    // Mark as spent if we own this UTXO
-                    const char* spend_sql = R"(
-                        UPDATE utxos SET is_spent = 1, spent_txid = ?, spent_height = ?
-                        WHERE wallet_id = ? AND txid = ? AND vout = ? AND is_spent = 0
-                    )";
-
-                    sqlite3_stmt* stmt = nullptr;
-                    if (sqlite3_prepare_v2(db_, spend_sql, -1, &stmt, nullptr) == SQLITE_OK) {
-                        int bind_index = 1;
-                        sqlite3_bind_text(stmt, bind_index++, txid_hex.c_str(), -1, SQLITE_STATIC);
-                        sqlite3_bind_int(stmt, bind_index++, static_cast<int>(height));
-                        sqlite3_bind_int(stmt, bind_index++, current_wallet_id_);
-                        sqlite3_bind_text(stmt, bind_index++, prev_txid.c_str(), -1, SQLITE_STATIC);
-                        sqlite3_bind_int(stmt, bind_index++, static_cast<int>(prev_vout));
-
-                        if (sqlite3_step(stmt) == SQLITE_DONE && sqlite3_changes(db_) > 0) {
-                            utxos_spent++;
-                        }
-                        sqlite3_finalize(stmt);
-                    }
-                }
-            }
-        }
-
-        std::string shielded_error;
-        if (!wallet::shielded_ops::RescanConfirmedBlock(*this, height,
-                                                        block.vtx,
-                                                        &shielded_error)) {
-            exec(db_, "ROLLBACK");
-            WLOG_ERR("rescanBlockchain: Shielded rescan failed at height " +
-                     std::to_string(height) + ": " + shielded_error);
-            return false;
-        }
-
-        blocks_scanned++;
-
-        // Progress logging every 100 blocks
-        if (blocks_scanned % 100 == 0) {
-            WLOG_INFO("  Scanned " + std::to_string(blocks_scanned) + " blocks, " +
-                      "found " + std::to_string(utxos_found) + " UTXOs, " +
-                      "spent " + std::to_string(utxos_spent));
-        }
-
-        // Update sync_meta progress (resumable)
-        if (blocks_scanned % 100 == 0 || height == tip_height) {
-            const char* meta_sql = R"(
-                INSERT OR REPLACE INTO sync_meta (id, last_scanned_height, birth_height, scan_complete)
-                VALUES (1, ?, ?, ?)
-            )";
-            sqlite3_stmt* stmt = nullptr;
-            if (sqlite3_prepare_v2(db_, meta_sql, -1, &stmt, nullptr) == SQLITE_OK) {
-                sqlite3_bind_int(stmt, 1, static_cast<int>(height));
-                sqlite3_bind_int(stmt, 2, start_height);
-                sqlite3_bind_int(stmt, 3, (height == tip_height) ? 1 : 0);
-                sqlite3_step(stmt);
-                sqlite3_finalize(stmt);
-            }
-        }
-    }
-
-    // Commit all changes
-    exec(db_, "COMMIT");
-
-    // Update wallet tip
-    current_blockchain_height_ = tip_height;
-
-    WLOG_INFO("═══════════════════════════════════════════════════════════");
-    WLOG_INFO("  RESCAN COMPLETE");
-    WLOG_INFO("  Blocks scanned: " + std::to_string(blocks_scanned));
-    WLOG_INFO("  UTXOs found: " + std::to_string(utxos_found));
-    WLOG_INFO("  UTXOs spent: " + std::to_string(utxos_spent));
-    WLOG_INFO("═══════════════════════════════════════════════════════════");
-
+bool WalletManager::snapshotRecoveryAlreadyApplied(uint32_t height,const std::string& hash) {
+    auto lease=AcquireDatabaseLease();if(!lease->Database())return false;
+    IssuedStatement exists(db_,"SELECT 1 FROM sqlite_schema WHERE type='table' AND name='wallet_snapshot_recovered_blocks'");
+    const auto present=sqlite3_step(exists.value.get());if(present==SQLITE_DONE)return false;
+    if(present!=SQLITE_ROW)throw std::runtime_error("Recovery block cache unavailable");
+    exists.Done();IssuedStatement bounds(db_,"SELECT MIN(height),MAX(height) FROM wallet_snapshot_recovered_blocks");
+    if(sqlite3_step(bounds.value.get())!=SQLITE_ROW)throw std::runtime_error("Recovery block bounds unavailable");
+    if(sqlite3_column_type(bounds.value.get(),0)==SQLITE_NULL)return false;
+    const auto base=sqlite3_column_int64(bounds.value.get(),0),tip=sqlite3_column_int64(bounds.value.get(),1);
+    if(height<uint64_t(base))return true;
+    if(height>uint64_t(tip))return false;
+    IssuedStatement block(db_,"SELECT hash FROM wallet_snapshot_recovered_blocks WHERE height=?");block.Int(1,height);
+    if(sqlite3_step(block.value.get())!=SQLITE_ROW)throw std::runtime_error("Recovery block cache has a gap");
+    const auto* value=reinterpret_cast<const char*>(sqlite3_column_text(block.value.get(),0));
+    if(!value||hash!=value)throw std::runtime_error("Queued wallet block differs from recovered selected source");
     return true;
+}
+
+bool WalletManager::RescanBlockchainImpl(int start_height, int gap_limit,
+                                        ChainDB* chain_db, BlockStorage* block_storage,
+                                        const SelectedWalletHistory* prepared, uint64_t expected_session) {
+    if (!chain_db && !prepared) return false;
+    std::unique_ptr<DatabaseLease> database_lease;
+    try { database_lease = AcquireDatabaseLease(); }
+    catch (...) { return false; }
+    if (!db_ || current_wallet_id_ == -1 || !sqlite3_get_autocommit(db_)) return false;
+    if (prepared && (database_leases_ != 1 || !expected_session ||
+        database_lease->Session() != expected_session || (prepared->blocks_.empty() && !prepared->snapshot_) ||
+        prepared->network_ != Params().network_id ||
+        prepared->genesis_ != uint256::FromHexUnsafe(Params().genesis_hash))) return false;
+
+    // The prepared path reads only owned immutable bodies. The legacy path
+    // still reads mutable archival data. Neither grants a recovery receipt.
+    auto checked = [&](int result, int expected) {
+        if (result != expected)
+            throw std::runtime_error(std::string("Block rescan SQL failed: ") + sqlite3_errmsg(db_));
+    };
+    using Statement = std::unique_ptr<sqlite3_stmt, decltype(&sqlite3_finalize)>;
+    auto prepare = [&](const char* sql) {
+        sqlite3_stmt* raw = nullptr;
+        const int rc = sqlite3_prepare_v2(db_, sql, -1, &raw, nullptr);
+        Statement statement(raw, sqlite3_finalize);
+        checked(rc, SQLITE_OK);
+        return statement;
+    };
+    auto watch_scripts = [&] {
+        std::set<std::vector<uint8_t>> scripts;
+        auto statement = prepare("SELECT script_pubkey FROM watch_scripts");
+        int rc;
+        while ((rc = sqlite3_step(statement.get())) == SQLITE_ROW) {
+            const auto* bytes = static_cast<const uint8_t*>(sqlite3_column_blob(statement.get(), 0));
+            const int size = sqlite3_column_bytes(statement.get(), 0);
+            if (sqlite3_column_type(statement.get(), 0) != SQLITE_BLOB || !bytes || size <= 0)
+                throw std::runtime_error("Block rescan watch script unavailable");
+            scripts.emplace(bytes, bytes + size);
+        }
+        checked(rc, SQLITE_DONE);
+        return scripts;
+    };
+    bool owned_transaction = false;
+    std::unique_lock<std::mutex> height_lock(height_mu_, std::defer_lock);
+    uint32_t tip_height = 0;
+    try {
+        if (prepared) {
+            const auto end=uint64_t(prepared->first_height_)+prepared->blocks_.size();
+            if (!end || end>uint64_t(INT32_MAX)+1 ||
+                (!prepared->blocks_.empty()&&prepared->blocks_.back().GetHash()!=prepared->tip_))return false;
+            tip_height=uint32_t(end-1);
+            if(prepared->snapshot_&&(prepared->snapshot_->height+1!=prepared->first_height_ ||
+                (!utxo_index_) || wallet_locked_))return false;
+        } else {
+            const auto tip = chain_db->getTip();
+            if (!tip.ok() || tip->height < 0) return false;
+            tip_height = static_cast<uint32_t>(tip->height);
+        }
+        start_height = std::max(start_height, 0);
+        // An unavailable requested prefix is not a completed empty scan. In
+        // particular a phone may select a snapshot tip while the archival tip
+        // is still genesis; callers must not earn a recovery marker from this.
+        if (static_cast<uint32_t>(start_height) > tip_height && !(prepared&&prepared->snapshot_&&uint32_t(start_height)==tip_height+1)) return false;
+        if (gap_limit < 0) return false;
+        auto scripts = watch_scripts();
+        if(prepared&&prepared->snapshot_&&scripts!=prepared->snapshot_scripts_)return false;
+        // Preserve existing address discovery. Issued addresses are durable
+        // independently of the scan and must not be rolled back with effects.
+        if (scripts.size() < uint64_t(gap_limit) * 2 && !master_seed_.empty()) {
+            for (int i = getNextAddressIndex(0, 0); i < gap_limit; ++i)
+                if (getNewAddress("", "taproot").empty()) return false;
+            for (int i = getNextAddressIndex(0, 1); i < gap_limit; ++i)
+                if (getNewChangeAddress("", "taproot").empty()) return false;
+            scripts = watch_scripts();
+        }
+        if (scripts.empty()) return true;
+        exec(db_, "PRAGMA synchronous=FULL");
+        {
+            auto policy = prepare("PRAGMA synchronous");
+            checked(sqlite3_step(policy.get()), SQLITE_ROW);
+            if (sqlite3_column_int(policy.get(), 0) != 2)
+                throw std::runtime_error("Block rescan durability unavailable");
+            checked(sqlite3_step(policy.get()), SQLITE_DONE);
+        }
+        exec(db_, "BEGIN IMMEDIATE");
+        owned_transaction = true;
+        // Cleanup and every required SQL effect/progress update share this
+        // transaction. Never adopt, commit or roll back a caller's transaction.
+        {
+            auto remove = prepare("DELETE FROM utxos WHERE wallet_id=? AND height>=?");
+            checked(sqlite3_bind_int(remove.get(), 1, current_wallet_id_), SQLITE_OK);
+            checked(sqlite3_bind_int(remove.get(), 2, start_height), SQLITE_OK);
+            checked(sqlite3_step(remove.get()), SQLITE_DONE);
+            auto restore = prepare("UPDATE utxos SET is_spent=0,spent_txid=NULL,spent_height=NULL WHERE wallet_id=? AND spent_height>=?");
+            checked(sqlite3_bind_int(restore.get(), 1, current_wallet_id_), SQLITE_OK);
+            checked(sqlite3_bind_int(restore.get(), 2, start_height), SQLITE_OK);
+            checked(sqlite3_step(restore.get()), SQLITE_DONE);
+        }
+        if(prepared&&prepared->snapshot_){
+            auto pending=prepare("SELECT 1 FROM transactions WHERE wallet_id=? AND height=0 AND category IN ('send','shield','unshield') LIMIT 1");
+            checked(sqlite3_bind_int(pending.get(),1,current_wallet_id_),SQLITE_OK);
+            if(sqlite3_step(pending.get())!=SQLITE_DONE)throw std::runtime_error("Pending outgoing payment prevents snapshot reconciliation");
+            auto clear=prepare("DELETE FROM utxos WHERE wallet_id=? AND is_spent=0");
+            checked(sqlite3_bind_int(clear.get(),1,current_wallet_id_),SQLITE_OK);checked(sqlite3_step(clear.get()),SQLITE_DONE);
+            for(const auto& coin:prepared->snapshot_->coins){
+                if(!scripts.contains(coin.script))continue;
+                if(!coin.maturity_bound&&!prepared->verified_legacy_origins_.contains({coin.txid,coin.output}))
+                    throw std::runtime_error("Owned legacy creation metadata is not authenticated");
+                std::string script;static constexpr char digits[]="0123456789abcdef";
+                for(const auto byte:coin.script){script+=digits[byte>>4];script+=digits[byte&15];}
+                auto address=extractAddressFromScript(coin.script);if(address.empty())throw std::runtime_error("Owned snapshot script type unsupported");
+                auto row=prepare(R"(
+                    INSERT INTO utxos(wallet_id,txid,vout,address,amount,script_pubkey,height,is_coinbase,is_spent,created_at)
+                    VALUES(?,?,?,?,?,?,?,?,0,?) ON CONFLICT DO UPDATE SET
+                    amount=excluded.amount,script_pubkey=excluded.script_pubkey,height=excluded.height,
+                    is_coinbase=excluded.is_coinbase,is_spent=0,spent_txid=NULL,spent_height=NULL
+                )");
+                const auto id=coin.txid.GetHex();
+                checked(sqlite3_bind_int(row.get(),1,current_wallet_id_),SQLITE_OK);
+                checked(sqlite3_bind_text(row.get(),2,id.c_str(),-1,SQLITE_TRANSIENT),SQLITE_OK);
+                checked(sqlite3_bind_int64(row.get(),3,coin.output),SQLITE_OK);
+                checked(sqlite3_bind_text(row.get(),4,address.c_str(),-1,SQLITE_TRANSIENT),SQLITE_OK);
+                checked(sqlite3_bind_int64(row.get(),5,coin.amount),SQLITE_OK);
+                checked(sqlite3_bind_text(row.get(),6,script.c_str(),-1,SQLITE_TRANSIENT),SQLITE_OK);
+                checked(sqlite3_bind_int64(row.get(),7,coin.height),SQLITE_OK);
+                checked(sqlite3_bind_int(row.get(),8,coin.coinbase),SQLITE_OK);
+                checked(sqlite3_bind_int64(row.get(),9,std::time(nullptr)),SQLITE_OK);checked(sqlite3_step(row.get()),SQLITE_DONE);
+            }
+        }
+        // The inclusive loop uses a wider counter so a maximal persisted
+        // height cannot wrap to zero and repeatedly replay the source.
+        for (uint64_t cursor = static_cast<uint32_t>(start_height); cursor <= tip_height; ++cursor) {
+            const auto height = static_cast<uint32_t>(cursor);
+            std::optional<Block> legacy_body;
+            if (!prepared) {
+                const auto hash = chain_db->getBlockHashByHeight(height);
+                if (!hash.ok()) throw std::runtime_error("Block rescan source height unavailable");
+                const auto source = dinero::storage::ReadArchivalBlock(*chain_db, block_storage, *hash);
+                if (!source.ok()) throw std::runtime_error("Block rescan source body unavailable");
+                legacy_body = *source;
+            }
+            const auto& block = prepared ? prepared->blocks_[height-prepared->first_height_] : *legacy_body;
+            for (size_t tx_index = 0; tx_index < block.vtx.size(); ++tx_index) {
+                const auto& tx = block.vtx[tx_index];
+                const std::string txid = tx.GetTxid().AsUint256().GetHex();
+                const bool coinbase = tx_index == 0;
+                std::map<std::string, int64_t> activity;
+                std::map<std::string, std::set<std::string>> obsolete_receipt_addresses;
+                bool spends_owned = false;
+                const auto accumulate = [&](const std::string& address, int64_t value) {
+                    auto& amount = activity[address];
+                    if ((value > 0 && amount > INT64_MAX - value) ||
+                        (value < 0 && amount < INT64_MIN - value))
+                        throw std::runtime_error("Block rescan history amount out of range");
+                    amount += value;
+                };
+                for (size_t vout = 0; vout < tx.vout.size(); ++vout) {
+                    const auto& output = tx.vout[vout];
+                    if (!scripts.count(output.scriptPubKey)) continue;
+                    if (output.is_confidential)
+                        throw std::runtime_error("Block rescan confidential history unsupported");
+                    if (output.value.GetUna() > uint64_t(INT64_MAX) || vout > UINT32_MAX)
+                        throw std::runtime_error("Block rescan owned output out of range");
+                    std::string script;
+                    static constexpr char hex[] = "0123456789abcdef";
+                    script.reserve(output.scriptPubKey.size() * 2);
+                    for (const auto byte : output.scriptPubKey) {
+                        script.push_back(hex[byte >> 4]); script.push_back(hex[byte & 15]);
+                    }
+                    std::string address = extractAddressFromScript(output.scriptPubKey);
+                    if (address.empty()) address = "script:" + script.substr(0, 16);
+                    accumulate(address, static_cast<int64_t>(output.value.GetUna()));
+                    // Earlier recovery used a Bech32 checksum for Taproot and
+                    // a display-only script fallback for P2MR. Reconcile only
+                    // aliases derived from this authenticated owned output.
+                    if (output.scriptPubKey.size()==34 && output.scriptPubKey[1]==0x20) {
+                        const auto& spk=output.scriptPubKey;
+                        if(spk[0]==0x51)
+                            obsolete_receipt_addresses[address].insert(bech32::Encode("din",1,
+                                std::vector<uint8_t>(spk.begin()+2,spk.end()),bech32::Encoding::BECH32));
+                        else if(spk[0]==0x53)
+                            obsolete_receipt_addresses[address].insert("script:"+script.substr(0,16));
+                    }
+                    auto row = prepare(R"(
+                        INSERT OR IGNORE INTO utxos
+                        (wallet_id,txid,vout,address,amount,script_pubkey,height,is_coinbase,is_spent,created_at)
+                        VALUES(?,?,?,?,?,?,?,?,0,?)
+                    )");
+                    checked(sqlite3_bind_int(row.get(), 1, current_wallet_id_), SQLITE_OK);
+                    checked(sqlite3_bind_text(row.get(), 2, txid.c_str(), -1, SQLITE_TRANSIENT), SQLITE_OK);
+                    checked(sqlite3_bind_int64(row.get(), 3, vout), SQLITE_OK);
+                    checked(sqlite3_bind_text(row.get(), 4, address.c_str(), -1, SQLITE_TRANSIENT), SQLITE_OK);
+                    checked(sqlite3_bind_int64(row.get(), 5, output.value.GetUna()), SQLITE_OK);
+                    checked(sqlite3_bind_text(row.get(), 6, script.c_str(), -1, SQLITE_TRANSIENT), SQLITE_OK);
+                    checked(sqlite3_bind_int64(row.get(), 7, height), SQLITE_OK);
+                    checked(sqlite3_bind_int(row.get(), 8, coinbase ? 1 : 0), SQLITE_OK);
+                    checked(sqlite3_bind_int64(row.get(), 9, std::time(nullptr)), SQLITE_OK);
+                    checked(sqlite3_step(row.get()), SQLITE_DONE);
+                }
+                if (!coinbase) {
+                    for (const auto& input : tx.vin) {
+                        const auto previous = input.prevout.txid.AsUint256().GetHex();
+                        auto owned = prepare("SELECT address,amount FROM utxos WHERE wallet_id=? AND txid=? AND vout=? AND is_spent=0");
+                        checked(sqlite3_bind_int(owned.get(), 1, current_wallet_id_), SQLITE_OK);
+                        checked(sqlite3_bind_text(owned.get(), 2, previous.c_str(), -1, SQLITE_TRANSIENT), SQLITE_OK);
+                        checked(sqlite3_bind_int64(owned.get(), 3, input.prevout.vout), SQLITE_OK);
+                        const int found = sqlite3_step(owned.get());
+                        if (found == SQLITE_ROW) {
+                            const auto* address = reinterpret_cast<const char*>(sqlite3_column_text(owned.get(), 0));
+                            const auto amount = sqlite3_column_int64(owned.get(), 1);
+                            if (!address || sqlite3_column_type(owned.get(), 1) != SQLITE_INTEGER || amount < 0)
+                                throw std::runtime_error("Block rescan owned history input malformed");
+                            spends_owned = true;
+                            accumulate(address, -amount);
+                            checked(sqlite3_step(owned.get()), SQLITE_DONE);
+                        } else checked(found, SQLITE_DONE);
+                        auto row = prepare(R"(
+                            UPDATE utxos SET is_spent=1,spent_txid=?,spent_height=?
+                            WHERE wallet_id=? AND txid=? AND vout=? AND is_spent=0
+                        )");
+                        checked(sqlite3_bind_text(row.get(), 1, txid.c_str(), -1, SQLITE_TRANSIENT), SQLITE_OK);
+                        checked(sqlite3_bind_int64(row.get(), 2, height), SQLITE_OK);
+                        checked(sqlite3_bind_int(row.get(), 3, current_wallet_id_), SQLITE_OK);
+                        checked(sqlite3_bind_text(row.get(), 4, previous.c_str(), -1, SQLITE_TRANSIENT), SQLITE_OK);
+                        checked(sqlite3_bind_int64(row.get(), 5, input.prevout.vout), SQLITE_OK);
+                        checked(sqlite3_step(row.get()), SQLITE_DONE);
+                    }
+                }
+                // Keep originating sends/self-transfers and their labels/amounts.
+                // A restored wallet without that record gets the aggregate owned
+                // net change, rather than a false incoming payment for change.
+                if (spends_owned) {
+                    auto existing = prepare("SELECT 1 FROM transactions WHERE wallet_id=? AND txid=? LIMIT 1");
+                    checked(sqlite3_bind_int(existing.get(), 1, current_wallet_id_), SQLITE_OK);
+                    checked(sqlite3_bind_text(existing.get(), 2, txid.c_str(), -1, SQLITE_TRANSIENT), SQLITE_OK);
+                    const int found = sqlite3_step(existing.get());
+                    if (found == SQLITE_ROW) {
+                        activity.clear();
+                        auto confirm = prepare("UPDATE transactions SET height=?,confirmations=? WHERE wallet_id=? AND txid=?");
+                        checked(sqlite3_bind_int64(confirm.get(), 1, height), SQLITE_OK);
+                        checked(sqlite3_bind_int64(confirm.get(), 2, uint64_t(tip_height)-height+1), SQLITE_OK);
+                        checked(sqlite3_bind_int(confirm.get(), 3, current_wallet_id_), SQLITE_OK);
+                        checked(sqlite3_bind_text(confirm.get(), 4, txid.c_str(), -1, SQLITE_TRANSIENT), SQLITE_OK);
+                        checked(sqlite3_step(confirm.get()), SQLITE_DONE);
+                    } else {
+                        checked(found, SQLITE_DONE);
+                        int64_t net = 0;
+                        for (const auto& [address, amount] : activity) {
+                            if ((amount > 0 && net > INT64_MAX-amount) || (amount < 0 && net < INT64_MIN-amount))
+                                throw std::runtime_error("Block rescan net history amount out of range");
+                            net += amount;
+                        }
+                        const auto address = activity.begin()->first;
+                        activity.clear();activity.emplace(address, net);
+                    }
+                }
+                // History shares the transaction with coins/progress. Preserve
+                // records outside this scan; this is not complete key discovery.
+                for (const auto& [address, amount] : activity) {
+                    const std::string category = coinbase ? "generate" : amount < 0 ? "send" : "receive";
+                    std::string recovered_label;
+                    if(prepared&&prepared->snapshot_ && amount>=0) {
+                        for(const auto& alias:obsolete_receipt_addresses[address]) {
+                            if(alias.empty()||alias==address)continue;
+                            auto old=prepare("SELECT label FROM transactions WHERE wallet_id=? AND txid=? AND address=? AND category=? AND is_coinbase=? AND amount>=0");
+                            checked(sqlite3_bind_int(old.get(),1,current_wallet_id_),SQLITE_OK);
+                            checked(sqlite3_bind_text(old.get(),2,txid.c_str(),-1,SQLITE_TRANSIENT),SQLITE_OK);
+                            checked(sqlite3_bind_text(old.get(),3,alias.c_str(),-1,SQLITE_TRANSIENT),SQLITE_OK);
+                            checked(sqlite3_bind_text(old.get(),4,category.c_str(),-1,SQLITE_TRANSIENT),SQLITE_OK);
+                            checked(sqlite3_bind_int(old.get(),5,coinbase?1:0),SQLITE_OK);
+                            int rc;
+                            while((rc=sqlite3_step(old.get()))==SQLITE_ROW) {
+                                const auto* label=reinterpret_cast<const char*>(sqlite3_column_text(old.get(),0));
+                                if(recovered_label.empty()&&label)recovered_label=label;
+                            }
+                            checked(rc,SQLITE_DONE);
+                            auto remove=prepare("DELETE FROM transactions WHERE wallet_id=? AND txid=? AND address=? AND category=? AND is_coinbase=? AND amount>=0");
+                            checked(sqlite3_bind_int(remove.get(),1,current_wallet_id_),SQLITE_OK);
+                            checked(sqlite3_bind_text(remove.get(),2,txid.c_str(),-1,SQLITE_TRANSIENT),SQLITE_OK);
+                            checked(sqlite3_bind_text(remove.get(),3,alias.c_str(),-1,SQLITE_TRANSIENT),SQLITE_OK);
+                            checked(sqlite3_bind_text(remove.get(),4,category.c_str(),-1,SQLITE_TRANSIENT),SQLITE_OK);
+                            checked(sqlite3_bind_int(remove.get(),5,coinbase?1:0),SQLITE_OK);
+                            checked(sqlite3_step(remove.get()),SQLITE_DONE);
+                        }
+                    }
+                    auto history = prepare(R"(
+                        INSERT INTO transactions(wallet_id,txid,address,amount,confirmations,category,label,time,is_coinbase,height)
+                        VALUES(?,?,?,?,?,?,?,?,?,?)
+                        ON CONFLICT DO UPDATE SET
+                            amount=excluded.amount,confirmations=excluded.confirmations,
+                            category=excluded.category,time=excluded.time,
+                            label=COALESCE(NULLIF(transactions.label,''),excluded.label),
+                            is_coinbase=excluded.is_coinbase,height=excluded.height
+                    )");
+                    checked(sqlite3_bind_int(history.get(), 1, current_wallet_id_), SQLITE_OK);
+                    checked(sqlite3_bind_text(history.get(), 2, txid.c_str(), -1, SQLITE_TRANSIENT), SQLITE_OK);
+                    checked(sqlite3_bind_text(history.get(), 3, address.c_str(), -1, SQLITE_TRANSIENT), SQLITE_OK);
+                    checked(sqlite3_bind_double(history.get(), 4, static_cast<double>(amount) / ConsensusSubsidy::UNA_PER_DIN), SQLITE_OK);
+                    checked(sqlite3_bind_int64(history.get(), 5, uint64_t(tip_height)-height+1), SQLITE_OK);
+                    checked(sqlite3_bind_text(history.get(), 6, category.c_str(), -1, SQLITE_TRANSIENT), SQLITE_OK);
+                    checked(sqlite3_bind_text(history.get(), 7, recovered_label.c_str(), -1, SQLITE_TRANSIENT), SQLITE_OK);
+                    checked(sqlite3_bind_int64(history.get(), 8, block.header.timestamp), SQLITE_OK);
+                    checked(sqlite3_bind_int(history.get(), 9, coinbase ? 1 : 0), SQLITE_OK);
+                    checked(sqlite3_bind_int64(history.get(), 10, height), SQLITE_OK);
+                    checked(sqlite3_step(history.get()), SQLITE_DONE);
+
+                }
+            }
+            std::string error;
+            // A transparent snapshot baseline does not qualify legacy shielded
+            // discovery. Keep that consumer on the existing archival path only.
+            if (!(prepared&&prepared->snapshot_) && !wallet::shielded_ops::RescanConfirmedBlock(*this, height, block.vtx, &error))
+                throw std::runtime_error("Block rescan shielded consumer failed: " + error);
+            if ((cursor - start_height + 1) % 100 == 0 || height == tip_height) {
+                auto progress = prepare(R"(
+                    INSERT INTO sync_meta(id,last_scanned_height,birth_height,scan_complete) VALUES(1,?,?,?)
+                    ON CONFLICT(id) DO UPDATE SET last_scanned_height=excluded.last_scanned_height,
+                        birth_height=excluded.birth_height,scan_complete=excluded.scan_complete
+                )");
+                checked(sqlite3_bind_int64(progress.get(), 1, height), SQLITE_OK);
+                checked(sqlite3_bind_int(progress.get(), 2, start_height), SQLITE_OK);
+                checked(sqlite3_bind_int(progress.get(), 3, height == tip_height ? 1 : 0), SQLITE_OK);
+                checked(sqlite3_step(progress.get()), SQLITE_DONE);
+                if (sqlite3_changes(db_) != 1) throw std::runtime_error("Block rescan progress not stored");
+            }
+        }
+        // Reserve memory publication ownership before committing the durable
+        // tip. Nothing fallible remains between COMMIT and height publication.
+        height_lock.lock();
+        auto persisted_tip = prepare("INSERT INTO tip(rowid,height) VALUES(1,?) ON CONFLICT(rowid) DO UPDATE SET height=excluded.height");
+        checked(sqlite3_bind_int64(persisted_tip.get(), 1, tip_height), SQLITE_OK);
+        checked(sqlite3_step(persisted_tip.get()), SQLITE_DONE);
+        if (sqlite3_changes(db_) != 1) throw std::runtime_error("Block rescan tip not stored");
+        if(prepared&&prepared->snapshot_){
+            auto progress=prepare("INSERT INTO sync_meta(id,last_scanned_height,birth_height,scan_complete) VALUES(1,?,?,1) ON CONFLICT(id) DO UPDATE SET last_scanned_height=excluded.last_scanned_height,birth_height=excluded.birth_height,scan_complete=1");
+            checked(sqlite3_bind_int64(progress.get(),1,tip_height),SQLITE_OK);
+            checked(sqlite3_bind_int64(progress.get(),2,prepared->first_height_),SQLITE_OK);
+            checked(sqlite3_step(progress.get()),SQLITE_DONE);
+            if(sqlite3_changes(db_)!=1)throw std::runtime_error("Recovery progress row unavailable");
+            exec(db_,"CREATE TABLE IF NOT EXISTS wallet_snapshot_recovered_blocks(height INTEGER PRIMARY KEY,hash TEXT NOT NULL)");
+            exec(db_,"DELETE FROM wallet_snapshot_recovered_blocks");
+            const auto stamp=[&](uint32_t height,const uint256& hash){
+                auto row=prepare("INSERT INTO wallet_snapshot_recovered_blocks VALUES(?,?)");const auto hex=hash.GetHex();
+                checked(sqlite3_bind_int64(row.get(),1,height),SQLITE_OK);checked(sqlite3_bind_text(row.get(),2,hex.c_str(),-1,SQLITE_TRANSIENT),SQLITE_OK);
+                checked(sqlite3_step(row.get()),SQLITE_DONE);
+            };
+            stamp(prepared->snapshot_->height,prepared->snapshot_->base);
+            for(size_t i=0;i<prepared->blocks_.size();++i)stamp(prepared->first_height_+uint32_t(i),prepared->blocks_[i].GetHash());
+            std::map<std::vector<uint8_t>,std::string> paths;
+            {auto rows=prepare("SELECT script_pubkey,path FROM watch_scripts");int rc;
+             while((rc=sqlite3_step(rows.get()))==SQLITE_ROW){const auto* data=static_cast<const uint8_t*>(sqlite3_column_blob(rows.get(),0));
+                const int size=sqlite3_column_bytes(rows.get(),0);const auto* path=reinterpret_cast<const char*>(sqlite3_column_text(rows.get(),1));
+                if(!data||size<=0||!path)throw std::runtime_error("Recovery index watch ownership unavailable");
+                paths.emplace(std::vector<uint8_t>(data,data+size),path);}
+             checked(rc,SQLITE_DONE);}
+            std::vector<dinero::WalletUTXO> coins;
+            {auto rows=prepare("SELECT txid,vout,amount,script_pubkey,height,is_coinbase,is_spent,spent_height FROM utxos WHERE wallet_id=?");
+             checked(sqlite3_bind_int(rows.get(),1,current_wallet_id_),SQLITE_OK);int rc;
+             while((rc=sqlite3_step(rows.get()))==SQLITE_ROW){
+                const auto text=[&](int n){const auto* v=reinterpret_cast<const char*>(sqlite3_column_text(rows.get(),n));
+                    if(!v)throw std::runtime_error("Recovery wallet coin unavailable");return std::string(v);};
+                uint256 hash;std::vector<uint8_t> script;
+                if(!uint256::FromHex(text(0),hash)||!util::unhex(text(3),script)||!paths.contains(script))
+                    throw std::runtime_error("Recovery coin ownership cannot be reconciled");
+                if(sqlite3_column_int(rows.get(),6)&&sqlite3_column_type(rows.get(),7)==SQLITE_NULL)continue;
+                dinero::WalletUTXO coin(TxId(hash),uint32_t(sqlite3_column_int64(rows.get(),1)),
+                    AmountUna::Una(uint64_t(sqlite3_column_int64(rows.get(),2))),script,paths.at(script),sqlite3_column_int(rows.get(),4),sqlite3_column_int(rows.get(),5)!=0);
+                if(sqlite3_column_int(rows.get(),6))coin.spend_height=sqlite3_column_int(rows.get(),7);
+                coins.push_back(std::move(coin));
+             }checked(rc,SQLITE_DONE);}
+            // Same ordered two-store convention as WalletWorker: index commits
+            // first; no wallet completion/history is published if either fails.
+            utxo_index_->ApplyAtomically([&]{
+                for(const auto& old:utxo_index_->GetUnspentUTXOs())if(paths.contains(old.spk))
+                    if(!utxo_index_->DeleteUTXO(old.txid,old.vout))throw std::runtime_error("Recovery old index row removal failed");
+                for(const auto& coin:coins){
+                    const auto old=utxo_index_->GetUTXO(coin.txid,coin.vout);
+                    if(old&&(!utxo_index_->DeleteUTXO(coin.txid,coin.vout)))throw std::runtime_error("Recovery index row replacement failed");
+                    if(!utxo_index_->AddUTXO(coin))throw std::runtime_error("Recovery index write failed");
+                }
+            });
+        }
+        exec(db_, "COMMIT");
+        owned_transaction = false;
+    } catch (...) {
+        if (owned_transaction && !sqlite3_get_autocommit(db_) &&
+            sqlite3_exec(db_, "ROLLBACK", nullptr, nullptr, nullptr) != SQLITE_OK &&
+            !sqlite3_get_autocommit(db_)) std::terminate();
+        return false;
+    }
+    current_blockchain_height_ = tip_height;
+    height_lock.unlock();
+    height_cv_.notify_all();
+    return true;
+}
+
+std::vector<WalletManager::WalletUTXO> WalletManager::ReadSnapshotCandidatesOwned() const {
+    if(!db_||!database_leases_||current_wallet_id_<=0)throw std::runtime_error("Snapshot candidate wallet owner unavailable");
+    IssuedStatement exists(db_,"SELECT 1 FROM sqlite_schema WHERE type='table' AND name='wallet_snapshot_candidates'");
+    const int present=sqlite3_step(exists.value.get());
+    if(present==SQLITE_DONE)return {};
+    IssuanceCheck(db_,present,SQLITE_ROW);exists.Done();
+    IssuedStatement rows(db_,"SELECT version,txid,vout,amount,script_pubkey,created_height,is_coinbase,base_height,base_block,source_root,network,genesis FROM wallet_snapshot_candidates WHERE wallet_id=? ORDER BY txid,vout");
+    rows.Int(1,current_wallet_id_);std::vector<WalletUTXO> result;size_t bytes=0;int rc;
+    std::set<std::pair<std::string,uint32_t>> seen;
+    const auto text=[&](int n,size_t max){
+        auto* q=rows.value.get();const auto* p=static_cast<const char*>(sqlite3_column_blob(q,n));const int size=sqlite3_column_bytes(q,n);
+        if(sqlite3_column_type(q,n)!=SQLITE_TEXT||!p||size<=0||size>int(max)||std::memchr(p,0,size))
+            throw std::runtime_error("Snapshot candidate text malformed");
+        return std::string(p,size);
+    };
+    const auto number=[&](int n,int64_t max){
+        auto* q=rows.value.get();const auto v=sqlite3_column_int64(q,n);
+        if(sqlite3_column_type(q,n)!=SQLITE_INTEGER||v<0||v>max)throw std::runtime_error("Snapshot candidate number malformed");return v;
+    };
+    const auto hash=[&](int n){const auto s=text(n,64);uint256 value;
+        if(s.size()!=64||!uint256::FromHex(s,value)||value.IsNull()||value.GetHex()!=s)throw std::runtime_error("Snapshot candidate hash malformed");return s;};
+    while((rc=sqlite3_step(rows.value.get()))==SQLITE_ROW){
+        if(result.size()>=65536||number(0,1)!=1)throw std::runtime_error("Snapshot candidate version/capacity invalid");
+        WalletUTXO coin{};coin.txid=hash(1);coin.vout=uint32_t(number(2,UINT32_MAX));coin.amount_una=uint64_t(number(3,INT64_MAX));
+        coin.script_pubkey=text(4,20000);coin.height=uint32_t(number(5,UINT32_MAX));coin.is_coinbase=number(6,1)!=0;
+        const auto base=number(7,UINT32_MAX);(void)hash(8);(void)hash(9);
+        std::vector<uint8_t> script;
+        (void)PaymentSum(0,coin.amount_una);
+        if(!coin.amount_una||coin.height>base||!base||!seen.emplace(coin.txid,coin.vout).second||text(10,16)!=Params().network_id||hash(11)!=Params().genesis_hash||
+            !util::unhex(coin.script_pubkey,script)||script.empty()||util::hex(script)!=coin.script_pubkey||
+            script.size()>16*1024*1024-bytes)throw std::runtime_error("Snapshot candidate data invalid");
+        bytes+=script.size();coin.address=extractAddressFromScript(script);
+        coin.amount_din=static_cast<double>(coin.amount_una)/ConsensusSubsidy::UNA_PER_DIN;
+        coin.confirmations=0;coin.is_mature=false;coin.spendable=false;coin.is_spent=false;coin.snapshot_candidate=true;
+        result.push_back(std::move(coin));
+    }
+    IssuanceCheck(db_,rc,SQLITE_DONE);return result;
+}
+
+int WalletManager::DiscoverSnapshotCandidates(std::span<const UtxoSetEntry> coins,uint32_t height,
+        const uint256& base,const std::string& root,uint64_t expected_session){
+    auto lease=AcquireDatabaseLease();
+    if(!db_||database_leases_!=1||!expected_session||lease->Session()!=expected_session||
+        current_wallet_id_<=0||!sqlite3_get_autocommit(db_)||base.IsNull()||!height)return -1;
+    const char* phase="unlocked-seed";
+    try{
+        auto seed=lease->CopyRecoverySeed(expected_session);
+        IssuedAddressTransaction transaction(db_);
+        phase="unknown-empty-catalog";
+        // Do not repair a missing/corrupt catalog, certify a recovered seed or
+        // touch any current/retained/archive/pending account owner. This first
+        // bounded discovery route requires their original unknown-empty state.
+        const auto catalog=wallet::OrchardAccountCatalog::RequireUnknownEmpty(db_,seed->Bytes());
+        const auto identity=lease->ReadDeliveryIdentity();(void)identity;
+        const auto old=ReadSnapshotCandidatesOwned();(void)old;
+        phase="watch-inventory";
+        std::set<std::vector<uint8_t>> watched;
+        {IssuedStatement scripts(db_,"SELECT script_pubkey FROM watch_scripts");int rc;
+         while((rc=sqlite3_step(scripts.value.get()))==SQLITE_ROW){
+             const auto* p=static_cast<const uint8_t*>(sqlite3_column_blob(scripts.value.get(),0));const auto n=sqlite3_column_bytes(scripts.value.get(),0);
+             if(sqlite3_column_type(scripts.value.get(),0)!=SQLITE_BLOB||!p||n<=0||n>10000||watched.size()>=65536)
+                 throw std::runtime_error("Snapshot watch inventory invalid");
+             watched.emplace(p,p+n);
+         }IssuanceCheck(db_,rc,SQLITE_DONE);}
+        phase="candidate-schema";
+        exec(db_,"CREATE TABLE IF NOT EXISTS wallet_snapshot_candidates(wallet_id INTEGER NOT NULL,version INTEGER NOT NULL,txid TEXT NOT NULL,vout INTEGER NOT NULL,amount INTEGER NOT NULL,script_pubkey TEXT NOT NULL,created_height INTEGER NOT NULL,is_coinbase INTEGER NOT NULL,base_height INTEGER NOT NULL,base_block TEXT NOT NULL,source_root TEXT NOT NULL,network TEXT NOT NULL,genesis TEXT NOT NULL,PRIMARY KEY(wallet_id,txid,vout))");
+        {IssuedStatement cohort(db_,"SELECT base_height,base_block,source_root,network,genesis FROM wallet_snapshot_candidates WHERE wallet_id=?");
+         cohort.Int(1,current_wallet_id_);int rc;
+         while((rc=sqlite3_step(cohort.value.get()))==SQLITE_ROW){
+             auto* q=cohort.value.get();
+             const auto same=[&](int n,const std::string& value){const auto* p=sqlite3_column_blob(q,n);return sqlite3_column_type(q,n)==SQLITE_TEXT&&sqlite3_column_bytes(q,n)==int(value.size())&&p&&std::memcmp(p,value.data(),value.size())==0;};
+             if(sqlite3_column_type(q,0)!=SQLITE_INTEGER||sqlite3_column_int64(q,0)!=height||!same(1,base.GetHex())||
+                 !same(2,root)||!same(3,Params().network_id)||!same(4,Params().genesis_hash))throw std::runtime_error("Snapshot candidate cohort changed");
+         }IssuanceCheck(db_,rc,SQLITE_DONE);}
+        int count=0;
+        phase="owned-records";
+        for(const auto& coin:coins){
+            if(!watched.contains(coin.script_pubkey))continue;
+            if(coin.txid_hex.size()!=64||coin.amount_una==0||coin.amount_una>uint64_t(INT64_MAX)||coin.height>height)
+                throw std::runtime_error("Snapshot owned candidate invalid");
+            (void)PaymentSum(0,coin.amount_una);
+            const auto script=util::hex(coin.script_pubkey);
+            const auto key=lease->ResolveSigningKeyInTransaction(script,*seed);
+            if(!key||key->script!=coin.script_pubkey)throw std::runtime_error("Snapshot watched script has no authenticated key owner");
+            IssuedStatement existing(db_,"SELECT version,amount,script_pubkey,created_height,is_coinbase,base_height,base_block,source_root,network,genesis FROM wallet_snapshot_candidates WHERE wallet_id=? AND txid=? AND vout=?");
+            existing.Int(1,current_wallet_id_);existing.Text(2,coin.txid_hex);existing.Int(3,coin.vout);
+            const int found=sqlite3_step(existing.value.get());
+            if(found==SQLITE_ROW){
+                const auto same_number=[&](int n,int64_t value){return sqlite3_column_type(existing.value.get(),n)==SQLITE_INTEGER&&sqlite3_column_int64(existing.value.get(),n)==value;};
+                const auto same_text=[&](int n,const std::string& value){const auto* p=sqlite3_column_blob(existing.value.get(),n);return sqlite3_column_type(existing.value.get(),n)==SQLITE_TEXT&&sqlite3_column_bytes(existing.value.get(),n)==int(value.size())&&p&&std::memcmp(p,value.data(),value.size())==0;};
+                if(!same_number(0,1)||!same_number(1,coin.amount_una)||!same_text(2,script)||!same_number(3,coin.height)||!same_number(4,coin.is_coinbase)||
+                    !same_number(5,height)||!same_text(6,base.GetHex())||!same_text(7,root)||!same_text(8,Params().network_id)||!same_text(9,Params().genesis_hash))
+                    throw std::runtime_error("Snapshot candidate conflicts with retained data");
+                existing.Done();
+            }else{
+                IssuanceCheck(db_,found,SQLITE_DONE);
+                IssuedStatement put(db_,"INSERT INTO wallet_snapshot_candidates VALUES(?,1,?,?,?,?,?,?,?,?,?,?,?)");
+                put.Int(1,current_wallet_id_);put.Text(2,coin.txid_hex);put.Int(3,coin.vout);put.Int(4,coin.amount_una);put.Text(5,script);
+                put.Int(6,coin.height);put.Int(7,coin.is_coinbase);put.Int(8,height);put.Text(9,base.GetHex());put.Text(10,root);
+                put.Text(11,Params().network_id);put.Text(12,Params().genesis_hash);put.Done(true);
+            }
+            if(++count>65536)throw std::runtime_error("Snapshot owned candidate capacity exceeded");
+        }
+        // Full recheck before commit. No scan_meta/tip, ordinary utxos, index
+        // coverage, payment owner or Orchard catalog is ever updated here.
+        phase="final-catalog-and-commit";
+        if(wallet::OrchardAccountCatalog::RequireUnknownEmpty(db_,seed->Bytes())!=catalog)
+            throw std::runtime_error("Snapshot candidate catalog changed");
+        (void)ReadSnapshotCandidatesOwned();transaction.Commit();return count;
+    }catch(...){try{WLOG_WARN(std::string("[Snapshot candidates] Wallet refused at ")+phase);}catch(...){}return -1;}
 }
 
 // ============================================================================
@@ -5992,160 +8020,186 @@ bool WalletManager::rescanBlockchain(int start_height,
 int WalletManager::rescanUtxoSet(
     const std::function<void(const std::function<void(const UtxoSetEntry&)>&)>& produce,
     uint32_t snapshot_height) {
-    if (!db_) {
-        WLOG_ERR("rescanUtxoSet: wallet database not initialized");
-        return 0;
-    }
-    if (current_wallet_id_ == -1) {
-        WLOG_WARN("rescanUtxoSet: no active wallet (current_wallet_id_ == -1)");
-        return 0;
-    }
+    // Pin the selected database for the complete producer/consumer transaction.
+    // The producer must already own immutable source data and must not acquire
+    // chain locks or wait for another thread that needs this wallet lease.
+    std::unique_ptr<DatabaseLease> database_lease;
+    try { database_lease = AcquireDatabaseLease(); }
+    catch (...) { return -1; }
+    if (!db_ || current_wallet_id_ == -1) return -1;
+    if (!sqlite3_get_autocommit(db_)) return -1; // Never adopt a caller transaction.
 
-    // Load watch_scripts into memory for fast matching (same source as the
-    // block-replay rescan at rescanBlockchain()).
-    std::set<std::vector<uint8_t>> watch_scripts;
-    {
-        const char* sql = "SELECT script_pubkey FROM watch_scripts";
-        sqlite3_stmt* stmt = nullptr;
-        if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) == SQLITE_OK) {
-            while (sqlite3_step(stmt) == SQLITE_ROW) {
-                const void* blob = sqlite3_column_blob(stmt, 0);
-                int blob_size = sqlite3_column_bytes(stmt, 0);
-                if (blob && blob_size > 0) {
-                    watch_scripts.emplace(
-                        static_cast<const uint8_t*>(blob),
-                        static_cast<const uint8_t*>(blob) + blob_size);
-                }
-            }
-            sqlite3_finalize(stmt);
-        }
-    }
-
-    if (watch_scripts.empty()) {
-        WLOG_WARN("rescanUtxoSet: no watch_scripts registered - nothing to match");
-        // Still advance the watermark below so catch-up starts above the snapshot.
-    }
-
-    WLOG_INFO("rescanUtxoSet: scanning snapshot UTXO set against " +
-              std::to_string(watch_scripts.size()) + " watch script(s)");
-
-    // Ensure the snapshot_anchored column exists (idempotent; older wallet DBs
-    // predate it). Coins flagged anchored are trusted by the balance read path
-    // so its "not in live utxo_index_ => spent" inference never re-clobbers them
-    // (snapshot UTXOs live in the utreexo accumulator, never the live index).
-    sqlite3_exec(db_, "ALTER TABLE utxos ADD COLUMN snapshot_anchored INTEGER NOT NULL DEFAULT 0",
-                 nullptr, nullptr, nullptr);
-
-    int recorded = 0;
-    exec(db_, "BEGIN TRANSACTION");
-
-    // Per-coin sink: identical insert path to rescanBlockchain (hex-encode the
-    // scriptPubKey, extractAddressFromScript, upsert INTO utxos).
-    auto sink = [&](const UtxoSetEntry& e) {
-        if (watch_scripts.find(e.script_pubkey) == watch_scripts.end()) {
-            return;  // not ours
-        }
-
-        std::string script_pubkey_hex;
-        script_pubkey_hex.reserve(e.script_pubkey.size() * 2);
-        static constexpr char kHex[] = "0123456789abcdef";
-        for (uint8_t b : e.script_pubkey) {
-            script_pubkey_hex.push_back(kHex[(b >> 4) & 0x0F]);
-            script_pubkey_hex.push_back(kHex[b & 0x0F]);
-        }
-
-        std::string address = extractAddressFromScript(e.script_pubkey);
-        if (address.empty()) {
-            // Preserve row integrity even for unknown script templates.
-            address = "script:" + script_pubkey_hex.substr(0, 16);
-        }
-
-        // A coin present in the snapshot UTXO set is UNSPENT by definition. If a
-        // row already exists (e.g. the wallet's block-replay history, or a prior
-        // failed block-rescan that wrongly flagged it is_spent=1), an INSERT OR
-        // IGNORE would leave the stale is_spent intact and the balance reads 0.
-        // Upsert instead: un-spend the row and refresh authoritative fields.
-        // Coinbase maturity is judged against the snapshot base height.
-        int is_mature = 1;
-        if (e.is_coinbase && snapshot_height < e.height + 100) {
-            is_mature = 0;
-        }
-
-        const char* insert_sql = R"(
-            INSERT INTO utxos
-            (wallet_id, txid, vout, address, amount, script_pubkey, height, is_coinbase, is_spent, is_mature, snapshot_anchored, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, 1, ?)
-            ON CONFLICT DO UPDATE SET
-                is_spent = 0,
-                spent_txid = NULL,
-                spent_height = NULL,
-                wallet_id = excluded.wallet_id,
-                amount = excluded.amount,
-                script_pubkey = excluded.script_pubkey,
-                height = excluded.height,
-                is_coinbase = excluded.is_coinbase,
-                is_mature = excluded.is_mature,
-                snapshot_anchored = 1
-        )";
-
-        sqlite3_stmt* stmt = nullptr;
-        const int prepare_rc = sqlite3_prepare_v2(db_, insert_sql, -1, &stmt, nullptr);
-        if (prepare_rc != SQLITE_OK) {
-            throw std::runtime_error(
-                "snapshot UTXO upsert prepare failed: " + std::string(sqlite3_errmsg(db_)));
-        }
-
-        int bind_index = 1;
-        sqlite3_bind_int(stmt, bind_index++, current_wallet_id_);
-        sqlite3_bind_text(stmt, bind_index++, e.txid_hex.c_str(), -1, SQLITE_TRANSIENT);
-        sqlite3_bind_int(stmt, bind_index++, static_cast<int>(e.vout));
-        sqlite3_bind_text(stmt, bind_index++, address.c_str(), -1, SQLITE_TRANSIENT);
-        sqlite3_bind_int64(stmt, bind_index++, static_cast<int64_t>(e.amount_una));
-        sqlite3_bind_text(stmt, bind_index++, script_pubkey_hex.c_str(), -1, SQLITE_TRANSIENT);
-        sqlite3_bind_int(stmt, bind_index++, static_cast<int>(e.height));
-        sqlite3_bind_int(stmt, bind_index++, e.is_coinbase ? 1 : 0);
-        sqlite3_bind_int(stmt, bind_index++, is_mature);
-        sqlite3_bind_int64(stmt, bind_index++, std::time(nullptr));
-
-        const int step_rc = sqlite3_step(stmt);
-        if (step_rc != SQLITE_DONE) {
-            const std::string error = sqlite3_errmsg(db_);
-            sqlite3_finalize(stmt);
-            throw std::runtime_error("snapshot UTXO upsert failed: " + error);
-        }
-        if (sqlite3_changes(db_) > 0) {
-            recorded++;
-        }
-        sqlite3_finalize(stmt);
+    auto checked = [&](int result, int expected) {
+        if (result != expected)
+            throw std::runtime_error(std::string("Snapshot wallet SQL failed: ") + sqlite3_errmsg(db_));
     };
-
-    try {
-        produce(sink);
-        exec(db_, "COMMIT");
-    } catch (const std::exception& e) {
-        try {
-            exec(db_, "ROLLBACK");
-        } catch (const std::exception&) {
-            // Preserve the original SQL/producer error below.
+    using Statement = std::unique_ptr<sqlite3_stmt, decltype(&sqlite3_finalize)>;
+    auto prepare = [&](const char* sql) {
+        sqlite3_stmt* raw = nullptr;
+        const int rc = sqlite3_prepare_v2(db_, sql, -1, &raw, nullptr);
+        Statement stmt(raw, sqlite3_finalize);
+        checked(rc, SQLITE_OK);
+        return stmt;
+    };
+    auto has_column = [&](const char* table, const char* column) {
+        const std::string query = std::string("PRAGMA table_info(") + table + ")";
+        auto stmt = prepare(query.c_str());
+        bool found = false;
+        int rc;
+        while ((rc = sqlite3_step(stmt.get())) == SQLITE_ROW) {
+            const auto* name = reinterpret_cast<const char*>(sqlite3_column_text(stmt.get(), 1));
+            if (name && std::string_view(name) == column) found = true;
         }
-        WLOG_ERR(std::string("rescanUtxoSet: atomic snapshot import failed: ") + e.what());
+        checked(rc, SQLITE_DONE);
+        return found;
+    };
+    int recorded = 0;
+    bool owned_transaction = false;
+    // Reserve publication ownership before COMMIT; no fallible SQL or lock
+    // acquisition may turn a committed import into an apparent failed import.
+    std::unique_lock<std::mutex> height_lock(height_mu_, std::defer_lock);
+    uint32_t published_height = 0;
+    try {
+        exec(db_, "PRAGMA synchronous=FULL");
+        {
+            auto policy = prepare("PRAGMA synchronous");
+            checked(sqlite3_step(policy.get()), SQLITE_ROW);
+            if (sqlite3_column_int(policy.get(), 0) != 2)
+                throw std::runtime_error("Snapshot wallet durability unavailable");
+            checked(sqlite3_step(policy.get()), SQLITE_DONE);
+        }
+        exec(db_, "BEGIN IMMEDIATE");
+        owned_transaction = true;
+        std::set<std::vector<uint8_t>> watch_scripts;
+        {
+            auto stmt = prepare("SELECT script_pubkey FROM watch_scripts");
+            int rc;
+            while ((rc = sqlite3_step(stmt.get())) == SQLITE_ROW) {
+                const auto* bytes = static_cast<const uint8_t*>(sqlite3_column_blob(stmt.get(), 0));
+                const int size = sqlite3_column_bytes(stmt.get(), 0);
+                if (sqlite3_column_type(stmt.get(), 0) != SQLITE_BLOB || !bytes || size <= 0)
+                    throw std::runtime_error("Snapshot wallet watch script unavailable");
+                watch_scripts.emplace(bytes, bytes + size);
+            }
+            checked(rc, SQLITE_DONE);
+        }
+        if (!has_column("utxos", "snapshot_anchored"))
+            exec(db_, "ALTER TABLE utxos ADD COLUMN snapshot_anchored INTEGER NOT NULL DEFAULT 0");
+        // Per-coin sink: identical insert path to rescanBlockchain (hex-encode the
+        // scriptPubKey, extractAddressFromScript, upsert INTO utxos).
+        auto sink = [&](const UtxoSetEntry& e) {
+            if (watch_scripts.find(e.script_pubkey) == watch_scripts.end()) {
+                return;  // not ours
+            }
+
+            if (e.height > snapshot_height || e.amount_una > uint64_t(INT64_MAX) ||
+                e.txid_hex.size() != 64 || e.txid_hex.find_first_not_of("0123456789abcdef") != std::string::npos)
+                throw std::runtime_error("Snapshot owned coin fields are out of range");
+            std::string script_pubkey_hex;
+            script_pubkey_hex.reserve(e.script_pubkey.size() * 2);
+            static constexpr char kHex[] = "0123456789abcdef";
+            for (uint8_t b : e.script_pubkey) {
+                script_pubkey_hex.push_back(kHex[(b >> 4) & 0x0F]);
+                script_pubkey_hex.push_back(kHex[b & 0x0F]);
+            }
+
+            std::string address = extractAddressFromScript(e.script_pubkey);
+            if (address.empty()) {
+                // Preserve row integrity even for unknown script templates.
+                address = "script:" + script_pubkey_hex.substr(0, 16);
+            }
+
+            // A coin present in the snapshot UTXO set is UNSPENT by definition. If a
+            // row already exists (e.g. the wallet's block-replay history, or a prior
+            // failed block-rescan that wrongly flagged it is_spent=1), an INSERT OR
+            // IGNORE would leave the stale is_spent intact and the balance reads 0.
+            // Upsert instead: un-spend the row and refresh authoritative fields.
+            // Coinbase maturity is judged against the snapshot base height.
+            int is_mature = 1;
+            if (e.is_coinbase && uint64_t(snapshot_height) < uint64_t(e.height) + 100) {
+                is_mature = 0;
+            }
+
+            const char* insert_sql = R"(
+                INSERT INTO utxos
+                (wallet_id, txid, vout, address, amount, script_pubkey, height, is_coinbase, is_spent, is_mature, snapshot_anchored, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, 1, ?)
+                ON CONFLICT DO UPDATE SET
+                    is_spent = 0,
+                    spent_txid = NULL,
+                    spent_height = NULL,
+                    wallet_id = excluded.wallet_id,
+                    amount = excluded.amount,
+                    script_pubkey = excluded.script_pubkey,
+                    height = excluded.height,
+                    is_coinbase = excluded.is_coinbase,
+                    is_mature = excluded.is_mature,
+                    snapshot_anchored = 1
+            )";
+
+            auto statement = prepare(insert_sql);
+            auto* stmt = statement.get();
+
+            int bind_index = 1;
+            checked(sqlite3_bind_int(stmt, bind_index++, current_wallet_id_), SQLITE_OK);
+            checked(sqlite3_bind_text(stmt, bind_index++, e.txid_hex.c_str(), -1, SQLITE_TRANSIENT), SQLITE_OK);
+            checked(sqlite3_bind_int64(stmt, bind_index++, e.vout), SQLITE_OK);
+            checked(sqlite3_bind_text(stmt, bind_index++, address.c_str(), -1, SQLITE_TRANSIENT), SQLITE_OK);
+            checked(sqlite3_bind_int64(stmt, bind_index++, static_cast<int64_t>(e.amount_una)), SQLITE_OK);
+            checked(sqlite3_bind_text(stmt, bind_index++, script_pubkey_hex.c_str(), -1, SQLITE_TRANSIENT), SQLITE_OK);
+            checked(sqlite3_bind_int64(stmt, bind_index++, e.height), SQLITE_OK);
+            checked(sqlite3_bind_int(stmt, bind_index++, e.is_coinbase ? 1 : 0), SQLITE_OK);
+            checked(sqlite3_bind_int(stmt, bind_index++, is_mature), SQLITE_OK);
+            checked(sqlite3_bind_int64(stmt, bind_index++, std::time(nullptr)), SQLITE_OK);
+
+            checked(sqlite3_step(stmt), SQLITE_DONE);
+            if (sqlite3_changes(db_) > 0) {
+                if (recorded == INT_MAX) throw std::runtime_error("Snapshot owned coin count exceeded");
+                ++recorded;
+            }
+        };
+        produce(sink);
+        height_lock.lock();
+        published_height = std::max(current_blockchain_height_, snapshot_height);
+        {
+            auto progress = prepare("UPDATE sync_meta SET last_scanned_height=? WHERE id=1");
+            checked(sqlite3_bind_int64(progress.get(), 1, snapshot_height), SQLITE_OK);
+            checked(sqlite3_step(progress.get()), SQLITE_DONE);
+            if (sqlite3_changes(db_) != 1)
+                throw std::runtime_error("Snapshot wallet progress row unavailable");
+        }
+        if (snapshot_height > current_blockchain_height_) {
+            auto tip = prepare("INSERT INTO tip(rowid,height) VALUES(1,?) ON CONFLICT(rowid) DO UPDATE SET height=excluded.height");
+            checked(sqlite3_bind_int64(tip.get(), 1, published_height), SQLITE_OK);
+            checked(sqlite3_step(tip.get()), SQLITE_DONE);
+            // Keep the existing ordinary-wallet display maturity/confirmation
+            // rules, but stage them with the imported coins and progress.
+            const bool scoped = has_column("transactions", "wallet_id");
+            if (has_column("transactions", "height") && has_column("transactions", "confirmations")) {
+                auto tx = prepare(scoped
+                    ? "UPDATE transactions SET confirmations=CASE WHEN ? >= height THEN ?-height+1 ELSE confirmations END WHERE height>0 AND wallet_id=?"
+                    : "UPDATE transactions SET confirmations=CASE WHEN ? >= height THEN ?-height+1 ELSE confirmations END WHERE height>0");
+                checked(sqlite3_bind_int64(tx.get(), 1, published_height), SQLITE_OK);
+                checked(sqlite3_bind_int64(tx.get(), 2, published_height), SQLITE_OK);
+                if (scoped) checked(sqlite3_bind_int(tx.get(), 3, current_wallet_id_), SQLITE_OK);
+                checked(sqlite3_step(tx.get()), SQLITE_DONE);
+            }
+            auto maturity = prepare("UPDATE utxos SET is_mature=CASE WHEN is_coinbase=0 OR ?-height+1>=100 THEN 1 ELSE 0 END WHERE wallet_id=? AND is_spent=0");
+            checked(sqlite3_bind_int64(maturity.get(), 1, published_height), SQLITE_OK);
+            checked(sqlite3_bind_int(maturity.get(), 2, current_wallet_id_), SQLITE_OK);
+            checked(sqlite3_step(maturity.get()), SQLITE_DONE);
+        }
+        exec(db_, "COMMIT");
+        owned_transaction = false;
+    } catch (...) {
+        if (owned_transaction && !sqlite3_get_autocommit(db_) &&
+            sqlite3_exec(db_, "ROLLBACK", nullptr, nullptr, nullptr) != SQLITE_OK &&
+            !sqlite3_get_autocommit(db_)) std::terminate();
         return -1;
     }
-
-    WLOG_INFO("rescanUtxoSet: recorded " + std::to_string(recorded) +
-              " owned UTXO(s) from snapshot UTXO set");
-
-    // Advance the wallet's scanned-height watermark to the snapshot base so a
-    // later block-replay catch-up starts ABOVE the snapshot height instead of at
-    // 0. Replaying pre-snapshot heights (whose block bodies are absent on a
-    // fast-synced node) would re-spend/clear the coins we just recorded. Persist
-    // unconditionally to sync_meta (the catch-up keys off last_scanned_height,
-    // not the tip), and also bump the tip if the wallet is behind.
-    persistScanHeight(snapshot_height);
-    if (snapshot_height > current_blockchain_height_) {
-        setBlockchainHeight(snapshot_height);
-    }
-
+    current_blockchain_height_ = published_height;
+    height_lock.unlock();
+    height_cv_.notify_all();
     return recorded;
 }
 
@@ -6445,9 +8499,15 @@ bool WalletManager::addUTXO(const std::string& txid, int vout, int64_t amount,
 
     sqlite3_stmt* stmt;
     const char* sql = R"(
-        INSERT OR REPLACE INTO utxos
+        INSERT INTO utxos
         (wallet_id, txid, vout, address, amount, script_pubkey, height, is_coinbase, is_spent, created_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
+        ON CONFLICT DO UPDATE SET
+            address=excluded.address, amount=excluded.amount,
+            script_pubkey=excluded.script_pubkey, height=excluded.height,
+            is_coinbase=excluded.is_coinbase
+        WHERE utxos.wallet_id=excluded.wallet_id
+          AND utxos.txid=excluded.txid AND utxos.vout=excluded.vout
     )";
 
     int rc = sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
@@ -6469,9 +8529,10 @@ bool WalletManager::addUTXO(const std::string& txid, int vout, int64_t amount,
     sqlite3_bind_int64(stmt, bind_index++, std::time(nullptr));
     
     rc = sqlite3_step(stmt);
+    const int changed = sqlite3_changes(db_);
     sqlite3_finalize(stmt);
 
-    if (rc == SQLITE_DONE) {
+    if (rc == SQLITE_DONE && changed == 1) {
         WLOG_INFO("[addUTXO] ✅ Successfully added UTXO " + txid + ":" + std::to_string(vout));
         return true;
     } else {
@@ -6533,6 +8594,22 @@ bool WalletManager::removeUTXO(const std::string& txid, int vout) {
 // ═══════════════════════════════════════════════════════════════
 
 std::optional<std::vector<uint8_t>> WalletManager::deriveKeyForScriptPubKey(const std::string& script_pubkey) {
+    return deriveKeyForScriptPubKeyOwned(script_pubkey,nullptr);
+}
+
+std::optional<SigningKey> WalletManager::resolveSigningKeyForScriptPubKey(const std::string& script_pubkey) {
+    std::vector<uint8_t> script;
+    if(!util::unhex(script_pubkey,script) || script.empty())return std::nullopt;
+    auto policy=script.size()==34 && script[0]==0x51 && script[1]==0x20
+        ?SigningKeyPolicy::TaprootCanonical:SigningKeyPolicy::Untweaked;
+    auto key=deriveKeyForScriptPubKeyOwned(script_pubkey,&policy);
+    if(!key)return std::nullopt;
+    return SigningKey(std::move(*key),std::move(script),policy);
+}
+
+std::optional<std::vector<uint8_t>> WalletManager::deriveKeyForScriptPubKeyOwned(
+    const std::string& script_pubkey,SigningKeyPolicy* policy,bool pinned_signing,bool owned_transaction) {
+    std::lock_guard<std::recursive_mutex> key_ownership(database_lifecycle_mutex_);
     // ⚠️ OWNERSHIP LOGIC - Uses scriptPubKey (consensus data), NOT address (display string)
     // Check if wallet is active and unlocked
     if (!hasActiveWallet()) {
@@ -6545,250 +8622,189 @@ std::optional<std::vector<uint8_t>> WalletManager::deriveKeyForScriptPubKey(cons
         return std::nullopt;
     }
 
-    // Check cache first for performance
-    auto cache_it = private_key_cache_.find(script_pubkey);
-    if (cache_it != private_key_cache_.end()) {
-        WLOG_DEBUG("Private key found in cache for scriptPubKey: " + script_pubkey);
-        return cache_it->second;
-    }
-
-    // Get derivation path from database (by scriptPubKey, NOT address)
-    auto path_opt = getDerivationPath(script_pubkey);
-    if (!path_opt) {
-        // Fallback: watch_scripts stores authoritative script->path bindings used
-        // by UTXO discovery, even when addresses/address_derivation_paths were
-        // lost or compacted in older wallets.
-        std::vector<unsigned char> script_bytes;
-        if (util::unhex(script_pubkey, script_bytes) && !script_bytes.empty()) {
-            sqlite3_stmt* watch_stmt = nullptr;
-            const char* watch_sql = "SELECT path FROM watch_scripts WHERE script_pubkey = ? LIMIT 1";
-            if (sqlite3_prepare_v2(db_, watch_sql, -1, &watch_stmt, nullptr) == SQLITE_OK) {
-                sqlite3_bind_blob(
-                    watch_stmt,
-                    1,
-                    script_bytes.data(),
-                    static_cast<int>(script_bytes.size()),
-                    SQLITE_TRANSIENT);
-                if (sqlite3_step(watch_stmt) == SQLITE_ROW) {
-                    const char* watch_path = reinterpret_cast<const char*>(sqlite3_column_text(watch_stmt, 0));
-                    if (watch_path && watch_path[0] != '\0') {
-                        path_opt = std::string(watch_path);
-                        WLOG_INFO("Recovered derivation path from watch_scripts: " + *path_opt +
-                                  " for scriptPubKey: " + script_pubkey);
-                    }
-                }
-                sqlite3_finalize(watch_stmt);
+    // Descriptor imports carry an internal key, not a BIP32 path. Resolve
+    // their durable tuple before the HD cache/fallback can invent authority.
+    std::vector<uint8_t> imported_script;
+    if (util::unhex(script_pubkey, imported_script) && imported_script.size()==34 &&
+        imported_script[0]==0x51 && imported_script[1]==0x20) {
+        try {
+            auto lease=AcquireDatabaseLease();
+            if (!db_ || (owned_transaction ? sqlite3_get_autocommit(db_) : !sqlite3_get_autocommit(db_)) || (recovery_seeds_ && !pinned_signing)) return std::nullopt;
+            if(!pinned_signing)checkUnlockTimeout();
+            if (wallet_locked_) return std::nullopt;
+            // The existing transaction owner also gives all tuple/policy reads
+            // one SQLite snapshot. It changes no wallet rows or receipts here.
+            std::optional<IssuedAddressTransaction> read;
+        if(!owned_transaction)read.emplace(db_);
+            const auto text_matches=[](sqlite3_stmt* q,int col,const std::string& expected) {
+                if(sqlite3_column_type(q,col)!=SQLITE_TEXT)return false;
+                const auto* value=sqlite3_column_text(q,col);
+                return value &&
+                    sqlite3_column_bytes(q,col)==int(expected.size()) &&
+                    std::memcmp(value,expected.data(),expected.size())==0;
+            };
+            const auto int_matches=[](sqlite3_stmt* q,int col,int expected) {
+                return sqlite3_column_type(q,col)==SQLITE_INTEGER && sqlite3_column_int64(q,col)==expected;
+            };
+            std::array<uint8_t,32> output{};
+            std::copy(imported_script.begin()+2,imported_script.end(),output.begin());
+            const auto& network=Params().name;
+            const auto address=TaprootKeys::CreateTaprootAddress(output,network=="regtest"?"rdin":network=="testnet"?"tdin":"din");
+            const auto canonical_script=util::hex(imported_script);
+            bool imported=false,has_keys=false;
+            { IssuedStatement candidate(db_,"SELECT 1 FROM addresses WHERE (address=? OR script_pubkey=?) AND account=-1 UNION ALL SELECT 1 FROM watch_scripts WHERE script_pubkey=? AND path LIKE 'tr(%'");
+              candidate.Text(1,address);candidate.Text(2,canonical_script);candidate.Blob(3,imported_script.data(),34);
+              int rc;while((rc=sqlite3_step(candidate.value.get()))==SQLITE_ROW)imported=true;
+              IssuanceCheck(db_,rc,SQLITE_DONE); }
+            { IssuedStatement tables(db_,"SELECT 1 FROM sqlite_schema WHERE type='table' AND name='taproot_keys'");
+              const int rc=sqlite3_step(tables.value.get());
+              if(rc==SQLITE_ROW){has_keys=true;tables.Done();}else IssuanceCheck(db_,rc,SQLITE_DONE); }
+            if(has_keys) {
+                IssuedStatement candidate(db_,"SELECT 1 FROM taproot_keys WHERE address=? OR output_pubkey=?");
+                candidate.Text(1,address);candidate.Blob(2,output.data(),32);
+                int rc;while((rc=sqlite3_step(candidate.value.get()))==SQLITE_ROW)imported=true;
+                IssuanceCheck(db_,rc,SQLITE_DONE);
             }
-        }
-    }
-
-    if (!path_opt) {
-        // No HD derivation path found - check if this is an imported key
-        // First, we need to find the address for this scriptPubKey to look it up in imported_keys
-        WLOG_INFO("🔍 No HD derivation path for scriptPubKey: " + script_pubkey + " - checking imported keys");
-
-        // Query imported_keys table by deriving address from scriptPubKey
-        // For Taproot (witness v1), scriptPubKey format: 5120 + <32-byte pubkey>
-        if (script_pubkey.length() == 68 && script_pubkey.substr(0, 4) == "5120") {
-            // Extract the 32-byte output pubkey
-            std::string output_pubkey_hex = script_pubkey.substr(4);
-
-            // Encode as bech32m address
-            std::vector<uint8_t> pubkey_bytes;
-            for (size_t i = 0; i < output_pubkey_hex.length(); i += 2) {
-                pubkey_bytes.push_back(std::stoi(output_pubkey_hex.substr(i, 2), nullptr, 16));
+            // The predecessor import format is an internal scalar under a
+            // different public tweak. Resolve it in this snapshot, before any
+            // cached scalar or HD label can bypass its durable owner.
+            const auto historical_address=AddressCodec::encodeP2TR(
+                Network::MAIN,std::vector<uint8_t>(output.begin(),output.end()));
+            IssuedStatement legacy(db_,"SELECT private_key_enc FROM imported_keys WHERE address=?");
+            legacy.Text(1,historical_address);
+            const int legacy_rc=sqlite3_step(legacy.value.get());
+            if(legacy_rc==SQLITE_ROW) {
+                if(imported) return std::nullopt; // conflicting modern owner
+                struct Secret {std::string value;~Secret(){secureClearString(value);}} stored,plain;
+                if(sqlite3_column_type(legacy.value.get(),0)!=SQLITE_TEXT)return std::nullopt;
+                const auto* bytes=static_cast<const char*>(sqlite3_column_blob(legacy.value.get(),0));
+                const int size=sqlite3_column_bytes(legacy.value.get(),0);
+                if(!bytes || (wallet_encrypted_?(size!=60 && size!=92):size!=64))return std::nullopt;
+                stored.value.assign(bytes,size);
+                legacy.Done();
+                { IssuedStatement policy(db_,"SELECT value FROM settings WHERE key='wallet_encrypted'");
+                  const int rc=sqlite3_step(policy.value.get());
+                  if(rc==SQLITE_ROW){if(!text_matches(policy.value.get(),0,wallet_encrypted_?"1":"0"))return std::nullopt;policy.Done();}
+                  else {IssuanceCheck(db_,rc,SQLITE_DONE);if(wallet_encrypted_)return std::nullopt;} }
+                { IssuedStatement metadata(db_,"SELECT encrypted FROM encryption_metadata WHERE id=1");
+                  const int rc=sqlite3_step(metadata.value.get());
+                  if(rc==SQLITE_ROW){if(!int_matches(metadata.value.get(),0,wallet_encrypted_?1:0))return std::nullopt;metadata.Done();}
+                  else {IssuanceCheck(db_,rc,SQLITE_DONE);if(wallet_encrypted_)return std::nullopt;} }
+                if(wallet_encrypted_ && encryption_key_.size()!=32)return std::nullopt;
+                plain.value=wallet_encrypted_?decryptData(stored.value,encryption_key_):stored.value;
+                struct Bytes {std::vector<uint8_t> value;~Bytes(){secureClearBytes(value);}} decoded;
+                if(wallet_encrypted_ && plain.value.size()==32)
+                    decoded.value.assign(plain.value.begin(),plain.value.end());
+                else if(plain.value.size()!=64 || !util::unhex(plain.value,decoded.value) || decoded.value.size()!=32)
+                    return std::nullopt;
+                struct Scalar {std::array<uint8_t,32> value{};~Scalar(){OPENSSL_cleanse(value.data(),value.size());}} scalar;
+                std::copy(decoded.value.begin(),decoded.value.end(),scalar.value.begin());
+                std::array<uint8_t,32> internal{},derived_output{},tweak{};int parity=0;
+                if(!TaprootKeys::DeriveXOnlyPubkey(scalar.value,internal,parity))return std::nullopt;
+                std::array<uint8_t,33> tweak_input{};
+                std::copy(internal.begin(),internal.end(),tweak_input.begin());
+                ::SHA256(tweak_input.data(),tweak_input.size(),tweak.data());
+                std::unique_ptr<secp256k1_context,decltype(&secp256k1_context_destroy)> context(
+                    secp256k1_context_create(SECP256K1_CONTEXT_VERIFY),secp256k1_context_destroy);
+                secp256k1_xonly_pubkey point{},result{};secp256k1_pubkey tweaked{};
+                if(!context || !secp256k1_xonly_pubkey_parse(context.get(),&point,internal.data()) ||
+                   !secp256k1_xonly_pubkey_tweak_add(context.get(),&tweaked,&point,tweak.data()) ||
+                   !secp256k1_xonly_pubkey_from_pubkey(context.get(),&result,nullptr,&tweaked) ||
+                   !secp256k1_xonly_pubkey_serialize(context.get(),derived_output.data(),&result) ||
+                   derived_output!=output)return std::nullopt;
+                if(read)read->Commit();
+                if(policy)*policy=SigningKeyPolicy::TaprootHistoricalImport;
+                // The compatibility API still returns the INTERNAL scalar.
+                // Typed callers receive the separately carried tweak policy.
+                return std::vector<uint8_t>(scalar.value.begin(),scalar.value.end());
             }
-
-            std::string address = AddressCodec::encodeP2TR(Network::MAIN, pubkey_bytes);
-            WLOG_INFO("🔍 Derived address from scriptPubKey: " + address);
-
-            // Now check imported_keys table
-            sqlite3_stmt* stmt = nullptr;
-            const char* sql = "SELECT private_key_enc FROM imported_keys WHERE address = ?";
-
-            if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) == SQLITE_OK) {
-                sqlite3_bind_text(stmt, 1, address.c_str(), -1, SQLITE_STATIC);
-                WLOG_INFO("🔍 Querying imported_keys for address: " + address);
-
-                if (sqlite3_step(stmt) == SQLITE_ROW) {
-                    WLOG_INFO("🔍 Found row in imported_keys table");
-                    const unsigned char* enc_key = sqlite3_column_text(stmt, 0);
-                    if (enc_key) {
-                        std::string key_storage(reinterpret_cast<const char*>(enc_key));
-                        sqlite3_finalize(stmt);
-
-                        // Decrypt or decode the private key
-                        std::string privkey_hex;
-                        if (!encryption_key_.empty()) {
-                            // Key is encrypted, decrypt it
-                            privkey_hex = decryptData(key_storage, encryption_key_);
-                        } else {
-                            // Key is stored as plaintext hex
-                            privkey_hex = key_storage;
-                        }
-
-                        if (!privkey_hex.empty() && privkey_hex.length() == 64) {
-                            // Convert hex to bytes
-                            std::vector<uint8_t> privkey_bytes;
-                            for (size_t i = 0; i < privkey_hex.length(); i += 2) {
-                                privkey_bytes.push_back(std::stoi(privkey_hex.substr(i, 2), nullptr, 16));
-                            }
-
-                            // Cache and return
-                            cachePrivateKey(script_pubkey, privkey_bytes);
-                            WLOG_INFO("✅ Found imported private key for scriptPubKey: " + script_pubkey);
-                            return privkey_bytes;
-                        }
-                    }
-                }
-                sqlite3_finalize(stmt);
+            IssuanceCheck(db_,legacy_rc,SQLITE_DONE);
+            if(imported) {
+                // Missing, old incomplete, or conflicting tuples refuse. Lookup
+                // never backfills a mapping or treats an import as HD account0.
+                if(!has_keys)return std::nullopt;
+                const bool wallet_column=IssuanceWalletColumn(db_,"addresses");
+                const std::string sql=R"(SELECT k.internal_privkey,k.internal_pubkey,k.output_pubkey,k.is_privkey_encrypted,
+                    m.internal_pubkey,m.derivation_path,w.path,w.is_change,a.account,a.change,a.type,a.script_pubkey,)"+
+                    std::string(wallet_column?"a.wallet_id":"1")+R"( FROM taproot_keys k
+                    JOIN taproot_key_mapping m ON m.output_pubkey=k.output_pubkey
+                    JOIN watch_scripts w ON w.script_pubkey=? JOIN addresses a ON a.address=k.address
+                    WHERE k.address=?)";
+                IssuedStatement tuple(db_,sql.c_str());tuple.Blob(1,imported_script.data(),34);tuple.Text(2,address);
+                IssuanceCheck(db_,sqlite3_step(tuple.value.get()),SQLITE_ROW);auto* q=tuple.value.get();
+                const auto key_blob=[&](int col,std::array<uint8_t,32>& dest) {
+                    if(sqlite3_column_type(q,col)!=SQLITE_BLOB)throw std::runtime_error("Invalid imported public key type");
+                    const auto* bytes=static_cast<const uint8_t*>(sqlite3_column_blob(q,col));
+                    if(!bytes || sqlite3_column_bytes(q,col)!=32)
+                        throw std::runtime_error("Invalid imported public key");
+                    std::copy(bytes,bytes+32,dest.begin());
+                };
+                std::array<uint8_t,32> internal{},stored_output{},mapped{};
+                key_blob(1,internal);key_blob(2,stored_output);key_blob(4,mapped);
+                const auto path="tr("+util::hex(std::vector<uint8_t>(internal.begin(),internal.end())).substr(0,8)+"...)";
+                if(stored_output!=output || mapped!=internal || !text_matches(q,5,path) || !text_matches(q,6,path) ||
+                   !int_matches(q,7,0) || !int_matches(q,8,-1) || !int_matches(q,9,0) ||
+                   !text_matches(q,10,"p2tr") || !text_matches(q,11,canonical_script) || !int_matches(q,12,1) ||
+                   !int_matches(q,3,wallet_encrypted_?1:0))return std::nullopt;
+                struct Secret {std::string value;~Secret(){secureClearString(value);}} stored,plain;
+                if(sqlite3_column_type(q,0)!=SQLITE_BLOB)return std::nullopt;
+                const auto* bytes=static_cast<const char*>(sqlite3_column_blob(q,0));
+                const int size=sqlite3_column_bytes(q,0);
+                if(!bytes || size!=(wallet_encrypted_?60:32))return std::nullopt;
+                stored.value.assign(bytes,size);tuple.Done();
+                // Match the durable encryption policy, not merely the blob flag.
+                { IssuedStatement policy(db_,"SELECT value FROM settings WHERE key='wallet_encrypted'");
+                  const int rc=sqlite3_step(policy.value.get());
+                  if(rc==SQLITE_ROW){if(!text_matches(policy.value.get(),0,wallet_encrypted_?"1":"0"))return std::nullopt;policy.Done();}
+                  else {IssuanceCheck(db_,rc,SQLITE_DONE);if(wallet_encrypted_)return std::nullopt;} }
+                { IssuedStatement metadata(db_,"SELECT encrypted FROM encryption_metadata WHERE id=1");
+                  const int rc=sqlite3_step(metadata.value.get());
+                  if(rc==SQLITE_ROW){if(!int_matches(metadata.value.get(),0,wallet_encrypted_?1:0))return std::nullopt;metadata.Done();}
+                  else {IssuanceCheck(db_,rc,SQLITE_DONE);if(wallet_encrypted_)return std::nullopt;} }
+                if(wallet_encrypted_ && encryption_key_.size()!=32)return std::nullopt;
+                plain.value=wallet_encrypted_?decryptData(stored.value,encryption_key_):stored.value;
+                if(plain.value.size()!=32)return std::nullopt;
+                struct Key {std::array<uint8_t,32> value{};~Key(){OPENSSL_cleanse(value.data(),value.size());}} secret;
+                std::copy(plain.value.begin(),plain.value.end(),secret.value.begin());
+                std::array<uint8_t,32> derived{},tweaked{};int parity=0;
+                if(!TaprootKeys::DeriveXOnlyPubkey(secret.value,derived,parity) || derived!=internal ||
+                   !TaprootKeys::ComputeTweakedPubkey(derived,tweaked) || tweaked!=output)return std::nullopt;
+                if(read)read->Commit();
+                // Do not cache imported plaintext: every lookup must recheck the
+                // persistent key, public bindings and current encryption owner.
+                return std::vector<uint8_t>(secret.value.begin(),secret.value.end());
             }
-        }
-
-        // Fallback: look up the address registry (addresses table) by scriptPubKey.
-        // Old wallets may have addresses registered here but not in address_derivation_paths.
-        {
-            sqlite3_stmt* addr_stmt = nullptr;
-            const char* addr_sql = "SELECT type, account, change, idx FROM addresses WHERE script_pubkey = ? LIMIT 1";
-            if (sqlite3_prepare_v2(db_, addr_sql, -1, &addr_stmt, nullptr) == SQLITE_OK) {
-                sqlite3_bind_text(addr_stmt, 1, script_pubkey.c_str(), -1, SQLITE_STATIC);
-                if (sqlite3_step(addr_stmt) == SQLITE_ROW) {
-                    const char* type_str = reinterpret_cast<const char*>(sqlite3_column_text(addr_stmt, 0));
-                    int account = sqlite3_column_int(addr_stmt, 1);
-                    int change  = sqlite3_column_int(addr_stmt, 2);
-                    int idx     = sqlite3_column_int(addr_stmt, 3);
-                    int purpose = (type_str && std::string(type_str) == "p2tr") ? 86 : 84;
-
-                    std::string recovered_path = "m/" + std::to_string(purpose) + "'/"
-                        + std::to_string(dinero::consensus::DINERO_COIN_TYPE) + "'/"
-                        + std::to_string(account) + "'/" + std::to_string(change) + "/" + std::to_string(idx);
-                    sqlite3_finalize(addr_stmt);
-
-                    WLOG_INFO("Recovered derivation path from address registry: " + recovered_path +
-                              " for scriptPubKey: " + script_pubkey);
-
-                    // Backfill address_derivation_paths for future lookups
-                    sqlite3_stmt* ins_stmt = nullptr;
-                    const char* ins_sql = "INSERT OR IGNORE INTO address_derivation_paths "
-                        "(address, derivation_path, script_pubkey, account, change, address_index, created_at) "
-                        "VALUES ((SELECT address FROM addresses WHERE script_pubkey = ? LIMIT 1), ?, ?, ?, ?, ?, datetime('now'))";
-                    if (sqlite3_prepare_v2(db_, ins_sql, -1, &ins_stmt, nullptr) == SQLITE_OK) {
-                        sqlite3_bind_text(ins_stmt, 1, script_pubkey.c_str(), -1, SQLITE_STATIC);
-                        sqlite3_bind_text(ins_stmt, 2, recovered_path.c_str(), -1, SQLITE_STATIC);
-                        sqlite3_bind_text(ins_stmt, 3, script_pubkey.c_str(), -1, SQLITE_STATIC);
-                        sqlite3_bind_int(ins_stmt, 4, account);
-                        sqlite3_bind_int(ins_stmt, 5, change);
-                        sqlite3_bind_int(ins_stmt, 6, idx);
-                        sqlite3_step(ins_stmt);
-                        sqlite3_finalize(ins_stmt);
-                    }
-
-                    path_opt = recovered_path;
-                }
-                if (!path_opt) sqlite3_finalize(addr_stmt);
-            }
-        }
-
-        if (!path_opt) {
-            WLOG_ERR("No derivation path or imported key found for scriptPubKey: " + script_pubkey);
+            if(read)read->Commit();
+        } catch(const std::exception&) {
+            WLOG_ERR("Imported Taproot signing key lookup refused");
             return std::nullopt;
         }
     }
 
-    std::string derivation_path = *path_opt;
-    WLOG_DEBUG("Deriving private key for scriptPubKey " + script_pubkey + " with path: " + derivation_path);
-
-    // Watch-only namespaces are deliberately not BIP32 paths. Covenant
-    // descriptors use a NUMS internal key and register
-    // m/covenant/<profile>/<descriptor-id> solely for UTXO discovery. Trying
-    // to parse that label with stoul both invents ownership and aborts
-    // multi-input signing before an unrelated wallet-owned fee input can be
-    // signed.
-    if (derivation_path.rfind("m/covenant/", 0) == 0) {
-        WLOG_DEBUG(
-            "Covenant watch script has no wallet private key: " +
-            script_pubkey);
-        return std::nullopt;
-    }
-
-    // Parse derivation path (e.g., "m/84'/1448'/0'/0/0")
-    // Expected format: m/purpose'/coin_type'/account'/change/address_index
-    std::vector<uint32_t> path_components;
-    size_t pos = 2; // Skip "m/"
-
+    // HD lookup authenticates the current durable tuple in one snapshot. A
+    // plaintext cache, recognition label or inferred current-network path is
+    // never a substitute for a recorded owner. No lookup repairs wallet rows.
     try {
-        while (pos < derivation_path.length()) {
-            size_t slash_pos = derivation_path.find('/', pos);
-            std::string component = (slash_pos == std::string::npos)
-                ? derivation_path.substr(pos)
-                : derivation_path.substr(pos, slash_pos - pos);
-            if (component.empty()) {
-                return std::nullopt;
-            }
-
-            bool hardened = (component.back() == '\'');
-            if (hardened) component.pop_back();
-            if (component.empty() ||
-                !std::all_of(
-                    component.begin(),
-                    component.end(),
-                    [](unsigned char ch) { return std::isdigit(ch) != 0; })) {
-                WLOG_ERR(
-                    "Refusing non-BIP32 watch path for private-key "
-                    "derivation: " + derivation_path);
-                return std::nullopt;
-            }
-
-            uint32_t index = std::stoul(component);
-            if (hardened) index |= 0x80000000; // Set hardened bit
-
-            path_components.push_back(index);
-
-            if (slash_pos == std::string::npos) break;
-            pos = slash_pos + 1;
-        }
-    } catch (const std::exception& e) {
-        WLOG_ERR(
-            "Invalid BIP32 derivation path " + derivation_path +
-            ": " + e.what());
-        return std::nullopt;
-    }
-
-    // Derive key using BIP32Deriver (canonical engine with secure zeroization)
-
-    // Unencrypted wallets should keep seed in memory, but recover defensively if it was cleared.
-    if (master_seed_.empty() && !wallet_locked_) {
-        auto seed_opt = loadMasterSeed("");
-        if (seed_opt.has_value()) {
-            master_seed_ = seed_opt.value();
-        }
-    }
-
-    if (master_seed_.empty()) {
-        return std::nullopt;
-    }
-
-    try {
-        dinero::BIP32Deriver deriver(master_seed_.data(), master_seed_.size());
-        for (uint32_t component : path_components) {
-            if (component & 0x80000000) {
-                deriver.deriveHardened(component & ~0x80000000);
-            } else {
-                deriver.deriveNormal(component);
-            }
-        }
-        auto privkey = deriver.getPrivateKey();
-        std::vector<uint8_t> private_key(privkey.begin(), privkey.end());
-
-        // Cache for future use
-        cachePrivateKey(script_pubkey, private_key);
-
-        WLOG_INFO("Successfully derived private key for scriptPubKey: " + script_pubkey);
-        return private_key;
-
-    } catch (const std::exception& e) {
-        WLOG_ERR("BIP32 derivation failed: " + std::string(e.what()));
-        return std::nullopt;
+        auto lease=AcquireDatabaseLease();
+        if(!db_ || (owned_transaction ? sqlite3_get_autocommit(db_) : !sqlite3_get_autocommit(db_)) || (recovery_seeds_ && !pinned_signing))return std::nullopt;
+        if(!pinned_signing)checkUnlockTimeout();
+        if(wallet_locked_ || master_seed_.size()!=64)return std::nullopt;
+        std::vector<uint8_t> script;
+        if(!util::unhex(script_pubkey,script) || script.empty())return std::nullopt;
+        std::optional<IssuedAddressTransaction> read;
+        if(!owned_transaction)read.emplace(db_);
+        const auto path=AuthenticateHdInventory(db_,master_seed_,&script);
+        if(!path)return std::nullopt;
+        BIP32Deriver deriver(master_seed_.data(),master_seed_.size());
+        for(size_t i=0;i<3;++i)deriver.deriveHardened((*path)[i]);
+        deriver.deriveNormal((*path)[3]);deriver.deriveNormal((*path)[4]);
+        struct Scalar {std::array<uint8_t,32> value;~Scalar(){OPENSSL_cleanse(value.data(),value.size());}} scalar{deriver.getPrivateKey()};
+        struct Secret {std::vector<uint8_t> value;~Secret(){secureClearBytes(value);}} secret;
+        secret.value.assign(scalar.value.begin(),scalar.value.end());
+        if(read)read->Commit();
+        return std::move(secret.value);
+    } catch(const std::exception&) {
+        WLOG_ERR("HD signing key lookup refused");return std::nullopt;
     }
 }
 
@@ -6929,6 +8945,7 @@ std::optional<std::string> WalletManager::getScriptPubKeyForAddress(const std::s
 }
 
 std::string WalletManager::getPrivateKeyForPath(const std::string& derivation_path) {
+    std::lock_guard<std::recursive_mutex> key_ownership(database_lifecycle_mutex_);
     WLOG_INFO("🔑 getPrivateKeyForPath() called with path: " + derivation_path);
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -7106,169 +9123,37 @@ bool WalletManager::validateWIF(const std::string& wif, bool& is_compressed, boo
     return (prefix == 0x9E || prefix == 0x80 || prefix == 0xEF);
 }
 
-std::string WalletManager::importPrivateKey(const std::vector<uint8_t>& privkey, const std::string& label) {
-    if (privkey.size() != 32) {
-        WLOG_ERR("Invalid private key length");
-        return "";
-    }
-
-    if (!hasActiveWallet()) {
-        WLOG_ERR("No active wallet for import");
-        return "";
-    }
-
-    try {
-        // Derive public key from private key using secp256k1
-        secp256k1_context* ctx = secp256k1_context_create(SECP256K1_CONTEXT_SIGN);
-        if (!ctx) {
-            WLOG_ERR("Failed to create secp256k1 context");
-            return "";
-        }
-
-        // Verify private key is valid
-        if (!secp256k1_ec_seckey_verify(ctx, privkey.data())) {
-            secp256k1_context_destroy(ctx);
-            WLOG_ERR("Invalid private key");
-            return "";
-        }
-
-        // Create public key
-        secp256k1_pubkey pubkey;
-        if (!secp256k1_ec_pubkey_create(ctx, &pubkey, privkey.data())) {
-            secp256k1_context_destroy(ctx);
-            WLOG_ERR("Failed to create public key");
-            return "";
-        }
-
-        // Dinero uses Taproot from genesis - create P2TR address
-        // For BIP341 Taproot, we need to apply TapTweak to get the output pubkey
-
-        // Step 1: Get internal x-only pubkey
-        secp256k1_xonly_pubkey internal_pubkey;
-        int pk_parity;
-        if (!secp256k1_xonly_pubkey_from_pubkey(ctx, &internal_pubkey, &pk_parity, &pubkey)) {
-            secp256k1_context_destroy(ctx);
-            WLOG_ERR("Failed to extract x-only pubkey");
-            return "";
-        }
-
-        // Serialize internal pubkey for TapTweak computation
-        std::vector<uint8_t> internal_xonly(32);
-        secp256k1_xonly_pubkey_serialize(ctx, internal_xonly.data(), &internal_pubkey);
-
-        // Step 2: Compute TapTweak
-        // NOTE: Using SHA256(internal_key || 0x00) for BIP86 key-path-only tweak
-        // (empty merkle root). This matches BIP341 key-spend-only convention.
-        unsigned char tweak_data[33];
-        std::memcpy(tweak_data, internal_xonly.data(), 32);
-        tweak_data[32] = 0x00;  // Empty merkle root
-
-        unsigned char tweak[32];
-        SHA256(tweak_data, 33, tweak);
-
-        // Step 3: Apply tweak: output_key = internal_key + tweak*G
-        secp256k1_pubkey tweaked_pubkey;
-        if (!secp256k1_xonly_pubkey_tweak_add(ctx, &tweaked_pubkey, &internal_pubkey, tweak)) {
-            secp256k1_context_destroy(ctx);
-            WLOG_ERR("Failed to apply TapTweak");
-            return "";
-        }
-
-        // Step 4: Extract output x-only pubkey
-        secp256k1_xonly_pubkey output_pubkey;
-        if (!secp256k1_xonly_pubkey_from_pubkey(ctx, &output_pubkey, nullptr, &tweaked_pubkey)) {
-            secp256k1_context_destroy(ctx);
-            WLOG_ERR("Failed to extract output x-only pubkey");
-            return "";
-        }
-
-        // Serialize output pubkey (32 bytes)
-        std::vector<uint8_t> x_only_pubkey(32);
-        secp256k1_xonly_pubkey_serialize(ctx, x_only_pubkey.data(), &output_pubkey);
-        secp256k1_context_destroy(ctx);
-
-        // Debug: Log the computed pubkeys
-        std::ostringstream debug_stream;
-        debug_stream << "TapTweak Debug:\n";
-        debug_stream << "  Internal pubkey: ";
-        for (auto b : internal_xonly) {
-            debug_stream << std::hex << std::setfill('0') << std::setw(2) << (int)b;
-        }
-        debug_stream << "\n  Output pubkey:   ";
-        for (auto b : x_only_pubkey) {
-            debug_stream << std::hex << std::setfill('0') << std::setw(2) << (int)b;
-        }
-        debug_stream << "\n  Expected:        ca062bff883f6d1511a72a78a09f3a17cb6734f9ce8543faa66f7e380d58d1b7";
-        WLOG_INFO(debug_stream.str());
-
-        // Create bech32m address (P2TR - witness version 1) using AddressCodec
-        std::string address = AddressCodec::encodeP2TR(Network::MAIN, x_only_pubkey);
-
-        if (address.empty()) {
-            WLOG_ERR("Failed to encode address");
-            return "";
-        }
-
-        // Store in imported_keys table
-        const char* sql = R"(
-            INSERT OR REPLACE INTO imported_keys (address, private_key_enc, label, created_at)
-            VALUES (?, ?, ?, datetime('now'))
-        )";
-
-        sqlite3_stmt* stmt;
-        if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
-            WLOG_ERR("Failed to prepare import statement");
-            return "";
-        }
-
-        // For now, store the key encrypted with wallet's encryption key if available
-        // Otherwise store as hex (not recommended for production)
-        std::string key_storage;
-        if (!encryption_key_.empty()) {
-            key_storage = encryptData(std::string(privkey.begin(), privkey.end()), encryption_key_);
-        } else {
-            // Hex encode for unencrypted wallets
-            static const char* hex_chars = "0123456789abcdef";
-            key_storage.reserve(64);
-            for (uint8_t byte : privkey) {
-                key_storage += hex_chars[(byte >> 4) & 0xF];
-                key_storage += hex_chars[byte & 0xF];
-            }
-        }
-
-        sqlite3_bind_text(stmt, 1, address.c_str(), -1, SQLITE_TRANSIENT);
-        sqlite3_bind_text(stmt, 2, key_storage.c_str(), -1, SQLITE_TRANSIENT);
-        sqlite3_bind_text(stmt, 3, label.c_str(), -1, SQLITE_TRANSIENT);
-
-        if (sqlite3_step(stmt) != SQLITE_DONE) {
-            WLOG_ERR("Failed to store imported key: " + std::string(sqlite3_errmsg(db_)));
-            sqlite3_finalize(stmt);
-            return "";
-        }
-        sqlite3_finalize(stmt);
-
-        // Add to address book via HD address method (account -1 = imported)
-        addHDAddress(address, -1, 0, 0, label.empty() ? "imported" : label);
-
-        // Cache the key for immediate use
-        cachePrivateKey(address, privkey);
-
-        WLOG_INFO("Successfully imported private key for address: " + address);
-        return address;
-
-    } catch (const std::exception& e) {
-        WLOG_ERR("Import failed: " + std::string(e.what()));
-        return "";
-    }
+std::string WalletManager::importPrivateKey(const std::vector<uint8_t>& privkey,
+    const std::string& label, uint64_t expected_session, const std::string& expected_address) {
+    std::lock_guard<std::recursive_mutex> owner(database_lifecycle_mutex_);
+    if (privkey.size()!=32 || !hasActiveWallet()) return {};
+    struct Secret {
+        std::array<uint8_t,32> value{};
+        ~Secret(){OPENSSL_cleanse(value.data(),value.size());}
+    } key;
+    std::copy(privkey.begin(),privkey.end(),key.value.begin());
+    std::array<uint8_t,32> internal{},output{};int parity=0;
+    if (!TaprootKeys::DeriveXOnlyPubkey(key.value,internal,parity) ||
+        !TaprootKeys::ComputeTweakedPubkey(internal,output)) return {};
+    const auto& network=Params().name;
+    const auto address=TaprootKeys::CreateTaprootAddress(output,
+        network=="regtest"?"rdin":network=="testnet"?"tdin":"din");
+    if (address.empty() || (!expected_address.empty() && expected_address!=address)) return {};
+    // The existing owner checks legacy inventory in the SAME transaction as
+    // persistence. A backup's recorded address cannot silently be substituted.
+    if (!storeTaprootKey(address,key.value,internal,output,label,expected_session,true)) return {};
+    return address;
 }
 
 void WalletManager::cachePrivateKey(const std::string& address, const std::vector<uint8_t>& key) {
+    std::lock_guard<std::recursive_mutex> key_ownership(database_lifecycle_mutex_);
     // Store private key in cache (in memory only while wallet is unlocked)
     private_key_cache_[address] = key;
     WLOG_DEBUG("Cached private key for address: " + address);
 }
 
 void WalletManager::clearPrivateKeyCache() {
+    std::lock_guard<std::recursive_mutex> key_ownership(database_lifecycle_mutex_);
     // Securely clear all cached private keys
     for (auto& pair : private_key_cache_) {
         secureClearBytes(pair.second);
@@ -7280,6 +9165,14 @@ void WalletManager::clearPrivateKeyCache() {
 bool WalletManager::storeMasterSeed(const std::vector<uint8_t>& seed,
                                     const std::string& passphrase,
                                     bool reset_address_state) {
+    return storeMasterSeedOwned(seed, passphrase, reset_address_state, nullptr);
+}
+
+bool WalletManager::storeMasterSeedOwned(const std::vector<uint8_t>& seed,
+    const std::string& passphrase, bool reset_address_state, const std::string* initial_owner,
+    std::optional<InitialSeedKind> catalog_kind) {
+    std::lock_guard<std::recursive_mutex> key_ownership(database_lifecycle_mutex_);
+    if (recovery_seeds_) throw std::logic_error("Wallet recovery key is pinned");
     if (!db_ || current_wallet_id_ < 0) {
         WLOG_ERR("No active wallet to store master seed");
         return false;
@@ -7290,198 +9183,185 @@ bool WalletManager::storeMasterSeed(const std::vector<uint8_t>& seed,
         return false;
     }
 
-    // Re-importing the active recovery phrase is an idempotent wallet bind,
-    // not a wallet replacement. In particular, embedded/mobile clients bind
-    // on every process start and may explicitly skip address derivation after
-    // the first successful bind. Clearing address state here would therefore
-    // erase watch_scripts and make the otherwise valid retry unusable.
-    if (master_seed_.empty() && !wallet_locked_) {
-        auto existing_seed = loadMasterSeed("");
-        if (existing_seed.has_value()) {
-            master_seed_ = std::move(existing_seed.value());
+    try {
+        auto lease = AcquireDatabaseLease();
+        IssuedAddressTransaction transaction(db_);
+        if (catalog_kind && !initial_owner) throw std::logic_error("Catalog requires initial owner");
+        if (initial_owner) {
+            // Only creation supplies this sealed owner. Never replace an
+            // established seed, even if its ciphertext cannot be read.
+            IssuedStatement empty(db_, "SELECT 1 FROM hd_seeds");
+            empty.Done();
+            IssuedStatement owner(db_, "INSERT INTO settings(key,value,updated_at) VALUES(?,?,strftime('%s','now'))");
+            owner.Text(1, kInitialOwnerSetting); owner.Text(2, *initial_owner); owner.Done(true);
+            if (catalog_kind) wallet::OrchardAccountCatalog::InitializeForInitialSeed(
+                db_, seed, *catalog_kind == InitialSeedKind::Generated);
         }
-    }
-    const bool replaces_wallet_identity =
-        reset_address_state && !ConstantTimeEqual(seed, master_seed_);
+        struct SeedBuffer {
+            std::vector<uint8_t> value;
+            ~SeedBuffer() { secureClearBytes(value); }
+        } previous{master_seed_}, staged{seed};
 
-    // ═══════════════════════════════════════════════════════════════════════
-    // Optional address-state reset
-    // ═══════════════════════════════════════════════════════════════════════
-    // Required when replacing the wallet seed (restore/import flows), but
-    // must NOT run during wallet encryption, where we only re-encrypt
-    // the same seed.
-    // ═══════════════════════════════════════════════════════════════════════
-
-    if (replaces_wallet_identity) {
-        WLOG_INFO("Clearing address tables for new HD seed import...");
-
-        // Clear addresses table (resets derivation index to 0)
-        char* err_msg = nullptr;
-        int rc = sqlite3_exec(db_, "DELETE FROM addresses", nullptr, nullptr, &err_msg);
-        if (rc != SQLITE_OK) {
-            WLOG_WARN("Failed to clear addresses table: " + std::string(err_msg ? err_msg : "unknown error"));
-            if (err_msg) sqlite3_free(err_msg);
+        // Re-importing the active recovery phrase is an idempotent wallet bind,
+        // not a wallet replacement. In particular, embedded/mobile clients bind
+        // on every process start and may explicitly skip address derivation after
+        // the first successful bind. Clearing address state here would therefore
+        // erase watch_scripts and make the otherwise valid retry unusable.
+        if (previous.value.empty() && !wallet_locked_) {
+            auto existing_seed = loadMasterSeed("");
+            if (existing_seed.has_value()) {
+                previous.value = std::move(existing_seed.value());
+            }
         }
-
-        // Clear address derivation paths
-        rc = sqlite3_exec(db_, "DELETE FROM address_derivation_paths", nullptr, nullptr, &err_msg);
-        if (rc != SQLITE_OK) {
-            WLOG_WARN("Failed to clear address_derivation_paths: " + std::string(err_msg ? err_msg : "unknown error"));
-            if (err_msg) sqlite3_free(err_msg);
+        const bool replaces_wallet_identity =
+            reset_address_state && !ConstantTimeEqual(seed, previous.value);
+        if (!initial_owner) {
+            IssuedStatement catalog(db_, "SELECT 1 FROM settings WHERE key='orchard_account_catalog_v1'");
+            const int rc = sqlite3_step(catalog.value.get());
+            if (rc != SQLITE_DONE) {
+                IssuanceCheck(db_,rc,SQLITE_ROW); catalog.Done();
+                if (previous.value.size()!=64 || !ConstantTimeEqual(seed,previous.value))
+                    throw std::runtime_error("Seed replacement would orphan Orchard catalog");
+                (void)wallet::OrchardAccountCatalog::Read(db_,previous.value);
+            }
         }
-
-        // Clear HD address book entries
-        rc = sqlite3_exec(db_, "DELETE FROM hd_address_book", nullptr, nullptr, &err_msg);
-        if (rc != SQLITE_OK) {
-            // Table may not exist in older schemas, ignore error
-            if (err_msg) sqlite3_free(err_msg);
-        }
-
-        // Clear UTXO entries (they belong to old seed's addresses)
-        rc = sqlite3_exec(db_, "DELETE FROM utxos", nullptr, nullptr, &err_msg);
-        if (rc != SQLITE_OK) {
-            WLOG_WARN("Failed to clear utxos: " + std::string(err_msg ? err_msg : "unknown error"));
-            if (err_msg) sqlite3_free(err_msg);
+        if(PaymentColumn(db_)) {
+            if(!ConstantTimeEqual(seed,previous.value))
+                throw std::runtime_error("Seed replacement would orphan retained payments");
+            (void)ReadPendingPaymentsOwned(previous.value);
         }
 
-        // Clear watch_scripts (they belong to old seed's scriptPubKeys)
-        rc = sqlite3_exec(db_, "DELETE FROM watch_scripts", nullptr, nullptr, &err_msg);
-        if (rc != SQLITE_OK) {
-            WLOG_WARN("Failed to clear watch_scripts: " + std::string(err_msg ? err_msg : "unknown error"));
-            if (err_msg) sqlite3_free(err_msg);
+        // ═══════════════════════════════════════════════════════════════════════
+        // Optional address-state reset
+        // ═══════════════════════════════════════════════════════════════════════
+        // Required when replacing the wallet seed (restore/import flows), but
+        // is disabled for initial creation. This preserves the existing
+        // replacement decision; it does not certify recovery completeness.
+        // ═══════════════════════════════════════════════════════════════════════
+
+        if (replaces_wallet_identity) {
+            WLOG_INFO("Clearing address tables for new HD seed import...");
+
+            // Preserve the existing replacement policy, but every required
+            // deletion now belongs to the same transaction as the new seed.
+            for (const char* table : {"addresses", "address_derivation_paths", "hd_address_book",
+                                      "utxos", "watch_scripts", "taproot_key_mapping", "transactions"}) {
+                const std::string name(table);
+                if (name == "hd_address_book" || name == "taproot_key_mapping") {
+                    IssuedStatement exists(db_, "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?");
+                    exists.Text(1, name);
+                    const int rc = sqlite3_step(exists.value.get());
+                    if (rc == SQLITE_DONE) continue; // Optional in older schemas.
+                    IssuanceCheck(db_, rc, SQLITE_ROW);
+                    exists.Done();
+                }
+                const std::string sql = "DELETE FROM " + name;
+                IssuanceCheck(db_, sqlite3_exec(db_, sql.c_str(), nullptr, nullptr, nullptr), SQLITE_OK);
+            }
+
         }
 
-        // Clear taproot_key_mapping (output/internal pubkey pairs belong to old seed)
-        rc = sqlite3_exec(db_, "DELETE FROM taproot_key_mapping", nullptr, nullptr, &err_msg);
-        if (rc != SQLITE_OK) {
-            // Table may not exist in older schemas, ignore error
-            if (err_msg) sqlite3_free(err_msg);
+        // === STEP 1: Generate random salt and nonce ===
+        constexpr size_t SALT_SIZE = 32;
+        constexpr size_t NONCE_SIZE = 12;
+        constexpr size_t TAG_SIZE = 16;
+        constexpr uint32_t PBKDF2_ITERATIONS = 600000;
+
+        std::vector<uint8_t> salt(SALT_SIZE);
+        std::vector<uint8_t> nonce(NONCE_SIZE);
+
+        if (RAND_bytes(salt.data(), SALT_SIZE) != 1) {
+            WLOG_ERR("Failed to generate random salt");
+            return false;
         }
 
-        // Clear transactions (they belong to previous wallet's addresses, not the new seed)
-        rc = sqlite3_exec(db_, "DELETE FROM transactions", nullptr, nullptr, &err_msg);
-        if (rc != SQLITE_OK) {
-            WLOG_WARN("Failed to clear transactions: " + std::string(err_msg ? err_msg : "unknown error"));
-            if (err_msg) sqlite3_free(err_msg);
+        if (RAND_bytes(nonce.data(), NONCE_SIZE) != 1) {
+            WLOG_ERR("Failed to generate random nonce");
+            return false;
         }
 
-        WLOG_INFO("✅ Address, watch_script, and transaction tables cleared - derivation will start from index 0");
-    }
+        // === STEP 2: Derive encryption key from passphrase using PBKDF2-HMAC-SHA512 ===
+        uint8_t derived_key[64]{};  // PBKDF2-SHA512 gives 64 bytes, we use first 32 for AES-256
+        uint8_t aes_key[32]{};
+        struct KeyCleanup {
+            uint8_t* derived;
+            uint8_t* aes;
+            ~KeyCleanup() { OPENSSL_cleanse(derived, 64); OPENSSL_cleanse(aes, 32); }
+        } key_cleanup{derived_key, aes_key};
+        dinero::crypto::PBKDF2_HMAC_SHA512(
+            reinterpret_cast<const uint8_t*>(passphrase.data()), passphrase.size(),
+            salt.data(), salt.size(),
+            PBKDF2_ITERATIONS,
+            derived_key, sizeof(derived_key)
+        );
 
-    // === STEP 1: Generate random salt and nonce ===
-    constexpr size_t SALT_SIZE = 32;
-    constexpr size_t NONCE_SIZE = 12;
-    constexpr size_t TAG_SIZE = 16;
-    constexpr uint32_t PBKDF2_ITERATIONS = 600000;
+        // Use first 32 bytes as AES-256 key
+        std::memcpy(aes_key, derived_key, 32);
 
-    std::vector<uint8_t> salt(SALT_SIZE);
-    std::vector<uint8_t> nonce(NONCE_SIZE);
-
-    if (RAND_bytes(salt.data(), SALT_SIZE) != 1) {
-        WLOG_ERR("Failed to generate random salt");
-        return false;
-    }
-
-    if (RAND_bytes(nonce.data(), NONCE_SIZE) != 1) {
-        WLOG_ERR("Failed to generate random nonce");
-        return false;
-    }
-
-    // === STEP 2: Derive encryption key from passphrase using PBKDF2-HMAC-SHA512 ===
-    uint8_t derived_key[64];  // PBKDF2-SHA512 gives 64 bytes, we use first 32 for AES-256
-    dinero::crypto::PBKDF2_HMAC_SHA512(
-        reinterpret_cast<const uint8_t*>(passphrase.data()), passphrase.size(),
-        salt.data(), salt.size(),
-        PBKDF2_ITERATIONS,
-        derived_key, sizeof(derived_key)
-    );
-
-    // Use first 32 bytes as AES-256 key
-    uint8_t aes_key[32];
-    std::memcpy(aes_key, derived_key, 32);
-
-    // === STEP 3: Encrypt seed with AES-256-GCM ===
-    EVP_CIPHER_CTX* ctx = EVP_CIPHER_CTX_new();
-    if (!ctx) {
-        OPENSSL_cleanse(derived_key, sizeof(derived_key));
-        OPENSSL_cleanse(aes_key, sizeof(aes_key));
-        WLOG_ERR("Failed to create cipher context");
-        return false;
-    }
-
-    bool success = false;
-    std::vector<uint8_t> ciphertext(seed.size());
-    std::vector<uint8_t> tag(TAG_SIZE);
-
-    do {
-        // Initialize AES-256-GCM encryption
-        if (EVP_EncryptInit_ex(ctx, EVP_aes_256_gcm(), nullptr, aes_key, nonce.data()) != 1) {
-            WLOG_ERR("Failed to initialize AES-256-GCM encryption");
-            break;
+        // === STEP 3: Encrypt seed with AES-256-GCM ===
+        EVP_CIPHER_CTX* ctx = EVP_CIPHER_CTX_new();
+        if (!ctx) {
+            OPENSSL_cleanse(derived_key, sizeof(derived_key));
+            OPENSSL_cleanse(aes_key, sizeof(aes_key));
+            WLOG_ERR("Failed to create cipher context");
+            return false;
         }
 
-        // Encrypt the seed
-        int len = 0;
-        if (EVP_EncryptUpdate(ctx, ciphertext.data(), &len, seed.data(), seed.size()) != 1) {
-            WLOG_ERR("Failed to encrypt seed");
-            break;
-        }
+        std::unique_ptr<EVP_CIPHER_CTX, decltype(&EVP_CIPHER_CTX_free)> cipher(ctx, EVP_CIPHER_CTX_free);
+        bool success = false;
+        std::vector<uint8_t> ciphertext(seed.size());
+        std::vector<uint8_t> tag(TAG_SIZE);
 
-        int ciphertext_len = len;
+        do {
+            // Initialize AES-256-GCM encryption
+            if (EVP_EncryptInit_ex(ctx, EVP_aes_256_gcm(), nullptr, aes_key, nonce.data()) != 1) {
+                WLOG_ERR("Failed to initialize AES-256-GCM encryption");
+                break;
+            }
 
-        // Finalize encryption
-        if (EVP_EncryptFinal_ex(ctx, ciphertext.data() + len, &len) != 1) {
-            WLOG_ERR("Failed to finalize encryption");
-            break;
-        }
+            // Encrypt the seed
+            int len = 0;
+            if (EVP_EncryptUpdate(ctx, ciphertext.data(), &len, seed.data(), seed.size()) != 1) {
+                WLOG_ERR("Failed to encrypt seed");
+                break;
+            }
 
-        ciphertext_len += len;
+            int ciphertext_len = len;
 
-        // Get authentication tag
-        if (EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_GET_TAG, TAG_SIZE, tag.data()) != 1) {
-            WLOG_ERR("Failed to get GCM tag");
-            break;
-        }
+            // Finalize encryption
+            if (EVP_EncryptFinal_ex(ctx, ciphertext.data() + len, &len) != 1) {
+                WLOG_ERR("Failed to finalize encryption");
+                break;
+            }
 
-        // === STEP 4: Store encrypted_seed + salt + nonce + tag in database ===
-        // Format: salt(32) + nonce(12) + ciphertext(64) + tag(16) = 124 bytes total
-        std::vector<uint8_t> encrypted_blob;
-        encrypted_blob.reserve(SALT_SIZE + NONCE_SIZE + ciphertext_len + TAG_SIZE);
-        encrypted_blob.insert(encrypted_blob.end(), salt.begin(), salt.end());
-        encrypted_blob.insert(encrypted_blob.end(), nonce.begin(), nonce.end());
-        encrypted_blob.insert(encrypted_blob.end(), ciphertext.begin(), ciphertext.begin() + ciphertext_len);
-        encrypted_blob.insert(encrypted_blob.end(), tag.begin(), tag.end());
+            ciphertext_len += len;
 
-        // Insert or replace into hd_seeds table (per-wallet DB uses id=1)
-        sqlite3_stmt* stmt = nullptr;
-        const char* sql = R"(
-            INSERT OR REPLACE INTO hd_seeds (id, encrypted_seed, salt, coin_type, encryption_version, created_at)
-            VALUES (1, ?, ?, ?, 2, strftime('%s','now'))
-        )";
+            // Get authentication tag
+            if (EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_GET_TAG, TAG_SIZE, tag.data()) != 1) {
+                WLOG_ERR("Failed to get GCM tag");
+                break;
+            }
 
-        if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
-            WLOG_ERR("Failed to prepare statement for storing seed: " + std::string(sqlite3_errmsg(db_)));
-            break;
-        }
+            // === STEP 4: Store encrypted_seed + salt + nonce + tag in database ===
+            // Format: salt(32) + nonce(12) + ciphertext(64) + tag(16) = 124 bytes total
+            std::vector<uint8_t> encrypted_blob;
+            encrypted_blob.reserve(SALT_SIZE + NONCE_SIZE + ciphertext_len + TAG_SIZE);
+            encrypted_blob.insert(encrypted_blob.end(), salt.begin(), salt.end());
+            encrypted_blob.insert(encrypted_blob.end(), nonce.begin(), nonce.end());
+            encrypted_blob.insert(encrypted_blob.end(), ciphertext.begin(), ciphertext.begin() + ciphertext_len);
+            encrypted_blob.insert(encrypted_blob.end(), tag.begin(), tag.end());
 
-        sqlite3_bind_blob(stmt, 1, encrypted_blob.data(), encrypted_blob.size(), SQLITE_TRANSIENT);
-        sqlite3_bind_blob(stmt, 2, salt.data(), salt.size(), SQLITE_TRANSIENT);
-        sqlite3_bind_int(stmt, 3, static_cast<int>(dinero::consensus::DINERO_COIN_TYPE));
+            // Insert or replace into hd_seeds table (per-wallet DB uses id=1)
+            IssuedStatement row(db_, R"(
+                INSERT OR REPLACE INTO hd_seeds (id, encrypted_seed, salt, coin_type, encryption_version, created_at)
+                VALUES (1, ?, ?, ?, 2, strftime('%s','now'))
+            )");
+            row.Blob(1, encrypted_blob.data(), static_cast<int>(encrypted_blob.size()));
+            row.Blob(2, salt.data(), static_cast<int>(salt.size()));
+            row.Int(3, static_cast<int>(dinero::consensus::DINERO_COIN_TYPE));
+            row.Done(true);
 
-        int rc = sqlite3_step(stmt);
-        sqlite3_finalize(stmt);
-
-        if (rc != SQLITE_DONE) {
-            WLOG_ERR("Failed to store encrypted seed in database");
-            break;
-        }
-
-        WLOG_INFO("Successfully stored encrypted HD wallet seed (encryption_version=2, PBKDF2@600K)");
-
-        // Update encryption_metadata with actual seed KDF params
-        {
-            sqlite3_stmt* meta_stmt = nullptr;
-            const char* meta_sql = R"(
+            IssuedStatement metadata(db_, R"(
                 INSERT OR REPLACE INTO encryption_metadata (
                     id, encrypted, kdf, kdf_iterations, cipher, salt, created_at, updated_at
                 )
@@ -7489,48 +9369,47 @@ bool WalletManager::storeMasterSeed(const std::vector<uint8_t>& seed,
                         'pbkdf2-hmac-sha512', 600000, 'AES-256-GCM', ?,
                         COALESCE((SELECT created_at FROM encryption_metadata WHERE id = 1), strftime('%s','now')),
                         strftime('%s','now'))
-            )";
-            if (sqlite3_prepare_v2(db_, meta_sql, -1, &meta_stmt, nullptr) == SQLITE_OK) {
-                sqlite3_bind_blob(meta_stmt, 1, salt.data(), salt.size(), SQLITE_TRANSIENT);
-                sqlite3_step(meta_stmt);
-                sqlite3_finalize(meta_stmt);
+            )");
+            metadata.Blob(1, salt.data(), static_cast<int>(salt.size()));
+            metadata.Done(true);
+
+            // Any operation that replaces the seed invalidates the old mnemonic
+            // binding. Clear it after the seed write succeeds; encryption passes
+            // reset_address_state=false because they preserve the same identity.
+            if (replaces_wallet_identity) {
+                const auto set = [&](const char* name, const char* value) {
+                    IssuedStatement setting(db_, "INSERT OR REPLACE INTO settings(key,value,updated_at) VALUES(?,?,strftime('%s','now'))");
+                    setting.Text(1, name); setting.Text(2, value); setting.Done(true);
+                };
+                set(kBip39RecoverySetting, "");
+                set(kBip39BackupAcknowledgedSetting, "0");
             }
-        }
 
-        // Any operation that replaces the seed invalidates the old mnemonic
-        // binding. Clear it after the seed write succeeds; encryption passes
-        // reset_address_state=false because they preserve the same identity.
-        if (replaces_wallet_identity) {
-            try {
-                setSetting(kBip39RecoverySetting, "");
-                setSetting(kBip39BackupAcknowledgedSetting, "0");
-            } catch (const std::exception& e) {
-                WLOG_ERR("Failed to invalidate old BIP39 recovery record: " +
-                         std::string(e.what()));
-                break;
-            }
-        }
+            // Allocate the live seed before writing and publish only after the
+            // required rows and commit succeed. The old live seed is cleansed.
+            transaction.Commit();
+            master_seed_.swap(staged.value);
 
-        // ✅ CRITICAL FIX: Set master_seed_ in memory so getNewAddress works immediately
-        // Without this, wallet.restore can't generate addresses after storing seed
-        master_seed_ = seed;
+            success = true;
 
-        success = true;
+        } while (false);
 
-    } while (false);
+        // Cleanup
+        OPENSSL_cleanse(derived_key, sizeof(derived_key));
+        OPENSSL_cleanse(aes_key, sizeof(aes_key));
 
-    // Cleanup
-    EVP_CIPHER_CTX_free(ctx);
-    OPENSSL_cleanse(derived_key, sizeof(derived_key));
-    OPENSSL_cleanse(aes_key, sizeof(aes_key));
-
-    return success;
+        return success;
+    } catch (const std::exception& e) {
+        WLOG_ERR(std::string("Failed to persist HD wallet seed: ") + e.what());
+        return false;
+    }
 }
 
 bool WalletManager::storeAuthoritativeBip39Mnemonic(
     const std::string& mnemonic,
     const std::string& bip39_passphrase,
     std::string* error_out) {
+    std::lock_guard<std::recursive_mutex> key_ownership(database_lifecycle_mutex_);
     if (!db_ || current_wallet_id_ < 0) {
         SetRecoveryError(error_out, "no active wallet");
         return false;
@@ -7604,6 +9483,7 @@ bool WalletManager::storeAuthoritativeBip39Mnemonic(
 
 std::optional<Bip39RecoveryMaterial> WalletManager::loadAuthoritativeBip39Mnemonic(
     std::string* error_out) const {
+    std::lock_guard<std::recursive_mutex> key_ownership(database_lifecycle_mutex_);
     if (!db_ || current_wallet_id_ < 0) {
         SetRecoveryError(error_out, "no active wallet");
         return std::nullopt;
@@ -7724,36 +9604,39 @@ bool WalletManager::acknowledgeBip39Backup(const std::string& mnemonic,
 }
 
 std::optional<std::vector<uint8_t>> WalletManager::loadMasterSeed(const std::string& passphrase) {
+    std::lock_guard<std::recursive_mutex> key_ownership(database_lifecycle_mutex_);
     if (!db_ || current_wallet_id_ < 0) {
         WLOG_ERR("No active wallet to load master seed from");
         return std::nullopt;
     }
 
-    // === STEP 1: Load encrypted seed + encryption_version from database ===
-    sqlite3_stmt* stmt = nullptr;
-    const char* sql = "SELECT encrypted_seed, encryption_version FROM hd_seeds WHERE id = 1";
-
-    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
-        return std::nullopt;
+    // Capture the established envelope in one checked statement before deriving
+    // any secret. This read may borrow the caller's transaction, never commit it.
+    std::vector<uint8_t> encrypted_blob;
+    int64_t encryption_version = 0;
+    {
+        sqlite3_stmt* raw = nullptr;
+        const int prepared = sqlite3_prepare_v2(
+            db_, "SELECT encrypted_seed, encryption_version FROM hd_seeds WHERE id = 1",
+            -1, &raw, nullptr);
+        std::unique_ptr<sqlite3_stmt, decltype(&sqlite3_finalize)> stmt(raw, sqlite3_finalize);
+        if (prepared != SQLITE_OK || sqlite3_step(stmt.get()) != SQLITE_ROW)
+            return std::nullopt;
+        const int version_type = sqlite3_column_type(stmt.get(), 1);
+        if (sqlite3_column_type(stmt.get(), 0) != SQLITE_BLOB ||
+            sqlite3_column_bytes(stmt.get(), 0) != 124 ||
+            (version_type != SQLITE_INTEGER && version_type != SQLITE_NULL))
+            return std::nullopt;
+        encryption_version = version_type == SQLITE_NULL ? 0 : sqlite3_column_int64(stmt.get(), 1);
+        // Only the documented absent/zero legacy marker may probe both KDFs.
+        if (encryption_version < 0 || encryption_version > 2)
+            return std::nullopt;
+        const auto* bytes = static_cast<const uint8_t*>(sqlite3_column_blob(stmt.get(), 0));
+        if (!bytes) return std::nullopt;
+        encrypted_blob.assign(bytes, bytes + 124);
+        if (sqlite3_step(stmt.get()) != SQLITE_DONE)
+            return std::nullopt;
     }
-
-    if (sqlite3_step(stmt) != SQLITE_ROW) {
-        sqlite3_finalize(stmt);
-        return std::nullopt;
-    }
-
-    const void* blob_data = sqlite3_column_blob(stmt, 0);
-    int blob_size = sqlite3_column_bytes(stmt, 0);
-    int encryption_version = sqlite3_column_int(stmt, 1); // 0 if NULL
-
-    if (!blob_data || blob_size < 92) {
-        sqlite3_finalize(stmt);
-        return std::nullopt;
-    }
-
-    std::vector<uint8_t> encrypted_blob(static_cast<const uint8_t*>(blob_data),
-                                        static_cast<const uint8_t*>(blob_data) + blob_size);
-    sqlite3_finalize(stmt);
 
     // === STEP 2: Extract components from encrypted blob ===
     // Format: salt(32) + nonce(12) + ciphertext(64) + tag(16) = 124 bytes
@@ -7764,17 +9647,16 @@ std::optional<std::vector<uint8_t>> WalletManager::loadMasterSeed(const std::str
     // Version-dispatched iteration count:
     //   Version 2 (current) = 600,000 PBKDF2-HMAC-SHA512 iterations
     //   Version 1 (legacy)  = 100,000 PBKDF2-HMAC-SHA512 iterations
-    //   Fallback: try both if version is unknown (0 or missing)
+    //   Legacy unmarked envelope (0 or NULL): authenticate with both known KDFs
     std::vector<uint32_t> iteration_candidates;
     if (encryption_version == 2) {
         iteration_candidates = {600000};
     } else if (encryption_version == 1) {
         iteration_candidates = {100000};
     } else {
-        // Unknown version or NULL — try all known candidates (backward compat)
+        // Explicit legacy-unmarked version only; unsupported versions refused above.
         iteration_candidates = {600000, 100000};
-        WLOG_WARN("Unknown seed encryption_version=" + std::to_string(encryption_version) +
-                  ", trying all known iteration counts");
+        WLOG_INFO("Legacy unmarked seed envelope: trying known iteration counts");
     }
 
     std::vector<uint8_t> salt(encrypted_blob.begin(), encrypted_blob.begin() + SALT_SIZE);
@@ -7997,89 +9879,80 @@ void WalletManager::onBlockConnected(const Block& block, uint32_t height) {
 }
 
 void WalletManager::onBlockDisconnected(const Block& block, uint32_t height) {
-    if (!hasActiveWallet()) {
-        return;  // No wallet loaded, nothing to do
-    }
+    const auto database_lease = AcquireDatabaseLease();
+    if (!hasActiveWallet()) return;
+    if (height == 0 || height > static_cast<uint32_t>(std::numeric_limits<int>::max()))
+        throw std::runtime_error("Wallet disconnect height is out of range");
 
-    WLOG_INFO("WalletManager: 🔄 Processing block disconnect at height " + std::to_string(height));
-
-    // Phase 4B: Full reorg handling
-    // During a blockchain reorganization, we need to:
-    // 1. Remove UTXOs that were created in this block
-    // 2. Mark spent UTXOs as unspent again (restore them)
-
-    int utxos_removed = 0;
-    int utxos_restored = 0;
-    bool tx_history_reverted = false;
-
-    // Step 1: Remove all UTXOs created in this block
-    // We can identify them by matching the height column
-    if (current_wallet_id_ != -1) {
-        sqlite3_stmt* stmt;
-        // Note: Per-wallet database - no wallet_id column needed
-        const char* sql = "DELETE FROM utxos WHERE height = ?";
-
-        int rc = sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
-        if (rc == SQLITE_OK) {
-            sqlite3_bind_int(stmt, 1, static_cast<int>(height));
-
-            rc = sqlite3_step(stmt);
-            if (rc == SQLITE_DONE) {
-                utxos_removed = sqlite3_changes(db_);
-            }
-            sqlite3_finalize(stmt);
+    // Failed BEGIN must leave an existing caller transaction untouched. This
+    // transaction covers this ordinary wallet only; the worker's index and
+    // shielded store are separate and may already have committed rollback.
+    exec(db_, "BEGIN IMMEDIATE");
+    try {
+        auto checked = [&](int result, int expected, const char* phase) {
+            if (result != expected)
+                throw std::runtime_error(std::string("Wallet disconnect ") + phase +
+                                         " failed: " + sqlite3_errmsg(db_));
+        };
+        using Statement = std::unique_ptr<sqlite3_stmt, decltype(&sqlite3_finalize)>;
+        auto prepare = [&](const char* sql, const char* phase) {
+            sqlite3_stmt* raw = nullptr;
+            const int result = sqlite3_prepare_v2(db_, sql, -1, &raw, nullptr);
+            Statement stmt(raw, sqlite3_finalize);
+            checked(result, SQLITE_OK, phase);
+            return stmt;
+        };
+        {
+            auto exists=prepare("SELECT 1 FROM sqlite_schema WHERE type='table' AND name='wallet_snapshot_recovered_blocks'","recovery cache read");
+            const int present=sqlite3_step(exists.get());
+            if(present==SQLITE_ROW){
+                auto remove=prepare("DELETE FROM wallet_snapshot_recovered_blocks WHERE height>=?","recovery cache prepare");
+                checked(sqlite3_bind_int64(remove.get(),1,height),SQLITE_OK,"recovery cache bind");
+                checked(sqlite3_step(remove.get()),SQLITE_DONE,"recovery cache removal");
+            }else checked(present,SQLITE_DONE,"recovery cache read");
         }
-    }
-
-    // Step 1.5: Remove wallet transactions confirmed in the disconnected block.
-    // Prevents "phantom confirmed" transaction history after reorg.
-    tx_history_reverted = removeTransactionsAtHeight(height);
-
-    // Step 2: Restore spent UTXOs (mark as unspent)
-    // Scan all transactions in the block to find inputs we own
-    for (size_t tx_idx = 0; tx_idx < block.vtx.size(); ++tx_idx) {
-        const auto& tx = block.vtx[tx_idx];
-
-        if (tx.IsCoinbase()) {
-            continue;  // Coinbase has no inputs to restore
+        {
+            auto stmt = prepare("DELETE FROM utxos WHERE height = ?", "delete prepare");
+            checked(sqlite3_bind_int(stmt.get(), 1, static_cast<int>(height)), SQLITE_OK, "delete bind");
+            checked(sqlite3_step(stmt.get()), SQLITE_DONE, "delete");
         }
-
-        // For each input, check if we spent it
-        for (const auto& input : tx.vin) {
-            // Use canonical prevout txid from input for UTXO restoration.
-            std::string prev_txid = input.prevout.txid.AsUint256().GetHex();
-            int prev_vout = static_cast<int>(input.prevout.vout);
-
-            // Try to mark this UTXO as unspent (restore it)
-            if (current_wallet_id_ != -1) {
-                sqlite3_stmt* stmt;
-                // Note: Per-wallet database - no wallet_id column needed
-                const char* sql = "UPDATE utxos SET is_spent = 0 WHERE txid = ? AND vout = ? AND is_spent = 1";
-
-                int rc = sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
-                if (rc == SQLITE_OK) {
-                    sqlite3_bind_text(stmt, 1, prev_txid.c_str(), -1, SQLITE_STATIC);
-                    sqlite3_bind_int(stmt, 2, prev_vout);
-
-                    rc = sqlite3_step(stmt);
-                    if (rc == SQLITE_DONE && sqlite3_changes(db_) > 0) {
-                        utxos_restored++;
-                    }
-                    sqlite3_finalize(stmt);
+        {
+            // Keep the historical per-wallet schema compatibility of the old
+            // history-removal path, but check every statement and binding.
+            const bool scoped = IssuanceWalletColumn(db_, "transactions");
+            UnconfirmOutgoingHistoryAtHeight(db_,current_wallet_id_,height,scoped);
+            auto stmt = prepare(scoped
+                ? "DELETE FROM transactions WHERE wallet_id = ? AND height = ?"
+                : "DELETE FROM transactions WHERE height = ?", "history prepare");
+            int parameter = 1;
+            if (scoped)
+                checked(sqlite3_bind_int(stmt.get(), parameter++, current_wallet_id_), SQLITE_OK, "history bind");
+            checked(sqlite3_bind_int(stmt.get(), parameter, static_cast<int>(height)), SQLITE_OK, "history bind");
+            checked(sqlite3_step(stmt.get()), SQLITE_DONE, "history");
+        }
+        {
+            auto stmt = prepare("UPDATE utxos SET is_spent = 0 WHERE txid = ? AND vout = ? AND is_spent = 1", "restore prepare");
+            for (const auto& tx : block.vtx) {
+                if (tx.IsCoinbase()) continue;
+                for (const auto& input : tx.vin) {
+                    const std::string prev_txid = input.prevout.txid.AsUint256().GetHex();
+                    checked(sqlite3_reset(stmt.get()), SQLITE_OK, "restore reset");
+                    checked(sqlite3_bind_text(stmt.get(), 1, prev_txid.c_str(), -1, SQLITE_TRANSIENT), SQLITE_OK, "restore bind");
+                    checked(sqlite3_bind_int64(stmt.get(), 2, input.prevout.vout), SQLITE_OK, "restore bind");
+                    checked(sqlite3_step(stmt.get()), SQLITE_DONE, "restore");
                 }
             }
         }
+        checked(sqlite3_exec(db_, "COMMIT", nullptr, nullptr, nullptr), SQLITE_OK, "commit");
+    } catch (...) {
+        if (!sqlite3_get_autocommit(db_) &&
+            sqlite3_exec(db_, "ROLLBACK", nullptr, nullptr, nullptr) != SQLITE_OK &&
+            !sqlite3_get_autocommit(db_)) std::terminate();
+        throw;
     }
-
-    // Step 3: Update wallet blockchain height
+    // This remains a later publication/metadata operation, not a durable source
+    // acknowledgment. Never lower the visible height after a failed SQL group.
     setBlockchainHeight(height - 1);
-
-    // sync_meta.last_scanned_height is updated by setBlockchainHeight(height-1) above
-
-    WLOG_INFO("WalletManager: Block " + std::to_string(height) + " disconnected - " +
-                         "removed " + std::to_string(utxos_removed) + " UTXOs, " +
-                         "restored " + std::to_string(utxos_restored) + " UTXOs, " +
-                         "tx history reverted=" + std::string(tx_history_reverted ? "yes" : "no"));
 }
 
 void WalletManager::onMempoolTransaction(const Transaction& tx) {
@@ -8150,118 +10023,89 @@ void WalletManager::onMempoolTransaction(const Transaction& tx) {
 // ═══════════════════════════════════════════════════════════════════════════
 
 void WalletManager::LoadAddressesIntoUTXOIndex() {
+    auto lease = AcquireDatabaseLease();
     if (!utxo_index_) {
         dinero::g_logger.warning("[WalletManager] UTXOIndex not set - cannot load addresses");
-        return;
+        return; // An absent optional index is not an acknowledgment of recovery.
     }
-
-    if (!db_) {
-        dinero::g_logger.error("[WalletManager] No database available for loading addresses");
-        return;
-    }
-
-    auto load_from_watch_scripts = [&]() -> int {
-        const char* sql = "SELECT script_pubkey, path FROM watch_scripts";
-        sqlite3_stmt* stmt = nullptr;
-
-        if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
-            dinero::g_logger.error("[WalletManager] Failed to prepare query for watch_scripts: " +
-                                   std::string(sqlite3_errmsg(db_)));
-            return 0;
-        }
-
-        int count = 0;
-        while (sqlite3_step(stmt) == SQLITE_ROW) {
-            // Get script_pubkey (BLOB)
-            const void* script_data = sqlite3_column_blob(stmt, 0);
-            const int script_size = sqlite3_column_bytes(stmt, 0);
-
-            // Get path (TEXT)
-            const char* path_cstr = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
-            if (!script_data || script_size <= 0 || !path_cstr) {
-                continue;
-            }
-
-            std::vector<uint8_t> script_pubkey;
-            const auto* bytes = static_cast<const uint8_t*>(script_data);
-            script_pubkey.assign(bytes, bytes + script_size);
-
-            utxo_index_->RegisterAddress(script_pubkey, path_cstr);
-            count++;
-        }
-
-        sqlite3_finalize(stmt);
-        return count;
+    if (!db_) throw std::runtime_error("Wallet script inventory database unavailable");
+    IssuedAddressTransaction read(db_);
+    const auto text = [](sqlite3_stmt* q, int col) {
+        if (sqlite3_column_type(q,col)!=SQLITE_TEXT)
+            throw std::runtime_error("Invalid wallet script inventory text");
+        const auto* value=static_cast<const char*>(sqlite3_column_blob(q,col));
+        const int size=sqlite3_column_bytes(q,col);
+        if (!value || size<=0 || std::memchr(value,0,size))
+            throw std::runtime_error("Empty or malformed wallet script inventory text");
+        return std::string(value,size);
     };
-
-    int count = load_from_watch_scripts();
-    if (count > 0) {
-        dinero::g_logger.info("[WalletManager] ✅ Loaded " + std::to_string(count) +
-                              " addresses into UTXOIndex from watch_scripts");
-        return;
-    }
-
-    // Recovery path: older/mobile states may have addresses persisted without
-    // corresponding watch_scripts rows, which leaves UTXOIndex empty and wallet
-    // scans unable to match outputs. Backfill watch_scripts from addresses.
-    dinero::g_logger.warning("[WalletManager] watch_scripts empty - attempting backfill from addresses");
-
-    const char* backfill_sql = R"(
-        SELECT a.script_pubkey,
-               COALESCE(adp.derivation_path,
-                        'm/' || CASE WHEN a.type = 'p2tr' THEN '86' ELSE '84' END ||
-                        '''/' || ?1 || '''/' || COALESCE(a.account, 0) || '''/' ||
-                        COALESCE(a.change, 0) || '/' || COALESCE(a.idx, 0)) AS derivation_path,
-               COALESCE(a.change, 0) AS is_change
-        FROM addresses a
-        LEFT JOIN address_derivation_paths adp ON adp.address = a.address
-        WHERE a.script_pubkey IS NOT NULL AND a.script_pubkey <> ''
-    )";
-
-    sqlite3_stmt* stmt = nullptr;
-    if (sqlite3_prepare_v2(db_, backfill_sql, -1, &stmt, nullptr) != SQLITE_OK) {
-        dinero::g_logger.error("[WalletManager] Failed to prepare watch backfill query: " +
-                               std::string(sqlite3_errmsg(db_)));
-        return;
-    }
-    sqlite3_bind_int(stmt, 1, static_cast<int>(dinero::consensus::DINERO_COIN_TYPE));
-
-    int backfilled = 0;
-    int skipped_invalid = 0;
-    while (sqlite3_step(stmt) == SQLITE_ROW) {
-        const char* script_hex_cstr = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
-        const char* path_cstr = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
-        const int is_change = sqlite3_column_int(stmt, 2);
-
-        if (!script_hex_cstr || !path_cstr) {
-            skipped_invalid++;
-            continue;
+    const auto integer = [](sqlite3_stmt* q,int col) {
+        if (sqlite3_column_type(q,col)!=SQLITE_INTEGER)
+            throw std::runtime_error("Invalid wallet script inventory integer");
+        return sqlite3_column_int64(q,col);
+    };
+    const auto parsed_script = [&](sqlite3_stmt* q,int col) {
+        std::vector<uint8_t> script;
+        if (!util::unhex(text(q,col),script) || script.empty())
+            throw std::runtime_error("Invalid wallet address script");
+        return script;
+    };
+    std::map<std::vector<uint8_t>,std::pair<std::string,sqlite3_int64>> captured;
+    const auto add = [&](const std::vector<uint8_t>& script,const std::string& path,sqlite3_int64 change) {
+        if (change!=0 && change!=1) throw std::runtime_error("Invalid wallet script change flag");
+        const auto [it,inserted]=captured.emplace(script,std::make_pair(path,change));
+        if (!inserted && it->second!=std::make_pair(path,change))
+            throw std::runtime_error("Conflicting persistent wallet script path");
+    };
+    {
+        IssuedStatement q(db_,"SELECT script_pubkey,path,is_change FROM watch_scripts");
+        int rc;
+        while ((rc=sqlite3_step(q.value.get()))==SQLITE_ROW) {
+            auto* row=q.value.get();
+            if (sqlite3_column_type(row,0)!=SQLITE_BLOB || sqlite3_column_bytes(row,0)<=0 || !sqlite3_column_blob(row,0))
+                throw std::runtime_error("Invalid watched script");
+            const auto* raw=static_cast<const uint8_t*>(sqlite3_column_blob(row,0));
+            const std::vector<uint8_t> script(raw,raw+sqlite3_column_bytes(row,0));
+            add(script,text(row,1),integer(row,2));
         }
-
-        std::string script_hex(script_hex_cstr);
-        if (script_hex.rfind("0x", 0) == 0 || script_hex.rfind("0X", 0) == 0) {
-            script_hex = script_hex.substr(2);
-        }
-
-        std::vector<unsigned char> parsed;
-        if (!util::unhex(script_hex, parsed) || parsed.empty()) {
-            skipped_invalid++;
-            continue;
-        }
-
-        std::vector<uint8_t> script_bytes(parsed.begin(), parsed.end());
-        addWatchScript(script_bytes, path_cstr, is_change != 0);
-        backfilled++;
+        IssuanceCheck(db_,rc,SQLITE_DONE);
     }
-    sqlite3_finalize(stmt);
-
-    if (backfilled > 0) {
-        dinero::g_logger.info("[WalletManager] ✅ Backfilled " + std::to_string(backfilled) +
-                              " watch scripts from addresses (" + std::to_string(skipped_invalid) +
-                              " skipped)");
-    } else {
-        dinero::g_logger.warning("[WalletManager] watch_scripts backfill found no usable addresses");
+    // The same known-script domain used by ordinary delivery. Empty/missing
+    // address scripts and orphan descriptors still need independent discovery.
+    // An existing watch row never hides another address's explicit path record.
+    const bool wallet_column=IssuanceWalletColumn(db_,"addresses");
+    const std::string sql=R"(SELECT a.script_pubkey,a.account,a.change,a.idx,
+        p.derivation_path,p.script_pubkey,p.account,p.change,p.address_index,)"+
+        std::string(wallet_column?"a.wallet_id":"1")+R"( FROM addresses a
+        LEFT JOIN address_derivation_paths p ON p.address=a.address
+        WHERE a.script_pubkey IS NOT NULL AND a.script_pubkey<>'')";
+    {
+        IssuedStatement q(db_,sql.c_str());int rc;
+        while ((rc=sqlite3_step(q.value.get()))==SQLITE_ROW) {
+            auto* row=q.value.get();const auto script=parsed_script(row,0);
+            const auto account=integer(row,1),change=integer(row,2),index=integer(row,3);
+            if (integer(row,9)!=1 || account < -1 || index<0 || index>INT_MAX || (change!=0 && change!=1))
+                throw std::runtime_error("Invalid wallet address ownership metadata");
+            if (sqlite3_column_type(row,4)!=SQLITE_NULL) {
+                const auto path=text(row,4);
+                if (parsed_script(row,5)!=script || integer(row,6)!=account ||
+                    integer(row,7)!=change || integer(row,8)!=index)
+                    throw std::runtime_error("Conflicting wallet address path metadata");
+                add(script,path,change);
+            } else {
+                const auto watched=captured.find(script);
+                if (watched==captured.end() || watched->second.second!=change)
+                    throw std::runtime_error("Wallet address has no consistent recorded script path");
+            }
+        }
+        IssuanceCheck(db_,rc,SQLITE_DONE);
     }
+    std::map<std::vector<uint8_t>,std::string> scripts;
+    for (const auto& [script,record] : captured) scripts.emplace(script,record.first);
+    read.Commit(); // No SQL backfill, invented HD path, or receipt mutation.
+    // The wallet/session remains pinned. The index stages a copy under its own
+    // script mutex and swaps only after every existing binding agrees.
+    utxo_index_->MergeRegisteredAddresses(scripts);
 }
 
 void WalletManager::addWatchScript(const std::vector<uint8_t>& script_pubkey, const std::string& path, bool is_change) {
@@ -8707,103 +10551,131 @@ void WalletManager::registerP2MRAddress(const std::vector<uint8_t>& script_pubke
     }
 }
 
-void WalletManager::storeTaprootKey(const std::string& address,
+bool WalletManager::storeTaprootKey(const std::string& address,
                                     const std::array<uint8_t, 32>& internal_privkey,
                                     const std::array<uint8_t, 32>& internal_pubkey,
                                     const std::array<uint8_t, 32>& output_pubkey,
-                                    const std::string& label) {
-    if (!db_) {
-        WLOG_ERR("[storeTaprootKey] No wallet database open");
-        return;
-    }
-
-    // Create taproot_keys table if it doesn't exist.
-    // is_privkey_encrypted: 1 = AES-256-GCM encrypted under wallet key, 0 = raw (unencrypted wallet)
-    const char* create_sql = R"(
-        CREATE TABLE IF NOT EXISTS taproot_keys (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            address TEXT UNIQUE NOT NULL,
-            internal_privkey BLOB NOT NULL,
-            internal_pubkey BLOB NOT NULL,
-            output_pubkey BLOB NOT NULL,
-            label TEXT,
-            created_at INTEGER NOT NULL,
-            is_privkey_encrypted INTEGER NOT NULL DEFAULT 0
-        )
-    )";
-    sqlite3_exec(db_, create_sql, nullptr, nullptr, nullptr);
-    // Migration: add column for wallets created before this change
-    sqlite3_exec(db_, "ALTER TABLE taproot_keys ADD COLUMN is_privkey_encrypted INTEGER NOT NULL DEFAULT 0",
-                 nullptr, nullptr, nullptr);
-
-    // Create taproot_key_mapping table if needed
-    const char* mapping_create_sql = R"(
-        CREATE TABLE IF NOT EXISTS taproot_key_mapping (
-            output_pubkey BLOB PRIMARY KEY,
-            internal_pubkey BLOB NOT NULL,
-            derivation_path TEXT,
-            created_at INTEGER NOT NULL
-        )
-    )";
-    sqlite3_exec(db_, mapping_create_sql, nullptr, nullptr, nullptr);
-
-    // Encrypt the imported private key under the wallet encryption key if available.
-    // Unencrypted wallets store it raw (matching the unencrypted seed semantics).
-    std::vector<uint8_t> privkey_blob(internal_privkey.begin(), internal_privkey.end());
-    int is_privkey_encrypted = 0;
-    if (!encryption_key_.empty()) {
-        try {
-            std::string raw(internal_privkey.begin(), internal_privkey.end());
-            std::string enc = encryptData(raw, encryption_key_);
-            privkey_blob.assign(enc.begin(), enc.end());
-            is_privkey_encrypted = 1;
-        } catch (const std::exception& e) {
-            WLOG_ERR("[storeTaprootKey] Encryption failed, storing plaintext: " + std::string(e.what()));
+                                    const std::string& label, uint64_t expected_session, bool require_empty_legacy_imports) {
+    try {
+        auto lease = AcquireDatabaseLease();
+        if (!db_ || !sqlite3_get_autocommit(db_) || recovery_seeds_ ||
+            (expected_session && lease->Session()!=expected_session)) return false;
+        checkUnlockTimeout();
+        IssuedAddressTransaction transaction(db_);
+        if (require_empty_legacy_imports) {
+            IssuedStatement legacy(db_, "SELECT 1 FROM imported_keys LIMIT 1");
+            const int result=sqlite3_step(legacy.value.get());
+            if (result==SQLITE_ROW) return false;
+            IssuanceCheck(db_,result,SQLITE_DONE);
         }
-    }
+        const auto text_matches=[](sqlite3_stmt* q,int column,std::string_view expected) {
+            const auto* value=sqlite3_column_text(q,column);
+            return sqlite3_column_type(q,column)==SQLITE_TEXT && value &&
+                sqlite3_column_bytes(q,column)==int(expected.size()) &&
+                std::memcmp(value,expected.data(),expected.size())==0;
+        };
+        // Read the durable policy while the real wallet session is pinned.
+        IssuedStatement policy(db_, "SELECT value FROM settings WHERE key='wallet_encrypted'");
+        int rc = sqlite3_step(policy.value.get());
+        bool encrypted = false;
+        const bool policy_present=rc==SQLITE_ROW;
+        if (rc == SQLITE_ROW) {
+            if (!text_matches(policy.value.get(),0,"0") && !text_matches(policy.value.get(),0,"1")) return false;
+            encrypted = text_matches(policy.value.get(),0,"1");
+            policy.Done();
+        } else IssuanceCheck(db_,rc,SQLITE_DONE);
+        { IssuedStatement metadata(db_,"SELECT encrypted FROM encryption_metadata WHERE id=1");
+          rc=sqlite3_step(metadata.value.get());
+          if(rc==SQLITE_ROW) {
+              const int flag=sqlite3_column_int(metadata.value.get(),0);
+              if(sqlite3_column_type(metadata.value.get(),0)!=SQLITE_INTEGER || (flag!=0 && flag!=1) ||
+                 (policy_present && encrypted!=(flag==1)))return false;
+              encrypted=flag==1;metadata.Done();
+          } else IssuanceCheck(db_,rc,SQLITE_DONE); }
+        if (encrypted != wallet_encrypted_ || (encrypted && (wallet_locked_ || encryption_key_.size()!=32))) return false;
 
-    const char* sql = "INSERT OR REPLACE INTO taproot_keys "
-                      "(address, internal_privkey, internal_pubkey, output_pubkey, label, created_at, is_privkey_encrypted) "
-                      "VALUES (?, ?, ?, ?, ?, ?, ?)";
-    sqlite3_stmt* stmt = nullptr;
-
-    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) == SQLITE_OK) {
-        sqlite3_bind_text(stmt, 1, address.c_str(), -1, SQLITE_STATIC);
-        sqlite3_bind_blob(stmt, 2, privkey_blob.data(), static_cast<int>(privkey_blob.size()), SQLITE_TRANSIENT);
-        sqlite3_bind_blob(stmt, 3, internal_pubkey.data(), 32, SQLITE_STATIC);
-        sqlite3_bind_blob(stmt, 4, output_pubkey.data(), 32, SQLITE_STATIC);
-        sqlite3_bind_text(stmt, 5, label.c_str(), -1, SQLITE_STATIC);
-        sqlite3_bind_int64(stmt, 6, std::time(nullptr));
-        sqlite3_bind_int(stmt, 7, is_privkey_encrypted);
-
-        int rc = sqlite3_step(stmt);
-        sqlite3_finalize(stmt);
-
-        if (rc == SQLITE_DONE) {
-            WLOG_INFO("[storeTaprootKey] ✅ Stored Taproot key for address: " + address +
-                      (is_privkey_encrypted ? " (encrypted)" : " (plaintext — wallet not encrypted)"));
+        std::array<uint8_t,32> derived_internal{}, derived_output{}; int parity=0;
+        if (!TaprootKeys::DeriveXOnlyPubkey(internal_privkey,derived_internal,parity) ||
+            derived_internal!=internal_pubkey ||
+            !TaprootKeys::ComputeTweakedPubkey(internal_pubkey,derived_output) || derived_output!=output_pubkey) return false;
+        const auto& network=Params().name;
+        const std::string hrp=network=="regtest"?"rdin":network=="testnet"?"tdin":"din";
+        if (TaprootKeys::CreateTaprootAddress(output_pubkey,hrp)!=address) return false;
+        std::vector<uint8_t> script{0x51,0x20};script.insert(script.end(),output_pubkey.begin(),output_pubkey.end());
+        const std::string path="tr("+util::hex(std::vector<uint8_t>(internal_pubkey.begin(),internal_pubkey.end())).substr(0,8)+"...)";
+        const std::string script_hex=util::hex(script);
+        const auto now=std::time(nullptr);
+        exec(db_, R"(CREATE TABLE IF NOT EXISTS taproot_keys (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, address TEXT UNIQUE NOT NULL,
+            internal_privkey BLOB NOT NULL, internal_pubkey BLOB NOT NULL, output_pubkey BLOB NOT NULL,
+            label TEXT, created_at INTEGER NOT NULL, is_privkey_encrypted INTEGER NOT NULL DEFAULT 0))");
+        bool has_encryption_flag=false;
+        { IssuedStatement columns(db_,"PRAGMA table_info(taproot_keys)");
+          while ((rc=sqlite3_step(columns.value.get()))==SQLITE_ROW) {
+              const auto* name=sqlite3_column_text(columns.value.get(),1);
+              if(!name) throw std::runtime_error("Imported key schema unavailable");
+              has_encryption_flag |= std::string_view(reinterpret_cast<const char*>(name))=="is_privkey_encrypted";
+          }
+          IssuanceCheck(db_,rc,SQLITE_DONE); }
+        if(!has_encryption_flag)exec(db_,"ALTER TABLE taproot_keys ADD COLUMN is_privkey_encrypted INTEGER NOT NULL DEFAULT 0");
+        exec(db_, R"(CREATE TABLE IF NOT EXISTS taproot_key_mapping (
+            output_pubkey BLOB PRIMARY KEY, internal_pubkey BLOB NOT NULL,
+            derivation_path TEXT, created_at INTEGER NOT NULL))");
+        { IssuedStatement watch(db_,"INSERT OR IGNORE INTO watch_scripts(script_pubkey,path,is_change,last_seen_height,created_at) VALUES(?,?,0,0,?)");
+          watch.Blob(1,script.data(),int(script.size()));watch.Text(2,path);watch.Int(3,now);watch.Done();
+          IssuedStatement verify(db_,"SELECT path,is_change FROM watch_scripts WHERE script_pubkey=?");
+          verify.Blob(1,script.data(),int(script.size()));IssuanceCheck(db_,sqlite3_step(verify.value.get()),SQLITE_ROW);
+          if(!text_matches(verify.value.get(),0,path) || sqlite3_column_type(verify.value.get(),1)!=SQLITE_INTEGER || sqlite3_column_int(verify.value.get(),1)!=0)
+              throw std::runtime_error("Imported key watch path conflict");
+          verify.Done(); }
+        { IssuedStatement mapping(db_,"INSERT OR IGNORE INTO taproot_key_mapping(output_pubkey,internal_pubkey,derivation_path,created_at) VALUES(?,?,?,?)");
+          mapping.Blob(1,output_pubkey.data(),32);mapping.Blob(2,internal_pubkey.data(),32);mapping.Text(3,path);mapping.Int(4,now);mapping.Done();
+          IssuedStatement verify(db_,"SELECT internal_pubkey,derivation_path FROM taproot_key_mapping WHERE output_pubkey=?");
+          verify.Blob(1,output_pubkey.data(),32);IssuanceCheck(db_,sqlite3_step(verify.value.get()),SQLITE_ROW);
+          const auto* key=static_cast<const uint8_t*>(sqlite3_column_blob(verify.value.get(),0));
+          if(!key || sqlite3_column_type(verify.value.get(),0)!=SQLITE_BLOB || sqlite3_column_bytes(verify.value.get(),0)!=32 ||
+              !std::equal(internal_pubkey.begin(),internal_pubkey.end(),key) || !text_matches(verify.value.get(),1,path))throw std::runtime_error("Imported key mapping conflict");
+          verify.Done(); }
+        // Cleansed on every exit, including encryption and SQLite failures.
+        struct Secret { std::string value; ~Secret(){secureClearString(value);} } raw, stored;
+        raw.value.assign(internal_privkey.begin(),internal_privkey.end());
+        stored.value=encrypted?encryptData(raw.value,encryption_key_):raw.value;
+        { IssuedStatement key(db_, R"(INSERT INTO taproot_keys(address,internal_privkey,internal_pubkey,output_pubkey,label,created_at,is_privkey_encrypted)
+            VALUES(?,?,?,?,?,?,?) ON CONFLICT(address) DO UPDATE SET internal_privkey=excluded.internal_privkey,
+            label=excluded.label,is_privkey_encrypted=excluded.is_privkey_encrypted
+            WHERE internal_pubkey=excluded.internal_pubkey AND output_pubkey=excluded.output_pubkey)");
+          key.Text(1,address);key.Blob(2,stored.value.data(),int(stored.value.size()));key.Blob(3,internal_pubkey.data(),32);
+          key.Blob(4,output_pubkey.data(),32);key.Text(5,label);key.Int(6,now);key.Int(7,encrypted?1:0);key.Done(true); }
+        bool exists=false;const bool wallet_column=IssuanceWalletColumn(db_,"addresses");
+        { IssuedStatement existing(db_,wallet_column?
+              "SELECT account,type,script_pubkey,wallet_id FROM addresses WHERE address=?":
+              "SELECT account,type,script_pubkey,1 FROM addresses WHERE address=?");
+          existing.Text(1,address);rc=sqlite3_step(existing.value.get());
+          if(rc==SQLITE_ROW) {
+              if(sqlite3_column_type(existing.value.get(),0)!=SQLITE_INTEGER || sqlite3_column_int(existing.value.get(),0)!=-1 ||
+                 sqlite3_column_type(existing.value.get(),3)!=SQLITE_INTEGER || sqlite3_column_int(existing.value.get(),3)!=1 ||
+                 (!text_matches(existing.value.get(),1,"p2tr") && !text_matches(existing.value.get(),1,"taproot_imported")) ||
+                 (sqlite3_column_type(existing.value.get(),2)!=SQLITE_NULL && !text_matches(existing.value.get(),2,"") &&
+                  !text_matches(existing.value.get(),2,script_hex)))throw std::runtime_error("Imported address ownership conflict");
+              exists=true;existing.Done();
+          } else IssuanceCheck(db_,rc,SQLITE_DONE); }
+        if(!exists) {
+            const int next=getNextAddressIndex(-1,0);
+            IssuedStatement row(db_,wallet_column?
+                "INSERT INTO addresses(wallet_id,account,change,idx,address,type,script_pubkey,label,created_at) VALUES(1,-1,0,?,?,'p2tr',?,?,?)":
+                "INSERT INTO addresses(account,change,idx,address,type,script_pubkey,label,created_at) VALUES(-1,0,?,?,'p2tr',?,?,?)");
+            row.Int(1,next);row.Text(2,address);row.Text(3,script_hex);row.Text(4,label);row.Int(5,now);row.Done(true);
         } else {
-            WLOG_ERR("[storeTaprootKey] Failed to store key: " + std::string(sqlite3_errmsg(db_)));
+            IssuedStatement row(db_,"UPDATE addresses SET type='p2tr',script_pubkey=?,label=?,is_system_label=0 WHERE address=?");
+            row.Text(1,script_hex);row.Text(2,label);row.Text(3,address);row.Done(true);
         }
-    } else {
-        WLOG_ERR("[storeTaprootKey] Failed to prepare SQL: " + std::string(sqlite3_errmsg(db_)));
+        transaction.Commit();
+        if(utxo_index_)utxo_index_->RegisterAddress(script,path);
+        return true;
+    } catch(const std::exception& error) {
+        WLOG_ERR("[storeTaprootKey] Import refused: "+std::string(error.what()));
+        return false;
     }
-
-    // Also add to main addresses table for address book
-    const char* addr_sql = "INSERT OR IGNORE INTO addresses (account, change, idx, address, type, created_at) VALUES (?, ?, ?, ?, ?, ?)";
-    if (sqlite3_prepare_v2(db_, addr_sql, -1, &stmt, nullptr) == SQLITE_OK) {
-        sqlite3_bind_int(stmt, 1, -1);  // -1 indicates imported (not HD derived)
-        sqlite3_bind_int(stmt, 2, 0);
-        sqlite3_bind_int(stmt, 3, 0);
-        sqlite3_bind_text(stmt, 4, address.c_str(), -1, SQLITE_STATIC);
-        sqlite3_bind_text(stmt, 5, "taproot_imported", -1, SQLITE_STATIC);
-        sqlite3_bind_int64(stmt, 6, std::time(nullptr));
-        sqlite3_step(stmt);
-        sqlite3_finalize(stmt);
-    }
-
-    // Set label
-    setAddressLabel(address, label);
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -8929,6 +10801,7 @@ bool WalletManager::storeUnencryptedWallet(
     uint32_t master_fingerprint,
     bool seed_already_stored
 ) {
+    std::lock_guard<std::recursive_mutex> key_ownership(database_lifecycle_mutex_);
     try {
         // Per-wallet DB: No wallet_id needed (always id=1)
         if (!db_) {
@@ -9039,6 +10912,7 @@ bool WalletManager::HaveKey(const wallet::KeyID& key_id) const {
 }
 
 std::optional<wallet::WalletKey> WalletManager::GetKey(const wallet::KeyID& key_id) const {
+    std::lock_guard<std::recursive_mutex> key_ownership(database_lifecycle_mutex_);
     if (!db_) {
         return std::nullopt;
     }
@@ -9119,6 +10993,7 @@ std::optional<wallet::WalletKey> WalletManager::GetKey(const wallet::KeyID& key_
 }
 
 std::optional<wallet::WalletKey> WalletManager::GetKeyByOutputKeyID(const wallet::KeyID& output_key_id) const {
+    std::lock_guard<std::recursive_mutex> key_ownership(database_lifecycle_mutex_);
     if (!db_) {
         return std::nullopt;
     }
@@ -9200,6 +11075,7 @@ std::optional<wallet::WalletKey> WalletManager::GetKeyByOutputKeyID(const wallet
 }
 
 std::vector<wallet::WalletKey> WalletManager::GetAllKeys() const {
+    std::lock_guard<std::recursive_mutex> key_ownership(database_lifecycle_mutex_);
     std::vector<wallet::WalletKey> keys;
 
     if (!db_) {
@@ -9260,10 +11136,12 @@ bool WalletManager::AddKey(const wallet::WalletKey& key) {
 }
 
 bool WalletManager::HaveMasterSeed() const {
+    std::lock_guard<std::recursive_mutex> key_ownership(database_lifecycle_mutex_);
     return !master_seed_.empty();
 }
 
 std::optional<std::vector<uint8_t>> WalletManager::GetMasterSeed() const {
+    std::lock_guard<std::recursive_mutex> key_ownership(database_lifecycle_mutex_);
     if (master_seed_.empty()) {
         return std::nullopt;
     }
@@ -9272,6 +11150,7 @@ std::optional<std::vector<uint8_t>> WalletManager::GetMasterSeed() const {
 
 std::optional<std::vector<uint8_t>> WalletManager::DerivePrivateKey(
     const wallet::KeyOriginInfo& origin) const {
+    std::lock_guard<std::recursive_mutex> key_ownership(database_lifecycle_mutex_);
 
     if (master_seed_.empty()) {
         // Defensive recovery: try reloading seed from DB if wallet is currently unlocked.

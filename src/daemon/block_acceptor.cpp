@@ -1,3 +1,4 @@
+#include "daemon/orchard_network_block.h"
 #include "daemon/block_acceptor.h"
 #include "mining/header_layout.h"  // 128-byte BlockHeader v1 constants
 #include "db_meta_utils.hpp"
@@ -23,6 +24,7 @@
 #include "consensus/block_lifecycle.h"  // BLOCK_HAVE_DATA status flag
 #include "consensus/fork_acceptance_policy.h"  // #803: fork-prior-to-checkpoint, overlay depth cap
 #include "consensus/header_chain.h"  // Fork-aware MTP: HeaderIndexEntry::GetMedianTimePast
+#include "daemon/block_announce_policy.h"
 #include "metrics/metrics_registry.h"
 #include "primitives/block.h"
 #include "wallet/wallet_manager.h"
@@ -127,13 +129,27 @@ BlockAcceptResult BlockAcceptor::AcceptBlockFromRPC(const std::string& blockHex,
         auto* activation_ctx = DaemonContext::instance();
         auto activation_chainstate = std::dynamic_pointer_cast<dinero::ChainstateService>(
             activation_ctx ? activation_ctx->chainstate : nullptr);
-        std::unique_lock<dinero::AnnotatedRecursiveMutex> activation_guard;
+        std::unique_ptr<dinero::ChainstateService::BlockIngressUse> activation_guard;
         if (activation_chainstate) {
-            activation_guard = activation_chainstate->AcquireBlockIngressActivationLock();
+            // This real ingress owner prepares history before taking the same
+            // canonical lock held through the historical or typed write path.
+            activation_guard = dinero::ChainstateService::AcquireBlockIngressUse(activation_chainstate,&blockHex);
+            if(!activation_guard) return BlockAcceptResult::Rejected(BlockRejectCode::CONNECT_FAILED,
+                "Selected ingress owner unavailable");
         }
 
         LOG_INFO("🔍 BlockAcceptor: Processing " + std::to_string(blockHex.length()) + " hex chars from " + source);
         std::cout << "[ACCEPTOR-DEBUG] >>> AcceptBlockFromRPC ENTRY hex_size=" << blockHex.length() << " source=" << source << std::endl;
+
+        if (activation_chainstate) {
+            const auto typed = activation_chainstate->TryAcceptOrchardBlockFromRPC(blockHex);
+            if (typed) {
+                auto result=*typed;
+                activation_guard.reset();
+                result.relayed=AnnounceAcceptedOrchardBlock(activation_chainstate,result);
+                return result;
+            }
+        }
 
         // 1. Parse block from hex
         std::cout << "[ACCEPTOR-DEBUG] Step 1: Parsing block from hex..." << std::endl;
@@ -2936,7 +2952,24 @@ void BlockAcceptor::NotifyBlockConnected(const ParsedBlock& block, uint64_t heig
                 // Activation gate: announce only when this callback height matches
                 // the active tip hash. This prevents stale/side-chain accepts from
                 // being advertised as canonical new blocks.
-                if (!active_tip_hash.empty() && active_tip_hash == active_hash_at_height) {
+                std::optional<uint32_t> best_header_height;
+                bool best_descends = false;
+                if (ctx_->header_chain) {
+                    if (auto best = ctx_->header_chain->GetBestHeaderValue()) {
+                        best_header_height = best->height;
+                        uint256 ancestor;
+                        uint32_t best_height = 0;
+                        best_descends = !active_hash_at_height.empty() &&
+                            ctx_->header_chain->GetAncestorHashByHash(best->hash, static_cast<uint32_t>(height),
+                                                                      ancestor, best_height) &&
+                            ancestor.GetHex() == active_hash_at_height;
+                    }
+                }
+                const bool historical = !dinero::daemon::ShouldAnnounceConnectedBlock(
+                    static_cast<uint32_t>(height), best_header_height, best_descends);
+                if (historical) {
+                    LOG_INFO("Block connected while catching up; not announced: height=" + std::to_string(height));
+                } else if (!active_tip_hash.empty() && active_tip_hash == active_hash_at_height) {
                     chainstate_service->BroadcastNewBlock(active_tip_hash);
                     LOG_INFO("✅ Block announced via ChainstateService (active tip) hash=" +
                              active_tip_hash.substr(0, 16) + "...");

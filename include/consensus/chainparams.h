@@ -355,8 +355,8 @@ struct ChainParams {
     // history; selected separately from the shielded Auth activation.
     uint32_t contextual_locks_activation_height = UINT32_MAX;
 
-    // 60-second target and 0.5 DIN tail. Dormant until a reviewed network
-    // height is assigned; regtest may override before any service starts.
+    // 60-second target and 0.5 DIN tail. Mainnet selects the joint v8.2.0
+    // height in chainparams_impl.cpp; regtest may override before startup.
     uint32_t sixty_second_activation_height = UINT32_MAX;
     // Explicit isolated-regtest qualification mode. Never enabled by network
     // defaults; mainnet/testnet always enforce PoW independently of this flag.
@@ -417,6 +417,17 @@ struct ChainParams {
     // Joint compact-v1 / 60-second release and service cutoff. Public heights
     // are source-selected, never operator overrides. UINT32_MAX is dormant.
     uint32_t release_v8113_activation_height = UINT32_MAX;
+
+    // Orchard profile defaults dormant. Mainnet selects a source-defined
+    // height and branch ID; no public-network CLI override is available.
+    // A scheduled public profile must share the joint release boundary.
+    uint32_t orchard_activation_height = UINT32_MAX;
+    uint32_t orchard_branch_id = 0;
+    // DNORST02 additionally commits the parent compact catalog. Independent
+    // hard-fork gate: never reinterpret deployed DNORST01 history. Public
+    // schedules require explicit fleet coordination. Mainnet selects the
+    // Orchard boundary; testnet/regtest retain the dormant struct default.
+    uint32_t orchard_catalog_commitment_activation_height = UINT32_MAX;
 };
 
 // ============================================================================

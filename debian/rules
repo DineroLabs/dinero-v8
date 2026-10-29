@@ -20,6 +20,16 @@ DEB_OPENSSL_VERSION := 3.5.7
 %:
 	dh $@ --buildsystem=cmake
 
+# dh_clean normally removes *.orig files, including the tracked Orchard
+# vendor manifest. Keep that source file intact across package builds.
+override_dh_clean:
+	dh_clean -Xrust/orchard_backend/vendor/orchard/Cargo.toml.orig
+
+# postinst reads the example by this exact path to seed /etc/dinero/dinero.conf.
+# Debian's default dh_compress would append .gz and silently skip that step.
+override_dh_compress:
+	dh_compress -Xdinero.conf.example
+
 # Phase E.3 — vendored static OpenSSL.
 #
 # The packaged-service build uses USE_SYSTEM_OPENSSL=OFF and pins the
@@ -56,6 +66,9 @@ override_dh_auto_configure:
 		-DCMAKE_BUILD_TYPE=Release \
 		-DCMAKE_INSTALL_PREFIX=/usr \
 		-DDINERO_PACKAGED_BUILD=ON \
+		-DDINERO_BUILD_ORCHARD_BACKEND=ON \
+		-DDINERO_ENABLE_PORTMAPPING=OFF \
+		-DDINERO_ROCKSDB_BUILD_JOBS=2 \
 		-DDINERO_PACKAGE_VERSION=$(DEB_VERSION_UPSTREAM) \
 		-DUSE_SYSTEM_OPENSSL=OFF \
 		-DDINERO_VENDORED_OPENSSL_VERSION=$(DEB_OPENSSL_VERSION) \
@@ -63,7 +76,7 @@ override_dh_auto_configure:
 
 # Build only the targets the .deb actually installs.
 #
-# Phase E.3: the packaged artifact ships dinerod + dinero-cli only
+# Phase E.3: the packaged artifact ships dinerod + dinero-cli + dinero-swap-tower
 # (spec §1.1 row 1). Miner / bench / lightning binaries are not
 # part of the dinero-core .deb. Skipping them here cuts build time,
 # avoids pulling in OpenCL ICD loader + libudev for the GPU miner
@@ -72,7 +85,7 @@ override_dh_auto_configure:
 # linked successfully into the staging dir), and keeps the package
 # contract honest.
 override_dh_auto_build:
-	dh_auto_build -- dinerod dinero-cli
+	dh_auto_build -- dinerod dinero-cli dinero-swap-tower
 
 # Skip ctest during package build. The full test suite requires a
 # clean datadir + dinerod startup which is fragile inside the

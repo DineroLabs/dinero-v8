@@ -3,23 +3,94 @@
 #include "daemon/services/config_service.h"
 #include "daemon/services/chainstate_service.h"
 #include "daemon/daemon_context.h"
+#include "daemon/config.h"
 #include "daemon/rpc/wallet_gui_handlers.h"  // For RpcCreateHDWallet
 #include "common/ilogger.h"           // For ILogger interface dependency injection
-#include "vault/vault_runtime.h"
 #include "wallet/wallet_worker.h"
 #include "wallet/hd_wallet.h"         // Phase F.5: For BIP32 view key derivation
 #include "consensus/coin_type.h"      // DINERO_COIN_TYPE
 #include "primitives/block.h"          // For dinero::Block
 #include <filesystem>
 #include <stdexcept>
+#ifdef DINERO_HAS_ORCHARD_PROOF_HOST
+#include "wallet/orchard_proof_jobs.h"
+#endif
 
 namespace dinero {
+
+// The worker owns its randomized plans and results; it calls no wallet,
+// chainstate or service callback while proving. Its destructor drains before
+// wallet_mgr_ destruction even when ordinary scope exit omits explicit Stop.
+struct WalletService::OrchardProofOwner {
+#ifdef DINERO_HAS_ORCHARD_PROOF_HOST
+    wallet::OrchardProofJobs jobs;
+    OrchardProofOwner(){jobs.Start();}
+    void Shutdown(){jobs.Shutdown();}
+#else
+    void Shutdown(){}
+#endif
+};
+wallet::OrchardProofJobs& WalletService::WalletUse::OrchardProofs() const {
+    (void)Wallet(); // Enforce the existing thread-affine lifetime owner.
+    return service_.ProofsForCurrentUse();
+}
+
+wallet::OrchardProofJobs& WalletService::ProofsForCurrentUse() const {
+#ifdef DINERO_HAS_ORCHARD_PROOF_HOST
+    std::lock_guard<std::mutex> lock(operation_mutex_);
+    if(!wallet_mgr_||!operations_by_thread_.contains(std::this_thread::get_id()))
+        throw std::runtime_error("Wallet proof execution requires an active service owner");
+    if(!orchard_proofs_){
+        if((!accepting_&&!reopen_fenced_)||stopping_)throw std::runtime_error("Wallet proof execution unavailable during shutdown");
+        auto owned=std::make_unique<OrchardProofOwner>();
+        orchard_proofs_=std::move(owned);
+    }
+    return orchard_proofs_->jobs;
+#else
+    throw std::runtime_error("Orchard wallet backend unavailable");
+#endif
+}
 
 // Constructor and destructor must be defined in .cpp to allow unique_ptr<ZKWalletSync> with forward declaration
 WalletService::WalletService() = default;
 WalletService::~WalletService() = default;
 
+std::unique_ptr<ReopenServiceFence> WalletService::FenceForReopen(
+    std::shared_ptr<WalletService> service,std::chrono::milliseconds timeout) {
+    if(!service||timeout<std::chrono::milliseconds::zero()||timeout>std::chrono::seconds(30))
+        throw std::invalid_argument("Invalid wallet reopen fence");
+    std::unique_lock lock(service->operation_mutex_);
+    if(service->operations_by_thread_.contains(std::this_thread::get_id())||service->stopping_||
+        service->reopen_fenced_||!service->accepting_||!service->wallet_mgr_)
+        throw std::runtime_error("Wallet reopen fence unavailable");
+    service->accepting_=false;service->reopen_fenced_=true;service->reopen_thread_=std::this_thread::get_id();
+    const auto resume=[service](bool open){
+        std::lock_guard guard(service->operation_mutex_);
+        if(!service->reopen_fenced_||service->reopen_thread_!=std::this_thread::get_id())std::terminate();
+        service->reopen_fenced_=false;service->reopen_thread_={};
+        if(open&&service->wallet_mgr_&&!service->stopping_)service->accepting_=true;
+        service->operation_changed_.notify_all();
+    };
+    std::unique_ptr<ReopenServiceFence> fence;
+    try {fence.reset(new ReopenServiceFence(service.get(),resume));}
+    catch(...){service->accepting_=true;service->reopen_fenced_=false;service->reopen_thread_={};throw;}
+    bool drained=false;
+    try{drained=service->operation_changed_.wait_for(lock,timeout,[&]{return service->active_operations_==0;});}
+    catch(...){lock.unlock();fence.reset();throw;}
+    if(!drained){
+        lock.unlock();fence.reset();throw std::runtime_error("Wallet reopen fence timed out");
+    }
+    return fence;
+}
+std::string WalletService::ReopenWalletName(const ReopenServiceFence& fence) const {
+    fence.RequireOwner(this);return wallet_mgr_->getCurrentWalletName();
+}
+
 bool WalletService::Init(DaemonContext& ctx) {
+    // Init/Start remain serialized startup operations. Never replace a manager
+    // that already belongs to this service or one being drained.
+    { std::lock_guard<std::mutex> lock(operation_mutex_);
+      if (wallet_mgr_ || accepting_ || stopping_) return false; }
     // Wire dependencies from context
     logger_ = std::dynamic_pointer_cast<LoggerService>(ctx.logger);
     // Use dedicated wallet logger if available, fallback to shared logger
@@ -51,13 +122,15 @@ bool WalletService::Init(DaemonContext& ctx) {
     try {
         // Create WalletManager with data directory (it handles /wallets subdirectory internally)
         #ifdef FFI_WALLET_ONLY
-        wallet_mgr_ = std::make_unique<WalletManager>(datadir, logger_interface_, wallet_schema_path);
+        auto manager = std::make_unique<WalletManager>(datadir, logger_interface_, wallet_schema_path);
         #else
-        wallet_mgr_ = std::make_unique<WalletManager>(std::filesystem::path(datadir), logger_interface_, wallet_schema_path);
+        auto manager = std::make_unique<WalletManager>(std::filesystem::path(datadir), logger_interface_, wallet_schema_path);
         #endif
 
         // Week 5: Bridge pattern removed - all code now uses ctx.daemon->wallet->get()
         logger_interface_->info("[WalletService] WalletManager created successfully");
+        { std::lock_guard<std::mutex> lock(operation_mutex_);
+          wallet_mgr_=std::move(manager);accepting_=true; }
         return true;
 
     } catch (const std::exception& e) {
@@ -67,6 +140,13 @@ bool WalletService::Init(DaemonContext& ctx) {
 }
 
 bool WalletService::Start() {
+    std::unique_ptr<WalletUse> use;
+    try { use=BorrowWalletUse(); } catch (const std::exception&) {
+        return false;
+    }
+    std::unique_ptr<ChainstateService::WalletIndexUse> index_use;
+    try { if (chainstate_) index_use=ChainstateService::AcquireWalletIndexUse(chainstate_); }
+    catch (const std::exception&) { return false; }
     if (!wallet_mgr_) {
         logger_interface_->error("[WalletService] Cannot start - wallet manager not initialized");
         return false;
@@ -87,6 +167,7 @@ bool WalletService::Start() {
         uint32_t actual_blockchain_height = 0;
         uint32_t wallet_scan_height = 0;
         bool needs_catchup_scan = false;
+        bool legacy_scan_suppressed = false;
         if (chainstate_) {
             actual_blockchain_height = chainstate_->getBlockHeight();
             logger_interface_->info("[WalletService] Real blockchain height from chainstate: "
@@ -97,7 +178,7 @@ bool WalletService::Start() {
         // Get UTXO index from chainstate service if available
         UTXOIndex* utxo_index = nullptr;
         if (chainstate_) {
-            utxo_index = chainstate_->utxoIndex();
+            utxo_index = &index_use->Index();
             logger_interface_->info("[WalletService] Initializing wallet worker with UTXO index");
         } else {
             logger_interface_->warning("[WalletService] Chainstate not available - wallet worker will start without UTXO index");
@@ -202,11 +283,27 @@ bool WalletService::Start() {
 
         if (wallet_mgr_->hasActiveWallet()) {
             EnsureRuntimeWalletBindings();
+            std::string canonical_error;
+            const auto canonical=RecoverActiveWalletFromCanonicalSource(&canonical_error);
+            legacy_scan_suppressed=canonical!=CanonicalRecovery::NotRequired;
+            if(!legacy_scan_suppressed&&GetConfig().utreexo_stateless&&
+               chainstate_&&chainstate_->GetSnapshotWalletRecoveryBaseHeight()>0){
+                // Bootstrap height is not a reorg or wallet recovery source.
+                // Preserve the durable wallet and index; the explicit checked
+                // phone path must reconcile them after selected state is ready.
+                legacy_scan_suppressed=true;
+                logger_interface_->info("[WalletService] Phone snapshot wallet preserved; explicit authenticated recovery required");
+            }
+            if (canonical==CanonicalRecovery::Deferred) {
+                logger_interface_->warning("[WalletService] " + canonical_error);
+            } else if (canonical==CanonicalRecovery::AppliedPrefix) {
+                logger_interface_->info("[WalletService] Current wallet recovered through a captured canonical prefix");
+            }
 
             // The active wallet database is bound now, so this reads the
             // durable per-wallet watermark rather than WalletManager's
             // pre-open default. Only genuinely missing heights are replayed.
-            try {
+            if (!legacy_scan_suppressed) try {
                 wallet_mgr_->loadBlockchainHeight();
                 wallet_scan_height = wallet_mgr_->getCurrentBlockchainHeight();
                 logger_interface_->info("[WalletService] Wallet scan progress: "
@@ -266,13 +363,13 @@ bool WalletService::Start() {
         // sweep EVERY wallet: open each, rescan from the snapshot, then restore the
         // originally-active wallet. This surfaces every wallet's pre-snapshot coins
         // at once instead of only the auto-opened one.
-        const uint32_t snapshot_recovery_base = chainstate_
+        const uint32_t snapshot_recovery_base = chainstate_ && !legacy_scan_suppressed
             ? chainstate_->GetSnapshotWalletRecoveryBaseHeight() : 0u;
         if (chainstate_ && snapshot_recovery_base > 0 && !wallets.empty()) {
             // Capture the wallet to restore as active afterward (open() below
             // overwrites the "most recently opened" marker).
             const std::string preferred_wallet = wallet_mgr_->hasActiveWallet()
-                ? wallet_mgr_->getMostRecentlyOpenedWallet() : std::string();
+                ? wallet_mgr_->getCurrentWalletName() : std::string();
             for (const auto& wname : wallets) {
                 try {
                     wallet_mgr_->open(wname);
@@ -298,21 +395,38 @@ bool WalletService::Start() {
             // may have been deliberately deferred, so never claim it reached
             // the chain tip merely because the multi-wallet sweep completed.
             if (wallet_mgr_->hasActiveWallet()) {
-                wallet_mgr_->loadBlockchainHeight();
-                wallet_scan_height = wallet_mgr_->getCurrentBlockchainHeight();
-                needs_catchup_scan = wallet_scan_height < actual_blockchain_height;
+                std::string canonical_error;
+                const auto canonical=RecoverActiveWalletFromCanonicalSource(&canonical_error);
+                legacy_scan_suppressed=canonical!=CanonicalRecovery::NotRequired;
+            if(!legacy_scan_suppressed&&GetConfig().utreexo_stateless&&
+               chainstate_&&chainstate_->GetSnapshotWalletRecoveryBaseHeight()>0){
+                // Bootstrap height is not a reorg or wallet recovery source.
+                // Preserve the durable wallet and index; the explicit checked
+                // phone path must reconcile them after selected state is ready.
+                legacy_scan_suppressed=true;
+                logger_interface_->info("[WalletService] Phone snapshot wallet preserved; explicit authenticated recovery required");
+            }
+                if (legacy_scan_suppressed) {
+                    needs_catchup_scan=false;
+                    if (canonical==CanonicalRecovery::Deferred)
+                        logger_interface_->warning("[WalletService] " + canonical_error);
+                } else {
+                    wallet_mgr_->loadBlockchainHeight();
+                    wallet_scan_height = wallet_mgr_->getCurrentBlockchainHeight();
+                    needs_catchup_scan = wallet_scan_height < actual_blockchain_height;
+                }
             }
         }
 
         // Trigger catch-up scan if wallet is behind blockchain
         // This happens AFTER wallet is opened so rescan has an active wallet
         // We manually trigger WalletNotify for each missed block
-        if (needs_catchup_scan && wallet_mgr_->hasActiveWallet() && chainstate_ &&
+        if (!legacy_scan_suppressed && needs_catchup_scan && wallet_mgr_->hasActiveWallet() && chainstate_ &&
             wallet_mgr_->isLocked()) {
             logger_interface_->warning(
                 "[WalletService] Wallet catch-up deferred: encrypted wallet is locked; "
                 "unlock it once to resume recovery");
-        } else if (needs_catchup_scan && wallet_mgr_->hasActiveWallet() && chainstate_) {
+        } else if (!legacy_scan_suppressed && needs_catchup_scan && wallet_mgr_->hasActiveWallet() && chainstate_) {
             logger_interface_->info("[WalletService] Triggering catch-up scan from height " 
                 + std::to_string(wallet_scan_height + 1) + " to " + std::to_string(actual_blockchain_height) + "...");
             
@@ -394,11 +508,26 @@ bool WalletService::Start() {
 }
 
 bool WalletService::EnsureRuntimeWalletBindings() {
+    std::unique_ptr<WalletUse> use;
+    try { use=BorrowWalletUse(); } catch (const std::exception&) { return false; }
     if (!wallet_mgr_ || !wallet_mgr_->hasActiveWallet()) {
         return false;
     }
 
-    wallet_mgr_->LoadAddressesIntoUTXOIndex();
+    std::unique_ptr<ChainstateService::WalletIndexUse> index_use;
+    try {
+        if (chainstate_) {
+            index_use=ChainstateService::AcquireWalletIndexUse(chainstate_);
+            if (wallet_mgr_->getUTXOIndex()!=&index_use->Index()) return false;
+        }
+    } catch (const std::exception&) { return false; }
+
+    try {
+        wallet_mgr_->LoadAddressesIntoUTXOIndex();
+    } catch (const std::exception& e) {
+        logger_interface_->error("[WalletService] Script inventory reload refused: " + std::string(e.what()));
+        return false;
+    }
 
     try {
         if (!wallet_mgr_->getHDWallet()) {
@@ -414,47 +543,64 @@ bool WalletService::EnsureRuntimeWalletBindings() {
         logger_interface_->warning("[WalletService] Runtime wallet binding incomplete: " + std::string(e.what()));
     }
 
-    try {
-        if (dinero::vault::GetVaultRuntimeService() != nullptr) {
-            const auto bound = dinero::vault::GetVaultOperator();
-            if (bound.address.empty()) {
-                std::string primary = wallet_mgr_->getPrimaryAddress();
-                if (primary.empty()) {
-                    primary = wallet_mgr_->getNewAddress("", "taproot");
-                    if (!primary.empty()) {
-                        logger_interface_->info(
-                            "[WalletService] Derived first wallet address for Liquidity Vault auto-bind: " +
-                            primary);
-                    }
-                }
-                if (!primary.empty()) {
-                    std::string err;
-                    if (dinero::vault::SetVaultOperator(primary, "wallet", &err)) {
-                        logger_interface_->info(
-                            "[WalletService] Auto-bound Liquidity Vault to wallet primary address: " +
-                            primary);
-                    } else if (!err.empty()) {
-                        logger_interface_->warning(
-                            "[WalletService] Liquidity Vault auto-bind failed: " + err);
-                    }
-                } else {
-                    logger_interface_->warning(
-                        "[WalletService] Liquidity Vault auto-bind skipped: wallet has no primary address");
-                }
-            }
-        }
-    } catch (const std::exception& e) {
-        logger_interface_->warning(
-            "[WalletService] Liquidity Vault auto-bind failed: " + std::string(e.what()));
-    }
+    // Wallet selection/reload does not issue an operator address or relabel
+    // an attached vault. That immutable routing owner is authenticated by the
+    // explicit vault.create/open operations, independent of wallet binding.
 
     return wallet_mgr_->hasActiveWallet();
 }
 
-bool WalletService::RecoverActiveWalletFromSnapshotIfNeeded(std::string* error) {
+WalletService::CanonicalRecovery WalletService::RecoverActiveWalletFromCanonicalSource(std::string* error, uint64_t expected_session) {
     if (error) error->clear();
+    try {
+        auto use=BorrowWalletUse();
+        if (!chainstate_ || !use->Wallet().hasActiveWallet())
+            throw std::runtime_error("wallet or chainstate unavailable");
+        auto index=ChainstateService::AcquireWalletIndexUse(chainstate_);
+        const auto recovered=chainstate_->resumeRuntimeWalletRecoveryIfNeeded(use->Wallet(),index->Index(),expected_session);
+        if (!recovered.ok())
+            throw std::runtime_error("canonical wallet recovery deferred: checked source, unlocked keys and authenticated store baselines are required");
+        return *recovered ? CanonicalRecovery::AppliedPrefix : CanonicalRecovery::NotRequired;
+    } catch (const std::exception& e) {
+        if (error) *error=e.what();
+        return CanonicalRecovery::Deferred;
+    }
+}
+
+bool WalletService::RecoverActiveWalletFromSnapshotIfNeeded(std::string* error, uint64_t expected_session) {
+    if (error) error->clear();
+    std::unique_ptr<WalletUse> use;
+    try { use=BorrowWalletUse(); } catch (const std::exception&) {
+        if (error) *error="wallet service unavailable";
+        return false;
+    }
     if (!wallet_mgr_ || !wallet_mgr_->hasActiveWallet() || !chainstate_) {
         if (error) *error = "wallet or chainstate is unavailable";
+        return false;
+    }
+
+    std::unique_ptr<ChainstateService::WalletIndexUse> index_use;
+    try {
+        index_use=ChainstateService::AcquireWalletIndexUse(chainstate_);
+        if (wallet_mgr_->getUTXOIndex()!=&index_use->Index()) {
+            if (error) *error="wallet index binding does not match current source";
+            return false;
+        }
+    } catch (const std::exception& e) { if (error) *error=e.what();return false; }
+
+    const auto canonical=RecoverActiveWalletFromCanonicalSource(error,expected_session);
+    if (canonical==CanonicalRecovery::AppliedPrefix) return true;
+    if (canonical==CanonicalRecovery::Deferred) {
+        // Keep recovery deferred. Discovery of real frozen-base candidates is
+        // useful to a restored phone, but is NOT permission to fall through to
+        // the old scan/watermark writer or mark an incomplete history complete.
+        if (!wallet_mgr_->isLocked()) {
+            uint64_t session=expected_session;
+            if(!session){auto lease=wallet_mgr_->AcquireDatabaseLease();session=lease->Session();}
+            const auto discovered=chainstate_->DiscoverSnapshotWalletCandidates(*wallet_mgr_,session);
+            if(discovered.ok()&&error)*error="Snapshot funding candidates discovered: "+std::to_string(*discovered)+
+                "; canonical history/index recovery remains deferred";
+        }
         return false;
     }
 
@@ -462,6 +608,26 @@ bool WalletService::RecoverActiveWalletFromSnapshotIfNeeded(std::string* error) 
         const uint32_t base_height = chainstate_->GetSnapshotWalletRecoveryBaseHeight();
         if (base_height == 0) {
             return true;  // Normal full-chain node; no snapshot recovery is needed.
+        }
+
+        if(GetConfig().utreexo_stateless){
+            if(error)*error="phone wallet requires explicit authenticated snapshot recovery";
+            return false;
+        }
+
+        // The legacy tail scanner reads the durable archival tip, not the
+        // selected snapshot tip. Check it BEFORE trusting an old completion
+        // marker or importing base coins (which could revive post-base spends).
+        // A snapshot-aware selected-source reconciliation must handle this
+        // mismatch; it is never a completed empty tail scan.
+        const auto selected = chainstate_->GetSyncSnapshot();
+        auto* database = chainstate_->GetChainDB();
+        const auto durable = database ? database->getTip() : StatusOr<TipInfo>(Status::Invalid);
+        if (!durable.ok() || durable->height < 0 ||
+            uint32_t(durable->height) != selected.active_tip_height ||
+            durable->hash != selected.active_tip_hash) {
+            if (error) *error = "snapshot wallet recovery requires a selected historical source; existing inventory preserved";
+            return false;
         }
 
         static constexpr const char* kRecoveryMarker =
@@ -520,43 +686,60 @@ bool WalletService::RecoverActiveWalletFromSnapshotIfNeeded(std::string* error) 
 }
 
 void WalletService::Stop() {
-    if (!wallet_mgr_) {
-        logger_interface_->info("[WalletService] Already stopped");
-        return;
-    }
-
-    logger_interface_->info("[WalletService] Stopping wallet service...");
-
-    try {
-        // Shutdown wallet worker thread
-        logger_interface_->info("[WalletService] Shutting down wallet worker thread...");
-        WalletNotify::Shutdown();
-        logger_interface_->info("[WalletService] Wallet worker thread stopped");
-
-        // If a wallet is currently open, close it cleanly
-        if (wallet_mgr_->hasActiveWallet()) {
-            std::string current = wallet_mgr_->getCurrentWalletName();
-            logger_interface_->info("[WalletService] Closing active wallet: " + current);
-
-            // WalletManager destructor will handle cleanup
-            // No explicit close() method needed
+    {
+        std::unique_lock<std::mutex> lock(operation_mutex_);
+        if (operations_by_thread_.count(std::this_thread::get_id()))
+            throw std::logic_error("Cannot stop wallet service inside an active operation");
+        if(reopen_fenced_&&reopen_thread_==std::this_thread::get_id())
+            throw std::logic_error("Commit or abandon the wallet reopen fence before Stop");
+        operation_changed_.wait(lock,[&]{return !reopen_fenced_;});
+        while (stopping_) {
+            if (stopping_thread_==std::this_thread::get_id())
+                throw std::logic_error("Recursive wallet shutdown is not available");
+            operation_changed_.wait(lock,[&]{return !stopping_;});
         }
-
-        // WalletManager only borrows the HDWallet pointer; release service ownership explicitly.
-        wallet_mgr_->setHDWallet(nullptr);
-        hd_wallet_.reset();
-
-        // Week 5: Bridge pattern removed - no longer clearing legacy global
-        // Reset the unique_ptr (calls WalletManager destructor)
-        wallet_mgr_.reset();
-
-        logger_interface_->info("[WalletService] Wallet service stopped cleanly");
-
-    } catch (const std::exception& e) {
-        logger_interface_->error("[WalletService] Error during shutdown: " + std::string(e.what()));
-        // Still reset to avoid dangling pointer
-        wallet_mgr_.reset();
+        // A prior shutdown attempt may have retained the manager after a
+        // required prerequisite failed. Recheck it and finish the retry.
+        if (!wallet_mgr_) return;
+        accepting_=false;stopping_=true;stopping_thread_=std::this_thread::get_id();
+        operation_changed_.notify_all();
+        operation_changed_.wait(lock,[&]{return active_operations_==0;});
     }
+    // No chain/database lock is acquired while waiting above. Existing daemon
+    // shutdown order stops incoming work before this service; old raw-reference
+    // callers do not gain a lifetime guarantee from this operation owner.
+    try { if (logger_interface_) logger_interface_->info("[WalletService] Stopping wallet service..."); }
+    catch (...) { /* Diagnostics cannot prevent drain and close. */ }
+    try {
+        // Existing operation owners have drained. Join without the lifecycle,
+        // wallet SQLite or selected-chain mutex; active proof computation is
+        // nonpreemptible, so this is not a bounded shutdown-time guarantee.
+        if(orchard_proofs_)orchard_proofs_->Shutdown();
+        WalletNotify::Shutdown();
+        wallet_mgr_->setHDWallet(nullptr);
+    } catch (...) {
+        // Keep the actual manager/helper owned if prerequisite shutdown did
+        // not finish. New operations stay refused; a later Stop may retry.
+        std::lock_guard<std::mutex> lock(operation_mutex_);
+        stopping_=false;stopping_thread_={};operation_changed_.notify_all();
+        throw;
+    }
+    std::unique_ptr<WalletManager> retired;
+    std::unique_ptr<OrchardProofOwner> retired_proofs;
+    std::unique_ptr<HDWallet> retired_hd;
+    {
+        std::lock_guard<std::mutex> lock(operation_mutex_);
+        retired_proofs=std::move(orchard_proofs_);
+        retired=std::move(wallet_mgr_);retired_hd=std::move(hd_wallet_);
+    }
+    // The manager is destroyed before the separately owned HD helper.
+    retired_proofs.reset();retired.reset();retired_hd.reset();
+    {
+        std::lock_guard<std::mutex> lock(operation_mutex_);
+        stopping_=false;stopping_thread_={};operation_changed_.notify_all();
+    }
+    try { if (logger_interface_) logger_interface_->info("[WalletService] Wallet service stopped cleanly"); }
+    catch (...) {}
 }
 
 } // namespace dinero
