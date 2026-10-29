@@ -26,7 +26,8 @@ Edge rule (which link items are followed out of a target):
   from PUBLIC, omits imported targets, and is cycle-broken for static libs.
   Codemodel 2.9 (linkLibraries, interfaceLinkLibraries, abstractTargets) is
   therefore REQUIRED, i.e. CMake >= 4.1; an older reply exits 2
-  ("ERROR codemodel 2.<n> < 2.9: linkLibraries required"). There is no
+  ("ERROR codemodel 2.<n> < 2.9: linkLibraries required"); a reply with a
+  missing version or a major other than 2 also exits 2. There is no
   weaker fallback mode.
 Imported/INTERFACE targets come from 'abstractTargets'. External libraries
 are matched by exact target name, or by normalized basename of raw link
@@ -95,10 +96,15 @@ class Model:
             raise InputError("index %s has no codemodel-v2 reply" % indexes[-1])
         self.reply = reply
         cm = load_json(reply / cm_ref["jsonFile"])
-        ver = cm.get("version", {})
-        self.cm_minor = ver.get("minor", 0)
-        if ver.get("major", 0) == 2 and self.cm_minor < 9:
-            raise InputError("codemodel 2.%d < 2.9: linkLibraries required" % self.cm_minor)
+        ver = cm.get("version")
+        ver = ver if isinstance(ver, dict) else {}
+        major, minor = ver.get("major"), ver.get("minor")
+        if not isinstance(major, int) or not isinstance(minor, int) or major != 2:
+            raise InputError("codemodel %s.%s unsupported: need 2.x with x >= 9"
+                             % ("none" if major is None else major,
+                                "none" if minor is None else minor))
+        if minor < 9:
+            raise InputError("codemodel 2.%d < 2.9: linkLibraries required" % minor)
         self.source_root = cm.get("paths", {}).get("source", "")
         configs = cm.get("configurations", [])
         if not configs:
