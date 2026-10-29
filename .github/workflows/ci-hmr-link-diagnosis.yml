@@ -1,0 +1,75 @@
+name: CI-only test_header_metadata_recovery link diagnosis (no ccache)
+
+# Diagnosis for draft PR #856: on ubuntu-latest (GCC 15) the tests.yml build
+# fails to link test_header_metadata_recovery (undefined
+# Mempool::isOutputSpentInMempool from libdinero_wallet.a), but the same tree
+# links in a clean ubuntu:26.04 container. This builds #856's head cold (no
+# ccache) with the tests.yml configure and records a linker map showing why
+# wallet_manager.cpp.o is pulled in. Read-only token, no secrets, no uploads.
+
+on:
+  push:
+    branches: [ci/quic-retransmit-windows]
+
+permissions:
+  contents: read
+
+jobs:
+  hmr-link:
+    name: Linux — cold tests.yml link of test_header_metadata_recovery
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout #856 head (7995e0d3b)
+        uses: actions/checkout@v4
+        with:
+          ref: 7995e0d3b
+          submodules: recursive
+          fetch-depth: 1
+
+      - name: Install build dependencies (as tests.yml)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake ninja-build pkg-config python3 perl \
+            libcurl4-openssl-dev libudev-dev libusb-1.0-0-dev
+          gcc --version | head -1; cmake --version | head -1; ld --version | head -1
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@1.75.0
+
+      - name: Build vendored OpenSSL
+        run: OPENSSL_VERSION=3.5.7 bash scripts/build-openssl-vendored.sh
+
+      - name: Build depends
+        run: |
+          cmake -S depends -B depends/build
+          cmake --build depends/build -j
+
+      - name: CMake configure (as tests.yml, no ccache)
+        run: |
+          cmake -S . -B build-tests -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DDINERO_USE_VENDORED_DEPS=ON \
+            -DENABLE_GRPC=OFF \
+            -DBUILD_NODECORE=ON \
+            -DDINERO_NODECORE_MAINTENANCE_QUALIFICATION=ON
+
+      - name: Build test_header_metadata_recovery
+        id: build
+        continue-on-error: true
+        run: cmake --build build-tests --target test_header_metadata_recovery -j
+
+      - name: Link again with a linker map and symbol trace
+        if: always()
+        run: |
+          cd build-tests
+          CMD=$(ninja -t commands test_header_metadata_recovery | tail -1 | sed -E 's/^: && //; s/ && :$//; s/-o test_header_metadata_recovery/-o \/tmp\/hmr/')
+          eval "$CMD -Wl,-Map,/tmp/hmr.map -Wl,-y,_ZNK6dinero7Mempool22isOutputSpentInMempoolERKNS_8OutPointE" 2>&1 | tail -20 || true
+          echo "===== why wallet_manager.cpp.o was pulled in"
+          grep -n -A2 "libdinero_wallet.a(wallet_manager.cpp.o)" /tmp/hmr.map | head -20 || true
+          echo "===== wallet members pulled"
+          grep -oE "libdinero_wallet.a\([^)]+\)" /tmp/hmr.map | sort | uniq -c | head -40 || true
+          echo "===== link command"
+          echo "$CMD" | tr ' ' '\n' | grep -nE '\.a$|^-l'
