@@ -9,8 +9,8 @@
 # snapshot.
 #
 # v4 / pre-activation snapshots require the pinned publisher signature.
-# Activated v5 snapshots may be downloaded without it: only the daemon's
-# mandatory DNRS/PoW state-binding validation authorizes their import.
+# Activated v5/v6 snapshots may be downloaded without it: only the daemon's
+# mandatory selected-chain state-binding validation authorizes their import.
 # Checksums detect transfer corruption; staging is NOT proof validation.
 # Use --require-publisher-signature to additionally pin the fleet publisher.
 # --mirror accepts an independently selected publisher; automatic discovery
@@ -29,6 +29,7 @@ MIRRORS=(
     "https://seed.dinerolabs.org/snapshot"
     "https://seed2.dinerolabs.org/snapshot"
 )
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 DEST="."
 CONF=""
 REQUIRE_SIGNATURE=0
@@ -112,19 +113,22 @@ for MIRROR in "${MIRRORS[@]}"; do
     fi
 
     # Decide from the downloaded header, never a mirror's claimed format.
-    # This is only a download gate: the daemon MUST verify the full v5 proof,
+    # This is only a download gate: the daemon MUST verify the full v5/v6 proof,
     # state roots, selected-header ancestry and burial before importing state.
-    FORMAT=$(python3 - "$WORK/snapshot.dat" "$HEIGHT" <<'PYHEADER'
-import struct,sys
-with open(sys.argv[1],'rb') as f: h=f.read(44)
-assert len(h)==44 and h[:4]==b'UXTO', 'invalid snapshot header'
-version=struct.unpack_from('<I',h,4)[0]
-height=struct.unpack_from('<I',h,40)[0]
-assert height==int(sys.argv[2]), 'manifest/header height mismatch'
-assert version in (4,5), 'unsupported snapshot version'
-assert height < 111000 or version==5, 'activated base requires v5'
-# Pre-activation v5 cannot replace legacy publisher authentication.
-print('bound-v5' if version==5 and height>=111000 else 'legacy')
+    FORMAT=$(python3 - "$SCRIPT_DIR" "$WORK/snapshot.dat" "$WORK/manifest.json" <<'PYHEADER'
+import json,sys
+sys.path.insert(0,sys.argv[1])
+from snapshot_transport import inspect
+version,height,block,profile=inspect(sys.argv[2])
+with open(sys.argv[3]) as f: manifest=json.load(f)
+snapshot=manifest['snapshot']
+def require(ok,message):
+    if not ok: raise ValueError(message)
+require(type(snapshot['height']) is int and snapshot['height']==height, 'manifest/header height mismatch')
+if 'block_hash' in snapshot: require(snapshot['block_hash'].lower()==block, 'manifest/header hash mismatch')
+if 'format_version' in manifest: require(type(manifest['format_version']) is int and manifest['format_version']==version, 'manifest/header format mismatch')
+if version==6: require(manifest.get('snapshot_profile')==profile, 'manifest/header profile mismatch')
+print('bound' if version>=5 and height>=111000 else 'legacy')
 PYHEADER
 ) || { log "  invalid format/activation header — next mirror"; continue; }
     if [ "$FORMAT" = legacy ] && [ "$SIGNATURE_OK" != 1 ]; then

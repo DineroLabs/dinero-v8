@@ -38,6 +38,11 @@
    sudo systemctl status dinerod
    ```
 
+The snapshot downloader requires `dinero-snapshot-fetch.sh` and
+`snapshot_transport.py` together in this directory. Include both files in the
+server archive; the Python helper checks transport metadata before staging.
+The daemon still performs mandatory selected-chain snapshot validation.
+
 ## 📊 Server Configuration
 
 ### Memory Optimization (1GB RAM)
