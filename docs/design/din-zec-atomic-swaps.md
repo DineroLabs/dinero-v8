@@ -1,6 +1,6 @@
 # DIN ↔ ZEC Atomic Swaps
 
-Status: **design, owner decisions recorded 2026-10-28.** No consensus change. Nothing here is built yet; code starts after Orchard activation (H150,000). Target release: v8.2.1.
+Status: **design, owner decisions recorded 2026-10-28.** No consensus change. Milestone 3 (the Zcash transaction FFI) is built and tested on the swaps branch; nothing else is built yet. Target release: v8.2.1.
 
 DIN↔ZEC v1 is the DIN↔BTC swap with a Zcash transparent P2SH hash-lock in place of the Bitcoin P2WSH one. The Dinero side is unchanged, and so are the roles. ZEC holders can pay in from a shielded wallet and shield again afterwards, but the lock itself is transparent. Code starts after Orchard activation.
 
@@ -137,7 +137,7 @@ ZEC is a second racing chain behind the `CounterChain` plug-in that the DIN↔ET
 | Area | Change |
 | --- | --- |
 | Plug-in | ZEC implements `CounterChain` with the racing flag on: after T\_zec, claim and refund can both land, as on Bitcoin |
-| Transactions and signing | v5 transparent building, ZIP 244 sighash and t-address encoding come from the reviewed librustzcash crates (zcash\_primitives, zcash\_transparent) through the existing `rust/` FFI. No hand-written BLAKE2b or v5 serialization in C++; the tree's only BLAKE2b is inside the vendored Orchard crate |
+| Transactions and signing | v5 transparent building, ZIP 244 sighash and t-address encoding come from the reviewed librustzcash crates (zcash\_primitives, zcash\_transparent, zcash\_address) through `rust/zcash_swap`, which becomes a dependency of `rust/orchard_backend` at v8.2.1 so the release ships one Rust static library. No hand-written BLAKE2b or v5 serialization in C++; the tree's only BLAKE2b is inside the vendored Orchard crate |
 | Lock-time model | refund treated as possible from T\_zec − 90 min; broadcast once MTP ≥ T\_zec |
 | Funding | new states for the deposit: AwaitingDeposit, DepositConfirmed; FundBtcHtlc becomes FundCounterHtlc, which sweeps the deposit |
 | Upgrade guard | at offer, accept and lock: read activation heights, refuse a window that crosses one |

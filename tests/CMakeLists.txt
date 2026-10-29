@@ -13891,6 +13891,56 @@ if(NOT WIN32)
   set_tests_properties(SwapTowerInstalls PROPERTIES LABELS "wallet;swap" TIMEOUT 120)
 endif()
 
+# DIN<->ZEC swap transactions (rust/zcash_swap over librustzcash): ZIP 244
+# vectors, and the HTLC spends run through the zcash_script interpreter. The
+# crate is linked into this test only until it folds into rust/orchard_backend.
+if(CARGO_EXECUTABLE AND NOT WIN32)
+  set(ZCASH_SWAP_DIR ${CMAKE_SOURCE_DIR}/rust/zcash_swap)
+  set(ZCASH_SWAP_TARGET_DIR ${CMAKE_BINARY_DIR}/zcash_swap-target)
+  set(ZCASH_SWAP_LIB ${ZCASH_SWAP_TARGET_DIR}/release/libdinero_zcash_swap.a)
+  set(ZCASH_SWAP_ENV CARGO_TARGET_DIR=${ZCASH_SWAP_TARGET_DIR})
+  if(APPLE AND CMAKE_OSX_DEPLOYMENT_TARGET)
+    # For the C that secp256k1-sys compiles through the cc crate. Not
+    # MACOSX_DEPLOYMENT_TARGET: that also reaches rustc's proc-macro links and
+    # breaks them (see the Bulletproofs FFI note in the top-level CMakeLists).
+    list(APPEND ZCASH_SWAP_ENV CFLAGS=-mmacosx-version-min=${CMAKE_OSX_DEPLOYMENT_TARGET})
+  endif()
+  add_custom_command(
+    OUTPUT ${ZCASH_SWAP_LIB}
+    COMMAND ${CMAKE_COMMAND} -E env ${ZCASH_SWAP_ENV}
+            ${CARGO_EXECUTABLE} build --release --locked --features script-verify
+    WORKING_DIRECTORY ${ZCASH_SWAP_DIR}
+    DEPENDS ${ZCASH_SWAP_DIR}/src/lib.rs ${ZCASH_SWAP_DIR}/Cargo.toml ${ZCASH_SWAP_DIR}/Cargo.lock
+    COMMENT "Building rust/zcash_swap (test build, script-verify)")
+  add_custom_target(build_zcash_swap DEPENDS ${ZCASH_SWAP_LIB})
+  add_library(dinero_zcash_swap STATIC IMPORTED)
+  set_target_properties(dinero_zcash_swap PROPERTIES IMPORTED_LOCATION ${ZCASH_SWAP_LIB})
+  add_dependencies(dinero_zcash_swap build_zcash_swap)
+
+  add_executable(test_swap_zec_tx
+    tests/wallet/test_swap_zec_tx.cpp
+    src/wallet/swap/zec_tx.cpp
+    src/wallet/swap/htlc.cpp
+  )
+  add_dependencies(test_swap_zec_tx gtest gtest_main build_zcash_swap)
+  target_link_libraries(test_swap_zec_tx PRIVATE dinero_consensus dinero_zcash_swap gtest gtest_main)
+  if(NOT APPLE)
+    target_link_libraries(test_swap_zec_tx PRIVATE Threads::Threads ${CMAKE_DL_LIBS} m)
+  endif()
+  link_zstd_if_needed(test_swap_zec_tx)
+  target_include_directories(test_swap_zec_tx PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+    ${ZCASH_SWAP_DIR}/include
+    ${CMAKE_SOURCE_DIR}/third_party  # nlohmann/json.hpp
+    ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+  )
+  target_compile_definitions(test_swap_zec_tx PRIVATE
+    DINERO_ZIP244_JSON="${CMAKE_SOURCE_DIR}/tests/vectors/zip_0244.json")
+  add_test(NAME SwapZecTx COMMAND test_swap_zec_tx)
+  set_tests_properties(SwapZecTx PROPERTIES LABELS "wallet;swap" TIMEOUT 60)
+endif()
+
 # DIN<->ETH swap contract (contracts/swap-htlc): Foundry unit, fuzz and invariant
 # tests, where forge is installed.
 find_program(DINERO_FORGE forge)
