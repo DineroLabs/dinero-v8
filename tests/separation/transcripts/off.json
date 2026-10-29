@@ -180,7 +180,7 @@
       "synced": 101,
       "total": 101
      },
-     "eta": "<D>",
+     "eta": "<D:int>",
      "eta_formatted": "0s",
      "headers": {
       "progress": 1.0,
@@ -668,7 +668,7 @@
       "fatal_reason": "",
       "history_fully_validated": false,
       "history_validation_state": "validating_history",
-      "last_progress_time": "<T>",
+      "last_progress_time": "<T:str>",
       "manifest_path": "<WORK>/snapshot.dat.manifest.json",
       "manifest_present": false,
       "manifest_regular_file": false,
@@ -852,6 +852,250 @@
     9999999
    ],
    "step": "listunspent.snapshot_recovered"
+  },
+  {
+   "body": {
+    "error": {
+     "code": -32603,
+     "message": "wallet_locked"
+    },
+    "id": 1,
+    "jsonrpc": "2.0"
+   },
+   "http_status": 200,
+   "method": "wallet.signp2mr",
+   "node": "p",
+   "params": {
+    "address": "rdin1r0",
+    "sighash_hex": "<H#8>"
+   },
+   "step": "p2mr.error.locked"
+  },
+  {
+   "body": {
+    "error": null,
+    "id": 1,
+    "jsonrpc": "2.0",
+    "result": {
+     "address": "<A#5>",
+     "derivation_path": "m/88'/1448'/0'/0/0",
+     "leaf_index": 0,
+     "merkle_root_hex": "<H#9>",
+     "pubkey_hex": "<X#1:len=3904>"
+    }
+   },
+   "http_status": 200,
+   "method": "wallet.getnewp2mraddress",
+   "node": "p",
+   "params": {
+    "account": 0,
+    "address_index": 0,
+    "change": 0,
+    "label": "w5",
+    "leaf_index": 0
+   },
+   "step": "p2mr.getnewp2mraddress"
+  },
+  {
+   "body": {
+    "error": null,
+    "id": 1,
+    "jsonrpc": "2.0",
+    "result": {
+     "address": "<A#6>",
+     "merkle_root_hex": "<H#10>",
+     "pubkey_hex": "<X#2:len=3904>"
+    }
+   },
+   "http_status": 200,
+   "method": "wallet.importp2mrseed",
+   "node": "p",
+   "params": {
+    "derivation_path": "m/44'/1448'/0'/0/7",
+    "label": "w5-import",
+    "leaf_index": 0,
+    "seed_hex": "<H#11>"
+   },
+   "step": "p2mr.importp2mrseed"
+  },
+  {
+   "body": {
+    "error": null,
+    "id": 1,
+    "jsonrpc": "2.0",
+    "result": {
+     "addresses": [
+      {
+       "address": "<A#5>",
+       "created_at": "<T:int>",
+       "derivation_path": "m/88'/1448'/0'/0/0",
+       "label": "w5",
+       "leaf_index": 0,
+       "merkle_root_hex": "<H#9>",
+       "pubkey_hex": "<X#1:len=3904>"
+      },
+      {
+       "address": "<A#6>",
+       "created_at": "<T:int>",
+       "derivation_path": "m/44'/1448'/0'/0/7",
+       "label": "w5-import",
+       "leaf_index": 0,
+       "merkle_root_hex": "<H#10>",
+       "pubkey_hex": "<X#2:len=3904>"
+      }
+     ]
+    }
+   },
+   "http_status": 200,
+   "method": "wallet.listp2mraddresses",
+   "node": "p",
+   "params": {},
+   "step": "p2mr.listp2mraddresses"
+  },
+  {
+   "body": {
+    "error": null,
+    "id": 1,
+    "jsonrpc": "2.0",
+    "result": {
+     "pubkey_hex": "<X#2:len=3904>",
+     "scheme_id": 1,
+     "signature_hex": "<X#3:len=6618>"
+    }
+   },
+   "http_status": 200,
+   "method": "wallet.signp2mr",
+   "node": "p",
+   "params": {
+    "address": "<A#6>",
+    "sighash_hex": "<H#8>"
+   },
+   "step": "p2mr.signp2mr"
+  },
+  {
+   "body": {
+    "error": {
+     "code": -32603,
+     "message": "invalid_params"
+    },
+    "id": 1,
+    "jsonrpc": "2.0"
+   },
+   "http_status": 200,
+   "method": "wallet.signp2mr",
+   "node": "p",
+   "params": {
+    "address": "<A#6>",
+    "sighash_hex": "abcd"
+   },
+   "step": "p2mr.error.bad_sighash"
+  },
+  {
+   "body": {
+    "error": null,
+    "id": 1,
+    "jsonrpc": "2.0",
+    "result": {
+     "accepted": true,
+     "amount": 30.0,
+     "amount_una": 3000000000,
+     "change_address": "<A#7>",
+     "change_amount_una": 6999999846,
+     "estimated_fee": 1.54e-06,
+     "fee_paid_una": 154,
+     "fee_rate": 1.0,
+     "inputs": 1,
+     "outputs": 2,
+     "payment_retained": true,
+     "selected_inputs": [
+      {
+       "amount_una": 10000000000,
+       "txid": "<H#12>",
+       "vout": 0
+      }
+     ],
+     "status": "signed_and_submitted",
+     "txid": "<H#13>"
+    }
+   },
+   "http_status": 200,
+   "method": "sendtoaddress",
+   "node": "p",
+   "params": [
+    "<A#6>",
+    30.0
+   ],
+   "step": "p2mr.sendtoaddress"
+  },
+  {
+   "body": {
+    "error": null,
+    "id": 1,
+    "jsonrpc": "2.0",
+    "result": {
+     "hex": "<X#4:len=188>"
+    }
+   },
+   "http_status": 200,
+   "method": "wallet.createrawtransaction",
+   "node": "p",
+   "params": [
+    [
+     {
+      "txid": "<H#13>",
+      "vout": 0
+     }
+    ],
+    [
+     {
+      "<A#8>": 29.9999
+     }
+    ]
+   ],
+   "step": "p2mr.createrawtransaction"
+  },
+  {
+   "body": {
+    "error": null,
+    "id": 1,
+    "jsonrpc": "2.0",
+    "result": {
+     "complete": true,
+     "hex": "<X#5:len=10740>"
+    }
+   },
+   "http_status": 200,
+   "method": "wallet.signrawtransaction",
+   "node": "p",
+   "params": [
+    "<X#4:len=188>",
+    [
+     {
+      "amount": 30.0,
+      "scriptPubKey": "5320f271a0d30e0bf7172aea06e2832d155caf890a8a131759a9a0e5d2e4d6e8dccf",
+      "txid": "<H#13>",
+      "vout": 0
+     }
+    ]
+   ],
+   "step": "p2mr.signrawtransaction"
+  },
+  {
+   "body": {
+    "error": null,
+    "id": 1,
+    "jsonrpc": "2.0",
+    "result": {
+     "result": "<H#14>"
+    }
+   },
+   "http_status": 200,
+   "method": "sendrawtransaction",
+   "node": "p",
+   "params": [
+    "<X#5:len=10740>"
+   ],
+   "step": "p2mr.sendrawtransaction"
   }
  ]
 }
