@@ -19,23 +19,36 @@ a = sys.argv[1:]
 with open(os.environ["FAKE_CTEST_LOG"], "a") as f:
     f.write(" ".join(a) + "\n")
 if "--show-only=json-v1" in a:
-    print(json.dumps({"tests": [{"name": n} for n in spec]}))
+    def props(s):
+        if os.environ.get("FAKE_HIDE_PROPS"):
+            return []
+        return [{"name": k, "value": s[v]} for k, v in
+                (("FIXTURES_REQUIRED", "req"), ("FIXTURES_SETUP", "setup"),
+                 ("FIXTURES_CLEANUP", "cleanup")) if v in s]
+    print(json.dumps({"tests": [{"name": n, "properties": props(s)} for n, s in spec.items()]}))
     sys.exit(0)
 rx = re.compile(a[a.index("-R") + 1])
 assert "--no-tests=error" in a
 out = a[a.index("--output-junit") + 1]
 cases = []
+sel = {n for n in spec if rx.search(n)}
+need = {f for n in sel for f in spec[n].get("req", [])}
+sel |= {n for n, s in spec.items() if need & set(s.get("setup", []) + s.get("cleanup", []))}
 for n, s in spec.items():
-    if not rx.search(n):
+    if n not in sel:
         continue
     st = s["status"]
     body = ""
     if st == "fail":
         body = "<failure message='Failed'/>"
+    if st == "skipped":
+        body = "<skipped/>"
+        st = "pass"
     cases.append('<testcase name="%s" status="%s">%s<system-out>%s</system-out></testcase>'
                  % (n, "run" if st == "pass" else st, body, escape(s.get("out", ""))))
 open(out, "w").write("<testsuite>" + "".join(cases) + "</testsuite>")
-sys.exit(0 if all(spec[n]["status"] == "pass" for n in spec if rx.search(n)) else 8)
+rc = os.environ.get("FAKE_CTEST_RC")
+sys.exit(int(rc) if rc else (0 if all(spec[n]["status"] in ("pass", "skipped") for n in sel) else 8))
 '''
 
 
@@ -58,12 +71,13 @@ def setup(tmp_path, tests, listed, floor=(), config="off"):
     return fake, lst, fl, build, env
 
 
-def run(tmp_path, tests, listed, mode, floor=(), config="off", ref=None):
+def run(tmp_path, tests, listed, mode, floor=(), config="off", ref=None, extra_env=None):
     fake, lst, fl, build, env = setup(tmp_path, tests, listed, floor, config)
     out = tmp_path / "ref.json"
     args = [sys.executable, str(SCRIPT), "--build", build, "--list", lst,
             "--floor", fl, "--ctest", fake, "--config", config]
     args += ["--record", out] if mode == "record" else ["--compare", ref or out]
+    env.update(extra_env or {})
     r = subprocess.run(list(map(str, args)), capture_output=True, text=True, env=env)
     return r, out, tmp_path / "ctest.log"
 
@@ -143,3 +157,45 @@ def test_on_prefix_only_in_on_config(tmp_path):
 def test_on_prefixed_floor_entry_refused_even_in_off(tmp_path):
     r, _, _ = run(tmp_path, {"A": P()}, ["A", "on:F"], "record", floor=["F"], config="off")
     assert r.returncode == 1 and "ON_FLOOR F" in r.stdout
+
+
+def test_floor_fixture_refused_before_running(tmp_path):
+    tests = {"A": dict(P(), req=["fx"]), "Setup": dict(P(), setup=["fx"])}
+    r, _, log = run(tmp_path, tests, ["A"], "record", floor=["Setup"])
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert "ON_FLOOR Setup" in r.stdout
+    assert not [l for l in log.read_text().splitlines() if "--output-junit" in l]
+
+
+def test_nonfloor_fixture_pulled_in_is_unexpected(tmp_path):
+    tests = {"A": dict(P(), req=["fx"]), "Setup": dict(P(), setup=["fx"])}
+    r, _, _ = run(tmp_path, tests, ["A"], "record")
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert "UNEXPECTED Setup" in r.stdout
+
+
+def test_extra_floor_testcase_in_junit_is_on_floor(tmp_path):
+    # floor test appears in results although no fixture metadata announced it
+    tests = {"A": dict(P(), req=["fx"]), "S": P()}
+    fake, lst, fl, build, env = setup(tmp_path, tests, ["A"], floor=["S"])
+    spec = json.loads((tmp_path / "spec.json").read_text())
+    spec["S"]["setup"] = ["fx"]  # run-time pulls it in...
+    (tmp_path / "spec.json").write_text(json.dumps(spec))
+    # ...but hide it from the pre-run query
+    env["FAKE_HIDE_PROPS"] = "1"
+    r = subprocess.run([sys.executable, str(SCRIPT), "--build", str(build), "--list", str(lst),
+                        "--floor", str(fl), "--ctest", str(fake), "--config", "off",
+                        "--record", str(tmp_path / "o.json")], capture_output=True, text=True, env=env)
+    assert r.returncode == 1 and "ON_FLOOR S" in r.stdout, r.stdout + r.stderr
+
+
+def test_skipped_test_is_not_run(tmp_path):
+    r, _, _ = run(tmp_path, {"A": P(), "B": {"status": "skipped"}}, ["A", "B"], "record")
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert "NOT_RUN B" in r.stdout
+
+
+def test_ctest_nonzero_exit_with_clean_results_fails(tmp_path):
+    r, _, _ = run(tmp_path, {"A": P()}, ["A"], "record", extra_env={"FAKE_CTEST_RC": "3"})
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert "CTEST_RC" in r.stdout
