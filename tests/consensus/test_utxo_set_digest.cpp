@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <unordered_map>
 
 #include "consensus/utxo_set_digest.h"
