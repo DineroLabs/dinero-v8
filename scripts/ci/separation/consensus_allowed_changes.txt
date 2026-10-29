@@ -1,0 +1,31 @@
+# K5 allowed changes to src/consensus/** and include/consensus/** (spec 6.1/6.5/6.6, 8).
+# Format: <stage> modify|remove|add <path>   or   <stage> hunk <path> <regex>
+# check --stage N allows the union of entries with stage <= N. See consensus_freeze.py.
+
+# Stage 1: CMake list membership only.
+1 modify src/consensus/CMakeLists.txt
+
+# Stage 2: moved sources keep their paths (CMake membership changes); "remove"
+# entries cover a later ruling that relocates them.
+2 modify src/consensus/CMakeLists.txt
+2 modify src/consensus/pq/CMakeLists.txt
+2 remove src/consensus/coins_db.cpp
+2 remove src/consensus/coins_view_cache.cpp
+2 remove src/consensus/global_utxo_set_impl.cpp
+
+# Stage 2 tx_validation.h (6.5): the forward declaration (:33), the three
+# `CoinsViewCache& view` parameters (validateTransaction, validateInputs,
+# checkSequenceLocks) and an optional chain_state_view.h include.
+2 hunk include/consensus/tx_validation.h ^class (CoinsViewCache|ChainStateView);$
+2 hunk include/consensus/tx_validation.h ^// Forward declaration
+2 hunk include/consensus/tx_validation.h ^\s*(const )?(CoinsViewCache|ChainStateView)& view,?$
+2 hunk include/consensus/tx_validation.h ^#include "consensus/chain_state_view\.h"$
+# Stage 2 tx_validation.cpp: the coins_db.h include (:2) and the three
+# definitions' `view` parameter lines.
+2 hunk src/consensus/tx_validation.cpp ^#include "consensus/(coins_db|chain_state_view)\.h"$
+2 hunk src/consensus/tx_validation.cpp ^\s*(const )?(CoinsViewCache|ChainStateView)& view,?$
+# Stage 2 freeze.h: only the manifest line holding tx_validation.h (:136).
+2 hunk include/consensus/freeze.h "include/consensus/tx_validation\.h"
+
+# Stage 3: CMake only.
+3 modify src/consensus/CMakeLists.txt
