@@ -677,3 +677,73 @@ TEST(SwapEngine, GoldenRecordBytesAreStable) {
     EXPECT_EQ(EncodeRecord(DecodeRecord(kRecord)), kRecord);
     EXPECT_EQ(DecodeRecord(kRecord).state, SwapState::BtcClaimBroadcast);
 }
+
+// --- Counter-chain rules (ETH, ZEC, SOL designs) -----------------------------
+
+TEST(SwapEngine, BitcoinRulesAreTheDefault) {
+    auto r = MakeRecord(Role::DinSeller);
+    r.state = SwapState::DinLocked;
+    for (uint32_t before : {7 * kHour, 6 * kHour, kHour}) {
+        auto obs = At(r.offer.t_btc_unix - before);
+        obs.din = Locked(kDin, 40);
+        obs.btc = Locked(kBtc, 5);
+        const auto a = Step(r, obs), b = Step(r, obs, kBitcoinRules);
+        EXPECT_EQ(a.record.state, b.record.state);
+        EXPECT_EQ(Has(a, ActionKind::ClaimBtc), Has(b, ActionKind::ClaimBtc));
+    }
+}
+
+// Solana: the first claim must go out a day before the deadline.
+TEST(SwapEngine, ALongerClaimCutoffIsHonoured) {
+    CounterChainRules sol;
+    sol.exclusive_windows = true;
+    sol.claim_cutoff_seconds = 24 * kHour;
+    auto r = MakeRecord(Role::DinSeller);
+    r.state = SwapState::DinLocked;
+    auto obs = At(r.offer.t_btc_unix - 20 * kHour);  // fine for Bitcoin, too late for Solana
+    obs.din = Locked(kDin, 40);
+    obs.btc = Locked(kBtc, 5);
+    EXPECT_TRUE(Has(Step(r, obs), ActionKind::ClaimBtc));
+    EXPECT_FALSE(Has(Step(r, obs, sol), ActionKind::ClaimBtc));
+    obs = At(r.offer.t_btc_unix - 25 * kHour);
+    obs.din = Locked(kDin, 40);
+    obs.btc = Locked(kBtc, 5);
+    EXPECT_TRUE(Has(Step(r, obs, sol), ActionKind::ClaimBtc));
+}
+
+// Zcash: a refund may confirm up to 90 min early, so Alice's window shrinks.
+TEST(SwapEngine, AnEarlyRefundAllowanceShrinksAlicesWindow) {
+    CounterChainRules zec;
+    zec.early_refund_seconds = 90 * 60;
+    auto r = MakeRecord(Role::DinSeller);
+    r.state = SwapState::DinLocked;
+    auto obs = At(r.offer.t_btc_unix - 7 * kHour);  // 6 h cut-off + 1 h: inside 6 h + 90 min
+    obs.din = Locked(kDin, 40);
+    obs.btc = Locked(kBtc, 5);
+    EXPECT_TRUE(Has(Step(r, obs), ActionKind::ClaimBtc));
+    EXPECT_FALSE(Has(Step(r, obs, zec), ActionKind::ClaimBtc));
+}
+
+// Ethereum/Solana: once sent, a claim may have leaked the secret, so Alice
+// keeps sending it while the contract still takes it, past her cut-off.
+TEST(SwapEngine, ExclusiveWindowsKeepClaimingUntilTheDeadline) {
+    CounterChainRules eth;
+    eth.exclusive_windows = true;
+    auto r = MakeRecord(Role::DinSeller);
+    r.state = SwapState::BtcClaimBroadcast;  // sent, never seen
+    auto obs = At(r.offer.t_btc_unix - kHour);  // inside the cut-off
+    obs.din = Locked(kDin, 40);
+    obs.btc = Locked(kBtc, 5);
+    EXPECT_EQ(Step(r, obs).record.state, SwapState::DinLocked) << "Bitcoin gives an unseen claim up";
+    auto s = Step(r, obs, eth);
+    EXPECT_TRUE(Has(s, ActionKind::ClaimBtc));
+    EXPECT_EQ(s.record.state, SwapState::BtcClaimBroadcast);
+
+    obs.btc_mtp_unix = r.offer.t_btc_unix - 1;  // last second the contract takes it
+    EXPECT_TRUE(Has(Step(r, obs, eth), ActionKind::ClaimBtc));
+
+    obs.btc_mtp_unix = r.offer.t_btc_unix;  // the chain's clock closed the claim window
+    s = Step(r, obs, eth);
+    EXPECT_FALSE(Has(s, ActionKind::ClaimBtc));
+    EXPECT_EQ(s.record.state, SwapState::DinLocked);
+}
