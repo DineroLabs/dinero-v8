@@ -314,14 +314,6 @@ TEST(SwapZecChainIo, PreparedFundingSentOrNot) {
     EXPECT_EQ(io->PreparedFundingUnsent(prep.raw), std::nullopt);
 }
 
-TEST(SwapZecChainIo, NoBitcoinRungsForAZcashLock) {
-    ZecSwap z;
-    auto io = z.Io();
-    TowerPackage p;
-    EXPECT_THROW(io->AddCounterTowerRungs(p, z.Session(Role::BtcSeller), SwapKeys{Key(5), Key(6), {}},
-                                          BtcFunding{Key(0x44), 0, z.offer.btc_amount_sat}, BtcFeeLadderPolicy{}),
-                 std::runtime_error);
-}
 
 // --- The runner with the Zcash counter chain ---------------------------------------
 
@@ -399,4 +391,132 @@ TEST(SwapZecChainIo, RunnerUsesZcashCutoffIncludingTheEarlyRefundAllowance) {
     EXPECT_EQ(report2.after, SwapState::BtcClaimBroadcast);
     ASSERT_EQ(io2->zec_sent.size(), 1u);
     EXPECT_EQ(VerifyInput(io2->zec_sent[0], 0, {{z.offer.btc_amount_sat, z.HtlcSpk()}}), DZS_OK);
+}
+
+namespace {
+
+TowerPackage ZecPackage(ZecSwap& z, ZecSwapChainIo& io) {
+    auto bob = z.Session(Role::BtcSeller);
+    const SwapKeys keys{Key(5), Key(6), {}};
+    const auto din_terms = MakeDinTerms(z.offer, z.accept);
+    FundingOutput din;
+    din.txid = TxId(uint256::FromHexUnsafe(std::string(64, '7')));
+    din.vout = 1;
+    din.value = AmountUna::Una(z.offer.din_amount_una);
+    din.script_pubkey = BuildDinHtlc(din_terms).script_pubkey;
+    FeeLadderPolicy din_policy;
+    din_policy.start_feerate_una_per_vb = 1'000;
+    din_policy.max_fee_una = z.offer.din_amount_una / 20;
+    din_policy.min_payout_una = z.offer.din_amount_una / 2;
+    BtcFeeLadderPolicy zec_policy;
+    zec_policy.min_payout_sat = z.offer.btc_amount_sat / 2;
+    io.ObserveBtcChain();
+    auto p = BuildTowerPackageDin(bob, keys, din, din_policy);
+    io.AddCounterTowerRungs(p, bob, keys, BtcFunding{Key(0x44), 0, z.offer.btc_amount_sat}, zec_policy);
+    VerifyTowerPackage(p);
+    return p;
+}
+
+}  // namespace
+
+TEST(SwapZecChainIo, TowerPackageCarriesOneNeverExpiringRefundRung) {
+    ZecSwap z;
+    auto io = z.Io();
+    const auto p = ZecPackage(z, *io);
+    ASSERT_TRUE(p.btc_refunds.empty());
+    ASSERT_EQ(p.zec_refunds.size(), 1u);
+    EXPECT_EQ(p.zec_refunds[0].fee_zat, 40'000u);  // 4 x conventional
+    EXPECT_EQ(p.zec_refunds[0].branch_id, kNu61);
+
+    const auto text = EncodeTowerPackage(p);
+    EXPECT_NE(text.find("zec_funding="), std::string::npos);
+    EXPECT_NE(text.find("zec_refund=40000:4dec4df0:"), std::string::npos);
+    EXPECT_EQ(EncodeTowerPackage(DecodeTowerPackage(text)), text);
+
+    // The tower watches exactly the package's ZEC lock.
+    EXPECT_EQ(TowerWatchSpec(p, "test").btc_funding_txid, "44" + std::string(62, '0'));  // display order
+}
+
+TEST(SwapZecChainIo, TamperedZecRungsAreRefused) {
+    ZecSwap z;
+    auto io = z.Io();
+    const auto good = ZecPackage(z, *io);
+    auto p = good;
+    p.zec_refunds[0].fee_zat += 1;  // signed for another fee
+    EXPECT_THROW(VerifyTowerPackage(p), std::invalid_argument);
+    p = good;
+    p.zec_refunds[0].payout_script = {0x51};  // someone else's payout
+    EXPECT_THROW(VerifyTowerPackage(p), std::invalid_argument);
+    p = good;
+    p.zec_refunds[0].branch_id = 0x5437f330;  // signed for another branch
+    EXPECT_THROW(VerifyTowerPackage(p), std::invalid_argument);
+    p = good;
+    p.zec_funding->vout = 1;  // another lock
+    EXPECT_THROW(VerifyTowerPackage(p), std::invalid_argument);
+    p = good;
+    p.zec_refunds.clear();
+    EXPECT_THROW(VerifyTowerPackage(p), std::invalid_argument);
+    p = good;
+    p.offer.chain = CounterChain::Bitcoin;  // a Bitcoin package must not carry Zcash rungs
+    p.offer.n_btc_confirmations = kMinZecConfirmations;
+    p.accept.offer_id = OfferId(p.offer);
+    try {
+        VerifyTowerPackage(p);
+        FAIL() << "Bitcoin package with Zcash rungs accepted";
+    } catch (const std::invalid_argument& e) {
+        EXPECT_NE(std::string(e.what()).find("Zcash rungs in a Bitcoin package"), std::string::npos) << e.what();
+    }
+
+    // A second rung Bob signed, but paying somewhere else: every rung must pay one payout.
+    p = good;
+    ZecRefundRung other = p.zec_refunds[0];
+    other.fee_zat += 10'000;
+    other.payout_script = ZecScriptPubKey({ZecNetwork::Regtest, ZecAddressKind::P2pkh, {0x0a}});
+    const auto terms = MakeBtcTerms(p.offer, p.accept);
+    const ZecFunding f{p.zec_funding->txid, p.zec_funding->vout, p.zec_funding->value_sat};
+    const auto unsigned_tx = BuildZecRefundTx(terms, f, other.payout_script, other.fee_zat, other.branch_id, 0);
+    other.signature = detail::EcdsaSignAll(Key(6), ZecHtlcSighash(unsigned_tx, terms, f));
+    p.zec_refunds.push_back(other);
+    EXPECT_THROW(VerifyTowerPackage(p), std::invalid_argument);
+    p.zec_refunds[1].payout_script = p.zec_refunds[0].payout_script;  // same payout, re-signed: fine
+    p.zec_refunds[1].signature = detail::EcdsaSignAll(
+        Key(6), ZecHtlcSighash(BuildZecRefundTx(terms, f, p.zec_refunds[1].payout_script, other.fee_zat, other.branch_id, 0),
+                               terms, f));
+    EXPECT_NO_THROW(VerifyTowerPackage(p));
+
+    InstallZecTowerHooks({});  // a build that cannot check Zcash rungs refuses the package
+    EXPECT_THROW(VerifyTowerPackage(good), std::invalid_argument);
+    z.Io();                    // reinstalls them
+    EXPECT_NO_THROW(VerifyTowerPackage(good));
+}
+
+TEST(SwapZecChainIo, TowerBroadcastsTheZecRungOncePastTheLock) {
+    ZecSwap z;
+    auto io = z.Io();
+    const auto p = ZecPackage(z, *io);
+    // The tower's chains: the DIN lock of the package on chain, the ZEC lock
+    // unspent and Zcash's median time past T_zec.
+    auto tower_io = CannedIo(z, z.offer.t_btc_unix + 60);
+    tower_io->din.funding = FundingOutput{};
+    tower_io->din.funding->txid = p.din_claims.front().tx.vin[0].prevout.txid;
+    tower_io->din.funding->vout = p.din_claims.front().tx.vin[0].prevout.vout;
+    tower_io->zec.funding = *p.zec_funding;
+    Watchtower tower(p, TowerConfig{}, *tower_io);
+    tower.Tick(z.offer.t_btc_unix + 60);
+    ASSERT_EQ(tower_io->zec_sent.size(), 1u);
+    const auto& raw = tower_io->zec_sent[0];
+    EXPECT_EQ(VerifyInput(raw, 0, {{z.offer.btc_amount_sat, z.HtlcSpk()}}), DZS_OK);
+    // nLockTime T_zec, nExpiryHeight 0.
+    char lock[9];
+    const uint32_t t = z.offer.t_btc_unix;
+    std::snprintf(lock, sizeof lock, "%02x%02x%02x%02x", t & 0xff, (t >> 8) & 0xff, (t >> 16) & 0xff, t >> 24);
+    EXPECT_EQ(detail::ToHex({raw.begin() + 12, raw.begin() + 20}), std::string(lock) + "00000000");
+
+    // Before T_zec by Zcash's median time: nothing is sent.
+    auto early_io = CannedIo(z, z.offer.t_btc_unix - 60);
+    early_io->din = tower_io->din;
+    early_io->zec.funding = *p.zec_funding;
+    Watchtower early(p, TowerConfig{}, *early_io);
+    early.Tick(z.offer.t_btc_unix - 60);
+    EXPECT_TRUE(early_io->zec_sent.empty());
 }

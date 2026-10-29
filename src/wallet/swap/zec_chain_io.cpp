@@ -1,6 +1,7 @@
 #include "wallet/swap/zec_chain_io.h"
 
 #include "wallet/swap/swap_crypto.h"
+#include "wallet/swap/tower.h"
 
 #include <algorithm>
 #include <ctime>
@@ -13,6 +14,47 @@ using detail::FromHex;
 using detail::ToHex;
 
 std::string DisplayTxid(const Bytes32& wire) { return ToHex(std::vector<uint8_t>(wire.rbegin(), wire.rend())); }
+
+[[noreturn]] void BadRung(const std::string& why) { throw std::invalid_argument("tower package refused: " + why); }
+
+ZecTx UnsignedRung(const TowerPackage& p, const ZecRefundRung& r) {
+    const ZecFunding f{p.zec_funding->txid, p.zec_funding->vout, p.zec_funding->value_sat};
+    return BuildZecRefundTx(MakeBtcTerms(p.offer, p.accept), f, r.payout_script, r.fee_zat, r.branch_id, 0);
+}
+
+// Every rung refunds the package's ZEC lock to one payout, at rising fees, and
+// carries Bob's valid signature.
+void VerifyZecRungs(const TowerPackage& p) {
+    const auto terms = MakeBtcTerms(p.offer, p.accept);
+    const ZecFunding f{p.zec_funding->txid, p.zec_funding->vout, p.zec_funding->value_sat};
+    uint64_t last_fee = 0;
+    for (size_t i = 0; i < p.zec_refunds.size(); ++i) {
+        const auto& r = p.zec_refunds[i];
+        const std::string at = "ZEC refund rung " + std::to_string(i) + ": ";
+        if (r.payout_script.empty() || r.payout_script != p.zec_refunds.front().payout_script) {
+            BadRung(at + "pays a different destination");
+        }
+        if (r.fee_zat == 0 || r.fee_zat >= p.offer.btc_amount_sat) BadRung(at + "fee does not fit the amount");
+        if (i > 0 && r.fee_zat <= last_fee) BadRung(at + "fees must rise");
+        last_fee = r.fee_zat;
+        ZecTx tx;
+        try {
+            tx = UnsignedRung(p, r);
+        } catch (const std::exception& e) {
+            BadRung(at + e.what());
+        }
+        if (!detail::EcdsaVerifyAll(terms.refund_pubkey, ZecHtlcSighash(tx, terms, f), r.signature)) {
+            BadRung(at + "signature does not verify");
+        }
+    }
+}
+
+std::vector<uint8_t> ZecRungRaw(const TowerPackage& p, size_t i) {
+    const auto& r = p.zec_refunds.at(i);
+    auto tx = UnsignedRung(p, r);
+    SetZecRefundScriptSig(tx, MakeBtcTerms(p.offer, p.accept), r.signature);
+    return SerializeZecTx(tx);
+}
 
 }  // namespace
 
@@ -30,6 +72,7 @@ ZecSwapChainIo::ZecSwapChainIo(DinRpc din, ZecRpc zec, SwapWatchSpec spec, ZecIo
                      spec),
       zec_(std::move(zec)), zspec_(std::move(spec)), config_(std::move(config)) {
     if (zspec_.offer.chain != CounterChain::Zcash) throw std::invalid_argument("not a Zcash swap");
+    InstallZecTowerHooks({VerifyZecRungs, ZecRungRaw});  // the tower (and Bob's runner) can now check Zcash rungs
     if (!config_.clock) config_.clock = [] { return static_cast<uint32_t>(std::time(nullptr)); };
     if (!config_.broadcast) {
         config_.broadcast = [this](const std::string& hex) {
@@ -205,9 +248,29 @@ bool ZecSwapChainIo::CounterBroadcastMayHaveLeft(const std::string& error) const
     return true;
 }
 
-void ZecSwapChainIo::AddCounterTowerRungs(TowerPackage&, const SwapSession&, const SwapKeys&, const BtcFunding&,
-                                          const BtcFeeLadderPolicy&) const {
-    throw std::runtime_error("no Zcash tower package yet");  // never the Bitcoin rungs for a Zcash lock
+// One rung: Zcash has no RBF, so more rungs would only conflict. 4 x the
+// conventional fee is ZIP 317's weight cap, so it ranks first. nExpiryHeight
+// 0 keeps it valid until it is needed; it binds the branch id it is signed
+// for, which the upgrade guard keeps stable for the swap's window.
+void ZecSwapChainIo::AddCounterTowerRungs(TowerPackage& package, const SwapSession& s, const SwapKeys& keys,
+                                          const BtcFunding& funding, const BtcFeeLadderPolicy& policy) const {
+    if (!chain_) throw std::runtime_error("Zebra not observed yet: cannot sign the refund rung");
+    const auto terms = MakeBtcTerms(s.record.offer, s.record.accept);
+    if (detail::CompressedOf(keys.btc_secret_key) != terms.refund_pubkey) {
+        throw std::invalid_argument("ZEC key does not match the swap");
+    }
+    if (config_.rung_fee_zat >= funding.value_sat || funding.value_sat - config_.rung_fee_zat < policy.min_payout_sat) {
+        throw std::invalid_argument("the ZEC refund rung fee does not fit the amount");
+    }
+    ZecRefundRung r;
+    r.fee_zat = config_.rung_fee_zat;
+    r.branch_id = chain_->next_block_branch_id;
+    r.payout_script = s.btc_payout_script;
+    package.zec_funding = funding;
+    const auto tx = UnsignedRung(package, r);
+    r.signature = detail::EcdsaSignAll(keys.btc_secret_key,
+                                       ZecHtlcSighash(tx, terms, {funding.txid, funding.vout, funding.value_sat}));
+    package.zec_refunds = {r};
 }
 
 }  // namespace dinero::swap

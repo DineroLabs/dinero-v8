@@ -18,7 +18,8 @@ ZEBRAD=None
 if args[:1]==['--zebrad']: ZEBRAD=args[1]; args=args[2:]
 LIB=ROOT+'/rust/zcash_swap/src/lib.rs'; CPP=ROOT+'/src/wallet/swap/zec_tx.cpp'
 WCPP=ROOT+'/src/wallet/swap/zec_watcher.cpp'; WHDR=ROOT+'/include/wallet/swap/zec_watcher.h'
-ZIO=ROOT+'/src/wallet/swap/zec_chain_io.cpp'; RUN=ROOT+'/src/wallet/swap/runner.cpp'
+ZIO=ROOT+'/src/wallet/swap/zec_chain_io.cpp'; RUN=ROOT+'/src/wallet/swap/runner.cpp'; TOW=ROOT+'/src/wallet/swap/tower.cpp'
+ZHDR=ROOT+'/include/wallet/swap/zec_chain_io.h'
 R='regtest'; IO='io'
 M=[
  ('sighash: always input 0', LIB, '        index,\n        &auth.scripts[index],', '        0,\n        &auth.scripts[index],'),
@@ -77,6 +78,12 @@ M=[
  ('io: fixed branch id', ZIO, 'fee, chain.next_block_branch_id, expiry)\n                     : BuildZecRefundTx', 'fee, 0x4dec4df0, expiry)\n                     : BuildZecRefundTx', IO),
  ('io: unsent despite spent coins', ZIO, '    if (deposit.coins.empty()) return false;  // spent by something: it may have gone out\n', '', IO),
  ('io: claim role not checked', ZIO, '    if (s.record.role != Role::DinSeller || detail::CompressedOf(keys.btc_secret_key) != s.record.offer.btc_claim_pubkey) {', '    if (false) {', IO),
+ ('tower: zec rung signature not checked', ZIO, '        if (!detail::EcdsaVerifyAll(terms.refund_pubkey, ZecHtlcSighash(tx, terms, f), r.signature)) {', '        if (false) {', IO),
+ ('tower: zec rung payout not checked', ZIO, '        if (r.payout_script.empty() || r.payout_script != p.zec_refunds.front().payout_script) {', '        if (false) {', IO),
+ ('tower: zec rung expires', ZIO, 'f, r.payout_script, r.fee_zat, r.branch_id, 0);', 'f, r.payout_script, r.fee_zat, r.branch_id, 500);', IO),
+ ('tower: zec package without hooks accepted', TOW, '        if (!ZecHooks().verify) Bad("this build cannot verify Zcash refund rungs");', '        if (!ZecHooks().verify) return;', IO),
+ ('tower: zec rungs allowed in btc package', TOW, '        if (p.zec_funding || !p.zec_refunds.empty()) Bad("Zcash rungs in a Bitcoin package");', '', IO),
+ ('tower: zec rung fee 2x', ZHDR, '    uint64_t rung_fee_zat{4 * 10\'000};', '    uint64_t rung_fee_zat{2 * 10\'000};', IO),
  ('watch: amount filter dropped', WCPP, '                    if (target_.expected_amount_zat && zat != target_.expected_amount_zat) continue;\n', '', R),
 ]
 only=args

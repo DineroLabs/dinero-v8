@@ -29,6 +29,8 @@
 #include "wallet/swap/fee_ladder.h"
 #include "wallet/swap/runner.h"
 
+#include <functional>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -54,6 +56,17 @@ struct BtcRefundRung {
     uint64_t fee_sat{};
 };
 
+// A Zcash refund rung (docs/design/din-zec-atomic-swaps.md): one, at 4 x the
+// conventional fee, nExpiryHeight 0, nLockTime T_zec. The package carries its
+// parts; the Zcash module rebuilds the exact transaction to verify and send
+// it, so this file needs no Zcash parser.
+struct ZecRefundRung {
+    uint64_t fee_zat{};
+    uint32_t branch_id{};                // the consensus branch it was signed for
+    std::vector<uint8_t> payout_script;  // Bob's
+    std::vector<uint8_t> signature;      // DER + SIGHASH_ALL, Bob's ZEC refund key
+};
+
 struct TowerPackage {
     SwapOffer offer;
     SwapAccept accept;
@@ -61,8 +74,19 @@ struct TowerPackage {
     uint32_t din_scan_from_height{};
     Bytes32 din_sweep_pubkey{};                // zero: claims pay Bob's wallet directly (no CPFP)
     std::vector<DinClaimRung> din_claims;    // ascending fee
-    std::vector<BtcRefundRung> btc_refunds;  // ascending fee
+    std::vector<BtcRefundRung> btc_refunds;  // ascending fee (Bitcoin swaps)
+    std::optional<BtcFunding> zec_funding;   // Zcash swaps: the ZEC lock (zatoshi)
+    std::vector<ZecRefundRung> zec_refunds;  // Zcash swaps
 };
+
+// What the Zcash module provides to the tower (installed by ZecSwapChainIo):
+// verify the Zcash rungs (throws std::invalid_argument) and serialize rung i.
+// Without them a Zcash package is refused.
+struct ZecTowerHooks {
+    std::function<void(const TowerPackage&)> verify;
+    std::function<std::vector<uint8_t>(const TowerPackage&, size_t)> rung_raw;
+};
+void InstallZecTowerHooks(ZecTowerHooks hooks);
 
 // The outpoints the package's rungs spend are the locks the tower watches,
 // exactly (payments to the same scripts are ignored).

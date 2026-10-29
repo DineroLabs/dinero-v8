@@ -50,7 +50,13 @@ FundingOutput DinFundingOf(const TowerPackage& p, const DinHtlcOutput& htlc) {
     return f;
 }
 
+ZecTowerHooks& ZecHooks() {
+    static ZecTowerHooks hooks;
+    return hooks;
+}
+
 BtcFunding BtcFundingOf(const TowerPackage& p) {
+    if (p.zec_funding) return *p.zec_funding;
     BtcFunding f;
     f.txid = p.btc_refunds.front().tx.vin.at(0).prev_txid;
     f.vout = p.btc_refunds.front().tx.vin.at(0).prev_vout;
@@ -59,6 +65,8 @@ BtcFunding BtcFundingOf(const TowerPackage& p) {
 }
 
 }  // namespace
+
+void InstallZecTowerHooks(ZecTowerHooks hooks) { ZecHooks() = std::move(hooks); }
 
 // ---- Package text form ------------------------------------------------------
 
@@ -84,6 +92,16 @@ std::string EncodeTowerPackage(const TowerPackage& p) {
         }
     }
     for (const auto& r : p.btc_refunds) out << "btc_refund=" << ToHex(SerializeBtcTx(r.tx)) << ":" << r.fee_sat << "\n";
+    if (p.zec_funding) {  // only in Zcash packages: Bitcoin packages are unchanged
+        out << "zec_funding=" << ToHex(std::vector<uint8_t>(p.zec_funding->txid.rbegin(), p.zec_funding->txid.rend()))
+            << ":" << p.zec_funding->vout << "\n";
+    }
+    for (const auto& r : p.zec_refunds) {
+        char branch[9];
+        std::snprintf(branch, sizeof branch, "%08x", r.branch_id);
+        out << "zec_refund=" << r.fee_zat << ":" << branch << ":" << ToHex(r.payout_script) << ":" << ToHex(r.signature)
+            << "\n";
+    }
     return out.str();
 }
 
@@ -126,6 +144,16 @@ TowerPackage DecodeTowerPackage(const std::string& text) {
             r.tx = ParseBtcTx(FromHex(parts[0]));
             r.fee_sat = ParseU64(parts[1]);
             p.btc_refunds.push_back(std::move(r));
+        } else if (key == "zec_refund") {
+            const auto parts = Split(value, ':');
+            if (parts.size() != 4 || parts[1].size() != 8) Bad("malformed zec_refund");
+            ZecRefundRung r;
+            r.fee_zat = ParseU64(parts[0]);
+            const auto b = FromHex(parts[1]);
+            r.branch_id = uint32_t(b[0]) << 24 | uint32_t(b[1]) << 16 | uint32_t(b[2]) << 8 | b[3];
+            r.payout_script = FromHex(parts[2]);
+            r.signature = FromHex(parts[3]);
+            p.zec_refunds.push_back(std::move(r));
         } else if (!single.emplace(key, value).second) {
             Bad("duplicate " + key);
         }
@@ -142,6 +170,18 @@ TowerPackage DecodeTowerPackage(const std::string& text) {
     const uint64_t dh = ParseU64(single["din_scan_from_height"]);
     if (dh > UINT32_MAX) Bad("bad DIN scan height");
     p.din_scan_from_height = static_cast<uint32_t>(dh);
+    if (single.count("zec_funding")) {
+        const auto parts = Split(single["zec_funding"], ':');
+        if (parts.size() != 2) Bad("malformed zec_funding");
+        const auto id = FromHex(parts[0]);
+        const uint64_t vout = ParseU64(parts[1]);
+        if (id.size() != 32 || vout > UINT32_MAX) Bad("bad zec_funding");
+        BtcFunding f;
+        std::copy(id.rbegin(), id.rend(), f.txid.begin());
+        f.vout = static_cast<uint32_t>(vout);
+        f.value_sat = p.offer.btc_amount_sat;
+        p.zec_funding = f;
+    }
     if (!single["din_sweep_pubkey"].empty()) {
         const auto k = FromHex(single["din_sweep_pubkey"]);
         if (k.size() != 32) Bad("bad din_sweep_pubkey");
@@ -245,7 +285,16 @@ void VerifyTowerPackage(const TowerPackage& p) {
     const auto btc_terms = MakeBtcTerms(p.offer, p.accept);
     const auto htlc = BuildDinHtlc(din_terms);
     if (p.din_claims.empty()) Bad("no DIN claim rungs");
-    if (p.btc_refunds.empty()) Bad("no BTC refund rungs");
+    const bool zec = p.offer.chain == CounterChain::Zcash;
+    if (zec) {
+        if (!p.btc_refunds.empty()) Bad("Bitcoin refund rungs in a Zcash package");
+        if (!p.zec_funding || p.zec_refunds.empty()) Bad("no ZEC refund rung");
+        if (p.zec_funding->value_sat != p.offer.btc_amount_sat) Bad("ZEC lock amount does not match the swap");
+        if (!ZecHooks().verify) Bad("this build cannot verify Zcash refund rungs");
+    } else {
+        if (p.zec_funding || !p.zec_refunds.empty()) Bad("Zcash rungs in a Bitcoin package");
+        if (p.btc_refunds.empty()) Bad("no BTC refund rungs");
+    }
 
     const FundingOutput din_funding = DinFundingOf(p, htlc);
     const bool cpfp = p.din_sweep_pubkey != Bytes32{};
@@ -304,6 +353,7 @@ void VerifyTowerPackage(const TowerPackage& p) {
         }
     }
 
+    if (zec) return ZecHooks().verify(p);
     const BtcFunding btc_funding = BtcFundingOf(p);
     const auto witness_script = BuildBtcHtlcWitnessScript(btc_terms);
     const auto& btc_payout = p.btc_refunds.front().tx.vout.empty() ? std::vector<uint8_t>{}
@@ -347,7 +397,7 @@ SwapWatchSpec TowerWatchSpec(const TowerPackage& p, const std::string& btc_chain
     w.din_scan_from_height = p.din_scan_from_height;
     w.btc_scan_from_height = p.btc_scan_from_height;
     w.din_funding_txid = p.din_claims.front().tx.vin.at(0).prevout.txid.AsUint256().GetHex();
-    const auto& wire = p.btc_refunds.front().tx.vin.at(0).prev_txid;
+    const auto wire = BtcFundingOf(p).txid;
     w.btc_funding_txid = ToHex(std::vector<uint8_t>(wire.rbegin(), wire.rend()));
     w.btc_chain = btc_chain;
     return w;
@@ -579,10 +629,12 @@ void Watchtower::BtcRefundDuty(const BtcWatchReport& btc, uint32_t now, TowerRep
     const auto& offer = package_.offer;
     if (btc.htlc.spent_by_claim || (btc.htlc.spent && btc.htlc.spend_confirmations >= 1)) return;
     if (btc.mtp_unix <= offer.t_btc_unix || !btc.htlc.output_seen) return;
-    const size_t i = NextRung(btc_refund_, package_.btc_refunds.size(), now);
+    const bool zec = package_.offer.chain == CounterChain::Zcash;
+    const size_t i = NextRung(btc_refund_, zec ? package_.zec_refunds.size() : package_.btc_refunds.size(), now);
     try {
-        report.events.push_back("BTC refund rung " + std::to_string(i) + " broadcast: " +
-                                io_.BroadcastBtc(SerializeBtcTx(package_.btc_refunds[i].tx)));
+        const auto raw = zec ? ZecHooks().rung_raw(package_, i) : SerializeBtcTx(package_.btc_refunds[i].tx);
+        report.events.push_back(std::string(zec ? "ZEC" : "BTC") + " refund rung " + std::to_string(i) + " broadcast: " +
+                                io_.BroadcastBtc(raw));
     } catch (const std::exception& e) {
         report.events.push_back("BTC refund rung " + std::to_string(i) + " not accepted: " + e.what());
     }
