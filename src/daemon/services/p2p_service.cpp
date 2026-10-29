@@ -1,6 +1,7 @@
 #include "consensus/release_profile.h"
 #include "consensus/orchard_profile.h"
 #include "daemon/services/p2p_service.h"
+#include "daemon/services/relay_role_policy.h"
 #include "daemon/services/logger_service.h"
 #include "daemon/services/config_service.h"
 #include "daemon/services/chainstate_service.h"
@@ -17,8 +18,11 @@
 #include "dinero/network/network_invariants.h"
 #include "consensus/header_chain.h"  // HeaderChainSelector value snapshots
 #include "network/local_interfaces.h"  // Self-loop filter (shared with P2PManager)
+#include "network/endpoint_format.h"
+#include "network/quic_endpoint.h"
 #include "network/port_mapper.h"
 #include "network/stun_client.h"       // NAT traversal Phase C1: public-IP discovery
+#include "p2p/nat_classifier.h"
 #include "network/quic_transport.h"    // Stage B: log QUIC relay-transport readiness at startup
 #include "daemon/node_identity.h"      // NAT traversal Phase 1A: keypair for dineroid handshake
 #include "p2p/block_download_scheduler.h"
@@ -67,15 +71,7 @@ std::string LowerAscii(std::string value) {
     return value;
 }
 
-bool IsRelayModeOn(const std::string& mode) {
-    const std::string value = LowerAscii(mode);
-    return value == "1" || value == "true" || value == "yes" || value == "on";
-}
-
-bool IsRelayModeOff(const std::string& mode) {
-    const std::string value = LowerAscii(mode);
-    return value == "0" || value == "false" || value == "no" || value == "off";
-}
+using dinero::daemon::RelayRoleEnabled;
 
 bool ValidRelayServiceLimits(const P2PService::RelayServiceLimits& limits) {
     return limits.max_circuits >= 1 && limits.max_circuits <= 25 &&
@@ -148,6 +144,9 @@ std::optional<P2PService::RelayServiceStatus> ReadRelayPolicy(
         !ValidRelayServiceLimits(status.limits)) return std::nullopt;
     if (status.mode != "off" && status.mode != "automatic" &&
         status.mode != "custom") return std::nullopt;
+    // Only custom keeps its own numbers; automatic always follows the
+    // current defaults (older builds persisted their defaults here too).
+    if (status.mode != "custom") status.limits = P2PService::RelayServiceLimits{};
     return status;
 }
 
@@ -164,32 +163,15 @@ bool ParseEndpoint(const std::string& endpoint,
     if (!out_host || !out_port) {
         return false;
     }
-    if (endpoint.empty()) {
+    bool has_port = false;
+    if (!dinero::network::SplitEndpoint(endpoint, out_host, out_port, &has_port) ||
+        out_host->empty()) {
         return false;
     }
-
-    const size_t colon = endpoint.rfind(':');
-    if (colon == std::string::npos) {
-        *out_host = endpoint;
+    if (!has_port) {
         *out_port = default_port;
-        return true;
     }
-
-    *out_host = endpoint.substr(0, colon);
-    if (out_host->empty()) {
-        return false;
-    }
-
-    try {
-        unsigned long parsed = std::stoul(endpoint.substr(colon + 1));
-        if (parsed == 0 || parsed > 65535) {
-            return false;
-        }
-        *out_port = static_cast<uint16_t>(parsed);
-        return true;
-    } catch (...) {
-        return false;
-    }
+    return true;
 }
 
 std::string ToLowerAscii(std::string value) {
@@ -421,6 +403,12 @@ P2PService::NetworkStatus P2PService::GetNetworkStatus() const {
     status.relay_mode = RelayMode();
     status.relay_active = relay_active_.load(std::memory_order_acquire);
     status.local_relay = IsRelayRoleEnabled();
+    if (p2p_mgr_) {
+        status.relay_quota_month_bytes = p2p_mgr_->relay_quota_month_bytes();
+        status.relay_quota_month_limit = p2p_mgr_->relay_quota_month_limit();
+        status.relay_paused_reason = p2p_mgr_->relay_paused_reason();
+        status.relay_registered = p2p_mgr_->confirmed_relay_endpoints();
+    }
     status.dynamic_p2p_enabled = IsDynamicP2PActive();
     status.dynamic_p2p_mode = DynamicP2PMode();
     if (!p2p_mgr_) {
@@ -444,7 +432,9 @@ P2PService::NetworkStatus P2PService::GetNetworkStatus() const {
     status.listening = p2p_mgr_->IsListening();
     status.listen_port = p2p_mgr_->get_listen_port();
     status.advertised_addresses = p2p_mgr_->get_advertised_addresses();
-    status.has_explicit_advertised = p2p_mgr_->has_explicit_advertised();
+    // Explicit address or dial-back verified: what peers can actually dial.
+    status.has_explicit_advertised = p2p_mgr_->has_proven_reachable();
+    status.self_reachability = p2p_mgr_->self_reachability_status();
     status.onion_transport_configured = onion_proxy_configured_;
     status.onion_transport_enabled = p2p_mgr_->onion_proxy_enabled();
     status.onion_transport_reachable = onion_proxy_reachable_;
@@ -515,6 +505,7 @@ P2PService::NetworkStatus P2PService::GetNetworkStatus() const {
             ++status.outbound;
         } else {
             ++status.inbound;
+            if (!peer.via_relay) ++status.direct_inbound;
         }
         if (configured_seed) {
             ++status.configured_seed_connections;
@@ -581,6 +572,17 @@ P2PService::NetworkStatus P2PService::GetNetworkStatus() const {
         status.stun_discovered_address = stun_discovered_address_;
         status.stun_server_used = stun_server_used_;
         status.stun_message = stun_message_;
+        status.nat_mapping = nat_mapping_;
+        status.nat_port_preserving = nat_port_preserving_;
+        status.nat_reflexive = nat_reflexive_;
+        status.nat_servers = nat_servers_;
+        status.nat_measured_at = nat_measured_at_;
+    }
+    if (p2p_mgr_ && p2p_mgr_->quic_endpoint()) {
+        const auto* ep = p2p_mgr_->quic_endpoint();
+        status.quic_listening = ep->Listening();
+        status.quic_listen_port = ep->Port();
+        status.quic_sessions = ep->SessionCount();
     }
     return status;
 }
@@ -685,26 +687,17 @@ bool P2PService::IsRelayRoleEnabled() const {
         std::lock_guard<std::mutex> lock(relay_service_mutex_);
         operator_mode = relay_service_status_.mode;
     }
-    if (operator_mode == "off") return false;
-    if (operator_mode == "custom") return true;
-    const std::string mode = RelayMode();
-    if (IsRelayModeOn(mode)) {
-        return true;
-    }
-    if (IsRelayModeOff(mode)) {
-        return false;
-    }
-    return relay_active_.load(std::memory_order_acquire);
+    return RelayRoleEnabled(operator_mode, RelayMode(),
+                            relay_active_.load(std::memory_order_acquire),
+                            relay_verified_.load(std::memory_order_acquire));
 }
 
 P2PService::RelayServiceStatus P2PService::GetRelayServiceStatus() const {
     std::lock_guard<std::mutex> lock(relay_service_mutex_);
     auto status = relay_service_status_;
     const std::string configured = RelayMode();
-    status.enabled = status.mode == "custom" ||
-        (status.mode == "automatic" &&
-         (IsRelayModeOn(configured) ||
-          (!IsRelayModeOff(configured) && relay_active_.load())));
+    status.enabled = RelayRoleEnabled(status.mode, configured, relay_active_.load(),
+                                      relay_verified_.load());
     return status;
 }
 
@@ -718,26 +711,25 @@ P2PService::RelayServiceStatus P2PService::SetRelayService(
         status.message = "invalid relay-service mode or limits";
         return status;
     }
-    RelayServiceStatus candidate{mode, false, limits, {}};
+    RelayServiceStatus candidate{mode, false,
+                                 mode == "custom" ? limits : RelayServiceLimits{}, {}};
     if (!WriteRelayPolicy(relay_service_policy_path_, candidate)) {
         auto status = relay_service_status_;
         status.message = "relay-service preference could not be saved";
         return status;
     }
     const std::string configured = RelayMode();
-    candidate.enabled = mode == "custom" ||
-        (mode == "automatic" &&
-         (IsRelayModeOn(configured) ||
-          (!IsRelayModeOff(configured) && relay_active_.load())));
+    candidate.enabled = RelayRoleEnabled(mode, configured, relay_active_.load(),
+                                         relay_verified_.load());
     candidate.message = "relay-service preference applied";
     relay_service_status_ = candidate;
     if (p2p_mgr_) {
         ::P2PManager::RelayServiceLimits applied;
-        applied.max_circuits = limits.max_circuits;
-        applied.bandwidth_bytes_per_second = limits.bandwidth_bytes_per_second;
-        applied.max_circuits_per_peer = limits.max_circuits_per_peer;
-        applied.circuit_lifetime_seconds = limits.circuit_lifetime_seconds;
-        applied.requests_per_peer_per_minute = limits.requests_per_peer_per_minute;
+        applied.max_circuits = candidate.limits.max_circuits;
+        applied.bandwidth_bytes_per_second = candidate.limits.bandwidth_bytes_per_second;
+        applied.max_circuits_per_peer = candidate.limits.max_circuits_per_peer;
+        applied.circuit_lifetime_seconds = candidate.limits.circuit_lifetime_seconds;
+        applied.requests_per_peer_per_minute = candidate.limits.requests_per_peer_per_minute;
         p2p_mgr_->set_relay_service_limits(applied);
         p2p_mgr_->set_relay_service_enabled(candidate.enabled);
     }
@@ -923,7 +915,24 @@ void P2PService::StartStunDiscoveryIfEnabled() {
         return;
     }
 
-    stun_client_ = std::make_unique<dinero::network::StunClient>();
+    // On the P2P UDP port when the QuicEndpoint is up: the reflexive address
+    // is then the one QUIC peers can dial and the NAT mapping is the one hole
+    // punching meets. Otherwise an ephemeral socket of its own (diagnostic
+    // public IP only; the mapping stays "unknown").
+    auto* ep = p2p_mgr_->quic_endpoint();
+    stun_on_p2p_port_ = ep && ep->Listening();
+    if (stun_on_p2p_port_) {
+        stun_client_ = std::make_shared<dinero::network::StunClient>(
+            [ep](const dinero::network::UdpAddr& dst, const uint8_t* d, size_t n) {
+                return ep->SendDatagram(dst, d, n);
+            });
+        std::weak_ptr<dinero::network::StunClient> weak = stun_client_;
+        ep->SetStunHandler([weak](const dinero::network::UdpAddr& src, const uint8_t* d, size_t n) {
+            if (auto c = weak.lock()) c->HandleDatagram(src, d, n);
+        });
+    } else {
+        stun_client_ = std::make_shared<dinero::network::StunClient>();
+    }
     std::vector<std::pair<std::string, uint16_t>> servers = {
         // DineroLabs primaries (TODO ops: bring these up before rc cut)
         {"stun1.dinerolabs.org", 3478},
@@ -934,38 +943,97 @@ void P2PService::StartStunDiscoveryIfEnabled() {
         {"stun.l.google.com", 19302},
         {"stun.cloudflare.com", 3478},
     };
+    // p2p.stun.servers=host:port,host:port replaces the list (private
+    // networks, test topologies, operators running their own STUN).
+    const std::string custom = config_ ? config_->GetString("p2p.stun.servers", "") : "";
+    if (!custom.empty()) {
+        servers.clear();
+        size_t pos = 0;
+        while (pos <= custom.size()) {
+            const size_t comma = std::min(custom.find(',', pos), custom.size());
+            std::string host;
+            uint16_t port = 0;
+            bool has_port = false;
+            if (dinero::network::SplitEndpoint(custom.substr(pos, comma - pos), &host, &port, &has_port)) {
+                servers.emplace_back(host, has_port ? port : 3478);
+            }
+            pos = comma + 1;
+        }
+    }
     stun_client_->SetServers(std::move(servers));
+    RunStunRound();
+}
 
+void P2PService::MaybeRemeasureStun() {
+    if (!stun_client_ || stun_client_->busy()) return;
+    {
+        std::lock_guard<std::mutex> lock(stun_status_mutex_);
+        if (std::chrono::steady_clock::now() < stun_next_round_) return;
+    }
+    RunStunRound();
+}
+
+void P2PService::RunStunRound() {
+    // Re-measured every 30 min: a lease change or a move to another network
+    // shows up as a new reflexive address, which un-verifies our candidates.
+    constexpr auto kStunRemeasure = std::chrono::minutes(30);
     {
         std::lock_guard<std::mutex> lock(stun_status_mutex_);
         stun_message_ = "discovering (background)";
+        stun_next_round_ = std::chrono::steady_clock::now() + kStunRemeasure;
     }
     if (logger_interface_) {
-        logger_interface_->info("[P2PService] STUN discovery dispatched (5 servers, 8s deadline)");
+        logger_interface_->info(std::string("[P2PService] STUN discovery dispatched (8s deadline, ") +
+                                (stun_on_p2p_port_ ? "P2P UDP port)" : "ephemeral socket)"));
     }
 
+    const uint16_t local_port = stun_on_p2p_port_ ? p2p_mgr_->quic_endpoint()->Port() : 0;
     stun_client_->Discover(std::chrono::seconds(8),
-                           [this](const dinero::network::StunResult& r) {
+                           [this, local_port](const dinero::network::StunResult& r) {
         if (!r.public_addr.empty()) {
             const std::string addr_str = r.public_addr.to_string();
+            std::vector<std::pair<std::string, uint16_t>> reflexive;
+            std::vector<std::string> reflexive_str;
+            for (const auto& [server, refl] : r.responses) {
+                const std::string rs = refl.to_string();
+                if (std::find(reflexive_str.begin(), reflexive_str.end(), rs) != reflexive_str.end()) {
+                    continue;
+                }
+                reflexive_str.push_back(rs);
+                std::string host;
+                uint16_t port = 0;
+                bool has_port = false;
+                if (dinero::network::SplitEndpoint(rs, &host, &port, &has_port) && has_port) {
+                    reflexive.emplace_back(host, port);
+                }
+            }
+            const auto nat = stun_on_p2p_port_
+                                 ? dinero::p2p::Classify(local_port, r.responses)
+                                 : dinero::p2p::NatMapping{};
             {
                 std::lock_guard<std::mutex> lock(stun_status_mutex_);
                 stun_discovered_address_ = addr_str;
                 stun_server_used_ = r.server_endpoint;
                 stun_message_ = "ok";
+                nat_mapping_ = dinero::p2p::NatMappingName(nat.mapping);
+                nat_port_preserving_ = nat.port_preserving;
+                nat_reflexive_ = reflexive_str;
+                nat_servers_ = static_cast<uint32_t>(r.responses.size());
+                nat_measured_at_ = std::chrono::duration_cast<std::chrono::seconds>(
+                                       std::chrono::system_clock::now().time_since_epoch())
+                                       .count();
             }
-            // STUN discovers the router's reflexive UDP endpoint. It is useful
-            // diagnostic data and a future hole-punching input, but it does
-            // not prove that the daemon's TCP/QUIC P2P listener is reachable.
-            // Do not feed it into advertised_addresses_: relay auto-register
-            // treats that list as confirmed direct inbound reachability. UPnP,
-            // NAT-PMP, and explicit externalip remain the sources for direct
-            // P2P address advertisement.
+            // The reflexive address is a QUIC candidate only, and only when it
+            // was measured on the P2P port. It is never advertised until
+            // dial-back verifies it, so the old concern (relay auto-register
+            // treating STUN output as proven inbound) no longer applies.
+            if (stun_on_p2p_port_ && p2p_mgr_) p2p_mgr_->update_stun_candidates(reflexive);
             if (logger_interface_) {
                 logger_interface_->info(
                     "[P2PService] STUN discovered public address " + addr_str +
-                    " via " + r.server_endpoint +
-                    " — keeping as diagnostic data, not advertising as reachable P2P");
+                    " via " + r.server_endpoint + " (" + std::to_string(r.responses.size()) +
+                    " servers, mapping " + dinero::p2p::NatMappingName(nat.mapping) +
+                    (nat.port_preserving ? ", port-preserving" : "") + ")");
             }
         } else {
             std::lock_guard<std::mutex> lock(stun_status_mutex_);
@@ -995,6 +1063,7 @@ void P2PService::StartSchedulerTickLoop() {
         auto last_invariant_check = std::chrono::steady_clock::now();
 
         while (scheduler_tick_running_.load(std::memory_order_relaxed)) {
+            MaybeRemeasureStun();
             if (auto* ctx = DaemonContext::instance()) {
                 if (ctx->header_sync) {
                     ctx->header_sync->Tick();
@@ -1633,7 +1702,8 @@ void P2PService::StartPortMappingIfEnabled() {
                 advertised_port = 0;
             }
             if (have_advertise && !timed_out && p2p_mgr_) {
-                p2p_mgr_->add_advertised_address(next_host, next_port);
+                p2p_mgr_->add_advertised_address(next_host, next_port, /*learned=*/false,
+                                                 dinero::p2p::CandidateSource::PortMapping);
                 advertised_host = next_host;
                 advertised_port = next_port;
             }
@@ -1775,6 +1845,7 @@ bool P2PService::Init(DaemonContext& ctx) {
     if (const auto persisted = ReadRelayPolicy(relay_service_policy_path_)) {
         relay_service_status_ = *persisted;
     }
+    relay_quota_path_ = datadir + "/relay_quota";
 
     // Parse seed nodes from config (support both addnode and connect)
     std::string addnode = config_->GetString("addnode", "");
@@ -1846,7 +1917,20 @@ bool P2PService::Init(DaemonContext& ctx) {
                 relay_service_status_.limits.requests_per_peer_per_minute;
             p2p_mgr_->set_relay_service_limits(limits);
             p2p_mgr_->set_relay_service_enabled(IsRelayRoleEnabled());
+            if (!relay_quota_path_.empty()) p2p_mgr_->set_relay_quota_path(relay_quota_path_);
         }
+        // Verified reachable (dial-back) turns the relay role on in auto. The
+        // service-flags provider reads IsRelayRoleEnabled() on every version,
+        // so NODE_RELAY follows without a separate push.
+        p2p_mgr_->set_reachability_changed_handler([this](bool reachable) {
+            relay_verified_.store(reachable, std::memory_order_release);
+            if (p2p_mgr_) p2p_mgr_->set_relay_service_enabled(IsRelayRoleEnabled());
+            if (logger_interface_) {
+                logger_interface_->info(std::string("[P2PService] Verified reachability ") +
+                                        (reachable ? "gained" : "lost") + "; relay role " +
+                                        (IsRelayRoleEnabled() ? "on" : "off"));
+            }
+        });
         p2p_mgr_->set_peer_height_updated_handler(
             [this](const std::string& peer_addr, uint32_t height) {
                 MaybeRequestHeadersForPeerTip(peer_addr, height, "peer-height-update");
@@ -2155,6 +2239,9 @@ bool P2PService::Start() {
         }
         if (!connect_only && !relay_hints_file_path_.empty()) {
             try {
+                // Restored signed hints are re-verified; local test networks
+                // may name private relays, so set that before loading.
+                if (Params().name == "regtest") p2p_mgr_->set_dialback_private_targets(true);
                 p2p_mgr_->load_relay_hints(relay_hints_file_path_);
             } catch (const std::exception& e) {
                 logger_interface_->warning(
@@ -2433,6 +2520,17 @@ bool P2PService::Start() {
             p2p_mgr_->set_height_provider([this]() -> uint32_t {
                 return chainstate_->getBlockHeight();
             });
+            // A relay more than 6 blocks behind its best validated header
+            // stops taking new circuits (validated headers only: peers'
+            // claimed heights must not be able to pause it).
+            p2p_mgr_->set_best_header_height_provider([]() -> uint32_t {
+                auto* ctx = DaemonContext::instance();
+                consensus::HeaderIndexEntry best{};
+                if (ctx && ctx->header_chain && ctx->header_chain->GetBestHeaderCopy(best)) {
+                    return best.height;
+                }
+                return 0;
+            });
             logger_interface_->info("[P2PService] Height provider wired to chainstate");
         } else {
             logger_interface_->warning("[P2PService] Chainstate not available - height will be 0 in handshakes");
@@ -2463,7 +2561,8 @@ bool P2PService::Start() {
             auto prune_svc = prune_;  // capture shared_ptr by value for lambda safety
             const bool bridge_enabled = config_->GetBool("utreexo-bridge", true);
             // NAT traversal: p2p.relay is tri-state. Explicit on/off wins;
-            // auto (the default) advertises NODE_RELAY only while mining.
+            // auto (the default) advertises NODE_RELAY while mining or while
+            // dial-back verified reachable.
             // Relay data is still guarded by the P2PManager caps: 64 KB/s per
             // circuit, 5 MB/s global, and 50 GB/day.
             p2p_mgr_->set_service_flags_provider([this, prune_svc,
@@ -2486,6 +2585,8 @@ bool P2PService::Start() {
                 if (IsRelayRoleEnabled()) {
                     flags |= ServiceFlags::NODE_RELAY;
                 }
+                flags |= p2p_mgr_->local_quic_service_bits();
+                flags |= ServiceFlags::NODE_DIALBACK;  // we answer reachchk
                 return flags;
             });
             bool pruned = prune_svc && prune_svc->isEnabled();
@@ -2513,6 +2614,25 @@ bool P2PService::Start() {
 
         StartOrchardHistoryWorkers();
         // Start P2P networking (spawns threads)
+        // Direct QUIC peers on UDP at the P2P port (p2p.quic, default on) and
+        // the peers to keep connected over it (p2p.quic_connect, ip:port list).
+        p2p_mgr_->set_quic_enabled(config_->GetBool("p2p.quic", true));
+        // Dial-back needs verifiers in 2 network groups; a single-host regtest
+        // setup can lower it to 1. Ignored on any other network.
+        if (Params().name == "regtest") {
+            const int groups = config_->GetInt("p2p.dialback_min_groups", 2);
+            if (groups >= 1) p2p_mgr_->set_dialback_min_groups(static_cast<uint32_t>(groups));
+            p2p_mgr_->set_dialback_private_targets(true);  // local test networks
+        }
+        {
+            std::vector<std::string> quic_targets;
+            std::istringstream ss(config_->GetString("p2p.quic_connect", ""));
+            std::string node;
+            while (std::getline(ss, node, ',')) {
+                if (!node.empty()) quic_targets.push_back(node);
+            }
+            p2p_mgr_->set_quic_connect_targets(std::move(quic_targets));
+        }
         if (!p2p_mgr_->start()) {
             StopCatalogWorkers();
             logger_interface_->error("[P2PService] Failed to start P2P manager");
@@ -2652,7 +2772,9 @@ void P2PService::Stop() {
         StopPortMapping();
 
         // NAT traversal Phase C1: tear down the STUN client (closes the
-        // ephemeral UDP socket + joins the reader thread). Idempotent.
+        // ephemeral UDP socket + joins the reader thread). Idempotent. The
+        // endpoint outlives it, so unhook its STUN handler first.
+        if (auto* ep = p2p_mgr_->quic_endpoint()) ep->SetStunHandler(nullptr);
         stun_client_.reset();
 
         // Stop P2P manager (disconnects all peers, stops threads)
@@ -2827,6 +2949,7 @@ void P2PService::HandleP2PMessage(const std::string& peer_addr, const ::P2PMessa
 }
 
 bool P2PService::checkTxRate(const std::string& peer_addr) {
+    std::lock_guard<std::mutex> lock(rate_tracker_mutex_);
     auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now().time_since_epoch()).count();
 
@@ -2844,6 +2967,7 @@ bool P2PService::checkTxRate(const std::string& peer_addr) {
 }
 
 bool P2PService::checkHeadersRate(const std::string& peer_addr) {
+    std::lock_guard<std::mutex> lock(rate_tracker_mutex_);
     auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now().time_since_epoch()).count();
 

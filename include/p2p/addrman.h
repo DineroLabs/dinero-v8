@@ -1,6 +1,7 @@
 #pragma once
 
 #include <vector>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -13,6 +14,10 @@
 
 namespace dinero {
 namespace p2p {
+
+// Network group used for diversity limits: the /16 for IPv4 ("1.2"), the /32
+// for IPv6 ("v6:26001700"); IPv4-mapped IPv6 groups as its IPv4 /16.
+std::string AddrManNetGroup(const std::string& ip);
 
 /**
  * Network address information for peers
@@ -110,6 +115,11 @@ public:
      * getAddressesByService().
      */
     size_t countAddressesByService(uint64_t service_bit) const;
+
+    /**
+     * Service flags last recorded for ip:port, if addrman knows it.
+     */
+    std::optional<uint64_t> getServices(const std::string& ip, uint16_t port) const;
 
     /**
      * Get addresses to advertise to peers

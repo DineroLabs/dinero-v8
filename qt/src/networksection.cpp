@@ -93,7 +93,7 @@ NetworkSection::NetworkSection(QWidget* parent) : QWidget(parent) {
     torStatusLabel_->setWordWrap(true);
     root->addWidget(torStatusLabel_);
 
-    root->addWidget(new QLabel(tr("Enable relay service (Admin only)"), this));
+    root->addWidget(new QLabel(tr("Help other home nodes connect (relay, up to 20 GB a month)"), this));
     relayControl_ = new QComboBox(this);
     relayControl_->setObjectName(QStringLiteral("relayServiceControl"));
     relayControl_->addItem(tr("Off"), QStringLiteral("off"));
@@ -107,7 +107,7 @@ NetworkSection::NetworkSection(QWidget* parent) : QWidget(parent) {
         {tr("Concurrent circuits"), {1, 25}}, {tr("Bandwidth (KiB/s)"), {64, 20480}},
         {tr("Circuits per peer"), {1, 25}}, {tr("Circuit lifetime (seconds)"), {60, 86400}},
         {tr("Requests per peer/minute"), {1, 60}}};
-    const QList<int> defaults = {12, 2048, 2, 1800, 6};
+    const QList<int> defaults = {8, 200, 2, 1800, 6};
     for (int i = 0; i < specs.size(); ++i) {
         auto* spin = new QSpinBox(relayCustom_);
         spin->setRange(specs[i].second.first, specs[i].second.second);
@@ -209,9 +209,22 @@ void NetworkSection::setRelayServiceStatus(const QJsonObject& status) {
     const int index = relayControl_->findData(mode);
     relayControl_->setCurrentIndex(index >= 0 ? index : 1);
     relayCustom_->setVisible(mode == QStringLiteral("custom"));
-    relayStatusLabel_->setText(status.value(QStringLiteral("enabled")).toBool()
+    QString text = status.value(QStringLiteral("enabled")).toBool()
         ? tr("Dinero relay service is active within the configured limits.")
-        : tr("Dinero relay service is not accepting new circuits."));
+        : tr("Dinero relay service is not accepting new circuits.");
+    const QString paused = status.value(QStringLiteral("paused_reason")).toString();
+    if (paused == QStringLiteral("syncing")) {
+        text += QLatin1Char(' ') + tr("Paused while this node catches up with the chain.");
+    } else if (paused == QStringLiteral("quota")) {
+        text += QLatin1Char(' ') + tr("Paused until next month: this month's relay allowance is used.");
+    }
+    if (status.contains(QStringLiteral("quota_month_limit"))) {
+        const double gb = 1024.0 * 1024.0 * 1024.0;
+        text += QLatin1Char('\n') + tr("This month: %1 GB of %2 GB relayed.")
+            .arg(status.value(QStringLiteral("quota_month_bytes")).toDouble() / gb, 0, 'f', 2)
+            .arg(status.value(QStringLiteral("quota_month_limit")).toDouble() / gb, 0, 'f', 0);
+    }
+    relayStatusLabel_->setText(text);
 }
 
 void NetworkSection::setTorActionError(bool unsupported) {

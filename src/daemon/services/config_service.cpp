@@ -36,6 +36,8 @@ static std::string NormalizeKey(const std::string& key) {
         {"bind",           "p2p.bind"},
         {"whitelist",      "p2p.whitelist"},
         {"connect",        "p2p.connect"},
+        {"quic",           "p2p.quic"},
+        {"quicconnect",    "p2p.quic_connect"},
         {"listen",         "p2p.listen"},
         {"maxconnections", "p2p.maxconnections"},
         {"portmap",        "p2p.portmap"},

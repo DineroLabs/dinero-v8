@@ -72,7 +72,18 @@ override_dh_auto_configure:
 		-DDINERO_PACKAGE_VERSION=$(DEB_VERSION_UPSTREAM) \
 		-DUSE_SYSTEM_OPENSSL=OFF \
 		-DDINERO_VENDORED_OPENSSL_VERSION=$(DEB_OPENSSL_VERSION) \
-		-DBUILD_LIGHTNINGD=OFF
+		-DBUILD_LIGHTNINGD=OFF \
+		-DDINERO_ENABLE_PORTMAPPING=ON \
+		-DDINERO_ENABLE_QUIC=ON \
+		-DDINERO_REQUIRE_REACHABILITY_STACK=ON
+
+# Reachability stack (UPnP, NAT-PMP, QUIC + TLS bridge) is REQUIRED: this is
+# the binary the fleet installs, and without it a node cannot open router
+# ports or carry encrypted relay traffic. miniupnpc/libnatpmp come statically
+# from depends/ -- build it first (cmake -S depends -B depends/build
+# -DCMAKE_TOOLCHAIN_FILE=$PWD/depends/toolchains/linux-x86_64.cmake &&
+# cmake --build depends/build); PortMapping.cmake finds it through
+# depends/current or $DINERO_DEPENDS_PREFIX, so no NEEDED entry is added.
 
 # Build only the targets the .deb actually installs.
 #

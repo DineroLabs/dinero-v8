@@ -37,6 +37,13 @@ public:
         routing_->client = client.get();
         routing_->server = server.get();
     }
+    // Simulate both endpoints vanishing from the network: writers keep running
+    // but nothing is delivered any more.
+    void SeverForTest() {
+        std::lock_guard<std::mutex> lock(routing_->mutex);
+        routing_->client = nullptr;
+        routing_->server = nullptr;
+    }
     ~QuicLoopbackPair() {
         // Wait for in-flight enqueue callbacks, then disconnect both directions
         // before either endpoint can be destroyed. Never hold this lock while

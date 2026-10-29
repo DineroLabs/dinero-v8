@@ -79,6 +79,10 @@ namespace MessageCommands {
     // forever for backward compat with rc7- peers.
     constexpr const char* SENDADDRV2 = "sendaddrv2";
     constexpr const char* ADDRV2 = "addrv2";
+    // Dial-back verification: "dial me back at <my source IP>:<port>" and the
+    // verifier's answer. Only sent to peers advertising NODE_DIALBACK.
+    constexpr const char* REACH_CHECK = "reachchk";
+    constexpr const char* REACH_RESULT = "reachres";
 
     // NAT traversal Phase C3 / circuit relay protocol — slice 1 lays
     // down the wire format and dispatch surface; later slices add the
@@ -119,6 +123,10 @@ namespace MessageCommands {
     constexpr const char* RELAY_DATA         = "relaydat";
     constexpr const char* RELAY_PING         = "relaypng";
     constexpr const char* RELAY_HINTS        = "relayhnt";
+    // RELAY_REGISTER_OK: the relay accepted a RELAY_REGISTER. Payload: ttl_u32 LE.
+    constexpr const char* RELAY_REGISTER_OK  = "relayrok";
+    // RELAY_HINTS_V2: one target-signed hint, forwardable (p2p/relay_hint_v2.h).
+    constexpr const char* RELAY_HINTS_V2     = "relayhn2";
 } // namespace MessageCommands
 
 // Service flags for node capabilities (Bitcoin P2P protocol standard)
@@ -146,6 +154,15 @@ namespace ServiceFlags {
     constexpr uint64_t NODE_ORCHARD_V1 = 1ULL << 30;
     // Version-1 boundary catalog serving, not validated balance or mobile readiness.
     constexpr uint64_t NODE_ORCHARD_CATALOG_V1 = 1ULL << 31;
+    // Accepts direct QUIC peer sessions on UDP at its P2P port (ALPN
+    // "dinero-p2p/1"). Advertised only while the endpoint is actually bound.
+    constexpr uint64_t NODE_P2P_QUIC = 1ULL << 32;
+    // Answers `reachchk`: dials the requester back at its own source IP and
+    // reports whether it reached the same node (dial-back verification).
+    constexpr uint64_t NODE_DIALBACK = 1ULL << 33;
+    static_assert(((NODE_P2P_QUIC | NODE_DIALBACK) &
+        (NODE_COMPACT_TIMING_V1 | NODE_ORCHARD_V1 | NODE_ORCHARD_CATALOG_V1)) == 0,
+        "Networking capabilities cannot claim Orchard or consensus-timing support");
 } // namespace ServiceFlags
 
 } // namespace dinero

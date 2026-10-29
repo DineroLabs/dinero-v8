@@ -6,6 +6,13 @@
 
 #include <openssl/evp.h>
 
+#ifdef _WIN32
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#else
+#include <arpa/inet.h>
+#endif
+
 #include <algorithm>
 #include <array>
 #include <cctype>
@@ -342,6 +349,37 @@ bool EncodeTorV3Address(const std::vector<uint8_t>& public_key,
     body.push_back(kTorV3Version);
     *onion = Base32Encode(body) + ".onion";
     return true;
+}
+
+std::vector<uint8_t> EncodeAddrV2Endpoint(const std::string& ip, uint16_t port) {
+    AddrV2Entry e;
+    e.port = port;
+    uint8_t buf[16];
+    if (inet_pton(AF_INET, ip.c_str(), buf) == 1) {
+        e.net = NetworkType::IPV4;
+        e.addr.assign(buf, buf + 4);
+    } else if (inet_pton(AF_INET6, ip.c_str(), buf) == 1) {
+        e.net = NetworkType::IPV6;
+        e.addr.assign(buf, buf + 16);
+    } else {
+        return {};
+    }
+    return EncodeAddrV2({e});
+}
+
+bool DecodeAddrV2Endpoint(const std::vector<uint8_t>& payload, std::string* ip, uint16_t* port) {
+    std::vector<AddrV2Entry> entries;
+    std::string err;
+    if (!DecodeAddrV2(payload, &entries, &err)) return false;
+    for (const auto& e : entries) {
+        char text[INET6_ADDRSTRLEN] = {};
+        const int family = e.net == NetworkType::IPV4 ? AF_INET : e.net == NetworkType::IPV6 ? AF_INET6 : 0;
+        if (family == 0 || !inet_ntop(family, e.addr.data(), text, sizeof(text))) continue;
+        *ip = text;
+        *port = e.port;
+        return true;
+    }
+    return false;
 }
 
 }  // namespace dinero::p2p

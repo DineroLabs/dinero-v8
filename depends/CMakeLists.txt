@@ -48,6 +48,14 @@ if(CMAKE_TOOLCHAIN_FILE)
        -DCMAKE_TOOLCHAIN_FILE=${CMAKE_TOOLCHAIN_FILE})
 endif()
 
+# The MSVC toolchain defaults to the static CRT (/MT). A consumer that links the
+# DLL CRT (/MD) must override it, and the override has to reach the inner
+# library builds or they keep /MT and the final link fails (LNK2038).
+if(CMAKE_MSVC_RUNTIME_LIBRARY)
+  list(APPEND DINERO_DEPENDS_COMMON_CMAKE_ARGS
+       "-DCMAKE_MSVC_RUNTIME_LIBRARY=${CMAKE_MSVC_RUNTIME_LIBRARY}")
+endif()
+
 if(CMAKE_OSX_DEPLOYMENT_TARGET)
   list(APPEND DINERO_DEPENDS_COMMON_CMAKE_ARGS
        -DCMAKE_OSX_DEPLOYMENT_TARGET=${CMAKE_OSX_DEPLOYMENT_TARGET})

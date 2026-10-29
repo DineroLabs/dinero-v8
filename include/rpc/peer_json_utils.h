@@ -26,6 +26,17 @@ inline din::Json BuildPeerInfoJson(const ::PeerInfo& peer_info) {
     const uint32_t observed_sync_height = std::max(peer_info.synced_headers, peer_info.synced_blocks);
 
     peer["addr"] = peer_info.address + ":" + std::to_string(peer_info.port);
+    peer["transport"] = peer_info.transport_name();
+    peer["identity_proven"] = peer_info.identity_proven;
+    if (peer_info.identity_proven) {
+        static const char* kHex = "0123456789abcdef";
+        std::string id;
+        for (uint8_t b : peer_info.their_node_id) {
+            id.push_back(kHex[b >> 4]);
+            id.push_back(kHex[b & 0xF]);
+        }
+        peer["node_id"] = id;
+    }
     peer["inbound"] = !peer_info.is_outbound;
     peer["version"] = static_cast<int>(peer_info.protocol_version);
     peer["subver"] = peer_info.user_agent;

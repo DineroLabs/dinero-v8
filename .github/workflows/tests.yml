@@ -170,6 +170,14 @@ jobs:
           python3 scripts/ci/test_execution_exclusions.py
           python3 scripts/ci/test_workflow_setarch_selection.py
 
+      # The release lanes trust check_reachability_stack.py to refuse a binary
+      # without UPnP/NAT-PMP/QUIC; this pins that it cannot pass one by accident.
+      - name: Reachability checker self-test
+        run: python3 scripts/ci/test_check_reachability_stack.py
+
+      - name: Reachability CMake gate self-test
+        run: python3 scripts/ci/test_require_reachability_stack.py
+
       # Build and call the production FFI; the inline RuntimeGuards unit test
       # alone cannot qualify DaemonApp/ChainDB shutdown or snapshot readers.
       - name: Real NodeCore lifecycle and snapshot consumers

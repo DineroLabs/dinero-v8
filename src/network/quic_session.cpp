@@ -158,6 +158,10 @@ struct QuicSession::Impl {
     std::promise<bool> handshake_promise;
     std::shared_future<bool> handshake_future;
     bool handshake_promise_set{false};  // session-thread-only
+    // Session-thread-only. The ngtcp2 error that ended the connection (0 =
+    // none yet), and whether a CONNECTION_CLOSE has already been written.
+    int last_liberr{0};
+    bool close_sent{false};
 
     // Atomic snapshot fields read by const accessors from any thread.
     std::atomic<bool> active_published{false};
@@ -205,6 +209,7 @@ struct QuicSession::Impl {
     // error_mutex (cheap; rarely contended).
     std::string tls_cipher_snapshot;
     std::string selected_alpn_snapshot;
+    std::optional<std::array<uint8_t, 32>> binding_snapshot;
 
     Impl() {
         conn_ref.get_conn = &Impl::GetConn;
@@ -738,10 +743,45 @@ struct QuicSession::Impl {
                                             packet.size(),
                                             Now());
         if (rv != 0) {
+            last_liberr = rv;
             SetError(std::string("ngtcp2_conn_read_pkt failed: ") + ngtcp2_strerror(rv));
             return false;
         }
         return true;
+    }
+
+    // Tell the peer the connection is over instead of letting it find out from
+    // the idle timeout. `liberr` 0 = local Close() (application error 0);
+    // otherwise the ngtcp2 error that ended it (a TLS alert for handshake
+    // failures such as an ALPN mismatch). Nothing is sent when the peer already
+    // closed or the connection idled out -- there is no one left to tell.
+    void SendConnectionClose(int liberr) {
+        if (close_sent || !conn) return;
+        close_sent = true;
+        if (liberr == NGTCP2_ERR_DRAINING || liberr == NGTCP2_ERR_CLOSING ||
+            liberr == NGTCP2_ERR_IDLE_CLOSE || liberr == NGTCP2_ERR_DROP_CONN) {
+            return;
+        }
+        ngtcp2_ccerr ccerr;
+        ngtcp2_ccerr_default(&ccerr);
+        if (liberr == 0) {
+            static constexpr uint8_t kReason[] = {'c', 'l', 'o', 's', 'e', 'd'};
+            ngtcp2_ccerr_set_application_error(&ccerr, 0, kReason, sizeof(kReason));
+        } else if (liberr == NGTCP2_ERR_CRYPTO) {
+            ngtcp2_ccerr_set_tls_alert(&ccerr, ngtcp2_conn_get_tls_alert(conn), nullptr, 0);
+        } else {
+            ngtcp2_ccerr_set_liberr(&ccerr, liberr, nullptr, 0);
+        }
+        std::vector<uint8_t> buf(options.max_datagram_size ? options.max_datagram_size : 1500);
+        ngtcp2_path_storage ps;
+        ngtcp2_path_storage_zero(&ps);
+        ngtcp2_pkt_info pi{};
+        const ngtcp2_ssize n = ngtcp2_conn_write_connection_close(
+            conn, &ps.path, &pi, buf.data(), buf.size(), &ccerr, Now());
+        if (n > 0 && outbound_writer) {
+            buf.resize(static_cast<size_t>(n));
+            outbound_writer(std::move(buf));
+        }
     }
 
     bool HandleExpiry() {
@@ -750,6 +790,7 @@ struct QuicSession::Impl {
         }
         const int rv = ngtcp2_conn_handle_expiry(conn, Now());
         if (rv != 0) {
+            last_liberr = rv;
             SetError(std::string("ngtcp2_conn_handle_expiry failed: ") +
                      ngtcp2_strerror(rv));
             return false;
@@ -899,9 +940,17 @@ struct QuicSession::Impl {
             alpn_str.assign(reinterpret_cast<const char*>(alpn),
                             reinterpret_cast<const char*>(alpn) + alpn_len);
         }
+        std::optional<std::array<uint8_t, 32>> binding;
+        static constexpr char kLabel[] = "EXPORTER-dinero-p2p-identity";
+        std::array<uint8_t, 32> out{};
+        if (SSL_export_keying_material(ssl, out.data(), out.size(), kLabel, sizeof(kLabel) - 1,
+                                       nullptr, 0, /*use_context=*/0) == 1) {
+            binding = out;
+        }
         std::lock_guard<std::mutex> lock(error_mutex);
         tls_cipher_snapshot = std::move(cipher_str);
         selected_alpn_snapshot = std::move(alpn_str);
+        binding_snapshot = binding;
     }
 
     bool ConnHandshakeReady() const {
@@ -1119,6 +1168,7 @@ struct QuicSession::Impl {
             // dead so the loop exits cleanly.
             if (ngtcp2_failed) {
                 MaybePublishHandshakeFailed(impl);
+                impl.SendConnectionClose(impl.last_liberr);
                 impl.Stop();
                 {
                     std::scoped_lock lock(impl.inbox_mutex, impl.outbox_mutex);
@@ -1131,6 +1181,8 @@ struct QuicSession::Impl {
             PublishDecryptedToOutbox(impl);
 
             if (stopping) {
+                // Close() was called: tell the peer before tearing down.
+                impl.SendConnectionClose(0);
                 // Drain whatever's left in one more pass, then exit.
                 std::lock_guard<std::mutex> lock2(impl.inbox_mutex);
                 if (impl.incoming_packets.empty() && impl.outgoing_streams.empty()) {
@@ -1307,6 +1359,15 @@ void QuicSession::Close() {
     }
     impl_->inbox_cv.notify_all();
     impl_->outbox_cv.notify_all();
+}
+
+std::optional<std::array<uint8_t, 32>> QuicSession::ExportBinding() const {
+#if defined(DINERO_HAVE_NGTCP2) && defined(DINERO_HAVE_NGTCP2_CRYPTO_OSSL)
+    std::lock_guard<std::mutex> lock(impl_->error_mutex);
+    return impl_->binding_snapshot;
+#else
+    return std::nullopt;
+#endif
 }
 
 QuicSessionStats QuicSession::Stats() const {

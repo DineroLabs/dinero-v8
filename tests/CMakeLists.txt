@@ -73,6 +73,7 @@ if(NOT WIN32)
   target_link_libraries(test_p2p_service_shutdown_order PRIVATE
     dinero_core GTest::gtest_main)
   link_zstd_if_needed(test_p2p_service_shutdown_order)
+
   add_test(NAME P2PServiceShutdownOrder COMMAND test_p2p_service_shutdown_order)
   set_tests_properties(P2PServiceShutdownOrder PROPERTIES
     LABELS "unit;p2p;shutdown;mandatory" TIMEOUT 30)
@@ -84,6 +85,23 @@ endif()
 if(NOT WIN32)
   get_target_property(_release_sources dinerod SOURCES)
   list(FILTER _release_sources EXCLUDE REGEX "/src/daemon/main\\.cpp$")
+  # UBSan vptr checks retain service RTTI/vtables and their daemon-only
+  # dependencies even though this fixture never initializes those services.
+  # Use the real daemon sources/settings, as the lifecycle test does, instead
+  # of relying on Release-only dead-code elimination or extending no-op stubs.
+  add_executable(test_p2p_service_rate_limits
+    tests/services/test_p2p_service_rate_limits.cpp ${_release_sources})
+  foreach(_property INCLUDE_DIRECTORIES COMPILE_DEFINITIONS COMPILE_OPTIONS LINK_LIBRARIES LINK_OPTIONS)
+    get_target_property(_rate_property dinerod ${_property})
+    if(_rate_property)
+      set_property(TARGET test_p2p_service_rate_limits PROPERTY ${_property} "${_rate_property}")
+    endif()
+  endforeach()
+  target_link_libraries(test_p2p_service_rate_limits PRIVATE GTest::gtest_main)
+  add_test(NAME P2PServiceRateLimits COMMAND test_p2p_service_rate_limits)
+  set_tests_properties(P2PServiceRateLimits PROPERTIES
+    LABELS "unit;p2p;mandatory" TIMEOUT 30)
+
   add_executable(test_daemon_service_release
     tests/daemon/test_daemon_service_release.cpp ${_release_sources})
   foreach(_property INCLUDE_DIRECTORIES COMPILE_DEFINITIONS COMPILE_OPTIONS LINK_LIBRARIES LINK_OPTIONS)
@@ -380,6 +398,66 @@ set_tests_properties(TokenBucket PROPERTIES
   LABELS "network;relay;smoke"
   TIMEOUT 10
 )
+
+add_executable(test_self_reachability
+  tests/p2p/test_self_reachability.cpp
+  src/p2p/self_reachability.cpp
+  src/p2p/addrman.cpp
+)
+target_include_directories(test_self_reachability PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(test_self_reachability PRIVATE GTest::gtest GTest::gtest_main)
+add_test(NAME SelfReachability COMMAND test_self_reachability)
+set_tests_properties(SelfReachability PROPERTIES LABELS "p2p;reachability" TIMEOUT 10)
+
+add_executable(test_relay_hint_v2
+  tests/p2p/test_relay_hint_v2.cpp
+  src/p2p/relay_hint_v2.cpp
+  src/p2p/addr_v2.cpp
+  src/daemon/node_identity.cpp
+  src/common/logger.cpp
+)
+target_include_directories(test_relay_hint_v2 PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(test_relay_hint_v2 PRIVATE GTest::gtest GTest::gtest_main Threads::Threads
+  dinero_crypto secp256k1 OpenSSL::Crypto)
+add_test(NAME RelayHintV2 COMMAND test_relay_hint_v2)
+set_tests_properties(RelayHintV2 PROPERTIES LABELS "p2p;relay;nat" TIMEOUT 10)
+
+add_executable(test_stun_parse
+  tests/network/test_stun_parse.cpp
+  src/network/stun_client.cpp
+  src/network/udp_socket.cpp
+)
+target_include_directories(test_stun_parse PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(test_stun_parse PRIVATE GTest::gtest GTest::gtest_main Threads::Threads)
+if(WIN32)
+  target_link_libraries(test_stun_parse PRIVATE ws2_32)
+endif()
+add_test(NAME StunParse COMMAND test_stun_parse)
+set_tests_properties(StunParse PROPERTIES LABELS "p2p;stun;nat" TIMEOUT 20)
+
+add_executable(test_nat_classifier
+  tests/p2p/test_nat_classifier.cpp
+  src/p2p/nat_classifier.cpp
+  src/network/udp_socket.cpp
+)
+target_include_directories(test_nat_classifier PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(test_nat_classifier PRIVATE GTest::gtest GTest::gtest_main Threads::Threads)
+if(WIN32)
+  target_link_libraries(test_nat_classifier PRIVATE ws2_32)
+endif()
+add_test(NAME NatClassifier COMMAND test_nat_classifier)
+set_tests_properties(NatClassifier PROPERTIES LABELS "p2p;stun;nat" TIMEOUT 10)
+
+add_executable(test_addrman_ipv6
+  tests/p2p/test_addrman_ipv6.cpp
+  src/p2p/addrman.cpp
+)
+target_include_directories(test_addrman_ipv6 PRIVATE
+  ${CMAKE_SOURCE_DIR}/include
+)
+target_link_libraries(test_addrman_ipv6 PRIVATE GTest::gtest GTest::gtest_main)
+add_test(NAME AddrManIpv6 COMMAND test_addrman_ipv6)
+set_tests_properties(AddrManIpv6 PROPERTIES LABELS "p2p;ipv6" TIMEOUT 10)
 
 add_executable(test_addrman_relay_select
   tests/network/test_addrman_relay_select.cpp
@@ -3677,8 +3755,11 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/p2p/test_p2p_manager_ts1_integration.cpp)
     tests/p2p/test_addr_relay_known.cpp
     tests/p2p/test_orchard_peer_cutoff.cpp
     src/daemon/p2p_manager.cpp
+    src/p2p/self_reachability.cpp
+    src/p2p/relay_hint_v2.cpp
     src/network/relay_hints_eviction.cpp
     src/network/relay_registry.cpp # Required by NAT C3 relay registry member in P2PManager
+    src/network/quic_endpoint.cpp
     src/network/quic_session.cpp   # Required by relay virtual-peer QUIC members in P2PManager
     src/network/quic_transport.cpp # Required by encrypted relay readiness checks in P2PManager
     src/network/udp_socket.cpp     # Required by QuicTransport
@@ -3758,8 +3839,11 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/p2p/test_p2p_idle_peer_reap.cpp)
   add_executable(test_p2p_idle_peer_reap
     tests/p2p/test_p2p_idle_peer_reap.cpp
     src/daemon/p2p_manager.cpp
+    src/p2p/self_reachability.cpp
+    src/p2p/relay_hint_v2.cpp
     src/network/relay_hints_eviction.cpp
     src/network/relay_registry.cpp
+    src/network/quic_endpoint.cpp
     src/network/quic_session.cpp
     src/network/quic_transport.cpp
     src/network/udp_socket.cpp
@@ -3824,8 +3908,11 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/p2p/test_relay_virtual_transport.cpp)
     tests/p2p/test_relay_virtual_transport.cpp
     tests/p2p/test_p2p_fd_hygiene.cpp
     src/daemon/p2p_manager.cpp
+    src/p2p/self_reachability.cpp
+    src/p2p/relay_hint_v2.cpp
     src/network/relay_hints_eviction.cpp
     src/network/relay_registry.cpp
+    src/network/quic_endpoint.cpp
     src/network/quic_session.cpp
     src/network/quic_transport.cpp
     src/network/relay_tls_keypair.cpp
@@ -3883,8 +3970,273 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/p2p/test_relay_virtual_transport.cpp)
   add_test(NAME RelayVirtualTransport COMMAND test_relay_virtual_transport)
   set_tests_properties(RelayVirtualTransport PROPERTIES
     LABELS "p2p;relay;transport;nat;quic-relay-focused"
-    TIMEOUT 10
+    TIMEOUT 60
   )
+
+  # Identity bound to the QUIC session (TLS exporter), incl. a MITM relay.
+  if(DINERO_ENABLE_QUIC)
+  add_executable(test_relay_identity_binding
+    tests/p2p/test_relay_identity_binding.cpp
+    src/daemon/p2p_manager.cpp
+    src/p2p/self_reachability.cpp
+    src/p2p/relay_hint_v2.cpp
+    src/network/relay_hints_eviction.cpp
+    src/network/relay_registry.cpp
+    src/network/quic_endpoint.cpp
+    src/network/quic_session.cpp
+    src/network/quic_transport.cpp
+    src/network/relay_tls_keypair.cpp
+    src/network/udp_socket.cpp
+    src/daemon/node_identity.cpp
+    src/p2p/addr_v2.cpp
+    src/p2p/addrman.cpp
+    src/crypto/params_stub.cpp
+    src/common/sha256d.cpp
+    src/common/logger.cpp
+    src/daemon/secure_random.cpp
+  )
+
+  target_compile_definitions(test_relay_identity_binding PRIVATE DINERO_TEST_BUILD)
+
+  if(APPLE)
+    target_link_libraries(test_relay_identity_binding PRIVATE
+      GTest::gtest GTest::gtest_main
+      Threads::Threads
+      dinero_crypto
+      secp256k1
+      OpenSSL::SSL
+      OpenSSL::Crypto
+      "-framework Security"
+    )
+  else()
+    target_link_libraries(test_relay_identity_binding PRIVATE
+      GTest::gtest GTest::gtest_main
+      Threads::Threads
+      dinero_crypto
+      secp256k1
+      OpenSSL::SSL
+      OpenSSL::Crypto
+    )
+  endif()
+
+  if(DINERO_ENABLE_QUIC AND TARGET dinero_ngtcp2)
+    target_link_libraries(test_relay_identity_binding PRIVATE dinero_ngtcp2)
+    if(TARGET dinero_ngtcp2_crypto_ossl)
+      target_link_libraries(test_relay_identity_binding PRIVATE dinero_ngtcp2_crypto_ossl)
+    elseif(TARGET dinero_ngtcp2_crypto_quictls)
+      target_link_libraries(test_relay_identity_binding PRIVATE dinero_ngtcp2_crypto_quictls)
+    endif()
+  endif()
+
+  if(WIN32)
+    target_link_libraries(test_relay_identity_binding PRIVATE ws2_32)
+  endif()
+
+  target_include_directories(test_relay_identity_binding PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src/daemon
+    ${CMAKE_SOURCE_DIR}/tests/network
+  )
+
+  add_test(NAME RelayIdentityBinding COMMAND test_relay_identity_binding)
+  set_tests_properties(RelayIdentityBinding PROPERTIES LABELS "p2p;relay;quic;security" TIMEOUT 120)
+  endif()
+
+  # Direct QUIC peers need the real QuicSession/QuicEndpoint (QUIC on).
+  if(DINERO_ENABLE_QUIC)
+  add_executable(test_quic_direct_peer
+    tests/p2p/test_quic_direct_peer.cpp
+    src/daemon/p2p_manager.cpp
+    src/p2p/self_reachability.cpp
+    src/p2p/relay_hint_v2.cpp
+    src/network/relay_hints_eviction.cpp
+    src/network/relay_registry.cpp
+    src/network/quic_endpoint.cpp
+    src/network/quic_session.cpp
+    src/network/quic_transport.cpp
+    src/network/relay_tls_keypair.cpp
+    src/network/udp_socket.cpp
+    src/daemon/node_identity.cpp
+    src/p2p/addr_v2.cpp
+    src/p2p/addrman.cpp
+    src/crypto/params_stub.cpp
+    src/common/sha256d.cpp
+    src/common/logger.cpp
+    src/daemon/secure_random.cpp
+  )
+
+  target_compile_definitions(test_quic_direct_peer PRIVATE DINERO_TEST_BUILD)
+
+  if(APPLE)
+    target_link_libraries(test_quic_direct_peer PRIVATE
+      GTest::gtest GTest::gtest_main
+      Threads::Threads
+      dinero_crypto
+      secp256k1
+      OpenSSL::SSL
+      OpenSSL::Crypto
+      "-framework Security"
+    )
+  else()
+    target_link_libraries(test_quic_direct_peer PRIVATE
+      GTest::gtest GTest::gtest_main
+      Threads::Threads
+      dinero_crypto
+      secp256k1
+      OpenSSL::SSL
+      OpenSSL::Crypto
+    )
+  endif()
+
+  if(DINERO_ENABLE_QUIC AND TARGET dinero_ngtcp2)
+    target_link_libraries(test_quic_direct_peer PRIVATE dinero_ngtcp2)
+    if(TARGET dinero_ngtcp2_crypto_ossl)
+      target_link_libraries(test_quic_direct_peer PRIVATE dinero_ngtcp2_crypto_ossl)
+    elseif(TARGET dinero_ngtcp2_crypto_quictls)
+      target_link_libraries(test_quic_direct_peer PRIVATE dinero_ngtcp2_crypto_quictls)
+    endif()
+  endif()
+
+  if(WIN32)
+    target_link_libraries(test_quic_direct_peer PRIVATE ws2_32)
+  endif()
+
+  target_include_directories(test_quic_direct_peer PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src/daemon
+  )
+
+  add_test(NAME QuicDirectPeer COMMAND test_quic_direct_peer)
+  set_tests_properties(QuicDirectPeer PROPERTIES LABELS "p2p;quic;transport" TIMEOUT 300)
+  add_executable(test_peer_key_ipv6
+    tests/p2p/test_peer_key_ipv6.cpp
+    src/daemon/p2p_manager.cpp
+    src/p2p/self_reachability.cpp
+    src/p2p/relay_hint_v2.cpp
+    src/network/relay_hints_eviction.cpp
+    src/network/relay_registry.cpp
+    src/network/quic_endpoint.cpp
+    src/network/quic_session.cpp
+    src/network/quic_transport.cpp
+    src/network/relay_tls_keypair.cpp
+    src/network/udp_socket.cpp
+    src/daemon/node_identity.cpp
+    src/p2p/addr_v2.cpp
+    src/p2p/addrman.cpp
+    src/crypto/params_stub.cpp
+    src/common/sha256d.cpp
+    src/common/logger.cpp
+    src/daemon/secure_random.cpp
+  )
+
+  target_compile_definitions(test_peer_key_ipv6 PRIVATE DINERO_TEST_BUILD)
+
+  if(APPLE)
+    target_link_libraries(test_peer_key_ipv6 PRIVATE
+      GTest::gtest GTest::gtest_main
+      Threads::Threads
+      dinero_crypto
+      secp256k1
+      OpenSSL::SSL
+      OpenSSL::Crypto
+      "-framework Security"
+    )
+  else()
+    target_link_libraries(test_peer_key_ipv6 PRIVATE
+      GTest::gtest GTest::gtest_main
+      Threads::Threads
+      dinero_crypto
+      secp256k1
+      OpenSSL::SSL
+      OpenSSL::Crypto
+    )
+  endif()
+
+  if(DINERO_ENABLE_QUIC AND TARGET dinero_ngtcp2)
+    target_link_libraries(test_peer_key_ipv6 PRIVATE dinero_ngtcp2)
+    if(TARGET dinero_ngtcp2_crypto_ossl)
+      target_link_libraries(test_peer_key_ipv6 PRIVATE dinero_ngtcp2_crypto_ossl)
+    elseif(TARGET dinero_ngtcp2_crypto_quictls)
+      target_link_libraries(test_peer_key_ipv6 PRIVATE dinero_ngtcp2_crypto_quictls)
+    endif()
+  endif()
+
+  if(WIN32)
+    target_link_libraries(test_peer_key_ipv6 PRIVATE ws2_32)
+  endif()
+
+  target_include_directories(test_peer_key_ipv6 PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src/daemon
+  )
+
+  add_test(NAME PeerKeyIpv6 COMMAND test_peer_key_ipv6)
+  set_tests_properties(PeerKeyIpv6 PROPERTIES LABELS "p2p;ipv6" TIMEOUT 60)
+  add_executable(test_dialback
+    tests/p2p/test_dialback.cpp
+    src/daemon/p2p_manager.cpp
+    src/p2p/self_reachability.cpp
+    src/p2p/relay_hint_v2.cpp
+    src/network/relay_hints_eviction.cpp
+    src/network/relay_registry.cpp
+    src/network/quic_endpoint.cpp
+    src/network/quic_session.cpp
+    src/network/quic_transport.cpp
+    src/network/relay_tls_keypair.cpp
+    src/network/udp_socket.cpp
+    src/daemon/node_identity.cpp
+    src/p2p/addr_v2.cpp
+    src/p2p/addrman.cpp
+    src/crypto/params_stub.cpp
+    src/common/sha256d.cpp
+    src/common/logger.cpp
+    src/daemon/secure_random.cpp
+  )
+
+  target_compile_definitions(test_dialback PRIVATE DINERO_TEST_BUILD)
+
+  if(APPLE)
+    target_link_libraries(test_dialback PRIVATE
+      GTest::gtest GTest::gtest_main
+      Threads::Threads
+      dinero_crypto
+      secp256k1
+      OpenSSL::SSL
+      OpenSSL::Crypto
+      "-framework Security"
+    )
+  else()
+    target_link_libraries(test_dialback PRIVATE
+      GTest::gtest GTest::gtest_main
+      Threads::Threads
+      dinero_crypto
+      secp256k1
+      OpenSSL::SSL
+      OpenSSL::Crypto
+    )
+  endif()
+
+  if(DINERO_ENABLE_QUIC AND TARGET dinero_ngtcp2)
+    target_link_libraries(test_dialback PRIVATE dinero_ngtcp2)
+    if(TARGET dinero_ngtcp2_crypto_ossl)
+      target_link_libraries(test_dialback PRIVATE dinero_ngtcp2_crypto_ossl)
+    elseif(TARGET dinero_ngtcp2_crypto_quictls)
+      target_link_libraries(test_dialback PRIVATE dinero_ngtcp2_crypto_quictls)
+    endif()
+  endif()
+
+  if(WIN32)
+    target_link_libraries(test_dialback PRIVATE ws2_32)
+  endif()
+
+  target_include_directories(test_dialback PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src/daemon
+  )
+
+  add_test(NAME DialBack COMMAND test_dialback)
+  set_tests_properties(DialBack PROPERTIES LABELS "p2p;reachability" TIMEOUT 240)
+  endif()
   list(APPEND DINERO_QUIC_RELAY_TEST_TARGETS test_relay_virtual_transport)
 endif()
 
@@ -3991,9 +4343,42 @@ if(DINERO_ENABLE_QUIC AND TARGET dinero_ngtcp2_crypto_ossl AND EXISTS ${CMAKE_SO
   add_test(NAME QuicSession COMMAND test_quic_session)
   set_tests_properties(QuicSession PROPERTIES
     LABELS "p2p;quic;ngtcp2;transport;crypto;quic-relay-focused"
-    TIMEOUT 10
+    TIMEOUT 120
   )
   list(APPEND DINERO_QUIC_RELAY_TEST_TARGETS test_quic_session)
+endif()
+
+if(DINERO_ENABLE_QUIC AND TARGET dinero_ngtcp2_crypto_ossl AND EXISTS ${CMAKE_SOURCE_DIR}/tests/network/test_quic_endpoint.cpp)
+  add_executable(test_quic_endpoint
+    tests/network/test_quic_endpoint.cpp
+    src/network/quic_endpoint.cpp
+    src/network/quic_session.cpp
+    src/network/quic_transport.cpp
+    src/network/udp_socket.cpp
+    src/network/relay_tls_keypair.cpp
+  )
+  target_link_libraries(test_quic_endpoint
+    PRIVATE
+      GTest::gtest
+      GTest::gtest_main
+      Threads::Threads
+      dinero_ngtcp2
+      dinero_ngtcp2_crypto_ossl
+      OpenSSL::SSL
+      OpenSSL::Crypto
+  )
+  if(WIN32)
+    target_link_libraries(test_quic_endpoint PRIVATE ws2_32)
+  endif()
+  target_include_directories(test_quic_endpoint PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+  )
+  add_test(NAME QuicEndpoint COMMAND test_quic_endpoint)
+  set_tests_properties(QuicEndpoint PROPERTIES
+    LABELS "p2p;quic;ngtcp2;transport"
+    TIMEOUT 60
+  )
+  list(APPEND DINERO_QUIC_RELAY_TEST_TARGETS test_quic_endpoint)
 endif()
 
 if(DINERO_ENABLE_QUIC AND TARGET dinero_ngtcp2_crypto_ossl AND EXISTS ${CMAKE_SOURCE_DIR}/tests/network/test_quic_session_stress.cpp)
@@ -10735,6 +11120,8 @@ if(FALSE AND EXISTS ${CMAKE_SOURCE_DIR}/tests/integration/test_codebase_verifica
     src/daemon/ws_globals.cpp
     src/daemon/p2p_message.cpp
     src/daemon/p2p_manager.cpp
+    src/p2p/self_reachability.cpp
+    src/p2p/relay_hint_v2.cpp
     src/network/relay_hints_eviction.cpp
     src/network/relay_registry.cpp
     src/network/quic_session.cpp
@@ -10929,8 +11316,11 @@ if(FALSE AND EXISTS ${CMAKE_SOURCE_DIR}/tests/mining/test_mining_comprehensive.c
     src/daemon/bech32_decode.cpp
     src/daemon/p2p_message.cpp
     src/daemon/p2p_manager.cpp
+    src/p2p/self_reachability.cpp
+    src/p2p/relay_hint_v2.cpp
     src/network/relay_hints_eviction.cpp
     src/network/relay_registry.cpp
+    src/network/quic_endpoint.cpp
     src/network/quic_session.cpp
     src/network/quic_transport.cpp
     src/network/udp_socket.cpp
@@ -11280,7 +11670,9 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/mining/test_mining_smoke.cpp)
     src/daemon/bech32_decode.cpp
     src/daemon/ws_globals.cpp
     src/daemon/p2p_message.cpp
-    src/daemon/p2p_manager.cpp  # For P2PMessage::create_inv() and P2PManager
+    src/daemon/p2p_manager.cpp
+    src/p2p/self_reachability.cpp  # For P2PMessage::create_inv() and P2PManager
+    src/p2p/relay_hint_v2.cpp
     src/network/relay_hints_eviction.cpp
     src/network/relay_registry.cpp # Required by NAT C3 relay registry member in P2PManager
     src/network/quic_session.cpp   # Required by relay virtual-peer QUIC members in P2PManager
@@ -13790,8 +14182,11 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/p2p/test_handshake_simple.cpp)
     tests/p2p/test_handshake_simple.cpp
     tests/p2p/test_harness.cpp
     src/daemon/p2p_manager.cpp
+    src/p2p/self_reachability.cpp
+    src/p2p/relay_hint_v2.cpp
     src/network/relay_hints_eviction.cpp
     src/network/relay_registry.cpp
+    src/network/quic_endpoint.cpp
     src/network/quic_session.cpp
     src/network/quic_transport.cpp
     src/network/udp_socket.cpp
@@ -13851,8 +14246,11 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/p2p/test_ping_pong.cpp)
     tests/p2p/test_ping_pong.cpp
     tests/p2p/test_harness.cpp
     src/daemon/p2p_manager.cpp
+    src/p2p/self_reachability.cpp
+    src/p2p/relay_hint_v2.cpp
     src/network/relay_hints_eviction.cpp
     src/network/relay_registry.cpp
+    src/network/quic_endpoint.cpp
     src/network/quic_session.cpp
     src/network/quic_transport.cpp
     src/network/udp_socket.cpp

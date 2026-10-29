@@ -6,11 +6,13 @@
 
 #include "network/udp_socket.h"
 
+#include <array>
 #include <chrono>
 #include <cstdint>
 #include <functional>
 #include <future>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -98,6 +100,13 @@ public:
     // Snapshot of state. Safe from any thread; reads atomic snapshot
     // fields the session thread publishes.
     QuicSessionStats Stats() const;
+
+    // TLS exporter value for this session (RFC 5705/8446:
+    // label "EXPORTER-dinero-p2p-identity", empty context, 32 bytes). Both
+    // ends of one session get the same value; two sessions never do, so
+    // signing it binds an identity to this session. Set once the handshake
+    // completes; nullopt before, and in builds without ngtcp2.
+    std::optional<std::array<uint8_t, 32>> ExportBinding() const;
 
     bool active() const;
     bool handshake_ready() const;

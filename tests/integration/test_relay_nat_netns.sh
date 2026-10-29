@@ -37,6 +37,16 @@ NS_TARGET="dn_t_${TAG}"
 NS_NAT_ORIGIN="dn_no_${TAG}"
 NS_NAT_TARGET="dn_nt_${TAG}"
 BRIDGE="dnbr${TAG}"
+# DIALBACK=1 topology: three public nodes in distinct /16s, an
+# endpoint-independent NAT and an endpoint-dependent (--random) NAT.
+NS_P1="dn_p1_${TAG}"
+NS_P2="dn_p2_${TAG}"
+NS_P3="dn_p3_${TAG}"
+NS_P4="dn_p4_${TAG}"  # COMMUNITY_RELAY: a second public node in P1's /16
+NS_NAT_EIM="dn_ne_${TAG}"
+NS_NAT_RND="dn_nr_${TAG}"
+NS_EIM="dn_e_${TAG}"
+NS_RND="dn_d_${TAG}"
 
 RUN_DIR="${DINERO_NETNS_RUN_DIR:-/tmp/dinero_relay_nat_netns_${TAG}}"
 DATA_ORIGIN="${RUN_DIR}/origin"
@@ -77,7 +87,8 @@ cleanup() {
         kill -9 "${pid}" 2>/dev/null || true
     done
     if command -v ip >/dev/null 2>&1; then
-        for ns in "${NS_ORIGIN}" "${NS_RELAY}" "${NS_TARGET}" "${NS_NAT_ORIGIN}" "${NS_NAT_TARGET}"; do
+        for ns in "${NS_ORIGIN}" "${NS_RELAY}" "${NS_TARGET}" "${NS_NAT_ORIGIN}" "${NS_NAT_TARGET}" \
+                  "${NS_P1}" "${NS_P2}" "${NS_P3}" "${NS_P4}" "${NS_NAT_EIM}" "${NS_NAT_RND}" "${NS_EIM}" "${NS_RND}"; do
             if ip netns list 2>/dev/null | awk '{print $1}' | grep -qx "${ns}"; then
                 for pid in $(ip netns pids "${ns}" 2>/dev/null); do
                     kill "${pid}" 2>/dev/null || true
@@ -337,12 +348,15 @@ setup_lan_pair() {
 
 configure_nat() {
     local ns="$1"
+    shift
+    # Extra args go to MASQUERADE: "--random" gives every flow its own
+    # source port, i.e. endpoint-dependent (symmetric) mapping.
     ip netns exec "${ns}" sh -c 'echo 1 > /proc/sys/net/ipv4/ip_forward'
     ip netns exec "${ns}" iptables -P FORWARD DROP
     ip netns exec "${ns}" iptables -A FORWARD -i lan0 -o wan0 -j ACCEPT
     ip netns exec "${ns}" iptables -A FORWARD -i wan0 -o lan0 \
         -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
-    ip netns exec "${ns}" iptables -t nat -A POSTROUTING -o wan0 -j MASQUERADE
+    ip netns exec "${ns}" iptables -t nat -A POSTROUTING -o wan0 -j MASQUERADE "$@"
 }
 
 setup_topology() {
@@ -385,12 +399,328 @@ start_node() {
         --rpcport="${rpc_port}" \
         --port="${p2p_port}" \
         --listen=1 \
-        --p2p.stun.enabled=0 \
+        --p2p.stun.enabled="${STUN_ENABLED:-0}" \
         --portmap=0 \
         "$@" \
         >"${logfile}" 2>&1 &
     printf '%s\n' "$!"
 }
+
+# ── DIALBACK=1: dial-back verification and NAT classification ─────────────
+# Public nodes P1..P3 sit in distinct /16s so min_groups=2 is met only by
+# genuinely different networks. E sits behind an endpoint-independent NAT, D
+# behind an endpoint-dependent one (MASQUERADE --random); inbound is blocked
+# for both. Expected: the public nodes prove each other reachable; E and D get
+# peer votes for their gateway address but it is never verified, listed or
+# gossiped; STUN on each P2P port classifies the two NATs correctly.
+if [[ "${DIALBACK:-0}" == "1" ]]; then
+    require_cmd tcpdump
+    require_cmd python3
+    # Routable-looking WAN addresses (DoD blocks, unused on the internet; the
+    # bridge has no uplink): the node refuses to advertise private ones at all,
+    # which would make the gossip check vacuous. A real router's address is
+    # routable, and that is the address that must stay unadvertised.
+    P1_IP="11.11.0.10"; P2_IP="22.22.0.10"; P3_IP="33.33.0.10"
+    EIM_WAN="55.44.0.2"; RND_WAN="55.55.0.2"
+    P1_RPC=$((BASE_PORT + 11)); P2_RPC=$((BASE_PORT + 12)); P3_RPC=$((BASE_PORT + 13))
+    E_RPC=$((BASE_PORT + 14)); D_RPC=$((BASE_PORT + 15))
+    P2P_PORT=$((BASE_PORT + 111))  # one port for all: each node has its own IP
+    rm -rf "${RUN_DIR}"; mkdir -p "${RUN_DIR}"
+    for ns in "${NS_P1}" "${NS_P2}" "${NS_P3}" "${NS_NAT_EIM}" "${NS_NAT_RND}" "${NS_EIM}" "${NS_RND}"; do
+        create_ns "${ns}"
+    done
+    ip link add "${BRIDGE}" type bridge
+    ip link set "${BRIDGE}" up
+    # Distinct /16s on one L2 segment: everything off-LAN is on-link via wan0.
+    wan_16() {
+        setup_wan_peer "$1" "$2" "br$2" "$3/16"
+        ip -n "$1" route add default dev wan0
+    }
+    wan_16 "${NS_P1}" "p1${TAG}" "${P1_IP}"
+    wan_16 "${NS_P2}" "p2${TAG}" "${P2_IP}"
+    wan_16 "${NS_P3}" "p3${TAG}" "${P3_IP}"
+    wan_16 "${NS_NAT_EIM}" "ne${TAG}" "${EIM_WAN}"
+    wan_16 "${NS_NAT_RND}" "nr${TAG}" "${RND_WAN}"
+    setup_lan_pair "${NS_EIM}" "${NS_NAT_EIM}" "e${TAG}" "nel${TAG}" \
+        "10.144.1.2/24" "10.144.1.1/24" "10.144.1.1"
+    setup_lan_pair "${NS_RND}" "${NS_NAT_RND}" "d${TAG}" "nrl${TAG}" \
+        "10.155.1.2/24" "10.155.1.1/24" "10.155.1.1"
+    configure_nat "${NS_NAT_EIM}"
+    configure_nat "${NS_NAT_RND}" --random
+    info "DIALBACK topology: P1 ${P1_IP}, P2 ${P2_IP}, P3 ${P3_IP}; E behind EIM NAT ${EIM_WAN}; D behind --random NAT ${RND_WAN}"
+
+    # Two STUN servers on different IPs (P2, P3): answer every Binding request
+    # with the source address in XOR-MAPPED-ADDRESS.
+    cat >"${RUN_DIR}/stun.py" <<'STUN'
+import socket, struct, sys
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+s.bind((sys.argv[1], 3478))
+while True:
+    d, (ip, port) = s.recvfrom(2048)
+    if len(d) < 20 or d[0:2] != b"\x00\x01" or d[4:8] != b"\x21\x12\xa4\x42":
+        continue
+    xip = bytes(a ^ b for a, b in zip(socket.inet_aton(ip), d[4:8]))
+    attr = struct.pack("!HHBBH", 0x0020, 8, 0, 1, port ^ 0x2112) + xip
+    s.sendto(struct.pack("!HH", 0x0101, len(attr)) + d[4:20] + attr, (ip, port))
+STUN
+    for pair in "${NS_P2}:${P2_IP}" "${NS_P3}:${P3_IP}"; do
+        ip netns exec "${pair%%:*}" python3 "${RUN_DIR}/stun.py" "${pair##*:}" &
+        PIDS+=("$!")
+    done
+    STUN_SERVERS="${P2_IP}:3478,${P3_IP}:3478"
+
+    # Everything E sends (only what it sends: verifiers' reachres replies
+    # carry the dialed gateway endpoint inbound): its gateway address may only
+    # leave E inside addr gossip, so "gateway IP + listen port" must never appear.
+    ip netns exec "${NS_EIM}" tcpdump -i eth0 -s 0 -U -w "${RUN_DIR}/e.pcap" "tcp and src host 10.144.1.2" 2>/dev/null &
+    TCPDUMP_PID="$!"
+    PIDS+=("${TCPDUMP_PID}")
+
+    export STUN_ENABLED=1
+    LOG_ORIGIN="${RUN_DIR}/e.log"; LOG_RELAY="${RUN_DIR}/p1.log"; LOG_TARGET="${RUN_DIR}/d.log"
+    declare -A NS_OF=([p1]="${NS_P1}" [p2]="${NS_P2}" [p3]="${NS_P3}" [e]="${NS_EIM}" [d]="${NS_RND}")
+    declare -A RPC_OF=([p1]="${P1_RPC}" [p2]="${P2_RPC}" [p3]="${P3_RPC}" [e]="${E_RPC}" [d]="${D_RPC}")
+    for n in p1 p2 p3 e d; do
+        pid="$(start_node "${NS_OF[$n]}" "${RUN_DIR}/${n}" "${RPC_OF[$n]}" "${P2P_PORT}" "${RUN_DIR}/${n}.log" \
+            --quic=1 --p2p.stun.servers="${STUN_SERVERS}")"
+        PIDS+=("${pid}")
+    done
+    for n in p1 p2 p3 e d; do
+        wait_rpc "${NS_OF[$n]}" "${RPC_OF[$n]}" "${RUN_DIR}/${n}" || fail "${n} RPC did not come up"
+    done
+    nrpc() { rpc_call "${NS_OF[$1]}" "${RPC_OF[$1]}" "${RUN_DIR}/$1" "$2" "$3"; }
+    addnode() { nrpc "$1" addnode "[\"$2:${P2P_PORT}\",\"onetry\"]" >/dev/null || fail "$1 addnode $2"; }
+    addnode p1 "${P2_IP}"; addnode p1 "${P3_IP}"; addnode p2 "${P3_IP}"
+    for n in e d; do
+        addnode "${n}" "${P1_IP}"; addnode "${n}" "${P2_IP}"; addnode "${n}" "${P3_IP}"
+    done
+
+    # NAT classification, measured through each node's P2P UDP socket.
+    nat_of() {
+        local n="$1" want="$2" got=""
+        for _ in $(seq 1 60); do
+            got="$(nrpc "${n}" getnetworkinfo '[]' | jq -r 'select(.result.nat.servers >= 2) | .result.nat.mapping' 2>/dev/null || true)"
+            [[ -n "${got}" ]] && break
+            sleep 1
+        done
+        [[ "${got}" == "${want}" ]] || fail "${n}: nat.mapping='${got}', expected ${want}"
+        pass "${n}: nat.mapping=${want} ($(nrpc "${n}" getnetworkinfo '[]' | jq -c '.result.nat'))"
+    }
+    nat_of e endpoint_independent
+    nat_of d endpoint_dependent
+
+    # Public nodes prove each other reachable (2 distinct /16s) within 5 min.
+    verified() {  # verified <node> <ip>: our own TCP address at P2P_PORT is verified
+        nrpc "$1" getnetworkinfo '[]' | jq -e --arg a "$2:${P2P_PORT}" \
+            '.result.self_reachability[] | select(.address==$a and .transport=="tcp" and .state=="verified")' >/dev/null 2>&1
+    }
+    for pair in "p1:${P1_IP}" "p2:${P2_IP}" "p3:${P3_IP}"; do
+        n="${pair%%:*}"; ip="${pair##*:}"; ok=0
+        for _ in $(seq 1 300); do
+            if verified "${n}" "${ip}"; then ok=1; break; fi
+            sleep 1
+        done
+        [[ "${ok}" == 1 ]] || fail "${n}: ${ip}:${P2P_PORT} not verified within 5 min: $(nrpc "${n}" getnetworkinfo '[]' | jq -c '.result.self_reachability')"
+        pass "${n}: ${ip}:${P2P_PORT} verified by dial-back"
+    done
+
+    # The NAT'd nodes: peers voted for the gateway address (it is a candidate),
+    # dial-back could not reach it, so it is never verified, listed or gossiped.
+    for pair in "e:${EIM_WAN}" "d:${RND_WAN}"; do
+        n="${pair%%:*}"; gw="${pair##*:}"; seen=0
+        for _ in $(seq 1 120); do
+            if nrpc "${n}" getnetworkinfo '[]' | jq -e --arg a "${gw}:${P2P_PORT}" \
+                '.result.self_reachability[] | select(.address==$a and .transport=="tcp")' >/dev/null 2>&1; then
+                seen=1; break
+            fi
+            sleep 1
+        done
+        [[ "${seen}" == 1 ]] || fail "${n}: peers never voted for gateway ${gw} (scenario did not exercise the vote path)"
+    done
+    sleep 60  # several reachability ticks with the gateway candidate pending
+    kill "${TCPDUMP_PID}" 2>/dev/null || true
+    sleep 1
+    # Positive control: E's version to P1 carries P1's address and port in
+    # addrRecv, so a working capture must contain that pattern.
+    python3 - "${RUN_DIR}/e.pcap" "${P1_IP}" "${P2P_PORT}" <<'SCAN' ||
+import socket, struct, sys
+data = open(sys.argv[1], "rb").read()
+sys.exit(0 if socket.inet_aton(sys.argv[2]) + struct.pack("!H", int(sys.argv[3])) in data else 1)
+SCAN
+        fail "packet capture on E saw no P2P traffic (capture broken, gossip check would be vacuous)"
+    python3 - "${RUN_DIR}/e.pcap" "${EIM_WAN}" "${P2P_PORT}" <<'SCAN' ||
+import socket, struct, sys
+data = open(sys.argv[1], "rb").read()
+needle = socket.inet_aton(sys.argv[2]) + struct.pack("!H", int(sys.argv[3]))
+sys.exit(1 if needle in data else 0)
+SCAN
+        fail "NAT'd node gossips gateway address ${EIM_WAN}:${P2P_PORT}"
+    pass "E never put its gateway address ${EIM_WAN}:${P2P_PORT} on the wire"
+    for pair in "e:${EIM_WAN}" "d:${RND_WAN}"; do
+        n="${pair%%:*}"; gw="${pair##*:}"
+        info_json="$(nrpc "${n}" getnetworkinfo '[]')"
+        jq -e --arg gw "${gw}" '[.result.localaddresses[] | select(.address==$gw)] | length == 0' \
+            <<<"${info_json}" >/dev/null || fail "NAT'd node ${n} lists gateway ${gw} in localaddresses"
+        jq -e --arg a "${gw}:${P2P_PORT}" \
+            '[.result.self_reachability[] | select(.address==$a and .state=="verified")] | length == 0' \
+            <<<"${info_json}" >/dev/null || fail "NAT'd node ${n}: gateway ${gw} verified despite blocked inbound"
+        pass "${n}: gateway ${gw} voted for, unverified, not in localaddresses"
+    done
+    exit 0
+fi
+
+# ── COMMUNITY_RELAY=1 / TWO_RELAYS=1: verified home-style nodes relay ────
+# P1..P4 are ordinary public nodes: no p2p.relay, no relayregister, no
+# mining. Dial-back verification alone must turn their relay role on. P4
+# shares P1's /16, so a NAT'd node that ignored netgroups could pick both.
+# E (endpoint-independent NAT) and D (--random NAT) cannot reach each other
+# directly; D must find E through a signed hint and reach it via a relay.
+# TWO_RELAYS=1 then kills one of E's relays: E must re-register and D must
+# still reach E within 90 s.
+if [[ "${COMMUNITY_RELAY:-0}" == "1" || "${TWO_RELAYS:-0}" == "1" ]]; then
+    P1_IP="11.11.0.10"; P4_IP="11.11.0.20"; P2_IP="22.22.0.10"; P3_IP="33.33.0.10"
+    EIM_WAN="55.44.0.2"; RND_WAN="55.55.0.2"
+    P2P_PORT=$((BASE_PORT + 111))
+    rm -rf "${RUN_DIR}"; mkdir -p "${RUN_DIR}"
+    for ns in "${NS_P1}" "${NS_P2}" "${NS_P3}" "${NS_P4}" "${NS_NAT_EIM}" "${NS_NAT_RND}" "${NS_EIM}" "${NS_RND}"; do
+        create_ns "${ns}"
+    done
+    ip link add "${BRIDGE}" type bridge
+    ip link set "${BRIDGE}" up
+    wan_16() {
+        setup_wan_peer "$1" "$2" "br$2" "$3/16"
+        ip -n "$1" route add default dev wan0
+    }
+    wan_16 "${NS_P1}" "p1${TAG}" "${P1_IP}"
+    wan_16 "${NS_P2}" "p2${TAG}" "${P2_IP}"
+    wan_16 "${NS_P3}" "p3${TAG}" "${P3_IP}"
+    wan_16 "${NS_P4}" "p4${TAG}" "${P4_IP}"
+    wan_16 "${NS_NAT_EIM}" "ne${TAG}" "${EIM_WAN}"
+    wan_16 "${NS_NAT_RND}" "nr${TAG}" "${RND_WAN}"
+    setup_lan_pair "${NS_EIM}" "${NS_NAT_EIM}" "e${TAG}" "nel${TAG}" \
+        "10.144.1.2/24" "10.144.1.1/24" "10.144.1.1"
+    setup_lan_pair "${NS_RND}" "${NS_NAT_RND}" "d${TAG}" "nrl${TAG}" \
+        "10.155.1.2/24" "10.155.1.1/24" "10.155.1.1"
+    configure_nat "${NS_NAT_EIM}"
+    configure_nat "${NS_NAT_RND}" --random
+    info "COMMUNITY_RELAY topology: P1 ${P1_IP}, P4 ${P4_IP} (same /16), P2 ${P2_IP}, P3 ${P3_IP}; E behind ${EIM_WAN}, D behind ${RND_WAN}"
+
+    LOG_ORIGIN="${RUN_DIR}/d.log"; LOG_RELAY="${RUN_DIR}/p1.log"; LOG_TARGET="${RUN_DIR}/e.log"
+    declare -A NS_OF=([p1]="${NS_P1}" [p2]="${NS_P2}" [p3]="${NS_P3}" [p4]="${NS_P4}" [e]="${NS_EIM}" [d]="${NS_RND}")
+    declare -A RPC_OF=([p1]=$((BASE_PORT + 11)) [p2]=$((BASE_PORT + 12)) [p3]=$((BASE_PORT + 13))
+                       [p4]=$((BASE_PORT + 16)) [e]=$((BASE_PORT + 14)) [d]=$((BASE_PORT + 15)))
+    declare -A IP_OF=([p1]="${P1_IP}" [p2]="${P2_IP}" [p3]="${P3_IP}" [p4]="${P4_IP}")
+    declare -A PID_OF=()
+    for n in p1 p2 p3 p4 e d; do
+        pid="$(start_node "${NS_OF[$n]}" "${RUN_DIR}/${n}" "${RPC_OF[$n]}" "${P2P_PORT}" "${RUN_DIR}/${n}.log" --quic=1)"
+        PIDS+=("${pid}"); PID_OF[$n]="${pid}"
+    done
+    for n in p1 p2 p3 p4 e d; do
+        wait_rpc "${NS_OF[$n]}" "${RPC_OF[$n]}" "${RUN_DIR}/${n}" || fail "${n} RPC did not come up"
+    done
+    nrpc() { rpc_call "${NS_OF[$1]}" "${RPC_OF[$1]}" "${RUN_DIR}/$1" "$2" "$3"; }
+    addnode() { nrpc "$1" addnode "[\"$2:${P2P_PORT}\",\"onetry\"]" >/dev/null || fail "$1 addnode $2"; }
+    addnode p1 "${P2_IP}"; addnode p1 "${P3_IP}"; addnode p1 "${P4_IP}"
+    addnode p2 "${P3_IP}"; addnode p2 "${P4_IP}"; addnode p3 "${P4_IP}"
+    for n in e d; do
+        for p in p1 p2 p3 p4; do addnode "${n}" "${IP_OF[$p]}"; done
+    done
+    for p in p1 p2 p3 p4; do
+        nrpc "${p}" getnetworkinfo '[]' | jq -e '.result.relay.local == false' >/dev/null ||
+            fail "${p} relays before anyone verified it (scenario would prove nothing)"
+    done
+    # A node at genesis is in initial block download, and a syncing relay
+    # refuses new circuits: give everyone a recent tip first.
+    p1_miner="$(nrpc p1 wallet.createhd '["miner"]' | jq -r '.result.first_address')"
+    nrpc p1 generatetoaddress "[3, \"${p1_miner}\"]" >/dev/null || fail "P1 could not mine"
+    for n in p1 p2 p3 p4 e d; do
+        ok=0
+        for _ in $(seq 1 120); do
+            [[ "$(nrpc "${n}" getblockcount '[]' | jq -r '.result')" -ge 3 ]] && { ok=1; break; }
+            sleep 1
+        done
+        [[ "${ok}" == 1 ]] || fail "${n} did not sync P1's first blocks"
+    done
+
+    # 1. Dial-back verification alone turns the relay role on.
+    for p in p1 p2 p3 p4; do
+        ok=0
+        for _ in $(seq 1 300); do
+            if nrpc "${p}" getnetworkinfo '[]' | jq -e --arg a "${IP_OF[$p]}:${P2P_PORT}" \
+                '.result.relay.local == true and
+                 any(.result.self_reachability[]; .address==$a and .state=="verified")' >/dev/null 2>&1; then
+                ok=1; break
+            fi
+            sleep 1
+        done
+        [[ "${ok}" == 1 ]] || fail "${p} never became a verified relay: $(nrpc "${p}" getnetworkinfo '[]' | jq -c '{relay: .result.relay.local, sr: .result.self_reachability}')"
+        pass "${p}: ${IP_OF[$p]} verified by dial-back, relay role on (no relay setting)"
+    done
+
+    # 2. E keeps two confirmed community relays in distinct /16s.
+    e_relays() { nrpc e getnetworkinfo '[]' | jq -r '.result.relay.registered[]' 2>/dev/null; }
+    two_distinct() {  # stdin: relay endpoints; true when 2 in distinct /16s
+        awk -F'[.:]' 'NF {g[$1"."$2]++; n++} END {exit !(n == 2 && length(g) == 2)}'
+    }
+    ok=0
+    for _ in $(seq 1 240); do
+        if e_relays | two_distinct; then ok=1; break; fi
+        sleep 1
+    done
+    [[ "${ok}" == 1 ]] || fail "E is not registered with 2 relays in distinct /16s: $(e_relays | tr '\n' ' ')"
+    pass "E registered with community relays $(e_relays | tr '\n' ' ')(distinct /16s, all confirmed)"
+
+    # 3. D reaches E through a relay: a relayed, identity-proven peer that is E.
+    e_id="$(nrpc e getnetworkinfo '[]' | jq -r '.result.node_id_hex')"
+    [[ "${#e_id}" == 40 ]] || fail "E has no node id"
+    d_reaches_e() {
+        nrpc d getpeerinfo '[]' | jq -e --arg id "${e_id}" \
+            'any(.result[]; .transport=="relay" and .identity_proven and .node_id==$id)' >/dev/null 2>&1
+    }
+    ok=0
+    for _ in $(seq 1 240); do
+        if d_reaches_e; then ok=1; break; fi
+        sleep 1
+    done
+    [[ "${ok}" == 1 ]] || fail "D never reached E through a relay: $(nrpc d getpeerinfo '[]' | jq -c '[.result[] | {addr, transport, node_id}]')"
+    pass "D reached E through a community relay (relayed peer, identity proven over dineroid v2)"
+
+    # 4. Blocks travel over the relayed connection: E mines, and D's relayed
+    #    peer (E) announces the new height.
+    miner="$(nrpc e wallet.createhd '["miner"]' | jq -r '.result.first_address')"
+    nrpc e generatetoaddress "[3, \"${miner}\"]" >/dev/null || fail "E could not mine"  # heights 4-6
+    e_height="$(nrpc e getblockcount '[]' | jq -r '.result')"
+    ok=0
+    for _ in $(seq 1 90); do
+        if nrpc d getpeerinfo '[]' | jq -e --arg id "${e_id}" --argjson h "${e_height}" \
+            'any(.result[]; .transport=="relay" and .node_id==$id and .bestknownheight >= $h)' >/dev/null 2>&1 &&
+           [[ "$(nrpc d getblockcount '[]' | jq -r '.result')" -ge "${e_height}" ]]; then
+            ok=1; break
+        fi
+        sleep 1
+    done
+    [[ "${ok}" == 1 ]] || fail "D did not get E's blocks (height ${e_height}) with E's relayed peer at that height"
+    pass "E mined ${e_height} blocks; D synced them and E's relayed peer reports height ${e_height}"
+
+    if [[ "${TWO_RELAYS:-0}" == "1" ]]; then
+        victim_ep="$(e_relays | head -1)"
+        victim=""
+        for p in p1 p2 p3 p4; do [[ "${IP_OF[$p]}:${P2P_PORT}" == "${victim_ep}" ]] && victim="${p}"; done
+        [[ -n "${victim}" ]] || fail "E's relay ${victim_ep} is not one of the public nodes"
+        kill "${PID_OF[$victim]}"
+        info "killed ${victim} (${victim_ep}), one of E's two relays"
+        t0="$(date +%s)"; ok=0
+        for _ in $(seq 1 90); do
+            if ! e_relays | grep -qx "${victim_ep}" && e_relays | two_distinct && d_reaches_e; then
+                ok=1; break
+            fi
+            sleep 1
+        done
+        [[ "${ok}" == 1 ]] || fail "after losing ${victim_ep}: E relays '$(e_relays | tr '\n' ' ')', D reaches E: $(d_reaches_e && echo yes || echo no)"
+        pass "within $(( $(date +%s) - t0 )) s E re-registered ($(e_relays | tr '\n' ' ')) and D still reaches E"
+    fi
+    exit 0
+fi
 
 setup_topology
 
@@ -435,8 +765,53 @@ if tcp_probe "${NS_ORIGIN}" "${TARGET_NAT_WAN_IP}" "${TARGET_P2P}"; then
 fi
 pass "Hostile NAT blocks unsolicited origin-to-target TCP"
 
+# ── DIRECT_QUIC=1: a NAT'd node syncs over direct QUIC (UDP) ─────────────
+# The origin sits behind MASQUERADE with inbound blocked; it dials the public
+# node over QUIC on UDP and conntrack carries the replies back -- the same
+# path a home node behind a router uses. No relay is involved.
+if [[ "${DIRECT_QUIC:-0}" == "1" ]]; then
+    RELAY_PID="$(start_node "${NS_RELAY}" "${DATA_RELAY}" "${RELAY_RPC}" "${RELAY_P2P}" "${LOG_RELAY}" \
+        "--externalip=${RELAY_IP}:${RELAY_P2P}")"
+    ORIGIN_PID="$(start_node "${NS_ORIGIN}" "${DATA_ORIGIN}" "${ORIGIN_RPC}" "${ORIGIN_P2P}" "${LOG_ORIGIN}" \
+        "--quicconnect=${RELAY_IP}:${RELAY_P2P}")"
+    PIDS+=("${RELAY_PID}" "${ORIGIN_PID}")
+    wait_rpc "${NS_RELAY}" "${RELAY_RPC}" "${DATA_RELAY}" || fail "public node RPC did not come up"
+    wait_rpc "${NS_ORIGIN}" "${ORIGIN_RPC}" "${DATA_ORIGIN}" || fail "origin RPC did not come up"
+
+    miner="$(rpc_call "${NS_RELAY}" "${RELAY_RPC}" "${DATA_RELAY}" "wallet.createhd" '["miner"]' |
+        python3 -c 'import json,sys; print(json.load(sys.stdin)["result"]["first_address"])')"
+    rpc_call "${NS_RELAY}" "${RELAY_RPC}" "${DATA_RELAY}" "generatetoaddress" "[10, \"${miner}\"]" \
+        >/dev/null || fail "public node could not mine"
+    synced=0
+    for _ in $(seq 1 90); do
+        h="$(rpc_call "${NS_ORIGIN}" "${ORIGIN_RPC}" "${DATA_ORIGIN}" "getblockcount" '[]' |
+            python3 -c 'import json,sys; print(json.load(sys.stdin)["result"])')"
+        if [[ "${h}" -ge 10 ]]; then synced=1; break; fi
+        sleep 1
+    done
+    [[ "${synced}" == 1 ]] || fail "NAT'd origin did not sync over direct QUIC (height ${h})"
+    pass "NAT'd origin synced 10 blocks over direct QUIC through MASQUERADE"
+
+    rpc_call "${NS_ORIGIN}" "${ORIGIN_RPC}" "${DATA_ORIGIN}" "getpeerinfo" '[]' | python3 -c '
+import json,sys
+peers=json.load(sys.stdin)["result"]
+assert any(p.get("transport")=="quic" and not p.get("inbound") for p in peers), peers' ||
+        fail "origin has no outbound transport=quic peer"
+    rpc_call "${NS_RELAY}" "${RELAY_RPC}" "${DATA_RELAY}" "getpeerinfo" '[]' | python3 -c '
+import json,sys
+peers=json.load(sys.stdin)["result"]
+nat_wan=sys.argv[1]
+assert any(p.get("transport")=="quic" and p.get("inbound") and p["addr"].startswith(nat_wan + ":")
+           for p in peers), peers' "${ORIGIN_NAT_WAN_IP}" ||
+        fail "public node does not see the origin (as its NAT address) over QUIC"
+    pass "Both sides report the direct QUIC peer; the public node sees the NAT's WAN address"
+    exit 0
+fi
+
+# The relay is operator-pinned (p2p.relay=1): its 10.88/16 address is
+# private, so dial-back can never verify it and auto mode would not relay.
 RELAY_PID="$(start_node "${NS_RELAY}" "${DATA_RELAY}" "${RELAY_RPC}" "${RELAY_P2P}" "${LOG_RELAY}" \
-    "--externalip=${RELAY_IP}:${RELAY_P2P}")"
+    "--externalip=${RELAY_IP}:${RELAY_P2P}" --p2p.relay=1)"
 ORIGIN_PID="$(start_node "${NS_ORIGIN}" "${DATA_ORIGIN}" "${ORIGIN_RPC}" "${ORIGIN_P2P}" "${LOG_ORIGIN}")"
 TARGET_PID="$(start_node "${NS_TARGET}" "${DATA_TARGET}" "${TARGET_RPC}" "${TARGET_P2P}" "${LOG_TARGET}" \
     "--relayregister=${RELAY_IP}:${RELAY_P2P}")"
@@ -446,6 +821,12 @@ wait_rpc "${NS_RELAY}" "${RELAY_RPC}" "${DATA_RELAY}" || fail "relay RPC did not
 wait_rpc "${NS_ORIGIN}" "${ORIGIN_RPC}" "${DATA_ORIGIN}" || fail "origin RPC did not come up"
 wait_rpc "${NS_TARGET}" "${TARGET_RPC}" "${DATA_TARGET}" || fail "target RPC did not come up"
 pass "All three regtest daemons are running inside isolated namespaces"
+# A relay at genesis is in initial block download and refuses new circuits;
+# give the chain a recent tip first.
+relay_miner="$(rpc_call "${NS_RELAY}" "${RELAY_RPC}" "${DATA_RELAY}" "wallet.createhd" '["miner"]' |
+    jq -r '.result.first_address')"
+rpc_call "${NS_RELAY}" "${RELAY_RPC}" "${DATA_RELAY}" "generatetoaddress" "[3, \"${relay_miner}\"]" \
+    >/dev/null || fail "relay could not mine"
 
 if tcp_probe "${NS_ORIGIN}" "${TARGET_NAT_WAN_IP}" "${TARGET_P2P}"; then
     fail "origin unexpectedly opened TCP to target through the target NAT public address"
