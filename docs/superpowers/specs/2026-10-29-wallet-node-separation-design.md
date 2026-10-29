@@ -1,215 +1,241 @@
-# Wallet / node separation — design
+# Consensus kernel and wallet separation — design (rev 2)
 
-**Status:** draft for owner approval. No code until approved.
-**Target:** v8.2.1 at the earliest, *if* the requalification cost below is acceptable. Not part of v8.2.0 or of PR #855.
-**Baseline:** `dinero-main` 3aca093c0 (after #856). All file:line references are against that commit.
+**Status:** draft for owner approval. No implementation until approved.
+**Release:** separate from v8.2.0 and from PR #855. Whether any of it fits v8.2.1 is decided **after stage 0 measures the scope** (section 11).
+**Baseline:** `dinero-main` 3aca093c0 (after #856). File:line references are against that commit.
+**Rev 2 changes:** owner chose to purify `dinero_consensus` itself (not to route the wallet through `dinero_consensus_core`); added the target architecture; folded in the builder check (rescan keeps a per-call chain view; mempool adapter is header-only; consensus_core is not self-contained and is out of scope).
 
-## 1. Why
+## 1. Target architecture (owner)
 
-`dinero_wallet` declares that it depends only on pure libraries, but ten of its objects call node code: ChainDB, BlockStorage, UTXOIndex, `open_sqlite`, `dinero::Mempool` (`src/daemon/mempool.cpp`, which is in no library), and a few `dinero_core` symbols. Today those references resolve only by link-order luck: GNU ld scans each archive once, and `wallet_manager.cpp.o` is pulled in or not depending on which archive member first satisfies a weak libstdc++ instantiation that RocksDB also references. On GCC 15 (ubuntu-latest) that luck runs out: 8 test links fail in CI, 114 in a forced worst case.
+Clear ownership and one-way dependencies. **"Pure" means code that can run from explicit inputs without a database, network, or global node state.**
 
-PR #856 pinned the three affected CI jobs to ubuntu-24.04 (`.github/workflows/tests.yml:42`, `:780`, `core-heavy.yml:49`). **The pin is a workaround, not a fix.** A 522/522 pass on 24.04 says nothing about GCC 15; the defect stays open until the wallet links on GCC 15 without the pin.
+- **Consensus kernel:** deterministic validation, scripts, sighash, subsidies, chain rules. Receives height, parameters and coin data as inputs. Pure and independently linkable.
+- **Chainstate:** stores blocks and UTXOs; adapts them to consensus interfaces.
+- **Mempool:** owns unconfirmed transactions and policy; calls consensus rules; consensus never calls the mempool.
+- **P2P:** transports messages; owns no validation rules.
+- **Wallet:** owns keys, accounts, wallet data. Node-side adapters provide chain and mempool observations.
+- **Daemon:** assembles the components. `dinero_core` may orchestrate services and need not be pure.
 
-## 2. Goals
+Forced-link tests and dependency-graph checks keep each boundary honest. The destination is reached in reviewable stages. **This project is the first leg: a pure consensus kernel and a wallet that depends only on pure libraries.** Mempool-as-a-library, P2P, and daemon assembly are later legs (section 13).
 
-1. `dinero_wallet` builds and passes a **forced-link test** (every object in the archive linked, whole-archive) with **no ChainDB, UTXOIndex-in-chainstate, BlockStorage, RocksDB, daemon mempool, or `dinero_core` code** anywhere in its *transitive* link.
-2. That property is **proven mechanically** and kept by CI (section 6), not asserted.
-3. The node supplies what the wallet needs through **interfaces the wallet defines**, implemented by **node-side adapters**.
-4. Existing callers — daemon/RPC, NodeCore, the standalone wallet FFI, Qt — migrate with no external behavior change (section 3).
-5. The ubuntu-24.04 pin on the three jobs is removed **only after** those jobs pass on GCC 15 without it.
+## 2. Why now
 
-## 3. Hard constraints (owner)
+`dinero_wallet` declares pure dependencies, but ten wallet objects call node code, and `dinero_consensus` — which the wallet links — carries RocksDB, SQLite, ChainDB, ChainstateService, and wallet code. Those references resolve only by link-order luck. On GCC 15 the luck runs out (8 test links fail in CI; 114 in a forced worst case). PR #856 pinned three jobs to ubuntu-24.04 (`.github/workflows/tests.yml:42`, `:780`, `core-heavy.yml:49`). **That pin is a workaround; a 24.04 pass says nothing about GCC 15. The defect is open until those jobs pass on GCC 15 unpinned.**
 
-- **Wallet files open unchanged, no migration.** Wallet storage is SQLite only: `<datadir>/wallet_registry.db` (`wallet_manager.cpp:396`), `<datadir>/wallets/wallet_<name>.db` (`:1695`, `:1923`), schema via `PRAGMA user_version` (`:2827`, `:2840`). No schema, file name, path, or PRAGMA changes. `open_sqlite`'s PRAGMAs (WAL, `synchronous=NORMAL`, `foreign_keys=ON`, busy 5000, mmap 64 MB — `src/sqlite_open.cpp:19-40`) move byte-for-byte. The raw `sqlite3_open` sites (wallet_manager:2088, hd_wallet:308/684/744, wallet_utxo_tracker:61, asset_registry:69) are left exactly as they are, including their lack of PRAGMAs.
-- **RPC methods, fields, and error behavior unchanged.**
-- **FFI signatures unchanged:** `include/nodecore/nodecore_ffi.h`, `wallet-core/ffi/wallet_ffi.h`, and the 7 Android JNI exports.
-- **Qt and NodeCore behave the same.**
-- **Internal C++ interfaces may change** (constructors, setters, method parameters, headers under `include/wallet/`).
-- **Any unavoidable external change is flagged for a separate decision**, not folded in. Section 9 lists the candidates found so far.
+## 3. Goals
 
-## 4. Non-goals and anti-goals
+1. `dinero_consensus` is pure by the definition above and links on its own (forced, whole-archive) with nothing but declared pure libraries.
+2. The consensus↔wallet address cycle is gone.
+3. `dinero_wallet` links on its own (forced, whole-archive), and its **full transitive closure** contains no RocksDB, chainstate, core, daemon, mempool, P2P, or RPC code.
+4. Both properties are proven mechanically and enforced in CI (section 8).
+5. Callers migrate with no external behavior change (section 4, section 10).
+6. The 24.04 pin comes off only after the three jobs pass on GCC 15 without it.
 
-- No new phone app, no light client, no new FFI surface.
-- No behavior change in coin selection, rescan, fee bumping, RBF/CPFP, sync reporting.
-- Not fixing the other architecture tangles (section 10); they are listed only.
-- **Anti-goal:** a "separation" that passes because a test links stubs or because link order happens to work. If the gate can pass with `wallet_manager.cpp.o` absent, it is not a gate.
-- **Anti-goal:** moving the dependency instead of removing it (e.g. the wallet linking a new library that itself drags in RocksDB).
+## 4. Hard constraints (owner)
 
-## 5. What the wallet actually calls (derived from the code)
+- **Wallet files open unchanged, no migration.** Wallet storage is SQLite only (`<datadir>/wallet_registry.db`, `wallet_manager.cpp:396`; `<datadir>/wallets/wallet_<name>.db`, `:1695`, `:1923`; schema by `PRAGMA user_version`, `:2827`, `:2840`). No schema, path, or PRAGMA change. `open_sqlite`'s PRAGMAs (`src/sqlite_open.cpp:19-40`) move byte-for-byte; raw `sqlite3_open` sites stay as they are.
+- **RPC methods, fields, and error behavior unchanged. FFI signatures unchanged** (`include/nodecore/nodecore_ffi.h`, `wallet-core/ffi/wallet_ffi.h`, 7 JNI exports). **Qt and NodeCore behave the same.**
+- **No consensus logic change.** No edit to any file in `CONSENSUS_MANIFEST` (`include/consensus/freeze.h:133-141`: `limits.h`, `tx_validation.h`, `subsidy.h`, `freeze.h`). Consensus sources that stay in the library are not edited, with one named exception (`tx_validation.cpp` include line, section 6.2).
+- Internal C++ interfaces may change.
+- **Any unavoidable external change is flagged for separate decision**, never folded in (section 10.3).
 
-Two read-only surveys of 3aca093c0 traced every node reference from `dinero_wallet` sources and reconciled it against the symbol evidence (`~/src/dinero-evidence/2026-10-28-wallet-node-separation/undeclared.json`, `link-red-base.log`). Ten objects, not nine: `wallet_fee_bump_hooks.cpp` was missing from the earlier list.
+## 5. Non-goals and anti-goals
+
+- No new phone app, light client, or FFI surface. No behavior change in validation, coin selection, rescan, fee bumping, RBF/CPFP, or sync reporting.
+- Dead code is moved or left, not deleted, in this project; deletion is a follow-up (keeps diffs reviewable).
+- **Anti-goal:** a gate that passes because of stubs or lucky link order.
+- **Anti-goal:** moving a dependency instead of removing it — e.g. a library the wallet links that itself drags RocksDB back in.
+
+## 6. Leg 1a — purify `dinero_consensus`
+
+### 6.1 Measured classification
+
+A read-only survey classified all 52 sources (`src/consensus/CMakeLists.txt:137-190`; no conditional sources) by full transitive includes (`c++ -M`) and by unresolved symbols in a built archive, cross-checked against `undeclared.json` (16 node symbols; exact match).
+
+- **Pure (42):** all script, sighash, tapscript, covenant, PoW, chainwork, merkle, filter, Utreexo, CSN-replay, subsidy, chainparams, primitives, and hash sources. `src/common/serialization.cpp` includes `storage/tip_info.h`, which is header-only over chainwork/uint256 — pure in practice; the header's location is a follow-up.
+- **Impure (10 objects, 8 distinct problems):**
+
+| Source | Problem | Live consumers | Disposition |
+|---|---|---|---|
+| `coins_db.cpp` | RocksDB (`:2-3`, `DB::Open :31`, WriteBatch `:354`, Iterator `:573`) | none compiled (only uncompiled `src/mining/miner_engine.cpp:356,462,512`) | **move to `dinero_chainstate`** (already links RocksDB; no chainstate code calls it → no cycle) |
+| `coins_view_cache.cpp` | includes `coins_db.h` (RocksDB headers) | none compiled | **move to `dinero_chainstate`** with coins_db |
+| `tx_validation.cpp` | `#include "consensus/coins_db.h"` (`:2`) only for the `CoinsViewCache` type (virtual `getCoin`, `:97`, `:221`); no RocksDB symbols | `test_covenant_activation.cpp:460,471` (`consensus::verifyScript`) | **stays.** New RocksDB-free header `include/consensus/coins_view.h` declares `CoinsViewCache`; `coins_db.h` includes it; `tx_validation.cpp` includes it instead. Frozen `tx_validation.h` already forward-declares the type (`:33`) and is not touched |
+| `global_utxo_set_impl.cpp` | `daemon/services/chainstate_service.h` (`:11`) → p2p, ChainDB, UTXOIndex, sqlite3; calls `ChainstateService::GetChainDB`/`getBlockHeight` (`:38,40`), `ChainDB::getCoinWithConfidentialFallback` (`:58,75`) | **none compiled** — callers `fast_sync_service.cpp:321`, `methods_snapshot.cpp:132,312` are in no CMake file (verified) | **move to `dinero_core`** (the only place it can live; it needs ChainstateService) |
+| `src/indexing/utxo_position_index.cpp` | `storage/chain_db.h` (RocksDB) `:12`; `ChainDB::forEachUTXO` `:97,203`, `getPreBaseCoinSetBase :175`, `forEachPreBaseCoin :205` | `chainstate_service.cpp` (core) `:2801, 4820-4863, 12065, 14175, 14200, 15863, 15880`; `methods_utreexo.cpp:517,887`; tests `test_utxo_position_index_rebuild` (`tests/CMakeLists.txt:5221-5249`), `test_csn_integration` (`:10616-10638`) — both already link chainstate | **move to `dinero_chainstate`** (core links chainstate, `CMakeLists.txt:1194`; chainstate never calls it → no cycle) |
+| `addr_codec.cpp` | `wallet/address.h` (`:2`) → UTXOIndex, wallet balance service, sqlite3; calls 5 `Address::*` from the wallet | **no consensus source calls it**; already compiled into `dinero_wallet` (`src/wallet/CMakeLists.txt:13`), `dinero_core` (`:958`), and 7 test executables | **remove from consensus** (section 6.3) |
+| `block_index.cpp`, `sigops.cpp` | logger only | — | **stay**; logger becomes a declared library (section 6.4) |
+
+Interface vs. input (owner's kernel rule): none of the remaining 44 sources reads a database or node global after this; the only coin access left in the kernel is through the `CoinsViewCache` abstraction passed into `tx_validation`, i.e. chainstate adapts to a consensus interface. No new consensus interface is needed in leg 1.
+
+### 6.2 Library interface cleanup
+
+After the moves, `dinero_consensus` drops from its PUBLIC usage requirements:
+- `RocksDB::rocksdb` (`:217` Apple, `:230` other) and the RocksDB include dir (`:193-195`);
+- `sqlite3` (`:218`, `:231`) — needed only by the addr_codec and global_utxo_set_impl header chains;
+- the `src/daemon` include dir (`:199`) — no consensus source needs it (all 52 preprocess without it).
+
+`jsoncpp_static` stays (`block_undo.cpp:3`).
+
+**Consumers that may have relied on those transitive exports** (they link `dinero_consensus` and get RocksDB/sqlite/daemon includes or symbols through it): `dinero_chainstate` (`src/storage/CMakeLists.txt:33`, declares RocksDB itself at `:37`), `dinero_core` (`CMakeLists.txt:1195`), `src/pool:27`, `src/network:26`, `tools/CMakeLists.txt:8,14,28`, `cmake/SwapTower.cmake:21`, `wallet-core/ffi/tests:14`, 4 fuzz targets, ~236 test references (`tests/CMakeLists.txt` 217, `tests/consensus` 19), and the Rust bridge (`mobile-tauri/src-tauri/build.rs:29-38`). Stage 0 measures exactly which of these break (section 11); each fix is the consumer declaring what it uses.
+
+### 6.3 Address cycle
+
+`addr_codec.o` is the only consensus object that needs wallet symbols (`Address::validateAddress`, `getAddressMetadata`, `decodeAddress`, `createAddress`, `createBech32P2WPKH`; defined `src/wallet/address.cpp:242, 343, 556, 791, 1499`). Since nothing in consensus calls addr_codec, removing it from the consensus source list breaks the cycle without moving `address.cpp`. Its other two homes (wallet, core) are unaffected. `addr_types.cpp` is pure and stays.
+
+Residual edge, not a cycle: `dinero_address_encoding` (root `:269-273`) uses `HrpForActiveNetworkRef` from consensus without declaring it. Stage 1 adds the declaration (`dinero_address_encoding` → `dinero_consensus`), which is one-way.
+
+### 6.4 Logger
+
+`block_index.cpp` and `sigops.cpp` (sigops is also in `dinero_consensus_core`, `:64`) use `Logger`/`g_logger`, which consensus never declares; today the wallet's or core's copy of `src/common/logger.cpp` satisfies them. A pure kernel must declare everything it needs, so rev 1's "don't move the logger" is reversed: **new `dinero_logging` library** containing only `src/common/logger.cpp` (std + `<filesystem>` only). Linked PUBLIC by `dinero_consensus`, `dinero_consensus_core`, `dinero_wallet`, `dinero_core`; removed from the wallet's and core's source lists so it exists once in each archive closure. The 132 test executables that compile `logger.cpp` directly are left alone (their own definition wins; the archive member is not pulled).
+
+Whether a process-wide logger counts as "global node state" under the purity rule is noted as a follow-up question; in leg 1 it is a declared, storage-free dependency.
+
+## 7. Leg 1b — separate the wallet
+
+### 7.1 What the wallet actually calls
+
+Derived from the code (two surveys, reconciled with `undeclared.json` and `link-red-base.log`). Ten wallet objects reach node code.
 
 | # | Operation | Call sites | Today's provider |
 |---|---|---|---|
-| C1 | Chain tip (height, hash) | wallet_manager:5682, wallet_sync_status:25, reorg_detector:104; hd_wallet:1070,1214 via the existing `ChainHeightProvider` | ChainDB `getTip` |
+| C1 | Chain tip (height, hash) | wallet_manager:5682, wallet_sync_status:25, reorg_detector:104; hd_wallet:1070,1214 via existing `ChainHeightProvider` | ChainDB `getTip` |
 | C2 | Block hash at height | wallet_manager:5831 | ChainDB `getBlockHashByHeight` |
-| C3 | Read full block by hash (archival read) | wallet_manager:5839 → `storage::ReadArchivalBlock` (`include/storage/archival_block_reader.h:76,81,104`: `getHeaderMetadata`, `BlockStorage::readBlock`, `ChainDB::getBlock`) | ChainDB + BlockStorage |
-| W1 | Watch-index UTXO lookup `(txid,vout)` → exists, is_confidential | wallet_manager:4395 | UTXOIndex `GetUTXO` |
-| W2 | List unspent from watch index | hd_wallet:1073,1218; transaction_builder:95 | UTXOIndex `GetUnspentUTXOs` |
-| W3 | Register watch script / clear watch set | wallet_manager:2547, 5262, 5503, 8189, 8297, 8489, 8634, 8679; hd_wallet:1018-1050, 1490 | UTXOIndex `RegisterAddress`, `ClearRegisteredAddresses` |
-| S1 | Open SQLite DB with standard PRAGMAs | wallet_manager:401, 1712, 1941; descriptor_store:20 | `open_sqlite` (in dinero_chainstate) |
-| M1 | Is outpoint spent in mempool | wallet_manager:4454 (listUnspent filter) | Mempool `isOutputSpentInMempool` |
-| M2 | Mempool entry by txid → fee, size, vin, depends | rbf_cpfp_detector:85,141,182,261; fee_bump_engine:190,260 | Mempool `getMempoolEntry` |
-| M3 | Mempool stats (size, count, avg fee rate) | slow_reason_analyzer:210 | Mempool `getStats` |
-| D1 | Sync phase, header-sync progress | wallet_sync_status:44,54 | BlockDownloadScheduler (inline), `HeaderSyncManager::GetStatus` (core) |
-| D2 | Peer quality stats | slow_reason_analyzer:141 | `PeerManager::GetQualityStats` (core) |
-| D3 | Tx inclusion analysis | wallet_fee_bump_hooks:26-27, 106/172/214/244/311 | `TxInclusionAnalyzer` (`src/mining`, core) |
-| P1 | Address → scriptPubKey | descriptor_psbt:253,391; recipient_descriptor:18 | `BuildScriptPubKeyFromAddress` (`src/common/address_script_builder.cpp`, core; pure code) |
+| C3 | Read full block | wallet_manager:5839 → `storage::ReadArchivalBlock` (`include/storage/archival_block_reader.h:70-105`) | ChainDB + optional BlockStorage |
+| W1–W3 | Watch-index lookup, list unspent, register/clear watch scripts | wallet_manager:4395, 2547, 5262, 5503, 8189, 8297, 8489, 8634, 8679; hd_wallet:1018-1050, 1073, 1218, 1490; transaction_builder:95 | UTXOIndex (SQLite, `src/wallet/utxo_index.cpp`, compiled into chainstate) |
+| S1 | Open SQLite with standard PRAGMAs | wallet_manager:401, 1712, 1941; descriptor_store:20 | `open_sqlite` (in chainstate) |
+| M1 | Outpoint spent in mempool | wallet_manager:4454 | `Mempool::isOutputSpentInMempool` |
+| M2 | Mempool entry (fee, size, vin, depends) | rbf_cpfp_detector:85,141,182,261; fee_bump_engine:190,260 | `Mempool::getMempoolEntry` |
+| M3 | Mempool stats | slow_reason_analyzer:210 | `Mempool::getStats` |
+| D1–D3 | Sync phase/header progress; peer quality; tx inclusion | wallet_sync_status:44,54; slow_reason_analyzer:141; wallet_fee_bump_hooks:26-27,106,172,214,244,311 | core / p2p / mining |
+| P1 | Address → scriptPubKey | descriptor_psbt:253,391; recipient_descriptor:18 | `BuildScriptPubKeyFromAddress` (`src/common/address_script_builder.cpp`, core, pure) |
 
-Not in the set: transaction submit. The wallet makes no submit call today (NodeCore's `nodecore_broadcast_tx` goes to the mempool directly, `nodecore_ffi.cpp:1187-1232`). `IMempoolInterface` (`include/wallet/mempool_interface.h:137`) exists with no production implementer; it is left alone.
+Compile-time leaks to remove: `storage/chain_db.h:8-13` (RocksDB headers) included by four wallet sources; `daemon/mempool.h:20-21`; node types in `include/wallet/wallet_manager.h:42-46,139,399,580-581`, `wallet_sync_status.h:3`, `wallet_fee_bump_hooks.h:7`. Not in the set: tx submit (the wallet makes none; `IMempoolInterface`, `include/wallet/mempool_interface.h:137`, is left alone).
 
-**Compile-time leaks** that must go too, or the wallet only compiles because `dinero_consensus` exports RocksDB's include path:
-- `storage/chain_db.h:8-13` includes `<rocksdb/*>`; included by wallet_manager, wallet_sync_status, reorg_detector, slow_reason_analyzer.
-- `daemon/mempool.h:20-21` pulls in `mempool/coins_view_mempool.h` and `mining/ct_selection_policy.h`.
-- Public wallet headers name node types: `include/wallet/wallet_manager.h:42-46, 139, 399, 580-581`; `wallet_sync_status.h:3` (`p2p/block_download_scheduler.h`); `wallet_fee_bump_hooks.h:7`.
-
-## 6. The transitive problem: `dinero_consensus`
-
-Removing the ten objects' node calls is **not enough**. `dinero_wallet` PUBLIC-links `dinero_consensus` (`src/wallet/CMakeLists.txt:112-123`), and `dinero_consensus`:
-- PUBLIC-links `RocksDB::rocksdb` (`src/consensus/CMakeLists.txt:217`, `:230`) for `coins_db.cpp`, and exports RocksDB's include dir (`:193-195`) and `src/daemon` (`:199`);
-- contains objects that reference `ChainstateService::GetChainDB` (dinero_core) and ChainDB methods without declaring either (`global_utxo_set_impl.cpp:11,38,58`; `src/indexing/utxo_position_index.cpp:12,175,205`);
-- has a consensus→wallet cycle (`addr_codec.cpp` calls `Address::*`).
-
-So the wallet's transitive link contains RocksDB today regardless of what the wallet's own objects do.
-
-**Decision (proposed):** the wallet stops linking `dinero_consensus` and links `dinero_consensus_core` instead. `dinero_consensus_core` (`src/consensus/CMakeLists.txt:29-76`) has no RocksDB, but lacks three things the wallet uses: `chainparams_impl.cpp` (`Params()`, e.g. hd_wallet:879), `script_interpreter.cpp`, `script_sighash.cpp` (taproot_tx_signer, swap/htlc, covenant_profile, transaction_signer). Their direct includes are consensus/primitives/crypto headers only (checked); they move from `dinero_consensus` to `dinero_consensus_core`, and `dinero_consensus` keeps getting them by linking `dinero_consensus_core` as it does now. The builder confirms the full transitive include and symbol closure with the gate in section 7; if any of the three turns out to drag storage in, that is a stop-and-report, not a workaround.
-
-`addr_codec.cpp` / `addr_types.cpp` are compiled into three targets (wallet :13-14, consensus :181-182, core :959-962). The wallet keeps its own copy; the cycle in `dinero_consensus` is a follow-up (section 10).
-
-## 7. Proof of separation (the gates)
-
-These are written first, observed RED on the baseline, and become required CI checks at the end.
-
-- **G1 — forced standalone link.** A test executable links `-Wl,--whole-archive libdinero_wallet.a -Wl,--no-whole-archive` plus *only* the wallet's declared transitive libraries, with `-Wl,--no-undefined` semantics (an executable link; no stubs, no `wallet_test_deps`, no `mempool_test_stubs.cpp`). It must link and run a trivial `main` that constructs a `WalletManager` on a temp dir and opens it. Evolves `test_wallet_mempool_link.cpp` from the evidence folder, which fails deterministically on the baseline with 10 undefined references. Whole-archive is what removes link-order luck: every object is present, so any undeclared dependency fails every time.
-- **G2 — transitive library closure.** A CMake script walks `dinero_wallet`'s `INTERFACE_LINK_LIBRARIES` recursively and fails if the closure contains `RocksDB::*`, `rocksdb`, `dinero_chainstate`, `dinero_core`, `dinero_consensus` (the full one), `dinero_rpc_handlers`, or any target compiling `src/daemon/mempool.cpp`. Also fails if any include directory in the closure is RocksDB's or `src/daemon`.
-- **G3 — symbol check.** On the G1 binary: `nm -C` must show no `rocksdb::`, `dinero::ChainDB`, `dinero::BlockStorage`, `dinero::Mempool`, `ChainstateService`, or `HeaderSyncManager` symbols. Catches a dependency that sneaks in through a library G2 thinks is clean.
-- **G4 — wallet file compatibility.** A fixture wallet directory (`wallet_registry.db` + one `wallets/wallet_<name>.db`, HD wallet, descriptor store) created by the *pre-split* build and checked in. The post-split build opens it read-write and must report the same addresses, balance, UTXOs, and `user_version`, and must not change the file's schema (`sqlite_master` dump identical before and after open).
-- **G5 — external interface freeze.** Header diff of `nodecore_ffi.h`, `wallet_ffi.h`, and the JNI export list is empty against the baseline; the exported dynamic symbol list of `nodecore_ffi` and `dinero_wallet_ffi` is a superset-equal match. RPC: the existing wallet RPC tests stay green, plus a recorded regtest transcript (getbalance, getnewaddress, listunspent incl. mempool-spent filtering, sendtoaddress, rescan, fee-bump/RBF, sync status, plus 3 error cases) diffed field-for-field before vs after.
-- **G6 — standalone consumer.** `dinero_wallet_ffi` and the Rust bridge's static link set (`mobile-tauri/src-tauri/build.rs:29-38`: `dinero_wallet_ffi`, `dinero_wallet`, `dinero_crypto`, `dinero_consensus` → becomes `dinero_consensus_core`) link with no node libraries. The survey *infers* this link is broken today; stage 0 confirms or refutes it by building it.
-
-G1–G3 run on GCC 15 (ubuntu-latest), GCC 13 (24.04), Clang (macOS), and MSVC (Windows).
-
-## 8. Shape of the change
-
-### 8.1 Libraries
+### 7.2 Shape
 
 ```
-dinero_wallet            pure; defines the interfaces; links consensus_core (+3 files), crypto,
-                         bip32, tx_primitives, address_encoding, shielded, argon2, OpenSSL, sqlite3,
-                         dinero_sqlite
-dinero_sqlite   (new)    src/sqlite_open.cpp only; linked by dinero_wallet and dinero_chainstate
-dinero_wallet_node (new) node-side adapters + node diagnostics moved out of the wallet;
-                         links dinero_wallet, dinero_chainstate, dinero_core
+dinero_logging      (new)  src/common/logger.cpp
+dinero_sqlite       (new)  src/sqlite_open.cpp, unchanged; linked by wallet and chainstate
+dinero_consensus           pure after leg 1a
+dinero_wallet              pure: links consensus, logging, sqlite, crypto, bip32, tx_primitives,
+                           address_encoding, shielded, argon2, OpenSSL, sqlite3
+                           + utxo_index.cpp (from chainstate), address_script_builder.cpp (from core)
+                           defines IWalletChainView, IWalletMempoolView
+dinero_wallet_node  (new)  ChainDbWalletView adapter; wallet_sync_status, slow_reason_analyzer,
+                           wallet_fee_bump_hooks (moved out of the wallet); links wallet, chainstate, core
+include/daemon/mempool_wallet_view.h   header-only MempoolWalletView adapter
 ```
 
-- `open_sqlite` (S1) moves into `dinero_sqlite` unchanged. Both the wallet and chainstate (`utxo_index.cpp:96` uses it) link it, so there is no second copy.
-- `BuildScriptPubKeyFromAddress` (P1) is pure; `src/common/address_script_builder.cpp` moves from `dinero_core` into `dinero_wallet` (core already links the wallet, so core callers are unaffected).
-- **UTXOIndex (W1–W3).** `src/wallet/utxo_index.cpp` is SQLite, not RocksDB (the comment at `src/storage/CMakeLists.txt:17` is wrong), and includes only wallet/address/logger headers. It moves from `dinero_chainstate` into `dinero_wallet`; W1–W3 then become internal wallet calls, not interfaces. The node still creates and owns the instance (`chainstate_service.cpp:2595`, `daemon_app.cpp:1724`) and hands it in with `setUTXOIndex` as today. If `dinero_chainstate`'s own objects (not `ChainstateService` in core) use UTXOIndex, chainstate links `dinero_wallet` for it; the builder checks which.
-
-### 8.2 Interfaces (wallet-defined, `include/wallet/node_interfaces.h`)
-
-Only what section 5 requires:
+- **UTXOIndex** is SQLite (the RocksDB comment at `src/storage/CMakeLists.txt:17` is wrong) and includes only wallet/address/logger headers; it moves into the wallet, so W1–W3 become internal calls. The node still creates and owns the instance (`chainstate_service.cpp:2595`, `daemon_app.cpp:1724`) and hands it in with `setUTXOIndex`. If `dinero_chainstate`'s own objects use UTXOIndex, chainstate links the wallet for it (builder checks).
+- **Interfaces** (`include/wallet/node_interfaces.h`), only what 7.1 requires:
 
 ```cpp
 struct WalletChainTip { int32_t height; uint256 hash; };
-
-class IWalletChainView {            // C1, C2, C3
+class IWalletChainView {                  // C1-C3
 public:
     virtual ~IWalletChainView() = default;
     virtual std::optional<WalletChainTip> GetTip() const = 0;
     virtual std::optional<uint256> GetBlockHashAtHeight(int32_t height) const = 0;
     virtual std::optional<CBlock> ReadBlock(const uint256& hash) const = 0;
 };
-
-struct WalletMempoolEntry { Transaction tx; CAmount fee; size_t tx_size; std::set<uint256> depends; };
-struct WalletMempoolStats { size_t total_size; size_t tx_count; double avg_fee_rate; };
-
-class IWalletMempoolView {          // M1, M2, M3
+class IWalletMempoolView {                // M1-M3
 public:
     virtual ~IWalletMempoolView() = default;
-    virtual bool IsOutputSpent(const OutPoint& outpoint) const = 0;
-    virtual std::optional<WalletMempoolEntry> GetEntry(const uint256& txid) const = 0;
-    virtual WalletMempoolStats GetStats() const = 0;
+    virtual bool IsOutputSpent(const OutPoint&) const = 0;
+    virtual std::optional<WalletMempoolEntry> GetEntry(const uint256& txid) const = 0;  // fee, tx_size, tx.vin, depends
+    virtual WalletMempoolStats GetStats() const = 0;                                    // total_size, tx_count, avg_fee_rate
 };
 ```
+Field types are copied from the current Mempool/ChainDB types. A null view reproduces today's null-pointer behavior.
+- **Rescan keeps a per-call chain view** (builder finding): `rescanBlockchain(start, gap, const IWalletChainView&)`. `wallet_worker.cpp:186` (compiled into core, `CMakeLists.txt:1136`) passes no BlockStorage, so `ReadArchivalBlock` reads ChainDB only; it gets a view built without BlockStorage and keeps reading the same source. The other callers (`wallet_service.cpp:502`, `methods_wallet_context.cpp:6678`, `nodecore_ffi.cpp:1134`) get views with BlockStorage, as today. A stored view would have silently changed `wallet_worker`'s read path.
+- **Mempool adapter is header-only** (builder finding): `src/daemon/mempool.cpp` is in no library, and `dinero_rpc_handlers` already calls `Mempool` directly without declaring it. A header-only adapter adds no new undeclared edge; the rpc_handlers edge is pre-existing and listed in leg 2. It is outside the wallet's closure, so it does not weaken the wallet gates.
+- **Node diagnostics move out** (D1–D3): `wallet_sync_status`, `slow_reason_analyzer`, `wallet_fee_bump_hooks` go to `dinero_wallet_node` unchanged, rather than putting node concepts into wallet interfaces. `reorg_detector` (C1 only), `rbf_cpfp_detector`, `fee_bump_engine` stay in the wallet on the interfaces. *My call.*
 
-Exact field types follow what the current callers read (the builder copies them from `Mempool`'s entry/stats types; the shapes above are the fields used, not new semantics). `ChainHeightProvider` already used by hd_wallet stays and is implemented by the chain-view adapter, so hd_wallet needs no change beyond wiring. Null view = today's null pointer behavior (e.g. `listUnspentUTXOs` with no mempool skips the M1 filter, exactly as `nodecore_list_unspent_json` does now, `nodecore_ffi.cpp:1150-1161`).
+## 8. Gates (written first, observed RED on the baseline)
 
-### 8.3 Node diagnostics move out instead of being abstracted
+Each gate is added in stage 0 as a non-required job so its RED is recorded, and becomes required at stage 7.
 
-D1–D3 are node telemetry, used only by RPC handlers and tests. Wrapping them in wallet interfaces would put node concepts in the wallet's API. Instead `wallet_sync_status.cpp`, `slow_reason_analyzer.cpp`, and `wallet_fee_bump_hooks.cpp` (and their headers) move from `dinero_wallet` to `dinero_wallet_node`, keeping names and behavior. `reorg_detector.cpp` needs only C1, so it stays in the wallet on `IWalletChainView`. `rbf_cpfp_detector.cpp` and `fee_bump_engine.cpp` stay in the wallet on `IWalletMempoolView` (they are wallet logic). *My call; the alternative is three more interfaces.*
+| Gate | What | Baseline expectation |
+|---|---|---|
+| **K1 consensus forced link** | executable linking `--whole-archive libdinero_consensus.a` + only its declared deps (`--no-undefined` semantics); `main` calls `Params()` and verifies one known script and sighash vector | RED: 16 undefined node symbols (ChainstateService, ChainDB, Address, Logger) |
+| **K2 consensus closure** | CMake script walks `dinero_consensus` usage requirements recursively; fails on RocksDB, sqlite3, chainstate, core, wallet, rpc, any target with `src/daemon/mempool.cpp`, or RocksDB/`src/daemon` include dirs | RED: RocksDB, sqlite3, daemon include |
+| **K3 consensus symbols** | `nm -C` on K1's output: no `rocksdb::`, `sqlite3_`, `ChainDB`, `ChainstateService`, `Address::`, `Mempool` | RED |
+| **K4 consensus vectors identical** | before/after run of: `BIP341SighashVectors` (`tests/CMakeLists.txt:5601`), `BIP119CTVVectors` (`:5558`), `CovenantActivation` (`:5622`), `ScriptJSONTests` (`:6081`), `DAAGoldenVectors` (`:1929`), `UtreexoLeafHashGolden` (`:10846`), `MerkleGolden` (`:9335`), `test_header_hash_vectors` (`:9198`), `HeaderPoWVerification` (`:9395`), `TaprootConsensus` (`:5470`), `ScriptInterpreter` (`:5490`), `TaprootScriptPathConsensus` (`:5579`), `RIPEMD160*Vectors` (`:261,760,775`), `HashWrapperVectors` (`:792`), `StateCommitmentExternalVectors` (`:2288`), `CompactRegtestFixedVectors`/`VectorOracle` (`:13499,13510`), `SerializationVectors` (`tests/consensus/CMakeLists.txt:699`), `ConsensusCoreSt` (`:1344`), `StatelessVerification` (`:1229`), `SubsidySchedule` (`:1222`), `ConsensusInvariants` (`:1267`), `FormalInvariants` (`:1155`), `Consensus_DeterminismOracles` (`:639`), plus `compact-regtest-vectors.yml` and the independent-vectors / saved-proofs jobs. Pass on both, and every test that prints a vector digest prints the same digest | GREEN on baseline (reference run) |
+| **K5 consensus source freeze** | `CONSENSUS_MANIFEST` checksums verify; `git diff` of `src/consensus/**` limited to CMake lists, the new `coins_view.h`, `coins_db.h` including it, and the one include line in `tx_validation.cpp` | GREEN |
+| **W1 wallet forced link** | `--whole-archive libdinero_wallet.a` + only declared deps; no `wallet_test_deps`, no `mempool_test_stubs.cpp`; `main` constructs a `WalletManager` on a temp dir and opens it. Evolves the evidence-folder probe | RED: at least the 10 undefined refs seen for wallet_manager.o (Mempool, ChainDB, BlockStorage, UTXOIndex, open_sqlite), plus the core/p2p/mining symbols of D1–D3 |
+| **W2 wallet closure** | as K2 for `dinero_wallet`; additionally fails on full `dinero_core`, `dinero_rpc_handlers`, P2P. Allows third-party crypto (`lightning_core_static` = libwally/secp256k1-zkp/blake3, via `dinero_zk`) | RED: RocksDB via consensus |
+| **W3 wallet symbols** | as K3 on W1's output, plus `BlockStorage`, `HeaderSyncManager`, `PeerManager`, `TxInclusionAnalyzer` | RED |
+| **W4 wallet-file compatibility** | fixture datadir (registry + one wallet db + HD wallet + descriptor store) created by the baseline build, checked in; post-split build opens it read-write and reports identical addresses, balance, UTXOs, `user_version`; `sqlite_master` dump identical before and after | GREEN on baseline |
+| **W5 external interface freeze** | empty diff of `nodecore_ffi.h`, `wallet_ffi.h`, JNI export list; exported dynamic symbols of `nodecore_ffi` and `dinero_wallet_ffi` unchanged; recorded regtest transcript (getbalance, getnewaddress, listunspent incl. mempool-spent filtering, sendtoaddress, rescan, fee bump/RBF, sync status, 3 error cases) identical field-for-field | GREEN on baseline |
+| **W6 standalone consumer** | `dinero_wallet_ffi` and the Rust bridge's static set link with no node libraries | **measured in stage 0** (survey infers RED) |
 
-### 8.4 Adapters (`dinero_wallet_node`)
+**Cross-platform:** K1–K3 and W1–W3 run on Linux GCC 15 (ubuntu-latest) and GCC 13 (24.04), macOS Clang (arm64), and Windows MSVC. Windows uses a CI-only workflow modeled on `windows-openssl-release-smoke.yml` (no signing, no uploads — `windows-release.yml` signs when `WINDOWS_SIGNING_READY=true` and is not used). MSVC-specific watch item: the `ParamsImpl` LNK2005 history (root `CMakeLists.txt:520-534`; `tx_validation.o` references `detail::ParamsImpl`). Apple/MSVC forced-link flags are `-force_load` / `/WHOLEARCHIVE`.
 
-- `ChainDbWalletView : IWalletChainView, ChainHeightProvider` wraps `ChainDB*` + `BlockStorage*`; `ReadBlock` calls `storage::ReadArchivalBlock` exactly as wallet_manager:5839 does now.
-- `MempoolWalletView : IWalletMempoolView` wraps `const Mempool*`. Because `src/daemon/mempool.cpp` is in no library, this adapter's .cpp is compiled into the same targets that compile `mempool.cpp` (`dinerod`, `nodecore_ffi`, and the 6 tests that compile it) rather than into `dinero_wallet_node`. Putting the mempool in a library is a follow-up (section 10).
+## 9. Affected consumers (leg 1a and 1b together)
 
-## 9. Caller migration
+| Consumer | Change | Behavior |
+|---|---|---|
+| `dinero_chainstate` | gains `coins_db.cpp`, `coins_view_cache.cpp`, `utxo_position_index.cpp`; links `dinero_sqlite`; loses `utxo_index.cpp` (to wallet) | unchanged |
+| `dinero_core` | gains `global_utxo_set_impl.cpp`; loses `address_script_builder.cpp`, `logger.cpp` (to libraries it links) | unchanged |
+| `dinerod`, `nodecore_ffi`, NodeCore xcframework (`build_nodecore_xcframework.sh:254-374`) | link set gains `dinero_logging`, `dinero_sqlite`, `dinero_wallet_node`; xcframework script bundles them | unchanged; W5 |
+| `WalletService` (`src/daemon/services/wallet_service.cpp`) | builds chain views from `chainstate_->GetChainDB()` + `block_storage_`; passes per call | unchanged |
+| RPC (`dinero_rpc_handlers`) | `methods_wallet_context.cpp:1890-1908, 6678-6682`, `wallet_sync_rpc_handlers.cpp:36,44`, `fee_bump_rpc_handlers.cpp:43,51,63-75` pass views. **Lines matched by `qt/tests/test_shielded_rpc_status.cmake:7-39` are not edited** | unchanged; W5 |
+| NodeCore C ABI (`nodecore_ffi.cpp:1118-1161`) | rescan builds a view; list-unspent still passes no mempool view (identical output) | unchanged; W5 |
+| Standalone wallet FFI (`wallet-core/ffi`) | none in code | may start linking (E1) |
+| Rust/Tauri bridge (`mobile-tauri/src-tauri/build.rs:29-38`) | adds `dinero_logging`, `dinero_sqlite` to its static set | may start linking (E1) |
+| Qt (`qt/`) | none — separate process over JSON-RPC/WS | unchanged |
+| Tools, pool, network, SwapTower, fuzz, ffi tests | declare RocksDB/sqlite/daemon includes themselves where they relied on consensus exporting them (measured in stage 0) | unchanged |
+| Tests (~88 link the wallet; ~236 link consensus) | pure-wallet tests drop `wallet_test_deps`/`mempool_test_stubs.cpp` and link the wallet alone; tests needing a mempool use a fake `IWalletMempoolView`; node-integration tests link `dinero_wallet_node`; consensus-linking tests declare what they used transitively | unchanged |
 
-| Caller | Today | After | External effect |
-|---|---|---|---|
-| `WalletService` (`src/daemon/services/wallet_service.cpp`) — sole daemon/NodeCore owner | passes ChainDB/BlockStorage per call (:335, :502), UTXOIndex via setter (:114) | builds `ChainDbWalletView` once from `chainstate_->GetChainDB()` + `block_storage_`; `wm->setChainView(&view)`; `rescanBlockchain(start, gap)` uses it. UTXOIndex setter unchanged | none |
-| RPC (`dinero_rpc_handlers`) | `methods_wallet_context.cpp:1890-1908` casts MempoolService to `Mempool*` for `listUnspentUTXOs`; `:6678-6682` passes chain_db/block_storage to rescan; `wallet_sync_rpc_handlers.cpp:36,44`, `fee_bump_rpc_handlers.cpp:43,51,63-75` pass raw node pointers | pass `MempoolWalletView` / rely on the wallet's chain view. **Do not edit `methods_wallet_context.cpp` lines matched by `qt/tests/test_shielded_rpc_status.cmake:7-39`** (`result["account_index"] = 0`, `GetMasterFingerprintHex()`) | none; G5 transcript |
-| NodeCore (`src/nodecore/nodecore_ffi.cpp`) — uses `DaemonApp`, never constructs a wallet | `nodecore_rescan` passes ChainDB/BlockStorage (:1118-1140); `nodecore_list_unspent_json` passes no mempool (:1150-1161) | rescan uses the wallet's chain view; list-unspent unchanged (still no mempool view, so output is identical). C ABI untouched | none; G5 |
-| Standalone wallet FFI (`wallet-core/ffi`) | `WalletManager(datadir)` with no node objects (`wallet_ffi.cpp:219`); `TransactionBuilder(wm->getUTXOIndex())` always null | unchanged code; now actually links standalone (G6) | possibly "starts linking" — see below |
-| Rust/Tauri bridge (`mobile-tauri/src-tauri/build.rs:29-38`) | links `dinero_consensus` | links `dinero_consensus_core` | build-script change only |
-| Qt (`qt/`) | separate process over JSON-RPC/WS; links no wallet code | no change | none |
-| Tests (~88 executables link the wallet) | node deps satisfied by `wallet_test_deps` (`tests/CMakeLists.txt:799-810`, ~23 uses), `tests/stubs/mempool_test_stubs.cpp` (36 uses), real `mempool.cpp` (6), direct `wallet_manager.cpp` compiles (6) | tests of pure wallet logic drop those and link `dinero_wallet` alone; tests that need a mempool use a fake `IWalletMempoolView`; node-integration tests link `dinero_wallet_node`. `mempool_test_stubs.cpp` shrinks to whatever non-wallet tests still need | none |
-
-**Candidate external changes, flagged for separate decision (none folded in):**
-- **E1.** If G6 confirms the standalone wallet FFI / Rust bridge does not link today, the split makes it link. That is a fix, but it changes what that build produces; decide separately whether to ship or advertise it.
-- **E2.** `getBalance(const void* mempool_ptr)` ignores its argument (wallet_manager.cpp:3933). Left as is; changing it would change RPC results.
-- None other found. If the builder finds one, stop and add it here.
+### 9.1 Flagged for separate decision (not folded in)
+- **E1.** If W6 is RED today, the split makes the standalone wallet FFI / Rust bridge link. That is a fix, but it changes what that build produces.
+- **E2.** `getBalance(const void* mempool_ptr)` ignores its argument (`wallet_manager.cpp:3933`). Left as is.
 
 ## 10. Stages
 
-Each stage is its own PR onto `dinero-main`, green on the existing CI before the next starts. G-tests are added in stage 0 as **non-required** jobs so their RED is visible, and turn required at stage 5.
+Each stage is its own PR onto `dinero-main`, green on existing CI plus the gates listed, before the next starts. Every gate is observed failing before the change that turns it green; logs are grepped to show tests ran; touched sources are rebuilt from clean.
 
-| Stage | Content | Exit check |
+| Stage | Content | Exit |
 |---|---|---|
-| 0 | Add G1–G6 (G4 fixture generated from the baseline build). Record their baseline RED in the PR. | G1/G2/G3 RED with the expected undefined refs / RocksDB in closure; G4/G5 GREEN on baseline; G6 result recorded |
-| 1 | `dinero_sqlite`; `address_script_builder.cpp` → wallet; `utxo_index.cpp` → wallet | full CI green; G4 green |
-| 2 | Wallet links `dinero_consensus_core` (+ chainparams_impl, script_interpreter, script_sighash moved there) | G2 no longer reports RocksDB via consensus; full CI green |
-| 3 | `IWalletChainView` / `IWalletMempoolView`, adapters, wallet sources and public headers rid of node includes; caller migration (section 9) | G1/G2/G3 GREEN; G4/G5 GREEN |
-| 4 | Diagnostics move to `dinero_wallet_node`; test link cleanup | G1–G6 GREEN on GCC 15, GCC 13, Clang, MSVC |
-| 5 | Make G1–G6 required. Add **unpinned trial copies** of the three pinned jobs on ubuntu-latest (non-required). | trial jobs GREEN on GCC 15 |
-| 6 | Only after stage 5's trial jobs pass: remove the pin and its comment at `tests.yml:42`, `:780`, `core-heavy.yml:49`; drop the trial copies | the three jobs GREEN on ubuntu-latest |
+| **0 — gates + measurement** | Add K1–K5, W1–W6 (non-required); W4 fixture and W5 transcript from the baseline; K4 reference digests. **Scope measurement:** on a throwaway branch, apply only 6.2 (drop RocksDB/sqlite/daemon exports from consensus) and record which consumers fail to build, per platform | K1–K3, W1–W3 RED as expected; K4, K5, W4, W5 GREEN; W6 and the consumer-breakage list recorded → **owner decides v8.2.1 fit** |
+| 1 | `dinero_logging`; consensus, consensus_core, wallet, core declare it; `dinero_address_encoding` declares consensus | full CI; K4 identical |
+| 2 | Consensus moves (6.1): coins_db/coins_view_cache/utxo_position_index → chainstate; global_utxo_set_impl → core; addr_codec out; `coins_view.h` | K1, K3 GREEN; K4, K5 identical on all four platforms |
+| 3 | Drop consensus exports (6.2); consumers declare their own deps | K2 GREEN; full CI on all platforms |
+| 4 | `dinero_sqlite`; `address_script_builder.cpp` and `utxo_index.cpp` → wallet | W4 GREEN; full CI |
+| 5 | Interfaces, adapters, wallet sources and headers rid of node includes; caller migration (section 9) | W1–W3 GREEN; W4, W5 GREEN |
+| 6 | Diagnostics → `dinero_wallet_node`; test link cleanup | all gates GREEN on all four platforms |
+| 7 | Gates required. Unpinned trial copies of the three pinned jobs on ubuntu-latest (non-required) | trial jobs GREEN on GCC 15 |
+| 8 | Only after stage 7's trials pass: remove the pin and comment at `tests.yml:42`, `:780`, `core-heavy.yml:49`; drop trial copies | the three jobs GREEN on ubuntu-latest |
 
-Every stage follows the repo's verification rules: each gate observed failing before the change that turns it green; logs grepped to show the tests ran; touched sources rebuilt from clean.
+## 11. Scope measurement and the v8.2.1 decision
 
-## 11. Requalification cost (deciding factor for v8.2.1)
+Known now: 10 impure consensus objects, of which 4 are moves with live consumers or callers (utxo_position_index, tx_validation include, addr_codec removal, logger) and 3 have no compiled caller (coins_db, coins_view_cache, global_utxo_set_impl); 10 wallet objects; ~5 production consumer areas; ~324 test references. **Unknown until stage 0:** how many consumers silently relied on consensus exporting RocksDB, sqlite3, and `src/daemon` includes, and whether the standalone wallet FFI links today. Stage 0's report gives counts per platform and an estimate per stage; the v8.2.1 decision is made on that report.
 
-The split changes the link of `dinerod`, `nodecore_ffi`, and the NodeCore xcframework (`build_nodecore_xcframework.sh:254-374` bundles `libdinero_wallet.a`). No consensus or wallet *logic* changes, but anything that ships must be requalified:
-- full Linux/macOS/Windows CI, ASan/UBSan daemon job, compact regtest qualification, core-heavy;
-- NodeCore rebuild and its lifecycle/snapshot consumers;
-- G4 wallet-file compatibility and the G5 RPC transcript on each platform;
-- a regtest wallet soak (send, receive, rescan, fee bump, reorg) on the release candidate.
+Requalification for anything shipped: full Linux/macOS/Windows CI, ASan/UBSan daemon job, compact regtest qualification and vectors, independent vectors and saved proofs, core-heavy, NodeCore rebuild with lifecycle/snapshot consumers, W4/W5 on each platform, and a regtest wallet soak (send, receive, rescan, fee bump, reorg). Consensus logic does not change, but consensus library composition does, so K4 is mandatory on every platform.
 
-**Recommendation:** decide the v8.2.1 target after stage 2. Stages 0–2 are small and low-risk and tell us whether `dinero_consensus_core` can carry the wallet; stage 3 is the bulk of the work.
+## 12. Left to the builder
 
-## 12. Follow-ups (listed, not in scope)
+Exact interface field types; whether chainstate links the wallet after UTXOIndex moves; how K2/W2 walk the closure (CMake script or link-line inspection), as long as they fail on the listed targets; the exact W5 transcript within the listed methods; splitting stages into smaller PRs. **Stop and report** (do not work around) if: any consensus source other than those in 6.1 turns out to need storage or node code; a frozen header would need to change; K4 digests differ; or an external change beyond E1/E2 appears.
 
-- `dinero_consensus` is impure: RocksDB via `coins_db.cpp`; undeclared ChainDB/ChainstateService use in `global_utxo_set_impl.cpp` and `src/indexing/utxo_position_index.cpp`; consensus→wallet cycle via `addr_codec.cpp`.
-- `src/daemon/mempool.cpp` belongs to no library and is compiled into ~21 targets.
-- `dinero_core` → `dinero_rpc_handlers` via `vault_runtime`.
-- `src/common/logger.cpp` compiled into both `dinero_wallet` and `dinero_core`; the wallet's copy currently satisfies undeclared logger use in `dinero_crypto`, `dinero_consensus`, `dinero_chainstate`, `dinero_bridge`. **Not moved here**: the standalone link works with the wallet's own copy, so moving it does not serve this project's goal. Fix with a small `dinero_logging` library later.
-- `addr_codec.cpp`/`addr_types.cpp` in three source lists; `src/wallet/psbt.cpp` in wallet and core.
-- Uncompiled dead sources: `src/daemon/rpc/WalletHandlers.cpp`, `src/core/rpc/wallet_security_rpc_handlers.cpp`, `wallet_query_rpc_handlers.cpp`, `src/blockchain/real_blockchain_integration.cpp`, `src/multi_account/multi_account_manager.cpp`, `src/mobile/mobile_wallet{,_simple}.cpp`.
-- `FFI_WALLET_ONLY` is referenced (`wallet_manager.h:88-94`) but defined by no CMake file; `BUILD_FFI_ONLY` is never exercised by CI.
+## 13. Later legs and follow-ups (listed, not in scope)
+
+**Toward the target architecture:**
+- Mempool as a library (`src/daemon/mempool.cpp` is in no library and compiled into ~21 targets); then `dinero_rpc_handlers` declares it, and a forced-link gate for the mempool.
+- `dinero_consensus_core` is not self-contained (needs `ScriptVerifier::VerifyTaproot`, `SignatureHashLegacy/Witness/Taproot`, `Params`, `GetActiveChain` from consensus); reconcile the two parallel libraries.
+- P2P limited to transport; `dinero_core` → `dinero_rpc_handlers` via `vault_runtime`.
+- Whether the process-wide logger is "global node state" under the purity rule.
+
+**Cleanup:**
+- Delete uncompiled dead code: `src/mining/miner_engine.*`, `fast_sync_service.cpp`, `methods_snapshot.cpp`, `utreexo_proof_generator.cpp`, `src/daemon/rpc/WalletHandlers.cpp`, `src/core/rpc/wallet_{security,query}_rpc_handlers.cpp`, `src/blockchain/real_blockchain_integration.cpp`, `src/multi_account/multi_account_manager.cpp`, `src/mobile/mobile_wallet{,_simple}.cpp`, `src/wallet/address_minimal.cpp`; then `global_utxo_set_impl` and `coins_db`/`coins_view_cache` if still unused.
+- Duplicate objects: `addr_codec.cpp`/`addr_types.cpp` (wallet, core), `block_index.cpp` (consensus, core, 7 tests), `src/wallet/psbt.cpp` (wallet, core).
+- `storage/tip_info.h` lives under storage but is pure.
+- `FFI_WALLET_ONLY` referenced (`wallet_manager.h:88-94`) but never defined; `BUILD_FFI_ONLY` never exercised in CI.
 - `IMempoolInterface` has no production implementer.
-- Other workflows pin ubuntu-24.04 without the wallet-link comment (desktop-release, linux-release, compact-regtest, compact-package-boundaries, shielded-readiness, …); out of scope.
-- Comment at `src/storage/CMakeLists.txt:17` wrongly says UTXOIndex uses RocksDB (fixed incidentally in stage 1 when the file moves).
-
-## 13. Left to the builder
-
-- Exact field types in the interface structs (copied from the current `Mempool` / ChainDB types they replace).
-- Whether `dinero_chainstate` itself needs to link `dinero_wallet` after UTXOIndex moves (section 8.1).
-- How G2 walks the closure (CMake script vs. generated link-line inspection), as long as it fails on the listed targets.
-- The exact regtest transcript in G5, within the methods listed.
-- Splitting any stage into smaller PRs.
+- `CrossLanguageVectors` commented out (`tests/consensus/CMakeLists.txt:789`).
+- Other workflows pin ubuntu-24.04 without the wallet-link comment.
 
 ## Evidence
 
-- `~/src/dinero-evidence/2026-10-28-wallet-node-separation/` — forced-link probe, baseline RED log, undeclared-symbol analysis.
+- `~/src/dinero-evidence/2026-10-28-wallet-node-separation/` — forced-link probe, baseline RED log, `undeclared.json`.
 - `~/src/dinero-evidence/2026-10-28-rocksdb-gcc15/` — GCC 15 container and CI link diagnosis.
-- PR #856 (merged 3aca093c0) — the pin this project removes.
+- PR #856 (merged as 3aca093c0) — the pin this project removes.
