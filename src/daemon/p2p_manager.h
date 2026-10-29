@@ -19,6 +19,7 @@
 
 #include "p2p/addrman.h"
 #include "p2p/addr_v2.h"  // NAT traversal Phase 1A.2: AddrV2Entry struct for create_addrv2()
+#include "p2p/hole_punch.h"
 #include "p2p/outbound_policy.h"
 #include "network/types.h"
 #include "network/clock_source.h"     // relay-hints Phase 1a: injectable time source for TTL logic
@@ -174,6 +175,15 @@ struct PeerInfo {
     // circuit, so both share the inbox, reader loop and send path below.
     bool quic_direct{false};
     dinero::network::UdpAddr quic_remote{};
+    // Hole-punched direct QUIC peer (Plan 4): dialed from a relayed link, so
+    // like a relayed peer it draws on the home-peer budget rather than the
+    // direct outbound slots. punch_expected_id is the node id the dial must
+    // authenticate as.
+    bool punched{false};
+    std::optional<std::array<uint8_t, 20>> punch_expected_id;
+    // Outbound relayed and punched peers share kHomePeerSlots instead of
+    // MAX_OUTBOUND_CONNECTIONS.
+    bool is_home_peer() const { return via_relay.has_value() || punched; }
     bool uses_quic_stream() const {
         return quic_direct || (via_relay && via_relay->encrypted_quic);
     }
@@ -181,6 +191,8 @@ struct PeerInfo {
     const char* transport_name() const {
         return quic_direct ? "quic" : (via_relay ? "relay" : "tcp");
     }
+    // getpeerinfo "path": how this peer is reached.
+    const char* path_name() const { return punched ? "punched" : (via_relay ? "relayed" : "direct"); }
 
     // Ring 3 Phase 4c: Move constructor (atomic is not movable, must load/store)
     PeerInfo(PeerInfo&& other) noexcept
@@ -220,6 +232,8 @@ struct PeerInfo {
           relay_quic_options(std::move(other.relay_quic_options)),
           quic_direct(other.quic_direct),
           quic_remote(other.quic_remote),
+          punched(other.punched),
+          punch_expected_id(other.punch_expected_id),
           lifetime_state(other.lifetime_state.load()),
           compact_timing_capable(other.compact_timing_capable.load()),
           orchard_capable(other.orchard_capable.load()),
@@ -348,6 +362,11 @@ struct P2PMessage {
         uint16_t relay_port{0};
     };
     static P2PMessage create_relay_hints(const std::vector<RelayHint>& hints);
+
+    // Relay-coordinated hole punching (p2p/hole_punch.h for the payload).
+    static P2PMessage create_punch_offer(uint64_t nonce, const dinero::p2p::PunchCandidates& c);
+    static P2PMessage create_punch_answer(uint64_t nonce, const dinero::p2p::PunchCandidates& c);
+    static P2PMessage create_punch_go(uint64_t nonce);
 
     static P2PMessage create_ping(uint64_t nonce);
     static P2PMessage create_pong(uint64_t nonce);
@@ -585,6 +604,35 @@ public:
     // fed in as QUIC candidates. A different set of IPs from the last round
     // means our public address moved: every candidate goes back to unverified.
     void update_stun_candidates(const std::vector<std::pair<std::string, uint16_t>>& reflexive);
+    // The last NAT mapping classification (P2PService sets it after each STUN round).
+    void set_nat_mapping(dinero::p2p::NatMappingType mapping);
+    // Addresses a remote peer can try for a hole punch: this host's global-unicast
+    // IPv6 interface addresses on the QUIC port, plus the first routable STUN
+    // reflexive IPv4. Empty when the QUIC endpoint is not listening.
+    dinero::p2p::PunchCandidates LocalPunchCandidates() const;
+    // Relay-coordinated hole punching: what the punch exchange has done so far.
+    struct PunchStats {
+        uint64_t attempts{0};          // Started, either role
+        uint64_t offers_sent{0};
+        uint64_t answers_sent{0};
+        uint64_t gos_sent{0};
+        uint64_t dials{0};             // punched QUIC dials started
+        uint64_t probes_sent{0};
+        size_t max_probe_targets{0};   // most distinct targets one attempt probed
+        uint64_t succeeded{0};
+        uint64_t timeout{0};
+        uint64_t mismatch{0};          // a punched session proved another node id
+        uint64_t refused{0};           // a punched session's dineroid was refused
+                                       // (missing, not session-bound, or invalid)
+        uint64_t skipped{0};           // no usable target pair
+        uint64_t ignored{0};           // punch messages dropped (unsolicited, refused, stale)
+        uint64_t received{0};          // punch messages received, any outcome
+        // attempts: attempts with a target of that family; succeeded: by
+        // the family of the punched session's address.
+        struct Family { uint64_t attempts{0}; uint64_t succeeded{0}; };
+        Family ipv4, ipv6;
+    };
+    PunchStats punch_stats() const;
     // True iff we have an EXPLICIT/confirmed reachable advertised address
     // (operator externalip or port-mapping) — not merely a Gap-1-learned one.
     // Used so a NAT'd node (only a learned, dead address) stays relay-fallback
@@ -780,6 +828,20 @@ public:
     // than kCircuitIdleTimeout. Called from keepalive_loop.
     void SweepIdleCircuits();
 
+    // Relay-coordinated hole punching (Plan 4). PunchTick starts offers to
+    // relayed peers we initiate for, fires due dials and probe rounds, and
+    // ends expired attempts. Called from keepalive_loop and, while an attempt
+    // is active, from punch_loop every kPunchProbeInterval.
+    void PunchTick();
+    void punch_loop();
+    void handle_punch_offer(const std::string& peer_address, const P2PMessage& message);
+    void handle_punch_answer(const std::string& peer_address, const P2PMessage& message);
+    void handle_punch_go(const std::string& peer_address, const P2PMessage& message);
+    // The punched session at peer_key failed its dineroid: count it and end
+    // the initiator attempt that dialed it (the relayed peer stays).
+    void EndPunchOnFailedProof(const std::array<uint8_t, 20>& expected_id,
+                               const std::string& peer_key, bool mismatch);
+
     // NAT traversal Phase C3 slice 4b: advertise + ingest RELAY_HINTS.
     //
     // SendRelayHintsIfApplicable is called from perform_handshake right
@@ -857,7 +919,9 @@ public:
     dinero::network::QuicEndpoint* quic_endpoint() const { return quic_endpoint_.get(); }
     // Dial ip:port over QUIC. False if not listening, banned, self, or a peer
     // (either transport) already exists at that address.
-    bool connect_to_peer_quic(const std::string& ip, uint16_t port);
+    bool connect_to_peer_quic(
+        const std::string& ip, uint16_t port,
+        std::optional<std::array<uint8_t, 20>> punch_expected_id = std::nullopt);
     // NODE_P2P_QUIC while the endpoint is listening, else 0.
     uint64_t local_quic_service_bits() const;
     // p2p.quic_connect: "ip:port" peers to keep connected over QUIC. Dialed by
@@ -870,7 +934,9 @@ public:
     // Returns the peer key.
     std::string install_direct_quic_peer(std::shared_ptr<dinero::network::QuicSession> session,
                                          const dinero::network::UdpAddr& remote,
-                                         bool outbound);
+                                         bool outbound,
+                                         std::optional<std::array<uint8_t, 20>> punch_expected_id =
+                                             std::nullopt);
     std::string install_outbound_virtual_relay_peer(
         const std::array<uint8_t, 20>& target_node_id,
         const std::string& relay_peer_address,
@@ -1058,6 +1124,17 @@ public:
         uint64_t circuit_id, std::optional<std::array<uint8_t, 20>> expected_target);
     // Behave like a pre-v8.2.0 build: send only dineroid v1.
     void test_set_dineroid_v1_only(bool v1_only) { test_dineroid_v1_only_ = v1_only; }
+    // Stands in for a listening QUIC endpoint (NGTCP2-off builds cannot start
+    // one). Interface addresses are injected through
+    // network::test_set_interface_enumerator_override (local_interfaces.h).
+    void test_set_quic_port(uint16_t port);
+    // Hole punching: drive the punch state machine, replace its clock (set it
+    // before any punch traffic), override LocalPunchCandidates (loopback
+    // candidates are never routable), read the counters.
+    void test_punch_tick() { PunchTick(); }
+    void test_set_punch_clock(std::function<std::chrono::steady_clock::time_point()> clock);
+    void test_set_local_punch_candidates(std::optional<dinero::p2p::PunchCandidates> c);
+    PunchStats test_punch_stats() const;
     void test_handle_getaddr(const std::string& peer_key) { handle_getaddr(peer_key, P2PMessage{}); }
     // Gives a test-installed peer (keyed "host:port", port 0) its real
     // endpoint, so to_string() matches relay endpoint keys.
@@ -1122,6 +1199,9 @@ private:
     static constexpr int SEND_TIMEOUT_SEC = 5;
     static constexpr size_t MAX_OUTBOUND_CONNECTIONS =
         dinero::p2p::kTargetDurableOutbound;
+    // Outbound slots for relayed/punched ("home") peers, counted apart from
+    // MAX_OUTBOUND_CONNECTIONS so a full direct set still gets a relayed link.
+    static constexpr size_t kHomePeerSlots = 2;
     static constexpr std::chrono::minutes FEELER_INTERVAL{2};
     static constexpr size_t MAX_INBOUND_CONNECTIONS = 125;
     // Two full nodes behind one household/office NAT can each maintain several
@@ -1167,6 +1247,10 @@ private:
         std::make_unique<dinero::p2p::SelfReachability>(
             dinero::p2p::SelfReachability::Params{}, [] { return std::chrono::steady_clock::now(); });
     std::set<std::pair<std::string, uint16_t>> stun_reflexive_;  // last STUN round's answers
+    dinero::p2p::NatMappingType nat_mapping_type_{dinero::p2p::NatMappingType::Unknown};
+#ifdef DINERO_TEST_BUILD
+    uint16_t test_quic_port_{0};
+#endif
     struct PendingReach {
         dinero::p2p::Candidate candidate;
         dinero::p2p::Verifier verifier;
@@ -1206,6 +1290,50 @@ private:
     std::unique_ptr<std::thread> listen_thread_;
     std::unique_ptr<std::thread> connection_manager_thread_;
     std::unique_ptr<std::thread> keepalive_thread_;  // Phase C: Adaptive keepalive
+    std::unique_ptr<std::thread> punch_thread_;      // drives active hole punches
+
+    // ---- hole punching ----
+    // One attempt per remote node id, either role. Lock order: punch_mutex_
+    // is a leaf; nothing else is taken while it is held, and sends, dials and
+    // probes happen with no lock held. punch_tick_mutex_ serializes PunchTick
+    // (keepalive, punch_loop, tests) and is taken before any other lock.
+    struct PunchAttempt {
+        enum class Phase { Offered, AwaitGo, Dialing, Probing };
+        dinero::p2p::PunchRole role{dinero::p2p::PunchRole::None};
+        Phase phase{Phase::Offered};
+        uint64_t nonce{0};
+        std::string relay_key;  // the relayed peer the exchange runs on
+        dinero::p2p::PunchCandidates local;  // what we sent
+        std::chrono::steady_clock::time_point offer_sent_at{};
+        std::chrono::steady_clock::time_point deadline{};
+        std::vector<dinero::network::UdpAddr> targets;
+        // Initiator: when to dial, the next target to try, the dialed peer key
+        // and when that dial gives way to the next target (each target gets an
+        // equal share of what is left of the window).
+        std::chrono::steady_clock::time_point dial_at{};
+        size_t next_target{0};
+        std::string dialed_key;
+        std::chrono::steady_clock::time_point dial_expires{};
+        // Acceptor: probe rounds sent and when the next one is due.
+        size_t probe_rounds{0};
+        std::chrono::steady_clock::time_point next_probe_at{};
+    };
+    std::mutex punch_tick_mutex_;
+    mutable std::mutex punch_mutex_;
+    std::condition_variable punch_cv_;
+    bool punch_wake_{false};  // guarded by punch_mutex_
+    std::map<std::array<uint8_t, 20>, PunchAttempt> punch_attempts_;
+    std::function<std::chrono::steady_clock::time_point()> punch_clock_;
+    std::optional<dinero::p2p::PunchScheduler> punch_scheduler_;
+    PunchStats punch_stats_;
+    std::chrono::steady_clock::time_point PunchNow() const;
+    // Under punch_mutex_: the next probe round's targets, or empty when none is due.
+    std::vector<dinero::network::UdpAddr> TakeProbeRoundLocked(
+        PunchAttempt& a, std::chrono::steady_clock::time_point now);
+    void SendPunchProbes(const std::vector<dinero::network::UdpAddr>& targets);
+#ifdef DINERO_TEST_BUILD
+    std::optional<dinero::p2p::PunchCandidates> test_local_punch_candidates_;  // reach_mutex_
+#endif
     std::mutex peer_threads_mutex_;
     // Per-peer threads (handlers, QUIC readers). `done` is set when the
     // thread's function returns so spawn_peer_thread_locked can join and drop

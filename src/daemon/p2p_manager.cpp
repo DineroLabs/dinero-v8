@@ -885,6 +885,27 @@ P2PMessage P2PMessage::create_relay_hints(const std::vector<RelayHint>& hints) {
     return msg;
 }
 
+P2PMessage P2PMessage::create_punch_offer(uint64_t nonce, const dinero::p2p::PunchCandidates& c) {
+    P2PMessage msg;
+    msg.command = "punchoff";
+    msg.payload = dinero::p2p::EncodePunchCandidates(nonce, c);
+    return msg;
+}
+
+P2PMessage P2PMessage::create_punch_answer(uint64_t nonce, const dinero::p2p::PunchCandidates& c) {
+    P2PMessage msg;
+    msg.command = "punchans";
+    msg.payload = dinero::p2p::EncodePunchCandidates(nonce, c);
+    return msg;
+}
+
+P2PMessage P2PMessage::create_punch_go(uint64_t nonce) {
+    P2PMessage msg;
+    msg.command = "punchgo";
+    for (int i = 0; i < 8; i++) msg.payload.push_back(static_cast<uint8_t>(nonce >> (i * 8)));
+    return msg;
+}
+
 std::string P2PManager::RelayVirtualPeerAddress(
     const std::array<uint8_t, 20>& target_node_id,
     uint64_t circuit_id) const {
@@ -2704,14 +2725,21 @@ void P2PManager::OrchestrateRelayDials() {
     const uint32_t now_unix = UnixSeconds(clock_->SystemNow());
     std::unordered_set<std::string> already_connected_targets_hex;
     std::unordered_set<std::string> connected_peer_addresses;
-    size_t current_outbound = 0;
+    size_t current_outbound = 0;  // direct outbound peers
+    size_t home_peers = 0;        // relayed/punched outbound peers (kHomePeerSlots)
     const auto now = std::chrono::steady_clock::now();
 
     {
         std::lock_guard<std::mutex> lock(peers_mutex_);
         for (const auto& [peer_key, peer] : connected_peers_) {
             if (!peer) continue;
-            if (peer->is_outbound) current_outbound++;
+            if (peer->is_outbound) {
+                if (peer->is_home_peer()) {
+                    home_peers++;
+                } else {
+                    current_outbound++;
+                }
+            }
             if (peer->is_connected) {
                 connected_peer_addresses.insert(peer_key);
             }
@@ -2726,8 +2754,12 @@ void P2PManager::OrchestrateRelayDials() {
         }
     }
 
-    if (current_outbound >= MAX_OUTBOUND_CONNECTIONS) {
-        return;  // slot budget already met by direct dials
+    // Relayed dials draw on the home-peer budget, not the direct one: a node
+    // with every direct slot full still needs a relayed link to hole-punch
+    // from. The cold dials below are ordinary direct peers and stay on the
+    // direct budget.
+    if (current_outbound >= MAX_OUTBOUND_CONNECTIONS && home_peers >= kHomePeerSlots) {
+        return;
     }
 
     std::string own_node_id_hex;
@@ -2805,7 +2837,7 @@ void P2PManager::OrchestrateRelayDials() {
     // (we need an open TCP connection to send RELAY_CONNECT through), then
     // fire SendRelayConnect.
     for (const auto& [target_hex, hint] : candidates) {
-        if (current_outbound >= MAX_OUTBOUND_CONNECTIONS) break;
+        if (home_peers >= kHomePeerSlots) break;
 
         const std::string relay_peer_address = dinero::network::FormatEndpoint(
             HintRelayHost(hint.net, hint.relay_addr), hint.relay_port);
@@ -2889,7 +2921,7 @@ void P2PManager::OrchestrateRelayDials() {
         uint64_t request_id = SendRelayConnect(
             relay_peer_address, target_node_id, std::move(callback));
         if (request_id != 0) {
-            current_outbound++;  // optimistically reserve a slot
+            home_peers++;  // optimistically reserve a home-peer slot
         }
     }
 
@@ -3981,6 +4013,7 @@ P2PManager::P2PManager(uint16_t listen_port, const std::string& external_ip)
     }
     // Phase 2b: clock_ is now live — safe to construct bytes_relayed_24h_.
     bytes_relayed_24h_.emplace(clock_.get());
+    punch_scheduler_.emplace([this] { return PunchNow(); });
 }
 
 // Test-only constructor: inject a custom ClockSource (e.g., FakeClockSource)
@@ -4396,6 +4429,9 @@ bool P2PManager::ExchangeDineroId(PeerInfo* peer) {
         std::cout << "[Handshake] dineroid: " << why << " for " << peer->to_string()
                   << (bound ? "; identity binding failed, disconnecting" : "; continuing legacy")
                   << std::endl;
+        if (bound && peer->punched && peer->punch_expected_id) {
+            EndPunchOnFailedProof(*peer->punch_expected_id, peer->to_string(), /*mismatch=*/false);
+        }
         return !bound;
     };
     if (bound && !binding) return fail("no TLS exporter value on this QUIC session");
@@ -4456,6 +4492,16 @@ bool P2PManager::ExchangeDineroId(PeerInfo* peer) {
                   << NodeIdHex(derived) << ", not the dialed " << NodeIdHex(dialed)
                   << "; disconnecting and dropping that hint" << std::endl;
         drop_relay_hints_via(dialed, peer->via_relay->relay_peer_address);
+        return false;
+    }
+    if (peer->punched && peer->is_outbound && peer->punch_expected_id &&
+        derived != *peer->punch_expected_id) {
+        // We punched toward X and someone else answered at that address.
+        std::cout << "[Handshake] dineroid: punched peer " << peer->to_string() << " is "
+                  << NodeIdHex(derived) << ", not the expected "
+                  << NodeIdHex(*peer->punch_expected_id) << "; disconnecting, staying relayed"
+                  << std::endl;
+        EndPunchOnFailedProof(*peer->punch_expected_id, peer->to_string(), /*mismatch=*/true);
         return false;
     }
     std::copy(pubkey, pubkey + 33, peer->their_pubkey.begin());
@@ -5291,6 +5337,7 @@ bool P2PManager::start() {
 
     // Phase C: Start adaptive keepalive thread
     keepalive_thread_ = std::make_unique<std::thread>(&P2PManager::keepalive_loop, this);
+    punch_thread_ = std::make_unique<std::thread>(&P2PManager::punch_loop, this);
 
     running_ = true;
 
@@ -5314,6 +5361,11 @@ void P2PManager::begin_shutdown() {
     outbox_cv_.notify_all();
     keepalive_cv_.notify_all();
     connection_manager_cv_.notify_all();
+    {
+        std::lock_guard<std::mutex> lock(punch_mutex_);
+        punch_wake_ = true;
+    }
+    punch_cv_.notify_all();
 }
 
 // THREAD-SAFE: Multiple concurrent calls to stop() are safe (idempotent)
@@ -5378,6 +5430,9 @@ void P2PManager::stop() {
     // Phase C: Stop keepalive thread
     if (keepalive_thread_ && keepalive_thread_->joinable()) {
         keepalive_thread_->join();
+    }
+    if (punch_thread_ && punch_thread_->joinable()) {
+        punch_thread_->join();
     }
 
     // TS1 CRITICAL SECTION: Join all peer threads BEFORE erasing peers
@@ -5980,7 +6035,9 @@ void P2PManager::connection_manager_loop() {
             size_t active_outbound = 0;
             for (const auto& pair : connected_peers_) {
                 const auto& peer = pair.second;
-                if (peer->is_connected && peer->is_outbound && !peer->is_feeler) {
+                // Relayed/punched peers have their own kHomePeerSlots budget.
+                if (peer->is_connected && peer->is_outbound && !peer->is_feeler &&
+                    !peer->is_home_peer()) {
                     ++active_outbound;
                 }
             }
@@ -6042,7 +6099,7 @@ void P2PManager::connection_manager_loop() {
                 for (const auto& pair : connected_peers_) {
                     if (pair.second->is_connected && pair.second->is_outbound &&
                         !pair.second->is_feeler) {
-                        active_peer_count++;
+                        if (!pair.second->is_home_peer()) active_peer_count++;
                         connected_endpoints.insert(
                             AddressKey(pair.second->address, pair.second->port));
                     }
@@ -7311,6 +7368,8 @@ std::vector<PeerInfo> P2PManager::get_connected_peers() const {
             info.via_relay = pair.second->via_relay;
             info.quic_direct = pair.second->quic_direct;
             info.quic_remote = pair.second->quic_remote;
+            info.punched = pair.second->punched;
+            info.punch_expected_id = pair.second->punch_expected_id;
             info.identity_proven = pair.second->identity_proven;
             info.their_node_id = pair.second->their_node_id;
             info.is_our_relay = pair.second->is_our_relay;
@@ -7752,6 +7811,12 @@ void P2PManager::process_message(const std::string& peer_address, const P2PMessa
         handle_relay_register_ok(peer_address, message);
     } else if (message.command == "relayhn2") {
         handle_relay_hint_v2(peer_address, message);
+    } else if (message.command == "punchoff") {
+        handle_punch_offer(peer_address, message);
+    } else if (message.command == "punchans") {
+        handle_punch_answer(peer_address, message);
+    } else if (message.command == "punchgo") {
+        handle_punch_go(peer_address, message);
     } else if (message.command == "relayhnt") {
         // NAT Phase C3 slice 4b: ingest into relay_hints_by_target_.
         handle_relay_hints(peer_address, message);
@@ -8237,6 +8302,637 @@ void P2PManager::update_stun_candidates(
     notify_reachability_if_changed();
 }
 
+void P2PManager::set_nat_mapping(dinero::p2p::NatMappingType mapping) {
+    std::lock_guard<std::mutex> lock(reach_mutex_);
+    nat_mapping_type_ = mapping;
+}
+
+dinero::p2p::PunchCandidates P2PManager::LocalPunchCandidates() const {
+    dinero::p2p::PunchCandidates out;
+#ifdef DINERO_TEST_BUILD
+    {
+        std::lock_guard<std::mutex> lock(reach_mutex_);
+        if (test_local_punch_candidates_) return *test_local_punch_candidates_;
+    }
+#endif
+    uint16_t quic_port = 0;
+    if (quic_endpoint_ && quic_endpoint_->Listening()) quic_port = quic_endpoint_->Port();
+#ifdef DINERO_TEST_BUILD
+    if (quic_port == 0) quic_port = test_quic_port_;
+#endif
+    if (quic_port == 0) return out;
+
+    std::vector<std::string> iface_ips;
+    std::set<std::pair<std::string, uint16_t>> reflexive;
+    {
+        std::lock_guard<std::mutex> lock(reach_mutex_);
+        reflexive = stun_reflexive_;
+        out.v4_mapping = nat_mapping_type_;
+#ifdef DINERO_TEST_BUILD
+#endif
+    }
+    // Fresh read every call (outside the lock): IPv6 prefixes and privacy
+    // addresses rotate.
+    {
+        const auto ips = dinero::network::EnumerateLocalInterfaceIps();
+        iface_ips.assign(ips.begin(), ips.end());
+    }
+    auto routable = [](const std::string& ip, uint16_t port) {
+        dinero::p2p::NetworkAddress a;
+        a.ip = ip;
+        a.port = port;
+        a.services = 0;
+        return a.isRoutable();
+    };
+    std::sort(iface_ips.begin(), iface_ips.end());
+    for (const auto& ip : iface_ips) {
+        in6_addr a6{};
+        if (inet_pton(AF_INET6, ip.c_str(), &a6) != 1) continue;
+        if ((a6.s6_addr[0] & 0xe0) != 0x20) continue;  // global unicast 2000::/3 only
+        if (!routable(ip, quic_port)) continue;
+        out.v6.push_back(dinero::network::UdpAddr::FromIPv6(a6.s6_addr, quic_port));
+    }
+    for (const auto& r : reflexive) {
+        in_addr a4{};
+        if (inet_pton(AF_INET, r.first.c_str(), &a4) != 1) continue;
+        if (!routable(r.first, r.second)) continue;
+        out.v4 = dinero::network::UdpAddr::FromIPv4(reinterpret_cast<const uint8_t*>(&a4), r.second);
+        break;
+    }
+    return out;
+}
+
+#ifdef DINERO_TEST_BUILD
+void P2PManager::test_set_quic_port(uint16_t port) { test_quic_port_ = port; }
+
+void P2PManager::test_set_punch_clock(std::function<std::chrono::steady_clock::time_point()> clock) {
+    std::lock_guard<std::mutex> lock(punch_mutex_);
+    punch_clock_ = std::move(clock);
+}
+
+void P2PManager::test_set_local_punch_candidates(std::optional<dinero::p2p::PunchCandidates> c) {
+    std::lock_guard<std::mutex> lock(reach_mutex_);
+    test_local_punch_candidates_ = std::move(c);
+}
+
+P2PManager::PunchStats P2PManager::test_punch_stats() const { return punch_stats(); }
+#endif
+
+P2PManager::PunchStats P2PManager::punch_stats() const {
+    std::lock_guard<std::mutex> lock(punch_mutex_);
+    return punch_stats_;
+}
+
+// ============================================================================
+// Relay-coordinated hole punching (punchoff / punchans / punchgo)
+// ============================================================================
+
+namespace {
+
+using PunchPeerId = std::array<uint8_t, 20>;
+
+// Live, identity-proven links to one remote node, as the punch logic sees them.
+struct PunchLinks {
+    std::string out_key;  // a relayed peer we dialed
+    bool out_bit{false};  // ... advertising NODE_HOLEPUNCH
+    std::string in_key;   // a relayed peer that dialed us
+    bool in_bit{false};
+    bool direct{false};   // a non-relayed peer (punched or otherwise)
+};
+
+// Caller holds peers_mutex_.
+std::map<PunchPeerId, PunchLinks> CollectPunchLinks(
+    const std::unordered_map<std::string, std::shared_ptr<PeerInfo>>& peers) {
+    std::map<PunchPeerId, PunchLinks> out;
+    for (const auto& [key, p] : peers) {
+        if (!p || !p->is_connected || !p->identity_proven ||
+            p->lifetime_state.load(std::memory_order_acquire) == PeerLifetimeState::STOPPING) {
+            continue;
+        }
+        auto& l = out[p->their_node_id];
+        const bool bit = (p->service_flags & ServiceFlags::NODE_HOLEPUNCH) != 0;
+        if (!p->via_relay) {
+            l.direct = true;
+        } else if (p->is_outbound) {
+            l.out_key = key;
+            l.out_bit = bit;
+        } else {
+            l.in_key = key;
+            l.in_bit = bit;
+        }
+    }
+    return out;
+}
+
+dinero::p2p::PunchRole PunchRoleOf(const PunchLinks& l, const PunchPeerId& ours,
+                                   const PunchPeerId& theirs) {
+    return dinero::p2p::RoleFor(!l.out_key.empty(), !l.in_key.empty(), ours, theirs);
+}
+
+// The parser accepts port 0; such a target is never probed or dialed.
+std::vector<dinero::network::UdpAddr> UsablePunchTargets(const dinero::p2p::PunchCandidates& local,
+                                                         dinero::p2p::PunchCandidates remote) {
+    remote.v6.erase(std::remove_if(remote.v6.begin(), remote.v6.end(),
+                                   [](const dinero::network::UdpAddr& a) { return a.port == 0; }),
+                    remote.v6.end());
+    if (remote.v4 && remote.v4->port == 0) remote.v4.reset();
+    return dinero::p2p::ChoosePunchTargets(local, remote);
+}
+
+bool HasPunchCandidates(const dinero::p2p::PunchCandidates& c) { return !c.v6.empty() || c.v4; }
+
+// IPv6 unless IPv4 or IPv4-mapped (::ffff:a.b.c.d).
+bool PunchAddrIsV6(const dinero::network::UdpAddr& a) {
+    if (a.family != dinero::network::UdpAddr::Family::V6) return false;
+    static constexpr uint8_t kMapped[12] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff};
+    return !std::equal(std::begin(kMapped), std::end(kMapped), a.ip.begin());
+}
+
+// Caller holds punch_mutex_: one attempt per family its targets include.
+void CountPunchFamilies(P2PManager::PunchStats& s, const std::vector<dinero::network::UdpAddr>& targets) {
+    bool v4 = false, v6 = false;
+    for (const auto& t : targets) (PunchAddrIsV6(t) ? v6 : v4) = true;
+    if (v4) ++s.ipv4.attempts;
+    if (v6) ++s.ipv6.attempts;
+}
+
+// One probe round per interval until the deadline: 40 rounds at most.
+constexpr size_t kPunchMaxProbeRounds =
+    static_cast<size_t>(dinero::p2p::kPunchAttemptTimeout / dinero::p2p::kPunchProbeInterval);
+
+}  // namespace
+
+// Caller holds punch_mutex_ (or is the constructor).
+std::chrono::steady_clock::time_point P2PManager::PunchNow() const {
+    if (punch_clock_) return punch_clock_();
+    return clock_ ? clock_->SteadyNow() : std::chrono::steady_clock::now();
+}
+
+std::vector<dinero::network::UdpAddr> P2PManager::TakeProbeRoundLocked(
+    PunchAttempt& a, std::chrono::steady_clock::time_point now) {
+    if (a.role != dinero::p2p::PunchRole::Acceptor || a.phase != PunchAttempt::Phase::Probing ||
+        now >= a.deadline || now < a.next_probe_at || a.probe_rounds >= kPunchMaxProbeRounds) {
+        return {};
+    }
+    ++a.probe_rounds;
+    a.next_probe_at = now + dinero::p2p::kPunchProbeInterval;
+    punch_stats_.max_probe_targets = std::max(punch_stats_.max_probe_targets, a.targets.size());
+    return a.targets;
+}
+
+// 8 bytes from the P2P port, first byte 0: shorter than a STUN header and not a
+// QUIC long header, so the far endpoint drops it (or its session discards it).
+// It only opens our own router toward the initiator.
+void P2PManager::SendPunchProbes(const std::vector<dinero::network::UdpAddr>& targets) {
+    if (targets.empty() || !quic_endpoint_) return;
+    uint64_t sent = 0;
+    for (const auto& t : targets) {
+        uint8_t probe[8];
+        const uint64_t r = RandomNonce();
+        probe[0] = 0x00;
+        for (int i = 1; i < 8; ++i) probe[i] = static_cast<uint8_t>(r >> (8 * i));
+        if (quic_endpoint_->SendDatagram(t, probe, sizeof(probe))) ++sent;
+    }
+    std::lock_guard<std::mutex> lock(punch_mutex_);
+    punch_stats_.probes_sent += sent;
+}
+
+void P2PManager::PunchTick() {
+    std::lock_guard<std::mutex> tick_lock(punch_tick_mutex_);
+    if (!node_identity_ || shutdown_requested_.load(std::memory_order_acquire)) return;
+    const PunchPeerId ours = node_identity_->get_node_id_bytes();
+
+    std::vector<std::string> dialed_keys;
+    {
+        std::lock_guard<std::mutex> lock(punch_mutex_);
+        for (const auto& [_, a] : punch_attempts_) {
+            if (!a.dialed_key.empty()) dialed_keys.push_back(a.dialed_key);
+        }
+    }
+    std::map<PunchPeerId, PunchLinks> links;
+    // A connected, session-bound direct peer for a node id: for the initiator
+    // its punched dial (dineroid matched punch_expected_id), for the acceptor
+    // any inbound direct QUIC peer. And every relayed peer per node id.
+    struct DirectUp { std::string key; bool v6{false}; };
+    std::map<PunchPeerId, DirectUp> initiator_done, acceptor_done;
+    std::map<PunchPeerId, std::vector<std::string>> relayed_keys;
+    std::unordered_map<std::string, bool> dial_live;  // dialed key -> still alive
+    {
+        std::lock_guard<std::mutex> lock(peers_mutex_);
+        links = CollectPunchLinks(connected_peers_);
+        for (const auto& [key, p] : connected_peers_) {
+            if (!p || !p->is_connected || !p->identity_proven ||
+                p->lifetime_state.load(std::memory_order_acquire) == PeerLifetimeState::STOPPING) {
+                continue;
+            }
+            if (p->punched && p->is_outbound && p->punch_expected_id &&
+                p->their_node_id == *p->punch_expected_id) {
+                initiator_done[p->their_node_id] = {key, PunchAddrIsV6(p->quic_remote)};
+            }
+            if (p->quic_direct && !p->is_outbound) {
+                acceptor_done[p->their_node_id] = {key, PunchAddrIsV6(p->quic_remote)};
+            }
+            if (p->via_relay) relayed_keys[p->their_node_id].push_back(key);
+        }
+        for (const auto& k : dialed_keys) {
+            auto it = connected_peers_.find(k);
+            dial_live[k] = it != connected_peers_.end() && it->second &&
+                           it->second->lifetime_state.load(std::memory_order_acquire) !=
+                               PeerLifetimeState::STOPPING;
+        }
+    }
+
+    bool want_offer = false;
+    for (const auto& [id, l] : links) {
+        if (l.out_bit && !l.direct &&
+            PunchRoleOf(l, ours, id) == dinero::p2p::PunchRole::Initiator) {
+            want_offer = true;
+        }
+    }
+    dinero::p2p::PunchCandidates local;
+    if (want_offer) local = LocalPunchCandidates();  // takes reach_mutex_: no punch lock held
+
+    struct Offer { std::string key; uint64_t nonce; };
+    struct Dial { PunchPeerId id; uint64_t nonce; size_t from; std::vector<dinero::network::UdpAddr> targets; };
+    std::vector<Offer> offers;
+    std::vector<Dial> dials;
+    std::vector<dinero::network::UdpAddr> probes;
+    std::vector<std::string> teardown;
+    std::vector<std::string> mark_punched, replaced;  // acceptor's direct peers; relayed peers to drop
+    {
+        std::lock_guard<std::mutex> lock(punch_mutex_);
+        const auto now = PunchNow();
+        if (want_offer && HasPunchCandidates(local)) {
+            for (const auto& [id, l] : links) {
+                if (!l.out_bit || l.direct || punch_attempts_.count(id) ||
+                    PunchRoleOf(l, ours, id) != dinero::p2p::PunchRole::Initiator ||
+                    !punch_scheduler_->MayStart(id)) {
+                    continue;
+                }
+                PunchAttempt a;
+                a.role = dinero::p2p::PunchRole::Initiator;
+                a.phase = PunchAttempt::Phase::Offered;
+                a.nonce = RandomNonce();
+                a.relay_key = l.out_key;
+                a.local = local;
+                a.offer_sent_at = now;
+                a.deadline = now + dinero::p2p::kPunchAttemptTimeout;  // for an unanswered offer
+                offers.push_back({a.relay_key, a.nonce});
+                punch_attempts_[id] = std::move(a);
+                punch_scheduler_->Started(id);
+                ++punch_stats_.attempts;
+                ++punch_stats_.offers_sent;
+            }
+        }
+        for (auto it = punch_attempts_.begin(); it != punch_attempts_.end();) {
+            const PunchPeerId& id = it->first;
+            PunchAttempt& a = it->second;
+            const bool initiator = a.role == dinero::p2p::PunchRole::Initiator;
+            const auto& done = initiator ? initiator_done : acceptor_done;
+            if (auto up = done.find(id); up != done.end()) {
+                std::cout << "[P2P] punch: direct link to " << NodeIdHex(id) << " is up at "
+                          << up->second.key << "; replacing the relayed peer" << std::endl;
+                if (!initiator) mark_punched.push_back(up->second.key);
+                if (auto r = relayed_keys.find(id); r != relayed_keys.end()) {
+                    replaced.insert(replaced.end(), r->second.begin(), r->second.end());
+                }
+                punch_scheduler_->Succeeded(id);
+                ++punch_stats_.succeeded;
+                ++(up->second.v6 ? punch_stats_.ipv6 : punch_stats_.ipv4).succeeded;
+                it = punch_attempts_.erase(it);
+                continue;
+            }
+            if (now >= a.deadline) {
+                std::cout << "[P2P] punch: attempt with " << NodeIdHex(id)
+                          << " timed out; staying relayed" << std::endl;
+                if (!a.dialed_key.empty()) teardown.push_back(a.dialed_key);
+                punch_scheduler_->Failed(id);
+                ++punch_stats_.timeout;
+                it = punch_attempts_.erase(it);
+                continue;
+            }
+            if (initiator && a.phase == PunchAttempt::Phase::Dialing && now >= a.dial_at &&
+                a.next_target < a.targets.size()) {
+                // A target that silently drops the Initial keeps its dial
+                // handshaking past the deadline; once its share is used up,
+                // drop it and try the next one.
+                const bool expired = !a.dialed_key.empty() && now >= a.dial_expires;
+                if (expired) teardown.push_back(a.dialed_key);
+                if (a.dialed_key.empty() || !dial_live[a.dialed_key] || expired) {
+                    dials.push_back({id, a.nonce, a.next_target, a.targets});
+                }
+            }
+            if (!initiator) {
+                auto round = TakeProbeRoundLocked(a, now);
+                probes.insert(probes.end(), round.begin(), round.end());
+            }
+            ++it;
+        }
+    }
+
+    for (const auto& o : offers) {
+        std::cout << "[P2P] punch: offering a hole punch to " << o.key << std::endl;
+        send_to_peer(o.key, P2PMessage::create_punch_offer(o.nonce, local));
+    }
+    SendPunchProbes(probes);
+    for (const auto& d : dials) {
+        // First target first; on an immediate failure the next, while any remain.
+        size_t idx = d.from;
+        std::string key;
+        for (; idx < d.targets.size(); ++idx) {
+            const auto& t = d.targets[idx];
+            const std::string host = QuicRemoteHost(t);
+            if (connect_to_peer_quic(host, t.port, d.id)) {
+                key = dinero::network::FormatEndpoint(host, t.port);
+                std::cout << "[P2P] punch: dialing " << key << " for " << NodeIdHex(d.id) << std::endl;
+                break;
+            }
+        }
+        std::lock_guard<std::mutex> lock(punch_mutex_);
+        auto it = punch_attempts_.find(d.id);
+        if (key.empty()) idx = d.targets.size();
+        if (it != punch_attempts_.end() && it->second.nonce == d.nonce) {
+            PunchAttempt& a = it->second;
+            a.next_target = idx + 1;
+            a.dialed_key = key;
+            const auto now = PunchNow();
+            const size_t remaining = d.targets.size() - std::min(idx, d.targets.size());
+            a.dial_expires = remaining > 0 && a.deadline > now
+                                 ? now + (a.deadline - now) / static_cast<long>(remaining)
+                                 : a.deadline;
+        } else if (!key.empty()) {
+            teardown.push_back(key);  // the attempt ended meanwhile
+        }
+        if (!key.empty()) ++punch_stats_.dials;
+    }
+    // A punched dial still handshaking when its attempt failed goes too; the
+    // relayed peer is never touched.
+    for (const auto& key : teardown) {
+        bool stale = false;
+        {
+            std::lock_guard<std::mutex> lock(peers_mutex_);
+            auto it = connected_peers_.find(key);
+            stale = it != connected_peers_.end() && it->second && it->second->punched &&
+                    !(it->second->is_connected && it->second->identity_proven);
+        }
+        if (stale) disconnect_peer(key);
+    }
+    // A punch that succeeded replaces the relayed peer; the relay's circuit
+    // then idle-closes on its own.
+    if (!mark_punched.empty()) {
+        std::lock_guard<std::mutex> lock(peers_mutex_);
+        for (const auto& key : mark_punched) {
+            if (auto it = connected_peers_.find(key); it != connected_peers_.end() && it->second) {
+                it->second->punched = true;
+            }
+        }
+    }
+    for (const auto& key : replaced) disconnect_peer(key);
+}
+
+void P2PManager::EndPunchOnFailedProof(const std::array<uint8_t, 20>& expected_id,
+                                       const std::string& peer_key, bool mismatch) {
+    std::lock_guard<std::mutex> lock(punch_mutex_);
+    ++(mismatch ? punch_stats_.mismatch : punch_stats_.refused);
+    auto it = punch_attempts_.find(expected_id);
+    // Only the attempt's current dial ends it; an earlier target torn down
+    // mid-handshake must not cut short the one being tried now.
+    if (it == punch_attempts_.end() || it->second.role != dinero::p2p::PunchRole::Initiator ||
+        it->second.phase != PunchAttempt::Phase::Dialing ||
+        (!it->second.dialed_key.empty() && it->second.dialed_key != peer_key)) {
+        return;
+    }
+    std::cout << "[P2P] punch: attempt with " << NodeIdHex(expected_id) << " failed ("
+              << (mismatch ? "identity mismatch" : "identity proof refused") << "); staying relayed"
+              << std::endl;
+    punch_scheduler_->Failed(expected_id);
+    punch_attempts_.erase(it);
+}
+
+void P2PManager::punch_loop() {
+    while (!shutdown_requested_.load(std::memory_order_acquire)) {
+        bool active = false;
+        {
+            std::unique_lock<std::mutex> lock(punch_mutex_);
+            // Idle: sleep until an exchange starts. Active: wake for the next
+            // dial or probe round, at least every kPunchProbeInterval.
+            auto wait = std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                std::chrono::seconds(30));
+            if (!punch_attempts_.empty()) {
+                wait = dinero::p2p::kPunchProbeInterval;
+                const auto now = PunchNow();
+                for (const auto& [_, a] : punch_attempts_) {
+                    if (a.phase == PunchAttempt::Phase::Dialing && a.dialed_key.empty()) {
+                        wait = std::min(wait, std::max(a.dial_at - now,
+                                                       std::chrono::steady_clock::duration::zero()));
+                    }
+                }
+            }
+            punch_cv_.wait_for(lock, wait, [this] {
+                return shutdown_requested_.load(std::memory_order_acquire) || punch_wake_;
+            });
+            punch_wake_ = false;
+            active = !punch_attempts_.empty();
+        }
+        if (shutdown_requested_.load(std::memory_order_acquire)) break;
+        if (active) PunchTick();
+    }
+}
+
+namespace {
+// A punch message's sender, read under peers_mutex_.
+struct PunchSender {
+    bool ok{false};  // relayed, connected, identity-proven, NODE_HOLEPUNCH
+    PunchPeerId id{};
+    PunchLinks links;
+};
+}  // namespace
+
+void P2PManager::handle_punch_offer(const std::string& peer_address, const P2PMessage& message) {
+    PunchSender from;
+    {
+        std::lock_guard<std::mutex> lock(peers_mutex_);
+        auto it = connected_peers_.find(peer_address);
+        if (it != connected_peers_.end() && it->second) {
+            const auto& p = *it->second;
+            from.ok = p.via_relay && p.is_connected && p.identity_proven &&
+                      (p.service_flags & ServiceFlags::NODE_HOLEPUNCH) != 0;
+            from.id = p.their_node_id;
+        }
+        if (from.ok) from.links = CollectPunchLinks(connected_peers_)[from.id];
+    }
+    const auto parsed = dinero::p2p::ParsePunchCandidates(message.payload);
+    std::string why;
+    if (!node_identity_) {
+        why = "no node identity";
+    } else if (!from.ok) {
+        why = "not a proven relayed peer with NODE_HOLEPUNCH";
+    } else if (!parsed) {
+        why = "malformed payload";
+    } else if (from.links.direct) {
+        why = "already connected directly";
+    } else if (PunchRoleOf(from.links, node_identity_->get_node_id_bytes(), from.id) !=
+               dinero::p2p::PunchRole::Acceptor) {
+        why = "we are not the acceptor";
+    }
+    dinero::p2p::PunchCandidates local;
+    if (why.empty()) {
+        local = LocalPunchCandidates();
+        if (!HasPunchCandidates(local)) why = "no local candidates";
+    }
+    {
+        std::lock_guard<std::mutex> lock(punch_mutex_);
+        ++punch_stats_.received;
+        if (why.empty() && punch_attempts_.count(from.id)) why = "an attempt is already in flight";
+        if (why.empty() && !punch_scheduler_->MayStart(from.id)) why = "backing off (or too many in flight)";
+        if (!why.empty()) {
+            ++punch_stats_.ignored;
+        } else {
+            const auto now = PunchNow();
+            PunchAttempt a;
+            a.role = dinero::p2p::PunchRole::Acceptor;
+            a.phase = PunchAttempt::Phase::AwaitGo;
+            a.nonce = parsed->first;
+            a.relay_key = peer_address;
+            a.local = local;
+            a.offer_sent_at = now;
+            a.deadline = now + dinero::p2p::kPunchAttemptTimeout;  // for a punchgo that never comes
+            a.targets = UsablePunchTargets(local, parsed->second);
+            CountPunchFamilies(punch_stats_, a.targets);
+            punch_attempts_[from.id] = std::move(a);
+            punch_scheduler_->Started(from.id);
+            ++punch_stats_.attempts;
+            ++punch_stats_.answers_sent;
+        }
+    }
+    if (!why.empty()) {
+        std::cout << "[P2P] punch: ignoring punchoff from " << peer_address << ": " << why << std::endl;
+        return;
+    }
+    std::cout << "[P2P] punch: answering punchoff from " << peer_address << std::endl;
+    send_to_peer(peer_address, P2PMessage::create_punch_answer(parsed->first, local));
+}
+
+void P2PManager::handle_punch_answer(const std::string& peer_address, const P2PMessage& message) {
+    PunchSender from;
+    {
+        std::lock_guard<std::mutex> lock(peers_mutex_);
+        auto it = connected_peers_.find(peer_address);
+        if (it != connected_peers_.end() && it->second) {
+            const auto& p = *it->second;
+            from.ok = p.via_relay && p.is_connected && p.identity_proven &&
+                      (p.service_flags & ServiceFlags::NODE_HOLEPUNCH) != 0;
+            from.id = p.their_node_id;
+        }
+    }
+    const auto parsed = dinero::p2p::ParsePunchCandidates(message.payload);
+    std::string why;
+    bool skipped = false;
+    uint64_t nonce = 0;
+    {
+        std::lock_guard<std::mutex> lock(punch_mutex_);
+        ++punch_stats_.received;
+        auto it = from.ok ? punch_attempts_.find(from.id) : punch_attempts_.end();
+        if (!from.ok) {
+            why = "not a proven relayed peer with NODE_HOLEPUNCH";
+        } else if (!parsed) {
+            why = "malformed payload";
+        } else if (it == punch_attempts_.end() || it->second.role != dinero::p2p::PunchRole::Initiator ||
+                   it->second.phase != PunchAttempt::Phase::Offered) {
+            why = "no offer outstanding";
+        } else if (it->second.nonce != parsed->first) {
+            why = "wrong nonce";
+        }
+        if (!why.empty()) {
+            ++punch_stats_.ignored;
+        } else {
+            PunchAttempt& a = it->second;
+            a.targets = UsablePunchTargets(a.local, parsed->second);
+            if (a.targets.empty()) {
+                // Nothing to try (symmetric NAT on IPv4, no IPv6): back off as
+                // after a failure, or every tick would offer again.
+                skipped = true;
+                ++punch_stats_.skipped;
+                punch_scheduler_->Failed(from.id);
+                punch_attempts_.erase(it);
+            } else {
+                CountPunchFamilies(punch_stats_, a.targets);
+                const auto now = PunchNow();
+                const auto rtt = now - a.offer_sent_at;
+                a.phase = PunchAttempt::Phase::Dialing;
+                a.deadline = now + dinero::p2p::kPunchAttemptTimeout;
+                a.dial_at = now + rtt / 2;
+                nonce = a.nonce;
+                ++punch_stats_.gos_sent;
+                punch_wake_ = true;
+            }
+        }
+    }
+    if (!why.empty()) {
+        std::cout << "[P2P] punch: ignoring punchans from " << peer_address << ": " << why << std::endl;
+        return;
+    }
+    if (skipped) {
+        std::cout << "[P2P] punch: no usable address pair with " << peer_address
+                  << "; skipping" << std::endl;
+        return;
+    }
+    send_to_peer(peer_address, P2PMessage::create_punch_go(nonce));
+    punch_cv_.notify_all();
+}
+
+void P2PManager::handle_punch_go(const std::string& peer_address, const P2PMessage& message) {
+    PunchSender from;
+    {
+        std::lock_guard<std::mutex> lock(peers_mutex_);
+        auto it = connected_peers_.find(peer_address);
+        if (it != connected_peers_.end() && it->second) {
+            const auto& p = *it->second;
+            from.ok = p.via_relay && p.is_connected && p.identity_proven &&
+                      (p.service_flags & ServiceFlags::NODE_HOLEPUNCH) != 0;
+            from.id = p.their_node_id;
+        }
+    }
+    uint64_t nonce = 0;
+    for (size_t i = 0; i < 8 && i < message.payload.size(); ++i) {
+        nonce |= static_cast<uint64_t>(message.payload[i]) << (8 * i);
+    }
+    std::string why;
+    std::vector<dinero::network::UdpAddr> probes;
+    {
+        std::lock_guard<std::mutex> lock(punch_mutex_);
+        ++punch_stats_.received;
+        auto it = from.ok ? punch_attempts_.find(from.id) : punch_attempts_.end();
+        if (!from.ok) {
+            why = "not a proven relayed peer with NODE_HOLEPUNCH";
+        } else if (message.payload.size() != 8) {
+            why = "malformed payload";
+        } else if (it == punch_attempts_.end() || it->second.role != dinero::p2p::PunchRole::Acceptor ||
+                   it->second.phase != PunchAttempt::Phase::AwaitGo) {
+            why = "no answer outstanding";
+        } else if (it->second.nonce != nonce) {
+            why = "wrong nonce";
+        }
+        if (!why.empty()) {
+            ++punch_stats_.ignored;
+        } else {
+            const auto now = PunchNow();
+            PunchAttempt& a = it->second;
+            a.phase = PunchAttempt::Phase::Probing;
+            a.deadline = now + dinero::p2p::kPunchAttemptTimeout;
+            a.next_probe_at = now;
+            probes = TakeProbeRoundLocked(a, now);
+            punch_wake_ = true;
+        }
+    }
+    if (!why.empty()) {
+        std::cout << "[P2P] punch: ignoring punchgo from " << peer_address << ": " << why << std::endl;
+        return;
+    }
+    SendPunchProbes(probes);  // the first round at once, so it meets the initiator's Initial
+    punch_cv_.notify_all();
+}
+
 bool P2PManager::has_proven_reachable() const {
     // An operator's externalip is an assertion we honour; everything else
     // (port mapping, peer votes, STUN) has to be dialed back first.
@@ -8570,7 +9266,9 @@ size_t P2PManager::test_reach_checks_sent() const {
 #endif
 
 uint64_t P2PManager::local_quic_service_bits() const {
-    return (quic_endpoint_ && quic_endpoint_->Listening()) ? ServiceFlags::NODE_P2P_QUIC : 0;
+    return (quic_endpoint_ && quic_endpoint_->Listening())
+               ? (ServiceFlags::NODE_P2P_QUIC | ServiceFlags::NODE_HOLEPUNCH)
+               : 0;
 }
 
 void P2PManager::set_quic_connect_targets(std::vector<std::string> targets) {
@@ -8606,7 +9304,9 @@ void P2PManager::dial_quic_connect_targets() {
     }
 }
 
-bool P2PManager::connect_to_peer_quic(const std::string& ip, uint16_t port) {
+bool P2PManager::connect_to_peer_quic(
+    const std::string& ip, uint16_t port,
+    std::optional<std::array<uint8_t, 20>> punch_expected_id) {
     if (shutdown_requested_.load(std::memory_order_acquire) ||
         !network_active_.load(std::memory_order_acquire) ||
         !quic_endpoint_ || !quic_endpoint_->Listening()) {
@@ -8635,13 +9335,15 @@ bool P2PManager::connect_to_peer_quic(const std::string& ip, uint16_t port) {
     }
     auto session = quic_endpoint_->Connect(remote, quic_p2p_options_);
     if (!session) return false;
-    return !install_direct_quic_peer(std::move(session), remote, /*outbound=*/true).empty();
+    return !install_direct_quic_peer(std::move(session), remote, /*outbound=*/true,
+                                     std::move(punch_expected_id)).empty();
 }
 
 std::string P2PManager::install_direct_quic_peer(
     std::shared_ptr<dinero::network::QuicSession> session,
     const dinero::network::UdpAddr& remote,
-    bool outbound) {
+    bool outbound,
+    std::optional<std::array<uint8_t, 20>> punch_expected_id) {
     auto peer = std::make_shared<PeerInfo>();
     peer->address = QuicRemoteHost(remote);
     peer->port = remote.port;
@@ -8655,6 +9357,12 @@ std::string P2PManager::install_direct_quic_peer(
     peer->lifetime_state.store(PeerLifetimeState::RUNNING);
     peer->quic_direct = true;
     peer->quic_remote = remote;
+    if (punch_expected_id) {
+        // A punched dial counts against the home-peer budget. The expected
+        // id is only recorded here; the identity check comes later.
+        peer->punched = true;
+        peer->punch_expected_id = punch_expected_id;
+    }
     peer->relay_quic_session = session;
     const std::string key = peer->to_string();
     bool refused = false;
@@ -9850,6 +10558,7 @@ void P2PManager::keepalive_loop() {
         // keepalive tick. O(25) work; sweeps idle circuits + lets the
         // relay registry reap expired registrations.
         SweepIdleCircuits();
+        PunchTick();  // offers to relayed peers we initiate for; punch_loop drives the rest
         relay_registry_.Sweep();
         SweepRelayHintsCache();
         MaybeReSendRelayHints();

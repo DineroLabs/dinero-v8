@@ -1,7 +1,13 @@
 # Zero-touch P2P reachability and direct home-to-home connections
 
 Date: 2026-10-25
-Status: draft for owner review
+
+**Owner update, 2026-10-29:** include the completed hole-punch implementation in
+v8.2.0 if the combined relay/Core candidate passes review and qualification.
+This supersedes the 2026-10-27 deferral recorded below. Older test receipts
+remain scoped to their original branches; no release or activation is authorized
+by the existence of a completed implementation alone.
+Status: combined-source integration qualification; owner direction updated 2026-10-29
 
 ## Intent
 
@@ -241,6 +247,11 @@ builds. *Server default: my call.* Operators can still set it to `0`.
 
 ### E. Direct connections: relay-introduced hole punching (owner: headline goal)
 
+> **Moved to the release after v8.2.0 (owner decision, 2026-10-27).** v8.2.0 ships
+> the prerequisites: the QUIC peer transport (2a), NAT-type measurement (2b) and
+> authenticated relay circuits (3). Until then, home nodes are reached through relays.
+
+
 - **Prerequisite: a native UDP/QUIC peer transport.** This is new work and the
   largest single item. It needs:
   - a UDP socket on the P2P port (20999/udp, alongside 20999/tcp), shared by STUN,
@@ -349,11 +360,11 @@ configuration.
 1. The Dell, configured with nothing, shows "Reachable through a relay" within a few
    minutes, and a node on DineroTX connects to it through a community (non-fleet)
    relay and exchanges blocks.
-2. A home-router-style NAT node on DineroTX and the Dell (behind the real AT&T NAT)
+2. *(Next release, with section E.)* A home-router-style NAT node on DineroTX and the Dell (behind the real AT&T NAT)
    establish a **direct** punched connection, verified as path type direct/punched
    with the relay circuit closed, and exchange blocks.
-3. The same over IPv6 between the Dell and a firewall-only IPv6 namespace.
-4. A symmetric-NAT namespace node falls back to relay automatically and stays
+3. *(Next release, with section E.)* The same over IPv6 between the Dell and a firewall-only IPv6 namespace.
+4. *(Next release, with section E.)* A symmetric-NAT namespace node falls back to relay automatically and stays
    connected.
 5. No node advertises an address that failed dial-back.
 6. Relay caps hold under load: a relay with more than 8 circuit requests refuses
@@ -366,7 +377,7 @@ scenarios above to CI. Every behavior fix ships with a regression test that fail
 without it (owner's verification rules: confirm it ran, neuter-check it, no
 `assert()`-only gates).
 
-## Delivery order (my call; all lands in v8.2.0 before the Nov 9-17 window)
+## Delivery order (my call; all lands in v8.2.0 before the Nov 9-17 window, except item 4)
 
 Run these as parallel tracks where possible. The order shows dependencies, not
 sequential calendar time.
@@ -381,7 +392,8 @@ sequential calendar time.
    - **2c.** Crawler and seeds (F) and the health page (G).
 3. **Community relays with caps and identity binding** (D), plus the relay-timeout
    root cause.
-4. **Hole punching**, IPv6 then IPv4 (E), on top of 2a and 3.
+4. **Hole punching**, IPv6 then IPv4 (E), on top of 2a and 3. **Moved to the release
+   after v8.2.0** (owner decision, 2026-10-27).
 5. **Alongside:** peer-quality and upgrade prompts (H), and PCP and UPnP IPv6
    pinholes (B.1).
 6. **Combined-candidate re-qualification:** the consensus evidence re-run plus the
@@ -396,6 +408,9 @@ sequential calendar time.
 - Direct home-to-home connections are a headline goal.
 - Test bench: DineroTX. Real-home test: the Dell.
 - Everything ships in v8.2.0; activation stays at 150,000; no split release.
+  **Exception (2026-10-27):** hole punching (section E, delivery item 4, acceptance
+  2-4) moves to the release after v8.2.0. It is non-consensus, and the relays already
+  make home nodes reachable.
 - Health-page self-reports are opt-in and sent over Tor.
 
 ## Calls I made (owner to check)

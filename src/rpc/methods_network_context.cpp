@@ -466,6 +466,30 @@ din::Json rpc_context_getnetworkinfo(const ExecutionContext& ctx, const din::Jso
     nat["measured_at"] = static_cast<Json::Int64>(status.nat_measured_at);
     result["nat"] = nat;
 
+    // Relay-coordinated hole punching. failed.mismatch: the punched session
+    // proved another node id; failed.refused: its dineroid was refused.
+    {
+        const auto& hp = status.hole_punch;
+        din::Json punch;
+        punch["attempts"] = static_cast<Json::UInt64>(hp.attempts);
+        punch["succeeded"] = static_cast<Json::UInt64>(hp.succeeded);
+        din::Json failed;
+        failed["timeout"] = static_cast<Json::UInt64>(hp.timeout);
+        failed["mismatch"] = static_cast<Json::UInt64>(hp.mismatch);
+        failed["refused"] = static_cast<Json::UInt64>(hp.refused);
+        punch["failed"] = failed;
+        punch["skipped"] = static_cast<Json::UInt64>(hp.skipped);
+        din::Json by_family;
+        for (const auto& [name, f] : {std::pair{"ipv4", hp.ipv4}, std::pair{"ipv6", hp.ipv6}}) {
+            din::Json fam;
+            fam["attempts"] = static_cast<Json::UInt64>(f.attempts);
+            fam["succeeded"] = static_cast<Json::UInt64>(f.succeeded);
+            by_family[name] = fam;
+        }
+        punch["by_family"] = by_family;
+        result["hole_punch"] = punch;
+    }
+
     din::Json onion_transport;
     onion_transport["configured"] = status.onion_transport_configured;
     onion_transport["enabled"] = status.onion_transport_enabled;

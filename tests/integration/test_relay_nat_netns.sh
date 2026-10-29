@@ -406,6 +406,28 @@ start_node() {
     printf '%s\n' "$!"
 }
 
+# A STUN server on <ip>:3478 in <ns>: answers every Binding request with the
+# source address in XOR-MAPPED-ADDRESS. Run two on different IPs so the NAT
+# mapping can be classified.
+start_stun_responder() {
+    local ns="$1"
+    local ip="$2"
+    [[ -f "${RUN_DIR}/stun.py" ]] || cat >"${RUN_DIR}/stun.py" <<'STUN'
+import socket, struct, sys
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+s.bind((sys.argv[1], 3478))
+while True:
+    d, (ip, port) = s.recvfrom(2048)
+    if len(d) < 20 or d[0:2] != b"\x00\x01" or d[4:8] != b"\x21\x12\xa4\x42":
+        continue
+    xip = bytes(a ^ b for a, b in zip(socket.inet_aton(ip), d[4:8]))
+    attr = struct.pack("!HHBBH", 0x0020, 8, 0, 1, port ^ 0x2112) + xip
+    s.sendto(struct.pack("!HH", 0x0101, len(attr)) + d[4:20] + attr, (ip, port))
+STUN
+    ip netns exec "${ns}" python3 "${RUN_DIR}/stun.py" "${ip}" &
+    PIDS+=("$!")
+}
+
 # ── DIALBACK=1: dial-back verification and NAT classification ─────────────
 # Public nodes P1..P3 sit in distinct /16s so min_groups=2 is met only by
 # genuinely different networks. E sits behind an endpoint-independent NAT, D
@@ -449,24 +471,9 @@ if [[ "${DIALBACK:-0}" == "1" ]]; then
     configure_nat "${NS_NAT_RND}" --random
     info "DIALBACK topology: P1 ${P1_IP}, P2 ${P2_IP}, P3 ${P3_IP}; E behind EIM NAT ${EIM_WAN}; D behind --random NAT ${RND_WAN}"
 
-    # Two STUN servers on different IPs (P2, P3): answer every Binding request
-    # with the source address in XOR-MAPPED-ADDRESS.
-    cat >"${RUN_DIR}/stun.py" <<'STUN'
-import socket, struct, sys
-s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-s.bind((sys.argv[1], 3478))
-while True:
-    d, (ip, port) = s.recvfrom(2048)
-    if len(d) < 20 or d[0:2] != b"\x00\x01" or d[4:8] != b"\x21\x12\xa4\x42":
-        continue
-    xip = bytes(a ^ b for a, b in zip(socket.inet_aton(ip), d[4:8]))
-    attr = struct.pack("!HHBBH", 0x0020, 8, 0, 1, port ^ 0x2112) + xip
-    s.sendto(struct.pack("!HH", 0x0101, len(attr)) + d[4:20] + attr, (ip, port))
-STUN
-    for pair in "${NS_P2}:${P2_IP}" "${NS_P3}:${P3_IP}"; do
-        ip netns exec "${pair%%:*}" python3 "${RUN_DIR}/stun.py" "${pair##*:}" &
-        PIDS+=("$!")
-    done
+    # Two STUN servers on different IPs (P2, P3).
+    start_stun_responder "${NS_P2}" "${P2_IP}"
+    start_stun_responder "${NS_P3}" "${P3_IP}"
     STUN_SERVERS="${P2_IP}:3478,${P3_IP}:3478"
 
     # Everything E sends (only what it sends: verifiers' reachres replies
@@ -718,6 +725,301 @@ if [[ "${COMMUNITY_RELAY:-0}" == "1" || "${TWO_RELAYS:-0}" == "1" ]]; then
         done
         [[ "${ok}" == 1 ]] || fail "after losing ${victim_ep}: E relays '$(e_relays | tr '\n' ' ')', D reaches E: $(d_reaches_e && echo yes || echo no)"
         pass "within $(( $(date +%s) - t0 )) s E re-registered ($(e_relays | tr '\n' ' ')) and D still reaches E"
+    fi
+    exit 0
+fi
+
+# ── PUNCH_V4=1 / PUNCH_SYMMETRIC=1 / PUNCH_V6=1: relay-coordinated punch ──
+# R is a public, operator-pinned relay. E2 registers with R and E1 and E2
+# reach each other through it; nothing test-only drives the punch, so the
+# keepalive tick and the punch thread must start it on their own.
+# PUNCH_V4: E1 and E2 each sit behind an endpoint-independent NAT with inbound
+#   blocked. R and P2 run STUN servers, so each node measures its reflexive
+#   address and mapping on its P2P port. The punched direct QUIC peer must
+#   replace the relayed one and carry blocks.
+# PUNCH_SYMMETRIC: the same, but E2's NAT is --random (endpoint-dependent).
+#   The initiator must skip the punch and keep the relayed peer, which still
+#   carries blocks.
+# PUNCH_V6: E1 and E2 are directly on the WAN with routable IPv6 addresses
+#   and a stateful firewall only (NEW inbound dropped, v4 and v6). No STUN,
+#   so the only candidates are IPv6 and the punch must succeed over IPv6.
+if [[ "${PUNCH_V4:-0}" == "1" || "${PUNCH_SYMMETRIC:-0}" == "1" || "${PUNCH_V6:-0}" == "1" ]]; then
+    R_IP="11.11.0.10"; S_IP="22.22.0.10"
+    E1_WAN="55.44.0.2"; E2_WAN="55.55.0.2"
+    # Global unicast outside 2001:db8::/32 (which the node treats as
+    # non-routable), in distinct /32s; the bridge has no uplink.
+    E1_IP6="2a0b:4e07:e1::2"; E2_IP6="2a0c:9a40:e2::2"
+    P2P_PORT=$((BASE_PORT + 111))
+    rm -rf "${RUN_DIR}"; mkdir -p "${RUN_DIR}"
+    ip link add "${BRIDGE}" type bridge
+    ip link set "${BRIDGE}" up
+    wan_16() {
+        setup_wan_peer "$1" "$2" "br$2" "$3/16"
+        ip -n "$1" route add default dev wan0
+    }
+    NODE_ARGS=()
+    if [[ "${PUNCH_V6:-0}" == "1" ]]; then
+        require_cmd ip6tables
+        FAMILY="ipv6"
+        for ns in "${NS_P1}" "${NS_EIM}" "${NS_RND}"; do create_ns "${ns}"; done
+        wan_16 "${NS_P1}" "r${TAG}" "${R_IP}"
+        wan_16 "${NS_EIM}" "e1${TAG}" "${E1_WAN}"
+        wan_16 "${NS_RND}" "e2${TAG}" "${E2_WAN}"
+        for pair in "${NS_EIM}=${E1_IP6}" "${NS_RND}=${E2_IP6}"; do
+            ns="${pair%%=*}"
+            ip -n "${ns}" -6 addr add "${pair#*=}/48" dev wan0 nodad
+            ip -n "${ns}" -6 route add default dev wan0
+            # Firewall only: outbound-initiated flows come back, nothing new
+            # gets in (NDP has to, or IPv6 itself breaks).
+            ip netns exec "${ns}" iptables -A INPUT -i wan0 -m conntrack --ctstate NEW -j DROP
+            ip netns exec "${ns}" ip6tables -A INPUT -p ipv6-icmp -j ACCEPT
+            ip netns exec "${ns}" ip6tables -A INPUT -i wan0 -m conntrack --ctstate NEW -j DROP
+        done
+        ip netns exec "${NS_EIM}" ping -6 -c 1 -W 2 "${E2_IP6}" >/dev/null ||
+            fail "E1 cannot reach E2 over IPv6 at all (topology broken)"
+        E2_DIRECT="${E2_IP6}"
+        info "PUNCH_V6 topology: R ${R_IP}; E1 ${E1_WAN} [${E1_IP6}], E2 ${E2_WAN} [${E2_IP6}], firewall-only"
+    else
+        require_cmd python3
+        FAMILY="ipv4"
+        for ns in "${NS_P1}" "${NS_P2}" "${NS_NAT_EIM}" "${NS_NAT_RND}" "${NS_EIM}" "${NS_RND}"; do
+            create_ns "${ns}"
+        done
+        wan_16 "${NS_P1}" "r${TAG}" "${R_IP}"
+        wan_16 "${NS_P2}" "s${TAG}" "${S_IP}"
+        wan_16 "${NS_NAT_EIM}" "ne${TAG}" "${E1_WAN}"
+        wan_16 "${NS_NAT_RND}" "nr${TAG}" "${E2_WAN}"
+        setup_lan_pair "${NS_EIM}" "${NS_NAT_EIM}" "e${TAG}" "nel${TAG}" \
+            "10.144.1.2/24" "10.144.1.1/24" "10.144.1.1"
+        setup_lan_pair "${NS_RND}" "${NS_NAT_RND}" "d${TAG}" "nrl${TAG}" \
+            "10.155.1.2/24" "10.155.1.1/24" "10.155.1.1"
+        configure_nat "${NS_NAT_EIM}"
+        if [[ "${PUNCH_SYMMETRIC:-0}" == "1" ]]; then
+            configure_nat "${NS_NAT_RND}" --random
+        else
+            configure_nat "${NS_NAT_RND}"
+        fi
+        # A router drops unsolicited WAN input before conntrack confirms it.
+        # Accepted, a peer's Initial that beats our first probe would leave a
+        # conntrack entry that forces our probe onto another source port.
+        for ns in "${NS_NAT_EIM}" "${NS_NAT_RND}"; do
+            ip netns exec "${ns}" iptables -A INPUT -i wan0 -m conntrack --ctstate NEW -j DROP
+        done
+        E2_DIRECT="${E2_WAN}"
+        start_stun_responder "${NS_P1}" "${R_IP}"
+        start_stun_responder "${NS_P2}" "${S_IP}"
+        export STUN_ENABLED=1
+        NODE_ARGS=(--p2p.stun.servers="${R_IP}:3478,${S_IP}:3478")
+        info "PUNCH topology: R ${R_IP}, STUN on R and ${S_IP}; E1 behind EIM NAT ${E1_WAN}, E2 behind $([[ "${PUNCH_SYMMETRIC:-0}" == "1" ]] && echo "--random" || echo EIM) NAT ${E2_WAN}"
+    fi
+
+    LOG_ORIGIN="${RUN_DIR}/e1.log"; LOG_RELAY="${RUN_DIR}/r.log"; LOG_TARGET="${RUN_DIR}/e2.log"
+    declare -A NS_OF=([r]="${NS_P1}" [e1]="${NS_EIM}" [e2]="${NS_RND}")
+    declare -A RPC_OF=([r]=$((BASE_PORT + 11)) [e1]=$((BASE_PORT + 14)) [e2]=$((BASE_PORT + 15)))
+    pid="$(start_node "${NS_P1}" "${RUN_DIR}/r" "${RPC_OF[r]}" "${P2P_PORT}" "${RUN_DIR}/r.log" \
+        --quic=1 "--externalip=${R_IP}:${P2P_PORT}" --p2p.relay=1 "${NODE_ARGS[@]}")"
+    PIDS+=("${pid}")
+    pid="$(start_node "${NS_EIM}" "${RUN_DIR}/e1" "${RPC_OF[e1]}" "${P2P_PORT}" "${RUN_DIR}/e1.log" \
+        --quic=1 "${NODE_ARGS[@]}")"
+    PIDS+=("${pid}")
+    pid="$(start_node "${NS_RND}" "${RUN_DIR}/e2" "${RPC_OF[e2]}" "${P2P_PORT}" "${RUN_DIR}/e2.log" \
+        --quic=1 "--relayregister=${R_IP}:${P2P_PORT}" "${NODE_ARGS[@]}")"
+    PIDS+=("${pid}")
+    for n in r e1 e2; do
+        wait_rpc "${NS_OF[$n]}" "${RPC_OF[$n]}" "${RUN_DIR}/${n}" || fail "${n} RPC did not come up"
+    done
+    # With E2 listening, a refused probe means its NAT/firewall dropped it.
+    if tcp_probe "${NS_EIM}" "${E2_DIRECT}" "${P2P_PORT}"; then
+        fail "E1 opened a direct TCP connection to E2 at ${E2_DIRECT}"
+    fi
+    pass "E2 is not directly reachable from E1 at ${E2_DIRECT}"
+    nrpc() { rpc_call "${NS_OF[$1]}" "${RPC_OF[$1]}" "${RUN_DIR}/$1" "$2" "$3"; }
+    nrpc e1 addnode "[\"${R_IP}:${P2P_PORT}\",\"onetry\"]" >/dev/null || fail "e1 addnode R"
+    nrpc e2 addnode "[\"${R_IP}:${P2P_PORT}\",\"onetry\"]" >/dev/null || fail "e2 addnode R"
+    # A relay at genesis is in initial block download and refuses circuits.
+    r_miner="$(nrpc r wallet.createhd '["miner"]' | jq -r '.result.first_address')"
+    nrpc r generatetoaddress "[3, \"${r_miner}\"]" >/dev/null || fail "R could not mine"
+    for n in e1 e2; do
+        ok=0
+        for _ in $(seq 1 120); do
+            [[ "$(nrpc "${n}" getblockcount '[]' | jq -r '.result')" -ge 3 ]] && { ok=1; break; }
+            sleep 1
+        done
+        [[ "${ok}" == 1 ]] || fail "${n} did not sync R's first blocks"
+    done
+
+    if [[ "${FAMILY}" == "ipv4" ]]; then
+        # The punch only has v4 candidates if STUN measured them on the P2P port.
+        nat_of() {
+            local n="$1" want="$2" got=""
+            for _ in $(seq 1 60); do
+                got="$(nrpc "${n}" getnetworkinfo '[]' | jq -r 'select(.result.nat.servers >= 2) | .result.nat.mapping' 2>/dev/null || true)"
+                [[ -n "${got}" ]] && break
+                sleep 1
+            done
+            [[ "${got}" == "${want}" ]] || fail "${n}: nat.mapping='${got}', expected ${want}"
+            pass "${n}: nat.mapping=${want} ($(nrpc "${n}" getnetworkinfo '[]' | jq -c '.result.nat'))"
+        }
+        nat_of e1 endpoint_independent
+        if [[ "${PUNCH_SYMMETRIC:-0}" == "1" ]]; then
+            nat_of e2 endpoint_dependent
+        else
+            nat_of e2 endpoint_independent
+        fi
+    fi
+
+    e1_id="$(nrpc e1 getnetworkinfo '[]' | jq -r '.result.node_id_hex')"
+    e2_id="$(nrpc e2 getnetworkinfo '[]' | jq -r '.result.node_id_hex')"
+    [[ "${#e1_id}" == 40 && "${#e2_id}" == 40 ]] || fail "E1 or E2 has no node id"
+    peers_of() {  # peers_of <node> <id>: that node's peers with node id <id>
+        nrpc "$1" getpeerinfo '[]' | jq -c --arg id "$2" \
+            '[.result[] | select(.node_id==$id) | {addr, transport, path, inbound, identity_proven, bestknownheight}]'
+    }
+    relayed_to() {  # a proven relayed peer to <id>, reported as path "relayed"
+        nrpc "$1" getpeerinfo '[]' | jq -e --arg id "$2" \
+            'any(.result[]; .node_id==$id and .transport=="relay" and .path=="relayed" and .identity_proven)' >/dev/null 2>&1
+    }
+    punched_to() {  # a proven punched direct QUIC peer to <id>, and no relayed one
+        nrpc "$1" getpeerinfo '[]' | jq -e --arg id "$2" \
+            '[.result[] | select(.node_id==$id)] as $p |
+             any($p[]; .path=="punched" and .transport=="quic" and .identity_proven) and
+             all($p[]; .transport!="relay" and .path!="relayed")' >/dev/null 2>&1
+    }
+    one_addr() {  # one_addr <node> <id> <path>: ONE_ADDR := the addr of the only such peer
+        local json n
+        json="$(peers_of "$1" "$2")"
+        n="$(jq --arg p "$3" 'map(select(.path==$p)) | length' <<<"${json}")"
+        [[ "${n}" == 1 ]] || fail "$1: expected exactly one $3 peer to $2, found ${n}: ${json}"
+        ONE_ADDR="$(jq -r --arg p "$3" 'map(select(.path==$p)) | .[0].addr' <<<"${json}")"
+    }
+    any_punched() {  # any peer at all reported as punched
+        nrpc "$1" getpeerinfo '[]' | jq -e 'any(.result[]; .path=="punched")' >/dev/null 2>&1
+    }
+
+    # E1 and E2 reach each other through R: both ends hold a proven relayed
+    # peer. E1 can register with R as well, so either may dial the circuit;
+    # the side that did is the punch initiator.
+    ok=0
+    for _ in $(seq 1 240); do
+        if relayed_to e1 "${e2_id}" && relayed_to e2 "${e1_id}"; then ok=1; break; fi
+        sleep 1
+    done
+    [[ "${ok}" == 1 ]] || fail "E1 and E2 never got a proven relayed peer to each other: E1 $(peers_of e1 "${e2_id}") E2 $(peers_of e2 "${e1_id}")"
+    t0="$(date +%s)"
+    if peers_of e1 "${e2_id}" | jq -e 'any(.[]; .transport=="relay" and .inbound==false)' >/dev/null; then
+        ini="e1"
+    else
+        ini="e2"
+    fi
+    pass "E1 and E2 reached each other through R (${ini} dialed): relayed peers $(peers_of e1 "${e2_id}") / $(peers_of e2 "${e1_id}")"
+
+    if [[ "${PUNCH_SYMMETRIC:-0}" == "1" ]]; then
+        # 1. The initiator gets the other's answer, finds no address pair to
+        #    try (E2's mapping is endpoint-dependent) and skips; nobody dials.
+        wait_networkinfo_jq "${NS_OF[$ini]}" "${RPC_OF[$ini]}" "${RUN_DIR}/${ini}" '.result.hole_punch.skipped >= 1' \
+            "${ini} skipped the punch (E2's mapping is endpoint-dependent)"
+        wait_log "${RUN_DIR}/${ini}.log" "[P2P] punch: no usable address pair with" "${ini} logged the skip"
+        info "${ini} hole_punch: $(nrpc "${ini}" getnetworkinfo '[]' | jq -c '.result.hole_punch')"
+        one_addr e1 "${e2_id}" relayed
+        relayed_addr="${ONE_ADDR}"
+        # 2. The relayed peer stays up for 2 min and nothing gets punched.
+        t1="$(date +%s)"
+        while (( $(date +%s) - t1 < 120 )); do
+            if any_punched e1 || any_punched e2; then
+                fail "a punched peer appeared despite the endpoint-dependent NAT: E1 $(peers_of e1 "${e2_id}") E2 $(peers_of e2 "${e1_id}")"
+            fi
+            relayed_to e1 "${e2_id}" && relayed_to e2 "${e1_id}" ||
+                fail "the relayed peer dropped after the skipped punch: E1 $(peers_of e1 "${e2_id}") E2 $(peers_of e2 "${e1_id}")"
+            sleep 5
+        done
+        one_addr e1 "${e2_id}" relayed
+        [[ "${ONE_ADDR}" == "${relayed_addr}" ]] ||
+            fail "E1's relayed peer to E2 was replaced (was ${relayed_addr}): $(peers_of e1 "${e2_id}")"
+        assert_log_absent "${LOG_ORIGIN}" "[P2P] punch: dialing" "E1 never dialed a punch target"
+        assert_log_absent "${LOG_TARGET}" "[P2P] punch: dialing" "E2 never dialed a punch target"
+        pass "after 2 min the same relayed peer (${relayed_addr}) is up and no peer is punched"
+        PEER_PATH="relayed"
+    else
+        # 1. Within 60 s of the relayed link both ends hold a punched direct
+        #    QUIC peer to the other, and the relayed peers are gone.
+        ok=0
+        while (( $(date +%s) - t0 <= 60 )); do
+            if punched_to e1 "${e2_id}" && punched_to e2 "${e1_id}"; then ok=1; break; fi
+            sleep 1
+        done
+        [[ "${ok}" == 1 ]] || fail "no punched peer within 60 s: E1 $(peers_of e1 "${e2_id}") E2 $(peers_of e2 "${e1_id}"); ${ini} hole_punch $(nrpc "${ini}" getnetworkinfo '[]' | jq -c '.result.hole_punch')"
+        pass "within $(( $(date +%s) - t0 )) s both hold a punched peer and no relayed one: $(peers_of e1 "${e2_id}") / $(peers_of e2 "${e1_id}")"
+        # 3. Counted on both sides, under the right family.
+        for n in e1 e2; do
+            wait_networkinfo_jq "${NS_OF[$n]}" "${RPC_OF[$n]}" "${RUN_DIR}/${n}" \
+                ".result.hole_punch.succeeded >= 1 and .result.hole_punch.by_family.${FAMILY}.succeeded >= 1" \
+                "${n}: hole_punch.by_family.${FAMILY}.succeeded >= 1"
+            info "${n} hole_punch: $(nrpc "${n}" getnetworkinfo '[]' | jq -c '.result.hole_punch')"
+        done
+        PEER_PATH="punched"
+    fi
+
+    # Blocks: E1 mines 10 and E2 syncs them.
+    if [[ "${PEER_PATH}" == "punched" ]]; then
+        # Cut E2 off from R first (both directions), so E2 can only get the
+        # blocks over the punched peer. synced_blocks is the height of the
+        # highest block E2 accepted from that peer.
+        if [[ "${FAMILY}" == "ipv4" ]]; then
+            ip netns exec "${NS_NAT_RND}" iptables -I FORWARD -d "${R_IP}" -j DROP
+            ip netns exec "${NS_NAT_RND}" iptables -I FORWARD -s "${R_IP}" -j DROP
+        else
+            # R is on IPv4 only.
+            ip netns exec "${NS_RND}" iptables -I OUTPUT -d "${R_IP}" -j DROP
+            ip netns exec "${NS_RND}" iptables -I INPUT -s "${R_IP}" -j DROP
+        fi
+        if tcp_probe "${NS_RND}" "${R_IP}" "${P2P_PORT}"; then
+            fail "E2 still reaches R after the cut"
+        fi
+        pass "E2 is cut off from R"
+        one_addr e2 "${e1_id}" punched
+        e2_peer="${ONE_ADDR}"
+        miner="$(nrpc e1 wallet.createhd '["miner"]' | jq -r '.result.first_address')"
+        nrpc e1 generatetoaddress "[10, \"${miner}\"]" >/dev/null || fail "E1 could not mine"
+        e1_height="$(nrpc e1 getblockcount '[]' | jq -r '.result')"
+        ok=0
+        for _ in $(seq 1 90); do
+            if [[ "$(nrpc e2 getblockcount '[]' | jq -r '.result')" -ge "${e1_height}" ]] &&
+               nrpc e2 getpeerinfo '[]' | jq -e --arg a "${e2_peer}" --argjson h "${e1_height}" \
+                   'any(.result[]; .addr==$a and .path=="punched" and .synced_blocks >= $h)' >/dev/null 2>&1; then
+                ok=1; break
+            fi
+            sleep 1
+        done
+        [[ "${ok}" == 1 ]] || fail "with R cut off, E2 did not sync E1's blocks to ${e1_height} over the punched peer ${e2_peer}: height $(nrpc e2 getblockcount '[]' | jq -r '.result'), $(nrpc e2 getpeerinfo '[]' | jq -c --arg id "${e1_id}" '[.result[] | select(.node_id==$id) | {addr, path, synced_blocks}]')"
+        punched_to e1 "${e2_id}" && punched_to e2 "${e1_id}" ||
+            fail "the punched link did not hold (or a relayed peer came back): E1 $(peers_of e1 "${e2_id}") E2 $(peers_of e2 "${e1_id}")"
+        pass "with R cut off, E1 mined to ${e1_height} and E2 synced it over the punched peer ${e2_peer} (synced_blocks $(nrpc e2 getpeerinfo '[]' | jq -r --arg a "${e2_peer}" '.result[] | select(.addr==$a) | .synced_blocks'))"
+    else
+        # R cannot be cut here (it carries the relayed peer), and R usually
+        # delivers the blocks first: the relayed peer to E1 has to carry E1's
+        # announcements of them (inv/cmpctblock). bestknownheight is no proof:
+        # it does not move on an announcement of a block E2 already has.
+        one_addr e2 "${e1_id}" relayed
+        e2_peer_log="${ONE_ADDR%:0}"  # the log omits the virtual port
+        e2_peer_re="${e2_peer_log//./\\.}"
+        announced() {
+            grep -cE "HandleP2PMessage: cmd='(inv|cmpctblock)' from ${e2_peer_re}([^:0-9]|\$)" "${LOG_TARGET}" || true
+        }
+        announced_before="$(announced)"
+        miner="$(nrpc e1 wallet.createhd '["miner"]' | jq -r '.result.first_address')"
+        nrpc e1 generatetoaddress "[10, \"${miner}\"]" >/dev/null || fail "E1 could not mine"
+        e1_height="$(nrpc e1 getblockcount '[]' | jq -r '.result')"
+        ok=0
+        for _ in $(seq 1 90); do
+            if [[ "$(nrpc e2 getblockcount '[]' | jq -r '.result')" -ge "${e1_height}" ]] &&
+               (( $(announced) > announced_before )); then
+                ok=1; break
+            fi
+            sleep 1
+        done
+        [[ "${ok}" == 1 ]] || fail "E2 did not sync E1's blocks (height ${e1_height}) with its relayed peer ${e2_peer_log} carrying them: $(peers_of e2 "${e1_id}"), $(( $(announced) - announced_before )) announcement(s) over it"
+        relayed_to e1 "${e2_id}" && relayed_to e2 "${e1_id}" || fail "the relayed peer dropped while syncing"
+        pass "E1 mined to ${e1_height}; E2 synced it, and E1 sent $(( $(announced) - announced_before )) block announcement(s) over the relayed peer ${e2_peer_log}"
     fi
     exit 0
 fi

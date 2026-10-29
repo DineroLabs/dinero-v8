@@ -160,9 +160,14 @@ namespace ServiceFlags {
     // Answers `reachchk`: dials the requester back at its own source IP and
     // reports whether it reached the same node (dial-back verification).
     constexpr uint64_t NODE_DIALBACK = 1ULL << 33;
-    static_assert(((NODE_P2P_QUIC | NODE_DIALBACK) &
+    // Relay-coordinated QUIC hole punching, advertised only with a bound
+    // endpoint. Keep networking bits distinct from the Orchard assignments.
+    constexpr uint64_t NODE_HOLEPUNCH = 1ULL << 34;
+    static_assert(((NODE_P2P_QUIC | NODE_DIALBACK | NODE_HOLEPUNCH) &
         (NODE_COMPACT_TIMING_V1 | NODE_ORCHARD_V1 | NODE_ORCHARD_CATALOG_V1)) == 0,
         "Networking capabilities cannot claim Orchard or consensus-timing support");
+    static_assert((NODE_HOLEPUNCH & (NODE_P2P_QUIC | NODE_DIALBACK)) == 0,
+        "Hole-punch support must be negotiated separately from QUIC and dial-back");
 } // namespace ServiceFlags
 
 } // namespace dinero

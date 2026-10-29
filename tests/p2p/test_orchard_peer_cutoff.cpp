@@ -69,7 +69,8 @@ TEST(OrchardPeerCutoff, BothHandshakeDirectionsRequireEachScheduledCapability) {
 }
 TEST(OrchardPeerCutoff, NetworkCapabilitiesCannotSatisfyOrchardHandshake) {
     constexpr auto networking = dinero::ServiceFlags::NODE_P2P_QUIC |
-                                dinero::ServiceFlags::NODE_DIALBACK;
+                                dinero::ServiceFlags::NODE_DIALBACK |
+                                dinero::ServiceFlags::NODE_HOLEPUNCH;
     for (bool outbound : {false, true}) {
         P2PManager manager(0);
         manager.set_release_services_provider([] { return compact | orchard; });
@@ -79,7 +80,8 @@ TEST(OrchardPeerCutoff, NetworkCapabilitiesCannotSatisfyOrchardHandshake) {
 }
 TEST(OrchardPeerCutoff, VersionPreservesIndependentHighNetworkingBits) {
     constexpr auto networking = dinero::ServiceFlags::NODE_P2P_QUIC |
-                                dinero::ServiceFlags::NODE_DIALBACK;
+                                dinero::ServiceFlags::NODE_DIALBACK |
+                                dinero::ServiceFlags::NODE_HOLEPUNCH;
     const auto message = P2PMessage::create_version(70016, 0, base | networking, "/relay/", 12348);
     ASSERT_GE(message.payload.size(), 12u);
     uint64_t flags = 0;

@@ -2269,3 +2269,104 @@ TEST(RelayOrchestrator, AcceptedColdDialDoesNotStarveTheConnectedRoute) {
             << "the connected route was not tried (cold dial accepted=" << accepted << ")";
     }
 }
+
+// Plan 4 Task 4: relayed and punched outbound peers draw on a small home-peer
+// budget (kHomePeerSlots), not on MAX_OUTBOUND_CONNECTIONS, so a node whose
+// direct slots are full still gets a relayed link to hole-punch from.
+namespace {
+void FillDirectOutbound(P2PManager& d, int count) {
+    for (int i = 0; i < count; ++i) {
+        d.test_install_connected_direct_peer(
+            "44.55.66." + std::to_string(i + 1) + ":20999", -1, true, false, {});
+    }
+}
+void InstallRelayedOutbound(P2PManager& d, int n) {
+    for (int i = 0; i < n; ++i) {
+        d.test_install_virtual_relay_peer("relay:home" + std::to_string(i), "9.9.20.2:20999",
+                                          100 + i, P2PMessage::RelayDirection::ClientToTarget,
+                                          true);
+    }
+}
+}  // namespace
+
+TEST(RelayOrchestrator, RelayedDialAtFullOutbound) {
+    auto target = NewIdentity();
+    P2PManager d(0);
+    InstallNodeIdentity(d);
+    auto relay = LoopbackSocketPair::Create();
+    d.test_install_connected_direct_peer("9.9.20.2:20999", relay.client_fd(), true, false, {});
+    FillDirectOutbound(d, 7);  // eight direct outbound peers in all
+    AddLegacyHint(d, target->get_node_id_bytes(), {9, 9, 20, 2});
+    d.test_orchestrate_relay_dials();
+    EXPECT_NE(NextRelayConnect(relay), nullptr)
+        << "a full direct-outbound set blocked the relayed (home-peer) dial";
+}
+
+TEST(RelayOrchestrator, HomePeerBudgetCapsAtTwo) {
+    auto target = NewIdentity();
+    P2PManager d(0);
+    InstallNodeIdentity(d);
+    auto relay = LoopbackSocketPair::Create();
+    d.test_install_connected_direct_peer("9.9.20.2:20999", relay.client_fd(), true, false, {});
+    FillDirectOutbound(d, 7);
+    InstallRelayedOutbound(d, 2);
+    AddLegacyHint(d, target->get_node_id_bytes(), {9, 9, 20, 2});
+    d.test_orchestrate_relay_dials();
+    EXPECT_EQ(NextRelayConnect(relay), nullptr) << "a third home peer was dialed";
+}
+
+TEST(RelayOrchestrator, HomePeerBudgetIsReservedAcrossTargetsInOnePass) {
+    auto t1 = NewIdentity();
+    auto t2 = NewIdentity();
+    auto t3 = NewIdentity();
+    P2PManager d(0);
+    InstallNodeIdentity(d);
+    auto relay = LoopbackSocketPair::Create();
+    d.test_install_connected_direct_peer("9.9.20.2:20999", relay.client_fd(), true, false, {});
+    AddLegacyHint(d, t1->get_node_id_bytes(), {9, 9, 20, 2});
+    AddLegacyHint(d, t2->get_node_id_bytes(), {9, 9, 20, 2});
+    AddLegacyHint(d, t3->get_node_id_bytes(), {9, 9, 20, 2});
+    d.test_orchestrate_relay_dials();
+    EXPECT_NE(NextRelayConnect(relay), nullptr);
+    EXPECT_NE(NextRelayConnect(relay), nullptr);
+    EXPECT_EQ(NextRelayConnect(relay), nullptr) << "more than kHomePeerSlots dialed in one pass";
+}
+
+TEST(RelayOrchestrator, DirectSlotsUnchangedByRelayedPeers) {
+    auto target = NewIdentity();
+    P2PManager d(0);
+    InstallNodeIdentity(d);
+    std::vector<std::string> dialed;
+    d.test_set_connection_manager_dial([&](const std::string& h, uint16_t p) {
+        dialed.push_back(h + ":" + std::to_string(p));
+        return false;
+    });
+    FillDirectOutbound(d, 7);  // one direct slot left
+    InstallRelayedOutbound(d, 2);
+    d.handle_relay_hint_v2("10.5.0.1:20999", SignedHintMessage(*target, 1));  // via 8.8.10.1, cold
+    d.test_orchestrate_relay_dials();
+    ASSERT_EQ(dialed.size(), 1u) << "relayed peers consumed a direct slot";
+    EXPECT_EQ(dialed[0], "8.8.10.1:20999");
+}
+
+// The connection manager's own direct-dial pass counts outbound peers too: a
+// relayed peer there would eat a direct slot and starve the seed dial.
+TEST(RelayOrchestrator, DirectDialPassIgnoresHomePeers) {
+    dinero::p2p::AddressManager addrman;  // outlives the manager
+    P2PManager d(0);
+    d.set_address_manager(&addrman);
+    std::atomic<int> dialed{0};
+    d.test_set_connection_manager_dial([&](const std::string&, uint16_t) {
+        ++dialed;
+        return false;
+    });
+    FillDirectOutbound(d, 7);  // one direct slot left
+    InstallRelayedOutbound(d, 2);
+    addrman.addAddress(MakeRelayAddress("8.8.30.1", 20999));  // a learned community peer
+    ASSERT_TRUE(d.start());
+    for (int i = 0; i < 300 && dialed.load() == 0; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    d.stop();
+    EXPECT_GE(dialed.load(), 1) << "relayed peers consumed a direct slot in the dial pass";
+}

@@ -164,6 +164,8 @@ public:
         std::vector<std::string> nat_reflexive;  // distinct addresses servers saw
         uint32_t nat_servers{0};                 // servers that answered
         int64_t nat_measured_at{0};              // unix seconds; 0 = never
+        // Relay-coordinated hole punching outcomes (getnetworkinfo "hole_punch").
+        ::P2PManager::PunchStats hole_punch;
         // Direct QUIC peers on UDP at the P2P port.
         // Inbound peers on a real socket or direct QUIC (relay circuits are
         // not evidence that our own address is dialable).

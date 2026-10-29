@@ -12,6 +12,7 @@
 // (dial-time filter) can use it without CMake changes. Each translation unit
 // gets its own cached set, initialized once on first call.
 
+#include <functional>
 #include <string>
 #include <unordered_set>
 
@@ -53,8 +54,24 @@ namespace network {
 //
 // On Windows the helper returns an empty set so the filter becomes a no-op,
 // preserving prior behavior — the production fleet is Linux-only.
-inline const std::unordered_set<std::string>& LocalInterfaceIps() {
-    static const std::unordered_set<std::string> kLocalIps = []() {
+#ifdef DINERO_TEST_BUILD
+// Tests: when set, EnumerateLocalInterfaceIps() returns this instead of reading
+// the interfaces. Reset with an empty function.
+using InterfaceEnumeratorOverride = std::function<std::unordered_set<std::string>()>;
+inline InterfaceEnumeratorOverride& InterfaceEnumeratorOverrideRef() {
+    static InterfaceEnumeratorOverride fn;
+    return fn;
+}
+inline void test_set_interface_enumerator_override(InterfaceEnumeratorOverride fn) {
+    InterfaceEnumeratorOverrideRef() = std::move(fn);
+}
+#endif
+
+inline std::unordered_set<std::string> EnumerateLocalInterfaceIps() {
+#ifdef DINERO_TEST_BUILD
+    if (const auto& fn = InterfaceEnumeratorOverrideRef()) return fn();
+#endif
+    {
         std::unordered_set<std::string> ips;
 #ifndef _WIN32
         // Primary: getifaddrs() — covers IPv4 + IPv6, but needs AF_NETLINK.
@@ -117,7 +134,14 @@ inline const std::unordered_set<std::string>& LocalInterfaceIps() {
         }
 #endif
         return ips;
-    }();
+    }
+}
+
+// Cached once at first call; for self-loop filtering, where staleness is harmless.
+// Callers that need the current addresses (IPv6 prefixes and privacy addresses
+// rotate) must call EnumerateLocalInterfaceIps() instead.
+inline const std::unordered_set<std::string>& LocalInterfaceIps() {
+    static const std::unordered_set<std::string> kLocalIps = EnumerateLocalInterfaceIps();
     return kLocalIps;
 }
 
