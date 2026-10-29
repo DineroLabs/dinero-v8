@@ -41,5 +41,8 @@ foreach(_pair "SepConsensusForcedLink;sep_consensus_forced_link"
     -DSEP_CONFIG=$<CONFIG>
     -DSEP_EXE=$<TARGET_FILE:${_tgt}>
     -P ${_sep_driver})
-  set_tests_properties(${_test} PROPERTIES LABELS "separation" TIMEOUT 1800)
+  # One cmake --build per build dir at a time (ninja is not re-entrant);
+  # later build-driving separation tests join the same lock.
+  set_tests_properties(${_test} PROPERTIES LABELS "separation" TIMEOUT 1800
+    RESOURCE_LOCK sep_build_dir)
 endforeach()
