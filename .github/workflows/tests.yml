@@ -898,7 +898,8 @@ jobs:
             perl \
             libcurl4-openssl-dev \
             libudev-dev \
-            libusb-1.0-0-dev
+            libusb-1.0-0-dev \
+            iproute2 iptables curl jq
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -1008,6 +1009,12 @@ jobs:
             -L 'quic|p2p' \
             --label-exclude 'integration|gate|release|canonicality|fuzz'
 
+      - name: Qualify real relay and hole-punch network paths
+        timeout-minutes: 60
+        run: |
+          sudo bash scripts/ci/run_relay_reachability_netns.sh \
+            "$PWD/build-tests-quic/dinerod" "$PWD/build-tests-quic/relay-netns-evidence"
+
       - name: Check QUIC session lifetimes with ThreadSanitizer
         run: |
           cmake -S . -B build-quic-tsan -G Ninja \
@@ -1030,4 +1037,8 @@ jobs:
           name: quic-lifetime-${{ github.sha }}
           path: |
             build-tests-quic/Testing/Temporary/
+            build-tests-quic/relay-netns-evidence/**/*.log
+            build-tests-quic/relay-netns-evidence/summary.txt
+            build-tests-quic/relay-netns-evidence/source-sha.txt
+            build-tests-quic/dinerod
             build-quic-tsan/Testing/Temporary/
