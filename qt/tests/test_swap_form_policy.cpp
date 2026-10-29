@@ -81,6 +81,69 @@ private Q_SLOTS:
         QVERIFY(SwapFormPolicy::reviewDecodedOffer(stale, "regtest", 1800000000).blocker.contains("expired"));
         QVERIFY(!SwapFormPolicy::reviewDecodedOffer(QJsonObject{{"kind", "accept"}}, "regtest", 0).blocker.isEmpty());
     }
+
+    // --- Zcash (docs/design/din-zec-atomic-swaps.md) ---
+    void zecOfferBlockers() {
+        using SwapFormPolicy::reviewZecOffer;
+        const QString tm = "tm9iNYCVAhLLa4rJtfqqHauR5xL1REdpiDs";  // regtest P2PKH
+        const QString t1 = "t1HsdDMzmJfq4vc7T17XYjEkLMLvbgM1fCi";  // mainnet P2PKH
+        auto ok = reviewZecOffer("10", "2.5", tm, "regtest");
+        QVERIFY2(ok.blocker.isEmpty(), qPrintable(ok.blocker));
+        QCOMPARE(ok.btcSat, 250000000LL);
+        QCOMPARE(reviewZecOffer("10", "", tm, "regtest").blocker, QString("Enter the ZEC amount you want"));
+        QCOMPARE(reviewZecOffer("10", "0.00399999", tm, "regtest").blocker,
+                 QString("ZEC amount is too small (at least 0.004 ZEC)"));
+        QVERIFY(reviewZecOffer("10", "0.004", tm, "regtest").blocker.isEmpty());
+        QCOMPARE(reviewZecOffer("10", "1", "", "regtest").blocker,
+                 QString("Enter your Zcash address (where you receive the ZEC)"));
+        QCOMPARE(reviewZecOffer("10", "1", t1, "regtest").blocker,
+                 QString("Enter a transparent Zcash address (tm… or t2…)"));  // a mainnet address on regtest
+        QVERIFY(reviewZecOffer("10", "1", t1, "main").blocker.isEmpty());
+        QVERIFY(!reviewZecOffer("10", "1", "zs1shieldedaddressnotallowedhere000", "main").blocker.isEmpty());
+        QVERIFY(!reviewZecOffer("10", "1", tm.left(34), "regtest").blocker.isEmpty());  // wrong length
+    }
+    void zecTextsAndStates() {
+        QCOMPARE(SwapFormPolicy::kindOfText("dinswap2o0201"), QString("offer"));
+        QVERIFY(SwapFormPolicy::isZecOffer(" dinswap2o0201"));
+        QVERIFY(!SwapFormPolicy::isZecOffer("dinswap1o0101"));
+        QVERIFY(SwapFormPolicy::canCancel("awaiting-deposit"));
+        QVERIFY(SwapFormPolicy::canCancel("deposit-confirmed"));
+        QCOMPARE(SwapFormPolicy::stateLabel("btc-locked", "btc-seller", "zec"),
+                 QString::fromUtf8("ZEC locked — waiting for the seller to claim"));
+        QCOMPARE(SwapFormPolicy::stateLabel("btc-locked", "btc-seller"),
+                 QString::fromUtf8("BTC locked — waiting for the seller to claim"));
+        QCOMPARE(SwapFormPolicy::stateLabel("awaiting-deposit", "btc-seller", "zec"), QString("Waiting for your ZEC deposit"));
+        QCOMPARE(SwapFormPolicy::rate(1000000000, 2500000, "zat"), QString("250000 zat per DIN"));
+    }
+    void depositHints() {
+        QJsonObject s{{"deposit_due_zat", 2520000}};
+        QCOMPARE(SwapFormPolicy::depositView(s).hint, QString("pay 0.02520000 ZEC to the deposit address"));
+        s["deposit_seen_zat"] = 1000000;
+        QCOMPARE(SwapFormPolicy::depositView(s).hint, QString("0.01520000 ZEC still due"));
+        s["deposit_seen_zat"] = 2520000;
+        s["deposit_confirmations"] = 7;
+        auto v = SwapFormPolicy::depositView(s);
+        QCOMPARE(v.hint, QString("wait for 3 more Zcash confirmations of the deposit"));
+        QVERIFY(!v.ready);
+        s["deposit_confirmed_zat"] = 2520000;
+        s["deposit_confirmations"] = 10;
+        v = SwapFormPolicy::depositView(s);
+        QVERIFY(v.ready);
+        QVERIFY(v.hint.isEmpty());
+        s["deposit_status"] = "Zcash node unreachable";
+        QVERIFY(!SwapFormPolicy::depositView(s).ready);
+    }
+    void zecAcceptReviewTalksAboutTheDeposit() {
+        QJsonObject d{{"kind", "offer"}, {"network", "regtest"}, {"chain", "zec"}, {"acceptable_now", true},
+                      {"din_amount_una", 1000000000}, {"btc_amount_sat", 2500000}, {"t_btc_unix", 1800172800},
+                      {"t_din_unix", 1800345600}, {"n_din", 30}};
+        const auto r = SwapFormPolicy::reviewDecodedOffer(d, "regtest", 1800000000);
+        QVERIFY(r.blocker.isEmpty());
+        QVERIFY2(r.text.startsWith("You send 0.02500000 ZEC and receive 10.00000000 DIN"), qPrintable(r.text));
+        QVERIFY(r.text.contains("0.02520000 ZEC"));  // amount + funding fee
+        QVERIFY(r.text.contains("deposit"));
+        QVERIFY(!r.text.contains("BTC"));
+    }
 };
 
 QTEST_MAIN(SwapFormPolicyTest)

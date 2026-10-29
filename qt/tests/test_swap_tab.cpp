@@ -5,7 +5,9 @@
 #include <QtTest/QtTest>
 
 #include <QApplication>
+#include <QFrame>
 #include <QGroupBox>
+#include <QJsonArray>
 #include <QMessageBox>
 #include <QPainter>
 #include <QTimer>
@@ -172,6 +174,33 @@ private Q_SLOTS:
         page.save(dir + "/swap-tab-hover.png");
         QToolTip::hideText();
 
+        // The same tab on a node that can swap ZEC: selling for ZEC, and a buyer's deposit.
+        Q_EMIT rpc_->rpcResult("swaptab.caps", QJsonObject{{"chains", QJsonArray{"btc", "zec"}}});
+        Find<QPushButton>(tab_, "chainZec")->click();
+        Find<QLineEdit>(tab_, "dinAmount")->setText("100");
+        Find<QLineEdit>(tab_, "btcAmount")->setText("2.5");
+        Find<QLineEdit>(tab_, "btcAddress")->setText("t1a6nTJkrNCib1gXugKBnNaRh5zAw7UNid5");
+        Find<QPlainTextEdit>(tab_, "pasteIn")->setPlainText("dinswap2o020201 (a ZEC offer: 100 DIN for 2.5 ZEC)");
+        Find<QLineEdit>(tab_, "btcRefundAddress")->setText("t1UTHATrzbyAyCLU4Yd5Q2rjcLcKX6EwqgH");
+        Q_EMIT rpc_->rpcResult("swaptab.deposit",
+                               QJsonObject{{"id", "7c1e9a0400000000"},
+                                           {"deposit_address", "t1Y5CHzCc5pGGUJha1jJTBGFh4Qxx2evjdQ"},
+                                           {"deposit_due_zat", 250020000}, {"deposit_seen_zat", 250020000},
+                                           {"deposit_confirmed_zat", 0}, {"deposit_confirmations", 7}});
+        Q_EMIT rpc_->rpcResult("swaptab.list", QJsonArray{
+            QJsonObject{{"id", "7c1e9a0400000000"}, {"role", "btc-seller"}, {"chain", "zec"}, {"state", "awaiting-deposit"},
+                        {"din_amount_una", 10000000000LL}, {"btc_amount_sat", 250000000},
+                        {"t_btc_unix", QDateTime::currentSecsSinceEpoch() + 42 * 3600},
+                        {"t_din_unix", QDateTime::currentSecsSinceEpoch() + 90 * 3600},
+                        {"deposit_address", "t1Y5CHzCc5pGGUJha1jJTBGFh4Qxx2evjdQ"}, {"deposit_due_zat", 250020000},
+                        {"deposit_seen_zat", 250020000}, {"deposit_confirmed_zat", 0}, {"deposit_confirmations", 7}},
+            QJsonObject{{"id", "a90c55e300000000"}, {"role", "din-seller"}, {"chain", "btc"}, {"state", "done"},
+                        {"din_amount_una", 25000000000LL}, {"btc_amount_sat", 420000}}});
+        tab_->resize(1440, 1350);
+        quiet();
+        tab_->grab().save(dir + "/swap-tab-zec.png");
+        tab_->resize(1440, 900);
+
         // The final review before anything is created (Cancel is the default).
         QTimer::singleShot(300, [dir] {
             if (auto* box = qobject_cast<QMessageBox*>(QApplication::activeModalWidget())) {
@@ -180,6 +209,78 @@ private Q_SLOTS:
             }
         });
         create->click();
+    }
+
+    // --- Zcash: only when the node says it can (swap.capabilities) ---
+    void zecIsHiddenUnlessTheNodeOffersIt() {
+        QVERIFY(!Find<QPushButton>(tab_, "chainZec")->isVisible());  // offline / older node: BTC only
+        QVERIFY(!Find<QLabel>(tab_, "swapIntro")->text().contains("ZEC"));
+        Q_EMIT rpc_->rpcResult("swaptab.caps", QJsonObject{{"chains", QJsonArray{"btc"}}});
+        QVERIFY(!Find<QPushButton>(tab_, "chainZec")->isVisible());  // a node built without Zcash swaps
+        Q_EMIT rpc_->rpcResult("swaptab.caps", QJsonObject{{"error", "swaps are disabled"}});
+        QVERIFY(!Find<QPushButton>(tab_, "chainZec")->isVisible());
+        Q_EMIT rpc_->rpcResult("swaptab.caps", QJsonObject{{"chains", QJsonArray{"btc", "zec"}}});
+        QVERIFY(Find<QPushButton>(tab_, "chainZec")->isVisible());
+        QVERIFY(Find<QLabel>(tab_, "swapIntro")->text().contains("BTC or ZEC"));
+    }
+
+    void sellingForZec() {
+        Q_EMIT rpc_->rpcResult("swaptab.caps", QJsonObject{{"chains", QJsonArray{"btc", "zec"}}});
+        Find<QPushButton>(tab_, "chainZec")->click();
+        Find<QLineEdit>(tab_, "dinAmount")->setText("100");
+        Find<QLineEdit>(tab_, "btcAmount")->setText("2.5");
+        Find<QLineEdit>(tab_, "btcAddress")->setText(kBtcAddress);  // a Bitcoin address does not do for ZEC
+        QVERIFY(!Find<QPushButton>(tab_, "createOffer")->isEnabled());
+        QVERIFY2(Find<QLabel>(tab_, "swapOfferHint")->text().contains("transparent Zcash address"),
+                 qPrintable(Find<QLabel>(tab_, "swapOfferHint")->text()));
+        Find<QLineEdit>(tab_, "btcAddress")->setText("t1HsdDMzmJfq4vc7T17XYjEkLMLvbgM1fCi");  // this node: mainnet
+        QVERIFY(Find<QPushButton>(tab_, "createOffer")->isEnabled());
+        QCOMPARE(Find<QLabel>(tab_, "swapReviewReceive")->text(), QString("2.50000000 ZEC"));
+        QVERIFY(Find<QLabel>(tab_, "swapReviewRate")->text().contains("zat per DIN"));
+        Find<QPushButton>(tab_, "chainBtc")->click();  // back to BTC: the same address is refused again
+        QVERIFY(!Find<QPushButton>(tab_, "createOffer")->isEnabled());
+    }
+
+    void buyingWithZecShowsTheDeposit() {
+        auto* review = Find<QPushButton>(tab_, "reviewPasted");
+        Find<QPlainTextEdit>(tab_, "pasteIn")->setPlainText("dinswap2o00");
+        QVERIFY(!review->isEnabled());  // this node has not said it can swap ZEC
+        QVERIFY(Find<QLabel>(tab_, "swapPasteHint")->text().contains("cannot swap ZEC"));
+        Q_EMIT rpc_->rpcResult("swaptab.caps", QJsonObject{{"chains", QJsonArray{"btc", "zec"}}});
+        QVERIFY(!review->isEnabled());
+        QVERIFY(Find<QLabel>(tab_, "swapPasteHint")->text().contains("Zcash refund address"));
+        Find<QLineEdit>(tab_, "btcRefundAddress")->setText("t1HsdDMzmJfq4vc7T17XYjEkLMLvbgM1fCi");
+        QVERIFY(review->isEnabled());
+
+        auto* box = Find<QFrame>(tab_, "swapDeposit");
+        QVERIFY(!box->isVisible());
+        Q_EMIT rpc_->rpcResult("swaptab.deposit",
+                               QJsonObject{{"id", "7c1e9a0400000000"},
+                                           {"deposit_address", "t1Y5CHzCc5pGGUJha1jJTBGFh4Qxx2evjdQ"},
+                                           {"deposit_due_zat", 250020000},
+                                           {"deposit_seen_zat", 0}});
+        QVERIFY(box->isVisible());
+        QVERIFY(!Find<QLabel>(tab_, "swapDepositQr")->pixmap().isNull());
+        QCOMPARE(Find<QLabel>(tab_, "swapDepositAddress")->text(), QString("t1Y5CHzCc5pGGUJha1jJTBGFh4Qxx2evjdQ"));
+        QVERIFY(Find<QLabel>(tab_, "swapDepositHint")->text().contains("pay 2.50020000 ZEC"));
+        QVERIFY(!Find<QPushButton>(tab_, "acceptDeposit")->isEnabled());
+        QVERIFY(!Find<QPushButton>(tab_, "withdrawDeposit")->isEnabled());  // nothing paid yet
+
+        // The list shows the confirmed deposit: the reply can go.
+        QJsonObject row{{"id", "7c1e9a0400000000"}, {"role", "btc-seller"}, {"chain", "zec"},
+                        {"state", "deposit-confirmed"}, {"din_amount_una", 10000000000LL},
+                        {"btc_amount_sat", 250000000}, {"deposit_address", "t1Y5CHzCc5pGGUJha1jJTBGFh4Qxx2evjdQ"},
+                        {"deposit_due_zat", 250020000}, {"deposit_seen_zat", 250020000},
+                        {"deposit_confirmed_zat", 250020000}, {"deposit_confirmations", 12}};
+        Q_EMIT rpc_->rpcResult("swaptab.list", QJsonArray{row});
+        QVERIFY(Find<QPushButton>(tab_, "acceptDeposit")->isEnabled());
+        QVERIFY(Find<QPushButton>(tab_, "withdrawDeposit")->isEnabled());
+        auto* table = Find<QTableWidget>(tab_, "swapTable");
+        QCOMPARE(table->item(0, 4)->text(), QString("2.50000000 ZEC"));
+        QVERIFY(table->item(0, 2)->text().startsWith("Deposit confirmed"));
+
+        Q_EMIT rpc_->rpcResult("swaptab.accept", QJsonObject{{"id", "7c1e9a0400000000"}, {"accept", "dinswap1a00"}});
+        QVERIFY(!box->isVisible());  // the deposit became the swap
     }
 
     void spareHeightStaysBelowTheContent() {

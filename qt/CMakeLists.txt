@@ -1473,7 +1473,8 @@ if(BUILD_TESTING)
   if(DIN_ENABLE_SWAP_UI)
     # The Swap tab's look and hints, offline (no node).
     add_executable(test_swap_tab tests/test_swap_tab.cpp
-      src/swapwidget.cpp src/swapwidget.h src/rpcclient.cpp src/rpcclient.h src/paycollectpolicy.cpp)
+      src/swapwidget.cpp src/swapwidget.h src/rpcclient.cpp src/rpcclient.h src/paycollectpolicy.cpp
+      src/QrUtil.cpp src/qrcodegen.cpp)
     target_include_directories(test_swap_tab PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
     target_link_libraries(test_swap_tab PRIVATE Qt6::Widgets Qt6::Network Qt6::Test)
     target_compile_definitions(test_swap_tab PRIVATE QT_NO_KEYWORDS)
@@ -1482,7 +1483,15 @@ if(BUILD_TESTING)
 
     # The real Swap tab against two regtest dinerods (tests/swap_widget_regtest.sh).
     add_executable(test_swap_widget_regtest tests/test_swap_widget_regtest.cpp
-      src/swapwidget.cpp src/swapwidget.h src/rpcclient.cpp src/rpcclient.h src/paycollectpolicy.cpp)
+      src/swapwidget.cpp src/swapwidget.h src/rpcclient.cpp src/rpcclient.h src/paycollectpolicy.cpp
+      src/QrUtil.cpp src/qrcodegen.cpp)
+    # The Zcash deposit's QR code (QrUtil): CoreImage on macOS.
+    foreach(swap_qt_test test_swap_tab test_swap_widget_regtest)
+      if(APPLE)
+        target_sources(${swap_qt_test} PRIVATE src/QrUtil_mac.mm)
+        target_link_libraries(${swap_qt_test} PRIVATE "-framework AppKit" "-framework CoreImage" "-framework Foundation")
+      endif()
+    endforeach()
     target_include_directories(test_swap_widget_regtest PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
     target_link_libraries(test_swap_widget_regtest PRIVATE Qt6::Widgets Qt6::Network Qt6::Test)
     target_compile_definitions(test_swap_widget_regtest PRIVATE QT_NO_KEYWORDS)
