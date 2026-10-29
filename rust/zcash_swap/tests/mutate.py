@@ -66,6 +66,7 @@ M=[
  ('watch: reorg keeps the funding', WCPP, '        if (*gone) {\n            funding_.reset();', '        if (false) {\n            funding_.reset();', R),
  ('watch: claim read as refund', WCPP, '    obs.spent_by_claim = obs.revealed_preimage.has_value();', '    obs.spent_by_claim = false;', R),
  # milestone 5: the Zcash counter chain behind the runner
+ ('runner: DIN claim rebuilds the full package', RUN, '                const auto package = MyDinRungs(*din.funding);  // the DIN rungs only: see runner.h', '                const auto package = MyTowerPackage(*din.funding, *armed_btc);', IO),
  ('runner: Bitcoin rules for every chain', RUN, '    const StepResult step = Step(session_.record, obs, io_.CounterRules());', '    const StepResult step = Step(session_.record, obs);', IO),
  ('io: no early-refund allowance', ZIO, '    r.early_refund_seconds = 90 * 60;', '    r.early_refund_seconds = 0;', IO),
  ('io: upgrade guard skipped', ZIO, '    if (const auto u = ZecUpgradeBefore(chain, config_.clock(),', '    if (const auto u = std::optional<ZecUpgrade>{}; false && ZecUpgradeBefore(chain, config_.clock(),', IO),

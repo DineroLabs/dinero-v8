@@ -527,13 +527,23 @@ void SwapRunner::ArmTower(const DinWatchReport& din, const BtcWatchReport& btc, 
     ArmTowerWith(*din.funding, *btc_funding, events);
 }
 
-TowerPackage SwapRunner::MyTowerPackage(const FundingOutput& din_funding, const BtcFunding& btc_funding) const {
+FeeLadderPolicy SwapRunner::DinTowerPolicy() const {
     const auto& offer = session_.record.offer;
     FeeLadderPolicy din_policy;
     din_policy.start_feerate_una_per_vb = config_.din_tower_start_feerate_una_per_vb;
     din_policy.max_rungs = config_.tower_rungs;
     din_policy.max_fee_una = offer.din_amount_una / 100 * config_.tower_max_fee_percent;
     din_policy.min_payout_una = offer.din_amount_una / 2;
+    return din_policy;
+}
+
+TowerPackage SwapRunner::MyDinRungs(const FundingOutput& din_funding) const {
+    return BuildTowerPackageDin(session_, keys_, din_funding, DinTowerPolicy());
+}
+
+TowerPackage SwapRunner::MyTowerPackage(const FundingOutput& din_funding, const BtcFunding& btc_funding) const {
+    const auto& offer = session_.record.offer;
+    const FeeLadderPolicy din_policy = DinTowerPolicy();
     BtcFeeLadderPolicy btc_policy;
     btc_policy.start_feerate_sat_per_vb = config_.btc_tower_start_feerate_sat_per_vb;
     btc_policy.max_rungs = config_.tower_rungs;
@@ -861,7 +871,7 @@ void SwapRunner::Execute(const Action& action, const DinWatchReport& din, const 
             if (session_.tower_armed && armed_btc && session_.din_sweep_pubkey != Bytes32{}) {
                 // Send the very rung the tower would (its children are signed
                 // against these txids), chosen by the same urgency rule.
-                const auto package = MyTowerPackage(*din.funding, *armed_btc);
+                const auto package = MyDinRungs(*din.funding);  // the DIN rungs only: see runner.h
                 size_t i = IndexByUrgency(package.din_claims.size(), offer.t_din_unix, din.mtp_unix, TowerConfig{});
                 for (size_t k = 0; k < package.din_claims.size(); ++k) {  // once sent, always that one
                     if (TxId::Compute(package.din_claims[k].tx).AsUint256().GetHex() == session_.din_claim_txid) i = k;

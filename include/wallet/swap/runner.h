@@ -25,6 +25,7 @@ namespace dinero::swap {
 
 struct TowerPackage;        // tower.h
 struct BtcFeeLadderPolicy;  // tower.h
+struct FeeLadderPolicy;     // fee_ladder.h
 
 // Everything one party needs to resume a swap after a restart.
 struct SwapSession {
@@ -287,6 +288,11 @@ private:
     std::optional<BtcFunding> ArmedBtcFunding(const BtcWatchReport& btc) const;
     bool ArmTowerWith(const FundingOutput& din_funding, const BtcFunding& btc_funding, std::vector<std::string>& events);
     TowerPackage MyTowerPackage(const FundingOutput& din_funding, const BtcFunding& btc_funding) const;
+    // The DIN half only (terms and claim rungs): what Bob's own claim needs.
+    // Never the counter-chain rungs, so a counter-chain problem (e.g. a Zcash
+    // branch the build does not know) cannot stop him claiming DIN.
+    TowerPackage MyDinRungs(const FundingOutput& din_funding) const;
+    FeeLadderPolicy DinTowerPolicy() const;
     void SendPreparedFunding(const DinWatchReport& din, const BtcWatchReport& btc, uint32_t now,
                              std::vector<std::string>& events);
     void ExpirePreparedFunding(uint32_t now, const std::string& why, std::vector<std::string>& events);

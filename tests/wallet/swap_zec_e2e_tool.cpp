@@ -109,7 +109,13 @@ struct Party {
     static uint32_t Now() { return static_cast<uint32_t>(std::time(nullptr)); }
     SwapState State() const { return runner->session().record.state; }
     bool Terminal() const {
-        const auto st = State();
+        const auto& ss = runner->session();
+        const auto st = ss.record.state;
+        // Bob's DIN still at his sweep key: not finished until swept to his wallet.
+        if (st == SwapState::Done && ss.record.role == Role::BtcSeller && ss.din_sweep_pubkey != Bytes32{} &&
+            !ss.din_swept) {
+            return false;
+        }
         return st == SwapState::Done || st == SwapState::Refunded || st == SwapState::Aborted || st == SwapState::Lost;
     }
 };
@@ -133,7 +139,7 @@ int main(int argc, char** argv) {
     // Separate payout keys per scenario, so a balance can only come from this run.
     const uint8_t kb = happy ? 20 : tower_claim ? 30 : bob_silent ? 40 : 50;
     const uint8_t kAliceZecClaim = kb, kBobDinClaim = kb + 1, kAliceDinRefund = kb + 2, kBobZecRefund = kb + 3;
-    const uint8_t kDeposit = kb + 4;
+    const uint8_t kDeposit = kb + 4, kBobSweep = kb + 5;
     const uint16_t zebra_port = static_cast<uint16_t>(std::stoi(argv[4]));
     auto din_client = std::make_shared<rpc::RpcClient>("127.0.0.1", uint16_t(std::stoi(argv[3])), "test", "test");
     auto zec_client = std::make_shared<rpc::RpcClient>("127.0.0.1", zebra_port, "", "");
@@ -254,10 +260,11 @@ int main(int argc, char** argv) {
             s.din_scan_from_height = din_tip->asUInt();
             s.din_payout_script = P2tr(role == Role::DinSeller ? kAliceDinRefund : kBobDinClaim);
             s.btc_payout_script = ZecScriptPubKey(ZecAddr(role == Role::DinSeller ? kAliceZecClaim : kBobZecRefund));
+            if (role == Role::BtcSeller) s.din_sweep_pubkey = XOnly(kBobSweep);  // production Bob: CPFP sweep key
             return s;
         };
         Party alice("alice", SwapKeys{Scalar(3), Scalar(4), {}}, dir + "/zec-alice-" + scenario + ".swap", 0xa1);
-        Party bob("bob", SwapKeys{Scalar(5), Scalar(6), {}}, dir + "/zec-bob-" + scenario + ".swap", 0xb0);
+        Party bob("bob", SwapKeys{Scalar(5), Scalar(6), Scalar(kBobSweep)}, dir + "/zec-bob-" + scenario + ".swap", 0xb0);
         alice.store.Save(make_session(Role::DinSeller));
         bob.store.Save(make_session(Role::BtcSeller));
 
@@ -338,7 +345,9 @@ int main(int argc, char** argv) {
             Check(alice.State() == SwapState::Done, std::string("alice Done (is ") + StateName(alice.State()) + ")");
             Check(bob.State() == SwapState::Done, std::string("bob Done (is ") + StateName(bob.State()) + ")");
             Check(zec_balance(kAliceZecClaim) == int64_t(kZecAmount - kZecSpendFee), "alice received ZEC minus fee on chain");
-            Check(din_balance(kBobDinClaim) == int64_t(kDinAmount - config.din_fee_una), "bob received DIN minus fee on chain");
+            Check(bob.runner->session().din_swept, "bob swept his claimed DIN to his wallet (CPFP sweep key)");
+            Check(din_balance(kBobDinClaim) == int64_t(kDinAmount - 2 * config.din_fee_una),
+                  "bob received DIN minus claim and sweep fees on chain");
             Check(ObserveZecDeposit(zec, deposit_addr, "test").coins.empty(), "bob's deposit was swept into the lock");
         } else if (tower_claim) {
             int round = 0;
@@ -362,7 +371,10 @@ int main(int argc, char** argv) {
             Check(zec_balance(kAliceZecClaim) == int64_t(kZecAmount - kZecSpendFee), "alice received ZEC minus fee");
             const auto pkg = DecodeTowerPackage(delivered);
             bool rung_amount = false;
-            for (const auto& r : pkg.din_claims) rung_amount |= din_balance(kBobDinClaim) == int64_t(kDinAmount - r.fee_una);
+            // A tower rung pays Bob's sweep output; the tower's first child sweeps it to his wallet.
+            for (const auto& r : pkg.din_claims) {
+                rung_amount |= din_balance(kBobDinClaim) == int64_t(kDinAmount - r.fee_una - r.children.front().fee_una);
+            }
             Check(rung_amount, "the tower claimed bob's DIN with one of his pre-signed rungs (" +
                                    std::to_string(din_balance(kBobDinClaim)) + " una)");
         } else if (bob_silent) {

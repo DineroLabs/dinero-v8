@@ -327,7 +327,12 @@ public:
     DinWatchReport din;
     BtcWatchReport zec;
     std::vector<std::vector<uint8_t>> zec_sent;
+    std::vector<std::vector<uint8_t>> din_sent;
     DinWatchReport ObserveDin() override { return din; }
+    std::string BroadcastDin(const std::vector<uint8_t>& raw) override {
+        din_sent.push_back(raw);
+        return std::string(64, 'd');
+    }
     BtcWatchReport ObserveBtc() override { return zec; }
     std::string BroadcastBtc(const std::vector<uint8_t>& raw) override {
         zec_sent.push_back(raw);
@@ -519,4 +524,42 @@ TEST(SwapZecChainIo, TowerBroadcastsTheZecRungOncePastTheLock) {
     Watchtower early(p, TowerConfig{}, *early_io);
     early.Tick(z.offer.t_btc_unix - 60);
     EXPECT_TRUE(early_io->zec_sent.empty());
+}
+
+// Bob's DIN claim must never depend on the Zcash side: after an upgrade to a
+// branch this build does not know, re-signing a Zcash rung fails, and Bob
+// must still claim his DIN once Alice's secret is public.
+TEST(SwapZecChainIo, BobClaimsDinEvenWhenZcashRungsCannotBeSigned) {
+    ZecSwap z;
+    const uint32_t now = z.offer.t_btc_unix - 20 * kHour;
+    auto bob = z.Session(Role::BtcSeller);
+    bob.record.state = SwapState::BtcLocked;
+    bob.din_sweep_pubkey = XOnly(11);  // production Bob: CPFP sweep key
+    bob.tower_armed = true;
+    bob.btc_funding_txid = "44" + std::string(62, '0');
+    bob.btc_funding_vout = 0;
+    const SwapKeys keys{Key(5), Key(6), Key(11)};
+    MemoryStore store;
+    auto io = CannedIo(z, now);
+    RunnerConfig config;
+    config.use_tower = true;
+    // The DIN lock, and Alice's claim on Zcash revealing the secret.
+    io->din.funding = FundingOutput{};
+    io->din.funding->txid = TxId(uint256::FromHexUnsafe(std::string(64, '7')));
+    io->din.funding->vout = 0;
+    io->din.funding->value = AmountUna::Una(z.offer.din_amount_una);
+    io->din.funding->script_pubkey = BuildDinHtlc(MakeDinTerms(z.offer, z.accept)).script_pubkey;
+    io->zec.htlc.spent = true;
+    io->zec.htlc.spent_by_claim = true;
+    Bytes32 secret{};
+    std::copy(z.secret.begin(), z.secret.end(), secret.begin());
+    io->zec.htlc.revealed_preimage = secret;
+    // Zebra has moved to a branch this build cannot sign for.
+    z.zebra.next_branch = "deadbeef";
+    io->ObserveBtcChain();
+    SwapRunner runner(bob, keys, config, *io, store);
+    const auto report = runner.Tick(now);
+    for (const auto& e : report.events) std::cout << "    " << e << "\n";
+    EXPECT_EQ(report.after, SwapState::DinClaimBroadcast);
+    ASSERT_EQ(io->din_sent.size(), 1u);  // his claim (a tower rung, the same the tower holds)
 }
