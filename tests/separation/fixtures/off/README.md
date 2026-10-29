@@ -24,3 +24,23 @@ height 101) in both the wallet DB and the UTXOIndex (user_version=2).
 Files: expected.json is the checker's derivation after a read-write open (contents, user_version
 and open_sqlite PRAGMAs per DB); schema.txt is each DB's
 SELECT type,name,tbl_name,sql FROM sqlite_master ORDER BY 1,2 (triggers included).
+
+Checker comparisons (sep_wallet_fixture_compat, on a 0600/0700 temp copy of the three DBs):
+- schema.txt vs sqlite_master before and after the read-write open;
+- expected.json vs the derivation after the open;
+- data-directory file set (files and directories) before vs after the open. A clean close leaves no
+  -wal/-shm/-journal (verified: none after generation or after the check; the dumps refuse them), so
+  no sidecar is tolerated and any added/removed/renamed file fails;
+- every persisted row of every table (raw immutable read, typed, blobs hex) before vs after the
+  open, except these columns, which the baseline open legitimately rewrites (evidence: the only
+  row differences of a relocated baseline open, measured with an empty exclusion list):
+  - wallet_registry.db wallets.last_opened (WalletManager::open -> updateLastOpened);
+  - wallet_registry.db wallets.path (WalletManager::open repairs a relocated path to
+    <datadir>/wallets/wallet_sepfixture.db);
+- database header bytes 18-19 (persisted journal mode: 02 02 = WAL), 20-23 and 44-67 per file before
+  vs after the open (change counters and schema cookie excluded).
+Out of W4's reach: which paths the daemon chooses for these stores (the checker opens the files at
+their current locations); that is covered by W5.
+The fixed-point, row, header and file-set checks were added to the generator in the follow-up
+fix commit; that generator, rebuilt at baseline-equivalent production code, passes them and writes
+byte-identical expected.json and schema.txt, so these fixtures were not regenerated.

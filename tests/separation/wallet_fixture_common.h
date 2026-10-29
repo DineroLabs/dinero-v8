@@ -20,6 +20,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
@@ -164,6 +165,132 @@ inline std::string SchemaDump(const fs::path& root) {
         }
         sqlite3_finalize(q);
         Check(rc == SQLITE_DONE, "schema read failed for " + rel);
+    }
+    return out;
+}
+
+// Every entry (files and directories) under the data directory, relative,
+// sorted. Compared before vs after an open: a relocated store, a copy- or
+// migrate-into-a-new-file open, or a leftover sidecar shows up here.
+inline std::string TreeDump(const fs::path& root) {
+    std::vector<std::string> entries;
+    for (const auto& e : fs::recursive_directory_iterator(root)) {
+        const auto rel = fs::relative(e.path(), root).generic_string();
+        entries.push_back((e.is_directory() ? "d " : "f ") + rel);
+    }
+    std::sort(entries.begin(), entries.end());
+    std::string out;
+    for (const auto& e : entries) out += e + "\n";
+    return out;
+}
+
+// Columns an open legitimately rewrites, excluded (by name) from the row
+// comparison. Determined from evidence: the generator's fixed-point pass
+// (no relocation) and the checker's relocated open (see fixtures README).
+struct ExcludedColumn { const char* db; const char* table; const char* column; };
+inline const std::vector<ExcludedColumn>& ExcludedColumns() {
+    static const std::vector<ExcludedColumn> cols{
+        // WalletManager::open(): updateLastOpened(name), unix seconds.
+        {"wallet_registry.db", "wallets", "last_opened"},
+        // WalletManager::open(): a relocated datadir repairs the stored
+        // absolute/relative wallet path to <datadir>/wallets/wallet_<name>.db.
+        {"wallet_registry.db", "wallets", "path"},
+    };
+    return cols;
+}
+inline bool Excluded(const std::string& db, const std::string& table, const std::string& column) {
+    for (const auto& c : ExcludedColumns())
+        if (db == c.db && table == c.table && column == c.column) return true;
+    return false;
+}
+
+inline std::vector<std::string> Strings(sqlite3* db, const std::string& sql) {
+    sqlite3_stmt* q = nullptr;
+    Check(sqlite3_prepare_v2(db, sql.c_str(), -1, &q, nullptr) == SQLITE_OK, "query failed: " + sql);
+    std::vector<std::string> out;
+    int rc;
+    while ((rc = sqlite3_step(q)) == SQLITE_ROW) out.push_back(Escape(sqlite3_column_text(q, 0)));
+    sqlite3_finalize(q);
+    Check(rc == SQLITE_DONE, "query read failed: " + sql);
+    return out;
+}
+inline std::string Quote(const std::string& id) {
+    std::string out = "\"";
+    for (char c : id) { if (c == '"') out += '"'; out += c; }
+    return out + "\"";
+}
+
+// Every persisted row of every table (sqlite_master type='table', including
+// sqlite_sequence), raw immutable read, typed values (blobs as hex), ordered
+// by all selected columns. Excluded columns are omitted and named in the
+// table header line so the exclusion is visible in every diff.
+inline std::string RowDump(const fs::path& root) {
+    RequireNoSidecars(root);
+    std::string out;
+    for (const auto& rel : DatabaseFiles()) {
+        RawDb db(root / rel);
+        out += "## " + rel + "\n";
+        for (const auto& table : Strings(db.get(), "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")) {
+            std::vector<std::string> cols, skipped;
+            for (const auto& c : Strings(db.get(), "SELECT name FROM pragma_table_info(" +
+                                                       std::string("'") + table + "') ORDER BY cid"))
+                (Excluded(rel, table, c) ? skipped : cols).push_back(c);
+            out += "### " + table + " (" + std::to_string(cols.size()) + " columns";
+            for (const auto& s : skipped) out += "; excluded " + s;
+            out += ")\n";
+            if (cols.empty()) continue;
+            std::string list, order;
+            for (size_t i = 0; i < cols.size(); ++i) {
+                list += (i ? "," : "") + Quote(cols[i]);
+                order += (i ? "," : "") + std::to_string(i + 1);
+            }
+            sqlite3_stmt* q = nullptr;
+            const std::string sql = "SELECT " + list + " FROM " + Quote(table) + " ORDER BY " + order;
+            Check(sqlite3_prepare_v2(db.get(), sql.c_str(), -1, &q, nullptr) == SQLITE_OK, "row query failed: " + sql);
+            int rc;
+            while ((rc = sqlite3_step(q)) == SQLITE_ROW) {
+                for (int c = 0; c < int(cols.size()); ++c) {
+                    if (c) out += '\t';
+                    switch (sqlite3_column_type(q, c)) {
+                    case SQLITE_NULL: out += "NULL"; break;
+                    case SQLITE_INTEGER: out += "i:" + std::to_string(sqlite3_column_int64(q, c)); break;
+                    case SQLITE_FLOAT: {
+                        char buf[40];
+                        std::snprintf(buf, sizeof(buf), "r:%.17g", sqlite3_column_double(q, c));
+                        out += buf;
+                        break;
+                    }
+                    case SQLITE_TEXT: out += "t:" + Escape(sqlite3_column_text(q, c)); break;
+                    default: {
+                        const auto* p = static_cast<const uint8_t*>(sqlite3_column_blob(q, c));
+                        out += "x:" + Hex(p, size_t(sqlite3_column_bytes(q, c)));
+                    }
+                    }
+                }
+                out += '\n';
+            }
+            sqlite3_finalize(q);
+            Check(rc == SQLITE_DONE, "row read failed: " + sql);
+        }
+    }
+    return out;
+}
+
+// Persisted database-header fields per file: bytes 18-19 (file format
+// write/read version: 1 legacy, 2 WAL -- the persisted journal mode), 20-23
+// (reserved space, payload fractions) and 44-67 (schema format, default cache
+// size, auto-vacuum root, text encoding, user_version, incremental vacuum,
+// application_id). Change counters (24-27, 92-99) and the schema cookie
+// (40-43) legitimately move on any write and are not compared.
+inline std::string HeaderDump(const fs::path& root) {
+    RequireNoSidecars(root);
+    std::string out;
+    for (const auto& rel : DatabaseFiles()) {
+        const auto bytes = ReadFile(root / rel);
+        Check(bytes.size() >= 100 && bytes.compare(0, 16, std::string("SQLite format 3\0", 16)) == 0,
+              "not a SQLite database: " + rel);
+        const auto* p = reinterpret_cast<const uint8_t*>(bytes.data());
+        out += rel + "\t18-19=" + Hex(p + 18, 2) + "\t20-23=" + Hex(p + 20, 4) + "\t44-67=" + Hex(p + 44, 24) + "\n";
     }
     return out;
 }
