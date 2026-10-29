@@ -1,4 +1,4 @@
-name: CI-only test_header_metadata_recovery link diagnosis (no ccache)
+name: CI-only full tests.yml link check with early -lstdc++ (no ccache)
 
 # Diagnosis for draft PR #856: on ubuntu-latest (GCC 15) the tests.yml build
 # fails to link test_header_metadata_recovery (undefined
@@ -54,12 +54,20 @@ jobs:
             -DDINERO_USE_VENDORED_DEPS=ON \
             -DENABLE_GRPC=OFF \
             -DBUILD_NODECORE=ON \
-            -DDINERO_NODECORE_MAINTENANCE_QUALIFICATION=ON
+            -DDINERO_NODECORE_MAINTENANCE_QUALIFICATION=ON \
+            -DCMAKE_EXE_LINKER_FLAGS=-lstdc++
 
-      - name: Build test_header_metadata_recovery
+      - name: Full build, keep going (early -lstdc++, no other workaround)
         id: build
         continue-on-error: true
-        run: cmake --build build-tests --target test_header_metadata_recovery -j
+        run: |
+          set +e
+          ninja -C build-tests -k 0 > full-build.log 2>&1
+          echo "ninja exit=$?"
+          echo "failed steps: $(grep -c '^FAILED:' full-build.log)"
+          grep '^FAILED:' full-build.log | head -40
+          grep -oE "(undefined reference to|multiple definition of) \`[^(]+" full-build.log | sort | uniq -c | sort -rn | head -20
+          tail -3 full-build.log
 
       - name: Link again with a linker map and symbol trace
         if: always()
