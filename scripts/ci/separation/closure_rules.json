@@ -1,0 +1,43 @@
+{
+  "_doc": "Rules for check_link_closure.py (spec 6.3 path rule, section 8 K2/W2). Target names and external library basenames are matched exactly, never by substring. include_patterns are Python regexes searched against each include directory with any trailing '/' removed.",
+  "source_allowlist": [
+    {"path": "src/daemon/bech32_decode.cpp", "reason": "pure codec (spec §6.3)"},
+    {"path": "src/daemon/bech32_encoder.cpp", "reason": "pure codec (spec §6.3)"},
+    {"path": "include/daemon/bech32_decode.h", "reason": "pure codec (spec §6.3)"}
+  ],
+  "gates": {
+    "K2": {
+      "_doc": "dinero_consensus closure must be storage-free and node-free.",
+      "forbidden_targets": [
+        {"label": "rocksdb", "names": ["RocksDB::rocksdb", "rocksdb"], "libs": ["rocksdb"]},
+        {"label": "sqlite3", "names": ["sqlite3", "SQLite::SQLite3"], "libs": ["sqlite3"]},
+        {"label": "dinero_chainstate", "names": ["dinero_chainstate"], "libs": []},
+        {"label": "dinero_core", "names": ["dinero_core"], "libs": []},
+        {"label": "dinero_wallet", "names": ["dinero_wallet"], "libs": []},
+        {"label": "dinero_rpc_handlers", "names": ["dinero_rpc_handlers"], "libs": []}
+      ],
+      "forbidden_source_files": ["src/daemon/mempool.cpp"],
+      "forbidden_source_prefixes": [],
+      "include_patterns": ["rocksdb", "/src/daemon$"],
+      "allowed_targets": [],
+      "node_source_dirs": ["src/daemon/", "src/rpc/", "src/storage/", "src/p2p/", "src/wallet/"],
+      "node_source_dirs_reason": "spec §6.3: any source under src/{daemon,rpc,storage,p2p,wallet} inside a storage-free library must be allowlisted"
+    },
+    "W2": {
+      "_doc": "dinero_wallet closure: K2 minus sqlite3 and dinero_wallet, plus targets with src/p2p/ sources; lightning_core_static allowed.",
+      "forbidden_targets": [
+        {"label": "rocksdb", "names": ["RocksDB::rocksdb", "rocksdb"], "libs": ["rocksdb"]},
+        {"label": "dinero_chainstate", "names": ["dinero_chainstate"], "libs": []},
+        {"label": "dinero_core", "names": ["dinero_core"], "libs": []},
+        {"label": "dinero_rpc_handlers", "names": ["dinero_rpc_handlers"], "libs": []}
+      ],
+      "forbidden_source_files": ["src/daemon/mempool.cpp"],
+      "forbidden_source_prefixes": ["src/p2p/"],
+      "include_patterns": ["rocksdb", "/src/daemon$"],
+      "allowed_targets": ["lightning_core_static"],
+      "allowed_targets_reason": "W2 allows lightning_core_static (spec section 8); its own dependencies are still walked",
+      "node_source_dirs": ["src/daemon/", "src/rpc/", "src/storage/", "src/p2p/"],
+      "node_source_dirs_reason": "spec §6.3 path rule; src/wallet/ is omitted because it is the wallet's own code"
+    }
+  }
+}

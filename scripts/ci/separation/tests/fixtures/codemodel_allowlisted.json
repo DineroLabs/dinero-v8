@@ -1,0 +1,8 @@
+{
+  "_doc": "root -> dinero_address_encoding which compiles the allowlisted pure codecs.",
+  "targets": {
+    "root": {"type": "STATIC_LIBRARY", "link": ["dinero_address_encoding"], "sources": ["src/consensus/root.cpp"]},
+    "dinero_address_encoding": {"type": "STATIC_LIBRARY",
+      "sources": ["src/daemon/bech32_decode.cpp", "src/daemon/bech32_encoder.cpp", "src/address/x.cpp"]}
+  }
+}
