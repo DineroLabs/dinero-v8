@@ -15,6 +15,7 @@
 
 #include <array>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -88,6 +89,48 @@ void SetZecClaimScriptSig(ZecTx& tx, const ZecHtlcTerms& terms, const std::vecto
 void SetZecRefundScriptSig(ZecTx& tx, const ZecHtlcTerms& terms,
                            const std::vector<uint8_t>& signature);
 
+// The secret from a ZEC HTLC spend: any 32-byte push in the scriptSig that
+// hashes to payment_hash. Present exactly when the spend took the claim branch
+// (the script hashes the secret, so every valid claim carries it). nullopt for
+// a refund, or a scriptSig that is not push-only (never valid for P2SH).
+std::optional<Bytes32> ExtractPreimageFromZecClaim(const std::vector<uint8_t>& script_sig,
+                                                   const Bytes32& payment_hash);
+
+// --- Fees (ZIP 317) ----------------------------------------------------------
+
+constexpr uint64_t kZip317MarginalFee = 5'000;  // zat per logical action
+
+// Conventional fee of a transparent-only transaction: 5,000 zat x max(2,
+// max(ceil(inputs bytes / 150), ceil(outputs bytes / 34))).
+uint64_t Zip317ConventionalFee(size_t tx_in_total_size, size_t tx_out_total_size);
+uint64_t Zip317ConventionalFee(const ZecTx& tx);  // from tx's serialized inputs and outputs
+
+// --- Deposit (Bob's per-swap t1 address) --------------------------------------
+
+// A transparent output the wallet can spend (a deposit coin, or the HTLC).
+using ZecCoin = ZecFunding;
+
+// The funding transaction: every deposit coin in, the HTLC output first, then
+// change (when at least one marginal fee) to change_script. The fee is
+// fee_multiplier x the conventional fee at signed size. Unsigned: sign with
+// SignZecP2pkhInputs. Throws std::invalid_argument when the coins do not
+// cover amount + fee.
+struct ZecFundingPlan {
+    ZecTx tx;
+    uint64_t fee_zat{};
+};
+ZecFundingPlan BuildZecFundingTx(const std::vector<ZecCoin>& deposit, const std::vector<uint8_t>& htlc_script_pubkey,
+                                 uint64_t htlc_amount_zat, const std::vector<uint8_t>& change_script,
+                                 uint32_t fee_multiplier, uint32_t consensus_branch_id, uint32_t expiry_height);
+
+// swap.cancel: every deposit coin to payout_script, less the conventional fee.
+ZecTx BuildZecSweepTx(const std::vector<ZecCoin>& deposit, const std::vector<uint8_t>& payout_script,
+                      uint32_t consensus_branch_id, uint32_t expiry_height);
+
+// Signs every input as a P2PKH spend by `secret_key` (all inputs are coins of
+// one deposit address, given in input order).
+void SignZecP2pkhInputs(ZecTx& tx, const std::vector<ZecCoin>& coins, const Bytes32& secret_key);
+
 // --- t-addresses -----------------------------------------------------------
 
 enum class ZecNetwork : uint8_t { Main = 0, Test = 1, Regtest = 2 };
@@ -103,5 +146,7 @@ std::string EncodeZecTAddress(const ZecTAddress& address);
 // Regtest addresses encode like testnet ones, so they decode as Test.
 ZecTAddress DecodeZecTAddress(const std::string& text);
 std::vector<uint8_t> ZecScriptPubKey(const ZecTAddress& address);
+// The t1/tm address of a compressed public key (the deposit address).
+ZecTAddress ZecP2pkhAddressOf(const std::array<uint8_t, 33>& pubkey, ZecNetwork network);
 
 }  // namespace dinero::swap

@@ -7,11 +7,14 @@
 #include "crypto/sha256.h"
 #include "dinero_zcash_swap.h"
 #include "wallet/swap/swap_crypto.h"
+#include "wallet/swap/zec_watcher.h"
 
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
 
+#include <cmath>
 #include <fstream>
+#include <map>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -318,6 +321,250 @@ TEST(SwapZecTx, BuilderGuards) {
     other.vout = 0;
     const auto tx = BuildZecClaimTx(s.funding, s.payout, kFee, kNu6, 0);
     EXPECT_THROW(ZecHtlcSighash(tx, s.terms, other), std::invalid_argument);
+}
+
+// --- Reading the secret from a claim ------------------------------------------
+
+TEST(SwapZecTx, PreimageFromClaimScriptSig) {
+    const Swap s;
+    const auto got = ExtractPreimageFromZecClaim(s.SignedClaim().vin[0].script_sig, s.terms.payment_hash);
+    ASSERT_TRUE(got.has_value());
+    EXPECT_EQ(std::vector<uint8_t>(got->begin(), got->end()), s.preimage);
+    EXPECT_FALSE(ExtractPreimageFromZecClaim(s.SignedRefund().vin[0].script_sig, s.terms.payment_hash));
+
+    // By content, not position: an OP_PUSHDATA1 push of the secret still counts.
+    std::vector<uint8_t> pd1{0x00, 0x4c, 0x20};
+    pd1.insert(pd1.end(), s.preimage.begin(), s.preimage.end());
+    EXPECT_TRUE(ExtractPreimageFromZecClaim(pd1, s.terms.payment_hash));
+
+    std::vector<uint8_t> other{0x20};
+    other.insert(other.end(), 32, 0x35);  // a 32-byte push that is not the secret
+    EXPECT_FALSE(ExtractPreimageFromZecClaim(other, s.terms.payment_hash));
+    std::vector<uint8_t> non_push{0x76, 0x20};  // OP_DUP: never valid in a P2SH scriptSig
+    non_push.insert(non_push.end(), s.preimage.begin(), s.preimage.end());
+    EXPECT_FALSE(ExtractPreimageFromZecClaim(non_push, s.terms.payment_hash));
+    std::vector<uint8_t> truncated{0x20, 0x33, 0x33};
+    EXPECT_FALSE(ExtractPreimageFromZecClaim(truncated, s.terms.payment_hash));
+}
+
+// --- ZIP 317 fees ----------------------------------------------------------------
+
+TEST(SwapZecTx, Zip317ConventionalFee) {
+    EXPECT_EQ(Zip317ConventionalFee(0, 0), 10'000u);      // at least two actions
+    EXPECT_EQ(Zip317ConventionalFee(150, 34), 10'000u);
+    EXPECT_EQ(Zip317ConventionalFee(301, 34), 15'000u);   // ceil(301 / 150) = 3
+    EXPECT_EQ(Zip317ConventionalFee(150, 103), 20'000u);  // ceil(103 / 34) = 4
+    const Swap s;
+    EXPECT_EQ(Zip317ConventionalFee(s.SignedClaim()), 10'000u);  // ~230-byte input: two actions
+}
+
+// --- Deposit ---------------------------------------------------------------------
+
+struct Deposit {
+    Bytes32 sk = Fill(0x55);
+    std::vector<uint8_t> spk = ZecScriptPubKey(ZecP2pkhAddressOf(detail::CompressedOf(sk), ZecNetwork::Main));
+    std::vector<uint8_t> change = ZecScriptPubKey({ZecNetwork::Main, ZecAddressKind::P2pkh, {0x01}});
+
+    static ZecCoin Coin(uint8_t id, uint64_t value) { return {Fill(id), 0, value}; }
+
+    std::vector<ZecTxOut> Prevouts(const std::vector<ZecCoin>& coins) const {
+        std::vector<ZecTxOut> out;
+        for (const auto& c : coins) out.push_back({c.value_zat, spk});
+        return out;
+    }
+
+    int32_t VerifyAll(const ZecTx& tx, const std::vector<ZecCoin>& coins) const {
+        const auto bytes = SerializeZecTx(tx);
+        const auto prevouts = Prevouts(coins);
+        std::vector<dzs_txout> ffi;
+        for (const auto& p : prevouts) ffi.push_back({p.value_zat, p.script_pubkey.data(), p.script_pubkey.size()});
+        for (size_t i = 0; i < tx.vin.size(); ++i) {
+            const int32_t rc = dzs_verify_input(bytes.data(), bytes.size(), i, ffi.data(), ffi.size());
+            if (rc != DZS_OK) return rc;
+        }
+        return DZS_OK;
+    }
+};
+
+TEST(SwapZecTx, FundingFromAnExactDeposit) {
+    const Swap s;
+    const Deposit d;
+    const auto htlc_spk = s.Prevouts()[0].script_pubkey;
+    // One input, the HTLC and a change output: two actions, paid twice = 20,000 zat (the design's figure).
+    const std::vector<ZecCoin> coins{Deposit::Coin(0x61, 1'000'000 + 20'000)};
+    auto plan = BuildZecFundingTx(coins, htlc_spk, 1'000'000, d.change, 2, kNu6, 100);
+    EXPECT_EQ(plan.fee_zat, 20'000u);
+    ASSERT_EQ(plan.tx.vout.size(), 1u);  // nothing left over: no change output
+    EXPECT_EQ(plan.tx.vout[0].value_zat, 1'000'000u);
+    EXPECT_EQ(plan.tx.vout[0].script_pubkey, htlc_spk);
+    SignZecP2pkhInputs(plan.tx, coins, d.sk);
+    EXPECT_EQ(d.VerifyAll(plan.tx, coins), DZS_OK);
+}
+
+TEST(SwapZecTx, FundingFromAnOverpaidSplitDeposit) {
+    const Swap s;
+    const Deposit d;
+    const std::vector<ZecCoin> coins{Deposit::Coin(0x61, 600'000), Deposit::Coin(0x62, 500'000)};
+    auto plan = BuildZecFundingTx(coins, s.Prevouts()[0].script_pubkey, 1'000'000, d.change, 2, kNu6, 100);
+    ASSERT_EQ(plan.tx.vin.size(), 2u);  // every deposit coin is swept
+    ASSERT_EQ(plan.tx.vout.size(), 2u);
+    EXPECT_EQ(plan.fee_zat, 2 * Zip317ConventionalFee(2 * 149, 32 + 34));  // recomputed for two inputs
+    EXPECT_EQ(plan.tx.vout[1].script_pubkey, d.change);
+    EXPECT_EQ(plan.tx.vout[0].value_zat + plan.tx.vout[1].value_zat + plan.fee_zat, 1'100'000u);
+    SignZecP2pkhInputs(plan.tx, coins, d.sk);
+    EXPECT_EQ(d.VerifyAll(plan.tx, coins), DZS_OK);
+
+    auto wrong_key = plan.tx;
+    SignZecP2pkhInputs(wrong_key, coins, Fill(0x56));
+    EXPECT_EQ(d.VerifyAll(wrong_key, coins), DZS_ERR_SCRIPT_INVALID);
+}
+
+TEST(SwapZecTx, FundingChangeBelowOneActionGoesToTheFee) {
+    const Swap s;
+    const Deposit d;
+    const std::vector<ZecCoin> coins{Deposit::Coin(0x61, 1'000'000 + 20'000 + 4'999)};
+    const auto plan = BuildZecFundingTx(coins, s.Prevouts()[0].script_pubkey, 1'000'000, d.change, 2, kNu6, 100);
+    EXPECT_EQ(plan.tx.vout.size(), 1u);
+    EXPECT_EQ(plan.fee_zat, 24'999u);
+}
+
+TEST(SwapZecTx, ShortDepositIsRefused) {
+    const Swap s;
+    const Deposit d;
+    try {
+        BuildZecFundingTx({Deposit::Coin(0x61, 1'000'000 + 19'999)}, s.Prevouts()[0].script_pubkey, 1'000'000,
+                          d.change, 2, kNu6, 100);
+        FAIL() << "a short deposit was accepted";
+    } catch (const std::invalid_argument& e) {
+        EXPECT_NE(std::string(e.what()).find("short by 1 zat"), std::string::npos) << e.what();
+    }
+    EXPECT_THROW(BuildZecFundingTx({}, s.Prevouts()[0].script_pubkey, 1, d.change, 2, kNu6, 100),
+                 std::invalid_argument);
+}
+
+TEST(SwapZecTx, CancelSweepsTheDeposit) {
+    const Deposit d;
+    const std::vector<ZecCoin> coins{Deposit::Coin(0x61, 300'000), Deposit::Coin(0x62, 200'000)};
+    auto tx = BuildZecSweepTx(coins, d.change, kNu6, 100);
+    ASSERT_EQ(tx.vout.size(), 1u);
+    EXPECT_EQ(tx.vout[0].value_zat, 500'000u - 10'000u);  // one conventional fee
+    SignZecP2pkhInputs(tx, coins, d.sk);
+    EXPECT_EQ(d.VerifyAll(tx, coins), DZS_OK);
+    EXPECT_THROW(BuildZecSweepTx({Deposit::Coin(0x61, 10'000)}, d.change, kNu6, 100), std::invalid_argument);
+    auto reordered = tx;
+    EXPECT_THROW(SignZecP2pkhInputs(reordered, {coins[1], coins[0]}, d.sk), std::invalid_argument);
+}
+
+// --- Upgrade guard and chain reading ----------------------------------------------
+
+TEST(SwapZecTx, UpgradeGuardBoundaries) {
+    ZecChainInfo c;
+    c.tip_height = 100;
+    c.upgrades = {{"Done", 90, 1}, {"Next", 150, 2}, {"Later", 400, 3}};
+    // 50 blocks ahead at 75 s / 1.10 per block.
+    const auto secs = [](uint32_t blocks) { return uint32_t(std::floor(blocks * kZecProjectedSecondsPerBlock)); };
+    EXPECT_FALSE(ZecUpgradeBefore(c, 1000, 1000 + secs(49)));
+    const auto hit = ZecUpgradeBefore(c, 1000, 1000 + secs(50) + 1);
+    ASSERT_TRUE(hit);
+    EXPECT_EQ(hit->name, "Next");  // the earliest pending one, never an active one
+    EXPECT_EQ(ZecUpgradeBefore(c, 1000, 1000 + secs(1000))->name, "Next");
+    EXPECT_FALSE(ZecUpgradeBefore(c, 1000, 900));  // a deadline already past projects to the tip
+    // 10% margin: 50 blocks at exactly 75 s would be 3,750 s; the guard already fires before that.
+    EXPECT_TRUE(ZecUpgradeBefore(c, 0, 3'500));
+}
+
+// A canned Zebra: heights 0..tip with given block times.
+struct FakeZebra {
+    uint32_t tip = 0;
+    std::vector<uint32_t> times;
+    std::string chain = "test";
+    std::string next_branch = "4dec4df0";
+    Json::Value utxos{Json::arrayValue};
+    int header_calls = 0;
+
+    ZecRpc Rpc() {
+        return [this](const std::string& m, const Json::Value& p) -> std::optional<Json::Value> {
+            Json::Value r;
+            if (m == "getblockchaininfo") {
+                r["chain"] = chain;
+                r["blocks"] = tip;
+                r["consensus"]["nextblock"] = next_branch;
+                r["upgrades"]["5437f330"]["name"] = "NU6.2";
+                r["upgrades"]["5437f330"]["activationheight"] = 700;
+                return r;
+            }
+            if (m == "getblockhash") return Json::Value("h" + std::to_string(p[0].asUInt()));
+            if (m == "getblockheader") {
+                ++header_calls;
+                r["time"] = times.at(std::stoul(p[0].asString().substr(1)));
+                return r;
+            }
+            if (m == "getaddressutxos") {
+                r["utxos"] = utxos;
+                r["height"] = tip;
+                return r;
+            }
+            return std::nullopt;
+        };
+    }
+};
+
+TEST(SwapZecTx, ChainInfoComputesMedianTimePast) {
+    FakeZebra z;
+    z.tip = 20;
+    for (uint32_t h = 0; h <= z.tip; ++h) z.times.push_back(1000 + h * 10);
+    z.times[20] = 5000;  // a tip far ahead moves the tip time, not the median
+    const auto c = ObserveZecChain(z.Rpc(), "test");
+    ASSERT_TRUE(c);
+    EXPECT_EQ(c->tip_height, 20u);
+    EXPECT_EQ(c->tip_time_unix, 5000u);
+    EXPECT_EQ(c->mtp_unix, 1150u);  // median of heights 10..20
+    EXPECT_EQ(c->next_block_branch_id, 0x4dec4df0u);
+    ASSERT_EQ(c->upgrades.size(), 1u);
+    EXPECT_EQ(c->upgrades[0].branch_id, 0x5437f330u);
+    EXPECT_EQ(c->upgrades[0].activation_height, 700u);
+
+    std::map<std::string, uint32_t> cache;
+    ObserveZecChain(z.Rpc(), "test", &cache);
+    const int calls = z.header_calls;
+    ObserveZecChain(z.Rpc(), "test", &cache);
+    EXPECT_EQ(z.header_calls, calls);  // headers come from the cache the second time
+
+    z.tip = 3;  // near genesis: the median of what there is
+    EXPECT_EQ(ObserveZecChain(z.Rpc(), "test")->mtp_unix, 1020u);
+    EXPECT_FALSE(ObserveZecChain(z.Rpc(), "main"));  // another network is not trusted
+    z.next_branch = "zz";
+    EXPECT_FALSE(ObserveZecChain(z.Rpc(), "test"));
+}
+
+TEST(SwapZecTx, DepositCountsOnlyConfirmedCoinsAtTheAddress) {
+    FakeZebra z;
+    z.tip = 100;
+    const std::string addr = "tm9iNYCVAhLLa4rJtfqqHauR5xL1REdpiDs";
+    auto utxo = [&](const char* txid_byte, uint32_t height, uint64_t zat) {
+        Json::Value u;
+        u["address"] = addr;
+        u["txid"] = std::string(64 - 2, '0') + txid_byte;
+        u["outputIndex"] = 1;
+        u["satoshis"] = Json::UInt64(zat);
+        u["height"] = height;
+        z.utxos.append(u);
+    };
+    utxo("01", 91, 400'000);  // 10 confirmations
+    utxo("02", 92, 700'000);  // 9
+    const auto r = ObserveZecDeposit(z.Rpc(), addr, "test");
+    ASSERT_TRUE(r.ok);
+    EXPECT_EQ(r.confirmed_zat(10), 400'000u);
+    EXPECT_EQ(r.confirmed_zat(9), 1'100'000u);
+    ASSERT_EQ(r.spendable(10).size(), 1u);
+    EXPECT_EQ(r.spendable(10)[0].txid[0], 0x01);  // display hex reversed to wire order
+    EXPECT_EQ(r.spendable(10)[0].vout, 1u);
+
+    z.utxos[1]["address"] = "tmSomebodyElse";
+    EXPECT_FALSE(ObserveZecDeposit(z.Rpc(), addr, "test").ok);
+    z.utxos[1]["address"] = addr;
+    z.utxos[1]["height"] = 101;  // above the reported tip: inconsistent
+    EXPECT_FALSE(ObserveZecDeposit(z.Rpc(), addr, "test").ok);
 }
 
 // --- t-addresses -------------------------------------------------------------

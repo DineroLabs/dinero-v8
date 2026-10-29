@@ -1,15 +1,24 @@
 #!/usr/bin/env python3
-"""Neuter checks for the ZEC transaction code: each mutation breaks one rule in
-rust/zcash_swap/src/lib.rs or src/wallet/swap/zec_tx.cpp, rebuilds
-test_swap_zec_tx and must make it fail. Sources are restored after each run.
+"""Neuter checks for the ZEC swap code: each mutation breaks one rule in
+rust/zcash_swap/src/lib.rs or src/wallet/swap/zec_{tx,watcher}.{h,cpp},
+rebuilds, and must make a test fail: test_swap_zec_tx, or for the rules only a
+real node exercises (marked R), tests/wallet/swap_zec_regtest.sh. Sources are
+restored after each run.
 
-    python3 rust/zcash_swap/tests/mutate.py <build-dir> [name-filter ...]
+    python3 rust/zcash_swap/tests/mutate.py <build-dir> [--zebrad PATH] [name-filter ...]
+
+Without --zebrad the R mutations are skipped (and reported as skipped).
 """
 import os, subprocess, sys
 ROOT=os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..'))
 if len(sys.argv) < 2: sys.exit(__doc__)
 BUILD=os.path.abspath(sys.argv[1])
+args=sys.argv[2:]
+ZEBRAD=None
+if args[:1]==['--zebrad']: ZEBRAD=args[1]; args=args[2:]
 LIB=ROOT+'/rust/zcash_swap/src/lib.rs'; CPP=ROOT+'/src/wallet/swap/zec_tx.cpp'
+WCPP=ROOT+'/src/wallet/swap/zec_watcher.cpp'; WHDR=ROOT+'/include/wallet/swap/zec_watcher.h'
+R='regtest'
 M=[
  ('sighash: always input 0', LIB, '        index,\n        &auth.scripts[index],', '        0,\n        &auth.scripts[index],'),
  ('sighash: amounts reversed', LIB, '        amounts.push(Zatoshis::from_u64(p.value_zat).map_err(|_| DZS_ERR_ARG)?);', '        amounts.insert(0, Zatoshis::from_u64(p.value_zat).map_err(|_| DZS_ERR_ARG)?);'),
@@ -34,17 +43,45 @@ M=[
  ('cpp: pushdata1 missing', CPP, '    if (data.size() > 75) script.push_back(0x4c);\n', ''),
  ('cpp: p2sh hash is sha256 only', CPP, '    return RIPEMD160(sha.data(), sha.size());', '    std::array<uint8_t, 20> h{}; std::copy(sha.begin(), sha.begin() + 20, h.begin()); return h;'),
  ('cpp: decode ignores kind', CPP, '    out.kind = static_cast<ZecAddressKind>(kind);', '    out.kind = ZecAddressKind::P2pkh;'),
+ # milestone 4: deposit, fees, extraction, guard, chain reading, watcher
+ ('cpp: extract ignores the hash', CPP, '            if (hash == payment_hash) return item;', '            return item;'),
+ ('cpp: extract accepts non-push ops', CPP, '            return std::nullopt;  // not push-only', '            continue;'),
+ ('cpp: zip317 floor of two dropped', CPP, 'std::max<size_t>({2, (tx_in_total_size', 'std::max<size_t>({0, (tx_in_total_size'),
+ ('cpp: zip317 output divisor 150', CPP, '(tx_out_total_size + 33) / 34', '(tx_out_total_size + 149) / 150'),
+ ('cpp: funding short check dropped', CPP, '    if (total < htlc_amount_zat || total - htlc_amount_zat < plan.fee_zat) {', '    if (false) {'),
+ ('cpp: dust change kept', CPP, '    if (change < kZip317MarginalFee) {', '    if (false) {'),
+ ('cpp: sweep pays the fee twice', CPP, '    const uint64_t fee = SignedFee(tx, 1);', '    const uint64_t fee = SignedFee(tx, 2);'),
+ ('cpp: p2pkh scriptSig without pubkey', CPP, '        PushData(script_sig, {pubkey.begin(), pubkey.end()});\n', ''),
+ ('guard: no 10% margin', WHDR, 'constexpr double kZecProjectedSecondsPerBlock = 75.0 / 1.10;', 'constexpr double kZecProjectedSecondsPerBlock = 75.0;'),
+ ('guard: active upgrades count', WCPP, 'if (u.activation_height <= chain.tip_height || u.activation_height > projected) continue;', 'if (u.activation_height > projected) continue;'),
+ ('guard: last instead of first', WCPP, 'if (!first || u.activation_height < first->activation_height) first = u;', 'first = u;'),
+ ('chain: tip time as mtp', WCPP, '    chain.mtp_unix = times[times.size() / 2];', '    chain.mtp_unix = chain.tip_time_unix;'),
+ ('chain: network not checked', WCPP, '    if (!expected_chain.empty() && (*info)["chain"].asString() != expected_chain) return std::nullopt;', ''),
+ ('deposit: depth ignored', WCPP, '        if (c.confirmations >= min_confirmations) total += c.coin.value_zat;', '        total += c.coin.value_zat;'),
+ ('deposit: address not checked', WCPP, ' || u["address"].asString() != address) {', ') {'),
+ ('deposit: height above tip allowed', WCPP, '        if (height > report.tip_height) return report;\n', ''),
+ ('watch: no mempool scan', WCPP, '        } else if (!FindMempoolSpend(report.htlc)) {', '        } else if (false) {', R),
+ ('watch: reorg keeps the funding', WCPP, '        if (*gone) {\n            funding_.reset();', '        if (false) {\n            funding_.reset();', R),
+ ('watch: claim read as refund', WCPP, '    obs.spent_by_claim = obs.revealed_preimage.has_value();', '    obs.spent_by_claim = false;', R),
+ ('watch: amount filter dropped', WCPP, '                    if (target_.expected_amount_zat && zat != target_.expected_amount_zat) continue;\n', '', R),
 ]
-only=sys.argv[2:]
+only=args
 res=[]
-for name,path,old,new in M:
+for name,path,old,new,*kind in M:
     if only and not any(o in name for o in only): continue
+    regtest=kind==[R]
+    if regtest and not ZEBRAD: res.append((name,'SKIPPED')); print(f'{name:40s} SKIPPED (no --zebrad)'); continue
     src=open(path).read()
     if src.count(old)!=1: res.append((name,'PATTERN')); print(name,'PATTERN NOT UNIQUE',src.count(old)); continue
     open(path,'w').write(src.replace(old,new))
     try:
-        b=subprocess.run(['nice','-n','15','cmake','--build',BUILD,'--target','test_swap_zec_tx','-j4'],capture_output=True,text=True)
+        target='swap_zec_regtest_tool' if regtest else 'test_swap_zec_tx'
+        b=subprocess.run(['nice','-n','15','cmake','--build',BUILD,'--target',target,'-j4'],capture_output=True,text=True)
         if b.returncode!=0: st='BUILD-FAIL'
+        elif regtest:
+            t=subprocess.run([ROOT+'/tests/wallet/swap_zec_regtest.sh',BUILD+'/swap_zec_regtest_tool',ZEBRAD],capture_output=True,text=True)
+            fails=[l.split(' FAIL ')[0].strip() for l in t.stdout.splitlines() if ' FAIL ' in l]
+            st='CAUGHT '+' | '.join(fails) if t.returncode!=0 else 'SURVIVED'
         else:
             t=subprocess.run([BUILD+'/test_swap_zec_tx'],capture_output=True,text=True)
             fails=[l.split()[3] for l in t.stdout.splitlines() if l.startswith('[  FAILED  ] SwapZecTx.')]
@@ -52,7 +89,9 @@ for name,path,old,new in M:
     finally:
         open(path,'w').write(src)
     res.append((name,st)); print(f'{name:40s} {st}', flush=True)
-subprocess.run(['nice','-n','15','cmake','--build',BUILD,'--target','test_swap_zec_tx','-j4'],capture_output=True)
-survivors=[n for n,s in res if not s.startswith('CAUGHT')]
+subprocess.run(['nice','-n','15','cmake','--build',BUILD,'--target','test_swap_zec_tx','swap_zec_regtest_tool','-j4'],capture_output=True)
+survivors=[n for n,s in res if not s.startswith('CAUGHT') and s!='SKIPPED']
+skipped=[n for n,s in res if s=='SKIPPED']
+if skipped: print(f'skipped (need --zebrad): {skipped}')
 print(f'{len(res)-len(survivors)}/{len(res)} caught; survivors: {survivors}')
 sys.exit(1 if survivors else 0)

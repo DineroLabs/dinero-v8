@@ -13920,6 +13920,7 @@ if(CARGO_EXECUTABLE AND NOT WIN32)
   add_executable(test_swap_zec_tx
     tests/wallet/test_swap_zec_tx.cpp
     src/wallet/swap/zec_tx.cpp
+    src/wallet/swap/zec_watcher.cpp
     src/wallet/swap/htlc.cpp
   )
   add_dependencies(test_swap_zec_tx gtest gtest_main build_zcash_swap)
@@ -13939,6 +13940,30 @@ if(CARGO_EXECUTABLE AND NOT WIN32)
     DINERO_ZIP244_JSON="${CMAKE_SOURCE_DIR}/tests/vectors/zip_0244.json")
   add_test(NAME SwapZecTx COMMAND test_swap_zec_tx)
   set_tests_properties(SwapZecTx PROPERTIES LABELS "wallet;swap" TIMEOUT 60)
+
+  # The same code against a real Zebra regtest node (deposit, claim, refund,
+  # tower rung, reorg, network upgrade), where zebrad is installed.
+  add_executable(swap_zec_regtest_tool
+    tests/wallet/swap_zec_regtest_tool.cpp
+    src/wallet/swap/zec_tx.cpp
+    src/wallet/swap/zec_watcher.cpp
+    src/wallet/swap/htlc.cpp
+  )
+  add_dependencies(swap_zec_regtest_tool build_zcash_swap)
+  target_link_libraries(swap_zec_regtest_tool PRIVATE dinero_rpc_client dinero_consensus dinero_zcash_swap)
+  if(NOT APPLE)
+    target_link_libraries(swap_zec_regtest_tool PRIVATE Threads::Threads ${CMAKE_DL_LIBS} m)
+  endif()
+  link_zstd_if_needed(swap_zec_regtest_tool)
+  target_include_directories(swap_zec_regtest_tool PRIVATE
+    ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src ${ZCASH_SWAP_DIR}/include)
+  find_program(DINERO_ZEBRAD zebrad HINTS "$ENV{HOME}/.local/zebra-7.0.0/bin")
+  if(DINERO_ZEBRAD)
+    add_test(NAME SwapZecRegtest
+      COMMAND ${CMAKE_SOURCE_DIR}/tests/wallet/swap_zec_regtest.sh
+              $<TARGET_FILE:swap_zec_regtest_tool> ${DINERO_ZEBRAD})
+    set_tests_properties(SwapZecRegtest PROPERTIES LABELS "wallet;swap;regtest" TIMEOUT 900)
+  endif()
 endif()
 
 # DIN<->ETH swap contract (contracts/swap-htlc): Foundry unit, fuzz and invariant

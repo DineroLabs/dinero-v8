@@ -1,6 +1,6 @@
 # DIN ↔ ZEC Atomic Swaps
 
-Status: **design, owner decisions recorded 2026-10-28.** No consensus change. Milestone 3 (the Zcash transaction FFI) is built and tested on the swaps branch; nothing else is built yet. Target release: v8.2.1.
+Status: **design, owner decisions recorded 2026-10-28.** No consensus change. Milestones 3 (the Zcash transaction FFI) and 4 (Zebra watcher, deposit flow, upgrade guard) are built and tested on the swaps branch against Zebra 7.0.0 regtest; the rest is not built yet. Target release: v8.2.1.
 
 DIN↔ZEC v1 is the DIN↔BTC swap with a Zcash transparent P2SH hash-lock in place of the Bitcoin P2WSH one. The Dinero side is unchanged, and so are the roles. ZEC holders can pay in from a shielded wallet and shield again afterwards, but the lock itself is transparent. Code starts after Orchard activation.
 
@@ -128,7 +128,12 @@ Desktops and the tower watch through a Zebra node; phones use lightwalletd raw-t
 
 **Watchtower.** The tower watches Zcash for s and claims DIN with Bob's pre-signed DIN rungs, as today. It also holds the single ZEC refund rung and broadcasts it once MTP passes T\_zec. It holds no Zcash key.
 
-Open point: whether Zebra's getaddresstxids lists the transaction spending a P2SH output. Until a regtest run confirms it, the watcher scans the mempool and every new block for spends of the HTLC outpoint.
+The watcher scans every new block (getblock verbosity 2) and every new mempool entry for spends of the HTLC outpoint; it does not rely on getaddresstxids. Found against Zebra 7.0.0 and handled:
+
+- Zebra has no gettxspendingprevout, so the mempool is scanned, each transaction fetched once.
+- Zebra reports no median time past; the watcher computes it from the last 11 block times.
+- Zebra names regtest "test", like testnet; tests tell them apart by the genesis hash.
+- Zebra's mempool checks a time lock against the next block's median time past, and blocks check their own timestamp, as assumed above.
 
 ## Changes to the swap engine and offer format
 

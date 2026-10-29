@@ -3,6 +3,7 @@
 #include "crypto/ripemd160.h"
 #include "crypto/sha256.h"
 #include "dinero_zcash_swap.h"
+#include "wallet/swap/swap_crypto.h"
 
 #include <algorithm>
 #include <stdexcept>
@@ -54,6 +55,40 @@ ZecTx BuildSpend(const ZecFunding& funding, const std::vector<uint8_t>& payout_s
     tx.vin.push_back({funding.txid, funding.vout, sequence, {}});
     tx.vout.push_back({funding.value_zat - fee_zat, payout_script});
     return tx;
+}
+
+size_t CompactSizeLen(size_t n) { return n < 0xfd ? 1 : n <= 0xffff ? 3 : n <= 0xffffffffULL ? 5 : 9; }
+
+// Serialized sizes, as ZIP 317 counts them.
+size_t InputSize(size_t script_sig_len) { return 32 + 4 + CompactSizeLen(script_sig_len) + script_sig_len + 4; }
+size_t OutputSize(const std::vector<uint8_t>& spk) { return 8 + CompactSizeLen(spk.size()) + spk.size(); }
+
+// <sig, at most 72 DER bytes + sighash byte> <33-byte pubkey>
+constexpr size_t kSignedP2pkhScriptSigLen = 1 + 73 + 1 + 33;
+
+uint64_t SumCoins(const std::vector<ZecCoin>& coins) {
+    uint64_t total = 0;
+    for (const auto& c : coins) {
+        if (c.value_zat > 21'000'000ULL * 100'000'000ULL - total) throw std::invalid_argument("zcash tx: coin values overflow");
+        total += c.value_zat;
+    }
+    return total;
+}
+
+ZecTx SpendAll(const std::vector<ZecCoin>& coins, uint32_t consensus_branch_id, uint32_t expiry_height) {
+    if (coins.empty()) throw std::invalid_argument("zcash tx: no deposit coins");
+    ZecTx tx;
+    tx.consensus_branch_id = consensus_branch_id;
+    tx.expiry_height = expiry_height;
+    for (const auto& c : coins) tx.vin.push_back({c.txid, c.vout, kFinalSequence, {}});
+    return tx;
+}
+
+uint64_t SignedFee(const ZecTx& tx, uint32_t multiplier) {
+    size_t in = 0, out = 0;
+    for (size_t i = 0; i < tx.vin.size(); ++i) in += InputSize(kSignedP2pkhScriptSigLen);
+    for (const auto& o : tx.vout) out += OutputSize(o.script_pubkey);
+    return multiplier * Zip317ConventionalFee(in, out);
 }
 
 void RequireOneInput(const ZecTx& tx) {
@@ -160,6 +195,115 @@ void SetZecRefundScriptSig(ZecTx& tx, const ZecHtlcTerms& terms, const std::vect
     script_sig.push_back(0x00);  // OP_FALSE: the refund branch
     PushData(script_sig, BuildZecHtlcRedeemScript(terms));
     tx.vin[0].script_sig = std::move(script_sig);
+}
+
+std::optional<Bytes32> ExtractPreimageFromZecClaim(const std::vector<uint8_t>& script_sig,
+                                                   const Bytes32& payment_hash) {
+    for (size_t pos = 0; pos < script_sig.size();) {
+        const uint8_t op = script_sig[pos++];
+        size_t len = 0;
+        if (op <= 75) {
+            len = op;
+        } else if (op >= 0x4c && op <= 0x4e) {  // OP_PUSHDATA1/2/4
+            const size_t width = op == 0x4c ? 1 : op == 0x4d ? 2 : 4;
+            if (script_sig.size() - pos < width) return std::nullopt;
+            for (size_t i = 0; i < width; ++i) len |= size_t(script_sig[pos + i]) << (8 * i);
+            pos += width;
+        } else if (op == 0x4f || (op >= 0x51 && op <= 0x60)) {
+            continue;  // OP_1NEGATE, OP_1..OP_16: pushes with no data
+        } else {
+            return std::nullopt;  // not push-only
+        }
+        if (script_sig.size() - pos < len) return std::nullopt;
+        if (len == 32) {
+            Bytes32 item{}, hash{};
+            std::copy(script_sig.begin() + pos, script_sig.begin() + pos + 32, item.begin());
+            crypto::CSHA256().Write(item.data(), item.size()).Finalize(hash.data());
+            if (hash == payment_hash) return item;
+        }
+        pos += len;
+    }
+    return std::nullopt;
+}
+
+uint64_t Zip317ConventionalFee(size_t tx_in_total_size, size_t tx_out_total_size) {
+    const size_t actions = std::max<size_t>({2, (tx_in_total_size + 149) / 150, (tx_out_total_size + 33) / 34});
+    return kZip317MarginalFee * actions;
+}
+
+uint64_t Zip317ConventionalFee(const ZecTx& tx) {
+    size_t in = 0, out = 0;
+    for (const auto& i : tx.vin) in += InputSize(i.script_sig.size());
+    for (const auto& o : tx.vout) out += OutputSize(o.script_pubkey);
+    return Zip317ConventionalFee(in, out);
+}
+
+ZecFundingPlan BuildZecFundingTx(const std::vector<ZecCoin>& deposit, const std::vector<uint8_t>& htlc_script_pubkey,
+                                 uint64_t htlc_amount_zat, const std::vector<uint8_t>& change_script,
+                                 uint32_t fee_multiplier, uint32_t consensus_branch_id, uint32_t expiry_height) {
+    if (htlc_script_pubkey.empty() || change_script.empty() || htlc_amount_zat == 0 || fee_multiplier == 0) {
+        throw std::invalid_argument("zcash tx: bad funding parameters");
+    }
+    const uint64_t total = SumCoins(deposit);
+    ZecFundingPlan plan;
+    plan.tx = SpendAll(deposit, consensus_branch_id, expiry_height);
+    plan.tx.vout.push_back({htlc_amount_zat, htlc_script_pubkey});
+    plan.tx.vout.push_back({0, change_script});
+    plan.fee_zat = SignedFee(plan.tx, fee_multiplier);  // with the change output
+    if (total < htlc_amount_zat || total - htlc_amount_zat < plan.fee_zat) {
+        throw std::invalid_argument("zcash tx: deposit is short by " +
+                                    std::to_string(htlc_amount_zat + plan.fee_zat - std::min(total, htlc_amount_zat + plan.fee_zat)) +
+                                    " zat");
+    }
+    const uint64_t change = total - htlc_amount_zat - plan.fee_zat;
+    if (change < kZip317MarginalFee) {
+        plan.tx.vout.pop_back();  // not worth an output: it goes to the fee
+        plan.fee_zat += change;
+    } else {
+        plan.tx.vout.back().value_zat = change;
+    }
+    return plan;
+}
+
+ZecTx BuildZecSweepTx(const std::vector<ZecCoin>& deposit, const std::vector<uint8_t>& payout_script,
+                      uint32_t consensus_branch_id, uint32_t expiry_height) {
+    if (payout_script.empty()) throw std::invalid_argument("zcash tx: empty payout script");
+    const uint64_t total = SumCoins(deposit);
+    ZecTx tx = SpendAll(deposit, consensus_branch_id, expiry_height);
+    tx.vout.push_back({0, payout_script});
+    const uint64_t fee = SignedFee(tx, 1);
+    if (total <= fee) throw std::invalid_argument("zcash tx: deposit does not cover the fee");
+    tx.vout[0].value_zat = total - fee;
+    return tx;
+}
+
+void SignZecP2pkhInputs(ZecTx& tx, const std::vector<ZecCoin>& coins, const Bytes32& secret_key) {
+    if (coins.size() != tx.vin.size()) throw std::invalid_argument("zcash tx: one coin per input");
+    const auto pubkey = detail::CompressedOf(secret_key);
+    const auto spk = ZecScriptPubKey({ZecNetwork::Main, ZecAddressKind::P2pkh, Hash160({pubkey.begin(), pubkey.end()})});
+    std::vector<ZecTxOut> prevouts;
+    for (size_t i = 0; i < coins.size(); ++i) {
+        if (tx.vin[i].prev_txid != coins[i].txid || tx.vin[i].prev_vout != coins[i].vout) {
+            throw std::invalid_argument("zcash tx: coins are not the inputs, in order");
+        }
+        prevouts.push_back({coins[i].value_zat, spk});
+    }
+    for (auto& in : tx.vin) in.script_sig.clear();
+    const auto unsigned_bytes = SerializeZecTx(tx);  // scriptSigs are not in the sighash
+    std::vector<std::vector<uint8_t>> sigs;
+    for (size_t i = 0; i < tx.vin.size(); ++i) {
+        sigs.push_back(detail::EcdsaSignAll(secret_key, Zip244SighashAll(unsigned_bytes, i, prevouts)));
+    }
+    for (size_t i = 0; i < tx.vin.size(); ++i) {
+        std::vector<uint8_t> script_sig;
+        PushData(script_sig, sigs[i]);
+        PushData(script_sig, {pubkey.begin(), pubkey.end()});
+        tx.vin[i].script_sig = std::move(script_sig);
+    }
+}
+
+ZecTAddress ZecP2pkhAddressOf(const std::array<uint8_t, 33>& pubkey, ZecNetwork network) {
+    return {network, ZecAddressKind::P2pkh, Hash160({pubkey.begin(), pubkey.end()})};
 }
 
 std::string EncodeZecTAddress(const ZecTAddress& address) {

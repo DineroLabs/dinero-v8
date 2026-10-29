@@ -37,14 +37,15 @@ The `SwapZecTx` ctest builds this crate with `--features script-verify` into
   lock and a refund with a final sequence;
 - golden bytes for the signed spends.
 
-`python3 rust/zcash_swap/tests/mutate.py <build-dir>` breaks 21 rules one at a
-time (in `src/lib.rs` and `src/wallet/swap/zec_tx.cpp`) and checks that each
-makes `test_swap_zec_tx` fail.
+`SwapZecRegtest` (when `zebrad` is found) runs `tests/wallet/swap_zec_regtest.sh`
+against a fresh Zebra regtest node: the deposit (short, split, overpaid,
+cancel), claim and refund as Zebra judges them, the watcher (decoy, mempool
+reveal, reorg), the tower rung with nExpiryHeight 0, and a rung voided by a
+network upgrade.
 
-What this does not prove yet: that a Zebra node accepts these transactions
-(regtest, ZEC milestones 4–5). The official vectors test reading and the
-sighash; the writer is checked by the header layout, by librustzcash reading
-its output back, and by golden bytes.
+`python3 rust/zcash_swap/tests/mutate.py <build-dir> --zebrad <path>` breaks 41
+rules one at a time and checks that each makes a test fail (4 of them only the
+regtest can catch).
 
 ## Versions and the fold-in
 
