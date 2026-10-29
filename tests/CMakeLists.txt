@@ -13891,6 +13891,15 @@ if(NOT WIN32)
   set_tests_properties(SwapTowerInstalls PROPERTIES LABELS "wallet;swap" TIMEOUT 120)
 endif()
 
+# DIN<->ETH swap contract (contracts/swap-htlc): Foundry unit, fuzz and invariant
+# tests, where forge is installed.
+find_program(DINERO_FORGE forge)
+if(DINERO_FORGE)
+  add_test(NAME SwapEvmContract
+    COMMAND ${DINERO_FORGE} test --root ${CMAKE_SOURCE_DIR}/contracts/swap-htlc)
+  set_tests_properties(SwapEvmContract PROPERTIES LABELS "wallet;swap" TIMEOUT 600)
+endif()
+
 # swap.* RPCs end to end: two dinerods + bitcoind, SIGKILL/restart, clean stop (milestone 6).
 if(TARGET dinerod AND DINERO_BITCOIND)
   add_test(NAME SwapRpcRegtest
