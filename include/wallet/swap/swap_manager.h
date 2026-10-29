@@ -8,6 +8,8 @@
 // m/1398227280' ("SWAP"), per network:
 //   store key   m/SWAP'/net'/0'          -> DeriveSwapStoreKey
 //   swap i      DIN key m/SWAP'/net'/1'/i', BTC key m/SWAP'/net'/2'/i'
+//               ZEC swaps: HTLC key m/SWAP'/net'/5'/i' (in place of the BTC
+//               key), Bob's deposit key m/SWAP'/net'/6'/i'
 // Alice's secret is fresh random per offer and kept only in the encrypted
 // files: a restore into an empty directory reuses indices (and keys), and a
 // secret derived from them would repeat one already revealed on chain.
@@ -46,12 +48,41 @@ struct SwapKeyMaterial {
 // Throw std::runtime_error("wallet locked ...") when the deriver returns nullopt.
 Bytes32 SwapStoreKeyFromSeed(const KeyDeriver& derive, SwapNetwork network);
 SwapKeyMaterial SwapKeysForIndex(const KeyDeriver& derive, SwapNetwork network, uint32_t index);
+// The counter-chain key follows the chain: 2' for Bitcoin (as above), 5' for Zcash.
+SwapKeyMaterial SwapKeysForIndex(const KeyDeriver& derive, SwapNetwork network, uint32_t index, CounterChain chain);
+// Bob's per-swap Zcash deposit key, m/SWAP'/net'/6'/i'.
+Bytes32 ZecDepositKey(const KeyDeriver& derive, SwapNetwork network, uint32_t index);
+
+// Zcash support (docs/design/din-zec-atomic-swaps.md), installed by
+// swap_manager_zec.cpp in dinerod builds with DINERO_SWAP_ZEC. Without it the
+// manager refuses Zcash offers; this file links no Zcash code.
+struct ZecDepositStatus {
+    uint64_t seen_zat{};       // paid to the deposit address, at least 1 confirmation
+    uint64_t confirmed_zat{};  // at least kZecDepositConfirmations (10)
+    uint32_t confirmations{};  // of the newest payment (0: none yet)
+};
+struct ZecSupport {
+    // Chain access for a Zcash swap; deposit_key is zero for Alice.
+    std::function<std::unique_ptr<RpcSwapChainIo>(const SwapSession&, const RunnerConfig&, const Bytes32& deposit_key)>
+        make_io;
+    std::function<std::string(const Bytes32& deposit_key)> deposit_address;
+    std::function<ZecDepositStatus(const Bytes32& deposit_key)> deposit_status;  // throws if Zebra is unreachable
+    // Sends every confirmed deposit coin to `to_script` (swap.cancel); returns the txid, throws if none or refused.
+    std::function<std::string(const Bytes32& deposit_key, const std::vector<uint8_t>& to_script)> sweep_deposit;
+    std::function<std::vector<uint8_t>(const std::string& address)> payout_script;  // a t-address of this network
+    // Throws when the swap's window (T_zec + 24 h) reaches a Zcash network upgrade.
+    std::function<void(const SwapOffer& offer, uint32_t now)> require_no_upgrade;
+    std::function<uint32_t()> tip_height;  // throws if Zebra is unreachable
+    uint64_t funding_fee_zat{20'000};      // part of the deposit: 2 x the conventional fee
+    uint64_t spend_fee_zat{20'000};        // claim / refund, taken from the lock
+};
 
 // Witness-program payout script from a bech32/bech32m address with the given
 // HRP: P2WPKH, P2WSH (v0, bech32) or P2TR (v1, bech32m). Throws std::invalid_argument.
 std::vector<uint8_t> PayoutScriptFromAddress(const std::string& address, const std::string& hrp);
 
 struct OfferRequest {
+    CounterChain chain{CounterChain::Bitcoin};  // Zcash: amounts in zatoshi, a t-address below
     uint64_t din_amount_una{};
     uint64_t btc_amount_sat{};
     std::string din_refund_address;  // Alice's own DIN address (refund payout)
@@ -77,6 +108,21 @@ struct SwapSummary {
     bool wallet_locked{false};   // session not readable: wallet locked, swap paused
     bool sweep_pending{false};   // Bob: done on chain, DIN not yet swept to the wallet
     std::vector<std::string> last_events;
+    CounterChain chain{CounterChain::Bitcoin};
+    // Bob's Zcash deposit, before he accepts (pending_deposit) and until his lock.
+    bool pending_deposit{false};
+    std::string deposit_address;
+    uint64_t deposit_due_zat{};
+    std::optional<ZecDepositStatus> deposit;  // nullopt: Zebra not reachable
+};
+
+// Bob's deposit for a Zcash offer: pay `address` from any Zcash wallet, then accept.
+struct DepositInfo {
+    std::string id;
+    uint32_t index{};
+    std::string address;
+    uint64_t amount_due_zat{};  // the swap amount + the funding fee
+    std::optional<ZecDepositStatus> status;
 };
 
 struct SwapManagerConfig {
@@ -119,6 +165,14 @@ public:
     // the wallet is locked: swaps are paused, not failed.
     bool TickAll(uint32_t now_unix);
 
+    // Zcash support (dinerod built with DINERO_SWAP_ZEC). Not on mainnet: the
+    // design starts with a testnet beta.
+    void SetZecSupport(ZecSupport zec);
+    bool SupportsZec() const;
+    // Bob pastes a Zcash offer: allocates its swap index and deposit address
+    // (kept across restarts). Repeating it returns the same deposit.
+    DepositInfo PrepareDeposit(const std::string& offer_text, const std::string& zec_refund_address, uint32_t now_unix);
+
     // Optional: deliver tower packages (Bob) to this sink; enables the tower.
     void SetTowerSink(std::function<void(const std::string&)> sink);
     void SetTowerAck(std::function<bool(const std::string& id, const std::string& package_hash)> ack);
@@ -132,6 +186,9 @@ private:
     };
     std::string SwapPath(uint32_t index) const;
     std::string OfferPath(uint32_t index) const;
+    std::string DepositPath(uint32_t index) const;
+    void RequireZec() const;
+    DepositInfo DepositOf(uint32_t index, const SwapOffer& offer);
     uint32_t AllocateIndex();
     std::map<uint32_t, std::string> ScanDir(const std::string& ext) const;  // index -> path
     SwapSession LoadSession(uint32_t index, const Bytes32& store_key) const;
@@ -150,6 +207,7 @@ private:
     BtcRpc btc_;
     std::function<void(const std::string&)> tower_sink_;
     std::function<bool(const std::string&, const std::string&)> tower_ack_;
+    std::optional<ZecSupport> zec_;
     std::optional<Bytes32> store_key_;  // kept while the daemon runs: live swaps survive a relock
     Bytes32 StoreKey();                  // derive (and remember), or the remembered one; throws if neither
     std::mutex mu_;

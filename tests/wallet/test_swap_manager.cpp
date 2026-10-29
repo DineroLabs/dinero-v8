@@ -627,3 +627,186 @@ TEST(SwapManager, PayoutScriptFromAddress) {
 }
 
 }  // namespace
+
+// --- Zcash swaps (docs/design/din-zec-atomic-swaps.md) ---------------------------
+
+namespace {
+
+// A stand-in for swap_manager_zec.cpp: records what the manager asks for.
+struct FakeZec {
+    ZecDepositStatus status;              // what every deposit shows
+    bool upgrade_ahead{false};            // require_no_upgrade refuses
+    std::vector<std::pair<Bytes32, std::vector<uint8_t>>> sweeps;
+    std::set<std::string> deposit_keys;   // hex of each deposit key asked about
+    ZecSupport Support() {
+        ZecSupport z;
+        z.make_io = [](const SwapSession& s, const RunnerConfig& rc, const Bytes32&) {
+            return std::make_unique<RpcSwapChainIo>(kNoDin, kNoBtc, s, rc);
+        };
+        z.deposit_address = [this](const Bytes32& key) {
+            deposit_keys.insert(ToHex(std::vector<uint8_t>(key.begin(), key.end())));
+            return "tmDeposit" + ToHex(std::vector<uint8_t>(key.begin(), key.begin() + 4));
+        };
+        z.deposit_status = [this](const Bytes32&) { return status; };
+        z.sweep_deposit = [this](const Bytes32& key, const std::vector<uint8_t>& to) {
+            sweeps.emplace_back(key, to);
+            return std::string(64, 'e');
+        };
+        z.payout_script = [](const std::string& address) {
+            if (address.rfind("tm", 0) != 0) throw std::invalid_argument("not a regtest t-address: " + address);
+            return std::vector<uint8_t>(address.begin(), address.end());
+        };
+        z.require_no_upgrade = [this](const SwapOffer&, uint32_t) {
+            if (upgrade_ahead) throw std::runtime_error("Zcash network upgrade NU7 falls inside this swap");
+        };
+        z.tip_height = [] { return uint32_t{2000}; };
+        return z;
+    }
+    static std::string ToHex(const std::vector<uint8_t>& b) { return detail::ToHex(b); }
+};
+
+OfferRequest ZecRequest() {
+    OfferRequest r = Request();
+    r.chain = CounterChain::Zcash;
+    r.btc_amount_sat = 2'500'000;  // 0.025 ZEC
+    r.btc_claim_address = "tmAliceClaim";
+    return r;
+}
+
+}  // namespace
+
+TEST(SwapManager, ZecKeyPathsLeaveBitcoinKeysUnchanged) {
+    FakeWallet w{0x07};
+    const auto d = w.Deriver();
+    auto at = [&](uint32_t branch, uint32_t i) { return *d({kSwapKeyPurpose, uint32_t(SwapNetwork::Regtest), branch, i}); };
+    const auto btc = SwapKeysForIndex(d, SwapNetwork::Regtest, 3);
+    EXPECT_EQ(btc.keys.btc_secret_key, at(2, 3));  // BTC stays at 2'
+    EXPECT_EQ(SwapKeysForIndex(d, SwapNetwork::Regtest, 3, CounterChain::Bitcoin).keys.btc_secret_key, at(2, 3));
+    const auto zec = SwapKeysForIndex(d, SwapNetwork::Regtest, 3, CounterChain::Zcash);
+    EXPECT_EQ(zec.keys.btc_secret_key, at(5, 3));  // ZEC HTLC key at 5'
+    EXPECT_EQ(zec.keys.din_secret_key, btc.keys.din_secret_key);
+    EXPECT_EQ(ZecDepositKey(d, SwapNetwork::Regtest, 3), at(6, 3));  // deposit at 6'
+}
+
+TEST(SwapManager, ZecNeedsZcashSupportAndIsRefusedOnMainnet) {
+    TempDir dir("zec_support");
+    FakeWallet w{0xa1};
+    SwapManager plain(Config(dir.path), w.Deriver(), kNoDin, kNoBtc);
+    EXPECT_FALSE(plain.SupportsZec());
+    try {
+        plain.MakeOffer(ZecRequest(), kNow);
+        FAIL() << "a Zcash offer without Zcash support";
+    } catch (const std::runtime_error& e) {
+        EXPECT_NE(std::string(e.what()).find("built without Zcash"), std::string::npos) << e.what();
+    }
+    FakeZec z;
+    auto mc = Config(dir.path);
+    mc.network = SwapNetwork::Mainnet;
+    SwapManager main(mc, w.Deriver(), kNoDin, kNoBtc);
+    main.SetZecSupport(z.Support());
+    EXPECT_FALSE(main.SupportsZec());
+    EXPECT_THROW(main.MakeOffer(ZecRequest(), kNow), std::runtime_error);
+}
+
+TEST(SwapManager, ZecOfferIsV2WithFortyConfirmationsAndTheUpgradeGuard) {
+    TempDir dir("zec_offer");
+    FakeWallet w{0xa1};
+    FakeZec z;
+    SwapManager alice(Config(dir.path), w.Deriver(), kNoDin, kNoBtc);
+    alice.SetZecSupport(z.Support());
+    EXPECT_TRUE(alice.SupportsZec());
+    auto r = ZecRequest();
+    r.n_btc_confirmations = 3;  // raised to the Zcash minimum
+    const auto text = alice.MakeOffer(r, kNow);
+    EXPECT_EQ(text.rfind(kOffer2Prefix, 0), 0u);
+    const auto o = DecodeOffer(text);
+    EXPECT_EQ(o.chain, CounterChain::Zcash);
+    EXPECT_EQ(o.n_btc_confirmations, kMinZecConfirmations);
+    EXPECT_EQ(o.btc_claim_pubkey, detail::CompressedOf(*w.Deriver()({kSwapKeyPurpose, 2, 5, 0})));  // the 5' key
+    ASSERT_EQ(alice.List().size(), 1u);
+    EXPECT_EQ(alice.List()[0].chain, CounterChain::Zcash);
+
+    r.btc_claim_address = "bcrt1notzcash";
+    EXPECT_THROW(alice.MakeOffer(r, kNow), std::invalid_argument);
+    r = ZecRequest();
+    r.btc_amount_sat = 399'999;  // below 20 x the 20,000-zat spend fee
+    EXPECT_THROW(alice.MakeOffer(r, kNow), std::invalid_argument);
+    z.upgrade_ahead = true;
+    EXPECT_THROW(alice.MakeOffer(ZecRequest(), kNow), std::runtime_error);
+}
+
+TEST(SwapManager, BobAcceptsAZecOfferOnlyFromAConfirmedDeposit) {
+    TempDir da("zec_alice"), db("zec_bob");
+    FakeWallet wa{0xa1}, wb{0xb0};
+    FakeZec za, zb;
+    SwapManager alice(Config(da.path), wa.Deriver(), kNoDin, kNoBtc);
+    SwapManager bob(Config(db.path), wb.Deriver(), kNoDin, kNoBtc);
+    alice.SetZecSupport(za.Support());
+    bob.SetZecSupport(zb.Support());
+    const std::string offer = alice.MakeOffer(ZecRequest(), kNow);
+
+    // Accepting before any deposit: refused, nothing created.
+    EXPECT_THROW(bob.Accept(offer, P2trAddress("rdin", 0x31), "", kNow + 60), std::runtime_error);
+    EXPECT_TRUE(bob.List().empty());
+
+    const auto d = bob.PrepareDeposit(offer, "tmBobRefund", kNow + 60);
+    EXPECT_EQ(d.amount_due_zat, 2'500'000u + 20'000u);
+    EXPECT_EQ(d.address.rfind("tmDeposit", 0), 0u);
+    EXPECT_EQ(bob.PrepareDeposit(offer, "tmBobRefund", kNow + 61).index, d.index);  // the same deposit again
+    ASSERT_EQ(bob.List().size(), 1u);
+    EXPECT_TRUE(bob.List()[0].pending_deposit);
+    EXPECT_EQ(bob.List()[0].deposit_address, d.address);
+
+    zb.status = {2'520'000, 2'519'999, 10};  // one zatoshi short at 10 confirmations
+    try {
+        bob.Accept(offer, P2trAddress("rdin", 0x31), "", kNow + 120);
+        FAIL() << "accepted a short deposit";
+    } catch (const std::runtime_error& e) {
+        EXPECT_NE(std::string(e.what()).find("deposit is short by 0.00000001 ZEC"), std::string::npos) << e.what();
+    }
+    zb.status = {2'520'000, 2'520'000, 10};
+    const auto b = bob.Accept(offer, P2trAddress("rdin", 0x31), "", kNow + 120);
+    ASSERT_TRUE(b.accept_text.has_value());
+    const auto list = bob.List();
+    ASSERT_EQ(list.size(), 1u);
+    EXPECT_FALSE(list[0].pending_deposit);  // the deposit became the swap, same index
+    EXPECT_EQ(list[0].index, d.index);
+    EXPECT_EQ(list[0].chain, CounterChain::Zcash);
+    // Bob's ZEC refund key is his 5' key for that index.
+    EXPECT_EQ(DecodeAccept(*b.accept_text).btc_refund_pubkey,
+              detail::CompressedOf(*wb.Deriver()({kSwapKeyPurpose, 2, 5, d.index})));
+    const auto a = alice.Accept(*b.accept_text, "", "", kNow + 180);
+    EXPECT_EQ(a.id, b.id);
+}
+
+TEST(SwapManager, CancellingAZecDepositSweepsItBack) {
+    TempDir da("zec_cancel_a"), db("zec_cancel_b");
+    FakeWallet wa{0xa1}, wb{0xb0};
+    FakeZec za, zb;
+    SwapManager alice(Config(da.path), wa.Deriver(), kNoDin, kNoBtc);
+    SwapManager bob(Config(db.path), wb.Deriver(), kNoDin, kNoBtc);
+    alice.SetZecSupport(za.Support());
+    bob.SetZecSupport(zb.Support());
+    const auto d = bob.PrepareDeposit(alice.MakeOffer(ZecRequest(), kNow), "tmBobRefund", kNow + 60);
+
+    bob.Cancel(d.id);  // nothing paid yet: nothing to sweep
+    EXPECT_TRUE(zb.sweeps.empty());
+    EXPECT_TRUE(bob.List().empty());
+
+    const auto d2 = bob.PrepareDeposit(alice.MakeOffer(ZecRequest(), kNow), "tmBobRefund", kNow + 60);
+    zb.status = {1'000'000, 0, 2};
+    bob.Cancel(d2.id);
+    ASSERT_EQ(zb.sweeps.size(), 1u);
+    EXPECT_EQ(zb.sweeps[0].first, ZecDepositKey(wb.Deriver(), SwapNetwork::Regtest, d2.index));
+    EXPECT_EQ(std::string(zb.sweeps[0].second.begin(), zb.sweeps[0].second.end()), "tmBobRefund");
+    EXPECT_TRUE(bob.List().empty());
+
+    // After accepting (nothing locked yet): cancel aborts and sweeps the deposit too.
+    const std::string offer3 = alice.MakeOffer(ZecRequest(), kNow);
+    const auto d3 = bob.PrepareDeposit(offer3, "tmBobRefund", kNow + 60);
+    zb.status = {2'520'000, 2'520'000, 12};
+    bob.Accept(offer3, P2trAddress("rdin", 0x31), "", kNow + 120);
+    bob.Cancel(d3.id);
+    EXPECT_EQ(zb.sweeps.size(), 2u);
+    EXPECT_EQ(bob.Status(d3.id).state, SwapState::Aborted);
+}
