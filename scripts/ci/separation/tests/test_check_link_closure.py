@@ -58,6 +58,8 @@ def materialize(fixture, build):
             deps = [e for e in _entries(t["link"]) if "id" in e]
             if deps:
                 tj["dependencies"] = deps
+        if "deps" in t:
+            tj["dependencies"] = [e for e in _entries(t["deps"])]
         if "ilink" in t:
             tj["interfaceLinkLibraries"] = _entries(t["ilink"])
         if t["type"] == "STATIC_LIBRARY" and not abstract:
@@ -66,18 +68,19 @@ def materialize(fixture, build):
         return {"id": _id(name), "name": name, "jsonFile": fname,
                 "directoryIndex": 0, "projectIndex": 0}
 
+    minor = spec.get("codemodel_minor", 10)
     targets = [write_target(n, t, False) for n, t in spec["targets"].items()]
     abstract = [write_target(n, t, True) for n, t in spec.get("abstract", {}).items()]
     cm = {
         "kind": "codemodel",
-        "version": {"major": 2, "minor": 10},
+        "version": {"major": 2, "minor": minor},
         "paths": {"source": "/repo", "build": str(build)},
         "configurations": [{"name": "Release", "targets": targets,
                             "abstractTargets": abstract, "directories": [], "projects": []}],
     }
     (reply / "codemodel-v2-0.json").write_text(json.dumps(cm))
     index = {"reply": {"codemodel-v2": {"jsonFile": "codemodel-v2-0.json", "kind": "codemodel",
-                                         "version": {"major": 2, "minor": 10}}}}
+                                         "version": {"major": 2, "minor": minor}}}}
     (reply / "index-2026-01-01T00-00-00-0000.json").write_text(json.dumps(index))
     return build
 
@@ -171,3 +174,9 @@ def test_missing_reply_fails_closed(tmp_path):
     r = subprocess.run([sys.executable, str(SCRIPT), "--build", str(tmp_path), "--target", "x",
                         "--rules", str(RULES), "--gate", "K2"], capture_output=True, text=True)
     assert r.returncode == 2, r.stdout + r.stderr
+
+
+def test_legacy_codemodel_fails_closed(tmp_path):
+    r = run(tmp_path, "legacy")
+    assert r.returncode == 2, r.stdout + r.stderr
+    assert "ERROR codemodel 2.8 < 2.9: linkLibraries required" in r.stderr, r.stderr

@@ -1,0 +1,8 @@
+{
+  "_doc": "codemodel 2.8 reply: no linkLibraries/interfaceLinkLibraries/abstractTargets; only build-order dependencies. Must fail closed.",
+  "codemodel_minor": 8,
+  "targets": {
+    "root": {"type": "STATIC_LIBRARY", "deps": ["A"], "sources": ["src/consensus/root.cpp"]},
+    "A": {"type": "STATIC_LIBRARY", "sources": ["src/a/a.cpp"]}
+  }
+}
