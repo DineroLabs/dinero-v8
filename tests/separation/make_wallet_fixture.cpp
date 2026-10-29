@@ -238,6 +238,8 @@ int main(int argc, char** argv) {
         Check(rows_first == RowDump(root), "persisted rows outside ExcludedColumns() change across reopen");
         Check(header_first == HeaderDump(root), "database header fields change across reopen");
         Check(TreeDump(root) == tree, "reopen adds or removes files in the data directory");
+        Check(RegistryWalletPath(root) == ExpectedRegistryWalletPath(root),
+              "registry wallet path is not <outdir>/wallets/wallet_sepfixture.db");
         const auto schema_second = SchemaDump(root);
 
         WriteFile(root / "expected.json", second);

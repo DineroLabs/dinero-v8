@@ -13,7 +13,8 @@
 //      compares it byte-for-byte;
 //   3. dumps sqlite_master again and compares it with schema.txt (after);
 //   4. compares, before vs after the open: the data-directory file set, every
-//      persisted row (minus ExcludedColumns()) and the header fields.
+//      persisted row (minus ExcludedColumns()) and the header fields; and
+//      checks the registry's wallet path is exactly <datadir>/wallets/....
 // Exit 1 on any difference or error (no assert: gates under NDEBUG too).
 
 #include "wallet_fixture_common.h"
@@ -80,7 +81,7 @@ int main(int argc, char** argv) {
         Check(json::parse(want_json).value("config", "") == kConfig, "fixture config does not match this build");
 
         TempDir temp;
-        const fs::path root = temp.path / "datadir";
+        const fs::path root = (temp.path / "datadir").lexically_normal();
         fs::create_directories(root / "wallets");
         fs::create_directories(root / "blockchain");
         for (const auto& rel : DatabaseFiles()) {
@@ -110,6 +111,10 @@ int main(int argc, char** argv) {
         ok &= Same("data-directory file set (before vs after open)", tree_before, TreeDump(root));
         ok &= Same("persisted rows (before vs after open)", rows_before, RowDump(root));
         ok &= Same("database header bytes 18-23,44-67 (before vs after open)", header_before, HeaderDump(root));
+        // wallets.path is excluded from the row diff (it moves with the copy)
+        // but its post-open value is fully determined: check it exactly.
+        ok &= Same("registry wallets.path after open (expected <datadir>/wallets/wallet_sepfixture.db)",
+                   ExpectedRegistryWalletPath(root), RegistryWalletPath(root));
 
         const auto derived = json::parse(got_json);
         std::cout << "W4 compared: " << DatabaseFiles().size() << " DBs, " << Lines(want_schema)
@@ -131,7 +136,7 @@ int main(int argc, char** argv) {
             std::fprintf(stderr, "W4 FAIL: wallet files differ from the baseline fixture\n");
             return 1;
         }
-        std::cout << "W4 OK: fixture opened read-write; contents, PRAGMAs, sqlite_master, rows, header fields and file set unchanged\n";
+        std::cout << "W4 OK: fixture opened read-write; contents, PRAGMAs, sqlite_master, rows, header fields, file set and wallet path unchanged\n";
         return 0;
     } catch (const std::exception& e) {
         std::fprintf(stderr, "W4 FAIL: %s\n", e.what());

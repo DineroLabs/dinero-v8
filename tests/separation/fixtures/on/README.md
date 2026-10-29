@@ -47,8 +47,10 @@ Checker comparisons (sep_wallet_fixture_compat, on a 0600/0700 temp copy of the 
   open, except these columns, which the baseline open legitimately rewrites (evidence: the only
   row differences of a relocated baseline open, measured with an empty exclusion list):
   - wallet_registry.db wallets.last_opened (WalletManager::open -> updateLastOpened);
-  - wallet_registry.db wallets.path (WalletManager::open repairs a relocated path to
-    <datadir>/wallets/wallet_sepfixture.db);
+  - wallet_registry.db wallets.path, excluded from the before/after diff only because it moves
+    with the copy (WalletManager::open repairs a relocated path). Its post-open value is checked
+    exactly instead: it must equal (<datadir>/wallets/wallet_sepfixture.db).lexically_normal(), so a
+    wallet DB used from outside the data directory (which the file-set check cannot see) fails;
 - database header bytes 18-19 (persisted journal mode: 02 02 = WAL), 20-23 and 44-67 per file before
   vs after the open (change counters and schema cookie excluded).
 Out of W4's reach: which paths the daemon chooses for these stores (the checker opens the files at
