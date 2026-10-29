@@ -471,7 +471,7 @@ void WalletWorker::ProcessConnect(uint32_t height, const std::string& hash,
                     // ✅ CRITICAL FIX: Persist UTXO to wallet database
                     if (wallet_manager_) {
                         // Convert scriptPubKey to address
-                        std::string address = ScriptPubKeyToAddress(output.scriptPubKey);
+                        std::string address = ScriptPubKeyToAddress(output.scriptPubKey, Params().hrp);
                         if (address.empty()) {
                             std::cerr << "[WalletWorker] ⚠️  Failed to convert scriptPubKey to address, skipping database persistence" << std::endl;
                         } else {

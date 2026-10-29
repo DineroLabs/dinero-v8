@@ -1,5 +1,6 @@
 #pragma once
 #include "wallet/wallet_worker.h"
+#include "wallet/p2mr_address.h"
 din::Json rpc_context_wallet_recoversnapshot(const ExecutionContext&,const din::Json&);
 namespace dinero {
 namespace {
@@ -10,7 +11,7 @@ struct SnapshotWalletRecoveryFixture:WalletIndexOwnerFixture {
     WalletManager wallet{root/"owned-wallet"};
     CBlockIndex tip;
     std::filesystem::path snapshot=root/"recovery.dat";
-    explicit SnapshotWalletRecoveryFixture(uint32_t target=130):chain(BuildDeterministicChain(target)),tip(chain.back().header,target){
+    explicit SnapshotWalletRecoveryFixture(uint32_t target=130,uint8_t witness_version=0):chain(BuildDeterministicChain(target,witness_version)),tip(chain.back().header,target){
         std::string error;if(!replay.SeedGenesis(SelectedGenesis(),error))throw std::runtime_error(error);
         for(uint32_t i=0;i<chain.size();++i)if(!replay.ConnectAndAdvance(chain[i],i+1,chain[i].GetHash(),error))throw std::runtime_error(error);
         const auto token=ChainWriteToken::CreateForTesting();
@@ -51,6 +52,56 @@ TEST(SnapshotWalletRecovery, RestoresMatureBaseCoinAndLaterMiningWithoutReplacin
     f.wallet.open("same-wallet");
     ASSERT_EQ(f.source->RecoverTransparentSnapshotWallet(f.wallet,&error),std::optional<uint32_t>(130))<<error;
     EXPECT_EQ(f.Count("SELECT COUNT(*) FROM utxos WHERE is_spent=0"),2);EXPECT_EQ(f.wallet.getTransactionHistory().size(),1u);
+}
+TEST(SnapshotWalletRecovery, TaprootReceiptKeepsCanonicalAddressAndDoesNotDuplicateWorkerHistory){
+    SnapshotWalletRecoveryFixture f(130,1);
+    const auto& tx=f.chain[109].vtx[0];const auto id=tx.GetTxid().AsUint256().GetHex();
+    const auto& script=tx.vout[0].scriptPubKey;const std::vector<uint8_t> program(script.begin()+2,script.end());
+    const auto address=bech32::Encode(Params().hrp,1,program,bech32::Encoding::BECH32M);
+    {auto index=ChainstateService::AcquireWalletIndexUse(f.source);WalletWorker worker(&index->Index(),&f.wallet);
+     WalletWorkerTestAccess::Connect(worker,f.wallet,110,f.chain[109]);}
+    const auto live=f.wallet.getTransactionHistory();ASSERT_EQ(live.size(),1u);EXPECT_EQ(live.front().address,address);
+    ASSERT_TRUE(f.wallet.addTransaction(id,address,1.0,"generate",true,"worker label",1,110));
+    std::string error;ASSERT_TRUE(f.source->RecoverTransparentSnapshotWallet(f.wallet,&error))<<error;
+    auto history=f.wallet.getTransactionHistory();ASSERT_EQ(history.size(),1u);
+    EXPECT_EQ(history.front().address,address);EXPECT_EQ(history.front().label,"worker label");
+    EXPECT_TRUE(history.front().is_coinbase);EXPECT_GT(f.wallet.getBalance().immature,0);
+    ASSERT_TRUE(f.source->RecoverTransparentSnapshotWallet(f.wallet,&error))<<error;
+    EXPECT_EQ(f.wallet.getTransactionHistory().size(),1u);
+}
+TEST(SnapshotWalletRecovery, RepairsOnlyVerifiedTaprootChecksumAliasAndPreservesLabel){
+    SnapshotWalletRecoveryFixture f(130,1);
+    const auto& tx=f.chain[109].vtx[0];const auto id=tx.GetTxid().AsUint256().GetHex();
+    const auto& script=tx.vout[0].scriptPubKey;const std::vector<uint8_t> program(script.begin()+2,script.end());
+    const auto address=bech32::Encode(Params().hrp,1,program,bech32::Encoding::BECH32M);
+    const auto obsolete=bech32::Encode("din",1,program,bech32::Encoding::BECH32);
+    ASSERT_TRUE(f.wallet.addTransaction(id,address,1.0,"generate",true,"",1,110));
+    ASSERT_TRUE(f.wallet.addTransaction(id,obsolete,1.0,"generate",true,"retained label",1,110));
+    {auto lease=f.wallet.AcquireDatabaseLease();ASSERT_EQ(sqlite3_exec(lease->Database(),
+        "CREATE TRIGGER refuse_receipt BEFORE INSERT ON transactions BEGIN SELECT RAISE(ABORT,'receipt failure'); END",nullptr,nullptr,nullptr),SQLITE_OK);}
+    std::string refused;EXPECT_FALSE(f.source->RecoverTransparentSnapshotWallet(f.wallet,&refused));
+    EXPECT_EQ(f.Count("SELECT COUNT(*) FROM transactions"),2); // Alias cleanup rolls back too.
+    {auto lease=f.wallet.AcquireDatabaseLease();ASSERT_EQ(sqlite3_exec(lease->Database(),"DROP TRIGGER refuse_receipt",nullptr,nullptr,nullptr),SQLITE_OK);}
+    ASSERT_TRUE(f.wallet.addTransaction(std::string(64,'e'),obsolete,2.0,"receive",false,"unrelated",1,1));
+    std::string error;ASSERT_TRUE(f.source->RecoverTransparentSnapshotWallet(f.wallet,&error))<<error;
+    auto history=f.wallet.getTransactionHistory();ASSERT_EQ(history.size(),2u);
+    const auto found=std::find_if(history.begin(),history.end(),[&](const auto& row){return row.txid==id;});
+    ASSERT_NE(found,history.end());EXPECT_EQ(found->address,address);EXPECT_EQ(found->label,"retained label");
+    ASSERT_TRUE(f.source->RecoverTransparentSnapshotWallet(f.wallet,&error))<<error;
+    EXPECT_EQ(f.wallet.getTransactionHistory().size(),2u);
+}
+TEST(SnapshotWalletRecovery, P2mrReceiptUsesCanonicalAddressAndKeepsWorkerHistory){
+    SnapshotWalletRecoveryFixture f(130,3);
+    const auto& tx=f.chain[109].vtx[0];const auto id=tx.GetTxid().AsUint256().GetHex();
+    const auto& script=tx.vout[0].scriptPubKey;
+    const auto address=wallet::EncodeP2MRAddress(Params().hrp,std::vector<uint8_t>(script.begin()+2,script.end()));
+    ASSERT_FALSE(address.empty());
+    ASSERT_TRUE(f.wallet.addTransaction(id,address,1.0,"generate",true,"pq receipt",1,110));
+    ASSERT_TRUE(f.wallet.addTransaction(id,"script:5320252525252525",1.0,"generate",true,"obsolete fallback",1,110));
+    std::string error;ASSERT_TRUE(f.source->RecoverTransparentSnapshotWallet(f.wallet,&error))<<error;
+    const auto history=f.wallet.getTransactionHistory();ASSERT_EQ(history.size(),1u);
+    EXPECT_EQ(history.front().address,address);EXPECT_EQ(history.front().label,"pq receipt");
+    EXPECT_EQ(f.Count("SELECT COUNT(*) FROM utxos WHERE address LIKE 'script:%'"),0);
 }
 TEST(SnapshotWalletRecovery, CorruptBodyOrRequiredWalletWriteFailureDoesNotPublishPartialRecovery){
     SnapshotWalletRecoveryFixture f;const auto token=ChainWriteToken::CreateForTesting();

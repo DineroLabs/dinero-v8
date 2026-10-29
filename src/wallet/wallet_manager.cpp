@@ -6026,8 +6026,7 @@ std::string WalletManager::extractAddressFromScript(const std::vector<uint8_t>& 
         return "";
     }
 
-    // Use default mainnet HRP "din" - TODO: make this configurable for testnet/regtest
-    const std::string hrp = "din";
+    const std::string hrp = Params().hrp;
 
     // P2WPKH: OP_0 PUSH20 <20-byte-pubkey-hash>
     if (scriptPubKey.size() == 22 &&
@@ -6059,7 +6058,12 @@ std::string WalletManager::extractAddressFromScript(const std::vector<uint8_t>& 
         std::vector<uint8_t> witness_program(scriptPubKey.begin() + 2, scriptPubKey.end());
 
         // Encode as Bech32m Taproot address (witness v1, 32 bytes)
-        return bech32::Encode(hrp, 1, witness_program);
+        return bech32::Encode(hrp, 1, witness_program, bech32::Encoding::BECH32M);
+    }
+
+    // P2MR: OP_3 PUSH32 <merkle root>, using the same codec as live receipts.
+    if (scriptPubKey.size() == 34 && scriptPubKey[0] == 0x53 && scriptPubKey[1] == 0x20) {
+        return wallet::EncodeP2MRAddress(hrp, std::vector<uint8_t>(scriptPubKey.begin()+2, scriptPubKey.end()));
     }
 
     // Unknown or legacy script type - return empty string
@@ -7643,6 +7647,7 @@ bool WalletManager::RescanBlockchainImpl(int start_height, int gap_limit,
                 const std::string txid = tx.GetTxid().AsUint256().GetHex();
                 const bool coinbase = tx_index == 0;
                 std::map<std::string, int64_t> activity;
+                std::map<std::string, std::set<std::string>> obsolete_receipt_addresses;
                 bool spends_owned = false;
                 const auto accumulate = [&](const std::string& address, int64_t value) {
                     auto& amount = activity[address];
@@ -7667,6 +7672,17 @@ bool WalletManager::RescanBlockchainImpl(int start_height, int gap_limit,
                     std::string address = extractAddressFromScript(output.scriptPubKey);
                     if (address.empty()) address = "script:" + script.substr(0, 16);
                     accumulate(address, static_cast<int64_t>(output.value.GetUna()));
+                    // Earlier recovery used a Bech32 checksum for Taproot and
+                    // a display-only script fallback for P2MR. Reconcile only
+                    // aliases derived from this authenticated owned output.
+                    if (output.scriptPubKey.size()==34 && output.scriptPubKey[1]==0x20) {
+                        const auto& spk=output.scriptPubKey;
+                        if(spk[0]==0x51)
+                            obsolete_receipt_addresses[address].insert(bech32::Encode("din",1,
+                                std::vector<uint8_t>(spk.begin()+2,spk.end()),bech32::Encoding::BECH32));
+                        else if(spk[0]==0x53)
+                            obsolete_receipt_addresses[address].insert("script:"+script.substr(0,16));
+                    }
                     auto row = prepare(R"(
                         INSERT OR IGNORE INTO utxos
                         (wallet_id,txid,vout,address,amount,script_pubkey,height,is_coinbase,is_spent,created_at)
@@ -7744,12 +7760,38 @@ bool WalletManager::RescanBlockchainImpl(int start_height, int gap_limit,
                 // records outside this scan; this is not complete key discovery.
                 for (const auto& [address, amount] : activity) {
                     const std::string category = coinbase ? "generate" : amount < 0 ? "send" : "receive";
+                    std::string recovered_label;
+                    if(prepared&&prepared->snapshot_ && amount>=0) {
+                        for(const auto& alias:obsolete_receipt_addresses[address]) {
+                            if(alias.empty()||alias==address)continue;
+                            auto old=prepare("SELECT label FROM transactions WHERE wallet_id=? AND txid=? AND address=? AND category=? AND is_coinbase=? AND amount>=0");
+                            checked(sqlite3_bind_int(old.get(),1,current_wallet_id_),SQLITE_OK);
+                            checked(sqlite3_bind_text(old.get(),2,txid.c_str(),-1,SQLITE_TRANSIENT),SQLITE_OK);
+                            checked(sqlite3_bind_text(old.get(),3,alias.c_str(),-1,SQLITE_TRANSIENT),SQLITE_OK);
+                            checked(sqlite3_bind_text(old.get(),4,category.c_str(),-1,SQLITE_TRANSIENT),SQLITE_OK);
+                            checked(sqlite3_bind_int(old.get(),5,coinbase?1:0),SQLITE_OK);
+                            int rc;
+                            while((rc=sqlite3_step(old.get()))==SQLITE_ROW) {
+                                const auto* label=reinterpret_cast<const char*>(sqlite3_column_text(old.get(),0));
+                                if(recovered_label.empty()&&label)recovered_label=label;
+                            }
+                            checked(rc,SQLITE_DONE);
+                            auto remove=prepare("DELETE FROM transactions WHERE wallet_id=? AND txid=? AND address=? AND category=? AND is_coinbase=? AND amount>=0");
+                            checked(sqlite3_bind_int(remove.get(),1,current_wallet_id_),SQLITE_OK);
+                            checked(sqlite3_bind_text(remove.get(),2,txid.c_str(),-1,SQLITE_TRANSIENT),SQLITE_OK);
+                            checked(sqlite3_bind_text(remove.get(),3,alias.c_str(),-1,SQLITE_TRANSIENT),SQLITE_OK);
+                            checked(sqlite3_bind_text(remove.get(),4,category.c_str(),-1,SQLITE_TRANSIENT),SQLITE_OK);
+                            checked(sqlite3_bind_int(remove.get(),5,coinbase?1:0),SQLITE_OK);
+                            checked(sqlite3_step(remove.get()),SQLITE_DONE);
+                        }
+                    }
                     auto history = prepare(R"(
                         INSERT INTO transactions(wallet_id,txid,address,amount,confirmations,category,label,time,is_coinbase,height)
-                        VALUES(?,?,?,?,?,?,NULL,?,?,?)
+                        VALUES(?,?,?,?,?,?,?,?,?,?)
                         ON CONFLICT DO UPDATE SET
                             amount=excluded.amount,confirmations=excluded.confirmations,
                             category=excluded.category,time=excluded.time,
+                            label=COALESCE(NULLIF(transactions.label,''),excluded.label),
                             is_coinbase=excluded.is_coinbase,height=excluded.height
                     )");
                     checked(sqlite3_bind_int(history.get(), 1, current_wallet_id_), SQLITE_OK);
@@ -7758,9 +7800,10 @@ bool WalletManager::RescanBlockchainImpl(int start_height, int gap_limit,
                     checked(sqlite3_bind_double(history.get(), 4, static_cast<double>(amount) / ConsensusSubsidy::UNA_PER_DIN), SQLITE_OK);
                     checked(sqlite3_bind_int64(history.get(), 5, uint64_t(tip_height)-height+1), SQLITE_OK);
                     checked(sqlite3_bind_text(history.get(), 6, category.c_str(), -1, SQLITE_TRANSIENT), SQLITE_OK);
-                    checked(sqlite3_bind_int64(history.get(), 7, block.header.timestamp), SQLITE_OK);
-                    checked(sqlite3_bind_int(history.get(), 8, coinbase ? 1 : 0), SQLITE_OK);
-                    checked(sqlite3_bind_int64(history.get(), 9, height), SQLITE_OK);
+                    checked(sqlite3_bind_text(history.get(), 7, recovered_label.c_str(), -1, SQLITE_TRANSIENT), SQLITE_OK);
+                    checked(sqlite3_bind_int64(history.get(), 8, block.header.timestamp), SQLITE_OK);
+                    checked(sqlite3_bind_int(history.get(), 9, coinbase ? 1 : 0), SQLITE_OK);
+                    checked(sqlite3_bind_int64(history.get(), 10, height), SQLITE_OK);
                     checked(sqlite3_step(history.get()), SQLITE_DONE);
 
                 }

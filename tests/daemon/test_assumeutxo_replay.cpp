@@ -361,7 +361,7 @@ Transaction MakeCoinbase(uint32_t height) {
 // Mining path per block: ComputeUtreexoRootPure -> header.utreexo_root,
 // then full ConnectBlock on the builder's own set to advance state.
 // Returns fewer than n blocks only on builder-side validation failure.
-std::vector<Block> BuildDeterministicChain(uint32_t n) {
+std::vector<Block> BuildDeterministicChain(uint32_t n, uint8_t recovery_witness_version = 0) {
     std::vector<Block> chain;
     consensus::ConsensusUTXOSet set;
     consensus::BlockValidator validator(&set);
@@ -377,6 +377,12 @@ std::vector<Block> BuildDeterministicChain(uint32_t n) {
         b.header.nonce = 0;
         b.header.ZeroReserved();
         b.vtx.push_back(MakeCoinbase(h));
+        // Exercise modern receipt scripts after the retained snapshot boundary.
+        if (h == 110 && recovery_witness_version) {
+            auto& script = b.vtx[0].vout[0].scriptPubKey;
+            script.assign(34, uint8_t(0x25));
+            script[0] = uint8_t(0x50 + recovery_witness_version); script[1] = 0x20;
+        }
         b.header.merkle_root = b.vtx[0].GetTxid().AsUint256();
 
         uint256 root;
