@@ -8,8 +8,8 @@ ALLOWED = """\
 1 modify src/consensus/CMakeLists.txt
 2 modify src/consensus/CMakeLists.txt
 2 remove src/consensus/coins_db.cpp
-2 hunk src/consensus/tx_validation.cpp ^#include "consensus/(coins_db|chain_state_view)\\.h"
-2 hunk src/consensus/tx_validation.cpp (CoinsViewCache|ChainStateView)& view
+2 hunk src/consensus/tx_validation.cpp@1 ^#include "consensus/(coins_db|chain_state_view)\\.h"$
+2 hunk src/consensus/tx_validation.cpp@4 ^    (const )?(CoinsViewCache|ChainStateView)& view,$
 """
 
 TXV = """\
@@ -109,3 +109,31 @@ def test_input_errors_exit_2(tmp_path):
     r = run(repo, "check", "--repo", repo, "--baseline", repo / "base.sha256",
             "--allowed", repo / "bad.txt", "--stage", 0)
     assert r.returncode == 2
+
+
+def test_extra_signature_line_fails(tmp_path):
+    repo = make_repo(tmp_path)
+    p = repo / "src/consensus/tx_validation.cpp"
+    p.write_text(TXV + "bool evil(\n    CoinsViewCache& view,\n    int x);\n")
+    r = check(repo, 2)
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert "HUNK src/consensus/tx_validation.cpp:6 +bool evil(" in r.stdout
+    # a second copy of the allowed line, inserted next to the real one
+    p.write_text(TXV.replace("    CoinsViewCache& view,\n",
+                             "    CoinsViewCache& view,\n    CoinsViewCache& view,\n"))
+    r = check(repo, 2)
+    assert r.returncode == 1, r.stdout + r.stderr
+
+
+def test_eol_only_change_fails(tmp_path):
+    repo = make_repo(tmp_path)
+    p = repo / "src/consensus/tx_validation.cpp"
+    p.write_bytes(TXV.replace("\n", "\r\n").encode())
+    r = check(repo, 2)
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert "HUNK src/consensus/tx_validation.cpp:" in r.stdout
+    # byte change with no line-level difference (drop trailing newline)
+    p.write_bytes(TXV.rstrip("\n").encode())
+    r = check(repo, 2)
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert "HUNK src/consensus/tx_validation.cpp:" in r.stdout
