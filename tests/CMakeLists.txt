@@ -13941,6 +13941,34 @@ if(CARGO_EXECUTABLE AND NOT WIN32)
   add_test(NAME SwapZecTx COMMAND test_swap_zec_tx)
   set_tests_properties(SwapZecTx PROPERTIES LABELS "wallet;swap" TIMEOUT 60)
 
+  # The Zcash counter chain behind the swap runner (ZecSwapChainIo).
+  add_executable(test_swap_zec_chain_io
+    tests/wallet/test_swap_zec_chain_io.cpp
+    src/wallet/swap/zec_chain_io.cpp
+    src/wallet/swap/zec_tx.cpp
+    src/wallet/swap/zec_watcher.cpp
+    src/wallet/swap/runner.cpp
+    src/wallet/swap/tower.cpp
+    src/wallet/swap/fee_ladder.cpp
+    src/wallet/swap/din_watcher.cpp
+    src/wallet/swap/btc_watcher.cpp
+    src/wallet/swap/btc_tx.cpp
+    src/wallet/swap/engine.cpp
+    src/wallet/swap/offer.cpp
+    src/wallet/swap/htlc.cpp
+  )
+  add_dependencies(test_swap_zec_chain_io gtest gtest_main build_zcash_swap)
+  target_link_libraries(test_swap_zec_chain_io PRIVATE dinero_consensus dinero_zcash_swap gtest gtest_main)
+  if(NOT APPLE)
+    target_link_libraries(test_swap_zec_chain_io PRIVATE Threads::Threads ${CMAKE_DL_LIBS} m)
+  endif()
+  link_zstd_if_needed(test_swap_zec_chain_io)
+  target_include_directories(test_swap_zec_chain_io PRIVATE
+    ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src ${ZCASH_SWAP_DIR}/include
+    ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include)
+  add_test(NAME SwapZecChainIo COMMAND test_swap_zec_chain_io)
+  set_tests_properties(SwapZecChainIo PROPERTIES LABELS "wallet;swap" TIMEOUT 60)
+
   # The same code against a real Zebra regtest node (deposit, claim, refund,
   # tower rung, reorg, network upgrade), where zebrad is installed.
   add_executable(swap_zec_regtest_tool

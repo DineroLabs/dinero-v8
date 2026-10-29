@@ -18,7 +18,8 @@ ZEBRAD=None
 if args[:1]==['--zebrad']: ZEBRAD=args[1]; args=args[2:]
 LIB=ROOT+'/rust/zcash_swap/src/lib.rs'; CPP=ROOT+'/src/wallet/swap/zec_tx.cpp'
 WCPP=ROOT+'/src/wallet/swap/zec_watcher.cpp'; WHDR=ROOT+'/include/wallet/swap/zec_watcher.h'
-R='regtest'
+ZIO=ROOT+'/src/wallet/swap/zec_chain_io.cpp'; RUN=ROOT+'/src/wallet/swap/runner.cpp'
+R='regtest'; IO='io'
 M=[
  ('sighash: always input 0', LIB, '        index,\n        &auth.scripts[index],', '        0,\n        &auth.scripts[index],'),
  ('sighash: amounts reversed', LIB, '        amounts.push(Zatoshis::from_u64(p.value_zat).map_err(|_| DZS_ERR_ARG)?);', '        amounts.insert(0, Zatoshis::from_u64(p.value_zat).map_err(|_| DZS_ERR_ARG)?);'),
@@ -63,6 +64,19 @@ M=[
  ('watch: no mempool scan', WCPP, '        } else if (!FindMempoolSpend(report.htlc)) {', '        } else if (false) {', R),
  ('watch: reorg keeps the funding', WCPP, '        if (*gone) {\n            funding_.reset();', '        if (false) {\n            funding_.reset();', R),
  ('watch: claim read as refund', WCPP, '    obs.spent_by_claim = obs.revealed_preimage.has_value();', '    obs.spent_by_claim = false;', R),
+ # milestone 5: the Zcash counter chain behind the runner
+ ('runner: Bitcoin rules for every chain', RUN, '    const StepResult step = Step(session_.record, obs, io_.CounterRules());', '    const StepResult step = Step(session_.record, obs);', IO),
+ ('io: no early-refund allowance', ZIO, '    r.early_refund_seconds = 90 * 60;', '    r.early_refund_seconds = 0;', IO),
+ ('io: upgrade guard skipped', ZIO, '    if (const auto u = ZecUpgradeBefore(chain, config_.clock(),', '    if (const auto u = std::optional<ZecUpgrade>{}; false && ZecUpgradeBefore(chain, config_.clock(),', IO),
+ ('io: lock prepared with an expiry', ZIO, 'config_.funding_fee_multiplier,\n                                  chain.next_block_branch_id, 0);', 'config_.funding_fee_multiplier,\n                                  chain.next_block_branch_id, chain.tip_height + 40);', IO),
+ ('io: shallow deposit coins spent', ZIO, '    const auto coins = deposit.spendable(config_.deposit_confirmations);', '    const auto coins = deposit.spendable(0);', IO),
+ ('io: address not checked', ZIO, '    if (address != CounterHtlcAddress(probe, RunnerConfig{})) throw', '    if (false) throw', IO),
+ ('io: consensus refusal read as maybe-left', ZIO, '    for (const char* refused : {"did not pass consensus validation", ', '    for (const char* refused : {', IO),
+ ('io: spend conflict read as refused', ZIO, '"transaction is non-standard", "reached transaction expiry height"}) {', '"transaction is non-standard", "reached transaction expiry height", "already spent"}) {', IO),
+ ('io: spend expiry dropped', ZIO, '    const uint32_t expiry = chain.tip_height + config_.spend_expiry_blocks;', '    const uint32_t expiry = 0;', IO),
+ ('io: fixed branch id', ZIO, 'fee, chain.next_block_branch_id, expiry)\n                     : BuildZecRefundTx', 'fee, 0x4dec4df0, expiry)\n                     : BuildZecRefundTx', IO),
+ ('io: unsent despite spent coins', ZIO, '    if (deposit.coins.empty()) return false;  // spent by something: it may have gone out\n', '', IO),
+ ('io: claim role not checked', ZIO, '    if (s.record.role != Role::DinSeller || detail::CompressedOf(keys.btc_secret_key) != s.record.offer.btc_claim_pubkey) {', '    if (false) {', IO),
  ('watch: amount filter dropped', WCPP, '                    if (target_.expected_amount_zat && zat != target_.expected_amount_zat) continue;\n', '', R),
 ]
 only=args
@@ -70,12 +84,13 @@ res=[]
 for name,path,old,new,*kind in M:
     if only and not any(o in name for o in only): continue
     regtest=kind==[R]
+    io=kind==[IO]
     if regtest and not ZEBRAD: res.append((name,'SKIPPED')); print(f'{name:40s} SKIPPED (no --zebrad)'); continue
     src=open(path).read()
     if src.count(old)!=1: res.append((name,'PATTERN')); print(name,'PATTERN NOT UNIQUE',src.count(old)); continue
     open(path,'w').write(src.replace(old,new))
     try:
-        target='swap_zec_regtest_tool' if regtest else 'test_swap_zec_tx'
+        target='swap_zec_regtest_tool' if regtest else 'test_swap_zec_chain_io' if io else 'test_swap_zec_tx'
         b=subprocess.run(['nice','-n','15','cmake','--build',BUILD,'--target',target,'-j4'],capture_output=True,text=True)
         if b.returncode!=0: st='BUILD-FAIL'
         elif regtest:
@@ -83,13 +98,13 @@ for name,path,old,new,*kind in M:
             fails=[l.split(' FAIL ')[0].strip() for l in t.stdout.splitlines() if ' FAIL ' in l]
             st='CAUGHT '+' | '.join(fails) if t.returncode!=0 else 'SURVIVED'
         else:
-            t=subprocess.run([BUILD+'/test_swap_zec_tx'],capture_output=True,text=True)
-            fails=[l.split()[3] for l in t.stdout.splitlines() if l.startswith('[  FAILED  ] SwapZecTx.')]
+            t=subprocess.run([BUILD+'/'+target],capture_output=True,text=True)
+            fails=[l.split()[3] for l in t.stdout.splitlines() if l.startswith('[  FAILED  ] SwapZec')]
             st='CAUGHT '+','.join(sorted(set(fails))) if t.returncode!=0 else 'SURVIVED'
     finally:
         open(path,'w').write(src)
     res.append((name,st)); print(f'{name:40s} {st}', flush=True)
-subprocess.run(['nice','-n','15','cmake','--build',BUILD,'--target','test_swap_zec_tx','swap_zec_regtest_tool','-j4'],capture_output=True)
+subprocess.run(['nice','-n','15','cmake','--build',BUILD,'--target','test_swap_zec_tx','test_swap_zec_chain_io','swap_zec_regtest_tool','-j4'],capture_output=True)
 survivors=[n for n,s in res if not s.startswith('CAUGHT') and s!='SKIPPED']
 skipped=[n for n,s in res if s=='SKIPPED']
 if skipped: print(f'skipped (need --zebrad): {skipped}')
