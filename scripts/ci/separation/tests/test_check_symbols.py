@@ -85,6 +85,7 @@ def test_duplicate_symbol_reported_once(tmp_path):
 def test_missing_binary_is_input_error(tmp_path):
     r = run("--binary", tmp_path / "nope", "--gate", "K3")
     assert r.returncode == 2
+    assert r.stderr.startswith("ERROR "), r.stderr
 
 
 def test_empty_nm_output_is_input_error(tmp_path):
@@ -92,3 +93,4 @@ def test_empty_nm_output_is_input_error(tmp_path):
     nm.write_text("")
     r = run("--nm-output", nm, "--gate", "K3")
     assert r.returncode == 2
+    assert r.stderr.startswith("ERROR "), r.stderr
