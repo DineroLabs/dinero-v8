@@ -14046,8 +14046,13 @@ endif()
 
 # swap.* RPCs end to end: two dinerods + bitcoind, SIGKILL/restart, clean stop (milestone 6).
 if(TARGET dinerod AND DINERO_BITCOIND)
+  # A dinerod built with DINERO_SWAP_ZEC also gets a Zebra: the BTC swap then runs on two-chain daemons.
+  set(_swap_rpc_zebrad "")
+  if(DINERO_SWAP_ZEC AND DINERO_ZEBRAD)
+    set(_swap_rpc_zebrad ${DINERO_ZEBRAD})
+  endif()
   add_test(NAME SwapRpcRegtest
-    COMMAND ${CMAKE_SOURCE_DIR}/tests/wallet/swap_rpc_regtest.sh $<TARGET_FILE:dinerod>)
+    COMMAND ${CMAKE_SOURCE_DIR}/tests/wallet/swap_rpc_regtest.sh $<TARGET_FILE:dinerod> ${_swap_rpc_zebrad})
   set_tests_properties(SwapRpcRegtest PROPERTIES LABELS "wallet;swap;regtest" TIMEOUT 900)
 endif()
 

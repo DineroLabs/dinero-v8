@@ -4,7 +4,8 @@
 # bitcoind) and one Zebra regtest. Driven ONLY through RPCs; each daemon's
 # SwapService does the work. Bob's deposit is short, then covered; his daemon
 # is restarted while the deposit is pending; a second deposit is cancelled and
-# swept back.
+# swept back. Where bitcoind is installed, both daemons also get swap.btc_rpc,
+# so the Zcash swap runs on a node that serves both chains.
 #   usage: swap_zec_rpc_regtest.sh <dinerod (DINERO_SWAP_ZEC)> <swap_zec_regtest_tool> <zebrad>
 set -euo pipefail
 . "$(cd "$(dirname "$0")" && pwd)/swap_regtest_lib.sh"
@@ -16,7 +17,10 @@ BASE=$(swap_free_base 8)
 APORT=$BASE; AP2P=$((BASE + 1)); BPORT=$((BASE + 2)); BP2P=$((BASE + 3)); ZPORT=$((BASE + 5)); ZP2P=$((BASE + 6))
 CONSENSUS=(--consensus-contextual-locks-height=1)
 SWAPCFG=(--swap.enable=1 --swap.zec_rpc=127.0.0.1:$ZPORT --swap.tick_seconds=1)
+CPORT=$((BASE + 7)); BCLI=(bitcoin-cli -regtest -datadir="$DIR/btc" -rpcport=$CPORT -rpcuser=test -rpcpassword=test)
+DUAL=0; command -v bitcoind >/dev/null && DUAL=1
 cleanup() { for p in "${APID:-}" "${BPID:-}" "${ZPID:-}"; do [[ -n "$p" ]] && kill -9 "$p" 2>/dev/null || true; done
+            [[ $DUAL == 1 ]] && { "${BCLI[@]}" stop >/dev/null 2>&1 || true; }
             sleep 1; [[ -n "${KEEP_LOGS:-}" ]] && cp "$DIR"/*.log "$KEEP_LOGS"/ 2>/dev/null; rm -rf "$DIR"; }
 trap cleanup EXIT
 
@@ -96,7 +100,17 @@ for _ in $(seq 1 60); do zcall getblockcount '[]' >/dev/null 2>&1 && break; slee
 mine_zec 110
 ALICE_ZEC=$("$TOOL" addr 21); BOB_ZEC=$("$TOOL" addr 22)
 
-# --- Alice's and Bob's daemons (Zcash only: no swap.btc_rpc) -----------------------
+# --- bitcoind too, where installed: each daemon then serves both chains ------------
+if [[ $DUAL == 1 ]]; then
+  mkdir -p "$DIR/btc"
+  bitcoind -regtest -datadir="$DIR/btc" -listen=0 -rpcport=$CPORT -rpcuser=test -rpcpassword=test -daemon >/dev/null
+  for _ in $(seq 1 60); do "${BCLI[@]}" getblockchaininfo >/dev/null 2>&1 && break; sleep 0.5; done
+  swap_require_regtest bitcoind "$("${BCLI[@]}" getblockchaininfo)"
+  SWAPCFG+=(--swap.btc_rpc=127.0.0.1:$CPORT --swap.btc_rpc_user=test --swap.btc_rpc_pass=test)
+  echo "  both chains: bitcoind on $CPORT, Zebra on $ZPORT"
+fi
+
+# --- Alice's and Bob's daemons -----------------------------------------------------
 APID=$(start_node alice $APORT $AP2P "${SWAPCFG[@]}"); wait_rpc $APORT
 BPID=$(start_node bob $BPORT $BP2P "${SWAPCFG[@]}" --connect=127.0.0.1:$AP2P); wait_rpc $BPORT
 for port in $APORT $BPORT; do
@@ -104,7 +118,9 @@ for port in $APORT $BPORT; do
   rpc $port wallet.encrypt '["pw-swap-zec"]' >/dev/null
   rpc $port wallet.unlock '["pw-swap-zec", 7200]' >/dev/null
 done
-check "swap.capabilities lists zec" '[[ "$(rpc $APORT swap.capabilities "[]")" == *zec* ]]'
+CAPS=$(rpc $APORT swap.capabilities "[]")
+check "swap.capabilities lists zec" '[[ "$CAPS" == *zec* ]]'
+[[ $DUAL == 1 ]] && check "swap.capabilities lists btc too ($CAPS)" '[[ "$CAPS" == *btc* ]]'
 ALICE_DIN=$(rpc $APORT wallet.getnewaddress '["taproot","mine"]' | python3 -c 'import sys,json
 s=sys.stdin.read().strip()
 try: print(json.loads(s)["address"])
