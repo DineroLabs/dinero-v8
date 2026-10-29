@@ -15,6 +15,7 @@ cleanup() {
   exec 3>&- 4<&- 2>/dev/null || true
   [[ -n "${WPID:-}" ]] && kill "$WPID" 2>/dev/null || true
   [[ -n "${ZPID:-}" ]] && { kill "$ZPID" 2>/dev/null || true; wait "$ZPID" 2>/dev/null || true; }
+  [[ -n "${KEEP_LOGS:-}" ]] && cp "$DIR"/*.log "$KEEP_LOGS"/ 2>/dev/null
   rm -rf "$DIR"
 }
 trap cleanup EXIT
@@ -147,5 +148,28 @@ mine $(( UPGRADE_AT - $(tip) + 1 )); mine_past "$LOCK3"
 expect "zebra: branch id is NU6.2 now"         "$("$TOOL" chain "$PORT")" "branch=5437f330"
 expect "zebra: rung signed before the upgrade" "$("$TOOL" send "$PORT" "$OLD_RUNG")" "rejected"
 expect "zebra: refund re-signed after it"      "$("$TOOL" send "$PORT" "$("$TOOL" spend "$PORT" refund "$T3" "$V3" $AMOUNT "$LOCK3" 0)")" "accepted"
+
+# --- Early refund: a block may be stamped up to 90 min past the median ------
+# Consensus judges a time lock by the block's own time, the mempool by the
+# median: a refund locked 1 h past the median confirms early in a block
+# stamped median + 90 min (why Alice's cut-off carries that allowance). The
+# 90 min cap itself is not checked here: Zebra enforces it on Mainnet, and on
+# Testnet (regtest included) only from height 653,606 (zebra-chain
+# is_max_block_time_enforced).
+MINE="$(cd "$(dirname "$0")" && pwd)/zebra_regtest_mine.py"
+mine_at() { python3 "$MINE" "$PORT" 1 "$1" --with-tx "$2" 2>&1 || true; }
+last_reject() { grep "submit block failed" "$DIR/zebrad.log" | tail -1 | sed 's/.*error=//; s/ block_hash.*//'; }
+"$TOOL" pay "$PORT" 7 "$DEPOSIT" $NEED >/dev/null; mine 10
+LOCK4=$(( $(mtp) + 3600 ))
+read -r T4 V4 <<<"$("$TOOL" fund "$PORT" $AMOUNT "$LOCK4" "$BOB")"; mine 1
+expect "zebra: mempool refuses it before the lock" \
+  "$("$TOOL" send "$PORT" "$("$TOOL" spend "$PORT" refund "$T4" "$V4" $AMOUNT "$LOCK4" 0)")" "locked until after block time"
+REFUND4=$("$TOOL" spend "$PORT" refund_nofee "$T4" "$V4" $AMOUNT "$LOCK4" 0)
+mine_at "$LOCK4" "$REFUND4" >/dev/null
+expect "block stamped at the lock is refused"  "$(last_reject)" "LockedUntilAfterBlockTime"
+expect "the HTLC is still unspent"             "$(rpc gettxout "[\"$T4\", $V4]")" '"value"'
+expect "block 90 min past median, refund in it" "$(mine_at "+5400" "$REFUND4")" "null"
+expect "the HTLC is spent by the refund"       "$(rpc gettxout "[\"$T4\", $V4]")" "null"
+expect "and the median is still before the lock" "$(( $(mtp) < LOCK4 ? 1 : 0 ))" "1"
 
 [[ $fail -eq 0 ]] && echo "ZEC REGTEST: PASS" || { echo "ZEC REGTEST: FAIL"; exit 1; }

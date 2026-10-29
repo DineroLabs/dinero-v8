@@ -201,8 +201,10 @@ int main(int argc, char** argv) try {
                 s.insert(s.end(), redeem.begin(), redeem.end());
                 tx.vin[0].script_sig = s;
             }
-        } else if (kind == "refund" || kind == "early_refund") {
-            tx = BuildZecRefundTx(terms, funding, payout, kSpendFee, chain.next_block_branch_id, expiry);
+        } else if (kind == "refund" || kind == "early_refund" || kind == "refund_nofee") {
+            // refund_nofee: for a hand-built block, whose coinbase must claim exactly the fees in it
+            tx = BuildZecRefundTx(terms, funding, payout, kind == "refund_nofee" ? 0 : kSpendFee,
+                                  chain.next_block_branch_id, expiry);
             if (kind == "early_refund") tx.locktime = terms.refund_locktime_unix - 1;  // fails CLTV
             SetZecRefundScriptSig(tx, terms, detail::EcdsaSignAll(Key(6), ZecHtlcSighash(tx, terms, funding)));
         } else {
