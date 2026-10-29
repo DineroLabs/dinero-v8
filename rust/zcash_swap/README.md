@@ -43,7 +43,14 @@ cancel), claim and refund as Zebra judges them, the watcher (decoy, mempool
 reveal, reorg), the tower rung with nExpiryHeight 0, and a rung voided by a
 network upgrade.
 
-`python3 rust/zcash_swap/tests/mutate.py <build-dir> --zebrad <path>` breaks 41
+`SwapZecE2ERegtest` runs a whole DIN↔ZEC swap on dinerod + Zebra regtest
+(tests/wallet/swap_zec_e2e_regtest.sh): happy, tower claims DIN for an offline
+Bob, Bob silent, Alice silent (Bob refunds after T_zec), and the tower's rung
+refunding an offline Bob. Zebra's blocks are stamped with the wall clock
+(tests/wallet/zebra_regtest_mine.py); for the refunds zebrad runs under
+libfaketime so its clock can pass T_zec (without it those steps are skipped).
+
+`python3 rust/zcash_swap/tests/mutate.py <build-dir> --zebrad <path>` breaks 60
 rules one at a time and checks that each makes a test fail (4 of them only the
 regtest can catch).
 

@@ -636,7 +636,7 @@ void Watchtower::BtcRefundDuty(const BtcWatchReport& btc, uint32_t now, TowerRep
         report.events.push_back(std::string(zec ? "ZEC" : "BTC") + " refund rung " + std::to_string(i) + " broadcast: " +
                                 io_.BroadcastBtc(raw));
     } catch (const std::exception& e) {
-        report.events.push_back("BTC refund rung " + std::to_string(i) + " not accepted: " + e.what());
+        report.events.push_back(std::string(zec ? "ZEC" : "BTC") + " refund rung " + std::to_string(i) + " not accepted: " + e.what());
     }
 }
 

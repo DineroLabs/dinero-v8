@@ -1,6 +1,6 @@
 # DIN ↔ ZEC Atomic Swaps
 
-Status: **design, owner decisions recorded 2026-10-28.** No consensus change. Milestones 3 (the Zcash transaction FFI), 4 (Zebra watcher, deposit flow, upgrade guard) and 5 (runner, tower package, two-chain regtest) are built and tested on the swaps branch against Zebra 7.0.0 regtest. The Zcash code is linked into test tools only until v8.2.1; `swap.*` in dinerod and the dinero-swap-tower binary do not handle ZEC yet. Target release: v8.2.1.
+Status: **design, owner decisions recorded 2026-10-28.** No consensus change. Milestones 3 (the Zcash transaction FFI), 4 (Zebra watcher, deposit flow, upgrade guard) and 5 (runner, tower package, two-chain regtest) are built and tested on the swaps branch against Zebra 7.0.0 regtest, including Bob's wallet refund and his tower's rung mined after T\_zec (Zebra's clock moved forward with libfaketime, since Zebra has no mock time). The Zcash code is linked into test tools only until v8.2.1; `swap.*` in dinerod and the dinero-swap-tower binary do not handle ZEC yet. Target release: v8.2.1.
 
 DIN↔ZEC v1 is the DIN↔BTC swap with a Zcash transparent P2SH hash-lock in place of the Bitcoin P2WSH one. The Dinero side is unchanged, and so are the roles. ZEC holders can pay in from a shielded wallet and shield again afterwards, but the lock itself is transparent. Code starts after Orchard activation.
 

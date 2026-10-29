@@ -6,6 +6,10 @@
 // Zcash time follows real time as it does on mainnet). Each runner is rebuilt
 // from its store once mid-swap. Outcomes are checked on chain.
 //   swap_zec_e2e_tool <scenario> <workdir> <din_rpcport> <zebra_rpcport> <din_miner_address> <zebra_mine.py>
+//                     [<zebra faketime file>]
+// The faketime file is libfaketime's FAKETIME_TIMESTAMP_FILE for zebrad (see
+// the script): writing "+49h" moves Zebra's clock, so blocks can be stamped
+// past T_zec and Bob's refund mined. Without it the refund steps are skipped.
 // happy:        both reach Done; Alice receives ZEC, Bob receives DIN.
 // tower-claim:  Bob locks ZEC, arms his (in-process) watchtower and goes
 //               offline; Alice claims ZEC; the tower learns the secret from
@@ -13,9 +17,11 @@
 // bob-silent:   Bob never locks; Alice's DIN stays locked: dinerod refuses her
 //               refund before T_din (no mock time on dinerod).
 // alice-silent: Alice funds DIN and vanishes after Bob locks ZEC; Zebra
-//               refuses Bob's refund and his tower rung before T_zec (Zebra has
-//               no mock time; mining the refund after T_zec needs a shifted
-//               Zebra clock, see the script).
+//               refuses Bob's refund before T_zec; then Zebra's clock moves past
+//               T_zec and Bob gets his ZEC back (his wallet's refund or his
+//               tower's rung, whichever lands first).
+// tower-refund: Alice silent, Bob offline after arming his tower; past T_zec
+//               the tower's never-expiring rung (signed hours earlier) is mined.
 #include "wallet/swap/encrypted_store.h"
 #include "wallet/swap/runner.h"
 #include "wallet/swap/swap_crypto.h"
@@ -30,6 +36,7 @@
 #include <chrono>
 #include <cstdlib>
 #include <ctime>
+#include <fstream>
 #include <iostream>
 #include <memory>
 #include <string>
@@ -127,17 +134,19 @@ int main(int argc, char** argv) {
         std::cout << EncodeZecTAddress(ZecAddr(kZebraMiner)) << std::endl;
         return 0;
     }
-    if (argc != 7) {
+    if (argc != 7 && argc != 8) {
         std::cerr << "usage: see file header\n";
         return 2;
     }
     const std::string scenario = argv[1], dir = argv[2], din_miner = argv[5], mine_py = argv[6];
     const bool happy = scenario == "happy", tower_claim = scenario == "tower-claim";
     const bool bob_silent = scenario == "bob-silent", alice_silent = scenario == "alice-silent";
-    if (!happy && !tower_claim && !bob_silent && !alice_silent) return 2;
-    const bool use_tower = tower_claim || alice_silent;
+    const bool tower_refund = scenario == "tower-refund";
+    if (!happy && !tower_claim && !bob_silent && !alice_silent && !tower_refund) return 2;
+    const bool use_tower = tower_claim || alice_silent || tower_refund;
+    const std::string faketime_file = argc == 8 ? argv[7] : "";
     // Separate payout keys per scenario, so a balance can only come from this run.
-    const uint8_t kb = happy ? 20 : tower_claim ? 30 : bob_silent ? 40 : 50;
+    const uint8_t kb = happy ? 20 : tower_claim ? 30 : bob_silent ? 40 : alice_silent ? 50 : 60;
     const uint8_t kAliceZecClaim = kb, kBobDinClaim = kb + 1, kAliceDinRefund = kb + 2, kBobZecRefund = kb + 3;
     const uint8_t kDeposit = kb + 4, kBobSweep = kb + 5;
     const uint16_t zebra_port = static_cast<uint16_t>(std::stoi(argv[4]));
@@ -146,9 +155,27 @@ int main(int argc, char** argv) {
     const DinRpc din = MakeRpc(din_client, "DIN");
     const ZecRpc zec = MakeRpc(zec_client, "ZEC");
 
+    int64_t zec_clock_offset = 0;  // how far Zebra's (libfaketime) clock runs ahead of ours
     auto mine_zec = [&](int n) {
-        const std::string cmd = "python3 '" + mine_py + "' " + std::to_string(zebra_port) + " " + std::to_string(n) + " >/dev/null";
-        if (std::system(cmd.c_str()) != 0) throw std::runtime_error("Zebra mining failed");
+        for (int i = 0; i < n; ++i) {
+            const std::string when = zec_clock_offset ? std::to_string(int64_t(std::time(nullptr)) + zec_clock_offset) : "now";
+            const std::string cmd = "python3 '" + mine_py + "' " + std::to_string(zebra_port) + " 1 " + when + " >/dev/null";
+            if (std::system(cmd.c_str()) != 0) throw std::runtime_error("Zebra mining failed");
+        }
+    };
+    // Moves Zebra's clock `seconds` ahead (it accepts block times up to its
+    // clock + 2 h) and mines until Zcash's median time is past `until`.
+    auto jump_zebra_past = [&](uint32_t until) {
+        const int64_t seconds = int64_t(until) - int64_t(std::time(nullptr)) + kHour;
+        std::ofstream(faketime_file) << "+" << seconds << "\n";
+        std::this_thread::sleep_for(std::chrono::seconds(2));
+        zec_clock_offset = seconds;
+        for (int i = 0; i < 30; ++i) {
+            const auto c = ObserveZecChain(zec, "test");
+            if (c && c->mtp_unix > until) return true;
+            mine_zec(1);
+        }
+        return false;
     };
     auto mine = [&] {
         std::this_thread::sleep_for(std::chrono::milliseconds(700));  // dinerod rate-limits RPC per IP
@@ -429,6 +456,51 @@ int main(int argc, char** argv) {
             const auto pkg = DecodeTowerPackage(delivered);
             Check(pkg.zec_refunds.size() == 1, "the tower holds one ZEC refund rung");
             Check(bob.State() == SwapState::BtcLocked, "bob keeps waiting for T_zec (no early action)");
+            if (faketime_file.empty()) {
+                std::cout << "  SKIP refund after T_zec: no shifted Zebra clock (libfaketime)\n";
+            } else {
+                Check(jump_zebra_past(o.t_btc_unix), "Zcash's median time passed T_zec (Zebra's clock moved ahead)");
+                for (; round < 200 && !bob.Terminal(); ++round) {
+                    tick(bob, round);
+                    tick_tower(round);
+                    mine();
+                }
+                Check(bob.State() == SwapState::Refunded, std::string("bob Refunded (is ") + StateName(bob.State()) + ")");
+                const int64_t got = zec_balance(kBobZecRefund);
+                Check(got == int64_t(kZecAmount - kZecSpendFee) || got == int64_t(kZecAmount - pkg.zec_refunds[0].fee_zat),
+                      "bob got his ZEC back on chain (" + std::to_string(got) + " zat: " +
+                          (got == int64_t(kZecAmount - kZecSpendFee) ? "his wallet's refund" : "his tower's rung") + ")");
+            }
+        } else if (tower_refund) {
+            int round = 0;
+            for (; round < 80 && !(bob.State() == SwapState::BtcLocked && bob.runner->session().tower_armed); ++round) {
+                if (alice.State() != SwapState::DinLocked) tick(alice, round);  // funds, then goes silent
+                tick(bob, round);
+                tick_tower(round);
+                mine();
+            }
+            Check(bob.runner->session().tower_armed, "bob locked ZEC and armed his tower");
+            std::cout << "  bob goes offline\n";
+            bob.runner.reset();
+            bob.io.reset();
+            for (int i = 0; i < 10; ++i, ++round) {  // hours before T_zec: the tower must wait
+                tick_tower(round);
+                mine();
+            }
+            Check(zec_balance(kBobZecRefund) == 0, "the tower sends nothing before T_zec");
+            const auto pkg = DecodeTowerPackage(delivered);
+            if (faketime_file.empty()) {
+                std::cout << "  SKIP refund after T_zec: no shifted Zebra clock (libfaketime)\n";
+            } else {
+                Check(jump_zebra_past(o.t_btc_unix), "Zcash's median time passed T_zec (Zebra's clock moved ahead)");
+                for (int i = 0; i < 30 && zec_balance(kBobZecRefund) <= 0; ++i, ++round) {
+                    tick_tower(round);
+                    mine();
+                }
+                Check(zec_balance(kBobZecRefund) == int64_t(kZecAmount - pkg.zec_refunds[0].fee_zat),
+                      "the tower's rung, signed while Bob was online, refunded his ZEC (" +
+                          std::to_string(zec_balance(kBobZecRefund)) + " zat)");
+            }
         }
     } catch (const std::exception& e) {
         std::cout << "  FAIL exception: " << e.what() << "\n";
