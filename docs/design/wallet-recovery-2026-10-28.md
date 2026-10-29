@@ -62,3 +62,10 @@ payments, required-history and deferred-COMMIT failures, retry/reopen, mined
 classification, covered connects/disconnects, and an empty post-base tail. The
 queued-connect regression fails without its guard: the old notification lowers
 wallet height from 130 to 110 and mature balance from 100 DIN to zero.
+
+Phone startup also suppresses the legacy height rewind/catch-up/index validation
+when a retained snapshot recovery base exists. An uninitialized selected source
+at genesis is not proof of a reorg. Its regression fails before the fix: startup
+changes a recovered height of 130 to zero and removes the mature presentation.
+With the fix, the same wallet height and mature balance survive startup while
+explicit source recovery remains deferred.

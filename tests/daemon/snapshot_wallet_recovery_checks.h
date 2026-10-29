@@ -183,4 +183,25 @@ TEST(SnapshotWalletRecovery, BaseOnlyRecoveryCreatesProgressWithoutInventingHist
     EXPECT_TRUE(f.wallet.snapshotRecoveryAlreadyApplied(105,f.chain.back().GetHash().GetHex()));
 }
 
+TEST(SnapshotWalletRecovery, PhoneStartupDoesNotRewindRecoveredWalletToBootstrapChainHeight){
+    SnapshotWalletRecoveryFixture f;
+    auto service=std::make_shared<WalletService>();ASSERT_TRUE(service->Init(f.context));f.context.wallet=service;
+    {auto use=WalletService::AcquireWalletUse(service);auto index=ChainstateService::AcquireWalletIndexUse(f.source);
+     auto& wallet=use->Wallet();wallet.setUTXOIndex(&index->Index());wallet.create("preserved");
+     wallet.addWatchScript(f.chain[24].vtx[0].vout[0].scriptPubKey,"m/84'/1'/0'/0/0",false);
+     std::string error;ASSERT_TRUE(f.source->RecoverTransparentSnapshotWallet(wallet,&error))<<error;
+     ASSERT_GT(wallet.getBalance().confirmed,0);}
+    // During restart, the chain owner can still be at bootstrap genesis before
+    // it has restored the retained selected snapshot. This is not a reorg proof.
+    CBlockIndex bootstrap(SelectedGenesis().header,0);
+    ShieldedStateStartupTestAccess::Select(*f.source,bootstrap);
+    struct Profile {bool old=GetConfig().utreexo_stateless;~Profile(){GetConfig().utreexo_stateless=old;}} profile;
+    GetConfig().utreexo_stateless=true;
+    EXPECT_TRUE(service->Start());
+    {auto use=WalletService::AcquireWalletUse(service);
+     EXPECT_EQ(use->Wallet().getCurrentBlockchainHeight(),130u);
+     EXPECT_GT(use->Wallet().getBalance().confirmed,0);}
+    service->Stop();f.context.wallet.reset();
+}
+
 }
