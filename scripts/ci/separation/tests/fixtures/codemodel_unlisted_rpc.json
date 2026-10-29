@@ -1,0 +1,7 @@
+{
+  "_doc": "root -> pq which compiles an unlisted src/rpc source.",
+  "targets": {
+    "root": {"type": "STATIC_LIBRARY", "link": ["pq"], "sources": ["src/consensus/root.cpp"]},
+    "pq": {"type": "STATIC_LIBRARY", "sources": ["src/consensus/pq/a.cpp", "src/rpc/v7_pq_handlers.cpp"]}
+  }
+}

@@ -1,0 +1,8 @@
+{
+  "_doc": "root (STATIC) links A; A is STATIC and links sqlite3 PRIVATE (linkLibraries only, not interfaceLinkLibraries).",
+  "targets": {
+    "root": {"type": "STATIC_LIBRARY", "link": ["A"], "ilink": ["A"], "sources": ["src/consensus/root.cpp"]},
+    "A": {"type": "STATIC_LIBRARY", "link": ["sqlite3"], "sources": ["src/a/a.cpp"]},
+    "sqlite3": {"type": "STATIC_LIBRARY", "sources": ["third_party/sqlite/sqlite3.c"]}
+  }
+}
