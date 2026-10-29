@@ -1,0 +1,860 @@
+{
+ "config": "on",
+ "transcript": [
+  {
+   "body": {
+    "error": null,
+    "id": 1,
+    "jsonrpc": "2.0",
+    "result": {
+     "address": "<A#1>",
+     "address_type": "taproot",
+     "rpc_schema": "din.wallet.v1"
+    }
+   },
+   "http_status": 200,
+   "method": "getnewaddress",
+   "node": "a",
+   "params": [],
+   "step": "getnewaddress"
+  },
+  {
+   "body": {
+    "error": null,
+    "id": 1,
+    "jsonrpc": "2.0",
+    "result": {
+     "breakdown": {
+      "pending": 0.0,
+      "spendable": 100.0,
+      "unspendable": 0.0
+     },
+     "confidential": 0.0,
+     "confirmed": 100.0,
+     "immature": 0.0,
+     "locked": 0.0,
+     "pq_balance_din": 0.0,
+     "pq_balance_una": 0,
+     "pq_ratio": 0.0,
+     "reservation_status": "untracked",
+     "rpc_schema": "din.wallet.v1",
+     "spendable": 100.0,
+     "total": 100.0,
+     "total_with_confidential": 100.0,
+     "unconfirmed": 0.0,
+     "utxo_count": 1
+    }
+   },
+   "http_status": 200,
+   "method": "getbalance",
+   "node": "a",
+   "params": [],
+   "step": "getbalance.funded"
+  },
+  {
+   "body": {
+    "error": null,
+    "id": 1,
+    "jsonrpc": "2.0",
+    "result": [
+     {
+      "address": "<A#1>",
+      "amount": 100.0,
+      "amount_una": 10000000000,
+      "confirmations": 101,
+      "derivation_path": "m/86'/1448'/0'/0/20",
+      "is_coinbase": true,
+      "is_mature": true,
+      "locked": false,
+      "safe": true,
+      "scriptPubKey": "51200550b43bfab8e618cce5f2e4543345612d90d709ed0db22d592848a61e65044e",
+      "snapshot_candidate": false,
+      "solvable": true,
+      "spendable": true,
+      "txid": "<H#1>",
+      "vout": 0,
+      "witness_version": 1
+     }
+    ]
+   },
+   "http_status": 200,
+   "method": "listunspent",
+   "node": "a",
+   "params": [
+    0,
+    9999999
+   ],
+   "step": "listunspent.before_send"
+  },
+  {
+   "body": {
+    "error": null,
+    "id": 1,
+    "jsonrpc": "2.0",
+    "result": {
+     "address": "<A#2>",
+     "address_type": "taproot",
+     "rpc_schema": "din.wallet.v1"
+    }
+   },
+   "http_status": 200,
+   "method": "getnewaddress",
+   "node": "a",
+   "params": [],
+   "step": "getnewaddress.recipient"
+  },
+  {
+   "body": {
+    "error": null,
+    "id": 1,
+    "jsonrpc": "2.0",
+    "result": {
+     "accepted": true,
+     "amount": 1.0,
+     "amount_una": 100000000,
+     "change_address": "<A#3>",
+     "change_amount_una": 9899999846,
+     "estimated_fee": 1.54e-06,
+     "fee_paid_una": 154,
+     "fee_rate": 1.0,
+     "inputs": 1,
+     "outputs": 2,
+     "payment_retained": true,
+     "selected_inputs": [
+      {
+       "amount_una": 10000000000,
+       "txid": "<H#1>",
+       "vout": 0
+      }
+     ],
+     "status": "signed_and_submitted",
+     "txid": "<H#2>"
+    }
+   },
+   "http_status": 200,
+   "method": "sendtoaddress",
+   "node": "a",
+   "params": [
+    "<A#2>",
+    1.0
+   ],
+   "step": "sendtoaddress"
+  },
+  {
+   "body": {
+    "error": null,
+    "id": 1,
+    "jsonrpc": "2.0",
+    "result": []
+   },
+   "http_status": 200,
+   "method": "listunspent",
+   "node": "a",
+   "params": [
+    0,
+    9999999
+   ],
+   "step": "listunspent.mempool_spent_filter"
+  },
+  {
+   "body": {
+    "error": null,
+    "id": 1,
+    "jsonrpc": "2.0",
+    "result": []
+   },
+   "http_status": 200,
+   "method": "listunspent",
+   "node": "a",
+   "params": [],
+   "step": "listunspent.default_after_send"
+  },
+  {
+   "body": {
+    "error": null,
+    "id": 1,
+    "jsonrpc": "2.0",
+    "result": {
+     "blocks": {
+      "progress": 1.0,
+      "synced": 101,
+      "total": 101
+     },
+     "eta": "<D>",
+     "eta_formatted": "0s",
+     "headers": {
+      "progress": 1.0,
+      "synced": 101,
+      "total": 101
+     },
+     "is_synced": true,
+     "overall_progress": 1.0,
+     "overall_progress_percent": "100.0%",
+     "phase": "steady_state",
+     "phase_name": "Synced",
+     "reorg": {
+      "in_progress": false,
+      "last_depth": 0
+     },
+     "scheduler": {
+      "in_flight": 0,
+      "is_fully_synchronized": true,
+      "missing": 0,
+      "queued": 0,
+      "queued_not_in_flight": 0
+     },
+     "slow_reason": {
+      "description": "Syncing normally",
+      "suggestion": ""
+     },
+     "status_description": "Fully synced",
+     "wallet_scan": {
+      "chain_height": 101,
+      "height": 101,
+      "progress": 1.0
+     }
+    }
+   },
+   "http_status": 200,
+   "method": "wallet.getsyncstatus",
+   "node": "a",
+   "params": [],
+   "step": "wallet.getsyncstatus"
+  },
+  {
+   "body": {
+    "error": null,
+    "id": 1,
+    "jsonrpc": "2.0",
+    "result": {
+     "description": "Replace-By-Fee is disabled by the live mempool",
+     "enabled": false,
+     "incremental_relay_fee": 1000,
+     "max_replacement_count": 100,
+     "min_relay_fee_rate": 1000,
+     "policy": "disabled"
+    }
+   },
+   "http_status": 200,
+   "method": "rbf.config",
+   "node": "a",
+   "params": [],
+   "step": "rbf.config"
+  },
+  {
+   "body": {
+    "error": null,
+    "id": 1,
+    "jsonrpc": "2.0",
+    "result": {
+     "description": "Transactions cannot be replaced because RBF is disabled",
+     "enabled": false,
+     "policy": "disabled"
+    }
+   },
+   "http_status": 200,
+   "method": "rbf.status",
+   "node": "a",
+   "params": [],
+   "step": "rbf.status"
+  },
+  {
+   "body": {
+    "error": null,
+    "id": 1,
+    "jsonrpc": "2.0",
+    "result": {
+     "current_fee": 154,
+     "description": "RBF is disabled on this node; replacements will be rejected",
+     "enabled": false,
+     "policy": "disabled",
+     "replaced_vsize": 154,
+     "replacement_vsize": 154
+    }
+   },
+   "http_status": 200,
+   "method": "rbf.estimate",
+   "node": "a",
+   "params": [
+    154,
+    154
+   ],
+   "step": "rbf.estimate"
+  },
+  {
+   "body": {
+    "error": {
+     "code": -32601,
+     "message": "Method not found: wallet.gettxbumprecommendation"
+    },
+    "jsonrpc": "2.0",
+    "result": null
+   },
+   "http_status": 200,
+   "method": "wallet.gettxbumprecommendation",
+   "node": "a",
+   "params": [
+    "<H#2>"
+   ],
+   "step": "rbf.bump_recommendation"
+  },
+  {
+   "body": {
+    "error": {
+     "code": -32601,
+     "message": "Method not found: wallet.gettxinclusion"
+    },
+    "jsonrpc": "2.0",
+    "result": null
+   },
+   "http_status": 200,
+   "method": "wallet.gettxinclusion",
+   "node": "a",
+   "params": [
+    "<H#2>"
+   ],
+   "step": "rbf.inclusion"
+  },
+  {
+   "body": {
+    "error": {
+     "code": -32603,
+     "message": "Invalid address: unsupported format"
+    },
+    "id": 1,
+    "jsonrpc": "2.0"
+   },
+   "http_status": 200,
+   "method": "sendtoaddress",
+   "node": "a",
+   "params": [
+    "rdin1notanaddress",
+    1.0
+   ],
+   "step": "error.invalid_address"
+  },
+  {
+   "body": {
+    "error": {
+     "code": -32603,
+     "message": "No available transparent mature UTXOs after filtering (missing_from_live_forest=0, spent_in_mempool=1, locked=0)"
+    },
+    "id": 1,
+    "jsonrpc": "2.0"
+   },
+   "http_status": 200,
+   "method": "sendtoaddress",
+   "node": "a",
+   "params": [
+    "<A#2>",
+    1.0
+   ],
+   "step": "error.all_coins_spent_in_mempool"
+  },
+  {
+   "body": {
+    "error": {
+     "code": -32603,
+     "message": "Transaction not found in blockchain"
+    },
+    "id": 1,
+    "jsonrpc": "2.0"
+   },
+   "http_status": 200,
+   "method": "gettransaction",
+   "node": "a",
+   "params": [
+    "<H#3>"
+   ],
+   "step": "error.unknown_txid"
+  },
+  {
+   "body": {
+    "error": null,
+    "id": 1,
+    "jsonrpc": "2.0",
+    "result": {
+     "breakdown": {
+      "pending": 0.0,
+      "spendable": 99.99999846,
+      "unspendable": 0.0
+     },
+     "confidential": 0.0,
+     "confirmed": 99.99999846,
+     "immature": 0.0,
+     "locked": 0.0,
+     "pq_balance_din": 0.0,
+     "pq_balance_una": 0,
+     "pq_ratio": 0.0,
+     "reservation_status": "authenticated",
+     "rpc_schema": "din.wallet.v1",
+     "spendable": 99.99999846,
+     "total": 99.99999846,
+     "total_with_confidential": 99.99999846,
+     "unconfirmed": 0.0,
+     "utxo_count": 2
+    }
+   },
+   "http_status": 200,
+   "method": "getbalance",
+   "node": "a",
+   "params": [],
+   "step": "getbalance.after_confirm"
+  },
+  {
+   "body": {
+    "error": null,
+    "id": 1,
+    "jsonrpc": "2.0",
+    "result": [
+     {
+      "address": "<A#3>",
+      "amount": 98.99999846,
+      "amount_una": 9899999846,
+      "confirmations": 1,
+      "derivation_path": "m/86'/1448'/0'/0/22",
+      "is_coinbase": false,
+      "is_mature": true,
+      "locked": false,
+      "safe": true,
+      "scriptPubKey": "5120eb183616eea9092e14608896942032fb96f5c6106d0ce45d718cf5a9105a6051",
+      "snapshot_candidate": false,
+      "solvable": true,
+      "spendable": true,
+      "txid": "<H#2>",
+      "vout": 1,
+      "witness_version": 1
+     },
+     {
+      "address": "<A#2>",
+      "amount": 1.0,
+      "amount_una": 100000000,
+      "confirmations": 1,
+      "derivation_path": "m/86'/1448'/0'/0/21",
+      "is_coinbase": false,
+      "is_mature": true,
+      "locked": false,
+      "safe": true,
+      "scriptPubKey": "5120ee8bfdd7728bc1961622e1ab8c450cfd788a7ccee1fbb65459da07a2307f4f87",
+      "snapshot_candidate": false,
+      "solvable": true,
+      "spendable": true,
+      "txid": "<H#2>",
+      "vout": 0,
+      "witness_version": 1
+     }
+    ]
+   },
+   "http_status": 200,
+   "method": "listunspent",
+   "node": "a",
+   "params": [],
+   "step": "listunspent.after_confirm"
+  },
+  {
+   "body": {
+    "error": {
+     "code": -32603,
+     "message": "Insufficient funds. Available: 99.999998 DIN"
+    },
+    "id": 1,
+    "jsonrpc": "2.0"
+   },
+   "http_status": 200,
+   "method": "sendtoaddress",
+   "node": "a",
+   "params": [
+    "<A#2>",
+    1000000.0
+   ],
+   "step": "error.insufficient_funds"
+  },
+  {
+   "body": {
+    "error": null,
+    "id": 1,
+    "jsonrpc": "2.0",
+    "result": {
+     "complete": true,
+     "progress": 1.0,
+     "scanned_blocks": 103,
+     "start_height": 0,
+     "stop_height": 102,
+     "success": true
+    }
+   },
+   "http_status": 200,
+   "method": "wallet.rescanblockchain",
+   "node": "a",
+   "params": [
+    0
+   ],
+   "step": "rescan.rescanblockchain"
+  },
+  {
+   "body": {
+    "error": null,
+    "id": 1,
+    "jsonrpc": "2.0",
+    "result": {
+     "complete": true,
+     "progress": 1.0,
+     "scanned_blocks": 103,
+     "start_height": 0,
+     "stop_height": 102,
+     "success": true
+    }
+   },
+   "http_status": 200,
+   "method": "wallet.rescan",
+   "node": "a",
+   "params": [],
+   "step": "rescan.rescan"
+  },
+  {
+   "body": {
+    "error": null,
+    "id": 1,
+    "jsonrpc": "2.0",
+    "result": {
+     "breakdown": {
+      "pending": 0.0,
+      "spendable": 99.99999846,
+      "unspendable": 0.0
+     },
+     "confidential": 0.0,
+     "confirmed": 99.99999846,
+     "immature": 0.0,
+     "locked": 0.0,
+     "pq_balance_din": 0.0,
+     "pq_balance_una": 0,
+     "pq_ratio": 0.0,
+     "reservation_status": "authenticated",
+     "rpc_schema": "din.wallet.v1",
+     "spendable": 99.99999846,
+     "total": 99.99999846,
+     "total_with_confidential": 99.99999846,
+     "unconfirmed": 0.0,
+     "utxo_count": 2
+    }
+   },
+   "http_status": 200,
+   "method": "getbalance",
+   "node": "a",
+   "params": [],
+   "step": "getbalance.after_rescan"
+  },
+  {
+   "body": {
+    "error": null,
+    "id": 1,
+    "jsonrpc": "2.0",
+    "result": {
+     "blockhash": "<H#4>",
+     "blockheight": 102,
+     "classification": "transparent",
+     "confirmations": 1,
+     "fee_din": "0.00000154",
+     "fee_una": 154.0,
+     "has_confidential_inputs": false,
+     "has_confidential_outputs": false,
+     "input_count": 1,
+     "inputs": [
+      {
+       "amount_hidden": false,
+       "display_amount": "100.00000000",
+       "is_confidential_prevout": false,
+       "prevout_scriptPubKey": "51200550b43bfab8e618cce5f2e4543345612d90d709ed0db22d592848a61e65044e",
+       "prevout_txid": "<H#1>",
+       "prevout_vout": 0,
+       "sequence": -3,
+       "value_din": "100.00000000",
+       "value_una": 10000000000.0
+      }
+     ],
+     "is_coinbase": false,
+     "locktime": 0,
+     "output_count": 2,
+     "outputs": [
+      {
+       "amount_hidden": false,
+       "display_amount": "1.00000000",
+       "is_confidential": false,
+       "scriptPubKey": "5120ee8bfdd7728bc1961622e1ab8c450cfd788a7ccee1fbb65459da07a2307f4f87",
+       "type": "taproot",
+       "value_din": "1.00000000",
+       "value_una": 100000000.0,
+       "vout": 0
+      },
+      {
+       "amount_hidden": false,
+       "display_amount": "98.99999846",
+       "is_confidential": false,
+       "scriptPubKey": "5120eb183616eea9092e14608896942032fb96f5c6106d0ce45d718cf5a9105a6051",
+       "type": "taproot",
+       "value_din": "98.99999846",
+       "value_una": 9899999846.0,
+       "vout": 1
+      }
+     ],
+     "status": "confirmed",
+     "total_input_value_din": "100.00000000",
+     "total_input_value_una": 10000000000.0,
+     "total_output_value_din": "99.99999846",
+     "total_output_value_una": 9999999846.0,
+     "txid": "<H#2>",
+     "version": 2,
+     "witness_version": "segwit_v0"
+    }
+   },
+   "http_status": 200,
+   "method": "gettransaction",
+   "node": "a",
+   "params": [
+    "<H#2>"
+   ],
+   "step": "gettransaction.sent"
+  },
+  {
+   "body": {
+    "error": null,
+    "id": 1,
+    "jsonrpc": "2.0",
+    "result": {
+     "base_hash": "<H#5>",
+     "base_height": 120,
+     "bytes_written": 49566,
+     "coins_written": 361,
+     "path": "<WORK>/snapshot.dat"
+    }
+   },
+   "http_status": 200,
+   "method": "dumptxoutset",
+   "node": "s",
+   "params": [
+    "<WORK>/snapshot.dat"
+   ],
+   "step": "snapshot.dumptxoutset"
+  },
+  {
+   "body": {
+    "error": null,
+    "id": 1,
+    "jsonrpc": "2.0",
+    "result": {
+     "base_hash": "<H#5>",
+     "base_height": 120,
+     "bytes_read": 49566,
+     "coins_loaded": 361,
+     "path": "<WORK>/snapshot.dat",
+     "snapshot_bootstrap": {
+      "assumeutxo_active": true,
+      "backfill_enabled": false,
+      "background_validation_complete": false,
+      "background_validation_current_height": 0,
+      "background_validation_progress_percent": 0.0,
+      "background_validation_status": "InProgress",
+      "background_validation_target_height": 120,
+      "configured_manifest": false,
+      "configured_manifest_path": "",
+      "configured_snapshot": true,
+      "configured_snapshot_bytes": 49566,
+      "configured_snapshot_exists": true,
+      "configured_snapshot_path": "<WORK>/snapshot.dat",
+      "configured_snapshot_regular_file": true,
+      "configured_snapshot_symlink": false,
+      "current_validation_height": 0,
+      "fatal": false,
+      "fatal_reason": "",
+      "history_fully_validated": false,
+      "history_validation_state": "validating_history",
+      "last_progress_time": "<T>",
+      "manifest_path": "<WORK>/snapshot.dat.manifest.json",
+      "manifest_present": false,
+      "manifest_regular_file": false,
+      "manifest_required": false,
+      "manifest_source": "sibling",
+      "missing_body_count": 0,
+      "next_action": "Background validation in progress.",
+      "progress_percent": 0.0,
+      "snapshot_base_block": "<H#5>",
+      "snapshot_base_height": 120,
+      "snapshot_transport_max_mb": 65536,
+      "stall_seconds": 0,
+      "target_validation_height": 120,
+      "trust_gate_mode": "disabled"
+     },
+     "snapshot_valid": true
+    }
+   },
+   "http_status": 200,
+   "method": "loadtxoutset",
+   "node": "c",
+   "params": [
+    "<WORK>/snapshot.dat"
+   ],
+   "step": "snapshot.loadtxoutset"
+  },
+  {
+   "body": {
+    "error": null,
+    "id": 1,
+    "jsonrpc": "2.0",
+    "result": {
+     "breakdown": {
+      "pending": 0.0,
+      "spendable": 0.0,
+      "unspendable": 0.0
+     },
+     "confidential": 0.0,
+     "confirmed": 0.0,
+     "immature": 0.0,
+     "locked": 0.0,
+     "pq_balance_din": 0.0,
+     "pq_balance_una": 0,
+     "pq_ratio": 0.0,
+     "reservation_status": "untracked",
+     "rpc_schema": "din.wallet.v1",
+     "spendable": 0.0,
+     "total": 0.0,
+     "total_with_confidential": 0.0,
+     "unconfirmed": 0.0,
+     "utxo_count": 0
+    }
+   },
+   "http_status": 200,
+   "method": "getbalance",
+   "node": "c",
+   "params": [],
+   "step": "getbalance.snapshot_before_recovery"
+  },
+  {
+   "body": {
+    "error": {
+     "code": -32603,
+     "message": "legacy owned coin creation ancestry unavailable"
+    },
+    "id": 1,
+    "jsonrpc": "2.0"
+   },
+   "http_status": 200,
+   "method": "wallet.recovertransparentfromsnapshot",
+   "node": "c",
+   "params": {
+    "expected_first_address": "<A#4>",
+    "walletname": "snapshot-recovered"
+   },
+   "step": "snapshot_recovery.refused_without_history"
+  },
+  {
+   "body": {
+    "error": null,
+    "id": 1,
+    "jsonrpc": "2.0",
+    "result": {
+     "recovered_height": 120,
+     "scope": "transparent-current-coins-and-post-snapshot-history",
+     "success": true,
+     "whole_wallet_certified": false
+    }
+   },
+   "http_status": 200,
+   "method": "wallet.recovertransparentfromsnapshot",
+   "node": "c",
+   "params": {
+    "expected_first_address": "<A#4>",
+    "walletname": "snapshot-recovered"
+   },
+   "step": "snapshot_recovery.recovered"
+  },
+  {
+   "body": {
+    "error": null,
+    "id": 1,
+    "jsonrpc": "2.0",
+    "result": {
+     "breakdown": {
+      "pending": 0.0,
+      "spendable": 200.0,
+      "unspendable": 0.0
+     },
+     "confidential": 0.0,
+     "confirmed": 200.0,
+     "immature": 0.0,
+     "locked": 0.0,
+     "pq_balance_din": 0.0,
+     "pq_balance_una": 0,
+     "pq_ratio": 0.0,
+     "reservation_status": "untracked",
+     "rpc_schema": "din.wallet.v1",
+     "spendable": 200.0,
+     "total": 200.0,
+     "total_with_confidential": 200.0,
+     "unconfirmed": 0.0,
+     "utxo_count": 2
+    }
+   },
+   "http_status": 200,
+   "method": "getbalance",
+   "node": "c",
+   "params": [],
+   "step": "getbalance.snapshot_recovered"
+  },
+  {
+   "body": {
+    "error": null,
+    "id": 1,
+    "jsonrpc": "2.0",
+    "result": [
+     {
+      "address": "<A#4>",
+      "amount": 100.0,
+      "amount_una": 10000000000,
+      "confirmations": 120,
+      "derivation_path": "m/86'/1448'/0'/0/0",
+      "is_coinbase": true,
+      "is_mature": true,
+      "locked": false,
+      "safe": true,
+      "scriptPubKey": "5120173262090fb7cf28fd9147da825a4958b74f34c71df12cb0a46cfc357cbd84d3",
+      "snapshot_candidate": false,
+      "solvable": true,
+      "spendable": true,
+      "txid": "<H#6>",
+      "vout": 0,
+      "witness_version": 1
+     },
+     {
+      "address": "<A#4>",
+      "amount": 100.0,
+      "amount_una": 10000000000,
+      "confirmations": 119,
+      "derivation_path": "m/86'/1448'/0'/0/0",
+      "is_coinbase": true,
+      "is_mature": true,
+      "locked": false,
+      "safe": true,
+      "scriptPubKey": "5120173262090fb7cf28fd9147da825a4958b74f34c71df12cb0a46cfc357cbd84d3",
+      "snapshot_candidate": false,
+      "solvable": true,
+      "spendable": true,
+      "txid": "<H#7>",
+      "vout": 0,
+      "witness_version": 1
+     }
+    ]
+   },
+   "http_status": 200,
+   "method": "listunspent",
+   "node": "c",
+   "params": [
+    1,
+    9999999
+   ],
+   "step": "listunspent.snapshot_recovered"
+  },
+  {
+   "marker": "COVERED_BY_UNIT_TEST orchard_rbf_entry Task5.3:RbfDetectorOrchardEntryThrowsSameError,WalletMempoolEntryOrchardVinThrowsSameError (stock regtest cannot activate Orchard; harness ctests are on the never-run floor)"
+  }
+ ]
+}
