@@ -9,6 +9,10 @@ struct WalletObservationTestAccess {
     }
 };
 struct WalletWorkerTestAccess {
+    static void Connect(WalletWorker& worker,WalletManager& wallet,uint32_t height,const Block& block){
+        const auto session=wallet.AcquireDatabaseLease()->Session();
+        worker.ProcessConnect(height,block.GetHash().GetHex(),block.vtx,session);
+    }
     static void Connect(WalletWorker& worker,const Transaction& tx) {
         worker.ProcessConnect(20,std::string(64,'1'),{tx});
     }

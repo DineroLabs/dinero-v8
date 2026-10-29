@@ -1091,6 +1091,7 @@ add_library(dinero_core STATIC
   src/daemon/orchard_compact_unavailable.cpp # Explicit refusal when the optional Orchard owner is absent
   src/daemon/runtime_notification_composition.cpp # All declared consumers prepare before commit
   src/daemon/services/chainstate_service.cpp
+  src/daemon/services/snapshot_wallet_source.cpp
   src/nodecore/sync_profile_policy.cpp
   src/daemon/sync_stats_recorder.cpp  # Forest checkpoint delta campaign phase 0
   src/daemon/services/assumeutxo_lifecycle.cpp  # AssumeUTXO fatal state machine

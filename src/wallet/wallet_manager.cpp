@@ -7479,6 +7479,24 @@ bool WalletManager::rescanBlockchain(int start_height,
     return RescanBlockchainImpl(start_height, gap_limit, chain_db, block_storage, nullptr, 0);
 }
 
+bool WalletManager::snapshotRecoveryAlreadyApplied(uint32_t height,const std::string& hash) {
+    auto lease=AcquireDatabaseLease();if(!lease->Database())return false;
+    IssuedStatement exists(db_,"SELECT 1 FROM sqlite_schema WHERE type='table' AND name='wallet_snapshot_recovered_blocks'");
+    const auto present=sqlite3_step(exists.value.get());if(present==SQLITE_DONE)return false;
+    if(present!=SQLITE_ROW)throw std::runtime_error("Recovery block cache unavailable");
+    exists.Done();IssuedStatement bounds(db_,"SELECT MIN(height),MAX(height) FROM wallet_snapshot_recovered_blocks");
+    if(sqlite3_step(bounds.value.get())!=SQLITE_ROW)throw std::runtime_error("Recovery block bounds unavailable");
+    if(sqlite3_column_type(bounds.value.get(),0)==SQLITE_NULL)return false;
+    const auto base=sqlite3_column_int64(bounds.value.get(),0),tip=sqlite3_column_int64(bounds.value.get(),1);
+    if(height<uint64_t(base))return true;
+    if(height>uint64_t(tip))return false;
+    IssuedStatement block(db_,"SELECT hash FROM wallet_snapshot_recovered_blocks WHERE height=?");block.Int(1,height);
+    if(sqlite3_step(block.value.get())!=SQLITE_ROW)throw std::runtime_error("Recovery block cache has a gap");
+    const auto* value=reinterpret_cast<const char*>(sqlite3_column_text(block.value.get(),0));
+    if(!value||hash!=value)throw std::runtime_error("Queued wallet block differs from recovered selected source");
+    return true;
+}
+
 bool WalletManager::RescanBlockchainImpl(int start_height, int gap_limit,
                                         ChainDB* chain_db, BlockStorage* block_storage,
                                         const SelectedWalletHistory* prepared, uint64_t expected_session) {
@@ -7488,7 +7506,7 @@ bool WalletManager::RescanBlockchainImpl(int start_height, int gap_limit,
     catch (...) { return false; }
     if (!db_ || current_wallet_id_ == -1 || !sqlite3_get_autocommit(db_)) return false;
     if (prepared && (database_leases_ != 1 || !expected_session ||
-        database_lease->Session() != expected_session || prepared->blocks_.empty() ||
+        database_lease->Session() != expected_session || (prepared->blocks_.empty() && !prepared->snapshot_) ||
         prepared->network_ != Params().network_id ||
         prepared->genesis_ != uint256::FromHexUnsafe(Params().genesis_hash))) return false;
 
@@ -7525,9 +7543,12 @@ bool WalletManager::RescanBlockchainImpl(int start_height, int gap_limit,
     uint32_t tip_height = 0;
     try {
         if (prepared) {
-            if (prepared->blocks_.size() > uint64_t(INT32_MAX) + 1 ||
-                prepared->blocks_.back().GetHash() != prepared->tip_) return false;
-            tip_height = static_cast<uint32_t>(prepared->blocks_.size() - 1);
+            const auto end=uint64_t(prepared->first_height_)+prepared->blocks_.size();
+            if (!end || end>uint64_t(INT32_MAX)+1 ||
+                (!prepared->blocks_.empty()&&prepared->blocks_.back().GetHash()!=prepared->tip_))return false;
+            tip_height=uint32_t(end-1);
+            if(prepared->snapshot_&&(prepared->snapshot_->height+1!=prepared->first_height_ ||
+                (!utxo_index_) || wallet_locked_))return false;
         } else {
             const auto tip = chain_db->getTip();
             if (!tip.ok() || tip->height < 0) return false;
@@ -7537,9 +7558,10 @@ bool WalletManager::RescanBlockchainImpl(int start_height, int gap_limit,
         // An unavailable requested prefix is not a completed empty scan. In
         // particular a phone may select a snapshot tip while the archival tip
         // is still genesis; callers must not earn a recovery marker from this.
-        if (static_cast<uint32_t>(start_height) > tip_height) return false;
+        if (static_cast<uint32_t>(start_height) > tip_height && !(prepared&&prepared->snapshot_&&uint32_t(start_height)==tip_height+1)) return false;
         if (gap_limit < 0) return false;
         auto scripts = watch_scripts();
+        if(prepared&&prepared->snapshot_&&scripts!=prepared->snapshot_scripts_)return false;
         // Preserve existing address discovery. Issued addresses are durable
         // independently of the scan and must not be rolled back with effects.
         if (scripts.size() < uint64_t(gap_limit) * 2 && !master_seed_.empty()) {
@@ -7572,6 +7594,37 @@ bool WalletManager::RescanBlockchainImpl(int start_height, int gap_limit,
             checked(sqlite3_bind_int(restore.get(), 2, start_height), SQLITE_OK);
             checked(sqlite3_step(restore.get()), SQLITE_DONE);
         }
+        if(prepared&&prepared->snapshot_){
+            auto pending=prepare("SELECT 1 FROM transactions WHERE wallet_id=? AND height=0 AND category IN ('send','shield','unshield') LIMIT 1");
+            checked(sqlite3_bind_int(pending.get(),1,current_wallet_id_),SQLITE_OK);
+            if(sqlite3_step(pending.get())!=SQLITE_DONE)throw std::runtime_error("Pending outgoing payment prevents snapshot reconciliation");
+            auto clear=prepare("DELETE FROM utxos WHERE wallet_id=? AND is_spent=0");
+            checked(sqlite3_bind_int(clear.get(),1,current_wallet_id_),SQLITE_OK);checked(sqlite3_step(clear.get()),SQLITE_DONE);
+            for(const auto& coin:prepared->snapshot_->coins){
+                if(!scripts.contains(coin.script))continue;
+                if(!coin.maturity_bound&&!prepared->verified_legacy_origins_.contains({coin.txid,coin.output}))
+                    throw std::runtime_error("Owned legacy creation metadata is not authenticated");
+                std::string script;static constexpr char digits[]="0123456789abcdef";
+                for(const auto byte:coin.script){script+=digits[byte>>4];script+=digits[byte&15];}
+                auto address=extractAddressFromScript(coin.script);if(address.empty())throw std::runtime_error("Owned snapshot script type unsupported");
+                auto row=prepare(R"(
+                    INSERT INTO utxos(wallet_id,txid,vout,address,amount,script_pubkey,height,is_coinbase,is_spent,created_at)
+                    VALUES(?,?,?,?,?,?,?,?,0,?) ON CONFLICT DO UPDATE SET
+                    amount=excluded.amount,script_pubkey=excluded.script_pubkey,height=excluded.height,
+                    is_coinbase=excluded.is_coinbase,is_spent=0,spent_txid=NULL,spent_height=NULL
+                )");
+                const auto id=coin.txid.GetHex();
+                checked(sqlite3_bind_int(row.get(),1,current_wallet_id_),SQLITE_OK);
+                checked(sqlite3_bind_text(row.get(),2,id.c_str(),-1,SQLITE_TRANSIENT),SQLITE_OK);
+                checked(sqlite3_bind_int64(row.get(),3,coin.output),SQLITE_OK);
+                checked(sqlite3_bind_text(row.get(),4,address.c_str(),-1,SQLITE_TRANSIENT),SQLITE_OK);
+                checked(sqlite3_bind_int64(row.get(),5,coin.amount),SQLITE_OK);
+                checked(sqlite3_bind_text(row.get(),6,script.c_str(),-1,SQLITE_TRANSIENT),SQLITE_OK);
+                checked(sqlite3_bind_int64(row.get(),7,coin.height),SQLITE_OK);
+                checked(sqlite3_bind_int(row.get(),8,coin.coinbase),SQLITE_OK);
+                checked(sqlite3_bind_int64(row.get(),9,std::time(nullptr)),SQLITE_OK);checked(sqlite3_step(row.get()),SQLITE_DONE);
+            }
+        }
         // The inclusive loop uses a wider counter so a maximal persisted
         // height cannot wrap to zero and repeatedly replay the source.
         for (uint64_t cursor = static_cast<uint32_t>(start_height); cursor <= tip_height; ++cursor) {
@@ -7584,7 +7637,7 @@ bool WalletManager::RescanBlockchainImpl(int start_height, int gap_limit,
                 if (!source.ok()) throw std::runtime_error("Block rescan source body unavailable");
                 legacy_body = *source;
             }
-            const auto& block = prepared ? prepared->blocks_[height] : *legacy_body;
+            const auto& block = prepared ? prepared->blocks_[height-prepared->first_height_] : *legacy_body;
             for (size_t tx_index = 0; tx_index < block.vtx.size(); ++tx_index) {
                 const auto& tx = block.vtx[tx_index];
                 const std::string txid = tx.GetTxid().AsUint256().GetHex();
@@ -7713,7 +7766,9 @@ bool WalletManager::RescanBlockchainImpl(int start_height, int gap_limit,
                 }
             }
             std::string error;
-            if (!wallet::shielded_ops::RescanConfirmedBlock(*this, height, block.vtx, &error))
+            // A transparent snapshot baseline does not qualify legacy shielded
+            // discovery. Keep that consumer on the existing archival path only.
+            if (!(prepared&&prepared->snapshot_) && !wallet::shielded_ops::RescanConfirmedBlock(*this, height, block.vtx, &error))
                 throw std::runtime_error("Block rescan shielded consumer failed: " + error);
             if ((cursor - start_height + 1) % 100 == 0 || height == tip_height) {
                 auto progress = prepare(R"(
@@ -7735,6 +7790,55 @@ bool WalletManager::RescanBlockchainImpl(int start_height, int gap_limit,
         checked(sqlite3_bind_int64(persisted_tip.get(), 1, tip_height), SQLITE_OK);
         checked(sqlite3_step(persisted_tip.get()), SQLITE_DONE);
         if (sqlite3_changes(db_) != 1) throw std::runtime_error("Block rescan tip not stored");
+        if(prepared&&prepared->snapshot_){
+            auto progress=prepare("INSERT INTO sync_meta(id,last_scanned_height,birth_height,scan_complete) VALUES(1,?,?,1) ON CONFLICT(id) DO UPDATE SET last_scanned_height=excluded.last_scanned_height,birth_height=excluded.birth_height,scan_complete=1");
+            checked(sqlite3_bind_int64(progress.get(),1,tip_height),SQLITE_OK);
+            checked(sqlite3_bind_int64(progress.get(),2,prepared->first_height_),SQLITE_OK);
+            checked(sqlite3_step(progress.get()),SQLITE_DONE);
+            if(sqlite3_changes(db_)!=1)throw std::runtime_error("Recovery progress row unavailable");
+            exec(db_,"CREATE TABLE IF NOT EXISTS wallet_snapshot_recovered_blocks(height INTEGER PRIMARY KEY,hash TEXT NOT NULL)");
+            exec(db_,"DELETE FROM wallet_snapshot_recovered_blocks");
+            const auto stamp=[&](uint32_t height,const uint256& hash){
+                auto row=prepare("INSERT INTO wallet_snapshot_recovered_blocks VALUES(?,?)");const auto hex=hash.GetHex();
+                checked(sqlite3_bind_int64(row.get(),1,height),SQLITE_OK);checked(sqlite3_bind_text(row.get(),2,hex.c_str(),-1,SQLITE_TRANSIENT),SQLITE_OK);
+                checked(sqlite3_step(row.get()),SQLITE_DONE);
+            };
+            stamp(prepared->snapshot_->height,prepared->snapshot_->base);
+            for(size_t i=0;i<prepared->blocks_.size();++i)stamp(prepared->first_height_+uint32_t(i),prepared->blocks_[i].GetHash());
+            std::map<std::vector<uint8_t>,std::string> paths;
+            {auto rows=prepare("SELECT script_pubkey,path FROM watch_scripts");int rc;
+             while((rc=sqlite3_step(rows.get()))==SQLITE_ROW){const auto* data=static_cast<const uint8_t*>(sqlite3_column_blob(rows.get(),0));
+                const int size=sqlite3_column_bytes(rows.get(),0);const auto* path=reinterpret_cast<const char*>(sqlite3_column_text(rows.get(),1));
+                if(!data||size<=0||!path)throw std::runtime_error("Recovery index watch ownership unavailable");
+                paths.emplace(std::vector<uint8_t>(data,data+size),path);}
+             checked(rc,SQLITE_DONE);}
+            std::vector<dinero::WalletUTXO> coins;
+            {auto rows=prepare("SELECT txid,vout,amount,script_pubkey,height,is_coinbase,is_spent,spent_height FROM utxos WHERE wallet_id=?");
+             checked(sqlite3_bind_int(rows.get(),1,current_wallet_id_),SQLITE_OK);int rc;
+             while((rc=sqlite3_step(rows.get()))==SQLITE_ROW){
+                const auto text=[&](int n){const auto* v=reinterpret_cast<const char*>(sqlite3_column_text(rows.get(),n));
+                    if(!v)throw std::runtime_error("Recovery wallet coin unavailable");return std::string(v);};
+                uint256 hash;std::vector<uint8_t> script;
+                if(!uint256::FromHex(text(0),hash)||!util::unhex(text(3),script)||!paths.contains(script))
+                    throw std::runtime_error("Recovery coin ownership cannot be reconciled");
+                if(sqlite3_column_int(rows.get(),6)&&sqlite3_column_type(rows.get(),7)==SQLITE_NULL)continue;
+                dinero::WalletUTXO coin(TxId(hash),uint32_t(sqlite3_column_int64(rows.get(),1)),
+                    AmountUna::Una(uint64_t(sqlite3_column_int64(rows.get(),2))),script,paths.at(script),sqlite3_column_int(rows.get(),4),sqlite3_column_int(rows.get(),5)!=0);
+                if(sqlite3_column_int(rows.get(),6))coin.spend_height=sqlite3_column_int(rows.get(),7);
+                coins.push_back(std::move(coin));
+             }checked(rc,SQLITE_DONE);}
+            // Same ordered two-store convention as WalletWorker: index commits
+            // first; no wallet completion/history is published if either fails.
+            utxo_index_->ApplyAtomically([&]{
+                for(const auto& old:utxo_index_->GetUnspentUTXOs())if(paths.contains(old.spk))
+                    if(!utxo_index_->DeleteUTXO(old.txid,old.vout))throw std::runtime_error("Recovery old index row removal failed");
+                for(const auto& coin:coins){
+                    const auto old=utxo_index_->GetUTXO(coin.txid,coin.vout);
+                    if(old&&(!utxo_index_->DeleteUTXO(coin.txid,coin.vout)))throw std::runtime_error("Recovery index row replacement failed");
+                    if(!utxo_index_->AddUTXO(coin))throw std::runtime_error("Recovery index write failed");
+                }
+            });
+        }
         exec(db_, "COMMIT");
         owned_transaction = false;
     } catch (...) {
@@ -9755,6 +9859,15 @@ void WalletManager::onBlockDisconnected(const Block& block, uint32_t height) {
             checked(result, SQLITE_OK, phase);
             return stmt;
         };
+        {
+            auto exists=prepare("SELECT 1 FROM sqlite_schema WHERE type='table' AND name='wallet_snapshot_recovered_blocks'","recovery cache read");
+            const int present=sqlite3_step(exists.get());
+            if(present==SQLITE_ROW){
+                auto remove=prepare("DELETE FROM wallet_snapshot_recovered_blocks WHERE height>=?","recovery cache prepare");
+                checked(sqlite3_bind_int64(remove.get(),1,height),SQLITE_OK,"recovery cache bind");
+                checked(sqlite3_step(remove.get()),SQLITE_DONE,"recovery cache removal");
+            }else checked(present,SQLITE_DONE,"recovery cache read");
+        }
         {
             auto stmt = prepare("DELETE FROM utxos WHERE height = ?", "delete prepare");
             checked(sqlite3_bind_int(stmt.get(), 1, static_cast<int>(height)), SQLITE_OK, "delete bind");

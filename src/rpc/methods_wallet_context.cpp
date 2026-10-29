@@ -7184,6 +7184,30 @@ din::Json rpc_context_wallet_createhd(const ExecutionContext& ctx, const din::Js
     return result;
 }
 
+din::Json rpc_context_wallet_recoversnapshot(const ExecutionContext& ctx,const din::Json& params){
+    din::Json result;
+    if(!ctx.daemon){result["error"]="Wallet recovery context unavailable";return result;}
+    const auto service=std::dynamic_pointer_cast<dinero::WalletService>(ctx.daemon->wallet);
+    const auto source=std::dynamic_pointer_cast<dinero::ChainstateService>(ctx.daemon->chainstate);
+    if(!service||!source||!params.isObject()||!params["walletname"].isString()||!params["expected_first_address"].isString()){
+        result["error"]="Expected wallet identity and first address are required";return result;
+    }
+    try{
+        auto use=dinero::WalletService::AcquireWalletUse(service);auto& wallet=use->Wallet();uint64_t session;
+        {auto lease=wallet.AcquireDatabaseLease();const auto addresses=wallet.listAddresses(false);
+         if(lease->WalletName()!=params["walletname"].asString()||addresses.empty()||
+            addresses.front().address!=params["expected_first_address"].asString()){
+            result["error"]="Active wallet differs from requested recovery wallet";return result;
+         }session=lease->Session();}
+        std::string error;const auto recovered=source->RecoverTransparentSnapshotWallet(wallet,&error,session);
+        if(!recovered){result["error"]=error;result["retryable"]=true;return result;}
+        result["success"]=true;result["recovered_height"]=Json::UInt64(*recovered);
+        result["scope"]="transparent-current-coins-and-post-snapshot-history";
+        result["whole_wallet_certified"]=false;
+        return result;
+    }catch(const std::exception& e){result["error"]=e.what();return result;}
+}
+
 din::Json rpc_context_wallet_restore(const ExecutionContext& ctx, const din::Json& params) {
     din::Json result;
 
@@ -8294,6 +8318,11 @@ void registerWalletMethodsContext() {
     // Wallet management methods
     g_rpcRegistry.registerHandler("wallet.listwallets",
                                  rpc_context_wallet_listwallets,
+                                 RegisterMode::Overwrite,
+                                 "context-aware");
+
+    g_rpcRegistry.registerHandler("wallet.recovertransparentfromsnapshot",
+                                 rpc_context_wallet_recoversnapshot,
                                  RegisterMode::Overwrite,
                                  "context-aware");
 

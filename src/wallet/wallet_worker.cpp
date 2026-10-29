@@ -349,6 +349,7 @@ void WalletWorker::ProcessConnect(uint32_t height, const std::string& hash,
     const auto vault_observer = dinero::vault::CaptureVaultWalletOutputObserver();
     auto database_lease = wallet_manager_ ? wallet_manager_->AcquireDatabaseLease() : nullptr;
     CheckWalletJobSession(database_lease.get(), session);
+    if(wallet_manager_&&wallet_manager_->snapshotRecoveryAlreadyApplied(height,hash))return;
     if (wallet_manager_) {
         std::string shielded_error;
         if (!wallet::shielded_ops::ProcessConfirmedBlock(*wallet_manager_, height, transactions, &shielded_error) &&

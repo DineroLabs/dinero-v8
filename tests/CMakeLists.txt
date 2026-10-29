@@ -5295,7 +5295,7 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_assumeutxo_replay.cpp)
   # Additional suites in this binary have separate bounded CTest registrations.
   # Keep the original replay/history/projection cases here without duplicating them.
   add_test(NAME AssumeUtxoReplay COMMAND test_assumeutxo_replay
-    --gtest_filter=AssumeUtxoReplay.*:SelectedWalletHistory.*:RuntimeOriginProjection.*:WalletRestorePreflight.*)
+    --gtest_filter=AssumeUtxoReplay.*:SelectedWalletHistory.*:RuntimeOriginProjection.*:WalletRestorePreflight.*:SnapshotWalletSource.*:SnapshotWalletRecovery.*)
   add_test(NAME AssumeUtxoPromotion COMMAND test_assumeutxo_replay
     --gtest_filter=AssumeUtxoPromotion.*)
   set_tests_properties(AssumeUtxoPromotion PROPERTIES LABELS "snapshot;daemon;restart;mandatory" TIMEOUT 120)

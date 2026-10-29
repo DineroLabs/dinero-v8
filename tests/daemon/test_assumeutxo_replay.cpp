@@ -952,6 +952,7 @@ int main(int argc, char** argv) {
 
 #include "chainstate_wallet_index_owner_checks.h"
 #include "wallet_restore_preflight_checks.h"
+#include "snapshot_wallet_source_checks.h"
 
 #include "wallet_canonical_recovery_checks.h"
 #include "orchard_rpc_binding_fixture.h"
@@ -969,6 +970,7 @@ int main(int argc, char** argv) {
 #include "vault_ledger_append_checks.h"
 
 #include "vault_wallet_observation_checks.h"
+#include "snapshot_wallet_recovery_checks.h"
 #include "vault_runtime_restore_guard_checks.h"
 
 #include "vault_state_snapshot_checks.h"

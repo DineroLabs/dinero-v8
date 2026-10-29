@@ -102,7 +102,8 @@
 #include "consensus/adapters/wallet_utxo_adapter.h"  // v2.2.0: Consensus interface adapter (kept for wallet)
 #include "consensus/consensus_utxo_set.h"  // Phase 2: Pure in-memory UTXO set (owns forest)
 #include "daemon/services/wallet_service.h"  // Snapshot wallet rescan: reach active wallet
-#include "wallet/wallet_manager.h"            // Snapshot wallet rescan: rescanUtxoSet
+#include "wallet/wallet_manager.h"
+#include "daemon/services/snapshot_wallet_source.h"            // Snapshot wallet rescan: rescanUtxoSet
 #include "storage/persistent_utxo_adapter.h"  // Phase 2: Bridges consensus to ChainDB
 #include "consensus/utreexo_accumulator.h"  // v0.14.0.4: For forest rebuild from UTXO set
 #include "consensus/utreexo_activation.h"  // Phase 3.2: For IsUtreexoActive() in reorg sanity check
@@ -14540,6 +14541,133 @@ std::optional<uint32_t> ChainstateService::RescanWalletFromSelectedHistory(
     } catch (...) {
         return fail("selected-history-unavailable");
     }
+}
+
+
+std::optional<uint32_t> ChainstateService::RecoverTransparentSnapshotWallet(
+        WalletManager& wallet,std::string* error,uint64_t expected_session){
+    if(error)error->clear();
+    const auto fail=[&](const std::string& why)->std::optional<uint32_t>{if(error)*error=why;return {};};
+    if(activation_mutex_.HeldByCurrentThread())return fail("snapshot recovery requires unowned selected source");
+    try{
+        auto index=AcquireWalletIndexUse(shared_from_this());
+        uint64_t session=0;std::set<std::vector<uint8_t>> scripts;
+        {
+            auto lease=wallet.AcquireDatabaseLease();
+            if(wallet.database_leases_!=1||!lease->Database()||!sqlite3_get_autocommit(lease->Database())||
+               wallet.getUTXOIndex()!=&index->Index()||wallet.isLocked())return fail("wallet recovery ownership or unlocked keys unavailable");
+            session=lease->Session();if(expected_session&&session!=expected_session)return fail("wallet changed before recovery");
+            sqlite3_stmt* raw=nullptr;
+            if(sqlite3_prepare_v2(lease->Database(),"SELECT script_pubkey FROM watch_scripts",-1,&raw,nullptr)!=SQLITE_OK)
+                return fail("wallet recovery watch set unavailable");
+            std::unique_ptr<sqlite3_stmt,decltype(&sqlite3_finalize)> row(raw,sqlite3_finalize);int step;
+            while((step=sqlite3_step(raw))==SQLITE_ROW){
+                const auto* data=static_cast<const uint8_t*>(sqlite3_column_blob(raw,0));const int size=sqlite3_column_bytes(raw,0);
+                if(!data||size<=0||size>100000||sqlite3_column_type(raw,0)!=SQLITE_BLOB||scripts.size()>=65536)
+                    return fail("wallet recovery watch set malformed or over capacity");
+                scripts.emplace(data,data+size);
+            }
+            if(step!=SQLITE_DONE||scripts.empty())return fail("wallet recovery watch set empty or unreadable");
+        }
+        auto prepared=std::unique_ptr<SelectedWalletHistory>(new SelectedWalletHistory());
+        prepared->network_=Params().network_id;prepared->genesis_=uint256::FromHexUnsafe(Params().genesis_hash);
+        uint32_t base_height=0,target=0;BlockHeader base_header;std::string path;
+        std::vector<std::pair<uint256,uint32_t>> ancestry;
+        {
+            std::lock_guard<AnnotatedRecursiveMutex> selected(activation_mutex_);
+            if(!active_tip_||safe_mode_active_||consensus::OrchardActiveForHeight(Params(),active_tip_->height))
+                return fail("transparent snapshot recovery requires a pre-Orchard selected source");
+            const auto current=UtreexoRpcSnapshotUnderLock();if(!current.ok())return fail("selected accumulator is unavailable for wallet recovery");
+            base_height=GetSnapshotWalletRecoveryBaseHeight();target=active_tip_->height;
+            if(!base_height||base_height>target||target-base_height>20000||!assumeutxo_lifecycle_)
+                return fail("snapshot recovery base/range unavailable or over capacity");
+            path=config_?config_->GetString("assumeutxo_snapshot",""):"";
+            if(path.empty())return fail("retained snapshot file is unavailable");
+            prepared->tip_=active_tip_->hash;prepared->first_height_=base_height+1;
+            auto expected=prepared->tip_;
+            for(uint32_t height=target;;--height){
+                const auto header=chain_db_->getHeader(expected);const auto stored_height=chain_db_->getBlockHeight(expected);
+                if(!header.ok()||header->GetHash()!=expected||!stored_height.ok()||*stored_height<0||uint32_t(*stored_height)!=height)
+                    return fail("selected snapshot recovery ancestry unavailable");
+                if(height==base_height){base_header=*header;break;}
+                ancestry.emplace_back(expected,height);expected=header->prev_block_hash;
+            }
+        }
+        Block genesis;
+        // Use the exact compiled genesis construction already used by archival
+        // replay; only its coinbase outputs may be absent from forest leaves.
+        const auto genesis_header=chain_db_->getHeader(prepared->genesis_);
+        if(!genesis_header.ok()||genesis_header->GetHash()!=prepared->genesis_)return fail("compiled genesis header unavailable");
+        genesis.header=*genesis_header;
+        Transaction generation;if(!TransactionSerializer::Deserialize(generation,Params().genesis.genesisCoinbaseHex))
+            return fail("compiled genesis transaction unavailable");
+        genesis.vtx.push_back(generation);
+        prepared->snapshot_=ReadSnapshotWalletSourceFile(path,base_header,base_height,genesis);
+        prepared->snapshot_scripts_=scripts;
+        std::reverse(ancestry.begin(),ancestry.end());size_t material=0,missing=0;
+        const auto* daemon=DaemonContext::instance();
+        const auto peers=daemon&&daemon->chainstate.get()==this?std::dynamic_pointer_cast<P2PService>(daemon->p2p):nullptr;
+        const auto read_body=[&](const uint256& hash)->std::optional<Block>{
+            const auto local=storage::ReadArchivalBlock(*chain_db_,block_storage_.get(),hash);
+            if(local.ok())return *local;if(local.status()!=Status::NotFound)return {};
+            if(!peers)return {};
+            const auto bytes=peers->WalletHistoricalBody(hash,missing<8);
+            if(!bytes)return {};return Block::Deserialize(*bytes);
+        };
+        for(const auto& [hash,height]:ancestry){
+            const auto body=read_body(hash);
+            if(!body){++missing;if(missing>=8)break;continue;}
+            bool mutated=false;
+            if(body->GetHash()!=hash||body->vtx.empty()||consensus::ComputeMerkleRoot(body->vtx,&mutated)!=body->header.merkle_root||mutated)
+                return fail("selected recovery body inclusion failed");
+            const auto size=body->Serialize().size();if(size>128*1024*1024-material)return fail("wallet recovery bodies exceed material limit");
+            material+=size;prepared->blocks_.push_back(*body);
+        }
+        if(missing)return fail("waiting for selected post-snapshot wallet history");
+        // Old leaves bind value/script/outpoint but not height/coinbase. Verify
+        // the actual canonical creation body for each OWNED legacy candidate.
+        // Follow hash-linked stored headers from this captured base; the live
+        // header selector need not retain a second in-memory copy of the prefix.
+        std::map<uint32_t,uint256> legacy_ancestry;
+        legacy_ancestry.emplace(base_height,base_header.GetHash());
+        for(const auto& coin:prepared->snapshot_->coins){
+            if(coin.maturity_bound||!scripts.contains(coin.script))continue;
+            while(legacy_ancestry.begin()->first>coin.height){
+                const auto [height,hash]=*legacy_ancestry.begin();
+                if(legacy_ancestry.size()>1000000)return fail("legacy creation ancestry exceeds limit");
+                const auto header=chain_db_->getHeader(hash);const auto stored=chain_db_->getBlockHeight(hash);
+                if(!header.ok()||header->GetHash()!=hash||!stored.ok()||*stored<0||uint32_t(*stored)!=height)
+                    return fail("legacy owned coin creation ancestry unavailable");
+                legacy_ancestry.emplace(height-1,header->prev_block_hash);
+            }
+            const auto origin=legacy_ancestry.at(coin.height);
+            const auto body=read_body(origin);if(!body)return fail("waiting for owned legacy coin creation history");
+            bool mutated=false;if(body->GetHash()!=origin||consensus::ComputeMerkleRoot(body->vtx,&mutated)!=body->header.merkle_root||mutated)
+                return fail("legacy owned coin creation inclusion failed");
+            bool found=false;
+            for(size_t i=0;i<body->vtx.size();++i){const auto& tx=body->vtx[i];
+                if(tx.GetTxid().AsUint256()!=coin.txid)continue;
+                if(coin.output>=tx.vout.size()||tx.vout[coin.output].is_confidential||
+                   tx.vout[coin.output].value.GetUna()!=coin.amount||tx.vout[coin.output].scriptPubKey!=coin.script||
+                   (i==0)!=coin.coinbase)return fail("legacy owned coin creation metadata mismatch");
+                found=true;break;
+            }
+            if(!found)return fail("legacy owned coin creation missing");
+            prepared->verified_legacy_origins_.emplace(coin.txid,coin.output);
+        }
+        std::unique_lock<std::mutex> snapshot(snapshot_load_mutex_);
+        std::lock_guard<AnnotatedRecursiveMutex> selected(activation_mutex_);
+        const auto current=UtreexoRpcSnapshotUnderLock();
+        if(!current.ok()||current->block_hash!=prepared->tip_||current->height!=target||
+           GetSnapshotWalletRecoveryBaseHeight()!=base_height||
+           config_->GetString("assumeutxo_snapshot","")!=path)
+            return fail("selected wallet recovery source changed; retry");
+        auto lifetime=assumeutxo_lifecycle_->AcquireSnapshotUse(base_header.GetHash(),base_height);
+        if(!lifetime)return fail("snapshot lifecycle changed before wallet recovery");
+        if(!wallet.RescanBlockchainImpl(int(base_height+1),0,nullptr,nullptr,prepared.get(),session))
+            return fail("authenticated snapshot wallet application failed");
+        return target;
+    }catch(const std::exception& e){return fail(e.what());}
 }
 
 StatusOr<std::unique_ptr<const ChainstateService::ImportedWalletSource>>

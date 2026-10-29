@@ -275,6 +275,12 @@ public:
     // WalletService startup sweep, and wallet.importmnemonic when the mnemonic
     // is imported only after snapshot activation.
     int RescanWalletFromSnapshotUTXOs(WalletManager& wallet, uint32_t base_height);
+    // Explicit pre-Orchard transparent recovery. Authenticates the retained
+    // snapshot's complete live leaf coverage and selected post-base bodies,
+    // then applies owned coins/history under one wallet transaction. Does not
+    // replace keys or certify pre-base spent history/other wallet consumers.
+    std::optional<uint32_t> RecoverTransparentSnapshotWallet(
+        WalletManager&,std::string* error=nullptr,uint64_t expected_session=0);
     // Exact fresh imported activation parent only. Checked source/seed-bound
     // candidate discovery, NOT wallet history/index completion or coin authority.
     // Caller retains WalletUse/WalletIndexUse and holds no SQLite/selected owner.

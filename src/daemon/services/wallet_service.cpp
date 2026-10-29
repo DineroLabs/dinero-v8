@@ -3,6 +3,7 @@
 #include "daemon/services/config_service.h"
 #include "daemon/services/chainstate_service.h"
 #include "daemon/daemon_context.h"
+#include "daemon/config.h"
 #include "daemon/rpc/wallet_gui_handlers.h"  // For RpcCreateHDWallet
 #include "common/ilogger.h"           // For ILogger interface dependency injection
 #include "wallet/wallet_worker.h"
@@ -591,6 +592,11 @@ bool WalletService::RecoverActiveWalletFromSnapshotIfNeeded(std::string* error, 
         const uint32_t base_height = chainstate_->GetSnapshotWalletRecoveryBaseHeight();
         if (base_height == 0) {
             return true;  // Normal full-chain node; no snapshot recovery is needed.
+        }
+
+        if(GetConfig().utreexo_stateless){
+            if(error)*error="phone wallet requires explicit authenticated snapshot recovery";
+            return false;
         }
 
         // The legacy tail scanner reads the durable archival tip, not the

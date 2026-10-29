@@ -788,6 +788,9 @@ public:
     // commit in one checked FULL transaction; caller transactions are refused.
     // Address discovery precedes that transaction and preserves issued keys.
     // Mutable ChainDB reads do NOT certify selected history or a recovery baseline.
+    // Idempotency only: local records of blocks already applied by a checked
+    // snapshot recovery. This does not authorize a chain, coin or send.
+    bool snapshotRecoveryAlreadyApplied(uint32_t height,const std::string& hash);
     bool rescanBlockchain(int start_height = 0,
                           int gap_limit = 20,
                           dinero::ChainDB* chain_db = nullptr,
