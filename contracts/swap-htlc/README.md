@@ -23,3 +23,20 @@ python3 test/mutate.py     # breaks each rule in turn; every break must fail a t
 | Timelock bounds | now + 1 h to now + 7 days |
 | Failed payouts | credited to the payee; `withdraw(token, to)` by the payee |
 | ETH payout gas | 100,000; a payee needing more is credited instead |
+
+The first `forge build` downloads solc 0.8.28. An offline CI runner needs that
+compiler installed beforehand (`forge build` once with network, or `svm install 0.8.28`).
+
+## Notes for auditors
+
+In scope: `src/DinSwapHTLC.sol`, against the "Ethereum contract" section of the
+design. Out of scope, handled by the client and stated to users:
+
+- **Token allowlist.** Any token can be locked; the client offers only ETH and
+  USDC. A token that lies about balances, or loses its code after `lock`
+  (created and self-destructed in the same transaction), is not defended against
+  on chain.
+- **Relayer tip front-running.** Whoever submits the claim takes the tip; the
+  amount still goes to the fixed recipient.
+- **Issuer freezes.** If Circle freezes the contract itself, locked USDC is stuck.
+  A frozen payee is credited and withdraws to another address.

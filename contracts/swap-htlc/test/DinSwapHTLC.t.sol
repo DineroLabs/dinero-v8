@@ -367,6 +367,44 @@ contract DinSwapHTLCTest is Base {
         eq(RELAYER.balance, 0, "no tip on refund");
     }
 
+    // Bob locks from a per-swap key; his refund goes to his own wallet.
+    function test_ARefundGoesToRefundToNotTheSender() public {
+        address wallet = address(0xB0B2);
+        vm.prank(BOB);
+        bytes32 id = htlc.lock{value: 1 ether}(ALICE, wallet, address(0), 1 ether, H, T, 0, 0);
+        vm.warp(T);
+        uint256 before = BOB.balance;
+        htlc.refund(id);
+        eq(wallet.balance, 1 ether, "refundTo paid");
+        eq(BOB.balance, before, "sender not paid");
+    }
+
+    function test_ATokenTipPaysTheSubmitter() public {
+        Token usdc = new Token();
+        usdc.mint(BOB, 1000e6);
+        vm.prank(BOB);
+        usdc.approve(address(htlc), 1000e6);
+        vm.prank(BOB);
+        bytes32 id = htlc.lock(ALICE, BOB, address(usdc), 1000e6, H, T, 2e6, 0);
+        vm.prank(RELAYER);
+        htlc.claim(id, S);
+        eq(usdc.balanceOf(ALICE), 998e6, "recipient gets amount - tip");
+        eq(usdc.balanceOf(RELAYER), 2e6, "relayer gets the tip");
+    }
+
+    function test_AFrozenRefundAddressIsCredited() public {
+        Token usdc = new Token();
+        usdc.mint(BOB, 1000e6);
+        bytes32 id = lockToken(address(usdc), ALICE, 1000e6);
+        usdc.freeze(BOB);
+        vm.warp(T);
+        htlc.refund(id); // must not revert: Bob withdraws to another address
+        eq(htlc.credits(address(usdc), BOB), 1000e6, "credited");
+        vm.prank(BOB);
+        htlc.withdraw(address(usdc), RELAYER);
+        eq(usdc.balanceOf(RELAYER), 1000e6, "withdrawn to a clean address");
+    }
+
     // ---- fuzz -------------------------------------------------------------
 
     function fuzzLock(uint96 amount, uint96 tip, bytes32 s, uint32 lockFor) internal returns (bytes32, uint64) {

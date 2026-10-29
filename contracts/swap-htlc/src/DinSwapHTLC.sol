@@ -187,8 +187,10 @@ contract DinSwapHTLC {
     }
 
     // Succeeds for tokens that return true and for tokens that return nothing
-    // (USDT); fails for a revert or a false return. An address with no code
-    // never gets here: lock() reads its balanceOf first, which reverts.
+    // (USDT); fails for a revert or a false return. lock() reads balanceOf
+    // first, so a token with no code is refused there; a token that loses its
+    // code later (created and self-destructed in the lock's own transaction)
+    // would "pay" nothing. The client's token allowlist rules such tokens out.
     function _callToken(address token, bytes memory data) private returns (bool ok) {
         uint256 size;
         uint256 word;

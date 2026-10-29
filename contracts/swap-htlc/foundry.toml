@@ -17,4 +17,4 @@ runs = 2000
 [invariant]
 runs = 256
 depth = 64
-fail_on_revert = false
+fail_on_revert = true  # a handler call that reverts is a failure, never a discard

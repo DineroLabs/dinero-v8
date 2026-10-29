@@ -38,7 +38,7 @@ The DIN seller is always the maker. An ETH holder who wants DIN cannot post an o
 
 ## Ethereum contract
 
-One small, immutable contract with three calls, deployed once per chain. It has no owner, proxy, pause, fee to Dinero Labs or self-destruct. Nobody can change or stop it after deployment, including us.
+One small, immutable contract, deployed once per chain: `lock`, `claim` and `refund`, plus `withdraw` for credited payouts. It has no owner, proxy, pause, fee to Dinero Labs or self-destruct. Nobody can change or stop it after deployment, including us.
 
 ```solidity
 function lock(address recipient, address refundTo, address token, uint256 amount,
@@ -46,10 +46,19 @@ function lock(address recipient, address refundTo, address token, uint256 amount
     external payable returns (bytes32 id);
 function claim(bytes32 id, bytes32 preimage) external;   // before timelock
 function refund(bytes32 id) external;                    // from timelock on
+function withdraw(address token, address to) external;   // payee takes a credited payout
+function swapId(address sender, address recipient, address refundTo, address token, uint256 amount,
+                bytes32 hashlock, uint64 timelock, uint256 tip, bytes32 nonce) external view returns (bytes32);
+function swaps(bytes32 id) external view returns (address sender, address recipient, address refundTo,
+               address token, uint256 amount, uint256 tip, bytes32 hashlock, uint64 timelock, State state);
+function preimages(bytes32 id) external view returns (bytes32);          // s, once claimed
+function credits(address token, address payee) external view returns (uint256);
 event Locked(bytes32 indexed id, address sender, address recipient, address refundTo,
              address token, uint256 amount, bytes32 hashlock, uint64 timelock, uint256 tip);
 event Claimed(bytes32 indexed id, bytes32 preimage);
 event Refunded(bytes32 indexed id);
+event Credited(address indexed token, address indexed payee, uint256 amount);
+event Withdrawn(address indexed token, address indexed payee, address to, uint256 amount);
 ```
 
 | Rule | Why | Test (each must fail with the rule removed) |
@@ -63,8 +72,11 @@ event Refunded(bytes32 indexed id);
 | `lock` checks the contract's token balance rose by exactly `amount`; ETH requires `msg.value == amount` | Rejects fee-on-transfer and rebasing tokens | Fee-on-transfer token reverts |
 | `timelock` between now + 1 h and now + 7 days; `tip ≤ amount` | Same 7-day lock bound as the BTC swap | Out-of-range values revert |
 | Optional `tip` paid to `msg.sender` on claim (0 by default) | Lets a relayer submit Alice's claim when she holds no ETH (decision 3), without a second deployment later | Claim with tip pays recipient `amount − tip` |
+| An ETH payout gets 100,000 gas and copies no return data; a payee needing more is credited | A payee contract cannot burn the submitter's gas and make the claim revert | Gas-burning recipient at a 300,000 gas claim: credited, claim succeeds |
+| `claim` stores `s` in `preimages(id)` as well as emitting it | Bob can read `s` from state if a provider filters logs | Stored after claim |
+| Token calls accept a `true` or an empty return (USDT) | Common tokens that return nothing still work | No-return token locks and claims |
 
-The contract is about 120 lines, built with a pinned compiler. It is deployed with CREATE2 to the same address on Ethereum and Base, with source verified on Sourcify. The address is hard-coded in the client per chain id. **An offer can never supply a contract address**, or a malicious offer could point Bob at a fake contract.
+The contract is about 200 lines, compiled with solc 0.8.28 (pinned). Source, tests and a mutation script are in `contracts/swap-htlc`. A token that loses its code after `lock` (created and self-destructed in the same transaction) would make payouts silently pay nothing; the client allowlist is what rules such tokens out. It is deployed with CREATE2 to the same address on Ethereum and Base, with source verified on Sourcify. The address is hard-coded in the client per chain id. **An offer can never supply a contract address**, or a malicious offer could point Bob at a fake contract.
 
 ## Deadlines and finality
 
@@ -117,7 +129,7 @@ Both make swaps cheaper or more useful, and each adds a party users must trust t
 | **Base** | Gas in cents, not dollars | One sequencer can delay or censor a claim for up to the sequencing window. Base's upgrade keys can change the chain's contracts. | Longer `T_eth` and Alice cut-off (deadlines table). Forced inclusion through Ethereum's OptimismPortal if a claim isn't included within 1 h. Upgrade-key risk named in the app. |
 | **USDC** | DIN for a dollar asset; likely the most-wanted pair | Circle can freeze any address, including the swap contract, and can upgrade the USDC contract. | Client allowlist per chain (ETH, USDC; USDT only after a separate check). Credit-on-failure covers a frozen payee. If the contract itself is frozen, locked USDC is stuck. Stated in the app; lower caps for USDC. |
 
-USDC funding uses `permit` (EIP-2612) plus `lock` in one transaction where the token supports it; otherwise approve, then lock. The contract stays token-neutral. The allowlist lives only in the client, so a token can be dropped without redeploying.
+USDC funding is approve, then lock, both sent from Bob's per-swap key; the contract has no `permit` path. The contract stays token-neutral. The allowlist lives only in the client, so a token can be dropped without redeploying.
 
 ## Keys, gas and the watchtower
 
@@ -176,7 +188,7 @@ Nothing ships until each item below has run (confirmed in its log) and fails wit
 - **One secret, both chains:** the same `s` opens the Dinero claim leaf (`ScriptVerifier`) and the contract; a 31- or 33-byte value and a keccak preimage fail on both.
 - **Two-chain end to end:** regtest dinerod plus anvil, using anvil's time control. Covers the happy path, both refunds, claim at `T_eth − 1` and refusal at `T_eth`, restart at every state, tower-only DIN claim, and an anvil reorg before finality.
 - **Lying providers:** a fake provider shows Alice a lock that isn't there (she must not claim); a provider hides the claim from Bob (the second provider or tower catches it).
-- **Mainnet fork:** anvil forked from Ethereum with real USDC: permit + lock, claim, a Circle-frozen recipient (credit path), a frozen contract.
+- **Mainnet fork:** anvil forked from Ethereum with real USDC: approve + lock, claim, a Circle-frozen recipient (credit path), a frozen contract.
 - **Base:** the same suite on Base Sepolia, plus a forced-inclusion claim through the OptimismPortal.
 - **BTC regression:** after the plug-in split, all existing `Swap*` ctests pass unchanged.
 - **Gates:** an external contract audit, then a Sepolia beta between known testers with small caps, before any mainnet deployment.

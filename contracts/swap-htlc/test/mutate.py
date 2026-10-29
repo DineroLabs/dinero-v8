@@ -2,7 +2,7 @@
 """Mutation check for DinSwapHTLC: breaks one rule at a time and requires the
 Foundry suite to fail for each. Run from contracts/swap-htlc: python3 test/mutate.py
 Exit 0 only if every mutation is caught. The source file is always restored."""
-import os,subprocess,sys
+import re,shutil,subprocess,sys
 P='src/DinSwapHTLC.sol'
 M=[
 ("sha256->keccak","if (sha256(abi.encodePacked(preimage)) != s.hashlock)","if (keccak256(abi.encodePacked(preimage)) != s.hashlock)"),
@@ -24,19 +24,26 @@ M=[
 ("unbounded payout gas","_sendEth(to, amount, ETH_PAYOUT_GAS)","_sendEth(to, amount, gasleft())"),
 ("credit not cleared","        credits[token][msg.sender] = 0;\n",""),
 ("preimage not stored","        preimages[id] = preimage;\n",""),
+("token tip to recipient","if (tip != 0) _pay(s.token, msg.sender, tip);","if (tip != 0) _pay(s.token, s.recipient, tip);"),
+("refund pays sender","        _pay(s.token, s.refundTo, s.amount);\n","        _pay(s.token, s.sender, s.amount);\n"),
+# The invariant alone must catch a claim that reverts for a rejecting payee.
+("failed payout reverts [invariant only]","            credits[token][to] += amount;\n            emit Credited(token, to, amount);","            revert TransferFailed();",["--match-contract","Invariants"]),
 ]
 src=open(P).read()
 bad=0
 try:
-  for name,a,b in M:
+  for m in M:
+      name,a,b=m[:3]; extra=list(m[3]) if len(m)>3 else []
       if src.count(a)!=1: print("SKIP(count)",name,src.count(a)); bad=1; continue
       open(P,'w').write(src.replace(a,b))
-      r=subprocess.run(['forge','test'],capture_output=True,text=True)
+      shutil.rmtree('cache/invariant',ignore_errors=True)  # no replayed failures
+      r=subprocess.run(['forge','test']+extra,capture_output=True,text=True)
       out=r.stdout+r.stderr
-      fails=sorted({l.split(']')[1].strip().split('(')[0] for l in out.splitlines() if l.startswith('[FAIL')})
-      status="CAUGHT" if fails else ("COMPILE-ERR" if 'Compiler run failed' in out else "SURVIVED")
+      fails=sorted({m.group(1) for l in out.splitlines() if l.startswith('[FAIL') for m in [re.search(r'((?:test|testFuzz|invariant)_\w+)', l)] if m})
+      failed=any(l.startswith('[FAIL') for l in out.splitlines())
+      status="CAUGHT" if failed else ("COMPILE-ERR" if 'Compiler run failed' in out else "SURVIVED")
       if status!="CAUGHT": bad=1
-      print(f"{status:9} {name:26} {', '.join(fails)[:150]}")
+      print(f"{status:9} {name:40} {', '.join(fails)[:150]}")
 finally:
   open(P,"w").write(src)
 sys.exit(bad)
