@@ -21,6 +21,11 @@ namespace {
 
 std::atomic<SwapService*> g_active{nullptr};
 
+SwapService::ZecInstaller& ZecInstallerSlot() {
+    static SwapService::ZecInstaller installer;
+    return installer;
+}
+
 bool IsWrite(const std::string& m) {
     return m == "sendrawtransaction" || m == "wallet.sendtoaddress" || m == "wallet.getnewaddress";
 }
@@ -66,25 +71,36 @@ swap::SwapNetwork NetworkOf(const ChainParams& p) {
 
 SwapService* SwapService::Active() { return g_active.load(); }
 
+void SwapService::SetZecInstaller(ZecInstaller installer) { ZecInstallerSlot() = std::move(installer); }
+
 bool SwapService::Init(DaemonContext& ctx) {
     ctx_ = &ctx;
     auto config = std::dynamic_pointer_cast<ConfigService>(ctx.config);
     if (!config || !config->GetBool("swap.enable", false)) return true;  // disabled: nothing at all
 
     const std::string btc = config->GetString("swap.btc_rpc", "");
+    const bool zec_wanted = !config->GetString("swap.zec_rpc", "").empty();
+    if (zec_wanted && !ZecInstallerSlot()) {
+        std::cerr << "[Swap] swap.zec_rpc needs a dinerod built with DINERO_SWAP_ZEC" << std::endl;
+        return false;
+    }
     const auto colon = btc.rfind(':');
-    if (colon == std::string::npos) {
+    // Without swap.btc_rpc (a Zcash-only node) Bitcoin calls report "unreachable".
+    swap::BtcRpc btc_rpc = [](const std::string&, const Json::Value&) { return std::optional<Json::Value>{}; };
+    if (colon == std::string::npos && !zec_wanted) {
         std::cerr << "[Swap] swap.enable=1 needs swap.btc_rpc=HOST:PORT (Bitcoin Core RPC)" << std::endl;
         return false;
     }
-    auto client = std::make_shared<rpc::RpcClient>(btc.substr(0, colon), uint16_t(std::stoi(btc.substr(colon + 1))),
-                                                   config->GetString("swap.btc_rpc_user", ""),
-                                                   config->GetString("swap.btc_rpc_pass", ""));
-    swap::BtcRpc btc_rpc = [client](const std::string& m, const Json::Value& p) -> std::optional<Json::Value> {
-        const auto r = client->call(m, p);
-        if (!r || !r->isMember("result") || (r->isMember("error") && !(*r)["error"].isNull())) return std::nullopt;
-        return (*r)["result"];
-    };
+    if (colon != std::string::npos) {
+        auto client = std::make_shared<rpc::RpcClient>(btc.substr(0, colon), uint16_t(std::stoi(btc.substr(colon + 1))),
+                                                       config->GetString("swap.btc_rpc_user", ""),
+                                                       config->GetString("swap.btc_rpc_pass", ""));
+        btc_rpc = [client](const std::string& m, const Json::Value& p) -> std::optional<Json::Value> {
+            const auto r = client->call(m, p);
+            if (!r || !r->isMember("result") || (r->isMember("error") && !(*r)["error"].isNull())) return std::nullopt;
+            return (*r)["result"];
+        };
+    }
 
     const ChainParams& params = dinero::Params();
     swap::SwapManagerConfig mc;
@@ -140,6 +156,10 @@ bool SwapService::Init(DaemonContext& ctx) {
         return out;
     };
     manager_ = std::make_unique<swap::SwapManager>(mc, derive, InProcessRpc(&ctx), btc_rpc);
+    if (zec_wanted && !ZecInstallerSlot()(*manager_, *config, mc.network, InProcessRpc(&ctx))) {
+        manager_.reset();
+        return false;
+    }
     const std::string inbox = config->GetString("swap.tower_inbox", "");
     if (!inbox.empty()) {
         manager_->SetTowerSink([inbox](const std::string& package) { swap::WriteTowerInbox(inbox, package); });
@@ -147,7 +167,9 @@ bool SwapService::Init(DaemonContext& ctx) {
             return swap::TowerAckFresh(inbox, id, hash, static_cast<uint32_t>(std::time(nullptr)));
         });
     }
-    std::cout << "[Swap] enabled: dir=" << mc.dir << " btc_rpc=" << btc << " tick=" << tick_seconds_ << "s"
+    std::cout << "[Swap] enabled: dir=" << mc.dir << " btc_rpc=" << btc
+              << (zec_wanted ? " zec_rpc=" + config->GetString("swap.zec_rpc", "") : std::string()) << " tick="
+              << tick_seconds_ << "s"
               << (mc.max_btc_sat ? " max_btc_sat=" + std::to_string(mc.max_btc_sat) + " max_din_una=" +
                                        std::to_string(mc.max_din_una)
                                  : std::string())

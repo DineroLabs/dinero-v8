@@ -150,6 +150,44 @@ set_target_properties(dinerod PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
 )
 
+# DIN <-> ZEC swaps (docs/design/din-zec-atomic-swaps.md): OFF by default. ON
+# links rust/zcash_swap into dinerod (and only dinerod); at v8.2.1 the crate
+# folds into rust/orchard_backend so a release ships one Rust library.
+option(DINERO_SWAP_ZEC "dinerod: DIN<->ZEC swaps (links rust/zcash_swap; testnet/regtest only)" OFF)
+if(DINERO_SWAP_ZEC)
+  find_program(ZEC_SWAP_CARGO cargo HINTS "$ENV{HOME}/.cargo/bin")
+  if(NOT ZEC_SWAP_CARGO OR WIN32)
+    message(FATAL_ERROR "DINERO_SWAP_ZEC needs cargo (and is not supported on Windows yet)")
+  endif()
+  set(ZEC_SWAP_DIR ${CMAKE_SOURCE_DIR}/rust/zcash_swap)
+  set(ZEC_SWAP_TARGET_DIR ${CMAKE_BINARY_DIR}/zcash_swap-daemon-target)
+  set(ZEC_SWAP_LIB ${ZEC_SWAP_TARGET_DIR}/release/libdinero_zcash_swap.a)
+  set(ZEC_SWAP_ENV CARGO_TARGET_DIR=${ZEC_SWAP_TARGET_DIR})
+  if(APPLE AND CMAKE_OSX_DEPLOYMENT_TARGET)
+    list(APPEND ZEC_SWAP_ENV CFLAGS=-mmacosx-version-min=${CMAKE_OSX_DEPLOYMENT_TARGET})
+  endif()
+  add_custom_command(
+    OUTPUT ${ZEC_SWAP_LIB}
+    COMMAND ${CMAKE_COMMAND} -E env ${ZEC_SWAP_ENV} ${ZEC_SWAP_CARGO} build --release --locked
+    WORKING_DIRECTORY ${ZEC_SWAP_DIR}
+    DEPENDS ${ZEC_SWAP_DIR}/src/lib.rs ${ZEC_SWAP_DIR}/Cargo.toml ${ZEC_SWAP_DIR}/Cargo.lock
+    COMMENT "Building rust/zcash_swap for dinerod (DINERO_SWAP_ZEC)")
+  add_custom_target(build_zcash_swap_daemon DEPENDS ${ZEC_SWAP_LIB})
+  target_sources(dinerod PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/daemon/swap_zec_install.cpp
+    ${CMAKE_SOURCE_DIR}/src/wallet/swap/swap_manager_zec.cpp
+    ${CMAKE_SOURCE_DIR}/src/wallet/swap/zec_chain_io.cpp
+    ${CMAKE_SOURCE_DIR}/src/wallet/swap/zec_tx.cpp
+    ${CMAKE_SOURCE_DIR}/src/wallet/swap/zec_watcher.cpp)
+  target_include_directories(dinerod PRIVATE ${ZEC_SWAP_DIR}/include)
+  add_dependencies(dinerod build_zcash_swap_daemon)
+  target_link_libraries(dinerod PRIVATE ${ZEC_SWAP_LIB})
+  if(NOT APPLE)
+    target_link_libraries(dinerod PRIVATE Threads::Threads ${CMAKE_DL_LIBS} m)
+  endif()
+  message(STATUS "DIN<->ZEC swaps: ON (dinerod links rust/zcash_swap)")
+endif()
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Link All Layers: Proper dependency order
 # ═══════════════════════════════════════════════════════════════════════════

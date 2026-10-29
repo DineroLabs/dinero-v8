@@ -14025,6 +14025,13 @@ if(CARGO_EXECUTABLE AND NOT WIN32)
               $<TARGET_FILE:dinerod> $<TARGET_FILE:swap_zec_e2e_tool> ${DINERO_ZEBRAD})
     set_tests_properties(SwapZecE2ERegtest PROPERTIES LABELS "wallet;swap;regtest" TIMEOUT 1800)
   endif()
+  # swap.* for ZEC through real daemons: only with a dinerod built with DINERO_SWAP_ZEC.
+  if(DINERO_SWAP_ZEC AND DINERO_ZEBRAD AND TARGET dinerod)
+    add_test(NAME SwapZecRpcRegtest
+      COMMAND ${CMAKE_SOURCE_DIR}/tests/wallet/swap_zec_rpc_regtest.sh
+              $<TARGET_FILE:dinerod> $<TARGET_FILE:swap_zec_regtest_tool> ${DINERO_ZEBRAD})
+    set_tests_properties(SwapZecRpcRegtest PROPERTIES LABELS "wallet;swap;regtest" TIMEOUT 900)
+  endif()
 endif()
 
 # DIN<->ETH swap contract (contracts/swap-htlc): Foundry unit, fuzz and invariant
