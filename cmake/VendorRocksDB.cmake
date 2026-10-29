@@ -74,14 +74,29 @@ if(DINERO_USE_VENDORED_DEPS)
   # file-name logging strings; two otherwise identical builders then produce
   # different final dinerod bytes. Map the parent source/build roots to the same
   # canonical names used by ReproducibleBuild.cmake.
+  # GCC 15's libstdc++ no longer pulls <cstdint> in transitively. The pinned
+  # RocksDB (v9.9.3) uses uint64_t/uint32_t without including it in
+  # db/blob/blob_file_meta.h, include/rocksdb/trace_record.h,
+  # include/rocksdb/trace_record_result.h and include/rocksdb/write_batch_base.h,
+  # so a cold build fails there. Force-include it for GCC >= 15 only, leaving
+  # older toolchains' flags (and their reproducible output) unchanged.
+  set(_rocksdb_cxx_compat_flags "")
+  if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND
+     CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL 15)
+    set(_rocksdb_cxx_compat_flags "-include cstdint")
+  endif()
+
   if(DINERO_REPRODUCIBLE_BUILD AND
      CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
     set(_rocksdb_repro_flags
       "-ffile-prefix-map=${CMAKE_SOURCE_DIR}=. -fdebug-prefix-map=${CMAKE_SOURCE_DIR}=. -fmacro-prefix-map=${CMAKE_SOURCE_DIR}=. -ffile-prefix-map=${CMAKE_BINARY_DIR}=./build -fdebug-prefix-map=${CMAKE_BINARY_DIR}=./build -fmacro-prefix-map=${CMAKE_BINARY_DIR}=./build -fno-record-gcc-switches -Wdate-time")
+    string(STRIP "${_rocksdb_repro_flags} ${_rocksdb_cxx_compat_flags}" _rocksdb_repro_cxx_flags)
     list(APPEND _rocksdb_cmake_args
       "-DCMAKE_C_FLAGS=${_rocksdb_repro_flags}"
-      "-DCMAKE_CXX_FLAGS=${_rocksdb_repro_flags}"
+      "-DCMAKE_CXX_FLAGS=${_rocksdb_repro_cxx_flags}"
     )
+  elseif(_rocksdb_cxx_compat_flags)
+    list(APPEND _rocksdb_cmake_args "-DCMAKE_CXX_FLAGS=${_rocksdb_cxx_compat_flags}")
   endif()
 
   if(APPLE AND NOT CMAKE_SYSTEM_NAME STREQUAL "Android")
