@@ -4,7 +4,7 @@
 //
 //   dinero-swap-tower --inbox DIR --din-rpc HOST:PORT --din-auth USER:PASS
 //                     --btc-rpc HOST:PORT --btc-auth USER:PASS
-//                     [--din-hrp din|tdin|rdin] [--btc-chain main|test|regtest]
+//                     [--din-hrp din|tdin|rdin] [--btc-chain main|testnet4|regtest]
 //                     [--interval SECONDS] [--escalate-after SECONDS]
 //
 // Arming: Bob's wallet writes <DIR>/<id>.pkg (WriteTowerInbox). Each package

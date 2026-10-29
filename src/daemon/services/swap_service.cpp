@@ -8,6 +8,7 @@
 #include "rpc/rpc_registry.h"
 #include "rpc_client.h"
 #include "wallet/key_origin.h"
+#include "wallet/swap/btc_watcher.h"
 #include "wallet/swap/tower.h"
 #include "wallet/wallet_manager.h"
 
@@ -109,8 +110,7 @@ bool SwapService::Init(DaemonContext& ctx) {
     mc.runner.din_hrp = params.hrp;
     mc.runner.btc_hrp = mc.network == swap::SwapNetwork::Mainnet ? "bc"
                       : mc.network == swap::SwapNetwork::Testnet ? "tb" : "bcrt";
-    mc.runner.btc_chain = mc.network == swap::SwapNetwork::Mainnet ? "main"
-                        : mc.network == swap::SwapNetwork::Testnet ? "test" : "regtest";
+    mc.runner.btc_chain = swap::BitcoinChainFor(mc.network);
     const int64_t din_fee = config->GetInt("swap.din_fee_una", int(mc.runner.din_fee_una));
     const int64_t din_fee_urgent = config->GetInt("swap.din_fee_urgent_una", int(mc.runner.din_fee_urgent_una));
     const int64_t btc_fee = config->GetInt("swap.btc_fee_sat", int(mc.runner.btc_fee_sat));

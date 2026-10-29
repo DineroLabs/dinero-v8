@@ -61,6 +61,15 @@ bool ClassifySpend(const Json::Value& txinwitness, const Bytes32& payment_hash, 
 
 }  // namespace
 
+std::string BitcoinChainFor(SwapNetwork network) {
+    switch (network) {
+    case SwapNetwork::Mainnet: return "main";
+    case SwapNetwork::Testnet: return "testnet4";
+    case SwapNetwork::Regtest: break;
+    }
+    return "regtest";
+}
+
 BtcWatcher::BtcWatcher(BtcRpc rpc, BtcWatchTarget target)
     : rpc_(std::move(rpc)), target_(std::move(target)),
       script_pubkey_(BtcP2wshScriptPubKey(BuildBtcHtlcWitnessScript(target_.terms))),
