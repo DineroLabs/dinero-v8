@@ -226,12 +226,19 @@ int main(int argc, char** argv) {
         RequireNoSidecars(root);
 
         // Reopen twice: the committed files are the fixed point of an open.
+        const std::string tree = "d blockchain\nd wallets\nf blockchain/utxo\nf wallet_registry.db\nf wallets/wallet_sepfixture.db\n";
         const auto first = Canonical(Derive(root, schema));
         const auto schema_first = SchemaDump(root);
+        const auto rows_first = RowDump(root);
+        const auto header_first = HeaderDump(root);
+        Check(TreeDump(root) == tree, "data directory holds files other than the three databases");
         const auto second = Canonical(Derive(root, schema));
-        const auto schema_second = SchemaDump(root);
         Check(first == second, "derived contents change across reopen (open is not a fixed point)");
-        Check(schema_first == schema_second, "schema changes across reopen (open is not a fixed point)");
+        Check(schema_first == SchemaDump(root), "schema changes across reopen (open is not a fixed point)");
+        Check(rows_first == RowDump(root), "persisted rows outside ExcludedColumns() change across reopen");
+        Check(header_first == HeaderDump(root), "database header fields change across reopen");
+        Check(TreeDump(root) == tree, "reopen adds or removes files in the data directory");
+        const auto schema_second = SchemaDump(root);
 
         WriteFile(root / "expected.json", second);
         WriteFile(root / "schema.txt", schema_second);

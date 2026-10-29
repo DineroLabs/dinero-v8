@@ -11,7 +11,9 @@
 //      re-derives expected.json (addresses, watch script, descriptor,
 //      balance, UTXOs, user_version and open_sqlite PRAGMAs per DB) and
 //      compares it byte-for-byte;
-//   3. dumps sqlite_master again and compares it with schema.txt (after).
+//   3. dumps sqlite_master again and compares it with schema.txt (after);
+//   4. compares, before vs after the open: the data-directory file set, every
+//      persisted row (minus ExcludedColumns()) and the header fields.
 // Exit 1 on any difference or error (no assert: gates under NDEBUG too).
 
 #include "wallet_fixture_common.h"
@@ -40,20 +42,20 @@ struct TempDir {
     ~TempDir() { std::error_code ec; fs::remove_all(path, ec); }
 };
 
-// Print the first differing line of two texts (and both line counts).
+// Print up to 10 differing lines (positional) of two texts.
 bool Same(const std::string& what, const std::string& want, const std::string& got) {
     if (want == got) return true;
     std::istringstream a(want), b(got);
     std::string la, lb;
-    size_t line = 0;
-    while (true) {
+    size_t line = 0, shown = 0;
+    while (shown < 10) {
         ++line;
         const bool ha = bool(std::getline(a, la)), hb = bool(std::getline(b, lb));
         if (!ha && !hb) break;
         if (!ha || !hb || la != lb) {
             std::fprintf(stderr, "W4 DIFF %s line %zu\n  fixture: %s\n  current: %s\n", what.c_str(), line,
                          ha ? la.c_str() : "<eof>", hb ? lb.c_str() : "<eof>");
-            break;
+            ++shown;
         }
     }
     return false;
@@ -94,23 +96,33 @@ int main(int argc, char** argv) {
         bool ok = true;
         const auto before = SchemaDump(root);
         ok &= Same("schema.txt (before open)", want_schema, before);
+        const auto tree_before = TreeDump(root);
+        const auto rows_before = RowDump(root);
+        const auto header_before = HeaderDump(root);
 
         const auto got_json = Canonical(Derive(root, SEP_WALLET_SCHEMA_PATH));
         ok &= Same("expected.json (after read-write open)", want_json, got_json);
 
         const auto after = SchemaDump(root);
         ok &= Same("schema.txt (after open)", want_schema, after);
+        // A clean close leaves no -wal/-shm/-journal (SchemaDump refuses
+        // them), so the file set must be exactly the copied one.
+        ok &= Same("data-directory file set (before vs after open)", tree_before, TreeDump(root));
+        ok &= Same("persisted rows (before vs after open)", rows_before, RowDump(root));
+        ok &= Same("database header bytes 18-23,44-67 (before vs after open)", header_before, HeaderDump(root));
 
         const auto derived = json::parse(got_json);
         std::cout << "W4 compared: " << DatabaseFiles().size() << " DBs, " << Lines(want_schema)
                   << " schema.txt lines, " << Lines(want_json) << " expected.json lines ("
                   << derived["wallet"]["addresses"].size() << " addresses, " << derived["wallet"]["utxos"].size()
                   << " wallet UTXOs, " << derived["utxo_index"]["utxos"].size() << " index UTXOs, "
-                  << derived["descriptors"].size() << " descriptors";
+                  << derived["descriptors"].size() << " descriptors; " << Lines(tree_before) << " datadir entries, "
+                  << Lines(rows_before) << " row-dump lines, " << ExcludedColumns().size() << " excluded columns";
 #ifdef SEP_FIXTURE_ORCHARD
         std::cout << ", Orchard snapshot revision " << derived["orchard"]["snapshot_revision"];
 #endif
         std::cout << ")\n";
+        std::cout << "W4 header fields:\n" << header_before;
         for (const auto& rel : DatabaseFiles())
             std::cout << "W4 " << rel << ": user_version=" << derived["sqlite"][rel]["user_version"]
                       << " journal_mode=" << derived["sqlite"][rel]["journal_mode"]
@@ -119,7 +131,7 @@ int main(int argc, char** argv) {
             std::fprintf(stderr, "W4 FAIL: wallet files differ from the baseline fixture\n");
             return 1;
         }
-        std::cout << "W4 OK: fixture opened read-write; contents, PRAGMAs and sqlite_master unchanged\n";
+        std::cout << "W4 OK: fixture opened read-write; contents, PRAGMAs, sqlite_master, rows, header fields and file set unchanged\n";
         return 0;
     } catch (const std::exception& e) {
         std::fprintf(stderr, "W4 FAIL: %s\n", e.what());
