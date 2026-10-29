@@ -193,7 +193,9 @@ inline const std::vector<ExcludedColumn>& ExcludedColumns() {
         // WalletManager::open(): updateLastOpened(name), unix seconds.
         {"wallet_registry.db", "wallets", "last_opened"},
         // WalletManager::open(): a relocated datadir repairs the stored
-        // absolute/relative wallet path to <datadir>/wallets/wallet_<name>.db.
+        // wallet path. Excluded from the before/after row diff only because
+        // the value moves with the copy; RequireRegistryWalletPath() checks
+        // its post-open value exactly.
         {"wallet_registry.db", "wallets", "path"},
     };
     return cols;
@@ -204,6 +206,20 @@ inline bool Excluded(const std::string& db, const std::string& table, const std:
     return false;
 }
 
+inline std::vector<std::string> Strings(sqlite3* db, const std::string& sql);
+// The baseline open leaves the registry path at exactly
+// <root>/wallets/wallet_sepfixture.db (wallet_manager.cpp:2048-2050 repairs a
+// relocated path to it). Any other value means the wallet DB is being used
+// from somewhere else, possibly outside the data directory TreeDump walks.
+inline std::string ExpectedRegistryWalletPath(const fs::path& root) {
+    return (root / "wallets" / "wallet_sepfixture.db").lexically_normal().string();
+}
+inline std::string RegistryWalletPath(const fs::path& root) {
+    RawDb db(root / "wallet_registry.db");
+    const auto rows = Strings(db.get(), "SELECT path FROM wallets WHERE name='sepfixture'");
+    Check(rows.size() == 1, "registry must hold exactly one sepfixture row");
+    return rows.front();
+}
 inline std::vector<std::string> Strings(sqlite3* db, const std::string& sql) {
     sqlite3_stmt* q = nullptr;
     Check(sqlite3_prepare_v2(db, sql.c_str(), -1, &q, nullptr) == SQLITE_OK, "query failed: " + sql);
