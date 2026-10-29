@@ -968,6 +968,11 @@ endif()
 if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_header_metadata_recovery.cpp)
   add_executable(test_header_metadata_recovery
     tests/daemon/test_header_metadata_recovery.cpp
+    # dinero_wallet (via dinero_core) uses dinero::Mempool but does not link
+    # it; whether wallet_manager.cpp.o is pulled into this link depends on
+    # which archive member supplies an unrelated libstdc++ instantiation
+    # (it is on GCC 15 CI). Provide Mempool the way other tests do.
+    src/daemon/mempool.cpp
   )
   target_link_libraries(test_header_metadata_recovery PRIVATE
     dinero_core
