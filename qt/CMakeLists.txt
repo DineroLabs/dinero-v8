@@ -1507,7 +1507,7 @@ if(BUILD_TESTING)
         add_test(NAME SwapWidgetZecRegtest COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/swap_widget_zec_regtest.sh
                  ${DINEROD_BINARY} $<TARGET_FILE:test_swap_widget_regtest>
                  ${_swap_dinerod_dir}/swap_zec_regtest_tool ${DINERO_QT_ZEBRAD})
-        set_tests_properties(SwapWidgetZecRegtest PROPERTIES TIMEOUT 900)
+        set_tests_properties(SwapWidgetZecRegtest PROPERTIES TIMEOUT 900 SKIP_RETURN_CODE 77)
       endif()
     endif()
   endif()

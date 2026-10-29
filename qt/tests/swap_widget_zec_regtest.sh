@@ -9,6 +9,8 @@
 set -euo pipefail
 DINEROD=${1:?dinerod}; QTTEST=${2:?test binary}; TOOL=${3:?swap_zec_regtest_tool}; ZEBRAD=${4:?zebrad}
 MINE="$(cd "$(dirname "$0")/../../tests/wallet" && pwd)/zebra_regtest_mine.py"
+# A dinerod built without DINERO_SWAP_ZEC has no Zcash code: skipped (77), not passed.
+nm "$DINEROD" 2>/dev/null | grep -q dzs_tx_build || { echo "SKIP: $DINEROD is built without DINERO_SWAP_ZEC"; exit 77; }
 REGTEST_GENESIS=029f11d80ef9765602235e1bc9727e3eb6ba20839319f761fee920d63401e327
 DIR=$(mktemp -d)
 BASE=$((30000 + RANDOM % 8000))
