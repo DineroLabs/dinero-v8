@@ -4492,9 +4492,12 @@ if(DINERO_ENABLE_QUIC AND TARGET dinero_ngtcp2_crypto_ossl AND EXISTS ${CMAKE_SO
     ${CMAKE_SOURCE_DIR}/include
   )
   add_test(NAME QuicEndpoint COMMAND test_quic_endpoint)
+  # Pending-session expiry and the STUN demux case run real timed sockets.
+  # Together these eight cases take over 60 seconds on macOS; keep the
+  # per-case handshake/expiry assertions and allow bounded suite teardown.
   set_tests_properties(QuicEndpoint PROPERTIES
     LABELS "p2p;quic;ngtcp2;transport"
-    TIMEOUT 60
+    TIMEOUT 120
   )
   list(APPEND DINERO_QUIC_RELAY_TEST_TARGETS test_quic_endpoint)
 endif()

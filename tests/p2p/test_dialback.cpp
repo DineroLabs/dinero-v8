@@ -58,6 +58,8 @@ struct Node {
         mgr->set_dialback_min_groups(1);
         mgr->set_dialback_private_targets(true);  // everything here is 127.0.0.1
         EXPECT_TRUE(mgr->start());
+        EXPECT_TRUE(mgr->WaitUntilListening(std::chrono::seconds(5)));
+        port=mgr->get_listen_port();
     }
     ~Node() {
         mgr->stop();

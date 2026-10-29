@@ -234,6 +234,7 @@ void ExpectLegacyTcpIdentity(uint16_t requested_port = 0) {
     for (Node* n : {&a, &b}) {
         n->mgr->set_quic_enabled(false);
         ASSERT_TRUE(n->mgr->start());
+        ASSERT_TRUE(n->mgr->WaitUntilListening(std::chrono::seconds(5)));
     }
     const auto port = b.mgr->get_listen_port();
     ASSERT_NE(port, 0);
@@ -255,6 +256,7 @@ TEST(RelayIdentityBinding, TcpPeerLegacyBehaviorAfterPortFallback) {
     Node occupied;
     occupied.mgr->set_quic_enabled(false);
     ASSERT_TRUE(occupied.mgr->start());
+    ASSERT_TRUE(occupied.mgr->WaitUntilListening(std::chrono::seconds(5)));
     ASSERT_NE(occupied.mgr->get_listen_port(), 0);
     // Deliberately force the server to fall back from an occupied port. The
     // identity exchange must reach its actual listener, not the requested one.

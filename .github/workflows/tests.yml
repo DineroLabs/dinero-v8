@@ -1009,6 +1009,11 @@ jobs:
             -L 'quic|p2p' \
             --label-exclude 'integration|gate|release|canonicality|fuzz'
 
+      - name: Require direct QUIC full-node sync
+        run: |
+          ctest --test-dir build-tests-quic -R '^DirectQuicSync$' \
+            --verbose --no-tests=error --output-log build-tests-quic/direct-quic-sync.log
+
       - name: Qualify real relay and hole-punch network paths
         timeout-minutes: 60
         run: |
@@ -1037,6 +1042,7 @@ jobs:
           name: quic-lifetime-${{ github.sha }}
           path: |
             build-tests-quic/Testing/Temporary/
+            build-tests-quic/direct-quic-sync.log
             build-tests-quic/relay-netns-evidence/**/*.log
             build-tests-quic/relay-netns-evidence/summary.txt
             build-tests-quic/relay-netns-evidence/source-sha.txt
