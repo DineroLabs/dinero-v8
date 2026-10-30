@@ -68,7 +68,7 @@ These five failure modes are the most likely to bite a user and are not otherwis
 | `tests/separation/make_wallet_fixture.cpp` | **W4 generator.** Built only at the baseline, never against split code |
 | `tests/separation/wallet_fixture_compat.cpp` + `fixtures/{off,on}/` | **W4 checker** and its checked-in fixtures |
 | `tests/separation/rpc_transcript.py` + `transcripts/{off,on}.json` | **W5 regtest transcript** and its normalizer |
-| `tests/separation/interface_freeze.py` + `interface_baseline/` | **W5.** Header diff, JNI export list and exported dynamic symbols |
+| `tests/separation/interface_freeze.py` + `interface_baseline/` | **W5.** Header diff, JNI export list and exported dynamic symbols. Linux/macOS check NodeCore and the wallet FFI; Windows checks the wallet FFI only (NodeCore is not a Windows target) |
 | `tests/separation/tx_validation_binds.cpp` | **K6.** Compile-time binding test |
 | `.github/workflows/separation-gates.yml` | Non-required gate jobs: Linux GCC 15 and 13, macOS arm64, each × OFF/ON |
 | `.github/workflows/separation-gates-windows.yml` | CI-only MSVC gate job: no signing, no uploads |
@@ -242,6 +242,10 @@ Library edits: `src/consensus/CMakeLists.txt`, `src/consensus/pq/CMakeLists.txt`
   - It diffs `nodecore_ffi.h` and `wallet_ffi.h` against the baseline copies.
   - It compares the JNI export list (`Java_org_dinerolabs_*` in `nodecore_jni_android.cpp`).
   - It compares exported dynamic symbols of `nodecore_ffi` and `dinero_wallet_ffi` (`nm -D --defined-only`; `-gU` on Apple).
+  - **Windows is partial.** NodeCore is not a Windows target (`src/nodecore/CMakeLists.txt:21`, "mobile embedding library"; POSIX APIs). On Windows, W5 does not build `nodecore_ffi`. It checks only `wallet_ffi.h`, the `dinero_wallet_ffi` `.lib` exports and the RPC transcript.
+    - `nodecore_ffi.h`, `jni_exports.txt` and the NodeCore symbols are reported `N/A on Windows (NodeCore not a Windows target)`.
+    - A passing Windows W5 reads `GATE W5 PASS (partial: wallet FFI + RPC only; NodeCore N/A on Windows)`, never a bare PASS.
+    - NodeCore interface evidence comes only from the supported platforms, Linux and macOS, where the NodeCore checks stay required.
 - Produces: `rpc_transcript.py record|check --dinerod <path> --out <json>`. It starts regtest in a temp datadir, mines, and runs the spec's W5 list in order:
   - getbalance, getnewaddress, listunspent (including an output spent by a mempool tx), sendtoaddress;
   - rescan, and a snapshot-recovery rescan where the fixture supports it;
@@ -283,9 +287,19 @@ Library edits: `src/consensus/CMakeLists.txt`, `src/consensus/pq/CMakeLists.txt`
   - K3 and W3 FAIL where they are measured.
     - On Windows they report **UNMEASURED** (neither PASS nor a measured FAIL) until the COFF archive scan is verified: the probe `.lib` link inputs, a verified `llvm-nm` and a positive control.
   - K5 and W4 PASS (K5 runs on POSIX runners only).
-  - K4 and W5 PASS on macOS, where the reviewed reference baselines are committed.
+  - K4 and W5 PASS on macOS, where the reviewed reference baselines are committed, once the macOS lane builds (see below).
     - **On Linux and Windows, K4 and W5 are expected red** (`FAIL rc=2 (missing reference -- not a vector/interface mismatch)`) until reviewed reference baselines for that platform are committed.
     - A missing reference is missing evidence, not a pass and not a mismatch.
+  - **Windows W5 is partial:** wallet FFI + RPC transcript only.
+    - "Windows W5 passed" never means NodeCore was tested. NodeCore is not a Windows target, and NodeCore interface evidence comes only from Linux and macOS.
+    - The Windows RPC transcript is blocked by product defect **B1**. On LLP64, `dinerod` parses `--consensus-state-commitment-height=4294967295` with `std::stol` (`src/daemon/main.cpp:565`), which overflows, so the snapshot node exits at startup.
+    - B1 is tracked separately and is fixed only through its own review, not in stage 0. Until then the Windows W5 transcript is **unmeasured**.
+  - **A failed prerequisite build makes the lane UNMEASURED.** The summary prints `LANE UNMEASURED: prerequisite build failed: <targets>` when any of `dinerod`, `dinero_wallet`, `dinero_consensus` or `sep_wallet_fixture_compat` fails to build.
+    - Each gate that depends on a failed target reports `GATE <id> UNMEASURED (...)` instead of FAIL.
+    - Gates whose own inputs built still report their real result; for example, K2/W2/K5 need no build.
+  - **macOS stays on `macos-14`.** Run 1 on macOS (PR #860) is **UNMEASURED**: the pre-existing Xcode 15.4 build break on dinero-main (`chainstate_service.h:1735`, incomplete type in `std::optional<std::span<const MempoolProofView>>`) stops the prerequisite build.
+    - The fix is not ours. Once it lands on dinero-main, rebase #860 and rerun.
+    - The runner is not switched.
   - W6 as recorded in Task 0.8.
   - **The first PR run only collects candidate baselines,** which the record step prints to the job log. It is not described as green.
     - The candidates are reviewed, then committed by hand in a separate change.
@@ -313,7 +327,10 @@ Library edits: `src/consensus/CMakeLists.txt`, `src/consensus/pq/CMakeLists.txt`
   - gate status per platform, stated as measured.
     - Linux and Windows K4/W5 count as red (missing reference) until reviewed baselines are committed.
     - Windows K3/W3 count as UNMEASURED until the COFF scan is verified.
-    - Neither is reported as a pass.
+    - Windows W5 counts as partial (wallet FFI + RPC only; NodeCore N/A on Windows). Its RPC transcript stays unmeasured until B1 is fixed through its own review.
+    - NodeCore interface status is reported from Linux and macOS only.
+    - A lane whose prerequisite build failed counts as UNMEASURED for every gate that depends on the failed targets (for example, macOS while the Xcode 15.4 break is unfixed).
+    - None of these is reported as a pass.
 - [ ] **Step 4: STOP.** Send the report to the owner. The v8.2.1 decision and permission to start stage 1 come from the owner. Delete the throwaway branch only after the owner says so.
 
 ---
@@ -541,7 +558,7 @@ Library edits: `src/consensus/CMakeLists.txt`, `src/consensus/pq/CMakeLists.txt`
 ### Task 6.2: Test link cleanup
 
 - [ ] **Step 1:** For each pure-wallet test that links `wallet_test_deps` or compiles `tests/stubs/mempool_test_stubs.cpp`, switch it to link `dinero_wallet` (plus `fake_node_views.h` where it used a mempool). Each test must keep passing; check with `ctest -R <name> --no-tests=error` per test.
-- [ ] **Step 2:** Run the full ctest in both configs on all four platforms, then every gate. Expected: K1–K6 and W1–W5 GREEN; W6 as stage 0 determined. Commit `test: wallet tests link the wallet alone`.
+- [ ] **Step 2:** Run the full ctest in both configs on all four platforms, then every gate. Expected: K1–K6 and W1–W5 GREEN; W6 as stage 0 determined. On Windows, W5 GREEN means the partial gate (wallet FFI + RPC transcript; NodeCore N/A). The NodeCore part of W5 must be GREEN on Linux and macOS. Commit `test: wallet tests link the wallet alone`.
 
 ## Stage 7 — required gates and unpinned trials (one PR)
 
