@@ -284,7 +284,7 @@ Library edits: `src/consensus/CMakeLists.txt`, `src/consensus/pq/CMakeLists.txt`
     - On Windows they report **UNMEASURED** (neither PASS nor a measured FAIL) until the COFF archive scan is verified: the probe `.lib` link inputs, a verified `llvm-nm` and a positive control.
   - K5 and W4 PASS (K5 runs on POSIX runners only).
   - K4 and W5 PASS on macOS, where the reviewed reference baselines are committed.
-    - **On Linux and Windows, K4 and W5 are expected red** (`FAIL rc=2 (missing reference — not a vector/interface mismatch)`) until reviewed reference baselines for that platform are committed.
+    - **On Linux and Windows, K4 and W5 are expected red** (`FAIL rc=2 (missing reference -- not a vector/interface mismatch)`) until reviewed reference baselines for that platform are committed.
     - A missing reference is missing evidence, not a pass and not a mismatch.
   - W6 as recorded in Task 0.8.
   - **The first PR run only collects candidate baselines,** which the record step prints to the job log. It is not described as green.

@@ -126,6 +126,9 @@ HEX_BLOB = re.compile(r"(?:[0-9a-fA-F]{2}){65,}")
 ADDR = re.compile(r"(?<![0-9a-z])(?:rdin|tdin|din|bcrt)1[02-9ac-hj-np-z]{6,}(?![0-9a-z])")
 
 
+LOG_TAIL = 60
+
+
 class RunError(Exception):
     pass
 
@@ -165,7 +168,8 @@ class Node:
                "--wallet-socket-port=%d" % self.wsport, "--listenonion=0",
                *net, *extra]
         self.starts += 1
-        log = open(os.path.join(self.log_dir, "%s.%d.log" % (self.name, self.starts)), "wb")
+        self.out_log = os.path.join(self.log_dir, "%s.%d.log" % (self.name, self.starts))
+        log = open(self.out_log, "wb")
         self.proc = subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT,
                                      stdin=subprocess.DEVNULL)
         log.close()
@@ -173,7 +177,8 @@ class Node:
         deadline = time.time() + 120
         while time.time() < deadline:
             if self.proc.poll() is not None:
-                raise RunError("%s exited rc=%s during startup" % (self.name, self.proc.returncode))
+                raise RunError("%s exited rc=%s during startup\n%s" % (
+                    self.name, self.proc.returncode, self.startup_logs()))
             try:
                 st, body = self.rpc("getblockcount", [])
                 if st == 200 and isinstance(body.get("result"), int):
@@ -182,6 +187,29 @@ class Node:
                 pass
             time.sleep(0.5)
         raise RunError("%s did not become ready" % self.name)
+
+    def startup_logs(self, n=LOG_TAIL):
+        """The last n lines of dinerod's log for this start, with its path, so
+        a CI log shows why the node exited (the work dir does not outlive the
+        runner). dinerod logs to stdout/stderr (debug.log_file is empty by
+        default), captured in out_log; a dinero.log under the datadir is
+        included too."""
+        logs = [("log (stdout/stderr)", self.out_log)]
+        for root, _dirs, files in sorted(os.walk(self.datadir)):
+            if "dinero.log" in files:
+                logs.append(("dinero.log", os.path.join(root, "dinero.log")))
+        parts = []
+        for what, path in logs:
+            try:
+                with open(path, "rb") as f:
+                    lines = f.read().decode(errors="replace").splitlines()
+            except OSError as e:
+                parts.append("%s %s: unreadable (%s)" % (self.name, what, e))
+                continue
+            parts.append("%s %s %s (last %d of %d lines):" % (
+                self.name, what, path, min(n, len(lines)), len(lines)))
+            parts.extend("  | " + l for l in lines[-n:])
+        return "\n".join(parts)
 
     def cookie(self):
         for p in (os.path.join(self.datadir, ".cookie"),

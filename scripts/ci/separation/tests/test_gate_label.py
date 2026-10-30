@@ -34,7 +34,7 @@ def test_k4_pass_with_reference(tmp_path):
 def test_k4_missing_reference_only_when_tests_ran(tmp_path):
     o, u = k4files(tmp_path, OK_OUT)
     rc, line, gh = run(tmp_path, "k4", output=o, unresolved=u, rc=0, reference_present=0)
-    assert (rc, line) == (2, "GATE K4 FAIL rc=2 (missing reference — not a vector mismatch)")
+    assert (rc, line) == (2, "GATE K4 FAIL rc=2 (missing reference -- not a vector mismatch)")
     assert gh == "note=missing reference\n"
 
 
@@ -115,7 +115,7 @@ def test_w5_run_error_is_not_missing_reference(tmp_path):
 
 def test_w5_missing_reference_only(tmp_path):
     rc, line, gh = w5(tmp_path, W5_MISSING_REF_ONLY, 8, 0)
-    assert (rc, line) == (2, "GATE W5 FAIL rc=2 (missing reference — not an interface mismatch)")
+    assert (rc, line) == (2, "GATE W5 FAIL rc=2 (missing reference -- not an interface mismatch)")
     assert gh == "note=missing reference\n"
 
 
@@ -138,10 +138,160 @@ def test_w5_pass_and_fail_with_reference(tmp_path):
 def test_w5_missing_reference_without_transcript_output(tmp_path):
     # --output-on-failure: a passing SepRpcTranscript prints only its result line
     text = W5_MISSING_REF_ONLY.replace("rpc_transcript: PASS (40 entries match off.json)\n", "")
-    assert w5(tmp_path, text, 8, 0)[:2] == (2, "GATE W5 FAIL rc=2 (missing reference — not an interface mismatch)")
+    assert w5(tmp_path, text, 8, 0)[:2] == (2, "GATE W5 FAIL rc=2 (missing reference -- not an interface mismatch)")
 
 
 def test_w5_transcript_failed_with_missing_reference(tmp_path):
     text = W5_MISSING_REF_ONLY.replace("SepRpcTranscript .................   Passed",
                                        "SepRpcTranscript .................***Failed")
     assert w5(tmp_path, text, 8, 0)[:2] == (1, "GATE W5 FAIL rc=1 (transcript mismatch (symbol reference also missing))")
+
+
+# Round 4 (I1): "missing reference" / "vector mismatch" need positive evidence
+# that the comparison ran; crashed, empty or not-run shapes are "did not run".
+K4_TRACEBACK = """\
+Traceback (most recent call last):
+  File "/x/run_consensus_vectors.py", line 188, in <module>
+    sys.exit(main())
+KeyError: 'tests'
+"""
+
+
+def test_k4_traceback_without_reference_is_not_missing_reference(tmp_path):
+    o, u = k4files(tmp_path, K4_TRACEBACK)
+    rc, line, gh = run(tmp_path, "k4", output=o, unresolved=u, rc=1, reference_present=0)
+    assert (rc, line) == (1, "GATE K4 FAIL rc=1 (check did not run: run_consensus_vectors.py traceback (rc=1))")
+    assert gh == ""
+
+
+def test_k4_traceback_with_reference_is_not_a_vector_mismatch(tmp_path):
+    o, u = k4files(tmp_path, K4_TRACEBACK)
+    assert run(tmp_path, "k4", output=o, unresolved=u, rc=1, reference_present=1)[:2] == (
+        1, "GATE K4 FAIL rc=1 (check did not run: run_consensus_vectors.py traceback (rc=1))")
+
+
+def test_k4_traceback_after_mismatch_lines_is_not_a_verdict(tmp_path):
+    o, u = k4files(tmp_path, "DIGEST_MISMATCH MerkleGolden\n" + K4_TRACEBACK)
+    rc, line, gh = run(tmp_path, "k4", output=o, unresolved=u, rc=1, reference_present=0)
+    assert rc == 1 and "check did not run" in line and gh == ""
+
+
+def test_k4_empty_output_is_not_a_verdict(tmp_path):
+    for ref in (0, 1):
+        for vrc in (0, 1):
+            o, u = k4files(tmp_path, "")
+            rc, line, gh = run(tmp_path, "k4", output=o, unresolved=u, rc=vrc, reference_present=ref)
+            assert (rc, line, gh) == (1, "GATE K4 FAIL rc=1 (check did not run: unrecognized output rc=%d)" % vrc, "")
+
+
+def test_k4_rc_contradicting_output_is_not_a_verdict(tmp_path):
+    # rc 1 with only an OK line, rc 0 with a mismatch line
+    o, u = k4files(tmp_path, OK_OUT)
+    assert run(tmp_path, "k4", output=o, unresolved=u, rc=1, reference_present=0)[:2] == (
+        1, "GATE K4 FAIL rc=1 (check did not run: unrecognized output rc=1)")
+    o, u = k4files(tmp_path, "DIGEST_MISMATCH MerkleGolden\n")
+    assert run(tmp_path, "k4", output=o, unresolved=u, rc=0, reference_present=1)[:2] == (
+        1, "GATE K4 FAIL rc=1 (check did not run: unrecognized output rc=0)")
+
+
+def test_k4_mismatch_lines_without_reference_is_missing_reference(tmp_path):
+    # informational comparison against the macOS reference differed
+    o, u = k4files(tmp_path, "DIGEST_MISMATCH MerkleGolden\n")
+    rc, line, gh = run(tmp_path, "k4", output=o, unresolved=u, rc=1, reference_present=0)
+    assert (rc, line, gh) == (2, "GATE K4 FAIL rc=2 (missing reference -- not a vector mismatch)",
+                              "note=missing reference\n")
+
+
+W5_FREEZE_TRACEBACK = W5_MISSING_REF_ONLY.replace(
+    "interface_freeze: INPUT ERROR: no baseline /x/symbols_linux_off.txt (record it at the baseline for this platform/config)\n",
+    "Traceback (most recent call last):\n  File \"/x/interface_freeze.py\", line 9, in current\nOSError: [Errno 2] nm\n")
+
+
+def test_w5_crashed_freeze_with_transcript_pass_is_not_missing_reference(tmp_path):
+    rc, line, gh = w5(tmp_path, W5_FREEZE_TRACEBACK, 8, 0)
+    assert (rc, line) == (8, "GATE W5 FAIL rc=8 (check did not run: Python traceback in the ctest log)")
+    assert gh == ""
+
+
+def test_w5_crashed_freeze_without_traceback_is_not_missing_reference(tmp_path):
+    # freeze died before comparing (no PASS lines, no no-baseline error)
+    text = W5_MISSING_REF_ONLY
+    for l in ("PASS nodecore_ffi.h\n", "PASS wallet_ffi.h\n", "PASS jni_exports.txt\n"):
+        text = text.replace(l, "")
+    text = text.replace(
+        "interface_freeze: INPUT ERROR: no baseline /x/symbols_linux_off.txt (record it at the baseline for this platform/config)\n",
+        "Segmentation fault\n")
+    rc, line, gh = w5(tmp_path, text, 8, 0)
+    assert rc == 8 and line.startswith("GATE W5 FAIL rc=8 (check did not run: interface_freeze did not reach")
+    assert "no nodecore_ffi.h" in line and "no no-baseline error" in line and gh == ""
+
+
+def test_w5_missing_reference_needs_every_item_pass(tmp_path):
+    text = W5_MISSING_REF_ONLY.replace("PASS jni_exports.txt\n", "")
+    rc, line, gh = w5(tmp_path, text, 8, 0)
+    assert (rc, line, gh) == (8, "GATE W5 FAIL rc=8 (check did not run: interface_freeze did not reach the "
+                                 "symbol comparison (no jni_exports.txt))", "")
+
+
+def test_w5_freeze_not_run_is_not_missing_reference(tmp_path):
+    for ref in (0, 1):
+        text = W5_MISSING_REF_ONLY.replace("SepInterfaceFreeze ...............***Failed",
+                                           "SepInterfaceFreeze ...............***Not Run")
+        rc, line, gh = w5(tmp_path, text, 8, ref)
+        assert (rc, line, gh) == (8, "GATE W5 FAIL rc=8 (check did not run: SepInterfaceFreeze ***Not Run)", "")
+
+
+def test_w5_transcript_not_run_is_not_a_transcript_verdict(tmp_path):
+    text = W5_MISSING_REF_ONLY.replace("SepRpcTranscript .................   Passed",
+                                       "SepRpcTranscript .................***Not Run")
+    assert w5(tmp_path, text, 8, 0)[:2] == (8, "GATE W5 FAIL rc=8 (check did not run: SepRpcTranscript ***Not Run)")
+
+
+def test_w5_other_no_baseline_error_is_not_missing_reference(tmp_path):
+    text = W5_MISSING_REF_ONLY.replace("/x/symbols_linux_off.txt", "/x/wallet_ffi.h")
+    rc, line, gh = w5(tmp_path, text, 8, 0)
+    assert rc == 8 and "check did not run: interface_freeze: INPUT ERROR: no baseline /x/wallet_ffi.h" in line
+    assert gh == ""
+
+
+def test_w5_run1_linux_log_shape_is_missing_reference(tmp_path):
+    # verbatim (timestamps stripped) from PR #860 run 1, linux-gcc15 orchard=off
+    text = """\
+ctest -R '^(SepInterfaceFreeze|SepRpcTranscript)$'
+Test project /home/runner/work/dinero-v8/dinero-v8/build-sep
+    Start 970: SepInterfaceFreeze
+1/2 Test #970: SepInterfaceFreeze ...............***Failed    0.21 sec
+[1/1] Building Bulletproofs FFI library (Rust)...
+    Finished `release` profile [optimized] target(s) in 0.02s
+interface_freeze: INPUT ERROR: no baseline /home/runner/work/dinero-v8/dinero-v8/tests/separation/interface_baseline/symbols_linux_off.txt (record it at the baseline for this platform/config)
+PASS nodecore_ffi.h
+PASS wallet_ffi.h
+PASS jni_exports.txt
+CMake Error at /home/runner/work/dinero-v8/dinero-v8/tests/separation/run_built_script.cmake:26 (message):
+  SEPARATION TEST FAILED:
+  /opt/hostedtoolcache/Python/3.12.15/x64/bin/python3.12;/home/runner/work/dinero-v8/dinero-v8/tests/separation/interface_freeze.py;check (rc=2)
+
+
+
+    Start 971: SepRpcTranscript
+2/2 Test #971: SepRpcTranscript .................   Passed   50.70 sec
+
+50% tests passed, 1 tests failed out of 2
+
+The following tests FAILED:
+\t970 - SepInterfaceFreeze (Failed)                       separation
+Errors while running CTest
+"""
+    assert w5(tmp_path, text, 8, 0) == (2, "GATE W5 FAIL rc=2 (missing reference -- not an interface mismatch)",
+                                        "note=missing reference\n")
+    # the same shape with CRLF line endings (Windows Tee-Object)
+    assert w5(tmp_path, text.replace("\n", "\r\n"), 8, 0)[:2] == (
+        2, "GATE W5 FAIL rc=2 (missing reference -- not an interface mismatch)")
+
+
+def test_gate_line_is_ascii(tmp_path):
+    o, u = k4files(tmp_path, OK_OUT)
+    line = run(tmp_path, "k4", output=o, unresolved=u, rc=0, reference_present=0)[1]
+    assert line.isascii() and " -- " in line
+    line = w5(tmp_path, W5_MISSING_REF_ONLY, 8, 0)[1]
+    assert line.isascii() and " -- " in line

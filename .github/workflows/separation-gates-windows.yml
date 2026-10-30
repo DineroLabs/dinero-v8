@@ -554,8 +554,8 @@ jobs:
             $r = Res ([Environment]::GetEnvironmentVariable("O_$g"))
             if ([Environment]::GetEnvironmentVariable("S_$g") -eq 'UNMEASURED') { $r = 'UNMEASURED (not a pass; not a measured fail)' }
             if ([Environment]::GetEnvironmentVariable("N_$g") -eq 'missing reference') {
-              if ($g -eq 'W5') { $r += ' (missing reference — not an interface mismatch)' }
-              else { $r += ' (missing reference — not a vector mismatch)' }
+              if ($g -eq 'W5') { $r += ' (missing reference -- not an interface mismatch)' }
+              else { $r += ' (missing reference -- not a vector mismatch)' }
             }
             "| $g | $r |"
           }
