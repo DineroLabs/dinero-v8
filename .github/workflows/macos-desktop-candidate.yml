@@ -11,6 +11,8 @@ on:
       - 'scripts/ci/test_desktop_candidate.py'
       - 'scripts/ci/check_macos_minimum.py'
       - 'scripts/ci/test_macos_minimum.py'
+      - 'scripts/ci/check_macos_desktop_payload.py'
+      - 'scripts/ci/test_macos_desktop_payload.py'
   workflow_dispatch:
     inputs:
       candidate_source:
@@ -34,6 +36,7 @@ jobs:
       - run: |
           python3 -B scripts/ci/test_desktop_candidate.py -v
           python3 -B scripts/ci/test_macos_minimum.py -v
+          python3 -B scripts/ci/test_macos_desktop_payload.py -v
       - name: Require an immutable candidate input
         if: github.event_name == 'workflow_dispatch'
         env:
@@ -272,12 +275,8 @@ jobs:
           test -x "$APP/Contents/Resources/tor/tor/tor"
           test -f "$APP/Contents/Resources/tor/DINERO_TOR_VERSION"
           "$APP/Contents/Resources/tor/tor/tor" --version | grep -F 'Tor version '
-          for bin in dinerod dinero-cli dinero-swap-tower dinero-qt dinero-miner \
-                     dinero-solo-miner dinero-gpu-miner dinero-stratum-worker \
-                     dinero-wallet-cli dinero-sv2-miner dinero-sv2-gpu-miner dinero-seeder; do
-            test -x "$APP/Contents/MacOS/$bin"
-            test "$(lipo -archs "$APP/Contents/MacOS/$bin")" = '${{ matrix.arch }}'
-          done
+          python3 "$GITHUB_WORKSPACE/tooling/scripts/ci/check_macos_desktop_payload.py" \
+            packaging/mac/dist/stage --arch '${{ matrix.arch }}'
           python3 "$GITHUB_WORKSPACE/tooling/scripts/ci/check_macos_minimum.py" \
             "$APP" --arch '${{ matrix.arch }}' --maximum 13.0
           MACHO_COUNT=0
@@ -313,6 +312,21 @@ jobs:
           kill "$QT_PID" 2>/dev/null || true
           wait "$QT_PID" 2>/dev/null || true
           echo "verified_macho_files=$MACHO_COUNT" | tee -a desktop-release-provenance-macos-${{ matrix.variant }}.txt
+
+      - name: Preserve failed candidate diagnostics
+        if: failure()
+        run: |
+          mkdir -p "$RUNNER_TEMP/macos-candidate-diagnostics"
+          find packaging/mac/dist/stage -type f -maxdepth 6 > "$RUNNER_TEMP/macos-candidate-diagnostics/layout.txt" 2>/dev/null || true
+          find "$RUNNER_TEMP" -name qt.log -exec cp {} "$RUNNER_TEMP/macos-candidate-diagnostics/" \; || true
+          git rev-parse HEAD > "$RUNNER_TEMP/macos-candidate-diagnostics/source.txt"
+
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: macos-${{ matrix.variant }}-failure-diagnostics
+          path: ${{ runner.temp }}/macos-candidate-diagnostics
+          retention-days: 7
 
       - name: Archive unsigned ${{ matrix.variant }} stage for local signing
         id: archive
