@@ -23,6 +23,10 @@
 #     on a manual run with record_baselines=true) a last step prints freshly
 #     recorded files to the log for review; they are never checked against
 #     in the same run.
+#   * a gate whose prerequisite target (dinero_consensus, dinero_wallet,
+#     dinerod, sep_wallet_fixture_compat) failed to build reports
+#     `GATE <id> UNMEASURED (prerequisite build failed: ...)`, and the summary
+#     a `LANE UNMEASURED` line (scripts/ci/separation/prereq_status.py).
 #
 # Configure flags are the ones the K4 refs, W4 fixtures and W5 baselines were
 # recorded with (sdd build-env.md); no depends/, QUIC or other extras.
@@ -202,6 +206,13 @@ jobs:
             echo "::error::cmake/ctest on PATH is not the pinned $SEP_CMAKE_VERSION"
             exit 2
           fi
+          # A gate whose prerequisite (base) target failed to build measures
+          # nothing: prereq_status.py prints GATE <id> UNMEASURED and returns 3.
+          # Usage in a gate step: sep_prereq <id> || exit $?
+          sep_prereq() {
+            python "$GITHUB_WORKSPACE/scripts/ci/separation/prereq_status.py" gate \
+              --status "$RUNNER_TEMP/prereq_status.json" --gate "$1" --github-output "$GITHUB_OUTPUT"
+          }
           gate_result() {  # <id> <rc> [note]
             if [ "$2" -eq 0 ]; then echo "GATE $1 PASS${3:+ ($3)}"
             else echo "GATE $1 FAIL rc=$2${3:+ ($3)}"; fi
@@ -268,7 +279,7 @@ jobs:
           trc=0
           python scripts/ci/separation/sep_targets.py --build "$SEP_BUILD" --config "$SEP_CFG" \
             --out "$RUNNER_TEMP/targets.txt" --unresolved-out "$RUNNER_TEMP/k4_unresolved.txt" \
-            --ctest "$(command -v ctest)" --ninja "$(command -v ninja)" || trc=$?
+            --ctest "$(command -v ctest)" --ninja "$(command -v ninja)" --platform "$SEP_PLAT" || trc=$?
           [ "$trc" -eq 0 ] || [ "$trc" -eq 3 ] || exit "$trc"
           # -k 0: collect every independent failure; a failed K4 test link must
           # not hide the other gates (each gate reports its own result).
@@ -277,12 +288,27 @@ jobs:
           cmake --build "$SEP_BUILD" --target "${targets[@]}" -- -k 0
           exit "$trc"
 
+      # Which base targets (dinero_consensus, dinero_wallet, dinerod,
+      # sep_wallet_fixture_compat) the build failed to produce, and which
+      # gates depend on them (codemodel). Those gates report UNMEASURED; the
+      # others (and K2/W2/K5, which need no build) report their real result.
+      - name: Prerequisite build status
+        id: prereq
+        if: ${{ !cancelled() && steps.configure.outcome == 'success' }}
+        continue-on-error: true
+        env:
+          O_BUILD: ${{ steps.build.outcome }}
+        run: |
+          python scripts/ci/separation/prereq_status.py scan --build "$SEP_BUILD" \
+            --build-outcome "$O_BUILD" --platform "$SEP_PLAT" --out "$RUNNER_TEMP/prereq_status.json"
+
       - name: K1 consensus forced link
         id: k1
         if: ${{ !cancelled() && steps.configure.outcome == 'success' }}
         continue-on-error: true
         run: |
           . "$RUNNER_TEMP/sep_gate.sh"
+          sep_prereq K1 || exit $?
           rc=0; sep_ctest SepConsensusForcedLink || rc=$?
           gate_result K1 "$rc"; exit "$rc"
 
@@ -327,6 +353,7 @@ jobs:
           NM_CHECK: ${{ steps.nm_demangle.outcome }}
         run: |
           . "$RUNNER_TEMP/sep_gate.sh"
+          sep_prereq K3 || exit $?
           # Same states as Windows: PASS/FAIL only when measured, otherwise
           # UNMEASURED (rc 3, never a success).
           unmeasured() { echo "state=UNMEASURED" >> "$GITHUB_OUTPUT"; echo "GATE K3 UNMEASURED ($1)"; exit 3; }
@@ -348,6 +375,7 @@ jobs:
         continue-on-error: true
         run: |
           . "$RUNNER_TEMP/sep_gate.sh"
+          sep_prereq K4 || exit $?
           d=scripts/ci/separation
           # Reference naming: consensus_vectors_ref_<cfg>.json is the
           # macOS-recorded ref; other platforms need
@@ -394,6 +422,7 @@ jobs:
         continue-on-error: true
         run: |
           . "$RUNNER_TEMP/sep_gate.sh"
+          sep_prereq W1 || exit $?
           rc=0; sep_ctest SepWalletForcedLink || rc=$?
           gate_result W1 "$rc"; exit "$rc"
 
@@ -416,6 +445,7 @@ jobs:
           NM_CHECK: ${{ steps.nm_demangle.outcome }}
         run: |
           . "$RUNNER_TEMP/sep_gate.sh"
+          sep_prereq W3 || exit $?
           # Same states as Windows: PASS/FAIL only when measured, otherwise
           # UNMEASURED (rc 3, never a success).
           unmeasured() { echo "state=UNMEASURED" >> "$GITHUB_OUTPUT"; echo "GATE W3 UNMEASURED ($1)"; exit 3; }
@@ -437,6 +467,7 @@ jobs:
         continue-on-error: true
         run: |
           . "$RUNNER_TEMP/sep_gate.sh"
+          sep_prereq W4 || exit $?
           rc=0; sep_ctest SepWalletFixtureCompat || rc=$?
           gate_result W4 "$rc"; exit "$rc"
 
@@ -446,6 +477,7 @@ jobs:
         continue-on-error: true
         run: |
           . "$RUNNER_TEMP/sep_gate.sh"
+          sep_prereq W5 || exit $?
           base="tests/separation/interface_baseline/symbols_${SEP_PLAT}_${SEP_CFG}.txt"
           present=1; [ -f "$base" ] || { present=0; echo "W5: no committed symbol baseline $base"; }
           crc=0; sep_ctest SepInterfaceFreeze SepRpcTranscript || crc=$?
@@ -453,7 +485,7 @@ jobs:
           # failed; a build break or run error is a real FAIL. See gate_label.py.
           rc=0
           python scripts/ci/separation/gate_label.py w5 --log "$RUNNER_TEMP/ctest-SepInterfaceFreeze.log" \
-            --rc "$crc" --reference-present "$present" --github-output "$GITHUB_OUTPUT" || rc=$?
+            --rc "$crc" --reference-present "$present" --platform "$SEP_PLAT" --github-output "$GITHUB_OUTPUT" || rc=$?
           exit "$rc"
 
       - name: W6 standalone wallet-FFI consumer (recorded)
@@ -462,6 +494,7 @@ jobs:
         continue-on-error: true
         run: |
           . "$RUNNER_TEMP/sep_gate.sh"
+          sep_prereq W6 || exit $?
           # Label separation;recorded: the Task 0.8 baseline is RED (repair is E1).
           rc=0; sep_ctest SepWalletFfiStandalone || rc=$?
           gate_result W6 "$rc" "recorded, baseline RED"; exit "$rc"
@@ -521,8 +554,22 @@ jobs:
           O_W6: ${{ steps.w6.outcome }}
           N_K4: ${{ steps.k4.outputs.note }}
           N_W5: ${{ steps.w5.outputs.note }}
+          S_K1: ${{ steps.k1.outputs.state }}
           S_K3: ${{ steps.k3.outputs.state }}
+          S_K4: ${{ steps.k4.outputs.state }}
+          S_W1: ${{ steps.w1.outputs.state }}
           S_W3: ${{ steps.w3.outputs.state }}
+          S_W4: ${{ steps.w4.outputs.state }}
+          S_W5: ${{ steps.w5.outputs.state }}
+          S_W6: ${{ steps.w6.outputs.state }}
+          Y_K1: ${{ steps.k1.outputs.why }}
+          Y_K3: ${{ steps.k3.outputs.why }}
+          Y_K4: ${{ steps.k4.outputs.why }}
+          Y_W1: ${{ steps.w1.outputs.why }}
+          Y_W3: ${{ steps.w3.outputs.why }}
+          Y_W4: ${{ steps.w4.outputs.why }}
+          Y_W5: ${{ steps.w5.outputs.why }}
+          Y_W6: ${{ steps.w6.outputs.why }}
           TOOLCHAIN: ${{ matrix.toolchain }}
         run: |
           res() { case "$1" in success) echo PASS ;; failure) echo FAIL ;; *) echo "NOT_RUN(${1:-none})" ;; esac; }
@@ -531,13 +578,19 @@ jobs:
             echo
             echo "compiler: $(head -1 "$RUNNER_TEMP/compiler.txt" 2>/dev/null || echo unknown)"
             echo "prerequisite build: $(res "$O_BUILD"); nm demangling check (R10): $(res "$O_NM")"
+            if [ -f "$RUNNER_TEMP/prereq_status.json" ]; then
+              python scripts/ci/separation/prereq_status.py lane --status "$RUNNER_TEMP/prereq_status.json" ||
+                echo "LANE prerequisite build status unreadable"
+            else
+              echo "LANE prerequisite build status not recorded"
+            fi
             echo
             echo "| gate | result |"
             echo "|---|---|"
             # A missing committed reference is missing evidence, shown apart
             # from a real mismatch.
-            row() { v="O_$1"; n="N_$1"; st="S_$1"; r="$(res "${!v}")"
-                    [ "${!st:-}" = UNMEASURED ] && r="UNMEASURED (not a pass; not a measured fail)"
+            row() { v="O_$1"; n="N_$1"; st="S_$1"; y="Y_$1"; r="$(res "${!v}")"
+                    [ "${!st:-}" = UNMEASURED ] && r="UNMEASURED (${!y:-not a pass; not a measured fail})"
                     if [ "${!n:-}" = "missing reference" ]; then
                       [ "$1" = W5 ] && r="$r (missing reference -- not an interface mismatch)" \
                                     || r="$r (missing reference -- not a vector mismatch)"
@@ -547,7 +600,7 @@ jobs:
             echo "| K6 | SKIP stage<2 |"
             for g in W1 W2 W3 W4 W5 W6; do row "$g"; done
             echo
-            echo "Stage-0 expectation: K1, K2, W1, W2 FAIL; K3, W3 UNMEASURED while the K1/W1 probes do not link (FAIL/PASS once measured); K5, W4 PASS; K4, W5 PASS on macOS, and on Linux FAIL rc 2 (missing reference) until reviewed baselines are committed; W6 recorded (RED). A missing reference is missing evidence, not a pass."
+            echo "Stage-0 expectation: K1, K2, W1, W2 FAIL; K3, W3 UNMEASURED while the K1/W1 probes do not link (FAIL/PASS once measured); K5, W4 PASS; K4, W5 PASS on macOS, and on Linux FAIL rc 2 (missing reference) until reviewed baselines are committed; W6 recorded (RED). A missing reference is missing evidence, not a pass. If the prerequisite build fails (LANE UNMEASURED), every gate that depends on a failed target is UNMEASURED, not a pass and not a measured fail; K2, W2, K5 still report their result. macOS (macos-14, Xcode 15.4) is UNMEASURED until the pre-existing Xcode 15.4 build break is fixed on dinero-main."
           } | tee -a "$GITHUB_STEP_SUMMARY"
 
   # K4, second half (ruling R13): the existing compact-regtest fixed-vector

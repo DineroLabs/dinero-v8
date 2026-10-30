@@ -35,6 +35,15 @@ Frozen items, each compared exactly against the baseline directory:
                  the internal C++ interfaces the spec allows to change (section 4),
                  and compiler-generated helpers (`___clang*`, `__clang*`) depend on
                  code generation, not on the interface. Nothing else is filtered.
+Windows is PARTIAL, selected by platform (never by a failed nodecore_ffi build):
+NodeCore is not a Windows target (src/nodecore/CMakeLists.txt: "mobile
+embedding library", POSIX APIs), so on Windows only the wallet FFI surface is
+checked (wallet_ffi.h and dinero_wallet_ffi's .lib exports). nodecore_ffi.h,
+jni_exports.txt and the nodecore_ffi symbols are printed as
+`N/A <item> (NodeCore not a Windows target)`, and a passing run ends with
+`interface_freeze: PASS (partial: wallet FFI only; NodeCore N/A on Windows)`.
+--nodecore-ffi is an input error on Windows. On Linux and macOS every item is
+required, unchanged.
 `record` writes the baseline; `check` prints PASS/FAIL per item with a diff.
 Exit 0 all PASS, 1 any FAIL, 2 input error (missing artifact, missing baseline
 for this platform/config, unparseable source).
@@ -58,6 +67,8 @@ LIBS = (("nodecore_ffi", "libnodecore_ffi"), ("dinero_wallet_ffi", "libdinero_wa
 LIB_HEADER = {"nodecore_ffi": "nodecore_ffi.h", "dinero_wallet_ffi": "wallet_ffi.h"}
 C_DECL = re.compile(r"\b((?:dinero|nodecore)_[A-Za-z0-9_]*)\s*\(")
 MSVC_CONST_PREFIXES = ("__real@", "__xmm@", "__ymm@")
+NODECORE_ITEMS = ("nodecore_ffi.h", "jni_exports.txt", "nodecore_ffi symbols")
+NA_WINDOWS = "(NodeCore not a Windows target)"
 
 
 class InputError(Exception):
@@ -166,9 +177,18 @@ def symbols(path, nm=None):
     return out
 
 
+def nodecore_checked():
+    """NodeCore surfaces are checked everywhere but Windows (explicit by platform)."""
+    return platform_tag() != "windows"
+
+
 def symbol_text(build, args):
     rows = []
     for (target, stem), explicit in zip(LIBS, (args.nodecore_ffi, args.wallet_ffi)):
+        if target == "nodecore_ffi" and not nodecore_checked():
+            if explicit:
+                raise InputError("--nodecore-ffi given on Windows: NodeCore is not a Windows target")
+            continue
         path = find_lib(build, stem, explicit)
         if is_windows_lib(path):
             found = symbols(path, args.nm)
@@ -183,8 +203,11 @@ def symbol_text(build, args):
 def current(args):
     items = []
     for base, rel in HEADERS:
+        if base == "nodecore_ffi.h" and not nodecore_checked():
+            continue
         items.append((base, read(os.path.join(args.repo, rel))))
-    items.append(("jni_exports.txt", jni_exports(args.repo).encode()))
+    if nodecore_checked():
+        items.append(("jni_exports.txt", jni_exports(args.repo).encode()))
     sym_name = "symbols_%s_%s.txt" % (platform_tag(), build_config(args.build))
     items.append((sym_name, symbol_text(args.build, args).encode()))
     return items
@@ -211,6 +234,9 @@ def main(argv=None):
             args.baseline_dir = committed
     try:
         items = current(args)
+        if not nodecore_checked():
+            for item in NODECORE_ITEMS:
+                print("N/A %s %s" % (item, NA_WINDOWS))
         if args.mode == "record":
             os.makedirs(bdir, exist_ok=True)
             for name, data in items:
@@ -239,7 +265,8 @@ def main(argv=None):
                 base.decode(errors="replace").splitlines(True),
                 data.decode(errors="replace").splitlines(True),
                 "baseline/" + name, "current/" + name, n=2))
-        print("interface_freeze: %s" % ("FAIL" if failed else "PASS"))
+        scope = "" if nodecore_checked() else " (partial: wallet FFI only; NodeCore N/A on Windows)"
+        print("interface_freeze: %s%s" % ("FAIL" if failed else "PASS", scope))
         return 1 if failed else 0
     except InputError as e:
         print("interface_freeze: INPUT ERROR: %s" % e, file=sys.stderr)

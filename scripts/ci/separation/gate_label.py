@@ -4,7 +4,7 @@
 usage: gate_label.py k4 --output FILE --rc N --reference-present {0,1}
                         --unresolved FILE [--github-output FILE]
        gate_label.py w5 --log FILE --rc N --reference-present {0,1}
-                        [--github-output FILE]
+                        --platform {linux,macos,windows} [--github-output FILE]
 
 A missing committed reference is missing evidence. It is reported as
 "missing reference" ONLY when the checks actually ran and nothing else went
@@ -18,7 +18,14 @@ k4: --output is run_consensus_vectors.py's output (the comparison against the
     resolution never ran).
 w5: --log is the ctest log of SepInterfaceFreeze + SepRpcTranscript; --rc the
     ctest exit code; --reference-present whether this platform's committed
-    symbol baseline exists.
+    symbol baseline exists; --platform the lane's platform.
+    Windows W5 is PARTIAL by platform: NodeCore is not a Windows target, so
+    only the wallet FFI and the RPC transcript are checked there and a pass
+    reads `GATE W5 PASS (partial: wallet FFI + RPC only; NodeCore N/A on
+    Windows)`, never a bare PASS. Its missing-reference verdict needs the
+    wallet_ffi.h PASS line and the NodeCore N/A lines. A NodeCore item checked
+    on Windows, or reported N/A on Linux/macOS (where it is required), is a
+    contradiction: "check did not run".
 
 Prints one `GATE <id> ...` line (plus a `note=missing reference` line to
 --github-output when that is the verdict) and exits with the gate rc: 0 PASS,
@@ -39,6 +46,11 @@ K4_MISMATCH = re.compile(r"DIGEST_MISMATCH \S")
 MISSING_K4 = "missing reference -- not a vector mismatch"
 MISSING_W5 = "missing reference -- not an interface mismatch"
 W5_ITEM_FAIL = re.compile(r"\s*(\d+: )?FAIL (nodecore_ffi\.h|wallet_ffi\.h|jni_exports\.txt|symbols_[a-z0-9]+_(off|on)\.txt)\s*$")
+W5_ITEMS_WINDOWS = ("wallet_ffi.h",)
+W5_NODECORE_NA = ("nodecore_ffi.h", "jni_exports.txt")
+W5_PARTIAL = "partial: wallet FFI + RPC only; NodeCore N/A on Windows"
+W5_NODECORE_CHECKED = re.compile(r"^\s*(\d+: )?(PASS|FAIL) (nodecore_ffi\.h|jni_exports\.txt)\s*$", re.M)
+W5_NODECORE_NA_LINE = re.compile(r"^\s*(\d+: )?N/A (nodecore_ffi\.h|jni_exports\.txt|nodecore_ffi symbols) ", re.M)
 W5_NO_SYMBOLS = re.compile(r"interface_freeze: INPUT ERROR: no baseline \S*symbols_[a-z0-9]+_(off|on)\.txt ")
 
 
@@ -123,6 +135,17 @@ def w5(a):
     other_freeze_err = [l for l in freeze_err if not W5_NO_SYMBOLS.search(l)]
     if other_freeze_err:
         return max(a.rc, 1), "check did not run: " + other_freeze_err[0]
+    windows = a.platform == "windows"
+    if windows:
+        m = W5_NODECORE_CHECKED.search(log)
+        if m:
+            return max(a.rc, 1), ("check did not run: NodeCore item checked on Windows (%s; NodeCore "
+                                  "is not a Windows target)" % m.group(0).strip())
+    else:
+        m = W5_NODECORE_NA_LINE.search(log)
+        if m:
+            return max(a.rc, 1), ("check did not run: NodeCore reported N/A on %s (%s); NodeCore "
+                                  "checks are required here" % (a.platform, m.group(0).strip()))
     # ctest prints a passing test's own output only with -V, so read the verdict
     # from ctest's result line.
     transcript_ok = status["SepRpcTranscript"] == "Passed"
@@ -135,8 +158,11 @@ def w5(a):
             return 1, "interface mismatch (symbol reference also missing)"
         # Positive evidence that the freeze compared every other item and
         # stopped only on the absent symbol baseline.
-        missing = [i for i in W5_ITEMS
+        missing = [i for i in (W5_ITEMS_WINDOWS if windows else W5_ITEMS)
                    if not re.search(r"^\s*(\d+: )?PASS %s\s*$" % re.escape(i), log, re.M)]
+        if windows:
+            missing += ["N/A " + i for i in W5_NODECORE_NA
+                        if not re.search(r"^\s*(\d+: )?N/A %s " % re.escape(i), log, re.M)]
         if not freeze_err:
             missing.append("no-baseline error for the symbol list")
         if not status["SepInterfaceFreeze"].startswith("***Failed"):
@@ -180,6 +206,7 @@ def main(argv=None):
     p4.add_argument("--unresolved", required=True)
     p5 = sub.add_parser("w5")
     p5.add_argument("--log", required=True)
+    p5.add_argument("--platform", required=True, choices=("linux", "macos", "windows"))
     for p in (p4, p5):
         p.add_argument("--rc", type=int, required=True)
         p.add_argument("--reference-present", type=int, choices=(0, 1), required=True)
@@ -191,7 +218,8 @@ def main(argv=None):
         rc = 1  # exit 2 means "missing reference" only
     gid = a.gate.upper()
     if rc == 0:
-        print("GATE %s PASS" % gid)
+        partial = a.gate == "w5" and a.platform == "windows"
+        print("GATE %s PASS%s" % (gid, " (%s)" % W5_PARTIAL if partial else ""))
     else:
         print("GATE %s FAIL rc=%d%s" % (gid, rc, " (%s)" % why if why else ""))
     if missing_ref and a.github_output:

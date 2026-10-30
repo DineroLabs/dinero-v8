@@ -93,10 +93,10 @@ rpc_transcript: PASS (40 entries match off.json)
 """
 
 
-def w5(tmp_path, text, rc, ref):
+def w5(tmp_path, text, rc, ref, platform="linux"):
     log = tmp_path / "w5.log"
     log.write_text(text)
-    return run(tmp_path, "w5", log=log, rc=rc, reference_present=ref)
+    return run(tmp_path, "w5", log=log, rc=rc, reference_present=ref, platform=platform)
 
 
 def test_w5_build_break_is_not_missing_reference(tmp_path):
@@ -376,3 +376,93 @@ def test_rc2_did_not_run_is_not_noted_as_missing_reference(tmp_path):
     o, u = k4files(tmp_path, "NOT_RUN BIP341SighashVectors\n")
     rc, line, gh = run(tmp_path, "k4", output=o, unresolved=u, rc=2, reference_present=0)
     assert (rc, line, gh) == (1, "GATE K4 FAIL rc=1 (check did not run: NOT_RUN BIP341SighashVectors)", "")
+
+
+# Owner decisions 2, item 1: Windows W5 is PARTIAL by platform (NodeCore is not
+# a Windows target). A pass is never a bare PASS there; POSIX is unchanged.
+W5_PARTIAL_LINE = "GATE W5 PASS (partial: wallet FFI + RPC only; NodeCore N/A on Windows)"
+W5_WINDOWS_MISSING_REF_ONLY = """\
+1/2 Test #866: SepInterfaceFreeze ...............***Failed    1.82 sec
+N/A nodecore_ffi.h (NodeCore not a Windows target)
+N/A jni_exports.txt (NodeCore not a Windows target)
+N/A nodecore_ffi symbols (NodeCore not a Windows target)
+PASS wallet_ffi.h
+interface_freeze: INPUT ERROR: no baseline D:/a/tests/separation/interface_baseline/symbols_windows_off.txt (record it at the baseline for this platform/config)
+2/2 Test #867: SepRpcTranscript .................   Passed   58.21 sec
+""".replace("\n", "\r\n")   # Windows Tee-Object writes CRLF
+
+
+def test_w5_windows_pass_is_labelled_partial(tmp_path):
+    rc, line, gh = w5(tmp_path, W5_PASS, 0, 1, "windows")
+    assert (rc, line, gh) == (0, W5_PARTIAL_LINE, "")
+    assert line.isascii()
+
+
+def test_w5_posix_pass_stays_bare(tmp_path):
+    for plat in ("linux", "macos"):
+        assert w5(tmp_path, W5_PASS, 0, 1, plat)[:2] == (0, "GATE W5 PASS")
+
+
+def test_w5_platform_is_required(tmp_path):
+    log = tmp_path / "w5.log"
+    log.write_text(W5_PASS)
+    r = subprocess.run([sys.executable, str(SCRIPT), "w5", "--log", str(log), "--rc", "0",
+                        "--reference-present", "1"], capture_output=True, text=True)
+    assert r.returncode == 2 and "--platform" in r.stderr and "GATE" not in r.stdout
+
+
+def test_w5_windows_missing_reference_needs_wallet_pass_and_nodecore_na(tmp_path):
+    rc, line, gh = w5(tmp_path, W5_WINDOWS_MISSING_REF_ONLY, 8, 0, "windows")
+    assert (rc, line, gh) == (2, "GATE W5 FAIL rc=2 (missing reference -- not an interface mismatch)",
+                              "note=missing reference\n")
+    (tmp_path / "gh.txt").unlink()
+    text = W5_WINDOWS_MISSING_REF_ONLY.replace("N/A jni_exports.txt (NodeCore not a Windows target)\r\n", "")
+    rc, line, gh = w5(tmp_path, text, 8, 0, "windows")
+    assert (rc, gh) == (8, "") and line == ("GATE W5 FAIL rc=8 (check did not run: interface_freeze did not "
+                                            "reach the symbol comparison (no N/A jni_exports.txt))")
+
+
+def test_w5_windows_nodecore_item_checked_is_a_contradiction(tmp_path):
+    # the POSIX run-1 shape (PASS nodecore_ffi.h / jni_exports.txt) on Windows
+    rc, line, gh = w5(tmp_path, W5_MISSING_REF_ONLY, 8, 0, "windows")
+    assert (rc, gh) == (8, "") and line.startswith(
+        "GATE W5 FAIL rc=8 (check did not run: NodeCore item checked on Windows (PASS nodecore_ffi.h;")
+    text = W5_PASS.replace("SepInterfaceFreeze ...............   Passed",
+                           "SepInterfaceFreeze ...............***Failed").replace(
+        "interface_freeze: PASS", "FAIL jni_exports.txt\ninterface_freeze: FAIL")
+    rc, line, _ = w5(tmp_path, text, 8, 1, "windows")
+    assert rc == 8 and "NodeCore item checked on Windows (FAIL jni_exports.txt" in line
+
+
+def test_w5_posix_nodecore_na_is_a_contradiction(tmp_path):
+    # NodeCore checks stay required on Linux/macOS: the partial shape there is "did not run"
+    for plat in ("linux", "macos"):
+        rc, line, gh = w5(tmp_path, W5_WINDOWS_MISSING_REF_ONLY, 8, 0, plat)
+        assert (rc, gh) == (8, "") and line.startswith(
+            "GATE W5 FAIL rc=8 (check did not run: NodeCore reported N/A on %s" % plat)
+
+
+def test_w5_posix_nodecore_build_failure_is_still_did_not_run(tmp_path):
+    # selection is by platform, not by "nodecore_ffi failed to build"
+    text = """\
+1/2 Test #970: SepInterfaceFreeze ...............***Failed    1.82 sec
+FAILED: [code=1] CMakeFiles/nodecore_ffi.dir/src/nodecore/nodecore_ffi.cpp.o
+CMake Error at /x/tests/separation/run_built_script.cmake:21 (message):
+  SEPARATION TEST BUILD FAILED: nodecore_ffi;dinero_wallet_ffi (rc=1)
+2/2 Test #971: SepRpcTranscript .................   Passed   50.70 sec
+"""
+    for ref in (0, 1):
+        rc, line, gh = w5(tmp_path, text, 8, ref, "linux")
+        assert (rc, line, gh) == (8, "GATE W5 FAIL rc=8 (check did not run: build failed: "
+                                     "nodecore_ffi;dinero_wallet_ffi (rc=1))", "")
+
+
+def test_w5_windows_failures_are_never_partial_pass(tmp_path):
+    # run-1 Windows shape (B1: dinerod exits at startup): FAIL, no partial PASS
+    rc, line, gh = w5(tmp_path, W5_WINDOWS_RUN1, 8, 0, "windows")
+    assert rc == 8 and line.startswith("GATE W5 FAIL rc=8 (check did not run: build failed") and gh == ""
+    text = W5_WINDOWS_MISSING_REF_ONLY.replace(
+        "SepRpcTranscript .................   Passed", "SepRpcTranscript .................***Failed") + \
+        "rpc_transcript: RUN ERROR: s exited rc=1 during startup\r\n"
+    rc, line, gh = w5(tmp_path, text, 8, 0, "windows")
+    assert rc == 8 and "check did not run: rpc_transcript: RUN ERROR: s exited rc=1" in line and gh == ""
