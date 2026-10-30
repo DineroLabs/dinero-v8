@@ -143,7 +143,9 @@ def test_w5_missing_reference_without_transcript_output(tmp_path):
 
 def test_w5_transcript_failed_with_missing_reference(tmp_path):
     text = W5_MISSING_REF_ONLY.replace("SepRpcTranscript .................   Passed",
-                                       "SepRpcTranscript .................***Failed")
+                                       "SepRpcTranscript .................***Failed").replace(
+        "rpc_transcript: PASS (40 entries match off.json)",
+        "-  \"height\": 1\n+  \"height\": 2\nrpc_transcript: FAIL transcript differs from /x/off.json")
     assert w5(tmp_path, text, 8, 0)[:2] == (1, "GATE W5 FAIL rc=1 (transcript mismatch (symbol reference also missing))")
 
 
@@ -295,3 +297,13 @@ def test_gate_line_is_ascii(tmp_path):
     assert line.isascii() and " -- " in line
     line = w5(tmp_path, W5_MISSING_REF_ONLY, 8, 0)[1]
     assert line.isascii() and " -- " in line
+
+
+def test_w5_transcript_failed_without_verdict_is_not_a_mismatch(tmp_path):
+    # SepRpcTranscript ***Failed with no FAIL line (crashed, killed, unrecognized)
+    text = W5_MISSING_REF_ONLY.replace("SepRpcTranscript .................   Passed",
+                                       "SepRpcTranscript .................***Failed").replace(
+        "rpc_transcript: PASS (40 entries match off.json)\n", "")
+    rc, line, gh = w5(tmp_path, text, 8, 0)
+    assert (rc, line, gh) == (8, "GATE W5 FAIL rc=8 (check did not run: SepRpcTranscript failed without a "
+                                 "transcript verdict)", "")
