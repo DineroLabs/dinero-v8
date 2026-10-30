@@ -1,0 +1,551 @@
+# ─────────────────────────────────────────────────────────────────────────
+# Wallet/consensus separation gates on Windows MSVC (stage 0: non-required)
+# ─────────────────────────────────────────────────────────────────────────
+#
+# Windows half of separation-gates.yml (spec section 8, plan Task 0.9).
+# Toolchain steps follow windows-openssl-release-smoke.yml (MSVC dev env,
+# vendored OpenSSL 3.5.7, vendored static libcurl, runner vcpkg curl, the
+# server-safe options). It is a CI-only gate run: it builds no installer and
+# publishes nothing (no artifacts, no tokens, no packaging).
+#
+# Differences from the smoke workflow, on purpose:
+#   * Ninja generator under the MSVC dev environment (not Visual Studio):
+#     run_consensus_vectors.py calls ctest without -C, and the closure checker
+#     reads a single-config codemodel.
+#   * pinned CMake from PyPI (K2/W2 need codemodel >= 2.9, CMake >= 4.1), the
+#     same version as the POSIX workflow; its Scripts dir is put ahead of the
+#     Visual Studio bundled cmake in every step.
+#   * orchard=on passes DINERO_ORCHARD_WINDOWS_QUALIFICATION=ON: the root
+#     build refuses Orchard on WIN32 without it
+#     (rust/orchard_backend/NativeRustPlatform.cmake). This is the documented
+#     testing-only opt-in; it does not qualify a Windows build.
+#
+# Stage 0 rules (as in separation-gates.yml): every gate step is
+# continue-on-error and echoes `GATE <id> <PASS|FAIL>`; exact ^(...)$ Sep*
+# ctest names checked against the never-run floor, or run_consensus_vectors.py
+# (which enforces the floor); no label selection; no committed Windows
+# baselines yet, so K4 and W5 fail closed (rc 2) until recorded and reviewed.
+# K5 does not run here (POSIX runners only, see separation-gates.yml).
+# ─────────────────────────────────────────────────────────────────────────
+
+name: Separation gates (Windows)
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/separation-gates-windows.yml'
+      - 'scripts/ci/separation/**'
+      - 'tests/separation/**'
+      - 'CMakeLists.txt'
+      - '**/CMakeLists.txt'
+      - 'cmake/**'
+      - 'src/**'
+      - 'include/**'
+      - 'wallet-core/**'
+      - 'resources/schema/**'
+      - 'rust/orchard_backend/**'
+      - 'mobile-tauri/src-tauri/build.rs'
+  workflow_dispatch:
+    inputs:
+      record_baselines:
+        description: 'Also record K4 refs and W5 symbol lists for Windows and print them to the log (review, then commit by hand)'
+        type: boolean
+        required: false
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: separation-gates-windows-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: pwsh
+
+env:
+  SEP_CMAKE_VERSION: '4.3.4'
+  SEP_NINJA_VERSION: '1.13.2'
+
+jobs:
+  gates:
+    name: gates windows-msvc orchard=${{ matrix.orchard }}
+    runs-on: windows-2022
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        orchard: [off, on]
+    env:
+      SEP_BUILD: ${{ github.workspace }}\build-sep
+      SEP_CFG: ${{ matrix.orchard }}
+      SEP_PLAT: windows
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Setup MSVC
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756
+        with:
+          arch: x64
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.12'
+
+      - name: Install pinned CMake and Ninja
+        run: |
+          python -m pip install --disable-pip-version-check "cmake==$env:SEP_CMAKE_VERSION" "ninja==$env:SEP_NINJA_VERSION"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $scripts = python -c "import sysconfig; print(sysconfig.get_path('scripts'))"
+          "SEP_PYSCRIPTS=$scripts" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          $env:PATH = $scripts + [IO.Path]::PathSeparator + $env:PATH
+          Get-Command cmake, ctest, ninja | Format-Table Name, Source -AutoSize | Out-Host
+          cmake --version
+          ctest --version
+          ninja --version
+          if (@(cmake --version)[0] -ne "cmake version $env:SEP_CMAKE_VERSION") { throw 'cmake is not the pinned version' }
+          if (@(ctest --version)[0] -ne "ctest version $env:SEP_CMAKE_VERSION") { throw 'ctest is not the pinned version' }
+          # cl.exe prints its banner (compiler version) on stderr; its exit code is irrelevant.
+          (cl.exe 2>&1 | Select-Object -First 1 | Out-String).Trim() | Tee-Object -FilePath "$env:RUNNER_TEMP\compiler.txt"
+          exit 0
+
+      - name: Read pinned Orchard compiler
+        id: rust-pin
+        run: |
+          python -c "import tomllib; print('version='+tomllib.load(open('rust/orchard_backend/rust-toolchain.toml','rb'))['toolchain']['channel'])" >> $env:GITHUB_OUTPUT
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install the source-pinned Orchard compiler
+        env:
+          RUST_PIN: ${{ steps.rust-pin.outputs.version }}
+        run: |
+          rustup toolchain install "$env:RUST_PIN" --profile minimal
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          rustc "+$env:RUST_PIN" -vV
+
+      - name: Cache vendored OpenSSL
+        uses: actions/cache@v4
+        with:
+          path: |
+            third_party/openssl-3.5.7
+          key: separation-windows-msvc-openssl-3.5.7-${{ hashFiles('scripts/build-openssl-vendored.ps1') }}
+
+      - name: Build vendored OpenSSL 3.5.7
+        shell: powershell
+        run: |
+          $env:OPENSSL_VERSION = '3.5.7'
+          .\scripts\build-openssl-vendored.ps1
+
+      - name: Cache vendored curl
+        uses: actions/cache@v4
+        with:
+          path: |
+            third_party/curl-8.21.0
+          key: separation-windows-msvc-curl-8.21.0-${{ hashFiles('scripts/build-curl-vendored.ps1') }}
+
+      # After the OpenSSL build (it links the vendored static OpenSSL);
+      # cmake/VendoredCurl.cmake fails the configure without this prebuilt.
+      - name: Build vendored static libcurl (OpenSSL 3.5.7)
+        shell: powershell
+        run: |
+          $env:OPENSSL_VERSION = '3.5.7'
+          .\scripts\build-curl-vendored.ps1
+
+      - name: Provision curl via runner vcpkg
+        run: |
+          & "$env:VCPKG_INSTALLATION_ROOT\vcpkg.exe" install curl:x64-windows --no-print-usage
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Write gate helpers
+        run: |
+          @'
+          # Dot-sourced by every gate step. Failures here must `throw`: an
+          # `exit` in a dot-sourced script only leaves this file, not the step.
+          # Stop: a missing command or file fails the step instead of yielding
+          # an empty result that `exit` would turn into 0. (Native nonzero exit
+          # codes and redirected stderr do not throw in pwsh 7.)
+          $ErrorActionPreference = 'Stop'
+          $env:PATH = $env:SEP_PYSCRIPTS + [IO.Path]::PathSeparator + $env:PATH
+          if (@(cmake --version)[0] -ne "cmake version $env:SEP_CMAKE_VERSION" -or
+              @(ctest --version)[0] -ne "ctest version $env:SEP_CMAKE_VERSION") {
+            Write-Host "::error::cmake/ctest on PATH is not the pinned $env:SEP_CMAKE_VERSION"
+            throw "cmake/ctest on PATH is not the pinned $env:SEP_CMAKE_VERSION"
+          }
+          $SepFloor = Join-Path $env:GITHUB_WORKSPACE 'scripts\ci\separation\never_run_floor.txt'
+          function Write-GateResult([string]$Id, [int]$Rc, [string]$Note = '') {
+            $suffix = ''
+            if ($Note) { $suffix = " ($Note)" }
+            if ($Rc -eq 0) { Write-Host "GATE $Id PASS$suffix" } else { Write-Host "GATE $Id FAIL rc=$Rc$suffix" }
+          }
+          # Run exact-named separation ctests only, after checking each name
+          # against the never-run floor; then prove from the log that each ran.
+          function Invoke-SepCtest([string[]]$Names) {
+            $floor = Get-Content $SepFloor | ForEach-Object { $_.Trim() }
+            foreach ($n in $Names) {
+              if ($n -cnotmatch '^Sep[A-Za-z]+$') { Write-Host "::error::refusing non-separation test $n"; return 2 }
+              if ($floor -ccontains $n) { Write-Host "::error::$n is on the never-run floor"; return 2 }
+            }
+            $re = '^(' + ($Names -join '|') + ')$'
+            $log = Join-Path $env:RUNNER_TEMP ('ctest-' + $Names[0] + '.log')
+            Write-Host "ctest -R '$re'"
+            & ctest --test-dir $env:SEP_BUILD --no-tests=error --output-on-failure -R $re 2>&1 |
+              Tee-Object -FilePath $log | Out-Host
+            $rc = $LASTEXITCODE
+            $text = Get-Content -Raw $log
+            foreach ($n in $Names) {
+              if ($text -notmatch ('Test +#\d+: ' + $n + ' ')) {
+                Write-Host "NOT_RUN $n"
+                if ($rc -eq 0) { $rc = 1 }
+              }
+            }
+            return $rc
+          }
+          '@ | Set-Content -Path "$env:RUNNER_TEMP\sep_gate.ps1" -Encoding utf8
+          @'
+          # Targets the gates need, prebuilt so the ctest drivers (1800 s
+          # TIMEOUT) only link: the gate libraries, dinerod and the FFI
+          # archives (W5), the W4 checker, the W6 static set, and the
+          # executables of the K4 tests registered for this config.
+          # The sep_*_forced_link / sep_wallet_ffi_standalone probes are NOT
+          # listed: they are RED at stage 0 and their ctests build them.
+          import json, os, subprocess, sys
+          build, cfg, out = sys.argv[1], sys.argv[2], sys.argv[3]
+          want = ["dinero_consensus", "dinero_wallet", "dinerod", "nodecore_ffi",
+                  "dinero_wallet_ffi", "sep_wallet_fixture_compat", "dinero_crypto",
+                  "secp256k1", "jsoncpp_static", "sqlite3"]
+          names = []
+          for line in open("scripts/ci/separation/consensus_vectors.txt"):
+              line = line.strip()
+              if not line or line.startswith("#"):
+                  continue
+              if line.startswith("on:"):
+                  if cfg != "on":
+                      continue
+                  line = line[3:]
+              names.append(line)
+          shown = subprocess.run(["ctest", "--test-dir", build, "--show-only=json-v1"],
+                                 capture_output=True, text=True, check=True).stdout
+          tests = {t["name"]: t for t in json.loads(shown)["tests"]}
+          root = os.path.normcase(os.path.abspath(build)) + os.sep
+          for n in names:
+              cmd = tests.get(n, {}).get("command") or []
+              if not cmd:
+                  print("K4 test %s is not registered (run_consensus_vectors.py will report NOT_RUN)" % n)
+                  continue
+              exe = os.path.normcase(os.path.abspath(cmd[0]))
+              if exe.startswith(root):
+                  stem = os.path.basename(exe)
+                  if stem.endswith(".exe"):
+                      stem = stem[:-4]
+                  if stem not in want:
+                      want.append(stem)
+          listed = subprocess.run(["ninja", "-C", build, "-t", "targets", "all"],
+                                  capture_output=True, text=True, check=True).stdout
+          avail = {l.split(":", 1)[0] for l in listed.splitlines()}
+          have = [t for t in want if t in avail]
+          for t in want:
+              if t not in avail:
+                  print("::warning::target %s does not exist in this configuration" % t)
+          print("prebuilding: " + " ".join(have))
+          with open(out, "w") as f:
+              f.write("\n".join(have) + "\n")
+          '@ | Set-Content -Path "$env:RUNNER_TEMP\sep_targets.py" -Encoding utf8
+
+      - name: CMake configure
+        id: configure
+        run: |
+          . "$env:RUNNER_TEMP\sep_gate.ps1"
+          $ErrorActionPreference = 'Stop'
+          # K2/W2 read the CMake file API codemodel: request it before configure.
+          $query = Join-Path $env:SEP_BUILD '.cmake\api\v1\query'
+          New-Item -ItemType Directory -Force -Path $query | Out-Null
+          New-Item -ItemType File -Force -Path (Join-Path $query 'codemodel-v2') | Out-Null
+          $orchard = if ($env:SEP_CFG -eq 'on') { 'ON' } else { 'OFF' }
+          $configureArgs = @(
+            '-S', '.', '-B', $env:SEP_BUILD, '-G', 'Ninja',
+            '-DCMAKE_BUILD_TYPE=Release',
+            '-DCMAKE_C_COMPILER=cl', '-DCMAKE_CXX_COMPILER=cl',
+            '-DDINERO_USE_VENDORED_DEPS=ON',
+            '-DENABLE_GRPC=OFF',
+            '-DBUILD_NODECORE=ON',
+            '-DDINERO_SEPARATION_GATES=ON',
+            "-DDINERO_BUILD_ORCHARD_BACKEND=$orchard",
+            # server-safe options, as windows-openssl-release-smoke.yml builds
+            '-DDINERO_WINDOWS_SERVER_BUILD=ON',
+            '-DDINERO_BUILD_MINER=OFF',
+            "-DCMAKE_TOOLCHAIN_FILE=$env:VCPKG_INSTALLATION_ROOT\scripts\buildsystems\vcpkg.cmake"
+          )
+          if ($orchard -eq 'ON') { $configureArgs += '-DDINERO_ORCHARD_WINDOWS_QUALIFICATION=ON' }
+          & cmake @configureArgs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Select-String -Path (Join-Path $env:SEP_BUILD 'CMakeCache.txt') `
+            -Pattern '^(DINERO_BUILD_ORCHARD_BACKEND|DINERO_SEPARATION_GATES|Python3_EXECUTABLE|CMAKE_CXX_COMPILER):' |
+            ForEach-Object { $_.Line }
+          Get-ChildItem (Join-Path $env:SEP_BUILD '.cmake\api\v1\reply') | Select-Object -First 3 | ForEach-Object { $_.Name }
+
+      - name: Build gate prerequisites
+        id: build
+        continue-on-error: true
+        run: |
+          . "$env:RUNNER_TEMP\sep_gate.ps1"
+          python "$env:RUNNER_TEMP\sep_targets.py" $env:SEP_BUILD $env:SEP_CFG "$env:RUNNER_TEMP\targets.txt"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $targets = Get-Content "$env:RUNNER_TEMP\targets.txt" | Where-Object { $_ }
+          # -k 0: collect every independent failure; each gate reports its own result.
+          & cmake --build $env:SEP_BUILD --target @targets -- -k 0
+          exit $LASTEXITCODE
+
+      - name: K1 consensus forced link
+        id: k1
+        if: ${{ !cancelled() && steps.configure.outcome == 'success' }}
+        continue-on-error: true
+        run: |
+          . "$env:RUNNER_TEMP\sep_gate.ps1"
+          $rc = [int](Invoke-SepCtest -Names 'SepConsensusForcedLink')
+          Write-GateResult 'K1' $rc; exit $rc
+
+      - name: K2 consensus closure
+        id: k2
+        if: ${{ !cancelled() && steps.configure.outcome == 'success' }}
+        continue-on-error: true
+        run: |
+          . "$env:RUNNER_TEMP\sep_gate.ps1"
+          python scripts\ci\separation\check_link_closure.py --build $env:SEP_BUILD `
+            --target dinero_consensus --rules scripts\ci\separation\closure_rules.json --gate K2
+          $rc = $LASTEXITCODE
+          Write-GateResult 'K2' $rc; exit $rc
+
+      # R10: check_symbols.py would silently pass on mangled names. Prove the
+      # llvm-nm passed to it demangles. An MSVC .exe carries no symbol table
+      # (symbols live in the PDB), so the check runs on a static .lib.
+      - name: llvm-nm demangling self-check (before K3/W3)
+        id: nm_demangle
+        if: ${{ !cancelled() && steps.configure.outcome == 'success' }}
+        continue-on-error: true
+        run: |
+          $nm = (Get-Command llvm-nm -ErrorAction SilentlyContinue).Source
+          if (-not $nm -and (Test-Path 'C:\Program Files\LLVM\bin\llvm-nm.exe')) { $nm = 'C:\Program Files\LLVM\bin\llvm-nm.exe' }
+          if (-not $nm) { Write-Host '::error::llvm-nm not found'; exit 2 }
+          & $nm --version | Select-Object -First 2 | Out-Host
+          $lib = Get-ChildItem -Path $env:SEP_BUILD -Recurse -Filter 'dinero_consensus.lib' -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $lib) { Write-Host '::error::dinero_consensus.lib not built; nothing to run the demangling check on'; exit 2 }
+          $n = (& $nm -C $lib.FullName 2>$null | Select-String -SimpleMatch 'dinero::' | Measure-Object).Count
+          Write-Host "nm=$nm binary=$($lib.FullName) demangled dinero:: symbol lines: $n"
+          if ($n -lt 1) { Write-Host "::error::$nm -C printed no demangled dinero:: symbol"; exit 1 }
+          "SEP_NM=$nm" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          exit 0
+
+      - name: K3 consensus symbols
+        id: k3
+        if: ${{ !cancelled() && steps.configure.outcome == 'success' }}
+        continue-on-error: true
+        env:
+          NM_CHECK: ${{ steps.nm_demangle.outcome }}
+        run: |
+          . "$env:RUNNER_TEMP\sep_gate.ps1"
+          if ($env:NM_CHECK -ne 'success') {
+            Write-Host 'K3: the llvm-nm demangling self-check did not pass; check_symbols not trusted'
+            Write-GateResult 'K3' 2 'nm not verified'; exit 2
+          }
+          $bin = Join-Path $env:SEP_BUILD 'tests\separation\sep_consensus_forced_link.exe'
+          if (-not (Test-Path $bin)) { Write-Host "K3: $bin absent (K1 forced link produced no binary); check_symbols fails closed" }
+          python scripts\ci\separation\check_symbols.py --binary $bin --gate K3 --nm $env:SEP_NM
+          $rc = $LASTEXITCODE
+          Write-GateResult 'K3' $rc; exit $rc
+
+      - name: K4 consensus vectors
+        id: k4
+        if: ${{ !cancelled() && steps.configure.outcome == 'success' }}
+        continue-on-error: true
+        run: |
+          . "$env:RUNNER_TEMP\sep_gate.ps1"
+          $d = 'scripts\ci\separation'
+          $ctest = (Get-Command ctest).Source
+          # Reference naming: consensus_vectors_ref_<cfg>.json is macOS-recorded;
+          # Windows needs consensus_vectors_ref_windows_<cfg>.json (recorded, reviewed, committed).
+          $ref = "$d\consensus_vectors_ref_windows_$env:SEP_CFG.json"
+          function Invoke-K4([string]$Reference) {
+            python "$d\run_consensus_vectors.py" --build $env:SEP_BUILD --list "$d\consensus_vectors.txt" `
+              --floor "$d\never_run_floor.txt" --ctest $ctest --config $env:SEP_CFG --compare $Reference | Out-Host
+            return $LASTEXITCODE
+          }
+          if (Test-Path $ref) {
+            $rc = [int](Invoke-K4 $ref)
+            Write-GateResult 'K4' $rc
+          } else {
+            Write-Host "K4: no committed windows reference $ref; failing closed (rc 2)"
+            $info = [int](Invoke-K4 "$d\consensus_vectors_ref_$env:SEP_CFG.json")
+            Write-Host "K4 (informational): comparison against the macOS-recorded reference exited $info"
+            $rc = 2
+            Write-GateResult 'K4' $rc 'no windows reference'
+          }
+          exit $rc
+
+      - name: K5 consensus source freeze
+        id: k5
+        if: always()
+        run: Write-Host 'GATE K5 SKIP (POSIX runners only; see separation-gates.yml)'
+
+      - name: K6 frozen-header change
+        id: k6
+        if: always()
+        run: Write-Host 'GATE K6 SKIP stage<2'
+
+      - name: W1 wallet forced link
+        id: w1
+        if: ${{ !cancelled() && steps.configure.outcome == 'success' }}
+        continue-on-error: true
+        run: |
+          . "$env:RUNNER_TEMP\sep_gate.ps1"
+          $rc = [int](Invoke-SepCtest -Names 'SepWalletForcedLink')
+          Write-GateResult 'W1' $rc; exit $rc
+
+      - name: W2 wallet closure
+        id: w2
+        if: ${{ !cancelled() && steps.configure.outcome == 'success' }}
+        continue-on-error: true
+        run: |
+          . "$env:RUNNER_TEMP\sep_gate.ps1"
+          python scripts\ci\separation\check_link_closure.py --build $env:SEP_BUILD `
+            --target dinero_wallet --rules scripts\ci\separation\closure_rules.json --gate W2
+          $rc = $LASTEXITCODE
+          Write-GateResult 'W2' $rc; exit $rc
+
+      - name: W3 wallet symbols
+        id: w3
+        if: ${{ !cancelled() && steps.configure.outcome == 'success' }}
+        continue-on-error: true
+        env:
+          NM_CHECK: ${{ steps.nm_demangle.outcome }}
+        run: |
+          . "$env:RUNNER_TEMP\sep_gate.ps1"
+          if ($env:NM_CHECK -ne 'success') {
+            Write-Host 'W3: the llvm-nm demangling self-check did not pass; check_symbols not trusted'
+            Write-GateResult 'W3' 2 'nm not verified'; exit 2
+          }
+          $bin = Join-Path $env:SEP_BUILD 'tests\separation\sep_wallet_forced_link.exe'
+          if (-not (Test-Path $bin)) { Write-Host "W3: $bin absent (W1 forced link produced no binary); check_symbols fails closed" }
+          python scripts\ci\separation\check_symbols.py --binary $bin --gate W3 --nm $env:SEP_NM
+          $rc = $LASTEXITCODE
+          Write-GateResult 'W3' $rc; exit $rc
+
+      - name: W4 wallet-file compatibility
+        id: w4
+        if: ${{ !cancelled() && steps.configure.outcome == 'success' }}
+        continue-on-error: true
+        run: |
+          . "$env:RUNNER_TEMP\sep_gate.ps1"
+          $rc = [int](Invoke-SepCtest -Names 'SepWalletFixtureCompat')
+          Write-GateResult 'W4' $rc; exit $rc
+
+      - name: W5 external interface freeze and RPC transcript
+        id: w5
+        if: ${{ !cancelled() && steps.configure.outcome == 'success' }}
+        continue-on-error: true
+        run: |
+          . "$env:RUNNER_TEMP\sep_gate.ps1"
+          $base = "tests\separation\interface_baseline\symbols_windows_$env:SEP_CFG.txt"
+          $rc = [int](Invoke-SepCtest -Names 'SepInterfaceFreeze', 'SepRpcTranscript')
+          if (-not (Test-Path $base)) {
+            Write-Host "W5: no committed symbol baseline $base; failing closed (rc 2)"
+            Write-GateResult 'W5' 2 'no windows symbol baseline'; exit 2
+          }
+          Write-GateResult 'W5' $rc; exit $rc
+
+      - name: W6 standalone wallet-FFI consumer (recorded)
+        id: w6
+        if: ${{ !cancelled() && steps.configure.outcome == 'success' }}
+        continue-on-error: true
+        run: |
+          . "$env:RUNNER_TEMP\sep_gate.ps1"
+          # Label separation;recorded: the Task 0.8 baseline is RED (repair is E1).
+          $rc = [int](Invoke-SepCtest -Names 'SepWalletFfiStandalone')
+          Write-GateResult 'W6' $rc 'recorded, baseline RED'; exit $rc
+
+      # Manual first run only. Writes to RUNNER_TEMP (never into the tree the
+      # checks above read) and prints the files for the controller to review.
+      - name: Record baselines for review (manual)
+        if: ${{ !cancelled() && inputs.record_baselines && steps.configure.outcome == 'success' }}
+        continue-on-error: true
+        run: |
+          . "$env:RUNNER_TEMP\sep_gate.ps1"
+          $d = 'scripts\ci\separation'
+          $out = Join-Path $env:RUNNER_TEMP 'recorded'
+          New-Item -ItemType Directory -Force -Path (Join-Path $out 'interface_baseline') | Out-Null
+          python "$d\run_consensus_vectors.py" --build $env:SEP_BUILD --list "$d\consensus_vectors.txt" `
+            --floor "$d\never_run_floor.txt" --ctest (Get-Command ctest).Source --config $env:SEP_CFG `
+            --record (Join-Path $out "consensus_vectors_ref_windows_$env:SEP_CFG.json")
+          $rc = $LASTEXITCODE
+          Write-Host "K4 record exited $rc"
+          $ncf = Get-ChildItem -Path $env:SEP_BUILD -Recurse -Filter 'nodecore_ffi.lib' -ErrorAction SilentlyContinue | Select-Object -First 1
+          $wlf = Get-ChildItem -Path $env:SEP_BUILD -Recurse -Filter 'dinero_wallet_ffi.lib' -ErrorAction SilentlyContinue | Select-Object -First 1
+          $wrc = 2
+          if ($ncf -and $wlf) {
+            python tests\separation\interface_freeze.py record --build $env:SEP_BUILD `
+              --baseline-dir (Join-Path $out 'interface_baseline') `
+              --nodecore-ffi $ncf.FullName --wallet-ffi $wlf.FullName
+            $wrc = $LASTEXITCODE
+          } else {
+            Write-Host 'W5 record: nodecore_ffi.lib or dinero_wallet_ffi.lib not built'
+          }
+          Write-Host "W5 symbol record exited $wrc"
+          $files = @(Get-ChildItem -Path $out -Filter 'consensus_vectors_ref_*.json' -ErrorAction SilentlyContinue) +
+                   @(Get-ChildItem -Path (Join-Path $out 'interface_baseline') -Filter 'symbols_*.txt' -ErrorAction SilentlyContinue)
+          foreach ($f in $files) {
+            $hash = (Get-FileHash -Algorithm SHA256 $f.FullName).Hash.ToLowerInvariant()
+            Write-Host "===== RECORDED $($f.Name) (sha256 $hash) ====="
+            Get-Content -Raw $f.FullName | Out-Host
+            Write-Host "===== END $($f.Name) ====="
+          }
+          if ($rc -ne 0 -or $wrc -ne 0) { exit 1 }
+          exit 0
+
+      - name: Gate summary
+        if: always()
+        env:
+          O_BUILD: ${{ steps.build.outcome }}
+          O_NM: ${{ steps.nm_demangle.outcome }}
+          O_K1: ${{ steps.k1.outcome }}
+          O_K2: ${{ steps.k2.outcome }}
+          O_K3: ${{ steps.k3.outcome }}
+          O_K4: ${{ steps.k4.outcome }}
+          O_W1: ${{ steps.w1.outcome }}
+          O_W2: ${{ steps.w2.outcome }}
+          O_W3: ${{ steps.w3.outcome }}
+          O_W4: ${{ steps.w4.outcome }}
+          O_W5: ${{ steps.w5.outcome }}
+          O_W6: ${{ steps.w6.outcome }}
+        run: |
+          function Res([string]$o) {
+            switch ($o) { 'success' { 'PASS' } 'failure' { 'FAIL' } default { "NOT_RUN($o)" } }
+          }
+          $compiler = 'unknown'
+          if (Test-Path "$env:RUNNER_TEMP\compiler.txt") { $compiler = (Get-Content "$env:RUNNER_TEMP\compiler.txt" | Select-Object -First 1) }
+          $lines = @(
+            "### Separation gates: windows-msvc, orchard=$env:SEP_CFG",
+            '',
+            "compiler: $compiler",
+            "prerequisite build: $(Res $env:O_BUILD); llvm-nm demangling check (R10): $(Res $env:O_NM)",
+            '',
+            '| gate | result |',
+            '|---|---|'
+          )
+          foreach ($g in 'K1','K2','K3','K4') { $lines += "| $g | $(Res ([Environment]::GetEnvironmentVariable("O_$g"))) |" }
+          $lines += '| K5 | SKIP (POSIX only) |'
+          $lines += '| K6 | SKIP stage<2 |'
+          foreach ($g in 'W1','W2','W3','W4','W5','W6') { $lines += "| $g | $(Res ([Environment]::GetEnvironmentVariable("O_$g"))) |" }
+          $lines += ''
+          $lines += 'Stage-0 expectation: K1-K3, W1-W3 FAIL; K4 and W5 FAIL rc 2 until Windows baselines are recorded and committed (fail closed); W4 PASS; W6 recorded (RED).'
+          $lines | Out-Host
+          $lines | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
