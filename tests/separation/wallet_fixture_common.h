@@ -96,10 +96,18 @@ inline std::string ReadFile(const fs::path& p) {
     return s.str();
 }
 // The fixture text files (expected.json, schema.txt) are generated with "\n"
-// line endings; a CRLF checkout must not read as a difference. Only CR LF
-// pairs are folded: Escape() never emits one (a CR in data stays a bare CR
-// next to an escaped "\\n"), so no data difference can be hidden.
+// line endings; a CRLF checkout must not read as a difference. The CR LF fold
+// applies only when the whole file is CRLF (every "\n" is preceded by "\r"):
+// a CR in data (Escape() leaves it bare, so one at the end of a value is
+// followed by the dump's "\n") in an otherwise LF file is compared raw.
 inline std::string GeneratedText(const std::string& text) {
+    size_t lf = 0, crlf = 0;
+    for (size_t i = 0; i < text.size(); ++i)
+        if (text[i] == '\n') {
+            ++lf;
+            if (i > 0 && text[i - 1] == '\r') ++crlf;
+        }
+    if (lf == 0 || crlf != lf) return text;
     std::string out;
     out.reserve(text.size());
     for (size_t i = 0; i < text.size(); ++i) {

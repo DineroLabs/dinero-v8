@@ -32,6 +32,13 @@ K4_NOT_RUN = ("NOT_RUN ", "UNEXPECTED ", "ON_FLOOR ", "CTEST_RC ", "ERROR ", "CO
 W5_TESTS = ("SepInterfaceFreeze", "SepRpcTranscript")
 W5_RUN_ERRORS = ("rpc_transcript: RUN ERROR", "rpc_transcript: dinerod not executable",
                  "rpc_transcript: no baseline", "***Timeout")
+W5_ITEMS = ("nodecore_ffi.h", "wallet_ffi.h", "jni_exports.txt")
+K4_OK = re.compile(r"OK \d+ tests match reference ")
+K4_MISMATCH = re.compile(r"DIGEST_MISMATCH \S")
+# ASCII only: a Windows runner's piped stdout is cp1252.
+MISSING_K4 = "missing reference -- not a vector mismatch"
+MISSING_W5 = "missing reference -- not an interface mismatch"
+W5_NO_SYMBOLS = re.compile(r"interface_freeze: INPUT ERROR: no baseline \S*symbols_[a-z0-9]+_(off|on)\.txt ")
 
 
 def read(path):
@@ -68,12 +75,26 @@ def k4(a):
         return 1, "test failed: " + failed[len("FAILED "):]
     if a.rc not in (0, 1):
         return 1, "check did not run: run_consensus_vectors.py exited %d" % a.rc
-    mismatch = first(lines, lambda l: l.startswith("DIGEST_MISMATCH "))
+    # Positive evidence the comparison ran: its per-test DIGEST_MISMATCH lines
+    # or its final OK line, consistent with the exit code. A crash, an empty
+    # output or anything unrecognized is "did not run", never a verdict.
+    if first(lines, lambda l: "Traceback (most recent call last)" in l):
+        return 1, "check did not run: run_consensus_vectors.py traceback (rc=%d)" % a.rc
+    mismatch = first(lines, lambda l: K4_MISMATCH.match(l))
+    ok = first(lines, lambda l: K4_OK.match(l))
+    if not ((a.rc == 0 and ok and not mismatch) or (a.rc == 1 and mismatch and not ok)):
+        return 1, "check did not run: unrecognized output rc=%d" % a.rc
     if not a.reference_present:
-        return 2, "missing reference — not a vector mismatch"
-    if mismatch or a.rc != 0:
-        return 1, "vector mismatch: " + (mismatch or "rc=%d" % a.rc)
+        return 2, MISSING_K4
+    if mismatch:
+        return 1, "vector mismatch: " + mismatch
     return 0, None
+
+
+def w5_status(log, test):
+    """ctest's result for test ("Passed", "***Failed", "***Not Run", ...)."""
+    m = re.search(r"Test +#\d+: %s \.*\s*(\S.*?)\s+[\d.]+ sec" % test, log)
+    return m.group(1) if m else None
 
 
 def w5(a):
@@ -81,30 +102,46 @@ def w5(a):
     if log is None:
         return 1, "check did not run: no ctest log"
     lines = log.splitlines()
+    status = {}
     for t in W5_TESTS:
-        if not re.search(r"Test +#\d+: %s " % t, log):
+        status[t] = w5_status(log, t)
+        if status[t] is None:
             return 1, "check did not run: %s not run" % t
     built = first(lines, lambda l: "SEPARATION TEST BUILD FAILED" in l)
     if built:
         return max(a.rc, 1), "check did not run: build failed: " + built.split("BUILD FAILED:", 1)[1].strip()
+    for t in W5_TESTS:
+        if status[t] != "Passed" and not status[t].startswith("***Failed"):
+            return max(a.rc, 1), "check did not run: %s %s" % (t, status[t])
     err = first(lines, lambda l: any(m in l for m in W5_RUN_ERRORS))
     if err:
         return max(a.rc, 1), "check did not run: " + err
+    if first(lines, lambda l: "Traceback (most recent call last)" in l):
+        return max(a.rc, 1), "check did not run: Python traceback in the ctest log"
     freeze_err = [l.strip() for l in lines if "interface_freeze: INPUT ERROR" in l]
-    other_freeze_err = [l for l in freeze_err if "INPUT ERROR: no baseline" not in l]
+    other_freeze_err = [l for l in freeze_err if not W5_NO_SYMBOLS.search(l)]
     if other_freeze_err:
         return max(a.rc, 1), "check did not run: " + other_freeze_err[0]
     # ctest prints a passing test's own output only with -V, so read the verdict
     # from ctest's result line.
-    transcript_ok = re.search(r"Test +#\d+: SepRpcTranscript \.+ +Passed", log) is not None
+    transcript_ok = status["SepRpcTranscript"] == "Passed"
     if not a.reference_present:
-        # The freeze can only fail here on the missing symbol baseline (other
-        # input errors returned above); its header/JNI items still compared.
         if not transcript_ok:
             return 1, "transcript mismatch (symbol reference also missing)"
         if re.search(r"^\s*(\d+: )?FAIL (nodecore_ffi\.h|wallet_ffi\.h|jni_exports\.txt)", log, re.M):
             return 1, "interface mismatch (symbol reference also missing)"
-        return 2, "missing reference — not an interface mismatch"
+        # Positive evidence that the freeze compared every other item and
+        # stopped only on the absent symbol baseline.
+        missing = [i for i in W5_ITEMS
+                   if not re.search(r"^\s*(\d+: )?PASS %s\s*$" % re.escape(i), log, re.M)]
+        if not freeze_err:
+            missing.append("no-baseline error for the symbol list")
+        if not status["SepInterfaceFreeze"].startswith("***Failed"):
+            missing.append("SepInterfaceFreeze ***Failed (it %s)" % status["SepInterfaceFreeze"])
+        if missing:
+            return max(a.rc, 1), ("check did not run: interface_freeze did not reach the "
+                                  "symbol comparison (no " + "; no ".join(missing) + ")")
+        return 2, MISSING_W5
     if a.rc != 0:
         return 1, None
     return 0, None

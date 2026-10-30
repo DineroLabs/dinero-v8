@@ -92,6 +92,19 @@ void SelfTestWalletPathEncoding(const fs::path& dir) {
     std::cout << "W4 self-test: backslash wallet path round-trips in the compared encoding\n";
 }
 
+// Runs on every platform: GeneratedText() folds a whole-file CRLF checkout
+// and nothing else. A CR at the end of one line of an otherwise LF file (a CR
+// stored at the end of a value) must still read as a difference.
+void SelfTestLineEndingFold() {
+    const std::string lf = "a\nb\nc\n";
+    Check(GeneratedText("a\r\nb\r\nc\r\n") == lf, "self-test: whole-file CRLF not folded");
+    Check(GeneratedText(lf) == lf, "self-test: LF file changed");
+    const std::string stray = "a\nb\r\nc\n";
+    Check(GeneratedText(stray) == stray, "self-test: stray CR folded in an LF file");
+    Check(GeneratedText(stray) != GeneratedText(lf), "self-test: stray CR hidden from the comparison");
+    std::cout << "W4 self-test: only a whole-file CRLF checkout is folded\n";
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -110,6 +123,7 @@ int main(int argc, char** argv) {
 
         TempDir temp;
         SelfTestWalletPathEncoding(temp.path);
+        SelfTestLineEndingFold();
         const fs::path root = (temp.path / "datadir").lexically_normal();
         fs::create_directories(root / "wallets");
         fs::create_directories(root / "blockchain");
