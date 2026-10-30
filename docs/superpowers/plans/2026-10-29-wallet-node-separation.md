@@ -289,13 +289,29 @@ Library edits: `src/consensus/CMakeLists.txt`, `src/consensus/pq/CMakeLists.txt`
   - K5 and W4 PASS (K5 runs on POSIX runners only).
   - K4 and W5 PASS on macOS, where the reviewed reference baselines are committed, once the macOS lane builds (see below).
     - **On Linux and Windows, K4 and W5 are expected red** (`FAIL rc=2 (missing reference -- not a vector/interface mismatch)`) until reviewed reference baselines for that platform are committed.
+      - On Windows, W5 shows that state only after B1 is fixed (see below). Until then it is UNMEASURED.
     - A missing reference is missing evidence, not a pass and not a mismatch.
   - **Windows W5 is partial:** wallet FFI + RPC transcript only.
     - "Windows W5 passed" never means NodeCore was tested. NodeCore is not a Windows target, and NodeCore interface evidence comes only from Linux and macOS.
     - The Windows RPC transcript is blocked by product defect **B1**. On LLP64, `dinerod` parses `--consensus-state-commitment-height=4294967295` with `std::stol` (`src/daemon/main.cpp:565`), which overflows, so the snapshot node exits at startup.
     - B1 is tracked separately and is fixed only through its own review, not in stage 0. Until then the Windows W5 transcript is **unmeasured**.
+    - **Owner decision 3:** the B1 rule is narrow.
+      - It applies only on Windows.
+      - It applies only when SepRpcTranscript failed with a startup `RUN ERROR` whose error output or daemon log tail contains B1's exact error, `invalid --consensus-state-commitment-height value: 4294967295`.
+      - Then W5 prints `GATE W5 UNMEASURED (transcript blocked by B1 (...); wallet FFI symbols: <its own result>; partial: ...)`.
+      - If the wallet-FFI part itself failed, W5 prints `GATE W5 FAIL ...` and names the B1 transcript state too.
+    - Any other startup failure, and the same text on Linux/macOS, stays `FAIL (check did not run: ...)`.
+      - The B1 match is a temporary mapping in `gate_label.py`. Remove it together with the B1 fix.
+    - After B1 is fixed, Windows W5 is `FAIL rc=2 (missing reference -- not an interface mismatch)` until a reviewed `symbols_windows_<cfg>.txt` is committed.
+  - **Every summary row carries the gate's reason.** Each gate step writes `why=` and the row shows it:
+    - missing reference, "check did not run", UNMEASURED and a measured mismatch read differently;
+    - there is no bare `FAIL` or `UNMEASURED` row.
+  - **A harness error is not a build failure.** These cases make every build-dependent gate print `FAIL rc=2 (check did not run: harness error: ...)` and the lane print `LANE FAIL: harness error: ...`, never LANE UNMEASURED:
+    - `sep_targets.py` failed, so the build never ran;
+    - a base target is missing from the codemodel.
   - **A failed prerequisite build makes the lane UNMEASURED.** The summary prints `LANE UNMEASURED: prerequisite build failed: <targets>` when any of `dinerod`, `dinero_wallet`, `dinero_consensus` or `sep_wallet_fixture_compat` fails to build.
-    - Each gate that depends on a failed target reports `GATE <id> UNMEASURED (...)` instead of FAIL.
+    - Each gate that depends on a failed target reports `GATE <id> UNMEASURED (...)` instead of FAIL. Dependence is the codemodel's build-order closure.
+      - K4's set includes its resolved test executables, some of which link `dinero_wallet`.
     - Gates whose own inputs built still report their real result; for example, K2/W2/K5 need no build.
   - **macOS stays on `macos-14`.** Run 1 on macOS (PR #860) is **UNMEASURED**: the pre-existing Xcode 15.4 build break on dinero-main (`chainstate_service.h:1735`, incomplete type in `std::optional<std::span<const MempoolProofView>>`) stops the prerequisite build.
     - The fix is not ours. Once it lands on dinero-main, rebase #860 and rerun.
@@ -327,7 +343,9 @@ Library edits: `src/consensus/CMakeLists.txt`, `src/consensus/pq/CMakeLists.txt`
   - gate status per platform, stated as measured.
     - Linux and Windows K4/W5 count as red (missing reference) until reviewed baselines are committed.
     - Windows K3/W3 count as UNMEASURED until the COFF scan is verified.
-    - Windows W5 counts as partial (wallet FFI + RPC only; NodeCore N/A on Windows). Its RPC transcript stays unmeasured until B1 is fixed through its own review.
+    - Windows W5 counts as partial (wallet FFI + RPC only; NodeCore N/A on Windows).
+      - Its RPC transcript counts as UNMEASURED only when the B1 signature matches (owner decision 3), until B1 is fixed through its own review.
+      - Any other startup failure counts as FAIL (check did not run).
     - NodeCore interface status is reported from Linux and macOS only.
     - A lane whose prerequisite build failed counts as UNMEASURED for every gate that depends on the failed targets (for example, macOS while the Xcode 15.4 break is unfixed).
     - None of these is reported as a pass.
@@ -564,7 +582,10 @@ Library edits: `src/consensus/CMakeLists.txt`, `src/consensus/pq/CMakeLists.txt`
 
 ### Task 7.1: Make the gates required and add GCC 15 trials
 
-- [ ] **Step 1:** In both separation workflows, remove `continue-on-error`. Add trial copies of `linux-full-build-ctest`, `linux-quic-full-build-ctest` and `linux-core-heavy` on `ubuntu-latest`, with `continue-on-error: true` at job level. Keep the pinned originals unchanged.
+- [ ] **Step 1:** In both separation workflows, remove `continue-on-error`.
+  - Once required, **UNMEASURED blocks the check exactly like FAIL**: every UNMEASURED gate exits nonzero, and only PASS is green.
+  - A `LANE UNMEASURED` caused by the PR's own diff is that PR's failure, not a "pre-existing" break. An example is a stage 1+ change that stops `dinero_wallet` or `dinero_consensus` from compiling.
+  - The B1 UNMEASURED mapping must be gone before the gates become required (B1 fixed). Add trial copies of `linux-full-build-ctest`, `linux-quic-full-build-ctest` and `linux-core-heavy` on `ubuntu-latest`, with `continue-on-error: true` at job level. Keep the pinned originals unchanged.
 - [ ] **Step 2:** Ask the owner to mark the separation gate jobs as required checks (a repository setting, done by the owner). Push after approval.
 - [ ] **Step 3:** Expected: all gates GREEN, and the three trial jobs GREEN on GCC 15. Grep each trial log for `100% tests passed` and for `Linking CXX executable test_header_metadata_recovery`. Commit `ci: separation gates required; GCC 15 trial lanes`.
 
