@@ -29,6 +29,7 @@
 #include "daemon/services/p2p_service.h"
 #include "daemon/block_relay_manager.h"  // Task 5: BlocksServed24h()
 #include "network/quic_transport.h"      // Stage B: surface QUIC relay-transport readiness
+#include "network/endpoint_format.h"
 #include "consensus/chainparams.h"
 #include "common/logger.h"
 #include <memory>
@@ -43,32 +44,14 @@ bool ParseNodeEndpoint(const std::string& node, std::string* host, uint16_t* por
     if (!host || !port) {
         return false;
     }
-    if (node.empty()) {
+    bool has_port = false;
+    if (!dinero::network::SplitEndpoint(node, host, port, &has_port) || host->empty()) {
         return false;
     }
-
-    const size_t colon_pos = node.rfind(':');
-    if (colon_pos == std::string::npos) {
-        *host = node;
+    if (!has_port) {
         *port = 20999;
-        return true;
     }
-
-    *host = node.substr(0, colon_pos);
-    if (host->empty()) {
-        return false;
-    }
-
-    try {
-        const auto parsed = std::stoul(node.substr(colon_pos + 1));
-        if (parsed == 0 || parsed > 65535) {
-            return false;
-        }
-        *port = static_cast<uint16_t>(parsed);
-        return true;
-    } catch (...) {
-        return false;
-    }
+    return true;
 }
 
 std::shared_ptr<dinero::P2PService> GetP2PService(const ExecutionContext& ctx) {
@@ -255,7 +238,8 @@ din::Json rpc_context_getnetworkinfo(const ExecutionContext& ctx, const din::Jso
     result["connections_out"] = static_cast<Json::UInt64>(status.outbound);
     result["listen"] = status.listening;
     result["listen_port"] = static_cast<int>(status.listen_port);
-    const bool direct_inbound_observed = status.inbound > 0;
+    // Relay-virtual inbound peers prove nothing about our own address.
+    const bool direct_inbound_observed = status.direct_inbound > 0;
     // Gap 2 fix: only an EXPLICIT/confirmed reachable advertisement (operator
     // externalip or port-mapping) proves direct reachability — a Gap-1-LEARNED
     // address is just the IP peers see us from (the NAT gateway's public IP for
@@ -266,8 +250,7 @@ din::Json rpc_context_getnetworkinfo(const ExecutionContext& ctx, const din::Jso
     // Same predicate the relay auto-register gate uses (IsDirectlyReachable in
     // p2p_manager.h) — keep these two call sites identical so the relay-fallback
     // report can never disagree with the registration behavior it gates.
-    const bool direct_reachable = IsDirectlyReachable(
-        direct_inbound_observed, direct_advertised, status.port_mapping_active);
+    const bool direct_reachable = IsDirectlyReachable(direct_advertised);
     const bool relay_fallback_eligible =
         status.network_active && status.listening && !direct_reachable;
     result["reachable"] = direct_reachable;
@@ -279,6 +262,12 @@ din::Json rpc_context_getnetworkinfo(const ExecutionContext& ctx, const din::Jso
     din::Json relay;
     relay["mode"] = status.relay_mode;
     relay["local"] = status.local_relay;
+    relay["quota_month_bytes"] = static_cast<Json::UInt64>(status.relay_quota_month_bytes);
+    relay["quota_month_limit"] = static_cast<Json::UInt64>(status.relay_quota_month_limit);
+    relay["paused_reason"] = status.relay_paused_reason;
+    din::Json registered(Json::arrayValue);
+    for (const auto& r : status.relay_registered) registered.append(r);
+    relay["registered"] = registered;
     // Auto-mode toggle: true when the relay role is currently engaged for
     // any reason (today: mining is running; future: spare-bandwidth
     // heuristic, dashboard opt-in, etc.). NOT a mining-only signal — see
@@ -333,6 +322,11 @@ din::Json rpc_context_getnetworkinfo(const ExecutionContext& ctx, const din::Jso
         // compiled in AND the mainnet gate is open.
         q["relay_data_ready"] =
             quic.ngtcp2_available && quic.crypto_available && quic.mainnet_relay_ready;
+        // Direct QUIC peers (runtime): is the UDP endpoint bound, and how many
+        // sessions does it route.
+        q["listening"] = status.quic_listening;
+        q["listen_port"] = static_cast<int>(status.quic_listen_port);
+        q["sessions"] = static_cast<Json::UInt64>(status.quic_sessions);
         result["quic_transport"] = q;
     }
 
@@ -414,6 +408,27 @@ din::Json rpc_context_getnetworkinfo(const ExecutionContext& ctx, const din::Jso
         local_addresses.append(entry);
     }
     result["localaddresses"] = local_addresses;
+    {
+        din::Json reach(Json::arrayValue);
+        for (const auto& st : status.self_reachability) {
+            din::Json e;
+            e["address"] = dinero::network::FormatEndpoint(st.c.ip, st.c.port);
+            e["transport"] = st.c.transport == dinero::p2p::Transport::Quic ? "quic" : "tcp";
+            switch (st.c.source) {
+                case dinero::p2p::CandidateSource::PeerVote: e["source"] = "peer_vote"; break;
+                case dinero::p2p::CandidateSource::Stun: e["source"] = "stun"; break;
+                case dinero::p2p::CandidateSource::PortMapping: e["source"] = "port_mapping"; break;
+                case dinero::p2p::CandidateSource::ExternalIp: e["source"] = "externalip"; break;
+            }
+            e["state"] = st.state == dinero::p2p::VerifyState::Verified ? "verified"
+                       : st.state == dinero::p2p::VerifyState::Verifying ? "verifying" : "unverified";
+            e["ok_groups"] = static_cast<Json::UInt64>(st.ok_groups);
+            e["verified_at"] = static_cast<Json::Int64>(
+                std::chrono::duration_cast<std::chrono::seconds>(st.verified_at.time_since_epoch()).count());
+            reach.append(e);
+        }
+        result["self_reachability"] = reach;
+    }
     result["advertised_addresses_count"] = static_cast<Json::UInt64>(status.advertised_addresses.size());
 
     din::Json portmap;
@@ -438,6 +453,42 @@ din::Json rpc_context_getnetworkinfo(const ExecutionContext& ctx, const din::Jso
     stun["server_used"] = status.stun_server_used;
     stun["message"] = status.stun_message;
     result["stun"] = stun;
+
+    // NAT mapping on the P2P UDP port, read by the health self-report and the
+    // hole-punch decision. "unknown" until two STUN servers have answered.
+    din::Json nat;
+    nat["mapping"] = status.nat_mapping;
+    nat["port_preserving"] = status.nat_port_preserving;
+    din::Json reflexive(Json::arrayValue);
+    for (const auto& r : status.nat_reflexive) reflexive.append(r);
+    nat["reflexive"] = reflexive;
+    nat["servers"] = static_cast<int>(status.nat_servers);
+    nat["measured_at"] = static_cast<Json::Int64>(status.nat_measured_at);
+    result["nat"] = nat;
+
+    // Relay-coordinated hole punching. failed.mismatch: the punched session
+    // proved another node id; failed.refused: its dineroid was refused.
+    {
+        const auto& hp = status.hole_punch;
+        din::Json punch;
+        punch["attempts"] = static_cast<Json::UInt64>(hp.attempts);
+        punch["succeeded"] = static_cast<Json::UInt64>(hp.succeeded);
+        din::Json failed;
+        failed["timeout"] = static_cast<Json::UInt64>(hp.timeout);
+        failed["mismatch"] = static_cast<Json::UInt64>(hp.mismatch);
+        failed["refused"] = static_cast<Json::UInt64>(hp.refused);
+        punch["failed"] = failed;
+        punch["skipped"] = static_cast<Json::UInt64>(hp.skipped);
+        din::Json by_family;
+        for (const auto& [name, f] : {std::pair{"ipv4", hp.ipv4}, std::pair{"ipv6", hp.ipv6}}) {
+            din::Json fam;
+            fam["attempts"] = static_cast<Json::UInt64>(f.attempts);
+            fam["succeeded"] = static_cast<Json::UInt64>(f.succeeded);
+            by_family[name] = fam;
+        }
+        punch["by_family"] = by_family;
+        result["hole_punch"] = punch;
+    }
 
     din::Json onion_transport;
     onion_transport["configured"] = status.onion_transport_configured;
@@ -788,7 +839,12 @@ din::Json rpc_context_getrelayservice(const ExecutionContext& ctx, const din::Js
         error["error"]["message"] = "P2P service not available";
         return error;
     }
-    return RelayServiceJson(p2p->GetRelayServiceStatus());
+    din::Json result = RelayServiceJson(p2p->GetRelayServiceStatus());
+    const auto net = p2p->GetNetworkStatus();
+    result["quota_month_bytes"] = static_cast<Json::UInt64>(net.relay_quota_month_bytes);
+    result["quota_month_limit"] = static_cast<Json::UInt64>(net.relay_quota_month_limit);
+    result["paused_reason"] = net.relay_paused_reason;
+    return result;
 }
 
 din::Json rpc_context_setrelayservice(const ExecutionContext& ctx,

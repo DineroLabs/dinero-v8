@@ -13,21 +13,29 @@
 #endif
 
 #include "p2p_manager.h"
+#include "consensus/chainparams.h"
+#include "daemon/services/relay_role_policy.h"
 #include "daemon/node_identity.h"
 #include "daemon/peer_send_health.h"
 #include "network/types.h"
 #include "p2p/addrman.h"
+#include "p2p/relay_hint_v2.h"
 
 #include <gtest/gtest.h>
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cstring>
+#include <ctime>
 #include <cstdint>
 #include <filesystem>
+#include <fstream>
 #include <iomanip>
+#include <map>
 #include <memory>
+#include <set>
 #include <optional>
 #include <sstream>
 #include <stdexcept>
@@ -681,36 +689,6 @@ TEST(RelayHintsDial, IgnoresStaleDisconnectedVirtualPeerForAlreadyConnected) {
     EXPECT_EQ(manager.test_pending_relay_connect_count(), 1u);
 }
 
-TEST(RelayAutoRegister, KeepsBootstrapRelayWhenDynamicCandidatesFillBudget) {
-    P2PManager manager(20999);
-    dinero::p2p::AddressManager addrman;
-    manager.set_address_manager(&addrman);
-
-    addrman.addAddress(MakeRelayAddress("8.8.10.1", 20999));
-    addrman.addAddress(MakeRelayAddress("9.9.20.2", 20999));
-    addrman.addAddress(MakeRelayAddress("13.13.30.3", 20999));
-    addrman.addAddress(MakeRelayAddress("14.14.40.4", 20999));
-
-    std::vector<LoopbackSocketPair> sockets;
-    auto install_connected = [&](const std::string& endpoint) {
-        sockets.push_back(LoopbackSocketPair::Create());
-        manager.test_install_connected_direct_peer(endpoint,
-                                                   sockets.back().client_fd(),
-                                                   true, false, {});
-    };
-    install_connected("173.249.200.59:20999");  // SJ / bootstrap fleet relay
-    install_connected("8.8.10.1:20999");
-    install_connected("9.9.20.2:20999");
-    install_connected("13.13.30.3:20999");
-    install_connected("14.14.40.4:20999");
-
-    manager.test_maybe_auto_register_with_relays();
-
-    const auto endpoints = manager.test_configured_relay_endpoints();
-    EXPECT_EQ(endpoints.size(), 5u);
-    EXPECT_TRUE(ContainsEndpoint(endpoints, "173.249.200.59:20999"));
-}
-
 TEST(RelayHintPersistence, FreshHintsSurviveRestartButExpiredHintsDoNot) {
     const auto suffix = std::chrono::steady_clock::now().time_since_epoch().count();
     const auto path = std::filesystem::temp_directory_path() /
@@ -895,4 +873,1500 @@ TEST(RelayHealthScoring, ScoreEwmaAndReplacementEligibility) {
 int main(int argc, char** argv) {
     ::testing::InitGoogleTest(&argc, argv);
     return RUN_ALL_TESTS();
+}
+
+// Plan 3 Task 1: a node whose address other nodes dialed back relays for the
+// NAT'd nodes that can't be reached, without the owner turning anything on.
+TEST(RelayServicePolicy, VerifiedReachableEnablesRelayInAuto) {
+    using dinero::daemon::RelayRoleEnabled;
+    EXPECT_TRUE(RelayRoleEnabled("automatic", "auto", /*mining=*/false, /*verified=*/true));
+    EXPECT_TRUE(RelayRoleEnabled("automatic", "auto", /*mining=*/true, /*verified=*/false));
+    EXPECT_TRUE(RelayRoleEnabled("automatic", "on", false, false));
+}
+
+TEST(RelayServicePolicy, OperatorOffBeatsVerified) {
+    using dinero::daemon::RelayRoleEnabled;
+    EXPECT_FALSE(RelayRoleEnabled("off", "auto", true, true));
+    EXPECT_FALSE(RelayRoleEnabled("off", "on", true, true));
+    EXPECT_FALSE(RelayRoleEnabled("automatic", "off", true, true));
+    EXPECT_FALSE(RelayRoleEnabled("automatic", "0", false, true));
+    EXPECT_TRUE(RelayRoleEnabled("custom", "off", false, false));
+}
+
+TEST(RelayServicePolicy, UnverifiedNonMiningStaysOff) {
+    EXPECT_FALSE(dinero::daemon::RelayRoleEnabled("automatic", "auto", false, false));
+    EXPECT_FALSE(dinero::daemon::RelayRoleEnabled("automatic", "", false, false));
+}
+
+TEST(RelayServicePolicy, ServiceBitFollowsVerification) {
+    P2PManager manager(0);
+    std::vector<bool> seen;
+    manager.set_reachability_changed_handler([&](bool reachable) { seen.push_back(reachable); });
+
+    manager.update_stun_candidates({{"198.51.100.9", 20999}});
+    manager.test_run_reachability_tick();
+    EXPECT_TRUE(seen.empty()) << "nothing verified yet, nothing changed";
+
+    manager.test_mark_self_verified("203.0.113.50", 20999);
+    manager.test_run_reachability_tick();
+    ASSERT_EQ(seen.size(), 1u);
+    EXPECT_TRUE(seen.back());
+    EXPECT_TRUE(dinero::daemon::RelayRoleEnabled("automatic", "auto", false, seen.back()));
+
+    manager.test_run_reachability_tick();
+    EXPECT_EQ(seen.size(), 1u) << "fires on a change only";
+
+    // New public IP: nothing stays verified, so the relay role (and NODE_RELAY) goes.
+    manager.update_stun_candidates({{"192.0.2.77", 20999}});
+    ASSERT_EQ(seen.size(), 2u);
+    EXPECT_FALSE(seen.back());
+    EXPECT_FALSE(dinero::daemon::RelayRoleEnabled("automatic", "auto", false, seen.back()));
+}
+
+// Plan 3 Task 2: the owner's caps are the defaults — at most 8 circuits,
+// 200 KB/s of relayed traffic, 20 GB a calendar month (kept across
+// restarts) — and a relay that is syncing stops taking new circuits.
+namespace {
+
+std::chrono::system_clock::time_point Utc(int year, int month, int day) {
+    std::tm tm{};
+    tm.tm_year = year - 1900;
+    tm.tm_mon = month - 1;
+    tm.tm_mday = day;
+    tm.tm_hour = 12;
+#ifdef _WIN32
+    const std::time_t t = _mkgmtime(&tm);
+#else
+    const std::time_t t = timegm(&tm);
+#endif
+    return std::chrono::system_clock::from_time_t(t);
+}
+
+std::unique_ptr<P2PManager> ManagerAt(std::chrono::system_clock::time_point when) {
+    auto clock = std::make_unique<dinero::network::FakeClockSource>();
+    clock->AdvanceSystem(when.time_since_epoch());
+    return std::make_unique<P2PManager>(0, "", std::move(clock));
+}
+
+}  // namespace
+
+TEST(RelayCaps, DefaultsAreTheOwnersCaps) {
+    const P2PManager::RelayServiceLimits limits;
+    EXPECT_EQ(limits.max_circuits, 8u);
+    EXPECT_EQ(limits.bandwidth_bytes_per_second, 200u * 1024u);
+    EXPECT_EQ(limits.monthly_quota_bytes, 20ULL * 1024 * 1024 * 1024);
+    EXPECT_EQ(limits.max_circuits_per_peer, 2u);
+    EXPECT_EQ(limits.circuit_lifetime_seconds, 1800u);
+}
+
+TEST(RelayCaps, NinthCircuitRefused) {
+    P2PManager manager(0);
+    auto target = LoopbackSocketPair::Create();
+    const std::string target_key = "127.0.0.1:" + std::to_string(target.port());
+    manager.test_install_connected_direct_peer(target_key, target.client_fd(), false, true,
+                                               MakeNodeId(0x30));
+    manager.test_register_relay_target(MakeNodeId(0x30), target_key);
+
+    std::vector<LoopbackSocketPair> requesters;
+    for (int i = 0; i < 9; ++i) requesters.push_back(LoopbackSocketPair::Create());
+    for (int i = 0; i < 9; ++i) {
+        const std::string key = "127.0.0.1:" + std::to_string(requesters[i].port());
+        manager.test_install_connected_direct_peer(key, requesters[i].client_fd(), true, false, {});
+        manager.handle_relay_connect(key, P2PMessage::create_relay_connect(MakeNodeId(0x30), 100 + i));
+        auto ack = requesters[i].ReceiveMessage();
+        ASSERT_NE(ack, nullptr) << "requester " << i;
+        const auto expected = i < 8 ? P2PMessage::RelayConnectStatus::Ok
+                                    : P2PMessage::RelayConnectStatus::RelayFull;
+        EXPECT_EQ(RelayAckStatus(*ack), static_cast<uint8_t>(expected)) << "requester " << i;
+    }
+}
+
+TEST(RelayCaps, GlobalRateStaysUnder200KBps) {
+    // Frames over the cap are dropped (the tunneled QUIC retransmits), so the
+    // cap shows up as the bytes forwarded per second of wall time.
+    P2PManager manager(0);
+    auto target = LoopbackSocketPair::Create();
+    const std::string target_key = "127.0.0.1:" + std::to_string(target.port());
+    manager.test_install_connected_direct_peer(target_key, target.client_fd(), true, false, {});
+    // The target reads what it is sent: an undrained socket fills (macOS
+    // buffers hold ~340 KB) and blocked sends stretch the wall time measured.
+    std::atomic<bool> stop{false};
+    std::thread drain([&] {
+        while (!stop.load()) target.ReceiveMessage();
+    });
+    const std::vector<std::string> requesters = {"10.0.0.1:20999", "10.0.0.2:20999",
+                                                 "10.0.0.3:20999"};
+    for (size_t i = 0; i < requesters.size(); ++i) {
+        manager.test_install_relay_circuit(0x1000 + i, requesters[i], target_key);
+    }
+    const std::vector<uint8_t> chunk(4096, 0x5A);
+    uint64_t offered = 0, frames = 0;
+    size_t frame_bytes = 0;
+    const auto start = std::chrono::steady_clock::now();
+    while (std::chrono::steady_clock::now() - start < std::chrono::seconds(2)) {
+        const size_t i = frames % requesters.size();
+        const auto frame = P2PMessage::create_relay_data(
+            0x1000 + i, P2PMessage::RelayDirection::ClientToTarget, chunk);
+        frame_bytes = frame.payload.size();
+        manager.handle_relay_data(requesters[i], frame);
+        offered += frame_bytes;
+        ++frames;
+        std::this_thread::sleep_for(std::chrono::microseconds(200));
+    }
+    const double elapsed =
+        std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+    stop = true;
+    drain.join();
+    const uint64_t forwarded = offered - manager.test_relay_cap_drop_frames() * frame_bytes;
+    const double cap = 200.0 * 1024.0;
+    ASSERT_GT(offered, 3 * cap) << "the test must offer more than the cap";
+    EXPECT_LE(forwarded, (cap * elapsed + cap) * 1.1) << "forwarded " << forwarded;
+    EXPECT_GE(forwarded, cap * elapsed * 0.9) << "forwarded " << forwarded;
+}
+
+TEST(RelayCaps, MonthlyQuotaPersistsAcrossRestartAndResetsOnNewMonth) {
+    const auto dir = std::filesystem::temp_directory_path() /
+                     ("relay_quota_test_" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    std::filesystem::create_directories(dir);
+    const std::string path = (dir / "relay_quota").string();
+    std::filesystem::remove(path);
+    P2PManager::RelayServiceLimits small;
+    small.monthly_quota_bytes = 10000;
+    const std::vector<uint8_t> chunk(1000, 0x5A);
+    auto send = [&](P2PManager& m) {
+        const auto frame = P2PMessage::create_relay_data(
+            0x77, P2PMessage::RelayDirection::ClientToTarget, chunk);
+        const uint64_t before = m.test_relay_cap_drop_frames();
+        m.handle_relay_data("10.0.0.9:20999", frame);
+        return m.test_relay_cap_drop_frames() == before;  // forwarded
+    };
+    auto target = LoopbackSocketPair::Create();
+    const std::string target_key = "127.0.0.1:" + std::to_string(target.port());
+    uint64_t used = 0;
+    {
+        auto m = ManagerAt(Utc(2026, 10, 15));
+        m->set_relay_service_limits(small);
+        m->set_relay_quota_path(path);
+        m->test_install_connected_direct_peer(target_key, target.client_fd(), true, false, {});
+        m->test_install_relay_circuit(0x77, "10.0.0.9:20999", target_key);
+        int forwarded = 0;
+        for (int i = 0; i < 20; ++i) forwarded += send(*m) ? 1 : 0;
+        EXPECT_GE(forwarded, 1);
+        EXPECT_LT(forwarded, 20) << "the quota must bite";
+        used = m->relay_quota_month_bytes();
+        EXPECT_GT(used, 0u);
+        EXPECT_LE(used, 10000u);
+        EXPECT_EQ(m->relay_paused_reason(), "quota");
+    }  // shutdown writes the quota
+    {
+        auto m = ManagerAt(Utc(2026, 10, 28));
+        m->set_relay_service_limits(small);
+        m->set_relay_quota_path(path);
+        EXPECT_EQ(m->relay_quota_month_bytes(), used) << "restart must not reset the month";
+        auto t2 = LoopbackSocketPair::Create();
+        const std::string t2_key = "127.0.0.1:" + std::to_string(t2.port());
+        m->test_install_connected_direct_peer(t2_key, t2.client_fd(), true, false, {});
+        m->test_install_relay_circuit(0x77, "10.0.0.9:20999", t2_key);
+        EXPECT_FALSE(send(*m)) << "still over this month's quota after restart";
+    }
+    {
+        auto m = ManagerAt(Utc(2026, 11, 1));
+        m->set_relay_service_limits(small);
+        m->set_relay_quota_path(path);
+        EXPECT_EQ(m->relay_quota_month_bytes(), 0u) << "a new month starts at zero";
+        auto t3 = LoopbackSocketPair::Create();
+        const std::string t3_key = "127.0.0.1:" + std::to_string(t3.port());
+        m->test_install_connected_direct_peer(t3_key, t3.client_fd(), true, false, {});
+        m->test_install_relay_circuit(0x77, "10.0.0.9:20999", t3_key);
+        EXPECT_TRUE(send(*m));
+    }
+    std::filesystem::remove_all(dir);
+}
+
+TEST(RelayCaps, SyncingRelayRefusesNewCircuits) {
+    P2PManager manager(0);
+    uint32_t header_height = 107;
+    uint32_t our_height = 100;
+    manager.set_height_provider([&] { return our_height; });
+    manager.set_best_header_height_provider([&] { return header_height; });
+    auto requester = LoopbackSocketPair::Create();
+    const std::string requester_key = "127.0.0.1:" + std::to_string(requester.port());
+    manager.test_install_connected_direct_peer(requester_key, requester.client_fd(), true, false,
+                                               {});
+    auto target = LoopbackSocketPair::Create();
+    const std::string target_key = "127.0.0.1:" + std::to_string(target.port());
+    manager.test_install_connected_direct_peer(target_key, target.client_fd(), true, false, {});
+    manager.test_install_relay_circuit(0xABCD, "10.0.0.7:20999", target_key);
+
+    auto connect_status = [&](uint64_t id) {
+        manager.handle_relay_connect(requester_key,
+                                     P2PMessage::create_relay_connect(MakeNodeId(0x40), id));
+        auto ack = requester.ReceiveMessage();
+        return ack ? RelayAckStatus(*ack) : uint8_t{0xFF};
+    };
+    const auto kRateLimited = static_cast<uint8_t>(P2PMessage::RelayConnectStatus::RateLimited);
+
+    manager.test_recompute_relay_behind_throttle();  // 7 blocks behind its best header
+    EXPECT_EQ(connect_status(1), kRateLimited);
+    EXPECT_EQ(manager.relay_paused_reason(), "syncing");
+
+    // An established circuit still carries data.
+    const auto frame = P2PMessage::create_relay_data(
+        0xABCD, P2PMessage::RelayDirection::ClientToTarget, std::vector<uint8_t>(64, 0x5A));
+    manager.handle_relay_data("10.0.0.7:20999", frame);
+    auto forwarded = target.ReceiveMessage();
+    ASSERT_NE(forwarded, nullptr);
+    EXPECT_EQ(forwarded->payload, frame.payload);
+
+    header_height = 106;  // 6 behind is fine
+    manager.test_recompute_relay_behind_throttle();
+    EXPECT_NE(connect_status(2), kRateLimited);
+    EXPECT_EQ(manager.relay_paused_reason(), "");
+
+    // A peer claiming a huge height must not pause us: only validated
+    // headers count (review C1: the IBD estimate took peers' claims).
+    auto liar = LoopbackSocketPair::Create();
+    const std::string liar_key = "127.0.0.1:" + std::to_string(liar.port());
+    manager.test_install_connected_direct_peer(liar_key, liar.client_fd(), false, false, {});
+    manager.test_set_peer_best_height(liar_key, 0xFFFFFFF0u);
+    manager.test_recompute_relay_behind_throttle();
+    EXPECT_EQ(manager.relay_paused_reason(), "") << "a peer's claimed height paused the relay";
+
+    our_height = 0;  // still at genesis: nothing to serve yet
+    header_height = 0;
+    manager.test_recompute_relay_behind_throttle();
+    EXPECT_EQ(connect_status(3), kRateLimited);
+}
+
+// Plan 3 Task 3: a NAT'd node keeps two relays on different networks,
+// community relays first and the fleet only to fill; a relay counts only
+// once it acks the registration (relayrok), and one that stops answering
+// relay pings is replaced.
+namespace {
+
+struct RelayWorld {
+    dinero::p2p::AddressManager addrman;  // outlives the manager
+    dinero::network::FakeClockSource* clock{nullptr};
+    std::unique_ptr<P2PManager> manager;
+    std::map<std::string, std::unique_ptr<LoopbackSocketPair>> sockets;
+
+    RelayWorld() {
+        auto c = std::make_unique<dinero::network::FakeClockSource>();
+        c->AdvanceSystem(std::chrono::hours(500000));
+        c->AdvanceSteady(std::chrono::hours(1));
+        clock = c.get();
+        manager = std::make_unique<P2PManager>(20999, "", std::move(c));
+        manager->set_address_manager(&addrman);
+        InstallNodeIdentity(*manager);
+        // Never touch the network: record what auto-registration would dial.
+        manager->test_set_connection_manager_dial([this](const std::string& host, uint16_t port) {
+            dialed.push_back(host + ":" + std::to_string(port));
+            return false;
+        });
+    }
+    std::vector<std::string> dialed;
+    // A connected, identity-proven peer; `gossiped` also puts it in addrman as NODE_RELAY.
+    void Connect(const std::string& endpoint, bool gossiped) {
+        sockets[endpoint] = std::make_unique<LoopbackSocketPair>(LoopbackSocketPair::Create());
+        manager->test_install_connected_direct_peer(endpoint, sockets[endpoint]->client_fd(), true,
+                                                    true, MakeNodeId(0x50));
+        std::string host = endpoint.substr(0, endpoint.rfind(':'));
+        if (host.front() == '[') host = host.substr(1, host.size() - 2);  // "[v6]:port"
+        manager->test_set_peer_endpoint(endpoint, host, 20999);
+        if (gossiped) addrman.addAddress(MakeRelayAddress(host, 20999));
+    }
+    // The next message with `command` the manager sent to `endpoint`.
+    std::unique_ptr<P2PMessage> Next(const std::string& endpoint, const std::string& command) {
+        for (int i = 0; i < 16; ++i) {
+            auto m = sockets[endpoint]->ReceiveMessage();
+            if (!m || m->command == command) return m;
+        }
+        return nullptr;
+    }
+    void Ack(const std::string& endpoint) {
+        manager->handle_relay_register_ok(endpoint, P2PMessage::create_relay_register_ok(3600));
+    }
+    // Answers the relay ping the manager sent to `endpoint`.
+    void Pong(const std::string& endpoint) {
+        auto ping = Next(endpoint, "relaypng");
+        ASSERT_NE(ping, nullptr) << "no relay ping sent to " << endpoint;
+        ASSERT_EQ(ping->payload.size(), 16u);
+        manager->handle_relay_ping(endpoint,
+                                   P2PMessage::create_relay_pong(ReadLE64ForTest(ping->payload, 8)));
+    }
+    void Tick(std::chrono::seconds s) {
+        clock->AdvanceSteady(s);
+        manager->test_relay_registration_tick();
+        manager->test_maybe_auto_register_with_relays();
+    }
+    std::vector<std::string> Relays() const { return manager->test_configured_relay_endpoints(); }
+};
+
+}  // namespace
+
+TEST(RelayRegistration, TargetsTwoRelaysInDistinctNetgroups) {
+    dinero::p2p::AddressManager later_gossip;  // outlives the manager
+    RelayWorld w;
+    w.Connect("173.249.200.59:20999", false);  // fleet, holds a slot meanwhile
+    w.Connect("8.8.10.1:20999", true);
+    w.manager->test_maybe_auto_register_with_relays();
+    ASSERT_TRUE(ContainsEndpoint(w.Relays(), "8.8.10.1:20999"));
+    w.Ack("8.8.10.1:20999");  // a confirmed community relay
+    // Addrman spreads its own answers over /16s; the live set and gossip must
+    // be spread together: 8.8.20.2 shares 8.8.10.1's /16 and is the healthiest.
+    w.manager->set_address_manager(&later_gossip);
+    w.Connect("8.8.20.2:20999", false);
+    w.Connect("9.9.20.2:20999", false);
+    later_gossip.addAddress(MakeRelayAddress("8.8.20.2", 20999));
+    later_gossip.addAddress(MakeRelayAddress("9.9.20.2", 20999));
+    for (int i = 0; i < 5; ++i) w.manager->note_relay_outcome("8.8.20.2:20999", true);
+    w.manager->test_maybe_auto_register_with_relays();
+    const auto relays = w.Relays();
+    std::set<std::string> groups;
+    for (const auto& r : relays) {
+        EXPECT_TRUE(groups.insert(dinero::p2p::AddrManNetGroup(r.substr(0, r.rfind(':')))).second)
+            << "two relays in one netgroup: " << r;
+    }
+    EXPECT_TRUE(ContainsEndpoint(relays, "8.8.10.1:20999"));
+    EXPECT_TRUE(ContainsEndpoint(relays, "9.9.20.2:20999"));
+    EXPECT_FALSE(ContainsEndpoint(relays, "8.8.20.2:20999"));
+}
+TEST(RelayRegistration, PrefersCommunityOverFleet) {
+    // The fleet holds the slots until community relays have confirmed; then
+    // it is dropped (and no longer counted, refreshed or advertised).
+    RelayWorld w;
+    w.Connect("173.249.200.59:20999", false);  // SJ
+    w.Connect("172.93.167.32:20999", false);   // NA
+    w.Connect("8.8.10.1:20999", true);
+    w.Connect("9.9.20.2:20999", true);
+    w.manager->test_maybe_auto_register_with_relays();
+    auto relays = w.Relays();
+    EXPECT_TRUE(ContainsEndpoint(relays, "8.8.10.1:20999"));
+    EXPECT_TRUE(ContainsEndpoint(relays, "9.9.20.2:20999"));
+    EXPECT_TRUE(ContainsEndpoint(relays, "173.249.200.59:20999")) << "no fallback while unconfirmed";
+    w.Ack("173.249.200.59:20999");
+    w.Ack("172.93.167.32:20999");
+    w.Ack("8.8.10.1:20999");
+    w.Ack("9.9.20.2:20999");
+    w.manager->test_maybe_auto_register_with_relays();
+    relays = w.Relays();
+    EXPECT_EQ(relays.size(), 2u);
+    EXPECT_TRUE(ContainsEndpoint(relays, "8.8.10.1:20999"));
+    EXPECT_TRUE(ContainsEndpoint(relays, "9.9.20.2:20999"));
+    EXPECT_EQ(w.manager->test_confirmed_relay_count(), 2u) << "the fleet is still counted as ours";
+    const auto registered = w.manager->confirmed_relay_endpoints();
+    EXPECT_FALSE(ContainsEndpoint(registered, "173.249.200.59:20999"));
+}
+TEST(RelayRegistration, FleetFillsWhenNoCommunity) {
+    RelayWorld w;
+    w.Connect("173.249.200.59:20999", false);
+    w.Connect("172.93.167.32:20999", false);
+    w.manager->test_maybe_auto_register_with_relays();
+    auto relays = w.Relays();
+    EXPECT_EQ(relays.size(), 2u);
+    EXPECT_TRUE(ContainsEndpoint(relays, "173.249.200.59:20999"));
+    EXPECT_TRUE(ContainsEndpoint(relays, "172.93.167.32:20999"));
+
+    // One community relay appears: it is tried while the fleet keeps both
+    // slots, and takes one of them only once it confirms.
+    w.Connect("8.8.10.1:20999", true);
+    w.manager->test_maybe_auto_register_with_relays();
+    relays = w.Relays();
+    EXPECT_TRUE(ContainsEndpoint(relays, "8.8.10.1:20999"));
+    EXPECT_TRUE(ContainsEndpoint(relays, "173.249.200.59:20999"));
+    EXPECT_TRUE(ContainsEndpoint(relays, "172.93.167.32:20999"));
+    w.Ack("8.8.10.1:20999");
+    w.manager->test_maybe_auto_register_with_relays();
+    relays = w.Relays();
+    EXPECT_EQ(relays.size(), 2u);
+    EXPECT_TRUE(ContainsEndpoint(relays, "8.8.10.1:20999"));
+}
+TEST(RelayRegistration, UnackedRegistrationIsReplaced) {
+    RelayWorld w;
+    w.Connect("8.8.10.1:20999", true);
+    w.Connect("9.9.20.2:20999", true);
+    w.manager->test_maybe_auto_register_with_relays();
+    ASSERT_NE(w.Next("8.8.10.1:20999", "relayreg"), nullptr);
+    ASSERT_NE(w.Next("9.9.20.2:20999", "relayreg"), nullptr);
+    EXPECT_EQ(w.manager->test_confirmed_relay_count(), 0u) << "nothing counts before relayrok";
+
+    w.Ack("8.8.10.1:20999");  // 9.9.20.2 (role off, old build) stays silent
+    EXPECT_EQ(w.manager->test_confirmed_relay_count(), 1u);
+
+    w.Connect("13.13.30.3:20999", true);
+    w.Tick(std::chrono::seconds(31));
+    const auto relays = w.Relays();
+    EXPECT_TRUE(ContainsEndpoint(relays, "8.8.10.1:20999"));
+    EXPECT_TRUE(ContainsEndpoint(relays, "13.13.30.3:20999"));
+    EXPECT_FALSE(ContainsEndpoint(relays, "9.9.20.2:20999")) << "unacked relay must be replaced";
+    ASSERT_NE(w.Next("13.13.30.3:20999", "relayreg"), nullptr);
+    w.Ack("13.13.30.3:20999");
+    EXPECT_EQ(w.manager->test_confirmed_relay_count(), 2u);
+
+    // Still skipped while the 30-minute penalty runs.
+    w.Tick(std::chrono::minutes(10));
+    EXPECT_FALSE(ContainsEndpoint(w.Relays(), "9.9.20.2:20999"));
+}
+
+TEST(RelayRegistration, DeadRelayDetectedByMissedPingsAndReplaced) {
+    RelayWorld w;
+    w.Connect("8.8.10.1:20999", true);
+    w.Connect("9.9.20.2:20999", true);
+    w.manager->test_maybe_auto_register_with_relays();
+    w.Ack("8.8.10.1:20999");
+    w.Ack("9.9.20.2:20999");
+    ASSERT_EQ(w.manager->test_confirmed_relay_count(), 2u);
+    w.Connect("13.13.30.3:20999", true);
+
+    // 8.8.10.1 answers every ping; 9.9.20.2 goes silent.
+    for (int round = 0; round < 3; ++round) {
+        w.Tick(std::chrono::seconds(30));
+        w.Pong("8.8.10.1:20999");
+        ASSERT_NE(w.Next("9.9.20.2:20999", "relaypng"), nullptr) << "round " << round;
+    }
+    EXPECT_TRUE(ContainsEndpoint(w.Relays(), "9.9.20.2:20999")) << "three pings sent, not yet missed";
+    w.Tick(std::chrono::seconds(30));  // the third missed pong
+    const auto relays = w.Relays();
+    EXPECT_TRUE(ContainsEndpoint(relays, "8.8.10.1:20999"));
+    EXPECT_FALSE(ContainsEndpoint(relays, "9.9.20.2:20999"));
+    EXPECT_TRUE(ContainsEndpoint(relays, "13.13.30.3:20999"));
+    EXPECT_EQ(w.manager->test_confirmed_relay_count(), 1u);
+}
+
+TEST(RelayRegistration, RelayAcksRegistrationAndEchoesPings) {
+    P2PManager relay(0);
+    const auto dir = std::filesystem::temp_directory_path() /
+                     ("dinero-registrant-" + std::to_string(
+                         std::chrono::steady_clock::now().time_since_epoch().count()));
+    std::filesystem::create_directories(dir);
+    dinero::daemon::NodeIdentity registrant;
+    ASSERT_TRUE(registrant.initialize(dir.string()));
+    std::filesystem::remove_all(dir);
+
+    auto sock = LoopbackSocketPair::Create();
+    const std::string key = "127.0.0.1:" + std::to_string(sock.port());
+    relay.test_install_connected_direct_peer(key, sock.client_fd(), false, true, {});
+    constexpr uint64_t kNonce = 0x1234567890ABCDEFULL;
+    relay.test_set_peer_proven_identity(key, registrant.get_node_id_bytes(),
+                                        registrant.get_pubkey_bytes(), kNonce);
+
+    relay.handle_relay_register(key, P2PMessage::create_relay_register(registrant, kNonce, 3600));
+    auto ack = sock.ReceiveMessage();
+    ASSERT_NE(ack, nullptr);
+    EXPECT_EQ(ack->command, "relayrok");
+    ASSERT_EQ(ack->payload.size(), 4u);
+    EXPECT_EQ(ack->payload[0] | (ack->payload[1] << 8), 3600);
+
+    relay.handle_relay_ping(key, P2PMessage::create_relay_ping(0, 777));
+    auto pong = sock.ReceiveMessage();
+    ASSERT_NE(pong, nullptr);
+    EXPECT_EQ(pong->command, "relaypng");
+    ASSERT_EQ(pong->payload.size(), 17u);
+    EXPECT_EQ(ReadLE64ForTest(pong->payload, 0), 0u);
+    EXPECT_EQ(ReadLE64ForTest(pong->payload, 8), 777u);
+    EXPECT_EQ(pong->payload[16], P2PMessage::kRelayPongFlag);
+}
+
+TEST(RelayRegistration, StalePongIsNeverEchoed) {
+    // Two nodes registered with each other: a pong that arrives late (its
+    // nonce already replaced) must not be answered, or they bounce it forever.
+    RelayWorld w;
+    w.Connect("8.8.10.1:20999", true);
+    w.manager->test_maybe_auto_register_with_relays();
+    ASSERT_NE(w.Next("8.8.10.1:20999", "relayreg"), nullptr);
+    w.Ack("8.8.10.1:20999");                                         // it is our relay
+    w.manager->test_register_relay_target(MakeNodeId(0x50), "8.8.10.1:20999");  // we are its
+    w.manager->handle_relay_ping("8.8.10.1:20999", P2PMessage::create_relay_pong(0xDEAD));
+    EXPECT_EQ(w.Next("8.8.10.1:20999", "relaypng"), nullptr) << "a pong was answered";
+    // A real ping from it is still answered, with a pong.
+    w.manager->handle_relay_ping("8.8.10.1:20999", P2PMessage::create_relay_ping(0, 0xBEEF));
+    auto pong = w.Next("8.8.10.1:20999", "relaypng");
+    ASSERT_NE(pong, nullptr);
+    EXPECT_EQ(pong->payload.size(), 17u);
+}
+
+TEST(RelayRegistration, OffMainnetUsesCommunityRelaysButNeverTheFleet) {
+    // Issue #470: a regtest node must never dial the mainnet fleet, but it
+    // still registers with community relays it learned from gossip.
+    auto& params = const_cast<dinero::ChainParams&>(dinero::Params());
+    const std::string was = params.name;
+    params.name = "regtest";
+    struct Restore {
+        dinero::ChainParams& p;
+        std::string name;
+        ~Restore() { p.name = name; }
+    } restore{params, was};
+
+    RelayWorld w;
+    w.Connect("173.249.200.59:20999", false);  // a fleet address, even if connected
+    w.manager->test_maybe_auto_register_with_relays();
+    EXPECT_TRUE(w.Relays().empty()) << "regtest picked a mainnet fleet relay";
+    EXPECT_TRUE(w.dialed.empty()) << "regtest dialed " << (w.dialed.empty() ? "" : w.dialed[0]);
+    EXPECT_EQ(w.Next("173.249.200.59:20999", "relayreg"), nullptr);
+
+    w.Connect("8.8.10.1:20999", true);
+    w.manager->test_maybe_auto_register_with_relays();
+    const auto relays = w.Relays();
+    ASSERT_EQ(relays.size(), 1u);
+    EXPECT_EQ(relays[0], "8.8.10.1:20999");
+    EXPECT_NE(w.Next("8.8.10.1:20999", "relayreg"), nullptr);
+}
+
+// Plan 3 Task 4: relayhn2 — the NAT'd target signs "reach me via relay R
+// until T"; nodes store only what verifies and forward it a bounded number
+// of hops, so a node that isn't connected to R or the target can still
+// find the target, dial R and ask it for a circuit.
+namespace {
+
+std::unique_ptr<dinero::daemon::NodeIdentity> NewIdentity() {
+    const auto dir = std::filesystem::temp_directory_path() /
+                     ("dinero-hint-target-" + std::to_string(
+                         std::chrono::steady_clock::now().time_since_epoch().count()));
+    std::filesystem::create_directories(dir);
+    auto id = std::make_unique<dinero::daemon::NodeIdentity>();
+    const bool ok = id->initialize(dir.string());
+    std::filesystem::remove_all(dir);
+    if (!ok) throw std::runtime_error("identity");
+    return id;
+}
+
+uint32_t UnixNow() {
+    return static_cast<uint32_t>(
+        std::chrono::system_clock::to_time_t(std::chrono::system_clock::now()));
+}
+
+P2PMessage SignedHintMessage(const dinero::daemon::NodeIdentity& target, uint8_t hop,
+                             std::vector<uint8_t> relay_ip = {8, 8, 10, 1}) {
+    dinero::p2p::HintFields f;
+    f.relay_addr = std::move(relay_ip);
+    f.relay_port = 20999;
+    f.expiry = UnixNow() + 1800;
+    P2PMessage m;
+    m.command = "relayhn2";
+    m.payload = dinero::p2p::WithHop(dinero::p2p::SignHint(target, f), hop);
+    return m;
+}
+
+constexpr uint64_t kDialbackPeer = dinero::ServiceFlags::NODE_DIALBACK;
+
+}  // namespace
+
+TEST(SignedHints, ForgedHintIsNotStoredOrForwarded) {
+    auto target = NewIdentity();
+    auto mallory = NewIdentity();
+    P2PManager m(0);
+    auto sender = LoopbackSocketPair::Create();
+    auto other = LoopbackSocketPair::Create();
+    const std::string sender_key = "10.1.0.1:20999", other_key = "10.1.0.2:20999";
+    m.test_install_connected_direct_peer(sender_key, sender.client_fd(), false, false, {});
+    m.test_install_connected_direct_peer(other_key, other.client_fd(), true, false, {});
+    m.test_set_peer_services(sender_key, kDialbackPeer);
+    m.test_set_peer_services(other_key, kDialbackPeer);
+
+    // Mallory claims to be the target: right node id, Mallory's key and signature.
+    auto forged = SignedHintMessage(*mallory, 0);
+    const auto id = target->get_node_id_bytes();
+    std::copy(id.begin(), id.end(), forged.payload.begin());
+    m.handle_relay_hint_v2(sender_key, forged);
+    EXPECT_EQ(m.test_relay_hint_count(id), 0u) << "a forged hint must not be stored";
+    EXPECT_EQ(other.ReceiveMessage(), nullptr) << "a forged hint must not be forwarded";
+
+    m.handle_relay_hint_v2(sender_key, SignedHintMessage(*target, 0));
+    EXPECT_EQ(m.test_relay_hint_count(id), 1u);
+    auto fwd = other.ReceiveMessage();
+    ASSERT_NE(fwd, nullptr);
+    EXPECT_EQ(fwd->command, "relayhn2");
+    const auto h = dinero::p2p::VerifyHint(fwd->payload, UnixNow());
+    ASSERT_TRUE(h.has_value());
+    EXPECT_EQ(h->hop, 1);
+    EXPECT_EQ(sender.ReceiveMessage(), nullptr) << "never sent back to the sender";
+}
+
+TEST(SignedHints, ForwardingIsBoundedInACycle) {
+    // Five nodes, every one connected to every other: each pair of nodes
+    // closes a cycle, so without dedup copies multiply within the hop limit.
+    constexpr int kN = 5;
+    std::vector<std::unique_ptr<P2PManager>> nodes;
+    for (int i = 0; i < kN; ++i) nodes.push_back(std::make_unique<P2PManager>(0));
+    auto key_of = [](int i) { return "10.2.0." + std::to_string(i + 1) + ":20999"; };
+    struct Link { int from, to; std::unique_ptr<LoopbackSocketPair> sock; };
+    std::vector<Link> links;  // what `from` sends to `to` arrives on sock
+    for (int i = 0; i < kN; ++i) {
+        for (int j = 0; j < kN; ++j) {
+            if (j == i) continue;
+            auto sock = std::make_unique<LoopbackSocketPair>(LoopbackSocketPair::Create());
+            nodes[i]->test_install_connected_direct_peer(key_of(j), sock->client_fd(), true, false, {});
+            nodes[i]->test_set_peer_services(key_of(j), kDialbackPeer);
+            links.push_back({i, j, std::move(sock)});
+        }
+    }
+    auto target = NewIdentity();
+    // The target's hint arrives at node 0 from outside the ring (hop 0).
+    nodes[0]->handle_relay_hint_v2("10.9.9.9:20999", SignedHintMessage(*target, 0));
+
+    std::vector<int> sent_by(kN, 0);
+    std::set<std::pair<int, int>> deliveries;
+    for (int round = 0; round < 10; ++round) {
+        bool any = false;
+        for (auto& l : links) {
+            while (auto msg = l.sock->ReceiveMessage()) {
+                any = true;
+                ++sent_by[l.from];
+                EXPECT_TRUE(deliveries.insert({l.from, l.to}).second)
+                    << l.from << "->" << l.to << " sent twice";
+                nodes[l.to]->handle_relay_hint_v2(key_of(l.from), *msg);
+            }
+        }
+        if (!any) break;
+    }
+    for (int i = 0; i < kN; ++i) {
+        EXPECT_EQ(nodes[i]->test_relay_hint_count(target->get_node_id_bytes()), 1u) << "node " << i;
+        EXPECT_LE(sent_by[i], kN - 1) << "node " << i << " forwards once (to each other peer)";
+    }
+    int total = 0;
+    for (int n : sent_by) total += n;
+    EXPECT_LE(total, kN * (kN - 1)) << "no amplification";
+
+    // Hop limit: a hint that has already travelled 3 hops is stored, not forwarded.
+    auto far = NewIdentity();
+    nodes[2]->handle_relay_hint_v2(key_of(1), SignedHintMessage(*far, dinero::p2p::kHintMaxHops));
+    EXPECT_EQ(nodes[2]->test_relay_hint_count(far->get_node_id_bytes()), 1u);
+    for (auto& l : links) {
+        if (l.from == 2) EXPECT_EQ(l.sock->ReceiveMessage(), nullptr) << "hop limit";
+    }
+}
+
+TEST(SignedHints, ThirdHopNodeCanDialTarget) {
+    // A (NAT'd) is registered with relay R = 8.8.10.1. D hears about it from
+    // C, two hops from R, and is connected to neither R nor A.
+    auto a = NewIdentity();
+    P2PManager d(0);
+    InstallNodeIdentity(d);
+    auto c_sock = LoopbackSocketPair::Create();
+    const std::string c_key = "10.3.0.3:20999";
+    d.test_install_connected_direct_peer(c_key, c_sock.client_fd(), true, false, {});
+    d.test_set_peer_services(c_key, kDialbackPeer);
+    std::vector<std::pair<std::string, uint16_t>> dialed;
+    d.test_set_connection_manager_dial([&](const std::string& host, uint16_t port) {
+        dialed.emplace_back(host, port);
+        return true;
+    });
+
+    d.handle_relay_hint_v2(c_key, SignedHintMessage(*a, 2));
+    d.test_orchestrate_relay_dials();
+    ASSERT_EQ(dialed.size(), 1u) << "D must connect to the relay named by the signed hint";
+    EXPECT_EQ(dialed[0].first, "8.8.10.1");
+    EXPECT_EQ(dialed[0].second, 20999);
+
+    // Once D is connected to R, the next pass asks R for a circuit to A.
+    auto r_sock = LoopbackSocketPair::Create();
+    d.test_install_connected_direct_peer("8.8.10.1:20999", r_sock.client_fd(), true, false, {});
+    d.test_orchestrate_relay_dials();
+    std::unique_ptr<P2PMessage> connect;
+    for (int i = 0; i < 4 && !connect; ++i) {
+        auto m = r_sock.ReceiveMessage();
+        if (!m) break;
+        if (m->command == "relaycon") connect = std::move(m);
+    }
+    ASSERT_NE(connect, nullptr) << "D sends RELAY_CONNECT for A through R";
+    const auto a_id = a->get_node_id_bytes();
+    EXPECT_TRUE(std::equal(a_id.begin(), a_id.end(), connect->payload.begin()));
+
+    // A legacy (unsigned) hint must never make a node dial an address.
+    P2PManager e(0);
+    InstallNodeIdentity(e);
+    std::vector<std::pair<std::string, uint16_t>> e_dialed;
+    e.test_set_connection_manager_dial([&](const std::string& h, uint16_t p) {
+        e_dialed.emplace_back(h, p);
+        return true;
+    });
+    AddRelayHint(e, MakeNodeId(0x61), 20999);
+    e.test_orchestrate_relay_dials();
+    EXPECT_TRUE(e_dialed.empty());
+}
+
+// Plan 3 Task 6: a RELAY_CONNECT whose relay goes away fails at once (not
+// after the timeout), and the 10 s timeout is enforced within 12 s.
+TEST(RelayOrchestrator, PendingConnectFailsImmediatelyWhenRelayDisconnects) {
+    P2PManager manager(0);
+    auto relay = LoopbackSocketPair::Create();
+    const std::string relay_key = "127.0.0.1:" + std::to_string(relay.port());
+    manager.test_install_connected_direct_peer(relay_key, relay.client_fd(), true, false, {});
+    std::atomic<int> fired{0};
+    bool ok = true;
+    std::string reason;
+    manager.test_insert_pending_relay_connect(
+        0x4242, MakeNodeId(0x70), relay_key, [&](bool o, uint64_t, const std::string& m) {
+            ok = o;
+            reason = m;
+            fired++;
+        });
+    manager.test_insert_pending_relay_connect(0x4343, MakeNodeId(0x71), "10.0.0.99:20999",
+                                              [&](bool, uint64_t, const std::string&) { fired += 10; });
+    manager.test_cleanup_peer(relay_key);
+    EXPECT_EQ(fired.load(), 1) << "only the connect through the departed relay fails";
+    EXPECT_FALSE(ok);
+    EXPECT_NE(reason.find("relay_disconnected"), std::string::npos) << reason;
+    EXPECT_EQ(manager.test_pending_relay_connect_count(), 1u);
+}
+
+TEST(RelayOrchestrator, TimeoutFiresWithin12Seconds) {
+    uint16_t port = 0;
+    {
+        auto probe = LoopbackSocketPair::Create();
+        port = probe.port();
+    }
+    P2PManager manager(port);
+    manager.set_quic_enabled(false);
+    ASSERT_TRUE(manager.start());
+    std::atomic<bool> fired{false};
+    std::string reason;
+    const auto sent = std::chrono::steady_clock::now();
+    std::chrono::steady_clock::time_point at{};
+    manager.test_insert_pending_relay_connect(
+        0x5151, MakeNodeId(0x72), "10.0.0.98:20999", [&](bool, uint64_t, const std::string& m) {
+            reason = m;
+            at = std::chrono::steady_clock::now();
+            fired = true;
+        });
+    while (!fired && std::chrono::steady_clock::now() - sent < std::chrono::seconds(13)) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+    manager.stop();
+    ASSERT_TRUE(fired.load()) << "no timeout within 13 s";
+    const double after = std::chrono::duration<double>(at - sent).count();
+    EXPECT_GE(after, 9.9) << reason;
+    EXPECT_LE(after, 12.0) << reason;
+}
+
+// A node that becomes verified reachable starts relaying; peers that are
+// already connected learn its new NODE_RELAY bit from a fresh
+// self-advertisement (their view of its version message is stale).
+TEST(RelayServicePolicy, VerifiedRelayReannouncesItsServices) {
+    P2PManager manager(0);
+    std::atomic<bool> verified{false};
+    manager.set_reachability_changed_handler([&](bool r) { verified = r; });
+    manager.set_service_flags_provider([&]() -> uint64_t {
+        return dinero::ServiceFlags::NODE_NETWORK | dinero::ServiceFlags::NODE_DINERO_V2 |
+               (verified ? dinero::ServiceFlags::NODE_RELAY : 0);
+    });
+    auto peer = LoopbackSocketPair::Create();
+    const std::string key = "127.0.0.1:" + std::to_string(peer.port());
+    manager.test_install_connected_direct_peer(key, peer.client_fd(), true, false, {});
+    manager.test_set_peer_services(key, dinero::ServiceFlags::NODE_DINERO_V2);
+    manager.add_advertised_address("203.0.113.50", 20999, /*learned=*/true);
+
+    manager.test_mark_self_verified("203.0.113.50", 20999);
+    manager.test_run_reachability_tick();
+    std::unique_ptr<P2PMessage> addr;
+    for (int i = 0; i < 4 && !addr; ++i) {
+        auto m = peer.ReceiveMessage();
+        if (!m) break;
+        if (m->command == "addrv2") addr = std::move(m);
+    }
+    ASSERT_NE(addr, nullptr) << "no self-advertisement after verification";
+    std::vector<dinero::p2p::AddrV2Entry> entries;
+    std::string err;
+    ASSERT_TRUE(dinero::p2p::DecodeAddrV2(addr->payload, &entries, &err)) << err;
+    ASSERT_EQ(entries.size(), 1u);
+    EXPECT_EQ(entries[0].port, 20999);
+    EXPECT_NE(entries[0].services & dinero::ServiceFlags::NODE_RELAY, 0u);
+}
+
+TEST(RelayServicePolicy, GetaddrReplyDoesNotStampOurServicesOnOthers) {
+    // A relay answering getaddr labels the addresses it knows with THEIR
+    // services, so NAT'd nodes do not try to register with non-relays.
+    P2PManager manager(0);
+    dinero::p2p::AddressManager addrman;
+    manager.set_address_manager(&addrman);
+    manager.set_service_flags_provider([] {
+        return dinero::ServiceFlags::NODE_NETWORK | dinero::ServiceFlags::NODE_DINERO_V2 |
+               dinero::ServiceFlags::NODE_RELAY;
+    });
+    dinero::p2p::NetworkAddress other;
+    other.ip = "8.8.10.1";
+    other.port = 20999;
+    other.services = dinero::ServiceFlags::NODE_NETWORK;
+    other.timestamp = std::chrono::system_clock::now();
+    addrman.addAddress(other);
+    addrman.markGood(other);  // getaddr answers from the tried table
+    auto peer = LoopbackSocketPair::Create();
+    const std::string key = "127.0.0.1:" + std::to_string(peer.port());
+    manager.test_install_connected_direct_peer(key, peer.client_fd(), false, false, {});
+    manager.test_set_peer_services(key, dinero::ServiceFlags::NODE_DINERO_V2);
+
+    manager.test_handle_getaddr(key);
+    auto reply = peer.ReceiveMessage();
+    ASSERT_NE(reply, nullptr);
+    ASSERT_EQ(reply->command, "addrv2");
+    std::vector<dinero::p2p::AddrV2Entry> entries;
+    std::string err;
+    ASSERT_TRUE(dinero::p2p::DecodeAddrV2(reply->payload, &entries, &err)) << err;
+    bool found = false;
+    for (const auto& e : entries) {
+        if (e.port == 20999 && e.addr == std::vector<uint8_t>{8, 8, 10, 1}) {
+            found = true;
+            EXPECT_EQ(e.services & dinero::ServiceFlags::NODE_RELAY, 0u)
+                << "another node's address was labelled with our NODE_RELAY";
+        }
+    }
+    EXPECT_TRUE(found);
+}
+
+// getpeerinfo reads a snapshot; it must carry the proven node id so an
+// operator (and the end-to-end scenarios) can see who a relayed peer is.
+TEST(RelayOrchestrator, ConnectedPeersSnapshotKeepsProvenIdentity) {
+    P2PManager manager(0);
+    auto sock = LoopbackSocketPair::Create();
+    const std::string key = "127.0.0.1:" + std::to_string(sock.port());
+    manager.test_install_connected_direct_peer(key, sock.client_fd(), true, true, MakeNodeId(0x77));
+    const auto peers = manager.get_connected_peers();
+    ASSERT_EQ(peers.size(), 1u);
+    EXPECT_TRUE(peers[0].identity_proven);
+    EXPECT_EQ(peers[0].their_node_id, MakeNodeId(0x77));
+}
+
+// Found end to end (TWO_RELAYS on DineroTX): a gossiped relay that went
+// down stays in addrman as NODE_RELAY; dialing it fails every pass and it
+// must not keep holding one of the two slots.
+TEST(RelayRegistration, UnreachableCandidateIsReplaced) {
+    RelayWorld w;
+    w.addrman.addAddress(MakeRelayAddress("8.8.10.1", 20999));  // gossiped, but down
+    for (int i = 0; i < 5; ++i) w.manager->note_relay_outcome("8.8.10.1:20999", true);
+    w.Connect("9.9.20.2:20999", true);
+    w.Connect("13.13.30.3:20999", true);
+    w.manager->test_maybe_auto_register_with_relays();
+    ASSERT_TRUE(ContainsEndpoint(w.Relays(), "8.8.10.1:20999"));
+    ASSERT_TRUE(ContainsEndpoint(w.dialed, "8.8.10.1:20999"));
+
+    w.Tick(std::chrono::seconds(31));  // still not connected 30 s after the dial
+    const auto relays = w.Relays();
+    EXPECT_FALSE(ContainsEndpoint(relays, "8.8.10.1:20999")) << "a relay we cannot reach keeps its slot";
+    EXPECT_EQ(relays.size(), 2u);
+}
+
+// Found end to end (default scenario's restart step): after a restart a
+// NAT'd origin knows the target only from relay_hints.dat and is connected
+// to no relay. A persisted SIGNED hint must still let it dial the relay; a
+// persisted hint whose signature no longer verifies must not.
+TEST(RelayHintPersistence, SignedHintSurvivesRestartAndStillDialsRelay) {
+    auto target = NewIdentity();
+    const auto path = std::filesystem::temp_directory_path() /
+                      ("dinero-v2-hints-" + std::to_string(
+                          std::chrono::steady_clock::now().time_since_epoch().count()));
+    {
+        P2PManager before(0);
+        before.handle_relay_hint_v2("10.5.0.1:20999", SignedHintMessage(*target, 1));
+        before.save_relay_hints(path.string());
+    }
+    auto dials_after_load = [&](const std::filesystem::path& file) {
+        P2PManager after(0);
+        InstallNodeIdentity(after);
+        std::vector<std::string> dialed;
+        after.test_set_connection_manager_dial([&](const std::string& h, uint16_t p) {
+            dialed.push_back(h + ":" + std::to_string(p));
+            return false;
+        });
+        after.load_relay_hints(file.string());
+        after.test_orchestrate_relay_dials();
+        return dialed;
+    };
+    const auto dialed = dials_after_load(path);
+    ASSERT_EQ(dialed.size(), 1u) << "restored signed hint did not lead to the relay";
+    EXPECT_EQ(dialed[0], "8.8.10.1:20999");
+
+    // Tamper with the stored signed payload: it may load as a plain hint but
+    // never makes the node dial.
+    std::ifstream in(path);
+    std::stringstream all;
+    all << in.rdbuf();
+    std::string text = all.str();
+    const auto last_space = text.rfind(' ');
+    ASSERT_NE(last_space, std::string::npos);
+    text[last_space + 1 + 2 * (20 + 33 + 2 + 3)] ^= 0x01;  // a hex digit of the relay address
+    const auto tampered = path.string() + ".tampered";
+    std::ofstream(tampered) << text;
+    EXPECT_TRUE(dials_after_load(tampered).empty()) << "a tampered stored hint made the node dial";
+    std::filesystem::remove(path);
+    std::filesystem::remove(tampered);
+}
+
+// Found end to end: the signed hint waited for the next keepalive tick (up
+// to 30 s), so peers that left in between never learned how to reach us.
+TEST(RelayRegistration, ConfirmedRelayGetsSignedHintImmediately) {
+    RelayWorld w;
+    w.Connect("8.8.10.1:20999", true);
+    w.Connect("9.9.20.2:20999", false);
+    w.manager->test_set_peer_services("8.8.10.1:20999", dinero::ServiceFlags::NODE_DIALBACK);
+    w.manager->test_set_peer_services("9.9.20.2:20999", dinero::ServiceFlags::NODE_DIALBACK);
+    w.manager->test_maybe_auto_register_with_relays();
+    ASSERT_NE(w.Next("8.8.10.1:20999", "relayreg"), nullptr);
+    w.Ack("8.8.10.1:20999");
+    auto hint = w.Next("9.9.20.2:20999", "relayhn2");
+    ASSERT_NE(hint, nullptr) << "no signed hint right after the relay confirmed us";
+    const auto now = static_cast<uint32_t>(std::chrono::system_clock::to_time_t(w.clock->SystemNow()));
+    const auto h = dinero::p2p::VerifyHint(hint->payload, now);
+    ASSERT_TRUE(h.has_value());
+    EXPECT_EQ(h->relay_addr, (std::vector<uint8_t>{8, 8, 10, 1}));
+    EXPECT_EQ(h->relay_port, 20999);
+}
+
+// Review I2: a relay that stops serving (syncing, over quota, role off)
+// must stop confirming registrations and answering pings, and drop the
+// registrations it holds, so its registrants move to a working relay.
+namespace {
+struct RelayWithRegistrant {
+    P2PManager relay{0};
+    std::unique_ptr<dinero::daemon::NodeIdentity> registrant = NewIdentity();
+    LoopbackSocketPair sock = LoopbackSocketPair::Create();
+    std::string key = "127.0.0.1:" + std::to_string(sock.port());
+    static constexpr uint64_t kNonce = 0x1122334455667788ULL;
+    RelayWithRegistrant() {
+        relay.test_install_connected_direct_peer(key, sock.client_fd(), false, true, {});
+        relay.test_set_peer_proven_identity(key, registrant->get_node_id_bytes(),
+                                            registrant->get_pubkey_bytes(), kNonce);
+    }
+    std::unique_ptr<P2PMessage> Register() {
+        relay.handle_relay_register(key, P2PMessage::create_relay_register(*registrant, kNonce, 3600));
+        return sock.ReceiveMessage();
+    }
+};
+}  // namespace
+
+TEST(RelayRegistration, PausedRelayStopsAckingAndPonging) {
+    RelayWithRegistrant r;
+    r.relay.test_set_relay_behind_throttle(true);
+    EXPECT_EQ(r.Register(), nullptr) << "a syncing relay confirmed a registration";
+    r.relay.test_set_relay_behind_throttle(false);
+    auto ack = r.Register();
+    ASSERT_NE(ack, nullptr);
+    EXPECT_EQ(ack->command, "relayrok");
+    r.relay.test_set_relay_behind_throttle(true);
+    r.relay.handle_relay_ping(r.key, P2PMessage::create_relay_ping(0, 99));
+    EXPECT_EQ(r.sock.ReceiveMessage(), nullptr) << "a syncing relay answered a ping";
+}
+
+TEST(RelayRegistration, RoleOffDropsRegistrations) {
+    RelayWithRegistrant r;
+    ASSERT_NE(r.Register(), nullptr);
+    ASSERT_EQ(r.relay.relay_registry_entry_count(), 1u);
+    r.relay.set_relay_service_enabled(false);
+    EXPECT_EQ(r.relay.relay_registry_entry_count(), 0u);
+}
+
+TEST(RelayRegistration, UnackedRefreshDropsRelay) {
+    RelayWorld w;
+    w.Connect("8.8.10.1:20999", true);
+    w.Connect("9.9.20.2:20999", true);
+    w.manager->test_maybe_auto_register_with_relays();
+    w.Ack("8.8.10.1:20999");
+    w.Ack("9.9.20.2:20999");
+    ASSERT_EQ(w.manager->test_confirmed_relay_count(), 2u);
+    w.clock->AdvanceSteady(std::chrono::hours(2));  // past the refresh interval
+    w.manager->test_refresh_relay_registrations();
+    w.Ack("9.9.20.2:20999");  // only one relay still confirms
+    w.clock->AdvanceSteady(std::chrono::seconds(31));
+    w.manager->test_relay_registration_tick();
+    EXPECT_EQ(w.manager->test_confirmed_relay_count(), 1u) << "a refresh nobody acked kept the relay";
+}
+
+// Review I7: each relayrok used to re-sign and broadcast a fresh hint, so a
+// relay could make us flood the network. Only the first confirmation is news.
+TEST(RelayRegistration, RepeatedAckDoesNotRebroadcast) {
+    RelayWorld w;
+    w.Connect("8.8.10.1:20999", true);
+    w.Connect("9.9.20.2:20999", false);
+    w.manager->test_set_peer_services("9.9.20.2:20999", dinero::ServiceFlags::NODE_DIALBACK);
+    w.manager->test_maybe_auto_register_with_relays();
+    w.Ack("8.8.10.1:20999");
+    ASSERT_NE(w.Next("9.9.20.2:20999", "relayhn2"), nullptr);
+    for (int i = 0; i < 5; ++i) w.Ack("8.8.10.1:20999");
+    EXPECT_EQ(w.Next("9.9.20.2:20999", "relayhn2"), nullptr) << "a repeated ack re-broadcast our hint";
+}
+
+// Review I3: anyone can send unsigned relayhnt hints; four of them for a
+// target used to push the target's own signed hint out of its bucket.
+TEST(SignedHints, UnsignedHintsCannotEvictTheSignedOne) {
+    auto target = NewIdentity();
+    P2PManager m(0);
+    m.handle_relay_hint_v2("10.6.0.1:20999", SignedHintMessage(*target, 0));
+    ASSERT_EQ(m.test_signed_relay_hint_count(target->get_node_id_bytes()), 1u);
+    std::vector<P2PMessage::RelayHint> junk;
+    for (uint8_t i = 1; i <= 6; ++i) {
+        P2PMessage::RelayHint h;
+        h.target_node_id = target->get_node_id_bytes();
+        h.relay_net = dinero::p2p::NetworkType::IPV4;
+        h.relay_addr = {66, 66, 66, i};
+        h.relay_port = 20999;
+        junk.push_back(h);
+    }
+    m.handle_relay_hints("10.6.0.2:20999", P2PMessage::create_relay_hints(junk));
+    EXPECT_EQ(m.test_signed_relay_hint_count(target->get_node_id_bytes()), 1u)
+        << "unsigned hints evicted the target's signed hint";
+}
+
+// Review I4: hint state must stay bounded however many identities an
+// attacker mints, and one peer can only cost a bounded number of checks.
+TEST(SignedHints, HintTableIsBounded) {
+    P2PManager m(0);
+    for (int peer = 0; peer < 12; ++peer) {
+        std::vector<P2PMessage::RelayHint> batch;
+        for (int i = 0; i < 100; ++i) {
+            P2PMessage::RelayHint h;
+            const int n = peer * 100 + i;
+            h.target_node_id = MakeNodeId(static_cast<uint8_t>(n & 0xFF));
+            h.target_node_id[18] = static_cast<uint8_t>(n >> 8);
+            h.relay_net = dinero::p2p::NetworkType::IPV4;
+            h.relay_addr = {8, 8, 10, 1};
+            h.relay_port = 20999;
+            batch.push_back(h);
+        }
+        m.handle_relay_hints("10.7.0." + std::to_string(peer) + ":20999",
+                             P2PMessage::create_relay_hints(batch));
+    }
+    EXPECT_LE(m.test_relay_hint_target_count(), 1024u);
+    EXPECT_GE(m.test_relay_hint_target_count(), 1000u);
+}
+
+TEST(SignedHints, PerPeerSignedHintBudget) {
+    P2PManager m(0);
+    std::vector<std::unique_ptr<dinero::daemon::NodeIdentity>> targets;
+    for (int i = 0; i < 40; ++i) {
+        targets.push_back(NewIdentity());
+        m.handle_relay_hint_v2("10.8.0.1:20999", SignedHintMessage(*targets.back(), 0));
+    }
+    EXPECT_EQ(m.test_relay_hint_target_count(), 30u) << "one peer may cost at most 30 checks a minute";
+    m.handle_relay_hint_v2("10.8.0.2:20999", SignedHintMessage(*targets[35], 0));
+    EXPECT_EQ(m.test_relay_hint_target_count(), 31u) << "another peer has its own budget";
+}
+
+// Review I1: hint-named relays are cold dials an attacker can aim. A relay
+// that can't be reached loses every hint naming it for hours, and at most
+// two new relays are cold-dialed per 10 minutes.
+TEST(RelayOrchestrator, HintRelayColdDialsAreBoundedAndFailuresDropHints) {
+    P2PManager d(0);
+    InstallNodeIdentity(d);
+    std::vector<std::string> dialed;
+    d.test_set_connection_manager_dial([&](const std::string& h, uint16_t p) {
+        dialed.push_back(h + ":" + std::to_string(p));
+        return false;  // nothing answers
+    });
+    std::vector<std::unique_ptr<dinero::daemon::NodeIdentity>> targets;
+    for (uint8_t i = 1; i <= 3; ++i) {
+        targets.push_back(NewIdentity());
+        d.handle_relay_hint_v2("10.9.0.1:20999", SignedHintMessage(*targets.back(), 1, {8, 8, 10, i}));
+    }
+    // Two targets share relay 8.8.10.1: its failure must drop both hints.
+    targets.push_back(NewIdentity());
+    d.handle_relay_hint_v2("10.9.0.1:20999", SignedHintMessage(*targets.back(), 1, {8, 8, 10, 1}));
+
+    d.test_orchestrate_relay_dials();
+    EXPECT_EQ(dialed.size(), 2u) << "cold dials must be budgeted";
+    const bool first_was_dialed =
+        std::find(dialed.begin(), dialed.end(), "8.8.10.1:20999") != dialed.end();
+    if (first_was_dialed) {
+        EXPECT_EQ(d.test_relay_hint_count(targets[0]->get_node_id_bytes()), 0u);
+        EXPECT_EQ(d.test_relay_hint_count(targets[3]->get_node_id_bytes()), 0u)
+            << "a failed relay keeps hints of other targets naming it";
+    }
+    dialed.clear();
+    d.test_orchestrate_relay_dials();
+    for (const auto& ep : dialed) {
+        EXPECT_NE(ep, "8.8.10.1:20999") << "a failed relay was redialed at once";
+    }
+}
+
+// Review I6: anyone can gossip NODE_RELAY for addresses that don't relay
+// (or relay nothing). Such candidates must never cost us the fleet fallback.
+TEST(RelayRegistration, FakeRelayGossipCannotLeaveUsWithoutARelay) {
+    RelayWorld w;
+    w.Connect("173.249.200.59:20999", false);
+    w.Connect("172.93.167.32:20999", false);
+    for (uint8_t i = 1; i <= 6; ++i) {
+        w.addrman.addAddress(MakeRelayAddress(std::to_string(20 + i) + ".1.1.1", 20999));
+    }
+    for (int round = 0; round < 4; ++round) {
+        w.manager->test_maybe_auto_register_with_relays();
+        const auto relays = w.Relays();
+        EXPECT_TRUE(ContainsEndpoint(relays, "173.249.200.59:20999") &&
+                    ContainsEndpoint(relays, "172.93.167.32:20999"))
+            << "round " << round << ": fake relays displaced the fleet";
+        if (round == 0) {  // the fleet answers like a working relay
+            w.Ack("173.249.200.59:20999");
+            w.Ack("172.93.167.32:20999");
+        }
+        w.Tick(std::chrono::seconds(31));
+    }
+}
+
+// Review I8: with only 8 slots, circuits must not outlive an endpoint, and
+// one network may hold at most 4 of them.
+TEST(RelayCaps, CircuitClosesWhenAnEndpointDisconnects) {
+    P2PManager manager(0);
+    manager.test_install_relay_circuit(0x91, "8.8.1.1:20999", "8.8.2.2:20999");
+    manager.test_install_relay_circuit(0x92, "9.9.1.1:20999", "9.9.2.2:20999");
+    manager.test_cleanup_peer("8.8.2.2:20999");
+    EXPECT_EQ(manager.test_relay_circuit_count(), 1u) << "a circuit outlived its target";
+}
+
+TEST(RelayCaps, OneNetworkHoldsAtMostHalfTheCircuits) {
+    P2PManager manager(0);
+    auto target = LoopbackSocketPair::Create();
+    const std::string target_key = "127.0.0.1:" + std::to_string(target.port());
+    manager.test_install_connected_direct_peer(target_key, target.client_fd(), false, true,
+                                               MakeNodeId(0x31));
+    manager.test_register_relay_target(MakeNodeId(0x31), target_key);
+    std::vector<LoopbackSocketPair> socks;
+    socks.reserve(6);
+    int ok = 0;
+    for (int i = 0; i < 6; ++i) {  // six connections from one /16, one circuit each
+        socks.push_back(LoopbackSocketPair::Create());
+        const std::string key = "45.67." + std::to_string(i) + ".1:20999";
+        manager.test_install_connected_direct_peer(key, socks.back().client_fd(), true, false, {});
+        manager.handle_relay_connect(key, P2PMessage::create_relay_connect(MakeNodeId(0x31), 500 + i));
+        auto ack = socks.back().ReceiveMessage();
+        ASSERT_NE(ack, nullptr);
+        if (RelayAckStatus(*ack) == static_cast<uint8_t>(P2PMessage::RelayConnectStatus::Ok)) ++ok;
+    }
+    EXPECT_EQ(ok, 4);
+}
+
+// Candidates came only from addrman's first 16 NODE_RELAY entries (one per
+// /16, in map order), and nearly every address carries NODE_RELAY because
+// old builds stamp it on the addresses they gossip. A node that has met many
+// peers never drew the community relay it was connected to.
+TEST(RelayRegistration, ConnectedRelayIsCandidateWhenAddrmanIsCrowded) {
+    RelayWorld w;
+    for (int i = 0; i < 20; ++i) {  // earlier peers, all claiming NODE_RELAY
+        auto a = MakeRelayAddress(std::to_string(20 + i) + "." + std::to_string(i) + ".1.1", 20999);
+        w.addrman.addAddress(a);
+        w.addrman.markGood(a);
+    }
+    const std::string r2 = "64.44.157.100:20999";
+    w.Connect(r2, true);
+    w.manager->test_set_peer_services(r2, dinero::ServiceFlags::NODE_RELAY);  // its own version
+    bool asked = false;
+    for (int i = 0; i < 15 && !asked; ++i) {
+        w.Tick(std::chrono::seconds(30));
+        asked = ContainsEndpoint(w.Relays(), r2);
+    }
+    ASSERT_TRUE(asked) << "a connected relay was never tried: addrman's draw left it out";
+    ASSERT_NE(w.Next(r2, "relayreg"), nullptr);
+}
+
+// Owner ruling (Codex review of #853): two confirmed IPv6 relays left a
+// dual-stack target with no route an IPv4-only origin can use. A relay
+// counts as IPv4 when we are registered with it over IPv4 (that is the
+// address the signed hint carries), so a dual-stack relay qualifies.
+TEST(RelayRegistration, DualStackNodeKeepsAnIPv4Relay) {
+    RelayWorld w;
+    const std::string a = "[2a01:4f8::1]:20999";
+    const std::string b = "[2604:a880::1]:20999";
+    w.Connect(a, true);
+    w.Connect(b, true);
+    w.manager->test_maybe_auto_register_with_relays();
+    w.Ack(a);
+    w.Ack(b);
+    for (int i = 0; i < 5; ++i) w.manager->note_relay_outcome(a, true);
+    for (int i = 0; i < 3; ++i) w.manager->note_relay_outcome(b, true);  // healthier than a new relay
+    w.manager->test_maybe_auto_register_with_relays();
+    ASSERT_EQ(w.Relays().size(), 2u);
+
+    // An IPv4 connection: this node is dual-stack. The IPv4 relay is tried
+    // beside the two working IPv6 relays, never in place of one.
+    const std::string v4 = "8.8.10.1:20999";
+    w.Connect(v4, true);
+    w.manager->test_maybe_auto_register_with_relays();
+    auto relays = w.Relays();
+    EXPECT_TRUE(ContainsEndpoint(relays, v4)) << "no IPv4 relay tried";
+    EXPECT_TRUE(ContainsEndpoint(relays, a));
+    EXPECT_TRUE(ContainsEndpoint(relays, b)) << "a working relay was dropped for an untried one";
+
+    // Confirmed, it takes the weaker IPv6 relay's slot.
+    w.Ack(v4);
+    w.manager->test_maybe_auto_register_with_relays();
+    relays = w.Relays();
+    EXPECT_EQ(relays.size(), 2u);
+    EXPECT_TRUE(ContainsEndpoint(relays, v4));
+    EXPECT_TRUE(ContainsEndpoint(relays, a));
+}
+
+TEST(RelayRegistration, DualStackNodeFallsBackToAnIPv4FleetRelay) {
+    RelayWorld w;
+    const std::string a = "[2a01:4f8::1]:20999";
+    const std::string b = "[2604:a880::1]:20999";
+    w.Connect(a, true);
+    w.Connect(b, true);
+    w.manager->test_maybe_auto_register_with_relays();
+    w.Ack(a);
+    w.Ack(b);
+    w.Connect("8.8.10.1:20999", false);  // an ordinary IPv4 peer, not a relay
+    w.dialed.clear();
+    w.manager->test_maybe_auto_register_with_relays();
+    const auto relays = w.Relays();
+    EXPECT_EQ(relays.size(), 3u) << "no IPv4 fleet relay beside the IPv6 community relays";
+    EXPECT_TRUE(ContainsEndpoint(relays, a));
+    EXPECT_TRUE(ContainsEndpoint(relays, b));
+    EXPECT_EQ(w.dialed.size(), 1u);
+}
+
+// Dual-stack is inferred from a direct IPv4 connection. Losing it (or the
+// IPv4 relay itself) must not drop the IPv4 relay or start churn; only
+// after an hour with no IPv4 connection does the node stop trying.
+TEST(RelayRegistration, DualStackIsRememberedAfterTheIPv4PeerGoes) {
+    RelayWorld w;
+    const std::string a = "[2a01:4f8::1]:20999";
+    const std::string b = "[2604:a880::1]:20999";
+    w.Connect(a, true);
+    w.Connect(b, true);
+    w.manager->test_maybe_auto_register_with_relays();
+    w.Ack(a);
+    w.Ack(b);
+    const std::string peer = "8.8.10.1:20999";  // an ordinary IPv4 peer
+    w.Connect(peer, false);
+    w.manager->test_maybe_auto_register_with_relays();
+    ASSERT_EQ(w.Relays().size(), 3u);
+    const auto probe = w.Relays();
+
+    w.manager->test_cleanup_peer(peer);
+    w.manager->test_maybe_auto_register_with_relays();
+    EXPECT_EQ(w.Relays(), probe) << "the IPv4 relay went with the IPv4 peer";
+
+    w.clock->AdvanceSteady(std::chrono::minutes(61));
+    w.dialed.clear();
+    w.manager->test_maybe_auto_register_with_relays();
+    EXPECT_EQ(w.Relays().size(), 2u) << "still trying IPv4 an hour after the last IPv4 connection";
+    EXPECT_TRUE(w.dialed.empty());
+}
+
+// An IPv6-only node can't use an IPv4 relay: it never tries one.
+TEST(RelayRegistration, IPv6OnlyNodeDoesNotProbeIPv4Relays) {
+    RelayWorld w;
+    const std::string a = "[2a01:4f8::1]:20999";
+    const std::string b = "[2604:a880::1]:20999";
+    w.Connect(a, true);
+    w.Connect(b, true);
+    w.manager->test_maybe_auto_register_with_relays();
+    w.Ack(a);
+    w.Ack(b);
+    w.addrman.addAddress(MakeRelayAddress("8.8.10.1", 20999));
+    w.dialed.clear();
+    w.manager->test_maybe_auto_register_with_relays();
+    EXPECT_EQ(w.Relays().size(), 2u);
+    EXPECT_TRUE(w.dialed.empty()) << "dialed " << w.dialed.front();
+}
+
+// Found on mainnet (Plan 3 Task 7): old relays keep re-advertising legacy
+// hints for a target's unconfirmed registrations, so the freshest hint was
+// usually legacy and the origin never used the relay the target had signed.
+namespace {
+void AddLegacyHint(P2PManager& m, const std::array<uint8_t, 20>& target, std::vector<uint8_t> ip) {
+    P2PMessage::RelayHint h;
+    h.target_node_id = target;
+    h.relay_net = dinero::p2p::NetworkType::IPV4;
+    h.relay_addr = std::move(ip);
+    h.relay_port = 20999;
+    m.handle_relay_hints("10.4.0.9:20999", P2PMessage::create_relay_hints({h}));
+}
+std::unique_ptr<P2PMessage> NextRelayConnect(LoopbackSocketPair& sock) {
+    for (int i = 0; i < 8; ++i) {
+        auto m = sock.ReceiveMessage();
+        if (!m || m->command == "relaycon") return m;
+    }
+    return nullptr;
+}
+}  // namespace
+
+TEST(RelayOrchestrator, SignedHintPreferredOverFresherLegacyHint) {
+    auto target = NewIdentity();
+    P2PManager d(0);
+    InstallNodeIdentity(d);
+    auto signed_relay = LoopbackSocketPair::Create();
+    auto legacy_relay = LoopbackSocketPair::Create();
+    d.test_install_connected_direct_peer("8.8.10.1:20999", signed_relay.client_fd(), true, false, {});
+    d.test_install_connected_direct_peer("9.9.20.2:20999", legacy_relay.client_fd(), true, false, {});
+    d.handle_relay_hint_v2("10.5.0.1:20999", SignedHintMessage(*target, 1));  // via 8.8.10.1
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    AddLegacyHint(d, target->get_node_id_bytes(), {9, 9, 20, 2});  // fresher
+
+    d.test_orchestrate_relay_dials();
+    EXPECT_EQ(NextRelayConnect(legacy_relay), nullptr) << "dialed through the legacy hint's relay";
+    auto connect = NextRelayConnect(signed_relay);
+    ASSERT_NE(connect, nullptr) << "the target's signed relay was not used";
+    const auto id = target->get_node_id_bytes();
+    EXPECT_TRUE(std::equal(id.begin(), id.end(), connect->payload.begin()));
+}
+
+// Review: the signed relay may never stick (full, drops us after version);
+// the target keeps re-signing, so dropping the legacy route meant no route.
+TEST(RelayOrchestrator, SignedRelayIsDialedWhileTheLegacyRouteStaysInUse) {
+    auto target = NewIdentity();
+    P2PManager d(0);
+    InstallNodeIdentity(d);
+    std::vector<std::string> dialed;
+    d.test_set_connection_manager_dial([&](const std::string& h, uint16_t p) {
+        dialed.push_back(h + ":" + std::to_string(p));
+        return false;
+    });
+    auto legacy_relay = LoopbackSocketPair::Create();
+    d.test_install_connected_direct_peer("9.9.20.2:20999", legacy_relay.client_fd(), true, false, {});
+    d.handle_relay_hint_v2("10.5.0.1:20999", SignedHintMessage(*target, 1));  // via 8.8.10.1, not connected
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    AddLegacyHint(d, target->get_node_id_bytes(), {9, 9, 20, 2});
+
+    d.test_orchestrate_relay_dials();
+    EXPECT_NE(NextRelayConnect(legacy_relay), nullptr) << "the only working route was dropped";
+    ASSERT_EQ(dialed.size(), 1u) << "the target's signed relay was not dialed";
+    EXPECT_EQ(dialed[0], "8.8.10.1:20999");
+}
+
+// Review of #853 (Codex): community selection and signed hints accept IPv6
+// relays, but the orchestrator only formatted IPv4, so a valid signed route
+// through a connected IPv6 relay was never used.
+TEST(RelayOrchestrator, ConnectedSignedIPv6RelayIsUsed) {
+    auto target = NewIdentity();
+    P2PManager d(0);
+    InstallNodeIdentity(d);
+    auto relay = LoopbackSocketPair::Create();
+    d.test_install_connected_direct_peer("[2606:4700::1]:20999", relay.client_fd(), true, false, {});
+    dinero::p2p::HintFields f;
+    f.relay_net = dinero::p2p::NetworkType::IPV6;
+    f.relay_addr.resize(16);
+    ASSERT_EQ(inet_pton(AF_INET6, "2606:4700::1", f.relay_addr.data()), 1);
+    f.relay_port = 20999;
+    f.expiry = UnixNow() + 1800;
+    P2PMessage hint;
+    hint.command = "relayhn2";
+    hint.payload = dinero::p2p::SignHint(*target, f);
+    d.handle_relay_hint_v2("10.5.0.1:20999", hint);
+    ASSERT_EQ(d.test_signed_relay_hint_count(target->get_node_id_bytes()), 1u);
+    d.test_orchestrate_relay_dials();
+    auto connect = NextRelayConnect(relay);
+    ASSERT_NE(connect, nullptr) << "a valid signed IPv6 route was ignored";
+    const auto id = target->get_node_id_bytes();
+    EXPECT_TRUE(std::equal(id.begin(), id.end(), connect->payload.begin()));
+}
+
+// Review of #853 (Codex): connect_to_peer returns true once TCP is accepted,
+// so a speculative cold dial took the last outbound slot before the
+// RELAY_CONNECT through an already-connected relay was sent.
+TEST(RelayOrchestrator, AcceptedColdDialDoesNotStarveTheConnectedRoute) {
+    for (const bool accepted : {false, true}) {
+        auto target = NewIdentity();
+        P2PManager d(0);
+        InstallNodeIdentity(d);
+        auto relay = LoopbackSocketPair::Create();
+        d.test_install_connected_direct_peer("9.9.20.2:20999", relay.client_fd(), true, false, {});
+        for (int i = 0; i < 6; ++i) {  // seven outbound peers in all: one slot left
+            d.test_install_connected_direct_peer("44.55.66." + std::to_string(i + 1) + ":20999", -1,
+                                                 true, false, {});
+        }
+        d.test_set_connection_manager_dial([&](const std::string&, uint16_t) { return accepted; });
+        d.handle_relay_hint_v2("10.5.0.1:20999", SignedHintMessage(*target, 1));  // via 8.8.10.1
+        AddLegacyHint(d, target->get_node_id_bytes(), {9, 9, 20, 2});
+        d.test_orchestrate_relay_dials();
+        EXPECT_NE(NextRelayConnect(relay), nullptr)
+            << "the connected route was not tried (cold dial accepted=" << accepted << ")";
+    }
+}
+
+// Plan 4 Task 4: relayed and punched outbound peers draw on a small home-peer
+// budget (kHomePeerSlots), not on MAX_OUTBOUND_CONNECTIONS, so a node whose
+// direct slots are full still gets a relayed link to hole-punch from.
+namespace {
+void FillDirectOutbound(P2PManager& d, int count) {
+    for (int i = 0; i < count; ++i) {
+        d.test_install_connected_direct_peer(
+            "44.55.66." + std::to_string(i + 1) + ":20999", -1, true, false, {});
+    }
+}
+void InstallRelayedOutbound(P2PManager& d, int n) {
+    for (int i = 0; i < n; ++i) {
+        d.test_install_virtual_relay_peer("relay:home" + std::to_string(i), "9.9.20.2:20999",
+                                          100 + i, P2PMessage::RelayDirection::ClientToTarget,
+                                          true);
+    }
+}
+}  // namespace
+
+TEST(RelayOrchestrator, RelayedDialAtFullOutbound) {
+    auto target = NewIdentity();
+    P2PManager d(0);
+    InstallNodeIdentity(d);
+    auto relay = LoopbackSocketPair::Create();
+    d.test_install_connected_direct_peer("9.9.20.2:20999", relay.client_fd(), true, false, {});
+    FillDirectOutbound(d, 7);  // eight direct outbound peers in all
+    AddLegacyHint(d, target->get_node_id_bytes(), {9, 9, 20, 2});
+    d.test_orchestrate_relay_dials();
+    EXPECT_NE(NextRelayConnect(relay), nullptr)
+        << "a full direct-outbound set blocked the relayed (home-peer) dial";
+}
+
+TEST(RelayOrchestrator, HomePeerBudgetCapsAtTwo) {
+    auto target = NewIdentity();
+    P2PManager d(0);
+    InstallNodeIdentity(d);
+    auto relay = LoopbackSocketPair::Create();
+    d.test_install_connected_direct_peer("9.9.20.2:20999", relay.client_fd(), true, false, {});
+    FillDirectOutbound(d, 7);
+    InstallRelayedOutbound(d, 2);
+    AddLegacyHint(d, target->get_node_id_bytes(), {9, 9, 20, 2});
+    d.test_orchestrate_relay_dials();
+    EXPECT_EQ(NextRelayConnect(relay), nullptr) << "a third home peer was dialed";
+}
+
+TEST(RelayOrchestrator, HomePeerBudgetIsReservedAcrossTargetsInOnePass) {
+    auto t1 = NewIdentity();
+    auto t2 = NewIdentity();
+    auto t3 = NewIdentity();
+    P2PManager d(0);
+    InstallNodeIdentity(d);
+    auto relay = LoopbackSocketPair::Create();
+    d.test_install_connected_direct_peer("9.9.20.2:20999", relay.client_fd(), true, false, {});
+    AddLegacyHint(d, t1->get_node_id_bytes(), {9, 9, 20, 2});
+    AddLegacyHint(d, t2->get_node_id_bytes(), {9, 9, 20, 2});
+    AddLegacyHint(d, t3->get_node_id_bytes(), {9, 9, 20, 2});
+    d.test_orchestrate_relay_dials();
+    EXPECT_NE(NextRelayConnect(relay), nullptr);
+    EXPECT_NE(NextRelayConnect(relay), nullptr);
+    EXPECT_EQ(NextRelayConnect(relay), nullptr) << "more than kHomePeerSlots dialed in one pass";
+}
+
+TEST(RelayOrchestrator, DirectSlotsUnchangedByRelayedPeers) {
+    auto target = NewIdentity();
+    P2PManager d(0);
+    InstallNodeIdentity(d);
+    std::vector<std::string> dialed;
+    d.test_set_connection_manager_dial([&](const std::string& h, uint16_t p) {
+        dialed.push_back(h + ":" + std::to_string(p));
+        return false;
+    });
+    FillDirectOutbound(d, 7);  // one direct slot left
+    InstallRelayedOutbound(d, 2);
+    d.handle_relay_hint_v2("10.5.0.1:20999", SignedHintMessage(*target, 1));  // via 8.8.10.1, cold
+    d.test_orchestrate_relay_dials();
+    ASSERT_EQ(dialed.size(), 1u) << "relayed peers consumed a direct slot";
+    EXPECT_EQ(dialed[0], "8.8.10.1:20999");
+}
+
+// The connection manager's own direct-dial pass counts outbound peers too: a
+// relayed peer there would eat a direct slot and starve the seed dial.
+TEST(RelayOrchestrator, DirectDialPassIgnoresHomePeers) {
+    dinero::p2p::AddressManager addrman;  // outlives the manager
+    P2PManager d(0);
+    d.set_address_manager(&addrman);
+    std::atomic<int> dialed{0};
+    d.test_set_connection_manager_dial([&](const std::string&, uint16_t) {
+        ++dialed;
+        return false;
+    });
+    FillDirectOutbound(d, 7);  // one direct slot left
+    InstallRelayedOutbound(d, 2);
+    addrman.addAddress(MakeRelayAddress("8.8.30.1", 20999));  // a learned community peer
+    ASSERT_TRUE(d.start());
+    for (int i = 0; i < 300 && dialed.load() == 0; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    d.stop();
+    EXPECT_GE(dialed.load(), 1) << "relayed peers consumed a direct slot in the dial pass";
 }

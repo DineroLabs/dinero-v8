@@ -221,6 +221,16 @@ jobs:
       - name: Build vendored OpenSSL 3.5.7
         run: bash scripts/build-openssl-vendored.sh
 
+      # Static miniupnpc + libnatpmp so the desktop node can open router
+      # ports. Absolute toolchain path: CMake resolves a relative one against
+      # the build directory.
+      - name: Build depends (miniupnpc + libnatpmp, static)
+        run: |
+          cmake -S depends -B depends/build -G Ninja \
+            -DCMAKE_TOOLCHAIN_FILE="$PWD/depends/toolchains/linux-x86_64.cmake"
+          cmake --build depends/build -j"$(nproc)"
+          grep '^DINERO_DEPENDS_PREFIX=' depends/current-prefix.env >> "$GITHUB_ENV"
+
       - name: Configure exact release
         env:
           DINERO_SV2_SOURCE_ROOT: ${{ github.workspace }}/dinero-sv2
@@ -235,8 +245,10 @@ jobs:
             -DDINERO_BUILD_SEEDER=ON \
             -DENABLE_GPU_MINING=ON \
             -DENABLE_GRPC=OFF \
-            -DDINERO_ENABLE_PORTMAPPING=OFF \
+            -DDINERO_ENABLE_PORTMAPPING=ON \
+            -DDINERO_DEPENDS_PREFIX="$DINERO_DEPENDS_PREFIX" \
             -DDINERO_ENABLE_QUIC=ON \
+            -DDINERO_REQUIRE_REACHABILITY_STACK=ON \
             -DDINERO_RELEASE_TAG=${{ steps.provenance.outputs.version }} \
             -DDINERO_SV2_SOURCE_ROOT="$DINERO_SV2_SOURCE_ROOT"
 
@@ -248,6 +260,13 @@ jobs:
 
       - name: Assert OpenSSL policy pin
         run: bash scripts/ci/check_openssl_version.sh build-desktop 3.5.7
+
+      # The reviewed tooling copy, so the gate also applies when packaging a
+      # release tag that predates the checker.
+      - name: Assert reachability stack
+        run: |
+          python3 "${GITHUB_WORKSPACE}/tooling/scripts/ci/check_reachability_stack.py" \
+            --dinerod build-desktop/dinerod --cli build-desktop/dinero-cli
 
       - name: Fetch and verify snapshot pair
         env:
@@ -537,6 +556,7 @@ jobs:
             -DENABLE_GRPC=OFF \
             -DDINERO_ENABLE_PORTMAPPING=ON \
             -DDINERO_ENABLE_QUIC=ON \
+            -DDINERO_REQUIRE_REACHABILITY_STACK=ON \
             -DDINERO_RELEASE_TAG=${{ steps.provenance.outputs.version }} \
             -DDINERO_SV2_SOURCE_ROOT="$DINERO_SV2_SOURCE_ROOT" \
             -DDINERO_TOR_BUNDLE_DIR="$DINERO_TOR_BUNDLE_DIR" \
@@ -548,6 +568,11 @@ jobs:
           cmake --build build-desktop -j"$(sysctl -n hw.ncpu)" --target \
             dinerod dinero-cli dinero-swap-tower dinero-qt dinero-miner dinero-stratum-worker \
             dinero-wallet-cli dinero-gpu-miner dinero-solo-miner-cli dinero-seeder
+
+      - name: Assert reachability stack
+        run: |
+          python3 "${GITHUB_WORKSPACE}/tooling/scripts/ci/check_reachability_stack.py" \
+            --dinerod build-desktop/dinerod --cli build-desktop/dinero-cli
 
       - name: Build unsigned Intel release stage
         env:

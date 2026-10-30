@@ -114,7 +114,11 @@ StunClient::StunClient() {
     });
 }
 
+StunClient::StunClient(SendFn send) : send_(std::move(send)) {}
+
 StunClient::~StunClient() {
+    stopping_.store(true, std::memory_order_release);
+    if (watcher_.joinable()) watcher_.join();
     socket_.Stop();
 }
 
@@ -142,8 +146,9 @@ bool StunClient::Discover(std::chrono::seconds timeout, ResultCallback cb) {
     // each Discover so consecutive rounds get fresh source ports —
     // matches the RFC 5780 multi-test pattern for NAT behavior probing
     // (Phase C2 work, not active here but a clean foundation).
-    socket_.Stop();
-    if (!socket_.Bind(0)) {
+    // An external socket (SendFn) is the caller's to manage.
+    if (!send_) socket_.Stop();
+    if (!send_ && !socket_.Bind(0)) {
         StunResult r;
         r.error_message = "STUN: could not bind UDP socket";
         cb(r);
@@ -154,6 +159,8 @@ bool StunClient::Discover(std::chrono::seconds timeout, ResultCallback cb) {
     {
         std::lock_guard<std::mutex> lock(state_mutex_);
         outstanding_.clear();
+        responses_.clear();
+        sending_ = true;
         result_cb_ = std::move(cb);
         deadline_ = std::chrono::steady_clock::now() + timeout;
     }
@@ -170,6 +177,7 @@ bool StunClient::Discover(std::chrono::seconds timeout, ResultCallback cb) {
             continue;
         }
         o.server_endpoint = host + ":" + std::to_string(port);
+        o.server_addr = dest;
 
         // Build STUN BINDING REQUEST (20 bytes, no attributes).
         std::vector<uint8_t> msg;
@@ -179,110 +187,127 @@ bool StunClient::Discover(std::chrono::seconds timeout, ResultCallback cb) {
         WriteBE32(&msg, kStunMagicCookie);
         msg.insert(msg.end(), o.txn_id.begin(), o.txn_id.end());
 
-        if (socket_.SendTo(dest, msg.data(), msg.size())) {
-            {
-                std::lock_guard<std::mutex> lock(state_mutex_);
-                outstanding_.push_back(std::move(o));
-            }
+        // Registered before sending: through an external socket the answer
+        // can arrive on another thread before SendTo returns.
+        const auto txn_id = o.txn_id;
+        {
+            std::lock_guard<std::mutex> lock(state_mutex_);
+            outstanding_.push_back(std::move(o));
+        }
+        const bool ok = send_ ? send_(dest, msg.data(), msg.size())
+                              : socket_.SendTo(dest, msg.data(), msg.size());
+        if (ok) {
             sent++;
+        } else {
+            std::lock_guard<std::mutex> lock(state_mutex_);
+            outstanding_.erase(std::remove_if(outstanding_.begin(), outstanding_.end(),
+                                              [&](const Outstanding& x) { return x.txn_id == txn_id; }),
+                               outstanding_.end());
         }
     }
 
+    bool all_answered = false;
+    {
+        std::lock_guard<std::mutex> lock(state_mutex_);
+        sending_ = false;
+        all_answered = !outstanding_.empty() &&
+                       std::all_of(outstanding_.begin(), outstanding_.end(),
+                                   [](const Outstanding& o) { return o.fulfilled; });
+    }
     if (sent == 0) {
         StunResult r;
         r.error_message = "STUN: all server resolutions / sends failed";
         DispatchResult(r);
         return true;
     }
+    if (all_answered) {  // every server answered while we were still sending
+        DispatchResult(StunResult{});
+        return true;
+    }
 
-    // Detached watcher thread that fires the result with a timeout
-    // error if no response is received within `timeout`. The result
-    // callback is fired at most once — DispatchResult guards on that.
-    std::thread([this, timeout]() { TimeoutWatcher(timeout); }).detach();
+    // Watcher thread that fires the result with a timeout error if no
+    // response is received within `timeout`. The result callback is fired at
+    // most once — DispatchResult guards on that. The previous round's watcher
+    // has already seen busy_ drop (or will within 100 ms).
+    if (watcher_.joinable()) watcher_.join();
+    watcher_ = std::thread([this, timeout]() { TimeoutWatcher(timeout); });
     return true;
 }
 
 void StunClient::OnDatagram(const UdpAddr& src, std::vector<uint8_t> data) {
-    // Minimum response: 20-byte header + 12-byte XOR-MAPPED-ADDRESS attr
-    // (4-byte TLV header + 8-byte IPv4 value) = 32 bytes.
-    if (data.size() < 32) return;
-    if (ReadBE16(data.data()) != kStunBindingSuccess) return;
-    const uint16_t msg_len = ReadBE16(data.data() + 2);
-    if (msg_len < 12 || static_cast<size_t>(msg_len) + 20 > data.size()) return;
-    if (ReadBE32(data.data() + 4) != kStunMagicCookie) return;
+    HandleDatagram(src, data.data(), data.size());
+}
 
-    // Match transaction id against an outstanding request.
-    std::array<uint8_t, 12> txn{};
-    std::memcpy(txn.data(), data.data() + 8, 12);
+std::optional<UdpAddr> StunClient::ParseBindingResponse(const uint8_t* data, size_t len) {
+    if (!IsStunPacket(data, len)) return std::nullopt;
+    if (ReadBE16(data) != kStunBindingSuccess) return std::nullopt;
+    const size_t end = 20 + static_cast<size_t>(ReadBE16(data + 2));
+    if (end > len) return std::nullopt;
+    const uint8_t* txn = data + 8;
 
-    std::string server_endpoint;
-    {
-        std::lock_guard<std::mutex> lock(state_mutex_);
-        for (auto& o : outstanding_) {
-            if (o.txn_id == txn && !o.fulfilled) {
-                o.fulfilled = true;
-                server_endpoint = o.server_endpoint;
-                break;
-            }
-        }
-    }
-    if (server_endpoint.empty()) return;  // unknown / duplicate / spoofed
-
-    // Parse attributes looking for XOR-MAPPED-ADDRESS.
     size_t offset = 20;
-    while (offset + 4 <= data.size()) {
-        const uint16_t attr_type = ReadBE16(data.data() + offset);
-        const uint16_t attr_len = ReadBE16(data.data() + offset + 2);
+    while (offset + 4 <= end) {
+        const uint16_t attr_type = ReadBE16(data + offset);
+        const uint16_t attr_len = ReadBE16(data + offset + 2);
         offset += 4;
-        if (offset + attr_len > data.size()) break;
+        if (offset + attr_len > end) return std::nullopt;
 
         if (attr_type == kStunAttrXorMappedAddress && attr_len >= 8) {
             const uint8_t family = data[offset + 1];
-            const uint16_t x_port = ReadBE16(data.data() + offset + 2);
             // X-Port XOR with first 2 bytes of magic cookie (BE).
-            const uint16_t port = x_port ^ static_cast<uint16_t>(kStunMagicCookie >> 16);
-
-            StunResult r;
-            r.server_endpoint = server_endpoint;
-            if (family == 0x01 && attr_len >= 8) {
+            const uint16_t port = ReadBE16(data + offset + 2) ^
+                                  static_cast<uint16_t>(kStunMagicCookie >> 16);
+            if (family == 0x01) {
                 // IPv4: X-Address XOR with full magic cookie (BE).
-                const uint32_t x_addr = ReadBE32(data.data() + offset + 4);
-                const uint32_t addr = x_addr ^ kStunMagicCookie;
-                uint8_t ip4[4] = {
+                const uint32_t addr = ReadBE32(data + offset + 4) ^ kStunMagicCookie;
+                const uint8_t ip4[4] = {
                     static_cast<uint8_t>((addr >> 24) & 0xFF),
                     static_cast<uint8_t>((addr >> 16) & 0xFF),
                     static_cast<uint8_t>((addr >> 8) & 0xFF),
                     static_cast<uint8_t>(addr & 0xFF),
                 };
-                r.public_addr = UdpAddr::FromIPv4(ip4, port);
-                DispatchResult(r);
-                return;
+                return UdpAddr::FromIPv4(ip4, port);
             }
             if (family == 0x02 && attr_len >= 20) {
                 // IPv6: X-Address XOR with magic cookie || txn_id (16 bytes).
-                uint8_t cookie_and_txn[16];
-                cookie_and_txn[0] = static_cast<uint8_t>((kStunMagicCookie >> 24) & 0xFF);
-                cookie_and_txn[1] = static_cast<uint8_t>((kStunMagicCookie >> 16) & 0xFF);
-                cookie_and_txn[2] = static_cast<uint8_t>((kStunMagicCookie >> 8) & 0xFF);
-                cookie_and_txn[3] = static_cast<uint8_t>(kStunMagicCookie & 0xFF);
-                std::memcpy(cookie_and_txn + 4, txn.data(), 12);
-
+                uint8_t mask[16];
+                for (int i = 0; i < 4; i++) mask[i] = data[4 + i];
+                std::memcpy(mask + 4, txn, 12);
                 uint8_t ip6[16];
-                for (int i = 0; i < 16; i++) {
-                    ip6[i] = data[offset + 4 + i] ^ cookie_and_txn[i];
-                }
-                r.public_addr = UdpAddr::FromIPv6(ip6, port);
-                DispatchResult(r);
-                return;
+                for (int i = 0; i < 16; i++) ip6[i] = data[offset + 4 + i] ^ mask[i];
+                return UdpAddr::FromIPv6(ip6, port);
             }
+            return std::nullopt;
         }
 
         // Attribute lengths are padded to 4-byte boundaries on the wire.
         offset += attr_len;
         if (attr_len % 4) offset += 4 - (attr_len % 4);
     }
-    // Response decoded but no XOR-MAPPED-ADDRESS found — uncommon but
-    // possible if the STUN server is broken. Move on to the next.
+    // Decoded, but no XOR-MAPPED-ADDRESS -- a broken server.
+    return std::nullopt;
+}
+
+void StunClient::HandleDatagram(const UdpAddr& /*src*/, const uint8_t* data, size_t len) {
+    const auto mapped = ParseBindingResponse(data, len);
+    if (!mapped) return;
+    std::array<uint8_t, 12> txn{};
+    std::memcpy(txn.data(), data + 8, 12);
+
+    bool all_answered = false;
+    {
+        std::lock_guard<std::mutex> lock(state_mutex_);
+        auto it = std::find_if(outstanding_.begin(), outstanding_.end(),
+                               [&](const Outstanding& o) { return o.txn_id == txn && !o.fulfilled; });
+        if (it == outstanding_.end()) return;  // unknown / duplicate / spoofed
+        it->fulfilled = true;
+        if (responses_.empty()) first_server_endpoint_ = it->server_endpoint;
+        responses_.emplace_back(it->server_addr, *mapped);
+        all_answered = !sending_ &&
+                       std::all_of(outstanding_.begin(), outstanding_.end(),
+                                   [](const Outstanding& o) { return o.fulfilled; });
+    }
+    if (all_answered) DispatchResult(StunResult{});
 }
 
 void StunClient::TimeoutWatcher(std::chrono::seconds timeout) {
@@ -290,6 +315,7 @@ void StunClient::TimeoutWatcher(std::chrono::seconds timeout) {
     while (std::chrono::steady_clock::now() < end) {
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
         if (!busy_.load(std::memory_order_acquire)) return;  // already dispatched
+        if (stopping_.load(std::memory_order_acquire)) return;  // being destroyed
     }
     StunResult r;
     r.error_message = "STUN: all servers timed out after " +
@@ -298,15 +324,22 @@ void StunClient::TimeoutWatcher(std::chrono::seconds timeout) {
 }
 
 void StunClient::DispatchResult(const StunResult& result) {
+    StunResult out = result;
     ResultCallback cb;
     {
         std::lock_guard<std::mutex> lock(state_mutex_);
         if (!result_cb_) return;  // already dispatched (race with timeout)
         cb = std::move(result_cb_);
         result_cb_ = nullptr;
+        out.responses = responses_;
+        if (!responses_.empty()) {
+            out.public_addr = responses_.front().second;
+            out.server_endpoint = first_server_endpoint_;
+            out.error_message.clear();
+        }
     }
     busy_.store(false, std::memory_order_release);
-    if (cb) cb(result);
+    if (cb) cb(out);
 }
 
 }  // namespace dinero::network

@@ -8,6 +8,8 @@
 #include <mutex>
 #include <condition_variable>
 #include <deque>
+#include <map>
+#include <set>
 #include <unordered_map>
 #include <unordered_set>
 #include <functional>
@@ -17,16 +19,21 @@
 
 #include "p2p/addrman.h"
 #include "p2p/addr_v2.h"  // NAT traversal Phase 1A.2: AddrV2Entry struct for create_addrv2()
+#include "p2p/hole_punch.h"
 #include "p2p/outbound_policy.h"
 #include "network/types.h"
 #include "network/clock_source.h"     // relay-hints Phase 1a: injectable time source for TTL logic
 #include "network/rolling_24h_counter.h"  // Phase 2b: rolling 24h byte counter for relay-virtual traffic
+#include "network/endpoint_format.h"   // [v6]:port peer keys
+#include "p2p/relay_hint_v2.h"         // relayhn2: target-signed, forwardable relay hints
+#include "p2p/self_reachability.h"      // dial-back verified self addresses
 #include "network/quic_session.h"     // NAT traversal Phase B2: encrypted relay virtual peers
 #include "network/relay_registry.h"   // NAT traversal Phase C3 slice 2: relay-side directory
 #include "network/token_bucket.h"     // NAT traversal: relay circuit bandwidth caps
 #include "network/version_nonce_tracker.h"
 
 namespace dinero { namespace daemon { class NodeIdentity; } }
+namespace dinero { namespace network { class QuicEndpoint; } }
 
 // Cross-platform P2P networking (no Qt dependencies)
 // Handles peer discovery, connections, and message routing
@@ -144,6 +151,15 @@ struct PeerInfo {
     //   refresh cadence; epoch sentinel means "never sent yet".
     bool is_our_relay{false};
     std::chrono::steady_clock::time_point last_register_sent_at{};
+    // A RELAY_REGISTER is out and its relayrok not yet back. is_our_relay
+    // becomes true only on the ack (an old build or a relay with the role
+    // off never acks, and must not be counted).
+    bool relay_register_pending{false};
+    std::chrono::steady_clock::time_point relay_register_pending_since{};
+    // Liveness of a confirmed relay: one outstanding circuit-0 relay ping.
+    uint64_t relay_ping_nonce{0};
+    uint32_t relay_pings_missed{0};
+    std::chrono::steady_clock::time_point last_relay_ping_at{};
 
     // NAT traversal slice 4c: synthetic peer carried over a relay circuit
     // instead of a direct TCP socket. address is a stable virtual key:
@@ -154,6 +170,29 @@ struct PeerInfo {
     std::deque<std::vector<uint8_t>> relay_inbox_frames;
     std::shared_ptr<dinero::network::QuicSession> relay_quic_session;
     std::optional<dinero::network::QuicSessionOptions> relay_quic_options;
+    // Direct QUIC peer: no relay and no TCP socket. Its session (in
+    // relay_quic_session) carries the same framed stream as an encrypted relay
+    // circuit, so both share the inbox, reader loop and send path below.
+    bool quic_direct{false};
+    dinero::network::UdpAddr quic_remote{};
+    // Hole-punched direct QUIC peer (Plan 4): dialed from a relayed link, so
+    // like a relayed peer it draws on the home-peer budget rather than the
+    // direct outbound slots. punch_expected_id is the node id the dial must
+    // authenticate as.
+    bool punched{false};
+    std::optional<std::array<uint8_t, 20>> punch_expected_id;
+    // Outbound relayed and punched peers share kHomePeerSlots instead of
+    // MAX_OUTBOUND_CONNECTIONS.
+    bool is_home_peer() const { return via_relay.has_value() || punched; }
+    bool uses_quic_stream() const {
+        return quic_direct || (via_relay && via_relay->encrypted_quic);
+    }
+    // getpeerinfo "transport".
+    const char* transport_name() const {
+        return quic_direct ? "quic" : (via_relay ? "relay" : "tcp");
+    }
+    // getpeerinfo "path": how this peer is reached.
+    const char* path_name() const { return punched ? "punched" : (via_relay ? "relayed" : "direct"); }
 
     // Ring 3 Phase 4c: Move constructor (atomic is not movable, must load/store)
     PeerInfo(PeerInfo&& other) noexcept
@@ -184,9 +223,17 @@ struct PeerInfo {
           last_seen_unix(other.last_seen_unix),
           avg_latency_ms(other.avg_latency_ms),
           last_getaddr_sent(other.last_getaddr_sent),
+          their_pubkey(other.their_pubkey),
+          their_node_id(other.their_node_id),
+          identity_proven(other.identity_proven),
+          is_our_relay(other.is_our_relay),
           via_relay(std::move(other.via_relay)),
           relay_quic_session(std::move(other.relay_quic_session)),
           relay_quic_options(std::move(other.relay_quic_options)),
+          quic_direct(other.quic_direct),
+          quic_remote(other.quic_remote),
+          punched(other.punched),
+          punch_expected_id(other.punch_expected_id),
           lifetime_state(other.lifetime_state.load()),
           compact_timing_capable(other.compact_timing_capable.load()),
           orchard_capable(other.orchard_capable.load()),
@@ -209,7 +256,7 @@ struct PeerInfo {
         if (via_relay.has_value()) {
             return address;
         }
-        return address + ":" + std::to_string(port);
+        return dinero::network::FormatEndpoint(address, port);
     }
 };
 
@@ -219,14 +266,17 @@ struct P2PMessage {
     uint32_t checksum;
     
     // Standard Bitcoin-like message types
-    // addr_recv_ip: the IPv4 address of the peer we're sending this version TO,
-    // written into addrRecv so the recipient can learn its own external address
-    // (Bitcoin addrRecv semantics). Empty => 0.0.0.0 (legacy behavior).
+    // addr_recv_ip/port: the address of the peer we're sending this version TO
+    // (IPv4, or IPv6 in v6 form), written into addrRecv so the recipient can
+    // learn its own external address (Bitcoin addrRecv semantics). Empty =>
+    // 0.0.0.0 (legacy behavior). addr_from_port: our listen port.
     static P2PMessage create_version(uint32_t protocol_version, uint32_t best_height,
                                      uint64_t services = 0,
                                      const std::string& user_agent = "",
                                      uint64_t explicit_nonce = 0,
-                                     const std::string& addr_recv_ip = "");
+                                     const std::string& addr_recv_ip = "",
+                                     uint16_t addr_recv_port = 20999,
+                                     uint16_t addr_from_port = 20999);
     static P2PMessage create_verack();
 
     // NAT traversal Phase 1A: post-verack node-identity exchange.
@@ -235,8 +285,13 @@ struct P2PMessage {
     // specific TCP handshake and prevents cross-connection replay.
     // Returns empty payload if the identity isn't initialized; caller MUST
     // handle that as a non-fatal handshake skip.
+    // With `binding` (a QUIC session's ExportBinding) it builds dineroid v2:
+    // the signature covers nonce_LE8 || binding32 and the payload ends with
+    // version byte 0x02.
     static P2PMessage create_dineroid(const dinero::daemon::NodeIdentity& identity,
-                                      uint64_t nonce_to_sign);
+                                      uint64_t nonce_to_sign,
+                                      const std::array<uint8_t, 32>* binding = nullptr);
+    static constexpr uint8_t kDineroIdV2 = 0x02;
 
     // NAT traversal Phase 1A.2 / BIP155:
     //   sendaddrv2 has empty payload — its presence is the negotiation.
@@ -290,6 +345,11 @@ struct P2PMessage {
         const std::vector<uint8_t>& payload);
 
     static P2PMessage create_relay_ping(uint64_t circuit_id, uint64_t nonce);
+    // Registration pong: circuit 0 | nonce | kRelayPongFlag.
+    static P2PMessage create_relay_pong(uint64_t nonce);
+    static constexpr uint8_t kRelayPongFlag = 0x01;
+    // relayrok: a relay accepted our RELAY_REGISTER. Payload: ttl_u32 LE.
+    static P2PMessage create_relay_register_ok(uint32_t ttl_seconds);
 
     // relay_hints: target_node_id is usually our own node_id; relay_addr
     // is one of the relays we've registered with. Multiple entries per
@@ -302,6 +362,11 @@ struct P2PMessage {
         uint16_t relay_port{0};
     };
     static P2PMessage create_relay_hints(const std::vector<RelayHint>& hints);
+
+    // Relay-coordinated hole punching (p2p/hole_punch.h for the payload).
+    static P2PMessage create_punch_offer(uint64_t nonce, const dinero::p2p::PunchCandidates& c);
+    static P2PMessage create_punch_answer(uint64_t nonce, const dinero::p2p::PunchCandidates& c);
+    static P2PMessage create_punch_go(uint64_t nonce);
 
     static P2PMessage create_ping(uint64_t nonce);
     static P2PMessage create_pong(uint64_t nonce);
@@ -332,10 +397,14 @@ struct P2PMessage {
 // diverge — the divergence that left Stage A reporting-complete but
 // behavior-incomplete (the RPC said relay_fallback_eligible=true while the
 // auto-register gate still suppressed registration on a learned address).
-inline bool IsDirectlyReachable(bool inbound_observed,
-                                bool has_explicit_advertised,
-                                bool port_mapping_active) {
-    return inbound_observed || has_explicit_advertised || port_mapping_active;
+//
+// Since dial-back: reachable means another node proved it (an address of ours
+// verified by dial-back, which covers a port mapping only once its address
+// verified) or the operator asserted it (externalip). An inbound connection
+// alone is not proof -- it may be a relay, a LAN peer, or a mapping that only
+// works from inside a double NAT.
+inline bool IsDirectlyReachable(bool proven_reachable) {
+    return proven_reachable;
 }
 
 class P2PManager {
@@ -428,17 +497,34 @@ public:
     bool is_peer_banned(const std::string& address, uint16_t port = 0) const;
     void set_network_active(bool active);
     bool is_network_active() const { return network_active_.load(std::memory_order_acquire); }
+    // Defaults are the owner's caps for a home relay: 8 circuits, 200 KB/s,
+    // 20 GB per calendar month.
     struct RelayServiceLimits {
-        size_t max_circuits{12};
-        uint64_t bandwidth_bytes_per_second{2ULL * 1024 * 1024};
+        size_t max_circuits{8};
+        uint64_t bandwidth_bytes_per_second{200ULL * 1024};
         size_t max_circuits_per_peer{2};
         uint32_t circuit_lifetime_seconds{1800};
         uint32_t requests_per_peer_per_minute{6};
+        uint64_t monthly_quota_bytes{20ULL * 1024 * 1024 * 1024};
     };
-    void set_relay_service_enabled(bool enabled) {
-        relay_service_enabled_.store(enabled, std::memory_order_release);
-    }
+    // Turning the role off also drops every registration we hold.
+    void set_relay_service_enabled(bool enabled);
+    // Enabled, not syncing, and quota left: what acks and pongs require.
+    bool relay_serving() const;
     void set_relay_service_limits(const RelayServiceLimits& limits);
+    // <datadir>/relay_quota: this calendar month's (UTC) relayed bytes, so a
+    // restart does not reset the monthly cap. Loads it now; written at most
+    // once a minute and at shutdown.
+    void set_relay_quota_path(const std::string& path);
+    uint64_t relay_quota_month_bytes() const;
+    uint64_t relay_quota_month_limit() const;
+    // Why new circuits are refused right now: "" (not paused), "syncing"
+    // (still at genesis, or more than 6 blocks behind the best validated
+    // header) or "quota".
+    std::string relay_paused_reason() const;
+    void set_best_header_height_provider(HeightProvider provider) {
+        best_header_height_provider_ = std::move(provider);
+    }
     void set_address_manager(dinero::p2p::AddressManager* address_manager);
 
     // NAT traversal Phase 1A: caller wires in the daemon-wide NodeIdentity
@@ -488,9 +574,65 @@ public:
     // proof of direct inbound reachability; learned=false (default) is an
     // explicit/trusted source (operator externalip, UPnP/NAT-PMP) and sets the
     // has_explicit_advertised_ flag used by the relay-fallback gate.
-    void add_advertised_address(const std::string& address, uint16_t port, bool learned = false);
+    // Explicit addresses (learned=false) are dial-back checked and reported
+    // too; `source` says where they came from. Operator externalip addresses
+    // are always gossiped and count as reachable; port-mapped ones only once
+    // verified (a mapping on an inner router of a double NAT dials nowhere).
+    void add_advertised_address(const std::string& address, uint16_t port, bool learned = false,
+                                dinero::p2p::CandidateSource source =
+                                    dinero::p2p::CandidateSource::ExternalIp);
     void remove_explicit_advertised_address(const std::string& address, uint16_t port);
     std::vector<std::pair<std::string, uint16_t>> get_advertised_addresses() const;
+    // Dial-back verification of our own addresses. min_groups is 2 by default;
+    // 1 is only for single-host (regtest) setups.
+    void set_dialback_min_groups(uint32_t min_groups);
+    // Regtest/tests only: answer reachchk from loopback/private requesters.
+    // Off, they get result 4 without a dial (every Tor inbound peer is
+    // 127.0.0.1, and a verifier must not probe its own localhost).
+    void set_dialback_private_targets(bool allow) { dialback_private_targets_.store(allow); }
+    std::vector<dinero::p2p::CandidateStatus> self_reachability_status() const;
+    // Directly reachable as far as we can prove: an explicit address (operator
+    // externalip / port mapping) or one that peers dialed back successfully.
+    bool has_proven_reachable() const;
+    // Called (outside every P2PManager lock) when has_proven_reachable()
+    // flips. Verification also lapses by time, so the reachability tick
+    // re-checks too.
+    void set_reachability_changed_handler(std::function<void(bool)> handler);
+    // Relays that confirmed our registration (relayrok), as host:port.
+    std::vector<std::string> confirmed_relay_endpoints() const;
+    // This round's STUN reflexive addresses (ip, port) on the P2P UDP port,
+    // fed in as QUIC candidates. A different set of IPs from the last round
+    // means our public address moved: every candidate goes back to unverified.
+    void update_stun_candidates(const std::vector<std::pair<std::string, uint16_t>>& reflexive);
+    // The last NAT mapping classification (P2PService sets it after each STUN round).
+    void set_nat_mapping(dinero::p2p::NatMappingType mapping);
+    // Addresses a remote peer can try for a hole punch: this host's global-unicast
+    // IPv6 interface addresses on the QUIC port, plus the first routable STUN
+    // reflexive IPv4. Empty when the QUIC endpoint is not listening.
+    dinero::p2p::PunchCandidates LocalPunchCandidates() const;
+    // Relay-coordinated hole punching: what the punch exchange has done so far.
+    struct PunchStats {
+        uint64_t attempts{0};          // Started, either role
+        uint64_t offers_sent{0};
+        uint64_t answers_sent{0};
+        uint64_t gos_sent{0};
+        uint64_t dials{0};             // punched QUIC dials started
+        uint64_t probes_sent{0};
+        size_t max_probe_targets{0};   // most distinct targets one attempt probed
+        uint64_t succeeded{0};
+        uint64_t timeout{0};
+        uint64_t mismatch{0};          // a punched session proved another node id
+        uint64_t refused{0};           // a punched session's dineroid was refused
+                                       // (missing, not session-bound, or invalid)
+        uint64_t skipped{0};           // no usable target pair
+        uint64_t ignored{0};           // punch messages dropped (unsolicited, refused, stale)
+        uint64_t received{0};          // punch messages received, any outcome
+        // attempts: attempts with a target of that family; succeeded: by
+        // the family of the punched session's address.
+        struct Family { uint64_t attempts{0}; uint64_t succeeded{0}; };
+        Family ipv4, ipv6;
+    };
+    PunchStats punch_stats() const;
     // True iff we have an EXPLICIT/confirmed reachable advertised address
     // (operator externalip or port-mapping) — not merely a Gap-1-learned one.
     // Used so a NAT'd node (only a learned, dead address) stays relay-fallback
@@ -624,8 +766,14 @@ public:
     // the middle of perform_handshake. Sends our signed pubkey and waits
     // (with the same timeout receive_message uses) for the remote one;
     // populates peer->their_pubkey / their_node_id / identity_proven on
-    // success. Failures are non-fatal — handshake continues legacy-style.
-    void ExchangeDineroId(PeerInfo* peer);
+    // success. On a TCP peer failures are non-fatal — the handshake
+    // continues legacy-style. On a QUIC peer (relayed or direct) the
+    // signature must cover nonce || this session's TLS exporter value
+    // (dineroid v2), so a relay that terminates both TLS legs cannot pass
+    // one side's proof to the other; any failure returns false and the
+    // handshake fails. An outbound relayed peer must also turn out to be
+    // the node we dialed; otherwise that hint is dropped.
+    bool ExchangeDineroId(PeerInfo* peer);
 
     // NAT traversal Phase 1A.2: symmetric `sendaddrv2` negotiation. Sends
     // our (empty-payload) sendaddrv2; receives remote's. Sets
@@ -670,10 +818,29 @@ public:
                            const P2PMessage& message);
     void handle_relay_ping(const std::string& peer_address,
                            const P2PMessage& message);
+    void handle_relay_register_ok(const std::string& peer_address,
+                                  const P2PMessage& message);
+    // Logs the reason, then acks the RELAY_CONNECT with `status`.
+    void refuse_relay_connect(const std::string& peer_address, uint64_t request_id,
+                              P2PMessage::RelayConnectStatus status, const std::string& why);
 
     // Periodic maintenance: drop circuits whose last_data_at is older
     // than kCircuitIdleTimeout. Called from keepalive_loop.
     void SweepIdleCircuits();
+
+    // Relay-coordinated hole punching (Plan 4). PunchTick starts offers to
+    // relayed peers we initiate for, fires due dials and probe rounds, and
+    // ends expired attempts. Called from keepalive_loop and, while an attempt
+    // is active, from punch_loop every kPunchProbeInterval.
+    void PunchTick();
+    void punch_loop();
+    void handle_punch_offer(const std::string& peer_address, const P2PMessage& message);
+    void handle_punch_answer(const std::string& peer_address, const P2PMessage& message);
+    void handle_punch_go(const std::string& peer_address, const P2PMessage& message);
+    // The punched session at peer_key failed its dineroid: count it and end
+    // the initiator attempt that dialed it (the relayed peer stays).
+    void EndPunchOnFailedProof(const std::array<uint8_t, 20>& expected_id,
+                               const std::string& peer_key, bool mismatch);
 
     // NAT traversal Phase C3 slice 4b: advertise + ingest RELAY_HINTS.
     //
@@ -702,6 +869,10 @@ public:
     // target to a freshly-connected NODE_DINERO_V2 peer, so an origin that
     // joins after a target registered still learns how to reach it.
     void SendRelayRegistryToNewPeer(PeerInfo* peer);
+    // relayhn2: verify (only the target can sign its own hint), store, then
+    // forward once with hop+1 to NODE_DIALBACK peers while hop < 3, at most
+    // 50 forwards a minute.
+    void handle_relay_hint_v2(const std::string& peer_address, const P2PMessage& message);
 
     // NAT traversal Phase D-1: match an incoming RELAY_CONNECT_ACK
     // against pending_connects_ and (on Ok) install the circuit_id into
@@ -741,6 +912,31 @@ public:
     // outbound_direction=ClientToTarget. Inserts into connected_peers_
     // keyed on the synthetic "relay:<node_id_hex>:<circuit_id_hex>" key
     // and returns that key (caller passes it to start_peer_handler_thread).
+    // Direct QUIC peers on the P2P port (UDP). start() calls
+    // start_quic_endpoint(listen_port_) when enabled; tests call it with 0.
+    void set_quic_enabled(bool enabled) { quic_enabled_ = enabled; }
+    bool start_quic_endpoint(uint16_t port);
+    dinero::network::QuicEndpoint* quic_endpoint() const { return quic_endpoint_.get(); }
+    // Dial ip:port over QUIC. False if not listening, banned, self, or a peer
+    // (either transport) already exists at that address.
+    bool connect_to_peer_quic(
+        const std::string& ip, uint16_t port,
+        std::optional<std::array<uint8_t, 20>> punch_expected_id = std::nullopt);
+    // NODE_P2P_QUIC while the endpoint is listening, else 0.
+    uint64_t local_quic_service_bits() const;
+    // p2p.quic_connect: "ip:port" peers to keep connected over QUIC. Dialed by
+    // the connection loop (dial_quic_connect_targets) whenever not connected.
+    void set_quic_connect_targets(std::vector<std::string> targets);
+    void dial_quic_connect_targets();
+
+    // Direct QUIC: wrap an already-started session (from QuicEndpoint) in a
+    // PeerInfo keyed "ip:port", insert it and start its handler thread.
+    // Returns the peer key.
+    std::string install_direct_quic_peer(std::shared_ptr<dinero::network::QuicSession> session,
+                                         const dinero::network::UdpAddr& remote,
+                                         bool outbound,
+                                         std::optional<std::array<uint8_t, 20>> punch_expected_id =
+                                             std::nullopt);
     std::string install_outbound_virtual_relay_peer(
         const std::array<uint8_t, 20>& target_node_id,
         const std::string& relay_peer_address,
@@ -762,6 +958,10 @@ public:
     // last_register_sent_at is older than kRelayRegisterRefreshInterval.
     void SendRelayRegisterIfConfigured(PeerInfo* peer);
     void RefreshRelayRegistrations();
+    // Keepalive tick: registrations with no relayrok within 30 s, and
+    // confirmed relays that missed 3 relay pings (one every 30 s), are
+    // dropped and the relay is skipped for 30 min; then re-plan.
+    void RelayRegistrationTick();
 
     // Phase 2b — value-type snapshot for the relay_hints.list RPC.
     // Built under relay_hints_mutex_; JSON construction happens with
@@ -812,6 +1012,7 @@ public:
         bool dry_run);
 
 #ifdef DINERO_TEST_BUILD
+    bool test_dineroid_v1_only_{false};
     bool test_shutdown_requested() const {
         return shutdown_requested_.load(std::memory_order_acquire);
     }
@@ -837,7 +1038,7 @@ public:
     }
     bool test_is_connecting_peer(const std::string& address, uint16_t port) const {
         std::lock_guard<std::mutex> lock(peers_mutex_);
-        return connecting_peers_.count(address + ":" + std::to_string(port)) != 0;
+        return connecting_peers_.count(dinero::network::FormatEndpoint(address, port)) != 0;
     }
     void test_handle_incoming_connection(int socket_fd, const std::string& address) {
         handle_incoming_connection(socket_fd, address);
@@ -858,6 +1059,33 @@ public:
     // stored fd so tests can prove close-and-invalidate (no double-close).
     bool test_send_peer_message(PeerInfo* peer, const P2PMessage& message) { return send_peer_message(peer, message); }
     bool test_perform_handshake(PeerInfo* peer) { return perform_handshake(peer); }
+    // An encrypted relay virtual peer whose QuicSession never started (so is
+    // never active), connected via `relay_endpoint`. Returns its key.
+    std::string test_install_dead_quic_relay_peer(const std::string& relay_endpoint);
+    void test_run_quic_reader_loop(const std::string& key);
+    size_t test_peer_thread_count() {
+        std::lock_guard<std::mutex> lock(peer_threads_mutex_);
+        return peer_threads_.size();
+    }
+    void test_add_self_candidate(const std::string& ip, uint16_t port);
+    void test_run_reachability_tick() { run_reachability_tick(); }
+    uint64_t test_send_reachchk(const std::string& peer_key, uint16_t port,
+                                const std::vector<uint8_t>& trailing = {});
+    std::optional<uint8_t> test_reach_result(uint64_t nonce) const;
+    std::vector<std::string> test_dialback_targets() const;
+    void test_mark_self_verified(const std::string& ip, uint16_t port);
+    size_t test_reach_checks_sent() const;
+    std::vector<std::pair<std::string, uint16_t>> test_local_advertised_addresses() const {
+        return get_local_advertised_addresses();
+    }
+    bool test_inbound_slot_available(const std::string& ip) const {
+        std::lock_guard<std::mutex> lock(peers_mutex_);
+        return inbound_slot_available_locked(ip, nullptr);
+    }
+    void test_set_inbound_limits(size_t total, size_t per_ip) {
+        max_inbound_ = total;
+        max_inbound_per_ip_ = per_ip;
+    }
     void test_sweep_release_compatibility() { sweep_release_compatibility(); }
     void test_process_message(const std::string& key, const P2PMessage& message) { process_message(key, message); }
     void test_set_release_capability(const std::string& key, bool capable, bool complete = true);
@@ -879,6 +1107,43 @@ public:
     void test_set_peer_connected(const std::string& peer_address,
                                  bool connected);
     void test_maybe_auto_register_with_relays();
+    void test_relay_registration_tick() { RelayRegistrationTick(); }
+    void test_refresh_relay_registrations() { RefreshRelayRegistrations(); }
+    void test_signed_relay_hints_tick() { SignedRelayHintsTick(/*force=*/true); }
+    void test_orchestrate_relay_dials() { OrchestrateRelayDials(); }
+    size_t test_relay_hint_count(const std::array<uint8_t, 20>& target) const;
+    size_t test_signed_relay_hint_count(const std::array<uint8_t, 20>& target) const;
+    size_t test_relay_hint_target_count() const;
+    size_t test_relay_circuit_count() const;
+    void test_set_peer_services(const std::string& peer_key, uint64_t services);
+    void test_set_peer_best_height(const std::string& peer_key, uint32_t height);
+    // A relayed (via_relay, encrypted QUIC) peer on a caller-owned session;
+    // `expected_target` set means an outbound dial of that node id.
+    std::string test_install_quic_relay_peer(
+        std::shared_ptr<dinero::network::QuicSession> session, const std::string& relay_address,
+        uint64_t circuit_id, std::optional<std::array<uint8_t, 20>> expected_target);
+    // Behave like a pre-v8.2.0 build: send only dineroid v1.
+    void test_set_dineroid_v1_only(bool v1_only) { test_dineroid_v1_only_ = v1_only; }
+    // Stands in for a listening QUIC endpoint (NGTCP2-off builds cannot start
+    // one). Interface addresses are injected through
+    // network::test_set_interface_enumerator_override (local_interfaces.h).
+    void test_set_quic_port(uint16_t port);
+    // Hole punching: drive the punch state machine, replace its clock (set it
+    // before any punch traffic), override LocalPunchCandidates (loopback
+    // candidates are never routable), read the counters.
+    void test_punch_tick() { PunchTick(); }
+    void test_set_punch_clock(std::function<std::chrono::steady_clock::time_point()> clock);
+    void test_set_local_punch_candidates(std::optional<dinero::p2p::PunchCandidates> c);
+    PunchStats test_punch_stats() const;
+    void test_handle_getaddr(const std::string& peer_key) { handle_getaddr(peer_key, P2PMessage{}); }
+    // Gives a test-installed peer (keyed "host:port", port 0) its real
+    // endpoint, so to_string() matches relay endpoint keys.
+    void test_set_peer_endpoint(const std::string& peer_key, const std::string& host,
+                                uint16_t port);
+    void test_set_peer_proven_identity(const std::string& peer_key,
+                                       const std::array<uint8_t, 20>& node_id,
+                                       const std::array<uint8_t, 33>& pubkey, uint64_t our_nonce);
+    size_t test_confirmed_relay_count() const;
     std::vector<std::string> test_configured_relay_endpoints() const;
     void test_insert_pending_relay_connect(
         uint64_t request_id,
@@ -908,6 +1173,11 @@ public:
     void test_install_relay_circuit(uint64_t circuit_id,
                                     const std::string& requester_addr,
                                     const std::string& target_addr);
+    void test_register_relay_target(const std::array<uint8_t, 20>& node_id,
+                                    const std::string& peer_address);
+    // Frames dropped by the per-circuit, global or monthly cap.
+    uint64_t test_relay_cap_drop_frames() const;
+    void test_recompute_relay_behind_throttle() { RecomputeRelayBehindThrottle(); }
 #endif
 
 private:
@@ -929,6 +1199,9 @@ private:
     static constexpr int SEND_TIMEOUT_SEC = 5;
     static constexpr size_t MAX_OUTBOUND_CONNECTIONS =
         dinero::p2p::kTargetDurableOutbound;
+    // Outbound slots for relayed/punched ("home") peers, counted apart from
+    // MAX_OUTBOUND_CONNECTIONS so a full direct set still gets a relayed link.
+    static constexpr size_t kHomePeerSlots = 2;
     static constexpr std::chrono::minutes FEELER_INTERVAL{2};
     static constexpr size_t MAX_INBOUND_CONNECTIONS = 125;
     // Two full nodes behind one household/office NAT can each maintain several
@@ -959,6 +1232,54 @@ private:
     std::atomic<bool> running_{false};
     std::atomic<bool> shutdown_requested_{false};
     std::atomic<bool> network_active_{true};
+    // Direct QUIC transport. Lock order: the endpoint calls AcceptFn under its
+    // own mutex and AcceptFn takes peers_mutex_, so never call into the
+    // endpoint while holding peers_mutex_.
+    std::unique_ptr<dinero::network::QuicEndpoint> quic_endpoint_;
+    dinero::network::QuicSessionOptions quic_p2p_options_;
+    bool quic_enabled_{true};
+    std::vector<std::string> quic_connect_targets_;
+
+    // ---- dial-back verification ----
+    // Lock order: peers_mutex_ before reach_mutex_; reach_mutex_ is a leaf.
+    mutable std::mutex reach_mutex_;
+    std::unique_ptr<dinero::p2p::SelfReachability> self_reach_ =
+        std::make_unique<dinero::p2p::SelfReachability>(
+            dinero::p2p::SelfReachability::Params{}, [] { return std::chrono::steady_clock::now(); });
+    std::set<std::pair<std::string, uint16_t>> stun_reflexive_;  // last STUN round's answers
+    dinero::p2p::NatMappingType nat_mapping_type_{dinero::p2p::NatMappingType::Unknown};
+#ifdef DINERO_TEST_BUILD
+    uint16_t test_quic_port_{0};
+#endif
+    struct PendingReach {
+        dinero::p2p::Candidate candidate;
+        dinero::p2p::Verifier verifier;
+        std::chrono::steady_clock::time_point sent_at;
+    };
+    std::map<uint64_t, PendingReach> pending_reach_;          // our requests by nonce
+    std::map<uint64_t, uint8_t> reach_results_;               // last results (bounded)
+    size_t reach_checks_sent_{0};
+    // Verifier side: request windows and the targets we dialed (bounded).
+    // Keyed by requester address (IPv4, or IPv6 /64), not by connection.
+    std::map<std::string, std::deque<std::chrono::steady_clock::time_point>> reach_window_by_peer_;
+    std::atomic<bool> dialback_private_targets_{false};
+    std::deque<std::chrono::steady_clock::time_point> reach_window_global_;
+    size_t dialbacks_in_flight_{0};
+    std::deque<std::string> dialback_targets_;
+    void run_reachability_tick();
+    void handle_reach_check(const std::string& peer_address, const P2PMessage& message);
+    void handle_reach_result(const std::string& peer_address, const P2PMessage& message);
+    uint64_t send_reach_check(const std::string& peer_key, const dinero::p2p::Candidate& c,
+                              const dinero::p2p::Verifier& v, const std::vector<uint8_t>& trailing);
+    // Dial ip:port, run a version handshake, report whether it is `expected`:
+    // 0 ok, 2 connect/handshake failed, 3 a different node answered.
+    uint8_t dialback_probe(const std::string& ip, uint16_t port,
+                           const std::array<uint8_t, 20>& expected);
+    // Caller holds peers_mutex_: explicit, or dial-back verified.
+    bool gossipable_locked(const std::string& address, uint16_t port) const;
+    std::atomic<bool> quic_connect_warned_{false};
+    size_t max_inbound_ = MAX_INBOUND_CONNECTIONS;
+    size_t max_inbound_per_ip_ = MAX_INBOUND_PER_IP;
 
     // Socket readiness observability (for deterministic tests)
     std::atomic<bool> socket_listening_{false};
@@ -969,8 +1290,62 @@ private:
     std::unique_ptr<std::thread> listen_thread_;
     std::unique_ptr<std::thread> connection_manager_thread_;
     std::unique_ptr<std::thread> keepalive_thread_;  // Phase C: Adaptive keepalive
+    std::unique_ptr<std::thread> punch_thread_;      // drives active hole punches
+
+    // ---- hole punching ----
+    // One attempt per remote node id, either role. Lock order: punch_mutex_
+    // is a leaf; nothing else is taken while it is held, and sends, dials and
+    // probes happen with no lock held. punch_tick_mutex_ serializes PunchTick
+    // (keepalive, punch_loop, tests) and is taken before any other lock.
+    struct PunchAttempt {
+        enum class Phase { Offered, AwaitGo, Dialing, Probing };
+        dinero::p2p::PunchRole role{dinero::p2p::PunchRole::None};
+        Phase phase{Phase::Offered};
+        uint64_t nonce{0};
+        std::string relay_key;  // the relayed peer the exchange runs on
+        dinero::p2p::PunchCandidates local;  // what we sent
+        std::chrono::steady_clock::time_point offer_sent_at{};
+        std::chrono::steady_clock::time_point deadline{};
+        std::vector<dinero::network::UdpAddr> targets;
+        // Initiator: when to dial, the next target to try, the dialed peer key
+        // and when that dial gives way to the next target (each target gets an
+        // equal share of what is left of the window).
+        std::chrono::steady_clock::time_point dial_at{};
+        size_t next_target{0};
+        std::string dialed_key;
+        std::chrono::steady_clock::time_point dial_expires{};
+        // Acceptor: probe rounds sent and when the next one is due.
+        size_t probe_rounds{0};
+        std::chrono::steady_clock::time_point next_probe_at{};
+    };
+    std::mutex punch_tick_mutex_;
+    mutable std::mutex punch_mutex_;
+    std::condition_variable punch_cv_;
+    bool punch_wake_{false};  // guarded by punch_mutex_
+    std::map<std::array<uint8_t, 20>, PunchAttempt> punch_attempts_;
+    std::function<std::chrono::steady_clock::time_point()> punch_clock_;
+    std::optional<dinero::p2p::PunchScheduler> punch_scheduler_;
+    PunchStats punch_stats_;
+    std::chrono::steady_clock::time_point PunchNow() const;
+    // Under punch_mutex_: the next probe round's targets, or empty when none is due.
+    std::vector<dinero::network::UdpAddr> TakeProbeRoundLocked(
+        PunchAttempt& a, std::chrono::steady_clock::time_point now);
+    void SendPunchProbes(const std::vector<dinero::network::UdpAddr>& targets);
+#ifdef DINERO_TEST_BUILD
+    std::optional<dinero::p2p::PunchCandidates> test_local_punch_candidates_;  // reach_mutex_
+#endif
     std::mutex peer_threads_mutex_;
-    std::vector<std::unique_ptr<std::thread>> peer_threads_;
+    // Per-peer threads (handlers, QUIC readers). `done` is set when the
+    // thread's function returns so spawn_peer_thread_locked can join and drop
+    // it; stop() joins whatever is left.
+    struct PeerThread {
+        std::unique_ptr<std::thread> thread;
+        std::shared_ptr<std::atomic<bool>> done;
+    };
+    std::vector<PeerThread> peer_threads_;
+    // Caller holds peer_threads_mutex_. Reaps finished threads, then starts
+    // `fn`. False if the thread could not be created (never throws).
+    bool spawn_peer_thread_locked(std::function<void()> fn);
 
     // Peer management
     mutable std::mutex peers_mutex_;
@@ -988,10 +1363,17 @@ private:
     std::vector<std::pair<std::string, uint16_t>> anchor_nodes_;
     std::vector<std::pair<std::string, uint16_t>> advertised_addresses_;
     std::unordered_set<std::string> explicit_advertised_addresses_;
+    // Operator externalip subset: always gossiped, always reachable.
+    std::unordered_set<std::string> operator_addresses_;
     // True once an EXPLICIT/trusted reachable address (operator externalip or
     // port-mapping) has been advertised — distinct from Gap-1-learned addresses.
     // Drives the relay-fallback gate so NAT'd nodes (learned-only) stay eligible.
     std::atomic<bool> has_explicit_advertised_{false};
+    std::atomic<bool> has_operator_address_{false};
+    void notify_reachability_if_changed();
+    std::mutex reachability_handler_mutex_;
+    std::function<void(bool)> reachability_changed_handler_;
+    bool last_reported_reachable_{false};  // guarded by reachability_handler_mutex_
     // Gap 2 (A.1): lock-free mirror of P2PService::port_mapping_active_, pushed
     // via set_port_mapping_active(). Lets the relay auto-register gate apply the
     // same reachability predicate (IsDirectlyReachable) as the getnetworkinfo RPC.
@@ -1068,7 +1450,22 @@ private:
     // no confirmed inbound path it keeps up to kAutoRelayTargetCount relay
     // registrations alive, discovered via addrman NODE_RELAY peers with a
     // hardcoded bootstrap fallback. Runs on the keepalive tick.
-    static constexpr size_t kAutoRelayTargetCount = 5;
+    static constexpr size_t kAutoRelayTargetCount = 2;  // on distinct netgroups
+    static constexpr std::chrono::seconds kRelayAckTimeout{30};
+    static constexpr std::chrono::seconds kRelayPingInterval{30};
+    static constexpr uint32_t kRelayMaxMissedPings = 3;
+    static constexpr std::chrono::minutes kRelaySkipAfterFailure{30};
+    // How long a node still counts as dual-stack after its last direct
+    // outbound IPv4 connection (see MaybeAutoRegisterWithRelays); guarded
+    // by peers_mutex_.
+    static constexpr std::chrono::hours kDualStackMemory{1};
+    std::chrono::steady_clock::time_point last_direct_ipv4_at_{};
+    // Relays that never acked or stopped answering pings; guarded by
+    // relay_endpoints_mutex_.
+    std::unordered_map<std::string, std::chrono::steady_clock::time_point> relay_skip_until_;
+    // Relay candidates we dialed and are waiting to connect; guarded by
+    // relay_endpoints_mutex_.
+    std::unordered_map<std::string, std::chrono::steady_clock::time_point> relay_dialed_at_;
     void MaybeAutoRegisterWithRelays();
 
     // NAT traversal Phase C3 slice 3: relay-side circuit table.
@@ -1095,18 +1492,13 @@ private:
     static constexpr size_t kMaxConcurrentCircuits = 25;
     static constexpr std::chrono::seconds kCircuitIdleTimeout{300};  // 5 min
 
-    // Relay bandwidth caps — global egress token bucket, fixed-window
-    // daily quota, and the chain-behind auto-suspend gate. The quota is
-    // a fixed 24h window (resets on the boundary); worst case is ~2x the
-    // cap across an unlucky boundary — acceptable vs uncapped, upgrade to
-    // an hourly-ring rolling window only if operational data shows it
-    // matters. relay_global_bucket_ / relay_quota_* are touched only
-    // under circuits_mutex_; the atomics need no lock.
-    static constexpr double kRelayGlobalRateBps = 5.0 * 1024.0 * 1024.0;     // 5 MB/s
-    static constexpr double kRelayGlobalBurstBytes = 5.0 * 1024.0 * 1024.0;  // 1s burst
-    static constexpr uint64_t kRelayDailyQuotaBytes =
-        50ULL * 1024 * 1024 * 1024;  // 50 GB / 24h
-    static constexpr uint32_t kRelayMaxBlocksBehind = 100;
+    // Relay bandwidth caps — global egress token bucket, a calendar-month
+    // (UTC) quota persisted across restarts, and the syncing auto-suspend
+    // gate. relay_global_bucket_ / relay_quota_* are touched only under
+    // circuits_mutex_; the atomics need no lock.
+    static constexpr double kRelayGlobalRateBps = 200.0 * 1024.0;     // 200 KB/s
+    static constexpr double kRelayGlobalBurstBytes = 200.0 * 1024.0;  // 1s burst
+    static constexpr uint32_t kRelayMaxBlocksBehind = 6;
     dinero::network::TokenBucket relay_global_bucket_{kRelayGlobalRateBps,
                                                       kRelayGlobalBurstBytes};
     std::atomic<bool> relay_service_enabled_{true};
@@ -1117,15 +1509,23 @@ private:
     };
     std::unordered_map<std::string, RelayRequestWindow> relay_request_windows_;
     uint64_t relay_quota_bytes_ = 0;
-    std::chrono::steady_clock::time_point relay_quota_window_start_{};
+    std::string relay_quota_month_;  // "YYYY-MM" the bytes belong to
+    std::string relay_quota_path_;
+    bool relay_quota_dirty_ = false;
+    std::chrono::steady_clock::time_point relay_quota_saved_at_{};
+    std::atomic<bool> relay_quota_exhausted_{false};
+    HeightProvider best_header_height_provider_;
     std::atomic<bool> relay_behind_throttle_{false};
     std::atomic<uint64_t> relay_drops_circuit_{0};
     std::atomic<uint64_t> relay_drops_global_{0};
     std::atomic<uint64_t> relay_drops_quota_{0};
     std::atomic<uint64_t> relay_drops_behind_{0};
-    // Fixed-window quota check; caller holds circuits_mutex_.
-    bool RelayQuotaAllows(size_t bytes,
-                          std::chrono::steady_clock::time_point now);
+    // Monthly quota check; caller holds circuits_mutex_.
+    bool RelayQuotaAllows(size_t bytes);
+    std::string RelayQuotaMonthNow() const;  // "YYYY-MM", UTC, from clock_
+    // Writes relay_quota_path_ when dirty: always if `force`, else at most
+    // once a minute.
+    void save_relay_quota(bool force);
     // Recompute the cached >kRelayMaxBlocksBehind throttle (keepalive tick).
     void RecomputeRelayBehindThrottle();
 
@@ -1158,6 +1558,8 @@ private:
     std::unordered_map<uint64_t /*request_id*/, PendingConnect> pending_connects_;
     std::unordered_map<uint64_t /*circuit_id*/, OriginatedCircuit> originated_circuits_;
     static constexpr std::chrono::seconds kRelayConnectTimeout{10};
+    static constexpr std::chrono::seconds kRelayConnectSweepPeriod{2};
+    static constexpr size_t kRelayMaxCircuitsPerNetGroup = 4;
 
     // NAT traversal Phase C3 slice 4b: ingested relay-hints side-table.
     // Keyed on target_node_id_hex (40 chars). Value is a list of relay
@@ -1180,6 +1582,10 @@ private:
         // on any successful handshake or on receipt of a fresh duplicate
         // hint. Drop when >= kHintMaxFailures.
         int consecutive_dial_failures{0};
+        // relayhn2 only: the target's own signed hint (empty for legacy
+        // relayhnt) and its expiry, unix seconds.
+        std::vector<uint8_t> v2_payload;
+        uint32_t v2_expiry{0};
     };
     // Time source for TTL/expiry logic in the hints subsystem.
     // Defaults to SystemClockSource; tests inject a FakeClockSource.
@@ -1223,6 +1629,36 @@ private:
     std::unordered_map<std::string /*target_node_id_hex*/,
                        std::chrono::steady_clock::time_point>
         last_relay_dial_attempt_;
+    // Relays named only by a signed hint, dialed so RELAY_CONNECT can follow:
+    // relay host:port -> not before. Failed ones wait kHintRelaySkipAfterFailure.
+    std::unordered_map<std::string /*relay host:port*/, std::chrono::steady_clock::time_point>
+        last_hint_relay_dial_;
+    static constexpr std::chrono::hours kHintRelaySkipAfterFailure{6};
+    // At most 2 such cold dials per 10 minutes.
+    dinero::network::TokenBucket hint_cold_dial_budget_{2.0 / 600.0, 2.0};
+    void drop_all_relay_hints_via(const std::string& relay_address);
+    // relayhn2: every 10 min a NAT'd target re-signs its hints (30 min
+    // expiry) and a relay re-advertises the signed hints of its registrants.
+    static constexpr std::chrono::minutes kSignedHintPeriod{10};
+    static constexpr uint32_t kSignedHintLifetimeSeconds = 30 * 60;
+    std::chrono::steady_clock::time_point last_signed_hint_round_{};
+    std::mutex hint_forwarder_mutex_;
+    dinero::p2p::HintForwarder hint_forwarder_;
+    std::atomic<uint64_t> hints_v2_rejected_{0};
+    // An outbound relayed dial reached someone other than the target: drop
+    // the target's hints through that relay.
+    // Caller holds relay_hints_mutex_. False: no room for this hint.
+    bool MakeRoomForHint(std::vector<RelayHintRecord>& bucket, bool incoming_signed);
+    // Caller holds relay_hints_mutex_. Keeps the table at kMaxHintTargets.
+    void EnforceHintTargetCap();
+    static constexpr size_t kMaxHintTargets = 1024;
+    static constexpr uint32_t kHintIngestPerPeerPerMinute = 30;
+    // peer -> (window start, relayhn2 seen); guarded by hint_forwarder_mutex_.
+    std::unordered_map<std::string, std::pair<std::chrono::steady_clock::time_point, uint32_t>>
+        hint_ingest_windows_;
+    void drop_relay_hints_via(const std::array<uint8_t, 20>& target, const std::string& relay_address);
+    void SignedRelayHintsTick(bool force);
+    void SendSignedRelayHint(const std::vector<uint8_t>& payload, const std::string& except_peer);
 
 public:
     // ── Relay health scoring (auto-registration SET) ────────────────────
@@ -1278,6 +1714,10 @@ private:
                               const std::optional<std::string>& pre_resolved_ip = std::nullopt);
     // Ring 3 Phase 4c: Changed to shared_ptr for TS1 compliance
     bool start_peer_handler_thread(std::shared_ptr<PeerInfo> peer);
+    // Inbound caps shared by TCP and QUIC. Caller holds peers_mutex_.
+    bool inbound_slot_available_locked(const std::string& ip, std::string* why) const;
+    // Frame one message onto a QUIC peer's stream (relay circuit or direct).
+    bool send_quic_stream_message(PeerInfo& peer, const P2PMessage& message);
     void peer_handler_loop(std::shared_ptr<PeerInfo> peer);
     // Task 5: Decrypted-stream reader for QUIC relay virtual peers.
     // Spawned by start_peer_handler_thread (Task 6) for encrypted circuits.
@@ -1343,6 +1783,9 @@ private:
     
     // Socket utilities
     int create_listen_socket();
+    // Best-effort IPv6 listener on listen_port_ (IPV6_V6ONLY); -1 if the host
+    // has no usable IPv6, and the node stays v4-only.
+    int create_listen_socket_v6();
     int create_client_socket(const std::string& address, uint16_t port);
     int create_socks5_client_socket(const std::string& proxy_host,
                                     uint16_t proxy_port,

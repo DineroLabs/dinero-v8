@@ -67,6 +67,29 @@ TEST(OrchardPeerCutoff, BothHandshakeDirectionsRequireEachScheduledCapability) {
         EXPECT_TRUE(OrchardHandshake(manager, outbound, 0));
     }
 }
+TEST(OrchardPeerCutoff, NetworkCapabilitiesCannotSatisfyOrchardHandshake) {
+    constexpr auto networking = dinero::ServiceFlags::NODE_P2P_QUIC |
+                                dinero::ServiceFlags::NODE_DIALBACK |
+                                dinero::ServiceFlags::NODE_HOLEPUNCH;
+    for (bool outbound : {false, true}) {
+        P2PManager manager(0);
+        manager.set_release_services_provider([] { return compact | orchard; });
+        EXPECT_FALSE(OrchardHandshake(manager, outbound, compact | networking));
+        EXPECT_TRUE(OrchardHandshake(manager, outbound, compact | networking | orchard));
+    }
+}
+TEST(OrchardPeerCutoff, VersionPreservesIndependentHighNetworkingBits) {
+    constexpr auto networking = dinero::ServiceFlags::NODE_P2P_QUIC |
+                                dinero::ServiceFlags::NODE_DIALBACK |
+                                dinero::ServiceFlags::NODE_HOLEPUNCH;
+    const auto message = P2PMessage::create_version(70016, 0, base | networking, "/relay/", 12348);
+    ASSERT_GE(message.payload.size(), 12u);
+    uint64_t flags = 0;
+    for (unsigned i = 0; i < 8; ++i) flags |= uint64_t(message.payload[4 + i]) << (8 * i);
+    EXPECT_EQ(flags & networking, networking);
+    EXPECT_EQ(flags & orchard, 0u);
+    EXPECT_EQ(flags & dinero::ServiceFlags::NODE_ORCHARD_CATALOG_V1, 0u);
+}
 TEST(OrchardPeerCutoff, EstablishedSessionsRespectOrchardForSweepReceiveAndSend) {
     for (bool supports : {false, true}) {
         for (bool sweep : {false, true}) {

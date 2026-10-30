@@ -73,6 +73,12 @@ bool DecodeAddrV2(const std::vector<uint8_t>& payload,
                   std::vector<AddrV2Entry>* out,
                   std::string* err);
 
+// One IPv4/IPv6 endpoint as a single-entry addrv2 payload (time 0, services
+// 0): the reachres "dialed" field. Empty if `ip` is not an IP literal.
+std::vector<uint8_t> EncodeAddrV2Endpoint(const std::string& ip, uint16_t port);
+// The first IPv4/IPv6 entry of such a payload, as an IP string and port.
+bool DecodeAddrV2Endpoint(const std::vector<uint8_t>& payload, std::string* ip, uint16_t* port);
+
 // Canonical Tor v3 hostname conversion used by addrv2 gossip. The BIP155 body
 // carries only the 32-byte Ed25519 public key; these helpers validate/regenerate
 // the onion checksum and version byte without clearnet DNS.

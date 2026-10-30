@@ -259,6 +259,28 @@ jobs:
         run: |
           & "$env:VCPKG_INSTALLATION_ROOT\vcpkg.exe" install curl:x64-windows --no-print-usage
 
+      # Static miniupnpc + libnatpmp for UPnP / NAT-PMP port mapping. The
+      # runtime must match the main build: this lane does not set
+      # DINERO_REPRODUCIBLE_BUILD (the only thing that forces /MT, in
+      # cmake/Repro.cmake), uses the dynamic vcpkg triplet and links curl
+      # MultiThreadedDLL, so the main build is CMake's default /MD. The depends
+      # toolchain defaults to /MT, hence the override. The host is pinned
+      # because depends/ derives it from `cc -dumpmachine`, which cl.exe does not
+      # support; windows-AMD64 is also the prefix build-server-installer.ps1 probes.
+      - name: Build depends (miniupnpc + libnatpmp, static, /MD)
+        shell: powershell
+        run: |
+          cmake -S depends -B depends\build-msvc -G Ninja `
+            -DCMAKE_TOOLCHAIN_FILE="$PWD\depends\toolchains\windows-msvc-x64.cmake" `
+            -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreadedDLL `
+            -DDINERO_DEPENDS_HOST=windows-AMD64
+          if ($LASTEXITCODE -ne 0) { throw 'depends configure failed' }
+          cmake --build depends\build-msvc
+          if ($LASTEXITCODE -ne 0) { throw 'depends build failed' }
+          $prefix = (Select-String -Path 'depends\current-prefix.env' `
+              -Pattern '^DINERO_DEPENDS_PREFIX=(.*)$').Matches[0].Groups[1].Value
+          "DINERO_DEPENDS_PREFIX=$prefix" | Out-File -Append -Encoding ascii $env:GITHUB_ENV
+
       - name: Build complete Windows desktop stack
         shell: powershell
         run: |
@@ -272,6 +294,8 @@ jobs:
             -DMINER_ENABLE_CUDA=ON `
             -DENABLE_GRPC=OFF `
             -DDINERO_ENABLE_QUIC=ON `
+            -DDINERO_DEPENDS_PREFIX="$env:DINERO_DEPENDS_PREFIX" `
+            -DDINERO_REQUIRE_REACHABILITY_STACK=ON `
             -DDINERO_RELEASE_TAG='${{ steps.ver.outputs.version }}' `
             -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT\scripts\buildsystems\vcpkg.cmake" `
             -DCMAKE_PREFIX_PATH="$env:QT_ROOT_DIR"
@@ -338,6 +362,20 @@ jobs:
           .\scripts\native-msvc-regtest-smoke.ps1 `
             -BuildDir 'build-msvc-server\Release' `
             -TimeoutSeconds 90
+
+      # Ask the finished binaries, not the build files: UPnP, NAT-PMP, QUIC and
+      # the QUIC TLS bridge must be compiled into both shipped daemons.
+      - name: Assert reachability stack (server and desktop daemons)
+        shell: powershell
+        run: |
+          foreach ($dir in 'build-msvc-server\Release', 'build-msvc-native\Release') {
+            $d = Join-Path $dir 'dinerod.exe'; $c = Join-Path $dir 'dinero-cli.exe'
+            foreach ($f in $d, $c) {
+              if (-not (Test-Path $f -PathType Leaf)) { throw "missing $f" }
+            }
+            python scripts\ci\check_reachability_stack.py --dinerod $d --cli $c
+            if ($LASTEXITCODE -ne 0) { throw "$d lacks the reachability stack" }
+          }
 
       # Authenticode signing via Azure Artifact Signing (publisher:
       # Microsoft-ID-verified). Gated on the WINDOWS_SIGNING_READY repo

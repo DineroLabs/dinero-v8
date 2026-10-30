@@ -18,6 +18,7 @@ else()
 endif()
 option(DINERO_ENABLE_QUIC "Build vendored ngtcp2 QUIC transport dependency (Phase B2; transport activation remains gated)" OFF)
 option(DINERO_ENABLE_QUIC_CRYPTO "Build the ngtcp2 OpenSSL QUIC TLS bridge when the active OpenSSL exposes compatible APIs" ON)
+option(DINERO_REQUIRE_REACHABILITY_STACK "Fail configure unless UPnP, NAT-PMP, QUIC and the QUIC TLS bridge are all compiled in (release lanes)" OFF)
 option(DINERO_WINDOWS_SERVER_BUILD "Build the Windows headless server artifact without daemon GPU/hardware-wallet load-time dependencies" OFF)
 
 if(DINERO_WINDOWS_SERVER_BUILD)

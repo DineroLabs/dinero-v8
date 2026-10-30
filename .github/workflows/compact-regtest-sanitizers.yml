@@ -16,6 +16,7 @@ on:
       - 'src/daemon/services/p2p_service.cpp'
       - 'include/daemon/services/p2p_service.h'
       - 'src/daemon/services/mempool_service.cpp'
+      - 'tests/services/test_p2p_service_rate_limits.cpp'
       - 'tests/daemon/test_p2p_header_parser.cpp'
       - 'tests/daemon/test_daemon_service_release.cpp'
       - 'tests/integration/test_daemon_service_release.py'

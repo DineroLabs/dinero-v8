@@ -22,6 +22,11 @@ set(DINERO_CORE_P2P_SOURCES
   src/network/udp_socket.cpp         # NAT traversal Phase B1: UDP socket facility
   src/network/quic_transport.cpp     # NAT traversal Phase B2: guarded ngtcp2/QUIC transport foundation
   src/network/quic_session.cpp       # NAT traversal Phase B2: encrypted ngtcp2 session driver
+  src/network/quic_endpoint.cpp      # Direct QUIC peers: one UDP socket on the P2P port, many sessions
+  src/p2p/self_reachability.cpp      # Dial-back: which of our addresses peers proved they can dial
+  src/p2p/relay_hint_v2.cpp          # relayhn2: target-signed, forwardable relay hints
+  src/p2p/nat_classifier.cpp         # RFC 4787 NAT mapping from STUN answers on the P2P port
+  src/p2p/hole_punch.cpp             # Relay-coordinated hole punching: pairing, roles, backoff
   src/network/stun_client.cpp        # NAT traversal Phase C1: STUN public-IP discovery
   src/network/relay_registry.cpp     # NAT traversal Phase C3: NAT'd peer registry on relay nodes
   src/network/relay_tls_keypair.cpp  # Self-signed cert+key for the QUIC relay TLS layer

@@ -1,5 +1,6 @@
 #pragma once
 #include "daemon/iservice.h"
+#include "p2p/self_reachability.h"
 #include "daemon/p2p_manager.h"
 #include "daemon/services/prune_service.h"
 #include "daemon/services/header_refresh_coalescer.h"
@@ -63,9 +64,10 @@ public:
         uint64_t bytes_recv{0};
         uint64_t bytes_sent{0};
     };
+    // Same defaults as ::P2PManager::RelayServiceLimits (the owner's caps).
     struct RelayServiceLimits {
-        size_t max_circuits{12};
-        uint64_t bandwidth_bytes_per_second{2ULL * 1024 * 1024};
+        size_t max_circuits{8};
+        uint64_t bandwidth_bytes_per_second{200ULL * 1024};
         size_t max_circuits_per_peer{2};
         uint32_t circuit_lifetime_seconds{1800};
         uint32_t requests_per_peer_per_minute{6};
@@ -153,7 +155,31 @@ public:
         std::string stun_discovered_address;
         std::string stun_server_used;
         std::string stun_message;
+        // NAT mapping measured by STUN on the P2P UDP port (RFC 4787):
+        // "endpoint_independent", "endpoint_dependent" or "unknown" (fewer
+        // than two servers answered, or QUIC is off so STUN used its own
+        // ephemeral socket and says nothing about the P2P port).
+        std::string nat_mapping{"unknown"};
+        bool nat_port_preserving{false};
+        std::vector<std::string> nat_reflexive;  // distinct addresses servers saw
+        uint32_t nat_servers{0};                 // servers that answered
+        int64_t nat_measured_at{0};              // unix seconds; 0 = never
+        // Relay-coordinated hole punching outcomes (getnetworkinfo "hole_punch").
+        ::P2PManager::PunchStats hole_punch;
+        // Direct QUIC peers on UDP at the P2P port.
+        // Inbound peers on a real socket or direct QUIC (relay circuits are
+        // not evidence that our own address is dialable).
+        size_t direct_inbound{0};
+        // Dial-back verification state of our own candidate addresses.
+        std::vector<dinero::p2p::CandidateStatus> self_reachability;
+        bool quic_listening{false};
+        uint16_t quic_listen_port{0};
+        size_t quic_sessions{0};
         bool local_relay{false};
+        uint64_t relay_quota_month_bytes{0};
+        uint64_t relay_quota_month_limit{0};
+        std::string relay_paused_reason;
+        std::vector<std::string> relay_registered;  // relays that confirmed us
         bool relay_active{false};
         std::string relay_mode{"auto"};
         size_t relay_hints_received_self{0};
@@ -341,6 +367,7 @@ private:
     // Allows the lifecycle regression to install a real manager and a
     // deliberately blocked logger without initializing unrelated services.
     friend struct P2PServiceStopTestAccess;
+    friend struct P2PServiceRateTestAccess;
     // Only after scheduler/network workers have joined. Break callback and
     // dependency cycles so a stopped service graph can actually be destroyed.
     void ReleaseStoppedDependencies();
@@ -400,15 +427,21 @@ private:
     std::mutex port_mapping_wait_mutex_;
     std::condition_variable port_mapping_wait_cv_;
 
-    // NAT traversal Phase C1: STUN client + mirror of last result. The
-    // unique_ptr is heap-allocated to avoid pulling stun_client.h
-    // (which pulls udp_socket.h, which pulls winsock2.h) into this
-    // public header transitively.
-    std::unique_ptr<network::StunClient> stun_client_;
+    // NAT traversal Phase C1: STUN client + mirror of last result. Shared
+    // so the QuicEndpoint's STUN handler can hold it weakly: a datagram
+    // arriving during teardown then finds no client instead of a dead one.
+    std::shared_ptr<network::StunClient> stun_client_;
+    bool stun_on_p2p_port_{false};  // sends through the QuicEndpoint socket
     mutable std::mutex stun_status_mutex_;
     std::string stun_discovered_address_;
     std::string stun_server_used_;
     std::string stun_message_{"not run"};
+    std::string nat_mapping_{"unknown"};
+    bool nat_port_preserving_{false};
+    std::vector<std::string> nat_reflexive_;
+    uint32_t nat_servers_{0};
+    int64_t nat_measured_at_{0};
+    std::chrono::steady_clock::time_point stun_next_round_{};
 
     // Public relay role policy (Tier 3 of the three-tier model — see
     // docs/network-participation.md). Tier 1 (be a full P2P node) and
@@ -433,9 +466,11 @@ private:
     //                          etc. — can flip the same lever via
     //                          SetRelayActive() without protocol change.
     std::atomic<bool> relay_active_{false};
+    std::atomic<bool> relay_verified_{false};  // dial-back verified reachable
     mutable std::mutex relay_service_mutex_;
     RelayServiceStatus relay_service_status_{};
     std::string relay_service_policy_path_;
+    std::string relay_quota_path_;
 
     // Periodic sync loop for headers-first + block scheduler in P2PService mode.
     std::atomic<bool> scheduler_tick_running_{false};
@@ -531,7 +566,14 @@ private:
     // stun_discovered_address_ / stun_message_ under stun_status_mutex_,
     // and on success calls p2p_mgr_->add_advertised_address().
     void StartStunDiscoveryIfEnabled();
+    void RunStunRound();
+    // Scheduler tick: re-measure once stun_next_round_ passes.
+    void MaybeRemeasureStun();
     void StopPortMapping();
+
+    // Peer handlers run concurrently, including insertions for different peers.
+    // Guard both maps and each complete window/count update.
+    std::mutex rate_tracker_mutex_;
 
     // Per-peer headers rate limiting (eclipse/DoS protection)
     // Tracks timestamps of recent headers messages per peer

@@ -80,6 +80,22 @@ jobs:
         run: |
           & "$env:VCPKG_INSTALLATION_ROOT\vcpkg.exe" install curl:x64-windows --no-print-usage
 
+      # The installer requires these static reachability libraries, just as the
+      # release workflow does. A clean PR runner has no preinstalled copies.
+      - name: Build depends (miniupnpc + libnatpmp, static, /MD)
+        shell: powershell
+        run: |
+          cmake -S depends -B depends\build-msvc -G Ninja `
+            -DCMAKE_TOOLCHAIN_FILE="$PWD\depends\toolchains\windows-msvc-x64.cmake" `
+            -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreadedDLL `
+            -DDINERO_DEPENDS_HOST=windows-AMD64
+          if ($LASTEXITCODE -ne 0) { throw 'depends configure failed' }
+          cmake --build depends\build-msvc
+          if ($LASTEXITCODE -ne 0) { throw 'depends build failed' }
+          $prefix = (Select-String -Path 'depends\current-prefix.env' `
+              -Pattern '^DINERO_DEPENDS_PREFIX=(.*)$').Matches[0].Groups[1].Value
+          "DINERO_DEPENDS_PREFIX=$prefix" | Out-File -Append -Encoding ascii $env:GITHUB_ENV
+
       - name: Check CI qualification cannot authorize release builds
         shell: powershell
         run: .\scripts\ci\test_windows_ci_qualification.ps1
@@ -108,6 +124,12 @@ jobs:
           .\scripts\ci\check_openssl_version.ps1 `
             -BuildDir 'build-msvc-server' `
             -ExpectedVersion '3.5.7'
+
+      - name: Verify compiled reachability stack
+        shell: powershell
+        run: |
+          python scripts/ci/check_reachability_stack.py --dinerod build-msvc-server/Release/dinerod.exe --cli build-msvc-server/Release/dinero-cli.exe
+          if ($LASTEXITCODE -ne 0) { throw 'reachability stack smoke failed' }
 
       - name: Daemon startup, mining, and restart smoke
         shell: powershell

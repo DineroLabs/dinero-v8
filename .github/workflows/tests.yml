@@ -170,6 +170,14 @@ jobs:
           python3 scripts/ci/test_execution_exclusions.py
           python3 scripts/ci/test_workflow_setarch_selection.py
 
+      # The release lanes trust check_reachability_stack.py to refuse a binary
+      # without UPnP/NAT-PMP/QUIC; this pins that it cannot pass one by accident.
+      - name: Reachability checker self-test
+        run: python3 scripts/ci/test_check_reachability_stack.py
+
+      - name: Reachability CMake gate self-test
+        run: python3 scripts/ci/test_require_reachability_stack.py
+
       # Build and call the production FFI; the inline RuntimeGuards unit test
       # alone cannot qualify DaemonApp/ChainDB shutdown or snapshot readers.
       - name: Real NodeCore lifecycle and snapshot consumers
@@ -890,7 +898,8 @@ jobs:
             perl \
             libcurl4-openssl-dev \
             libudev-dev \
-            libusb-1.0-0-dev
+            libusb-1.0-0-dev \
+            iproute2 iptables curl jq tcpdump
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -1000,6 +1009,17 @@ jobs:
             -L 'quic|p2p' \
             --label-exclude 'integration|gate|release|canonicality|fuzz'
 
+      - name: Require direct QUIC full-node sync
+        run: |
+          ctest --test-dir build-tests-quic -R '^DirectQuicSync$' \
+            --verbose --no-tests=error --output-log build-tests-quic/direct-quic-sync.log
+
+      - name: Qualify real relay and hole-punch network paths
+        timeout-minutes: 60
+        run: |
+          sudo bash scripts/ci/run_relay_reachability_netns.sh \
+            "$PWD/build-tests-quic/dinerod" "$PWD/build-tests-quic/relay-netns-evidence"
+
       - name: Check QUIC session lifetimes with ThreadSanitizer
         run: |
           cmake -S . -B build-quic-tsan -G Ninja \
@@ -1022,4 +1042,9 @@ jobs:
           name: quic-lifetime-${{ github.sha }}
           path: |
             build-tests-quic/Testing/Temporary/
+            build-tests-quic/direct-quic-sync.log
+            build-tests-quic/relay-netns-evidence/**/*.log
+            build-tests-quic/relay-netns-evidence/summary.txt
+            build-tests-quic/relay-netns-evidence/source-sha.txt
+            build-tests-quic/dinerod
             build-quic-tsan/Testing/Temporary/
