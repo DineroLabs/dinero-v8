@@ -21,6 +21,16 @@ Frozen items, each compared exactly against the baseline directory:
                  CMakeCache DINERO_BUILD_ORCHARD_BACKEND).
                  On macOS (and every non-Android platform) both targets are STATIC
                  archives, so "exported" means the archive's global defined symbols.
+                 Windows (an MSVC .lib, selected by the .lib extension): LLVM
+                 `llvm-nm --extern-only --defined-only` (--nm, default llvm-nm),
+                 the tool the Windows K3/W3 scan also verifies; it lists an
+                 archive's COFF symbols, which `dumpbin /exports` does not (that
+                 shows DLL exports only). MSVC C++ names (`?...`) and compiler
+                 constants (`__real@`, `__xmm@`, `__ymm@`) are filtered. Because a
+                 wrong tool or input could yield a short list, the .lib path also
+                 requires every C function declared in the committed baseline
+                 header for that library (nodecore_ffi.h / wallet_ffi.h in the
+                 baseline dir) to appear as a defined symbol, else input error.
                  Only C-linkage symbols are frozen: C++-mangled names (`_Z`/`__Z`) are
                  the internal C++ interfaces the spec allows to change (section 4),
                  and compiler-generated helpers (`___clang*`, `__clang*`) depend on
@@ -45,6 +55,9 @@ JNI_PREFIX = "Java_org_dinerolabs_"
 JNI_DEF = re.compile(r'extern\s+"C"\s+JNIEXPORT\s+(\w+)\s+JNICALL\s+(' + JNI_PREFIX +
                      r'\w+)\s*\(([^)]*)\)')
 LIBS = (("nodecore_ffi", "libnodecore_ffi"), ("dinero_wallet_ffi", "libdinero_wallet_ffi"))
+LIB_HEADER = {"nodecore_ffi": "nodecore_ffi.h", "dinero_wallet_ffi": "wallet_ffi.h"}
+C_DECL = re.compile(r"\b((?:dinero|nodecore)_[A-Za-z0-9_]*)\s*\(")
+MSVC_CONST_PREFIXES = ("__real@", "__xmm@", "__ymm@")
 
 
 class InputError(Exception):
@@ -97,8 +110,34 @@ def find_lib(build, stem, explicit):
                      % (stem, build))
 
 
-def symbols(path):
-    if platform.system() == "Darwin":
+def is_windows_lib(path):
+    return path.lower().endswith(".lib")
+
+
+def declared_c_functions(header_text):
+    """C function names declared in an FFI header (comments stripped)."""
+    text = re.sub(r"/\*.*?\*/", "", header_text, flags=re.S)
+    text = re.sub(r"//[^\n]*", "", text)
+    return set(C_DECL.findall(text))
+
+
+def require_exports(target, found, header_path):
+    expected = declared_c_functions(read(header_path).decode(errors="replace"))
+    if not expected:
+        raise InputError("no C functions parsed from baseline header %s" % header_path)
+    have = {name for _, name in found}
+    missing = sorted(expected - have)
+    if missing:
+        raise InputError("%s: %d of %d C exports declared in %s not found as defined symbols "
+                         "(wrong nm or input?): %s" % (target, len(missing), len(expected),
+                                                      header_path, " ".join(missing[:10])))
+
+
+def symbols(path, nm=None):
+    windows = is_windows_lib(path)
+    if windows:
+        cmd = [nm or "llvm-nm", "--extern-only", "--defined-only", path]
+    elif platform.system() == "Darwin":
         cmd = ["nm", "-gU", path]
     elif path.endswith(".a"):
         cmd = ["nm", "-g", "--defined-only", path]
@@ -119,6 +158,8 @@ def symbols(path):
         bare = name[1:] if platform.system() == "Darwin" and name.startswith("_") else name
         if bare.startswith("_Z") or bare.startswith("__clang"):
             continue
+        if windows and (name.startswith("?") or name.startswith(MSVC_CONST_PREFIXES)):
+            continue
         out.add((typ, name))
     if not out:
         raise InputError("no C-linkage symbols found in %s" % path)
@@ -128,7 +169,13 @@ def symbols(path):
 def symbol_text(build, args):
     rows = []
     for (target, stem), explicit in zip(LIBS, (args.nodecore_ffi, args.wallet_ffi)):
-        for typ, name in symbols(find_lib(build, stem, explicit)):
+        path = find_lib(build, stem, explicit)
+        if is_windows_lib(path):
+            found = symbols(path, args.nm)
+            require_exports(target, found, os.path.join(args.baseline_dir, LIB_HEADER[target]))
+        else:
+            found = symbols(path)
+        for typ, name in found:
             rows.append("%s %s %s" % (target, typ, name))
     return "".join(r + "\n" for r in sorted(rows))
 
@@ -152,8 +199,16 @@ def main(argv=None):
     ap.add_argument("--baseline-dir")
     ap.add_argument("--nodecore-ffi")
     ap.add_argument("--wallet-ffi")
+    ap.add_argument("--nm", help="nm for an MSVC .lib (default llvm-nm)")
     args = ap.parse_args(argv)
     bdir = args.baseline_dir or os.path.join(args.repo, "tests", "separation", "interface_baseline")
+    # The .lib export check reads the committed headers: in record mode the
+    # output dir has none yet, so take them from the committed baseline.
+    args.baseline_dir = bdir
+    if args.mode == "record":
+        committed = os.path.join(args.repo, "tests", "separation", "interface_baseline")
+        if not os.path.isfile(os.path.join(bdir, "wallet_ffi.h")):
+            args.baseline_dir = committed
     try:
         items = current(args)
         if args.mode == "record":

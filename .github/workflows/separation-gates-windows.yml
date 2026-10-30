@@ -25,6 +25,8 @@
 # ctest names checked against the never-run floor, or run_consensus_vectors.py
 # (which enforces the floor); no label selection; no committed Windows
 # baselines yet, so K4 and W5 fail closed (rc 2) until recorded and reviewed.
+# K3/W3 scan the probe's COFF .lib link inputs with a verified llvm-nm and a
+# positive control; they report UNMEASURED (never PASS) when that is not possible.
 # K5 does not run here (POSIX runners only, see separation-gates.yml).
 # ─────────────────────────────────────────────────────────────────────────
 
@@ -213,6 +215,35 @@ jobs:
             }
             return $rc
           }
+          # K3/W3 on Windows: PASS/FAIL only when the scan is measured;
+          # otherwise UNMEASURED (rc 3, never a success).
+          function Invoke-CoffScan([string]$Id, [string[]]$Libs, [string]$Control) {
+            $state = 'UNMEASURED'; $reason = ''
+            if (-not $env:SEP_LLVM_NM -or -not (Test-Path $env:SEP_LLVM_NM)) { $reason = 'llvm-nm not available or not verified' }
+            elseif (-not $Libs -or $Libs.Count -eq 0) { $reason = 'no input archive from the probe link set' }
+            else {
+              $missing = @($Libs | Where-Object { -not (Test-Path $_) })
+              if ($missing.Count -gt 0) { $reason = 'input not built: ' + ($missing -join ', ') }
+            }
+            if (-not $reason) {
+              $a = @('scripts\ci\separation\check_symbols.py', '--coff-archive', '--nm', $env:SEP_LLVM_NM,
+                     '--gate', $Id, '--control', $Control)
+              foreach ($l in $Libs) { $a += @('--binary', $l) }
+              & python @a | Out-Host
+              $rc = $LASTEXITCODE
+              switch ($rc) {
+                0 { $state = 'PASS' }
+                1 { $state = 'FAIL' }
+                3 { $reason = 'positive control failed' }
+                default { $reason = "check_symbols input error rc=$rc" }
+              }
+            }
+            "state=$state" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+            if ($state -eq 'PASS') { Write-Host "GATE $Id PASS"; return 0 }
+            if ($state -eq 'FAIL') { Write-Host "GATE $Id FAIL rc=1"; return 1 }
+            Write-Host "GATE $Id UNMEASURED ($reason)"
+            return 3
+          }
           '@ | Set-Content -Path "$env:RUNNER_TEMP\sep_gate.ps1" -Encoding utf8
 
       - name: CMake configure
@@ -280,43 +311,48 @@ jobs:
           $rc = $LASTEXITCODE
           Write-GateResult 'K2' $rc; exit $rc
 
-      # R10: check_symbols.py would silently pass on mangled names. Prove the
-      # llvm-nm passed to it demangles. An MSVC .exe carries no symbol table
-      # (symbols live in the PDB), so the check runs on a static .lib.
-      - name: llvm-nm demangling self-check (before K3/W3)
+      # R10 / Windows K3-W3. An MSVC .exe carries no symbol table (symbols
+      # live in the PDB), so K3/W3 scan the COFF .lib archives the probe links
+      # (from the CMake codemodel, scripts/ci/separation/probe_link_libs.py)
+      # with a verified llvm-nm, in check_symbols.py's explicit --coff-archive
+      # mode, with an in-step positive control (--control). A missing tool,
+      # missing input or failed control reports UNMEASURED, never PASS.
+      - name: Resolve and verify llvm-nm (before K3/W3)
         id: nm_demangle
         if: ${{ !cancelled() && steps.configure.outcome == 'success' }}
         continue-on-error: true
         run: |
-          $nm = (Get-Command llvm-nm -ErrorAction SilentlyContinue).Source
-          if (-not $nm -and (Test-Path 'C:\Program Files\LLVM\bin\llvm-nm.exe')) { $nm = 'C:\Program Files\LLVM\bin\llvm-nm.exe' }
-          if (-not $nm) { Write-Host '::error::llvm-nm not found'; exit 2 }
-          & $nm --version | Select-Object -First 2 | Out-Host
-          $lib = Get-ChildItem -Path $env:SEP_BUILD -Recurse -Filter 'dinero_consensus.lib' -ErrorAction SilentlyContinue | Select-Object -First 1
-          if (-not $lib) { Write-Host '::error::dinero_consensus.lib not built; nothing to run the demangling check on'; exit 2 }
-          $n = (& $nm -C $lib.FullName 2>$null | Select-String -SimpleMatch 'dinero::' | Measure-Object).Count
-          Write-Host "nm=$nm binary=$($lib.FullName) demangled dinero:: symbol lines: $n"
-          if ($n -lt 1) { Write-Host "::error::$nm -C printed no demangled dinero:: symbol"; exit 1 }
-          "SEP_NM=$nm" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          $cands = @()
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+          if (Test-Path $vswhere) {
+            $vs = & $vswhere -latest -products * -property installationPath
+            if ($vs) { $cands += (Join-Path $vs 'VC\Tools\Llvm\x64\bin\llvm-nm.exe') }
+          }
+          $cands += 'C:\Program Files\LLVM\bin\llvm-nm.exe'
+          $nm = $cands | Where-Object { Test-Path $_ } | Select-Object -First 1
+          Write-Host ("llvm-nm candidates: " + ($cands -join '; '))
+          if (-not $nm) { Write-Host '::error::llvm-nm not found (VS Llvm component or C:\Program Files\LLVM)'; exit 2 }
+          $ver = (& $nm --version | Out-String)
+          Write-Host "llvm-nm: $nm"; Write-Host $ver.Trim()
+          if ($ver -notmatch 'LLVM version (\d+)\.' -or [int]$Matches[1] -lt 15) {
+            Write-Host '::error::llvm-nm is not LLVM >= 15 (MSVC demangling)'; exit 2
+          }
+          "SEP_LLVM_NM=$nm" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           exit 0
 
-      - name: K3 consensus symbols
+      - name: K3 consensus symbols (COFF archive scan)
         id: k3
         if: ${{ !cancelled() && steps.configure.outcome == 'success' }}
         continue-on-error: true
-        env:
-          NM_CHECK: ${{ steps.nm_demangle.outcome }}
         run: |
           . "$env:RUNNER_TEMP\sep_gate.ps1"
-          if ($env:NM_CHECK -ne 'success') {
-            Write-Host 'K3: the llvm-nm demangling self-check did not pass; check_symbols not trusted'
-            Write-GateResult 'K3' 2 'nm not verified'; exit 2
-          }
-          $bin = Join-Path $env:SEP_BUILD 'tests\separation\sep_consensus_forced_link.exe'
-          if (-not (Test-Path $bin)) { Write-Host "K3: $bin absent (K1 forced link produced no binary); check_symbols fails closed" }
-          python scripts\ci\separation\check_symbols.py --binary $bin --gate K3 --nm $env:SEP_NM
-          $rc = $LASTEXITCODE
-          Write-GateResult 'K3' $rc; exit $rc
+          # K3 scans the probe's root library only (whole-archive in K1).
+          $libs = @(python scripts\ci\separation\probe_link_libs.py --build $env:SEP_BUILD --target sep_consensus_forced_link |
+                    Where-Object { (Split-Path -Leaf $_) -ieq 'dinero_consensus.lib' })
+          # Control: dinero::consensus::EvalScript is the script interpreter
+          # entry K1 exercises; it is defined in src/consensus (K5-frozen).
+          $rc = [int](Invoke-CoffScan -Id 'K3' -Libs $libs -Control 'dinero::consensus::EvalScript')
+          exit $rc
 
       - name: K4 consensus vectors
         id: k4
@@ -339,10 +375,11 @@ jobs:
             Write-GateResult 'K4' $rc
           } else {
             Write-Host "K4: no committed windows reference $ref; failing closed (rc 2)"
+            'note=missing reference' | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
             $info = [int](Invoke-K4 "$d\consensus_vectors_ref_$env:SEP_CFG.json")
             Write-Host "K4 (informational): comparison against the macOS-recorded reference exited $info"
             $rc = 2
-            Write-GateResult 'K4' $rc 'no windows reference'
+            Write-GateResult 'K4' $rc 'missing reference — not a vector mismatch'
           }
           exit $rc
 
@@ -376,23 +413,23 @@ jobs:
           $rc = $LASTEXITCODE
           Write-GateResult 'W2' $rc; exit $rc
 
-      - name: W3 wallet symbols
+      - name: W3 wallet symbols (COFF archive scan)
         id: w3
         if: ${{ !cancelled() && steps.configure.outcome == 'success' }}
         continue-on-error: true
-        env:
-          NM_CHECK: ${{ steps.nm_demangle.outcome }}
         run: |
           . "$env:RUNNER_TEMP\sep_gate.ps1"
-          if ($env:NM_CHECK -ne 'success') {
-            Write-Host 'W3: the llvm-nm demangling self-check did not pass; check_symbols not trusted'
-            Write-GateResult 'W3' 2 'nm not verified'; exit 2
-          }
-          $bin = Join-Path $env:SEP_BUILD 'tests\separation\sep_wallet_forced_link.exe'
-          if (-not (Test-Path $bin)) { Write-Host "W3: $bin absent (W1 forced link produced no binary); check_symbols fails closed" }
-          python scripts\ci\separation\check_symbols.py --binary $bin --gate W3 --nm $env:SEP_NM
-          $rc = $LASTEXITCODE
-          Write-GateResult 'W3' $rc; exit $rc
+          # W3 scans dinero_wallet.lib plus the static closure the W1 probe
+          # links (tests/separation/CMakeLists.txt: root + propagated deps).
+          # Whole archives are scanned, so this can report more than the
+          # POSIX scan of the linked executable (which holds only pulled-in
+          # members); it never reports less.
+          $libs = @(python scripts\ci\separation\probe_link_libs.py --build $env:SEP_BUILD --target sep_wallet_forced_link)
+          if ($LASTEXITCODE -ne 0) { $libs = @() }
+          $libs | ForEach-Object { Write-Host "W3 input: $_" }
+          # Control: the WalletManager constructor is what the W1 probe calls.
+          $rc = [int](Invoke-CoffScan -Id 'W3' -Libs $libs -Control 'dinero::WalletManager::WalletManager')
+          exit $rc
 
       - name: W4 wallet-file compatibility
         id: w4
@@ -410,10 +447,14 @@ jobs:
         run: |
           . "$env:RUNNER_TEMP\sep_gate.ps1"
           $base = "tests\separation\interface_baseline\symbols_windows_$env:SEP_CFG.txt"
+          # interface_freeze.py reads an MSVC .lib with llvm-nm (default name
+          # on PATH): put the verified one first.
+          if ($env:SEP_LLVM_NM) { $env:PATH = (Split-Path -Parent $env:SEP_LLVM_NM) + [IO.Path]::PathSeparator + $env:PATH }
           $rc = [int](Invoke-SepCtest -Names 'SepInterfaceFreeze', 'SepRpcTranscript')
           if (-not (Test-Path $base)) {
             Write-Host "W5: no committed symbol baseline $base; failing closed (rc 2)"
-            Write-GateResult 'W5' 2 'no windows symbol baseline'; exit 2
+            'note=missing reference' | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+            Write-GateResult 'W5' 2 'missing reference — not an interface mismatch'; exit 2
           }
           Write-GateResult 'W5' $rc; exit $rc
 
@@ -459,7 +500,7 @@ jobs:
           if ($ncf -and $wlf) {
             python tests\separation\interface_freeze.py record --build $env:SEP_BUILD `
               --baseline-dir (Join-Path $out 'interface_baseline') `
-              --nodecore-ffi $ncf.FullName --wallet-ffi $wlf.FullName
+              --nodecore-ffi $ncf.FullName --wallet-ffi $wlf.FullName --nm $env:SEP_LLVM_NM
             $wrc = $LASTEXITCODE
           } else {
             Write-Host 'W5 record: nodecore_ffi.lib or dinero_wallet_ffi.lib not built'
@@ -491,9 +532,24 @@ jobs:
           O_W4: ${{ steps.w4.outcome }}
           O_W5: ${{ steps.w5.outcome }}
           O_W6: ${{ steps.w6.outcome }}
+          S_K3: ${{ steps.k3.outputs.state }}
+          S_W3: ${{ steps.w3.outputs.state }}
+          N_K4: ${{ steps.k4.outputs.note }}
+          N_W5: ${{ steps.w5.outputs.note }}
         run: |
           function Res([string]$o) {
             switch ($o) { 'success' { 'PASS' } 'failure' { 'FAIL' } default { "NOT_RUN($o)" } }
+          }
+          # UNMEASURED is its own state: never PASS, never a measured FAIL.
+          # A missing committed reference is missing evidence, not a mismatch.
+          function Row([string]$g) {
+            $r = Res ([Environment]::GetEnvironmentVariable("O_$g"))
+            if ([Environment]::GetEnvironmentVariable("S_$g") -eq 'UNMEASURED') { $r = 'UNMEASURED (not a pass; not a measured fail)' }
+            if ([Environment]::GetEnvironmentVariable("N_$g") -eq 'missing reference') {
+              if ($g -eq 'W5') { $r += ' (missing reference — not an interface mismatch)' }
+              else { $r += ' (missing reference — not a vector mismatch)' }
+            }
+            "| $g | $r |"
           }
           $compiler = 'unknown'
           if (Test-Path "$env:RUNNER_TEMP\compiler.txt") { $compiler = (Get-Content "$env:RUNNER_TEMP\compiler.txt" | Select-Object -First 1) }
@@ -501,16 +557,16 @@ jobs:
             "### Separation gates: windows-msvc, orchard=$env:SEP_CFG",
             '',
             "compiler: $compiler",
-            "prerequisite build: $(Res $env:O_BUILD); llvm-nm demangling check (R10): $(Res $env:O_NM)",
+            "prerequisite build: $(Res $env:O_BUILD); llvm-nm resolved and verified (R10): $(Res $env:O_NM)",
             '',
             '| gate | result |',
             '|---|---|'
           )
-          foreach ($g in 'K1','K2','K3','K4') { $lines += "| $g | $(Res ([Environment]::GetEnvironmentVariable("O_$g"))) |" }
+          foreach ($g in 'K1','K2','K3','K4') { $lines += (Row $g) }
           $lines += '| K5 | SKIP (POSIX only) |'
           $lines += '| K6 | SKIP stage<2 |'
-          foreach ($g in 'W1','W2','W3','W4','W5','W6') { $lines += "| $g | $(Res ([Environment]::GetEnvironmentVariable("O_$g"))) |" }
+          foreach ($g in 'W1','W2','W3','W4','W5','W6') { $lines += (Row $g) }
           $lines += ''
-          $lines += 'Stage-0 expectation: K1-K3, W1-W3 FAIL; K4 and W5 FAIL rc 2 until Windows baselines are recorded and committed (fail closed); W4 PASS; W6 recorded (RED).'
+          $lines += 'Stage-0 expectation: K1, K2, W1, W2 FAIL; K3 and W3 FAIL when measured, else UNMEASURED until the COFF scan is verified; K4 and W5 FAIL rc 2 (missing reference) until reviewed Windows baselines are committed; W4 PASS; W6 recorded (RED).'
           $lines | Out-Host
           $lines | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
