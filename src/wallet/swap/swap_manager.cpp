@@ -111,6 +111,20 @@ std::string ZecAmount(uint64_t zat) {
     return s;
 }
 
+// Alice's DIN refund must wait for T_din, or she could take the BTC and refund
+// her DIN before Bob's claim confirms. CLTV only compares against the spend's
+// own nLockTime; the chain makes that binding only once it enforces
+// transaction time locks (contextual locks; never on Dinero testnet today).
+void RequireDinTimeLocks(const DinRpc& din) {
+    const auto info = din("getblockchaininfo", Json::Value(Json::arrayValue));
+    if (!info || !info->isObject()) throw std::runtime_error("Dinero node unreachable");
+    const Json::Value& active = (*info)["contextual_locks_active"];
+    if (!active.isBool() || !active.asBool()) {
+        throw std::runtime_error("this Dinero network does not enforce transaction time locks yet, "
+                                 "so a swap's refund lock would not hold");
+    }
+}
+
 }  // namespace
 
 // ---- Keys -------------------------------------------------------------------
@@ -320,6 +334,7 @@ void SwapManager::StartSession(uint32_t index, SwapSession session, const Bytes3
 std::string SwapManager::MakeOffer(const OfferRequest& r, uint32_t now) {
     std::lock_guard<std::mutex> lock(mu_);
     StoreKey();  // refuses a locked wallet before using an index
+    RequireDinTimeLocks(din_);
     if (r.din_lock_hours < r.btc_lock_hours + 24) throw std::invalid_argument("DIN lock must be >= BTC lock + 24 h");
     const bool zec = r.chain == CounterChain::Zcash;
     if (zec) {
@@ -372,6 +387,7 @@ SwapManager::AcceptResult SwapManager::Accept(const std::string& text, const std
                                               const std::string& btc_refund_address, uint32_t now) {
     std::lock_guard<std::mutex> lock(mu_);
     const Bytes32 store_key = StoreKey();
+    RequireDinTimeLocks(din_);
     // Where the counter-chain watcher starts: a few blocks below the tip.
     auto counter_scan_from = [&](CounterChain chain) -> uint32_t {
         uint32_t tip = 0;

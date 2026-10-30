@@ -66,11 +66,20 @@ SwapManagerConfig Config(const std::string& dir) {
     return c;
 }
 
-// A Dinero node that reports its height (the scan start of a new swap) and a
-// wallet balance of `spendable_din` (DIN, as wallet.getbalance reports it).
-DinRpc DinWithBalance(double spendable_din) {
-    return [spendable_din](const std::string& m, const Json::Value&) -> std::optional<Json::Value> {
+// What getblockchaininfo says about transaction time locks.
+std::optional<Json::Value> ChainInfo(bool locks_active) {
+    Json::Value i(Json::objectValue);
+    i["contextual_locks_active"] = locks_active;
+    return i;
+}
+
+// A Dinero node that reports its height (the scan start of a new swap), that
+// it enforces time locks, and a wallet balance of `spendable_din` (DIN, as
+// wallet.getbalance reports it).
+DinRpc DinWithBalance(double spendable_din, bool locks_active = true) {
+    return [spendable_din, locks_active](const std::string& m, const Json::Value&) -> std::optional<Json::Value> {
         if (m == "getblockcount") return Json::Value(1000);
+        if (m == "getblockchaininfo") return ChainInfo(locks_active);
         if (m == "wallet.getbalance") {
             Json::Value b(Json::objectValue);
             b["spendable"] = spendable_din;
@@ -604,12 +613,39 @@ TEST(SwapManager, OpenOffersAndUnfundedSwapsReserveTheirDin) {
 TEST(SwapManager, AnUnreadableBalanceRefusesTheOffer) {
     TempDir d("balance_unreadable");
     FakeWallet w{0x54};
-    const DinRpc no_wallet = [](const std::string& m, const Json::Value&) {
+    const DinRpc no_wallet = [](const std::string& m, const Json::Value&) -> std::optional<Json::Value> {
+        if (m == "getblockchaininfo") return ChainInfo(true);
         return m == "getblockcount" ? std::optional<Json::Value>(Json::Value(1000)) : std::optional<Json::Value>{};
     };
     SwapManager m(Config(d.path), w.Deriver(), no_wallet, kNoBtc);
     EXPECT_THROW(m.MakeOffer(Request(), kNow), std::runtime_error);
     EXPECT_TRUE(m.List().empty());
+}
+
+// Dinero testnet does not enforce transaction time locks: Alice's refund
+// would confirm at once, so neither side may start a swap there.
+TEST(SwapManager, NoSwapOnADineroChainWithoutTimeLocks) {
+    TempDir da("nolocks_a"), db("nolocks_b"), dc("nolocks_c");
+    FakeWallet wa{0x61}, wb{0x62};
+    const DinRpc no_locks = DinWithBalance(1'000'000, false);
+    SwapManager alice_unsafe(Config(da.path), wa.Deriver(), no_locks, kNoBtc);
+    EXPECT_THROW(alice_unsafe.MakeOffer(Request(), kNow), std::runtime_error);
+    EXPECT_TRUE(alice_unsafe.List().empty());
+
+    SwapManager alice(Config(dc.path), wa.Deriver(), kNoDin, kNoBtc);
+    const auto offer = alice.MakeOffer(Request(), kNow);
+    SwapManager bob_unsafe(Config(db.path), wb.Deriver(), no_locks, kNoBtc);
+    EXPECT_THROW(bob_unsafe.Accept(offer, P2trAddress("rdin", 1), P2trAddress("bcrt", 2), kNow), std::runtime_error);
+    EXPECT_TRUE(bob_unsafe.List().empty());
+    // A node that does not say counts as one that does not enforce them.
+    const DinRpc silent = [](const std::string& m, const Json::Value&) -> std::optional<Json::Value> {
+        if (m == "getblockchaininfo") return Json::Value(Json::objectValue);
+        return kNoDin(m, Json::Value());
+    };
+    SwapManager bob_silent(Config(db.path), wb.Deriver(), silent, kNoBtc);
+    EXPECT_THROW(bob_silent.Accept(offer, P2trAddress("rdin", 1), P2trAddress("bcrt", 2), kNow), std::runtime_error);
+    SwapManager bob(Config(db.path), wb.Deriver(), kNoDin, kNoBtc);
+    EXPECT_NO_THROW(bob.Accept(offer, P2trAddress("rdin", 1), P2trAddress("bcrt", 2), kNow));
 }
 
 TEST(SwapManager, PayoutScriptFromAddress) {
