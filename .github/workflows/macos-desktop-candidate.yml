@@ -51,7 +51,7 @@ jobs:
         include:
           - variant: arm64
             arch: arm64
-            runner: macos-14
+            runner: macos-15 # macos-14 is in scheduled retirement brownouts
             qt: '6.9.1'
           - variant: x86_64
             arch: x86_64
