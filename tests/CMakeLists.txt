@@ -14074,6 +14074,25 @@ add_executable(swap_e2e_tool
 target_link_libraries(swap_e2e_tool PRIVATE dinero_rpc_client dinero_consensus argon2 OpenSSL::Crypto)
 link_zstd_if_needed(swap_e2e_tool)
 target_include_directories(swap_e2e_tool PRIVATE ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/external)
+# Manual rehearsal against the public Bitcoin testnet4 (not a ctest: it needs
+# a synced, funded testnet4 node): tests/wallet/swap_testnet4_rehearsal.sh.
+add_executable(swap_testnet4_tool
+  tests/wallet/swap_testnet4_tool.cpp
+  src/wallet/swap/encrypted_store.cpp
+  src/crypto/wallet_crypto.cpp
+  src/wallet/swap/runner.cpp
+  src/wallet/swap/tower.cpp
+  src/wallet/swap/fee_ladder.cpp
+  src/wallet/swap/din_watcher.cpp
+  src/wallet/swap/btc_watcher.cpp
+  src/wallet/swap/btc_tx.cpp
+  src/wallet/swap/engine.cpp
+  src/wallet/swap/offer.cpp
+  src/wallet/swap/htlc.cpp
+)
+target_link_libraries(swap_testnet4_tool PRIVATE dinero_rpc_client dinero_consensus argon2 OpenSSL::Crypto)
+link_zstd_if_needed(swap_testnet4_tool)
+target_include_directories(swap_testnet4_tool PRIVATE ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/external)
 if(TARGET dinerod AND TARGET dinero-swap-tower AND DINERO_BITCOIND)
   add_test(NAME SwapE2ERegtest
     COMMAND ${CMAKE_SOURCE_DIR}/tests/wallet/swap_e2e_regtest.sh $<TARGET_FILE:dinerod> $<TARGET_FILE:swap_e2e_tool>
