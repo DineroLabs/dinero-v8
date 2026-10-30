@@ -213,9 +213,14 @@ jobs:
             python "$GITHUB_WORKSPACE/scripts/ci/separation/prereq_status.py" gate \
               --status "$RUNNER_TEMP/prereq_status.json" --gate "$1" --github-output "$GITHUB_OUTPUT"
           }
-          gate_result() {  # <id> <rc> [note]
+          # gate_result <id> <rc> [note] [what failed]: a FAIL also writes
+          # why= for the summary row (never a bare FAIL there).
+          gate_result() {
             if [ "$2" -eq 0 ]; then echo "GATE $1 PASS${3:+ ($3)}"
-            else echo "GATE $1 FAIL rc=$2${3:+ ($3)}"; fi
+            else
+              echo "GATE $1 FAIL rc=$2${3:+ ($3)}"
+              echo "why=rc=$2: ${4:-see the step log}${3:+ ($3)}" >> "$GITHUB_OUTPUT"
+            fi
           }
           # Run exact-named separation ctests only, after checking each name
           # against the never-run floor; then prove from the log that each ran.
@@ -279,7 +284,10 @@ jobs:
           trc=0
           python scripts/ci/separation/sep_targets.py --build "$SEP_BUILD" --config "$SEP_CFG" \
             --out "$RUNNER_TEMP/targets.txt" --unresolved-out "$RUNNER_TEMP/k4_unresolved.txt" \
-            --ctest "$(command -v ctest)" --ninja "$(command -v ninja)" --platform "$SEP_PLAT" || trc=$?
+            --ctest "$(command -v ctest)" --ninja "$(command -v ninja)" --platform "$SEP_PLAT" \
+            --k4-out "$RUNNER_TEMP/k4_targets.txt" || trc=$?
+          # prereq_status.py: any other rc means the build never ran (harness error).
+          echo "$trc" > "$RUNNER_TEMP/sep_targets_rc.txt"
           [ "$trc" -eq 0 ] || [ "$trc" -eq 3 ] || exit "$trc"
           # -k 0: collect every independent failure; a failed K4 test link must
           # not hide the other gates (each gate reports its own result).
@@ -300,7 +308,8 @@ jobs:
           O_BUILD: ${{ steps.build.outcome }}
         run: |
           python scripts/ci/separation/prereq_status.py scan --build "$SEP_BUILD" \
-            --build-outcome "$O_BUILD" --platform "$SEP_PLAT" --out "$RUNNER_TEMP/prereq_status.json"
+            --build-outcome "$O_BUILD" --platform "$SEP_PLAT" --out "$RUNNER_TEMP/prereq_status.json" \
+            --sep-targets-rc "$RUNNER_TEMP/sep_targets_rc.txt" --k4-targets "$RUNNER_TEMP/k4_targets.txt"
 
       - name: K1 consensus forced link
         id: k1
@@ -310,7 +319,7 @@ jobs:
           . "$RUNNER_TEMP/sep_gate.sh"
           sep_prereq K1 || exit $?
           rc=0; sep_ctest SepConsensusForcedLink || rc=$?
-          gate_result K1 "$rc"; exit "$rc"
+          gate_result K1 "$rc" "" "SepConsensusForcedLink did not pass (dinero_consensus forced link)"; exit "$rc"
 
       - name: K2 consensus closure
         id: k2
@@ -321,7 +330,7 @@ jobs:
           rc=0
           python scripts/ci/separation/check_link_closure.py --build "$SEP_BUILD" \
             --target dinero_consensus --rules scripts/ci/separation/closure_rules.json --gate K2 || rc=$?
-          gate_result K2 "$rc"; exit "$rc"
+          gate_result K2 "$rc" "" "check_link_closure dinero_consensus (rc 1 violations, 2 input error)"; exit "$rc"
 
       # R10: check_symbols.py would silently pass on mangled names. Prove the
       # nm passed to it demangles before K3/W3 trust it.
@@ -356,7 +365,7 @@ jobs:
           sep_prereq K3 || exit $?
           # Same states as Windows: PASS/FAIL only when measured, otherwise
           # UNMEASURED (rc 3, never a success).
-          unmeasured() { echo "state=UNMEASURED" >> "$GITHUB_OUTPUT"; echo "GATE K3 UNMEASURED ($1)"; exit 3; }
+          unmeasured() { printf 'state=UNMEASURED\nwhy=%s\n' "$1" >> "$GITHUB_OUTPUT"; echo "GATE K3 UNMEASURED ($1)"; exit 3; }
           [ "$NM_CHECK" = success ] || unmeasured "nm demangling self-check did not pass"
           bin="$SEP_BUILD/tests/separation/sep_consensus_forced_link"
           [ -f "$bin" ] || unmeasured "probe binary absent: K1 RED"
@@ -367,7 +376,7 @@ jobs:
             1) echo "state=FAIL" >> "$GITHUB_OUTPUT" ;;
             *) unmeasured "check_symbols input error rc=$rc" ;;
           esac
-          gate_result K3 "$rc"; exit "$rc"
+          gate_result K3 "$rc" "" "check_symbols: forbidden symbols in sep_consensus_forced_link"; exit "$rc"
 
       - name: K4 consensus vectors
         id: k4
@@ -409,7 +418,7 @@ jobs:
           python scripts/ci/separation/consensus_freeze.py check --repo . \
             --baseline scripts/ci/separation/consensus_baseline.sha256 \
             --allowed scripts/ci/separation/consensus_allowed_changes.txt --stage 0 || rc=$?
-          gate_result K5 "$rc"; exit "$rc"
+          gate_result K5 "$rc" "" "consensus_freeze: frozen consensus sources changed or input error"; exit "$rc"
 
       - name: K6 frozen-header change
         id: k6
@@ -424,7 +433,7 @@ jobs:
           . "$RUNNER_TEMP/sep_gate.sh"
           sep_prereq W1 || exit $?
           rc=0; sep_ctest SepWalletForcedLink || rc=$?
-          gate_result W1 "$rc"; exit "$rc"
+          gate_result W1 "$rc" "" "SepWalletForcedLink did not pass (dinero_wallet forced link)"; exit "$rc"
 
       - name: W2 wallet closure
         id: w2
@@ -435,7 +444,7 @@ jobs:
           rc=0
           python scripts/ci/separation/check_link_closure.py --build "$SEP_BUILD" \
             --target dinero_wallet --rules scripts/ci/separation/closure_rules.json --gate W2 || rc=$?
-          gate_result W2 "$rc"; exit "$rc"
+          gate_result W2 "$rc" "" "check_link_closure dinero_wallet (rc 1 violations, 2 input error)"; exit "$rc"
 
       - name: W3 wallet symbols
         id: w3
@@ -448,7 +457,7 @@ jobs:
           sep_prereq W3 || exit $?
           # Same states as Windows: PASS/FAIL only when measured, otherwise
           # UNMEASURED (rc 3, never a success).
-          unmeasured() { echo "state=UNMEASURED" >> "$GITHUB_OUTPUT"; echo "GATE W3 UNMEASURED ($1)"; exit 3; }
+          unmeasured() { printf 'state=UNMEASURED\nwhy=%s\n' "$1" >> "$GITHUB_OUTPUT"; echo "GATE W3 UNMEASURED ($1)"; exit 3; }
           [ "$NM_CHECK" = success ] || unmeasured "nm demangling self-check did not pass"
           bin="$SEP_BUILD/tests/separation/sep_wallet_forced_link"
           [ -f "$bin" ] || unmeasured "probe binary absent: W1 RED"
@@ -459,7 +468,7 @@ jobs:
             1) echo "state=FAIL" >> "$GITHUB_OUTPUT" ;;
             *) unmeasured "check_symbols input error rc=$rc" ;;
           esac
-          gate_result W3 "$rc"; exit "$rc"
+          gate_result W3 "$rc" "" "check_symbols: forbidden symbols in sep_wallet_forced_link"; exit "$rc"
 
       - name: W4 wallet-file compatibility
         id: w4
@@ -469,7 +478,7 @@ jobs:
           . "$RUNNER_TEMP/sep_gate.sh"
           sep_prereq W4 || exit $?
           rc=0; sep_ctest SepWalletFixtureCompat || rc=$?
-          gate_result W4 "$rc"; exit "$rc"
+          gate_result W4 "$rc" "" "SepWalletFixtureCompat did not pass"; exit "$rc"
 
       - name: W5 external interface freeze and RPC transcript
         id: w5
@@ -497,7 +506,7 @@ jobs:
           sep_prereq W6 || exit $?
           # Label separation;recorded: the Task 0.8 baseline is RED (repair is E1).
           rc=0; sep_ctest SepWalletFfiStandalone || rc=$?
-          gate_result W6 "$rc" "recorded, baseline RED"; exit "$rc"
+          gate_result W6 "$rc" "recorded, baseline RED" "SepWalletFfiStandalone did not pass"; exit "$rc"
 
       # Records when record_baselines=true, or automatically when this
       # platform/config has no committed K4 ref or W5 symbol list (so the
@@ -552,8 +561,6 @@ jobs:
           O_W4: ${{ steps.w4.outcome }}
           O_W5: ${{ steps.w5.outcome }}
           O_W6: ${{ steps.w6.outcome }}
-          N_K4: ${{ steps.k4.outputs.note }}
-          N_W5: ${{ steps.w5.outputs.note }}
           S_K1: ${{ steps.k1.outputs.state }}
           S_K3: ${{ steps.k3.outputs.state }}
           S_K4: ${{ steps.k4.outputs.state }}
@@ -563,9 +570,12 @@ jobs:
           S_W5: ${{ steps.w5.outputs.state }}
           S_W6: ${{ steps.w6.outputs.state }}
           Y_K1: ${{ steps.k1.outputs.why }}
+          Y_K2: ${{ steps.k2.outputs.why }}
           Y_K3: ${{ steps.k3.outputs.why }}
           Y_K4: ${{ steps.k4.outputs.why }}
+          Y_K5: ${{ steps.k5.outputs.why }}
           Y_W1: ${{ steps.w1.outputs.why }}
+          Y_W2: ${{ steps.w2.outputs.why }}
           Y_W3: ${{ steps.w3.outputs.why }}
           Y_W4: ${{ steps.w4.outputs.why }}
           Y_W5: ${{ steps.w5.outputs.why }}
@@ -587,14 +597,12 @@ jobs:
             echo
             echo "| gate | result |"
             echo "|---|---|"
-            # A missing committed reference is missing evidence, shown apart
-            # from a real mismatch.
-            row() { v="O_$1"; n="N_$1"; st="S_$1"; y="Y_$1"; r="$(res "${!v}")"
-                    [ "${!st:-}" = UNMEASURED ] && r="UNMEASURED (${!y:-not a pass; not a measured fail})"
-                    if [ "${!n:-}" = "missing reference" ]; then
-                      [ "$1" = W5 ] && r="$r (missing reference -- not an interface mismatch)" \
-                                    || r="$r (missing reference -- not a vector mismatch)"
-                    fi
+            # Every FAIL/UNMEASURED row carries the gate's reason (why=): a
+            # missing reference, a check that did not run and a measured
+            # mismatch read differently; never a bare FAIL.
+            row() { v="O_$1"; st="S_$1"; y="Y_$1"; r="$(res "${!v}")"
+                    [ "${!st:-}" = UNMEASURED ] && r=UNMEASURED
+                    case "$r" in PASS|NOT_RUN*) ;; *) r="$r (${!y:-no reason recorded})" ;; esac
                     echo "| $1 | $r |"; }
             for g in K1 K2 K3 K4 K5; do row "$g"; done
             echo "| K6 | SKIP stage<2 |"
@@ -693,7 +701,10 @@ jobs:
             fi
           done
           if [ "$rc" -eq 0 ]; then echo "GATE K4 PASS (compact-regtest-vectors)"
-          else echo "GATE K4 FAIL rc=$rc (compact-regtest-vectors)"; fi
+          else
+            echo "GATE K4 FAIL rc=$rc (compact-regtest-vectors)"
+            echo "why=rc=$rc: compact-regtest-vectors ctest did not pass (see the step log)" >> "$GITHUB_OUTPUT"
+          fi
           exit "$rc"
 
       - name: Gate summary
@@ -701,6 +712,7 @@ jobs:
         env:
           O_BUILD: ${{ steps.build.outcome }}
           O_K4C: ${{ steps.k4c.outcome }}
+          Y_K4C: ${{ steps.k4c.outputs.why }}
         run: |
           res() { case "$1" in success) echo PASS ;; failure) echo FAIL ;; *) echo "NOT_RUN(${1:-none})" ;; esac; }
           {
@@ -710,5 +722,7 @@ jobs:
             echo
             echo "| gate | result |"
             echo "|---|---|"
-            echo "| K4 (compact-regtest-vectors) | $(res "$O_K4C") |"
+            r="$(res "$O_K4C")"
+            [ "$r" != FAIL ] || r="FAIL (${Y_K4C:-no reason recorded})"
+            echo "| K4 (compact-regtest-vectors) | $r |"
           } | tee -a "$GITHUB_STEP_SUMMARY"

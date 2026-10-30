@@ -2,6 +2,7 @@
 """Prerequisite-build status for the separation-gate workflows (Task 0.9).
 
 usage: prereq_status.py scan --build DIR --build-outcome OUTCOME --platform PLAT --out FILE
+                             --sep-targets-rc FILE --k4-targets FILE
        prereq_status.py gate --status FILE --gate ID [--github-output FILE]
        prereq_status.py lane --status FILE
 
@@ -14,7 +15,16 @@ The base targets are the four the prerequisite build exists for:
 The FFI archives are NOT base targets: a nodecore_ffi or dinero_wallet_ffi
 build failure stays a W5 FAIL ("check did not run"), never UNMEASURED.
 
-scan: when --build-outcome is "success" nothing failed. Otherwise a base
+scan: first the harness. --sep-targets-rc holds sep_targets.py's exit code
+  (written by the build step before it builds) and must be 0 or 3, and
+  --k4-targets (sep_targets.py --k4-out) must exist; otherwise the build
+  never ran its targets, which is a harness error, not a build failure.
+  Every base target must be in the codemodel (a renamed or removed one is a
+  harness error, never "built"). A harness error is written as
+  {"harness_error": ...}: every build-dependent gate then prints
+  `GATE <id> FAIL rc=2 (check did not run: harness error: ...)`, the lane
+  `LANE FAIL: harness error: ...`, and scan exits 2.
+  Then: when --build-outcome is "success" nothing failed. Otherwise a base
   target failed if any of its codemodel artifacts (ignoring .pdb) is absent
   from the build dir (the CI build dir is fresh, so an artifact exists only if
   this build produced it). Each gate's anchors (below) plus their transitive
@@ -42,6 +52,8 @@ BASE_TARGETS = ("dinero_consensus", "dinero_wallet", "dinerod", "sep_wallet_fixt
 ANCHORS = {
     "K1": ("sep_consensus_forced_link",),
     "K3": ("sep_consensus_forced_link",),
+    # K4: dinero_consensus plus the resolved K4 test executables (--k4-targets);
+    # some of them also link dinero_wallet.
     "K4": ("dinero_consensus",),
     "W1": ("sep_wallet_forced_link",),
     "W3": ("sep_wallet_forced_link",),
@@ -106,13 +118,37 @@ def built(build, tj):
     return all(os.path.isfile(p if os.path.isabs(p) else os.path.join(build, p)) for p in arts)
 
 
-def scan(build, outcome, plat):
+class HarnessError(Exception):
+    pass
+
+
+def harness(rc_file, k4_file):
+    """The K4 test targets, or HarnessError if the build step never got to build."""
+    try:
+        with open(rc_file) as f:
+            rc = f.read().strip()
+    except OSError:
+        raise HarnessError("prerequisite build did not run: no sep_targets.py exit code (%s)" % rc_file)
+    if rc not in ("0", "3"):
+        raise HarnessError("prerequisite build did not run: sep_targets.py rc=%s" % (rc or "empty"))
+    try:
+        with open(k4_file) as f:
+            return [l.strip() for l in f if l.strip()]
+    except OSError:
+        raise HarnessError("prerequisite build did not run: no K4 target list (%s)" % k4_file)
+
+
+def scan(build, outcome, plat, k4_targets=()):
     gates = {g: [] for g in ANCHORS}
+    targets = codemodel_targets(build)
+    absent = [t for t in BASE_TARGETS if t not in targets]
+    if absent:
+        raise HarnessError("base target(s) not in the codemodel: " + ", ".join(absent))
     if outcome == "success":
         return [], gates
-    targets = codemodel_targets(build)
-    failed = [t for t in BASE_TARGETS if t in targets and not built(build, targets[t])]
+    failed = [t for t in BASE_TARGETS if not built(build, targets[t])]
     for g, anchors in ANCHORS.items():
+        anchors = list(anchors) + (list(k4_targets) if g == "K4" else [])
         if plat == "windows":
             anchors = [a for a in anchors if a not in WINDOWS_EXCLUDED]
         need = closure(targets, anchors)
@@ -126,6 +162,8 @@ def lane_line(failed):
 
 def read_status(path):
     st = load(path)
+    if isinstance(st, dict) and isinstance(st.get("harness_error"), str):
+        return st
     if not isinstance(st, dict) or not isinstance(st.get("failed"), list) \
             or not isinstance(st.get("gates"), dict):
         raise InputError("malformed prerequisite status %s" % path)
@@ -140,6 +178,8 @@ def main(argv=None):
     ps.add_argument("--build-outcome", required=True)
     ps.add_argument("--platform", required=True, choices=("linux", "macos", "windows"))
     ps.add_argument("--out", required=True)
+    ps.add_argument("--sep-targets-rc", required=True)
+    ps.add_argument("--k4-targets", required=True)
     pg = sub.add_parser("gate")
     pg.add_argument("--status", required=True)
     pg.add_argument("--gate", required=True, choices=sorted(ANCHORS) + list(NO_BUILD))
@@ -149,7 +189,14 @@ def main(argv=None):
     a = ap.parse_args(argv)
     try:
         if a.mode == "scan":
-            failed, gates = scan(a.build, a.build_outcome, a.platform)
+            try:
+                k4 = harness(a.sep_targets_rc, a.k4_targets)
+                failed, gates = scan(a.build, a.build_outcome, a.platform, k4)
+            except (HarnessError, InputError) as e:
+                with open(a.out, "w") as f:
+                    json.dump({"harness_error": str(e)}, f, indent=1)
+                print("LANE FAIL: harness error: %s" % e)
+                return 2
             with open(a.out, "w") as f:
                 json.dump({"failed": failed, "gates": gates}, f, indent=1, sort_keys=True)
             print("prerequisite build outcome: %s; failed base targets: %s"
@@ -160,6 +207,16 @@ def main(argv=None):
         if a.mode == "gate" and a.gate in NO_BUILD:
             return 0
         st = read_status(a.status)
+        if "harness_error" in st:
+            if a.mode == "lane":
+                print("LANE FAIL: harness error: %s" % st["harness_error"])
+                return 0
+            why = "check did not run: harness error: " + st["harness_error"]
+            print("GATE %s FAIL rc=2 (%s)" % (a.gate, why))
+            if a.github_output:
+                with open(a.github_output, "a") as f:
+                    f.write("why=%s\n" % why)
+            return 2
         if a.mode == "lane":
             if st["failed"]:
                 print(lane_line(st["failed"]))
@@ -177,7 +234,11 @@ def main(argv=None):
         return 3
     except InputError as e:
         if a.mode == "gate":
-            print("GATE %s FAIL rc=2 (check did not run: no prerequisite build status: %s)" % (a.gate, e))
+            why = "check did not run: no prerequisite build status: %s" % e
+            print("GATE %s FAIL rc=2 (%s)" % (a.gate, why))
+            if a.github_output:
+                with open(a.github_output, "a") as f:
+                    f.write("why=%s\n" % why)
         else:
             print("prereq_status: INPUT ERROR: %s" % e, file=sys.stderr)
         return 2

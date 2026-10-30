@@ -91,3 +91,44 @@ def test_cmake_selects_windows_w5_scope_by_platform():
     assert "-DSEP_TARGETS=dinero_wallet_ffi\n" in code and "nodecore" not in code
     posix = CMAKE.split("elseif(NOT WIN32 AND TARGET nodecore_ffi AND TARGET dinero_wallet_ffi)", 1)[1]
     assert "-DSEP_TARGETS=nodecore_ffi|dinero_wallet_ffi" in posix.split("else()", 1)[0]
+
+
+# Fix round: decision 3 (why= in every row) and minors 3/5
+def test_summary_rows_always_carry_a_reason():
+    for text, gates in ((POSIX, ("K1", "K2", "K3", "K4", "K5", "W1", "W2", "W3", "W4", "W5", "W6")),
+                        (WINDOWS, ("K1", "K2", "K3", "K4", "W1", "W2", "W3", "W4", "W5", "W6"))):
+        summary = text.split("- name: Gate summary", 1)[1].split("\n  k4-compact-regtest:")[0]
+        for g in gates:
+            assert "Y_%s: ${{ steps.%s.outputs.why }}" % (g, g.lower()) in summary
+        assert "no reason recorded" in summary
+        assert "N_K4" not in summary and "N_W5" not in summary   # the reason comes from why=
+    assert 'case "$r" in PASS|NOT_RUN*) ;; *) r="$r (${!y:-no reason recorded})" ;; esac' in POSIX
+    assert "if ($r -eq 'FAIL' -or $r -eq 'UNMEASURED') {" in WINDOWS
+    compact = POSIX.split("\n  k4-compact-regtest:")[1]
+    assert 'Y_K4C: ${{ steps.k4c.outputs.why }}' in compact and "no reason recorded" in compact
+
+
+def test_gate_results_write_why_on_failure():
+    assert 'echo "why=rc=$2: ${4:-see the step log}${3:+ ($3)}" >> "$GITHUB_OUTPUT"' in POSIX
+    assert '"why=rc=${Rc}: $What$suffix" | Out-File -FilePath $env:GITHUB_OUTPUT' in WINDOWS
+    assert POSIX.count("printf 'state=UNMEASURED\\nwhy=%s\\n'") == 2      # K3, W3
+    assert '"why=$reason" | Out-File' in WINDOWS                           # COFF scan UNMEASURED
+
+
+def test_build_step_records_the_harness_state_for_the_prereq_scan():
+    for text, rcw in ((POSIX, 'echo "$trc" > "$RUNNER_TEMP/sep_targets_rc.txt"'),
+                      (WINDOWS, '"$trc" | Set-Content -Path (Join-Path $env:RUNNER_TEMP \'sep_targets_rc.txt\')')):
+        build = steps(text)["build"]
+        assert "--k4-out" in build and rcw in build
+        # written before the early exit on a sep_targets.py failure
+        assert build.index(rcw) < build.index("exit")
+        prereq = steps(text)["prereq"]
+        assert "--sep-targets-rc" in prereq and "--k4-targets" in prereq
+
+
+def test_windows_expectation_keeps_w5_missing_reference_after_b1():
+    summary = WINDOWS.split("- name: Gate summary", 1)[1]
+    exp = summary.split("Stage-0 expectation:", 1)[1].split("\n")[0]
+    assert "After B1 is fixed through its own review, W5 stays FAIL rc 2 (missing reference)" in exp
+    assert "symbols_windows_<cfg>.txt" in exp
+    assert "'" not in exp[:-1]      # single-quoted pwsh string: no stray quote inside

@@ -11,7 +11,20 @@ def run(tmp_path, gate, **kw):
         args += ["--" + k.replace("_", "-"), str(v)]
     r = subprocess.run(args, capture_output=True, text=True)
     gh = (tmp_path / "gh.txt").read_text() if (tmp_path / "gh.txt").exists() else ""
-    return r.returncode, r.stdout.strip(), gh
+    # the third value is the note= output only; why=/state= are checked by
+    # the owner-decision-3 tests through outputs()
+    return r.returncode, r.stdout.strip(), "".join(
+        l + "\n" for l in gh.splitlines() if l.startswith("note="))
+
+
+def outputs(tmp_path):
+    """--github-output of the last run as {key: value}; removes the file."""
+    f = tmp_path / "gh.txt"
+    if not f.exists():
+        return {}
+    d = dict(l.split("=", 1) for l in f.read_text().splitlines())
+    f.unlink()
+    return d
 
 
 def k4files(tmp_path, out, unresolved=""):
@@ -466,3 +479,113 @@ def test_w5_windows_failures_are_never_partial_pass(tmp_path):
         "rpc_transcript: RUN ERROR: s exited rc=1 during startup\r\n"
     rc, line, gh = w5(tmp_path, text, 8, 0, "windows")
     assert rc == 8 and "check did not run: rpc_transcript: RUN ERROR: s exited rc=1" in line and gh == ""
+
+
+# Owner decision 3: Windows W5 transcript is UNMEASURED (blocked by B1) only
+# when its startup error output carries B1's exact error; the wallet-FFI part
+# still reports its own result; every non-PASS verdict writes why=.
+B1_WHY = ("transcript blocked by B1 (dinerod --consensus-state-commitment-height=4294967295 "
+          "std::stol overflow on LLP64, src/daemon/main.cpp:565)")
+PARTIAL = "partial: wallet FFI + RPC only; NodeCore N/A on Windows"
+B1_TRANSCRIPT = """\
+2/2 Test #867: SepRpcTranscript .................***Failed   15.77 sec
+rpc_transcript: RUN ERROR: s exited rc=1 during startup
+s log (stdout/stderr) C:\\a\\_temp\\rt\\s.1.log (last 1 of 1 lines):
+  | Error: invalid --consensus-state-commitment-height value: 4294967295
+rpc_transcript: work dir kept at C:\\a\\_temp\\rt
+CMake Error at D:/a/tests/separation/run_built_script.cmake:26 (message):
+  SEPARATION TEST FAILED: python;rpc_transcript.py;check (rc=2)
+
+50% tests passed, 1 tests failed out of 2
+"""
+FREEZE_MISSING_REF = W5_WINDOWS_MISSING_REF_ONLY.replace("\r\n", "\n").split("2/2")[0]
+FREEZE_PASSED = "1/2 Test #866: SepInterfaceFreeze ...............   Passed    3.00 sec\n"
+
+
+def crlf(t):
+    return t.replace("\n", "\r\n")
+
+
+def test_w5_windows_b1_with_missing_symbol_reference_is_unmeasured(tmp_path):
+    rc, line, _ = w5(tmp_path, crlf(FREEZE_MISSING_REF + B1_TRANSCRIPT), 8, 0, "windows")
+    why = "%s; wallet FFI symbols: missing reference -- not an interface mismatch; %s" % (B1_WHY, PARTIAL)
+    assert (rc, line) == (3, "GATE W5 UNMEASURED (%s)" % why)
+    assert outputs(tmp_path) == {"state": "UNMEASURED", "why": why}
+    assert line.isascii()
+
+
+def test_w5_windows_b1_with_wallet_ffi_pass_is_unmeasured(tmp_path):
+    rc, line, _ = w5(tmp_path, crlf(FREEZE_PASSED + B1_TRANSCRIPT), 8, 1, "windows")
+    assert (rc, line) == (3, "GATE W5 UNMEASURED (%s; wallet FFI symbols: PASS; %s)" % (B1_WHY, PARTIAL))
+    assert outputs(tmp_path)["state"] == "UNMEASURED"
+
+
+def test_w5_windows_b1_keeps_a_wallet_ffi_failure(tmp_path):
+    fail = ("1/2 Test #866: SepInterfaceFreeze ...............***Failed    3.00 sec\n"
+            "N/A nodecore_ffi.h (NodeCore not a Windows target)\n"
+            "FAIL wallet_ffi.h\n-int dinero_wallet_create(void);\n+int dinero_wallet_create(int);\n"
+            "PASS symbols_windows_off.txt\ninterface_freeze: FAIL (partial: wallet FFI only; NodeCore N/A on Windows)\n")
+    rc, line, _ = w5(tmp_path, crlf(fail + B1_TRANSCRIPT), 8, 1, "windows")
+    why = "wallet FFI symbols: mismatch: FAIL wallet_ffi.h; %s; %s" % (B1_WHY, PARTIAL)
+    assert (rc, line) == (1, "GATE W5 FAIL rc=1 (%s)" % why)
+    assert outputs(tmp_path) == {"why": why}
+    # wallet FFI did not build: still the FFI's own "did not run", transcript UNMEASURED named
+    build = ("1/2 Test #866: SepInterfaceFreeze ...............***Failed    1.82 sec\n"
+             "CMake Error at D:/a/tests/separation/run_built_script.cmake:21 (message):\n"
+             "  SEPARATION TEST BUILD FAILED: dinero_wallet_ffi (rc=2)\n")
+    rc, line, _ = w5(tmp_path, crlf(build + B1_TRANSCRIPT), 8, 0, "windows")
+    assert (rc, line) == (8, "GATE W5 FAIL rc=8 (wallet FFI symbols: check did not run: build failed: "
+                             "dinero_wallet_ffi (rc=2); %s; %s)" % (B1_WHY, PARTIAL))
+
+
+def test_w5_windows_other_run_error_stays_fail(tmp_path):
+    for err in ("  | Error: unknown option --listenonion=0",
+                "  | Error: invalid --consensus-state-commitment-height value: 42949672950",
+                "  | Error: invalid --consensus-state-commitment-burial-depth value: 4294967295"):
+        text = FREEZE_MISSING_REF + B1_TRANSCRIPT.replace(
+            "  | Error: invalid --consensus-state-commitment-height value: 4294967295", err)
+        rc, line, _ = w5(tmp_path, crlf(text), 8, 0, "windows")
+        assert (rc, line) == (8, "GATE W5 FAIL rc=8 (check did not run: rpc_transcript: RUN ERROR: "
+                                 "s exited rc=1 during startup)"), err
+        assert outputs(tmp_path) == {"why": "check did not run: rpc_transcript: RUN ERROR: s exited rc=1 during startup"}
+    # B1's text but not a startup exit (node became unready later) is not B1
+    text = FREEZE_MISSING_REF + B1_TRANSCRIPT.replace("s exited rc=1 during startup", "s did not become ready")
+    rc, line, _ = w5(tmp_path, crlf(text), 8, 0, "windows")
+    assert rc == 8 and line.startswith("GATE W5 FAIL rc=8 (check did not run: rpc_transcript: RUN ERROR: s did not")
+
+
+def test_w5_b1_text_on_posix_is_a_real_fail(tmp_path):
+    posix = FREEZE_MISSING_REF.replace("N/A nodecore_ffi.h (NodeCore not a Windows target)\n", "").replace(
+        "N/A jni_exports.txt (NodeCore not a Windows target)\n", "").replace(
+        "N/A nodecore_ffi symbols (NodeCore not a Windows target)\n", "").replace(
+        "PASS wallet_ffi.h\n", "PASS nodecore_ffi.h\nPASS wallet_ffi.h\nPASS jni_exports.txt\n")
+    for plat in ("linux", "macos"):
+        rc, line, _ = w5(tmp_path, posix + B1_TRANSCRIPT, 8, 0, plat)
+        assert (rc, line) == (8, "GATE W5 FAIL rc=8 (check did not run: rpc_transcript: RUN ERROR: "
+                                 "s exited rc=1 during startup)")
+        assert outputs(tmp_path) == {"why": "check did not run: rpc_transcript: RUN ERROR: "
+                                            "s exited rc=1 during startup"}
+
+
+def test_w5_b1_text_outside_the_transcript_output_is_not_b1(tmp_path):
+    # the signature in the freeze test's output, the transcript failing otherwise
+    text = FREEZE_MISSING_REF.replace("PASS wallet_ffi.h\n", "PASS wallet_ffi.h\n  | Error: invalid "
+                                      "--consensus-state-commitment-height value: 4294967295\n") + \
+        B1_TRANSCRIPT.replace("  | Error: invalid --consensus-state-commitment-height value: 4294967295\n",
+                              "  | Error: cannot bind port\n")
+    rc, line, _ = w5(tmp_path, crlf(text), 8, 0, "windows")
+    assert rc == 8 and "UNMEASURED" not in line and "check did not run: rpc_transcript: RUN ERROR" in line
+    assert outputs(tmp_path) == {"why": "check did not run: rpc_transcript: RUN ERROR: s exited rc=1 during startup"}
+
+
+def test_every_non_pass_verdict_writes_why(tmp_path):
+    rc, line, _ = w5(tmp_path, W5_WINDOWS_RUN1, 8, 0, "windows")
+    assert outputs(tmp_path) == {"why": line.split("(", 1)[1][:-1]}
+    rc, line, _ = w5(tmp_path, W5_MISSING_REF_ONLY, 8, 0)
+    assert outputs(tmp_path) == {"why": "missing reference -- not an interface mismatch",
+                                 "note": "missing reference"}
+    o, u = k4files(tmp_path, "DIGEST_MISMATCH MerkleGolden\n")
+    run(tmp_path, "k4", output=o, unresolved=u, rc=1, reference_present=1)
+    assert outputs(tmp_path) == {"why": "vector mismatch: DIGEST_MISMATCH MerkleGolden"}
+    w5(tmp_path, W5_PASS, 0, 1)
+    assert outputs(tmp_path) == {}

@@ -26,10 +26,22 @@ w5: --log is the ctest log of SepInterfaceFreeze + SepRpcTranscript; --rc the
     wallet_ffi.h PASS line and the NodeCore N/A lines. A NodeCore item checked
     on Windows, or reported N/A on Linux/macOS (where it is required), is a
     contradiction: "check did not run".
+    B1 (owner decision 3, Windows only): when SepRpcTranscript ***Failed with
+    an rpc_transcript startup RUN ERROR whose error output / daemon log tail
+    contains B1's exact error `invalid --consensus-state-commitment-height
+    value: 4294967295` (dinerod main.cpp std::stol overflow on LLP64), the
+    transcript is UNMEASURED (blocked by B1), not a FAIL. The wallet-FFI part
+    still reports its own result: PASS or missing reference gives
+    `GATE W5 UNMEASURED (...)` (exit 3), a wallet-FFI failure gives
+    `GATE W5 FAIL ...`; both name the transcript state and the partial scope.
+    Any other RUN ERROR, and the same text on Linux/macOS, stays FAIL
+    "check did not run".
 
-Prints one `GATE <id> ...` line (plus a `note=missing reference` line to
---github-output when that is the verdict) and exits with the gate rc: 0 PASS,
-1 FAIL, 2 FAIL (missing reference). Stdlib only.
+Prints one `GATE <id> ...` line and exits with the gate rc: 0 PASS, 1 FAIL,
+2 FAIL (missing reference), 3 UNMEASURED (W5 on Windows under B1). Every
+non-PASS verdict writes why=<reason> to --github-output (the summary row
+shows it), plus state=UNMEASURED or note=missing reference when that is the
+verdict. Stdlib only.
 """
 import argparse
 import re
@@ -51,6 +63,11 @@ W5_NODECORE_NA = ("nodecore_ffi.h", "jni_exports.txt")
 W5_PARTIAL = "partial: wallet FFI + RPC only; NodeCore N/A on Windows"
 W5_NODECORE_CHECKED = re.compile(r"^\s*(\d+: )?(PASS|FAIL) (nodecore_ffi\.h|jni_exports\.txt)\s*$", re.M)
 W5_NODECORE_NA_LINE = re.compile(r"^\s*(\d+: )?N/A (nodecore_ffi\.h|jni_exports\.txt|nodecore_ffi symbols) ", re.M)
+B1_ERROR = re.compile(r"invalid --consensus-state-commitment-height value: 4294967295\s*$")
+B1_WHY = ("transcript blocked by B1 (dinerod --consensus-state-commitment-height=4294967295 "
+          "std::stol overflow on LLP64, src/daemon/main.cpp:565)")
+RESULT_LINE = re.compile(r"Test +#\d+: (\S+) ")
+CTEST_TAIL = re.compile(r"^\s*\d+% tests passed")
 W5_NO_SYMBOLS = re.compile(r"interface_freeze: INPUT ERROR: no baseline \S*symbols_[a-z0-9]+_(off|on)\.txt ")
 
 
@@ -110,6 +127,28 @@ def w5_status(log, test):
     return m.group(1) if m else None
 
 
+def sections(lines):
+    """{test name: [indexes of its result line and the output ctest printed after it]}."""
+    out, cur = {}, None
+    for i, l in enumerate(lines):
+        m = RESULT_LINE.search(l)
+        if m:
+            cur = m.group(1)
+            out[cur] = []
+        elif CTEST_TAIL.match(l):
+            cur = None
+        if cur is not None:
+            out[cur].append(i)
+    return out
+
+
+def b1_blocked(section):
+    """SepRpcTranscript's own output shows a startup RUN ERROR carrying B1's exact error."""
+    run_error = any("rpc_transcript: RUN ERROR:" in l and "during startup" in l for l in section)
+    verdict = any("rpc_transcript: FAIL transcript differs" in l for l in section)
+    return run_error and not verdict and any(B1_ERROR.search(l) for l in section)
+
+
 def w5(a):
     log = read(a.log)
     if log is None:
@@ -120,6 +159,31 @@ def w5(a):
         status[t] = w5_status(log, t)
         if status[t] is None:
             return 1, "check did not run: %s not run" % t
+    if a.platform == "windows" and status["SepRpcTranscript"].startswith("***Failed"):
+        idx = sections(lines).get("SepRpcTranscript", [])
+        if b1_blocked([lines[i] for i in idx]):
+            return w5_b1(a, lines, idx, status)
+    return w5_full(a, log, lines, status)
+
+
+def w5_b1(a, lines, idx, status):
+    """Windows under B1: the transcript is UNMEASURED. The wallet FFI is judged
+    alone by the same rules, on the log without the transcript's own output
+    (its result line counted as Passed)."""
+    drop = set(idx[1:])
+    rest = [l for i, l in enumerate(lines) if i not in drop]
+    rest = [re.sub(r"(SepRpcTranscript \.*\s*)\*\*\*Failed", r"\1  Passed", l) for l in rest]
+    sub = argparse.Namespace(**vars(a))
+    sub.rc = 0 if status["SepInterfaceFreeze"] == "Passed" else max(a.rc, 1)
+    rc, why = w5_full(sub, "\n".join(rest) + "\n", rest,
+                      {"SepInterfaceFreeze": status["SepInterfaceFreeze"], "SepRpcTranscript": "Passed"})
+    if rc == 0 or why == MISSING_W5:
+        a.state = "UNMEASURED"
+        return 3, "%s; wallet FFI symbols: %s; %s" % (B1_WHY, "PASS" if rc == 0 else why, W5_PARTIAL)
+    return rc, "wallet FFI symbols: %s; %s; %s" % (why, B1_WHY, W5_PARTIAL)
+
+
+def w5_full(a, log, lines, status):
     built = first(lines, lambda l: "SEPARATION TEST BUILD FAILED" in l)
     if built:
         return max(a.rc, 1), "check did not run: build failed: " + built.split("BUILD FAILED:", 1)[1].strip()
@@ -213,18 +277,29 @@ def main(argv=None):
         p.add_argument("--github-output")
     a = ap.parse_args(argv)
     rc, why = (k4 if a.gate == "k4" else w5)(a)
+    unmeasured = getattr(a, "state", None) == "UNMEASURED"
     missing_ref = why in (MISSING_K4, MISSING_W5)
     if rc == 2 and not missing_ref:
         rc = 1  # exit 2 means "missing reference" only
+    if rc == 3 and not unmeasured:
+        rc = 1  # exit 3 means UNMEASURED only
     gid = a.gate.upper()
+    out = []
     if rc == 0:
         partial = a.gate == "w5" and a.platform == "windows"
         print("GATE %s PASS%s" % (gid, " (%s)" % W5_PARTIAL if partial else ""))
+    elif unmeasured:
+        print("GATE %s UNMEASURED (%s)" % (gid, why))
+        out += ["state=UNMEASURED", "why=" + why]
     else:
-        print("GATE %s FAIL rc=%d%s" % (gid, rc, " (%s)" % why if why else ""))
-    if missing_ref and a.github_output:
+        why = why or "no reason recorded"
+        print("GATE %s FAIL rc=%d (%s)" % (gid, rc, why))
+        out.append("why=" + why)
+    if missing_ref:
+        out.append("note=missing reference")
+    if out and a.github_output:
         with open(a.github_output, "a") as f:
-            f.write("note=missing reference\n")
+            f.write("".join(l + "\n" for l in out))
     return rc
 
 
