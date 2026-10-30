@@ -131,8 +131,9 @@ def test_w5_test_not_run(tmp_path):
 
 def test_w5_pass_and_fail_with_reference(tmp_path):
     assert w5(tmp_path, W5_PASS, 0, 1)[:2] == (0, "GATE W5 PASS")
-    text = W5_PASS.replace("interface_freeze: PASS", "FAIL symbols_macos_off.txt\ninterface_freeze: FAIL")
-    assert w5(tmp_path, text, 8, 1)[:2] == (1, "GATE W5 FAIL rc=1")
+    text = W5_PASS.replace("interface_freeze: PASS", "FAIL symbols_macos_off.txt\ninterface_freeze: FAIL").replace(
+        "SepInterfaceFreeze ...............   Passed", "SepInterfaceFreeze ...............***Failed")
+    assert w5(tmp_path, text, 8, 1)[:2] == (1, "GATE W5 FAIL rc=1 (mismatch: FAIL symbols_macos_off.txt)")
 
 
 def test_w5_missing_reference_without_transcript_output(tmp_path):
@@ -307,3 +308,71 @@ def test_w5_transcript_failed_without_verdict_is_not_a_mismatch(tmp_path):
     rc, line, gh = w5(tmp_path, text, 8, 0)
     assert (rc, line, gh) == (8, "GATE W5 FAIL rc=8 (check did not run: SepRpcTranscript failed without a "
                                  "transcript verdict)", "")
+
+
+# Round 5. N1: with the reference present, PASS needs rc 0 AND both ctest
+# results Passed AND no FAIL line; rc 0 against a contrary log is not PASS.
+W5_FREEZE_FAILED_REF = W5_PASS.replace(
+    "SepInterfaceFreeze ...............   Passed", "SepInterfaceFreeze ...............***Failed").replace(
+    "interface_freeze: PASS", "FAIL symbols_macos_off.txt\ninterface_freeze: FAIL")
+
+
+def test_w5_rc0_with_failed_freeze_is_not_pass(tmp_path):
+    rc, line, gh = w5(tmp_path, W5_FREEZE_FAILED_REF, 0, 1)
+    assert (rc, gh) == (1, "") and line.startswith("GATE W5 FAIL rc=1 (check did not run: log contradicts rc 0")
+
+
+def test_w5_rc0_with_failed_freeze_and_no_body_is_not_pass(tmp_path):
+    text = W5_PASS.replace("SepInterfaceFreeze ...............   Passed",
+                           "SepInterfaceFreeze ...............***Failed").replace("interface_freeze: PASS\n", "")
+    assert w5(tmp_path, text, 0, 1)[0] == 1
+
+
+def test_w5_rc0_with_fail_lines_under_passed_results_is_not_pass(tmp_path):
+    text = W5_PASS.replace("rpc_transcript: PASS (40 entries match off.json)",
+                           "rpc_transcript: FAIL transcript differs from /x/off.json")
+    assert w5(tmp_path, text, 0, 1)[:2] == (
+        1, "GATE W5 FAIL rc=1 (check did not run: log contradicts rc 0 (SepInterfaceFreeze Passed, "
+           "SepRpcTranscript Passed))")
+
+
+# N2: with the reference present, a FAIL needs the failed test's verdict line.
+def test_w5_ref_failed_freeze_without_verdict_is_not_a_measured_fail(tmp_path):
+    text = W5_PASS.replace("SepInterfaceFreeze ...............   Passed",
+                           "SepInterfaceFreeze ...............***Failed").replace(
+        "interface_freeze: PASS", "Segmentation fault")
+    assert w5(tmp_path, text, 8, 1)[:2] == (
+        8, "GATE W5 FAIL rc=8 (check did not run: SepInterfaceFreeze failed without an interface verdict)")
+
+
+def test_w5_ref_failed_transcript_without_verdict_is_not_a_measured_fail(tmp_path):
+    text = W5_PASS.replace("SepRpcTranscript .................   Passed",
+                           "SepRpcTranscript .................***Failed").replace(
+        "rpc_transcript: PASS (40 entries match off.json)\n", "")
+    assert w5(tmp_path, text, 8, 1)[:2] == (
+        8, "GATE W5 FAIL rc=8 (check did not run: SepRpcTranscript failed without a transcript verdict)")
+
+
+def test_w5_ref_transcript_mismatch_is_labelled(tmp_path):
+    text = W5_PASS.replace("SepRpcTranscript .................   Passed",
+                           "SepRpcTranscript .................***Failed").replace(
+        "rpc_transcript: PASS (40 entries match off.json)",
+        "rpc_transcript: FAIL transcript differs from /x/off.json")
+    assert w5(tmp_path, text, 8, 1)[:2] == (
+        1, "GATE W5 FAIL rc=1 (mismatch: rpc_transcript: FAIL transcript differs from /x/off.json)")
+
+
+def test_w5_ref_rc_nonzero_with_both_passed_is_not_a_measured_fail(tmp_path):
+    assert w5(tmp_path, W5_PASS, 8, 1)[:2] == (
+        8, "GATE W5 FAIL rc=8 (check did not run: log contradicts rc 8 (both tests Passed))")
+
+
+# N3: note=missing reference (and exit 2) only for the missing-reference labels.
+def test_rc2_did_not_run_is_not_noted_as_missing_reference(tmp_path):
+    text = W5_MISSING_REF_ONLY.replace("SepInterfaceFreeze ...............***Failed",
+                                       "SepInterfaceFreeze ...............***Not Run")
+    rc, line, gh = w5(tmp_path, text, 2, 0)
+    assert (rc, line, gh) == (1, "GATE W5 FAIL rc=1 (check did not run: SepInterfaceFreeze ***Not Run)", "")
+    o, u = k4files(tmp_path, "NOT_RUN BIP341SighashVectors\n")
+    rc, line, gh = run(tmp_path, "k4", output=o, unresolved=u, rc=2, reference_present=0)
+    assert (rc, line, gh) == (1, "GATE K4 FAIL rc=1 (check did not run: NOT_RUN BIP341SighashVectors)", "")
