@@ -473,14 +473,25 @@ jobs:
           $rc = [int](Invoke-SepCtest -Names 'SepWalletFfiStandalone')
           Write-GateResult 'W6' $rc 'recorded, baseline RED'; exit $rc
 
-      # Manual first run only. Writes to RUNNER_TEMP (never into the tree the
-      # checks above read) and prints the files for the controller to review.
-      - name: Record baselines for review (manual)
-        if: ${{ !cancelled() && inputs.record_baselines && steps.configure.outcome == 'success' }}
+      # Records when record_baselines=true, or automatically when Windows has
+      # no committed K4 ref or W5 symbol list for this config (so the first
+      # pull_request run already yields candidates: workflow_dispatch only
+      # works once the workflow is on the default branch). Runs after the
+      # checks, writes to RUNNER_TEMP only (never into the tree the checks
+      # read) and prints the files for review; it never changes a gate result.
+      - name: Record baselines for review
+        if: ${{ !cancelled() && steps.configure.outcome == 'success' }}
         continue-on-error: true
+        env:
+          RECORD_INPUT: ${{ inputs.record_baselines }}
         run: |
           . "$env:RUNNER_TEMP\sep_gate.ps1"
           $d = 'scripts\ci\separation'
+          $kref = "$d\consensus_vectors_ref_windows_$env:SEP_CFG.json"
+          $sym = "tests\separation\interface_baseline\symbols_windows_$env:SEP_CFG.txt"
+          if ($env:RECORD_INPUT -ne 'true' -and (Test-Path $kref) -and (Test-Path $sym)) {
+            Write-Host "record: skipped (baselines committed for windows/$env:SEP_CFG; record_baselines not set)"; exit 0
+          }
           $out = Join-Path $env:RUNNER_TEMP 'recorded'
           New-Item -ItemType Directory -Force -Path (Join-Path $out 'interface_baseline') | Out-Null
           python "$d\run_consensus_vectors.py" --build $env:SEP_BUILD --list "$d\consensus_vectors.txt" `

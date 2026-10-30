@@ -19,9 +19,10 @@
 #   * K2/W2 need CMake codemodel >= 2.9 (CMake >= 4.1): every job installs the
 #     same pinned CMake from PyPI and asserts the exact version.
 #   * Platforms without committed baselines (K4 refs and W5 symbol lists are
-#     macOS-recorded) fail closed with rc 2. A manual run with
-#     record_baselines=true also prints freshly recorded files to the log for
-#     review; they are never checked against in the same run.
+#     macOS-recorded) fail closed with rc 2. Where a baseline is missing (or
+#     on a manual run with record_baselines=true) a last step prints freshly
+#     recorded files to the log for review; they are never checked against
+#     in the same run.
 #
 # Configure flags are the ones the K4 refs, W4 fixtures and W5 baselines were
 # recorded with (sdd build-env.md); no depends/, QUIC or other extras.
@@ -471,13 +472,25 @@ jobs:
           rc=0; sep_ctest SepWalletFfiStandalone || rc=$?
           gate_result W6 "$rc" "recorded, baseline RED"; exit "$rc"
 
-      # Manual first run only. Writes to $RUNNER_TEMP (never into the tree the
-      # checks above read) and prints the files for the controller to review.
-      - name: Record baselines for review (manual)
-        if: ${{ !cancelled() && inputs.record_baselines && steps.configure.outcome == 'success' }}
+      # Records when record_baselines=true, or automatically when this
+      # platform/config has no committed K4 ref or W5 symbol list (so the
+      # first pull_request run already yields candidates: workflow_dispatch
+      # only works once the workflow is on the default branch). Runs after the
+      # checks, writes to $RUNNER_TEMP only (never into the tree the checks
+      # read) and prints the files for review; it never changes a gate result.
+      - name: Record baselines for review
+        if: ${{ !cancelled() && steps.configure.outcome == 'success' }}
         continue-on-error: true
+        env:
+          RECORD_INPUT: ${{ inputs.record_baselines }}
         run: |
           d=scripts/ci/separation
+          if [ "$SEP_PLAT" = macos ]; then kref="$d/consensus_vectors_ref_$SEP_CFG.json"
+          else kref="$d/consensus_vectors_ref_${SEP_PLAT}_$SEP_CFG.json"; fi
+          sym="tests/separation/interface_baseline/symbols_${SEP_PLAT}_${SEP_CFG}.txt"
+          if [ "$RECORD_INPUT" != true ] && [ -f "$kref" ] && [ -f "$sym" ]; then
+            echo "record: skipped (baselines committed for $SEP_PLAT/$SEP_CFG; record_baselines not set)"; exit 0
+          fi
           out="$RUNNER_TEMP/recorded"; mkdir -p "$out/interface_baseline"
           rc=0
           python $d/run_consensus_vectors.py --build "$SEP_BUILD" --list $d/consensus_vectors.txt \
