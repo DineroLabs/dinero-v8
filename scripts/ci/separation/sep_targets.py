@@ -3,7 +3,7 @@
 
 usage: sep_targets.py --build DIR --config {off,on} --out FILE
            [--list consensus_vectors.txt] [--floor never_run_floor.txt]
-           [--ctest ctest] [--ninja ninja]
+           [--ctest ctest] [--ninja ninja] [--platform {linux,macos,windows}]
 
 Prebuilding keeps the ctest drivers (1800 s TIMEOUT) to a link: the gate
 libraries, dinerod and the FFI archives (W5), the W4 checker, the W6 static
@@ -23,6 +23,10 @@ whose command cannot be found either way is UNRESOLVED: it is reported as an
 (ninja -t targets all); a missing one is reported, never passed to the build
 (an unknown target would abort ninja before it builds anything).
 
+NodeCore is not a Windows target (src/nodecore/CMakeLists.txt: mobile
+embedding library, POSIX APIs): with --platform windows nodecore_ffi is not
+prebuilt (Windows W5 checks the wallet FFI only). On linux/macos it is.
+
 The sep_*_forced_link / sep_wallet_ffi_standalone probes are deliberately not
 listed: they are RED at stage 0 and their ctests build them.
 
@@ -32,6 +36,7 @@ Writes one target per line to --out. Stdlib only. Exit 0; 2 on bad input;
 import argparse
 import json
 import os
+import platform
 import re
 import subprocess
 import sys
@@ -45,6 +50,13 @@ ADD_TEST = re.compile(
 BASE_TARGETS = ["dinero_consensus", "dinero_wallet", "dinerod", "nodecore_ffi",
                 "dinero_wallet_ffi", "sep_wallet_fixture_compat", "dinero_crypto",
                 "secp256k1", "jsoncpp_static", "sqlite3"]
+NOT_ON_WINDOWS = ("nodecore_ffi",)
+
+
+def base_targets(plat):
+    if plat == "windows":
+        return [t for t in BASE_TARGETS if t not in NOT_ON_WINDOWS]
+    return list(BASE_TARGETS)
 
 
 def read_names(text):
@@ -150,6 +162,8 @@ def main(argv=None):
     ap.add_argument("--floor", default=os.path.join(here, "never_run_floor.txt"))
     ap.add_argument("--ctest", default="ctest")
     ap.add_argument("--ninja", default="ninja")
+    ap.add_argument("--platform", choices=("linux", "macos", "windows"), default=None,
+                    help="target platform (default: this host)")
     a = ap.parse_args(argv)
     try:
         with open(a.list) as f:
@@ -184,7 +198,8 @@ def main(argv=None):
     if a.unresolved_out:
         with open(a.unresolved_out, "w") as f:
             f.write("".join(n + "\n" for n in unresolved))
-    have, missing = select(BASE_TARGETS + k4, avail)
+    plat = a.platform or {"Darwin": "macos", "Windows": "windows"}.get(platform.system(), "linux")
+    have, missing = select(base_targets(plat) + k4, avail)
     for t in missing:
         print("::warning::target %s does not exist in this configuration" % t)
     print("prebuilding: " + " ".join(have))

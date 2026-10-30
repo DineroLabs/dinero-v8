@@ -241,3 +241,65 @@ def test_crlf_checkout_of_generated_lists_passes_headers_stay_exact(tmp_path, mo
     hdr = base / "nodecore_ffi.h"
     hdr.write_bytes(hdr.read_bytes().replace(b"\n", b"\r\n"))
     assert run_main(monkeypatch, repo, build, base, "check", syms) == 1
+
+
+# --- Owner decisions 2, item 1: Windows W5 is PARTIAL, selected by platform ---
+
+def win_partial_tree(tmp_path, monkeypatch):
+    monkeypatch.setattr(ifz.platform, "system", lambda: "Windows")
+    repo, build = make_tree(tmp_path)
+    (build / "dinero_wallet_ffi.lib").write_text("")
+    base = tmp_path / "base"
+    base.mkdir()
+    (base / "wallet_ffi.h").write_text("int dinero_wallet_create(void);\n")
+    monkeypatch.setattr(ifz, "symbols", lambda path, nm=None: {("T", "dinero_wallet_create")})
+    return repo, build, base
+
+
+def win_main(repo, build, base, mode, *extra):
+    return ifz.main([mode, "--build", str(build), "--repo", str(repo), "--baseline-dir", str(base),
+                     "--wallet-ffi", str(build / "dinero_wallet_ffi.lib")] + list(extra))
+
+
+def test_windows_checks_wallet_ffi_only_and_reports_nodecore_na(tmp_path, monkeypatch, capsys):
+    repo, build, base = win_partial_tree(tmp_path, monkeypatch)
+    # no NodeCore input at all: no nodecore_ffi.h baseline, JNI source broken
+    (repo / "src/nodecore/nodecore_jni_android.cpp").write_text("garbage Java_org_dinerolabs_\n")
+    assert win_main(repo, build, base, "record") == 0
+    assert sorted(p.name for p in base.iterdir()) == ["symbols_windows_off.txt", "wallet_ffi.h"]
+    assert (base / "symbols_windows_off.txt").read_text() == "dinero_wallet_ffi T dinero_wallet_create\n"
+    capsys.readouterr()
+    assert win_main(repo, build, base, "check") == 0
+    out = capsys.readouterr().out.splitlines()
+    assert out == ["N/A nodecore_ffi.h (NodeCore not a Windows target)",
+                   "N/A jni_exports.txt (NodeCore not a Windows target)",
+                   "N/A nodecore_ffi symbols (NodeCore not a Windows target)",
+                   "PASS wallet_ffi.h",
+                   "PASS symbols_windows_off.txt",
+                   "interface_freeze: PASS (partial: wallet FFI only; NodeCore N/A on Windows)"]
+    (repo / "wallet-core/ffi/wallet_ffi.h").write_text("int dinero_wallet_create(int x);\n")
+    assert win_main(repo, build, base, "check") == 1
+
+
+def test_windows_rejects_a_nodecore_input(tmp_path, monkeypatch, capsys):
+    repo, build, base = win_partial_tree(tmp_path, monkeypatch)
+    (build / "nodecore_ffi.lib").write_text("")
+    assert win_main(repo, build, base, "check", "--nodecore-ffi", str(build / "nodecore_ffi.lib")) == 2
+    assert "NodeCore is not a Windows target" in capsys.readouterr().err
+
+
+def test_posix_still_requires_every_nodecore_item(tmp_path, monkeypatch, capsys):
+    # same tree on Linux: the NodeCore items are checked (a broken JNI source is an input error)
+    repo, build = make_tree(tmp_path)
+    monkeypatch.setattr(ifz.platform, "system", lambda: "Linux")
+    base = tmp_path / "base"
+    syms = {("T", "nodecore_stop")}
+    assert run_main(monkeypatch, repo, build, base, "record", syms) == 0
+    assert sorted(p.name for p in base.iterdir()) == ["jni_exports.txt", "nodecore_ffi.h",
+                                                      "symbols_linux_off.txt", "wallet_ffi.h"]
+    capsys.readouterr()
+    assert run_main(monkeypatch, repo, build, base, "check", syms) == 0
+    out = capsys.readouterr().out
+    assert "N/A" not in out and out.endswith("interface_freeze: PASS\n")
+    (repo / "src/nodecore/nodecore_jni_android.cpp").write_text("garbage Java_org_dinerolabs_\n")
+    assert run_main(monkeypatch, repo, build, base, "check", syms) == 2

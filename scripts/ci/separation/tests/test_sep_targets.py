@@ -179,3 +179,29 @@ def test_cli_unresolved_fails_and_is_written(tmp_path):
     assert "test_a" in out.read_text().split()
     assert unres.read_text().split() == ["TestB"]
     assert "::error::K4 test TestB is registered but its executable target is unresolved" in r.stdout
+
+
+# Owner decisions 2, item 1: NodeCore is not a Windows target; the Windows
+# lane must not prebuild nodecore_ffi (selected by platform). POSIX keeps it.
+def test_windows_does_not_prebuild_nodecore_ffi(tmp_path):
+    b = tmp_path / "build"
+    b.mkdir()
+    lst = tmp_path / "list.txt"
+    lst.write_text("TestA\n")
+    floor = tmp_path / "floor.txt"
+    floor.write_text(FLOOR)
+    (tmp_path / "tests.json").write_text(json.dumps({"tests": tests_json(str(b))}))
+    ctest = _exe(tmp_path / "ctest", "import sys; print(open(%r).read())\n" % str(tmp_path / "tests.json"))
+    ninja = _exe(tmp_path / "ninja", "print('dinerod: phony\\nnodecore_ffi: phony\\n"
+                                      "dinero_wallet_ffi: phony\\ntest_a: phony')\n")
+    got = {}
+    for plat in ("windows", "linux", "macos"):
+        out = tmp_path / ("targets-%s.txt" % plat)
+        r = subprocess.run([sys.executable, str(SCRIPT), "--build", str(b), "--config", "off",
+                            "--out", str(out), "--list", str(lst), "--floor", str(floor),
+                            "--ctest", ctest, "--ninja", ninja, "--platform", plat],
+                           capture_output=True, text=True)
+        assert r.returncode == 0, r.stderr
+        got[plat] = out.read_text().split()
+    assert got["windows"] == ["dinerod", "dinero_wallet_ffi", "test_a"]
+    assert got["linux"] == got["macos"] == ["dinerod", "nodecore_ffi", "dinero_wallet_ffi", "test_a"]
