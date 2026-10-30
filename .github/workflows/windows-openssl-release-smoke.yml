@@ -31,6 +31,13 @@ jobs:
       - name: Setup MSVC
         uses: ilammy/msvc-dev-cmd@v1
 
+      - name: Check Orchard production and qualification mode boundaries
+        shell: powershell
+        run: |
+          python -B scripts/ci/test_orchard_msvc_bridge.py
+          if ($LASTEXITCODE -ne 0) { throw 'Orchard MSVC bridge contracts failed' }
+          .\scripts\ci\test_windows_ci_qualification.ps1
+
       - name: Windows monitor header compile regression
         shell: powershell
         run: |
@@ -99,13 +106,6 @@ jobs:
           $prefix = (Select-String -Path 'depends\current-prefix.env' `
               -Pattern '^DINERO_DEPENDS_PREFIX=(.*)$').Matches[0].Groups[1].Value
           "DINERO_DEPENDS_PREFIX=$prefix" | Out-File -Append -Encoding ascii $env:GITHUB_ENV
-
-      - name: Check Orchard production and qualification mode boundaries
-        shell: powershell
-        run: |
-          python -B scripts/ci/test_orchard_msvc_bridge.py
-          if ($LASTEXITCODE -ne 0) { throw 'Orchard MSVC bridge contracts failed' }
-          .\scripts\ci\test_windows_ci_qualification.ps1
 
       - name: Build Windows server release and installer
         shell: powershell

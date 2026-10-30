@@ -333,7 +333,7 @@ if (-not $SkipBuild) {
 }
 
 $resolvedOrchardMode = if ($CiOrchardQualification) { 'Qualification' } else { 'Release' }
-& (Join-Path $ScriptDir 'assert-orchard-build-mode.ps1') -BuildDir $BuildDir -Mode $resolvedOrchardMode
+& (Join-Path $ScriptDir 'assert-orchard-build-mode.ps1') -BuildDir $BuildRoot -Mode $resolvedOrchardMode
 
 $daemonBinaries = 'dinerod','dinero-cli','dinero-miner','dinero-stratum-worker','dinero-gpu-miner','dinero-wallet-cli','dinero-seeder'
 foreach ($b in $daemonBinaries) {

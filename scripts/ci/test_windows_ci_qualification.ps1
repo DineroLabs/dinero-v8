@@ -73,6 +73,22 @@ try {
         }
         if (-not $refused) { throw 'SkipBuild promoted a CI-only tree into a production package' }
         Write-Host 'PASS: actual SkipBuild entrypoint refuses qualification-only artifacts'
+        # The actual binary directory can differ from the configured build dir.
+        # Do not accept a clean cache belonging to a different production build.
+        $otherRoot = Join-Path $temp 'qualification-tree'
+        New-Item -ItemType Directory -Path $otherRoot | Out-Null
+        Set-Content -Path (Join-Path $otherRoot 'CMakeCache.txt') -Value $ciLines
+        Set-Content -Path $cache -Value $releaseLines
+        $refused = $false
+        try {
+            & $builder -Version '8.2.0' -BuildDir $temp `
+                -DaemonBuildDir (Join-Path $otherRoot 'Release') -SkipBuild
+        } catch {
+            if ($_.Exception.Message -notlike 'Orchard Release build requires exactly*') { throw }
+            $refused = $true
+        }
+        if (-not $refused) { throw 'DaemonBuildDir used a production receipt belonging to a different build' }
+        Write-Host 'PASS: actual binary directory must carry the production mode receipt'
         foreach ($lines in @(
             ,$ciLines,
             ,@('DINERO_BUILD_ORCHARD_BACKEND:BOOL=ON', 'DINERO_ORCHARD_WINDOWS_QUALIFICATION:BOOL=OFF'),

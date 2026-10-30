@@ -137,6 +137,13 @@ jobs:
       - name: Setup MSVC
         uses: ilammy/msvc-dev-cmd@v1
 
+      - name: Check Orchard production and qualification mode boundaries
+        shell: powershell
+        run: |
+          python -B scripts/ci/test_orchard_msvc_bridge.py
+          if ($LASTEXITCODE -ne 0) { throw 'Orchard MSVC bridge contracts failed' }
+          .\scripts\ci\test_windows_ci_qualification.ps1
+
       - name: Install and verify CUDA Toolkit 12.2 for the embedded solo miner
         timeout-minutes: 35
         shell: powershell
@@ -208,13 +215,6 @@ jobs:
               raise SystemExit('Missing exact Orchard compiler pin')
           subprocess.run(['rustup', 'toolchain', 'install', pins[0], '--profile', 'minimal'], check=True)
           PY_ORCHARD_TOOLCHAIN
-
-      - name: Check Orchard production and qualification mode boundaries
-        shell: powershell
-        run: |
-          python -B scripts/ci/test_orchard_msvc_bridge.py
-          if ($LASTEXITCODE -ne 0) { throw 'Orchard MSVC bridge contracts failed' }
-          .\scripts\ci\test_windows_ci_qualification.ps1
 
       - name: Install OpenCL import library for the SV2 GPU miner
         shell: powershell
