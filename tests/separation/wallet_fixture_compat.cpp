@@ -64,6 +64,34 @@ bool Same(const std::string& what, const std::string& want, const std::string& g
 
 size_t Lines(const std::string& s) { return size_t(std::count(s.begin(), s.end(), '\n')); }
 
+// Runs on every platform before the real check: a registry row whose path has
+// Windows backslashes (literal characters on POSIX) must read back equal to
+// ExpectedRegistryWalletPath() for the same root, and a different path must
+// not. Guards the exact-path comparison against encoding mismatches (PR #860
+// run 1: the read side was Escape()d, doubling every backslash).
+void SelfTestWalletPathEncoding(const fs::path& dir) {
+    const fs::path fake_root = fs::path("C:\\Users\\sep x\\datadir");
+    const fs::path reg = dir / "selftest_registry.db";
+    const std::string want = ExpectedRegistryWalletPath(fake_root);
+    Check(want.find('\\') != std::string::npos, "self-test path must contain a backslash");
+    sqlite3* db = nullptr;
+    Check(sqlite3_open(reg.string().c_str(), &db) == SQLITE_OK, "self-test: cannot create " + reg.string());
+    sqlite3_stmt* q = nullptr;
+    const bool ok = sqlite3_exec(db, "CREATE TABLE wallets(name TEXT, path TEXT)", nullptr, nullptr, nullptr) == SQLITE_OK &&
+        sqlite3_prepare_v2(db, "INSERT INTO wallets VALUES('sepfixture', ?1)", -1, &q, nullptr) == SQLITE_OK &&
+        sqlite3_bind_text(q, 1, want.c_str(), int(want.size()), SQLITE_TRANSIENT) == SQLITE_OK &&
+        sqlite3_step(q) == SQLITE_DONE;
+    sqlite3_finalize(q);
+    sqlite3_close(db);
+    Check(ok, "self-test: cannot write " + reg.string());
+    const std::string got = RegistryWalletPathIn(reg);
+    Check(got == want, "self-test: registry path encoding differs: stored '" + want + "' read back '" + got + "'");
+    Check(got != ExpectedRegistryWalletPath(fs::path("C:\\Users\\other\\datadir")),
+          "self-test: different paths compare equal");
+    fs::remove(reg);
+    std::cout << "W4 self-test: backslash wallet path round-trips in the compared encoding\n";
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -76,11 +104,12 @@ int main(int argc, char** argv) {
         std::cout << "W4 config=" << kConfig << " fixture=" << fixture.string() << "\n";
         for (const auto& rel : DatabaseFiles())
             Check(fs::is_regular_file(fixture / rel), "fixture database missing: " + (fixture / rel).string());
-        const std::string want_json = ReadFile(fixture / "expected.json");
-        const std::string want_schema = ReadFile(fixture / "schema.txt");
+        const std::string want_json = GeneratedText(ReadFile(fixture / "expected.json"));
+        const std::string want_schema = GeneratedText(ReadFile(fixture / "schema.txt"));
         Check(json::parse(want_json).value("config", "") == kConfig, "fixture config does not match this build");
 
         TempDir temp;
+        SelfTestWalletPathEncoding(temp.path);
         const fs::path root = (temp.path / "datadir").lexically_normal();
         fs::create_directories(root / "wallets");
         fs::create_directories(root / "blockchain");

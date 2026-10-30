@@ -51,7 +51,7 @@ def test_k4_names_filters_config_and_floor():
 def test_floor_name_never_contributes_a_target(tmp_path):
     m = load()
     names = m.k4_names(LIST, "on", m.read_names(FLOOR))
-    targets, _ = m.k4_targets(names, tests_json(str(tmp_path)), str(tmp_path))
+    targets, _, _ = m.k4_targets(names, tests_json(str(tmp_path)), str(tmp_path))
     assert "test_floor" not in targets
 
 
@@ -59,10 +59,11 @@ def test_k4_targets_registered_in_build_only(tmp_path):
     m = load()
     b = str(tmp_path)
     names = m.k4_names(LIST, "on", m.read_names(FLOOR))
-    targets, unregistered = m.k4_targets(names, tests_json(b), b)
+    targets, unregistered, unresolved = m.k4_targets(names, tests_json(b), b)
     # .exe stripped; interpreter outside the build dir skipped; unlisted ignored
     assert targets == ["test_a", "test_b", "test_only_on"]
     assert unregistered == ["NotRegistered"]
+    assert unresolved == []
 
 
 def test_select_keeps_only_existing_targets():
@@ -108,3 +109,73 @@ def test_cli_missing_floor_is_input_error(tmp_path):
                         "--floor", str(tmp_path / "absent.txt")], capture_output=True, text=True)
     assert r.returncode == 2
     assert r.stderr.startswith("ERROR ")
+
+
+# --- C1: ctest --show-only=json-v1 omits "command" until the executable is built ---
+
+def prebuild_json():
+    # What ctest emits on a fresh configure: names and properties, no "command".
+    return [{"name": n, "properties": []} for n in
+            ("TestA", "TestB", "OnFloor", "OnlyOn", "PyTest", "Unlisted")]
+
+
+def write_ctestfiles(build):
+    (build / "sub").mkdir(parents=True, exist_ok=True)
+    (build / "CTestTestfile.cmake").write_text(
+        '# CMake generated Testfile\n'
+        'add_test([=[TestA]=] "%s/test_a")\n'
+        'set_tests_properties([=[TestA]=] PROPERTIES  LABELS "consensus")\n'
+        'add_test([=[PyTest]=] "python3" "/src/check.py" "--self-test")\n'
+        'add_test([=[OnFloor]=] "%s/test_floor")\n'
+        'subdirs("sub")\n' % (build, build))
+    (build / "sub" / "CTestTestfile.cmake").write_text(
+        'add_test(TestB "%s/sub/test_b.exe" "--x")\n'
+        'add_test([==[OnlyOn]==] "%s/test_only_on" "--gtest_filter=OnlyOn.*")\n' % (build, build))
+
+
+def test_prebuild_json_resolves_targets_from_ctesttestfile(tmp_path):
+    m = load()
+    b = tmp_path / "build"
+    write_ctestfiles(b)
+    names = m.k4_names(LIST, "on", m.read_names(FLOOR))
+    cmds = m.ctesttestfile_commands(str(b))
+    targets, unregistered, unresolved = m.k4_targets(names, prebuild_json(), str(b), cmds)
+    assert targets == ["test_a", "test_b", "test_only_on"]
+    assert unregistered == ["NotRegistered"]
+    assert unresolved == []
+
+
+def test_registered_without_resolvable_command_is_unresolved(tmp_path):
+    m = load()
+    b = tmp_path / "build"
+    b.mkdir()
+    (b / "CTestTestfile.cmake").write_text('add_test([=[TestA]=] "%s/test_a")\n' % b)
+    names = m.k4_names(LIST, "off", m.read_names(FLOOR))
+    targets, unregistered, unresolved = m.k4_targets(
+        names, prebuild_json(), str(b), m.ctesttestfile_commands(str(b)))
+    assert targets == ["test_a"]
+    # registered (present in json-v1) but no add_test line found: loud, not skipped
+    assert unresolved == ["TestB", "PyTest"]
+    assert unregistered == ["NotRegistered"]
+
+
+def test_cli_unresolved_fails_and_is_written(tmp_path):
+    b = tmp_path / "build"
+    b.mkdir()
+    (b / "CTestTestfile.cmake").write_text('add_test([=[TestA]=] "%s/test_a")\n' % b)
+    lst = tmp_path / "list.txt"
+    lst.write_text("TestA\nTestB\n")
+    floor = tmp_path / "floor.txt"
+    floor.write_text(FLOOR)
+    (tmp_path / "tests.json").write_text(json.dumps({"tests": prebuild_json()}))
+    ctest = _exe(tmp_path / "ctest", "print(open(%r).read())\n" % str(tmp_path / "tests.json"))
+    ninja = _exe(tmp_path / "ninja", "print('test_a: phony')\n")
+    out, unres = tmp_path / "t.txt", tmp_path / "unresolved.txt"
+    r = subprocess.run([sys.executable, str(SCRIPT), "--build", str(b), "--config", "off",
+                        "--out", str(out), "--unresolved-out", str(unres), "--list", str(lst),
+                        "--floor", str(floor), "--ctest", ctest, "--ninja", ninja],
+                       capture_output=True, text=True)
+    assert r.returncode == 3, r.stdout + r.stderr
+    assert "test_a" in out.read_text().split()
+    assert unres.read_text().split() == ["TestB"]
+    assert "::error::K4 test TestB is registered but its executable target is unresolved" in r.stdout
