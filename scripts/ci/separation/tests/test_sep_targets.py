@@ -205,3 +205,23 @@ def test_windows_does_not_prebuild_nodecore_ffi(tmp_path):
         got[plat] = out.read_text().split()
     assert got["windows"] == ["dinerod", "dinero_wallet_ffi", "test_a"]
     assert got["linux"] == got["macos"] == ["dinerod", "nodecore_ffi", "dinero_wallet_ffi", "test_a"]
+
+
+def test_k4_out_lists_the_prebuilt_k4_targets(tmp_path):
+    # prereq_status.py anchors K4 on these (some K4 tests link dinero_wallet)
+    b = tmp_path / "build"
+    b.mkdir()
+    lst = tmp_path / "list.txt"
+    lst.write_text(LIST)
+    floor = tmp_path / "floor.txt"
+    floor.write_text(FLOOR)
+    (tmp_path / "tests.json").write_text(json.dumps({"tests": tests_json(str(b))}))
+    ctest = _exe(tmp_path / "ctest", "import sys; print(open(%r).read())\n" % str(tmp_path / "tests.json"))
+    ninja = _exe(tmp_path / "ninja", "print('dinerod: phony\\ntest_a: phony\\ntest_only_on: phony')\n")
+    k4 = tmp_path / "k4.txt"
+    r = subprocess.run([sys.executable, str(SCRIPT), "--build", str(b), "--config", "on",
+                        "--out", str(tmp_path / "t.txt"), "--list", str(lst), "--floor", str(floor),
+                        "--ctest", ctest, "--ninja", ninja, "--platform", "linux", "--k4-out", str(k4)],
+                       capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+    assert k4.read_text().split() == ["test_a", "test_only_on"]   # test_b not in the build

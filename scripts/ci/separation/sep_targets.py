@@ -158,6 +158,8 @@ def main(argv=None):
     ap.add_argument("--config", required=True, choices=("off", "on"))
     ap.add_argument("--out", required=True)
     ap.add_argument("--unresolved-out", help="write unresolved K4 test names here (one per line)")
+    ap.add_argument("--k4-out", help="write the prebuilt K4 test targets here (one per line); "
+                                     "prereq_status.py anchors K4 on them")
     ap.add_argument("--list", default=os.path.join(here, "consensus_vectors.txt"))
     ap.add_argument("--floor", default=os.path.join(here, "never_run_floor.txt"))
     ap.add_argument("--ctest", default="ctest")
@@ -205,6 +207,9 @@ def main(argv=None):
     print("prebuilding: " + " ".join(have))
     with open(a.out, "w") as f:
         f.write("".join(t + "\n" for t in have))
+    if a.k4_out:
+        with open(a.k4_out, "w") as f:
+            f.write("".join(t + "\n" for t in k4 if t in have))
     return 3 if unresolved else 0
 
 

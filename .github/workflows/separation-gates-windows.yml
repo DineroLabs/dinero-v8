@@ -30,6 +30,9 @@
 # are checked and nodecore_ffi is not built; a pass reads `GATE W5 PASS
 # (partial: wallet FFI + RPC only; NodeCore N/A on Windows)`, never bare PASS.
 # A gate whose prerequisite target failed to build reports UNMEASURED.
+# Owner decision 3: until product defect B1 is fixed, W5 reports UNMEASURED
+# (transcript blocked by B1) only when SepRpcTranscript's startup error shows
+# B1's exact error; any other startup failure stays FAIL (check did not run).
 # K3/W3 scan the probe's COFF .lib link inputs with a verified llvm-nm and a
 # positive control; they report UNMEASURED (never PASS) when that is not possible.
 # K5 does not run here (POSIX runners only, see separation-gates.yml).
@@ -201,10 +204,15 @@ jobs:
               --github-output $env:GITHUB_OUTPUT | Out-Host
             return $LASTEXITCODE
           }
-          function Write-GateResult([string]$Id, [int]$Rc, [string]$Note = '') {
+          # A FAIL also writes why= for the summary row (never a bare FAIL there).
+          function Write-GateResult([string]$Id, [int]$Rc, [string]$Note = '', [string]$What = 'see the step log') {
             $suffix = ''
             if ($Note) { $suffix = " ($Note)" }
-            if ($Rc -eq 0) { Write-Host "GATE $Id PASS$suffix" } else { Write-Host "GATE $Id FAIL rc=$Rc$suffix" }
+            if ($Rc -eq 0) { Write-Host "GATE $Id PASS$suffix" }
+            else {
+              Write-Host "GATE $Id FAIL rc=$Rc$suffix"
+              "why=rc=${Rc}: $What$suffix" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+            }
           }
           # Run exact-named separation ctests only, after checking each name
           # against the never-run floor; then prove from the log that each ran.
@@ -254,8 +262,13 @@ jobs:
             }
             "state=$state" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
             if ($state -eq 'PASS') { Write-Host "GATE $Id PASS"; return 0 }
-            if ($state -eq 'FAIL') { Write-Host "GATE $Id FAIL rc=1"; return 1 }
+            if ($state -eq 'FAIL') {
+              Write-Host "GATE $Id FAIL rc=1"
+              'why=rc=1: check_symbols: forbidden symbols in the probe COFF link inputs' | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+              return 1
+            }
             Write-Host "GATE $Id UNMEASURED ($reason)"
+            "why=$reason" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
             return 3
           }
           '@ | Set-Content -Path "$env:RUNNER_TEMP\sep_gate.ps1" -Encoding utf8
@@ -301,8 +314,11 @@ jobs:
           # rest (the K4 step fails on k4_unresolved.txt).
           python scripts\ci\separation\sep_targets.py --build $env:SEP_BUILD --config $env:SEP_CFG `
             --out "$env:RUNNER_TEMP\targets.txt" --unresolved-out "$env:RUNNER_TEMP\k4_unresolved.txt" `
-            --ctest (Get-Command ctest).Source --ninja (Get-Command ninja).Source --platform windows
+            --ctest (Get-Command ctest).Source --ninja (Get-Command ninja).Source --platform windows `
+            --k4-out (Join-Path $env:RUNNER_TEMP 'k4_targets.txt')
           $trc = $LASTEXITCODE
+          # prereq_status.py: any other rc means the build never ran (harness error).
+          "$trc" | Set-Content -Path (Join-Path $env:RUNNER_TEMP 'sep_targets_rc.txt') -Encoding ascii
           if ($trc -ne 0 -and $trc -ne 3) { exit $trc }
           $targets = Get-Content "$env:RUNNER_TEMP\targets.txt" | Where-Object { $_ }
           # -k 0: collect every independent failure; each gate reports its own result.
@@ -322,7 +338,8 @@ jobs:
           O_BUILD: ${{ steps.build.outcome }}
         run: |
           python scripts\ci\separation\prereq_status.py scan --build $env:SEP_BUILD `
-            --build-outcome $env:O_BUILD --platform windows --out (Join-Path $env:RUNNER_TEMP 'prereq_status.json')
+            --build-outcome $env:O_BUILD --platform windows --out (Join-Path $env:RUNNER_TEMP 'prereq_status.json') `
+            --sep-targets-rc (Join-Path $env:RUNNER_TEMP 'sep_targets_rc.txt') --k4-targets (Join-Path $env:RUNNER_TEMP 'k4_targets.txt')
           exit $LASTEXITCODE
 
       - name: K1 consensus forced link
@@ -333,7 +350,7 @@ jobs:
           . "$env:RUNNER_TEMP\sep_gate.ps1"
           $p = [int](Test-SepPrereq 'K1'); if ($p -ne 0) { exit $p }
           $rc = [int](Invoke-SepCtest -Names 'SepConsensusForcedLink')
-          Write-GateResult 'K1' $rc; exit $rc
+          Write-GateResult 'K1' $rc '' 'SepConsensusForcedLink did not pass (dinero_consensus forced link)'; exit $rc
 
       - name: K2 consensus closure
         id: k2
@@ -344,7 +361,7 @@ jobs:
           python scripts\ci\separation\check_link_closure.py --build $env:SEP_BUILD `
             --target dinero_consensus --rules scripts\ci\separation\closure_rules.json --gate K2
           $rc = $LASTEXITCODE
-          Write-GateResult 'K2' $rc; exit $rc
+          Write-GateResult 'K2' $rc '' 'check_link_closure dinero_consensus (rc 1 violations, 2 input error)'; exit $rc
 
       # R10 / Windows K3-W3. An MSVC .exe carries no symbol table (symbols
       # live in the PDB), so K3/W3 scan the COFF .lib archives the probe links
@@ -440,7 +457,7 @@ jobs:
           . "$env:RUNNER_TEMP\sep_gate.ps1"
           $p = [int](Test-SepPrereq 'W1'); if ($p -ne 0) { exit $p }
           $rc = [int](Invoke-SepCtest -Names 'SepWalletForcedLink')
-          Write-GateResult 'W1' $rc; exit $rc
+          Write-GateResult 'W1' $rc '' 'SepWalletForcedLink did not pass (dinero_wallet forced link)'; exit $rc
 
       - name: W2 wallet closure
         id: w2
@@ -451,7 +468,7 @@ jobs:
           python scripts\ci\separation\check_link_closure.py --build $env:SEP_BUILD `
             --target dinero_wallet --rules scripts\ci\separation\closure_rules.json --gate W2
           $rc = $LASTEXITCODE
-          Write-GateResult 'W2' $rc; exit $rc
+          Write-GateResult 'W2' $rc '' 'check_link_closure dinero_wallet (rc 1 violations, 2 input error)'; exit $rc
 
       - name: W3 wallet symbols (COFF archive scan)
         id: w3
@@ -480,7 +497,7 @@ jobs:
           . "$env:RUNNER_TEMP\sep_gate.ps1"
           $p = [int](Test-SepPrereq 'W4'); if ($p -ne 0) { exit $p }
           $rc = [int](Invoke-SepCtest -Names 'SepWalletFixtureCompat')
-          Write-GateResult 'W4' $rc; exit $rc
+          Write-GateResult 'W4' $rc '' 'SepWalletFixtureCompat did not pass'; exit $rc
 
       - name: W5 external interface freeze and RPC transcript
         id: w5
@@ -511,7 +528,7 @@ jobs:
           $p = [int](Test-SepPrereq 'W6'); if ($p -ne 0) { exit $p }
           # Label separation;recorded: the Task 0.8 baseline is RED (repair is E1).
           $rc = [int](Invoke-SepCtest -Names 'SepWalletFfiStandalone')
-          Write-GateResult 'W6' $rc 'recorded, baseline RED'; exit $rc
+          Write-GateResult 'W6' $rc 'recorded, baseline RED' 'SepWalletFfiStandalone did not pass'; exit $rc
 
       # Records when record_baselines=true, or automatically when Windows has
       # no committed K4 ref or W5 symbol list for this config (so the first
@@ -587,35 +604,34 @@ jobs:
           S_W5: ${{ steps.w5.outputs.state }}
           S_W6: ${{ steps.w6.outputs.state }}
           Y_K1: ${{ steps.k1.outputs.why }}
+          Y_K2: ${{ steps.k2.outputs.why }}
           Y_K3: ${{ steps.k3.outputs.why }}
           Y_K4: ${{ steps.k4.outputs.why }}
           Y_W1: ${{ steps.w1.outputs.why }}
+          Y_W2: ${{ steps.w2.outputs.why }}
           Y_W3: ${{ steps.w3.outputs.why }}
           Y_W4: ${{ steps.w4.outputs.why }}
           Y_W5: ${{ steps.w5.outputs.why }}
           Y_W6: ${{ steps.w6.outputs.why }}
-          N_K4: ${{ steps.k4.outputs.note }}
-          N_W5: ${{ steps.w5.outputs.note }}
         run: |
           function Res([string]$o) {
             switch ($o) { 'success' { 'PASS' } 'failure' { 'FAIL' } default { "NOT_RUN($o)" } }
           }
           # UNMEASURED is its own state: never PASS, never a measured FAIL.
-          # A missing committed reference is missing evidence, not a mismatch.
+          # Every FAIL/UNMEASURED row carries the gate's reason (why=): a
+          # missing reference, a check that did not run, B1 and a measured
+          # mismatch read differently; never a bare FAIL or UNMEASURED.
           function Row([string]$g) {
             $r = Res ([Environment]::GetEnvironmentVariable("O_$g"))
-            if ([Environment]::GetEnvironmentVariable("S_$g") -eq 'UNMEASURED') {
-              $why = [Environment]::GetEnvironmentVariable("Y_$g")
-              if (-not $why) { $why = 'not a pass; not a measured fail' }
-              $r = "UNMEASURED ($why)"
-            }
-            if ([Environment]::GetEnvironmentVariable("N_$g") -eq 'missing reference') {
-              if ($g -eq 'W5') { $r += ' (missing reference -- not an interface mismatch)' }
-              else { $r += ' (missing reference -- not a vector mismatch)' }
+            $why = [Environment]::GetEnvironmentVariable("Y_$g")
+            if ([Environment]::GetEnvironmentVariable("S_$g") -eq 'UNMEASURED') { $r = 'UNMEASURED' }
+            if ($r -eq 'FAIL' -or $r -eq 'UNMEASURED') {
+              if (-not $why) { $why = 'no reason recorded' }
+              $r = "$r ($why)"
             }
             # Windows W5 is PARTIAL (NodeCore is not a Windows target): never a bare PASS.
             if ($g -eq 'W5' -and $r -eq 'PASS') { $r = 'PASS (partial: wallet FFI + RPC only; NodeCore N/A on Windows)' }
-            elseif ($g -eq 'W5') { $r += ' [scope: wallet FFI + RPC only; NodeCore N/A on Windows]' }
+            elseif ($g -eq 'W5' -and $r -notmatch 'NodeCore N/A on Windows') { $r += ' [scope: wallet FFI + RPC only; NodeCore N/A on Windows]' }
             "| $g | $r |"
           }
           $compiler = 'unknown'
@@ -642,6 +658,6 @@ jobs:
           $lines += '| K6 | SKIP stage<2 |'
           foreach ($g in 'W1','W2','W3','W4','W5','W6') { $lines += (Row $g) }
           $lines += ''
-          $lines += 'Stage-0 expectation: K1, K2, W1, W2 FAIL; K3 and W3 FAIL when measured, else UNMEASURED until the COFF scan is verified; K4 FAIL rc 2 (missing reference) until reviewed Windows baselines are committed; W4 PASS; W6 recorded (RED). W5 on Windows is PARTIAL (wallet FFI + RPC only; NodeCore is not a Windows target, so NodeCore interface evidence comes only from Linux/macOS) and its RPC transcript is unmeasured until product defect B1 (dinerod --consensus-state-commitment-height parse overflow on LLP64) is fixed through its own review. If the prerequisite build fails (LANE UNMEASURED), every gate that depends on a failed target is UNMEASURED.'
+          $lines += 'Stage-0 expectation: K1, K2, W1, W2 FAIL; K3 and W3 FAIL when measured, else UNMEASURED until the COFF scan is verified; K4 FAIL rc 2 (missing reference) until reviewed Windows baselines are committed; W4 PASS; W6 recorded (RED). W5 on Windows is PARTIAL (wallet FFI + RPC only; NodeCore is not a Windows target, so NodeCore interface evidence comes only from Linux/macOS). Its RPC transcript is UNMEASURED (blocked by B1: dinerod --consensus-state-commitment-height=4294967295 std::stol overflow on LLP64) only when the startup log shows the exact B1 error; any other startup failure is FAIL (check did not run). After B1 is fixed through its own review, W5 stays FAIL rc 2 (missing reference) until a reviewed Windows symbol baseline (symbols_windows_<cfg>.txt) is committed. If the prerequisite build fails (LANE UNMEASURED), every gate that depends on a failed target is UNMEASURED.'
           $lines | Out-Host
           $lines | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
