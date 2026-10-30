@@ -4,6 +4,7 @@
 #include <array>
 #include <stdexcept>
 #include "daemon/mempool_transaction.h"
+#include "daemon/mempool_chainstate_guard.h" // optional<span<...>> requires a complete element type on libc++ 15
 #include "daemon/interfaces/ingress_types.h"
 #include "consensus/csn_replay_data.h"
 #include "daemon/replay_metadata_recovery.h"
@@ -70,7 +71,6 @@ class PreparedOrchardCatalog;
 class MempoolTransaction;
 struct MempoolOrchardValidation;
 struct MempoolSelectionValidation;
-struct MempoolProofView;
 class BlockStorage;
 class RuntimeBlockBody;
 struct RuntimeOutboxCursor;
