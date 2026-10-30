@@ -283,13 +283,18 @@ jobs:
         continue-on-error: true
         run: |
           . "$env:RUNNER_TEMP\sep_gate.ps1"
+          # rc 3 = a registered K4 test's target is unresolved: still build the
+          # rest (the K4 step fails on k4_unresolved.txt).
           python scripts\ci\separation\sep_targets.py --build $env:SEP_BUILD --config $env:SEP_CFG `
-            --out "$env:RUNNER_TEMP\targets.txt" --ctest (Get-Command ctest).Source --ninja (Get-Command ninja).Source
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            --out "$env:RUNNER_TEMP\targets.txt" --unresolved-out "$env:RUNNER_TEMP\k4_unresolved.txt" `
+            --ctest (Get-Command ctest).Source --ninja (Get-Command ninja).Source
+          $trc = $LASTEXITCODE
+          if ($trc -ne 0 -and $trc -ne 3) { exit $trc }
           $targets = Get-Content "$env:RUNNER_TEMP\targets.txt" | Where-Object { $_ }
           # -k 0: collect every independent failure; each gate reports its own result.
           & cmake --build $env:SEP_BUILD --target @targets -- -k 0
-          exit $LASTEXITCODE
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          exit $trc
 
       - name: K1 consensus forced link
         id: k1
@@ -370,23 +375,20 @@ jobs:
           # Reference naming: consensus_vectors_ref_<cfg>.json is macOS-recorded;
           # Windows needs consensus_vectors_ref_windows_<cfg>.json (recorded, reviewed, committed).
           $ref = "$d\consensus_vectors_ref_windows_$env:SEP_CFG.json"
-          function Invoke-K4([string]$Reference) {
-            python "$d\run_consensus_vectors.py" --build $env:SEP_BUILD --list "$d\consensus_vectors.txt" `
-              --floor "$d\never_run_floor.txt" --ctest $ctest --config $env:SEP_CFG --compare $Reference | Out-Host
-            return $LASTEXITCODE
+          $present = 1; $cmp = $ref
+          if (-not (Test-Path $ref)) {
+            $present = 0; $cmp = "$d\consensus_vectors_ref_$env:SEP_CFG.json"
+            Write-Host "K4: no committed windows reference $ref; comparing against the macOS reference for information only"
           }
-          if (Test-Path $ref) {
-            $rc = [int](Invoke-K4 $ref)
-            Write-GateResult 'K4' $rc
-          } else {
-            Write-Host "K4: no committed windows reference $ref; failing closed (rc 2)"
-            'note=missing reference' | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
-            $info = [int](Invoke-K4 "$d\consensus_vectors_ref_$env:SEP_CFG.json")
-            Write-Host "K4 (informational): comparison against the macOS-recorded reference exited $info"
-            $rc = 2
-            Write-GateResult 'K4' $rc 'missing reference — not a vector mismatch'
-          }
-          exit $rc
+          $out = Join-Path $env:RUNNER_TEMP 'k4-compare.txt'
+          python "$d\run_consensus_vectors.py" --build $env:SEP_BUILD --list "$d\consensus_vectors.txt" `
+            --floor "$d\never_run_floor.txt" --ctest $ctest --config $env:SEP_CFG --compare $cmp 2>&1 |
+            Tee-Object -FilePath $out | Out-Host
+          $vrc = $LASTEXITCODE
+          # "missing reference" only if every test ran; see gate_label.py.
+          python "$d\gate_label.py" k4 --output $out --rc $vrc --reference-present $present `
+            --unresolved "$env:RUNNER_TEMP\k4_unresolved.txt" --github-output $env:GITHUB_OUTPUT
+          exit $LASTEXITCODE
 
       - name: K5 consensus source freeze
         id: k5
@@ -455,13 +457,14 @@ jobs:
           # interface_freeze.py reads an MSVC .lib with llvm-nm (default name
           # on PATH): put the verified one first.
           if ($env:SEP_LLVM_NM) { $env:PATH = (Split-Path -Parent $env:SEP_LLVM_NM) + [IO.Path]::PathSeparator + $env:PATH }
-          $rc = [int](Invoke-SepCtest -Names 'SepInterfaceFreeze', 'SepRpcTranscript')
-          if (-not (Test-Path $base)) {
-            Write-Host "W5: no committed symbol baseline $base; failing closed (rc 2)"
-            'note=missing reference' | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
-            Write-GateResult 'W5' 2 'missing reference — not an interface mismatch'; exit 2
-          }
-          Write-GateResult 'W5' $rc; exit $rc
+          $present = 1
+          if (-not (Test-Path $base)) { $present = 0; Write-Host "W5: no committed symbol baseline $base" }
+          $crc = [int](Invoke-SepCtest -Names 'SepInterfaceFreeze', 'SepRpcTranscript')
+          # "missing reference" only if both checks ran and nothing else
+          # failed; a build break or run error is a real FAIL. See gate_label.py.
+          python scripts\ci\separation\gate_label.py w5 --log (Join-Path $env:RUNNER_TEMP 'ctest-SepInterfaceFreeze.log') `
+            --rc $crc --reference-present $present --github-output $env:GITHUB_OUTPUT
+          exit $LASTEXITCODE
 
       - name: W6 standalone wallet-FFI consumer (recorded)
         id: w6

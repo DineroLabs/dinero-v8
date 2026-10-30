@@ -225,6 +225,11 @@ def main(argv=None):
                 raise InputError("no baseline %s (record it at the baseline for this "
                                  "platform/config)" % path)
             base = read(path)
+            if name.endswith(".txt"):
+                # Generated lists (jni_exports.txt, symbols_*.txt) are written
+                # with "\n": a CRLF checkout is not a difference. The headers
+                # stay byte-for-byte (.gitattributes keeps them LF).
+                base = base.replace(b"\r\n", b"\n")
             if base == data:
                 print("PASS %s" % name)
                 continue

@@ -263,13 +263,19 @@ jobs:
         id: build
         continue-on-error: true
         run: |
+          # rc 3 = a registered K4 test's target is unresolved: still build the
+          # rest (the K4 step fails on $RUNNER_TEMP/k4_unresolved.txt).
+          trc=0
           python scripts/ci/separation/sep_targets.py --build "$SEP_BUILD" --config "$SEP_CFG" \
-            --out "$RUNNER_TEMP/targets.txt" --ctest "$(command -v ctest)" --ninja "$(command -v ninja)"
+            --out "$RUNNER_TEMP/targets.txt" --unresolved-out "$RUNNER_TEMP/k4_unresolved.txt" \
+            --ctest "$(command -v ctest)" --ninja "$(command -v ninja)" || trc=$?
+          [ "$trc" -eq 0 ] || [ "$trc" -eq 3 ] || exit "$trc"
           # -k 0: collect every independent failure; a failed K4 test link must
           # not hide the other gates (each gate reports its own result).
           targets=()   # no mapfile: keep this bash 3.2 compatible
           while IFS= read -r t; do [ -z "$t" ] || targets+=("$t"); done < "$RUNNER_TEMP/targets.txt"
           cmake --build "$SEP_BUILD" --target "${targets[@]}" -- -k 0
+          exit "$trc"
 
       - name: K1 consensus forced link
         id: k1
@@ -321,14 +327,19 @@ jobs:
           NM_CHECK: ${{ steps.nm_demangle.outcome }}
         run: |
           . "$RUNNER_TEMP/sep_gate.sh"
-          if [ "$NM_CHECK" != success ]; then
-            echo "K3: the nm demangling self-check did not pass; check_symbols not trusted"
-            gate_result K3 2 "nm not verified"; exit 2
-          fi
+          # Same states as Windows: PASS/FAIL only when measured, otherwise
+          # UNMEASURED (rc 3, never a success).
+          unmeasured() { echo "state=UNMEASURED" >> "$GITHUB_OUTPUT"; echo "GATE K3 UNMEASURED ($1)"; exit 3; }
+          [ "$NM_CHECK" = success ] || unmeasured "nm demangling self-check did not pass"
           bin="$SEP_BUILD/tests/separation/sep_consensus_forced_link"
-          [ -f "$bin" ] || echo "K3: $bin absent (K1 forced link produced no binary); check_symbols fails closed"
+          [ -f "$bin" ] || unmeasured "probe binary absent: K1 RED"
           rc=0
           python scripts/ci/separation/check_symbols.py --binary "$bin" --gate K3 --nm "$SEP_NM" || rc=$?
+          case "$rc" in
+            0) echo "state=PASS" >> "$GITHUB_OUTPUT" ;;
+            1) echo "state=FAIL" >> "$GITHUB_OUTPUT" ;;
+            *) unmeasured "check_symbols input error rc=$rc" ;;
+          esac
           gate_result K3 "$rc"; exit "$rc"
 
       - name: K4 consensus vectors
@@ -343,21 +354,19 @@ jobs:
           # consensus_vectors_ref_<plat>_<cfg>.json (recorded, reviewed, committed).
           if [ "$SEP_PLAT" = macos ]; then ref="$d/consensus_vectors_ref_$SEP_CFG.json"
           else ref="$d/consensus_vectors_ref_${SEP_PLAT}_$SEP_CFG.json"; fi
-          run_k4() {
-            python $d/run_consensus_vectors.py --build "$SEP_BUILD" --list $d/consensus_vectors.txt \
-              --floor $d/never_run_floor.txt --ctest "$(command -v ctest)" --config "$SEP_CFG" --compare "$1"
-          }
-          rc=0
-          if [ -f "$ref" ]; then
-            run_k4 "$ref" || rc=$?
-            gate_result K4 "$rc"
-          else
-            echo "K4: no committed $SEP_PLAT reference $ref; failing closed (rc 2)"
-            info=0; run_k4 "$d/consensus_vectors_ref_$SEP_CFG.json" || info=$?
-            echo "K4 (informational): comparison against the macOS-recorded reference exited $info"
-            echo "note=missing reference" >> "$GITHUB_OUTPUT"
-            rc=2; gate_result K4 "$rc" "missing reference — not a vector mismatch"
+          present=1; cmp="$ref"
+          if [ ! -f "$ref" ]; then
+            present=0; cmp="$d/consensus_vectors_ref_$SEP_CFG.json"
+            echo "K4: no committed $SEP_PLAT reference $ref; comparing against the macOS reference for information only"
           fi
+          out="$RUNNER_TEMP/k4-compare.txt"; vrc=0
+          python $d/run_consensus_vectors.py --build "$SEP_BUILD" --list $d/consensus_vectors.txt \
+            --floor $d/never_run_floor.txt --ctest "$(command -v ctest)" --config "$SEP_CFG" \
+            --compare "$cmp" 2>&1 | tee "$out" || vrc=$?
+          # "missing reference" only if every test ran; see gate_label.py.
+          rc=0
+          python $d/gate_label.py k4 --output "$out" --rc "$vrc" --reference-present "$present" \
+            --unresolved "$RUNNER_TEMP/k4_unresolved.txt" --github-output "$GITHUB_OUTPUT" || rc=$?
           exit "$rc"
 
       # K5 runs on POSIX runners only: consensus_freeze.py hashes and reports
@@ -407,14 +416,19 @@ jobs:
           NM_CHECK: ${{ steps.nm_demangle.outcome }}
         run: |
           . "$RUNNER_TEMP/sep_gate.sh"
-          if [ "$NM_CHECK" != success ]; then
-            echo "W3: the nm demangling self-check did not pass; check_symbols not trusted"
-            gate_result W3 2 "nm not verified"; exit 2
-          fi
+          # Same states as Windows: PASS/FAIL only when measured, otherwise
+          # UNMEASURED (rc 3, never a success).
+          unmeasured() { echo "state=UNMEASURED" >> "$GITHUB_OUTPUT"; echo "GATE W3 UNMEASURED ($1)"; exit 3; }
+          [ "$NM_CHECK" = success ] || unmeasured "nm demangling self-check did not pass"
           bin="$SEP_BUILD/tests/separation/sep_wallet_forced_link"
-          [ -f "$bin" ] || echo "W3: $bin absent (W1 forced link produced no binary); check_symbols fails closed"
+          [ -f "$bin" ] || unmeasured "probe binary absent: W1 RED"
           rc=0
           python scripts/ci/separation/check_symbols.py --binary "$bin" --gate W3 --nm "$SEP_NM" || rc=$?
+          case "$rc" in
+            0) echo "state=PASS" >> "$GITHUB_OUTPUT" ;;
+            1) echo "state=FAIL" >> "$GITHUB_OUTPUT" ;;
+            *) unmeasured "check_symbols input error rc=$rc" ;;
+          esac
           gate_result W3 "$rc"; exit "$rc"
 
       - name: W4 wallet-file compatibility
@@ -433,13 +447,14 @@ jobs:
         run: |
           . "$RUNNER_TEMP/sep_gate.sh"
           base="tests/separation/interface_baseline/symbols_${SEP_PLAT}_${SEP_CFG}.txt"
-          rc=0; sep_ctest SepInterfaceFreeze SepRpcTranscript || rc=$?
-          if [ ! -f "$base" ]; then
-            echo "W5: no committed symbol baseline $base; failing closed (rc 2)"
-            echo "note=missing reference" >> "$GITHUB_OUTPUT"
-            gate_result W5 2 "missing reference — not an interface mismatch"; exit 2
-          fi
-          gate_result W5 "$rc"; exit "$rc"
+          present=1; [ -f "$base" ] || { present=0; echo "W5: no committed symbol baseline $base"; }
+          crc=0; sep_ctest SepInterfaceFreeze SepRpcTranscript || crc=$?
+          # "missing reference" only if both checks ran and nothing else
+          # failed; a build break or run error is a real FAIL. See gate_label.py.
+          rc=0
+          python scripts/ci/separation/gate_label.py w5 --log "$RUNNER_TEMP/ctest-SepInterfaceFreeze.log" \
+            --rc "$crc" --reference-present "$present" --github-output "$GITHUB_OUTPUT" || rc=$?
+          exit "$rc"
 
       - name: W6 standalone wallet-FFI consumer (recorded)
         id: w6
@@ -506,6 +521,8 @@ jobs:
           O_W6: ${{ steps.w6.outcome }}
           N_K4: ${{ steps.k4.outputs.note }}
           N_W5: ${{ steps.w5.outputs.note }}
+          S_K3: ${{ steps.k3.outputs.state }}
+          S_W3: ${{ steps.w3.outputs.state }}
           TOOLCHAIN: ${{ matrix.toolchain }}
         run: |
           res() { case "$1" in success) echo PASS ;; failure) echo FAIL ;; *) echo "NOT_RUN(${1:-none})" ;; esac; }
@@ -519,7 +536,8 @@ jobs:
             echo "|---|---|"
             # A missing committed reference is missing evidence, shown apart
             # from a real mismatch.
-            row() { v="O_$1"; n="N_$1"; r="$(res "${!v}")"
+            row() { v="O_$1"; n="N_$1"; st="S_$1"; r="$(res "${!v}")"
+                    [ "${!st:-}" = UNMEASURED ] && r="UNMEASURED (not a pass; not a measured fail)"
                     if [ "${!n:-}" = "missing reference" ]; then
                       [ "$1" = W5 ] && r="$r (missing reference — not an interface mismatch)" \
                                     || r="$r (missing reference — not a vector mismatch)"
@@ -529,7 +547,7 @@ jobs:
             echo "| K6 | SKIP stage<2 |"
             for g in W1 W2 W3 W4 W5 W6; do row "$g"; done
             echo
-            echo "Stage-0 expectation: K1-K3, W1-W3 FAIL; K5, W4 PASS; K4, W5 PASS on macOS, and on Linux FAIL rc 2 (missing reference) until reviewed baselines are committed; W6 recorded (RED). A missing reference is missing evidence, not a pass."
+            echo "Stage-0 expectation: K1, K2, W1, W2 FAIL; K3, W3 UNMEASURED while the K1/W1 probes do not link (FAIL/PASS once measured); K5, W4 PASS; K4, W5 PASS on macOS, and on Linux FAIL rc 2 (missing reference) until reviewed baselines are committed; W6 recorded (RED). A missing reference is missing evidence, not a pass."
           } | tee -a "$GITHUB_STEP_SUMMARY"
 
   # K4, second half (ruling R13): the existing compact-regtest fixed-vector

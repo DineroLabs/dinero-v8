@@ -95,6 +95,19 @@ inline std::string ReadFile(const fs::path& p) {
     s << in.rdbuf();
     return s.str();
 }
+// The fixture text files (expected.json, schema.txt) are generated with "\n"
+// line endings; a CRLF checkout must not read as a difference. Only CR LF
+// pairs are folded: Escape() never emits one (a CR in data stays a bare CR
+// next to an escaped "\\n"), so no data difference can be hidden.
+inline std::string GeneratedText(const std::string& text) {
+    std::string out;
+    out.reserve(text.size());
+    for (size_t i = 0; i < text.size(); ++i) {
+        if (text[i] == '\r' && i + 1 < text.size() && text[i + 1] == '\n') continue;
+        out += text[i];
+    }
+    return out;
+}
 inline void WriteFile(const fs::path& p, const std::string& text) {
     std::ofstream out(p, std::ios::binary | std::ios::trunc);
     Check(bool(out), "cannot write " + p.string());
@@ -211,14 +224,30 @@ inline std::vector<std::string> Strings(sqlite3* db, const std::string& sql);
 // <root>/wallets/wallet_sepfixture.db (wallet_manager.cpp:2048-2050 repairs a
 // relocated path to it). Any other value means the wallet DB is being used
 // from somewhere else, possibly outside the data directory TreeDump walks.
+// Both sides are compared in the same encoding: the raw stored text, not the
+// Escape()d dump form (which doubles every backslash of a Windows path).
 inline std::string ExpectedRegistryWalletPath(const fs::path& root) {
     return (root / "wallets" / "wallet_sepfixture.db").lexically_normal().string();
 }
-inline std::string RegistryWalletPath(const fs::path& root) {
-    RawDb db(root / "wallet_registry.db");
-    const auto rows = Strings(db.get(), "SELECT path FROM wallets WHERE name='sepfixture'");
+inline std::string RegistryWalletPathIn(const fs::path& registry_db) {
+    RawDb db(registry_db);
+    sqlite3_stmt* q = nullptr;
+    const std::string sql = "SELECT path FROM wallets WHERE name='sepfixture'";
+    Check(sqlite3_prepare_v2(db.get(), sql.c_str(), -1, &q, nullptr) == SQLITE_OK, "query failed: " + sql);
+    std::vector<std::string> rows;
+    int rc;
+    while ((rc = sqlite3_step(q)) == SQLITE_ROW) {
+        const auto* t = sqlite3_column_text(q, 0);
+        rows.push_back(t ? std::string(reinterpret_cast<const char*>(t), size_t(sqlite3_column_bytes(q, 0)))
+                         : std::string("NULL"));
+    }
+    sqlite3_finalize(q);
+    Check(rc == SQLITE_DONE, "query read failed: " + sql);
     Check(rows.size() == 1, "registry must hold exactly one sepfixture row");
     return rows.front();
+}
+inline std::string RegistryWalletPath(const fs::path& root) {
+    return RegistryWalletPathIn(root / "wallet_registry.db");
 }
 inline std::vector<std::string> Strings(sqlite3* db, const std::string& sql) {
     sqlite3_stmt* q = nullptr;

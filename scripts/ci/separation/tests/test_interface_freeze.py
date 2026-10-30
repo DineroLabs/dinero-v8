@@ -226,3 +226,18 @@ def test_committed_headers_declarations_match_macos_c_exports():
             exported = {r[2].lstrip("_") for r in rows if r[0] == lib and r[1] == "T"}
             declared = ifz.declared_c_functions(open(os.path.join(base, header)).read())
             assert declared == exported, (cfg, lib)
+
+
+def test_crlf_checkout_of_generated_lists_passes_headers_stay_exact(tmp_path, monkeypatch):
+    repo, build = make_tree(tmp_path)
+    base = tmp_path / "base"
+    syms = {("T", "_nodecore_stop")}
+    assert run_main(monkeypatch, repo, build, base, "record", syms) == 0
+    for f in base.iterdir():
+        if f.suffix == ".txt":
+            f.write_bytes(f.read_bytes().replace(b"\n", b"\r\n"))
+    assert run_main(monkeypatch, repo, build, base, "check", syms) == 0
+    assert run_main(monkeypatch, repo, build, base, "check", set(syms) | {("T", "_new")}) == 1
+    hdr = base / "nodecore_ffi.h"
+    hdr.write_bytes(hdr.read_bytes().replace(b"\n", b"\r\n"))
+    assert run_main(monkeypatch, repo, build, base, "check", syms) == 1
