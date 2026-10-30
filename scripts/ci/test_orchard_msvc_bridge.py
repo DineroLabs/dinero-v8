@@ -33,8 +33,45 @@ class PlatformContract(unittest.TestCase):
     def test_msvc_native_release_contract(self):
         self.assertIn('RESULT=x86_64-pc-windows-msvc|dinero_orchard_backend.lib', self.platform({}))
 
-    def test_windows_release_guard_remains(self):
-        self.platform({'DINERO_ORCHARD_WINDOWS_QUALIFICATION':'FALSE'}, False, 'Windows release is not qualified')
+    def test_explicit_production_mode_does_not_need_ci_qualification(self):
+        self.assertIn('RESULT=x86_64-pc-windows-msvc|dinero_orchard_backend.lib',
+                      self.platform({'DINERO_ORCHARD_WINDOWS_RELEASE':'TRUE',
+                                     'DINERO_ORCHARD_WINDOWS_QUALIFICATION':'FALSE'}))
+
+    def test_windows_still_requires_an_explicit_mode(self):
+        self.platform({'DINERO_ORCHARD_WINDOWS_QUALIFICATION':'FALSE'}, False,
+                      'require explicit release or qualification mode')
+
+    def test_production_rejects_reused_qualification_mode(self):
+        self.platform({'DINERO_ORCHARD_WINDOWS_RELEASE':'TRUE'}, False, 'mutually exclusive')
+
+    def test_production_preserves_platform_and_runtime_refusals(self):
+        production={'DINERO_ORCHARD_WINDOWS_RELEASE':'TRUE',
+                    'DINERO_ORCHARD_WINDOWS_QUALIFICATION':'FALSE'}
+        for settings,diagnostic in [
+            ({'MSVC':'FALSE'},'native x64 MSVC'),
+            ({'CMAKE_CXX_COMPILER_ID':'Clang'},'native x64 MSVC'),
+            ({'CMAKE_HOST_WIN32':'FALSE'},'native x64 MSVC'),
+            ({'MSVC_CXX_ARCHITECTURE_ID':'ARM64'},'native x64 MSVC'),
+            ({'CMAKE_SIZEOF_VOID_P':'4'},'native x64 MSVC'),
+            ({'CMAKE_SYSTEM_PROCESSOR':'ARM64'},'native x64 MSVC'),
+            ({'CMAKE_CROSSCOMPILING':'TRUE'},'cross/mobile'),
+            ({'CMAKE_MSVC_RUNTIME_LIBRARY':'MultiThreaded'},'dynamic MSVC runtime'),
+            ({'CMAKE_CXX_FLAGS_RELEASE':'/MDd'},'runtime compiler flag'),
+            ({'CMAKE_C_FLAGS':'/MT'},'runtime compiler flag'),
+        ]:
+            with self.subTest(settings=settings):
+                self.platform(dict(production,**settings),False,diagnostic)
+
+    def test_production_refuses_uncontrolled_rust_environment(self):
+        from unittest.mock import patch
+        for name in ('RUSTFLAGS','CARGO_ENCODED_RUSTFLAGS','RUSTC','RUSTC_WRAPPER',
+                     'RUSTC_WORKSPACE_WRAPPER','CARGO_BUILD_RUSTC',
+                     'CARGO_BUILD_RUSTC_WRAPPER','CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER'):
+            with self.subTest(name=name), patch.dict(os.environ,{name:'uncontrolled'}):
+                self.platform({'DINERO_ORCHARD_WINDOWS_RELEASE':'TRUE',
+                               'DINERO_ORCHARD_WINDOWS_QUALIFICATION':'FALSE'},
+                              False,'Uncontrolled '+name)
 
     def test_wrong_compiler_architecture_or_host_refuses(self):
         for settings in ({'MSVC':'FALSE'}, {'CMAKE_CXX_COMPILER_ID':'Clang'},

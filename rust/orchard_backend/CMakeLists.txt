@@ -16,7 +16,9 @@ if(NOT TARGET secp256k1)
   endforeach()
   add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/../../third_party/secp256k1-zkp" "secp256k1")
 endif()
-# Windows remains unavailable to release builds until native qualification.
+# Native Windows release builds use the same checked MSVC bridge as qualification.
+# Selecting a build mode does not qualify an artifact or activate consensus.
+option(DINERO_ORCHARD_WINDOWS_RELEASE "Build Orchard for production native x64 MSVC packages" OFF)
 option(DINERO_ORCHARD_WINDOWS_QUALIFICATION "Allow isolated native x64 MSVC Orchard qualification" OFF)
 option(DINERO_ORCHARD_MOBILE_QUALIFICATION "Allow explicit Apple/Android Orchard SDK qualification (not release approval)" OFF)
 include("${CMAKE_CURRENT_SOURCE_DIR}/NativeRustPlatform.cmake")
