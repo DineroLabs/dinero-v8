@@ -279,10 +279,17 @@ Library edits: `src/consensus/CMakeLists.txt`, `src/consensus/pq/CMakeLists.txt`
 
 - [ ] **Step 1:** Write the workflows. Grep each file for `sign`, `secrets.`, `upload` and `release`. Expected: no matches apart from comments.
 - [ ] **Step 2:** **Ask the owner before pushing.** After approval, push the stage 0 branch and record the run URL. Expected outcomes:
-  - K1–K3 and W1–W3 FAIL;
-  - K4, K5, W4 and W5 PASS;
-  - W6 as recorded in Task 0.8;
-  - on every platform and configuration.
+  - K1, K2, W1 and W2 FAIL on every platform and configuration.
+  - K3 and W3 FAIL where they are measured.
+    - On Windows they report **UNMEASURED** (neither PASS nor a measured FAIL) until the COFF archive scan is verified: the probe `.lib` link inputs, a verified `llvm-nm` and a positive control.
+  - K5 and W4 PASS (K5 runs on POSIX runners only).
+  - K4 and W5 PASS on macOS, where the reviewed reference baselines are committed.
+    - **On Linux and Windows, K4 and W5 are expected red** (`FAIL rc=2 (missing reference — not a vector/interface mismatch)`) until reviewed reference baselines for that platform are committed.
+    - A missing reference is missing evidence, not a pass and not a mismatch.
+  - W6 as recorded in Task 0.8.
+  - **The first PR run only collects candidate baselines,** which the record step prints to the job log. It is not described as green.
+    - The candidates are reviewed, then committed by hand in a separate change.
+    - Only a later run against the committed baselines can show K4/W5 PASS on Linux and Windows.
 - [ ] **Step 3:** Commit `ci(separation): non-required gate workflows`.
 
 ### Task 0.10: Scope measurement → owner decision (STOP)
@@ -302,7 +309,11 @@ Library edits: `src/consensus/CMakeLists.txt`, `src/consensus/pq/CMakeLists.txt`
   - failing targets per platform and configuration, grouped by cause (missing RocksDB, missing sqlite3, missing daemon include, missing moved object, cycle, logger);
   - the count of consumer fixes needed;
   - W6 status;
-  - an estimate per stage.
+  - an estimate per stage;
+  - gate status per platform, stated as measured.
+    - Linux and Windows K4/W5 count as red (missing reference) until reviewed baselines are committed.
+    - Windows K3/W3 count as UNMEASURED until the COFF scan is verified.
+    - Neither is reported as a pass.
 - [ ] **Step 4: STOP.** Send the report to the owner. The v8.2.1 decision and permission to start stage 1 come from the owner. Delete the throwaway branch only after the owner says so.
 
 ---
