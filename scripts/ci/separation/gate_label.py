@@ -38,6 +38,7 @@ K4_MISMATCH = re.compile(r"DIGEST_MISMATCH \S")
 # ASCII only: a Windows runner's piped stdout is cp1252.
 MISSING_K4 = "missing reference -- not a vector mismatch"
 MISSING_W5 = "missing reference -- not an interface mismatch"
+W5_ITEM_FAIL = re.compile(r"\s*(\d+: )?FAIL (nodecore_ffi\.h|wallet_ffi\.h|jni_exports\.txt|symbols_[a-z0-9]+_(off|on)\.txt)\s*$")
 W5_NO_SYMBOLS = re.compile(r"interface_freeze: INPUT ERROR: no baseline \S*symbols_[a-z0-9]+_(off|on)\.txt ")
 
 
@@ -144,9 +145,31 @@ def w5(a):
             return max(a.rc, 1), ("check did not run: interface_freeze did not reach the "
                                   "symbol comparison (no " + "; no ".join(missing) + ")")
         return 2, MISSING_W5
-    if a.rc != 0:
-        return 1, None
-    return 0, None
+    # Reference present: PASS needs rc 0, both tests Passed and no FAIL line;
+    # a FAIL needs each failed test's own verdict line. Anything else is a
+    # contradiction or an unmeasured failure, never PASS or a bare FAIL.
+    item_fail = first(lines, lambda l: W5_ITEM_FAIL.match(l))
+    transcript_fail = first(lines, lambda l: "rpc_transcript: FAIL transcript differs" in l)
+    passed = [t for t in W5_TESTS if status[t] == "Passed"]
+    if a.rc == 0:
+        if len(passed) == len(W5_TESTS) and not item_fail and not transcript_fail:
+            return 0, None
+        return 1, "check did not run: log contradicts rc 0 (%s)" % ", ".join(
+            "%s %s" % (t, status[t]) for t in W5_TESTS)
+    if len(passed) == len(W5_TESTS):
+        return max(a.rc, 1), "check did not run: log contradicts rc %d (both tests Passed)" % a.rc
+    found = []
+    for t, verdict, what in (("SepInterfaceFreeze", item_fail, "interface"),
+                             ("SepRpcTranscript", transcript_fail, "transcript")):
+        if status[t] == "Passed":
+            if verdict:
+                return max(a.rc, 1), "check did not run: log contradicts itself (%s Passed, %s)" % (t, verdict)
+            continue
+        if not verdict:
+            return max(a.rc, 1), "check did not run: %s failed without a%s %s verdict" % (
+                t, "n" if what[0] == "i" else "", what)
+        found.append(verdict)
+    return 1, "mismatch: " + "; ".join(found)
 
 
 def main(argv=None):
@@ -163,12 +186,15 @@ def main(argv=None):
         p.add_argument("--github-output")
     a = ap.parse_args(argv)
     rc, why = (k4 if a.gate == "k4" else w5)(a)
+    missing_ref = why in (MISSING_K4, MISSING_W5)
+    if rc == 2 and not missing_ref:
+        rc = 1  # exit 2 means "missing reference" only
     gid = a.gate.upper()
     if rc == 0:
         print("GATE %s PASS" % gid)
     else:
         print("GATE %s FAIL rc=%d%s" % (gid, rc, " (%s)" % why if why else ""))
-    if rc == 2 and a.github_output:
+    if missing_ref and a.github_output:
         with open(a.github_output, "a") as f:
             f.write("note=missing reference\n")
     return rc
