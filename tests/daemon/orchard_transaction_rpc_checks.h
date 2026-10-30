@@ -4,6 +4,9 @@
 namespace dinero {
 class ChainDBTransactionReadTestPeer {
 public:
+    static rocksdb::ColumnFamilyHandle* HandoffMeta(const ChainDB& db) {
+        return db.cf_[db.idx_meta_].get();
+    }
     static Status HandoffReadOnly(ChainDB& db,const std::filesystem::path& path){return db.initReadOnlyForHandoff(path);}
     // Serialized detached-handoff fixtures only. Capture all durable logical
     // rows so a refusal must leave the actual store unchanged, including the

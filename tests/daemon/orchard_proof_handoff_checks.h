@@ -4,6 +4,45 @@
 #include "consensus/orchard_block_staging.h"
 namespace dinero {
 namespace {
+// Compare every batch byte except setTip's local receipt timestamp. Two valid
+// staging calls can cross a wall-clock second; that field is not chain state.
+// Locate it through RocksDB's typed iterator, not a byte-pattern search, so no
+// coin, proof, chainwork, marker, operation order, or batch header is excluded.
+std::string HandoffBatchWithoutReceiptTime(const ChainDB& db,
+    const rocksdb::WriteBatch& batch) {
+    struct ReceiptTimeLocator final : rocksdb::WriteBatch::Handler {
+        uint32_t meta_id;
+        const std::string& bytes;
+        std::optional<size_t> offset;
+        ReceiptTimeLocator(uint32_t id,const std::string& data):meta_id(id),bytes(data) {}
+        rocksdb::Status PutCF(uint32_t family,const rocksdb::Slice& key,
+            const rocksdb::Slice& value) override {
+            if(family!=meta_id || key.ToString()!="tip")return rocksdb::Status::OK();
+            if(offset) return rocksdb::Status::Corruption("duplicate handoff tip");
+            Reader reader(value.ToString());
+            if(reader.readString().size()!=64)throw std::runtime_error("invalid handoff tip hash");
+            (void)reader.read<uint32_t>(); // height
+            (void)reader.read<arith_uint256>(); // chainwork
+            const auto timestamp_position=reader.position();
+            (void)reader.read<uint32_t>();
+            if(reader.remaining()!=0)throw std::runtime_error("invalid handoff tip layout");
+            const auto base=reinterpret_cast<uintptr_t>(bytes.data());
+            const auto start=reinterpret_cast<uintptr_t>(value.data());
+            if(start<base || start-base>bytes.size() || value.size()>bytes.size()-(start-base))
+                throw std::runtime_error("handoff tip outside batch");
+            offset=size_t(start-base)+timestamp_position;
+            return rocksdb::Status::OK();
+        }
+        rocksdb::Status DeleteCF(uint32_t,const rocksdb::Slice&) override {
+            return rocksdb::Status::OK(); // Bytes remain in the original batch.
+        }
+    } locator(ChainDBTransactionReadTestPeer::HandoffMeta(db)->GetID(),batch.Data());
+    const auto status=batch.Iterate(&locator);
+    if(!status.ok() || !locator.offset)throw std::runtime_error("handoff batch tip not uniquely located");
+    auto bytes=batch.Data();
+    std::fill_n(bytes.begin()+*locator.offset,sizeof(uint32_t),'\0');
+    return bytes;
+}
 Transaction HandoffTimeLockedSpend(const OrchardAdmissionFixture& f,const OutPoint& point,
     const consensus::UTXOEntry& coin) {
     auto tx=SelectionSpend(f,point,coin,100000);
@@ -104,6 +143,42 @@ struct ProofHandoffFixture:CanonicalPoolFixture {
 };
 }
 
+TEST(OrchardProofHandoff, BatchComparisonIgnoresOnlyLocalReceiptTime) {
+    ProofHandoffFixture f;
+    const auto hash=f.second->Header().GetHash();
+    const auto work=*f.f.db.getBlockWork(hash);
+    auto batch=[&](uint32_t timestamp,uint32_t height,const arith_uint256& chainwork,
+        const uint256& tip_hash,bool changed_row=false) {
+        rocksdb::WriteBatch result;
+        VectorWriter writer;
+        writer.writeString(tip_hash.GetHex());writer.write(height);
+        writer.write(chainwork);writer.write(timestamp);
+        result.Put(ChainDBTransactionReadTestPeer::HandoffMeta(f.f.db),"tip",writer.release_string());
+        // A similarly named row must never have its trailing bytes masked.
+        result.Put(ChainDBTransactionReadTestPeer::HandoffMeta(f.f.db),"validated_tip",
+            changed_row?"changed":"unchanged");
+        return result;
+    };
+    const auto earlier=batch(1000,103,work,hash);
+    const auto later=batch(1001,103,work,hash);
+    ASSERT_NE(earlier.Data(),later.Data()); // Deterministically reproduces CI's boundary.
+    const auto expected=HandoffBatchWithoutReceiptTime(f.f.db,earlier);
+    EXPECT_EQ(expected,HandoffBatchWithoutReceiptTime(f.f.db,later));
+    EXPECT_NE(expected,HandoffBatchWithoutReceiptTime(f.f.db,batch(1001,104,work,hash)));
+    EXPECT_NE(expected,HandoffBatchWithoutReceiptTime(f.f.db,batch(1001,103,work+arith_uint256{1},hash)));
+    EXPECT_NE(expected,HandoffBatchWithoutReceiptTime(f.f.db,batch(1001,103,work,uint256{})));
+    EXPECT_NE(expected,HandoffBatchWithoutReceiptTime(f.f.db,batch(1001,103,work,hash,true)));
+    auto removed=later;removed.Delete(ChainDBTransactionReadTestPeer::HandoffMeta(f.f.db),"coin");
+    EXPECT_NE(expected,HandoffBatchWithoutReceiptTime(f.f.db,removed));
+    rocksdb::WriteBatch missing;
+    EXPECT_THROW(HandoffBatchWithoutReceiptTime(f.f.db,missing),std::runtime_error);
+    auto duplicate=later;duplicate.Put(ChainDBTransactionReadTestPeer::HandoffMeta(f.f.db),"tip","bad");
+    EXPECT_THROW(HandoffBatchWithoutReceiptTime(f.f.db,duplicate),std::runtime_error);
+    rocksdb::WriteBatch malformed;
+    malformed.Put(ChainDBTransactionReadTestPeer::HandoffMeta(f.f.db),"tip","bad");
+    EXPECT_THROW(HandoffBatchWithoutReceiptTime(f.f.db,malformed),std::runtime_error);
+}
+
 TEST(OrchardProofHandoff, CompletedBranchOnlyAndExactNormalStaging) {
     ProofHandoffFixture f;auto branch=f.NewBranch();
     const auto first=OrchardBlockCandidate::DecodeExact(f.first->WireBytes());
@@ -122,7 +197,8 @@ TEST(OrchardProofHandoff, CompletedBranchOnlyAndExactNormalStaging) {
     std::map<uint32_t,uint64_t> regular_mtp,detached_mtp;
     const auto ordinary=f.Stage(nullptr,*f.body,f.forest,[&](uint32_t h){auto v=f.Mtp(h);if(v)regular_mtp[h]=*v;return v;},regular);
     const auto reused=f.Stage(&checked,*f.body,f.forest,[&](uint32_t h){auto v=f.Mtp(h);if(v)detached_mtp[h]=*v;return v;},detached);
-    EXPECT_EQ(regular.Data(),detached.Data());EXPECT_GT(detached.Count(),0u);
+    EXPECT_EQ(HandoffBatchWithoutReceiptTime(f.f.db,regular),
+        HandoffBatchWithoutReceiptTime(f.f.db,detached));EXPECT_GT(detached.Count(),0u);
     EXPECT_EQ(ordinary.block.undo.Serialize(),reused.block.undo.Serialize());
     EXPECT_EQ(ordinary.forest.After().serialize(),reused.forest.After().serialize());
     EXPECT_EQ(regular_mtp,checked.BranchMtp());EXPECT_EQ(detached_mtp,regular_mtp);EXPECT_EQ(f.Rows(),rows);
