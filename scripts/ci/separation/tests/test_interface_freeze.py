@@ -114,3 +114,115 @@ def test_record_check_pass_then_header_symbol_and_missing_baseline(tmp_path, mon
     assert run_main(monkeypatch, repo, build, base, "check", syms) == 1
     (build / "CMakeCache.txt").write_text("DINERO_BUILD_ORCHARD_BACKEND:BOOL=ON\n")
     assert run_main(monkeypatch, repo, build, base, "check", syms) == 2   # no ON baseline
+
+
+# --- Windows MSVC .lib path ---
+
+import os
+
+WIN_NM = """\
+
+nodecore_ffi.cpp.obj:
+0000000000000000 T nodecore_start
+0000000000000010 T nodecore_stop
+0000000000000020 T ?Start@nodecore@dinero@@YAXXZ
+0000000000000000 R __real@3ff0000000000000
+0000000000000000 B g_wallet_manager
+"""
+
+
+def capture_nm(monkeypatch, stdout):
+    calls = []
+
+    def run(cmd, **k):
+        calls.append(cmd)
+        return types.SimpleNamespace(returncode=0, stdout=stdout, stderr="")
+    monkeypatch.setattr(ifz.subprocess, "run", run)
+    return calls
+
+
+def test_lib_path_selects_windows_llvm_nm_command(monkeypatch):
+    # platform.system() must not matter: the .lib input decides.
+    monkeypatch.setattr(ifz.platform, "system", lambda: "Darwin")
+    calls = capture_nm(monkeypatch, WIN_NM)
+    got = ifz.symbols("C:/b/nodecore_ffi.lib")
+    assert calls == [["llvm-nm", "--extern-only", "--defined-only", "C:/b/nodecore_ffi.lib"]]
+    assert got == {("T", "nodecore_start"), ("T", "nodecore_stop"), ("B", "g_wallet_manager")}
+    ifz.symbols("x.LIB", nm="C:/LLVM/bin/llvm-nm.exe")
+    assert calls[-1][0] == "C:/LLVM/bin/llvm-nm.exe"
+
+
+def test_non_lib_paths_keep_posix_commands(monkeypatch):
+    calls = capture_nm(monkeypatch, LINUX_NM)
+    monkeypatch.setattr(ifz.platform, "system", lambda: "Linux")
+    ifz.symbols("libx.a")
+    ifz.symbols("libx.so")
+    monkeypatch.setattr(ifz.platform, "system", lambda: "Darwin")
+    ifz.symbols("libx.a")
+    assert calls == [["nm", "-g", "--defined-only", "libx.a"],
+                     ["nm", "-D", "--defined-only", "libx.so"],
+                     ["nm", "-gU", "libx.a"]]
+
+
+def win_tree(tmp_path):
+    base = tmp_path / "base"
+    base.mkdir()
+    (base / "nodecore_ffi.h").write_text(
+        "/* nodecore_legacy(void) is gone */\n"
+        "int32_t nodecore_start(const char* d);\nint32_t nodecore_stop(void);\n")
+    (base / "wallet_ffi.h").write_text("int dinero_wallet_create(void);\n")
+    build = tmp_path / "build"
+    build.mkdir()
+    for n in ("nodecore_ffi.lib", "dinero_wallet_ffi.lib"):
+        (build / n).write_text("")
+    args = types.SimpleNamespace(nodecore_ffi=str(build / "nodecore_ffi.lib"),
+                                 wallet_ffi=str(build / "dinero_wallet_ffi.lib"),
+                                 nm=None, baseline_dir=str(base))
+    return build, args
+
+
+def test_lib_with_every_declared_export_passes(tmp_path, monkeypatch):
+    build, args = win_tree(tmp_path)
+    table = {"nodecore_ffi.lib": {("T", "nodecore_start"), ("T", "nodecore_stop")},
+             "dinero_wallet_ffi.lib": {("T", "dinero_wallet_create")}}
+    monkeypatch.setattr(ifz, "symbols", lambda path, nm=None: table[os.path.basename(path)])
+    assert ifz.symbol_text(str(build), args) == (
+        "dinero_wallet_ffi T dinero_wallet_create\n"
+        "nodecore_ffi T nodecore_start\nnodecore_ffi T nodecore_stop\n")
+
+
+def test_lib_short_symbol_list_is_an_input_error(tmp_path, monkeypatch):
+    build, args = win_tree(tmp_path)
+    table = {"nodecore_ffi.lib": {("T", "nodecore_start")},          # nodecore_stop missing
+             "dinero_wallet_ffi.lib": {("T", "dinero_wallet_create")}}
+    monkeypatch.setattr(ifz, "symbols", lambda path, nm=None: table[os.path.basename(path)])
+    with pytest.raises(ifz.InputError, match="nodecore_stop"):
+        ifz.symbol_text(str(build), args)
+
+
+def test_lib_empty_symbol_list_is_an_input_error(tmp_path, monkeypatch):
+    build, args = win_tree(tmp_path)
+    capture_nm(monkeypatch, "nodecore_ffi.cpp.obj:\n")
+    with pytest.raises(ifz.InputError):
+        ifz.symbol_text(str(build), args)
+
+
+def test_lib_header_with_no_declarations_is_an_input_error(tmp_path, monkeypatch):
+    build, args = win_tree(tmp_path)
+    (tmp_path / "base" / "nodecore_ffi.h").write_text("/* nothing */\n")
+    monkeypatch.setattr(ifz, "symbols", lambda path, nm=None: {("T", "nodecore_start")})
+    with pytest.raises(ifz.InputError, match="no C functions parsed"):
+        ifz.symbol_text(str(build), args)
+
+
+def test_committed_headers_declarations_match_macos_c_exports():
+    # The export check's expected list (headers) equals the committed macOS
+    # baseline's defined C functions, so it is neither too short nor too long.
+    base = os.path.join(os.path.dirname(__file__), "..", "..", "..", "..",
+                        "tests", "separation", "interface_baseline")
+    for cfg in ("off", "on"):
+        rows = [l.split() for l in open(os.path.join(base, "symbols_macos_%s.txt" % cfg))]
+        for lib, header in ifz.LIB_HEADER.items():
+            exported = {r[2].lstrip("_") for r in rows if r[0] == lib and r[1] == "T"}
+            declared = ifz.declared_c_functions(open(os.path.join(base, header)).read())
+            assert declared == exported, (cfg, lib)

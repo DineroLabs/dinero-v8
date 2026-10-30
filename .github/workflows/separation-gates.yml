@@ -355,7 +355,8 @@ jobs:
             echo "K4: no committed $SEP_PLAT reference $ref; failing closed (rc 2)"
             info=0; run_k4 "$d/consensus_vectors_ref_$SEP_CFG.json" || info=$?
             echo "K4 (informational): comparison against the macOS-recorded reference exited $info"
-            rc=2; gate_result K4 "$rc" "no $SEP_PLAT reference"
+            echo "note=missing reference" >> "$GITHUB_OUTPUT"
+            rc=2; gate_result K4 "$rc" "missing reference — not a vector mismatch"
           fi
           exit "$rc"
 
@@ -435,7 +436,8 @@ jobs:
           rc=0; sep_ctest SepInterfaceFreeze SepRpcTranscript || rc=$?
           if [ ! -f "$base" ]; then
             echo "W5: no committed symbol baseline $base; failing closed (rc 2)"
-            gate_result W5 2 "no $SEP_PLAT symbol baseline"; exit 2
+            echo "note=missing reference" >> "$GITHUB_OUTPUT"
+            gate_result W5 2 "missing reference — not an interface mismatch"; exit 2
           fi
           gate_result W5 "$rc"; exit "$rc"
 
@@ -502,6 +504,8 @@ jobs:
           O_W4: ${{ steps.w4.outcome }}
           O_W5: ${{ steps.w5.outcome }}
           O_W6: ${{ steps.w6.outcome }}
+          N_K4: ${{ steps.k4.outputs.note }}
+          N_W5: ${{ steps.w5.outputs.note }}
           TOOLCHAIN: ${{ matrix.toolchain }}
         run: |
           res() { case "$1" in success) echo PASS ;; failure) echo FAIL ;; *) echo "NOT_RUN(${1:-none})" ;; esac; }
@@ -513,11 +517,19 @@ jobs:
             echo
             echo "| gate | result |"
             echo "|---|---|"
-            for g in K1 K2 K3 K4 K5; do v="O_$g"; echo "| $g | $(res "${!v}") |"; done
+            # A missing committed reference is missing evidence, shown apart
+            # from a real mismatch.
+            row() { v="O_$1"; n="N_$1"; r="$(res "${!v}")"
+                    if [ "${!n:-}" = "missing reference" ]; then
+                      [ "$1" = W5 ] && r="$r (missing reference — not an interface mismatch)" \
+                                    || r="$r (missing reference — not a vector mismatch)"
+                    fi
+                    echo "| $1 | $r |"; }
+            for g in K1 K2 K3 K4 K5; do row "$g"; done
             echo "| K6 | SKIP stage<2 |"
-            for g in W1 W2 W3 W4 W5 W6; do v="O_$g"; echo "| $g | $(res "${!v}") |"; done
+            for g in W1 W2 W3 W4 W5 W6; do row "$g"; done
             echo
-            echo "Stage-0 expectation: K1-K3, W1-W3 FAIL; K4, K5, W4, W5 PASS where baselines exist (else FAIL rc 2, fail closed); W6 recorded (RED)."
+            echo "Stage-0 expectation: K1-K3, W1-W3 FAIL; K5, W4 PASS; K4, W5 PASS on macOS, and on Linux FAIL rc 2 (missing reference) until reviewed baselines are committed; W6 recorded (RED). A missing reference is missing evidence, not a pass."
           } | tee -a "$GITHUB_STEP_SUMMARY"
 
   # K4, second half (ruling R13): the existing compact-regtest fixed-vector
