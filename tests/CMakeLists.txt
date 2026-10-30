@@ -17220,3 +17220,9 @@ if(WIN32)
 endif()
 add_test(NAME MonitorMacroHygiene COMMAND test_monitor_macro_hygiene)
 set_tests_properties(MonitorMacroHygiene PROPERTIES TIMEOUT 10 LABELS "unit;portability;mandatory")
+
+# Compile-only interface contract: no transitive header may complete the proof
+# view used by ChainstateService's optional<span<...>> default argument.
+add_library(test_chainstate_service_header OBJECT
+  tests/daemon/test_chainstate_service_header.cpp)
+target_link_libraries(test_chainstate_service_header PRIVATE dinero_core)
