@@ -128,7 +128,7 @@ jobs:
       - name: Verify compiled reachability stack
         shell: powershell
         run: |
-          python scripts/ci/check_reachability_stack.py --dinerod build-msvc-server/Release/dinerod.exe
+          python scripts/ci/check_reachability_stack.py --dinerod build-msvc-server/Release/dinerod.exe --cli build-msvc-server/Release/dinero-cli.exe
           if ($LASTEXITCODE -ne 0) { throw 'reachability stack smoke failed' }
 
       - name: Daemon startup, mining, and restart smoke
