@@ -127,7 +127,9 @@ def w5(a):
     transcript_ok = status["SepRpcTranscript"] == "Passed"
     if not a.reference_present:
         if not transcript_ok:
-            return 1, "transcript mismatch (symbol reference also missing)"
+            if first(lines, lambda l: "rpc_transcript: FAIL transcript differs" in l):
+                return 1, "transcript mismatch (symbol reference also missing)"
+            return max(a.rc, 1), "check did not run: SepRpcTranscript failed without a transcript verdict"
         if re.search(r"^\s*(\d+: )?FAIL (nodecore_ffi\.h|wallet_ffi\.h|jni_exports\.txt)", log, re.M):
             return 1, "interface mismatch (symbol reference also missing)"
         # Positive evidence that the freeze compared every other item and
