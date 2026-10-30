@@ -346,9 +346,14 @@ jobs:
         continue-on-error: true
         run: |
           . "$env:RUNNER_TEMP\sep_gate.ps1"
-          # K3 scans the probe's root library only (whole-archive in K1).
-          $libs = @(python scripts\ci\separation\probe_link_libs.py --build $env:SEP_BUILD --target sep_consensus_forced_link |
-                    Where-Object { (Split-Path -Leaf $_) -ieq 'dinero_consensus.lib' })
+          # K3 scans dinero_consensus.lib plus the static closure the K1 probe
+          # links (tests/separation/CMakeLists.txt: root + propagated deps),
+          # exactly as W3 does for the wallet probe. Whole archives are
+          # scanned, so this can report more than the POSIX scan of the linked
+          # executable; it never reports less.
+          $libs = @(python scripts\ci\separation\probe_link_libs.py --build $env:SEP_BUILD --target sep_consensus_forced_link)
+          if ($LASTEXITCODE -ne 0) { $libs = @() }
+          $libs | ForEach-Object { Write-Host "K3 input: $_" }
           # Control: dinero::consensus::EvalScript is the script interpreter
           # entry K1 exercises; it is defined in src/consensus (K5-frozen).
           $rc = [int](Invoke-CoffScan -Id 'K3' -Libs $libs -Control 'dinero::consensus::EvalScript')

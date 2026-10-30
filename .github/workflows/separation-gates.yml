@@ -192,7 +192,7 @@ jobs:
           cat > "$RUNNER_TEMP/sep_gate.sh" <<'SH'
           # Sourced by every gate step.
           FLOOR="$GITHUB_WORKSPACE/scripts/ci/separation/never_run_floor.txt"
-          if [ ! -r "$FLOOR" ] || ! grep -qv '^#' "$FLOOR"; then
+          if [ ! -r "$FLOOR" ] || ! grep -qEv '^[[:space:]]*(#|$)' "$FLOOR"; then
             echo "::error::never-run floor $FLOOR missing, unreadable or empty"
             echo "GATE $(printf %s "${GITHUB_ACTION:-?}" | tr '[:lower:]' '[:upper:]') FAIL rc=2 (no floor)"
             exit 2
@@ -601,7 +601,7 @@ jobs:
           # all derive from it (same tests as compact-regtest-vectors.yml).
           names=(CompactRegtestFixedVectors CompactRegtestVectorOracle CompactProductionV6Vectors CompactProductionV6Oracle ShieldedResourceLimits)
           floor=scripts/ci/separation/never_run_floor.txt
-          if [ ! -r "$floor" ] || ! grep -qv '^#' "$floor"; then
+          if [ ! -r "$floor" ] || ! grep -qEv '^[[:space:]]*(#|$)' "$floor"; then
             echo "::error::never-run floor $floor missing, unreadable or empty"
             echo "GATE K4 FAIL rc=2 (compact-regtest-vectors: no floor)"; exit 2
           fi
