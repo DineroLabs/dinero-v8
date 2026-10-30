@@ -85,15 +85,15 @@ jobs:
           - os: ubuntu-latest
             toolchain: linux-gcc15
             plat: linux
-            expect_compiler: 'gcc 15'
+            gcc_major: '15'
           - os: ubuntu-24.04
             toolchain: linux-gcc13
             plat: linux
-            expect_compiler: 'gcc 13'
+            gcc_major: '13'
           - os: macos-14
             toolchain: macos-arm64
             plat: macos
-            expect_compiler: 'apple clang'
+            gcc_major: ''
     env:
       SEP_BUILD: ${{ github.workspace }}/build-sep
       SEP_CFG: ${{ matrix.orchard }}
@@ -124,13 +124,20 @@ jobs:
           test "$(cmake --version | head -1)" = "cmake version ${SEP_CMAKE_VERSION}"
           test "$(ctest --version | head -1)" = "ctest version ${SEP_CMAKE_VERSION}"
 
+      # The GCC lanes name their compiler explicitly (gcc-15 on ubuntu-latest,
+      # gcc-13 on ubuntu-24.04) instead of trusting the image default; the
+      # configure step then asserts CMake's recorded compiler version.
       - name: Install Linux build dependencies
         if: runner.os == 'Linux'
+        env:
+          GCC_MAJOR: ${{ matrix.gcc_major }}
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
-            build-essential ccache pkg-config perl \
+            build-essential "gcc-${GCC_MAJOR}" "g++-${GCC_MAJOR}" ccache pkg-config perl \
             libcurl4-openssl-dev libudev-dev libusb-1.0-0-dev
+          echo "CC=gcc-${GCC_MAJOR}" >> "$GITHUB_ENV"
+          echo "CXX=g++-${GCC_MAJOR}" >> "$GITHUB_ENV"
 
       - name: Install macOS build dependencies
         if: runner.os == 'macOS'
@@ -138,19 +145,20 @@ jobs:
 
       - name: Record compiler
         env:
-          EXPECT: ${{ matrix.expect_compiler }}
+          GCC_MAJOR: ${{ matrix.gcc_major }}
         run: |
-          c++ --version | tee "$RUNNER_TEMP/compiler.txt"
-          case "$EXPECT" in
-            gcc*) want="${EXPECT#gcc }"
-                  got="$(gcc -dumpversion | cut -d. -f1)"
-                  if [ "$got" != "$want" ]; then
-                    echo "::warning::matrix label says GCC $want but the runner has GCC $got"
-                  fi ;;
-          esac
+          "${CXX:-c++}" --version | tee "$RUNNER_TEMP/compiler.txt"
+          if [ -n "$GCC_MAJOR" ]; then
+            got="$("$CXX" -dumpversion | cut -d. -f1)"
+            if [ "$got" != "$GCC_MAJOR" ]; then
+              echo "::error::lane is GCC $GCC_MAJOR but $CXX is GCC $got"; exit 1
+            fi
+          fi
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # same pin as orchard-backend.yml
+        with:
+          toolchain: stable
 
       - name: Install the source-pinned Orchard compiler
         run: |
@@ -165,7 +173,7 @@ jobs:
           rustc "+$pin" --version
 
       - name: Set up ccache
-        uses: hendrikmuhs/ccache-action@v1.2
+        uses: hendrikmuhs/ccache-action@5ebbd400eff9e74630f759d94ddd7b6c26299639 # v1.2
         with:
           key: separation-gates-${{ matrix.toolchain }}-${{ matrix.orchard }}
           max-size: 1G
@@ -184,6 +192,11 @@ jobs:
           cat > "$RUNNER_TEMP/sep_gate.sh" <<'SH'
           # Sourced by every gate step.
           FLOOR="$GITHUB_WORKSPACE/scripts/ci/separation/never_run_floor.txt"
+          if [ ! -r "$FLOOR" ] || ! grep -qv '^#' "$FLOOR"; then
+            echo "::error::never-run floor $FLOOR missing, unreadable or empty"
+            echo "GATE $(printf %s "${GITHUB_ACTION:-?}" | tr '[:lower:]' '[:upper:]') FAIL rc=2 (no floor)"
+            exit 2
+          fi
           if [ "$(cmake --version | head -1)" != "cmake version $SEP_CMAKE_VERSION" ] ||
              [ "$(ctest --version | head -1)" != "ctest version $SEP_CMAKE_VERSION" ]; then
             echo "::error::cmake/ctest on PATH is not the pinned $SEP_CMAKE_VERSION"
@@ -198,7 +211,7 @@ jobs:
           sep_ctest() {
             local n rc=0 log re
             for n in "$@"; do
-              case "$n" in Sep[A-Za-z]*) ;; *) echo "::error::refusing non-separation test $n"; return 2 ;; esac
+              [[ $n =~ ^Sep[A-Za-z0-9]+$ ]] || { echo "::error::refusing non-separation test $n"; return 2; }
               if grep -qxF -- "$n" "$FLOOR"; then echo "::error::$n is on the never-run floor"; return 2; fi
             done
             re="^($(IFS='|'; echo "$*"))\$"
@@ -214,58 +227,11 @@ jobs:
             return "$rc"
           }
           SH
-          cat > "$RUNNER_TEMP/sep_targets.py" <<'PY'
-          # Targets the gates need, prebuilt so the ctest drivers (1800 s
-          # TIMEOUT) only link: the gate libraries, dinerod and the FFI
-          # archives (W5), the W4 checker, the W6 static set, and the
-          # executables of the K4 tests registered for this config.
-          # The sep_*_forced_link / sep_wallet_ffi_standalone probes are NOT
-          # listed: they are RED at stage 0 and their ctests build them.
-          import json, os, subprocess, sys
-          build, cfg, out = sys.argv[1], sys.argv[2], sys.argv[3]
-          want = ["dinero_consensus", "dinero_wallet", "dinerod", "nodecore_ffi",
-                  "dinero_wallet_ffi", "sep_wallet_fixture_compat", "dinero_crypto",
-                  "secp256k1", "jsoncpp_static", "sqlite3"]
-          names = []
-          for line in open("scripts/ci/separation/consensus_vectors.txt"):
-              line = line.strip()
-              if not line or line.startswith("#"):
-                  continue
-              if line.startswith("on:"):
-                  if cfg != "on":
-                      continue
-                  line = line[3:]
-              names.append(line)
-          shown = subprocess.run(["ctest", "--test-dir", build, "--show-only=json-v1"],
-                                 capture_output=True, text=True, check=True).stdout
-          tests = {t["name"]: t for t in json.loads(shown)["tests"]}
-          root = os.path.normcase(os.path.abspath(build)) + os.sep
-          for n in names:
-              cmd = tests.get(n, {}).get("command") or []
-              if not cmd:
-                  print("K4 test %s is not registered (run_consensus_vectors.py will report NOT_RUN)" % n)
-                  continue
-              exe = os.path.normcase(os.path.abspath(cmd[0]))
-              if exe.startswith(root):
-                  stem = os.path.basename(exe)
-                  if stem.endswith(".exe"):
-                      stem = stem[:-4]
-                  if stem not in want:
-                      want.append(stem)
-          listed = subprocess.run(["ninja", "-C", build, "-t", "targets", "all"],
-                                  capture_output=True, text=True, check=True).stdout
-          avail = {l.split(":", 1)[0] for l in listed.splitlines()}
-          have = [t for t in want if t in avail]
-          for t in want:
-              if t not in avail:
-                  print("::warning::target %s does not exist in this configuration" % t)
-          print("prebuilding: " + " ".join(have))
-          with open(out, "w") as f:
-              f.write("\n".join(have) + "\n")
-          PY
 
       - name: CMake configure
         id: configure
+        env:
+          GCC_MAJOR: ${{ matrix.gcc_major }}
         run: |
           ORCHARD=OFF; [ "$SEP_CFG" = on ] && ORCHARD=ON
           # K2/W2 read the CMake file API codemodel: request it before configure.
@@ -281,13 +247,24 @@ jobs:
             -DCMAKE_C_COMPILER_LAUNCHER=ccache \
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
           grep -E '^(DINERO_BUILD_ORCHARD_BACKEND|DINERO_SEPARATION_GATES|Python3_EXECUTABLE|CMAKE_CXX_COMPILER):' "$SEP_BUILD/CMakeCache.txt"
+          # The compiler CMake actually recorded must be the lane's GCC.
+          if [ -n "$GCC_MAJOR" ]; then
+            f="$(find "$SEP_BUILD/CMakeFiles" -maxdepth 2 -name CMakeCXXCompiler.cmake | head -1)"
+            id="$(sed -n 's/^set(CMAKE_CXX_COMPILER_ID "\(.*\)")$/\1/p' "$f")"
+            ver="$(sed -n 's/^set(CMAKE_CXX_COMPILER_VERSION "\(.*\)")$/\1/p' "$f")"
+            echo "CMake CXX compiler: $id $ver ($f)"
+            if [ "$id" != GNU ] || [ "${ver%%.*}" != "$GCC_MAJOR" ]; then
+              echo "::error::CMake recorded CXX compiler '$id $ver', expected GNU $GCC_MAJOR"; exit 1
+            fi
+          fi
           find "$SEP_BUILD/.cmake/api/v1/reply" -name 'index-*.json'
 
       - name: Build gate prerequisites
         id: build
         continue-on-error: true
         run: |
-          python "$RUNNER_TEMP/sep_targets.py" "$SEP_BUILD" "$SEP_CFG" "$RUNNER_TEMP/targets.txt"
+          python scripts/ci/separation/sep_targets.py --build "$SEP_BUILD" --config "$SEP_CFG" \
+            --out "$RUNNER_TEMP/targets.txt" --ctest "$(command -v ctest)" --ninja "$(command -v ninja)"
           # -k 0: collect every independent failure; a failed K4 test link must
           # not hide the other gates (each gate reports its own result).
           targets=()   # no mapfile: keep this bash 3.2 compatible
@@ -547,22 +524,13 @@ jobs:
   # check, run with the commands of .github/workflows/compact-regtest-vectors.yml
   # (that workflow is unchanged). It is a separate build configuration
   # (DINERO_ENABLE_COMPACT_REGTEST=ON, Orchard default OFF) exactly as that
-  # workflow builds it, so it is not crossed with orchard=off/on. Windows is not
-  # covered here, as in the original workflow.
+  # workflow builds it, so it is not crossed with orchard=off/on. It runs only
+  # on that workflow's x86 runner (ubuntu-24.04); macOS, ubuntu-latest and
+  # Windows are not covered, as in the original workflow.
   k4-compact-regtest:
-    name: K4 compact-regtest vectors ${{ matrix.toolchain }}
-    runs-on: ${{ matrix.os }}
+    name: K4 compact-regtest vectors linux-gcc13
+    runs-on: ubuntu-24.04
     timeout-minutes: 90
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-latest
-            toolchain: linux-gcc15
-          - os: ubuntu-24.04
-            toolchain: linux-gcc13
-          - os: macos-14
-            toolchain: macos-arm64
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -586,13 +554,14 @@ jobs:
           c++ --version
 
       - name: Install Linux dependencies
-        if: runner.os == 'Linux'
         run: >-
           sudo apt-get update && sudo apt-get install -y
           curl perl pkg-config libudev-dev libusb-1.0-0-dev
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # same pin as orchard-backend.yml
+        with:
+          toolchain: stable
 
       - name: Build pinned OpenSSL
         run: OPENSSL_VERSION=3.5.7 bash scripts/build-openssl-vendored.sh
@@ -608,7 +577,7 @@ jobs:
         id: build
         continue-on-error: true
         run: >-
-          cmake --build build-compact-regtest --parallel "$(python -c 'import os; print(os.cpu_count())')"
+          cmake --build build-compact-regtest --parallel "$(nproc)"
           --target test_compact_regtest_vectors test_shielded_resource_limits test_shielded_validation
 
       - name: K4 saved proofs, independent literals and resource boundaries
@@ -616,18 +585,26 @@ jobs:
         if: ${{ !cancelled() && steps.configure.outcome == 'success' }}
         continue-on-error: true
         run: |
-          names="CompactRegtestFixedVectors CompactRegtestVectorOracle CompactProductionV6Vectors CompactProductionV6Oracle ShieldedResourceLimits"
-          for n in $names; do
-            if grep -qxF -- "$n" scripts/ci/separation/never_run_floor.txt; then
-              echo "::error::$n is on the never-run floor; refusing to run"
-              echo "GATE K4 FAIL rc=2 (compact-regtest-vectors: floor test)"; exit 2
+          # The one name list: the floor check, the -R regex and the ran-proof
+          # all derive from it (same tests as compact-regtest-vectors.yml).
+          names=(CompactRegtestFixedVectors CompactRegtestVectorOracle CompactProductionV6Vectors CompactProductionV6Oracle ShieldedResourceLimits)
+          floor=scripts/ci/separation/never_run_floor.txt
+          if [ ! -r "$floor" ] || ! grep -qv '^#' "$floor"; then
+            echo "::error::never-run floor $floor missing, unreadable or empty"
+            echo "GATE K4 FAIL rc=2 (compact-regtest-vectors: no floor)"; exit 2
+          fi
+          for n in "${names[@]}"; do
+            if ! [[ $n =~ ^[A-Za-z0-9_]+$ ]] || grep -qxF -- "$n" "$floor"; then
+              echo "::error::$n is not a plain test name or is on the never-run floor; refusing to run"
+              echo "GATE K4 FAIL rc=2 (compact-regtest-vectors: refused $n)"; exit 2
             fi
           done
+          re="^($(IFS='|'; echo "${names[*]}"))\$"
+          echo "ctest -R '$re'"
           rc=0
-          ctest --test-dir build-compact-regtest --no-tests=error --output-on-failure \
-            -R '^(CompactRegtestFixedVectors|CompactRegtestVectorOracle|CompactProductionV6Vectors|CompactProductionV6Oracle|ShieldedResourceLimits)$' \
+          ctest --test-dir build-compact-regtest --no-tests=error --output-on-failure -R "$re" \
             2>&1 | tee "$RUNNER_TEMP/ctest-compact.log" || rc=$?
-          for n in $names; do
+          for n in "${names[@]}"; do
             if ! grep -Eq "Test +#[0-9]+: $n " "$RUNNER_TEMP/ctest-compact.log"; then
               echo "NOT_RUN $n"; [ "$rc" -ne 0 ] || rc=1
             fi
@@ -641,11 +618,10 @@ jobs:
         env:
           O_BUILD: ${{ steps.build.outcome }}
           O_K4C: ${{ steps.k4c.outcome }}
-          TOOLCHAIN: ${{ matrix.toolchain }}
         run: |
           res() { case "$1" in success) echo PASS ;; failure) echo FAIL ;; *) echo "NOT_RUN(${1:-none})" ;; esac; }
           {
-            echo "### K4 compact-regtest vectors: $TOOLCHAIN"
+            echo "### K4 compact-regtest vectors: ubuntu-24.04"
             echo
             echo "prerequisite build: $(res "$O_BUILD")"
             echo

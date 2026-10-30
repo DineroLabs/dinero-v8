@@ -124,7 +124,9 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # same pin as orchard-backend.yml
+        with:
+          toolchain: stable
 
       - name: Install the source-pinned Orchard compiler
         env:
@@ -193,7 +195,7 @@ jobs:
           function Invoke-SepCtest([string[]]$Names) {
             $floor = Get-Content $SepFloor | ForEach-Object { $_.Trim() }
             foreach ($n in $Names) {
-              if ($n -cnotmatch '^Sep[A-Za-z]+$') { Write-Host "::error::refusing non-separation test $n"; return 2 }
+              if ($n -cnotmatch '^Sep[A-Za-z0-9]+$') { Write-Host "::error::refusing non-separation test $n"; return 2 }
               if ($floor -ccontains $n) { Write-Host "::error::$n is on the never-run floor"; return 2 }
             }
             $re = '^(' + ($Names -join '|') + ')$'
@@ -212,55 +214,6 @@ jobs:
             return $rc
           }
           '@ | Set-Content -Path "$env:RUNNER_TEMP\sep_gate.ps1" -Encoding utf8
-          @'
-          # Targets the gates need, prebuilt so the ctest drivers (1800 s
-          # TIMEOUT) only link: the gate libraries, dinerod and the FFI
-          # archives (W5), the W4 checker, the W6 static set, and the
-          # executables of the K4 tests registered for this config.
-          # The sep_*_forced_link / sep_wallet_ffi_standalone probes are NOT
-          # listed: they are RED at stage 0 and their ctests build them.
-          import json, os, subprocess, sys
-          build, cfg, out = sys.argv[1], sys.argv[2], sys.argv[3]
-          want = ["dinero_consensus", "dinero_wallet", "dinerod", "nodecore_ffi",
-                  "dinero_wallet_ffi", "sep_wallet_fixture_compat", "dinero_crypto",
-                  "secp256k1", "jsoncpp_static", "sqlite3"]
-          names = []
-          for line in open("scripts/ci/separation/consensus_vectors.txt"):
-              line = line.strip()
-              if not line or line.startswith("#"):
-                  continue
-              if line.startswith("on:"):
-                  if cfg != "on":
-                      continue
-                  line = line[3:]
-              names.append(line)
-          shown = subprocess.run(["ctest", "--test-dir", build, "--show-only=json-v1"],
-                                 capture_output=True, text=True, check=True).stdout
-          tests = {t["name"]: t for t in json.loads(shown)["tests"]}
-          root = os.path.normcase(os.path.abspath(build)) + os.sep
-          for n in names:
-              cmd = tests.get(n, {}).get("command") or []
-              if not cmd:
-                  print("K4 test %s is not registered (run_consensus_vectors.py will report NOT_RUN)" % n)
-                  continue
-              exe = os.path.normcase(os.path.abspath(cmd[0]))
-              if exe.startswith(root):
-                  stem = os.path.basename(exe)
-                  if stem.endswith(".exe"):
-                      stem = stem[:-4]
-                  if stem not in want:
-                      want.append(stem)
-          listed = subprocess.run(["ninja", "-C", build, "-t", "targets", "all"],
-                                  capture_output=True, text=True, check=True).stdout
-          avail = {l.split(":", 1)[0] for l in listed.splitlines()}
-          have = [t for t in want if t in avail]
-          for t in want:
-              if t not in avail:
-                  print("::warning::target %s does not exist in this configuration" % t)
-          print("prebuilding: " + " ".join(have))
-          with open(out, "w") as f:
-              f.write("\n".join(have) + "\n")
-          '@ | Set-Content -Path "$env:RUNNER_TEMP\sep_targets.py" -Encoding utf8
 
       - name: CMake configure
         id: configure
@@ -299,7 +252,8 @@ jobs:
         continue-on-error: true
         run: |
           . "$env:RUNNER_TEMP\sep_gate.ps1"
-          python "$env:RUNNER_TEMP\sep_targets.py" $env:SEP_BUILD $env:SEP_CFG "$env:RUNNER_TEMP\targets.txt"
+          python scripts\ci\separation\sep_targets.py --build $env:SEP_BUILD --config $env:SEP_CFG `
+            --out "$env:RUNNER_TEMP\targets.txt" --ctest (Get-Command ctest).Source --ninja (Get-Command ninja).Source
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $targets = Get-Content "$env:RUNNER_TEMP\targets.txt" | Where-Object { $_ }
           # -k 0: collect every independent failure; each gate reports its own result.
