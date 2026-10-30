@@ -33,14 +33,16 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-# Testing opt-in only. Ordinary configure calls clear a reused qualification
-# cache; this switch cannot grant Windows release qualification.
+# Production and CI-only qualification are separate modes. Always pass both
+# switches so a reused CMake cache cannot carry qualification into a release.
 $orchardQualificationMode = 'OFF'
+$orchardReleaseMode = 'ON'
 if ($CiOrchardQualification) {
     if ($env:GITHUB_ACTIONS -ne 'true' -or $Version -notmatch '-ci$') {
         throw 'Orchard qualification is restricted to GitHub CI smoke versions ending in -ci.'
     }
     $orchardQualificationMode = 'ON'
+    $orchardReleaseMode = 'OFF'
     Write-Warning 'CI-only Orchard qualification build; not a qualified Windows release.'
 }
 
@@ -303,6 +305,7 @@ if (-not $SkipBuild) {
         '-DDINERO_BUILD_SEEDER=ON',
         '-DDINERO_BUILD_MINER=OFF',
         '-DDINERO_BUILD_ORCHARD_BACKEND=ON',
+        "-DDINERO_ORCHARD_WINDOWS_RELEASE=$orchardReleaseMode",
         "-DDINERO_ORCHARD_WINDOWS_QUALIFICATION=$orchardQualificationMode",
         '-DDINERO_ENABLE_QUIC=ON',
         '-DDINERO_REQUIRE_REACHABILITY_STACK=ON'
@@ -328,6 +331,9 @@ if (-not $SkipBuild) {
         '--parallel', '1'
     )
 }
+
+$resolvedOrchardMode = if ($CiOrchardQualification) { 'Qualification' } else { 'Release' }
+& (Join-Path $ScriptDir 'assert-orchard-build-mode.ps1') -BuildDir $BuildRoot -Mode $resolvedOrchardMode
 
 $daemonBinaries = 'dinerod','dinero-cli','dinero-miner','dinero-stratum-worker','dinero-gpu-miner','dinero-wallet-cli','dinero-seeder'
 foreach ($b in $daemonBinaries) {

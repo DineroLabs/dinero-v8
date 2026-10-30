@@ -11,6 +11,10 @@ on:
       - 'scripts/build-curl-vendored.ps1'
       - 'scripts/ci/check_openssl_version.ps1'
       - 'packaging/windows/**'
+      - 'rust/orchard_backend/NativeRustPlatform.cmake'
+      - 'rust/orchard_backend/CMakeLists.txt'
+      - 'scripts/ci/test_orchard_msvc_bridge.py'
+      - 'scripts/ci/test_windows_ci_qualification.ps1'
 
 jobs:
   windows-openssl-release-smoke:
@@ -26,6 +30,13 @@ jobs:
 
       - name: Setup MSVC
         uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Check Orchard production and qualification mode boundaries
+        shell: powershell
+        run: |
+          python -B scripts/ci/test_orchard_msvc_bridge.py
+          if ($LASTEXITCODE -ne 0) { throw 'Orchard MSVC bridge contracts failed' }
+          .\scripts\ci\test_windows_ci_qualification.ps1
 
       - name: Windows monitor header compile regression
         shell: powershell
@@ -96,10 +107,6 @@ jobs:
               -Pattern '^DINERO_DEPENDS_PREFIX=(.*)$').Matches[0].Groups[1].Value
           "DINERO_DEPENDS_PREFIX=$prefix" | Out-File -Append -Encoding ascii $env:GITHUB_ENV
 
-      - name: Check CI qualification cannot authorize release builds
-        shell: powershell
-        run: .\scripts\ci\test_windows_ci_qualification.ps1
-
       - name: Build Windows server release and installer
         shell: powershell
         run: |
@@ -110,7 +117,6 @@ jobs:
           # the production 84131 default after its assets exist.
           .\packaging\windows\build-server-installer.ps1 `
             -Version '8.0.18-openssl357-ci' `
-            -CiOrchardQualification `
             -BuildDir 'build-msvc-server' `
             -VcpkgRoot "$env:VCPKG_INSTALLATION_ROOT" `
             -VcpkgBin "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows\bin" `

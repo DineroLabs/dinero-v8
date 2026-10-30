@@ -334,3 +334,21 @@ make -j$(sysctl -n hw.ncpu)
 ```
 
 **Architecture complete. Socket transport implementation is Phase 2.**
+
+
+## Native Windows Orchard build mode
+
+Windows production packages explicitly configure `DINERO_ORCHARD_WINDOWS_RELEASE=ON`
+and `DINERO_ORCHARD_WINDOWS_QUALIFICATION=OFF`. The supported bridge remains native
+x64 MSVC with the dynamic release CRT, the source-pinned Rust compiler, checked
+native Rust libraries and a controlled compiler environment. Other Windows
+compilers, architectures and cross builds remain refused.
+
+The server installer selects both options on every configure. Its `-SkipBuild`
+path and the desktop workflow check the resolved CMake cache before packaging;
+a stale CI-only tree cannot become a production package by changing its version.
+`-CiOrchardQualification` remains limited to GitHub smoke versions ending in
+`-ci`, selects release mode OFF, and cannot be combined with production mode.
+
+This build mode permits producing candidates; it does not replace native tests,
+actual packaged-application checks, signing verification or final release review.

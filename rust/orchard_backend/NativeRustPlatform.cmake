@@ -3,7 +3,7 @@ function(dinero_orchard_msvc_environment)
       RUSTC_WORKSPACE_WRAPPER CARGO_BUILD_RUSTC CARGO_BUILD_RUSTC_WRAPPER
       CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER)
     if(DEFINED ENV{${flag_env}} AND NOT "$ENV{${flag_env}}" STREQUAL "")
-      message(FATAL_ERROR "Uncontrolled ${flag_env} in Orchard MSVC qualification")
+      message(FATAL_ERROR "Uncontrolled ${flag_env} in Orchard MSVC build")
     endif()
   endforeach()
 endfunction()
@@ -47,19 +47,22 @@ function(dinero_orchard_native_platform out_target out_archive)
     message(FATAL_ERROR "Orchard backend cross/mobile toolchain is not qualified yet")
   endif()
   if(WIN32)
-    if(NOT DINERO_ORCHARD_WINDOWS_QUALIFICATION)
-      message(FATAL_ERROR "Orchard Windows release is not qualified; use the isolated qualification option only for testing")
+    if(DINERO_ORCHARD_WINDOWS_RELEASE AND DINERO_ORCHARD_WINDOWS_QUALIFICATION)
+      message(FATAL_ERROR "Orchard Windows release and qualification modes are mutually exclusive; clear the reused qualification cache")
+    endif()
+    if(NOT DINERO_ORCHARD_WINDOWS_RELEASE AND NOT DINERO_ORCHARD_WINDOWS_QUALIFICATION)
+      message(FATAL_ERROR "Orchard Windows builds require explicit release or qualification mode")
     endif()
     if(NOT CMAKE_HOST_WIN32 OR NOT MSVC OR NOT CMAKE_CXX_COMPILER_ID STREQUAL "MSVC" OR
        NOT MSVC_CXX_ARCHITECTURE_ID STREQUAL "x64" OR
        NOT CMAKE_SIZEOF_VOID_P EQUAL 8 OR
        NOT CMAKE_SYSTEM_PROCESSOR MATCHES "^(AMD64|amd64|x86_64|X86_64)$")
-      message(FATAL_ERROR "Orchard Windows qualification requires native x64 MSVC")
+      message(FATAL_ERROR "Orchard Windows build requires native x64 MSVC")
     endif()
     if(DEFINED CMAKE_MSVC_RUNTIME_LIBRARY AND NOT CMAKE_MSVC_RUNTIME_LIBRARY STREQUAL "" AND
        NOT CMAKE_MSVC_RUNTIME_LIBRARY STREQUAL "MultiThreadedDLL" AND
        NOT CMAKE_MSVC_RUNTIME_LIBRARY STREQUAL "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
-      message(FATAL_ERROR "Orchard Windows qualification requires the dynamic MSVC runtime")
+      message(FATAL_ERROR "Orchard Windows build requires the dynamic MSVC runtime")
     endif()
     foreach(flags CMAKE_C_FLAGS CMAKE_CXX_FLAGS CMAKE_C_FLAGS_RELEASE
         CMAKE_CXX_FLAGS_RELEASE CMAKE_C_FLAGS_RELWITHDEBINFO CMAKE_CXX_FLAGS_RELWITHDEBINFO

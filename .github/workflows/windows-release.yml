@@ -137,6 +137,13 @@ jobs:
       - name: Setup MSVC
         uses: ilammy/msvc-dev-cmd@v1
 
+      - name: Check Orchard production and qualification mode boundaries
+        shell: powershell
+        run: |
+          python -B scripts/ci/test_orchard_msvc_bridge.py
+          if ($LASTEXITCODE -ne 0) { throw 'Orchard MSVC bridge contracts failed' }
+          .\scripts\ci\test_windows_ci_qualification.ps1
+
       - name: Install and verify CUDA Toolkit 12.2 for the embedded solo miner
         timeout-minutes: 35
         shell: powershell
@@ -287,6 +294,8 @@ jobs:
           cmake -S . -B build-msvc-native -G 'Visual Studio 17 2022' -A x64 `
             -DDINERO_BUILD_QT=ON `
             -DDINERO_BUILD_ORCHARD_BACKEND=ON `
+            -DDINERO_ORCHARD_WINDOWS_RELEASE=ON `
+            -DDINERO_ORCHARD_WINDOWS_QUALIFICATION=OFF `
             -DDIN_ENABLE_ORCHARD_UI=ON `
             -DDINERO_BUILD_MINER=ON `
             -DDINERO_BUILD_SEEDER=ON `
@@ -300,6 +309,7 @@ jobs:
             -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT\scripts\buildsystems\vcpkg.cmake" `
             -DCMAKE_PREFIX_PATH="$env:QT_ROOT_DIR"
           if ($LASTEXITCODE -ne 0) { throw 'desktop configure failed' }
+          .\packaging\windows\assert-orchard-build-mode.ps1 -BuildDir 'build-msvc-native'
           if (-not (Select-String -Path 'build-msvc-native\CMakeCache.txt' `
               -Pattern '^MINER_ENABLE_CUDA:BOOL=ON$' -Quiet)) {
             throw 'release configure silently disabled the embedded CUDA backend'
