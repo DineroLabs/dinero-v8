@@ -136,6 +136,37 @@ TEST(NotifyDrainWorker, DrainsAllQueuedWorkWithoutFurtherNotifies) {
     EXPECT_EQ(drained, (std::deque<int>{1, 2, 3, 4, 5})) << "drain order violated";
 }
 
+// Real CSN IBD can keep receiving work throughout shutdown. Stop must
+// finish after the current item, without waiting for the queue to go idle.
+TEST(NotifyDrainWorker, StopInterruptsContinuousProgress) {
+    std::atomic<bool> backlog{true};
+    std::atomic<unsigned> calls{0};
+    std::atomic<bool> stopped{false};
+    NotifyDrainWorker worker([&] {
+        calls.fetch_add(1);
+        std::this_thread::sleep_for(1ms);  // one bounded in-flight block
+        return backlog.load();
+    }, "test-stop-busy");
+    worker.Notify();
+    for (unsigned i=0; i<200 && calls.load()==0; ++i)
+        std::this_thread::sleep_for(5ms);
+    if (calls.load()==0) backlog.store(false); // bounded failure cleanup
+    ASSERT_GT(calls.load(),0u);
+    std::thread stopper([&] { worker.Stop(); stopped.store(true); });
+    for (unsigned i=0; i<400 && !stopped.load(); ++i)
+        std::this_thread::sleep_for(5ms);
+    const bool stopped_with_backlog=stopped.load();
+    // Keep the old-code failure bounded and joinable too.
+    backlog.store(false);
+    stopper.join();
+    EXPECT_TRUE(stopped_with_backlog)
+        << "Stop waited for continuous incoming work to run out";
+    const auto at_stop=calls.load();
+    worker.Notify();
+    std::this_thread::sleep_for(20ms);
+    EXPECT_EQ(calls.load(),at_stop) << "Notify restarted a stopped worker";
+}
+
 TEST(NotifyDrainWorker, StopJoinsPromptly) {
     std::atomic<int> calls{0};
     auto worker = std::make_unique<NotifyDrainWorker>(
