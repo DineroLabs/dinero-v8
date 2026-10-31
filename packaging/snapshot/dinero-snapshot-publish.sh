@@ -129,6 +129,9 @@ GATE_DIR=$(mktemp -d /tmp/dinero-snapgate.XXXXXX)
 GATE_PID=""
 trap '[ -z "$GATE_PID" ] || kill -9 "$GATE_PID" 2>/dev/null || true; rm -rf "$GATE_DIR"' EXIT
 mkdir -p "$GATE_DIR/datadir"
+# The manifest names the public payload. The native loader checks that basename
+# as well as its hash; pending.dat is only the publisher's private staging name.
+cp "$DUMP_FILE" "$GATE_DIR/snapshot.dat"
 cat > "$GATE_DIR/datadir/dinero.conf" <<EOF
 sync-profile=$SYNC_PROFILE
 utreexo-bridge=0
@@ -139,7 +142,7 @@ rpcport=$GATE_RPC
 portmap=0
 listen=0
 connect=127.0.0.1:20999
-assumeutxo_snapshot=$DUMP_FILE
+assumeutxo_snapshot=$GATE_DIR/snapshot.dat
 assumeutxo_manifest=$MANIFEST
 assumeutxo_require_manifest=1
 EOF
