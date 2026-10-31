@@ -145,3 +145,50 @@ def test_no_step_saves_a_cache():
             if re.search(r"uses:\s*actions/setup-(python|node|go|java)@", block):
                 assert not re.search(r"^\s+cache:", block, re.M), name
     assert "actions/cache/restore@" in POSIX and "actions/cache/restore@" in WINDOWS
+
+
+def test_macos_lane_is_macos15_with_pinned_xcode_and_its_own_reference_key():
+    # macos-14 images retire 2026-11-02 (actions/runner-images#13518).
+    matrix = POSIX.split("    strategy:", 1)[1].split("    env:", 1)[0]
+    assert not re.search(r"^\s*(- )?os: .*macos-14", matrix, re.M)
+    assert "os: [ubuntu-latest, ubuntu-24.04, macos-15]" in matrix
+    mac = matrix.split("- os: macos-15", 1)[1]
+    assert re.search(r"^\s+plat: macos$", mac, re.M)
+    assert re.search(r"^\s+ref_tag: macos15$", mac, re.M)
+    assert re.search(r"^\s+xcode: '16\.4'$", mac, re.M)
+    for os_ in ("ubuntu-latest", "ubuntu-24.04"):
+        lane = matrix.split("- os: %s\n" % os_, 1)[1].split("- os:", 1)[0]
+        assert re.search(r"^\s+ref_tag: linux$", lane, re.M), os_
+    assert "SEP_REF_TAG: ${{ matrix.ref_tag }}" in POSIX
+    deps = POSIX.split("- name: Install macOS build dependencies", 1)[1].split("\n      - name: ", 1)[0]
+    assert 'sudo xcode-select -s "/Applications/Xcode_${XCODE}.app"' in deps
+    assert 'test "$(xcodebuild -version | head -1)" = "Xcode ${XCODE}"' in deps
+
+
+def test_reference_paths_use_the_reference_key_not_the_platform():
+    st = steps(POSIX)
+    assert 'if [ "$SEP_REF_TAG" = macos ]; then ref="$d/consensus_vectors_ref_$SEP_CFG.json"' in st["k4"]
+    assert 'else ref="$d/consensus_vectors_ref_${SEP_REF_TAG}_$SEP_CFG.json"; fi' in st["k4"]
+    assert 'base="tests/separation/interface_baseline/symbols_${SEP_REF_TAG}_${SEP_CFG}.txt"' in st["w5"]
+    rec = POSIX.split("- name: Record baselines for review", 1)[1].split("\n      - name: ", 1)[0]
+    assert "SEP_PLAT" not in rec
+    assert '--record "$out/consensus_vectors_ref_${SEP_REF_TAG}_$SEP_CFG.json"' in rec
+
+
+def test_macos14_era_references_are_preserved():
+    # Recorded locally (AppleClang 21 / Xcode 27, macOS 27.0.1) and matched by the
+    # macos-14 / Xcode 15.4 lane in run 2. Kept byte-for-byte with their provenance.
+    import hashlib, json
+    pins = {
+        "scripts/ci/separation/consensus_vectors_ref_off.json": "466af11bf3dfdf5666b4ce87b7738c640c486d405b16b5dc311ef5aa9fdcea0a",
+        "scripts/ci/separation/consensus_vectors_ref_on.json": "78dbd04d6d28a5daf792ebcf363d07f341e83607cee2fbc780afeab99d278de6",
+        "tests/separation/interface_baseline/symbols_macos_off.txt": "2adc40d15e990f33dd9975e891ac0c68e0fa01a3b53e1726e32335a4e5246feb",
+        "tests/separation/interface_baseline/symbols_macos_on.txt": "2adc40d15e990f33dd9975e891ac0c68e0fa01a3b53e1726e32335a4e5246feb",
+    }
+    for rel, digest in pins.items():
+        data = (ROOT / rel).read_bytes().replace(b"\r\n", b"\n")
+        assert hashlib.sha256(data).hexdigest() == digest, rel
+    for cfg, sha in (("off", "33d1ca772ebf1f26d538cbd0fc47d1b8f189bb5d"),
+                     ("on", "6e57af6150e990c02aa53d2772ec476bd219585f")):
+        ref = json.loads((ROOT / ("scripts/ci/separation/consensus_vectors_ref_%s.json" % cfg)).read_text())
+        assert ref["provenance_sha"] == sha

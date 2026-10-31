@@ -323,3 +323,31 @@ def test_posix_still_requires_every_nodecore_item(tmp_path, monkeypatch, capsys)
     assert "N/A" not in out and out.endswith("interface_freeze: PASS\n")
     (repo / "src/nodecore/nodecore_jni_android.cpp").write_text("garbage Java_org_dinerolabs_\n")
     assert run_main(monkeypatch, repo, build, base, "check", syms) == 2
+
+
+# --- macos-15 lane: SEP_REF_TAG names the reference, never the host OS ---
+
+def test_reference_tag_selects_its_own_baseline_and_keeps_the_platform_one(tmp_path, monkeypatch, capsys):
+    repo, build = make_tree(tmp_path)
+    monkeypatch.setattr(ifz.platform, "system", lambda: "Darwin")
+    monkeypatch.delenv("SEP_REF_TAG", raising=False)
+    base = tmp_path / "base"
+    syms = {("T", "_nodecore_stop")}
+    assert run_main(monkeypatch, repo, build, base, "record", syms) == 0
+    old = (base / "symbols_macos_off.txt").read_bytes()
+    monkeypatch.setenv("SEP_REF_TAG", "macos15")
+    # the macOS 14-era baseline is never used as this lane's reference
+    assert run_main(monkeypatch, repo, build, base, "check", syms) == 2
+    assert "symbols_macos15_off.txt" in capsys.readouterr().err
+    assert run_main(monkeypatch, repo, build, base, "record", syms) == 0
+    assert (base / "symbols_macos_off.txt").read_bytes() == old
+    assert (base / "symbols_macos15_off.txt").read_bytes() == old
+    assert run_main(monkeypatch, repo, build, base, "check", syms) == 0
+    # NodeCore items are still checked: the tag changes the file name only
+    assert (base / "nodecore_ffi.h").is_file() and (base / "jni_exports.txt").is_file()
+
+
+def test_reference_tag_must_be_a_plain_name(tmp_path, monkeypatch):
+    repo, build = make_tree(tmp_path)
+    monkeypatch.setenv("SEP_REF_TAG", "../macos")
+    assert run_main(monkeypatch, repo, build, tmp_path / "base", "record", {("T", "_nodecore_stop")}) == 2
