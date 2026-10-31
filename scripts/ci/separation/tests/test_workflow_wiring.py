@@ -220,3 +220,17 @@ def test_w5_refuses_a_result_against_another_reference_and_reports_the_path():
     assert '--selected-out "$RUNNER_TEMP/w5-info-selected.txt"' in w5.split("SEP_REF_TAG=macos python", 1)[1]
     assert "R_W5: ${{ steps.w5.outputs.ref }}" in POSIX
     assert 'rf="R_$1"; [ -z "${!rf:-}" ] || r="$r; ref: ${!rf}"' in POSIX
+
+
+def test_script_tests_job_runs_this_suite_without_a_native_build():
+    # Owner decision 2026-10-31: the separation unit/wiring tests (including the
+    # reference pins) gate in CI, in a lightweight job.
+    job = POSIX.split("\n  separation-script-tests:\n", 1)[1]
+    assert "runs-on: ubuntu-24.04" in job
+    assert "SEP_PYTEST_VERSION: '9.2.0'" in POSIX
+    assert 'python -m pip install --disable-pip-version-check "pytest==${SEP_PYTEST_VERSION}"' in job
+    assert "python -m pytest -q -p no:cacheprovider scripts/ci/separation" in job
+    assert "persist-credentials: false" in job
+    for native in ("cmake", "ninja", "ccache", "rustup", "rust-toolchain", "apt-get", "brew", "openssl"):
+        assert native not in job.lower(), native
+    assert "continue-on-error" not in job and "submodules" not in job
