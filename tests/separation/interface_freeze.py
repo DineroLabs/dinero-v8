@@ -214,6 +214,8 @@ def current(args):
 
 
 def main(argv=None):
+    # Windows pipes stdout as cp1252; escape echoed test/diff text instead of crashing.
+    sys.stdout.reconfigure(errors="backslashreplace")
     ap = argparse.ArgumentParser()
     ap.add_argument("mode", choices=["record", "check"])
     ap.add_argument("--build", required=True)
