@@ -24,7 +24,11 @@ jobs:
           $path = 'scripts/native-msvc-regtest-smoke.ps1'
           $fixed = Get-Content $path -Raw
           try {
-            git show b10b2a5f4fd1dcdf95e843ea629f4b78581194c8:$path | Set-Content $path -Encoding utf8
+            git fetch --depth=1 origin b10b2a5f4fd1dcdf95e843ea629f4b78581194c8
+            if ($LASTEXITCODE -ne 0) { throw 'Could not fetch prior harness' }
+            $prior = git show b10b2a5f4fd1dcdf95e843ea629f4b78581194c8:$path | Out-String
+            if ($LASTEXITCODE -ne 0 -or $prior -notmatch 'Get-Random -Minimum 30000') { throw 'Prior harness identity mismatch' }
+            Set-Content $path -Value $prior -Encoding utf8
             & powershell -NoProfile -File scripts/ci/test_windows_smoke_ports.ps1
             if ($LASTEXITCODE -eq 0) { throw 'Regression did not reject the prior numeric-port harness' }
           } finally { Set-Content $path -Value $fixed -Encoding utf8 }
