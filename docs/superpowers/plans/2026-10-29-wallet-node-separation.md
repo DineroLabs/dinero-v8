@@ -304,7 +304,7 @@ Replaces Task 0.8's consumer. That one linked `dinero_wallet_ffi` with a list co
 
 **Interfaces:**
 - Produces two workflows. Neither is a required check.
-  - `separation-gates.yml` runs a matrix of {`ubuntu-latest` (GCC 15), `ubuntu-24.04` (GCC 13), `macos-14` (arm64)} × {OFF, ON}, each with steps for K1–K6 and W1–W6.
+  - `separation-gates.yml` runs a matrix of {`ubuntu-latest` (GCC 15), `ubuntu-24.04` (GCC 13), `macos-15` (arm64, Xcode 16.4 pinned)} × {OFF, ON}, each with steps for K1–K6 and W1–W6.
   - `separation-gates-windows.yml` follows `windows-openssl-release-smoke.yml`'s toolchain steps. It has no signing steps, no `secrets.*`, no artifact uploads and no release creation.
 - In stage 0 every gate step is `continue-on-error: true`. Each step echoes `GATE <id> <PASS|FAIL>`, and a final summary step prints the table.
 
@@ -340,9 +340,11 @@ Replaces Task 0.8's consumer. That one linked `dinero_wallet_ffi` with a list co
     - Each gate that depends on a failed target reports `GATE <id> UNMEASURED (...)` instead of FAIL. Dependence is the codemodel's build-order closure.
       - K4's set includes its resolved test executables, some of which link `dinero_wallet`.
     - Gates whose own inputs built still report their real result; for example, K2/W2/K5 need no build.
-  - **macOS stays on `macos-14`.** Run 1 on macOS (PR #860) is **UNMEASURED**: the pre-existing Xcode 15.4 build break on dinero-main (`chainstate_service.h:1735`, incomplete type in `std::optional<std::span<const MempoolProofView>>`) stops the prerequisite build.
-    - The fix is not ours. Once it lands on dinero-main, rebase #860 and rerun.
-    - The runner is not switched.
+  - **macOS moves to `macos-15` (owner decision, 2026-10-31).** `macos-14` images retire on 2026-11-02 (actions/runner-images#13518). Run 3 on macOS is **UNMEASURED** (scheduled brownout); it is not rerun.
+    - History: run 1 was UNMEASURED (Xcode 15.4 build break, `chainstate_service.h:1735`, fixed by #859). Run 2 measured macos-14 / Xcode 15.4 and matched the macOS references.
+    - `macos-15` has no Xcode 15.4. The lane pins Xcode 16.4 (the image default) and asserts it.
+    - The lane's references are named by `ref_tag: macos15` (`SEP_REF_TAG`), not by platform. The existing macOS references (`consensus_vectors_ref_<cfg>.json`, `symbols_macos_<cfg>.txt`, recorded locally with AppleClang 21 / Xcode 27) stay unchanged with their provenance and are never this lane's acceptance reference.
+    - Until a recorded `macos15` reference is reviewed and committed, K4 and W5 on the lane are FAIL rc 2 (missing reference); K4 still compares against the old reference for information. Any difference from it is investigated before a new reference is accepted; expected values are never updated just to make the lane pass.
   - W6 as recorded in Task 0.8a.
   - **The first PR run only collects candidate baselines,** which the record step prints to the job log. It is not described as green.
     - The candidates are reviewed, then committed by hand in a separate change.
