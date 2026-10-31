@@ -111,6 +111,23 @@ def test_failed_test_fails(tmp_path):
     assert "FAILED B" in r.stdout
 
 
+def test_failed_test_prints_its_output_tail(tmp_path):
+    out = "\n".join("line%d" % i for i in range(1, 101)) + "\nNOT_RUN Z\nFAILED Q"
+    r, _, _ = run(tmp_path, {"A": P(), "B": {"status": "fail", "out": out}}, ["A", "B"], "record")
+    assert r.returncode == 1, r.stdout + r.stderr
+    lines = r.stdout.splitlines()
+    assert "  | line43" in lines and "  | FAILED Q" in lines and "  | NOT_RUN Z" in lines
+    assert "  | line42" not in lines, "only the last 60 output lines are printed"
+    # Output lines can never be read as a K4 verdict line by gate_label.py.
+    marks = ("FAILED ", "NOT_RUN ", "UNEXPECTED ", "ON_FLOOR ", "CTEST_RC ", "ERROR ")
+    assert [l for l in lines if l.startswith(marks)] == ["FAILED B"]
+
+
+def test_failed_test_without_output_says_so(tmp_path):
+    r, _, _ = run(tmp_path, {"A": P(), "B": {"status": "fail"}}, ["A", "B"], "record")
+    assert "  | (no test output captured)" in r.stdout.splitlines()
+
+
 def test_record_then_compare_passes_and_flags_digests(tmp_path):
     tests = {"A": P("x " + D1 + " y " + D2), "B": P("no digests here")}
     r, out, log = run(tmp_path, tests, ["A", "B"], "record")
