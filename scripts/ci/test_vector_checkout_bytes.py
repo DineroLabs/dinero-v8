@@ -22,7 +22,7 @@ def git(*args):
 
 class VectorCheckoutBytes(unittest.TestCase):
     def test_autocrlf_checkout_of_every_vector_matches_its_blob(self):
-        names = git("ls-tree", "-r", "--name-only", "HEAD", "--", "tests/vectors").decode().split()
+        names = git("ls-tree", "-r", "-z", "--name-only", "HEAD", "--", "tests/vectors").decode().split("\0")[:-1]
         self.assertIn("tests/vectors/bip119_ctvhash.json", names)
         tar = tarfile.open(fileobj=io.BytesIO(
             git("-c", "core.autocrlf=true", "archive", "--format=tar", "HEAD", "--", "tests/vectors")))
