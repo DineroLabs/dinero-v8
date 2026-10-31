@@ -167,10 +167,11 @@ jobs:
   root-linux:
     name: Orchard through root build
     runs-on: ubuntu-24.04
-    # Recorded selections total about 97 minutes of tests, before the ~30
-    # minute root build and evidence upload. Allow the complete inventory;
-    # individual CTest deadlines and all execution-count checks stay intact.
-    timeout-minutes: 180
+    # Recorded selections total about 97 minutes of tests. A cold native
+    # build can exceed 100 minutes (30721e5), rather than the earlier 30-minute
+    # estimate. Allow the full inventory and evidence upload; individual
+    # CTest deadlines and all execution-count checks stay intact.
+    timeout-minutes: 300
     env:
       CARGO_BUILD_JOBS: '2'
       CMAKE_BUILD_PARALLEL_LEVEL: '2'
