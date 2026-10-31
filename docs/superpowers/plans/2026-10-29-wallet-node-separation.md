@@ -281,7 +281,8 @@ Replaces Task 0.8's consumer. That one linked `dinero_wallet_ffi` with a list co
 - Delete: `tests/separation/wallet_ffi_standalone.cpp`.
 - Modify: `scripts/ci/separation/check_link_closure.py` (`--gate` accepts `W6`) and `closure_rules.json` (a `W6` entry equal to `W2`'s rules).
 - Modify: `scripts/ci/separation/prereq_status.py:62` (W6 → `sep_wallet_standalone`), the `sep_targets.py` docstring (`:9`, `:30`) and `scripts/ci/separation/tests/test_prereq_status.py` (`:23-24`, `:115`, `:202`).
-- Modify: both separation workflows' W6 step (run the ctest, then `check_link_closure.py --target sep_wallet_standalone --gate W6`; the label stays `recorded` until stage 7). With Orchard OFF the step fails if either fails. With Orchard ON the verdict is the ctest alone: the closure result is printed as a separate `W6 closure (Orchard ON, recorded)` line and never fails the step, so the required gate (Task 7.1) can go green while the Orchard exception (spec §8) stands; Task 6.3 removes the exception, `gate_label.py` if it names the old test, `tests/separation/README.md` (the W6 section).
+- Modify: both separation workflows' W6 step (run the ctest, then `check_link_closure.py --target sep_wallet_standalone --gate W6`; the label stays `recorded` until stage 7). With Orchard OFF the step fails if either fails. With Orchard ON the verdict is the ctest alone: the closure result is printed as a separate `W6 closure (Orchard ON, recorded)` line and never fails the step, so the required gate (Task 7.1) can go green while the Orchard exception (spec §8) stands. Task 6.3 removes the exception.
+- Modify: `gate_label.py` if it names the old test, and `tests/separation/README.md` (the W6 section).
 - Test: `scripts/ci/separation/tests/test_check_link_closure.py`, `test_workflow_wiring.py`.
 
 - [ ] **Step 1:** Write failing tests:
@@ -627,13 +628,14 @@ Why: with Orchard ON, W6's closure check fails because `dinero_orchard_index_del
 
 **Files:**
 - Modify: `rust/orchard_backend/CMakeLists.txt` (`:344`, `:346-355`). Move `runtime_wallet_recovery_service.cpp` into a node-side target that `dinero_core` links; name it after the existing `dinero_orchard_*` pattern. Remove `dinero_orchard_chainstate_write` from the PUBLIC links of `dinero_orchard_index_delivery` and `dinero_orchard_account_replay`. Each consumer that used it through them (`dinero_core`, `dinerod`, Orchard tests) links it itself.
-- Modify: spec §8 W6 row, Task 0.8a and Task 6.2. With Orchard ON, the closure check rejoins the W6 verdict.
+- Modify: both separation workflows' W6 step (with Orchard ON the closure check rejoins the verdict, as with OFF; drop the separate `W6 closure (Orchard ON, recorded)` line), the Task 0.8a wiring test (it now requires the closure result to fail the step in both configs), and `tests/separation/README.md` (the W6 section).
+- Modify: spec §8 W6 row and stage-6 row; plan Tasks 0.8a and 6.2. Say "recorded only until Task 6.3".
 
 - [ ] **Step 1:** Show the RED. In the ON build, W6's closure check (`check_link_closure.py --target sep_wallet_standalone --gate W6`) lists `dinero_chainstate`, `dinero_core` and the `src/daemon/` source through `dinero_orchard_index_delivery`.
-- [ ] **Step 2:** Find what the five `dinero_orchard_index_delivery` sources and the `dinero_orchard_account_replay` sources still reference from `dinero_orchard_chainstate_write`. Use `nm -u` on their objects against `nm --defined-only` on the chainstate_write archive. If anything remains besides the recovery service, stop and ask: it needs an interface like Stage 5's, which is a design decision.
+- [ ] **Step 2:** List every archive that reaches the two libraries only through `dinero_orchard_chainstate_write`: at least `dinero_orchard_chainstate_write`, `dinero_orchard_block_staging`, `dinero_orchard_legacy_accounting`, `dinero_orchard_header` and `dinero_orchard_reindex`; derive the full set from the codemodel. Then find what the five `dinero_orchard_index_delivery` sources and `runtime_account_replay.cpp` still reference from any of them: `nm -u` on their objects against `nm --defined-only` on each archive. `runtime_account_replay.cpp` includes `consensus/orchard_validated_block.h`, `orchard_header.h`, `undo.h` and `storage/orchard_catalog_state.h`, so check it closely. If anything remains besides the recovery service, stop and ask: it needs an interface like Stage 5's, which is a design decision.
 - [ ] **Step 3:** Make the moves. Build ON with `-k 0`, and add each missing link to the consumer that needs it, one consumer per commit.
 - [ ] **Step 4:** Run W6 in ON (closure check now part of the verdict), W4 and W5 `check` in both configs, and every ctest whose name matches `Orchard`, floor-checked. Expected: PASS. Run K4. Expected: PASS.
-- [ ] **Step 5:** Commit `build: Orchard wallet delivery is node-free (recovery service to core)`.
+- [ ] **Step 5:** Commit the moves as `build: Orchard wallet delivery is node-free (recovery service to core)`. The per-consumer link fixes from Step 3 are their own commits, `build: <consumer> links orchard chainstate_write directly`.
 
 ## Stage 7 — required gates and unpinned trials (one PR)
 
