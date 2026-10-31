@@ -212,6 +212,10 @@ def symbol_text(build, args):
     return "".join(r + "\n" for r in sorted(rows))
 
 
+def symbols_name(args):
+    return "symbols_%s_%s.txt" % (reference_tag(), build_config(args.build))
+
+
 def current(args):
     items = []
     for base, rel in HEADERS:
@@ -220,7 +224,7 @@ def current(args):
         items.append((base, read(os.path.join(args.repo, rel))))
     if nodecore_checked():
         items.append(("jni_exports.txt", jni_exports(args.repo).encode()))
-    sym_name = "symbols_%s_%s.txt" % (reference_tag(), build_config(args.build))
+    sym_name = symbols_name(args)
     items.append((sym_name, symbol_text(args.build, args).encode()))
     return items
 
@@ -237,6 +241,8 @@ def main(argv=None):
     ap.add_argument("--nodecore-ffi")
     ap.add_argument("--wallet-ffi")
     ap.add_argument("--nm", help="nm for an MSVC .lib (default llvm-nm)")
+    ap.add_argument("--selected-out", help="check: file to record the selected symbol "
+                    "reference path in (default <build>/sep_w5_selected_reference.txt)")
     args = ap.parse_args(argv)
     bdir = args.baseline_dir or os.path.join(args.repo, "tests", "separation", "interface_baseline")
     # The .lib export check reads the committed headers: in record mode the
@@ -247,6 +253,13 @@ def main(argv=None):
         if not os.path.isfile(os.path.join(bdir, "wallet_ffi.h")):
             args.baseline_dir = committed
     try:
+        if args.mode == "check":
+            # Which reference this check uses, written before anything else can
+            # fail, so the gate can refuse a result against another lane's file.
+            chosen = os.path.join(bdir, symbols_name(args))
+            sel = args.selected_out or os.path.join(args.build, "sep_w5_selected_reference.txt")
+            with open(sel, "w") as f:
+                f.write(chosen + "\n")
         items = current(args)
         if not nodecore_checked():
             for item in NODECORE_ITEMS:

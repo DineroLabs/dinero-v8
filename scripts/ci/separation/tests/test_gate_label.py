@@ -633,3 +633,43 @@ def test_w5_missing_reference_reports_the_informational_comparison(tmp_path):
     # rc and output must agree; a contradiction is never "identical"
     (rc, _, _), info = w5info(tmp_path, "FAIL symbols_macos_off.txt\n", 0)
     assert info == "vs macOS reference: comparison did not run (rc=0)"
+
+
+# --- W5 reference selection (owner decision 2026-10-31) ---
+
+def w5sel(tmp_path, text, rc, ref, selected, expected="symbols_macos15_off.txt"):
+    log = tmp_path / "w5.log"
+    log.write_text(text)
+    sel = tmp_path / "selected.txt"
+    if selected is None:
+        sel.unlink(missing_ok=True)
+    else:
+        sel.write_text(selected + "\n")
+    r = run(tmp_path, "w5", log=log, rc=rc, reference_present=ref, platform="macos",
+            selected_ref_file=sel, expected_ref=expected)
+    return r[:2], outputs(tmp_path)
+
+
+def test_w5_pass_needs_the_lane_reference_and_reports_its_path(tmp_path):
+    (rc, line), out = w5sel(tmp_path, W5_PASS, 0, 1, "/w/tests/separation/interface_baseline/symbols_macos15_off.txt")
+    assert (rc, line) == (0, "GATE W5 PASS")
+    assert out["ref"] == "/w/tests/separation/interface_baseline/symbols_macos15_off.txt"
+
+
+def test_w5_pass_against_another_reference_fails(tmp_path):
+    (rc, line), out = w5sel(tmp_path, W5_PASS, 0, 1, "/w/tests/separation/interface_baseline/symbols_macos_off.txt")
+    assert (rc, line) == (1, "GATE W5 FAIL rc=1 (wrong reference selected: symbols_macos_off.txt, "
+                             "lane reference is symbols_macos15_off.txt)")
+    assert out["ref"] == "/w/tests/separation/interface_baseline/symbols_macos_off.txt"
+
+
+def test_w5_without_a_recorded_selection_did_not_run(tmp_path):
+    (rc, line), out = w5sel(tmp_path, W5_PASS, 0, 1, None)
+    assert (rc, line) == (1, "GATE W5 FAIL rc=1 (check did not run: interface_freeze recorded no selected reference)")
+    assert "ref" not in out
+
+
+def test_w5_missing_lane_reference_stays_missing_reference_and_reports_the_path(tmp_path):
+    (rc, line), out = w5sel(tmp_path, W5_MISSING_REF_ONLY, 8, 0, "/w/b/symbols_macos15_off.txt")
+    assert (rc, line) == (2, "GATE W5 FAIL rc=2 (missing reference -- not an interface mismatch)")
+    assert out["ref"] == "/w/b/symbols_macos15_off.txt" and out["note"] == "missing reference"
