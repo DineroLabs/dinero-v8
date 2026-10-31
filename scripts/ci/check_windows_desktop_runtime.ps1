@@ -7,7 +7,7 @@ $artifact = (Resolve-Path $ArtifactDir).Path
 $version = '8.2.0'
 $zipName = "dinero-v$version-windows-x86_64-msvc.zip"
 $zip = Get-ChildItem $artifact -Recurse -File | Where-Object Name -eq $zipName
-if (@($zip).Count -ne 1) { throw 'Expected exactly one portable desktop package' }
+if (@($zip).Count -ne 1) { throw 'Expected exactly one portable operator package' }
 $sums = Get-ChildItem $artifact -Recurse -File | Where-Object Name -eq "SHA256SUMS-windows-x86_64-$version"
 if (@($sums).Count -ne 1) { throw 'Expected checksum inventory is missing' }
 foreach ($line in Get-Content $sums.FullName) {
@@ -20,8 +20,20 @@ $owned = Join-Path $env:RUNNER_TEMP 'v820-desktop-runtime'
 if (Test-Path $owned) { throw 'Refusing an existing test directory' }
 New-Item $owned -ItemType Directory | Out-Null
 Expand-Archive $zip.FullName -DestinationPath (Join-Path $owned 'portable')
-$qt = @(Get-ChildItem (Join-Path $owned 'portable') -Recurse -File -Filter dinero-qt.exe)
-if ($qt.Count -ne 1) { throw 'Expected one Qt executable in portable package' }
+$operator = @(Get-ChildItem (Join-Path $owned 'portable') -Recurse -File -Filter dinerod.exe)
+if ($operator.Count -ne 1) { throw 'Expected one daemon in portable operator package' }
+$operatorBin = Split-Path $operator[0].FullName
+# The portable ZIP intentionally ships operators, not Qt. Qualify the actual
+# signed GUI installer, then compare its operator bytes with that ZIP.
+$setup = @(Get-ChildItem $artifact -Recurse -File | Where-Object Name -eq "Dinero-$version-windows-x86_64-Setup.exe")
+if ($setup.Count -ne 1) { throw 'Expected signed desktop installer' }
+$setupSignature = Get-AuthenticodeSignature $setup[0].FullName
+if ($setupSignature.Status -ne 'Valid' -or $setupSignature.SignerCertificate.Subject -notmatch 'CN=Mirsad Hajdarevic(?:,|$)' -or $null -eq $setupSignature.TimeStamperCertificate) { throw 'Untrusted desktop installer signature' }
+$installed = Join-Path $owned 'installed'
+$process = Start-Process $setup[0].FullName -ArgumentList '/S',"/D=$installed" -Wait -PassThru
+if ($process.ExitCode -ne 0) { throw 'Silent desktop installation failed' }
+$qt = @(Get-ChildItem $installed -Recurse -File -Filter dinero-qt.exe)
+if ($qt.Count -ne 1) { throw 'Expected one Qt executable in installed desktop package' }
 $bin = Split-Path $qt[0].FullName
 foreach ($name in 'dinero-qt.exe','dinerod.exe','dinero-cli.exe') {
     $file = Join-Path $bin $name
@@ -72,16 +84,11 @@ try {
     if ($null -ne $gui -and -not $gui.HasExited) { $gui.CloseMainWindow() | Out-Null; Start-Sleep -Seconds 2; $gui.Refresh(); if (-not $gui.HasExited) { Stop-Process -Id $gui.Id -Force; $report['forced_owned_gui_cleanup']=$true } }
     $report | ConvertTo-Json -Depth 8 | Set-Content (Join-Path $owned 'runtime-result.json') -Encoding UTF8
 }
-$setup = @(Get-ChildItem $artifact -Recurse -File | Where-Object Name -eq "Dinero-$version-windows-x86_64-Setup.exe")
-if ($setup.Count -ne 1) { throw 'Expected signed desktop installer' }
-$installed = Join-Path $owned 'installed'
-$process = Start-Process $setup[0].FullName -ArgumentList '/S',"/D=$installed" -Wait -PassThru
-if ($process.ExitCode -ne 0) { throw 'Silent desktop installation failed' }
-foreach ($name in 'dinero-qt.exe','dinerod.exe','dinero-cli.exe','dinero-sv2-miner.exe','dinero-sv2-gpu-miner.exe') {
-    $left=Join-Path $bin $name; $right=Join-Path $installed $name
+foreach ($name in 'dinerod.exe','dinero-cli.exe','dinero-miner.exe','dinero-stratum-worker.exe','dinero-gpu-miner.exe','dinero-wallet-cli.exe','dinero-seeder.exe','dinero-sv2-miner.exe','dinero-sv2-gpu-miner.exe') {
+    $left=Join-Path $operatorBin $name; $right=Join-Path $bin $name
     if (-not (Test-Path $right) -or (Get-FileHash $left -Algorithm SHA256).Hash -ne (Get-FileHash $right -Algorithm SHA256).Hash) { throw "Installed versus portable byte mismatch: $name" }
 }
 $report['installed_vs_portable_product_bytes']='PASS'
-$report['result']='PASS: signed portable Qt startup, one bundled daemon, authenticated RPC and installed product parity'
+$report['result']='PASS: signed installed Qt startup, one bundled daemon, authenticated RPC and installed-versus-portable operator parity'
 $report | ConvertTo-Json -Depth 8 | Set-Content (Join-Path $owned 'runtime-result.json') -Encoding UTF8
 $report | ConvertTo-Json -Depth 8
