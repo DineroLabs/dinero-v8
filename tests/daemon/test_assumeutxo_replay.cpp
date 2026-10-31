@@ -18,6 +18,7 @@
 #include "daemon/utreexo_tx_payload.h"
 #include "daemon/utreexo_tx_reader.h"
 #include "rpc/rpc_registry.h"
+din::Json rpc_getblocktemplate_v14(const ExecutionContext&, const din::Json&);
 din::Json rpc_mining_getjob(const ExecutionContext&, const din::Json&);
 din::Json rpc_mining_submit(const ExecutionContext&, const din::Json&);
 din::Json rpc_context_getblock(const ExecutionContext&, const din::Json&);
