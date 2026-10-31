@@ -1,0 +1,342 @@
+name: macOS desktop candidates
+
+# Native, artifact-only desktop preparation. No tag/release creation, signing
+# secrets, or publishing steps. Sign and notarize the final verified stages locally.
+on:
+  pull_request:
+    branches: [dinero-main]
+    paths:
+      - '.github/workflows/macos-desktop-candidate.yml'
+      - 'scripts/ci/check_desktop_candidate.py'
+      - 'scripts/ci/test_desktop_candidate.py'
+      - 'scripts/ci/check_macos_minimum.py'
+      - 'scripts/ci/test_macos_minimum.py'
+      - 'scripts/ci/check_macos_desktop_payload.py'
+      - 'scripts/ci/test_macos_desktop_payload.py'
+  workflow_dispatch:
+    inputs:
+      candidate_source:
+        description: 'Full reviewed Core source SHA; artifact-only, no publication'
+        required: true
+        type: string
+permissions:
+  # Needed to read historical snapshot assets if their release is still draft.
+  contents: write
+concurrency:
+  group: macos-desktop-candidate-${{ inputs.candidate_source || github.ref }}
+  cancel-in-progress: false
+env:
+  SV2_REF: 5f3054367646d4abc667d501e01669ff24979e14
+jobs:
+  contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          python3 -B scripts/ci/test_desktop_candidate.py -v
+          python3 -B scripts/ci/test_macos_minimum.py -v
+          python3 -B scripts/ci/test_macos_desktop_payload.py -v
+      - name: Require an immutable candidate input
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          CANDIDATE_SOURCE: ${{ inputs.candidate_source }}
+        run: python3 scripts/ci/check_desktop_candidate.py "$CANDIDATE_SOURCE"
+
+  macos-desktop:
+    name: macOS ${{ matrix.variant }} — native desktop candidate
+    if: github.event_name == 'workflow_dispatch'
+    needs: contract
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - variant: arm64
+            arch: arm64
+            runner: macos-15 # macos-14 is in scheduled retirement brownouts
+            qt: '6.9.1'
+          - variant: x86_64
+            arch: x86_64
+            runner: macos-26-intel
+            qt: '6.9.1'
+          - variant: x86_64-ventura-qt6.5
+            arch: x86_64
+            runner: macos-26-intel
+            qt: '6.5.3'
+    timeout-minutes: 180
+
+    defaults:
+      run:
+        working-directory: source
+
+    steps:
+      - name: Checkout immutable release source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.candidate_source }}
+          path: source
+          submodules: recursive
+          fetch-depth: 1
+
+      - name: Checkout reviewed release tooling
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          path: tooling
+          fetch-depth: 1
+
+      - name: Checkout pinned SV2 miners
+        uses: actions/checkout@v4
+        with:
+          repository: DineroLabs/dinero-sv2
+          ref: ${{ env.SV2_REF }}
+          path: dinero-sv2
+          fetch-depth: 1
+
+      - name: Record and verify provenance
+        id: provenance
+        env:
+          CANDIDATE_SOURCE: ${{ inputs.candidate_source }}
+        run: |
+          set -euo pipefail
+          SOURCE_HEAD=$(git rev-parse HEAD)
+          TOOLING_HEAD=$(git -C "${GITHUB_WORKSPACE}/tooling" rev-parse HEAD)
+          SV2_HEAD=$(git -C "${GITHUB_WORKSPACE}/dinero-sv2" rev-parse HEAD)
+          test "$TOOLING_HEAD" = "$GITHUB_SHA"
+          test "$SV2_HEAD" = "$SV2_REF"
+          EXPECTED_SV2=$(python3 -c 'import json; print(json.load(open("packaging/v8.2.0-candidate-sources.json"))["mining"]["source_commit"])')
+          test "$SV2_HEAD" = "$EXPECTED_SV2"
+          test "$(uname -m)" = '${{ matrix.arch }}'
+          V=$(python3 "$GITHUB_WORKSPACE/tooling/scripts/ci/check_desktop_candidate.py" \
+            "$CANDIDATE_SOURCE" --source "$PWD")
+          {
+            echo "version=$V"
+            echo "source_head=$SOURCE_HEAD"
+            echo "tooling_head=$TOOLING_HEAD"
+          } >> "$GITHUB_OUTPUT"
+          {
+            echo 'status=unsigned artifact-only candidate; not release approved'
+            echo 'architecture=${{ matrix.arch }}'
+            echo 'variant=${{ matrix.variant }}'
+            echo 'qt_version=${{ matrix.qt }}'
+            echo 'deployment_target=13.0'
+            echo 'snapshot_inputs=v8.1.11 primary, v8.0.17 fallback; final bootstrap review pending'
+            echo "source_commit=$SOURCE_HEAD"
+            echo "tooling_commit=$TOOLING_HEAD"
+            echo "sv2_commit=$SV2_HEAD"
+            echo "runner=${RUNNER_OS} ${RUNNER_ARCH}"
+          } | tee desktop-release-provenance-macos-${{ matrix.variant }}.txt
+
+      - name: Exercise the audit with real Apple tools before the full build
+        run: python3 "$GITHUB_WORKSPACE/tooling/scripts/ci/test_macos_minimum.py" -v
+
+      - name: Overlay reviewed architecture-aware packaging helpers
+        run: |
+          cp "${GITHUB_WORKSPACE}/tooling/packaging/mac/build-installer.sh" packaging/mac/
+          cp "${GITHUB_WORKSPACE}/tooling/packaging/mac/assert-v8-release-lane.sh" packaging/mac/
+          chmod +x packaging/mac/build-installer.sh packaging/mac/assert-v8-release-lane.sh
+
+      - name: Install Rust and build tools
+        run: |
+          brew install ninja ccache gnupg
+
+      - name: Install the variant-specific Qt runtime
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: ${{ matrix.qt }}
+          host: mac
+          target: desktop
+          arch: clang_64
+          modules: qtwebsockets
+          cache: true
+
+      - name: Verify Qt version and native build host
+        run: |
+          test "$(uname -m)" = '${{ matrix.arch }}'
+          test "$("$QT_ROOT_DIR/bin/qmake" -query QT_VERSION)" = '${{ matrix.qt }}'
+          echo "QT_PREFIX=$QT_ROOT_DIR" >> "$GITHUB_ENV"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install the source-pinned Orchard compiler
+        run: |
+          python3 - <<'PY_ORCHARD_TOOLCHAIN'
+          import pathlib, re, subprocess
+          text = pathlib.Path('rust/orchard_backend/rust-toolchain.toml').read_text()
+          pins = re.findall(r'^channel = "([0-9]+\.[0-9]+\.[0-9]+)"$', text, re.MULTILINE)
+          if len(pins) != 1:
+              raise SystemExit('Missing exact Orchard compiler pin')
+          subprocess.run(['rustup', 'toolchain', 'install', pins[0], '--profile', 'minimal'], check=True)
+          PY_ORCHARD_TOOLCHAIN
+
+      - name: Build pinned SV2 miners
+        working-directory: dinero-sv2
+        run: cargo build --release --locked
+
+      - name: Cache vendored prerequisites
+        uses: actions/cache@v4
+        with:
+          path: |
+            source/third_party/openssl-3.5.7/prebuilt
+            source/depends/sources
+            source/third_party/bulletproofs_ffi/target
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: desktop-macos-${{ matrix.variant }}-${{ steps.provenance.outputs.source_head }}-${{ env.SV2_REF }}
+
+      - name: Build vendored prerequisites
+        run: |
+          OPENSSL_REBUILD=1 bash scripts/build-openssl-vendored.sh
+          cmake -S depends -B depends/build
+          cmake --build depends/build -j"$(sysctl -n hw.ncpu)"
+
+      - name: Fetch and verify pinned ${{ matrix.variant }} Tor bundle
+        run: |
+          bash scripts/fetch-tor-expert-bundle.sh ${{ matrix.arch }} "$RUNNER_TEMP/tor-expert-bundle"
+          echo "DINERO_TOR_BUNDLE_DIR=$RUNNER_TEMP/tor-expert-bundle" >> "$GITHUB_ENV"
+
+      - name: Fetch and verify snapshot pair
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p release-inputs
+          gh release download v8.1.11 \
+            --repo DineroLabs/dinero-v8 \
+            --pattern dinero-assumeutxo-99677-v4.dat \
+            --pattern dinero-assumeutxo-99677-v4.manifest.json \
+            --dir release-inputs
+          gh release download v8.0.17 \
+            --repo DineroLabs/dinero-v8 \
+            --pattern utxo-snapshot-65300.dat \
+            --pattern utxo-snapshot-65300.dat.manifest.json \
+            --dir release-inputs
+          {
+            echo "DINERO_SNAPSHOT_DAT=$PWD/release-inputs/dinero-assumeutxo-99677-v4.dat"
+            echo "DINERO_SNAPSHOT_MANIFEST=$PWD/release-inputs/dinero-assumeutxo-99677-v4.manifest.json"
+            echo "DINERO_SNAPSHOT_FALLBACK_DAT=$PWD/release-inputs/utxo-snapshot-65300.dat"
+            echo "DINERO_SNAPSHOT_FALLBACK_MANIFEST=$PWD/release-inputs/utxo-snapshot-65300.dat.manifest.json"
+          } >> "$GITHUB_ENV"
+
+      - name: Configure exact ${{ matrix.variant }} release
+        env:
+          DINERO_SV2_SOURCE_ROOT: ${{ github.workspace }}/dinero-sv2
+        run: |
+          cmake -S . -B build-desktop -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_PREFIX_PATH="$QT_PREFIX" \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=13.0 \
+            -DCMAKE_OSX_ARCHITECTURES=${{ matrix.arch }} \
+            -DDINERO_USE_VENDORED_DEPS=ON \
+            -DDINERO_BUILD_QT=ON \
+            -DDINERO_BUILD_ORCHARD_BACKEND=ON \
+            -DDIN_ENABLE_ORCHARD_UI=ON \
+            -DDINERO_BUILD_MINER=ON \
+            -DDINERO_BUILD_SEEDER=ON \
+            -DENABLE_GPU_MINING=ON \
+            -DMINER_ENABLE_OPENCL=ON \
+            -DMINER_ENABLE_METAL=ON \
+            -DENABLE_GRPC=OFF \
+            -DDINERO_ENABLE_PORTMAPPING=ON \
+            -DDINERO_ENABLE_QUIC=ON \
+            -DDINERO_REQUIRE_REACHABILITY_STACK=ON \
+            -DDINERO_RELEASE_TAG=${{ steps.provenance.outputs.version }} \
+            -DDINERO_SV2_SOURCE_ROOT="$DINERO_SV2_SOURCE_ROOT" \
+            -DDINERO_TOR_BUNDLE_DIR="$DINERO_TOR_BUNDLE_DIR" \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+
+      - name: Build complete ${{ matrix.variant }} desktop stack
+        run: |
+          cmake --build build-desktop -j"$(sysctl -n hw.ncpu)" --target \
+            dinerod dinero-cli dinero-swap-tower dinero-qt dinero-miner dinero-stratum-worker \
+            dinero-wallet-cli dinero-gpu-miner dinero-solo-miner-cli dinero-seeder
+
+      - name: Assert reachability stack
+        run: |
+          python3 "${GITHUB_WORKSPACE}/tooling/scripts/ci/check_reachability_stack.py" \
+            --dinerod build-desktop/dinerod --cli build-desktop/dinero-cli
+
+      - name: Build unsigned ${{ matrix.variant }} release stage
+        env:
+          DINERO_RELEASE_ARCH: ${{ matrix.arch }}
+        run: |
+          bash packaging/mac/build-installer.sh \
+            --version "${{ steps.provenance.outputs.version }}" \
+            --arch ${{ matrix.arch }} \
+            --build-dir build-desktop
+
+      - name: Verify ${{ matrix.variant }} architecture and real Qt daemon launch
+        run: |
+          set -euo pipefail
+          APP="packaging/mac/dist/stage/dinero-qt.app"
+          test -d "$APP"
+          python3 scripts/verify-swap-tower-binary.py "$APP/Contents/MacOS/dinero-swap-tower"
+          python3 scripts/verify-orchard-package.py --daemon "$APP/Contents/MacOS/dinerod" --qt "$APP/Contents/MacOS/dinero-qt"
+          python3 scripts/verify-swap-tower-binary.py packaging/mac/dist/stage/dinero-swap-tower
+          test -x "$APP/Contents/Resources/tor/tor/tor"
+          test -f "$APP/Contents/Resources/tor/DINERO_TOR_VERSION"
+          "$APP/Contents/Resources/tor/tor/tor" --version | grep -F 'Tor version '
+          python3 "$GITHUB_WORKSPACE/tooling/scripts/ci/check_macos_desktop_payload.py" \
+            packaging/mac/dist/stage --arch '${{ matrix.arch }}'
+          python3 "$GITHUB_WORKSPACE/tooling/scripts/ci/check_macos_minimum.py" \
+            "$APP" --arch '${{ matrix.arch }}' --maximum 13.0 --min-files 10 \
+            | tee -a desktop-release-provenance-macos-${{ matrix.variant }}.txt
+          TEST_HOME=$(mktemp -d)
+          # macdeployqt ships the native cocoa platform plugin on macOS; it does
+          # not ship Qt's offscreen plugin. Hosted macOS runners have a WindowServer,
+          # so exercise the same platform plugin end users will actually load.
+          HOME="$TEST_HOME" QT_QPA_PLATFORM=cocoa \
+            "$APP/Contents/MacOS/dinero-qt" >"$TEST_HOME/qt.log" 2>&1 &
+          QT_PID=$!
+          DAEMON_PID=""
+          for _ in $(seq 1 90); do
+            DAEMON_PID=$(pgrep -P "$QT_PID" -f '/dinerod( |$)' || true)
+            [ -n "$DAEMON_PID" ] && break
+            kill -0 "$QT_PID" 2>/dev/null || { cat "$TEST_HOME/qt.log"; exit 1; }
+            sleep 1
+          done
+          [ -n "$DAEMON_PID" ] || { cat "$TEST_HOME/qt.log"; echo "::error::${{ matrix.variant }} Qt did not start bundled dinerod"; exit 1; }
+          sleep 5
+          COUNT=$(pgrep -P "$QT_PID" -f '/dinerod( |$)' | wc -l)
+          [ "$COUNT" -eq 1 ] || { cat "$TEST_HOME/qt.log"; echo "::error::expected one daemon child, got $COUNT"; exit 1; }
+          kill "$QT_PID" 2>/dev/null || true
+          wait "$QT_PID" 2>/dev/null || true
+
+      - name: Preserve failed candidate diagnostics
+        if: failure()
+        run: |
+          mkdir -p "$RUNNER_TEMP/macos-candidate-diagnostics"
+          find packaging/mac/dist/stage -type f -maxdepth 6 > "$RUNNER_TEMP/macos-candidate-diagnostics/layout.txt" 2>/dev/null || true
+          find "$RUNNER_TEMP" -name qt.log -exec cp {} "$RUNNER_TEMP/macos-candidate-diagnostics/" \; || true
+          git rev-parse HEAD > "$RUNNER_TEMP/macos-candidate-diagnostics/source.txt"
+          if [ -d packaging/mac/dist/stage/dinero-qt.app ]; then
+            echo 'UNQUALIFIED failed candidate; diagnostics only, not release approved' > "$RUNNER_TEMP/macos-candidate-diagnostics/STATUS.txt"
+            ditto -c -k --sequesterRsrc --keepParent packaging/mac/dist "$RUNNER_TEMP/macos-candidate-diagnostics/unqualified-stage.zip"
+          fi
+
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: macos-${{ matrix.variant }}-failure-diagnostics
+          path: ${{ runner.temp }}/macos-candidate-diagnostics
+          retention-days: 7
+
+      - name: Archive unsigned ${{ matrix.variant }} stage for local signing
+        id: archive
+        run: |
+          V="${{ steps.provenance.outputs.version }}"
+          cp desktop-release-provenance-macos-${{ matrix.variant }}.txt packaging/mac/dist/
+          ARCHIVE="dinero-macos-${{ matrix.variant }}-desktop-stage-${V}.zip"
+          (cd packaging/mac && ditto -c -k --sequesterRsrc --keepParent dist "$GITHUB_WORKSPACE/$ARCHIVE")
+          shasum -a 256 "$GITHUB_WORKSPACE/$ARCHIVE"
+          echo "archive=$ARCHIVE" >> "$GITHUB_OUTPUT"
+
+      - name: Upload unsigned ${{ matrix.variant }} release stage
+        uses: actions/upload-artifact@v4
+        with:
+          name: dinero-macos-${{ matrix.variant }}-desktop-stage-${{ steps.provenance.outputs.version }}
+          path: ${{ steps.archive.outputs.archive }}
+          if-no-files-found: error
+          retention-days: 14
