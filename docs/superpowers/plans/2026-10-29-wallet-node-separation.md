@@ -342,13 +342,13 @@ Replaces Task 0.8's consumer. That one linked `dinero_wallet_ffi` with a list co
     - Gates whose own inputs built still report their real result; for example, K2/W2/K5 need no build.
   - **macOS moves to `macos-15` (owner decision, 2026-10-31).** `macos-14` images retire on 2026-11-02 (actions/runner-images#13518). Run 3 on macOS is **UNMEASURED** (scheduled brownout); it is not rerun.
     - History: run 1 was UNMEASURED (Xcode 15.4 build break, `chainstate_service.h:1735`, fixed by #859). Run 2 measured macos-14 / Xcode 15.4 and matched the macOS references.
-    - `macos-15` has no Xcode 15.4. The lane pins Xcode 16.4 (the image default) and asserts it.
+    - `macos-15` has no Xcode 15.4. The lane pins Xcode 16.4 as an explicit, reproducible choice (owner decision) and asserts it and its `clang++`.
     - The lane's references are named by `ref_tag: macos15` (`SEP_REF_TAG`), not by platform. The existing macOS references (`consensus_vectors_ref_<cfg>.json`, `symbols_macos_<cfg>.txt`, recorded locally with AppleClang 21 / Xcode 27) stay unchanged with their provenance and are never this lane's acceptance reference.
     - Until a recorded `macos15` reference is reviewed and committed, K4 and W5 on the lane are FAIL rc 2 (missing reference).
       - Both still compare against the old macOS reference for information only. The summary row shows the result as `info:` (K4 digest mismatches; W5 interface identical or differs).
       - Any difference from it is investigated before a new reference is accepted. Expected values are never updated just to make the lane pass.
     - The RPC transcript reference (`tests/separation/transcripts/<cfg>.json`) is shared by every POSIX lane and is not keyed by `ref_tag`.
-    - Xcode 16.4 is pinned because it is the image default. It is not the smallest step from 15.4; 16.0 is also on the image.
+    - That the image currently defaults to 16.4 is context, not a compatibility argument. Compatibility with the old reference is shown only by the lane's own informational comparison.
   - W6 as recorded in Task 0.8a.
   - **The first PR run only collects candidate baselines,** which the record step prints to the job log. It is not described as green.
     - The candidates are reviewed, then committed by hand in a separate change.

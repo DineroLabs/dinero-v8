@@ -103,7 +103,8 @@ jobs:
             ref_tag: linux
             gcc_major: '13'
           # macos-14 images retire 2026-11-02 (actions/runner-images#13518);
-          # macos-15 has no Xcode 15.4, so its default 16.4 is pinned explicitly.
+          # Xcode 16.4 is an explicit, reproducible pin (owner decision; macos-15
+          # has no 15.4). The lane fails if that Xcode or its clang++ is not selected.
           - os: macos-15
             toolchain: macos15-arm64
             plat: macos
