@@ -1,5 +1,8 @@
 name: v8.2.0 isolated Windows desktop runtime
 on:
+  push:
+    branches: [ci/v820-desktop-runtime-verification]
+    paths: ['.github/workflows/v820-windows-runtime-verification.yml']
   workflow_dispatch:
     inputs:
       artifact_run:
@@ -14,7 +17,14 @@ permissions:
   contents: read
   actions: read
 jobs:
+  registration:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - run: echo 'Read-only candidate verification workflow registered; use manual dispatch after artifact completion.'
   verify:
+    if: github.event_name == 'workflow_dispatch'
     runs-on: windows-2022
     timeout-minutes: 20
     steps:
