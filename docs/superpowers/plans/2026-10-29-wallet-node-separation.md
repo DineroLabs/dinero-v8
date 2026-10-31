@@ -305,6 +305,8 @@ Replaces Task 0.8's consumer. That one linked `dinero_wallet_ffi` with a list co
 **Interfaces:**
 - Produces two workflows. Neither is a required check.
   - `separation-gates.yml` runs a matrix of {`ubuntu-latest` (GCC 15), `ubuntu-24.04` (GCC 13), `macos-15` (arm64, Xcode 16.4 pinned)} × {OFF, ON}, each with steps for K1–K6 and W1–W6.
+  - `separation-gates.yml` also runs `separation-script-tests` (owner decision 2026-10-31): `pytest scripts/ci/separation` on ubuntu-24.04 with pinned pytest, no native build. It is how the reference pins and wiring tests gate in CI.
+  - W5 records which symbol reference it selected (`sep_w5_selected_reference.txt`); gate_label refuses a PASS or missing-reference result against any file other than the lane's `symbols_<ref_tag>_<cfg>.txt`, and the summary row shows the path (`ref:`).
   - `separation-gates-windows.yml` follows `windows-openssl-release-smoke.yml`'s toolchain steps. It has no signing steps, no `secrets.*`, no artifact uploads and no release creation.
 - In stage 0 every gate step is `continue-on-error: true`. Each step echoes `GATE <id> <PASS|FAIL>`, and a final summary step prints the table.
 
