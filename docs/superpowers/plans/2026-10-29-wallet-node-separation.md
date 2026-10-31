@@ -314,8 +314,8 @@ Replaces Task 0.8's consumer. That one linked `dinero_wallet_ffi` with a list co
   - K3 and W3 FAIL where they are measured.
     - On Windows they report **UNMEASURED** (neither PASS nor a measured FAIL) until the COFF archive scan is verified: the probe `.lib` link inputs, a verified `llvm-nm` and a positive control.
   - K5 and W4 PASS (K5 runs on POSIX runners only).
-  - K4 and W5 PASS on macOS, where the reviewed reference baselines are committed, once the macOS lane builds (see below).
-    - **On Linux and Windows, K4 and W5 are expected red** (`FAIL rc=2 (missing reference -- not a vector/interface mismatch)`) until reviewed reference baselines for that platform are committed.
+  - K4 and W5 PASS on a lane only against that lane's committed, reviewed reference. On the macos-15 lane (`ref_tag: macos15`) none is committed yet (see below).
+    - **On Linux, macOS (macos-15) and Windows, K4 and W5 are expected red** (`FAIL rc=2 (missing reference -- not a vector/interface mismatch)`) until reviewed reference baselines for that platform are committed.
       - On Windows, W5 shows that state only after B1 is fixed (see below). Until then it is UNMEASURED.
     - A missing reference is missing evidence, not a pass and not a mismatch.
   - **Windows W5 is partial:** wallet FFI + RPC transcript only.
@@ -344,11 +344,15 @@ Replaces Task 0.8's consumer. That one linked `dinero_wallet_ffi` with a list co
     - History: run 1 was UNMEASURED (Xcode 15.4 build break, `chainstate_service.h:1735`, fixed by #859). Run 2 measured macos-14 / Xcode 15.4 and matched the macOS references.
     - `macos-15` has no Xcode 15.4. The lane pins Xcode 16.4 (the image default) and asserts it.
     - The lane's references are named by `ref_tag: macos15` (`SEP_REF_TAG`), not by platform. The existing macOS references (`consensus_vectors_ref_<cfg>.json`, `symbols_macos_<cfg>.txt`, recorded locally with AppleClang 21 / Xcode 27) stay unchanged with their provenance and are never this lane's acceptance reference.
-    - Until a recorded `macos15` reference is reviewed and committed, K4 and W5 on the lane are FAIL rc 2 (missing reference); K4 still compares against the old reference for information. Any difference from it is investigated before a new reference is accepted; expected values are never updated just to make the lane pass.
+    - Until a recorded `macos15` reference is reviewed and committed, K4 and W5 on the lane are FAIL rc 2 (missing reference).
+      - Both still compare against the old macOS reference for information only. The summary row shows the result as `info:` (K4 digest mismatches; W5 interface identical or differs).
+      - Any difference from it is investigated before a new reference is accepted. Expected values are never updated just to make the lane pass.
+    - The RPC transcript reference (`tests/separation/transcripts/<cfg>.json`) is shared by every POSIX lane and is not keyed by `ref_tag`.
+    - Xcode 16.4 is pinned because it is the image default. It is not the smallest step from 15.4; 16.0 is also on the image.
   - W6 as recorded in Task 0.8a.
   - **The first PR run only collects candidate baselines,** which the record step prints to the job log. It is not described as green.
     - The candidates are reviewed, then committed by hand in a separate change.
-    - Only a later run against the committed baselines can show K4/W5 PASS on Linux and Windows.
+    - Only a later run against the committed baselines can show K4/W5 PASS on Linux, macOS (macos-15) and Windows.
 - [ ] **Step 3:** Commit `ci(separation): non-required gate workflows`.
 
 ### Task 0.10: Scope measurement → owner decision (STOP)
