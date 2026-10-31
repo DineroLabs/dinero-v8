@@ -1,0 +1,9 @@
+{
+  "_doc": "root -> A; B <-> C is a cycle not reachable from root.",
+  "targets": {
+    "root": {"type": "STATIC_LIBRARY", "link": ["A"], "sources": ["src/consensus/root.cpp"]},
+    "A": {"type": "STATIC_LIBRARY", "sources": ["src/a/a.cpp"]},
+    "B": {"type": "STATIC_LIBRARY", "link": ["C", "A"], "sources": ["src/b/b.cpp"]},
+    "C": {"type": "STATIC_LIBRARY", "link": ["B"], "sources": ["src/c/c.cpp"]}
+  }
+}

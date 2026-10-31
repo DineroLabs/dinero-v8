@@ -1,0 +1,730 @@
+# ─────────────────────────────────────────────────────────────────────────
+# Wallet/consensus separation gates (stage 0: non-required, report only)
+# ─────────────────────────────────────────────────────────────────────────
+#
+# Runs every separation gate (spec section 8, plan Task 0.9) on
+#   Linux GCC 15 (ubuntu-latest), Linux GCC 13 (ubuntu-24.04), macOS arm64
+#   (macos-14), each with DINERO_BUILD_ORCHARD_BACKEND=OFF and =ON.
+# Windows MSVC runs the same gates in separation-gates-windows.yml.
+#
+# Stage 0 rules:
+#   * not a required check; every gate step is continue-on-error and echoes
+#     `GATE <id> <PASS|FAIL>`; the last step prints the table.
+#   * evidence goes to the job log (and the run's step summary) only:
+#     nothing is uploaded, nothing is committed or pushed from CI.
+#   * never-run floor (scripts/ci/separation/never_run_floor.txt): ctest is only
+#     invoked with exact ^(...)$ names from the Sep* gate list (checked against
+#     the floor before running) or through run_consensus_vectors.py, which
+#     enforces the floor itself. No label (-L) selection anywhere.
+#   * K2/W2 need CMake codemodel >= 2.9 (CMake >= 4.1): every job installs the
+#     same pinned CMake from PyPI and asserts the exact version.
+#   * Platforms without committed baselines (K4 refs and W5 symbol lists are
+#     macOS-recorded) fail closed with rc 2. Where a baseline is missing (or
+#     on a manual run with record_baselines=true) a last step prints freshly
+#     recorded files to the log for review; they are never checked against
+#     in the same run.
+#   * a gate whose prerequisite target (dinero_consensus, dinero_wallet,
+#     dinerod, sep_wallet_fixture_compat) failed to build reports
+#     `GATE <id> UNMEASURED (prerequisite build failed: ...)`, and the summary
+#     a `LANE UNMEASURED` line (scripts/ci/separation/prereq_status.py).
+#
+# Configure flags are the ones the K4 refs, W4 fixtures and W5 baselines were
+# recorded with (sdd build-env.md); no depends/, QUIC or other extras.
+# ─────────────────────────────────────────────────────────────────────────
+
+name: Separation gates
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/separation-gates.yml'
+      - 'scripts/ci/separation/**'
+      - 'tests/separation/**'
+      - 'CMakeLists.txt'
+      - '**/CMakeLists.txt'
+      - 'cmake/**'
+      - 'src/**'
+      - 'include/**'
+      - 'wallet-core/**'
+      - 'resources/schema/**'
+      - 'rust/orchard_backend/**'
+      - 'mobile-tauri/src-tauri/build.rs'
+      - 'scripts/check_compact_regtest_vectors.py'
+      - 'tests/vectors/compact_regtest_v1/**'
+      - 'tests/vectors/compact_v6_v1/**'
+  workflow_dispatch:
+    inputs:
+      record_baselines:
+        description: 'Also record K4 refs and W5 symbol lists for this platform and print them to the log (review, then commit by hand)'
+        type: boolean
+        required: false
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: separation-gates-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash   # bash --noprofile --norc -eo pipefail
+
+env:
+  SEP_CMAKE_VERSION: '4.3.4'
+  SEP_NINJA_VERSION: '1.13.2'
+
+jobs:
+  gates:
+    name: gates ${{ matrix.toolchain }} orchard=${{ matrix.orchard }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04, macos-14]
+        orchard: [off, on]
+        include:
+          - os: ubuntu-latest
+            toolchain: linux-gcc15
+            plat: linux
+            gcc_major: '15'
+          - os: ubuntu-24.04
+            toolchain: linux-gcc13
+            plat: linux
+            gcc_major: '13'
+          - os: macos-14
+            toolchain: macos-arm64
+            plat: macos
+            gcc_major: ''
+    env:
+      SEP_BUILD: ${{ github.workspace }}/build-sep
+      SEP_CFG: ${{ matrix.orchard }}
+      SEP_PLAT: ${{ matrix.plat }}
+
+    steps:
+      # K5 reads the baseline (1667f8ed6) blobs from git history: full clone.
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.12'
+
+      - name: Install pinned CMake and Ninja
+        run: |
+          python -m pip install --disable-pip-version-check "cmake==${SEP_CMAKE_VERSION}" "ninja==${SEP_NINJA_VERSION}"
+          hash -r
+          command -v cmake ctest ninja
+          cmake --version
+          ctest --version
+          ninja --version
+          test "$(cmake --version | head -1)" = "cmake version ${SEP_CMAKE_VERSION}"
+          test "$(ctest --version | head -1)" = "ctest version ${SEP_CMAKE_VERSION}"
+
+      # The GCC lanes name their compiler explicitly (gcc-15 on ubuntu-latest,
+      # gcc-13 on ubuntu-24.04) instead of trusting the image default; the
+      # configure step then asserts CMake's recorded compiler version.
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        env:
+          GCC_MAJOR: ${{ matrix.gcc_major }}
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            build-essential "gcc-${GCC_MAJOR}" "g++-${GCC_MAJOR}" ccache pkg-config perl \
+            libcurl4-openssl-dev libudev-dev libusb-1.0-0-dev
+          echo "CC=gcc-${GCC_MAJOR}" >> "$GITHUB_ENV"
+          echo "CXX=g++-${GCC_MAJOR}" >> "$GITHUB_ENV"
+
+      - name: Install macOS build dependencies
+        if: runner.os == 'macOS'
+        run: brew install ccache
+
+      - name: Record compiler
+        env:
+          GCC_MAJOR: ${{ matrix.gcc_major }}
+        run: |
+          "${CXX:-c++}" --version | tee "$RUNNER_TEMP/compiler.txt"
+          if [ -n "$GCC_MAJOR" ]; then
+            got="$("$CXX" -dumpversion | cut -d. -f1)"
+            if [ "$got" != "$GCC_MAJOR" ]; then
+              echo "::error::lane is GCC $GCC_MAJOR but $CXX is GCC $got"; exit 1
+            fi
+          fi
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # same pin as orchard-backend.yml
+        with:
+          toolchain: stable
+
+      - name: Install the source-pinned Orchard compiler
+        run: |
+          pin="$(python - <<'PY'
+          import tomllib
+          with open('rust/orchard_backend/rust-toolchain.toml', 'rb') as f:
+              print(tomllib.load(f)['toolchain']['channel'])
+          PY
+          )"
+          rustup toolchain install "$pin" --profile minimal
+          rustc --version
+          rustc "+$pin" --version
+
+      - name: Set up ccache
+        uses: hendrikmuhs/ccache-action@5ebbd400eff9e74630f759d94ddd7b6c26299639 # v1.2
+        with:
+          key: separation-gates-${{ matrix.toolchain }}-${{ matrix.orchard }}
+          max-size: 1G
+          # Owner rule: cache saves are uploads; restore only.
+          save: false
+
+      - name: Cache vendored OpenSSL
+        uses: actions/cache/restore@v4
+        with:
+          path: third_party/openssl-3.5.7/prebuilt
+          key: separation-openssl-${{ matrix.toolchain }}-${{ hashFiles('scripts/build-openssl-vendored.sh') }}
+
+      - name: Build vendored OpenSSL
+        run: OPENSSL_VERSION=3.5.7 bash scripts/build-openssl-vendored.sh
+
+      - name: Write gate helpers
+        run: |
+          cat > "$RUNNER_TEMP/sep_gate.sh" <<'SH'
+          # Sourced by every gate step.
+          FLOOR="$GITHUB_WORKSPACE/scripts/ci/separation/never_run_floor.txt"
+          if [ ! -r "$FLOOR" ] || ! grep -qEv '^[[:space:]]*(#|$)' "$FLOOR"; then
+            echo "::error::never-run floor $FLOOR missing, unreadable or empty"
+            echo "GATE $(printf %s "${GITHUB_ACTION:-?}" | tr '[:lower:]' '[:upper:]') FAIL rc=2 (no floor)"
+            exit 2
+          fi
+          if [ "$(cmake --version | head -1)" != "cmake version $SEP_CMAKE_VERSION" ] ||
+             [ "$(ctest --version | head -1)" != "ctest version $SEP_CMAKE_VERSION" ]; then
+            echo "::error::cmake/ctest on PATH is not the pinned $SEP_CMAKE_VERSION"
+            exit 2
+          fi
+          # A gate whose prerequisite (base) target failed to build measures
+          # nothing: prereq_status.py prints GATE <id> UNMEASURED and returns 3.
+          # Usage in a gate step: sep_prereq <id> || exit $?
+          sep_prereq() {
+            python "$GITHUB_WORKSPACE/scripts/ci/separation/prereq_status.py" gate \
+              --status "$RUNNER_TEMP/prereq_status.json" --gate "$1" --github-output "$GITHUB_OUTPUT"
+          }
+          # gate_result <id> <rc> [note] [what failed]: a FAIL also writes
+          # why= for the summary row (never a bare FAIL there).
+          gate_result() {
+            if [ "$2" -eq 0 ]; then echo "GATE $1 PASS${3:+ ($3)}"
+            else
+              echo "GATE $1 FAIL rc=$2${3:+ ($3)}"
+              echo "why=rc=$2: ${4:-see the step log}${3:+ ($3)}" >> "$GITHUB_OUTPUT"
+            fi
+          }
+          # Run exact-named separation ctests only, after checking each name
+          # against the never-run floor; then prove from the log that each ran.
+          sep_ctest() {
+            local n rc=0 log re
+            for n in "$@"; do
+              [[ $n =~ ^Sep[A-Za-z0-9]+$ ]] || { echo "::error::refusing non-separation test $n"; return 2; }
+              if grep -qxF -- "$n" "$FLOOR"; then echo "::error::$n is on the never-run floor"; return 2; fi
+            done
+            re="^($(IFS='|'; echo "$*"))\$"
+            log="$RUNNER_TEMP/ctest-$1.log"
+            echo "ctest -R '$re'"
+            ctest --test-dir "$SEP_BUILD" --no-tests=error --output-on-failure -R "$re" 2>&1 | tee "$log" || rc=$?
+            for n in "$@"; do
+              if ! grep -Eq "Test +#[0-9]+: $n " "$log"; then
+                echo "NOT_RUN $n"
+                [ "$rc" -ne 0 ] || rc=1
+              fi
+            done
+            return "$rc"
+          }
+          SH
+
+      - name: CMake configure
+        id: configure
+        env:
+          GCC_MAJOR: ${{ matrix.gcc_major }}
+        run: |
+          ORCHARD=OFF; [ "$SEP_CFG" = on ] && ORCHARD=ON
+          # K2/W2 read the CMake file API codemodel: request it before configure.
+          mkdir -p "$SEP_BUILD/.cmake/api/v1/query"
+          touch "$SEP_BUILD/.cmake/api/v1/query/codemodel-v2"
+          cmake -S . -B "$SEP_BUILD" -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DDINERO_USE_VENDORED_DEPS=ON \
+            -DENABLE_GRPC=OFF \
+            -DBUILD_NODECORE=ON \
+            -DDINERO_SEPARATION_GATES=ON \
+            -DDINERO_BUILD_ORCHARD_BACKEND=$ORCHARD \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+          grep -E '^(DINERO_BUILD_ORCHARD_BACKEND|DINERO_SEPARATION_GATES|Python3_EXECUTABLE|CMAKE_CXX_COMPILER):' "$SEP_BUILD/CMakeCache.txt"
+          # The compiler CMake actually recorded must be the lane's GCC.
+          if [ -n "$GCC_MAJOR" ]; then
+            f="$(find "$SEP_BUILD/CMakeFiles" -maxdepth 2 -name CMakeCXXCompiler.cmake | head -1)"
+            id="$(sed -n 's/^set(CMAKE_CXX_COMPILER_ID "\(.*\)")$/\1/p' "$f")"
+            ver="$(sed -n 's/^set(CMAKE_CXX_COMPILER_VERSION "\(.*\)")$/\1/p' "$f")"
+            echo "CMake CXX compiler: $id $ver ($f)"
+            if [ "$id" != GNU ] || [ "${ver%%.*}" != "$GCC_MAJOR" ]; then
+              echo "::error::CMake recorded CXX compiler '$id $ver', expected GNU $GCC_MAJOR"; exit 1
+            fi
+          fi
+          find "$SEP_BUILD/.cmake/api/v1/reply" -name 'index-*.json'
+
+      - name: Build gate prerequisites
+        id: build
+        continue-on-error: true
+        run: |
+          # rc 3 = a registered K4 test's target is unresolved: still build the
+          # rest (the K4 step fails on $RUNNER_TEMP/k4_unresolved.txt).
+          trc=0
+          python scripts/ci/separation/sep_targets.py --build "$SEP_BUILD" --config "$SEP_CFG" \
+            --out "$RUNNER_TEMP/targets.txt" --unresolved-out "$RUNNER_TEMP/k4_unresolved.txt" \
+            --ctest "$(command -v ctest)" --ninja "$(command -v ninja)" --platform "$SEP_PLAT" \
+            --k4-out "$RUNNER_TEMP/k4_targets.txt" || trc=$?
+          # prereq_status.py: any other rc means the build never ran (harness error).
+          echo "$trc" > "$RUNNER_TEMP/sep_targets_rc.txt"
+          [ "$trc" -eq 0 ] || [ "$trc" -eq 3 ] || exit "$trc"
+          # -k 0: collect every independent failure; a failed K4 test link must
+          # not hide the other gates (each gate reports its own result).
+          targets=()   # no mapfile: keep this bash 3.2 compatible
+          while IFS= read -r t; do [ -z "$t" ] || targets+=("$t"); done < "$RUNNER_TEMP/targets.txt"
+          cmake --build "$SEP_BUILD" --target "${targets[@]}" -- -k 0
+          exit "$trc"
+
+      # Which base targets (dinero_consensus, dinero_wallet, dinerod,
+      # sep_wallet_fixture_compat) the build failed to produce, and which
+      # gates depend on them (codemodel). Those gates report UNMEASURED; the
+      # others (and K2/W2/K5, which need no build) report their real result.
+      - name: Prerequisite build status
+        id: prereq
+        if: ${{ !cancelled() && steps.configure.outcome == 'success' }}
+        continue-on-error: true
+        env:
+          O_BUILD: ${{ steps.build.outcome }}
+        run: |
+          python scripts/ci/separation/prereq_status.py scan --build "$SEP_BUILD" \
+            --build-outcome "$O_BUILD" --platform "$SEP_PLAT" --out "$RUNNER_TEMP/prereq_status.json" \
+            --sep-targets-rc "$RUNNER_TEMP/sep_targets_rc.txt" --k4-targets "$RUNNER_TEMP/k4_targets.txt"
+
+      - name: K1 consensus forced link
+        id: k1
+        if: ${{ !cancelled() && steps.configure.outcome == 'success' }}
+        continue-on-error: true
+        run: |
+          . "$RUNNER_TEMP/sep_gate.sh"
+          sep_prereq K1 || exit $?
+          rc=0; sep_ctest SepConsensusForcedLink || rc=$?
+          gate_result K1 "$rc" "" "SepConsensusForcedLink did not pass (dinero_consensus forced link)"; exit "$rc"
+
+      - name: K2 consensus closure
+        id: k2
+        if: ${{ !cancelled() && steps.configure.outcome == 'success' }}
+        continue-on-error: true
+        run: |
+          . "$RUNNER_TEMP/sep_gate.sh"
+          rc=0
+          python scripts/ci/separation/check_link_closure.py --build "$SEP_BUILD" \
+            --target dinero_consensus --rules scripts/ci/separation/closure_rules.json --gate K2 || rc=$?
+          gate_result K2 "$rc" "" "check_link_closure dinero_consensus (rc 1 violations, 2 input error)"; exit "$rc"
+
+      # R10: check_symbols.py would silently pass on mangled names. Prove the
+      # nm passed to it demangles before K3/W3 trust it.
+      - name: nm demangling self-check (before K3/W3)
+        id: nm_demangle
+        if: ${{ !cancelled() && steps.configure.outcome == 'success' }}
+        continue-on-error: true
+        run: |
+          NM="$(command -v nm)"
+          bin="$SEP_BUILD/dinerod"
+          if [ ! -f "$bin" ]; then
+            bin="$(find "$SEP_BUILD" -maxdepth 2 -name libdinero_consensus.a | head -1)"
+          fi
+          if [ -z "$bin" ] || [ ! -f "$bin" ]; then
+            echo "::error::no built binary to run the nm demangling check on"; exit 2
+          fi
+          n="$("$NM" -C "$bin" | grep -c 'dinero::' || true)"
+          echo "nm=$NM binary=$bin demangled dinero:: symbol lines: $n"
+          if [ "$n" -lt 1 ]; then
+            echo "::error::$NM -C printed no demangled dinero:: symbol"; exit 1
+          fi
+          echo "SEP_NM=$NM" >> "$GITHUB_ENV"
+
+      - name: K3 consensus symbols
+        id: k3
+        if: ${{ !cancelled() && steps.configure.outcome == 'success' }}
+        continue-on-error: true
+        env:
+          NM_CHECK: ${{ steps.nm_demangle.outcome }}
+        run: |
+          . "$RUNNER_TEMP/sep_gate.sh"
+          sep_prereq K3 || exit $?
+          # Same states as Windows: PASS/FAIL only when measured, otherwise
+          # UNMEASURED (rc 3, never a success).
+          unmeasured() { printf 'state=UNMEASURED\nwhy=%s\n' "$1" >> "$GITHUB_OUTPUT"; echo "GATE K3 UNMEASURED ($1)"; exit 3; }
+          [ "$NM_CHECK" = success ] || unmeasured "nm demangling self-check did not pass"
+          bin="$SEP_BUILD/tests/separation/sep_consensus_forced_link"
+          [ -f "$bin" ] || unmeasured "probe binary absent: K1 RED"
+          rc=0
+          python scripts/ci/separation/check_symbols.py --binary "$bin" --gate K3 --nm "$SEP_NM" || rc=$?
+          case "$rc" in
+            0) echo "state=PASS" >> "$GITHUB_OUTPUT" ;;
+            1) echo "state=FAIL" >> "$GITHUB_OUTPUT" ;;
+            *) unmeasured "check_symbols input error rc=$rc" ;;
+          esac
+          gate_result K3 "$rc" "" "check_symbols: forbidden symbols in sep_consensus_forced_link"; exit "$rc"
+
+      - name: K4 consensus vectors
+        id: k4
+        if: ${{ !cancelled() && steps.configure.outcome == 'success' }}
+        continue-on-error: true
+        run: |
+          . "$RUNNER_TEMP/sep_gate.sh"
+          sep_prereq K4 || exit $?
+          d=scripts/ci/separation
+          # Reference naming: consensus_vectors_ref_<cfg>.json is the
+          # macOS-recorded ref; other platforms need
+          # consensus_vectors_ref_<plat>_<cfg>.json (recorded, reviewed, committed).
+          if [ "$SEP_PLAT" = macos ]; then ref="$d/consensus_vectors_ref_$SEP_CFG.json"
+          else ref="$d/consensus_vectors_ref_${SEP_PLAT}_$SEP_CFG.json"; fi
+          present=1; cmp="$ref"
+          if [ ! -f "$ref" ]; then
+            present=0; cmp="$d/consensus_vectors_ref_$SEP_CFG.json"
+            echo "K4: no committed $SEP_PLAT reference $ref; comparing against the macOS reference for information only"
+          fi
+          out="$RUNNER_TEMP/k4-compare.txt"; vrc=0
+          python $d/run_consensus_vectors.py --build "$SEP_BUILD" --list $d/consensus_vectors.txt \
+            --floor $d/never_run_floor.txt --ctest "$(command -v ctest)" --config "$SEP_CFG" \
+            --compare "$cmp" 2>&1 | tee "$out" || vrc=$?
+          # "missing reference" only if every test ran; see gate_label.py.
+          rc=0
+          python $d/gate_label.py k4 --output "$out" --rc "$vrc" --reference-present "$present" \
+            --unresolved "$RUNNER_TEMP/k4_unresolved.txt" --github-output "$GITHUB_OUTPUT" || rc=$?
+          exit "$rc"
+
+      # K5 runs on POSIX runners only: consensus_freeze.py hashes and reports
+      # forward-slash repo paths (Windows backslash paths are not normalized).
+      - name: K5 consensus source freeze
+        id: k5
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        run: |
+          . "$RUNNER_TEMP/sep_gate.sh"
+          rc=0
+          python scripts/ci/separation/consensus_freeze.py check --repo . \
+            --baseline scripts/ci/separation/consensus_baseline.sha256 \
+            --allowed scripts/ci/separation/consensus_allowed_changes.txt --stage 0 || rc=$?
+          gate_result K5 "$rc" "" "consensus_freeze: frozen consensus sources changed or input error"; exit "$rc"
+
+      - name: K6 frozen-header change
+        id: k6
+        if: always()
+        run: echo 'GATE K6 SKIP stage<2'
+
+      - name: W1 wallet forced link
+        id: w1
+        if: ${{ !cancelled() && steps.configure.outcome == 'success' }}
+        continue-on-error: true
+        run: |
+          . "$RUNNER_TEMP/sep_gate.sh"
+          sep_prereq W1 || exit $?
+          rc=0; sep_ctest SepWalletForcedLink || rc=$?
+          gate_result W1 "$rc" "" "SepWalletForcedLink did not pass (dinero_wallet forced link)"; exit "$rc"
+
+      - name: W2 wallet closure
+        id: w2
+        if: ${{ !cancelled() && steps.configure.outcome == 'success' }}
+        continue-on-error: true
+        run: |
+          . "$RUNNER_TEMP/sep_gate.sh"
+          rc=0
+          python scripts/ci/separation/check_link_closure.py --build "$SEP_BUILD" \
+            --target dinero_wallet --rules scripts/ci/separation/closure_rules.json --gate W2 || rc=$?
+          gate_result W2 "$rc" "" "check_link_closure dinero_wallet (rc 1 violations, 2 input error)"; exit "$rc"
+
+      - name: W3 wallet symbols
+        id: w3
+        if: ${{ !cancelled() && steps.configure.outcome == 'success' }}
+        continue-on-error: true
+        env:
+          NM_CHECK: ${{ steps.nm_demangle.outcome }}
+        run: |
+          . "$RUNNER_TEMP/sep_gate.sh"
+          sep_prereq W3 || exit $?
+          # Same states as Windows: PASS/FAIL only when measured, otherwise
+          # UNMEASURED (rc 3, never a success).
+          unmeasured() { printf 'state=UNMEASURED\nwhy=%s\n' "$1" >> "$GITHUB_OUTPUT"; echo "GATE W3 UNMEASURED ($1)"; exit 3; }
+          [ "$NM_CHECK" = success ] || unmeasured "nm demangling self-check did not pass"
+          bin="$SEP_BUILD/tests/separation/sep_wallet_forced_link"
+          [ -f "$bin" ] || unmeasured "probe binary absent: W1 RED"
+          rc=0
+          python scripts/ci/separation/check_symbols.py --binary "$bin" --gate W3 --nm "$SEP_NM" || rc=$?
+          case "$rc" in
+            0) echo "state=PASS" >> "$GITHUB_OUTPUT" ;;
+            1) echo "state=FAIL" >> "$GITHUB_OUTPUT" ;;
+            *) unmeasured "check_symbols input error rc=$rc" ;;
+          esac
+          gate_result W3 "$rc" "" "check_symbols: forbidden symbols in sep_wallet_forced_link"; exit "$rc"
+
+      - name: W4 wallet-file compatibility
+        id: w4
+        if: ${{ !cancelled() && steps.configure.outcome == 'success' }}
+        continue-on-error: true
+        run: |
+          . "$RUNNER_TEMP/sep_gate.sh"
+          sep_prereq W4 || exit $?
+          rc=0; sep_ctest SepWalletFixtureCompat || rc=$?
+          gate_result W4 "$rc" "" "SepWalletFixtureCompat did not pass"; exit "$rc"
+
+      - name: W5 external interface freeze and RPC transcript
+        id: w5
+        if: ${{ !cancelled() && steps.configure.outcome == 'success' }}
+        continue-on-error: true
+        run: |
+          . "$RUNNER_TEMP/sep_gate.sh"
+          sep_prereq W5 || exit $?
+          base="tests/separation/interface_baseline/symbols_${SEP_PLAT}_${SEP_CFG}.txt"
+          present=1; [ -f "$base" ] || { present=0; echo "W5: no committed symbol baseline $base"; }
+          crc=0; sep_ctest SepInterfaceFreeze SepRpcTranscript || crc=$?
+          # "missing reference" only if both checks ran and nothing else
+          # failed; a build break or run error is a real FAIL. See gate_label.py.
+          rc=0
+          python scripts/ci/separation/gate_label.py w5 --log "$RUNNER_TEMP/ctest-SepInterfaceFreeze.log" \
+            --rc "$crc" --reference-present "$present" --platform "$SEP_PLAT" --github-output "$GITHUB_OUTPUT" || rc=$?
+          exit "$rc"
+
+      - name: W6 standalone wallet-FFI consumer (recorded)
+        id: w6
+        if: ${{ !cancelled() && steps.configure.outcome == 'success' }}
+        continue-on-error: true
+        run: |
+          . "$RUNNER_TEMP/sep_gate.sh"
+          sep_prereq W6 || exit $?
+          # Label separation;recorded: the Task 0.8 baseline is RED (repair is E1).
+          rc=0; sep_ctest SepWalletFfiStandalone || rc=$?
+          gate_result W6 "$rc" "recorded, baseline RED" "SepWalletFfiStandalone did not pass"; exit "$rc"
+
+      # Records when record_baselines=true, or automatically when this
+      # platform/config has no committed K4 ref or W5 symbol list (so the
+      # first pull_request run already yields candidates: workflow_dispatch
+      # only works once the workflow is on the default branch). Runs after the
+      # checks, writes to $RUNNER_TEMP only (never into the tree the checks
+      # read) and prints the files for review; it never changes a gate result.
+      - name: Record baselines for review
+        if: ${{ !cancelled() && steps.configure.outcome == 'success' }}
+        continue-on-error: true
+        env:
+          RECORD_INPUT: ${{ inputs.record_baselines }}
+        run: |
+          d=scripts/ci/separation
+          if [ "$SEP_PLAT" = macos ]; then kref="$d/consensus_vectors_ref_$SEP_CFG.json"
+          else kref="$d/consensus_vectors_ref_${SEP_PLAT}_$SEP_CFG.json"; fi
+          sym="tests/separation/interface_baseline/symbols_${SEP_PLAT}_${SEP_CFG}.txt"
+          if [ "$RECORD_INPUT" != true ] && [ -f "$kref" ] && [ -f "$sym" ]; then
+            echo "record: skipped (baselines committed for $SEP_PLAT/$SEP_CFG; record_baselines not set)"; exit 0
+          fi
+          out="$RUNNER_TEMP/recorded"; mkdir -p "$out/interface_baseline"
+          rc=0
+          python $d/run_consensus_vectors.py --build "$SEP_BUILD" --list $d/consensus_vectors.txt \
+            --floor $d/never_run_floor.txt --ctest "$(command -v ctest)" --config "$SEP_CFG" \
+            --record "$out/consensus_vectors_ref_${SEP_PLAT}_$SEP_CFG.json" || rc=$?
+          echo "K4 record exited $rc"
+          wrc=0
+          python tests/separation/interface_freeze.py record --build "$SEP_BUILD" \
+            --baseline-dir "$out/interface_baseline" || wrc=$?
+          echo "W5 symbol record exited $wrc"
+          for f in "$out"/consensus_vectors_ref_*.json "$out"/interface_baseline/symbols_*.txt; do
+            [ -f "$f" ] || continue
+            echo "===== RECORDED $(basename "$f") (sha256 $(python -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' "$f")) ====="
+            cat "$f"
+            echo "===== END $(basename "$f") ====="
+          done
+          [ "$rc" -eq 0 ] && [ "$wrc" -eq 0 ]
+
+      - name: Gate summary
+        if: always()
+        env:
+          O_BUILD: ${{ steps.build.outcome }}
+          O_NM: ${{ steps.nm_demangle.outcome }}
+          O_K1: ${{ steps.k1.outcome }}
+          O_K2: ${{ steps.k2.outcome }}
+          O_K3: ${{ steps.k3.outcome }}
+          O_K4: ${{ steps.k4.outcome }}
+          O_K5: ${{ steps.k5.outcome }}
+          O_W1: ${{ steps.w1.outcome }}
+          O_W2: ${{ steps.w2.outcome }}
+          O_W3: ${{ steps.w3.outcome }}
+          O_W4: ${{ steps.w4.outcome }}
+          O_W5: ${{ steps.w5.outcome }}
+          O_W6: ${{ steps.w6.outcome }}
+          S_K1: ${{ steps.k1.outputs.state }}
+          S_K3: ${{ steps.k3.outputs.state }}
+          S_K4: ${{ steps.k4.outputs.state }}
+          S_W1: ${{ steps.w1.outputs.state }}
+          S_W3: ${{ steps.w3.outputs.state }}
+          S_W4: ${{ steps.w4.outputs.state }}
+          S_W5: ${{ steps.w5.outputs.state }}
+          S_W6: ${{ steps.w6.outputs.state }}
+          Y_K1: ${{ steps.k1.outputs.why }}
+          Y_K2: ${{ steps.k2.outputs.why }}
+          Y_K3: ${{ steps.k3.outputs.why }}
+          Y_K4: ${{ steps.k4.outputs.why }}
+          Y_K5: ${{ steps.k5.outputs.why }}
+          Y_W1: ${{ steps.w1.outputs.why }}
+          Y_W2: ${{ steps.w2.outputs.why }}
+          Y_W3: ${{ steps.w3.outputs.why }}
+          Y_W4: ${{ steps.w4.outputs.why }}
+          Y_W5: ${{ steps.w5.outputs.why }}
+          Y_W6: ${{ steps.w6.outputs.why }}
+          TOOLCHAIN: ${{ matrix.toolchain }}
+        run: |
+          res() { case "$1" in success) echo PASS ;; failure) echo FAIL ;; *) echo "NOT_RUN(${1:-none})" ;; esac; }
+          {
+            echo "### Separation gates: $TOOLCHAIN, orchard=$SEP_CFG"
+            echo
+            echo "compiler: $(head -1 "$RUNNER_TEMP/compiler.txt" 2>/dev/null || echo unknown)"
+            echo "prerequisite build: $(res "$O_BUILD"); nm demangling check (R10): $(res "$O_NM")"
+            if [ -f "$RUNNER_TEMP/prereq_status.json" ]; then
+              python scripts/ci/separation/prereq_status.py lane --status "$RUNNER_TEMP/prereq_status.json" ||
+                echo "LANE prerequisite build status unreadable"
+            else
+              echo "LANE prerequisite build status not recorded"
+            fi
+            echo
+            echo "| gate | result |"
+            echo "|---|---|"
+            # Every FAIL/UNMEASURED row carries the gate's reason (why=): a
+            # missing reference, a check that did not run and a measured
+            # mismatch read differently; never a bare FAIL.
+            row() { v="O_$1"; st="S_$1"; y="Y_$1"; r="$(res "${!v}")"
+                    [ "${!st:-}" = UNMEASURED ] && r=UNMEASURED
+                    case "$r" in PASS|NOT_RUN*) ;; *) r="$r (${!y:-no reason recorded})" ;; esac
+                    echo "| $1 | $r |"; }
+            for g in K1 K2 K3 K4 K5; do row "$g"; done
+            echo "| K6 | SKIP stage<2 |"
+            for g in W1 W2 W3 W4 W5 W6; do row "$g"; done
+            echo
+            echo "Stage-0 expectation: K1, K2, W1, W2 FAIL; K3, W3 UNMEASURED while the K1/W1 probes do not link (FAIL/PASS once measured); K5, W4 PASS; K4, W5 PASS on macOS, and on Linux FAIL rc 2 (missing reference) until reviewed baselines are committed; W6 recorded (RED). A missing reference is missing evidence, not a pass. If the prerequisite build fails (LANE UNMEASURED), every gate that depends on a failed target is UNMEASURED, not a pass and not a measured fail; K2, W2, K5 still report their result. macOS (macos-14, Xcode 15.4) is UNMEASURED until the pre-existing Xcode 15.4 build break is fixed on dinero-main."
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
+  # K4, second half (ruling R13): the existing compact-regtest fixed-vector
+  # check, run with the commands of .github/workflows/compact-regtest-vectors.yml
+  # (that workflow is unchanged). It is a separate build configuration
+  # (DINERO_ENABLE_COMPACT_REGTEST=ON, Orchard default OFF) exactly as that
+  # workflow builds it, so it is not crossed with orchard=off/on. It runs only
+  # on that workflow's x86 runner (ubuntu-24.04); macOS, ubuntu-latest and
+  # Windows are not covered, as in the original workflow.
+  k4-compact-regtest:
+    name: K4 compact-regtest vectors linux-gcc13
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.12'
+
+      - name: Install pinned CMake, Ninja and PyYAML
+        run: |
+          python -m pip install --disable-pip-version-check "cmake==${SEP_CMAKE_VERSION}" "ninja==${SEP_NINJA_VERSION}" "pyyaml==6.0.2"
+          hash -r
+          cmake --version
+          test "$(cmake --version | head -1)" = "cmake version ${SEP_CMAKE_VERSION}"
+          test "$(ctest --version | head -1)" = "ctest version ${SEP_CMAKE_VERSION}"
+          c++ --version
+
+      - name: Install Linux dependencies
+        run: >-
+          sudo apt-get update && sudo apt-get install -y
+          curl perl pkg-config libudev-dev libusb-1.0-0-dev
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # same pin as orchard-backend.yml
+        with:
+          toolchain: stable
+
+      - name: Build pinned OpenSSL
+        run: OPENSSL_VERSION=3.5.7 bash scripts/build-openssl-vendored.sh
+
+      - name: Configure compact-regtest inventory
+        id: configure
+        run: |
+          cmake -S . -B build-compact-regtest -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DDINERO_BUILD_QT=OFF -DENABLE_GRPC=OFF -DENABLE_TESTS=ON -DENABLE_ZK=ON \
+            -DDINERO_ENABLE_COMPACT_REGTEST=ON
+
+      - name: Build fixed-proof consumers
+        id: build
+        continue-on-error: true
+        run: >-
+          cmake --build build-compact-regtest --parallel "$(nproc)"
+          --target test_compact_regtest_vectors test_shielded_resource_limits test_shielded_validation
+
+      - name: K4 saved proofs, independent literals and resource boundaries
+        id: k4c
+        if: ${{ !cancelled() && steps.configure.outcome == 'success' }}
+        continue-on-error: true
+        run: |
+          # The one name list: the floor check, the -R regex and the ran-proof
+          # all derive from it (same tests as compact-regtest-vectors.yml).
+          names=(CompactRegtestFixedVectors CompactRegtestVectorOracle CompactProductionV6Vectors CompactProductionV6Oracle ShieldedResourceLimits)
+          floor=scripts/ci/separation/never_run_floor.txt
+          if [ ! -r "$floor" ] || ! grep -qEv '^[[:space:]]*(#|$)' "$floor"; then
+            echo "::error::never-run floor $floor missing, unreadable or empty"
+            echo "GATE K4 FAIL rc=2 (compact-regtest-vectors: no floor)"; exit 2
+          fi
+          for n in "${names[@]}"; do
+            if ! [[ $n =~ ^[A-Za-z0-9_]+$ ]] || grep -qxF -- "$n" "$floor"; then
+              echo "::error::$n is not a plain test name or is on the never-run floor; refusing to run"
+              echo "GATE K4 FAIL rc=2 (compact-regtest-vectors: refused $n)"; exit 2
+            fi
+          done
+          re="^($(IFS='|'; echo "${names[*]}"))\$"
+          echo "ctest -R '$re'"
+          rc=0
+          ctest --test-dir build-compact-regtest --no-tests=error --output-on-failure -R "$re" \
+            2>&1 | tee "$RUNNER_TEMP/ctest-compact.log" || rc=$?
+          for n in "${names[@]}"; do
+            if ! grep -Eq "Test +#[0-9]+: $n " "$RUNNER_TEMP/ctest-compact.log"; then
+              echo "NOT_RUN $n"; [ "$rc" -ne 0 ] || rc=1
+            fi
+          done
+          if [ "$rc" -eq 0 ]; then echo "GATE K4 PASS (compact-regtest-vectors)"
+          else
+            echo "GATE K4 FAIL rc=$rc (compact-regtest-vectors)"
+            echo "why=rc=$rc: compact-regtest-vectors ctest did not pass (see the step log)" >> "$GITHUB_OUTPUT"
+          fi
+          exit "$rc"
+
+      - name: Gate summary
+        if: always()
+        env:
+          O_BUILD: ${{ steps.build.outcome }}
+          O_K4C: ${{ steps.k4c.outcome }}
+          Y_K4C: ${{ steps.k4c.outputs.why }}
+        run: |
+          res() { case "$1" in success) echo PASS ;; failure) echo FAIL ;; *) echo "NOT_RUN(${1:-none})" ;; esac; }
+          {
+            echo "### K4 compact-regtest vectors: ubuntu-24.04"
+            echo
+            echo "prerequisite build: $(res "$O_BUILD")"
+            echo
+            echo "| gate | result |"
+            echo "|---|---|"
+            r="$(res "$O_K4C")"
+            [ "$r" != FAIL ] || r="FAIL (${Y_K4C:-no reason recorded})"
+            echo "| K4 (compact-regtest-vectors) | $r |"
+          } | tee -a "$GITHUB_STEP_SUMMARY"

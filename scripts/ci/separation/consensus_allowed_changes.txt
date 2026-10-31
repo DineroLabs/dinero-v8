@@ -1,0 +1,35 @@
+# K5 allowed changes to src/consensus/** and include/consensus/** (spec 6.1/6.5/6.6, 8).
+# Format: <stage> modify|remove|add <path>   or   <stage> hunk|insert <path>@<baseline line> <regex>
+# check --stage N allows the union of entries with stage <= N. See consensus_freeze.py.
+
+# Stage 1: CMake list membership only.
+1 modify src/consensus/CMakeLists.txt
+
+# Stage 2: moved sources keep their paths (CMake membership changes); "remove"
+# entries cover a later ruling that relocates them.
+2 modify src/consensus/CMakeLists.txt
+2 modify src/consensus/pq/CMakeLists.txt
+2 remove src/consensus/coins_db.cpp
+2 remove src/consensus/coins_view_cache.cpp
+2 remove src/consensus/global_utxo_set_impl.cpp
+
+# Stage 2 tx_validation.h (6.5), positional (baseline 1667f8ed6 line numbers):
+# forward declaration (:32 comment, :33), the three `view` parameters, and an
+# optional single chain_state_view.h include after the last project include (:20).
+2 hunk include/consensus/tx_validation.h@32 ^// Forward declaration - .*$
+2 hunk include/consensus/tx_validation.h@33 ^class (CoinsViewCache|ChainStateView);$
+2 hunk include/consensus/tx_validation.h@265 ^    (const )?(CoinsViewCache|ChainStateView)& view,$
+2 hunk include/consensus/tx_validation.h@341 ^    (const )?(CoinsViewCache|ChainStateView)& view,$
+2 hunk include/consensus/tx_validation.h@363 ^    (const )?(CoinsViewCache|ChainStateView)& view,$
+2 insert include/consensus/tx_validation.h@20 ^#include "consensus/chain_state_view\.h"$
+# Stage 2 tx_validation.cpp: the coins_db.h include (:2) and the three
+# definitions' `view` parameter lines.
+2 hunk src/consensus/tx_validation.cpp@2 ^#include "consensus/(coins_db|chain_state_view)\.h"$
+2 hunk src/consensus/tx_validation.cpp@74 ^    (const )?(CoinsViewCache|ChainStateView)& view,$
+2 hunk src/consensus/tx_validation.cpp@189 ^    (const )?(CoinsViewCache|ChainStateView)& view,$
+2 hunk src/consensus/tx_validation.cpp@451 ^    (const )?(CoinsViewCache|ChainStateView)& view,$
+# Stage 2 freeze.h: only the manifest entry for tx_validation.h (:136), same shape.
+2 hunk include/consensus/freeze.h@136 ^    \{"include/consensus/tx_validation\.h",\s+"[0-9a-f]{64}"\},$
+
+# Stage 3: CMake only.
+3 modify src/consensus/CMakeLists.txt

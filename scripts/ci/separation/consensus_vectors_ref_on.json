@@ -1,0 +1,163 @@
+{
+  "build_dir": "/Users/haydarevich/src/dinero-sep-builds/on",
+  "config": "on",
+  "provenance_sha": "6e57af6150e990c02aa53d2772ec476bd219585f",
+  "tests": {
+    "BIP119CTVVectors": {
+      "digests": [],
+      "emitted_digests": false,
+      "status": "passed"
+    },
+    "BIP341SighashVectors": {
+      "digests": [],
+      "emitted_digests": false,
+      "status": "passed"
+    },
+    "CompactRegtestVectorOracle": {
+      "digests": [],
+      "emitted_digests": false,
+      "status": "passed"
+    },
+    "ConsensusCoreSt": {
+      "digests": [],
+      "emitted_digests": false,
+      "status": "passed"
+    },
+    "ConsensusInvariants": {
+      "digests": [],
+      "emitted_digests": false,
+      "status": "passed"
+    },
+    "Consensus_DeterminismOracles_DD1_DD5_R5_5f": {
+      "digests": [],
+      "emitted_digests": false,
+      "status": "passed"
+    },
+    "CovenantActivation": {
+      "digests": [],
+      "emitted_digests": false,
+      "status": "passed"
+    },
+    "DAAGoldenVectors": {
+      "digests": [],
+      "emitted_digests": false,
+      "status": "passed"
+    },
+    "FormalInvariants": {
+      "digests": [],
+      "emitted_digests": false,
+      "status": "passed"
+    },
+    "HashWrapperVectors": {
+      "digests": [],
+      "emitted_digests": false,
+      "status": "passed"
+    },
+    "HeaderPoWVerification": {
+      "digests": [],
+      "emitted_digests": false,
+      "status": "passed"
+    },
+    "MerkleGolden": {
+      "digests": [
+        "6ca790306f9e3dd3b5107b1bada9cb5c7376e88b7862fe195422d54451386d2f",
+        "e3e3e0dab4f05f6d07140e91bdb1755c706f865d0a05fda75e1065db2970f613"
+      ],
+      "emitted_digests": true,
+      "status": "passed"
+    },
+    "OrchardCompactHeaderBinding": {
+      "digests": [],
+      "emitted_digests": false,
+      "status": "passed"
+    },
+    "OrchardCompactHeaderRestore": {
+      "digests": [],
+      "emitted_digests": false,
+      "status": "passed"
+    },
+    "OrchardCompactHeaderRetention": {
+      "digests": [],
+      "emitted_digests": false,
+      "status": "passed"
+    },
+    "OrchardCompactHeaderTransition": {
+      "digests": [],
+      "emitted_digests": false,
+      "status": "passed"
+    },
+    "RIPEMD160CoreVectors": {
+      "digests": [],
+      "emitted_digests": false,
+      "status": "passed"
+    },
+    "RIPEMD160SrcVectors": {
+      "digests": [],
+      "emitted_digests": false,
+      "status": "passed"
+    },
+    "RIPEMD160StandaloneVectors": {
+      "digests": [],
+      "emitted_digests": false,
+      "status": "passed"
+    },
+    "ScriptInterpreter": {
+      "digests": [],
+      "emitted_digests": false,
+      "status": "passed"
+    },
+    "ScriptJSONTests": {
+      "digests": [
+        "fe61340182d05eaccf022765292f02b9833558d32e7eab197740dd046f58e59c"
+      ],
+      "emitted_digests": true,
+      "status": "passed"
+    },
+    "SerializationVectors": {
+      "digests": [],
+      "emitted_digests": false,
+      "status": "passed"
+    },
+    "StateCommitmentExternalVectors": {
+      "digests": [],
+      "emitted_digests": false,
+      "status": "passed"
+    },
+    "StatelessVerification": {
+      "digests": [],
+      "emitted_digests": false,
+      "status": "passed"
+    },
+    "SubsidySchedule": {
+      "digests": [],
+      "emitted_digests": false,
+      "status": "passed"
+    },
+    "TaprootConsensus": {
+      "digests": [
+        "53a1f6e454df1aa2776a2814a721372d6258050de330b3c6d10ee8f4e0dda343",
+        "5e3292d70d7978a22de4a89f965ca85059359b319731c759ed19873db781a211",
+        "b86e7be8f39bab32a6f2c0443abbc210f0edac0e2c53d501b36b64437d9c6c70",
+        "d6889cb081036e0faefa3a35157ad71086b123b2b144b649798b494c300a961d"
+      ],
+      "emitted_digests": true,
+      "status": "passed"
+    },
+    "TaprootScriptPathConsensus": {
+      "digests": [],
+      "emitted_digests": false,
+      "status": "passed"
+    },
+    "test_header_hash_vectors": {
+      "digests": [
+        "0083ec41a3e43624574fe3dba00c305d0081e11cb3a8ba9756a3fb15cdda72e0",
+        "390da8b9cca91cb53016561b4f29f12bb62f4c8da9844f43da2051c4c51d5089",
+        "59604bc16e64854789ab2d7159492bcf27434930289a7b73f8a5b2f6131fbf96",
+        "bf8476763499c964756424e73db44ac148d990d17e20416f0bf7fcd991f20321",
+        "d777cf3a1252bc9a2a07a3d6662442ead5ba02a779f043c283d5eb2ac81cf1c7"
+      ],
+      "emitted_digests": true,
+      "status": "passed"
+    }
+  }
+}

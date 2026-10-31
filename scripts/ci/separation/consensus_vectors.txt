@@ -1,0 +1,33 @@
+# K4 consensus vectors (spec section 8). Exact ctest names; "on:" = ON-only (DINERO_BUILD_ORCHARD_BACKEND=ON).
+# RIPEMD160*Vectors, ConsensusCoreSt* and OrchardCompactHeader* expanded from `ctest --show-only=json-v1`.
+# Spec names NOT listed: UtreexoLeafHashGolden (source tests/utreexo_leaf_hash_golden_test.cpp absent, not registered),
+#   CompactRegtestFixedVectors (needs DINERO_ENABLE_COMPACT_REGTEST=ON, not registered in baseline dirs),
+#   OrchardMemoryPublication and OrchardHeader (ON, but on the never-run floor).
+BIP341SighashVectors
+BIP119CTVVectors
+CovenantActivation
+ScriptJSONTests
+ScriptInterpreter
+DAAGoldenVectors
+MerkleGolden
+test_header_hash_vectors
+HeaderPoWVerification
+TaprootConsensus
+TaprootScriptPathConsensus
+RIPEMD160CoreVectors
+RIPEMD160SrcVectors
+RIPEMD160StandaloneVectors
+HashWrapperVectors
+StateCommitmentExternalVectors
+CompactRegtestVectorOracle
+SerializationVectors
+ConsensusCoreSt
+StatelessVerification
+SubsidySchedule
+ConsensusInvariants
+FormalInvariants
+Consensus_DeterminismOracles_DD1_DD5_R5_5f
+on:OrchardCompactHeaderBinding
+on:OrchardCompactHeaderRestore
+on:OrchardCompactHeaderRetention
+on:OrchardCompactHeaderTransition

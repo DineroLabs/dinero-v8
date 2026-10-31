@@ -1,0 +1,7 @@
+{
+  "_doc": "root links an id that resolves to no target or abstract target.",
+  "targets": {
+    "root": {"type": "STATIC_LIBRARY", "link": ["ghost"], "sources": ["src/consensus/root.cpp"]}
+  },
+  "unresolved": ["ghost"]
+}

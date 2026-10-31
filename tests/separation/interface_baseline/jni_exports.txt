@@ -1,0 +1,8 @@
+jboolean Java_org_dinerolabs_dinerodpi_node_NativeNodeCore_nativeIsRunning(JNIEnv*, jobject)
+jint Java_org_dinerolabs_dinerodpi_node_NativeNodeCore_nativeStart(JNIEnv* env, jobject, jstring datadir, jstring config_json)
+jint Java_org_dinerolabs_dinerodpi_node_NativeNodeCore_nativeStop(JNIEnv*, jobject)
+jstring Java_org_dinerolabs_dinerodpi_node_NativeNodeCore_nativeP2mrAddresses(JNIEnv* env, jobject, jstring mnemonic, jstring passphrase, jint count, jboolean is_change)
+jstring Java_org_dinerolabs_dinerodpi_node_NativeNodeCore_nativeP2mrSignWitness(JNIEnv* env, jobject, jstring mnemonic, jstring passphrase, jboolean is_change, jint index, jstring script_hex, jstring sighash_hex)
+jstring Java_org_dinerolabs_dinerodpi_node_NativeNodeCore_nativeRpcCall(JNIEnv* env, jobject, jstring method, jstring params_json)
+jstring Java_org_dinerolabs_dinerodpi_node_NativeNodeCore_nativeShieldedAddresses(JNIEnv* env, jobject, jstring mnemonic, jstring passphrase, jint count)
+jstring Java_org_dinerolabs_dinerodpi_node_NativeNodeCore_nativeStatusJson(JNIEnv* env, jobject)
