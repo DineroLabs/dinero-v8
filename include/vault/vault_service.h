@@ -215,7 +215,7 @@ class VaultService {
     friend class WalletVaultStateOwner;
     struct PreparedState;
     void publish(PreparedState& state) noexcept;
-    void commitAndPublish(PreparedState&, VaultStateWrite*);
+    void commitAndPublish(PreparedState&, VaultStateWrite*, bool preserve_unchanged = false);
     void requireCurrentOwner(const VaultStateWrite*) const;
     VaultStateSnapshot captureStateLocked() const;
     static std::shared_ptr<VaultService> RestorePrepared(

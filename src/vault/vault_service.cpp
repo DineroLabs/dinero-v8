@@ -134,7 +134,7 @@ void VaultService::requireCurrentOwner(const VaultStateWrite* transaction) const
         throw std::runtime_error("vault durable state differs from the live owner");
 }
 
-void VaultService::commitAndPublish(PreparedState& state, VaultStateWrite* transaction) {
+void VaultService::commitAndPublish(PreparedState& state, VaultStateWrite* transaction, bool preserve_unchanged) {
     if (state_owner_) {
         if (!transaction) throw std::runtime_error("vault durable transaction required");
         VaultStateSnapshot saved;
@@ -156,6 +156,14 @@ void VaultService::commitAndPublish(PreparedState& state, VaultStateWrite* trans
             saved.withdrawals.push_back({request,state.withdrawals.states_.at(id)});
         // Replay and all allocations precede the checked durable commit.
         (void)ReplayVaultStateLedger(saved);
+        // Canonical observations still acquire/authenticate the durable owner
+        // and validate the selected source before reaching this point. Compare
+        // semantic state at the same prospective revision; never lower a new
+        // ledger's revision below its entries while checking for a no-op.
+        if (preserve_unchanged) {
+            auto previous=transaction->Base();previous.revision=saved.revision;
+            if (EncodeVaultState(saved)==EncodeVaultState(previous)) return;
+        }
         transaction->Commit(saved);
     }
     publish(state);
@@ -304,7 +312,7 @@ VaultService::TipObservation VaultService::tipChanged(uint64_t height) {
         }
     }
     state.withdrawals.tipChanged(captured.height);
-    commitAndPublish(state,transaction.get());
+    commitAndPublish(state,transaction.get(),true);
     return {captured.height,captured.block_hash,revision_};
 }
 
