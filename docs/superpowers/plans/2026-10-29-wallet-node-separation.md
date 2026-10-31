@@ -502,7 +502,7 @@ Added 2026-10-31 (owner decision). Neither the spec nor the original plan covers
 - [ ] **Step 1:** Show the RED. Run W1 in `$CFG` and record that the forced-link output lists both symbols above.
 - [ ] **Step 2:** Make the two edits. Build `$CFG`. Expected: no duplicate-definition errors for `TaprootControlBlock` (it would show if a direct compile was missed).
 - [ ] **Step 3:** Run W1 again. Expected: no `TaprootControlBlock` or `buildScriptPathWitness` symbols in the undefined set; the other W1 symbols are unchanged.
-- [ ] **Step 4:** In both configs, build `test_wallet_ffi_concurrency` (`cmake --build "$BUILD" --target test_wallet_ffi_concurrency`), but **do not run it**: `WalletFFIConcurrency` is on the never-run floor (`never_run_floor.txt:230`). Run `ctest -R '^EscrowBuildersFailSafe$' --no-tests=error` (floor-checked) and W5 `check`. Expected: the build links; the ctest and W5 PASS.
+- [ ] **Step 4:** Build `test_wallet_ffi_concurrency` (`cmake --build $CFG --target test_wallet_ffi_concurrency`), but **do not run it**: `WalletFFIConcurrency` is on the never-run floor (`never_run_floor.txt:230`). Run `ctest -R '^EscrowBuildersFailSafe$' --no-tests=error` (floor-checked) and W5 `check`. Expected: the build links; the ctest and W5 PASS.
 - [ ] **Step 5:** Commit `build: taproot_control_block is wallet code; direct compiles removed`.
 
 ## Stage 5 — interfaces and adapters (one PR)
