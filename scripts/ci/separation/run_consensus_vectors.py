@@ -147,6 +147,9 @@ def main():
         if (status == "fail" or tc.find("failure") is not None
                 or tc.find("error") is not None):
             print("FAILED " + n)
+            # Indented so no output line reads as a verdict line (gate_label.py).
+            for line in (out.splitlines()[-60:] or ["(no test output captured)"]):
+                print("  | " + line)
             problems += 1
             continue
         digests = sorted({d.lower() for d in HEX64.findall(out)})
