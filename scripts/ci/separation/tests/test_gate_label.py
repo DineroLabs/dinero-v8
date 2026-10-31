@@ -673,3 +673,10 @@ def test_w5_missing_lane_reference_stays_missing_reference_and_reports_the_path(
     (rc, line), out = w5sel(tmp_path, W5_MISSING_REF_ONLY, 8, 0, "/w/b/symbols_macos15_off.txt")
     assert (rc, line) == (2, "GATE W5 FAIL rc=2 (missing reference -- not an interface mismatch)")
     assert out["ref"] == "/w/b/symbols_macos15_off.txt" and out["note"] == "missing reference"
+
+
+def test_w5_missing_reference_with_another_file_selected_fails(tmp_path):
+    (rc, line), out = w5sel(tmp_path, W5_MISSING_REF_ONLY, 8, 0, "/w/b/symbols_macos_off.txt")
+    assert (rc, line) == (1, "GATE W5 FAIL rc=1 (wrong reference selected: symbols_macos_off.txt, "
+                             "lane reference is symbols_macos15_off.txt)")
+    assert "note" not in out and out["ref"] == "/w/b/symbols_macos_off.txt"
