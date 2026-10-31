@@ -497,13 +497,13 @@ Library edits: `src/consensus/CMakeLists.txt`, `src/consensus/pq/CMakeLists.txt`
 Added 2026-10-31 (owner decision). Neither the spec nor the original plan covers this. Run 2's W1 log shows `taproot_template_builder.o` and `protected_spend.o` with undefined `dinero::TaprootControlBlock::TaprootControlBlock()` and `dinero::buildScriptPathWitness(…)`. The defining file is compiled by no production target, only directly by two tests. Evidence: `~/src/dinero-evidence/2026-10-29-separation-stage0/blocker-map-2026-10-31.md`, row B-T.
 
 **Files:**
-- Modify: `src/wallet/CMakeLists.txt` (add `${CMAKE_CURRENT_SOURCE_DIR}/taproot_control_block.cpp` to `dinero_wallet`) and `tests/CMakeLists.txt:4763` (`test_wallet_ffi_concurrency`) and `:17661` (`test_escrow_builders_fail_safe`). Remove both direct compiles; both targets already link `dinero_wallet`.
+- Modify: `src/wallet/CMakeLists.txt` (add `${CMAKE_CURRENT_SOURCE_DIR}/taproot_control_block.cpp` to `dinero_wallet`, next to `taproot_template_builder.cpp` at `:50`) and `tests/CMakeLists.txt:4763` (`test_wallet_ffi_concurrency`) and `:17661` (`test_escrow_builders_fail_safe`). Remove both direct compiles; both targets already link `dinero_wallet`.
 
 - [ ] **Step 1:** Show the RED. Run W1 in `$CFG` and record that the forced-link output lists both symbols above.
 - [ ] **Step 2:** Make the two edits. Build `$CFG`. Expected: no duplicate-definition errors for `TaprootControlBlock` (it would show if a direct compile was missed).
 - [ ] **Step 3:** Run W1 again. Expected: no `TaprootControlBlock` or `buildScriptPathWitness` symbols in the undefined set; the other W1 symbols are unchanged.
-  - Then run `ctest -R '^(WalletFFIConcurrency|EscrowBuildersFailSafe)$' --no-tests=error` (floor-checked) and W5 `check` in both configs. Expected: PASS.
-- [ ] **Step 4:** Commit `build: taproot_control_block is wallet code; direct compiles removed`.
+- [ ] **Step 4:** In both configs, build `test_wallet_ffi_concurrency` (`cmake --build "$BUILD" --target test_wallet_ffi_concurrency`), but **do not run it**: `WalletFFIConcurrency` is on the never-run floor (`never_run_floor.txt:230`). Run `ctest -R '^EscrowBuildersFailSafe$' --no-tests=error` (floor-checked) and W5 `check`. Expected: the build links; the ctest and W5 PASS.
+- [ ] **Step 5:** Commit `build: taproot_control_block is wallet code; direct compiles removed`.
 
 ## Stage 5 — interfaces and adapters (one PR)
 
