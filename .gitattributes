@@ -40,3 +40,6 @@ third_party/openssl-*/prebuilt/**/include/** text eol=lf
 third_party/openssl-*/prebuilt/**/*.a binary
 third_party/openssl-*/prebuilt/**/*.lib binary
 third_party/openssl-*/prebuilt/**/.dinero-build-meta text eol=lf
+
+# Test vectors are pinned byte-for-byte (sha256); never convert line endings.
+tests/vectors/** text eol=lf
