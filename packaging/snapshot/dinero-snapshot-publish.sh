@@ -27,6 +27,7 @@ CLI=("${CLI_BIN:-dinero-cli}" "-datadir=$DATADIR")
 DINEROD=${DINEROD:-/usr/bin/dinerod}
 GATE_PORT=${GATE_PORT:-26999}
 GATE_RPC=${GATE_RPC:-26998}
+GATE_WALLET=${GATE_WALLET:-27000}
 GATE_TIMEOUT=${GATE_TIMEOUT:-1200}
 KEEP=7
 TS=$(date -u +%Y%m%dT%H%M%SZ)
@@ -128,20 +129,24 @@ GATE_DIR=$(mktemp -d /tmp/dinero-snapgate.XXXXXX)
 GATE_PID=""
 trap '[ -z "$GATE_PID" ] || kill -9 "$GATE_PID" 2>/dev/null || true; rm -rf "$GATE_DIR"' EXIT
 mkdir -p "$GATE_DIR/datadir"
+# The manifest names the public payload. The native loader checks that basename
+# as well as its hash; pending.dat is only the publisher's private staging name.
+cp "$DUMP_FILE" "$GATE_DIR/snapshot.dat"
 cat > "$GATE_DIR/datadir/dinero.conf" <<EOF
 sync-profile=$SYNC_PROFILE
-utreexo_bridge=0
+utreexo-bridge=0
+lightning.oracles.enable=0
 assumeutxo_forward_connect=1
 port=$GATE_PORT
 rpcport=$GATE_RPC
 portmap=0
 listen=0
 connect=127.0.0.1:20999
-assumeutxo_snapshot=$DUMP_FILE
+assumeutxo_snapshot=$GATE_DIR/snapshot.dat
 assumeutxo_manifest=$MANIFEST
 assumeutxo_require_manifest=1
 EOF
-"$DINEROD" --datadir="$GATE_DIR/datadir" > "$GATE_DIR/node.log" 2>&1 &
+"$DINEROD" --datadir="$GATE_DIR/datadir" --wallet-socket-port="$GATE_WALLET" > "$GATE_DIR/node.log" 2>&1 &
 GATE_PID=$!
 log "gate node started (pid $GATE_PID), waiting up to ${GATE_TIMEOUT}s"
 
@@ -149,24 +154,28 @@ DEADLINE=$(( $(date +%s) + GATE_TIMEOUT ))
 GATE_OK=0
 while [ "$(date +%s)" -lt "$DEADLINE" ]; do
     kill -0 $GATE_PID 2>/dev/null || break
-    if grep -qE "rejected|checksum mismatch|refusing partial|FATAL" "$GATE_DIR/node.log"; then
-        break
-    fi
-    # RPC state is shared by legacy and v6 loaders. Log text is not an import receipt.
-    if "${CLI[0]}" -rpcport="$GATE_RPC" -datadir="$GATE_DIR/datadir" getbackgroundvalidationprogress > "$GATE_DIR/state.json" 2>/dev/null \
-       && python3 - "$GATE_DIR/state.json" "$HEIGHT" "$BASE_HASH" <<'PYGATE'
+    # RPC state is shared by legacy and v6 loaders. Ordinary startup metrics
+    # include "blocks_rejected_total"; matching arbitrary log words aborts a
+    # healthy gate before its headers arrive. Logs are not an import receipt.
+    if "${CLI[0]}" -rpcport="$GATE_RPC" -datadir="$GATE_DIR/datadir" getbackgroundvalidationprogress > "$GATE_DIR/state.json" 2>/dev/null; then
+      if python3 - "$GATE_DIR/state.json" "$HEIGHT" "$BASE_HASH" <<'PYGATE'
 import json,sys
 with open(sys.argv[1]) as f: state=json.load(f)
+if state.get('status')=='Failed' or state.get('error_message'):
+    raise SystemExit(2)
 if (state.get('assumeutxo_active') is not True or
     type(state.get('snapshot_base_height')) is not int or
     state['snapshot_base_height']!=int(sys.argv[2]) or
-    state.get('snapshot_base_block')!=sys.argv[3] or
-    state.get('status')=='Failed' or state.get('error_message')):
-    raise ValueError('native gate has not admitted the expected snapshot base')
+    state.get('snapshot_base_block')!=sys.argv[3]):
+    raise SystemExit(1)
 PYGATE
-    then
+      then
         GATE_OK=1
         break
+      else
+        GATE_STATUS=$?
+        [ "$GATE_STATUS" -ne 2 ] || fail "native gate reported snapshot failure; kept latest"
+      fi
     fi
     sleep 10
 done

@@ -402,7 +402,7 @@ jobs:
           set +e
           failed=""
           ran=0
-          for t in CompactDefaultActivation PowEnforcedRegtest CheckpointForkAcceptance BlockAcceptorFeeLifecycle CsnCpfpDisconnect CsnReplayMetadataRecovery CsnReplayMetadataLocalUndo SixtySecondActivation SixtySecondShieldedLifecycle DaemonServiceRelease RPCListenerStartup VaultExplicitStartup OrchardCapabilityAdvertisement CsnManualInvalidation CsnStoredProofRetry ColdStartConsensus MiningPolicyE2E CovenantWalletMultinodeLifecycle ContextualLocksLifecycle ParallelBlockDownloadTargeted CrossSeedRestartReorgParity CrossSeedTeardownLifecycle UtreexoLiveReorgStateRestoration SnapshotFormatPolicyRuntime SnapshotBindingMutations SnapshotNullifierRestart CSNSnapshotProofRestart CSNSnapshotHistory StateCommitmentMining CsnEpochResetCrashAtomicity ShieldedNullifierCrashBoundary ShieldedPromotionBoundary ShieldedOutgoingRecoveryLifecycle ShieldedAuthRelayLifecycle UtreexoBatchProofCanonicalCoins PrivateCovenantLifecycle ReconsiderRestartBoundary InvalidityRestartSticky CSNShieldedReorgInvertibility AssumeUtxoCorruptCheckpointRecovery ConsensusIntrospectionRpc ConnectTipRestartEquivalence RecoveryMarkerRestartEquivalence ShieldedRootMultinodeDeepReorg DeferredBaseChildForgedRoot MinorityTipHeaderRelay GetChainTipsValidFork; do
+          for t in CompactDefaultActivation PowEnforcedRegtest CheckpointForkAcceptance BlockAcceptorFeeLifecycle CsnCpfpDisconnect CsnReplayMetadataRecovery CsnReplayMetadataLocalUndo SixtySecondActivation SixtySecondShieldedLifecycle DaemonServiceRelease RPCListenerStartup VaultExplicitStartup OrchardCapabilityAdvertisement CsnManualInvalidation CsnStoredProofRetry ColdStartConsensus MiningPolicyE2E CovenantWalletMultinodeLifecycle ContextualLocksLifecycle ParallelBlockDownloadTargeted CrossSeedRestartReorgParity CrossSeedTeardownLifecycle UtreexoLiveReorgStateRestoration SnapshotFormatPolicyRuntime SnapshotBindingMutations SnapshotNullifierRestart StatefulSnapshotRestart CSNSnapshotProofRestart CSNSnapshotHistory StateCommitmentMining CsnEpochResetCrashAtomicity ShieldedNullifierCrashBoundary ShieldedPromotionBoundary ShieldedOutgoingRecoveryLifecycle ShieldedAuthRelayLifecycle UtreexoBatchProofCanonicalCoins PrivateCovenantLifecycle ReconsiderRestartBoundary InvalidityRestartSticky CSNShieldedReorgInvertibility AssumeUtxoCorruptCheckpointRecovery ConsensusIntrospectionRpc ConnectTipRestartEquivalence RecoveryMarkerRestartEquivalence ShieldedRootMultinodeDeepReorg DeferredBaseChildForgedRoot MinorityTipHeaderRelay GetChainTipsValidFork; do
             echo "=== $t ==="
             ctest --test-dir build-tests \
               --output-on-failure \
@@ -1017,6 +1017,7 @@ jobs:
       - name: Qualify real relay and hole-punch network paths
         timeout-minutes: 60
         run: |
+          python3 -B scripts/ci/test_collect_relay_netns_evidence.py
           sudo bash scripts/ci/run_relay_reachability_netns.sh \
             "$PWD/build-tests-quic/dinerod" "$PWD/build-tests-quic/relay-netns-evidence"
 
@@ -1035,6 +1036,14 @@ jobs:
             ctest --test-dir build-quic-tsan --output-on-failure --no-tests=error \
             -R '^(QuicSession|QuicSessionStress)$'
 
+      - name: Collect readable relay evidence without exposing node datadirs
+        if: always()
+        run: |
+          sudo python3 -B scripts/ci/collect_relay_netns_evidence.py \
+            "$PWD/build-tests-quic/relay-netns-evidence" \
+            "$PWD/build-tests-quic/relay-upload-evidence" \
+            --uid "$(id -u)" --gid "$(id -g)"
+
       - name: Preserve QUIC test and sanitizer logs
         if: always()
         uses: actions/upload-artifact@v4
@@ -1043,8 +1052,6 @@ jobs:
           path: |
             build-tests-quic/Testing/Temporary/
             build-tests-quic/direct-quic-sync.log
-            build-tests-quic/relay-netns-evidence/**/*.log
-            build-tests-quic/relay-netns-evidence/summary.txt
-            build-tests-quic/relay-netns-evidence/source-sha.txt
+            build-tests-quic/relay-upload-evidence/
             build-tests-quic/dinerod
             build-quic-tsan/Testing/Temporary/

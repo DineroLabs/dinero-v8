@@ -38,7 +38,11 @@ publisher signature; native selected-chain authentication is always mandatory.
 
 The publisher retains its candidate while waiting for burial, verifies its
 RPC/header base identity, signs the exact manifest bytes, and starts a fresh
-native node with the matching profile and exact manifest. The gate checks RPC
+native node with the matching profile and exact manifest. This disposable gate
+explicitly disables legacy Lightning oracles and proof-bridge advertisement.
+Its wallet socket uses a separate port (`GATE_WALLET`, default 27000), alongside
+the separate `GATE_PORT` and `GATE_RPC` ports, so it can run beside the live node.
+The gate checks RPC
 AssumeUTXO state/base identity, not legacy-only log text. It rechecks source
 ancestry after the gate and only then swaps `latest`. Gate/reorg failures preserve
 the previous publication. Native import verifies full state, profile, selected

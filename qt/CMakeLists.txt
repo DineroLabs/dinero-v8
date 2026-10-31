@@ -1516,6 +1516,14 @@ if(BUILD_TESTING)
   add_test(NAME RpcConnectionPolicy COMMAND test_rpc_connection_policy)
   set_tests_properties(RpcConnectionPolicy PROPERTIES TIMEOUT 60)
 
+  add_executable(test_connection_manager tests/test_connection_manager.cpp
+    src/connection_manager.cpp src/connection_manager.h)
+  target_include_directories(test_connection_manager PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_link_libraries(test_connection_manager PRIVATE Qt6::Core Qt6::Network Qt6::Test)
+  target_compile_definitions(test_connection_manager PRIVATE QT_NO_KEYWORDS)
+  add_test(NAME ConnectionManagerLateStartup COMMAND test_connection_manager)
+  set_tests_properties(ConnectionManagerLateStartup PROPERTIES TIMEOUT 30)
+
 
   if(DIN_ENABLE_ORCHARD_UI)
     # The Orchard preview screens, offline (no node).

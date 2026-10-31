@@ -5,6 +5,8 @@
 #include <QJsonArray>
 #include <QDebug>
 #include <QtMath>
+#include <cmath>
+#include <limits>
 
 namespace {
 QString defaultCookiePath() {
@@ -121,7 +123,7 @@ void ConnectionManager::reconnect() {
     
     if (currentRetryAttempt_ >= maxRetries_) {
         setState(Failed);
-        Q_EMIT statusMessage("Failed to connect after " + QString::number(maxRetries_) + " attempts", "error");
+        Q_EMIT statusMessage("Node is not ready yet; checking again every 30 seconds", "warning");
         return;
     }
     
@@ -207,10 +209,18 @@ void ConnectionManager::setState(ConnectionState newState) {
     if (newState == Connected) {
         consecutiveFailures_ = 0;
         currentRetryAttempt_ = 0;
-        healthCheckTimer_->start();
+        reconnectTimer_->stop();
+        healthCheckTimer_->start(healthCheckInterval_);
         queueProcessTimer_->start();
         Q_EMIT connected();
         Q_EMIT statusMessage("✅ Connected to daemon", "info");
+    } else if (newState == Failed) {
+        // Large pre-Orchard databases can need nearly an hour for the one-time
+        // migration. Exhausting the fast reconnect budget must not strand a
+        // healthy daemon that becomes ready later. Only probe readiness; queued
+        // wallet calls remain disabled until a successful RPC response.
+        reconnectTimer_->stop();
+        healthCheckTimer_->start(30000);
     } else if (newState == Disconnected) {
         healthCheckTimer_->stop();
         Q_EMIT disconnected();
@@ -224,7 +234,7 @@ void ConnectionManager::scheduleHealthCheck() {
 }
 
 void ConnectionManager::onHealthCheckTimer() {
-    if (state_ == Connected) {
+    if (state_ == Connected || state_ == Failed) {
         performHealthCheck();
     }
 }
@@ -238,6 +248,7 @@ void ConnectionManager::performHealthCheck() {
     // Read cookie
     QString cookie = readCookie();
     if (cookie.isEmpty()) {
+        if (state_ == Failed) return; // Keep the slow probe, without reviving fast retries.
         if (state_ == Connected) {
             Q_EMIT statusMessage("Lost connection to daemon (cookie missing)", "error");
             setState(Reconnecting);
@@ -294,23 +305,23 @@ void ConnectionManager::performHealthCheck() {
             return;
         }
         
-        if (replyPtr->error() == QNetworkReply::NoError) {
+        const auto doc = QJsonDocument::fromJson(replyPtr->readAll());
+        const auto object = doc.object();
+        const auto error = object.value("error");
+        const auto result = object.value("result");
+        const double height = result.toDouble(-1);
+        const bool ready = replyPtr->error() == QNetworkReply::NoError &&
+            doc.isObject() && (error.isNull() || error.isUndefined()) &&
+            result.isDouble() && height >= 0 &&
+            height <= std::numeric_limits<int>::max() && std::floor(height) == height;
+        if (ready) {
             // Success
             if (state_ != Connected) {
                 setState(Connected);
             }
             consecutiveFailures_ = 0;
             
-            // Parse response to get block height
-            QByteArray response = replyPtr->readAll();
-            QJsonDocument doc = QJsonDocument::fromJson(response);
-            if (doc.isObject()) {
-                QJsonObject obj = doc.object();
-                if (obj.contains("result")) {
-                    int blocks = obj["result"].toInt();
-                    Q_EMIT blockchainSynced(blocks, blocks);
-                }
-            }
+            Q_EMIT blockchainSynced(static_cast<int>(height), static_cast<int>(height));
         } else {
             // Failure
             consecutiveFailures_++;

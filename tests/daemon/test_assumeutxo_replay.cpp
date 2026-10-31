@@ -18,6 +18,7 @@
 #include "daemon/utreexo_tx_payload.h"
 #include "daemon/utreexo_tx_reader.h"
 #include "rpc/rpc_registry.h"
+din::Json rpc_getblocktemplate_v14(const ExecutionContext&, const din::Json&);
 din::Json rpc_mining_getjob(const ExecutionContext&, const din::Json&);
 din::Json rpc_mining_submit(const ExecutionContext&, const din::Json&);
 din::Json rpc_context_getblock(const ExecutionContext&, const din::Json&);
@@ -172,6 +173,16 @@ struct RuntimeOriginProjectionTestAccess {
 #endif
 
 struct ShieldedStateStartupTestAccess {
+    static bool RestoreSnapshotCache(ChainstateService& service, std::string& error) {
+        return service.RestoreStatefulSnapshotCoinCache(error);
+    }
+    static void CacheSnapshotBase(ChainstateService& service, const uint256& hash,
+                                  uint32_t height, bool promoted = false) {
+        service.assumeutxo_active_ = !promoted;
+        service.assumeutxo_base_block_ = promoted ? uint256{} : hash;
+        service.assumeutxo_base_height_ = promoted ? 0 : height;
+        service.promoted_base_height_ = promoted ? height : 0;
+    }
     static auto SnapshotBootstrapConfig(ChainstateService& service) {
         if(!service.config_)service.config_=std::make_shared<ConfigService>();
         return service.config_;
@@ -959,6 +970,7 @@ int main(int argc, char** argv) {
 #include "chainstate_wallet_index_owner_checks.h"
 #include "wallet_restore_preflight_checks.h"
 #include "snapshot_wallet_source_checks.h"
+#include "stateful_snapshot_cache_checks.h"
 
 #include "wallet_canonical_recovery_checks.h"
 #include "orchard_rpc_binding_fixture.h"
