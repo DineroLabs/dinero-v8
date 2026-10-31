@@ -10,10 +10,10 @@
   },
   "mining": {
     "repository": "DineroLabs/dinero-sv2",
-    "source_commit": "5f3054367646d4abc667d501e01669ff24979e14",
-    "pool_version": "0.1.9",
-    "cpu_version": "0.2.13",
-    "gpu_version": "0.2.13"
+    "source_commit": "fa7538d85a22dfbb345c508354a9e4dc2eeebc7b",
+    "pool_version": "0.1.10",
+    "cpu_version": "0.2.14",
+    "gpu_version": "0.2.14"
   },
   "activation": {
     "sixty_second_height": null,
