@@ -42,6 +42,33 @@ SNAPSHOT_FALLBACKS="${DINERO_SNAPSHOT_FALLBACKS:-/opt/dinero/dinero-assumeutxo-7
 # only do that behind an authenticated proxy on a private network.
 RPCBIND="${DINERO_RPCBIND:-127.0.0.1}"
 
+# New volumes have no operator-selected legacy IPC consumers. Match the
+# packaged fresh-node configuration, which explicitly disables those clients
+# on the scheduled Orchard profile. Never infer permission to change an
+# existing volume or an explicit configuration/Lightning argument.
+config_override=no
+for arg in "$@"; do
+    case "$arg" in
+        -conf|--conf|-conf=*|--conf=*|-config|--config|-config=*|--config=*|\
+        -lightning.*|--lightning.*) config_override=yes ;;
+    esac
+done
+mkdir -p "$DATADIR"
+if [ "$config_override" = no ] && [ ! -L "$DATADIR" ]; then
+    if ! entries=$(find "$DATADIR" -mindepth 1 -maxdepth 1 -print -quit); then
+        echo "[entrypoint] cannot inspect datadir; refusing to initialize configuration" >&2
+        exit 1
+    fi
+    if [ -z "$entries" ]; then
+        # O_EXCL-style noclobber also preserves a concurrent initializer's file.
+        if (umask 077; set -C; printf '%s\n' \
+            '# Fresh Docker node: no legacy Lightning IPC consumers configured.' \
+            'lightning.oracles.enable=0' > "$DATADIR/dinero.conf"); then
+            echo "[entrypoint] initialized fresh-node configuration"
+        fi
+    fi
+fi
+
 # Base flags: serve the network (listen), talk RPC inside the container only.
 set -- \
     -datadir="$DATADIR" \

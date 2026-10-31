@@ -161,6 +161,13 @@ if(NOT WIN32)
   set_tests_properties(DaemonServiceRelease PROPERTIES
     LABELS "integration;restart;mandatory" TIMEOUT 300 RUN_SERIAL TRUE)
 
+  if(UNIX)
+    add_test(NAME DockerEntrypointConfig COMMAND python3 -B
+      ${CMAKE_SOURCE_DIR}/tests/integration/test_docker_entrypoint_config.py)
+    set_tests_properties(DockerEntrypointConfig PROPERTIES
+      LABELS "unit;packaging;mandatory" TIMEOUT 30)
+  endif()
+
   add_test(NAME OrchardWalletCycleHttpContract COMMAND python3 -B
     ${CMAKE_SOURCE_DIR}/tests/integration/test_orchard_wallet_cycle_http_contract.py)
   set_tests_properties(OrchardWalletCycleHttpContract PROPERTIES
