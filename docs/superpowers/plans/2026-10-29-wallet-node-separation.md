@@ -262,6 +262,8 @@ Library edits: `src/consensus/CMakeLists.txt`, `src/consensus/pq/CMakeLists.txt`
 
 ### Task 0.8: Standalone consumer baseline (W6)
 
+(Done; its consumer is superseded by Task 0.8a, owner decision 2026-10-31.)
+
 **Files:**
 - Modify: `tests/separation/CMakeLists.txt`. Add target `sep_wallet_ffi_standalone`, which links `dinero_wallet_ffi` whole-archive plus the Rust bridge's static set from `mobile-tauri/src-tauri/build.rs:29-38` (`dinero_wallet_ffi`, `dinero_wallet`, `dinero_crypto`, `dinero_consensus`) and nothing else. Add ctest `SepWalletFfiStandalone`.
 
@@ -269,6 +271,26 @@ Library edits: `src/consensus/CMakeLists.txt`, `src/consensus/pq/CMakeLists.txt`
   - **If GREEN:** label the ctest `separation;required` and note "W6 required (baseline green)" in the evidence README.
   - **If RED:** label it `separation;recorded` and save the undefined-symbol list. The repair is E1, handled separately.
 - [ ] **Step 2:** Commit `test(separation): standalone FFI consumer baseline (W6)`.
+
+### Task 0.8a: W6 redefined as the standalone wallet (owner decision 2026-10-31)
+
+Replaces Task 0.8's consumer. That one linked `dinero_wallet_ffi` with a list copied from the deprecated Tauri `build.rs`, which no shipping client uses (DineroDPI iOS and Android load `nodecore_ffi` only; evidence: `~/src/dinero-evidence/2026-10-29-separation-stage0/blocker-map-2026-10-31.md`, addendum). Spec §8 W6 row, as amended. Lands before Task 0.10, so the measurement reports the new W6.
+
+**Files:**
+- Modify: `tests/separation/CMakeLists.txt`. Replace `sep_wallet_ffi_standalone` with `sep_wallet_standalone`: built from `wallet_fixture_compat.cpp` with W4's compile settings, but linked only with `target_link_libraries(sep_wallet_standalone PRIVATE dinero_wallet)` (ON: plus `dinero_orchard_index_delivery`, exactly as W4). No `dinero_core`, no `mempool_test_stubs.cpp`, no hand-listed archives; Linux adds `-Wl,--no-undefined`. Replace ctest `SepWalletFfiStandalone` with `SepWalletStandalone`, which builds the target and then runs it on `fixtures/<cfg>` (the same driver as `SepWalletFixtureCompat`).
+- Delete: `tests/separation/wallet_ffi_standalone.cpp`.
+- Modify: `scripts/ci/separation/check_link_closure.py` (`--gate` accepts `W6`) and `closure_rules.json` (a `W6` entry equal to `W2`'s rules).
+- Modify: both separation workflows' W6 step (run the ctest, then `check_link_closure.py --target sep_wallet_standalone --gate W6`; the step fails if either fails; the label stays `recorded` until stage 7), `gate_label.py` if it names the old test, `tests/separation/README.md` (the W6 section).
+- Test: `scripts/ci/separation/tests/test_check_link_closure.py`, `test_workflow_wiring.py`.
+
+- [ ] **Step 1:** Write failing tests:
+  - `--gate W6` on the closure fixtures reports the same violations as `W2`;
+  - the wiring test requires the W6 step to run `SepWalletStandalone` and the closure check, and no longer names `SepWalletFfiStandalone` or `dinero_wallet_ffi`.
+  Run them. Expected: FAIL.
+- [ ] **Step 2:** Implement the four changes. Run the pytest suite and actionlint. Expected: PASS.
+- [ ] **Step 3:** Build `sep_wallet_standalone` in `$CFG`. Expected **RED** at stage 0: unresolved node symbols (for example `Mempool::isOutputSpentInMempool`, `ChainDB::*`) and closure violations. Save the undefined-symbol list as evidence.
+  - **Neuter check:** temporarily link `dinero_core` and the mempool stub (W4's line). The target must then link, and the ctest must run and PASS on the fixture. This proves the checker exercises real wallet code and can go green. Revert the neuter.
+- [ ] **Step 4:** Commit `test(separation): W6 measures the standalone wallet, not the Tauri bridge`.
 
 ### Task 0.9: Non-required CI workflows
 
@@ -316,7 +338,7 @@ Library edits: `src/consensus/CMakeLists.txt`, `src/consensus/pq/CMakeLists.txt`
   - **macOS stays on `macos-14`.** Run 1 on macOS (PR #860) is **UNMEASURED**: the pre-existing Xcode 15.4 build break on dinero-main (`chainstate_service.h:1735`, incomplete type in `std::optional<std::span<const MempoolProofView>>`) stops the prerequisite build.
     - The fix is not ours. Once it lands on dinero-main, rebase #860 and rerun.
     - The runner is not switched.
-  - W6 as recorded in Task 0.8.
+  - W6 as recorded in Task 0.8a.
   - **The first PR run only collects candidate baselines,** which the record step prints to the job log. It is not described as green.
     - The candidates are reviewed, then committed by hand in a separate change.
     - Only a later run against the committed baselines can show K4/W5 PASS on Linux and Windows.
@@ -589,7 +611,7 @@ Added 2026-10-31 (owner decision). Neither the spec nor the original plan covers
 ### Task 6.2: Test link cleanup
 
 - [ ] **Step 1:** For each pure-wallet test that links `wallet_test_deps` or compiles `tests/stubs/mempool_test_stubs.cpp`, switch it to link `dinero_wallet` (plus `fake_node_views.h` where it used a mempool). Each test must keep passing; check with `ctest -R <name> --no-tests=error` per test.
-- [ ] **Step 2:** Run the full ctest in both configs on all four platforms, then every gate. Expected: K1–K6 and W1–W5 GREEN; W6 as stage 0 determined. On Windows, W5 GREEN means the partial gate (wallet FFI + RPC transcript; NodeCore N/A). The NodeCore part of W5 must be GREEN on Linux and macOS. Commit `test: wallet tests link the wallet alone`.
+- [ ] **Step 2:** Run the full ctest in both configs on all four platforms, then every gate. Expected: K1–K6 and W1–W6 GREEN (W6 is the standalone wallet, Task 0.8a). On Windows, W5 GREEN means the partial gate (wallet FFI + RPC transcript; NodeCore N/A). The NodeCore part of W5 must be GREEN on Linux and macOS. Commit `test: wallet tests link the wallet alone`.
 
 ## Stage 7 — required gates and unpinned trials (one PR)
 
@@ -619,4 +641,4 @@ Added 2026-10-31 (owner decision). Neither the spec nor the original plan covers
 4. **Task 0.4 Step 1:** the never-run floor's location.
 5. **Task 7.1 Step 2:** the required-check setting.
 
-E1 (W6 repair, if RED) and E3 (manifest repair) are separate decisions outside this plan.
+E3 (manifest repair) is a separate decision outside this plan. E1 is superseded by the W6 redefinition (Task 0.8a).
