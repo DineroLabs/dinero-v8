@@ -132,3 +132,16 @@ def test_windows_expectation_keeps_w5_missing_reference_after_b1():
     assert "After B1 is fixed through its own review, W5 stays FAIL rc 2 (missing reference)" in exp
     assert "symbols_windows_<cfg>.txt" in exp
     assert "'" not in exp[:-1]      # single-quoted pwsh string: no stray quote inside
+
+
+def test_no_step_saves_a_cache():
+    # Owner rule: cache saves are uploads. Restoring existing caches is allowed.
+    for name, text in (("posix", POSIX), ("windows", WINDOWS)):
+        uses = re.findall(r"^\s*uses:\s*(\S+)", text, re.M)
+        assert not [u for u in uses if re.match(r"actions/cache@", u)], name
+        for block in text.split("\n      - name: ")[1:]:
+            if "hendrikmuhs/ccache-action@" in block:
+                assert re.search(r"^\s+save:\s*false\s*$", block, re.M), name
+            if re.search(r"uses:\s*actions/setup-(python|node|go|java)@", block):
+                assert not re.search(r"^\s+cache:", block, re.M), name
+    assert "actions/cache/restore@" in POSIX and "actions/cache/restore@" in WINDOWS

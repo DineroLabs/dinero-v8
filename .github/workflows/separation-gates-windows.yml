@@ -147,7 +147,7 @@ jobs:
           rustc "+$env:RUST_PIN" -vV
 
       - name: Cache vendored OpenSSL
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: |
             third_party/openssl-3.5.7
@@ -160,7 +160,7 @@ jobs:
           .\scripts\build-openssl-vendored.ps1
 
       - name: Cache vendored curl
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: |
             third_party/curl-8.21.0

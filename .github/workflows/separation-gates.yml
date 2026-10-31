@@ -181,9 +181,11 @@ jobs:
         with:
           key: separation-gates-${{ matrix.toolchain }}-${{ matrix.orchard }}
           max-size: 1G
+          # Owner rule: cache saves are uploads; restore only.
+          save: false
 
       - name: Cache vendored OpenSSL
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: third_party/openssl-3.5.7/prebuilt
           key: separation-openssl-${{ matrix.toolchain }}-${{ hashFiles('scripts/build-openssl-vendored.sh') }}
