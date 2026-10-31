@@ -128,6 +128,9 @@ jobs:
             echo "runner=${RUNNER_OS} ${RUNNER_ARCH}"
           } | tee desktop-release-provenance-macos-${{ matrix.variant }}.txt
 
+      - name: Exercise the audit with real Apple tools before the full build
+        run: python3 "$GITHUB_WORKSPACE/tooling/scripts/ci/test_macos_minimum.py" -v
+
       - name: Overlay reviewed architecture-aware packaging helpers
         run: |
           cp "${GITHUB_WORKSPACE}/tooling/packaging/mac/build-installer.sh" packaging/mac/
@@ -278,19 +281,8 @@ jobs:
           python3 "$GITHUB_WORKSPACE/tooling/scripts/ci/check_macos_desktop_payload.py" \
             packaging/mac/dist/stage --arch '${{ matrix.arch }}'
           python3 "$GITHUB_WORKSPACE/tooling/scripts/ci/check_macos_minimum.py" \
-            "$APP" --arch '${{ matrix.arch }}' --maximum 13.0
-          MACHO_COUNT=0
-          while IFS= read -r -d '' path; do
-            if file "$path" | grep -q 'Mach-O'; then
-              ARCHES=$(lipo -archs "$path")
-              lipo -verify_arch ${{ matrix.arch }} "$path" || {
-                echo "::error::Mach-O missing required native architecture in bundle: $path ($ARCHES)"; exit 1;
-              }
-              MACHO_COUNT=$((MACHO_COUNT + 1))
-            fi
-          done < <(find "$APP" -type f -print0)
-          [ "$MACHO_COUNT" -gt 10 ] || { echo "::error::too few Mach-O files checked: $MACHO_COUNT"; exit 1; }
-
+            "$APP" --arch '${{ matrix.arch }}' --maximum 13.0 --min-files 10 \
+            | tee -a desktop-release-provenance-macos-${{ matrix.variant }}.txt
           TEST_HOME=$(mktemp -d)
           # macdeployqt ships the native cocoa platform plugin on macOS; it does
           # not ship Qt's offscreen plugin. Hosted macOS runners have a WindowServer,
@@ -311,7 +303,6 @@ jobs:
           [ "$COUNT" -eq 1 ] || { cat "$TEST_HOME/qt.log"; echo "::error::expected one daemon child, got $COUNT"; exit 1; }
           kill "$QT_PID" 2>/dev/null || true
           wait "$QT_PID" 2>/dev/null || true
-          echo "verified_macho_files=$MACHO_COUNT" | tee -a desktop-release-provenance-macos-${{ matrix.variant }}.txt
 
       - name: Preserve failed candidate diagnostics
         if: failure()
@@ -320,6 +311,10 @@ jobs:
           find packaging/mac/dist/stage -type f -maxdepth 6 > "$RUNNER_TEMP/macos-candidate-diagnostics/layout.txt" 2>/dev/null || true
           find "$RUNNER_TEMP" -name qt.log -exec cp {} "$RUNNER_TEMP/macos-candidate-diagnostics/" \; || true
           git rev-parse HEAD > "$RUNNER_TEMP/macos-candidate-diagnostics/source.txt"
+          if [ -d packaging/mac/dist/stage/dinero-qt.app ]; then
+            echo 'UNQUALIFIED failed candidate; diagnostics only, not release approved' > "$RUNNER_TEMP/macos-candidate-diagnostics/STATUS.txt"
+            ditto -c -k --sequesterRsrc --keepParent packaging/mac/dist "$RUNNER_TEMP/macos-candidate-diagnostics/unqualified-stage.zip"
+          fi
 
       - uses: actions/upload-artifact@v4
         if: failure()

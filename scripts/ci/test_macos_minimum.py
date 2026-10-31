@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 import pathlib
+import platform
+import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -25,15 +28,29 @@ class MacMinimum(unittest.TestCase):
             helper = root / 'Contents/Frameworks/New.framework/New'
             helper.parent.mkdir(parents=True)
             helper.write_bytes(bytes.fromhex('cffaedfe') + bytes(20))
-            with patch('check_macos_minimum.subprocess.check_output', return_value=BUILD) as tool:
+            with patch('check_macos_minimum.subprocess.run') as arch_check, patch('check_macos_minimum.subprocess.check_output', return_value=BUILD) as tool:
                 audit(root, 'x86_64', '13.0')
+                arch_check.assert_called_once_with(['lipo', str(helper), '-verify_arch', 'x86_64'], check=True)
                 self.assertEqual(tool.call_args.args[0], ['otool', '-arch', 'x86_64', '-l', str(helper)])
-            with patch('check_macos_minimum.subprocess.check_output', return_value=BUILD.replace('minos 13.0', 'minos 14.0')):
+            with patch('check_macos_minimum.subprocess.run'), patch('check_macos_minimum.subprocess.check_output', return_value=BUILD.replace('minos 13.0', 'minos 14.0')):
                 with self.assertRaisesRegex(ValueError, 'above 13.0'):
                     audit(root, 'x86_64', '13.0')
 
+    @unittest.skipUnless(sys.platform == 'darwin', 'requires Apple lipo/otool/clang')
+    def test_actual_apple_tools_on_native_and_wrong_architecture(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = pathlib.Path(temp)
+            source = root / 'main.c'
+            source.write_text('int main(void) { return 0; }\n')
+            subprocess.run(['clang', '-mmacosx-version-min=13.0', str(source), '-o', str(root / 'tool')], check=True)
+            native = platform.machine()
+            audit(root, native, '13.0')
+            other = 'x86_64' if native == 'arm64' else 'arm64'
+            with self.assertRaises(subprocess.CalledProcessError):
+                audit(root, other, '13.0')
+
     def test_empty_package_refused(self):
-        with tempfile.TemporaryDirectory() as temp, self.assertRaisesRegex(ValueError, 'no Mach-O'):
+        with tempfile.TemporaryDirectory() as temp, self.assertRaisesRegex(ValueError, 'too few Mach-O'):
             audit(pathlib.Path(temp), 'arm64', '13.0')
 
 

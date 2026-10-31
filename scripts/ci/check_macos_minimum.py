@@ -32,7 +32,7 @@ def minimum(text):
     return values[0]
 
 
-def audit(root, arch, maximum):
+def audit(root, arch, maximum, min_files=1):
     count = 0
     for path in sorted(root.rglob('*')):
         if path.is_symlink() or not path.is_file():
@@ -40,12 +40,13 @@ def audit(root, arch, maximum):
         with path.open('rb') as stream:
             if stream.read(4) not in MAGICS:
                 continue
+        subprocess.run(['lipo', str(path), '-verify_arch', arch], check=True)
         text = subprocess.check_output(['otool', '-arch', arch, '-l', str(path)], text=True)
         if minimum(text) > version(maximum):
             raise ValueError(f'{path} requires macOS {minimum(text)}, above {maximum}')
         count += 1
-    if not count:
-        raise ValueError('no Mach-O files audited')
+    if count < min_files:
+        raise ValueError(f'too few Mach-O files audited: {count}, expected at least {min_files}')
     print(f'PASS: {count} Mach-O files support macOS {maximum} or earlier ({arch} slice)')
 
 
@@ -54,8 +55,9 @@ if __name__ == '__main__':
     parser.add_argument('root', type=pathlib.Path)
     parser.add_argument('--arch', choices=['arm64', 'x86_64'], required=True)
     parser.add_argument('--maximum', required=True)
+    parser.add_argument('--min-files', type=int, default=1)
     args = parser.parse_args()
     try:
-        audit(args.root, args.arch, args.maximum)
+        audit(args.root, args.arch, args.maximum, args.min_files)
     except (ValueError, OSError, subprocess.CalledProcessError) as exc:
         parser.exit(1, f'{exc}\n')
