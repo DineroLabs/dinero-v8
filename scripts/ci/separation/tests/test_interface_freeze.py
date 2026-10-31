@@ -116,6 +116,26 @@ def test_record_check_pass_then_header_symbol_and_missing_baseline(tmp_path, mon
     assert run_main(monkeypatch, repo, build, base, "check", syms) == 2   # no ON baseline
 
 
+def test_header_diff_survives_a_cp1252_stdout(tmp_path, monkeypatch):
+    # wallet_ffi.h contains non-cp1252 text; a Windows mismatch must print its diff, not crash.
+    import io
+    repo, build = make_tree(tmp_path)
+    base = tmp_path / "base"
+    syms = {("T", "_nodecore_stop")}
+    assert run_main(monkeypatch, repo, build, base, "record", syms) == 0
+    (repo / "wallet-core/ffi/wallet_ffi.h").write_text(
+        "int dinero_wallet_create(int x); // C++ \u2192 Rust\n", encoding="utf-8")
+    buf = io.BytesIO()
+    monkeypatch.setattr(ifz.sys, "stdout", io.TextIOWrapper(buf, encoding="cp1252", errors="strict"))
+    rc = run_main(monkeypatch, repo, build, base, "check", syms)
+    ifz.sys.stdout.flush()
+    out = buf.getvalue().decode("cp1252")
+    assert rc == 1, out
+    assert "FAIL wallet_ffi.h" in out.splitlines()
+    assert "+int dinero_wallet_create(int x); // C++ \\u2192 Rust" in out.splitlines()
+    assert "interface_freeze: FAIL" in out
+
+
 # --- Windows MSVC .lib path ---
 
 import os

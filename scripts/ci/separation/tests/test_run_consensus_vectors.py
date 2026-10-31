@@ -128,6 +128,17 @@ def test_failed_test_without_output_says_so(tmp_path):
     assert "  | (no test output captured)" in r.stdout.splitlines()
 
 
+def test_failed_output_tail_survives_a_cp1252_stdout(tmp_path):
+    # Windows runners pipe stdout as cp1252; K4 tests print glyphs outside it.
+    tests = {"A": {"status": "fail", "out": "MerkleGolden \u2705 ok"}, "B": {"status": "notrun"}}
+    r, _, _ = run(tmp_path, tests, ["A", "B"], "record", extra_env={"PYTHONIOENCODING": "cp1252"})
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert "Traceback" not in r.stderr, r.stderr
+    lines = r.stdout.splitlines()
+    assert "  | MerkleGolden \\u2705 ok" in lines
+    assert "NOT_RUN B" in lines
+
+
 def test_record_then_compare_passes_and_flags_digests(tmp_path):
     tests = {"A": P("x " + D1 + " y " + D2), "B": P("no digests here")}
     r, out, log = run(tmp_path, tests, ["A", "B"], "record")

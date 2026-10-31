@@ -53,6 +53,8 @@ def fail(msg):
 
 
 def main():
+    # Windows pipes stdout as cp1252; escape echoed test/diff text instead of crashing.
+    sys.stdout.reconfigure(errors="backslashreplace")
     ap = argparse.ArgumentParser()
     ap.add_argument("--build", required=True)
     ap.add_argument("--list", required=True)
