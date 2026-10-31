@@ -1560,6 +1560,9 @@ public:
         std::shared_ptr<ChainstateService> owner);
 
 private:
+    // Refill the full-node coin cache only after restoring the selected forest
+    // and exact snapshot lifecycle. Frozen rows alone do not authorize a spend.
+    bool RestoreStatefulSnapshotCoinCache(std::string& error);
     friend class DaemonApp;
     std::shared_ptr<ChainDB> StageCompletedActivationRoot(const daemon::DatadirGuard&);
     // Startup-only reconstruction. The caller owns the datadir and has not
