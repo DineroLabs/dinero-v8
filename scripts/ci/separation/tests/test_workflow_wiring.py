@@ -156,6 +156,7 @@ def test_macos_lane_is_macos15_with_pinned_xcode_and_its_own_reference_key():
     assert re.search(r"^\s+plat: macos$", mac, re.M)
     assert re.search(r"^\s+ref_tag: macos15$", mac, re.M)
     assert re.search(r"^\s+xcode: '16\.4'$", mac, re.M)
+    assert re.search(r"^\s+toolchain: macos15-arm64$", mac, re.M)
     for os_ in ("ubuntu-latest", "ubuntu-24.04"):
         lane = matrix.split("- os: %s\n" % os_, 1)[1].split("- os:", 1)[0]
         assert re.search(r"^\s+ref_tag: linux$", lane, re.M), os_
@@ -163,6 +164,7 @@ def test_macos_lane_is_macos15_with_pinned_xcode_and_its_own_reference_key():
     deps = POSIX.split("- name: Install macOS build dependencies", 1)[1].split("\n      - name: ", 1)[0]
     assert 'sudo xcode-select -s "/Applications/Xcode_${XCODE}.app"' in deps
     assert 'test "$(xcodebuild -version | head -1)" = "Xcode ${XCODE}"' in deps
+    assert 'case "$(xcrun -f clang++)" in "/Applications/Xcode_${XCODE}.app/"*) ;;' in deps
 
 
 def test_reference_paths_use_the_reference_key_not_the_platform():
@@ -175,7 +177,7 @@ def test_reference_paths_use_the_reference_key_not_the_platform():
     assert '--record "$out/consensus_vectors_ref_${SEP_REF_TAG}_$SEP_CFG.json"' in rec
 
 
-def test_macos14_era_references_are_preserved():
+def test_local_macos_references_are_preserved():
     # Recorded locally (AppleClang 21 / Xcode 27, macOS 27.0.1) and matched by the
     # macos-14 / Xcode 15.4 lane in run 2. Kept byte-for-byte with their provenance.
     import hashlib, json
@@ -186,9 +188,21 @@ def test_macos14_era_references_are_preserved():
         "tests/separation/interface_baseline/symbols_macos_on.txt": "2adc40d15e990f33dd9975e891ac0c68e0fa01a3b53e1726e32335a4e5246feb",
     }
     for rel, digest in pins.items():
-        data = (ROOT / rel).read_bytes().replace(b"\r\n", b"\n")
-        assert hashlib.sha256(data).hexdigest() == digest, rel
+        # raw bytes: .gitattributes keeps these LF on every checkout
+        assert hashlib.sha256((ROOT / rel).read_bytes()).hexdigest() == digest, rel
     for cfg, sha in (("off", "33d1ca772ebf1f26d538cbd0fc47d1b8f189bb5d"),
                      ("on", "6e57af6150e990c02aa53d2772ec476bd219585f")):
         ref = json.loads((ROOT / ("scripts/ci/separation/consensus_vectors_ref_%s.json" % cfg)).read_text())
         assert ref["provenance_sha"] == sha
+
+
+def test_differences_from_the_macos_reference_reach_the_summary():
+    w5 = steps(POSIX)["w5"]
+    guard = 'if [ "$present" = 0 ] && [ "$SEP_PLAT" = macos ] && [ "$SEP_REF_TAG" != macos ]; then'
+    assert guard in w5
+    body = w5.split(guard, 1)[1].split("\n          fi\n", 1)[0]
+    assert 'SEP_REF_TAG=macos python tests/separation/interface_freeze.py check --build "$SEP_BUILD"' in body
+    assert 'info=(--info-log "$RUNNER_TEMP/w5-info.txt" --info-rc "$irc")' in body
+    assert '${info[@]+"${info[@]}"}' in w5.split("gate_label.py w5", 1)[1]
+    assert "I_K4: ${{ steps.k4.outputs.info }}" in POSIX and "I_W5: ${{ steps.w5.outputs.info }}" in POSIX
+    assert 'i="I_$1"; [ -z "${!i:-}" ] || r="$r; info: ${!i}"' in POSIX
