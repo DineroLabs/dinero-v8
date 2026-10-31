@@ -1,0 +1,52 @@
+name: v8.2.0 Windows smoke-port qualification
+on:
+  push:
+    branches: [ci/v820-desktop-runtime-verification]
+    paths: ['.github/workflows/v820-windows-port-diagnostic.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  smoke:
+    runs-on: windows-2022
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Regression for occupied and OS-allocated ports
+        shell: powershell
+        run: .\scripts\ci\test_windows_smoke_ports.ps1
+      - name: Require the regression to fail on the prior harness
+        shell: powershell
+        run: |
+          $path = 'scripts/native-msvc-regtest-smoke.ps1'
+          $fixed = Get-Content $path -Raw
+          try {
+            git show b10b2a5f4fd1dcdf95e843ea629f4b78581194c8:$path | Set-Content $path -Encoding utf8
+            & powershell -NoProfile -File scripts/ci/test_windows_smoke_ports.ps1
+            if ($LASTEXITCODE -eq 0) { throw 'Regression did not reject the prior numeric-port harness' }
+          } finally { Set-Content $path -Value $fixed -Encoding utf8 }
+      - uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ github.token }}
+          run-id: '41176446837'
+          name: windows-candidate-failure-41176446837
+          path: candidate
+      - name: Install retained unsigned server candidate into isolated VM
+        shell: powershell
+        run: |
+          $installer = @(Get-ChildItem candidate -Recurse -Filter 'Dinero-Server-*-Setup.exe')
+          if ($installer.Count -ne 1) { throw 'Expected one retained diagnostic server installer' }
+          $target = Join-Path $env:RUNNER_TEMP 'dinero-port-diagnostic'
+          $p = Start-Process $installer[0].FullName -ArgumentList @('/S', "/D=$target") -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw 'Diagnostic install failed' }
+          $daemon = @(Get-ChildItem $target -Recurse -Filter dinerod.exe)
+          if ($daemon.Count -ne 1) { throw 'Expected one installed daemon' }
+          $version = & $daemon[0].FullName --version | Out-String
+          if ($version -notmatch '71451614832b3a4a610d0a77ac2a314c7809505d') { throw 'Wrong diagnostic binary source' }
+          "SMOKE_BINARY_DIR=$($daemon[0].DirectoryName)" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+      - name: Actual native startup mining and cold restart with bindable ports
+        shell: powershell
+        run: .\scripts\native-msvc-regtest-smoke.ps1 -BuildDir $env:SMOKE_BINARY_DIR -TimeoutSeconds 90

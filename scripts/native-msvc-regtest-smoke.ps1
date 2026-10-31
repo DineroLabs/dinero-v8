@@ -150,10 +150,30 @@ if ($DataDir) {
 
 New-Item -ItemType Directory -Force -Path $script:SmokeDataDir | Out-Null
 
-$basePort = Get-Random -Minimum 30000 -Maximum 56000
-$script:RpcPort = $basePort
-$script:P2pPort = $basePort + 1
-$script:WalletPort = $basePort + 2
+# Ask Windows for bindable ports, keeping all three listeners reserved until
+# the complete set exists. Random numeric ports can be occupied or excluded by
+# Windows networking even when no other Dinero process is running.
+function Get-SmokePorts {
+  param([int[]]$CandidatePorts = @(0, 0, 0))
+  if ($CandidatePorts.Count -ne 3) { throw "Expected three smoke ports" }
+  $listeners = @()
+  try {
+    $ports = foreach ($port in $CandidatePorts) {
+      $listener = New-Object System.Net.Sockets.TcpListener([System.Net.IPAddress]::Loopback, $port)
+      $listener.Server.ExclusiveAddressUse = $true
+      $listeners += $listener
+      $listener.Start()
+      $listener.LocalEndpoint.Port
+    }
+    return $ports
+  } finally {
+    foreach ($listener in $listeners) { $listener.Stop() }
+  }
+}
+$ports = Get-SmokePorts
+$script:RpcPort = $ports[0]
+$script:P2pPort = $ports[1]
+$script:WalletPort = $ports[2]
 $script:NodeProcess = $null
 
 Write-Host "Native MSVC regtest smoke"
