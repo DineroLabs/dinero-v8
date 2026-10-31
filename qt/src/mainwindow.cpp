@@ -2031,11 +2031,9 @@ MainWindow::MainWindow(dinero::qt::DaemonBootstrapOwner daemonBootstrapOwner,
   // Auto-connect ConnectionManager for wallet/address operations
   connectionMgr_->connectToDaemon();
 
-  // Friendly startup countdown. On Windows a node with many wallets at high
-  // height can take up to ~3 minutes to serve RPC. Without visible feedback,
-  // users assume the app hung and force-quit + relaunch mid-init — which is
-  // exactly what wedged startup historically. A live mm:ss countdown shows
-  // progress so they wait it out. Auto-dismisses the instant we connect.
+  // Show elapsed startup time, not a promised ETA: the one-time migration of
+  // a large existing chain database can take much longer than an ordinary
+  // cold start. Auto-dismiss the moment RPC is actually ready.
   //
   // MUST be a plain widget-based QDialog, NOT a QMessageBox. On macOS a
   // QMessageBox is presented as a native NSAlert that spins its own nested
@@ -2072,35 +2070,30 @@ MainWindow::MainWindow(dinero::qt::DaemonBootstrapOwner daemonBootstrapOwner,
     layout->addLayout(btnRow);
     QObject::connect(hideBtn, &QPushButton::clicked, box, &QDialog::close);
 
-    auto remaining = std::make_shared<int>(180);  // 3:00
+    auto elapsed = std::make_shared<int>(0);
     auto render = [titleLabel, infoLabel](int secs) {
-      if (secs > 0) {
-        titleLabel->setText(QString("Starting the Dinero node — ready in about %1:%2")
-                                .arg(secs / 60)
-                                .arg(secs % 60, 2, 10, QChar('0')));
-        infoLabel->setText(
-            "This can take up to ~3 minutes on first start.\n"
-            "Please wait — do NOT close or restart. The wallet opens "
-            "automatically once the node is ready.");
-      } else {
-        titleLabel->setText("Almost there — the node is taking a little longer than usual.");
-        infoLabel->setText(
-            "Still starting… please keep waiting and do NOT close or restart.");
-      }
+      titleLabel->setText(QString("Starting the Dinero node — %1:%2 elapsed")
+                              .arg(secs / 60)
+                              .arg(secs % 60, 2, 10, QChar('0')));
+      infoLabel->setText(
+          secs < 180
+            ? "Opening your local chain data. Please keep the app open; the wallet "
+              "connects automatically when the node is ready."
+            : "Still opening your local chain data. A one-time upgrade of a large "
+              "existing database can take an hour or longer. Please keep the app "
+              "open; the wallet connects automatically when the node is ready.");
     };
-    render(*remaining);
+    render(*elapsed);
 
     auto* tick = new QTimer(box);
     tick->setInterval(1000);
-    QObject::connect(tick, &QTimer::timeout, box, [this, box, remaining, render]() {
+    QObject::connect(tick, &QTimer::timeout, box, [this, box, elapsed, render]() {
       if (connectionMgr_ && connectionMgr_->isConnected()) {
         box->close();
         return;
       }
-      if (*remaining > 0) {
-        --(*remaining);
-      }
-      render(*remaining);
+      ++(*elapsed);
+      render(*elapsed);
     });
     tick->start();
 
@@ -17463,7 +17456,7 @@ void MainWindow::updateConnectionStatus(ConnectionManager::ConnectionState state
       break;
 
     case ConnectionManager::Failed:
-      lblConnectionStatus_->setText("Connection failed");
+      lblConnectionStatus_->setText("Node unavailable — retrying");
       lblConnectionStatus_->setStyleSheet(headerPillStyle());
       // Always show Start button on failure
       btnStartDaemon_->setVisible(true);

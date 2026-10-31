@@ -1,0 +1,13 @@
+cmake_minimum_required(VERSION 3.20)
+project(DineroQtConnectionRecovery LANGUAGES CXX)
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_AUTOMOC ON)
+find_package(Qt6 REQUIRED COMPONENTS Core Network Test)
+enable_testing()
+add_executable(test_connection_manager ../test_connection_manager.cpp
+  ../../src/connection_manager.cpp ../../src/connection_manager.h)
+target_include_directories(test_connection_manager PRIVATE ../../src)
+target_compile_definitions(test_connection_manager PRIVATE QT_NO_KEYWORDS)
+target_link_libraries(test_connection_manager PRIVATE Qt6::Core Qt6::Network Qt6::Test)
+add_test(NAME ConnectionManagerLateStartup COMMAND test_connection_manager)
+set_tests_properties(ConnectionManagerLateStartup PROPERTIES TIMEOUT 30)
