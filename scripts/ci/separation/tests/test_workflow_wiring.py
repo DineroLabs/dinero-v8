@@ -138,7 +138,7 @@ def test_no_step_saves_a_cache():
     # Owner rule: cache saves are uploads. Restoring existing caches is allowed.
     for name, text in (("posix", POSIX), ("windows", WINDOWS)):
         uses = re.findall(r"^\s*uses:\s*(\S+)", text, re.M)
-        assert not [u for u in uses if re.match(r"actions/cache@", u)], name
+        assert not [u for u in uses if re.match(r"actions/(cache@|cache/save@|upload-artifact@)", u)], name
         for block in text.split("\n      - name: ")[1:]:
             if "hendrikmuhs/ccache-action@" in block:
                 assert re.search(r"^\s+save:\s*false\s*$", block, re.M), name
