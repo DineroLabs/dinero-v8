@@ -5455,6 +5455,15 @@ bool ChainstateService::Start() {
     // This enables fast sync for new nodes (minutes instead of days)
     // ═════════════════════════════════════════════════════════════════════════
 
+    // ChainDB's ordinary coin family contains only post-base changes while
+    // AssumeUTXO is active. A full validator also needs the still-live imported
+    // coins after restart, before startup activation can spend any of them.
+    std::string snapshot_cache_error;
+    if (!RestoreStatefulSnapshotCoinCache(snapshot_cache_error)) {
+        logger_->error("[AssumeUTXO restore] " + snapshot_cache_error);
+        return false;
+    }
+
     if (IsInIBD()) {
         logger_->info("════════════════════════════════════════════════════════════════");
         logger_->info("🔄 INITIAL BLOCK DOWNLOAD DETECTED");
@@ -17108,6 +17117,63 @@ bool ChainstateService::ForceSetActiveTip(const uint256& hash, std::string& erro
     return true;
 }
 
+bool ChainstateService::RestoreStatefulSnapshotCoinCache(std::string& error) {
+    std::lock_guard<AnnotatedRecursiveMutex> selected(activation_mutex_);
+    if (GetConfig().utreexo_stateless ||
+        (!assumeutxo_active_ && promoted_base_height_ == 0)) return true;
+    if (!chain_db_ || !consensus_utxo_set_) {
+        error = "Snapshot coin cache has no chainstate owner";
+        return false;
+    }
+    // Check the base even for an empty frozen set; never turn an unreadable or
+    // foreign snapshot marker into an apparently successful empty restore.
+    const auto marker = chain_db_->getPreBaseCoinSetBase();
+    bool bound = marker.ok() && assumeutxo_active_ && !assumeutxo_base_block_.IsNull() &&
+        marker->first == assumeutxo_base_block_ &&
+        marker->second == assumeutxo_base_height_;
+    if (!bound && marker.ok() && promoted_base_height_ > 0 &&
+        marker->second == promoted_base_height_) {
+        const auto canonical = chain_db_->getBlockHashByHeight(promoted_base_height_);
+        bound = canonical.ok() && *canonical == marker->first;
+    }
+    if (!bound) {
+        error = "Frozen snapshot coin cache base is unavailable or mismatched";
+        return false;
+    }
+    std::vector<std::pair<OutPoint, consensus::UTXOEntry>> additions;
+    bool valid = true;
+    const auto status = chain_db_->forEachPreBaseCoin(
+        [&](const uint256& txid, uint32_t vout, const Coin&) {
+            const OutPoint point(TxId(txid), vout);
+            const auto coin = ResolveLivePreBaseCoinChecked(point);
+            if (coin.status() == Status::NotFound) return true; // Already spent.
+            if (!coin.ok()) { valid = false; return false; }
+            if (const auto* current = consensus_utxo_set_->GetCoin(point)) {
+                valid = current->value == coin->value && current->scriptPubKey == coin->scriptPubKey &&
+                    current->height == coin->height && current->isCoinbase == coin->isCoinbase &&
+                    current->is_confidential == coin->is_confidential && current->commitment == coin->commitment;
+                return valid;
+            }
+            additions.emplace_back(point, *coin);
+            return true;
+        });
+    if (status != Status::Ok || !valid) {
+        error = "Frozen snapshot coin cache contains unreadable or conflicting records";
+        return false;
+    }
+    // No durable writes, no forest rebuild and no tip change. Stage the whole
+    // checked set first so corrupt rows cannot publish a partial cache restore.
+    for (const auto& [point, coin] : additions) {
+        if (!consensus_utxo_set_->AddCoin(point, coin)) {
+            error = "Snapshot coin cache changed during selected restore";
+            return false;
+        }
+    }
+    if (logger_) logger_->info("[AssumeUTXO restore] Restored " + std::to_string(additions.size()) +
+                               " live pre-base coins into the full validator cache");
+    return true;
+}
+
 bool ChainstateService::RestoreUtreexoCheckpoint(uint32_t height, std::string& error) {
     if (!chain_db_) {
         error = "ChainDB not available";
@@ -17144,7 +17210,7 @@ bool ChainstateService::RestoreUtreexoCheckpoint(uint32_t height, std::string& e
             return false;
         }
         consensus_utxo_set_->ReplaceForestGuarded(std::move(restored));
-        return true;
+        return RestoreStatefulSnapshotCoinCache(error);
     } catch (const std::exception& e) {
         error = std::string("Failed to restore Utreexo checkpoint: ") + e.what();
         return false;

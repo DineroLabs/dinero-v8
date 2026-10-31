@@ -5842,6 +5842,9 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_assumeutxo_replay.cpp)
     --gtest_filter=AssumeUtxoReplay.*:SelectedWalletHistory.*:RuntimeOriginProjection.*:WalletRestorePreflight.*:SnapshotWalletSource.*:SnapshotWalletRecovery.*)
   add_test(NAME AssumeUtxoPromotion COMMAND test_assumeutxo_replay
     --gtest_filter=AssumeUtxoPromotion.*)
+  add_test(NAME StatefulSnapshotCache COMMAND test_assumeutxo_replay
+    --gtest_filter=StatefulSnapshotCache.*)
+  set_tests_properties(StatefulSnapshotCache PROPERTIES LABELS "snapshot;daemon;restart;mandatory" TIMEOUT 120)
   set_tests_properties(AssumeUtxoPromotion PROPERTIES LABELS "snapshot;daemon;restart;mandatory" TIMEOUT 120)
   set_tests_properties(AssumeUtxoReplay PROPERTIES
     LABELS "daemon;assumeutxo;replay"

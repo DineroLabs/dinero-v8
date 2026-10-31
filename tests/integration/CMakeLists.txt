@@ -2436,6 +2436,13 @@ set_tests_properties(SnapshotNullifierRestart PROPERTIES
   LABELS "integration;shielded;assumeutxo;snapshot;restart;utreexo;mandatory"
   TIMEOUT 600 RUN_SERIAL TRUE)
 
+add_test(NAME StatefulSnapshotRestart
+  COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/test_stateful_snapshot_restart.py)
+set_tests_properties(StatefulSnapshotRestart PROPERTIES
+  ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>"
+  LABELS "integration;assumeutxo;snapshot;restart;utreexo;mandatory"
+  TIMEOUT 300 RUN_SERIAL TRUE)
+
 add_test(NAME CSNSnapshotProofRestart
   COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/test_csn_snapshot_proof_restart.py)
 set_tests_properties(CSNSnapshotProofRestart PROPERTIES
