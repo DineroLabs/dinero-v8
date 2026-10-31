@@ -630,16 +630,25 @@ Why: with Orchard ON, W6's closure check fails because `dinero_orchard_index_del
 
 **Requirements (owner, 2026-10-31).** Placement: the wallet owns the recovery logic and its interface; the node owns `ChainstateService` and the adapter. Nothing node-side moves into the wallet.
 - **R1. Wallet-side source interface.** A public interface in `include/wallet/` (name it in the commit) with one operation per call the adapter makes today:
-  - the delivery page (`getRuntimeDeliveryPage`, `chainstate_service.h:1030`);
+  - the delivery page (`getRuntimeDeliveryPage`, `include/daemon/services/chainstate_service.h:1030`);
   - the account replay (`getRuntimeAccountReplay`, `:1039`);
   - the wallet coverage (`getRuntimeWalletCoverage`, `:1165`);
   - the coverage reconcile (`reconcileRuntimeWalletCoverage`, `:1170`).
 
-  Its types are the wallet-side `RuntimeAccountReplay` (`include/wallet/runtime_account_replay.h:14`), `RuntimeWalletCoverageProjection` (`include/wallet/runtime_origin_projection.h:72`) and `RuntimeOutboxPage`. The last is defined in `include/daemon/runtime_block_outbox.h:41`, which wallet headers already include; Step 2 checks that header is node-free (it includes `daemon/runtime_block_notifications.h`). If it isn't, stop and ask.
+  Each operation returns the neutral `StatusOr<…>` / `Status` from `include/common/status.h` (standard library only), as the `ChainstateService` calls do today. It never throws for an unavailable source: the wallet decides what that means (R3).
+  Its types are the wallet-side `RuntimeAccountReplay` (`include/wallet/runtime_account_replay.h:14`), `RuntimeWalletCoverageProjection` (`include/wallet/runtime_origin_projection.h:72`) and `RuntimeOutboxPage`. The last is defined in `include/daemon/runtime_block_outbox.h:41`, which wallet headers already include; Step 2 checks that header and what it includes are node-free: `daemon/runtime_block_notifications.h`, and `consensus/orchard_state_transition.h`, which includes `storage/orchard_state.h`. If they aren't, stop and ask.
 - **R2. Public wallet entry points take the interface.** The four `RuntimeWalletRecovery::Resume*Stores` entry points take the R1 interface instead of `ChainstateService&`. `include/wallet/runtime_wallet_recovery.h` no longer names `ChainstateService` at all: no forward declaration, no friend, no signature (RR6).
+  - `ChainstateService` also calls private members through that friend: `ResumePreparedOrchardCatalog` with an `OrchardSourceOwner` (`src/daemon/services/chainstate_service.cpp:20635`, `:20655`).
+  - Each such use gets a public wallet-side entry point taking the R1 interface, plus the source-owner callback where it needs one.
+  - Step 3's build lists every remaining use once the friend is gone. If a use needs node state beyond R1, stop and ask.
 - **R3. Wallet logic stays in the wallet (RR5).** The adapter is pure binding today in name only. It also holds the database-lease precondition (it reads `database_leases_` through `friend class RuntimeWalletRecovery` at `wallet_manager.h:1158`; that friend is already wallet-side, so the check moves with no access change) and the `RuntimeOrdinaryDelivery::CoverageRequiredForWallet` decision.
   - Both move into wallet-side `runtime_wallet_recovery.cpp`, with the same checks and the same exception messages.
-  - The node adapter keeps only the four `ChainstateService` calls and the mapping of each `!ok()` to the same `std::runtime_error` messages as today.
+  - The mapping of each `!ok()` to today's `std::runtime_error` messages also moves wallet-side, with identical text:
+    - `"Wallet recovery checked source unavailable"`;
+    - `"Wallet recovery checked account source unavailable"`;
+    - `"Wallet recovery coverage source unavailable"`;
+    - `"Wallet recovery coverage reconciliation refused"`.
+  - The node adapter only forwards the four `ChainstateService` calls and their `StatusOr` / `Status` results.
 - **R4. Standalone recovery is usable and testable without `ChainstateService`.** A wallet test drives every public entry point through a fake R1 source, linking `dinero_wallet` and the Orchard wallet libraries, but no `dinero_core`, `dinero_chainstate` or `src/daemon/` source. When wallet and node run together, the node supplies the adapter: `chainstate_service.cpp:7044` and `tests/daemon/orchard_catalog_recovery_checks.h:26` pass it.
 
 **Files:**
@@ -648,7 +657,9 @@ Why: with Orchard ON, W6's closure check fails because `dinero_orchard_index_del
 - Modify: spec §8 W6 row and stage-6 row; plan Tasks 0.8a and 6.2. Say "recorded only until Task 6.3".
 
 - [ ] **Step 0: Write the failing test** `WalletRecoveryWithoutNode` (new `tests/wallet/test_wallet_recovery_without_node.cpp`, linked as R4 says). With a fake R1 source:
-  - the page source reporting unavailable throws `"Wallet recovery checked source unavailable"`;
+  - the page source returning a non-ok status throws `"Wallet recovery checked source unavailable"`;
+  - the account-replay source returning a non-ok status throws `"Wallet recovery checked account source unavailable"`;
+  - the coverage source returning a non-ok status (for a wallet that needs coverage) throws `"Wallet recovery coverage source unavailable"`;
   - a held caller lease throws `"Wallet recovery requires released caller lease"`;
   - a wallet that needs coverage calls coverage and then reconcile, and a refused reconcile throws `"Wallet recovery coverage reconciliation refused"`;
   - fake pages for one enrolled store resume it.
