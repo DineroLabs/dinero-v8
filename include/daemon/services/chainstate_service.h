@@ -2120,7 +2120,7 @@ private:
     std::unique_ptr<CompactStartupState> compact_startup_;
     std::unique_ptr<OrchardSnapshotStartupState> orchard_snapshot_startup_;
     std::atomic<bool> orchard_compact_bootstrap_pending_{false};
-    bool snapshot_bootstrap_v6_=false;
+    bool snapshot_bootstrap_requires_burial_=false;
 
     // Phase 43: Safe mode state (deep reorg protection)
     bool safe_mode_active_ = false;

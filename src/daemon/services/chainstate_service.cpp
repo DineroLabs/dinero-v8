@@ -5499,7 +5499,12 @@ bool ChainstateService::Start() {
                     snapshot_bootstrap_path_ = snapshot_path;
                     snapshot_bootstrap_base_hash_ = peek.block_hash;
                     snapshot_bootstrap_base_height_ = peek.block_height;
-                    snapshot_bootstrap_v6_ = peek.version==consensus::SNAPSHOT_VERSION_V6;
+                    // v5 and v6 both authenticate their base with buried state
+                    // commitments. Do not invoke the loader on a partial header
+                    // batch: its correct refusal would permanently select full IBD.
+                    snapshot_bootstrap_requires_burial_ =
+                        peek.version==consensus::SNAPSHOT_VERSION_V5 ||
+                        peek.version==consensus::SNAPSHOT_VERSION_V6;
                     logger_->info("[snapshot] pending — base height " +
                                   std::to_string(peek.block_height) + ", base hash " +
                                   peek.block_hash.GetHex().substr(0, 16) +
@@ -13599,7 +13604,7 @@ bool ChainstateService::InitCompactSnapshotBootstrap(const std::filesystem::path
         wallet->RequireMetadataAbsent({"reorg_in_progress",assumeutxo::kActiveKey,assumeutxo::kBaseBlockKey,
             assumeutxo::kBaseHeightKey,assumeutxo::kLifecycleStateKey,assumeutxo::kLcBaseBlockKey});
         utxo_index_=std::move(wallet);snapshot_bootstrap_path_=std::move(bootstrap_path);snapshot_bootstrap_base_hash_=metadata.block_hash;
-        snapshot_bootstrap_base_height_=metadata.block_height;snapshot_bootstrap_v6_=true;
+        snapshot_bootstrap_base_height_=metadata.block_height;snapshot_bootstrap_requires_burial_=true;
         snapshot_bootstrap_state_.store(SnapshotBootstrapState::Pending);orchard_compact_bootstrap_pending_.store(true);
         // No temporary full coin owner/forest is exposed to later provider
         // construction. Selected-state reads stay unavailable until v6 enrolls.
@@ -27716,7 +27721,7 @@ void ChainstateService::TryDeferredSnapshotBootstrap() {
     const bool base_header_known = header_chain_selector_ &&
         header_chain_selector_->ContainsHeader(snapshot_bootstrap_base_hash_);
 
-    if(base_header_known&&snapshot_bootstrap_v6_) {
+    if(base_header_known&&snapshot_bootstrap_requires_burial_) {
         const auto best=header_chain_selector_->GetBestHeaderValue();consensus::HeaderIndexEntry base;
         if(best&&header_chain_selector_->GetHeaderAtHeightCopy(snapshot_bootstrap_base_height_,base)&&
             base.hash==snapshot_bootstrap_base_hash_&&

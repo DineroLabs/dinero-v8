@@ -2351,6 +2351,64 @@ TEST(OrchardSnapshotRuntime, RealRegtestActivationFullAndCompactImportReopenAndF
         ASSERT_NO_THROW(Access::Restore(mutex,db,headers));db.close();
     }
 }
+TEST(OrchardSnapshotRuntime, DeferredV5WaitsForBurialBeforeLoaderAttempt) {
+    using namespace consensus;
+    OrchardAdmissionFixture source(true);
+    MutableParams().state_commitment_burial_depth=2;
+    for (const uint32_t version : {SNAPSHOT_VERSION_V4, SNAPSHOT_VERSION_V5}) {
+        shielded_store_fixture::TempDir directory;
+        const auto snapshot=directory.path/"snapshot.dat";
+        // A complete preview but deliberately incomplete body: reaching the
+        // loader is observable as refusal, without admitting forged state.
+        SnapshotMetadata metadata;
+        metadata.version=version;metadata.block_hash=source.blocks.at(1).GetHash();
+        metadata.block_height=1;metadata.timestamp=source.blocks.at(1).header.timestamp;
+        {
+            std::ofstream out(snapshot,std::ios::binary);
+            const auto field=[&](const auto& value){out.write(reinterpret_cast<const char*>(&value),sizeof(value));};
+            field(metadata.magic);field(metadata.version);out.write(reinterpret_cast<const char*>(metadata.block_hash.data),32);
+            field(metadata.block_height);field(metadata.utxo_count);field(metadata.timestamp);field(metadata.reserved);
+        }
+        const auto path=directory.path/"chainstate";
+        OrchardSnapshotStoreTestAccess::CreateFresh(path);
+        RawIngressGraph isolated;
+        struct ContextGuard {DaemonContext* prior=DaemonContext::instance();
+            ~ContextGuard(){BlockAcceptor::SetContext(prior);DaemonContext::setInstance(prior);}} guard;
+        auto db=std::make_shared<ChainDB>();ASSERT_EQ(db->init(path),Status::Ok);
+        DaemonContext context;context.config=std::make_shared<ConfigService>();
+        context.config->Set("datadir",directory.path.string());
+        context.config->Set("assumeutxo_snapshot",snapshot.string());
+        context.config->Set("assumeutxo_require_manifest","0");
+        context.logger=std::make_shared<LoggerService>("");
+        context.block_storage=std::make_shared<BlockStorage>();
+        ASSERT_EQ(context.block_storage->init(directory.path/"files"),Status::Ok);
+        auto service=std::make_shared<ChainstateService>();context.chainstate=service;
+        struct StopGuard {std::shared_ptr<ChainstateService> service;~StopGuard(){service->Stop();}} stop{service};
+        DaemonContext::setInstance(&context);service->setOwnedChainDB(db);
+        ASSERT_TRUE(service->Init(context));ASSERT_TRUE(service->Start());
+        ASSERT_TRUE(service->IsSnapshotBootstrapPending());
+        auto headers=std::make_shared<HeaderChainSelector>();
+        ASSERT_TRUE(headers->AddHeader(source.blocks.at(0).header));
+        ASSERT_TRUE(headers->AddHeader(source.blocks.at(1).header));
+        service->setHeaderChainSelector(headers);
+        service->TryDeferredSnapshotBootstrap();
+        if (version==SNAPSHOT_VERSION_V4) {
+            // Legacy v4 remains eligible at its base; the invalid body is
+            // refused immediately instead of gaining a new burial wait.
+            EXPECT_FALSE(service->IsSnapshotBootstrapPending());
+        } else {
+            ASSERT_TRUE(service->IsSnapshotBootstrapPending()) << "base presence alone is not v5 burial";
+            ASSERT_TRUE(headers->AddHeader(source.blocks.at(2).header));
+            service->TryDeferredSnapshotBootstrap();
+            ASSERT_TRUE(service->IsSnapshotBootstrapPending()) << "one descendant is insufficient";
+            ASSERT_TRUE(headers->AddHeader(source.blocks.at(3).header));
+            service->TryDeferredSnapshotBootstrap();
+            EXPECT_FALSE(service->IsSnapshotBootstrapPending()) << "at exact burial the loader must run and refuse the invalid body";
+        }
+        EXPECT_EQ(db->getTip()->height,0);
+        EXPECT_EQ(std::filesystem::file_size(snapshot),68u);
+    }
+}
 TEST(OrchardSnapshotRuntime, ActualServiceBootstrapExportAndRestartBothProfiles) {
     using namespace consensus;using Access=OrchardSnapshotStoreTestAccess;
     OrchardCycleFixture source(true);MutableParams().orchard_catalog_commitment_activation_height=102;
