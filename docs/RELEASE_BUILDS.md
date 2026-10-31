@@ -352,3 +352,21 @@ a stale CI-only tree cannot become a production package by changing its version.
 
 This build mode permits producing candidates; it does not replace native tests,
 actual packaged-application checks, signing verification or final release review.
+
+## Artifact-only Mac desktop candidates
+
+`macos-desktop-candidate.yml` accepts a full Core commit SHA without creating a
+release tag. It builds on native Apple Silicon and Intel runners, with separate
+Qt 6.9.1 standard and Qt 6.5.3 Intel Ventura stages. Each stage includes the
+in-tree solo/CPU/GPU tools and the source-pinned SV2 pool miners, verified Tor,
+source/tooling/miner provenance, and the existing bootstrap pair for preparation.
+The bootstrap selection still needs final release review.
+
+The lane checks every bundled Mach-O's requested architecture and deployment
+minimum, including frameworks and nested helpers, then starts the actual Qt app
+and requires its bundled daemon child. The Ventura lane runs on a newer native
+Intel host: a successful build and macOS 13 load-command audit are not a physical
+Ventura runtime pass. All stages are unsigned workflow artifacts for local
+Developer ID signing/notarization with `dinero-notarytool`; no publishing step
+runs. Keep the standard and Ventura stages separate through final signing and
+checksums. Mobile applications and their SDK publication are outside this lane.
