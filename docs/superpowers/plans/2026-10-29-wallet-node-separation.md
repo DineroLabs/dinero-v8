@@ -281,13 +281,14 @@ Replaces Task 0.8's consumer. That one linked `dinero_wallet_ffi` with a list co
 - Delete: `tests/separation/wallet_ffi_standalone.cpp`.
 - Modify: `scripts/ci/separation/check_link_closure.py` (`--gate` accepts `W6`) and `closure_rules.json` (a `W6` entry equal to `W2`'s rules).
 - Modify: `scripts/ci/separation/prereq_status.py:62` (W6 → `sep_wallet_standalone`), the `sep_targets.py` docstring (`:9`, `:30`) and `scripts/ci/separation/tests/test_prereq_status.py` (`:23-24`, `:115`, `:202`).
-- Modify: both separation workflows' W6 step (run the ctest, then `check_link_closure.py --target sep_wallet_standalone --gate W6`; the step fails if either fails; the label stays `recorded` until stage 7), `gate_label.py` if it names the old test, `tests/separation/README.md` (the W6 section).
+- Modify: both separation workflows' W6 step (run the ctest, then `check_link_closure.py --target sep_wallet_standalone --gate W6`; the label stays `recorded` until stage 7). With Orchard OFF the step fails if either fails. With Orchard ON the verdict is the ctest alone: the closure result is printed as a separate `W6 closure (Orchard ON, recorded)` line and never fails the step, so the required gate (Task 7.1) can go green while the Orchard exception (spec §8) stands, `gate_label.py` if it names the old test, `tests/separation/README.md` (the W6 section).
 - Test: `scripts/ci/separation/tests/test_check_link_closure.py`, `test_workflow_wiring.py`.
 
 - [ ] **Step 1:** Write failing tests:
   - `--gate W6` on the closure fixtures reports the same violations as `W2`, and the `W6` entry in `closure_rules.json` equals the `W2` entry (no drift);
   - `prereq_status.py` maps W6 to `sep_wallet_standalone`;
   - the wiring test requires the W6 step to run `SepWalletStandalone` and the closure check, and no longer names `SepWalletFfiStandalone` or `dinero_wallet_ffi`.
+  - the wiring test requires that, with Orchard ON, the closure result is reported but cannot change the W6 step's exit code.
   Run them. Expected: FAIL.
 - [ ] **Step 2:** Implement the four changes. Run the pytest suite and actionlint. Expected: PASS.
 - [ ] **Step 3:** Build `sep_wallet_standalone` in `$CFG`. Expected **RED** at stage 0: unresolved node symbols and closure violations. Which symbols is measured, not predicted: this is not a whole-archive link, so only what the checker reaches is reported. Save the undefined-symbol list as evidence.
