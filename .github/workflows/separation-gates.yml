@@ -61,7 +61,7 @@ on:
   workflow_dispatch:
     inputs:
       record_baselines:
-        description: 'Also record K4 refs and W5 symbol lists for this platform and print them to the log (review, then commit by hand)'
+        description: 'Also record K4 refs and W5 symbol lists for this lane (ref_tag) and print them to the log (review, then commit by hand)'
         type: boolean
         required: false
         default: false
@@ -105,7 +105,7 @@ jobs:
           # macos-14 images retire 2026-11-02 (actions/runner-images#13518);
           # macos-15 has no Xcode 15.4, so its default 16.4 is pinned explicitly.
           - os: macos-15
-            toolchain: macos-arm64
+            toolchain: macos15-arm64
             plat: macos
             ref_tag: macos15
             xcode: '16.4'
@@ -164,6 +164,8 @@ jobs:
           sudo xcode-select -s "/Applications/Xcode_${XCODE}.app"
           xcodebuild -version
           test "$(xcodebuild -version | head -1)" = "Xcode ${XCODE}"
+          case "$(xcrun -f clang++)" in "/Applications/Xcode_${XCODE}.app/"*) ;;
+            *) echo "::error::clang++ is not from Xcode ${XCODE}: $(xcrun -f clang++)"; exit 1 ;; esac
           brew install ccache
 
       - name: Record compiler
@@ -511,11 +513,22 @@ jobs:
           base="tests/separation/interface_baseline/symbols_${SEP_REF_TAG}_${SEP_CFG}.txt"
           present=1; [ -f "$base" ] || { present=0; echo "W5: no committed symbol baseline $base"; }
           crc=0; sep_ctest SepInterfaceFreeze SepRpcTranscript || crc=$?
+          # A macOS lane with its own (missing) reference: compare against the
+          # macOS reference for information only, so any difference is reported
+          # for investigation (info=), never accepted.
+          info=()
+          if [ "$present" = 0 ] && [ "$SEP_PLAT" = macos ] && [ "$SEP_REF_TAG" != macos ]; then
+            irc=0; SEP_REF_TAG=macos python tests/separation/interface_freeze.py check --build "$SEP_BUILD" \
+              > "$RUNNER_TEMP/w5-info.txt" 2>&1 || irc=$?
+            sed 's/^/  info| /' "$RUNNER_TEMP/w5-info.txt"
+            info=(--info-log "$RUNNER_TEMP/w5-info.txt" --info-rc "$irc")
+          fi
           # "missing reference" only if both checks ran and nothing else
           # failed; a build break or run error is a real FAIL. See gate_label.py.
           rc=0
           python scripts/ci/separation/gate_label.py w5 --log "$RUNNER_TEMP/ctest-SepInterfaceFreeze.log" \
-            --rc "$crc" --reference-present "$present" --platform "$SEP_PLAT" --github-output "$GITHUB_OUTPUT" || rc=$?
+            --rc "$crc" --reference-present "$present" --platform "$SEP_PLAT" ${info[@]+"${info[@]}"} \
+            --github-output "$GITHUB_OUTPUT" || rc=$?
           exit "$rc"
 
       - name: W6 standalone wallet-FFI consumer (recorded)
@@ -530,7 +543,7 @@ jobs:
           gate_result W6 "$rc" "recorded, baseline RED" "SepWalletFfiStandalone did not pass"; exit "$rc"
 
       # Records when record_baselines=true, or automatically when this
-      # platform/config has no committed K4 ref or W5 symbol list (so the
+      # lane (ref_tag)/config has no committed K4 ref or W5 symbol list (so the
       # first pull_request run already yields candidates: workflow_dispatch
       # only works once the workflow is on the default branch). Runs after the
       # checks, writes to $RUNNER_TEMP only (never into the tree the checks
@@ -601,6 +614,8 @@ jobs:
           Y_W4: ${{ steps.w4.outputs.why }}
           Y_W5: ${{ steps.w5.outputs.why }}
           Y_W6: ${{ steps.w6.outputs.why }}
+          I_K4: ${{ steps.k4.outputs.info }}
+          I_W5: ${{ steps.w5.outputs.info }}
           TOOLCHAIN: ${{ matrix.toolchain }}
         run: |
           res() { case "$1" in success) echo PASS ;; failure) echo FAIL ;; *) echo "NOT_RUN(${1:-none})" ;; esac; }
@@ -624,6 +639,7 @@ jobs:
             row() { v="O_$1"; st="S_$1"; y="Y_$1"; r="$(res "${!v}")"
                     [ "${!st:-}" = UNMEASURED ] && r=UNMEASURED
                     case "$r" in PASS|NOT_RUN*) ;; *) r="$r (${!y:-no reason recorded})" ;; esac
+                    i="I_$1"; [ -z "${!i:-}" ] || r="$r; info: ${!i}"
                     echo "| $1 | $r |"; }
             for g in K1 K2 K3 K4 K5; do row "$g"; done
             echo "| K6 | SKIP stage<2 |"

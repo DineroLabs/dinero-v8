@@ -121,6 +121,29 @@ def k4(a):
     return 0, None
 
 
+def k4_info(a):
+    """With no lane reference the comparison ran against the macOS reference for
+    information only: say whether it matched, so differences reach the summary."""
+    lines = (read(a.output) or "").splitlines()
+    names = [l.split()[1] for l in lines if K4_MISMATCH.match(l)]
+    if not names:
+        return "vs macOS reference: all digests match"
+    return "vs macOS reference: %d DIGEST_MISMATCH (%s)" % (len(names), ", ".join(names))
+
+
+def w5_info(a):
+    """--info-log: interface_freeze.py check against the macOS reference (information only)."""
+    if a.info_log is None:
+        return None
+    lines = (read(a.info_log) or "").splitlines()
+    fails = [l.strip() for l in lines if W5_ITEM_FAIL.match(l)]
+    if a.info_rc == 0 and not fails and "interface_freeze: PASS" in lines:
+        return "vs macOS reference: interface identical"
+    if a.info_rc == 1 and fails:
+        return "vs macOS reference: differs (%s)" % "; ".join(fails)
+    return "vs macOS reference: comparison did not run (rc=%d)" % a.info_rc
+
+
 def w5_status(log, test):
     """ctest's result for test ("Passed", "***Failed", "***Not Run", ...)."""
     m = re.search(r"Test +#\d+: %s \.*\s*(\S.*?)\s+[\d.]+ sec" % test, log)
@@ -271,6 +294,8 @@ def main(argv=None):
     p5 = sub.add_parser("w5")
     p5.add_argument("--log", required=True)
     p5.add_argument("--platform", required=True, choices=("linux", "macos", "windows"))
+    p5.add_argument("--info-log")
+    p5.add_argument("--info-rc", type=int, default=0)
     for p in (p4, p5):
         p.add_argument("--rc", type=int, required=True)
         p.add_argument("--reference-present", type=int, choices=(0, 1), required=True)
@@ -297,6 +322,10 @@ def main(argv=None):
         out.append("why=" + why)
     if missing_ref:
         out.append("note=missing reference")
+        info = k4_info(a) if a.gate == "k4" else w5_info(a)
+        if info:
+            print("INFO %s %s" % (gid, info))
+            out.append("info=" + info)
     if out and a.github_output:
         with open(a.github_output, "a") as f:
             f.write("".join(l + "\n" for l in out))

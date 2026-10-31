@@ -47,7 +47,8 @@ def test_k4_pass_with_reference(tmp_path):
 def test_k4_missing_reference_only_when_tests_ran(tmp_path):
     o, u = k4files(tmp_path, OK_OUT)
     rc, line, gh = run(tmp_path, "k4", output=o, unresolved=u, rc=0, reference_present=0)
-    assert (rc, line) == (2, "GATE K4 FAIL rc=2 (missing reference -- not a vector mismatch)")
+    assert (rc, line) == (2, "GATE K4 FAIL rc=2 (missing reference -- not a vector mismatch)\n"
+                             "INFO K4 vs macOS reference: all digests match")
     assert gh == "note=missing reference\n"
 
 
@@ -214,7 +215,8 @@ def test_k4_mismatch_lines_without_reference_is_missing_reference(tmp_path):
     # informational comparison against the macOS reference differed
     o, u = k4files(tmp_path, "DIGEST_MISMATCH MerkleGolden\n")
     rc, line, gh = run(tmp_path, "k4", output=o, unresolved=u, rc=1, reference_present=0)
-    assert (rc, line, gh) == (2, "GATE K4 FAIL rc=2 (missing reference -- not a vector mismatch)",
+    assert (rc, line, gh) == (2, "GATE K4 FAIL rc=2 (missing reference -- not a vector mismatch)\n"
+                                 "INFO K4 vs macOS reference: 1 DIGEST_MISMATCH (MerkleGolden)",
                               "note=missing reference\n")
 
 
@@ -589,3 +591,45 @@ def test_every_non_pass_verdict_writes_why(tmp_path):
     assert outputs(tmp_path) == {"why": "vector mismatch: DIGEST_MISMATCH MerkleGolden"}
     w5(tmp_path, W5_PASS, 0, 1)
     assert outputs(tmp_path) == {}
+
+
+# --- macos15 lane: differences from the macOS reference reach the summary (info=) ---
+
+def test_k4_missing_reference_reports_the_informational_comparison(tmp_path):
+    o, u = k4files(tmp_path, OK_OUT)
+    rc, line, _ = run(tmp_path, "k4", output=o, unresolved=u, rc=0, reference_present=0)
+    assert rc == 2
+    assert outputs(tmp_path)["info"] == "vs macOS reference: all digests match"
+    o, u = k4files(tmp_path, "DIGEST_MISMATCH MerkleGolden\nDIGEST_MISMATCH TxVectors\n")
+    rc, line, _ = run(tmp_path, "k4", output=o, unresolved=u, rc=1, reference_present=0)
+    assert (rc, line.splitlines()[0]) == (2, "GATE K4 FAIL rc=2 (missing reference -- not a vector mismatch)")
+    assert "INFO K4 vs macOS reference: 2 DIGEST_MISMATCH (MerkleGolden, TxVectors)" in line.splitlines()
+    assert outputs(tmp_path)["info"] == "vs macOS reference: 2 DIGEST_MISMATCH (MerkleGolden, TxVectors)"
+
+
+def test_k4_with_reference_has_no_info(tmp_path):
+    o, u = k4files(tmp_path, OK_OUT)
+    run(tmp_path, "k4", output=o, unresolved=u, rc=0, reference_present=1)
+    assert "info" not in outputs(tmp_path)
+
+
+def w5info(tmp_path, text, rc):
+    f = tmp_path / "w5-info.txt"
+    f.write_text(text)
+    log = tmp_path / "w5.log"
+    log.write_text(W5_MISSING_REF_ONLY)
+    r = run(tmp_path, "w5", log=log, rc=8, reference_present=0, platform="macos",
+            info_log=f, info_rc=rc)
+    return r, outputs(tmp_path).get("info")
+
+
+def test_w5_missing_reference_reports_the_informational_comparison(tmp_path):
+    (rc, _, _), info = w5info(tmp_path, "PASS wallet_ffi.h\nPASS symbols_macos_off.txt\ninterface_freeze: PASS\n", 0)
+    assert rc == 2 and info == "vs macOS reference: interface identical"
+    (rc, _, _), info = w5info(tmp_path, "PASS wallet_ffi.h\nFAIL symbols_macos_off.txt\ninterface_freeze: FAIL\n", 1)
+    assert rc == 2 and info == "vs macOS reference: differs (FAIL symbols_macos_off.txt)"
+    (rc, _, _), info = w5info(tmp_path, "interface_freeze: INPUT ERROR: x\n", 2)
+    assert rc == 2 and info == "vs macOS reference: comparison did not run (rc=2)"
+    # rc and output must agree; a contradiction is never "identical"
+    (rc, _, _), info = w5info(tmp_path, "FAIL symbols_macos_off.txt\n", 0)
+    assert info == "vs macOS reference: comparison did not run (rc=0)"

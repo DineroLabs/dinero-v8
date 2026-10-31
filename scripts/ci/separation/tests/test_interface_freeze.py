@@ -5,6 +5,12 @@ import pytest
 
 from _w5_load import load
 
+
+@pytest.fixture(autouse=True)
+def _no_reference_tag(monkeypatch):
+    # A developer's exported SEP_REF_TAG must not rename the baselines under test.
+    monkeypatch.delenv("SEP_REF_TAG", raising=False)
+
 ifz = load("interface_freeze")
 
 JNI_OK = '''
@@ -330,13 +336,12 @@ def test_posix_still_requires_every_nodecore_item(tmp_path, monkeypatch, capsys)
 def test_reference_tag_selects_its_own_baseline_and_keeps_the_platform_one(tmp_path, monkeypatch, capsys):
     repo, build = make_tree(tmp_path)
     monkeypatch.setattr(ifz.platform, "system", lambda: "Darwin")
-    monkeypatch.delenv("SEP_REF_TAG", raising=False)
     base = tmp_path / "base"
     syms = {("T", "_nodecore_stop")}
     assert run_main(monkeypatch, repo, build, base, "record", syms) == 0
     old = (base / "symbols_macos_off.txt").read_bytes()
     monkeypatch.setenv("SEP_REF_TAG", "macos15")
-    # the macOS 14-era baseline is never used as this lane's reference
+    # the existing macOS baseline is never used as this lane's reference
     assert run_main(monkeypatch, repo, build, base, "check", syms) == 2
     assert "symbols_macos15_off.txt" in capsys.readouterr().err
     assert run_main(monkeypatch, repo, build, base, "record", syms) == 0
@@ -350,4 +355,11 @@ def test_reference_tag_selects_its_own_baseline_and_keeps_the_platform_one(tmp_p
 def test_reference_tag_must_be_a_plain_name(tmp_path, monkeypatch):
     repo, build = make_tree(tmp_path)
     monkeypatch.setenv("SEP_REF_TAG", "../macos")
+    assert run_main(monkeypatch, repo, build, tmp_path / "base", "record", {("T", "_nodecore_stop")}) == 2
+
+
+def test_empty_reference_tag_is_an_input_error(tmp_path, monkeypatch):
+    # bash would build symbols__off.txt from an empty tag; never fall back silently
+    repo, build = make_tree(tmp_path)
+    monkeypatch.setenv("SEP_REF_TAG", "")
     assert run_main(monkeypatch, repo, build, tmp_path / "base", "record", {("T", "_nodecore_stop")}) == 2

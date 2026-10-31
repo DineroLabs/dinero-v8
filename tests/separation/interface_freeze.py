@@ -112,7 +112,9 @@ def platform_tag():
 def reference_tag():
     """Names symbols_<tag>_<cfg>.txt: SEP_REF_TAG (a CI lane whose toolchain has
     its own reference, e.g. macos15) or the platform. Behavior stays by platform."""
-    tag = os.environ.get("SEP_REF_TAG") or platform_tag()
+    tag = os.environ.get("SEP_REF_TAG")
+    if tag is None:
+        tag = platform_tag()
     if not re.fullmatch(r"[a-z0-9]+", tag):
         raise InputError("SEP_REF_TAG must be [a-z0-9]+: %r" % tag)
     return tag
