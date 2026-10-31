@@ -206,3 +206,17 @@ def test_differences_from_the_macos_reference_reach_the_summary():
     assert '${info[@]+"${info[@]}"}' in w5.split("gate_label.py w5", 1)[1]
     assert "I_K4: ${{ steps.k4.outputs.info }}" in POSIX and "I_W5: ${{ steps.w5.outputs.info }}" in POSIX
     assert 'i="I_$1"; [ -z "${!i:-}" ] || r="$r; info: ${!i}"' in POSIX
+
+
+def test_w5_refuses_a_result_against_another_reference_and_reports_the_path():
+    w5 = steps(POSIX)["w5"]
+    sel = '"$SEP_BUILD/sep_w5_selected_reference.txt"'
+    # a stale selection from an earlier check can never vouch for this run
+    assert w5.index("rm -f " + sel) < w5.index("sep_ctest SepInterfaceFreeze")
+    label = w5.split("gate_label.py w5", 1)[1]
+    assert "--selected-ref-file " + sel in label
+    assert '--expected-ref "symbols_${SEP_REF_TAG}_${SEP_CFG}.txt"' in label
+    # the informational check against the macOS reference records elsewhere
+    assert '--selected-out "$RUNNER_TEMP/w5-info-selected.txt"' in w5.split("SEP_REF_TAG=macos python", 1)[1]
+    assert "R_W5: ${{ steps.w5.outputs.ref }}" in POSIX
+    assert 'rf="R_$1"; [ -z "${!rf:-}" ] || r="$r; ref: ${!rf}"' in POSIX

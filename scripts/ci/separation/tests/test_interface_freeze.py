@@ -363,3 +363,41 @@ def test_empty_reference_tag_is_an_input_error(tmp_path, monkeypatch):
     repo, build = make_tree(tmp_path)
     monkeypatch.setenv("SEP_REF_TAG", "")
     assert run_main(monkeypatch, repo, build, tmp_path / "base", "record", {("T", "_nodecore_stop")}) == 2
+
+
+# --- W5 reference selection is reported (owner decision 2026-10-31) ---
+
+def test_check_records_the_selected_reference_path_even_when_absent(tmp_path, monkeypatch):
+    repo, build = make_tree(tmp_path)
+    monkeypatch.setattr(ifz.platform, "system", lambda: "Darwin")
+    base = tmp_path / "base"
+    syms = {("T", "_nodecore_stop")}
+    assert run_main(monkeypatch, repo, build, base, "record", syms) == 0
+    sel = build / "sep_w5_selected_reference.txt"
+    assert not sel.exists()   # record mode selects nothing
+    assert run_main(monkeypatch, repo, build, base, "check", syms) == 0
+    assert sel.read_text() == str(base / "symbols_macos_off.txt") + "\n"
+    monkeypatch.setenv("SEP_REF_TAG", "macos15")
+    assert run_main(monkeypatch, repo, build, base, "check", syms) == 2
+    assert sel.read_text() == str(base / "symbols_macos15_off.txt") + "\n"
+
+
+def test_selected_out_overrides_the_build_dir_file(tmp_path, monkeypatch):
+    repo, build = make_tree(tmp_path)
+    monkeypatch.setattr(ifz.platform, "system", lambda: "Linux")
+    base = tmp_path / "base"
+    syms = {("T", "_nodecore_stop")}
+    assert run_main(monkeypatch, repo, build, base, "record", syms) == 0
+    out = tmp_path / "info-selected.txt"
+    monkeypatch.setattr(ifz, "symbols", lambda path: syms)
+    assert ifz.main(["check", "--build", str(build), "--repo", str(repo), "--baseline-dir", str(base),
+                     "--selected-out", str(out)]) == 0
+    assert out.read_text().strip().endswith("symbols_linux_off.txt")
+    assert not (build / "sep_w5_selected_reference.txt").exists()
+
+
+def test_invalid_tag_records_no_selection(tmp_path, monkeypatch):
+    repo, build = make_tree(tmp_path)
+    monkeypatch.setenv("SEP_REF_TAG", "../x")
+    assert run_main(monkeypatch, repo, build, tmp_path / "base", "check", {("T", "_nodecore_stop")}) == 2
+    assert not (build / "sep_w5_selected_reference.txt").exists()

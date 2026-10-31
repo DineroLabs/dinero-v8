@@ -513,6 +513,9 @@ jobs:
           sep_prereq W5 || exit $?
           base="tests/separation/interface_baseline/symbols_${SEP_REF_TAG}_${SEP_CFG}.txt"
           present=1; [ -f "$base" ] || { present=0; echo "W5: no committed symbol baseline $base"; }
+          # interface_freeze.py records which symbol reference it selected;
+          # gate_label refuses any result against another lane's file.
+          rm -f "$SEP_BUILD/sep_w5_selected_reference.txt"
           crc=0; sep_ctest SepInterfaceFreeze SepRpcTranscript || crc=$?
           # A macOS lane with its own (missing) reference: compare against the
           # macOS reference for information only, so any difference is reported
@@ -520,7 +523,7 @@ jobs:
           info=()
           if [ "$present" = 0 ] && [ "$SEP_PLAT" = macos ] && [ "$SEP_REF_TAG" != macos ]; then
             irc=0; SEP_REF_TAG=macos python tests/separation/interface_freeze.py check --build "$SEP_BUILD" \
-              > "$RUNNER_TEMP/w5-info.txt" 2>&1 || irc=$?
+              --selected-out "$RUNNER_TEMP/w5-info-selected.txt" > "$RUNNER_TEMP/w5-info.txt" 2>&1 || irc=$?
             sed 's/^/  info| /' "$RUNNER_TEMP/w5-info.txt"
             info=(--info-log "$RUNNER_TEMP/w5-info.txt" --info-rc "$irc")
           fi
@@ -529,6 +532,8 @@ jobs:
           rc=0
           python scripts/ci/separation/gate_label.py w5 --log "$RUNNER_TEMP/ctest-SepInterfaceFreeze.log" \
             --rc "$crc" --reference-present "$present" --platform "$SEP_PLAT" ${info[@]+"${info[@]}"} \
+            --selected-ref-file "$SEP_BUILD/sep_w5_selected_reference.txt" \
+            --expected-ref "symbols_${SEP_REF_TAG}_${SEP_CFG}.txt" \
             --github-output "$GITHUB_OUTPUT" || rc=$?
           exit "$rc"
 
@@ -617,6 +622,7 @@ jobs:
           Y_W6: ${{ steps.w6.outputs.why }}
           I_K4: ${{ steps.k4.outputs.info }}
           I_W5: ${{ steps.w5.outputs.info }}
+          R_W5: ${{ steps.w5.outputs.ref }}
           TOOLCHAIN: ${{ matrix.toolchain }}
         run: |
           res() { case "$1" in success) echo PASS ;; failure) echo FAIL ;; *) echo "NOT_RUN(${1:-none})" ;; esac; }
@@ -641,6 +647,7 @@ jobs:
                     [ "${!st:-}" = UNMEASURED ] && r=UNMEASURED
                     case "$r" in PASS|NOT_RUN*) ;; *) r="$r (${!y:-no reason recorded})" ;; esac
                     i="I_$1"; [ -z "${!i:-}" ] || r="$r; info: ${!i}"
+                    rf="R_$1"; [ -z "${!rf:-}" ] || r="$r; ref: ${!rf}"
                     echo "| $1 | $r |"; }
             for g in K1 K2 K3 K4 K5; do row "$g"; done
             echo "| K6 | SKIP stage<2 |"

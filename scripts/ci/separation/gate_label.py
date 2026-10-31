@@ -296,12 +296,28 @@ def main(argv=None):
     p5.add_argument("--platform", required=True, choices=("linux", "macos", "windows"))
     p5.add_argument("--info-log")
     p5.add_argument("--info-rc", type=int, default=0)
+    p5.add_argument("--selected-ref-file", help="interface_freeze.py's record of the "
+                    "symbol reference it selected")
+    p5.add_argument("--expected-ref", help="the lane's own symbol reference file name")
     for p in (p4, p5):
         p.add_argument("--rc", type=int, required=True)
         p.add_argument("--reference-present", type=int, choices=(0, 1), required=True)
         p.add_argument("--github-output")
     a = ap.parse_args(argv)
     rc, why = (k4 if a.gate == "k4" else w5)(a)
+    selected = None
+    if a.gate == "w5" and a.selected_ref_file is not None:
+        if not a.expected_ref:
+            ap.error("--selected-ref-file needs --expected-ref")
+        selected = (read(a.selected_ref_file) or "").strip() or None
+        # A PASS or a missing reference is only meaningful against the lane's
+        # own reference file; never accept a result against another lane's.
+        if rc in (0, 2):
+            name = re.split(r"[\\/]", selected)[-1] if selected else None
+            if name is None:
+                rc, why = 1, "check did not run: interface_freeze recorded no selected reference"
+            elif name != a.expected_ref:
+                rc, why = 1, "wrong reference selected: %s, lane reference is %s" % (name, a.expected_ref)
     unmeasured = getattr(a, "state", None) == "UNMEASURED"
     missing_ref = why in (MISSING_K4, MISSING_W5)
     if rc == 2 and not missing_ref:
@@ -326,6 +342,8 @@ def main(argv=None):
         if info:
             print("INFO %s %s" % (gid, info))
             out.append("info=" + info)
+    if selected:
+        out.append("ref=" + selected)
     if out and a.github_output:
         with open(a.github_output, "a") as f:
             f.write("".join(l + "\n" for l in out))
