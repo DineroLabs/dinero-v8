@@ -1,0 +1,42 @@
+name: v8.2.0 isolated Windows desktop runtime
+on:
+  workflow_dispatch:
+    inputs:
+      artifact_run:
+        description: Completed Windows candidate run to inspect
+        required: true
+        type: string
+      expected_source:
+        description: Exact product source SHA reported by the candidate daemon
+        required: true
+        type: string
+permissions:
+  contents: read
+  actions: read
+jobs:
+  verify:
+    runs-on: windows-2022
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.artifact_run }}
+          name: dinero-server-windows-x86_64-8.2.0
+          path: candidate
+      - name: Verify signed Qt runtime and installer parity
+        shell: powershell
+        env:
+          EXPECTED_SOURCE: ${{ inputs.expected_source }}
+        run: .\scripts\ci\check_windows_desktop_runtime.ps1 -ArtifactDir candidate -ExpectedSource $env:EXPECTED_SOURCE
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-desktop-runtime-${{ inputs.artifact_run }}
+          path: |
+            ${{ runner.temp }}/v820-desktop-runtime/*.log
+            ${{ runner.temp }}/v820-desktop-runtime/runtime-result.json
+          if-no-files-found: error
