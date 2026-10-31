@@ -280,16 +280,19 @@ Replaces Task 0.8's consumer. That one linked `dinero_wallet_ffi` with a list co
 - Modify: `tests/separation/CMakeLists.txt`. Replace `sep_wallet_ffi_standalone` with `sep_wallet_standalone`: built from `wallet_fixture_compat.cpp` with W4's compile settings, but linked only with `target_link_libraries(sep_wallet_standalone PRIVATE dinero_wallet)` (ON: plus `dinero_orchard_index_delivery`, exactly as W4). No `dinero_core`, no `mempool_test_stubs.cpp`, no hand-listed archives; Linux adds `-Wl,--no-undefined`. Replace ctest `SepWalletFfiStandalone` with `SepWalletStandalone`, which builds the target and then runs it on `fixtures/<cfg>` (the same driver as `SepWalletFixtureCompat`).
 - Delete: `tests/separation/wallet_ffi_standalone.cpp`.
 - Modify: `scripts/ci/separation/check_link_closure.py` (`--gate` accepts `W6`) and `closure_rules.json` (a `W6` entry equal to `W2`'s rules).
+- Modify: `scripts/ci/separation/prereq_status.py:62` (W6 → `sep_wallet_standalone`), the `sep_targets.py` docstring (`:9`, `:30`) and `scripts/ci/separation/tests/test_prereq_status.py` (`:23-24`, `:115`, `:202`).
 - Modify: both separation workflows' W6 step (run the ctest, then `check_link_closure.py --target sep_wallet_standalone --gate W6`; the step fails if either fails; the label stays `recorded` until stage 7), `gate_label.py` if it names the old test, `tests/separation/README.md` (the W6 section).
 - Test: `scripts/ci/separation/tests/test_check_link_closure.py`, `test_workflow_wiring.py`.
 
 - [ ] **Step 1:** Write failing tests:
-  - `--gate W6` on the closure fixtures reports the same violations as `W2`;
+  - `--gate W6` on the closure fixtures reports the same violations as `W2`, and the `W6` entry in `closure_rules.json` equals the `W2` entry (no drift);
+  - `prereq_status.py` maps W6 to `sep_wallet_standalone`;
   - the wiring test requires the W6 step to run `SepWalletStandalone` and the closure check, and no longer names `SepWalletFfiStandalone` or `dinero_wallet_ffi`.
   Run them. Expected: FAIL.
 - [ ] **Step 2:** Implement the four changes. Run the pytest suite and actionlint. Expected: PASS.
-- [ ] **Step 3:** Build `sep_wallet_standalone` in `$CFG`. Expected **RED** at stage 0: unresolved node symbols (for example `Mempool::isOutputSpentInMempool`, `ChainDB::*`) and closure violations. Save the undefined-symbol list as evidence.
-  - **Neuter check:** temporarily link `dinero_core` and the mempool stub (W4's line). The target must then link, and the ctest must run and PASS on the fixture. This proves the checker exercises real wallet code and can go green. Revert the neuter.
+- [ ] **Step 3:** Build `sep_wallet_standalone` in `$CFG`. Expected **RED** at stage 0: unresolved node symbols and closure violations. Which symbols is measured, not predicted: this is not a whole-archive link, so only what the checker reaches is reported. Save the undefined-symbol list as evidence.
+  - **Neuter check:** temporarily link `dinero_core` and the mempool stub (W4's line). The target must then link, and the ctest must run and PASS on the fixture. This proves the run half exercises real wallet code and can pass. The closure check must still FAIL under the neuter (it now sees `dinero_core`), which proves the closure half bites. Revert the neuter.
+  - In the ON build, the closure check is expected RED on the Orchard delivery libraries (spec §8 W6 row); record it, don't fix it here.
 - [ ] **Step 4:** Commit `test(separation): W6 measures the standalone wallet, not the Tauri bridge`.
 
 ### Task 0.9: Non-required CI workflows
@@ -611,7 +614,7 @@ Added 2026-10-31 (owner decision). Neither the spec nor the original plan covers
 ### Task 6.2: Test link cleanup
 
 - [ ] **Step 1:** For each pure-wallet test that links `wallet_test_deps` or compiles `tests/stubs/mempool_test_stubs.cpp`, switch it to link `dinero_wallet` (plus `fake_node_views.h` where it used a mempool). Each test must keep passing; check with `ctest -R <name> --no-tests=error` per test.
-- [ ] **Step 2:** Run the full ctest in both configs on all four platforms, then every gate. Expected: K1–K6 and W1–W6 GREEN (W6 is the standalone wallet, Task 0.8a). On Windows, W5 GREEN means the partial gate (wallet FFI + RPC transcript; NodeCore N/A). The NodeCore part of W5 must be GREEN on Linux and macOS. Commit `test: wallet tests link the wallet alone`.
+- [ ] **Step 2:** Run the full ctest in both configs on all four platforms, then every gate. Expected: K1–K6 and W1–W6 GREEN (W6 is the standalone wallet, Task 0.8a). With Orchard ON, W6's closure check stays RED and recorded only (spec §8). On Windows, W5 GREEN means the partial gate (wallet FFI + RPC transcript; NodeCore N/A). The NodeCore part of W5 must be GREEN on Linux and macOS. Commit `test: wallet tests link the wallet alone`.
 
 ## Stage 7 — required gates and unpinned trials (one PR)
 
