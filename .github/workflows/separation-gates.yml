@@ -4,7 +4,7 @@
 #
 # Runs every separation gate (spec section 8, plan Task 0.9) on
 #   Linux GCC 15 (ubuntu-latest), Linux GCC 13 (ubuntu-24.04), macOS arm64
-#   (macos-14), each with DINERO_BUILD_ORCHARD_BACKEND=OFF and =ON.
+#   (macos-15, Xcode 16.4 pinned), each with DINERO_BUILD_ORCHARD_BACKEND=OFF and =ON.
 # Windows MSVC runs the same gates in separation-gates-windows.yml.
 #
 # Stage 0 rules:
@@ -19,7 +19,13 @@
 #   * K2/W2 need CMake codemodel >= 2.9 (CMake >= 4.1): every job installs the
 #     same pinned CMake from PyPI and asserts the exact version.
 #   * Platforms without committed baselines (K4 refs and W5 symbol lists are
-#     macOS-recorded) fail closed with rc 2. Where a baseline is missing (or
+#     macOS-recorded) fail closed with rc 2. A lane's references are named by
+#     its ref_tag (SEP_REF_TAG), not its platform: the macOS refs
+#     (consensus_vectors_ref_<cfg>.json, symbols_macos_<cfg>.txt) were recorded
+#     locally (AppleClang 21 / Xcode 27, macOS 27.0.1) and matched by the
+#     retired macos-14 / Xcode 15.4 lane; they are kept unchanged. The
+#     macos-15 lane (ref_tag macos15) needs its own reviewed
+#     consensus_vectors_ref_macos15_<cfg>.json and symbols_macos15_<cfg>.txt. Where a baseline is missing (or
 #     on a manual run with record_baselines=true) a last step prints freshly
 #     recorded files to the log for review; they are never checked against
 #     in the same run.
@@ -83,25 +89,32 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, ubuntu-24.04, macos-14]
+        os: [ubuntu-latest, ubuntu-24.04, macos-15]
         orchard: [off, on]
         include:
           - os: ubuntu-latest
             toolchain: linux-gcc15
             plat: linux
+            ref_tag: linux
             gcc_major: '15'
           - os: ubuntu-24.04
             toolchain: linux-gcc13
             plat: linux
+            ref_tag: linux
             gcc_major: '13'
-          - os: macos-14
+          # macos-14 images retire 2026-11-02 (actions/runner-images#13518);
+          # macos-15 has no Xcode 15.4, so its default 16.4 is pinned explicitly.
+          - os: macos-15
             toolchain: macos-arm64
             plat: macos
+            ref_tag: macos15
+            xcode: '16.4'
             gcc_major: ''
     env:
       SEP_BUILD: ${{ github.workspace }}/build-sep
       SEP_CFG: ${{ matrix.orchard }}
       SEP_PLAT: ${{ matrix.plat }}
+      SEP_REF_TAG: ${{ matrix.ref_tag }}
 
     steps:
       # K5 reads the baseline (1667f8ed6) blobs from git history: full clone.
@@ -145,7 +158,13 @@ jobs:
 
       - name: Install macOS build dependencies
         if: runner.os == 'macOS'
-        run: brew install ccache
+        env:
+          XCODE: ${{ matrix.xcode }}
+        run: |
+          sudo xcode-select -s "/Applications/Xcode_${XCODE}.app"
+          xcodebuild -version
+          test "$(xcodebuild -version | head -1)" = "Xcode ${XCODE}"
+          brew install ccache
 
       - name: Record compiler
         env:
@@ -389,14 +408,14 @@ jobs:
           sep_prereq K4 || exit $?
           d=scripts/ci/separation
           # Reference naming: consensus_vectors_ref_<cfg>.json is the
-          # macOS-recorded ref; other platforms need
-          # consensus_vectors_ref_<plat>_<cfg>.json (recorded, reviewed, committed).
-          if [ "$SEP_PLAT" = macos ]; then ref="$d/consensus_vectors_ref_$SEP_CFG.json"
-          else ref="$d/consensus_vectors_ref_${SEP_PLAT}_$SEP_CFG.json"; fi
+          # macOS-recorded ref (ref_tag macos); other lanes need
+          # consensus_vectors_ref_<ref_tag>_<cfg>.json (recorded, reviewed, committed).
+          if [ "$SEP_REF_TAG" = macos ]; then ref="$d/consensus_vectors_ref_$SEP_CFG.json"
+          else ref="$d/consensus_vectors_ref_${SEP_REF_TAG}_$SEP_CFG.json"; fi
           present=1; cmp="$ref"
           if [ ! -f "$ref" ]; then
             present=0; cmp="$d/consensus_vectors_ref_$SEP_CFG.json"
-            echo "K4: no committed $SEP_PLAT reference $ref; comparing against the macOS reference for information only"
+            echo "K4: no committed $SEP_REF_TAG reference $ref; comparing against the macOS reference for information only"
           fi
           out="$RUNNER_TEMP/k4-compare.txt"; vrc=0
           python $d/run_consensus_vectors.py --build "$SEP_BUILD" --list $d/consensus_vectors.txt \
@@ -489,7 +508,7 @@ jobs:
         run: |
           . "$RUNNER_TEMP/sep_gate.sh"
           sep_prereq W5 || exit $?
-          base="tests/separation/interface_baseline/symbols_${SEP_PLAT}_${SEP_CFG}.txt"
+          base="tests/separation/interface_baseline/symbols_${SEP_REF_TAG}_${SEP_CFG}.txt"
           present=1; [ -f "$base" ] || { present=0; echo "W5: no committed symbol baseline $base"; }
           crc=0; sep_ctest SepInterfaceFreeze SepRpcTranscript || crc=$?
           # "missing reference" only if both checks ran and nothing else
@@ -523,17 +542,17 @@ jobs:
           RECORD_INPUT: ${{ inputs.record_baselines }}
         run: |
           d=scripts/ci/separation
-          if [ "$SEP_PLAT" = macos ]; then kref="$d/consensus_vectors_ref_$SEP_CFG.json"
-          else kref="$d/consensus_vectors_ref_${SEP_PLAT}_$SEP_CFG.json"; fi
-          sym="tests/separation/interface_baseline/symbols_${SEP_PLAT}_${SEP_CFG}.txt"
+          if [ "$SEP_REF_TAG" = macos ]; then kref="$d/consensus_vectors_ref_$SEP_CFG.json"
+          else kref="$d/consensus_vectors_ref_${SEP_REF_TAG}_$SEP_CFG.json"; fi
+          sym="tests/separation/interface_baseline/symbols_${SEP_REF_TAG}_${SEP_CFG}.txt"
           if [ "$RECORD_INPUT" != true ] && [ -f "$kref" ] && [ -f "$sym" ]; then
-            echo "record: skipped (baselines committed for $SEP_PLAT/$SEP_CFG; record_baselines not set)"; exit 0
+            echo "record: skipped (baselines committed for $SEP_REF_TAG/$SEP_CFG; record_baselines not set)"; exit 0
           fi
           out="$RUNNER_TEMP/recorded"; mkdir -p "$out/interface_baseline"
           rc=0
           python $d/run_consensus_vectors.py --build "$SEP_BUILD" --list $d/consensus_vectors.txt \
             --floor $d/never_run_floor.txt --ctest "$(command -v ctest)" --config "$SEP_CFG" \
-            --record "$out/consensus_vectors_ref_${SEP_PLAT}_$SEP_CFG.json" || rc=$?
+            --record "$out/consensus_vectors_ref_${SEP_REF_TAG}_$SEP_CFG.json" || rc=$?
           echo "K4 record exited $rc"
           wrc=0
           python tests/separation/interface_freeze.py record --build "$SEP_BUILD" \
@@ -610,7 +629,7 @@ jobs:
             echo "| K6 | SKIP stage<2 |"
             for g in W1 W2 W3 W4 W5 W6; do row "$g"; done
             echo
-            echo "Stage-0 expectation: K1, K2, W1, W2 FAIL; K3, W3 UNMEASURED while the K1/W1 probes do not link (FAIL/PASS once measured); K5, W4 PASS; K4, W5 PASS on macOS, and on Linux FAIL rc 2 (missing reference) until reviewed baselines are committed; W6 recorded (RED). A missing reference is missing evidence, not a pass. If the prerequisite build fails (LANE UNMEASURED), every gate that depends on a failed target is UNMEASURED, not a pass and not a measured fail; K2, W2, K5 still report their result. macOS (macos-14, Xcode 15.4) is UNMEASURED until the pre-existing Xcode 15.4 build break is fixed on dinero-main."
+            echo "Stage-0 expectation: K1, K2, W1, W2 FAIL; K3, W3 UNMEASURED while the K1/W1 probes do not link (FAIL/PASS once measured); K5, W4 PASS; K4, W5 FAIL rc 2 (missing reference) on Linux and on macOS (macos-15, ref_tag macos15) until reviewed baselines are committed; W6 recorded (RED). A missing reference is missing evidence, not a pass. If the prerequisite build fails (LANE UNMEASURED), every gate that depends on a failed target is UNMEASURED, not a pass and not a measured fail; K2, W2, K5 still report their result."
           } | tee -a "$GITHUB_STEP_SUMMARY"
 
   # K4, second half (ruling R13): the existing compact-regtest fixed-vector

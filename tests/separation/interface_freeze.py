@@ -18,7 +18,8 @@ Frozen items, each compared exactly against the baseline directory:
                  for a shared library elsewhere, nm -g --defined-only for an
                  archive), one `<lib> <type> <name>` line each, sorted, in
                  symbols_<platform>_<off|on>.txt (config read from the build's
-                 CMakeCache DINERO_BUILD_ORCHARD_BACKEND).
+                 CMakeCache DINERO_BUILD_ORCHARD_BACKEND; <platform> is
+                 SEP_REF_TAG when set, e.g. macos15).
                  On macOS (and every non-Android platform) both targets are STATIC
                  archives, so "exported" means the archive's global defined symbols.
                  Windows (an MSVC .lib, selected by the .lib extension): LLVM
@@ -106,6 +107,15 @@ def build_config(build):
 def platform_tag():
     s = platform.system()
     return {"Darwin": "macos", "Linux": "linux", "Windows": "windows"}.get(s, s.lower())
+
+
+def reference_tag():
+    """Names symbols_<tag>_<cfg>.txt: SEP_REF_TAG (a CI lane whose toolchain has
+    its own reference, e.g. macos15) or the platform. Behavior stays by platform."""
+    tag = os.environ.get("SEP_REF_TAG") or platform_tag()
+    if not re.fullmatch(r"[a-z0-9]+", tag):
+        raise InputError("SEP_REF_TAG must be [a-z0-9]+: %r" % tag)
+    return tag
 
 
 def find_lib(build, stem, explicit):
@@ -208,7 +218,7 @@ def current(args):
         items.append((base, read(os.path.join(args.repo, rel))))
     if nodecore_checked():
         items.append(("jni_exports.txt", jni_exports(args.repo).encode()))
-    sym_name = "symbols_%s_%s.txt" % (platform_tag(), build_config(args.build))
+    sym_name = "symbols_%s_%s.txt" % (reference_tag(), build_config(args.build))
     items.append((sym_name, symbol_text(args.build, args).encode()))
     return items
 
