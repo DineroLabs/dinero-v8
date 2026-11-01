@@ -87,6 +87,10 @@ struct BatchDiscoveryState {
 
 BatchDiscoveryState g_batch_discovery;
 
+// Full inventories are deliberately bounded. Public callers must not queue
+// an unbounded number of expensive scans (or wait for the selected-chain lock).
+std::mutex g_address_balance_scan;
+
 void addBatchMetadata(Json& result,
                       bool cache_hit,
                       uint64_t scan_ms,
@@ -319,32 +323,52 @@ Json rpc_getaddressbalance(const ExecutionContext& ctx, const Json& params) {
             return result;
         }
 
+        std::unique_lock<std::mutex> scan_slot(g_address_balance_scan, std::try_to_lock);
+        if (!scan_slot.owns_lock()) {
+            result["error"]["code"] = -32005;
+            result["error"]["message"] = "Address balance scan busy; retry later";
+            return result;
+        }
+
         auto selected_chain = chainstate->AcquireBlockIngressActivationLock();
+        // Capture pending input coins under the same selected view as the
+        // database iterator. All later amount work owns its inputs.
+        const auto pending = capturePending(ctx);
         // Sum confirmed UTXOs
         uint64_t confirmed = 0;
         bool scan_ok = true;
+        bool scan_timed_out = false;
+        size_t visited = 0;
+        const auto deadline = BatchClock::now() + BATCH_SCAN_TIMEOUT;
+        const auto keep_scanning = [&] {
+            if ((++visited & 1023) == 0 && BatchClock::now() > deadline)
+                scan_timed_out = true;
+            return !scan_timed_out;
+        };
         const bool assumed_utxo = chainstate->IsAssumeUTXOActive();
         if (assumed_utxo) {
+            const auto target_bytes = dinero::DecodePaymentTarget(address).script_pubkey;
             scan_ok = chainstate->ForEachActiveUTXO(
                 [&](const dinero::OutPoint&, const dinero::consensus::UTXOEntry& coin) {
-                    if (bytesToHex(coin.scriptPubKey) == target_script) confirmed += coin.value.GetUna();
+                    if (!keep_scanning()) return false;
+                    if (coin.scriptPubKey == target_bytes) confirmed += coin.value.GetUna();
                     return true;
                 });
         } else {
             scan_ok = chain_db->forEachUTXO(
                 [&](const uint256&, uint32_t, const dinero::Coin& coin) -> bool {
+                    if (!keep_scanning()) return false;
                     if (coin.script_pubkey == target_script) confirmed += coin.amount;
                     return true;
-                }) == dinero::Status::Ok;
+                }, [&] { selected_chain.unlock(); }) == dinero::Status::Ok;
         }
-        if (!scan_ok) {
+        if (!scan_ok || scan_timed_out) {
             result["error"]["code"] = -1;
-            result["error"]["message"] = "Failed to scan UTXO set";
+            result["error"]["message"] = scan_timed_out ? "Address balance scan timed out" : "Failed to scan UTXO set";
             return result;
         }
 
-        const auto pending = capturePending(ctx);
-        selected_chain.unlock();
+        if (selected_chain.owns_lock()) selected_chain.unlock();
         int64_t unconfirmed = 0;
         for (const auto& captured : pending)
             addPendingDelta(unconfirmed, pendingEffect(captured, target_script).net);
@@ -734,13 +758,31 @@ static Json computeAddressBatch(const ExecutionContext& ctx,
         }
 
         auto selected_chain = chainstate->AcquireBlockIngressActivationLock();
+        const auto pending = capturePending(ctx);
         const bool assumed_utxo = chainstate->IsAssumeUTXOActive();
+        auto tip_result = chain_db->getTip();
+        if (!tip_result.ok()) {
+            result["error"]["code"] = -1;
+            result["error"]["message"] = "Failed to get chain tip";
+            return result;
+        }
+        const int tip_height = assumed_utxo
+            ? static_cast<int>(chainstate->getBlockHeight())
+            : tip_result.value().height;
+        bool scan_timed_out = false;
+        size_t visited = 0;
+        const auto keep_scanning = [&] {
+            if ((++visited & 1023) == 0 && BatchClock::now() > deadline)
+                scan_timed_out = true;
+            return !scan_timed_out;
+        };
         if (assumed_utxo) {
             // An assumed UTXO set is active before its background replay has
             // populated ChainDB. Read that authoritative in-memory set so a
             // snapshot-bootstrapped bridge cannot report false zero balances.
             const bool scanned = chainstate->ForEachActiveUTXO(
                 [&](const dinero::OutPoint&, const dinero::consensus::UTXOEntry& coin) {
+                    if (!keep_scanning()) return false;
                     auto found = script_to_index.find(bytesToHex(coin.scriptPubKey));
                     if (found != script_to_index.end()) {
                         states[found->second].confirmed += coin.value.GetUna();
@@ -755,37 +797,28 @@ static Json computeAddressBatch(const ExecutionContext& ctx,
         } else {
             auto utxo_status = chain_db->forEachUTXO(
                 [&](const uint256&, uint32_t, const dinero::Coin& coin) -> bool {
+                    if (!keep_scanning()) return false;
                     auto found = script_to_index.find(coin.script_pubkey);
                     if (found != script_to_index.end()) states[found->second].confirmed += coin.amount;
                     return true;
-                });
+                }, [&] { selected_chain.unlock(); });
             if (utxo_status != dinero::Status::Ok) {
                 result["error"]["code"] = -1;
                 result["error"]["message"] = "Failed to scan UTXO set";
                 return result;
             }
         }
-        if (BatchClock::now() > deadline) {
+        if (scan_timed_out || BatchClock::now() > deadline) {
             result["error"]["code"] = -32006;
             result["error"]["message"] = "batch discovery timed out";
             return result;
         }
 
-        const auto pending = capturePending(ctx);
+        if (selected_chain.owns_lock()) selected_chain.unlock();
         for (auto& state : states)
             for (const auto& captured : pending)
                 addPendingDelta(state.unconfirmed, pendingEffect(captured, state.script).net);
 
-        auto tip_result = chain_db->getTip();
-        if (!tip_result.ok()) {
-            result["error"]["code"] = -1;
-            result["error"]["message"] = "Failed to get chain tip";
-            return result;
-        }
-        const int tip_height = assumed_utxo
-            ? static_cast<int>(chainstate->getBlockHeight())
-            : tip_result.value().height;
-        selected_chain.unlock();
         size_t history_transactions = 0;
         // Snapshot bootstrap guarantees the current UTXO set, not historical
         // block bodies. Do not turn a balance query into a futile 90k-height

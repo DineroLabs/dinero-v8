@@ -884,6 +884,13 @@ target_include_directories(test_chain_db_prebase_coins PRIVATE
   ${CMAKE_SOURCE_DIR}/src
 )
 add_test(NAME ChainDBPreBaseCoins COMMAND test_chain_db_prebase_coins)
+add_executable(test_chain_db_scan_view tests/storage/test_chain_db_scan_view.cpp src/common/logger.cpp)
+target_link_libraries(test_chain_db_scan_view PRIVATE dinero_chainstate dinero_crypto
+  RocksDB::rocksdb OpenSSL::Crypto GTest::gtest GTest::gtest_main)
+link_zstd_if_needed(test_chain_db_scan_view)
+target_include_directories(test_chain_db_scan_view PRIVATE ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src)
+add_test(NAME ChainDBScanView COMMAND test_chain_db_scan_view)
+set_tests_properties(ChainDBScanView PROPERTIES LABELS "storage;rpc;regression" TIMEOUT 30)
 set_tests_properties(ChainDBPreBaseCoins PROPERTIES
   LABELS "storage;persistence;assumeutxo;regression"
   TIMEOUT 30

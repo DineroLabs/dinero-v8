@@ -736,7 +736,11 @@ public:
     // Checked row decoding and terminal iterator status; malformed records
     // refuse rather than disappear. Visitor exceptions propagate. A false
     // visitor result still deliberately stops early (not a complete inventory).
-    Status forEachUTXO(std::function<bool(const uint256& txid, uint32_t vout, const Coin& coin)> callback) const;
+    // NewIterator owns a consistent RocksDB read view. snapshot_ready runs
+    // after that view is captured and before scanning, so a caller can release
+    // its selected-chain lock without mixing rows from different commits.
+    Status forEachUTXO(std::function<bool(const uint256& txid, uint32_t vout, const Coin& coin)> callback,
+                       std::function<void()> snapshot_ready = {}) const;
 
     // Phase H.3: Iterate all header metadata (restart recovery - rebuild header tree)
     Status forEachHeaderMetadata(std::function<bool(const uint256& hash, const PersistedHeaderMetadata& metadata)> callback) const;

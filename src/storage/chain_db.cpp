@@ -3081,7 +3081,8 @@ std::vector<rocksdb::ColumnFamilyDescriptor> ChainDB::getColumnFamilyDescriptors
     };
 }
 
-Status ChainDB::forEachUTXO(std::function<bool(const uint256& txid, uint32_t vout, const Coin& coin)> callback) const {
+Status ChainDB::forEachUTXO(std::function<bool(const uint256& txid, uint32_t vout, const Coin& coin)> callback,
+                          std::function<void()> snapshot_ready) const {
     // Phase 34.1: Write diagnostics to file for visibility when daemon forks
     std::ofstream diag("/tmp/chaindb_foreach_utxo.log", std::ios::app);
 
@@ -3114,6 +3115,10 @@ Status ChainDB::forEachUTXO(std::function<bool(const uint256& txid, uint32_t vou
     read_opts.io_activity = rocksdb::Env::IOActivity::kDBIterator;
     std::unique_ptr<rocksdb::Iterator> it(db_->NewIterator(read_opts, cf_[idx_utxo_].get()));
 
+    // A non-tailing RocksDB iterator retains its implicit snapshot for its
+    // entire lifetime, including writes committed after this callback.
+    if (snapshot_ready) snapshot_ready();
+
     // Seek to beginning of UTXO column family
     it->SeekToFirst();
 
@@ -3135,15 +3140,11 @@ Status ChainDB::forEachUTXO(std::function<bool(const uint256& txid, uint32_t vou
             return Status::Corruption;
         }
 
-        // Extract txid (bytes 1-32), convert raw bytes to hex string
-        std::string txid_hex;
-        txid_hex.reserve(64);
-        for (size_t i = 1; i <= 32; ++i) {
-            char buf[3];
-            snprintf(buf, sizeof(buf), "%02x", static_cast<unsigned char>(key[i]));
-            txid_hex.append(buf);
-        }
-        uint256 txid = uint256::FromHexUnsafe(txid_hex);
+        // Keys store display-order bytes; uint256 stores the reverse order.
+        // Preserve that mapping without 32 formatted strings and streams per
+        // coin. This path is used for complete inventories, not only lookups.
+        uint256 txid;
+        std::reverse_copy(key.begin() + 1, key.begin() + 33, txid.begin());
 
         // Extract vout (bytes 33-36, big-endian)
         uint32_t be_vout;

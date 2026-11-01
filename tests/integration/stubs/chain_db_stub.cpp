@@ -34,7 +34,8 @@ StatusOr<TipInfo> ChainDB::getTip() const {
     throw std::runtime_error("ChainDB::getTip stub called - test should use UTXOSet(nullptr)");
 }
 
-Status ChainDB::forEachUTXO(std::function<bool(const uint256&, uint32_t, const Coin&)>) const {
+Status ChainDB::forEachUTXO(std::function<bool(const uint256&, uint32_t, const Coin&)>,
+                          std::function<void()>) const {
     throw std::runtime_error("ChainDB::forEachUTXO stub called - test should use UTXOSet(nullptr)");
 }
 
