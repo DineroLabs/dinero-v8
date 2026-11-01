@@ -115,3 +115,97 @@ def test_adapter_mutex_rejected(tmp_path):
                      "};\n")
     r = run("check", str(tmp_path / "mempool.cpp"), "--baseline", str(base), "--adapter", str(clean))
     assert r.returncode == 0, r.stdout
+
+
+# --- Review findings (independent review of Task 0.2): each must FAIL on the
+# first implementation and PASS after the fix. ---------------------------------
+
+def _inv(tmp_path, text, name):
+    _, _, data = record(tmp_path, text, name)
+    return data
+
+
+GUARD_FN = """\
+TxAcceptResult Mempool::f() {
+    auto g = chainstate_read_guard_factory_();
+    %s
+    return {};
+}
+"""
+
+
+def test_lock_spellings_without_template_args_are_locks(tmp_path):
+    for i, lock in enumerate(["std::unique_lock lk(m_mutex);",
+                              "std::scoped_lock lk{m_mutex};",
+                              "m_mutex.lock();",
+                              "std::shared_lock<std::shared_mutex> lk(\n        m_mutex);"]):
+        before = _inv(tmp_path, GUARD_FN % lock, "b%d.cpp" % i)
+        assert before["functions"]["Mempool::f"]["guards_before_pool_lock"] == [True], lock
+        moved = ("TxAcceptResult Mempool::f() {\n    %s\n"
+                 "    auto g = chainstate_read_guard_factory_();\n    return {};\n}\n") % lock
+        after = _inv(tmp_path, moved, "a%d.cpp" % i)
+        assert after["functions"]["Mempool::f"]["guards_before_pool_lock"] == [False], lock
+
+
+def test_guard_without_visible_lock_is_unresolved(tmp_path):
+    data = _inv(tmp_path, GUARD_FN % "helper_lock();", "u.cpp")
+    assert data["functions"]["Mempool::f"]["guards_before_pool_lock"] == [None]
+    src = tmp_path / "u.cpp"
+    r = run("check", str(src), "--baseline", str(tmp_path / "u.cpp.json"))
+    assert r.returncode == 1 and "UNRESOLVED Mempool::f" in r.stdout
+
+
+def test_wrapped_and_spaced_reads_are_counted(tmp_path):
+    text = ("void Mempool::f() {\n"
+            "    auto a = chain_view_\n        ->GetTip();\n"
+            "    auto b = chain_db_ -> getTip();\n"
+            "    auto c = chain_db_fallback_\n            ->getCoin(o);\n"
+            "}\n")
+    data = _inv(tmp_path, text, "w.cpp")
+    assert data["functions"]["Mempool::f"]["reads"] == {"fallbackGetCoin": 1, "getTip": 2}
+
+
+def test_read_through_alias_is_not_silently_dropped(tmp_path):
+    # Pin (fail-safe already before the fix): an aliased read must never compare equal.
+    base = _inv(tmp_path, "void Mempool::f() {\n    auto t = chain_db_->getTip();\n}\n", "x.cpp")
+    alias = "void Mempool::f() {\n    auto& v = *chain_view_;\n    auto t = v.GetTip();\n}\n"
+    src = tmp_path / "alias.cpp"
+    src.write_text(alias)
+    r = run("check", str(src), "--baseline", str(tmp_path / "x.cpp.json"))
+    assert r.returncode == 1, r.stdout   # must not pass as identical
+    assert base["functions"]["Mempool::f"]["reads"] == {"getTip": 1}
+
+
+def test_block_comment_read_is_not_counted(tmp_path):
+    text = ("void Mempool::f() {\n"
+            "    /* chain_db_->getTip(); */\n"
+            "    auto t = chain_db_->getCoinWithConfidentialFallback(a, b);\n"
+            "}\n")
+    data = _inv(tmp_path, text, "c1.cpp")
+    assert data["functions"]["Mempool::f"]["reads"] == {"getCoin": 1}
+
+
+def test_slashes_in_string_do_not_hide_code(tmp_path):
+    text = ("void Mempool::f() {\n"
+            "    log(\"http://x\"); auto t = chain_db_->getTip();\n"
+            "    // chain_db_->getTip();\n"
+            "}\n")
+    data = _inv(tmp_path, text, "c2.cpp")
+    assert data["functions"]["Mempool::f"]["reads"] == {"getTip": 1}
+
+
+def test_split_signature_and_free_helpers_are_own_functions(tmp_path):
+    text = ("void Mempool::a() {\n    auto t = chain_db_->getTip();\n}\n"
+            "static void\nhelper(const ChainDB* chain_db_) {\n"
+            "    auto t = chain_db_->getTip();\n"
+            "    auto g = chainstate_read_guard_factory_();\n}\n"
+            "bool\nMempool::b(int x,\n               int y) {\n"
+            "    auto t = chain_db_->getTip();\n}\n"
+            "class V : public X {\n  int h() const { return chain_db_->getTip().ok(); }\n};\n"
+            "void free_after_class() { auto t = chain_db_->getTip(); }\n")
+    fns = _inv(tmp_path, text, "s.cpp")["functions"]
+    assert fns["Mempool::a"]["reads"] == {"getTip": 1}
+    assert fns["helper"]["reads"] == {"getTip": 1} and fns["helper"]["guards"] == 1
+    assert fns["Mempool::b"]["reads"] == {"getTip": 1}
+    assert fns["V"]["reads"] == {"getTip": 1}
+    assert fns["free_after_class"]["reads"] == {"getTip": 1}
