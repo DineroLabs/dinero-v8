@@ -266,7 +266,9 @@ def _run_w6(cfg, ctest_rc, closure_rc):
         "gate_result() { echo \"GATE_RESULT $1 rc=$2\"; }\n"
         "source() { :; }\n" % (cfg, ctest_rc, closure_rc))
     script = _w6_script().replace('. "$RUNNER_TEMP/sep_gate.sh"', ":")
-    r = subprocess.run(["bash", "-c", pre + script], capture_output=True, text=True)
+    # The step's real shell (separation-gates.yml defaults): bash --noprofile --norc -eo pipefail.
+    r = subprocess.run(["bash", "--noprofile", "--norc", "-eo", "pipefail", "-c", pre + script],
+                       capture_output=True, text=True)
     return r.returncode, r.stdout
 
 
@@ -296,3 +298,10 @@ def test_w6_windows_orchard_on_closure_cannot_change_the_exit_code():
     assert "SEP_CFG" in on.split("\n")[0]
     after = w6.split("W6 closure (Orchard ON, recorded)", 1)[1].split("} else", 1)[0]
     assert "$rc" not in after.replace("$crc", "")
+
+
+def test_w6_windows_orchard_off_closure_failure_fails_the_step():
+    w6 = steps(WINDOWS)["w6"]
+    off = w6.split("W6 closure (Orchard ON, recorded)", 1)[1].split("} else", 1)[1]
+    assert re.search(r"if \(\$crc -ne 0 -and \$rc -eq 0\) \{ \$rc = \$crc \}", off), off
+    assert off.index("$rc = $crc") < off.index("Write-GateResult 'W6' $rc")

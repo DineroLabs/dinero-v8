@@ -164,7 +164,7 @@ def test_w2_allows_sqlite3_and_lightning(tmp_path):
 
 
 def test_w6_reports_the_same_violations_as_w2(tmp_path):
-    for fixture in ("externals",):
+    for fixture in ("externals", "unlisted_rpc", "cycle"):   # targets/includes, sources, cycles
         w2 = run(tmp_path / ("w2-" + fixture), fixture, gate="W2")
         w6 = run(tmp_path / ("w6-" + fixture), fixture, gate="W6")
         assert w6.returncode == w2.returncode == 1, w6.stdout + w6.stderr
