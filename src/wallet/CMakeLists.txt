@@ -101,7 +101,6 @@ add_library(dinero_wallet STATIC
   ${CMAKE_SOURCE_DIR}/src/assets/asset_proof.cpp        # Merkle proofs for asset operations
   ${CMAKE_SOURCE_DIR}/src/assets/asset_transfer.cpp     # Asset transfer protocol
   ${CMAKE_SOURCE_DIR}/src/assets/asset_registry.cpp     # Global asset registry (SQLite)
-  ${CMAKE_SOURCE_DIR}/src/crypto/pbkdf2.cpp
   ${CMAKE_SOURCE_DIR}/src/crypto/wallet_crypto.cpp  # Wallet encryption (Argon2id + AES-256-GCM)
   # Wallet UX Abstractions (Phase CT.2 - Unified API layer)
   ${CMAKE_CURRENT_SOURCE_DIR}/unified_balance_service.cpp # UnifiedBalanceService: combined transparent + CT balance

@@ -580,6 +580,7 @@ add_library(dinero_crypto STATIC
   src/crypto/sha256_arm_shani_wrapper.cpp
   src/crypto/encrypted_key.cpp  # Phase W.1.1: Encrypted key utilities (ParseBase64, SecureZero)
   src/crypto/decrypt_encrypted_key.cpp  # Phase W.1.1: Encrypted key decryption
+  src/crypto/pbkdf2.cpp
 )
 
 # Enable ARM Crypto Extensions on ARM64 platforms
