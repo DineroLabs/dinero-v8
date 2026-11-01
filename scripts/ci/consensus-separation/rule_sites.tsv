@@ -1,0 +1,40 @@
+rule_id	file	function	anchor	note
+# Live consensus rule sites at c4940d86c (survey section 3). Anchors must occur exactly once. Update by review only.
+ING-ENTRY	src/daemon/block_acceptor.cpp	BlockAcceptor::AcceptBlockFromRPC	BlockAcceptResult BlockAcceptor::AcceptBlockFromRPC(	ingress entry (dinero_core); P2P path re-hexes into it
+ING-HEADER	src/daemon/block_acceptor.cpp	AcceptBlockFromRPC	if (!ValidateBlockHeader(block, error)) {	header check call
+ING-POW	src/daemon/block_acceptor.cpp	AcceptBlockFromRPC	if (!ValidateProofOfWork(block, static_cast<uint32_t>(newHeight), error, block.prevBlockHash)) {	PoW/ASERT check call
+ING-POW-IMPL	src/daemon/block_acceptor.cpp	BlockAcceptor::ValidateProofOfWork	bool BlockAcceptor::ValidateProofOfWork(	reads DaemonContext/ChainstateService/HeaderChain/ChainDB
+ING-POW-TARGET	src/daemon/block_acceptor.cpp	BlockAcceptor::ValidateProofOfWork	auto targetBE = dinero::TargetFromBits(requiredBits);	inline target compare, not pow.cpp CheckProofOfWork
+ING-MERKLE	src/daemon/block_acceptor.cpp	AcceptBlockFromRPC	if (!ValidateMerkleRoot(block, error)) {	merkle check call
+ING-SIGOPS	src/daemon/block_acceptor.cpp	AcceptBlockFromRPC	if (!ValidateBlockSigops(block, error)) {	block sigops check call
+ING-SIGOPS-CALL	src/daemon/block_acceptor.cpp	BlockAcceptor::ValidateBlockSigops	if (!dinero::consensus::CheckBlockSigops(consensus_block, sigop_cost, error)) {	only caller of CheckBlockSigops
+ING-CONTEXTUAL	src/daemon/block_acceptor.cpp	AcceptBlockFromRPC	if (!ValidateContextual(block, newHeight, error)) {	coinbase/BIP34 via ValidateCoinbase
+ING-CHECKPOINT	src/daemon/block_acceptor.cpp	AcceptBlockFromRPC	if (!ValidateCheckpoint(block, newHeight, error)) {	checkpoints, global Params()
+ING-UTREEXO	src/daemon/block_acceptor.cpp	AcceptBlockFromRPC	if (bv->ComputeUtreexoRootPure(consensus_block,	utreexo root at ingress
+ING-MTP	src/daemon/block_acceptor.cpp	BlockAcceptor::ValidateTimestamp	bool BlockAcceptor::ValidateTimestamp(	MTP from BlockIndex/HeaderChain/ChainDB
+ING-FUTURE-TIME	src/daemon/block_acceptor.cpp	BlockAcceptor::ValidateTimestamp	if (block.timestamp > nowTimestamp + 7200) {	wall-clock future limit
+ING-COINBASE	src/daemon/block_acceptor.cpp	BlockAcceptor::ValidateCoinbase	bool BlockAcceptor::ValidateCoinbase(	coinbase structure + BIP34
+CON-TIP	src/daemon/services/chainstate_service.cpp	ChainstateService::ConnectTip	bool ChainstateService::ConnectTip(	connect driver (dinero_core)
+CON-ORCHARD-SWITCH	src/daemon/services/chainstate_service.cpp	ChainstateService::ConnectTip	if (consensus::OrchardActiveForHeight(Params(),tip_to_connect->height))	Orchard connect path from activation height
+CON-DNRF-PRESENCE	src/daemon/services/chainstate_service.cpp	ChainstateService::ConnectTip	if (consensus::RequiresFilterCommitment(tip_to_connect->height) && !block.vtx.empty()) {	DNRF commitment check
+CON-CALL-VALIDATOR	src/daemon/services/chainstate_service.cpp	ChainstateService::ConnectTip	if (!block_validator_->ConnectBlock(block, tip_to_connect->height, tip_to_connect->hash, block_undo, error)) {	calls BlockValidator
+CON-DNRF-HASH	src/daemon/services/chainstate_service.cpp	ChainstateService::ConnectTip	if (!consensus::ValidateFilterCommitment(block.vtx[0], filter_hash, tip_to_connect->height, filter_error)) {	DNRF commitment check
+ORC-RPC-ENTRY	src/daemon/services/chainstate_service.cpp	ChainstateService::TryAcceptOrchardBlockFromRPC	ChainstateService::TryAcceptOrchardBlockFromRPC(	Orchard RPC ingress
+VAL-CONNECT	src/consensus/block_validation.cpp	BlockValidator::ConnectBlockInternal	bool BlockValidator::ConnectBlockInternal(	connect-time validator, compiled into dinero_core
+VAL-WITNESS	src/consensus/block_validation.cpp	ConnectBlockInternal	if (!EnforceWitnessCommitment(	witness commitment
+VAL-COINBASE-FIRST	src/consensus/block_validation.cpp	ConnectBlockInternal	// Coinbase must be first transaction	coinbase position
+VAL-STATE-COMMIT	src/consensus/block_validation.cpp	ConnectBlockInternal	const auto sc_lookup = FindStateCommitment(coinbase_tx);	DNRS presence (value half is in ApplyBlockShieldedSection)
+VAL-FEE	src/consensus/block_validation.cpp	ConnectBlockInternal	if (!ComputeValidatedTransactionFee(tx, fee_input_utxos, total_input_value, total_output_value, tx_fee, error)) {	per-tx fee (dinero_consensus helper)
+VAL-REWARD	src/consensus/block_validation.cpp	ConnectBlockInternal	if (!CheckCoinbaseReward(coinbase_tx, height, total_fees, error)) {	coinbase value (dinero_consensus helper)
+VAL-UTREEXO	src/consensus/block_validation.cpp	ConnectBlockInternal	error = "bad-utreexo-root (ROOT_MISMATCH): computed="	utreexo root at connect
+VAL-TX	src/consensus/block_validation.cpp	BlockValidator::ValidateTransaction	bool BlockValidator::ValidateTransaction(const Transaction& tx, uint32_t height,	live tx validator at connect
+VAL-MATURITY	src/consensus/block_validation.cpp	BlockValidator::ValidateTransaction	if (utxo.isCoinbase) {	inline coinbase maturity
+VAL-MTP-GLOBAL	src/consensus/block_validation.cpp	BlockValidator::ValidateTransaction	const auto* cursor = FindBlockIndex(parent_hash);	global block-index fallback for MTP
+VQ-LOCK	src/consensus/validation_queue.cpp	ValidationQueue::validateBlock	auto read_lock = chainstate_guard_->readLock();	P2P pre-check under chainstate lock
+VQ-TX	src/consensus/validation_queue.cpp	ValidationQueue::validateBlock	auto result = TransactionValidator::ValidateTransaction(tx, consensus_utxo_set_, job.height);	pre-check against tip UTXO set
+TV-MATURITY	src/consensus/transaction_validator.cpp	TransactionValidator::ValidateTransaction	// Check coinbase maturity (must wait 100 blocks before spending coinbase)	hard-coded maturity
+RIX-FEE	src/consensus/reindexer.cpp	ComputeValidatedTransactionFee	bool ComputeValidatedTransactionFee(const Transaction& tx,	reindexer's own fee path
+RIX-DUPTX	src/consensus/reindexer.cpp	Reindexer	if (!seen_transactions.insert(txid).second) return Status::Invalid;	reindexer duplicate-tx check
+LIB-SIGOPS	src/consensus/sigops.cpp	CheckBlockSigops	bool CheckBlockSigops(const dinero::Block& block,	dinero_consensus
+LIB-REWARD	src/consensus/block_reward.cpp	CheckCoinbaseReward	bool CheckCoinbaseReward(const Transaction& coinbase, uint32_t height,	dinero_consensus; reads Params()
+LIB-WITNESS	src/consensus/witness_commitment.cpp	EnforceWitnessCommitment	bool EnforceWitnessCommitment(	dinero_consensus

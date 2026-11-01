@@ -1,0 +1,14 @@
+{
+ "_doc": "CV1 rules. bucket_a_sources = sources the wallet plan's leg 1a moves or changes (spec 6.1; Tasks 2.1-2.4, 2.6): reported, never failing. allowlisted_headers are pure, only misplaced (survey section 2).",
+ "targets": ["dinero_consensus", "dinero_consensus_core"],
+ "bucket_a_sources": [
+  "src/consensus/coins_db.cpp",
+  "src/consensus/coins_view_cache.cpp",
+  "src/consensus/global_utxo_set_impl.cpp",
+  "src/indexing/utxo_position_index.cpp",
+  "src/address/addr_codec.cpp",
+  "src/consensus/tx_validation.cpp"
+ ],
+ "allowlisted_headers": ["include/mining/header_layout.h", "include/storage/tip_info.h"],
+ "controls": [{"source": "src/consensus/coins_db.cpp", "family": "rocksdb"}]
+}
