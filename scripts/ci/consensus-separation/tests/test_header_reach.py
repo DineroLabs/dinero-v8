@@ -131,6 +131,21 @@ class HeaderReach(unittest.TestCase):
         self.set_rules(controls=[{"source": "src/a.cpp", "family": "storage"}])
         self.record_ok()
 
+    def test_source_in_forbidden_dir_does_not_reach_itself_whatever_the_dep_order(self):
+        # Apple clang (Xcode 27) lists SDKSettings.json BEFORE the source in -M output.
+        # A fake compiler reproduces that order exactly.
+        self.hdr("src/storage/x.cpp", "int x;\n")
+        sdk = os.path.join(self.tmp, "SDKSettings.json"); open(sdk, "w").write("{}")
+        fake = os.path.join(self.tmp, "fakecc.py")
+        open(fake, "w").write("import sys\nprint('x.o: %s %s %s')\n" % (
+            sdk, os.path.join(self.root, "src/storage/x.cpp"), os.path.join(self.root, "include/storage/db.h")))
+        cc = [{"directory": self.build, "file": os.path.join(self.root, "src/storage/x.cpp"),
+               "output": "CMakeFiles/dinero_consensus.dir/src/storage/x.cpp.o",
+               "command": "%s %s -c x.cpp -o CMakeFiles/dinero_consensus.dir/x.o" % (sys.executable, fake)}]
+        json.dump(cc, open(os.path.join(self.build, "compile_commands.json"), "w"))
+        self.record_ok()
+        self.assertEqual(json.load(open(self.base))["reach"], {"src/storage/x.cpp": ["include/storage/db.h"]})
+
     def test_no_entries_for_target_fails(self):
         self.src("src/a.cpp", [], target="dinero_other")
         r = self.run_tool("record")

@@ -65,8 +65,11 @@ def measure(build, root, rules):
             last = (r.stderr.strip().splitlines() or ["?"])[-1]
             problems.append("PREPROCESS_ERROR %s (%s): %s" % (rel, target, last)); continue
         deps = r.stdout.replace("\\\n", " ").split(":", 1)[1].split()
-        for d in deps[1:]:  # deps[0] is the source itself
+        src_abs = os.path.realpath(os.path.join(e["directory"], e["file"]))
+        for d in deps:
             p = os.path.realpath(os.path.join(e["directory"], d))
+            if p == src_abs:  # the source itself; its position varies (Apple clang lists SDKSettings.json first)
+                continue
             if not os.path.exists(p):
                 problems.append("UNRESOLVED %s <- %s" % (d, rel)); continue
             hrel = os.path.relpath(p, root)
