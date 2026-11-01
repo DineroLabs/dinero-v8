@@ -18,6 +18,7 @@
 #include "consensus/utreexo_maturity_leaf_activation.h"
 #include "consensus/csn_replay_data.h"
 #include "daemon/services/chainstate_service.h"
+#include "consensus/candidate_ancestry.h"
 #include "daemon/runtime_reorg_readmission.h"
 #include "daemon/utreexo_tx_reader.h"
 #include "consensus/genesis_canonical.h"
@@ -16539,34 +16540,18 @@ bool ChainstateService::IsReorgCandidateEligible(CBlockIndex* block_index) {
 }
 
 CBlockIndex* ChainstateService::GetBestCandidate() {
+    // Keep the per-pass memo and its raw parent pointers in one selected graph
+    // snapshot. Both production callers already hold the recursive selected
+    // lock; this also enforces the established selected -> index order here.
+    std::lock_guard<AnnotatedRecursiveMutex> selected(activation_mutex_);
+    std::lock_guard<std::recursive_mutex> graph_lock(dinero::g_block_index_mutex);
     if (candidates_.empty()) return nullptr;
 
-    // Only select candidates that share ancestry with the active chain.
-    // Incompatible candidates (no common ancestor) can appear from stale/forked
-    // header data and would make FindFork() return null, stalling activation.
-    auto shares_active_ancestor = [this](CBlockIndex* candidate) -> bool {
-        if (!candidate || !active_tip_) {
-            return true;
-        }
-
-        CBlockIndex* a = active_tip_;
-        CBlockIndex* b = candidate;
-
-        while (a && b && a->height > b->height) {
-            a = a->pprev;
-        }
-        while (a && b && b->height > a->height) {
-            b = b->pprev;
-        }
-        while (a && b) {
-            if (a->hash == b->hash) {
-                return true;
-            }
-            a = a->pprev;
-            b = b->pprev;
-        }
-        return false;
-    };
+    // Reuse the active and fork ancestry within this pass. Walking down from
+    // active_tip_ for every historical candidate is quadratic and holds block
+    // ingress while peers leave already-delivered bytes unread (SJ incident).
+    // The view is discarded before any later graph/status/tip transition.
+    consensus::CandidateAncestryView ancestry(active_tip_);
 
     std::vector<CBlockIndex*> incompatible;
     std::vector<CBlockIndex*> invalid;
@@ -16577,7 +16562,7 @@ CBlockIndex* ChainstateService::GetBestCandidate() {
             invalid.push_back(candidate);
             return false;
         }
-        if (!shares_active_ancestor(candidate)) {
+        if (!ancestry.SharesActiveAncestor(candidate)) {
             incompatible.push_back(candidate);
             return false;
         }
