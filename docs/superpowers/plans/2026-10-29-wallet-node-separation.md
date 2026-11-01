@@ -347,6 +347,7 @@ Replaces Task 0.8's consumer. That one linked `dinero_wallet_ffi` with a list co
     - `macos-15` has no Xcode 15.4. The lane pins Xcode 16.4 as an explicit, reproducible choice (owner decision) and asserts it and its `clang++`.
     - The lane's references are named by `ref_tag: macos15` (`SEP_REF_TAG`), not by platform. The existing macOS references (`consensus_vectors_ref_<cfg>.json`, `symbols_macos_<cfg>.txt`, recorded locally with AppleClang 21 / Xcode 27) stay unchanged with their provenance and are never this lane's acceptance reference.
     - Until a recorded `macos15` reference is reviewed and committed, K4 and W5 on the lane are FAIL rc 2 (missing reference).
+      - Accepted 2026-11-01 (owner): the run 4 candidates, committed unchanged. K4 digests and W5 symbols are identical to the macOS references; only `build_dir` and `provenance_sha` (PR merge ref 7442bcc14d47) differ.
       - Both still compare against the old macOS reference for information only. The summary row shows the result as `info:` (K4 digest mismatches; W5 interface identical or differs).
       - Any difference from it is investigated before a new reference is accepted. Expected values are never updated just to make the lane pass.
     - The RPC transcript reference (`tests/separation/transcripts/<cfg>.json`) is shared by every POSIX lane and is not keyed by `ref_tag`.
