@@ -6361,13 +6361,30 @@ StatusOr<ChainstateService::UtreexoRpcSnapshot> ChainstateService::UtreexoRpcSna
     const auto canonical=chain_db_->getBlockHashByHeight(int(live.height));
     const auto height=chain_db_->getBlockHeight(live.hash);
     const auto work=chain_db_->getBlockWork(live.hash);
-    if (!tip.ok() || !validated.ok() || !header.ok() ||
+    if (!tip.ok() || (!validated.ok() && validated.status()!=Status::NotFound) || !header.ok() ||
         !height.ok() || !work.ok()) return Status::Internal;
     if (*height!=int(live.height) ||
         ChainworkFromHex(live.chainwork)!=*work || header->GetHash()!=live.hash ||
         header->prev_block_hash!=live.prev_hash || header->version!=live.version ||
         header->merkle_root!=live.merkle_root || header->timestamp!=live.timestamp ||
         header->difficulty!=live.bits || header->nonce!=live.nonce) return Status::Corruption;
+    // Older full-node writers persisted forest_tip without validated_tip.
+    // Admit only their exact canonical, pre-Orchard full owner. An imported
+    // or promoted snapshot must retain its existing history/origin checks;
+    // never manufacture a validated_tip row to make a read succeed.
+    bool legacy_full_origin=false;
+    if (!validated.ok()) {
+        if (GetConfig().utreexo_stateless || compact_startup_ || orchard_snapshot_startup_ ||
+            consensus::OrchardActiveForHeight(Params(),live.height) || assumeutxo_active_ ||
+            assumeutxo_base_height_!=0 || !assumeutxo_base_block_.IsNull() || promoted_base_height_!=0 ||
+            chain_db_->getPreBaseCoinSetBase().status()!=Status::NotFound)
+            return Status::Corruption;
+        const auto marker=chain_db_->getForestTipMarker();
+        if (!marker.ok() || marker->height!=int(live.height) ||
+            marker->block_hash!=live.hash || marker->forest_root!=header->utreexo_root)
+            return Status::Corruption;
+        legacy_full_origin=true;
+    }
     bool selected_origin=false;
 #ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
     // A completed activation handoff authenticates selected state without
@@ -6378,14 +6395,15 @@ StatusOr<ChainstateService::UtreexoRpcSnapshot> ChainstateService::UtreexoRpcSna
 #endif
     const bool canonical_selection=canonical.ok()&&*canonical==live.hash&&
         tip->hash==live.hash&&tip->height==int(live.height)&&*work==tip->work&&
-        (selected_origin||(validated->hash==tip->hash&&validated->height==tip->height));
+        (legacy_full_origin||selected_origin||
+         (validated.ok()&&validated->hash==tip->hash&&validated->height==tip->height));
     if(!canonical_selection) {
         // Legacy v5 owns authenticated state at its exact imported base while
         // history validation deliberately leaves the durable tip below it.
         // This is a read-only assumed-base observation, NOT permission to
         // fabricate canonical heights or advance validatedTip. Rebind the
         // existing imported owner, frozen coin marker and selected PoW ancestry.
-        if(compact_startup_||orchard_snapshot_startup_||
+        if(!validated.ok()||compact_startup_||orchard_snapshot_startup_||
             consensus::OrchardActiveForHeight(Params(),live.height)||!assumeutxo_active_||
             live.hash!=assumeutxo_base_block_||live.height!=assumeutxo_base_height_||
             tip->height<0||uint32_t(tip->height)>live.height||
