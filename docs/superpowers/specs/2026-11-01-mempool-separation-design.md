@@ -19,13 +19,13 @@ This project produces **one library, `dinero_mempool`**, that:
 2. links on its own (forced, whole-archive) with only its declared dependencies;
 3. reaches chain state only through a declared, storage-free chain view;
 4. has no edge to `dinero_core`, the wallet, RPC, P2P, gRPC, RocksDB or mining;
-5. is declared by every consumer (`dinero_core`, `dinero_rpc_handlers`, `dinero_wallet` until the wallet's own seam lands, `dinerod`, `nodecore_ffi`, tests) instead of being compiled into each one.
+5. is declared by its node-side consumers (`dinero_core`, `dinero_rpc_handlers`, and through core `dinerod`, `nodecore_ffi`, tests) instead of being compiled into each one. **`dinero_wallet` does not declare it** (X1): the wallet's M1–M3 edge is removed by the wallet project's own seam, not by linking the mempool into the wallet closure.
 
 ## 2. Why now
 
 - **`src/daemon/mempool.cpp` belongs to no library.** It is compiled directly into **57 targets** (identical OFF and ON): `dinerod`, `nodecore_ffi`, `swap_e2e_fixture_daemon`, the OBJECT library `dinero_test_mempool_runtime` (attached to 32 fixtures by `tests/CMakeLists.txt:17204-17309`), and 53 test executables (list: evidence `survey/mempool_cpp_compilers_off.txt`).
 - **Two-way dependency with `dinero_core`.** `dinero_core` (20 sources, e.g. `mempool_service.cpp`, `chainstate_service.cpp`, `p2p_service.cpp`, `tx_relay_manager.cpp`, `block_assembler.cpp`) calls `Mempool::` but does not contain it; `mempool.cpp` in turn needs `dinero_core` objects (section 6.1). Both resolve only because the final executable compiles `mempool.cpp` in. `dinero_rpc_handlers` (16 sources) and `dinero_wallet` (5 sources) have the same undeclared edge.
-- **Stubs instead of a library.** `tests/stubs/mempool_test_stubs.cpp` replaces six `Mempool` methods with no-ops for 19 configured targets (43 live references in `tests/CMakeLists.txt`, 4 in `rust/orchard_backend/CMakeLists.txt:533,544,663,675`). The wallet project's W1/W6 gates forbid it; it can't go away while there is no real library to link.
+- **Stubs instead of a library.** `tests/stubs/mempool_test_stubs.cpp` replaces six `Mempool` methods with no-ops. 43 live references in `tests/CMakeLists.txt` and 4 in `rust/orchard_backend/CMakeLists.txt:533,544,663,675`; **19 targets** compile it in the surveyed macOS config (OFF and ON identical). The rest are either among the 32 fixtures from which `dinero_attach_real_mempool_fixture_runtime` strips the stubs at configure time (`tests/CMakeLists.txt:17268-17269`, "the former no-op mempool stubs cannot implement those contracts") or gated by `if(UNIX)`, `if(NOT WIN32)`, `DINERO_ENABLE_COMPACT_REGTEST`, `DINERO_TEST_ORCHARD_QT_CONTRACT`, `TARGET gtest`, `TARGET dinero_shielded_prover_kit`; stage 0 enumerates them per platform with those options on. The wallet project's W1/W6 gates forbid the stub; it can't go away while there is no real library to link. The fixtures also link core with `-Wl,--start-group … --end-group` on Linux (`:17280-17284`), i.e. today's resolution depends on link grouping.
 - **The wallet project needs it.** Its W2/W6 closures forbid `src/daemon/mempool.cpp`; its §7 mempool seam (M1–M3) is header-only over `Mempool`. A real `dinero_mempool` with a storage-free closure is what lets that seam be linked honestly.
 
 ## 3. Goals
@@ -132,6 +132,32 @@ Production sources referencing `Mempool`/`MempoolEntry`/`MempoolTransaction`/`Me
 
 Matches of `Mempool` under consensus, classified: `header_store.h:54`, `header_sync.h:17`, `chainparams.h:117`, `header_chain.h:172`, `script_validation.h:76`, `transaction_validator.cpp:744` are comments; `iconsensus_engine.h:16` is a bare `class Mempool;` forward declaration with no use. No consensus source calls the mempool. The wallet project's K2 (forbids any target compiling `src/daemon/mempool.cpp` in the consensus closure) and K3 (forbids `dinero::Mempool` symbols) enforce it; **they key on the path and symbol prefix, so they stay valid because the file is not moved** — but K2 must also forbid the new target name `dinero_mempool` (9.1, X2).
 
+### 6.7 Library shape
+
+```
+dinero_mempool  STATIC   (new; root CMakeLists.txt, placed before add_library(dinero_core))
+  sources   src/daemon/mempool.cpp
+            src/mempool/{coins_view_mempool,fee_estimator,invalid_tx_cache,
+                         mempool_persistence,tx_orphan_pool}.cpp
+            src/policy/{mempool_policy,rbf_policy,fee_estimator}.cpp
+            src/daemon/relay_transaction_reader.cpp
+            src/mining/{ct_selection_policy,address_validator}.cpp   (or a lower lib, §13)
+  PUBLIC    dinero_consensus  dinero_pq  dinero_shielded  dinero_tx_primitives  dinero_crypto
+            dinero_logging (once wallet Stage 1 creates it; bucket A until then)
+            ON only: dinero_orchard_mempool_body
+  includes  ${CMAKE_SOURCE_DIR}/include  (no src/daemon, no RocksDB dir)
+  headers   include/daemon/mempool*.h, tx_mempool.h, mempool_chain_view.h (new),
+            mempool_scan_sink.h (new), include/mempool/*.h (non-legacy), include/policy/*.h
+node side   include/storage/chain_db_mempool_view.h   header-only ChainDbMempoolView
+            core: ScannerManager-backed IMempoolScanSink (in mempool_service.cpp or beside it)
+consumers   dinero_core PUBLIC dinero_mempool;  dinero_rpc_handlers declares it
+ON hook     rust/orchard_backend/CMakeLists.txt:181-184 gains
+            if(TARGET dinero_mempool) target_link_libraries(dinero_mempool PUBLIC dinero_orchard_mempool_body)
+            (the relay-reader COMPILE_DEFINITIONS is a SOURCE property, so it follows the file)
+```
+
+Exact PUBLIC set is what MP1 proves necessary; anything not needed is dropped (stage 3).
+
 ## 7. Interfaces
 
 ### 7.1 `IMempoolChainView` (replaces `ChainDB*`)
@@ -156,7 +182,9 @@ public:
 
 - Field and status types are copied from ChainDB's. **`Coin` is defined only in `include/storage/chain_db.h:37`**, which pulls RocksDB headers, so the view cannot return it as is (X4): either a field-for-field `MempoolCoin` in a library header, or `consensus::UTXOEntry` (which already carries `is_confidential` and `commitment`, see `mempool_transaction.h` `OutputCoin`) if every read field maps one-to-one. Stage 0 lists the `Coin` fields `mempool.cpp` reads.
 - `Mempool(ChainDB*, const IConsensusUTXOSet*, bool)` becomes `Mempool(const IMempoolChainView*, const IConsensusUTXOSet*, bool)`. `nullptr` keeps today's `if (!chain_db_)` behaviour at every site.
-- The three in-file ChainDB adapters (`ChainDBUTXOView` `:108`, `ChainDBStateView` `:187`, the `MempoolUTXOView` member `:281`) switch from `ChainDB*` to `const IMempoolChainView*`. **This is the only logic-adjacent edit in `mempool.cpp`**: a type and include swap, each call one-to-one.
+- The three in-file ChainDB adapters (`ChainDBUTXOView` `:108`, `ChainDBStateView` `:187`, the `MempoolUTXOView` member `:281`) switch from `ChainDB*` to `const IMempoolChainView*`. These are **the only logic-adjacent edits in `mempool.cpp`**, of two kinds, each named in the plan:
+  - a type and include swap where the call maps one-to-one (`getTip`, `getCoinWithConfidentialFallback`, `getTxLocation`);
+  - a **relocation**: the two `forEachUTXO` commitment scans (`:169-181`, `:366-375`) move verbatim into `ChainDbMempoolView::HaveConfidentialCommitment`, and the call sites call it. Same predicate, same early exit.
 - **Node adapter:** `include/storage/chain_db_mempool_view.h`, header-only, `ChainDbMempoolView : IMempoolChainView`, forwarding each call to ChainDB unchanged. `MempoolService` and tests include it; they already link chainstate. Same pattern as the wallet's `chain_db_wallet_view.h`.
 
 ### 7.2 `IMempoolScanSink` (replaces the owned `ScannerManager`)
@@ -171,7 +199,12 @@ public:
 };
 ```
 
-`ScannerManager::acquireEmptyRegistry()` (`include/privacy/silent_scanner_manager.h:32-35`) returns a `unique_ptr<EmptyRegistry>` that **holds `scanners_mutex_` for its lifetime**, and `mempool.cpp:793` keeps it alive through the rest of Orchard admission. The interface therefore returns an RAII guard, not a bool; the core implementation wraps `EmptyRegistry` in it, so lock scope and ordering are unchanged. Owned by `Mempool` as `std::unique_ptr` (same lifetime as today). The `ScannerManager`-backed implementation lives in core. Where `Mempool` is constructed without a sink, behaviour must equal today's "manager always present" default, so the constructor keeps creating the default sink when the caller passes none — **or** every construction site passes one; stage 0 counts which test sites rely on the default.
+`ScannerManager::acquireEmptyRegistry()` (`include/privacy/silent_scanner_manager.h:32-35`) returns a `unique_ptr<EmptyRegistry>` that **holds `scanners_mutex_` for its lifetime**, and `mempool.cpp:793` keeps it alive through the rest of Orchard admission. The interface therefore returns an RAII guard, not a bool; the core implementation wraps `EmptyRegistry` in it, so lock scope and ordering are unchanged. Owned by `Mempool` as `std::unique_ptr` (same lifetime as today). The `ScannerManager`-backed implementation lives in core.
+
+**Today the mempool's manager is always empty.** `m_sp_scanner_manager` is private (`mempool.h:773`), has no accessor, and nothing calls `addScanner` on it (the only uses are `mempool.cpp:468`, `:793-794`, `:1104-1106`). So `acquireEmptyRegistry()` always succeeds, the "Configured scanner cannot consume Orchard body" rejection is **unreachable in production**, and `scanMempoolTransaction` parses the hex and matches zero scanners. Consequences:
+- The library needs no default `ScannerManager`. A **null sink** means "no scanners registered" and is observably equivalent to today's empty manager, **except** that it takes no `scanners_mutex_` and skips the parse; neither is visible through RPC, persistence or relay.
+- To stay strictly equal, `MempoolService` still passes a `ScannerManager`-backed sink (lock and parse kept in the daemon); tests that construct `Mempool` directly may pass none.
+- MP4 freezes the observable path (Orchard entry accepted). The unreachable UNAVAILABLE branch is kept verbatim and covered by one unit test with a fake sink returning null.
 
 ### 7.3 Unchanged
 
@@ -187,19 +220,26 @@ Each gate is added at stage 0 as a non-required job; its baseline result is reco
 
 Stage exits (section 10) require bucket B = 0; full green (A and B) follows wallet Stages 1–3. **Owner decision D1.**
 
+**RED for the right reason.** "Target does not exist" is not a meaningful RED. Stage 0 adds an `EXCLUDE_FROM_ALL` **probe archive**, `sep_mempool_probe`, built at the baseline from the planned source list (6.3) with the planned declared deps. MP1/MP3/MP5 run against it at baseline, and MP2 walks it. Expected baseline RED, from the measured `nm -u` (6.1):
+- MP1/MP5 link: undefined `ChainDB::{getTip, getCoinWithConfidentialFallback, getTxLocation, forEachUTXO}`, `din::sp::ScannerManager::{ScannerManager, ~ScannerManager, scanMempoolTransaction}` (and `acquireEmptyRegistry` if out-of-line), plus bucket A;
+- MP2: `dinero_chainstate`/RocksDB needed for ChainDB, `dinero_core` needed for the scanner;
+- MP3: `ChainDB`, `din::sp::` in the probe's link;
+- MP4: GREEN.
+The probe becomes `dinero_mempool` at stage 2.
+
 | Gate | What | Baseline expectation |
 |---|---|---|
-| **MP1 forced link** | Executable linking `dinero_mempool` whole-archive (`--whole-archive` / `-force_load` / `/WHOLEARCHIVE`) plus only its declared deps, `--no-undefined` semantics. `main` constructs a `Mempool` on a fake `IMempoolChainView` and calls `size()` | RED: target doesn't exist. After creation, before the interfaces: undefined `ChainDB::*`, `ScannerManager::*`, plus bucket A |
-| **MP2 closure** | Walk `dinero_mempool` usage requirements recursively (incl. PRIVATE of static libs). **Allowed:** `dinero_consensus`, `dinero_consensus_core`, `dinero_tx_primitives`, `dinero_pq` (kernel), `dinero_shielded`, `dinero_crypto`, `dinero_logging`, and in ON `dinero_orchard_mempool_body` and its closure. **Forbidden:** `dinero_core`, `dinero_chainstate`, `dinero_wallet`, `dinero_rpc_handlers`, P2P targets, gRPC, RocksDB, sqlite3, `src/daemon` include dirs, any target compiling `tests/stubs/mempool_test_stubs.cpp`, cycles in the closure, non-allowlisted node-path sources (6.4). **Reverse check:** no target in the `dinero_consensus` closure links `dinero_mempool` | RED (target missing) |
+| **MP1 forced link** | Executable linking `dinero_mempool` whole-archive (`--whole-archive` / `-force_load` / `/WHOLEARCHIVE`) plus only its declared deps, `--no-undefined` semantics. `main` constructs a `Mempool` on a fake `IMempoolChainView` and calls `size()` | RED on `sep_mempool_probe`: undefined `ChainDB::*`, `ScannerManager::*`, plus bucket A |
+| **MP2 closure** | Walk `dinero_mempool` usage requirements recursively (incl. PRIVATE of static libs). **Allowed:** `dinero_consensus`, `dinero_consensus_core`, `dinero_tx_primitives`, `dinero_pq` (kernel), `dinero_shielded`, `dinero_crypto`, `dinero_logging`, and in ON `dinero_orchard_mempool_body` and its closure. **Forbidden:** `dinero_core`, `dinero_chainstate`, `dinero_wallet`, `dinero_rpc_handlers`, P2P targets, gRPC, RocksDB, sqlite3, `src/daemon` include dirs, any target compiling `tests/stubs/mempool_test_stubs.cpp`, cycles in the closure, non-allowlisted node-path sources (6.4). **Reverse check:** no target in the `dinero_consensus` closure links `dinero_mempool` | RED on the probe: chainstate/RocksDB and core edges |
 | **MP3 symbols** | `nm -C` on MP1's output: no `rocksdb::`, `sqlite3_`, `ChainDB`, `ChainstateService`, `din::sp::`, `PeerManager`, `P2PService`, `RPCServer`, `WalletManager`, `grpc::` | RED |
-| **MP4 behaviour freeze** | (a) **RPC transcript** on regtest, field for field (timestamps and other run-varying fields masked by an explicit, reviewed list): `getmempoolinfo`; `getrawmempool` (plain and verbose); `getmempoolentry`; `getmempoolancestors`/`descendants`; `testmempoolaccept` (accept, reject, duplicate); `sendrawtransaction`; an RBF replacement (accepted and rejected); a CPFP child; an orphan arriving before its parent; `estimatesmartfee`/`estimatefee`; three error cases; in ON builds an Orchard mempool entry (accepted, and the scanner-UNAVAILABLE path if reachable over RPC, else by a unit test). (b) **Persistence:** a `mempool.dat` fixture per configuration generated by the c4940d86c build (ON contains an Orchard entry, because load decodes `AvailableFamilies`, `mempool.cpp:4242`); the split build loads it, reports identical entries, saves it, and the saved file is **byte-identical** to the fixture | GREEN (reference run) |
-| **MP5 standalone consumer** | `sep_mempool_standalone`, linked only through `target_link_libraries(... dinero_mempool)` (no `dinero_core`, no stubs, no hand-listed archives). On a fake chain view it must **run**: submit a valid tx (accepted), an invalid one (rejected with the frozen reason), save, clear, load, compare. Its resolved closure must pass MP2's rules | RED (target missing) |
+| **MP4 behaviour freeze** | (a) **RPC transcript** on regtest, field for field (timestamps and other run-varying fields masked by an explicit, reviewed list): `getmempoolinfo`; `getrawmempool` (plain and verbose); `getmempoolentry`; `getmempoolancestors`/`descendants`; `testmempoolaccept` (accept, reject, duplicate); `sendrawtransaction`; an RBF replacement (accepted and rejected); a CPFP child; an orphan arriving before its parent; `estimatesmartfee`/`estimatefee`; three error cases; in ON builds an Orchard mempool entry (accepted, and the scanner-UNAVAILABLE path if reachable over RPC, else by a unit test). (b) **Persistence, inside the same regtest run:** populate, `stop` (save), restart (load), compare. Facts that shape it: `m_transactions` is an `unordered_map` (`mempool.h:723`) and `saveToDisk` writes in its iteration order (`mempool.cpp:4204-4209`), so entry order is not stable across runs or standard libraries; and `loadFromDisk` **re-admits every body against the current tip** (`:4254-4280`, "disk metadata never grants admission"), so a `mempool.dat` without its chain would be rejected wholesale and a round-trip would compare near-empty files. Therefore: (i) **format identity** — header (magic `MEMPOOLV`, `VERSION`) byte-identical, and the decoded entry set sorted by txid identical (tx bytes exact; any run-varying field on the reviewed mask list); (ii) **reload identity** — `getrawmempool true` after restart equals before restart, masked the same way, and equals the baseline build's own run; (iii) ON: the set contains an Orchard entry (load decodes `AvailableFamilies`, `:4242`). The reference is the c4940d86c build's output on the same platform and configuration | GREEN (reference run) |
+| **MP5 standalone consumer** | `sep_mempool_standalone`, linked only through `target_link_libraries(... dinero_mempool)` (no `dinero_core`, no stubs, no hand-listed archives). On a fake chain view it must **run**: submit a valid tx (accepted), an invalid one (rejected with the frozen reason), save, clear, load, compare. Its resolved closure must pass MP2's rules | RED on the probe (as MP1) |
 
 **MP4 and the never-run floor.** `MempoolPolicyOwner`, `MempoolTestAcceptReadOnly`, `BlockRelayPoolOwner`, `CsnCpfpDisconnect`, `AddressBalanceMempoolOverlay`, `UtreexoMempoolCanonicalSeparation` and other mempool-adjacent tests are on the floor (`scripts/ci/separation/never_run_floor.txt` on #860's branch, 230 names). MP4 uses its own transcript and fixture checks and runs **no** floor test; the gate script refuses any name on the floor list.
 
-**Known baseline conditions** (from #860 runs; `~/src/dinero-evidence/2026-10-29-separation-stage0/ci-pr860-run{1..4}/SUMMARY.md`):
-- Windows: `dinerod.exe` exited rc 1 at startup under the transcript harness (run 1) → MP4(a) on Windows may be **UNMEASURED** at baseline; recorded, not hidden.
-- Windows ON: `LNK2005` duplicate `isCoinbaseMature` (`src/consensus` + `src/core/consensus`) (run 2) → ON links on MSVC may fail at baseline for reasons outside this project.
+**Known baseline conditions** (latest: #860 run 4, `~/src/dinero-evidence/2026-10-29-separation-stage0/ci-pr860-run4/SUMMARY.md:34-39`):
+- Windows OFF: the wallet's regtest transcript (W5) is **UNMEASURED (B1, `stol` overflow)** → MP4(a) on Windows is expected UNMEASURED at baseline for the same harness cause; recorded, not hidden. (Run 1 showed `dinerod.exe` rc 1 at startup; run 4 names B1.)
+- Windows ON: `dinerod` fails to build, **B3 `LNK2005 CoinbaseMaturity::isCoinbaseMature`** (`wallet_manager.cpp.obj` vs `coinbase_maturity.cpp.obj`) → every ON gate that needs `dinerod` is UNMEASURED on MSVC until B3 is fixed.
 - `nodecore_ffi` is not an MSVC target (owner, 2026-10-30).
 
 ## 9. Affected consumers
@@ -208,7 +248,7 @@ Stage exits (section 10) require bucket B = 0; full green (A and B) follows wall
 |---|---|---|
 | `dinero_core` | loses the 8 mempool-owned sources + `ct_selection_policy`, `address_validator` (if they move); links `dinero_mempool` PUBLIC; `MempoolService` builds `ChainDbMempoolView` and the scanner sink | unchanged; MP4 |
 | `dinero_rpc_handlers` | declares `dinero_mempool` | unchanged |
-| `dinero_wallet` | declares `dinero_mempool` **only until** the wallet project's M1–M3 seam lands (cross-project, X1) | unchanged |
+| `dinero_wallet` | **no change** (X1): does not declare `dinero_mempool`; its 5 M1–M3 sources keep resolving at the final link exactly as today, until the wallet project's seam (its Stage 5) removes the edge | unchanged |
 | `dinerod` (both `add_executable` branches, `src/daemon/CMakeLists.txt:58`, `:133`), `nodecore_ffi` (`src/nodecore/CMakeLists.txt:50`), `swap_e2e_fixture_daemon` | drop the direct `mempool.cpp`; link the library (via core). The NodeCore xcframework script bundles `libdinero_mempool.a` | unchanged; W5 (wallet) and MP4 |
 | Orchard backend (ON) | `dinero_mempool` links `dinero_orchard_mempool_body`; 4 stub users at `rust/orchard_backend/CMakeLists.txt:533,544,663,675` re-decided with X3 | unchanged |
 | Tests | 53 direct compiles and `dinero_test_mempool_runtime` (32 fixtures) replaced by linking `dinero_mempool`; 46 test files that construct `Mempool(ChainDB*,…)` pass `ChainDbMempoolView` (mechanical). Duplicate `tx_relay_manager.cpp` compile goes with the OBJECT library | unchanged |
@@ -310,5 +350,6 @@ Each stage is its own PR onto `dinero-main`, green on existing CI plus the named
   - `tests/separation/CMakeLists.txt` and `scripts/ci/separation/` exist only on #860's branch, not on `dinero-main`; the 2 refs there are wallet-owned;
   - CMake reference counts split live/commented: `tests/CMakeLists.txt` 100/2, `tests/mining/CMakeLists.txt` 4/2, `src/daemon/CMakeLists.txt` 2/1 (others all live);
   - `check_no_legacy_mempool_prod` is not run by any workflow (E2).
-- **Overlap with the wallet project** not in its spec: the `mempool_test_stubs.cpp` users (X3) including its own W4 checker; the `dinero_test_mempool_runtime` OBJECT library (32 fixtures, duplicate `tx_relay_manager.cpp`); K2/W2/W6 keyed on path, K3/W3 prefix also matching `MempoolTransaction` (X2); `include/wallet/mempool_interface.h` (`IMempoolInterface`) and `src/wallet/wallet_mempool_adapter.cpp` compiled into `dinero_wallet` against it (E1).
+- **`v8.2.0` tag:** `git ls-remote --tags https://github.com/DineroLabs/dinero-v8.git 'v8.2.0*'` returned no tag on 2026-11-01, and no local tag exists; re-checked at stage 0.
+- **Overlap with the wallet project** not in its spec: `include/wallet/transaction.h` (wallet-owned path) is included by `include/daemon/mempool.h:22`, `tx_mempool.h:6`, `mempool_events.h:3`, `rbf_policy.cpp:2`, `mempool_policy.cpp:2`, `mempool_persistence.cpp:3`, `ct_selection_policy.h`; it is a thin layer over `primitives/transaction.h` (its own comment: "Wallet uses primitives, never redefines"), and `mempool.o`'s `Transaction::*` symbols resolve to primitives — a header edge into a wallet-owned directory, not a link edge into `dinero_wallet`. MP2 treats it as allowed; moving it is a wallet-project decision. Also: the `mempool_test_stubs.cpp` users (X3) including its own W4 checker; the `dinero_test_mempool_runtime` OBJECT library (32 fixtures, duplicate `tx_relay_manager.cpp`); K2/W2/W6 keyed on path, K3/W3 prefix also matching `MempoolTransaction` (X2); `include/wallet/mempool_interface.h` (`IMempoolInterface`) and `src/wallet/wallet_mempool_adapter.cpp` compiled into `dinero_wallet` against it (E1).
 - Wallet spec rev 4 and #860 run summaries (runs 1–4) for the Windows baseline conditions.
