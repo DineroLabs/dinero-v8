@@ -24,8 +24,8 @@
 #     (consensus_vectors_ref_<cfg>.json, symbols_macos_<cfg>.txt) were recorded
 #     locally (AppleClang 21 / Xcode 27, macOS 27.0.1) and matched by the
 #     retired macos-14 / Xcode 15.4 lane; they are kept unchanged. The
-#     macos-15 lane (ref_tag macos15) needs its own reviewed
-#     consensus_vectors_ref_macos15_<cfg>.json and symbols_macos15_<cfg>.txt. Where a baseline is missing (or
+#     macos-15 lane (ref_tag macos15) uses its own reviewed
+#     consensus_vectors_ref_macos15_<cfg>.json and symbols_macos15_<cfg>.txt (run 4, accepted 2026-11-01). Where a baseline is missing (or
 #     on a manual run with record_baselines=true) a last step prints freshly
 #     recorded files to the log for review; they are never checked against
 #     in the same run.
@@ -665,7 +665,7 @@ jobs:
             echo "| K6 | SKIP stage<2 |"
             for g in W1 W2 W3 W4 W5 W6; do row "$g"; done
             echo
-            echo "Stage-0 expectation: K1, K2, W1, W2 FAIL; K3, W3 UNMEASURED while the K1/W1 probes do not link (FAIL/PASS once measured); K5, W4 PASS; K4, W5 FAIL rc 2 (missing reference) on Linux and on macOS (macos-15, ref_tag macos15) until reviewed baselines are committed; W6 recorded (RED). A missing reference is missing evidence, not a pass. If the prerequisite build fails (LANE UNMEASURED), every gate that depends on a failed target is UNMEASURED, not a pass and not a measured fail; K2, W2, K5 still report their result."
+            echo "Stage-0 expectation: K1, K2, W1, W2 FAIL; K3, W3 UNMEASURED while the K1/W1 probes do not link (FAIL/PASS once measured); K5, W4 PASS; K4, W5 FAIL rc 2 (missing reference) on Linux until reviewed baselines are committed; K4, W5 PASS on macOS (macos-15) against the committed macos15 references; W6 recorded (RED). A missing reference is missing evidence, not a pass. If the prerequisite build fails (LANE UNMEASURED), every gate that depends on a failed target is UNMEASURED, not a pass and not a measured fail; K2, W2, K5 still report their result."
           } | tee -a "$GITHUB_STEP_SUMMARY"
 
   # K4, second half (ruling R13): the existing compact-regtest fixed-vector

@@ -127,6 +127,16 @@ def test_build_step_records_the_harness_state_for_the_prereq_scan():
         assert "--sep-targets-rc" in prereq and "--k4-targets" in prereq
 
 
+def test_posix_expectation_reflects_the_accepted_macos15_references():
+    summary = POSIX.split("- name: Gate summary", 1)[1]
+    exp = summary.split("Stage-0 expectation:", 1)[1].split("\n")[0]
+    assert "K4, W5 FAIL rc 2 (missing reference) on Linux until reviewed baselines are committed" in exp
+    assert "K4, W5 PASS on macOS (macos-15) against the committed macos15 references" in exp
+    header = POSIX.split("\non:", 1)[0]
+    assert "needs its own reviewed" not in header
+    assert "consensus_vectors_ref_macos15_<cfg>.json and symbols_macos15_<cfg>.txt (run 4, accepted 2026-11-01)" in header
+
+
 def test_windows_expectation_keeps_w5_missing_reference_after_b1():
     summary = WINDOWS.split("- name: Gate summary", 1)[1]
     exp = summary.split("Stage-0 expectation:", 1)[1].split("\n")[0]
