@@ -316,8 +316,10 @@ Replaces Task 0.8's consumer. That one linked `dinero_wallet_ffi` with a list co
   - K3 and W3 FAIL where they are measured.
     - On Windows they report **UNMEASURED** (neither PASS nor a measured FAIL) until the COFF archive scan is verified: the probe `.lib` link inputs, a verified `llvm-nm` and a positive control.
   - K5 and W4 PASS (K5 runs on POSIX runners only).
-  - K4 and W5 PASS on a lane only against that lane's committed, reviewed reference. On the macos-15 lane (`ref_tag: macos15`) none is committed yet (see below).
-    - **On Linux, macOS (macos-15) and Windows, K4 and W5 are expected red** (`FAIL rc=2 (missing reference -- not a vector/interface mismatch)`) until reviewed reference baselines for that platform are committed.
+  - K4 and W5 PASS on a lane only against that lane's committed, reviewed reference. macos-15 (`ref_tag: macos15`) and Linux (`ref_tag: linux`) have one since 2026-11-01 (see below).
+    - **K4 and W5 are expected red on a platform without one** (`FAIL rc=2 (missing reference -- not a vector/interface mismatch)`): since 2026-11-01 that is Windows only.
+      - Linux: accepted 2026-11-01 (owner): the run 5 candidates (GCC 13 = GCC 15, byte-identical), committed unchanged. K4 identical to macos15; the symbol lists keep their ELF-only `DW.ref.*` entries. Follow-up (owner): investigate the macOS-only `nodecore_ffi` export of `g_data_dir` separately.
+      - Windows: references are recorded only after B2 (the `tests/vectors/** eol=lf` fix, its own PR) lands, because B2 changes the vector bytes a Windows checkout sees.
       - On Windows, W5 shows that state only after B1 is fixed (see below). Until then it is UNMEASURED.
     - A missing reference is missing evidence, not a pass and not a mismatch.
   - **Windows W5 is partial:** wallet FFI + RPC transcript only.

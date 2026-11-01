@@ -127,11 +127,11 @@ def test_build_step_records_the_harness_state_for_the_prereq_scan():
         assert "--sep-targets-rc" in prereq and "--k4-targets" in prereq
 
 
-def test_posix_expectation_reflects_the_accepted_macos15_references():
+def test_posix_expectation_reflects_the_accepted_references():
     summary = POSIX.split("- name: Gate summary", 1)[1]
     exp = summary.split("Stage-0 expectation:", 1)[1].split("\n")[0]
-    assert "K4, W5 FAIL rc 2 (missing reference) on Linux until reviewed baselines are committed" in exp
-    assert "K4, W5 PASS on macOS (macos-15) against the committed macos15 references" in exp
+    assert "missing reference) on Linux" not in exp
+    assert "K4, W5 PASS on Linux (ref_tag linux, GCC 13 and GCC 15) and on macOS (macos-15) against the committed references" in exp
     header = POSIX.split("\non:", 1)[0]
     assert "needs its own reviewed" not in header
     assert "consensus_vectors_ref_macos15_<cfg>.json and symbols_macos15_<cfg>.txt (run 4, accepted 2026-11-01)" in header
@@ -222,6 +222,27 @@ def test_accepted_macos15_references_are_pinned():
     for cfg in ("off", "on"):
         ref = json.loads((ROOT / ("scripts/ci/separation/consensus_vectors_ref_macos15_%s.json" % cfg)).read_text())
         assert ref["provenance_sha"].startswith("7442bcc14d47")
+
+
+def test_accepted_linux_references_are_pinned():
+    # Recorded by run 5 (GCC 13 and GCC 15 printed byte-identical files; PR merge
+    # ref af2722021870 = stage-0 baseline), reviewed against the macos15 references
+    # and accepted as-is by the owner on 2026-11-01. The ELF-only DW.ref.* entries
+    # stay in the symbol lists on purpose (platform-specific, kept visible).
+    import hashlib, json
+    pins = {
+        "scripts/ci/separation/consensus_vectors_ref_linux_off.json": "38143c38a50ae84eb5313aeac74fbd5420d29299cafba562114e64e01728fe2e",
+        "scripts/ci/separation/consensus_vectors_ref_linux_on.json": "8fd00c5bb60cb5b7f8d7a7672e0ee8028dec7e866f7b9427cfd1fa9932e97b33",
+        "tests/separation/interface_baseline/symbols_linux_off.txt": "aa142886f762afb471f7f156e1318f3abf0a4a3e6803a7b44854a91403174c8a",
+        "tests/separation/interface_baseline/symbols_linux_on.txt": "6dd13493ee345d0ebd41c5e759f9342fc597331cae0a45a96c0dcc8f952e90a9",
+    }
+    for rel, digest in pins.items():
+        assert hashlib.sha256((ROOT / rel).read_bytes()).hexdigest() == digest, rel
+    for cfg in ("off", "on"):
+        ref = json.loads((ROOT / ("scripts/ci/separation/consensus_vectors_ref_linux_%s.json" % cfg)).read_text())
+        assert ref["provenance_sha"].startswith("af2722021870")
+        sym = (ROOT / ("tests/separation/interface_baseline/symbols_linux_%s.txt" % cfg)).read_text()
+        assert " V DW.ref.__gxx_personality_v0" in sym
 
 
 def test_differences_from_the_macos_reference_reach_the_summary():
