@@ -177,7 +177,6 @@ add_library(dinero_consensus STATIC
   src/consensus/csn_replay_data.cpp      # Historical CSN targets and spent metadata
   src/consensus/cpu_budget_monitor.cpp   # Phase E.2.d: CPU budget monitoring and validation timeouts
   src/consensus/undo.cpp                 # UndoRecord serialization for ChainDB
-  src/address/addr_codec.cpp           # Address encoding/decoding (Taproot support)
   src/address/addr_types.cpp           # Address type definitions
   src/crypto/ripemd160.cpp             # Crypto primitives
   src/common/serialization.cpp         # Serialization utilities
