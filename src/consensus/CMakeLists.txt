@@ -82,6 +82,7 @@ target_include_directories(dinero_consensus_core PUBLIC
 )
 
 target_link_libraries(dinero_consensus_core PUBLIC
+  dinero_logging
   dinero_crypto
   dinero_pq        # Phase 6: P2MR spend validator (VerifyP2MRSpend) in script_validation.cpp
   dinero_shielded  # v7 Shielded pool: commitment tree + nullifier set + validation
@@ -203,6 +204,7 @@ target_include_directories(dinero_consensus PUBLIC
 
 if(APPLE)
   target_link_libraries(dinero_consensus PUBLIC
+    dinero_logging
     dinero_crypto
     dinero_pq       # Phase 6: P2MR spend validator (pq::VerifyP2MRSpend +
                     # IsSchemeAcceptedAtHeight) is called from
@@ -221,6 +223,7 @@ if(APPLE)
   )
 else()
   target_link_libraries(dinero_consensus PUBLIC
+    dinero_logging
     dinero_crypto
     dinero_pq       # See APPLE branch above for the rationale; mirror the
                     # PUBLIC dep here so non-Apple consumers get pq::* too.

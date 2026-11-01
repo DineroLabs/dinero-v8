@@ -12,7 +12,6 @@ target_compile_features(dinero_wallet_catalog PUBLIC cxx_std_20)
 target_link_libraries(dinero_wallet_catalog PUBLIC OpenSSL::Crypto sqlite3)
 
 add_library(dinero_wallet STATIC
-  ${CMAKE_SOURCE_DIR}/src/common/logger.cpp         # Logger used by wallet code
   ${CMAKE_CURRENT_SOURCE_DIR}/address.cpp
   ${CMAKE_SOURCE_DIR}/src/common/AddressCodec.cpp  # Taproot address encoding (P2TR)
   ${CMAKE_SOURCE_DIR}/src/address/addr_codec.cpp    # Taproot address decoding and scriptPubKey creation
@@ -116,6 +115,7 @@ target_include_directories(dinero_wallet PUBLIC
 )
 
 target_link_libraries(dinero_wallet PUBLIC
+  dinero_logging
   dinero_wallet_catalog
   dinero_address_encoding
   dinero_bip32

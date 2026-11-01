@@ -32,6 +32,7 @@ target_include_directories(dinero_chainstate PUBLIC
 )
 
 target_link_libraries(dinero_chainstate PUBLIC
+  dinero_logging
   dinero_consensus
   dinero_crypto
   jsoncpp_static
