@@ -225,3 +225,10 @@ def test_k4_out_lists_the_prebuilt_k4_targets(tmp_path):
                        capture_output=True, text=True)
     assert r.returncode == 0, r.stderr
     assert k4.read_text().split() == ["test_a", "test_only_on"]   # test_b not in the build
+
+
+def test_base_targets_drop_the_old_w6_static_set():
+    # Task 0.8a: W6 builds sep_wallet_standalone in its ctest; nothing consumes these prebuilt.
+    for plat in ("linux", "macos", "windows"):
+        for t in ("secp256k1", "jsoncpp_static", "sqlite3"):
+            assert t not in load().base_targets(plat), (plat, t)

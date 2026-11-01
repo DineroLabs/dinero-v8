@@ -48,8 +48,7 @@ ADD_TEST = re.compile(
     r'\s+(?:"(?P<qarg>[^"]*)"|(?P<arg>[^\s)]+))')
 
 BASE_TARGETS = ["dinero_consensus", "dinero_wallet", "dinerod", "nodecore_ffi",
-                "dinero_wallet_ffi", "sep_wallet_fixture_compat", "dinero_crypto",
-                "secp256k1", "jsoncpp_static", "sqlite3"]
+                "dinero_wallet_ffi", "sep_wallet_fixture_compat", "dinero_crypto"]
 NOT_ON_WINDOWS = ("nodecore_ffi",)
 
 
