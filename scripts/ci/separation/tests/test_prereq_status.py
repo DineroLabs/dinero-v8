@@ -20,8 +20,7 @@ GRAPH = {
     "sep_consensus_forced_link": (["dinero_consensus"], "tests/separation/sep_consensus_forced_link"),
     "sep_wallet_forced_link": (["dinero_wallet"], "tests/separation/sep_wallet_forced_link"),
     "sep_wallet_fixture_compat": (["dinero_wallet"], "tests/separation/sep_wallet_fixture_compat"),
-    "sep_wallet_ffi_standalone": (["dinero_wallet_ffi", "dinero_wallet", "dinero_consensus"],
-                                  "tests/separation/sep_wallet_ffi_standalone"),
+    "sep_wallet_standalone": (["dinero_wallet"], "tests/separation/sep_wallet_standalone"),
     # K4 test executables (real codemodel: DAAGoldenVectors, MerkleGolden and
     # HeaderPoWVerification also depend on dinero_wallet)
     "test_bip341_sighash_vectors": (["dinero_consensus"], "tests/test_bip341_sighash_vectors"),
@@ -199,7 +198,7 @@ def test_k4_anchors_include_the_k4_test_targets(tmp_path):
     arts = codemodel(b)
     built(b, [p for n, p in arts.items() if n not in ("dinero_wallet", "dinerod", "dinero_wallet_ffi",
               "nodecore_ffi", "sep_wallet_forced_link", "sep_wallet_fixture_compat",
-              "sep_wallet_ffi_standalone", "test_daa_golden_vectors")])
+              "sep_wallet_standalone", "test_daa_golden_vectors")])
     st, stdout, out = scan(tmp_path, "failure", "linux")
     assert st["failed"] == ["dinero_wallet", "dinerod", "sep_wallet_fixture_compat"]
     assert gate(out, "K4")[:2] == (3, "GATE K4 UNMEASURED (prerequisite build failed: dinero_wallet)")
@@ -239,3 +238,12 @@ def test_base_target_missing_from_codemodel_is_a_harness_error(tmp_path):
         rc, stdout, err, out = scan_cli(tmp_path, outcome, "linux")
         assert rc == 2 and stdout == "LANE FAIL: harness error: base target(s) not in the codemodel: dinerod"
         assert gate(out, "W5")[0] == 2
+
+
+def test_w6_anchor_is_the_standalone_wallet():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "prereq_status", Path(__file__).resolve().parents[1] / "prereq_status.py")
+    m = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(m)
+    assert m.ANCHORS["W6"] == ("sep_wallet_standalone",)

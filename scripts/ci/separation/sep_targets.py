@@ -6,8 +6,8 @@ usage: sep_targets.py --build DIR --config {off,on} --out FILE
            [--ctest ctest] [--ninja ninja] [--platform {linux,macos,windows}]
 
 Prebuilding keeps the ctest drivers (1800 s TIMEOUT) to a link: the gate
-libraries, dinerod and the FFI archives (W5), the W4 checker, the W6 static
-set, and the executables of the K4 tests. A K4 test contributes its executable
+libraries, dinerod and the FFI archives (W5), the W4 checker,
+and the executables of the K4 tests. A K4 test contributes its executable
 only if it is listed for this config in consensus_vectors.txt ("on:" = ON
 only), is NOT on the never-run floor, is registered in the build (its name
 appears in ctest --show-only=json-v1) and its command runs an executable
@@ -27,7 +27,7 @@ NodeCore is not a Windows target (src/nodecore/CMakeLists.txt: mobile
 embedding library, POSIX APIs): with --platform windows nodecore_ffi is not
 prebuilt (Windows W5 checks the wallet FFI only). On linux/macos it is.
 
-The sep_*_forced_link / sep_wallet_ffi_standalone probes are deliberately not
+The sep_*_forced_link / sep_wallet_standalone probes are deliberately not
 listed: they are RED at stage 0 and their ctests build them.
 
 Writes one target per line to --out. Stdlib only. Exit 0; 2 on bad input;

@@ -538,16 +538,27 @@ jobs:
             --github-output "$GITHUB_OUTPUT" || rc=$?
           exit "$rc"
 
-      - name: W6 standalone wallet-FFI consumer (recorded)
+      - name: W6 standalone wallet (recorded)
         id: w6
         if: ${{ !cancelled() && steps.configure.outcome == 'success' }}
         continue-on-error: true
         run: |
           . "$RUNNER_TEMP/sep_gate.sh"
           sep_prereq W6 || exit $?
-          # Label separation;recorded: the Task 0.8 baseline is RED (repair is E1).
-          rc=0; sep_ctest SepWalletFfiStandalone || rc=$?
-          gate_result W6 "$rc" "recorded, baseline RED" "SepWalletFfiStandalone did not pass"; exit "$rc"
+          # Label separation;recorded until stage 7 (Task 7.1 makes it required).
+          rc=0; sep_ctest SepWalletStandalone || rc=$?
+          crc=0
+          python scripts/ci/separation/check_link_closure.py --build "$SEP_BUILD" \
+            --target sep_wallet_standalone --rules scripts/ci/separation/closure_rules.json --gate W6 || crc=$?
+          if [ "$SEP_CFG" = on ]; then
+            # Orchard exception (spec section 8): the delivery libraries link
+            # dinero_core until Task 6.3, so the closure is reported only; the
+            # verdict is the ctest alone.
+            echo "W6 closure (Orchard ON, recorded): rc=$crc"
+          elif [ "$crc" -ne 0 ]; then
+            [ "$rc" -ne 0 ] || rc=$crc
+          fi
+          gate_result W6 "$rc" "recorded" "SepWalletStandalone or its link closure did not pass"; exit "$rc"
 
       # Records when record_baselines=true, or automatically when this
       # lane (ref_tag)/config has no committed K4 ref or W5 symbol list (so the
