@@ -59,7 +59,7 @@ ANCHORS = {
     "W3": ("sep_wallet_forced_link",),
     "W4": ("sep_wallet_fixture_compat",),
     "W5": ("dinerod", "dinero_wallet_ffi", "nodecore_ffi"),
-    "W6": ("sep_wallet_ffi_standalone",),
+    "W6": ("sep_wallet_standalone",),
 }
 NO_BUILD = ("K2", "W2", "K5")
 # NodeCore is not a Windows target (src/nodecore/CMakeLists.txt): W5 on

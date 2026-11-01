@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Transitive link-closure checker for the K2/W2 separation gates.
+"""Transitive link-closure checker for the K2/W2/W6 separation gates.
 
 usage: check_link_closure.py --build <dir> --target <name> --rules closure_rules.json
-                             --gate {K2,W2} [--config <name>]
+                             --gate {K2,W2,W6} [--config <name>]
 
 Reads the CMake File API codemodel-v2 reply under <dir>/.cmake/api/v1/reply
 (the lexicographically last index-*.json), walks the link closure of <target>
@@ -337,7 +337,7 @@ def main(argv=None):
     ap.add_argument("--build", required=True)
     ap.add_argument("--target", required=True)
     ap.add_argument("--rules", required=True)
-    ap.add_argument("--gate", required=True, choices=["K2", "W2"])
+    ap.add_argument("--gate", required=True, choices=["K2", "W2", "W6"])
     ap.add_argument("--config", default=None)
     a = ap.parse_args(argv)
     try:

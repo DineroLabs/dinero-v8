@@ -163,6 +163,22 @@ def test_w2_allows_sqlite3_and_lightning(tmp_path):
     assert "RocksDB::rocksdb" in ft, r.stdout
 
 
+def test_w6_reports_the_same_violations_as_w2(tmp_path):
+    for fixture in ("externals",):
+        w2 = run(tmp_path / ("w2-" + fixture), fixture, gate="W2")
+        w6 = run(tmp_path / ("w6-" + fixture), fixture, gate="W6")
+        assert w6.returncode == w2.returncode == 1, w6.stdout + w6.stderr
+        strip = lambda r: [l for l in r.stdout.splitlines() if not l.startswith("# W")]
+        assert strip(w6) == strip(w2) and strip(w6), w6.stdout
+
+
+def test_w6_rules_equal_w2_rules():
+    gates = json.loads(RULES.read_text())["gates"]
+    w2 = {k: v for k, v in gates["W2"].items() if k != "_doc"}
+    assert "W6" in gates
+    assert {k: v for k, v in gates["W6"].items() if k != "_doc"} == w2
+
+
 def test_unresolved_dependency_fails_closed(tmp_path):
     r = run(tmp_path, "unresolved")
     assert r.returncode != 0, r.stdout + r.stderr

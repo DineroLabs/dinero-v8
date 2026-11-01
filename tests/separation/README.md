@@ -4,42 +4,30 @@ Gate probes for the wallet/node separation (spec section 8). All `sep_*` targets
 are `EXCLUDE_FROM_ALL`; each ctest builds its target first. Run with
 `ctest --no-tests=error -R '^<name>$'`.
 
-## W6: standalone wallet-FFI consumer (`SepWalletFfiStandalone`)
+## W6: standalone wallet (`SepWalletStandalone`)
 
-Question: do the standalone wallet FFI and the Rust bridge's static library set
-link with no node libraries today?
+Question: does the wallet link and run with no node code? (Spec section 8, W6
+row, redefined 2026-10-31; replaces the earlier wallet-FFI/Tauri-bridge consumer,
+whose link list no shipping client uses.)
 
-Target `sep_wallet_ffi_standalone` (`wallet_ffi_standalone.cpp`, calls
-`dinero_wallet_init` on a temp dir, nonzero on failure) is linked exactly as
-`mobile-tauri/src-tauri/build.rs:29-38` links, with the archive files passed
-directly (no `target_link_libraries`, so no transitive INTERFACE deps):
+Target `sep_wallet_standalone` is the W4 checker (`wallet_fixture_compat.cpp`,
+same compile settings) linked only through `dinero_wallet`'s own declared CMake
+dependencies: `target_link_libraries(sep_wallet_standalone PRIVATE dinero_wallet)`
+(Orchard ON: plus `dinero_orchard_index_delivery`, exactly as W4). No
+`dinero_core`, no `mempool_test_stubs.cpp`, no hand-listed archives; Linux adds
+`-Wl,--no-undefined`. The ctest `SepWalletStandalone` builds the target, then
+runs it on `fixtures/<off|on>`. Two checks make the gate:
 
-    -Wl,-force_load,libdinero_wallet_ffi.a   (GNU: --whole-archive ... --no-whole-archive; MSVC: /WHOLEARCHIVE)
-    libdinero_wallet.a libdinero_crypto.a libdinero_consensus.a
-    libsecp256k1.a libjsoncpp.a libsqlite3.a  -lc++  -framework Security -framework Foundation
+1. the ctest (link with no unresolved symbols, then run and pass on the fixture);
+2. `check_link_closure.py --target sep_wallet_standalone --gate W6` (the `W6`
+   rules in `closure_rules.json` equal `W2`'s; a test pins them equal).
 
-build.rs lists secp256k1, jsoncpp, sqlite3, c++ and the system frameworks (dl,
-pthread on Linux) in addition to the four archives named in the task brief; the
-target follows build.rs. build.rs does not list OpenSSL, zstd, or any other
-archive, and neither does this link.
+Orchard OFF: both must pass. Orchard ON: the verdict is the ctest alone; the
+closure is printed as `W6 closure (Orchard ON, recorded)` and never fails the
+step, because `dinero_orchard_index_delivery` still links `dinero_core` via
+`dinero_orchard_chainstate_write` and `dinero_chainstate` (spec section 8; plan
+Task 6.3 removes the exception).
 
-### Baseline result (2026-10-29, macOS arm64, Release)
-
-RED in both configurations (Orchard OFF and ON give an identical undefined-symbol
-set): the link fails with 142 distinct undefined symbols. Per the owner rule the
-ctest is labelled `separation;recorded` (not a required gate); the repair is E1.
-Undefined symbols, grouped, with the archive that defines each, are in
-`dinero-evidence/2026-10-29-separation-stage0/w6-{off,on}.log`:
-
-- node/chainstate (`ChainDB`, `BlockStorage`): 5 (libdinero_chainstate.a)
-- mempool (`Mempool::isOutputSpentInMempool`): 1 (nodecore_ffi / test stub)
-- RocksDB: 0
-- sqlite-owner stores (`ShieldedNoteStore`, `V7P2MRStore`, `OrchardAccountCatalog`,
-  `UTXOIndex`, `open_sqlite`): 39 (libdinero_wallet_catalog.a, libwallet_test_deps.a, ...)
-- OpenSSL (`EVP_*`, `HMAC`, `RAND_bytes`, ...): 33, since build.rs does not link OpenSSL
-- zstd: 4
-- other (libdinero_shielded, libdinero_pq, libdinero_bip32, libdinero_address_encoding,
-  argon2): 60
-
-When the result turns GREEN, flip the label in `CMakeLists.txt` to
-`separation;required` and update this note to "W6 required (baseline green)".
+The ctest is labelled `separation;recorded` until stage 7 (Task 7.1).
+Stage-0 result (RED, measured): see the Task 0.8a report and
+`dinero-evidence/2026-10-29-separation-stage0/task-0.8a/`.

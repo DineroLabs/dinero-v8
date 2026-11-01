@@ -38,6 +38,22 @@
       "allowed_targets_reason": "W2 allows lightning_core_static (spec section 8); its own dependencies are still walked",
       "node_source_dirs": ["src/daemon/", "src/rpc/", "src/storage/", "src/p2p/"],
       "node_source_dirs_reason": "spec §6.3 path rule; src/wallet/ is omitted because it is the wallet's own code"
+    },
+    "W6": {
+      "_doc": "sep_wallet_standalone closure (spec section 8 W6): identical to W2; a test pins the two entries equal.",
+      "forbidden_targets": [
+        {"label": "rocksdb", "names": ["RocksDB::rocksdb", "rocksdb"], "libs": ["rocksdb"]},
+        {"label": "dinero_chainstate", "names": ["dinero_chainstate"], "libs": []},
+        {"label": "dinero_core", "names": ["dinero_core"], "libs": []},
+        {"label": "dinero_rpc_handlers", "names": ["dinero_rpc_handlers"], "libs": []}
+      ],
+      "forbidden_source_files": ["src/daemon/mempool.cpp"],
+      "forbidden_source_prefixes": ["src/p2p/"],
+      "include_patterns": ["rocksdb", "/src/daemon$"],
+      "allowed_targets": ["lightning_core_static"],
+      "allowed_targets_reason": "W2 allows lightning_core_static (spec section 8); its own dependencies are still walked",
+      "node_source_dirs": ["src/daemon/", "src/rpc/", "src/storage/", "src/p2p/"],
+      "node_source_dirs_reason": "spec §6.3 path rule; src/wallet/ is omitted because it is the wallet's own code"
     }
   }
 }

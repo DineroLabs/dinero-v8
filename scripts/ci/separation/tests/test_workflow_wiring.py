@@ -5,6 +5,7 @@ prerequisite status first, K2/W2/K5 never do, the summary carries every
 UNMEASURED state, and Windows W5 is partial (no nodecore_ffi, never bare PASS).
 """
 import re
+import subprocess
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[4]
@@ -234,3 +235,64 @@ def test_script_tests_job_runs_this_suite_without_a_native_build():
     for native in ("cmake", "ninja", "ccache", "rustup", "rust-toolchain", "apt-get", "brew", "openssl"):
         assert native not in job.lower(), native
     assert "continue-on-error" not in job and "submodules" not in job
+
+
+# --- W6: the standalone wallet (task 0.8a) ------------------------------------
+
+def _w6_script():
+    run = steps(POSIX)["w6"].split("run: |", 1)[1]
+    return "\n".join(l[10:] for l in run.splitlines() if l.startswith("          "))
+
+
+def test_w6_runs_the_standalone_ctest_and_the_closure_check():
+    for name, text in (("posix", POSIX), ("windows", WINDOWS)):
+        w6 = steps(text)["w6"]
+        assert "SepWalletStandalone" in w6, name
+        assert "check_link_closure.py" in w6 and "--target sep_wallet_standalone" in w6, name
+        assert "--gate W6" in w6, name
+        assert "SepWalletFfiStandalone" not in w6 and "dinero_wallet_ffi" not in w6, name
+        assert "recorded" in w6, name           # label stays recorded until stage 7
+    for name in ("SepWalletFfiStandalone", "sep_wallet_ffi_standalone"):
+        assert name not in POSIX and name not in WINDOWS and name not in CMAKE
+    assert "SepWalletStandalone" in CMAKE and "add_executable(sep_wallet_standalone" in CMAKE
+
+
+def _run_w6(cfg, ctest_rc, closure_rc):
+    pre = (
+        "RUNNER_TEMP=/x; SEP_CFG=%s; SEP_BUILD=/b\n"
+        "sep_prereq() { return 0; }\n"
+        "sep_ctest() { return %d; }\n"
+        "python() { echo \"closure-ran $*\"; return %d; }\n"
+        "gate_result() { echo \"GATE_RESULT $1 rc=$2\"; }\n"
+        "source() { :; }\n" % (cfg, ctest_rc, closure_rc))
+    script = _w6_script().replace('. "$RUNNER_TEMP/sep_gate.sh"', ":")
+    r = subprocess.run(["bash", "-c", pre + script], capture_output=True, text=True)
+    return r.returncode, r.stdout
+
+
+def test_w6_orchard_on_closure_is_reported_but_never_changes_the_exit_code():
+    rc, out = _run_w6("on", 0, 1)
+    assert rc == 0, out
+    assert "closure-ran" in out and "W6 closure (Orchard ON, recorded)" in out, out
+    assert "GATE_RESULT W6 rc=0" in out, out
+    rc, out = _run_w6("on", 1, 1)               # the ctest alone is the verdict
+    assert rc == 1 and "GATE_RESULT W6 rc=1" in out, out
+    rc, out = _run_w6("on", 0, 2)               # even an input error is only recorded
+    assert rc == 0, out
+
+
+def test_w6_orchard_off_fails_if_either_the_ctest_or_the_closure_fails():
+    assert _run_w6("off", 0, 0)[0] == 0
+    assert _run_w6("off", 1, 0)[0] == 1
+    rc, out = _run_w6("off", 0, 1)
+    assert rc == 1 and "closure-ran" in out and "GATE_RESULT W6 rc=1" in out, out
+    assert "W6 closure (Orchard ON" not in out, out
+
+
+def test_w6_windows_orchard_on_closure_cannot_change_the_exit_code():
+    w6 = steps(WINDOWS)["w6"]
+    assert "W6 closure (Orchard ON, recorded)" in w6
+    on = w6.split("W6 closure (Orchard ON, recorded)", 1)[0].rsplit("if (", 1)[1]
+    assert "SEP_CFG" in on.split("\n")[0]
+    after = w6.split("W6 closure (Orchard ON, recorded)", 1)[1].split("} else", 1)[0]
+    assert "$rc" not in after.replace("$crc", "")
