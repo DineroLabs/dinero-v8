@@ -132,6 +132,12 @@ After the moves, `dinero_consensus` drops from its PUBLIC usage requirements:
 
 Stage 0 measures which ones break (section 11). Each fix is the consumer declaring what it uses.
 
+**Staging (owner decisions 2026-11-01, options (c) and (ii)):**
+- **sqlite3 and the `src/daemon` include dir are dropped in stage 3.** Measured consumers: on Windows only, `dinero_chainstate`, `dinero_pool` and `test_assumeutxo_precheck` for sqlite3; no consumer for `src/daemon`.
+- **The RocksDB export is dropped in stage 6, immediately after the diagnostics move,** once its consumers have migrated. Those consumers are the four `dinero_wallet` sources that include `storage/chain_db.h` and the RocksDB tests (`test_header_*` ×4; `test_orchard_header` in ON builds). Of the four wallet sources, `wallet_manager` and `reorg_detector` drop the include with the C1–C3 chain view in stage 5. `wallet_sync_status` and `slow_reason_analyzer` keep it and leave the wallet unchanged with D1–D3 in stage 6 (7.2). Stage 6 is therefore the actual boundary.
+- **K2 and W2 are unchanged.** From stage 3 until the drop in stage 6, both stay RED, and their only finding is the remaining RocksDB export (for W2, reaching the wallet through consensus). That is what is true of the declared interfaces in those stages. Both go GREEN for the first time when the export drops.
+- **Any release containing stages 2–3 without that stage-6 drop** must state, as a known limitation, that `dinero_consensus` still exports RocksDB to its consumers.
+
 ### 6.3 Address cycle and the path rule
 
 - **Address cycle:** removing `addr_codec.cpp` from consensus breaks the consensus↔wallet cycle, since nothing in consensus calls it. `address.cpp`'s five definitions (`:242, 343, 556, 780, 1488`) stay in the wallet.
@@ -205,7 +211,7 @@ So this project does not rely on it.
 
 | # | Operation | Call sites | Provider today |
 |---|---|---|---|
-| C1 | Chain tip | wallet_manager:7557; wallet_sync_status:25; reorg_detector:104; hd_wallet:1070,1214 (`ChainHeightProvider`) | ChainDB `getTip` |
+| C1 | Chain tip | wallet_manager:7557; wallet_sync_status:25 (not migrated: moves to core unchanged with D1–D3, owner decision 2026-11-01 (ii)); reorg_detector:104; hd_wallet:1070,1214 (`ChainHeightProvider`) | ChainDB `getTip` |
 | C2 | Block hash at height | wallet_manager:7638 | ChainDB `getBlockHashByHeight` |
 | C3 | Read block | wallet_manager:7640 → `storage::ReadArchivalBlock` (`include/storage/archival_block_reader.h:70,110`) | ChainDB + optional BlockStorage |
 | W1–W3 | UTXO lookup, list unspent, register/clear watch scripts | GetUTXO 6310; Clear 2878; Register 7160, 7315, 10141, 10333, 10478, 10523, **10673 (new)**; hd_wallet:1018-1050, 1073, 1218, 1490; transaction_builder:95 | UTXOIndex |
@@ -377,10 +383,10 @@ Each stage is its own PR onto `dinero-main`, and must be green on existing CI pl
 | **0 — refresh, gates, measurement** | Refresh the baseline to the then-current `dinero-main` and re-check every cited line. Add K1–K5 and W1–W6 (non-required). Build the W4 fixtures (OFF and ON), the W5 transcripts and the K4/K5 reference data. **Measurement:** on a throwaway branch, apply all of leg 1a (6.1–6.5), build every target on every platform in both configurations, and record what breaks and why | K1–K3 and W1–W3 RED as expected; K4, K5, W4, W5 GREEN; W6 and the breakage list recorded → **owner decides v8.2.1 fit** |
 | 1 | `dinero_logging`, declared by all eight users; `pbkdf2.cpp` → crypto | full CI; K4 identical |
 | 2 | Consensus moves (6.1); pq split; `SignP2MR` → wallet; `tx_validation` → `ChainStateView` (6.5, "CONSENSUS CHANGE" approval); then `dinero_address_encoding` declares consensus | K1, K3, K6 GREEN; K4, K5 identical on all four platforms; no cycles in the consensus closure |
-| 3 | Drop consensus exports (6.2); consumers declare their own deps | K2 GREEN; full CI on all platforms |
+| 3 | Drop the consensus sqlite3 export and `src/daemon` include (6.2); consumers declare their own deps. The RocksDB export stays (stage 6) | K2's sqlite3 and `src/daemon` findings gone; RocksDB finding remains, so **K2 still RED** (reported as such); full CI on all platforms |
 | 4 | `dinero_sqlite`; `address_script_builder.cpp` and `utxo_index.cpp` → wallet; remove direct `utxo_index.cpp` compiles | W4 GREEN (both fixtures); full CI |
-| 5 | Interfaces, header-only adapters, nullable-view rescan, `WalletMempoolEntry`; wallet sources and headers rid of node includes (including T1); caller migration | W1–W3 GREEN; W4, W5 GREEN |
-| 6 | Diagnostics → core; `sync_phase.h`; test link cleanup | every gate GREEN on all four platforms, both configurations (including W6, the standalone wallet, redefined 2026-10-31; with Orchard ON its closure check is recorded only until plan Task 6.3, then part of the verdict, §8) |
+| 5 | Interfaces, header-only adapters, nullable-view rescan, `WalletMempoolEntry`; wallet sources and headers rid of node includes (including T1), except the D1–D3 diagnostics sources, which move unchanged in stage 6; caller migration | W4, W5 GREEN; W1 and W3 still RED, only on the D1–D3 diagnostics symbols; K2 and W2 still RED, only on the RocksDB export (6.2); all four reported as RED |
+| 6 | Diagnostics → core; `sync_phase.h`; **then drop the RocksDB export (6.2)**; test link cleanup | W1 and W3 GREEN for the first time after the diagnostics move (W1's remaining dependencies are the diagnostics moved here; W3 scans W1's output); K2 and W2 GREEN for the first time after the export drop; every gate GREEN on all four platforms, both configurations (including W6, the standalone wallet, redefined 2026-10-31; with Orchard ON its closure check is recorded only until plan Task 6.3, then part of the verdict, §8) |
 | 7 | Gates become required. Unpinned trial copies of the three pinned jobs run on ubuntu-latest (non-required) | trial jobs GREEN on GCC 15 |
 | 8 | Only after the stage-7 trials pass: remove the pin and comment at `tests.yml:42`, `:780`, `core-heavy.yml:49`; drop the trial copies | the three jobs GREEN on ubuntu-latest |
 
@@ -417,6 +423,10 @@ Stage 0 reports counts per platform and configuration, and an estimate per stage
 - a regtest wallet soak: send, receive, rescan, snapshot recovery, fee bump, reorg.
 
 The consensus library's composition changes and one frozen header changes, so K4 and K6 are mandatory on every platform.
+
+**Known qualification limitations (recorded 2026-11-01):**
+- `test_runtime_prefix_storage` (Orchard ON, `rust/orchard_backend`) fails to link at the stage-0 baseline (#860 head, 28 undefined symbols, macOS). It also fails after leg 1a and after stages 1 + 4, and none of these changes caused it. It stays a documented limitation of any qualification until it is fixed on its own.
+- A release containing stages 2–3 without the stage-6 RocksDB drop still exports RocksDB from `dinero_consensus` (6.2).
 
 **Approval scope (owner):** rev 4 is approved for writing the implementation plan. That approval does **not** select v8.2.1 and does **not** approve the frozen-header change. The 6.5 change still needs "CONSENSUS CHANGE" approval at stage 2. **E3** (manifest repair) is tracked separately.
 

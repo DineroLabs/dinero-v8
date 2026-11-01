@@ -497,15 +497,17 @@ Replaces Task 0.8's consumer. That one linked `dinero_wallet_ffi` with a list co
 
 ## Stage 3 — drop consensus exports (one PR)
 
-### Task 3.1: Remove RocksDB, sqlite3 and the daemon include from `dinero_consensus`
+### Task 3.1: Remove sqlite3 and the daemon include from `dinero_consensus` (RocksDB stays until Task 6.1a)
+
+Owner decision 2026-11-01 (option (c), `~/src/dinero-evidence/2026-10-29-separation-stage0/rocksdb-order-options.md`): the RocksDB export stays until its consumers have migrated (Task 6.1a, owner decision 2026-11-01 (ii)). The wallet compiles only through it until its last `storage/chain_db.h` include leaves `dinero_wallet` (Task 0.10 measurement): Task 5.2 removes two, and the other two move to core unchanged in Task 6.1.
 
 **Files:**
-- Modify: `src/consensus/CMakeLists.txt:195-197,201,219-220,232-233`, plus each consumer the stage 0 report listed.
+- Modify: `src/consensus/CMakeLists.txt` (the `sqlite3` entries at `:220`, `:233` and the `src/daemon` include dir at `:201`), plus each consumer the stage 0 report listed for sqlite3. Measured 2026-11-01: on Windows only, `dinero_chainstate` (`sqlite_open.cpp`, `wallet/utxo_index.cpp`), `dinero_pool` (`pool_db.cpp`) and `test_assumeutxo_precheck`. `src/daemon`: no consumer.
 
-- [ ] **Step 1:** Remove the three exports.
-- [ ] **Step 2:** For each failing consumer in the stage 0 report, add exactly the library or include dir it uses, to that consumer's own `target_link_libraries` / `target_include_directories`. One consumer per commit is fine.
-- [ ] **Step 3:** Run K2 `--gate K2` on `$CFG`. Expected: exit 0. Then run a full build plus ctest in `$CFG` on all four platforms, and K4. Expected: PASS.
-- [ ] **Step 4:** Commit `build: dinero_consensus is storage-free (exports dropped; consumers declare their own)`.
+- [ ] **Step 1:** Remove the sqlite3 export and the `src/daemon` include dir. Leave `RocksDB::rocksdb` and the RocksDB include dir in place.
+- [ ] **Step 2:** For each failing consumer, add exactly the library or include dir it uses, to that consumer's own `target_link_libraries` / `target_include_directories`. One consumer per commit is fine.
+- [ ] **Step 3:** Run K2 `--gate K2` on `$CFG`. Expected: **still RED** (exit 1). Its findings are only the RocksDB export (`RocksDB::rocksdb` and the RocksDB include dirs). No `sqlite3` finding and no `src/daemon` include finding remains: check with `grep -E 'sqlite3|/src/daemon'` on the K2 output, which must print nothing. Report K2 as RED with that reason, not as a pass. Then run a full build plus ctest in `$CFG` on all four platforms, and K4. Expected: PASS.
+- [ ] **Step 4:** Commit `build: dinero_consensus drops sqlite3 and the daemon include (consumers declare their own; RocksDB export remains until stage 6, Task 6.1a)`.
 
 ## Stage 4 — wallet-owned storage helpers (one PR)
 
@@ -524,10 +526,18 @@ Replaces Task 0.8's consumer. That one linked `dinero_wallet_ffi` with a list co
 **Files:**
 - Modify: `src/storage/CMakeLists.txt:19` (remove the entry and the wrong RocksDB comment), `src/wallet/CMakeLists.txt` (add the entry), `tests/CMakeLists.txt` (~18 direct `utxo_index.cpp` entries, e.g. `:905`, `:4438`; the `wallet_test_deps` sources), `rust/orchard_backend/CMakeLists.txt:663,675`.
 
-- [ ] **Step 1:** Show the RED. After moving only the list entry, the ON build fails on `test_orchard_account_delivery` and `test_orchard_index_delivery` with duplicate definitions (or ODR warnings). Record which.
-- [ ] **Step 2:** Remove every direct `utxo_index.cpp` compile from targets that link `dinero_wallet`. If a target doesn't link the wallet, link it instead.
-  - If `dinero_chainstate`'s own objects reference `UTXOIndex`, add `dinero_wallet` to chainstate's links and record that in the commit body (spec §13).
-- [ ] **Step 3:** Run W4 in both configs, `ctest -R 'UTXOIndex|UtxoIndex|WalletRescan|OrchardAccountDelivery|OrchardIndexDelivery' --no-tests=error` (floor-checked), and W5 `check`. Expected: PASS.
+- [ ] **Step 1:** Move only the list entry, build ON, and record the link result of `test_orchard_account_delivery` and `test_orchard_index_delivery`.
+  - **No RED is expected here** (corrected 2026-11-01). The stage-4 measurement showed both targets link cleanly on macOS/ld64: their direct `utxo_index.o` satisfies every `UTXOIndex` symbol before the archive member is considered. GNU ld is unverified.
+  - The defect Step 2 removes is the duplicate copy, not a link error. Show it with `nm`: before Step 2, each such target holds its own `UTXOIndex` definitions from a direct object.
+- [ ] **Step 2:** Remove every direct `utxo_index.cpp` compile from targets that link `dinero_wallet`. Measured: 14 compiles. If a target doesn't link the wallet, link it instead; measured: `test_wallet_revert_atomic`.
+  - **§13, signed off by the owner 2026-11-01:** chainstate does **not** link the wallet. `nm` shows no chainstate object other than `utxo_index.o` itself references `UTXOIndex`. Re-check with `nm` on the real stage. If any chainstate object references it, stop and report rather than adding the link.
+- [ ] **Step 3:** Run W4 in both configs and W5 `check`. Then run the task's tests by **explicit name**, never by pattern:
+  - Run `ctest -R '^(UTXOIndexCorrectness|WalletRescanUtxoSet)$' --no-tests=error`.
+  - Before running, prove the selection is safe in both configs:
+    - `ctest -N -R '^(UTXOIndexCorrectness|WalletRescanUtxoSet)$'` lists exactly those 2 tests.
+    - Neither `OrchardAccountDelivery` nor `OrchardIndexDelivery` appears in that list. Both are on the never-run floor (`never_run_floor.txt:96,114`) and are never run.
+    - No listed name is in `never_run_floor.txt`.
+  - Expected: PASS.
 - [ ] **Step 4:** Commit `build: UTXOIndex is wallet code; direct compiles removed`.
 
 ### Task 4.4: `taproot_control_block.cpp` → `dinero_wallet`; remove direct compiles
@@ -570,6 +580,7 @@ Added 2026-10-31 (owner decision). Neither the spec nor the original plan covers
 - Create: `include/storage/chain_db_wallet_view.h`.
 - Modify: `include/wallet/wallet_manager.h:796-797,1150-1151` and `src/wallet/wallet_manager.cpp:7479,7505-7507,7557,7638-7640`; the callers `wallet_service.cpp:668-672`, `methods_wallet_context.cpp:6593-6597`, `nodecore_ffi.cpp:1348-1353`, `wallet_worker.cpp:217` and `chainstate_service.cpp:14538,14667`; `reorg_detector.cpp:104`, `hd_wallet` (`ChainHeightProvider` adapter).
 - Test: `tests/wallet/test_wallet_chain_view.cpp` (ctest `WalletChainView`).
+- **Not in this task (corrected plan defect, 2026-11-01):** spec §7.1 lists `wallet_sync_status:25` as a C1 site, but this Files list omitted it without saying so (found in review of the option (c) revision). Owner decision (ii): it is **not** migrated. `wallet_sync_status.cpp` keeps its ChainDB `getTip` call, and `slow_reason_analyzer.cpp` keeps its `const ChainDB*` parameter (used only as a null check in the `CheckDiskBound` TODO). Both move to core unchanged with D1–D3 in Task 6.1, so no diagnostics interface changes in stage 5.
 
 **Interfaces:**
 - Produces: `bool WalletManager::rescanBlockchain(int start_height = 0, int gap_limit = 20, const wallet::IWalletChainView* view = nullptr)`. The private `RescanBlockchainImpl(int, int, const wallet::IWalletChainView*, const SelectedWalletHistory*, uint64_t)` has its guard `if (!view && !prepared) return false;`.
@@ -580,7 +591,7 @@ Added 2026-10-31 (owner decision). Neither the spec nor the original plan covers
   - `RescanNullViewPreparedHistoryRuns`: `rescanBlockchain` with a null view and a prepared history reaches the prepared path. With a null view and no prepared history it returns false.
   - `RescanWithFakeViewFindsFundedAddress`: a `FakeChainView` with 3 blocks funding a fixture address; the rescan registers the UTXO.
 - [ ] **Step 2:** Run `ctest -R '^WalletChainView$' --no-tests=error`. Expected: FAIL (compile).
-- [ ] **Step 3:** Implement the change. Every caller passes `ChainDbWalletView view(*chain_db, block_storage)`, except `wallet_worker` (`block_storage = nullptr`) and ChainstateService (null view). The wallet `.cpp` files drop `storage/chain_db.h` and `storage/archival_block_reader.h`.
+- [ ] **Step 3:** Implement the change. Every caller passes `ChainDbWalletView view(*chain_db, block_storage)`, except `wallet_worker` (`block_storage = nullptr`) and ChainstateService (null view). The wallet `.cpp` files this task modifies (`wallet_manager.cpp`, `reorg_detector.cpp`) drop `storage/chain_db.h` and `storage/archival_block_reader.h`. `wallet_sync_status.cpp` and `slow_reason_analyzer.cpp` keep theirs until Task 6.1.
 - [ ] **Step 4:** Run `WalletChainView`, W5 `check` and W4. Expected: PASS. Then `touch src/wallet/wallet_manager.cpp`, rebuild, and confirm the `.o` rebuilt. Commit `wallet: rescan through IWalletChainView`.
 
 ### Task 5.3: Mempool view and migrating M1–M3
@@ -611,7 +622,7 @@ Added 2026-10-31 (owner decision). Neither the spec nor the original plan covers
 
 - [ ] **Step 1:** Show the RED. Add the ctest `SepWalletHeadersSelfContained`, which compiles each `include/wallet/*.h` that `dinero_wallet` sources include, in a TU whose include path excludes `src/daemon`, the storage RocksDB headers and `include/daemon`. Expected: FAIL on `selected_history.h` and `wallet_manager.h`.
 - [ ] **Step 2:** Move the types verbatim. Remove the node forward declarations that are no longer used. Keep the friend declarations (spec §7.2).
-- [ ] **Step 3:** Run `SepWalletHeadersSelfContained` and the full build in both configs. Expected: PASS. Then W1/W3: still RED only on the D1–D3 symbols. Commit `wallet: public headers free of daemon and storage types`.
+- [ ] **Step 3:** Run `SepWalletHeadersSelfContained` and the full build in both configs. Expected: PASS. Then W1/W3: still RED only on the D1–D3 symbols. K2 and W2: still RED, only on the RocksDB export (`dinero_consensus`'s `RocksDB::rocksdb` and RocksDB include dirs; for W2 reaching the wallet through consensus), which stays until Task 6.1a. Report all four as RED with those reasons, not as passes. Commit `wallet: public headers free of daemon and storage types`.
 
 ## Stage 6 — diagnostics to core, test cleanup (one PR)
 
@@ -621,8 +632,33 @@ Added 2026-10-31 (owner decision). Neither the spec nor the original plan covers
 - Modify: `src/wallet/CMakeLists.txt` (remove `wallet_sync_status.cpp`, `slow_reason_analyzer.cpp`, `wallet_fee_bump_hooks.cpp`), root `CMakeLists.txt` (add them to core), `include/p2p/block_download_scheduler.h` (include `common/sync_phase.h`), `include/wallet/wallet_sync_status.h:3`.
 - Create: `include/common/sync_phase.h` (enum moved verbatim).
 
-- [ ] **Step 1:** Make the moves. Build. Then run W1, W2 and W3 in `$CFG`. Expected: **GREEN** (the first time all three pass).
+- [ ] **Step 1:** Make the moves. Build. Then run W1 and W3 in `$CFG`. Expected: **GREEN** (the first time both pass). Run K2 and W2 too. Expected: still **RED**, only on the RocksDB export, which Task 6.1a drops next. Report them as RED.
 - [ ] **Step 2:** Run `ctest -R 'WalletSync|SlowReason|FeeBumpHooks|ReorgDetector|SyncProgress' --no-tests=error` and W5. Expected: PASS. Commit `build: node diagnostics move to core; SyncPhase header`.
+
+### Task 6.1a: Drop the RocksDB export from `dinero_consensus` (owner decisions 2026-11-01, options (c) and (ii))
+
+Runs immediately after Task 6.1: the diagnostics move takes the wallet's last `storage/chain_db.h` includes (`wallet_sync_status.cpp`, `slow_reason_analyzer.cpp`) out of `dinero_wallet`, so this is the first point where nothing relies on consensus for RocksDB. K2 and W2 first pass here; their rules are unchanged.
+
+**Files:**
+- Modify: `src/consensus/CMakeLists.txt` (`RocksDB::rocksdb` in both branches and the RocksDB include dir `:195-197`).
+- Modify the consumers measured by Task 0.10: `test_header_fork_choice`, `test_header_pow_verification`, `test_header_real_mainnet_replay`, `test_header_sync_restart`, and in ON builds `test_orchard_header`. Each declares RocksDB itself.
+
+- [ ] **Step 1:** Check the precondition against the **`dinero_wallet` target's own sources**, taken from the CMake File API of the `$CFG` build, plus the wallet headers. Run from the repo root:
+  ```bash
+  jq -r '.sources[].path' "$CFG"/.cmake/api/v1/reply/target-dinero_wallet-*.json > "$CFG/wallet_sources.txt"
+  test -s "$CFG/wallet_sources.txt" || { echo "no dinero_wallet sources found"; exit 1; }
+  HITS=$(xargs git grep -n '#include.*storage/chain_db\.h' -- include/wallet 'src/wallet/*.h' < "$CFG/wallet_sources.txt" || true)
+  test -z "$HITS" || { echo "$HITS"; echo "precondition failed: RocksDB export cannot drop yet"; exit 1; }
+  ```
+  - Works the same under bash and zsh (no reliance on word-splitting a variable), and exits 0 only when nothing matches.
+  - Expected: exit 0 with no output, in both configs.
+  - If it fails, stop: the export cannot drop yet.
+  - This deliberately excludes `src/wallet/wallet_worker.cpp`: `dinero_core` compiles it (root `CMakeLists.txt:1185`), not `dinero_wallet`.
+  - Check of the command itself, not of this task's expected state: on the stage-0 tree (leg 1a builds, OFF and ON, 89 sources each) it fails and prints exactly the four wallet includes: `wallet_manager.cpp:93`, `wallet_sync_status.cpp:2`, `reorg_detector.cpp:2`, `slow_reason_analyzer.cpp:2`. Task 5.2 removes the first and third, and Task 6.1 moves the other two out of the target.
+- [ ] **Step 2:** Show the RED. Run K2 `--gate K2` and W2 `--gate W2` on `$CFG`. Expected: both exit 1, with the RocksDB export as their only finding (the state Tasks 3.1 and 6.1 left).
+- [ ] **Step 3:** Remove the export. For each failing consumer, add exactly what it uses to its own target. Never add RocksDB to `dinero_wallet`.
+- [ ] **Step 4:** Run K2 and W2 on `$CFG`. Expected: **both exit 0, the first time either is GREEN.** Then run W1 and W3 (still GREEN), a full build plus ctest in `$CFG` on all four platforms, K4 and W5. Expected: PASS.
+- [ ] **Step 5:** Commit `build: dinero_consensus is storage-free (RocksDB export dropped; consumers declare their own)`.
 
 ### Task 6.2: Test link cleanup
 
