@@ -17,7 +17,7 @@ gate() { # id baseline-name cmd...
   local id=$1 name=$2; shift 2
   local ref="$here/baselines/${name}_${plat}_${cfg}.json" rc
   if [ ! -f "$ref" ]; then
-    "$@" record "$cand/${name}_${plat}_${cfg}.json" >/dev/null; rc=$?
+    "$@" record "$cand/${name}_${plat}_${cfg}.json"; rc=$?
     echo "GATE $id MISSING_REFERENCE (candidate $cand/${name}_${plat}_${cfg}.json, record rc=$rc)"
     rc=2
   else
