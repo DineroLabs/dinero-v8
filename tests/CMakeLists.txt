@@ -15322,6 +15322,11 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_forward_sync_activation_retry.cp
   target_include_directories(test_forward_sync_activation_retry PRIVATE
     ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include)
   add_test(NAME ForwardSyncActivationRetry COMMAND test_forward_sync_activation_retry)
+  add_test(NAME CandidateAncestryCost
+    COMMAND test_forward_sync_activation_retry --ancestor-cost)
+  set_tests_properties(CandidateAncestryCost PROPERTIES
+    LABELS "daemon;consensus;regression;mandatory" TIMEOUT 15)
+
   set_tests_properties(ForwardSyncActivationRetry PROPERTIES
     LABELS "daemon;consensus;regression;mandatory" TIMEOUT 30)
 endif()

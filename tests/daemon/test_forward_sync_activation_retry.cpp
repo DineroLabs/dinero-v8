@@ -4,6 +4,7 @@
 #include "daemon/services/chainstate_service.h"
 #include "daemon/config.h"
 #include "consensus/block_lifecycle.h"
+#include "consensus/candidate_ancestry.h"
 #include "consensus/chainparams.h"
 #include "storage/chain_write_token.h"
 
@@ -11,6 +12,9 @@
 #include <chrono>
 #include <filesystem>
 #include <iostream>
+#include <memory>
+#include <sstream>
+#include <iomanip>
 #include <stdexcept>
 #include <vector>
 
@@ -48,6 +52,12 @@ struct ActivationRetryTestAccess {
         return svc.activation_retries_.IsReady(hash, when);
     }
     static CBlockIndex* Best(ChainstateService& svc) { return svc.GetBestCandidate(); }
+    static void PrepareCandidateCost(ChainstateService& svc, CBlockIndex* active,
+                                     const std::vector<std::unique_ptr<CBlockIndex>>& chain) {
+        svc.active_tip_ = active;
+        for (const auto& node : chain) svc.candidates_.insert(node.get());
+    }
+
     static bool Contains(const ChainstateService& svc, CBlockIndex* candidate) {
         const auto entries = svc.candidates_.Snapshot();
         return std::find(entries.begin(), entries.end(), candidate) != entries.end();
@@ -132,9 +142,132 @@ void RunCase(const std::filesystem::path& root, bool first_body, bool middle_gap
     g_block_index.clear();
     InvalidateAncestryCache();
 }
+
+// Compare valid fork graphs against the unchanged original predicate. This
+// reference deliberately has no memo: correctness must not rely on caching.
+bool OriginalSharesAncestor(const dinero::CBlockIndex* active,
+                            const dinero::CBlockIndex* candidate) {
+    if (!active || !candidate) return true;
+    auto* a = active;
+    auto* b = candidate;
+    while (a && b && a->height > b->height) a = a->pprev;
+    while (a && b && b->height > a->height) b = b->pprev;
+    while (a && b) {
+        if (a->hash == b->hash) return true;
+        a = a->pprev;
+        b = b->pprev;
+    }
+    return false;
+}
+
+void RunAncestryEquivalence() {
+    using namespace dinero;
+    std::vector<std::unique_ptr<CBlockIndex>> nodes;
+    uint32_t random = 0x42534a31;
+    for (uint32_t i = 0; i < 80; ++i) {
+        random = random * 1664525U + 1013904223U;
+        auto node = std::make_unique<CBlockIndex>();
+        node->pprev = i > 1 ? nodes[random % i].get() : nullptr;
+        node->height = node->pprev ? node->pprev->height + 1 : 0;
+        std::ostringstream serial;
+        serial << std::hex << std::setfill('0') << std::setw(64) << (20000000ULL + i);
+        node->hash = uint256::FromHexUnsafe(serial.str());
+        if (node->pprev) node->prev_hash = node->pprev->hash;
+        nodes.push_back(std::move(node));
+    }
+    bool equivalent = true;
+    bool linear = true;
+    for (uint32_t pass = 0; pass < 16; ++pass) {
+        const auto* active = nodes[(pass * 17 + 7) % nodes.size()].get();
+        consensus::CandidateAncestryView view(active);
+        for (const auto& node : nodes)
+            equivalent = (view.SharesActiveAncestor(node.get()) ==
+                          OriginalSharesAncestor(active, node.get())) && equivalent;
+        linear = view.ActiveWalkSteps() <= active->height &&
+                 view.BranchWalkSteps() <= nodes.size() && linear;
+    }
+    Require(equivalent, "1280 fork/active-tip comparisons equal the original predicate");
+    Require(linear, "shared fork branches are walked at most once per pass");
+}
+
+// Real GetBestCandidate, not a model of its ranking. A long-running pool can
+// retain connected historical candidates; replaying the active ancestry for
+// every one produces a quadratic ingress-lock hold. The 15-second public-pool
+// request budget is generous for the linear implementation, including ASan.
+void RunCandidateCostCase() {
+    using namespace dinero;
+    constexpr uint32_t height = 150000;
+    std::vector<std::unique_ptr<CBlockIndex>> chain;
+    chain.reserve(height + 1);
+    for (uint32_t h = 0; h <= height; ++h) {
+        auto node = std::make_unique<CBlockIndex>();
+        node->height = h;
+        std::ostringstream number;
+        number << std::hex << std::setfill('0') << std::setw(64) << (uint64_t(h) + 1);
+        node->hash = uint256::FromHexUnsafe(number.str());
+        node->chainwork = number.str();
+        node->status = BLOCK_VALID_CHAIN | BLOCK_HAVE_DATA;
+        node->pprev = h ? chain.back().get() : nullptr;
+        if (node->pprev) node->prev_hash = node->pprev->hash;
+        chain.push_back(std::move(node));
+    }
+    // Deterministic work-count controls complement the real service budget.
+    consensus::CandidateAncestryView view(chain.back().get());
+    bool all_share = true;
+    for (uint32_t h = 0; h <= height; ++h)
+        all_share = view.SharesActiveAncestor(chain[h].get()) && all_share;
+    Require(all_share, "every historical candidate shares the active ancestry");
+    Require(view.ActiveWalkSteps() == height && view.BranchWalkSteps() == 0,
+            "all historical candidates share exactly one active-chain walk");
+
+    CBlockIndex sibling;
+    sibling.height = height;
+    sibling.pprev = chain[height - 1].get();
+    sibling.hash = uint256::FromHexUnsafe(std::string(63, 'f') + "1");
+    Require(view.SharesActiveAncestor(&sibling), "fork sibling shares its real ancestor");
+    Require(view.BranchWalkSteps() == 1, "fork sibling adds only one branch step");
+    Require(view.SharesActiveAncestor(&sibling) && view.BranchWalkSteps() == 1,
+            "same-pass fork result is reused");
+
+    CBlockIndex duplicate;
+    duplicate.height = height;
+    duplicate.hash = chain.back()->hash;
+    Require(view.SharesActiveAncestor(&duplicate),
+            "same-height same-hash index objects retain original compatibility");
+    CBlockIndex foreign;
+    foreign.hash = uint256::FromHexUnsafe(std::string(64, 'e'));
+    Require(!view.SharesActiveAncestor(&foreign), "disconnected genesis is incompatible");
+    consensus::CandidateAncestryView changed(&foreign);
+    Require(!changed.SharesActiveAncestor(chain.back().get()),
+            "a fresh pass cannot reuse the previous tip's ancestry results");
+    CBlockIndex cycle;
+    cycle.height = 3;
+    cycle.hash = uint256::FromHexUnsafe(std::string(64, 'd'));
+    cycle.pprev = &cycle;
+    Require(!view.SharesActiveAncestor(&cycle),
+            "malformed candidate cycle refuses without an unbounded walk");
+    consensus::CandidateAncestryView malformed(&cycle);
+    Require(!malformed.SharesActiveAncestor(chain.front().get()),
+            "malformed active cycle refuses without an unbounded walk");
+    InvalidateAncestryCache();
+    {
+        ChainstateService service;
+        ActivationRetryTestAccess::PrepareCandidateCost(service, chain.back().get(), chain);
+        const auto start = std::chrono::steady_clock::now();
+        std::cout << "Selecting among 150001 real connected historical candidates" << std::endl;
+        Require(ActivationRetryTestAccess::Best(service) == chain.back().get(),
+                "large historical candidate set selects the exact highest-work active tip");
+        const auto elapsed = std::chrono::duration<double>(
+            std::chrono::steady_clock::now() - start).count();
+        std::cout << "candidate selection seconds: " << elapsed << std::endl;
+        Require(ActivationRetryTestAccess::Contains(service, chain.front().get()),
+                "performance repair preserves historical candidate membership");
+    }
+    InvalidateAncestryCache();
+}
 } // namespace
 
-int main() {
+int main(int argc, char** argv) {
     const auto unique = std::chrono::steady_clock::now().time_since_epoch().count();
     const auto root = std::filesystem::temp_directory_path() /
         ("dinero-forward-activation-retry-" + std::to_string(unique));
@@ -142,6 +275,13 @@ int main() {
         dinero::SelectParams(dinero::Chain::REGTEST);
         GetConfig().utreexo_stateless = false;
         GetConfig().assumeutxo_forward_connect = false;
+        if (argc == 2 && std::string(argv[1]) == "--ancestor-cost") {
+            RunAncestryEquivalence();
+            RunCandidateCostCase();
+            std::cout << "ALL PASSED\n";
+            return 0;
+        }
+
         RunCase(root / "prefix-failure", true, true);
         RunCase(root / "first-body-gap", false, true);
         RunCase(root / "whole-path-failure", true, false);
