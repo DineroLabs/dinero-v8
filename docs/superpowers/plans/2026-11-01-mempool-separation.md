@@ -8,7 +8,7 @@
 
 **Tech Stack:** C++20, CMake ≥ 3.20 (File API codemodel v2, read by the gate scripts), Ninja, Python 3, GNU ld / ld64 / MSVC link, GitHub Actions.
 
-**Spec:** `docs/superpowers/specs/2026-11-01-mempool-separation-design.md` (rev 1.2). The spec is the authority; §-numbers below refer to it.
+**Spec:** `docs/superpowers/specs/2026-11-01-mempool-separation-design.md` (rev 1.3). The spec is the authority; §-numbers below refer to it.
 
 **Execution (prompt Phase C):** Stage 0 only, after plan approval and the owner's choice of execution method. Each task: test-first RED→GREEN, then an independent review before the next task. Progress ledger in the git-ignored `.superpowers/sdd/2026-11-01-mempool-separation/` inside the worktree. Stop after Task 0.8.
 
@@ -54,7 +54,8 @@ The owner's constraints from the task prompt (`~/src/dinero-evidence/2026-11-01-
 **Also binding here** (owner decisions and constraints shared with the wallet project):
 - **Baseline:** `dinero-main` c4940d86c. Task 0.1 refreshes it; every later reference uses the refreshed SHA.
 - **Owner decisions 2026-11-01 (spec §14):** D1 bucket split (inherited violations reported, mempool-owned ones fail; never call the library storage-independent while bucket A exists); D2 separate rules and workflow, reuse shared tooling, no stacking on #860; D3 draft PR prepared, push approved per SHA.
-- **X1–X5 are resolved jointly with the wallet project before Stage 1.** Stage 0 changes no product code and may run first. **STOP before Task 1.1** until the owner records the X decisions.
+- **X1–X5 are resolved jointly with the wallet project before implementation.** Whether Stage 0 counts as implementation is open (spec §14 Q0). **Nothing in this plan starts until the owner answers Q0**; if Stage 0 runs first, Task 0.8 states that it measures with the X3/X4 proposals as assumptions. **STOP before Task 1.1** in any case until the X decisions are recorded.
+- **L1 (open, spec §8):** the mempool-owned logger edge is reported on its own non-failing row until `dinero_logging` exists, if the owner confirms this extension of D1; otherwise it counts in bucket B from the start.
 - **Every gate runs twice:** `-DDINERO_BUILD_ORCHARD_BACKEND=OFF` and `=ON`.
 - **Do not edit `methods_wallet_context.cpp` lines matched by `qt/tests/test_shielded_rpc_status.cmake:7-39`** (wallet plan constraint; this project touches `methods_*` only through CMake).
 - **Windows labelling follows the wallet project's rules:** B1 (`std::stol` overflow of `--consensus-state-commitment-height=4294967295`) makes the Windows transcript UNMEASURED only on that exact signature; B3 (`LNK2005 isCoinbaseMature`) makes ON gates needing `dinerod` UNMEASURED on MSVC; a harness error is `FAIL rc=2 (check did not run: …)`, never UNMEASURED; a missing reviewed reference is `FAIL rc=2 (missing reference)`, never PASS.
@@ -66,7 +67,7 @@ The owner's constraints from the task prompt (`~/src/dinero-evidence/2026-11-01-
   - M1–M3, `MempoolEntry` or `MempoolTransaction` would need a change;
   - any consensus file or frozen header would need an edit;
   - MP4 differs anywhere;
-  - a `KEY_TIP` writer does not hold the block-ingress activation lock (Task 0.2);
+  - a chain write path (tip, coins or tx index) does not hold the block-ingress activation lock (Task 0.2);
   - the ON closure of `dinero_orchard_mempool_body` reaches `dinero_core` or chainstate;
   - any gate would need a floor test.
 
@@ -134,7 +135,7 @@ These failure modes are the most likely to hurt a user and are not otherwise cov
 - [ ] **Step 3:** Implement.
 - [ ] **Step 4:** Run again. Expected: 4 PASS.
 - [ ] **Step 5:** `record` at the baseline. Expected: the 23 chain-read sites and 5 guarded functions of spec §7.4 (`submitTransactionInternal`, `submitOrchardBody`, `getConfirmedWalletCoins`, `CaptureEntriesWithInputCoins`, `CaptureBlockSelectionImpl`). Any difference from the spec → update the spec's table first, then the baseline.
-- [ ] **Step 6: Tip-writer trace (read-only).** List every caller of `ChainDB::setTip` (the only `KEY_TIP` writer, `chain_db.cpp:1089`, `:1096`) and of any write batch carrying it, and for each name the lock held (expected: the block-ingress activation lock, `AcquireBlockIngressActivationLock`). Save `tip-writers.md` in the evidence dir with file:line per caller. Expected: every writer holds it. **Stop and report** if one doesn't (pre-existing defect; not fixed here).
+- [ ] **Step 6: Chain-writer trace (read-only, spec §7.4).** Every ChainDB write takes a `ChainWriteToken`, minted only by its friends (`include/storage/chain_write_token.h`: BlockAcceptor, PruneService, BlockReindexer, HeaderSyncManager, UTXOIndex, `ChainDB::init`, `InitializeGenesis`). For each minting path, list the writes it performs to the tip (`setTip`, `chain_db.cpp:1073`), coins (`putCoin` `:1615`, `deleteCoin` `:1843`), tx index (`putTxIndex` `:1344`, `deleteTxIndex` `:1391`) and `writeBatch` (`:1475`), and name the lock held at that point. Cover AssumeUTXO import, snapshot load, reindex and prune explicitly. Save `chain-writers.md` (file:line per path) in the evidence dir. Expected: every write that can run while the pool is live holds the block-ingress activation lock (bootstrap writes before `MempoolService` starts are listed as such). **Stop and report** any that doesn't (pre-existing defect; not fixed here).
 - [ ] **Step 7:** Commit `ci(mempool-sep): chain-read site inventory (spec §7.4)`.
 
 ### Task 0.3: Probe archive and forced link (MP1) and symbols (MP3)
@@ -151,7 +152,7 @@ These failure modes are the most likely to hurt a user and are not otherwise cov
 - [ ] **Step 1: Write failing tests:** `test_mp_symbols_flags_chaindb`, `test_mp_symbols_clean`, `test_inherited_label`, `test_x5_symbols_api`.
 - [ ] **Step 2:** Run pytest. Expected: FAIL.
 - [ ] **Step 3:** Implement the wrapper, the CMake block and `forced_link.cpp`.
-- [ ] **Step 4:** Run pytest. Expected: PASS. Then `nice -n 10 cmake --build $CFG --target sep_mempool_forced_link -j4 -k 0`. Expected **RED** (link errors) listing exactly the spec §8 set: `ChainDB::{getTip,getCoinWithConfidentialFallback,getTxLocation,forEachUTXO}`, `din::sp::ScannerManager::{ScannerManager,~ScannerManager,scanMempoolTransaction}` (+ `acquireEmptyRegistry` if out-of-line), plus bucket A. Save logs to `~/src/dinero-evidence/2026-11-01-mempool-separation/stage0/`. **Stop and report** any other undefined symbol.
+- [ ] **Step 4:** Run pytest. Expected: PASS. Then `nice -n 10 cmake --build $CFG --target sep_mempool_forced_link -j4 -k 0`. Expected **RED** (link errors) listing exactly the measured set (spec §6.1, `survey/library_set_undefined_off.txt`): `ChainDB::{getTip,getCoinWithConfidentialFallback,getTxLocation,forEachUTXO}`, `din::sp::ScannerManager::{ScannerManager,~ScannerManager,scanMempoolTransaction}`, `g_logger`/`Logger::*` (L1), plus anything bucket A adds through consensus. First measurement of ON happens here; record any ON-only symbol. Save logs to `~/src/dinero-evidence/2026-11-01-mempool-separation/stage0/`. **Stop and report** any other undefined symbol.
 - [ ] **Step 5:** MP3 on the probe's objects (`nm -C` of the archive, since the executable didn't link). Expected: RED with `ChainDB`, `din::sp::` references.
 - [ ] **Step 6:** Commit `ci(mempool-sep): probe archive, forced link and symbol checks (MP1/MP3)`.
 
@@ -161,8 +162,8 @@ These failure modes are the most likely to hurt a user and are not otherwise cov
 - Create: `scripts/ci/mempool-separation/mp_closure.py`, `scripts/ci/mempool-separation/mempool_closure_rules.json`, `scripts/ci/mempool-separation/tests/test_mp_closure.py` (+ fixture codemodels)
 
 **Interfaces:**
-- Produces: `mp_closure.py --build <dir> --target <name> [--all-targets-stub-rule]`. Imports `Model`, `check`, `load_json` from `check_link_closure` (X5). Prints the wallet checker's line types plus `BUCKET A|B` per violation (A = every path from the root to the violation passes through `dinero_consensus` or `dinero_pq`, or is the undeclared logger), and `STUB_IN_MEMPOOL_CLOSURE <target>`. Exit 1 iff any bucket-B violation; bucket A is printed and summarised, never hidden. Reverse check: exit 1 if any target in `dinero_consensus`'s closure has `dinero_mempool`/`sep_mempool_probe` in its closure.
-- Rules: spec §8 MP2 allowed/forbidden sets; allowlist of spec §6.4 with reasons.
+- Produces: `mp_closure.py --build <dir> --target <name> [--all-targets-stub-rule]`. Imports `Model`, `check`, `load_json` from `check_link_closure` (X5). Prints the wallet checker's line types plus `BUCKET A|B|L1` per violation (A = every path from the root to the violation passes through `dinero_consensus` or `dinero_pq`; L1 = the logger edge, per the owner's answer on L1), and `STUB_IN_MEMPOOL_CLOSURE <target>`. Exit 1 iff any bucket-B violation; bucket A is printed and summarised, never hidden. Reverse check: exit 1 if any target in `dinero_consensus`'s closure has `dinero_mempool`/`sep_mempool_probe` in its closure.
+- Rules: spec §8 MP2 allowed/forbidden sets plus `dinero_address_encoding` (allowed); allowlist of spec §6.4 with reasons, including the wallet project's three bech32 entries copied verbatim.
 
 - [ ] **Step 1: Write failing tests:** `test_bucket_a_via_consensus`, `test_bucket_b_direct_chainstate`, `test_stub_rule_flags_core_plus_stub`, `test_stub_rule_allows_stub_without_core`, `test_reverse_edge_from_consensus`, `test_x5_closure_api`.
 - [ ] **Step 2:** Run pytest. Expected: 6 FAIL.
@@ -183,6 +184,7 @@ These failure modes are the most likely to hurt a user and are not otherwise cov
 
 - [ ] **Step 1:** `record` at the baseline, OFF then ON.
 - [ ] **Step 2:** `check` at the baseline. Expected: PASS (twice in a row, to prove the masks remove all run-varying fields).
+- [ ] **Step 2b: Orphans (P2P-only, spec §8).** Run `ctest --no-tests=error -R '^(TxRelayG3Verification|RelayRefreshOwner|CsnProofRefresh)$'` at the baseline in both configs; confirm against `never_run_floor.txt` first (expected: none listed) and grep the log for all three names. Expected: PASS. The same run is repeated after Stages 1 and 2.
 - [ ] **Step 3: Neuter checks** (scratch, reverted): (a) change one `getmempoolinfo` field name → FAIL; (b) make `saveToDisk` skip the last entry → FAIL in (b); (c) ON only: drop `DINERO_HAS_ORCHARD_RELAY_READER` → FAIL in (b)(iii).
 - [ ] **Step 4:** Commit `test(mempool-sep): behaviour freeze transcript and persistence check (MP4)`.
 
@@ -278,9 +280,9 @@ These failure modes are the most likely to hurt a user and are not otherwise cov
 
 ### Task 2.2: Remove direct compiles
 
-**Files:** `src/daemon/CMakeLists.txt:58,133`, `src/nodecore/CMakeLists.txt:50`, `tests/CMakeLists.txt` (50 live entries; `dinero_attach_real_mempool_fixture_runtime` keeps stripping stubs but stops adding `dinero_test_mempool_runtime`, which is deleted), `tests/mining/CMakeLists.txt:147,195,374,461`; `dinero_rpc_handlers` declares `dinero_mempool`; NodeCore xcframework script bundles `libdinero_mempool.a`.
+**Files:** `src/daemon/CMakeLists.txt:58,133`, `src/nodecore/CMakeLists.txt:50`, `tests/CMakeLists.txt` (50 live `mempool.cpp` entries, plus the direct compiles of other moving sources in `test_mempool_proof_staleness`, `test_fee_estimation_g4`, `test_csn_proof_refresh`, `test_relay_refresh_owner`, `test_tx_relay_g3`, `test_mempool_policy`, `test_rbf_policy_service`, `test_ct_fee_policy`, `test_ct_selection_policy`, `test_mempool_address_queries`; `dinero_attach_real_mempool_fixture_runtime` keeps stripping stubs but stops adding `dinero_test_mempool_runtime`, which is deleted), `tests/mining/CMakeLists.txt:147,195,374,461`; `dinero_rpc_handlers` declares `dinero_mempool`; NodeCore xcframework script bundles `libdinero_mempool.a`.
 
-- [ ] **Step 1:** Before: `grep -c 'daemon/mempool.cpp'` in compile_commands. Expected 57 targets. After: Expected exactly 1 (`dinero_mempool`).
+- [ ] **Step 1:** Before: for each of the 12 moving sources, list the compiling targets from compile_commands (`survey/moving_sources_direct_compiles.txt` + `mempool_cpp_compilers_*.txt`). Expected: `mempool.cpp` 57 targets; the other 11 sources `dinero_core` plus 10 test targets. After: Expected **each of the 12 sources compiled by exactly one target, `dinero_mempool`**, in both configs.
 - [ ] **Step 2:** Full build both configs, `-k 0`. Expected: green, or the Task 0.8 list.
 - [ ] **Step 3:** MP4 PASS; full non-floor ctest. Commit `build(mempool): link dinero_mempool instead of compiling mempool.cpp`.
 
