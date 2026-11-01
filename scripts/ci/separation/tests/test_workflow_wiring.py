@@ -197,6 +197,23 @@ def test_local_macos_references_are_preserved():
         assert ref["provenance_sha"] == sha
 
 
+def test_accepted_macos15_references_are_pinned():
+    # Recorded by run 4 (Xcode 16.4 / Apple clang 17, PR merge ref 7442bcc14d47),
+    # reviewed against the macOS references and accepted as-is by the owner on 2026-11-01.
+    import hashlib, json
+    pins = {
+        "scripts/ci/separation/consensus_vectors_ref_macos15_off.json": "ec557d368eadf48b98ee1e090f7bf95e90784495f83c27e1f746eb86f4926421",
+        "scripts/ci/separation/consensus_vectors_ref_macos15_on.json": "a587ea98e5c46d7027ec07f2063e439ac5708d50099f3c5e8029a918a99e5b55",
+        "tests/separation/interface_baseline/symbols_macos15_off.txt": "2adc40d15e990f33dd9975e891ac0c68e0fa01a3b53e1726e32335a4e5246feb",
+        "tests/separation/interface_baseline/symbols_macos15_on.txt": "2adc40d15e990f33dd9975e891ac0c68e0fa01a3b53e1726e32335a4e5246feb",
+    }
+    for rel, digest in pins.items():
+        assert hashlib.sha256((ROOT / rel).read_bytes()).hexdigest() == digest, rel
+    for cfg in ("off", "on"):
+        ref = json.loads((ROOT / ("scripts/ci/separation/consensus_vectors_ref_macos15_%s.json" % cfg)).read_text())
+        assert ref["provenance_sha"].startswith("7442bcc14d47")
+
+
 def test_differences_from_the_macos_reference_reach_the_summary():
     w5 = steps(POSIX)["w5"]
     guard = 'if [ "$present" = 0 ] && [ "$SEP_PLAT" = macos ] && [ "$SEP_REF_TAG" != macos ]; then'
