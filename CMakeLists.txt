@@ -1158,6 +1158,7 @@ add_library(dinero_core STATIC
   src/consensus/orphan_manager.cpp
   src/consensus/genesis_canonical.cpp  # Phase 3: Genesis hash self-test
   src/consensus/adapters/wallet_utxo_adapter.cpp  # UTXO adapter for wallet integration
+  src/consensus/global_utxo_set_impl.cpp  # Phase 11a: GlobalUTXOSet implementation
 
   # Mempool
   ${DINERO_CORE_MEMPOOL_SUPPORT_SOURCES}
