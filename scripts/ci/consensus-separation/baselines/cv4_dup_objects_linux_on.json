@@ -1,0 +1,162 @@
+{
+ "duplicates": {
+  "src/address/addr_codec.cpp": [
+   "dinero_consensus",
+   "dinero_core",
+   "dinero_wallet"
+  ],
+  "src/address/addr_types.cpp": [
+   "dinero_consensus",
+   "dinero_core",
+   "dinero_wallet"
+  ],
+  "src/common/logger.cpp": [
+   "dinero_core",
+   "dinero_wallet"
+  ],
+  "src/common/serialization.cpp": [
+   "dinero_consensus",
+   "dinero_consensus_core"
+  ],
+  "src/common/sha256d.cpp": [
+   "dinero_consensus",
+   "dinero_consensus_core",
+   "dinero_crypto"
+  ],
+  "src/consensus/block_filter.cpp": [
+   "dinero_consensus",
+   "dinero_consensus_core"
+  ],
+  "src/consensus/block_index.cpp": [
+   "dinero_consensus",
+   "dinero_core"
+  ],
+  "src/consensus/block_undo.cpp": [
+   "dinero_consensus",
+   "dinero_consensus_core"
+  ],
+  "src/consensus/chainwork.cpp": [
+   "dinero_consensus",
+   "dinero_consensus_core"
+  ],
+  "src/consensus/coinbase_maturity.cpp": [
+   "dinero_consensus",
+   "dinero_consensus_core"
+  ],
+  "src/consensus/consensus_invariants.cpp": [
+   "dinero_consensus",
+   "dinero_consensus_core"
+  ],
+  "src/consensus/consensus_utxo_set.cpp": [
+   "dinero_consensus",
+   "dinero_consensus_core"
+  ],
+  "src/consensus/crypto/sighash_bip143.cpp": [
+   "dinero_consensus",
+   "dinero_consensus_core"
+  ],
+  "src/consensus/csn_replay_data.cpp": [
+   "dinero_consensus",
+   "dinero_consensus_core"
+  ],
+  "src/consensus/filter_commitment.cpp": [
+   "dinero_consensus",
+   "dinero_consensus_core"
+  ],
+  "src/consensus/freeze.cpp": [
+   "dinero_consensus",
+   "dinero_consensus_core"
+  ],
+  "src/consensus/merkle_proof.cpp": [
+   "dinero_consensus",
+   "dinero_consensus_core"
+  ],
+  "src/consensus/merkle_root.cpp": [
+   "dinero_consensus",
+   "dinero_consensus_core"
+  ],
+  "src/consensus/pow.cpp": [
+   "dinero_consensus",
+   "dinero_consensus_core"
+  ],
+  "src/consensus/script.cpp": [
+   "dinero_consensus",
+   "dinero_consensus_core"
+  ],
+  "src/consensus/script_crypto.cpp": [
+   "dinero_consensus",
+   "dinero_consensus_core"
+  ],
+  "src/consensus/script_validation.cpp": [
+   "dinero_consensus",
+   "dinero_consensus_core"
+  ],
+  "src/consensus/sigops.cpp": [
+   "dinero_consensus",
+   "dinero_consensus_core"
+  ],
+  "src/consensus/snapshot_binding.cpp": [
+   "dinero_core",
+   "dinero_orchard_snapshot"
+  ],
+  "src/consensus/state_commitment.cpp": [
+   "dinero_core",
+   "dinero_orchard_block_staging"
+  ],
+  "src/consensus/undo.cpp": [
+   "dinero_consensus",
+   "dinero_core"
+  ],
+  "src/consensus/utreexo_accumulator.cpp": [
+   "dinero_consensus",
+   "dinero_consensus_core"
+  ],
+  "src/consensus/utreexo_delta_codec.cpp": [
+   "dinero_consensus",
+   "dinero_consensus_core"
+  ],
+  "src/consensus/utreexo_stump.cpp": [
+   "dinero_consensus",
+   "dinero_consensus_core"
+  ],
+  "src/consensus/utxo_publication.cpp": [
+   "dinero_consensus",
+   "dinero_consensus_core"
+  ],
+  "src/consensus/utxo_set_digest.cpp": [
+   "dinero_core",
+   "dinero_orchard_snapshot"
+  ],
+  "src/crypto/ripemd160.cpp": [
+   "dinero_consensus",
+   "dinero_consensus_core"
+  ],
+  "src/primitives/block.cpp": [
+   "dinero_consensus",
+   "dinero_consensus_core"
+  ],
+  "src/primitives/hash_domains.cpp": [
+   "dinero_consensus",
+   "dinero_consensus_core",
+   "dinero_tx_primitives"
+  ],
+  "src/primitives/transaction.cpp": [
+   "dinero_consensus",
+   "dinero_consensus_core",
+   "dinero_tx_primitives"
+  ],
+  "src/primitives/transaction_serializer.cpp": [
+   "dinero_consensus",
+   "dinero_consensus_core"
+  ],
+  "src/primitives/uint256.cpp": [
+   "dinero_consensus",
+   "dinero_consensus_core"
+  ],
+  "src/wallet/psbt.cpp": [
+   "dinero_core",
+   "dinero_wallet"
+  ]
+ },
+ "gate": "CV4"
+}

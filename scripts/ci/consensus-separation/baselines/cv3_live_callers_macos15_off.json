@@ -1,0 +1,68 @@
+{
+ "callers": {
+  "BlockValidator-ConnectBlock": {
+   "src/consensus/validation_queue.cpp": "live",
+   "src/daemon/services/chainstate_service.cpp": "live"
+  },
+  "CheckBlockSigops": {
+   "src/daemon/block_acceptor.cpp": "live"
+  },
+  "CheckCoinbaseReward": {
+   "src/consensus/block_validation.cpp": "live",
+   "src/consensus/orchard_block_coins.cpp": "uncompiled"
+  },
+  "CheckProofOfWork": {
+   "include/consensus/iconsensus_engine.h": "header",
+   "include/daemon/mining_engine.h": "header",
+   "include/dinero/daemon/mining_engine.h": "header",
+   "src/consensus/header_chain.cpp": "live",
+   "src/consensus/header_sync_manager.cpp": "live",
+   "src/consensus/orchard_header.cpp": "uncompiled",
+   "src/consensus/pow_consensus_engine.cpp": "live",
+   "src/consensus/reindexer.cpp": "live",
+   "src/daemon/mining_engine.cpp": "uncompiled",
+   "src/daemon/services/chainstate_service.cpp": "live",
+   "tests/consensus/mine_test_vectors.cpp": "uncompiled",
+   "tests/consensus/test_header_pow_verification.cpp": "other-target",
+   "tests/consensus/test_header_real_mainnet_replay.cpp": "other-target",
+   "tests/consensus/test_header_sync_restart.cpp": "other-target",
+   "tests/consensus/test_orchard_header.cpp": "uncompiled",
+   "tests/daemon/orchard_branch_ancestry_checks.h": "header",
+   "tests/daemon/orchard_compact_header_retention_checks.h": "header",
+   "tests/daemon/orchard_compact_transition_checks.h": "header",
+   "tests/daemon/orchard_selected_admission_checks.h": "header",
+   "tests/daemon/replay_header_history_checks.h": "header"
+  },
+  "PowConsensusEngine-ValidateBlock": {
+   "tests/consensus/test_consensus_validation_tripwires.cpp": "other-target"
+  },
+  "TXV-checkSequenceLocks": {},
+  "TXV-validateInputs": {},
+  "TXV-validateTransaction": {
+   "src/mining/miner_engine.cpp": "uncompiled"
+  },
+  "TransactionValidator-ValidateTransaction": {
+   "src/consensus/parallel_block_validator.cpp": "live",
+   "src/consensus/validation_queue.cpp": "live",
+   "tests/consensus/test_covenant_activation.cpp": "other-target"
+  },
+  "VerifyBlockStateless": {
+   "tests/consensus/test_stateless_verification.cpp": "other-target",
+   "tests/consensus/test_utreexo_maturity_bound_leaf_experiment.cpp": "other-target"
+  },
+  "isCoinbaseMature": {
+   "include/dinero/core/consensus/coinbase_maturity.h": "header",
+   "include/dinero/core/daemon/blockchain.h": "header",
+   "include/dinero/daemon/blockchain.h": "header",
+   "src/core/consensus/coinbase_maturity.cpp": "uncompiled",
+   "src/daemon/mempool.cpp": "live",
+   "src/wallet/hd_wallet.cpp": "live",
+   "src/wallet/wallet_manager.cpp": "live",
+   "tests/consensus/test_coinbase_maturity.cpp": "uncompiled"
+  }
+ },
+ "gate": "CV3",
+ "roots": [
+  "dinerod"
+ ]
+}
