@@ -669,3 +669,23 @@ jobs:
           $lines += 'Stage-0 expectation: K1, K2, W1, W2 FAIL; K3 and W3 FAIL when measured, else UNMEASURED until the COFF scan is verified; K4 FAIL rc 2 (missing reference) until reviewed Windows baselines are committed; W4 PASS; W6 recorded (RED). W5 on Windows is PARTIAL (wallet FFI + RPC only; NodeCore is not a Windows target, so NodeCore interface evidence comes only from Linux/macOS). Its RPC transcript is UNMEASURED (blocked by B1: dinerod --consensus-state-commitment-height=4294967295 std::stol overflow on LLP64) only when the startup log shows the exact B1 error; any other startup failure is FAIL (check did not run). After B1 is fixed through its own review, W5 stays FAIL rc 2 (missing reference) until a reviewed Windows symbol baseline (symbols_windows_<cfg>.txt) is committed. If the prerequisite build fails (LANE UNMEASURED), every gate that depends on a failed target is UNMEASURED.'
           $lines | Out-Host
           $lines | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+
+      # Task 0.10 measurement only: this step exists on the throwaway branch
+      # measure/separation-leg1a and is never merged. It builds every target
+      # with -k 0 after the gates and prints the failures (no upload, no cache,
+      # no signing).
+      - name: Task 0.10 full build (measurement)
+        if: ${{ !cancelled() && steps.configure.outcome == 'success' }}
+        continue-on-error: true
+        timeout-minutes: 150
+        run: |
+          $log = Join-Path $env:RUNNER_TEMP 'full-build.log'
+          & cmake --build $env:SEP_BUILD -- -k 0 *> $log
+          $rc = $LASTEXITCODE
+          Write-Host "TASK010 full build rc=$rc"
+          Select-String -Path $log -Pattern '^\[\d+/\d+\] ' -NotMatch | ForEach-Object { $_.Line }
+          $failed = @(Select-String -Path $log -Pattern '^FAILED: ')
+          $failed | ForEach-Object { "TASK010 $($_.Line)" }
+          "Task 0.10 full build (measurement): rc=$rc, $($failed.Count) failed build edges" |
+            Tee-Object -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          exit 0

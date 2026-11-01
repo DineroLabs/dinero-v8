@@ -668,6 +668,22 @@ jobs:
             echo "Stage-0 expectation: K1, K2, W1, W2 FAIL; K3, W3 UNMEASURED while the K1/W1 probes do not link (FAIL/PASS once measured); K5, W4 PASS; K4, W5 FAIL rc 2 (missing reference) on Linux and on macOS (macos-15, ref_tag macos15) until reviewed baselines are committed; W6 recorded (RED). A missing reference is missing evidence, not a pass. If the prerequisite build fails (LANE UNMEASURED), every gate that depends on a failed target is UNMEASURED, not a pass and not a measured fail; K2, W2, K5 still report their result."
           } | tee -a "$GITHUB_STEP_SUMMARY"
 
+      # Task 0.10 measurement only: this step exists on the throwaway branch
+      # measure/separation-leg1a and is never merged. It builds every target
+      # with -k 0 after the gates and prints the failures (no upload, no cache).
+      - name: Task 0.10 full build (measurement)
+        if: ${{ !cancelled() && steps.configure.outcome == 'success' }}
+        continue-on-error: true
+        timeout-minutes: 150
+        run: |
+          log="$RUNNER_TEMP/full-build.log"; rc=0
+          nice -n 10 cmake --build "$SEP_BUILD" -- -k 0 > "$log" 2>&1 || rc=$?
+          echo "TASK010 full build rc=$rc"
+          grep -v '^\[[0-9]*/[0-9]*\] ' "$log" || true
+          n=$(grep -c '^FAILED: ' "$log" || true)
+          grep '^FAILED: ' "$log" | sed 's/^/TASK010 /' || true
+          echo "Task 0.10 full build (measurement): rc=$rc, $n failed build edges" | tee -a "$GITHUB_STEP_SUMMARY"
+
   # K4, second half (ruling R13): the existing compact-regtest fixed-vector
   # check, run with the commands of .github/workflows/compact-regtest-vectors.yml
   # (that workflow is unchanged). It is a separate build configuration
