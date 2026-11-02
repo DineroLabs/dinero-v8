@@ -20,7 +20,12 @@ SNAPSHOT_PROFILE=${SNAPSHOT_PROFILE:-compact}
 case "$SNAPSHOT_PROFILE" in compact) SYNC_PROFILE=ios_utreexo;; full) SYNC_PROFILE=mac_fullblock;; *) echo "invalid SNAPSHOT_PROFILE" >&2; exit 2;; esac
 
 DATADIR=${DATADIR:-/var/lib/dinero}
-DUMPDIR=$DATADIR/snapshots
+SNAPSHOT_ROOT=$DATADIR/snapshots
+# Keep the existing compact/legacy and H149999 capture path. Full v6 uses a
+# separate pending namespace so neither profile can consume or delete the
+# other's retained candidate while it waits for burial.
+DUMPDIR=$SNAPSHOT_ROOT
+if [ "$SNAPSHOT_PROFILE" = full ]; then DUMPDIR=$SNAPSHOT_ROOT/full; fi
 PUBROOT=${PUBROOT:-/var/www/dinero-snapshots}
 KEY=${KEY:-/etc/dinero-snapshot/ed25519.key}
 CLI=("${CLI_BIN:-dinero-cli}" "-datadir=$DATADIR")
@@ -38,10 +43,10 @@ log() { echo "$LOG_PREFIX $*"; }
 fail() { log "FAIL: $*"; exit 1; }
 
 mkdir -p "$DUMPDIR" "$PUBROOT/archive"
-chown dinero:dinero "$DUMPDIR" || true
+chown dinero:dinero "$SNAPSHOT_ROOT" "$DUMPDIR" || true
 
-# Only one dump / publication may manipulate the pending candidate at a time.
-exec 9>"$DUMPDIR/publisher.lock"
+# Serialize both profiles' exports and the exact-height boundary capture.
+exec 9>"$SNAPSHOT_ROOT/publisher.lock"
 flock -n 9 || { log "another publisher run is active"; exit 0; }
 
 # Keep one candidate while waiting for burial. The daemon exports its current

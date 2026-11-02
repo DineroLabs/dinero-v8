@@ -7,17 +7,29 @@ SCRIPT=Path(__file__).with_name('dinero-snapshot-publish.sh').resolve()
 CAPTURE=Path(__file__).with_name('capture_boundary_v5.py').resolve()
 
 class PublisherV6(unittest.TestCase):
-    def run_publication(self, profile=2, gate=True, reorg=False, key=True, fresh=False, optimize=False, failed=False, boundary=False, bad_pin=False, capture_first=False):
+    def run_publication(self, profile=2, gate=True, reorg=False, key=True, fresh=False, optimize=False, failed=False, boundary=False, bad_pin=False, capture_first=False, publisher_profile='compact', other_pending_profile=None):
         tmp=tempfile.TemporaryDirectory(); self.addCleanup(tmp.cleanup)
-        root=Path(tmp.name); dumps=root/'data/snapshots'; dumps.mkdir(parents=True)
+        root=Path(tmp.name); snapshot_root=root/'data/snapshots'; snapshot_root.mkdir(parents=True)
+        dumps=snapshot_root if publisher_profile=='compact' else snapshot_root/'full'; dumps.mkdir(parents=True,exist_ok=True)
         height=149999 if boundary else 150000
         version=5 if boundary else 6
-        section=b'ORCH'+struct.pack('<I',1)+bytes([profile])+bytes(1048576)
-        payload=b'UXTO'+struct.pack('<I',version)+bytes.fromhex('ab'*32)+struct.pack('<I',height)+bytes(24)
-        if version==6: payload+=struct.pack('<Q',len(section))+section+bytes(32)
+        def make_payload(section_profile):
+            section=b'ORCH'+struct.pack('<I',1)+bytes([section_profile])+bytes(1048576)
+            data=b'UXTO'+struct.pack('<I',version)+bytes.fromhex('ab'*32)+struct.pack('<I',height)+bytes(24)
+            if version==6: data+=struct.pack('<Q',len(section))+section+bytes(32)
+            return data
+        payload=make_payload(profile)
         (root/'template.dat').write_bytes(payload)
         (dumps/'pending.dat').write_bytes(payload)
         (dumps/'pending.json').write_text(json.dumps({'base_height':height,'base_hash':'ab'*32}))
+        if other_pending_profile:
+            other_dumps=snapshot_root if other_pending_profile=='compact' else snapshot_root/'full'
+            assert other_dumps!=dumps
+            other_dumps.mkdir(parents=True,exist_ok=True)
+            other_payload=make_payload(2 if other_pending_profile=='compact' else 1)
+            (other_dumps/'pending.dat').write_bytes(other_payload)
+            (other_dumps/'pending.json').write_text(json.dumps({'base_height':height,'base_hash':'ab'*32}))
+            (root/'other-candidate.sha256').write_text(hashlib.sha256(other_payload).hexdigest())
         previous=root/'www/archive/previous';previous.mkdir(parents=True)
         (previous/'retained').write_text('previous publication')
         (root/'www/latest').symlink_to('archive/previous')
@@ -40,7 +52,7 @@ class PublisherV6(unittest.TestCase):
         ssl=shutil.which('openssl'); keypath=root/'key.pem'
         subprocess.run([ssl,'genpkey','-algorithm','ED25519','-out',str(keypath)],check=True,capture_output=True)
         pub=subprocess.check_output([ssl,'pkey','-in',str(keypath),'-pubout','-outform','DER'])[-32:]
-        env=dict(os.environ,DATADIR=str(root/'data'),PUBROOT=str(root/'www'),KEY=str(keypath if key else root/'missing'),CLI_BIN=str(cli),DINEROD=str(daemon),GATE_TIMEOUT='2',PATH=str(bin)+os.pathsep+os.environ['PATH'])
+        env=dict(os.environ,DATADIR=str(root/'data'),PUBROOT=str(root/'www'),KEY=str(keypath if key else root/'missing'),CLI_BIN=str(cli),DINEROD=str(daemon),GATE_TIMEOUT='2',SNAPSHOT_PROFILE=publisher_profile,PATH=str(bin)+os.pathsep+os.environ['PATH'])
         if optimize: env['PYTHONOPTIMIZE']='1'
         if capture_first:
             assert boundary
@@ -106,6 +118,26 @@ class PublisherV6(unittest.TestCase):
         args=json.loads((root/'export-args.json').read_text());self.assertEqual(args[-1],'compact')
     def test_full_export_cannot_publish_to_phone(self):
         root,_,_,r=self.run_publication(profile=1);self.assertNotEqual(r.returncode,0);self.assertEqual((root/'www/latest/retained').read_text(),'previous publication')
+    def test_full_publish_preserves_compact_pending_in_shared_datadir(self):
+        root,_,_,r=self.run_publication(profile=1,publisher_profile='full',other_pending_profile='compact')
+        self.assertEqual(r.returncode,0,r.stdout+r.stderr)
+        other=root/'data/snapshots/pending.dat'
+        self.assertEqual(hashlib.sha256(other.read_bytes()).hexdigest(),(root/'other-candidate.sha256').read_text())
+        self.assertTrue((root/'data/snapshots/pending.json').is_file())
+        self.assertEqual(json.loads((root/'www/latest/manifest.json').read_text())['snapshot_profile'],'full')
+    def test_full_profile_mismatch_cannot_delete_compact_pending(self):
+        root,_,_,r=self.run_publication(profile=2,publisher_profile='full',other_pending_profile='compact')
+        self.assertNotEqual(r.returncode,0)
+        other=root/'data/snapshots/pending.dat'
+        self.assertEqual(hashlib.sha256(other.read_bytes()).hexdigest(),(root/'other-candidate.sha256').read_text())
+        self.assertTrue((root/'data/snapshots/pending.json').is_file())
+        self.assertFalse((root/'data/snapshots/full/pending.dat').exists())
+    def test_compact_publish_preserves_full_pending_in_shared_datadir(self):
+        root,_,_,r=self.run_publication(profile=2,publisher_profile='compact',other_pending_profile='full')
+        self.assertEqual(r.returncode,0,r.stdout+r.stderr)
+        other=root/'data/snapshots/full/pending.dat'
+        self.assertEqual(hashlib.sha256(other.read_bytes()).hexdigest(),(root/'other-candidate.sha256').read_text())
+        self.assertTrue((root/'data/snapshots/full/pending.json').is_file())
     def test_native_gate_refusal_preserves_latest(self):
         root,_,_,r=self.run_publication(gate=False);self.assertNotEqual(r.returncode,0);self.assertEqual((root/'www/latest/retained').read_text(),'previous publication')
     def test_reorg_during_gate_refuses(self):

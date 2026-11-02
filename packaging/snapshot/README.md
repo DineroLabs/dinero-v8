@@ -45,7 +45,11 @@ Deploy the publisher/fetcher scripts together with their sibling
 stump/catalog artifact without converting its live owner. Before Orchard, the
 shared legacy format is unchanged. `SNAPSHOT_PROFILE=full` exports the ordinary
 full artifact. Use distinct PUBROOT endpoints for the two profiles; do not point
-phone mirrors at a full-v6 endpoint. A profile mismatch refuses publication.
+phone mirrors at a full-v6 endpoint. The compact endpoint retains the existing
+`DATADIR/snapshots/pending.*` path, including the H149999 capture. The full
+endpoint uses `DATADIR/snapshots/full/pending.*`; both still share the root
+publisher lock so exports and the boundary capture do not race. A profile
+mismatch refuses publication and cannot remove the other profile's candidate.
 
 The manifest includes `format_version` and `snapshot_profile` (`legacy` before
 v6). Phone publication requires an Ed25519 key, preserving both mobile apps'
