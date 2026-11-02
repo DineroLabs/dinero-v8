@@ -2600,6 +2600,19 @@ if(UNIX AND NOT IOS)
         ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>;CSN_REPLAY_FIXTURE=$<TARGET_FILE:csn_replay_metadata_fixture>;CSN_REPLAY_RECOVERY_SOURCE=undo"
         LABELS "integration;consensus;csn;utreexo;restart;reorg;mandatory"
         TIMEOUT 600 RUN_SERIAL TRUE)
+    foreach(markerless_restart IN ITEMS 0 1)
+        if(markerless_restart EQUAL 0)
+            set(markerless_name CsnMarkerlessSidecarSameProcess)
+        else()
+            set(markerless_name CsnMarkerlessSidecarRestart)
+        endif()
+        add_test(NAME ${markerless_name}
+            COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/test_csn_markerless_upgrade.py)
+        set_tests_properties(${markerless_name} PROPERTIES
+            ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>;CSN_REPLAY_FIXTURE=$<TARGET_FILE:csn_replay_metadata_fixture>;CSN_MARKERLESS_RESTART=${markerless_restart}"
+            LABELS "integration;consensus;csn;utreexo;restart;reorg;mandatory"
+            TIMEOUT 600 RUN_SERIAL TRUE)
+    endforeach()
 endif()
 
 if(TARGET test_shielded_migration_cohort)

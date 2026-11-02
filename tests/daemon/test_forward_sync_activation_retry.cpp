@@ -11,6 +11,10 @@
 #include "consensus/witness_commitment.h"
 #include "consensus/sigops.h"
 #include "consensus/filter_commitment.h"
+#include "consensus/block_download_scheduler.h"
+#include "consensus/header_chain.h"
+#include "daemon/daemon_context.h"
+#include "mining/block_assembler.h"
 #include "storage/chain_write_token.h"
 #include "storage/block_storage.h"
 
@@ -72,6 +76,12 @@ struct ActivationRetryTestAccess {
         svc.block_validator_ = std::make_unique<consensus::BlockValidator>(
             svc.consensus_utxo_set_.get());
     }
+    static bool Quarantine(ChainstateService& svc, CBlockIndex* index) {
+        return svc.QuarantineStoredBodyForReplacement(index);
+    }
+    static void QueueCsnRefetch(ChainstateService& svc, const uint256& hash) {
+        svc.pending_csn_body_refetches_.insert(hash);
+    }
 };
 } // namespace dinero
 
@@ -79,6 +89,131 @@ namespace {
 void Require(bool condition, const char* message) {
     if (!condition) throw std::runtime_error(message);
     std::cout << "[PASS] " << message << '\n';
+}
+
+// The real daemon test above proves old sidecar detection. This companion
+// isolates its liveness handoff: once a durable quarantine clears HAVE_DATA,
+// a scheduler that still remembers RECEIVED + proof-staged will not fetch on
+// an ordinary Tick. ActivateBestChain must explicitly reset that exact hash.
+void RunCsnMarkerlessDispatchLiveness(const std::filesystem::path& root) {
+    using namespace dinero;
+    using namespace dinero::consensus;
+    ChainDB db;
+    Require(db.init(root / "chaindb") == Status::Ok,
+            "markerless dispatch ChainDB opens");
+
+    Transaction coinbase;
+    TxInput input;
+    input.prevout.txid = TxId();
+    input.prevout.vout = UINT32_MAX;
+    input.scriptSig = {1, 1};
+    input.sequence = UINT32_MAX;
+    coinbase.vin.push_back(input);
+    TxOutput output;
+    output.value = AmountUna::Una(1);
+    output.scriptPubKey = {0x51};
+    coinbase.vout.push_back(output);
+
+    BlockHeader genesis;
+    genesis.version = 1;
+    genesis.timestamp = 1'000'000;
+    genesis.difficulty = 0x207fffff;
+    genesis.nonce = 1;
+    genesis.merkle_root = ComputeMerkleRoot({coinbase});
+    BlockHeader child = genesis;
+    child.prev_block_hash = genesis.GetHash();
+    child.timestamp++;
+    child.nonce++;
+
+    HeaderChainSelector selector;
+    Require(selector.AddHeader(genesis) && selector.AddHeader(child),
+            "markerless dispatch headers admitted");
+    const auto hash = child.GetHash();
+    auto* index = AddBlockIndex(child, 1);
+    Require(index != nullptr, "markerless dispatch index created");
+    index->status |= BLOCK_HAVE_DATA | BLOCK_VALID_TRANSACTIONS;
+    ChainDB::PersistedHeaderMetadata metadata;
+    metadata.parent_hash = genesis.GetHash();
+    metadata.height = 1;
+    metadata.chainwork = arith_uint256(2);
+    metadata.status_flags = index->status;
+    metadata.file_number = 1;
+    metadata.data_pos = 128;
+    metadata.data_size = 512;
+    const auto token = ChainWriteToken::CreateForTesting();
+    Require(db.putHeaderMetadata(token, hash, metadata) == Status::Ok,
+            "markerless dispatch stored metadata staged");
+
+    auto scheduler = std::make_shared<consensus::BlockDownloadScheduler>(
+        &selector, nullptr);
+    scheduler->SetStatelessMode(true);
+    scheduler->SetLocalTipHeight(0);
+    scheduler->SetGetTipHeightCallback([] { return uint32_t{0}; });
+    scheduler->SetGetBlockHashAtHeightCallback(
+        [&](uint32_t height, uint256& out) {
+            if (height != 0) return false;
+            out = genesis.GetHash();
+            return true;
+        });
+    scheduler->SetTipRetryTimeout(std::chrono::hours(1));
+    scheduler->SetStaleRequestTimeoutSeconds(3600);
+    std::vector<uint256> requests;
+    scheduler->SetSendGetDataCallback([&](const uint256& requested, uint32_t) {
+        requests.push_back(requested);
+    });
+    scheduler->OnHeadersProcessed();
+    scheduler->Tick();
+    Require(requests.size() == 1 && requests[0] == hash,
+            "markerless dispatch initial body request issued");
+    Block body;
+    body.header = child;
+    body.vtx = {coinbase};
+    Require(scheduler->OnBlockReceived(body) &&
+                scheduler->AcknowledgeStatelessProofStaged(hash),
+            "markerless dispatch stale receipt/proof state staged");
+    requests.clear();
+    scheduler->Tick();
+    Require(requests.empty(), "stale proof receipt suppresses ordinary retry");
+
+    DaemonContext context;
+    Require(DaemonContext::instance() == nullptr,
+            "markerless dispatch owns isolated daemon context");
+    context.block_download = scheduler;
+    DaemonContext::setInstance(&context);
+    try {
+        ChainstateService service;
+        service.setChainDB(&db);
+        Require(ActivationRetryTestAccess::Quarantine(service, index),
+                "markerless dispatch body quarantined");
+        const auto quarantined = db.getHeaderMetadata(hash);
+        Require(quarantined.ok() && quarantined->data_size == 0 &&
+                    (quarantined->status_flags &
+                     (BLOCK_HAVE_DATA | BLOCK_VALID_TRANSACTIONS)) == 0,
+                "markerless dispatch quarantine durably clears body flags");
+        ActivationRetryTestAccess::QueueCsnRefetch(service, hash);
+        // No active chain is required for this dispatch-only case. The
+        // activation pass exits before connecting, but the root tick still
+        // drains the queued exact-hash refetch outside its selected lock.
+        service.setChainDB(nullptr);
+        service.ActivateBestChain();
+        Require(requests.size() == 1 && requests[0] == hash,
+                "activation dispatches exact quarantined hash");
+        Require(scheduler->IsBlockInFlight(hash) &&
+                    !scheduler->HasReceivedBlock(hash),
+                "stale received/proof state reset to a fresh request");
+        Require(scheduler->OnBlockReceived(body) &&
+                    scheduler->AcknowledgeStatelessProofStaged(hash),
+                "fresh receipt can be validated after dispatch");
+    } catch (...) {
+        DaemonContext::setInstance(nullptr);
+        throw;
+    }
+    DaemonContext::setInstance(nullptr);
+    db.close();
+    g_candidates.clear();
+    g_orphan_pool.clear();
+    g_block_index.clear();
+    InvalidateAncestryCache();
 }
 
 void RunCase(const std::filesystem::path& root, bool first_body, bool middle_gap,
@@ -707,6 +842,12 @@ int main(int argc, char** argv) {
         if (argc == 2 && std::string(argv[1]) == "--ancestor-cost") {
             RunAncestryEquivalence();
             RunCandidateCostCase();
+            std::cout << "ALL PASSED\n";
+            return 0;
+        }
+        if (argc == 2 && std::string(argv[1]) == "--markerless-dispatch") {
+            RunCsnMarkerlessDispatchLiveness(root / "markerless-dispatch");
+            std::filesystem::remove_all(root);
             std::cout << "ALL PASSED\n";
             return 0;
         }
