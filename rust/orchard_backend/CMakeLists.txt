@@ -498,6 +498,10 @@ if(DINERO_ORCHARD_BUILD_TESTS)
       message(FATAL_ERROR "OrchardDaemonWalletCycle requires the native copied-datadir migration target")
     endif()
     add_dependencies(test_orchard_wallet_cycle_daemon migrate_shielded_datadir)
+    add_test(NAME OrchardCatalogReadRetry COMMAND python3 -B
+      ${ORCHARD_HOST_ROOT}/tests/integration/test_orchard_catalog_read_retry.py)
+    set_tests_properties(OrchardCatalogReadRetry PROPERTIES
+      LABELS "integration;orchard;wallet;regression" TIMEOUT 30)
     add_test(NAME OrchardDaemonWalletCycle COMMAND python3
       ${ORCHARD_HOST_ROOT}/tests/integration/test_orchard_daemon_wallet_cycle.py
       $<TARGET_FILE:test_orchard_wallet_cycle_daemon>

@@ -353,12 +353,26 @@ class Node:
         print("PASS JSON-RPC explicit copied storage migration preserved original and selected tip", flush=True)
 
     def synced(self, account):
+        settled = None
         def caught_up():
-            view = self.rpc("wallet.orchard.listoperations", {"account": account})
-            return (view["account_sequence"] == view["captured_source_sequence"] and
-                    view["account_digest"] == view["captured_source_digest"])
+            nonlocal settled
+            try:
+                view = self.rpc("wallet.orchard.listoperations", {"account": account})
+            except RpcError as error:
+                # Provider delivery may change the two authenticated catalog
+                # snapshots through all four RPC-side attempts. Only that
+                # exact read race belongs in this bounded catch-up wait.
+                if (error.method == "wallet.orchard.listoperations" and error.code == -32603 and
+                        error.rpc_message == "Authenticated Orchard catalog changed during read"):
+                    return False
+                raise
+            if (view["account_sequence"] == view["captured_source_sequence"] and
+                    view["account_digest"] == view["captured_source_digest"]):
+                settled = view
+                return True
+            return False
         self.wait(caught_up, f"account {account} actual provider delivery")
-        return self.rpc("wallet.orchard.listoperations", {"account": account})
+        return settled
 
     def status(self, account, request_id):
         view = self.synced(account)
