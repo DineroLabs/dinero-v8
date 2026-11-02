@@ -22,6 +22,14 @@ from snapshot_transport import inspect
 BOUNDARY_HEIGHT = 149999
 
 
+def sync_directory(path: Path) -> None:
+    directory = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
+
+
 def rpc(datadir: Path, *args: str) -> str:
     cli = os.environ.get("CLI_BIN", "dinero-cli")
     return subprocess.check_output(
@@ -48,6 +56,37 @@ def verify_existing(datadir: Path, dumps: Path, height: int) -> bool:
     payload, metadata = dumps / "pending.dat", dumps / "pending.json"
     if not payload.exists() and not metadata.exists():
         return False
+    if payload.is_file() and not metadata.exists():
+        # An interruption after the payload rename leaves the only exact-height
+        # export without its metadata. Recover it from its native header and
+        # selected-chain identity; the publisher's native loader remains the
+        # authority before publication.
+        version, base_height, base_hash, profile = inspect(payload)
+        if (version, base_height, profile) != (5, height, "legacy") or \
+                selected_hash(datadir, height) != base_hash:
+            raise ValueError("unpaired payload is not the selected H149999 v5 base")
+        digest = hashlib.sha256()
+        with payload.open("rb") as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(chunk)
+        record = {
+            "base_height": height, "base_hash": base_hash,
+            "format_version": 5, "bytes": payload.stat().st_size,
+            "sha256": digest.hexdigest(), "boundary_capture": True,
+        }
+        temporary = dumps / f".pending-recovery-{os.getpid()}-{uuid.uuid4().hex}.json"
+        try:
+            with temporary.open("x") as stream:
+                json.dump(record, stream, sort_keys=True)
+                stream.write("\n")
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, metadata)
+            sync_directory(dumps)
+        finally:
+            temporary.unlink(missing_ok=True)
+        print(f"recovered v5 base={height} hash={base_hash} from retained payload", flush=True)
+        return True
     if not payload.is_file() or not metadata.is_file():
         raise ValueError("partial pending artifact exists; inspect before retry")
     data = json.loads(metadata.read_text())
@@ -109,12 +148,11 @@ def capture(datadir: Path, height: int) -> None:
             with temporary.open("rb") as stream:
                 os.fsync(stream.fileno())
             os.replace(temporary, dumps / "pending.dat")
+            # Make the data rename durable before installing metadata. After
+            # power loss, the recoverable state is data-only or the full pair.
+            sync_directory(dumps)
             os.replace(metadata_tmp, dumps / "pending.json")
-            directory = os.open(dumps, os.O_RDONLY)
-            try:
-                os.fsync(directory)
-            finally:
-                os.close(directory)
+            sync_directory(dumps)
             print(f"captured v5 base={height} hash={before} sha256={record['sha256']}; awaiting 288 descendants and native publisher gate", flush=True)
         finally:
             temporary.unlink(missing_ok=True)
@@ -134,11 +172,15 @@ def main() -> int:
             raise ValueError("exact H149999 capture requires mainnet")
         while True:
             tip = count(datadir)
-            if tip == BOUNDARY_HEIGHT:
+            if tip >= BOUNDARY_HEIGHT:
+                # A completed or data-only capture remains valid after the tip
+                # advances. Only a new export is forbidden after H149999.
+                dumps = datadir / "snapshots"
+                if tip > BOUNDARY_HEIGHT and not (dumps / "pending.dat").exists() and \
+                        not (dumps / "pending.json").exists():
+                    raise ValueError(f"missed H{BOUNDARY_HEIGHT}; current selected tip is H{tip}")
                 capture(datadir, BOUNDARY_HEIGHT)
                 return 0
-            if tip > BOUNDARY_HEIGHT:
-                raise ValueError(f"missed H{BOUNDARY_HEIGHT}; current selected tip is H{tip}")
             if not args.watch:
                 raise ValueError(f"selected tip H{tip} is below H{BOUNDARY_HEIGHT}; start --watch before the boundary")
             time.sleep(float(os.environ.get("SNAPSHOT_BOUNDARY_POLL_SECONDS", "1")))

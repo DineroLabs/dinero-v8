@@ -25,14 +25,27 @@ existing unrelated pending candidate, changed selected hash, or postactivation
 v6 export refuses without replacing the pending artifact. Keep the watcher log
 and its exit status; it is not a publication receipt. The capture height is
 fixed at H149999 and the script refuses a non-mainnet RPC endpoint.
+After H149999, rerunning the watcher can verify a completed pending capture or
+recover metadata from a data-only pending payload, after checking the v5 header
+and selected-chain hash. It never starts a new export after that height. The
+publisher refuses an unpaired pending payload instead of deleting it. If no
+payload survived an interruption, the height was missed: use an independently
+captured copy from another selected mainnet host, or fail the boundary gate.
+Keep a second supervised capture host ready for that once-only failure case.
+If the pending metadata is damaged or the H149999 base leaves the selected
+chain, the publisher keeps the native v5 boundary payload for operator review
+and leaves the previous `latest` in place. It does not publish a stale base.
 
 After capture, run the publisher only once H150287 is selected and buried.
 The publisher's existing native fresh-node gate decides whether to serve it;
 for the exact H149999 v5 base, it also installs an immutable copy in
 `$PUBROOT/pinned/v5-h149999` before updating `latest`. Archive rotation never
 touches this pinned directory. Retain its payload, manifest and signature
-even when `latest` later points at a v6 artifact. The v5 base at H149999 must
-still wait for 288 descendants: earliest publication is H150287. Orchard
+even when `latest` later points at a v6 artifact. An existing pin is rechecked
+for payload identity, mainnet/legacy profile and signature against the
+configured publisher key; key rotation needs an explicit pin migration, not an
+automatic overwrite. The v5 base at H149999 must still wait for 288
+descendants: earliest publication is H150287. Orchard
 activation itself remains H150000; this snapshot does not delay activation or
 permit a v5 snapshot with an Orchard-era base. The first possible v6 base is
 H150000, earliest publication H150288. Qualify both boundary artifacts against

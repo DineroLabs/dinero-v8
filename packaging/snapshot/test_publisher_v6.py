@@ -7,7 +7,7 @@ SCRIPT=Path(__file__).with_name('dinero-snapshot-publish.sh').resolve()
 CAPTURE=Path(__file__).with_name('capture_boundary_v5.py').resolve()
 
 class PublisherV6(unittest.TestCase):
-    def run_publication(self, profile=2, gate=True, reorg=False, key=True, fresh=False, optimize=False, failed=False, boundary=False, bad_pin=False, capture_first=False, publisher_profile='compact', other_pending_profile=None):
+    def run_publication(self, profile=2, gate=True, reorg=False, key=True, fresh=False, optimize=False, failed=False, boundary=False, bad_pin=False, capture_first=False, publisher_profile='compact', other_pending_profile=None, orphan_pending=False, existing_pin_fault=None, bad_metadata=False):
         tmp=tempfile.TemporaryDirectory(); self.addCleanup(tmp.cleanup)
         root=Path(tmp.name); snapshot_root=root/'data/snapshots'; snapshot_root.mkdir(parents=True)
         dumps=snapshot_root if publisher_profile=='compact' else snapshot_root/'full'; dumps.mkdir(parents=True,exist_ok=True)
@@ -38,6 +38,10 @@ class PublisherV6(unittest.TestCase):
             (pinned/'manifest.json').write_text('{}')
         if fresh or capture_first:
             (dumps/'pending.dat').unlink();(dumps/'pending.json').unlink()
+        if orphan_pending:
+            (dumps/'pending.json').unlink()
+        if bad_metadata:
+            (dumps/'pending.json').write_text('{}')
         bin=root/'bin';bin.mkdir()
         def executable(name, text):
             p=bin/name;p.write_text(text);p.chmod(0o755);return p
@@ -52,6 +56,22 @@ class PublisherV6(unittest.TestCase):
         ssl=shutil.which('openssl'); keypath=root/'key.pem'
         subprocess.run([ssl,'genpkey','-algorithm','ED25519','-out',str(keypath)],check=True,capture_output=True)
         pub=subprocess.check_output([ssl,'pkey','-in',str(keypath),'-pubout','-outform','DER'])[-32:]
+        if existing_pin_fault:
+            assert boundary
+            pin=root/'www/pinned/v5-h149999';pin.mkdir(parents=True)
+            (pin/'snapshot.dat').write_bytes(payload)
+            pinned_manifest={
+                'format_version':5,'network':'regtest' if existing_pin_fault=='network' else 'mainnet',
+                'snapshot_profile':'full' if existing_pin_fault=='profile' else 'legacy',
+                'snapshot':{'height':height,'block_hash':'ab'*32,'sha256':hashlib.sha256(payload).hexdigest(),
+                            'bytes':len(payload),'snapshot_file':'snapshot.dat'},
+            }
+            manifest_file=pin/'manifest.json';manifest_file.write_text(json.dumps(pinned_manifest))
+            signature=pin/'manifest.sig'
+            if existing_pin_fault=='signature':
+                signature.write_bytes(bytes(64))
+            else:
+                subprocess.run([ssl,'pkeyutl','-sign','-inkey',str(keypath),'-rawin','-in',str(manifest_file),'-out',str(signature)],check=True,capture_output=True)
         env=dict(os.environ,DATADIR=str(root/'data'),PUBROOT=str(root/'www'),KEY=str(keypath if key else root/'missing'),CLI_BIN=str(cli),DINEROD=str(daemon),GATE_TIMEOUT='2',SNAPSHOT_PROFILE=publisher_profile,PATH=str(bin)+os.pathsep+os.environ['PATH'])
         if optimize: env['PYTHONOPTIMIZE']='1'
         if capture_first:
@@ -90,6 +110,37 @@ class PublisherV6(unittest.TestCase):
         pin=root/'www/pinned/v5-h149999'
         self.assertEqual((pin/'snapshot.dat').read_bytes(),payload)
         self.assertFalse((root/'data/snapshots/pending.json').exists())
+    def test_orphan_boundary_payload_is_preserved_for_capture_recovery(self):
+        root,payload,_,r=self.run_publication(boundary=True,orphan_pending=True)
+        self.assertNotEqual(r.returncode,0)
+        self.assertEqual((root/'data/snapshots/pending.dat').read_bytes(),payload)
+        self.assertEqual((root/'www/latest/retained').read_text(),'previous publication')
+    def test_boundary_payload_survives_bad_metadata(self):
+        root,payload,_,r=self.run_publication(boundary=True,bad_metadata=True)
+        self.assertNotEqual(r.returncode,0)
+        self.assertEqual((root/'data/snapshots/pending.dat').read_bytes(),payload)
+        self.assertEqual((root/'www/latest/retained').read_text(),'previous publication')
+    def test_boundary_payload_survives_reorg_during_gate(self):
+        root,payload,_,r=self.run_publication(boundary=True,reorg=True)
+        self.assertNotEqual(r.returncode,0)
+        self.assertEqual((root/'data/snapshots/pending.dat').read_bytes(),payload)
+        self.assertEqual((root/'www/latest/retained').read_text(),'previous publication')
+    def test_corrupt_existing_pin_signature_refuses_publication(self):
+        root,_,_,r=self.run_publication(boundary=True,existing_pin_fault='signature')
+        self.assertNotEqual(r.returncode,0)
+        self.assertEqual((root/'www/latest/retained').read_text(),'previous publication')
+    def test_wrong_network_existing_pin_refuses_publication(self):
+        root,_,_,r=self.run_publication(boundary=True,existing_pin_fault='network')
+        self.assertNotEqual(r.returncode,0)
+        self.assertEqual((root/'www/latest/retained').read_text(),'previous publication')
+    def test_wrong_profile_existing_pin_refuses_publication(self):
+        root,_,_,r=self.run_publication(boundary=True,existing_pin_fault='profile')
+        self.assertNotEqual(r.returncode,0)
+        self.assertEqual((root/'www/latest/retained').read_text(),'previous publication')
+    def test_valid_existing_pin_allows_republication(self):
+        root,_,_,r=self.run_publication(boundary=True,existing_pin_fault='valid')
+        self.assertEqual(r.returncode,0,r.stdout+r.stderr)
+        self.assertTrue((root/'www/latest/manifest.json').is_file())
     def test_different_existing_v5_pin_preserves_latest(self):
         root,_,_,r=self.run_publication(boundary=True,bad_pin=True);self.assertNotEqual(r.returncode,0)
         self.assertIn('existing permanent v5 boundary artifact differs',r.stdout)

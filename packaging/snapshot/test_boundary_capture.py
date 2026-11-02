@@ -71,6 +71,35 @@ else: sys.exit(99)
         self.assertEqual(second.returncode, 0, second.stderr)
         self.assertIn("already captured", second.stdout)
 
+    def test_completed_capture_is_recognized_after_tip_advances(self):
+        self.assertEqual(self.run_capture().returncode, 0)
+        result = self.run_capture(TIP=150000)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("already captured", result.stdout)
+
+    def test_data_only_capture_is_recovered_after_tip_advances(self):
+        payload = self.write_template()
+        self.assertEqual(self.run_capture().returncode, 0)
+        pending = self.datadir / "snapshots"
+        (pending / "pending.json").unlink()  # Interruption between the two installs.
+        result = self.run_capture(TIP=150000)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((pending / "pending.dat").read_bytes(), payload)
+        record = json.loads((pending / "pending.json").read_text())
+        self.assertEqual(record["base_height"], HEIGHT)
+        self.assertEqual(record["sha256"], hashlib.sha256(payload).hexdigest())
+        self.assertTrue(record["boundary_capture"])
+
+    def test_unrelated_orphan_is_never_relabelled_after_boundary(self):
+        payload = self.write_template(height=HEIGHT - 1)
+        pending = self.datadir / "snapshots"
+        pending.mkdir()
+        (pending / "pending.dat").write_bytes(payload)
+        result = self.run_capture(TIP=150000)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse((pending / "pending.json").exists())
+        self.assertEqual((pending / "pending.dat").read_bytes(), payload)
+
     def test_watch_reaches_exact_tip(self):
         result = self.run_capture("--watch", WATCH_SEQUENCE="1")
         self.assertEqual(result.returncode, 0, result.stderr)

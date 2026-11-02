@@ -53,8 +53,32 @@ flock -n 9 || { log "another publisher run is active"; exit 0; }
 # state, so repeatedly dumping the tip would never produce a buried candidate.
 DUMP_FILE=$DUMPDIR/pending.dat
 PENDING=$DUMPDIR/pending.json
+discard_pending_unless_boundary() {
+    local reason=$1
+    # A malformed metadata file or a reorg must never silently erase the
+    # one-time H149999 export. Retain it for selected-chain review or recovery.
+    if [ -f "$DUMP_FILE" ] && python3 - "$SCRIPT_DIR" "$DUMP_FILE" "$PIN_V5_HEIGHT" <<'PYBOUNDARY'
+import sys
+sys.path.insert(0,sys.argv[1])
+from snapshot_transport import inspect
+try:
+    version,height,_,profile=inspect(sys.argv[2])
+except (OSError,ValueError):
+    raise SystemExit(1)
+raise SystemExit(0 if (version,height,profile)==(5,int(sys.argv[3]),'legacy') else 1)
+PYBOUNDARY
+    then
+        fail "$reason; retained exact v5 boundary payload for review"
+    fi
+    rm -f "$PENDING" "$DUMP_FILE"
+}
 if [ ! -f "$PENDING" ]; then
-    rm -f "$DUMP_FILE"
+    # A process may have stopped after installing the exact H149999 payload
+    # but before its metadata. Never erase an unpaired export automatically:
+    # the boundary capture can validate and recover it after the tip advances.
+    if [ -e "$DUMP_FILE" ] || [ -L "$DUMP_FILE" ]; then
+        fail "unpaired pending payload; inspect or recover before exporting again"
+    fi
     EXPORT_ARGS=(); [ "$SNAPSHOT_PROFILE" != compact ] || EXPORT_ARGS+=(compact)
     OUT=$("${CLI[@]}" dumptxoutset "$DUMP_FILE" "${EXPORT_ARGS[@]}") || fail "dumptxoutset RPC failed"
     printf '%s\n' "$OUT" > "$PENDING.tmp"
@@ -73,11 +97,11 @@ require(isinstance(d['base_hash'],str) and d['base_hash'].lower()==block, 'RPC/h
 require(version!=6 or profile==sys.argv[4], 'exporter profile differs from publication profile')
 print(height,block,version,profile)
 PYFIELDS
-) || { rm -f "$PENDING" "$DUMP_FILE"; fail "invalid pending snapshot metadata/header/profile"; }
+) || { discard_pending_unless_boundary "invalid pending metadata/header/profile"; fail "invalid pending snapshot metadata/header/profile"; }
 read -r HEIGHT BASE_HASH FORMAT FILE_PROFILE <<< "$FIELDS"
 CURRENT_HASH=$("${CLI[@]}" getblockhash "$HEIGHT" | tr -d '\"\r\n') || fail "base ancestry RPC failed"
 if [ "$CURRENT_HASH" != "$BASE_HASH" ]; then
-    rm -f "$PENDING" "$DUMP_FILE"
+    discard_pending_unless_boundary "pending base left selected chain"
     fail "pending base left selected chain; discarded candidate, kept latest"
 fi
 if [ "$FORMAT" -ge 5 ]; then
@@ -208,7 +232,7 @@ GATE_PID=""
 
 # Recheck ancestry after the potentially long native validation gate.
 CURRENT_HASH=$("${CLI[@]}" getblockhash "$HEIGHT" | tr -d '\"\r\n') || fail "final ancestry RPC failed"
-[ "$CURRENT_HASH" = "$BASE_HASH" ] || { rm -f "$PENDING" "$DUMP_FILE"; fail "base left selected chain during gate"; }
+[ "$CURRENT_HASH" = "$BASE_HASH" ] || { discard_pending_unless_boundary "base left selected chain during gate"; fail "base left selected chain during gate"; }
 
 # ── 5. Publish atomically ───────────────────────────────────────────────────
 SET_DIR=$PUBROOT/archive/$TS
@@ -224,22 +248,31 @@ if [ "$FORMAT" = 5 ] && [ "$HEIGHT" = "$PIN_V5_HEIGHT" ]; then
     PIN_DIR=$PIN_ROOT/v5-h$HEIGHT
     mkdir -p "$PIN_ROOT"
     if [ -e "$PIN_DIR" ]; then
-        python3 - "$PIN_DIR" "$HEIGHT" "$BASE_HASH" "$SHA" <<'PYPIN' \
+        python3 - "$PIN_DIR" "$HEIGHT" "$BASE_HASH" "$SHA" "$BYTES" <<'PYPIN' \
             || fail "existing permanent v5 boundary artifact differs or is incomplete"
 import hashlib,json,pathlib,sys
-root=pathlib.Path(sys.argv[1]);height=int(sys.argv[2]);block=sys.argv[3];sha=sys.argv[4]
+root=pathlib.Path(sys.argv[1]);height=int(sys.argv[2]);block=sys.argv[3];sha=sys.argv[4];size=int(sys.argv[5])
 data=json.loads((root/'manifest.json').read_text())
-if data.get('format_version')!=5:
-    raise SystemExit('wrong pinned format')
+if data.get('format_version')!=5 or data.get('network')!='mainnet' or data.get('snapshot_profile')!='legacy':
+    raise SystemExit('wrong pinned format, network or profile')
 if data['snapshot']['height']!=height or data['snapshot']['block_hash']!=block:
     raise SystemExit('wrong pinned base')
-if data['snapshot']['sha256']!=sha or not (root/'manifest.sig').is_file():
+if (data['snapshot']['sha256']!=sha or data['snapshot'].get('bytes')!=size or
+    data['snapshot'].get('snapshot_file')!='snapshot.dat' or
+    not (root/'manifest.sig').is_file()):
     raise SystemExit('incomplete pinned identity')
 with (root/'snapshot.dat').open('rb') as stream:
     digest=hashlib.file_digest(stream,'sha256').hexdigest()
 if digest!=sha:
     raise SystemExit('pinned payload hash differs')
 PYPIN
+        # Existence is not a signature check: a damaged retained signature
+        # would leave the permanent recovery URL unusable by clients.
+        openssl pkeyutl -verify -pubin \
+            -inkey <(openssl pkey -in "$KEY" -pubout) \
+            -rawin -in "$PIN_DIR/manifest.json" \
+            -sigfile "$PIN_DIR/manifest.sig" >/dev/null \
+            || fail "existing permanent v5 boundary signature is invalid"
     else
         PIN_TMP=$(mktemp -d "$PIN_ROOT/.v5-h$HEIGHT.XXXXXX")
         cp "$SET_DIR/snapshot.dat" "$SET_DIR/manifest.json" "$SET_DIR/manifest.sig" "$PIN_TMP/" \
