@@ -7,7 +7,7 @@ SCRIPT=Path(__file__).with_name('dinero-snapshot-publish.sh').resolve()
 CAPTURE=Path(__file__).with_name('capture_boundary_v5.py').resolve()
 
 class PublisherV6(unittest.TestCase):
-    def run_publication(self, profile=2, gate=True, reorg=False, key=True, fresh=False, optimize=False, failed=False, boundary=False, bad_pin=False, capture_first=False, publisher_profile='compact', other_pending_profile=None, orphan_pending=False, existing_pin_fault=None, bad_metadata=False):
+    def run_publication(self, profile=2, gate=True, reorg=False, key=True, fresh=False, optimize=False, failed=False, boundary=False, bad_pin=False, capture_first=False, publisher_profile='compact', other_pending_profile=None, orphan_pending=False, existing_pin_fault=None, bad_metadata=False, previous_profile='legacy', prior_archives=0, endpoint_switch_during_gate=False):
         tmp=tempfile.TemporaryDirectory(); self.addCleanup(tmp.cleanup)
         root=Path(tmp.name); snapshot_root=root/'data/snapshots'; snapshot_root.mkdir(parents=True)
         dumps=snapshot_root if publisher_profile=='compact' else snapshot_root/'full'; dumps.mkdir(parents=True,exist_ok=True)
@@ -32,7 +32,14 @@ class PublisherV6(unittest.TestCase):
             (root/'other-candidate.sha256').write_text(hashlib.sha256(other_payload).hexdigest())
         previous=root/'www/archive/previous';previous.mkdir(parents=True)
         (previous/'retained').write_text('previous publication')
+        previous_manifest={'network':'mainnet','format_version':5 if previous_profile=='legacy' else 6}
+        if previous_profile!='legacy': previous_manifest['snapshot_profile']=previous_profile
+        (previous/'manifest.json').write_text(json.dumps(previous_manifest))
         (root/'www/latest').symlink_to('archive/previous')
+        for n in range(prior_archives):
+            old=root/'www/archive'/f'202501{n+1:02}T000000Z'
+            old.mkdir()
+            (old/'retained').write_text('old publication')
         if bad_pin:
             pinned=root/'www/pinned/v5-h149999';pinned.mkdir(parents=True)
             (pinned/'manifest.json').write_text('{}')
@@ -52,6 +59,11 @@ class PublisherV6(unittest.TestCase):
         executable('head','#!/usr/bin/env python3\nimport sys\ndata=sys.stdin.readlines()\nn=int(sys.argv[2]);sys.stdout.writelines(data[:n] if n<0 else data[:n])\n')
         state={'assumeutxo_active':gate,'snapshot_base_height':height,'snapshot_base_block':'ab'*32,'status':'Failed' if failed else 'NotStarted','error_message':''}
         cli=executable('cli', '#!/usr/bin/env python3\nimport json,sys,pathlib,shutil\na=sys.argv\nr=pathlib.Path('+repr(str(root))+')\nif "getblockchaininfo" in a: print(json.dumps({"chain":"mainnet"}))\nelif "dumptxoutset" in a:\n i=a.index("dumptxoutset");shutil.copyfile(r/"template.dat",a[i+1]);(r/"export-args.json").write_text(json.dumps(a[i+1:]));print(json.dumps({"base_height":'+str(height)+',"base_hash":"ab"*32}))\nelif "getbackgroundvalidationprogress" in a:\n sys.exit(1) if not (r/"configured-gate").exists() else None; ready=(r/"first-gate-probe").exists(); (r/"first-gate-probe").touch(); sys.exit(1) if not ready else None; (r/"gate-ran").touch(); print('+repr(json.dumps(state))+')\nelif "getblockcount" in a: print(int((r/"tip").read_text()) if (r/"tip").exists() else '+str(height+288)+')\nelif "getblockhash" in a: print(json.dumps("cd"*32 if '+repr(reorg)+' and (r/"gate-ran").exists() else "ab"*32))\nelse: sys.exit(99)\n')
+        if endpoint_switch_during_gate:
+            needle='(r/"gate-ran").touch(); print('
+            changed='(r/"gate-ran").touch(); (r/"www/archive/previous/manifest.json").write_text(json.dumps({"network":"mainnet","format_version":6,"snapshot_profile":"full"})); print('
+            original=cli.read_text();assert needle in original
+            cli.write_text(original.replace(needle,changed))
         daemon=executable('daemon','#!/usr/bin/env python3\nimport pathlib,sys,time,signal,json\nr=pathlib.Path('+repr(str(root))+')\nd=pathlib.Path(next(a.split("=",1)[1] for a in sys.argv if a.startswith("--datadir=")))\nif not all(setting in (d/"dinero.conf").read_text().splitlines() for setting in ("lightning.oracles.enable=0","utreexo-bridge=0")):\n print("FATAL: Scheduled Orchard requires explicit disabled legacy oracles",flush=True);sys.exit(1)\nprint("# HELP din_blocks_rejected_total Number of rejected blocks",flush=True)\nprint("din_blocks_rejected_total 0",flush=True)\nc=dict(line.split("=",1) for line in (d/"dinero.conf").read_text().splitlines() if "=" in line)\npayload=pathlib.Path(c["assumeutxo_snapshot"]);manifest=json.loads(pathlib.Path(c["assumeutxo_manifest"]).read_text())\nif payload.name!=manifest["snapshot"]["snapshot_file"]:print("FATAL: Snapshot manifest snapshot_file mismatch",flush=True);sys.exit(1)\n(r/"gate-payload-name").write_text(payload.name)\n(r/"configured-gate").touch();(r/"gate-argv.json").write_text(json.dumps(sys.argv[1:]))\nsignal.signal(signal.SIGTERM,lambda *_:sys.exit(0))\nwhile True:time.sleep(.01)\n')
         ssl=shutil.which('openssl'); keypath=root/'key.pem'
         subprocess.run([ssl,'genpkey','-algorithm','ED25519','-out',str(keypath)],check=True,capture_output=True)
@@ -104,6 +116,12 @@ class PublisherV6(unittest.TestCase):
         self.assertEqual(json.loads((pin/'manifest.json').read_text())['snapshot']['height'],149999)
         self.assertTrue((pin/'manifest.sig').is_file())
         self.assertEqual((root/'www/latest/manifest.json').read_bytes(),(pin/'manifest.json').read_bytes())
+    def test_v5_pin_survives_archive_rotation(self):
+        root,payload,_,r=self.run_publication(boundary=True,prior_archives=8)
+        self.assertEqual(r.returncode,0,r.stdout+r.stderr)
+        self.assertFalse((root/'www/archive/20250101T000000Z').exists())
+        self.assertEqual((root/'www/pinned/v5-h149999/snapshot.dat').read_bytes(),payload)
+        self.assertTrue((root/'www/latest/manifest.json').is_file())
     def test_exact_capture_waits_288_then_pins_v5(self):
         root,payload,_,r=self.run_publication(boundary=True,capture_first=True)
         self.assertEqual(r.returncode,0,r.stdout+r.stderr)
@@ -170,14 +188,14 @@ class PublisherV6(unittest.TestCase):
     def test_full_export_cannot_publish_to_phone(self):
         root,_,_,r=self.run_publication(profile=1);self.assertNotEqual(r.returncode,0);self.assertEqual((root/'www/latest/retained').read_text(),'previous publication')
     def test_full_publish_preserves_compact_pending_in_shared_datadir(self):
-        root,_,_,r=self.run_publication(profile=1,publisher_profile='full',other_pending_profile='compact')
+        root,_,_,r=self.run_publication(profile=1,publisher_profile='full',other_pending_profile='compact',previous_profile='full')
         self.assertEqual(r.returncode,0,r.stdout+r.stderr)
         other=root/'data/snapshots/pending.dat'
         self.assertEqual(hashlib.sha256(other.read_bytes()).hexdigest(),(root/'other-candidate.sha256').read_text())
         self.assertTrue((root/'data/snapshots/pending.json').is_file())
         self.assertEqual(json.loads((root/'www/latest/manifest.json').read_text())['snapshot_profile'],'full')
     def test_full_profile_mismatch_cannot_delete_compact_pending(self):
-        root,_,_,r=self.run_publication(profile=2,publisher_profile='full',other_pending_profile='compact')
+        root,_,_,r=self.run_publication(profile=2,publisher_profile='full',other_pending_profile='compact',previous_profile='full')
         self.assertNotEqual(r.returncode,0)
         other=root/'data/snapshots/pending.dat'
         self.assertEqual(hashlib.sha256(other.read_bytes()).hexdigest(),(root/'other-candidate.sha256').read_text())
@@ -189,6 +207,29 @@ class PublisherV6(unittest.TestCase):
         other=root/'data/snapshots/full/pending.dat'
         self.assertEqual(hashlib.sha256(other.read_bytes()).hexdigest(),(root/'other-candidate.sha256').read_text())
         self.assertTrue((root/'data/snapshots/full/pending.json').is_file())
+    def test_full_cannot_replace_unmarked_legacy_phone_latest(self):
+        root,_,_,r=self.run_publication(profile=1,publisher_profile='full')
+        self.assertNotEqual(r.returncode,0,r.stdout+r.stderr)
+        self.assertIn('endpoint profile',r.stdout+r.stderr)
+        self.assertEqual((root/'www/latest/retained').read_text(),'previous publication')
+        self.assertTrue((root/'data/snapshots/full/pending.dat').is_file())
+        self.assertFalse((root/'gate-ran').exists())
+    def test_full_cannot_replace_compact_v6_latest(self):
+        root,_,_,r=self.run_publication(profile=1,publisher_profile='full',previous_profile='compact')
+        self.assertNotEqual(r.returncode,0,r.stdout+r.stderr)
+        self.assertIn('endpoint profile',r.stdout+r.stderr)
+        self.assertEqual((root/'www/latest/retained').read_text(),'previous publication')
+    def test_compact_cannot_replace_full_v6_latest(self):
+        root,_,_,r=self.run_publication(previous_profile='full')
+        self.assertNotEqual(r.returncode,0,r.stdout+r.stderr)
+        self.assertIn('endpoint profile',r.stdout+r.stderr)
+        self.assertEqual((root/'www/latest/retained').read_text(),'previous publication')
+    def test_endpoint_switch_during_native_gate_refuses_publication(self):
+        root,_,_,r=self.run_publication(endpoint_switch_during_gate=True)
+        self.assertNotEqual(r.returncode,0,r.stdout+r.stderr)
+        self.assertTrue((root/'gate-ran').exists())
+        self.assertIn('endpoint profile',r.stdout+r.stderr)
+        self.assertEqual((root/'www/latest/retained').read_text(),'previous publication')
     def test_native_gate_refusal_preserves_latest(self):
         root,_,_,r=self.run_publication(gate=False);self.assertNotEqual(r.returncode,0);self.assertEqual((root/'www/latest/retained').read_text(),'previous publication')
     def test_reorg_during_gate_refuses(self):

@@ -49,6 +49,37 @@ chown dinero:dinero "$SNAPSHOT_ROOT" "$DUMPDIR" || true
 exec 9>"$SNAPSHOT_ROOT/publisher.lock"
 flock -n 9 || { log "another publisher run is active"; exit 0; }
 
+# A full v6 artifact must never replace the phone endpoint's latest (or the
+# reverse). Existing public v5 manifests predate snapshot_profile: that
+# legacy endpoint is the compact/phone endpoint. Check again after the native
+# gate in case an independent publisher changed this root while it ran.
+verify_endpoint_profile() {
+    if [ ! -e "$PUBROOT/latest" ] && [ ! -L "$PUBROOT/latest" ]; then
+        return 0
+    fi
+    python3 - "$PUBROOT/latest/manifest.json" "$SNAPSHOT_PROFILE" <<'PYENDPOINT' \
+        || fail "endpoint profile collision or unreadable latest manifest; kept latest"
+import json, sys
+try:
+    with open(sys.argv[1]) as stream:
+        data = json.load(stream)
+    if data.get('network') != 'mainnet' or type(data.get('format_version')) is not int:
+        raise ValueError('latest is not a mainnet snapshot manifest')
+    profile = data.get('snapshot_profile')
+    if data['format_version'] < 6 and profile in (None, 'legacy'):
+        endpoint = 'compact'
+    elif data['format_version'] == 6 and profile in ('compact', 'full'):
+        endpoint = profile
+    else:
+        raise ValueError('latest has an unknown snapshot profile')
+    if endpoint != sys.argv[2]:
+        raise ValueError(f'latest belongs to {endpoint}, requested {sys.argv[2]}')
+except (OSError, ValueError, TypeError, AttributeError) as error:
+    raise SystemExit(f'endpoint profile check refused: {error}')
+PYENDPOINT
+}
+verify_endpoint_profile
+
 # Keep one candidate while waiting for burial. The daemon exports its current
 # state, so repeatedly dumping the tip would never produce a buried candidate.
 DUMP_FILE=$DUMPDIR/pending.dat
@@ -235,6 +266,7 @@ CURRENT_HASH=$("${CLI[@]}" getblockhash "$HEIGHT" | tr -d '\"\r\n') || fail "fin
 [ "$CURRENT_HASH" = "$BASE_HASH" ] || { discard_pending_unless_boundary "base left selected chain during gate"; fail "base left selected chain during gate"; }
 
 # ── 5. Publish atomically ───────────────────────────────────────────────────
+verify_endpoint_profile
 SET_DIR=$PUBROOT/archive/$TS
 mkdir -p "$SET_DIR"
 cp "$DUMP_FILE"  "$SET_DIR/snapshot.dat"
