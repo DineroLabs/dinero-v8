@@ -150,10 +150,12 @@ void RunCase(const std::filesystem::path& root, bool first_body, bool middle_gap
     InvalidateAncestryCache();
 }
 
-// Exercise the production connect-abort path with an exact stored body. A
-// deterministic missing mandatory commitment must be persisted as invalid;
-// otherwise its lower-hash tip can outrank an equal-work sibling forever.
-void RunDeterministicFilterFailure(const std::filesystem::path& root) {
+// Exercise the production connect-abort path with an exact stored body. Both a
+// missing mandatory commitment and an empty header-first body are deterministic
+// failures; leaving either retryable lets its lower-hash tip outrank an
+// equal-work sibling forever.
+void RunDeterministicCandidateFailure(const std::filesystem::path& root,
+                                      bool empty_body = false) {
     using namespace dinero;
     ChainDB db;
     Require(db.init(root / "chaindb") == Status::Ok, "filter case ChainDB opens");
@@ -199,6 +201,7 @@ void RunDeterministicFilterFailure(const std::filesystem::path& root) {
     second.header.nonce = 102;
     Block& bad = first.GetHash() < second.GetHash() ? first : second;
     Block& sibling = first.GetHash() < second.GetHash() ? second : first;
+    if (empty_body) bad.vtx.clear();
     auto* bad_index = AddBlockIndex(bad.header, 2);
     auto* sibling_index = AddBlockIndex(sibling.header, 2);
     bad_index->status |= BLOCK_HAVE_DATA;
@@ -228,8 +231,11 @@ void RunDeterministicFilterFailure(const std::filesystem::path& root) {
         ActivationRetryTestAccess::Prepare(svc, parent, db);
         ActivationRetryTestAccess::PrepareConnect(svc);
         svc.PersistStoredBodyPosition(bad_index->hash, pos.value());
-        Require(svc.getBlockByHash(bad_index->hash).status() == Status::Ok,
+        const auto stored = svc.getBlockByHash(bad_index->hash);
+        Require(stored.status() == Status::Ok,
                 "filter case stored body is readable");
+        if (empty_body) Require(stored->vtx.empty(),
+                                "header-first empty body reaches activation");
         svc.AddCandidate(bad_index);
         svc.AddCandidate(sibling_index);
         Require(ActivationRetryTestAccess::Best(svc) == bad_index,
@@ -402,7 +408,11 @@ int main(int argc, char** argv) {
         RunCase(root / "first-body-gap", false, true);
         RunCase(root / "whole-path-failure", true, false);
         RunCase(root / "snapshot-cap-failure", true, false, true);
-        RunDeterministicFilterFailure(root / "filter-failure");
+        RunDeterministicCandidateFailure(root / "filter-failure");
+        // A header-first empty body skips the DNRF precheck and reaches the
+        // validator's structural rejection. It must not remain retryable and
+        // exclude an equal-work sibling after activation or restart.
+        RunDeterministicCandidateFailure(root / "structural-empty", true);
         std::filesystem::remove_all(root);
         std::cout << "ALL PASSED\n";
         return 0;

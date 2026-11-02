@@ -19029,6 +19029,7 @@ bool IsUnambiguousConsensusViolation(const std::string& err) {
         "double-spend-in-block",
         "Coinbase pays too much",
         "Block has no transactions",
+        "invalid-coinbase-prevout-structure",
         "Stateless validation: Script validation failed",
         "utreexo-phase3-height-limit-exceeded",
         "shielded-delta-accounting-mismatch",
