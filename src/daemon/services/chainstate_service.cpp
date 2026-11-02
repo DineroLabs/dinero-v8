@@ -12656,6 +12656,98 @@ void ChainstateService::ActivateBestChainPass(const ActivationParentPlan* prepar
         // advances over the proposed branch without changing canonical state.
         consensus::UtreexoForest preflight_forest = restored_forest;
         network::StatelessNode preflight_node(&preflight_forest);
+
+        // Replay the shielded side against a private fork state as well. A
+        // Utreexo proof does not authenticate a shielded anchor, nullifier or
+        // the post-block DNRS value. The latter changes on transparent-only
+        // blocks too, so every connect-path block must pass this preflight.
+        consensus::shielded::CommitmentTree preflight_shielded_tree = shielded_tree_;
+        consensus::shielded::AnchorHistory preflight_anchors = shielded_anchor_history_;
+        consensus::shielded::NullifierSet preflight_nullifiers;
+        const auto live_nullifier_count = shielded_nullifiers_.TryCount();
+        if (!live_nullifier_count ||
+            preflight_nullifiers.Open(":memory:") !=
+                consensus::shielded::NullifierSet::OpenResult::Ok) {
+            if (logger_) logger_->error(
+                "[ABC-CSN] Shielded preflight cannot clone nullifier state");
+            return;
+        }
+        std::vector<std::pair<consensus::shielded::Hash, uint32_t>> nullifier_rows;
+        if (*live_nullifier_count > static_cast<uint64_t>(SIZE_MAX)) {
+            if (logger_) logger_->error(
+                "[ABC-CSN] Shielded preflight nullifier count exceeds addressable memory");
+            return;
+        }
+        nullifier_rows.reserve(static_cast<size_t>(*live_nullifier_count));
+        const bool enumerated = shielded_nullifiers_.ForEach(
+            [&](uint32_t height, const uint8_t* bytes) {
+                consensus::shielded::Hash nullifier{};
+                std::copy_n(bytes, nullifier.size(), nullifier.begin());
+                nullifier_rows.emplace_back(nullifier, height);
+                return true;
+            });
+        if (!enumerated || nullifier_rows.size() != *live_nullifier_count ||
+            !preflight_nullifiers.InsertBatch(nullifier_rows) ||
+            preflight_nullifiers.TryCount() != live_nullifier_count) {
+            if (logger_) logger_->error(
+                "[ABC-CSN] Shielded preflight nullifier clone incomplete");
+            return;
+        }
+        // Apply exactly the disconnect twin used by DisconnectTip, in the
+        // same tip-to-fork order. The epoch-reset undo restores the whole
+        // pre-reset pool; a simple RollbackAbove cannot recreate wiped rows.
+        for (const auto* block_index : disconnect_path) {
+            const auto undo_result = ReadStoredUndo(block_index->hash);
+            if (undo_result.status() != Status::Ok) {
+                if (logger_) logger_->error(
+                    "[ABC-CSN] Shielded preflight missing disconnect undo at height " +
+                    std::to_string(block_index->height));
+                return;
+            }
+            const auto& undo = undo_result.value();
+            if ((consensus::shielded::IsShieldedEpochResetHeight(
+                     static_cast<uint32_t>(block_index->height),
+                     Params().shielded_epoch_reset_height,
+                     Params().shielded_spend_auth_epoch_reset_height) &&
+                 !undo.pre_reset_shielded_epoch) ||
+                (block_index->height >= static_cast<int>(Params().shielded_activation_height) &&
+                 !undo.pre_reset_shielded_epoch &&
+                 (!undo.pre_block_shielded_frontier ||
+                  !undo.pre_block_shielded_anchors))) {
+                if (logger_) logger_->error(
+                    "[ABC-CSN] Shielded preflight undo lacks fork state at height " +
+                    std::to_string(block_index->height));
+                return;
+            }
+            std::string undo_error;
+            if (!consensus::shielded::DisconnectBlockShieldedSection(
+                    static_cast<uint32_t>(block_index->height),
+                    undo.pre_reset_shielded_epoch,
+                    undo.pre_block_shielded_frontier,
+                    preflight_shielded_tree, preflight_nullifiers,
+                    &preflight_anchors, undo_error,
+                    undo.pre_block_shielded_anchors)) {
+                if (logger_) logger_->error(
+                    "[ABC-CSN] Shielded preflight cannot rewind to fork: " +
+                    undo_error);
+                return;
+            }
+        }
+        // A failed SQLite rollback is otherwise silent (RollbackAbove is a
+        // void legacy API). Enumerate to verify that no old-branch nullifier
+        // remains above the fork point.
+        if (!preflight_nullifiers.ForEach(
+                [&](uint32_t height, const uint8_t*) {
+                    return height <= static_cast<uint32_t>(fork_point->height);
+                })) {
+            if (logger_) logger_->error(
+                "[ABC-CSN] Shielded preflight nullifier rewind incomplete");
+            return;
+        }
+        consensus::ConsensusUTXOSet preflight_utxo_set;
+        consensus::BlockValidator preflight_validator(&preflight_utxo_set);
+        preflight_validator.setShieldedState(
+            &preflight_shielded_tree, &preflight_nullifiers, &preflight_anchors);
         const auto reject_proven_invalid = [&](CBlockIndex* index,
                                                const std::string& reason) {
             // Only an authenticated, deterministic consensus failure may
@@ -12723,19 +12815,39 @@ void ChainstateService::ActivateBestChainPass(const ActivationParentPlan* prepar
                 }
                 return;
             }
-            // Shielded anchor/nullifier validation still depends on the
-            // mutable selected shielded state. Until it can be run on a
-            // private fork copy, refuse this reorg before the forest rewind
-            // instead of discovering an invalid bundle after disconnect.
-            if (std::any_of(candidate.vtx.begin() + 1, candidate.vtx.end(),
-                    [](const Transaction& tx) { return tx.IsShielded(); })) {
+            std::vector<int64_t> shielded_deltas;
+            std::string shielded_error;
+            if (!preflight_validator.ComputeShieldedDeltasForStoredBlock(
+                    candidate, static_cast<uint32_t>(block_index->height),
+                    shielded_deltas, shielded_error, spent_outputs)) {
                 if (logger_) logger_->error(
-                    "[ABC-CSN] Shielded branch requires scratch-state preflight; "
-                    "reorg refused before canonical mutation. Recover with a "
-                    "newer qualified snapshot or a full-node validator.");
+                    "[ABC-CSN] Shielded preflight rejected height " +
+                    std::to_string(block_index->height) + ": " + shielded_error +
+                    " — canonical state left untouched");
+                return;
+            }
+            consensus::BlockUndo shielded_undo;
+            if (!preflight_validator.ApplyBlockShieldedSection(
+                    candidate, static_cast<uint32_t>(block_index->height),
+                    shielded_deltas, shielded_undo, shielded_error)) {
+                if (logger_) logger_->error(
+                    "[ABC-CSN] Shielded preflight rejected height " +
+                    std::to_string(block_index->height) + ": " + shielded_error +
+                    " — canonical state left untouched");
                 return;
             }
         }
+        const auto expected_shielded_root =
+            consensus::shielded::ComputeShieldedRoot(
+                preflight_shielded_tree, preflight_nullifiers,
+                preflight_anchors);
+        if (!expected_shielded_root) {
+            if (logger_) logger_->error(
+                "[ABC-CSN] Shielded preflight final root unavailable");
+            return;
+        }
+        const auto expected_anchors =
+            preflight_anchors.SerializePersistenceBytes();
 
         // Step 2: Restore forest + StatelessNode state
         stateless_node_->RewindToCheckpoint(static_cast<uint32_t>(fork_point->height), restored_forest);
@@ -12881,6 +12993,22 @@ void ChainstateService::ActivateBestChainPass(const ActivationParentPlan* prepar
                                             std::to_string(block_index->height) + ": " + bk_err);
                 return;
             }
+        }
+
+        // The real replay must reproduce the entire private-fork shielded
+        // result. The commitment binds tree, nullifiers and the consensus
+        // anchor window; the persistence comparison also checks the bounded
+        // anchor eviction journal needed for a subsequent reorg.
+        const auto selected_shielded_root =
+            consensus::shielded::ComputeShieldedRoot(
+                shielded_tree_, shielded_nullifiers_,
+                shielded_anchor_history_);
+        if (!selected_shielded_root ||
+            *selected_shielded_root != *expected_shielded_root ||
+            shielded_anchor_history_.SerializePersistenceBytes() !=
+                expected_anchors) {
+            EnterSafeMode("CSN shielded state diverged from private-fork preflight");
+            return;
         }
 
         // Step 5: Signal OnUtxoBlock handler to reset
