@@ -23287,6 +23287,41 @@ bool ChainstateService::ConnectTip(CBlockIndex* tip_to_connect, std::string* out
         return fail("read-block-failed-status-" + std::to_string(static_cast<int>(block_result.status())));
     }
     Block block = block_result.value();
+    // A body persisted by an older scheduler may have the right header hash
+    // but unrelated transactions. It has not necessarily passed AcceptBlock's
+    // Merkle check, especially on a below-tip fork-heal branch. Do this before
+    // the DNRF precheck or ConnectBlock can classify a failure as consensus
+    // invalid and permanently mark the honest header BLOCK_FAILED_VALID.
+    bool merkle_mutated = false;
+    const auto body_merkle = consensus::ComputeMerkleRoot(block.vtx, &merkle_mutated);
+    if (merkle_mutated || body_merkle != block.header.merkle_root) {
+        const uint32_t stale_body_flags = static_cast<uint32_t>(BLOCK_HAVE_DATA) |
+                                          static_cast<uint32_t>(BLOCK_VALID_TRANSACTIONS);
+        tip_to_connect->status &= ~stale_body_flags;
+        unreadable_blocks_.mark(tip_to_connect->hash);
+        const auto saved = chain_db_->getHeaderMetadata(tip_to_connect->hash);
+        if (saved.ok()) {
+            auto metadata = saved.value();
+            metadata.status_flags &= ~stale_body_flags;
+            metadata.data_size = 0;
+            metadata.data_pos = 0;
+            metadata.file_number = 0;
+            ChainWriteToken token;
+            const auto status = chain_db_->putHeaderMetadata(token, tip_to_connect->hash,
+                                                             metadata);
+            if (status != Status::Ok && logger_) {
+                logger_->error("[ConnectTip] Could not persist unbound-body quarantine for " +
+                               tip_to_connect->hash.GetHex());
+            }
+        }
+        if (logger_) {
+            logger_->warning("[ConnectTip] Stored body Merkle mismatch or mutation for " +
+                             tip_to_connect->hash.GetHex() +
+                             "; preserving header and requesting a replacement body");
+        }
+        if (out_consensus_invalid) *out_consensus_invalid = false;
+        return fail("stored-body-merkle-unbound");
+    }
 #ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
     std::optional<PreparedHistoricalRuntimeOutbox> historical_delivery;
     try {

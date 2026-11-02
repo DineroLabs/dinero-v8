@@ -3,6 +3,7 @@
 #include "storage/block_storage.h"
 #include "storage/chain_db.h"
 #include "consensus/block_lifecycle.h"
+#include "consensus/merkle_root.h"
 
 #include <limits>
 
@@ -124,7 +125,8 @@ enum class BodyPositionPersistResult {
 // header. A HAVE_DATA bit is only a claim: interrupted writes and stale
 // flatfile references can leave it pointing at a missing, corrupt, or wrong
 // block. Preserve an existing position only when a strict read resolves to the
-// requested hash; otherwise replace it with the scheduler's verified copy.
+// requested hash and its transactions bind to the header Merkle root without
+// mutation; otherwise replace it with the scheduler's verified copy.
 //
 // Status::NotFound means the header metadata row does not exist. The caller
 // that owns the in-memory block index may synthesize that row; storage code
@@ -149,8 +151,12 @@ inline StatusOr<BodyPositionPersistResult> PersistVerifiedArchivalBodyPosition(
     if (claimed_existing_body) {
         const auto existing = ReadArchivalBlockDetailed(
             chain_db, block_storage, hash, ArchivalReadMode::RequireFlatfiles);
+        bool merkle_mutated = false;
         if (existing.result.status() == Status::Ok &&
-            existing.result.value().GetHash() == hash) {
+            existing.result.value().GetHash() == hash &&
+            consensus::ComputeMerkleRoot(existing.result.value().vtx, &merkle_mutated) ==
+                existing.result.value().header.merkle_root &&
+            !merkle_mutated) {
             return BodyPositionPersistResult::RetainedReadable;
         }
     }

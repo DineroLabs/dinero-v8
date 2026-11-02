@@ -199,9 +199,16 @@ void RunDeterministicCandidateFailure(const std::filesystem::path& root,
     first.header.nonce = 101;
     Block second = first;
     second.header.nonce = 102;
+    if (empty_body) {
+        // A zero-transaction body is bound only to a header with the empty
+        // Merkle root. Keep this deterministic-invalid case distinct from a
+        // corrupt body stored under an otherwise honest header.
+        first.vtx.clear();
+        first.header.merkle_root = consensus::ComputeMerkleRoot(first.vtx);
+        while (!(first.GetHash() < second.GetHash())) ++first.header.nonce;
+    }
     Block& bad = first.GetHash() < second.GetHash() ? first : second;
     Block& sibling = first.GetHash() < second.GetHash() ? second : first;
-    if (empty_body) bad.vtx.clear();
     auto* bad_index = AddBlockIndex(bad.header, 2);
     auto* sibling_index = AddBlockIndex(sibling.header, 2);
     bad_index->status |= BLOCK_HAVE_DATA;
@@ -235,7 +242,7 @@ void RunDeterministicCandidateFailure(const std::filesystem::path& root,
         Require(stored.status() == Status::Ok,
                 "filter case stored body is readable");
         if (empty_body) Require(stored->vtx.empty(),
-                                "header-first empty body reaches activation");
+                                "merkle-bound empty body reaches activation");
         svc.AddCandidate(bad_index);
         svc.AddCandidate(sibling_index);
         Require(ActivationRetryTestAccess::Best(svc) == bad_index,
@@ -257,6 +264,150 @@ void RunDeterministicCandidateFailure(const std::filesystem::path& root,
     const auto reopened = db.getHeaderMetadata(bad_index->hash);
     Require(reopened.ok() && (reopened->status_flags & BLOCK_FAILED_VALID) != 0,
             "deterministic failure remains invalid after database reopen");
+    files->close();
+    db.close();
+    g_candidates.clear();
+    g_orphan_pool.clear();
+    g_block_index.clear();
+    InvalidateAncestryCache();
+}
+
+// A pre-fix binary could persist a body whose header hash is honest but whose
+// transactions do not match that header's Merkle root. On restart, the stored
+// body must be discarded and made replaceable; it must never poison the header.
+void RunLegacyStoredBodyRecovery(const std::filesystem::path& root,
+                                 bool mutated_body = false) {
+    using namespace dinero;
+    ChainDB db;
+    Require(db.init(root / "chaindb") == Status::Ok, "legacy-body ChainDB opens");
+    auto files = std::make_shared<BlockStorage>();
+    Require(files->init(root) == Status::Ok, "legacy-body flatfiles open");
+
+    BlockHeader genesis_header;
+    genesis_header.version = 1;
+    genesis_header.timestamp = 1000000;
+    genesis_header.difficulty = 0x207fffff;
+    genesis_header.nonce = 1;
+    auto* genesis = AddBlockIndex(genesis_header, 0);
+    BlockHeader parent_header = genesis_header;
+    parent_header.prev_block_hash = genesis->hash;
+    parent_header.timestamp += 1;
+    parent_header.nonce += 1;
+    auto* parent = AddBlockIndex(parent_header, 1);
+    genesis->status |= BLOCK_VALID_CHAIN | BLOCK_HAVE_DATA;
+    parent->status |= BLOCK_VALID_CHAIN | BLOCK_HAVE_DATA;
+
+    Transaction coinbase;
+    TxInput input;
+    input.prevout.txid = TxId();
+    input.prevout.vout = UINT32_MAX;
+    input.scriptSig = {1, 2};
+    input.sequence = UINT32_MAX;
+    coinbase.vin.push_back(input);
+    TxOutput output;
+    output.value = AmountUna::Una(1);
+    output.scriptPubKey = {0x51};
+    coinbase.vout.push_back(output);
+    Block correct;
+    correct.vtx = {coinbase};
+    if (mutated_body) {
+        auto second = coinbase;
+        second.vout.front().value = AmountUna::Una(2);
+        auto third = coinbase;
+        third.vout.front().value = AmountUna::Una(3);
+        correct.vtx.push_back(second);
+        correct.vtx.push_back(third);
+    }
+    correct.header.version = 1;
+    correct.header.prev_block_hash = parent->hash;
+    correct.header.timestamp = 1000002;
+    correct.header.difficulty = 0x207fffff;
+    correct.header.merkle_root = consensus::ComputeMerkleRoot(correct.vtx);
+    correct.header.nonce = 101;
+    const auto hash = correct.GetHash();
+    auto* candidate = AddBlockIndex(correct.header, 2);
+    candidate->status |= BLOCK_HAVE_DATA;
+
+    Block wrong = correct;
+    if (mutated_body) {
+        wrong.vtx.push_back(wrong.vtx.back());
+        bool mutated = false;
+        Require(consensus::ComputeMerkleRoot(wrong.vtx, &mutated) ==
+                    correct.header.merkle_root && mutated,
+                "legacy-body fixture duplicates last transaction without changing Merkle root");
+    } else {
+        wrong.vtx.front().vout.front().value = AmountUna::Una(2);
+        Require(consensus::ComputeMerkleRoot(wrong.vtx) != correct.header.merkle_root,
+                "legacy-body fixture changes transactions without changing header");
+    }
+    const auto token = ChainWriteToken::CreateForTesting();
+    Require(db.setTip(token, parent->hash, 1, arith_uint256()) == Status::Ok,
+            "legacy-body active tip staged");
+    Require(db.putHeader(token, hash, correct.header, 2, arith_uint256(3)) == Status::Ok,
+            "legacy-body header staged");
+    ChainDB::PersistedHeaderMetadata metadata;
+    metadata.parent_hash = parent->hash;
+    metadata.height = 2;
+    metadata.chainwork = arith_uint256(3);
+    metadata.status_flags = candidate->status;
+    Require(db.putHeaderMetadata(token, hash, metadata) == Status::Ok,
+            "legacy-body metadata staged");
+    const auto wrong_pos = files->writeBlock(hash, wrong);
+    Require(wrong_pos.ok(), "legacy-body mismatched body stored");
+    {
+        ChainstateService svc;
+        svc.setChainDB(&db);
+        svc.setBlockStorage(files);
+        ActivationRetryTestAccess::Prepare(svc, parent, db);
+        ActivationRetryTestAccess::PrepareConnect(svc);
+        svc.PersistStoredBodyPosition(hash, wrong_pos.value());
+        Require(svc.getBlockByHash(hash).ok(), "legacy-body old stored body is readable by hash");
+        svc.AddCandidate(candidate);
+        svc.ActivateBestChain();
+        Require((candidate->status & BLOCK_FAILED_VALID) == 0,
+                "mismatched old body does not mark honest header consensus-invalid");
+        Require((candidate->status & BLOCK_HAVE_DATA) == 0,
+                "mismatched old body is removed from candidate data availability");
+        const auto quarantined = db.getHeaderMetadata(hash);
+        Require(quarantined.ok() && quarantined->data_size == 0 &&
+                    (quarantined->status_flags & BLOCK_HAVE_DATA) == 0,
+                "mismatched old body is durably quarantined");
+        if (mutated_body) {
+            const auto correct_pos = files->writeBlock(hash, correct);
+            Require(correct_pos.ok(), "replacement body written");
+            svc.PersistStoredBodyPosition(hash, correct_pos.value());
+            const auto repaired = svc.getBlockByHash(hash);
+            Require(repaired.ok() &&
+                        consensus::ComputeMerkleRoot(repaired->vtx) == correct.header.merkle_root,
+                    "verified replacement body becomes readable");
+            Require(svc.hasBlockByHash(hash),
+                    "verified replacement clears unreadable quarantine");
+        }
+    }
+    db.close();
+    Require(db.init(root / "chaindb") == Status::Ok,
+            "legacy-body ChainDB reopens");
+    if (!mutated_body) {
+        {
+            ChainstateService restarted;
+            restarted.setChainDB(&db);
+            restarted.setBlockStorage(files);
+            Require(!restarted.hasBlockByHash(hash) &&
+                        restarted.getBlockByHash(hash).status() == Status::NotFound,
+                    "quarantined body stays unavailable after restart");
+            const auto correct_pos = files->writeBlock(hash, correct);
+            Require(correct_pos.ok(), "replacement body written after restart");
+            restarted.PersistStoredBodyPosition(hash, correct_pos.value());
+            const auto repaired = restarted.getBlockByHash(hash);
+            Require(repaired.ok() &&
+                        consensus::ComputeMerkleRoot(repaired->vtx) == correct.header.merkle_root,
+                    "verified replacement body becomes readable after restart");
+        }
+    }
+    const auto reopened = db.getHeaderMetadata(hash);
+    Require(reopened.ok() && (reopened->status_flags & BLOCK_FAILED_VALID) == 0 &&
+                (reopened->status_flags & BLOCK_HAVE_DATA) != 0,
+            "replacement body retains valid header status after restart");
     files->close();
     db.close();
     g_candidates.clear();
@@ -413,6 +564,8 @@ int main(int argc, char** argv) {
         // validator's structural rejection. It must not remain retryable and
         // exclude an equal-work sibling after activation or restart.
         RunDeterministicCandidateFailure(root / "structural-empty", true);
+        RunLegacyStoredBodyRecovery(root / "legacy-stored-body");
+        RunLegacyStoredBodyRecovery(root / "legacy-mutated-body", true);
         std::filesystem::remove_all(root);
         std::cout << "ALL PASSED\n";
         return 0;

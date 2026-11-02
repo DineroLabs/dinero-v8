@@ -580,6 +580,44 @@ TEST(PersistStoredBodyPosition_ReplacesStaleMetadataOnly) {
     std::filesystem::remove_all(root);
 }
 
+TEST(PersistStoredBodyPosition_ReplacesUnboundStoredBody) {
+    const auto root = MakeTempRoot();
+    ChainDB chain_db;
+    ASSERT_TRUE(chain_db.init(root / "chaindb") == Status::Ok);
+    BlockStorage block_storage;
+    ASSERT_TRUE(block_storage.init(root) == Status::Ok);
+    const auto token = ChainWriteToken::CreateForTesting();
+    const Block correct = MakeBlock(78);
+    const auto hash = correct.GetHash();
+    Block wrong = correct;
+    wrong.vtx.front().vout.front().value = AmountUna::Una(51);
+    ASSERT_TRUE(wrong.GetHash() == hash);
+    ASSERT_TRUE(wrong.vtx.front().GetTxid() != correct.vtx.front().GetTxid());
+    const auto wrong_pos = block_storage.writeBlock(hash, wrong);
+    const auto correct_pos = block_storage.writeBlock(hash, correct);
+    ASSERT_TRUE(wrong_pos.ok() && correct_pos.ok());
+    ChainDB::PersistedHeaderMetadata metadata;
+    metadata.height = 78;
+    metadata.status_flags = BLOCK_VALID_HEADER | BLOCK_HAVE_DATA;
+    metadata.file_number = wrong_pos->file_number;
+    metadata.data_pos = static_cast<uint32_t>(wrong_pos->offset);
+    metadata.data_size = wrong_pos->size;
+    ASSERT_TRUE(chain_db.putHeaderMetadata(token, hash, metadata) == Status::Ok);
+
+    const auto result = storage::PersistVerifiedArchivalBodyPosition(
+        chain_db, &block_storage, hash, correct_pos.value());
+    ASSERT_TRUE(result.ok() &&
+                result.value() == storage::BodyPositionPersistResult::ReplacedStale);
+    const auto repaired = storage::ReadArchivalBlockDetailed(
+        chain_db, &block_storage, hash,
+        storage::ArchivalReadMode::RequireFlatfiles);
+    ASSERT_TRUE(repaired.result.ok() &&
+                repaired.result->vtx.front().GetTxid() == correct.vtx.front().GetTxid());
+    block_storage.close();
+    chain_db.close();
+    std::filesystem::remove_all(root);
+}
+
 int main() {
     SelectParams(Chain::MAINNET);
     std::cout << "\n===========================================================\n";
@@ -608,6 +646,9 @@ int main() {
     std::cout << " OK" << std::endl;
     std::cout << "Running: PersistStoredBodyPosition_ReplacesStaleMetadataOnly..." << std::flush;
     test_PersistStoredBodyPosition_ReplacesStaleMetadataOnly();
+    std::cout << " OK" << std::endl;
+    std::cout << "Running: PersistStoredBodyPosition_ReplacesUnboundStoredBody..." << std::flush;
+    test_PersistStoredBodyPosition_ReplacesUnboundStoredBody();
     std::cout << " OK" << std::endl;
     std::cout << "\nALL ARCHIVAL BLOCK READER TESTS PASSED!" << std::endl;
     std::cout << "===========================================================\n" << std::endl;
