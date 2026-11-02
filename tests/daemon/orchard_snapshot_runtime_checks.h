@@ -252,6 +252,31 @@ TEST(OrchardReopenIntent, OnlyExplicitCurrentCaptureIsSelectedAndSurvivesGuardRe
     EXPECT_TRUE(std::filesystem::is_regular_file(path/abandoned->Name()/"candidates.sealed"));
     EXPECT_ANY_THROW(Access::Select(*pending,guard,"recovery-owner"));
 }
+TEST(OrchardReopenIntent, SelectedDormantProfileJournalSurvivesOnlyScheduledCoinbaseChange){
+    using Journal=daemon::ReopenCandidateJournal;using Access=ReopenIntentTestAccess;
+    CanonicalPoolFixture fixture;const auto survivor=CanonicalPoolSurvivor(fixture);
+    ASSERT_TRUE(fixture.f.ingress->SubmitBody(survivor,TxOrigin::INTERNAL).accepted());
+    const auto path=ReopenJournalEvidence();daemon::DatadirGuard guard;std::string error,wallet;
+    ASSERT_TRUE(guard.Acquire(path,error))<<error;
+    struct RestoreParams { ChainParams saved;~RestoreParams(){MutableParams()=saved;} } restore{Params()};
+    auto& params=MutableParams();
+    ASSERT_NE(params.coinbase_structure_activation_height,UINT32_MAX);
+    params.coinbase_structure_activation_height=UINT32_MAX;
+    auto fence=MempoolService::FenceForReopen(fixture.f.ingress,std::chrono::milliseconds(100));
+    auto captured=Journal::Capture(guard,fixture.f.ingress,*fence);ASSERT_EQ(captured->Count(),1u);
+    Access::Select(*captured,guard,"existing-wallet");captured.reset();
+    params.coinbase_structure_activation_height=restore.saved.coinbase_structure_activation_height;
+    std::unique_ptr<Journal> pending;
+    ASSERT_NO_THROW(pending=Journal::OpenPending(guard,wallet));ASSERT_TRUE(pending);
+    EXPECT_EQ(wallet,"existing-wallet");unsigned visited=0;
+    pending->ForEach(guard,[&](const auto& candidate){EXPECT_EQ(candidate.body,survivor.Serialize());++visited;});
+    EXPECT_EQ(visited,1u);
+    ++params.target_spacing;wallet="unchanged";
+    EXPECT_ANY_THROW(Journal::OpenPending(guard,wallet));EXPECT_EQ(wallet,"unchanged");
+    params.target_spacing=restore.saved.target_spacing;
+    EXPECT_TRUE(Journal::OpenPending(guard,wallet));
+    Access::Archive(*pending,guard,"existing-wallet");EXPECT_FALSE(Journal::OpenPending(guard,wallet));
+}
 TEST(OrchardReopenIntent, PartialPublicationAndCompletionNeverBecomeMissingWork){
     using Journal=daemon::ReopenCandidateJournal;using Access=ReopenIntentTestAccess;CanonicalPoolFixture fixture;
     const auto survivor=CanonicalPoolSurvivor(fixture);ASSERT_TRUE(fixture.f.ingress->SubmitBody(survivor,TxOrigin::INTERNAL).accepted());

@@ -67,9 +67,9 @@ void Space(int fd,uint64_t next){
     const auto needed=(uint64_t(512)<<20)+next;
     Require(uint64_t(space.f_bavail)>=(needed+space.f_frsize-1)/space.f_frsize);
 }
-std::array<uint8_t,32> Profile(){
-    crypto::CSHA256 hash;hash.Write("DNRPCDOMAIN1").Write(ConsensusChecksum(Params())).Write(Params().name);
-    uint8_t magic[4];for(unsigned i=0;i<4;++i)magic[i]=uint8_t(Params().magic>>(8*i));
+std::array<uint8_t,32> Profile(const ChainParams& params){
+    crypto::CSHA256 hash;hash.Write("DNRPCDOMAIN1").Write(ConsensusChecksum(params)).Write(params.name);
+    uint8_t magic[4];for(unsigned i=0;i<4;++i)magic[i]=uint8_t(params.magic>>(8*i));
     hash.Write(magic,4);std::array<uint8_t,32> out;hash.Finalize(out.data());return out;
 }
 void Put(Bytes& out,uint64_t n,unsigned width){for(unsigned i=0;i<width;++i)out.push_back(uint8_t(n>>(8*i)));}
@@ -79,10 +79,21 @@ Bytes Nonce(const std::string& name){
     for(size_t i=prefix.size();i<name.size();i+=2)out.push_back(uint8_t(digit(name[i])*16+digit(name[i+1])));
     return out;
 }
-Bytes Header(int root,const std::string& name){
-    const auto st=Stat(root);const auto profile=Profile();const auto nonce=Nonce(name);
+Bytes Header(int root,const std::string& name,const ChainParams& params){
+    const auto st=Stat(root);const auto profile=Profile(params);const auto nonce=Nonce(name);
     Bytes bytes{'D','N','R','P','C','A','N',1};bytes.insert(bytes.end(),profile.begin(),profile.end());
     Put(bytes,uint64_t(st.st_dev),8);Put(bytes,uint64_t(st.st_ino),8);bytes.insert(bytes.end(),nonce.begin(),nonce.end());return bytes;
+}
+Bytes Header(int root,const std::string& name){return Header(root,name,Params());}
+// A selected reopen journal contains untrusted public transaction bytes only.
+// They are replayed through current canonical admission, not imported as state.
+// Permit exactly the prior dormant-coinbase-schedule fingerprint when that is
+// the sole profile change; still bind the same network, magic, root and nonce.
+bool KnownReopenHeader(int root,const std::string& name,const Bytes& header){
+    if(header==Header(root,name))return true;
+    if(Params().coinbase_structure_activation_height==UINT32_MAX)return false;
+    auto previous=Params();previous.coinbase_structure_activation_height=UINT32_MAX;
+    return header==Header(root,name,previous);
 }
 void CheckWire(const Journal::Candidate& candidate){
     Require(!candidate.body.empty()&&candidate.body.size()<=Journal::MaximumWireBytes&&candidate.proof.size()<=Journal::MaximumWireBytes);
@@ -160,12 +171,20 @@ struct ReopenCandidateJournal::Data {
     Fd root,dir,file;std::string name;Bytes header;struct stat directory,record;
     const std::thread::id thread=std::this_thread::get_id();mutable bool visiting=false;uint64_t count=0;bool captured_here=false;
     Data(Fd r,Fd d,Fd f,std::string n):root(std::move(r)),dir(std::move(d)),file(std::move(f)),name(std::move(n)),
-        header(Header(root.value,name)),directory(Stat(dir.value)),record(Stat(file.value)){}
+        directory(Stat(dir.value)),record(Stat(file.value)){
+        header.resize(72);size_t at=0;
+        while(at<header.size()){
+            const auto got=::pread(file.value,header.data()+at,header.size()-at,off_t(at));
+            if(got<0&&errno==EINTR)continue;Require(got>0);at+=size_t(got);
+        }
+        Require(KnownReopenHeader(root.value,name,header));
+    }
     void Check(const DatadirGuard& guard)const {
         Require(thread==std::this_thread::get_id());Fd current(ReopenCandidateJournal::OpenRoot(guard));
         Require(Same(Stat(root.value),Stat(current.value))&&Same(directory,Named(current.value,name.c_str())));
         PrivateDirectory(Stat(dir.value));SealedFile(Stat(file.value));
-        Require(SameFile(record,Stat(file.value))&&SameFile(record,Named(dir.value,Sealed))&&header==Header(current.value,name));
+        Require(SameFile(record,Stat(file.value))&&SameFile(record,Named(dir.value,Sealed))&&
+            KnownReopenHeader(current.value,name,header));
         OnlySealed(dir.value);
     }
     uint64_t Scan(const std::function<void(const Candidate&)>& visitor={})const {
