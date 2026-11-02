@@ -22,6 +22,10 @@ from snapshot_transport import inspect
 BOUNDARY_HEIGHT = 149999
 
 
+class MissedBoundary(ValueError):
+    """The exact-height export is no longer possible without a saved payload."""
+
+
 def sync_directory(path: Path) -> None:
     directory = os.open(path, os.O_RDONLY)
     try:
@@ -178,12 +182,15 @@ def main() -> int:
                 dumps = datadir / "snapshots"
                 if tip > BOUNDARY_HEIGHT and not (dumps / "pending.dat").exists() and \
                         not (dumps / "pending.json").exists():
-                    raise ValueError(f"missed H{BOUNDARY_HEIGHT}; current selected tip is H{tip}")
+                    raise MissedBoundary(f"missed H{BOUNDARY_HEIGHT}; current selected tip is H{tip}")
                 capture(datadir, BOUNDARY_HEIGHT)
                 return 0
             if not args.watch:
                 raise ValueError(f"selected tip H{tip} is below H{BOUNDARY_HEIGHT}; start --watch before the boundary")
             time.sleep(float(os.environ.get("SNAPSHOT_BOUNDARY_POLL_SECONDS", "1")))
+    except MissedBoundary as error:
+        print(f"boundary capture refused: {error}", file=sys.stderr)
+        return 2  # Terminal: systemd must not restart a once-only missed capture.
     except (OSError, ValueError, subprocess.CalledProcessError, BlockingIOError) as error:
         print(f"boundary capture refused: {error}", file=sys.stderr)
         return 1

@@ -13,6 +13,7 @@ from snapshot_transport import inspect
 
 
 SCRIPT = Path(__file__).with_name("capture_boundary_v5.py")
+WATCHER = Path(__file__).with_name("run_boundary_capture_v5.sh")
 HEIGHT = 149999
 BLOCK = "ab" * 32
 
@@ -56,6 +57,20 @@ else: sys.exit(99)
         env = dict(os.environ, DATADIR=str(self.datadir), CLI_BIN=str(self.cli), FIXTURE_ROOT=str(self.root), SNAPSHOT_BOUNDARY_POLL_SECONDS="0.001")
         env.update({name: str(value) for name, value in env_changes.items()})
         return subprocess.run(["python3", str(SCRIPT), *args], env=env, capture_output=True, text=True, timeout=5)
+
+    def run_watcher(self, timer_state, **env_changes):
+        systemctl = self.root / "systemctl"
+        systemctl.write_text("#!/bin/sh\n"
+                             "[ \"$1 $2 $3 $4\" = 'show -p ActiveState --value' ] || exit 99\n"
+                             "[ \"$TIMER_STATE\" != error ] || exit 1\n"
+                             "printf '%s\\n' \"$TIMER_STATE\"\n")
+        systemctl.chmod(0o755)
+        env = dict(os.environ, DATADIR=str(self.datadir), CLI_BIN=str(self.cli),
+                   FIXTURE_ROOT=str(self.root), SYSTEMCTL_BIN=str(systemctl),
+                   TIMER_STATE=timer_state, SNAPSHOT_BOUNDARY_POLL_SECONDS="0.001")
+        env.update({name: str(value) for name, value in env_changes.items()})
+        return subprocess.run(["bash", str(WATCHER)], env=env,
+                              capture_output=True, text=True, timeout=5)
 
     def test_exact_height_stages_v5_and_is_idempotent(self):
         payload = self.write_template()
@@ -116,9 +131,29 @@ else: sys.exit(99)
 
     def test_missed_height_fails_without_export(self):
         result = self.run_capture("--watch", TIP=150000)
-        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(result.returncode, 2)
         self.assertIn("missed", result.stderr)
         self.assertFalse((self.root / "exported").exists())
+
+    def test_supervisor_refuses_active_publisher_timer(self):
+        result = self.run_watcher("active")
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertIn("timer must be held", result.stderr)
+        self.assertFalse((self.root / "exported").exists())
+
+    def test_supervisor_refuses_unknown_timer_state(self):
+        result = self.run_watcher("error")
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertFalse((self.root / "exported").exists())
+
+    def test_supervisor_captures_with_timer_held(self):
+        latest = self.root / "www/latest"
+        latest.parent.mkdir()
+        latest.write_text("unchanged public latest")
+        result = self.run_watcher("inactive", PUBROOT=latest.parent)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertTrue((self.datadir / "snapshots/pending.dat").is_file())
+        self.assertEqual(latest.read_text(), "unchanged public latest")
 
     def test_non_mainnet_refused(self):
         result = self.run_capture(CHAIN="regtest")

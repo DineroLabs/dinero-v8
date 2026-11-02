@@ -1,0 +1,22 @@
+[Unit]
+Description=Capture and retain the exact last-v5 H149999 snapshot candidate
+Wants=dinero.service
+After=dinero.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=exec
+# EU1's existing publisher and publisher.lock are root-owned. The wrapper only
+# writes the snapshot staging directory and reads the node's local RPC cookie.
+User=root
+Group=root
+NoNewPrivileges=true
+Environment=DATADIR=/var/lib/dinero
+Environment=CLI_BIN=/usr/bin/dinero-cli
+ExecStart=/usr/local/libexec/dinero-snapshot/run_boundary_capture_v5.sh
+Restart=on-failure
+RestartSec=5s
+RestartPreventExitStatus=2
+
+[Install]
+WantedBy=multi-user.target

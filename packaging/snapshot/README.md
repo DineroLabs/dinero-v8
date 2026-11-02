@@ -36,6 +36,23 @@ If the pending metadata is damaged or the H149999 base leaves the selected
 chain, the publisher keeps the native v5 boundary payload for operator review
 and leaves the previous `latest` in place. It does not publish a stale base.
 
+The proposed EU1 systemd unit is `dinero-snapshot-boundary-v5.service`. Install
+`capture_boundary_v5.py`, `run_boundary_capture_v5.sh`, and the sibling
+`snapshot_transport.py` together in `/usr/local/libexec/dinero-snapshot/`;
+install the unit in `/etc/systemd/system/` only after checking the live paths,
+RPC cookie, and service owner. The template uses root because the existing EU1
+publisher owns `snapshots/publisher.lock` as root, while the node's cookie is
+readable through that account. It starts after `dinero.service` and retries after
+transient RPC/process failures. The wrapper refuses to start if
+`dinero-snapshot.timer` is active or its state cannot be read. A missed height
+without a saved payload exits 2; systemd does not restart that terminal case.
+Start and verify the watcher **below H149999** on EU1 and a second selected-chain
+host, with the daily publisher timer held on the capture host. Verify its
+journal and `systemctl is-active` state before relying on it. A successful
+service exit confirms staging only; inspect `pending.dat/json` and selected
+H149999 hash before resuming the publisher after 288 descendants. This unit is
+a deployable template, not installed or enabled by repository checkout.
+
 After capture, run the publisher only once H150287 is selected and buried.
 The publisher's existing native fresh-node gate decides whether to serve it;
 for the exact H149999 v5 base, it also installs an immutable copy in
@@ -63,6 +80,14 @@ phone mirrors at a full-v6 endpoint. The compact endpoint retains the existing
 endpoint uses `DATADIR/snapshots/full/pending.*`; both still share the root
 publisher lock so exports and the boundary capture do not race. A profile
 mismatch refuses publication and cannot remove the other profile's candidate.
+The publisher checks an existing `latest` manifest before export and again
+after the native gate. A v4/v5 manifest without `snapshot_profile` is treated
+as the existing compact/phone endpoint, matching the live legacy publication.
+A full publisher pointed there, or a compact publisher pointed at a full-v6
+endpoint, exits without replacing `latest`. An unreadable or unknown existing
+manifest also fails closed. A new full endpoint must start with its own empty
+PUBROOT; the native gate and mirror/consumer checks are still required before
+advertising it.
 
 The manifest includes `format_version` and `snapshot_profile` (`legacy` before
 v6). Phone publication requires an Ed25519 key, preserving both mobile apps'
