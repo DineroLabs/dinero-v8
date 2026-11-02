@@ -12761,9 +12761,19 @@ void ChainstateService::ActivateBestChainPass(const ActivationParentPlan* prepar
                 return;
             }
             if (fork_body.status() == Status::Ok && !fork_body->vtx.empty()) {
+                // The stored body's header hash matches the selected fork,
+                // but that alone does not bind its coinbase to the header.
+                // A stale or corrupted copy must not authorize permanent
+                // failure of a different branch's header.
+                bool merkle_mutated = false;
+                const bool fork_coinbase_bound =
+                    consensus::ComputeMerkleRoot(fork_body->vtx, &merkle_mutated) ==
+                        fork_body->header.merkle_root &&
+                    !merkle_mutated;
                 const auto committed = consensus::FindStateCommitment(
                     fork_body->vtx.front());
                 authenticated_shielded_fork =
+                    fork_coinbase_bound &&
                     committed.status == consensus::StateCommitmentStatus::Ok &&
                     committed.root == *fork_root;
             }

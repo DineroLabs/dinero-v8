@@ -16,6 +16,7 @@
 #include "daemon/daemon_context.h"
 #include "mining/block_assembler.h"
 #include "consensus/state_commitment.h"
+#include "consensus/shielded/shielded_root.h"
 #include "consensus/block_filter.h"
 #include "consensus/consensus_utxo_set.h"
 #include "consensus/utreexo_maturity_leaf_activation.h"
@@ -63,6 +64,11 @@ struct ActivationRetryTestAccess {
     }
     static uint256 ShieldedRoot(const ChainstateService& svc) {
         return svc.CurrentShieldedStateSnapshot().root;
+    }
+    static std::optional<uint256> ForkShieldedRoot(const ChainstateService& svc) {
+        return consensus::shielded::ComputeShieldedRoot(
+            svc.shielded_tree_, svc.shielded_nullifiers_,
+            svc.shielded_anchor_history_);
     }
     static void ClearFailure(ChainstateService& svc, const uint256& hash) {
         svc.activation_retries_.Clear(hash);
@@ -857,7 +863,8 @@ void RunSigopsStoredCandidate(const std::filesystem::path& root) {
 // block whose only invalidity is a missing Taproot signature. The ordinary
 // full validator must reject it, and the CSN route must leave the tip alone.
 void RunCsnInvalidSignatureReplay(const std::filesystem::path& root,
-                                  bool activate_candidates = false) {
+                                  bool activate_candidates = false,
+                                  bool stage_unbound_fork = false) {
     using namespace dinero;
     GetConfig().utreexo_stateless = true;
     MutableParams().state_commitment_activation_height = UINT32_MAX;
@@ -1164,6 +1171,44 @@ void RunCsnInvalidSignatureReplay(const std::filesystem::path& root,
                 csn_set.GetForest().getCommitment() == forest_before &&
                 wrong_error.find("state-commitment-mismatch") != std::string::npos,
                 "CSN rejects wrong DNRS before forest mutation");
+        if (stage_unbound_fork) {
+            // An archival read checks the header hash, but an old stored body
+            // can still carry an unrelated coinbase. Place a DNRS commitment
+            // equal to the scratch fork root in such a body. It cannot
+            // authenticate permanent failure of the proposed branch.
+            Block unbound_fork;
+            unbound_fork.header = parent_header;
+            unbound_fork.vtx = {coinbase};
+            TxOutput fork_commitment;
+            fork_commitment.value = AmountUna::Zero();
+            const auto scratch_fork_root =
+                ActivationRetryTestAccess::ForkShieldedRoot(svc);
+            Require(scratch_fork_root.has_value(),
+                    "selected fork shielded root is available");
+            fork_commitment.scriptPubKey = consensus::BuildStateCommitmentScript(
+                *scratch_fork_root);
+            unbound_fork.vtx.front().vout.push_back(fork_commitment);
+            Require(consensus::ComputeMerkleRoot(unbound_fork.vtx) !=
+                        unbound_fork.header.merkle_root,
+                    "selected fork body is deliberately unbound from its header");
+            ChainDB::PersistedHeaderMetadata parent_metadata;
+            parent_metadata.parent_hash = genesis->hash;
+            parent_metadata.height = parent_height;
+            parent_metadata.chainwork = arith_uint256(parent_height + 1);
+            parent_metadata.status_flags = parent->status;
+            Require(db.putHeaderMetadata(token, parent->hash, parent_metadata) == Status::Ok,
+                    "unbound selected fork metadata staged");
+            const auto fork_pos = files->writeBlock(parent->hash, unbound_fork);
+            Require(fork_pos.status() == Status::Ok,
+                    "unbound selected fork body staged");
+            svc.PersistStoredBodyPosition(parent->hash, fork_pos.value());
+            const auto readable_fork = svc.getBlockByHash(parent->hash);
+            Require(readable_fork.status() == Status::Ok &&
+                        consensus::ComputeMerkleRoot(readable_fork->vtx) !=
+                            readable_fork->header.merkle_root,
+                    "unbound selected fork body is readable at its header hash");
+            MutableParams().state_commitment_activation_height = parent_height;
+        }
         // Force the same transparent-only wrong-DNRS body through the ABC-CSN
         // replay route (a reconnect from a verified fork checkpoint). The
         // recovery call above covers ConnectTip; it does not cover ABC's
@@ -1176,6 +1221,19 @@ void RunCsnInvalidSignatureReplay(const std::filesystem::path& root,
         const auto shielded_before = ActivationRetryTestAccess::ShieldedRoot(svc);
         svc.ActivateBestChain();
         const auto shielded_after = ActivationRetryTestAccess::ShieldedRoot(svc);
+        if (stage_unbound_fork) {
+            const auto stored_wrong = db.getHeaderMetadata(wrong_index->hash);
+            std::cout << "CSN_UNBOUND_FORK_RESULT failed_memory="
+                      << ((wrong_index->status & BLOCK_FAILED_VALID) != 0)
+                      << " failed_durable="
+                      << (stored_wrong.ok() &&
+                          (stored_wrong->status_flags & BLOCK_FAILED_VALID) != 0)
+                      << '\n';
+            Require(stored_wrong.ok() &&
+                        (wrong_index->status & BLOCK_FAILED_VALID) == 0 &&
+                        (stored_wrong->status_flags & BLOCK_FAILED_VALID) == 0,
+                    "unbound selected fork cannot durably fail proposed header");
+        }
         Require(svc.GetActiveTip() == parent &&
                     csn_set.GetForest().getCommitment() == forest_before &&
                     shielded_after == shielded_before &&
@@ -1200,7 +1258,8 @@ void RunCsnInvalidSignatureReplay(const std::filesystem::path& root,
         // exercises ABC with an actual old-branch disconnect, not just the
         // reconnect path above. Work is staged in the index for candidate
         // selection; the test concerns shielded preflight before mutation.
-        MutableParams().state_commitment_activation_height = height;
+        MutableParams().state_commitment_activation_height =
+            stage_unbound_fork ? parent_height : height;
         auto forced_work = ChainworkFromHex(honest_index->chainwork);
         forced_work += arith_uint256(1);
         wrong_index->chainwork = forced_work.GetHex();
@@ -1250,6 +1309,12 @@ int main(int argc, char** argv) {
         }
         if (argc == 2 && std::string(argv[1]) == "--csn-abc-invalid-signature") {
             RunCsnInvalidSignatureReplay(root / "csn-abc-invalid-signature", true);
+            std::filesystem::remove_all(root);
+            std::cout << "ALL PASSED\n";
+            return 0;
+        }
+        if (argc == 2 && std::string(argv[1]) == "--csn-unbound-fork-dnrs") {
+            RunCsnInvalidSignatureReplay(root / "csn-unbound-fork-dnrs", false, true);
             std::filesystem::remove_all(root);
             std::cout << "ALL PASSED\n";
             return 0;
