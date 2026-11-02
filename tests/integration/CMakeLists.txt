@@ -2503,6 +2503,13 @@ set_tests_properties(CsnWitnessBodyReplacement PROPERTIES
     LABELS "integration;csn;utreexo;body-replacement;mandatory"
     TIMEOUT 420 RUN_SERIAL TRUE)
 
+add_test(NAME FullWitnessBodyReplacement
+    COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/test_full_witness_body_replacement.py)
+set_tests_properties(FullWitnessBodyReplacement PROPERTIES
+    ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>"
+    LABELS "integration;utreexo;body-replacement;mandatory"
+    TIMEOUT 420 RUN_SERIAL TRUE)
+
 # Timing upgrade qualification is always registered and executed in the serial lane.
 add_test(NAME SixtySecondActivation
     COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/test_sixty_second_activation.py)
