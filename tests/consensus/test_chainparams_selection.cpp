@@ -208,28 +208,29 @@ TEST(ChainParamsSelection, CatalogScheduleFingerprintsAndSnapshotBoundary) {
         const bool mainnet=chain==Chain::MAINNET;
         EXPECT_EQ(profile.orchard_catalog_commitment_activation_height,mainnet?150000u:UINT32_MAX);
         EXPECT_EQ(profile.coinbase_structure_activation_height,
-                  chain==Chain::REGTEST?1u:UINT32_MAX);
+                  chain==Chain::TESTNET?UINT32_MAX:1u);
         if (mainnet) {
-            auto scheduled=profile;
-            scheduled.coinbase_structure_activation_height=150000;
-            // This is deliberately a compatibility alarm, not an activation
-            // choice: Orchard origins and reopen journals persist this checksum.
-            // Scheduling the rule would change their profile immediately.
-            EXPECT_NE(dinero::ConsensusChecksum(scheduled),
+            auto previous=profile;
+            previous.coinbase_structure_activation_height=UINT32_MAX;
+            // Existing Orchard origins and reopen journals carry this old
+            // checksum. A mainnet H1 rule changes it immediately, so startup
+            // migration or a separate profile identity is a release gate.
+            EXPECT_EQ(dinero::ConsensusChecksum(previous),
+                      "d81a7474229102455fb552224c63c8b0e13947f16cb59e86d9b5d02630057ad2");
+            EXPECT_NE(dinero::ConsensusChecksum(previous),
                       dinero::ConsensusChecksum(profile));
         }
         // Independently reconstructed preimages and external SHA256 audit:
-        // Mainnet adds exactly the two catalog profile/height lines. Regtest's
-        // coinbase-structure test activation changes only its own fingerprint.
-        // Do not update these blindly.
+        // Mainnet adds the height-1 canonical first-transaction rule. Do not
+        // update this fingerprint blindly.
         EXPECT_EQ(dinero::ConsensusChecksum(profile),mainnet?
-            "d81a7474229102455fb552224c63c8b0e13947f16cb59e86d9b5d02630057ad2":chain==Chain::TESTNET?
+            "cfe4657542c39613f70aff6bd3989f7300fee6ec184e5c24e9a980e87373a229":chain==Chain::TESTNET?
             "d999b0b59cc9f9575e85f424e763a15a53e50c8e24b50c5a96268cb11d93cbf8":
             "521b2ce10c314a26c76d35d9359425e160b95f9e4730ca17e09759ca13309a25");
         if(!mainnet)continue;
         auto predecessor=profile;predecessor.orchard_catalog_commitment_activation_height=UINT32_MAX;
         EXPECT_EQ(dinero::ConsensusChecksum(predecessor),
-            "9675a39fa147bab33c3e35da6df08fca598d90e54e6da7a08b0a1157f60c3111");
+            "1e18b8f9b73d30edc5277e3f8c824789bcf1162e97da9c0425268cb18c78403a");
         const auto format=[&](uint32_t version,uint32_t height) {
             return dinero::consensus::EvaluateSnapshotFormat(version,height,profile.shielded_activation_height,
                 profile.state_commitment_activation_height,profile.orchard_activation_height,

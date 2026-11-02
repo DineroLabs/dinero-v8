@@ -173,6 +173,26 @@ int main() {
             Require(error.find("Invalid coinbase prevout structure") != std::string::npos,
                     "wrong structural rejection: " + error);
         }},
+        {"mainnet_h1_rejects_new_historical_fork", [] {
+            Fixture f(COIN / 10);
+            f.block.vtx[0].vin[0].prevout.vout = 0;
+            const auto prior_chain = GetActiveChain();
+            struct RestoreChain {
+                Chain prior;
+                ~RestoreChain() { SelectParams(prior); }
+            } restore{prior_chain};
+            SelectParams(Chain::MAINNET);
+            Require(Params().coinbase_structure_activation_height == 1,
+                    "mainnet first-transaction rule is not active from H1");
+            for (uint32_t height : {HEIGHT, 149999u}) {
+                std::string error;
+                Require(!BlockAcceptorFeeTestAccess::Check(f.block, height, error),
+                        "mainnet admitted malformed historical fork at " +
+                            std::to_string(height));
+                Require(error == "Invalid coinbase prevout structure",
+                        "historical fork rejected for a different reason: " + error);
+            }
+        }},
         {"coinbase_prevout_txid_must_be_null", [] {
             Fixture f(COIN / 10); std::string error;
             f.block.vtx[0].vin[0].prevout.txid = f.funding.txid;

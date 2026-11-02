@@ -139,7 +139,11 @@ static ChainParams g_mainnet = {
     // Reject shielded coinbase bundles at the Auth cutover; coinbase funds
     // continue to use transparent outputs and their existing maturity rules.
     .shielded_coinbase_reject_activation_height = 110000,
-    .coinbase_structure_activation_height = UINT32_MAX,
+    // Candidate-only F-C3 repair: all post-genesis blocks use one canonical
+    // first-transaction shape, including newly presented historical forks.
+    // Canonical history must be scanned through the deploy tip and existing
+    // snapshot/journal profile compatibility resolved before deployment.
+    .coinbase_structure_activation_height = 1,
 
     // Operator-selected DNRS cutover, 2026-09-09: mandatory coinbase
     // commitment and v5 snapshot authentication from block 111000.
