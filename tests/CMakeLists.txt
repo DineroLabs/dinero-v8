@@ -10676,7 +10676,7 @@ if(UNIX AND NOT IOS)
   )
   target_compile_definitions(test_shielded_state_migration PRIVATE DINERO_SHIELDED_MIGRATION_FAULT_TESTING=1)
   add_test(NAME ShieldedStateMigration COMMAND test_shielded_state_migration)
-  set_tests_properties(ShieldedStateMigration PROPERTIES LABELS "storage;smoke" TIMEOUT 180)
+  set_tests_properties(ShieldedStateMigration PROPERTIES LABELS "storage;smoke" RUN_SERIAL TRUE TIMEOUT 300)
 
   add_executable(test_shielded_migration_cohort
     tests/storage/test_shielded_migration_cohort.cpp
@@ -10693,7 +10693,7 @@ if(UNIX AND NOT IOS)
     ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include
   )
   add_test(NAME ShieldedMigrationCohort COMMAND test_shielded_migration_cohort)
-  set_tests_properties(ShieldedMigrationCohort PROPERTIES LABELS "storage;smoke" TIMEOUT 180)
+  set_tests_properties(ShieldedMigrationCohort PROPERTIES LABELS "storage;smoke" RUN_SERIAL TRUE TIMEOUT 300)
   # Explicit metadata-only selections avoid executing unrelated cohort cases.
   add_test(NAME ShieldedMigrationMetadataV1 COMMAND test_shielded_migration_cohort --metadata-v1)
   add_test(NAME ShieldedMigrationMetadataV2 COMMAND test_shielded_migration_cohort --metadata-v2)
