@@ -1621,8 +1621,14 @@ bool DaemonApp::Init(int argc, char** argv) {
             const auto retained = chain_db_->getRaw("runtime_orchard_outbox:v1:head", head);
             if (retained != Status::Ok && retained != Status::NotFound) return retained;
             const auto old_tip = chain_db_->getTip();
-            if (!old_tip.ok()) return old_tip.status();
-            if (retained == Status::Ok || (old_tip->height >= 0 &&
+            if (!old_tip.ok()) {
+                if (old_tip.status() != Status::NotFound || retained == Status::Ok) {
+                    return old_tip.status();
+                }
+                // A raw-block-only datadir has no chainstate tip yet; the
+                // ordinary reindexer must be allowed to reconstruct it.
+            }
+            if (retained == Status::Ok || (old_tip.ok() && old_tip->height >= 0 &&
                 uint64_t(old_tip->height) >= Params().orchard_activation_height)) {
                 ChainWriteToken reindex_token;
                 return OrchardReindexOwner::Run(*chain_db_, *rebuilt_chain_db, reindex_token,

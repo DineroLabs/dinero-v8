@@ -100,6 +100,11 @@ wait_rpc() {
         if rpc_call "getblockcount" '[]' | jq -e '.error == null and .result >= 0' >/dev/null 2>&1; then
             return 0
         fi
+        # A failed reindex exits before opening RPC. Report that failure now
+        # instead of masking it as a 90-second readiness timeout.
+        if [[ -n "${PID}" ]] && ! kill -0 "${PID}" 2>/dev/null; then
+            return 1
+        fi
         sleep 1
     done
     return 1
@@ -402,6 +407,10 @@ stop_node
 
 info "Cloning raw block history into replay datadir"
 prepare_replay_datadir
+[[ -s "${REPLAY_DIR}/blocks/blk00000.dat" ]] \
+    || fail "replay fixture has no raw block history"
+[[ ! -e "${REPLAY_DIR}/blockchain" ]] \
+    || fail "replay fixture unexpectedly retained chainstate"
 
 start_node "${REPLAY_DIR}" "${LOG_REPLAY}" "${REPLAY_RPC_PORT}" "${REPLAY_P2P_PORT}" "${REPLAY_WALLET_PORT}" --reindex-chainstate
 wait_rpc || fail "replay daemon did not reach RPC readiness"
