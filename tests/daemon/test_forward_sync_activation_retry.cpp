@@ -33,6 +33,7 @@
 #include <filesystem>
 #include <iostream>
 #include <memory>
+#include <optional>
 #include <sstream>
 #include <iomanip>
 #include <stdexcept>
@@ -864,7 +865,8 @@ void RunSigopsStoredCandidate(const std::filesystem::path& root) {
 // full validator must reject it, and the CSN route must leave the tip alone.
 void RunCsnInvalidSignatureReplay(const std::filesystem::path& root,
                                   bool activate_candidates = false,
-                                  bool stage_unbound_fork = false) {
+                                  bool stage_unbound_fork = false,
+                                  bool legacy_uncertain = false) {
     using namespace dinero;
     GetConfig().utreexo_stateless = true;
     MutableParams().state_commitment_activation_height = UINT32_MAX;
@@ -875,6 +877,15 @@ void RunCsnInvalidSignatureReplay(const std::filesystem::path& root,
 
     const uint32_t height = consensus::GetUtreexoMaturityLeafActivationHeight() + 1;
     const uint32_t parent_height = height - 1;
+    const auto saved_locks_activation = MutableParams().contextual_locks_activation_height;
+    struct RestoreLocksActivation {
+        uint32_t value;
+        ~RestoreLocksActivation() { MutableParams().contextual_locks_activation_height = value; }
+    } restore_locks_activation{saved_locks_activation};
+    if (legacy_uncertain) {
+        Require(parent_height <= 0xffffU, "legacy relative delay fits sequence field");
+        MutableParams().contextual_locks_activation_height = height;
+    }
     uint256 funding_hash;
     std::fill(funding_hash.begin(), funding_hash.end(), 0x11);
     const TxId funding_txid(funding_hash);
@@ -884,9 +895,10 @@ void RunCsnInvalidSignatureReplay(const std::filesystem::path& root,
         0x55, 0xa0, 0x62, 0x95, 0xce, 0x87, 0x0b, 0x07,
         0x02, 0x9b, 0xfc, 0xdb, 0x2d, 0xce, 0x28, 0xd9,
         0x59, 0xf2, 0x81, 0x5b, 0x16, 0xf8, 0x17, 0x98};
-    const consensus::UTXOEntry funded(AmountUna::Una(5000), p2tr, parent_height, false);
+    const uint32_t funding_height = legacy_uncertain ? 0 : parent_height;
+    const consensus::UTXOEntry funded(AmountUna::Una(5000), p2tr, funding_height, false);
     const auto funding_leaf = consensus::HashUTXOForCreationHeight(
-        funding_txid.AsUint256(), 0, 5000, p2tr, parent_height, false);
+        funding_txid.AsUint256(), 0, 5000, p2tr, funding_height, false);
     consensus::ConsensusUTXOSet producer;
     Require(producer.AddCoin(funding, funded), "producer funding UTXO staged");
     Require(producer.GetForest().add(funding_leaf) != UINT64_MAX,
@@ -933,7 +945,7 @@ void RunCsnInvalidSignatureReplay(const std::filesystem::path& root,
     TxInput spend_input;
     spend_input.prevout.txid = funding_txid;
     spend_input.prevout.vout = 0;
-    spend_input.sequence = 0xfffffffe;
+    spend_input.sequence = legacy_uncertain ? parent_height : 0xfffffffe;
     spend_input.witness.push_back(std::vector<uint8_t>(64, 0x01));
     spend.vin.push_back(spend_input);
     TxOutput spend_output;
@@ -956,12 +968,36 @@ void RunCsnInvalidSignatureReplay(const std::filesystem::path& root,
         std::shared_ptr<void>{}, static_cast<consensus::IUTXOProvider*>(&producer));
     network::BridgeNode bridge(provider, &producer.GetForest());
     block.utreexo = bridge.GenerateProofForBlock(block, height);
+    if (legacy_uncertain) {
+        std::string context_error;
+        const consensus::LockMtpLookup no_old_mtp =
+            [](uint32_t) -> std::optional<uint64_t> { return std::nullopt; };
+        Require(!consensus::CheckStatelessBlockContextReadOnly(
+                    block, height, &block.utreexo->spent_outputs,
+                    no_old_mtp, context_error) &&
+                    context_error == "contextual-lock-legacy-height-unverified",
+                "fixture reaches uncertain legacy relative-lock context preflight");
+    }
     consensus::BlockValidator producer_validator(&producer);
     uint256 post_root;
     std::string root_error;
     Require(producer_validator.ComputeUtreexoRootPure(block, height, post_root, root_error),
             "producer computes authentic post-root");
     block.header.utreexo_root = post_root;
+    if (legacy_uncertain) {
+        std::string reward_error;
+        Require(network::StatelessNode::CheckReplayReward(
+                    block, height, block.utreexo->spend_proof.targets,
+                    &block.utreexo->spent_outputs, reward_error),
+                "uncertain fixture passes the earlier reward preflight");
+        auto replay_forest = producer.GetForest();
+        network::StatelessNode replay_probe(&replay_forest);
+        replay_probe.SyncToForestState(parent_height);
+        Require(replay_probe.ReplayBlock(
+                    block, height, block.utreexo->spend_proof.targets,
+                    &block.utreexo->spent_outputs),
+                "uncertain fixture passes authenticated replay before context preflight");
+    }
     std::string schnorr_error;
     Require(!consensus::ScriptVerifier::VerifyTaproot(
                 block.vtx[1], 0, {funded}, schnorr_error,
@@ -1074,33 +1110,66 @@ void RunCsnInvalidSignatureReplay(const std::filesystem::path& root,
             svc.AddCandidate(candidate);
             svc.AddCandidate(honest_index);
             Require(ActivationRetryTestAccess::Best(svc) == candidate,
-                    "ABC selects lower-hash invalid candidate first");
+                    "ABC selects lower-hash candidate first");
             svc.ActivateBestChain();
             const auto failed_status = db.getHeaderMetadata(candidate->hash);
-            std::cout << "CSN_ABC_INVALID_SIGNATURE_RESULT active_parent="
-                      << (svc.GetActiveTip() == parent)
-                      << " forest_unchanged="
-                      << (csn_set.GetForest().getCommitment() == forest_before)
-                      << " failed_memory="
-                      << ((candidate->status & BLOCK_FAILED_VALID) != 0)
-                      << " failed_durable="
-                      << (failed_status.ok() &&
-                          (failed_status->status_flags & BLOCK_FAILED_VALID) != 0)
-                      << '\n';
-            Require(svc.GetActiveTip() == parent &&
-                        csn_set.GetForest().getCommitment() == forest_before,
-                    "ABC CSN failure preserves selected tip and forest");
-            Require((candidate->status & BLOCK_FAILED_VALID) != 0 &&
-                        failed_status.ok() &&
-                        (failed_status->status_flags & BLOCK_FAILED_VALID) != 0,
-                    "ABC durably marks authenticated invalid-signature body failed");
-            Require(ActivationRetryTestAccess::Best(svc) == honest_index,
-                    "ABC elects honest equal-work sibling after invalid candidate");
-            svc.ActivateBestChain();
-            std::cout << "CSN_ABC_HONEST_SIBLING_RESULT active="
-                      << (svc.GetActiveTip() == honest_index) << '\n';
-            Require(svc.GetActiveTip() == honest_index,
-                    "ABC connects honest equal-work sibling");
+            if (legacy_uncertain) {
+                std::cout << "CSN_ABC_LEGACY_RETRY_RESULT active_parent="
+                          << (svc.GetActiveTip() == parent)
+                          << " forest_unchanged="
+                          << (csn_set.GetForest().getCommitment() == forest_before)
+                          << " retry="
+                          << ActivationRetryTestAccess::Failures(svc, candidate->hash)
+                          << " failed_memory="
+                          << ((candidate->status & BLOCK_FAILED_VALID) != 0)
+                          << " failed_durable="
+                          << (failed_status.ok() &&
+                              (failed_status->status_flags & BLOCK_FAILED_VALID) != 0)
+                          << '\n';
+                Require(svc.GetActiveTip() == parent &&
+                            csn_set.GetForest().getCommitment() == forest_before &&
+                            ActivationRetryTestAccess::Failures(svc, candidate->hash) > 0 &&
+                            ActivationRetryTestAccess::Contains(svc, candidate) &&
+                            (candidate->status & BLOCK_FAILED_VALID) == 0 &&
+                            failed_status.ok() &&
+                            (failed_status->status_flags & BLOCK_FAILED_VALID) == 0,
+                        "uncertain legacy spend cools down without poisoning candidate or canonical state");
+                Require(ActivationRetryTestAccess::Ready(
+                            svc, candidate->hash,
+                            consensus::ActivationRetryTracker::Clock::now() +
+                                std::chrono::hours(3)),
+                        "uncertain candidate can be retried after cooldown");
+                Require(ActivationRetryTestAccess::Best(svc) == honest_index,
+                        "ABC elects honest equal-work sibling while uncertain candidate cools down");
+                svc.ActivateBestChain();
+                Require(svc.GetActiveTip() == honest_index,
+                        "ABC connects honest equal-work sibling after uncertain legacy spend");
+            } else {
+                std::cout << "CSN_ABC_INVALID_SIGNATURE_RESULT active_parent="
+                          << (svc.GetActiveTip() == parent)
+                          << " forest_unchanged="
+                          << (csn_set.GetForest().getCommitment() == forest_before)
+                          << " failed_memory="
+                          << ((candidate->status & BLOCK_FAILED_VALID) != 0)
+                          << " failed_durable="
+                          << (failed_status.ok() &&
+                              (failed_status->status_flags & BLOCK_FAILED_VALID) != 0)
+                          << '\n';
+                Require(svc.GetActiveTip() == parent &&
+                            csn_set.GetForest().getCommitment() == forest_before,
+                        "ABC CSN failure preserves selected tip and forest");
+                Require((candidate->status & BLOCK_FAILED_VALID) != 0 &&
+                            failed_status.ok() &&
+                            (failed_status->status_flags & BLOCK_FAILED_VALID) != 0,
+                        "ABC durably marks authenticated invalid-signature body failed");
+                Require(ActivationRetryTestAccess::Best(svc) == honest_index,
+                        "ABC elects honest equal-work sibling after invalid candidate");
+                svc.ActivateBestChain();
+                std::cout << "CSN_ABC_HONEST_SIBLING_RESULT active="
+                          << (svc.GetActiveTip() == honest_index) << '\n';
+                Require(svc.GetActiveTip() == honest_index,
+                        "ABC connects honest equal-work sibling");
+            }
         } else {
         std::string connect_error;
         bool consensus_invalid = false;
@@ -1282,8 +1351,11 @@ void RunCsnInvalidSignatureReplay(const std::filesystem::path& root,
                 "ABC fixture database reopens after candidate election");
         const auto failed_after_restart = db.getHeaderMetadata(candidate->hash);
         Require(failed_after_restart.ok() &&
-                    (failed_after_restart->status_flags & BLOCK_FAILED_VALID) != 0,
-                "ABC invalid-signature status survives database reopen");
+                    (((failed_after_restart->status_flags & BLOCK_FAILED_VALID) != 0) !=
+                     legacy_uncertain),
+                legacy_uncertain
+                    ? "ABC uncertain candidate stays unpoisoned after database reopen"
+                    : "ABC invalid-signature status survives database reopen");
     }
     files->close();
     db.close();
@@ -1315,6 +1387,12 @@ int main(int argc, char** argv) {
         }
         if (argc == 2 && std::string(argv[1]) == "--csn-unbound-fork-dnrs") {
             RunCsnInvalidSignatureReplay(root / "csn-unbound-fork-dnrs", false, true);
+            std::filesystem::remove_all(root);
+            std::cout << "ALL PASSED\n";
+            return 0;
+        }
+        if (argc == 2 && std::string(argv[1]) == "--csn-abc-legacy-retry-sibling") {
+            RunCsnInvalidSignatureReplay(root / "csn-abc-legacy-retry-sibling", true, false, true);
             std::filesystem::remove_all(root);
             std::cout << "ALL PASSED\n";
             return 0;

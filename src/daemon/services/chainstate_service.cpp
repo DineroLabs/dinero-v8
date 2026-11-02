@@ -12486,6 +12486,13 @@ void ChainstateService::ActivateBestChainPass(const ActivationParentPlan* prepar
             if (logger_) logger_->error("[ABC-CSN] Stateless reorg requested but consensus UTXO set is unavailable");
             return;
         }
+        const auto retry_candidate_after_preflight = [&] {
+            // An unavailable body, proof, or contextual fact is not evidence
+            // against the header. Retain the candidate but let another
+            // equal-work branch run while this one cools down.
+            activation_retries_.RecordFailure(
+                best_candidate->hash, std::chrono::steady_clock::now());
+        };
 
         // Preflight the complete branch before touching any canonical state.
         // A side branch becomes visible to candidate import only after the CSN
@@ -12502,6 +12509,7 @@ void ChainstateService::ActivateBestChainPass(const ActivationParentPlan* prepar
                                      std::to_string(block_index->height) +
                                      " — canonical state left untouched");
                 }
+                retry_candidate_after_preflight();
                 return;
             }
             const auto replay_result = chain_db_->getCSNSpendTargets(block_index->hash);
@@ -12555,6 +12563,7 @@ void ChainstateService::ActivateBestChainPass(const ActivationParentPlan* prepar
                                      std::to_string(block_index->height) +
                                      " — canonical state left untouched");
                 }
+                retry_candidate_after_preflight();
                 return;
             }
             // Stored proof/transition records prove a forest transition, not
@@ -12562,7 +12571,10 @@ void ChainstateService::ActivateBestChainPass(const ActivationParentPlan* prepar
             // rewinding the canonical tip. Bind input amounts to the stored
             // targets and real intra-block outputs here; ReplayBlock repeats
             // this gate and verifies the resulting forest against the header.
-            if (record && !EnsureCsnReplayMetadata(block_index, candidate, *record, replay_data)) return;
+            if (record && !EnsureCsnReplayMetadata(block_index, candidate, *record, replay_data)) {
+                retry_candidate_after_preflight();
+                return;
+            }
             const auto* fee_coins = replay_data.has_spent_outputs
                 ? &replay_data.spent_outputs
                 : (candidate.utreexo ? &candidate.utreexo->spent_outputs : nullptr);
@@ -12573,6 +12585,7 @@ void ChainstateService::ActivateBestChainPass(const ActivationParentPlan* prepar
                 if (logger_) logger_->error("[ABC-CSN] Reorg reward preflight failed at height " +
                     std::to_string(block_index->height) + ": " + reward_error +
                     " — canonical state left untouched");
+                retry_candidate_after_preflight();
                 return;
             }
         }
@@ -12805,16 +12818,12 @@ void ChainstateService::ActivateBestChainPass(const ActivationParentPlan* prepar
                 "[ABC-CSN] Persisted consensus-invalid branch block at height " +
                 std::to_string(index->height) + ": " + reason);
         };
-        const auto retry_shielded_failure = [&] {
-            // A missing/ambiguous prestate may make an otherwise valid
-            // candidate appear bad. Keep it retryable, but let a valid
-            // equal-work sibling run while this candidate cools down.
-            activation_retries_.RecordFailure(
-                best_candidate->hash, std::chrono::steady_clock::now());
-        };
         for (auto* block_index : connect_path) {
             const auto block_result = ReadStoredBlock(block_index->hash);
-            if (block_result.status() != Status::Ok) return;
+            if (block_result.status() != Status::Ok) {
+                retry_candidate_after_preflight();
+                return;
+            }
             const auto& candidate = block_result.value();
             const auto replay_result = chain_db_->getCSNSpendTargets(block_index->hash);
             CsnReplayData replay_data;
@@ -12826,6 +12835,7 @@ void ChainstateService::ActivateBestChainPass(const ActivationParentPlan* prepar
                 (record && !EnsureCsnReplayMetadata(
                     block_index, candidate, *record, replay_data))) {
                 if (logger_) logger_->error("[ABC-CSN] Context preflight: replay data unavailable");
+                retry_candidate_after_preflight();
                 return;
             }
             const auto* spent_outputs = replay_data.has_spent_outputs
@@ -12835,6 +12845,7 @@ void ChainstateService::ActivateBestChainPass(const ActivationParentPlan* prepar
                                             replay_data.spend_targets, spent_outputs)) {
                 if (logger_) logger_->error("[ABC-CSN] Context preflight: stored spends not authenticated at height " +
                                             std::to_string(block_index->height));
+                retry_candidate_after_preflight();
                 return;
             }
             const auto branch_mtp = [block_index](uint32_t wanted)
@@ -12853,6 +12864,8 @@ void ChainstateService::ActivateBestChainPass(const ActivationParentPlan* prepar
                     " — canonical state left untouched");
                 if (IsDeterministicStatelessContextFailure(context_error)) {
                     reject_proven_invalid(block_index, context_error);
+                } else {
+                    retry_candidate_after_preflight();
                 }
                 return;
             }
@@ -12865,7 +12878,7 @@ void ChainstateService::ActivateBestChainPass(const ActivationParentPlan* prepar
                     "[ABC-CSN] Shielded preflight rejected height " +
                     std::to_string(block_index->height) + ": " + shielded_error +
                     " — canonical state left untouched");
-                retry_shielded_failure();
+                retry_candidate_after_preflight();
                 return;
             }
             consensus::BlockUndo shielded_undo;
@@ -12881,7 +12894,7 @@ void ChainstateService::ActivateBestChainPass(const ActivationParentPlan* prepar
                         "coinbase-state-commitment-mismatch", 0) == 0) {
                     reject_proven_invalid(block_index, shielded_error);
                 } else {
-                    retry_shielded_failure();
+                    retry_candidate_after_preflight();
                 }
                 return;
             }

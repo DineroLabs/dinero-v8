@@ -15336,6 +15336,10 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_forward_sync_activation_retry.cp
   target_include_directories(test_forward_sync_activation_retry PRIVATE
     ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include)
   add_test(NAME ForwardSyncActivationRetry COMMAND test_forward_sync_activation_retry)
+  add_test(NAME CsnLegacyContextRetrySibling
+    COMMAND test_forward_sync_activation_retry --csn-abc-legacy-retry-sibling)
+  set_tests_properties(CsnLegacyContextRetrySibling PROPERTIES
+    LABELS "daemon;consensus;csn;regression;mandatory" TIMEOUT 30)
   add_test(NAME CsnMarkerlessDispatchLiveness
     COMMAND test_forward_sync_activation_retry --markerless-dispatch)
   set_tests_properties(CsnMarkerlessDispatchLiveness PROPERTIES
