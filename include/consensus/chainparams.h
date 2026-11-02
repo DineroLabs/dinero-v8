@@ -325,8 +325,9 @@ struct ChainParams {
 
     // At/after this height, vtx[0] must satisfy Transaction::IsCoinbase():
     // exactly one input with a zero txid AND vout 0xffffffff. This is a
-    // validity tightening, so mainnet remains dormant until its activation
-    // is explicitly selected after historical-compatibility review.
+    // validity tightening. The struct default is dormant; each network chooses
+    // its own boundary after historical review. Mainnet and regtest select H1;
+    // testnet remains dormant pending its own history scan and decision.
     uint32_t coinbase_structure_activation_height = UINT32_MAX;
 
     // ===========================================================================
