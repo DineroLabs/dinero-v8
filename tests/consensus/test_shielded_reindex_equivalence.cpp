@@ -862,6 +862,87 @@ int main(int argc, char** argv) {
                        prefix);
         }
 
+        // A historical first transaction with a non-null prevout must still
+        // replay under the old rule. Point it at a real unspent output so the
+        // forest can compute the root that the legacy replay path expects.
+        // This exercises processBlock through execute(), including its forest
+        // and durable tip writes, rather than merely testing the height gate.
+        {
+            ReferenceState branch_state;
+            branch_state.forest = state.forest.clone();
+            branch_state.tree = state.tree;
+            branch_state.anchor_history = state.anchor_history;
+            branch_state.utxos = state.utxos;
+            branch_state.nullifier_rows = state.nullifier_rows;
+
+            dinero::Block malformed;
+            malformed.vtx.push_back(MakeCoinbaseTx(6, 50, 0x26));
+            malformed.vtx.front().vin.front().prevout = dinero::TxOutPoint(
+                blocks.back().vtx.front().GetTxid(), 0);
+            Require(!malformed.vtx.front().IsCoinbase(),
+                    "replay boundary fixture must have a malformed first transaction");
+            const auto expected = FinalizeAndApplyReferenceBlock(
+                malformed, 6, blocks.back().GetHash(), branch_state);
+            blocks.push_back(std::move(malformed));
+            expectations.push_back(expected);
+
+            auto& params = dinero::MutableParams();
+            const auto prior_activation = params.coinbase_structure_activation_height;
+            params.coinbase_structure_activation_height = 7;
+            const fs::path legacy_dir = base_dir / "legacy_first_tx";
+            fs::create_directories(legacy_dir);
+            run_prefix(legacy_dir,
+                       legacy_dir / "blockchain" / "chaindb.reindex",
+                       legacy_dir / "blockchain" / "shielded_frontier.reindex.bin",
+                       legacy_dir / "blockchain" / "shielded_nullifiers.reindex.db",
+                       blocks.size());
+
+            // Replay the exact same serialized blocks with the boundary at
+            // this block. The structural failure must abort before publishing
+            // the malformed tip; all other fixture inputs are identical.
+            params.coinbase_structure_activation_height = 6;
+            const fs::path active_dir = base_dir / "active_first_tx";
+            fs::create_directories(active_dir);
+            dinero::BlockStorage active_storage;
+            Require(active_storage.init(active_dir) == dinero::Status::Ok,
+                    "failed to init active-boundary BlockStorage");
+            Require(active_storage.writeBlock(genesis_hash, genesis_block).ok(),
+                    "failed to write active-boundary genesis");
+            for (const auto& replay_block : blocks) {
+                Require(active_storage.writeBlock(replay_block.GetHash(), replay_block).ok(),
+                        "failed to write active-boundary block");
+            }
+            Require(active_storage.flush() == dinero::Status::Ok,
+                    "failed to flush active-boundary blocks");
+
+            dinero::ChainDB active_db;
+            Require(active_db.init(active_dir / "blockchain" / "chaindb.reindex") ==
+                        dinero::Status::Ok,
+                    "failed to init active-boundary ChainDB");
+            dinero::consensus::BlockReindexer::Config active_config;
+            active_config.mode = dinero::consensus::BlockReindexer::Mode::FULL;
+            active_config.use_assumevalid = true;
+            active_config.progress_interval = 1000;
+            active_config.shielded_frontier_output_path =
+                active_dir / "blockchain" / "shielded_frontier.reindex.bin";
+            active_config.shielded_nullifier_db_path =
+                active_dir / "blockchain" / "shielded_nullifiers.reindex.db";
+            dinero::consensus::BlockReindexer active_reindexer(
+                active_dir, &active_db, &active_storage, active_config);
+            auto active_result = active_reindexer.execute();
+            Require(active_result.ok() && !active_result.value().success,
+                    "active-boundary replay accepted malformed first transaction");
+            auto active_tip = active_db.getTip();
+            Require(active_tip.ok() && active_tip.value().height == 5,
+                    "active-boundary replay published malformed tip");
+            active_storage.close();
+            active_db.close();
+
+            params.coinbase_structure_activation_height = prior_activation;
+            expectations.pop_back();
+            blocks.pop_back();
+        }
+
         // Replaying the reset must remove authoritative rows from the old
         // epoch as well as emptying the SQLite cache. Derive the expected
         // post-reset state directly: empty tree and no spent-note records.
