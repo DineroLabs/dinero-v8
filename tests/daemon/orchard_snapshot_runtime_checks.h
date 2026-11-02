@@ -1392,6 +1392,22 @@ TEST(OrchardActivationHandoff, ClosedCopyConvertsWithoutMovingHistoryMarkersOrOr
     ChainDB cold;ASSERT_EQ(cold.init(candidate_path),Status::Ok);EXPECT_TRUE(storage::ReadOrchardActivationOrigin(cold));
     EXPECT_EQ(cold.getValidatedTip()->height,0);EXPECT_ANY_THROW(storage::RequireFullOrchardStorage(cold));cold.close();
 }
+TEST(OrchardActivationHandoff, H1OriginRefusesDormantProfileWithoutChangingCandidate){
+    struct RestoreParams { ChainParams saved;~RestoreParams(){MutableParams()=saved;} } restore{Params()};
+    MutableParams().coinbase_structure_activation_height=1;
+    ActivationHandoffFixture fixture;
+    auto prepared=fixture.Prepare();ASSERT_TRUE(prepared);
+    const auto scheduled_profile=ConsensusChecksum(Params());
+    const auto origin=storage::ReadOrchardActivationOrigin(prepared->CandidateForInspection());
+    ASSERT_TRUE(origin);EXPECT_EQ(origin->profile,scheduled_profile);
+    MutableParams().coinbase_structure_activation_height=UINT32_MAX;
+    ASSERT_NE(ConsensusChecksum(Params()),scheduled_profile);
+    EXPECT_ANY_THROW(OrchardSnapshotStoreTestAccess::CheckHandoff(fixture.guard,*prepared));
+    const auto after=storage::ReadOrchardActivationOrigin(prepared->CandidateForInspection());
+    ASSERT_TRUE(after);EXPECT_EQ(after->Encode(),origin->Encode());
+    MutableParams().coinbase_structure_activation_height=1;
+    EXPECT_NO_THROW(OrchardSnapshotStoreTestAccess::CheckHandoff(fixture.guard,*prepared));
+}
 TEST(OrchardActivationHandoff, MissingCorruptOriginOrSelectionCannotBecomeFreshParentAuthority){
     ActivationHandoffFixture f;auto prepared=f.Prepare();const auto candidate=prepared->CandidatePath();prepared.reset();
     for(unsigned variant=0;variant<5;++variant){
@@ -2374,6 +2390,54 @@ TEST(OrchardSnapshotRuntime, RealRegtestActivationFullAndCompactImportReopenAndF
         EXPECT_ANY_THROW(Access::Restore(mutex,db,headers));EXPECT_EQ(db.getTip()->hash,section.state.block_hash);
         {rocksdb::WriteBatch batch;batch.Put(key,proof);ASSERT_EQ(db.writeBatch(source.f.token,std::move(batch),true),Status::Ok);}
         ASSERT_NO_THROW(Access::Restore(mutex,db,headers));db.close();
+    }
+}
+TEST(OrchardSnapshotRuntime, DormantCoinbaseProfileV6FileImportsUnderH1Schedule) {
+    using namespace consensus;using Access=OrchardSnapshotStoreTestAccess;
+    struct RestoreParams { ChainParams saved;~RestoreParams(){MutableParams()=saved;} } restore{Params()};
+    MutableParams().coinbase_structure_activation_height=UINT32_MAX;
+    CanonicalPoolFixture source(true);MutableParams().orchard_catalog_commitment_activation_height=102;
+    MutableParams().state_commitment_burial_depth=0;
+    const auto first=SolveCatalogTemplate(source.Build());ASSERT_TRUE(first);
+    const auto accepted=source.Submit(first->WireBytes());ASSERT_TRUE(accepted.connected)<<accepted.reason;
+    HeaderChainSelector headers;for(const auto& block:source.f.blocks)ASSERT_TRUE(headers.AddHeader(block.header));
+    ASSERT_TRUE(headers.AddHeader(first->Header()));
+    auto& live=ShieldedStateStartupTestAccess::CatalogWriterCoins(*source.f.service);
+    const auto full=Access::Capture(source.f.db,OrchardSnapshotProfile::Full,live.GetForest().serialize());
+    const auto dormant_profile=ConsensusChecksum(Params());
+    for(const auto profile:{OrchardSnapshotProfile::Full,OrchardSnapshotProfile::Compact}) {
+        MutableParams().coinbase_structure_activation_height=UINT32_MAX;
+        auto section=full;section.profile=profile;OrchardSnapshotCoins coins;
+        if(profile==OrchardSnapshotProfile::Full)coins=live.GetUTXOs();
+        else section.accumulator=section.base_catalog.stump;
+        SnapshotMetadata header;header.version=SNAPSHOT_VERSION_V6;header.block_hash=section.state.block_hash;
+        header.block_height=section.state.height;header.timestamp=first->Header().timestamp;header.utxo_count=coins.size();
+        std::ostringstream encoded(std::ios::binary);
+        ASSERT_NO_THROW(WriteOrchardSnapshotFile(encoded,header,section,coins));
+        const auto bytes=encoded.str();
+
+        // The new release changes the consensus fingerprint, but the v6 file
+        // authenticates the selected block/state rather than a software profile.
+        MutableParams().coinbase_structure_activation_height=1;
+        ASSERT_NE(ConsensusChecksum(Params()),dormant_profile);
+        std::istringstream input(bytes,std::ios::binary);
+        const auto decoded=ReadOrchardSnapshotFile(input,bytes.size(),profile);
+        shielded_store_fixture::TempDir directory;const auto database_path=directory.path/"chainstate";
+        ASSERT_NO_THROW(Access::CreateFresh(database_path));
+        ChainDB db;ASSERT_EQ(db.init(database_path),Status::Ok);
+        BlockStorage files;ASSERT_EQ(files.init(directory.path/"files"),Status::Ok);
+        AnnotatedRecursiveMutex mutex;
+        auto installed=Access::Install(mutex,db,source.f.token,files,headers,decoded);
+        ASSERT_TRUE(db.getTip().ok());EXPECT_EQ(db.getTip()->hash,section.state.block_hash);
+        EXPECT_EQ(bool(installed.full),profile==OrchardSnapshotProfile::Full);
+        EXPECT_EQ(bool(installed.compact),profile==OrchardSnapshotProfile::Compact);
+        installed.full.reset();installed.compact.reset();db.close();
+        ASSERT_EQ(db.init(database_path),Status::Ok);
+        auto reopened=Access::Restore(mutex,db,headers);
+        EXPECT_EQ(bool(reopened.full),profile==OrchardSnapshotProfile::Full);
+        EXPECT_EQ(bool(reopened.compact),profile==OrchardSnapshotProfile::Compact);
+        ASSERT_TRUE(db.getTip().ok());EXPECT_EQ(db.getTip()->hash,section.state.block_hash);
+        reopened.full.reset();reopened.compact.reset();db.close();files.close();
     }
 }
 TEST(OrchardSnapshotRuntime, DeferredV5WaitsForBurialBeforeLoaderAttempt) {
