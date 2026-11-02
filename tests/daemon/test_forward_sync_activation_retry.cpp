@@ -1174,6 +1174,15 @@ void RunCsnInvalidSignatureReplay(const std::filesystem::path& root,
                 "CSN can select honest same-height sibling after invalid candidate");
         }
     }
+    if (activate_candidates) {
+        db.close();
+        Require(db.init(root / "chaindb") == Status::Ok,
+                "ABC fixture database reopens after candidate election");
+        const auto failed_after_restart = db.getHeaderMetadata(candidate->hash);
+        Require(failed_after_restart.ok() &&
+                    (failed_after_restart->status_flags & BLOCK_FAILED_VALID) != 0,
+                "ABC invalid-signature status survives database reopen");
+    }
     files->close();
     db.close();
     g_candidates.clear();
