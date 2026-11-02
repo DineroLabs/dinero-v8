@@ -23786,39 +23786,60 @@ bool ChainstateService::ConnectTip(CBlockIndex* tip_to_connect, std::string* out
                 [](const Transaction& tx) { return tx.IsShielded(); });
             if (has_shielded) {
                 const auto marker = chain_db_->getShieldedTipMarker();
-                if (marker.status() != Status::Ok ||
-                    StatelessReplayShieldedDecision(
-                        static_cast<uint32_t>(marker.value().height),
-                        tip_to_connect->height) != StatelessReplayShieldedAction::Apply) {
+                if (marker.status() != Status::Ok || marker.value().height < 0) {
                     return fail("stateless-replay-shielded-scratch-marker-unavailable");
                 }
-                auto scratch_tree = shielded_tree_;
-                auto scratch_anchors = shielded_anchor_history_;
-                consensus::shielded::NullifierSet scratch_nullifiers;
-                const auto nullifier_content = shielded_nullifiers_.SerializeContent();
-                if (nullifier_content.empty() ||
-                    scratch_nullifiers.Open(":memory:") !=
-                        consensus::shielded::NullifierSet::OpenResult::Ok ||
-                    !scratch_nullifiers.DeserializeContent(nullifier_content)) {
-                    return fail("stateless-replay-shielded-scratch-state-unavailable");
-                }
-                std::vector<int64_t> scratch_deltas;
-                std::string scratch_error;
-                if (!block_validator_->ComputeShieldedDeltasForStoredBlock(
-                        block, tip_to_connect->height, scratch_deltas,
-                        scratch_error, spent_outputs)) {
-                    return fail("stateless-replay-shielded-scratch-delta-invalid: " +
-                                scratch_error);
-                }
-                consensus::BlockValidator scratch_validator(consensus_utxo_set_.get());
-                scratch_validator.setShieldedState(
-                    &scratch_tree, &scratch_nullifiers, &scratch_anchors);
-                consensus::BlockUndo scratch_undo;
-                if (!scratch_validator.ApplyBlockShieldedSection(
-                        block, tip_to_connect->height, scratch_deltas,
-                        scratch_undo, scratch_error)) {
-                    return fail("stateless-replay-shielded-scratch-invalid: " +
-                                scratch_error);
+                const uint32_t marker_height =
+                    static_cast<uint32_t>(marker.value().height);
+                const auto shielded_action = StatelessReplayShieldedDecision(
+                    marker_height, tip_to_connect->height);
+                if (shielded_action == StatelessReplayShieldedAction::Skip) {
+                    const auto state = CurrentShieldedStateSnapshot();
+                    const bool state_matches =
+                        marker.value().shielded_root == state.root &&
+                        marker.value().tree_size == state.tree_size &&
+                        marker.value().nullifier_count == state.nullifier_count &&
+                        !shielded_nullifiers_.SerializeContent().empty();
+                    if (!StatelessReplayShieldedSkipMatches(
+                            marker_height, tip_to_connect->height,
+                            marker.value().block_hash == tip_to_connect->hash,
+                            state_matches)) {
+                        return fail("stateless-replay-shielded-scratch-skip-unbound");
+                    }
+                    // The identical selected block has already advanced the
+                    // durable pool. Its authenticated transparent context was
+                    // checked above; live apply will deliberately skip it.
+                } else if (shielded_action != StatelessReplayShieldedAction::Apply) {
+                    return fail("stateless-replay-shielded-scratch-gap");
+                } else {
+                    auto scratch_tree = shielded_tree_;
+                    auto scratch_anchors = shielded_anchor_history_;
+                    consensus::shielded::NullifierSet scratch_nullifiers;
+                    const auto nullifier_content = shielded_nullifiers_.SerializeContent();
+                    if (nullifier_content.empty() ||
+                        scratch_nullifiers.Open(":memory:") !=
+                            consensus::shielded::NullifierSet::OpenResult::Ok ||
+                        !scratch_nullifiers.DeserializeContent(nullifier_content)) {
+                        return fail("stateless-replay-shielded-scratch-state-unavailable");
+                    }
+                    std::vector<int64_t> scratch_deltas;
+                    std::string scratch_error;
+                    if (!block_validator_->ComputeShieldedDeltasForStoredBlock(
+                            block, tip_to_connect->height, scratch_deltas,
+                            scratch_error, spent_outputs)) {
+                        return fail("stateless-replay-shielded-scratch-delta-invalid: " +
+                                    scratch_error);
+                    }
+                    consensus::BlockValidator scratch_validator(consensus_utxo_set_.get());
+                    scratch_validator.setShieldedState(
+                        &scratch_tree, &scratch_nullifiers, &scratch_anchors);
+                    consensus::BlockUndo scratch_undo;
+                    if (!scratch_validator.ApplyBlockShieldedSection(
+                            block, tip_to_connect->height, scratch_deltas,
+                            scratch_undo, scratch_error)) {
+                        return fail("stateless-replay-shielded-scratch-invalid: " +
+                                    scratch_error);
+                    }
                 }
             }
 
