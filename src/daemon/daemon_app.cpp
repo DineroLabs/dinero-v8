@@ -6694,6 +6694,33 @@ bool DaemonApp::Init(int argc, char** argv) {
                     }
                 }
 
+                // An archival bridge can have the requested body despite a
+                // stale height announcement. If every height-capable peer has
+                // already timed out or returned NOTFOUND, probe such bridges
+                // before retrying the same unavailable peers. Keep CSN's
+                // bridge-specific filtering and ordinary height filtering as-is.
+                if (sched && !csn_mode && !skip_below_height.empty()) {
+                    std::vector<dinero::daemon::BlockBodyPeerAvailability>
+                        availability;
+                    availability.reserve(peers.size());
+                    for (const auto& peer : peers) {
+                        const auto key = peer.to_string();
+                        const bool archival_bridge =
+                            p2p_service->get().peer_has_service_flags(
+                                key, ServiceFlags::NODE_NETWORK) &&
+                            p2p_service->get().peer_has_service_flags(
+                                key, ServiceFlags::NODE_UTREEXO_BRIDGE);
+                        availability.push_back({key, peer_advertised_height(peer),
+                                                archival_bridge});
+                    }
+                    for (const auto& key :
+                            dinero::daemon::LaggingArchivalBridgeFallback(
+                                availability, block_height,
+                                sched->CurrentRequestSkipPeers())) {
+                        skip_below_height.erase(key);
+                    }
+                }
+
                 // Also skip peers the scheduler has marked body-incapable at or
                 // below this height (issue #241). AssumeUTXO/snapshot peers
                 // advertise the full chain height but lack pre-snapshot block
