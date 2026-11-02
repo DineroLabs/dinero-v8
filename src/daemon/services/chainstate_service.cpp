@@ -13058,14 +13058,24 @@ void ChainstateService::ActivateBestChainPass(const ActivationParentPlan* prepar
                 if (logger_) logger_->warning("[ActivateBestChain] REORG ABORT: consensus-invalid block at height " +
                                               std::to_string(block_index->height) +
                                               " — marking BLOCK_FAILED_VALID (#309/I2)");
+                // Persist the deterministic rejection before the in-memory
+                // candidate graph can forget it. A failed status write is a
+                // local persistence fault, never permission to silently retry
+                // the same invalid branch after a restart.
+                const auto failed_status = chain_db_ ? [&] {
+                    ChainWriteToken token;
+                    return chain_db_->setHeaderStatusBits(
+                        token, block_index->hash, BLOCK_FAILED_VALID);
+                }() : Status::Internal;
                 {
                     std::lock_guard<std::recursive_mutex> index_lock(g_block_index_mutex);
                     block_index->status |= BLOCK_FAILED_VALID;
                     InvalidateAncestryCache();
                 }
-                if (chain_db_) {
-                    ChainWriteToken token = ChainWriteToken::CreateForTesting();
-                    chain_db_->setHeaderStatusBits(token, block_index->hash, BLOCK_FAILED_VALID);
+                if (failed_status != Status::Ok) {
+                    if (logger_) logger_->error(
+                        "[ActivateBestChain] Failed to persist consensus-invalid block status");
+                    EnterSafeMode("failed to persist consensus-invalid block status");
                 }
             }
 
@@ -23402,6 +23412,10 @@ bool ChainstateService::ConnectTip(CBlockIndex* tip_to_connect, std::string* out
             if (logger_) logger_->error("[ConnectTip] REJECTING block " +
                 std::to_string(tip_to_connect->height) +
                 ": Missing mandatory DNRF filter commitment in coinbase");
+            // The body was read successfully and a mandatory commitment is
+            // absent. This is a deterministic consensus failure, not a
+            // missing local proof/resource that should stay retryable.
+            if (out_consensus_invalid) *out_consensus_invalid = true;
             return fail("bad-filter-commitment: Missing DNRF commitment (pre-check)");
         }
     }

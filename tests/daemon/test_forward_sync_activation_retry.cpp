@@ -6,7 +6,10 @@
 #include "consensus/block_lifecycle.h"
 #include "consensus/candidate_ancestry.h"
 #include "consensus/chainparams.h"
+#include "consensus/block_validation.h"
+#include "consensus/merkle_root.h"
 #include "storage/chain_write_token.h"
+#include "storage/block_storage.h"
 
 #include <algorithm>
 #include <chrono>
@@ -61,6 +64,10 @@ struct ActivationRetryTestAccess {
     static bool Contains(const ChainstateService& svc, CBlockIndex* candidate) {
         const auto entries = svc.candidates_.Snapshot();
         return std::find(entries.begin(), entries.end(), candidate) != entries.end();
+    }
+    static void PrepareConnect(ChainstateService& svc) {
+        svc.block_validator_ = std::make_unique<consensus::BlockValidator>(
+            svc.consensus_utxo_set_.get());
     }
 };
 } // namespace dinero
@@ -137,6 +144,115 @@ void RunCase(const std::filesystem::path& root, bool first_body, bool middle_gap
                 "repeated ticks never assign retry state to the prefix");
     }
     // Every service has released its raw index pointers before clearing globals.
+    g_candidates.clear();
+    g_orphan_pool.clear();
+    g_block_index.clear();
+    InvalidateAncestryCache();
+}
+
+// Exercise the production connect-abort path with an exact stored body. A
+// deterministic missing mandatory commitment must be persisted as invalid;
+// otherwise its lower-hash tip can outrank an equal-work sibling forever.
+void RunDeterministicFilterFailure(const std::filesystem::path& root) {
+    using namespace dinero;
+    ChainDB db;
+    Require(db.init(root / "chaindb") == Status::Ok, "filter case ChainDB opens");
+    auto files = std::make_shared<BlockStorage>();
+    Require(files->init(root) == Status::Ok, "filter case flatfiles open");
+
+    BlockHeader genesis_header;
+    genesis_header.version = 1;
+    genesis_header.timestamp = 1000000;
+    genesis_header.difficulty = 0x207fffff;
+    genesis_header.nonce = 1;
+    auto* genesis = AddBlockIndex(genesis_header, 0);
+    BlockHeader parent_header = genesis_header;
+    parent_header.prev_block_hash = genesis->hash;
+    parent_header.timestamp += 1;
+    parent_header.nonce += 1;
+    auto* parent = AddBlockIndex(parent_header, 1);
+    genesis->status |= BLOCK_VALID_CHAIN;
+    genesis->status |= BLOCK_HAVE_DATA;
+    parent->status |= BLOCK_VALID_CHAIN;
+    parent->status |= BLOCK_HAVE_DATA;
+
+    Transaction coinbase;
+    TxInput input;
+    input.prevout.txid = TxId();
+    input.prevout.vout = UINT32_MAX;
+    input.scriptSig = {1, 2};
+    input.sequence = UINT32_MAX;
+    coinbase.vin.push_back(input);
+    TxOutput output;
+    output.value = AmountUna::Una(1);
+    output.scriptPubKey = {0x51};
+    coinbase.vout.push_back(output);
+    Block first;
+    first.vtx = {coinbase};
+    first.header.version = 1;
+    first.header.prev_block_hash = parent->hash;
+    first.header.timestamp = 1000002;
+    first.header.difficulty = 0x207fffff;
+    first.header.merkle_root = consensus::ComputeMerkleRoot(first.vtx);
+    first.header.nonce = 101;
+    Block second = first;
+    second.header.nonce = 102;
+    Block& bad = first.GetHash() < second.GetHash() ? first : second;
+    Block& sibling = first.GetHash() < second.GetHash() ? second : first;
+    auto* bad_index = AddBlockIndex(bad.header, 2);
+    auto* sibling_index = AddBlockIndex(sibling.header, 2);
+    bad_index->status |= BLOCK_HAVE_DATA;
+    sibling_index->status |= BLOCK_HAVE_DATA;
+    Require(bad_index->hash < sibling_index->hash,
+            "deterministic invalid candidate ranks before equal-work sibling");
+
+    const auto token = ChainWriteToken::CreateForTesting();
+    Require(db.setTip(token, parent->hash, 1, arith_uint256()) == Status::Ok,
+            "filter case active tip staged");
+    Require(db.putHeader(token, bad_index->hash, bad.header, 2,
+                         arith_uint256(3)) == Status::Ok,
+            "filter case header staged");
+    ChainDB::PersistedHeaderMetadata metadata;
+    metadata.parent_hash = parent->hash;
+    metadata.height = 2;
+    metadata.chainwork = arith_uint256(3);
+    metadata.status_flags = bad_index->status;
+    Require(db.putHeaderMetadata(token, bad_index->hash, metadata) == Status::Ok,
+            "filter case metadata staged");
+    const auto pos = files->writeBlock(bad_index->hash, bad);
+    Require(pos.status() == Status::Ok, "filter case body written");
+    {
+        ChainstateService svc;
+        svc.setChainDB(&db);
+        svc.setBlockStorage(files);
+        ActivationRetryTestAccess::Prepare(svc, parent, db);
+        ActivationRetryTestAccess::PrepareConnect(svc);
+        svc.PersistStoredBodyPosition(bad_index->hash, pos.value());
+        Require(svc.getBlockByHash(bad_index->hash).status() == Status::Ok,
+                "filter case stored body is readable");
+        svc.AddCandidate(bad_index);
+        svc.AddCandidate(sibling_index);
+        Require(ActivationRetryTestAccess::Best(svc) == bad_index,
+                "lower-hash invalid candidate is selected first");
+        svc.ActivateBestChain();
+        Require((bad_index->status & BLOCK_FAILED_VALID) != 0,
+                "deterministic failure marks candidate invalid in memory");
+        const auto saved = db.getHeaderMetadata(bad_index->hash);
+        Require(saved.ok() && (saved->status_flags & BLOCK_FAILED_VALID) != 0,
+                "deterministic failure persists invalid status");
+        Require(ActivationRetryTestAccess::Best(svc) == sibling_index,
+                "invalid lower-hash candidate no longer excludes sibling");
+        Require(svc.GetActiveTip() == parent,
+                "failed candidate did not publish an invalid tip");
+    }
+    db.close();
+    Require(db.init(root / "chaindb") == Status::Ok,
+            "filter case ChainDB reopens");
+    const auto reopened = db.getHeaderMetadata(bad_index->hash);
+    Require(reopened.ok() && (reopened->status_flags & BLOCK_FAILED_VALID) != 0,
+            "deterministic failure remains invalid after database reopen");
+    files->close();
+    db.close();
     g_candidates.clear();
     g_orphan_pool.clear();
     g_block_index.clear();
@@ -286,6 +402,7 @@ int main(int argc, char** argv) {
         RunCase(root / "first-body-gap", false, true);
         RunCase(root / "whole-path-failure", true, false);
         RunCase(root / "snapshot-cap-failure", true, false, true);
+        RunDeterministicFilterFailure(root / "filter-failure");
         std::filesystem::remove_all(root);
         std::cout << "ALL PASSED\n";
         return 0;
