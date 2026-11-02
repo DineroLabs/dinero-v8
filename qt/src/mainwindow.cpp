@@ -146,7 +146,7 @@ QString mainTabName(const QTabWidget* tabs, int index) {
 }
 
 // CPU mining threads shown when the app starts (the user can change it per session).
-constexpr int kDefaultMiningThreads = 4;
+constexpr int kDefaultMiningThreads = 2;
 
 enum class NavigationGlyph {
   Dashboard,

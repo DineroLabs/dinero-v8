@@ -229,14 +229,14 @@ private Q_SLOTS:
         // Not a cross: nothing past the end of the handle.
         QVERIFY2(!ink(4, 35), "handle extends into a cross bar");
     }
-    void miningThreadsStartAtFour() {
+    void miningThreadsStartAtTwo() {
         QTemporaryDir dir;
         QVERIFY(dir.isValid());
         QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, dir.path());
         MainWindow window(dinero::qt::DaemonBootstrapOwner::ApplicationMain);
         auto* threads = window.findChild<QLineEdit*>("miningThreads");
         QVERIFY(threads);
-        QCOMPARE(threads->text(), QString("4"));
+        QCOMPARE(threads->text(), QString("2"));
     }
     void recentAlertsStayCompactUntilThereAreAlerts() {
         QTemporaryDir dir;
