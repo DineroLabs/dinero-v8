@@ -1408,6 +1408,24 @@ TEST(OrchardActivationHandoff, H1OriginRefusesDormantProfileWithoutChangingCandi
     MutableParams().coinbase_structure_activation_height=1;
     EXPECT_NO_THROW(OrchardSnapshotStoreTestAccess::CheckHandoff(fixture.guard,*prepared));
 }
+TEST(OrchardActivationHandoff, DormantOriginRefusesH1ProfileWithoutChangingCandidate){
+    struct RestoreParams { ChainParams saved;~RestoreParams(){MutableParams()=saved;} } restore{Params()};
+    MutableParams().coinbase_structure_activation_height=UINT32_MAX;
+    ActivationHandoffFixture fixture;
+    auto prepared=fixture.Prepare();ASSERT_TRUE(prepared);
+    const auto dormant_profile=ConsensusChecksum(Params());
+    const auto origin=storage::ReadOrchardActivationOrigin(prepared->CandidateForInspection());
+    ASSERT_TRUE(origin);EXPECT_EQ(origin->profile,dormant_profile);
+    const auto rows=ChainDBTransactionReadTestPeer::HandoffRows(prepared->CandidateForInspection());
+    MutableParams().coinbase_structure_activation_height=1;
+    ASSERT_NE(ConsensusChecksum(Params()),dormant_profile);
+    EXPECT_ANY_THROW(OrchardSnapshotStoreTestAccess::CheckHandoff(fixture.guard,*prepared));
+    const auto after=storage::ReadOrchardActivationOrigin(prepared->CandidateForInspection());
+    ASSERT_TRUE(after);EXPECT_EQ(after->Encode(),origin->Encode());
+    EXPECT_EQ(ChainDBTransactionReadTestPeer::HandoffRows(prepared->CandidateForInspection()),rows);
+    MutableParams().coinbase_structure_activation_height=UINT32_MAX;
+    EXPECT_NO_THROW(OrchardSnapshotStoreTestAccess::CheckHandoff(fixture.guard,*prepared));
+}
 TEST(OrchardActivationHandoff, MissingCorruptOriginOrSelectionCannotBecomeFreshParentAuthority){
     ActivationHandoffFixture f;auto prepared=f.Prepare();const auto candidate=prepared->CandidatePath();prepared.reset();
     for(unsigned variant=0;variant<5;++variant){
