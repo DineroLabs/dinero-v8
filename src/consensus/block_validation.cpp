@@ -20,6 +20,7 @@ extern "C" {
 #include <secp256k1_generator.h>
 }
 #include "consensus/limits.h"              // MAX_BLOCK_SIZE, MAX_BLOCK_WEIGHT, MAX_BLOCK_SIGOPS_COST
+#include "consensus/sigops.h"
 #include "consensus/outpoint.h"            // Phase M.2: Binary OutPoint comparison
 #include "consensus/utreexo_activation.h"   // Phase 3: Utreexo activation rule
 #include "consensus/utreexo_canonical_roots_activation.h"  // Apr 13 2026 Stage 3 fork
@@ -283,8 +284,6 @@ bool BlockValidator::ComputeUtreexoRootPure(const Block& block, uint32_t height,
     if (!shielded::CheckAuthBlockResources(block.vtx, height,
             Params().shielded_spend_auth_activation_height, error,
             shielded::CompactRulesFor(Params()))) return false;
-
-
     // Check if Utreexo is active at this height
     if (!IsUtreexoActive(height)) {
         computed_utreexo_root.SetNull();
@@ -928,6 +927,12 @@ bool BlockValidator::ConnectBlockInternal(const Block& block, uint32_t height, c
     if (!shielded::CheckAuthBlockResources(block.vtx, height,
             Params().shielded_spend_auth_activation_height, error,
             shielded::CompactRulesFor(Params()))) return false;
+    unsigned int sigop_cost = 0;
+    std::string sigops_error;
+    if (!consensus::CheckBlockSigops(block, sigop_cost, sigops_error)) {
+        error = "block-sigops-exceeded: " + sigops_error;
+        return false;
+    }
 
 
     // Private replay checkpoints precede even the historical forest-mode flip.

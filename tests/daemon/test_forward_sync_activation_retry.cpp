@@ -8,6 +8,8 @@
 #include "consensus/chainparams.h"
 #include "consensus/block_validation.h"
 #include "consensus/merkle_root.h"
+#include "consensus/sigops.h"
+#include "consensus/filter_commitment.h"
 #include "storage/chain_write_token.h"
 #include "storage/block_storage.h"
 
@@ -540,6 +542,115 @@ void RunCandidateCostCase() {
 }
 } // namespace
 
+void RunSigopsStoredCandidate(const std::filesystem::path& root) {
+    using namespace dinero;
+    ChainDB db;
+    Require(db.init(root / "chaindb") == Status::Ok, "sigops ChainDB opens");
+    auto files = std::make_shared<BlockStorage>();
+    Require(files->init(root) == Status::Ok, "sigops flatfiles open");
+    BlockHeader genesis_header;
+    genesis_header.version = 1;
+    genesis_header.timestamp = 1000000;
+    genesis_header.difficulty = 0x207fffff;
+    genesis_header.nonce = 1;
+    auto* genesis = AddBlockIndex(genesis_header, 0);
+    BlockHeader parent_header = genesis_header;
+    parent_header.prev_block_hash = genesis->hash;
+    parent_header.timestamp += 1;
+    parent_header.nonce += 1;
+    auto* parent = AddBlockIndex(parent_header, 1);
+    genesis->status |= BLOCK_VALID_CHAIN | BLOCK_HAVE_DATA;
+    parent->status |= BLOCK_VALID_CHAIN | BLOCK_HAVE_DATA;
+    Transaction coinbase;
+    TxInput input;
+    input.prevout.txid = TxId();
+    input.prevout.vout = UINT32_MAX;
+    input.scriptSig = {1, 2};
+    input.sequence = UINT32_MAX;
+    coinbase.vin.push_back(input);
+    for (int n = 0; n < 321; ++n) {
+        TxOutput output;
+        output.value = AmountUna::Una(n == 0 ? 1 : 0);
+        output.scriptPubKey = std::vector<uint8_t>(250, 0xac);
+        coinbase.vout.push_back(output);
+    }
+    TxOutput dnrf;
+    dnrf.value = AmountUna::Una(0);
+    dnrf.scriptPubKey = consensus::BuildFilterCommitmentScript(
+        uint256::FromHexUnsafe(std::string(63, '0') + '1'));
+    coinbase.vout.push_back(dnrf);
+    Block block;
+    block.vtx = {coinbase};
+    block.header.version = 1;
+    block.header.prev_block_hash = parent->hash;
+    block.header.timestamp = 1000002;
+    block.header.difficulty = 0x207fffff;
+    block.header.merkle_root = consensus::ComputeMerkleRoot(block.vtx);
+    block.header.nonce = 101;
+    consensus::ConsensusUTXOSet preview_set;
+    preview_set.SetBestBlock(parent->hash, 1);
+    consensus::BlockValidator preview_validator(&preview_set);
+    uint256 computed_root;
+    std::string root_error;
+    Require(preview_validator.ComputeUtreexoRootPure(block, 2, computed_root, root_error),
+            "sigops body has computed Utreexo root");
+    block.header.utreexo_root = computed_root;
+    unsigned int sigop_cost = 0;
+    std::string sigop_error;
+    const bool sigops_ok = consensus::CheckBlockSigops(block, sigop_cost, sigop_error);
+    std::cout << "SIGOPS_COUNT " << sigop_cost << " ok=" << sigops_ok
+              << " error=" << sigop_error << "\n";
+    Require(!sigops_ok &&
+                sigop_cost > consensus::MAX_BLOCK_SIGOPS_COST,
+            "same body is ingress-invalid for excessive sigops");
+    consensus::ConsensusUTXOSet connect_set;
+    connect_set.SetBestBlock(parent->hash, 1);
+    consensus::BlockValidator connect_validator(&connect_set);
+    consensus::BlockUndo connect_undo;
+    std::string connect_error;
+    Require(!connect_validator.ConnectBlock(block, 2, block.GetHash(),
+                                            connect_undo, connect_error) &&
+                connect_error.rfind("block-sigops-exceeded", 0) == 0,
+            "shared connect validator rejects same excessive-sigops body");
+    auto* candidate = AddBlockIndex(block.header, 2);
+    candidate->status |= BLOCK_HAVE_DATA;
+    const auto token = ChainWriteToken::CreateForTesting();
+    Require(db.setTip(token, parent->hash, 1, arith_uint256()) == Status::Ok,
+            "sigops active tip staged");
+    Require(db.putHeader(token, candidate->hash, block.header, 2,
+                         arith_uint256(3)) == Status::Ok,
+            "sigops header staged");
+    ChainDB::PersistedHeaderMetadata metadata;
+    metadata.parent_hash = parent->hash;
+    metadata.height = 2;
+    metadata.chainwork = arith_uint256(3);
+    metadata.status_flags = candidate->status;
+    Require(db.putHeaderMetadata(token, candidate->hash, metadata) == Status::Ok,
+            "sigops metadata staged");
+    const auto pos = files->writeBlock(candidate->hash, block);
+    Require(pos.ok(), "sigops body stored as scheduler would");
+    {
+        ChainstateService svc;
+        svc.setChainDB(&db);
+        svc.setBlockStorage(files);
+        ActivationRetryTestAccess::Prepare(svc, parent, db);
+        ActivationRetryTestAccess::PrepareConnect(svc);
+        svc.PersistStoredBodyPosition(candidate->hash, pos.value());
+        svc.AddCandidate(candidate);
+        svc.ActivateBestChain();
+        Require(svc.GetActiveTip() == parent,
+                "sigops-invalid stored body never becomes active tip");
+        Require((candidate->status & BLOCK_FAILED_VALID) != 0,
+                "sigops-invalid Merkle-bound candidate is marked failed");
+    }
+    files->close();
+    db.close();
+    g_candidates.clear();
+    g_orphan_pool.clear();
+    g_block_index.clear();
+    InvalidateAncestryCache();
+}
+
 int main(int argc, char** argv) {
     const auto unique = std::chrono::steady_clock::now().time_since_epoch().count();
     const auto root = std::filesystem::temp_directory_path() /
@@ -566,6 +677,8 @@ int main(int argc, char** argv) {
         RunDeterministicCandidateFailure(root / "structural-empty", true);
         RunLegacyStoredBodyRecovery(root / "legacy-stored-body");
         RunLegacyStoredBodyRecovery(root / "legacy-mutated-body", true);
+        dinero::SelectParams(dinero::Chain::TESTNET);
+        RunSigopsStoredCandidate(root / "sigops-stored");
         std::filesystem::remove_all(root);
         std::cout << "ALL PASSED\n";
         return 0;
