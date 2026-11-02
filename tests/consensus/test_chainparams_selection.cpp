@@ -207,13 +207,25 @@ TEST(ChainParamsSelection, CatalogScheduleFingerprintsAndSnapshotBoundary) {
         SelectParams(chain);const auto profile=Params();
         const bool mainnet=chain==Chain::MAINNET;
         EXPECT_EQ(profile.orchard_catalog_commitment_activation_height,mainnet?150000u:UINT32_MAX);
+        EXPECT_EQ(profile.coinbase_structure_activation_height,
+                  chain==Chain::REGTEST?1u:UINT32_MAX);
+        if (mainnet) {
+            auto scheduled=profile;
+            scheduled.coinbase_structure_activation_height=150000;
+            // This is deliberately a compatibility alarm, not an activation
+            // choice: Orchard origins and reopen journals persist this checksum.
+            // Scheduling the rule would change their profile immediately.
+            EXPECT_NE(dinero::ConsensusChecksum(scheduled),
+                      dinero::ConsensusChecksum(profile));
+        }
         // Independently reconstructed preimages and external SHA256 audit:
-        // mainnet adds exactly the two catalog profile/height lines; neither
-        // non-mainnet fingerprint changes. Do not update these blindly.
+        // Mainnet adds exactly the two catalog profile/height lines. Regtest's
+        // coinbase-structure test activation changes only its own fingerprint.
+        // Do not update these blindly.
         EXPECT_EQ(dinero::ConsensusChecksum(profile),mainnet?
             "d81a7474229102455fb552224c63c8b0e13947f16cb59e86d9b5d02630057ad2":chain==Chain::TESTNET?
             "d999b0b59cc9f9575e85f424e763a15a53e50c8e24b50c5a96268cb11d93cbf8":
-            "0caa01581b5cf97410957a2f72a29ec5bc9c61b6a42c49db805ad298bd353ff9");
+            "521b2ce10c314a26c76d35d9359425e160b95f9e4730ca17e09759ca13309a25");
         if(!mainnet)continue;
         auto predecessor=profile;predecessor.orchard_catalog_commitment_activation_height=UINT32_MAX;
         EXPECT_EQ(dinero::ConsensusChecksum(predecessor),

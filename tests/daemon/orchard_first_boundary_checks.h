@@ -100,6 +100,11 @@ TEST(OrchardFirstBoundary, ConnectRefusalDisconnectAndReopenReconnect) {
     OwnedSelectedParentFixture f;const auto record=f.Read();ASSERT_TRUE(record);
     MutableParams().enforce_witness_commitment=true;MutableParams().witness_commitment_enforcement_height=4;
     const auto candidate=BoundaryCoinbaseBlock(f,*record);
+    ASSERT_FALSE(candidate.Transactions().empty());
+    ASSERT_FALSE(candidate.Transactions().front().IsOrchard());
+    ASSERT_TRUE(candidate.Transactions().front().Historical().IsCoinbase());
+    std::string coinbase_error;
+    ASSERT_TRUE(candidate.CheckCoinbaseHeight(4, coinbase_error)) << coinbase_error;
     auto files=std::make_shared<BlockStorage>();ASSERT_EQ(files->init(f.path/"flatfiles"),Status::Ok);
     f.service.setBlockStorage(files);
     struct DetachFixtureStorage {

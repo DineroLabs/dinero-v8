@@ -164,6 +164,93 @@ int main() {
             Require(!BlockAcceptorFeeTestAccess::Check(f.block, HEIGHT + 1, error), "wrong height accepted");
             Require(error.find("BIP34 height mismatch") != std::string::npos, error);
         }},
+        {"coinbase_prevout_index_must_be_null", [] {
+            Fixture f(COIN / 10); std::string error;
+            f.block.vtx[0].vin[0].prevout.vout = 0;
+            Require(!f.block.vtx[0].IsCoinbase(), "fixture unexpectedly remains coinbase");
+            Require(!BlockAcceptorFeeTestAccess::Check(f.block, HEIGHT, error),
+                    "admission accepted malformed coinbase prevout");
+            Require(error.find("Invalid coinbase prevout structure") != std::string::npos,
+                    "wrong structural rejection: " + error);
+        }},
+        {"coinbase_prevout_txid_must_be_null", [] {
+            Fixture f(COIN / 10); std::string error;
+            f.block.vtx[0].vin[0].prevout.txid = f.funding.txid;
+            Require(!BlockAcceptorFeeTestAccess::Check(f.block, HEIGHT, error),
+                    "admission accepted nonnull coinbase txid");
+            Require(error.find("Invalid coinbase prevout structure") != std::string::npos,
+                    "wrong structural rejection: " + error);
+        }},
+        {"coinbase_requires_one_input", [] {
+            Fixture f(COIN / 10); std::string error;
+            f.block.vtx[0].vin.push_back(f.block.vtx[0].vin[0]);
+            Require(!BlockAcceptorFeeTestAccess::Check(f.block, HEIGHT, error),
+                    "admission accepted two-input coinbase");
+            Require(error.find("Coinbase must have exactly one input") != std::string::npos,
+                    "wrong one-input rejection: " + error);
+        }},
+        {"coinbase_legacy_before_structure_activation", [] {
+            Fixture f(COIN / 10); std::string error;
+            const auto saved = MutableParams().coinbase_structure_activation_height;
+            MutableParams().coinbase_structure_activation_height = HEIGHT + 1;
+            f.block.vtx[0].vin[0].prevout.vout = 0;
+            const bool admitted = BlockAcceptorFeeTestAccess::Check(f.block, HEIGHT, error);
+            MutableParams().coinbase_structure_activation_height = saved;
+            Require(admitted, "preadmission legacy rule changed: " + error);
+        }},
+        {"stateful_connect_rejects_malformed_coinbase_before_mutation", [] {
+            Fixture f(COIN / 10); std::string error;
+            f.block.vtx[0].vin[0].prevout.vout = 0;
+            BlockValidator validator(&f.coins);
+            BlockUndo undo;
+            Require(!validator.ValidateAndApplyBlock(
+                        f.block, HEIGHT, f.block.GetHash(), undo, error),
+                    "stateful connector accepted malformed coinbase");
+            Require(error == "invalid-coinbase-prevout-structure", error);
+            Require(f.coins.GetForest().getCommitment() == f.before,
+                    "invalid structure mutated forest");
+            Require(f.coins.HaveCoin(f.funding), "invalid structure spent funding coin");
+        }},
+        {"stateless_connect_rejects_malformed_coinbase_before_mutation", [] {
+            Fixture f(COIN / 10); std::string error;
+            f.block.vtx[0].vin[0].prevout.vout = 0;
+            BlockValidator validator(&f.coins);
+            validator.setValidationMode(ValidationMode::STATELESS);
+            BlockUndo undo;
+            Require(!validator.ValidateAndApplyBlock(
+                        f.block, HEIGHT, f.block.GetHash(), undo, error),
+                    "stateless connector accepted malformed coinbase");
+            Require(error == "invalid-coinbase-prevout-structure", error);
+            Require(f.coins.GetForest().getCommitment() == f.before,
+                    "invalid structure mutated stateless forest");
+        }},
+        {"orchard_active_regtest_rejects_malformed_coinbase_before_connect", [] {
+            Fixture f(COIN / 10); std::string error;
+            const auto prior_schedule = Params();
+            struct RestoreSchedule {
+                ChainParams prior;
+                ~RestoreSchedule() { MutableParams() = prior; }
+            } restore{prior_schedule};
+            MutableParams().orchard_activation_height = HEIGHT;
+            MutableParams().orchard_branch_id = 1;
+            Require(Params().orchard_activation_height <= HEIGHT,
+                    "Orchard test schedule was not activated");
+            f.block.vtx[0].vin[0].prevout.vout = 0;
+            Require(!BlockAcceptorFeeTestAccess::Check(f.block, HEIGHT, error),
+                    "Orchard-height ingress accepted malformed coinbase");
+            Require(error.find("Invalid coinbase prevout structure") != std::string::npos,
+                    "Orchard-height ingress rejected for another reason: " + error);
+            BlockValidator validator(&f.coins);
+            BlockUndo undo;
+            error.clear();
+            Require(!validator.ValidateAndApplyBlock(
+                        f.block, HEIGHT, f.block.GetHash(), undo, error),
+                    "Orchard-height connector accepted malformed coinbase");
+            Require(error == "invalid-coinbase-prevout-structure",
+                    "Orchard-height connector rejected for another reason: " + error);
+            Require(f.coins.GetForest().getCommitment() == f.before,
+                    "Orchard-height structural rejection mutated forest");
+        }},
         {"stateful_actual_fee", [] { ValidateReward(false, 0, false); }},
         {"stateful_overpay", [] { ValidateReward(false, 1, false); }},
         {"stateful_split_overpay", [] { ValidateReward(false, 1, true); }},

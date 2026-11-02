@@ -1,4 +1,5 @@
 #include "consensus/chainparams.h"
+#include "consensus/coinbase_structure.h"
 #include "consensus/contextual_locks.h"
 #include "consensus/block_index.h"
 #include "consensus/shielded/resource_limits.h"
@@ -918,6 +919,12 @@ bool BlockValidator::ConnectBlockInternal(const Block& block, uint32_t height, c
     // Initialize undo data before any validation exits so callers always get
     // a height/hash-consistent container and rollback can capture genesis-state snapshots.
     undo = BlockUndo(height, block_hash);
+    if (consensus::IsCoinbaseStructureActive(
+            height, Params().coinbase_structure_activation_height) &&
+        (block.vtx.empty() || !block.vtx.front().IsCoinbase())) {
+        error = "invalid-coinbase-prevout-structure";
+        return false;
+    }
     if (!shielded::CheckAuthBlockResources(block.vtx, height,
             Params().shielded_spend_auth_activation_height, error,
             shielded::CompactRulesFor(Params()))) return false;

@@ -23407,7 +23407,8 @@ bool ChainstateService::ConnectTip(CBlockIndex* tip_to_connect, std::string* out
     // Full filter hash verification happens after ConnectBlock (needs undo data).
     // ═══════════════════════════════════════════════════════════════════════════
     if (consensus::RequiresFilterCommitment(tip_to_connect->height) && !block.vtx.empty()) {
-        auto dnrf_idx = consensus::FindFilterCommitmentIndex(block.vtx[0]);
+        auto dnrf_idx = consensus::FindFilterCommitmentIndexForBlock(
+            block.vtx[0], tip_to_connect->height);
         if (!dnrf_idx.has_value()) {
             if (logger_) logger_->error("[ConnectTip] REJECTING block " +
                 std::to_string(tip_to_connect->height) +

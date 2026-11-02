@@ -10,6 +10,7 @@
 #include "consensus/pow_context.h"
 #include "consensus/pow.hpp"
 #include "consensus/chainparams.h"  // For dinero::Params()
+#include "consensus/coinbase_structure.h"
 #include "consensus/utreexo_activation.h"  // Phase 11a: IsUtreexoActive check
 #include "consensus/block_status_generation.h"
 #include "common/crash_injection.h"
@@ -1585,7 +1586,7 @@ bool BlockAcceptor::ValidateCoinbase(const std::string& coinbaseTx, uint64_t exp
     // Parse coinbase transaction to extract height
     std::vector<uint8_t> txBytes = HexToBytes(coinbaseTx);
     size_t offset = 0;
-    
+
     // Skip version (4 bytes)
     if (txBytes.size() < 4) {
         error = "Coinbase transaction too short";
@@ -1613,6 +1614,24 @@ bool BlockAcceptor::ValidateCoinbase(const std::string& coinbaseTx, uint64_t exp
         return false;
     }
     
+    // This parser already requires exactly one input. Under the separately
+    // scheduled structural rule, its 36-byte prevout must be the canonical
+    // null outpoint (zero txid, index 0xffffffff). Checking the existing
+    // bytes avoids imposing a second transaction decoder or a new wire format.
+    if (dinero::consensus::IsCoinbaseStructureActive(
+            expectedHeight, Params().coinbase_structure_activation_height)) {
+        const bool null_txid = std::all_of(
+            txBytes.begin() + offset, txBytes.begin() + offset + 32,
+            [](uint8_t byte) { return byte == 0; });
+        const bool null_index = std::all_of(
+            txBytes.begin() + offset + 32, txBytes.begin() + offset + 36,
+            [](uint8_t byte) { return byte == 0xff; });
+        if (!null_txid || !null_index) {
+            error = "Invalid coinbase prevout structure";
+            return false;
+        }
+    }
+
     // Skip previous output (32 bytes + 4 bytes)
     offset += 36;
     

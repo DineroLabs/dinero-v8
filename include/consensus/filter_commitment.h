@@ -71,6 +71,12 @@ std::vector<uint8_t> BuildFilterCommitmentScript(const uint256& filter_hash);
  */
 std::optional<size_t> FindFilterCommitmentIndex(const Transaction& coinbase);
 
+/// Block-validation lookup. At the scheduled coinbase-structure boundary it
+/// uses the canonical predicate above; before it, it preserves the historical
+/// txid-only lookup so replaying old blocks does not change their validity.
+std::optional<size_t> FindFilterCommitmentIndexForBlock(
+    const Transaction& coinbase, uint64_t height);
+
 /**
  * Extract filter hash from coinbase commitment output.
  *

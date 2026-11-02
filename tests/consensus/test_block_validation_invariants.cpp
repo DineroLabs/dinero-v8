@@ -1235,14 +1235,13 @@ TEST(BlockValidationInvariants, SnapshotCapableEmptyStateRestoresOnFailure) {
     BlockValidator validator(&utxo_set);
     validator.setValidationMode(ValidationMode::STATEFUL);
 
-    Block bad_block;
-    bad_block.header.version = 1;
-    bad_block.header.prev_block_hash = MakeTestHash(500);
-    bad_block.header.timestamp = 1772496000 + 120;
-    bad_block.header.difficulty = 0x1d00ffff;
-    bad_block.header.nonce = 0;
-    bad_block.header.ZeroReserved();
-    // No transactions => guaranteed validation failure
+    // The structural guard now rejects an empty block before taking a
+    // rollback snapshot. Use a canonical coinbase with an excessive reward
+    // to exercise a failure after the snapshot has been captured.
+    Block bad_block = MakeCoinbaseBlock(2, MakeTestHash(500));
+    bad_block.vtx[0].vout[0].value = AmountUna::Una(
+        ConsensusSubsidy::GetBlockSubsidy(2).GetUna() + 1);
+    bad_block.header.merkle_root = bad_block.vtx[0].GetTxid().AsUint256();
 
     BlockUndo undo;
     std::string error;

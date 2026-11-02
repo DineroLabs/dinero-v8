@@ -11,6 +11,8 @@
 
 #include "consensus/block_filter.h"
 #include "consensus/filter_commitment.h"
+#include "consensus/chainparams.h"
+#include "consensus/coinbase_structure.h"
 #include "primitives/block.h"
 #include "primitives/amount.h"
 #include "primitives/transaction.h"
@@ -123,6 +125,63 @@ TEST(FilterCommitmentActivation, ValidCommitmentAcceptedAtAndAfterActivation) {
         FilterCommitment::ACTIVATION_HEIGHT + 1,
         post_activation_error));
     EXPECT_TRUE(post_activation_error.empty());
+}
+
+TEST(FilterCommitmentActivation, LookupRequiresCanonicalCoinbasePrevout) {
+    Transaction coinbase = CreateCoinbase();
+    const uint256 hash = SampleHash("123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0");
+    TxOutput commitment;
+    commitment.value = AmountUna::Zero();
+    commitment.scriptPubKey = BuildFilterCommitmentScript(hash);
+    coinbase.vout.push_back(commitment);
+    ASSERT_TRUE(FindFilterCommitmentIndex(coinbase).has_value());
+    coinbase.vin[0].prevout.vout = 0;
+    ASSERT_FALSE(coinbase.IsCoinbase());
+    EXPECT_FALSE(FindFilterCommitmentIndex(coinbase).has_value());
+}
+
+TEST(FilterCommitmentActivation, HistoricalLookupRetainedUntilStructureActivation) {
+    Transaction coinbase = CreateCoinbase();
+    const uint256 hash = SampleHash("123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0");
+    TxOutput commitment;
+    commitment.value = AmountUna::Zero();
+    commitment.scriptPubKey = BuildFilterCommitmentScript(hash);
+    coinbase.vout.push_back(commitment);
+    coinbase.vin[0].prevout.vout = 0;
+
+    SelectParams(Chain::MAINNET); // Explicitly dormant until release activation is chosen.
+    EXPECT_TRUE(FindFilterCommitmentIndexForBlock(coinbase, 144257).has_value());
+    std::string before;
+    EXPECT_TRUE(ValidateFilterCommitment(coinbase, hash, 144257, before)) << before;
+
+    SelectParams(Chain::REGTEST); // Active from the first mined regtest block.
+    EXPECT_FALSE(FindFilterCommitmentIndexForBlock(coinbase, 1).has_value());
+    std::string after;
+    EXPECT_FALSE(ValidateFilterCommitment(coinbase, hash, 1, after));
+    SelectParams(Chain::MAINNET);
+}
+
+TEST(FilterCommitmentActivation, StructureActivationHasDormantSentinel) {
+    EXPECT_FALSE(IsCoinbaseStructureActive(144257, UINT32_MAX));
+    EXPECT_FALSE(IsCoinbaseStructureActive(149999, 150000));
+    EXPECT_TRUE(IsCoinbaseStructureActive(150000, 150000));
+}
+
+TEST(FilterCommitmentActivation, HypotheticalMainnetBoundaryPreservesPriorBlock) {
+    SelectParams(Chain::MAINNET);
+    const auto saved_height = MutableParams().coinbase_structure_activation_height;
+    MutableParams().coinbase_structure_activation_height = 150000;
+    Transaction malformed = CreateCoinbase();
+    const uint256 hash = SampleHash("123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0");
+    TxOutput commitment;
+    commitment.value = AmountUna::Zero();
+    commitment.scriptPubKey = BuildFilterCommitmentScript(hash);
+    malformed.vout.push_back(commitment);
+    malformed.vin[0].prevout.vout = 0;
+    EXPECT_TRUE(FindFilterCommitmentIndexForBlock(malformed, 149999).has_value());
+    EXPECT_FALSE(FindFilterCommitmentIndexForBlock(malformed, 150000).has_value());
+    MutableParams().coinbase_structure_activation_height = saved_height;
+    SelectParams(Chain::MAINNET);
 }
 
 TEST(FilterCommitmentActivation, PrevBlockHashKeyMatchesCommitmentButBlockHashKeyDoesNot) {

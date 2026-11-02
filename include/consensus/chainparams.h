@@ -323,6 +323,12 @@ struct ChainParams {
     // ===========================================================================
     uint32_t shielded_coinbase_reject_activation_height = UINT32_MAX;
 
+    // At/after this height, vtx[0] must satisfy Transaction::IsCoinbase():
+    // exactly one input with a zero txid AND vout 0xffffffff. This is a
+    // validity tightening, so mainnet remains dormant until its activation
+    // is explicitly selected after historical-compatibility review.
+    uint32_t coinbase_structure_activation_height = UINT32_MAX;
+
     // ===========================================================================
     // CONSENSUS (dormant): state_commitment_v1 activation height.
     //
