@@ -15,6 +15,7 @@
 #include "consensus/header_chain.h"
 #include "daemon/daemon_context.h"
 #include "mining/block_assembler.h"
+#include "consensus/state_commitment.h"
 #include "consensus/block_filter.h"
 #include "consensus/consensus_utxo_set.h"
 #include "consensus/utreexo_maturity_leaf_activation.h"
@@ -93,8 +94,8 @@ struct ActivationRetryTestAccess {
         return *svc.consensus_utxo_set_;
     }
     static bool Connect(ChainstateService& svc, CBlockIndex* candidate,
-                        std::string& error) {
-        return svc.ConnectTip(candidate, &error);
+                        std::string& error, bool* consensus_invalid = nullptr) {
+        return svc.ConnectTip(candidate, &error, consensus_invalid);
     }
 };
 } // namespace dinero
@@ -992,6 +993,9 @@ void RunCsnInvalidSignatureReplay(const std::filesystem::path& root) {
         Require(csn_set.AddCoin(funding, funded), "CSN funding UTXO staged");
         Require(csn_set.GetForest().add(funding_leaf) != UINT64_MAX,
                 "CSN funding leaf staged");
+        Require(svc.GetShieldedNullifierSet()->Open(":memory:") ==
+                    consensus::shielded::NullifierSet::OpenResult::Ok,
+                "CSN scratch shielded nullifier state opened");
         ActivationRetryTestAccess::PrepareConnect(svc);
         auto replay = std::make_shared<network::StatelessNode>(&csn_set.GetForest());
         replay->SyncToForestState(parent_height);
@@ -1002,15 +1006,75 @@ void RunCsnInvalidSignatureReplay(const std::filesystem::path& root) {
                 "CSN exact body and proof readable");
         const auto forest_before = csn_set.GetForest().getCommitment();
         std::string connect_error;
-        const bool connected = ActivationRetryTestAccess::Connect(svc, candidate, connect_error);
+        bool consensus_invalid = false;
+        const bool connected = ActivationRetryTestAccess::Connect(
+            svc, candidate, connect_error, &consensus_invalid);
         std::cout << "CSN_INVALID_SIGNATURE_RESULT connected=" << connected
                   << " active=" << (svc.GetActiveTip() == candidate)
                   << " forest_unchanged="
                   << (csn_set.GetForest().getCommitment() == forest_before)
                   << " error=" << connect_error << '\n';
-        Require(!connected && svc.GetActiveTip() == parent &&
+        Require(!connected && consensus_invalid && svc.GetActiveTip() == parent &&
                 csn_set.GetForest().getCommitment() == forest_before,
-                "CSN rejects unauthorized spend before tip or forest mutation");
+                "CSN classifies unauthorized spend as invalid before tip or forest mutation");
+
+        // A transparent-only block can carry a syntactically present but
+        // incorrect DNRS commitment. Its shielded post-state must be checked
+        // before the recovery path mutates the shared forest.
+        Block wrong_dnrs;
+        wrong_dnrs.header = block.header;
+        wrong_dnrs.header.nonce += 2;
+        wrong_dnrs.vtx = {coinbase};
+        TxOutput wrong_witness;
+        wrong_witness.value = AmountUna::Zero();
+        wrong_witness.scriptPubKey = consensus::BuildWitnessCommitment(wrong_dnrs.vtx);
+        wrong_dnrs.vtx.front().vout.push_back(wrong_witness);
+        TxOutput wrong_filter;
+        wrong_filter.value = AmountUna::Zero();
+        wrong_filter.scriptPubKey = consensus::BuildFilterCommitmentScript(
+            consensus::GCSFilter::Build({p2tr}, wrong_dnrs.header.prev_block_hash).GetHash());
+        wrong_dnrs.vtx.front().vout.push_back(wrong_filter);
+        TxOutput wrong_commitment;
+        wrong_commitment.value = AmountUna::Zero();
+        uint256 unrelated_root;
+        std::fill(unrelated_root.begin(), unrelated_root.end(), 0x42);
+        wrong_commitment.scriptPubKey = consensus::BuildStateCommitmentScript(unrelated_root);
+        wrong_dnrs.vtx.front().vout.push_back(wrong_commitment);
+        wrong_dnrs.header.merkle_root = consensus::ComputeMerkleRoot(wrong_dnrs.vtx);
+        wrong_dnrs.utreexo = bridge.GenerateProofForBlock(wrong_dnrs, height);
+        uint256 wrong_post_root;
+        std::string wrong_root_error;
+        Require(producer_validator.ComputeUtreexoRootPure(
+                    wrong_dnrs, height, wrong_post_root, wrong_root_error),
+                "transparent-only wrong-DNRS post-root computed");
+        wrong_dnrs.header.utreexo_root = wrong_post_root;
+        auto* wrong_index = AddBlockIndex(wrong_dnrs.header, height);
+        wrong_index->status |= BLOCK_HAVE_DATA | BLOCK_VALID_TRANSACTIONS | BLOCK_VALID_CHAIN;
+        Require(db.putHeader(token, wrong_index->hash, wrong_dnrs.header, height,
+                             arith_uint256(height + 1)) == Status::Ok,
+                "wrong-DNRS candidate header staged");
+        metadata.status_flags = wrong_index->status;
+        Require(db.putHeaderMetadata(token, wrong_index->hash, metadata) == Status::Ok,
+                "wrong-DNRS candidate metadata staged");
+        const auto wrong_pos = files->writeBlock(wrong_index->hash, wrong_dnrs);
+        Require(wrong_pos.status() == Status::Ok,
+                "wrong-DNRS exact body stored");
+        svc.PersistStoredBodyPosition(wrong_index->hash, wrong_pos.value());
+        MutableParams().state_commitment_activation_height = height;
+        std::string wrong_error;
+        bool wrong_consensus_invalid = false;
+        const bool wrong_connected = ActivationRetryTestAccess::Connect(
+            svc, wrong_index, wrong_error, &wrong_consensus_invalid);
+        std::cout << "CSN_WRONG_DNRS_RESULT connected=" << wrong_connected
+                  << " active=" << (svc.GetActiveTip() == wrong_index)
+                  << " forest_unchanged="
+                  << (csn_set.GetForest().getCommitment() == forest_before)
+                  << " error=" << wrong_error << '\n';
+        Require(!wrong_connected && svc.GetActiveTip() == parent &&
+                csn_set.GetForest().getCommitment() == forest_before &&
+                wrong_error.find("state-commitment-mismatch") != std::string::npos,
+                "CSN rejects wrong DNRS before forest mutation");
+        MutableParams().state_commitment_activation_height = UINT32_MAX;
 
         // A different valid body at the same height must remain connectable
         // after the bad candidate is refused. This catches a partial rewind
