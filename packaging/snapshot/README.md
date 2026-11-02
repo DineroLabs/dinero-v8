@@ -80,9 +80,15 @@ phone mirrors at a full-v6 endpoint. The compact endpoint retains the existing
 endpoint uses `DATADIR/snapshots/full/pending.*`; both still share the root
 publisher lock so exports and the boundary capture do not race. A profile
 mismatch refuses publication and cannot remove the other profile's candidate.
-The publisher checks an existing `latest` manifest before export and again
-after the native gate. A v4/v5 manifest without `snapshot_profile` is treated
-as the existing compact/phone endpoint, matching the live legacy publication.
+The publisher holds a PUBROOT-level `.publisher.lock` through publication, in
+addition to the datadir lock, so publishers with distinct datadirs cannot race
+on one endpoint. It durably binds the endpoint to its first requested profile
+in `.snapshot-profile`, including an initially empty root. The claim persists
+if a later native gate fails; reuse a separate empty root for another profile
+instead of silently repurposing a claimed endpoint. It checks an existing
+`latest` manifest before export and again after the native gate. A v4/v5
+manifest without `snapshot_profile` is treated as the existing compact/phone
+endpoint, matching the live legacy publication.
 A full publisher pointed there, or a compact publisher pointed at a full-v6
 endpoint, exits without replacing `latest`. An unreadable or unknown existing
 manifest also fails closed. A new full endpoint must start with its own empty

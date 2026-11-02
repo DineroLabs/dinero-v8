@@ -1,13 +1,13 @@
 """Real publisher shell + filesystem + Ed25519; RPC/native gate is an explicit fixture.
 Native v6 proof/import is independently exercised by OrchardSnapshotRuntime.
 """
-import hashlib,json,os,struct,subprocess,tempfile,unittest,shutil
+import hashlib,json,os,struct,subprocess,tempfile,unittest,shutil,time
 from pathlib import Path
 SCRIPT=Path(__file__).with_name('dinero-snapshot-publish.sh').resolve()
 CAPTURE=Path(__file__).with_name('capture_boundary_v5.py').resolve()
 
 class PublisherV6(unittest.TestCase):
-    def run_publication(self, profile=2, gate=True, reorg=False, key=True, fresh=False, optimize=False, failed=False, boundary=False, bad_pin=False, capture_first=False, publisher_profile='compact', other_pending_profile=None, orphan_pending=False, existing_pin_fault=None, bad_metadata=False, previous_profile='legacy', prior_archives=0, endpoint_switch_during_gate=False):
+    def run_publication(self, profile=2, gate=True, reorg=False, key=True, fresh=False, optimize=False, failed=False, boundary=False, bad_pin=False, capture_first=False, publisher_profile='compact', other_pending_profile=None, orphan_pending=False, existing_pin_fault=None, bad_metadata=False, previous_profile='legacy', prior_archives=0, endpoint_switch_during_gate=False, prepare_only=False):
         tmp=tempfile.TemporaryDirectory(); self.addCleanup(tmp.cleanup)
         root=Path(tmp.name); snapshot_root=root/'data/snapshots'; snapshot_root.mkdir(parents=True)
         dumps=snapshot_root if publisher_profile=='compact' else snapshot_root/'full'; dumps.mkdir(parents=True,exist_ok=True)
@@ -52,7 +52,21 @@ class PublisherV6(unittest.TestCase):
         bin=root/'bin';bin.mkdir()
         def executable(name, text):
             p=bin/name;p.write_text(text);p.chmod(0o755);return p
-        for name in ('flock','chown'):executable(name,'#!/bin/sh\nexit 0\n')
+        executable('chown','#!/bin/sh\nexit 0\n')
+        executable('flock','''#!/usr/bin/env python3
+import fcntl,sys,time
+args=sys.argv[1:]
+if len(args)==2 and args[0]=='-n':
+    fd=int(args[1]); deadline=time.monotonic()
+elif len(args)==3 and args[0]=='-w':
+    fd=int(args[2]); deadline=time.monotonic()+float(args[1])
+else: sys.exit(99)
+while True:
+    try: fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB);sys.exit(0)
+    except BlockingIOError:
+        if time.monotonic()>=deadline:sys.exit(1)
+        time.sleep(.01)
+''')
         executable('stat','#!/usr/bin/env python3\nimport os,sys\nprint(os.stat(sys.argv[-1]).st_size)\n')
         executable('mv','#!/usr/bin/env python3\nimport os,sys\nos.replace(sys.argv[-2],sys.argv[-1])\n')
         executable('sleep','#!/bin/sh\n/bin/sleep 0.01\n')
@@ -86,6 +100,7 @@ class PublisherV6(unittest.TestCase):
                 subprocess.run([ssl,'pkeyutl','-sign','-inkey',str(keypath),'-rawin','-in',str(manifest_file),'-out',str(signature)],check=True,capture_output=True)
         env=dict(os.environ,DATADIR=str(root/'data'),PUBROOT=str(root/'www'),KEY=str(keypath if key else root/'missing'),CLI_BIN=str(cli),DINEROD=str(daemon),GATE_TIMEOUT='2',SNAPSHOT_PROFILE=publisher_profile,PATH=str(bin)+os.pathsep+os.environ['PATH'])
         if optimize: env['PYTHONOPTIMIZE']='1'
+        if prepare_only: return root,payload,pub,env
         if capture_first:
             assert boundary
             (root/'tip').write_text(str(height))
@@ -230,6 +245,56 @@ class PublisherV6(unittest.TestCase):
         self.assertTrue((root/'gate-ran').exists())
         self.assertIn('endpoint profile',r.stdout+r.stderr)
         self.assertEqual((root/'www/latest/retained').read_text(),'previous publication')
+    def test_concurrent_distinct_datadirs_cannot_share_empty_pubroot(self):
+        shared=Path(tempfile.mkdtemp());self.addCleanup(shutil.rmtree,shared)
+        compact_root,_,_,compact_env=self.run_publication(prepare_only=True)
+        full_root,_,_,full_env=self.run_publication(profile=1,publisher_profile='full',prepare_only=True)
+        compact_env['PUBROOT']=full_env['PUBROOT']=str(shared)
+        compact_env['GATE_TIMEOUT']=full_env['GATE_TIMEOUT']='5'
+        compact_env['PUBROOT_LOCK_TIMEOUT']=full_env['PUBROOT_LOCK_TIMEOUT']='5'
+        daemon=compact_root/'bin/daemon'
+        original=daemon.read_text();needle='(r/"configured-gate").touch();'
+        hold='(r/"gate-entered").touch()\nwhile not (r/"gate-release").exists():time.sleep(.01)\n'+needle
+        self.assertIn(needle,original)
+        daemon.write_text(original.replace(needle,hold))
+        compact=subprocess.Popen(['bash',str(SCRIPT)],env=compact_env,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
+        full=None
+        try:
+            deadline=time.monotonic()+5
+            while not (compact_root/'gate-entered').exists() and time.monotonic()<deadline:
+                time.sleep(.01)
+            self.assertTrue((compact_root/'gate-entered').exists(),'compact publisher did not enter native gate')
+            full=subprocess.Popen(['bash',str(SCRIPT)],env=full_env,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
+            time.sleep(.15)
+            blocked=full.poll() is None and not (full_root/'configured-gate').exists()
+            (compact_root/'gate-release').touch()
+            compact_out,compact_err=compact.communicate(timeout=8)
+            full_out,full_err=full.communicate(timeout=8)
+        finally:
+            (compact_root/'gate-release').touch()
+            if compact.poll() is None:compact.kill();compact.communicate()
+            if full is not None and full.poll() is None:full.kill();full.communicate()
+        self.assertTrue(blocked,'second publisher ran before first released the publication root')
+        self.assertEqual(compact.returncode,0,compact_out+compact_err)
+        self.assertNotEqual(full.returncode,0,full_out+full_err)
+        self.assertEqual((shared/'.snapshot-profile').read_text().strip(),'compact')
+        self.assertEqual(json.loads((shared/'latest/manifest.json').read_text())['snapshot_profile'],'compact')
+        self.assertFalse((full_root/'configured-gate').exists())
+    def test_empty_root_claim_survives_failed_native_gate(self):
+        shared=Path(tempfile.mkdtemp());self.addCleanup(shutil.rmtree,shared)
+        compact_root,_,_,compact_env=self.run_publication(gate=False,prepare_only=True)
+        compact_env['PUBROOT']=str(shared)
+        compact_env['GATE_TIMEOUT']='1'
+        failed=subprocess.run(['bash',str(SCRIPT)],env=compact_env,capture_output=True,text=True,timeout=5)
+        self.assertNotEqual(failed.returncode,0)
+        self.assertEqual((shared/'.snapshot-profile').read_text(),'compact\n')
+        self.assertFalse((shared/'latest').exists())
+        full_root,_,_,full_env=self.run_publication(profile=1,publisher_profile='full',prepare_only=True)
+        full_env['PUBROOT']=str(shared)
+        refused=subprocess.run(['bash',str(SCRIPT)],env=full_env,capture_output=True,text=True,timeout=5)
+        self.assertNotEqual(refused.returncode,0,refused.stdout+refused.stderr)
+        self.assertIn('endpoint profile',refused.stdout+refused.stderr)
+        self.assertFalse((full_root/'configured-gate').exists())
     def test_native_gate_refusal_preserves_latest(self):
         root,_,_,r=self.run_publication(gate=False);self.assertNotEqual(r.returncode,0);self.assertEqual((root/'www/latest/retained').read_text(),'previous publication')
     def test_reorg_during_gate_refuses(self):

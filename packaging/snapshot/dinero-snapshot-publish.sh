@@ -49,31 +49,55 @@ chown dinero:dinero "$SNAPSHOT_ROOT" "$DUMPDIR" || true
 exec 9>"$SNAPSHOT_ROOT/publisher.lock"
 flock -n 9 || { log "another publisher run is active"; exit 0; }
 
+# Publishers using different datadirs do not share publisher.lock. Hold an
+# endpoint lock through the final latest swap as well, so even an initially
+# empty PUBROOT can be claimed by only one profile at a time.
+exec 8>"$PUBROOT/.publisher.lock"
+flock -w "${PUBROOT_LOCK_TIMEOUT:-1800}" 8 || fail "publication root is locked by another publisher"
+
 # A full v6 artifact must never replace the phone endpoint's latest (or the
 # reverse). Existing public v5 manifests predate snapshot_profile: that
-# legacy endpoint is the compact/phone endpoint. Check again after the native
-# gate in case an independent publisher changed this root while it ran.
+# legacy endpoint is the compact/phone endpoint. A durable claim also binds a
+# new empty root before its first latest symlink exists.
 verify_endpoint_profile() {
-    if [ ! -e "$PUBROOT/latest" ] && [ ! -L "$PUBROOT/latest" ]; then
-        return 0
-    fi
-    python3 - "$PUBROOT/latest/manifest.json" "$SNAPSHOT_PROFILE" <<'PYENDPOINT' \
+    python3 - "$PUBROOT" "$SNAPSHOT_PROFILE" <<'PYENDPOINT' \
         || fail "endpoint profile collision or unreadable latest manifest; kept latest"
-import json, sys
+import json, os, pathlib, sys
 try:
-    with open(sys.argv[1]) as stream:
-        data = json.load(stream)
-    if data.get('network') != 'mainnet' or type(data.get('format_version')) is not int:
-        raise ValueError('latest is not a mainnet snapshot manifest')
-    profile = data.get('snapshot_profile')
-    if data['format_version'] < 6 and profile in (None, 'legacy'):
-        endpoint = 'compact'
-    elif data['format_version'] == 6 and profile in ('compact', 'full'):
-        endpoint = profile
-    else:
-        raise ValueError('latest has an unknown snapshot profile')
-    if endpoint != sys.argv[2]:
-        raise ValueError(f'latest belongs to {endpoint}, requested {sys.argv[2]}')
+    root, requested = pathlib.Path(sys.argv[1]), sys.argv[2]
+    marker = root / '.snapshot-profile'
+    if marker.exists() or marker.is_symlink():
+        if marker.is_symlink() or not marker.is_file() or marker.read_text() != requested + '\n':
+            raise ValueError(f'publication root profile claim differs from {requested}')
+    latest = root / 'latest'
+    if latest.exists() or latest.is_symlink():
+        with (latest / 'manifest.json').open() as stream:
+            data = json.load(stream)
+        if data.get('network') != 'mainnet' or type(data.get('format_version')) is not int:
+            raise ValueError('latest is not a mainnet snapshot manifest')
+        profile = data.get('snapshot_profile')
+        if 4 <= data['format_version'] < 6 and profile in (None, 'legacy'):
+            endpoint = 'compact'
+        elif data['format_version'] == 6 and profile in ('compact', 'full'):
+            endpoint = profile
+        else:
+            raise ValueError('latest has an unknown snapshot profile')
+        if endpoint != requested:
+            raise ValueError(f'latest belongs to {endpoint}, requested {requested}')
+    if not marker.exists():
+        # O_EXCL makes the claim atomic even if an uncooperative publisher
+        # ignores .publisher.lock. An interrupted partial claim fails closed.
+        fd = os.open(marker, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+        try:
+            os.write(fd, (requested + '\n').encode())
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        directory = os.open(root, os.O_RDONLY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
 except (OSError, ValueError, TypeError, AttributeError) as error:
     raise SystemExit(f'endpoint profile check refused: {error}')
 PYENDPOINT
@@ -208,7 +232,7 @@ assumeutxo_snapshot=$GATE_DIR/snapshot.dat
 assumeutxo_manifest=$MANIFEST
 assumeutxo_require_manifest=1
 EOF
-"$DINEROD" --datadir="$GATE_DIR/datadir" --wallet-socket-port="$GATE_WALLET" > "$GATE_DIR/node.log" 2>&1 &
+"$DINEROD" --datadir="$GATE_DIR/datadir" --wallet-socket-port="$GATE_WALLET" 8>&- 9>&- > "$GATE_DIR/node.log" 2>&1 &
 GATE_PID=$!
 log "gate node started (pid $GATE_PID), waiting up to ${GATE_TIMEOUT}s"
 
