@@ -1,16 +1,16 @@
 # ─────────────────────────────────────────────────────────────────────────
-# Consensus-validation gates CV1-CV4 (option A; report only, not required)
+# Consensus-validation gate CV1 header reach (option A; report only, not required)
 # Spec: docs/superpowers/specs/2026-11-01-consensus-validation-design.md
 #
-# Configure only (no compile): the gates read compile_commands.json, the CMake
-# File API codemodel and the preprocessor. Each lane runs OFF and ON.
+# Configure only (no compile): CV1 reads compile_commands.json and the
+# preprocessor. Each lane runs OFF and ON.
 # Owner no-upload rule: no cache saves, no artifact uploads. Evidence goes to
-# the job log and step summary only. A lane without committed baselines
-# prints freshly recorded candidates to the log (MISSING_REFERENCE, rc 2); they
-# are never checked against in the same run and are committed only by review.
+# the job log and step summary only. A lane without a committed baseline
+# prints a freshly recorded candidate to the log (MISSING_REFERENCE, rc 2); it
+# is never checked against in the same run and is committed only by review.
 # Such a lane is never green: the Summary step fails on any non-zero gate rc.
-# The committed macos-local baselines were recorded on a developer Mac; CI lanes
-# (linux, macos15) use their own tags and start as MISSING_REFERENCE.
+# The committed macos-local baseline was recorded on a developer Mac; CI lanes
+# (linux, macos15) use their own tags.
 # ─────────────────────────────────────────────────────────────────────────
 name: Consensus gates
 
@@ -122,7 +122,7 @@ jobs:
             > "$RUNNER_TEMP/configure.log" 2>&1 \
             || { tail -60 "$RUNNER_TEMP/configure.log"; exit 1; }
 
-      - name: Gates CV1-CV4
+      - name: Gate CV1
         id: gates
         continue-on-error: true
         run: |
