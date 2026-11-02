@@ -205,6 +205,30 @@ constexpr uint32_t kInvMsgUtreexoBlock = 0x50000002u;
 using consensus::CsnReplayData;
 using consensus::DecodeCsnReplayData;
 
+// Only call this after a private forest replay authenticated the block's
+// spent-output scripts and metadata. These failures depend solely on the
+// bound body/branch context; missing proof, height or MTP remains retryable.
+bool IsDeterministicStatelessContextFailure(const std::string& error) {
+    static constexpr const char* kExact[] = {
+        "stateless-context-script-verification-failed",
+        "stateless-context-bip34-height-mismatch",
+        "stateless-context-invalid-coinbase-height-script",
+        "stateless-context-invalid-coinbase-framing",
+        "stateless-context-missing-dnrf",
+        "stateless-context-invalid-state-commitment",
+        "coinbase-carries-shielded-bundle",
+        "stateless-context-double-spend",
+        "stateless-context-invalid-transaction-inputs",
+        "stateless-coinbase-maturity-violation",
+        "Legacy private lane removed",
+    };
+    for (const char* candidate : kExact) {
+        if (error == candidate) return true;
+    }
+    return error.rfind("block-sigops-exceeded", 0) == 0 ||
+           error.rfind("non-final-", 0) == 0;
+}
+
 bool RuntimeRetainsHistoricalBodies() {
     const auto& config = GetConfig();
     return dinero::nodecore::RuntimeRetainsHistoricalBodies(config.sync_profile, config.utreexo_stateless);
@@ -12695,18 +12719,7 @@ void ChainstateService::ActivateBestChainPass(const ActivationParentPlan* prepar
                 if (logger_) logger_->error("[ABC-CSN] Context preflight rejected height " +
                     std::to_string(block_index->height) + ": " + context_error +
                     " — canonical state left untouched");
-                if (context_error == "stateless-context-script-verification-failed" ||
-                    context_error == "stateless-context-bip34-height-mismatch" ||
-                    context_error == "stateless-context-invalid-coinbase-height-script" ||
-                    context_error == "stateless-context-invalid-coinbase-framing" ||
-                    context_error == "stateless-context-missing-dnrf" ||
-                    context_error == "stateless-context-invalid-state-commitment" ||
-                    context_error == "coinbase-carries-shielded-bundle" ||
-                    context_error == "stateless-context-double-spend" ||
-                    context_error == "stateless-context-invalid-transaction-inputs" ||
-                    context_error == "Legacy private lane removed" ||
-                    context_error.rfind("block-sigops-exceeded", 0) == 0 ||
-                    context_error.rfind("non-final-", 0) == 0) {
+                if (IsDeterministicStatelessContextFailure(context_error)) {
                     reject_proven_invalid(block_index, context_error);
                 }
                 return;
@@ -23775,6 +23788,10 @@ bool ChainstateService::ConnectTip(CBlockIndex* tip_to_connect, std::string* out
             if (!consensus::CheckStatelessBlockContextReadOnly(
                     block, tip_to_connect->height, spent_outputs,
                     branch_mtp, context_error)) {
+                if (out_consensus_invalid &&
+                    IsDeterministicStatelessContextFailure(context_error)) {
+                    *out_consensus_invalid = true;
+                }
                 return fail("stateless-replay-context-invalid: " + context_error);
             }
             // Recovery may replay a shielded-bearing selected block that was
@@ -23784,7 +23801,18 @@ bool ChainstateService::ConnectTip(CBlockIndex* tip_to_connect, std::string* out
             const bool has_shielded = std::any_of(
                 block.vtx.begin() + 1, block.vtx.end(),
                 [](const Transaction& tx) { return tx.IsShielded(); });
-            if (has_shielded) {
+            // DNRS binds the post-block shielded state even for transparent-
+            // only blocks: anchor history advances on every active height.
+            // The epoch-reset height likewise mutates the pool with no bundle.
+            const bool needs_shielded_preflight = has_shielded ||
+                consensus::IsStateCommitmentActive(
+                    tip_to_connect->height,
+                    Params().state_commitment_activation_height) ||
+                consensus::shielded::IsShieldedEpochResetHeight(
+                    tip_to_connect->height,
+                    Params().shielded_epoch_reset_height,
+                    Params().shielded_spend_auth_epoch_reset_height);
+            if (needs_shielded_preflight) {
                 const auto marker = chain_db_->getShieldedTipMarker();
                 if (marker.status() != Status::Ok || marker.value().height < 0) {
                     return fail("stateless-replay-shielded-scratch-marker-unavailable");
