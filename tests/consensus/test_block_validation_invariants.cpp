@@ -24,6 +24,9 @@
 #include "consensus/shielded/commitment_tree.h"
 #include "consensus/subsidy.h"
 #include "consensus/witness_commitment.h"
+#include "consensus/filter_commitment.h"
+#include "consensus/block_filter.h"
+#include "consensus/merkle_root.h"
 #include "network/bridge_node.h"
 #include "network/stateless_node.h"
 #include "primitives/transaction.h"
@@ -1814,4 +1817,187 @@ TEST(BlockValidationInvariants, StatelessAuthenticatesRelativeLockAge) {
     EXPECT_FALSE(validator.ConnectBlock(block, height, MakeTestHash(9121), undo, error));
     EXPECT_NE(error.find("non-final-relative-height-lock"), std::string::npos) << error;
     EXPECT_FALSE(validator.statelessRelativeLocksUnverified());
+}
+
+static Block MakeContextPreflightBlock(uint32_t height) {
+    Block block = MakeCoinbaseBlock(height, MakeTestHash(height - 1));
+    auto& coinbase = block.vtx.front();
+    auto& script = coinbase.vin.front().scriptSig;
+    script.clear();
+    uint32_t encoded = height;
+    do {
+        script.push_back(static_cast<uint8_t>(encoded & 0xff));
+        encoded >>= 8;
+    } while (encoded);
+    script.insert(script.begin(), static_cast<uint8_t>(script.size()));
+    TxOutput filter;
+    filter.value = AmountUna::Zero();
+    filter.scriptPubKey = BuildFilterCommitmentScript(MakeTestHash(987654));
+    coinbase.vout.push_back(filter);
+    return block;
+}
+
+TEST(BlockValidationInvariants, CsnContextPreflightEnforcesCoinbaseAndBlockRules) {
+    SelectRegtestDormantCommitment();
+    const uint32_t height = 21;
+    Block block = MakeContextPreflightBlock(height);
+    std::string error;
+    ASSERT_TRUE(CheckStatelessBlockContextReadOnly(block, height, nullptr, {}, error))
+        << error;
+
+    Block bad_height = block;
+    bad_height.vtx.front().vin.front().scriptSig[1] ^= 1;
+    EXPECT_FALSE(CheckStatelessBlockContextReadOnly(
+        bad_height, height, nullptr, {}, error));
+    EXPECT_EQ(error, "stateless-context-bip34-height-mismatch");
+
+    Block no_dnrf = block;
+    no_dnrf.vtx.front().vout.pop_back();
+    EXPECT_FALSE(CheckStatelessBlockContextReadOnly(
+        no_dnrf, height, nullptr, {}, error));
+    EXPECT_EQ(error, "stateless-context-missing-dnrf");
+
+    Block too_many_sigops = block;
+    too_many_sigops.vtx.front().vout.front().scriptPubKey.assign(80001, 0xac);
+    EXPECT_FALSE(CheckStatelessBlockContextReadOnly(
+        too_many_sigops, height, nullptr, {}, error));
+    EXPECT_NE(error.find("block-sigops-exceeded"), std::string::npos) << error;
+}
+
+TEST(BlockValidationInvariants, CsnContextPreflightFailsClosedOnLegacyRelativeLock) {
+    SelectRegtestDormantCommitment();
+    const uint32_t height = 111001;
+    Block block = MakeContextPreflightBlock(height);
+    Transaction spend;
+    spend.version = 2;
+    spend.vin.resize(1);
+    spend.vin.front().prevout = TxOutPoint{MakeTestTxId(9991), 0};
+    spend.vin.front().sequence = 2;
+    spend.vout.emplace_back(AmountUna::Una(9000), MakeMatrixScript(0x42));
+    block.vtx.push_back(spend);
+    const std::vector<SpentOutputData> spent_outputs{
+        SpentOutputData(10000, MakeMatrixScript(0x42), 1, false)};
+    std::string error;
+    EXPECT_FALSE(CheckStatelessBlockContextReadOnly(
+        block, height, &spent_outputs, {}, error));
+    EXPECT_EQ(error, "contextual-lock-missing-input-height");
+}
+
+TEST(BlockValidationInvariants, CsnContextPreflightPreservesPreH1CoinbaseShape) {
+    SelectRegtestDormantCommitment();
+    const auto saved_height = MutableParams().coinbase_structure_activation_height;
+    struct Restore {
+        uint32_t height;
+        ~Restore() { MutableParams().coinbase_structure_activation_height = height; }
+    } restore{saved_height};
+    const uint32_t height = 21;
+    Block block = MakeContextPreflightBlock(height);
+    block.vtx.front().vin.front().prevout.vout = 0;
+    std::string error;
+    MutableParams().coinbase_structure_activation_height = UINT32_MAX;
+    EXPECT_TRUE(CheckStatelessBlockContextReadOnly(
+        block, height, nullptr, {}, error)) << error;
+    MutableParams().coinbase_structure_activation_height = height;
+    EXPECT_FALSE(CheckStatelessBlockContextReadOnly(
+        block, height, nullptr, {}, error));
+    EXPECT_EQ(error, "invalid-coinbase-prevout-structure");
+}
+
+TEST(BlockValidationInvariants, CsnContextPreflightRejectsRetiredPrivateAndCoinbaseShielded) {
+    SelectRegtestDormantCommitment();
+    const uint32_t height = 21;
+    Block block = MakeContextPreflightBlock(height);
+    Transaction spend;
+    spend.version = 2;
+    spend.vin.resize(1);
+    spend.vin.front().prevout = TxOutPoint{MakeTestTxId(9992), 0};
+    spend.vin.front().sequence = UINT32_MAX;
+    spend.vout.emplace_back(AmountUna::Una(9000), MakeMatrixScript(0x42));
+    block.vtx.push_back(spend);
+    std::vector<SpentOutputData> spent_outputs{
+        SpentOutputData(10000, MakeMatrixScript(0x42), height - 1,
+                        false, true, {0x02})};
+    std::string error;
+    EXPECT_FALSE(CheckStatelessBlockContextReadOnly(
+        block, height, &spent_outputs, {}, error));
+    EXPECT_EQ(error, "Legacy private lane removed");
+
+    Block shielded_coinbase = MakeContextPreflightBlock(height);
+    const auto saved_height = MutableParams().shielded_coinbase_reject_activation_height;
+    struct Restore {
+        uint32_t height;
+        ~Restore() { MutableParams().shielded_coinbase_reject_activation_height = height; }
+    } restore{saved_height};
+    MutableParams().shielded_coinbase_reject_activation_height = height;
+    shielded_coinbase.vtx.front().version = Transaction::TX_VERSION_SHIELDED;
+    shielded_coinbase.vtx.front().shielded_bundle_bytes = {0x01};
+    EXPECT_FALSE(CheckStatelessBlockContextReadOnly(
+        shielded_coinbase, height, nullptr, {}, error));
+    EXPECT_EQ(error, "coinbase-carries-shielded-bundle");
+}
+
+TEST(BlockValidationInvariants, ProofConsistentReplayRejectsBadSignatureBeforeRewind) {
+    SelectRegtestDormantCommitment();
+    ConsensusUTXOSet utxo_set;
+    OutPoint funding;
+    UTXOEntry funding_utxo;
+    UtreexoHash funding_leaf;
+    SeedCpfpFunding(utxo_set, funding, funding_utxo, funding_leaf);
+
+    const uint32_t height = GetUtreexoMaturityLeafActivationHeight() + 1;
+    Block block = MakeCpfpMatrixBlock(height, funding);
+    block.vtx.resize(2);
+    block.vtx.front().vin.front().scriptSig = {1, static_cast<uint8_t>(height), 0};
+    TxOutput witness;
+    witness.value = AmountUna::Zero();
+    witness.scriptPubKey = BuildWitnessCommitment(block.vtx);
+    ASSERT_FALSE(witness.scriptPubKey.empty());
+    block.vtx.front().vout.push_back(witness);
+
+    std::vector<std::vector<uint8_t>> filter_scripts;
+    for (const auto& tx : block.vtx) {
+        for (const auto& output : tx.vout) {
+            if (!output.scriptPubKey.empty() && output.scriptPubKey[0] != 0x6a)
+                filter_scripts.push_back(output.scriptPubKey);
+        }
+    }
+    filter_scripts.push_back(funding_utxo.scriptPubKey);
+    TxOutput filter;
+    filter.value = AmountUna::Zero();
+    filter.scriptPubKey = BuildFilterCommitmentScript(
+        GCSFilter::Build(filter_scripts, block.header.prev_block_hash).GetHash());
+    block.vtx.front().vout.push_back(filter);
+    block.header.merkle_root = ComputeMerkleRoot(block.vtx);
+    std::string commitment_error;
+    ASSERT_TRUE(EnforceWitnessCommitment(block.vtx, height,
+        Params().enforce_witness_commitment,
+        Params().witness_commitment_enforcement_height, commitment_error))
+        << commitment_error;
+
+    block.utreexo = BuildBridgeCpfpUtreexoData(utxo_set, block, height);
+    ASSERT_TRUE(block.utreexo.has_value());
+    ASSERT_EQ(block.utreexo->spent_outputs.size(), 1u);
+    BlockValidator validator(&utxo_set);
+    validator.setValidationMode(ValidationMode::STATELESS);
+    uint256 root;
+    std::string error;
+    ASSERT_TRUE(validator.ComputeUtreexoRootPure(block, height, root, error)) << error;
+    block.header.utreexo_root = root;
+
+    UtreexoForest scratch = utxo_set.GetForest().clone();
+    network::StatelessNode replay(&scratch);
+    replay.SyncToForestState(height - 1);
+    ASSERT_TRUE(replay.ReplayBlock(block, height,
+        block.utreexo->spend_proof.targets, &block.utreexo->spent_outputs))
+        << "proof-consistent replay must succeed independently of the bad signature";
+    ASSERT_EQ(scratch.getCommitment(), UtreexoHash(root.data, root.data + 32));
+    error.clear();
+    EXPECT_FALSE(CheckStatelessBlockContextReadOnly(
+        block, height, &block.utreexo->spent_outputs, {}, error));
+    EXPECT_EQ(error, "stateless-context-script-verification-failed");
+
+    BlockUndo undo;
+    error.clear();
+    EXPECT_FALSE(validator.ConnectBlock(block, height, MakeTestHash(9453), undo, error));
+    EXPECT_NE(error.find("SCRIPT_VERIFY_FAILED"), std::string::npos) << error;
 }

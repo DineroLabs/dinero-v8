@@ -15,8 +15,15 @@
 #include "consensus/header_chain.h"
 #include "daemon/daemon_context.h"
 #include "mining/block_assembler.h"
+#include "consensus/block_filter.h"
+#include "consensus/consensus_utxo_set.h"
+#include "consensus/utreexo_maturity_leaf_activation.h"
+#include "consensus/script_verify.h"
+#include "consensus/covenant_activation.h"
 #include "storage/chain_write_token.h"
 #include "storage/block_storage.h"
+#include "network/stateless_node.h"
+#include "network/bridge_node.h"
 
 #include <algorithm>
 #include <chrono>
@@ -81,6 +88,13 @@ struct ActivationRetryTestAccess {
     }
     static void QueueCsnRefetch(ChainstateService& svc, const uint256& hash) {
         svc.pending_csn_body_refetches_.insert(hash);
+    }
+    static consensus::ConsensusUTXOSet& CsnSet(ChainstateService& svc) {
+        return *svc.consensus_utxo_set_;
+    }
+    static bool Connect(ChainstateService& svc, CBlockIndex* candidate,
+                        std::string& error) {
+        return svc.ConnectTip(candidate, &error);
     }
 };
 } // namespace dinero
@@ -831,6 +845,226 @@ void RunSigopsStoredCandidate(const std::filesystem::path& root) {
     InvalidateAncestryCache();
 }
 
+// Exercise the actual CSN ConnectTip recovery route with a proof-consistent
+// block whose only invalidity is a missing Taproot signature. The ordinary
+// full validator must reject it, and the CSN route must leave the tip alone.
+void RunCsnInvalidSignatureReplay(const std::filesystem::path& root) {
+    using namespace dinero;
+    GetConfig().utreexo_stateless = true;
+    MutableParams().state_commitment_activation_height = UINT32_MAX;
+    ChainDB db;
+    Require(db.init(root / "chaindb") == Status::Ok, "CSN fixture ChainDB opens");
+    auto files = std::make_shared<BlockStorage>();
+    Require(files->init(root) == Status::Ok, "CSN fixture flatfiles open");
+
+    const uint32_t height = consensus::GetUtreexoMaturityLeafActivationHeight() + 1;
+    const uint32_t parent_height = height - 1;
+    uint256 funding_hash;
+    std::fill(funding_hash.begin(), funding_hash.end(), 0x11);
+    const TxId funding_txid(funding_hash);
+    const OutPoint funding(funding_txid, 0);
+    std::vector<uint8_t> p2tr = {0x51, 0x20,
+        0x79, 0xbe, 0x66, 0x7e, 0xf9, 0xdc, 0xbb, 0xac,
+        0x55, 0xa0, 0x62, 0x95, 0xce, 0x87, 0x0b, 0x07,
+        0x02, 0x9b, 0xfc, 0xdb, 0x2d, 0xce, 0x28, 0xd9,
+        0x59, 0xf2, 0x81, 0x5b, 0x16, 0xf8, 0x17, 0x98};
+    const consensus::UTXOEntry funded(AmountUna::Una(5000), p2tr, parent_height, false);
+    const auto funding_leaf = consensus::HashUTXOForCreationHeight(
+        funding_txid.AsUint256(), 0, 5000, p2tr, parent_height, false);
+    consensus::ConsensusUTXOSet producer;
+    Require(producer.AddCoin(funding, funded), "producer funding UTXO staged");
+    Require(producer.GetForest().add(funding_leaf) != UINT64_MAX,
+            "producer funding leaf staged");
+    const auto parent_root = producer.GetForest().getCommitment();
+
+    BlockHeader genesis_header;
+    genesis_header.version = 1;
+    genesis_header.timestamp = 1000000;
+    genesis_header.difficulty = 0x207fffff;
+    genesis_header.nonce = 1;
+    auto* genesis = AddBlockIndex(genesis_header, 0);
+    BlockHeader parent_header = genesis_header;
+    parent_header.prev_block_hash = genesis->hash;
+    parent_header.timestamp += parent_height;
+    parent_header.nonce += parent_height;
+    std::copy(parent_root.begin(), parent_root.end(), parent_header.utreexo_root.begin());
+    auto* parent = AddBlockIndex(parent_header, parent_height);
+    genesis->status |= BLOCK_VALID_CHAIN | BLOCK_HAVE_DATA;
+    parent->status |= BLOCK_VALID_CHAIN | BLOCK_HAVE_DATA;
+
+    Block block;
+    block.header.version = 1;
+    block.header.prev_block_hash = parent->hash;
+    block.header.timestamp = parent_header.timestamp + 120;
+    block.header.difficulty = 0x207fffff;
+    block.header.nonce = 100;
+    Transaction coinbase;
+    coinbase.version = 1;
+    coinbase.witness_version = 1;
+    TxInput coinbase_input;
+    coinbase_input.prevout.txid = TxId();
+    coinbase_input.prevout.vout = UINT32_MAX;
+    coinbase_input.scriptSig = {1, static_cast<uint8_t>(height), 0};
+    coinbase_input.sequence = UINT32_MAX;
+    coinbase.vin.push_back(coinbase_input);
+    TxOutput coinbase_payout;
+    coinbase_payout.value = AmountUna::Una(1);
+    coinbase_payout.scriptPubKey = p2tr;
+    coinbase.vout.push_back(coinbase_payout);
+    Transaction spend;
+    spend.version = 2;
+    spend.witness_version = 1;
+    TxInput spend_input;
+    spend_input.prevout.txid = funding_txid;
+    spend_input.prevout.vout = 0;
+    spend_input.sequence = 0xfffffffe;
+    spend_input.witness.push_back(std::vector<uint8_t>(64, 0x01));
+    spend.vin.push_back(spend_input);
+    TxOutput spend_output;
+    spend_output.value = AmountUna::Una(4000);
+    spend_output.scriptPubKey = p2tr;
+    spend.vout.push_back(spend_output);
+    block.vtx = {coinbase, spend};
+    TxOutput witness;
+    witness.value = AmountUna::Zero();
+    witness.scriptPubKey = consensus::BuildWitnessCommitment(block.vtx);
+    block.vtx.front().vout.push_back(witness);
+    const auto filter = consensus::GCSFilter::Build({p2tr, p2tr, p2tr},
+                                                     block.header.prev_block_hash);
+    TxOutput dnrf;
+    dnrf.value = AmountUna::Zero();
+    dnrf.scriptPubKey = consensus::BuildFilterCommitmentScript(filter.GetHash());
+    block.vtx.front().vout.push_back(dnrf);
+    block.header.merkle_root = consensus::ComputeMerkleRoot(block.vtx);
+    auto provider = std::shared_ptr<consensus::IUTXOProvider>(
+        std::shared_ptr<void>{}, static_cast<consensus::IUTXOProvider*>(&producer));
+    network::BridgeNode bridge(provider, &producer.GetForest());
+    block.utreexo = bridge.GenerateProofForBlock(block, height);
+    consensus::BlockValidator producer_validator(&producer);
+    uint256 post_root;
+    std::string root_error;
+    Require(producer_validator.ComputeUtreexoRootPure(block, height, post_root, root_error),
+            "producer computes authentic post-root");
+    block.header.utreexo_root = post_root;
+    std::string schnorr_error;
+    Require(!consensus::ScriptVerifier::VerifyTaproot(
+                block.vtx[1], 0, {funded}, schnorr_error,
+                consensus::CovenantActivationParams::StandardFlags(height, Params())) &&
+                schnorr_error == "Schnorr signature verification failed",
+            "64-byte key-path signature is cryptographically invalid");
+    producer_validator.setValidationMode(consensus::ValidationMode::STATEFUL);
+    consensus::BlockUndo full_undo;
+    std::string full_error;
+    const bool full_accepted = producer_validator.ConnectBlock(
+        block, height, block.GetHash(), full_undo, full_error);
+    std::cout << "FULL_INVALID_SIGNATURE_RESULT connected=" << full_accepted
+              << " error=" << full_error << '\n';
+    Require(!full_accepted &&
+            full_error.find("Script validation failed") != std::string::npos,
+            "full validator rejects identical authenticated block for invalid signature");
+    auto* candidate = AddBlockIndex(block.header, height);
+    candidate->status |= BLOCK_HAVE_DATA | BLOCK_VALID_TRANSACTIONS | BLOCK_VALID_CHAIN;
+    const auto token = ChainWriteToken::CreateForTesting();
+    Require(db.setTip(token, parent->hash, parent_height, arith_uint256()) == Status::Ok,
+            "CSN fixture active parent staged");
+    Require(db.putHeader(token, parent->hash, parent_header, parent_height,
+                         arith_uint256(parent_height + 1)) == Status::Ok,
+            "CSN fixture parent header staged");
+    Require(db.putHeader(token, candidate->hash, block.header, height,
+                         arith_uint256(height + 1)) == Status::Ok,
+            "CSN fixture candidate header staged");
+    ChainDB::PersistedHeaderMetadata metadata;
+    metadata.parent_hash = parent->hash;
+    metadata.height = height;
+    metadata.chainwork = arith_uint256(height + 1);
+    metadata.status_flags = candidate->status;
+    Require(db.putHeaderMetadata(token, candidate->hash, metadata) == Status::Ok,
+            "CSN fixture candidate metadata staged");
+    const auto pos = files->writeBlock(candidate->hash, block);
+    Require(pos.status() == Status::Ok, "CSN fixture exact body stored");
+
+    {
+        ChainstateService svc;
+        svc.setChainDB(&db);
+        svc.setBlockStorage(files);
+        ActivationRetryTestAccess::Prepare(svc, parent, db);
+        auto& csn_set = ActivationRetryTestAccess::CsnSet(svc);
+        Require(csn_set.AddCoin(funding, funded), "CSN funding UTXO staged");
+        Require(csn_set.GetForest().add(funding_leaf) != UINT64_MAX,
+                "CSN funding leaf staged");
+        ActivationRetryTestAccess::PrepareConnect(svc);
+        auto replay = std::make_shared<network::StatelessNode>(&csn_set.GetForest());
+        replay->SyncToForestState(parent_height);
+        svc.setStatelessNode(replay);
+        svc.PersistStoredBodyPosition(candidate->hash, pos.value());
+        auto stored = svc.getBlockByHash(candidate->hash);
+        Require(stored.status() == Status::Ok && stored->utreexo.has_value(),
+                "CSN exact body and proof readable");
+        const auto forest_before = csn_set.GetForest().getCommitment();
+        std::string connect_error;
+        const bool connected = ActivationRetryTestAccess::Connect(svc, candidate, connect_error);
+        std::cout << "CSN_INVALID_SIGNATURE_RESULT connected=" << connected
+                  << " active=" << (svc.GetActiveTip() == candidate)
+                  << " forest_unchanged="
+                  << (csn_set.GetForest().getCommitment() == forest_before)
+                  << " error=" << connect_error << '\n';
+        Require(!connected && svc.GetActiveTip() == parent &&
+                csn_set.GetForest().getCommitment() == forest_before,
+                "CSN rejects unauthorized spend before tip or forest mutation");
+
+        // A different valid body at the same height must remain connectable
+        // after the bad candidate is refused. This catches a partial rewind
+        // that would pass the negative check but leave the node unable to
+        // follow an honest branch.
+        Block honest;
+        honest.header = block.header;
+        honest.header.nonce = block.header.nonce + 1;
+        honest.vtx = {coinbase};
+        TxOutput honest_witness;
+        honest_witness.value = AmountUna::Zero();
+        honest_witness.scriptPubKey = consensus::BuildWitnessCommitment(honest.vtx);
+        honest.vtx.front().vout.push_back(honest_witness);
+        TxOutput honest_filter;
+        honest_filter.value = AmountUna::Zero();
+        honest_filter.scriptPubKey = consensus::BuildFilterCommitmentScript(
+            consensus::GCSFilter::Build({p2tr}, honest.header.prev_block_hash).GetHash());
+        honest.vtx.front().vout.push_back(honest_filter);
+        honest.header.merkle_root = consensus::ComputeMerkleRoot(honest.vtx);
+        honest.utreexo = bridge.GenerateProofForBlock(honest, height);
+        std::string honest_root_error;
+        uint256 honest_root;
+        Require(producer_validator.ComputeUtreexoRootPure(
+                    honest, height, honest_root, honest_root_error),
+                "honest sibling post-root computed");
+        honest.header.utreexo_root = honest_root;
+        auto* honest_index = AddBlockIndex(honest.header, height);
+        honest_index->status |= BLOCK_HAVE_DATA | BLOCK_VALID_TRANSACTIONS | BLOCK_VALID_CHAIN;
+        Require(db.putHeader(token, honest_index->hash, honest.header, height,
+                             arith_uint256(height + 1)) == Status::Ok,
+                "honest sibling header staged");
+        metadata.status_flags = honest_index->status;
+        Require(db.putHeaderMetadata(token, honest_index->hash, metadata) == Status::Ok,
+                "honest sibling metadata staged");
+        const auto honest_pos = files->writeBlock(honest_index->hash, honest);
+        Require(honest_pos.status() == Status::Ok, "honest sibling body stored");
+        svc.PersistStoredBodyPosition(honest_index->hash, honest_pos.value());
+        std::string honest_error;
+        const bool honest_connected = ActivationRetryTestAccess::Connect(
+            svc, honest_index, honest_error);
+        std::cout << "CSN_HONEST_SIBLING_RESULT connected=" << honest_connected
+                  << " active=" << (svc.GetActiveTip() == honest_index)
+                  << " error=" << honest_error << '\n';
+        Require(honest_connected && svc.GetActiveTip() == honest_index,
+                "CSN can select honest same-height sibling after invalid candidate");
+    }
+    files->close();
+    db.close();
+    g_candidates.clear();
+    g_orphan_pool.clear();
+    g_block_index.clear();
+    InvalidateAncestryCache();
+}
+
 int main(int argc, char** argv) {
     const auto unique = std::chrono::steady_clock::now().time_since_epoch().count();
     const auto root = std::filesystem::temp_directory_path() /
@@ -839,6 +1073,12 @@ int main(int argc, char** argv) {
         dinero::SelectParams(dinero::Chain::REGTEST);
         GetConfig().utreexo_stateless = false;
         GetConfig().assumeutxo_forward_connect = false;
+        if (argc == 2 && std::string(argv[1]) == "--csn-invalid-signature") {
+            RunCsnInvalidSignatureReplay(root / "csn-invalid-signature");
+            std::filesystem::remove_all(root);
+            std::cout << "ALL PASSED\n";
+            return 0;
+        }
         if (argc == 2 && std::string(argv[1]) == "--ancestor-cost") {
             RunAncestryEquivalence();
             RunCandidateCostCase();
