@@ -365,6 +365,10 @@ struct ActivationHandoffFixture {
         auto name=(std::filesystem::temp_directory_path()/"orchard-handoff-evidence-XXXXXX").string();
         OrchardAdmissionFixture::Require(::mkdtemp(name.data())!=nullptr);root=std::filesystem::canonical(name);
         std::filesystem::create_directory(root/"blockchain");path=root/"blockchain"/"chaindb";
+        // Handoff requires an owner-only blockchain directory even when the
+        // test process inherited a group-writable umask (for example 0002).
+        std::filesystem::permissions(root/"blockchain",std::filesystem::perms::owner_all,
+            std::filesystem::perm_options::replace);
         std::string error;OrchardAdmissionFixture::Require(guard.Acquire(root,error));
         if(lifecycle){
 #ifdef DINERO_TEST_REAL_CORE_HANDOFF
@@ -396,6 +400,8 @@ struct ActivationHandoffFixture {
 #endif
         }
         std::filesystem::copy(full.f.path,path,std::filesystem::copy_options::recursive);
+        std::filesystem::permissions(path,std::filesystem::perms::owner_all,
+            std::filesystem::perm_options::replace);
         {std::ofstream wallet(root/"named-wallet.sentinel");wallet<<"opaque test-only named wallet/pending bytes";}
         {std::ofstream lifecycle(root/"blockchain"/"original-lifecycle.sentinel");lifecycle<<"do not rebase or promote original history";}
         std::cout<<"Activation handoff evidence: "<<root.string()<<"\n";
