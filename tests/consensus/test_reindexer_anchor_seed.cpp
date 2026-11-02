@@ -22,16 +22,28 @@
 #include "primitives/block.h"
 #include "primitives/transaction.h"
 #include "primitives/uint256.h"
+#include "storage/block_storage.h"
 
 #include <cassert>
 #include <cstring>
 #include <filesystem>
 #include <iostream>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
 using namespace dinero;
 using namespace dinero::consensus;
+
+namespace dinero::consensus {
+class BlockReindexerStructuralTestAccess {
+public:
+    static Status Process(BlockReindexer& reindexer, const Block& block,
+                          uint64_t height) {
+        return reindexer.processBlock(block, FilePosition{}, height);
+    }
+};
+}
 
 namespace {
 
@@ -60,6 +72,30 @@ BlockReindexer MakeBareReindexer(const std::filesystem::path& tmp) {
     config.shielded_nullifier_db_path = tmp / "shielded_nullifiers.db";
     return BlockReindexer(tmp, /*chain_db=*/nullptr, /*block_storage=*/nullptr,
                           config);
+}
+
+void testMalformedCoinbaseRejectedBeforeReplayMutatesChainwork(
+    const std::filesystem::path& tmp) {
+    if (Params().coinbase_structure_activation_height != 1)
+        throw std::runtime_error("regtest structural boundary is not active");
+    auto reindexer = MakeBareReindexer(tmp);
+    const auto before = reindexer.snapshotInternalStateForTesting();
+    Transaction malformed;
+    TxInput input;
+    input.prevout.txid = TxId();
+    input.prevout.vout = 0; // Noncanonical null outpoint.
+    malformed.vin.push_back(input);
+    if (malformed.IsCoinbase())
+        throw std::runtime_error("malformed reindex fixture is still coinbase");
+    Block block;
+    block.vtx.push_back(malformed);
+    if (BlockReindexerStructuralTestAccess::Process(reindexer, block, 1) != Status::Invalid)
+        throw std::runtime_error("reindex accepted malformed first transaction");
+    const auto after = reindexer.snapshotInternalStateForTesting();
+    if (after.accumulated_chainwork != before.accumulated_chainwork ||
+        after.final_tip_hash != before.final_tip_hash ||
+        after.final_tip_height != before.final_tip_height)
+        throw std::runtime_error("reindex changed chainwork or tip before structural rejection");
 }
 
 // Test 1: anchor at a Utreexo-active height with a non-empty forest blob
@@ -603,6 +639,7 @@ int main() {
     std::filesystem::create_directories(tmp, ec);
 
     testSnapshotInitialState(tmp);
+    testMalformedCoinbaseRejectedBeforeReplayMutatesChainwork(tmp);
     testForestSeedRoundTrip(tmp);
     testHeightZeroRefused(tmp);
     testUtreexoActiveEmptyForestRefused(tmp);
