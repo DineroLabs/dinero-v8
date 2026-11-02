@@ -220,7 +220,6 @@ bool IsDeterministicStatelessContextFailure(const std::string& error) {
         "stateless-context-double-spend",
         "stateless-context-invalid-transaction-inputs",
         "stateless-coinbase-maturity-violation",
-        "Legacy private lane removed",
     };
     for (const char* candidate : kExact) {
         if (error == candidate) return true;
