@@ -4675,6 +4675,10 @@ bool DaemonApp::Init(int argc, char** argv) {
                                             MakeUtreexoDeltaUndoKey(
                                                 pending.proof_msg.block_hash),
                                             delta_blob);
+                                        batch.Put(
+                                            consensus::CsnSpeculativeProofMarkerKey(
+                                                pending.proof_msg.block_hash),
+                                            consensus::CSN_SPECULATIVE_PROOF_MARKER_VALUE);
                                     }
                                     if (replay_status != Status::Ok ||
                                         cdb->writeBatch(token, std::move(batch), true) != Status::Ok) {
@@ -4857,6 +4861,8 @@ bool DaemonApp::Init(int argc, char** argv) {
                             }
                             return true;
                         }
+                        const uint256 proof_parent_hash = proof_tip->hash;
+                        const int proof_parent_height = proof_tip->height;
 
                         uint64_t peer_id = GetPeerID(pending.peer_addr);
                             const bool use_transition_proof = csn_should_use_transition_proof(pending);
@@ -4866,6 +4872,41 @@ bool DaemonApp::Init(int argc, char** argv) {
                                     : pending.proof_msg.proof_data.spend_proof.targets;
                             consensus::UtreexoDelta utreexo_delta;
                             std::string delta_error;
+                            auto* forest_owner = chainstate_service->GetConsensusUTXOSet();
+                            if (!forest_owner) {
+                                g_logger.error("[CSN] Consensus forest unavailable at height " +
+                                               std::to_string(h));
+                                return false;
+                            }
+                            // Proof verification advances the live CSN forest before
+                            // chainstate accepts/connects this body. Keep an exact
+                            // pre-proof state so any later failure leaves the forest
+                            // and proof cursor at the active parent.
+                            auto forest_before_proof = [&] {
+                                auto forest_lock = forest_owner->LockForestShared();
+                                return forest_owner->GetForest().clone();
+                            }();
+                            const uint32_t sync_height_before_proof =
+                                stateless_node->GetSyncHeight();
+                            auto restore_unconnected_proof = [&] {
+                                forest_owner->ReplaceForestGuarded(forest_before_proof.clone());
+                                stateless_node->SyncToForestState(sync_height_before_proof);
+                            };
+                            auto restore_if_parent_unchanged = [&] {
+                                const auto* active = chainstate_service->GetActiveTip();
+                                if (active && active->height == proof_parent_height &&
+                                    active->hash == proof_parent_hash) {
+                                    restore_unconnected_proof();
+                                }
+                            };
+                            // Also restore on exceptional exits before ingress commits.
+                            // Dismiss immediately when the active tip changes: copying
+                            // the old forest over a connected descendant is unsafe.
+                            struct ProofRestoreGuard {
+                                std::function<void()> restore;
+                                ~ProofRestoreGuard() { if (restore) restore(); }
+                                void dismiss() { restore = {}; }
+                            } proof_guard{restore_if_parent_unchanged};
                             auto* forest_before = stateless_node->GetForest();
                             bool valid = forest_before && BuildStatelessUtreexoDelta(
                                 *forest_before, pending.block, h, replay_targets,
@@ -4957,7 +4998,59 @@ bool DaemonApp::Init(int argc, char** argv) {
                                     snprintf(buf, sizeof(buf), "%02x", byte);
                                     blockHex += buf;
                                 }
-                                chainstate_service->ProcessIncomingBlockHex(blockHex, pending.peer_addr);
+                                const bool accepted = chainstate_service->ProcessIncomingBlockHex(
+                                    blockHex, pending.peer_addr);
+                                const CBlockIndex* connected_tip = chainstate_service->GetActiveTip();
+                                const bool pending_is_tip = accepted && connected_tip &&
+                                    connected_tip->height == static_cast<int>(h) &&
+                                    connected_tip->hash == pending.proof_msg.block_hash;
+                                if (!pending_is_tip) {
+                                    const bool still_at_parent = connected_tip &&
+                                        connected_tip->height == proof_parent_height &&
+                                        connected_tip->hash == proof_parent_hash;
+                                    if (still_at_parent) {
+                                        restore_unconnected_proof();
+                                        proof_guard.dismiss();
+                                        chainstate_service->ForgetCompletedBlockForRetry(
+                                            pending.proof_msg.block_hash);
+                                    } else {
+                                        proof_guard.dismiss();
+                                        // ProcessIncoming may recursively connect an
+                                        // orphan descendant before returning. Never
+                                        // roll its committed forest back to this h-1
+                                        // snapshot or write an h checkpoint from it.
+                                        const CBlockIndex* ancestor = connected_tip;
+                                        while (ancestor && ancestor->height > static_cast<int>(h)) {
+                                            ancestor = ancestor->pprev;
+                                        }
+                                        if (accepted && ancestor &&
+                                            ancestor->height == static_cast<int>(h) &&
+                                            ancestor->hash == pending.proof_msg.block_hash) {
+                                            stateless_node->SyncToForestState(connected_tip->height);
+                                            activation_lock.unlock();
+                                            chainstate_service->DispatchQueuedCsnBodyRefetches();
+                                            {
+                                                std::lock_guard<std::mutex> rl(*buffer_mutex);
+                                                *next_validate_height = std::max(
+                                                    *next_validate_height,
+                                                    static_cast<uint32_t>(connected_tip->height) + 1);
+                                            }
+                                            if (block_download_for_csn) block_download_for_csn->Tick();
+                                            return true;
+                                        }
+                                    }
+                                    g_logger.warning("[CSN] Proof-valid body did not connect at height " +
+                                                     std::to_string(h) + "; retaining active-parent cursor");
+                                    activation_lock.unlock();
+                                    chainstate_service->DispatchQueuedCsnBodyRefetches();
+                                    if (still_at_parent && block_download_for_csn) {
+                                        block_download_for_csn->ReRequestBlock(
+                                            pending.proof_msg.block_hash);
+                                        block_download_for_csn->Tick();
+                                    }
+                                    return false;
+                                }
+                                proof_guard.dismiss();
                                 if (block_download_for_csn) {
                                     block_download_for_csn->MarkBlockConnected(
                                         pending.proof_msg.block_hash
@@ -4999,9 +5092,13 @@ bool DaemonApp::Init(int argc, char** argv) {
                                         g_logger.warning("[CSN] Failed preparing post-connect checkpoint batch");
                                     }
                                 }
-
                             }
+                        if (!valid) {
+                            restore_unconnected_proof();
+                            proof_guard.dismiss();
+                        }
                         activation_lock.unlock();
+                        chainstate_service->DispatchQueuedCsnBodyRefetches();
                         if (valid) {
                             csn_request_frontier_headers(pending.peer_addr, h);
                             {
@@ -5352,8 +5449,12 @@ bool DaemonApp::Init(int argc, char** argv) {
                         }
 
                         // Notify scheduler: download completed (frees in-flight slot)
-                        if (block_download_for_csn) {
-                            block_download_for_csn->OnBlockReceived(block);
+                        if (block_download_for_csn &&
+                            !block_download_for_csn->OnBlockReceived(block)) {
+                            g_logger.warning("[CSN] Rejected unbound body before proof buffering at height " +
+                                             std::to_string(block_height));
+                            block_download_for_csn->ReRequestBlock(block_hash);
+                            return;
                         }
                         if (parallel_download_for_csn) {
                             parallel_download_for_csn->notifyBlockReceived(block_hash);

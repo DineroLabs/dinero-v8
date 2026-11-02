@@ -65,6 +65,8 @@
 #include "daemon/snapshot_bootstrap_policy.h"
 #include "daemon/services/replay_failure_policy.h"  // confirm-before-fatal for replay validation failures
 #include "consensus/merkle_root.h"  // torn-body guard on replay reads
+#include "consensus/witness_commitment.h"  // bind stored legacy witness before activation
+#include "consensus/utreexo_activation.h"
 #include "daemon/services/config_service.h"
 #include "daemon/config.h"
 #include "daemon/prepared_pool_tip.h"
@@ -8877,6 +8879,11 @@ StatusOr<UndoRecord> ChainstateService::ReadStoredUndo(const uint256& hash) cons
 // Phase C.1: P2P Block Relay Integration
 // ═══════════════════════════════════════════════════════════════════════════
 
+void ChainstateService::ForgetCompletedBlockForRetry(const uint256& hash) {
+    std::lock_guard<std::mutex> lock(block_request_state_mutex_);
+    completed_blocks_.erase(hash.GetHex());
+}
+
 bool ChainstateService::ProcessIncomingBlockHex(const std::string& blockHex, const std::string& peer_id) {
     std::cout << "[CHAINSTATE-DEBUG] >>> ProcessIncomingBlockHex ENTRY from " << peer_id
               << " hex_size=" << blockHex.size() << std::endl;
@@ -11439,9 +11446,40 @@ void ChainstateService::ActivateBestChain() {
     }
     std::unique_ptr<ActivationParentPlan> request;
     ActivateBestChainPass(nullptr,request,may_prepare,inverse.get());
-    if(!request || !CompleteActivationParentPlan(*request)) return;
+    if(!request || !CompleteActivationParentPlan(*request)) {
+        DispatchQueuedCsnBodyRefetches();
+        return;
+    }
     std::unique_ptr<ActivationParentPlan> unused;
     ActivateBestChainPass(request.get(),unused,false,inverse.get());
+    DispatchQueuedCsnBodyRefetches();
+}
+
+void ChainstateService::DispatchQueuedCsnBodyRefetches() {
+    if (activation_mutex_.HeldByCurrentThread()) return;
+    auto* ctx = DaemonContext::instance();
+    if (!ctx || !ctx->block_download) return;
+    std::set<uint256> hashes;
+    {
+        std::lock_guard<AnnotatedRecursiveMutex> lock(activation_mutex_);
+        hashes.swap(pending_csn_body_refetches_);
+    }
+    if (hashes.empty()) return;
+    // A quarantined old side-branch body may not have an entry in the
+    // scheduler's current window. Rebuild it once after the durable metadata
+    // clear, then force RECEIVED/proof-staged entries back to MISSING.
+    ctx->block_download->OnHeadersProcessed();
+    std::set<uint256> deferred;
+    for (const auto& hash : hashes) {
+        if (!ctx->block_download->ReRequestBlock(hash)) deferred.insert(hash);
+    }
+    if (!deferred.empty()) {
+        std::lock_guard<AnnotatedRecursiveMutex> lock(activation_mutex_);
+        pending_csn_body_refetches_.insert(deferred.begin(), deferred.end());
+        if (logger_) logger_->warning(
+            "[CSN] Body refetch awaits scheduler header-window admission");
+    }
+    ctx->block_download->Tick();
 }
 
 bool ChainstateService::CompleteActivationParentPlan(ActivationParentPlan& request) {
@@ -11824,8 +11862,10 @@ void ChainstateService::ActivateBestChainPass(const ActivationParentPlan* prepar
                     // worker verifies their accumulator transition. Import only
                     // after either (a) the reorg worker persisted hash-anchored
                     // replay data for a genuinely competing branch, or (b)
-                    // AcceptBlockFromRPC durably marked transaction validation
-                    // before a crash stopped tip connection. Forward-sync replay
+                    // AcceptBlockFromRPC durably marked its transaction-stage
+                    // receipt before a crash stopped tip connection. Neither
+                    // marker alone attests script/contextual validity.
+                    // Forward-sync replay
                     // data is not an activation marker: the ordered worker still
                     // owns submission of that block. A raw scheduler body may
                     // carry proof bytes too, so payload shape is not a validation
@@ -11833,14 +11873,45 @@ void ChainstateService::ActivateBestChainPass(const ActivationParentPlan* prepar
                     // preserving store-ahead crash recovery.
                     if (GetConfig().utreexo_stateless) {
                         const auto metadata = chain_db_->getHeaderMetadata(entry.hash);
-                        const bool transaction_validated =
+                        // This status is a staging/ingress marker, not proof
+                        // that CSN replay checked scripts or contextual locks.
+                        const bool ingress_marked_transactions =
                             metadata.status() == Status::Ok &&
                             (metadata.value().status_flags &
                              BLOCK_VALID_TRANSACTIONS) != 0;
-                        const bool reorg_plan_validated =
-                            importing_competing_branch &&
+                        const bool has_replay_sidecar = importing_competing_branch &&
                             chain_db_->getCSNSpendTargets(entry.hash).status() == Status::Ok;
-                        if (!transaction_validated && !reorg_plan_validated) {
+                        std::string proof_marker;
+                        const Status marker_status = importing_competing_branch
+                            ? chain_db_->getRaw(
+                                  consensus::CsnSpeculativeProofMarkerKey(entry.hash),
+                                  proof_marker)
+                            : Status::NotFound;
+                        if (marker_status != Status::Ok && marker_status != Status::NotFound) {
+                            if (logger_) logger_->error(
+                                "[ActivateBestChain] Cannot read CSN speculative proof marker");
+                            return;
+                        }
+                        const bool reorg_plan_validated =
+                            has_replay_sidecar && marker_status == Status::Ok &&
+                            proof_marker == consensus::CSN_SPECULATIVE_PROOF_MARKER_VALUE;
+                        if (!ingress_marked_transactions && !reorg_plan_validated) {
+                            // Older versions could leave a valid speculative sidecar
+                            // without a distinct proof-staged marker, or a forward
+                            // sidecar after ingress rejected the body. Make either
+                            // body refetchable so the speculative worker verifies it
+                            // again, rather than silently stranding the branch.
+                            if (has_replay_sidecar && metadata.ok()) {
+                                if (!QuarantineStoredBodyForReplacement(idx)) {
+                                    if (logger_) logger_->error(
+                                        "[ActivateBestChain] Cannot quarantine CSN body without proof marker");
+                                    return;
+                                }
+                                pending_csn_body_refetches_.insert(entry.hash);
+                                missing_block_bodies.push_back(entry.hash.GetHex());
+                                if (logger_) logger_->warning(
+                                    "[ActivateBestChain] Re-requesting CSN body without speculative proof marker");
+                            }
                             if (logger_) {
                                 logger_->debug("[ActivateBestChain] CSN body at height " +
                                                std::to_string(entry.height) +
@@ -12399,7 +12470,7 @@ void ChainstateService::ActivateBestChainPass(const ActivationParentPlan* prepar
         // other body, absence means the plan is incomplete or stale. Previously a
         // missing body was discovered only after DisconnectTip had already
         // moved the active chain to the fork, leaving the node stranded there.
-        for (const auto* block_index : connect_path) {
+        for (auto* block_index : connect_path) {
             const auto block_result = ReadStoredBlock(block_index->hash);
             if (block_result.status() != Status::Ok) {
                 if (logger_) {
@@ -12411,6 +12482,46 @@ void ChainstateService::ActivateBestChainPass(const ActivationParentPlan* prepar
             }
             const auto replay_result = chain_db_->getCSNSpendTargets(block_index->hash);
             const auto& candidate = block_result.value();
+            // This replay path does not enter ConnectTip. A body inherited
+            // from an older scheduler may share the honest header and txid
+            // Merkle root while carrying a different witness commitment.
+            // Quarantine it before rewinding the active chain or forest.
+            const auto body_binding = QuarantineIfStoredBodyUnbound(
+                block_index, candidate);
+            if (body_binding != StoredBodyBindingResult::Bound) {
+                if (body_binding == StoredBodyBindingResult::Quarantined) {
+                    pending_csn_body_refetches_.insert(block_index->hash);
+                }
+                if (logger_) logger_->warning(
+                    body_binding == StoredBodyBindingResult::Quarantined
+                        ? "[ABC-CSN] Reorg plan has an unbound stored body; awaiting replacement"
+                        : "[ABC-CSN] Could not durably quarantine unbound reorg body");
+                return;
+            }
+            const auto replay_metadata = chain_db_->getHeaderMetadata(block_index->hash);
+            const bool ingress_marked_transactions = replay_metadata.ok() &&
+                (replay_metadata->status_flags & BLOCK_VALID_TRANSACTIONS) != 0;
+            std::string proof_marker;
+            const Status marker_status = chain_db_->getRaw(
+                consensus::CsnSpeculativeProofMarkerKey(block_index->hash), proof_marker);
+            if (marker_status != Status::Ok && marker_status != Status::NotFound) {
+                if (logger_) logger_->error(
+                    "[ABC-CSN] Cannot read speculative proof marker before reorg");
+                return;
+            }
+            const bool speculative_proof_staged = marker_status == Status::Ok &&
+                proof_marker == consensus::CSN_SPECULATIVE_PROOF_MARKER_VALUE;
+            if (!ingress_marked_transactions && !speculative_proof_staged) {
+                if (!QuarantineStoredBodyForReplacement(block_index)) {
+                    if (logger_) logger_->error(
+                        "[ABC-CSN] Cannot durably quarantine reorg body without proof marker");
+                    return;
+                }
+                pending_csn_body_refetches_.insert(block_index->hash);
+                if (logger_) logger_->warning(
+                    "[ABC-CSN] Reorg body has no durable proof-staged marker; awaiting revalidation");
+                return;
+            }
             CsnReplayData replay_data;
             const std::string* record = replay_result.status() == Status::Ok ? &replay_result.value() : nullptr;
             if ((replay_result.status() != Status::Ok && replay_result.status() != Status::NotFound) ||
@@ -23163,6 +23274,65 @@ void ChainstateService::RunPostConnectStorageCleanup() noexcept {
     } catch (...) {}
 }
 
+bool ChainstateService::QuarantineStoredBodyForReplacement(CBlockIndex* index) {
+    unreadable_blocks_.mark(index->hash);
+    const auto saved = chain_db_->getHeaderMetadata(index->hash);
+    if (!saved.ok()) return false;
+    auto metadata = saved.value();
+    const uint32_t stale_body_flags = static_cast<uint32_t>(BLOCK_HAVE_DATA) |
+                                      static_cast<uint32_t>(BLOCK_VALID_TRANSACTIONS);
+    metadata.status_flags &= ~stale_body_flags;
+    metadata.data_size = 0;
+    metadata.data_pos = 0;
+    metadata.file_number = 0;
+    ChainWriteToken token;
+    // This is a full read-modify-write of the row, including its undo fields.
+    // The preserving-undo writer ORs old status bits back and would undo the
+    // HAVE_DATA clear, so it cannot be used for quarantine.
+    if (chain_db_->putHeaderMetadata(token, index->hash, metadata) != Status::Ok) {
+        return false;
+    }
+    index->status &= ~stale_body_flags;
+    return true;
+}
+
+ChainstateService::StoredBodyBindingResult
+ChainstateService::QuarantineIfStoredBodyUnbound(
+    CBlockIndex* index, const Block& body) {
+    bool merkle_mutated = false;
+    const auto body_merkle = consensus::ComputeMerkleRoot(body.vtx, &merkle_mutated);
+    // An empty body with an empty Merkle root belongs to this header. It is
+    // consensus-invalid, not a replaceable bad copy of an honest body.
+    const bool merkle_unbound = merkle_mutated ||
+                                body_merkle != body.header.merkle_root;
+    std::string witness_error;
+    bool witness_unbound = false;
+    if (!merkle_unbound && !body.vtx.empty() &&
+        index->height < Params().orchard_activation_height) {
+        const auto height = static_cast<uint32_t>(index->height);
+        witness_unbound = consensus::FullRulesActive(height)
+            ? !consensus::EnforceWitnessCommitment(
+                  body.vtx, height, Params().enforce_witness_commitment,
+                  Params().witness_commitment_enforcement_height, witness_error)
+            : consensus::FindWitnessCommitmentIndex(body.vtx[0]).has_value();
+    }
+    if (!merkle_unbound && !witness_unbound) return StoredBodyBindingResult::Bound;
+    if (!QuarantineStoredBodyForReplacement(index)) {
+        if (logger_) logger_->error(
+            "[Chainstate] Could not durably quarantine unbound body for " +
+            index->hash.GetHex());
+        return StoredBodyBindingResult::StorageError;
+    }
+    if (logger_) {
+        logger_->warning("[Chainstate] Stored body " +
+                         std::string(merkle_unbound ? "Merkle mismatch or mutation" :
+                             "witness commitment mismatch") + " for " +
+                         index->hash.GetHex() +
+                         "; preserving header and requesting a replacement body");
+    }
+    return StoredBodyBindingResult::Quarantined;
+}
+
 bool ChainstateService::ConnectTip(CBlockIndex* tip_to_connect, std::string* out_error,
                                    bool* out_consensus_invalid) {
     std::unique_lock<AnnotatedRecursiveMutex> delivery_lock(activation_mutex_);
@@ -23293,35 +23463,11 @@ bool ChainstateService::ConnectTip(CBlockIndex* tip_to_connect, std::string* out
     // Merkle check, especially on a below-tip fork-heal branch. Do this before
     // the DNRF precheck or ConnectBlock can classify a failure as consensus
     // invalid and permanently mark the honest header BLOCK_FAILED_VALID.
-    bool merkle_mutated = false;
-    const auto body_merkle = consensus::ComputeMerkleRoot(block.vtx, &merkle_mutated);
-    if (merkle_mutated || body_merkle != block.header.merkle_root) {
-        const uint32_t stale_body_flags = static_cast<uint32_t>(BLOCK_HAVE_DATA) |
-                                          static_cast<uint32_t>(BLOCK_VALID_TRANSACTIONS);
-        tip_to_connect->status &= ~stale_body_flags;
-        unreadable_blocks_.mark(tip_to_connect->hash);
-        const auto saved = chain_db_->getHeaderMetadata(tip_to_connect->hash);
-        if (saved.ok()) {
-            auto metadata = saved.value();
-            metadata.status_flags &= ~stale_body_flags;
-            metadata.data_size = 0;
-            metadata.data_pos = 0;
-            metadata.file_number = 0;
-            ChainWriteToken token;
-            const auto status = chain_db_->putHeaderMetadata(token, tip_to_connect->hash,
-                                                             metadata);
-            if (status != Status::Ok && logger_) {
-                logger_->error("[ConnectTip] Could not persist unbound-body quarantine for " +
-                               tip_to_connect->hash.GetHex());
-            }
-        }
-        if (logger_) {
-            logger_->warning("[ConnectTip] Stored body Merkle mismatch or mutation for " +
-                             tip_to_connect->hash.GetHex() +
-                             "; preserving header and requesting a replacement body");
-        }
+    const auto body_binding = QuarantineIfStoredBodyUnbound(tip_to_connect, block);
+    if (body_binding != StoredBodyBindingResult::Bound) {
         if (out_consensus_invalid) *out_consensus_invalid = false;
-        return fail("stored-body-merkle-unbound");
+        return fail(body_binding == StoredBodyBindingResult::Quarantined
+            ? "stored-body-unbound" : "stored-body-quarantine-failed");
     }
 #ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
     std::optional<PreparedHistoricalRuntimeOutbox> historical_delivery;

@@ -97,7 +97,8 @@ private:
     static bool ValidateParentLink(const ParsedBlock& block, uint64_t parentHeight, std::string& error);
 
     // Transaction validation
-    static bool ValidateMerkleRoot(const ParsedBlock& block, std::string& error);
+    static bool ValidateBodyCommitments(const ParsedBlock& block, uint32_t height,
+                                        std::string& error);
     static bool ValidateBlockSigops(const ParsedBlock& block, std::string& error);
     static bool ValidateContextual(const ParsedBlock& block, uint64_t height, std::string& error);
     static bool ValidateCheckpoint(const ParsedBlock& block, uint64_t height, std::string& error);

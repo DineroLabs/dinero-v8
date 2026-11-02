@@ -4,6 +4,9 @@
 #include "storage/chain_db.h"
 #include "consensus/block_lifecycle.h"
 #include "consensus/merkle_root.h"
+#include "consensus/witness_commitment.h"
+#include "consensus/utreexo_activation.h"
+#include "consensus/chainparams.h"
 
 #include <limits>
 
@@ -125,8 +128,8 @@ enum class BodyPositionPersistResult {
 // header. A HAVE_DATA bit is only a claim: interrupted writes and stale
 // flatfile references can leave it pointing at a missing, corrupt, or wrong
 // block. Preserve an existing position only when a strict read resolves to the
-// requested hash and its transactions bind to the header Merkle root without
-// mutation; otherwise replace it with the scheduler's verified copy.
+// requested hash and both its transaction and witness data bind to the header;
+// otherwise replace it with the scheduler's verified copy.
 //
 // Status::NotFound means the header metadata row does not exist. The caller
 // that owns the in-memory block index may synthesize that row; storage code
@@ -152,11 +155,29 @@ inline StatusOr<BodyPositionPersistResult> PersistVerifiedArchivalBodyPosition(
         const auto existing = ReadArchivalBlockDetailed(
             chain_db, block_storage, hash, ArchivalReadMode::RequireFlatfiles);
         bool merkle_mutated = false;
+        bool body_bound = false;
         if (existing.result.status() == Status::Ok &&
             existing.result.value().GetHash() == hash &&
+            !existing.result.value().vtx.empty() &&
             consensus::ComputeMerkleRoot(existing.result.value().vtx, &merkle_mutated) ==
-                existing.result.value().header.merkle_root &&
-            !merkle_mutated) {
+                existing.result.value().header.merkle_root && !merkle_mutated) {
+            const auto& body = existing.result.value();
+            const uint32_t height = metadata.height;
+            if (height >= Params().orchard_activation_height) {
+                // Orchard body identity is checked by its typed staging path.
+                // This legacy retention repair does not reinterpret that rule.
+                body_bound = true;
+            } else if (consensus::FullRulesActive(height)) {
+                std::string witness_error;
+                body_bound = consensus::EnforceWitnessCommitment(
+                    body.vtx, height, Params().enforce_witness_commitment,
+                    Params().witness_commitment_enforcement_height,
+                    witness_error);
+            } else {
+                body_bound = !consensus::FindWitnessCommitmentIndex(body.vtx[0]).has_value();
+            }
+        }
+        if (body_bound) {
             return BodyPositionPersistResult::RetainedReadable;
         }
     }

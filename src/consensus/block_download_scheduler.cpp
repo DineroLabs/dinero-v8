@@ -5,6 +5,8 @@
 #include "consensus/block_download_scheduler.h"
 #include "consensus/header_chain.h"
 #include "consensus/merkle_root.h"
+#include "consensus/witness_commitment.h"
+#include "consensus/utreexo_activation.h"
 #include "consensus/orchard_profile.h"
 #ifdef DINERO_HAS_ORCHARD_DOWNLOAD_READER
 #include "primitives/orchard_block_reader.h"
@@ -2090,6 +2092,22 @@ bool BlockDownloadScheduler::ValidateBlockAgainstHeader(const Block& block) {
     if (merkle_mutated || body_merkle != header.header.merkle_root) {
         g_logger.warning("[BlockDownloadScheduler] Unbound body for header: " +
                          block_hash.GetHex());
+        return false;
+    }
+
+    // Witness bytes do not affect txids or the header Merkle root. Bind them
+    // to the coinbase commitment before this body receives a flat-file
+    // position: otherwise a peer can poison an honest header's stored body.
+    std::string witness_error;
+    const bool witness_bound = FullRulesActive(header.height)
+        ? EnforceWitnessCommitment(block.vtx, header.height,
+                                   Params().enforce_witness_commitment,
+                                   Params().witness_commitment_enforcement_height,
+                                   witness_error)
+        : !FindWitnessCommitmentIndex(block.vtx[0]).has_value();
+    if (!witness_bound) {
+        g_logger.warning("[BlockDownloadScheduler] Unbound witness body for header " +
+                         block_hash.GetHex() + ": " + witness_error);
         return false;
     }
 

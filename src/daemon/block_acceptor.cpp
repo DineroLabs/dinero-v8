@@ -21,6 +21,7 @@
 #include "consensus/parallel_block_validator.h"  // Phase 6B: Parallel script validation
 #include "consensus/sigops.h"       // Mainnet Blocker: MAX_BLOCK_SIGOPS enforcement
 #include "consensus/merkle_root.h"  // Phase 11a: Canonical merkle computation
+#include "consensus/witness_commitment.h"
 #include "consensus/block_index.h"  // For FindBlockIndex, CBlockIndex::GetMedianTimePast (Reorg MTP fix)
 #include "consensus/block_lifecycle.h"  // BLOCK_HAVE_DATA status flag
 #include "consensus/fork_acceptance_policy.h"  // #803: fork-prior-to-checkpoint, overlay depth cap
@@ -261,9 +262,15 @@ BlockAcceptResult BlockAcceptor::AcceptBlockFromRPC(const std::string& blockHex,
         }
 
         // 4. Validate merkle root
-        if (!ValidateMerkleRoot(block, error)) {
-            dinero::metrics::MetricsRegistry::IncrementBlocksRejected("invalid-merkle");
-            return BlockAcceptResult::Rejected(BlockRejectCode::INVALID_MERKLE_ROOT, error, block_hash, newHeight);
+        if (!ValidateBodyCommitments(block, static_cast<uint32_t>(newHeight), error)) {
+            const bool witness_failure = error.rfind("bad-witness-commitment", 0) == 0 ||
+                                         error.rfind("missing-witness-commitment", 0) == 0;
+            dinero::metrics::MetricsRegistry::IncrementBlocksRejected(
+                witness_failure ? "invalid-witness-commitment" : "invalid-merkle");
+            return BlockAcceptResult::Rejected(
+                witness_failure ? BlockRejectCode::INVALID_TRANSACTION :
+                                  BlockRejectCode::INVALID_MERKLE_ROOT,
+                error, block_hash, newHeight);
         }
 
         // 4.5. Validate signature operations (MAINNET BLOCKER FIX)
@@ -1471,7 +1478,8 @@ bool BlockAcceptor::ValidateParentLink(const ParsedBlock& block, uint64_t parent
     return true;
 }
 
-bool BlockAcceptor::ValidateMerkleRoot(const ParsedBlock& block, std::string& error) {
+bool BlockAcceptor::ValidateBodyCommitments(const ParsedBlock& block,
+                                             uint32_t height, std::string& error) {
     if (block.transactions.empty()) {
         error = "No transactions in block";
         return false;
@@ -1502,7 +1510,21 @@ bool BlockAcceptor::ValidateMerkleRoot(const ParsedBlock& block, std::string& er
         return false;
     }
 
-    LOG_INFO("✅ Merkle root validation passed");
+    // The transaction Merkle root binds txids, not witness bytes. Check the
+    // witness commitment using the same converted block before ConnectBlock
+    // stores this body under an honest header hash.
+    if (consensus::FullRulesActive(height)) {
+        if (!consensus::EnforceWitnessCommitment(
+                consensus_block.vtx, height, dinero::Params().enforce_witness_commitment,
+                dinero::Params().witness_commitment_enforcement_height, error)) {
+            return false;
+        }
+    } else if (consensus::FindWitnessCommitmentIndex(
+                   consensus_block.vtx[0]).has_value()) {
+        error = "bad-witness-commitment-preactivation";
+        return false;
+    }
+    LOG_INFO("✅ Body commitments validated");
     return true;
 }
 

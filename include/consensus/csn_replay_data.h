@@ -14,6 +14,15 @@ struct CsnReplayData {
     bool has_spent_outputs = false;
 };
 
+// A sidecar alone is not proof that a stored competing-branch body passed the
+// speculative CSN worker: forward sync writes its sidecar before ingress and
+// may then reject the body. Only the speculative worker writes this durable,
+// hash-anchored marker in the same batch as its validated replay sidecars.
+inline std::string CsnSpeculativeProofMarkerKey(const uint256& block_hash) {
+    return "CSN-SP1:" + block_hash.GetHex();
+}
+inline constexpr const char* CSN_SPECULATIVE_PROOF_MARKER_VALUE = "proof-staged-v1";
+
 // Reads either historical u32-count/hash-only records or CSN2 records with
 // SpentOutputData format 4, 5, or 6. Counts are capped at 1,000,000 and the
 // complete record must be consumed. Failure clears every field in out;

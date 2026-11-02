@@ -8,6 +8,7 @@
 #include "consensus/chainparams.h"
 #include "consensus/block_validation.h"
 #include "consensus/merkle_root.h"
+#include "consensus/witness_commitment.h"
 #include "consensus/sigops.h"
 #include "consensus/filter_commitment.h"
 #include "storage/chain_write_token.h"
@@ -278,7 +279,8 @@ void RunDeterministicCandidateFailure(const std::filesystem::path& root,
 // transactions do not match that header's Merkle root. On restart, the stored
 // body must be discarded and made replaceable; it must never poison the header.
 void RunLegacyStoredBodyRecovery(const std::filesystem::path& root,
-                                 bool mutated_body = false) {
+                                 bool mutated_body = false,
+                                 bool witness_body = false) {
     using namespace dinero;
     ChainDB db;
     Require(db.init(root / "chaindb") == Status::Ok, "legacy-body ChainDB opens");
@@ -312,7 +314,24 @@ void RunLegacyStoredBodyRecovery(const std::filesystem::path& root,
     coinbase.vout.push_back(output);
     Block correct;
     correct.vtx = {coinbase};
-    if (mutated_body) {
+    if (witness_body) {
+        Transaction spend;
+        TxInput spent_input;
+        spent_input.prevout.txid = TxId();
+        spent_input.prevout.vout = 1;
+        spent_input.witness.push_back({0x30, 0x31, 0x32});
+        spend.vin.push_back(spent_input);
+        spend.vout.push_back(output);
+        correct.vtx.push_back(spend);
+        TxOutput commitment_output;
+        commitment_output.value = AmountUna::Zero();
+        commitment_output.scriptPubKey =
+            consensus::BuildWitnessCommitment(correct.vtx);
+        correct.vtx[0].vout.push_back(commitment_output);
+        std::string witness_error;
+        Require(consensus::ValidateWitnessCommitment(correct.vtx, witness_error),
+                "legacy-body fixture has valid witness commitment");
+    } else if (mutated_body) {
         auto second = coinbase;
         second.vout.front().value = AmountUna::Una(2);
         auto third = coinbase;
@@ -331,7 +350,14 @@ void RunLegacyStoredBodyRecovery(const std::filesystem::path& root,
     candidate->status |= BLOCK_HAVE_DATA;
 
     Block wrong = correct;
-    if (mutated_body) {
+    if (witness_body) {
+        wrong.vtx[1].vin[0].witness[0][0] ^= 1;
+        std::string witness_error;
+        Require(wrong.vtx[1].GetTxid() == correct.vtx[1].GetTxid() &&
+                    consensus::ComputeMerkleRoot(wrong.vtx) == correct.header.merkle_root &&
+                    !consensus::ValidateWitnessCommitment(wrong.vtx, witness_error),
+                "legacy-body fixture changes witness without changing header or txid");
+    } else if (mutated_body) {
         wrong.vtx.push_back(wrong.vtx.back());
         bool mutated = false;
         Require(consensus::ComputeMerkleRoot(wrong.vtx, &mutated) ==
@@ -351,7 +377,7 @@ void RunLegacyStoredBodyRecovery(const std::filesystem::path& root,
     metadata.parent_hash = parent->hash;
     metadata.height = 2;
     metadata.chainwork = arith_uint256(3);
-    metadata.status_flags = candidate->status;
+    metadata.status_flags = candidate->status | BLOCK_VALID_TRANSACTIONS;
     Require(db.putHeaderMetadata(token, hash, metadata) == Status::Ok,
             "legacy-body metadata staged");
     const auto wrong_pos = files->writeBlock(hash, wrong);
@@ -372,7 +398,8 @@ void RunLegacyStoredBodyRecovery(const std::filesystem::path& root,
                 "mismatched old body is removed from candidate data availability");
         const auto quarantined = db.getHeaderMetadata(hash);
         Require(quarantined.ok() && quarantined->data_size == 0 &&
-                    (quarantined->status_flags & BLOCK_HAVE_DATA) == 0,
+                    (quarantined->status_flags &
+                     (BLOCK_HAVE_DATA | BLOCK_VALID_TRANSACTIONS)) == 0,
                 "mismatched old body is durably quarantined");
         if (mutated_body) {
             const auto correct_pos = files->writeBlock(hash, correct);
@@ -390,6 +417,11 @@ void RunLegacyStoredBodyRecovery(const std::filesystem::path& root,
     Require(db.init(root / "chaindb") == Status::Ok,
             "legacy-body ChainDB reopens");
     if (!mutated_body) {
+        const auto quarantined_reopen = db.getHeaderMetadata(hash);
+        Require(quarantined_reopen.ok() && quarantined_reopen->data_size == 0 &&
+                    (quarantined_reopen->status_flags &
+                     (BLOCK_HAVE_DATA | BLOCK_VALID_TRANSACTIONS)) == 0,
+                "old unbound body remains quarantined after database reopen");
         {
             ChainstateService restarted;
             restarted.setChainDB(&db);
@@ -690,6 +722,7 @@ int main(int argc, char** argv) {
         RunDeterministicCandidateFailure(root / "structural-empty", true);
         RunLegacyStoredBodyRecovery(root / "legacy-stored-body");
         RunLegacyStoredBodyRecovery(root / "legacy-mutated-body", true);
+        RunLegacyStoredBodyRecovery(root / "legacy-witness-body", false, true);
         dinero::SelectParams(dinero::Chain::TESTNET);
         RunSigopsStoredCandidate(root / "sigops-stored");
         std::filesystem::remove_all(root);
