@@ -17249,6 +17249,8 @@ function(dinero_attach_real_mempool_fixture_runtime)
     test_header_status_bits
     test_orchard_account_delivery
     test_orchard_index_delivery
+    test_runtime_prefix_storage
+    test_runtime_replay_branch_views
     test_reindex_deep_chain
     test_header_metadata_recovery
     test_assumeutxo_replay
@@ -17291,7 +17293,7 @@ function(dinero_attach_real_mempool_fixture_runtime)
     if(NOT TARGET ${_fixture})
       continue()
     endif()
-    if(_fixture MATCHES "^test_orchard_(account|index)_delivery$")
+    if(_fixture MATCHES "^(test_orchard_(account|index)_delivery|test_runtime_(prefix_storage|replay_branch_views))$")
       target_sources(${_fixture} PRIVATE src/daemon/config.cpp)
     endif()
     get_target_property(_sources ${_fixture} SOURCES)
