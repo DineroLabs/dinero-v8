@@ -210,6 +210,13 @@ public:
         }
         std::vector<Block> chain;consensus::ConsensusUTXOSet coins;
         consensus::BlockValidator validator(&coins);SeedDirect(coins);
+        consensus::shielded::CommitmentTree commitment_tree;
+        consensus::shielded::NullifierSet commitment_nullifiers;
+        consensus::shielded::AnchorHistory commitment_anchors;
+        if(consensus::IsStateCommitmentActive(1,Params().state_commitment_activation_height)) {
+            Require(commitment_nullifiers.Open(":memory:")==consensus::shielded::NullifierSet::OpenResult::Ok);
+            validator.setShieldedState(&commitment_tree,&commitment_nullifiers,&commitment_anchors);
+        }
         auto parent=SelectedGenesis().GetHash();
         std::deque<consensus::HeaderIndexEntry> headers;
         if(real_pow)headers.emplace_back(SelectedGenesis().header,nullptr);
@@ -270,6 +277,13 @@ public:
             block.vtx.front().vout.push_back(std::move(commitment));
             std::string filter_error;
             Require(consensus::ValidateFilterCommitment(block.vtx.front(),filter.GetHash(),height,filter_error));
+            if(consensus::IsStateCommitmentActive(height,Params().state_commitment_activation_height)) {
+                const auto post_root=consensus::shielded::PredictPostBlockShieldedRoot({},height,
+                    Params().shielded_epoch_reset_height,Params().shielded_spend_auth_epoch_reset_height,
+                    Params().shielded_activation_height,commitment_tree,{},commitment_anchors);
+                Require(bool(post_root));
+                block.vtx.front().vout.emplace_back(AmountUna::Zero(),consensus::BuildStateCommitmentScript(*post_root));
+            }
             block.header.merkle_root=consensus::ComputeMerkleRoot(block.vtx);
             uint256 root;std::string error;
             Require(validator.ComputeUtreexoRootPure(block,height,root,error));block.header.utreexo_root=root;

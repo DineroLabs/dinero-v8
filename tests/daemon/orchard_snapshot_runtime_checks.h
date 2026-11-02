@@ -614,10 +614,11 @@ void GenerateSdkActivationFixture(){
         constexpr std::string_view memo="authenticated phone history";
         std::copy(memo.begin(),memo.end(),source.f.shield_memo.begin());
         if(assumed){
-            // The SDK, not a SQL fixture, must import this ordinary legacy
-            // snapshot into a NEW root. This isolated profile has dormant
-            // legacy state commitments, so the normal exporter emits v4.
-            assumed_snapshot=source.f.path.string()+".sdk-input.v4";
+            // The SDK, not a SQL fixture, imports this genuine legacy file
+            // into a new root. The private crossing variant enables DNRS and
+            // emits v5 while retaining the original v4 fixture unchanged.
+            const bool v5=std::getenv("DINERO_SDK_V5_ACTIVATION_FIXTURE")!=nullptr;
+            assumed_snapshot=source.f.path.string()+(v5?".sdk-input.v5":".sdk-input.v4");
             const auto exported=source.f.service->ExportSnapshot(assumed_snapshot);
             OrchardAdmissionFixture::Require(exported.success&&exported.block_height==101);
         }
@@ -649,6 +650,8 @@ void GenerateSdkActivationFixture(){
     const auto archives=f.full.files->getBlockFilePath(0).parent_path();
     std::filesystem::copy(archives,f.root/"blocks",std::filesystem::copy_options::recursive);
     Json::Value row;row["datadir"]=f.root.string();row["profile"]=ConsensusChecksum(Params());
+    row["producer_coinbase_structure_height"]=Json::UInt(Params().coinbase_structure_activation_height);
+    row["producer_state_commitment_height"]=Json::UInt(Params().state_commitment_activation_height);
     row["magic"]=Json::UInt(Params().magic);row["parent"]=f.proof->parent_catalog.block.GetHex();
     row["first_hash"]=f.full.first->Header().GetHash().GetHex();row["second_hash"]=f.full.second->Header().GetHash().GetHex();
     if(assumed){
@@ -657,8 +660,13 @@ void GenerateSdkActivationFixture(){
         consensus::HeaderStore store((mobile/"headers").string());ASSERT_TRUE(store.Open());
         consensus::HeaderChainSelector selected(&store);
         for(const auto& block:f.full.f.blocks)ASSERT_TRUE(selected.AddHeader(block.header));
+        // A v5 base needs the selected next header for the test profile's
+        // one-block state-commitment burial before the SDK loads it.
+        if(std::getenv("DINERO_SDK_V5_ACTIVATION_FIXTURE"))
+            ASSERT_TRUE(selected.AddHeader(f.full.first->Header()));
         row["assumed_datadir"]=mobile.string();row["assumed_snapshot"]=assumed_snapshot.string();
-        row["assumed_snapshot_version"]=4;row["assumed_base"]=101;
+        row["assumed_snapshot_version"]=std::getenv("DINERO_SDK_V5_ACTIVATION_FIXTURE")?5:4;
+        row["assumed_base"]=101;
         // No ChainDB, forest, wallet index, lifecycle keys or historical body
         // is copied into this new SDK root.
         ASSERT_FALSE(std::filesystem::exists(mobile/"blockchain"));

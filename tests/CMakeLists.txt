@@ -10024,6 +10024,13 @@ if(TARGET nodecore_ffi)
       python3 ${CMAKE_SOURCE_DIR}/tests/integration/test_nodecore_activation_wire.py)
     set_tests_properties(NodeCoreAssumedMobileCrossing PROPERTIES TIMEOUT 300 RUN_SERIAL TRUE
       LABELS "integration;nodecore;orchard;assumedmobile;wallet")
+    add_test(NAME NodeCoreAssumedMobileV5H1Crossing COMMAND ${CMAKE_COMMAND} -E env
+      NODECORE_DRIVER=$<TARGET_FILE:nodecore_activation_driver>
+      ACTIVATION_FIXTURE_GENERATOR=$<TARGET_FILE:test_assumeutxo_replay>
+      DINERO_SDK_ASSUMED_MOBILE_FIXTURE=1 DINERO_SDK_V5_ACTIVATION_FIXTURE=1
+      python3 ${CMAKE_SOURCE_DIR}/tests/integration/test_nodecore_activation_wire.py)
+    set_tests_properties(NodeCoreAssumedMobileV5H1Crossing PROPERTIES TIMEOUT 300 RUN_SERIAL TRUE
+      LABELS "integration;nodecore;orchard;assumedmobile;wallet;snapshot-v5")
     add_test(NAME NodeCoreFundedCrossing COMMAND ${CMAKE_COMMAND} -E env
       NODECORE_DRIVER=$<TARGET_FILE:nodecore_activation_driver>
       ACTIVATION_FIXTURE_GENERATOR=$<TARGET_FILE:test_assumeutxo_replay>

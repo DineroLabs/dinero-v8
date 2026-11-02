@@ -916,7 +916,14 @@ int main(int argc, char** argv) {
     // without coinbase DNRS commitments and its subject is replay digest
     // equivalence, not commitment enforcement (which the state-commitment
     // suites and the forged-snapshot e2e exercise on the active default).
-    dinero::MutableParams().state_commitment_activation_height = UINT32_MAX;
+    if (std::getenv("DINERO_SDK_V5_ACTIVATION_FIXTURE")) {
+        // Test-only old-profile producer: the real SDK consumer below selects
+        // the H1 rule while importing this pre-Orchard v5 parent.
+        dinero::MutableParams().state_commitment_activation_height = 1;
+        dinero::MutableParams().coinbase_structure_activation_height = UINT32_MAX;
+    } else {
+        dinero::MutableParams().state_commitment_activation_height = UINT32_MAX;
+    }
     ::testing::InitGoogleTest(&argc, argv);
 #ifdef DINERO_TEST_REAL_CORE_HANDOFF
     if(argc==2&&std::string(argv[1])=="--export-sdk-activation-fixture") {
