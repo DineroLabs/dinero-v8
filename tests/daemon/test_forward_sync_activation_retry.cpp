@@ -603,6 +603,19 @@ void RunSigopsStoredCandidate(const std::filesystem::path& root) {
     Require(!sigops_ok &&
                 sigop_cost > consensus::MAX_BLOCK_SIGOPS_COST,
             "same body is ingress-invalid for excessive sigops");
+    consensus::ConsensusUTXOSet stateless_set;
+    stateless_set.SetBestBlock(parent->hash, 1);
+    const auto stateless_root_before = stateless_set.GetForest().getCommitment();
+    consensus::BlockValidator stateless_validator(&stateless_set);
+    stateless_validator.setValidationMode(consensus::ValidationMode::STATELESS);
+    consensus::BlockUndo stateless_undo;
+    std::string stateless_error;
+    Require(!stateless_validator.ValidateAndApplyBlock(
+                block, 2, block.GetHash(), stateless_undo, stateless_error) &&
+                stateless_error.rfind("block-sigops-exceeded", 0) == 0,
+            "stateless validator rejects ingress-invalid excessive-sigops body");
+    Require(stateless_set.GetForest().getCommitment() == stateless_root_before,
+            "stateless sigops rejection does not mutate the forest");
     consensus::ConsensusUTXOSet connect_set;
     connect_set.SetBestBlock(parent->hash, 1);
     consensus::BlockValidator connect_validator(&connect_set);
