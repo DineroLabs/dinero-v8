@@ -12744,6 +12744,30 @@ void ChainstateService::ActivateBestChainPass(const ActivationParentPlan* prepar
                 "[ABC-CSN] Shielded preflight nullifier rewind incomplete");
             return;
         }
+        // Only a DNRS committed by the selected fork block can turn a
+        // post-state mismatch into proof that the proposed body is invalid.
+        // A pruned fork body or a fork before DNRS activation still permits
+        // safe preflight refusal, but never permanent header invalidation.
+        bool authenticated_shielded_fork = false;
+        if (consensus::IsStateCommitmentActive(
+                static_cast<uint32_t>(fork_point->height),
+                Params().state_commitment_activation_height)) {
+            const auto fork_body = ReadStoredBlock(fork_point->hash);
+            const auto fork_root = consensus::shielded::ComputeShieldedRoot(
+                preflight_shielded_tree, preflight_nullifiers, preflight_anchors);
+            if (!fork_root) {
+                if (logger_) logger_->error(
+                    "[ABC-CSN] Shielded preflight fork root unavailable");
+                return;
+            }
+            if (fork_body.status() == Status::Ok && !fork_body->vtx.empty()) {
+                const auto committed = consensus::FindStateCommitment(
+                    fork_body->vtx.front());
+                authenticated_shielded_fork =
+                    committed.status == consensus::StateCommitmentStatus::Ok &&
+                    committed.root == *fork_root;
+            }
+        }
         consensus::ConsensusUTXOSet preflight_utxo_set;
         consensus::BlockValidator preflight_validator(&preflight_utxo_set);
         preflight_validator.setShieldedState(
@@ -12770,6 +12794,13 @@ void ChainstateService::ActivateBestChainPass(const ActivationParentPlan* prepar
             if (logger_) logger_->warning(
                 "[ABC-CSN] Persisted consensus-invalid branch block at height " +
                 std::to_string(index->height) + ": " + reason);
+        };
+        const auto retry_shielded_failure = [&] {
+            // A missing/ambiguous prestate may make an otherwise valid
+            // candidate appear bad. Keep it retryable, but let a valid
+            // equal-work sibling run while this candidate cools down.
+            activation_retries_.RecordFailure(
+                best_candidate->hash, std::chrono::steady_clock::now());
         };
         for (auto* block_index : connect_path) {
             const auto block_result = ReadStoredBlock(block_index->hash);
@@ -12824,6 +12855,7 @@ void ChainstateService::ActivateBestChainPass(const ActivationParentPlan* prepar
                     "[ABC-CSN] Shielded preflight rejected height " +
                     std::to_string(block_index->height) + ": " + shielded_error +
                     " — canonical state left untouched");
+                retry_shielded_failure();
                 return;
             }
             consensus::BlockUndo shielded_undo;
@@ -12834,6 +12866,13 @@ void ChainstateService::ActivateBestChainPass(const ActivationParentPlan* prepar
                     "[ABC-CSN] Shielded preflight rejected height " +
                     std::to_string(block_index->height) + ": " + shielded_error +
                     " — canonical state left untouched");
+                if (authenticated_shielded_fork &&
+                    shielded_error.rfind(
+                        "coinbase-state-commitment-mismatch", 0) == 0) {
+                    reject_proven_invalid(block_index, shielded_error);
+                } else {
+                    retry_shielded_failure();
+                }
                 return;
             }
         }

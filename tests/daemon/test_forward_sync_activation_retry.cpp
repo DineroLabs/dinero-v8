@@ -61,6 +61,12 @@ struct ActivationRetryTestAccess {
     static uint32_t Failures(const ChainstateService& svc, const uint256& hash) {
         return svc.activation_retries_.FailureCount(hash);
     }
+    static uint256 ShieldedRoot(const ChainstateService& svc) {
+        return svc.CurrentShieldedStateSnapshot().root;
+    }
+    static void ClearFailure(ChainstateService& svc, const uint256& hash) {
+        svc.activation_retries_.Clear(hash);
+    }
     static void CapAtSnapshotBase(ChainstateService& svc, CBlockIndex* base) {
         svc.assumeutxo_active_ = true;
         svc.assumeutxo_base_height_ = base->height;
@@ -1158,6 +1164,24 @@ void RunCsnInvalidSignatureReplay(const std::filesystem::path& root,
                 csn_set.GetForest().getCommitment() == forest_before &&
                 wrong_error.find("state-commitment-mismatch") != std::string::npos,
                 "CSN rejects wrong DNRS before forest mutation");
+        // Force the same transparent-only wrong-DNRS body through the ABC-CSN
+        // replay route (a reconnect from a verified fork checkpoint). The
+        // recovery call above covers ConnectTip; it does not cover ABC's
+        // distinct stored-body path. The old ABC gate skipped this section
+        // because there is no shielded transaction in the block.
+        Require(db.putUtreexoCheckpointWithChecksum(
+                    token, parent_height, csn_set.GetForest().serialize()) == Status::Ok,
+                "CSN fork checkpoint staged for ABC preflight");
+        svc.AddCandidate(wrong_index);
+        const auto shielded_before = ActivationRetryTestAccess::ShieldedRoot(svc);
+        svc.ActivateBestChain();
+        const auto shielded_after = ActivationRetryTestAccess::ShieldedRoot(svc);
+        Require(svc.GetActiveTip() == parent &&
+                    csn_set.GetForest().getCommitment() == forest_before &&
+                    shielded_after == shielded_before &&
+                    ActivationRetryTestAccess::Failures(svc, wrong_index->hash) > 0 &&
+                    (wrong_index->status & BLOCK_FAILED_VALID) == 0,
+                "ABC-CSN wrong DNRS leaves canonical tip, forest and shielded state untouched; unproven fork stays retryable");
         MutableParams().state_commitment_activation_height = UINT32_MAX;
 
         // A different valid body at the same height must remain connectable
@@ -1172,6 +1196,25 @@ void RunCsnInvalidSignatureReplay(const std::filesystem::path& root,
                   << " error=" << honest_error << '\n';
         Require(honest_connected && svc.GetActiveTip() == honest_index,
                 "CSN can select honest same-height sibling after invalid candidate");
+        // Now make the wrong-DNRS sibling the proposed heavier branch. This
+        // exercises ABC with an actual old-branch disconnect, not just the
+        // reconnect path above. Work is staged in the index for candidate
+        // selection; the test concerns shielded preflight before mutation.
+        MutableParams().state_commitment_activation_height = height;
+        auto forced_work = ChainworkFromHex(honest_index->chainwork);
+        forced_work += arith_uint256(1);
+        wrong_index->chainwork = forced_work.GetHex();
+        ActivationRetryTestAccess::ClearFailure(svc, wrong_index->hash);
+        svc.AddCandidate(wrong_index);
+        const auto honest_forest = csn_set.GetForest().getCommitment();
+        const auto honest_shielded = ActivationRetryTestAccess::ShieldedRoot(svc);
+        svc.ActivateBestChain();
+        Require(svc.GetActiveTip() == honest_index &&
+                    csn_set.GetForest().getCommitment() == honest_forest &&
+                    ActivationRetryTestAccess::ShieldedRoot(svc) == honest_shielded &&
+                    (wrong_index->status & BLOCK_FAILED_VALID) == 0,
+                "ABC-CSN wrong-DNRS competing branch cannot disconnect honest tip or mutate canonical state");
+        MutableParams().state_commitment_activation_height = UINT32_MAX;
         }
     }
     if (activate_candidates) {
