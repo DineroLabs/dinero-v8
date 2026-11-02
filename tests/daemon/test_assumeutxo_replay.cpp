@@ -98,7 +98,11 @@ din::Json rpc_context_wallet_decoderawtransaction(const ExecutionContext&, const
 #include <sqlite3.h>
 #include <filesystem>
 #include <future>
+#ifdef _WIN32
+#include <process.h>
+#else
 #include <unistd.h>
+#endif
 
 #include <string>
 #include <vector>
@@ -141,6 +145,14 @@ din::Json rpc_context_wallet_decoderawtransaction(const ExecutionContext&, const
 din::Json rpc_context_wallet_unlock(const ExecutionContext&, const din::Json&);
 
 namespace dinero {
+
+static int TestProcessId() {
+#ifdef _WIN32
+    return _getpid();
+#else
+    return getpid();
+#endif
+}
 
 #ifdef DINERO_TEST_ORCHARD_ORIGIN
 struct RuntimeOriginProjectionTestAccess {
@@ -737,7 +749,7 @@ TEST(AssumeUtxoReplay, TimeLocksUseOwnedAncestryWithoutGlobalIndex) {
 
 
 TEST(SelectedWalletHistory, ValidatesBeforeEffectsAndUsesOwnedBodies) {
-    const auto dir=std::filesystem::temp_directory_path()/("selected_wallet_history_"+std::to_string(getpid()));
+    const auto dir=std::filesystem::temp_directory_path()/("selected_wallet_history_"+std::to_string(TestProcessId()));
     std::filesystem::create_directories(dir);
     WalletManager wallet(dir/"wallet"); wallet.create("selected"); wallet.open("selected");
     auto blocks=BuildDeterministicChain(3); ASSERT_EQ(blocks.size(),3u);
@@ -819,7 +831,7 @@ TEST(SelectedWalletHistory, ValidatesBeforeEffectsAndUsesOwnedBodies) {
 
 #ifdef DINERO_TEST_ORCHARD_ORIGIN
 TEST(RuntimeOriginProjection, BindsCapturedWalletAndScriptDomain) {
-    const auto dir=std::filesystem::temp_directory_path()/("origin_wallet_domain_"+std::to_string(getpid()));
+    const auto dir=std::filesystem::temp_directory_path()/("origin_wallet_domain_"+std::to_string(TestProcessId()));
     WalletManager wallet(dir);wallet.create("origin");wallet.open("origin");
     const auto session=wallet.AcquireDatabaseLease()->Session();
     {const auto lease=wallet.AcquireDatabaseLease();
@@ -871,7 +883,7 @@ TEST(RuntimeOriginProjection, KeepsSpentCoinsAndExactTransactionHistory) {
 #else
 TEST(RuntimeOriginProjection, UnavailableWithoutBackend) {
     ChainstateService service;
-    WalletManager wallet(std::filesystem::temp_directory_path()/("origin_backend_off_"+std::to_string(getpid())));
+    WalletManager wallet(std::filesystem::temp_directory_path()/("origin_backend_off_"+std::to_string(TestProcessId())));
     // No wallet or chain is opened: the absent implementation must refuse
     // without acquiring either source or silently constructing a projection.
     const auto origin=service.getRuntimeWalletOrigin(wallet,0);
