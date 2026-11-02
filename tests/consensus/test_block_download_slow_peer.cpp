@@ -4,6 +4,7 @@
 #include "consensus/drain_failure_streak.h"
 #include "consensus/header_chain.h"
 #include "consensus/chainparams.h"
+#include "consensus/merkle_root.h"
 #include "primitives/block.h"
 #include "primitives/uint256.h"
 #include "storage/block_storage.h"
@@ -31,6 +32,19 @@ namespace dcs = dinero::consensus;
 
 namespace {
 
+dinero::Transaction TestCoinbase() {
+    dinero::Transaction tx;
+    tx.version = 1;
+    tx.witness_version = 0xFF;
+    dinero::TxInput input;
+    input.prevout.vout = 0xffffffffu;
+    input.scriptSig = {1, 1};
+    input.sequence = 0xffffffffu;
+    tx.vin.push_back(input);
+    tx.vout.emplace_back(dinero::AmountUna::Una(1), std::vector<uint8_t>{0x51});
+    return tx;
+}
+
 BlockHeader CreateTestHeader(
     const uint256& prev_hash,
     uint32_t time,
@@ -39,7 +53,7 @@ BlockHeader CreateTestHeader(
     BlockHeader header;
     header.version = 1;
     header.prev_block_hash = prev_hash;
-    header.merkle_root = uint256();
+    header.merkle_root = dcs::ComputeMerkleRoot({TestCoinbase()});
     header.timestamp = time;
     header.difficulty = bits;
     header.nonce = 1;
@@ -111,6 +125,7 @@ Block MakeBlockForHash(dcs::HeaderChainSelector& selector, const uint256& hash) 
 
     Block block;
     block.header = entry->header;
+    block.vtx.push_back(TestCoinbase());
     return block;
 }
 
